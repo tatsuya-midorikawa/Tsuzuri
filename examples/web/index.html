@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tsuzuri / LLVM WebAssembly</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101820; color: #edf8f7; }
+      body { max-width: 980px; margin: 3rem auto; padding: 0 1.25rem; }
+      h1 { font-size: clamp(2rem, 6vw, 3.4rem); letter-spacing: -0.04em; margin-bottom: 0.5rem; }
+      p { color: #b5c8cb; line-height: 1.6; }
+      .tag { color: #69e8c1; text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.8rem; }
+      canvas { display: block; width: 100%; height: auto; background: #17242d; border: 1px solid #34505a; border-radius: 12px; }
+      .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+      button { border: 0; border-radius: 6px; padding: 0.65rem 1.2rem; background: #69e8c1; color: #10251f; font: inherit; cursor: pointer; min-width: 100px; }
+      button:disabled { opacity: 0.5; cursor: wait; }
+      input { accent-color: #69e8c1; vertical-align: middle; }
+      :focus-visible { outline: 3px solid #f5c46a; outline-offset: 4px; }
+      #fps { margin-left: auto; color: #69e8c1; font-variant-numeric: tabular-nums; }
+      .error { color: #ffaea4; }
+      code { color: #cfebe4; }
+      footer { margin-top: 2rem; border-top: 1px solid #34505a; padding-top: 1rem; font-size: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <p class="tag">Pure functions. Native machine code. WebAssembly.</p>
+    <h1>Tsuzuri in motion</h1>
+    <p>The same immutable <code>Physics.tzr</code> kernel powers this browser demo and the native desktop example. No GC, allocator, or JavaScript imports inside the WASM kernel.</p>
+    <canvas id="game" width="960" height="540" aria-label="Animated balls with elastic wall collisions"></canvas>
+    <div class="controls">
+      <button id="pause" type="button" disabled aria-pressed="false">Pause</button>
+      <label for="count">Balls: <span id="count-label">32</span></label>
+      <input id="count" type="range" min="1" max="128" value="32" disabled>
+      <output id="fps" aria-live="off">Loading</output>
+    </div>
+    <p id="status" role="status">Loading physics.wasm...</p>
+    <footer>
+      <p>Build with <code>tsuzuri build examples/web/Physics.tzr --target wasm32 -o examples/web/physics.wasm</code>, then serve this directory over HTTP. FPS includes rendering and browser scheduling; it is not a compiler benchmark.</p>
+    </footer>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+fn sum(n: i64, total: i64) -> i64 {
+    if n <= 0 {
+        total
+    } else {
+        sum(n - 1, total + n)
+    }
+}
+
+export fn answer() -> i64 {
+    sum(100, 0)
+}
+
+fn main() -> i64 {
+    answer()
+}

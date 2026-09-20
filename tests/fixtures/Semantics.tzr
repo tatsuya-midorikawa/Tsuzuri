@@ -1,0 +1,208 @@
+record Vec2 {
+    x: f64,
+    y: f64,
+}
+
+record IntPair {
+    first: i64,
+    second: i64,
+}
+
+record Operation {
+    apply: fn(i64) -> i64,
+}
+
+record Empty {}
+
+export fn add(a: i64, b: i64) -> i64 { a + b }
+export fn subtract(a: i64, b: i64) -> i64 { a - b }
+export fn multiply(a: i64, b: i64) -> i64 { a * b }
+export fn divide(a: i64, b: i64) -> i64 { a / b }
+export fn remainder(a: i64, b: i64) -> i64 { a % b }
+export fn negate(a: i64) -> i64 { -a }
+export fn bit_not(a: i64) -> i64 { ~a }
+export fn shift_left(a: i64, n: i64) -> i64 { a << n }
+export fn shift_right(a: i64, n: i64) -> i64 { a >> n }
+export fn shift_unsigned(a: i64, n: i64) -> i64 { a >>> n }
+export fn bit_mix(a: i64, b: i64) -> i64 { (a & b) ^ (a | b) }
+export fn less(a: i64, b: i64) -> bool { a < b }
+export fn equal(a: i64, b: i64) -> bool { a == b }
+export fn bool_not(value: bool) -> bool { !value }
+export fn short_and(flag: bool, divisor: i64) -> bool { flag && 10 / divisor > 1 }
+export fn short_or(flag: bool, divisor: i64) -> bool { flag || 10 / divisor > 1 }
+
+export fn else_if(flag: bool) -> i64 {
+    (if flag { 1 } else if false { 2 } else { 3 } + 10) * 2
+}
+
+export fn nested_if(a: bool, b: bool) -> i64 {
+    let first = if a { if b { 10 } else { 20 } } else { 30 };
+    first + if b { 1 } else { 2 }
+}
+
+fn sum(n: i64, total: i64) -> i64 {
+    if n <= 0 { total } else { sum(n - 1, total + n) }
+}
+
+export fn tail_sum(n: i64) -> i64 { sum(n, 0) }
+
+fn polynomial(n: i64, total: i64) -> i64 {
+    if n <= 0 { total } else { polynomial(n - 1, total + n * n * n * n) }
+}
+
+export fn sum_polynomial(n: i64) -> i64 { polynomial(n, 0) }
+
+fn swap(n: i64, a: i64, b: i64) -> i64 {
+    if n <= 0 { a * 10 + b } else { swap(n - 1, b, a) }
+}
+
+export fn tail_swap(n: i64) -> i64 { swap(n, 1, 2) }
+
+fn down(n: i64) -> i64 {
+    if n <= 0 { 0 } else { (n - 1) |> down }
+}
+
+export fn tail_pipe(n: i64) -> i64 { down(n) }
+
+fn even(n: i64) -> bool {
+    if n <= 0 { true } else { odd(n - 1) }
+}
+
+fn odd(n: i64) -> bool {
+    if n <= 0 { false } else { even(n - 1) }
+}
+
+export fn mutual_recursion(n: i64) -> bool { even(n) }
+
+fn square(n: i64) -> i64 { n * n }
+
+fn apply_twice(f: fn(i64) -> i64, n: i64) -> i64 { f(f(n)) }
+
+fn select_function(flag: bool) -> fn(i64) -> i64 {
+    if flag { square } else { negate }
+}
+
+export fn higher_order(flag: bool, n: i64) -> i64 {
+    apply_twice(select_function(flag), n)
+}
+
+export fn function_record(flag: bool, n: i64) -> i64 {
+    let operation = Operation { apply: select_function(flag) };
+    operation.apply(n)
+}
+
+export fn function_array(index: i64, n: i64) -> i64 {
+    let operations = [square, negate];
+    operations[index](n)
+}
+
+fn map4(f: fn(i64) -> i64, values: [i64; 4]) -> [i64; 4] {
+    [f(values[0]), f(values[1]), f(values[2]), f(values[3])]
+}
+
+fn fold4(f: fn(i64, i64) -> i64, values: [i64; 4], index: i64, total: i64) -> i64 {
+    if index == values.length {
+        total
+    } else {
+        fold4(f, values, index + 1, f(total, values[index]))
+    }
+}
+
+export fn functional_sum(start: i64) -> i64 {
+    let values = [start, start + 1, start + 2, start + 3];
+    let squares = map4(square, values);
+    fold4(add, squares, 0, 0)
+}
+
+fn array_loop(n: i64, values: [i64; 2]) -> i64 {
+    let value = values[n & 1];
+    if n <= 0 { value } else { array_loop(n - 1, [value, value + 1]) }
+}
+
+export fn tail_array(n: i64) -> i64 {
+    array_loop(n, [0, 1])
+}
+
+export fn index(index: i64) -> i64 {
+    let values = [10, 20, 30, 40];
+    values[index]
+}
+
+fn retain(values: [i64; 64]) -> [i64; 64] { values }
+
+export fn large_array(base: i64, index: i64) -> i64 {
+    let values = [
+        base, base + 1, base + 2, base + 3, base + 4, base + 5, base + 6, base + 7,
+        base + 8, base + 9, base + 10, base + 11, base + 12, base + 13, base + 14, base + 15,
+        base + 16, base + 17, base + 18, base + 19, base + 20, base + 21, base + 22, base + 23,
+        base + 24, base + 25, base + 26, base + 27, base + 28, base + 29, base + 30, base + 31,
+        base + 32, base + 33, base + 34, base + 35, base + 36, base + 37, base + 38, base + 39,
+        base + 40, base + 41, base + 42, base + 43, base + 44, base + 45, base + 46, base + 47,
+        base + 48, base + 49, base + 50, base + 51, base + 52, base + 53, base + 54, base + 55,
+        base + 56, base + 57, base + 58, base + 59, base + 60, base + 61, base + 62, base + 63,
+    ];
+    retain(values)[index]
+}
+
+export fn nested_array(index: i64) -> i64 {
+    let values = [[1, 2], [3, 4]];
+    values[index][1]
+}
+
+export fn bool_array(index: i64) -> bool {
+    [true, false, true][index]
+}
+
+export fn empty_values() -> i64 {
+    let a: [i64; 0] = [];
+    let empty = Empty {};
+    let records = [empty, empty];
+    a.length + records.length
+}
+
+export fn empty_index(index: i64) -> bool {
+    let values = [Empty {}, Empty {}];
+    let _ = values[index];
+    true
+}
+
+export fn unit_index(index: i64) -> bool {
+    [(), ()][index] == ()
+}
+
+fn translate(point: Vec2, x: f64, y: f64) -> Vec2 {
+    Vec2 { y: point.y + y, x: point.x + x }
+}
+
+export fn distance(x: f64, y: f64) -> f64 {
+    let origin = Vec2 { x: 0.0, y: 0.0 };
+    let point = translate(origin, x, y);
+    sqrt(point.x * point.x + point.y * point.y)
+}
+
+fn apply_float(f: fn(f64) -> f64, value: f64) -> f64 { f(value) }
+
+export fn rounded(value: f64) -> f64 { apply_float(floor, value) }
+export fn ceiling(value: f64) -> f64 { ceil(value) }
+export fn absolute(value: f64) -> f64 { abs(value) }
+export fn convert_int(value: f64) -> i64 { to_int(value) }
+export fn convert_float(value: i64) -> f64 { value |> to_float }
+export fn float_divide(a: f64, b: f64) -> f64 { a / b }
+export fn float_equal(a: f64, b: f64) -> bool { a == b }
+export fn float_not_equal(a: f64, b: f64) -> bool { a != b }
+export fn float_less(a: f64, b: f64) -> bool { a < b }
+export fn float_order(a: f64, b: f64, c: f64) -> f64 { (a + b) + c }
+export fn negative_zero() -> f64 { -0.0 }
+export fn require(flag: bool) -> unit { assert(flag) }
+export fn unit_equal() -> bool { () == {} }
+
+export fn unused_field(divisor: i64) -> i64 {
+    let pair = IntPair { first: 42, second: 1 / divisor };
+    pair.first
+}
+
+export fn unused_array(divisor: i64) -> i64 {
+    [1 / divisor].length
+}
+
+fn main() -> i64 { functional_sum(1) }

@@ -1,0 +1,137 @@
+record Label { text: string, other: string, count: i32 }
+
+fn text_length(text: &string) -> i64 { text.length }
+fn first(values: &[string; 2]) -> &string { &values[0] }
+fn replace(text: &mut string) -> unit { *text = "changed"; }
+
+export fn strings(flag: bool) -> i64 {
+    let mut text = "日本語";
+    let borrowed = &text;
+    let original = text_length(borrowed);
+    replace(&mut text);
+    let values = [clone_string(&text), "second"];
+    let label = Label { text: clone_string(first(&values)), other: "!", count: 7 };
+    let moved = label.text;
+    let joined = if flag { moved + label.other } else { moved };
+    let _ = assert(text == "changed");
+    let _ = assert("a\0b".length == 3);
+    let _ = assert("日本語"[0] == 230ubyte);
+    let _ = assert({ let local = "x"; local } == "x");
+    original + joined.length + (label.count as i64)
+}
+
+fn owned_loop(n: i64, text: string) -> i64 {
+    let temporary = clone_string(&text);
+    let size = temporary.length;
+    if n == 0 { size } else { owned_loop(n - 1, text) }
+}
+
+fn repeat(n: i64, text: string) -> string {
+    if n == 0 { text } else { repeat(n - 1, text + "0123456789abcdef") }
+}
+
+export fn ownership_stress(n: i64) -> i64 {
+    let text = repeat(32, "");
+    owned_loop(n, text)
+}
+
+export fn coalescing(n: i64) -> i64 {
+    let a = repeat(n, "");
+    let b = repeat(n + 1, "");
+    let c = repeat(n + 2, "");
+    a.length + b.length + c.length
+}
+
+export fn mutable_local() -> i32 {
+    let mut value: i32 = 1;
+    let exclusive = &mut value;
+    let reborrow = &mut *exclusive;
+    *reborrow = 40;
+    *exclusive = *exclusive + 2;
+    value
+}
+
+export fn narrow_signed(x: i8, y: i8) -> i8 { x + y }
+export fn narrow_unsigned(x: ubyte, y: ubyte) -> ubyte { x + y }
+export fn unsigned32(x: i32u, y: i32u) -> i32u { x + y }
+export fn unsigned64(x: i64u, y: i64u) -> i64u { x / y }
+export fn float32(x: f32, y: f32) -> f32 { (x + y) * 0.5 }
+export fn half_add(x: f32, y: f32) -> f32 { ((x as f16) + (y as f16)) as f32 }
+export fn half_divide(x: f32, y: f32) -> f32 { ((x as f16) / (y as f16)) as f32 }
+
+export fn integer128() -> bool {
+    let max = 340282366920938463463374607431768211455i128u;
+    let minimum = -170141183460469231731687303715884105728i128;
+    let x = 123456789012345678901234567890i128;
+    max + 1 == 0 && minimum - 1 == 170141183460469231731687303715884105727i128
+        && (x * 7) / 7 == x && (x * 7) % 7 == 0
+        && (max >> 127) == 1 && (minimum >>> 127) == 1
+        && (255i16 as i8) == -1 && (-1i8 as i128) == -1
+}
+
+export fn wide_shift(low: i64, high: i64, count: i64, mode: i32, upper: bool) -> i64 {
+    let value = (low as i64u as i128u) | ((high as i128u) << 64);
+    let shifted = if mode == 0 {
+        value << (count as i128u)
+    } else if mode == 1 {
+        value >> (count as i128u)
+    } else {
+        ((value as i128) >> (count as i128)) as i128u
+    };
+    (if upper { shifted >> 64 } else { shifted }) as i64
+}
+
+export fn binary_precision() -> bool {
+    let tiny = 1e-30f128;
+    let limit = 10384593717069655257060992658440192i128u;
+    let half_nan = 0.0f16 / 0.0f16;
+    let quad_nan = 0.0f128 / 0.0f128;
+    let negative_zero = -0.0f128;
+    (1.0f128 + tiny) > 1.0f128
+        && ((limit + 1) as f128) as i128u == limit
+        && ((limit + 3) as f128) as i128u == limit + 4
+        && 1.0f16 + 0.00048828125f16 == 1.0f16
+        && half_nan != half_nan && quad_nan != quad_nan
+        && !(quad_nan >= 1.0f128) && !(quad_nan <= 1.0f128)
+        && 1.0f128 / negative_zero < 0.0f128
+        && (6.475175119438025110924438958227647e-4966f128 / 2.0f128) == 0.0f128
+}
+
+export fn decimal_precision() -> bool {
+    let exact = 1234567890123456789012345678901234d128;
+    let nan = 0.0d128 / 0.0d128;
+    let infinity = 1.0d128 / 0.0d128;
+    0.1d32 + 0.2d32 == 0.3d32
+        && 0.1d64 + 0.2d64 == 0.3d64
+        && 0.1d128 + 0.2d128 == 0.3d128
+        && exact + 1.0d128 - exact == 1.0d128
+        && 1.234566d32 + 0.0000005d32 == 1.234566d32
+        && 1.234567d32 + 0.0000005d32 == 1.234568d32
+        && 6e-102d32 == 1e-101d32 && 5e-102d32 == 0.0d32
+        && 1e-101d32 / 2.0d32 == 0.0d32
+        && 9.999999e96d32 * 10.0d32 > 9.999999e96d32
+        && infinity / infinity != infinity / infinity
+        && nan != nan && !(nan >= 0.0d128) && !(nan <= 0.0d128)
+        && 1.0d64 / -0.0d64 < 0.0d64
+        && (0.1d128 as f128) as d128 == 0.1d128
+        && (42.0d128 as i128) == 42
+        && ((1.0d128 / 0.0d128) as i128) == 170141183460469231731687303715884105727i128
+        && ((-1.0f128 / 0.0f128) as i128) == -170141183460469231731687303715884105728i128
+        && ((0.0f128 / 0.0f128) as i128u) == 0
+        && (-1.0d128 as i128u) == 0
+}
+
+export fn signed8_divide(x: i8, y: i8) -> i8 { x / y }
+export fn unsigned128_zero(x: i64) -> i64 { (1i128u / (x as i128u)) as i64 }
+export fn signed128_overflow() -> i64 {
+    (-170141183460469231731687303715884105728i128 / -1i128) as i64
+}
+export fn string_bounds(index: i64) -> ubyte { "abc"[index] }
+
+fn grow(n: i64, text: string) -> i64 {
+    if n == 0 { text.length } else { grow(n - 1, clone_string(&text) + text) }
+}
+
+export fn allocation_limit() -> i64 { grow(25, "a") }
+
+fn main() -> string { "UTF-8: 日本語 \u{1f600}" }

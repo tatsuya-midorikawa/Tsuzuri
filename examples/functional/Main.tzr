@@ -1,0 +1,24 @@
+fn increment(value: i64) -> i64 { value + 1 }
+fn add(a: i64, b: i64) -> i64 { a + b }
+fn triple(value: i64) -> i64 { value * 3 }
+
+fn map4(f: fn(i64) -> i64, values: [i64; 4]) -> [i64; 4] {
+    [f(values[0]), f(values[1]), f(values[2]), f(values[3])]
+}
+
+fn fold4(f: fn(i64, i64) -> i64, values: [i64; 4], index: i64, total: i64) -> i64 {
+    if index == values.length {
+        total
+    } else {
+        fold4(f, values, index + 1, f(total, values[index]))
+    }
+}
+
+export fn transform(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    let values = map4(increment, [a, b, c, d]);
+    fold4(add, values, 0, 0) |> triple
+}
+
+fn main() -> i64 {
+    transform(1, 2, 3, 4)
+}

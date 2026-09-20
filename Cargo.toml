@@ -1,0 +1,22 @@
+[package]
+name = "tsuzuri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A small, statically typed language with ownership and LLVM native and WebAssembly backends"
+license = "Apache-2.0"
+repository = "https://github.com/tatsuya-midorikawa/Tsuzuri"
+
+[dependencies]
+rustc_apfloat = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
