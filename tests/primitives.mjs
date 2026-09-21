@@ -106,6 +106,9 @@ const generatedBinary = binaryReference.map(([a, b, op, expected], index) =>
 
 try {
   const input = join(temporary, "Main.tzr");
+  writeFileSync(join(temporary, "Curried.tzr"), readFileSync(join(root, "tests/fixtures/currying/Functions.tzr"), "utf8"));
+  writeFileSync(join(temporary, "Arrays.tzr"), readFileSync(join(root, "tests/fixtures/arrays/Arrays.tzr"), "utf8"));
+  writeFileSync(join(temporary, "Lists.tzr"), readFileSync(join(root, "tests/fixtures/lists/Lists.tzr"), "utf8"));
   writeFileSync(input, readFileSync(join(root, "tests/fixtures/primitives/Main.tzr"), "utf8") + "\n" + generated + "\n" + generatedBinary);
   cli(["check", input]);
   const header = join(temporary, "primitives.h");
@@ -118,12 +121,13 @@ try {
 #include <stdlib.h>
 #include <stdio.h>
 #include "primitives.h"
-static uint64_t live, peak;
+static uint64_t live, peak, allocations;
 void *tracked_alloc(uint64_t n) {
     uint64_t *p = malloc((size_t)n + 16);
     assert(p);
     p[0] = n; p[1] = UINT64_C(0x51a110ca7e);
     live += n; if (live > peak) peak = live;
+    ++allocations;
     return p + 2;
 }
 void tracked_free(void *pointer) {
@@ -132,7 +136,44 @@ void tracked_free(void *pointer) {
     assert(p[1] == UINT64_C(0x51a110ca7e));
     p[1] = 0; assert(live >= p[0]); live -= p[0]; free(p);
 }
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        switch (atoi(argv[1])) {
+            case 0: tz_array_bounds(0, 0); break;
+            case 1: tz_array_bounds(3, -1); break;
+            case 2: tz_array_bounds(3, 3); break;
+            case 3: tz_array_length(-1); break;
+            case 4: tz_array_length(INT64_MIN); break;
+            case 5: tz_array_length(INT64_MAX); break;
+            case 6: tz_array_length(INT64_C(1) << 61); break;
+            case 7: tz_array_init_trap(2); break;
+            case 8: tz_list_bounds(0, 0); break;
+            case 9: tz_list_bounds(3, -1); break;
+            case 10: tz_list_bounds(3, 3); break;
+            case 11: tz_list_length(-1); break;
+            case 12: tz_list_length(INT64_MIN); break;
+            case 13: tz_list_length(INT64_MAX); break;
+            case 14: tz_list_length(INT64_C(1) << 61); break;
+            case 15: tz_list_init_trap(2); break;
+        }
+        return 0;
+    }
+    assert(tz_curried_integer() == 42 && live == 0);
+    assert(tz_curried_float() == 3.75 && live == 0);
+    assert(tz_curried_decimal() == 0.3 && live == 0);
+    assert(tz_curried_capture() == 42 && live == 0);
+    assert(tz_curried_choose(1, 41) == 42 && live == 0);
+    assert(tz_curried_choose(0, 43) == 42 && live == 0);
+    assert(tz_curried_aggregate() == 63 && live == 0);
+    assert(tz_curried_string() == 13 && live == 0);
+    assert(tz_curried_nested() == 15 && live == 0);
+    assert(tz_curried_borrow() == 19 && live == 0);
+    assert(tz_curried_order() == 12 && live == 0);
+    assert(tz_curried_pipeline() == 21 && live == 0);
+    assert(tz_curried_exclusive() == 7 && live == 0);
+    assert(tz_curried_class() == 45 && live == 0);
+    assert(tz_curried_higher() == 42 && live == 0);
+    assert(tz_curried_churn(40000) == 2160054 && live == 0);
     assert(tz_strings(1) == 24 && live == 0);
     assert(tz_strings(0) == 23 && live == 0);
     assert(tz_mutable_local() == 42);
@@ -166,6 +207,54 @@ int main(void) {
         assert(tz_coalescing(n) == 16 * (3 * n + 3) && live == 0);
     }
     assert(peak < 16384);
+    peak = 0;
+    for (int n = 0; n <= 32; ++n) {
+        assert(tz_array_values(n) == (n == 0 ? 0 : 3 * n + 19) && live == 0);
+        assert(tz_array_owned(n) == (n == 0 ? 0 : n + 6) && live == 0);
+        assert(tz_array_capture(n) == 4 * n && live == 0);
+        assert(tz_array_functions(n) == (n == 0 ? 0 : n + 29) && live == 0);
+        assert(tz_array_zero_sized(n) == 2 * n && live == 0);
+    }
+    assert(tz_array_values(2048) == 6163 && live == 0);
+    assert(tz_array_shapes(1) == 15 && live == 0);
+    assert(tz_array_shapes(0) == 27 && live == 0);
+    assert(tz_array_empty() == 0 && live == 0);
+    assert(tz_array_temporaries() == 15 && live == 0);
+    assert(tz_array_wide() && live == 0);
+    assert(tz_array_borrows() == 15 && live == 0);
+    assert(tz_array_replace() == 17 && live == 0);
+    assert(tz_array_order() == 44 && live == 0);
+    assert(tz_array_bounds(3, 2) == 2 && live == 0);
+    assert(tz_array_init_trap(0) == 0 && live == 0);
+    assert(tz_array_init_trap(1) == 1 && live == 0);
+    assert(tz_array_churn(100000) == 8 && live == 0);
+    for (int n = 0; n <= 32; ++n) {
+        assert(tz_list_values(n) == (n == 0 ? 0 : 3 * n + 19) && live == 0);
+        assert(tz_list_owned(n) == (n == 0 ? 0 : n + 6) && live == 0);
+        assert(tz_list_capture(n) == 4 * n && live == 0);
+        assert(tz_list_functions(n) == (n == 0 ? 0 : n + 29) && live == 0);
+        assert(tz_list_zero_sized(n) == 2 * n && live == 0);
+    }
+    assert(tz_list_values(2048) == 6163 && live == 0);
+    assert(tz_list_shapes(1) == 15 && live == 0);
+    assert(tz_list_shapes(0) == 27 && live == 0);
+    assert(tz_list_empty() == 0 && live == 0);
+    assert(tz_list_temporaries() == 15 && live == 0);
+    assert(tz_list_mixed() == 7 && live == 0);
+    assert(tz_list_wide() && live == 0);
+    assert(tz_list_borrows() == 15 && live == 0);
+    assert(tz_list_replace() == 17 && live == 0);
+    assert(tz_list_order() == 44 && live == 0);
+    assert(tz_list_bounds(3, 2) == 2 && live == 0);
+    assert(tz_list_init_trap(0) == 0 && live == 0);
+    assert(tz_list_init_trap(1) == 1 && live == 0);
+    assert(tz_list_churn(100000) == 8 && live == 0);
+    assert(peak < 131072);
+    uint64_t before = allocations;
+    assert(tz_list_length(100000) == 100000 && live == 0);
+    assert(allocations - before == 100000);
+    before = allocations;
+    assert(tz_list_length(0) == 0 && live == 0 && allocations == before);
     return 0;
 }
 `);
@@ -177,10 +266,70 @@ int main(void) {
     writeFileSync(ir, readFileSync(ir, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free"));
     execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir, "-lm", "-o", native]);
     execute(native, []);
+    for (let trap = 0; trap < 16; ++trap) {
+      const result = execute(native, [String(trap)], false);
+      assert.notEqual(result.status, 0, `native collection trap ${trap}`);
+    }
     cli(["build", input, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
     const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
     assert.deepEqual(WebAssembly.Module.imports(module), []);
     const api = instance.exports;
+    assert.equal(api.tz_curried_integer(), 42);
+    assert.equal(api.tz_curried_float(), 3.75);
+    assert.equal(api.tz_curried_decimal(), 0.3);
+    assert.equal(api.tz_curried_capture(), 42);
+    assert.equal(api.tz_curried_choose(1, 41), 42);
+    assert.equal(api.tz_curried_choose(0, 43), 42);
+    assert.equal(api.tz_curried_aggregate(), 63);
+    assert.equal(api.tz_curried_string(), 13n);
+    assert.equal(api.tz_curried_nested(), 15n);
+    assert.equal(api.tz_curried_borrow(), 19n);
+    assert.equal(api.tz_curried_order(), 12);
+    assert.equal(api.tz_curried_pipeline(), 21);
+    assert.equal(api.tz_curried_exclusive(), 7n);
+    assert.equal(api.tz_curried_class(), 45);
+    assert.equal(api.tz_curried_higher(), 42);
+    assert.equal(api.tz_curried_churn(40000n), 2160054n);
+    for (let n = 0n; n <= 32n; ++n) {
+      assert.equal(api.tz_array_values(n), n === 0n ? 0n : 3n * n + 19n);
+      assert.equal(api.tz_array_owned(n), n === 0n ? 0n : n + 6n);
+      assert.equal(api.tz_array_capture(n), 4n * n);
+      assert.equal(api.tz_array_functions(n), n === 0n ? 0n : n + 29n);
+      assert.equal(api.tz_array_zero_sized(n), 2n * n);
+    }
+    assert.equal(api.tz_array_values(2048n), 6163n);
+    assert.equal(api.tz_array_shapes(1), 15n);
+    assert.equal(api.tz_array_shapes(0), 27n);
+    assert.equal(api.tz_array_empty(), 0n);
+    assert.equal(api.tz_array_temporaries(), 15n);
+    assert.equal(api.tz_array_wide(), 1);
+    assert.equal(api.tz_array_borrows(), 15n);
+    assert.equal(api.tz_array_replace(), 17n);
+    assert.equal(api.tz_array_order(), 44n);
+    assert.equal(api.tz_array_bounds(3n, 2n), 2n);
+    assert.equal(api.tz_array_init_trap(0n), 0n);
+    assert.equal(api.tz_array_init_trap(1n), 1n);
+    for (let n = 0n; n <= 32n; ++n) {
+      assert.equal(api.tz_list_values(n), n === 0n ? 0n : 3n * n + 19n);
+      assert.equal(api.tz_list_owned(n), n === 0n ? 0n : n + 6n);
+      assert.equal(api.tz_list_capture(n), 4n * n);
+      assert.equal(api.tz_list_functions(n), n === 0n ? 0n : n + 29n);
+      assert.equal(api.tz_list_zero_sized(n), 2n * n);
+    }
+    assert.equal(api.tz_list_values(2048n), 6163n);
+    assert.equal(api.tz_list_shapes(1), 15n);
+    assert.equal(api.tz_list_shapes(0), 27n);
+    assert.equal(api.tz_list_empty(), 0n);
+    assert.equal(api.tz_list_temporaries(), 15n);
+    assert.equal(api.tz_list_mixed(), 7n);
+    assert.equal(api.tz_list_wide(), 1);
+    assert.equal(api.tz_list_borrows(), 15n);
+    assert.equal(api.tz_list_replace(), 17n);
+    assert.equal(api.tz_list_order(), 44n);
+    assert.equal(api.tz_list_bounds(3n, 2n), 2n);
+    assert.equal(api.tz_list_init_trap(0n), 0n);
+    assert.equal(api.tz_list_init_trap(1n), 1n);
+    assert.equal(api.tz_list_length(100000n), 100000n);
     assert.equal(api.tz_strings(1), 24n);
     assert.equal(api.tz_strings(0), 23n);
     assert.equal(api.tz_mutable_local(), 42);
@@ -217,9 +366,29 @@ int main(void) {
       () => api.tz_signed128_overflow(),
       () => api.tz_string_bounds(-1n),
       () => api.tz_string_bounds(3n),
+      () => api.tz_array_bounds(0n, 0n),
+      () => api.tz_array_bounds(3n, -1n),
+      () => api.tz_array_bounds(3n, 3n),
+      () => api.tz_array_length(-1n),
+      () => api.tz_array_length(-(1n << 63n)),
+      () => api.tz_array_length((1n << 63n) - 1n),
+      () => api.tz_array_length(1n << 61n),
+      () => api.tz_array_length(3n * 1024n * 1024n),
+      () => api.tz_array_init_trap(2n),
+      () => api.tz_list_bounds(0n, 0n),
+      () => api.tz_list_bounds(3n, -1n),
+      () => api.tz_list_bounds(3n, 3n),
+      () => api.tz_list_length(-1n),
+      () => api.tz_list_length(-(1n << 63n)),
+      () => api.tz_list_length((1n << 63n) - 1n),
+      () => api.tz_list_length(1n << 61n),
+      () => api.tz_list_init_trap(2n),
     ]) assert.throws(run, WebAssembly.RuntimeError);
     const before = api.memory.buffer.byteLength;
     assert.equal(api.tz_ownership_stress(200000n), 512n);
+    assert.equal(api.tz_array_churn(100000n), 8n);
+    assert.equal(api.tz_list_churn(100000n), 8n);
+    assert.equal(api.tz_list_length(100000n), 100000n);
     for (let i = 0; i < 500; ++i) {
       const n = BigInt(i % 64);
       assert.equal(api.tz_coalescing(n), 16n * (3n * n + 3n));
@@ -228,8 +397,11 @@ int main(void) {
     const exhausted = (await WebAssembly.instantiate(readFileSync(wasm))).instance.exports;
     assert.throws(() => exhausted.tz_allocation_limit(), WebAssembly.RuntimeError);
     assert.ok(exhausted.memory.buffer.byteLength <= 16 * 1024 * 1024);
+    const exhaustedList = (await WebAssembly.instantiate(readFileSync(wasm))).instance.exports;
+    assert.throws(() => exhaustedList.tz_list_length(1024n * 1024n), WebAssembly.RuntimeError);
+    assert.ok(exhaustedList.memory.buffer.byteLength <= 16 * 1024 * 1024);
     assert.equal(cli(["run", input, `-O${optimization}`]).stdout, "UTF-8: 日本語 😀\n");
-    console.log(`-O${optimization}: primitive widths, ${reference.length} decimal / ${binaryReference.length} binary128 reference cases, UTF-8, borrows, bounded heap, no WASM imports`);
+    console.log(`-O${optimization}: primitive widths, ${reference.length} decimal / ${binaryReference.length} binary128 reference cases, curried closures, runtime arrays and linked lists, UTF-8, borrows, bounded heap, no WASM imports`);
   }
   for (const [value, expected] of [
     ["340282366920938463463374607431768211455i128u", "340282366920938463463374607431768211455"],

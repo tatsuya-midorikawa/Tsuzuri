@@ -1,7 +1,7 @@
 record Label { text: string, other: string, count: i32 }
 
 fn text_length(text: &string) -> i64 { text.length }
-fn first(values: &[string; 2]) -> &string { &values[0] }
+fn first(values: &[string]) -> &string { &values[0] }
 fn replace(text: &mut string) -> unit { *text = "changed"; }
 
 export fn strings(flag: bool) -> i64 {

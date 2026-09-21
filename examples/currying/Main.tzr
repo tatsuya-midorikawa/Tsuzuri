@@ -1,0 +1,13 @@
+def add :: Add 'a -> 'a -> 'a
+let add = x -> y -> x + y
+
+def apply_twice :: ('a -> 'a) -> 'a -> 'a
+fn apply_twice f value = f (f value)
+
+def main :: i32
+fn main = {
+    let increment = add 1i32;
+    let offset: i32 = 20;
+    let shift = value -> value + offset;
+    apply_twice increment (shift 20)
+}

@@ -307,6 +307,64 @@ define i64 @${name}_${half}(i64 %al, i64 %ah, i64 %bl, i64 %bh) {
   console.log(`LLVM runtime: ${pairs.length} full-width 128-bit cases per operation at -O0/-O3`);
 }
 
+async function polymorphismChecks() {
+  const source = join(root, "tests/fixtures/polymorphism/Main.tzr");
+  const directory = join(temporary, "polymorphism");
+  mkdirSync(directory);
+  const header = join(directory, "polymorphism.h");
+  const host = join(directory, "host.c");
+  cli(["build", source, "--emit", "header", "-o", header]);
+  assert.doesNotMatch(readFileSync(header, "utf8"), /tz_add\b|\$mono/);
+  writeFileSync(host, `
+#include <assert.h>
+#include "polymorphism.h"
+int main(void) {
+  assert(tz_integer(20, 22) == 42);
+  assert(tz_integer(INT32_MAX, 1) == INT32_MIN);
+  assert(tz_floating(1.5, 2.25) == 3.75);
+  assert(tz_narrow(127) == -128);
+  assert(tz_decimal() == 0.3);
+  assert(tz_wide() == 42);
+  assert(tz_parametric() == 42);
+  assert(tz_classes() == 42);
+  assert(tz_intrinsic() == 42);
+  assert(tz_recursion() == INT64_C(2000000));
+  assert(tz_owned() == 11);
+  assert(tz_borrowed() == 8);
+  assert(tz_ordered() == 12);
+  return 0;
+}
+`);
+  for (const optimization of [0, 3]) {
+    assert.equal(cli(["run", source, `-O${optimization}`]).stdout, "42\n");
+    const object = join(directory, `polymorphism-${optimization}.o`);
+    const wasm = join(directory, `polymorphism-${optimization}.wasm`);
+    const native = join(directory, `host-${optimization}${process.platform === "win32" ? ".exe" : ""}`);
+    cli(["build", source, "--emit", "object", `-O${optimization}`, "-o", object]);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", host, object, "-o", native,
+      ...(process.platform === "win32" ? [] : ["-lm"])]);
+    execute(native, []);
+    cli(["build", source, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+    const { instance, module } = await WebAssembly.instantiate(readFileSync(wasm));
+    assert.deepEqual(WebAssembly.Module.imports(module), []);
+    const api = instance.exports;
+    assert.equal(api.tz_integer(20, 22), 42);
+    assert.equal(api.tz_integer(2147483647, 1), -2147483648);
+    assert.equal(api.tz_floating(1.5, 2.25), 3.75);
+    assert.equal(api.tz_narrow(127), -128);
+    assert.equal(api.tz_decimal(), 0.3);
+    assert.equal(api.tz_wide(), 42n);
+    assert.equal(api.tz_parametric(), 42);
+    assert.equal(api.tz_classes(), 42);
+    assert.equal(api.tz_intrinsic(), 42);
+    assert.equal(api.tz_recursion(), 2000000n);
+    assert.equal(api.tz_owned(), 11n);
+    assert.equal(api.tz_borrowed(), 8n);
+    assert.equal(api.tz_ordered(), 12n);
+  }
+  console.log("Polymorphism: signatures, specialization, classes, ownership, evaluation order and tail recursion at -O0/-O3");
+}
+
 async function moduleChecks() {
   const directory = join(temporary, "modules");
   mkdirSync(directory);
@@ -356,7 +414,7 @@ fn value(v: Value) -> i64 { v.x + 1 }
 `,
     "Odd.tzr": "fn test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
     "Loop.tzr": `
-fn sum(n: i64, values: [i64; 2]) -> i64 {
+fn sum(n: i64, values: [i64]) -> i64 {
   let total = values[0];
   if n == 0 { total } else { Loop.sum(n - 1, [total + n, values[1]]) }
 }
@@ -531,6 +589,7 @@ try {
   }
   await runtimeChecks();
   await moduleChecks();
+  await polymorphismChecks();
 
   for (const [type, value, expected] of [
     ["i64", "-9223372036854775808", "-9223372036854775808\n"],
@@ -553,6 +612,12 @@ try {
   diagnostic("fn f() -> i64 { 1e400 }", "E1009");
   diagnostic("fn f() -> i64 { 1__2 }", "E0001");
   diagnostic("record R { r: R }", "E1010");
+  diagnostic("def id :: 'a -> 'a\nfn id x = x\ndef f :: unit\nfn f = { let value = id; }", "E1015");
+  diagnostic("class C 'a { def f :: 'a -> i32 }\ninstance C bool {}", "E1016");
+  diagnostic("def add :: 'a -> 'a -> 'a\nfn add x y = x + y\ndef f :: bool\nfn f = add true false", "E1005");
+  diagnostic("fn add :: i32 -> i32 -> i32\nfn add x y = x + y", "E0002");
+  diagnostic("def f :: Add 'a -> 'a\nfn f x = x\ndef g :: bool\nfn g = f true", "E1005");
+  diagnostic("def f :: i64\nfn f = { let x = 1; let g: &i64 -> unit = r -> { *r = 2; }; 0 }", "E1014");
   diagnostic(Buffer.from([0xff]), "E2001");
   diagnostic(" ".repeat(1024 * 1024 + 1), "E0003");
 

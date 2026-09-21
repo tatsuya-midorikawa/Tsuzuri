@@ -1,0 +1,113 @@
+record Point { x: i32, y: i32 }
+
+def id :: 'a -> 'a
+fn id x = x
+
+def add :: 'a -> 'a -> 'a
+fn add x y = x + y
+
+def apply :: ('a -> 'b) -> 'a -> 'b
+fn apply f x = f x
+
+def twice :: 'a -> 'a
+fn twice x = add x x
+
+def increment :: 'a -> 'a
+fn increment x = x + 1
+
+def sum :: i64 -> 'a -> 'a -> 'a
+fn sum n x total =
+    if n == 0 { total } else { sum (n - 1) x (add total x) }
+
+def countdown :: i64 -> 'a -> 'a
+fn countdown n value = {
+    let unused = "dropped on every iteration";
+    if n == 0 { value } else { countdown (n - 1) value }
+}
+
+class Score 'a {
+    def score :: &'a -> i32
+}
+
+instance Score Point {
+    fn score point = point.x + point.y
+}
+
+instance Score i32 {
+    fn score value = *value
+}
+
+instance Add Point {
+    fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
+}
+
+def score :: Score 'a => &'a -> i32
+fn score value = Score.score value
+
+export def integer :: i32 -> i32 -> i32
+fn integer x y = add x y
+
+export def floating :: f64 -> f64 -> f64
+fn floating x y = add x y
+
+export def narrow :: i8 -> i8
+fn narrow x = increment x
+
+export def decimal :: f64
+fn decimal = (add 0.1d128 0.2d128) as f64
+
+export def wide :: i64
+fn wide = (add 18446744073709551616i128 42i128) as i64
+
+export def parametric :: i32
+fn parametric = {
+    let f: i32 -> i32 = id;
+    apply f (twice 21i32)
+}
+
+export def classes :: i32
+fn classes = {
+    let point = add (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 });
+    let f: &Point -> i32 = Score.score;
+    let value = f (&point);
+    score (&value)
+}
+
+export def intrinsic :: i32
+fn intrinsic = {
+    let f: i32 -> i32 -> i32 = Add.add;
+    f 20 22
+}
+
+export def recursion :: i64
+fn recursion = sum 1_000_000 2i64 0
+
+export def owned :: i64
+fn owned = {
+    let text = countdown 100_000 (id (add "hello" " world"));
+    text.length
+}
+
+def borrow :: &'a -> &'a
+fn borrow value = value
+
+export def borrowed :: i64
+fn borrowed = {
+    let text = "borrowed";
+    (borrow (&text)).length
+}
+
+def tick :: &mut i64 -> i64
+fn tick counter = { *counter = *counter + 1; *counter }
+
+def combine :: 'a -> 'a -> 'a
+fn combine x y = x * 10 + y
+
+export def ordered :: i64
+fn ordered = {
+    let mut counter = 0;
+    combine (tick (&mut counter)) (tick (&mut counter))
+}
+
+def main :: i32
+fn main = classes()

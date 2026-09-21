@@ -1,0 +1,159 @@
+def curry_add :: Add 'a -> 'a -> 'a
+let curry_add = x -> y -> x + y
+
+export def curried_integer :: i32
+fn curried_integer = {
+    let add20 = curry_add 20i32;
+    add20 22
+}
+
+export def curried_float :: f64
+fn curried_float = {
+    let add = curry_add 1.5;
+    add 2.25
+}
+
+export def curried_decimal :: f64
+fn curried_decimal = {
+    let add = curry_add 0.1d128;
+    (add 0.2d128) as f64
+}
+
+def curry_make :: i32 -> i32 -> i32
+fn curry_make offset = {
+    let scale: i32 = 2;
+    x -> (x + offset) * scale
+}
+
+export def curried_capture :: i32
+fn curried_capture = {
+    let f = curry_make 20;
+    f 1
+}
+
+export def curried_choose :: bool -> i32 -> i32
+fn curried_choose flag =
+    if flag { x -> x + 1 } else { x -> x - 1 }
+
+record CurriedCallback { run: i32 -> i32, label: string }
+
+export def curried_aggregate :: i32
+fn curried_aggregate = {
+    let offset: i32 = 20;
+    let f = x -> offset + x;
+    let callback = CurriedCallback { run: f, label: "drop this" };
+    let functions = [f, callback.run];
+    let copy = functions;
+    let temporary = ([f, f])[0];
+    temporary 1 + copy[0] 1 + functions[1] 1
+}
+
+export def curried_string :: i64
+fn curried_string = {
+    let prefix = "hello";
+    let f: string -> string = suffix -> prefix + suffix;
+    let g = f;
+    let a = g "a";
+    let b = f "bb";
+    (a + b).length
+}
+
+export def curried_nested :: i64
+fn curried_nested = {
+    let prefix = "hello";
+    let outer: i64 -> string -> string = n -> {
+        let marker = if n == 0 { "!" } else { "?" };
+        suffix -> prefix + marker + suffix
+    };
+    let inner = outer 0;
+    let first = inner "a";
+    let second = inner "bb";
+    first.length + second.length
+}
+
+export def curried_borrow :: i64
+fn curried_borrow = {
+    let owner = "borrowed";
+    let reference = &owner;
+    let f: i64 -> i64 = n -> reference.length + n;
+    f 1 + f 2
+}
+
+def curry_tick :: &mut i64 -> i32
+fn curry_tick counter = { *counter = *counter + 1; *counter as i32 }
+
+def curry_stage :: &mut i64 -> i32 -> i32
+fn curry_stage counter = {
+    let first = curry_tick counter;
+    second -> first * 10 + second
+}
+
+export def curried_order :: i32
+fn curried_order = {
+    let mut counter = 0;
+    curry_stage (&mut counter) (curry_tick (&mut counter))
+}
+
+def curry_combine :: i32 -> i32 -> i32
+fn curry_combine x y = x * 10 + y
+
+export def curried_pipeline :: i32
+fn curried_pipeline = {
+    let mut counter = 0;
+    curry_tick (&mut counter) |> curry_combine (curry_tick (&mut counter))
+}
+
+def curry_replace :: &mut string -> string -> unit
+fn curry_replace target value = { *target = value; }
+
+export def curried_exclusive :: i64
+fn curried_exclusive = {
+    let mut text = "old";
+    (curry_replace (&mut text)) "new";
+    "changed" |> curry_replace (&mut text);
+    text.length
+}
+
+class CurriedCombine 'a {
+    def combine :: 'a -> 'a -> 'a
+}
+instance CurriedCombine i32 {
+    let combine = x -> y -> x + y
+}
+
+export def curried_class :: i32
+fn curried_class = {
+    let f = CurriedCombine.combine 20i32;
+    let g: i32 -> i32 -> i32 = Add.add;
+    f 22 + g 1 2
+}
+
+def curry_apply :: ('a -> 'b) -> 'a -> 'b
+fn curry_apply f x = f x
+
+def curry_hold :: 'a -> i32 -> 'a
+fn curry_hold value n = value
+
+export def curried_higher :: i32
+fn curried_higher = {
+    let f = curry_apply curry_add 20i32;
+    let identity = x -> x;
+    let value = f 22;
+    let r = &value;
+    let hold = curry_apply curry_hold r;
+    let result = hold 0;
+    identity (*result)
+}
+
+def curry_loop :: i64 -> i64 -> i64
+fn curry_loop n total = {
+    let prefix = "abcdefghijklmnopqrstuvwxyz";
+    let f = curry_add prefix;
+    let g = f;
+    let text = g "!" + f "?";
+    let total = total + text.length;
+    if n == 0 { total } else { curry_loop (n - 1) total }
+}
+
+export def curried_churn :: i64 -> i64
+fn curried_churn n = curry_loop n 0

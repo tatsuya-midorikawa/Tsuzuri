@@ -26,6 +26,7 @@ target
 *.obj
 *.ll
 !src/runtime/wasm.ll
+!src/runtime/closure.ll
 *.dylib
 *.so
 *.dll

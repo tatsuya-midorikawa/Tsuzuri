@@ -96,11 +96,11 @@ export fn function_array(index: i64, n: i64) -> i64 {
     operations[index](n)
 }
 
-fn map4(f: fn(i64) -> i64, values: [i64; 4]) -> [i64; 4] {
+fn map4(f: fn(i64) -> i64, values: [i64]) -> [i64] {
     [f(values[0]), f(values[1]), f(values[2]), f(values[3])]
 }
 
-fn fold4(f: fn(i64, i64) -> i64, values: [i64; 4], index: i64, total: i64) -> i64 {
+fn fold4(f: fn(i64, i64) -> i64, values: [i64], index: i64, total: i64) -> i64 {
     if index == values.length {
         total
     } else {
@@ -114,7 +114,7 @@ export fn functional_sum(start: i64) -> i64 {
     fold4(add, squares, 0, 0)
 }
 
-fn array_loop(n: i64, values: [i64; 2]) -> i64 {
+fn array_loop(n: i64, values: [i64]) -> i64 {
     let value = values[n & 1];
     if n <= 0 { value } else { array_loop(n - 1, [value, value + 1]) }
 }
@@ -128,7 +128,7 @@ export fn index(index: i64) -> i64 {
     values[index]
 }
 
-fn retain(values: [i64; 64]) -> [i64; 64] { values }
+fn retain(values: [i64]) -> [i64] { values }
 
 export fn large_array(base: i64, index: i64) -> i64 {
     let values = [
@@ -154,7 +154,7 @@ export fn bool_array(index: i64) -> bool {
 }
 
 export fn empty_values() -> i64 {
-    let a: [i64; 0] = [];
+    let a: [i64] = [];
     let empty = Empty {};
     let records = [empty, empty];
     a.length + records.length

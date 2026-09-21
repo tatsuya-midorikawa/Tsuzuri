@@ -22,7 +22,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         validate_main(module)?;
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n",
     );
     for record in &module.records {
         let _ = writeln!(
@@ -41,22 +41,15 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     let mut builtins = BTreeSet::new();
     let mut globals = Vec::new();
     for (id, function) in module.functions.iter().enumerate() {
-        let emitter = FunctionEmitter {
+        let emitter = FunctionEmitter::new(module, function, id, &mut builtins, &mut globals);
+        output.push_str(&emitter.emit());
+        output.push_str(&closure_wrappers(
             module,
             function,
-            function_id: id,
-            builtins: &mut builtins,
-            lines: Vec::new(),
-            allocas: Vec::new(),
-            locals: BTreeMap::new(),
-            next_value: 0,
-            next_block: 0,
-            block: "loop".into(),
-            back_edges: Vec::new(),
-            scopes: vec![Vec::new()],
-            globals: &mut globals,
-        };
-        output.push_str(&emitter.emit());
+            id,
+            &mut builtins,
+            &mut globals,
+        ));
         if function.exported {
             output.push_str(&export_wrapper(function, module));
         }
@@ -75,7 +68,11 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         output = output.replace("declare void @llvm.trap()\n", "");
         output.push_str(include_str!("runtime/numeric.ll"));
     }
-    if output.contains("@tz.string.") || output.contains("@tz.free") {
+    if output.contains("@tz.closure.") {
+        output.push_str(include_str!("runtime/closure.ll"));
+    }
+    if output.contains("@tz.string.") || output.contains("@tz.free") || output.contains("@tz.alloc")
+    {
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(if wasm {
             include_str!("runtime/heap-wasm.ll")
@@ -122,6 +119,113 @@ pub fn header(module: &CheckedModule) -> String {
     output
 }
 
+fn environment_type(function: &CheckedFunction, count: usize, module: &CheckedModule) -> String {
+    format!(
+        "{{ {} }}",
+        function.signature.parameters[..count]
+            .iter()
+            .map(|ty| llvm_type(ty, module))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn closure_wrappers(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    id: usize,
+    builtins: &mut BTreeSet<Builtin>,
+    globals: &mut Vec<String>,
+) -> String {
+    let mut output = String::new();
+    let name = function.qualified_name();
+    let arity = function.parameters.len();
+    for count in function.capture_count..arity.max(function.capture_count + 1) {
+        let environment = environment_type(function, count, module);
+        if count != 0 {
+            let mut clone = FunctionEmitter::new(module, function, id, builtins, globals);
+            let allocation = clone.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({environment}, ptr null, i32 1) to i64))"));
+            for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
+                let pointer = clone.value(format!(
+                    "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
+                ));
+                let value = clone.value(format!("load {}, ptr {pointer}", clone.ty(ty)));
+                let value = clone.clone_value(ty, &value);
+                let target = clone.value(format!(
+                    "getelementptr inbounds {environment}, ptr {allocation}, i32 0, i32 {index}"
+                ));
+                clone.instruction(format!("store {} {value}, ptr {target}", clone.ty(ty)));
+            }
+            clone.instruction(format!("ret ptr {allocation}"));
+            output
+                .push_str(&clone.auxiliary(&format!("ptr @tz.env.clone.{name}.{count}(ptr %env)")));
+
+            let mut drop = FunctionEmitter::new(module, function, id, builtins, globals);
+            for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
+                if ty.needs_drop(&module.records) {
+                    let pointer = drop.value(format!(
+                        "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
+                    ));
+                    let value = drop.value(format!("load {}, ptr {pointer}", drop.ty(ty)));
+                    drop.drop_value(ty, &value);
+                }
+            }
+            drop.instruction("call void @tz.free(ptr %env)");
+            drop.instruction("ret void");
+            output
+                .push_str(&drop.auxiliary(&format!("void @tz.env.drop.{name}.{count}(ptr %env)")));
+        }
+        let mut apply = FunctionEmitter::new(module, function, id, builtins, globals);
+        let mut values = Vec::new();
+        for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
+            let pointer = apply.value(format!(
+                "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
+            ));
+            values.push(apply.value(format!("load {}, ptr {pointer}", apply.ty(ty))));
+        }
+        if count < arity {
+            values.push("%argument".into());
+        }
+        if count != 0 {
+            apply.instruction("call void @tz.free(ptr %env)");
+        }
+        let (value, result) = if values.len() == arity {
+            let arguments = values
+                .iter()
+                .zip(&function.signature.parameters)
+                .map(|(value, ty)| format!("{} {value}", apply.ty(ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let value = apply.value(format!(
+                "call {} @tz.fn.{name}({arguments})",
+                apply.ty(&function.signature.result)
+            ));
+            (value, function.signature.result.clone())
+        } else {
+            let value = apply.make_closure(id, &values);
+            let result = Type::function(
+                function.signature.parameters[values.len()..].to_vec(),
+                function.signature.result.clone(),
+            );
+            (value, result)
+        };
+        apply.instruction(format!("ret {} {value}", apply.ty(&result)));
+        let argument = if count < arity {
+            format!(
+                ", {} %argument",
+                apply.ty(&function.signature.parameters[count])
+            )
+        } else {
+            String::new()
+        };
+        output.push_str(&apply.auxiliary(&format!(
+            "{} @tz.apply.{name}.{count}(ptr %env{argument})",
+            llvm_type(&result, module)
+        )));
+    }
+    output
+}
+
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Integer(bits, signed) => {
@@ -147,10 +251,11 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Unit => "i8".into(),
         Type::String => "%tz.string".into(),
         Type::Record(id) => format!("%tz.record.{}", module.records[*id].name),
-        Type::Array(element, length) => {
-            format!("[{length} x {}]", llvm_type(element, module))
-        }
-        Type::Function(_, _) | Type::Reference(..) => "ptr".into(),
+        Type::Array(_) => "%tz.array".into(),
+        Type::List(_) => "%tz.list".into(),
+        Type::Function(..) => "%tz.closure".into(),
+        Type::Reference(..) => "ptr".into(),
+        Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
     }
 }
 
@@ -205,8 +310,45 @@ struct FunctionEmitter<'a, 'b> {
     globals: &'b mut Vec<String>,
 }
 
-impl FunctionEmitter<'_, '_> {
+impl<'a, 'b> FunctionEmitter<'a, 'b> {
+    fn new(
+        module: &'a CheckedModule,
+        function: &'a CheckedFunction,
+        function_id: usize,
+        builtins: &'b mut BTreeSet<Builtin>,
+        globals: &'b mut Vec<String>,
+    ) -> Self {
+        Self {
+            module,
+            function,
+            function_id,
+            builtins,
+            globals,
+            lines: Vec::new(),
+            allocas: Vec::new(),
+            locals: BTreeMap::new(),
+            next_value: 0,
+            next_block: 0,
+            block: "entry".into(),
+            back_edges: Vec::new(),
+            scopes: vec![Vec::new()],
+        }
+    }
+
+    fn auxiliary(self, signature: &str) -> String {
+        let mut output = format!("define internal {signature} nounwind {{\nentry:\n");
+        for line in self.allocas {
+            let _ = writeln!(output, "  {line}");
+        }
+        for line in self.lines {
+            let _ = writeln!(output, "{line}");
+        }
+        output.push_str("}\n\n");
+        output
+    }
+
     fn emit(mut self) -> String {
+        self.block = "loop".into();
         for (index, parameter) in self.function.parameters.iter().enumerate() {
             self.bind_local(parameter, &format!("%p{index}"));
         }
@@ -329,7 +471,7 @@ impl FunctionEmitter<'_, '_> {
                 .signature
                 .parameters
                 .iter()
-                .any(Type::contains_reference)
+                .any(|ty| ty.carries_loans(&self.module.records))
     }
 
     fn tail(&mut self, expression: &TypedExpr) {
@@ -354,7 +496,9 @@ impl FunctionEmitter<'_, '_> {
                 self.begin(&no);
                 self.tail(else_branch);
             }
-            TypedExprKind::Call(callee, arguments) if self.is_self(callee) => {
+            TypedExprKind::Call(callee, arguments)
+                if self.is_self(callee) && arguments.len() == self.function.parameters.len() =>
+            {
                 let values = arguments
                     .iter()
                     .map(|argument| self.expression(argument))
@@ -363,7 +507,9 @@ impl FunctionEmitter<'_, '_> {
                 self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
             }
-            TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) if self.is_self(callee) => {
+            TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
+                if self.is_self(callee) && self.function.parameters.len() == 1 =>
+            {
                 let value = self.expression(argument);
                 self.drop_all();
                 self.back_edges.push((self.block.clone(), vec![value]));
@@ -386,6 +532,9 @@ impl FunctionEmitter<'_, '_> {
             let slot = self.place(expression);
             let value = self.value(format!("load {}, ptr {slot}", self.ty(&expression.ty)));
             if take && expression.ty.needs_drop(&self.module.records) {
+                if expression.ty.is_copy(&self.module.records) {
+                    return self.clone_value(&expression.ty, &value);
+                }
                 self.instruction(format!(
                     "store {} zeroinitializer, ptr {slot}",
                     self.ty(&expression.ty)
@@ -395,6 +544,13 @@ impl FunctionEmitter<'_, '_> {
         }
         match &expression.kind {
             TypedExprKind::Int(value) => value.to_string(),
+            TypedExprKind::GenericFunction(..)
+            | TypedExprKind::Method(..)
+            | TypedExprKind::GenericInteger(..)
+            | TypedExprKind::GenericFloat(_)
+            | TypedExprKind::Lambda { .. } => {
+                unreachable!("polymorphism is resolved before LLVM")
+            }
             TypedExprKind::Float(value) => value.clone(),
             TypedExprKind::Bool(value) => if *value { "1" } else { "0" }.into(),
             TypedExprKind::Unit => "0".into(),
@@ -426,14 +582,16 @@ impl FunctionEmitter<'_, '_> {
             }
             TypedExprKind::Cast(value) => self.cast(value, &expression.ty),
             TypedExprKind::Function(reference) => match reference {
-                FunctionRef::User(id) => {
-                    format!("@tz.fn.{}", self.module.functions[*id].qualified_name())
-                }
-                FunctionRef::Builtin(builtin) => {
-                    self.builtins.insert(*builtin);
-                    format!("@tz.builtin.{}", builtin.name())
-                }
+                FunctionRef::User(id) => self.make_closure(*id, &[]),
+                FunctionRef::Builtin(_) => unreachable!("builtin values are lifted before LLVM"),
             },
+            TypedExprKind::Closure(id, captures) => {
+                let values: Vec<_> = captures
+                    .iter()
+                    .map(|capture| self.expression(capture))
+                    .collect();
+                self.make_closure(*id, &values)
+            }
             TypedExprKind::Unary(operator, operand) => {
                 let value = self.expression(operand);
                 let ty = self.ty(&operand.ty);
@@ -462,28 +620,11 @@ impl FunctionEmitter<'_, '_> {
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) => {
                 let value = self.expression(argument);
                 let function = self.expression(callee);
-                self.value(format!(
-                    "call {} {function}({} {value})",
-                    self.ty(&expression.ty),
-                    self.ty(&argument.ty)
-                ))
+                self.apply_value(&function, &callee.ty, Some((&argument.ty, &value)))
+                    .0
             }
             TypedExprKind::Binary(operator, left, right) => self.binary(*operator, left, right),
-            TypedExprKind::Call(callee, arguments) => {
-                let callee = self.expression(callee);
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| {
-                        let value = self.expression(argument);
-                        format!("{} {value}", self.ty(&argument.ty))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.value(format!(
-                    "call {} {callee}({arguments})",
-                    self.ty(&expression.ty)
-                ))
-            }
+            TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
             TypedExprKind::If {
                 condition,
                 then_branch,
@@ -529,16 +670,64 @@ impl FunctionEmitter<'_, '_> {
                 record
             }
             TypedExprKind::Array(elements) => {
-                let mut array = "zeroinitializer".into();
-                for (index, element) in elements.iter().enumerate() {
-                    let value = self.expression(element);
-                    array = self.value(format!(
-                        "insertvalue {} {array}, {} {value}, {index}",
-                        self.ty(&expression.ty),
-                        self.ty(&element.ty)
-                    ));
+                let Type::Array(element) = &expression.ty else {
+                    unreachable!()
+                };
+                let (array, data) = self.allocate_array(element, &elements.len().to_string());
+                for (index, value) in elements.iter().enumerate() {
+                    let value = self.expression(value);
+                    let pointer = self.element_pointer(element, &data, &index.to_string());
+                    self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
                 }
                 array
+            }
+            TypedExprKind::NewArray(length, initializer) => {
+                let length = self.expression(length);
+                let callee = self.expression(initializer);
+                let Type::Array(element) = &expression.ty else {
+                    unreachable!()
+                };
+                let (array, data) = self.allocate_array(element, &length);
+                self.array_loop(&length, |emitter, index| {
+                    let function = emitter.clone_value(&initializer.ty, &callee);
+                    let (value, _) =
+                        emitter.apply_value(&function, &initializer.ty, Some((&Type::I64, index)));
+                    let pointer = emitter.element_pointer(element, &data, index);
+                    emitter.instruction(format!(
+                        "store {} {value}, ptr {pointer}",
+                        emitter.ty(element)
+                    ));
+                });
+                self.drop_value(&initializer.ty, &callee);
+                array
+            }
+            TypedExprKind::List(elements) => {
+                let Type::List(element) = &expression.ty else {
+                    unreachable!()
+                };
+                let (head, tail) = self.list_builder();
+                for value in elements {
+                    let value = self.expression(value);
+                    self.append_list(element, &tail, &value);
+                }
+                self.finish_list(&head, &elements.len().to_string())
+            }
+            TypedExprKind::NewList(length, initializer) => {
+                let length = self.expression(length);
+                let callee = self.expression(initializer);
+                let Type::List(element) = &expression.ty else {
+                    unreachable!()
+                };
+                self.allocation_size(&self.list_node_type(element), &length);
+                let (head, tail) = self.list_builder();
+                self.array_loop(&length, |emitter, index| {
+                    let function = emitter.clone_value(&initializer.ty, &callee);
+                    let (value, _) =
+                        emitter.apply_value(&function, &initializer.ty, Some((&Type::I64, index)));
+                    emitter.append_list(element, &tail, &value);
+                });
+                self.drop_value(&initializer.ty, &callee);
+                self.finish_list(&head, &length)
             }
             TypedExprKind::Field(record, index) => {
                 let value = self.expression(record);
@@ -571,28 +760,22 @@ impl FunctionEmitter<'_, '_> {
                 byte
             }
             TypedExprKind::Index(array, index) => {
-                let value = self.expression(array);
+                let value = self.expression_mode(array, false);
                 let index = self.expression(index);
-                let Type::Array(element, length) = &array.ty else {
+                let (Type::Array(element) | Type::List(element)) = &array.ty else {
                     unreachable!()
                 };
-                let valid = self.value(format!("icmp ult i64 {index}, {length}"));
-                self.guard(&valid);
-                let slot = self.fresh();
-                let array_type = self.ty(&array.ty);
-                // All storage is in entry, so tail-recursive loops never grow the stack.
-                self.allocas
-                    .push(format!("{slot} = alloca {array_type}, align 8"));
-                self.instruction(format!("store {array_type} {value}, ptr {slot}"));
-                let pointer = self.value(format!(
-                    "getelementptr inbounds {array_type}, ptr {slot}, i32 0, i64 {index}"
-                ));
-                self.value(format!("load {}, ptr {pointer}", self.ty(element)))
-            }
-            TypedExprKind::Length(array, length) => {
-                let value = self.expression_mode(array, false);
+                let pointer = self.checked_element_pointer(&array.ty, &value, &index);
+                let extracted = self.value(format!("load {}, ptr {pointer}", self.ty(element)));
+                let result = self.clone_value(element, &extracted);
                 self.drop_temporary(array, &value);
-                length.to_string()
+                result
+            }
+            TypedExprKind::Length(array) => {
+                let value = self.expression_mode(array, false);
+                let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&array.ty)));
+                self.drop_temporary(array, &value);
+                length
             }
             TypedExprKind::StringLength(string) => {
                 let value = self.expression_mode(string, false);
@@ -608,7 +791,7 @@ impl FunctionEmitter<'_, '_> {
             TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
             TypedExprKind::Field(value, _) => Self::is_place(value),
             TypedExprKind::Index(value, _) => {
-                matches!(value.ty, Type::Array(..)) && Self::is_place(value)
+                matches!(value.ty, Type::Array(_) | Type::List(_)) && Self::is_place(value)
             }
             _ => false,
         }
@@ -627,16 +810,9 @@ impl FunctionEmitter<'_, '_> {
             }
             TypedExprKind::Index(value, index) => {
                 let slot = self.place(value);
+                let array = self.value(format!("load {}, ptr {slot}", self.ty(&value.ty)));
                 let index = self.expression(index);
-                let Type::Array(_, length) = value.ty else {
-                    unreachable!()
-                };
-                let valid = self.value(format!("icmp ult i64 {index}, {length}"));
-                self.guard(&valid);
-                self.value(format!(
-                    "getelementptr inbounds {}, ptr {slot}, i32 0, i64 {index}",
-                    self.ty(&value.ty)
-                ))
+                self.checked_element_pointer(&value.ty, &array, &index)
             }
             _ => unreachable!("borrow checker requires an addressable place"),
         }
@@ -644,6 +820,9 @@ impl FunctionEmitter<'_, '_> {
 
     fn drop_value(&mut self, ty: &Type, value: &str) {
         match ty {
+            Type::Function(..) => {
+                self.instruction(format!("call void @tz.closure.drop(%tz.closure {value})"))
+            }
             Type::String => {
                 let pointer = self.value(format!("extractvalue %tz.string {value}, 0"));
                 self.instruction(format!("call void @tz.free(ptr {pointer})"));
@@ -657,15 +836,353 @@ impl FunctionEmitter<'_, '_> {
                     }
                 }
             }
-            Type::Array(element, length) if element.needs_drop(&self.module.records) => {
-                for index in 0..*length {
-                    let extracted =
-                        self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
-                    self.drop_value(element, &extracted);
+            Type::Array(element) => {
+                let data = self.value(format!("extractvalue %tz.array {value}, 0"));
+                if element.needs_drop(&self.module.records) {
+                    let length = self.value(format!("extractvalue %tz.array {value}, 1"));
+                    self.array_loop(&length, |emitter, index| {
+                        let pointer = emitter.element_pointer(element, &data, index);
+                        let extracted =
+                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                        emitter.drop_value(element, &extracted);
+                    });
                 }
+                self.instruction(format!("call void @tz.free(ptr {data})"));
+            }
+            Type::List(element) => {
+                let head = self.value(format!("extractvalue %tz.list {value}, 0"));
+                let length = self.value(format!("extractvalue %tz.list {value}, 1"));
+                self.list_loop(&head, &length, |emitter, node| {
+                    if element.needs_drop(&emitter.module.records) {
+                        let pointer = emitter.list_element_pointer(element, node);
+                        let value =
+                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                        emitter.drop_value(element, &value);
+                    }
+                    emitter.instruction(format!("call void @tz.free(ptr {node})"));
+                });
             }
             _ => {}
         }
+    }
+    fn clone_value(&mut self, ty: &Type, value: &str) -> String {
+        match ty {
+            Type::String => {
+                let pointer = self.value(format!("extractvalue %tz.string {value}, 0"));
+                let length = self.value(format!("extractvalue %tz.string {value}, 1"));
+                self.value(format!(
+                    "call %tz.string @tz.string.new(ptr {pointer}, i64 {length})"
+                ))
+            }
+            Type::Function(..) => self.value(format!(
+                "call %tz.closure @tz.closure.clone(%tz.closure {value})"
+            )),
+            Type::Record(id) => {
+                let mut result = value.to_owned();
+                for (index, (_, field)) in self.module.records[*id].fields.iter().enumerate() {
+                    if field.needs_drop(&self.module.records) {
+                        let field_value =
+                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                        let copy = self.clone_value(field, &field_value);
+                        result = self.value(format!(
+                            "insertvalue {} {result}, {} {copy}, {index}",
+                            self.ty(ty),
+                            self.ty(field)
+                        ));
+                    }
+                }
+                result
+            }
+            Type::Array(element) => {
+                let data = self.value(format!("extractvalue %tz.array {value}, 0"));
+                let length = self.value(format!("extractvalue %tz.array {value}, 1"));
+                let (result, target) = self.allocate_array(element, &length);
+                self.array_loop(&length, |emitter, index| {
+                    let source = emitter.element_pointer(element, &data, index);
+                    let element_value =
+                        emitter.value(format!("load {}, ptr {source}", emitter.ty(element)));
+                    let copy = emitter.clone_value(element, &element_value);
+                    let destination = emitter.element_pointer(element, &target, index);
+                    emitter.instruction(format!(
+                        "store {} {copy}, ptr {destination}",
+                        emitter.ty(element)
+                    ));
+                });
+                result
+            }
+            Type::List(element) => {
+                let source = self.value(format!("extractvalue %tz.list {value}, 0"));
+                let length = self.value(format!("extractvalue %tz.list {value}, 1"));
+                let (head, tail) = self.list_builder();
+                self.list_loop(&source, &length, |emitter, node| {
+                    let pointer = emitter.list_element_pointer(element, node);
+                    let value =
+                        emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                    let copy = emitter.clone_value(element, &value);
+                    emitter.append_list(element, &tail, &copy);
+                });
+                self.finish_list(&head, &length)
+            }
+            _ => value.to_owned(),
+        }
+    }
+
+    fn allocate_array(&mut self, element: &Type, length: &str) -> (String, String) {
+        let bytes = self.allocation_size(&self.ty(element), length);
+        let empty = self.value(format!("icmp eq i64 {length}, 0"));
+        let bytes = self.value(format!("select i1 {empty}, i64 1, i64 {bytes}"));
+        let data = self.value(format!("call ptr @tz.alloc(i64 {bytes})"));
+        let array = self.value(format!(
+            "insertvalue %tz.array zeroinitializer, ptr {data}, 0"
+        ));
+        let array = self.value(format!("insertvalue %tz.array {array}, i64 {length}, 1"));
+        (array, data)
+    }
+
+    fn allocation_size(&mut self, ty: &str, length: &str) -> String {
+        let size = format!("ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64)");
+        let zero = self.value(format!("icmp eq i64 {size}, 0"));
+        let stride = self.value(format!("select i1 {zero}, i64 1, i64 {size}"));
+        let limit = self.value(format!("udiv i64 {}, {stride}", i64::MAX));
+        // Unsigned comparison rejects negative lengths as well as byte-size overflow.
+        let valid = self.value(format!("icmp ule i64 {length}, {limit}"));
+        self.guard(&valid);
+        self.value(format!("mul i64 {length}, {stride}"))
+    }
+
+    fn element_pointer(&mut self, element: &Type, data: &str, index: &str) -> String {
+        self.value(format!(
+            "getelementptr inbounds {}, ptr {data}, i64 {index}",
+            self.ty(element)
+        ))
+    }
+
+    fn checked_element_pointer(&mut self, ty: &Type, collection: &str, index: &str) -> String {
+        let length = self.value(format!("extractvalue {} {collection}, 1", self.ty(ty)));
+        let valid = self.value(format!("icmp ult i64 {index}, {length}"));
+        self.guard(&valid);
+        let data = self.value(format!("extractvalue {} {collection}, 0", self.ty(ty)));
+        match ty {
+            Type::Array(element) => self.element_pointer(element, &data, index),
+            Type::List(element) => {
+                let node = self.list_loop(&data, index, |_, _| {});
+                self.list_element_pointer(element, &node)
+            }
+            _ => unreachable!("indexing requires a collection"),
+        }
+    }
+
+    fn list_node_type(&self, element: &Type) -> String {
+        format!("{{ ptr, {} }}", self.ty(element))
+    }
+
+    fn list_element_pointer(&mut self, element: &Type, node: &str) -> String {
+        self.value(format!(
+            "getelementptr inbounds {}, ptr {node}, i32 0, i32 1",
+            self.list_node_type(element)
+        ))
+    }
+
+    fn list_builder(&mut self) -> (String, String) {
+        let pointer = Type::Reference(Box::new(Type::Unit), false);
+        let head = self.slot(&pointer);
+        let tail = self.slot(&pointer);
+        self.instruction(format!("store ptr null, ptr {head}"));
+        self.instruction(format!("store ptr {head}, ptr {tail}"));
+        (head, tail)
+    }
+
+    fn append_list(&mut self, element: &Type, tail: &str, value: &str) {
+        let node = self.value(format!(
+            "call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64))",
+            self.list_node_type(element)
+        ));
+        self.instruction(format!("store ptr null, ptr {node}"));
+        let pointer = self.list_element_pointer(element, &node);
+        self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
+        let previous = self.value(format!("load ptr, ptr {tail}"));
+        self.instruction(format!("store ptr {node}, ptr {previous}"));
+        // The first field of each node is the next pointer, also used as the builder's tail slot.
+        self.instruction(format!("store ptr {node}, ptr {tail}"));
+    }
+
+    fn finish_list(&mut self, head: &str, length: &str) -> String {
+        let head = self.value(format!("load ptr, ptr {head}"));
+        let list = self.value(format!(
+            "insertvalue %tz.list zeroinitializer, ptr {head}, 0"
+        ));
+        self.value(format!("insertvalue %tz.list {list}, i64 {length}, 1"))
+    }
+
+    fn list_loop(
+        &mut self,
+        head: &str,
+        length: &str,
+        body: impl FnOnce(&mut Self, &str),
+    ) -> String {
+        let entry = self.block.clone();
+        let condition = self.label();
+        let element = self.label();
+        let advance = self.label();
+        let exit = self.label();
+        let index = self.fresh();
+        let next_index = self.fresh();
+        let node = self.fresh();
+        let next_node = self.fresh();
+        self.jump(&condition);
+        self.begin(&condition);
+        self.instruction(format!(
+            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{advance} ]"
+        ));
+        self.instruction(format!(
+            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{advance} ]"
+        ));
+        let more = self.value(format!("icmp ult i64 {index}, {length}"));
+        self.branch(&more, &element, &exit);
+        self.begin(&element);
+        // Read the link before the callback, which may free this node.
+        self.instruction(format!("{next_node} = load ptr, ptr {node}"));
+        body(self, &node);
+        self.jump(&advance);
+        self.begin(&advance);
+        self.instruction(format!("{next_index} = add i64 {index}, 1"));
+        self.jump(&condition);
+        self.begin(&exit);
+        node
+    }
+
+    fn array_loop(&mut self, length: &str, body: impl FnOnce(&mut Self, &str)) {
+        let entry = self.block.clone();
+        let condition = self.label();
+        let element = self.label();
+        let advance = self.label();
+        let exit = self.label();
+        let index = self.fresh();
+        let next = self.fresh();
+        self.jump(&condition);
+        self.begin(&condition);
+        self.instruction(format!(
+            "{index} = phi i64 [ 0, %{entry} ], [ {next}, %{advance} ]"
+        ));
+        let more = self.value(format!("icmp ult i64 {index}, {length}"));
+        self.branch(&more, &element, &exit);
+        self.begin(&element);
+        body(self, &index);
+        self.jump(&advance);
+        self.begin(&advance);
+        self.instruction(format!("{next} = add i64 {index}, 1"));
+        self.jump(&condition);
+        self.begin(&exit);
+    }
+
+    fn make_closure(&mut self, id: usize, values: &[String]) -> String {
+        let function = &self.module.functions[id];
+        let count = values.len();
+        let name = function.qualified_name();
+        let environment = if count == 0 {
+            "null".to_owned()
+        } else {
+            let ty = environment_type(function, count, self.module);
+            let environment = self.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64))"));
+            for (index, value) in values.iter().enumerate() {
+                let pointer = self.value(format!(
+                    "getelementptr inbounds {ty}, ptr {environment}, i32 0, i32 {index}"
+                ));
+                self.instruction(format!(
+                    "store {} {value}, ptr {pointer}",
+                    self.ty(&function.signature.parameters[index])
+                ));
+            }
+            environment
+        };
+        let value = self.value(format!(
+            "insertvalue %tz.closure zeroinitializer, ptr @tz.apply.{name}.{count}, 0"
+        ));
+        let value = self.value(format!(
+            "insertvalue %tz.closure {value}, ptr {environment}, 1"
+        ));
+        if count == 0 {
+            return value;
+        }
+        let value = self.value(format!(
+            "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
+        ));
+        self.value(format!(
+            "insertvalue %tz.closure {value}, ptr @tz.env.drop.{name}.{count}, 3"
+        ))
+    }
+
+    fn apply_value(
+        &mut self,
+        callee: &str,
+        ty: &Type,
+        argument: Option<(&Type, &str)>,
+    ) -> (String, Type) {
+        let code = self.value(format!("extractvalue %tz.closure {callee}, 0"));
+        let environment = self.value(format!("extractvalue %tz.closure {callee}, 1"));
+        let result = ty.after_arguments(usize::from(argument.is_some()));
+        let argument = argument.map_or_else(String::new, |(ty, value)| {
+            format!(", {} {value}", self.ty(ty))
+        });
+        let value = self.value(format!(
+            "call {} {code}(ptr {environment}{argument})",
+            self.ty(&result)
+        ));
+        (value, result)
+    }
+
+    fn call(&mut self, callee: &TypedExpr, arguments: &[TypedExpr]) -> String {
+        let known = match callee.kind {
+            TypedExprKind::Function(FunctionRef::User(id)) => {
+                let function = &self.module.functions[id];
+                if arguments.len() < function.parameters.len() {
+                    let values: Vec<_> = arguments
+                        .iter()
+                        .map(|argument| self.expression(argument))
+                        .collect();
+                    return self.make_closure(id, &values);
+                }
+                Some((
+                    format!("@tz.fn.{}", function.qualified_name()),
+                    function.signature.clone(),
+                ))
+            }
+            TypedExprKind::Function(FunctionRef::Builtin(builtin)) => {
+                self.builtins.insert(builtin);
+                Some((
+                    format!("@tz.builtin.{}", builtin.name()),
+                    builtin.signature(),
+                ))
+            }
+            _ => None,
+        };
+        let (mut value, mut ty, consumed) = if let Some((symbol, signature)) = known {
+            let count = signature.parameters.len();
+            let values = arguments[..count]
+                .iter()
+                .map(|argument| {
+                    let value = self.expression(argument);
+                    format!("{} {value}", self.ty(&argument.ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let value = self.value(format!(
+                "call {} {symbol}({values})",
+                self.ty(&signature.result)
+            ));
+            (value, signature.result, count)
+        } else {
+            let value = self.expression(callee);
+            if arguments.is_empty() {
+                return self.apply_value(&value, &callee.ty, None).0;
+            }
+            (value, callee.ty.clone(), 0)
+        };
+        for argument in &arguments[consumed..] {
+            let next = self.expression(argument);
+            (value, ty) = self.apply_value(&value, &ty, Some((&argument.ty, &next)));
+        }
+        value
     }
 
     fn drop_slot(&mut self, slot: &str, ty: &Type) {
@@ -1136,7 +1653,14 @@ mod tests {
         )
         .unwrap();
         let ir = emit(&module, Entry::Console).unwrap();
-        assert_eq!(ir.matches("call i64 @tz.fn.Main.sum").count(), 1);
+        let body = ir
+            .split("define internal i64 @tz.fn.Main.sum(")
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        assert!(!body.contains("call i64 @tz.fn.Main.sum"));
         assert!(ir.contains("phi i64"));
         assert!(ir.contains("call void @llvm.trap()"));
         assert!(ir.contains("define i64 @tz_main()"));
@@ -1148,7 +1672,7 @@ mod tests {
     #[test]
     fn puts_array_storage_before_the_tail_loop() {
         let module = analyze(
-            "fn f(n: i64, a: [i64; 2]) -> i64 {
+            "fn f(n: i64, a: [i64]) -> i64 {
                 let first = a[n & 1];
                 if n == 0 { first } else { f(n - 1, [first, 2]) }
              }",
@@ -1156,7 +1680,14 @@ mod tests {
         .unwrap();
         let ir = emit(&module, Entry::Library).unwrap();
         assert!(ir.find("alloca").unwrap() < ir.find("br label %loop").unwrap());
-        assert_eq!(ir.matches("call i64 @tz.fn.Main.f").count(), 0);
+        let body = ir
+            .split("define internal i64 @tz.fn.Main.f(")
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        assert!(!body.contains("call i64 @tz.fn.Main.f"));
     }
 
     #[test]

@@ -1,9 +1,9 @@
 record Point { x: f64, y: f64 }
 
-fn distance(point: Point) -> f64 {
-    sqrt(point.x * point.x + point.y * point.y)
-}
+def distance :: Point -> f64
+fn distance point =
+    sqrt (point.x * point.x + point.y * point.y)
 
-export fn hypotenuse(x: f64, y: f64) -> f64 {
-    distance(Point { x: x, y: y })
-}
+export def hypotenuse :: f64 -> f64 -> f64
+fn hypotenuse x y =
+    distance (Point { x: x, y: y })

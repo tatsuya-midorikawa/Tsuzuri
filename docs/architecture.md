@@ -10,8 +10,11 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
    -> driver -> sorted source files + filename-based module names
    -> lexer -> tokens + per-file byte spans
    -> parser -> syntax AST per file
-   -> check -> module-scoped names + resolved, typed value IR
-   -> ownership -> moves + loans + lifetime validation
+   -> check -> module-scoped names + rigid type variables + local unification
+   -> ownership -> symbolic moves/loans + inferred Copy requirements
+   -> polymorph -> constraint fixed point + coherent instances + monomorphization
+   -> closures -> lambda lifting + capture parameters + saturated export bridges
+   -> ownership -> concrete moves + loans + lifetime validation
    -> llvm -> deterministic LLVM IR
    -> Clang -O0..3 -> native executable / PIC object
                    -> wasm32 object -> LLD -> standalone .wasm
@@ -23,12 +26,15 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
 | `src/syntax.rs` | トークン、構文木、構文資源上限 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント、数値 |
 | `src/parser.rs` | Pratt parser、宣言と式、トップレベルのエントリーコード、深さの制限 |
-| `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、単相型検査、レイアウト、公開 ABI |
+| `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR、レイアウト、公開 ABI |
+| `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、制約の伝播、単相化（check の子モジュール） |
+| `src/closures.rs` | 匿名関数の検査、自由変数の捕捉、lambda lifting、公開ABIの完全適用ラッパー |
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、変換、表示 |
 | `src/runtime/string.ll` / `heap-*.ll` | UTF-8 バッファ操作、ネイティブ確保、WASM の再利用・結合可能なヒープ |
+| `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tzr` 選択、LLVM／LLD 起動、ステージング、出力保護 |
 | `src/main.rs` | CLI オプションと診断表示 |
@@ -55,6 +61,36 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
 Span はソース ID とファイル内バイト位置を保ち、字句・構文・型・レイアウトのエラーを
 元のファイルに対応付けます。ソースの連結や診断オフセットの書き換えは行いません。
 
+**多相性:** 明示シグネチャの型変数は rigid、各関数参照で導入する推論変数だけを単一化します。
+occurs check と型の深さ・構成要素数の上限を適用し、型が決まらない関数値は拒否します。
+型クラスの要件は演算・メソッド・所有権から収集し、呼び出しグラフ上の固定点まで伝播します。
+クラスと具体型の組み合わせにはインスタンスを一つだけ認め、型別名も正規化した後に比較します。
+インスタンスの本体は未使用でも通常の関数と同じ検査を受けます。
+ジェネリック本体も宣言時に抽象型で検査し、特殊化時には型・所有権・寿命・レイアウト・
+リテラル範囲の具体的な条件を再確認します。テンプレートを呼び出し時だけ検査する方式ではありません。
+特殊化は `(宣言 ID, 型引数)` のキャッシュとキューで行い、再帰にも同じ ID を使います。
+型変数、未解決のメソッド、未エンコードのリテラルは LLVM に渡しません。
+ランタイム辞書・仮想呼び出し・汎用値の boxing は不要です。
+旧宣言構文は互換テストとして残し、新しい例は分離シグネチャと空白適用を使います。
+
+**カリー化:** 型宣言は `def`、実装は `fn` または宣言に対応する `let` と lambda です。
+型の矢印は右結合、適用は左結合です。内部の `Type::Function` の引数列は矢印列を正規化した
+表現であり、非カリー化を意味しません。実装の `Signature.parameters` は各 worker が
+実際に受け取る引数列を保持し、途中で関数を返す worker の評価を後続引数より後へ遅延しません。
+完全適用された既知の worker は直接呼びます。部分適用・未知の関数値の適用は
+`{ code, environment, clone, drop }` の記述子と一引数ずつの adapter を使います。
+借用が残らないと証明できる途中段階では一時 loan を終了し、不明な場合は保守的に保持します。
+
+**捕捉:** 自由変数を ID で求め、lambda を捕捉引数付きの worker に持ち上げます。
+捕捉時は Copy／move、関数値をコピーするときは独立した環境スナップショットを作ります。
+string と内側の関数値も環境ごとに複製するため、GC・参照カウント・共有可変状態は不要です。
+通常の Copy 値にも関数値を含む場合は destructor が必要なので、`is_copy` と `needs_drop` は
+同義ではありません。集約値のコピーと一時配列の索引でも環境の複製・解放を漏らさないでください。
+各 apply adapter は受け取った環境を消費し、次の段階へ所有値を移すか worker に渡して
+環境本体を解放します。共有参照の loan は関数値・集約値のコピーを通して引き継ぎます。
+排他参照を保存する再利用可能な環境は `Capture` 制約で拒否し、完全適用の一時的な段階だけ許します。
+公開 ABI には環境ポインターを露出せず、必要なら全引数を受け取る bridge を生成します。
+
 **数値:** 各整数幅・符号、各浮動小数点形式は別の型です。byte／ubyte だけは i8／i8u の別名です。
 リテラルは型の文脈または接尾辞で決定し、変数を暗黙変換しません。
 binary リテラルを f64 に落としてから f128 に拡大するような二重丸めは禁止です。
@@ -67,14 +103,39 @@ decimal は BID の有限値／非正規化数／符号付きゼロ／無限大�
 再借用は元の loan を親として追跡し、子の生存中に元の排他参照を使用・移動できません。
 参照を結果・外側の束縛へ移すときは、参照先の所有者が生存していることを検証します。
 借用を返す関数は単一の借用入力に寿命を結び付けます。参照フィールドと名前付きライフタイムは未対応です。
-レコード／配列の Copy は構造的に決まり、文字列を含む値は所有権を移動します。
+レコード／配列／リストの Copy は構造的に決まり、文字列を含む値は所有権を移動します。
+
+**配列:** `Type::Array` は要素型だけを保持し、LLVM では `%tz.array = { ptr, i64 }` に下げます。
+リテラルも `new [T](length, initializer)` も所有ヒープ領域を確保し、生成後は長さ・要素を変更しません。
+初期化関数の式は一度だけ評価し、各添字で関数値のスナップショットを適用します。
+確保前に負の長さ・要素サイズとの積のオーバーフローを検査します。
+空配列とサイズ 0 の要素でも確保サイズを 1 バイト以上にし、`malloc(0)` の挙動には依存しません。
+配列の Copy と捕捉環境の複製ではバッファを独立に複製し、要素の clone／drop も反復します。
+要素型がスカラーでもバッファの解放が必要なため、すべての配列で `needs_drop` は true です。
+長さの取得・索引・借用だけで配列全体を複製せず、要素取得に必要な複製と一時所有値の解放だけを行います。
+単相化・型クラスのインスタンス選択に配列長は関与しません。再帰的なヒープ型は引き続き拒否します。
+
+**連結リスト:** `Type::List` は `[|T|]` に対応し、LLVM では `%tz.list = { ptr, i64 }`
+（先頭・長さ）と `{ ptr, T }`（次のノード・要素）に下げます。
+`[|...|]` と `new [|T|](length, initializer)` は評価順にノードを確保し、生成後は変更しません。
+空リストの先頭は null でノードの確保は不要です。`.length` は O(1)、索引は範囲検査後にリンクを辿ります。
+構造的 Copy・捕捉環境の複製ではノードと要素を独立に複製し、すべてのリストで `needs_drop` は true です。
+clone／drop／索引は反復で処理します。drop ではノードを解放する前に次のポインタを読みます。
+生成用の一時スロットも entry に置き、長いリストや末尾再帰でスタックを蓄積しません。
+配列と同じ多相化・所有権・借用追跡・ABI 制限を適用します。
+
+**コレクションの不変性:** 配列・リストの要素への代入・可変借用を拒否します。
+要素から入れ子・共有参照を辿って可変参照に到達できる型も `validate_size` で拒否し、
+単相化後の全型にも再適用します。関数シグネチャ中の可変参照は格納状態ではないので対象外で、
+排他参照の捕捉は既存の Capture 検査で拒否します。共有借用の要素の寿命は通常の loan 追跡で保持します。
+可変束縛や `&mut` によるコレクション全体の置換は引き続き許可します。
 
 **LLVM:** 整数の算術に `nsw`／`nuw` を付けません。除算／剰余はゼロと符号付き MIN/-1 を検査し、
 シフト数を幅ごとにマスクし、浮動小数点→整数には飽和変換を使います。
-負の添字を含め、配列の範囲検査を GEP／load の前に行います。
+負の添字を含め、配列・リストの範囲検査を要素の GEP／load やリンクの走査前に行います。
 浮動小数点に fast-math フラグを付けません。
 借用可能な値の領域は entry に置きます。所有値を move すると移動元をゼロにし、
-スコープ終了時に残った文字列フィールドだけを解放します。レコードの部分 move も同じ仕組みです。
+スコープ終了時に残った文字列・配列・リスト・捕捉環境を解放します。レコードの部分 move も同じ仕組みです。
 
 **末尾再帰:** 直接の自己末尾呼び出しは引数評価の後で loop に分岐し、
 全引数を phi のバックエッジで同時更新します。
@@ -120,7 +181,7 @@ node tests/examples.mjs target/release/tsuzuri
 ```
 
 Rust のテストは LLVM なしで走ります。字句・型・失敗例・レイアウト・IR の不変条件・
-2,000 パターンの決定的なソース変異を検査します。
+4,500 パターンの決定的なソース変異を検査します。
 所有権では正常な move／共有借用／排他借用に加え、move 後の使用、部分 move、
 分岐・短絡評価、再借用、寿命切れ、オペランド評価中の参照先の無効化を検査します。
 Node の E2E は本物の Clang／LLD、ネイティブ C ホスト、WebAssembly エンジンを使い、
@@ -130,9 +191,24 @@ JavaScript の BigInt／Number の参照結果と照合します。
 例の検証には HTTP 経由の WASM 読み込み、Python デスクトップ・ホストの headless 実行も含みます。
 複数ファイルでは名前の分離、修飾された高階関数・レコード、相互再帰、
 `Main.tzr` の選択、ファイルごとの診断、依存ソースの出力保護を検査します。
+`tests/polymorphism.rs` は抽象本体・型クラス制約・インスタンス重複・特殊化・型の増大を検査します。
+`tests/e2e.mjs` の多相 fixture は C／WASM で整数・浮動小数点・独自レコードの演算、
+高階関数、型クラスのメソッド値、所有文字列、評価順序、百万回の末尾再帰を実行します。
 `tests/primitives.mjs` は decimal の結果を Python の IEEE 用 decimal コンテキストと照合し、
 ネイティブの確保／解放を追跡して解放漏れ・二重解放を検出します。
 WASM では累積の確保量がメモリ上限を超える反復を実行し、空き領域の再利用を確認します。
+カリー化では `tests/currying.rs` が型・捕捉・寿命を検査し、
+`tests/fixtures/currying` を `tests/primitives.mjs` から C／WASM の両方で実行します。
+匿名関数、途中段階の副作用、関数を含む集約値、入れ子の所有文字列、40,000回の
+環境作成・複製・解放を追跡し、各公開関数の呼び出し後にネイティブの未解放バイトが 0 であることを確認します。
+配列は `tests/arrays.rs` と `tests/fixtures/arrays` で型から長さが独立していること、
+実行時生成、異なる長さの入れ子、空配列、不変性、借用の寿命を検査します。
+`tests/primitives.mjs` では 1024 要素を超える生成、確保サイズのオーバーフロー、
+所有要素・関数要素の複製と解放、100,000 回の末尾再帰、ネイティブ／WASM のトラップを確認します。
+連結リストは `tests/lists.rs` と `tests/fixtures/lists` で同じ範囲に加え、区切りと演算子の共存、
+型クラス、配列との混在、可変参照による不変性の迂回を検査します。
+`tests/primitives.mjs` は連結ノードの確保数、100,000 ノードの反復解放、100,000 回の末尾再帰、
+複製・所有要素・捕捉環境の解放、WASM のヒープ再利用とメモリ上限も検査します。
 
 数値ランタイムの変更時は `src/runtime/numeric.c` を編集し、
 `python3 src/runtime/generate.py` で `numeric.ll` を再生成します。
@@ -158,7 +234,7 @@ overflow、評価順序を両ターゲットで確認します。
 
 ## 初版の次に必要な設計
 
-動的コレクション、キャプチャ付きクロージャー、代数的データ型、ジェネリクス、
+伸縮可能なコレクション、共有可変キャプチャ、代数的データ型、ジェネリックなレコード、
 外部パッケージ、階層モジュール、効果の型付け、デバッグ情報、IDE／LSP は未実装です。
 所有権は文字列と不変集約値を対象に実装していますが、名前付きライフタイム、
 借用フィールド、再帰的なヒープ型、任意の destructor、ホストをまたぐ所有権は未対応です。

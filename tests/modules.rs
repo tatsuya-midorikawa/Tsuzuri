@@ -129,7 +129,7 @@ fn resolves_cross_module_recursion_and_qualified_self_tail_calls() {
         ),
         (
             "Loop",
-            "fn sum(n: i64, a: [i64; 2]) -> i64 {
+            "fn sum(n: i64, a: [i64]) -> i64 {
                  let value = a[n & 1];
                  if n == 0 { value } else { Loop.sum(n - 1, [value + 1, value]) }
              }
@@ -141,8 +141,16 @@ fn resolves_cross_module_recursion_and_qualified_self_tail_calls() {
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(ir.contains("call i1 @tz.fn.Odd.test"));
     assert!(ir.contains("call i1 @tz.fn.Even.test"));
-    assert!(!ir.contains("call i64 @tz.fn.Loop.sum"));
-    assert!(!ir.contains("call i64 @tz.fn.Loop.down"));
+    for name in ["sum", "down"] {
+        let body = ir
+            .split(&format!("define internal i64 @tz.fn.Loop.{name}("))
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        assert!(!body.contains(&format!("call i64 @tz.fn.Loop.{name}")));
+    }
     let sum = ir.split("@tz.fn.Loop.sum(").nth(1).unwrap();
     assert!(sum.find("alloca").unwrap() < sum.find("br label %loop").unwrap());
 }

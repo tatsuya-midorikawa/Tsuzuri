@@ -3,11 +3,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::syntax::*;
 
-pub const MAX_ARRAY_LENGTH: usize = 1024;
+#[path = "closures.rs"]
+mod closures;
+#[path = "polymorph.rs"]
+mod polymorph;
+use polymorph::{Classes, Constraint, Inference, Scheme};
+
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
+    Variable(String),
+    Infer(usize),
     Integer(u16, bool),
     Binary(u16),
     Decimal(u16),
@@ -15,7 +22,8 @@ pub enum Type {
     Unit,
     String,
     Record(usize),
-    Array(Box<Type>, usize),
+    Array(Box<Type>),
+    List(Box<Type>),
     Function(Vec<Type>, Box<Type>),
     Reference(Box<Type>, bool),
 }
@@ -24,32 +32,72 @@ impl Type {
     pub const I64: Self = Self::Integer(64, true);
     pub const F64: Self = Self::Binary(64);
 
+    pub(crate) fn function(mut parameters: Vec<Type>, mut result: Type) -> Self {
+        if !parameters.is_empty() {
+            while matches!(&result, Self::Function(more, _) if !more.is_empty()) {
+                let Self::Function(more, tail) = result else {
+                    unreachable!()
+                };
+                parameters.extend(more);
+                result = *tail;
+            }
+        }
+        Self::Function(parameters, Box::new(result))
+    }
+
+    pub(crate) fn after_arguments(&self, count: usize) -> Self {
+        let Self::Function(parameters, result) = self else {
+            unreachable!()
+        };
+        if count == parameters.len() {
+            (**result).clone()
+        } else {
+            Self::function(parameters[count..].to_vec(), (**result).clone())
+        }
+    }
+
     pub fn display(&self, records: &[CheckedRecord]) -> String {
         match self {
+            Self::Variable(name) => format!("'{name}"),
+            Self::Infer(_) => "an undetermined type".into(),
             Self::Integer(bits, signed) => format!("i{bits}{}", if *signed { "" } else { "u" }),
             Self::Binary(bits) => format!("f{bits}"),
             Self::Decimal(bits) => format!("d{bits}"),
             Self::Bool => "bool".into(),
             Self::Unit => "unit".into(),
             Self::String => "string".into(),
-            Self::Reference(ty, mutable) => format!(
-                "&{}{}",
-                if *mutable { "mut " } else { "" },
-                ty.display(records)
-            ),
-            Self::Record(id) => records[*id].name.clone(),
-            Self::Array(element, length) => {
-                format!("[{}; {length}]", element.display(records))
+            Self::Reference(ty, mutable) => {
+                let inner = ty.display(records);
+                let inner = if matches!(**ty, Self::Function(..)) {
+                    format!("({inner})")
+                } else {
+                    inner
+                };
+                format!("&{}{inner}", if *mutable { "mut " } else { "" })
             }
-            Self::Function(parameters, result) => format!(
-                "fn({}) -> {}",
-                parameters
+            Self::Record(id) => records[*id].name.clone(),
+            Self::Array(element) => {
+                format!("[{}]", element.display(records))
+            }
+            Self::List(element) => format!("[|{}|]", element.display(records)),
+            Self::Function(parameters, result) if parameters.is_empty() => {
+                format!("fn() -> {}", result.display(records))
+            }
+            Self::Function(parameters, result) => {
+                let mut parts: Vec<_> = parameters
                     .iter()
-                    .map(|parameter| parameter.display(records))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                result.display(records),
-            ),
+                    .map(|parameter| {
+                        let text = parameter.display(records);
+                        if matches!(parameter, Self::Function(..)) {
+                            format!("({text})")
+                        } else {
+                            text
+                        }
+                    })
+                    .collect();
+                parts.push(result.display(records));
+                parts.join(" -> ")
+            }
         }
     }
 
@@ -71,24 +119,24 @@ impl Type {
 
     pub fn is_copy(&self, records: &[CheckedRecord]) -> bool {
         match self {
-            Self::String | Self::Reference(_, true) => false,
+            Self::String | Self::Reference(_, true) | Self::Variable(_) | Self::Infer(_) => false,
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
                 .all(|(_, ty)| ty.is_copy(records)),
-            Self::Array(element, _) => element.is_copy(records),
+            Self::Array(element) | Self::List(element) => element.is_copy(records),
             _ => true,
         }
     }
 
     pub fn needs_drop(&self, records: &[CheckedRecord]) -> bool {
         match self {
-            Self::String => true,
+            Self::String | Self::Function(..) => true,
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
                 .any(|(_, ty)| ty.needs_drop(records)),
-            Self::Array(element, length) => *length != 0 && element.needs_drop(records),
+            Self::Array(_) | Self::List(_) => true,
             _ => false,
         }
     }
@@ -96,8 +144,43 @@ impl Type {
     pub fn contains_reference(&self) -> bool {
         match self {
             Self::Reference(..) => true,
-            Self::Array(element, _) => element.contains_reference(),
+            Self::Array(element) | Self::List(element) => element.contains_reference(),
             _ => false,
+        }
+    }
+
+    fn contains_mutable_reference(&self) -> bool {
+        match self {
+            Self::Reference(_, true) => true,
+            Self::Reference(value, false) | Self::Array(value) | Self::List(value) => {
+                value.contains_mutable_reference()
+            }
+            // Function signatures describe calls, not stored references; captures are checked separately.
+            _ => false,
+        }
+    }
+
+    pub(crate) fn carries_loans(&self, records: &[CheckedRecord]) -> bool {
+        match self {
+            Self::Reference(..) | Self::Function(..) => true,
+            Self::Array(element) | Self::List(element) => element.carries_loans(records),
+            Self::Record(id) => records[*id]
+                .fields
+                .iter()
+                .any(|(_, ty)| ty.carries_loans(records)),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn can_capture(&self, records: &[CheckedRecord]) -> bool {
+        match self {
+            Self::Reference(_, true) => false,
+            Self::Array(element) | Self::List(element) => element.can_capture(records),
+            Self::Record(id) => records[*id]
+                .fields
+                .iter()
+                .all(|(_, ty)| ty.can_capture(records)),
+            _ => true,
         }
     }
 
@@ -175,7 +258,25 @@ pub struct Signature {
 
 impl Signature {
     fn as_type(&self) -> Type {
-        Type::Function(self.parameters.clone(), Box::new(self.result.clone()))
+        Type::function(self.parameters.clone(), self.result.clone())
+    }
+
+    fn validate_borrows(&self, records: &[CheckedRecord], span: Span) -> Result<(), Diagnostic> {
+        if self.result.contains_reference()
+            && self
+                .parameters
+                .iter()
+                .filter(|ty| ty.carries_loans(records))
+                .count()
+                != 1
+        {
+            return Err(Diagnostic::new(
+                "E1013",
+                "a borrowed result requires exactly one borrowed input for lifetime elision",
+                span,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -186,14 +287,14 @@ pub struct CheckedModule {
     pub entry: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CheckedRecord {
     pub name: String,
     pub fields: Vec<(String, Type)>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CheckedFunction {
     pub module: String,
     pub name: String,
@@ -202,6 +303,9 @@ pub struct CheckedFunction {
     pub signature: Signature,
     pub body: TypedExpr,
     pub span: Span,
+    type_parameters: Vec<String>,
+    constraints: Vec<Constraint>,
+    pub(crate) capture_count: usize,
 }
 
 impl CheckedFunction {
@@ -219,14 +323,14 @@ pub struct Local {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TypedExpr {
     pub kind: TypedExprKind,
     pub ty: Type,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TypedExprKind {
     Int(u128),
     Float(String),
@@ -235,9 +339,19 @@ pub enum TypedExprKind {
     Unit,
     Local(usize),
     Function(FunctionRef),
+    GenericFunction(usize, Vec<Type>),
+    Method(usize, usize, Type),
+    GenericInteger(u128, bool),
+    GenericFloat(String),
     Unary(UnaryOp, Box<TypedExpr>),
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(Box<TypedExpr>, Vec<TypedExpr>),
+    Lambda {
+        parameters: Vec<Local>,
+        captures: Vec<Local>,
+        body: Box<TypedExpr>,
+    },
+    Closure(usize, Vec<TypedExpr>),
     If {
         condition: Box<TypedExpr>,
         then_branch: Box<TypedExpr>,
@@ -249,9 +363,12 @@ pub enum TypedExprKind {
     },
     Record(Vec<(usize, TypedExpr)>),
     Array(Vec<TypedExpr>),
+    List(Vec<TypedExpr>),
+    NewArray(Box<TypedExpr>, Box<TypedExpr>),
+    NewList(Box<TypedExpr>, Box<TypedExpr>),
     Field(Box<TypedExpr>, usize),
     Index(Box<TypedExpr>, Box<TypedExpr>),
-    Length(Box<TypedExpr>, usize),
+    Length(Box<TypedExpr>),
     StringLength(Box<TypedExpr>),
     Borrow(Box<TypedExpr>, bool),
     Dereference(Box<TypedExpr>),
@@ -324,9 +441,14 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         .iter()
         .flat_map(|(name, program)| program.records.iter().map(|record| (*name, record)))
         .collect();
-    let function_declarations: Vec<_> = modules
+    let mut function_declarations: Vec<_> = modules
         .iter()
-        .flat_map(|(name, program)| program.functions.iter().map(|function| (*name, function)))
+        .flat_map(|(name, program)| {
+            program
+                .functions
+                .iter()
+                .map(|function| ((*name).to_owned(), function.clone()))
+        })
         .collect();
     for (id, (module, record)) in record_declarations.iter().enumerate() {
         let qualified = format!("{module}.{}", record.name.text);
@@ -351,6 +473,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
                 return Err(duplicate(&field.name));
             }
             let ty = resolve_type(&field.ty, module, &names)?;
+            polymorph::require_concrete(&ty, field.ty.span)?;
             if field.mutable || ty.contains_reference() {
                 return Err(Diagnostic::new(
                     "E1013",
@@ -377,6 +500,8 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         }
     }
     let mut export_names = BTreeSet::new();
+    let mut classes = Classes::collect(modules, &names, &record_sizes)?;
+    classes.instances(modules, &names, &records, &mut function_declarations)?;
     let mut signatures = Vec::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if function.name.text == "_"
@@ -412,9 +537,13 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         }
         let result = resolve_type(&function.result, module, &names)?;
         validate_size(&result, &record_sizes, function.result.span)?;
+        let public_type = Type::function(parameters.clone(), result.clone());
+        let Type::Function(public_parameters, public_result) = &public_type else {
+            unreachable!()
+        };
         if function.exported
-            && (parameters.iter().any(|ty| !ty.exportable())
-                || (!result.exportable() && result != Type::Unit))
+            && (public_parameters.iter().any(|ty| !ty.exportable())
+                || (!public_result.exportable() && **public_result != Type::Unit))
         {
             return Err(Diagnostic::new(
                 "E1008",
@@ -422,38 +551,79 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
                 function.name.span,
             ));
         }
-        if result.contains_reference()
-            && parameters
-                .iter()
-                .filter(|ty| ty.contains_reference())
-                .count()
-                != 1
+        let signature = Signature { parameters, result };
+        signature.validate_borrows(&records, function.result.span)?;
+        polymorph::bounded_type(&signature.as_type(), function.name.span)?;
+        let variables = polymorph::variables(&signature.as_type());
+        let mut constraints: Vec<_> = function
+            .constraints
+            .iter()
+            .map(|constraint| {
+                let class = classes.resolve(module, &constraint.class)?;
+                let ty = resolve_type(&constraint.ty, module, &names)?;
+                if polymorph::variables(&ty)
+                    .iter()
+                    .any(|variable| !variables.contains(variable))
+                {
+                    return Err(Diagnostic::new(
+                        "E1015",
+                        "constraint mentions a type variable absent from the signature",
+                        constraint.ty.span,
+                    ));
+                }
+                Ok(Constraint {
+                    class,
+                    ty,
+                    span: constraint.class.span,
+                })
+            })
+            .collect::<Result<_, Diagnostic>>()?;
+        for ty in function
+            .parameters
+            .iter()
+            .map(|parameter| &parameter.ty)
+            .chain(std::iter::once(&function.result))
         {
-            return Err(Diagnostic::new(
-                "E1013",
-                "a borrowed result requires exactly one borrowed input for lifetime elision",
-                function.result.span,
-            ));
+            constraints.extend(classes.inline_constraints(ty, module, &names)?);
         }
-        signatures.push(Signature { parameters, result });
+        signatures.push(Scheme {
+            signature,
+            variables,
+            constraints,
+        });
     }
     let mut functions = Vec::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
-        let signature = signatures[id].clone();
-        let mut checker = Checker::new(module, &names, &records, &record_sizes, &signatures);
+        let scheme = &signatures[id];
+        let signature = scheme.signature.clone();
+        let mut checker = Checker::new(
+            module,
+            &names,
+            &records,
+            &record_sizes,
+            &signatures,
+            &classes,
+        );
+        checker.type_parameters = scheme.variables.clone();
         let mut parameters = Vec::new();
         for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
             parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
         }
-        let body = checker.expression(&function.body, Some(&signature.result))?;
+        let mut body = checker.expression(&function.body, Some(&signature.result))?;
+        checker.finish(&mut body)?;
+        let mut constraints = scheme.constraints.clone();
+        constraints.extend(checker.constraints);
         functions.push(CheckedFunction {
-            module: (*module).to_owned(),
+            module: module.clone(),
             name: function.name.text.clone(),
             exported: function.exported,
             parameters,
             signature,
             body,
             span: function.name.span,
+            type_parameters: scheme.variables.clone(),
+            constraints,
+            capture_count: 0,
         });
     }
     let mut entry = names.functions.get("Main.main").copied();
@@ -475,8 +645,16 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
                 expression.span,
             ));
         }
-        let mut checker = Checker::new(module, &names, &records, &record_sizes, &signatures);
-        let body = checker.expression(expression, None)?;
+        let mut checker = Checker::new(
+            module,
+            &names,
+            &records,
+            &record_sizes,
+            &signatures,
+            &classes,
+        );
+        let mut body = checker.expression(expression, None)?;
+        checker.finish(&mut body)?;
         entry = Some(functions.len());
         functions.push(CheckedFunction {
             module: (*module).to_owned(),
@@ -489,6 +667,9 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             },
             body,
             span: expression.span,
+            type_parameters: Vec::new(),
+            constraints: checker.constraints,
+            capture_count: 0,
         });
     }
     let module = CheckedModule {
@@ -496,6 +677,13 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         functions,
         entry,
     };
+    let module = polymorph::specialize(module, &classes, &record_sizes)?;
+    let module = closures::lower(module)?;
+    for function in &module.functions {
+        function
+            .signature
+            .validate_borrows(&module.records, function.span)?;
+    }
     crate::ownership::check(&module)?;
     Ok(module)
 }
@@ -514,25 +702,21 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
             Some(ty) => ty,
             None => Type::Record(names.record(module, name, expression.span)?),
         },
+        TypeExprKind::Variable(name) => Type::Variable(name.clone()),
+        TypeExprKind::Constrained(_, ty) => resolve_type(ty, module, names)?,
         TypeExprKind::Reference(ty, mutable) => {
             Type::Reference(Box::new(resolve_type(ty, module, names)?), *mutable)
         }
-        TypeExprKind::Array(element, length) => {
-            if *length > MAX_ARRAY_LENGTH {
-                return Err(Diagnostic::new(
-                    "E1004",
-                    format!("fixed arrays are limited to {MAX_ARRAY_LENGTH} elements"),
-                    expression.span,
-                ));
-            }
-            Type::Array(Box::new(resolve_type(element, module, names)?), *length)
+        TypeExprKind::Array(element) => {
+            Type::Array(Box::new(resolve_type(element, module, names)?))
         }
-        TypeExprKind::Function(parameters, result) => Type::Function(
+        TypeExprKind::List(element) => Type::List(Box::new(resolve_type(element, module, names)?)),
+        TypeExprKind::Function(parameters, result) => Type::function(
             parameters
                 .iter()
                 .map(|parameter| resolve_type(parameter, module, names))
                 .collect::<Result<_, _>>()?,
-            Box::new(resolve_type(result, module, names)?),
+            resolve_type(result, module, names)?,
         ),
     })
 }
@@ -596,10 +780,12 @@ fn layout_size(
 ) -> Result<usize, Diagnostic> {
     Ok(match ty {
         Type::Record(id) => record_size(*id, records, sizes, visiting, depth)?,
-        Type::Array(element, length) => {
-            layout_size(element, records, sizes, visiting, depth)?.saturating_mul(*length)
+        Type::Array(element) | Type::List(element) => {
+            layout_size(element, records, sizes, visiting, depth)?;
+            16
         }
         Type::Integer(128, _) | Type::Binary(128) | Type::Decimal(128) | Type::String => 16,
+        Type::Function(..) => 32,
         // Small values conservatively occupy at least one pointer-sized slot.
         _ => 8,
     })
@@ -608,15 +794,23 @@ fn layout_size(
 fn validate_size(ty: &Type, sizes: &[usize], span: Span) -> Result<usize, Diagnostic> {
     let size = match ty {
         Type::Record(id) => sizes[*id],
-        Type::Array(element, length) => {
-            validate_size(element, sizes, span)?.saturating_mul(*length)
+        Type::Array(element) | Type::List(element) => {
+            if element.contains_mutable_reference() {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "array and list elements cannot contain mutable references; collections are deeply immutable",
+                    span,
+                ));
+            }
+            validate_size(element, sizes, span)?;
+            16
         }
         Type::Function(parameters, result) => {
             for parameter in parameters {
                 validate_size(parameter, sizes, span)?;
             }
             validate_size(result, sizes, span)?;
-            8
+            32
         }
         Type::Reference(value, _) => {
             validate_size(value, sizes, span)?;
@@ -637,7 +831,11 @@ struct Checker<'a> {
     names: &'a Names,
     records: &'a [CheckedRecord],
     record_sizes: &'a [usize],
-    signatures: &'a [Signature],
+    signatures: &'a [Scheme],
+    classes: &'a Classes,
+    inference: Inference,
+    constraints: Vec<Constraint>,
+    type_parameters: Vec<String>,
     scopes: Vec<BTreeMap<String, Local>>,
     next_local: usize,
 }
@@ -648,7 +846,8 @@ impl<'a> Checker<'a> {
         names: &'a Names,
         records: &'a [CheckedRecord],
         record_sizes: &'a [usize],
-        signatures: &'a [Signature],
+        signatures: &'a [Scheme],
+        classes: &'a Classes,
     ) -> Self {
         Self {
             module,
@@ -656,6 +855,10 @@ impl<'a> Checker<'a> {
             records,
             record_sizes,
             signatures,
+            classes,
+            inference: Inference::default(),
+            constraints: Vec::new(),
+            type_parameters: Vec::new(),
             scopes: vec![BTreeMap::new()],
             next_local: 0,
         }
@@ -679,20 +882,8 @@ impl<'a> Checker<'a> {
         local
     }
 
-    fn same(&self, actual: &Type, expected: &Type, span: Span) -> Result<(), Diagnostic> {
-        if actual == expected {
-            Ok(())
-        } else {
-            Err(Diagnostic::new(
-                "E1003",
-                format!(
-                    "expected {}, found {}",
-                    expected.display(self.records),
-                    actual.display(self.records)
-                ),
-                span,
-            ))
-        }
+    fn same(&mut self, actual: &Type, expected: &Type, span: Span) -> Result<(), Diagnostic> {
+        self.inference.unify(actual, expected, self.records, span)
     }
 
     fn expression(
@@ -700,36 +891,69 @@ impl<'a> Checker<'a> {
         expression: &Expr,
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
+        let expected = expected.map(|ty| self.inference.resolve(ty));
+        let expected = expected.as_ref();
+        let module_function = matches!(&expression.kind, ExprKind::Field(value, field)
+            if matches!(&value.kind, ExprKind::Name(name)
+                if self.local(&name.text).is_none()
+                    && self.names.functions.contains_key(&format!("{}.{}", name.text, field.text))));
+        let method = if module_function {
+            None
+        } else {
+            self.classes
+                .method(expression, self.module, |name| self.local(name).is_some())?
+        };
+        if let Some((class, method)) = method {
+            let (kind, ty) = self.method(class, method, expression.span);
+            if let Some(expected) = expected {
+                self.same(&ty, expected, expression.span)?;
+            }
+            return Ok(TypedExpr {
+                kind,
+                ty: self.inference.resolve(&ty),
+                span: expression.span,
+            });
+        }
         let (kind, ty) = match &expression.kind {
             ExprKind::Integer(value, suffix) => {
                 self.integer(*value, suffix.as_deref(), expected, false, expression.span)?
             }
             ExprKind::Float(value, suffix) => {
-                let ty = suffix
-                    .as_deref()
-                    .and_then(crate::numeric::primitive)
-                    .or_else(|| expected.filter(|ty| ty.is_float()).cloned())
-                    .unwrap_or(Type::F64);
-                if !ty.is_float() {
-                    return Err(Diagnostic::new(
-                        "E1009",
-                        "a floating-point literal needs a binary or decimal floating-point type",
-                        expression.span,
-                    ));
+                if suffix.is_none() && expected.is_some_and(polymorph::is_unknown) {
+                    let ty = expected.unwrap().clone();
+                    self.require("Float", ty.clone(), expression.span)?;
+                    self.inference.default_numeric(&ty, Type::F64);
+                    (TypedExprKind::GenericFloat(value.clone()), ty)
+                } else {
+                    let ty = suffix
+                        .as_deref()
+                        .and_then(crate::numeric::primitive)
+                        .or_else(|| expected.filter(|ty| ty.is_float()).cloned())
+                        .unwrap_or(Type::F64);
+                    if !ty.is_float() {
+                        return Err(Diagnostic::new(
+                            "E1009",
+                            "a floating-point literal needs a binary or decimal floating-point type",
+                            expression.span,
+                        ));
+                    }
+                    (
+                        TypedExprKind::Float(crate::numeric::float_literal(
+                            value,
+                            &ty,
+                            expression.span,
+                        )?),
+                        ty,
+                    )
                 }
-                (
-                    TypedExprKind::Float(crate::numeric::float_literal(
-                        value,
-                        &ty,
-                        expression.span,
-                    )?),
-                    ty,
-                )
             }
             ExprKind::String(text) => (TypedExprKind::String(text.clone()), Type::String),
             ExprKind::Bool(value) => (TypedExprKind::Bool(*value), Type::Bool),
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
             ExprKind::Name(name) => self.name(name)?,
+            ExprKind::Lambda(parameters, body) => {
+                return self.lambda(parameters, body, expected, expression.span);
+            }
             ExprKind::Unary(UnaryOp::Negate, operand)
                 if matches!(operand.kind, ExprKind::Integer(..)) =>
             {
@@ -740,22 +964,18 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Unary(operator, operand) => {
                 let operand = self.expression(operand, expected)?;
-                let valid = match operator {
-                    UnaryOp::Negate => {
-                        operand.ty.is_float() || matches!(operand.ty, Type::Integer(_, true))
-                    }
-                    UnaryOp::Not => operand.ty == Type::Bool,
-                    UnaryOp::BitNot => operand.ty.is_integer(),
-                };
-                if !valid {
-                    return Err(Diagnostic::new(
-                        "E1005",
-                        format!(
-                            "invalid operand {} for {operator:?}",
-                            operand.ty.display(self.records)
-                        ),
+                if *operator == UnaryOp::Not {
+                    self.same(&operand.ty, &Type::Bool, expression.span)?;
+                } else {
+                    self.require(
+                        if *operator == UnaryOp::Negate {
+                            "Neg"
+                        } else {
+                            "Bits"
+                        },
+                        operand.ty.clone(),
                         expression.span,
-                    ));
+                    )?;
                 }
                 let ty = operand.ty.clone();
                 (TypedExprKind::Unary(*operator, Box::new(operand)), ty)
@@ -763,15 +983,25 @@ impl<'a> Checker<'a> {
             ExprKind::Binary(operator, left, right) => {
                 let (left, right) = if *operator == BinaryOp::Pipe {
                     let right = self.expression(right, None)?;
-                    let hint = match &right.ty {
-                        Type::Function(parameters, _) if parameters.len() == 1 => {
-                            Some(&parameters[0])
-                        }
-                        _ => None,
-                    };
-                    (self.expression(left, hint)?, right)
+                    let (parameters, result) = self.call_signature(&right.ty, 1, right.span)?;
+                    if let Some(expected) = expected {
+                        self.same(&result, expected, expression.span)?;
+                    }
+                    (self.expression(left, Some(&parameters[0]))?, right)
                 } else {
-                    let hint = expected.filter(|ty| ty.is_numeric() || **ty == Type::String);
+                    let hint = expected.filter(|_| {
+                        !matches!(
+                            operator,
+                            BinaryOp::Equal
+                                | BinaryOp::NotEqual
+                                | BinaryOp::Less
+                                | BinaryOp::LessEqual
+                                | BinaryOp::Greater
+                                | BinaryOp::GreaterEqual
+                                | BinaryOp::And
+                                | BinaryOp::Or
+                        )
+                    });
                     if Self::untyped_number(left) && !Self::untyped_number(right) {
                         let right = self.expression(right, hint)?;
                         (self.expression(left, Some(&right.ty))?, right)
@@ -782,22 +1012,9 @@ impl<'a> Checker<'a> {
                     }
                 };
                 let result = if *operator == BinaryOp::Pipe {
-                    let Type::Function(parameters, result) = &right.ty else {
-                        return Err(Diagnostic::new(
-                            "E1005",
-                            "the right side of '|>' must be a one-argument function",
-                            right.span,
-                        ));
-                    };
-                    if parameters.len() != 1 {
-                        return Err(Diagnostic::new(
-                            "E1006",
-                            "'|>' requires a one-argument function",
-                            right.span,
-                        ));
-                    }
+                    let (parameters, result) = self.call_signature(&right.ty, 1, right.span)?;
                     self.same(&left.ty, &parameters[0], left.span)?;
-                    (**result).clone()
+                    result
                 } else {
                     self.binary_type(*operator, &left, &right, expression.span)?
                 };
@@ -807,31 +1024,29 @@ impl<'a> Checker<'a> {
                 )
             }
             ExprKind::Call(callee, arguments) => {
-                let callee = self.expression(callee, None)?;
-                let Type::Function(parameters, result) = &callee.ty else {
-                    return Err(Diagnostic::new(
-                        "E1005",
-                        "only a function value can be called",
-                        callee.span,
-                    ));
-                };
-                if parameters.len() != arguments.len() {
-                    return Err(Diagnostic::new(
-                        "E1006",
-                        format!(
-                            "expected {} arguments, found {}",
-                            parameters.len(),
-                            arguments.len()
-                        ),
-                        expression.span,
-                    ));
+                if let ExprKind::Call(inner, first) = &callee.kind {
+                    if !first.is_empty() && !arguments.is_empty() {
+                        let mut combined = first.clone();
+                        combined.extend(arguments.iter().cloned());
+                        let combined = Expr {
+                            kind: ExprKind::Call(inner.clone(), combined),
+                            span: expression.span,
+                            depth: expression.depth,
+                        };
+                        return self.expression(&combined, expected);
+                    }
                 }
-                let arguments = arguments
+                let callee = self.expression(callee, None)?;
+                let (parameters, result) =
+                    self.call_signature(&callee.ty, arguments.len(), expression.span)?;
+                if let Some(expected) = expected {
+                    self.same(&result, expected, expression.span)?;
+                }
+                let arguments: Vec<_> = arguments
                     .iter()
-                    .zip(parameters)
+                    .zip(&parameters)
                     .map(|(argument, parameter)| self.expression(argument, Some(parameter)))
                     .collect::<Result<_, _>>()?;
-                let result = (**result).clone();
                 (TypedExprKind::Call(Box::new(callee), arguments), result)
             }
             ExprKind::If {
@@ -859,7 +1074,7 @@ impl<'a> Checker<'a> {
                     let annotation = binding
                         .annotation
                         .as_ref()
-                        .map(|ty| resolve_type(ty, self.module, self.names))
+                        .map(|ty| self.annotation(ty))
                         .transpose()?;
                     if let Some(ty) = &annotation {
                         validate_size(ty, self.record_sizes, binding.name.span)?;
@@ -919,16 +1134,12 @@ impl<'a> Checker<'a> {
                 }
                 (TypedExprKind::Record(values), Type::Record(id))
             }
-            ExprKind::Array(values) => {
-                if values.len() > MAX_ARRAY_LENGTH {
-                    return Err(Diagnostic::new(
-                        "E1004",
-                        format!("fixed arrays are limited to {MAX_ARRAY_LENGTH} elements"),
-                        expression.span,
-                    ));
-                }
-                let mut element_type = match expected {
-                    Some(Type::Array(element, _)) => Some((**element).clone()),
+            ExprKind::Array(values) | ExprKind::List(values) => {
+                let list = matches!(expression.kind, ExprKind::List(_));
+                let mut element_type = match (list, expected) {
+                    (false, Some(Type::Array(element))) | (true, Some(Type::List(element))) => {
+                        Some((**element).clone())
+                    }
                     _ => None,
                 };
                 let mut checked = Vec::new();
@@ -940,13 +1151,41 @@ impl<'a> Checker<'a> {
                 let element = element_type.ok_or_else(|| {
                     Diagnostic::new(
                         "E1004",
-                        "an empty array needs a type annotation, for example '[i64; 0]'",
+                        if list {
+                            "an empty list needs a type annotation, for example '[|i64|]'"
+                        } else {
+                            "an empty array needs a type annotation, for example '[i64]'"
+                        },
                         expression.span,
                     )
                 })?;
-                let ty = Type::Array(Box::new(element), values.len());
+                let (kind, ty) = if list {
+                    (TypedExprKind::List(checked), Type::List(Box::new(element)))
+                } else {
+                    (
+                        TypedExprKind::Array(checked),
+                        Type::Array(Box::new(element)),
+                    )
+                };
                 validate_size(&ty, self.record_sizes, expression.span)?;
-                (TypedExprKind::Array(checked), ty)
+                (kind, ty)
+            }
+            ExprKind::NewArray(annotation, length, initializer)
+            | ExprKind::NewList(annotation, length, initializer) => {
+                let ty = self.annotation(annotation)?;
+                validate_size(&ty, self.record_sizes, expression.span)?;
+                let (Type::Array(element) | Type::List(element)) = &ty else {
+                    unreachable!("the parser requires a collection type after 'new'")
+                };
+                let length = self.expression(length, Some(&Type::I64))?;
+                let initializer_type = Type::function(vec![Type::I64], (**element).clone());
+                let initializer = self.expression(initializer, Some(&initializer_type))?;
+                let kind = if matches!(ty, Type::List(_)) {
+                    TypedExprKind::NewList(Box::new(length), Box::new(initializer))
+                } else {
+                    TypedExprKind::NewArray(Box::new(length), Box::new(initializer))
+                };
+                (kind, ty)
             }
             ExprKind::Field(value, field)
                 if matches!(&value.kind, ExprKind::Name(name)
@@ -983,9 +1222,8 @@ impl<'a> Checker<'a> {
                         let ty = self.records[*id].fields[index].1.clone();
                         (TypedExprKind::Field(Box::new(value), index), ty)
                     }
-                    Type::Array(_, length) if field.text == "length" => {
-                        let length = *length;
-                        (TypedExprKind::Length(Box::new(value), length), Type::I64)
+                    Type::Array(_) | Type::List(_) if field.text == "length" => {
+                        (TypedExprKind::Length(Box::new(value)), Type::I64)
                     }
                     Type::String if field.text == "length" => {
                         (TypedExprKind::StringLength(Box::new(value)), Type::I64)
@@ -993,7 +1231,7 @@ impl<'a> Checker<'a> {
                     _ => {
                         return Err(Diagnostic::new(
                             "E1007",
-                            "field access requires a record, or '.length' on an array or string",
+                            "field access requires a record, or '.length' on an array, list, or string",
                             field.span,
                         ));
                     }
@@ -1002,12 +1240,12 @@ impl<'a> Checker<'a> {
             ExprKind::Index(value, index) => {
                 let value = Self::autoderef(self.expression(value, None)?);
                 let ty = match &value.ty {
-                    Type::Array(element, _) => (**element).clone(),
+                    Type::Array(element) | Type::List(element) => (**element).clone(),
                     Type::String => Type::Integer(8, false),
                     _ => {
                         return Err(Diagnostic::new(
                             "E1005",
-                            "indexing requires a fixed array or string",
+                            "indexing requires an array, list, or string",
                             value.span,
                         ));
                     }
@@ -1023,6 +1261,9 @@ impl<'a> Checker<'a> {
                     _ => None,
                 };
                 let value = self.expression(value, hint)?;
+                if *mutable {
+                    Self::require_mutable_reference(&value)?;
+                }
                 let ty = Type::Reference(Box::new(value.ty.clone()), *mutable);
                 (TypedExprKind::Borrow(Box::new(value), *mutable), ty)
             }
@@ -1040,13 +1281,14 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Assign(place, value) => {
                 let place = self.expression(place, None)?;
+                Self::require_mutable_reference(&place)?;
                 if !matches!(
                     place.kind,
                     TypedExprKind::Local(_) | TypedExprKind::Dereference(_)
                 ) {
                     return Err(Diagnostic::new(
                         "E1012",
-                        "assignment replaces a mutable binding; record fields and array elements are immutable",
+                        "assignment replaces a mutable binding; record fields, array elements, and list elements are immutable",
                         place.span,
                     ));
                 }
@@ -1058,14 +1300,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Cast(value, ty) => {
                 let value = self.expression(value, None)?;
-                let ty = resolve_type(ty, self.module, self.names)?;
-                if !value.ty.is_numeric() || !ty.is_numeric() {
-                    return Err(Diagnostic::new(
-                        "E1005",
-                        "'as' converts between numeric types only",
-                        expression.span,
-                    ));
-                }
+                let ty = self.annotation(ty)?;
+                self.require("Numeric", value.ty.clone(), expression.span)?;
+                self.require("Numeric", ty.clone(), expression.span)?;
                 (TypedExprKind::Cast(Box::new(value)), ty)
             }
         };
@@ -1074,9 +1311,22 @@ impl<'a> Checker<'a> {
         }
         Ok(TypedExpr {
             kind,
-            ty,
+            ty: self.inference.resolve(&ty),
             span: expression.span,
         })
+    }
+
+    fn require_mutable_reference(place: &TypedExpr) -> Result<(), Diagnostic> {
+        if matches!(&place.kind, TypedExprKind::Dereference(reference) if matches!(reference.ty, Type::Reference(_, false)))
+        {
+            Err(Diagnostic::new(
+                "E1014",
+                "cannot mutate or exclusively reborrow through a shared reference",
+                place.span,
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn autoderef(mut value: TypedExpr) -> TypedExpr {
@@ -1101,12 +1351,33 @@ impl<'a> Checker<'a> {
     }
 
     fn integer(
-        &self,
+        &mut self,
         value: u128,
         suffix: Option<&str>,
         expected: Option<&Type>,
         negative: bool,
         span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        if suffix.is_none() && expected.is_some_and(polymorph::is_unknown) {
+            let ty = expected.unwrap().clone();
+            self.require(
+                if negative { "SignedInteger" } else { "Integer" },
+                ty.clone(),
+                span,
+            )?;
+            self.inference.default_numeric(&ty, Type::I64);
+            return Ok((TypedExprKind::GenericInteger(value, negative), ty));
+        }
+        Self::integer_literal(value, suffix, expected, negative, span, self.records)
+    }
+
+    fn integer_literal(
+        value: u128,
+        suffix: Option<&str>,
+        expected: Option<&Type>,
+        negative: bool,
+        span: Span,
+        records: &[CheckedRecord],
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let ty = suffix
             .and_then(crate::numeric::primitive)
@@ -1131,7 +1402,7 @@ impl<'a> Checker<'a> {
                 "E1009",
                 format!(
                     "integer literal is outside the range of {}",
-                    ty.display(self.records)
+                    ty.display(records)
                 ),
                 span,
             ));
@@ -1153,14 +1424,7 @@ impl<'a> Checker<'a> {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
     }
 
-    fn function(&self, id: usize) -> (TypedExprKind, Type) {
-        (
-            TypedExprKind::Function(FunctionRef::User(id)),
-            self.signatures[id].as_type(),
-        )
-    }
-
-    fn name(&self, name: &Ident) -> Result<(TypedExprKind, Type), Diagnostic> {
+    fn name(&mut self, name: &Ident) -> Result<(TypedExprKind, Type), Diagnostic> {
         if let Some(local) = self.local(&name.text) {
             return Ok((TypedExprKind::Local(local.id), local.ty.clone()));
         }
@@ -1188,7 +1452,7 @@ impl<'a> Checker<'a> {
     }
 
     fn binary_type(
-        &self,
+        &mut self,
         operator: BinaryOp,
         left: &TypedExpr,
         right: &TypedExpr,
@@ -1196,26 +1460,14 @@ impl<'a> Checker<'a> {
     ) -> Result<Type, Diagnostic> {
         use BinaryOp::*;
         self.same(&right.ty, &left.ty, right.span)?;
-        let valid = match operator {
-            Add | Subtract | Multiply | Divide | Less | LessEqual | Greater | GreaterEqual => {
-                left.ty.is_numeric() || (operator == Add && left.ty == Type::String)
-            }
-            Remainder | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight | ShiftRightUnsigned => {
-                left.ty.is_integer()
-            }
-            And | Or => left.ty == Type::Bool,
-            Equal | NotEqual => left.ty.is_scalar() || matches!(left.ty, Type::Unit | Type::String),
-            Pipe => unreachable!("pipeline types are checked separately"),
-        };
-        if !valid {
-            return Err(Diagnostic::new(
-                "E1005",
-                format!(
-                    "operator {operator:?} does not accept {}",
-                    left.ty.display(self.records)
-                ),
+        if matches!(operator, And | Or) {
+            self.same(&left.ty, &Type::Bool, span)?;
+        } else {
+            self.require(
+                polymorph::binary_class(operator),
+                self.inference.resolve(&left.ty),
                 span,
-            ));
+            )?;
         }
         Ok(match operator {
             Equal | NotEqual | Less | LessEqual | Greater | GreaterEqual | And | Or => Type::Bool,
@@ -1252,7 +1504,7 @@ mod tests {
         assert!(
             analyze(
                 "record Empty {}
-                 fn f() -> i64 { let a: [i64; 0] = []; let _ = Empty {}; -9223372036854775808 + a.length }
+                 fn f() -> i64 { let a: [i64] = []; let _ = Empty {}; -9223372036854775808 + a.length }
                  export fn empty() -> unit {}"
             )
             .is_ok()
@@ -1288,9 +1540,8 @@ mod tests {
             ),
             ("export fn f(x: unit) -> i64 { 1 }", "E1008"),
             ("record A { b: B } record B { a: A }", "E1010"),
-            ("record A { a: [A; 0] }", "E1010"),
-            ("fn f(a: [i64; 1025]) -> i64 { 0 }", "E1004"),
-            ("record A { a: [[i64; 1024]; 1024] }", "E1010"),
+            ("record A { a: [A] }", "E1010"),
+            ("fn f(a: [i64; 4]) -> i64 { 0 }", "E0002"),
         ] {
             let error = analyze(source).expect_err(source);
             assert_eq!(error.code, code, "{source}: {}", error.message);
@@ -1306,11 +1557,15 @@ mod tests {
 
     #[test]
     fn accepts_exact_value_limits_and_rejects_the_next_scalar() {
-        assert!(analyze("fn f(x: [i64; 1024]) -> i64 { x.length }").is_ok());
-        assert!(analyze("fn f(x: [i64; 1025]) -> i64 { x.length }").is_err());
-        assert!(analyze("record Full { values: [[i64; 1024]; 8] }").is_ok());
+        assert!(analyze("fn f(x: [i64]) -> i64 { x.length }").is_ok());
+        assert!(analyze("record Nested { values: [[i64]] }").is_ok());
+        let fields = (0..4096)
+            .map(|index| format!("f{index}: i64"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(analyze(&format!("record Full {{ {fields} }}")).is_ok());
         assert_eq!(
-            analyze("record TooLarge { values: [[i64; 1024]; 8], extra: i64 }")
+            analyze(&format!("record TooLarge {{ {fields}, extra: i64 }}"))
                 .unwrap_err()
                 .code,
             "E1010"

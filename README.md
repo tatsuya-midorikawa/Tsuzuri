@@ -7,28 +7,26 @@ WebAssembly を生成します。
 現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、
 ネイティブのデスクトップ・ホスト、ブラウザーのゲーム例を含みます。
 C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であり、現時点の達成保証ではありません。
-動的配列、クロージャー、ジェネリクス、
+伸縮可能なコレクション、ジェネリックなレコード型、
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
 
 `Main.tzr`:
 
 ```text
-fn sum(n: i64, total: i64) -> i64 {
+def sum :: i64 -> i64 -> i64
+fn sum n total =
     if n <= 0 {
         total
     } else {
-        sum(n - 1, total + n)
+        sum (n - 1) (total + n)
     }
-}
 
-export fn answer() -> i64 {
-    sum(100, 0)
-}
+export def answer :: i64
+fn answer = sum 100 0
 
-fn main() -> i64 {
-    answer()
-}
+def main :: i64
+fn main = answer()
 ```
 
 ## 設計と実装済みの範囲
@@ -36,19 +34,90 @@ fn main() -> i64 {
 | 項目 | 初版の実装 |
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `&mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
-| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、不変レコード・配列、静的関数参照 |
-| 書きやすさ | ローカル型推論、式としての `if`／ブロック、`|>`、高階関数、前方参照 |
+| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
+| 書きやすさ | `def` 宣言と `fn`／`let` 実装、全関数のカリー化、部分適用、匿名関数、ローカル型推論、式としての `if`／ブロック、`|>`、高階関数、前方参照 |
+| 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tzr` エントリー |
-| メモリ | 所有権、move、`&T`／`&mut T` の借用検査。文字列を自動解放。GC・参照カウント・手動解放なし |
+| メモリ | 所有権、move、`&T`／`&mut T` の借用検査。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`。直接の自己末尾再帰は `-O0` でもループ化 |
-| 安全性 | 整数除算・配列アクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
+| 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
 | ホスト連携 | 64-bit 以下の整数、f32／f64、bool の C ABI と WASM エクスポート。UI／I/O はホストの責務 |
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
+
+配列型は `[i32]` のように要素型だけを指定します。
+`new [i32](count, i -> i as i32)` は実行時の `count: i64` 個の要素を添字順に初期化します。
+`[1, 2, 3]` のリテラルも使え、生成後の長さ・要素は不変です。
+旧 `[i32; 4]` 形式は `[i32]` へ移行してください。
+
+連結リスト型は `[|i32|]`、リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。
+`new [|i32|](count, i -> i as i32)` で実行時にも生成できます。
+配列と同じく `.length` と読み取り専用の `xs[index]` を使えますが、リストの添字アクセスは O(n) です。
+配列・リストとも入れ子の要素は変更不可で、可変参照を要素に格納することも禁止します。
+`let mut` ではコレクション全体を別の値に置換できますが、既存の要素は変更できません。
 
 Web 向けの小さな計算モジュールという方向性は
 [fsw のネイティブコンパイラ](https://github.com/tatsuya-midorikawa/fsw/tree/feat/fsw-native-compiler)
 を参考にしています。fsw の直接 WASM 出力とは異なり、Tsuzuri は **LLVM を共通基盤** にして
 ネイティブ／WASM の両方へ出力します。生成 WASM は JavaScript ランタイムのインポートを必要としません。
+
+## 関数と型クラス
+
+型を `def` で宣言し、`fn` または `let` と匿名関数で実装します。引数は半角スペースで区切ります。
+同じ型変数は同じ型を表し、呼び出しごとに引数・返却値の文脈から具体型を決めます。
+
+```text
+def add :: Add 'a -> 'a -> 'a
+let add = x -> y -> x + y
+
+def identity :: 'a -> 'a
+fn identity x = x
+
+let add20 = add 20i32
+let integer = add20 22
+let decimal: d128 = add 0.1d128 0.2d128
+let text = identity "こんにちは"
+integer
+```
+
+`Add 'a` は `Add` 制約を持つ `'a` です。`def add :: 'a -> 'a -> 'a` と書いて本体から
+制約を推論することも、`Add 'a => 'a -> 'a -> 'a` と明記することもできます。
+すべての関数はカリー化され、`add 20 22` と `(add 20) 22` は同じ適用です。
+型クラスによるメソッド選択はコンパイル時に完了し、辞書や型クラスの
+動的ディスパッチを実行時に持ち込みません。利用した型の組み合わせごとにコードを生成します。
+
+匿名関数は `x -> x + offset` のように外側の値を捕捉できます。
+捕捉した所有値は関数値が管理し、関数値のコピーでは捕捉環境を独立したスナップショットにします。
+文字列などの捕捉にはコピーコストがありますが、GC・参照カウントは不要です。
+共有借用の寿命も検査し、排他借用を再利用可能な関数値へ保存することは拒否します。
+完全適用された既知の関数は、環境を確保せず直接呼び出します。
+実行例は `tsuzuri run examples/currying` です。
+
+```text
+record Point { x: i32, y: i32 }
+
+instance Add Point {
+    fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
+}
+
+class Score 'a {
+    def score :: &'a -> i32
+}
+
+instance Score Point {
+    fn score point = point.x + point.y
+}
+```
+
+上の `add` を `Point` にも使え、`Score.score (&point)` で独自クラスのメソッドを呼べます。
+例は `tsuzuri run examples/polymorphism`。型クラス名でメソッドを明示することで、
+同名関数の探索やインスタンスの選択順に依存しない記述にしています。
+同じクラス・型のインスタンス重複や、組み込みインスタンスの上書きはエラーです。
+
+初版はランク1の関数多相です。高階型・条件付きの汎用インスタンスは未対応です。
+公開する関数も言語内ではカリー化され、C／WASM 境界では全引数を渡す既存ABIを維持します。
+旧 `fn name :: ...` は `def name :: ...` へ置き換えます。
+旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
+詳細と制約一覧は [言語仕様](docs/language.md#多相関数と型クラス) を参照してください。
 
 ## ファイルとモジュール
 
@@ -61,20 +130,18 @@ Web 向けの小さな計算モジュールという方向性は
 ```text
 record Point { x: f64, y: f64 }
 
-fn distance(point: Point) -> f64 {
-    sqrt(point.x * point.x + point.y * point.y)
-}
+def distance :: Point -> f64
+fn distance point = sqrt (point.x * point.x + point.y * point.y)
 
-export fn hypotenuse(x: f64, y: f64) -> f64 {
-    distance(Point { x: x, y: y })
-}
+export def hypotenuse :: f64 -> f64 -> f64
+fn hypotenuse x y = distance (Point { x: x, y: y })
 ```
 
 同じディレクトリの `Main.tzr`:
 
 ```text
 let p = Point { x: 10.0, y: 20.5 }
-let d = Point.distance(p)
+let d = Point.distance p
 d
 ```
 
@@ -167,19 +234,22 @@ WASM は bulk-memory 対応の現在のブラウザー／Node.js を対象にし
 ## 所有権と借用
 
 ```text
-fn length(text: &string) -> i64 { text.length }
-fn replace(text: &mut string) -> unit { *text = "updated"; }
+def length :: &string -> i64
+fn length text = text.length
+def replace :: &mut string -> unit
+fn replace text = { *text = "updated"; }
 
-fn main() -> string {
+def main :: string
+fn main = {
     let mut text = "こんにちは";
-    let size = length(&text); // 借用後も所有者を使える
-    replace(&mut text);      // この呼び出し中は排他的に借用
+    let size = length (&text); // 借用後も所有者を使える
+    replace (&mut text);       // この呼び出し中は排他的に借用
     let result = text;      // 所有権を移動。以降の text の使用はエラー
     result
 }
 ```
 
-数値・bool・unit・静的関数参照・共有参照は Copy です。
+数値・bool・unit・関数値・共有参照は Copy です。関数値のコピーは捕捉環境の複製を伴う場合があります。
 レコードと配列も全要素が Copy なら Copy、それ以外は move します。
 `byte` は `i8`、`ubyte` は `i8u` の別名です。旧 `Int`／`Float`／`Bool`／`Unit` は廃止しました。
 型注釈や `1i32`／`0.1d128` のような接尾辞で型を選べます。
@@ -240,8 +310,8 @@ tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--json]
 
 出力先省略時は選択した入力ファイルの拡張子を変更します。ディレクトリ指定なら `Main.ll` などになります。
 `--emit llvm` はライブラリ用 IR で、コンソールのエントリー・ラッパーは付けません。
-WASM は少なくとも一つの `export fn` が必要です。
-ホスト向けの公開名 `tz_name` は維持するため、`export fn` の名前はプロジェクト全体で一意にします。
+WASM は少なくとも一つの `export def` が必要です。
+ホスト向けの公開名 `tz_name` は維持するため、エクスポート名はプロジェクト全体で一意にします。
 `--emit object --target wasm32` はリンク前の WASM オブジェクトも生成できます。
 コンパイル／リンク失敗では既存出力を変更せず、成功した成果物だけを同じファイルシステム上で置換します。
 読み込んだいずれのソース自身やその別名、シンボリックリンクへの出力も拒否します。

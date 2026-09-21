@@ -1,15 +1,13 @@
-fn sum(n: i64, total: i64) -> i64 {
+def sum :: i64 -> i64 -> i64
+fn sum n total =
     if n <= 0 {
         total
     } else {
-        sum(n - 1, total + n)
+        sum (n - 1) (total + n)
     }
-}
 
-export fn answer() -> i64 {
-    sum(100, 0)
-}
+export def answer :: i64
+fn answer = sum 100 0
 
-fn main() -> i64 {
-    answer()
-}
+def main :: i64
+fn main = answer()

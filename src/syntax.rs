@@ -6,14 +6,19 @@ pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident(String),
+    TypeVariable(String),
     Integer(String),
     Float(String),
     String(String),
     Fn,
+    Def,
     Export,
     Record,
+    Class,
+    Instance,
     Let,
     Mut,
+    New,
     As,
     If,
     Else,
@@ -25,11 +30,15 @@ pub enum TokenKind {
     RightBrace,
     LeftBracket,
     RightBracket,
+    LeftList,
+    RightList,
     Colon,
+    DoubleColon,
     Semicolon,
     Comma,
     Dot,
     Arrow,
+    FatArrow,
     Equal,
     Plus,
     Minus,
@@ -72,41 +81,83 @@ pub struct Ident {
 pub struct Program {
     pub records: Vec<RecordDecl>,
     pub functions: Vec<FunctionDecl>,
+    pub classes: Vec<ClassDecl>,
+    pub instances: Vec<InstanceDecl>,
     pub entry: Option<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RecordDecl {
     pub name: Ident,
     pub fields: Vec<Parameter>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub name: Ident,
     pub exported: bool,
     pub parameters: Vec<Parameter>,
     pub result: TypeExpr,
+    pub constraints: Vec<ConstraintExpr>,
     pub body: Expr,
 }
 
+#[derive(Clone, Debug)]
+pub struct SignatureDecl {
+    pub name: Ident,
+    pub exported: bool,
+    pub parameters: Vec<TypeExpr>,
+    pub result: TypeExpr,
+    pub constraints: Vec<ConstraintExpr>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Definition {
+    pub name: Ident,
+    pub parameters: Vec<(Ident, bool)>,
+    pub body: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstraintExpr {
+    pub class: Ident,
+    pub ty: TypeExpr,
+}
+
 #[derive(Debug)]
+pub struct ClassDecl {
+    pub name: Ident,
+    pub variable: Ident,
+    pub methods: Vec<SignatureDecl>,
+}
+
+#[derive(Debug)]
+pub struct InstanceDecl {
+    pub class: Ident,
+    pub ty: TypeExpr,
+    pub methods: Vec<Definition>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Parameter {
     pub name: Ident,
     pub ty: TypeExpr,
     pub mutable: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TypeExpr {
     pub kind: TypeExprKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TypeExprKind {
     Named(String),
-    Array(Box<TypeExpr>, usize),
+    Variable(String),
+    Constrained(Box<Ident>, Box<TypeExpr>),
+    Array(Box<TypeExpr>),
+    List(Box<TypeExpr>),
     Function(Vec<TypeExpr>, Box<TypeExpr>),
     Reference(Box<TypeExpr>, bool),
 }
@@ -142,14 +193,14 @@ pub enum BinaryOp {
     Pipe,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
     pub depth: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ExprKind {
     Integer(u128, Option<String>),
     Float(String, Option<String>),
@@ -160,6 +211,7 @@ pub enum ExprKind {
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
+    Lambda(Vec<(Ident, bool)>, Box<Expr>),
     If {
         condition: Box<Expr>,
         then_branch: Box<Expr>,
@@ -174,6 +226,9 @@ pub enum ExprKind {
         fields: Vec<(Ident, Expr)>,
     },
     Array(Vec<Expr>),
+    List(Vec<Expr>),
+    NewArray(Box<TypeExpr>, Box<Expr>, Box<Expr>),
+    NewList(Box<TypeExpr>, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
     Borrow(Box<Expr>, bool),
@@ -182,7 +237,7 @@ pub enum ExprKind {
     Cast(Box<Expr>, TypeExpr),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Binding {
     pub name: Ident,
     pub mutable: bool,

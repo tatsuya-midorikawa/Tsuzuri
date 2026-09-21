@@ -240,7 +240,7 @@ pub fn build(
     if options.emit == Emit::Wasm && !module.functions.iter().any(|function| function.exported) {
         return Err(driver_error(
             "E2004",
-            "a WebAssembly module needs at least one 'export fn' entry point",
+            "a WebAssembly module needs at least one 'export def' entry point",
         ));
     }
     let mut text = if options.emit == Emit::Header {

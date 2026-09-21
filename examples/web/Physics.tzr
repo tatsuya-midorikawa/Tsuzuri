@@ -3,7 +3,8 @@ record Axis {
     velocity: f64,
 }
 
-fn step(position: f64, velocity: f64, dt: f64, extent: f64) -> Axis {
+def step :: f64 -> f64 -> f64 -> f64 -> Axis
+fn step position velocity dt extent = {
     let _ = assert(extent >= 1.0 && extent <= 1_000_000.0);
     let _ = assert(position >= 0.0 && position <= extent);
     let _ = assert(abs(velocity) <= 1_000_000.0 && dt >= 0.0 && dt <= 1.0);
@@ -24,10 +25,10 @@ fn step(position: f64, velocity: f64, dt: f64, extent: f64) -> Axis {
     Axis { position: next_position, velocity: next_velocity }
 }
 
-export fn next_position(position: f64, velocity: f64, dt: f64, extent: f64) -> f64 {
-    step(position, velocity, dt, extent).position
-}
+export def next_position :: f64 -> f64 -> f64 -> f64 -> f64
+fn next_position position velocity dt extent =
+    (step position velocity dt extent).position
 
-export fn next_velocity(position: f64, velocity: f64, dt: f64, extent: f64) -> f64 {
-    step(position, velocity, dt, extent).velocity
-}
+export def next_velocity :: f64 -> f64 -> f64 -> f64 -> f64
+fn next_velocity position velocity dt extent =
+    (step position velocity dt extent).velocity

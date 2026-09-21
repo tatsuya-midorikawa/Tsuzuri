@@ -31,6 +31,7 @@ struct Loan {
 struct State {
     locals: BTreeMap<usize, (Local, Value)>,
     moved: BTreeSet<Place>,
+    generic_moves: BTreeMap<Place, Type>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,46 +44,165 @@ enum Use {
 }
 
 pub fn check(module: &CheckedModule) -> Result<(), Diagnostic> {
+    check_functions(module, false).map(|_| ())
+}
+
+pub(crate) fn infer_copy(module: &CheckedModule) -> Result<Vec<BTreeSet<String>>, Diagnostic> {
+    check_functions(module, true)
+}
+
+fn check_functions(
+    module: &CheckedModule,
+    infer: bool,
+) -> Result<Vec<BTreeSet<String>>, Diagnostic> {
+    let closed = closed_returns(module);
+    let mut constraints = Vec::new();
     for function in &module.functions {
-        let mut checker = Checker {
+        constraints.push(check_body(
             module,
-            state: State::default(),
-            loans: Vec::new(),
-            held: Vec::new(),
-            external: BTreeSet::new(),
-        };
-        for parameter in &function.parameters {
-            let mut value = Value::default();
-            if parameter.ty.contains_reference() {
-                let root = usize::MAX - parameter.id;
-                checker.external.insert(root);
-                let mutable = matches!(parameter.ty, Type::Reference(_, true));
-                value.loans.insert(checker.loan(
-                    Place {
-                        root,
-                        fields: Vec::new(),
-                    },
-                    mutable,
-                    BTreeSet::new(),
-                ));
-            }
-            checker
-                .state
-                .locals
-                .insert(parameter.id, (parameter.clone(), value));
+            &function.parameters,
+            &function.body,
+            infer,
+            &closed,
+        )?);
+    }
+    Ok(constraints)
+}
+
+fn check_body(
+    module: &CheckedModule,
+    parameters: &[Local],
+    body: &TypedExpr,
+    infer: bool,
+    closed: &[bool],
+) -> Result<BTreeSet<String>, Diagnostic> {
+    let mut checker = Checker {
+        module,
+        state: State::default(),
+        loans: Vec::new(),
+        held: Vec::new(),
+        external: BTreeSet::new(),
+        infer,
+        copy_variables: BTreeSet::new(),
+        closed,
+    };
+    for parameter in parameters {
+        let mut value = Value::default();
+        if parameter.ty.carries_loans(&module.records) {
+            let root = usize::MAX - parameter.id;
+            checker.external.insert(root);
+            let mutable = matches!(parameter.ty, Type::Reference(_, true));
+            value.loans.insert(checker.loan(
+                Place {
+                    root,
+                    fields: Vec::new(),
+                },
+                mutable,
+                BTreeSet::new(),
+            ));
         }
-        let result = checker.eval(&function.body, Use::Consume, &BTreeSet::new())?;
-        for id in result.loans {
-            if !checker.external.contains(&checker.loans[id].place.root) {
-                return Err(error(
-                    "E1013",
-                    "cannot return a reference to a local value",
-                    function.body.span,
-                ));
-            }
+        checker
+            .state
+            .locals
+            .insert(parameter.id, (parameter.clone(), value));
+    }
+    let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    for id in result.loans {
+        if !checker.external.contains(&checker.loans[id].place.root) {
+            return Err(error(
+                "E1013",
+                "cannot return a reference to a local value",
+                body.span,
+            ));
         }
     }
-    Ok(())
+    Ok(checker.copy_variables)
+}
+
+// Unknown results retain their input loans. Only proven closed snapshots can end a curried stage's loans.
+fn closed_returns(module: &CheckedModule) -> Vec<bool> {
+    fn owned(ty: &Type, module: &CheckedModule) -> bool {
+        match ty {
+            Type::Variable(_) | Type::Infer(_) | Type::Reference(..) | Type::Function(..) => false,
+            Type::Array(element) | Type::List(element) => owned(element, module),
+            Type::Record(id) => module.records[*id]
+                .fields
+                .iter()
+                .all(|(_, ty)| owned(ty, module)),
+            _ => true,
+        }
+    }
+    fn closed(
+        expression: &TypedExpr,
+        module: &CheckedModule,
+        known: &[bool],
+        locals: &BTreeMap<usize, bool>,
+    ) -> bool {
+        if owned(&expression.ty, module) {
+            return true;
+        }
+        match &expression.kind {
+            E::Function(_) | E::GenericFunction(..) | E::Method(..) => true,
+            E::Local(id) => locals.get(id).copied().unwrap_or(false),
+            E::Lambda { captures, .. } => captures
+                .iter()
+                .all(|local| owned(&local.ty, module) || locals.get(&local.id) == Some(&true)),
+            E::Closure(_, captures) | E::Array(captures) | E::List(captures) => captures
+                .iter()
+                .all(|value| closed(value, module, known, locals)),
+            E::NewArray(_, initializer) | E::NewList(_, initializer) => {
+                closed(initializer, module, known, locals)
+            }
+            E::Record(fields) => fields
+                .iter()
+                .all(|(_, value)| closed(value, module, known, locals)),
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                closed(then_branch, module, known, locals)
+                    && closed(else_branch, module, known, locals)
+            }
+            E::Block { bindings, result } => {
+                let mut locals = locals.clone();
+                for (local, value) in bindings {
+                    let value = !local.mutable && closed(value, module, known, &locals);
+                    locals.insert(local.id, value);
+                }
+                closed(result, module, known, &locals)
+            }
+            E::Call(callee, arguments) => {
+                let complete_closed = match callee.kind {
+                    E::Function(crate::check::FunctionRef::User(id))
+                    | E::GenericFunction(id, _) => {
+                        arguments.len() == module.functions[id].parameters.len() && known[id]
+                    }
+                    _ => false,
+                };
+                complete_closed
+                    || (closed(callee, module, known, locals)
+                        && arguments
+                            .iter()
+                            .all(|value| closed(value, module, known, locals)))
+            }
+            E::Field(value, _) | E::Index(value, _) => closed(value, module, known, locals),
+            _ => false,
+        }
+    }
+    let mut known = vec![false; module.functions.len()];
+    loop {
+        let mut changed = false;
+        for (id, function) in module.functions.iter().enumerate() {
+            if !known[id] && closed(&function.body, module, &known, &BTreeMap::new()) {
+                known[id] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return known;
+        }
+    }
 }
 
 fn error(code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
@@ -95,9 +215,50 @@ struct Checker<'a> {
     loans: Vec<Loan>,
     held: Vec<Value>,
     external: BTreeSet<usize>,
+    infer: bool,
+    copy_variables: BTreeSet<String>,
+    closed: &'a [bool],
 }
 
 impl Checker<'_> {
+    fn is_copy(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Variable(name) => self.copy_variables.contains(name),
+            Type::Array(element) | Type::List(element) => self.is_copy(element),
+            _ => ty.is_copy(&self.module.records),
+        }
+    }
+
+    fn require_copy(&mut self, ty: &Type) -> bool {
+        if !self.infer {
+            return false;
+        }
+        match ty {
+            Type::Variable(name) => {
+                self.copy_variables.insert(name.clone());
+                true
+            }
+            Type::Array(element) | Type::List(element) => self.require_copy(element),
+            _ => false,
+        }
+    }
+
+    fn revive_generic_moves(&mut self, place: &Place) {
+        let moved: Vec<_> = self
+            .state
+            .generic_moves
+            .iter()
+            .filter(|(moved, _)| moved.overlaps(place))
+            .map(|(moved, ty)| (moved.clone(), ty.clone()))
+            .collect();
+        for (moved, ty) in moved {
+            if self.require_copy(&ty) {
+                self.state.moved.remove(&moved);
+                self.state.generic_moves.remove(&moved);
+            }
+        }
+    }
+
     fn loan(&mut self, place: Place, mutable: bool, parents: BTreeSet<usize>) -> usize {
         let id = self.loans.len();
         self.loans.push(Loan {
@@ -129,12 +290,15 @@ impl Checker<'_> {
     }
 
     fn access(
-        &self,
+        &mut self,
         place: &Place,
         via: &BTreeSet<usize>,
         usage: Use,
         span: Span,
     ) -> Result<(), Diagnostic> {
+        if usage != Use::Write {
+            self.revive_generic_moves(place);
+        }
         if usage != Use::Write && self.state.moved.iter().any(|moved| moved.overlaps(place)) {
             let name = self
                 .state
@@ -159,7 +323,7 @@ impl Checker<'_> {
             if !mutable || !place.fields.is_empty() {
                 return Err(error(
                     "E1014",
-                    "mutable access requires 'let mut' or '&mut'; record fields and array elements are immutable",
+                    "mutable access requires 'let mut' or '&mut'; record fields, array elements, and list elements are immutable",
                     span,
                 ));
             }
@@ -200,7 +364,7 @@ impl Checker<'_> {
                 }
                 Ok(places)
             }
-            E::Index(value, index) if matches!(value.ty, Type::Array(..)) => {
+            E::Index(value, index) if matches!(value.ty, Type::Array(_) | Type::List(_)) => {
                 let mut places = self.place(value, live)?;
                 let mut guard = Value::default();
                 for (place, via) in &places {
@@ -213,7 +377,7 @@ impl Checker<'_> {
                 self.eval(index, Use::Consume, live)?;
                 self.held.pop();
                 for (place, _) in &mut places {
-                    // Array loans conservatively cover every element.
+                    // Collection loans conservatively cover every element.
                     place.fields.push(usize::MAX);
                 }
                 Ok(places)
@@ -258,22 +422,39 @@ impl Checker<'_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
-        let copy = expression.ty.is_copy(&self.module.records);
-        let moving = usage == Use::Consume && !copy;
+        let mut moving = usage == Use::Consume && !self.is_copy(&expression.ty);
+        if moving
+            && matches!(expression.kind, E::Index(..) | E::Dereference(_))
+            && self.require_copy(&expression.ty)
+        {
+            moving = false;
+        }
         if moving && matches!(expression.kind, E::Index(..)) {
             return Err(error(
                 "E1012",
-                "cannot move a non-Copy element out of an array; borrow the element instead",
+                "cannot move a non-Copy element out of an array or list; borrow the element instead",
                 expression.span,
             ));
         }
         let places = self.place(expression, live)?;
         let mut value = Value::default();
         for (place, via) in places {
+            self.revive_generic_moves(&place);
+            if moving
+                && (!via.is_empty()
+                    || place.fields.contains(&usize::MAX)
+                    || self
+                        .active()
+                        .iter()
+                        .any(|id| self.loans[*id].place.overlaps(&place)))
+            {
+                self.require_copy(&expression.ty);
+            }
+            moving = usage == Use::Consume && !self.is_copy(&expression.ty);
             if moving && place.fields.contains(&usize::MAX) {
                 return Err(error(
                     "E1012",
-                    "cannot move a non-Copy value out of an array element; borrow it instead",
+                    "cannot move a non-Copy value out of an array or list element; borrow it instead",
                     expression.span,
                 ));
             }
@@ -290,7 +471,7 @@ impl Checker<'_> {
                 if moving { Use::Consume } else { Use::Read },
                 expression.span,
             )?;
-            if expression.ty.contains_reference() {
+            if expression.ty.carries_loans(&self.module.records) {
                 if let Some((_, stored)) = self.state.locals.get(&place.root) {
                     value.loans.extend(stored.loans.iter().copied());
                 } else {
@@ -317,6 +498,11 @@ impl Checker<'_> {
             }
             if moving {
                 self.state.moved.insert(place.clone());
+                if self.infer {
+                    self.state
+                        .generic_moves
+                        .insert(place.clone(), expression.ty.clone());
+                }
                 if place.fields.is_empty() {
                     self.state
                         .locals
@@ -379,6 +565,9 @@ impl Checker<'_> {
                         ));
                     }
                     self.state.moved.retain(|moved| !moved.overlaps(&place));
+                    self.state
+                        .generic_moves
+                        .retain(|moved, _| !moved.overlaps(&place));
                     if via.is_empty() {
                         self.state.locals.get_mut(&place.root).unwrap().1 = value.clone();
                     } else if expression.ty.contains_reference() || !value.loans.is_empty() {
@@ -476,16 +665,72 @@ impl Checker<'_> {
                 self.merge(&before);
             }
             E::Call(callee, arguments) => {
-                self.eval(callee, Use::Consume, &during)?;
                 let start = self.held.len();
-                for argument in arguments {
+                let value = self.eval(callee, Use::Consume, &during)?;
+                let known = match callee.kind {
+                    E::Function(crate::check::FunctionRef::User(id))
+                    | E::GenericFunction(id, _) => Some(id),
+                    _ => None,
+                };
+                let boundary = known
+                    .map(|id| self.module.functions[id].parameters.len())
+                    .filter(|count| *count <= arguments.len());
+                let mut current = value.clone();
+                self.held.push(value);
+                for (index, argument) in arguments.iter().enumerate() {
                     let value = self.eval(argument, Use::Consume, &during)?;
-                    if expression.ty.contains_reference() {
-                        result.loans.extend(&value.loans);
-                    }
+                    current.loans.extend(&value.loans);
                     self.held.push(value);
+                    if boundary == Some(index + 1) {
+                        let id = known.unwrap();
+                        if self.closed[id]
+                            || !callee
+                                .ty
+                                .after_arguments(index + 1)
+                                .carries_loans(&self.module.records)
+                        {
+                            current = Value::default();
+                        }
+                        self.held.truncate(start);
+                        self.held.push(current.clone());
+                    }
+                }
+                if expression.ty.carries_loans(&self.module.records) {
+                    result = current;
                 }
                 self.held.truncate(start);
+            }
+            E::Lambda {
+                parameters,
+                captures,
+                body,
+            } => {
+                let mut locals = captures.clone();
+                locals.extend(parameters.iter().cloned());
+                self.copy_variables.extend(check_body(
+                    self.module,
+                    &locals,
+                    body,
+                    self.infer,
+                    self.closed,
+                )?);
+                for capture in captures {
+                    let expression = TypedExpr {
+                        kind: E::Local(capture.id),
+                        ty: capture.ty.clone(),
+                        span: expression.span,
+                    };
+                    result
+                        .loans
+                        .extend(self.eval(&expression, Use::Consume, &during)?.loans);
+                }
+            }
+            E::Closure(_, captures) => {
+                for capture in captures {
+                    result
+                        .loans
+                        .extend(self.eval(capture, Use::Consume, &during)?.loans);
+                }
             }
             E::Binary(operator, left, right) => {
                 let usage = if left.ty == Type::String
@@ -497,21 +742,24 @@ impl Checker<'_> {
                 };
                 let value = self.eval(left, usage, &during)?;
                 self.held.push(value.clone());
-                self.eval(right, usage, &during)?;
+                let callee = self.eval(right, usage, &during)?;
                 self.held.pop();
-                if *operator == BinaryOp::Pipe && expression.ty.contains_reference() {
+                if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.records)
+                {
                     result = value;
+                    result.loans.extend(callee.loans);
                 }
             }
             E::Record(fields) => {
                 let start = self.held.len();
                 for (_, field) in fields {
                     let value = self.eval(field, Use::Consume, &during)?;
+                    result.loans.extend(&value.loans);
                     self.held.push(value);
                 }
                 self.held.truncate(start);
             }
-            E::Array(elements) => {
+            E::Array(elements) | E::List(elements) => {
                 let start = self.held.len();
                 for element in elements {
                     let value = self.eval(element, Use::Consume, &during)?;
@@ -520,14 +768,21 @@ impl Checker<'_> {
                 }
                 self.held.truncate(start);
             }
-            E::Length(value, _) | E::StringLength(value) => {
+            E::NewArray(length, initializer) | E::NewList(length, initializer) => {
+                self.eval(length, Use::Consume, &during)?;
+                let value = self.eval(initializer, Use::Consume, &during)?;
+                if expression.ty.carries_loans(&self.module.records) {
+                    result = value;
+                }
+            }
+            E::Length(value) | E::StringLength(value) => {
                 self.eval(value, Use::Read, &during)?;
             }
             E::Index(value, index) => {
-                if !expression.ty.is_copy(&self.module.records) {
+                if !self.is_copy(&expression.ty) && !self.require_copy(&expression.ty) {
                     return Err(error(
                         "E1012",
-                        "cannot move a non-Copy array element; borrow it instead",
+                        "cannot move a non-Copy array or list element; borrow it instead",
                         expression.span,
                     ));
                 }
@@ -535,17 +790,29 @@ impl Checker<'_> {
                 self.held.push(container.clone());
                 self.eval(index, Use::Consume, &during)?;
                 self.held.pop();
-                if expression.ty.contains_reference() {
+                if expression.ty.carries_loans(&self.module.records) {
                     result = container;
                 }
             }
             E::Field(value, _) => {
-                result = self.eval(value, Use::Consume, &during)?;
+                let value = self.eval(value, Use::Consume, &during)?;
+                if expression.ty.carries_loans(&self.module.records) {
+                    result = value;
+                }
             }
             E::Unary(_, value) | E::Cast(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
-            E::Int(_) | E::Float(_) | E::String(_) | E::Bool(_) | E::Unit | E::Function(_) => {}
+            E::Int(_)
+            | E::Float(_)
+            | E::String(_)
+            | E::Bool(_)
+            | E::Unit
+            | E::Function(_)
+            | E::GenericFunction(..)
+            | E::Method(..)
+            | E::GenericInteger(..)
+            | E::GenericFloat(_) => {}
             E::Local(_) | E::Dereference(_) => unreachable!("places handled above"),
         }
         Ok(result)
@@ -553,6 +820,7 @@ impl Checker<'_> {
 
     fn merge(&mut self, other: &State) {
         self.state.moved.extend(other.moved.iter().cloned());
+        self.state.generic_moves.extend(other.generic_moves.clone());
         for (id, (_, value)) in &mut self.state.locals {
             if let Some((_, other_value)) = other.locals.get(id) {
                 value.loans.extend(&other_value.loans);
@@ -571,9 +839,13 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
         | E::Dereference(value)
         | E::Cast(value)
         | E::Field(value, _)
-        | E::Length(value, _)
+        | E::Length(value)
         | E::StringLength(value) => count_uses(value, counts),
-        E::Binary(_, left, right) | E::Assign(left, right) | E::Index(left, right) => {
+        E::Binary(_, left, right)
+        | E::Assign(left, right)
+        | E::Index(left, right)
+        | E::NewArray(left, right)
+        | E::NewList(left, right) => {
             count_uses(left, counts);
             count_uses(right, counts);
         }
@@ -581,6 +853,16 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
             count_uses(callee, counts);
             for argument in arguments {
                 count_uses(argument, counts);
+            }
+        }
+        E::Lambda { captures, .. } => {
+            for capture in captures {
+                *counts.entry(capture.id).or_default() += 1;
+            }
+        }
+        E::Closure(_, captures) => {
+            for capture in captures {
+                count_uses(capture, counts);
             }
         }
         E::If {
@@ -603,7 +885,7 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
                 count_uses(value, counts);
             }
         }
-        E::Array(values) => {
+        E::Array(values) | E::List(values) => {
             for value in values {
                 count_uses(value, counts);
             }

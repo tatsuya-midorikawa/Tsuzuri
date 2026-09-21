@@ -1,6 +1,7 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::lex;
 use crate::syntax::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     parse_source(source, None)
@@ -98,18 +99,109 @@ impl Parser<'_> {
         let mut program = Program {
             records: Vec::new(),
             functions: Vec::new(),
+            classes: Vec::new(),
+            instances: Vec::new(),
             entry: None,
         };
+        let mut signatures = BTreeMap::new();
+        let mut definitions = Vec::new();
+        let mut defined_names = BTreeSet::new();
         while !self.at(&TokenKind::End) {
             if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
                 let fields = self.parameters(TokenKind::RightBrace)?;
                 program.records.push(RecordDecl { name, fields });
-            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Export) {
-                let exported = self.eat(&TokenKind::Export);
-                self.expect(&TokenKind::Fn, "'fn', 'export fn', or 'record'")?;
+            } else if self.eat(&TokenKind::Class) {
                 let name = self.ident()?;
+                let variable = self.type_variable()?;
+                self.expect(&TokenKind::LeftBrace, "'{' after the class parameter")?;
+                let mut methods = Vec::new();
+                while !self.eat(&TokenKind::RightBrace) {
+                    self.expect(&TokenKind::Def, "a 'def' method signature or '}'")?;
+                    let method = self.ident()?;
+                    self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
+                    methods.push(self.signature(method, false)?);
+                    self.eat(&TokenKind::Semicolon);
+                }
+                program.classes.push(ClassDecl {
+                    name,
+                    variable,
+                    methods,
+                });
+            } else if self.eat(&TokenKind::Instance) {
+                let class = self.qualified_ident()?;
+                let ty = self.type_atom()?;
+                self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
+                let mut methods = Vec::new();
+                while !self.eat(&TokenKind::RightBrace) {
+                    let anonymous = self.eat(&TokenKind::Let);
+                    if !anonymous {
+                        self.expect(&TokenKind::Fn, "a 'fn' or 'let' method definition, or '}'")?;
+                    }
+                    let name = self.ident()?;
+                    let definition = self.definition(name)?;
+                    if anonymous && (!definition.parameters.is_empty() || !matches!(definition.body.kind, ExprKind::Lambda(..))) {
+                        return Err(Diagnostic::new("E0002", "a 'let' method implementation needs a lambda", definition.name.span));
+                    }
+                    methods.push(definition);
+                    self.eat(&TokenKind::Semicolon);
+                }
+                program.instances.push(InstanceDecl { class, ty, methods });
+            } else if self.at(&TokenKind::Let)
+                && self.tokens.get(self.position + 1).is_some_and(|token|
+                    matches!(&token.kind, TokenKind::Ident(name) if signatures.contains_key(name) && !defined_names.contains(name)))
+            {
+                self.take();
+                let name = self.ident()?;
+                if !defined_names.insert(name.text.clone()) {
+                    return Err(Diagnostic::new("E1001", "duplicate function definition", name.span));
+                }
+                self.expect(&TokenKind::Equal, "'=' before the anonymous function")?;
+                let body = self.expression_inner(0, true, true)?;
+                if !matches!(body.kind, ExprKind::Lambda(..)) {
+                    return Err(Diagnostic::new("E0002", "a declared top-level 'let' function needs a lambda such as 'x -> y -> x + y'", body.span));
+                }
+                definitions.push(Definition { name, parameters: Vec::new(), body });
+                self.eat(&TokenKind::Semicolon);
+            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) {
+                let exported = self.eat(&TokenKind::Export);
+                let declaration = self.eat(&TokenKind::Def);
+                if !declaration {
+                    self.expect(&TokenKind::Fn, "'def', 'fn', or 'record'")?;
+                }
+                let name = self.ident()?;
+                if declaration {
+                    self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
+                    let signature = self.signature(name.clone(), exported)?;
+                    if signatures.insert(name.text.clone(), signature).is_some() {
+                        return Err(Diagnostic::new(
+                            "E1001",
+                            "duplicate function signature",
+                            name.span,
+                        ));
+                    }
+                    if self.at(&TokenKind::DoubleColon) {
+                        return Err(self.error("use 'def name :: ...' for a signature; 'fn' introduces its implementation"));
+                    }
+                    self.eat(&TokenKind::Semicolon);
+                    continue;
+                }
+                if !defined_names.insert(name.text.clone()) {
+                    return Err(Diagnostic::new(
+                        "E1001",
+                        "duplicate function definition",
+                        name.span,
+                    ));
+                }
+                if !self.at(&TokenKind::LeftParen) {
+                    if exported {
+                        return Err(self.error("put 'export' on the function signature"));
+                    }
+                    definitions.push(self.definition(name)?);
+                    self.eat(&TokenKind::Semicolon);
+                    continue;
+                }
                 self.expect(&TokenKind::LeftParen, "'(' after the function name")?;
                 let parameters = self.parameters(TokenKind::RightParen)?;
                 self.expect(&TokenKind::Arrow, "'->' and an explicit return type")?;
@@ -120,6 +212,7 @@ impl Parser<'_> {
                     exported,
                     parameters,
                     result,
+                    constraints: Vec::new(),
                     body,
                 });
             } else {
@@ -137,7 +230,175 @@ impl Parser<'_> {
                 break;
             }
         }
+        for definition in definitions {
+            let signature = signatures.remove(&definition.name.text).ok_or_else(|| {
+                Diagnostic::new(
+                    "E0002",
+                    "function definition needs a 'def name :: ...' signature",
+                    definition.name.span,
+                )
+            })?;
+            program.functions.push(Self::define(signature, definition)?);
+        }
+        if let Some(signature) = signatures.values().next() {
+            return Err(Diagnostic::new(
+                "E0002",
+                "function signature has no definition",
+                signature.name.span,
+            ));
+        }
         Ok(program)
+    }
+
+    fn qualified_ident(&mut self) -> Result<Ident, Diagnostic> {
+        let mut name = self.ident()?;
+        if self.eat(&TokenKind::Dot) {
+            let member = self.ident()?;
+            name.text.push('.');
+            name.text.push_str(&member.text);
+            name.span = name.span.through(member.span);
+        }
+        Ok(name)
+    }
+
+    fn type_variable(&mut self) -> Result<Ident, Diagnostic> {
+        let token = self.expect(
+            &TokenKind::TypeVariable(String::new()),
+            "a type variable such as 'a",
+        )?;
+        let TokenKind::TypeVariable(text) = token.kind else {
+            unreachable!()
+        };
+        Ok(Ident {
+            text,
+            span: token.span,
+        })
+    }
+
+    fn signature(&mut self, name: Ident, exported: bool) -> Result<SignatureDecl, Diagnostic> {
+        let mut constraints = Vec::new();
+        // A constraint prefix always ends in => before the next declaration/body.
+        let has_constraints = self.constraint_prefix();
+        if has_constraints {
+            let grouped = self.eat(&TokenKind::LeftParen);
+            loop {
+                let class = self.qualified_ident()?;
+                let ty = self.type_atom()?;
+                constraints.push(ConstraintExpr { class, ty });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            if grouped {
+                self.expect(&TokenKind::RightParen, "')' after constraints")?;
+            }
+            self.expect(&TokenKind::FatArrow, "'=>' after constraints")?;
+        }
+        let ty = self.type_expr()?;
+        let (mut parameters, mut result) = match ty.kind {
+            TypeExprKind::Function(parameters, result) => (parameters, *result),
+            _ => (Vec::new(), ty),
+        };
+        while !parameters.is_empty()
+            && matches!(&result.kind, TypeExprKind::Function(parameters, _) if !parameters.is_empty())
+        {
+            let TypeExprKind::Function(more, tail) = result.kind else {
+                unreachable!()
+            };
+            parameters.extend(more);
+            result = *tail;
+        }
+        Ok(SignatureDecl {
+            name,
+            exported,
+            parameters,
+            result,
+            constraints,
+        })
+    }
+
+    fn constraint_prefix(&self) -> bool {
+        for (offset, token) in self.tokens[self.position..].iter().enumerate() {
+            match token.kind {
+                TokenKind::FatArrow => return true,
+                TokenKind::Fn
+                    if self
+                        .tokens
+                        .get(self.position + offset + 1)
+                        .is_some_and(|next| next.kind == TokenKind::LeftParen) => {}
+                TokenKind::Def
+                | TokenKind::Let
+                | TokenKind::Fn
+                | TokenKind::Equal
+                | TokenKind::LeftBrace
+                | TokenKind::RightBrace
+                | TokenKind::End => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn definition(&mut self, name: Ident) -> Result<Definition, Diagnostic> {
+        let mut parameters = Vec::new();
+        while !self.at(&TokenKind::Equal) {
+            let mutable = self.eat(&TokenKind::Mut);
+            parameters.push((self.ident()?, mutable));
+        }
+        self.take();
+        let body = self.expression_inner(0, true, true)?;
+        Ok(Definition {
+            name,
+            parameters,
+            body,
+        })
+    }
+
+    pub(crate) fn define(
+        signature: SignatureDecl,
+        mut definition: Definition,
+    ) -> Result<FunctionDecl, Diagnostic> {
+        while let ExprKind::Lambda(parameters, body) = definition.body.kind {
+            definition.parameters.extend(parameters);
+            definition.body = *body;
+        }
+        if signature.parameters.len() < definition.parameters.len()
+            || (definition.parameters.is_empty() && !signature.parameters.is_empty())
+        {
+            return Err(Diagnostic::new(
+                "E1006",
+                format!(
+                    "signature expects {} parameters, definition has {}",
+                    signature.parameters.len(),
+                    definition.parameters.len()
+                ),
+                definition.name.span,
+            ));
+        }
+        let mut types = signature.parameters;
+        let remaining = types.split_off(definition.parameters.len());
+        let result = if remaining.is_empty() {
+            signature.result
+        } else {
+            let span = remaining[0].span.through(signature.result.span);
+            TypeExpr {
+                kind: TypeExprKind::Function(remaining, Box::new(signature.result)),
+                span,
+            }
+        };
+        Ok(FunctionDecl {
+            name: definition.name,
+            exported: signature.exported,
+            parameters: definition
+                .parameters
+                .into_iter()
+                .zip(types)
+                .map(|((name, mutable), ty)| Parameter { name, mutable, ty })
+                .collect(),
+            result,
+            constraints: signature.constraints,
+            body: definition.body,
+        })
     }
 
     fn parameters(&mut self, end: TokenKind) -> Result<Vec<Parameter>, Diagnostic> {
@@ -159,11 +420,40 @@ impl Parser<'_> {
     }
 
     fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let first = self.type_atom()?;
+        if !self.eat(&TokenKind::Arrow) {
+            return Ok(first);
+        }
+        let mut parameters = vec![first];
+        let result = loop {
+            let next = self.type_atom()?;
+            if !self.eat(&TokenKind::Arrow) {
+                break next;
+            }
+            if parameters.len() >= MAX_NESTING {
+                return Err(self.error("too many function parameters"));
+            }
+            parameters.push(next);
+        };
+        let span = parameters[0].span.through(result.span);
+        Ok(TypeExpr {
+            kind: TypeExprKind::Function(parameters, Box::new(result)),
+            span,
+        })
+    }
+
+    fn type_atom(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.enter()?;
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) {
             let mutable = self.eat(&TokenKind::Mut);
-            TypeExprKind::Reference(Box::new(self.type_expr()?), mutable)
+            TypeExprKind::Reference(Box::new(self.type_atom()?), mutable)
+        } else if self.at(&TokenKind::TypeVariable(String::new())) {
+            TypeExprKind::Variable(self.type_variable()?.text)
+        } else if self.eat(&TokenKind::LeftParen) {
+            let ty = self.type_expr()?;
+            self.expect(&TokenKind::RightParen, "')' after the type")?;
+            ty.kind
         } else if self.eat(&TokenKind::Fn) {
             self.expect(&TokenKind::LeftParen, "'(' in a function type")?;
             let mut parameters = Vec::new();
@@ -178,30 +468,33 @@ impl Parser<'_> {
             self.expect(&TokenKind::RightParen, "')'")?;
             self.expect(&TokenKind::Arrow, "'->' in a function type")?;
             TypeExprKind::Function(parameters, Box::new(self.type_expr()?))
-        } else if self.eat(&TokenKind::LeftBracket) {
+        } else if self.at(&TokenKind::LeftBracket) || self.at(&TokenKind::LeftList) {
+            let list = self.take().kind == TokenKind::LeftList;
             let element = self.type_expr()?;
-            self.expect(&TokenKind::Semicolon, "';' and a fixed array length")?;
-            let token = self.expect(&TokenKind::Integer(String::new()), "an array length")?;
-            if matches!(&token.kind, TokenKind::Integer(text) if crate::numeric::literal_parts(text).1.is_some())
-            {
-                return Err(Diagnostic::new(
-                    "E0002",
-                    "array lengths do not have type suffixes",
-                    token.span,
-                ));
+            if self.at(&TokenKind::Semicolon) {
+                return Err(self.error("array types use '[T]', without a length; use 'new [T](length, initializer)' to create an array"));
             }
-            let length = integer(&token)?;
-            let length = usize::try_from(length)
-                .map_err(|_| Diagnostic::new("E0002", "array length is too large", token.span))?;
-            self.expect(&TokenKind::RightBracket, "']'")?;
-            TypeExprKind::Array(Box::new(element), length)
+            if list {
+                self.expect(&TokenKind::RightList, "'|]'")?;
+                TypeExprKind::List(Box::new(element))
+            } else {
+                self.expect(&TokenKind::RightBracket, "']'")?;
+                TypeExprKind::Array(Box::new(element))
+            }
         } else {
-            let mut name = self.ident()?.text;
-            if self.eat(&TokenKind::Dot) {
-                name.push('.');
-                name.push_str(&self.ident()?.text);
+            let name = self.qualified_ident()?;
+            if self.at(&TokenKind::TypeVariable(String::new())) {
+                let variable = self.type_variable()?;
+                TypeExprKind::Constrained(
+                    Box::new(name),
+                    Box::new(TypeExpr {
+                        kind: TypeExprKind::Variable(variable.text),
+                        span: variable.span,
+                    }),
+                )
+            } else {
+                TypeExprKind::Named(name.text)
             }
-            TypeExprKind::Named(name)
         };
         let end = self.tokens[self.position - 1].span;
         self.nesting -= 1;
@@ -373,10 +666,16 @@ impl Parser<'_> {
             if stop_at_newline && self.newline_before_current() {
                 break;
             }
-            if matches!(
-                self.current().kind,
-                TokenKind::LeftParen | TokenKind::Dot | TokenKind::LeftBracket
-            ) {
+            if minimum <= 14 && self.space_argument() {
+                left = self.application(left, allow_record, stop_at_newline)?;
+                continue;
+            }
+            if self.at(&TokenKind::Dot)
+                || (matches!(
+                    self.current().kind,
+                    TokenKind::LeftParen | TokenKind::LeftBracket
+                ) && self.tokens[self.position - 1].span.end == self.current().span.start)
+            {
                 left = self.postfix(left)?;
                 continue;
             }
@@ -416,6 +715,75 @@ impl Parser<'_> {
         }
         self.nesting -= 1;
         Ok(left)
+    }
+
+    fn application(
+        &mut self,
+        left: Expr,
+        allow_record: bool,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
+        let mut arguments = Vec::new();
+        while self.space_argument() {
+            if self.at(&TokenKind::LeftParen) {
+                let start = self.take().span;
+                if self.eat(&TokenKind::RightParen) {
+                    arguments.push(self.make(
+                        ExprKind::Unit,
+                        start.through(self.tokens[self.position - 1].span),
+                        1,
+                    )?);
+                } else {
+                    let mut grouped = self.expressions(TokenKind::RightParen)?;
+                    if grouped.len() == 1 {
+                        let mut argument = grouped.pop().unwrap();
+                        argument.span = start.through(self.tokens[self.position - 1].span);
+                        while !(stop_at_newline && self.newline_before_current())
+                            && (self.at(&TokenKind::Dot)
+                                || (matches!(
+                                    self.current().kind,
+                                    TokenKind::LeftParen | TokenKind::LeftBracket
+                                ) && self.tokens[self.position - 1].span.end
+                                    == self.current().span.start))
+                        {
+                            argument = self.postfix(argument)?;
+                        }
+                        arguments.push(argument);
+                    } else {
+                        arguments.extend(grouped);
+                    }
+                }
+            } else {
+                arguments.push(self.expression_inner(15, allow_record, stop_at_newline)?);
+            }
+        }
+        let span = left.span.through(self.tokens[self.position - 1].span);
+        let depth = arguments
+            .iter()
+            .map(|argument| argument.depth)
+            .max()
+            .unwrap_or(0)
+            .max(left.depth)
+            + 1;
+        self.make(ExprKind::Call(Box::new(left), arguments), span, depth)
+    }
+
+    fn space_argument(&self) -> bool {
+        !self.newline_before_current()
+            && self.tokens[self.position - 1].span.end < self.current().span.start
+            && matches!(
+                self.current().kind,
+                TokenKind::Ident(_)
+                    | TokenKind::Integer(_)
+                    | TokenKind::Float(_)
+                    | TokenKind::String(_)
+                    | TokenKind::True
+                    | TokenKind::False
+                    | TokenKind::New
+                    | TokenKind::LeftParen
+                    | TokenKind::LeftBracket
+                    | TokenKind::LeftList
+            )
     }
 
     fn postfix(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
@@ -468,9 +836,53 @@ impl Parser<'_> {
         Ok(values)
     }
 
+    fn new_collection(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.take().span;
+        let list = self.at(&TokenKind::LeftList);
+        if !list && !self.at(&TokenKind::LeftBracket) {
+            return Err(self.error("expected an array type '[T]' or list type '[|T|]' after 'new'"));
+        }
+        let ty = self.type_atom()?;
+        self.expect(&TokenKind::LeftParen, "'(' before the collection length")?;
+        let length = self.expression(0, true)?;
+        self.expect(&TokenKind::Comma, "',' before the collection initializer")?;
+        let initializer = self.expression(0, true)?;
+        self.eat(&TokenKind::Comma);
+        let end = self.expect(
+            &TokenKind::RightParen,
+            "')' after the collection initializer",
+        )?;
+        let depth = length.depth.max(initializer.depth) + 1;
+        let kind = if list {
+            ExprKind::NewList(Box::new(ty), Box::new(length), Box::new(initializer))
+        } else {
+            ExprKind::NewArray(Box::new(ty), Box::new(length), Box::new(initializer))
+        };
+        self.make(kind, start.through(end.span), depth)
+    }
+
+    fn collection_literal(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.take();
+        let list = start.kind == TokenKind::LeftList;
+        let values = self.expressions(if list {
+            TokenKind::RightList
+        } else {
+            TokenKind::RightBracket
+        })?;
+        let end = self.tokens[self.position - 1].span;
+        let depth = values.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
+        let kind = if list {
+            ExprKind::List(values)
+        } else {
+            ExprKind::Array(values)
+        };
+        self.make(kind, start.span.through(end), depth)
+    }
+
     fn primary(&mut self, allow_record: bool, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
         let kind = match &self.current().kind {
+            TokenKind::New => return self.new_collection(),
             TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::String(_) => {
                 return self.literal();
             }
@@ -484,6 +896,9 @@ impl Parser<'_> {
             }
             TokenKind::Ident(_) => {
                 let mut name = self.ident()?;
+                if self.eat(&TokenKind::Arrow) {
+                    return self.lambda(name, stop_at_newline);
+                }
                 if allow_record
                     && self.at(&TokenKind::Dot)
                     && (!stop_at_newline || !self.newline_before_current())
@@ -520,19 +935,28 @@ impl Parser<'_> {
                     return Ok(value);
                 }
             }
-            TokenKind::LeftBracket => {
-                self.take();
-                let values = self.expressions(TokenKind::RightBracket)?;
-                let end = self.tokens[self.position - 1].span;
-                let depth = values.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
-                return self.make(ExprKind::Array(values), start.through(end), depth);
-            }
+            TokenKind::LeftBracket | TokenKind::LeftList => return self.collection_literal(),
             TokenKind::LeftBrace => return self.block(),
             TokenKind::If => return self.conditional(),
             _ => return Err(self.error("expected an expression")),
         };
         let end = self.tokens[self.position - 1].span;
         self.make(kind, start.through(end), 1)
+    }
+
+    fn lambda(&mut self, name: Ident, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
+        let body = self.expression_inner(0, true, stop_at_newline)?;
+        let span = name.span.through(body.span);
+        let depth = body.depth + 1;
+        let (mut parameters, body) = match body {
+            Expr {
+                kind: ExprKind::Lambda(parameters, body),
+                ..
+            } => (parameters, body),
+            body => (Vec::new(), Box::new(body)),
+        };
+        parameters.insert(0, (name, false));
+        self.make(ExprKind::Lambda(parameters, body), span, depth)
     }
 
     fn literal(&mut self) -> Result<Expr, Diagnostic> {
@@ -656,7 +1080,7 @@ mod tests {
         let source = "
             record Pair { x: i64, y: f64, }
             fn choose(flag: bool, f: fn(i64) -> i64) -> i64 {
-                let xs: [i64; 2] = [10, 20];
+                let xs: [i64] = [10, 20];
                 if flag { xs[0] |> f } else { Pair { x: 3, y: 2.0 }.x }
             }";
         let program = parse(source).unwrap();
@@ -692,6 +1116,9 @@ mod tests {
             ("R { x: ", "}"),
             ("Module.R { x: ", "}"),
             ("[", "]"),
+            ("[|", "|]"),
+            ("new [i64](1, i -> ", ")"),
+            ("new [|i64|](1, i -> ", ")"),
             ("- ", ""),
         ] {
             let source = format!(

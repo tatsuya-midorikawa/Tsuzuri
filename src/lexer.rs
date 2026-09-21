@@ -43,7 +43,23 @@ impl Lexer<'_> {
                 self.comment()?;
                 continue;
             }
-            let kind = if byte.is_ascii_alphabetic() || byte == b'_' {
+            let kind = if byte == b'\'' {
+                self.position += 1;
+                if !self
+                    .source
+                    .as_bytes()
+                    .get(self.position)
+                    .is_some_and(|b| b.is_ascii_alphabetic())
+                {
+                    return Err(Diagnostic::new(
+                        "E0001",
+                        "a type variable starts with an apostrophe and an ASCII letter",
+                        Span::new(start, self.position),
+                    ));
+                }
+                self.identifier();
+                TokenKind::TypeVariable(self.source[start + 1..self.position].to_owned())
+            } else if byte.is_ascii_alphabetic() || byte == b'_' {
                 self.identifier()
             } else if byte.is_ascii_digit() {
                 self.number()?
@@ -104,10 +120,14 @@ impl Lexer<'_> {
         }
         match &self.source[start..self.position] {
             "fn" => TokenKind::Fn,
+            "def" => TokenKind::Def,
             "export" => TokenKind::Export,
             "record" => TokenKind::Record,
+            "class" => TokenKind::Class,
+            "instance" => TokenKind::Instance,
             "let" => TokenKind::Let,
             "mut" => TokenKind::Mut,
+            "new" => TokenKind::New,
             "as" => TokenKind::As,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
@@ -293,8 +313,12 @@ impl Lexer<'_> {
     fn symbol(&mut self) -> Result<TokenKind, Diagnostic> {
         use TokenKind::*;
         for (text, kind) in [
+            ("[|", LeftList),
+            ("|]", RightList),
             (">>>", ShiftRightUnsigned),
             ("->", Arrow),
+            ("=>", FatArrow),
+            ("::", DoubleColon),
             ("==", EqualEqual),
             ("!=", BangEqual),
             ("<=", LessEqual),

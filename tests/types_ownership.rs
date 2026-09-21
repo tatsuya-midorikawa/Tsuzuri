@@ -71,7 +71,7 @@ fn accepts_moves_borrows_partial_moves_and_local_mutation() {
         "fn f(s: &string) -> i64 { s.length } fn g() -> i64 { let s = \"日本語\"; f(&s) + f(&s) }",
         "fn f() -> string { let s = \"x\"; let r = &s; let _ = r.length; s }",
         "fn id(s: &string) -> &string { s } fn f() -> i64 { let s = \"x\"; id(&s).length }",
-        "fn first(s: &[string; 2]) -> &string { &s[0] } fn f() -> string { let a = [\"a\", \"b\"]; clone_string(first(&a)) }",
+        "fn first(s: &[string]) -> &string { &s[0] } fn f() -> string { let a = [\"a\", \"b\"]; clone_string(first(&a)) }",
         "fn f(x: &mut i64) -> unit { *x = *x + 1; } fn g() -> i64 { let mut x = 1; f(&mut x); x }",
         "fn f() -> string { let mut x = \"a\"; let r = &mut x; *r = \"b\"; x }",
         "fn f() -> i64 { let mut x = 1; let a = &x; let b = &x; let n = *a + *b; x = n; x }",
@@ -82,7 +82,7 @@ fn accepts_moves_borrows_partial_moves_and_local_mutation() {
         "fn f() -> string { let mut s = \"a\"; let t = s; s = \"b\"; t + s }",
         "fn f(flag: bool) -> string { let s = \"a\"; if flag { s } else { s } }",
         "fn f() -> string { let s = \"\\u{1f600}\\n\\0\"; clone_string(&s) }",
-        "fn f(x: i32) -> i32 { let a: [i32; 4] = [x, 2, 3, 4]; let b = a; a[0] + b[1] }",
+        "fn f(x: i32) -> i32 { let a: [i32] = [x, 2, 3, 4]; let b = a; a[0] + b[1] }",
         "fn f() -> unit { (); {} }",
     ] {
         accepts(source);
@@ -164,14 +164,14 @@ fn guards_reads_while_other_operands_are_evaluated() {
         "record R { s: string } fn f() -> string { let a = [R { s: \"x\" }]; a[0].s }",
         "E1012",
     );
-    rejects("fn f(value: &[[i128; 1024]; 1024]) -> unit {}", "E1010");
+    accepts("fn f(value: &[[i128]]) -> unit {}");
     rejects(
         "fn replace(s: &mut string) -> unit { *s = \"changed\"; } fn f() -> i64 { let mut s = \"original\"; let r = &mut s; let shared = &*r; replace(r); shared.length }",
         "E1014",
     );
     rejects(
-        "fn replace(s: [&mut string; 1]) -> unit { *s[0] = \"changed\"; } fn f() -> i64 { let mut s = \"original\"; let refs = [&mut s]; let shared = &*refs[0]; replace(refs); shared.length }",
-        "E1014",
+        "fn replace(s: [&mut string]) -> unit { *s[0] = \"changed\"; } fn f() -> i64 { let mut s = \"original\"; let refs = [&mut s]; let shared = &*refs[0]; replace(refs); shared.length }",
+        "E1005",
     );
     rejects(
         "fn f() -> bool { let s = \"x\"; s == { let t = s; t } }",

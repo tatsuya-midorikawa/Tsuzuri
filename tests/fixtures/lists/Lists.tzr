@@ -1,0 +1,156 @@
+record Empty {}
+record Bundle { strings: [|string|], numbers: [|i64|] }
+record Wide { flag: bool, value: i128 }
+
+def generate :: i64 -> (i64 -> 'a) -> [|'a|]
+fn generate n f = new [|'a|](n, f)
+
+def choose :: bool -> [|i64|]
+fn choose flag = if flag { [|10|] } else { [|20, 30, 40|] }
+
+export def list_values :: i64 -> i64
+fn list_values n = {
+    let values = generate n (i -> i + 10);
+    let copy = values;
+    let borrowed = &values;
+    if n == 0 { copy.length + borrowed.length }
+    else { copy.length + borrowed.length + copy[0] + borrowed[n - 1] }
+}
+
+export def list_shapes :: bool -> i64
+fn list_shapes flag = {
+    let values = choose flag;
+    let nested: [|[|i64|]|] = [|[||], [|1|], [|2, 3, 4|]|];
+    let copy = nested;
+    values.length + values[0] + copy[2].length + nested[1][0]
+}
+
+export def list_empty :: i64
+fn list_empty = {
+    let values: [|i64|] = [||];
+    let mut evaluations = 0;
+    let generated = new [|i64|](values.length, { evaluations = evaluations + 1; i -> 1 / i });
+    assert (evaluations == 1);
+    generated.length
+}
+
+export def list_zero_sized :: i64 -> i64
+fn list_zero_sized n = {
+    let values = new [|Empty|](n, i -> Empty {});
+    let copy = values;
+    let _ = if n > 0 { let _ = copy[n - 1]; } else {};
+    values.length + copy.length
+}
+
+export def list_owned :: i64 -> i64
+fn list_owned n = {
+    let prefix = "abc";
+    let strings = new [|string|](n, i -> prefix + "d");
+    let moved = strings;
+    let nested = new [|[|string|]|](n, i -> new [|string|](i + 1, j -> "xy"));
+    if n == 0 { moved.length + nested.length }
+    else { (clone_string (&moved[n - 1])).length + nested[n - 1].length + nested[n - 1][0].length }
+}
+
+export def list_capture :: i64 -> i64
+fn list_capture n = {
+    let bundle = Bundle {
+        strings: new [|string|](n, i -> "abc"),
+        numbers: new [|i64|](n, i -> i)
+    };
+    let take: unit -> i64 = u -> {
+        let owned = bundle;
+        let strings = owned.strings;
+        strings.length + owned.numbers.length
+    };
+    let copy = take;
+    take () + copy ()
+}
+
+export def list_functions :: i64 -> i64
+fn list_functions n = {
+    let functions = new [|i64 -> i64|](n, i -> x -> i + x);
+    let copy = functions;
+    if n == 0 { copy.length }
+    else { functions[n - 1] 10 + copy[0] 20 }
+}
+
+export def list_temporaries :: i64
+fn list_temporaries = {
+    let f = new [|i64 -> i64|](3, i -> x -> i + x)[2];
+    f 10 + new [|[|i64|]|](3, i -> [|i, i + 1|])[2][1]
+}
+
+export def list_mixed :: i64
+fn list_mixed = {
+    let lists = new [[|i64|]](3, i -> [|i, i + 1|]);
+    let arrays = new [|[i64]|](3, i -> [i, i + 1]);
+    let copy = lists;
+    let more = arrays;
+    lists[1][0] + copy[2][1] + arrays[0][1] + more[2][0]
+}
+
+export def list_wide :: bool
+fn list_wide = {
+    let values = new [|Wide|](3, i -> Wide { flag: i != 0, value: (i as i128) << 100 });
+    let copy = values;
+    let decimals = new [|d128|](3, i -> (i as d128) / 10.0);
+    let flags = new [|bool|](3, i -> i == 2);
+    let units = new [|unit|](3, i -> ());
+    copy[2].value == (2i128 << 100) && values[1].flag
+        && decimals[2] == 0.2 && flags[2] && !flags[0] && units[2] == ()
+}
+
+def refs :: &string -> i64 -> [|&string|]
+fn refs value n = new [|&string|](n, i -> value)
+
+export def list_borrows :: i64
+fn list_borrows = {
+    let text = "hello";
+    let values = refs (&text) 3;
+    let copy = values;
+    values[0].length + copy[2].length + text.length
+}
+
+def replace :: &mut [|string|] -> unit
+fn replace values = { *values = new [|string|](3, i -> "replacement"); }
+
+export def list_replace :: i64
+fn list_replace = {
+    let mut numbers = [|1|];
+    let copy = numbers;
+    numbers = [|2, 3|];
+    let mut strings = [|"old"|];
+    replace (&mut strings);
+    copy[0] + numbers.length + strings.length + strings[2].length
+}
+
+export def list_order :: i64
+fn list_order = {
+    let mut order = 0;
+    let literal = [|{ order = 1; order }, { order = order + 1; order }|];
+    assert (literal[0] == 1 && literal[1] == 2);
+    let values = new [|i64|](
+        { order = 1; 3 },
+        { assert (order == 1); order = order + 1; i -> i + 20 }
+    );
+    order + values[0] + values[2]
+}
+
+def churn :: i64 -> [|string|] -> i64
+fn churn n values = {
+    let next = new [|string|](8, i -> "owned");
+    if n == 0 { values.length } else { churn (n - 1) next }
+}
+
+export def list_churn :: i64 -> i64
+fn list_churn n = churn n (new [|string|](8, i -> "initial"))
+
+export def list_bounds :: i64 -> i64 -> i64
+fn list_bounds n index = new [|i64|](n, i -> i)[index]
+
+export def list_length :: i64 -> i64
+fn list_length n = new [|i64|](n, i -> i).length
+
+export def list_init_trap :: i64 -> i64
+fn list_init_trap n = new [|i64|](n, i -> 10 / (i - 1)).length
