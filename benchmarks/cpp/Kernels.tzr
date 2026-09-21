@@ -1,0 +1,49 @@
+def escape :: f64 -> f64 -> f64 -> f64 -> i64 -> i64
+fn escape cr ci real imaginary count =
+    if count >= 256 || real * real + imaginary * imaginary > 4.0 {
+        count
+    } else {
+        let next_real = real * real - imaginary * imaginary + cr;
+        let next_imaginary = 2.0 * real * imaginary + ci;
+        escape cr ci next_real next_imaginary (count + 1)
+    }
+
+def pixels :: i64 -> i64 -> f64 -> f64 -> f64 -> i64 -> i64 -> i64
+fn pixels size count dx dy offset index total =
+    if index >= count {
+        total
+    } else {
+        let cr = (index % size) as f64 * dx - 2.0 + offset;
+        let ci = (index / size) as f64 * dy - 1.0;
+        let value = escape cr ci 0.0 0.0 0;
+        pixels size count dx dy offset (index + 1) (total + value)
+    }
+
+export def mandelbrot :: i64 -> i64 -> i64
+fn mandelbrot size seed = {
+    assert (size >= 0 && size <= 4096);
+    if size == 0 {
+        0
+    } else {
+        let dx = 3.0 / (size as f64);
+        let dy = 2.0 / (size as f64);
+        let offset = (seed as f64) * 0.000001;
+        pixels size (size * size) dx dy offset 0 0
+    }
+}
+
+def sum :: &[i64] -> i64 -> i64 -> i64
+fn sum values index total =
+    if index >= values.length {
+        total
+    } else {
+        sum values (index + 1) (total + values[index])
+    }
+
+export def array_sum :: i64 -> i64 -> i64
+fn array_sum count seed = {
+    assert (count >= 0 && count <= 100000000);
+    let values = new [i64](count, i ->
+        (i ^ seed) * 6364136223846793005 + 1442695040888963407);
+    sum (&values) 0 0
+}

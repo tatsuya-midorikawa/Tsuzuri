@@ -39,15 +39,24 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     }
     output.push_str("\ndeclare void @llvm.trap()\n\n");
     let mut builtins = BTreeSet::new();
+    let mut intrinsics = BTreeSet::new();
     let mut globals = Vec::new();
     for (id, function) in module.functions.iter().enumerate() {
-        let emitter = FunctionEmitter::new(module, function, id, &mut builtins, &mut globals);
+        let emitter = FunctionEmitter::new(
+            module,
+            function,
+            id,
+            &mut builtins,
+            &mut intrinsics,
+            &mut globals,
+        );
         output.push_str(&emitter.emit());
         output.push_str(&closure_wrappers(
             module,
             function,
             id,
             &mut builtins,
+            &mut intrinsics,
             &mut globals,
         ));
         if function.exported {
@@ -55,7 +64,10 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         }
     }
     for builtin in builtins {
-        output.push_str(&emit_builtin(builtin));
+        output.push_str(&emit_builtin(builtin, &mut intrinsics));
+    }
+    for intrinsic in intrinsics {
+        let _ = writeln!(output, "{intrinsic}");
     }
     if entry == Entry::Console {
         output.push_str(&console_main(module));
@@ -135,6 +147,7 @@ fn closure_wrappers(
     function: &CheckedFunction,
     id: usize,
     builtins: &mut BTreeSet<Builtin>,
+    intrinsics: &mut BTreeSet<String>,
     globals: &mut Vec<String>,
 ) -> String {
     let mut output = String::new();
@@ -143,7 +156,8 @@ fn closure_wrappers(
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
         if count != 0 {
-            let mut clone = FunctionEmitter::new(module, function, id, builtins, globals);
+            let mut clone =
+                FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
             let allocation = clone.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({environment}, ptr null, i32 1) to i64))"));
             for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
                 let pointer = clone.value(format!(
@@ -160,7 +174,8 @@ fn closure_wrappers(
             output
                 .push_str(&clone.auxiliary(&format!("ptr @tz.env.clone.{name}.{count}(ptr %env)")));
 
-            let mut drop = FunctionEmitter::new(module, function, id, builtins, globals);
+            let mut drop =
+                FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
             for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
                 if ty.needs_drop(&module.records) {
                     let pointer = drop.value(format!(
@@ -175,7 +190,7 @@ fn closure_wrappers(
             output
                 .push_str(&drop.auxiliary(&format!("void @tz.env.drop.{name}.{count}(ptr %env)")));
         }
-        let mut apply = FunctionEmitter::new(module, function, id, builtins, globals);
+        let mut apply = FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
         let mut values = Vec::new();
         for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
             let pointer = apply.value(format!(
@@ -299,6 +314,7 @@ struct FunctionEmitter<'a, 'b> {
     function: &'a CheckedFunction,
     function_id: usize,
     builtins: &'b mut BTreeSet<Builtin>,
+    intrinsics: &'b mut BTreeSet<String>,
     lines: Vec<String>,
     allocas: Vec<String>,
     locals: BTreeMap<usize, String>,
@@ -316,6 +332,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         function: &'a CheckedFunction,
         function_id: usize,
         builtins: &'b mut BTreeSet<Builtin>,
+        intrinsics: &'b mut BTreeSet<String>,
         globals: &'b mut Vec<String>,
     ) -> Self {
         Self {
@@ -323,6 +340,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             function,
             function_id,
             builtins,
+            intrinsics,
             globals,
             lines: Vec::new(),
             allocas: Vec::new(),
@@ -1239,6 +1257,30 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.ty(to)
             ));
         }
+        let instruction = match (&expression.ty, to) {
+            (Type::Integer(8 | 16 | 32 | 64, true), Type::Binary(32 | 64)) => Some("sitofp"),
+            (Type::Integer(8 | 16 | 32 | 64, false), Type::Binary(32 | 64)) => Some("uitofp"),
+            (Type::Binary(32), Type::Binary(64)) => Some("fpext"),
+            (Type::Binary(64), Type::Binary(32)) => Some("fptrunc"),
+            _ => None,
+        };
+        if let Some(instruction) = instruction {
+            return self.value(format!(
+                "{instruction} {} {value} to {}",
+                self.ty(&expression.ty),
+                self.ty(to)
+            ));
+        }
+        if let (Type::Binary(from @ (32 | 64)), Type::Integer(bits @ (8 | 16 | 32 | 64), signed)) =
+            (&expression.ty, to)
+        {
+            let intrinsic = saturating_cast(*from, *bits, *signed, self.intrinsics);
+            return self.value(format!(
+                "call {} @{intrinsic}({} {value})",
+                self.ty(to),
+                self.ty(&expression.ty)
+            ));
+        }
         let input = self.spill(&expression.ty, &value);
         let output = self.slot(to);
         self.instruction(format!(
@@ -1499,18 +1541,33 @@ fn export_wrapper(function: &CheckedFunction, module: &CheckedModule) -> String 
     output
 }
 
-fn emit_builtin(builtin: Builtin) -> String {
+fn saturating_cast(
+    from: u16,
+    bits: u16,
+    signed: bool,
+    intrinsics: &mut BTreeSet<String>,
+) -> String {
+    let sign = if signed { "s" } else { "u" };
+    let intrinsic = format!("llvm.fpto{sign}i.sat.i{bits}.f{from}");
+    let source = if from == 32 { "float" } else { "double" };
+    intrinsics.insert(format!("declare i{bits} @{intrinsic}({source})"));
+    intrinsic
+}
+
+fn emit_builtin(builtin: Builtin, intrinsics: &mut BTreeSet<String>) -> String {
     let name = builtin.name();
     match builtin {
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
              entry:\n  %r = sitofp i64 %x to double\n  ret double %r\n}}\n\n"
         ),
-        Builtin::ToInt => format!(
-            "declare i64 @llvm.fptosi.sat.i64.f64(double)\n\
-             define internal i64 @tz.builtin.{name}(double %x) nounwind {{\n\
-             entry:\n  %r = call i64 @llvm.fptosi.sat.i64.f64(double %x)\n  ret i64 %r\n}}\n\n"
-        ),
+        Builtin::ToInt => {
+            let intrinsic = saturating_cast(64, 64, true, intrinsics);
+            format!(
+                "define internal i64 @tz.builtin.{name}(double %x) nounwind {{\n\
+                 entry:\n  %r = call i64 @{intrinsic}(double %x)\n  ret i64 %r\n}}\n\n"
+            )
+        }
         Builtin::Assert => format!(
             "define internal i8 @tz.builtin.{name}(i1 %x) nounwind {{\n\
              entry:\n  br i1 %x, label %ok, label %fail\n\
@@ -1531,9 +1588,9 @@ fn emit_builtin(builtin: Builtin) -> String {
                 Builtin::Abs => "fabs",
                 _ => unreachable!(),
             };
+            intrinsics.insert(format!("declare double @llvm.{intrinsic}.f64(double)"));
             format!(
-                "declare double @llvm.{intrinsic}.f64(double)\n\
-                 define internal double @tz.builtin.{name}(double %x) nounwind {{\n\
+                "define internal double @tz.builtin.{name}(double %x) nounwind {{\n\
                  entry:\n  %r = call double @llvm.{intrinsic}.f64(double %x)\n\
                  ret double %r\n}}\n\n"
             )

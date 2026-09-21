@@ -32,12 +32,48 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
-| `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、変換、表示 |
+| `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、表示 |
 | `src/runtime/string.ll` / `heap-*.ll` | UTF-8 バッファ操作、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tzr` 選択、LLVM／LLD 起動、ステージング、出力保護 |
 | `src/main.rs` | CLI オプションと診断表示 |
+
+## 性能設計の原則
+
+**最速・最強を目指すことは、コンパイラ・ランタイム・組み込み関数・今後の標準ライブラリに
+共通する設計要件です。** 高水準で安全な API の内側では、対象機で利用できる CPU 命令、
+SIMD、複数 CPU コア、GPU、最適化済みカーネルを活用する設計にします。
+ただし、利用率やバックエンドの名前ではなく、正しい結果までの総時間を最小化します。
+LLVM に渡すだけで高速と判断せず、生成コードと実測で経路を確認してください。
+
+現在の実装と将来の要件は区別します。
+
+| 項目 | 現在の実装／今後の要件 |
+|---|---|
+| スカラー CPU | i8〜i64／i8u〜i64u と f32／f64 の変換は LLVM の直接命令・飽和 intrinsic。`as` と変換 builtin の意味・性能経路を揃える |
+| SIMD | `-O3` のループ／SLP 自動ベクトル化。連続配列・型の特殊化・不要コピーの除去で最適化可能な IR を生成する。`--cpu native` はビルド機の命令セットを有効化 |
+| 移植性 | 既定の `--cpu generic` は Clang のターゲット既定を維持。`native` は明示指定し、CPU 要件を配布条件に含める。実行時 ISA 判定・複数版の選択は今後の実装 |
+| 複数 CPU コア | 自動並列化・ワーカープールは未実装。今後の一括操作では仕事量、依存関係、起動コストから選択し、過剰なスレッド生成を避ける |
+| GPU | バックエンドは未実装。今後は能力検出、所有権を保つバッファ、転送・同期・カーネル選択、CPU 経路と合わせた実行基盤を設計する |
+| WASM | 現在は bulk-memory 対応の CPU 実行。専用 SIMD／threads／GPU 経路は未実装であり、将来もエンジンの能力要件を明示する |
+
+新しい builtin／標準ライブラリでは、要素ごとの汎用関数呼び出しだけを基本実装にせず、
+型・連続性・サイズが分かる一括操作を設計してください。正確な基準実装を持ち、
+スカラー／SIMD／並列 CPU／GPU で同じ契約を検証します。既存の所有権・借用・不変性から
+別名関係や独立性を証明できる場合だけ最適化し、根拠のない `noalias` 等を付けません。
+
+自動バックエンド選択では、確保、コンパイル／初期化、ディスパッチ、転送、同期、
+結果の回収まで含めた閾値を対象ハードウェアで測定します。小さい処理を常に GPU に送ったり、
+スレッドを増やせば速いと仮定したりしないでください。GPU 常駐データは転送の繰り返しを避けます。
+未対応機では契約を保つ CPU 経路を選べるようにし、選択経路を観測可能にします。
+GPU 等を明示要求した場合の利用不可・実行失敗は診断し、黙って成功扱いや結果変更をしません。
+
+高速化で整数の折り返し、飽和、最近接・偶数丸め、NaN、符号付きゼロ、評価順序、トラップを
+変更しません。浮動小数点の集計順変更や FMA 融合が必要なら、まず別 API／明示モードの契約を
+設計し、既存の演算へ暗黙適用しません。追加した経路には境界値・参照実装との照合と、
+同条件の C/C++ 比較を用意します。共有 CI は正しさと経路の退行を検査し、
+性能の閾値判定は安定した専用環境で行います。
 
 ## 不変条件
 
@@ -132,6 +168,11 @@ clone／drop／索引は反復で処理します。drop ではノードを解放
 
 **LLVM:** 整数の算術に `nsw`／`nuw` を付けません。除算／剰余はゼロと符号付き MIN/-1 を検査し、
 シフト数を幅ごとにマスクし、浮動小数点→整数には飽和変換を使います。
+i8〜i64／i8u〜i64u から f32／f64 へは `sitofp`／`uitofp` を使い、
+逆方向は `llvm.fptosi.sat`／`llvm.fptoui.sat` にして poison や範囲外の未定義動作を避けます。
+f32／f64 間は `fpext`／`fptrunc`。i128、f16／f128、decimal を含む変換は正確な
+ソフトウェア経路を維持し、f64 を経由して丸めを二重にしません。
+intrinsic 宣言は builtin と通常の式で共有し、重複なく決定的な順序で出力します。
 負の添字を含め、配列・リストの範囲検査を要素の GEP／load やリンクの走査前に行います。
 浮動小数点に fast-math フラグを付けません。
 借用可能な値の領域は entry に置きます。所有値を move すると移動元をゼロにし、
@@ -177,6 +218,7 @@ cargo test --locked
 cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 ```
 
@@ -196,6 +238,10 @@ JavaScript の BigInt／Number の参照結果と照合します。
 高階関数、型クラスのメソッド値、所有文字列、評価順序、百万回の末尾再帰を実行します。
 `tests/primitives.mjs` は decimal の結果を Python の IEEE 用 decimal コンテキストと照合し、
 ネイティブの確保／解放を追跡して解放漏れ・二重解放を検出します。
+`tests/numeric_casts.mjs` は整数の全幅・符号と f32／f64 の高速変換を、BigInt の直接丸め、
+飽和の参照結果、および f128 を経由する正確なソフトウェア実装と照合します。
+NaN、無限大、符号付きゼロ、非正規化数、丸めの中点と二重丸めが起きる値、
+飽和境界を native／WASM の `-O0`／`-O3` と native CPU 指定で検証します。
 WASM では累積の確保量がメモリ上限を超える反復を実行し、空き領域の再利用を確認します。
 カリー化では `tests/currying.rs` が型・捕捉・寿命を検査し、
 `tests/fixtures/currying` を `tests/primitives.mjs` から C／WASM の両方で実行します。

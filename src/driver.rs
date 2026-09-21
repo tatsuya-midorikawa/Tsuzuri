@@ -18,6 +18,12 @@ pub enum Target {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cpu {
+    Generic,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Emit {
     Executable,
     Object,
@@ -31,6 +37,7 @@ pub struct BuildOptions {
     pub target: Target,
     pub emit: Emit,
     pub optimization: u8,
+    pub cpu: Cpu,
 }
 
 impl Default for BuildOptions {
@@ -39,6 +46,7 @@ impl Default for BuildOptions {
             target: Target::Native,
             emit: Emit::Executable,
             optimization: 3,
+            cpu: Cpu::Generic,
         }
     }
 }
@@ -59,6 +67,15 @@ impl BuildOptions {
                 "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32'",
             ));
         }
+        if self.cpu == Cpu::Native {
+            if self.target != Target::Native || matches!(self.emit, Emit::Llvm | Emit::Header) {
+                return Err(driver_error(
+                    "E2000",
+                    "'--cpu native' requires native executable or object output",
+                ));
+            }
+            native_cpu_flag(env::consts::ARCH)?;
+        }
         Ok(())
     }
 
@@ -72,6 +89,17 @@ impl BuildOptions {
             Emit::Header => "h",
             Emit::Wasm => "wasm",
         })
+    }
+}
+
+fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
+    match architecture {
+        "x86" | "x86_64" => Ok("-march=native"),
+        "arm" | "aarch64" => Ok("-mcpu=native"),
+        _ => Err(driver_error(
+            "E2000",
+            format!("'--cpu native' is not supported on {architecture}; use '--cpu generic'"),
+        )),
     }
 }
 
@@ -292,6 +320,9 @@ pub fn build(
                 .arg("-mbulk-memory");
         } else {
             clang.arg("-fPIC");
+            if options.cpu == Cpu::Native {
+                clang.arg(native_cpu_flag(env::consts::ARCH)?);
+            }
         }
         if options.emit != Emit::Executable {
             clang.arg("-c");
@@ -346,23 +377,21 @@ pub fn build(
 pub fn run(
     module: &CheckedModule,
     project: &Project,
-    optimization: u8,
+    options: BuildOptions,
 ) -> Result<Vec<String>, Diagnostic> {
+    if options.target != Target::Native || options.emit != Emit::Executable {
+        return Err(driver_error(
+            "E2000",
+            "run requires native executable output",
+        ));
+    }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
     let output = temporary.path.join(if cfg!(windows) {
         "program.exe"
     } else {
         "program"
     });
-    let messages = build(
-        module,
-        project,
-        &output,
-        BuildOptions {
-            optimization,
-            ..BuildOptions::default()
-        },
-    )?;
+    let messages = build(module, project, &output, options)?;
     let status = Command::new(&output)
         .status()
         .map_err(|error| io_error("run executable", &output, error))?;
@@ -574,7 +603,7 @@ mod tests {
         let options = BuildOptions {
             target: Target::Wasm32,
             emit: Emit::Wasm,
-            optimization: 3,
+            ..BuildOptions::default()
         };
         assert_eq!(
             build(&module, &project, &directory.path.join("f.wasm"), options)
@@ -591,6 +620,35 @@ mod tests {
             .is_err()
         );
         directory.close().unwrap();
+    }
+
+    #[test]
+    fn validates_native_cpu_tuning_and_selects_architecture_flags() {
+        assert_eq!(BuildOptions::default().cpu, Cpu::Generic);
+        for architecture in ["x86", "x86_64"] {
+            assert_eq!(native_cpu_flag(architecture).unwrap(), "-march=native");
+        }
+        for architecture in ["arm", "aarch64"] {
+            assert_eq!(native_cpu_flag(architecture).unwrap(), "-mcpu=native");
+        }
+        assert!(native_cpu_flag("unknown").is_err());
+        for (target, emit) in [
+            (Target::Wasm32, Emit::Wasm),
+            (Target::Wasm32, Emit::Object),
+            (Target::Native, Emit::Llvm),
+            (Target::Native, Emit::Header),
+        ] {
+            assert!(
+                BuildOptions {
+                    target,
+                    emit,
+                    cpu: Cpu::Native,
+                    ..BuildOptions::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 
     #[test]

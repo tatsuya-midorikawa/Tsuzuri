@@ -7,6 +7,11 @@ WebAssembly を生成します。
 現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、
 ネイティブのデスクトップ・ホスト、ブラウザーのゲーム例を含みます。
 C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であり、現時点の達成保証ではありません。
+**性能を最優先の設計要件の一つとし、CPU 命令・SIMD・並列 CPU・GPU のうち、
+意味を保ち実処理が最も速くなる経路を内部で選ぶことを目指します。**
+この方針はコンパイラだけでなく、組み込み関数と今後の標準ライブラリにも適用します。
+現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、
+GPU バックエンドと自動マルチスレッド化は未実装です。
 伸縮可能なコレクション、ジェネリックなレコード型、
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
@@ -39,7 +44,7 @@ fn main = answer()
 | 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tzr` エントリー |
 | メモリ | 所有権、move、`&T`／`&mut T` の借用検査。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
-| 最適化 | 既定で LLVM `-O3`。直接の自己末尾再帰は `-O0` でもループ化 |
+| 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
 | ホスト連携 | 64-bit 以下の整数、f32／f64、bool の C ABI と WASM エクスポート。UI／I/O はホストの責務 |
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
@@ -288,7 +293,7 @@ GUI には Tk とデスクトップ画面が必要です。`--headless` を付�
 ```text
 tsuzuri check source.tzr|directory [--json]
 tsuzuri [build] source.tzr|directory [options]
-tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--json]
+tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 ```
 
 | オプション | 内容 |
@@ -297,9 +302,19 @@ tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--json]
 | `--target native\|wasm32` | 既定は native |
 | `--emit exe\|object\|llvm\|header\|wasm` | 既定は native なら exe、wasm32 なら wasm |
 | `-O0` ～ `-O3` | 既定は `-O3`。fast-math は使わない |
+| `--cpu generic\|native` | 既定は `generic`（Clang のターゲット既定）。`native` はビルド機の命令セットとスケジューリングに最適化 |
 | `--json` | 標準エラーに機械可読の診断を出力 |
 | `--` | 以降をパスとして解釈 |
 | `--help`, `--version` | ヘルプ／バージョン |
+
+ローカル実行や実行機が固定された配備では、`tsuzuri run examples/point --cpu native`、
+または `tsuzuri build examples/point --cpu native -o target/point` を使えます。
+`native` は x86/x86-64 では `-march=native`、ARM/AArch64 では `-mcpu=native` を
+Clang に渡します。SIMD 化は演算と依存関係が許す範囲で LLVM が判断し、全処理の SIMD 化や
+全 CPU コアの利用を保証する指定ではありません。生成物は古い CPU で動かない場合があります。
+他機への配布では `generic` を使い、OS・アーキテクチャ・ABI の互換性も確認してください。
+`--cpu native` はネイティブの実行ファイル／オブジェクトと `run` 専用です。
+`check` への CPU 指定、WASM／LLVM IR／ヘッダーへの `native` 指定はエラーにします。
 
 入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tzr` を選びます。
 どちらも同じディレクトリ直下の全 `.tzr` を名前順に読み込み、未参照のモジュールも検査します。
@@ -325,8 +340,10 @@ cargo test --locked
 cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri
+node benchmarks/run-cpp.mjs target/release/tsuzuri
 ```
 
 境界値・NaN・短絡評価・高階関数・レコード・配列・100 万回の末尾再帰を、

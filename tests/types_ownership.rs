@@ -65,6 +65,68 @@ fn checks_all_float_formats_and_contextual_literals() {
 }
 
 #[test]
+fn lowers_common_numeric_casts_to_native_instructions() {
+    for bits in [8, 16, 32, 64] {
+        for (suffix, instruction, sign) in [("", "sitofp", "s"), ("u", "uitofp", "u")] {
+            for (float, llvm_float) in [(32, "float"), (64, "double")] {
+                let source = format!(
+                    "def to_float_value :: i{bits}{suffix} -> f{float}\n\
+                     fn to_float_value x = x as f{float}\n\
+                     def to_integer_value :: f{float} -> i{bits}{suffix}\n\
+                     fn to_integer_value x = x as i{bits}{suffix}"
+                );
+                let module = analyze(&source).unwrap();
+                let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+                assert!(ir.contains(&format!("{instruction} i{bits}")));
+                let declaration =
+                    format!("declare i{bits} @llvm.fpto{sign}i.sat.i{bits}.f{float}({llvm_float})");
+                assert_eq!(ir.matches(&declaration).count(), 1);
+                assert!(!ir.contains("@tz_soft_"));
+            }
+        }
+    }
+    let module = analyze(
+        "def narrow :: f64 -> f32\nfn narrow x = x as f32\n\
+         def widen :: f32 -> f64\nfn widen x = x as f64\n\
+         def integer :: f64 -> i64\nfn integer x = (x as i64) + to_int x",
+    )
+    .unwrap();
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(ir.contains("fptrunc double"));
+    assert!(ir.contains("fpext float"));
+    assert_eq!(
+        ir.matches("declare i64 @llvm.fptosi.sat.i64.f64(double)")
+            .count(),
+        1
+    );
+    assert!(!ir.contains("@tz_soft_"));
+}
+
+#[test]
+fn retains_exact_software_conversions_for_wide_and_decimal_types() {
+    for (from, to) in [
+        ("i128", "f32"),
+        ("i128u", "f64"),
+        ("f64", "i128"),
+        ("f32", "i128u"),
+        ("f16", "f32"),
+        ("f64", "f16"),
+        ("f128", "f64"),
+        ("i64", "f128"),
+        ("d32", "f64"),
+        ("f32", "d64"),
+        ("d128", "i64"),
+    ] {
+        let module = analyze(&format!(
+            "def convert :: {from} -> {to}\nfn convert x = x as {to}"
+        ))
+        .unwrap();
+        let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+        assert!(ir.contains("call void @tz_soft_cast"), "{from} -> {to}");
+    }
+}
+
+#[test]
 fn accepts_moves_borrows_partial_moves_and_local_mutation() {
     for source in [
         "fn f() -> string { let a = \"hello\"; let b = a; b }",

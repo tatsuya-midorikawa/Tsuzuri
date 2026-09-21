@@ -44,10 +44,14 @@ jobs:
         run: |
           node tests/e2e.mjs target/release/tsuzuri
           node tests/primitives.mjs target/release/tsuzuri
+          node tests/numeric_casts.mjs target/release/tsuzuri
       - name: Application examples
         run: node tests/examples.mjs target/release/tsuzuri
       - name: Benchmark correctness smoke
-        run: node benchmarks/run.mjs target/release/tsuzuri 100000
+        run: |
+          node benchmarks/run.mjs target/release/tsuzuri 100000
+          node benchmarks/run-cpp.mjs target/release/tsuzuri --quick
+          node benchmarks/run-cpp.mjs target/release/tsuzuri --quick --cpu native
 
   minimum-rust:
     runs-on: ubuntu-24.04

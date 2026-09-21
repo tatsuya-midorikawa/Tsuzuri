@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Emit, Project, Target};
+use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target};
 
 const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
@@ -12,7 +12,7 @@ Tsuzuri - a statically typed language with ownership, powered by LLVM
 Usage:
   tsuzuri check source.tzr|directory [--json]
   tsuzuri [build] source.tzr|directory [options]
-  tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--json]
+  tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 
 Each .tzr file is one module named after its filename. All sibling .tzr files
 are loaded together. Applications start in Main.tzr; a directory selects it.
@@ -24,6 +24,8 @@ Build options:
   --emit KIND            exe, object, llvm, header, or wasm
                          Default: exe for native, wasm for wasm32
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
+  --cpu generic|native   CPU tuning for native build/run (default: generic)
+                         native uses this machine's ISA; not portable to older CPUs
   --json                 Emit machine-readable diagnostics on stderr
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
@@ -76,6 +78,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut target = None;
     let mut emit = None;
     let mut optimization = None;
+    let mut cpu = None;
     let mut json = false;
     let mut paths_only = false;
     while position < arguments.len() {
@@ -142,6 +145,19 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     optimization = Some(argument.to_str().unwrap().as_bytes()[2] - b'0');
                     continue;
                 }
+                Some("--cpu") => {
+                    if cpu.is_some() {
+                        return Err("CPU tuning specified more than once".into());
+                    }
+                    cpu = Some(
+                        match next_value(arguments, &mut position, "--cpu")?.to_str() {
+                            Some("generic") => Cpu::Generic,
+                            Some("native") => Cpu::Native,
+                            _ => return Err("CPU tuning must be 'generic' or 'native'".into()),
+                        },
+                    );
+                    continue;
+                }
                 Some(value) if value.starts_with('-') => {
                     return Err(format!("unknown option '{value}'; use --help"));
                 }
@@ -162,6 +178,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if action == Action::Check && optimization.is_some() {
         return Err("check does not use an optimization level".into());
     }
+    if action == Action::Check && cpu.is_some() {
+        return Err("check does not use CPU tuning".into());
+    }
     let target = target.unwrap_or(Target::Native);
     let options = BuildOptions {
         target,
@@ -171,6 +190,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             Emit::Executable
         }),
         optimization: optimization.unwrap_or(3),
+        cpu: cpu.unwrap_or(Cpu::Generic),
     };
     options.validate().map_err(|error| error.message)?;
     Ok(Arguments {
@@ -257,7 +277,7 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| arguments.options.output_path(project.input())),
             arguments.options,
         ),
-        Action::Run => driver::run(&module, &project, arguments.options.optimization),
+        Action::Run => driver::run(&module, &project, arguments.options),
     });
     match result {
         Ok(messages) => {
@@ -298,6 +318,17 @@ mod tests {
         assert_eq!(arguments.input, Path::new("-project/Main.tzr"));
         assert!(parse(&["run", "Main.tzr", "--target", "wasm32"]).is_err());
         assert_eq!(parse(&["run", "app"]).unwrap().input, Path::new("app"));
+        assert_eq!(
+            parse(&["run", "app", "--cpu", "native"])
+                .unwrap()
+                .options
+                .cpu,
+            Cpu::Native
+        );
+        assert_eq!(
+            parse(&["build", "Main.tzr"]).unwrap().options.cpu,
+            Cpu::Generic
+        );
     }
 
     #[test]
@@ -311,6 +342,13 @@ mod tests {
             vec!["check", "A.tzr", "-O0"],
             vec!["run", "Main.tzr", "-o", "app"],
             vec!["build", "Main.tzr", "-O0", "-O3"],
+            vec!["build", "Main.tzr", "--cpu"],
+            vec!["build", "Main.tzr", "--cpu", "unsupported"],
+            vec!["build", "Main.tzr", "--cpu", "generic", "--cpu", "native"],
+            vec!["check", "Main.tzr", "--cpu", "generic"],
+            vec!["build", "Main.tzr", "--target", "wasm32", "--cpu", "native"],
+            vec!["build", "Main.tzr", "--emit", "llvm", "--cpu", "native"],
+            vec!["build", "Main.tzr", "--emit", "header", "--cpu", "native"],
         ] {
             assert!(parse(&values).is_err(), "{values:?}");
         }
