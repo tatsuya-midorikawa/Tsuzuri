@@ -76,6 +76,13 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         output.push_str(&global);
         output.push('\n');
     }
+    if output.contains("@tsuzuri_task_parallel(") {
+        output.push_str(if wasm {
+            include_str!("runtime/task-wasm.ll")
+        } else {
+            "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\n"
+        });
+    }
     if output.contains("@tz_soft_") {
         output = output.replace("declare void @llvm.trap()\n", "");
         output.push_str(include_str!("runtime/numeric.ll"));
@@ -156,23 +163,30 @@ fn closure_wrappers(
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
         if count != 0 {
-            let mut clone =
-                FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
-            let allocation = clone.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({environment}, ptr null, i32 1) to i64))"));
-            for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
-                let pointer = clone.value(format!(
-                    "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
-                ));
-                let value = clone.value(format!("load {}, ptr {pointer}", clone.ty(ty)));
-                let value = clone.clone_value(ty, &value);
-                let target = clone.value(format!(
-                    "getelementptr inbounds {environment}, ptr {allocation}, i32 0, i32 {index}"
-                ));
-                clone.instruction(format!("store {} {value}, ptr {target}", clone.ty(ty)));
+            if !function.is_task
+                && function.signature.parameters[..count]
+                    .iter()
+                    .all(|ty| ty.can_capture(&module.records))
+            {
+                let mut clone =
+                    FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
+                let allocation = clone.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({environment}, ptr null, i32 1) to i64))"));
+                for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
+                    let pointer = clone.value(format!(
+                        "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
+                    ));
+                    let value = clone.value(format!("load {}, ptr {pointer}", clone.ty(ty)));
+                    let value = clone.clone_value(ty, &value);
+                    let target = clone.value(format!(
+                        "getelementptr inbounds {environment}, ptr {allocation}, i32 0, i32 {index}"
+                    ));
+                    clone.instruction(format!("store {} {value}, ptr {target}", clone.ty(ty)));
+                }
+                clone.instruction(format!("ret ptr {allocation}"));
+                output.push_str(
+                    &clone.auxiliary(&format!("ptr @tz.env.clone.{name}.{count}(ptr %env)")),
+                );
             }
-            clone.instruction(format!("ret ptr {allocation}"));
-            output
-                .push_str(&clone.auxiliary(&format!("ptr @tz.env.clone.{name}.{count}(ptr %env)")));
 
             let mut drop =
                 FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
@@ -268,7 +282,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Record(id) => format!("%tz.record.{}", module.records[*id].name),
         Type::Array(_) => "%tz.array".into(),
         Type::List(_) => "%tz.list".into(),
-        Type::Function(..) => "%tz.closure".into(),
+        Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
         Type::Reference(..) => "ptr".into(),
         Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
     }
@@ -643,6 +657,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Binary(operator, left, right) => self.binary(*operator, left, right),
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
+            TypedExprKind::TaskRun(task) => {
+                let task = self.expression(task);
+                let code = self.value(format!("extractvalue %tz.closure {task}, 0"));
+                let environment = self.value(format!("extractvalue %tz.closure {task}, 1"));
+                self.value(format!(
+                    "call {} {code}(ptr {environment})",
+                    self.ty(&expression.ty)
+                ))
+            }
+            TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
             TypedExprKind::If {
                 condition,
                 then_branch,
@@ -838,7 +862,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn drop_value(&mut self, ty: &Type, value: &str) {
         match ty {
-            Type::Function(..) => {
+            Type::Function(..) | Type::Task(_) => {
                 self.instruction(format!("call void @tz.closure.drop(%tz.closure {value})"))
             }
             Type::String => {
@@ -885,6 +909,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
     fn clone_value(&mut self, ty: &Type, value: &str) -> String {
         match ty {
+            Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
             Type::String => {
                 let pointer = self.value(format!("extractvalue %tz.string {value}, 0"));
                 let length = self.value(format!("extractvalue %tz.string {value}, 1"));
@@ -1122,12 +1147,61 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if count == 0 {
             return value;
         }
-        let value = self.value(format!(
-            "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
-        ));
+        let value = if !function.is_task
+            && function.signature.parameters[..count]
+                .iter()
+                .all(|ty| ty.can_capture(&self.module.records))
+        {
+            self.value(format!(
+                "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
+            ))
+        } else {
+            value
+        };
         self.value(format!(
             "insertvalue %tz.closure {value}, ptr @tz.env.drop.{name}.{count}, 3"
         ))
+    }
+
+    fn parallel_tasks(&mut self, tasks: &TypedExpr, result: &Type) -> String {
+        let tasks = self.expression(tasks);
+        let source = self.value(format!("extractvalue %tz.array {tasks}, 0"));
+        let length = self.value(format!("extractvalue %tz.array {tasks}, 1"));
+        let Type::Array(element) = result else {
+            unreachable!()
+        };
+        let (array, target) = self.allocate_array(element, &length);
+        let ty = self.ty(element);
+        let callback = format!("@tz.task.item.{}", ty.trim_start_matches('%'));
+        self.intrinsics.insert(format!(
+            "define internal void {callback}(ptr %context, i64 %index) nounwind {{\n\
+             entry:\n\
+               %source = load ptr, ptr %context\n\
+               %target.slot = getelementptr inbounds {{ ptr, ptr }}, ptr %context, i32 0, i32 1\n\
+               %target = load ptr, ptr %target.slot\n\
+               %slot = getelementptr inbounds %tz.closure, ptr %source, i64 %index\n\
+               %task = load %tz.closure, ptr %slot\n\
+               %code = extractvalue %tz.closure %task, 0\n\
+               %env = extractvalue %tz.closure %task, 1\n\
+               %result = call {ty} %code(ptr %env)\n\
+               %destination = getelementptr inbounds {ty}, ptr %target, i64 %index\n\
+               store {ty} %result, ptr %destination\n\
+               ret void\n\
+             }}\n"
+        ));
+        let context = self.fresh();
+        self.allocas
+            .push(format!("{context} = alloca {{ ptr, ptr }}, align 16"));
+        self.instruction(format!("store ptr {source}, ptr {context}"));
+        let slot = self.value(format!(
+            "getelementptr inbounds {{ ptr, ptr }}, ptr {context}, i32 0, i32 1"
+        ));
+        self.instruction(format!("store ptr {target}, ptr {slot}"));
+        self.instruction(format!(
+            "call void @tsuzuri_task_parallel(ptr {callback}, ptr {context}, i64 {length})"
+        ));
+        self.instruction(format!("call void @tz.free(ptr {source})"));
+        array
     }
 
     fn apply_value(

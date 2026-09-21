@@ -7,13 +7,22 @@ impl Checker<'_> {
         body: &Expr,
         expected: Option<&Type>,
         span: Span,
+        task: bool,
     ) -> Result<TypedExpr, Diagnostic> {
-        let (parameter_types, result) = match expected {
-            Some(ty) => self.call_signature(ty, names.len(), span)?,
-            None => (
-                names.iter().map(|_| self.inference.fresh()).collect(),
-                self.inference.fresh(),
-            ),
+        let (parameter_types, result) = if task {
+            let result = self.inference.fresh();
+            if let Some(expected) = expected {
+                self.same(&Type::Task(Box::new(result.clone())), expected, span)?;
+            }
+            (Vec::new(), self.inference.resolve(&result))
+        } else {
+            match expected {
+                Some(ty) => self.call_signature(ty, names.len(), span)?,
+                None => (
+                    names.iter().map(|_| self.inference.fresh()).collect(),
+                    self.inference.fresh(),
+                ),
+            }
         };
         let outer: BTreeMap<_, _> = self
             .scopes
@@ -40,17 +49,27 @@ impl Checker<'_> {
                 let mut capture = local.clone();
                 capture.ty = self.inference.resolve(&capture.ty);
                 capture.mutable = false;
-                self.require("Capture", capture.ty.clone(), span)?;
+                self.require(
+                    if task { "Send" } else { "Capture" },
+                    capture.ty.clone(),
+                    span,
+                )?;
                 captures.push(capture);
             }
         }
-        let ty = Type::function(
-            parameters
-                .iter()
-                .map(|parameter| parameter.ty.clone())
-                .collect(),
-            body.ty.clone(),
-        );
+        let ty = if task {
+            self.require("Send", body.ty.clone(), body.span)?;
+            Type::Task(Box::new(body.ty.clone()))
+        } else {
+            Type::function(
+                parameters
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect(),
+                body.ty.clone(),
+            )
+        };
+        validate_size(&ty, self.record_sizes, span)?;
         if let Some(expected) = expected {
             self.same(&ty, expected, span)?;
         }
@@ -92,7 +111,9 @@ fn children(expression: &TypedExpr) -> Vec<&TypedExpr> {
         | Cast(value)
         | Field(value, _)
         | Length(value)
-        | StringLength(value) => vec![value],
+        | StringLength(value)
+        | TaskRun(value)
+        | TaskParallel(value) => vec![value],
         Binary(_, a, b) | Assign(a, b) | Index(a, b) | NewArray(a, b) | NewList(a, b) => vec![a, b],
         Call(callee, arguments) => std::iter::once(callee.as_ref()).chain(arguments).collect(),
         If {
@@ -160,6 +181,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 type_parameters: Vec::new(),
                 constraints: Vec::new(),
                 capture_count: 0,
+                is_task: false,
             });
             function.exported = false;
         }
@@ -179,7 +201,7 @@ fn local_value(local: &Local) -> TypedExpr {
 fn lower_expression(
     expression: &mut TypedExpr,
     functions: &mut Vec<CheckedFunction>,
-    builtins: &mut BTreeMap<Builtin, usize>,
+    builtins: &mut BTreeMap<(Builtin, Type), usize>,
 ) -> Result<(), Diagnostic> {
     use TypedExprKind::*;
     match &mut expression.kind {
@@ -189,7 +211,9 @@ fn lower_expression(
         | Cast(value)
         | Field(value, _)
         | Length(value)
-        | StringLength(value) => lower_expression(value, functions, builtins)?,
+        | StringLength(value)
+        | TaskRun(value)
+        | TaskParallel(value) => lower_expression(value, functions, builtins)?,
         Binary(_, a, b) | Assign(a, b) | Index(a, b) | NewArray(a, b) | NewList(a, b) => {
             lower_expression(a, functions, builtins)?;
             lower_expression(b, functions, builtins)?;
@@ -235,7 +259,12 @@ fn lower_expression(
             let mut all_parameters = captures.clone();
             all_parameters.extend(parameters.iter().cloned());
             functions.push(CheckedFunction {
-                module: "$lambda".into(),
+                module: if matches!(expression.ty, Type::Task(_)) {
+                    "$task"
+                } else {
+                    "$lambda"
+                }
+                .into(),
                 name: id.to_string(),
                 exported: false,
                 signature: Signature {
@@ -251,13 +280,23 @@ fn lower_expression(
                 type_parameters: Vec::new(),
                 constraints: Vec::new(),
                 capture_count: captures.len(),
+                is_task: matches!(expression.ty, Type::Task(_)),
             });
             expression.kind = Closure(id, captures.iter().map(local_value).collect());
         }
         Function(FunctionRef::Builtin(builtin)) => {
             let builtin = *builtin;
-            let id = *builtins.entry(builtin).or_insert_with(|| {
-                let signature = builtin.signature();
+            let key = (builtin, expression.ty.clone());
+            let id = if let Some(id) = builtins.get(&key) {
+                *id
+            } else {
+                let Type::Function(types, _) = &expression.ty else {
+                    unreachable!()
+                };
+                let signature = Signature {
+                    parameters: vec![types[0].clone()],
+                    result: expression.ty.after_arguments(1),
+                };
                 let parameter = super::Local {
                     id: 0,
                     ty: signature.parameters[0].clone(),
@@ -270,15 +309,40 @@ fn lower_expression(
                     ty: signature.as_type(),
                     span: expression.span,
                 };
-                let body = TypedExpr {
-                    kind: Call(Box::new(callee), vec![local_value(&parameter)]),
+                let kind = match builtin {
+                    Builtin::TaskRun => TaskRun(Box::new(local_value(&parameter))),
+                    Builtin::TaskParallel => {
+                        let Type::Task(result) = &signature.result else {
+                            unreachable!()
+                        };
+                        Lambda {
+                            parameters: Vec::new(),
+                            captures: vec![parameter.clone()],
+                            body: Box::new(TypedExpr {
+                                kind: TaskParallel(Box::new(local_value(&parameter))),
+                                ty: (**result).clone(),
+                                span: expression.span,
+                            }),
+                        }
+                    }
+                    _ => Call(Box::new(callee), vec![local_value(&parameter)]),
+                };
+                let mut body = TypedExpr {
+                    kind,
                     ty: signature.result.clone(),
                     span: expression.span,
                 };
+                if builtin == Builtin::TaskParallel {
+                    lower_expression(&mut body, functions, builtins)?;
+                }
                 let id = functions.len();
                 functions.push(CheckedFunction {
                     module: "$builtin".into(),
-                    name: builtin.name().into(),
+                    name: if matches!(builtin, Builtin::TaskRun | Builtin::TaskParallel) {
+                        format!("{}.{id}", builtin.name())
+                    } else {
+                        builtin.name().into()
+                    },
                     exported: false,
                     parameters: vec![parameter],
                     signature,
@@ -287,9 +351,11 @@ fn lower_expression(
                     type_parameters: Vec::new(),
                     constraints: Vec::new(),
                     capture_count: 0,
+                    is_task: false,
                 });
+                builtins.insert(key, id);
                 id
-            });
+            };
             expression.kind = Function(FunctionRef::User(id));
         }
         _ => {}

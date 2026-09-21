@@ -17,6 +17,9 @@ pub enum TokenKind {
     Class,
     Instance,
     Let,
+    Task,
+    Do,
+    Return,
     Mut,
     New,
     As,
@@ -158,6 +161,7 @@ pub enum TypeExprKind {
     Constrained(Box<Ident>, Box<TypeExpr>),
     Array(Box<TypeExpr>),
     List(Box<TypeExpr>),
+    Task(Box<TypeExpr>),
     Function(Vec<TypeExpr>, Box<TypeExpr>),
     Reference(Box<TypeExpr>, bool),
 }
@@ -212,6 +216,8 @@ pub enum ExprKind {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     Lambda(Vec<(Ident, bool)>, Box<Expr>),
+    Task(Box<Expr>),
+    TaskRun(Box<Expr>),
     If {
         condition: Box<Expr>,
         then_branch: Box<Expr>,

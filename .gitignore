@@ -27,6 +27,7 @@ target
 *.ll
 !src/runtime/wasm.ll
 !src/runtime/closure.ll
+!src/runtime/task-wasm.ll
 *.dylib
 *.so
 *.dll

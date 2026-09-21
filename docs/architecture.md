@@ -35,6 +35,7 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、表示 |
 | `src/runtime/string.ll` / `heap-*.ll` | UTF-8 バッファ操作、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
+| `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tzr` 選択、LLVM／LLD 起動、ステージング、出力保護 |
 | `src/main.rs` | CLI オプションと診断表示 |
@@ -54,7 +55,7 @@ LLVM に渡すだけで高速と判断せず、生成コードと実測で経路
 | スカラー CPU | i8〜i64／i8u〜i64u と f32／f64 の変換は LLVM の直接命令・飽和 intrinsic。`as` と変換 builtin の意味・性能経路を揃える |
 | SIMD | `-O3` のループ／SLP 自動ベクトル化。連続配列・型の特殊化・不要コピーの除去で最適化可能な IR を生成する。`--cpu native` はビルド機の命令セットを有効化 |
 | 移植性 | 既定の `--cpu generic` は Clang のターゲット既定を維持。`native` は明示指定し、CPU 要件を配布条件に含める。実行時 ISA 判定・複数版の選択は今後の実装 |
-| 複数 CPU コア | 自動並列化・ワーカープールは未実装。今後の一括操作では仕事量、依存関係、起動コストから選択し、過剰なスレッド生成を避ける |
+| 複数 CPU コア | `Task.parallel` の明示的な fork/join。CPU 数・共有枠で追加スレッド数を制限し、入れ子も呼び出し元で進行できる。自動並列化・常駐ワーカープールは未実装 |
 | GPU | バックエンドは未実装。今後は能力検出、所有権を保つバッファ、転送・同期・カーネル選択、CPU 経路と合わせた実行基盤を設計する |
 | WASM | 現在は bulk-memory 対応の CPU 実行。専用 SIMD／threads／GPU 経路は未実装であり、将来もエンジンの能力要件を明示する |
 
@@ -134,6 +135,38 @@ decimal は BID の有限値／非正規化数／符号付きゼロ／無限大�
 ソフトウェア演算は基数 2 または 10 の整数係数と指数を復号し、多倍長整数で計算して、
 目的の精度へ一度だけ最近接・偶数丸めします。binary64 による近似代用は行いません。
 
+**タスク:** `Type::Task(T)` は非 Copy の cold な一回実行の計算です。
+型検査では `task` を引数なしの Lambda として扱い、捕捉と結果には `Capture` ではなく `Send` を課します。
+参照を含むデータと借用のある関数環境を拒否し、タスク内部の借用は外へ出させません。
+所有権検査がタスク生成時の環境を検証するため、lift された `is_task` worker の捕捉引数は
+閉じた所有値として扱えます。通常の関数の関数値引数には同じ仮定を置きません。
+`Task T` は loan を運ばないという不変条件を、抽象本体と具体化後の両方で維持します。
+通常の再利用可能な環境へのタスク捕捉は拒否します。
+
+LLVM では `%tz.closure` の apply／environment／drop を再利用しますが、clone ポインタは null で、
+タスク用環境の clone 関数は生成しません。タスクを含む一時的な完全適用用環境も clone 不可です。
+`let!`／`return!` と `Task.run` は同じ一回消費の lowering を使います。
+`Task.parallel` 自体は配列を所有する cold タスクを作り、実行時だけ結果用の連続領域を確保します。
+各入力スロットを一回ずつ消費する、結果の LLVM 型ごとの callback を決定的に重複除去して生成します。
+callback の C 境界は `(void *context, uint64_t index)` のみで、集約値の ABI を C に露出しません。
+全 callback が完了してから入力の配列領域を解放し、初期化済みの結果配列を返します。
+グループの context を含め、反復で使う alloca は関数 entry に置きます。
+
+ネイティブランタイムはグループごとの atomic index と、ランタイム共有の atomic なスレッド枠を持ちます。
+呼び出し元も実行し、追加スレッドを `min(sysconf(_SC_NPROCESSORS_ONLN), 32) - 1` 以下に制限します。
+CPU 数が取得できなければ追加スレッドなし、枠のない入れ子も呼び出し元で進めます。
+枠は join 後に返すため、完了して未回収の OS スレッドも数えます。detach・常駐 pool・待ちキューはありません。
+pthread の失敗は stderr の診断と abort で明示し、成功形の結果を返しません。
+WASM は同じ callback を添字順に呼び、ホストのスレッド機能を要求しません。
+独立した仕事の実行順は未規定ですが、各仕事の内部の評価順序と結果配列の順序は保持します。
+
+ネイティブ並列 IR の外部シンボルは `tsuzuri_task_parallel` とし、`tz_` の公開 ABI と衝突させません。
+driver は必要なときだけ同梱 C をコンパイルし、実行ファイルには `-pthread` 付きでリンク、
+オブジェクトには relocatable link で組み込みます。ランタイム入口は weak/hidden で、
+複数の生成オブジェクトを同時リンクしても一つに統合します。
+生のネイティブ LLVM IR を直接リンクする利用者は `src/runtime/task.c` と `-pthread` を追加します。
+LLVM IR／ヘッダーの出力と Cargo ビルドには、引き続き LLVM・pthread ヘッダーを要求しません。
+
 **所有権:** 型検査済みのローカル ID とフィールド経路に対して move と loan を検査します。
 引数などの一時的な loan も、後続オペランドの評価が終わるまで保持します。
 再借用は元の loan を親として追跡し、子の生存中に元の排他参照を使用・移動できません。
@@ -200,7 +233,7 @@ memory.grow の失敗・16 MiB 上限超過ではトラップし、成功した�
 公開 ABI は 64-bit 以下の整数／f32／f64／正規化した bool／void に限定します。
 8／16-bit 整数のホスト ABI は 32-bit に正規化します。128-bit 値、ソフトウェア浮動小数点、
 文字列・参照の所有権やホスト依存レイアウトを公開しません。
-GUI、入力、永続化、非同期処理はホストの境界で扱います。
+GUI、入力、永続化、非同期 I/O／イベントループはホストの境界で扱います。
 
 **出力:** 入力全体の検査後、出力先と同じファイルシステムの専用ディレクトリでビルドします。
 全ツールが成功した後にだけ rename で成果物を公開します。
@@ -218,6 +251,7 @@ cargo test --locked
 cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/tasks.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 ```
@@ -262,6 +296,14 @@ WASM では累積の確保量がメモリ上限を超える反復を実行し、
 生成器はホストの target triple／データレイアウト／CPU 属性と新しい IR 限定の属性を除き、
 対応する little-endian ネイティブ／wasm32 で同じ整数アルゴリズムを使います。
 生成済み IR は直接手編集せず、C の変更と一緒に更新してください。
+
+タスクは `tests/tasks.rs` が構文・単相化・move・捕捉された借用・決定的 IR を検査します。
+`tests/tasks.mjs` は native／WASM の `-O0`／`-O3` で逐次 bind、結果順序、入れ子の並列処理、
+所有文字列・コレクション・関数・タスクの結果、数値境界、trap を確認します。
+ネイティブのヒープ追跡と WASM 上限を超える累積確保で、未実行タスクを含む解放も確認します。
+`tests/task_runtime.c` は capability 検出と pthread 呼び出しを計測可能な境界に差し替え、
+条件変数による実際の同時実行、共有枠の上限、全 join、逐次 fallback、作成／join 失敗の診断を検査します。
+時間の速さを合否条件にせず、通常の関数呼び出し後には実行中の worker を残しません。
 
 任意の実ブラウザー検証:
 

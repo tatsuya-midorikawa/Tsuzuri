@@ -64,6 +64,7 @@ fn check_functions(
             &function.body,
             infer,
             &closed,
+            function.is_task,
         )?);
     }
     Ok(constraints)
@@ -75,6 +76,7 @@ fn check_body(
     body: &TypedExpr,
     infer: bool,
     closed: &[bool],
+    task: bool,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut checker = Checker {
         module,
@@ -88,7 +90,7 @@ fn check_body(
     };
     for parameter in parameters {
         let mut value = Value::default();
-        if parameter.ty.carries_loans(&module.records) {
+        if !task && parameter.ty.carries_loans(&module.records) {
             let root = usize::MAX - parameter.id;
             checker.external.insert(root);
             let mutable = matches!(parameter.ty, Type::Reference(_, true));
@@ -108,10 +110,14 @@ fn check_body(
     }
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
     for id in result.loans {
-        if !checker.external.contains(&checker.loans[id].place.root) {
+        if task || !checker.external.contains(&checker.loans[id].place.root) {
             return Err(error(
                 "E1013",
-                "cannot return a reference to a local value",
+                if task {
+                    "task results cannot retain borrowed values"
+                } else {
+                    "cannot return a reference to a local value"
+                },
                 body.span,
             ));
         }
@@ -142,7 +148,11 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
             return true;
         }
         match &expression.kind {
-            E::Function(_) | E::GenericFunction(..) | E::Method(..) => true,
+            E::Function(_)
+            | E::GenericFunction(..)
+            | E::Method(..)
+            | E::TaskRun(_)
+            | E::TaskParallel(_) => true,
             E::Local(id) => locals.get(id).copied().unwrap_or(false),
             E::Lambda { captures, .. } => captures
                 .iter()
@@ -713,24 +723,40 @@ impl Checker<'_> {
                     body,
                     self.infer,
                     self.closed,
+                    matches!(expression.ty, Type::Task(_)),
                 )?);
                 for capture in captures {
-                    let expression = TypedExpr {
+                    let value = TypedExpr {
                         kind: E::Local(capture.id),
                         ty: capture.ty.clone(),
                         span: expression.span,
                     };
-                    result
-                        .loans
-                        .extend(self.eval(&expression, Use::Consume, &during)?.loans);
+                    let value = self.eval(&value, Use::Consume, &during)?;
+                    if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
+                        return Err(error(
+                            "E1013",
+                            "task captures cannot retain borrowed values, including borrowed function environments",
+                            expression.span,
+                        ));
+                    }
+                    result.loans.extend(value.loans);
                 }
             }
             E::Closure(_, captures) => {
                 for capture in captures {
-                    result
-                        .loans
-                        .extend(self.eval(capture, Use::Consume, &during)?.loans);
+                    let value = self.eval(capture, Use::Consume, &during)?;
+                    if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
+                        return Err(error(
+                            "E1013",
+                            "task captures cannot retain borrowed values, including borrowed function environments",
+                            expression.span,
+                        ));
+                    }
+                    result.loans.extend(value.loans);
                 }
+            }
+            E::TaskRun(value) | E::TaskParallel(value) => {
+                self.eval(value, Use::Consume, &during)?;
             }
             E::Binary(operator, left, right) => {
                 let usage = if left.ty == Type::String
@@ -840,7 +866,9 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
         | E::Cast(value)
         | E::Field(value, _)
         | E::Length(value)
-        | E::StringLength(value) => count_uses(value, counts),
+        | E::StringLength(value)
+        | E::TaskRun(value)
+        | E::TaskParallel(value) => count_uses(value, counts),
         E::Binary(_, left, right)
         | E::Assign(left, right)
         | E::Index(left, right)

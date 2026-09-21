@@ -24,6 +24,7 @@ pub enum Type {
     Record(usize),
     Array(Box<Type>),
     List(Box<Type>),
+    Task(Box<Type>),
     Function(Vec<Type>, Box<Type>),
     Reference(Box<Type>, bool),
 }
@@ -80,6 +81,14 @@ impl Type {
                 format!("[{}]", element.display(records))
             }
             Self::List(element) => format!("[|{}|]", element.display(records)),
+            Self::Task(result) => {
+                let inner = result.display(records);
+                if matches!(**result, Self::Function(..)) {
+                    format!("Task ({inner})")
+                } else {
+                    format!("Task {inner}")
+                }
+            }
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(records))
             }
@@ -119,7 +128,11 @@ impl Type {
 
     pub fn is_copy(&self, records: &[CheckedRecord]) -> bool {
         match self {
-            Self::String | Self::Reference(_, true) | Self::Variable(_) | Self::Infer(_) => false,
+            Self::String
+            | Self::Task(_)
+            | Self::Reference(_, true)
+            | Self::Variable(_)
+            | Self::Infer(_) => false,
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
@@ -131,7 +144,7 @@ impl Type {
 
     pub fn needs_drop(&self, records: &[CheckedRecord]) -> bool {
         match self {
-            Self::String | Self::Function(..) => true,
+            Self::String | Self::Function(..) | Self::Task(_) => true,
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
@@ -174,7 +187,7 @@ impl Type {
 
     pub(crate) fn can_capture(&self, records: &[CheckedRecord]) -> bool {
         match self {
-            Self::Reference(_, true) => false,
+            Self::Reference(_, true) | Self::Task(_) => false,
             Self::Array(element) | Self::List(element) => element.can_capture(records),
             Self::Record(id) => records[*id]
                 .fields
@@ -190,6 +203,19 @@ impl Type {
             Self::Integer(8 | 16 | 32 | 64, _) | Self::Binary(32 | 64) | Self::Bool
         )
     }
+
+    pub(crate) fn can_send(&self, records: &[CheckedRecord]) -> bool {
+        match self {
+            Self::Reference(..) => false,
+            Self::Array(element) | Self::List(element) => element.can_send(records),
+            Self::Record(id) => records[*id]
+                .fields
+                .iter()
+                .all(|(_, ty)| ty.can_send(records)),
+            // Function environments are checked by ownership, not by their call signatures.
+            _ => true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -202,10 +228,12 @@ pub enum Builtin {
     ToInt,
     Assert,
     CloneString,
+    TaskRun,
+    TaskParallel,
 }
 
 impl Builtin {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Sqrt,
         Self::Floor,
         Self::Ceil,
@@ -214,6 +242,8 @@ impl Builtin {
         Self::ToInt,
         Self::Assert,
         Self::CloneString,
+        Self::TaskRun,
+        Self::TaskParallel,
     ];
 
     pub fn name(self) -> &'static str {
@@ -226,6 +256,8 @@ impl Builtin {
             Self::ToInt => "to_int",
             Self::Assert => "assert",
             Self::CloneString => "clone_string",
+            Self::TaskRun => "Task.run",
+            Self::TaskParallel => "Task.parallel",
         }
     }
 
@@ -235,6 +267,17 @@ impl Builtin {
             Self::ToInt => (Type::F64, Type::I64),
             Self::Assert => (Type::Bool, Type::Unit),
             Self::CloneString => (Type::Reference(Box::new(Type::String), false), Type::String),
+            Self::TaskRun => {
+                let ty = Type::Variable("a".into());
+                (Type::Task(Box::new(ty.clone())), ty)
+            }
+            Self::TaskParallel => {
+                let ty = Type::Variable("a".into());
+                (
+                    Type::Array(Box::new(Type::Task(Box::new(ty.clone())))),
+                    Type::Task(Box::new(Type::Array(Box::new(ty)))),
+                )
+            }
             _ => (Type::F64, Type::F64),
         };
         Signature {
@@ -306,6 +349,7 @@ pub struct CheckedFunction {
     type_parameters: Vec<String>,
     constraints: Vec<Constraint>,
     pub(crate) capture_count: usize,
+    pub(crate) is_task: bool,
 }
 
 impl CheckedFunction {
@@ -352,6 +396,8 @@ pub enum TypedExprKind {
         body: Box<TypedExpr>,
     },
     Closure(usize, Vec<TypedExpr>),
+    TaskRun(Box<TypedExpr>),
+    TaskParallel(Box<TypedExpr>),
     If {
         condition: Box<TypedExpr>,
         then_branch: Box<TypedExpr>,
@@ -424,14 +470,14 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             matches!(
                 tokens.as_slice(),
                 [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
-                    if text == name && name != "_"
+                    if text == name && name != "_" && name != "Task"
             )
         });
         if !valid || !names.modules.insert(name.to_owned()) {
             return Err(Diagnostic::new(
                 "E1011",
                 format!(
-                    "invalid or duplicate module name '{name}'; each .tzr filename must be a unique ASCII identifier, not '_' or a keyword"
+                    "invalid or duplicate module name '{name}'; each .tzr filename must be a unique ASCII identifier, not '_', 'Task', or a keyword"
                 ),
                 Span::default().in_source(source),
             ));
@@ -454,6 +500,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         let qualified = format!("{module}.{}", record.name.text);
         if crate::numeric::primitive(&record.name.text).is_some()
             || record.name.text == "_"
+            || record.name.text == "Task"
             || names.records.insert(qualified.clone(), id).is_some()
         {
             return Err(duplicate(&record.name));
@@ -624,6 +671,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             type_parameters: scheme.variables.clone(),
             constraints,
             capture_count: 0,
+            is_task: false,
         });
     }
     let mut entry = names.functions.get("Main.main").copied();
@@ -670,6 +718,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             type_parameters: Vec::new(),
             constraints: checker.constraints,
             capture_count: 0,
+            is_task: false,
         });
     }
     let module = CheckedModule {
@@ -711,6 +760,7 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
             Type::Array(Box::new(resolve_type(element, module, names)?))
         }
         TypeExprKind::List(element) => Type::List(Box::new(resolve_type(element, module, names)?)),
+        TypeExprKind::Task(result) => Type::Task(Box::new(resolve_type(result, module, names)?)),
         TypeExprKind::Function(parameters, result) => Type::function(
             parameters
                 .iter()
@@ -785,7 +835,7 @@ fn layout_size(
             16
         }
         Type::Integer(128, _) | Type::Binary(128) | Type::Decimal(128) | Type::String => 16,
-        Type::Function(..) => 32,
+        Type::Function(..) | Type::Task(_) => 32,
         // Small values conservatively occupy at least one pointer-sized slot.
         _ => 8,
     })
@@ -808,6 +858,17 @@ fn validate_size(ty: &Type, sizes: &[usize], span: Span) -> Result<usize, Diagno
         Type::Function(parameters, result) => {
             for parameter in parameters {
                 validate_size(parameter, sizes, span)?;
+            }
+            validate_size(result, sizes, span)?;
+            32
+        }
+        Type::Task(result) => {
+            if result.contains_reference() {
+                return Err(Diagnostic::new(
+                    "E1013",
+                    "task results must be owned values, not references",
+                    span,
+                ));
             }
             validate_size(result, sizes, span)?;
             32
@@ -952,7 +1013,15 @@ impl<'a> Checker<'a> {
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
             ExprKind::Name(name) => self.name(name)?,
             ExprKind::Lambda(parameters, body) => {
-                return self.lambda(parameters, body, expected, expression.span);
+                return self.lambda(parameters, body, expected, expression.span, false);
+            }
+            ExprKind::Task(body) => {
+                return self.lambda(&[], body, expected, expression.span, true);
+            }
+            ExprKind::TaskRun(value) => {
+                let result = expected.cloned().unwrap_or_else(|| self.inference.fresh());
+                let value = self.expression(value, Some(&Type::Task(Box::new(result.clone()))))?;
+                (TypedExprKind::TaskRun(Box::new(value)), result)
             }
             ExprKind::Unary(UnaryOp::Negate, operand)
                 if matches!(operand.kind, ExprKind::Integer(..)) =>
@@ -1186,6 +1255,25 @@ impl<'a> Checker<'a> {
                     TypedExprKind::NewArray(Box::new(length), Box::new(initializer))
                 };
                 (kind, ty)
+            }
+            ExprKind::Field(value, field)
+                if matches!(&value.kind, ExprKind::Name(name)
+                    if name.text == "Task" && self.local(&name.text).is_none()) =>
+            {
+                let builtin = Builtin::ALL
+                    .iter()
+                    .find(|builtin| builtin.name() == format!("Task.{}", field.text))
+                    .ok_or_else(|| {
+                        Diagnostic::new(
+                            "E1002",
+                            format!(
+                                "Task has no function '{}'; use Task.run or Task.parallel",
+                                field.text
+                            ),
+                            field.span,
+                        )
+                    })?;
+                self.builtin(*builtin)
             }
             ExprKind::Field(value, field)
                 if matches!(&value.kind, ExprKind::Name(name)
@@ -1439,10 +1527,7 @@ impl<'a> Checker<'a> {
             .iter()
             .find(|builtin| builtin.name() == name.text)
         {
-            return Ok((
-                TypedExprKind::Function(FunctionRef::Builtin(*builtin)),
-                builtin.signature().as_type(),
-            ));
+            return Ok(self.builtin(*builtin));
         }
         Err(Diagnostic::new(
             "E1002",

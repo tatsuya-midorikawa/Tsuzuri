@@ -35,6 +35,7 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
     match ty {
         Type::Array(element) => Type::Array(Box::new(map_type(element, f))),
         Type::List(element) => Type::List(Box::new(map_type(element, f))),
+        Type::Task(result) => Type::Task(Box::new(map_type(result, f))),
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
         Type::Function(parameters, result) => Type::function(
             parameters.iter().map(|ty| map_type(ty, f)).collect(),
@@ -61,7 +62,7 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
             return false;
         }
         match ty {
-            Type::Array(ty) | Type::List(ty) | Type::Reference(ty, _) => {
+            Type::Array(ty) | Type::List(ty) | Type::Task(ty) | Type::Reference(ty, _) => {
                 visit(ty, depth + 1, count)
             }
             Type::Function(parameters, result) => {
@@ -123,6 +124,7 @@ impl Inference {
         match ty {
             Type::Array(element) => Type::Array(Box::new(self.resolve(element))),
             Type::List(element) => Type::List(Box::new(self.resolve(element))),
+            Type::Task(result) => Type::Task(Box::new(self.resolve(result))),
             Type::Reference(value, mutable) => {
                 Type::Reference(Box::new(self.resolve(value)), *mutable)
             }
@@ -160,7 +162,9 @@ impl Inference {
                 self.solutions[*id] = Some(ty.clone());
                 return Ok(());
             }
-            (Type::Array(a), Type::Array(b)) | (Type::List(a), Type::List(b)) => {
+            (Type::Array(a), Type::Array(b))
+            | (Type::List(a), Type::List(b))
+            | (Type::Task(a), Type::Task(b)) => {
                 return self.unify(a, b, records, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
@@ -276,6 +280,7 @@ impl Classes {
             "Numeric",
             "Copy",
             "Capture",
+            "Send",
         ] {
             classes
                 .names
@@ -344,6 +349,7 @@ impl Classes {
             for declaration in &program.classes {
                 let qualified = format!("{module}.{}", declaration.name.text);
                 if declaration.name.text == "_"
+                    || declaration.name.text == "Task"
                     || classes.names.contains_key(&declaration.name.text)
                     || classes
                         .names
@@ -452,7 +458,10 @@ impl Classes {
                 });
                 constraints.extend(self.inline_constraints(ty, module, names)?);
             }
-            TypeExprKind::Array(ty) | TypeExprKind::List(ty) | TypeExprKind::Reference(ty, _) => {
+            TypeExprKind::Array(ty)
+            | TypeExprKind::List(ty)
+            | TypeExprKind::Task(ty)
+            | TypeExprKind::Reference(ty, _) => {
                 constraints.extend(self.inline_constraints(ty, module, names)?)
             }
             TypeExprKind::Function(parameters, result) => {
@@ -646,6 +655,7 @@ impl Classes {
             "Eq" => ty.is_scalar() || matches!(ty, Type::String | Type::Unit),
             "Copy" => ty.is_copy(records),
             "Capture" => ty.can_capture(records),
+            "Send" => ty.can_send(records),
             _ => false,
         }
     }
@@ -671,7 +681,17 @@ impl Classes {
                 return Err(Diagnostic::new(
                     "E1005",
                     format!(
-                        "cannot capture {} in a reusable function; fully apply exclusive borrows instead of storing them",
+                        "cannot capture {} in a reusable function; fully apply exclusive borrows and keep single-use tasks in task blocks",
+                        constraint.ty.display(records)
+                    ),
+                    constraint.span,
+                ));
+            }
+            if self.declarations[constraint.class].name == "Send" {
+                return Err(Diagnostic::new(
+                    "E1013",
+                    format!(
+                        "tasks require owned values; {} contains a reference",
                         constraint.ty.display(records)
                     ),
                     constraint.span,
@@ -709,6 +729,7 @@ fn type_expression(ty: &Type, records: &[CheckedRecord], span: Span) -> TypeExpr
         Type::Variable(name) => TypeExprKind::Variable(name.clone()),
         Type::Array(ty) => TypeExprKind::Array(Box::new(type_expression(ty, records, span))),
         Type::List(ty) => TypeExprKind::List(Box::new(type_expression(ty, records, span))),
+        Type::Task(ty) => TypeExprKind::Task(Box::new(type_expression(ty, records, span))),
         Type::Reference(ty, mutable) => {
             TypeExprKind::Reference(Box::new(type_expression(ty, records, span)), *mutable)
         }
@@ -726,6 +747,18 @@ fn type_expression(ty: &Type, records: &[CheckedRecord], span: Span) -> TypeExpr
 }
 
 impl Checker<'_> {
+    pub(super) fn builtin(&mut self, builtin: Builtin) -> (TypedExprKind, Type) {
+        let ty = builtin.signature().as_type();
+        let substitutions = variables(&ty)
+            .into_iter()
+            .map(|name| (name, self.inference.fresh()))
+            .collect();
+        (
+            TypedExprKind::Function(FunctionRef::Builtin(builtin)),
+            substitute(&ty, &substitutions),
+        )
+    }
+
     pub(super) fn function(&mut self, id: usize) -> (TypedExprKind, Type) {
         let scheme = &self.signatures[id];
         if scheme.variables.is_empty() {
@@ -781,7 +814,12 @@ impl Checker<'_> {
             ty,
             span,
         };
-        if !matches!(constraint.ty, Type::Infer(_)) {
+        let mut undetermined = false;
+        map_type(&constraint.ty, &mut |ty| {
+            undetermined |= matches!(ty, Type::Infer(_));
+            ty.clone()
+        });
+        if !undetermined {
             self.classes.validate(&constraint, self.records)?;
         }
         self.constraints.push(constraint);
@@ -887,10 +925,10 @@ impl Checker<'_> {
             *ty = resolved;
             Ok(())
         })?;
-        for (ty, span) in captures(body, self.classes, |id| {
+        for (class, ty, span) in captures(body, self.classes, |id| {
             self.signatures[id].signature.parameters.len()
         })? {
-            self.require("Capture", ty, span)?;
+            self.require(class, ty, span)?;
         }
         for constraint in &mut self.constraints {
             constraint.ty = self.inference.resolve(&constraint.ty);
@@ -904,7 +942,7 @@ fn captures(
     body: &mut TypedExpr,
     classes: &Classes,
     parameters: impl Fn(usize) -> usize,
-) -> Result<Vec<(Type, Span)>, Diagnostic> {
+) -> Result<Vec<(&'static str, Type, Span)>, Diagnostic> {
     let arity = |callee: &TypedExpr| match &callee.kind {
         TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::GenericFunction(id, _) => {
             parameters(*id)
@@ -941,14 +979,24 @@ fn captures(
                 result.extend(
                     arguments
                         .iter()
-                        .map(|argument| (argument.ty.clone(), argument.span)),
+                        .map(|argument| ("Capture", argument.ty.clone(), argument.span)),
                 )
             }
-            TypedExprKind::Lambda { captures, .. } => result.extend(
-                captures
-                    .iter()
-                    .map(|capture| (capture.ty.clone(), expression.span)),
-            ),
+            TypedExprKind::Lambda { captures, body, .. } => {
+                let class = if matches!(expression.ty, Type::Task(_)) {
+                    "Send"
+                } else {
+                    "Capture"
+                };
+                result.extend(
+                    captures
+                        .iter()
+                        .map(|capture| (class, capture.ty.clone(), expression.span)),
+                );
+                if class == "Send" {
+                    result.push(("Send", body.ty.clone(), body.span));
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -968,7 +1016,9 @@ fn walk(
         | Cast(value)
         | Field(value, _)
         | Length(value)
-        | StringLength(value) => walk(value, f)?,
+        | StringLength(value)
+        | TaskRun(value)
+        | TaskParallel(value) => walk(value, f)?,
         Binary(_, left, right)
         | Assign(left, right)
         | Index(left, right)
@@ -1280,12 +1330,12 @@ impl Specializer<'_> {
             validate_size(ty, self.sizes, span)?;
             Ok(())
         })?;
-        for (ty, span) in captures(&mut function.body, self.classes, |id| {
+        for (class, ty, span) in captures(&mut function.body, self.classes, |id| {
             self.templates[id].parameters.len()
         })? {
             self.classes.validate(
                 &Constraint {
-                    class: self.classes.names["Capture"],
+                    class: self.classes.names[class],
                     ty,
                     span,
                 },
@@ -1465,6 +1515,7 @@ impl Specializer<'_> {
             type_parameters: Vec::new(),
             constraints: Vec::new(),
             capture_count: 0,
+            is_task: false,
         });
         self.intrinsics.insert(key, id);
         self.request(id, Vec::new(), span)

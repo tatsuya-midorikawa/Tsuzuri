@@ -11,6 +11,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 意味を保ち実処理が最も速くなる経路を内部で選ぶことを目指します。**
 この方針はコンパイラだけでなく、組み込み関数と今後の標準ライブラリにも適用します。
 現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、
+`Task.parallel` による明示的な CPU 並列処理も使えます。
 GPU バックエンドと自動マルチスレッド化は未実装です。
 伸縮可能なコレクション、ジェネリックなレコード型、
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
@@ -42,6 +43,7 @@ fn main = answer()
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` 宣言と `fn`／`let` 実装、全関数のカリー化、部分適用、匿名関数、ローカル型推論、式としての `if`／ブロック、`|>`、高階関数、前方参照 |
 | 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
+| タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tzr` エントリー |
 | メモリ | 所有権、move、`&T`／`&mut T` の借用検査。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
@@ -124,6 +126,40 @@ instance Score Point {
 旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
 詳細と制約一覧は [言語仕様](docs/language.md#多相関数と型クラス) を参照してください。
 
+## タスクと並列処理
+
+```text
+let computation = task {
+    let! values = Task.parallel [
+        task { return 20 },
+        task { return 22 }
+    ]
+    return values[0] + values[1]
+}
+
+Task.run computation
+// 42
+```
+
+`task { ... }` は `Task T` 型の **遅延・一回実行の計算** を作ります。
+F# の通常の `task` と異なり、作成しただけでは開始しません。
+`let!` で前の計算の結果を受け取り、`return` で結果を返します。
+独立した計算は `Task.parallel` に配列で渡し、入力順の結果配列を受け取ります。
+`Task.run` は計算を消費して実行し、すべての子処理とスレッドの回収が完了してから戻ります。
+スレッドの開始・join・detach をユーザーが管理する必要はありません。
+
+捕捉する値は Copy／move でタスク自身が所有します。参照や、借用を保持した関数値の
+持ち込みを拒否するため、所有者の寿命や共有可変状態を気にせず処理を分離できます。
+同じタスクの二重実行はコンパイルエラーです。未実行のままスコープを出たタスクは、
+本体を実行せず捕捉値を解放します。計算を繰り返す場合は、タスクを返す関数を呼び直します。
+
+ネイティブの並列区間は POSIX threads を使い、利用可能 CPU 数と最大32実行スレッドを目安に、
+ランタイム全体で追加スレッド数を制限します。入れ子で枠が埋まっても呼び出し元で処理を進めます。
+WASM はインポート不要の **逐次フォールバック** です。WASM threads、非同期 I/O、
+キャンセル、常駐ワーカープールは未対応で、`Task.run` は呼び出し元をブロックします。
+小さい仕事では確保・コピー・スレッド起動の方が高くつくため、ある程度まとまった計算を渡してください。
+実行例は `tsuzuri run examples/tasks`、詳細は [タスクの仕様](docs/language.md#タスク) を参照してください。
+
 ## ファイルとモジュール
 
 **モジュール名は拡張子を除いたファイル名で決まり、1 ファイルに 1 モジュールを強制します。**
@@ -166,6 +202,8 @@ d
 - LLVM/Clang 17 以降。WASM のリンクには `wasm-ld`（LLD）も必要です。
 - 検証には Node.js 20 以降と Python 3.9 以降。
 - macOS と Linux を CI 対象にしています。Windows のネイティブ・ツールチェーンは未検証です。
+- ネイティブの `Task.parallel` は POSIX pthread ヘッダーとライブラリが必要です。
+  `build`／`run` はランタイムを同梱します。オブジェクトを C/C++ ホストへリンクするときは `-pthread` を付けます。
 
 macOS の例（Rust は rustup 管理を推奨）:
 
@@ -325,6 +363,9 @@ Clang に渡します。SIMD 化は演算と依存関係が許す範囲で LLVM 
 
 出力先省略時は選択した入力ファイルの拡張子を変更します。ディレクトリ指定なら `Main.ll` などになります。
 `--emit llvm` はライブラリ用 IR で、コンソールのエントリー・ラッパーは付けません。
+ネイティブの並列タスクを含む生の IR を直接リンクする場合は、
+`clang kernel.ll src/runtime/task.c -pthread -lm ...` のようにタスクランタイムも渡します。
+`--emit object` にはランタイム本体が含まれ、別途 C ソースを渡す必要はありません。
 WASM は少なくとも一つの `export def` が必要です。
 ホスト向けの公開名 `tz_name` は維持するため、エクスポート名はプロジェクト全体で一意にします。
 `--emit object --target wasm32` はリンク前の WASM オブジェクトも生成できます。
@@ -340,6 +381,7 @@ cargo test --locked
 cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/tasks.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri

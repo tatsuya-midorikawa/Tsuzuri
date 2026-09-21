@@ -24,6 +24,7 @@ fn parse_source(source: &str, source_id: Option<usize>) -> Result<Program, Diagn
         tokens,
         position: 0,
         nesting: 0,
+        in_task: false,
     }
     .program()
 }
@@ -33,6 +34,7 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     position: usize,
     nesting: usize,
+    in_task: bool,
 }
 
 impl Parser<'_> {
@@ -483,7 +485,9 @@ impl Parser<'_> {
             }
         } else {
             let name = self.qualified_ident()?;
-            if self.at(&TokenKind::TypeVariable(String::new())) {
+            if name.text == "Task" {
+                TypeExprKind::Task(Box::new(self.type_atom()?))
+            } else if self.at(&TokenKind::TypeVariable(String::new())) {
                 let variable = self.type_variable()?;
                 TypeExprKind::Constrained(
                     Box::new(name),
@@ -523,7 +527,13 @@ impl Parser<'_> {
         let mut depth = 0;
         let result = loop {
             if self.eat(&TokenKind::Let) {
-                let binding = self.binding(false)?;
+                let binding = self.binding(self.in_task)?;
+                depth = depth.max(binding.value.depth);
+                bindings.push(binding);
+            } else if self.at(&TokenKind::Return) {
+                break self.task_return()?;
+            } else if self.at(&TokenKind::Do) {
+                let binding = self.task_do()?;
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
             } else if self.at(&TokenKind::RightBrace) {
@@ -558,7 +568,65 @@ impl Parser<'_> {
         )
     }
 
+    fn task(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.take().span;
+        let outer = self.in_task;
+        self.in_task = true;
+        let body = self.block()?;
+        self.in_task = outer;
+        let span = start.through(body.span);
+        let depth = body.depth + 1;
+        self.make(ExprKind::Task(Box::new(body)), span, depth)
+    }
+
+    fn task_return(&mut self) -> Result<Expr, Diagnostic> {
+        if !self.in_task {
+            return Err(self.error("'return' is only allowed at the end of a task block"));
+        }
+        let start = self.take().span;
+        let run = self.eat(&TokenKind::Bang);
+        let value = self.expression_inner(0, true, true)?;
+        let value = if run {
+            let span = start.through(value.span);
+            let depth = value.depth + 1;
+            self.make(ExprKind::TaskRun(Box::new(value)), span, depth)?
+        } else {
+            value
+        };
+        self.eat(&TokenKind::Semicolon);
+        Ok(value)
+    }
+
+    fn task_do(&mut self) -> Result<Binding, Diagnostic> {
+        if !self.in_task {
+            return Err(self.error("'do!' is only allowed inside a task block"));
+        }
+        let start = self.take().span;
+        self.expect(&TokenKind::Bang, "'!' after 'do'")?;
+        let value = self.expression_inner(0, true, true)?;
+        let span = start.through(value.span);
+        let depth = value.depth + 1;
+        let value = self.make(ExprKind::TaskRun(Box::new(value)), span, depth)?;
+        self.binding_end(true)?;
+        Ok(Binding {
+            name: Ident {
+                text: "_".into(),
+                span,
+            },
+            mutable: false,
+            annotation: Some(TypeExpr {
+                kind: TypeExprKind::Named("unit".into()),
+                span,
+            }),
+            value,
+        })
+    }
+
     fn binding(&mut self, top_level: bool) -> Result<Binding, Diagnostic> {
+        let run = self.eat(&TokenKind::Bang);
+        if run && !self.in_task {
+            return Err(self.error("'let!' is only allowed inside a task block"));
+        }
         let mutable = self.eat(&TokenKind::Mut);
         let name = self.ident()?;
         let annotation = if self.eat(&TokenKind::Colon) {
@@ -568,21 +636,37 @@ impl Parser<'_> {
         };
         self.expect(&TokenKind::Equal, "'=' in the binding")?;
         let value = self.expression_inner(0, true, top_level)?;
-        let newline = self.newline_before_current();
-        if !self.eat(&TokenKind::Semicolon) && !(top_level && (self.at(&TokenKind::End) || newline))
-        {
-            return Err(self.error(if top_level {
-                "expected ';' or a newline after the top-level let binding"
-            } else {
-                "expected ';' after the let binding"
-            }));
-        }
+        let value = if run {
+            let span = value.span;
+            let depth = value.depth + 1;
+            self.make(ExprKind::TaskRun(Box::new(value)), span, depth)?
+        } else {
+            value
+        };
+        self.binding_end(top_level)?;
         Ok(Binding {
             name,
             mutable,
             annotation,
             value,
         })
+    }
+
+    fn binding_end(&mut self, newline_allowed: bool) -> Result<(), Diagnostic> {
+        let newline = self.newline_before_current();
+        if !self.eat(&TokenKind::Semicolon)
+            && !(newline_allowed
+                && (self.at(&TokenKind::End)
+                    || newline
+                    || (self.in_task && self.at(&TokenKind::RightBrace))))
+        {
+            return Err(self.error(if newline_allowed {
+                "expected ';' or a newline after the binding"
+            } else {
+                "expected ';' after the let binding"
+            }));
+        }
+        Ok(())
     }
 
     fn newline_before_current(&self) -> bool {
@@ -780,6 +864,7 @@ impl Parser<'_> {
                     | TokenKind::True
                     | TokenKind::False
                     | TokenKind::New
+                    | TokenKind::Task
                     | TokenKind::LeftParen
                     | TokenKind::LeftBracket
                     | TokenKind::LeftList
@@ -882,6 +967,7 @@ impl Parser<'_> {
     fn primary(&mut self, allow_record: bool, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
         let kind = match &self.current().kind {
+            TokenKind::Task => return self.task(),
             TokenKind::New => return self.new_collection(),
             TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::String(_) => {
                 return self.literal();
@@ -945,7 +1031,10 @@ impl Parser<'_> {
     }
 
     fn lambda(&mut self, name: Ident, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
+        let outer = self.in_task;
+        self.in_task = false;
         let body = self.expression_inner(0, true, stop_at_newline)?;
+        self.in_task = outer;
         let span = name.span.through(body.span);
         let depth = body.depth + 1;
         let (mut parameters, body) = match body {

@@ -287,6 +287,14 @@ pub fn build(
     if options.target == Target::Wasm32 && options.emit != Emit::Header {
         text.push_str(include_str!("runtime/wasm.ll"));
     }
+    let task_runtime =
+        options.target == Target::Native && text.contains("declare void @tsuzuri_task_parallel(");
+    if task_runtime && !cfg!(unix) && !matches!(options.emit, Emit::Llvm | Emit::Header) {
+        return Err(driver_error(
+            "E2002",
+            "native parallel tasks require a POSIX pthread toolchain; wasm32 provides the portable sequential backend",
+        ));
+    }
     protect_sources(project, output)?;
     let parent = output
         .parent()
@@ -308,6 +316,27 @@ pub fn build(
     } else {
         let ir = temporary.path.join("module.ll");
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+        let runtime_object = temporary.path.join("task.o");
+        if task_runtime {
+            let runtime_source = temporary.path.join("task.c");
+            fs::write(&runtime_source, include_str!("runtime/task.c"))
+                .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args(["-std=c11", "-fPIC", "-pthread", "-c"])
+                .arg(format!("-O{}", options.optimization));
+            if options.cpu == Cpu::Native {
+                runtime.arg(native_cpu_flag(env::consts::ARCH)?);
+            }
+            runtime.arg(&runtime_source).arg("-o").arg(&runtime_object);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut runtime,
+                    "parallel tasks require Clang and POSIX pthread headers",
+                )?,
+            );
+        }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         clang
             .arg("-x")
@@ -328,13 +357,21 @@ pub fn build(
             clang.arg("-c");
         }
         let object = temporary.path.join("module.o");
-        clang.arg(&ir).arg("-o").arg(if options.emit == Emit::Wasm {
-            &object
-        } else {
-            &artifact
-        });
+        clang.arg(&ir).arg("-o").arg(
+            if options.emit == Emit::Wasm || (task_runtime && options.emit == Emit::Object) {
+                &object
+            } else {
+                &artifact
+            },
+        );
         if options.emit == Emit::Executable && !cfg!(windows) {
             clang.arg("-lm");
+        }
+        if task_runtime && options.emit == Emit::Executable {
+            clang
+                .args(["-x", "none"])
+                .arg(&runtime_object)
+                .arg("-pthread");
         }
         collect_message(
             &mut messages,
@@ -343,6 +380,25 @@ pub fn build(
                 "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
             )?,
         );
+        if task_runtime && options.emit == Emit::Object {
+            let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
+            linker.args(["-r", "-nostdlib"]);
+            if cfg!(target_os = "linux") {
+                linker.arg("-no-pie");
+            }
+            linker
+                .arg(&object)
+                .arg(&runtime_object)
+                .arg("-o")
+                .arg(&artifact);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut linker,
+                    "the native linker must support relocatable object linking for parallel tasks",
+                )?,
+            );
+        }
         if options.emit == Emit::Wasm {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
             linker
