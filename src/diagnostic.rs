@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(location("// 日本語\nlet x", 18), (2, 6));
         assert_eq!(json_string("a\n\"\\\u{1}"), "\"a\\n\\\"\\\\\\u0001\"");
         let diagnostic = Diagnostic::new("E0001", "bad \"value\"", Span::new(0, 1));
-        assert!(diagnostic.json("A.tzr", "x").contains("\"column\":1"));
-        assert!(diagnostic.render("A.tzr", "x").contains("A.tzr:1:1"));
+        assert!(diagnostic.json("A.tz", "x").contains("\"column\":1"));
+        assert!(diagnostic.render("A.tz", "x").contains("A.tz:1:1"));
     }
 }

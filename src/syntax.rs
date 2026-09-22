@@ -3,6 +3,24 @@ use crate::diagnostic::Span;
 pub const MAX_NESTING: usize = 128;
 pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    Code,
+    TypeClass,
+    Computation,
+}
+
+impl SourceKind {
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension {
+            "tz" => Some(Self::Code),
+            "tt" => Some(Self::TypeClass),
+            "tc" => Some(Self::Computation),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident(String),
@@ -20,6 +38,10 @@ pub enum TokenKind {
     Task,
     Do,
     Return,
+    Yield,
+    For,
+    In,
+    While,
     Mut,
     New,
     As,
@@ -82,6 +104,7 @@ pub struct Ident {
 
 #[derive(Debug)]
 pub struct Program {
+    pub source_kind: Option<SourceKind>,
     pub records: Vec<RecordDecl>,
     pub functions: Vec<FunctionDecl>,
     pub classes: Vec<ClassDecl>,
@@ -212,12 +235,14 @@ pub enum ExprKind {
     Bool(bool),
     Unit,
     Name(Ident),
+    QualifiedFunction(Ident),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     Lambda(Vec<(Ident, bool)>, Box<Expr>),
     Task(Box<Expr>),
     TaskRun(Box<Expr>),
+    Computation(Ident, Box<ComputationBlock>),
     If {
         condition: Box<Expr>,
         then_branch: Box<Expr>,
@@ -249,4 +274,43 @@ pub struct Binding {
     pub mutable: bool,
     pub annotation: Option<TypeExpr>,
     pub value: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct ComputationBlock {
+    pub statements: Vec<ComputationStatement>,
+    pub span: Span,
+    pub depth: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct ComputationStatement {
+    pub kind: ComputationStatementKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum ComputationStatementKind {
+    Let(Binding, bool),
+    Do(Expr),
+    Operation(&'static str, Expr),
+    If(Expr, ComputationBlock, Option<ComputationBlock>),
+    For(Ident, Expr, ComputationBlock),
+    While(Expr, ComputationBlock),
+    Expression(Expr),
+}
+
+impl ComputationStatement {
+    pub fn depth(&self) -> usize {
+        use ComputationStatementKind::*;
+        match &self.kind {
+            Let(binding, _) => binding.value.depth,
+            Do(value) | Operation(_, value) | Expression(value) => value.depth,
+            If(condition, yes, no) => condition
+                .depth
+                .max(yes.depth)
+                .max(no.as_ref().map_or(0, |branch| branch.depth)),
+            For(_, source, body) | While(source, body) => source.depth.max(body.depth),
+        }
+    }
 }

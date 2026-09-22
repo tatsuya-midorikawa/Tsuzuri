@@ -12,7 +12,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-e2e-"));
-const fixture = join(root, "tests/fixtures/Semantics.tzr");
+const fixture = join(root, "tests/fixtures/Semantics.tz");
 const cases = [];
 const minimum = -(1n << 63n);
 const maximum = (1n << 63n) - 1n;
@@ -222,7 +222,7 @@ function nativeValue(text, kind) {
 function diagnostic(source, code) {
   const directory = join(temporary, "diagnostics");
   mkdirSync(directory, { recursive: true });
-  const input = join(directory, "Invalid.tzr");
+  const input = join(directory, "Invalid.tz");
   writeFileSync(input, source);
   const result = cli(["check", input, "--json"], { success: false });
   assert.equal(result.status, 1, result.stderr);
@@ -308,7 +308,7 @@ define i64 @${name}_${half}(i64 %al, i64 %ah, i64 %bl, i64 %bh) {
 }
 
 async function polymorphismChecks() {
-  const source = join(root, "tests/fixtures/polymorphism/Main.tzr");
+  const source = join(root, "tests/fixtures/polymorphism/Main.tz");
   const directory = join(temporary, "polymorphism");
   mkdirSync(directory);
   const header = join(directory, "polymorphism.h");
@@ -368,8 +368,8 @@ int main(void) {
 async function moduleChecks() {
   const directory = join(temporary, "modules");
   mkdirSync(directory);
-  const main = join(directory, "Main.tzr");
-  const point = join(directory, "Point.tzr");
+  const main = join(directory, "Main.tz");
+  const point = join(directory, "Point.tz");
   const pointSource = `
 record Point { x: f64, y: f64 }
 fn distance(point: Point) -> f64 {
@@ -408,25 +408,25 @@ export fn hypotenuse(x: f64, y: f64) -> f64 {
   assert.equal((await WebAssembly.instantiate(readFileSync(library))).instance.exports.tz_hypotenuse(3, 4), 5);
 
   const sources = {
-    "Right.tzr": `
+    "Right.tz": `
 record Value { x: i64 }
 fn value(v: Value) -> i64 { v.x + 1 }
 `,
-    "Odd.tzr": "fn test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
-    "Loop.tzr": `
+    "Odd.tz": "fn test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
+    "Loop.tz": `
 fn sum(n: i64, values: [i64]) -> i64 {
   let total = values[0];
   if n == 0 { total } else { Loop.sum(n - 1, [total + n, values[1]]) }
 }
 fn down(n: i64) -> i64 { if n == 0 { 0 } else { n - 1 |> Loop.down } }
 `,
-    "Left.tzr": `
+    "Left.tz": `
 record Value { x: i64 }
 fn value(v: Value) -> i64 { v.x }
 fn main() -> i64 { 999 }
 `,
-    "Even.tzr": "fn test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
-    "Main.tzr": `
+    "Even.tz": "fn test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
+    "Main.tz": `
 record Callback { distance: fn(Point.Point) -> f64 }
 fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
 export fn module_result() -> f64 {
@@ -494,7 +494,7 @@ int main(void) {
   assert.equal(JSON.parse(wrongEntry.stderr).code, "E2004");
   assert.equal(JSON.parse(wrongEntry.stderr).path, point);
 
-  const broken = join(directory, "Broken.tzr");
+  const broken = join(directory, "Broken.tz");
   for (const [source, code, line] of [
     ["// 日本語\nfn broken() -> i64 { false }", "E1003", 2],
     ["fn broken() -> i64 { @ }", "E0001", 1],
@@ -522,7 +522,7 @@ int main(void) {
     assert.equal(readFileSync(point, "utf8"), pointSource);
   }
 
-  const badName = join(directory, "Bad-Name.tzr");
+  const badName = join(directory, "Bad-Name.tz");
   writeFileSync(badName, "fn value() -> i64 { 0 }");
   const invalidName = cli(["check", badName, "--json"], { success: false });
   assert.equal(invalidName.status, 1);
@@ -536,8 +536,8 @@ int main(void) {
   assert.equal(rejected.status, 1);
   const extensionError = JSON.parse(rejected.stderr);
   assert.equal(extensionError.code, "E2000");
-  assert.match(extensionError.message, /\.tzr/);
-  console.log("Modules: file namespaces, Main.tzr entry, higher-order calls, records, recursion, per-file diagnostics, source protection");
+  assert.match(extensionError.message, /\.tz/);
+  console.log("Modules: file namespaces, Main.tz entry, higher-order calls, records, recursion, per-file diagnostics, source protection");
 }
 
 try {
@@ -599,7 +599,7 @@ try {
   ]) {
     const directory = join(temporary, `scalar-${type}`);
     mkdirSync(directory);
-    const input = join(directory, "Main.tzr");
+    const input = join(directory, "Main.tz");
     writeFileSync(input, `fn main() -> ${type} { ${value} }`);
     assert.equal(cli(["run", input]).stdout, expected);
   }
@@ -613,7 +613,7 @@ try {
   diagnostic("fn f() -> i64 { 1__2 }", "E0001");
   diagnostic("record R { r: R }", "E1010");
   diagnostic("def id :: 'a -> 'a\nfn id x = x\ndef f :: unit\nfn f = { let value = id; }", "E1015");
-  diagnostic("class C 'a { def f :: 'a -> i32 }\ninstance C bool {}", "E1016");
+  diagnostic("class C 'a { def f :: 'a -> i32 }\ninstance C bool {}", "E1018");
   diagnostic("def add :: 'a -> 'a -> 'a\nfn add x y = x + y\ndef f :: bool\nfn f = add true false", "E1005");
   diagnostic("fn add :: i32 -> i32 -> i32\nfn add x y = x + y", "E0002");
   diagnostic("def f :: Add 'a -> 'a\nfn f x = x\ndef g :: bool\nfn g = f true", "E1005");
@@ -623,7 +623,7 @@ try {
 
   const spaced = join(temporary, "space 日本語");
   mkdirSync(spaced);
-  const input = join(spaced, "Main.tzr");
+  const input = join(spaced, "Main.tz");
   writeFileSync(input, "\uFEFFexport fn main() -> i64 {\r\n  42\r\n}\r\n");
   const output = join(spaced, "output.wasm");
   cli(["build", "--target", "wasm32", "-o", output, "--", input]);
@@ -652,7 +652,7 @@ try {
     symlinkSync(input, symlink);
     assert.equal(cli(["build", input, "--emit", "llvm", "-o", hardlink], { success: false }).status, 1);
     assert.equal(cli(["build", input, "--emit", "llvm", "-o", symlink], { success: false }).status, 1);
-    const pipe = join(spaced, "Pipe.tzr");
+    const pipe = join(spaced, "Pipe.tz");
     execute("mkfifo", [pipe]);
     const pipeResult = cli(["check", pipe, "--json"], { success: false });
     assert.equal(JSON.parse(pipeResult.stderr).code, "E2001");

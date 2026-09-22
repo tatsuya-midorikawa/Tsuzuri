@@ -1,0 +1,14 @@
+record Result { valid: bool, value: i64 }
+
+def Return :: i64 -> Result
+fn Return value = Result { valid: true, value: value }
+
+def ReturnFrom :: Result -> Result
+fn ReturnFrom result = result
+
+def Bind :: Result -> (i64 -> Result) -> Result
+fn Bind result next =
+    if result.valid { next result.value } else { result }
+
+def Zero :: Result
+fn Zero = Result { valid: false, value: 0 }

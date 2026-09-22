@@ -2,7 +2,7 @@ use tsuzuri::{analyze, llvm};
 
 #[test]
 fn all_semantics_fixture_functions_lower_deterministically() {
-    let source = include_str!("fixtures/Semantics.tzr");
+    let source = include_str!("fixtures/Semantics.tz");
     let module = analyze(source).unwrap();
     let first = llvm::emit(&module, llvm::Entry::Library).unwrap();
     let second = llvm::emit(&module, llvm::Entry::Library).unwrap();

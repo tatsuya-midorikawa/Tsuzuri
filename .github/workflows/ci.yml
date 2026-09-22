@@ -45,6 +45,7 @@ jobs:
           node tests/e2e.mjs target/release/tsuzuri
           node tests/primitives.mjs target/release/tsuzuri
           node tests/tasks.mjs target/release/tsuzuri
+          node tests/computations.mjs target/release/tsuzuri
           node tests/numeric_casts.mjs target/release/tsuzuri
       - name: Application examples
         run: node tests/examples.mjs target/release/tsuzuri

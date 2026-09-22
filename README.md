@@ -1,8 +1,8 @@
 # Tsuzuri
 
 **AI と人間が、少ない暗黙ルールで堅牢なプログラムを書けることを目指す、関数型の式と所有権モデルを備えた言語。**
-拡張子は `.tzr`。Rust 製のフロントエンドで型検査し、LLVM によりネイティブコードと
-WebAssembly を生成します。
+コードは **`.tz`**、型クラス宣言は **`.tt`**、コンピュテーション式のビルダー実装は **`.tc`**。
+Rust 製のフロントエンドで型検査し、LLVM によりネイティブコードと WebAssembly を生成します。
 
 現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、
 ネイティブのデスクトップ・ホスト、ブラウザーのゲーム例を含みます。
@@ -17,7 +17,7 @@ GPU バックエンドと自動マルチスレッド化は未実装です。
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
 
-`Main.tzr`:
+`Main.tz`:
 
 ```text
 def sum :: i64 -> i64 -> i64
@@ -43,8 +43,9 @@ fn main = answer()
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` 宣言と `fn`／`let` 実装、全関数のカリー化、部分適用、匿名関数、ローカル型推論、式としての `if`／ブロック、`|>`、高階関数、前方参照 |
 | 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
+| コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
-| モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tzr` エントリー |
+| モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
 | メモリ | 所有権、move、`&T`／`&mut T` の借用検査。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
@@ -99,6 +100,20 @@ integer
 完全適用された既知の関数は、環境を確保せず直接呼び出します。
 実行例は `tsuzuri run examples/currying` です。
 
+型クラスは `Classes.tt` に記述します。一つのファイルに複数のクラスを宣言できます。
+
+```text
+class Score 'a {
+    def score :: &'a -> i32
+}
+
+class Size 'a {
+    def size :: &'a -> i64
+}
+```
+
+レコードとインスタンス実装は `Main.tz` などのコードファイルに置きます。
+
 ```text
 record Point { x: i32, y: i32 }
 
@@ -106,16 +121,12 @@ instance Add Point {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-class Score 'a {
-    def score :: &'a -> i32
-}
-
-instance Score Point {
+instance Classes.Score Point {
     fn score point = point.x + point.y
 }
 ```
 
-上の `add` を `Point` にも使え、`Score.score (&point)` で独自クラスのメソッドを呼べます。
+上の `add` を `Point` にも使え、`Classes.Score.score (&point)` で独自クラスのメソッドを呼べます。
 例は `tsuzuri run examples/polymorphism`。型クラス名でメソッドを明示することで、
 同名関数の探索やインスタンスの選択順に依存しない記述にしています。
 同じクラス・型のインスタンス重複や、組み込みインスタンスの上書きはエラーです。
@@ -125,6 +136,46 @@ instance Score Point {
 旧 `fn name :: ...` は `def name :: ...` へ置き換えます。
 旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
 詳細と制約一覧は [言語仕様](docs/language.md#多相関数と型クラス) を参照してください。
+
+## ユーザー定義のコンピュテーション式
+
+F# のように、`Bind`・`Return` などを実装して計算の組み合わせ方を定義できます。
+**一つの `.tc` ファイルが一つのビルダー**で、ビルダー名はファイル名です。
+型クラスの実装や新しい構文の登録は不要です。例えば `Checked.tc`:
+
+```text
+record Result { ok: bool, value: i64 }
+
+def Return :: i64 -> Result
+fn Return value = Result { ok: true, value: value }
+
+def Bind :: Result -> (i64 -> Result) -> Result
+fn Bind result next =
+    if result.ok { next result.value } else { result }
+```
+
+同じディレクトリの `Main.tz`:
+
+```text
+let answer = Checked {
+    let! first = Checked.Return 20
+    let! second = Checked.Return 22
+    return first + second
+}
+answer.value
+```
+
+`let!` は `Checked.Bind(value, continuation)`、`return` は `Checked.Return(value)` に相当します。
+上の `Bind` は失敗値なら続きを呼ばないため、ビルダー自身で短絡を実装できます。
+`ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While` も必要に応じて定義でき、
+`Delay`／`Run` があれば本体を包んで遅延・実行の仕方を制御します。
+使用した構文の操作が未実装ならコンパイルエラーで、暗黙の既定実装はありません。
+
+展開後も通常の型推論・所有権・借用検査を通ります。継続は通常の関数値なので、
+外側の可変状態の共有や、一回実行のタスクの捕捉を勝手に許可することはありません。
+F# の全機能互換ではなく、`and!`、例外処理、`use`、カスタム演算は未対応です。
+実行例は `tsuzuri run examples/computations`、
+詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) を参照してください。
 
 ## タスクと並列処理
 
@@ -164,9 +215,19 @@ WASM はインポート不要の **逐次フォールバック** です。WASM t
 
 **モジュール名は拡張子を除いたファイル名で決まり、1 ファイルに 1 モジュールを強制します。**
 `module` 宣言、入れ子のモジュール、複数ファイルへの同一モジュールの分割はできません。
-同じディレクトリの `.tzr` ファイルを自動で読み込みます。インポート宣言やファイルの列挙は不要です。
+同じディレクトリの `.tz`・`.tt`・`.tc` ファイルを自動で読み込みます。
+インポート宣言やファイルの列挙は不要です。
 
-`Point.tzr`:
+| 拡張子 | 内容 |
+|---|---|
+| `.tz` | レコード・関数・型クラスのインスタンス実装。`Main.tz` だけはトップレベルの実行コードも可 |
+| `.tt` | 複数の型クラスの宣言。関数本体・レコード・インスタンスは置かない |
+| `.tc` | 一つのビルダーの操作と補助関数・レコード・インスタンス。トップレベル実行は不可 |
+
+拡張子が違っても同名のモジュールにはできません。例えば `Checked.tz` と `Checked.tc` の併存はエラーです。
+旧 `.tzr` は入力として受理しません。コードを `.tz` へ改名し、`class` 宣言を `.tt` に分離してください。
+
+`Point.tz`:
 
 ```text
 record Point { x: f64, y: f64 }
@@ -178,7 +239,7 @@ export def hypotenuse :: f64 -> f64 -> f64
 fn hypotenuse x y = distance (Point { x: x, y: y })
 ```
 
-同じディレクトリの `Main.tzr`:
+同じディレクトリの `Main.tz`:
 
 ```text
 let p = Point { x: 10.0, y: 20.5 }
@@ -191,7 +252,7 @@ d
 レコード名は一意なら `Point`、明示する場合は `Point.Point` と書けます。
 同名のレコードが複数モジュールにある場合、他モジュールからは修飾名で区別します。
 
-アプリケーションは **`Main.tzr`** から開始します。
+アプリケーションは **`Main.tz`** から開始します。
 トップレベルの `let` と最後の結果式、または従来の `fn main` のどちらかを使います。
 上の例では最後の `d` を表示します。結果式を省略すると `unit` になり、何も表示しません。
 実行例は `./target/release/tsuzuri run examples/point` です。
@@ -231,18 +292,18 @@ cargo build --release
 ## コンソール
 
 ```sh
-./target/release/tsuzuri check examples/hello/Main.tzr
-./target/release/tsuzuri run examples/hello/Main.tzr
+./target/release/tsuzuri check examples/hello/Main.tz
+./target/release/tsuzuri run examples/hello/Main.tz
 # 5050
 
 ./target/release/tsuzuri run examples/functional
 # 42
 
-./target/release/tsuzuri build examples/hello/Main.tzr -o target/hello
+./target/release/tsuzuri build examples/hello/Main.tz -o target/hello
 ./target/hello
 ```
 
-`Main.tzr` のトップレベルの結果、または引数なしの `main` の返却型は
+`Main.tz` のトップレベルの結果、または引数なしの `main` の返却型は
 数値型／`bool`／`unit`／`string` です。ネイティブ用ホスト・ラッパーが
 結果を表示し、成功時は終了コード 0 を返します。`unit` は何も表示しません。
 言語内に出力の副作用を持ち込む仕組みではありません。
@@ -250,7 +311,7 @@ cargo build --release
 ## Web／ゲーム
 
 ```sh
-./target/release/tsuzuri build examples/web/Physics.tzr --target wasm32 -o examples/web/physics.wasm
+./target/release/tsuzuri build examples/web/Physics.tz --target wasm32 -o examples/web/physics.wasm
 python3 -m http.server 8000 --bind 127.0.0.1 --directory examples/web
 ```
 
@@ -262,7 +323,7 @@ FPS 表示は描画とブラウザーのスケジューリングを含み、コ�
 Node.js でも通常の WebAssembly API から呼び出せます:
 
 ```sh
-./target/release/tsuzuri build examples/functional/Main.tzr --target wasm32 -o target/functional.wasm
+./target/release/tsuzuri build examples/functional/Main.tz --target wasm32 -o target/functional.wasm
 node --input-type=module -e '
 import { readFileSync } from "node:fs";
 const { instance } = await WebAssembly.instantiate(readFileSync("target/functional.wasm"));
@@ -302,11 +363,11 @@ Rust の全機能を実装するものではなく、名前付きライフタイ
 
 ## ネイティブ・ホスト／デスクトップ
 
-同じ `Physics.tzr` を C/C++、ゲームエンジン、GUI ホストへ組み込めます:
+同じ `Physics.tz` を C/C++、ゲームエンジン、GUI ホストへ組み込めます:
 
 ```sh
-./target/release/tsuzuri build examples/web/Physics.tzr --emit object -o target/examples/physics.o
-./target/release/tsuzuri build examples/web/Physics.tzr --emit header -o target/examples/physics.h
+./target/release/tsuzuri build examples/web/Physics.tz --emit object -o target/examples/physics.o
+./target/release/tsuzuri build examples/web/Physics.tz --emit header -o target/examples/physics.h
 clang -O3 examples/native/main.c target/examples/physics.o -I target/examples -lm -o target/examples/native
 ./target/examples/native
 ```
@@ -329,9 +390,9 @@ GUI には Tk とデスクトップ画面が必要です。`--headless` を付�
 ## CLI
 
 ```text
-tsuzuri check source.tzr|directory [--json]
-tsuzuri [build] source.tzr|directory [options]
-tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
+tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 ```
 
 | オプション | 内容 |
@@ -354,12 +415,13 @@ Clang に渡します。SIMD 化は演算と依存関係が許す範囲で LLVM 
 `--cpu native` はネイティブの実行ファイル／オブジェクトと `run` 専用です。
 `check` への CPU 指定、WASM／LLVM IR／ヘッダーへの `native` 指定はエラーにします。
 
-入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tzr` を選びます。
-どちらも同じディレクトリ直下の全 `.tzr` を名前順に読み込み、未参照のモジュールも検査します。
+入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tz` を選びます。
+どちらも同じディレクトリ直下の全 `.tz`・`.tt`・`.tc` をファイル名順に読み込み、
+未参照のモジュール・ビルダーも検査します。
 サブディレクトリは探索しません。ファイル名は大文字小文字を区別する ASCII 識別子で、
 `_` 単独や予約語は使えません。
-`run`／`--emit exe` の入力は `Main.tzr` またはそのディレクトリに限ります。
-`check`／ライブラリ出力では別の `.tzr` を指定でき、`Main.tzr` は不要です。
+`run`／`--emit exe` の入力は `Main.tz` またはそのディレクトリに限ります。
+`check`／ライブラリ出力では `.tz`・`.tt`・`.tc` を指定でき、`Main.tz` は不要です。
 
 出力先省略時は選択した入力ファイルの拡張子を変更します。ディレクトリ指定なら `Main.ll` などになります。
 `--emit llvm` はライブラリ用 IR で、コンソールのエントリー・ラッパーは付けません。
@@ -382,6 +444,7 @@ cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
+node tests/computations.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri

@@ -19,15 +19,16 @@ const run = (program, args) => execFileSync(program, args, {
 let server;
 
 try {
-  assert.equal(run(compiler, ["run", "examples/hello/Main.tzr"]), "5050\n");
-  assert.equal(run(compiler, ["run", "examples/functional/Main.tzr"]), "42\n");
+  assert.equal(run(compiler, ["run", "examples/hello/Main.tz"]), "5050\n");
+  assert.equal(run(compiler, ["run", "examples/functional/Main.tz"]), "42\n");
   assert.equal(run(compiler, ["run", "examples/polymorphism"]), "42\n");
   assert.equal(run(compiler, ["run", "examples/currying"]), "42\n");
   assert.equal(run(compiler, ["run", "examples/tasks"]), "21325334000\n");
+  assert.equal(run(compiler, ["run", "examples/computations"]), "42\n");
   assert.equal(Number(run(compiler, ["run", "examples/point"])), Math.sqrt(10 ** 2 + 20.5 ** 2));
   run(process.execPath, ["--check", "examples/web/app.mjs"]);
 
-  const source = join(root, "examples/web/Physics.tzr");
+  const source = join(root, "examples/web/Physics.tz");
   const wasm = join(temporary, "physics.wasm");
   const object = join(temporary, "physics.o");
   const header = join(temporary, "physics.h");

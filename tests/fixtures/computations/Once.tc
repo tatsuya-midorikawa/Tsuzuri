@@ -1,0 +1,11 @@
+def Return :: i64 -> i64
+fn Return value = value
+
+def Delay :: (unit -> i64) -> (unit -> i64)
+fn Delay body = body
+
+def Run :: (unit -> i64) -> i64
+fn Run body = body ()
+
+def While :: (unit -> bool) -> (unit -> i64) -> i64
+fn While guard body = if guard () { body () } else { 0 }

@@ -21,9 +21,9 @@ node benchmarks/run.mjs target/release/tsuzuri 10000000
 必要なのは通常の LLVM ツールチェーンと Node.js 20 以降です。
 同じ Clang、`-O3`、同じ入力で以下を測定し、JSON を標準出力に出します。
 
-- `benchmarks/Mix.tzr` をネイティブ・オブジェクト化した関数。
+- `benchmarks/Mix.tz` をネイティブ・オブジェクト化した関数。
 - `benchmarks/native.c` に書いた同じ計算の C 関数。
-- 同じ `.tzr` を WASM にした関数。
+- 同じ `.tz` を WASM にした関数。
 
 ワークロードは符号なし右シフト、XOR、64-bit の折り返し乗算／加算を行う
 ループ依存の整数ミキサーです。C 側も `uint64_t` を使い、signed overflow に依存しません。
@@ -88,7 +88,7 @@ node benchmarks/run-cpp.mjs target/release/tsuzuri --quick
 
 | 種目 | 既定の仕事量 | 含める処理 |
 |---|---|---|
-| `integer_mix` | 20,000,000 反復 | 既存の `Mix.tzr` と同じ64-bit整数ミキサー |
+| `integer_mix` | 20,000,000 反復 | 既存の `Mix.tz` と同じ64-bit整数ミキサー |
 | `mandelbrot` | 768 × 768 点、最大256反復/点 | f64 の Mandelbrot escape-time、全点の反復数を集計 |
 | `array_sum` | 8,000,000 要素（64 MB） | 64-bit配列の確保、seed に依存する初期化、全要素の和、解放 |
 

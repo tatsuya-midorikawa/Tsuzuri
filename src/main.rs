@@ -10,13 +10,17 @@ const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
 
 Usage:
-  tsuzuri check source.tzr|directory [--json]
-  tsuzuri [build] source.tzr|directory [options]
-  tsuzuri run Main.tzr|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+  tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 
-Each .tzr file is one module named after its filename. All sibling .tzr files
-are loaded together. Applications start in Main.tzr; a directory selects it.
-Other .tzr inputs can be checked or built as libraries.
+Each source file is one module named after its filename:
+  .tz  Code (records, functions, and type class instances)
+  .tt  Type class declarations (multiple classes per file)
+  .tc  One computation expression builder (its operations and helpers)
+All sibling .tz, .tt, and .tc files are loaded together.
+Applications start in Main.tz; a directory selects it.
+Other source inputs can be checked or built as libraries.
 
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
@@ -36,7 +40,7 @@ Toolchain:
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
-the numeric, bool, or UTF-8 string result of Main.tzr's top-level code or fn main.
+the numeric, bool, or UTF-8 string result of Main.tz's top-level code or fn main.
 unit results do not print anything.
 All UI and I/O belong to the host, not the language.";
 
@@ -166,12 +170,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         }
         if input.replace(PathBuf::from(argument)).is_some() {
             return Err(
-                "pass one .tzr file or project directory; sibling modules are loaded automatically"
+                "pass one .tz, .tt, or .tc file or project directory; sibling modules are loaded automatically"
                     .into(),
             );
         }
     }
-    let input = input.ok_or("missing .tzr input or project directory; use --help")?;
+    let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
     if action != Action::Build && (output.is_some() || target.is_some() || emit.is_some()) {
         return Err("--output, --target, and --emit are build-only options".into());
     }
@@ -311,12 +315,12 @@ mod tests {
 
     #[test]
     fn selects_target_defaults_and_honors_path_separator() {
-        let arguments = parse(&["build", "A.tzr", "--target", "wasm32", "-O0"]).unwrap();
+        let arguments = parse(&["build", "A.tz", "--target", "wasm32", "-O0"]).unwrap();
         assert_eq!(arguments.options.emit, Emit::Wasm);
         assert_eq!(arguments.options.optimization, 0);
-        let arguments = parse(&["--", "-project/Main.tzr"]).unwrap();
-        assert_eq!(arguments.input, Path::new("-project/Main.tzr"));
-        assert!(parse(&["run", "Main.tzr", "--target", "wasm32"]).is_err());
+        let arguments = parse(&["--", "-project/Main.tz"]).unwrap();
+        assert_eq!(arguments.input, Path::new("-project/Main.tz"));
+        assert!(parse(&["run", "Main.tz", "--target", "wasm32"]).is_err());
         assert_eq!(parse(&["run", "app"]).unwrap().input, Path::new("app"));
         assert_eq!(
             parse(&["run", "app", "--cpu", "native"])
@@ -326,7 +330,7 @@ mod tests {
             Cpu::Native
         );
         assert_eq!(
-            parse(&["build", "Main.tzr"]).unwrap().options.cpu,
+            parse(&["build", "Main.tz"]).unwrap().options.cpu,
             Cpu::Generic
         );
     }
@@ -335,20 +339,20 @@ mod tests {
     fn rejects_ambiguous_or_unused_arguments() {
         for values in [
             vec!["check"],
-            vec!["A.tzr", "B.tzr"],
-            vec!["build", "Main.tzr", "-O9"],
-            vec!["build", "Main.tzr", "--output"],
-            vec!["build", "Main.tzr", "--emit", "wasm"],
-            vec!["check", "A.tzr", "-O0"],
-            vec!["run", "Main.tzr", "-o", "app"],
-            vec!["build", "Main.tzr", "-O0", "-O3"],
-            vec!["build", "Main.tzr", "--cpu"],
-            vec!["build", "Main.tzr", "--cpu", "unsupported"],
-            vec!["build", "Main.tzr", "--cpu", "generic", "--cpu", "native"],
-            vec!["check", "Main.tzr", "--cpu", "generic"],
-            vec!["build", "Main.tzr", "--target", "wasm32", "--cpu", "native"],
-            vec!["build", "Main.tzr", "--emit", "llvm", "--cpu", "native"],
-            vec!["build", "Main.tzr", "--emit", "header", "--cpu", "native"],
+            vec!["A.tz", "B.tz"],
+            vec!["build", "Main.tz", "-O9"],
+            vec!["build", "Main.tz", "--output"],
+            vec!["build", "Main.tz", "--emit", "wasm"],
+            vec!["check", "A.tz", "-O0"],
+            vec!["run", "Main.tz", "-o", "app"],
+            vec!["build", "Main.tz", "-O0", "-O3"],
+            vec!["build", "Main.tz", "--cpu"],
+            vec!["build", "Main.tz", "--cpu", "unsupported"],
+            vec!["build", "Main.tz", "--cpu", "generic", "--cpu", "native"],
+            vec!["check", "Main.tz", "--cpu", "generic"],
+            vec!["build", "Main.tz", "--target", "wasm32", "--cpu", "native"],
+            vec!["build", "Main.tz", "--emit", "llvm", "--cpu", "native"],
+            vec!["build", "Main.tz", "--emit", "header", "--cpu", "native"],
         ] {
             assert!(parse(&values).is_err(), "{values:?}");
         }

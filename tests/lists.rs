@@ -213,7 +213,7 @@ fn lists_specialize_across_modules_and_type_classes() {
 
 #[test]
 fn runtime_fixture_uses_linked_nodes_and_entry_allocas() {
-    let module = analyze(include_str!("fixtures/lists/Lists.tzr")).unwrap();
+    let module = analyze(include_str!("fixtures/lists/Lists.tz")).unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert!(ir.contains("%tz.list = type { ptr, i64 }"));

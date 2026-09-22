@@ -182,7 +182,7 @@ fn dynamic_arrays_cross_modules_and_specialize_only_on_element_types() {
 
 #[test]
 fn runtime_fixture_lowers_for_both_targets() {
-    let module = analyze(include_str!("fixtures/arrays/Arrays.tzr")).unwrap();
+    let module = analyze(include_str!("fixtures/arrays/Arrays.tz")).unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert!(ir.contains("%tz.array = type { ptr, i64 }"));

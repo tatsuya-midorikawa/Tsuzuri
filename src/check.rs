@@ -5,6 +5,8 @@ use crate::syntax::*;
 
 #[path = "closures.rs"]
 mod closures;
+#[path = "computation.rs"]
+mod computation;
 #[path = "polymorph.rs"]
 mod polymorph;
 use polymorph::{Classes, Constraint, Inference, Scheme};
@@ -429,6 +431,7 @@ pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
 #[derive(Default)]
 struct Names {
     modules: BTreeSet<String>,
+    builders: BTreeMap<String, BTreeSet<String>>,
     records: BTreeMap<String, usize>,
     record_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, usize>,
@@ -477,12 +480,13 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             return Err(Diagnostic::new(
                 "E1011",
                 format!(
-                    "invalid or duplicate module name '{name}'; each .tzr filename must be a unique ASCII identifier, not '_', 'Task', or a keyword"
+                    "invalid or duplicate module name '{name}'; each .tz, .tt, or .tc filename must have a unique ASCII identifier stem, not '_', 'Task', or a keyword"
                 ),
                 Span::default().in_source(source),
             ));
         }
     }
+    names.builders = computation::collect(modules)?;
     let record_declarations: Vec<_> = modules
         .iter()
         .flat_map(|(name, program)| program.records.iter().map(|record| (*name, record)))
@@ -640,7 +644,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         });
     }
     let mut functions = Vec::new();
-    for (id, (module, function)) in function_declarations.iter().enumerate() {
+    for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
         let scheme = &signatures[id];
         let signature = scheme.signature.clone();
         let mut checker = Checker::new(
@@ -656,6 +660,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
             parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
         }
+        computation::expand(&mut function.body, &names)?;
         let mut body = checker.expression(&function.body, Some(&signature.result))?;
         checker.finish(&mut body)?;
         let mut constraints = scheme.constraints.clone();
@@ -674,7 +679,13 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             is_task: false,
         });
     }
-    let mut entry = names.functions.get("Main.main").copied();
+    let mut entry = modules
+        .iter()
+        .any(|(name, program)| {
+            *name == "Main" && matches!(program.source_kind, None | Some(SourceKind::Code))
+        })
+        .then(|| names.functions.get("Main.main").copied())
+        .flatten();
     for (module, program) in modules {
         let Some(expression) = &program.entry else {
             continue;
@@ -682,14 +693,14 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         if *module != "Main" {
             return Err(Diagnostic::new(
                 "E2004",
-                "top-level execution is only allowed in Main.tzr; other modules contain record and function declarations",
+                "top-level execution is only allowed in Main.tz; other modules contain record and function declarations",
                 expression.span,
             ));
         }
         if entry.is_some() {
             return Err(Diagnostic::new(
                 "E2004",
-                "Main.tzr must use either top-level entry-point code or 'fn main', not both",
+                "Main.tz must use either top-level entry-point code or 'fn main', not both",
                 expression.span,
             ));
         }
@@ -701,7 +712,9 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             &signatures,
             &classes,
         );
-        let mut body = checker.expression(expression, None)?;
+        let mut expression = expression.clone();
+        computation::expand(&mut expression, &names)?;
+        let mut body = checker.expression(&expression, None)?;
         checker.finish(&mut body)?;
         entry = Some(functions.len());
         functions.push(CheckedFunction {
@@ -952,6 +965,100 @@ impl<'a> Checker<'a> {
         expression: &Expr,
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
+        // Continuations must not retain the large value-checking frame at every recursive step.
+        match expression.kind {
+            ExprKind::Lambda(..)
+            | ExprKind::Task(_)
+            | ExprKind::Call(..)
+            | ExprKind::Block { .. } => self.composed_expression(expression, expected),
+            _ => self.value_expression(expression, expected),
+        }
+    }
+
+    fn composed_expression(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let expected = expected.map(|ty| self.inference.resolve(ty));
+        let expected = expected.as_ref();
+        let (kind, ty) = match &expression.kind {
+            ExprKind::Lambda(parameters, body) => {
+                return self.lambda(parameters, body, expected, expression.span, false);
+            }
+            ExprKind::Task(body) => {
+                return self.lambda(&[], body, expected, expression.span, true);
+            }
+            ExprKind::Call(callee, arguments) => {
+                if let ExprKind::Call(inner, first) = &callee.kind {
+                    if !first.is_empty() && !arguments.is_empty() {
+                        let mut combined = first.clone();
+                        combined.extend(arguments.iter().cloned());
+                        let combined = Expr {
+                            kind: ExprKind::Call(inner.clone(), combined),
+                            span: expression.span,
+                            depth: expression.depth,
+                        };
+                        return self.expression(&combined, expected);
+                    }
+                }
+                let callee = self.expression(callee, None)?;
+                let (parameters, result) =
+                    self.call_signature(&callee.ty, arguments.len(), expression.span)?;
+                if let Some(expected) = expected {
+                    self.same(&result, expected, expression.span)?;
+                }
+                let arguments: Vec<_> = arguments
+                    .iter()
+                    .zip(&parameters)
+                    .map(|(argument, parameter)| self.expression(argument, Some(parameter)))
+                    .collect::<Result<_, _>>()?;
+                (TypedExprKind::Call(Box::new(callee), arguments), result)
+            }
+            ExprKind::Block { bindings, result } => {
+                self.scopes.push(BTreeMap::new());
+                let mut checked = Vec::new();
+                for binding in bindings {
+                    let annotation = binding
+                        .annotation
+                        .as_ref()
+                        .map(|ty| self.annotation(ty))
+                        .transpose()?;
+                    if let Some(ty) = &annotation {
+                        validate_size(ty, self.record_sizes, binding.name.span)?;
+                    }
+                    let value = self.expression(&binding.value, annotation.as_ref())?;
+                    let local = self.bind(&binding.name, value.ty.clone(), binding.mutable);
+                    checked.push((local, value));
+                }
+                let result = self.expression(result, expected)?;
+                self.scopes.pop();
+                let ty = result.ty.clone();
+                (
+                    TypedExprKind::Block {
+                        bindings: checked,
+                        result: Box::new(result),
+                    },
+                    ty,
+                )
+            }
+            _ => unreachable!("composed expression kinds are checked by expression"),
+        };
+        if let Some(expected) = expected {
+            self.same(&ty, expected, expression.span)?;
+        }
+        Ok(TypedExpr {
+            kind,
+            ty: self.inference.resolve(&ty),
+            span: expression.span,
+        })
+    }
+
+    fn value_expression(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
         let expected = expected.map(|ty| self.inference.resolve(ty));
         let expected = expected.as_ref();
         let module_function = matches!(&expression.kind, ExprKind::Field(value, field)
@@ -1012,17 +1119,22 @@ impl<'a> Checker<'a> {
             ExprKind::Bool(value) => (TypedExprKind::Bool(*value), Type::Bool),
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
             ExprKind::Name(name) => self.name(name)?,
-            ExprKind::Lambda(parameters, body) => {
-                return self.lambda(parameters, body, expected, expression.span, false);
-            }
-            ExprKind::Task(body) => {
-                return self.lambda(&[], body, expected, expression.span, true);
+            ExprKind::QualifiedFunction(name) => {
+                let id = self.names.functions.get(&name.text).ok_or_else(|| {
+                    Diagnostic::new(
+                        "E1002",
+                        format!("unknown function '{}'", name.text),
+                        name.span,
+                    )
+                })?;
+                self.function(*id)
             }
             ExprKind::TaskRun(value) => {
                 let result = expected.cloned().unwrap_or_else(|| self.inference.fresh());
                 let value = self.expression(value, Some(&Type::Task(Box::new(result.clone()))))?;
                 (TypedExprKind::TaskRun(Box::new(value)), result)
             }
+            ExprKind::Computation(..) => unreachable!("computations expand before type checking"),
             ExprKind::Unary(UnaryOp::Negate, operand)
                 if matches!(operand.kind, ExprKind::Integer(..)) =>
             {
@@ -1092,32 +1204,6 @@ impl<'a> Checker<'a> {
                     result,
                 )
             }
-            ExprKind::Call(callee, arguments) => {
-                if let ExprKind::Call(inner, first) = &callee.kind {
-                    if !first.is_empty() && !arguments.is_empty() {
-                        let mut combined = first.clone();
-                        combined.extend(arguments.iter().cloned());
-                        let combined = Expr {
-                            kind: ExprKind::Call(inner.clone(), combined),
-                            span: expression.span,
-                            depth: expression.depth,
-                        };
-                        return self.expression(&combined, expected);
-                    }
-                }
-                let callee = self.expression(callee, None)?;
-                let (parameters, result) =
-                    self.call_signature(&callee.ty, arguments.len(), expression.span)?;
-                if let Some(expected) = expected {
-                    self.same(&result, expected, expression.span)?;
-                }
-                let arguments: Vec<_> = arguments
-                    .iter()
-                    .zip(&parameters)
-                    .map(|(argument, parameter)| self.expression(argument, Some(parameter)))
-                    .collect::<Result<_, _>>()?;
-                (TypedExprKind::Call(Box::new(callee), arguments), result)
-            }
             ExprKind::If {
                 condition,
                 then_branch,
@@ -1132,33 +1218,6 @@ impl<'a> Checker<'a> {
                         condition: Box::new(condition),
                         then_branch: Box::new(then_branch),
                         else_branch: Box::new(else_branch),
-                    },
-                    ty,
-                )
-            }
-            ExprKind::Block { bindings, result } => {
-                self.scopes.push(BTreeMap::new());
-                let mut checked = Vec::new();
-                for binding in bindings {
-                    let annotation = binding
-                        .annotation
-                        .as_ref()
-                        .map(|ty| self.annotation(ty))
-                        .transpose()?;
-                    if let Some(ty) = &annotation {
-                        validate_size(ty, self.record_sizes, binding.name.span)?;
-                    }
-                    let value = self.expression(&binding.value, annotation.as_ref())?;
-                    let local = self.bind(&binding.name, value.ty.clone(), binding.mutable);
-                    checked.push((local, value));
-                }
-                let result = self.expression(result, expected)?;
-                self.scopes.pop();
-                let ty = result.ty.clone();
-                (
-                    TypedExprKind::Block {
-                        bindings: checked,
-                        result: Box::new(result),
                     },
                     ty,
                 )
@@ -1393,6 +1452,10 @@ impl<'a> Checker<'a> {
                 self.require("Numeric", ty.clone(), expression.span)?;
                 (TypedExprKind::Cast(Box::new(value)), ty)
             }
+            ExprKind::Lambda(..)
+            | ExprKind::Task(_)
+            | ExprKind::Call(..)
+            | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),
         };
         if let Some(expected) = expected {
             self.same(&ty, expected, expression.span)?;

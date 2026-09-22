@@ -533,63 +533,23 @@ impl Checker<'_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
-        if Self::is_place(expression)
-            && !matches!(expression.kind, E::Index(ref value, _) if value.ty == Type::String)
-        {
-            return self.read_place(expression, usage, live);
+        match expression.kind {
+            E::Block { .. } | E::Call(..) | E::Lambda { .. } => {
+                self.eval_composed(expression, live)
+            }
+            _ => self.eval_value(expression, usage, live),
         }
-        let usage = Use::Consume;
+    }
+
+    fn eval_composed(
+        &mut self,
+        expression: &TypedExpr,
+        live: &BTreeSet<usize>,
+    ) -> Result<Value, Diagnostic> {
         let mut during = live.clone();
         uses(expression, &mut during);
         let mut result = Value::default();
         match &expression.kind {
-            E::Borrow(value, mutable) => {
-                for (place, via) in self.place(value, &during)? {
-                    self.access(
-                        &place,
-                        &via,
-                        if *mutable {
-                            Use::MutBorrow
-                        } else {
-                            Use::Borrow
-                        },
-                        expression.span,
-                    )?;
-                    result.loans.insert(self.loan(place, *mutable, via));
-                }
-            }
-            E::Assign(place, value) => {
-                let value = self.eval(value, Use::Consume, &during)?;
-                self.held.push(value.clone());
-                for (place, via) in self.place(place, &during)? {
-                    self.access(&place, &via, Use::Write, expression.span)?;
-                    if value
-                        .loans
-                        .iter()
-                        .any(|id| self.loans[*id].place.root == place.root)
-                    {
-                        return Err(error(
-                            "E1013",
-                            "cannot store a reference inside its own owner",
-                            expression.span,
-                        ));
-                    }
-                    self.state.moved.retain(|moved| !moved.overlaps(&place));
-                    self.state
-                        .generic_moves
-                        .retain(|moved, _| !moved.overlaps(&place));
-                    if via.is_empty() {
-                        self.state.locals.get_mut(&place.root).unwrap().1 = value.clone();
-                    } else if expression.ty.contains_reference() || !value.loans.is_empty() {
-                        return Err(error(
-                            "E1013",
-                            "assigning borrowed values through references requires explicit lifetimes",
-                            expression.span,
-                        ));
-                    }
-                }
-                self.held.pop();
-            }
             E::Block {
                 bindings,
                 result: tail,
@@ -625,7 +585,7 @@ impl Checker<'_> {
                         }
                     }
                 }
-                result = self.eval(tail, usage, live)?;
+                result = self.eval(tail, Use::Consume, live)?;
                 for id in &result.loans {
                     if ids.contains(&self.loans[*id].place.root) {
                         return Err(error(
@@ -652,27 +612,6 @@ impl Checker<'_> {
                 for id in ids {
                     self.state.locals.remove(&id);
                 }
-            }
-            E::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                self.eval(condition, Use::Consume, &during)?;
-                let before = self.state.clone();
-                let then_value = self.eval(then_branch, usage, live)?;
-                let then_state = self.state.clone();
-                self.state = before;
-                let else_value = self.eval(else_branch, usage, live)?;
-                self.merge(&then_state);
-                result.loans.extend(then_value.loans);
-                result.loans.extend(else_value.loans);
-            }
-            E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
-                self.eval(left, Use::Consume, &during)?;
-                let before = self.state.clone();
-                self.eval(right, Use::Consume, &during)?;
-                self.merge(&before);
             }
             E::Call(callee, arguments) => {
                 let start = self.held.len();
@@ -741,6 +680,95 @@ impl Checker<'_> {
                     }
                     result.loans.extend(value.loans);
                 }
+            }
+            _ => unreachable!("composed expression kinds are checked by eval"),
+        }
+        Ok(result)
+    }
+
+    fn eval_value(
+        &mut self,
+        expression: &TypedExpr,
+        usage: Use,
+        live: &BTreeSet<usize>,
+    ) -> Result<Value, Diagnostic> {
+        if Self::is_place(expression)
+            && !matches!(expression.kind, E::Index(ref value, _) if value.ty == Type::String)
+        {
+            return self.read_place(expression, usage, live);
+        }
+        let usage = Use::Consume;
+        let mut during = live.clone();
+        uses(expression, &mut during);
+        let mut result = Value::default();
+        match &expression.kind {
+            E::Borrow(value, mutable) => {
+                for (place, via) in self.place(value, &during)? {
+                    self.access(
+                        &place,
+                        &via,
+                        if *mutable {
+                            Use::MutBorrow
+                        } else {
+                            Use::Borrow
+                        },
+                        expression.span,
+                    )?;
+                    result.loans.insert(self.loan(place, *mutable, via));
+                }
+            }
+            E::Assign(place, value) => {
+                let value = self.eval(value, Use::Consume, &during)?;
+                self.held.push(value.clone());
+                for (place, via) in self.place(place, &during)? {
+                    self.access(&place, &via, Use::Write, expression.span)?;
+                    if value
+                        .loans
+                        .iter()
+                        .any(|id| self.loans[*id].place.root == place.root)
+                    {
+                        return Err(error(
+                            "E1013",
+                            "cannot store a reference inside its own owner",
+                            expression.span,
+                        ));
+                    }
+                    self.state.moved.retain(|moved| !moved.overlaps(&place));
+                    self.state
+                        .generic_moves
+                        .retain(|moved, _| !moved.overlaps(&place));
+                    if via.is_empty() {
+                        self.state.locals.get_mut(&place.root).unwrap().1 = value.clone();
+                    } else if expression.ty.contains_reference() || !value.loans.is_empty() {
+                        return Err(error(
+                            "E1013",
+                            "assigning borrowed values through references requires explicit lifetimes",
+                            expression.span,
+                        ));
+                    }
+                }
+                self.held.pop();
+            }
+            E::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.eval(condition, Use::Consume, &during)?;
+                let before = self.state.clone();
+                let then_value = self.eval(then_branch, usage, live)?;
+                let then_state = self.state.clone();
+                self.state = before;
+                let else_value = self.eval(else_branch, usage, live)?;
+                self.merge(&then_state);
+                result.loans.extend(then_value.loans);
+                result.loans.extend(else_value.loans);
+            }
+            E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
+                self.eval(left, Use::Consume, &during)?;
+                let before = self.state.clone();
+                self.eval(right, Use::Consume, &during)?;
+                self.merge(&before);
             }
             E::Closure(_, captures) => {
                 for capture in captures {
@@ -840,6 +868,9 @@ impl Checker<'_> {
             | E::GenericInteger(..)
             | E::GenericFloat(_) => {}
             E::Local(_) | E::Dereference(_) => unreachable!("places handled above"),
+            E::Block { .. } | E::Call(..) | E::Lambda { .. } => {
+                unreachable!("composed expressions use their own evaluator")
+            }
         }
         Ok(result)
     }

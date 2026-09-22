@@ -1,0 +1,3 @@
+class CurriedCombine 'a {
+    def combine :: 'a -> 'a -> 'a
+}

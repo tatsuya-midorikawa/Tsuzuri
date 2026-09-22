@@ -1,0 +1,20 @@
+def Return :: string -> string
+fn Return value = value
+
+def ReturnFrom :: string -> string
+fn ReturnFrom value = value
+
+def Yield :: string -> string
+fn Yield value = value
+
+def YieldFrom :: string -> string
+fn YieldFrom value = value
+
+def Bind :: string -> (string -> string) -> string
+fn Bind value next = next value
+
+def Zero :: string
+fn Zero = ""
+
+def Combine :: string -> string -> string
+fn Combine first rest = first + rest

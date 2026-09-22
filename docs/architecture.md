@@ -6,11 +6,12 @@ LLVM の C API／Rust バインディングには結合しません。
 `cargo build` に LLVM 開発ヘッダーや CMake は不要です。
 
 ```text
-UTF-8 .tzr files in one directory (application entry: Main.tzr)
-   -> driver -> sorted source files + filename-based module names
+UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
+   -> driver -> sorted source files + filename-based module names and source kinds
    -> lexer -> tokens + per-file byte spans
    -> parser -> syntax AST per file
-   -> check -> module-scoped names + rigid type variables + local unification
+   -> check -> source kinds + builder expansion + module-scoped names
+            -> rigid type variables + local unification
    -> ownership -> symbolic moves/loans + inferred Copy requirements
    -> polymorph -> constraint fixed point + coherent instances + monomorphization
    -> closures -> lambda lifting + capture parameters + saturated export bridges
@@ -27,6 +28,7 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント、数値 |
 | `src/parser.rs` | Pratt parser、宣言と式、トップレベルのエントリーコード、深さの制限 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR、レイアウト、公開 ABI |
+| `src/computation.rs` | ソース種別の検査、`.tc` ビルダーの収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉、lambda lifting、公開ABIの完全適用ラッパー |
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
@@ -37,7 +39,7 @@ UTF-8 .tzr files in one directory (application entry: Main.tzr)
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
 | `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
-| `src/driver.rs` | ソースファイルの列挙、`Main.tzr` 選択、LLVM／LLD 起動、ステージング、出力保護 |
+| `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護 |
 | `src/main.rs` | CLI オプションと診断表示 |
 
 ## 性能設計の原則
@@ -79,15 +81,20 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 ## 不変条件
 
 **モジュール:** 1 ファイルに 1 モジュールを強制し、名前はファイル名から取得します。
-同じディレクトリ直下の全 `.tzr` を名前順に処理し、サブディレクトリは探索しません。
-`analyze_modules` はメモリ上の複数ソースを検査し、`analyze` は単独の `Main` モジュールとして検査します。
+同じディレクトリ直下の全 `.tz`・`.tt`・`.tc` をファイル名順に処理し、サブディレクトリは探索しません。
+`.tz` はコード、`.tt` は複数の型クラス宣言、`.tc` は一つのビルダー実装です。
+型クラスは `.tt` に限定し、インスタンスは `.tz`／`.tc` の通常の実装です。
+拡張子を除いた名前が重複するファイルは拒否します。旧 `.tzr` は直接入力を拒否し、自動列挙の対象外です。
+`analyze_modules` は `("Name.tz", source)` などの組を受け、ファイル種別も含めて検査します。
+互換の拡張子なし `("Name", source)` と `analyze(source)` はファイル種別未指定のメモリ上 AST を検査し、
+既存のフロントエンド利用者向けに混在宣言を許します。driver は必ず拡張子を渡し、この互換経路を使いません。
 関数とレコードはモジュールで修飾した一意な名前を持ち、LLVM の内部シンボルにも修飾名を使います。
 他モジュールの関数は修飾が必須で、レコードだけは自モジュール優先・他モジュールで一意なら
 無修飾名を解決します。型付き IR の関数・レコード参照はプロジェクト全体で一意な ID です。
 公開 ABI は従来の `tz_name` を維持し、エクスポート名の衝突は型検査で拒否します。
 
-**エントリー:** `Main.tzr` のトップレベルコードを合成した非公開関数、または `Main.main` の
-関数 ID を保持します。両者の併用は拒否し、他モジュールの `main` は入口に選びません。
+**エントリー:** `Main.tz` のトップレベルコードを合成した非公開関数、または `Main.main` の
+関数 ID を保持します。両者の併用は拒否し、他モジュールや `Main.tc` の `main` は入口に選びません。
 トップレベルの `let` は通常のローカル束縛へ下げ、モジュールの共有状態は導入しません。
 ライブラリ出力にはコンソール・ラッパーやトップレベルコードの自動実行を追加しません。
 
@@ -97,6 +104,29 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 決定性が必要な名前集合は順序付きコレクションです。
 Span はソース ID とファイル内バイト位置を保ち、字句・構文・型・レイアウトのエラーを
 元のファイルに対応付けます。ソースの連結や診断オフセットの書き換えは行いません。
+
+**コンピュテーション式:** `.tc` の全関数名を順序付き集合に収集し、ファイル名をビルダー名にします。
+使用側の `Builder { ... }` は元の Span を持つ専用の構文 AST とし、各関数・エントリーの型検査前に
+`Bind`／`Return`／`ReturnFrom`／`Yield`／`YieldFrom`／`Zero`／`Combine`／`For`／`While`
+への通常の関数呼び出しと匿名関数へ展開します。`Delay`／`Run` は存在するときだけ使います。
+継続は残りの文を内包し、`let!` の注釈と `do!` の unit 制約を生成したローカル束縛で検査します。
+注釈なしの `let!` は直接継続の引数へ束縛し、別名の束縛による余分な配列・関数環境のコピーを作りません。
+単なる `let` と unit 式は同じブロックにまとめ、フラットな束縛列で不要な再帰を増やしません。
+内側の式から展開し、通常の親式も含めて深さを再計算します。個々の展開だけを検査して
+入れ子の遅延・継続の合計深さを見落とすと型検査のスタックが枯渇するため、全体で上限を維持します。
+型・所有権検査では呼び出し・匿名関数・ブロックを値／演算の大きな分岐処理から分離し、
+上限内の継続を検査するときも各再帰段に大きなスタックフレームを保持しないようにします。
+生成名にはユーザーが書けない `$` を使い、操作名はローカル変数を経由しない修飾参照にするため、
+ユーザーの `Bind` やビルダーと同名の束縛で展開先を変更できません。
+
+型付き IR 以降にはカスタムビルダー専用の値・命令・ランタイムを追加しません。
+通常の型クラス制約、特殊化、Capture、関数環境の複製、寿命と move／drop がそのまま適用されます。
+操作の不在は `E1018`、型・所有権の不整合は既存の診断で拒否し、成功形の既定実装へ置換しません。
+`Delay` なしでは `Combine` の両引数は厳格評価、ありでは第二引数の本体を遅延値に渡します。
+`While` は bool を返す unit 関数と明示的な `Delay` の結果を受けます。
+空の `Name {}` は収集済みビルダーを優先し、それ以外は既存の空レコードです。
+組み込み `task` の cold・非 Copy・Send・一回消費の経路は別のまま維持します。
+カスタム展開によって通常の関数値へ一回実行タスクや排他参照を捕捉させる特例は導入しません。
 
 **多相性:** 明示シグネチャの型変数は rigid、各関数参照で導入する推論変数だけを単一化します。
 occurs check と型の深さ・構成要素数の上限を適用し、型が決まらない関数値は拒否します。
@@ -252,6 +282,7 @@ cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
+node tests/computations.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 ```
@@ -266,7 +297,7 @@ JavaScript の BigInt／Number の参照結果と照合します。
 キャリーを含む全幅 128-bit 補助を検査します。外部ツール不足をスキップして成功扱いにはしません。
 例の検証には HTTP 経由の WASM 読み込み、Python デスクトップ・ホストの headless 実行も含みます。
 複数ファイルでは名前の分離、修飾された高階関数・レコード、相互再帰、
-`Main.tzr` の選択、ファイルごとの診断、依存ソースの出力保護を検査します。
+`Main.tz` の選択、ファイルごとの診断、依存ソースの出力保護を検査します。
 `tests/polymorphism.rs` は抽象本体・型クラス制約・インスタンス重複・特殊化・型の増大を検査します。
 `tests/e2e.mjs` の多相 fixture は C／WASM で整数・浮動小数点・独自レコードの演算、
 高階関数、型クラスのメソッド値、所有文字列、評価順序、百万回の末尾再帰を実行します。
@@ -304,6 +335,14 @@ WASM では累積の確保量がメモリ上限を超える反復を実行し、
 `tests/task_runtime.c` は capability 検出と pthread 呼び出しを計測可能な境界に差し替え、
 条件変数による実際の同時実行、共有枠の上限、全 join、逐次 fallback、作成／join 失敗の診断を検査します。
 時間の速さを合否条件にせず、通常の関数呼び出し後には実行中の worker を残しません。
+
+`tests/computations.rs` は拡張子ごとの宣言制約、複数型クラス、ビルダーの各構文、
+単相化、捕捉、寿命、未実装操作、展開深さ、未使用ビルダーの検査を確認します。
+`tests/computations.mjs` は native／WASM の `-O0`／`-O3` で独自の短絡・複数 yield・
+入れ子の反復・Delay／Run の有無・評価順序・数値境界・trap・タスクとの合成を実行します。
+ネイティブでは全呼び出し後の未解放バイトを 0 と照合し、WASM では 16 MiB を超える累積確保の
+反復を行います。注釈なしの配列 bind と手書きの操作呼び出しの確保量も一致させます。
+`.tt`／`.tc` の診断先・出力保護と、決定的な IR／WASM も確認します。
 
 任意の実ブラウザー検証:
 

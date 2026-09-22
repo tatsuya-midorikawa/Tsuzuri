@@ -105,11 +105,12 @@ const generatedBinary = binaryReference.map(([a, b, op, expected], index) =>
    }`).join("\n");
 
 try {
-  const input = join(temporary, "Main.tzr");
-  writeFileSync(join(temporary, "Curried.tzr"), readFileSync(join(root, "tests/fixtures/currying/Functions.tzr"), "utf8"));
-  writeFileSync(join(temporary, "Arrays.tzr"), readFileSync(join(root, "tests/fixtures/arrays/Arrays.tzr"), "utf8"));
-  writeFileSync(join(temporary, "Lists.tzr"), readFileSync(join(root, "tests/fixtures/lists/Lists.tzr"), "utf8"));
-  writeFileSync(input, readFileSync(join(root, "tests/fixtures/primitives/Main.tzr"), "utf8") + "\n" + generated + "\n" + generatedBinary);
+  const input = join(temporary, "Main.tz");
+  writeFileSync(join(temporary, "Curried.tz"), readFileSync(join(root, "tests/fixtures/currying/Functions.tz"), "utf8"));
+  writeFileSync(join(temporary, "Classes.tt"), readFileSync(join(root, "tests/fixtures/currying/Classes.tt"), "utf8"));
+  writeFileSync(join(temporary, "Arrays.tz"), readFileSync(join(root, "tests/fixtures/arrays/Arrays.tz"), "utf8"));
+  writeFileSync(join(temporary, "Lists.tz"), readFileSync(join(root, "tests/fixtures/lists/Lists.tz"), "utf8"));
+  writeFileSync(input, readFileSync(join(root, "tests/fixtures/primitives/Main.tz"), "utf8") + "\n" + generated + "\n" + generatedBinary);
   cli(["check", input]);
   const header = join(temporary, "primitives.h");
   cli(["build", input, "--emit", "header", "-o", header]);

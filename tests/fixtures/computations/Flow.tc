@@ -1,0 +1,41 @@
+record Deferred { invoke: unit -> i64 }
+
+def Return :: i64 -> i64
+fn Return value = value
+
+def ReturnFrom :: i64 -> i64
+fn ReturnFrom value = value
+
+def Yield :: i64 -> i64
+fn Yield value = value
+
+def YieldFrom :: i64 -> i64
+fn YieldFrom value = value
+
+def Bind :: 'a -> ('a -> i64) -> i64
+fn Bind value next = next value
+
+def Zero :: i64
+fn Zero = 0
+
+def Delay :: (unit -> i64) -> Deferred
+fn Delay body = Deferred { invoke: body }
+
+def Run :: Deferred -> i64
+fn Run body = body.invoke ()
+
+def Combine :: i64 -> Deferred -> i64
+fn Combine first rest = first + rest.invoke ()
+
+def fold :: &[i64] -> (i64 -> i64) -> i64 -> i64 -> i64
+fn fold values body index total =
+    if index == values.length { total }
+    else { fold values body (index + 1) (total + body values[index]) }
+
+def For :: [i64] -> (i64 -> i64) -> i64
+fn For values body = fold (&values) body 0 0
+
+def While :: (unit -> bool) -> Deferred -> i64
+fn While guard body =
+    if guard () { body.invoke () + While guard body }
+    else { 0 }

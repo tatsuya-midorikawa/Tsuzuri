@@ -1,7 +1,7 @@
 export async function loadPhysics(url) {
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Cannot load physics.wasm (${response.status}). Build the .tzr example first.`);
+    throw new Error(`Cannot load physics.wasm (${response.status}). Build the .tz example first.`);
   }
   const { instance } = await WebAssembly.instantiateStreaming(response);
   const api = instance.exports;

@@ -274,5 +274,5 @@ fn supports_task_instances_and_reserves_the_task_namespace() {
 
 #[test]
 fn runtime_fixture_lowers_for_both_targets() {
-    accepts(include_str!("fixtures/tasks/Main.tzr"));
+    accepts(include_str!("fixtures/tasks/Main.tz"));
 }

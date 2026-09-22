@@ -1,0 +1,14 @@
+def Return :: 'a -> 'a
+fn Return value = value
+
+def Yield :: 'a -> 'a
+fn Yield value = value
+
+def Delay :: (unit -> 'a) -> (unit -> 'a)
+fn Delay body = body
+
+def Run :: (unit -> 'a) -> 'a
+fn Run body = body ()
+
+def Combine :: 'a -> (unit -> 'a) -> 'a
+fn Combine first rest = first

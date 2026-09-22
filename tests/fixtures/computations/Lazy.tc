@@ -1,0 +1,14 @@
+def Return :: 'a -> 'a
+fn Return value = value
+
+def ReturnFrom :: 'a -> 'a
+fn ReturnFrom value = value
+
+def Bind :: 'a -> ('a -> 'b) -> 'b
+fn Bind value next = next value
+
+def Zero :: unit
+fn Zero = ()
+
+def Delay :: (unit -> 'a) -> (unit -> 'a)
+fn Delay body = body

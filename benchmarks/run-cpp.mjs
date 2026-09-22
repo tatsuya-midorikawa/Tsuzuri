@@ -74,7 +74,7 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-cpp-benchmark-"));
 
 try {
   const objects = [];
-  for (const [source, name] of [["benchmarks/Mix.tzr", "mix"], ["benchmarks/cpp/Kernels.tzr", "kernels"]]) {
+  for (const [source, name] of [["benchmarks/Mix.tz", "mix"], ["benchmarks/cpp/Kernels.tz", "kernels"]]) {
     const object = join(temporary, `${name}.o`);
     run(compiler, ["build", source, "--emit", "object", ...tsuzuriFlags, "-o", object]);
     run(compiler, ["build", source, "--emit", "header", "-o", join(temporary, `${name}.h`)]);

@@ -167,12 +167,12 @@ int main(int argc, char **argv) {
   // Each separately built native object carries a coalescible task runtime.
   const other = join(temporary, "other");
   mkdirSync(other);
-  writeFileSync(join(other, "Other.tzr"), `
+  writeFileSync(join(other, "Other.tz"), `
 export def other :: i64
 fn other = { let values = Task.run (Task.parallel [task { 42 }]); values[0] }
 `);
   const otherObject = join(other, "other.o");
-  cli(["build", join(other, "Other.tzr"), "--emit", "object", "-o", otherObject]);
+  cli(["build", join(other, "Other.tz"), "--emit", "object", "-o", otherObject]);
   execute(clang, ["-std=c11", "-DOTHER", host, join(temporary, "tasks-3.o"), otherObject, "-pthread", "-lm",
     "-o", join(temporary, "combined")]);
   execute(join(temporary, "combined"), []);

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::check::CheckedModule;
 use crate::diagnostic::{Diagnostic, Span};
 use crate::llvm::{self, Entry};
-use crate::syntax::MAX_SOURCE_BYTES;
+use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -153,7 +153,7 @@ impl Project {
         let metadata = fs::metadata(input)
             .map_err(|error| SourceError::new(input, io_error("inspect source", input, error)))?;
         let input = if metadata.is_dir() {
-            input.join("Main.tzr")
+            input.join("Main.tz")
         } else {
             input.to_owned()
         };
@@ -175,7 +175,7 @@ impl Project {
                 .path();
             if path.file_name() == input.file_name() {
                 found_root = true;
-            } else if path.extension() == Some(OsStr::new("tzr")) {
+            } else if source_kind(&path).is_some() {
                 paths.push(path);
             }
         }
@@ -193,7 +193,7 @@ impl Project {
         for path in paths {
             sources.push(SourceFile::read(&path)?);
         }
-        sources.sort_by(|left, right| left.name.cmp(&right.name));
+        sources.sort_by(|left, right| left.path.file_name().cmp(&right.path.file_name()));
         let root = sources
             .iter()
             .position(|source| source.path == input)
@@ -213,17 +213,22 @@ impl Project {
         let sources: Vec<_> = self
             .sources
             .iter()
-            .map(|source| (source.name.as_str(), source.text.as_str()))
+            .map(|source| {
+                (
+                    source.path.file_name().unwrap().to_str().unwrap(),
+                    source.text.as_str(),
+                )
+            })
             .collect();
         crate::analyze_modules(&sources)
     }
 }
 
 pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
-    if path.extension() != Some(OsStr::new("tzr")) {
+    if source_kind(path).is_none() {
         return Err(driver_error(
             "E2000",
-            "input files must use the '.tzr' extension",
+            "input files must use '.tz' (code), '.tt' (type classes), or '.tc' (computation builder); rename old '.tzr' code files to '.tz'",
         ));
     }
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
@@ -250,6 +255,12 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
     Ok(source)
 }
 
+fn source_kind(path: &Path) -> Option<SourceKind> {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .and_then(SourceKind::from_extension)
+}
+
 pub fn build(
     module: &CheckedModule,
     project: &Project,
@@ -258,11 +269,11 @@ pub fn build(
 ) -> Result<Vec<String>, Diagnostic> {
     options.validate()?;
     if options.emit == Emit::Executable
-        && project.input().file_name() != Some(OsStr::new("Main.tzr"))
+        && project.input().file_name() != Some(OsStr::new("Main.tz"))
     {
         return Err(driver_error(
             "E2004",
-            "an application must start from Main.tzr; pass Main.tzr or its directory, or use '--emit object' for a library",
+            "an application must start from Main.tz; pass Main.tz or its directory, or use '--emit object' for a library",
         ));
     }
     if options.emit == Emit::Wasm && !module.functions.iter().any(|function| function.exported) {
@@ -504,10 +515,10 @@ fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
 }
 
 fn protect_source(input: &Path, output: &Path) -> Result<(), Diagnostic> {
-    if output.extension() == Some(OsStr::new("tzr")) {
+    if source_kind(output).is_some() {
         return Err(driver_error(
             "E2003",
-            "an output must not have the '.tzr' source extension",
+            "an output must not have a '.tz', '.tt', or '.tc' source extension",
         ));
     }
     match fs::symlink_metadata(output) {
@@ -633,7 +644,7 @@ mod tests {
     #[test]
     fn publishes_text_atomically_and_protects_source() {
         let source = "export fn f() -> i64 { 42 }";
-        let (directory, project) = project(&[("Example.tzr", source)], "Example.tzr");
+        let (directory, project) = project(&[("Example.tz", source)], "Example.tz");
         let input = project.input();
         let module = project.analyze().unwrap();
         let options = BuildOptions {
@@ -654,7 +665,7 @@ mod tests {
 
     #[test]
     fn refuses_invalid_options_and_empty_wasm_modules() {
-        let (directory, project) = project(&[("F.tzr", "fn f() -> i64 { 1 }")], "F.tzr");
+        let (directory, project) = project(&[("F.tz", "fn f() -> i64 { 1 }")], "F.tz");
         let module = project.analyze().unwrap();
         let options = BuildOptions {
             target: Target::Wasm32,
@@ -711,17 +722,17 @@ mod tests {
     fn loads_sorted_sibling_modules_and_selects_main_for_directories() {
         let (directory, project) = project(
             &[
-                ("Zebra.tzr", "fn value() -> i64 { 2 }"),
-                ("Main.tzr", "Alpha.value() + Zebra.value()"),
-                ("Alpha.tzr", "fn value() -> i64 { 40 }"),
+                ("Zebra.tz", "fn value() -> i64 { 2 }"),
+                ("Main.tz", "Alpha.value() + Zebra.value()"),
+                ("Alpha.tz", "fn value() -> i64 { 40 }"),
                 ("ignored.txt", "not a Tsuzuri module"),
                 ("ignored.tsz", "not a Tsuzuri module"),
             ],
             "",
         );
         fs::create_dir(directory.path.join("nested")).unwrap();
-        fs::write(directory.path.join("nested/Hidden.tzr"), "invalid").unwrap();
-        assert_eq!(project.input(), directory.path.join("Main.tzr"));
+        fs::write(directory.path.join("nested/Hidden.tz"), "invalid").unwrap();
+        assert_eq!(project.input(), directory.path.join("Main.tz"));
         assert_eq!(
             project
                 .sources
@@ -731,14 +742,14 @@ mod tests {
             ["Alpha", "Main", "Zebra"]
         );
         let first = llvm::emit(&project.analyze().unwrap(), Entry::Console).unwrap();
-        let reloaded = Project::load(&directory.path.join("Main.tzr")).unwrap();
+        let reloaded = Project::load(&directory.path.join("Main.tz")).unwrap();
         assert_eq!(
             first,
             llvm::emit(&reloaded.analyze().unwrap(), Entry::Console).unwrap()
         );
-        let wrong_case = Project::load(&directory.path.join("MAIN.tzr")).unwrap_err();
+        let wrong_case = Project::load(&directory.path.join("MAIN.tz")).unwrap_err();
         assert!(matches!(wrong_case.diagnostic.code, "E2001" | "E1011"));
-        let library = Project::load(&directory.path.join("Alpha.tzr")).unwrap();
+        let library = Project::load(&directory.path.join("Alpha.tz")).unwrap();
         assert_eq!(
             build(
                 &library.analyze().unwrap(),
@@ -754,27 +765,132 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_source_file_for_module_errors() {
+    fn loads_all_source_kinds_and_rejects_old_extensions_and_colliding_stems() {
         let (directory, project) = project(
             &[
-                ("Main.tzr", "fn main() -> i64 { Other.value() }"),
-                ("Other.tzr", "// other module\nfn value() -> i64 { false }"),
+                ("Main.tz", "Identity { return 42 }"),
+                (
+                    "Identity.tc",
+                    "def Return :: 'a -> 'a\nfn Return value = value",
+                ),
+                (
+                    "Classes.tt",
+                    "class Score 'a { def score :: 'a -> i64 }\nclass Size 'a { def size :: 'a -> i64 }",
+                ),
+                ("Ignored.tzr", "not a supported source"),
             ],
-            "Main.tzr",
+            "",
+        );
+        assert_eq!(
+            project
+                .sources
+                .iter()
+                .map(|source| source.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Classes", "Identity", "Main"]
+        );
+        let ir = llvm::emit(&project.analyze().unwrap(), Entry::Console).unwrap();
+        assert!(ir.contains("@tz.fn.Identity.Return"));
+        for name in ["Classes.tt", "Identity.tc"] {
+            let library = Project::load(&directory.path.join(name)).unwrap();
+            let module = library.analyze().unwrap();
+            assert_eq!(ir, llvm::emit(&module, Entry::Console).unwrap());
+            for extension in ["tz", "tt", "tc"] {
+                let output = directory.path.join(format!("Output.{extension}"));
+                let options = BuildOptions {
+                    emit: Emit::Llvm,
+                    ..BuildOptions::default()
+                };
+                assert_eq!(
+                    build(&module, &library, &output, options).unwrap_err().code,
+                    "E2003"
+                );
+                assert!(!output.exists());
+            }
+            assert_eq!(
+                build(
+                    &module,
+                    &library,
+                    &directory.path.join("not-main"),
+                    BuildOptions::default(),
+                )
+                .unwrap_err()
+                .code,
+                "E2004"
+            );
+        }
+        let old = Project::load(&directory.path.join("Ignored.tzr")).unwrap_err();
+        assert_eq!(old.diagnostic.code, "E2000");
+        assert!(old.diagnostic.message.contains("rename"));
+        fs::write(directory.path.join("Identity.tz"), "").unwrap();
+        let collision = Project::load(&directory.path)
+            .unwrap()
+            .analyze()
+            .unwrap_err();
+        assert_eq!(collision.code, "E1011");
+        directory.close().unwrap();
+    }
+
+    #[test]
+    fn reports_errors_in_type_class_and_computation_files() {
+        let (directory, project) = project(
+            &[
+                ("Main.tz", "Identity { return 42 }"),
+                (
+                    "Identity.tc",
+                    "def Return :: i64 -> i64\nfn Return value = false",
+                ),
+            ],
+            "",
         );
         let error = project.analyze().unwrap_err();
         assert_eq!(error.code, "E1003");
         assert_eq!(
             project.source_for(&error).path,
-            directory.path.join("Other.tzr")
+            directory.path.join("Identity.tc")
         );
-        fs::write(directory.path.join("Other.tzr"), [0xff]).unwrap();
+        fs::write(
+            directory.path.join("Identity.tc"),
+            "def Return :: i64 -> i64\nfn Return value = value",
+        )
+        .unwrap();
+        fs::write(
+            directory.path.join("Classes.tt"),
+            "class Wrong 'a { def value :: 'b -> 'b }",
+        )
+        .unwrap();
+        let project = Project::load(&directory.path).unwrap();
+        let error = project.analyze().unwrap_err();
+        assert_eq!(error.code, "E1016");
+        assert_eq!(
+            project.source_for(&error).path,
+            directory.path.join("Classes.tt")
+        );
+        directory.close().unwrap();
+    }
+
+    #[test]
+    fn reports_the_source_file_for_module_errors() {
+        let (directory, project) = project(
+            &[
+                ("Main.tz", "fn main() -> i64 { Other.value() }"),
+                ("Other.tz", "// other module\nfn value() -> i64 { false }"),
+            ],
+            "Main.tz",
+        );
+        let error = project.analyze().unwrap_err();
+        assert_eq!(error.code, "E1003");
+        assert_eq!(
+            project.source_for(&error).path,
+            directory.path.join("Other.tz")
+        );
+        fs::write(directory.path.join("Other.tz"), [0xff]).unwrap();
         let error = Project::load(&directory.path).unwrap_err();
         assert_eq!(error.diagnostic.code, "E2001");
-        assert_eq!(error.path, directory.path.join("Other.tzr"));
-        fs::remove_file(directory.path.join("Main.tzr")).unwrap();
+        assert_eq!(error.path, directory.path.join("Other.tz"));
+        fs::remove_file(directory.path.join("Main.tz")).unwrap();
         let error = Project::load(&directory.path).unwrap_err();
-        assert_eq!(error.path, directory.path.join("Main.tzr"));
+        assert_eq!(error.path, directory.path.join("Main.tz"));
         directory.close().unwrap();
         assert!(
             BuildOptions {
@@ -791,7 +907,7 @@ mod tests {
     fn refuses_hardlinks_and_symlinks() {
         use std::os::unix::fs::symlink;
         let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
-        let input = directory.path.join("Source.tzr");
+        let input = directory.path.join("Source.tz");
         let output = directory.path.join("alias.ll");
         let link = directory.path.join("symlink.ll");
         fs::write(&input, "source").unwrap();
@@ -807,24 +923,32 @@ mod tests {
     fn protects_every_module_from_output_aliases() {
         let (directory, project) = project(
             &[
-                ("Main.tzr", "Other.value()"),
-                ("Other.tzr", "fn value() -> i64 { 42 }"),
+                ("Main.tz", "Other.value()"),
+                ("Other.tz", "fn value() -> i64 { 42 }"),
+                ("Traits.tt", "class Score 'a { def score :: 'a -> i64 }"),
+                (
+                    "Builder.tc",
+                    "def Return :: 'a -> 'a\nfn Return value = value",
+                ),
             ],
-            "Main.tzr",
+            "Main.tz",
         );
         let module = project.analyze().unwrap();
-        let other = directory.path.join("Other.tzr");
-        let alias = directory.path.join("other.ll");
-        fs::hard_link(&other, &alias).unwrap();
+        let other = directory.path.join("Other.tz");
         let options = BuildOptions {
             emit: Emit::Llvm,
             ..BuildOptions::default()
         };
-        for output in [&other, &alias] {
-            assert_eq!(
-                build(&module, &project, output, options).unwrap_err().code,
-                "E2003"
-            );
+        for name in ["Other.tz", "Traits.tt", "Builder.tc"] {
+            let input = directory.path.join(name);
+            let alias = directory.path.join(format!("{name}.ll"));
+            fs::hard_link(&input, &alias).unwrap();
+            for output in [&input, &alias] {
+                assert_eq!(
+                    build(&module, &project, output, options).unwrap_err().code,
+                    "E2003"
+                );
+            }
         }
         assert_eq!(
             fs::read_to_string(other).unwrap(),

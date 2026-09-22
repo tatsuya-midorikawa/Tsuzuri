@@ -21,7 +21,7 @@ const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.l
 const hex = (value) => BigInt.asUintN(64, value).toString(16).padStart(16, "0");
 
 try {
-  const input = join(root, "benchmarks/Mix.tzr");
+  const input = join(root, "benchmarks/Mix.tz");
   const object = join(temporary, "mix.o");
   const wasm = join(temporary, "mix.wasm");
   const native = join(temporary, platform() === "win32" ? "benchmark.exe" : "benchmark");

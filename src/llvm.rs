@@ -306,7 +306,7 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
         .ok_or_else(|| {
             Diagnostic::new(
                 "E2004",
-                "an executable requires top-level entry-point code or 'fn main' in Main.tzr; use '--emit object' for a library",
+                "an executable requires top-level entry-point code or 'fn main' in Main.tz; use '--emit object' for a library",
                 Span::default(),
             )
         })?;
@@ -316,7 +316,7 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
     {
         return Err(Diagnostic::new(
             "E2004",
-            "the Main.tzr entry point must take no arguments and return a number, bool, unit, or string",
+            "the Main.tz entry point must take no arguments and return a number, bool, unit, or string",
             main.span,
         ));
     }

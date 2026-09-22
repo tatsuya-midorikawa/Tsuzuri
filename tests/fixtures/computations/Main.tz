@@ -1,0 +1,216 @@
+instance Traits.Score i64 {
+    fn score value = *value
+}
+
+instance Traits.Size string {
+    fn size value = value.length
+}
+
+export def generic :: i64 -> i64
+fn generic value = Identity {
+    let! first = value
+    let! second = 2
+    return first + second
+}
+
+export def unit_bind :: i64
+fn unit_bind = Identity {
+    let! mut value: i64 = 41
+    value = value + 1
+    do! Identity { assert (value == 42); }
+    return value
+}
+
+export def choices :: bool -> i64
+fn choices valid = {
+    let result = Choice {
+        let! value = Choice.Result { valid: valid, value: 20 }
+        return! Choice { return value + 22 }
+    };
+    result.value
+}
+
+export def skipped_bind :: i64
+fn skipped_bind = {
+    let result = Choice {
+        let! value = Choice {}
+        return value / 0
+    };
+    result.value
+}
+
+export def yields :: i64
+fn yields = Flow { yield 20; yield! 22 }
+
+export def flow_bind :: i64
+fn flow_bind = Flow { let! first = 20; do! (); return first + 22 }
+
+export def branches :: bool -> i64
+fn branches flag = Flow {
+    if flag { yield 20 } else if false { yield 100 } else { yield 1 }
+    yield 22
+}
+
+export def zero_branch :: bool -> i64
+fn zero_branch flag = Flow { if flag { return 42 } }
+
+export def loop_sum :: i64 -> i64
+fn loop_sum count = Flow {
+    for n in new [i64](count, i -> i) {
+        yield n * n
+    }
+}
+
+export def nested_loops :: i64
+fn nested_loops = Flow {
+    for x in [1, 2] {
+        for y in [10, 20] {
+            yield x * y
+        }
+    }
+}
+
+export def owned_iterations :: i64
+fn owned_iterations = {
+    let prefix = "owned";
+    Flow {
+        for n in [1, 2, 3] {
+            let value = prefix + " text"
+            yield n + value.length
+        }
+    }
+}
+
+export def empty_loops :: i64
+fn empty_loops = Flow {
+    for n in [] { yield n / 0 }
+    while false { yield 1 / 0 }
+    return 42
+}
+
+export def skip_delayed_tail :: i64
+fn skip_delayed_tail = First {
+    yield 42
+    assert false
+    return 1 / 0
+}
+
+export def run_without_delay :: i64
+fn run_without_delay = RunOnly { return 41 }
+
+export def lazy_snapshots :: i64
+fn lazy_snapshots = {
+    let text = "hello";
+    let work: unit -> string = Lazy { return text + "!" };
+    let first = work ();
+    let second = work ();
+    first.length + second.length
+}
+
+export def discarded_lazy :: i64
+fn discarded_lazy = {
+    let text = "never evaluated";
+    let work: unit -> i64 = Lazy { assert false; return text.length };
+    42
+}
+
+def stamp :: &mut i64 -> string
+fn stamp counter = {
+    *counter = *counter + 1;
+    if *counter == 1 { "a" } else if *counter == 2 { "b" } else { "c" }
+}
+
+export def evaluation_order :: i64
+fn evaluation_order = {
+    let mut counter = 0;
+    let value = Text {
+        yield stamp (&mut counter)
+        yield! stamp (&mut counter)
+        return stamp (&mut counter)
+    };
+    assert (value == "abc");
+    counter
+}
+
+export def borrowed :: i64
+fn borrowed = {
+    let value = 42;
+    let reference: &i64 = Identity { return &value };
+    *reference
+}
+
+export def type_classes :: i64
+fn type_classes = {
+    let value = Identity { return 37 };
+    let text = Text { return "owned" };
+    Traits.Score.score (&value) + Traits.Size.size (&text)
+}
+
+export def array_bind :: i64
+fn array_bind = Identity {
+    let! values = [1, 2, 3]
+    return values.length
+}
+
+export def explicit_array_bind :: i64
+fn explicit_array_bind =
+    Identity.Bind [1i64, 2, 3] (values -> Identity.Return values.length)
+
+export def nested_task :: i64
+fn nested_task = Task.run task {
+    let! value = task { return Identity { return 20 } }
+    return Flow { yield value; return 22 }
+}
+
+export def task_payload :: i64
+fn task_payload = Identity {
+    let! work = task { return 42 }
+    return Task.run work
+}
+
+export def while_delegate :: i64
+fn while_delegate = Once { while true { return 42 } }
+
+export def numeric_boundary :: i64
+fn numeric_boundary = {
+    let value: i8 = Identity { let! n = 127i8; return n + 1 };
+    value as i64
+}
+
+export def decimal :: f64
+fn decimal = (Identity { return 0.1d128 + 0.2d128 }) as f64
+
+export def negative_zero :: f64
+fn negative_zero = Identity { return -0.0 }
+
+export def nan_result :: bool
+fn nan_result = {
+    let value: f64 = Identity { return 0.0 / 0.0 };
+    value != value
+}
+
+def heap_loop :: i64 -> i64 -> i64
+fn heap_loop count total =
+    if count == 0 { total } else {
+        let values = new [i64](256, i -> i);
+        let work: unit -> i64 = Lazy {
+            let! offset = 20
+            return values[0] + values[255] + offset
+        };
+        let value = work ();
+        let text = Text { yield "owned"; yield " values" };
+        let unused: unit -> i64 = Lazy { assert false; return text.length };
+        heap_loop (count - 1) (total + value)
+    }
+
+export def heap_cycles :: i64 -> i64
+fn heap_cycles count = heap_loop count 0
+
+export def trap_bind :: i64
+fn trap_bind = Identity { let! divisor = 0; return 1 / divisor }
+
+export def trap_loop :: i64
+fn trap_loop = Flow { for divisor in [0] { yield 1 / divisor } }
+
+def main :: i64
+fn main = generic 40

@@ -99,6 +99,7 @@ impl Parser<'_> {
 
     fn program(mut self) -> Result<Program, Diagnostic> {
         let mut program = Program {
+            source_kind: None,
             records: Vec::new(),
             functions: Vec::new(),
             classes: Vec::new(),
@@ -225,7 +226,7 @@ impl Parser<'_> {
                     )
                 {
                     return Err(self.error(
-                        "module and namespace declarations are not supported; each .tzr file is one module named after its filename",
+                        "module and namespace declarations are not supported; each .tz, .tt, or .tc file is one module named after its filename",
                     ));
                 }
                 program.entry = Some(self.entry()?);
@@ -627,6 +628,17 @@ impl Parser<'_> {
         if run && !self.in_task {
             return Err(self.error("'let!' is only allowed inside a task block"));
         }
+        let mut binding = self.binding_value(top_level)?;
+        if run {
+            let span = binding.value.span;
+            let depth = binding.value.depth + 1;
+            binding.value = self.make(ExprKind::TaskRun(Box::new(binding.value)), span, depth)?;
+        }
+        self.binding_end(top_level)?;
+        Ok(binding)
+    }
+
+    fn binding_value(&mut self, stop_at_newline: bool) -> Result<Binding, Diagnostic> {
         let mutable = self.eat(&TokenKind::Mut);
         let name = self.ident()?;
         let annotation = if self.eat(&TokenKind::Colon) {
@@ -635,15 +647,7 @@ impl Parser<'_> {
             None
         };
         self.expect(&TokenKind::Equal, "'=' in the binding")?;
-        let value = self.expression_inner(0, true, top_level)?;
-        let value = if run {
-            let span = value.span;
-            let depth = value.depth + 1;
-            self.make(ExprKind::TaskRun(Box::new(value)), span, depth)?
-        } else {
-            value
-        };
-        self.binding_end(top_level)?;
+        let value = self.expression_inner(0, true, stop_at_newline)?;
         Ok(Binding {
             name,
             mutable,
@@ -732,6 +736,112 @@ impl Parser<'_> {
             start.through(end.span),
             depth,
         )
+    }
+
+    fn computation(&mut self, builder: Ident) -> Result<Expr, Diagnostic> {
+        let outer = self.in_task;
+        self.in_task = false;
+        let body = self.computation_block()?;
+        self.in_task = outer;
+        let span = builder.span.through(body.span);
+        let depth = body.depth + 1;
+        self.make(ExprKind::Computation(builder, Box::new(body)), span, depth)
+    }
+
+    fn computation_block(&mut self) -> Result<ComputationBlock, Diagnostic> {
+        self.enter()?;
+        let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
+        let mut statements = Vec::new();
+        let mut depth = 0;
+        while !self.at(&TokenKind::RightBrace) {
+            let start = self.current().span;
+            let statement = if self.at(&TokenKind::If) {
+                self.computation_if()?
+            } else {
+                let kind = if self.eat(&TokenKind::Let) {
+                    let bind = self.eat(&TokenKind::Bang);
+                    ComputationStatementKind::Let(self.binding_value(true)?, bind)
+                } else if self.eat(&TokenKind::Do) {
+                    self.expect(&TokenKind::Bang, "'!' after 'do'")?;
+                    ComputationStatementKind::Do(self.expression_inner(0, true, true)?)
+                } else if self.at(&TokenKind::Return) || self.at(&TokenKind::Yield) {
+                    let returns = self.take().kind == TokenKind::Return;
+                    let from = self.eat(&TokenKind::Bang);
+                    let operation = match (returns, from) {
+                        (true, false) => "Return",
+                        (true, true) => "ReturnFrom",
+                        (false, false) => "Yield",
+                        (false, true) => "YieldFrom",
+                    };
+                    ComputationStatementKind::Operation(
+                        operation,
+                        self.expression_inner(0, true, true)?,
+                    )
+                } else if self.eat(&TokenKind::For) {
+                    let name = self.ident()?;
+                    self.expect(&TokenKind::In, "'in' after the loop binding")?;
+                    let source = self.expression(0, false)?;
+                    ComputationStatementKind::For(name, source, self.computation_block()?)
+                } else if self.eat(&TokenKind::While) {
+                    let condition = self.expression(0, false)?;
+                    ComputationStatementKind::While(condition, self.computation_block()?)
+                } else {
+                    ComputationStatementKind::Expression(self.expression_inner(0, true, true)?)
+                };
+                ComputationStatement {
+                    kind,
+                    span: start.through(self.tokens[self.position - 1].span),
+                }
+            };
+            if !self.at(&TokenKind::RightBrace) {
+                self.binding_end(true)?;
+            }
+            if matches!(
+                statement.kind,
+                ComputationStatementKind::Operation("Return" | "ReturnFrom", _)
+            ) && !self.at(&TokenKind::RightBrace)
+            {
+                return Err(self.error("'return' and 'return!' must end a computation block"));
+            }
+            depth = depth.max(statement.depth());
+            statements.push(statement);
+        }
+        let end = self.take().span;
+        self.nesting -= 1;
+        let depth = depth + 1;
+        let span = start.through(end);
+        self.make(ExprKind::Unit, span, depth)?;
+        Ok(ComputationBlock {
+            statements,
+            span,
+            depth,
+        })
+    }
+
+    fn computation_if(&mut self) -> Result<ComputationStatement, Diagnostic> {
+        self.enter()?;
+        let start = self.expect(&TokenKind::If, "'if'")?.span;
+        let condition = self.expression(0, false)?;
+        let yes = self.computation_block()?;
+        let no = if self.eat(&TokenKind::Else) {
+            Some(if self.at(&TokenKind::If) {
+                let statement = self.computation_if()?;
+                ComputationBlock {
+                    span: statement.span,
+                    depth: statement.depth() + 1,
+                    statements: vec![statement],
+                }
+            } else {
+                self.computation_block()?
+            })
+        } else {
+            None
+        };
+        self.nesting -= 1;
+        Ok(ComputationStatement {
+            span: start.through(self.tokens[self.position - 1].span),
+            kind: ComputationStatementKind::If(condition, yes, no),
+        })
     }
 
     fn expression(&mut self, minimum: u8, allow_record: bool) -> Result<Expr, Diagnostic> {
@@ -1006,6 +1116,17 @@ impl Parser<'_> {
                     && self.at(&TokenKind::LeftBrace)
                     && (!stop_at_newline || !self.newline_before_current())
                 {
+                    let record = self.tokens.get(self.position + 1).is_some_and(|token| {
+                        token.kind == TokenKind::RightBrace
+                            || (matches!(token.kind, TokenKind::Ident(_))
+                                && self
+                                    .tokens
+                                    .get(self.position + 2)
+                                    .is_some_and(|next| next.kind == TokenKind::Colon))
+                    });
+                    if !record {
+                        return self.computation(name);
+                    }
                     return self.record(name);
                 }
                 ExprKind::Name(name)

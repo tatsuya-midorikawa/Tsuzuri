@@ -19,7 +19,16 @@ pub fn analyze_modules(
         .iter()
         .enumerate()
         .map(|(id, (name, source))| {
-            parser::parse_with_source(source, id).map(|program| (*name, program))
+            let (name, kind) = name
+                .rsplit_once('.')
+                .and_then(|(name, extension)| {
+                    syntax::SourceKind::from_extension(extension).map(|kind| (name, Some(kind)))
+                })
+                .unwrap_or((*name, None));
+            parser::parse_with_source(source, id).map(|mut program| {
+                program.source_kind = kind;
+                (name, program)
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let modules: Vec<_> = programs

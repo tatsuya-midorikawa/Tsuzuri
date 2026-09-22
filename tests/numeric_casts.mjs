@@ -95,7 +95,7 @@ function literal(value) {
 }
 
 try {
-  const source = join(temporary, "Main.tzr");
+  const source = join(temporary, "Main.tz");
   const definitions = [], cases = [];
   for (const [from, to] of conversions) {
     const name = `cast_${from.name}_${to.name}`;

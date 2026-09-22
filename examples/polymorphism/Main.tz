@@ -3,20 +3,16 @@ record Point { x: i32, y: i32 }
 def add :: 'a -> 'a -> 'a
 fn add x y = x + y
 
-class Score 'a {
-    def score :: &'a -> i32
-}
-
 instance Add Point {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-instance Score Point {
+instance Classes.Score Point {
     fn score point = point.x + point.y
 }
 
-def score :: Score 'a => &'a -> i32
-fn score value = Score.score value
+def score :: Classes.Score 'a => &'a -> i32
+fn score value = Classes.Score.score value
 
 let point = add (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 })
 score (&point)

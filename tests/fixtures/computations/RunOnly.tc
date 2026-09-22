@@ -1,0 +1,5 @@
+def Return :: i64 -> i64
+fn Return value = value
+
+def Run :: i64 -> i64
+fn Run value = value + 1

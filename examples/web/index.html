@@ -25,7 +25,7 @@
   <body>
     <p class="tag">Pure functions. Native machine code. WebAssembly.</p>
     <h1>Tsuzuri in motion</h1>
-    <p>The same immutable <code>Physics.tzr</code> kernel powers this browser demo and the native desktop example. No GC, allocator, or JavaScript imports inside the WASM kernel.</p>
+    <p>The same immutable <code>Physics.tz</code> kernel powers this browser demo and the native desktop example. No GC, allocator, or JavaScript imports inside the WASM kernel.</p>
     <canvas id="game" width="960" height="540" aria-label="Animated balls with elastic wall collisions"></canvas>
     <div class="controls">
       <button id="pause" type="button" disabled aria-pressed="false">Pause</button>
@@ -35,7 +35,7 @@
     </div>
     <p id="status" role="status">Loading physics.wasm...</p>
     <footer>
-      <p>Build with <code>tsuzuri build examples/web/Physics.tzr --target wasm32 -o examples/web/physics.wasm</code>, then serve this directory over HTTP. FPS includes rendering and browser scheduling; it is not a compiler benchmark.</p>
+      <p>Build with <code>tsuzuri build examples/web/Physics.tz --target wasm32 -o examples/web/physics.wasm</code>, then serve this directory over HTTP. FPS includes rendering and browser scheduling; it is not a compiler benchmark.</p>
     </footer>
     <script type="module" src="./app.mjs"></script>
   </body>

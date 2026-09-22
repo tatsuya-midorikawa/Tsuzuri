@@ -114,16 +114,13 @@ fn curried_exclusive = {
     text.length
 }
 
-class CurriedCombine 'a {
-    def combine :: 'a -> 'a -> 'a
-}
-instance CurriedCombine i32 {
+instance Classes.CurriedCombine i32 {
     let combine = x -> y -> x + y
 }
 
 export def curried_class :: i32
 fn curried_class = {
-    let f = CurriedCombine.combine 20i32;
+    let f = Classes.CurriedCombine.combine 20i32;
     let g: i32 -> i32 -> i32 = Add.add;
     f 22 + g 1 2
 }
