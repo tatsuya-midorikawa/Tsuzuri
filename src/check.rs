@@ -7,8 +7,12 @@ use crate::syntax::*;
 mod closures;
 #[path = "computation.rs"]
 mod computation;
+#[path = "control.rs"]
+mod control;
 #[path = "polymorph.rs"]
 mod polymorph;
+#[path = "recursion.rs"]
+mod recursion;
 use polymorph::{Classes, Constraint, Inference, Scheme};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
@@ -26,6 +30,7 @@ pub enum Type {
     Record(usize),
     Array(Box<Type>),
     List(Box<Type>),
+    Tuple(Vec<Type>),
     Task(Box<Type>),
     Function(Vec<Type>, Box<Type>),
     Reference(Box<Type>, bool),
@@ -83,6 +88,21 @@ impl Type {
                 format!("[{}]", element.display(records))
             }
             Self::List(element) => format!("[|{}|]", element.display(records)),
+            Self::Tuple(elements) => format!(
+                "({})",
+                elements
+                    .iter()
+                    .map(|ty| {
+                        let text = ty.display(records);
+                        if matches!(ty, Self::Function(..)) {
+                            format!("({text})")
+                        } else {
+                            text
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" * ")
+            ),
             Self::Task(result) => {
                 let inner = result.display(records);
                 if matches!(**result, Self::Function(..)) {
@@ -140,6 +160,7 @@ impl Type {
                 .iter()
                 .all(|(_, ty)| ty.is_copy(records)),
             Self::Array(element) | Self::List(element) => element.is_copy(records),
+            Self::Tuple(elements) => elements.iter().all(|ty| ty.is_copy(records)),
             _ => true,
         }
     }
@@ -152,6 +173,7 @@ impl Type {
                 .iter()
                 .any(|(_, ty)| ty.needs_drop(records)),
             Self::Array(_) | Self::List(_) => true,
+            Self::Tuple(elements) => elements.iter().any(|ty| ty.needs_drop(records)),
             _ => false,
         }
     }
@@ -160,6 +182,7 @@ impl Type {
         match self {
             Self::Reference(..) => true,
             Self::Array(element) | Self::List(element) => element.contains_reference(),
+            Self::Tuple(elements) => elements.iter().any(Self::contains_reference),
             _ => false,
         }
     }
@@ -170,6 +193,7 @@ impl Type {
             Self::Reference(value, false) | Self::Array(value) | Self::List(value) => {
                 value.contains_mutable_reference()
             }
+            Self::Tuple(elements) => elements.iter().any(Self::contains_mutable_reference),
             // Function signatures describe calls, not stored references; captures are checked separately.
             _ => false,
         }
@@ -179,6 +203,7 @@ impl Type {
         match self {
             Self::Reference(..) | Self::Function(..) => true,
             Self::Array(element) | Self::List(element) => element.carries_loans(records),
+            Self::Tuple(elements) => elements.iter().any(|ty| ty.carries_loans(records)),
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
@@ -191,6 +216,7 @@ impl Type {
         match self {
             Self::Reference(_, true) | Self::Task(_) => false,
             Self::Array(element) | Self::List(element) => element.can_capture(records),
+            Self::Tuple(elements) => elements.iter().all(|ty| ty.can_capture(records)),
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
@@ -210,6 +236,7 @@ impl Type {
         match self {
             Self::Reference(..) => false,
             Self::Array(element) | Self::List(element) => element.can_send(records),
+            Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(records)),
             Self::Record(id) => records[*id]
                 .fields
                 .iter()
@@ -377,6 +404,39 @@ pub struct TypedExpr {
 }
 
 #[derive(Clone, Debug)]
+pub struct PatternAlternative {
+    pub steps: Vec<PatternStep>,
+    pub bindings: Vec<(Local, TypedExpr)>,
+}
+
+#[derive(Clone, Debug)]
+pub enum PatternStep {
+    Test(TypedExpr),
+    Bind(Local, TypedExpr),
+}
+
+impl PatternStep {
+    pub(crate) fn expression(&self) -> &TypedExpr {
+        match self {
+            Self::Test(value) | Self::Bind(_, value) => value,
+        }
+    }
+
+    pub(crate) fn expression_mut(&mut self) -> &mut TypedExpr {
+        match self {
+            Self::Test(value) | Self::Bind(_, value) => value,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TypedMatchArm {
+    pub alternatives: Vec<PatternAlternative>,
+    pub guard: Option<TypedExpr>,
+    pub body: TypedExpr,
+}
+
+#[derive(Clone, Debug)]
 pub enum TypedExprKind {
     Int(u128),
     Float(String),
@@ -405,6 +465,28 @@ pub enum TypedExprKind {
         then_branch: Box<TypedExpr>,
         else_branch: Box<TypedExpr>,
     },
+    While {
+        condition: Box<TypedExpr>,
+        body: Box<TypedExpr>,
+    },
+    ForRange {
+        local: Local,
+        start: Box<TypedExpr>,
+        step: Box<TypedExpr>,
+        finish: Box<TypedExpr>,
+        body: Box<TypedExpr>,
+    },
+    ForEach {
+        owner: Local,
+        local: Local,
+        source: Box<TypedExpr>,
+        body: Box<TypedExpr>,
+    },
+    Match {
+        local: Local,
+        value: Box<TypedExpr>,
+        arms: Vec<TypedMatchArm>,
+    },
     Block {
         bindings: Vec<(Local, TypedExpr)>,
         result: Box<TypedExpr>,
@@ -412,6 +494,8 @@ pub enum TypedExprKind {
     Record(Vec<(usize, TypedExpr)>),
     Array(Vec<TypedExpr>),
     List(Vec<TypedExpr>),
+    Tuple(Vec<TypedExpr>),
+    ListTail(Box<TypedExpr>, usize),
     NewArray(Box<TypedExpr>, Box<TypedExpr>),
     NewList(Box<TypedExpr>, Box<TypedExpr>),
     Field(Box<TypedExpr>, usize),
@@ -422,6 +506,141 @@ pub enum TypedExprKind {
     Dereference(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
+}
+
+impl TypedExpr {
+    pub(crate) fn children(&self) -> Vec<&Self> {
+        use TypedExprKind::*;
+        match &self.kind {
+            Unary(_, value)
+            | Borrow(value, _)
+            | Dereference(value)
+            | Cast(value)
+            | Field(value, _)
+            | Length(value)
+            | StringLength(value)
+            | TaskRun(value)
+            | TaskParallel(value)
+            | ListTail(value, _) => vec![value],
+            Binary(_, a, b)
+            | Assign(a, b)
+            | Index(a, b)
+            | NewArray(a, b)
+            | NewList(a, b)
+            | While {
+                condition: a,
+                body: b,
+            }
+            | ForEach {
+                source: a, body: b, ..
+            } => vec![a, b],
+            ForRange {
+                start,
+                step,
+                finish,
+                body,
+                ..
+            } => vec![start, step, finish, body],
+            Call(callee, arguments) => std::iter::once(callee.as_ref()).chain(arguments).collect(),
+            Lambda { body, .. } => vec![body],
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => vec![condition, then_branch, else_branch],
+            Match { value, arms, .. } => {
+                let mut children = vec![value.as_ref()];
+                for arm in arms {
+                    for alternative in &arm.alternatives {
+                        children.extend(alternative.steps.iter().map(PatternStep::expression));
+                        children.extend(alternative.bindings.iter().map(|(_, value)| value));
+                    }
+                    children.extend(arm.guard.iter());
+                    children.push(&arm.body);
+                }
+                children
+            }
+            Block { bindings, result } => bindings
+                .iter()
+                .map(|(_, value)| value)
+                .chain(std::iter::once(result.as_ref()))
+                .collect(),
+            Record(fields) => fields.iter().map(|(_, value)| value).collect(),
+            Array(values) | List(values) | Tuple(values) | Closure(_, values) => {
+                values.iter().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn children_mut(&mut self) -> Vec<&mut Self> {
+        use TypedExprKind::*;
+        match &mut self.kind {
+            Unary(_, value)
+            | Borrow(value, _)
+            | Dereference(value)
+            | Cast(value)
+            | Field(value, _)
+            | Length(value)
+            | StringLength(value)
+            | TaskRun(value)
+            | TaskParallel(value)
+            | ListTail(value, _) => vec![value],
+            Binary(_, a, b)
+            | Assign(a, b)
+            | Index(a, b)
+            | NewArray(a, b)
+            | NewList(a, b)
+            | While {
+                condition: a,
+                body: b,
+            }
+            | ForEach {
+                source: a, body: b, ..
+            } => vec![a, b],
+            ForRange {
+                start,
+                step,
+                finish,
+                body,
+                ..
+            } => vec![start, step, finish, body],
+            Call(callee, arguments) => std::iter::once(callee.as_mut()).chain(arguments).collect(),
+            Lambda { body, .. } => vec![body],
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => vec![condition, then_branch, else_branch],
+            Match { value, arms, .. } => {
+                let mut children = vec![value.as_mut()];
+                for arm in arms {
+                    for alternative in &mut arm.alternatives {
+                        children.extend(
+                            alternative
+                                .steps
+                                .iter_mut()
+                                .map(PatternStep::expression_mut),
+                        );
+                        children.extend(alternative.bindings.iter_mut().map(|(_, value)| value));
+                    }
+                    children.extend(arm.guard.iter_mut());
+                    children.push(&mut arm.body);
+                }
+                children
+            }
+            Block { bindings, result } => bindings
+                .iter_mut()
+                .map(|(_, value)| value)
+                .chain(std::iter::once(result.as_mut()))
+                .collect(),
+            Record(fields) => fields.iter_mut().map(|(_, value)| value).collect(),
+            Array(values) | List(values) | Tuple(values) | Closure(_, values) => {
+                values.iter_mut().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
@@ -435,6 +654,7 @@ struct Names {
     records: BTreeMap<String, usize>,
     record_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, usize>,
+    active_patterns: BTreeMap<String, (usize, bool)>,
 }
 
 impl Names {
@@ -566,6 +786,13 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
         {
             return Err(duplicate(&function.name));
         }
+        if function.exported && function.name.text.starts_with("$active.") {
+            return Err(Diagnostic::new(
+                "E1008",
+                "active recognizers cannot be exported; expose an ordinary wrapper",
+                function.name.span,
+            ));
+        }
         if function.exported && !export_names.insert(&function.name.text) {
             return Err(Diagnostic::new(
                 "E1001",
@@ -642,6 +869,38 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             variables,
             constraints,
         });
+    }
+    for (module, program) in modules {
+        for active in &program.active_patterns {
+            let id = names.functions[&format!("{module}.{}", active.function)];
+            let Type::Function(parameters, result) = signatures[id].signature.as_type() else {
+                unreachable!()
+            };
+            if parameters.is_empty() {
+                return Err(Diagnostic::new(
+                    "E1006",
+                    "an active recognizer needs an input parameter",
+                    active.name.span,
+                ));
+            }
+            if active.partial && *result != Type::Bool {
+                return Err(Diagnostic::new(
+                    "E1003",
+                    "a partial active recognizer must return bool",
+                    active.name.span,
+                ));
+            }
+            if names
+                .active_patterns
+                .insert(
+                    format!("{module}.{}", active.name.text),
+                    (id, active.partial),
+                )
+                .is_some()
+            {
+                return Err(duplicate(&active.name));
+            }
+        }
     }
     let mut functions = Vec::new();
     for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
@@ -734,6 +993,7 @@ pub fn check_modules(modules: &[(&str, &Program)]) -> Result<CheckedModule, Diag
             is_task: false,
         });
     }
+    recursion::check(&functions, &function_declarations, &classes)?;
     let module = CheckedModule {
         records,
         functions,
@@ -773,6 +1033,12 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
             Type::Array(Box::new(resolve_type(element, module, names)?))
         }
         TypeExprKind::List(element) => Type::List(Box::new(resolve_type(element, module, names)?)),
+        TypeExprKind::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|ty| resolve_type(ty, module, names))
+                .collect::<Result<_, _>>()?,
+        ),
         TypeExprKind::Task(result) => Type::Task(Box::new(resolve_type(result, module, names)?)),
         TypeExprKind::Function(parameters, result) => Type::function(
             parameters
@@ -823,7 +1089,7 @@ fn record_size(
     let mut size: usize = 0;
     for (_, ty) in &record.fields {
         size = size.saturating_add(
-            layout_size(ty, records, sizes, visiting, depth + 1)?.next_multiple_of(16),
+            layout_size(ty, records, sizes, visiting, depth + 1, record.span)?.next_multiple_of(16),
         );
         if size > MAX_VALUE_BYTES {
             return Err(size_error(record.span));
@@ -840,12 +1106,26 @@ fn layout_size(
     sizes: &mut [Option<usize>],
     visiting: &mut BTreeSet<usize>,
     depth: usize,
+    span: Span,
 ) -> Result<usize, Diagnostic> {
     Ok(match ty {
         Type::Record(id) => record_size(*id, records, sizes, visiting, depth)?,
         Type::Array(element) | Type::List(element) => {
-            layout_size(element, records, sizes, visiting, depth)?;
+            layout_size(element, records, sizes, visiting, depth, span)?;
             16
+        }
+        Type::Tuple(elements) => {
+            let mut size = 0usize;
+            for ty in elements {
+                size = size.saturating_add(
+                    layout_size(ty, records, sizes, visiting, depth + 1, span)?
+                        .next_multiple_of(16),
+                );
+                if size > MAX_VALUE_BYTES {
+                    return Err(size_error(span));
+                }
+            }
+            size
         }
         Type::Integer(128, _) | Type::Binary(128) | Type::Decimal(128) | Type::String => 16,
         Type::Function(..) | Type::Task(_) => 32,
@@ -857,6 +1137,13 @@ fn layout_size(
 fn validate_size(ty: &Type, sizes: &[usize], span: Span) -> Result<usize, Diagnostic> {
     let size = match ty {
         Type::Record(id) => sizes[*id],
+        Type::Tuple(elements) => {
+            let mut size = 0usize;
+            for ty in elements {
+                size = size.saturating_add(validate_size(ty, sizes, span)?.next_multiple_of(16));
+            }
+            size
+        }
         Type::Array(element) | Type::List(element) => {
             if element.contains_mutable_reference() {
                 return Err(Diagnostic::new(
@@ -967,6 +1254,9 @@ impl<'a> Checker<'a> {
     ) -> Result<TypedExpr, Diagnostic> {
         // Continuations must not retain the large value-checking frame at every recursive step.
         match expression.kind {
+            ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
+                self.control_expression(expression, expected)
+            }
             ExprKind::Lambda(..)
             | ExprKind::Task(_)
             | ExprKind::Call(..)
@@ -1003,6 +1293,28 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let callee = self.expression(callee, None)?;
+                let arguments = if let [
+                    Expr {
+                        kind: ExprKind::Tuple(values),
+                        ..
+                    },
+                ] = arguments.as_slice()
+                {
+                    match &callee.ty {
+                        Type::Function(parameters, _)
+                            if parameters.len() >= values.len()
+                                && !matches!(
+                                    parameters[0],
+                                    Type::Tuple(_) | Type::Variable(_) | Type::Infer(_)
+                                ) =>
+                        {
+                            values
+                        }
+                        _ => arguments,
+                    }
+                } else {
+                    arguments
+                };
                 let (parameters, result) =
                     self.call_signature(&callee.ty, arguments.len(), expression.span)?;
                 if let Some(expected) = expected {
@@ -1118,6 +1430,30 @@ impl<'a> Checker<'a> {
             ExprKind::String(text) => (TypedExprKind::String(text.clone()), Type::String),
             ExprKind::Bool(value) => (TypedExprKind::Bool(*value), Type::Bool),
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
+            ExprKind::Tuple(values) => {
+                let types = match expected {
+                    Some(Type::Tuple(types)) if types.len() == values.len() => Some(types),
+                    _ => None,
+                };
+                let values = values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| self.expression(value, types.map(|types| &types[index])))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ty = Type::Tuple(values.iter().map(|value| value.ty.clone()).collect());
+                validate_size(&ty, self.record_sizes, expression.span)?;
+                (TypedExprKind::Tuple(values), ty)
+            }
+            ExprKind::Range { .. } => {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "a range is an enumerable expression for 'for...in', not a stored value",
+                    expression.span,
+                ));
+            }
+            ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
+                unreachable!("control expressions use their own checker")
+            }
             ExprKind::Name(name) => self.name(name)?,
             ExprKind::QualifiedFunction(name) => {
                 let id = self.names.functions.get(&name.text).ok_or_else(|| {
@@ -1632,8 +1968,8 @@ mod tests {
     fn checks_value_types_higher_order_and_forward_recursion() {
         let source = "
             record Vec2 { x: f64, y: f64 }
-            fn even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }
-            fn odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }
+            fn rec even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }
+            fn rec odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }
             fn apply(f: fn(i64) -> i64, n: i64) -> i64 { f(n) }
             fn square(n: i64) -> i64 { n * n }
             export fn answer() -> i64 {

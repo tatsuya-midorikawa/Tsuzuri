@@ -20,8 +20,8 @@ GPU バックエンドと自動マルチスレッド化は未実装です。
 `Main.tz`:
 
 ```text
-def sum :: i64 -> i64 -> i64
-fn sum n total =
+def rec sum :: i64 -> i64 -> i64
+fn rec sum n total =
     if n <= 0 {
         total
     } else {
@@ -40,8 +40,8 @@ fn main = answer()
 | 項目 | 初版の実装 |
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `&mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
-| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
-| 書きやすさ | `def` 宣言と `fn`／`let` 実装、全関数のカリー化、部分適用、匿名関数、ローカル型推論、式としての `if`／ブロック、`|>`、高階関数、前方参照 |
+| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、タプル、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
+| 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
@@ -136,6 +136,45 @@ instance Classes.Score Point {
 旧 `fn name :: ...` は `def name :: ...` へ置き換えます。
 旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
 詳細と制約一覧は [言語仕様](docs/language.md#多相関数と型クラス) を参照してください。
+
+## 制御構文とパターン
+
+```text
+let mut total = 0
+for (x, y) in [(1, 2), (3, 4)] do
+    total = total + x + y
+for i = 1 to 5 do
+    total = total + i as i64
+while total < 40 do
+    total = total + 1
+let add = fx x y -> x + y
+match add total 2 with
+| 0 -> 0
+| answer when answer > 0 -> answer
+| otherwise -> -1
+```
+
+`for…to`／`downto` は F# と同じく **i32 の両端を含む反復**です。
+`for…in` は配列・連結リスト・整数範囲 `start .. [step ..] finish` に対応し、
+文字列では既存の索引仕様と同じ UTF-8 バイトを列挙します。
+ループとその本体は `unit`、条件は `bool` です。
+`if condition then value else other`、`elif`、unit を返す `else` 省略も使えます。
+従来の `{ ... }` ブロック、`if condition { ... } else { ... }`、`x -> ...` も維持します。
+
+パターンには定数・変数・`_`／`otherwise`、タプル、レコード、配列、リスト、
+`head :: tail`、OR／AND、`as`、型注釈を使えます。
+単一ケースの全域アクティブパターンと、bool を返す部分アクティブパターンもあります。
+対象は **Tsuzuri の型と所有権モデル**であり、.NET の型テスト・null・判別共用体や
+`IEnumerable` 全般との互換を意味しません。コレクションの記号は従来どおり、
+配列が `[ ... ]`、連結リストが `[| ... |]` です。
+
+再帰関数には `def rec` と `fn rec` が必要です。相互再帰は先頭を `rec`、
+続く宣言を `def and`、実装を `and` で記述できます。既存コードも明示指定へ移行してください。
+ループは LLVM の直接分岐、配列は連続走査、リストは一方向走査へ下げます。
+`match` 内の直接自己末尾再帰も `-O0` からループ化します。
+速度の実測と未達の比較は [制御構文のベンチマーク](docs/benchmarks.md#制御構文の比較)、
+詳しい契約は [言語仕様](docs/language.md#制御構文)、
+実行例は `tsuzuri run examples/control` を参照してください。
 
 ## ユーザー定義のコンピュテーション式
 
@@ -449,11 +488,13 @@ node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
+node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
+node benchmarks/run-control.mjs target/release/tsuzuri
 ```
 
 境界値・NaN・短絡評価・高階関数・レコード・配列・100 万回の末尾再帰を、

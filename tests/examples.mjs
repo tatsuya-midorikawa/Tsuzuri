@@ -25,6 +25,7 @@ try {
   assert.equal(run(compiler, ["run", "examples/currying"]), "42\n");
   assert.equal(run(compiler, ["run", "examples/tasks"]), "21325334000\n");
   assert.equal(run(compiler, ["run", "examples/computations"]), "42\n");
+  assert.equal(run(compiler, ["run", "examples/control"]), "42\n");
   assert.equal(Number(run(compiler, ["run", "examples/point"])), Math.sqrt(10 ** 2 + 20.5 ** 2));
   run(process.execPath, ["--check", "examples/web/app.mjs"]);
 

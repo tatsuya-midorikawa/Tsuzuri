@@ -160,6 +160,16 @@ pub(super) fn single_use_locals(expression: &TypedExpr) -> BTreeSet<usize> {
             count(child, uses);
             true
         });
+        if matches!(
+            expression.kind,
+            TypedExprKind::While { .. }
+                | TypedExprKind::ForRange { .. }
+                | TypedExprKind::ForEach { .. }
+        ) {
+            for count in uses.values_mut() {
+                *count = (*count).max(2);
+            }
+        }
     }
     let mut uses = BTreeMap::new();
     count(expression, &mut uses);
@@ -179,6 +189,7 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
                 .fields
                 .iter()
                 .any(|(_, ty)| mutable_reference(ty, module)),
+            Type::Tuple(elements) => elements.iter().any(|ty| mutable_reference(ty, module)),
             _ => false,
         }
     }
@@ -286,31 +297,5 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
 }
 
 fn all_children(expression: &TypedExpr, visit: &mut impl FnMut(&TypedExpr) -> bool) -> bool {
-    use TypedExprKind::*;
-    match &expression.kind {
-        Unary(_, value)
-        | Borrow(value, _)
-        | Dereference(value)
-        | Cast(value)
-        | Field(value, _)
-        | Length(value)
-        | StringLength(value)
-        | TaskRun(value)
-        | TaskParallel(value) => visit(value),
-        Binary(_, a, b) | Assign(a, b) | Index(a, b) | NewArray(a, b) | NewList(a, b) => {
-            visit(a) && visit(b)
-        }
-        Call(callee, arguments) => visit(callee) && arguments.iter().all(visit),
-        If {
-            condition,
-            then_branch,
-            else_branch,
-        } => visit(condition) && visit(then_branch) && visit(else_branch),
-        Block { bindings, result } => {
-            bindings.iter().all(|(_, value)| visit(value)) && visit(result)
-        }
-        Record(fields) => fields.iter().all(|(_, value)| visit(value)),
-        Array(values) | List(values) | Closure(_, values) => values.iter().all(visit),
-        _ => true,
-    }
+    expression.children().into_iter().all(visit)
 }

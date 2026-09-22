@@ -345,6 +345,105 @@ for cpu in generic native; do
 done
 ```
 
+## 制御構文の比較
+
+```sh
+cargo build --release --locked
+node benchmarks/run-control.mjs target/release/tsuzuri
+node benchmarks/run-control.mjs target/release/tsuzuri --cpu native
+node benchmarks/run-control.mjs target/release/tsuzuri --quick
+```
+
+`benchmarks/control/Main.tz` の新しい制御構文を、C11、C++20、Rust と比較します。
+C／C++ は同じ `reference.c` を各言語としてコンパイルし、Clang と CPU 指定を Tsuzuri に揃えます。
+Rust は `reference.rs` を `rustc` で独立した PIC オブジェクトにします。
+`TSUZURI_CLANG`／`TSUZURI_RUSTC` でツールを指定できます。
+全言語で `-O3` 相当、LTO・fast-math なし、整数は同じ 64-bit 折り返しです。
+Rust の slice 走査は通常の安全なコードで、未初期化領域の確保・初期化・解放だけを
+同じシステムの malloc/free に揃えています。ゼロ初期化や余分なコピーを比較相手だけに課しません。
+
+| 種目 | 既定の仕事量 | 比較する処理 |
+|---|---|---|
+| `while_mix` | 8,000,000 反復 | ループ依存の整数ミキサー |
+| `for_mix` | 8,000,000 反復 | i32 の `downto` と、対応する C／C++ の for、Rust の逆順 inclusive range |
+| `tail_mix` | 8,000,000 反復 | match からの自己末尾再帰と、同じ計算の手書きループ |
+| `match_dispatch` | 8,000,000 選択 | 16 通りの整数分類と折り返し加算 |
+| `array_sum` | 4,000,000 要素（32 MB） | 確保、seed 依存の初期化、for-in 集計、解放の全体 |
+
+各種目・各言語を二回ウォームアップし、12 サンプルを採取します。
+一サンプルは二回呼び出しの平均 CPU time です。順序は四言語で巡回・反転させ、
+volatile の入力と結果保存、別オブジェクト・LTO 無効により計算の削除・再利用を避けます。
+25 組の小さい入力を四言語と独立した BigInt 実装で照合し、計測中もすべての checksum を確認します。
+`--quick` は正しさだけの小規模実行で、時間を性能の判断には使いません。
+WASM は制御構文の native／WASM `-O0`／`-O3` テストで検証し、この表のネイティブ時間と混ぜません。
+
+JSON にツールのバージョン、Rust の LLVM バージョン、コンパイラ SHA-256、
+CPU、OS、全フラグ、生サンプル、各中央値、`tsuzuri_over_c`／`cpp`／`rust` を保存します。
+比率が 1 未満ならその相手より速いことを表します。
+`--artifacts directory` は各言語のオブジェクト、LLVM IR、アセンブリを保存します。
+自動検出する vector 命令数は調査用で、**それだけを SIMD の実行や高速化の証明にはしません**。
+
+実装中の初回測定では for が C/C++ 比約 1.60、整数 match が Rust 比約 1.62 でした。
+32-bit カウンターを毎回拡張する経路を、範囲が証明された広い誘導変数へ変更しました。
+密な定数パターンは早い段階で静的表へ下げ、小さい整数 reduction にだけ LLVM の展開ヒントを渡します。
+全ループへの一律の展開ヒントはミキサーを遅くしたため採用していません。
+整数の overflow フラグや浮動小数点の再結合で意味を緩める変更も行っていません。
+
+再測定例:
+
+```sh
+mkdir -p target/benchmarks
+for cpu in generic native; do
+  for trial in 1 2 3; do
+    node benchmarks/run-control.mjs target/release/tsuzuri --cpu "$cpu" \
+      --artifacts "target/benchmarks/control-final-$cpu-$trial" \
+      > "target/benchmarks/control-final-$cpu-$trial.json" || exit 1
+  done
+done
+```
+
+### 制御構文の実測（2026-09-22）
+
+Apple M1 Max（10 logical CPUs）、arm64 macOS/Darwin 27.0.0、
+Apple Clang 21.0.0（clang-2100.3.34.2）、Rust 1.98.1／LLVM 22.1.8、Node.js 20.19.6。
+下表の時間は独立した三回の実行の中央値の中央値、比率も各回の比率の中央値です。
+したがって、別々に集計した時間同士の商と比率が厳密に一致するとは限りません。
+
+| CPU 指定 | 種目 | Tsuzuri ms | 対 C | 対 C++ | 対 Rust |
+|---|---|---:|---:|---:|---:|
+| generic | while_mix | 12.469 | 1.002 | 0.998 | 1.002 |
+| generic | for_mix | 12.470 | 1.000 | 0.999 | 0.624 |
+| generic | tail_mix | 14.989 | 1.196 | 1.200 | 1.201 |
+| generic | match_dispatch | 2.489 | 0.614 | 0.613 | 0.993 |
+| generic | array_sum | 1.786 | 1.004 | 0.999 | 1.003 |
+| native | while_mix | 12.499 | 0.999 | 0.998 | 1.002 |
+| native | for_mix | 12.477 | 1.000 | 0.999 | 0.623 |
+| native | tail_mix | 15.045 | 1.201 | 1.201 | 1.207 |
+| native | match_dispatch | 2.502 | 0.612 | 0.615 | 0.995 |
+| native | array_sum | 1.771 | 1.002 | 0.998 | 1.002 |
+
+この条件では **for は Rust より約 1.60 倍、整数 match は C/C++ より約 1.63 倍高速**でした。
+while、配列、その他のほぼ 1.0 の差を性能上の勝利とは解釈しません。
+**match を使う末尾再帰のミキサーは約 20% 遅いまま**で、すべての制御経路が比較相手を上回ったわけではありません。
+この経路では折り返しを許す誘導変数の生成コードに差が残ります。速度のために signed overflow を
+未定義動作に変更することはしません。Rust と Clang では LLVM の版・最適化パイプラインも異なります。
+
+生成アセンブリでは、for の反復ごとの狭幅拡張が消え、整数 match は静的表と展開したスカラーループ、
+配列集計は NEON の `ldp q`／`add.2d`／`addp` になっていることを確認しました。
+match 内の小さい入力専用の vector 経路は大きい入力では通らないため、
+その命令の存在だけをこの match 測定の SIMD 加速と呼びません。
+GPU・自動並列化・全アプリケーション性能・他 CPU での優位性を示す測定でもありません。
+
+生データとコードは `target/benchmarks/control-final-{generic,native}-{1,2,3}.json` と同名ディレクトリです。
+測定したコンパイラの SHA-256 は
+`94291a712871f12137d8227a7cc52e9772feaacd72245f0750e58fb0fa4b710a`。
+共有 CI には速度の閾値を追加していません。
+
+既存の CE 比較で古い `--baseline` を指定する場合、実行器は小さいソースで `rec` 構文を検出します。
+未対応のベースラインには、一時コピーから再帰の指定だけを除いて同じアルゴリズムを渡します。
+このモードは `baseline_rec_syntax: "legacy-rec-erased"` として記録し、予期した構文エラー以外の
+ツール失敗はそのまま失敗にします。現行ソースの再帰検査を無効にする機能ではありません。
+
 ## 現実的な次の指標
 
 目標の達成には、代表的なアプリケーション・カーネル、コンパイル時間、成果物サイズ、

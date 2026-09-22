@@ -8,13 +8,13 @@ fn bind_step value salt = Identity {
     return scaled + salt
 }
 
-def bind_loop :: i64 -> i64 -> i64
-fn bind_loop remaining state =
+def rec bind_loop :: i64 -> i64 -> i64
+fn rec bind_loop remaining state =
     if remaining <= 0 { state }
     else { bind_loop (remaining - 1) (bind_step state (1442695040888963407 + remaining)) }
 
-def direct_loop :: i64 -> i64 -> i64
-fn direct_loop remaining state =
+def rec direct_loop :: i64 -> i64 -> i64
+fn rec direct_loop remaining state =
     if remaining <= 0 { state }
     else { direct_loop (remaining - 1) (mix state (1442695040888963407 + remaining)) }
 
@@ -43,13 +43,13 @@ fn direct_checked_step state salt = {
     }
 }
 
-def checked_loop :: i64 -> i64 -> i64
-fn checked_loop remaining state =
+def rec checked_loop :: i64 -> i64 -> i64
+fn rec checked_loop remaining state =
     if remaining <= 0 { state }
     else { checked_loop (remaining - 1) (checked_step state (1442695040888963407 + remaining)) }
 
-def direct_checked_loop :: i64 -> i64 -> i64
-fn direct_checked_loop remaining state =
+def rec direct_checked_loop :: i64 -> i64 -> i64
+fn rec direct_checked_loop remaining state =
     if remaining <= 0 { state }
     else { direct_checked_loop (remaining - 1) (direct_checked_step state (1442695040888963407 + remaining)) }
 
@@ -69,13 +69,13 @@ fn delayed_step state salt = Delayed {
 def direct_delayed_step :: i64 -> i64 -> i64
 fn direct_delayed_step state salt = mix state salt + (mix (state ^ 71) salt + mix (state ^ 113) salt)
 
-def delayed_loop :: i64 -> i64 -> i64
-fn delayed_loop remaining state =
+def rec delayed_loop :: i64 -> i64 -> i64
+fn rec delayed_loop remaining state =
     if remaining <= 0 { state }
     else { delayed_loop (remaining - 1) (delayed_step state (1442695040888963407 + remaining)) }
 
-def direct_delayed_loop :: i64 -> i64 -> i64
-fn direct_delayed_loop remaining state =
+def rec direct_delayed_loop :: i64 -> i64 -> i64
+fn rec direct_delayed_loop remaining state =
     if remaining <= 0 { state }
     else { direct_delayed_loop (remaining - 1) (direct_delayed_step state (1442695040888963407 + remaining)) }
 
@@ -85,8 +85,8 @@ fn ce_delayed count seed = { assert (count >= 0); delayed_loop count seed }
 export def direct_delayed :: i64 -> i64 -> i64
 fn direct_delayed count seed = { assert (count >= 0); direct_delayed_loop count seed }
 
-def sum :: &[i64] -> i64 -> i64 -> i64 -> i64
-fn sum values scale index total =
+def rec sum :: &[i64] -> i64 -> i64 -> i64 -> i64
+fn rec sum values scale index total =
     if index == values.length { total }
     else {
         let value = values[index];
@@ -124,13 +124,13 @@ fn ce_array_bind count seed = {
 export def direct_array_bind :: i64 -> i64 -> i64
 fn direct_array_bind count seed = direct_array_for count seed
 
-def apply_loop :: i64 -> (i64 -> i64) -> i64 -> i64
-fn apply_loop remaining next state =
+def rec apply_loop :: i64 -> (i64 -> i64) -> i64 -> i64
+fn rec apply_loop remaining next state =
     if remaining <= 0 { state }
     else { apply_loop (remaining - 1) next (next state) }
 
-def direct_owned_loop :: i64 -> &[i64] -> i64 -> i64
-fn direct_owned_loop remaining values state =
+def rec direct_owned_loop :: i64 -> &[i64] -> i64 -> i64
+fn rec direct_owned_loop remaining values state =
     if remaining <= 0 { state }
     else { direct_owned_loop (remaining - 1) values (mix values[state & 255] state) }
 

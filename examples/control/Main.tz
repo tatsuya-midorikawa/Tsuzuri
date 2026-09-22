@@ -1,0 +1,28 @@
+def rec even :: i64 -> bool
+def and odd :: i64 -> bool
+fn rec even n = if n == 0 then true else odd (n - 1)
+and odd n = if n == 0 then false else even (n - 1)
+
+def (|Even|_|) :: i64 -> bool
+fn (|Even|_|) n = n % 2 == 0
+
+def positive :: i64 -> i64
+fn positive n
+    | value when value > 0 -> value
+    | otherwise -> 0
+
+let mut total = 0
+for (x, y) in [(1, 2), (3, 4)] do
+    total = total + x + y
+for i = 1 to 5 do
+    total = total + i as i64
+for i = 3 downto 1 do
+    total = total - i as i64
+let mut count = 0
+while count < 3 do
+    total = total + 1
+    count = count + 1
+let add = fx x y -> x + y
+match add total 20 with
+| Even as answer when even answer -> positive answer
+| _ -> 0

@@ -40,35 +40,35 @@ export fn nested_if(a: bool, b: bool) -> i64 {
     first + if b { 1 } else { 2 }
 }
 
-fn sum(n: i64, total: i64) -> i64 {
+fn rec sum(n: i64, total: i64) -> i64 {
     if n <= 0 { total } else { sum(n - 1, total + n) }
 }
 
 export fn tail_sum(n: i64) -> i64 { sum(n, 0) }
 
-fn polynomial(n: i64, total: i64) -> i64 {
+fn rec polynomial(n: i64, total: i64) -> i64 {
     if n <= 0 { total } else { polynomial(n - 1, total + n * n * n * n) }
 }
 
 export fn sum_polynomial(n: i64) -> i64 { polynomial(n, 0) }
 
-fn swap(n: i64, a: i64, b: i64) -> i64 {
+fn rec swap(n: i64, a: i64, b: i64) -> i64 {
     if n <= 0 { a * 10 + b } else { swap(n - 1, b, a) }
 }
 
 export fn tail_swap(n: i64) -> i64 { swap(n, 1, 2) }
 
-fn down(n: i64) -> i64 {
+fn rec down(n: i64) -> i64 {
     if n <= 0 { 0 } else { (n - 1) |> down }
 }
 
 export fn tail_pipe(n: i64) -> i64 { down(n) }
 
-fn even(n: i64) -> bool {
+fn rec even(n: i64) -> bool {
     if n <= 0 { true } else { odd(n - 1) }
 }
 
-fn odd(n: i64) -> bool {
+fn rec odd(n: i64) -> bool {
     if n <= 0 { false } else { even(n - 1) }
 }
 
@@ -100,7 +100,7 @@ fn map4(f: fn(i64) -> i64, values: [i64]) -> [i64] {
     [f(values[0]), f(values[1]), f(values[2]), f(values[3])]
 }
 
-fn fold4(f: fn(i64, i64) -> i64, values: [i64], index: i64, total: i64) -> i64 {
+fn rec fold4(f: fn(i64, i64) -> i64, values: [i64], index: i64, total: i64) -> i64 {
     if index == values.length {
         total
     } else {
@@ -114,7 +114,7 @@ export fn functional_sum(start: i64) -> i64 {
     fold4(add, squares, 0, 0)
 }
 
-fn array_loop(n: i64, values: [i64]) -> i64 {
+fn rec array_loop(n: i64, values: [i64]) -> i64 {
     let value = values[n & 1];
     if n <= 0 { value } else { array_loop(n - 1, [value, value + 1]) }
 }

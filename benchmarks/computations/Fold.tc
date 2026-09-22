@@ -1,8 +1,8 @@
 def Yield :: i64 -> i64
 fn Yield value = value
 
-def fold :: &[i64] -> (i64 -> i64) -> i64 -> i64 -> i64
-fn fold values body index total =
+def rec fold :: &[i64] -> (i64 -> i64) -> i64 -> i64 -> i64
+fn rec fold values body index total =
     if index == values.length { total }
     else { fold values body (index + 1) (total + body values[index]) }
 

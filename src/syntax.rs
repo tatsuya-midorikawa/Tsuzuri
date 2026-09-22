@@ -29,7 +29,10 @@ pub enum TokenKind {
     Float(String),
     String(String),
     Fn,
+    Fx,
     Def,
+    Rec,
+    And,
     Export,
     Record,
     Class,
@@ -41,12 +44,19 @@ pub enum TokenKind {
     Yield,
     For,
     In,
+    To,
+    Downto,
     While,
     Mut,
     New,
     As,
     If,
+    Then,
+    Elif,
     Else,
+    Match,
+    With,
+    When,
     True,
     False,
     LeftParen,
@@ -62,6 +72,7 @@ pub enum TokenKind {
     Semicolon,
     Comma,
     Dot,
+    DotDot,
     Arrow,
     FatArrow,
     Equal,
@@ -109,7 +120,15 @@ pub struct Program {
     pub functions: Vec<FunctionDecl>,
     pub classes: Vec<ClassDecl>,
     pub instances: Vec<InstanceDecl>,
+    pub active_patterns: Vec<ActivePattern>,
     pub entry: Option<Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActivePattern {
+    pub name: Ident,
+    pub function: String,
+    pub partial: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +140,7 @@ pub struct RecordDecl {
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub name: Ident,
+    pub recursion: Option<String>,
     pub exported: bool,
     pub parameters: Vec<Parameter>,
     pub result: TypeExpr,
@@ -131,6 +151,7 @@ pub struct FunctionDecl {
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
     pub name: Ident,
+    pub recursion: Option<String>,
     pub exported: bool,
     pub parameters: Vec<TypeExpr>,
     pub result: TypeExpr,
@@ -140,6 +161,7 @@ pub struct SignatureDecl {
 #[derive(Clone, Debug)]
 pub struct Definition {
     pub name: Ident,
+    pub recursion: Option<String>,
     pub parameters: Vec<(Ident, bool)>,
     pub body: Expr,
 }
@@ -184,6 +206,7 @@ pub enum TypeExprKind {
     Constrained(Box<Ident>, Box<TypeExpr>),
     Array(Box<TypeExpr>),
     List(Box<TypeExpr>),
+    Tuple(Vec<TypeExpr>),
     Task(Box<TypeExpr>),
     Function(Vec<TypeExpr>, Box<TypeExpr>),
     Reference(Box<TypeExpr>, bool),
@@ -248,6 +271,26 @@ pub enum ExprKind {
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
     },
+    While {
+        condition: Box<Expr>,
+        body: Box<Expr>,
+    },
+    For {
+        pattern: Box<Pattern>,
+        source: Box<Expr>,
+        body: Box<Expr>,
+    },
+    Range {
+        start: Box<Expr>,
+        step: Option<Box<Expr>>,
+        finish: Box<Expr>,
+        counted: bool,
+        descending: bool,
+    },
+    Match {
+        value: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
     Block {
         bindings: Vec<Binding>,
         result: Box<Expr>,
@@ -258,6 +301,7 @@ pub enum ExprKind {
     },
     Array(Vec<Expr>),
     List(Vec<Expr>),
+    Tuple(Vec<Expr>),
     NewArray(Box<TypeExpr>, Box<Expr>, Box<Expr>),
     NewList(Box<TypeExpr>, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, Ident),
@@ -266,6 +310,39 @@ pub enum ExprKind {
     Dereference(Box<Expr>),
     Assign(Box<Expr>, Box<Expr>),
     Cast(Box<Expr>, TypeExpr),
+}
+
+#[derive(Clone, Debug)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+    pub depth: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum PatternKind {
+    Wildcard,
+    Binding(Ident),
+    Apply(Ident, Vec<Pattern>),
+    Argument(Box<Expr>),
+    Literal(Box<Expr>),
+    Tuple(Vec<Pattern>),
+    Record(Option<Ident>, Vec<(Ident, Pattern)>),
+    Array(Vec<Pattern>),
+    List(Vec<Pattern>),
+    Cons(Box<Pattern>, Box<Pattern>),
+    Or(Box<Pattern>, Box<Pattern>),
+    And(Box<Pattern>, Box<Pattern>),
+    As(Box<Pattern>, Ident),
+    Annotated(Box<Pattern>, TypeExpr),
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -295,7 +372,7 @@ pub enum ComputationStatementKind {
     Do(Expr),
     Operation(&'static str, Expr),
     If(Expr, ComputationBlock, Option<ComputationBlock>),
-    For(Ident, Expr, ComputationBlock),
+    For(Box<Pattern>, Expr, ComputationBlock),
     While(Expr, ComputationBlock),
     Expression(Expr),
 }
@@ -310,7 +387,8 @@ impl ComputationStatement {
                 .depth
                 .max(yes.depth)
                 .max(no.as_ref().map_or(0, |branch| branch.depth)),
-            For(_, source, body) | While(source, body) => source.depth.max(body.depth),
+            For(pattern, source, body) => pattern.depth.max(source.depth).max(body.depth),
+            While(source, body) => source.depth.max(body.depth),
         }
     }
 }

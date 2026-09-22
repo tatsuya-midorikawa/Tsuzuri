@@ -132,12 +132,12 @@ fn opt_return_borrow = {
     *result
 }
 
-def even :: i64 -> (i64 -> i64) -> i64
-fn even remaining body =
+def rec even :: i64 -> (i64 -> i64) -> i64
+fn rec even remaining body =
     if remaining == 0 { body 21 } else { odd (remaining - 1) body }
 
-def odd :: i64 -> (i64 -> i64) -> i64
-fn odd remaining body =
+def rec odd :: i64 -> (i64 -> i64) -> i64
+fn rec odd remaining body =
     if remaining == 0 { body 21 } else { even (remaining - 1) body }
 
 export def opt_mutual :: i64

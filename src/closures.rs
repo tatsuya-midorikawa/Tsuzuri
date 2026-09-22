@@ -95,40 +95,10 @@ fn free_locals(expression: &TypedExpr, used: &mut BTreeSet<usize>) {
             used.extend(captures.iter().map(|local| local.id));
         }
         _ => {
-            for child in children(expression) {
+            for child in expression.children() {
                 free_locals(child, used);
             }
         }
-    }
-}
-
-fn children(expression: &TypedExpr) -> Vec<&TypedExpr> {
-    use TypedExprKind::*;
-    match &expression.kind {
-        Unary(_, value)
-        | Borrow(value, _)
-        | Dereference(value)
-        | Cast(value)
-        | Field(value, _)
-        | Length(value)
-        | StringLength(value)
-        | TaskRun(value)
-        | TaskParallel(value) => vec![value],
-        Binary(_, a, b) | Assign(a, b) | Index(a, b) | NewArray(a, b) | NewList(a, b) => vec![a, b],
-        Call(callee, arguments) => std::iter::once(callee.as_ref()).chain(arguments).collect(),
-        If {
-            condition,
-            then_branch,
-            else_branch,
-        } => vec![condition, then_branch, else_branch],
-        Block { bindings, result } => bindings
-            .iter()
-            .map(|(_, value)| value)
-            .chain(std::iter::once(result.as_ref()))
-            .collect(),
-        Record(fields) => fields.iter().map(|(_, value)| value).collect(),
-        Array(values) | List(values) | Closure(_, values) => values.iter().collect(),
-        _ => Vec::new(),
     }
 }
 
@@ -205,50 +175,6 @@ fn lower_expression(
 ) -> Result<(), Diagnostic> {
     use TypedExprKind::*;
     match &mut expression.kind {
-        Unary(_, value)
-        | Borrow(value, _)
-        | Dereference(value)
-        | Cast(value)
-        | Field(value, _)
-        | Length(value)
-        | StringLength(value)
-        | TaskRun(value)
-        | TaskParallel(value) => lower_expression(value, functions, builtins)?,
-        Binary(_, a, b) | Assign(a, b) | Index(a, b) | NewArray(a, b) | NewList(a, b) => {
-            lower_expression(a, functions, builtins)?;
-            lower_expression(b, functions, builtins)?;
-        }
-        Call(callee, arguments) => {
-            lower_expression(callee, functions, builtins)?;
-            for argument in arguments {
-                lower_expression(argument, functions, builtins)?;
-            }
-        }
-        If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            lower_expression(condition, functions, builtins)?;
-            lower_expression(then_branch, functions, builtins)?;
-            lower_expression(else_branch, functions, builtins)?;
-        }
-        Block { bindings, result } => {
-            for (_, value) in bindings {
-                lower_expression(value, functions, builtins)?;
-            }
-            lower_expression(result, functions, builtins)?;
-        }
-        Record(fields) => {
-            for (_, value) in fields {
-                lower_expression(value, functions, builtins)?;
-            }
-        }
-        Array(values) | List(values) => {
-            for value in values {
-                lower_expression(value, functions, builtins)?;
-            }
-        }
         Lambda {
             parameters,
             captures,
@@ -358,7 +284,11 @@ fn lower_expression(
             };
             expression.kind = Function(FunctionRef::User(id));
         }
-        _ => {}
+        _ => {
+            for child in expression.children_mut() {
+                lower_expression(child, functions, builtins)?;
+            }
+        }
     }
     Ok(())
 }

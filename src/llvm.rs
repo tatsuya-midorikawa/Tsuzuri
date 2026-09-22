@@ -9,6 +9,8 @@ use crate::syntax::{BinaryOp, UnaryOp};
 
 #[path = "call_specialization.rs"]
 mod call_specialization;
+#[path = "llvm_control.rs"]
+mod control;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +46,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     output.push_str("\ndeclare void @llvm.trap()\n\n");
     let mut builtins = BTreeSet::new();
     let mut intrinsics = BTreeSet::new();
-    let mut globals = Vec::new();
+    let mut globals = Globals::default();
     let mut specializations = Specializations::new(module);
     for (id, function) in module.functions.iter().enumerate() {
         let emitter = FunctionEmitter::new(
@@ -94,7 +96,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     if entry == Entry::Console {
         output.push_str(&console_main(module));
     }
-    for global in globals {
+    for global in globals.definitions {
         output.push_str(&global);
         output.push('\n');
     }
@@ -160,6 +162,35 @@ pub fn header(module: &CheckedModule) -> String {
     output
 }
 
+struct Globals {
+    definitions: Vec<String>,
+    next_metadata: usize,
+}
+
+impl Default for Globals {
+    fn default() -> Self {
+        static FIRST_METADATA: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let next_metadata = *FIRST_METADATA.get_or_init(|| {
+            include_str!("runtime/numeric.ll")
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix('!')?
+                        .split_once('=')?
+                        .0
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .max()
+                .map_or(0, |id| id + 1)
+        });
+        Self {
+            definitions: Vec::new(),
+            next_metadata,
+        }
+    }
+}
+
 fn environment_type(function: &CheckedFunction, count: usize, module: &CheckedModule) -> String {
     format!(
         "{{ {} }}",
@@ -177,7 +208,7 @@ fn closure_wrappers(
     id: usize,
     builtins: &mut BTreeSet<Builtin>,
     intrinsics: &mut BTreeSet<String>,
-    globals: &mut Vec<String>,
+    globals: &mut Globals,
     specializations: &mut Specializations,
 ) -> String {
     let mut output = String::new();
@@ -327,6 +358,14 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Record(id) => format!("%tz.record.{}", module.records[*id].name),
         Type::Array(_) => "%tz.array".into(),
         Type::List(_) => "%tz.list".into(),
+        Type::Tuple(elements) => format!(
+            "{{ {} }}",
+            elements
+                .iter()
+                .map(|ty| llvm_type(ty, module))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
         Type::Reference(..) => "ptr".into(),
         Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
@@ -388,7 +427,7 @@ struct FunctionEmitter<'a, 'b> {
     block: String,
     back_edges: Vec<(String, Vec<String>)>,
     scopes: Vec<Vec<(String, Type)>>,
-    globals: &'b mut Vec<String>,
+    globals: &'b mut Globals,
 }
 
 struct BorrowedCall {
@@ -405,7 +444,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         function_id: usize,
         builtins: &'b mut BTreeSet<Builtin>,
         intrinsics: &'b mut BTreeSet<String>,
-        globals: &'b mut Vec<String>,
+        globals: &'b mut Globals,
         specializations: &'b mut Specializations,
     ) -> Self {
         Self {
@@ -541,6 +580,101 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.instruction(format!("br i1 {condition}, label %{yes}, label %{no}"));
     }
 
+    fn hint_loop(&mut self, body: &TypedExpr) {
+        fn uses(expression: &TypedExpr, id: usize) -> bool {
+            matches!(expression.kind, TypedExprKind::Local(local) if local == id)
+                || expression
+                    .children()
+                    .into_iter()
+                    .any(|child| uses(child, id))
+        }
+        fn operands<'a>(
+            expression: &'a TypedExpr,
+            module: &'a CheckedModule,
+        ) -> Option<(BinaryOp, &'a TypedExpr, &'a TypedExpr)> {
+            match &expression.kind {
+                TypedExprKind::Binary(operator, left, right) => Some((*operator, left, right)),
+                TypedExprKind::Call(callee, arguments) if arguments.len() == 2 => {
+                    let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
+                        return None;
+                    };
+                    let function = &module.functions[id];
+                    if function.parameters.len() != 2 {
+                        return None;
+                    }
+                    let TypedExprKind::Binary(operator, left, right) = &function.body.kind else {
+                        return None;
+                    };
+                    if !matches!(left.kind, TypedExprKind::Local(id) if id == function.parameters[0].id)
+                        || !matches!(right.kind, TypedExprKind::Local(id) if id == function.parameters[1].id)
+                    {
+                        return None;
+                    }
+                    Some((*operator, &arguments[0], &arguments[1]))
+                }
+                _ => None,
+            }
+        }
+        fn reduction(expression: &TypedExpr, module: &CheckedModule) -> bool {
+            if let TypedExprKind::Assign(place, value) = &expression.kind {
+                if let (TypedExprKind::Local(id), Some((operator, left, right))) =
+                    (&place.kind, operands(value, module))
+                {
+                    if matches!(
+                        operator,
+                        BinaryOp::Add
+                            | BinaryOp::Multiply
+                            | BinaryOp::BitAnd
+                            | BinaryOp::BitOr
+                            | BinaryOp::BitXor
+                    ) && value.ty.is_integer()
+                        && ((matches!(left.kind, TypedExprKind::Local(local) if local == *id)
+                            && !uses(right, *id))
+                            || (matches!(right.kind, TypedExprKind::Local(local) if local == *id)
+                                && !uses(left, *id)))
+                    {
+                        return true;
+                    }
+                }
+            }
+            expression
+                .children()
+                .into_iter()
+                .any(|child| reduction(child, module))
+        }
+        fn assignments(expression: &TypedExpr) -> usize {
+            usize::from(matches!(expression.kind, TypedExprKind::Assign(..)))
+                + expression
+                    .children()
+                    .into_iter()
+                    .map(assignments)
+                    .sum::<usize>()
+        }
+        fn small(expression: &TypedExpr, remaining: &mut usize) -> bool {
+            if *remaining == 0 {
+                return false;
+            }
+            *remaining -= 1;
+            expression
+                .children()
+                .into_iter()
+                .all(|child| small(child, remaining))
+        }
+        if !small(body, &mut 64) || assignments(body) != 1 || !reduction(body, self.module) {
+            return;
+        }
+        let id = self.globals.next_metadata;
+        self.globals.next_metadata += 2;
+        self.globals.definitions.push(format!(
+            "!{id} = distinct !{{!{id}, !{}}}\n!{} = !{{!\"llvm.loop.unroll.enable\"}}",
+            id + 1,
+            id + 1
+        ));
+        let branch = self.lines.last_mut().expect("loop back edge");
+        debug_assert!(branch.trim_start().starts_with("br "));
+        let _ = write!(branch, ", !llvm.loop !{id}");
+    }
+
     fn guard(&mut self, valid: &str) {
         let success = self.label();
         let failure = self.label();
@@ -596,6 +730,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn tail(&mut self, expression: &TypedExpr) {
         match &expression.kind {
+            TypedExprKind::Match { local, value, arms } => {
+                self.match_expression(local, value, arms, &expression.ty, true);
+            }
             TypedExprKind::Block { bindings, result } => {
                 self.scopes.push(Vec::new());
                 self.bind(bindings);
@@ -626,6 +763,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.drop_all();
                 self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
+                self.hint_loop(&self.function.body);
             }
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
                 if self.is_self(callee) && self.function.parameters.len() == 1 =>
@@ -634,6 +772,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.drop_all();
                 self.back_edges.push((self.block.clone(), vec![value]));
                 self.jump("loop");
+                self.hint_loop(&self.function.body);
             }
             _ => {
                 let value = self.expression(expression);
@@ -676,13 +815,39 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Float(value) => value.clone(),
             TypedExprKind::Bool(value) => if *value { "1" } else { "0" }.into(),
             TypedExprKind::Unit => "0".into(),
+            TypedExprKind::While { condition, body } => {
+                self.while_loop(condition, body);
+                "0".into()
+            }
+            TypedExprKind::ForRange {
+                local,
+                start,
+                step,
+                finish,
+                body,
+            } => {
+                self.range_loop(local, start, step, finish, body);
+                "0".into()
+            }
+            TypedExprKind::ForEach {
+                local,
+                source,
+                body,
+                ..
+            } => {
+                self.for_each(local, source, body);
+                "0".into()
+            }
+            TypedExprKind::Match { local, value, arms } => {
+                self.match_expression(local, value, arms, &expression.ty, false)
+            }
             TypedExprKind::String(text) => {
-                let name = format!("@tz.literal.{}", self.globals.len());
+                let name = format!("@tz.literal.{}", self.globals.definitions.len());
                 let escaped = text
                     .bytes()
                     .map(|byte| format!("\\{byte:02X}"))
                     .collect::<String>();
-                self.globals.push(format!(
+                self.globals.definitions.push(format!(
                     "{name} = private unnamed_addr constant [{} x i8] c\"{escaped}\"",
                     text.len()
                 ));
@@ -691,7 +856,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     text.len()
                 ))
             }
-            TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => {
+            TypedExprKind::Local(_)
+            | TypedExprKind::Dereference(_)
+            | TypedExprKind::ListTail(..) => {
                 unreachable!("places handled above")
             }
             TypedExprKind::Borrow(value, _) => self.place(value),
@@ -808,6 +975,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     ));
                 }
                 record
+            }
+            TypedExprKind::Tuple(elements) => {
+                let mut tuple = "zeroinitializer".into();
+                for (index, element) in elements.iter().enumerate() {
+                    let value = self.expression(element);
+                    tuple = self.value(format!(
+                        "insertvalue {} {tuple}, {} {value}, {index}",
+                        self.ty(&expression.ty),
+                        self.ty(&element.ty)
+                    ));
+                }
+                tuple
             }
             TypedExprKind::Array(elements) => {
                 let Type::Array(element) = &expression.ty else {
@@ -951,7 +1130,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn is_place(expression: &TypedExpr) -> bool {
         match &expression.kind {
             TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
-            TypedExprKind::Field(value, _) => Self::is_place(value),
+            TypedExprKind::Field(value, _) | TypedExprKind::ListTail(value, _) => {
+                Self::is_place(value)
+            }
             TypedExprKind::Index(value, _) => {
                 matches!(value.ty, Type::Array(_) | Type::List(_)) && Self::is_place(value)
             }
@@ -969,6 +1150,25 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     "getelementptr inbounds {}, ptr {slot}, i32 0, i32 {index}",
                     self.ty(&value.ty)
                 ))
+            }
+            TypedExprKind::ListTail(value, count) => {
+                let slot = self.place(value);
+                let list = self.value(format!("load %tz.list, ptr {slot}"));
+                let length = self.value(format!("extractvalue %tz.list {list}, 1"));
+                let valid = self.value(format!("icmp uge i64 {length}, {count}"));
+                self.guard(&valid);
+                let head = self.value(format!("extractvalue %tz.list {list}, 0"));
+                let tail = self.list_loop(&head, &count.to_string(), |_, _| {});
+                let length = self.value(format!("sub i64 {length}, {count}"));
+                let descriptor = self.value(format!(
+                    "insertvalue %tz.list zeroinitializer, ptr {tail}, 0"
+                ));
+                let descriptor = self.value(format!(
+                    "insertvalue %tz.list {descriptor}, i64 {length}, 1"
+                ));
+                let slot = self.slot(&value.ty);
+                self.instruction(format!("store %tz.list {descriptor}, ptr {slot}"));
+                slot
             }
             TypedExprKind::Index(value, index) => {
                 let slot = self.place(value);
@@ -991,6 +1191,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             Type::Record(id) => {
                 for (index, (_, field)) in self.module.records[*id].fields.iter().enumerate() {
+                    if field.needs_drop(&self.module.records) {
+                        let extracted =
+                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                        self.drop_value(field, &extracted);
+                    }
+                }
+            }
+            Type::Tuple(elements) => {
+                for (index, field) in elements.iter().enumerate() {
                     if field.needs_drop(&self.module.records) {
                         let extracted =
                             self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
@@ -1047,6 +1256,22 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                         let field_value =
                             self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
                         let copy = self.clone_value(field, &field_value);
+                        result = self.value(format!(
+                            "insertvalue {} {result}, {} {copy}, {index}",
+                            self.ty(ty),
+                            self.ty(field)
+                        ));
+                    }
+                }
+                result
+            }
+            Type::Tuple(elements) => {
+                let mut result = value.to_owned();
+                for (index, field) in elements.iter().enumerate() {
+                    if field.needs_drop(&self.module.records) {
+                        let extracted =
+                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                        let copy = self.clone_value(field, &extracted);
                         result = self.value(format!(
                             "insertvalue {} {result}, {} {copy}, {index}",
                             self.ty(ty),
@@ -2112,7 +2337,7 @@ mod tests {
     #[test]
     fn emits_explicit_tail_loop_and_checked_arithmetic() {
         let module = analyze(
-            "fn sum(n: i64, acc: i64) -> i64 {
+            "fn rec sum(n: i64, acc: i64) -> i64 {
                 if n == 0 { acc / 2 } else { sum(n - 1, acc + n) }
              }
              export fn main() -> i64 { sum(100, 0) }",
@@ -2138,7 +2363,7 @@ mod tests {
     #[test]
     fn puts_array_storage_before_the_tail_loop() {
         let module = analyze(
-            "fn f(n: i64, a: [i64]) -> i64 {
+            "fn rec f(n: i64, a: [i64]) -> i64 {
                 let first = a[n & 1];
                 if n == 0 { first } else { f(n - 1, [first, 2]) }
              }",

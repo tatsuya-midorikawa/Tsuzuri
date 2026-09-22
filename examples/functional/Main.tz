@@ -9,8 +9,8 @@ def map :: ('a -> 'b) -> ['a] -> ['b]
 fn map f values =
     new ['b](values.length, i -> f values[i])
 
-def fold :: ('b -> 'a -> 'b) -> ['a] -> i64 -> 'b -> 'b
-fn fold f values index total =
+def rec fold :: ('b -> 'a -> 'b) -> ['a] -> i64 -> 'b -> 'b
+fn rec fold f values index total =
     if index == values.length {
         total
     } else {

@@ -142,8 +142,8 @@ fn curried_higher = {
     identity (*result)
 }
 
-def curry_loop :: i64 -> i64 -> i64
-fn curry_loop n total = {
+def rec curry_loop :: i64 -> i64 -> i64
+fn rec curry_loop n total = {
     let prefix = "abcdefghijklmnopqrstuvwxyz";
     let f = curry_add prefix;
     let g = f;

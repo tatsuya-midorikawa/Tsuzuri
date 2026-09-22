@@ -3,6 +3,9 @@ use crate::lexer::lex;
 use crate::syntax::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "parse_control.rs"]
+mod control;
+
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     parse_source(source, None)
 }
@@ -25,6 +28,10 @@ fn parse_source(source: &str, source_id: Option<usize>) -> Result<Program, Diagn
         position: 0,
         nesting: 0,
         in_task: false,
+        stop_at_arm: false,
+        stop_at_arrow: false,
+        active_patterns: BTreeMap::new(),
+        pattern_type_arrow: false,
     }
     .program()
 }
@@ -35,6 +42,10 @@ struct Parser<'a> {
     position: usize,
     nesting: usize,
     in_task: bool,
+    stop_at_arm: bool,
+    stop_at_arrow: bool,
+    active_patterns: BTreeMap<String, ActivePattern>,
+    pattern_type_arrow: bool,
 }
 
 impl Parser<'_> {
@@ -104,11 +115,14 @@ impl Parser<'_> {
             functions: Vec::new(),
             classes: Vec::new(),
             instances: Vec::new(),
+            active_patterns: Vec::new(),
             entry: None,
         };
         let mut signatures = BTreeMap::new();
         let mut definitions = Vec::new();
         let mut defined_names = BTreeSet::new();
+        let mut signature_group = None;
+        let mut definition_group = None;
         while !self.at(&TokenKind::End) {
             if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
@@ -142,8 +156,10 @@ impl Parser<'_> {
                     if !anonymous {
                         self.expect(&TokenKind::Fn, "a 'fn' or 'let' method definition, or '}'")?;
                     }
+                    let recursive = self.eat(&TokenKind::Rec);
                     let name = self.ident()?;
-                    let definition = self.definition(name)?;
+                    let mut definition = self.definition(name.clone())?;
+                    definition.recursion = recursive.then_some(name.text);
                     if anonymous && (!definition.parameters.is_empty() || !matches!(definition.body.kind, ExprKind::Lambda(..))) {
                         return Err(Diagnostic::new("E0002", "a 'let' method implementation needs a lambda", definition.name.span));
                     }
@@ -152,31 +168,46 @@ impl Parser<'_> {
                 }
                 program.instances.push(InstanceDecl { class, ty, methods });
             } else if self.at(&TokenKind::Let)
-                && self.tokens.get(self.position + 1).is_some_and(|token|
+                && self.tokens.get(self.position + if self.tokens.get(self.position + 1).is_some_and(|token| token.kind == TokenKind::Rec) { 2 } else { 1 }).is_some_and(|token|
                     matches!(&token.kind, TokenKind::Ident(name) if signatures.contains_key(name) && !defined_names.contains(name)))
             {
                 self.take();
+                let recursive = self.eat(&TokenKind::Rec);
                 let name = self.ident()?;
                 if !defined_names.insert(name.text.clone()) {
                     return Err(Diagnostic::new("E1001", "duplicate function definition", name.span));
                 }
                 self.expect(&TokenKind::Equal, "'=' before the anonymous function")?;
-                let body = self.expression_inner(0, true, true)?;
+                let body = self.body_expression()?;
                 if !matches!(body.kind, ExprKind::Lambda(..)) {
                     return Err(Diagnostic::new("E0002", "a declared top-level 'let' function needs a lambda such as 'x -> y -> x + y'", body.span));
                 }
-                definitions.push(Definition { name, parameters: Vec::new(), body });
+                let recursion = recursive.then(|| name.text.clone());
+                definition_group = recursion.clone();
+                definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
-            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) {
+            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) {
                 let exported = self.eat(&TokenKind::Export);
                 let declaration = self.eat(&TokenKind::Def);
-                if !declaration {
+                let continuation = self.eat(&TokenKind::And);
+                if !declaration && !continuation {
                     self.expect(&TokenKind::Fn, "'def', 'fn', or 'record'")?;
                 }
-                let name = self.ident()?;
+                let recursive = !continuation && self.eat(&TokenKind::Rec);
+                let name = self.function_name()?;
+                let group = if declaration { &mut signature_group } else { &mut definition_group };
+                let recursion = if continuation {
+                    Some(group.clone().ok_or_else(|| Diagnostic::new(
+                        "E1019", "'and' requires a preceding recursive declaration or definition", name.span,
+                    ))?)
+                } else {
+                    recursive.then(|| name.text.clone())
+                };
+                *group = recursion.clone();
                 if declaration {
                     self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
-                    let signature = self.signature(name.clone(), exported)?;
+                    let mut signature = self.signature(name.clone(), exported)?;
+                    signature.recursion = recursion;
                     if signatures.insert(name.text.clone(), signature).is_some() {
                         return Err(Diagnostic::new(
                             "E1001",
@@ -201,7 +232,9 @@ impl Parser<'_> {
                     if exported {
                         return Err(self.error("put 'export' on the function signature"));
                     }
-                    definitions.push(self.definition(name)?);
+                    let mut definition = self.definition(name)?;
+                    definition.recursion = recursion;
+                    definitions.push(definition);
                     self.eat(&TokenKind::Semicolon);
                     continue;
                 }
@@ -212,6 +245,7 @@ impl Parser<'_> {
                 let body = self.block()?;
                 program.functions.push(FunctionDecl {
                     name,
+                    recursion,
                     exported,
                     parameters,
                     result,
@@ -250,6 +284,7 @@ impl Parser<'_> {
                 signature.name.span,
             ));
         }
+        program.active_patterns = self.active_patterns.into_values().collect();
         Ok(program)
     }
 
@@ -313,6 +348,7 @@ impl Parser<'_> {
         }
         Ok(SignatureDecl {
             name,
+            recursion: None,
             exported,
             parameters,
             result,
@@ -332,6 +368,7 @@ impl Parser<'_> {
                 TokenKind::Def
                 | TokenKind::Let
                 | TokenKind::Fn
+                | TokenKind::And
                 | TokenKind::Equal
                 | TokenKind::LeftBrace
                 | TokenKind::RightBrace
@@ -344,14 +381,19 @@ impl Parser<'_> {
 
     fn definition(&mut self, name: Ident) -> Result<Definition, Diagnostic> {
         let mut parameters = Vec::new();
-        while !self.at(&TokenKind::Equal) {
+        while !self.at(&TokenKind::Equal) && !self.at(&TokenKind::Pipe) {
             let mutable = self.eat(&TokenKind::Mut);
             parameters.push((self.ident()?, mutable));
         }
-        self.take();
-        let body = self.expression_inner(0, true, true)?;
+        let body = if self.at(&TokenKind::Pipe) {
+            self.guarded_definition(&parameters)?
+        } else {
+            self.take();
+            self.body_expression()?
+        };
         Ok(Definition {
             name,
+            recursion: None,
             parameters,
             body,
         })
@@ -361,6 +403,13 @@ impl Parser<'_> {
         signature: SignatureDecl,
         mut definition: Definition,
     ) -> Result<FunctionDecl, Diagnostic> {
+        if signature.recursion != definition.recursion {
+            return Err(Diagnostic::new(
+                "E1019",
+                "'def' and its implementation must have matching 'rec'/'and' groups",
+                definition.name.span,
+            ));
+        }
         while let ExprKind::Lambda(parameters, body) = definition.body.kind {
             definition.parameters.extend(parameters);
             definition.body = *body;
@@ -391,6 +440,7 @@ impl Parser<'_> {
         };
         Ok(FunctionDecl {
             name: definition.name,
+            recursion: definition.recursion,
             exported: signature.exported,
             parameters: definition
                 .parameters
@@ -423,13 +473,13 @@ impl Parser<'_> {
     }
 
     fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let first = self.type_atom()?;
+        let first = self.type_product()?;
         if !self.eat(&TokenKind::Arrow) {
             return Ok(first);
         }
         let mut parameters = vec![first];
         let result = loop {
-            let next = self.type_atom()?;
+            let next = self.type_product()?;
             if !self.eat(&TokenKind::Arrow) {
                 break next;
             }
@@ -524,6 +574,8 @@ impl Parser<'_> {
     fn block(&mut self) -> Result<Expr, Diagnostic> {
         self.enter()?;
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
         let mut bindings = Vec::new();
         let mut depth = 0;
         let result = loop {
@@ -541,7 +593,9 @@ impl Parser<'_> {
                 break self.make(ExprKind::Unit, self.current().span, 1)?;
             } else {
                 let value = self.expression(0, true)?;
-                if !self.eat(&TokenKind::Semicolon) {
+                if !self.eat(&TokenKind::Semicolon)
+                    && !(self.newline_before_current() && !self.at(&TokenKind::RightBrace))
+                {
                     break value;
                 }
                 depth = depth.max(value.depth);
@@ -558,6 +612,8 @@ impl Parser<'_> {
         };
         depth = depth.max(result.depth) + 1;
         let end = self.expect(&TokenKind::RightBrace, "'}' after the result expression")?;
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
         self.nesting -= 1;
         self.make(
             ExprKind::Block {
@@ -660,9 +716,7 @@ impl Parser<'_> {
         let newline = self.newline_before_current();
         if !self.eat(&TokenKind::Semicolon)
             && !(newline_allowed
-                && (self.at(&TokenKind::End)
-                    || newline
-                    || (self.in_task && self.at(&TokenKind::RightBrace))))
+                && (self.at(&TokenKind::End) || newline || self.at(&TokenKind::RightBrace)))
         {
             return Err(self.error(if newline_allowed {
                 "expected ';' or a newline after the binding"
@@ -679,39 +733,19 @@ impl Parser<'_> {
     }
 
     fn entry(&mut self) -> Result<Expr, Diagnostic> {
-        self.enter()?;
-        let start = self.current().span;
-        let mut bindings = Vec::new();
-        let mut depth = 0;
-        while self.eat(&TokenKind::Let) {
-            let binding = self.binding(true)?;
-            depth = depth.max(binding.value.depth);
-            bindings.push(binding);
-        }
-        let result = if self.at(&TokenKind::End) {
-            self.make(ExprKind::Unit, self.current().span, 1)?
-        } else {
-            self.expression(0, true)?
-        };
-        depth = depth.max(result.depth) + 1;
-        let end = self.expect(
+        let result = self.layout_block(0)?;
+        self.expect(
             &TokenKind::End,
             "the end of the file; declarations must precede the entry-point code",
         )?;
-        self.nesting -= 1;
-        self.make(
-            ExprKind::Block {
-                bindings,
-                result: Box::new(result),
-            },
-            start.through(end.span),
-            depth,
-        )
+        Ok(result)
     }
 
     fn record(&mut self, name: Ident) -> Result<Expr, Diagnostic> {
         let start = name.span;
         self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
         let mut fields = Vec::new();
         if !self.at(&TokenKind::RightBrace) {
             loop {
@@ -725,6 +759,8 @@ impl Parser<'_> {
             }
         }
         let end = self.expect(&TokenKind::RightBrace, "'}'")?;
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
         let depth = fields
             .iter()
             .map(|(_, value)| value.depth)
@@ -751,65 +787,77 @@ impl Parser<'_> {
     fn computation_block(&mut self) -> Result<ComputationBlock, Diagnostic> {
         self.enter()?;
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let mut body = self.computation_sequence(None, false)?;
+        let end = self.expect(&TokenKind::RightBrace, "'}' after the computation")?;
+        body.span = start.through(end.span);
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        self.nesting -= 1;
+        Ok(body)
+    }
+
+    fn computation_body(&mut self) -> Result<ComputationBlock, Diagnostic> {
+        if self.at(&TokenKind::LeftBrace) {
+            return self.computation_block();
+        }
+        self.enter()?;
+        let single = !self.newline_before_current();
+        let body = self.computation_sequence(Some(self.column(self.current().span)), single)?;
+        self.nesting -= 1;
+        if body.statements.is_empty() {
+            return Err(self.error("expected a computation body"));
+        }
+        Ok(body)
+    }
+
+    fn computation_end(&self, indent: Option<usize>) -> bool {
+        self.at(&TokenKind::RightBrace)
+            || self.at(&TokenKind::End)
+            || indent.is_some_and(|indent| {
+                self.column(self.current().span) < indent
+                    || matches!(
+                        self.current().kind,
+                        TokenKind::Else
+                            | TokenKind::Elif
+                            | TokenKind::Pipe
+                            | TokenKind::RightParen
+                            | TokenKind::RightBracket
+                            | TokenKind::RightList
+                    )
+            })
+    }
+
+    fn computation_sequence(
+        &mut self,
+        indent: Option<usize>,
+        single: bool,
+    ) -> Result<ComputationBlock, Diagnostic> {
+        let start = self.current().span;
         let mut statements = Vec::new();
         let mut depth = 0;
-        while !self.at(&TokenKind::RightBrace) {
-            let start = self.current().span;
-            let statement = if self.at(&TokenKind::If) {
-                self.computation_if()?
-            } else {
-                let kind = if self.eat(&TokenKind::Let) {
-                    let bind = self.eat(&TokenKind::Bang);
-                    ComputationStatementKind::Let(self.binding_value(true)?, bind)
-                } else if self.eat(&TokenKind::Do) {
-                    self.expect(&TokenKind::Bang, "'!' after 'do'")?;
-                    ComputationStatementKind::Do(self.expression_inner(0, true, true)?)
-                } else if self.at(&TokenKind::Return) || self.at(&TokenKind::Yield) {
-                    let returns = self.take().kind == TokenKind::Return;
-                    let from = self.eat(&TokenKind::Bang);
-                    let operation = match (returns, from) {
-                        (true, false) => "Return",
-                        (true, true) => "ReturnFrom",
-                        (false, false) => "Yield",
-                        (false, true) => "YieldFrom",
-                    };
-                    ComputationStatementKind::Operation(
-                        operation,
-                        self.expression_inner(0, true, true)?,
-                    )
-                } else if self.eat(&TokenKind::For) {
-                    let name = self.ident()?;
-                    self.expect(&TokenKind::In, "'in' after the loop binding")?;
-                    let source = self.expression(0, false)?;
-                    ComputationStatementKind::For(name, source, self.computation_block()?)
-                } else if self.eat(&TokenKind::While) {
-                    let condition = self.expression(0, false)?;
-                    ComputationStatementKind::While(condition, self.computation_block()?)
-                } else {
-                    ComputationStatementKind::Expression(self.expression_inner(0, true, true)?)
-                };
-                ComputationStatement {
-                    kind,
-                    span: start.through(self.tokens[self.position - 1].span),
-                }
-            };
-            if !self.at(&TokenKind::RightBrace) {
+        while !self.computation_end(indent) {
+            let statement = self.computation_statement()?;
+            if !single && !self.computation_end(indent) {
                 self.binding_end(true)?;
             }
             if matches!(
                 statement.kind,
                 ComputationStatementKind::Operation("Return" | "ReturnFrom", _)
-            ) && !self.at(&TokenKind::RightBrace)
+            ) && !single
+                && !self.computation_end(indent)
             {
                 return Err(self.error("'return' and 'return!' must end a computation block"));
             }
             depth = depth.max(statement.depth());
             statements.push(statement);
+            if single {
+                break;
+            }
         }
-        let end = self.take().span;
-        self.nesting -= 1;
         let depth = depth + 1;
-        let span = start.through(end);
+        let span = start.through(statements.last().map_or(start, |statement| statement.span));
         self.make(ExprKind::Unit, span, depth)?;
         Ok(ComputationBlock {
             statements,
@@ -818,13 +866,71 @@ impl Parser<'_> {
         })
     }
 
+    fn computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
+        let start = self.current().span;
+        if self.at(&TokenKind::If) {
+            return self.computation_if();
+        }
+        let kind = if self.eat(&TokenKind::Let) {
+            let bind = self.eat(&TokenKind::Bang);
+            ComputationStatementKind::Let(self.binding_value(true)?, bind)
+        } else if self.eat(&TokenKind::Do) {
+            self.expect(&TokenKind::Bang, "'!' after 'do'")?;
+            ComputationStatementKind::Do(self.expression_inner(0, true, true)?)
+        } else if self.at(&TokenKind::Return) || self.at(&TokenKind::Yield) {
+            let returns = self.take().kind == TokenKind::Return;
+            let from = self.eat(&TokenKind::Bang);
+            let operation = match (returns, from) {
+                (true, false) => "Return",
+                (true, true) => "ReturnFrom",
+                (false, false) => "Yield",
+                (false, true) => "YieldFrom",
+            };
+            ComputationStatementKind::Operation(operation, self.expression_inner(0, true, true)?)
+        } else if self.eat(&TokenKind::For) {
+            let pattern = Box::new(self.pattern(0)?);
+            self.expect(&TokenKind::In, "'in' after the loop binding")?;
+            let source = self.expression(0, false)?;
+            let body = if self.eat(&TokenKind::Do) {
+                self.computation_body()?
+            } else {
+                self.computation_block()?
+            };
+            ComputationStatementKind::For(pattern, source, body)
+        } else if self.eat(&TokenKind::While) {
+            let condition = self.expression(0, false)?;
+            let body = if self.eat(&TokenKind::Do) {
+                self.computation_body()?
+            } else {
+                self.computation_block()?
+            };
+            ComputationStatementKind::While(condition, body)
+        } else {
+            ComputationStatementKind::Expression(self.expression_inner(0, true, true)?)
+        };
+        Ok(ComputationStatement {
+            kind,
+            span: start.through(self.tokens[self.position - 1].span),
+        })
+    }
+
     fn computation_if(&mut self) -> Result<ComputationStatement, Diagnostic> {
         self.enter()?;
-        let start = self.expect(&TokenKind::If, "'if'")?.span;
+        let start = self.take().span;
         let condition = self.expression(0, false)?;
-        let yes = self.computation_block()?;
-        let no = if self.eat(&TokenKind::Else) {
-            Some(if self.at(&TokenKind::If) {
+        let keyword = self.eat(&TokenKind::Then);
+        let yes = if keyword {
+            self.computation_body()?
+        } else {
+            self.computation_block()?
+        };
+        let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
+            && (!keyword
+                || !self.newline_before_current()
+                || self.column(self.current().span) >= self.column(start));
+        let no = if has_else {
+            self.eat(&TokenKind::Else);
+            Some(if self.at(&TokenKind::If) || self.at(&TokenKind::Elif) {
                 let statement = self.computation_if()?;
                 ComputationBlock {
                     span: statement.span,
@@ -832,7 +938,11 @@ impl Parser<'_> {
                     statements: vec![statement],
                 }
             } else {
-                self.computation_block()?
+                if keyword {
+                    self.computation_body()?
+                } else {
+                    self.computation_block()?
+                }
             })
         } else {
             None
@@ -860,6 +970,13 @@ impl Parser<'_> {
             if stop_at_newline && self.newline_before_current() {
                 break;
             }
+            if self.stop_at_arm && self.at(&TokenKind::Pipe) {
+                break;
+            }
+            if minimum == 0 && self.eat(&TokenKind::DotDot) {
+                left = self.range_expression(left, allow_record, stop_at_newline)?;
+                continue;
+            }
             if minimum <= 14 && self.space_argument() {
                 left = self.application(left, allow_record, stop_at_newline)?;
                 continue;
@@ -874,7 +991,7 @@ impl Parser<'_> {
                 continue;
             }
             if minimum <= 12 && self.eat(&TokenKind::As) {
-                let ty = self.type_expr()?;
+                let ty = self.type_atom()?;
                 let span = left.span.through(ty.span);
                 let depth = left.depth + 1;
                 left = self.make(ExprKind::Cast(Box::new(left), ty), span, depth)?;
@@ -928,7 +1045,13 @@ impl Parser<'_> {
                         1,
                     )?);
                 } else {
+                    let outer = self.stop_at_arm;
+                    let outer_arrow = self.stop_at_arrow;
+                    self.stop_at_arm = false;
+                    self.stop_at_arrow = false;
                     let mut grouped = self.expressions(TokenKind::RightParen)?;
+                    self.stop_at_arm = outer;
+                    self.stop_at_arrow = outer_arrow;
                     if grouped.len() == 1 {
                         let mut argument = grouped.pop().unwrap();
                         argument.span = start.through(self.tokens[self.position - 1].span);
@@ -944,7 +1067,9 @@ impl Parser<'_> {
                         }
                         arguments.push(argument);
                     } else {
-                        arguments.extend(grouped);
+                        let span = start.through(self.tokens[self.position - 1].span);
+                        let depth = grouped.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
+                        arguments.push(self.make(ExprKind::Tuple(grouped), span, depth)?);
                     }
                 }
             } else {
@@ -975,6 +1100,7 @@ impl Parser<'_> {
                     | TokenKind::False
                     | TokenKind::New
                     | TokenKind::Task
+                    | TokenKind::Fx
                     | TokenKind::LeftParen
                     | TokenKind::LeftBracket
                     | TokenKind::LeftList
@@ -1003,8 +1129,12 @@ impl Parser<'_> {
                 self.make(ExprKind::Field(Box::new(left), field), span, depth)
             }
             TokenKind::LeftBracket => {
+                let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+                let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
                 let index = self.expression(0, true)?;
                 let end = self.expect(&TokenKind::RightBracket, "']'")?;
+                self.stop_at_arm = outer_arm;
+                self.stop_at_arrow = outer_arrow;
                 let span = left.span.through(end.span);
                 let depth = left.depth.max(index.depth) + 1;
                 self.make(
@@ -1018,6 +1148,8 @@ impl Parser<'_> {
     }
 
     fn expressions(&mut self, end: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
         let mut values = Vec::new();
         if !self.at(&end) {
             loop {
@@ -1028,6 +1160,8 @@ impl Parser<'_> {
             }
         }
         self.expect(&end, "the closing delimiter")?;
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
         Ok(values)
     }
 
@@ -1078,7 +1212,11 @@ impl Parser<'_> {
         let start = self.current().span;
         let kind = match &self.current().kind {
             TokenKind::Task => return self.task(),
+            TokenKind::Fx => return self.fx(),
             TokenKind::New => return self.new_collection(),
+            TokenKind::While => return self.while_expression(),
+            TokenKind::For => return self.for_expression(),
+            TokenKind::Match => return self.match_expression(),
             TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::String(_) => {
                 return self.literal();
             }
@@ -1092,7 +1230,7 @@ impl Parser<'_> {
             }
             TokenKind::Ident(_) => {
                 let mut name = self.ident()?;
-                if self.eat(&TokenKind::Arrow) {
+                if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
                     return self.lambda(name, stop_at_newline);
                 }
                 if allow_record
@@ -1131,17 +1269,7 @@ impl Parser<'_> {
                 }
                 ExprKind::Name(name)
             }
-            TokenKind::LeftParen => {
-                self.take();
-                if self.eat(&TokenKind::RightParen) {
-                    ExprKind::Unit
-                } else {
-                    let mut value = self.expression(0, true)?;
-                    let end = self.expect(&TokenKind::RightParen, "')'")?;
-                    value.span = start.through(end.span);
-                    return Ok(value);
-                }
-            }
+            TokenKind::LeftParen => return self.grouped_expression(),
             TokenKind::LeftBracket | TokenKind::LeftList => return self.collection_literal(),
             TokenKind::LeftBrace => return self.block(),
             TokenKind::If => return self.conditional(),
@@ -1206,20 +1334,10 @@ impl Parser<'_> {
 
     fn conditional(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
-        let condition = self.expression(0, false)?;
-        let then_branch = self.block()?;
-        self.expect(
-            &TokenKind::Else,
-            "'else'; every if expression must return a value",
-        )?;
-        let else_branch = if self.at(&TokenKind::If) {
-            self.enter()?;
-            let branch = self.conditional()?;
-            self.nesting -= 1;
-            branch
-        } else {
-            self.block()?
-        };
+        let condition = Box::new(self.expression(0, false)?);
+        let keyword = self.eat(&TokenKind::Then);
+        let then_branch = Box::new(self.conditional_body(keyword)?);
+        let else_branch = Box::new(self.conditional_else(keyword, start, then_branch.span)?);
         let span = start.through(else_branch.span);
         let depth = condition
             .depth
@@ -1228,13 +1346,47 @@ impl Parser<'_> {
             + 1;
         self.make(
             ExprKind::If {
-                condition: Box::new(condition),
-                then_branch: Box::new(then_branch),
-                else_branch: Box::new(else_branch),
+                condition,
+                then_branch,
+                else_branch,
             },
             span,
             depth,
         )
+    }
+
+    fn conditional_body(&mut self, keyword: bool) -> Result<Expr, Diagnostic> {
+        if keyword {
+            self.body_expression()
+        } else {
+            self.block()
+        }
+    }
+
+    fn conditional_else(
+        &mut self,
+        keyword: bool,
+        start: Span,
+        then_span: Span,
+    ) -> Result<Expr, Diagnostic> {
+        let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
+            && (!keyword
+                || !self.newline_before_current()
+                || self.column(self.current().span) >= self.column(start));
+        if !has_else {
+            return self.make(ExprKind::Unit, then_span, 1);
+        }
+        if self.at(&TokenKind::Else) {
+            self.take();
+        }
+        if self.at(&TokenKind::If) || self.at(&TokenKind::Elif) {
+            self.enter()?;
+            let branch = self.conditional()?;
+            self.nesting -= 1;
+            Ok(branch)
+        } else {
+            self.conditional_body(keyword)
+        }
     }
 }
 
@@ -1299,10 +1451,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_else_and_parameter_types() {
-        for source in ["fn f() -> i64 { if true { 1 } }", "fn f(x) -> i64 { x }"] {
-            assert!(parse(source).is_err(), "{source}");
-        }
+    fn accepts_optional_else_but_requires_parameter_types() {
+        assert!(parse("fn f() -> i64 { if true { 1 } }").is_ok());
+        assert!(parse("fn f(x) -> i64 { x }").is_err());
     }
 
     #[test]

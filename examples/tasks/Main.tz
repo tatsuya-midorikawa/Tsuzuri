@@ -1,5 +1,5 @@
-def sum_squares :: i64 -> i64 -> i64 -> i64
-fn sum_squares first last total =
+def rec sum_squares :: i64 -> i64 -> i64 -> i64
+fn rec sum_squares first last total =
     if first >= last { total }
     else { sum_squares (first + 1) last (total + first * first) }
 

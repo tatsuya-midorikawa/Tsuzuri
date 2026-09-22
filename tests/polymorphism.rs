@@ -92,8 +92,8 @@ fn infers_constraints_through_forward_calls_and_recursion() {
          fn twice x = plus x x
          def plus :: 'a -> 'a -> 'a
          fn plus x y = x + y
-         def total :: i64 -> 'a -> 'a -> 'a
-         fn total n x acc = if n == 0 { acc } else { total (n - 1) x (plus acc x) }
+         def rec total :: i64 -> 'a -> 'a -> 'a
+         fn rec total n x acc = if n == 0 { acc } else { total (n - 1) x (plus acc x) }
          def main :: i32
          fn main = total 10 (twice 2i32) 2",
     );
@@ -222,7 +222,7 @@ fn rejects_ambiguous_mismatched_and_unsafe_instantiations() {
     rejects("fn add x y = x + y", "E0002");
     rejects("def add :: i32 -> i32 -> i32", "E0002");
     rejects("export def id :: 'a -> 'a\nfn id x = x", "E1008");
-    rejects("def main :: 'a\nfn main = main()", "E1015");
+    rejects("def rec main :: 'a\nfn rec main = main()", "E1015");
     rejects(
         "def duplicate :: 'a -> ['a]\nfn duplicate x = [x, x]\nduplicate \"owned\"",
         "E1005",
@@ -239,9 +239,9 @@ fn rejects_ambiguous_mismatched_and_unsafe_instantiations() {
 
 #[test]
 fn bounds_type_growing_polymorphic_recursion() {
-    rejects("def f :: 'a -> unit\nfn f x = f [x]\nf 1", "E1017");
+    rejects("def rec f :: 'a -> unit\nfn rec f x = f [x]\nf 1", "E1017");
     rejects(
-        "def f :: 'a -> unit\nfn f x = { let y = x + x; f [y] }",
+        "def rec f :: 'a -> unit\nfn rec f x = { let y = x + x; f [y] }",
         "E1017",
     );
     rejects(
@@ -350,7 +350,7 @@ fn infers_copy_only_when_required_by_ownership() {
     for source in [
         "def choose :: bool -> 'a -> 'a\nfn choose flag x = if flag { x } else { x }\nchoose true \"owned\"",
         "def first :: 'a -> 'b -> 'a\nfn first x y = x\nfirst \"owned\" \"dropped\"",
-        "def loop :: i64 -> 'a -> 'a\nfn loop n x = if n == 0 { x } else { loop (n - 1) x }\nloop 10 \"owned\"",
+        "def rec loop :: i64 -> 'a -> 'a\nfn rec loop n x = if n == 0 { x } else { loop (n - 1) x }\nloop 10 \"owned\"",
         "def replace :: 'a -> 'a -> 'a\nfn replace mut x y = { let old = x; x = y; x }\nreplace \"old\" \"new\"",
         "def dup :: 'a -> ['a]\nfn dup x = [x, x]\ndup 2i32",
         "def read :: &'a -> 'a\nfn read x = *x\ndef main :: i64\nfn main = { let x = 42; read (&x) }",

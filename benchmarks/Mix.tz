@@ -1,4 +1,4 @@
-fn mix_loop(remaining: i64, state: i64) -> i64 {
+fn rec mix_loop(remaining: i64, state: i64) -> i64 {
     if remaining <= 0 {
         state
     } else {

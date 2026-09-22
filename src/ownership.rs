@@ -4,6 +4,9 @@ use crate::check::{CheckedModule, Local, Type, TypedExpr, TypedExprKind as E};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::syntax::BinaryOp;
 
+#[path = "ownership_control.rs"]
+mod control;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Place {
     root: usize,
@@ -30,6 +33,7 @@ struct Loan {
 #[derive(Clone, Default)]
 struct State {
     locals: BTreeMap<usize, (Local, Value)>,
+    aliases: BTreeMap<usize, Vec<(Place, BTreeSet<usize>)>>,
     moved: BTreeSet<Place>,
     generic_moves: BTreeMap<Place, Type>,
 }
@@ -131,6 +135,7 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
         match ty {
             Type::Variable(_) | Type::Infer(_) | Type::Reference(..) | Type::Function(..) => false,
             Type::Array(element) | Type::List(element) => owned(element, module),
+            Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
             Type::Record(id) => module.records[*id]
                 .fields
                 .iter()
@@ -157,7 +162,10 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
             E::Lambda { captures, .. } => captures
                 .iter()
                 .all(|local| owned(&local.ty, module) || locals.get(&local.id) == Some(&true)),
-            E::Closure(_, captures) | E::Array(captures) | E::List(captures) => captures
+            E::Closure(_, captures)
+            | E::Array(captures)
+            | E::List(captures)
+            | E::Tuple(captures) => captures
                 .iter()
                 .all(|value| closed(value, module, known, locals)),
             E::NewArray(_, initializer) | E::NewList(_, initializer) => {
@@ -235,6 +243,7 @@ impl Checker<'_> {
         match ty {
             Type::Variable(name) => self.copy_variables.contains(name),
             Type::Array(element) | Type::List(element) => self.is_copy(element),
+            Type::Tuple(elements) => elements.iter().all(|ty| self.is_copy(ty)),
             _ => ty.is_copy(&self.module.records),
         }
     }
@@ -249,6 +258,13 @@ impl Checker<'_> {
                 true
             }
             Type::Array(element) | Type::List(element) => self.require_copy(element),
+            Type::Tuple(elements) => {
+                let mut changed = false;
+                for ty in elements {
+                    changed |= self.require_copy(ty);
+                }
+                changed
+            }
             _ => false,
         }
     }
@@ -360,6 +376,9 @@ impl Checker<'_> {
         live: &BTreeSet<usize>,
     ) -> Result<Vec<(Place, BTreeSet<usize>)>, Diagnostic> {
         match &expression.kind {
+            E::Local(id) if self.state.aliases.contains_key(id) => {
+                Ok(self.state.aliases[id].clone())
+            }
             E::Local(id) => Ok(vec![(
                 Place {
                     root: *id,
@@ -371,6 +390,13 @@ impl Checker<'_> {
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(*field);
+                }
+                Ok(places)
+            }
+            E::ListTail(value, _) => {
+                let mut places = self.place(value, live)?;
+                for (place, _) in &mut places {
+                    place.fields.push(usize::MAX);
                 }
                 Ok(places)
             }
@@ -421,7 +447,10 @@ impl Checker<'_> {
     fn is_place(expression: &TypedExpr) -> bool {
         match &expression.kind {
             E::Local(_) | E::Dereference(_) => true,
-            E::Field(value, _) | E::Index(value, _) => Self::is_place(value),
+            E::Field(value, _) | E::ListTail(value, _) => Self::is_place(value),
+            E::Index(value, _) => {
+                matches!(value.ty, Type::Array(_) | Type::List(_)) && Self::is_place(value)
+            }
             _ => false,
         }
     }
@@ -432,9 +461,22 @@ impl Checker<'_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
+        let places = self.place(expression, live)?;
+        self.read_places(expression, usage, places)
+    }
+
+    fn read_places(
+        &mut self,
+        expression: &TypedExpr,
+        usage: Use,
+        places: Vec<(Place, BTreeSet<usize>)>,
+    ) -> Result<Value, Diagnostic> {
         let mut moving = usage == Use::Consume && !self.is_copy(&expression.ty);
         if moving
-            && matches!(expression.kind, E::Index(..) | E::Dereference(_))
+            && matches!(
+                expression.kind,
+                E::Index(..) | E::ListTail(..) | E::Dereference(_)
+            )
             && self.require_copy(&expression.ty)
         {
             moving = false;
@@ -446,7 +488,6 @@ impl Checker<'_> {
                 expression.span,
             ));
         }
-        let places = self.place(expression, live)?;
         let mut value = Value::default();
         for (place, via) in places {
             self.revive_generic_moves(&place);
@@ -534,6 +575,9 @@ impl Checker<'_> {
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
         match expression.kind {
+            E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
+                self.eval_control(expression, live)
+            }
             E::Block { .. } | E::Call(..) | E::Lambda { .. } => {
                 self.eval_composed(expression, live)
             }
@@ -576,6 +620,10 @@ impl Checker<'_> {
                     self.state
                         .locals
                         .insert(local.id, (local.clone(), value_result));
+                    self.state.moved.retain(|place| place.root != local.id);
+                    self.state
+                        .generic_moves
+                        .retain(|place, _| place.root != local.id);
                     ids.insert(local.id);
                     let mut keep = live.clone();
                     keep.extend(future.keys().copied());
@@ -813,7 +861,7 @@ impl Checker<'_> {
                 }
                 self.held.truncate(start);
             }
-            E::Array(elements) | E::List(elements) => {
+            E::Array(elements) | E::List(elements) | E::Tuple(elements) => {
                 let start = self.held.len();
                 for element in elements {
                     let value = self.eval(element, Use::Consume, &during)?;
@@ -867,7 +915,12 @@ impl Checker<'_> {
             | E::Method(..)
             | E::GenericInteger(..)
             | E::GenericFloat(_) => {}
-            E::Local(_) | E::Dereference(_) => unreachable!("places handled above"),
+            E::Local(_) | E::Dereference(_) | E::ListTail(..) => {
+                unreachable!("places handled above")
+            }
+            E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
+                unreachable!("control expressions use their own evaluator")
+            }
             E::Block { .. } | E::Call(..) | E::Lambda { .. } => {
                 unreachable!("composed expressions use their own evaluator")
             }
@@ -891,65 +944,16 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
         E::Local(id) => {
             *counts.entry(*id).or_default() += 1;
         }
-        E::Unary(_, value)
-        | E::Borrow(value, _)
-        | E::Dereference(value)
-        | E::Cast(value)
-        | E::Field(value, _)
-        | E::Length(value)
-        | E::StringLength(value)
-        | E::TaskRun(value)
-        | E::TaskParallel(value) => count_uses(value, counts),
-        E::Binary(_, left, right)
-        | E::Assign(left, right)
-        | E::Index(left, right)
-        | E::NewArray(left, right)
-        | E::NewList(left, right) => {
-            count_uses(left, counts);
-            count_uses(right, counts);
-        }
-        E::Call(callee, arguments) => {
-            count_uses(callee, counts);
-            for argument in arguments {
-                count_uses(argument, counts);
-            }
-        }
         E::Lambda { captures, .. } => {
             for capture in captures {
                 *counts.entry(capture.id).or_default() += 1;
             }
         }
-        E::Closure(_, captures) => {
-            for capture in captures {
-                count_uses(capture, counts);
+        _ => {
+            for child in expression.children() {
+                count_uses(child, counts);
             }
         }
-        E::If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            count_uses(condition, counts);
-            count_uses(then_branch, counts);
-            count_uses(else_branch, counts);
-        }
-        E::Block { bindings, result } => {
-            for (_, value) in bindings {
-                count_uses(value, counts);
-            }
-            count_uses(result, counts);
-        }
-        E::Record(fields) => {
-            for (_, value) in fields {
-                count_uses(value, counts);
-            }
-        }
-        E::Array(values) | E::List(values) => {
-            for value in values {
-                count_uses(value, counts);
-            }
-        }
-        _ => {}
     }
 }
 

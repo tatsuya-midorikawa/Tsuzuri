@@ -27,13 +27,17 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/syntax.rs` | トークン、構文木、構文資源上限 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント、数値 |
 | `src/parser.rs` | Pratt parser、宣言と式、トップレベルのエントリーコード、深さの制限 |
+| `src/parse_control.rs` | インデント本体、for／while／match、関数ガード、fx、パターンと認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR、レイアウト、公開 ABI |
+| `src/control.rs` / `recursion.rs` | 型付きループ、短絡するパターン手順と束縛、認識器呼び出し、参照グラフの再帰検査 |
 | `src/computation.rs` | ソース種別の検査、`.tc` ビルダーの収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉、lambda lifting、公開ABIの完全適用ラッパー |
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
+| `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
+| `src/llvm_control.rs` | 直接の反復・switch・定数表、パターン手順の分岐と全経路の解放 |
 | `src/call_specialization.rs` | 非 escaping な関数引数の固定点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker の特殊化予算 |
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、表示 |
 | `src/runtime/string.ll` / `heap-*.ll` | UTF-8 バッファ操作、ネイティブ確保、WASM の再利用・結合可能なヒープ |
@@ -105,6 +109,43 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 決定性が必要な名前集合は順序付きコレクションです。
 Span はソース ID とファイル内バイト位置を保ち、字句・構文・型・レイアウトのエラーを
 元のファイルに対応付けます。ソースの連結や診断オフセットの書き換えは行いません。
+
+**制御構文:** while、整数範囲、コレクション反復、match を専用の型付き IR として保持します。
+ループ・条件・パターンの型は型検査で確定し、LLVM で型推論やイテレーターの動的探索を行いません。
+タプルは構造的な値型で、型置換・レイアウト・Copy／Capture／Send・loan・clone／drop へ再帰的に参加します。
+型付き式の子の列挙を共有し、新しい制御節内の型置換・lambda lifting・使用数・呼び出し特殊化を漏らさないようにします。
+
+再帰指定は構文 AST に保持します。型検査後・単相化前の参照グラフを反復的な SCC 走査で検査し、
+自己・相互参照・関数値・認識器・インスタンスのメソッド／演算子の循環に `rec` を要求します。
+抽象型のクラス呼び出しは該当クラスの実装を保守的に候補とします。
+`def rec`／`def and` と実装のグループを一致させ、非再帰の前方参照は維持します。
+
+パターンは左から順序付きの `Test`／`Bind` 手順と、成功時の束縛元へ展開します。
+OR は束縛名・型を揃え、最初に成立した側でガードを一回評価します。
+ガード失敗は次の節へ進み、同じ OR の別の側を再試行しません。
+構造の長さ検査は要素ロードより前で、共有参照を辿る場合も既存の loan 規則を使います。
+単一ケースの全域認識器は結果を一時ローカルへ保存し、部分認識器は bool の Test です。
+検査中は読み取り専用の別名を使い、ガード成立後にだけ通常の所有ローカルへコピー／move します。
+どの Test・ガードで不成立になっても、それまでの認識器の一時所有値を解放します。
+一時スロットを entry に置き、別の OR 経路の未使用スロットはゼロにして drop を安全にします。
+全節が不成立なら `llvm.trap`／`unreachable` で、成功形の既定値は生成しません。
+OR 展開は最大 1,024 通りで、構文・展開後の深さにも既存の 128 上限を適用します。
+
+所有権の反復解析はループ入口・条件・本体・バックエッジの move と loan の合流を固定点まで検査します。
+新しい反復のローカルは再初期化し、外側に出した参照が反復ローカルを指す場合は拒否します。
+状態比較は loan の生成 ID ではなく参照先と可変性を比較し、上限を超える解析は `E1017` にします。
+ループ内の一回の構文上の使用を「実行時にも一回」とみなして所有領域を奪ってはいけません。
+反復元は一度だけ評価・読み取り借用し、配列・文字列は連続走査、リストはリンクの O(n) 走査です。
+添字を増やしてリストの先頭から繰り返し探索したり、列挙のために全体を深くコピーしたりしません。
+
+狭い整数の単位刻みは i64 の誘導変数へ拡張し、終点の次の値も表現可能にします。
+本体に入った値が元の幅に収まることだけを `llvm.assume` へ伝え、ユーザーの算術に overflow フラグを付けません。
+64／128-bit の単位刻みは終点を処理した時点で停止し、任意刻みは overflow intrinsic と範囲比較で停止します。
+密な整数の定数結果は最大 256 要素・密度 1/2 以上の静的表、それ以外の整数定数選択は switch、
+構造・ガード・認識器は順序付き分岐へ下げます。表の範囲外も明示的な既定節へ進みます。
+代入が一箇所だけの小さい整数 reduction には LLVM の unroll ヒントを付けますが、固定の展開数・ISA・再結合を強制せず、
+浮動小数点 reduction やループ依存の整数ミキサーには適用しません。
+ループ用 metadata は同梱数値ランタイムの ID 範囲と分離し、全 IR を決定的に生成します。
 
 **コンピュテーション式:** `.tc` の全関数名を順序付き集合に収集し、ファイル名をビルダー名にします。
 使用側の `Builder { ... }` は元の Span を持つ専用の構文 AST とし、各関数・エントリーの型検査前に
@@ -310,12 +351,13 @@ node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
+node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 ```
 
 Rust のテストは LLVM なしで走ります。字句・型・失敗例・レイアウト・IR の不変条件・
-4,500 パターンの決定的なソース変異を検査します。
+6,500 パターンの決定的なソース変異を検査します。
 所有権では正常な move／共有借用／排他借用に加え、move 後の使用、部分 move、
 分岐・短絡評価、再借用、寿命切れ、オペランド評価中の参照先の無効化を検査します。
 Node の E2E は本物の Clang／LLD、ネイティブ C ホスト、WebAssembly エンジンを使い、
@@ -379,6 +421,16 @@ WASM では累積の確保量がメモリ上限を超える反復を実行し、
 Clang の AddressSanitizer が使える環境では
 `TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/computations.mjs target/release/tsuzuri`
 により、生成したネイティブ IR のヒープ・スタックへのアクセスも検査できます。
+
+`tests/control.rs` と `tests/control.mjs` は新構文、単相化、再帰の指定漏れ、move／loan の反復、
+OR の束縛とガード、認識器の順序・解放、タプル、宣言・パターンの深さを検査します。
+native／WASM の `-O0`／`-O3` で、整数端点・正負の step・ゼロ step・空列挙・NaN・符号付きゼロ・
+software 数値・密な表の範囲外・百万回の match 末尾再帰を実行します。
+ネイティブの確保追跡と WASM のヒープ再利用も検査し、
+`TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/control.mjs target/release/tsuzuri`
+で追加のメモリ検査ができます。
+`benchmarks/run-control.mjs` は同じ ABI の C／C++／Rust と五つの matched workload を比較し、
+小さい入力では独立した BigInt 参照結果とも照合します。CI は `--quick` の正しさだけを検査します。
 
 任意の実ブラウザー検証:
 

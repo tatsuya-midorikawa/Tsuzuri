@@ -14,7 +14,7 @@ fn all_semantics_fixture_functions_lower_deterministically() {
 #[test]
 fn deterministic_source_mutations_do_not_panic() {
     let originals = [
-        "fn f(n: i64) -> i64 { if n == 0 { 1 } else { f(n - 1) } }",
+        "fn rec f(n: i64) -> i64 { if n == 0 { 1 } else { f(n - 1) } }",
         "record R { x: i64 } export fn f() -> i64 { let r = R { x: 1 }; r.x }",
         "fn f(x: [i64]) -> i64 { let a = [true, false]; if a[0] { x[1] } else { 0 } }",
         "fn id(x: i64) -> i64 { x } fn f() -> i64 { let g: fn(i64) -> i64 = id; 42 |> g }",
@@ -23,6 +23,10 @@ fn deterministic_source_mutations_do_not_panic() {
         "def add :: Add 'a -> 'a -> 'a\nlet add = x -> y -> x + y\ndef main :: i32\nfn main = { let f = add 20; f 22 }",
         "def main :: string\nfn main = { let prefix = \"x\"; let f: string -> string = y -> prefix + y; f \"z\" }",
         "def f :: i64 -> [i32]\nfn f n = new [i32](n, i -> i as i32)",
+        "def rec total :: i64 -> i64 -> i64\nfn rec total n sum = match n with | 0 -> sum | n when n > 0 -> total (n - 1) (sum + n) | _ -> sum",
+        "let mut sum = 0\nfor i = 1 to 3 do { sum = sum + i as i64; }\nwhile sum < 8 do sum = sum + 1\nsum",
+        "let f = fx (x, y) -> match x with | 0 | 1 -> y | _ -> x + y\nf (1, 2)",
+        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nmatch 2 with | Even as n when n > 0 -> n | _ -> 0",
     ];
     let mut seed = 0x1357_2468_u32;
     for original in originals {

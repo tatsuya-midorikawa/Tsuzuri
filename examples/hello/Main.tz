@@ -1,5 +1,5 @@
-def sum :: i64 -> i64 -> i64
-fn sum n total =
+def rec sum :: i64 -> i64 -> i64
+fn rec sum n total =
     if n <= 0 {
         total
     } else {

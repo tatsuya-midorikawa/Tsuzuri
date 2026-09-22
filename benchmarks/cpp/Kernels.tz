@@ -1,5 +1,5 @@
-def escape :: f64 -> f64 -> f64 -> f64 -> i64 -> i64
-fn escape cr ci real imaginary count =
+def rec escape :: f64 -> f64 -> f64 -> f64 -> i64 -> i64
+fn rec escape cr ci real imaginary count =
     if count >= 256 || real * real + imaginary * imaginary > 4.0 {
         count
     } else {
@@ -8,8 +8,8 @@ fn escape cr ci real imaginary count =
         escape cr ci next_real next_imaginary (count + 1)
     }
 
-def pixels :: i64 -> i64 -> f64 -> f64 -> f64 -> i64 -> i64 -> i64
-fn pixels size count dx dy offset index total =
+def rec pixels :: i64 -> i64 -> f64 -> f64 -> f64 -> i64 -> i64 -> i64
+fn rec pixels size count dx dy offset index total =
     if index >= count {
         total
     } else {
@@ -32,8 +32,8 @@ fn mandelbrot size seed = {
     }
 }
 
-def sum :: &[i64] -> i64 -> i64 -> i64
-fn sum values index total =
+def rec sum :: &[i64] -> i64 -> i64 -> i64
+fn rec sum values index total =
     if index >= values.length {
         total
     } else {

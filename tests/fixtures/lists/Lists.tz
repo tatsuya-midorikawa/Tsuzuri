@@ -137,8 +137,8 @@ fn list_order = {
     order + values[0] + values[2]
 }
 
-def churn :: i64 -> [|string|] -> i64
-fn churn n values = {
+def rec churn :: i64 -> [|string|] -> i64
+fn rec churn n values = {
     let next = new [|string|](8, i -> "owned");
     if n == 0 { values.length } else { churn (n - 1) next }
 }

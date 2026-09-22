@@ -35,6 +35,7 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
     match ty {
         Type::Array(element) => Type::Array(Box::new(map_type(element, f))),
         Type::List(element) => Type::List(Box::new(map_type(element, f))),
+        Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
         Type::Task(result) => Type::Task(Box::new(map_type(result, f))),
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
         Type::Function(parameters, result) => Type::function(
@@ -69,6 +70,7 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
                 parameters.iter().all(|ty| visit(ty, depth + 1, count))
                     && visit(result, depth + 1, count)
             }
+            Type::Tuple(elements) => elements.iter().all(|ty| visit(ty, depth + 1, count)),
             _ => true,
         }
     }
@@ -124,6 +126,9 @@ impl Inference {
         match ty {
             Type::Array(element) => Type::Array(Box::new(self.resolve(element))),
             Type::List(element) => Type::List(Box::new(self.resolve(element))),
+            Type::Tuple(elements) => {
+                Type::Tuple(elements.iter().map(|ty| self.resolve(ty)).collect())
+            }
             Type::Task(result) => Type::Task(Box::new(self.resolve(result))),
             Type::Reference(value, mutable) => {
                 Type::Reference(Box::new(self.resolve(value)), *mutable)
@@ -169,6 +174,12 @@ impl Inference {
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
                 return self.unify(a, b, records, span);
+            }
+            (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
+                for (a, b) in a.iter().zip(b) {
+                    self.unify(a, b, records, span)?;
+                }
+                return Ok(());
             }
             (Type::Function(a, x), Type::Function(b, y)) if a.is_empty() == b.is_empty() => {
                 for (a, b) in a.iter().zip(b) {
@@ -469,6 +480,11 @@ impl Classes {
                     constraints.extend(self.inline_constraints(ty, module, names)?);
                 }
             }
+            TypeExprKind::Tuple(elements) => {
+                for ty in elements {
+                    constraints.extend(self.inline_constraints(ty, module, names)?);
+                }
+            }
             _ => {}
         }
         Ok(constraints)
@@ -576,6 +592,7 @@ impl Classes {
                     functions.push((
                         (*module).into(),
                         FunctionDecl {
+                            recursion: definition.recursion.clone(),
                             name: Ident {
                                 text: format!("$instance.{function_id}.{}", method.name),
                                 span: definition.name.span,
@@ -639,6 +656,35 @@ impl Classes {
                 )
             })?;
         Ok(Some((class, index)))
+    }
+
+    pub(super) fn recursion_targets(&self, expression: &TypedExpr) -> Vec<usize> {
+        let (class, method, ty) = match &expression.kind {
+            TypedExprKind::Method(class, method, ty) => (*class, *method, ty),
+            TypedExprKind::Binary(operator, left, _)
+                if !matches!(operator, BinaryOp::And | BinaryOp::Or | BinaryOp::Pipe) =>
+            {
+                let (class, method) = self.operation(Operation::Binary(*operator));
+                (class, method, &left.ty)
+            }
+            TypedExprKind::Unary(operator, operand) if *operator != UnaryOp::Not => {
+                let (class, method) = self.operation(Operation::Unary(*operator));
+                (class, method, &operand.ty)
+            }
+            _ => return Vec::new(),
+        };
+        if variables(ty).is_empty() {
+            self.implementations
+                .get(&(class, ty.clone()))
+                .map(|methods| vec![methods[method]])
+                .unwrap_or_default()
+        } else {
+            self.implementations
+                .iter()
+                .filter(|((candidate, _), _)| *candidate == class)
+                .map(|(_, methods)| methods[method])
+                .collect()
+        }
     }
 
     fn intrinsic(&self, class: usize, ty: &Type, records: &[CheckedRecord]) -> bool {
@@ -729,6 +775,12 @@ fn type_expression(ty: &Type, records: &[CheckedRecord], span: Span) -> TypeExpr
         Type::Variable(name) => TypeExprKind::Variable(name.clone()),
         Type::Array(ty) => TypeExprKind::Array(Box::new(type_expression(ty, records, span))),
         Type::List(ty) => TypeExprKind::List(Box::new(type_expression(ty, records, span))),
+        Type::Tuple(elements) => TypeExprKind::Tuple(
+            elements
+                .iter()
+                .map(|ty| type_expression(ty, records, span))
+                .collect(),
+        ),
         Type::Task(ty) => TypeExprKind::Task(Box::new(type_expression(ty, records, span))),
         Type::Reference(ty, mutable) => {
             TypeExprKind::Reference(Box::new(type_expression(ty, records, span)), *mutable)
@@ -1008,63 +1060,8 @@ fn walk(
     expression: &mut TypedExpr,
     f: &mut impl FnMut(&mut TypedExpr) -> Result<(), Diagnostic>,
 ) -> Result<(), Diagnostic> {
-    use TypedExprKind::*;
-    match &mut expression.kind {
-        Unary(_, value)
-        | Borrow(value, _)
-        | Dereference(value)
-        | Cast(value)
-        | Field(value, _)
-        | Length(value)
-        | StringLength(value)
-        | TaskRun(value)
-        | TaskParallel(value) => walk(value, f)?,
-        Binary(_, left, right)
-        | Assign(left, right)
-        | Index(left, right)
-        | NewArray(left, right)
-        | NewList(left, right) => {
-            walk(left, f)?;
-            walk(right, f)?;
-        }
-        Call(callee, arguments) => {
-            walk(callee, f)?;
-            for argument in arguments {
-                walk(argument, f)?;
-            }
-        }
-        Lambda { body, .. } => walk(body, f)?,
-        Closure(_, captures) => {
-            for capture in captures {
-                walk(capture, f)?;
-            }
-        }
-        If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            walk(condition, f)?;
-            walk(then_branch, f)?;
-            walk(else_branch, f)?;
-        }
-        Block { bindings, result } => {
-            for (_, value) in bindings {
-                walk(value, f)?;
-            }
-            walk(result, f)?;
-        }
-        Record(fields) => {
-            for (_, value) in fields {
-                walk(value, f)?;
-            }
-        }
-        Array(values) | List(values) => {
-            for value in values {
-                walk(value, f)?;
-            }
-        }
-        _ => {}
+    for child in expression.children_mut() {
+        walk(child, f)?;
     }
     f(expression)
 }
@@ -1085,6 +1082,28 @@ fn expression_types(
             TypedExprKind::Block { bindings, .. } => {
                 for (local, _) in bindings {
                     f(&mut local.ty, local.span)?;
+                }
+            }
+            TypedExprKind::ForRange { local, .. } => {
+                f(&mut local.ty, local.span)?;
+            }
+            TypedExprKind::ForEach { owner, local, .. } => {
+                f(&mut owner.ty, owner.span)?;
+                f(&mut local.ty, local.span)?;
+            }
+            TypedExprKind::Match { local, arms, .. } => {
+                f(&mut local.ty, local.span)?;
+                for arm in arms {
+                    for alternative in &mut arm.alternatives {
+                        for step in &mut alternative.steps {
+                            if let PatternStep::Bind(local, _) = step {
+                                f(&mut local.ty, local.span)?;
+                            }
+                        }
+                        for (local, _) in &mut alternative.bindings {
+                            f(&mut local.ty, local.span)?;
+                        }
+                    }
                 }
             }
             TypedExprKind::Lambda {

@@ -1,0 +1,321 @@
+record Pair { number: i64, text: string }
+
+export def inclusive :: i32 -> i32 -> bool -> i64
+fn inclusive first last down =
+    let mut total = 0i64
+    if down then
+        for i = first downto last do total = total + i as i64
+    else
+        for i = first to last do total = total + i as i64
+    total
+
+export def stepped :: i64 -> i64 -> i64 -> i64
+fn stepped first step last =
+    let mut total = 0
+    for i in first .. step .. last do total = total + i
+    total
+
+export def unsigned_steps :: i64u -> i64u -> i64u -> i64
+fn unsigned_steps first step last =
+    let mut total = 0i64u
+    for i in first .. step .. last do total = total + i
+    total as i64
+
+export def integer_boundaries :: i64
+fn integer_boundaries =
+    let mut total = 0
+    for i in 125i8 .. 2i8 .. 127i8 do total = total + i as i64
+    for i in -126i8 .. -2i8 .. -128i8 do total = total + i as i64
+    for _ in 170141183460469231731687303715884105726i128 .. 170141183460469231731687303715884105727i128 do total = total + 1
+    for _ in 340282366920938463463374607431768211454i128u .. 2i128u .. 340282366920938463463374607431768211455i128u do total = total + 1
+    for _ in -170141183460469231731687303715884105727i128 .. -2i128 .. -170141183460469231731687303715884105728i128 do total = total + 1
+    total
+
+def bound :: &mut i64 -> i32 -> i32
+fn bound state n = { *state = *state * 10 + n as i64; n }
+
+export def bounds_once :: i64
+fn bounds_once =
+    let mut state = 0
+    let mut finish = 3i32
+    for i = bound (&mut state) 1 to bound (&mut state) finish do
+        finish = 0
+        state = state * 10 + i as i64
+    state
+
+def condition :: &mut i64 -> i64 -> bool
+fn condition count last = { *count = *count + 1; *count <= last }
+
+export def while_checks :: i64 -> i64
+fn while_checks n =
+    let mut checks = 0
+    let mut iterations = 0
+    while condition (&mut checks) n do iterations = iterations + 1
+    checks * 100 + iterations
+
+export def collection_sum :: i64 -> i64 -> i64
+fn collection_sum n seed =
+    let values = new [i64](n, fx i -> (i * 17) ^ seed)
+    let mut total = 0
+    for value in values do total = total + value
+    total + values.length
+
+export def list_sum :: i64 -> i64
+fn list_sum n =
+    let mut total = 0
+    for value in new [|i64|](n, fx i -> i * 3) do total = total + value
+    total
+
+export def destructuring :: i64
+fn destructuring =
+    let mut total = 0
+    for (x, y) in [(1, 2), (3, 4)] do total = total + x * y
+    for p in [Pair { number: 10, text: "abc" }, Pair { number: 20, text: "defg" }] do
+        total = total + p.number + p.text.length
+    for byte in "hello" do total = total + byte as i64
+    total
+
+export def utf8_iteration :: i64
+fn utf8_iteration =
+    let mut total = 0
+    let mut count = 0
+    for byte in "\u{7db4}\0" do
+        total = total + byte as i64
+        count = count + 1
+    total + count * 1000
+
+export def patterns :: i64 -> i64
+fn patterns n =
+    match n with
+    | -3 | -1 -> 17
+    | 0 -> 3
+    | 1 -> 29
+    | 2 -> 7
+    | 3 -> 61
+    | 4 -> 11
+    | 5 -> 83
+    | 6 -> 5
+    | 7 -> 47
+    | 8 -> 19
+    | 9 -> 101
+    | value when value > 100 -> value - 100
+    | otherwise -> 42
+
+export def structural_patterns :: i64
+fn structural_patterns =
+    let a = match [1, 2] with | [x; y] -> x * 10 + y | [] -> 9 | _ -> 7
+    let b = match [|3, 4, 5|] with | head :: tail -> head * 10 + tail.length | _ -> 0
+    let c = match (6, 7) with | ((x, _) | (_, x)) & (_, 7) -> x | _ -> 0
+    let d = match Pair { number: 8, text: "nine" } with | { number = 8; text = s } -> s.length | _ -> 0
+    let empty: [|i64|] = [||]
+    let e = match empty with | [||] -> 1 | _ -> 0
+    a + b + c + d + e
+
+export def guard_once :: i64
+fn guard_once =
+    match (1, 2) with
+    | (x, _) | (_, x) when x == 2 -> 999
+    | _ -> 42
+
+def guarded :: i64 -> i64 -> i64
+fn guarded x y
+    | x > y -> x
+    | otherwise when y > 0 -> y
+    | otherwise -> 0
+
+export def function_forms :: i64
+fn function_forms =
+    let offset = 2
+    let add = fx (x: i64) y -> x + y + offset
+    let tuple = fx (a, b) -> add a b
+    tuple (20, 20) + guarded 3 4
+
+export def partial_moves :: i64
+fn partial_moves =
+    let p = Pair { number: 42, text: "owned" }
+    let text = match p with | { text = s } when s.length == 99 -> "wrong" | { text = s } -> s
+    p.number + text.length
+
+export def owned_guard :: i64
+fn owned_guard =
+    let text = "keep"
+    let result = match text with | "wrong" -> "no" | s when s.length == 99 -> s | s -> s
+    result.length
+
+export def loop_copies :: i64 -> i64
+fn loop_copies n =
+    let values = [20, 22]
+    let callback = fx i -> values[0] + values[1] + i
+    let mut total = 0
+    for i in 0 .. n - 1 do
+        let copy = values
+        let f = callback
+        total = total + copy[0] + f i
+    total
+
+export def owned_replacements :: i64 -> i64
+fn owned_replacements n =
+    let mut text = "old"
+    let mut count = 0
+    while count < n do
+        let previous = text
+        text = if previous.length == 3 then "new" else "bad"
+        count = count + 1
+    text.length
+
+def rec tail :: i64 -> i64 -> i64
+fn rec tail n result =
+    match n with
+    | 0 -> result
+    | n -> tail (n - 1) (result + 1)
+
+export def tail_match :: i64 -> i64
+fn tail_match n = tail n 0
+
+def rec even :: i64 -> bool
+def and odd :: i64 -> bool
+fn rec even n = if n == 0 then true else odd (n - 1)
+and odd n = if n == 0 then false else even (n - 1)
+
+export def mutual :: i64 -> bool
+fn mutual n = even n
+
+export def nested_match :: i64 -> i64
+fn nested_match n =
+    match n with
+    | 0 ->
+        match n + 1 with
+        | 1 -> 42
+        | _ -> 9
+    | _ -> 10
+
+def (|Even|_|) :: i64 -> bool
+fn (|Even|_|) n = n % 2 == 0
+
+def (|Divisible|_|) :: i64 -> i64 -> bool
+fn (|Divisible|_|) divisor n = n % divisor == 0
+
+def (|Parts|) :: i64 -> (i64 * i64)
+fn (|Parts|) n = (n, n + 1)
+
+def (|Length|) :: &string -> i64
+fn (|Length|) text = text.length
+
+def (|Copy|) :: &string -> string
+fn (|Copy|) text = clone_string text
+
+def (|Mark|_|) :: &mut i64 -> i64 -> bool -> i64 -> bool
+fn (|Mark|_|) state digit accepted n = { *state = *state * 10 + digit; accepted }
+
+export def active_patterns :: i64
+fn active_patterns =
+    let a = match 42 with | Even & Divisible (1 + 2) -> 42 | _ -> 0
+    let b = match 20 with | Parts (x, y) when x < y -> x + y | _ -> 0
+    let c = match "abc" with | Length 3 -> 3 | _ -> 0
+    let get = fx (Length n) -> n
+    let mut total = get "hello"
+    for Length n in ["a", "bc"] do total = total + n
+    a + b + c + total
+
+export def active_order :: i64
+fn active_order =
+    let mut state = 0
+    let answer =
+        match 42 with
+        | Mark (&mut state) 1 true | Mark (&mut state) 2 true when state == 2 -> 999
+        | Mark (&mut state) 3 false | Mark (&mut state) 4 true -> 42
+        | _ -> 0
+    answer + state * 1000
+
+export def active_owned :: i64 -> i64
+fn active_owned n =
+    let text = "owned"
+    let mut total = 0
+    for _ in 1 .. n do
+        let result =
+            match text with
+            | Copy s when s.length == 99 -> s
+            | Copy s & Length 5 -> s
+            | _ -> "wrong"
+        total = total + result.length
+    total
+
+export def active_short_circuit :: i64
+fn active_short_circuit =
+    match 1 with
+    | 0 & Divisible 0 -> 0
+    | _ -> 42
+
+export def dense_i8 :: i8 -> i64
+fn dense_i8 n =
+    match n with
+    | -128 -> 10
+    | -127 -> 20
+    | -126 -> 30
+    | -125 -> 40
+    | _ -> 42
+
+export def dense_holes :: i64 -> i64
+fn dense_holes n =
+    match n as i128 with
+    | 1 -> 10
+    | 2 -> 20
+    | 4 -> 40
+    | 5 -> 50
+    | _ -> 42
+
+export def numeric_patterns :: f64 -> i64
+fn numeric_patterns n = match n with | 0.0 -> 1 | 1.5 -> 2 | _ -> 3
+
+export def software_patterns :: i64
+fn software_patterns =
+    let d = match 0.1d128 + 0.2d128 with | 0.3d128 -> 20 | _ -> 0
+    let f = match 0.5f128 with | 0.5f128 -> 22 | _ -> 0
+    d + f
+
+export def floating_order :: f64
+fn floating_order =
+    let values = [10000000000000000.0, 1.0, -10000000000000000.0, 1.0]
+    let mut total = 0.0
+    for value in values do total = total + value
+    total
+
+def position :: &mut i64 -> i64
+fn position counter = { *counter = *counter + 1; 0 }
+
+export def scrutinee_once :: i64
+fn scrutinee_once =
+    let values = [42]
+    let mut count = 0
+    let answer = match values[position (&mut count)] with | 42 -> 42 | _ -> 0
+    answer + count * 100
+
+export def empty_loops :: i64
+fn empty_loops =
+    let array: [i64] = []
+    let list: [|i64|] = [||]
+    for i = 3 to 1 do assert false
+    for i = 1 downto 3 do assert false
+    for _ in array do assert false
+    for _ in list do assert false
+    while false do assert false
+    if false then assert false
+    42
+
+export def trap_step :: unit
+fn trap_step = for _ in 1 .. 0 .. 2 do ()
+
+export def trap_match :: i64
+fn trap_match = match 2 with | 1 -> 0
+
+export def trap_pattern :: unit
+fn trap_pattern = for [x] in [[1], [2, 3]] do ()
+
+export def trap_lambda :: i64
+fn trap_lambda = (fx [x] -> x) [1, 2]
+
+export def trap_for_active :: unit
+fn trap_for_active = for Even in [2, 3] do ()
+
+export def trap_fx_active :: i64
+fn trap_fx_active = (fx Even -> 42) 3

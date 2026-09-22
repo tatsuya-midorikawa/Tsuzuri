@@ -42,6 +42,15 @@ fn skipped_bind = {
 export def yields :: i64
 fn yields = Flow { yield 20; yield! 22 }
 
+export def keyword_loops :: i64
+fn keyword_loops = Flow {
+    for n in [20, 22] do
+        if n > 0 then
+            yield n
+        else yield 0
+    while false do yield 100
+}
+
 export def flow_bind :: i64
 fn flow_bind = Flow { let! first = 20; do! (); return first + 22 }
 
@@ -189,8 +198,8 @@ fn nan_result = {
     value != value
 }
 
-def heap_loop :: i64 -> i64 -> i64
-fn heap_loop count total =
+def rec heap_loop :: i64 -> i64 -> i64
+fn rec heap_loop count total =
     if count == 0 { total } else {
         let values = new [i64](256, i -> i);
         let work: unit -> i64 = Lazy {

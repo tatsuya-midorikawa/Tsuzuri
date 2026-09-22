@@ -412,20 +412,20 @@ export fn hypotenuse(x: f64, y: f64) -> f64 {
 record Value { x: i64 }
 fn value(v: Value) -> i64 { v.x + 1 }
 `,
-    "Odd.tz": "fn test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
+    "Odd.tz": "fn rec test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
     "Loop.tz": `
-fn sum(n: i64, values: [i64]) -> i64 {
+fn rec sum(n: i64, values: [i64]) -> i64 {
   let total = values[0];
   if n == 0 { total } else { Loop.sum(n - 1, [total + n, values[1]]) }
 }
-fn down(n: i64) -> i64 { if n == 0 { 0 } else { n - 1 |> Loop.down } }
+fn rec down(n: i64) -> i64 { if n == 0 { 0 } else { n - 1 |> Loop.down } }
 `,
     "Left.tz": `
 record Value { x: i64 }
 fn value(v: Value) -> i64 { v.x }
 fn main() -> i64 { 999 }
 `,
-    "Even.tz": "fn test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
+    "Even.tz": "fn rec test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
     "Main.tz": `
 record Callback { distance: fn(Point.Point) -> f64 }
 fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }

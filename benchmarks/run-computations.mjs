@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,12 +75,38 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-computation-benchmark-"));
 const source = join(root, "benchmarks/computations/Main.tz");
 
 try {
+  let baselineSource = source;
+  let baselineRecSyntax = baseline ? "explicit-rec" : null;
+  if (baseline) {
+    const probeDirectory = join(temporary, "rec-probe");
+    mkdirSync(probeDirectory);
+    const probe = join(probeDirectory, "Main.tz");
+    writeFileSync(probe, "def rec identity :: i64 -> i64\nfn rec identity n = n\n");
+    const supported = spawnSync(baseline, ["check", probe, "--json"], {
+      cwd: root, encoding: "utf8", timeout: 30_000,
+    });
+    if (supported.error) throw supported.error;
+    if (supported.status !== 0) {
+      if (supported.status !== 1 || JSON.parse(supported.stderr).code !== "E0002") {
+        throw new Error(`Baseline capability check failed:\n${supported.stderr}`);
+      }
+      const legacy = join(temporary, "before-source");
+      mkdirSync(legacy);
+      for (const name of readdirSync(dirname(source)).filter((name) => /\.(tz|tt|tc)$/.test(name))) {
+        const original = readFileSync(join(dirname(source), name), "utf8");
+        writeFileSync(join(legacy, name), original.replace(/^(\s*(?:export\s+)?(?:def|fn))\s+rec\s+/gm, "$1 "));
+      }
+      baselineSource = join(legacy, "Main.tz");
+      baselineRecSyntax = "legacy-rec-erased";
+    }
+  }
   const objects = [], trackedObjects = [], wasmModules = [];
   for (const [label, binary] of [["current", compiler], ...(baseline ? [["before", baseline]] : [])]) {
+    const input = label === "before" ? baselineSource : source;
     const ir = join(temporary, `${label}.ll`);
-    run(binary, ["build", source, "--emit", "llvm", "-o", ir]);
+    run(binary, ["build", input, "--emit", "llvm", "-o", ir]);
     const header = join(temporary, label === "current" ? "kernels.h" : "before.h");
-    run(binary, ["build", source, "--emit", "header", "-o", header]);
+    run(binary, ["build", input, "--emit", "header", "-o", header]);
     if (label === "before") {
       writeFileSync(ir, readFileSync(ir, "utf8").replaceAll("@tz_ce_", "@before_tz_ce_").replaceAll("@tz_direct_", "@before_tz_direct_"));
       writeFileSync(header, readFileSync(header, "utf8").replaceAll("tz_ce_", "before_tz_ce_").replaceAll("tz_direct_", "before_tz_direct_"));
@@ -100,7 +126,7 @@ try {
     run(clang, ["-O0", "-fPIC", "-Wno-override-module", "-c", tracked, "-o", trackedObject]);
     trackedObjects.push(trackedObject);
     const wasm = join(temporary, `${label}.wasm`);
-    run(binary, ["build", source, "--target", "wasm32", "-O3", "-o", wasm]);
+    run(binary, ["build", input, "--target", "wasm32", "-O3", "-o", wasm]);
     const module = await WebAssembly.compile(readFileSync(wasm));
     assert.deepEqual(WebAssembly.Module.imports(module), []);
     wasmModules.push([label, module, readFileSync(wasm).byteLength]);
@@ -188,7 +214,7 @@ try {
   if (options["--artifacts"]) {
     const destination = resolve(options["--artifacts"]);
     mkdirSync(destination, { recursive: true });
-    for (const name of readdirSync(temporary)) copyFileSync(join(temporary, name), join(destination, name));
+    for (const name of readdirSync(temporary)) cpSync(join(temporary, name), join(destination, name), { recursive: true });
   }
   console.log(JSON.stringify({
     environment: {
@@ -196,6 +222,7 @@ try {
       compiler,
       compiler_sha256: createHash("sha256").update(readFileSync(compiler)).digest("hex"),
       baseline: baseline ?? null,
+      baseline_rec_syntax: baselineRecSyntax,
       baseline_sha256: baseline ? createHash("sha256").update(readFileSync(baseline)).digest("hex") : null,
       clang: run(clang, ["--version"]).split(/\r?\n/)[0],
       node: process.version, platform: platform(), os_release: release(), architecture: arch(),

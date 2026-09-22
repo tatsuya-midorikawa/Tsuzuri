@@ -15,12 +15,12 @@ fn twice x = add x x
 def increment :: 'a -> 'a
 fn increment x = x + 1
 
-def sum :: i64 -> 'a -> 'a -> 'a
-fn sum n x total =
+def rec sum :: i64 -> 'a -> 'a -> 'a
+fn rec sum n x total =
     if n == 0 { total } else { sum (n - 1) x (add total x) }
 
-def countdown :: i64 -> 'a -> 'a
-fn countdown n value = {
+def rec countdown :: i64 -> 'a -> 'a
+fn rec countdown n value = {
     let unused = "dropped on every iteration";
     if n == 0 { value } else { countdown (n - 1) value }
 }

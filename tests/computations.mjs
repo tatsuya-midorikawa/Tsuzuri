@@ -31,6 +31,7 @@ const cases = [
   ["choices", [0], 20n],
   ["skipped_bind", [], 0n],
   ["yields", [], 42n],
+  ["keyword_loops", [], 42n],
   ["flow_bind", [], 42n],
   ["branches", [1], 42n],
   ["branches", [0], 23n],

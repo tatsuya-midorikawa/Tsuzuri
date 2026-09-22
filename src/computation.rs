@@ -87,6 +87,7 @@ pub(super) fn collect(
 
 pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnostic> {
     let span = expression.span;
+    let mut pattern_depth = 0;
     let children: Vec<&mut Expr> = match &mut expression.kind {
         ExprKind::Computation(builder, body) => {
             expand_block(body, names)?;
@@ -125,13 +126,46 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
             then_branch,
             else_branch,
         } => vec![condition, then_branch, else_branch],
+        ExprKind::While { condition, body } => vec![condition, body],
+        ExprKind::For {
+            pattern,
+            source,
+            body,
+        } => {
+            expand_pattern(pattern, names)?;
+            pattern_depth = pattern.depth;
+            vec![source, body]
+        }
+        ExprKind::Range {
+            start,
+            step,
+            finish,
+            ..
+        } => {
+            let mut values = vec![start.as_mut()];
+            values.extend(step.iter_mut().map(Box::as_mut));
+            values.push(finish);
+            values
+        }
+        ExprKind::Match { value, arms } => {
+            let mut values = vec![value.as_mut()];
+            for arm in arms {
+                expand_pattern(&mut arm.pattern, names)?;
+                pattern_depth = pattern_depth.max(arm.pattern.depth);
+                values.extend(arm.guard.iter_mut());
+                values.push(&mut arm.body);
+            }
+            values
+        }
         ExprKind::Block { bindings, result } => bindings
             .iter_mut()
             .map(|binding| &mut binding.value)
             .chain(std::iter::once(result.as_mut()))
             .collect(),
         ExprKind::Record { fields, .. } => fields.iter_mut().map(|(_, value)| value).collect(),
-        ExprKind::Array(values) | ExprKind::List(values) => values.iter_mut().collect(),
+        ExprKind::Array(values) | ExprKind::List(values) | ExprKind::Tuple(values) => {
+            values.iter_mut().collect()
+        }
         ExprKind::Integer(..)
         | ExprKind::Float(..)
         | ExprKind::String(_)
@@ -145,8 +179,33 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
         expand(child, names)?;
         depth = depth.max(child.depth);
     }
-    expression.depth = depth + 1;
+    expression.depth = depth.max(pattern_depth) + 1;
     bounded_depth(expression.depth, span)
+}
+
+fn expand_pattern(pattern: &mut Pattern, names: &Names) -> Result<(), Diagnostic> {
+    let children: Vec<&mut Pattern> = match &mut pattern.kind {
+        PatternKind::Literal(value) | PatternKind::Argument(value) => {
+            expand(value, names)?;
+            pattern.depth = value.depth;
+            return bounded_depth(pattern.depth, pattern.span);
+        }
+        PatternKind::Tuple(values)
+        | PatternKind::Array(values)
+        | PatternKind::List(values)
+        | PatternKind::Apply(_, values) => values.iter_mut().collect(),
+        PatternKind::Record(_, fields) => fields.iter_mut().map(|(_, pattern)| pattern).collect(),
+        PatternKind::Cons(a, b) | PatternKind::Or(a, b) | PatternKind::And(a, b) => vec![a, b],
+        PatternKind::As(pattern, _) | PatternKind::Annotated(pattern, _) => vec![pattern],
+        PatternKind::Wildcard | PatternKind::Binding(_) => Vec::new(),
+    };
+    let mut depth = 0;
+    for child in children {
+        expand_pattern(child, names)?;
+        depth = depth.max(child.depth);
+    }
+    pattern.depth = depth + 1;
+    bounded_depth(pattern.depth, pattern.span)
 }
 
 fn expand_block(body: &mut ComputationBlock, names: &Names) -> Result<(), Diagnostic> {
@@ -164,8 +223,12 @@ fn expand_block(body: &mut ComputationBlock, names: &Names) -> Result<(), Diagno
                 }
                 condition
             }
-            ComputationStatementKind::For(_, source, body)
-            | ComputationStatementKind::While(source, body) => {
+            ComputationStatementKind::For(pattern, source, body) => {
+                expand_pattern(pattern, names)?;
+                expand_block(body, names)?;
+                source
+            }
+            ComputationStatementKind::While(source, body) => {
                 expand_block(body, names)?;
                 source
             }
@@ -265,11 +328,36 @@ impl Lowering<'_> {
                         depth,
                     )?
                 }
-                ComputationStatementKind::For(name, source, body) => {
-                    let body = self.block(body)?;
+                ComputationStatementKind::For(pattern, source, body) => {
+                    let mut body = self.block(body)?;
+                    let simple = matches!(&pattern.kind, PatternKind::Binding(name) if !name.text.as_bytes()[0].is_ascii_uppercase() && !name.text.contains('.'));
+                    let name = if simple {
+                        let PatternKind::Binding(name) = &pattern.kind else {
+                            unreachable!()
+                        };
+                        name.clone()
+                    } else {
+                        let name = ident("$computation.element", pattern.span);
+                        let matched = make(ExprKind::Name(name.clone()), pattern.span, 1)?;
+                        let depth = body.depth.max(pattern.depth) + 1;
+                        body = make(
+                            ExprKind::Match {
+                                value: Box::new(matched),
+                                arms: vec![MatchArm {
+                                    pattern: (**pattern).clone(),
+                                    guard: None,
+                                    body,
+                                    span,
+                                }],
+                            },
+                            span,
+                            depth,
+                        )?;
+                        name
+                    };
                     let depth = body.depth + 1;
                     let body = make(
-                        ExprKind::Lambda(vec![(name.clone(), false)], Box::new(body)),
+                        ExprKind::Lambda(vec![(name, false)], Box::new(body)),
                         span,
                         depth,
                     )?;

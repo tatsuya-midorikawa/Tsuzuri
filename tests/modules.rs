@@ -121,19 +121,19 @@ fn resolves_cross_module_recursion_and_qualified_self_tail_calls() {
     let module = analyze_modules(&[
         (
             "Even",
-            "fn test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
+            "fn rec test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
         ),
         (
             "Odd",
-            "fn test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
+            "fn rec test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
         ),
         (
             "Loop",
-            "fn sum(n: i64, a: [i64]) -> i64 {
+            "fn rec sum(n: i64, a: [i64]) -> i64 {
                  let value = a[n & 1];
                  if n == 0 { value } else { Loop.sum(n - 1, [value + 1, value]) }
              }
-             fn down(n: i64) -> i64 { if n == 0 { 0 } else { n - 1 |> Loop.down } }",
+             fn rec down(n: i64) -> i64 { if n == 0 { 0 } else { n - 1 |> Loop.down } }",
         ),
         ("Main", "Even.test(100)"),
     ])
