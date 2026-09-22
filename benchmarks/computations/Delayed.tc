@@ -1,0 +1,14 @@
+def Return :: i64 -> i64
+fn Return value = value
+
+def Yield :: i64 -> i64
+fn Yield value = value
+
+def Delay :: (unit -> i64) -> (unit -> i64)
+fn Delay body = body
+
+def Run :: (unit -> i64) -> i64
+fn Run body = body ()
+
+def Combine :: i64 -> (unit -> i64) -> i64
+fn Combine first rest = first + rest ()

@@ -469,6 +469,11 @@ fn bounds_nested_builder_expansion_not_just_source_syntax() {
 fn runtime_fixture_lowers_deterministically_for_both_targets() {
     let mut sources = sources(include_str!("fixtures/computations/Main.tz")).to_vec();
     sources.extend([
+        (
+            "Optimization.tz",
+            include_str!("fixtures/computations/Optimization.tz"),
+        ),
+        ("Skew.tc", include_str!("fixtures/computations/Skew.tc")),
         ("Traits.tt", include_str!("fixtures/computations/Traits.tt")),
         ("First.tc", include_str!("fixtures/computations/First.tc")),
         ("Once.tc", include_str!("fixtures/computations/Once.tc")),

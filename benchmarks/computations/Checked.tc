@@ -1,0 +1,8 @@
+record Result { ok: bool, value: i64 }
+
+def Return :: i64 -> Result
+fn Return value = Result { ok: true, value: value }
+
+def Bind :: Result -> (i64 -> Result) -> Result
+fn Bind result next =
+    if result.ok { next result.value } else { result }

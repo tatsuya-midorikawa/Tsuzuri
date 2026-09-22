@@ -173,6 +173,10 @@ answer.value
 
 展開後も通常の型推論・所有権・借用検査を通ります。継続は通常の関数値なので、
 外側の可変状態の共有や、一回実行のタスクの捕捉を勝手に許可することはありません。
+呼び先が分かり外へ逃げない継続は特殊化し、読み取り専用の捕捉環境の複製・間接呼び出しを省きます。
+同じ最適化を通常の高階関数・パイプライン・コレクション初期化にも適用します。
+未知・逃げる継続は従来の所有する関数値を使います。
+性能の条件と手書き Tsuzuri／C++ との実測は [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。
 F# の全機能互換ではなく、`and!`、例外処理、`use`、カスタム演算は未対応です。
 実行例は `tsuzuri run examples/computations`、
 詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) を参照してください。
@@ -449,6 +453,7 @@ node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
+node benchmarks/run-computations.mjs target/release/tsuzuri
 ```
 
 境界値・NaN・短絡評価・高階関数・レコード・配列・100 万回の末尾再帰を、

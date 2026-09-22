@@ -54,6 +54,7 @@ jobs:
           node benchmarks/run.mjs target/release/tsuzuri 100000
           node benchmarks/run-cpp.mjs target/release/tsuzuri --quick
           node benchmarks/run-cpp.mjs target/release/tsuzuri --quick --cpu native
+          node benchmarks/run-computations.mjs target/release/tsuzuri --quick
 
   minimum-rust:
     runs-on: ubuntu-24.04

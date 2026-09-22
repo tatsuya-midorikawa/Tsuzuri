@@ -1,0 +1,199 @@
+def apply :: ('a -> 'b) -> 'a -> 'b
+fn apply body value = body value
+
+def twice :: (i64 -> i64) -> i64
+fn twice body = body 20 + body 22
+
+def piped :: (i64 -> i64) -> i64
+fn piped body = (20 |> body) + (22 |> body)
+
+export def opt_scalar :: i64
+fn opt_scalar = {
+    let offset = 21;
+    twice (value -> value + offset)
+}
+
+export def opt_pipeline :: i64
+fn opt_pipeline = {
+    let offset = 21;
+    piped (value -> value + offset)
+}
+
+export def opt_read_array :: i64
+fn opt_read_array = {
+    let values = [3, 5, 7];
+    twice (value -> values[(value - 20) / 2])
+}
+
+export def opt_read_string :: i64
+fn opt_read_string = {
+    let text = "owned";
+    twice (value -> value + text.length)
+}
+
+export def opt_consumed_string :: i64
+fn opt_consumed_string = {
+    let text = "owned";
+    let body: unit -> string = _ -> text + "!";
+    let first = body ();
+    let second = body ();
+    first.length + second.length
+}
+
+export def opt_copy_result :: i64
+fn opt_copy_result = {
+    let values = [3, 5, 7];
+    let body: unit -> [i64] = _ -> values;
+    let mut first = body ();
+    let second = body ();
+    first = [99];
+    first[0] + second[1]
+}
+
+def update_array :: [i64] -> i64 -> i64
+fn update_array mut values value = {
+    values = [value];
+    values[0]
+}
+
+export def opt_mutable_bound_array :: i64
+fn opt_mutable_bound_array = {
+    let values = [1, 2];
+    let body = update_array values;
+    body 20 + body 21 + values[0]
+}
+
+def update_scalar :: i64 -> i64 -> i64
+fn update_scalar mut state value = {
+    state = state + value;
+    state
+}
+
+export def opt_mutable_bound_scalar :: i64
+fn opt_mutable_bound_scalar = {
+    let body = update_scalar 1;
+    body 20 + body 21
+}
+
+def replace_values :: &mut [i64] -> i64
+fn replace_values values = { *values = [100]; 2 }
+
+export def opt_snapshot_argument :: i64
+fn opt_snapshot_argument = {
+    let mut values = [20];
+    let body: i64 -> i64 = value -> values[0] + value;
+    let result = apply body (replace_values (&mut values));
+    result + values[0]
+}
+
+export def opt_direct_snapshot :: i64
+fn opt_direct_snapshot = {
+    let mut values = [20];
+    let body: i64 -> i64 = value -> values[0] + value;
+    let result = body (replace_values (&mut values));
+    result + values[0]
+}
+
+def replace_function :: &mut (i64 -> i64) -> i64
+fn replace_function target = { *target = _ -> 1000; 2 }
+
+export def opt_callee_replaced :: i64
+fn opt_callee_replaced = {
+    let values = [40];
+    let mut body: i64 -> i64 = value -> values[0] + value;
+    let result = body (replace_function (&mut body));
+    result + body 0
+}
+
+def retain :: (i64 -> i64) -> (i64 -> i64)
+fn retain body = { body }
+
+def make :: i64 -> (i64 -> i64)
+fn make offset = {
+    let text = "abc";
+    retain (value -> offset + value + text.length)
+}
+
+export def opt_escaping :: i64
+fn opt_escaping = {
+    let body = make 20;
+    let copy = body;
+    body 10 + copy 9
+}
+
+def finish :: (unit -> &i64) -> &i64
+fn finish body = body ()
+
+export def opt_return_borrow :: i64
+fn opt_return_borrow = {
+    let value = 42;
+    let reference = &value;
+    let result = finish (_ -> reference);
+    *result
+}
+
+def even :: i64 -> (i64 -> i64) -> i64
+fn even remaining body =
+    if remaining == 0 { body 21 } else { odd (remaining - 1) body }
+
+def odd :: i64 -> (i64 -> i64) -> i64
+fn odd remaining body =
+    if remaining == 0 { body 21 } else { even (remaining - 1) body }
+
+export def opt_mutual :: i64
+fn opt_mutual = {
+    let offset = 21;
+    even 100 (value -> value + offset)
+}
+
+def combine :: (i64 -> i64) -> (i64 -> i64) -> i64
+fn combine first second = first 20 + second 22
+
+export def opt_two_callbacks :: i64
+fn opt_two_callbacks = {
+    let values = [1, 2];
+    combine (value -> value + values[0]) (value -> value + values[1])
+}
+
+def initialize :: (i64 -> i64) -> [i64]
+fn initialize body = new [i64](32, body)
+
+export def opt_initializer :: i64
+fn opt_initializer = {
+    let text = "owned";
+    let values = initialize (index -> index + text.length);
+    values[0] + values[31]
+}
+
+export def opt_custom_operations :: i64
+fn opt_custom_operations = Skew { let! value = 10; return value }
+
+def initializer_factory :: &mut i64 -> (i64 -> i64)
+fn initializer_factory calls = {
+    *calls = *calls + 1;
+    let initial = *calls;
+    index -> initial + index
+}
+
+export def opt_empty_initializer :: i64
+fn opt_empty_initializer = {
+    let text = "owned";
+    let empty = new [i64](0, index -> { assert false; index + text.length });
+    let mut calls = 0;
+    let also_empty = new [i64](0, initializer_factory (&mut calls));
+    empty.length + also_empty.length + calls
+}
+
+export def opt_list_initializer :: i64
+fn opt_list_initializer = {
+    let mut calls = 0;
+    let values = new [|i64|](3, initializer_factory (&mut calls));
+    calls + values[0] + values[2]
+}
+
+export def opt_trap_index :: i64
+fn opt_trap_index = {
+    let values = [1];
+    let body: i64 -> i64 = index -> values[index];
+    body 2
+}

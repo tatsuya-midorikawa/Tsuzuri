@@ -1,0 +1,11 @@
+def Return :: i64 -> i64
+fn Return value = value + 1
+
+def Bind :: i64 -> (i64 -> i64) -> i64
+fn Bind value next = next (value + 1) + next (value + 2)
+
+def Delay :: (unit -> i64) -> i64
+fn Delay body = body () + body ()
+
+def Run :: i64 -> i64
+fn Run value = value + 3

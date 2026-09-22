@@ -16,7 +16,7 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
    -> polymorph -> constraint fixed point + coherent instances + monomorphization
    -> closures -> lambda lifting + capture parameters + saturated export bridges
    -> ownership -> concrete moves + loans + lifetime validation
-   -> llvm -> deterministic LLVM IR
+   -> llvm -> bounded known-call specialization + deterministic LLVM IR
    -> Clang -O0..3 -> native executable / PIC object
                    -> wasm32 object -> LLD -> standalone .wasm
 ```
@@ -34,6 +34,7 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
+| `src/call_specialization.rs` | 非 escaping な関数引数の固定点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker の特殊化予算 |
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、表示 |
 | `src/runtime/string.ll` / `heap-*.ll` | UTF-8 バッファ操作、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
@@ -157,6 +158,32 @@ string と内側の関数値も環境ごとに複製するため、GC・参照�
 環境本体を解放します。共有参照の loan は関数値・集約値のコピーを通して引き継ぎます。
 排他参照を保存する再利用可能な環境は `Capture` 制約で拒否し、完全適用の一時的な段階だけ許します。
 公開 ABI には環境ポインターを露出せず、必要なら全引数を受け取る bridge を生成します。
+
+**継続の特殊化:** 型・所有権検査済みの通常の関数呼び出しを対象にし、CE の操作名を特別扱いしません。
+関数引数が完全適用の callee、または他の非 escaping 引数・コレクション初期化にだけ使われることを、
+相互再帰も含む固定点で確認します。結果が loan を運ぶ関数は保守的に除外します。
+呼び先と捕捉数が分かる関数値には `(関数 ID, 既知の関数引数)` ごとの worker を生成します。
+一時的な環境は entry block の alloca に置き、呼び出し終了後に捕捉した所有値を解放します。
+callee の解析で引数を先に評価してはいけません。`|>` だけは元の規則どおり引数を先に評価します。
+
+既知の callee が捕捉した所有値を読むだけなら、その prefix 引数の drop を行わない内部 worker を使います。
+元の環境・所有者は呼び出し側が保持します。部分適用で所有値を置換する関数や、非 Copy 捕捉値の
+move はこの経路から除外します。Copy 捕捉値を値として取り出すときの必要な複製は維持し、
+借用 worker の prefix を一回使用の所有値と誤認して move／drop してはいけません。
+普通の所有引数・ローカルは引き続き通常の drop を行います。
+後続引数に可変参照・代入などがあれば、callee のスナップショットを保持する通常経路を選びます。
+関数値が外へ逃げる場合や呼び先が不明な場合も、既存の環境の複製・消費型 adapter を使います。
+
+本体が引数をそのまま返すだけの関数は透過的に扱えますが、名前だけで `Delay` や `Return` を恒等関数とはみなしません。
+元の AST 全体で参照が一箇所だけの所有ローカルは、消費する読み出し時に Copy でも領域を移せます。
+その際は元スロットをゼロ化し、スコープ終了時の二重解放を防ぎます。複数使用・部分フィールド・
+借用 worker の入力には適用しません。配列・リスト初期化も既知の callee なら、元の順序で
+初期化関数の式を一回だけ評価し、各添字の呼び出しを直接行います。
+
+追加 worker は順序付きキーとキューで重複排除し、最大 1,024 までです。上限後の呼び出しは通常経路へ戻します。
+既にスタック環境を借りた worker 内でこの上限に達しても、通常 adapter に渡すのは独立したヒープ複製であり、
+スタック環境を free してはいけません。関数記述子の4ポインター表現と公開 ABI は変更しません。
+通常の型エラー・move エラーを最適化で消して受理することはなく、数値・範囲・確保サイズの検査も維持します。
 
 **数値:** 各整数幅・符号、各浮動小数点形式は別の型です。byte／ubyte だけは i8／i8u の別名です。
 リテラルは型の文脈または接尾辞で決定し、変数を暗黙変換しません。
@@ -343,6 +370,15 @@ WASM では累積の確保量がメモリ上限を超える反復を実行し、
 ネイティブでは全呼び出し後の未解放バイトを 0 と照合し、WASM では 16 MiB を超える累積確保の
 反復を行います。注釈なしの配列 bind と手書きの操作呼び出しの確保量も一致させます。
 `.tt`／`.tc` の診断先・出力保護と、決定的な IR／WASM も確認します。
+`tests/call_specialization.rs` と `tests/fixtures/computations/Optimization.tz` は既知・動的・
+逃げる関数値、可変引数の評価順序、所有する捕捉値・返却値、相互再帰、特殊化上限の通常経路を検査します。
+コンピュテーションの実行テストには 520 個の異なる継続で予算を超える例と、
+`-O3` の 262,144 回のコールバックを含め、native／WASM で解放・スタック・結果を確認します。
+`benchmarks/run-computations.mjs` は最適化後 IR の確保数と手書き Tsuzuri／C++ との時間を別々に測定し、
+共有 CI では `--quick` による正しさの検査だけを行います。
+Clang の AddressSanitizer が使える環境では
+`TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/computations.mjs target/release/tsuzuri`
+により、生成したネイティブ IR のヒープ・スタックへのアクセスも検査できます。
 
 任意の実ブラウザー検証:
 

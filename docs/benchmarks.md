@@ -188,6 +188,163 @@ for cpu in generic native; do
 done
 ```
 
+## コンピュテーション式の比較
+
+```sh
+cargo build --release --locked
+node benchmarks/run-computations.mjs target/release/tsuzuri
+node benchmarks/run-computations.mjs target/release/tsuzuri --cpu native
+
+# CI 用。速度の合否条件はなく、小さい入力・参照結果・解放を検査する
+node benchmarks/run-computations.mjs target/release/tsuzuri --quick
+
+# 変更前のコンパイラも同じ入力でビルドし、同じプロセス内で交互に比較
+node benchmarks/run-computations.mjs target/release/tsuzuri \
+  --baseline target/benchmarks/tsuzuri-ce-baseline-869c4b1 \
+  --artifacts target/benchmarks/ce-inspect
+```
+
+比較対象は `.tc` のユーザー定義ビルダー、同じ処理の手書き Tsuzuri、
+`benchmarks/computations/native.cpp` の最適化用 C++20 実装です。
+**比較した実装の中での到達点を測るもので、理論上の最速実装であることの証明ではありません。**
+任意のビルダーのアルゴリズムや、あらゆる CPU・入力での性能を代表する測定でもありません。
+
+| 種目 | native の仕事量 | 比較する処理 |
+|---|---:|---|
+| `bind` | 2,000,000 反復 | `let!` を2つ持つ整数ミキサー。loop-carried の値に依存 |
+| `checked` | 2,000,000 反復 | 成功フラグ付きレコードを `Bind` し、失敗時に続きを呼ばない |
+| `delayed` | 500,000 反復 | `Delay`／`Run`／`Combine` と複数 yield を持つミキサー |
+| `array_for` | 8,192 要素 | 確保・seed 依存の初期化・捕捉した倍率による変換集計・解放 |
+| `array_bind` | 8,192 要素 | 配列を型注釈付き `let!` に渡し、同じ変換集計を行う |
+| `owned_capture` | 8,192 反復 | 256 要素の所有配列を捕捉し、前の結果に依存する添字で読み出す |
+
+C++ は符号なし整数と `std::bit_cast` で i64 の折り返しを再現し、signed overflow に依存しません。
+両版の Tsuzuri と C++ は同じ反復継続条件を使い、負の反復数を入口で拒否します。
+計算結果を定数に置換したり、Tsuzuri にだけ不利なゼロ初期化を C++ に追加したりしません。
+配列種目には実際の確保・初期化・解放を含めます。`owned_capture` の C++ は固定長配列をスタックに置く
+手書き版であり、Tsuzuri に合わせて不要なヒープ・クロージャーを追加しません。
+基準版で大きな再帰的コールバックがスタックを使い切ったため、時間比較には両版が完走するサイズを使います。
+別の実行テストで、改善版の 262,144 回のコールバックを native／WASM `-O3` で照合します。
+
+### 条件・出力・確保数
+
+両言語に同じ Clang、`-O3`、PIC、`-fno-fast-math`、`-ffp-contract=off` を使い、LTO はしません。
+`--cpu native` の場合だけ両言語に同じ CPU フラグを付けます。
+native は `clock()` の CPU time、WASM は Node.js でウォームアップした後の wall time です。
+WASM は全種目 1,024 要素／反復で、手書き Tsuzuri・改善前・改善後を比較します。
+WASM の C++ 標準ライブラリは要求せず、native と WASM の時間を同じ比率にまとめません。
+
+native は各版を2回、WASM は3回ウォームアップします。
+各種目を12サンプル測り、seed と計測順を変えます。各版ごとに繰り返し数を校正して、
+約20 ms のバッチを目安にし、一呼び出し当たりの時間へ正規化します。
+上限は10,000呼び出しで、非常に短い経路ではバッチも20 ms未満になります。
+native の入力読み出し・結果保存は volatile、C++ カーネルは noinline です。
+計測内の全呼び出しの checksum と、ゼロ長・小さい入力・負の seed・i64 の MIN/MAX を含む
+各25ケースを確認し、JavaScript/BigInt の独立した参照実装とも照合します。
+WASM のホスト境界と結果照合は計測に含みますが、コンパイル・インスタンス化・プロセス起動は含めません。
+
+JSON には `native_flags`、`wasm_flags`、各コンパイラの SHA-256、CPU・OS・ツールの情報、
+全サンプルの時間・繰り返し数・checksum を残します。
+`native.computation_over_cpp`／`computation_over_direct` は1未満なら CE が速い比率、
+`native.speedup`／`wasm.speedup` は改善前時間を改善後時間で割った倍率です。
+最小・最大も保存するため、単発の僅かな差を速度向上とは判定しないでください。
+`--artifacts` は native のソース IR・最適化後 IR・アセンブリ、C++ の IR・アセンブリ、
+オブジェクト、実行ファイル、WASM を指定ディレクトリへ保存します。
+
+`allocations_at_size_64` は **時間計測とは別の実行ファイル**で数えます。
+まず通常の `-O3` を完了し、その IR に残った `malloc`／`free` だけを追跡関数へ置換します。
+追跡による副作用を隠す最適化属性を除き、再最適化せずに実行し、全呼び出し後の未解放バイトが0であることも確認します。
+最適化前の IR を追跡関数に置換してから `-O3` にすると、本来消える確保まで残り、
+実際のリリースコードの確保数とは異なるため、この測定では使いません。
+
+### 改善の範囲
+
+非 escaping な既知の継続を通常の関数呼び出しとして特殊化し、読むだけの所有する捕捉値を
+呼び出し元が生存させたまま内部的に貸し出すことで、間接呼び出し・環境の複製・反復ごとの解放を除去します。
+一時的な環境は entry block のスタック領域を使い、一回しか使用しない Copy ローカルの深いコピーも省略できます。
+同じ経路を手書きの高階関数、パイプライン、配列・リスト初期化にも適用します。
+型検査・所有権検査を省く最適化ではなく、スナップショット・評価順序・trap を維持します。
+
+未知・逃げる関数値、所有する捕捉値の消費や置換、借用を返す場合などは通常の環境を維持します。
+追加 worker の予算を超えた場合も正しい通常経路を使います。
+したがって、この6種目が手書き版に近づいても、すべての CE が必ずゼロコストになるという意味ではありません。
+GPU・複数 CPU コア・専用 SIMD バックエンドによる高速化の測定でもありません。
+
+### 実測（2026-09-22）
+
+Apple M1 Max／arm64／Darwin 27.0.0、Apple Clang 21.0.0
+（clang-2100.3.34.2）、Node.js 20.19.6、Tsuzuri 0.1.0。
+改善前はコミット `869c4b1` から保存したコンパイラです。
+同じ現在のベンチマークソースを両コンパイラに渡し、generic／native を各3回、
+各条件の36サンプルをまとめた中央値で比較しました。
+反復条件を C++ と揃える前の探索的な測定値は、この表には混ぜていません。
+
+native generic、単位は ms。改善倍率は「改善前 / 改善後」です。
+
+| 種目 | 改善前 CE | 改善後 CE | C++ | 改善倍率 | 改善後 / C++ |
+|---|---:|---:|---:|---:|---:|
+| `bind` | 3.207643 | 3.208357 | 3.205500 | 1.00 | 1.001 |
+| `checked` | 5.145250 | 5.240125 | 5.147625 | 0.98 | 1.018 |
+| `delayed` | 1.302906 | 1.295531 | 1.289031 | 1.01 | 1.005 |
+| `array_for` | 0.370280 | 0.005649 | 0.005634 | **65.5** | 1.003 |
+| `array_bind` | 0.007913 | 0.005616 | 0.005627 | **1.41** | 0.998 |
+| `owned_capture` | 1.419150 | 0.026332 | 0.026308 | **53.9** | 1.001 |
+
+native CPU 指定でも同様で、配列 `for` は66.1倍、所有配列の捕捉は53.7倍、
+配列 bind は1.40倍の改善でした。改善後の C++ 比は generic で0.998〜1.018、
+native CPU 指定で0.994〜1.020です。
+**手書き最適化版とほぼ同程度に到達しましたが、全種目で C++ を上回った結果ではありません。**
+`checked` の native は改善前より約2%遅く、この小差を隠して全面的な高速化とは報告しません。
+単純なスカラー CE は改善前から native LLVM `-O3` が環境の確保を消せていました。
+
+WASM は native generic と同時に採取した3回、各36サンプルです。
+仕事量は各1,024、単位はマイクロ秒で、native 表とは直接比較しません。
+
+| 種目 | 改善前 CE | 改善後 CE | 手書き Tsuzuri | 改善倍率 |
+|---|---:|---:|---:|---:|
+| `bind` | 17.167 | 2.031 | 2.013 | **8.45** |
+| `checked` | 14.858 | 2.102 | 2.083 | **7.07** |
+| `delayed` | 25.389 | 2.781 | 2.796 | **9.13** |
+| `array_for` | 27.876 | 0.721 | 0.716 | **38.7** |
+| `array_bind` | 5.227 | 0.713 | 0.721 | **7.33** |
+| `owned_capture` | 178.551 | 3.998 | 3.988 | **44.7** |
+
+改善前の WASM では、独自 allocator を使う環境の確保・複製が native と同じようには消えていませんでした。
+静的な継続の特殊化と初期化関数の直接呼び出しにより、この差も縮まりました。
+native CPU 指定の測定に付随する WASM も同じバイナリ条件で、同程度の結果です。
+
+最適化後 native IR に残る確保回数（入力64）:
+
+| 種目 | 改善前 CE | 改善後 CE | 手書き Tsuzuri |
+|---|---:|---:|---:|
+| スカラー3種目 | 0 | 0 | 0 |
+| `array_for` | 130 | **1** | 1 |
+| `array_bind` | 3 | **1** | 1 |
+| `owned_capture` | 259 | **1** | 1 |
+
+改善後の配列種目の IR／アセンブリには、入力データ用の確保と解放だけが残り、
+ホットループから継続の間接呼び出し・環境の確保・深い複製が消えています。
+反復の後に環境を解放するために残っていた再帰も、既知の callback では LLVM がループへ変換できます。
+一般の未知・逃げる関数値に同じ保証を拡張したわけではありません。
+
+生データと生成コードは `target/benchmarks/ce-final-{generic,native}-{1,2,3}.json` と
+同名ディレクトリへ保存しました。JSON の compiler SHA-256 は
+改善前 `c161c53723ef4620aed36cf1e8872c5a4efc701adfeb296e54927a9c2d9cc95d`、
+改善後 `8e22ddcba72572b0bd8f0dc4dfee6129618a4c7e1c4b08b706e1172646385b0c` です。
+baseline バイナリは改善前コミットを別の作業ディレクトリでビルドして保存することで再作成できます。
+再測定例:
+
+```sh
+for cpu in generic native; do
+  for trial in 1 2 3; do
+    node benchmarks/run-computations.mjs target/release/tsuzuri \
+      --cpu "$cpu" --baseline target/benchmarks/tsuzuri-ce-baseline-869c4b1 \
+      --artifacts "target/benchmarks/ce-final-$cpu-$trial" \
+      > "target/benchmarks/ce-final-$cpu-$trial.json" || exit 1
+  done
+done
+```
+
 ## 現実的な次の指標
 
 目標の達成には、代表的なアプリケーション・カーネル、コンパイル時間、成果物サイズ、

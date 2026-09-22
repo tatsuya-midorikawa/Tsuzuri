@@ -1,0 +1,153 @@
+def mix :: i64 -> i64 -> i64
+fn mix value salt = (value ^ (value >>> 13)) * 6364136223846793005 + salt
+
+def bind_step :: i64 -> i64 -> i64
+fn bind_step value salt = Identity {
+    let! shifted = value ^ (value >>> 13)
+    let! scaled = shifted * 6364136223846793005
+    return scaled + salt
+}
+
+def bind_loop :: i64 -> i64 -> i64
+fn bind_loop remaining state =
+    if remaining <= 0 { state }
+    else { bind_loop (remaining - 1) (bind_step state (1442695040888963407 + remaining)) }
+
+def direct_loop :: i64 -> i64 -> i64
+fn direct_loop remaining state =
+    if remaining <= 0 { state }
+    else { direct_loop (remaining - 1) (mix state (1442695040888963407 + remaining)) }
+
+export def ce_bind :: i64 -> i64 -> i64
+fn ce_bind count seed = { assert (count >= 0); bind_loop count seed }
+
+export def direct_bind :: i64 -> i64 -> i64
+fn direct_bind count seed = { assert (count >= 0); direct_loop count seed }
+
+def checked_step :: i64 -> i64 -> i64
+fn checked_step state salt = {
+    let result = Checked {
+        let! first = Checked.Result { ok: (state & 7) != 0, value: state ^ salt }
+        let! second = Checked.Result { ok: (first & 3) != 0, value: mix first salt }
+        return second ^ salt
+    };
+    result.value
+}
+
+def direct_checked_step :: i64 -> i64 -> i64
+fn direct_checked_step state salt = {
+    let first = state ^ salt;
+    if (state & 7) == 0 { first } else {
+        let second = mix first salt;
+        if (first & 3) == 0 { second } else { second ^ salt }
+    }
+}
+
+def checked_loop :: i64 -> i64 -> i64
+fn checked_loop remaining state =
+    if remaining <= 0 { state }
+    else { checked_loop (remaining - 1) (checked_step state (1442695040888963407 + remaining)) }
+
+def direct_checked_loop :: i64 -> i64 -> i64
+fn direct_checked_loop remaining state =
+    if remaining <= 0 { state }
+    else { direct_checked_loop (remaining - 1) (direct_checked_step state (1442695040888963407 + remaining)) }
+
+export def ce_checked :: i64 -> i64 -> i64
+fn ce_checked count seed = { assert (count >= 0); checked_loop count seed }
+
+export def direct_checked :: i64 -> i64 -> i64
+fn direct_checked count seed = { assert (count >= 0); direct_checked_loop count seed }
+
+def delayed_step :: i64 -> i64 -> i64
+fn delayed_step state salt = Delayed {
+    yield mix state salt
+    yield mix (state ^ 71) salt
+    return mix (state ^ 113) salt
+}
+
+def direct_delayed_step :: i64 -> i64 -> i64
+fn direct_delayed_step state salt = mix state salt + (mix (state ^ 71) salt + mix (state ^ 113) salt)
+
+def delayed_loop :: i64 -> i64 -> i64
+fn delayed_loop remaining state =
+    if remaining <= 0 { state }
+    else { delayed_loop (remaining - 1) (delayed_step state (1442695040888963407 + remaining)) }
+
+def direct_delayed_loop :: i64 -> i64 -> i64
+fn direct_delayed_loop remaining state =
+    if remaining <= 0 { state }
+    else { direct_delayed_loop (remaining - 1) (direct_delayed_step state (1442695040888963407 + remaining)) }
+
+export def ce_delayed :: i64 -> i64 -> i64
+fn ce_delayed count seed = { assert (count >= 0); delayed_loop count seed }
+
+export def direct_delayed :: i64 -> i64 -> i64
+fn direct_delayed count seed = { assert (count >= 0); direct_delayed_loop count seed }
+
+def sum :: &[i64] -> i64 -> i64 -> i64 -> i64
+fn sum values scale index total =
+    if index == values.length { total }
+    else {
+        let value = values[index];
+        sum values scale (index + 1) (total + (value ^ (value >>> 17)) * scale)
+    }
+
+export def ce_array_for :: i64 -> i64 -> i64
+fn ce_array_for count seed = {
+    assert (count >= 0 && count <= 100000000);
+    let values = new [i64](count, i -> mix i seed);
+    let scale = seed | 1;
+    Fold {
+        for value in (&values) {
+            yield (value ^ (value >>> 17)) * scale
+        }
+    }
+}
+
+export def direct_array_for :: i64 -> i64 -> i64
+fn direct_array_for count seed = {
+    assert (count >= 0 && count <= 100000000);
+    let values = new [i64](count, i -> mix i seed);
+    sum (&values) (seed | 1) 0 0
+}
+
+export def ce_array_bind :: i64 -> i64 -> i64
+fn ce_array_bind count seed = {
+    assert (count >= 0 && count <= 100000000);
+    Identity {
+        let! values: [i64] = new [i64](count, i -> mix i seed)
+        return sum (&values) (seed | 1) 0 0
+    }
+}
+
+export def direct_array_bind :: i64 -> i64 -> i64
+fn direct_array_bind count seed = direct_array_for count seed
+
+def apply_loop :: i64 -> (i64 -> i64) -> i64 -> i64
+fn apply_loop remaining next state =
+    if remaining <= 0 { state }
+    else { apply_loop (remaining - 1) next (next state) }
+
+def direct_owned_loop :: i64 -> &[i64] -> i64 -> i64
+fn direct_owned_loop remaining values state =
+    if remaining <= 0 { state }
+    else { direct_owned_loop (remaining - 1) values (mix values[state & 255] state) }
+
+export def ce_owned_capture :: i64 -> i64 -> i64
+fn ce_owned_capture count seed = {
+    assert (count >= 0);
+    let values = new [i64](256, i -> mix i seed);
+    let next: i64 -> i64 = state -> Identity {
+        let! value = values[state & 255]
+        return mix value state
+    };
+    apply_loop count next seed
+}
+
+export def direct_owned_capture :: i64 -> i64 -> i64
+fn direct_owned_capture count seed = {
+    assert (count >= 0);
+    let values = new [i64](256, i -> mix i seed);
+    direct_owned_loop count (&values) seed
+}

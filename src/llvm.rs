@@ -7,6 +7,10 @@ use crate::check::{
 use crate::diagnostic::{Diagnostic, Span};
 use crate::syntax::{BinaryOp, UnaryOp};
 
+#[path = "call_specialization.rs"]
+mod call_specialization;
+use call_specialization::{ClosureTarget, Specialization, Specializations};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {
     Library,
@@ -41,6 +45,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     let mut builtins = BTreeSet::new();
     let mut intrinsics = BTreeSet::new();
     let mut globals = Vec::new();
+    let mut specializations = Specializations::new(module);
     for (id, function) in module.functions.iter().enumerate() {
         let emitter = FunctionEmitter::new(
             module,
@@ -49,6 +54,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
             &mut builtins,
             &mut intrinsics,
             &mut globals,
+            &mut specializations,
         );
         output.push_str(&emitter.emit());
         output.push_str(&closure_wrappers(
@@ -58,10 +64,26 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
             &mut builtins,
             &mut intrinsics,
             &mut globals,
+            &mut specializations,
         ));
         if function.exported {
             output.push_str(&export_wrapper(function, module));
         }
+    }
+    let mut next = 0;
+    while let Some(key) = specializations.requests.get(next).cloned() {
+        let emitter = FunctionEmitter::new(
+            module,
+            &module.functions[key.function],
+            key.function,
+            &mut builtins,
+            &mut intrinsics,
+            &mut globals,
+            &mut specializations,
+        )
+        .specialized(next, &key);
+        output.push_str(&emitter.emit());
+        next += 1;
     }
     for builtin in builtins {
         output.push_str(&emit_builtin(builtin, &mut intrinsics));
@@ -156,6 +178,7 @@ fn closure_wrappers(
     builtins: &mut BTreeSet<Builtin>,
     intrinsics: &mut BTreeSet<String>,
     globals: &mut Vec<String>,
+    specializations: &mut Specializations,
 ) -> String {
     let mut output = String::new();
     let name = function.qualified_name();
@@ -168,8 +191,15 @@ fn closure_wrappers(
                     .iter()
                     .all(|ty| ty.can_capture(&module.records))
             {
-                let mut clone =
-                    FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
+                let mut clone = FunctionEmitter::new(
+                    module,
+                    function,
+                    id,
+                    builtins,
+                    intrinsics,
+                    globals,
+                    specializations,
+                );
                 let allocation = clone.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({environment}, ptr null, i32 1) to i64))"));
                 for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
                     let pointer = clone.value(format!(
@@ -188,8 +218,15 @@ fn closure_wrappers(
                 );
             }
 
-            let mut drop =
-                FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
+            let mut drop = FunctionEmitter::new(
+                module,
+                function,
+                id,
+                builtins,
+                intrinsics,
+                globals,
+                specializations,
+            );
             for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
                 if ty.needs_drop(&module.records) {
                     let pointer = drop.value(format!(
@@ -204,7 +241,15 @@ fn closure_wrappers(
             output
                 .push_str(&drop.auxiliary(&format!("void @tz.env.drop.{name}.{count}(ptr %env)")));
         }
-        let mut apply = FunctionEmitter::new(module, function, id, builtins, intrinsics, globals);
+        let mut apply = FunctionEmitter::new(
+            module,
+            function,
+            id,
+            builtins,
+            intrinsics,
+            globals,
+            specializations,
+        );
         let mut values = Vec::new();
         for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
             let pointer = apply.value(format!(
@@ -327,6 +372,12 @@ struct FunctionEmitter<'a, 'b> {
     module: &'a CheckedModule,
     function: &'a CheckedFunction,
     function_id: usize,
+    symbol: String,
+    specializations: &'b mut Specializations,
+    known_closures: BTreeMap<usize, ClosureTarget>,
+    borrowed_locals: BTreeSet<usize>,
+    single_use: BTreeSet<usize>,
+    borrowed_worker: bool,
     builtins: &'b mut BTreeSet<Builtin>,
     intrinsics: &'b mut BTreeSet<String>,
     lines: Vec<String>,
@@ -340,6 +391,13 @@ struct FunctionEmitter<'a, 'b> {
     globals: &'b mut Vec<String>,
 }
 
+struct BorrowedCall {
+    target: ClosureTarget,
+    symbol: String,
+    captures: Vec<String>,
+    cleanup: Vec<(Type, String)>,
+}
+
 impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn new(
         module: &'a CheckedModule,
@@ -348,11 +406,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         builtins: &'b mut BTreeSet<Builtin>,
         intrinsics: &'b mut BTreeSet<String>,
         globals: &'b mut Vec<String>,
+        specializations: &'b mut Specializations,
     ) -> Self {
         Self {
             module,
             function,
             function_id,
+            symbol: format!("@tz.fn.{}", function.qualified_name()),
+            specializations,
+            known_closures: BTreeMap::new(),
+            borrowed_locals: BTreeSet::new(),
+            single_use: BTreeSet::new(),
+            borrowed_worker: false,
             builtins,
             intrinsics,
             globals,
@@ -365,6 +430,21 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             back_edges: Vec::new(),
             scopes: vec![Vec::new()],
         }
+    }
+
+    fn specialized(mut self, id: usize, key: &Specialization) -> Self {
+        self.symbol = format!("@tz.specialized.{id}");
+        self.borrowed_worker = key.borrowed != 0;
+        // The caller retains these immutable payloads; owning temporaries still use normal drops.
+        for parameter in &self.function.parameters[..key.borrowed] {
+            self.borrowed_locals.insert(parameter.id);
+        }
+        for (index, target) in &key.callbacks {
+            let local = self.function.parameters[*index].id;
+            self.borrowed_locals.insert(local);
+            self.known_closures.insert(local, *target);
+        }
+        self
     }
 
     fn auxiliary(self, signature: &str) -> String {
@@ -380,6 +460,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn emit(mut self) -> String {
+        self.single_use = call_specialization::single_use_locals(&self.function.body);
         self.block = "loop".into();
         for (index, parameter) in self.function.parameters.iter().enumerate() {
             self.bind_local(parameter, &format!("%p{index}"));
@@ -394,9 +475,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .collect::<Vec<_>>()
             .join(", ");
         let mut output = format!(
-            "define internal {} @tz.fn.{}({parameters}) nounwind {{\nentry:\n",
+            "define internal {} {}({parameters}) nounwind {{\nentry:\n",
             self.ty(&self.function.signature.result),
-            self.function.qualified_name()
+            self.symbol
         );
         for alloca in self.allocas {
             let _ = writeln!(output, "  {alloca}");
@@ -481,7 +562,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let slot = self.slot(&local.ty);
         self.instruction(format!("store {} {value}, ptr {slot}", self.ty(&local.ty)));
         self.locals.insert(local.id, slot.clone());
-        if local.ty.needs_drop(&self.module.records) {
+        if local.ty.needs_drop(&self.module.records) && !self.borrowed_locals.contains(&local.id) {
             self.scopes
                 .last_mut()
                 .unwrap()
@@ -491,13 +572,20 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn bind(&mut self, bindings: &[(Local, TypedExpr)]) {
         for (local, expression) in bindings {
+            let target = (!local.mutable)
+                .then(|| call_specialization::target(expression, &self.known_closures, self.module))
+                .flatten();
             let value = self.expression(expression);
             self.bind_local(local, &value);
+            if let Some(target) = target {
+                self.known_closures.insert(local.id, target);
+            }
         }
     }
 
     fn is_self(&self, callee: &TypedExpr) -> bool {
         matches!(callee.kind, TypedExprKind::Function(FunctionRef::User(id)) if id == self.function_id)
+            && !self.borrowed_worker
             && !self
                 .function
                 .signature
@@ -564,7 +652,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let slot = self.place(expression);
             let value = self.value(format!("load {}, ptr {slot}", self.ty(&expression.ty)));
             if take && expression.ty.needs_drop(&self.module.records) {
-                if expression.ty.is_copy(&self.module.records) {
+                let last_use = matches!(expression.kind, TypedExprKind::Local(id)
+                    if self.single_use.contains(&id) && !self.borrowed_locals.contains(&id));
+                if expression.ty.is_copy(&self.module.records) && !last_use {
                     return self.clone_value(&expression.ty, &value);
                 }
                 self.instruction(format!(
@@ -650,7 +740,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.short_circuit(operator, left, right)
             }
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) => {
+                if matches!(callee.kind, TypedExprKind::Function(_)) {
+                    return self.call(callee, std::slice::from_ref(argument.as_ref()));
+                }
                 let value = self.expression(argument);
+                if let Some(call) = self.prepare_known_call(callee, 1) {
+                    let result = self.emit_borrowed_call(&call, &[value]);
+                    self.finish_borrowed_call(&call);
+                    return result;
+                }
                 let function = self.expression(callee);
                 self.apply_value(&function, &callee.ty, Some((&argument.ty, &value)))
                     .0
@@ -725,22 +823,33 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::NewArray(length, initializer) => {
                 let length = self.expression(length);
-                let callee = self.expression(initializer);
+                let direct = self.prepare_known_call(initializer, 1);
+                let callee = direct.is_none().then(|| self.expression(initializer));
                 let Type::Array(element) = &expression.ty else {
                     unreachable!()
                 };
                 let (array, data) = self.allocate_array(element, &length);
                 self.array_loop(&length, |emitter, index| {
-                    let function = emitter.clone_value(&initializer.ty, &callee);
-                    let (value, _) =
-                        emitter.apply_value(&function, &initializer.ty, Some((&Type::I64, index)));
+                    let value = if let Some(call) = &direct {
+                        emitter.emit_borrowed_call(call, &[index.to_owned()])
+                    } else {
+                        let function =
+                            emitter.clone_value(&initializer.ty, callee.as_ref().unwrap());
+                        emitter
+                            .apply_value(&function, &initializer.ty, Some((&Type::I64, index)))
+                            .0
+                    };
                     let pointer = emitter.element_pointer(element, &data, index);
                     emitter.instruction(format!(
                         "store {} {value}, ptr {pointer}",
                         emitter.ty(element)
                     ));
                 });
-                self.drop_value(&initializer.ty, &callee);
+                if let Some(call) = &direct {
+                    self.finish_borrowed_call(call);
+                } else {
+                    self.drop_value(&initializer.ty, callee.as_ref().unwrap());
+                }
                 array
             }
             TypedExprKind::List(elements) => {
@@ -756,19 +865,30 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::NewList(length, initializer) => {
                 let length = self.expression(length);
-                let callee = self.expression(initializer);
+                let direct = self.prepare_known_call(initializer, 1);
+                let callee = direct.is_none().then(|| self.expression(initializer));
                 let Type::List(element) = &expression.ty else {
                     unreachable!()
                 };
                 self.allocation_size(&self.list_node_type(element), &length);
                 let (head, tail) = self.list_builder();
                 self.array_loop(&length, |emitter, index| {
-                    let function = emitter.clone_value(&initializer.ty, &callee);
-                    let (value, _) =
-                        emitter.apply_value(&function, &initializer.ty, Some((&Type::I64, index)));
+                    let value = if let Some(call) = &direct {
+                        emitter.emit_borrowed_call(call, &[index.to_owned()])
+                    } else {
+                        let function =
+                            emitter.clone_value(&initializer.ty, callee.as_ref().unwrap());
+                        emitter
+                            .apply_value(&function, &initializer.ty, Some((&Type::I64, index)))
+                            .0
+                    };
                     emitter.append_list(element, &tail, &value);
                 });
-                self.drop_value(&initializer.ty, &callee);
+                if let Some(call) = &direct {
+                    self.finish_borrowed_call(call);
+                } else {
+                    self.drop_value(&initializer.ty, callee.as_ref().unwrap());
+                }
                 self.finish_list(&head, &length)
             }
             TypedExprKind::Field(record, index) => {
@@ -1121,7 +1241,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn make_closure(&mut self, id: usize, values: &[String]) -> String {
         let function = &self.module.functions[id];
         let count = values.len();
-        let name = function.qualified_name();
         let environment = if count == 0 {
             "null".to_owned()
         } else {
@@ -1138,6 +1257,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             environment
         };
+        self.closure_descriptor(id, count, &environment)
+    }
+
+    fn closure_descriptor(&mut self, id: usize, count: usize, environment: &str) -> String {
+        let function = &self.module.functions[id];
+        let name = function.qualified_name();
         let value = self.value(format!(
             "insertvalue %tz.closure zeroinitializer, ptr @tz.apply.{name}.{count}, 0"
         ));
@@ -1161,6 +1286,27 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.value(format!(
             "insertvalue %tz.closure {value}, ptr @tz.env.drop.{name}.{count}, 3"
         ))
+    }
+
+    fn stack_closure(&mut self, target: ClosureTarget, values: &[String]) -> String {
+        if values.is_empty() {
+            return self.closure_descriptor(target.function, 0, "null");
+        }
+        let function = &self.module.functions[target.function];
+        let environment_ty = environment_type(function, target.bound, self.module);
+        let environment = self.fresh();
+        self.allocas
+            .push(format!("{environment} = alloca {environment_ty}, align 16"));
+        for (index, value) in values.iter().enumerate() {
+            let pointer = self.value(format!(
+                "getelementptr inbounds {environment_ty}, ptr {environment}, i32 0, i32 {index}"
+            ));
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}",
+                self.ty(&function.signature.parameters[index])
+            ));
+        }
+        self.closure_descriptor(target.function, target.bound, &environment)
     }
 
     fn parallel_tasks(&mut self, tasks: &TypedExpr, result: &Type) -> String {
@@ -1224,6 +1370,29 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn call(&mut self, callee: &TypedExpr, arguments: &[TypedExpr]) -> String {
+        if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind {
+            let function = &self.module.functions[id];
+            if arguments.len() == 1 && call_specialization::is_identity(function) {
+                return self.expression(&arguments[0]);
+            }
+        }
+        if !matches!(callee.kind, TypedExprKind::Function(_)) {
+            if let Some(target) =
+                call_specialization::target(callee, &self.known_closures, self.module)
+            {
+                if target.bound + arguments.len()
+                    == self.module.functions[target.function].parameters.len()
+                    && !arguments
+                        .iter()
+                        .any(|argument| call_specialization::may_mutate(argument, self.module))
+                    && self.specializations.can_borrow(target, self.module)
+                {
+                    if let Some(value) = self.borrowed_call(callee, target, arguments) {
+                        return value;
+                    }
+                }
+            }
+        }
         let known = match callee.kind {
             TypedExprKind::Function(FunctionRef::User(id)) => {
                 let function = &self.module.functions[id];
@@ -1234,34 +1403,78 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                         .collect();
                     return self.make_closure(id, &values);
                 }
-                Some((
-                    format!("@tz.fn.{}", function.qualified_name()),
-                    function.signature.clone(),
-                ))
+                let mut callbacks = Vec::new();
+                if arguments.len() == function.parameters.len() {
+                    for index in self.specializations.eligible[id].clone() {
+                        if arguments[index + 1..]
+                            .iter()
+                            .any(|argument| call_specialization::may_mutate(argument, self.module))
+                        {
+                            continue;
+                        }
+                        if let Some(target) = call_specialization::target(
+                            &arguments[index],
+                            &self.known_closures,
+                            self.module,
+                        ) {
+                            if self.specializations.can_borrow(target, self.module) {
+                                callbacks.push((index, target));
+                            }
+                        }
+                    }
+                }
+                let symbol = if callbacks.is_empty() {
+                    format!("@tz.fn.{}", function.qualified_name())
+                } else if let Some(variant) = self.specializations.request(Specialization {
+                    function: id,
+                    callbacks: callbacks.clone(),
+                    borrowed: 0,
+                }) {
+                    format!("@tz.specialized.{variant}")
+                } else {
+                    callbacks.clear();
+                    format!("@tz.fn.{}", function.qualified_name())
+                };
+                Some((symbol, function.signature.clone(), callbacks))
             }
             TypedExprKind::Function(FunctionRef::Builtin(builtin)) => {
                 self.builtins.insert(builtin);
                 Some((
                     format!("@tz.builtin.{}", builtin.name()),
                     builtin.signature(),
+                    Vec::new(),
                 ))
             }
             _ => None,
         };
-        let (mut value, mut ty, consumed) = if let Some((symbol, signature)) = known {
+        let (mut value, mut ty, consumed) = if let Some((symbol, signature, callbacks)) = known {
             let count = signature.parameters.len();
-            let values = arguments[..count]
-                .iter()
-                .map(|argument| {
-                    let value = self.expression(argument);
-                    format!("{} {value}", self.ty(&argument.ty))
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+            let mut values = Vec::new();
+            let mut cleanup = Vec::new();
+            for (index, argument) in arguments[..count].iter().enumerate() {
+                let value =
+                    if let Some((_, target)) = callbacks.iter().find(|(slot, _)| *slot == index) {
+                        let argument = call_specialization::transparent(argument, self.module);
+                        if Self::is_place(argument) {
+                            self.expression_mode(argument, false)
+                        } else {
+                            let captures = self.capture_values(argument);
+                            self.capture_cleanup(*target, &captures, &mut cleanup);
+                            self.stack_closure(*target, &captures)
+                        }
+                    } else {
+                        self.expression(argument)
+                    };
+                values.push(format!("{} {value}", self.ty(&argument.ty)));
+            }
+            let values = values.join(", ");
             let value = self.value(format!(
                 "call {} {symbol}({values})",
                 self.ty(&signature.result)
             ));
+            for (ty, value) in cleanup.iter().rev() {
+                self.drop_value(ty, value);
+            }
             (value, signature.result, count)
         } else {
             let value = self.expression(callee);
@@ -1275,6 +1488,128 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             (value, ty) = self.apply_value(&value, &ty, Some((&argument.ty, &next)));
         }
         value
+    }
+
+    fn capture_values(&mut self, expression: &TypedExpr) -> Vec<String> {
+        let expression = call_specialization::transparent(expression, self.module);
+        match &expression.kind {
+            TypedExprKind::Closure(_, values) | TypedExprKind::Call(_, values) => {
+                values.iter().map(|value| self.expression(value)).collect()
+            }
+            TypedExprKind::Function(_) => Vec::new(),
+            _ => unreachable!("known temporary closures have explicit captures"),
+        }
+    }
+
+    fn capture_cleanup(
+        &self,
+        target: ClosureTarget,
+        values: &[String],
+        cleanup: &mut Vec<(Type, String)>,
+    ) {
+        for (value, ty) in values
+            .iter()
+            .zip(&self.module.functions[target.function].signature.parameters[..target.bound])
+        {
+            if ty.needs_drop(&self.module.records) {
+                cleanup.push((ty.clone(), value.clone()));
+            }
+        }
+    }
+
+    fn borrowed_call(
+        &mut self,
+        callee: &TypedExpr,
+        target: ClosureTarget,
+        arguments: &[TypedExpr],
+    ) -> Option<String> {
+        let call = self.prepare_borrowed_call(callee, target)?;
+        let arguments: Vec<_> = arguments
+            .iter()
+            .map(|argument| self.expression(argument))
+            .collect();
+        let result = self.emit_borrowed_call(&call, &arguments);
+        self.finish_borrowed_call(&call);
+        Some(result)
+    }
+
+    fn prepare_known_call(&mut self, expression: &TypedExpr, arity: usize) -> Option<BorrowedCall> {
+        let target = call_specialization::target(expression, &self.known_closures, self.module)?;
+        if target.bound + arity != self.module.functions[target.function].parameters.len()
+            || !self.specializations.can_borrow(target, self.module)
+        {
+            return None;
+        }
+        self.prepare_borrowed_call(expression, target)
+    }
+
+    fn prepare_borrowed_call(
+        &mut self,
+        callee: &TypedExpr,
+        target: ClosureTarget,
+    ) -> Option<BorrowedCall> {
+        let callee = call_specialization::transparent(callee, self.module);
+        let function = &self.module.functions[target.function];
+        let symbol = if target.bound == 0 {
+            format!("@tz.fn.{}", function.qualified_name())
+        } else {
+            let id = self.specializations.request(Specialization {
+                function: target.function,
+                callbacks: Vec::new(),
+                borrowed: target.bound,
+            })?;
+            format!("@tz.specialized.{id}")
+        };
+        let mut cleanup = Vec::new();
+        let captures = if Self::is_place(callee) {
+            let value = self.expression_mode(callee, false);
+            let environment = self.value(format!("extractvalue %tz.closure {value}, 1"));
+            let environment_ty = environment_type(function, target.bound, self.module);
+            let mut values = Vec::new();
+            for (index, ty) in function.signature.parameters[..target.bound]
+                .iter()
+                .enumerate()
+            {
+                let pointer = self.value(format!(
+                    "getelementptr inbounds {environment_ty}, ptr {environment}, i32 0, i32 {index}",
+                ));
+                values.push(self.value(format!("load {}, ptr {pointer}", self.ty(ty))));
+            }
+            values
+        } else {
+            let values = self.capture_values(callee);
+            self.capture_cleanup(target, &values, &mut cleanup);
+            values
+        };
+        Some(BorrowedCall {
+            target,
+            symbol,
+            captures,
+            cleanup,
+        })
+    }
+
+    fn emit_borrowed_call(&mut self, call: &BorrowedCall, arguments: &[String]) -> String {
+        let function = &self.module.functions[call.target.function];
+        let values = call
+            .captures
+            .iter()
+            .chain(arguments)
+            .zip(&function.signature.parameters)
+            .map(|(value, ty)| format!("{} {value}", self.ty(ty)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.value(format!(
+            "call {} {}({values})",
+            self.ty(&function.signature.result),
+            call.symbol
+        ))
+    }
+
+    fn finish_borrowed_call(&mut self, call: &BorrowedCall) {
+        for (ty, value) in call.cleanup.iter().rev() {
+            self.drop_value(ty, value);
+        }
     }
 
     fn drop_slot(&mut self, slot: &str, ty: &Type) {
