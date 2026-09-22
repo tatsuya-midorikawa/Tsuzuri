@@ -1,0 +1,124 @@
+def rec down8 :: i8 -> i64 -> i64
+fn rec down8 n steps = if n == 0 then steps else down8 (n - 1) (steps + 1)
+
+def rec up8 :: i8 -> i64 -> i64
+fn rec up8 n steps = if n == 0 then steps else up8 (n + 1) (steps + 1)
+
+def rec unsigned8 :: i8u -> i64 -> i64
+fn rec unsigned8 n steps = match n with | 0 -> steps | n -> unsigned8 (n - 1) (steps + 1)
+
+export def recursion_down8 :: i8 -> i64
+fn recursion_down8 n = down8 n 0
+
+export def recursion_up8 :: i8 -> i64
+fn recursion_up8 n = up8 n 0
+
+export def recursion_unsigned8 :: i8u -> i64
+fn recursion_unsigned8 n = unsigned8 n 0
+
+def mix :: i64 -> i64 -> i64
+fn mix state n = (state ^ (state >>> 13)) * 6364136223846793005 + n + 1442695040888963407
+
+def rec bounded :: i64 -> i64 -> i64 -> i64
+fn rec bounded n fuel state =
+    if fuel == 0 then state else
+    match n with
+    | 0 -> state
+    | n -> bounded (n - 1) (fuel - 1) (mix state n)
+
+export def recursion_bounded :: i64 -> i64 -> i64 -> i64
+fn recursion_bounded n fuel state = bounded n fuel state
+
+def rec wide :: i128 -> i64 -> i128 -> i128
+fn rec wide n fuel total =
+    if fuel == 0 then total else wide (n - 1) (fuel - 1) (total + n)
+
+def rec wide_unsigned :: i128u -> i64 -> i128u -> i128u
+fn rec wide_unsigned n fuel total =
+    if fuel == 0 then total else wide_unsigned (n + 1) (fuel - 1) (total + n)
+
+export def recursion_wide :: i32 -> i64
+fn recursion_wide mode =
+    if mode == 0 then
+        wide (-170141183460469231731687303715884105728i128) 3 0 as i64
+    elif mode == 1 then
+        wide 170141183460469231731687303715884105727i128 3 0 as i64
+    else
+        wide_unsigned 340282366920938463463374607431768211455i128u 3 0 as i64
+
+def mark :: &mut i64 -> i64 -> i64
+fn mark value digit = { *value = *value * 10 + digit; *value }
+
+def rec order :: i64 -> i64 -> i64 -> i64
+fn rec order rounds mut value result =
+    if rounds == 0 then value * 10000 + result else
+    order (rounds - 1) (mark (&mut value) 1 + mark (&mut value) 2) ({ let observed = value; value = 99; observed })
+
+def add :: i64 -> i64 -> i64
+fn add x y = { x + y }
+
+def rec order_call :: i64 -> i64 -> i64 -> i64
+fn rec order_call rounds mut value result =
+    if rounds == 0 then value * 10000 + result else
+    order_call (rounds - 1) (add (mark (&mut value) 1) (mark (&mut value) 2)) ({ let observed = value; value = 99; observed })
+
+def rec order_builtin :: i64 -> i64 -> i64 -> i64
+fn rec order_builtin rounds mut value result =
+    if rounds == 0 then value * 10000 + result else
+    order_builtin (rounds - 1) (Add.add (mark (&mut value) 1) (mark (&mut value) 2)) ({ let observed = value; value = 99; observed })
+
+export def recursion_order :: i32 -> i64
+fn recursion_order mode =
+    if mode == 0 then order 1 0 0
+    elif mode == 1 then order_call 1 0 0
+    else order_builtin 1 0 0
+
+def rec snapshot :: i64 -> i64 -> i64
+fn rec snapshot mut n fuel =
+    if fuel == 0 then n else snapshot (n - 1) ({ n = 50; fuel - 1 })
+
+export def recursion_snapshot :: i64 -> i64
+fn recursion_snapshot n = snapshot n 1
+
+def rec floating :: i64 -> f64 -> f64
+fn rec floating n total =
+    if n == 0 then total else
+    floating (n - 1) (total + (if n == 4 then 10000000000000000.0 elif n == 2 then -10000000000000000.0 else 1.0))
+
+def rec zero :: i64 -> f64 -> f64
+fn rec zero n value = if n == 0 then value else zero (n - 1) (value - 0.0)
+
+export def recursion_floating :: f64
+fn recursion_floating = floating 4 0.0
+
+export def recursion_zero :: bool
+fn recursion_zero = 1.0 / zero 2 (-0.0) < 0.0
+
+export def recursion_nan :: bool
+fn recursion_nan = { let value = zero 2 (0.0 / 0.0); value != value }
+
+def length :: string -> i64
+fn length text = text.length
+
+def rec owned :: i64 -> string -> i64 -> i64
+fn rec owned n text total =
+    if n == 0 then total + text.length else owned (n - 1) "next" (total + length text)
+
+export def recursion_owned :: i64 -> i64
+fn recursion_owned n = owned n "first" 0
+
+def rec temporaries :: i64 -> i64 -> i64
+fn rec temporaries n total =
+    if n == 0 then total else temporaries (n - new [i64](1, fx i -> i).length) (total + 1)
+
+export def recursion_temporaries :: i64 -> i64
+fn recursion_temporaries n = temporaries n 0
+
+def checked :: i64 -> i64 -> i64
+fn checked x y = { assert (x > 0); x - y }
+
+def rec invalid :: i64 -> i64
+fn rec invalid n = if n == 0 then 42 else invalid (checked (-1) 0)
+
+export def recursion_trap_checked :: i64
+fn recursion_trap_checked = invalid 1

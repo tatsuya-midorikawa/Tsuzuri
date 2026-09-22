@@ -151,6 +151,44 @@ pub(super) fn is_identity(function: &CheckedFunction) -> bool {
         && matches!(function.body.kind, TypedExprKind::Local(id) if id == function.parameters[0].id)
 }
 
+pub(super) fn binary_operation<'a>(
+    expression: &'a TypedExpr,
+    module: &CheckedModule,
+) -> Option<(BinaryOp, &'a TypedExpr, &'a TypedExpr)> {
+    fn unwrapped(mut expression: &TypedExpr) -> &TypedExpr {
+        while let TypedExprKind::Block { bindings, result } = &expression.kind {
+            if !bindings.is_empty() {
+                break;
+            }
+            expression = result;
+        }
+        expression
+    }
+    match &unwrapped(expression).kind {
+        TypedExprKind::Binary(operator, left, right) => Some((*operator, left, right)),
+        TypedExprKind::Call(callee, arguments) if arguments.len() == 2 => {
+            let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
+                return None;
+            };
+            let function = &module.functions[id];
+            if function.parameters.len() != 2 {
+                return None;
+            }
+            let TypedExprKind::Binary(operator, left, right) = &unwrapped(&function.body).kind
+            else {
+                return None;
+            };
+            if !matches!(left.kind, TypedExprKind::Local(id) if id == function.parameters[0].id)
+                || !matches!(right.kind, TypedExprKind::Local(id) if id == function.parameters[1].id)
+            {
+                return None;
+            }
+            Some((*operator, &arguments[0], &arguments[1]))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn single_use_locals(expression: &TypedExpr) -> BTreeSet<usize> {
     fn count(expression: &TypedExpr, uses: &mut BTreeMap<usize, usize>) {
         if let TypedExprKind::Local(id) = expression.kind {

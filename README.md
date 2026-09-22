@@ -497,6 +497,10 @@ node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
 ```
 
+末尾再帰の変更前後も比べる場合は、
+`node benchmarks/run-control.mjs target/release/tsuzuri --baseline <変更前のコンパイラ>` を使います。
+両コンパイラと C／C++／Rust の同じ計算を、一つのプロセス内で順序を入れ替えて測定します。
+
 境界値・NaN・短絡評価・高階関数・レコード・配列・100 万回の末尾再帰を、
 実際のネイティブコードと WASM の `-O0`／`-O3` で照合します。
 失敗時の出力保護、JSON 診断、再現性、決定的なソース変異、LLVM が生成する 128-bit 演算補助も検証します。

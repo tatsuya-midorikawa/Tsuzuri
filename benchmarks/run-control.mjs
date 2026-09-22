@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--cpu generic|native] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
-  return index < 0 ? fallback : args.splice(index, 2)[1];
+  if (index < 0) return fallback;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith("--")) throw new Error(usage);
+  args.splice(index, 2);
+  return value;
 };
 const cpu = take("--cpu", "generic");
 const artifacts = take("--artifacts", null);
+const baselineArgument = take("--baseline", null);
+const baseline = baselineArgument && resolve(baselineArgument);
 const quick = args.includes("--quick");
 const positional = args.filter((arg) => arg !== "--quick");
 if (!["generic", "native"].includes(cpu) || positional.length > 1
@@ -35,7 +41,7 @@ const wrap = (n) => BigInt.asUintN(64, n);
 const hex = (n) => wrap(n).toString(16).padStart(16, "0");
 const factors = [17n, 3n, 29n, 7n, 61n, 11n, 83n, 5n, 47n, 19n, 101n, 31n, 53n, 23n, 97n, 13n];
 function reference(name, size, seed) {
-  if (["while_mix", "for_mix", "tail_mix"].includes(name)) {
+  if (["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix"].includes(name)) {
     for (let n = BigInt(size); n > 0n; n--) seed = wrap((seed ^ (seed >> 13n)) * 6364136223846793005n + n + 1442695040888963407n);
     return seed;
   }
@@ -78,19 +84,33 @@ try {
   }
   run(rustc, [...rustFlags, "--emit=obj,asm,llvm-ir", `${fixture}/reference.rs`, "--out-dir", temporary]);
   generated.push("control_reference.o", "control_reference.s", "control_reference.ll");
+  if (baseline) {
+    const ir = join(temporary, "before.ll");
+    const header = join(temporary, "before.h");
+    run(baseline, ["build", fixture, "--emit", "llvm", "-o", ir]);
+    run(baseline, ["build", fixture, "--emit", "header", "-o", header]);
+    writeFileSync(ir, readFileSync(ir, "utf8").replaceAll("@tz_", "@before_tz_"));
+    writeFileSync(header, readFileSync(header, "utf8").replaceAll("tz_", "before_tz_"));
+    run(clang, [...flags, "-Wno-override-module", "-c", ir, "-o", join(temporary, "before.o")]);
+    run(clang, [...flags, "-Wno-override-module", "-S", ir, "-o", join(temporary, "before.s")]);
+    run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", ir, "-o", join(temporary, "before.optimized.ll")]);
+    generated.push("before.ll", "before.h", "before.o", "before.s", "before.optimized.ll");
+  }
   const native = join(temporary, "benchmark");
-  run(clang, ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", `${fixture}/host.c`, "-I", temporary,
-    ...["control.o", "c.o", "cpp.o", "control_reference.o"].map((name) => join(temporary, name)), "-lm", "-o", native]);
+  run(clang, ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", ...(baseline ? ["-DBASELINE"] : []),
+    `${fixture}/host.c`, "-I", temporary,
+    ...["control.o", "c.o", "cpp.o", "control_reference.o", ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name)), "-lm", "-o", native]);
   const result = JSON.parse(run(native, quick ? ["--quick"] : []));
-  assert.equal(result.samples, quick ? 4 : 12);
-  assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "match_dispatch", "array_sum"]);
+  const variants = ["c", "cpp", "rust", "tsuzuri", ...(baseline ? ["before"] : [])];
+  assert.equal(result.samples, variants.length * (quick ? 1 : 3));
+  assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum"]);
   for (const work of result.workloads) {
     assert.equal(work.checks.length, 25);
     for (const check of work.checks) {
       assert.equal(check.checksum, hex(reference(work.name, BigInt(check.size), BigInt(check.seed))), work.name);
     }
     assert.equal(work.raw.length, result.samples);
-    for (const variant of ["c", "cpp", "rust", "tsuzuri"]) {
+    for (const variant of variants) {
       const times = work.raw.map((sample) => sample[`${variant}_ms`]);
       assert.ok(times.every((time) => Number.isFinite(time) && (quick ? time >= 0 : time > 0)));
       work[`${variant}_median_ms`] = median(times);
@@ -98,6 +118,9 @@ try {
     for (const variant of ["c", "cpp", "rust"]) {
       work[`tsuzuri_over_${variant}`] = work[`${variant}_median_ms`] > 0
         ? work.tsuzuri_median_ms / work[`${variant}_median_ms`] : null;
+    }
+    if (baseline) {
+      work.speedup = work.tsuzuri_median_ms > 0 ? work.before_median_ms / work.tsuzuri_median_ms : null;
     }
   }
   const optimized = readFileSync(join(temporary, "control.optimized.ll"), "utf8");
@@ -114,6 +137,8 @@ try {
     environment: {
       tsuzuri: run(compiler, ["--version"]).trim(),
       compiler_sha256: createHash("sha256").update(readFileSync(compiler)).digest("hex"),
+      baseline: baseline ?? null,
+      baseline_sha256: baseline ? createHash("sha256").update(readFileSync(baseline)).digest("hex") : null,
       clang: run(clang, ["--version"]).trim(),
       rustc: run(rustc, ["-vV"]).trim(),
       node: process.version, platform: platform(), os_release: release(),

@@ -72,7 +72,37 @@ const cases = [
   ["floating_order", [], 1],
   ["scrutinee_once", [], 142n],
   ["empty_loops", [], 42n],
+  ["recursion_wide", [0], -3n],
+  ["recursion_wide", [1], -6n],
+  ["recursion_wide", [2], 0n],
+  ["recursion_order", [0], 130012n],
+  ["recursion_order", [1], 130012n],
+  ["recursion_order", [2], 130012n],
+  ["recursion_floating", [], 1],
+  ["recursion_zero", [], 1],
+  ["recursion_nan", [], 1],
+  ["recursion_owned", [0n], 5n],
+  ["recursion_owned", [8192n], 32773n],
+  ["recursion_temporaries", [100000n], 100000n],
 ];
+for (const n of [0, 1, 2, 126, 127, -1, -2, -127, -128]) {
+  cases.push(["recursion_down8", [n], BigInt.asUintN(8, BigInt(n))]);
+  cases.push(["recursion_up8", [n], BigInt.asUintN(8, -BigInt(n))]);
+}
+for (const n of [0, 1, 2, 127, 128, 254, 255]) cases.push(["recursion_unsigned8", [n], BigInt(n)]);
+for (const n of [min, max, -2n, -1n, 0n, 1n, 2n, 7n]) {
+  cases.push(["recursion_snapshot", [n], wrap(n - 1n)]);
+  for (const fuel of [0n, 1n, 3n]) for (const seed of [-3n, max]) {
+    let count = n, state = seed, remaining = fuel;
+    while (remaining > 0n && count !== 0n) {
+      const unsigned = BigInt.asUintN(64, state);
+      state = wrap((unsigned ^ (unsigned >> 13n)) * 6364136223846793005n + count + 1442695040888963407n);
+      count = wrap(count - 1n);
+      remaining--;
+    }
+    cases.push(["recursion_bounded", [n, fuel, seed], state]);
+  }
+}
 for (const n of [-128, -127, -126, -125, -124, -1, 0, 127]) {
   cases.push(["dense_i8", [n], n <= -125 ? BigInt(n + 129) * 10n : 42n]);
 }
@@ -102,7 +132,7 @@ const patternValues = new Map([[-3n, 17n], [-1n, 17n], [0n, 3n], [1n, 29n], [2n,
   [4n, 11n], [5n, 83n], [6n, 5n], [7n, 47n], [8n, 19n], [9n, 101n]]);
 for (let n = -5n; n <= 12n; n++) cases.push(["patterns", [n], patternValues.get(n) ?? 42n]);
 cases.push(["patterns", [142n], 42n], ["patterns", [max], max - 100n]);
-const traps = ["trap_step", "trap_match", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active"];
+const traps = ["trap_step", "trap_match", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked"];
 const cValue = (n) => typeof n !== "bigint" ? Number.isNaN(n) ? "NAN"
   : n === Infinity ? "INFINITY" : n === -Infinity ? "-INFINITY" : Object.is(n, -0) ? "-0.0" : String(n)
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`

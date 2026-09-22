@@ -46,7 +46,10 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     output.push_str("\ndeclare void @llvm.trap()\n\n");
     let mut builtins = BTreeSet::new();
     let mut intrinsics = BTreeSet::new();
-    let mut globals = Globals::default();
+    let mut globals = Globals {
+        wasm,
+        ..Globals::default()
+    };
     let mut specializations = Specializations::new(module);
     for (id, function) in module.functions.iter().enumerate() {
         let emitter = FunctionEmitter::new(
@@ -165,6 +168,7 @@ pub fn header(module: &CheckedModule) -> String {
 struct Globals {
     definitions: Vec<String>,
     next_metadata: usize,
+    wasm: bool,
 }
 
 impl Default for Globals {
@@ -187,6 +191,7 @@ impl Default for Globals {
         Self {
             definitions: Vec::new(),
             next_metadata,
+            wasm: false,
         }
     }
 }
@@ -588,38 +593,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     .into_iter()
                     .any(|child| uses(child, id))
         }
-        fn operands<'a>(
-            expression: &'a TypedExpr,
-            module: &'a CheckedModule,
-        ) -> Option<(BinaryOp, &'a TypedExpr, &'a TypedExpr)> {
-            match &expression.kind {
-                TypedExprKind::Binary(operator, left, right) => Some((*operator, left, right)),
-                TypedExprKind::Call(callee, arguments) if arguments.len() == 2 => {
-                    let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
-                        return None;
-                    };
-                    let function = &module.functions[id];
-                    if function.parameters.len() != 2 {
-                        return None;
-                    }
-                    let TypedExprKind::Binary(operator, left, right) = &function.body.kind else {
-                        return None;
-                    };
-                    if !matches!(left.kind, TypedExprKind::Local(id) if id == function.parameters[0].id)
-                        || !matches!(right.kind, TypedExprKind::Local(id) if id == function.parameters[1].id)
-                    {
-                        return None;
-                    }
-                    Some((*operator, &arguments[0], &arguments[1]))
-                }
-                _ => None,
-            }
-        }
         fn reduction(expression: &TypedExpr, module: &CheckedModule) -> bool {
             if let TypedExprKind::Assign(place, value) = &expression.kind {
-                if let (TypedExprKind::Local(id), Some((operator, left, right))) =
-                    (&place.kind, operands(value, module))
-                {
+                if let (TypedExprKind::Local(id), Some((operator, left, right))) = (
+                    &place.kind,
+                    call_specialization::binary_operation(value, module),
+                ) {
                     if matches!(
                         operator,
                         BinaryOp::Add
@@ -728,6 +707,51 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .any(|ty| ty.carries_loans(&self.module.records))
     }
 
+    fn tail_arguments(&mut self, arguments: &[TypedExpr]) -> Vec<String> {
+        if self.globals.wasm {
+            return arguments
+                .iter()
+                .map(|argument| self.expression(argument))
+                .collect();
+        }
+        enum Argument {
+            Value(String),
+            Arithmetic(String),
+        }
+        let mut pending = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let operation = call_specialization::binary_operation(argument, self.module).filter(
+                |(operator, _, _)| {
+                    argument.ty.is_integer()
+                        && matches!(operator, BinaryOp::Add | BinaryOp::Subtract)
+                },
+            );
+            if let Some((operator, left, right)) = operation {
+                // Snapshot operands now; only the nontrapping wrapping operation moves to the latch.
+                let left = self.expression(left);
+                let right = self.expression(right);
+                let opcode = if operator == BinaryOp::Add {
+                    "add"
+                } else {
+                    "sub"
+                };
+                pending.push(Argument::Arithmetic(format!(
+                    "{opcode} {} {left}, {right}",
+                    self.ty(&argument.ty)
+                )));
+            } else {
+                pending.push(Argument::Value(self.expression(argument)));
+            }
+        }
+        pending
+            .into_iter()
+            .map(|argument| match argument {
+                Argument::Value(value) => value,
+                Argument::Arithmetic(instruction) => self.value(instruction),
+            })
+            .collect()
+    }
+
     fn tail(&mut self, expression: &TypedExpr) {
         match &expression.kind {
             TypedExprKind::Match { local, value, arms } => {
@@ -756,10 +780,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Call(callee, arguments)
                 if self.is_self(callee) && arguments.len() == self.function.parameters.len() =>
             {
-                let values = arguments
-                    .iter()
-                    .map(|argument| self.expression(argument))
-                    .collect();
+                let values = self.tail_arguments(arguments);
                 self.drop_all();
                 self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
@@ -768,9 +789,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
                 if self.is_self(callee) && self.function.parameters.len() == 1 =>
             {
-                let value = self.expression(argument);
+                let values = self.tail_arguments(std::slice::from_ref(argument.as_ref()));
                 self.drop_all();
-                self.back_edges.push((self.block.clone(), vec![value]));
+                self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
                 self.hint_loop(&self.function.body);
             }

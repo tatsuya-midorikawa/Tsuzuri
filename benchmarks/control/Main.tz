@@ -30,6 +30,26 @@ fn tail_mix count seed =
     assert (count >= 0 && count <= 100000000)
     tail count seed
 
+def rec tail_if :: i64 -> i64u -> i64u
+fn rec tail_if count state =
+    if count == 0 then state else tail_if (count - 1) (step state (count as i64u))
+
+export def tail_if_mix :: i64 -> i64u -> i64u
+fn tail_if_mix count seed =
+    assert (count >= 0 && count <= 100000000)
+    tail_if count seed
+
+def rec tail_builtin :: i64 -> i64u -> i64u
+fn rec tail_builtin count state =
+    match count with
+    | 0 -> state
+    | remaining -> tail_builtin (Sub.sub remaining 1) (step state (remaining as i64u))
+
+export def tail_builtin_mix :: i64 -> i64u -> i64u
+fn tail_builtin_mix count seed =
+    assert (count >= 0 && count <= 100000000)
+    tail_builtin count seed
+
 def classify :: i64u -> i64u
 fn classify n =
     match n with

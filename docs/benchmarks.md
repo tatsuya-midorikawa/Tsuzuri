@@ -352,6 +352,10 @@ cargo build --release --locked
 node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri --cpu native
 node benchmarks/run-control.mjs target/release/tsuzuri --quick
+
+# 保存した変更前のコンパイラと、同じプロセス内でも比較
+node benchmarks/run-control.mjs target/release/tsuzuri \
+  --baseline target/benchmarks/tsuzuri-recursion-baseline-b3f658e
 ```
 
 `benchmarks/control/Main.tz` の新しい制御構文を、C11、C++20、Rust と比較します。
@@ -367,10 +371,13 @@ Rust の slice 走査は通常の安全なコードで、未初期化領域の�
 | `while_mix` | 8,000,000 反復 | ループ依存の整数ミキサー |
 | `for_mix` | 8,000,000 反復 | i32 の `downto` と、対応する C／C++ の for、Rust の逆順 inclusive range |
 | `tail_mix` | 8,000,000 反復 | match からの自己末尾再帰と、同じ計算の手書きループ |
+| `tail_if_mix` | 8,000,000 反復 | 同じ末尾再帰を if で記述 |
+| `tail_builtin_mix` | 8,000,000 反復 | 同じ末尾再帰を `Sub.sub` で記述 |
 | `match_dispatch` | 8,000,000 選択 | 16 通りの整数分類と折り返し加算 |
 | `array_sum` | 4,000,000 要素（32 MB） | 確保、seed 依存の初期化、for-in 集計、解放の全体 |
 
 各種目・各言語を二回ウォームアップし、12 サンプルを採取します。
+`--baseline` 付きでは変更前も五つ目の実装としてリンクし、全実装で順序を均等に巡回できる15サンプルにします。
 一サンプルは二回呼び出しの平均 CPU time です。順序は四言語で巡回・反転させ、
 volatile の入力と結果保存、別オブジェクト・LTO 無効により計算の削除・再利用を避けます。
 25 組の小さい入力を四言語と独立した BigInt 実装で照合し、計測中もすべての checksum を確認します。
@@ -379,6 +386,7 @@ WASM は制御構文の native／WASM `-O0`／`-O3` テストで検証し、こ�
 
 JSON にツールのバージョン、Rust の LLVM バージョン、コンパイラ SHA-256、
 CPU、OS、全フラグ、生サンプル、各中央値、`tsuzuri_over_c`／`cpp`／`rust` を保存します。
+変更前を指定した場合は、その SHA-256、`before_median_ms` と `speedup`（変更前／変更後）も記録します。
 比率が 1 未満ならその相手より速いことを表します。
 `--artifacts directory` は各言語のオブジェクト、LLVM IR、アセンブリを保存します。
 自動検出する vector 命令数は調査用で、**それだけを SIMD の実行や高速化の証明にはしません**。
@@ -424,9 +432,9 @@ Apple Clang 21.0.0（clang-2100.3.34.2）、Rust 1.98.1／LLVM 22.1.8、Node.js 
 
 この条件では **for は Rust より約 1.60 倍、整数 match は C/C++ より約 1.63 倍高速**でした。
 while、配列、その他のほぼ 1.0 の差を性能上の勝利とは解釈しません。
-**match を使う末尾再帰のミキサーは約 20% 遅いまま**で、すべての制御経路が比較相手を上回ったわけではありません。
-この経路では折り返しを許す誘導変数の生成コードに差が残ります。速度のために signed overflow を
-未定義動作に変更することはしません。Rust と Clang では LLVM の版・最適化パイプラインも異なります。
+**この時点では match を使う末尾再帰のミキサーが約 20% 遅く**、すべての制御経路が比較相手を上回ったわけではありません。
+その後の末尾再帰改善は次節に記録します。速度のために signed overflow を未定義動作に変更することはしません。
+Rust と Clang では LLVM の版・最適化パイプラインも異なります。
 
 生成アセンブリでは、for の反復ごとの狭幅拡張が消え、整数 match は静的表と展開したスカラーループ、
 配列集計は NEON の `ldp q`／`add.2d`／`addp` になっていることを確認しました。
@@ -443,6 +451,73 @@ GPU・自動並列化・全アプリケーション性能・他 CPU での優位
 未対応のベースラインには、一時コピーから再帰の指定だけを除いて同じアルゴリズムを渡します。
 このモードは `baseline_rec_syntax: "legacy-rec-erased"` として記録し、予期した構文エラー以外の
 ツール失敗はそのまま失敗にします。現行ソースの再帰検査を無効にする機能ではありません。
+
+### 末尾再帰の改善（2026-09-23）
+
+ループ化自体は既に実装済みなので、while への単純な構文置換ではなく、
+元の計算・入力・終了条件を保つ八通りの LLVM IR を比較しました。
+分岐／ブロック順の変更、非ゼロの assume、広幅カウンター、正負の経路の分離だけでは
+このミキサーの遅れは解消しませんでした。
+明示的なループ末尾の比較と、引数の整数演算を後で生成する方法は、ともに C/Rust と同等になりました。
+前者に必要なカウンター・停止条件の認識や本体の複製を避けられる、後者を採用しています。
+
+native の自己末尾呼び出しで、整数 `+`／`-` の**オペランドを元の評価順で確定**し、
+トラップしない折り返し演算だけを全引数の評価後に配置します。
+読み出し・呼び出し・可変状態の更新・トラップ・一時値の解放は元の順序のままで、
+新しい非負制約、overflow フラグ、浮動小数点の再結合は追加しません。
+本体が一つの演算だけの既知の関数も認識し、`Sub.sub` と `-` を同じ経路にします。
+この変更は非末尾再帰や相互再帰のアルゴリズムを変更するものではありません。
+
+同じ M1 Max／Apple Clang 21／Rust 1.98.1 の環境で、変更前後と C/C++/Rust を
+**同じプロセス内**にリンクし、generic／native を独立に三回ずつ測定しました。
+一回は各実装二回のウォームアップ、15サンプル、各サンプル二回の平均です。
+時間・比率はそれぞれ三回の中央値です。
+
+| CPU | 末尾再帰の形式 | 変更前 ms | 変更後 ms | 高速化率 | 対 C | 対 C++ | 対 Rust |
+|---|---|---:|---:|---:|---:|---:|---:|
+| generic | match / `-` | 14.937 | 12.437 | 1.201 | 1.001 | 1.000 | 1.001 |
+| generic | if / `-` | 14.979 | 12.416 | 1.205 | 0.999 | 0.999 | 0.996 |
+| generic | match / `Sub.sub` | 14.990 | 12.521 | 1.197 | 0.993 | 0.999 | 0.995 |
+| native | match / `-` | 14.912 | 12.441 | 1.199 | 1.000 | 0.998 | 1.001 |
+| native | if / `-` | 14.972 | 12.461 | 1.196 | 1.002 | 1.003 | 1.001 |
+| native | match / `Sub.sub` | 14.929 | 12.433 | 1.200 | 1.000 | 0.999 | 1.001 |
+
+**約1.20倍、実行時間では約17%の改善で、以前の約20%の遅れを解消しました。**
+C/C++/Rust を大幅に上回ったという結果ではなく、このミキサーで同等になったという結果です。
+生成アセンブリでは、状態更新の `eor → madd → add` の直列依存が、
+カウンター側の加算を独立に行う `eor → madd` へ変わっています。
+while／for／整数 match／配列の変更前後比較もほぼ同等でした。
+既存の C++ 比較（三種目）と native の CE 比較でも、明確な低下は観測していません。
+
+**WASM にこの命令配置を一律適用する案は採用していません。**
+Node/V8 の末尾ミキサーにはほぼ効果がなく、長くウォームアップした CE の delayed 種目では
+0.350 ms → 0.371 ms の約6%の低下が二回の測定で再現しました。
+最終版は WASM の従来の引数生成順を維持し、CE 比較の WASM 全体が変更前とバイト単位で一致します。
+CPU time と WASM wall time を混ぜたり、native の改善率を WASM にも適用したりしません。
+
+`tests/tail_recursion.rs` と control の native/WASM `-O0`／`-O3` 検証では、
+負数、8／64／128-bit の折り返し、可変値の読み出し、左右の副作用、関数内の assert、
+浮動小数点の加算順序・NaN・符号付きゼロ、所有値・一時配列の解放を検査します。
+ASan でも同じ所有権経路を検証し、borrowed／非末尾の通常経路を維持しています。
+
+再測定には、コミット `b3f658e` を別の作業ディレクトリでビルドした変更前バイナリを保存します。
+今回は `target/benchmarks/tsuzuri-recursion-baseline-b3f658e` を使用しました。
+
+```sh
+for cpu in generic native; do
+  for trial in 1 2 3; do
+    node benchmarks/run-control.mjs target/release/tsuzuri --cpu "$cpu" \
+      --baseline target/benchmarks/tsuzuri-recursion-baseline-b3f658e \
+      --artifacts "target/benchmarks/recursion-final-$cpu-$trial" \
+      > "target/benchmarks/recursion-final-$cpu-$trial.json" || exit 1
+  done
+done
+```
+
+変更前の SHA-256 は `94291a712871f12137d8227a7cc52e9772feaacd72245f0750e58fb0fa4b710a`、
+変更後は `66cf308bce9c93498ca93bf27faf7c59217af607d47acd7db98a42894d31187a`。
+生データ・IR・アセンブリは上記の各 JSON／同名ディレクトリへ保存しています。
+速度の合否閾値は追加せず、他 CPU・LLVM・実行エンジンでの優位性は別途測定する必要があります。
 
 ## 現実的な次の指標
 
