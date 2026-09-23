@@ -27,6 +27,7 @@ fn deterministic_source_mutations_do_not_panic() {
         "let mut sum = 0\nfor i = 1 to 3 do { sum = sum + i as i64; }\nwhile sum < 8 do sum = sum + 1\nsum",
         "let f = fx (x, y) -> match x with | 0 | 1 -> y | _ -> x + y\nf (1, 2)",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nmatch 2 with | Even as n when n > 0 -> n | _ -> 0",
+        "def bump :: ref mut i64 -> i64 -> unit\nfn bump r n = deref r = deref r + n\nlet mut x = 1\nbump (ref mut x) 2\nbump &mut x 3\nlet t = ref x\nlet u: &&i64 = &t\nderef t + *t",
     ];
     let mut seed = 0x1357_2468_u32;
     for original in originals {

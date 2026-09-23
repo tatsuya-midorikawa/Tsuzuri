@@ -40,14 +40,14 @@ fn main = answer()
 
 | 項目 | 初版の実装 |
 |---|---|
-| 状態 | `let` は不変。`let mut` と排他的な `&mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
+| 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、タプル、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
-| メモリ | 所有権、move、`&T`／`&mut T` の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
+| メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
 | ホスト連携 | 64-bit 以下の整数、f32／f64、bool の C ABI と WASM エクスポート。UI／I/O はホストの責務 |
@@ -117,11 +117,11 @@ integer
 
 ```text
 class Score 'a {
-    def score :: &'a -> i32
+    def score :: ref 'a -> i32
 }
 
 class Size 'a {
-    def size :: &'a -> i64
+    def size :: ref 'a -> i64
 }
 ```
 
@@ -139,7 +139,7 @@ instance Classes.Score Point {
 }
 ```
 
-上の `add` を `Point` にも使え、`Classes.Score.score (&point)` で独自クラスのメソッドを呼べます。
+上の `add` を `Point` にも使え、`Classes.Score.score ref point` で独自クラスのメソッドを呼べます。
 例は `tsuzuri run examples/polymorphism`。型クラス名でメソッドを明示することで、
 同名関数の探索やインスタンスの選択順に依存しない記述にしています。
 同じクラス・型のインスタンス重複や、組み込みインスタンスの上書きはエラーです。
@@ -394,20 +394,26 @@ WASM は bulk-memory 対応の現在のブラウザー／Node.js を対象にし
 ## 所有権と借用
 
 ```text
-def length :: &string -> i64
+def length :: ref string -> i64
 fn length text = text.length
-def replace :: &mut string -> unit
-fn replace text = { *text = "updated"; }
+def replace :: ref mut string -> unit
+fn replace text = { deref text = "updated"; }
 
 def main :: string
 fn main = {
     let mut text = "こんにちは";
-    let size = length (&text); // 借用後も所有者を使える
-    replace (&mut text);       // この呼び出し中は排他的に借用
+    let size = length ref text; // 借用後も所有者を使える
+    replace ref mut text;       // この呼び出し中は排他的に借用
     let result = text;      // 所有権を移動。以降の text の使用はエラー
     result
 }
 ```
+
+借用は `ref x`（共有）、`ref mut x`（排他）、参照先は `deref r` と書きます。
+`ref`／`ref mut` は参照に対して使うと一段だけ貸し直すため、所有値か参照かで書き分ける必要はありません。
+Rust との互換のため `&x`／`&mut x`／`*r`／`&mut *r`／`&*r` と `&T`／`&mut T` も受理し、
+どちらの表記も同じコードを生成します。キーワードの被演算子は一つの項で、`f (ref mut x) 1` のように
+後続の引数があるときは括弧で区切ります。
 
 数値・bool・unit・関数値・共有参照は Copy です。関数値のコピーは捕捉環境の複製を伴う場合があります。
 レコードと配列も全要素が Copy なら Copy、それ以外は move します。

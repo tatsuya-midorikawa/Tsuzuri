@@ -48,6 +48,8 @@ pub enum TokenKind {
     Downto,
     While,
     Mut,
+    Ref,
+    Deref,
     New,
     As,
     If,
@@ -308,10 +310,19 @@ pub enum ExprKind {
     NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
-    Borrow(Box<Expr>, bool),
-    Dereference(Box<Expr>),
+    Borrow(Box<Expr>, bool, Notation),
+    Dereference(Box<Expr>, Notation),
     Assign(Box<Expr>, Box<Expr>),
     Cast(Box<Expr>, TypeExpr),
+}
+
+/// Spelling of a borrow or dereference. Both spellings produce the same typed tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Notation {
+    /// `&x`, `&mut x`, `*r`: Rust-compatible; `&r` borrows the reference itself.
+    Symbol,
+    /// `ref x`, `ref mut x`, `deref r`: `ref` reborrows when `x` is statically a reference.
+    Keyword,
 }
 
 #[derive(Clone, Debug)]

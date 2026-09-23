@@ -959,6 +959,15 @@ impl Checker<'_> {
 
     pub(super) fn finish(&mut self, body: &mut TypedExpr) -> Result<(), Diagnostic> {
         self.inference.apply_defaults();
+        for (ty, span) in &self.undecided_borrows {
+            if matches!(self.inference.resolve(ty), Type::Reference(..)) {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "'ref' must know whether its operand is a reference when it is checked; this operand is inferred later to be one, so annotate its type, or write '&x' to borrow the reference itself or '&*x' to reborrow",
+                    *span,
+                ));
+            }
+        }
         expression_types(body, &mut |ty, span| {
             let resolved = self.inference.resolve(ty);
             let mut ambiguous = false;

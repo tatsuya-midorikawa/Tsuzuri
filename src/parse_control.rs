@@ -504,6 +504,8 @@ impl Parser<'_> {
                             | TokenKind::String(_)
                             | TokenKind::True
                             | TokenKind::False
+                            | TokenKind::Ref
+                            | TokenKind::Deref
                     )
                 })
             {
@@ -521,7 +523,9 @@ impl Parser<'_> {
                 | TokenKind::GreaterEqual
                 | TokenKind::AndAnd
                 | TokenKind::OrOr
-                | TokenKind::Bang => return true,
+                | TokenKind::Bang
+                | TokenKind::Ref
+                | TokenKind::Deref => return true,
                 _ => {}
             }
         }
@@ -762,7 +766,9 @@ impl Parser<'_> {
                 | TokenKind::GreaterEqual
                 | TokenKind::AndAnd
                 | TokenKind::OrOr
-                | TokenKind::Bang => return true,
+                | TokenKind::Bang
+                | TokenKind::Ref
+                | TokenKind::Deref => return true,
                 TokenKind::Minus
                     if index != 0
                         || !matches!(

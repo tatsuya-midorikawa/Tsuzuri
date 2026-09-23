@@ -51,6 +51,17 @@ export fn mutable_local() -> i32 {
     value
 }
 
+export fn mutable_local_keywords() -> i32 {
+    let mut value: i32 = 1;
+    let exclusive = ref mut value;
+    let reborrow = ref mut exclusive;
+    deref reborrow = 40;
+    let shared = ref exclusive;
+    let read = deref shared;
+    deref exclusive = read + 2;
+    value
+}
+
 export fn narrow_signed(x: i8, y: i8) -> i8 { x + y }
 export fn narrow_unsigned(x: ubyte, y: ubyte) -> ubyte { x + y }
 export fn unsigned32(x: i32u, y: i32u) -> i32u { x + y }

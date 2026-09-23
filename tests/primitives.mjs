@@ -229,6 +229,7 @@ int main(int argc, char **argv) {
     assert(tz_strings(1) == 24 && live == 0);
     assert(tz_strings(0) == 23 && live == 0);
     assert(tz_mutable_local() == 42);
+    assert(tz_mutable_local_keywords() == 42);
     assert(tz_narrow_signed(127, 1) == -128);
     assert(tz_narrow_unsigned(255, 1) == 0);
     assert(tz_unsigned32(UINT32_MAX, 1) == 0);
@@ -390,6 +391,7 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_strings(1), 24n);
     assert.equal(api.tz_strings(0), 23n);
     assert.equal(api.tz_mutable_local(), 42);
+    assert.equal(api.tz_mutable_local_keywords(), 42);
     assert.equal(api.tz_narrow_signed(127, 1), -128);
     assert.equal(api.tz_narrow_unsigned(255, 1), 0);
     assert.equal(api.tz_unsigned32(-1, 1), 0);

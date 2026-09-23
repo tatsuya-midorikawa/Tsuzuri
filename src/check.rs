@@ -81,7 +81,7 @@ impl Type {
                 } else {
                     inner
                 };
-                format!("&{}{inner}", if *mutable { "mut " } else { "" })
+                format!("ref {}{inner}", if *mutable { "mut " } else { "" })
             }
             Self::Record(id) => records[*id].name.clone(),
             Self::Array(element) => {
@@ -1203,6 +1203,8 @@ struct Checker<'a> {
     type_parameters: Vec<String>,
     scopes: Vec<BTreeMap<String, Local>>,
     next_local: usize,
+    /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
+    undecided_borrows: Vec<(Type, Span)>,
 }
 
 impl<'a> Checker<'a> {
@@ -1226,6 +1228,7 @@ impl<'a> Checker<'a> {
             type_parameters: Vec::new(),
             scopes: vec![BTreeMap::new()],
             next_local: 0,
+            undecided_borrows: Vec::new(),
         }
     }
 
@@ -1319,8 +1322,9 @@ impl<'a> Checker<'a> {
                 } else {
                     arguments
                 };
-                let (parameters, result) =
-                    self.call_signature(&callee.ty, arguments.len(), expression.span)?;
+                let (parameters, result) = self
+                    .call_signature(&callee.ty, arguments.len(), expression.span)
+                    .map_err(|error| Self::operator_spacing_hint(error, arguments))?;
                 if let Some(expected) = expected {
                     self.same(&result, expected, expression.span)?;
                 }
@@ -1745,26 +1749,42 @@ impl<'a> Checker<'a> {
                 let index = self.expression(index, Some(&Type::I64))?;
                 (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
             }
-            ExprKind::Borrow(value, mutable) => {
-                let hint = match expected {
-                    Some(Type::Reference(ty, expected_mutable)) if mutable == expected_mutable => {
-                        Some(ty.as_ref())
+            ExprKind::Borrow(value, mutable, notation) => {
+                let value = match notation {
+                    Notation::Symbol => {
+                        let hint = match expected {
+                            Some(Type::Reference(ty, expected_mutable))
+                                if mutable == expected_mutable =>
+                            {
+                                Some(ty.as_ref())
+                            }
+                            _ => None,
+                        };
+                        self.expression(value, hint)?
                     }
-                    _ => None,
+                    Notation::Keyword => {
+                        let value = self.expression(value, None)?;
+                        if matches!(value.ty, Type::Infer(_)) {
+                            self.undecided_borrows.push((value.ty.clone(), value.span));
+                        }
+                        Self::reborrow_operand(value)
+                    }
                 };
-                let value = self.expression(value, hint)?;
                 if *mutable {
                     Self::require_mutable_reference(&value)?;
                 }
                 let ty = Type::Reference(Box::new(value.ty.clone()), *mutable);
                 (TypedExprKind::Borrow(Box::new(value), *mutable), ty)
             }
-            ExprKind::Dereference(value) => {
+            ExprKind::Dereference(value, notation) => {
                 let value = self.expression(value, None)?;
                 let Type::Reference(ty, _) = &value.ty else {
                     return Err(Diagnostic::new(
                         "E1005",
-                        "dereference requires a reference",
+                        match notation {
+                            Notation::Symbol => "dereference requires a reference",
+                            Notation::Keyword => "'deref' requires a reference",
+                        },
                         value.span,
                     ));
                 };
@@ -1836,6 +1856,46 @@ impl<'a> Checker<'a> {
             };
         }
         value
+    }
+
+    /// Keyword `ref r` on a reference `r` builds the same tree as the symbol reborrow `&*r`.
+    fn reborrow_operand(value: TypedExpr) -> TypedExpr {
+        let Type::Reference(ty, _) = &value.ty else {
+            return value;
+        };
+        let ty = (**ty).clone();
+        let span = value.span;
+        TypedExpr {
+            kind: TypedExprKind::Dereference(Box::new(value)),
+            ty,
+            span,
+        }
+    }
+
+    /// `a *b` and `a &b` pass prefix arguments; point to the spaced binary form when the call fails.
+    fn operator_spacing_hint(mut error: Diagnostic, arguments: &[Expr]) -> Diagnostic {
+        if !matches!(error.code, "E1005" | "E1006") {
+            return error;
+        }
+        let symbol = arguments.iter().find_map(|argument| match &argument.kind {
+            ExprKind::Dereference(value, Notation::Symbol)
+                if value.span.start == argument.span.start + 1 =>
+            {
+                Some('*')
+            }
+            ExprKind::Borrow(value, false, Notation::Symbol)
+                if value.span.start == argument.span.start + 1 =>
+            {
+                Some('&')
+            }
+            _ => None,
+        });
+        if let Some(symbol) = symbol {
+            error.message.push_str(&format!(
+                "; '{symbol}' written directly before an operand starts a prefix argument, so write 'a {symbol} b' with spaces on both sides for the binary operator"
+            ));
+        }
+        error
     }
 
     fn untyped_number(expression: &Expr) -> bool {

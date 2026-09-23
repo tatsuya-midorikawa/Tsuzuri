@@ -349,7 +349,7 @@ impl Checker<'_> {
             if !mutable || !place.fields.is_empty() {
                 return Err(error(
                     "E1014",
-                    "mutable access requires 'let mut' or '&mut'; record fields, array elements, and list elements are immutable",
+                    "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
                     span,
                 ));
             }

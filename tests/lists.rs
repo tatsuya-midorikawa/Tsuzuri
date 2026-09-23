@@ -116,7 +116,7 @@ fn lists_are_deeply_immutable_but_bindings_can_be_replaced() {
             "E1005",
         ),
         ("def f :: [|&mut i64|] -> unit\nfn f a = {}", "E1005"),
-        ("def f :: [|&&mut i64|] -> unit\nfn f a = {}", "E0002"),
+        ("def f :: [|&&mut i64|] -> unit\nfn f a = {}", "E1005"),
         ("def f :: [|& &mut i64|] -> unit\nfn f a = {}", "E1005"),
         ("new [|[&mut i64]|](0, i -> [])", "E1005"),
         ("new [[|&mut i64|]](0, i -> [||])", "E1005"),

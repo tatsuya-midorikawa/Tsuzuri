@@ -498,9 +498,24 @@ impl Parser<'_> {
     fn type_atom(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.enter()?;
         let start = self.current().span;
-        let kind = if self.eat(&TokenKind::Ampersand) {
+        let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
             let mutable = self.eat(&TokenKind::Mut);
             TypeExprKind::Reference(Box::new(self.type_atom()?), mutable)
+        } else if self.eat(&TokenKind::AndAnd) {
+            // As in Rust, `&&T` is `& &T` and `&&mut T` is `& &mut T`.
+            let mutable = self.eat(&TokenKind::Mut);
+            let value = self.type_atom()?;
+            let span = Span {
+                start: start.start + 1,
+                ..start.through(value.span)
+            };
+            TypeExprKind::Reference(
+                Box::new(TypeExpr {
+                    kind: TypeExprKind::Reference(Box::new(value), mutable),
+                    span,
+                }),
+                false,
+            )
         } else if self.at(&TokenKind::TypeVariable(String::new())) {
             TypeExprKind::Variable(self.type_variable()?.text)
         } else if self.eat(&TokenKind::LeftParen) {
@@ -1073,7 +1088,7 @@ impl Parser<'_> {
                     }
                 }
             } else {
-                arguments.push(self.expression_inner(15, allow_record, stop_at_newline)?);
+                arguments.push(self.term(allow_record, stop_at_newline)?);
             }
         }
         let span = left.span.through(self.tokens[self.position - 1].span);
@@ -1090,21 +1105,31 @@ impl Parser<'_> {
     fn space_argument(&self) -> bool {
         !self.newline_before_current()
             && self.tokens[self.position - 1].span.end < self.current().span.start
-            && matches!(
-                self.current().kind,
+            && match self.current().kind {
                 TokenKind::Ident(_)
-                    | TokenKind::Integer(_)
-                    | TokenKind::Float(_)
-                    | TokenKind::String(_)
-                    | TokenKind::True
-                    | TokenKind::False
-                    | TokenKind::New
-                    | TokenKind::Task
-                    | TokenKind::Fx
-                    | TokenKind::LeftParen
-                    | TokenKind::LeftBracket
-                    | TokenKind::LeftList
-            )
+                | TokenKind::Integer(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::New
+                | TokenKind::Task
+                | TokenKind::Fx
+                | TokenKind::Ref
+                | TokenKind::Deref
+                | TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftList => true,
+                // Never an argument; parsing it as one reports the 'ref mut' hint.
+                TokenKind::Mut => true,
+                // `f &x` and `f *r` pass prefix arguments; `f & x` and `a * b` stay binary.
+                TokenKind::Ampersand | TokenKind::Star => {
+                    self.tokens.get(self.position + 1).is_some_and(|next| {
+                        next.kind != TokenKind::End && next.span.start == self.current().span.end
+                    })
+                }
+                _ => false,
+            }
     }
 
     fn postfix(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
@@ -1280,7 +1305,15 @@ impl Parser<'_> {
             | TokenKind::Star
             | TokenKind::Minus
             | TokenKind::Bang
-            | TokenKind::Tilde => return self.prefix(allow_record, stop_at_newline),
+            | TokenKind::Tilde => return self.prefix(allow_record, stop_at_newline, false),
+            TokenKind::Ref | TokenKind::Deref => {
+                return self.keyword_prefix(allow_record, stop_at_newline);
+            }
+            TokenKind::Mut => {
+                return Err(self.error(
+                    "'mut' is not an expression; write 'ref mut x' to borrow exclusively, or 'let mut x = ...' for a mutable binding",
+                ));
+            }
             TokenKind::True | TokenKind::False => {
                 ExprKind::Bool(self.take().kind == TokenKind::True)
             }
@@ -1370,22 +1403,96 @@ impl Parser<'_> {
         self.make(kind, token.span, 1)
     }
 
-    fn prefix(&mut self, allow_record: bool, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
+    /// Symbol prefixes. At the head of an expression the operand may be an application
+    /// (`*f x` is `*(f x)`); a prefix argument (`f *r y`) takes only a `term`.
+    fn prefix(
+        &mut self,
+        allow_record: bool,
+        stop_at_newline: bool,
+        term: bool,
+    ) -> Result<Expr, Diagnostic> {
         let token = self.take();
         let mutable = token.kind == TokenKind::Ampersand && self.eat(&TokenKind::Mut);
-        let value = self.expression_inner(13, allow_record, stop_at_newline)?;
+        let value = if term {
+            self.term(allow_record, stop_at_newline)?
+        } else {
+            self.expression_inner(13, allow_record, stop_at_newline)?
+        };
         let span = token.span.through(value.span);
         let depth = value.depth + 1;
         let value = Box::new(value);
         let kind = match token.kind {
-            TokenKind::Ampersand => ExprKind::Borrow(value, mutable),
-            TokenKind::Star => ExprKind::Dereference(value),
+            TokenKind::Ampersand => ExprKind::Borrow(value, mutable, Notation::Symbol),
+            TokenKind::Star => ExprKind::Dereference(value, Notation::Symbol),
             TokenKind::Minus => ExprKind::Unary(UnaryOp::Negate, value),
             TokenKind::Bang => ExprKind::Unary(UnaryOp::Not, value),
             TokenKind::Tilde => ExprKind::Unary(UnaryOp::BitNot, value),
             _ => unreachable!("prefix token checked"),
         };
         self.make(kind, span, depth)
+    }
+
+    /// `ref x`, `ref mut x`, and `deref r` take one `term`, in head and argument positions alike.
+    fn keyword_prefix(
+        &mut self,
+        allow_record: bool,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
+        let token = self.take();
+        let mutable = token.kind == TokenKind::Ref && self.eat(&TokenKind::Mut);
+        let value = self.term(allow_record, stop_at_newline)?;
+        if self.space_argument() {
+            let keyword = if token.kind == TokenKind::Ref {
+                "ref"
+            } else {
+                "deref"
+            };
+            let text = &self.source[token.span.start..value.span.end];
+            let form = if text.len() <= 60 && !text.contains(['\n', '\r']) {
+                text.to_owned()
+            } else {
+                format!("{keyword} ...")
+            };
+            return Err(self.error(format!(
+                "'{keyword}' takes exactly one operand; write '({form})' when more arguments follow, or parenthesize an application operand"
+            )));
+        }
+        let span = token.span.through(value.span);
+        let depth = value.depth + 1;
+        let value = Box::new(value);
+        let kind = if token.kind == TokenKind::Ref {
+            ExprKind::Borrow(value, mutable, Notation::Keyword)
+        } else {
+            ExprKind::Dereference(value, Notation::Keyword)
+        };
+        self.make(kind, span, depth)
+    }
+
+    /// The operand of a prefix argument or keyword form: nested prefix forms, or one primary
+    /// expression with its `.field`, `[index]`, and adjacent `(...)` suffixes.
+    fn term(&mut self, allow_record: bool, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
+        let keyword = matches!(self.current().kind, TokenKind::Ref | TokenKind::Deref);
+        if !keyword
+            && !matches!(
+                self.current().kind,
+                TokenKind::Ampersand
+                    | TokenKind::Star
+                    | TokenKind::Minus
+                    | TokenKind::Bang
+                    | TokenKind::Tilde
+            )
+        {
+            // Ordinary arguments keep their previous parse and nesting accounting.
+            return self.expression_inner(15, allow_record, stop_at_newline);
+        }
+        self.enter()?;
+        let value = if keyword {
+            self.keyword_prefix(allow_record, stop_at_newline)?
+        } else {
+            self.prefix(allow_record, stop_at_newline, true)?
+        };
+        self.nesting -= 1;
+        Ok(value)
     }
 
     fn conditional(&mut self) -> Result<Expr, Diagnostic> {

@@ -139,6 +139,8 @@ impl Lexer<'_> {
             "downto" => TokenKind::Downto,
             "while" => TokenKind::While,
             "mut" => TokenKind::Mut,
+            "ref" => TokenKind::Ref,
+            "deref" => TokenKind::Deref,
             "new" => TokenKind::New,
             "as" => TokenKind::As,
             "if" => TokenKind::If,

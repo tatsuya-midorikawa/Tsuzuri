@@ -11,8 +11,8 @@ instance Classes.Score Point {
     fn score point = point.x + point.y
 }
 
-def score :: Classes.Score 'a => &'a -> i32
+def score :: Classes.Score 'a => ref 'a -> i32
 fn score value = Classes.Score.score value
 
 let point = add (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 })
-score (&point)
+score ref point
