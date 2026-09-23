@@ -11,7 +11,10 @@ use crate::syntax::{BinaryOp, UnaryOp};
 mod call_specialization;
 #[path = "llvm_control.rs"]
 mod control;
+#[path = "llvm_frame.rs"]
+mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
+use frame::Frame;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {
@@ -432,6 +435,9 @@ struct FunctionEmitter<'a, 'b> {
     block: String,
     back_edges: Vec<(String, Vec<String>)>,
     scopes: Vec<Vec<(String, Type)>>,
+    /// Stack parts that each slot and local (including match aliases) may hold.
+    frame_slots: BTreeMap<String, Vec<Frame>>,
+    frame_locals: BTreeMap<usize, Vec<Frame>>,
     globals: &'b mut Globals,
 }
 
@@ -439,7 +445,7 @@ struct BorrowedCall {
     target: ClosureTarget,
     symbol: String,
     captures: Vec<String>,
-    cleanup: Vec<(Type, String)>,
+    cleanup: Vec<(Type, String, Vec<Frame>)>,
 }
 
 impl<'a, 'b> FunctionEmitter<'a, 'b> {
@@ -473,6 +479,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             block: "entry".into(),
             back_edges: Vec::new(),
             scopes: vec![Vec::new()],
+            frame_slots: BTreeMap::new(),
+            frame_locals: BTreeMap::new(),
         }
     }
 
@@ -688,8 +696,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let target = (!local.mutable)
                 .then(|| call_specialization::target(expression, &self.known_closures, self.module))
                 .flatten();
-            let value = self.expression(expression);
+            let (value, frames) = self.frame_value(expression);
             self.bind_local(local, &value);
+            self.bind_frames(local, frames);
             if let Some(target) = target {
                 self.known_closures.insert(local.id, target);
             }
@@ -755,7 +764,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn tail(&mut self, expression: &TypedExpr) {
         match &expression.kind {
             TypedExprKind::Match { local, value, arms } => {
-                self.match_expression(local, value, arms, &expression.ty, true);
+                self.match_expression(local, value, arms, &expression.ty, true, None);
             }
             TypedExprKind::Block { bindings, result } => {
                 self.scopes.push(Vec::new());
@@ -807,22 +816,50 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.expression_mode(expression, true)
     }
 
+    /// Reads a place. A taken value is cloned (Copy) or moved; a moved value leaves this frame's
+    /// storage unless `relocate` is false and the caller destroys it immediately.
+    fn read_place(&mut self, expression: &TypedExpr, take: bool, relocate: bool) -> String {
+        let slot = self.place(expression);
+        let value = self.value(format!("load {}, ptr {slot}", self.ty(&expression.ty)));
+        if take && expression.ty.needs_drop(&self.module.records) {
+            if self.clones_on_take(expression) {
+                return self.clone_value(&expression.ty, &value);
+            }
+            self.instruction(format!(
+                "store {} zeroinitializer, ptr {slot}",
+                self.ty(&expression.ty)
+            ));
+            if relocate {
+                let frames = self.frame_of_place(expression);
+                return self.relocate(&expression.ty, &value, &frames);
+            }
+        }
+        value
+    }
+
+    /// Taking a Copy place copies it, except at the only use of an owned local.
+    fn clones_on_take(&self, expression: &TypedExpr) -> bool {
+        let last_use = matches!(expression.kind, TypedExprKind::Local(id)
+            if self.single_use.contains(&id) && !self.borrowed_locals.contains(&id));
+        expression.ty.is_copy(&self.module.records) && !last_use
+    }
+
+    fn string_constant(&mut self, text: &str) -> String {
+        let name = format!("@tz.literal.{}", self.globals.definitions.len());
+        let escaped = text
+            .bytes()
+            .map(|byte| format!("\\{byte:02X}"))
+            .collect::<String>();
+        self.globals.definitions.push(format!(
+            "{name} = private unnamed_addr constant [{} x i8] c\"{escaped}\"",
+            text.len()
+        ));
+        name
+    }
+
     fn expression_mode(&mut self, expression: &TypedExpr, take: bool) -> String {
         if Self::is_place(expression) {
-            let slot = self.place(expression);
-            let value = self.value(format!("load {}, ptr {slot}", self.ty(&expression.ty)));
-            if take && expression.ty.needs_drop(&self.module.records) {
-                let last_use = matches!(expression.kind, TypedExprKind::Local(id)
-                    if self.single_use.contains(&id) && !self.borrowed_locals.contains(&id));
-                if expression.ty.is_copy(&self.module.records) && !last_use {
-                    return self.clone_value(&expression.ty, &value);
-                }
-                self.instruction(format!(
-                    "store {} zeroinitializer, ptr {slot}",
-                    self.ty(&expression.ty)
-                ));
-            }
-            return value;
+            return self.read_place(expression, take, true);
         }
         match &expression.kind {
             TypedExprKind::Int(value) => value.to_string(),
@@ -860,18 +897,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 "0".into()
             }
             TypedExprKind::Match { local, value, arms } => {
-                self.match_expression(local, value, arms, &expression.ty, false)
+                self.match_expression(local, value, arms, &expression.ty, false, None)
             }
             TypedExprKind::String(text) => {
-                let name = format!("@tz.literal.{}", self.globals.definitions.len());
-                let escaped = text
-                    .bytes()
-                    .map(|byte| format!("\\{byte:02X}"))
-                    .collect::<String>();
-                self.globals.definitions.push(format!(
-                    "{name} = private unnamed_addr constant [{} x i8] c\"{escaped}\"",
-                    text.len()
-                ));
+                let name = self.string_constant(text);
                 self.value(format!(
                     "call %tz.string @tz.string.new(ptr {name}, i64 {})",
                     text.len()
@@ -882,7 +911,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             | TypedExprKind::ListTail(..) => {
                 unreachable!("places handled above")
             }
-            TypedExprKind::Borrow(value, _) => self.place(value),
+            TypedExprKind::Borrow(value, mutable) => {
+                let slot = self.place(value);
+                let frames = self.frame_of_place(value);
+                if *mutable && !frames.is_empty() {
+                    // The borrower may replace and drop the value, so it must own heap storage.
+                    let ty = self.ty(&value.ty);
+                    let current = self.value(format!("load {ty}, ptr {slot}"));
+                    let moved = self.relocate(&value.ty, &current, &frames);
+                    self.instruction(format!("store {ty} {moved}, ptr {slot}"));
+                }
+                slot
+            }
             TypedExprKind::Assign(place, value) => {
                 let value = self.expression(value);
                 let slot = self.place(place);
@@ -1009,18 +1049,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
                 tuple
             }
-            TypedExprKind::Array(elements) => {
-                let Type::Array(element) = &expression.ty else {
-                    unreachable!()
-                };
-                let (array, data) = self.allocate_array(element, &elements.len().to_string());
-                for (index, value) in elements.iter().enumerate() {
-                    let value = self.expression(value);
-                    let pointer = self.element_pointer(element, &data, &index.to_string());
-                    self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
-                }
-                array
+            TypedExprKind::Array(elements) | TypedExprKind::List(elements)
+                if elements.is_empty() =>
+            {
+                // An empty literal owns no storage; dropping its null buffer is a no-op.
+                "zeroinitializer".into()
             }
+            TypedExprKind::Array(_) | TypedExprKind::List(_) => self.heap_collection(expression),
+            TypedExprKind::NewLiteral(literal) => self.heap_collection(literal),
             TypedExprKind::NewArray(length, initializer) => {
                 let length = self.expression(length);
                 let direct = self.prepare_known_call(initializer, 1);
@@ -1051,17 +1087,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     self.drop_value(&initializer.ty, callee.as_ref().unwrap());
                 }
                 array
-            }
-            TypedExprKind::List(elements) => {
-                let Type::List(element) = &expression.ty else {
-                    unreachable!()
-                };
-                let (head, tail) = self.list_builder();
-                for value in elements {
-                    let value = self.expression(value);
-                    self.append_list(element, &tail, &value);
-                }
-                self.finish_list(&head, &elements.len().to_string())
             }
             TypedExprKind::NewList(length, initializer) => {
                 let length = self.expression(length);
@@ -1108,7 +1133,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 field
             }
             TypedExprKind::Index(string, index) if string.ty == Type::String => {
-                let value = self.expression_mode(string, false);
+                let (value, frames) = self.read_operand(string);
                 let index = self.expression(index);
                 let data = self.value(format!("extractvalue %tz.string {value}, 0"));
                 let length = self.value(format!("extractvalue %tz.string {value}, 1"));
@@ -1118,11 +1143,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     "getelementptr inbounds i8, ptr {data}, i64 {index}"
                 ));
                 let byte = self.value(format!("load i8, ptr {pointer}"));
-                self.drop_temporary(string, &value);
+                self.release_operand(string, &value, &frames);
                 byte
             }
             TypedExprKind::Index(array, index) => {
-                let value = self.expression_mode(array, false);
+                let (value, frames) = self.read_operand(array);
                 let index = self.expression(index);
                 let (Type::Array(element) | Type::List(element)) = &array.ty else {
                     unreachable!()
@@ -1130,21 +1155,45 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let pointer = self.checked_element_pointer(&array.ty, &value, &index);
                 let extracted = self.value(format!("load {}, ptr {pointer}", self.ty(element)));
                 let result = self.clone_value(element, &extracted);
-                self.drop_temporary(array, &value);
+                self.release_operand(array, &value, &frames);
                 result
             }
             TypedExprKind::Length(array) => {
-                let value = self.expression_mode(array, false);
+                let (value, frames) = self.read_operand(array);
                 let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&array.ty)));
-                self.drop_temporary(array, &value);
+                self.release_operand(array, &value, &frames);
                 length
             }
             TypedExprKind::StringLength(string) => {
-                let value = self.expression_mode(string, false);
+                let (value, frames) = self.read_operand(string);
                 let length = self.value(format!("extractvalue %tz.string {value}, 1"));
-                self.drop_temporary(string, &value);
+                self.release_operand(string, &value, &frames);
                 length
             }
+        }
+    }
+
+    /// Builds an array or list literal on the heap, as for `new [...]` and escaping temporaries.
+    fn heap_collection(&mut self, expression: &TypedExpr) -> String {
+        match (&expression.kind, &expression.ty) {
+            (TypedExprKind::Array(elements), Type::Array(element)) => {
+                let (array, data) = self.allocate_array(element, &elements.len().to_string());
+                for (index, value) in elements.iter().enumerate() {
+                    let value = self.expression(value);
+                    let pointer = self.element_pointer(element, &data, &index.to_string());
+                    self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
+                }
+                array
+            }
+            (TypedExprKind::List(elements), Type::List(element)) => {
+                let (head, tail) = self.list_builder();
+                for value in elements {
+                    let value = self.expression(value);
+                    self.append_list(element, &tail, &value);
+                }
+                self.finish_list(&head, &elements.len().to_string())
+            }
+            _ => unreachable!("'new' literals are array or list literals"),
         }
     }
 
@@ -1706,6 +1755,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                         } else {
                             let captures = self.capture_values(argument);
                             self.capture_cleanup(*target, &captures, &mut cleanup);
+                            let captures: Vec<_> =
+                                captures.into_iter().map(|(value, _)| value).collect();
                             self.stack_closure(*target, &captures)
                         }
                     } else {
@@ -1718,8 +1769,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 "call {} {symbol}({values})",
                 self.ty(&signature.result)
             ));
-            for (ty, value) in cleanup.iter().rev() {
-                self.drop_value(ty, value);
+            for (ty, value, frames) in cleanup.iter().rev() {
+                self.drop_framed(ty, value, frames);
             }
             (value, signature.result, count)
         } else {
@@ -1736,12 +1787,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         value
     }
 
-    fn capture_values(&mut self, expression: &TypedExpr) -> Vec<String> {
+    fn capture_values(&mut self, expression: &TypedExpr) -> Vec<(String, Vec<Frame>)> {
         let expression = call_specialization::transparent(expression, self.module);
         match &expression.kind {
-            TypedExprKind::Closure(_, values) | TypedExprKind::Call(_, values) => {
-                values.iter().map(|value| self.expression(value)).collect()
-            }
+            // Known temporary closures only lend their captures to a borrowing worker; the caller
+            // drops them after the call, so stack values need not move to the heap.
+            TypedExprKind::Closure(_, values) | TypedExprKind::Call(_, values) => values
+                .iter()
+                .map(|value| self.take_operand(value))
+                .collect(),
             TypedExprKind::Function(_) => Vec::new(),
             _ => unreachable!("known temporary closures have explicit captures"),
         }
@@ -1750,15 +1804,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn capture_cleanup(
         &self,
         target: ClosureTarget,
-        values: &[String],
-        cleanup: &mut Vec<(Type, String)>,
+        captures: &[(String, Vec<Frame>)],
+        cleanup: &mut Vec<(Type, String, Vec<Frame>)>,
     ) {
-        for (value, ty) in values
+        for ((value, frames), ty) in captures
             .iter()
             .zip(&self.module.functions[target.function].signature.parameters[..target.bound])
         {
             if ty.needs_drop(&self.module.records) {
-                cleanup.push((ty.clone(), value.clone()));
+                cleanup.push((ty.clone(), value.clone(), frames.clone()));
             }
         }
     }
@@ -1825,7 +1879,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         } else {
             let values = self.capture_values(callee);
             self.capture_cleanup(target, &values, &mut cleanup);
-            values
+            values.into_iter().map(|(value, _)| value).collect()
         };
         Some(BorrowedCall {
             target,
@@ -1853,22 +1907,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn finish_borrowed_call(&mut self, call: &BorrowedCall) {
-        for (ty, value) in call.cleanup.iter().rev() {
-            self.drop_value(ty, value);
+        for (ty, value, frames) in call.cleanup.iter().rev() {
+            self.drop_framed(ty, value, frames);
         }
     }
 
     fn drop_slot(&mut self, slot: &str, ty: &Type) {
         if ty.needs_drop(&self.module.records) {
             let value = self.value(format!("load {}, ptr {slot}", self.ty(ty)));
-            self.drop_value(ty, &value);
+            let frames = self.frame_slots.get(slot).cloned().unwrap_or_default();
+            self.drop_framed(ty, &value, &frames);
             self.instruction(format!("store {} zeroinitializer, ptr {slot}", self.ty(ty)));
-        }
-    }
-
-    fn drop_temporary(&mut self, expression: &TypedExpr, value: &str) {
-        if !Self::is_place(expression) {
-            self.drop_value(&expression.ty, value);
         }
     }
 
@@ -1972,8 +2021,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         use BinaryOp::*;
         if left.ty == Type::String {
             let take = operator == Add;
-            let lhs = self.expression_mode(left, take);
-            let rhs = self.expression_mode(right, take);
+            // Concatenation reads both operands and then destroys them, so stack strings stay put.
+            let (lhs, left_frames) = if take {
+                self.take_operand(left)
+            } else {
+                self.read_operand(left)
+            };
+            let (rhs, right_frames) = if take {
+                self.take_operand(right)
+            } else {
+                self.read_operand(right)
+            };
             let result = if take {
                 self.value(format!(
                     "call %tz.string @tz.string.concat(%tz.string {lhs}, %tz.string {rhs})"
@@ -1984,11 +2042,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 ))
             };
             if take {
-                self.drop_value(&left.ty, &lhs);
-                self.drop_value(&right.ty, &rhs);
+                self.drop_framed(&left.ty, &lhs, &left_frames);
+                self.drop_framed(&right.ty, &rhs, &right_frames);
             } else {
-                self.drop_temporary(left, &lhs);
-                self.drop_temporary(right, &rhs);
+                self.release_operand(left, &lhs, &left_frames);
+                self.release_operand(right, &rhs, &right_frames);
             }
             return if operator == NotEqual {
                 self.value(format!("xor i1 {result}, 1"))

@@ -179,7 +179,7 @@ impl FunctionEmitter<'_, '_> {
     }
 
     pub(super) fn for_each(&mut self, local: &Local, source: &TypedExpr, body: &TypedExpr) {
-        let collection = self.expression_mode(source, false);
+        let (collection, frames) = self.read_operand(source);
         let data = self.value(format!(
             "extractvalue {} {collection}, 0",
             self.ty(&source.ty)
@@ -203,7 +203,7 @@ impl FunctionEmitter<'_, '_> {
             });
         }
         self.borrowed_locals.remove(&local.id);
-        self.drop_temporary(source, &collection);
+        self.release_operand(source, &collection, &frames);
     }
 
     fn switch_cases(
@@ -334,6 +334,7 @@ impl FunctionEmitter<'_, '_> {
         arms: &[TypedMatchArm],
         result_type: &Type,
         tail: bool,
+        mut delivered: Option<&mut Vec<Frame>>,
     ) -> String {
         if let Some(result) = self.lookup_match(local, matched, arms, result_type) {
             if tail {
@@ -347,9 +348,14 @@ impl FunctionEmitter<'_, '_> {
             let pointer = self.place(matched);
             self.locals.insert(local.id, pointer);
             self.borrowed_locals.insert(local.id);
+            let frames = self.frame_of_place(matched);
+            if !frames.is_empty() {
+                self.frame_locals.insert(local.id, frames);
+            }
         } else {
-            let value = self.expression(matched);
+            let (value, frames) = self.frame_value(matched);
             self.bind_local(local, &value);
+            self.bind_frames(local, frames);
         }
         let done = self.label();
         let failure = self.label();
@@ -458,6 +464,17 @@ impl FunctionEmitter<'_, '_> {
             }
             for (binding, _) in bindings {
                 self.borrowed_locals.insert(binding.id);
+                // A binding aliases part of the scrutinee in whichever alternative matched.
+                let frames: Vec<Frame> = arm
+                    .alternatives
+                    .iter()
+                    .flat_map(|alternative| &alternative.bindings)
+                    .filter(|(other, _)| other.id == binding.id)
+                    .flat_map(|(_, projection)| self.frame_of_place(projection))
+                    .collect();
+                if !frames.is_empty() {
+                    self.frame_locals.insert(binding.id, frames);
+                }
             }
             if let Some(guard) = &arm.guard {
                 let condition = self.expression(guard);
@@ -478,12 +495,20 @@ impl FunctionEmitter<'_, '_> {
                 };
                 let value = self.expression(&expression);
                 self.borrowed_locals.remove(&binding.id);
+                self.frame_locals.remove(&binding.id);
                 self.bind_local(binding, &value);
             }
             if tail {
                 self.tail(&arm.body);
             } else {
-                let value = self.expression(&arm.body);
+                let value = match delivered.as_deref_mut() {
+                    Some(frames) => {
+                        let (value, arm_frames) = self.frame_inner(&arm.body);
+                        frames.extend(arm_frames);
+                        value
+                    }
+                    None => self.expression(&arm.body),
+                };
                 let scope = self.scopes.last().unwrap().clone();
                 self.drop_scope(&scope);
                 self.drop_scope(&temporaries);
@@ -497,6 +522,7 @@ impl FunctionEmitter<'_, '_> {
         self.instruction("call void @llvm.trap()");
         self.instruction("unreachable");
         self.borrowed_locals.remove(&local.id);
+        self.frame_locals.remove(&local.id);
         let scope = self.scopes.pop().unwrap();
         if tail {
             return String::new();

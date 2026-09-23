@@ -304,6 +304,8 @@ pub enum ExprKind {
     Tuple(Vec<Expr>),
     NewArray(Box<TypeExpr>, Box<Expr>, Box<Expr>),
     NewList(Box<TypeExpr>, Box<Expr>, Box<Expr>),
+    /// `new [a, b]` / `new [|a, b|]`: an array or list literal allocated on the heap.
+    NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
     Borrow(Box<Expr>, bool),

@@ -112,6 +112,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
         | ExprKind::Field(value, _)
         | ExprKind::Borrow(value, _)
         | ExprKind::Dereference(value)
+        | ExprKind::NewLiteral(value)
         | ExprKind::Cast(value, _) => vec![value],
         ExprKind::Binary(_, left, right)
         | ExprKind::Index(left, right)

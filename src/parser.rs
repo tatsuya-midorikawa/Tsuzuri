@@ -1169,7 +1169,35 @@ impl Parser<'_> {
         let start = self.take().span;
         let list = self.at(&TokenKind::LeftList);
         if !list && !self.at(&TokenKind::LeftBracket) {
-            return Err(self.error("expected an array type '[T]' or list type '[|T|]' after 'new'"));
+            return Err(self.error(
+                "expected an array or list after 'new': 'new [T](length, initializer)', 'new [values]', or 'new [|values|]'",
+            ));
+        }
+        if !self.sized_collection() {
+            let literal = self.collection_literal()?;
+            if let ExprKind::Array(values) | ExprKind::List(values) = &literal.kind {
+                if let [
+                    Expr {
+                        kind: ExprKind::Name(name),
+                        ..
+                    },
+                ] = values.as_slice()
+                {
+                    if crate::numeric::primitive(&name.text).is_some() {
+                        return Err(Diagnostic::new(
+                            "E0002",
+                            format!(
+                                "expected '(' after the collection type; use 'new [{}](length, initializer)'",
+                                name.text
+                            ),
+                            literal.span,
+                        ));
+                    }
+                }
+            }
+            let span = start.through(literal.span);
+            let depth = literal.depth + 1;
+            return self.make(ExprKind::NewLiteral(Box::new(literal)), span, depth);
         }
         let ty = self.type_atom()?;
         self.expect(&TokenKind::LeftParen, "'(' before the collection length")?;
@@ -1188,6 +1216,34 @@ impl Parser<'_> {
             ExprKind::NewArray(Box::new(ty), Box::new(length), Box::new(initializer))
         };
         self.make(kind, start.through(end.span), depth)
+    }
+
+    /// `new [T](...)` puts '(' directly after the closing delimiter; `new [values]` does not.
+    fn sized_collection(&self) -> bool {
+        let mut depth = 0usize;
+        for (offset, token) in self.tokens[self.position..].iter().enumerate() {
+            match token.kind {
+                TokenKind::LeftBracket
+                | TokenKind::LeftList
+                | TokenKind::LeftParen
+                | TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightBracket
+                | TokenKind::RightList
+                | TokenKind::RightParen
+                | TokenKind::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return self
+                            .tokens
+                            .get(self.position + offset + 1)
+                            .is_some_and(|next| next.kind == TokenKind::LeftParen);
+                    }
+                }
+                TokenKind::End => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn collection_literal(&mut self) -> Result<Expr, Diagnostic> {

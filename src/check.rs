@@ -498,6 +498,8 @@ pub enum TypedExprKind {
     ListTail(Box<TypedExpr>, usize),
     NewArray(Box<TypedExpr>, Box<TypedExpr>),
     NewList(Box<TypedExpr>, Box<TypedExpr>),
+    /// A collection literal written with `new`; it is always heap-allocated.
+    NewLiteral(Box<TypedExpr>),
     Field(Box<TypedExpr>, usize),
     Index(Box<TypedExpr>, Box<TypedExpr>),
     Length(Box<TypedExpr>),
@@ -521,6 +523,7 @@ impl TypedExpr {
             | StringLength(value)
             | TaskRun(value)
             | TaskParallel(value)
+            | NewLiteral(value)
             | ListTail(value, _) => vec![value],
             Binary(_, a, b)
             | Assign(a, b)
@@ -585,6 +588,7 @@ impl TypedExpr {
             | StringLength(value)
             | TaskRun(value)
             | TaskParallel(value)
+            | NewLiteral(value)
             | ListTail(value, _) => vec![value],
             Binary(_, a, b)
             | Assign(a, b)
@@ -1650,6 +1654,11 @@ impl<'a> Checker<'a> {
                     TypedExprKind::NewArray(Box::new(length), Box::new(initializer))
                 };
                 (kind, ty)
+            }
+            ExprKind::NewLiteral(literal) => {
+                let literal = self.expression(literal, expected)?;
+                let ty = literal.ty.clone();
+                (TypedExprKind::NewLiteral(Box::new(literal)), ty)
             }
             ExprKind::Field(value, field)
                 if matches!(&value.kind, ExprKind::Name(name)

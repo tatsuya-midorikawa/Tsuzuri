@@ -103,6 +103,56 @@ const generatedBinary = binaryReference.map(([a, b, op, expected], index) =>
   `export fn binary_${index}() -> bool {
      ${binaryLiteral(a)} ${op} ${binaryLiteral(b)} == ${binaryLiteral(expected)}
    }`).join("\n");
+// 8,192 i64 elements fill the 64 KiB stack-literal budget exactly; one more falls back to the heap.
+const largeLiteral = (name, count) => `
+export def ${name} :: i64
+fn ${name} =
+    let values = [${Array.from({ length: count }, (_, index) => index).join(", ")}]
+    values[${count - 1}] + values.length
+`;
+const storageLiterals = largeLiteral("large_stack", 8192) + largeLiteral("large_heap", 8193);
+// [call, native result, heap allocations, WASM call, WASM result]
+const storage = [
+  ["stack_array()", "10450", 0, (api) => api.tz_stack_array(), 10450n],
+  ["stack_list()", "388", 0, (api) => api.tz_stack_list(), 388n],
+  ["stack_string()", "2015", 0, (api) => api.tz_stack_string(), 2015n],
+  ["stack_nested()", "435032", 0, (api) => api.tz_stack_nested(), 435032n],
+  ["temporary_stack()", "5281210", 0, (api) => api.tz_temporary_stack(), 5281210n],
+  ["empty_stack()", "0", 0, (api) => api.tz_empty_stack(), 0n],
+  ["wide_stack()", "1", 0, (api) => api.tz_wide_stack(), 1],
+  ["branch_stack(1)", "71112", 0, (api) => api.tz_branch_stack(1), 71112n],
+  ["branch_stack(0)", "11233", 1, (api) => api.tz_branch_stack(0), 11233n],
+  ["large_stack()", "16383", 0, (api) => api.tz_large_stack(), 16383n],
+  ["large_heap()", "16385", 1, (api) => api.tz_large_heap(), 16385n],
+  ["heap_literals()", "3053", 4, (api) => api.tz_heap_literals(), 3053n],
+  ["escape_return()", "1210", 1, (api) => api.tz_escape_return(), 1210n],
+  ["escape_argument()", "35", 1, (api) => api.tz_escape_argument(), 35n],
+  ["escape_nested()", "3043", 3, (api) => api.tz_escape_nested(), 3043n],
+  ["escape_record()", "642", 2, (api) => api.tz_escape_record(), 642n],
+  ["escape_strings()", "3032", 3, (api) => api.tz_escape_strings(), 3032n],
+  ["escape_list()", "397", 3, (api) => api.tz_escape_list(), 397n],
+  ["mutable_borrow()", "63", 7, (api) => api.tz_mutable_borrow(), 63n],
+  ["assign_stack()", "2352", 4, (api) => api.tz_assign_stack(), 2352n],
+  ["partial_move()", "905078", 5, (api) => api.tz_partial_move(), 905078n],
+  ["match_stack(1)", "6321", 1, (api) => api.tz_match_stack(1), 6321n],
+  ["match_stack(0)", "7321", 2, (api) => api.tz_match_stack(0), 7321n],
+  ["copy_stack()", "21", 1, (api) => api.tz_copy_stack(), 21n],
+  ["concat_stack()", "1206", 2, (api) => api.tz_concat_stack(), 1206n],
+  ["capture_stack()", "76", 4, (api) => api.tz_capture_stack(), 76n],
+  ["function_stack()", "4015", 2, (api) => api.tz_function_stack(), 4015n],
+  ["loop_copies(10)", "210110", 10, (api) => api.tz_loop_copies(10n), 210110n],
+  ["loop_moves(10)", "22", 30, (api) => api.tz_loop_moves(10n), 22n],
+  ["tail_frames(0)", "4", 0, (api) => api.tz_tail_frames(0n), 4n],
+  ["tail_frames(100000)", "5", 200000, (api) => api.tz_tail_frames(100000n), 5n],
+  ["reborrow_stack()", "33", 11, (api) => api.tz_reborrow_stack(), 33n],
+  ["or_moves(1)", "3", 1, (api) => api.tz_or_moves(1), 3n],
+  ["or_moves(0)", "2", 1, (api) => api.tz_or_moves(0), 2n],
+  ["delivered_match(0)", "14", 0, (api) => api.tz_delivered_match(0n), 14n],
+  ["delivered_match(1)", "23", 0, (api) => api.tz_delivered_match(1n), 23n],
+  ["delivered_match(2)", "0", 0, (api) => api.tz_delivered_match(2n), 0n],
+  ["scrutinee_moves()", "602", 6, (api) => api.tz_scrutinee_moves(), 602n],
+  ["lent_capture()", "616", 1, (api) => api.tz_lent_capture(), 616n],
+];
 
 try {
   const input = join(temporary, "Main.tz");
@@ -110,6 +160,7 @@ try {
   writeFileSync(join(temporary, "Classes.tt"), readFileSync(join(root, "tests/fixtures/currying/Classes.tt"), "utf8"));
   writeFileSync(join(temporary, "Arrays.tz"), readFileSync(join(root, "tests/fixtures/arrays/Arrays.tz"), "utf8"));
   writeFileSync(join(temporary, "Lists.tz"), readFileSync(join(root, "tests/fixtures/lists/Lists.tz"), "utf8"));
+  writeFileSync(join(temporary, "Storage.tz"), readFileSync(join(root, "tests/fixtures/storage/Storage.tz"), "utf8") + storageLiterals);
   writeFileSync(input, readFileSync(join(root, "tests/fixtures/primitives/Main.tz"), "utf8") + "\n" + generated + "\n" + generatedBinary);
   cli(["check", input]);
   const header = join(temporary, "primitives.h");
@@ -256,6 +307,10 @@ int main(int argc, char **argv) {
     assert(allocations - before == 100000);
     before = allocations;
     assert(tz_list_length(0) == 0 && live == 0 && allocations == before);
+    // Literals without 'new' live in the stack frame; heap work is only 'new', escapes, and copies.
+    ${storage.map(([call, expected, count]) => `before = allocations;
+    assert(tz_${call} == ${expected} && live == 0);
+    if (allocations - before != ${count}) { fprintf(stderr, "${call}: %llu heap allocations\\n", (unsigned long long)(allocations - before)); return 1; }`).join("\n    ")}
     return 0;
 }
 `);
@@ -331,6 +386,7 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_list_init_trap(0n), 0n);
     assert.equal(api.tz_list_init_trap(1n), 1n);
     assert.equal(api.tz_list_length(100000n), 100000n);
+    for (const [call, , , run, expected] of storage) assert.equal(run(api), expected, call);
     assert.equal(api.tz_strings(1), 24n);
     assert.equal(api.tz_strings(0), 23n);
     assert.equal(api.tz_mutable_local(), 42);
@@ -390,6 +446,8 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_array_churn(100000n), 8n);
     assert.equal(api.tz_list_churn(100000n), 8n);
     assert.equal(api.tz_list_length(100000n), 100000n);
+    assert.equal(api.tz_loop_moves(100000n), 22n);
+    assert.equal(api.tz_tail_frames(200000n), 5n);
     for (let i = 0; i < 500; ++i) {
       const n = BigInt(i % 64);
       assert.equal(api.tz_coalescing(n), 16n * (3n * n + 3n));
@@ -402,7 +460,7 @@ int main(int argc, char **argv) {
     assert.throws(() => exhaustedList.tz_list_length(1024n * 1024n), WebAssembly.RuntimeError);
     assert.ok(exhaustedList.memory.buffer.byteLength <= 16 * 1024 * 1024);
     assert.equal(cli(["run", input, `-O${optimization}`]).stdout, "UTF-8: 日本語 😀\n");
-    console.log(`-O${optimization}: primitive widths, ${reference.length} decimal / ${binaryReference.length} binary128 reference cases, curried closures, runtime arrays and linked lists, UTF-8, borrows, bounded heap, no WASM imports`);
+    console.log(`-O${optimization}: primitive widths, ${reference.length} decimal / ${binaryReference.length} binary128 reference cases, curried closures, runtime arrays and linked lists, ${storage.length} stack/heap storage cases, UTF-8, borrows, bounded heap, no WASM imports`);
   }
   for (const [value, expected] of [
     ["340282366920938463463374607431768211455i128u", "340282366920938463463374607431768211455"],

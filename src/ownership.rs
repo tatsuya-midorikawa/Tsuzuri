@@ -168,9 +168,9 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
             | E::Tuple(captures) => captures
                 .iter()
                 .all(|value| closed(value, module, known, locals)),
-            E::NewArray(_, initializer) | E::NewList(_, initializer) => {
-                closed(initializer, module, known, locals)
-            }
+            E::NewArray(_, initializer)
+            | E::NewList(_, initializer)
+            | E::NewLiteral(initializer) => closed(initializer, module, known, locals),
             E::Record(fields) => fields
                 .iter()
                 .all(|(_, value)| closed(value, module, known, locals)),
@@ -876,6 +876,9 @@ impl Checker<'_> {
                 if expression.ty.carries_loans(&self.module.records) {
                     result = value;
                 }
+            }
+            E::NewLiteral(literal) => {
+                result = self.eval(literal, Use::Consume, &during)?;
             }
             E::Length(value) | E::StringLength(value) => {
                 self.eval(value, Use::Read, &during)?;
