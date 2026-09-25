@@ -1,0 +1,15 @@
+record Point { x: f64, y: f64 }
+record Box<'a> { value: 'a }
+union Count = Counted of i64
+
+def distance :: Point -> f64
+fn distance point = sqrt (point.x * point.x + point.y * point.y)
+
+def scale :: Point -> f64 -> Point
+fn scale point factor = Point { x: point.x * factor, y: point.y * factor }
+
+def unwrap :: Box<'a> -> 'a
+fn unwrap box = box.value
+
+def count :: Count -> i64
+fn count value = match value with | Counted number -> number

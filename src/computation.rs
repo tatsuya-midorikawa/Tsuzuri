@@ -202,6 +202,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
         | ExprKind::Bool(_)
         | ExprKind::Unit
         | ExprKind::Name(_)
+        | ExprKind::TypeFunction(..)
         | ExprKind::QualifiedFunction(_) => Vec::new(),
     };
     let mut depth = 0;

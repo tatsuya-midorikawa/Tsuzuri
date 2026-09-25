@@ -139,6 +139,294 @@ fn supports_explicit_constraints_and_literal_specialization() {
 }
 
 #[test]
+fn supports_indented_type_class_constraints() {
+    accepts(
+        "def increment :: 'a -> 'a\n  @'a : Add, Integer\nfn increment value = value + 1\nincrement 41i32",
+    );
+    accepts(
+        "def keep :: 'a -> 'b -> 'a\n  @'a : Add, Integer\n  @'b : Copy\nfn keep value other = value\nkeep 42i32 true",
+    );
+    accepts(
+        "def add :: Add<'a> -> 'a -> 'a\n  @'a : Integer\nfn add left right = left + right\nadd 20i32 22",
+    );
+    accepts("def id :: 'a -> 'a\r\n  @'a : Copy\r\nfn id value = value\r\nid 42i32");
+    rejects(
+        "def id :: 'a -> 'a\n  @'a : Add, Integer\nfn id value = value\nid 1.0",
+        "E1005",
+    );
+    rejects(
+        "def id :: 'a -> 'a\n  @'b : Copy\nfn id value = value",
+        "E1015",
+    );
+    rejects(
+        "def id :: 'a -> 'a\n  @'a : Unknown\nfn id value = value",
+        "E1016",
+    );
+    for declaration in [
+        "def id :: 'a -> 'a @'a : Copy",
+        "def id :: 'a -> 'a\n@'a : Copy",
+        "def id :: 'a -> 'a\n  @'a :",
+        "def id :: 'a -> 'a\n  @'a : Copy,",
+        "def id :: 'a -> 'a\n  @'a Copy",
+        "def id :: 'a -> 'a\n  @i32 : Copy",
+        "def id :: 'a -> 'a\n  @\n  'a : Copy",
+        "def id :: 'a -> 'a\n  @'a\n  : Copy",
+        "def id :: 'a -> 'a\n  @'a : #\n  distance",
+        "def id :: 'a -> 'a\n  @'a : #Point.distance",
+    ] {
+        rejects(&format!("{declaration}\nfn id value = value"), "E0002");
+    }
+}
+
+#[test]
+fn resolves_module_function_constraints_and_infers_results() {
+    let module = analyze_modules(&[
+        (
+            "Main.tz",
+            "def func :: 'T -> 'U\n  @'T : #distance\nfn func value = 'T.distance value\nlet result = func (Point { x: 3.0, y: 4.0 })\nresult",
+        ),
+        (
+            "Point.tz",
+            "record Point { x: f64, y: f64 }\ndef distance :: Point -> f64\nfn distance point = sqrt (point.x * point.x + point.y * point.y)",
+        ),
+    ])
+    .unwrap();
+    assert_eq!(
+        module.functions[module.entry.unwrap()].signature.result,
+        Type::F64
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(ir.contains("call double @tz.fn.Point.distance"));
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+}
+
+#[test]
+fn propagates_function_constraints_and_supports_function_values() {
+    let sources = [
+        (
+            "Main.tz",
+            "def forward :: 'T -> 'U
+fn forward value = measure value
+def measure :: 'T -> 'U
+    @'T : Copy, #distance, #constant
+fn measure value = { let offset: 'U = 'T.constant(); (apply 'T.distance value) + offset }
+def apply :: ('a -> 'b) -> 'a -> 'b
+fn apply action value = action value
+def unbox :: 'T -> 'U
+  @'T : #unwrap
+fn unbox value = (fx item -> 'T.unwrap item) value
+def scaled :: 'T -> (f64 -> 'T)
+  @'T : #scale
+fn scaled value = 'T.scale value
+export def left :: f64
+fn left = forward (Left.Point { value: 5.0 })
+export def right :: i64
+fn right = forward (Right.Point { value: 42 })
+export def boxed :: i64
+fn boxed = unbox (Boxes.Box { value: 42i64 })
+export def owned :: i64
+fn owned = { let text: string = unbox (Boxes.Box { value: \"owned\" }); text.length }
+export def partial :: f64
+fn partial = Left.distance ((scaled (Left.Point { value: 5.0 })) 2.0)",
+        ),
+        (
+            "Left.tz",
+            "record Point { value: f64 }
+def distance :: Point -> f64
+fn distance point = point.value
+def constant :: f64
+fn constant = 0.0
+def scale :: Point -> f64 -> Point
+fn scale point factor = Point { value: point.value * factor }",
+        ),
+        (
+            "Right.tz",
+            "record Point { value: i64 }
+def distance :: Point -> i64
+fn distance point = point.value
+def constant :: i64
+fn constant = 0",
+        ),
+        (
+            "Boxes.tz",
+            "record Box<'a> { value: 'a }
+def unwrap :: Box<'a> -> 'a
+fn unwrap box = box.value",
+        ),
+    ];
+    for sources in [sources.to_vec(), sources.into_iter().rev().collect()] {
+        let module = analyze_modules(&sources).unwrap();
+        let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+        assert!(ir.contains("call double @tz.fn.Left.distance"));
+        assert!(ir.contains("call i64 @tz.fn.Right.distance"));
+        assert!(ir.contains("@tz.fn.Boxes.unwrap.$mono."));
+        assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    }
+}
+
+#[test]
+fn rejects_missing_inaccessible_and_mismatched_function_constraints() {
+    let declaration = "def func :: 'T -> 'U\n  @'T : #distance\nfn func value = 'T.distance value";
+    let record = "record Point { value: i64 }";
+    for (implementation, call, code) in [
+        ("", "func (Point { value: 42 })", "E1005"),
+        ("", "func 42i64", "E1005"),
+        (
+            "private def distance :: Point -> i64\nfn distance point = point.value",
+            "func (Point { value: 42 })",
+            "E1022",
+        ),
+        (
+            "def distance :: i64 -> i64\nfn distance value = value",
+            "func (Point { value: 42 })",
+            "E1003",
+        ),
+        (
+            "def distance :: Point -> i64\nfn distance point = point.value",
+            "let result: bool = func (Point { value: 42 })",
+            "E1003",
+        ),
+        (
+            "def distance :: Point -> i64 -> i64\nfn distance point extra = point.value + extra",
+            "let result: i64 = func (Point { value: 42 })",
+            "E1003",
+        ),
+    ] {
+        let main = format!("{declaration}\n{call}");
+        let point = format!("{record}\n{implementation}");
+        let error = analyze_modules(&[("Main.tz", &main), ("Point.tz", &point)]).unwrap_err();
+        assert_eq!(error.code, code, "{main}\n{point}\n{}", error.message);
+        assert_eq!(error.span.source, Some(0));
+    }
+    rejects("def f :: 'T -> 'U\nfn f value = 'T.distance value", "E1016");
+    rejects(
+        "def f :: i64 -> i64\nfn f value = 'T.distance value",
+        "E1015",
+    );
+    rejects(
+        "def f :: 'T -> 'T\n  @'U : #distance\nfn f value = value",
+        "E1015",
+    );
+    let error = analyze_modules(&[
+        (
+            "Main.tz",
+            "def id :: 'T -> 'T\n  @'T : #distance\nfn id value = value\nid (Point { value: 42 })",
+        ),
+        ("Point.tz", record),
+        (
+            "Unrelated.tz",
+            "def distance :: Point -> i64\nfn distance point = point.value",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1005");
+}
+
+#[test]
+fn function_constraints_preserve_module_visibility_ownership_and_recursion() {
+    let module = analyze_modules(&[
+        (
+            "Main.tz",
+            "let value = Point.Point { value: 42 }\nPoint.reveal value",
+        ),
+        (
+            "Point.tz",
+            "record Point { value: i64 }
+private def distance :: Point -> i64
+fn distance point = point.value
+def reveal :: 'T -> 'U
+  @'T : #distance
+fn reveal value = 'T.distance value",
+        ),
+    ])
+    .unwrap();
+    llvm::emit(&module, llvm::Entry::Library).unwrap();
+    let point = "record Point { value: string }
+def distance :: Point -> i64
+fn distance point = point.value.length";
+    let error = analyze_modules(&[
+        (
+            "Main.tz",
+            "def twice :: 'T -> i64
+  @'T : #distance
+fn twice value = { let first = 'T.distance value; first + 'T.distance value }
+twice (Point { value: \"owned\" })",
+        ),
+        ("Point.tz", point),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1005");
+    let module = analyze_modules(&[
+        ("Main.tz", "def borrow :: ref 'T -> ref 'T
+  @'T : #borrow
+fn borrow value = 'T.borrow value
+def size :: i64
+fn size = { let point = Point { value: \"owned\" }; (borrow (ref point)).value.length }"),
+        ("Point.tz", "record Point { value: string }\ndef borrow :: ref Point -> ref Point\nfn borrow value = value"),
+    ]).unwrap();
+    llvm::emit(&module, llvm::Entry::Library).unwrap();
+    for recursive in [false, true] {
+        let recursion = if recursive { "rec " } else { "" };
+        let main = format!(
+            "def {recursion}func :: 'T -> 'U\n  @'T : #distance\nfn {recursion}func value = 'T.distance value\nfunc (Point {{ value: 42 }})"
+        );
+        let point = format!(
+            "record Point {{ value: i64 }}\ndef {recursion}distance :: Point -> i64\nfn {recursion}distance value = Main.func value"
+        );
+        let result = analyze_modules(&[("Main.tz", &main), ("Point.tz", &point)]);
+        if recursive {
+            llvm::emit(&result.unwrap(), llvm::Entry::Library).unwrap();
+        } else {
+            assert_eq!(result.unwrap_err().code, "E1019");
+        }
+    }
+}
+
+#[test]
+fn function_constraint_recursion_ignores_instance_method_names() {
+    let module = analyze_modules(&[
+        (
+            "Main.tz",
+            "def func :: 'T -> 'U\n  @'T : #distance\nfn func value = 'T.distance value",
+        ),
+        (
+            "Point.tz",
+            "record Point { value: i64 }
+def distance :: Point -> i64
+fn distance point = point.value
+instance Traits.Distance<Point> { fn distance point = Main.func point }",
+        ),
+        (
+            "Traits.tt",
+            "class Distance<'a> { def distance :: 'a -> i64 }",
+        ),
+    ])
+    .unwrap();
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(ir.contains("call i64 @tz.fn.Point.distance"));
+}
+
+#[test]
+fn bounds_and_deduplicates_function_constraints() {
+    for (count, accepted) in [(128, true), (129, false)] {
+        let constraints = (0..count)
+            .map(|index| format!("#f{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!("def id :: 'T -> 'T\n  @'T : {constraints}\nfn id value = value");
+        if accepted {
+            accepts(&source);
+        } else {
+            rejects(&source, "E1017");
+        }
+    }
+    let constraints = vec!["#distance"; 200].join(", ");
+    accepts(&format!(
+        "def id :: 'T -> 'T\n  @'T : {constraints}\nfn id value = value"
+    ));
+}
+
+#[test]
 fn supports_user_classes_instances_and_operator_instances() {
     accepts(
         "record Point { x: i32, y: i32 }

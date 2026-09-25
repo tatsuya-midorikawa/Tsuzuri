@@ -282,7 +282,7 @@ fn supports_entry_bindings_with_newlines_or_semicolons_and_a_final_result() {
 #[test]
 fn keeps_source_identity_for_lexing_parsing_types_and_recursive_layouts() {
     for (source, code) in [
-        ("fn value() -> i64 { @ }", "E0001"),
+        ("fn value() -> i64 { ? }", "E0001"),
         ("fn value() -> i64 {", "E0002"),
         ("fn value() -> i64 { true }", "E1003"),
         ("record R { r: R }", "E1010"),

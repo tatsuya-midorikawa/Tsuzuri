@@ -426,6 +426,8 @@ impl Lexer<'_> {
             ';' => Semicolon,
             ',' => Comma,
             '.' => Dot,
+            '@' => At,
+            '#' => Hash,
             '=' => Equal,
             '+' => Plus,
             '-' => Minus,

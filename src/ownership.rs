@@ -190,6 +190,7 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
             | E::GenericFunction(..)
             | E::CaseConstructor { .. }
             | E::Method(..)
+            | E::TypeFunction { .. }
             | E::TaskRun(_)
             | E::TaskParallel(_) => true,
             E::Local(id) => locals.get(id).copied().unwrap_or(false),
@@ -1015,6 +1016,7 @@ impl Checker<'_> {
             | E::GenericFunction(..)
             | E::CaseConstructor { .. }
             | E::Method(..)
+            | E::TypeFunction { .. }
             | E::GenericInteger(..)
             | E::GenericFloat(_) => {}
             E::Local(_) | E::Dereference(_) | E::ListTail(..) => {

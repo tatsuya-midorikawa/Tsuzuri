@@ -34,19 +34,19 @@ fn collects_function_errors_in_source_order_without_changing_legacy_api() {
 
 #[test]
 fn recovers_lexer_errors_without_splitting_utf8_or_skipping_next_line() {
-    let source = "\"unterminated\n@\n1bad @ /*";
+    let source = "\"unterminated\n?\n1bad ? /*";
     let (tokens, diagnostics) = lexer::lex_all(source);
     assert_eq!(diagnostics.len(), 5, "{diagnostics:?}");
     assert!(diagnostics.iter().all(|d| d.code == "E0001"));
     assert_eq!(lexer::lex(source).unwrap_err(), diagnostics[0]);
     assert_eq!(tokens.last().unwrap().kind, tsuzuri::syntax::TokenKind::End);
-    let (_, diagnostics) = lexer::lex_all("日 @ 1__2 \"bad\\q\"\n@");
+    let (_, diagnostics) = lexer::lex_all("日 ? 1__2 \"bad\\q\"\n?");
     assert_eq!(diagnostics.len(), 5);
     for diagnostic in diagnostics {
-        assert!("日 @ 1__2 \"bad\\q\"\n@".is_char_boundary(diagnostic.span.start));
-        assert!("日 @ 1__2 \"bad\\q\"\n@".is_char_boundary(diagnostic.span.end));
+        assert!("日 ? 1__2 \"bad\\q\"\n?".is_char_boundary(diagnostic.span.start));
+        assert!("日 ? 1__2 \"bad\\q\"\n?".is_char_boundary(diagnostic.span.end));
     }
-    assert_eq!(errors("@ @").diagnostics.len(), 2);
+    assert_eq!(errors("? ?").diagnostics.len(), 2);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn display_cap_counts_all_unique_errors_until_the_separate_hard_limit() {
         set.omission_note().as_deref(),
         Some("at least 950 more errors not shown")
     );
-    let set = errors(&"@\n".repeat(MAX_UNIQUE_DIAGNOSTICS + 3));
+    let set = errors(&"?\n".repeat(MAX_UNIQUE_DIAGNOSTICS + 3));
     assert!(set.omitted_is_lower_bound);
     let duplicate = Diagnostic::new("E1003", "same", Span::default());
     let set = DiagnosticSet::from_diagnostics(

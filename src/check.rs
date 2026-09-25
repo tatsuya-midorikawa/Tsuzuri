@@ -782,6 +782,7 @@ pub struct CheckedFunction {
     pub span: Span,
     type_parameters: Vec<String>,
     constraints: Vec<Constraint>,
+    members: Vec<polymorph::MemberConstraint>,
     pub(crate) capture_count: usize,
     pub(crate) is_task: bool,
 }
@@ -869,6 +870,11 @@ pub enum TypedExprKind {
     Function(FunctionRef),
     GenericFunction(usize, Vec<Type>),
     Method(usize, usize, Type),
+    TypeFunction {
+        receiver: Type,
+        name: String,
+        module: String,
+    },
     GenericInteger(u128, bool),
     GenericFloat(String),
     Unary(UnaryOp, Box<TypedExpr>),
@@ -1684,6 +1690,42 @@ impl Names {
         Ok(Some(info.id))
     }
 
+    fn member_function(
+        &self,
+        requester: &str,
+        receiver: &Type,
+        name: &str,
+        types: &TypeContext<'_>,
+        span: Span,
+    ) -> Result<usize, Diagnostic> {
+        let qualified_type = match receiver {
+            Type::Record(id, _) => &types.records[*id].name,
+            Type::Union(id, _) => &types.unions[*id].name,
+            _ => {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "{} has no declaring module for function constraint '#{name}'",
+                        receiver.display(types)
+                    ),
+                    span,
+                ));
+            }
+        };
+        let (module, _) = qualified_type.rsplit_once('.').unwrap();
+        let qualified = format!("{module}.{name}");
+        self.function(requester, &qualified, span)?.ok_or_else(|| {
+            Diagnostic::new(
+                "E1005",
+                format!(
+                    "{} does not satisfy '#{name}': module '{module}' has no function '{name}'",
+                    receiver.display(types)
+                ),
+                span,
+            )
+        })
+    }
+
     fn has_active_pattern(&self, requester: &str, qualified: &str) -> bool {
         self.searchable_path(requester, qualified) && self.active_patterns.contains_key(qualified)
     }
@@ -2210,29 +2252,35 @@ fn check_modules_collect(
             signature.validate_borrows(&types, function.result.span)?;
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
-            let mut constraints: Vec<_> = function
-                .constraints
-                .iter()
-                .map(|constraint| {
-                    let class = classes.resolve(&names, module, &constraint.class)?;
-                    let ty = resolve_type(&constraint.ty, module, &names)?;
-                    if polymorph::variables(&ty)
-                        .iter()
-                        .any(|variable| !variables.contains(variable))
-                    {
-                        return Err(Diagnostic::new(
-                            "E1015",
-                            "constraint mentions a type variable absent from the signature",
-                            constraint.ty.span,
-                        ));
-                    }
-                    Ok(Constraint {
-                        class,
+            let mut constraints = Vec::new();
+            let mut members = Vec::new();
+            for constraint in &function.constraints {
+                let ty = resolve_type(&constraint.ty, module, &names)?;
+                if polymorph::variables(&ty)
+                    .iter()
+                    .any(|variable| !variables.contains(variable))
+                {
+                    return Err(Diagnostic::new(
+                        "E1015",
+                        "constraint mentions a type variable absent from the signature",
+                        constraint.ty.span,
+                    ));
+                }
+                match &constraint.name {
+                    ConstraintName::Class(name) => constraints.push(Constraint {
+                        class: classes.resolve(&names, module, name)?,
                         ty,
-                        span: constraint.class.span,
-                    })
-                })
-                .collect::<Result<_, Diagnostic>>()?;
+                        span: name.span,
+                    }),
+                    ConstraintName::Function(name) => members.push(polymorph::MemberConstraint {
+                        receiver: ty,
+                        name: name.text.clone(),
+                        module: module.clone(),
+                        signature: None,
+                        span: name.span,
+                    }),
+                }
+            }
             for ty in function
                 .parameters
                 .iter()
@@ -2245,6 +2293,7 @@ fn check_modules_collect(
                 signature,
                 variables,
                 constraints,
+                members,
             })
         })();
         signatures.push(match checked {
@@ -2303,6 +2352,7 @@ fn check_modules_collect(
         }
     }
     let mut functions = Vec::new();
+    let mut pending = Vec::new();
     let mut warnings = Vec::new();
     for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
         if diagnostics.is_full() {
@@ -2316,18 +2366,13 @@ fn check_modules_collect(
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
         let checked = (|| {
             checker.type_parameters = scheme.variables.clone();
+            checker.members = scheme.members.clone();
             let mut parameters = Vec::new();
             for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
                 parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
             }
             computation::expand(&mut function.body, &names)?;
-            let mut body = checker.expression(&function.body, Some(&signature.result))?;
-            if !checker.poisoned {
-                checker.finish(&mut body)?;
-                warnings.extend(checker.check_coverage()?);
-            }
-            let mut constraints = scheme.constraints.clone();
-            constraints.extend(std::mem::take(&mut checker.constraints));
+            let body = checker.expression(&function.body, Some(&signature.result))?;
             Ok(CheckedFunction {
                 module: module.clone(),
                 origin: FunctionOrigin::source(names.origin(module)),
@@ -2339,7 +2384,8 @@ fn check_modules_collect(
                 body,
                 span: function.name.span,
                 type_parameters: scheme.variables.clone(),
-                constraints,
+                constraints: scheme.constraints.clone(),
+                members: Vec::new(),
                 capture_count: 0,
                 is_task: false,
             })
@@ -2348,7 +2394,10 @@ fn check_modules_collect(
             continue;
         }
         match checked {
-            Ok(function) => functions.push(function),
+            Ok(function) => {
+                functions.push(function);
+                pending.push(checker);
+            }
             Err(error) => diagnostics.push(error),
         }
     }
@@ -2393,11 +2442,7 @@ fn check_modules_collect(
         let checked = (|| {
             let mut expression = expression.clone();
             computation::expand(&mut expression, &names)?;
-            let mut body = checker.expression(&expression, None)?;
-            if !checker.poisoned {
-                checker.finish(&mut body)?;
-                warnings.extend(checker.check_coverage()?);
-            }
+            let body = checker.expression(&expression, None)?;
             Ok(CheckedFunction {
                 module: module.to_owned(),
                 origin: FunctionOrigin::source(ModuleOrigin::User),
@@ -2412,7 +2457,8 @@ fn check_modules_collect(
                 body,
                 span: expression.span,
                 type_parameters: Vec::new(),
-                constraints: std::mem::take(&mut checker.constraints),
+                constraints: Vec::new(),
+                members: Vec::new(),
                 capture_count: 0,
                 is_task: false,
             })
@@ -2424,12 +2470,31 @@ fn check_modules_collect(
             Ok(function) => {
                 entry = Some(functions.len());
                 functions.push(function);
+                pending.push(checker);
             }
             Err(error) => diagnostics.push(error),
         }
     }
+    if diagnostics.check().is_ok() {
+        polymorph::solve_members(&mut functions, &mut pending)?;
+    }
+    for (function, mut checker) in functions.iter_mut().zip(pending) {
+        let checked = (|| {
+            checker.finish(&mut function.body)?;
+            warnings.extend(checker.check_coverage()?);
+            if function.name == "$entry" {
+                function.signature.result = function.body.ty.clone();
+            }
+            function.constraints.extend(checker.constraints);
+            function.members = checker.members;
+            Ok(())
+        })();
+        if let Err(error) = checked {
+            diagnostics.push(error);
+        }
+    }
     diagnostics.check()?;
-    recursion::check(&functions, &function_declarations, &classes)?;
+    recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
     let module = CheckedModule {
@@ -2444,7 +2509,7 @@ fn check_modules_collect(
         diagnostics.extend(errors);
         first
     })?;
-    let module = polymorph::specialize(module, &classes, copy_constraints)?;
+    let module = polymorph::specialize(module, &classes, &names, copy_constraints)?;
     let module = closures::lower(module)?;
     for function in &module.functions {
         if let Err(error) = function
@@ -3124,6 +3189,7 @@ struct Checker<'a> {
     classes: &'a Classes,
     inference: Inference,
     constraints: Vec<Constraint>,
+    members: Vec<polymorph::MemberConstraint>,
     type_parameters: Vec<String>,
     scopes: Vec<BTreeMap<String, Local>>,
     next_local: usize,
@@ -3156,6 +3222,7 @@ impl<'a> Checker<'a> {
             classes,
             inference: Inference::default(),
             constraints: Vec::new(),
+            members: Vec::new(),
             type_parameters: Vec::new(),
             scopes: vec![BTreeMap::new()],
             next_local: 0,
@@ -3449,6 +3516,7 @@ impl<'a> Checker<'a> {
                 unreachable!("control expressions use their own checker")
             }
             ExprKind::Name(name) => self.name(name)?,
+            ExprKind::TypeFunction(variable, name) => self.type_function(variable, name)?,
             ExprKind::QualifiedFunction(name) => {
                 let id = self
                     .names

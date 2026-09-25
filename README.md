@@ -102,6 +102,23 @@ integer
 
 `Add<'a>` は `Add` 制約を持つ `'a` です。`def add :: 'a -> 'a -> 'a` と書いて本体から
 制約を推論することも、`Add<'a> => 'a -> 'a -> 'a` と明記することもできます。
+複数の制約は `def` の次の行にインデントして、型変数ごとに指定できます。既存の構文も引き続き使えます。
+
+```text
+def increment :: 'a -> 'a
+    @'a : Add, Integer
+fn increment value = value + 1
+
+def distance_of :: 'T -> 'U
+    @'T : Copy, #distance
+fn distance_of value = 'T.distance value
+```
+
+`#distance` は具体的なレコード・union の定義元モジュールにある関数を要求します。
+例えば `'T` が `Point.Point` なら `'T.distance` は `Point.distance` を選び、返却型も照合・推論します。
+通常の関数値・部分適用に対応し、`private` を迂回しません。
+詳しくは [モジュール関数の制約](docs/language.md#モジュール関数の制約) を参照してください。
+
 すべての関数はカリー化され、`add 20 22` と `(add 20) 22` は同じ適用です。
 型クラスによるメソッド選択はコンパイル時に完了し、辞書や型クラスの
 動的ディスパッチを実行時に持ち込みません。利用した型の組み合わせごとにコードを生成します。

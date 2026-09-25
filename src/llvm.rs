@@ -1248,6 +1248,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Int(value) => value.to_string(),
             TypedExprKind::GenericFunction(..)
             | TypedExprKind::Method(..)
+            | TypedExprKind::TypeFunction { .. }
             | TypedExprKind::GenericInteger(..)
             | TypedExprKind::GenericFloat(_)
             | TypedExprKind::Error

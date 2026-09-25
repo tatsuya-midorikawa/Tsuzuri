@@ -10,10 +10,62 @@ pub(super) struct Constraint {
     pub span: Span,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct MemberConstraint {
+    pub receiver: Type,
+    pub name: String,
+    pub module: String,
+    pub signature: Option<Type>,
+    pub span: Span,
+}
+
+impl MemberConstraint {
+    fn resolved(&self, inference: &Inference) -> Self {
+        Self {
+            receiver: inference.resolve(&self.receiver),
+            signature: self.signature.as_ref().map(|ty| inference.resolve(ty)),
+            ..self.clone()
+        }
+    }
+
+    fn substituted(&self, substitutions: &BTreeMap<String, Type>, span: Span) -> Self {
+        Self {
+            receiver: substitute(&self.receiver, substitutions),
+            signature: self
+                .signature
+                .as_ref()
+                .map(|ty| substitute(ty, substitutions)),
+            span,
+            ..self.clone()
+        }
+    }
+
+    fn key(&self) -> (String, String, Type, Option<Type>) {
+        (
+            self.module.clone(),
+            self.name.clone(),
+            self.receiver.clone(),
+            self.signature.clone(),
+        )
+    }
+
+    fn determined(&self) -> bool {
+        let mut inferred = false;
+        for ty in std::iter::once(&self.receiver).chain(self.signature.iter()) {
+            map_type(ty, &mut |ty| {
+                inferred |= matches!(ty, Type::Infer(_));
+                ty.clone()
+            });
+        }
+        !inferred
+    }
+}
+
 pub(super) struct Scheme {
     pub signature: Signature,
     pub variables: Vec<String>,
     pub constraints: Vec<Constraint>,
+    pub members: Vec<MemberConstraint>,
 }
 
 impl Scheme {
@@ -25,6 +77,7 @@ impl Scheme {
             },
             variables: Vec::new(),
             constraints: Vec::new(),
+            members: Vec::new(),
         }
     }
 
@@ -1211,6 +1264,52 @@ impl Checker<'_> {
         ))
     }
 
+    pub(super) fn type_function(
+        &mut self,
+        variable: &Ident,
+        name: &Ident,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        if !self.type_parameters.contains(&variable.text) {
+            return Err(Diagnostic::new(
+                "E1015",
+                format!(
+                    "type variable '{}' is absent from this function's signature",
+                    variable.text
+                ),
+                variable.span,
+            ));
+        }
+        let receiver = Type::Variable(variable.text.clone());
+        if !self.members.iter().any(|member| {
+            member.receiver == receiver && member.name == name.text && member.signature.is_none()
+        }) {
+            return Err(Diagnostic::new(
+                "E1016",
+                format!(
+                    "'{}.{} requires an explicit @'{} : #{} constraint",
+                    variable.text, name.text, variable.text, name.text
+                ),
+                name.span,
+            ));
+        }
+        let ty = self.inference.fresh();
+        self.members.push(MemberConstraint {
+            receiver: receiver.clone(),
+            name: name.text.clone(),
+            module: self.module.to_owned(),
+            signature: Some(ty.clone()),
+            span: name.span,
+        });
+        Ok((
+            TypedExprKind::TypeFunction {
+                receiver,
+                name: name.text.clone(),
+                module: self.module.to_owned(),
+            },
+            ty,
+        ))
+    }
+
     pub(super) fn require(&mut self, name: &str, ty: Type, span: Span) -> Result<(), Diagnostic> {
         let ty = self.inference.resolve(&ty);
         if ty.contains_error() {
@@ -1352,8 +1451,137 @@ impl Checker<'_> {
             constraint.ty = self.inference.resolve(&constraint.ty);
             self.classes.validate(constraint, &self.types)?;
         }
+        for member in &mut self.members {
+            *member = member.resolved(&self.inference);
+        }
         Ok(())
     }
+}
+
+pub(super) fn solve_members(
+    functions: &mut [CheckedFunction],
+    checkers: &mut [Checker<'_>],
+) -> Result<(), Diagnostic> {
+    if checkers.iter().all(|checker| checker.members.is_empty()) {
+        return Ok(());
+    }
+    for checker in checkers.iter_mut() {
+        let mut seen = BTreeSet::new();
+        checker.members = std::mem::take(&mut checker.members)
+            .into_iter()
+            .map(|member| member.resolved(&checker.inference))
+            .filter(|member| seen.insert(member.key()))
+            .collect();
+        if checker.members.len() > MAX_CONSTRAINTS {
+            return Err(Diagnostic::new(
+                "E1017",
+                "too many distinct function constraints in one function",
+                checker.members[MAX_CONSTRAINTS].span,
+            ));
+        }
+    }
+    let mut dependencies = Vec::new();
+    for function in functions {
+        let mut calls = Vec::new();
+        walk(&mut function.body, &mut |expression| {
+            match &expression.kind {
+                TypedExprKind::GenericFunction(id, types) => {
+                    calls.push((*id, types.clone(), expression.span));
+                }
+                TypedExprKind::Function(FunctionRef::User(id)) => {
+                    calls.push((*id, Vec::new(), expression.span));
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
+        dependencies.push(calls);
+    }
+    let mut solved = vec![BTreeSet::new(); checkers.len()];
+    for defaults in [false, true] {
+        if defaults {
+            for checker in checkers.iter_mut() {
+                checker.inference.apply_defaults();
+            }
+        }
+        loop {
+            let mut changed = false;
+            for (caller, checker) in checkers.iter_mut().enumerate() {
+                for index in 0..checker.members.len() {
+                    if solved[caller].contains(&index) {
+                        continue;
+                    }
+                    let member = checker.members[index].resolved(&checker.inference);
+                    if is_unknown(&member.receiver) {
+                        continue;
+                    }
+                    let callee = checker.names.member_function(
+                        &member.module,
+                        &member.receiver,
+                        &member.name,
+                        &checker.types,
+                        member.span,
+                    )?;
+                    if let Some(signature) = &member.signature {
+                        let (kind, actual) = checker.function(callee);
+                        checker.same(&actual, signature, member.span)?;
+                        let types = match kind {
+                            TypedExprKind::GenericFunction(_, types) => types,
+                            _ => Vec::new(),
+                        };
+                        dependencies[caller].push((callee, types, member.span));
+                    }
+                    solved[caller].insert(index);
+                    changed = true;
+                }
+            }
+            for (caller, calls) in dependencies.iter().enumerate() {
+                let mut inherited = Vec::new();
+                for (callee, types, span) in calls {
+                    let checker = &checkers[*callee];
+                    let substitutions = checker
+                        .type_parameters
+                        .iter()
+                        .cloned()
+                        .zip(types.clone())
+                        .collect();
+                    for member in &checker.members {
+                        let member = member.resolved(&checker.inference);
+                        if member.determined() {
+                            inherited.push(member.substituted(&substitutions, *span));
+                        }
+                    }
+                }
+                let checker = &mut checkers[caller];
+                let mut seen: BTreeSet<_> = checker
+                    .members
+                    .iter()
+                    .map(|member| member.resolved(&checker.inference).key())
+                    .collect();
+                for member in inherited {
+                    let member = member.resolved(&checker.inference);
+                    if seen.insert(member.key()) {
+                        for ty in std::iter::once(&member.receiver).chain(member.signature.iter()) {
+                            bounded_type(ty, member.span)?;
+                        }
+                        if checker.members.len() >= MAX_CONSTRAINTS {
+                            return Err(Diagnostic::new(
+                                "E1017",
+                                "too many distinct function constraints; polymorphic recursion must not grow types",
+                                member.span,
+                            ));
+                        }
+                        checker.members.push(member);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn captures(
@@ -1452,7 +1680,9 @@ fn expression_types(
                     f(ty, expression.span)?;
                 }
             }
-            TypedExprKind::Method(_, _, ty) => f(ty, expression.span)?,
+            TypedExprKind::Method(_, _, ty) | TypedExprKind::TypeFunction { receiver: ty, .. } => {
+                f(ty, expression.span)?
+            }
             TypedExprKind::Block { bindings, .. } => {
                 for (local, _) in bindings {
                     f(&mut local.ty, local.span)?;
@@ -1498,6 +1728,7 @@ fn expression_types(
 pub(super) fn specialize(
     mut module: CheckedModule,
     classes: &Classes,
+    names: &Names,
     copy_constraints: Vec<BTreeSet<String>>,
 ) -> Result<CheckedModule, Diagnostic> {
     for (function, copy_variables) in module.functions.iter_mut().zip(copy_constraints) {
@@ -1625,6 +1856,7 @@ pub(super) fn specialize(
     let mut specializer = Specializer {
         templates: module.functions.clone(),
         classes,
+        names,
         types: module.types(),
         keys: BTreeMap::new(),
         requests: Vec::new(),
@@ -1664,6 +1896,7 @@ pub(super) fn specialize(
 struct Specializer<'a> {
     templates: Vec<CheckedFunction>,
     classes: &'a Classes,
+    names: &'a Names,
     types: TypeContext<'a>,
     keys: BTreeMap<(usize, Vec<Type>), usize>,
     requests: Vec<(usize, Vec<Type>)>,
@@ -1725,6 +1958,10 @@ impl Specializer<'_> {
                 &self.types,
             )?;
         }
+        for member in &function.members {
+            let member = member.substituted(&substitutions, member.span);
+            self.member_target(&member)?;
+        }
         for parameter in &mut function.parameters {
             parameter.ty = substitute(&parameter.ty, &substitutions);
         }
@@ -1745,6 +1982,25 @@ impl Specializer<'_> {
             validate_size(ty, &self.types, span)?;
             Ok(())
         })?;
+        walk(&mut function.body, &mut |expression| {
+            if let TypedExprKind::TypeFunction {
+                receiver,
+                name,
+                module,
+            } = &expression.kind
+            {
+                let member = MemberConstraint {
+                    receiver: receiver.clone(),
+                    name: name.clone(),
+                    module: module.clone(),
+                    signature: Some(expression.ty.clone()),
+                    span: expression.span,
+                };
+                let (id, types) = self.member_target(&member)?;
+                expression.kind = TypedExprKind::GenericFunction(id, types);
+            }
+            Ok(())
+        })?;
         for (class, ty, span) in captures(&mut function.body, self.classes, |id| {
             self.templates[id].parameters.len()
         })? {
@@ -1761,7 +2017,45 @@ impl Specializer<'_> {
         walk(&mut function.body, &mut |expression| self.lower(expression))?;
         function.type_parameters.clear();
         function.constraints.clear();
+        function.members.clear();
         Ok(function)
+    }
+
+    fn member_target(&self, member: &MemberConstraint) -> Result<(usize, Vec<Type>), Diagnostic> {
+        let id = self.names.member_function(
+            &member.module,
+            &member.receiver,
+            &member.name,
+            &self.types,
+            member.span,
+        )?;
+        let Some(expected) = &member.signature else {
+            return Ok((id, Vec::new()));
+        };
+        let target = &self.templates[id];
+        let mut inference = Inference::default();
+        let types: Vec<_> = target
+            .type_parameters
+            .iter()
+            .map(|_| inference.fresh())
+            .collect();
+        let substitutions = target
+            .type_parameters
+            .iter()
+            .cloned()
+            .zip(types.clone())
+            .collect();
+        inference.unify(
+            &substitute(&target.signature.as_type(), &substitutions),
+            expected,
+            &self.types,
+            member.span,
+        )?;
+        let types: Vec<_> = types.iter().map(|ty| inference.resolve(ty)).collect();
+        for ty in &types {
+            require_concrete(ty, member.span)?;
+        }
+        Ok((id, types))
     }
 
     fn lower(&mut self, expression: &mut TypedExpr) -> Result<(), Diagnostic> {
@@ -1955,6 +2249,7 @@ impl Specializer<'_> {
             span,
             type_parameters: Vec::new(),
             constraints: Vec::new(),
+            members: Vec::new(),
             capture_count: 0,
             is_task: false,
         });
@@ -2013,6 +2308,7 @@ impl Specializer<'_> {
             span,
             type_parameters: Vec::new(),
             constraints: Vec::new(),
+            members: Vec::new(),
             capture_count: 0,
             is_task: false,
         });

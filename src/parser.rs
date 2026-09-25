@@ -201,10 +201,11 @@ impl Parser<'_> {
                 self.expect(&TokenKind::LeftBrace, "'{' after the class parameter")?;
                 let mut methods = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
+                    let column = self.column(self.current().span);
                     self.expect(&TokenKind::Def, "a 'def' method signature or '}'")?;
                     let method = self.ident()?;
                     self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
-                    methods.push(self.signature(method, false)?);
+                    methods.push(self.signature(method, false, column)?);
                     self.eat(&TokenKind::Semicolon);
                 }
                 program.classes.push(ClassDecl {
@@ -277,7 +278,7 @@ impl Parser<'_> {
                 *group = recursion.clone();
                 if declaration {
                     self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
-                    let mut signature = self.signature(name.clone(), exported)?;
+                    let mut signature = self.signature(name.clone(), exported, column)?;
                     signature.recursion = recursion;
                     signature.visibility = visibility;
                     if signatures.contains_key(&name.text) {
@@ -626,7 +627,12 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn signature(&mut self, name: Ident, exported: bool) -> Result<SignatureDecl, Diagnostic> {
+    fn signature(
+        &mut self,
+        name: Ident,
+        exported: bool,
+        column: usize,
+    ) -> Result<SignatureDecl, Diagnostic> {
         let mut constraints = Vec::new();
         // A constraint prefix always ends in => before the next declaration/body.
         let has_constraints = self.constraint_prefix();
@@ -635,7 +641,10 @@ impl Parser<'_> {
             loop {
                 let class = self.qualified_ident()?;
                 let ty = self.single_type_argument()?;
-                constraints.push(ConstraintExpr { class, ty });
+                constraints.push(ConstraintExpr {
+                    name: ConstraintName::Class(class),
+                    ty,
+                });
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -658,6 +667,54 @@ impl Parser<'_> {
             };
             parameters.extend(more);
             result = *tail;
+        }
+        let constraint_column = self.column(self.current().span);
+        while self.at(&TokenKind::At) {
+            if !self.newline_before_current()
+                || constraint_column <= column
+                || self.column(self.current().span) != constraint_column
+            {
+                return Err(
+                    self.error("constraint lines must be indented after the 'def' signature")
+                );
+            }
+            self.take();
+            if self.newline_before_current() {
+                return Err(self.error("expected a type variable after '@' on the same line"));
+            }
+            let variable = self.type_variable()?;
+            let ty = TypeExpr {
+                kind: TypeExprKind::Variable(variable.text),
+                span: variable.span,
+            };
+            if self.newline_before_current() {
+                return Err(self.error("expected ':' on the constraint line"));
+            }
+            self.expect(&TokenKind::Colon, "':' before the constraint list")?;
+            loop {
+                if self.newline_before_current() {
+                    return Err(
+                        self.error("expected a type class or '#function' on the constraint line")
+                    );
+                }
+                let name = if self.eat(&TokenKind::Hash) {
+                    if self.newline_before_current() {
+                        return Err(
+                            self.error("expected a function name after '#' on the same line")
+                        );
+                    }
+                    ConstraintName::Function(self.ident()?)
+                } else {
+                    ConstraintName::Class(self.qualified_ident()?)
+                };
+                constraints.push(ConstraintExpr {
+                    name,
+                    ty: ty.clone(),
+                });
+                if self.newline_before_current() || !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
         }
         Ok(SignatureDecl {
             name,
@@ -1426,6 +1483,7 @@ impl Parser<'_> {
             && self.tokens[self.position - 1].span.end < self.current().span.start
             && match self.current().kind {
                 TokenKind::Ident(_)
+                | TokenKind::TypeVariable(_)
                 | TokenKind::Integer(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
@@ -1636,6 +1694,7 @@ impl Parser<'_> {
             TokenKind::True | TokenKind::False => {
                 ExprKind::Bool(self.take().kind == TokenKind::True)
             }
+            TokenKind::TypeVariable(_) => return self.type_function_expression(),
             TokenKind::Ident(_) => {
                 let mut name = self.ident()?;
                 if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
@@ -1685,6 +1744,21 @@ impl Parser<'_> {
         };
         let end = self.tokens[self.position - 1].span;
         self.make(kind, start.through(end), 1)
+    }
+
+    fn type_function_expression(&mut self) -> Result<Expr, Diagnostic> {
+        let variable = self.type_variable()?;
+        self.expect(
+            &TokenKind::Dot,
+            "'.' before a type-constrained function name",
+        )?;
+        let function = self.ident()?;
+        let span = variable.span.through(function.span);
+        self.make(
+            ExprKind::TypeFunction(Box::new(variable), Box::new(function)),
+            span,
+            1,
+        )
     }
 
     fn lambda(&mut self, name: Ident, stop_at_newline: bool) -> Result<Expr, Diagnostic> {

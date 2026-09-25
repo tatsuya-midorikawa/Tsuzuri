@@ -3,7 +3,7 @@ record Point { x: i32, y: i32 }
 def id :: 'a -> 'a
 fn id x = x
 
-def add :: 'a -> 'a -> 'a
+def add :: Add<'a> -> 'a -> 'a
 fn add x y = x + y
 
 def apply :: ('a -> 'b) -> 'a -> 'b
@@ -13,6 +13,7 @@ def twice :: 'a -> 'a
 fn twice x = add x x
 
 def increment :: 'a -> 'a
+    @'a : Add, Integer
 fn increment x = x + 1
 
 def rec sum :: i64 -> 'a -> 'a -> 'a
@@ -104,6 +105,49 @@ fn ordered = {
     let mut counter = 0;
     combine (tick (&mut counter)) (tick (&mut counter))
 }
+
+def distance :: Point -> i32
+fn distance point = point.x + point.y
+
+def distance_of :: 'T -> 'U
+    @'T : Copy, #distance
+fn distance_of value = apply 'T.distance value
+
+def forward_distance :: 'T -> 'U
+fn forward_distance value = distance_of value
+
+def scale_of :: 'T -> (f64 -> 'T)
+    @'T : #scale
+fn scale_of value = 'T.scale value
+
+def extract :: 'T -> 'U
+    @'T : #unwrap
+fn extract value = 'T.unwrap value
+
+def read_choice :: 'T -> i64
+    @'T : #count
+fn read_choice value = 'T.count value
+
+export def constrained_integer :: i32
+fn constrained_integer = forward_distance (Point { x: 20, y: 22 })
+
+export def constrained_floating :: f64 -> f64 -> f64
+fn constrained_floating x y = forward_distance (Geometry.Point { x: x, y: y })
+
+export def constrained_partial :: f64
+fn constrained_partial = {
+        let scale = scale_of (Geometry.Point { x: 3.0, y: 4.0 });
+        distance_of (scale 2.0)
+}
+
+export def constrained_owned :: i64
+fn constrained_owned = {
+        let text: string = extract (Geometry.Box { value: "owned" });
+        text.length
+}
+
+export def constrained_union :: i64
+fn constrained_union = read_choice (Geometry.Counted 42)
 
 def main :: i32
 fn main = classes()

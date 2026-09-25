@@ -167,6 +167,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 span: function.span,
                 type_parameters: Vec::new(),
                 constraints: Vec::new(),
+                members: Vec::new(),
                 capture_count: 0,
                 is_task: false,
             });
@@ -228,6 +229,7 @@ fn lower_expression(
                 span: expression.span,
                 type_parameters: Vec::new(),
                 constraints: Vec::new(),
+                members: Vec::new(),
                 capture_count: captures.len(),
                 is_task: matches!(expression.ty, Type::Task(_)),
             });
@@ -318,6 +320,7 @@ fn lower_expression(
                     span: expression.span,
                     type_parameters: Vec::new(),
                     constraints: Vec::new(),
+                    members: Vec::new(),
                     capture_count: 0,
                     is_task: false,
                 });
@@ -377,6 +380,7 @@ fn lower_expression(
                     span: expression.span,
                     type_parameters: Vec::new(),
                     constraints: Vec::new(),
+                    members: Vec::new(),
                     capture_count: 0,
                     is_task: false,
                 });

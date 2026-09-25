@@ -286,7 +286,7 @@ function multipleDiagnosticChecks() {
   }
   for (const [source, code] of [
     ["fn first =\nrecord R { x: i64 }\nfn second =\n", "E0002"],
-    ["@ @", "E0001"],
+    ["? ?", "E0001"],
     ['def consume :: string -> unit\nfn consume s = ()\ndef a :: unit\nfn a = { let s = "a"; consume s; consume s }\ndef b :: unit\nfn b = { let s = "b"; consume s; consume s }', "E1012"],
   ]) {
     writeFileSync(main, source);
@@ -396,6 +396,13 @@ int main(void) {
   assert(tz_owned() == 11);
   assert(tz_borrowed() == 8);
   assert(tz_ordered() == 12);
+  assert(tz_constrained_integer() == 42);
+  assert(tz_constrained_floating(3.0, 4.0) == 5.0);
+  assert(tz_constrained_floating(-3.0, 4.0) == 5.0);
+  assert(tz_constrained_floating(0.0, 0.0) == 0.0);
+  assert(tz_constrained_partial() == 10.0);
+  assert(tz_constrained_owned() == 5);
+  assert(tz_constrained_union() == 42);
   return 0;
 }
 `);
@@ -425,8 +432,15 @@ int main(void) {
     assert.equal(api.tz_owned(), 11n);
     assert.equal(api.tz_borrowed(), 8n);
     assert.equal(api.tz_ordered(), 12n);
+    assert.equal(api.tz_constrained_integer(), 42);
+    assert.equal(api.tz_constrained_floating(3.0, 4.0), 5.0);
+    assert.equal(api.tz_constrained_floating(-3.0, 4.0), 5.0);
+    assert.equal(api.tz_constrained_floating(0.0, 0.0), 0.0);
+    assert.equal(api.tz_constrained_partial(), 10.0);
+    assert.equal(api.tz_constrained_owned(), 5n);
+    assert.equal(api.tz_constrained_union(), 42n);
   }
-  console.log("Polymorphism: signatures, specialization, classes, ownership, evaluation order and tail recursion at -O0/-O3");
+  console.log("Polymorphism: signatures, specialization, class/function constraints, ownership, evaluation order and tail recursion at -O0/-O3");
 }
 
 async function moduleChecks() {
@@ -561,7 +575,7 @@ int main(void) {
   const broken = join(directory, "Broken.tz");
   for (const [source, code, line] of [
     ["// 日本語\nfn broken() -> i64 { false }", "E1003", 2],
-    ["fn broken() -> i64 { @ }", "E0001", 1],
+    ["fn broken() -> i64 { ? }", "E0001", 1],
     ["fn broken() -> i64 {", "E0002", 1],
   ]) {
     writeFileSync(broken, source);

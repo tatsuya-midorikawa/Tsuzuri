@@ -77,6 +77,8 @@ pub enum TokenKind {
     Comma,
     Dot,
     DotDot,
+    At,
+    Hash,
     Arrow,
     FatArrow,
     Equal,
@@ -197,8 +199,14 @@ pub struct Definition {
 
 #[derive(Clone, Debug)]
 pub struct ConstraintExpr {
-    pub class: Ident,
+    pub name: ConstraintName,
     pub ty: TypeExpr,
+}
+
+#[derive(Clone, Debug)]
+pub enum ConstraintName {
+    Class(Ident),
+    Function(Ident),
 }
 
 #[derive(Debug)]
@@ -292,6 +300,7 @@ pub enum ExprKind {
     Unit,
     Name(Ident),
     QualifiedFunction(Ident),
+    TypeFunction(Box<Ident>, Box<Ident>),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
