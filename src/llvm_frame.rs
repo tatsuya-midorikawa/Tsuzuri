@@ -29,15 +29,27 @@ pub(super) enum Frame {
 }
 
 /// Conservative stack bytes of one value, matching the documented value-layout rule.
-fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
+pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
     let fields = |types: &mut dyn Iterator<Item = &Type>| {
         types.fold(0usize, |total, ty| {
             total.saturating_add(stack_size(ty, module).next_multiple_of(16))
         })
     };
     match ty {
-        Type::Record(id) => fields(&mut module.records[*id].fields.iter().map(|(_, ty)| ty)),
+        Type::Record(id, arguments) => {
+            fields(&mut module.types().record_fields(*id, arguments).iter())
+        }
         Type::Tuple(elements) => fields(&mut elements.iter()),
+        Type::Union(id, arguments) => module
+            .types()
+            .union_payloads(*id, arguments)
+            .iter()
+            .flatten()
+            .map(|ty| stack_size(ty, module))
+            .max()
+            .map_or(8, |payload| {
+                16usize.saturating_add(payload.next_multiple_of(16))
+            }),
         Type::Integer(128, _)
         | Type::Binary(128)
         | Type::Decimal(128)
@@ -348,13 +360,7 @@ impl FunctionEmitter<'_, '_> {
 
     fn field_types(&self, ty: &Type) -> Option<Vec<Type>> {
         match ty {
-            Type::Record(id) => Some(
-                self.module.records[*id]
-                    .fields
-                    .iter()
-                    .map(|(_, ty)| ty.clone())
-                    .collect(),
-            ),
+            Type::Record(id, arguments) => Some(self.module.types().record_fields(*id, arguments)),
             Type::Tuple(elements) => Some(elements.clone()),
             _ => None,
         }
@@ -492,7 +498,7 @@ impl FunctionEmitter<'_, '_> {
             let llvm = self.ty(ty);
             let fields = Self::field_frames(frames);
             for (index, field) in types.iter().enumerate() {
-                if !field.needs_drop(&self.module.records) {
+                if !field.needs_drop(&self.module.types()) {
                     continue;
                 }
                 let extracted = self.value(format!("extractvalue {llvm} {value}, {index}"));
@@ -523,7 +529,7 @@ impl FunctionEmitter<'_, '_> {
         match (ty, frame) {
             (Type::String, Frame::String { .. }) => {}
             (Type::Array(element), Frame::Array { buffer, elements }) => {
-                if !element.needs_drop(&self.module.records) {
+                if !element.needs_drop(&self.module.types()) {
                     return;
                 }
                 let llvm = self.ty(element);
@@ -542,7 +548,7 @@ impl FunctionEmitter<'_, '_> {
                 }
             }
             (Type::List(element), Frame::List { nodes, elements }) => {
-                if !element.needs_drop(&self.module.records) {
+                if !element.needs_drop(&self.module.types()) {
                     return;
                 }
                 let llvm = self.ty(element);

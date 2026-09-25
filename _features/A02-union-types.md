@@ -1003,3 +1003,25 @@ node tests/examples.mjs target/release/tsuzuri
   実装後に IR サイズが大きすぎる場合だけ、payload alignment を計算して `[K x i64]` を選ぶ最適化を別 PR にする。
 - `CaseConstructor` を typed kind として残すか、hidden function だけで表すか。
   既定案は direct full application 最適化のため `CaseConstructor` を追加し、closures lowering 前に残ったものだけ hidden function に変換する。
+
+### 実装時の判断（A02）
+
+- 上の 3 点は既定案どおり実装した。case と同一モジュールの関数・アクティブパターン・自身の union 名との衝突は `E1001`
+  （同一モジュールの名前空間の表に従い、`union Pair = Pair of …` も拒否する）。
+- 一般形の `K` は、例の `Shape` が `[1 x i128]` になるよう、payload の実 LLVM storage size（64-bit、`i128` は 16 bytes 境界）から
+  `ceil(size / 16)` で求める。保守的な layout size から求めると `Rect of f64 * f64` が `K = 2` になり、例と矛盾するため。
+  64 KiB 判定と `stack_size` は `16 + round_up_16(conservative upper bound)` のままなので、見積もりは常に実サイズ以上になる。
+- ownership の place 経路は payload を番兵 `PAYLOAD = usize::MAX - 1` で表し、配列要素の `ELEMENT = usize::MAX` と区別する。
+  payload を move した union は payload slot を 0 で埋めるため、後続の union 全体の drop は `free(null)` の no-op になる。
+- `SwitchPlan` は tag を 1 回 load して `switch i32` へ下げる。OR パターンの各候補で payload 以下の Field 経路が同じ場合も switch に含める。
+  guard と参照越し（`ref (Maybe i64)`）の match は既存の順次テストへ fallback し、非網羅の default は A03 まで `llvm.trap`。
+- match は subject slot から tag と payload を GEP + load で読むため、テスト計画の `extractvalue %"tz.union.Main.Shape"` は生成しない。
+  IR テストは構築の `insertvalue` と、slot からの `load i32`／payload GEP を検査する。
+- テスト計画の `Option.tc` 例は、`.tc` がビルダー操作を必須とするため `Option.tz` で検証した。`.tc` 内の union は別の `Maybe.tc` ビルダーで検証する。
+- E2E は `tests/unions.mjs` ではなく、既存の `tests/features.mjs` の `unions` suite（`tests/fixtures/unions/`）に置いた。
+- 再帰 union の診断文は `recursive union layout for '{name}'; recursive heap types are not supported in 0.1`（`E1010`）。
+  型引数を決められない `let x = Some` は `E1015`。パターンの未知名の診断文は `unknown union case or active pattern '{name}'` に変更した。
+- 4095 フィールドの payload は native・wasm32 とも build できるが、V8 は `-O0` の WASM で引数が 1000 を超える関数の instantiate を拒否する。
+  同じフィールド数のレコードでも起きる既存の ABI 制約で、union 固有ではない。
+- nullary enum の conservative size 8 は、集約の各メンバーが 16 bytes に丸められるため外部から観測できない。
+- 台帳の見直し提案はない。

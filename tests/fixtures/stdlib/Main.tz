@@ -1,0 +1,7 @@
+// Uses the embedded standard library; unused std code must not reach the IR.
+export def answer :: i64
+fn answer = (Math.zero() as i64) + 42
+
+// `unreachable ()` traps and has the type its context needs.
+export def checked :: i64 -> i64
+fn checked n = if n >= 0 then n else unreachable ()

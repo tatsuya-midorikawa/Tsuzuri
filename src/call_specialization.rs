@@ -34,7 +34,7 @@ impl Specializations {
                     .enumerate()
                     .filter(|(_, parameter)| {
                         matches!(parameter.ty, Type::Function(..))
-                            && !function.signature.result.carries_loans(&module.records)
+                            && !function.signature.result.carries_loans(&module.types())
                     })
                     .map(|(index, _)| index)
                     .collect()
@@ -74,10 +74,10 @@ impl Specializations {
             let function = &module.functions[target.function];
             !function.is_task
                 && target.bound <= function.parameters.len()
-                && !function.signature.result.carries_loans(&module.records)
+                && !function.signature.result.carries_loans(&module.types())
                 && function.parameters[..target.bound].iter().all(|parameter| {
-                    parameter.ty.can_capture(&module.records)
-                        && (!parameter.ty.needs_drop(&module.records)
+                    parameter.ty.can_capture(&module.types())
+                        && (!parameter.ty.needs_drop(&module.types())
                             || read_only(&function.body, parameter.id, Access::Consume, module))
                 })
         })
@@ -223,10 +223,11 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
             Type::Array(ty) | Type::List(ty) | Type::Reference(ty, false) => {
                 mutable_reference(ty, module)
             }
-            Type::Record(id) => module.records[*id]
-                .fields
+            Type::Record(id, arguments) => module
+                .types()
+                .record_fields(*id, arguments)
                 .iter()
-                .any(|(_, ty)| mutable_reference(ty, module)),
+                .any(|ty| mutable_reference(ty, module)),
             Type::Tuple(elements) => elements.iter().any(|ty| mutable_reference(ty, module)),
             _ => false,
         }
@@ -294,7 +295,7 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
     use TypedExprKind::*;
     match &expression.kind {
         Local(id) if *id == local => match access {
-            Access::Consume => expression.ty.is_copy(&module.records),
+            Access::Consume => expression.ty.is_copy(&module.types()),
             Access::Read => true,
             Access::Write => false,
         },
@@ -312,9 +313,11 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
             read_only(place, local, Access::Write, module)
                 && read_only(value, local, Access::Consume, module)
         }
-        Field(value, _) | Index(value, _) if FunctionEmitter::is_place(expression) => {
+        Field(value, _) | Index(value, _) | UnionPayload { value, .. }
+            if FunctionEmitter::is_place(expression) =>
+        {
             let access = match access {
-                Access::Consume if expression.ty.is_copy(&module.records) => Access::Read,
+                Access::Consume if expression.ty.is_copy(&module.types()) => Access::Read,
                 other => other,
             };
             read_only(value, local, access, module)
@@ -323,7 +326,9 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
                     _ => true,
                 }
         }
-        Length(value) | StringLength(value) => read_only(value, local, Access::Read, module),
+        Length(value) | StringLength(value) | UnionTag(value) => {
+            read_only(value, local, Access::Read, module)
+        }
         Binary(BinaryOp::Equal | BinaryOp::NotEqual, left, right) if left.ty == Type::String => {
             read_only(left, local, Access::Read, module)
                 && read_only(right, local, Access::Read, module)

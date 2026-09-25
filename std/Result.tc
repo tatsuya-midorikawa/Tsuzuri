@@ -1,0 +1,127 @@
+union Result 'a 'e =
+    | Ok of 'a
+    | Error of 'e
+
+def is_ok :: &(Result 'a 'e) -> bool
+fn is_ok result =
+    match result with
+    | Ok _ -> true
+    | Error _ -> false
+
+def is_error :: &(Result 'a 'e) -> bool
+fn is_error result = ! (is_ok result)
+
+def get :: Result 'a 'e -> 'a
+fn get result =
+    match result with
+    | Ok value -> value
+    | Error _ -> unreachable ()
+
+def get_error :: Result 'a 'e -> 'e
+fn get_error result =
+    match result with
+    | Error error -> error
+    | Ok _ -> unreachable ()
+
+def default_value :: 'a -> Result 'a 'e -> 'a
+fn default_value fallback result =
+    match result with
+    | Ok value -> value
+    | Error _ -> fallback
+
+def default_with :: (unit -> 'a) -> Result 'a 'e -> 'a
+fn default_with fallback result =
+    match result with
+    | Ok value -> value
+    | Error _ -> fallback ()
+
+def map :: ('a -> 'b) -> Result 'a 'e -> Result 'b 'e
+fn map transform result =
+    match result with
+    | Ok value -> Ok (transform value)
+    | Error error -> Error error
+
+def map_ref :: Copy 'e => (&'a -> 'b) -> &(Result 'a 'e) -> Result 'b 'e
+fn map_ref transform result =
+    match result with
+    | Ok value -> Ok (transform (&value))
+    | Error error -> Error error
+
+def map_error :: ('e -> 'f) -> Result 'a 'e -> Result 'a 'f
+fn map_error transform result =
+    match result with
+    | Ok value -> Ok value
+    | Error error -> Error (transform error)
+
+def bind :: Result 'a 'e -> ('a -> Result 'b 'e) -> Result 'b 'e
+fn bind result next =
+    match result with
+    | Ok value -> next value
+    | Error error -> Error error
+
+def bind_ref :: Copy 'e => &(Result 'a 'e) -> (&'a -> Result 'b 'e) -> Result 'b 'e
+fn bind_ref result next =
+    match result with
+    | Ok value -> next (&value)
+    | Error error -> Error error
+
+def or_else :: Result 'a 'e -> (unit -> Result 'a 'e) -> Result 'a 'e
+fn or_else result fallback =
+    match result with
+    | Ok value -> Ok value
+    | Error _ -> fallback ()
+
+def to_option :: Result 'a 'e -> Option.Option 'a
+fn to_option result =
+    match result with
+    | Ok value -> Option.Some value
+    | Error _ -> Option.None
+
+def of_option :: 'e -> Option.Option 'a -> Result 'a 'e
+fn of_option error option =
+    match option with
+    | Option.Some value -> Ok value
+    | Option.None -> Error error
+
+def Return :: 'a -> Result 'a 'e
+fn Return value = Ok value
+
+def ReturnFrom :: Result 'a 'e -> Result 'a 'e
+fn ReturnFrom result = result
+
+def Bind :: Result 'a 'e -> ('a -> Result 'b 'e) -> Result 'b 'e
+fn Bind result next = bind result next
+
+def Zero :: Result unit 'e
+fn Zero = Ok ()
+
+def Delay :: (unit -> Result 'a 'e) -> (unit -> Result 'a 'e)
+fn Delay body = body
+
+def Run :: (unit -> Result 'a 'e) -> Result 'a 'e
+fn Run body = body ()
+
+def Combine :: Result unit 'e -> (unit -> Result 'a 'e) -> Result 'a 'e
+fn Combine first rest =
+    match first with
+    | Ok _ -> rest ()
+    | Error error -> Error error
+
+def For :: Copy 'a => ['a] -> ('a -> Result unit 'e) -> Result unit 'e
+fn For values body = for_loop values body 0
+
+private def rec for_loop :: Copy 'a => ['a] -> ('a -> Result unit 'e) -> i64 -> Result unit 'e
+fn rec for_loop values body index =
+    if index == values.length then Ok ()
+    else
+        match body values[index] with
+        | Ok _ -> for_loop values body (index + 1)
+        | Error error -> Error error
+
+def rec While :: (unit -> bool) -> (unit -> Result unit 'e) -> Result unit 'e
+fn rec While guard body =
+    if guard () then
+        match body () with
+        | Ok _ -> While guard body
+        | Error error -> Error error
+    else Ok ()

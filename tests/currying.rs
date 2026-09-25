@@ -171,7 +171,7 @@ fn rejects_invalid_definitions_and_bounds_lambda_nesting() {
     rejects("def f :: i32 -> i32\nlet f = 1", "E0002");
     rejects("def f :: i32 -> i32\nlet f = x -> x\nfn f x = x", "E1001");
     rejects("def f :: i32 -> i32 -> i32\nlet f = x -> x -> x", "E1001");
-    rejects("def f :: Missing 'a -> 'a\nfn f x = x", "E1016");
+    rejects("def f :: Missing 'a -> 'a\nfn f x = x", "E1004");
     rejects("def f :: Copy 'a -> 'a\nfn f x = x\nf \"owned\"", "E1005");
     rejects("def f :: i32 -> i32\nfn f x = x\nf 1 2", "E1006");
     rejects(
@@ -203,10 +203,10 @@ fn curries_builtins_methods_module_functions_and_pipelines() {
     );
     let module = analyze_modules(&[
         (
-            "Math",
+            "Arith",
             "def add :: Add 'a -> 'a -> 'a\nlet add = x -> y -> x + y",
         ),
-        ("Main", "let f = Math.add 20i32\nf 22"),
+        ("Main", "let f = Arith.add 20i32\nf 22"),
     ])
     .unwrap();
     llvm::emit(&module, llvm::Entry::Console).unwrap();

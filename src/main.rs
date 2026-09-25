@@ -15,7 +15,7 @@ Usage:
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 
 Each source file is one module named after its filename:
-  .tz  Code (records, functions, and type class instances)
+  .tz  Code (records, unions, functions, and type class instances)
   .tt  Type class declarations (multiple classes per file)
   .tc  One computation expression builder (its operations and helpers)
 All sibling .tz, .tt, and .tc files are loaded together.
@@ -219,15 +219,45 @@ fn next_value<'a>(
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
+    print_with_severity("error", error, input, source, json);
+}
+
+fn print_with_severity(
+    severity: &str,
+    diagnostic: &Diagnostic,
+    input: &Path,
+    source: &str,
+    json: bool,
+) {
     let path = input.to_string_lossy();
     eprintln!(
         "{}",
         if json {
-            error.json(&path, source)
+            diagnostic.json_with_severity(severity, &path, source)
         } else {
-            error.render(&path, source)
+            diagnostic.render_with_severity(severity, &path, source)
         }
     );
+}
+
+fn run_action(
+    arguments: &Arguments,
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+) -> Result<Vec<String>, Diagnostic> {
+    match arguments.action {
+        Action::Check => Ok(Vec::new()),
+        Action::Build => driver::build(
+            module,
+            project,
+            &arguments
+                .output
+                .clone()
+                .unwrap_or_else(|| arguments.options.output_path(project.input())),
+            arguments.options,
+        ),
+        Action::Run => driver::run(module, project, arguments.options),
+    }
 }
 
 fn main() -> ExitCode {
@@ -271,17 +301,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = project.analyze().and_then(|module| match arguments.action {
-        Action::Check => Ok(Vec::new()),
-        Action::Build => driver::build(
-            &module,
-            &project,
-            &arguments
-                .output
-                .unwrap_or_else(|| arguments.options.output_path(project.input())),
-            arguments.options,
-        ),
-        Action::Run => driver::run(&module, &project, arguments.options),
+    let result = project.analyze().and_then(|module| {
+        for warning in &module.warnings {
+            let source = project.source_for(warning);
+            print_with_severity(
+                "warning",
+                warning,
+                &source.path,
+                &source.text,
+                arguments.json,
+            );
+        }
+        run_action(&arguments, &project, &module)
     });
     match result {
         Ok(messages) => {

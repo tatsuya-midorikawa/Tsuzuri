@@ -101,6 +101,39 @@ fn matches_patterns_and_guards() {
     rejects("match (1, 2) with | (x, x) -> x", "E1001");
     rejects("match (1, 2) with | (x, _) | (_, y) -> 0", "E1020");
     rejects("match (1, true) with | (x, _) | (_, x) -> x", "E1003");
+    rejects("match 2 with | 1 -> 0", "E1021");
+    rejects("match true with | true -> 1", "E1021");
+    rejects(
+        "def f :: bool -> i64\nfn f x\n    | true -> 1\nf true",
+        "E1021",
+    );
+}
+
+#[test]
+fn match_origin_destructuring() {
+    // Destructuring keeps its runtime trap instead of the exhaustiveness check.
+    for source in [
+        "for [x] in [[1], [2, 3]] do ()",
+        "(fx [x] -> x) [1, 2]",
+        "union Maybe 'a = None | Some of 'a\nlet f = fx (Some n) -> n\nf (Some 1)",
+        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nfor Even in [2, 3] do ()",
+        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\n(fx Even -> 42) 3",
+    ] {
+        let ir = accepts(source);
+        assert!(ir.contains("@llvm.trap"), "{source}");
+        assert!(analyze(source).unwrap().warnings.is_empty(), "{source}");
+    }
+    let module = analyze_modules(&[
+        (
+            "Arrays.tc",
+            "def For :: [[i64]] -> ([i64] -> i64) -> i64\nfn For values f = f values[0]\ndef Yield :: i64 -> i64\nfn Yield n = n",
+        ),
+        ("Main.tz", "Arrays { for [x] in [[42]] do { yield x } }"),
+    ])
+    .unwrap();
+    assert!(module.warnings.is_empty());
+    // A written match is checked even when it only destructures.
+    rejects("match [1] with | [x] -> x", "E1021");
 }
 
 #[test]

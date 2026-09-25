@@ -69,7 +69,7 @@ impl Checker<'_> {
                 body.ty.clone(),
             )
         };
-        validate_size(&ty, self.record_sizes, span)?;
+        validate_size(&ty, &self.types, span)?;
         if let Some(expected) = expected {
             self.same(&ty, expected, span)?;
         }
@@ -102,12 +102,27 @@ fn free_locals(expression: &TypedExpr, used: &mut BTreeSet<usize>) {
     }
 }
 
+/// Generated functions that stand for builtins and case constructors used as
+/// values, one per concrete instance.
+#[derive(Default)]
+struct Generated {
+    builtins: BTreeMap<(BuiltinInstance, Type), usize>,
+    cases: BTreeMap<(usize, usize, Box<[Type]>), usize>,
+}
+
 pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnostic> {
-    let mut builtins = BTreeMap::new();
+    let mut generated = Generated::default();
     let original_count = module.functions.len();
     for id in 0..original_count {
         let mut body = module.functions[id].body.clone();
-        lower_expression(&mut body, &mut module.functions, &mut builtins)?;
+        let origin = module.functions[id].origin.generated(id);
+        lower_expression(
+            &mut body,
+            &mut module.functions,
+            &module.unions,
+            &mut generated,
+            origin,
+        )?;
         module.functions[id].body = body;
     }
     let mut bridges = Vec::new();
@@ -135,7 +150,9 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             let arguments = parameters.iter().map(local_value).collect();
             bridges.push(CheckedFunction {
                 module: "$export".into(),
+                origin: function.origin.generated(id),
                 name: function.name.clone(),
+                visibility: Visibility::Public,
                 exported: true,
                 parameters,
                 signature: Signature {
@@ -168,10 +185,14 @@ fn local_value(local: &Local) -> TypedExpr {
     }
 }
 
+/// Lowers lambdas, builtin values, and case constructor values in
+/// `expression` to generated functions, which inherit `origin`.
 fn lower_expression(
     expression: &mut TypedExpr,
     functions: &mut Vec<CheckedFunction>,
-    builtins: &mut BTreeMap<(Builtin, Type), usize>,
+    unions: &[CheckedUnion],
+    generated: &mut Generated,
+    origin: FunctionOrigin,
 ) -> Result<(), Diagnostic> {
     use TypedExprKind::*;
     match &mut expression.kind {
@@ -180,7 +201,7 @@ fn lower_expression(
             captures,
             body,
         } => {
-            lower_expression(body, functions, builtins)?;
+            lower_expression(body, functions, unions, generated, origin)?;
             let id = functions.len();
             let mut all_parameters = captures.clone();
             all_parameters.extend(parameters.iter().cloned());
@@ -191,7 +212,9 @@ fn lower_expression(
                     "$lambda"
                 }
                 .into(),
+                origin,
                 name: id.to_string(),
+                visibility: Visibility::Public,
                 exported: false,
                 signature: Signature {
                     parameters: all_parameters
@@ -210,48 +233,64 @@ fn lower_expression(
             });
             expression.kind = Closure(id, captures.iter().map(local_value).collect());
         }
-        Function(FunctionRef::Builtin(builtin)) => {
-            let builtin = *builtin;
-            let key = (builtin, expression.ty.clone());
-            let id = if let Some(id) = builtins.get(&key) {
+        Function(FunctionRef::Builtin(instance)) => {
+            let key = (instance.clone(), expression.ty.clone());
+            let id = if let Some(id) = generated.builtins.get(&key) {
                 *id
             } else {
+                // One wrapper per instance takes every scheme parameter;
+                // closure wrappers provide partial application.
+                let builtin = instance.builtin;
+                let scheme = builtin.scheme();
+                let arity = scheme.parameters.len();
                 let Type::Function(types, _) = &expression.ty else {
                     unreachable!()
                 };
                 let signature = Signature {
-                    parameters: vec![types[0].clone()],
-                    result: expression.ty.after_arguments(1),
+                    parameters: types[..arity].to_vec(),
+                    result: expression.ty.after_arguments(arity),
                 };
-                let parameter = super::Local {
-                    id: 0,
-                    ty: signature.parameters[0].clone(),
-                    name: "value".into(),
-                    mutable: false,
-                    span: expression.span,
-                };
+                let parameters: Vec<_> = signature
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .map(|(id, ty)| super::Local {
+                        id,
+                        ty: ty.clone(),
+                        name: if arity == 1 {
+                            "value".into()
+                        } else {
+                            format!("value{id}")
+                        },
+                        mutable: false,
+                        span: expression.span,
+                    })
+                    .collect();
                 let callee = TypedExpr {
-                    kind: Function(FunctionRef::Builtin(builtin)),
+                    kind: Function(FunctionRef::Builtin(instance.clone())),
                     ty: signature.as_type(),
                     span: expression.span,
                 };
                 let kind = match builtin {
-                    Builtin::TaskRun => TaskRun(Box::new(local_value(&parameter))),
+                    Builtin::TaskRun => TaskRun(Box::new(local_value(&parameters[0]))),
                     Builtin::TaskParallel => {
                         let Type::Task(result) = &signature.result else {
                             unreachable!()
                         };
                         Lambda {
                             parameters: Vec::new(),
-                            captures: vec![parameter.clone()],
+                            captures: vec![parameters[0].clone()],
                             body: Box::new(TypedExpr {
-                                kind: TaskParallel(Box::new(local_value(&parameter))),
+                                kind: TaskParallel(Box::new(local_value(&parameters[0]))),
                                 ty: (**result).clone(),
                                 span: expression.span,
                             }),
                         }
                     }
-                    _ => Call(Box::new(callee), vec![local_value(&parameter)]),
+                    _ => Call(
+                        Box::new(callee),
+                        parameters.iter().map(local_value).collect(),
+                    ),
                 };
                 let mut body = TypedExpr {
                     kind,
@@ -259,18 +298,21 @@ fn lower_expression(
                     span: expression.span,
                 };
                 if builtin == Builtin::TaskParallel {
-                    lower_expression(&mut body, functions, builtins)?;
+                    lower_expression(&mut body, functions, unions, generated, origin)?;
                 }
                 let id = functions.len();
                 functions.push(CheckedFunction {
                     module: "$builtin".into(),
-                    name: if matches!(builtin, Builtin::TaskRun | Builtin::TaskParallel) {
-                        format!("{}.{id}", builtin.name())
-                    } else {
+                    origin,
+                    // Instances of a polymorphic builtin get distinct symbols.
+                    name: if scheme.variables.is_empty() {
                         builtin.name().into()
+                    } else {
+                        format!("{}.{id}", builtin.name())
                     },
+                    visibility: Visibility::Public,
                     exported: false,
-                    parameters: vec![parameter],
+                    parameters,
                     signature,
                     body,
                     span: expression.span,
@@ -279,14 +321,73 @@ fn lower_expression(
                     capture_count: 0,
                     is_task: false,
                 });
-                builtins.insert(key, id);
+                generated.builtins.insert(key, id);
+                id
+            };
+            expression.kind = Function(FunctionRef::User(id));
+        }
+        CaseConstructor {
+            union_id,
+            case_id,
+            args,
+        } => {
+            let (union_id, case_id) = (*union_id, *case_id);
+            let key = (union_id, case_id, args.clone());
+            let id = if let Some(id) = generated.cases.get(&key) {
+                *id
+            } else {
+                let Type::Function(parameters, result) = &expression.ty else {
+                    unreachable!("a case constructor is a function value")
+                };
+                let parameter = super::Local {
+                    id: 0,
+                    ty: parameters[0].clone(),
+                    name: "payload".into(),
+                    mutable: false,
+                    span: expression.span,
+                };
+                let id = functions.len();
+                let union = &unions[union_id];
+                // Instances of a generic union get distinct symbols.
+                let instance = if args.is_empty() {
+                    std::string::String::new()
+                } else {
+                    format!(".$mono.{id}")
+                };
+                functions.push(CheckedFunction {
+                    module: "$case".into(),
+                    origin,
+                    name: format!("{}.{}{instance}", union.name, union.cases[case_id].0),
+                    visibility: Visibility::Public,
+                    exported: false,
+                    signature: Signature {
+                        parameters: vec![parameter.ty.clone()],
+                        result: (**result).clone(),
+                    },
+                    body: TypedExpr {
+                        kind: Construct {
+                            union_id,
+                            case_id,
+                            payload: Some(Box::new(local_value(&parameter))),
+                        },
+                        ty: (**result).clone(),
+                        span: expression.span,
+                    },
+                    parameters: vec![parameter],
+                    span: expression.span,
+                    type_parameters: Vec::new(),
+                    constraints: Vec::new(),
+                    capture_count: 0,
+                    is_task: false,
+                });
+                generated.cases.insert(key, id);
                 id
             };
             expression.kind = Function(FunctionRef::User(id));
         }
         _ => {
             for child in expression.children_mut() {
-                lower_expression(child, functions, builtins)?;
+                lower_expression(child, functions, unions, generated, origin)?;
             }
         }
     }

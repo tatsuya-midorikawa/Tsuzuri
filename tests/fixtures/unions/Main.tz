@@ -1,0 +1,189 @@
+union Shape =
+    | Circle of f64
+    | Rect of f64 * f64
+    | Empty
+
+union Maybe 'a = None | Some of 'a
+union Color = Red | Green | Blue
+union Pick = Left of i64 | Right of i64 | Neither
+record Tagged { label: string, shape: Shape }
+record Holder { item: Maybe string }
+
+def area :: Shape -> f64
+fn area shape =
+    match shape with
+    | Circle r -> r * r * 3.141592653589793
+    | Rect (w, h) -> w * h
+    | Empty -> 0.0
+
+def default_value :: 'a -> Maybe 'a -> 'a
+fn default_value fallback value =
+    match value with
+    | Some x -> x
+    | None -> fallback
+
+def color_code :: Color -> i64
+fn color_code color =
+    match color with
+    | Red -> 1
+    | Green -> 2
+    | Blue -> 3
+
+def apply :: ('a -> 'b) -> 'a -> 'b
+fn apply f x = f x
+
+def text_length :: Maybe string -> i64
+fn text_length value =
+    match value with
+    | Some text -> text.length
+    | None -> 0
+
+def sum_maybe :: Maybe [i64] -> i64
+fn sum_maybe value =
+    match value with
+    | Some items ->
+        let mut total = 0
+        for item in items do
+            total = total + item
+        total
+    | None -> 0
+
+def describe :: Maybe Tagged -> i64
+fn describe value =
+    match value with
+    | Some Tagged { label = text; shape = s } -> text.length * 10 + to_int (area s)
+    | None -> 0
+
+def total :: [Maybe i64] -> i64
+fn total items =
+    let mut sum = 0
+    for item in items do
+        match item with
+        | Some n -> sum = sum + n
+        | None -> ()
+    sum
+
+def borrowed :: ref (Maybe i64) -> i64
+fn borrowed value =
+    match value with
+    | Some n -> n
+    | None -> 0
+
+def remote_radius :: Shapes.Shape -> i64
+fn remote_radius shape =
+    match shape with
+    | Shapes.Circle r -> to_int r
+    | Shapes.Empty -> 0
+
+export def shape_area_scaled :: i64
+fn shape_area_scaled =
+    let a = area (Circle 2.0)
+    let b = area (Rect (3.0, 4.0))
+    to_int ((a + b) * 1000.0)
+
+export def maybe_number :: i64
+fn maybe_number =
+    default_value 10 (Some 42)
+
+export def maybe_string_length :: i64
+fn maybe_string_length =
+    let value = default_value "fallback" (Some "owned")
+    value.length
+
+export def color_sum :: i64
+fn color_sum =
+    color_code Red * 100 + color_code Green * 10 + color_code Blue
+
+export def constructors :: i64 -> i64
+fn constructors n =
+    let wrap = Some
+    let a = default_value 0 (apply Some n)
+    let b = default_value 0 (n |> Some)
+    let c = default_value 0 (wrap (n + 1))
+    let text = default_value "" (apply Some "abc")
+    a + b * 10 + c * 100 + text.length * 1000
+
+export def either :: i64 -> i64
+fn either n =
+    let pick = if n > 0 then Left n elif n < 0 then Right (0 - n) else Neither
+    match pick with
+    | Left x | Right x -> x * 2
+    | Neither -> 7
+
+export def guarded :: i64 -> i64
+fn guarded n =
+    let source = "guarded"
+    let value = Some (clone_string ref source)
+    match value with
+    | Some text when text.length > n -> text.length
+    | Some text -> text.length + 100
+    | None -> 0
+
+export def nested :: i64 -> i64
+fn nested n =
+    let value = if n > 0 then Some (Some n) elif n == 0 then Some None else None
+    match value with
+    | Some (Some x) -> x
+    | Some None -> 100
+    | None -> 200
+
+export def containers :: i64 -> i64
+fn containers n =
+    let shapes = [Circle 1.0, Rect (2.0, to_float n), Empty]
+    let mut total = 0.0
+    for shape in shapes do
+        total = total + area shape
+    let options = [|Some n, None, Some (n * 2)|]
+    let mut count = 0
+    for option in options do
+        count = count + default_value 1000 option
+    let tagged = Tagged { label: "box", shape: Rect (2.0, 3.0) }
+    to_int total + count * 100 + describe (Some tagged) * 10000
+
+export def owned_collections :: i64 -> i64
+fn owned_collections n =
+    let holder = Holder { item: Some "abc" }
+    let field = match holder.item with
+        | Some t -> t.length
+        | None -> 0
+    let texts = [Some "a", None, Some "bcd"]
+    let list = [|None, Some "xy"|]
+    let nested_value = if n > 0 then Some (Some "abcd") else Some None
+    let inner = match nested_value with
+        | Some (Some text) -> text.length
+        | Some None -> 9
+        | None -> 0
+    let kept = Some n
+    field + total [Some 1, None, Some 2] + texts.length * 1000 + list.length * 100 + inner * 10000 + borrowed ref kept * 100000
+
+export def copy_reuse :: i64 -> i64
+fn copy_reuse n =
+    let value = Some [n, n + 1, n + 2]
+    let first = sum_maybe value
+    let color = Blue
+    let again = color_code color + color_code color
+    first * 1000 + sum_maybe value * 10 + again
+
+export def captured :: i64 -> i64
+fn captured n =
+    let label = Some "abc"
+    let shape = Rect (to_float n, 2.0)
+    let measure = x -> x + to_int (area shape) + text_length label
+    measure 1 + measure 2
+
+export def qualified :: i64 -> i64
+fn qualified n =
+    let remote = Shapes.Shape.Circle (to_float n)
+    remote_radius remote * 10 + remote_radius Shapes.Empty + to_int (Shapes.radius (Shapes.Circle 2.0)) + to_int (area (Circle 1.0))
+
+export def churn :: i64 -> i64
+fn churn n =
+    let base = "payload"
+    let mut total = 0
+    let mut i = 0
+    while i < n do
+        let value = if i % 3 == 0 then None else Some (clone_string ref base)
+        let copied = Some [i, 1]
+        total = total + text_length value + sum_maybe copied + sum_maybe copied
+        i = i + 1
+    total

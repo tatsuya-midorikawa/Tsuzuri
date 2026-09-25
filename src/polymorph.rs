@@ -42,11 +42,17 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
             parameters.iter().map(|ty| map_type(ty, f)).collect(),
             map_type(result, f),
         ),
+        Type::Record(id, args) if !args.is_empty() => {
+            Type::Record(*id, args.iter().map(|ty| map_type(ty, f)).collect())
+        }
+        Type::Union(id, args) if !args.is_empty() => {
+            Type::Union(*id, args.iter().map(|ty| map_type(ty, f)).collect())
+        }
         _ => f(ty),
     }
 }
 
-fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
+pub(super) fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
     map_type(ty, &mut |ty| match ty {
         Type::Variable(name) => substitutions
             .get(name)
@@ -71,6 +77,9 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
                     && visit(result, depth + 1, count)
             }
             Type::Tuple(elements) => elements.iter().all(|ty| visit(ty, depth + 1, count)),
+            Type::Record(_, arguments) | Type::Union(_, arguments) => {
+                arguments.iter().all(|ty| visit(ty, depth + 1, count))
+            }
             _ => true,
         }
     }
@@ -137,6 +146,12 @@ impl Inference {
                 parameters.iter().map(|ty| self.resolve(ty)).collect(),
                 self.resolve(result),
             ),
+            Type::Record(id, args) => {
+                Type::Record(*id, args.iter().map(|ty| self.resolve(ty)).collect())
+            }
+            Type::Union(id, args) => {
+                Type::Union(*id, args.iter().map(|ty| self.resolve(ty)).collect())
+            }
             _ => ty.clone(),
         }
     }
@@ -145,7 +160,7 @@ impl Inference {
         &mut self,
         actual: &Type,
         expected: &Type,
-        records: &[CheckedRecord],
+        types: &TypeContext<'_>,
         span: Span,
     ) -> Result<(), Diagnostic> {
         let actual = self.resolve(actual);
@@ -170,20 +185,48 @@ impl Inference {
             (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b))
             | (Type::Task(a), Type::Task(b)) => {
-                return self.unify(a, b, records, span);
+                return self.unify(a, b, types, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
-                return self.unify(a, b, records, span);
+                return self.unify(a, b, types, span);
             }
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
                 for (a, b) in a.iter().zip(b) {
-                    self.unify(a, b, records, span)?;
+                    self.unify(a, b, types, span)?;
+                }
+                return Ok(());
+            }
+            (Type::Record(a_id, a), Type::Record(b_id, b))
+            | (Type::Union(a_id, a), Type::Union(b_id, b))
+                if a_id == b_id && a.len() == b.len() =>
+            {
+                let inferred = |ty: &Type| {
+                    let mut inferred = false;
+                    map_type(ty, &mut |ty| {
+                        inferred |= matches!(ty, Type::Infer(_));
+                        ty.clone()
+                    });
+                    inferred
+                };
+                for (a, b) in a.iter().zip(b) {
+                    self.unify(a, b, types, span).map_err(|mut error| {
+                        // Report the whole type when both sides were known before unification;
+                        // partially inferred arguments would otherwise show intermediate bindings.
+                        if error.code == "E1003" && !inferred(&actual) && !inferred(&expected) {
+                            error.message = format!(
+                                "expected {}, found {}",
+                                expected.display(types),
+                                actual.display(types)
+                            );
+                        }
+                        error
+                    })?;
                 }
                 return Ok(());
             }
             (Type::Function(a, x), Type::Function(b, y)) if a.is_empty() == b.is_empty() => {
                 for (a, b) in a.iter().zip(b) {
-                    self.unify(a, b, records, span)?;
+                    self.unify(a, b, types, span)?;
                 }
                 let common = a.len().min(b.len());
                 let tail = |parameters: &[Type], result: &Type| {
@@ -193,7 +236,7 @@ impl Inference {
                         Type::function(parameters[common..].to_vec(), result.clone())
                     }
                 };
-                return self.unify(&tail(a, x), &tail(b, y), records, span);
+                return self.unify(&tail(a, x), &tail(b, y), types, span);
             }
             _ => {}
         }
@@ -201,8 +244,8 @@ impl Inference {
             "E1003",
             format!(
                 "expected {}, found {}",
-                expected.display(records),
-                actual.display(records)
+                expected.display(types),
+                actual.display(types)
             ),
             span,
         ))
@@ -263,11 +306,31 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
     }
 }
 
+/// Built-in class names; they share the type namespace with record types.
+pub(super) const BUILTIN_CLASSES: [&str; 16] = [
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "Rem",
+    "Eq",
+    "Ord",
+    "Bits",
+    "Neg",
+    "Integer",
+    "SignedInteger",
+    "Float",
+    "Numeric",
+    "Copy",
+    "Capture",
+    "Send",
+];
+
 impl Classes {
     pub fn collect(
-        modules: &[(&str, &Program)],
+        modules: &[ModuleInput<'_>],
         names: &Names,
-        sizes: &[usize],
+        types: &TypeContext<'_>,
     ) -> Result<Self, Diagnostic> {
         use BinaryOp::*;
         let mut classes = Self {
@@ -275,24 +338,7 @@ impl Classes {
             names: BTreeMap::new(),
             implementations: BTreeMap::new(),
         };
-        for name in [
-            "Add",
-            "Sub",
-            "Mul",
-            "Div",
-            "Rem",
-            "Eq",
-            "Ord",
-            "Bits",
-            "Neg",
-            "Integer",
-            "SignedInteger",
-            "Float",
-            "Numeric",
-            "Copy",
-            "Capture",
-            "Send",
-        ] {
+        for name in BUILTIN_CLASSES {
             classes
                 .names
                 .insert(name.into(), classes.declarations.len());
@@ -356,7 +402,12 @@ impl Classes {
                 operation: Some(Operation::Unary(operator)),
             });
         }
-        for (module, program) in modules {
+        for &ModuleInput {
+            name: module,
+            program,
+            ..
+        } in modules
+        {
             for declaration in &program.classes {
                 let qualified = format!("{module}.{}", declaration.name.text);
                 if declaration.name.text == "_"
@@ -403,7 +454,7 @@ impl Classes {
                             .collect::<Result<_, _>>()?,
                         result: resolve_type(&method.result, module, names)?,
                     };
-                    validate_size(&signature.as_type(), sizes, method.name.span)?;
+                    validate_size(&signature.as_type(), types, method.name.span)?;
                     bounded_type(&signature.as_type(), method.name.span)?;
                     if variables(&signature.as_type()) != [declaration.variable.text.clone()] {
                         return Err(Diagnostic::new(
@@ -436,21 +487,29 @@ impl Classes {
         Ok(classes)
     }
 
-    fn find(&self, module: &str, name: &str) -> Option<usize> {
-        self.names
-            .get(&format!("{module}.{name}"))
-            .or_else(|| self.names.get(name))
-            .copied()
+    /// Finds a class through the tiered name lookup of GUIDE D-07. A class
+    /// that `collect` has not registered yet is unknown.
+    fn find(
+        &self,
+        names: &Names,
+        module: &str,
+        name: &str,
+        span: Span,
+    ) -> Result<Option<usize>, Diagnostic> {
+        Ok(names
+            .class(module, name, span)?
+            .and_then(|key| self.names.get(key).copied()))
     }
 
-    pub fn resolve(&self, module: &str, name: &Ident) -> Result<usize, Diagnostic> {
-        self.find(module, &name.text).ok_or_else(|| {
-            Diagnostic::new(
-                "E1016",
-                format!("unknown type class '{}'", name.text),
-                name.span,
-            )
-        })
+    pub fn resolve(&self, names: &Names, module: &str, name: &Ident) -> Result<usize, Diagnostic> {
+        self.find(names, module, &name.text, name.span)?
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    "E1016",
+                    format!("unknown type class '{}'", name.text),
+                    name.span,
+                )
+            })
     }
 
     pub(super) fn inline_constraints(
@@ -461,13 +520,23 @@ impl Classes {
     ) -> Result<Vec<Constraint>, Diagnostic> {
         let mut constraints = Vec::new();
         match &expression.kind {
-            TypeExprKind::Constrained(class, ty) => {
-                constraints.push(Constraint {
-                    class: self.resolve(module, class)?,
-                    ty: resolve_type(ty, module, names)?,
-                    span: class.span,
-                });
-                constraints.extend(self.inline_constraints(ty, module, names)?);
+            TypeExprKind::Apply(head, arguments)
+                if crate::numeric::primitive(&head.text).is_none() =>
+            {
+                if let TypeHead::Class = names.type_head(module, head)? {
+                    // `resolve_type` reports a class applied to zero or several types.
+                    let [ty] = &**arguments else {
+                        return Ok(constraints);
+                    };
+                    constraints.push(Constraint {
+                        class: self.resolve(names, module, head)?,
+                        ty: resolve_type(ty, module, names)?,
+                        span: head.span,
+                    });
+                }
+                for ty in arguments {
+                    constraints.extend(self.inline_constraints(ty, module, names)?);
+                }
             }
             TypeExprKind::Array(ty)
             | TypeExprKind::List(ty)
@@ -492,18 +561,23 @@ impl Classes {
 
     pub fn instances(
         &mut self,
-        modules: &[(&str, &Program)],
+        modules: &[ModuleInput<'_>],
         names: &Names,
-        records: &[CheckedRecord],
+        types: &TypeContext<'_>,
         functions: &mut Vec<(String, FunctionDecl)>,
     ) -> Result<(), Diagnostic> {
-        for (module, program) in modules {
+        for &ModuleInput {
+            name: module,
+            program,
+            ..
+        } in modules
+        {
             for instance in &program.instances {
-                let id = self.resolve(module, &instance.class)?;
+                let id = self.resolve(names, module, &instance.class)?;
                 let class = &self.declarations[id];
                 let ty = resolve_type(&instance.ty, module, names)?;
                 require_concrete(&ty, instance.ty.span)?;
-                if class.builtin && (class.methods.is_empty() || self.intrinsic(id, &ty, records)) {
+                if class.builtin && (class.methods.is_empty() || self.intrinsic(id, &ty, types)) {
                     return Err(Diagnostic::new(
                         "E1016",
                         "built-in instances and marker classes cannot be overridden",
@@ -517,7 +591,7 @@ impl Classes {
                         format!(
                             "overlapping instance for {} {}",
                             class.name,
-                            ty.display(records)
+                            ty.display(types)
                         ),
                         instance.class.span,
                     ));
@@ -582,11 +656,7 @@ impl Classes {
                         .map(|((name, mutable), ty)| Parameter {
                             name: name.clone(),
                             mutable: *mutable,
-                            ty: type_expression(
-                                &substitute(ty, &substitutions),
-                                records,
-                                name.span,
-                            ),
+                            ty: type_expression(&substitute(ty, &substitutions), types, name.span),
                         })
                         .collect();
                     functions.push((
@@ -597,6 +667,7 @@ impl Classes {
                                 text: format!("$instance.{function_id}.{}", method.name),
                                 span: definition.name.span,
                             },
+                            visibility: Visibility::Public,
                             exported: false,
                             parameters,
                             result: type_expression(
@@ -607,7 +678,7 @@ impl Classes {
                                         .after_arguments(definition.parameters.len()),
                                     &substitutions,
                                 ),
-                                records,
+                                types,
                                 definition.name.span,
                             ),
                             constraints: Vec::new(),
@@ -626,6 +697,7 @@ impl Classes {
         &self,
         expression: &Expr,
         module: &str,
+        names: &Names,
         is_local: impl Fn(&str) -> bool,
     ) -> Result<Option<(usize, usize)>, Diagnostic> {
         let ExprKind::Field(value, method) = &expression.kind else {
@@ -641,7 +713,7 @@ impl Classes {
             },
             _ => return Ok(None),
         };
-        let Some(class) = self.find(module, &class_name) else {
+        let Some(class) = self.find(names, module, &class_name, value.span)? else {
             return Ok(None);
         };
         let index = self.declarations[class]
@@ -687,7 +759,7 @@ impl Classes {
         }
     }
 
-    fn intrinsic(&self, class: usize, ty: &Type, records: &[CheckedRecord]) -> bool {
+    fn intrinsic(&self, class: usize, ty: &Type, types: &TypeContext<'_>) -> bool {
         if !self.declarations[class].builtin {
             return false;
         }
@@ -699,24 +771,20 @@ impl Classes {
             "Neg" => ty.is_float() || matches!(ty, Type::Integer(_, true)),
             "Float" => ty.is_float(),
             "Eq" => ty.is_scalar() || matches!(ty, Type::String | Type::Unit),
-            "Copy" => ty.is_copy(records),
-            "Capture" => ty.can_capture(records),
-            "Send" => ty.can_send(records),
+            "Copy" => ty.is_copy(types),
+            "Capture" => ty.can_capture(types),
+            "Send" => ty.can_send(types),
             _ => false,
         }
     }
 
-    fn validate(
-        &self,
-        constraint: &Constraint,
-        records: &[CheckedRecord],
-    ) -> Result<(), Diagnostic> {
+    fn validate(&self, constraint: &Constraint, types: &TypeContext<'_>) -> Result<(), Diagnostic> {
         bounded_type(&constraint.ty, constraint.span)?;
         if !variables(&constraint.ty).is_empty() {
             return Ok(());
         }
         require_concrete(&constraint.ty, constraint.span)?;
-        if self.intrinsic(constraint.class, &constraint.ty, records)
+        if self.intrinsic(constraint.class, &constraint.ty, types)
             || self
                 .implementations
                 .contains_key(&(constraint.class, constraint.ty.clone()))
@@ -728,7 +796,7 @@ impl Classes {
                     "E1005",
                     format!(
                         "cannot capture {} in a reusable function; fully apply exclusive borrows and keep single-use tasks in task blocks",
-                        constraint.ty.display(records)
+                        constraint.ty.display(types)
                     ),
                     constraint.span,
                 ));
@@ -738,7 +806,7 @@ impl Classes {
                     "E1013",
                     format!(
                         "tasks require owned values; {} contains a reference",
-                        constraint.ty.display(records)
+                        constraint.ty.display(types)
                     ),
                     constraint.span,
                 ));
@@ -748,7 +816,7 @@ impl Classes {
                 format!(
                     "no instance for {} {}; define an instance or use a supported type",
                     self.declarations[constraint.class].name,
-                    constraint.ty.display(records)
+                    constraint.ty.display(types)
                 ),
                 constraint.span,
             ))
@@ -770,45 +838,189 @@ impl Classes {
     }
 }
 
-fn type_expression(ty: &Type, records: &[CheckedRecord], span: Span) -> TypeExpr {
+fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) -> TypeExpr {
     let kind = match ty {
         Type::Variable(name) => TypeExprKind::Variable(name.clone()),
-        Type::Array(ty) => TypeExprKind::Array(Box::new(type_expression(ty, records, span))),
-        Type::List(ty) => TypeExprKind::List(Box::new(type_expression(ty, records, span))),
+        Type::Array(ty) => TypeExprKind::Array(Box::new(type_expression(ty, types, span))),
+        Type::List(ty) => TypeExprKind::List(Box::new(type_expression(ty, types, span))),
         Type::Tuple(elements) => TypeExprKind::Tuple(
             elements
                 .iter()
-                .map(|ty| type_expression(ty, records, span))
+                .map(|ty| type_expression(ty, types, span))
                 .collect(),
         ),
-        Type::Task(ty) => TypeExprKind::Task(Box::new(type_expression(ty, records, span))),
+        Type::Task(ty) => TypeExprKind::Task(Box::new(type_expression(ty, types, span))),
         Type::Reference(ty, mutable) => {
-            TypeExprKind::Reference(Box::new(type_expression(ty, records, span)), *mutable)
+            TypeExprKind::Reference(Box::new(type_expression(ty, types, span)), *mutable)
         }
         Type::Function(parameters, result) => TypeExprKind::Function(
             parameters
                 .iter()
-                .map(|ty| type_expression(ty, records, span))
+                .map(|ty| type_expression(ty, types, span))
                 .collect(),
-            Box::new(type_expression(result, records, span)),
+            Box::new(type_expression(result, types, span)),
         ),
+        Type::Record(id, arguments) | Type::Union(id, arguments) if !arguments.is_empty() => {
+            let name = match ty {
+                Type::Record(..) => &types.records[*id].name,
+                _ => &types.unions[*id].name,
+            };
+            TypeExprKind::Apply(
+                Box::new(Ident {
+                    text: name.clone(),
+                    span,
+                }),
+                arguments
+                    .iter()
+                    .map(|ty| type_expression(ty, types, span))
+                    .collect(),
+            )
+        }
         Type::Infer(_) => unreachable!("instance types are concrete"),
-        _ => TypeExprKind::Named(ty.display(records)),
+        _ => TypeExprKind::Named(ty.display(types)),
     };
     TypeExpr { kind, span }
 }
 
+/// A pending `UnsignedOf` or `WidenOf` result of a builtin use: `output` is
+/// solved once `input` is a concrete integer type.
+pub(super) struct Family {
+    widen: bool,
+    input: Type,
+    output: Type,
+    span: Span,
+}
+
 impl Checker<'_> {
-    pub(super) fn builtin(&mut self, builtin: Builtin) -> (TypedExprKind, Type) {
-        let ty = builtin.signature().as_type();
-        let substitutions = variables(&ty)
-            .into_iter()
-            .map(|name| (name, self.inference.fresh()))
+    /// Instantiates a builtin's scheme with fresh inference variables, which
+    /// become the types of its `BuiltinInstance`.
+    pub(super) fn builtin(
+        &mut self,
+        builtin: Builtin,
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let scheme = builtin.scheme();
+        let types: Vec<Type> = scheme
+            .variables
+            .iter()
+            .map(|_| self.inference.fresh())
             .collect();
-        (
-            TypedExprKind::Function(FunctionRef::Builtin(builtin)),
-            substitute(&ty, &substitutions),
-        )
+        let bindings: BTreeMap<&str, Type> = scheme
+            .variables
+            .iter()
+            .copied()
+            .zip(types.iter().cloned())
+            .collect();
+        let parameters = scheme
+            .parameters
+            .iter()
+            .map(|ty| self.builtin_type(ty, &bindings, span))
+            .collect::<Result<_, _>>()?;
+        let result = self.builtin_type(&scheme.result, &bindings, span)?;
+        for constraint in &scheme.constraints {
+            let ty = self.builtin_type(&constraint.ty, &bindings, span)?;
+            self.require(constraint.class, ty, span)?;
+        }
+        Ok((
+            TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance { builtin, types })),
+            Type::function(parameters, result),
+        ))
+    }
+
+    fn builtin_type(
+        &mut self,
+        ty: &BuiltinType,
+        bindings: &BTreeMap<&str, Type>,
+        span: Span,
+    ) -> Result<Type, Diagnostic> {
+        let mut element = |ty: &BuiltinType| self.builtin_type(ty, bindings, span).map(Box::new);
+        Ok(match ty {
+            BuiltinType::Var(name) => bindings[name].clone(),
+            BuiltinType::Concrete(ty) => ty.clone(),
+            BuiltinType::Array(ty) => Type::Array(element(ty)?),
+            BuiltinType::List(ty) => Type::List(element(ty)?),
+            BuiltinType::Task(ty) => Type::Task(element(ty)?),
+            BuiltinType::Reference(ty, mutable) => Type::Reference(element(ty)?, *mutable),
+            BuiltinType::Std { module, name, args } => {
+                let args = args
+                    .iter()
+                    .map(|ty| self.builtin_type(ty, bindings, span))
+                    .collect::<Result<_, _>>()?;
+                self.names.std_type(module, name, args, span)?
+            }
+            BuiltinType::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|ty| self.builtin_type(ty, bindings, span))
+                    .collect::<Result<_, _>>()?,
+            ),
+            BuiltinType::Function(parameters, result) => Type::function(
+                parameters
+                    .iter()
+                    .map(|ty| self.builtin_type(ty, bindings, span))
+                    .collect::<Result<_, _>>()?,
+                self.builtin_type(result, bindings, span)?,
+            ),
+            BuiltinType::UnsignedOf(input) | BuiltinType::WidenOf(input) => {
+                let input = self.builtin_type(input, bindings, span)?;
+                let output = self.inference.fresh();
+                self.families.push(Family {
+                    widen: matches!(ty, BuiltinType::WidenOf(_)),
+                    input,
+                    output: output.clone(),
+                    span,
+                });
+                output
+            }
+        })
+    }
+
+    /// Solves the type families whose inputs are now concrete integers. At
+    /// the end of a function (`last`), every remaining family is an error:
+    /// phase 1 resolves them only at concrete call sites.
+    pub(super) fn solve_families(&mut self, last: bool) -> Result<(), Diagnostic> {
+        for family in std::mem::take(&mut self.families) {
+            let output = match self.inference.resolve(&family.input) {
+                Type::Integer(bits, signed) if family.widen && bits < 128 => {
+                    Type::Integer(bits * 2, signed)
+                }
+                Type::Integer(128, _) if family.widen => {
+                    return Err(Diagnostic::new(
+                        "E1015",
+                        "128-bit integers have no wider integer type",
+                        family.span,
+                    ));
+                }
+                Type::Integer(bits, _) => Type::Integer(bits, false),
+                Type::Infer(_) if !last => {
+                    self.families.push(family);
+                    continue;
+                }
+                input => {
+                    let mut generic = false;
+                    map_type(&input, &mut |ty| {
+                        generic |= is_unknown(ty);
+                        ty.clone()
+                    });
+                    if !generic {
+                        // A concrete non-integer is an ordinary `Integer` error.
+                        let constraint = Constraint {
+                            class: self.classes.names["Integer"],
+                            ty: input,
+                            span: family.span,
+                        };
+                        self.classes.validate(&constraint, &self.types)?;
+                    }
+                    return Err(Diagnostic::new(
+                        "E1015",
+                        "this builtin needs a concrete integer argument type at its call site; generic code cannot use it",
+                        family.span,
+                    ));
+                }
+            };
+            self.same(&family.output, &output, family.span)?;
+        }
+        Ok(())
     }
 
     pub(super) fn function(&mut self, id: usize) -> (TypedExprKind, Type) {
@@ -872,7 +1084,7 @@ impl Checker<'_> {
             ty.clone()
         });
         if !undetermined {
-            self.classes.validate(&constraint, self.records)?;
+            self.classes.validate(&constraint, &self.types)?;
         }
         self.constraints.push(constraint);
         Ok(())
@@ -959,6 +1171,7 @@ impl Checker<'_> {
 
     pub(super) fn finish(&mut self, body: &mut TypedExpr) -> Result<(), Diagnostic> {
         self.inference.apply_defaults();
+        self.solve_families(true)?;
         for (ty, span) in &self.undecided_borrows {
             if matches!(self.inference.resolve(ty), Type::Reference(..)) {
                 return Err(Diagnostic::new(
@@ -993,7 +1206,7 @@ impl Checker<'_> {
         }
         for constraint in &mut self.constraints {
             constraint.ty = self.inference.resolve(&constraint.ty);
-            self.classes.validate(constraint, self.records)?;
+            self.classes.validate(constraint, &self.types)?;
         }
         Ok(())
     }
@@ -1008,7 +1221,9 @@ fn captures(
         TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::GenericFunction(id, _) => {
             parameters(*id)
         }
-        TypedExprKind::Function(FunctionRef::Builtin(_)) => 1,
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
+            instance.builtin.scheme().parameters.len()
+        }
         TypedExprKind::Lambda { parameters, .. } => parameters.len(),
         TypedExprKind::Method(class, method, ty)
             if classes.implementations.contains_key(&(*class, ty.clone())) =>
@@ -1082,8 +1297,14 @@ fn expression_types(
     walk(expression, &mut |expression| {
         f(&mut expression.ty, expression.span)?;
         match &mut expression.kind {
-            TypedExprKind::GenericFunction(_, types) => {
+            TypedExprKind::GenericFunction(_, types)
+            | TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance { types, .. })) => {
                 for ty in types {
+                    f(ty, expression.span)?;
+                }
+            }
+            TypedExprKind::CaseConstructor { args, .. } => {
+                for ty in args.iter_mut() {
                     f(ty, expression.span)?;
                 }
             }
@@ -1133,7 +1354,6 @@ fn expression_types(
 pub(super) fn specialize(
     mut module: CheckedModule,
     classes: &Classes,
-    sizes: &[usize],
 ) -> Result<CheckedModule, Diagnostic> {
     let copy_constraints = crate::ownership::infer_copy(&module)?;
     for (function, copy_variables) in module.functions.iter_mut().zip(copy_constraints) {
@@ -1147,7 +1367,13 @@ pub(super) fn specialize(
         let mut seen = BTreeSet::new();
         let mut constraints = Vec::new();
         for constraint in std::mem::take(&mut function.constraints) {
-            classes.validate(&constraint, &module.records)?;
+            classes.validate(
+                &constraint,
+                &TypeContext {
+                    records: &module.records,
+                    unions: &module.unions,
+                },
+            )?;
             if !variables(&constraint.ty).is_empty()
                 && seen.insert((constraint.class, constraint.ty.clone()))
             {
@@ -1203,7 +1429,13 @@ pub(super) fn specialize(
             }
             let function = &mut module.functions[id];
             for constraint in inherited {
-                classes.validate(&constraint, &module.records)?;
+                classes.validate(
+                    &constraint,
+                    &TypeContext {
+                        records: &module.records,
+                        unions: &module.unions,
+                    },
+                )?;
                 if variables(&constraint.ty).is_empty() {
                     continue;
                 }
@@ -1228,7 +1460,13 @@ pub(super) fn specialize(
     }
     for function in &module.functions {
         for constraint in &function.constraints {
-            classes.validate(constraint, &module.records)?;
+            classes.validate(
+                constraint,
+                &TypeContext {
+                    records: &module.records,
+                    unions: &module.unions,
+                },
+            )?;
         }
     }
     if let Some(entry) = module.entry {
@@ -1243,12 +1481,12 @@ pub(super) fn specialize(
     let mut specializer = Specializer {
         templates: module.functions.clone(),
         classes,
-        records: &module.records,
-        sizes,
+        types: module.types(),
         keys: BTreeMap::new(),
         requests: Vec::new(),
         functions: Vec::new(),
         intrinsics: BTreeMap::new(),
+        current: FunctionOrigin::source(ModuleOrigin::User),
         base_count: module
             .functions
             .iter()
@@ -1271,20 +1509,23 @@ pub(super) fn specialize(
     let functions = specializer.functions;
     Ok(CheckedModule {
         records: module.records,
+        unions: module.unions,
         functions,
         entry,
+        warnings: module.warnings,
     })
 }
 
 struct Specializer<'a> {
     templates: Vec<CheckedFunction>,
     classes: &'a Classes,
-    records: &'a [CheckedRecord],
-    sizes: &'a [usize],
+    types: TypeContext<'a>,
     keys: BTreeMap<(usize, Vec<Type>), usize>,
     requests: Vec<(usize, Vec<Type>)>,
     functions: Vec<CheckedFunction>,
     intrinsics: BTreeMap<(usize, usize, Type), usize>,
+    /// The origin that helpers generated for the function being instantiated inherit.
+    current: FunctionOrigin,
     base_count: usize,
 }
 
@@ -1335,7 +1576,7 @@ impl Specializer<'_> {
                     ty: substitute(&constraint.ty, &substitutions),
                     span: constraint.span,
                 },
-                self.records,
+                &self.types,
             )?;
         }
         for parameter in &mut function.parameters {
@@ -1348,14 +1589,14 @@ impl Specializer<'_> {
             .map(|ty| substitute(ty, &substitutions))
             .collect();
         function.signature.result = substitute(&function.signature.result, &substitutions);
-        validate_size(&function.signature.as_type(), self.sizes, function.span)?;
+        validate_size(&function.signature.as_type(), &self.types, function.span)?;
         function
             .signature
-            .validate_borrows(self.records, function.span)?;
+            .validate_borrows(&self.types, function.span)?;
         expression_types(&mut function.body, &mut |ty, span| {
             *ty = substitute(ty, &substitutions);
             require_concrete(ty, span)?;
-            validate_size(ty, self.sizes, span)?;
+            validate_size(ty, &self.types, span)?;
             Ok(())
         })?;
         for (class, ty, span) in captures(&mut function.body, self.classes, |id| {
@@ -1367,9 +1608,10 @@ impl Specializer<'_> {
                     ty,
                     span,
                 },
-                self.records,
+                &self.types,
             )?;
         }
+        self.current = function.origin.generated(instance);
         walk(&mut function.body, &mut |expression| self.lower(expression))?;
         function.type_parameters.clear();
         function.constraints.clear();
@@ -1410,7 +1652,7 @@ impl Specializer<'_> {
                         Some(&expression.ty),
                         *negative,
                         expression.span,
-                        self.records,
+                        &self.types,
                     )?
                     .0,
                 ),
@@ -1423,7 +1665,7 @@ impl Specializer<'_> {
                     if !matches!(operator, BinaryOp::And | BinaryOp::Or | BinaryOp::Pipe) =>
                 {
                     let (class, method) = self.classes.operation(Operation::Binary(*operator));
-                    if self.classes.intrinsic(class, &left.ty, self.records) {
+                    if self.classes.intrinsic(class, &left.ty, &self.types) {
                         None
                     } else {
                         Some(self.operator_call(
@@ -1437,7 +1679,7 @@ impl Specializer<'_> {
                 }
                 Unary(operator, operand) if *operator != UnaryOp::Not => {
                     let (class, method) = self.classes.operation(Operation::Unary(*operator));
-                    if self.classes.intrinsic(class, &operand.ty, self.records) {
+                    if self.classes.intrinsic(class, &operand.ty, &self.types) {
                         None
                     } else {
                         Some(self.operator_call(
@@ -1534,7 +1776,9 @@ impl Specializer<'_> {
         };
         self.templates.push(CheckedFunction {
             module: "$intrinsic".into(),
+            origin: self.current,
             name: format!("{}.{}.{id}", declaration.name, method.name),
+            visibility: Visibility::Public,
             exported: false,
             parameters,
             signature,

@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::check::{
-    Builtin, CheckedFunction, CheckedModule, FunctionRef, Local, Type, TypedExpr, TypedExprKind,
+    Builtin, BuiltinInstance, CheckedFunction, CheckedModule, FunctionRef, Local, ModuleOrigin,
+    Type, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::syntax::{BinaryOp, UnaryOp};
@@ -15,6 +16,10 @@ mod control;
 mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
 use frame::Frame;
+
+/// The builtin instances that emitted code calls, with their concrete
+/// callee types.
+type Builtins = BTreeMap<BuiltinInstance, Type>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {
@@ -33,21 +38,74 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     let mut output = String::from(
         "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n",
     );
-    for record in &module.records {
+    let types = module.types();
+    let reachable = reachable_functions(module);
+    let emitted: Vec<bool> = (0..module.functions.len())
+        .map(|id| emit_function(id, &reachable, module))
+        .collect();
+    let named = named_types(module, &emitted);
+    let generic = |ty: &&Type| matches!(ty, Type::Record(_, arguments) | Type::Union(_, arguments) if !arguments.is_empty());
+    let record_types = (0..module.records.len())
+        .filter(|id| module.records[*id].parameters.is_empty())
+        .map(|id| Type::Record(id, Box::default()))
+        .filter(|ty| {
+            let Type::Record(id, _) = ty else {
+                unreachable!()
+            };
+            module.records[*id].origin == ModuleOrigin::User || named.contains(ty)
+        })
+        .chain(
+            named
+                .iter()
+                .filter(generic)
+                .filter(|ty| matches!(ty, Type::Record(..)))
+                .cloned(),
+        );
+    for ty in record_types {
+        let Type::Record(id, arguments) = &ty else {
+            unreachable!("only record types are collected")
+        };
         let _ = writeln!(
             output,
-            "%tz.record.{} = type {{ {} }}",
-            record.name,
-            record
-                .fields
+            "{} = type {{ {} }}",
+            llvm_type(&ty, module),
+            types
+                .record_fields(*id, arguments)
                 .iter()
-                .map(|(_, ty)| llvm_type(ty, module))
+                .map(|ty| llvm_type(ty, module))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
     }
+    let union_types = (0..module.unions.len())
+        .filter(|id| module.unions[*id].parameters.is_empty())
+        .map(|id| Type::Union(id, Box::default()))
+        .filter(|ty| {
+            let Type::Union(id, _) = ty else {
+                unreachable!()
+            };
+            module.unions[*id].origin == ModuleOrigin::User || named.contains(ty)
+        })
+        .chain(
+            named
+                .iter()
+                .filter(generic)
+                .filter(|ty| matches!(ty, Type::Union(..)))
+                .cloned(),
+        );
+    for ty in union_types {
+        let Type::Union(id, arguments) = &ty else {
+            unreachable!("only union types are collected")
+        };
+        let layout = match union_layout(*id, arguments, module) {
+            UnionLayout::Enum => "i32".into(),
+            UnionLayout::Common(payload) => format!("{{ i32, {} }}", llvm_type(&payload, module)),
+            UnionLayout::General(count) => format!("{{ i32, [{count} x i128] }}"),
+        };
+        let _ = writeln!(output, "{} = type {layout}", llvm_type(&ty, module));
+    }
     output.push_str("\ndeclare void @llvm.trap()\n\n");
-    let mut builtins = BTreeSet::new();
+    let mut builtins = Builtins::new();
     let mut intrinsics = BTreeSet::new();
     let mut globals = Globals {
         wasm,
@@ -55,6 +113,9 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     };
     let mut specializations = Specializations::new(module);
     for (id, function) in module.functions.iter().enumerate() {
+        if !emitted[id] {
+            continue;
+        }
         let emitter = FunctionEmitter::new(
             module,
             function,
@@ -93,8 +154,8 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         output.push_str(&emitter.emit());
         next += 1;
     }
-    for builtin in builtins {
-        output.push_str(&emit_builtin(builtin, &mut intrinsics));
+    for (instance, ty) in &builtins {
+        output.push_str(&emit_builtin(instance, ty, module, &mut intrinsics));
     }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
@@ -214,7 +275,7 @@ fn closure_wrappers(
     module: &CheckedModule,
     function: &CheckedFunction,
     id: usize,
-    builtins: &mut BTreeSet<Builtin>,
+    builtins: &mut Builtins,
     intrinsics: &mut BTreeSet<String>,
     globals: &mut Globals,
     specializations: &mut Specializations,
@@ -228,7 +289,7 @@ fn closure_wrappers(
             if !function.is_task
                 && function.signature.parameters[..count]
                     .iter()
-                    .all(|ty| ty.can_capture(&module.records))
+                    .all(|ty| ty.can_capture(&module.types()))
             {
                 let mut clone = FunctionEmitter::new(
                     module,
@@ -267,7 +328,7 @@ fn closure_wrappers(
                 specializations,
             );
             for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
-                if ty.needs_drop(&module.records) {
+                if ty.needs_drop(&module.types()) {
                     let pointer = drop.value(format!(
                         "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
                     ));
@@ -363,7 +424,11 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Bool => "i1".into(),
         Type::Unit => "i8".into(),
         Type::String => "%tz.string".into(),
-        Type::Record(id) => format!("%tz.record.{}", module.records[*id].name),
+        Type::Record(id, arguments) if arguments.is_empty() => {
+            format!("%tz.record.{}", module.records[*id].name)
+        }
+        Type::Record(..) => format!("%\"tz.record.{}\"", canonical_type(ty, module)),
+        Type::Union(..) => format!("%\"tz.union.{}\"", canonical_type(ty, module)),
         Type::Array(_) => "%tz.array".into(),
         Type::List(_) => "%tz.list".into(),
         Type::Tuple(elements) => format!(
@@ -378,6 +443,274 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(..) => "ptr".into(),
         Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
     }
+}
+
+/// The injective Tsuzuri spelling of a concrete type used in LLVM type names.
+fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
+    let list = |types: &[Type]| {
+        types
+            .iter()
+            .map(|ty| canonical_type(ty, module))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    match ty {
+        Type::Record(id, arguments) if arguments.is_empty() => module.records[*id].name.clone(),
+        Type::Record(id, arguments) => {
+            format!("{}[{}]", module.records[*id].name, list(arguments))
+        }
+        Type::Union(id, arguments) if arguments.is_empty() => module.unions[*id].name.clone(),
+        Type::Union(id, arguments) => {
+            format!("{}[{}]", module.unions[*id].name, list(arguments))
+        }
+        Type::Array(element) => format!("array[{}]", canonical_type(element, module)),
+        Type::List(element) => format!("list[{}]", canonical_type(element, module)),
+        Type::Tuple(elements) => format!("tuple[{}]", list(elements)),
+        Type::Function(parameters, result) => format!(
+            "fn[{}->{}]",
+            list(parameters),
+            canonical_type(result, module)
+        ),
+        Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
+        Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
+        Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
+        Type::Integer(..)
+        | Type::Binary(_)
+        | Type::Decimal(_)
+        | Type::Bool
+        | Type::Unit
+        | Type::String => ty.display(&module.types()),
+        Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
+    }
+}
+
+/// How a union instance stores its tag and payload.
+enum UnionLayout {
+    /// Every case is nullary, so the value is its `i32` tag.
+    Enum,
+    /// Every payload has the LLVM type of this one: `{ i32, T }`.
+    Common(Type),
+    /// Payloads of different LLVM types share `{ i32, [K x i128] }` storage
+    /// that holds the largest payload.
+    General(usize),
+}
+
+/// Size and alignment in bytes of a type's LLVM representation on 64-bit
+/// targets with 16-byte `i128`, which bound those of wasm32 and older layouts.
+fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
+    let aggregate = |fields: &mut dyn Iterator<Item = (usize, usize)>| {
+        let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
+            (
+                size.next_multiple_of(field_align) + field,
+                align.max(field_align),
+            )
+        });
+        (size.next_multiple_of(align), align)
+    };
+    match ty {
+        Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
+            let bytes = usize::from(*bits).div_ceil(8);
+            (bytes, bytes)
+        }
+        Type::Bool | Type::Unit => (1, 1),
+        Type::String | Type::Array(_) | Type::List(_) => (16, 8),
+        Type::Function(..) | Type::Task(_) => (32, 8),
+        Type::Reference(..) => (8, 8),
+        Type::Tuple(elements) => {
+            aggregate(&mut elements.iter().map(|ty| storage_layout(ty, module)))
+        }
+        Type::Record(id, arguments) => aggregate(
+            &mut module
+                .types()
+                .record_fields(*id, arguments)
+                .iter()
+                .map(|ty| storage_layout(ty, module)),
+        ),
+        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
+            UnionLayout::Enum => (4, 4),
+            UnionLayout::Common(payload) => {
+                aggregate(&mut [(4, 4), storage_layout(&payload, module)].into_iter())
+            }
+            UnionLayout::General(count) => (16 + 16 * count, 16),
+        },
+        Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
+    }
+}
+
+fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionLayout {
+    let payloads: Vec<_> = module
+        .types()
+        .union_payloads(id, arguments)
+        .into_iter()
+        .flatten()
+        .collect();
+    let Some(first) = payloads.first() else {
+        return UnionLayout::Enum;
+    };
+    let llvm = llvm_type(first, module);
+    if payloads.iter().all(|ty| llvm_type(ty, module) == llvm) {
+        return UnionLayout::Common(first.clone());
+    }
+    let bytes = payloads
+        .iter()
+        .map(|ty| storage_layout(ty, module).0)
+        .max()
+        .unwrap_or(0);
+    UnionLayout::General(bytes.div_ceil(16))
+}
+
+/// The functions that the program needs: user functions, exports, and the
+/// entry point, and every function they refer to (GUIDE D-22). Unused std
+/// functions and the helpers generated for them are left out.
+fn reachable_functions(module: &CheckedModule) -> BTreeSet<usize> {
+    fn references(expression: &TypedExpr, pending: &mut Vec<usize>) {
+        if let TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) =
+            &expression.kind
+        {
+            pending.push(*id);
+        }
+        for child in expression.children() {
+            references(child, pending);
+        }
+    }
+    let mut pending: Vec<usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| {
+            (function.origin.module == ModuleOrigin::User && function.origin.test.is_none())
+                || function.exported
+                || module.entry == Some(*id)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    let mut reachable = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if reachable.insert(id) {
+            references(&module.functions[id].body, &mut pending);
+        }
+    }
+    reachable
+}
+
+/// Whether `emit_target` defines a function: user-origin functions always,
+/// and std functions only when reachable.
+fn emit_function(id: usize, reachable: &BTreeSet<usize>, module: &CheckedModule) -> bool {
+    module.functions[id].origin.module == ModuleOrigin::User || reachable.contains(&id)
+}
+
+/// Record and union types, generic instances included, reachable from
+/// user-origin type declarations and emitted functions, including those
+/// nested in other types' fields and payloads, in deterministic order.
+fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
+    fn visit(ty: &Type, pending: &mut Vec<Type>) {
+        match ty {
+            Type::Record(..) | Type::Union(..) => pending.push(ty.clone()),
+            Type::Array(ty) | Type::List(ty) | Type::Task(ty) | Type::Reference(ty, _) => {
+                visit(ty, pending)
+            }
+            Type::Tuple(types) => types.iter().for_each(|ty| visit(ty, pending)),
+            Type::Function(parameters, result) => {
+                parameters.iter().for_each(|ty| visit(ty, pending));
+                visit(result, pending);
+            }
+            _ => {}
+        }
+    }
+    fn walk(expression: &TypedExpr, pending: &mut Vec<Type>) {
+        visit(&expression.ty, pending);
+        let mut local = |local: &Local| visit(&local.ty, pending);
+        match &expression.kind {
+            TypedExprKind::Block { bindings, .. } => {
+                bindings.iter().for_each(|(binding, _)| local(binding))
+            }
+            TypedExprKind::ForRange { local: bound, .. } => local(bound),
+            TypedExprKind::ForEach {
+                owner,
+                local: bound,
+                ..
+            } => {
+                local(owner);
+                local(bound);
+            }
+            TypedExprKind::Match {
+                local: subject,
+                arms,
+                ..
+            } => {
+                local(subject);
+                for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
+                    for step in &alternative.steps {
+                        if let crate::check::PatternStep::Bind(bound, _) = step {
+                            local(bound);
+                        }
+                    }
+                    alternative
+                        .bindings
+                        .iter()
+                        .for_each(|(binding, _)| local(binding));
+                }
+            }
+            TypedExprKind::Lambda {
+                parameters,
+                captures,
+                ..
+            } => parameters.iter().chain(captures).for_each(local),
+            _ => {}
+        }
+        for child in expression.children() {
+            walk(child, pending);
+        }
+    }
+    let mut pending = Vec::new();
+    for (id, record) in module.records.iter().enumerate() {
+        if record.parameters.is_empty() && record.origin == ModuleOrigin::User {
+            for ty in module.types().record_fields(id, &[]) {
+                visit(&ty, &mut pending);
+            }
+        }
+    }
+    for (id, union) in module.unions.iter().enumerate() {
+        if union.parameters.is_empty() && union.origin == ModuleOrigin::User {
+            for ty in module.types().union_payloads(id, &[]).into_iter().flatten() {
+                visit(&ty, &mut pending);
+            }
+        }
+    }
+    for (function, _) in module
+        .functions
+        .iter()
+        .zip(emitted)
+        .filter(|(_, emitted)| **emitted)
+    {
+        for ty in function
+            .signature
+            .parameters
+            .iter()
+            .chain([&function.signature.result])
+            .chain(function.parameters.iter().map(|parameter| &parameter.ty))
+        {
+            visit(ty, &mut pending);
+        }
+        walk(&function.body, &mut pending);
+    }
+    let mut instances = BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        let nested: Vec<_> = match &ty {
+            Type::Record(id, arguments) => module.types().record_fields(*id, arguments),
+            Type::Union(id, arguments) => module
+                .types()
+                .union_payloads(*id, arguments)
+                .into_iter()
+                .flatten()
+                .collect(),
+            _ => unreachable!("only record and union types are pending"),
+        };
+        if instances.insert(ty) {
+            nested.iter().for_each(|ty| visit(ty, &mut pending));
+        }
+    }
+    instances
 }
 
 fn abi_type(ty: &Type) -> String {
@@ -425,7 +758,7 @@ struct FunctionEmitter<'a, 'b> {
     borrowed_locals: BTreeSet<usize>,
     single_use: BTreeSet<usize>,
     borrowed_worker: bool,
-    builtins: &'b mut BTreeSet<Builtin>,
+    builtins: &'b mut Builtins,
     intrinsics: &'b mut BTreeSet<String>,
     lines: Vec<String>,
     allocas: Vec<String>,
@@ -453,7 +786,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         module: &'a CheckedModule,
         function: &'a CheckedFunction,
         function_id: usize,
-        builtins: &'b mut BTreeSet<Builtin>,
+        builtins: &'b mut Builtins,
         intrinsics: &'b mut BTreeSet<String>,
         globals: &'b mut Globals,
         specializations: &'b mut Specializations,
@@ -683,7 +1016,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let slot = self.slot(&local.ty);
         self.instruction(format!("store {} {value}, ptr {slot}", self.ty(&local.ty)));
         self.locals.insert(local.id, slot.clone());
-        if local.ty.needs_drop(&self.module.records) && !self.borrowed_locals.contains(&local.id) {
+        if local.ty.needs_drop(&self.module.types()) && !self.borrowed_locals.contains(&local.id) {
             self.scopes
                 .last_mut()
                 .unwrap()
@@ -713,7 +1046,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .signature
                 .parameters
                 .iter()
-                .any(|ty| ty.carries_loans(&self.module.records))
+                .any(|ty| ty.carries_loans(&self.module.types()))
     }
 
     fn tail_arguments(&mut self, arguments: &[TypedExpr]) -> Vec<String> {
@@ -821,7 +1154,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn read_place(&mut self, expression: &TypedExpr, take: bool, relocate: bool) -> String {
         let slot = self.place(expression);
         let value = self.value(format!("load {}, ptr {slot}", self.ty(&expression.ty)));
-        if take && expression.ty.needs_drop(&self.module.records) {
+        if take && expression.ty.needs_drop(&self.module.types()) {
             if self.clones_on_take(expression) {
                 return self.clone_value(&expression.ty, &value);
             }
@@ -841,7 +1174,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn clones_on_take(&self, expression: &TypedExpr) -> bool {
         let last_use = matches!(expression.kind, TypedExprKind::Local(id)
             if self.single_use.contains(&id) && !self.borrowed_locals.contains(&id));
-        expression.ty.is_copy(&self.module.records) && !last_use
+        expression.ty.is_copy(&self.module.types()) && !last_use
     }
 
     fn string_constant(&mut self, text: &str) -> String {
@@ -867,8 +1200,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             | TypedExprKind::Method(..)
             | TypedExprKind::GenericInteger(..)
             | TypedExprKind::GenericFloat(_)
-            | TypedExprKind::Lambda { .. } => {
+            | TypedExprKind::Lambda { .. }
+            | TypedExprKind::CaseConstructor { .. } => {
                 unreachable!("polymorphism is resolved before LLVM")
+            }
+            TypedExprKind::Construct {
+                case_id, payload, ..
+            } => self.construct(&expression.ty, *case_id, payload.as_deref()),
+            TypedExprKind::UnionTag(value) => self.union_tag(value),
+            TypedExprKind::UnionPayload { value, .. } => {
+                let union = self.expression(value);
+                // The remainder of a union is its tag, which owns nothing.
+                self.payload_value(&value.ty, &union, &expression.ty)
             }
             TypedExprKind::Float(value) => value.clone(),
             TypedExprKind::Bool(value) => if *value { "1" } else { "0" }.into(),
@@ -1122,7 +1465,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     "extractvalue {} {value}, {index}",
                     self.ty(&record.ty)
                 ));
-                if record.ty.needs_drop(&self.module.records) {
+                if record.ty.needs_drop(&self.module.types()) {
                     let remainder = self.value(format!(
                         "insertvalue {} {value}, {} zeroinitializer, {index}",
                         self.ty(&record.ty),
@@ -1200,9 +1543,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn is_place(expression: &TypedExpr) -> bool {
         match &expression.kind {
             TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
-            TypedExprKind::Field(value, _) | TypedExprKind::ListTail(value, _) => {
-                Self::is_place(value)
-            }
+            TypedExprKind::Field(value, _)
+            | TypedExprKind::ListTail(value, _)
+            | TypedExprKind::UnionPayload { value, .. } => Self::is_place(value),
             TypedExprKind::Index(value, _) => {
                 matches!(value.ty, Type::Array(_) | Type::List(_)) && Self::is_place(value)
             }
@@ -1220,6 +1563,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     "getelementptr inbounds {}, ptr {slot}, i32 0, i32 {index}",
                     self.ty(&value.ty)
                 ))
+            }
+            TypedExprKind::UnionPayload { value, .. } => {
+                let slot = self.place(value);
+                self.payload_pointer(&value.ty, &slot)
             }
             TypedExprKind::ListTail(value, count) => {
                 let slot = self.place(value);
@@ -1259,9 +1606,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let pointer = self.value(format!("extractvalue %tz.string {value}, 0"));
                 self.instruction(format!("call void @tz.free(ptr {pointer})"));
             }
-            Type::Record(id) => {
-                for (index, (_, field)) in self.module.records[*id].fields.iter().enumerate() {
-                    if field.needs_drop(&self.module.records) {
+            Type::Record(id, arguments) => {
+                let fields = self.module.types().record_fields(*id, arguments);
+                for (index, field) in fields.iter().enumerate() {
+                    if field.needs_drop(&self.module.types()) {
                         let extracted =
                             self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
                         self.drop_value(field, &extracted);
@@ -1270,16 +1618,38 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             Type::Tuple(elements) => {
                 for (index, field) in elements.iter().enumerate() {
-                    if field.needs_drop(&self.module.records) {
+                    if field.needs_drop(&self.module.types()) {
                         let extracted =
                             self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
                         self.drop_value(field, &extracted);
                     }
                 }
             }
+            Type::Union(..) => {
+                let cases = self.owning_cases(ty);
+                if cases.is_empty() {
+                    return;
+                }
+                let spilled = matches!(self.union_layout(ty), UnionLayout::General(_))
+                    .then(|| self.spill(ty, value));
+                let (labels, done) = self.case_switch(ty, value, &cases);
+                for ((_, payload), label) in cases.into_iter().zip(labels) {
+                    self.begin(&label);
+                    let extracted = match &spilled {
+                        Some(slot) => {
+                            let pointer = self.payload_pointer(ty, slot);
+                            self.value(format!("load {}, ptr {pointer}", self.ty(&payload)))
+                        }
+                        None => self.value(format!("extractvalue {} {value}, 1", self.ty(ty))),
+                    };
+                    self.drop_value(&payload, &extracted);
+                    self.jump(&done);
+                }
+                self.begin(&done);
+            }
             Type::Array(element) => {
                 let data = self.value(format!("extractvalue %tz.array {value}, 0"));
-                if element.needs_drop(&self.module.records) {
+                if element.needs_drop(&self.module.types()) {
                     let length = self.value(format!("extractvalue %tz.array {value}, 1"));
                     self.array_loop(&length, |emitter, index| {
                         let pointer = emitter.element_pointer(element, &data, index);
@@ -1294,7 +1664,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let head = self.value(format!("extractvalue %tz.list {value}, 0"));
                 let length = self.value(format!("extractvalue %tz.list {value}, 1"));
                 self.list_loop(&head, &length, |emitter, node| {
-                    if element.needs_drop(&emitter.module.records) {
+                    if element.needs_drop(&emitter.module.types()) {
                         let pointer = emitter.list_element_pointer(element, node);
                         let value =
                             emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
@@ -1319,10 +1689,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Function(..) => self.value(format!(
                 "call %tz.closure @tz.closure.clone(%tz.closure {value})"
             )),
-            Type::Record(id) => {
+            Type::Record(id, arguments) => {
                 let mut result = value.to_owned();
-                for (index, (_, field)) in self.module.records[*id].fields.iter().enumerate() {
-                    if field.needs_drop(&self.module.records) {
+                let fields = self.module.types().record_fields(*id, arguments);
+                for (index, field) in fields.iter().enumerate() {
+                    if field.needs_drop(&self.module.types()) {
                         let field_value =
                             self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
                         let copy = self.clone_value(field, &field_value);
@@ -1338,7 +1709,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Tuple(elements) => {
                 let mut result = value.to_owned();
                 for (index, field) in elements.iter().enumerate() {
-                    if field.needs_drop(&self.module.records) {
+                    if field.needs_drop(&self.module.types()) {
                         let extracted =
                             self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
                         let copy = self.clone_value(field, &extracted);
@@ -1350,6 +1721,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     }
                 }
                 result
+            }
+            Type::Union(..) => {
+                let cases = self.owning_cases(ty);
+                if cases.is_empty() {
+                    return value.to_owned();
+                }
+                // The copy starts as the original and receives a cloned payload in place.
+                let slot = self.spill(ty, value);
+                let (labels, done) = self.case_switch(ty, value, &cases);
+                for ((_, payload), label) in cases.into_iter().zip(labels) {
+                    self.begin(&label);
+                    let pointer = self.payload_pointer(ty, &slot);
+                    let llvm = self.ty(&payload);
+                    let original = self.value(format!("load {llvm}, ptr {pointer}"));
+                    let copy = self.clone_value(&payload, &original);
+                    self.instruction(format!("store {llvm} {copy}, ptr {pointer}"));
+                    self.jump(&done);
+                }
+                self.begin(&done);
+                self.value(format!("load {}, ptr {slot}", self.ty(ty)))
             }
             Type::Array(element) => {
                 let data = self.value(format!("extractvalue %tz.array {value}, 0"));
@@ -1383,6 +1774,108 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             _ => value.to_owned(),
         }
+    }
+
+    fn union_layout(&self, ty: &Type) -> UnionLayout {
+        let Type::Union(id, arguments) = ty else {
+            unreachable!("union layouts belong to union types")
+        };
+        union_layout(*id, arguments, self.module)
+    }
+
+    /// The payload storage of the union stored at `slot`, typed by each case's load or store.
+    fn payload_pointer(&mut self, ty: &Type, slot: &str) -> String {
+        self.value(format!(
+            "getelementptr inbounds {}, ptr {slot}, i32 0, i32 1",
+            self.ty(ty)
+        ))
+    }
+
+    fn construct(&mut self, ty: &Type, case_id: usize, payload: Option<&TypedExpr>) -> String {
+        let layout = self.union_layout(ty);
+        if matches!(layout, UnionLayout::Enum) {
+            return case_id.to_string();
+        }
+        let payload = payload.map(|payload| (self.expression(payload), self.ty(&payload.ty)));
+        let llvm = self.ty(ty);
+        let tagged = self.value(format!(
+            "insertvalue {llvm} zeroinitializer, i32 {case_id}, 0"
+        ));
+        let Some((value, payload_type)) = payload else {
+            return tagged;
+        };
+        if let UnionLayout::Common(_) = layout {
+            return self.value(format!(
+                "insertvalue {llvm} {tagged}, {payload_type} {value}, 1"
+            ));
+        }
+        let slot = self.spill(ty, &tagged);
+        let pointer = self.payload_pointer(ty, &slot);
+        self.instruction(format!("store {payload_type} {value}, ptr {pointer}"));
+        self.value(format!("load {llvm}, ptr {slot}"))
+    }
+
+    fn union_tag(&mut self, value: &TypedExpr) -> String {
+        if Self::is_place(value) {
+            // The tag is the first field, so it is also the value of an enum-like union.
+            let slot = self.place(value);
+            return self.value(format!("load i32, ptr {slot}"));
+        }
+        let (union, frames) = self.read_operand(value);
+        let tag = if matches!(self.union_layout(&value.ty), UnionLayout::Enum) {
+            union.clone()
+        } else {
+            self.value(format!("extractvalue {} {union}, 0", self.ty(&value.ty)))
+        };
+        self.release_operand(value, &union, &frames);
+        tag
+    }
+
+    fn payload_value(&mut self, ty: &Type, union: &str, payload: &Type) -> String {
+        match self.union_layout(ty) {
+            UnionLayout::Enum => unreachable!("nullary cases have no payload"),
+            UnionLayout::Common(_) => {
+                self.value(format!("extractvalue {} {union}, 1", self.ty(ty)))
+            }
+            UnionLayout::General(_) => {
+                let slot = self.spill(ty, union);
+                let pointer = self.payload_pointer(ty, &slot);
+                self.value(format!("load {}, ptr {pointer}", self.ty(payload)))
+            }
+        }
+    }
+
+    /// Cases whose payload owns resources, by tag.
+    fn owning_cases(&self, ty: &Type) -> Vec<(usize, Type)> {
+        let Type::Union(id, arguments) = ty else {
+            unreachable!("union cases belong to union types")
+        };
+        let types = self.module.types();
+        types
+            .union_payloads(*id, arguments)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(case, payload)| Some((case, payload.filter(|ty| ty.needs_drop(&types))?)))
+            .collect()
+    }
+
+    /// Branches on the tag of `value` to one new block per case; other tags reach the returned
+    /// join block.
+    fn case_switch(
+        &mut self,
+        ty: &Type,
+        value: &str,
+        cases: &[(usize, Type)],
+    ) -> (Vec<String>, String) {
+        let tag = self.value(format!("extractvalue {} {value}, 0", self.ty(ty)));
+        let labels: Vec<_> = cases.iter().map(|_| self.label()).collect();
+        let done = self.label();
+        self.instruction(format!("switch i32 {tag}, label %{done} ["));
+        for ((case, _), label) in cases.iter().zip(&labels) {
+            self.instruction(format!("  i32 {case}, label %{label}"));
+        }
+        self.instruction("]");
+        (labels, done)
     }
 
     fn allocate_array(&mut self, element: &Type, length: &str) -> (String, String) {
@@ -1570,7 +2063,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let value = if !function.is_task
             && function.signature.parameters[..count]
                 .iter()
-                .all(|ty| ty.can_capture(&self.module.records))
+                .all(|ty| ty.can_capture(&self.module.types()))
         {
             self.value(format!(
                 "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
@@ -1688,8 +2181,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
             }
         }
-        let known = match callee.kind {
-            TypedExprKind::Function(FunctionRef::User(id)) => {
+        let known = match &callee.kind {
+            &TypedExprKind::Function(FunctionRef::User(id)) => {
                 let function = &self.module.functions[id];
                 if arguments.len() < function.parameters.len() {
                     let values: Vec<_> = arguments
@@ -1732,13 +2225,23 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 };
                 Some((symbol, function.signature.clone(), callbacks))
             }
-            TypedExprKind::Function(FunctionRef::Builtin(builtin)) => {
-                self.builtins.insert(builtin);
-                Some((
-                    format!("@tz.builtin.{}", builtin.name()),
-                    builtin.signature(),
-                    Vec::new(),
-                ))
+            TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
+                let count = instance.builtin.scheme().parameters.len();
+                debug_assert!(
+                    count <= arguments.len(),
+                    "builtin wrappers apply every parameter"
+                );
+                let Type::Function(parameters, _) = &callee.ty else {
+                    unreachable!("a builtin is a function")
+                };
+                let signature = crate::check::Signature {
+                    parameters: parameters[..count].to_vec(),
+                    result: callee.ty.after_arguments(count),
+                };
+                self.builtins
+                    .entry(instance.clone())
+                    .or_insert_with(|| callee.ty.clone());
+                Some((builtin_symbol(instance, self.module), signature, Vec::new()))
             }
             _ => None,
         };
@@ -1811,7 +2314,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .iter()
             .zip(&self.module.functions[target.function].signature.parameters[..target.bound])
         {
-            if ty.needs_drop(&self.module.records) {
+            if ty.needs_drop(&self.module.types()) {
                 cleanup.push((ty.clone(), value.clone(), frames.clone()));
             }
         }
@@ -1913,7 +2416,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn drop_slot(&mut self, slot: &str, ty: &Type) {
-        if ty.needs_drop(&self.module.records) {
+        if ty.needs_drop(&self.module.types()) {
             let value = self.value(format!("load {}, ptr {slot}", self.ty(ty)));
             let frames = self.frame_slots.get(slot).cloned().unwrap_or_default();
             self.drop_framed(ty, &value, &frames);
@@ -2267,8 +2770,56 @@ fn saturating_cast(
     intrinsic
 }
 
-fn emit_builtin(builtin: Builtin, intrinsics: &mut BTreeSet<String>) -> String {
+/// The LLVM symbol of a builtin instance: `@tz.builtin.name`, followed for a
+/// polymorphic builtin by its type arguments as unquoted, injective names.
+fn builtin_symbol(instance: &BuiltinInstance, module: &CheckedModule) -> String {
+    let mut symbol = format!("@tz.builtin.{}", instance.builtin.name());
+    if !instance.types.is_empty() {
+        symbol.push('.');
+        symbol.push_str(
+            &instance
+                .types
+                .iter()
+                .map(|ty| mangled_type(ty, module))
+                .collect::<Vec<_>>()
+                .join("$C"),
+        );
+    }
+    symbol
+}
+
+/// `canonical_type` spelled with LLVM identifier characters only; `$` never
+/// occurs in canonical types, so the escapes keep the spelling injective.
+fn mangled_type(ty: &Type, module: &CheckedModule) -> String {
+    canonical_type(ty, module)
+        .replace("->", "$A")
+        .replace('[', "$L")
+        .replace(']', "$R")
+        .replace(',', "$C")
+}
+
+/// Defines one builtin instance, whose callee type `ty` is concrete.
+fn emit_builtin(
+    instance: &BuiltinInstance,
+    ty: &Type,
+    module: &CheckedModule,
+    intrinsics: &mut BTreeSet<String>,
+) -> String {
+    let builtin = instance.builtin;
     let name = builtin.name();
+    let symbol = builtin_symbol(instance, module);
+    let count = builtin.scheme().parameters.len();
+    let result = llvm_type(&ty.after_arguments(count), module);
+    if builtin == Builtin::Unreachable {
+        return format!(
+            "define internal {result} {symbol}(i8 %unit) noreturn nounwind {{\n\
+             entry:\n  call void @llvm.trap()\n  unreachable\n}}\n\n"
+        );
+    }
+    #[cfg(test)]
+    if let Some(definition) = test_builtin(instance, ty, &symbol, &result, module) {
+        return definition;
+    }
     match builtin {
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
@@ -2309,6 +2860,41 @@ fn emit_builtin(builtin: Builtin, intrinsics: &mut BTreeSet<String>) -> String {
             )
         }
     }
+}
+
+/// Defines the test-only builtins that exercise polymorphic instances.
+#[cfg(test)]
+fn test_builtin(
+    instance: &BuiltinInstance,
+    ty: &Type,
+    symbol: &str,
+    result: &str,
+    module: &CheckedModule,
+) -> Option<String> {
+    let Type::Function(parameters, _) = ty else {
+        unreachable!("a builtin is a function")
+    };
+    let parameter = llvm_type(&parameters[0], module);
+    let body = match instance.builtin {
+        Builtin::TestAdd => {
+            return Some(format!(
+                "define internal {result} {symbol}({parameter} %x, {parameter} %y) nounwind {{\n\
+                 entry:\n  %r = add {parameter} %x, %y\n  ret {result} %r\n}}\n\n"
+            ));
+        }
+        Builtin::TestUnsigned => format!("ret {result} %x"),
+        Builtin::TestWiden => {
+            let Type::Integer(_, signed) = instance.types[0] else {
+                unreachable!("Int.test_widen takes an integer")
+            };
+            let extend = if signed { "sext" } else { "zext" };
+            format!("%r = {extend} {parameter} %x to {result}\n  ret {result} %r")
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "define internal {result} {symbol}({parameter} %x) nounwind {{\nentry:\n  {body}\n}}\n\n"
+    ))
 }
 
 fn console_main(module: &CheckedModule) -> String {
@@ -2468,5 +3054,118 @@ mod tests {
         assert!(ir.contains("icmp ne i32 %arg0, 0"));
         assert!(header(&module).contains("int32_t tz_not(int32_t arg0);"));
         assert!(emit(&module, Entry::Console).is_err());
+    }
+
+    fn checked(source: &str) -> CheckedModule {
+        analyze(source)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message))
+    }
+
+    fn library(source: &str) -> String {
+        let module = checked(source);
+        let ir = emit(&module, Entry::Library).unwrap();
+        assert_eq!(ir, emit(&module, Entry::Library).unwrap(), "{source}");
+        ir
+    }
+
+    #[test]
+    fn applies_multi_argument_constrained_builtins_like_functions() {
+        let add = "define internal i32 @tz.builtin.Int.test_add.i32(i32 %x, i32 %y) nounwind";
+        for source in [
+            "export def f :: i32 -> i32\nfn f x = Int.test_add x 1i32",
+            "export def f :: i32 -> i32\nfn f x = {\n    let add = Int.test_add x;\n    add 2i32\n}",
+            "export def f :: i32 -> i32\nfn f x = x |> Int.test_add 3i32",
+            "def twice :: (i32 -> i32 -> i32) -> i32 -> i32\nfn twice g x = g x x\n\
+             export def f :: i32 -> i32\nfn f x = twice Int.test_add x",
+        ] {
+            let ir = library(source);
+            assert_eq!(ir.matches(add).count(), 1, "{source}\n{ir}");
+            assert!(ir.contains("add i32 %x, %y"), "{source}");
+        }
+        // A generic higher-order function receives one instance per type.
+        let ir = library(
+            "def apply :: ('a -> 'a -> 'a) -> 'a -> 'a\nfn apply g x = g x x\n\
+             export def small :: i32 -> i32\nfn small x = apply Int.test_add x\n\
+             export def large :: i64 -> i64\nfn large x = apply Int.test_add x\n\
+             export def again :: i32 -> i32\nfn again x = Int.test_add x x",
+        );
+        assert_eq!(ir.matches(add).count(), 1, "{ir}");
+        assert_eq!(
+            ir.matches("define internal i64 @tz.builtin.Int.test_add.i64(i64 %x, i64 %y)")
+                .count(),
+            1,
+            "{ir}"
+        );
+        let error = analyze("def f :: f64 -> f64\nfn f x = Int.test_add x x").unwrap_err();
+        assert_eq!(error.code, "E1005", "{}", error.message);
+    }
+
+    #[test]
+    fn solves_unsigned_and_widened_builtin_results_at_call_sites() {
+        let ir = library(
+            "export def unsigned :: i32 -> i32u\nfn unsigned x = Int.test_unsigned x\n\
+             export def widen :: i32 -> i64\nfn widen x = Int.test_widen x\n\
+             def widen_unsigned :: i64u -> i128u\nfn widen_unsigned x = x |> Int.test_widen\n\
+             let defaulted: i128 = Int.test_widen 1\n0",
+        );
+        for definition in [
+            "define internal i32 @tz.builtin.Int.test_unsigned.i32(i32 %x) nounwind",
+            "define internal i64 @tz.builtin.Int.test_widen.i32(i32 %x) nounwind",
+            "define internal i128 @tz.builtin.Int.test_widen.i64u(i64 %x) nounwind",
+            "define internal i128 @tz.builtin.Int.test_widen.i64(i64 %x) nounwind",
+        ] {
+            assert_eq!(ir.matches(definition).count(), 1, "{definition}\n{ir}");
+        }
+        assert!(ir.contains("sext i32 %x to i64"));
+        assert!(ir.contains("zext i64 %x to i128"));
+        for (source, code, message) in [
+            (
+                "def f :: i32 -> i32\nfn f x = Int.test_unsigned x",
+                "E1003",
+                "",
+            ),
+            ("let x: i64 = Int.test_widen 1\n0", "E1003", ""),
+            (
+                "def f :: i128 -> i128\nfn f x = Int.test_widen x",
+                "E1015",
+                "128-bit integers have no wider integer type",
+            ),
+            (
+                "def f :: Integer 'a => 'a -> 'a\nfn f x = {\n    let _ = Int.test_widen x;\n    x\n}",
+                "E1015",
+                "generic code cannot use it",
+            ),
+            (
+                "def f :: f64 -> f64\nfn f x = Int.test_unsigned x",
+                "E1005",
+                "Integer f64",
+            ),
+        ] {
+            let error = analyze(source).expect_err(source);
+            assert_eq!(error.code, code, "{source}\n{}", error.message);
+            assert!(
+                error.message.contains(message),
+                "{source}\n{}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn emits_one_unreachable_instance_per_result_type() {
+        let ir = library(
+            "export def f :: bool -> i64\nfn f b = if b then 1 else unreachable ()\n\
+             export def g :: bool -> i64\nfn g b = if b then 2 else unreachable ()\n\
+             def h :: bool -> string\nfn h b = if b then \"x\" else unreachable ()",
+        );
+        for definition in [
+            "define internal i64 @tz.builtin.unreachable.i64(i8 %unit) noreturn nounwind",
+            "define internal %tz.string @tz.builtin.unreachable.string(i8 %unit) noreturn nounwind",
+        ] {
+            assert_eq!(ir.matches(definition).count(), 1, "{definition}\n{ir}");
+        }
+        let library = library("export def answer :: i64\nfn answer = 42");
+        assert!(!library.contains("@tz.builtin."), "{library}");
+        assert!(!library.contains("@tz.fn.Math."), "{library}");
     }
 }

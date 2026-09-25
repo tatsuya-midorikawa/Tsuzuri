@@ -1,6 +1,7 @@
+use super::exhaustiveness::{Constructor, CoverageArm, CoveragePat, MatchCoverage};
 use super::*;
 
-const MAX_PATTERN_ALTERNATIVES: usize = 1024;
+pub(super) const MAX_PATTERN_ALTERNATIVES: usize = 1024;
 
 #[derive(Clone)]
 struct Alternative {
@@ -14,6 +15,21 @@ fn value(kind: TypedExprKind, ty: Type, span: Span) -> TypedExpr {
 
 fn local_value(local: &Local) -> TypedExpr {
     value(TypedExprKind::Local(local.id), local.ty.clone(), local.span)
+}
+
+/// Matches the place classification of ownership and LLVM lowering, which
+/// view such a match subject in place instead of binding a temporary.
+fn is_place(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
+        TypedExprKind::Field(value, _)
+        | TypedExprKind::ListTail(value, _)
+        | TypedExprKind::UnionPayload { value, .. } => is_place(value),
+        TypedExprKind::Index(value, _) => {
+            matches!(value.ty, Type::Array(_) | Type::List(_)) && is_place(value)
+        }
+        _ => false,
+    }
 }
 
 fn combine(
@@ -100,7 +116,9 @@ impl Checker<'_> {
                     (Some(source), None, element)
                 };
                 self.scopes.push(BTreeMap::new());
-                let simple_binding = matches!(&pattern.kind, PatternKind::Binding(name) if self.active_recognizer(name).is_none());
+                let simple_binding = matches!(&pattern.kind, PatternKind::Binding(name)
+                    if self.active_recognizer(name).is_none()
+                        && matches!(self.names.case_path(self.module, &name.text, name.span), Ok(None)));
                 let name = match &pattern.kind {
                     PatternKind::Binding(name) if simple_binding => name.clone(),
                     _ => Ident {
@@ -109,6 +127,9 @@ impl Checker<'_> {
                     },
                 };
                 let local = self.bind(&name, element, false);
+                if source.is_some() {
+                    self.borrowed.insert(local.id);
+                }
                 let body = if simple_binding || matches!(pattern.kind, PatternKind::Wildcard) {
                     self.expression(body, Some(&Type::Unit))?
                 } else {
@@ -122,6 +143,7 @@ impl Checker<'_> {
                         }],
                         Some(&Type::Unit),
                         expression.span,
+                        false,
                     )?
                 };
                 self.scopes.pop();
@@ -151,9 +173,19 @@ impl Checker<'_> {
                     }
                 }
             }
-            ExprKind::Match { value, arms } => {
+            ExprKind::Match {
+                value,
+                arms,
+                origin,
+            } => {
                 let value = self.expression(value, None)?;
-                return self.match_value(value, arms, expected, expression.span);
+                return self.match_value(
+                    value,
+                    arms,
+                    expected,
+                    expression.span,
+                    origin.checks_coverage(),
+                );
             }
             _ => unreachable!("control expression kinds checked by expression"),
         };
@@ -163,13 +195,43 @@ impl Checker<'_> {
         Ok(value(kind, Type::Unit, expression.span))
     }
 
+    /// Whether `place` lies behind a reference, inside a collection element
+    /// or tail, or within a local that already aliases such storage. A match
+    /// cannot move a non-Copy value out of it, so a pattern variable bound
+    /// there may instead view it (`TypedMatchArm::views`).
+    fn borrowed_place(&self, place: &TypedExpr) -> bool {
+        match &place.kind {
+            TypedExprKind::Local(id) => self.borrowed.contains(id),
+            TypedExprKind::Dereference(_) => true,
+            TypedExprKind::Index(value, _) | TypedExprKind::ListTail(value, _) => {
+                matches!(value.ty, Type::Array(_) | Type::List(_)) && is_place(value)
+            }
+            TypedExprKind::Field(value, _) | TypedExprKind::UnionPayload { value, .. } => {
+                self.borrowed_place(value)
+            }
+            _ => false,
+        }
+    }
+
+    /// Checks the arms of a match. With `checked`, the arms' coverage is
+    /// recorded so that `check_coverage` can reject a non-exhaustive match and
+    /// warn about unreachable arms; destructuring keeps its runtime trap.
     fn match_value(
         &mut self,
         matched: TypedExpr,
         arms: &[MatchArm],
         expected: Option<&Type>,
         span: Span,
+        checked: bool,
     ) -> Result<TypedExpr, Diagnostic> {
+        let slot = checked.then(|| {
+            self.coverage.push(MatchCoverage {
+                span,
+                arms: Vec::new(),
+            });
+            self.coverage.len() - 1
+        });
+        let mut coverage = Vec::new();
         self.scopes.push(BTreeMap::new());
         let subject = self.bind(
             &Ident {
@@ -179,13 +241,23 @@ impl Checker<'_> {
             matched.ty.clone(),
             false,
         );
+        if self.borrowed_place(&matched) {
+            self.borrowed.insert(subject.id);
+        }
         let mut checked = Vec::new();
         let mut result = expected.cloned();
         for arm in arms {
             self.scopes.push(BTreeMap::new());
-            let alternatives = self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
+            let (alternatives, pattern) =
+                self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
+            coverage.push(CoverageArm {
+                pattern,
+                guarded: arm.guard.is_some(),
+                span: arm.pattern.span,
+            });
             let mut locals: BTreeMap<String, Local> = BTreeMap::new();
             let mut plans = Vec::new();
+            let mut borrowed = BTreeSet::new();
             for (index, alternative) in alternatives.into_iter().enumerate() {
                 let mut seen = BTreeSet::new();
                 let mut bindings = Vec::new();
@@ -211,6 +283,9 @@ impl Checker<'_> {
                         self.same(&projection.ty, &local.ty, name.span)?;
                         local
                     };
+                    if self.borrowed_place(&projection) {
+                        borrowed.insert(local.id);
+                    }
                     bindings.push((local, projection));
                 }
                 if seen.len() != locals.len() {
@@ -225,6 +300,7 @@ impl Checker<'_> {
                     bindings,
                 });
             }
+            self.borrowed.extend(&borrowed);
             let guard = arm
                 .guard
                 .as_ref()
@@ -237,9 +313,13 @@ impl Checker<'_> {
                 alternatives: plans,
                 guard,
                 body,
+                borrowed,
             });
         }
         self.scopes.pop();
+        if let Some(slot) = slot {
+            self.coverage[slot].arms = coverage;
+        }
         Ok(value(
             TypedExprKind::Match {
                 local: subject,
@@ -252,11 +332,13 @@ impl Checker<'_> {
         ))
     }
 
+    /// Resolves a pattern into lowering alternatives and, from the same
+    /// resolution, the pattern's coverage for the exhaustiveness check.
     fn pattern_alternatives(
         &mut self,
         pattern: &Pattern,
         mut matched: TypedExpr,
-    ) -> Result<Vec<Alternative>, Diagnostic> {
+    ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
         matched.ty = self.inference.resolve(&matched.ty);
         if matches!(
             pattern.kind,
@@ -273,9 +355,12 @@ impl Checker<'_> {
             steps: Vec::new(),
             bindings: Vec::new(),
         }];
-        match &pattern.kind {
-            PatternKind::Wildcard => {}
+        let coverage = match &pattern.kind {
+            PatternKind::Wildcard => CoveragePat::Wildcard,
             PatternKind::Binding(name) => {
+                if let Some(case) = self.pattern_case(name)? {
+                    return self.case_pattern(name, case, &[], matched);
+                }
                 if self.active_recognizer(name).is_some() {
                     return self.active_pattern(name, &[], matched);
                 }
@@ -287,8 +372,12 @@ impl Checker<'_> {
                     ));
                 }
                 alternatives[0].bindings.push((name.clone(), matched));
+                CoveragePat::Wildcard
             }
             PatternKind::Apply(name, arguments) => {
+                if let Some(case) = self.pattern_case(name)? {
+                    return self.case_pattern(name, case, arguments, matched);
+                }
                 return self.active_pattern(name, arguments, matched);
             }
             PatternKind::Argument(_) => {
@@ -301,11 +390,13 @@ impl Checker<'_> {
             PatternKind::Literal(literal) => {
                 let literal = self.expression(literal, Some(&matched.ty))?;
                 self.require("Eq", matched.ty.clone(), pattern.span)?;
+                let coverage = CoveragePat::Literal(Box::new(literal.clone()));
                 alternatives[0].steps.push(PatternStep::Test(value(
                     TypedExprKind::Binary(BinaryOp::Equal, Box::new(matched), Box::new(literal)),
                     Type::Bool,
                     pattern.span,
                 )));
+                coverage
             }
             PatternKind::Annotated(inner, annotation) => {
                 let ty = self.annotation(annotation)?;
@@ -314,15 +405,17 @@ impl Checker<'_> {
                 return self.pattern_alternatives(inner, matched);
             }
             PatternKind::As(inner, name) => {
-                let mut alternatives = self.pattern_alternatives(inner, matched.clone())?;
+                let (mut alternatives, coverage) =
+                    self.pattern_alternatives(inner, matched.clone())?;
                 for alternative in &mut alternatives {
                     alternative.bindings.push((name.clone(), matched.clone()));
                 }
-                return Ok(alternatives);
+                return Ok((alternatives, coverage));
             }
             PatternKind::Or(left, right) => {
-                let mut alternatives = self.pattern_alternatives(left, matched.clone())?;
-                alternatives.extend(self.pattern_alternatives(right, matched)?);
+                let (mut alternatives, left) = self.pattern_alternatives(left, matched.clone())?;
+                let (others, right) = self.pattern_alternatives(right, matched)?;
+                alternatives.extend(others);
                 if alternatives.len() > MAX_PATTERN_ALTERNATIVES {
                     return Err(Diagnostic::new(
                         "E1017",
@@ -330,35 +423,50 @@ impl Checker<'_> {
                         pattern.span,
                     ));
                 }
-                return Ok(alternatives);
+                return Ok((
+                    alternatives,
+                    CoveragePat::Or(Box::new(left), Box::new(right)),
+                ));
             }
             PatternKind::And(left, right) => {
-                let left = self.pattern_alternatives(left, matched.clone())?;
-                let right = self.pattern_alternatives(right, matched)?;
-                return combine(left, right, pattern.span);
+                let (left, left_coverage) = self.pattern_alternatives(left, matched.clone())?;
+                let (right, right_coverage) = self.pattern_alternatives(right, matched)?;
+                return Ok((
+                    combine(left, right, pattern.span)?,
+                    CoveragePat::And(Box::new(left_coverage), Box::new(right_coverage)),
+                ));
             }
             PatternKind::Tuple(patterns) => {
                 let types: Vec<_> = patterns.iter().map(|_| self.inference.fresh()).collect();
                 self.same(&matched.ty, &Type::Tuple(types.clone()), pattern.span)?;
                 matched.ty = self.inference.resolve(&matched.ty);
+                let mut elements = Vec::new();
                 for (index, (pattern, ty)) in patterns.iter().zip(types).enumerate() {
                     let projection = value(
                         TypedExprKind::Field(Box::new(matched.clone()), index),
                         self.inference.resolve(&ty),
                         pattern.span,
                     );
-                    let next = self.pattern_alternatives(pattern, projection)?;
+                    let (next, coverage) = self.pattern_alternatives(pattern, projection)?;
                     alternatives = combine(alternatives, next, pattern.span)?;
+                    elements.push(coverage);
                 }
+                CoveragePat::Constructor(Constructor::Tuple(patterns.len()), elements)
             }
             PatternKind::Record(name, fields) => {
-                let id = if let Some(name) = name {
+                let (id, arguments) = if let Some(name) = name {
                     let id = self.names.record(self.module, &name.text, name.span)?;
-                    self.same(&matched.ty, &Type::Record(id), pattern.span)?;
-                    matched.ty = Type::Record(id);
-                    id
-                } else if let Type::Record(id) = matched.ty {
-                    id
+                    let arguments = (0..self.types.records[id].parameters.len())
+                        .map(|_| self.inference.fresh())
+                        .collect();
+                    self.same(&matched.ty, &Type::Record(id, arguments), pattern.span)?;
+                    matched.ty = self.inference.resolve(&matched.ty);
+                    let Type::Record(id, arguments) = &matched.ty else {
+                        unreachable!("the pattern type was unified with a record")
+                    };
+                    (*id, arguments.clone())
+                } else if let Type::Record(id, arguments) = self.inference.resolve(&matched.ty) {
+                    (id, arguments)
                 } else {
                     return Err(Diagnostic::new(
                         "E1020",
@@ -367,11 +475,13 @@ impl Checker<'_> {
                     ));
                 };
                 let mut seen = BTreeSet::new();
+                let field_count = self.types.records[id].fields.len();
+                let mut coverage = vec![CoveragePat::Wildcard; field_count];
                 for (name, pattern) in fields {
                     if !seen.insert(name.text.clone()) {
                         return Err(duplicate(name));
                     }
-                    let index = self.records[id]
+                    let index = self.types.records[id]
                         .fields
                         .iter()
                         .position(|(field, _)| field == &name.text)
@@ -382,15 +492,25 @@ impl Checker<'_> {
                                 name.span,
                             )
                         })?;
-                    let ty = self.records[id].fields[index].1.clone();
+                    let ty = self
+                        .inference
+                        .resolve(&self.types.record_field(id, &arguments, index));
                     let projection = value(
                         TypedExprKind::Field(Box::new(matched.clone()), index),
                         ty,
                         pattern.span,
                     );
-                    let next = self.pattern_alternatives(pattern, projection)?;
+                    let (next, field) = self.pattern_alternatives(pattern, projection)?;
                     alternatives = combine(alternatives, next, pattern.span)?;
+                    coverage[index] = field;
                 }
+                CoveragePat::Constructor(
+                    Constructor::Record {
+                        record_id: id,
+                        field_count,
+                    },
+                    coverage,
+                )
             }
             PatternKind::Array(patterns) | PatternKind::List(patterns) => {
                 let element = self.inference.fresh();
@@ -409,6 +529,7 @@ impl Checker<'_> {
                         BinaryOp::Equal,
                         pattern.span,
                     )));
+                let mut elements = Vec::new();
                 for (index, pattern) in patterns.iter().enumerate() {
                     let index = value(TypedExprKind::Int(index as u128), Type::I64, pattern.span);
                     let projection = value(
@@ -416,8 +537,14 @@ impl Checker<'_> {
                         self.inference.resolve(&element),
                         pattern.span,
                     );
-                    let next = self.pattern_alternatives(pattern, projection)?;
+                    let (next, coverage) = self.pattern_alternatives(pattern, projection)?;
                     alternatives = combine(alternatives, next, pattern.span)?;
+                    elements.push(coverage);
+                }
+                if matches!(pattern.kind, PatternKind::List(_)) {
+                    CoveragePat::list(elements)
+                } else {
+                    CoveragePat::Constructor(Constructor::ArrayLen(patterns.len()), elements)
                 }
             }
             PatternKind::Cons(head, tail) => {
@@ -442,50 +569,170 @@ impl Checker<'_> {
                     self.inference.resolve(&element),
                     head.span,
                 );
-                let next = self.pattern_alternatives(head, projection)?;
+                let (next, head_coverage) = self.pattern_alternatives(head, projection)?;
                 alternatives = combine(alternatives, next, head.span)?;
                 let projection = value(
                     TypedExprKind::ListTail(Box::new(matched.clone()), 1),
                     matched.ty.clone(),
                     tail.span,
                 );
-                let next = self.pattern_alternatives(tail, projection)?;
+                let (next, tail_coverage) = self.pattern_alternatives(tail, projection)?;
                 alternatives = combine(alternatives, next, tail.span)?;
+                CoveragePat::Constructor(Constructor::ListCons, vec![head_coverage, tail_coverage])
             }
-        }
-        Ok(alternatives)
+        };
+        Ok((alternatives, coverage))
     }
 
-    fn active_recognizer(&self, name: &Ident) -> Option<(usize, bool)> {
+    /// Resolves a pattern name to a union case, which takes precedence over
+    /// active recognizers and bindings. An unqualified case of another module
+    /// that meets a recognizer of this module is ambiguous.
+    fn pattern_case(&self, name: &Ident) -> Result<Option<(usize, usize, bool)>, Diagnostic> {
+        let Some(case) = self.names.case_path(self.module, &name.text, name.span)? else {
+            return Ok(None);
+        };
+        if !name.text.contains('.')
+            && case.info.module != self.module
+            && self.active_recognizer(name).is_some()
+        {
+            return Err(Diagnostic::new(
+                "E1004",
+                format!(
+                    "'{}' names both the union case '{}' and an active pattern of module '{}'; qualify the case as '{}'",
+                    name.text, case.info.name, self.module, case.info.name
+                ),
+                name.span,
+            ));
+        }
+        Ok(Some((case.info.id, case.case, case.has_payload)))
+    }
+
+    /// A case pattern tests the tag of the matched union, then matches the
+    /// payload projection of that case against the payload pattern.
+    fn case_pattern(
+        &mut self,
+        name: &Ident,
+        (union_id, case_id, has_payload): (usize, usize, bool),
+        arguments: &[Pattern],
+        matched: TypedExpr,
+    ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
+        let payload = match (has_payload, arguments) {
+            (false, []) => None,
+            (true, [payload]) => Some(payload),
+            (true, []) => {
+                return Err(Diagnostic::new(
+                    "E1020",
+                    format!(
+                        "union case '{}' carries a payload; match it with a payload pattern such as '{} _'",
+                        name.text, name.text
+                    ),
+                    name.span,
+                ));
+            }
+            (false, _) => {
+                return Err(Diagnostic::new(
+                    "E1020",
+                    format!(
+                        "union case '{}' has no payload; remove the patterns after it",
+                        name.text
+                    ),
+                    name.span,
+                ));
+            }
+            (true, _) => {
+                return Err(Diagnostic::new(
+                    "E1020",
+                    format!(
+                        "union case '{}' carries one payload; match several values with one tuple pattern such as '{} (a, b)'",
+                        name.text, name.text
+                    ),
+                    name.span,
+                ));
+            }
+        };
+        let mut matched = Self::autoderef(matched);
+        let arity = self.types.unions[union_id].parameters.len();
+        let args: Box<[Type]> = (0..arity).map(|_| self.inference.fresh()).collect();
+        self.same(&matched.ty, &Type::Union(union_id, args), name.span)?;
+        matched.ty = self.inference.resolve(&matched.ty);
+        let tag = Type::Integer(32, true);
+        let test = value(
+            TypedExprKind::Binary(
+                BinaryOp::Equal,
+                Box::new(value(
+                    TypedExprKind::UnionTag(Box::new(matched.clone())),
+                    tag.clone(),
+                    name.span,
+                )),
+                Box::new(value(TypedExprKind::Int(case_id as u128), tag, name.span)),
+            ),
+            Type::Bool,
+            name.span,
+        );
+        let alternatives = vec![Alternative {
+            steps: vec![PatternStep::Test(test)],
+            bindings: Vec::new(),
+        }];
+        let case = Constructor::Union { union_id, case_id };
+        let Some(pattern) = payload else {
+            return Ok((alternatives, CoveragePat::Constructor(case, Vec::new())));
+        };
+        let Type::Union(_, args) = &matched.ty else {
+            unreachable!("the pattern type was unified with a union")
+        };
+        let ty = self
+            .types
+            .union_payload(union_id, args, case_id)
+            .expect("the case carries a payload");
+        let projection = value(
+            TypedExprKind::UnionPayload {
+                value: Box::new(matched.clone()),
+                case_id,
+            },
+            self.inference.resolve(&ty),
+            pattern.span,
+        );
+        let (next, coverage) = self.pattern_alternatives(pattern, projection)?;
+        Ok((
+            combine(alternatives, next, pattern.span)?,
+            CoveragePat::Constructor(case, vec![coverage]),
+        ))
+    }
+
+    fn active_recognizer(&self, name: &Ident) -> Option<String> {
+        let local = format!("{}.{}", self.module, name.text);
+        if self.names.has_active_pattern(self.module, &local) {
+            return Some(local);
+        }
         self.names
-            .active_patterns
-            .get(&format!("{}.{}", self.module, name.text))
-            .or_else(|| self.names.active_patterns.get(&name.text))
-            .copied()
+            .has_active_pattern(self.module, &name.text)
+            .then(|| name.text.clone())
     }
 
     fn active_argument(pattern: &Pattern) -> Result<Expr, Diagnostic> {
         let kind = match &pattern.kind {
             PatternKind::Binding(name) => {
-                if let Some((root, field)) = name.text.split_once('.') {
-                    let root = Expr {
-                        kind: ExprKind::Name(Ident {
-                            text: root.into(),
-                            span: name.span,
-                        }),
+                let mut segments = name.text.split('.');
+                let root = segments.next().expect("a name has a first segment");
+                let mut kind = ExprKind::Name(Ident {
+                    text: root.into(),
+                    span: name.span,
+                });
+                for (depth, field) in segments.enumerate() {
+                    let value = Expr {
+                        kind,
                         span: name.span,
-                        depth: 1,
+                        depth: depth + 1,
                     };
-                    ExprKind::Field(
-                        Box::new(root),
+                    kind = ExprKind::Field(
+                        Box::new(value),
                         Ident {
                             text: field.into(),
                             span: name.span,
                         },
-                    )
-                } else {
-                    ExprKind::Name(name.clone())
+                    );
                 }
+                kind
             }
             PatternKind::Literal(expression) | PatternKind::Argument(expression) => {
                 return Ok((**expression).clone());
@@ -516,14 +763,18 @@ impl Checker<'_> {
         name: &Ident,
         arguments: &[Pattern],
         matched: TypedExpr,
-    ) -> Result<Vec<Alternative>, Diagnostic> {
-        let (id, partial) = self.active_recognizer(name).ok_or_else(|| {
+    ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
+        let recognizer = self.active_recognizer(name).ok_or_else(|| {
             Diagnostic::new(
                 "E1020",
-                format!("unknown active pattern '{}'", name.text),
+                format!("unknown union case or active pattern '{}'", name.text),
                 name.span,
             )
         })?;
+        let (id, partial) = self
+            .names
+            .active_pattern(self.module, &recognizer, name.span)?
+            .expect("active recognizer exists");
         let (kind, ty) = self.function(id);
         let Type::Function(parameters, result) = &ty else {
             unreachable!("recognizer signature checked")
@@ -600,10 +851,13 @@ impl Checker<'_> {
             name.span,
         );
         if partial {
-            return Ok(vec![Alternative {
-                steps: vec![PatternStep::Test(call)],
-                bindings: Vec::new(),
-            }]);
+            return Ok((
+                vec![Alternative {
+                    steps: vec![PatternStep::Test(call)],
+                    bindings: Vec::new(),
+                }],
+                CoveragePat::Opaque,
+            ));
         }
         let local = self.bind(
             &Ident {
@@ -613,20 +867,25 @@ impl Checker<'_> {
             result_type,
             false,
         );
-        let mut alternatives = if let Some(payload) = payload {
-            self.pattern_alternatives(payload, local_value(&local))?
+        let (mut alternatives, payload) = if let Some(payload) = payload {
+            let (alternatives, coverage) =
+                self.pattern_alternatives(payload, local_value(&local))?;
+            (alternatives, Some(Box::new(coverage)))
         } else {
-            vec![Alternative {
-                steps: Vec::new(),
-                bindings: Vec::new(),
-            }]
+            (
+                vec![Alternative {
+                    steps: Vec::new(),
+                    bindings: Vec::new(),
+                }],
+                None,
+            )
         };
         for alternative in &mut alternatives {
             alternative
                 .steps
                 .insert(0, PatternStep::Bind(local.clone(), call.clone()));
         }
-        Ok(alternatives)
+        Ok((alternatives, CoveragePat::Total(payload)))
     }
 
     fn length_test(matched: &TypedExpr, count: usize, operator: BinaryOp, span: Span) -> TypedExpr {

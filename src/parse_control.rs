@@ -143,7 +143,9 @@ impl Parser<'_> {
                     | TokenKind::Fn
                     | TokenKind::And
                     | TokenKind::Export
+                    | TokenKind::Private
                     | TokenKind::Record
+                    | TokenKind::Union
                     | TokenKind::Class
                     | TokenKind::Instance
             ) || self.column(self.current().span) < indent
@@ -207,13 +209,13 @@ impl Parser<'_> {
     }
 
     pub(super) fn type_product(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let first = self.type_atom()?;
+        let first = self.type_apply()?;
         if !self.eat(&TokenKind::Star) {
             return Ok(first);
         }
         let mut elements = vec![first];
         loop {
-            elements.push(self.type_atom()?);
+            elements.push(self.type_apply()?);
             if elements.len() > MAX_NESTING {
                 return Err(self.error("too many tuple elements"));
             }
@@ -353,6 +355,7 @@ impl Parser<'_> {
                         body,
                         span,
                     }],
+                    origin: MatchOrigin::FxDestructuring,
                 },
                 span,
                 depth,
@@ -371,7 +374,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::With, "'with' after the matched expression")?;
         let arms = self.match_arms(None)?;
         self.nesting -= 1;
-        self.make_match(value, arms, start)
+        self.make_match(value, arms, start, MatchOrigin::Explicit)
     }
 
     pub(super) fn guarded_definition(
@@ -395,7 +398,7 @@ impl Parser<'_> {
         {
             value = self.make(ExprKind::Unit, start, 1)?;
         }
-        self.make_match(value, arms, start)
+        self.make_match(value, arms, start, MatchOrigin::FunctionGuard)
     }
 
     fn make_match(
@@ -403,6 +406,7 @@ impl Parser<'_> {
         value: Expr,
         arms: Vec<MatchArm>,
         start: Span,
+        origin: MatchOrigin,
     ) -> Result<Expr, Diagnostic> {
         let span = start.through(arms.last().unwrap().body.span);
         let depth = arms
@@ -421,6 +425,7 @@ impl Parser<'_> {
             ExprKind::Match {
                 value: Box::new(value),
                 arms,
+                origin,
             },
             span,
             depth,
@@ -640,7 +645,7 @@ impl Parser<'_> {
     }
 
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
-        let name = self.qualified_ident()?;
+        let name = self.qualified_path(3)?;
         if name.text == "null" {
             return Err(Diagnostic::new(
                 "E1020",

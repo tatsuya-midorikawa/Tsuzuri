@@ -23,6 +23,42 @@ impl Checker<'_> {
         Ok(temporary)
     }
 
+    /// Binds a pattern variable as a read-only view of the matched storage.
+    /// The view is its own root, so a borrow of it ends with the arm like a
+    /// borrow of an owned pattern variable; the view's loans keep the storage
+    /// shared while the view or such a borrow is live.
+    fn view(
+        &mut self,
+        local: &Local,
+        projection: &TypedExpr,
+        live: &BTreeSet<usize>,
+    ) -> Result<(), Diagnostic> {
+        let mut value = Value::default();
+        for (place, via) in self.place(projection, live)? {
+            self.access(&place, &via, Use::Read, projection.span)?;
+            value.loans.insert(self.loans.len());
+            self.loans.push(Loan {
+                place,
+                mutable: false,
+                parents: via,
+                view: Some(local.ty.clone()),
+            });
+        }
+        let root = Place {
+            root: local.id,
+            fields: Vec::new(),
+        };
+        self.state
+            .aliases
+            .insert(local.id, vec![(root, value.loans.clone())]);
+        self.state.locals.insert(local.id, (local.clone(), value));
+        self.state.moved.retain(|place| place.root != local.id);
+        self.state
+            .generic_moves
+            .retain(|place, _| place.root != local.id);
+        Ok(())
+    }
+
     fn protect(&mut self, local: &Local, live: &BTreeSet<usize>) -> Result<Value, Diagnostic> {
         let expression = TypedExpr {
             kind: E::Local(local.id),
@@ -174,7 +210,7 @@ impl Checker<'_> {
                 };
                 let mut places = self.place(&subject, &during)?;
                 for (place, _) in &mut places {
-                    place.fields.push(usize::MAX);
+                    place.fields.push(ELEMENT);
                 }
                 self.state.aliases.insert(local.id, places);
                 let loans = self.state.locals[&owner.id].1.clone();
@@ -258,7 +294,7 @@ impl Checker<'_> {
                 failed = self.state.clone();
                 self.state = success;
                 // Pattern variables acquire their values only after the guard succeeds.
-                if !subject.ty.carries_loans(&self.module.records) {
+                if !subject.ty.carries_loans(&self.module.types()) {
                     self.state
                         .locals
                         .get_mut(&subject.id)
@@ -268,6 +304,13 @@ impl Checker<'_> {
                         .clear();
                 }
                 for (local, projection) in &alternative.bindings {
+                    if arm.borrowed.contains(&local.id)
+                        && !self.is_copy(&local.ty)
+                        && !local.ty.carries_loans(&self.module.types())
+                    {
+                        self.view(local, projection, during)?;
+                        continue;
+                    }
                     let value = self.eval(projection, Use::Consume, during)?;
                     self.state.locals.insert(local.id, (local.clone(), value));
                     self.state.moved.retain(|place| place.root != local.id);

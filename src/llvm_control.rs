@@ -1,6 +1,19 @@
 use super::*;
 use crate::check::{PatternStep, TypedMatchArm};
 
+/// A match whose arms select on constants, lowered to one `switch`.
+struct SwitchPlan {
+    /// The type of the switched value: the subject's, or `i32` for a union tag.
+    selector: Type,
+    /// Whether the selector is the union tag of the subject.
+    tag: bool,
+    /// The first arm for each constant.
+    cases: BTreeMap<u128, usize>,
+    default: Option<usize>,
+    /// Whether some arm binds a union payload.
+    payloads: bool,
+}
+
 impl FunctionEmitter<'_, '_> {
     pub(super) fn while_loop(&mut self, condition: &TypedExpr, body: &TypedExpr) {
         let test = self.label();
@@ -206,25 +219,31 @@ impl FunctionEmitter<'_, '_> {
         self.release_operand(source, &collection, &frames);
     }
 
-    fn switch_cases(
-        &self,
-        local: &Local,
-        arms: &[TypedMatchArm],
-    ) -> Option<(BTreeMap<u128, usize>, Option<usize>)> {
-        if !matches!(local.ty, Type::Integer(..) | Type::Bool | Type::Unit) {
-            return None;
-        }
+    /// Recognizes arms that only compare the subject, or a union subject's tag, with constants.
+    fn switch_plan(&self, local: &Local, arms: &[TypedMatchArm]) -> Option<SwitchPlan> {
+        let tag = match local.ty {
+            Type::Integer(..) | Type::Bool | Type::Unit => false,
+            Type::Union(..) => true,
+            _ => return None,
+        };
+        let subject =
+            |value: &TypedExpr| matches!(value.kind, TypedExprKind::Local(id) if id == local.id);
         let mut cases = BTreeMap::new();
         let mut default = None;
+        let mut payloads = false;
         for (index, arm) in arms.iter().enumerate() {
             if arm.guard.is_some() {
                 return None;
             }
+            // Switched arms bind storage at the same address in every alternative.
+            let mut paths = BTreeMap::new();
             for alternative in &arm.alternatives {
-                if alternative.bindings.iter().any(
-                    |(_, value)| !matches!(value.kind, TypedExprKind::Local(id) if id == local.id),
-                ) {
-                    return None;
+                for (binding, value) in &alternative.bindings {
+                    let path = Self::binding_path(value, local.id)?;
+                    payloads |= !path.is_empty();
+                    if paths.entry(binding.id).or_insert_with(|| path.clone()) != &path {
+                        return None;
+                    }
                 }
                 let condition = match alternative.steps.as_slice() {
                     [] => None,
@@ -235,7 +254,11 @@ impl FunctionEmitter<'_, '_> {
                     None | Some(TypedExprKind::Bool(true)) => {
                         default.get_or_insert(index);
                     }
-                    Some(TypedExprKind::Binary(BinaryOp::Equal, left, right)) if matches!(left.kind, TypedExprKind::Local(id) if id == local.id) =>
+                    Some(TypedExprKind::Binary(BinaryOp::Equal, left, right))
+                        if match &left.kind {
+                            TypedExprKind::UnionTag(value) => tag && subject(value),
+                            _ => !tag && subject(left),
+                        } =>
                     {
                         let constant = match right.kind {
                             TypedExprKind::Int(n) => n,
@@ -251,7 +274,43 @@ impl FunctionEmitter<'_, '_> {
                 }
             }
         }
-        Some((cases, default))
+        Some(SwitchPlan {
+            selector: if tag {
+                Type::Integer(32, true)
+            } else {
+                local.ty.clone()
+            },
+            tag,
+            cases,
+            default,
+            payloads,
+        })
+    }
+
+    /// The storage path of a pattern binding below the subject or its union payload storage,
+    /// with the type that each step projects from.
+    fn binding_path(value: &TypedExpr, subject: usize) -> Option<Vec<(Option<usize>, Type)>> {
+        match &value.kind {
+            TypedExprKind::Local(id) if *id == subject => Some(Vec::new()),
+            TypedExprKind::UnionPayload { value: union, .. } if matches!(union.kind, TypedExprKind::Local(id) if id == subject) => {
+                Some(vec![(None, union.ty.clone())])
+            }
+            TypedExprKind::Field(record, index) => {
+                let mut path = Self::binding_path(record, subject)?;
+                path.push((Some(*index), record.ty.clone()));
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    /// The switched value of `matched`: the value itself, or its union tag.
+    fn selector(&mut self, plan: &SwitchPlan, matched: &TypedExpr) -> String {
+        if plan.tag {
+            self.union_tag(matched)
+        } else {
+            self.expression_mode(matched, false)
+        }
     }
 
     fn constant_result(expression: &TypedExpr) -> Option<String> {
@@ -276,8 +335,12 @@ impl FunctionEmitter<'_, '_> {
         if !matches!(result_type, Type::Integer(..) | Type::Bool | Type::Unit) {
             return None;
         }
-        let (cases, default) = self.switch_cases(local, arms)?;
-        let default = Self::constant_result(&arms[default?].body)?;
+        let plan = self.switch_plan(local, arms)?;
+        if plan.payloads {
+            return None;
+        }
+        let default = Self::constant_result(&arms[plan.default?].body)?;
+        let cases = &plan.cases;
         let first = *cases.keys().next()?;
         let last = *cases.keys().next_back()?;
         let width = last.checked_sub(first)?.checked_add(1)?;
@@ -287,10 +350,10 @@ impl FunctionEmitter<'_, '_> {
         let width = (width as usize).next_power_of_two();
         let mut constants = vec![default.clone(); width];
         for (key, arm) in cases {
-            constants[(key - first) as usize] = Self::constant_result(&arms[arm].body)?;
+            constants[(key - first) as usize] = Self::constant_result(&arms[*arm].body)?;
         }
-        let source = self.expression_mode(matched, false);
-        let source_type = self.ty(&local.ty);
+        let source = self.selector(&plan, matched);
+        let source_type = self.ty(&plan.selector);
         let offset = self.value(format!("sub {source_type} {source}, {first}"));
         let valid = self.value(format!("icmp ule {source_type} {offset}, {}", width - 1));
         let yes = self.label();
@@ -298,7 +361,7 @@ impl FunctionEmitter<'_, '_> {
         let merge = self.label();
         self.branch(&valid, &yes, &no);
         self.begin(&yes);
-        let index = match local.ty {
+        let index = match plan.selector {
             Type::Integer(64, _) => offset,
             Type::Integer(128, _) => self.value(format!("trunc i128 {offset} to i64")),
             _ => self.value(format!("zext {source_type} {offset} to i64")),
@@ -360,22 +423,25 @@ impl FunctionEmitter<'_, '_> {
         let done = self.label();
         let failure = self.label();
         let labels: Vec<_> = arms.iter().map(|_| self.label()).collect();
-        let switch = self.switch_cases(local, arms);
-        if let Some((cases, default)) = &switch {
+        let switch = self.switch_plan(local, arms);
+        if let Some(plan) = &switch {
+            // The union tag is the first field, so one load reads it from the subject's slot.
             let subject = self.value(format!(
                 "load {}, ptr {}",
-                self.ty(&local.ty),
+                self.ty(&plan.selector),
                 self.locals[&local.id]
             ));
-            let default = default.map_or(failure.as_str(), |index| labels[index].as_str());
+            let default = plan
+                .default
+                .map_or(failure.as_str(), |index| labels[index].as_str());
             self.instruction(format!(
                 "switch {} {subject}, label %{default} [",
-                self.ty(&local.ty)
+                self.ty(&plan.selector)
             ));
-            for (constant, index) in cases {
+            for (constant, index) in &plan.cases {
                 self.instruction(format!(
                     "  {} {constant}, label %{}",
-                    self.ty(&local.ty),
+                    self.ty(&plan.selector),
                     labels[*index]
                 ));
             }
@@ -457,9 +523,10 @@ impl FunctionEmitter<'_, '_> {
                     self.locals.insert(binding.id, pointer);
                 }
             } else {
-                for (binding, _) in bindings {
-                    self.locals
-                        .insert(binding.id, self.locals[&local.id].clone());
+                // Every alternative of a switched arm binds the subject or its payload storage.
+                for (binding, projection) in bindings {
+                    let pointer = self.place(projection);
+                    self.locals.insert(binding.id, pointer);
                 }
             }
             for (binding, _) in bindings {
@@ -487,7 +554,17 @@ impl FunctionEmitter<'_, '_> {
                 self.begin(&success);
             }
             self.scopes.push(Vec::new());
+            let types = self.module.types();
+            let views: Vec<usize> = bindings
+                .iter()
+                .filter(|(binding, _)| arm.views(binding, &types))
+                .map(|(binding, _)| binding.id)
+                .collect();
             for (binding, _) in bindings {
+                if views.contains(&binding.id) {
+                    // The body keeps reading the matched storage in place.
+                    continue;
+                }
                 let expression = TypedExpr {
                     kind: TypedExprKind::Local(binding.id),
                     ty: binding.ty.clone(),
@@ -514,6 +591,10 @@ impl FunctionEmitter<'_, '_> {
                 self.drop_scope(&temporaries);
                 incoming.push(format!("[ {value}, %{} ]", self.block));
                 self.jump(&done);
+            }
+            for id in &views {
+                self.borrowed_locals.remove(id);
+                self.frame_locals.remove(id);
             }
             self.scopes.pop();
             self.scopes.pop();

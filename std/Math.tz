@@ -1,0 +1,5 @@
+private def identity_f64 :: f64 -> f64
+fn identity_f64 value = value
+
+def zero :: f64
+fn zero = identity_f64 0.0

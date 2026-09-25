@@ -32,6 +32,7 @@ fn parse_source(source: &str, source_id: Option<usize>) -> Result<Program, Diagn
         stop_at_arrow: false,
         active_patterns: BTreeMap::new(),
         pattern_type_arrow: false,
+        type_offside: None,
     }
     .program()
 }
@@ -46,6 +47,7 @@ struct Parser<'a> {
     stop_at_arrow: bool,
     active_patterns: BTreeMap<String, ActivePattern>,
     pattern_type_arrow: bool,
+    type_offside: Option<usize>,
 }
 
 impl Parser<'_> {
@@ -112,6 +114,7 @@ impl Parser<'_> {
         let mut program = Program {
             source_kind: None,
             records: Vec::new(),
+            unions: Vec::new(),
             functions: Vec::new(),
             classes: Vec::new(),
             instances: Vec::new(),
@@ -124,11 +127,32 @@ impl Parser<'_> {
         let mut signature_group = None;
         let mut definition_group = None;
         while !self.at(&TokenKind::End) {
-            if self.eat(&TokenKind::Record) {
+            let column = self.column(self.current().span);
+            let visibility = self.visibility()?;
+            if self.eat(&TokenKind::Union) {
+                program.unions.push(self.union_declaration(visibility, column)?);
+            } else if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
+                let mut parameters = Vec::new();
+                while self.at(&TokenKind::TypeVariable(String::new())) {
+                    if parameters.len() >= MAX_NESTING {
+                        return Err(self.error("too many record type parameters"));
+                    }
+                    parameters.push(self.type_variable()?);
+                }
+                if !self.at(&TokenKind::LeftBrace)
+                    && matches!(self.current().kind, TokenKind::Ident(_) | TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftList)
+                {
+                    return Err(self.error("record type parameters use variables such as 'a"));
+                }
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
                 let fields = self.parameters(TokenKind::RightBrace)?;
-                program.records.push(RecordDecl { name, fields });
+                program.records.push(RecordDecl {
+                    visibility,
+                    name,
+                    parameters,
+                    fields,
+                });
             } else if self.eat(&TokenKind::Class) {
                 let name = self.ident()?;
                 let variable = self.type_variable()?;
@@ -148,7 +172,7 @@ impl Parser<'_> {
                 });
             } else if self.eat(&TokenKind::Instance) {
                 let class = self.qualified_ident()?;
-                let ty = self.type_atom()?;
+                let ty = self.type_apply()?;
                 self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
                 let mut methods = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
@@ -187,11 +211,15 @@ impl Parser<'_> {
                 definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
             } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) {
+                let export = self.current().span;
                 let exported = self.eat(&TokenKind::Export);
+                if exported && self.at(&TokenKind::Private) {
+                    return Err(Self::private_export(export.through(self.current().span)));
+                }
                 let declaration = self.eat(&TokenKind::Def);
                 let continuation = self.eat(&TokenKind::And);
                 if !declaration && !continuation {
-                    self.expect(&TokenKind::Fn, "'def', 'fn', or 'record'")?;
+                    self.expect(&TokenKind::Fn, "'def', 'fn', 'record', or 'union'")?;
                 }
                 let recursive = !continuation && self.eat(&TokenKind::Rec);
                 let name = self.function_name()?;
@@ -208,6 +236,7 @@ impl Parser<'_> {
                     self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
                     let mut signature = self.signature(name.clone(), exported)?;
                     signature.recursion = recursion;
+                    signature.visibility = visibility;
                     if signatures.insert(name.text.clone(), signature).is_some() {
                         return Err(Diagnostic::new(
                             "E1001",
@@ -246,6 +275,7 @@ impl Parser<'_> {
                 program.functions.push(FunctionDecl {
                     name,
                     recursion,
+                    visibility: Visibility::Public,
                     exported,
                     parameters,
                     result,
@@ -288,9 +318,114 @@ impl Parser<'_> {
         Ok(program)
     }
 
+    fn visibility(&mut self) -> Result<Visibility, Diagnostic> {
+        let private = self.current().span;
+        if !self.eat(&TokenKind::Private) {
+            return Ok(Visibility::Public);
+        }
+        let next = self.current();
+        let message = match next.kind {
+            TokenKind::Record | TokenKind::Union | TokenKind::Def => {
+                return Ok(Visibility::Private);
+            }
+            TokenKind::Export => return Err(Self::private_export(private.through(next.span))),
+            TokenKind::Fn | TokenKind::And | TokenKind::Let => {
+                "put 'private' on the 'def' signature; its 'fn', 'and', or 'let' implementation inherits that visibility"
+            }
+            TokenKind::Class => "type classes are always public; remove 'private'",
+            TokenKind::Instance => {
+                "instances take part in global coherence and are always public; remove 'private'"
+            }
+            _ => "'private' must be followed by 'def', 'record', or 'union'",
+        };
+        Err(Diagnostic::new("E1022", message, private))
+    }
+
+    /// Parses the cases after `union Name 'a* =`. `of` is contextual, and a
+    /// payload type ends before a new line that is not indented past the
+    /// declaration, so the entry-point code may follow the last case.
+    fn union_declaration(
+        &mut self,
+        visibility: Visibility,
+        column: usize,
+    ) -> Result<UnionDecl, Diagnostic> {
+        let name = self.ident()?;
+        let mut parameters = Vec::new();
+        while self.at(&TokenKind::TypeVariable(String::new())) {
+            if parameters.len() >= MAX_NESTING {
+                return Err(self.error("too many union type parameters"));
+            }
+            parameters.push(self.type_variable()?);
+        }
+        if matches!(
+            self.current().kind,
+            TokenKind::Ident(_)
+                | TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftList
+        ) {
+            return Err(self.error("union type parameters use variables such as 'a"));
+        }
+        self.expect(&TokenKind::Equal, "'=' after the union name")?;
+        self.eat(&TokenKind::Pipe);
+        let outer = self.type_offside.replace(column);
+        let mut cases = Vec::new();
+        loop {
+            if !matches!(self.current().kind, TokenKind::Ident(_)) {
+                return Err(self.error("expected a union case name"));
+            }
+            let name = self.ident()?;
+            let payload = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "of")
+                && !self.offside()
+            {
+                self.take();
+                Some(self.type_expr()?)
+            } else {
+                None
+            };
+            cases.push(UnionCaseDecl { name, payload });
+            if !self.eat(&TokenKind::Pipe) {
+                break;
+            }
+        }
+        self.type_offside = outer;
+        self.eat(&TokenKind::Semicolon);
+        Ok(UnionDecl {
+            visibility,
+            name,
+            parameters,
+            cases,
+        })
+    }
+
+    /// Whether the current token starts a new line at or left of the
+    /// enclosing declaration, which ends a union payload type.
+    fn offside(&self) -> bool {
+        self.type_offside.is_some_and(|column| {
+            self.newline_before_current() && self.column(self.current().span) <= column
+        })
+    }
+
+    fn private_export(span: Span) -> Diagnostic {
+        Diagnostic::new(
+            "E1022",
+            "'private export' is not allowed; remove 'private' or remove 'export'",
+            span,
+        )
+    }
+
     fn qualified_ident(&mut self) -> Result<Ident, Diagnostic> {
+        self.qualified_path(2)
+    }
+
+    /// Reads up to `segments` dot-separated identifiers, as in
+    /// `Module.Union.Case` patterns.
+    pub(super) fn qualified_path(&mut self, segments: usize) -> Result<Ident, Diagnostic> {
         let mut name = self.ident()?;
-        if self.eat(&TokenKind::Dot) {
+        for _ in 1..segments {
+            if !self.eat(&TokenKind::Dot) {
+                break;
+            }
             let member = self.ident()?;
             name.text.push('.');
             name.text.push_str(&member.text);
@@ -321,7 +456,7 @@ impl Parser<'_> {
             let grouped = self.eat(&TokenKind::LeftParen);
             loop {
                 let class = self.qualified_ident()?;
-                let ty = self.type_atom()?;
+                let ty = self.type_primary()?;
                 constraints.push(ConstraintExpr { class, ty });
                 if !self.eat(&TokenKind::Comma) {
                     break;
@@ -349,6 +484,7 @@ impl Parser<'_> {
         Ok(SignatureDecl {
             name,
             recursion: None,
+            visibility: Visibility::Public,
             exported,
             parameters,
             result,
@@ -366,6 +502,7 @@ impl Parser<'_> {
                         .get(self.position + offset + 1)
                         .is_some_and(|next| next.kind == TokenKind::LeftParen) => {}
                 TokenKind::Def
+                | TokenKind::Private
                 | TokenKind::Let
                 | TokenKind::Fn
                 | TokenKind::And
@@ -441,6 +578,7 @@ impl Parser<'_> {
         Ok(FunctionDecl {
             name: definition.name,
             recursion: definition.recursion,
+            visibility: signature.visibility,
             exported: signature.exported,
             parameters: definition
                 .parameters
@@ -495,16 +633,17 @@ impl Parser<'_> {
         })
     }
 
-    fn type_atom(&mut self) -> Result<TypeExpr, Diagnostic> {
+    /// Reads exactly one type atom; type arguments are left to `type_apply`.
+    fn type_primary(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.enter()?;
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
             let mutable = self.eat(&TokenKind::Mut);
-            TypeExprKind::Reference(Box::new(self.type_atom()?), mutable)
+            TypeExprKind::Reference(Box::new(self.type_primary()?), mutable)
         } else if self.eat(&TokenKind::AndAnd) {
             // As in Rust, `&&T` is `& &T` and `&&mut T` is `& &mut T`.
             let mutable = self.eat(&TokenKind::Mut);
-            let value = self.type_atom()?;
+            let value = self.type_primary()?;
             let span = Span {
                 start: start.start + 1,
                 ..start.through(value.span)
@@ -522,8 +661,14 @@ impl Parser<'_> {
             let ty = self.type_expr()?;
             self.expect(&TokenKind::RightParen, "')' after the type")?;
             ty.kind
-        } else if self.eat(&TokenKind::Fn) {
-            self.expect(&TokenKind::LeftParen, "'(' in a function type")?;
+        } else if self.at(&TokenKind::Fn)
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::LeftParen)
+        {
+            self.take();
+            self.take();
             let mut parameters = Vec::new();
             if !self.at(&TokenKind::RightParen) {
                 loop {
@@ -552,16 +697,7 @@ impl Parser<'_> {
         } else {
             let name = self.qualified_ident()?;
             if name.text == "Task" {
-                TypeExprKind::Task(Box::new(self.type_atom()?))
-            } else if self.at(&TokenKind::TypeVariable(String::new())) {
-                let variable = self.type_variable()?;
-                TypeExprKind::Constrained(
-                    Box::new(name),
-                    Box::new(TypeExpr {
-                        kind: TypeExprKind::Variable(variable.text),
-                        span: variable.span,
-                    }),
-                )
+                TypeExprKind::Task(Box::new(self.type_primary()?))
             } else {
                 TypeExprKind::Named(name.text)
             }
@@ -572,6 +708,52 @@ impl Parser<'_> {
             kind,
             span: start.through(end),
         })
+    }
+
+    /// Reads `Head Arg*`, where each argument is one `type_primary`, so nested
+    /// applications such as `Option (Pair i64 string)` need parentheses.
+    pub(super) fn type_apply(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let head = self.type_primary()?;
+        if !self.type_argument_start() {
+            return Ok(head);
+        }
+        let TypeExprKind::Named(name) = head.kind else {
+            return Err(self.error(
+                "type arguments must follow a type name; parenthesize an applied type, as in '&(Pair i64 string)' or 'Task (Pair i64 string)'",
+            ));
+        };
+        let mut arguments = Vec::new();
+        while self.type_argument_start() {
+            if arguments.len() >= MAX_NESTING {
+                return Err(self.error("too many type arguments"));
+            }
+            arguments.push(self.type_primary()?);
+        }
+        let span = head.span.through(arguments.last().unwrap().span);
+        Ok(TypeExpr {
+            kind: TypeExprKind::Apply(
+                Box::new(Ident {
+                    text: name,
+                    span: head.span,
+                }),
+                arguments.into_boxed_slice(),
+            ),
+            span,
+        })
+    }
+
+    /// References and function types start an argument only inside
+    /// parentheses, which keeps `x: T & p` patterns and `fn (|A|) ...`
+    /// definitions after signatures unambiguous.
+    fn type_argument_start(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::TypeVariable(_)
+                | TokenKind::Ident(_)
+                | TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftList
+        ) && !self.offside()
     }
 
     fn make(&self, kind: ExprKind, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
@@ -1006,7 +1188,7 @@ impl Parser<'_> {
                 continue;
             }
             if minimum <= 12 && self.eat(&TokenKind::As) {
-                let ty = self.type_atom()?;
+                let ty = self.type_primary()?;
                 let span = left.span.through(ty.span);
                 let depth = left.depth + 1;
                 left = self.make(ExprKind::Cast(Box::new(left), ty), span, depth)?;
@@ -1224,7 +1406,7 @@ impl Parser<'_> {
             let depth = literal.depth + 1;
             return self.make(ExprKind::NewLiteral(Box::new(literal)), span, depth);
         }
-        let ty = self.type_atom()?;
+        let ty = self.type_primary()?;
         self.expect(&TokenKind::LeftParen, "'(' before the collection length")?;
         let length = self.expression(0, true)?;
         self.expect(&TokenKind::Comma, "',' before the collection initializer")?;

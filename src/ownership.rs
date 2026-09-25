@@ -13,6 +13,11 @@ struct Place {
     fields: Vec<usize>,
 }
 
+/// Collection elements are conservatively one place.
+const ELEMENT: usize = usize::MAX;
+/// Every case payload of a union shares the storage after the tag.
+const PAYLOAD: usize = usize::MAX - 1;
+
 impl Place {
     fn overlaps(&self, other: &Self) -> bool {
         self.root == other.root && self.fields.iter().zip(&other.fields).all(|(a, b)| a == b)
@@ -28,6 +33,10 @@ struct Loan {
     place: Place,
     mutable: bool,
     parents: BTreeSet<usize>,
+    /// The type of the pattern view that holds this loan. Such a view would be
+    /// a copy if the type were Copy, so while inferring constraints a conflict
+    /// with the loan requires Copy instead of rejecting the access.
+    view: Option<Type>,
 }
 
 #[derive(Clone, Default)]
@@ -94,7 +103,7 @@ fn check_body(
     };
     for parameter in parameters {
         let mut value = Value::default();
-        if !task && parameter.ty.carries_loans(&module.records) {
+        if !task && parameter.ty.carries_loans(&module.types()) {
             let root = usize::MAX - parameter.id;
             checker.external.insert(root);
             let mutable = matches!(parameter.ty, Type::Reference(_, true));
@@ -136,10 +145,17 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
             Type::Variable(_) | Type::Infer(_) | Type::Reference(..) | Type::Function(..) => false,
             Type::Array(element) | Type::List(element) => owned(element, module),
             Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
-            Type::Record(id) => module.records[*id]
-                .fields
+            Type::Record(id, arguments) => module
+                .types()
+                .record_fields(*id, arguments)
                 .iter()
-                .all(|(_, ty)| owned(ty, module)),
+                .all(|ty| owned(ty, module)),
+            Type::Union(id, arguments) => module
+                .types()
+                .union_payloads(*id, arguments)
+                .iter()
+                .flatten()
+                .all(|ty| owned(ty, module)),
             _ => true,
         }
     }
@@ -155,10 +171,14 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
         match &expression.kind {
             E::Function(_)
             | E::GenericFunction(..)
+            | E::CaseConstructor { .. }
             | E::Method(..)
             | E::TaskRun(_)
             | E::TaskParallel(_) => true,
             E::Local(id) => locals.get(id).copied().unwrap_or(false),
+            E::Construct { payload, .. } => payload
+                .as_ref()
+                .is_none_or(|value| closed(value, module, known, locals)),
             E::Lambda { captures, .. } => captures
                 .iter()
                 .all(|local| owned(&local.ty, module) || locals.get(&local.id) == Some(&true)),
@@ -204,7 +224,9 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
                             .iter()
                             .all(|value| closed(value, module, known, locals)))
             }
-            E::Field(value, _) | E::Index(value, _) => closed(value, module, known, locals),
+            E::Field(value, _) | E::Index(value, _) | E::UnionPayload { value, .. } => {
+                closed(value, module, known, locals)
+            }
             _ => false,
         }
     }
@@ -244,7 +266,20 @@ impl Checker<'_> {
             Type::Variable(name) => self.copy_variables.contains(name),
             Type::Array(element) | Type::List(element) => self.is_copy(element),
             Type::Tuple(elements) => elements.iter().all(|ty| self.is_copy(ty)),
-            _ => ty.is_copy(&self.module.records),
+            Type::Record(id, arguments) if !arguments.is_empty() => self
+                .module
+                .types()
+                .record_fields(*id, arguments)
+                .iter()
+                .all(|ty| self.is_copy(ty)),
+            Type::Union(id, arguments) if !arguments.is_empty() => self
+                .module
+                .types()
+                .union_payloads(*id, arguments)
+                .iter()
+                .flatten()
+                .all(|ty| self.is_copy(ty)),
+            _ => ty.is_copy(&self.module.types()),
         }
     }
 
@@ -262,6 +297,26 @@ impl Checker<'_> {
                 let mut changed = false;
                 for ty in elements {
                     changed |= self.require_copy(ty);
+                }
+                changed
+            }
+            Type::Record(id, arguments) if !arguments.is_empty() => {
+                let mut changed = false;
+                for ty in self.module.types().record_fields(*id, arguments) {
+                    changed |= self.require_copy(&ty);
+                }
+                changed
+            }
+            Type::Union(id, arguments) if !arguments.is_empty() => {
+                let mut changed = false;
+                for ty in self
+                    .module
+                    .types()
+                    .union_payloads(*id, arguments)
+                    .into_iter()
+                    .flatten()
+                {
+                    changed |= self.require_copy(&ty);
                 }
                 changed
             }
@@ -291,6 +346,7 @@ impl Checker<'_> {
             place,
             mutable,
             parents,
+            view: None,
         });
         id
     }
@@ -360,6 +416,12 @@ impl Checker<'_> {
                 continue;
             }
             if loan.mutable || matches!(usage, Use::Consume | Use::MutBorrow | Use::Write) {
+                if let Some(ty) = loan.view.clone() {
+                    self.require_copy(&ty);
+                    if self.is_copy(&ty) {
+                        continue;
+                    }
+                }
                 return Err(error(
                     "E1014",
                     "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
@@ -393,10 +455,17 @@ impl Checker<'_> {
                 }
                 Ok(places)
             }
+            E::UnionPayload { value, .. } => {
+                let mut places = self.place(value, live)?;
+                for (place, _) in &mut places {
+                    place.fields.push(PAYLOAD);
+                }
+                Ok(places)
+            }
             E::ListTail(value, _) => {
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
-                    place.fields.push(usize::MAX);
+                    place.fields.push(ELEMENT);
                 }
                 Ok(places)
             }
@@ -414,7 +483,7 @@ impl Checker<'_> {
                 self.held.pop();
                 for (place, _) in &mut places {
                     // Collection loans conservatively cover every element.
-                    place.fields.push(usize::MAX);
+                    place.fields.push(ELEMENT);
                 }
                 Ok(places)
             }
@@ -447,7 +516,9 @@ impl Checker<'_> {
     fn is_place(expression: &TypedExpr) -> bool {
         match &expression.kind {
             E::Local(_) | E::Dereference(_) => true,
-            E::Field(value, _) | E::ListTail(value, _) => Self::is_place(value),
+            E::Field(value, _) | E::ListTail(value, _) | E::UnionPayload { value, .. } => {
+                Self::is_place(value)
+            }
             E::Index(value, _) => {
                 matches!(value.ty, Type::Array(_) | Type::List(_)) && Self::is_place(value)
             }
@@ -493,7 +564,7 @@ impl Checker<'_> {
             self.revive_generic_moves(&place);
             if moving
                 && (!via.is_empty()
-                    || place.fields.contains(&usize::MAX)
+                    || place.fields.contains(&ELEMENT)
                     || self
                         .active()
                         .iter()
@@ -502,7 +573,7 @@ impl Checker<'_> {
                 self.require_copy(&expression.ty);
             }
             moving = usage == Use::Consume && !self.is_copy(&expression.ty);
-            if moving && place.fields.contains(&usize::MAX) {
+            if moving && place.fields.contains(&ELEMENT) {
                 return Err(error(
                     "E1012",
                     "cannot move a non-Copy value out of an array or list element; borrow it instead",
@@ -512,7 +583,11 @@ impl Checker<'_> {
             if moving && !via.is_empty() {
                 return Err(error(
                     "E1012",
-                    "cannot move a non-Copy value out of a reference",
+                    if via.iter().any(|id| self.loans[*id].view.is_some()) {
+                        "cannot move a non-Copy pattern variable bound through a reference or a collection element; borrow it with 'ref' instead"
+                    } else {
+                        "cannot move a non-Copy value out of a reference"
+                    },
                     expression.span,
                 ));
             }
@@ -522,7 +597,7 @@ impl Checker<'_> {
                 if moving { Use::Consume } else { Use::Read },
                 expression.span,
             )?;
-            if expression.ty.carries_loans(&self.module.records) {
+            if expression.ty.carries_loans(&self.module.types()) {
                 if let Some((_, stored)) = self.state.locals.get(&place.root) {
                     value.loans.extend(stored.loans.iter().copied());
                 } else {
@@ -684,7 +759,7 @@ impl Checker<'_> {
                             || !callee
                                 .ty
                                 .after_arguments(index + 1)
-                                .carries_loans(&self.module.records)
+                                .carries_loans(&self.module.types())
                         {
                             current = Value::default();
                         }
@@ -692,7 +767,7 @@ impl Checker<'_> {
                         self.held.push(current.clone());
                     }
                 }
-                if expression.ty.carries_loans(&self.module.records) {
+                if expression.ty.carries_loans(&self.module.types()) {
                     result = current;
                 }
                 self.held.truncate(start);
@@ -846,7 +921,7 @@ impl Checker<'_> {
                 self.held.push(value.clone());
                 let callee = self.eval(right, usage, &during)?;
                 self.held.pop();
-                if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.records)
+                if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.types())
                 {
                     result = value;
                     result.loans.extend(callee.loans);
@@ -873,14 +948,19 @@ impl Checker<'_> {
             E::NewArray(length, initializer) | E::NewList(length, initializer) => {
                 self.eval(length, Use::Consume, &during)?;
                 let value = self.eval(initializer, Use::Consume, &during)?;
-                if expression.ty.carries_loans(&self.module.records) {
+                if expression.ty.carries_loans(&self.module.types()) {
                     result = value;
                 }
             }
             E::NewLiteral(literal) => {
                 result = self.eval(literal, Use::Consume, &during)?;
             }
-            E::Length(value) | E::StringLength(value) => {
+            E::Construct { payload, .. } => {
+                if let Some(payload) = payload {
+                    result = self.eval(payload, Use::Consume, &during)?;
+                }
+            }
+            E::Length(value) | E::StringLength(value) | E::UnionTag(value) => {
                 self.eval(value, Use::Read, &during)?;
             }
             E::Index(value, index) => {
@@ -895,13 +975,13 @@ impl Checker<'_> {
                 self.held.push(container.clone());
                 self.eval(index, Use::Consume, &during)?;
                 self.held.pop();
-                if expression.ty.carries_loans(&self.module.records) {
+                if expression.ty.carries_loans(&self.module.types()) {
                     result = container;
                 }
             }
-            E::Field(value, _) => {
+            E::Field(value, _) | E::UnionPayload { value, .. } => {
                 let value = self.eval(value, Use::Consume, &during)?;
-                if expression.ty.carries_loans(&self.module.records) {
+                if expression.ty.carries_loans(&self.module.types()) {
                     result = value;
                 }
             }
@@ -915,6 +995,7 @@ impl Checker<'_> {
             | E::Unit
             | E::Function(_)
             | E::GenericFunction(..)
+            | E::CaseConstructor { .. }
             | E::Method(..)
             | E::GenericInteger(..)
             | E::GenericFloat(_) => {}

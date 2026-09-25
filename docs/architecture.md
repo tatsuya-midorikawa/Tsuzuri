@@ -8,28 +8,33 @@ LLVM の C API／Rust バインディングには結合しません。
 ```text
 UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
    -> driver -> sorted source files + filename-based module names and source kinds
+             + embedded std sources (stdlib::SOURCES) appended after user sources
    -> lexer -> tokens + per-file byte spans
    -> parser -> syntax AST per file
    -> check -> source kinds + builder expansion + module-scoped names
             -> rigid type variables + local unification
+            -> match coverage: exhaustiveness errors + unreachable-arm warnings
    -> ownership -> symbolic moves/loans + inferred Copy requirements
    -> polymorph -> constraint fixed point + coherent instances + monomorphization
    -> closures -> lambda lifting + capture parameters + saturated export bridges
+               + FunctionOrigin of every generated helper
    -> ownership -> concrete moves + loans + lifetime validation
-   -> llvm -> bounded known-call specialization + deterministic LLVM IR
+   -> llvm -> reachability pruning of std code + bounded known-call specialization
+           + deterministic LLVM IR
    -> Clang -O0..3 -> native executable / PIC object
                    -> wasm32 object -> LLD -> standalone .wasm
 ```
 
 | ファイル | 責務 |
 |---|---|
-| `src/diagnostic.rs` | ソース ID とファイル内位置、安定コード、human／JSON 診断 |
+| `src/diagnostic.rs` | ソース ID とファイル内位置、安定コード、error／warning の human／JSON 診断 |
 | `src/syntax.rs` | トークン、構文木、構文資源上限 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント、数値 |
 | `src/parser.rs` | Pratt parser、宣言と式、トップレベルのエントリーコード、深さの制限 |
 | `src/parse_control.rs` | インデント本体、for／while／match、関数ガード、fx、パターンと認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR、レイアウト、公開 ABI |
 | `src/control.rs` / `recursion.rs` | 型付きループ、短絡するパターン手順と束縛、認識器呼び出し、参照グラフの再帰検査 |
+| `src/exhaustiveness.rs` | 型付きの被覆パターン、usefulness による match の網羅性・到達不能な節の検査、不足する値の例（check の子モジュール） |
 | `src/computation.rs` | ソース種別の検査、`.tc` ビルダーの収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉、lambda lifting、公開ABIの完全適用ラッパー |
@@ -45,8 +50,9 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
 | `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
+| `src/stdlib.rs` / `std/` | 埋め込みの標準ライブラリのソース、予約 std モジュール名、std の仮想パス |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護 |
-| `src/main.rs` | CLI オプションと診断表示 |
+| `src/main.rs` | CLI オプションと診断・警告の表示 |
 
 ## 性能設計の原則
 
@@ -95,9 +101,37 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 互換の拡張子なし `("Name", source)` と `analyze(source)` はファイル種別未指定のメモリ上 AST を検査し、
 既存のフロントエンド利用者向けに混在宣言を許します。driver は必ず拡張子を渡し、この互換経路を使いません。
 関数とレコードはモジュールで修飾した一意な名前を持ち、LLVM の内部シンボルにも修飾名を使います。
-他モジュールの関数は修飾が必須で、レコードだけは自モジュール優先・他モジュールで一意なら
-無修飾名を解決します。型付き IR の関数・レコード参照はプロジェクト全体で一意な ID です。
+他モジュールの関数は修飾が必須で、レコード・union・case・クラスは自モジュール優先・
+他モジュールで一意なら無修飾名を解決します（std との優先順位は後述）。型付き IR の関数・レコード参照はプロジェクト全体で一意な ID です。
 公開 ABI は従来の `tz_name` を維持し、エクスポート名の衝突は型検査で拒否します。
+`private` は型検査時の名前解決（`Names` の `NameInfo` による可視性判定）だけで完結し、
+型付き IR・LLVM の内部シンボル・公開 ABI を変えません。他モジュールの private 候補は
+無修飾レコード名の解決先にも曖昧性の候補にもなりません。public 宣言からの private 型の漏れは
+解決済みの `Type` ではなく元の `TypeExpr` を走査して、漏れた型参照の位置で報告します。
+
+**標準ライブラリ:** `std/` のソースは `stdlib::SOURCES` として `include_str!` で埋め込み、
+`analyze`／`analyze_modules`／`Project::load` のすべてで利用者のソースの後に追加します。
+parse 順は入力順なので、利用者のソース ID と `Project.root` は std の有無で変わりません。
+`analyze_modules_with_std` は Rust テスト向けに std を差し替えます（空スライスは std なし）。
+各モジュールは `ModuleOrigin`（`User`／`Std`）を持ち、`stdlib::RESERVED_MODULES` の名前は利用者のモジュールに使えません。
+std のパスは `std/Name.ext` の平坦な仮想パスで、出力保護の対象外です。
+無修飾の型・case・レコード・クラスの解決は、自モジュール、完全修飾名の後、参照元が利用者なら
+利用者のモジュール、std のモジュールの順に段階ごとに一意な候補を探し、参照元が std なら std だけを探します。
+std の `export def` は拒否し、std の関数は利用者の関数と同じく修飾必須です。
+std のソースは常に型検査し、`closures::lower` の後で到達可能性により間引きます。
+`CheckedFunction.origin`（`FunctionOrigin`）が唯一の由来情報で、生成された `$lambda`／`$task`／`$builtin`／
+`$case`／`$export` などの補助関数は持ち主の `module`／`test` を継承し、`parent` に持ち主の関数 ID を持ちます。
+LLVM は利用者由来の関数をすべて出力し、std 由来の関数は利用者のテスト以外の関数・export・入口からの
+参照で到達するものだけを出力します（`reachable_functions`）。名前付きレコード・union の型定義は、
+利用者由来の型、出力する関数のシグネチャと本体から集めます。
+
+**組み込み関数:** `Builtin` は `BuiltinScheme`（型変数、制約、`Std` の型、`UnsignedOf`／`WidenOf` の型族）で型を表し、
+参照は具体化後の型引数を持つ `FunctionRef::Builtin(BuiltinInstance)` だけです。
+修飾名の組み込み関数（`Task.run` など）はモジュール関数の後、型クラスのメソッドより前に解決します。
+型族は引数が具体的な整数型に決まった呼び出し位置で解き、型変数のまま関数末尾に残れば `E1015` です。
+組み込み関数はすべて scheme の引数個数を持つ `$builtin` ラッパーを経由して呼び、部分適用は通常の関数値と同じく下げます。
+LLVM の定義は具体化ごとに一度だけ `@tz.builtin.name` に型引数の名前を `.` で連結したシンボルで出力し、
+型名は `$A`（`->`）・`$L`／`$R`（`[`／`]`）・`$C`（`,`）で LLVM の識別子文字に置き換えます。
 
 **エントリー:** `Main.tz` のトップレベルコードを合成した非公開関数、または `Main.main` の
 関数 ID を保持します。両者の併用は拒否し、他モジュールや `Main.tc` の `main` は入口に選びません。
@@ -140,6 +174,24 @@ OR は束縛名・型を揃え、最初に成立した側でガードを一回�
 一時スロットを entry に置き、別の OR 経路の未使用スロットはゼロにして drop を安全にします。
 全節が不成立なら `llvm.trap`／`unreachable` で、成功形の既定値は生成しません。
 OR 展開は最大 1,024 通りで、構文・展開後の深さにも既存の 128 上限を適用します。
+
+網羅性（`exhaustiveness.rs`）は、`control::pattern_alternatives` が lowering と同じ名前・認識器の解決から
+同時に返す型付きの `CoveragePat` を使い、構文 AST を再解決しません。
+記録するのは `MatchOrigin::{Explicit, FunctionGuard}` の match だけで、`fx`・source の `for`・
+コンピュテーション式の分解は検査せず実行時のトラップを維持します。
+定数の鍵は既定の型を確定した後の型に依存するため、検査は関数ごとの `finish` の後に行います。
+鍵は解決済みの型と実行時の等価性に合わせた正規形（整数のビット、浮動小数点数の ±0 の同一視と NaN の空パターン、
+decimal の cohort の正規化）です。
+usefulness は行列の特殊化で求め、`Rc` の永続的な行を反復的な DFS で辿るため、ネイティブのスタック深さは入力に依存しません。
+完全なシグネチャは bool・unit・タプル・レコード・union の case・リストの空と cons で、
+整数・浮動小数点数・decimal・文字列の定数と配列の長さは常に不完全として既定行列へ進みます。
+部分認識器と結果のパターンが網羅的でない全域認識器は、網羅の行には何も加えず、到達可能性の問い合わせでは任意の値とみなします。
+全列がワイルドカードの行を含む部分問題は網羅済みとして探索を打ち切ります。
+一つの節の正規化が 1,024 通り、または探索の作業量が 2^24 を超えれば `E1017` にします。
+非網羅は最初に到達した match の `E1021`、到達不能な節は arm のパターン位置の `W1003` です。
+網羅性を保証した後も、LLVM の失敗ブロックの `llvm.trap` と `switch` の既定先は防御として残します。
+警告は `CheckedModule.warnings` をソース・位置順に並べ、単相化・closure 変換を経ても保持して CLI が
+`Project::source_for` の該当ファイルで表示します。
 
 所有権の反復解析はループ入口・条件・本体・バックエッジの move と loan の合流を固定点まで検査します。
 新しい反復のローカルは再初期化し、外側に出した参照が反復ローカルを指す場合は拒否します。
@@ -191,6 +243,58 @@ occurs check と型の深さ・構成要素数の上限を適用し、型が決�
 型変数、未解決のメソッド、未エンコードのリテラルは LLVM に渡しません。
 ランタイム辞書・仮想呼び出し・汎用値の boxing は不要です。
 旧宣言構文は互換テストとして残し、新しい例は分離シグネチャと空白適用を使います。
+
+**ジェネリックなレコード:** 構文 AST の型の前置適用は `TypeExprKind::Apply(head, args)` 一つで、
+`Add 'a` のような制約と `Pair i64 string` のような型の具体化を型解決時に名前の種類で分類します。
+クラス名・レコード名は一つの名前空間で、未知の先頭名・個数違い・非ジェネリック型への適用は `E1004` です。
+型付き IR のレコード型は `Type::Record(id, args)` で、非ジェネリックなレコードは空の引数列を持ちます。
+型引数は `Box<[Type]>` に保持して `Type` を 32 バイトに保ち、深い式の検査が 2 MiB のテストスレッドでも
+スタックを使い切らないようにします。`TypeExprKind::Apply` も同じ理由で先頭名と引数列を box にします。
+宣言のフィールド型は型パラメーターを含んでよく、`TypeContext` の `record_fields`／`record_field` が
+実引数で置換したフィールド型を返します。Copy／drop／clone／loan／Capture／Send・所有権の部分 move・
+呼び出し特殊化の可変性判定・フレーム配置は、宣言のフィールド型ではなく必ず置換後の型で判定します。
+レイアウト（64 KiB 上限・再帰の検出）と参照を格納する具体化の拒否は具体型ごとに行い、
+シグネチャ・型注釈・リテラル・単相化後の式型の各境界で再検査します。
+LLVM では非ジェネリックなレコードを従来どおり `%tz.record.M.N` として宣言順に出力し、
+続いて出力する全関数のシグネチャ・ローカル・式型と非ジェネリックなレコードのフィールドから
+具体インスタンスを `BTreeSet<Type>` に集め、入れ子のインスタンスまで閉包してから一回ずつ定義します。
+名前は `%"tz.record.M.Pair[i64,string]"` のような正規の型テキスト（`array[T]`・`list[T]`・`tuple[T,U]`・
+`fn[T,U->R]`・`ref[T]`・`refmut[T]`・`task[T]`）で、ジェネリックな宣言自体の LLVM 型は出力しません。
+集合の順序と正規名は入力順やハッシュに依存せず、native／WASM で同じ決定的な IR になります。
+
+**共用体（union）:** 構文 AST の `UnionDecl` は case ごとに 0／1 個の payload 型を持ち、`of` は
+case 宣言の中だけの文脈キーワードです。union 名はクラス・レコードと同じ型の名前空間、case 名は
+同じモジュールの型名・関数名・active pattern と衝突しない値の名前空間に入り、衝突は宣言順によらず `E1001` です。
+型付き IR の型は `Type::Union(id, args)`、宣言は `CheckedModule.unions` の `CheckedUnion` で、
+`TypeContext::union_payload(s)` が実引数で置換した payload 型を返します。Copy／drop／loan／Capture／Send は
+レコードと同じく置換後の全 payload から構造的に決めます。
+式は `Construct { union_id, case_id, payload }`（値の構築）、`CaseConstructor`（関数値として使う case）、
+`UnionTag`（`i32` の tag）、`UnionPayload`（case の payload への射影）です。
+完全適用された case は `Checker::call_kind` で `Construct` にし、呼び出しを残しません。
+関数値として残った `CaseConstructor` は再帰検査・単相化の後に `closures::lower` が
+`(union ID, case ID, 具体的な型引数)` ごとに一つの非公開関数 `$case.M.U.C[.$mono.N]` へ置き換えるため、
+再帰の診断に合成関数は現れません。
+case パターンは `Test(UnionTag(subject) == case)` と `UnionPayload` の射影に分解し、
+ownership では `UnionPayload` を要素（`ELEMENT`）と区別した場所成分 `PAYLOAD` として扱います。
+payload の move は union の部分 move で、移動元の payload 領域を 0 にするため、後続の union 全体の解放は
+移動済みの payload を二重に解放しません。
+
+保守的なレイアウト（`Layouts::union` と `llvm_frame::stack_size` で共有）は payload なしで 8 バイト、
+それ以外は 16 バイトと最大の payload を 16 バイト境界に切り上げた値の和で、64 KiB 上限と再帰の検出（`E1010`）を
+具体化ごとに行います。再帰的な union は A04 まで `E1010` です。
+LLVM の表現は `UnionLayout` で決めます。全 case に payload がなければ `i32`（`Enum`）、
+全 payload が同じ LLVM 型なら `{ i32, T }`（`Common`）、それ以外は `{ i32, [K x i128] }`（`General`）です。
+K は 64-bit ターゲットの正確な格納サイズ（i128 を 16 バイト整列、wasm32 以上）の最大値を 16 で切り上げた数で、
+payload は領域への GEP と payload 型での load／store で読み書きします。
+名前は `%"tz.union.M.Shape"`・`%"tz.union.M.Maybe[i64]"` で、ジェネリックなレコードと同じ
+`named_instances` の閉包で具体インスタンスだけを決定的な順序で一回ずつ定義します。
+解放・複製は tag の `switch` で所有値を持つ case の payload だけを処理し、非活性の payload を読んだり解放したりしません。
+`Construct` はフレーム経路の対象外で、union の値は `new` なしのリテラルのフレーム領域を持ちません。
+
+match は `llvm_control::SwitchPlan` が、ガードのない全節の条件が単一の tag（整数・bool・unit の場合は値）の
+定数比較で、束縛が同じ射影の経路を持つ場合に限り、対象の領域から tag を一度だけ load する `switch i32` にします。
+束縛は `UnionPayload`／フィールドの射影のポインターから読み、対象全体の領域を別名にしません。
+OR の各側の束縛経路は一致させ、条件を満たさない match は従来の順序付き検査に戻します。
 
 **カリー化:** 型宣言は `def`、実装は `fn` または宣言に対応する `let` と lambda です。
 型の矢印は右結合、適用は左結合です。内部の `Type::Function` の引数列は矢印列を正規化した
@@ -393,6 +497,7 @@ GUI、入力、永続化、非同期 I/O／イベントループはホストの�
 ## 開発と検証
 
 ```sh
+sh scripts/check-runtime-includes.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
@@ -404,6 +509,7 @@ node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
+node tests/features.mjs target/release/tsuzuri
 ```
 
 Rust のテストは LLVM なしで走ります。字句・型・失敗例・レイアウト・IR の不変条件・
@@ -452,6 +558,13 @@ WASM では累積の確保量がメモリ上限を超える反復を実行し、
 生成器はホストの target triple／データレイアウト／CPU 属性と新しい IR 限定の属性を除き、
 対応する little-endian ネイティブ／wasm32 で同じ整数アルゴリズムを使います。
 生成済み IR は直接手編集せず、C の変更と一緒に更新してください。
+`numeric.ll` を含む `include_str!` 対象のランタイム IR はすべて Git で追跡します（`*.ll` の ignore には
+`.gitignore` の例外で対応）。新しいランタイム `.ll` を埋め込むときは例外行を追加し、
+`sh scripts/check-runtime-includes.sh` で追跡漏れがないことを確認します。
+再生成の検証は `python3 src/runtime/generate.py` の後に `git diff --exit-code -- src/runtime/numeric.ll`
+が通ることです。同梱の `numeric.ll` は Apple clang 21 で生成しており、同じ版では byte-identical になります。
+LLVM 23 系の Clang はサイズ引数のない `llvm.lifetime.*` など LLVM 17 が読めない IR を出すため、
+再生成には LLVM 17〜21 系の Clang を `TSUZURI_CLANG` で指定し、差分は手で取り込まないでください。
 
 タスクは `tests/tasks.rs` が構文・単相化・move・捕捉された借用・決定的 IR を検査します。
 `tests/tasks.mjs` は native／WASM の `-O0`／`-O3` で逐次 bind、結果順序、入れ子の並列処理、
@@ -493,6 +606,10 @@ match／if／`Sub.sub` の末尾再帰を含む七つの matched workload を比
 負のカウンター・8／64／128-bit の折り返し・可変引数のスナップショット・左右の副作用・trap・
 IEEE の加算順序・所有値の解放・借用付き／非末尾呼び出しの通常経路を検査します。
 
+`tests/features.mjs` は `tests/fixtures/<suite>` の機能別 fixture（可視性など）を
+native／WASM の `-O0`／`-O3` で実行し、ネイティブの確保追跡で各呼び出し後の解放を確認し、
+WASM がインポートを持たないことを検査します。第 2 引数に suite 名を渡すとその suite だけを実行します。
+
 任意の実ブラウザー検証:
 
 ```sh
@@ -510,8 +627,8 @@ overflow、評価順序を両ターゲットで確認します。
 
 ## 初版の次に必要な設計
 
-伸縮可能なコレクション、共有可変キャプチャ、代数的データ型、ジェネリックなレコード、
+伸縮可能なコレクション、共有可変キャプチャ、
 外部パッケージ、階層モジュール、効果の型付け、デバッグ情報、IDE／LSP は未実装です。
 所有権は文字列と不変集約値を対象に実装していますが、名前付きライフタイム、
-借用フィールド、再帰的なヒープ型、任意の destructor、ホストをまたぐ所有権は未対応です。
+借用フィールド、再帰的なヒープ型（再帰的なレコード・union）、任意の destructor、ホストをまたぐ所有権は未対応です。
 これらを追加するときも、寿命・ホスト境界・失敗モデルを型検査と一緒に設計する必要があります。

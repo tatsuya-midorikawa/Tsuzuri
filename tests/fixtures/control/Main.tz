@@ -305,9 +305,6 @@ fn empty_loops =
 export def trap_step :: unit
 fn trap_step = for _ in 1 .. 0 .. 2 do ()
 
-export def trap_match :: i64
-fn trap_match = match 2 with | 1 -> 0
-
 export def trap_pattern :: unit
 fn trap_pattern = for [x] in [[1], [2, 3]] do ()
 

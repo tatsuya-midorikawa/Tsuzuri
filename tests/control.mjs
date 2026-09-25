@@ -132,7 +132,7 @@ const patternValues = new Map([[-3n, 17n], [-1n, 17n], [0n, 3n], [1n, 29n], [2n,
   [4n, 11n], [5n, 83n], [6n, 5n], [7n, 47n], [8n, 19n], [9n, 101n]]);
 for (let n = -5n; n <= 12n; n++) cases.push(["patterns", [n], patternValues.get(n) ?? 42n]);
 cases.push(["patterns", [142n], 42n], ["patterns", [max], max - 100n]);
-const traps = ["trap_step", "trap_match", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked"];
+const traps = ["trap_step", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked"];
 const cValue = (n) => typeof n !== "bigint" ? Number.isNaN(n) ? "NAN"
   : n === Infinity ? "INFINITY" : n === -Infinity ? "-INFINITY" : Object.is(n, -0) ? "-0.0" : String(n)
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`

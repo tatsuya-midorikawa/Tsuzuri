@@ -34,7 +34,9 @@ pub enum TokenKind {
     Rec,
     And,
     Export,
+    Private,
     Record,
+    Union,
     Class,
     Instance,
     Let,
@@ -119,6 +121,7 @@ pub struct Ident {
 pub struct Program {
     pub source_kind: Option<SourceKind>,
     pub records: Vec<RecordDecl>,
+    pub unions: Vec<UnionDecl>,
     pub functions: Vec<FunctionDecl>,
     pub classes: Vec<ClassDecl>,
     pub instances: Vec<InstanceDecl>,
@@ -133,16 +136,39 @@ pub struct ActivePattern {
     pub partial: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
 #[derive(Clone, Debug)]
 pub struct RecordDecl {
+    pub visibility: Visibility,
     pub name: Ident,
+    pub parameters: Vec<Ident>,
     pub fields: Vec<Parameter>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UnionDecl {
+    pub visibility: Visibility,
+    pub name: Ident,
+    pub parameters: Vec<Ident>,
+    pub cases: Vec<UnionCaseDecl>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UnionCaseDecl {
+    pub name: Ident,
+    pub payload: Option<TypeExpr>,
 }
 
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub name: Ident,
     pub recursion: Option<String>,
+    pub visibility: Visibility,
     pub exported: bool,
     pub parameters: Vec<Parameter>,
     pub result: TypeExpr,
@@ -154,6 +180,7 @@ pub struct FunctionDecl {
 pub struct SignatureDecl {
     pub name: Ident,
     pub recursion: Option<String>,
+    pub visibility: Visibility,
     pub exported: bool,
     pub parameters: Vec<TypeExpr>,
     pub result: TypeExpr,
@@ -205,7 +232,11 @@ pub struct TypeExpr {
 pub enum TypeExprKind {
     Named(String),
     Variable(String),
-    Constrained(Box<Ident>, Box<TypeExpr>),
+    /// Prefix type application such as `Pair i64 string` or `Add 'a`; the
+    /// checker decides whether the head names a record or a type class.
+    /// Both parts are boxed so every `TypeExpr` and expression embedding one
+    /// stays as small as before, which bounds the parser's recursion stack.
+    Apply(Box<Ident>, Box<[TypeExpr]>),
     Array(Box<TypeExpr>),
     List(Box<TypeExpr>),
     Tuple(Vec<TypeExpr>),
@@ -292,6 +323,7 @@ pub enum ExprKind {
     Match {
         value: Box<Expr>,
         arms: Vec<MatchArm>,
+        origin: MatchOrigin,
     },
     Block {
         bindings: Vec<Binding>,
@@ -348,6 +380,27 @@ pub enum PatternKind {
     And(Box<Pattern>, Box<Pattern>),
     As(Box<Pattern>, Ident),
     Annotated(Box<Pattern>, TypeExpr),
+}
+
+/// Where a `match` comes from. Explicit matches and function guards must be
+/// exhaustive; destructuring keeps its runtime trap when a value does not fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchOrigin {
+    /// `match value with ...`.
+    Explicit,
+    /// The clauses of `fn f x | pattern -> ...`.
+    FunctionGuard,
+    /// A destructuring `fx` parameter.
+    FxDestructuring,
+    /// A destructuring `for` inside a computation expression.
+    ComputationDestructuring,
+}
+
+impl MatchOrigin {
+    /// Whether the checker rejects non-exhaustive arms at compile time.
+    pub fn checks_coverage(self) -> bool {
+        matches!(self, Self::Explicit | Self::FunctionGuard)
+    }
 }
 
 #[derive(Clone, Debug)]

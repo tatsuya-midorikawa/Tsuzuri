@@ -13,7 +13,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、
 `Task.parallel` による明示的な CPU 並列処理も使えます。
 GPU バックエンドと自動マルチスレッド化は未実装です。
-伸縮可能なコレクション、ジェネリックなレコード型、
+伸縮可能なコレクション、
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
 記憶域は C/C++ と同じ方式で、`new` で生成した値はヒープ、`new` を使わずに生成して束縛した値はスタックに置きます。
@@ -41,9 +41,9 @@ fn main = answer()
 | 項目 | 初版の実装 |
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
-| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、タプル、不変レコード・配列・連結リスト、捕捉環境を持つ関数値 |
+| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
-| 多相性 | `'a` によるパラメトリック多相、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
+| 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
@@ -144,6 +144,48 @@ instance Classes.Score Point {
 同名関数の探索やインスタンスの選択順に依存しない記述にしています。
 同じクラス・型のインスタンス重複や、組み込みインスタンスの上書きはエラーです。
 
+レコードは型パラメーターを持てます。`Pair i64 string` のように型名の後へ型引数を並べて具体化し、
+リテラルの型引数はフィールドの値や期待型から推論します。
+
+```text
+record Pair 'a 'b { first: 'a, second: 'b }
+
+def swap :: Pair 'a 'b -> Pair 'b 'a
+fn swap pair = Pair { first: pair.second, second: pair.first }
+
+let pair: Pair string i64 = swap (Pair { first: 42, second: "answer" })
+pair.second
+```
+
+具体化ごとに別の LLVM 型を生成し、Copy・move・借用・レイアウトは置換後のフィールド型から決まります。
+詳細は [言語仕様](docs/language.md#ジェネリックなレコード) を参照してください。
+
+代数的データ型は `union` で宣言します。case は payload を 0 個か 1 個持ち、
+payload のある case は一引数の関数値としても使えます。
+
+```text
+union Shape =
+    | Circle of f64
+    | Rect of f64 * f64
+    | Empty
+
+union Maybe 'a = None | Some of 'a
+
+def area :: Shape -> f64
+fn area shape =
+    match shape with
+    | Circle r -> r * r * 3.141592653589793
+    | Rect (w, h) -> w * h
+    | Empty -> 0.0
+
+area (Rect (3.0, 4.0))
+```
+
+match は tag の `switch` に下げ、payload の move・解放・複製も case ごとに行います。
+`Option`／`Result` は標準では同梱していないため、必要なら上の `Maybe` のように宣言します。
+case が不足する match は `E1021` のコンパイルエラーです。再帰的な union・`==` などの組み込み比較は未対応です。
+詳細は [言語仕様](docs/language.md#共用体union) を参照してください。
+
 初版はランク1の関数多相です。高階型・条件付きの汎用インスタンスは未対応です。
 公開する関数も言語内ではカリー化され、C／WASM 境界では全引数を渡す既存ABIを維持します。
 旧 `fn name :: ...` は `def name :: ...` へ置き換えます。
@@ -174,10 +216,13 @@ match add total 2 with
 `if condition then value else other`、`elif`、unit を返す `else` 省略も使えます。
 従来の `{ ... }` ブロック、`if condition { ... } else { ... }`、`x -> ...` も維持します。
 
-パターンには定数・変数・`_`／`otherwise`、タプル、レコード、配列、リスト、
+パターンには定数・変数・`_`／`otherwise`、タプル、レコード、union case、配列、リスト、
 `head :: tail`、OR／AND、`as`、型注釈を使えます。
 単一ケースの全域アクティブパターンと、bool を返す部分アクティブパターンもあります。
-対象は **Tsuzuri の型と所有権モデル**であり、.NET の型テスト・null・判別共用体や
+明示の `match` と関数ガードは網羅性をコンパイル時に検査し、一致しない値があれば不足する値の例とともに
+`E1021` のエラー、前の節だけで覆われる節は `W1003` の警告です。`when` 付きの節は網羅に数えません。
+`for`・`fx` の分解パターンは従来どおり、一致しない値で実行時にトラップします。
+対象は **Tsuzuri の型と所有権モデル**であり、.NET の型テスト・null や
 `IEnumerable` 全般との互換を意味しません。コレクションの記号は従来どおり、
 配列が `[ ... ]`、連結リストが `[| ... |]` です。
 
@@ -276,9 +321,9 @@ WASM はインポート不要の **逐次フォールバック** です。WASM t
 
 | 拡張子 | 内容 |
 |---|---|
-| `.tz` | レコード・関数・型クラスのインスタンス実装。`Main.tz` だけはトップレベルの実行コードも可 |
-| `.tt` | 複数の型クラスの宣言。関数本体・レコード・インスタンスは置かない |
-| `.tc` | 一つのビルダーの操作と補助関数・レコード・インスタンス。トップレベル実行は不可 |
+| `.tz` | レコード・union・関数・型クラスのインスタンス実装。`Main.tz` だけはトップレベルの実行コードも可 |
+| `.tt` | 複数の型クラスの宣言。関数本体・レコード・union・インスタンスは置かない |
+| `.tc` | 一つのビルダーの操作と補助関数・レコード・union・インスタンス。トップレベル実行は不可 |
 
 拡張子が違っても同名のモジュールにはできません。例えば `Checked.tz` と `Checked.tc` の併存はエラーです。
 旧 `.tzr` は入力として受理しません。コードを `.tz` へ改名し、`class` 宣言を `.tt` に分離してください。
@@ -307,6 +352,32 @@ d
 `export` はモジュール間の可視性ではなく、C／WASM ホストへの公開指定です。
 レコード名は一意なら `Point`、明示する場合は `Point.Point` と書けます。
 同名のレコードが複数モジュールにある場合、他モジュールからは修飾名で区別します。
+
+宣言は既定で public です。モジュール内だけで使う補助関数・レコード・union には `private` を付けます。
+`fn` 実装は `def` の可視性を継承し、他モジュールからの参照は `E1022` です。
+
+標準ライブラリ（std）はコンパイラに埋め込まれ、すべてのプロジェクトで自動的に読み込まれます。
+std の関数も `Math.zero()` のように修飾して呼び、使わない std のコードは生成物に含まれません。
+次のモジュール名は std 用に予約しており、利用者のファイル名には使えません（`E1011`）。
+
+| 予約モジュール | 用途 |
+|---|---|
+| `Option`、`Result` | 省略可能な値と失敗 |
+| `Array`、`List`、`Vec`、`Map`、`Set` | コレクション |
+| `String`、`Char` | 文字列と文字 |
+| `Math`、`Int` | 数学関数と整数演算 |
+| `Debug`、`Test` | デバッグ出力とテスト |
+| `Parallel`、`Simd`、`Gpu` | データ並列・SIMD・GPU |
+
+現在の std は仮の API `Math.zero : f64` だけを持ちます。無修飾の型・クラス名は利用者の宣言を std より優先します。
+
+```text
+private def square :: f64 -> f64
+fn square x = x * x
+
+def length :: Point -> f64
+fn length point = sqrt (square point.x + square point.y)
+```
 
 アプリケーションは **`Main.tz`** から開始します。
 トップレベルの `let` と最後の結果式、または従来の `fn main` のどちらかを使います。
@@ -343,6 +414,7 @@ cargo build --release
 
 `clang` と `wasm-ld` はそれぞれ `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で実行ファイルの
 パスを指定できます。`check`／`--emit llvm`／`--emit header` には LLVM の実行環境は不要です。
+標準ライブラリはコンパイラに埋め込まれているため、これらも追加のファイルなしで動きます。
 コンパイラはシェルを経由せずツールを起動し、失敗したツールの診断を報告します。
 
 ## コンソール
@@ -499,6 +571,7 @@ WASM は少なくとも一つの `export def` が必要です。
 ## 検証と性能測定
 
 ```sh
+sh scripts/check-runtime-includes.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
@@ -510,11 +583,16 @@ node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
+node tests/features.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
 ```
+
+コンパイラが `include_str!` で埋め込むランタイム IR（`src/runtime/*.ll`）はリポジトリに同梱されており、
+新しい clone でもそのままビルドできます。`scripts/check-runtime-includes.sh` は埋め込み対象が存在し、
+Git で追跡され、`.gitignore` に無視されていないことを検査します。
 
 末尾再帰の変更前後も比べる場合は、
 `node benchmarks/run-control.mjs target/release/tsuzuri --baseline <変更前のコンパイラ>` を使います。

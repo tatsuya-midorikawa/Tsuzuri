@@ -48,10 +48,15 @@ impl Diagnostic {
     }
 
     pub fn render(&self, path: &str, source: &str) -> String {
+        self.render_with_severity("error", path, source)
+    }
+
+    /// Renders the diagnostic as `path:line:column: severity[code]: message`.
+    pub fn render_with_severity(&self, severity: &str, path: &str, source: &str) -> String {
         let (line, column) = location(source, self.span.start);
         let text = source.lines().nth(line - 1).unwrap_or("");
         let mut output = format!(
-            "{path}:{line}:{column}: error[{}]: {}",
+            "{path}:{line}:{column}: {severity}[{}]: {}",
             self.code, self.message
         );
         if !text.is_empty() {
@@ -64,12 +69,18 @@ impl Diagnostic {
     }
 
     pub fn json(&self, path: &str, source: &str) -> String {
+        self.json_with_severity("error", path, source)
+    }
+
+    /// Renders the diagnostic as one JSON object with the given severity.
+    pub fn json_with_severity(&self, severity: &str, path: &str, source: &str) -> String {
         let (line, column) = location(source, self.span.start);
         let (end_line, end_column) = location(source, self.span.end);
         format!(
-            "{{\"severity\":\"error\",\"code\":{},\"message\":{},\"path\":{},\
+            "{{\"severity\":{},\"code\":{},\"message\":{},\"path\":{},\
              \"span\":{{\"start\":{},\"end\":{},\"line\":{line},\"column\":{column},\
              \"end_line\":{end_line},\"end_column\":{end_column}}}}}",
+            json_string(severity),
             json_string(self.code),
             json_string(&self.message),
             json_string(path),
@@ -120,5 +131,24 @@ mod tests {
         let diagnostic = Diagnostic::new("E0001", "bad \"value\"", Span::new(0, 1));
         assert!(diagnostic.json("A.tz", "x").contains("\"column\":1"));
         assert!(diagnostic.render("A.tz", "x").contains("A.tz:1:1"));
+        assert!(
+            diagnostic
+                .json("A.tz", "x")
+                .starts_with("{\"severity\":\"error\",\"code\":\"E0001\"")
+        );
+    }
+
+    #[test]
+    fn renders_warnings_with_their_severity() {
+        let warning = Diagnostic::new("W1003", "unreachable", Span::new(4, 5));
+        let source = "a\nbc d";
+        assert_eq!(
+            warning.render_with_severity("warning", "M.tz", source),
+            "M.tz:2:3: warning[W1003]: unreachable\n  2 | bc d\n    |   ^"
+        );
+        let json = warning.json_with_severity("warning", "M.tz", source);
+        assert!(json.starts_with("{\"severity\":\"warning\",\"code\":\"W1003\""));
+        assert!(json.contains("\"path\":\"M.tz\""));
+        assert!(json.contains("\"line\":2,\"column\":3"));
     }
 }

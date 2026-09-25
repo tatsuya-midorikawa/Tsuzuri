@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::check::CheckedModule;
+use crate::check::{CheckedModule, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::llvm::{self, Entry};
 use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
@@ -105,9 +105,11 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
 
 #[derive(Debug)]
 pub struct SourceFile {
+    /// A file path, or a virtual `std/Name.tz` path for std sources.
     pub path: PathBuf,
     pub name: String,
     pub text: String,
+    pub origin: ModuleOrigin,
 }
 
 #[derive(Debug)]
@@ -144,6 +146,7 @@ impl SourceFile {
             path: path.to_owned(),
             name: name.to_owned(),
             text,
+            origin: ModuleOrigin::User,
         })
     }
 }
@@ -198,6 +201,17 @@ impl Project {
             .iter()
             .position(|source| source.path == input)
             .unwrap();
+        // The embedded standard library follows the user sources.
+        sources.extend(crate::stdlib::SOURCES.iter().map(|(path, text)| {
+            SourceFile {
+                path: PathBuf::from(path),
+                name: crate::stdlib::module_name(path)
+                    .expect("embedded std paths are flat")
+                    .to_owned(),
+                text: (*text).to_owned(),
+                origin: ModuleOrigin::Std,
+            }
+        }));
         Ok(Self { sources, root })
     }
 
@@ -213,14 +227,16 @@ impl Project {
         let sources: Vec<_> = self
             .sources
             .iter()
-            .map(|source| {
-                (
-                    source.path.file_name().unwrap().to_str().unwrap(),
-                    source.text.as_str(),
-                )
+            .map(|source| crate::SourceInput {
+                path: match source.origin {
+                    ModuleOrigin::User => source.path.file_name().unwrap().to_str().unwrap(),
+                    ModuleOrigin::Std => source.path.to_str().unwrap(),
+                },
+                text: &source.text,
+                origin: source.origin,
             })
             .collect();
-        crate::analyze_modules(&sources)
+        crate::analyze_inputs(&sources)
     }
 }
 
@@ -509,7 +525,10 @@ fn collect_message(messages: &mut Vec<String>, message: String) {
 
 fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
     for source in &project.sources {
-        protect_source(&source.path, output)?;
+        // Std sources are embedded, so no output can overwrite them.
+        if source.origin == ModuleOrigin::User {
+            protect_source(&source.path, output)?;
+        }
     }
     Ok(())
 }
@@ -737,9 +756,23 @@ mod tests {
             project
                 .sources
                 .iter()
+                .filter(|source| source.origin == ModuleOrigin::User)
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
             ["Alpha", "Main", "Zebra"]
+        );
+        // The embedded standard library follows the user sources, so user
+        // source indices and the root are unchanged.
+        assert_eq!(project.root, 1);
+        let std: Vec<_> = project
+            .sources
+            .iter()
+            .skip_while(|source| source.origin == ModuleOrigin::User)
+            .collect();
+        assert_eq!(std.len(), crate::stdlib::SOURCES.len());
+        assert!(
+            std.iter()
+                .all(|source| source.origin == ModuleOrigin::Std && source.path.starts_with("std"))
         );
         let first = llvm::emit(&project.analyze().unwrap(), Entry::Console).unwrap();
         let reloaded = Project::load(&directory.path.join("Main.tz")).unwrap();
@@ -785,6 +818,7 @@ mod tests {
             project
                 .sources
                 .iter()
+                .filter(|source| source.origin == ModuleOrigin::User)
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
             ["Classes", "Identity", "Main"]
@@ -900,6 +934,22 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn reports_std_errors_at_their_virtual_path() {
+        let (directory, mut project) = project(&[("Main.tz", "0")], "Main.tz");
+        project.sources.push(SourceFile {
+            path: PathBuf::from("std/Broken.tz"),
+            name: "Broken".to_owned(),
+            text: "def broken :: i64\nfn broken = false".to_owned(),
+            origin: ModuleOrigin::Std,
+        });
+        let error = project.analyze().unwrap_err();
+        assert_eq!(error.code, "E1003");
+        assert_eq!(project.source_for(&error).path, Path::new("std/Broken.tz"));
+        assert_eq!(project.input(), directory.path.join("Main.tz"));
+        directory.close().unwrap();
     }
 
     #[cfg(unix)]

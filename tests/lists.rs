@@ -54,7 +54,7 @@ fn lists_support_inference_nesting_and_construction() {
         module.functions[0]
             .signature
             .result
-            .display(&module.records),
+            .display(&module.types()),
         "[|i32|]"
     );
 }

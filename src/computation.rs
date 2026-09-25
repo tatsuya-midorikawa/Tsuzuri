@@ -15,10 +15,10 @@ const OPERATIONS: &[&str] = &[
 ];
 
 pub(super) fn collect(
-    modules: &[(&str, &Program)],
+    modules: &[ModuleInput<'_>],
 ) -> Result<BTreeMap<String, BTreeSet<String>>, Diagnostic> {
     let mut builders = BTreeMap::new();
-    for (source, (name, program)) in modules.iter().enumerate() {
+    for (source, &ModuleInput { name, program, .. }) in modules.iter().enumerate() {
         let Some(kind) = program.source_kind else {
             continue;
         };
@@ -35,6 +35,7 @@ pub(super) fn collect(
                 .records
                 .first()
                 .map(|record| record.name.span)
+                .or_else(|| program.unions.first().map(|union| union.name.span))
                 .or_else(|| program.functions.first().map(|function| function.name.span))
                 .or_else(|| {
                     program
@@ -46,7 +47,7 @@ pub(super) fn collect(
             if let Some(span) = invalid {
                 return Err(Diagnostic::new(
                     "E1018",
-                    "a .tt file contains only type class declarations; put records, functions, and instances in .tz or .tc files",
+                    "a .tt file contains only type class declarations; put records, unions, functions, and instances in .tz or .tc files",
                     span,
                 ));
             }
@@ -59,9 +60,23 @@ pub(super) fn collect(
                     entry.span,
                 ));
             }
+            if let Some(function) = program.functions.iter().find(|function| {
+                function.visibility == Visibility::Private
+                    && OPERATIONS.contains(&function.name.text.as_str())
+            }) {
+                return Err(Diagnostic::new(
+                    "E1022",
+                    format!(
+                        "builder operation '{}' cannot be private; make the operation public and keep helpers private",
+                        function.name.text
+                    ),
+                    function.name.span,
+                ));
+            }
             let methods: BTreeSet<_> = program
                 .functions
                 .iter()
+                .filter(|function| function.visibility == Visibility::Public)
                 .map(|function| function.name.text.clone())
                 .collect();
             if !OPERATIONS
@@ -79,7 +94,7 @@ pub(super) fn collect(
                         }),
                 ));
             }
-            builders.insert((*name).to_owned(), methods);
+            builders.insert(name.to_owned(), methods);
         }
     }
     Ok(builders)
@@ -148,7 +163,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
             values.push(finish);
             values
         }
-        ExprKind::Match { value, arms } => {
+        ExprKind::Match { value, arms, .. } => {
             let mut values = vec![value.as_mut()];
             for arm in arms {
                 expand_pattern(&mut arm.pattern, names)?;
@@ -350,6 +365,7 @@ impl Lowering<'_> {
                                     body,
                                     span,
                                 }],
+                                origin: MatchOrigin::ComputationDestructuring,
                             },
                             span,
                             depth,

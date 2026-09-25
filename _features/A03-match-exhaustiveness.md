@@ -811,3 +811,44 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
   G03 で severity enum、複数 warning 種、抑制設定へ拡張する。
 - `W1003` を JSON で出す順序は source traversal 順とする。
   G03 で安定ソート規則が変わる可能性があるが、A03 では `match_value` 到達順で十分。
+
+### 実装時の判断（A03）
+
+- 上の未決事項は既定案どおり `ExprKind::Match` に `MatchOrigin { Explicit, FunctionGuard, FxDestructuring, ComputationDestructuring }` を持たせ、
+  warning channel は `CheckedModule.warnings: Vec<Diagnostic>` にした。重大度は enum ではなく
+  `Diagnostic::render_with_severity`／`json_with_severity` の引数で、`render`／`json` は従来どおり `"error"`。
+- 被覆パターンは `control::pattern_alternatives`（と `case_pattern`／`active_pattern`）が lowering の選択肢と同時に返す
+  `CoveragePat` で、case・認識器・リテラルは lowering と同じ解決結果を使う。`match_value` は入口で被覆の枠を予約し、節ごとに
+  `CoverageArm { pattern, guarded, span }` を埋める。記録するのは `MatchOrigin::checks_coverage()` が真の `Explicit`／`FunctionGuard` だけ。
+- 検査は `match_value` の中ではなく、関数ごとの `finish`（既定型の適用）の後に `Checker::check_coverage` で行う。
+  リテラルの鍵に既定型の確定後の型が必要なため。`E1021` は記録順（到達順）で最初の非網羅の match だけを報告する。
+- `W1003` は到達順ではなく `(span.source, span.start)` で安定ソートする。外側の match の後方の節が内側の match より先に報告され、
+  関数の検査順もソース順と一致しないため。単相化・closure 変換は `warnings` をそのまま運ぶ。
+- 正規化は `Row`（網羅の行）と `Query`（到達可能性の問い合わせ）の二つのモードを持つ。部分認識器と、結果のパターンが単独で網羅的でない
+  全域認識器は `Row` では空（何も覆わない）、`Query` では `_`。結果のパターンがないか単独で網羅的な全域認識器は両方で `_`。
+  AND は各側の正規化の組ごとの交差、`as` と型注釈は透過。一つの節の正規化が 1,024 通りを超えると `E1017`
+  （"pattern alternatives exceed the compiler limit; split the match"）だが、通常は lowering の OR 展開の `E1017` が先に出る。
+- usefulness は行列の特殊化で、`Rc` の永続的な行と明示的なスタックによる反復 DFS（行の `Drop` も反復）にし、
+  ネイティブのスタック深さを入力に依存させない。完全なシグネチャは宣言順に分岐する（bool は `true`, `false`、union は case の宣言順、
+  リストは `[||]`, `::`）。unit・タプル・レコードは単一の構成子、配列の長さとリテラルは常に不完全で既定行列へ進む。
+- 資源制限はチケットの「行数 × 構成子数 > 1024」ではなく作業量の予算にした（部分問題ごとに行数 + 1、特殊化ごとに行数 × arity、
+  上限 2^24、超過は `E1017` "the match is too large to check for exhaustiveness; split the match"）。
+  「最初の列だけで決まる」行列で指数的な探索を避けるため、全列が `_` の行を含む部分問題は網羅済みとして打ち切る（行ごとの `concrete` 数）。
+  25 列の bool の行列は debug ビルドでも約 1 秒で予算の `E1017` になる。
+- リテラルの鍵は解決済みの型と正規形のテキスト。整数は `integer_literal` のビット、型が未確定の汎用整数は（絶対値, 負か）。
+  f32／f64 は f64 のビット、f16／f128 は u128 のビット。符号は `Unary(Negate)` で反転し、±0 は同じ鍵、NaN は空のパターン
+  （NaN のリテラル構文はないため防御的な扱い）。decimal は BID を復号して末尾の 0 を除き、cohort が同じ鍵になる
+  （`tz_soft_cmp` は値で比較するため）。それ以外は一意の鍵で、重複の判定に使わない。
+- `W1003` は `Query` の正規化のどの選択肢も、前にある `when` なしの節に対して有用でない節に、節のパターンの span で出す。
+  OR の一部の側だけが到達不能な場合と、正規化が空の節（NaN のリテラルなど）は警告しない。ガード付きの節も到達不能なら警告する。
+- 不足の例は探索の手順から組み立てるため、型から展開せず有限になる（A04 の再帰的な union でも visited 集合は不要）。
+  case 名は match のモジュールから無修飾で同じ case に解決できれば無修飾、それ以外は `Module.Case`。
+  payload は原子的でなければ括弧で囲む（`Some (Some false)`、レコードの payload も `Some ({ ok = false })`）。
+  レコードは型名なしの `{ field = ... }`、配列の他の長さは `_`、リストは `[||]`／`_ :: _`。
+- 関数ガードの `E1021` の位置は最初の節の `|`。bool 条件の節はガード付きの `_` と同じなので、`otherwise` がなければ `missing: _`。
+- `tests/fixtures/control/Main.tz` の `trap_match` と `tests/control.mjs` の対応する trap 検査を削除した。
+  `trap_pattern`／`trap_lambda`／`trap_for_active` は実行時トラップのまま残る。fixtures・examples・benchmarks は警告を出さない。
+- テストは `tests/match_exhaustiveness.rs` に加え、分解の origin を `tests/control.rs::match_origin_destructuring`、
+  警告の表示先を `tests/frontend.rs::warning_rendering_uses_source_path` に置いた（テスト計画のコマンド名に合わせた）。
+  frontend の変異 fuzz の原文に union の match を追加した。
+- 台帳の見直し提案はない。

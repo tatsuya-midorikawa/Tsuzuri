@@ -1,0 +1,58 @@
+record Pair 'a 'b { first: 'a, second: 'b }
+record Box 'a { value: 'a }
+record Wrap 'a { value: 'a }
+
+def add_pair :: Pair i64 i64 -> Pair i64 i64 -> Pair i64 i64
+fn add_pair a b =
+    Pair { first: a.first + b.first, second: a.second + b.second }
+
+def owned :: Box string -> i64
+fn owned box =
+    let text = box.value
+    text.length
+
+def swap :: Pair 'a 'b -> Pair 'b 'a
+fn swap pair = Pair { first: pair.second, second: pair.first }
+
+def nested_length :: Wrap (Pair i64 string) -> i64
+fn nested_length wrapped = wrapped.value.first + wrapped.value.second.length
+
+def apply_boxed :: Box (i64 -> i64) -> i64 -> i64
+fn apply_boxed boxed x = boxed.value x
+
+def weighted :: [Pair i64 i64] -> i64
+fn weighted pairs =
+    let mut total = 0
+    for Pair { first = count; second = weight } in pairs do
+        total = total + count * weight
+    total
+
+export def numbers :: i64
+fn numbers =
+    let p = add_pair (Pair { first: 20, second: 1 }) (Pair { first: 22, second: 2 })
+    p.first * 100 + p.second
+
+export def strings :: i64
+fn strings =
+    owned (Box { value: "hello" })
+
+export def nested :: i64 -> i64
+fn nested n =
+    let swapped = swap (Pair { first: "abc", second: n })
+    nested_length (Wrap { value: swapped })
+
+export def closures :: i64 -> i64
+fn closures n =
+    let k = n * 2
+    apply_boxed (Box { value: x -> x + k }) 1
+
+export def matched :: i64 -> i64
+fn matched n =
+    match Pair { first: "four", second: Box { value: n } } with
+    | Pair { first = text; second = Box { value = v } } -> text.length * 100 + v
+
+export def collections :: i64 -> i64
+fn collections n =
+    let pairs = [Pair { first: n, second: 2 }, Pair { first: 3, second: 4 }]
+    let lists = Box { value: [|"a", "bc", "def"|] }
+    weighted pairs + lists.value.length * 1000

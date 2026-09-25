@@ -1,0 +1,18 @@
+private record Pair { left: i64, right: i64 }
+
+private def sum :: Pair -> i64
+fn sum pair = pair.left + pair.right
+
+private def owned :: i64 -> i64
+fn owned n =
+    let words = new [string](n, i -> "ab")
+    words.length + words[0].length
+
+export def answer :: i64
+fn answer = sum (Pair { left: 40, right: 2 })
+
+export def reveal :: i64 -> i64
+fn reveal n = Secret.reveal n
+
+export def owned_total :: i64 -> i64
+fn owned_total n = owned n

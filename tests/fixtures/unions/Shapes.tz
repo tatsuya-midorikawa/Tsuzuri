@@ -1,0 +1,7 @@
+union Shape = Empty | Circle of f64
+
+def radius :: Shape -> f64
+fn radius shape =
+    match shape with
+    | Circle r -> r
+    | Empty -> 0.0

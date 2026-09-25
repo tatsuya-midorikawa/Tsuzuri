@@ -1,4 +1,4 @@
-use tsuzuri::{analyze, llvm};
+use tsuzuri::{analyze, analyze_modules, llvm};
 
 #[test]
 fn all_semantics_fixture_functions_lower_deterministically() {
@@ -27,6 +27,7 @@ fn deterministic_source_mutations_do_not_panic() {
         "let mut sum = 0\nfor i = 1 to 3 do { sum = sum + i as i64; }\nwhile sum < 8 do sum = sum + 1\nsum",
         "let f = fx (x, y) -> match x with | 0 | 1 -> y | _ -> x + y\nf (1, 2)",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nmatch 2 with | Even as n when n > 0 -> n | _ -> 0",
+        "union Maybe 'a = None | Some of 'a\nmatch Some (true, [|1|]) with | Some (true, [||]) -> 0 | Some (_, x :: _) -> x | Some (false, _) -> 1 | None -> 2",
         "def bump :: ref mut i64 -> i64 -> unit\nfn bump r n = deref r = deref r + n\nlet mut x = 1\nbump (ref mut x) 2\nbump &mut x 3\nlet t = ref x\nlet u: &&i64 = &t\nderef t + *t",
     ];
     let mut seed = 0x1357_2468_u32;
@@ -54,4 +55,26 @@ fn deterministic_source_mutations_do_not_panic() {
             }
         }
     }
+}
+
+#[test]
+fn warning_rendering_uses_source_path() {
+    let helpers =
+        "def pick :: bool -> i64\nfn pick b =\n    match b with\n    | _ -> 0\n    | true -> 1\n";
+    let module =
+        analyze_modules(&[("Helpers.tz", helpers), ("Main.tz", "Helpers.pick true")]).unwrap();
+    let [warning] = module.warnings.as_slice() else {
+        panic!("{:?}", module.warnings);
+    };
+    assert_eq!(warning.span.source, Some(0));
+    assert_eq!(&helpers[warning.span.start..warning.span.end], "true");
+    assert_eq!(
+        warning.render_with_severity("warning", "Helpers.tz", helpers),
+        "Helpers.tz:5:7: warning[W1003]: unreachable match arm; previous patterns already cover this arm\n  5 |     | true -> 1\n    |       ^"
+    );
+    assert!(
+        warning
+            .json_with_severity("warning", "Helpers.tz", helpers)
+            .starts_with("{\"severity\":\"warning\",\"code\":\"W1003\",")
+    );
 }

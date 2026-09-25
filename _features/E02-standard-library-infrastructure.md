@@ -674,3 +674,37 @@ std record/type の pruning は E02 で「emitted functions/wrappers/roots か�
 builtin mangle 形式は `@tz.builtin.Name.i64` を既定案にする。引用符付き LLVM name は避ける。
 custom std hook を public API として長期維持するかは未決。既定案は Rust tests 用として `#[doc(hidden)]` ではなく公開し、後続 ticket のテストで使う。
 台帳の見直し提案はない。更新済み D-03、D-07、D-17、D-18、D-20、D-21 と整合する。
+
+### 実装時の判断（E02）
+
+- 上の未決事項は既定案どおり実装した。`std/Math.tz` は仮 API の `Math.zero : f64` と private の `identity_f64` だけを持ち、
+  custom std の注入口 `analyze_modules_with_std` は公開 API にした。builtin の mangle は引用符なしの `@tz.builtin.name.<型>` 形式。
+- `BuiltinType` に `Task` を追加した（`Task.run`／`Task.parallel` の scheme を表すため）。
+- mangle は `Builtin::llvm_name` ではなく `llvm.rs` の `builtin_symbol`／`mangled_type` に置いた。`canonical_type` の `->`・`[`・`]`・`,` を
+  `$A`・`$L`・`$R`・`$C` に置き換え、複数の型引数は `$C` で連結する。`$` は canonical type に現れないので単射になる。
+- 組み込み関数は直接呼び出しも含めて、すべて scheme の引数個数を持つ一つの `$builtin` ラッパーを経由する（従来の設計を維持）。
+  部分適用・関数値は通常の関数値の closure wrapper に任せ、引数段階ごとのラッパーは作らない。
+  ラッパー名は型変数のない builtin では `name`、ある builtin では具体化ごとに `name.<id>`。
+- 多引数・制約付き・型族の検査のため、`#[cfg(test)]` の builtin `Int.test_add`／`Int.test_unsigned`／`Int.test_widen` を追加した。
+  テストビルドの `Builtin::ALL` にだけ含まれ、本番のコンパイラには存在しない。
+- D-21 の `unreachable : unit -> 'a` は、テスト計画の symbol 検査のため B01 ではなく E02 で追加した。
+- 型族 `UnsignedOf`／`WidenOf` は、呼び出しの引数の型検査後とパイプラインの単一化後に解き、未確定なら保留する。
+  関数末尾（既定型の適用後）に残れば `E1015`。具体的な非整数型は、型族ではなく `Integer` 制約違反の `E1005` として報告する。
+- 利用者由来の関数は到達不能でも従来どおりすべて出力し、std 由来の関数だけを到達可能性で間引く。
+  root は利用者由来でテストでない関数・export・入口。型定義は利用者由来の型を常に出力し、std の型は出力する関数から参照される場合だけ出力する。
+- 入れ子の lambda の `origin.parent` は top-level の持ち主の関数 ID。複数の関数が共有する `$builtin`／`$case`／`$intrinsic` は
+  最初に要求した関数の origin を持ち、他の参照元からは到達可能性で出力される。
+- `emit_builtin` は `BuiltinInstance` と具体的な callee 型を受け取る。
+- std の関数が組み込み関数と同じ修飾名を持つ場合は、テストでの検出に加えて型検査でも `E1001` の重複として拒否する。
+- D-07 に従い、無修飾のクラス名も自モジュール → 利用者のモジュールで一意 → std の順に解決するようにした。
+  以前は他モジュールのクラスを無修飾では参照できなかった（`instance Score Point` が `E1016`）。
+- 予約モジュール名は std の有無に関係なく `E1011`。利用者と std のモジュール名の衝突と不正な std のパスも `E1011` で、
+  衝突は利用者のソース位置を指す。std の `export def` は `E1018` で、診断表の `E1018` の説明を拡張した。
+- 生成関数の番号（`$lambda.N`、`$mono.N` など）は std の関数の数だけずれる。出力は決定的だが、std に関数を追加すると
+  利用者の IR の補助関数名が変わる。補助関数を含まないプログラムの IR は std の有無で一致する（`tests/stdlib.rs`）。
+  既存の fixtures と examples の IR は、番号を正規化すると E02 前と一致した。
+- E2E は `tests/stdlib.mjs` ではなく `tests/features.mjs` の `stdlib` suite（`tests/fixtures/stdlib/`）に置き、`unreachable` のトラップも検査する。
+  生成ヘッダー `stdlib.h` がシステムの `<stdlib.h>` を隠すため、harness の生成ヘッダー名を `tz-<name>.h` に変更した。
+- 予約名との衝突の移行として、`tests/currying.rs` の `Math` は `UserMath` ではなく `Arith` に、
+  `tests/union_types.rs` の `Option` は `Choice` に改名した。`tests`／`examples` にほかの衝突はない。
+- 台帳の見直し提案はない。
