@@ -37,7 +37,7 @@ WASM で出力したい場合は明示 `--debug-output` で host import を追�
 
 E02 後、std module `Debug` は予約される。
 
-D01 後、`Display 'a` と `to_string` または equivalent display runtime が存在する。
+D01 後、`Display<'a>` と `to_string` または equivalent display runtime が存在する。
 
 `src/llvm.rs` の `emit_builtin` は builtin ごとに internal function を生成できる。
 
@@ -54,10 +54,10 @@ WASM tests は import が空であることを既定として検査する。
 `std/Debug.tz` に次を提供する。
 
 ```text
-def print :: Display 'a => &'a -> unit
+def print :: Display<'a> => &'a -> unit
 fn print value = Debug.__print_string (display value)
 
-def trace :: Display 'a => 'a -> 'a
+def trace :: Display<'a> => 'a -> 'a
 fn trace value = {
     Debug.print (&value);
     value
@@ -68,7 +68,7 @@ fn trace value = {
 
 実際の D01 API 名が `Display.display` / `to_string` のどちらになっても、D01 の確定名に合わせる。
 
-既定案は D-11 に従い `Display 'a { def display :: &'a -> string }` とし、`display value` または `Display.display value` を使う。
+既定案は D-11 に従い `Display<'a> { def display :: &'a -> string }` とし、`display value` または `Display.display value` を使う。
 
 `Debug.print` は表示文字列の後に改行を出す。
 
@@ -246,7 +246,7 @@ This is intentional: debug output is a side effect of the library function when 
 
 E02 provides std `Debug` module, qualified builtin `Debug.__print_string`, std pruning, and reserved module names.
 
-D01 provides `Display 'a` and display function returning `string`.
+D01 provides `Display<'a>` and display function returning `string`.
 
 E01 provides private helper hiding for `Debug.__print_string`.
 
@@ -267,11 +267,11 @@ Initial content:
 ```text
 private def __print_string :: string -> unit
 
-def print :: Display 'a => &'a -> unit
+def print :: Display<'a> => &'a -> unit
 fn print value =
     __print_string (Display.display value)
 
-def trace :: Display 'a => 'a -> 'a
+def trace :: Display<'a> => 'a -> 'a
 fn trace value = {
     Debug.print (&value);
     value
@@ -462,7 +462,7 @@ Node E2E の直前には必ず `cargo build --release --locked` を実行し、`
 
 `let x = Debug.trace "hello"` returns `string`.
 
-`Debug.trace` works with non-Copy string by moving in and returning owned string.
+`Debug.trace` works with non-Copy<string> by moving in and returning owned string.
 
 `Debug.print` can borrow a value and the owner can be used afterward.
 
@@ -568,8 +568,8 @@ WASM host example must copy bytes from `instance.exports.memory`.
 
 ## 受け入れ条件
 
-- [ ] `Debug.print : Display 'a => &'a -> unit` が使える。
-- [ ] `Debug.trace : Display 'a => 'a -> 'a` が値を一度評価して返す。
+- [ ] `Debug.print : Display<'a> => &'a -> unit` が使える。
+- [ ] `Debug.trace : Display<'a> => 'a -> 'a` が値を一度評価して返す。
 - [ ] native は stderr に line output する。
 - [ ] WASM default は imports 空で no-op だが argument evaluation/traps は維持する。
 - [ ] WASM `--debug-output` は明示 import を追加する。

@@ -80,46 +80,46 @@ D01 は numeric formatter/parser と math runtime が fast-math を使わない�
 型汎用関数:
 
 ```text
-Math.sqrt       :: Float 'a => 'a -> 'a
-Math.floor      :: Float 'a => 'a -> 'a
-Math.ceil       :: Float 'a => 'a -> 'a
-Math.trunc      :: Float 'a => 'a -> 'a
-Math.round      :: Float 'a => 'a -> 'a
-Math.round_even :: Float 'a => 'a -> 'a
-Math.abs        :: Float 'a => 'a -> 'a
-Math.min        :: Float 'a => 'a -> 'a -> 'a
-Math.max        :: Float 'a => 'a -> 'a -> 'a
-Math.clamp      :: Float 'a => 'a -> 'a -> 'a -> 'a
-Math.copysign   :: Float 'a => 'a -> 'a -> 'a
-Math.is_nan     :: Float 'a => 'a -> bool
-Math.is_infinite :: Float 'a => 'a -> bool
-Math.is_finite  :: Float 'a => 'a -> bool
+Math.sqrt       :: Float<'a> => 'a -> 'a
+Math.floor      :: Float<'a> => 'a -> 'a
+Math.ceil       :: Float<'a> => 'a -> 'a
+Math.trunc      :: Float<'a> => 'a -> 'a
+Math.round      :: Float<'a> => 'a -> 'a
+Math.round_even :: Float<'a> => 'a -> 'a
+Math.abs        :: Float<'a> => 'a -> 'a
+Math.min        :: Float<'a> => 'a -> 'a -> 'a
+Math.max        :: Float<'a> => 'a -> 'a -> 'a
+Math.clamp      :: Float<'a> => 'a -> 'a -> 'a -> 'a
+Math.copysign   :: Float<'a> => 'a -> 'a -> 'a
+Math.is_nan     :: Float<'a> => 'a -> bool
+Math.is_infinite :: Float<'a> => 'a -> bool
+Math.is_finite  :: Float<'a> => 'a -> bool
 ```
 
 Transcendental（制約は `Float` ではなく組み込みマーカークラス `Elementary`。下の「サポート行列」を参照）:
 
 ```text
-Math.sin   :: Elementary 'a => 'a -> 'a
-Math.cos   :: Elementary 'a => 'a -> 'a
-Math.tan   :: Elementary 'a => 'a -> 'a
-Math.asin  :: Elementary 'a => 'a -> 'a
-Math.acos  :: Elementary 'a => 'a -> 'a
-Math.atan  :: Elementary 'a => 'a -> 'a
-Math.atan2 :: Elementary 'a => 'a -> 'a -> 'a
-Math.exp   :: Elementary 'a => 'a -> 'a
-Math.exp2  :: Elementary 'a => 'a -> 'a
-Math.log   :: Elementary 'a => 'a -> 'a
-Math.log2  :: Elementary 'a => 'a -> 'a
-Math.log10 :: Elementary 'a => 'a -> 'a
-Math.pow   :: Elementary 'a => 'a -> 'a -> 'a
-Math.cbrt  :: Elementary 'a => 'a -> 'a
-Math.hypot :: Elementary 'a => 'a -> 'a -> 'a
+Math.sin   :: Elementary<'a> => 'a -> 'a
+Math.cos   :: Elementary<'a> => 'a -> 'a
+Math.tan   :: Elementary<'a> => 'a -> 'a
+Math.asin  :: Elementary<'a> => 'a -> 'a
+Math.acos  :: Elementary<'a> => 'a -> 'a
+Math.atan  :: Elementary<'a> => 'a -> 'a
+Math.atan2 :: Elementary<'a> => 'a -> 'a -> 'a
+Math.exp   :: Elementary<'a> => 'a -> 'a
+Math.exp2  :: Elementary<'a> => 'a -> 'a
+Math.log   :: Elementary<'a> => 'a -> 'a
+Math.log2  :: Elementary<'a> => 'a -> 'a
+Math.log10 :: Elementary<'a> => 'a -> 'a
+Math.pow   :: Elementary<'a> => 'a -> 'a -> 'a
+Math.cbrt  :: Elementary<'a> => 'a -> 'a
+Math.hypot :: Elementary<'a> => 'a -> 'a -> 'a
 ```
 
 Integer abs:
 
 ```text
-Math.abs_int :: SignedInteger 'a => 'a -> 'a
+Math.abs_int :: SignedInteger<'a> => 'a -> 'a
 ```
 
 `Math.abs` は float 専用とし、既存無修飾 `abs` の f64 挙動と一致する。
@@ -129,8 +129,8 @@ Math.abs_int :: SignedInteger 'a => 'a -> 'a
 定数:
 
 ```text
-Math.pi :: Float 'a => 'a
-Math.e  :: Float 'a => 'a
+Math.pi :: Float<'a> => 'a
+Math.e  :: Float<'a> => 'a
 ```
 
 E02 の制約付き 0 引数 builtin が必要である。
@@ -222,7 +222,7 @@ decimal32/64/128 の basic API。
 transcendental は `Float` ではなく、メソッドを持たない組み込みマーカークラス `Elementary` で制約する。
 `Classes::collect` の組み込みクラス一覧に `Elementary` を追加し、`Classes::intrinsic` はフェーズ 1 では
 `Type::Binary(32 | 64)` だけを true にする。f16/f128/decimal で使うと通常の
-`E1005 no instance for Elementary f16; ...` になる（実行時フォールバックや近似の代用はしない）。
+`E1005 no instance for Elementary<f16>; ...` になる（実行時フォールバックや近似の代用はしない）。
 将来 f16/f128/decimal の transcendental を bundled runtime に実装したら、`intrinsic` の対象型を増やすだけで
 API を変えずに対応を広げられる。ユーザーは `Elementary` のインスタンスを定義できない（既存のマーカークラスと同じ扱い）。
 `Math.sin_f32` のような型別の名前は作らない。
@@ -280,7 +280,7 @@ E02 の修飾 builtin 解決で `Math.sqrt` が見つかる。
 二引数 Float 関数は `parameters = [Var("a"), Var("a")]`。
 `clamp` は三引数。
 predicate は `result = bool`。
-定数は `parameters = []`, `result = 'a`, `constraints = [Float 'a]`。
+定数は `parameters = []`, `result = 'a`, `constraints = [Float<'a>]`。
 transcendental は `constraints = [Elementary Var("a")]`。
 
 `FunctionRef::Builtin` は E02 の `BuiltinInstance { builtin, types }` だけを使う。

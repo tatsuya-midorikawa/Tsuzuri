@@ -12,7 +12,7 @@
 
 ## 目的
 
-`type Meters = f64`、`type Pair2 'a = Pair 'a 'a` のような透過的な型別名を導入し、標準ライブラリと利用者コードで長い型、部分適用した型、将来の `Option`/`Result`/`Vec`/`Map` 型を読みやすく表せるようにする。別名は **newtype ではなく完全に透過的**であり、型検査・型クラス・所有権・LLVM IR では展開後の型だけが意味を持つ。
+`type Meters = f64`、`type Pair2<'a> = Pair<'a, 'a>` のような透過的な型別名を導入し、標準ライブラリと利用者コードで長い型、部分適用した型、将来の `Option`/`Result`/`Vec`/`Map` 型を読みやすく表せるようにする。別名は **newtype ではなく完全に透過的**であり、型検査・型クラス・所有権・LLVM IR では展開後の型だけが意味を持つ。
 
 このチケットは GUIDE §9 D-06 に従う。区別される型が必要な場合は A02 の単一ケース `union UserId = UserId of i64` を使い、型別名で実行時表現や型クラス解決を分岐させない。
 
@@ -21,10 +21,10 @@
 - `src/syntax.rs` の `TokenKind` には `Type` がなく、`Program` は `records`, `functions`, `classes`, `instances`, `active_patterns`, `entry` だけを持つ。
 - `src/parser.rs` の `Parser::program` は先頭キーワードごとに `record`、`class`、`instance`、`let` 実装、`def`/`fn`、最後にエントリー式を読む。新しいトップレベル宣言はここへ分岐を足す。
 - 型式は `src/syntax.rs` の `TypeExprKind::{Named, Variable, Constrained, Array, List, Tuple, Task, Function, Reference}`。A01 完了前は `TypeExprKind::Apply` が存在しない。
-- `src/parser.rs` の `Parser::type_atom` は `&`、型変数、括弧、`fn(...) -> ...`、配列/リスト、`Task T`、修飾名、`Class 'a` 制約を処理する。型名に続く一般の型引数は読まない。
+- `src/parser.rs` の型解析は `&`、型変数、括弧、`fn(...) -> ...`、配列/リスト、`Task<T>`、修飾名、`Class<'a>` 制約を処理する。A01 後は名前に続く `<...>` の型引数も同じ経路で読む。
 - `src/check.rs` の `resolve_type` は `TypeExprKind::Named` を `numeric::primitive` または `Names::record` へ解決する。ここが注釈、レコードフィールド、関数シグネチャ、クラス/インスタンス型、ローカル注釈の共通入口になっている。
 - `src/polymorph.rs` の `Classes::inline_constraints` は `TypeExprKind::Constrained` を制約として集め、`TypeExpr` の内側を再帰する。別名が制約付き型式を含む場合もここで展開が必要。
-- `src/polymorph.rs` の `Classes::instances` は `instance.class` と `instance.ty` を `resolve_type` し、`require_concrete` 後に `implementations: BTreeMap<(usize, Type), Vec<usize>>` へ登録する。別名を展開しないと `instance Add Meters` と組み込み `Add f64` の重複を見逃す。
+- `src/polymorph.rs` の `Classes::instances` は `instance.class` と `instance.ty` を `resolve_type` し、`require_concrete` 後に `implementations: BTreeMap<(usize, Type), Vec<usize>>` へ登録する。別名を展開しないと `instance Add<Meters>` と組み込み `Add<f64>` の重複を見逃す。
 - `src/computation.rs` の `collect` は `.tt` には class 以外を禁止し、`.tc` はビルダー操作を要求する。新宣言のソース種別違反はここで `E1018` にする。
 - `src/numeric.rs` の `primitive` は `bool`, `unit`, `string`, `byte`, `ubyte`, 数値名をプリミティブへ写す。これらの名前で型別名を宣言してはいけない。
 
@@ -33,10 +33,11 @@
 ### 構文
 
 ```text
-type-declaration ::= visibility? "type" type-name type-parameter* "=" type
+type-declaration ::= visibility? "type" type-name type-parameters? "=" type
 visibility       ::= "private"                  // E01 完了後だけ有効
 type-name        ::= PascalCase identifier
 type-parameter   ::= type-variable              // 'a, 'value
+type-parameters  ::= "<" type-parameter ("," type-parameter)* ","? ">"
 type             ::= 既存の TypeExpr。A01 後は型適用も含む
 ```
 
@@ -45,7 +46,7 @@ type             ::= 既存の TypeExpr。A01 後は型適用も含む
 ```text
 type Meters = f64
 type UserNames = [string]
-type Pair2 'a = Pair 'a 'a
+type Pair2<'a> = Pair<'a, 'a>
 type BorrowedText = &string
 ```
 
@@ -72,7 +73,7 @@ type BorrowedText = &string
   ```
 - 宣言した型パラメーターは右辺で少なくとも一回使う。未使用は `E1024`:
   ```text
-  type Boxed 'a = i64  // E1024
+  type Boxed<'a> = i64  // E1024
   ```
 - 未宣言の型変数を右辺で使うと `E1024`:
   ```text
@@ -80,14 +81,14 @@ type BorrowedText = &string
   ```
 - 同じ型パラメーター名の重複も `E1024`。
 - 非ジェネリック別名は A01 前でも実装する。ジェネリック別名は A01 の `TypeExprKind::Apply` と `Type::Record(usize, Vec<Type>)`/将来の `Type::Union` が入ってから有効化する。
-- ジェネリック別名の arity 不一致は `E1024`。例: `type Pair2 'a = Pair 'a 'a` に対して `Pair2` や `Pair2 i64 string` は拒否。
+- ジェネリック別名の arity 不一致は `E1024`。例: `type Pair2<'a> = Pair<'a, 'a>` に対して `Pair2` や `Pair2<i64, string>` は拒否。
 - `type byte = i8` のようにプリミティブ名、`Task`、`_`、既存レコード/union/class と衝突する名前は `E1001`。
 
 ### 型クラス・所有権・評価順序
 
 - 別名展開は型検査前の名前解決で完了するため、評価順序、短絡、所有権、借用、move/drop は展開後の型と完全に同じ。
-- `instance Add Meters { ... }` は `instance Add f64` と同じインスタンスヘッドとして扱う。`Add f64` は組み込みなので `E1016`。
-- 制約に含まれる型も展開する。`def f :: Eq Meters => Meters -> bool` は `Eq f64 => f64 -> bool` と同じ。
+- `instance Add<Meters> { ... }` は `instance Add<f64>` と同じインスタンスヘッドとして扱う。`Add<f64>` は組み込みなので `E1016`。
+- 制約に含まれる型も展開する。`def f :: Eq<Meters> => Meters -> bool` は `Eq<f64> => f64 -> bool` と同じ。
 - 別名が参照型を含む場合、`type TextRef = &string` は既存の `Signature::validate_borrows` と `ownership.rs` の loan 追跡を通る。
 
 ### LLVM IR
@@ -225,7 +226,7 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
 
 1. **構文だけ追加**
    - `TokenKind::Type`、`Lexer::identifier`、`TypeAliasDecl`、`Program.type_aliases`、`Parser::program` の `type` 分岐を追加。
-   - `parse` テストで `type Meters = f64`、`type Pair2 'a = Pair 'a 'a`、`type` が識別子として使えなくなることを確認。
+   - `parse` テストで `type Meters = f64`、`type Pair2<'a> = Pair<'a, 'a>`、`type` が識別子として使えなくなることを確認。
    - 確認: `cargo test --locked lexer::tests::` と `cargo test --locked parser::tests::` を実行し、GUIDE §3 の通り `running N tests` が 0 でないことを確認する。統合テストへ移した場合は `cargo test --locked --test frontend <テスト名>` を使う。
 2. **名前収集とソース種別**
    - `check_modules` で alias 名を収集し、プリミティブ/`Task`/`_`/同一 alias/record/class との衝突を `E1001`。
@@ -239,10 +240,10 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
 4. **ジェネリック alias 展開**
    - A01 の `TypeExprKind::Apply` を使い、パラメーター置換と arity 検査を実装。
    - 未使用/未宣言/重複パラメーターを宣言収集時に `E1024`。
-   - 確認: `type Pair2 'a = Pair 'a 'a` が `Pair i64 i64` と同じ型になる。
+   - 確認: `type Pair2<'a> = Pair<'a, 'a>` が `Pair<i64, i64>` と同じ型になる。
 5. **型クラス連携**
    - `Classes::inline_constraints` と `Classes::instances` の既存呼び出しが alias 展開後 Type を使うことをテストで固定。
-   - 確認: `type Meters = f64; instance Add Meters { fn add x y = x }` が `E1016`。
+   - 確認: `type Meters = f64; instance Add<Meters> { fn add x y = x }` が `E1016`。
 6. **ドキュメントと回帰**
    - README/docs の予約語、型節、診断表を更新。
    - 確認: `cargo fmt --all -- --check`, `cargo test --locked`, 関連 Node E2E。
@@ -269,9 +270,9 @@ fn sum p = p.left + p.right
 A01 後:
 
 ```text
-record Pair 'a 'b { left: 'a, right: 'b }
-type Pair2 'a = Pair 'a 'a
-def first :: Pair2 i32 -> i32
+record Pair<'a, 'b> { left: 'a, right: 'b }
+type Pair2<'a> = Pair<'a, 'a>
+def first :: Pair2<i32> -> i32
 fn first p = p.left
 ```
 
@@ -289,15 +290,15 @@ fn Return x = x
 | プログラム | 期待 |
 |---|---|
 | `type A = B; type B = A` | `E1024` |
-| `type Box 'a = i64` | `E1024` |
+| `type Box<'a> = i64` | `E1024` |
 | `type Bad = 'a` | `E1024` |
-| `type Pair2 'a 'a = 'a` | `E1024` |
+| `type Pair2<'a, 'a> = 'a` | `E1024` |
 | `type i64 = i32` | `E1001` |
 | `type Task = i64` | `E1001` |
 | `type R = Missing` | `E1004` |
 | `Types.tt` に `type Meters = f64` | `E1018` |
-| `type Meters = f64; instance Add Meters { fn add x y = x }` | `E1016` |
-| A01 後 `type Pair2 'a = Pair 'a 'a; def f :: Pair2 -> i64` | `E1024` |
+| `type Meters = f64; instance Add<Meters> { fn add x y = x }` | `E1016` |
+| A01 後 `type Pair2<'a> = Pair<'a, 'a>; def f :: Pair2 -> i64` | `E1024` |
 
 ### E2E
 
@@ -325,7 +326,7 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 ## 受け入れ条件
 
 - [ ] `type Name = T` がすべての型注釈位置で使える。
-- [ ] A01 後、`type Name 'a... = T` の置換と arity 検査が動作する。
+- [ ] A01 後、`type Name<'a>... = T` の置換と arity 検査が動作する。
 - [ ] alias cycle、未使用/未宣言/重複パラメーターが `E1024`。
 - [ ] `.tt` の alias が `E1018`。
 - [ ] alias 展開後の型で instance overlap と組み込み上書きが検査される。
@@ -337,7 +338,7 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 - `Type::Alias` を追加しない。追加すると `Type::is_copy`, `needs_drop`, `llvm_type`, `unify`, `Classes::intrinsic` など全経路で展開漏れが起きる。
 - `resolve_type` だけでなく `Classes::inline_constraints` も alias target の `Constrained` を見る必要がある。
 - alias の右辺を宣言時に `Type` へ固定しすぎると、A01 の型適用や A02 の union 追加と衝突する。`TypeExpr` を保持して展開時に置換する。
-- `type Pair2 'a = Pair 'a 'a` の `Pair` が型かクラスかは A01 の D-02 分類に従う。曖昧なら `E1004`。
+- `type Pair2<'a> = Pair<'a, 'a>` の `Pair` が型かクラスかは A01 の D-02 分類に従う。曖昧なら `E1004`。
 - 無修飾 alias 名の解決順をレコードとずらすと、モジュール間の診断が不安定になる。
 
 ## 対象外

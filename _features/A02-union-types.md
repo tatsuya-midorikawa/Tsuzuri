@@ -7,13 +7,13 @@
 | 規模 | XL |
 | 依存 | A01 |
 | 後続 | A03, A04, A07, B01, B04, C06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/check.rs`, `src/polymorph.rs`, `src/control.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `src/closures.rs`, `src/recursion.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/computation.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/*.rs`, `tests/*.mjs` |
 
 ## 目的
 
 Tsuzuri に代数的データ型の中核である判別共用体を追加する。
-`Option 'a`、`Result 'a 'e`、列挙型、軽量なドメインモデルを表せるようにし、B01 と A03 の基盤にする。
+`Option<'a>`、`Result<'a, 'e>`、列挙型、軽量なドメインモデルを表せるようにし、B01 と A03 の基盤にする。
 
 このチケットでは `union` 宣言、ケース構築、ケースパターン、所有権、単相化、LLVM lowering を実装する。
 再帰的 union は A04 まで `E1010` で拒否する。
@@ -48,10 +48,10 @@ union の `==` / `!=` / `<` などは組み込みにしない。A11 により比
 台帳 D-05 に従う。
 
 ```text
-UnionDecl      ::= "union" TypeName TypeParameter* "=" UnionCases
+UnionDecl      ::= "union" TypeName TypeParameters? "=" UnionCases
 UnionCases     ::= UnionCase ( "|" UnionCase )*
 UnionCase      ::= "|" ? CaseName ( "of" TypeExpr )?
-TypeParameter  ::= TypeVariable
+TypeParameters ::= "<" TypeVariable ("," TypeVariable)* ","? ">"
 CasePattern    ::= CaseName Pattern?
                  | ModuleName "." CaseName Pattern?
                  | ModuleName "." UnionName "." CaseName Pattern?
@@ -68,7 +68,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Option 'a = None | Some of 'a
+union Option<'a> = None | Some of 'a
 ```
 
 - `union` は新しい予約語として `TokenKind::Union` に追加する。
@@ -146,9 +146,9 @@ pub struct Program {
 ```
 
 - `Type::Union(id, args)` の `args` は `CheckedUnion.parameters` と同数。
-- `Option i64` は `Type::Union(option_id, vec![Type::I64])`。
+- `Option<i64>` は `Type::Union(option_id, vec![Type::I64])`。
 - payload 型は宣言の型パラメーターを型引数で置換して得る。
-- `Type::display` は `Option i64`、`Result i64 string` の形。
+- `Type::display` は `Option<i64>`、`Result<i64, string>` の形。
 - 単一化は union ID と型引数ごとの単一化。
 - `Type::exportable` は union を常に `false`。
 - A01 の `TypeContext` を拡張し、`Type::display`、型性質、layout、class validation、ownership、LLVM helper はすべて `&TypeContext` を受け取る。
@@ -478,11 +478,11 @@ payload binding がある場合は lookup table 化しない。
 - 例:
 
 ```text
-union Tree 'a = Leaf | Node of Tree 'a * 'a * Tree 'a
+union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>
 ```
 
 は A02 では `E1010 recursive union layout for 'Main.Tree'; recursive heap types require A04`。
-- `Option 'a` や `Result 'a 'e` は再帰しないので許可。
+- `Option<'a>` や `Result<'a, 'e>` は再帰しないので許可。
 
 ### 各コンパイラ段の変更有無
 
@@ -524,8 +524,8 @@ A04 は以下を拡張する。
 
 B01 は以下を前提にする。
 
-- `union Option 'a = None | Some of 'a`
-- `union Result 'a 'e = Ok of 'a | Error of 'e`
+- `union Option<'a> = None | Some of 'a`
+- `union Result<'a, 'e> = Ok of 'a | Error of 'e`
 - `Some` / `Ok` が一引数の関数値として使える。
 
 ## 実装手順
@@ -550,7 +550,7 @@ cargo test --locked --test frontend
 ### 2. 型名・case 名の収集
 
 1. A01 の phase split を拡張する。
-   - `collect_class_names`: 組み込みクラス、ユーザー class、record、union 型名を先に収集し、`record Add` / `union Add 'a = ...` / cross-order class collision を `E1001`。
+   - `collect_class_names`: 組み込みクラス、ユーザー class、record、union 型名を先に収集し、`record Add` / `union Add<'a> = ...` / cross-order class collision を `E1001`。
    - record/union fields & payloads を解決し layout を検査する。
    - `check_class_declarations` で class method signatures を解決・検証する。
    - instances を検証する。
@@ -699,9 +699,9 @@ area (Rect (3.0, 4.0))
 Option-like:
 
 ```text
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 
-def default_value :: 'a -> Maybe 'a -> 'a
+def default_value :: 'a -> Maybe<'a> -> 'a
 fn default_value fallback value =
     match value with
     | Some x -> x
@@ -728,7 +728,7 @@ code Green
 First-class constructor:
 
 ```text
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 def apply :: ('a -> 'b) -> 'a -> 'b
 fn apply f x = f x
 match apply Some 42 with
@@ -753,19 +753,19 @@ match Shapes.Shape.Circle 2.0 with
 | ソース | 期待 |
 |---|---|
 | `union option = None` | `E1024` |
-| `union Option 'a = None` | `E1024`, unused type parameter |
+| `union Option<'a> = None` | `E1024`, unused type parameter |
 | `union Option = Some of 'a` | `E1024`, undeclared type parameter |
 | `union U = A | A` | `E1024`, duplicate case in union |
 | `record None {} union U = None` | `E1001` |
 | `.tt` 内 `union U = A` | `E1018` |
-| `union Add 'a = Value of 'a` | `E1001`, builtin class/type collision |
-| `class C 'a { def f :: 'a -> i64 } union C 'a = Value of 'a` | `E1001`, cross-order class/type collision |
-| `union Maybe 'a = Some of 'a let x = Some` を具体化なしで使う | `E1015` または `E1006` |
-| `union Maybe 'a = None | Some of 'a match Some 1 with | Some -> 0 | None -> 1` | `E1020` |
-| `union Maybe 'a = None | Some of 'a match None with | None x -> x` | `E1020` |
-| `union Tree 'a = Leaf | Node of Tree 'a` | `E1010` until A04 |
+| `union Add<'a> = Value of 'a` | `E1001`, builtin class/type collision |
+| `class C<'a> { def f :: 'a -> i64 } union C<'a> = Value of 'a` | `E1001`, cross-order class/type collision |
+| `union Maybe<'a> = Some of 'a let x = Some` を具体化なしで使う | `E1015` または `E1006` |
+| `union Maybe<'a> = None | Some of 'a match Some 1 with | Some -> 0 | None -> 1` | `E1020` |
+| `union Maybe<'a> = None | Some of 'a match None with | None x -> x` | `E1020` |
+| `union Tree<'a> = Leaf | Node of Tree<'a>` | `E1010` until A04 |
 | `union U = A of i64 export def f :: U ...` | `E1008` |
-| `union Maybe 'a = None | Some of 'a let x = Some 1 == Some 1` | `E1005`; D-20/A11 後も union には `Eq` instance が必要 |
+| `union Maybe<'a> = None | Some of 'a let x = Some 1 == Some 1` | `E1005`; D-20/A11 後も union には `Eq` instance が必要 |
 | payload move 後に source union を再使用する | `E1012` |
 | guard 失敗のある payload pattern で次 arm が source union を使う | 受理し leak なし |
 
@@ -824,7 +824,7 @@ Qualified path:
 
 ```text
 // Option.tc (std 相当)
-union Option 'a = None | Some of 'a
+union Option<'a> = None | Some of 'a
 // Main.tz
 let x = Option.Some 1
 match x with | Option.Some n -> n | Option.None -> 0
@@ -850,7 +850,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 union Color = Red | Green | Blue
 
 def area :: Shape -> f64
@@ -860,7 +860,7 @@ fn area shape =
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe 'a -> 'a
+def default_value :: 'a -> Maybe<'a> -> 'a
 fn default_value fallback value =
     match value with
     | Some x -> x
@@ -907,7 +907,7 @@ E2E:
 - WASM imports empty
 - IR deterministic
 - native heap tracking `live == 0`
-- string payload を含む `Maybe string` の clone/drop を 40,000 回繰り返して leak / double free を検査する。
+- string payload を含む `Maybe<string>` の clone/drop を 40,000 回繰り返して leak / double free を検査する。
 - Node block の直前に毎回 `cargo build --release --locked` を実行する。
 
 ### 既存テスト
@@ -950,20 +950,20 @@ node tests/examples.mjs target/release/tsuzuri
 
 ## 受け入れ条件
 
-- [ ] `union` が予約語になり、`.tz` / `.tc` で宣言でき、`.tt` では `E1018`。
-- [ ] `CheckedModule.unions` と `Type::Union(usize, Vec<Type>)` がある。
-- [ ] generic union が A01 の型適用と同じ経路で推論・単相化される。
-- [ ] payload なし case は値、payload あり case は一引数関数値として使える。
-- [ ] direct full constructor application は `Construct` に lower され、余分な call を出さない。
-- [ ] constructor を高階関数へ渡せる。残った `CaseConstructor` は specialization 後に `(union_id, case_id, concrete_args)` で dedup された hidden monomorphic function へ `closures::lower` で置換される。
-- [ ] nullary case pattern が変数束縛ではなく case として解決される。
-- [ ] union match が `SwitchPlan` により tag switch に lower され、payload binding は `UnionPayload` projection を使う。
-- [ ] payload move / drop / clone / zeroing が string, array, list, closure で leak / double free しない。
-- [ ] `UnionPayload` は ownership と LLVM の place/read_place/read_places に参加し、payload move は source union 全体への後続 access と正しく overlap する。
-- [ ] union layout size は nullary 8、common payload `16 + round_up_16(payload)`, general `16 + 16*K` を `layout_size` / `validate_size` / `llvm_frame::stack_size` で共有し、64 KiB boundary tests が native/wasm32 で通る。
-- [ ] recursive union は A04 まで `E1010`。
-- [ ] `==` / `Ord` / Display は builtin ではない。D-20/A11 後も union 比較には `Eq` / `Ord` instance が必要で、A07 deriving がそれを提供する。
-- [ ] native/WASM × `-O0`/`-O3`、WASM imports empty、heap tracking `live == 0` を確認した。
+- [x] `union` が予約語になり、`.tz` / `.tc` で宣言でき、`.tt` では `E1018`。
+- [x] `CheckedModule.unions` と `Type::Union(usize, Box<[Type]>)` がある。
+- [x] generic union が A01 の型適用と同じ経路で推論・単相化される。
+- [x] payload なし case は値、payload あり case は一引数関数値として使える。
+- [x] direct full constructor application は `Construct` に lower され、余分な call を出さない。
+- [x] constructor を高階関数へ渡せる。残った `CaseConstructor` は specialization 後に `(union_id, case_id, concrete_args)` で dedup された hidden monomorphic function へ `closures::lower` で置換される。
+- [x] nullary case pattern が変数束縛ではなく case として解決される。
+- [x] union match が `SwitchPlan` により tag switch に lower され、payload binding は `UnionPayload` projection を使う。
+- [x] payload move / drop / clone / zeroing が string, array, list, closure で leak / double free しない。
+- [x] `UnionPayload` は ownership と LLVM の place/read_place/read_places に参加し、payload move は source union 全体への後続 access と正しく overlap する。
+- [x] 保守的な union layout size（nullary 8、payload ありは `16 + round_up_16(payload)`）を `layout_size` / `validate_size` / `llvm_frame::stack_size` で共有し、64 KiB boundary tests が native/wasm32 で通る。LLVM storage の K は実サイズから算出する（実装時の判断を参照）。
+- [x] recursive union は A04 まで `E1010`。
+- [x] `==` / `Ord` / Display は builtin ではない。D-20/A11 後も union 比較には `Eq` / `Ord` instance が必要で、A07 deriving がそれを提供する。
+- [x] native/WASM × `-O0`/`-O3`、WASM imports empty、heap tracking `live == 0` を確認した。
 
 ## 落とし穴
 
@@ -1014,7 +1014,7 @@ node tests/examples.mjs target/release/tsuzuri
 - ownership の place 経路は payload を番兵 `PAYLOAD = usize::MAX - 1` で表し、配列要素の `ELEMENT = usize::MAX` と区別する。
   payload を move した union は payload slot を 0 で埋めるため、後続の union 全体の drop は `free(null)` の no-op になる。
 - `SwitchPlan` は tag を 1 回 load して `switch i32` へ下げる。OR パターンの各候補で payload 以下の Field 経路が同じ場合も switch に含める。
-  guard と参照越し（`ref (Maybe i64)`）の match は既存の順次テストへ fallback し、非網羅の default は A03 まで `llvm.trap`。
+  guard と参照越し（`ref (Maybe<i64>)`）の match は既存の順次テストへ fallback し、非網羅の default は A03 まで `llvm.trap`。
 - match は subject slot から tag と payload を GEP + load で読むため、テスト計画の `extractvalue %"tz.union.Main.Shape"` は生成しない。
   IR テストは構築の `insertvalue` と、slot からの `load i32`／payload GEP を検査する。
 - テスト計画の `Option.tc` 例は、`.tc` がビルダー操作を必須とするため `Option.tz` で検証した。`.tc` 内の union は別の `Maybe.tc` ビルダーで検証する。

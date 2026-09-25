@@ -56,6 +56,8 @@ const suites = {
       ["closures", [0n], 1n],
       ["matched", [2n], 402n],
       ["collections", [5n], 3022n],
+      ["nested_syntax", [39n], 42n],
+      ["nested_syntax", [-3n], 0n],
     ],
     inspect(ir, header) {
       assert.doesNotMatch(header, /Pair|Box|Wrap/);
@@ -138,6 +140,64 @@ const suites = {
       }
     },
   },
+  option_result: {
+    cases: [
+      ["option_some", [], 42n],
+      ["option_none_short_circuit", [], 42n],
+      ["result_ok", [], 42n],
+      ["result_error_short_circuit", [], 42n],
+      ["option_loop", [0n], 0n],
+      ["option_loop", [257n], 257n],
+      ["result_loop", [0n], 0n],
+      ["result_loop", [257n], 257n],
+      ["option_loop", [40000n], 40000n],
+      ["result_loop", [40000n], 40000n],
+      ["stopped_loops", [], 42n],
+      ["while_and_zero", [], 42n],
+      ["while_failure", [], 42n],
+      ["owned_loop_failures", [], 12n],
+      ["remaining_functions", [], 42n],
+      ["defaults", [], 42n],
+      ["conversions", [], 42n],
+      ["owned", [0n], 0n],
+      ["owned", [1n], 20n],
+      ["owned", [40000n], 800000n],
+      ["copy_snapshot", [], 42n],
+      ["borrowed_patterns", [], 24n],
+    ],
+    traps: [
+      ["trap_option_get", []],
+      ["trap_result_get", []],
+      ["trap_result_get_error", []],
+      ["trap_string", []],
+      ["trap_eager_default", []],
+    ],
+    inspect(ir, header) {
+      assert.doesNotMatch(header, /Option|Result/);
+      assert.match(ir, /@tz\.specialized\./);
+      assert.match(ir, /tz\.union\.Option\.Option\[string\]/);
+      assert.match(ir, /tz\.union\.Result\.Result\[string,i64\]/);
+    },
+  },
+  display_parse: {
+    cases: [
+      ["displays", [], 1],
+      ["text_copy", [], 36n],
+      ["parse_numbers", [], 42n],
+      ["parse_bool", [], 1],
+      ["malformed", [], 1],
+      ["round_f64", [0.1], 0.1],
+      ["round_f32", [Math.fround(0.1)], Math.fround(0.1)],
+      ["custom", [0n], 0n],
+      ["custom", [1n], 10n],
+      ["custom", [40000n], 400000n],
+    ],
+    inspect(ir) {
+      assert.match(ir, /@tz_soft_format/);
+      assert.match(ir, /@tz_soft_parse/);
+      assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf|@memcmp/);
+    },
+  },
 };
 
 function run(name, suite) {
@@ -214,6 +274,7 @@ int main(int argc, char **argv) {
       const exports = new WebAssembly.Instance(module).exports;
       for (const [exported, args, expected] of suite.cases) {
         assert.equal(exports[`tz_${exported}`](...args), expected, `${name} WASM O${optimization}: ${exported}(${args})`);
+        assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024, `${name}: WASM stays within 16 MiB`);
       }
       for (const [trap, args] of traps) {
         const fresh = new WebAssembly.Instance(module).exports;

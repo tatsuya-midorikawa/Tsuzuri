@@ -1,4 +1,4 @@
-def curry_add :: Add 'a -> 'a -> 'a
+def curry_add :: Add<'a> -> 'a -> 'a
 let curry_add = x -> y -> x + y
 
 export def curried_integer :: i32
@@ -114,7 +114,7 @@ fn curried_exclusive = {
     text.length
 }
 
-instance Classes.CurriedCombine i32 {
+instance Classes.CurriedCombine<i32> {
     let combine = x -> y -> x + y
 }
 

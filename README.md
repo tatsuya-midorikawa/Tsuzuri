@@ -87,7 +87,7 @@ Web 向けの小さな計算モジュールという方向性は
 同じ型変数は同じ型を表し、呼び出しごとに引数・返却値の文脈から具体型を決めます。
 
 ```text
-def add :: Add 'a -> 'a -> 'a
+def add :: Add<'a> -> 'a -> 'a
 let add = x -> y -> x + y
 
 def identity :: 'a -> 'a
@@ -100,8 +100,8 @@ let text = identity "こんにちは"
 integer
 ```
 
-`Add 'a` は `Add` 制約を持つ `'a` です。`def add :: 'a -> 'a -> 'a` と書いて本体から
-制約を推論することも、`Add 'a => 'a -> 'a -> 'a` と明記することもできます。
+`Add<'a>` は `Add` 制約を持つ `'a` です。`def add :: 'a -> 'a -> 'a` と書いて本体から
+制約を推論することも、`Add<'a> => 'a -> 'a -> 'a` と明記することもできます。
 すべての関数はカリー化され、`add 20 22` と `(add 20) 22` は同じ適用です。
 型クラスによるメソッド選択はコンパイル時に完了し、辞書や型クラスの
 動的ディスパッチを実行時に持ち込みません。利用した型の組み合わせごとにコードを生成します。
@@ -116,11 +116,11 @@ integer
 型クラスは `Classes.tt` に記述します。一つのファイルに複数のクラスを宣言できます。
 
 ```text
-class Score 'a {
+class Score<'a> {
     def score :: ref 'a -> i32
 }
 
-class Size 'a {
+class Size<'a> {
     def size :: ref 'a -> i64
 }
 ```
@@ -130,11 +130,11 @@ class Size 'a {
 ```text
 record Point { x: i32, y: i32 }
 
-instance Add Point {
+instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-instance Classes.Score Point {
+instance Classes.Score<Point> {
     fn score point = point.x + point.y
 }
 ```
@@ -144,16 +144,18 @@ instance Classes.Score Point {
 同名関数の探索やインスタンスの選択順に依存しない記述にしています。
 同じクラス・型のインスタンス重複や、組み込みインスタンスの上書きはエラーです。
 
-レコードは型パラメーターを持てます。`Pair i64 string` のように型名の後へ型引数を並べて具体化し、
-リテラルの型引数はフィールドの値や期待型から推論します。
+型パラメーターと型引数は、レコード・union・型クラス・制約・インスタンス・`Task<T>` のすべてで
+`Name<'a, 'b>`／`Name<i64, string>` のように `<...>` 内へカンマ区切りで書きます。
+旧来の空白区切りは受理しません。関数の型変数の暗黙の全称量化と、値からの型推論は維持します。
+レコードリテラルの型引数はフィールドの値や期待型から推論します。
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
+record Pair<'a, 'b> { first: 'a, second: 'b }
 
-def swap :: Pair 'a 'b -> Pair 'b 'a
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
 fn swap pair = Pair { first: pair.second, second: pair.first }
 
-let pair: Pair string i64 = swap (Pair { first: 42, second: "answer" })
+let pair: Pair<string, i64> = swap (Pair { first: 42, second: "answer" })
 pair.second
 ```
 
@@ -169,7 +171,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 
 def area :: Shape -> f64
 fn area shape =
@@ -182,7 +184,7 @@ area (Rect (3.0, 4.0))
 ```
 
 match は tag の `switch` に下げ、payload の move・解放・複製も case ごとに行います。
-`Option`／`Result` は標準では同梱していないため、必要なら上の `Maybe` のように宣言します。
+標準の `Option<'a>`／`Result<'a, 'e>` と、変換・借用・失敗伝播の関数も同梱しています。
 case が不足する match は `E1021` のコンパイルエラーです。再帰的な union・`==` などの組み込み比較は未対応です。
 詳細は [言語仕様](docs/language.md#共用体union) を参照してください。
 
@@ -238,32 +240,23 @@ match add total 2 with
 
 F# のように、`Bind`・`Return` などを実装して計算の組み合わせ方を定義できます。
 **一つの `.tc` ファイルが一つのビルダー**で、ビルダー名はファイル名です。
-型クラスの実装や新しい構文の登録は不要です。例えば `Checked.tc`:
+型クラスの実装や新しい構文の登録は不要です。標準の `Option`／`Result` もこの仕組みで実装され、
+追加ファイルなしで使えます。
 
 ```text
-record Result { ok: bool, value: i64 }
-
-def Return :: i64 -> Result
-fn Return value = Result { ok: true, value: value }
-
-def Bind :: Result -> (i64 -> Result) -> Result
-fn Bind result next =
-    if result.ok { next result.value } else { result }
-```
-
-同じディレクトリの `Main.tz`:
-
-```text
-let answer = Checked {
-    let! first = Checked.Return 20
-    let! second = Checked.Return 22
+let answer: Result<i64, string> = Result {
+    let! first = Ok 20
+    let! second = Ok 22
     return first + second
 }
-answer.value
+match answer with
+| Ok value -> value
+| Error _ -> -1
 ```
 
-`let!` は `Checked.Bind(value, continuation)`、`return` は `Checked.Return(value)` に相当します。
-上の `Bind` は失敗値なら続きを呼ばないため、ビルダー自身で短絡を実装できます。
+`let!` は `Result.Bind value continuation`、`return` は `Result.Return value` に相当します。
+`Error`／`None` なら続きを呼ばず、error 型の暗黙変換はしません。
+`Option.map_ref` などは所有する payload を借用して扱い、`get` は失敗値に対してトラップします。
 `ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While` も必要に応じて定義でき、
 `Delay`／`Run` があれば本体を包んで遅延・実行の仕方を制御します。
 使用した構文の操作が未実装ならコンパイルエラーで、暗黙の既定実装はありません。
@@ -293,7 +286,7 @@ Task.run computation
 // 42
 ```
 
-`task { ... }` は `Task T` 型の **遅延・一回実行の計算** を作ります。
+`task { ... }` は `Task<T>` 型の **遅延・一回実行の計算** を作ります。
 F# の通常の `task` と異なり、作成しただけでは開始しません。
 `let!` で前の計算の結果を受け取り、`return` で結果を返します。
 独立した計算は `Task.parallel` に配列で渡し、入力順の結果配列を受け取ります。
@@ -369,7 +362,8 @@ std の関数も `Math.zero()` のように修飾して呼び、使わない std
 | `Debug`、`Test` | デバッグ出力とテスト |
 | `Parallel`、`Simd`、`Gpu` | データ並列・SIMD・GPU |
 
-現在の std は仮の API `Math.zero : f64` だけを持ちます。無修飾の型・クラス名は利用者の宣言を std より優先します。
+現在の std は `Option`・`Result` の型／関数／ビルダーと仮の API `Math.zero : f64` を持ちます。
+無修飾の型・case・クラス名は利用者の宣言を std より優先します。
 
 ```text
 private def square :: f64 -> f64
@@ -435,6 +429,11 @@ cargo build --release
 数値型／`bool`／`unit`／`string` です。ネイティブ用ホスト・ラッパーが
 結果を表示し、成功時は終了コード 0 を返します。`unit` は何も表示しません。
 言語内に出力の副作用を持ち込む仕組みではありません。
+数値は `to_string`／`Display.display` と同じ形式です。二進浮動小数点は最短の往復可能な十進表現
+（`0.1` は `0.1`）、負のゼロは `-0` と表示し、native／WASM で共通の実装を使います。
+`to_string value` は値を消費し、`Display.display ref value` は借用します。
+`let value: Option<f64> = Parse.parse ref text` のように解析でき、不正入力・overflow は `None` です。
+独自型にも Display／Parse インスタンスを定義できます。
 
 ## Web／ゲーム
 
@@ -536,7 +535,7 @@ tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 | `--emit exe\|object\|llvm\|header\|wasm` | 既定は native なら exe、wasm32 なら wasm |
 | `-O0` ～ `-O3` | 既定は `-O3`。fast-math は使わない |
 | `--cpu generic\|native` | 既定は `generic`（Clang のターゲット既定）。`native` はビルド機の命令セットとスケジューリングに最適化 |
-| `--json` | 標準エラーに機械可読の診断を出力 |
+| `--json` | 標準エラーへ 1 行 1 JSON オブジェクトで診断を出力 |
 | `--` | 以降をパスとして解釈 |
 | `--help`, `--version` | ヘルプ／バージョン |
 
@@ -556,6 +555,11 @@ Clang に渡します。SIMD 化は演算と依存関係が許す範囲で LLVM 
 `_` 単独や予約語は使えません。
 `run`／`--emit exe` の入力は `Main.tz` またはそのディレクトリに限ります。
 `check`／ライブラリ出力では `.tz`・`.tt`・`.tc` を指定でき、`Main.tz` は不要です。
+
+`check`・`build`・`run` は独立したエラーをまとめてファイル・位置順で報告します。
+例えば二つの関数に型の不一致があれば、`tsuzuri check Main.tz --json` は二行の error オブジェクトを返します。
+表示は 50 件までで、残りの件数はコードなしの note です。収集上限 1000 件に達した場合だけ `at least` と表示します。
+壊れたシグネチャに由来する二次エラーは抑制し、エラーがある間は生成・実行せず終了コード 1 を返します。
 
 出力先省略時は選択した入力ファイルの拡張子を変更します。ディレクトリ指定なら `Main.ll` などになります。
 `--emit llvm` はライブラリ用 IR で、コンソールのエントリー・ラッパーは付けません。
@@ -582,6 +586,7 @@ node tests/tasks.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
+node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri

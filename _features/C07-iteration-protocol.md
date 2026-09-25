@@ -11,7 +11,7 @@
 
 ## 目的
 
-`for pattern in source do ...` を配列・リスト・文字列・整数範囲以外のユーザー定義型にも拡張する。現行の型クラス制約では associated element type を表現できないため、Phase 1 は builtin lazy sequence `Seq 'a` を導入し、各型が `Module.iter : &Source -> Seq Element` を提供する方式を採用する。
+`for pattern in source do ...` を配列・リスト・文字列・整数範囲以外のユーザー定義型にも拡張する。現行の型クラス制約では associated element type を表現できないため、Phase 1 は builtin lazy sequence `Seq<'a>` を導入し、各型が `Module.iter : &Source -> Seq<Element>` を提供する方式を採用する。
 
 ## 現状
 
@@ -24,33 +24,33 @@
 
 ### 前提とする他チケットのインターフェース
 
-- B01: `Option 'a`。`Seq.next` の戻り値に使う。
+- B01: `Option<'a>`。`Seq.next` の戻り値に使う。
 - A06: 型クラス拡張はあるが、Phase 1 では multi-parameter class / associated type はまだ使えない前提。
 - C02/C06 が完了していれば `Vec.iter` / `Map.iter` / `Set.iter` を追加できる。C07 自体の必須依存にはしない。
 
 ### 他チケットへの提供インターフェース
 
-- C02 は `Vec.iter : &Vec 'a -> Seq &'a` を実装できる。
-- C06 は `Map.iter : &Map 'k 'v -> Seq (&'k * &'v)` と `Set.iter : &Set 'k -> Seq &'k` を実装できる。
+- C02 は `Vec.iter : &Vec<'a> -> Seq<&'a>` を実装できる。
+- C06 は `Map.iter : &Map<'k, 'v> -> Seq<&'k * &'v>` と `Set.iter : &Set<'k> -> Seq<&'k>` を実装できる。
 - F02 は `Seq` を並列化しない。並列 API は `&[T]` などサイズ既知 input を使う。
 
 ### 設計選択肢の評価
 
-#### Option A: builtin lazy `Seq 'a`
+#### Option A: builtin lazy `Seq<'a>`
 
 ```text
-Seq 'a
-Seq.next : Seq 'a -> (Seq 'a * Option 'a)
+Seq<'a>
+Seq.next : Seq<'a> -> (Seq<'a> * Option<'a>)
 ```
 
-各型が `iter` 関数を提供し、`for` は `Seq` を pull する。element type は `Seq 'a` の型引数として表現できる。現行型システムで実装可能。
+各型が `iter` 関数を提供し、`for` は `Seq` を pull する。element type は `Seq<'a>` の型引数として表現できる。現行型システムで実装可能。
 
 採用。
 
 #### Option B: multi-param / associated type class
 
 ```text
-class Iterable 'source 'item { def iter :: &'source -> Seq 'item }
+class Iterable<'source, 'item> { def iter :: &'source -> Seq<'item> }
 ```
 
 現行 `Classes::collect` の「型変数 1 個・method はその変数だけ」に反する。A10/A06 の範囲拡大が必要。C07 Phase 1 では不採用。
@@ -64,27 +64,27 @@ class Iterable 'source 'item { def iter :: &'source -> Seq 'item }
 組み込み型:
 
 ```text
-Seq 'a
+Seq<'a>
 ```
 
 標準関数:
 
 ```text
-Seq.next    : Seq 'a -> (Seq 'a * Option 'a)
-Seq.empty   : Seq 'a
-Seq.once    : 'a -> Seq 'a
-Seq.map     : Seq 'a -> ('a -> 'b) -> Seq 'b
-Seq.filter  : Seq 'a -> ('a -> bool) -> Seq 'a
-Seq.to_array: Seq 'a -> ['a]        // C02 があれば Vec builder 使用、なければ two-pass 不可なので phase 2
+Seq.next    : Seq<'a> -> (Seq<'a> * Option<'a>)
+Seq.empty   : Seq<'a>
+Seq.once    : 'a -> Seq<'a>
+Seq.map     : Seq<'a> -> ('a -> 'b) -> Seq<'b>
+Seq.filter  : Seq<'a> -> ('a -> bool) -> Seq<'a>
+Seq.to_array: Seq<'a> -> ['a]        // C02 があれば Vec builder 使用、なければ two-pass 不可なので phase 2
 ```
 
 for-in lowering:
 
 - Source が既存 direct iterable (`[T]`, `[|T|]`, `string`, range) なら既存 lowering を維持する。
-- Source が `Seq 'a` なら `Seq.next` を loop で呼ぶ。
+- Source が `Seq<'a>` なら `Seq.next` を loop で呼ぶ。
 - ユーザー型からの for-in は暗黙探索しない。ユーザーは `for x in MyType.iter (&value) do ...` と明示する。
 
-これにより「ユーザー定義プロトコル」は `iter : &T -> Seq U` を提供する library convention と、言語が `Seq U` を for-in 可能にする組み合わせになる。暗黙 associated type がない現状で最も安全。
+これにより「ユーザー定義プロトコル」は `iter : &T -> Seq<U>` を提供する library convention と、言語が `Seq<U>` を for-in 可能にする組み合わせになる。暗黙 associated type がない現状で最も安全。
 
 ### 構文
 
@@ -118,14 +118,14 @@ LLVM:
 
 契約:
 
-- `Seq 'a` は non-Copy。pull するたびに新しい `Seq` と `Option 'a` を返す一回進行の状態。
+- `Seq<'a>` は non-Copy。pull するたびに新しい `Seq` と `Option<'a>` を返す一回進行の状態。
 - `Seq.next` は sequence を消費する。
 - `for` は sequence local を mutable state として保持するが、言語上は各 step で `Seq.next seq` の返した新 sequence に置き換える。
 - `Seq` は cold task ではなく同期的な純粋値。外部スレッド・I/O は持たない。
 
 ### 型・所有権
 
-- `Seq 'a` は常に non-Copy、needs_drop true。
+- `Seq<'a>` は常に non-Copy、needs_drop true。
 - `Seq` の environment は closure と同じ clone/drop だが、`Seq` 自体は one-shot state として Copy 不可。
 - `Seq` が `&T` を element として返す場合、sequence 自体が元 owner の loan を運ぶ。`Seq` を owner より長生きさせると `E1013`。
 - `for x in seq` は `seq` を消費する。loop 後に元 `seq` は使えない。
@@ -162,10 +162,10 @@ exportable = false
 Conceptual signature:
 
 ```text
-Seq.next : Seq 'a -> (Seq 'a * Option 'a)
+Seq.next : Seq<'a> -> (Seq<'a> * Option<'a>)
 ```
 
-`Seq 'a` の value は next function closure。closure を呼ぶと tuple を返す。tuple の第 1 要素が次 state。
+`Seq<'a>` の value は next function closure。closure を呼ぶと tuple を返す。tuple の第 1 要素が次 state。
 
 `Seq.empty`:
 
@@ -266,7 +266,7 @@ Existing builder `For` lowering in `src/computation.rs` remains unchanged: it ca
 
 Interplay:
 
-- If a builder wants to support `Seq`, its `For` operation can have `Seq 'a -> ('a -> M) -> M` and call `Seq.next` itself.
+- If a builder wants to support `Seq`, its `For` operation can have `Seq<'a> -> ('a -> M) -> M` and call `Seq.next` itself.
 - C07 must not rewrite computation `For` to language `for`.
 
 ### Vec/Map integration
@@ -274,11 +274,11 @@ Interplay:
 Optional std functions when dependencies exist:
 
 ```text
-Vec.iter : &Vec 'a -> Seq &'a
-Map.iter : &Map 'k 'v -> Seq (&'k * &'v)
-Set.iter : &Set 'k -> Seq &'k
-Array.iter : &['a] -> Seq &'a
-List.iter : &[|'a|] -> Seq &'a
+Vec.iter : &Vec<'a> -> Seq<&'a>
+Map.iter : &Map<'k, 'v> -> Seq<&'k * &'v>
+Set.iter : &Set<'k> -> Seq<&'k>
+Array.iter : &['a] -> Seq<&'a>
+List.iter : &[|'a|] -> Seq<&'a>
 ```
 
 Language direct for over arrays/lists stays faster and allocation-free. `Array.iter` is for higher-order composition.
@@ -287,7 +287,7 @@ Language direct for over arrays/lists stays faster and allocation-free. `Array.i
 
 1. **Type::Seq**
    - Add type variant and all type walkers。
-   - Confirm display `Seq i64`。
+   - Confirm display `Seq<i64>`。
 
 2. **B01/A02 union access helpers確認**
    - Identify Option tag/payload API from B01/A02。
@@ -300,7 +300,7 @@ Language direct for over arrays/lists stays faster and allocation-free. `Array.i
 
 4. **ForSeq typed IR**
    - Add `TypedExprKind::ForSeq` and children。
-   - Type checker accepts `Seq 'a` in `for...in`。
+   - Type checker accepts `Seq<'a>` in `for...in`。
    - 確認: `for x in Seq.once 1 do ...` accepted。
 
 5. **Ownership**
@@ -333,7 +333,7 @@ Language direct for over arrays/lists stays faster and allocation-free. `Array.i
 - User module:
   ```text
   record Counter { start: i64, finish: i64 }
-  def iter :: &Counter -> Seq i64
+  def iter :: &Counter -> Seq<i64>
   ```
   then `for x in Counter.iter (&c) do ...`
 
@@ -342,7 +342,7 @@ Language direct for over arrays/lists stays faster and allocation-free. `Array.i
 - `for x in counter do ...` without explicit iter → `E1005`。
 - `let seq = Seq.once "x"; let _ = Seq.next seq; Seq.next seq` → `E1012`。
 - sequence returning borrowed element outliving owner → `E1013`。
-- task capturing `Seq &i64` → `E1013`。
+- task capturing `Seq<&i64>` → `E1013`。
 
 IR:
 
@@ -380,8 +380,8 @@ Targets:
 
 ## 受け入れ条件
 
-- [ ] `Seq 'a` 型と `Seq.empty` / `Seq.once` / `Seq.next` が動く。
-- [ ] `for...in` accepts `Seq 'a` and direct collections unchanged。
+- [ ] `Seq<'a>` 型と `Seq.empty` / `Seq.once` / `Seq.next` が動く。
+- [ ] `for...in` accepts `Seq<'a>` and direct collections unchanged。
 - [ ] User-defined iter is explicit; no implicit name search。
 - [ ] Seq is non-Copy and consumed by iteration。
 - [ ] Borrowed elements cannot escape owner/iteration。
@@ -407,7 +407,7 @@ Targets:
 
 ## 未決事項
 
-- 推奨は Option A: builtin `Seq 'a`。Option B/C は不採用。
+- 推奨は Option A: builtin `Seq<'a>`。Option B/C は不採用。
 - `Seq.to_array` は C02 Vec がある場合だけ phase 2 で実装。C07 phase 1 では省略可。
 - `for x in source` の暗黙 `Module.iter` は将来 associated type が入るまで導入しない。
 - 台帳の見直し提案: なし。A06/A10 で associated type を導入する場合に C07 phase 2 として再設計する。

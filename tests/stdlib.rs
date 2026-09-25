@@ -150,24 +150,24 @@ fn prefers_user_declarations_and_hides_them_from_std() {
             "std/Custom.tz",
             "record Point { flag: bool }\n\
              def flagged :: Point\nfn flagged = Point { flag: true }\n\
-             instance Pretty bool {\n    fn pretty value = value\n}",
+             instance Pretty<bool> {\n    fn pretty value = value\n}",
         ),
         (
             "std/Show.tt",
-            "class Pretty 'a {\n    def pretty :: 'a -> bool\n}",
+            "class Pretty<'a> {\n    def pretty :: 'a -> bool\n}",
         ),
     ];
     let user = [
         (
             "Main",
             "record Local { y: i64 }\n\
-             instance Pretty i64 {\n    fn pretty value = value\n}\n\
+             instance Pretty<i64> {\n    fn pretty value = value\n}\n\
              export def answer :: i64\nfn answer = {\n    let p = Point { x: 41 };\n    p.x + 1\n}",
         ),
         ("Geometry", "record Point { x: i64 }"),
         (
             "Traits.tt",
-            "class Pretty 'a {\n    def pretty :: 'a -> i64\n}",
+            "class Pretty<'a> {\n    def pretty :: 'a -> i64\n}",
         ),
     ];
     accepts(&user, &std);
@@ -181,11 +181,11 @@ fn prefers_user_declarations_and_hides_them_from_std() {
             "E1004",
         ),
         (
-            "instance Traits.Pretty string {\n    fn pretty value = 0\n}",
+            "instance Traits.Pretty<string> {\n    fn pretty value = 0\n}",
             "E1016",
         ),
         (
-            "instance Pretty string {\n    fn pretty value = 0\n}",
+            "instance Pretty<string> {\n    fn pretty value = 0\n}",
             "E1016",
         ),
         ("def value :: i64\nfn value = Helpers.value()", "E1002"),
@@ -197,7 +197,7 @@ fn prefers_user_declarations_and_hides_them_from_std() {
                 ("Geometry", "record Point { x: i64 }"),
                 (
                     "Traits.tt",
-                    "class Pretty 'a {\n    def pretty :: 'a -> i64\n}",
+                    "class Pretty<'a> {\n    def pretty :: 'a -> i64\n}",
                 ),
                 ("Helpers", "def value :: i64\nfn value = 1"),
             ],

@@ -3,11 +3,11 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 union Color = Red | Green | Blue
 union Pick = Left of i64 | Right of i64 | Neither
 record Tagged { label: string, shape: Shape }
-record Holder { item: Maybe string }
+record Holder { item: Maybe<string> }
 
 def area :: Shape -> f64
 fn area shape =
@@ -16,7 +16,7 @@ fn area shape =
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe 'a -> 'a
+def default_value :: 'a -> Maybe<'a> -> 'a
 fn default_value fallback value =
     match value with
     | Some x -> x
@@ -32,13 +32,13 @@ fn color_code color =
 def apply :: ('a -> 'b) -> 'a -> 'b
 fn apply f x = f x
 
-def text_length :: Maybe string -> i64
+def text_length :: Maybe<string> -> i64
 fn text_length value =
     match value with
     | Some text -> text.length
     | None -> 0
 
-def sum_maybe :: Maybe [i64] -> i64
+def sum_maybe :: Maybe<[i64]> -> i64
 fn sum_maybe value =
     match value with
     | Some items ->
@@ -48,13 +48,13 @@ fn sum_maybe value =
         total
     | None -> 0
 
-def describe :: Maybe Tagged -> i64
+def describe :: Maybe<Tagged> -> i64
 fn describe value =
     match value with
     | Some Tagged { label = text; shape = s } -> text.length * 10 + to_int (area s)
     | None -> 0
 
-def total :: [Maybe i64] -> i64
+def total :: [Maybe<i64>] -> i64
 fn total items =
     let mut sum = 0
     for item in items do
@@ -63,7 +63,7 @@ fn total items =
         | None -> ()
     sum
 
-def borrowed :: ref (Maybe i64) -> i64
+def borrowed :: ref (Maybe<i64>) -> i64
 fn borrowed value =
     match value with
     | Some n -> n

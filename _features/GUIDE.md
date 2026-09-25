@@ -412,11 +412,14 @@ fn rejects(source: &str, code: &str) {
 - 標準ライブラリの関数は常に `Module.function` で呼ぶ（F# の `List.map` と同様）。例: `Option.map`、`Array.sum`、`String.split`。
 
 ### D-02 型適用の構文
-- 型引数は **前置の並置**: `Option i64`、`Result i64 string`、`Pair 'a 'b`、`[Option i64]`、`Option (Pair i64 i64)`。
-  既存の `Task i64` と同じ形です。`Option<i64>` の角括弧形式は導入しない。
-- 構文木には `TypeExprKind::Apply(Ident, Vec<TypeExpr>)` を追加する。`type_atom` は修飾名の後に続く型アトム
-  （型変数・識別子・`(`・`[`・`[|`・`&`）を貪欲に読む。`->`、`,`、`}`、`)`、`=`、`=>`、`{`、キーワード、`*` で止まる。
-- 既存の `Add 'a`（制約付き型変数）も同じ `Apply` として構文解析し、`resolve_type` の段階で分類する:
+- 型パラメーターと型引数は **`<...>` 内のカンマ区切り**:
+  `Option<i64>`、`Result<i64, string>`、`Pair<'a, 'b>`、`[Option<i64>]`、`Option<Pair<i64, i64>>`。
+  レコード・union・型クラスの宣言、制約・インスタンス、`Task<T>`、将来のジェネリック型も同じ形式にする。
+  名前と `<` は隣接させ、空のリストは拒否、末尾のカンマは許す。旧来の空白区切りは受理しない。
+- 構文木は `TypeExprKind::Apply(Box<Ident>, Box<[TypeExpr]>)`。
+  `type_primary` は修飾名の後の `<...>` を読み、各型引数は完全な `type_expr` として解析する。
+  入れ子の `>>`・`>>>` と `>=` の先頭の `>` は型の文脈でだけ分割し、式の演算子を変えない。
+- 既存の `Add<'a>`（制約付き型変数）も同じ `Apply` として構文解析し、`resolve_type` の段階で分類する:
   名前が型クラスなら制約、ジェネリック型なら型適用。同じ名前が両方に解決できる場合は `E1004`（曖昧）。
   型クラス名と型名の衝突は宣言時にも `E1001` で拒否する（新しい曖昧さを作らない）。
 
@@ -424,7 +427,7 @@ fn rejects(source: &str, code: &str) {
 - `Type::Record(usize)` を `Type::Record(usize, Vec<Type>)` に変更する（id は宣言、`Vec<Type>` は型引数。非ジェネリックは空）。
   共用体は `Type::Union(usize, Vec<Type>)` を新設する。フィールド／ペイロードの型は宣言の型パラメーターを
   型引数で置換して得る（補助関数 `CheckedModule`／`Checker` 側に `record_field_types(id, args)` などを設ける）。
-- 単一化は id の一致と型引数の要素ごとの単一化。表示は `Pair i64 string`（`Type::display`）。
+- 単一化は id の一致と型引数の要素ごとの単一化。表示は `Pair<i64, string>`（`Type::display`）。
 - 単相化後の LLVM 型名は決定的にマングリングする。型引数には **LLVM 型の文字列ではなく Tsuzuri の型の正規表記**を使う
   （`llvm_type` の結果には引用符付き識別子が含まれ、入れ子にすると無効な IR になるため）:
   `%"tz.record.Main.Pair[i64,string]"`、`%"tz.union.Option.Option[Main.Pair[i64,string]]"`。
@@ -437,8 +440,8 @@ fn rejects(source: &str, code: &str) {
 - レイアウト上限（64 KiB）・再帰検出は具体化した型ごとに再検査する。
 
 ### D-04 ジェネリックなレコード宣言
-- `record Pair 'a 'b { first: 'a, second: 'b }`。型パラメーターは名前の後に並べ、フィールドは宣言した変数だけを使う。
-- リテラル `Pair { first: 1, second: "x" }` の型引数は推論する。型注釈は `Pair i64 string`。
+- `record Pair<'a, 'b> { first: 'a, second: 'b }`。型パラメーターは名前の後の `<...>` にカンマ区切りで並べ、フィールドは宣言した変数だけを使う。
+- リテラル `Pair { first: 1, second: "x" }` の型引数は推論する。型注釈は `Pair<i64, string>`。
 - A01 はライフタイム機能ではない。型引数を代入した後のフィールドが共有・排他のどちらの参照を含んでも `E1013`
   （現在のレコードと同じ規則。入れ子のレコード・コレクション経由も含む）。リテラル・注釈・シグネチャ・単相化後の全具体型で検査する。
   借用フィールドは A09 で扱う。
@@ -450,7 +453,7 @@ fn rejects(source: &str, code: &str) {
       | Circle of f64
       | Rect of f64 * f64
       | Empty
-  union Option 'a = None | Some of 'a
+  union Option<'a> = None | Some of 'a
   ```
   最初の `|` は省略可。各ケースのペイロードは `of T` で **ちょうど 0 個か 1 個の型**（複数値はタプル型 `f64 * f64` やレコード）。
 - ケース名は大文字始まり。同じモジュール内のケース名・レコード名・共用体名は互いに重複不可（`E1001`）。
@@ -463,7 +466,7 @@ fn rejects(source: &str, code: &str) {
   詳細なレイアウト規則はチケット A02。再帰的な共用体はチケット A04 まで `E1010` で拒否する。
 
 ### D-06 型別名
-- `type Meters = f64`、`type Pair2 'a = Pair 'a 'a`。**透過的**（別名と元の型は同一の型）。キーワード `type`（新規予約語）。
+- `type Meters = f64`、`type Pair2<'a> = Pair<'a, 'a>`。**透過的**（別名と元の型は同一の型）。キーワード `type`（新規予約語）。
 - 区別される新しい型（newtype）は単一ケースの共用体で表す: `union UserId = UserId of i64`。
 
 ### D-07 標準ライブラリの配置と解決
@@ -510,9 +513,9 @@ fn rejects(source: &str, code: &str) {
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
 
 ### D-08 Option と Result
-- `std/Option.tc`: `union Option 'a = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
+- `std/Option.tc`: `union Option<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
   コンピュテーション式の操作（`Bind`、`Return`、`ReturnFrom`、`Zero` など）。`Option { let! x = ...; return x }` が使える。
-- `std/Result.tc`: `union Result 'a 'e = Ok of 'a | Error of 'e`、関数（`map`、`map_error`、`bind` など）、同様の操作。
+- `std/Result.tc`: `union Result<'a, 'e> = Ok of 'a | Error of 'e`、関数（`map`、`map_error`、`bind` など）、同様の操作。
 - `.tc` はビルダー 1 個分の実装であり、共用体・レコード・補助関数・インスタンスを含められる（A02 で union を許可）。
 
 ### D-09 可視性
@@ -528,9 +531,9 @@ fn rejects(source: &str, code: &str) {
 - 早期脱出の `?` 演算子は導入しない。伝播は `Option { }`／`Result { }` ビルダーで書く（B02）。
 
 ### D-11 表示と解析
-- 組み込みクラス `Display 'a { def display :: &'a -> string }`。数値・bool・unit・string・char に組み込みインスタンス。
-- 組み込み関数 `to_string :: Display 'a => 'a -> string`（値を受け取り、内部で借用して `display` し、値を解放する）。
-- 組み込みクラス `Parse 'a { def parse :: &string -> Option 'a }`。数値・bool に組み込みインスタンス。
+- 組み込みクラス `Display<'a> { def display :: &'a -> string }`。数値・bool・unit・string・char に組み込みインスタンス。
+- 組み込み関数 `to_string :: Display<'a> => 'a -> string`（値を受け取り、内部で借用して `display` し、値を解放する）。
+- 組み込みクラス `Parse<'a> { def parse :: &string -> Option<'a> }`。数値・bool に組み込みインスタンス。
 - 数値の文字列表現は、`to_string` とコンソール出力（`console_main`、`tz_soft_format`）で **同じ実装・同じ形式** にする。
 - **決定（2026-09-23 承認）:** 二進浮動小数点（f16／f32／f64／f128）は、同じ型へ解析し直すと元の値に戻る
   **最短の十進表現**で表示する（例: `0.1` は `0.1`。現在の `%.17g` 相当の `0.10000000000000001` はやめる）。
@@ -541,12 +544,12 @@ fn rejects(source: &str, code: &str) {
 ### D-12 文字型
 - 型名 `char`（Unicode スカラー値 U+0000–U+D7FF, U+E000–U+10FFFF）。LLVM では `i32`。リテラル `'a'`、`'\n'`、`'\u{1F600}'`。
 - 字句解析: `'` の後に 1 文字（またはエスケープ）と `'` が続けば文字リテラル、それ以外は従来の型変数 `'a`。
-- Copy・Eq・Ord・Display。算術なし。整数との変換は `Char` モジュールの関数（`Char.to_u32`、`Char.of_u32 : i32u -> Option char`）。
+- Copy・Eq・Ord・Display。算術なし。整数との変換は `Char` モジュールの関数（`Char.to_u32`、`Char.of_u32 : i32u -> Option<char>`）。
 
 ### D-13 コレクションの更新・伸縮・部分参照
 - **消費する関数的更新**: `Array.set : ['a] -> i64 -> 'a -> ['a]` のように所有値を受け取り新しい値を返す。
   所有権により唯一の所有者であることが保証されるため、実装はバッファをその場で書き換えてよい（観測できない最適化）。
-- 伸縮可能な配列は組み込み型 `Vec 'a`（C02）。`[T]` の記述子 `{ ptr, i64 }` は変更しない。
+- 伸縮可能な配列は組み込み型 `Vec<'a>`（C02）。`[T]` の記述子 `{ ptr, i64 }` は変更しない。
 - 部分参照（スライス）は **`&[T]` そのもの**（C03）。`&xs[a..b]` で作る。`&mut [T]` は従来どおり配列全体の置換用。
 
 ### D-14 決定性と数値演算の順序
@@ -608,7 +611,7 @@ fn rejects(source: &str, code: &str) {
 - 組み込みインスタンス（数値・bool・unit・string・char）の生成コードは変えない（`icmp`／`fcmp`／`@tz.string.equal` のまま、
   参照の受け渡しを生成しない）。ユーザー／条件付きインスタンスだけ `Call(method, [&left, &right])` に下げる。
 - 算術・ビット演算のクラス（`Add` など）は従来どおり値を受け取る（文字列の `+` は両辺を消費する）。
-- 実装はチケット **A11**。A06（条件付き `Eq ['a]` など）、A07（deriving）、C04（`Array.sort`、`contains` など）、
+- 実装はチケット **A11**。A06（条件付き `Eq<['a]>` など）、A07（deriving）、C04（`Array.sort`、`contains` など）、
   C06（Map のキー比較）は A11 を前提にし、比較のためだけに `Copy` を要求しない。
 
 ### D-21 発散する組み込み関数 `unreachable`

@@ -340,7 +340,7 @@ TypedExprKind::RecordUpdate { base, fields } => {
   `record R { s: string, n: i64 }` で `s` 置換。
 - unspecified non-Copy field move:
   `{ r with n = 2 }` 後に old `r.s` は q が所有。
-- generic record A01 後: `Pair i64 string` の update。
+- generic record A01 後: `Pair<i64, string>` の update。
 
 拒否:
 
@@ -348,7 +348,7 @@ TypedExprKind::RecordUpdate { base, fields } => {
 - `{ p with z = 1 }` → `E1007`
 - `{ p with x = 1; x = 2 }` → `E1001`
 - `{ p with x = true }` → `E1003`
-- A01 後 `{ pair with first = "x" }` where `pair: Pair i64 i64` → `E1003`
+- A01 後 `{ pair with first = "x" }` where `pair: Pair<i64, i64>` → `E1003`
 - `let q = { p with x = 1 }; p.y` for non-Copy p → `E1012`
 - `let r = &p.y; let q = { p with x = 1 }; r` → `E1014`
 

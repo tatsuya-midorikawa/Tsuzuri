@@ -45,16 +45,16 @@
 - D-07 に従い `Gpu` モジュールに置く。
 - Phase 1 の利用者 API 既定案:
   - `Gpu.request : Gpu.Backend -> Gpu.Device`
-  - `Gpu.init : Gpu.Device -> i64 -> (i64 -> 'a) -> Gpu.Buffer 'a`
-  - `Gpu.map : Gpu.Device -> ('a -> 'b) -> Gpu.Buffer 'a -> Gpu.Buffer 'b`
-  - `Gpu.from_array : Gpu.Device -> &['a] -> Gpu.Buffer 'a`
-  - `Gpu.to_array : Gpu.Buffer 'a -> ['a]`
-  - `Gpu.release : Gpu.Buffer 'a -> unit` は ownership と衝突するため導入しない。
-- `Gpu.Buffer 'a` は所有値。drop 時に device buffer を解放する。
+  - `Gpu.init : Gpu.Device -> i64 -> (i64 -> 'a) -> Gpu.Buffer<'a>`
+  - `Gpu.map : Gpu.Device -> ('a -> 'b) -> Gpu.Buffer<'a> -> Gpu.Buffer<'b>`
+  - `Gpu.from_array : Gpu.Device -> &['a] -> Gpu.Buffer<'a>`
+  - `Gpu.to_array : Gpu.Buffer<'a> -> ['a]`
+  - `Gpu.release : Gpu.Buffer<'a> -> unit` は ownership と衝突するため導入しない。
+- `Gpu.Buffer<'a>` は所有値。drop 時に device buffer を解放する。
 - `Gpu.Device` は opaque handle。Copy ではない。
 - `Gpu.request` は明示要求 backend が利用不可なら error。
 - B01 が完了している場合の望ましい API:
-  - `Gpu.request : Gpu.Backend -> Result Gpu.Device Gpu.Error`
+  - `Gpu.request : Gpu.Backend -> Result<Gpu.Device, Gpu.Error>`
 - B01 が未完の Phase 1 では、利用不可を runtime trap / host diagnostic として扱う。
 - `Gpu.Backend.auto` は CPU fallback を含む自動選択ではなく、利用可能 GPU backend の選択だけを意味する。
 - CPU fallback を自動で選ぶ API は Phase 1 では提供しない。
@@ -86,7 +86,7 @@
 
 ### data residency
 
-- `Gpu.Buffer 'a` は device-resident。
+- `Gpu.Buffer<'a>` は device-resident。
 - `Gpu.from_array` は host array から device buffer へ転送する。
 - `Gpu.to_array` は device buffer から host array へ同期転送する。
 - `Gpu.map` / `Gpu.init` は device buffer を返し、host へ戻さない。

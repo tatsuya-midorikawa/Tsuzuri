@@ -33,7 +33,7 @@
 - E02 は標準ライブラリ module 名を予約し、`Array.set` のような修飾名付き builtin を `Builtin` に登録できるようにする。
 - E02 後の `Builtin` は次を表現できること。
   - 複数引数の curried signature。
-  - `Copy 'a => ...` のような制約付き signature。
+  - `Copy<'a> => ...` のような制約付き signature。
   - 修飾名 `"Array.set"` / `"List.tail"` を `Checker::name` と `ExprKind::Field` の module 解決から参照する仕組み。
 - E02 はソース定義の `Array.set` があればそれを優先し、なければ builtin を解決する D-07 の規則を提供する。
 

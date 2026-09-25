@@ -14,90 +14,104 @@ const OPERATIONS: &[&str] = &[
     "While",
 ];
 
-pub(super) fn collect(
+pub(super) fn collect_all(
     modules: &[ModuleInput<'_>],
-) -> Result<BTreeMap<String, BTreeSet<String>>, Diagnostic> {
+    diagnostics: &mut Diagnostics,
+) -> BTreeMap<String, BTreeSet<String>> {
     let mut builders = BTreeMap::new();
     for (source, &ModuleInput { name, program, .. }) in modules.iter().enumerate() {
-        let Some(kind) = program.source_kind else {
-            continue;
-        };
-        if kind != SourceKind::TypeClass {
-            if let Some(class) = program.classes.first() {
-                return Err(Diagnostic::new(
-                    "E1018",
-                    "type class declarations belong in a .tt file; a .tt file may declare multiple classes",
-                    class.name.span,
-                ));
-            }
-        } else {
-            let invalid = program
-                .records
-                .first()
-                .map(|record| record.name.span)
-                .or_else(|| program.unions.first().map(|union| union.name.span))
-                .or_else(|| program.functions.first().map(|function| function.name.span))
-                .or_else(|| {
-                    program
-                        .instances
-                        .first()
-                        .map(|instance| instance.class.span)
-                })
-                .or_else(|| program.entry.as_ref().map(|entry| entry.span));
-            if let Some(span) = invalid {
-                return Err(Diagnostic::new(
-                    "E1018",
-                    "a .tt file contains only type class declarations; put records, unions, functions, and instances in .tz or .tc files",
-                    span,
-                ));
-            }
+        if diagnostics.is_full() {
+            break;
         }
-        if kind == SourceKind::Computation {
-            if let Some(entry) = &program.entry {
-                return Err(Diagnostic::new(
-                    "E2004",
-                    "a .tc file implements one builder named after the file; top-level execution belongs in Main.tz",
-                    entry.span,
-                ));
+        let collected = (|| {
+            let Some(kind) = program.source_kind else {
+                return Ok(None);
+            };
+            if kind != SourceKind::TypeClass {
+                if let Some(class) = program.classes.first() {
+                    return Err(Diagnostic::new(
+                        "E1018",
+                        "type class declarations belong in a .tt file; a .tt file may declare multiple classes",
+                        class.name.span,
+                    ));
+                }
+            } else {
+                let invalid = program
+                    .records
+                    .first()
+                    .map(|record| record.name.span)
+                    .or_else(|| program.unions.first().map(|union| union.name.span))
+                    .or_else(|| program.functions.first().map(|function| function.name.span))
+                    .or_else(|| {
+                        program
+                            .instances
+                            .first()
+                            .map(|instance| instance.class.span)
+                    })
+                    .or_else(|| program.entry.as_ref().map(|entry| entry.span));
+                if let Some(span) = invalid {
+                    return Err(Diagnostic::new(
+                        "E1018",
+                        "a .tt file contains only type class declarations; put records, unions, functions, and instances in .tz or .tc files",
+                        span,
+                    ));
+                }
             }
-            if let Some(function) = program.functions.iter().find(|function| {
-                function.visibility == Visibility::Private
-                    && OPERATIONS.contains(&function.name.text.as_str())
-            }) {
-                return Err(Diagnostic::new(
-                    "E1022",
-                    format!(
-                        "builder operation '{}' cannot be private; make the operation public and keep helpers private",
-                        function.name.text
-                    ),
-                    function.name.span,
-                ));
+            if kind == SourceKind::Computation {
+                if let Some(entry) = &program.entry {
+                    return Err(Diagnostic::new(
+                        "E2004",
+                        "a .tc file implements one builder named after the file; top-level execution belongs in Main.tz",
+                        entry.span,
+                    ));
+                }
+                if let Some(function) = program.functions.iter().find(|function| {
+                    function.visibility == Visibility::Private
+                        && OPERATIONS.contains(&function.name.text.as_str())
+                }) {
+                    return Err(Diagnostic::new(
+                        "E1022",
+                        format!(
+                            "builder operation '{}' cannot be private; make the operation public and keep helpers private",
+                            function.name.text
+                        ),
+                        function.name.span,
+                    ));
+                }
+                let methods: BTreeSet<_> = program
+                    .functions
+                    .iter()
+                    .filter(|function| function.visibility == Visibility::Public)
+                    .map(|function| function.name.text.clone())
+                    .collect();
+                if !OPERATIONS
+                    .iter()
+                    .any(|operation| methods.contains(*operation))
+                {
+                    return Err(Diagnostic::new(
+                        "E1018",
+                        "a .tc builder needs at least one computation operation, such as Bind, Return, Yield, or Zero",
+                        program
+                            .functions
+                            .first()
+                            .map_or(Span::default().in_source(source), |function| {
+                                function.name.span
+                            }),
+                    ));
+                }
+                return Ok(Some(methods));
             }
-            let methods: BTreeSet<_> = program
-                .functions
-                .iter()
-                .filter(|function| function.visibility == Visibility::Public)
-                .map(|function| function.name.text.clone())
-                .collect();
-            if !OPERATIONS
-                .iter()
-                .any(|operation| methods.contains(*operation))
-            {
-                return Err(Diagnostic::new(
-                    "E1018",
-                    "a .tc builder needs at least one computation operation, such as Bind, Return, Yield, or Zero",
-                    program
-                        .functions
-                        .first()
-                        .map_or(Span::default().in_source(source), |function| {
-                            function.name.span
-                        }),
-                ));
+            Ok(None)
+        })();
+        match collected {
+            Ok(Some(methods)) => {
+                builders.insert(name.to_owned(), methods);
             }
-            builders.insert(name.to_owned(), methods);
+            Ok(None) => {}
+            Err(error) => diagnostics.push(error),
         }
     }
-    Ok(builders)
+    builders
 }
 
 pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnostic> {

@@ -102,6 +102,9 @@ impl Checker<'_> {
                     )
                 } else {
                     let source = Self::autoderef(self.expression(source, None)?);
+                    if source.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
                     let element = match &source.ty {
                         Type::Array(element) | Type::List(element) => (**element).clone(),
                         Type::String => Type::Integer(8, false),
@@ -224,6 +227,9 @@ impl Checker<'_> {
         span: Span,
         checked: bool,
     ) -> Result<TypedExpr, Diagnostic> {
+        if matched.ty.contains_error() {
+            return Ok(TypedExpr::error(span));
+        }
         let slot = checked.then(|| {
             self.coverage.push(MatchCoverage {
                 span,
@@ -776,6 +782,15 @@ impl Checker<'_> {
             .active_pattern(self.module, &recognizer, name.span)?
             .expect("active recognizer exists");
         let (kind, ty) = self.function(id);
+        if ty.contains_error() {
+            return Ok((
+                vec![Alternative {
+                    steps: vec![PatternStep::Test(TypedExpr::error(name.span))],
+                    bindings: Vec::new(),
+                }],
+                CoveragePat::Opaque,
+            ));
+        }
         let Type::Function(parameters, result) = &ty else {
             unreachable!("recognizer signature checked")
         };

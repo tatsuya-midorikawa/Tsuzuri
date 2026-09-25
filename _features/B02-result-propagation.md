@@ -16,14 +16,14 @@
 ユーザーが書く形:
 
 ```text
-def parse_pair :: &string -> &string -> Result (i64 * i64) string
+def parse_pair :: &string -> &string -> Result<i64 * i64, string>
 fn parse_pair left right = Result {
     let! a = D01.parse_i64 left
     let! b = D01.parse_i64 right
     return (a, b)
 }
 
-def find_positive :: [i64] -> Option i64
+def find_positive :: [i64] -> Option<i64>
 fn find_positive values = Option {
     for n in values do
         do! if n > 0 then Some () else None
@@ -50,19 +50,19 @@ fn find_positive values = Option {
 ### 前提とする他チケットのインターフェース
 
 - **B01**:
-  - `Option.Bind : Option 'a -> ('a -> Option 'b) -> Option 'b`
-  - `Option.Zero : Option 'a`
-  - `Option.Combine : Option unit -> (unit -> Option 'a) -> Option 'a`
-  - `Result.Bind : Result 'a 'e -> ('a -> Result 'b 'e) -> Result 'b 'e`
-  - `Result.Zero : Result unit 'e`
-  - `Result.Combine : Result unit 'e -> (unit -> Result 'a 'e) -> Result 'a 'e`
+  - `Option.Bind : Option<'a> -> ('a -> Option<'b>) -> Option<'b>`
+  - `Option.Zero : Option<unit>`（`Some ()`。B01 の実装時の判断に従う）
+  - `Option.Combine : Option<unit> -> (unit -> Option<'a>) -> Option<'a>`
+  - `Result.Bind : Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>`
+  - `Result.Zero : Result<unit, 'e>`
+  - `Result.Combine : Result<unit, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>`
   - `Delay` は恒等、`Run` は thunk 呼び出し。
 - **A02/E02**: `Option`/`Result` の union と std fallback が実装済み。
 
 ### 他チケットへの提供インターフェース
 
 - D01/D02/D04 は回復可能な失敗を返す関数で `Result { let! ... }` を使える。
-- B06 は `Result` を含む `Task (Result 'a 'e)` を合成できる。
+- B06 は `Result` を含む `Task<Result<'a, 'e>>` を合成できる。
 - B04 は Option 返却アクティブパターンの recognizer 実装例として `Option { ... }` を使える。
 
 ## 仕様
@@ -117,8 +117,8 @@ B { let! x [: T] = value; C }
 ```
 
 - `value` は左から右の通常評価で一度だけ評価する。
-- `Option`: `value : Option T`、成功 payload を `x : T` に束縛する。
-- `Result`: `value : Result T E`、成功 payload を `x : T` に束縛し、`E` をブロック全体の error 型へ単一化する。
+- `Option`: `value : Option<T>`、成功 payload を `x : T` に束縛する。
+- `Result`: `value : Result<T, E>`、成功 payload を `x : T` に束縛し、`E` をブロック全体の error 型へ単一化する。
 - `value` が `None`/`Error e` のとき継続 `x -> C` は呼ばれない。
 - `let! mut x` は継続内のローカル `x` を可変にするだけで、外側の可変状態共有を許可しない。
 
@@ -128,9 +128,9 @@ B { let! x [: T] = value; C }
 B { do! value; C }
 ```
 
-- `value` は `Option unit` または `Result unit E`。
+- `value` は `Option<unit>` または `Result<unit, E>`。
 - 成功時だけ `C` を実行する。
-- `do!` の payload は必ず `unit`。`Option i64`／`Result i64 E` を渡すと既存の型エラー。
+- `do!` の payload は必ず `unit`。`Option<i64>`／`Result<i64, E>` を渡すと既存の型エラー。
 
 #### `return` / `return!`
 
@@ -143,8 +143,8 @@ B { return! value }
   - `Option.Return value = Some value`
   - `Result.Return value = Ok value`
 - `return! value` は既に builder 結果である値をそのまま返す。
-  - `Option.ReturnFrom : Option 'a -> Option 'a`
-  - `Result.ReturnFrom : Result 'a 'e -> Result 'a 'e`
+  - `Option.ReturnFrom : Option<'a> -> Option<'a>`
+  - `Result.ReturnFrom : Result<'a, 'e> -> Result<'a, 'e>`
 - `return`/`return!` は早期脱出ではなく、その computation block の末尾だけに書ける。これは既存 parser の規則を維持する。
 
 #### 通常 `let`
@@ -190,8 +190,8 @@ B {
 - 選ばれた分岐だけが builder 展開された計算として実行される。
 - `else` 省略時は `B.Zero()` を補う。
 - 後続 `C3` がある場合、分岐結果は `B.Combine branch (B.Delay (u -> C3))` に入る。
-- `Option.Zero : Option 'a` なので、`Option { if flag { return 1 } }` は `Option i64` として成立しうる。
-- `Result.Zero : Result unit 'e` なので、`Result { if flag { return 1 } }` は `Ok 1` と `Ok ()` が合わず `E1003`。`else { return ... }` を書く。
+- `Option.Zero : Option<unit>` なので、`Option { if flag { return 1 } }` は `E1003`。`else { return ... }` または明示的な `return! None` を書く。
+- `Result.Zero : Result<unit, 'e>` なので、`Result { if flag { return 1 } }` は `Ok 1` と `Ok ()` が合わず `E1003`。`else { return ... }` を書く。
 
 #### `for`
 
@@ -203,7 +203,7 @@ B {
 ```
 
 - 既存展開は `B.For values (fx element -> match element with | pattern -> C)`。
-- B01 phase 1 の `Option.For`/`Result.For` は `Copy 'a => ['a]` の配列だけを受ける。
+- B01 phase 1 の `Option.For`/`Result.For` は `Copy<'a> => ['a]` の配列だけを受ける。
 - `values` は一度だけ評価する。
 - 各要素は添字順に処理し、最初の `None`/`Error` で後続要素と `return value` を実行しない。
 - パターン不一致は通常の `match` と同じくトラップであり、`None`/`Error` には変換しない。
@@ -420,9 +420,9 @@ fn result_explicit_conversion =
 | `Result { let! x = Error "bad"; let! y = Error 1; return 0 }` | `E1003` | error 型が `string` と `i64` で不一致 |
 | `Option { let! x = Error "bad"; return x }` | `E1003` | `Option.Bind` は `Result` を受けない |
 | `Result { let! x = None; return x }` | `E1003` | 暗黙の `Option`→`Result` 変換なし |
-| `let x = Option { return None }` | `E1003` または `E1015` | `return` は payload を包むので `Option (Option 'a)` になる。型文脈不足なら推論不足 |
-| `Result { if true { return 1 } }` | `E1003` | `Result.Zero` は `Result unit 'e` |
-| `Option { for s in ["a"] do do! Some (); return 1 }` | 既存の Copy 制約診断 | phase 1 の `For` は `Copy 'a` |
+| `let x = Option { return None }` | `E1003` または `E1015` | `return` は payload を包むので `Option<Option<'a>>` になる。型文脈不足なら推論不足 |
+| `Result { if true { return 1 } }` | `E1003` | `Result.Zero` は `Result<unit, 'e>` |
+| `Option { for s in ["a"] do do! Some (); return 1 }` | 既存の Copy 制約診断 | phase 1 の `For` は `Copy<'a>` |
 
 ### E2E 期待値
 
@@ -471,7 +471,7 @@ fn result_explicit_conversion =
 
 - `return` は早期 return ではない。`if flag { return 1 }; return 2` のような形は `Combine` の型に従う。
 - `Result.Zero` は `Ok ()` であり、任意の成功型を作らない。
-- `Option.Zero` は多相 `None` なので、文脈がないと型が決まらない。
+- `Option.Zero` は `Some ()` であり、失敗は明示的に `None` で表す。空の本体と成功した `do!` を失敗に変えない。
 - `do!` は `unit` payload 専用。値を取り出すなら `let!`。
 - `for` は B01 phase 1 では Copy 配列だけ。通常 loop の `for...in` と同じ非 Copy 借用反復だと思わない。
 - `Delay` があっても、builder 実装が body を即時呼び出せば遅延しない。std `Option`/`Result` では `Delay` は恒等で、`Run` と `Combine` が呼び出しタイミングを決める。
@@ -481,12 +481,12 @@ fn result_explicit_conversion =
 
 - `?` 演算子。
 - `try`/`use`/`and!`/`match!` などの追加 CE 構文。B05 の担当。
-- `Task` builder との自動統合。`Task (Result 'a 'e)` の合成は B06。
+- `Task` builder との自動統合。`Task<Result<'a, 'e>>` の合成は B06。
 - error 型の subtyping、暗黙変換、標準 error 階層。
 - 非 Copy 配列・リスト・ユーザー定義 iterator の builder `For`。C07 の担当。
 
 ## 未決事項
 
 - `Option.For`/`Result.For` の phase 1 制約違反診断は、A02/A06 の実装後に `Copy` 制約エラーとして `E1005` か `E1016` かが決まる。既定案は既存の型クラス制約不足と同じ診断に合わせ、テストは実装後に固定する。
-- `Result { if flag { return 1 } }` を便利にするため `Zero : Result 'a 'e` を導入する案は、error payload を作れないため採用しない。
+- `Result { if flag { return 1 } }` を便利にするため `Zero : Result<'a, 'e>` を導入する案は、error payload を作れないため採用しない。
 - `Option`/`Result` builder の `While` は再帰関数で実装する。大きなループの性能が問題なら、後続チケットで std builder `While` の直接 lowering を検討するが、このチケットでは通常関数＋末尾再帰最適化に任せる。

@@ -63,7 +63,7 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 
 `Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Test`、`Gpu`
 
-現在の std は `Math` モジュールだけで、仮の API として `0.0` を返す `Math.zero : f64` を持ちます。
+現在の std は `Option`・`Result` の型／関数／ビルダーと、仮の API `Math.zero : f64`（`0.0`）を持ちます。
 
 `Point.tz`:
 
@@ -189,7 +189,7 @@ Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと
 ### 匿名関数と捕捉
 
 ```text
-def add :: Add 'a -> 'a -> 'a
+def add :: Add<'a> -> 'a -> 'a
 let add = x -> y -> x + y
 
 def main :: i32
@@ -231,11 +231,19 @@ fn main = {
 
 ### 多相関数と型クラス
 
+名前付きの型・型クラスの型パラメーターと型引数は、すべて `<...>` 内へカンマ区切りで書きます。
+宣言は `record Pair<'a, 'b>`・`union Maybe<'a>`・`class Score<'a>`、
+使用側は `Pair<i64, string>`・`Task<i64>`・`Score<'a>`・`instance Score<i64>` のようになります。
+型名と `<` は隣接させます。内部の空白・改行・コメントと末尾のカンマは許しますが、空の `<>` は許しません。
+型パラメーターのない宣言では `<...>` 自体を省略します。
+旧来の `Pair 'a 'b`・`Add 'a`・`Task i64` のような空白区切りは受理しません。
+値の引数は従来どおり空白で適用し、配列 `[T]`・リスト `[|T|]`・借用 `ref T` の固有の型構文も維持します。
+
 ```text
 def identity :: 'a -> 'a
 fn identity x = x
 
-def add :: Add 'a -> 'a -> 'a
+def add :: Add<'a> -> 'a -> 'a
 fn add x y =
     x + y
 
@@ -252,16 +260,16 @@ apply identity n
 型変数は配列・連結リスト・参照・関数型・タスク型の内部にも使えます。呼び出しごとに新しく具体化し、
 引数・返却値の型から推論します。シグネチャを持つ関数の本体は、未使用でも抽象的な型で検査します。
 例えば `'a -> 'b` の本体が入力をそのまま返すことや、任意の `'a` のフィールドへアクセスすることはできません。
-`Add 'a` は別の型コンストラクターではなく、`Add` 制約を付けた `'a` の型注釈です。
-`def add :: Add 'a -> 'a -> 'a` と `def add :: Add 'a => 'a -> 'a -> 'a` は同じ制約を宣言します。
+`Add<'a>` は別の型コンストラクターではなく、`Add` 制約を付けた `'a` の型注釈です。
+`def add :: Add<'a> -> 'a -> 'a` と `def add :: Add<'a> => 'a -> 'a -> 'a` は同じ制約を宣言します。
 
-本体の `+` から `Add 'a`、他の関数・クラスメソッドの利用からその制約を推論します。
-値の複製・配列要素の取り出しなどに必要な `Copy 'a` も所有権検査で推論します。
+本体の `+` から `Add<'a>`、他の関数・クラスメソッドの利用からその制約を推論します。
+値の複製・配列要素の取り出しなどに必要な `Copy<'a>` も所有権検査で推論します。
 相互再帰も含めて呼び出し先の制約を伝播するので、定義順には依存しません。
 次の明示的な制約は推論された制約へ追加されます。
 
 ```text
-def twice :: (Add 'a, Copy 'a) => 'a -> 'a
+def twice :: (Add<'a>, Copy<'a>) => 'a -> 'a
 fn twice x = x + x
 ```
 
@@ -273,11 +281,11 @@ fn twice x = x + x
 `Traits.tt` は複数の型クラスをまとめて宣言できます。
 
 ```text
-class Score 'a {
+class Score<'a> {
     def score :: ref 'a -> i32
 }
 
-class Size 'a {
+class Size<'a> {
     def size :: ref 'a -> i64
 }
 ```
@@ -287,24 +295,24 @@ class Size 'a {
 ```text
 record Point { x: i32, y: i32 }
 
-instance Traits.Score Point {
+instance Traits.Score<Point> {
     fn score point = point.x + point.y
 }
 
-instance Add Point {
+instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-def score :: Traits.Score 'a => ref 'a -> i32
+def score :: Traits.Score<'a> => ref 'a -> i32
 fn score value = Traits.Score.score value
 ```
 
 型クラスは型変数を一つ持ち、各メソッドのシグネチャにはその変数だけを含めます。
-`instance クラス名 具体型` 内のメソッド型はクラスから取得するので再記述しません。
+`instance クラス名<具体型>` 内のメソッド型はクラスから取得するので再記述しません。
 全メソッドを `fn` または `let method = x -> ...` でちょうど一回ずつ実装します。
 メソッドは `Traits.Score.score`、制約とインスタンスのクラス名は `Traits.Score` のように
 ファイルのモジュール名とクラス名で修飾します。組み込みメソッドは `Add.add` のように書きます。
-無修飾のクラス名（`instance Score Point` など）は、自モジュール、利用者のモジュールで一意なクラス、
+無修飾のクラス名（`instance Score<Point>` など）は、自モジュール、利用者のモジュールで一意なクラス、
 std で一意なクラスの順に解決します。同じ段階に候補が複数ある場合は修飾が必要です。
 クラス名もモジュールに属します。組み込みクラス名は予約されています。
 `Name.method` がモジュールの関数名でもある場合は関数を優先し、ローカル値がある場合は
@@ -325,8 +333,10 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 | `Copy` | 所有権上の複製の制約、メソッドなし | 構造的に Copy な型 |
 | `Capture` | 再利用可能な捕捉環境の制約、メソッドなし | 排他参照を含まない型。string・関数値・共有参照も対象 |
 | `Send` | タスクの所有する値の制約、メソッドなし | 格納された参照を含まない型。関数の捕捉環境は別途所有権検査する |
+| `Display` | `display :: ref 'a -> string` | 全数値、bool、unit、string |
+| `Parse` | `parse :: ref string -> Option<'a>` | 全数値、bool |
 
-`Capture` は一回実行の `Task T`、およびそれを含む集約値も拒否します。
+`Capture` は一回実行の `Task<T>`、およびそれを含む集約値も拒否します。
 `Send` はタスクの捕捉値と結果から推論され、特殊化時にも再検査します。
 関数型の引数・返却型に参照が現れることと、関数値が参照を捕捉していることは区別します。
 
@@ -351,43 +361,44 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 ### ジェネリックなレコード
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
-record Box 'a { value: 'a }
+record Pair<'a, 'b> { first: 'a, second: 'b }
+record Box<'a> { value: 'a }
 
-def swap :: Pair 'a 'b -> Pair 'b 'a
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
 fn swap pair = Pair { first: pair.second, second: pair.first }
 
-def total :: Box (Pair i64 i64) -> i64
+def total :: Box<Pair<i64, i64>> -> i64
 fn total box = box.value.first + box.value.second
 
 let p = Pair { first: 20, second: "text" }
-let q: Pair string i64 = swap p
+let q: Pair<string, i64> = swap p
 total (Box { value: Pair { first: 20, second: 22 } })
 ```
 
-レコード名の後に型パラメーター（`'a` などの型変数）を並べ、フィールド型で使います。
+レコード名の後の `<...>` に型パラメーター（`'a` などの型変数）をカンマ区切りで並べ、フィールド型で使います。
 各パラメーターは少なくとも一つのフィールドで使い、重複やフィールドでの未宣言の型変数は `E1024` です。
 `'_` のような匿名の型変数は字句解析で `E0001` です。
-型の適用は `Pair i64 string` のように型名の後へ引数を並べ、引数の個数は宣言と一致させます。
-引数が型の適用・関数型・タプル型・参照型なら `Pair (Box i64) (i64 -> i64)` のように括弧で囲みます。
-`&`・`ref`・`Task` などの前置型にも同じく括弧が必要で、`&(Pair i64 i64)`・`Task (Pair i64 i64)` と書きます
-（`&Pair i64 i64` や `Task Pair i64 i64` は `E0002`）。
+型の適用は `Pair<i64, string>` のように書き、引数の個数は宣言と一致させます。
+型引数は型の適用・関数型・タプル型・参照型を含められ、`Pair<Box<i64>, i64 -> i64>` のように
+入れ子の適用や関数型を追加の丸括弧なしで書けます。
+借用も `ref Pair<i64, i64>`／`&Pair<i64, i64>`、タスクも `Task<Pair<i64, i64>>` と書けます。
+隣接する `>>`・`>>>` は型引数の閉じ括弧として扱い、式内のシフト演算子とは区別します。
 非ジェネリックなレコードや組み込み型への適用、個数違い、未知の型名は `E1004` です。
 
-`Add 'a` と `Pair i64 string` は同じ前置適用の構文で、名前がクラスなら型変数への制約、
+`Add<'a>` と `Pair<i64, string>` は同じ型適用の構文で、名前がクラスなら型変数への制約、
 レコードなら型の具体化として解決します。クラス名とレコード名は同じ名前空間を共有し、
 組み込みクラス名（`Add` など）や同じ修飾名のクラスと衝突するレコードは宣言順によらず `E1001` です。
 
 リテラルの型引数は期待型があればそれを使い、なければフィールドの値から推論します。
 フィールドアクセスと `Pair { first = x }` などのレコードパターンは、宣言のフィールド型を実際の型引数で置換した型になります。
 Copy・move・drop・借用・タスクへの送信の可否は、置換後のフィールド型から構造的に決まります。
-`Pair i64 bool` は Copy、`Pair string i64` はフィールド単位で move する非 Copy のレコードです。
-型引数に参照を含む具体化（`Box (ref i64)` など）はフィールドに参照を格納するので、
+`Pair<i64, bool>` は Copy、`Pair<string, i64>` はフィールド単位で move する非 Copy のレコードです。
+型引数に参照を含む具体化（`Box<ref i64>` など）はフィールドに参照を格納するので、
 リテラル・型注釈・シグネチャ・多相関数の具体化のいずれでも `E1013` です。
 64 KiB のレイアウト上限と再帰的なレイアウトの検出（`E1010`）は具体化ごとに行い、
 使われない巨大な具体化はエラーになりません。
-`instance Add (Pair i64 i64)` のように具体化した型へのインスタンスは定義できますが、
-`instance Add (Pair 'a 'b)` のような汎用インスタンスは未対応です。
+`instance Add<Pair<i64, i64>>` のように具体化した型へのインスタンスは定義できますが、
+`instance Add<Pair<'a, 'b>>` のような汎用インスタンスは未対応です。
 レコード型は従来どおり `export def` の引数・返却型にできません。
 
 ### 共用体（union）
@@ -398,7 +409,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 union Color = Red | Green | Blue
 
 def area :: Shape -> f64
@@ -408,7 +419,7 @@ fn area shape =
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe 'a -> 'a
+def default_value :: 'a -> Maybe<'a> -> 'a
 fn default_value fallback value =
     match value with
     | Some x -> x
@@ -417,7 +428,7 @@ fn default_value fallback value =
 area (Rect (3.0, 4.0)) + to_float (default_value 10 (Some 42))
 ```
 
-`union Name 'a ... = Case | Case of Type | ...` は、いずれか一つの case の値を持つ型を宣言します。
+`union Name<'a, ...> = Case | Case of Type | ...` は、いずれか一つの case の値を持つ型を宣言します。
 先頭の `|` は省略でき、case は同じ行にも複数行にも並べられます。
 各 case の payload は 0 個か 1 個で、複数の値は `Rect of f64 * f64` のようにタプル型を一つ持ちます。
 payload にはレコード・タプル・配列・リスト・関数値・他の union など任意の所有値を使えます。
@@ -441,11 +452,12 @@ payload のない case は名前だけを書きます。payload の有無と数�
 衝突する union・case は `E1001` です。case と所属する union の同名（`union Pair = Pair of ...`）も同じ名前空間のため `E1001` です。
 
 Copy・move・drop・借用・タスクへの送信の可否は、具体化した payload 型から構造的に決まります。
-全 payload が Copy なら union も Copy で、`Maybe [i64]` の複製は payload の配列も複製します。
-パターンで束縛した非 Copy の payload は union から move され、その後の union 全体の使用は `E1012` です。
+全 payload が Copy なら union も Copy で、`Maybe<[i64]>` の複製は payload の配列も複製します。
+所有する union からパターンで束縛した非 Copy の payload は move され、その後の union 全体の使用は `E1012` です。
 ガード中の束縛は読み取り専用なので、ガードが不成立なら後続の節で同じ union を照合できます。
-配列・リスト要素や参照先からの非 Copy payload の move は、レコードのフィールドと同じく拒否します。
-payload に参照を含む union（`Hold of &i64` や `Holder (&i64)` の具体化）は `E1013` です。
+配列・リスト要素や参照先の非 Copy payload は、借用を含まなければ読み取り専用のビューとして束縛できます。
+ビューは節の中で借用できますが、move はできません。生存中は元の記憶域の置換・move・排他借用を拒否します。
+payload に参照を含む union（`Hold of &i64` や `Holder<&i64>` の具体化）は `E1013` です。
 
 レイアウトは tag と、最大の payload を収める領域です。
 保守的なサイズは payload のない union が 8 バイト、それ以外が 16 バイトと最大の payload を 16 バイト境界に切り上げた値の和で、
@@ -491,13 +503,14 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 | `byte` / `ubyte` | それぞれ `i8` / `i8u` の別名 |
 | `string` | 所有する不変の UTF-8 文字列 |
 | `Point` など | 名前付きの不変レコード。フィールド数・型は宣言通り |
-| `Pair i64 string` など | `record Pair 'a 'b { ... }` で宣言したジェネリックレコードの具体化。型引数ごとに別の型 |
-| `Shape`・`Maybe i64` など | `union` で宣言した不変の共用体。いずれか一つの case と、その case の payload を持つ |
+| `Pair<i64, string>` など | `record Pair<'a, 'b> { ... }` で宣言したジェネリックレコードの具体化。型引数ごとに別の型 |
+| `Shape`・`Maybe<i64>` など | `union` で宣言した不変の共用体。いずれか一つの case と、その case の payload を持つ |
+| `Option<'a>`／`Result<'a, 'e>` | 標準の union。`None`／`Some value`、`Ok value`／`Error error` |
 | `i64 * string` など | `(42, "text")` のような不変タプル。要素ごとに型・Copy・move・drop を持つ |
 | `[i32]` など | 要素型だけが静的に決まり、長さは実行時に決められる不変配列 |
 | `[\|i32\|]` など | 要素型だけが静的に決まる不変の単方向連結リスト |
 | `i32 -> i32` など | 名前付き関数／クラスメソッド／組み込み関数への静的参照 |
-| `Task i32` など | 結果型だけが静的に決まる、所有権を持つ一回実行の遅延計算 |
+| `Task<i32>` など | 結果型だけが静的に決まる、所有権を持つ一回実行の遅延計算 |
 | `ref T` / `ref mut T` | 共有借用 / 排他借用。所有者の寿命を超えて保持できない。Rust 互換の `&T` / `&mut T` も同じ型 |
 
 旧名 `Int`／`Float`／`Bool`／`Unit` は組み込み型ではありません。
@@ -588,7 +601,7 @@ Copy のコレクションを値として複製する場合（`let b = a` の後
 読み取りだけの関数では `ref [T]`／`ref [|T|]` を使うとコレクション全体のコピーを避けられます。
 Rust の明示的な `derive(Copy)` と異なり、宣言による opt-in は不要です。
 `ref mut T` は Copy ではありません。
-`Task T` も結果型によらず非 Copy です。未実行のタスクはスコープ終了時に捕捉値だけを解放します。
+`Task<T>` も結果型によらず非 Copy です。未実行のタスクはスコープ終了時に捕捉値だけを解放します。
 
 ```text
 def length :: ref string -> i64
@@ -690,6 +703,33 @@ fn identity x = x
 
 関数値は引数、戻り値、レコード、配列に格納できます。匿名関数・部分適用・名前付き関数は同じ関数型を使います。
 
+### Option と Result
+
+`Option<'a> = None | Some of 'a` は値の不在を、`Result<'a, 'e> = Ok of 'a | Error of 'e` は予期できる失敗を表します。
+標準の `.tc` ソースに定義された通常の union で、すべてのプロジェクトから利用できます。
+case は無修飾でも使えますが、利用者の同名 case があればそちらを優先します。`Option.Some`・`Result.Error` と修飾できます。
+
+| 関数 | 契約 |
+|---|---|
+| `Option.is_some`／`is_none`、`Result.is_ok`／`is_error` | union を共有借用し、case を調べる |
+| `Option.get`、`Result.get`／`get_error` | union を消費して payload を返す。違う case ならトラップ |
+| 両方の `default_value fallback value` | 成功 payload、または先に評価済みの fallback を返す |
+| 両方の `default_with fallback value` | 不在／失敗のときだけ `fallback ()` を呼ぶ |
+| 両方の `map transform value`／`bind value next` | 成功 payload を消費して変換／次の union を返す。不在／失敗では継続を呼ばない |
+| 両方の `map_ref transform value`／`bind_ref value next` | union と成功 payload を共有借用し、所有する結果を返す |
+| `Option.filter predicate value` | payload を借用して検査し、成立なら所有する `Some` を、不成立なら `None` を返す |
+| `Result.map_error transform value` | `Error` の payload だけを消費して変換する |
+| 両方の `or_else value fallback` | 不在／失敗のときだけ `fallback ()` を呼ぶ |
+| `Option.to_result error value`／`Result.of_option error value` | `Some` を `Ok`、`None` を指定した `Error` へ変換 |
+| `Option.of_result value`／`Result.to_option value` | `Ok` を `Some`、`Error` を解放して `None` へ変換 |
+
+`Result.map_ref`／`bind_ref` は失敗値を複製するため `Copy<'e>` を要求します。成功 payload に `Copy` は不要です。
+union に参照を格納できないため、`Option<&T>` や `Result<&T, E>` を返す使い方は `E1013` です。
+ビューの借用は節の外へ返せません。Copy の payload は従来どおり束縛時に複製し、
+配列・リストなどの Copy 値には深い複製のコストがあります。
+`get` の失敗は `unreachable ()` によるトラップで、回復可能な失敗・例外ではありません。
+union は公開 ABI の引数・戻り値にできません（`E1008`）。
+
 ## コンピュテーション式
 
 F# の [computation expressions](https://learn.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions)
@@ -728,9 +768,26 @@ Identity {
 
 `Bind` の第一引数や結果を恒等型にする必要はありません。配列・リスト、具体的なレコード、
 関数型などを使い、`Bind` が継続を呼ぶか、何回呼ぶか、どの値を渡すかを実装で決められます。
-`examples/computations/Checked.tc` は成功フラグ付きのレコードを使い、失敗時には継続を呼びません。
+標準の `Option`／`Result` は失敗時に継続を呼びません。`examples/computations/Main.tz` は標準の `Result` を使います。
 ビルダーの操作も通常の関数として直接呼べ、`def` の型変数・制約・カリー化を利用できます。
 使われない操作や補助関数も宣言時に型検査します。
+
+```text
+let answer: Result<i64, string> = Result {
+    let! first = Ok 20
+    let! second = Ok 22
+    return first + second
+}
+match answer with
+| Ok value -> value
+| Error _ -> -1
+```
+
+両ビルダーは `Bind`・`Return`・`ReturnFrom`・`Zero`・`Combine`・`Delay`・`Run`・`For`・`While` を持ちます。
+`None`／`Error` は後続の `let!`・`do!`・反復・`Combine` を短絡します。`Result` の error 型は全体で同じです。
+空本体と省略した else は unit の成功（`Option.Zero() = Some ()`、`Result.Zero() = Ok ()`）です。
+値を返す `return` は末尾に置きます。`For` は `Copy<'a> => ['a]` の配列だけを受け取り、
+通常の `for…in` の非 Copy 要素の借用反復とは異なります。`?`、例外、暗黙の error 変換はありません。
 
 ### 操作と展開規則
 
@@ -796,7 +853,7 @@ Identity {
 独立した捕捉環境のスナップショットになります。共有参照の寿命も通常どおり検査します。
 `let! mut x` はその継続内のローカルを可変にするだけで、次の `let!`／`do!` や `Delay` の
 境界を越えて外側の可変束縛を共有する機能ではありません。
-可変参照・一回実行の `Task T` の捕捉は `Capture` 制約で拒否します。
+可変参照・一回実行の `Task<T>` の捕捉は `Capture` 制約で拒否します。
 そのため可変カウンターを捕捉して更新する F# 風の `while` は使えません。
 借用を返す `Bind` も、値と継続の二つが借用入力になれば既存の寿命省略規則により拒否します。
 生成した関数呼び出し・匿名関数にも深さ上限を適用し、長すぎる式は `E0002` です。
@@ -834,13 +891,13 @@ callee を先に評価して得たスナップショットを保持します。
 
 ## タスク
 
-`Task T` は所有値を捕捉した **cold（作成時には開始しない）・一回実行** の計算です。
+`Task<T>` は所有値を捕捉した **cold（作成時には開始しない）・一回実行** の計算です。
 スレッドのハンドルではありません。`task { ... }` で作成し、`Task.run` または
 別タスク内の `let!` で消費して実行します。F# の通常の hot な `task` とは開始時点が異なります。
-型変数を使った `Task 'a`、`Task [i64]`、`Task (i64 -> i64)`、`Task (Task i64)` も扱えます。
+型変数を使った `Task<'a>`、`Task<[i64]>`、`Task<i64 -> i64>`、`Task<Task<i64>>` も扱えます。
 
 ```text
-def next :: i64 -> Task i64
+def next :: i64 -> Task<i64>
 fn next n = task { return n + 1 }
 
 let computation = task {
@@ -856,19 +913,19 @@ Task.run computation
 | 記法／関数 | 意味 |
 |---|---|
 | `task { ... }` | 本体を遅延し、外側の値を作成時に Copy／move で捕捉する |
-| `let! x [: T] = work` | `work: Task T` を一回実行し、結果を束縛して続きを実行する（bind） |
+| `let! x [: T] = work` | `work: Task<T>` を一回実行し、結果を束縛して続きを実行する（bind） |
 | `return value` | このブロックの最終結果。`task { return value }` が値をタスクに包む操作になる |
 | `return! work` | 最後に別タスクを実行し、その結果をこのタスクの結果にする |
-| `do! work` | `Task unit` を実行し、続きを実行する |
-| `Task.run : Task 'a -> 'a` | タスクを消費して完了まで実行し、所有する結果を返す |
-| `Task.parallel : [Task 'a] -> Task ['a]` | タスク配列を消費し、並列区間を表す遅延タスクを作る。結果配列は入力順 |
+| `do! work` | `Task<unit>` を実行し、続きを実行する |
+| `Task.run : Task<'a> -> 'a` | タスクを消費して完了まで実行し、所有する結果を返す |
+| `Task.parallel : [Task<'a>] -> Task<['a]>` | タスク配列を消費し、並列区間を表す遅延タスクを作る。結果配列は入力順 |
 
 `task` は専用のビルダー記法であり、任意の型コンストラクターを抽象化する高階型・汎用 Monad クラスではありません。
 他の計算の合成方法は `.tc` のユーザー定義ビルダーで記述できますが、`task` 自体の再定義はできません。
 通常の `let`、`let mut`、式、`if`、ローカルな借用もタスク内で使えます。
 `return` は早期脱出ではなく、各ブロックの最後にだけ書けます。
 例えば `if flag { return 1 } else { return 2 }` は可能です。
-最後の式をそのまま結果にしてもよく、空の `task {}` は `Task unit` です。
+最後の式をそのまま結果にしてもよく、空の `task {}` は `Task<unit>` です。
 タスク内の `let`／`let!`／`do!` は `;` または改行で区切ります。
 式を改行して続ける場合は演算子の直後で改行するか、括弧などの内側に書きます。
 これらの記法は通常の関数本体や、タスク内で定義した通常の匿名関数の本体には持ち越しません。
@@ -878,7 +935,7 @@ Task.run computation
 
 ```text
 let computation = task {
-    let jobs = new [Task i64](4, i -> task { return i * i })
+    let jobs = new [Task<i64>](4, i -> task { return i * i })
     let! results = Task.parallel jobs
     return results[0] + results[1] + results[2] + results[3]
 }
@@ -993,6 +1050,7 @@ for の分解パターンは網羅性を検査せず、一致しない要素で�
 置換・move・排他借用を禁止します。一時的な列挙元はループ終了まで保持して解放します。
 要素の変数は読み取り専用で、非 Copy 要素の move はできません。
 例えば `for text in strings do ... text.length ...` や `ref text` は使えます。
+タプル・union などを分解した非 Copy 要素も、借用を含まなければ節内の読み取り専用ビューになります。
 値として Copy 要素を渡すときは従来のコピー規則を適用します。
 反復内で作った所有値は反復ごとに解放し、その値への借用を外へ残すことは拒否します。
 条件・本体・次の反復を合わせて move／loan を検査するため、外側の所有値を
@@ -1047,12 +1105,17 @@ OR の最初に一致した側で `when` が false になれば次の**節**へ�
 分解した値の所有権は通常のフィールド／要素アクセスと同じです。
 レコード・タプルからの部分 move は可能ですが、借用先や配列・リスト要素からの非 Copy move は拒否します。
 `as` で全体と部分を同時に非 Copy 値として消費することもできません。
-リストの tail を所有値として束縛する場合は要素に Copy を要求し、独立したノード列を複製します。
+借用先・要素・リストの tail にある、借用を含まない非 Copy 値は読み取り専用ビューとして束縛できます。
+節の中ではフィールドの読み出しと共有借用が可能ですが、move・可変借用・節外へ借用を返す操作は拒否します。
+派生した借用も含む最後の使用まで、元の記憶域を共有借用します。OR のどちらかがビューなら両側をビューに揃えます。
+Copy の束縛は元の領域を後で置換しても独立な値を保つよう、成立時に複製します。
+リストの tail を所有値として渡す場合は要素に Copy を要求し、独立したノード列を複製します。
 大量のリストを集計する場合は O(n) の `for…in` を使うと tail 複製の繰り返しを避けられます。
 
 ガード中の束縛は検査対象への読み取り専用ビューです。
 ガード不成立で元の値を失わないように、非 Copy 値の消費・対象の変更を拒否し、
-ガード成立後にだけ所有するパターン変数へ移します。Copy の複製と借用の寿命は通常どおり検査します。
+ガード成立後にだけ所有するパターン変数へ移します（前述のビューは読み取り専用のままです）。
+Copy の複製と借用の寿命は通常どおり検査します。
 同一行の `|` は節／OR の区切りです。結果やガードでビット OR を使うときは `(a | b)` や `{ a | b }` と括ります。
 
 ### 関数ガード
@@ -1109,7 +1172,8 @@ unit 結果だけは結果パターンを省略できます。
 不足の例は認識器の名前ではなく、対象の型の値で示します。
 再利用できる通常の関数であり、`fx` と for のパターンでも使えます。
 option 返却の部分形式と複数ケース形式は未対応です。判別共用体は前述の `union` で宣言しますが、
-標準の `Option`／`Result` 型は同梱していません。文字型・null・.NET の実行時型テストもありません。
+標準の `Option`／`Result` 型は同梱していますが、Option 返却の部分認識器は未対応です。
+文字型・null・.NET の実行時型テストもありません。
 
 ## 式と評価順序
 
@@ -1285,21 +1349,70 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 | `assert` | `fn(bool) -> unit`。false ならトラップする部分関数 |
 | `clone_string` | `fn(ref string) -> string`。独立した UTF-8 バッファを持つ所有値を作る |
 | `unreachable` | `unit -> 'a`。必ずトラップする。任意の型が必要な、到達しない分岐に置く |
+| `to_string` | `Display<'a> => 'a -> string`。値を消費して表示用の所有文字列を返す |
 
-数値の組み込み関数は上記の固定シグネチャを維持しており、オーバーロードではありません。
+`sqrt`／`floor`／`ceil`／`abs`／`to_float`／`to_int` は上記の固定シグネチャを維持しており、オーバーロードではありません。
 組み込み関数も通常の関数と同じくカリー化された関数値で、部分適用・パイプライン・高階関数の引数に使えます。
-新しい組み込み関数は無修飾名を増やさず、`Task.run` のように std のモジュール名で修飾した名前で追加します。
+`to_string` は基本の文字列化として無修飾で提供します。それ以外の新しい組み込み関数は、
+`Task.run` のように std のモジュール名で修飾した名前で追加します。
 `Module.name` は、そのモジュールのソース定義の関数、同じ修飾名の組み込み関数の順に解決し、
 型クラスのメソッドより先に判定します。std のソースは組み込み関数と同じ修飾名の関数を定義できません（`E1001`）。
 その他の数値型の変換には `as` を使います。
-コンソール表示は f32 が最大 9 桁、f64 が最大 17 桁、f16／f128 が最大 36 桁で、
-decimal は値を十進で正確に表示します。末尾の不要なゼロは省略します。
 
 トラップは WASM では `WebAssembly.RuntimeError`。
 ネイティブでは `llvm.trap` によるプロセス終了です。
 `tsuzuri run` は異常終了を診断しますが、言語内の回復可能な例外機構はありません。
 UI／公開 API の入力はホストでも検査してください。
 メモリ確保失敗もトラップします。トラップ時のスタック巻き戻しや destructor 実行は保証しません。
+
+### 表示と解析
+
+`Display.display ref value` は値を共有借用し、独立した所有文字列を返します。
+`to_string value` は値を消費し、同じ Display インスタンスで表示してから元の値を解放します。
+string の `to_string` は元のバッファの所有権をそのまま返し、余分な複製をしません。
+string の `Display.display` は複製します。どちらも NUL・改行・UTF-8 を含む生のバイト列で、
+引用符やエスケープを追加しません。bool は `true`／`false`、unit は `()` です。
+コンソールの数値・bool・string も同じ形式で末尾に改行を付けますが、unit のコンソール出力は空です。
+
+```text
+let text = to_string 0.1
+let number: Option<f64> = Parse.parse ref text
+Option.get number
+```
+
+整数は符号と十進数字だけです。f16／f32／f64／f128 は同じ型へ解析し直すと元のビットに戻る
+**最短の有効桁数**で表示します。同じ桁数なら数値的に近い方、等距離なら十進仮数が偶数の方を選びます。
+例えば `0.1`・`0.1f32` はどちらも `0.1`、`1.0` は `1` です。
+decimal は十進の値を正確に表示し、quantum の末尾ゼロは省きます（`0.10d128` も `0.1`）。
+全浮動小数点で正のゼロは `0`、負のゼロは `-0`、無限大は `inf`／`-inf`、NaN は常に `nan` です。
+NaN の符号・payload は表示／解析の往復で保持しません。decimal の quantum も保持しません。
+
+正規化した `d.ddd * 10^e` の指数 e が -6 未満、または有効桁数 + 6 以上なら指数表記を使います。
+指数は小文字 `e`、必須の `+`／`-`、先頭ゼロなしです。その他は通常表記で、不要な `.0` は付けません。
+例えば `1000000.0` は `1000000`、`10000000.0` は `1e+7` です。
+表示と解析はホストの locale・printf・浮動小数点中間値を使わず、native と WASM で同じ結果になります。
+
+`Parse.parse ref text` は入力を消費せず、成功なら `Some value`、失敗なら `None` を返します。
+前後の空白・空文字・途中までの成功は許可しません。数値の数字と区切りは ASCII だけです。
+
+| 入力型 | 受理する文字列 |
+|---|---|
+| 整数 | 省略可能な `+`／`-`、十進数字、または小文字 prefix `0x`＋十六進数字／`0b`＋二進数字 |
+| 浮動小数点 | 省略可能な符号、十進数字と省略可能な小数点・指数。`1.`・`.5`・`1e3`・`1E-3` を受理 |
+| 特殊な浮動小数点 | 小文字の `inf`／`nan` と省略可能な符号。NaN は canonical quiet NaN |
+| bool | 厳密に `true` または `false` |
+
+数値の `_` は同じ数字列の桁と桁の間だけに置けます（`1_000`、`0xF_F`、`1.2_5e1_0`）。
+`_1`・`1_`・`1__0`・`0x_1`・`1e_2`、大文字の prefix `0X`／`0B`、`INF`／`NaN`、hex float は拒否します。
+符号なし整数の負号（`-0` を含む）と範囲外の整数も `None` です。
+有限浮動小数点は目的の形式へ一度だけ最近接・偶数丸めし、無限大になる overflow は `None`、
+subnormal と符号付きゼロへの underflow は成功です。`inf` の入力だけが無限大を生成します。
+4096 バイトを超える入力は資源上限として `None` にし、解析の失敗で診断・トラップは発生しません。
+
+独自の具体型には `instance Display<Type>`／`instance Parse<Type>` を通常のメソッドとして定義できます。
+`to_string` も独自 Display を選択し、実行時の辞書や型分岐は追加しません。
+組み込みインスタンスの上書きは `E1016`、インスタンスがない適用は `E1005` です。
+`Parse<unit>`／`Parse<string>`、自動 deriving、char、文字列補間、任意の書式指定は未対応です。
 
 ## 再帰とスタック
 
@@ -1386,7 +1499,13 @@ LLD により到達しないコードを削除します。
 
 成功時は終了コード 0、ソース／ツール／I/O／実行エラーは 1、CLI の引数構成の誤りは 2 です。
 拡張子や通常ファイルでない入力の拒否もソースエラーとして終了コード 1 です。
-検査は最初のエラーで停止します。安定したコードと位置を持ちます。
+検査は可能な範囲で独立した複数エラーを報告します。診断は安定したコードと位置を持ち、
+ソース ID・開始位置・終了位置・コード・メッセージの順に並べ、同一の診断を重複表示しません。
+関数のシグネチャが壊れている場合は、その関数の使用による二次エラーを抑制し、他の関数を検査します。
+関数内の最初の型／所有権エラーからの完全な回復は行いません。
+字句エラーがあるファイルは構文検査へ、構文エラーがあるプロジェクトは型検査へ進めません。
+構文エラーは括弧の外側・行頭の宣言境界で回復し、壊れた AST は後段へ渡しません。
+名前空間など後続の検査を信用できない段階では、集めた診断を報告して停止します。
 警告はコンパイルを止めず、終了コードも変えません。検査が成功した場合だけ、`check`・`build`・`run` の処理の前に
 ファイルごとに位置順で stderr へ出力します（`Main.tz:5:7: warning[W1003]: ...`）。
 `check` は実行入口の有無・返却型や LLVM の有無を検査せず、
@@ -1399,7 +1518,14 @@ LLD により到達しないコードを削除します。
 
 `start`／`end` は UTF-8 のバイトオフセット（end は排他的）。
 行・列は 1 始まりで、列は Unicode の文字数です。タブも一文字として数えます。
-`--json` の診断先は stderr。ソースの警告 `W1003` は `"severity":"warning"` の同じ形式の JSON オブジェクト、
+`--json` の診断先は stderr で、**1 行 1 JSON オブジェクト（JSON lines）**です。配列ではありません。
+human 出力は診断ごとに空行で区切ります。表示は最初の 50 件までで、収集は重複しない 1000 件まで続けます。
+1000 件未満なら残りは `error: 12 more errors not shown` のように正確な件数、
+収集上限に達した場合は `error: at least 950 more errors not shown` のように下限を示します。
+JSON の省略通知はコードなしの `{"severity":"note","message":"12 more errors not shown"}` です。
+コンパイルエラーがある `build`／`run` は LLVM・リンク・実行へ進まず、既存の出力も変更しません。
+CLI 引数・入力読み込み・外部ツール・実行時のエラーは従来どおり単一の診断です。
+ソースの警告 `W1003` は `"severity":"warning"` の同じ形式の JSON オブジェクト、
 ツールの警告は `W2001` の JSON オブジェクトです。
 一時領域を OS が削除できなかった際の最後のクリーンアップ警告は通常のテキストです。
 

@@ -1,19 +1,31 @@
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
 use crate::syntax::{MAX_SOURCE_BYTES, Token, TokenKind};
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    let (tokens, diagnostics) = tokenize(source, false);
+    diagnostics.into_iter().next().map_or(Ok(tokens), Err)
+}
+
+pub fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    tokenize(source, true)
+}
+
+fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     if source.len() > MAX_SOURCE_BYTES {
-        return Err(Diagnostic::new(
-            "E0003",
-            format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit; split the program"),
-            Span::default(),
-        ));
+        return (
+            Vec::new(),
+            vec![Diagnostic::new(
+                "E0003",
+                format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit; split the program"),
+                Span::default(),
+            )],
+        );
     }
     Lexer {
         source,
         position: if source.starts_with('\u{feff}') { 3 } else { 0 },
     }
-    .tokens()
+    .tokens(recovering)
 }
 
 struct Lexer<'a> {
@@ -22,62 +34,103 @@ struct Lexer<'a> {
 }
 
 impl Lexer<'_> {
-    fn tokens(mut self) -> Result<Vec<Token>, Diagnostic> {
+    fn tokens(mut self, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
         let mut tokens = Vec::new();
+        let mut diagnostics = Vec::new();
         while self.position < self.source.len() {
             let start = self.position;
-            let byte = self.source.as_bytes()[start];
-            if byte.is_ascii_whitespace() {
-                self.position += 1;
-                continue;
-            }
-            if self.rest().starts_with("//") {
-                while self.position < self.source.len()
-                    && self.source.as_bytes()[self.position] != b'\n'
-                {
-                    self.position += 1;
+            match self.token() {
+                Ok(Some(token)) => tokens.push(token),
+                Ok(None) => {}
+                Err(error) => {
+                    diagnostics.push(error);
+                    if !recovering || diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
+                        self.position = self.source.len();
+                        break;
+                    }
+                    self.recover(start);
                 }
-                continue;
             }
-            if self.rest().starts_with("/*") {
-                self.comment()?;
-                continue;
-            }
-            let kind = if byte == b'\'' {
-                self.position += 1;
-                if !self
-                    .source
-                    .as_bytes()
-                    .get(self.position)
-                    .is_some_and(|b| b.is_ascii_alphabetic())
-                {
-                    return Err(Diagnostic::new(
-                        "E0001",
-                        "a type variable starts with an apostrophe and an ASCII letter",
-                        Span::new(start, self.position),
-                    ));
-                }
-                self.identifier();
-                TokenKind::TypeVariable(self.source[start + 1..self.position].to_owned())
-            } else if byte.is_ascii_alphabetic() || byte == b'_' {
-                self.identifier()
-            } else if byte.is_ascii_digit() {
-                self.number()?
-            } else if byte == b'"' {
-                self.string()?
-            } else {
-                self.symbol()?
-            };
-            tokens.push(Token {
-                kind,
-                span: Span::new(start, self.position),
-            });
         }
         tokens.push(Token {
             kind: TokenKind::End,
             span: Span::new(self.position, self.position),
         });
-        Ok(tokens)
+        (tokens, diagnostics)
+    }
+
+    fn recover(&mut self, start: usize) {
+        let first = self.source[start..].chars().next().unwrap();
+        self.position = self.position.max(start + first.len_utf8());
+        if first == '"' {
+            if !matches!(
+                self.source.as_bytes().get(self.position - 1),
+                Some(b'\n' | b'\r')
+            ) {
+                while self.position < self.source.len() && !self.rest().starts_with(['\n', '\r']) {
+                    self.position += self.rest().chars().next().unwrap().len_utf8();
+                }
+            }
+        } else if first.is_ascii_digit() {
+            while self
+                .source
+                .as_bytes()
+                .get(self.position)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                self.position += 1;
+            }
+        }
+    }
+
+    fn token(&mut self) -> Result<Option<Token>, Diagnostic> {
+        let start = self.position;
+        let byte = self.source.as_bytes()[start];
+        if byte.is_ascii_whitespace() {
+            self.position += 1;
+            return Ok(None);
+        }
+        if self.rest().starts_with("//") {
+            while self.position < self.source.len()
+                && self.source.as_bytes()[self.position] != b'\n'
+            {
+                self.position += 1;
+            }
+            return Ok(None);
+        }
+        if self.rest().starts_with("/*") {
+            self.comment()?;
+            return Ok(None);
+        }
+        let kind = if byte == b'\'' {
+            self.position += 1;
+            if !self
+                .source
+                .as_bytes()
+                .get(self.position)
+                .is_some_and(|b| b.is_ascii_alphabetic())
+            {
+                return Err(Diagnostic::new(
+                    "E0001",
+                    "a type variable starts with an apostrophe and an ASCII letter",
+                    Span::new(start, self.position),
+                ));
+            }
+            self.identifier();
+            TokenKind::TypeVariable(self.source[start + 1..self.position].to_owned())
+        } else if byte.is_ascii_alphabetic() || byte == b'_' {
+            self.identifier()
+        } else if byte.is_ascii_digit() {
+            self.number()?
+        } else if byte == b'"' {
+            self.string()?
+        } else {
+            self.symbol()?
+        };
+        Ok(Some(Token {
+            kind,
+            span: Span::new(start, self.position),
+        }))
     }
 
     fn rest(&self) -> &str {
@@ -333,6 +386,11 @@ impl Lexer<'_> {
 
     fn symbol(&mut self) -> Result<TokenKind, Diagnostic> {
         use TokenKind::*;
+        // Keep a generic close followed by a constraint arrow separate from '>='.
+        if self.rest().starts_with(">=>") {
+            self.position += 1;
+            return Ok(Greater);
+        }
         for (text, kind) in [
             ("[|", LeftList),
             ("|]", RightList),

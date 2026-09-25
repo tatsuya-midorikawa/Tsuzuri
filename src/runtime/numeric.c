@@ -380,10 +380,69 @@ static int unsigned_text(char *out, u32 value) {
     return count;
 }
 
-/* At most 48 bytes, including a sign, 36 significant digits, and an exponent. */
+/* Dragon4: generate digits until the remainder enters a rounding boundary.
+   Powers of two (except the smallest normal) have a closer lower neighbor. */
+static void shortest(tzrt_number *value, tzrt_format f) {
+    u128 significand = narrow(&value->coefficient);
+    int closed = !(significand & 1);
+    tzrt_big numerator = small(significand << 2), denominator = small(4);
+    tzrt_big lower = small(significand == ((u128)1 << f.fraction) && value->exponent > f.minimum ? 1 : 2);
+    tzrt_big upper = small(2);
+    if (value->exponent >= 0) {
+        shift(&numerator, value->exponent);
+        shift(&lower, value->exponent);
+        shift(&upper, value->exponent);
+    } else shift(&denominator, -value->exponent);
+    int exponent = magnitude(&numerator, &denominator, 10);
+    if (exponent >= 0) power(&denominator, 10, exponent);
+    else {
+        power(&numerator, 10, -exponent);
+        power(&lower, 10, -exponent);
+        power(&upper, 10, -exponent);
+    }
+    u128 coefficient = 0;
+    for (int digits = 1; ; ++digits) {
+        u32 digit = 0;
+        while (compare(&numerator, &denominator) >= 0) {
+            subtract(&numerator, &denominator);
+            ++digit;
+        }
+        coefficient = coefficient * 10 + digit;
+        int low_order = compare(&numerator, &lower);
+        tzrt_big gap = denominator;
+        subtract(&gap, &numerator);
+        int high_order = compare(&gap, &upper);
+        int low = low_order < 0 || (closed && !low_order);
+        int high = high_order < 0 || (closed && !high_order);
+        if (low || high) {
+            multiply_small(&numerator, 2);
+            int nearest = compare(&numerator, &denominator);
+            if (high && (!low || nearest > 0 || (!nearest && (coefficient & 1)))) ++coefficient;
+            value->coefficient = small(coefficient);
+            value->exponent = exponent - digits + 1;
+            return;
+        }
+        multiply_small(&numerator, 10);
+        multiply_small(&lower, 10);
+        multiply_small(&upper, 10);
+    }
+}
+
+/* The caller supplies 128 bytes. No locale, host FP, or allocation is used. */
 __attribute__((visibility("hidden")))
 int tz_soft_format(char *out, const unsigned char *input, int kind) {
     tzrt_format f = format(kind);
+    if (f.integer) {
+        u128 value = load(input, f.width);
+        int negative = f.sign && (value >> (f.width - 1));
+        if (negative) value = -value & mask(f.width);
+        char digits[40];
+        int count = 0, length = 0;
+        do { digits[count++] = (char)('0' + value % 10); value /= 10; } while (value);
+        if (negative) out[length++] = '-';
+        while (count) out[length++] = digits[--count];
+        return length;
+    }
     tzrt_number value = decode(input, f);
     int length = 0;
     if (value.negative && value.special != 2) out[length++] = '-';
@@ -393,14 +452,7 @@ int tz_soft_format(char *out, const unsigned char *input, int kind) {
         return length;
     }
     if (!value.coefficient.n) { out[length++] = '0'; return length; }
-    if (f.base == 2 && !f.integer) {
-        tzrt_big denominator = small(1);
-        if (value.exponent >= 0) power(&value.coefficient, 2, value.exponent);
-        else power(&denominator, 2, -value.exponent);
-        int exponent = magnitude(&value.coefficient, &denominator, 10) - 35;
-        value.coefficient = rounded(&value.coefficient, &denominator, 10, -exponent);
-        value.exponent = exponent;
-    }
+    if (f.base == 2) shortest(&value, f);
     char digits[48];
     int count = 0;
     do { digits[count++] = (char)('0' + divide_small(&value.coefficient, 10)); } while (value.coefficient.n);
@@ -430,4 +482,131 @@ int tz_soft_format(char *out, const unsigned char *input, int kind) {
         length += unsigned_text(out + length, (u32)(exponent < 0 ? -exponent : exponent));
     }
     return length;
+}
+
+static int digit_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* A null coefficient parses an exponent, saturating well beyond any format's
+   range. Separators must have decimal digits on both sides in this section. */
+static int decimal_digits(const char *input, u64 length, u64 *index, tzrt_big *coefficient, int *exponent) {
+    int count = 0;
+    while (*index < length) {
+        char c = input[*index];
+        if (c == '_') {
+            if (!count || *index + 1 == length || input[*index + 1] < '0' || input[*index + 1] > '9') return -1;
+            ++*index;
+            continue;
+        }
+        if (c < '0' || c > '9') break;
+        u32 digit = (u32)(c - '0');
+        if (coefficient) {
+            multiply_small(coefficient, 10);
+            u64 carry = digit;
+            for (int i = 0; carry; ++i) {
+                if (i == coefficient->n) coefficient->w[coefficient->n++] = 0;
+                carry += coefficient->w[i];
+                coefficient->w[i] = (u32)carry;
+                carry >>= 32;
+            }
+        } else if (*exponent < 100000) {
+            *exponent = *exponent * 10 + (int)digit;
+        }
+        ++count;
+        ++*index;
+    }
+    return count;
+}
+
+__attribute__((visibility("hidden")))
+int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
+    if (!length || length > 4096) return 0;
+    tzrt_format f = format(kind);
+    u64 index = 0;
+    int negative = input[0] == '-';
+    if (negative || input[0] == '+') ++index;
+    if (index == length) return 0;
+    if (f.integer) {
+        if (negative && !f.sign) return 0;
+        int base = 10;
+        if (index + 1 < length && input[index] == '0') {
+            if (input[index + 1] == 'x') { base = 16; index += 2; }
+            else if (input[index + 1] == 'b') { base = 2; index += 2; }
+        }
+        if (index == length) return 0;
+        u128 limit = mask(f.width - f.sign) + (f.sign && negative);
+        u128 cutoff = limit / (u32)base, value = 0;
+        u32 last = (u32)(limit % (u32)base);
+        int previous = 0;
+        for (; index < length; ++index) {
+            if (input[index] == '_') {
+                if (!previous || index + 1 == length) return 0;
+                previous = 0;
+                continue;
+            }
+            int digit = digit_value(input[index]);
+            if (digit < 0 || digit >= base || value > cutoff || (value == cutoff && (u32)digit > last)) return 0;
+            value = value * (u32)base + (u32)digit;
+            previous = 1;
+        }
+        store(out, negative ? -value : value, f.width);
+        return 1;
+    }
+    if (length - index == 3) {
+        const char *p = input + index;
+        if (p[0] == 'i' && p[1] == 'n' && p[2] == 'f') {
+            store(out, special(f, 1, negative), f.width);
+            return 1;
+        }
+        if (p[0] == 'n' && p[1] == 'a' && p[2] == 'n') {
+            store(out, special(f, 2, 0), f.width);
+            return 1;
+        }
+    }
+    tzrt_big coefficient = small(0), denominator = small(1);
+    int integral = decimal_digits(input, length, &index, &coefficient, 0);
+    if (integral < 0) return 0;
+    int fractional = 0;
+    if (index < length && input[index] == '.') {
+        ++index;
+        fractional = decimal_digits(input, length, &index, &coefficient, 0);
+        if (fractional < 0) return 0;
+    }
+    if (!integral && !fractional) return 0;
+    int exponent = 0;
+    if (index < length && (input[index] == 'e' || input[index] == 'E')) {
+        ++index;
+        int sign = index < length && input[index] == '-';
+        if (index < length && (sign || input[index] == '+')) ++index;
+        if (decimal_digits(input, length, &index, 0, &exponent) <= 0) return 0;
+        if (sign) exponent = -exponent;
+    }
+    if (index != length) return 0;
+    exponent -= fractional;
+    if (!coefficient.n) {
+        store(out, pack(&coefficient, &denominator, exponent, negative, f), f.width);
+        return 1;
+    }
+    int adjusted = magnitude(&coefficient, &denominator, 10) + exponent;
+    int maximum = f.base == 10 ? f.maximum + f.precision - 1 : (f.maximum + f.precision) * 30103 / 100000 + 1;
+    int minimum = f.base == 10 ? f.minimum - 1 : f.minimum * 30103 / 100000 - 2;
+    if (adjusted > maximum) return 0;
+    if (adjusted < minimum) {
+        coefficient = small(0);
+        exponent = f.minimum;
+    } else if (f.base == 2) {
+        if (exponent >= 0) power(&coefficient, 10, exponent);
+        else power(&denominator, 10, -exponent);
+        exponent = 0;
+    }
+    /* At most 4096 input digits plus the target's exponent range fit LIMBS.
+       Classifying extreme exponents first keeps malformed input trap-free. */
+    u128 raw = pack(&coefficient, &denominator, exponent, negative, f);
+    if ((raw & mask(f.width - 1)) == special(f, 1, 0)) return 0;
+    store(out, raw, f.width);
+    return 1;
 }

@@ -32,6 +32,7 @@ pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> 
 }
 
 pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<String, Diagnostic> {
+    validate_lowering(module)?;
     if entry == Entry::Console {
         validate_main(module)?;
     }
@@ -191,6 +192,49 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         });
     }
     Ok(output)
+}
+
+fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
+    let check = |ty: &Type, span| {
+        if ty.contains_error() {
+            Err(Diagnostic::new(
+                "E1015",
+                "internal compiler error: erroneous typed IR cannot be lowered",
+                span,
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    for record in &module.records {
+        for (_, ty) in &record.fields {
+            check(ty, record.span)?;
+        }
+    }
+    for union in &module.unions {
+        for ty in union.cases.iter().filter_map(|(_, ty)| ty.as_ref()) {
+            check(ty, union.span)?;
+        }
+    }
+    for function in &module.functions {
+        for ty in function
+            .signature
+            .parameters
+            .iter()
+            .chain([&function.signature.result])
+        {
+            check(ty, function.span)?;
+        }
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            check(&expression.ty, expression.span)?;
+            if matches!(expression.kind, TypedExprKind::Error) {
+                check(&Type::Error, expression.span)?;
+            }
+            pending.extend(expression.children());
+        }
+    }
+    Ok(())
 }
 
 pub fn header(module: &CheckedModule) -> String {
@@ -441,7 +485,9 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         ),
         Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
         Type::Reference(..) => "ptr".into(),
-        Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
+        Type::Error | Type::Variable(_) | Type::Infer(_) => {
+            unreachable!("erroneous and polymorphic types cannot reach LLVM")
+        }
     }
 }
 
@@ -480,7 +526,9 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         | Type::Bool
         | Type::Unit
         | Type::String => ty.display(&module.types()),
-        Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
+        Type::Error | Type::Variable(_) | Type::Infer(_) => {
+            unreachable!("erroneous and polymorphic types cannot reach LLVM")
+        }
     }
 }
 
@@ -533,7 +581,9 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
             }
             UnionLayout::General(count) => (16 + 16 * count, 16),
         },
-        Type::Variable(_) | Type::Infer(_) => unreachable!("polymorphism is resolved before LLVM"),
+        Type::Error | Type::Variable(_) | Type::Infer(_) => {
+            unreachable!("erroneous and polymorphic types cannot reach LLVM")
+        }
     }
 }
 
@@ -1200,6 +1250,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             | TypedExprKind::Method(..)
             | TypedExprKind::GenericInteger(..)
             | TypedExprKind::GenericFloat(_)
+            | TypedExprKind::Error
             | TypedExprKind::Lambda { .. }
             | TypedExprKind::CaseConstructor { .. } => {
                 unreachable!("polymorphism is resolved before LLVM")
@@ -2773,7 +2824,11 @@ fn saturating_cast(
 /// The LLVM symbol of a builtin instance: `@tz.builtin.name`, followed for a
 /// polymorphic builtin by its type arguments as unquoted, injective names.
 fn builtin_symbol(instance: &BuiltinInstance, module: &CheckedModule) -> String {
-    let mut symbol = format!("@tz.builtin.{}", instance.builtin.name());
+    let name = instance.builtin.name();
+    let mut symbol = format!(
+        "@tz.builtin.{}",
+        name.strip_prefix("$builtin.").unwrap_or(name)
+    );
     if !instance.types.is_empty() {
         symbol.push('.');
         symbol.push_str(
@@ -2821,6 +2876,8 @@ fn emit_builtin(
         return definition;
     }
     match builtin {
+        Builtin::Display | Builtin::ToString => emit_display(instance, module),
+        Builtin::Parse => emit_parse(instance, ty, module),
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
              entry:\n  %r = sitofp i64 %x to double\n  ret double %r\n}}\n\n"
@@ -2862,6 +2919,133 @@ fn emit_builtin(
     }
 }
 
+fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
+    let symbol = builtin_symbol(instance, module);
+    let ty = &instance.types[0];
+    let value_type = llvm_type(ty, module);
+    let borrowed = instance.builtin == Builtin::Display;
+    let parameter = if borrowed { "ptr" } else { &value_type };
+    let mut globals = String::new();
+    let mut body = String::new();
+    match ty {
+        Type::String if !borrowed => body.push_str("  ret %tz.string %x\n"),
+        Type::String => body.push_str(
+            "  %s = load %tz.string, ptr %x\n\
+               %data = extractvalue %tz.string %s, 0\n\
+               %length = extractvalue %tz.string %s, 1\n\
+               %r = call %tz.string @tz.string.new(ptr %data, i64 %length)\n\
+               ret %tz.string %r\n",
+        ),
+        Type::Bool => {
+            let _ = writeln!(
+                globals,
+                "{symbol}.true = private unnamed_addr constant [4 x i8] c\"true\"\n\
+                 {symbol}.false = private unnamed_addr constant [5 x i8] c\"false\""
+            );
+            let value = if borrowed {
+                body.push_str("  %value = load i1, ptr %x\n");
+                "%value"
+            } else {
+                "%x"
+            };
+            let _ = writeln!(
+                body,
+                "  %data = select i1 {value}, ptr {symbol}.true, ptr {symbol}.false\n\
+                   %length = select i1 {value}, i64 4, i64 5\n\
+                   %r = call %tz.string @tz.string.new(ptr %data, i64 %length)\n\
+                   ret %tz.string %r"
+            );
+        }
+        Type::Unit => {
+            let _ = writeln!(
+                globals,
+                "{symbol}.unit = private unnamed_addr constant [2 x i8] c\"()\""
+            );
+            let _ = writeln!(
+                body,
+                "  %r = call %tz.string @tz.string.new(ptr {symbol}.unit, i64 2)\n\
+                   ret %tz.string %r"
+            );
+        }
+        _ => {
+            let pointer = if borrowed {
+                "%x"
+            } else {
+                let _ = writeln!(
+                    body,
+                    "  %slot = alloca {value_type}, align 16\n  store {value_type} %x, ptr %slot"
+                );
+                "%slot"
+            };
+            let _ = writeln!(
+                body,
+                "  %buffer = alloca [128 x i8], align 16\n\
+                   %count = call i32 @tz_soft_format(ptr %buffer, ptr {pointer}, i32 {})\n\
+                   %length = zext i32 %count to i64\n\
+                   %r = call %tz.string @tz.string.new(ptr %buffer, i64 %length)\n\
+                   ret %tz.string %r",
+                numeric_kind(ty),
+            );
+        }
+    }
+    format!(
+        "{globals}define internal %tz.string {symbol}({parameter} %x) nounwind {{\nentry:\n{body}}}\n\n"
+    )
+}
+
+fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> String {
+    let symbol = builtin_symbol(instance, module);
+    let payload = &instance.types[0];
+    let value_type = llvm_type(payload, module);
+    let result = ty.after_arguments(1);
+    let result_type = llvm_type(&result, module);
+    let Type::Union(id, _) = result else {
+        unreachable!("Parse returns the checked standard Option union")
+    };
+    let cases = &module.unions[id].cases;
+    let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
+    let none = cases.iter().position(|(name, _)| name == "None").unwrap();
+    let mut globals = String::new();
+    let mut body = String::from("  %text = load %tz.string, ptr %x\n");
+    if *payload == Type::Bool {
+        let _ = writeln!(
+            globals,
+            "{symbol}.true = private unnamed_addr constant [4 x i8] c\"true\"\n\
+             {symbol}.false = private unnamed_addr constant [5 x i8] c\"false\""
+        );
+        let _ = writeln!(
+            body,
+            "  %value = call i1 @tz.string.equal(%tz.string %text, %tz.string {{ ptr {symbol}.true, i64 4 }})\n\
+               %false = call i1 @tz.string.equal(%tz.string %text, %tz.string {{ ptr {symbol}.false, i64 5 }})\n\
+               %ok = or i1 %value, %false\n\
+               br i1 %ok, label %some, label %none\nsome:"
+        );
+    } else {
+        let _ = writeln!(
+            body,
+            "  %data = extractvalue %tz.string %text, 0\n\
+               %length = extractvalue %tz.string %text, 1\n\
+               %slot = alloca {value_type}, align 16\n\
+               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %data, i64 %length, i32 {})\n\
+               %ok = icmp ne i32 %parsed, 0\n\
+               br i1 %ok, label %some, label %none\nsome:\n\
+               %value = load {value_type}, ptr %slot",
+            numeric_kind(payload),
+        );
+    }
+    let _ = writeln!(
+        body,
+        "  %tag = insertvalue {result_type} zeroinitializer, i32 {some}, 0\n\
+           %result = insertvalue {result_type} %tag, {value_type} %value, 1\n\
+           ret {result_type} %result\nnone:\n\
+           %empty = insertvalue {result_type} zeroinitializer, i32 {none}, 0\n\
+           ret {result_type} %empty"
+    );
+    format!(
+        "{globals}define internal {result_type} {symbol}(ptr %x) nounwind {{\nentry:\n{body}}}\n\n"
+    )
+}
+
 /// Defines the test-only builtins that exercise polymorphic instances.
 #[cfg(test)]
 fn test_builtin(
@@ -2900,32 +3084,15 @@ fn test_builtin(
 fn console_main(module: &CheckedModule) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let ty = &main.signature.result;
-    let buffered = matches!(
-        ty,
-        Type::String | Type::Integer(128, _) | Type::Binary(16 | 128) | Type::Decimal(_)
-    );
     let mut output = match ty {
-        Type::Integer(8 | 16 | 32 | 64, signed) => format!(
-            "@tz.fmt = private unnamed_addr constant [6 x i8] c\"%ll{}\\0A\\00\"\n",
-            if *signed { "d" } else { "u" }
-        ),
-        Type::Binary(64) => {
-            "@tz.fmt = private unnamed_addr constant [7 x i8] c\"%.17g\\0A\\00\"\n".into()
-        }
-        Type::Binary(32) => {
-            "@tz.fmt = private unnamed_addr constant [6 x i8] c\"%.9g\\0A\\00\"\n".into()
-        }
         Type::Bool => String::from(
-            "@tz.fmt = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\"\n\
-             @tz.true = private unnamed_addr constant [5 x i8] c\"true\\00\"\n\
-             @tz.false = private unnamed_addr constant [6 x i8] c\"false\\00\"\n",
+            "@tz.true = private unnamed_addr constant [4 x i8] c\"true\"\n\
+             @tz.false = private unnamed_addr constant [5 x i8] c\"false\"\n",
         ),
         _ => String::new(),
     };
-    if buffered {
+    if *ty != Type::Unit {
         output.push_str(include_str!("runtime/console.ll"));
-    } else if *ty != Type::Unit {
-        output.push_str("declare i32 @printf(ptr, ...)\n\n");
     }
     let _ = writeln!(
         output,
@@ -2934,38 +3101,11 @@ fn console_main(module: &CheckedModule) -> String {
         main.qualified_name()
     );
     match ty {
-        Type::Integer(bits @ (8 | 16 | 32 | 64), signed) => {
-            let value = if *bits < 64 {
-                let _ = writeln!(
-                    output,
-                    "  %wide = {} i{bits} %result to i64",
-                    if *signed { "sext" } else { "zext" }
-                );
-                "%wide"
-            } else {
-                "%result"
-            };
-            let _ = writeln!(
-                output,
-                "  %printed = call i32 (ptr, ...) @printf(ptr @tz.fmt, i64 {value})"
-            );
-        }
-        Type::Binary(32 | 64) => {
-            let value = if *ty == Type::Binary(32) {
-                output.push_str("  %wide = fpext float %result to double\n");
-                "%wide"
-            } else {
-                "%result"
-            };
-            let _ = writeln!(
-                output,
-                "  %printed = call i32 (ptr, ...) @printf(ptr @tz.fmt, double {value})"
-            );
-        }
         Type::Bool => {
             output.push_str(
                 "  %text = select i1 %result, ptr @tz.true, ptr @tz.false\n\
-                   %printed = call i32 (ptr, ...) @printf(ptr @tz.fmt, ptr %text)\n",
+                   %length = select i1 %result, i64 4, i64 5\n\
+                   %printed = call i32 @tz.console.write(ptr %text, i64 %length)\n",
             );
         }
         Type::String => {
@@ -2975,7 +3115,7 @@ fn console_main(module: &CheckedModule) -> String {
         _ if ty.is_numeric() => {
             let _ = writeln!(
                 output,
-                "  %slot = alloca {}, align 16\n  %buffer = alloca [64 x i8], align 16\n  store {} %result, ptr %slot\n  %count = call i32 @tz_soft_format(ptr %buffer, ptr %slot, i32 {})\n  %length = zext i32 %count to i64\n  %printed = call i32 @tz.console.write(ptr %buffer, i64 %length)",
+                "  %slot = alloca {}, align 16\n  %buffer = alloca [128 x i8], align 16\n  store {} %result, ptr %slot\n  %count = call i32 @tz_soft_format(ptr %buffer, ptr %slot, i32 {})\n  %length = zext i32 %count to i64\n  %printed = call i32 @tz.console.write(ptr %buffer, i64 %length)",
                 llvm_type(ty, module),
                 llvm_type(ty, module),
                 numeric_kind(ty)
@@ -3021,7 +3161,8 @@ mod tests {
         assert!(ir.contains("call void @llvm.trap()"));
         assert!(ir.contains("define i64 @tz_main()"));
         assert!(ir.contains("define i32 @main()"));
-        assert!(!ir.contains(" nsw "));
+        assert!(!body.contains(" nsw "));
+        assert!(!body.contains(" nuw "));
         assert_eq!(ir, emit(&module, Entry::Console).unwrap());
     }
 
@@ -3131,14 +3272,14 @@ mod tests {
                 "128-bit integers have no wider integer type",
             ),
             (
-                "def f :: Integer 'a => 'a -> 'a\nfn f x = {\n    let _ = Int.test_widen x;\n    x\n}",
+                "def f :: Integer<'a> => 'a -> 'a\nfn f x = {\n    let _ = Int.test_widen x;\n    x\n}",
                 "E1015",
                 "generic code cannot use it",
             ),
             (
                 "def f :: f64 -> f64\nfn f x = Int.test_unsigned x",
                 "E1005",
-                "Integer f64",
+                "Integer<f64>",
             ),
         ] {
             let error = analyze(source).expect_err(source);

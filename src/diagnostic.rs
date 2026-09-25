@@ -1,4 +1,126 @@
-use std::fmt::Write;
+use std::{collections::BTreeMap, fmt::Write};
+
+pub const MAX_REPORTED_ERRORS: usize = 50;
+pub const MAX_UNIQUE_DIAGNOSTICS: usize = 1000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticSet {
+    pub diagnostics: Vec<Diagnostic>,
+    pub omitted: usize,
+    pub omitted_is_lower_bound: bool,
+}
+
+impl DiagnosticSet {
+    pub fn from_diagnostics(
+        diagnostics: impl IntoIterator<Item = Diagnostic>,
+        root: usize,
+    ) -> Self {
+        let mut collected = Diagnostics::new(root);
+        collected.extend(diagnostics);
+        collected.finish()
+    }
+
+    pub fn first(self) -> Option<Diagnostic> {
+        self.diagnostics.into_iter().next()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.diagnostics.is_empty()
+    }
+
+    pub fn omission_note(&self) -> Option<String> {
+        (self.omitted != 0).then(|| {
+            format!(
+                "{}{} more errors not shown",
+                if self.omitted_is_lower_bound {
+                    "at least "
+                } else {
+                    ""
+                },
+                self.omitted,
+            )
+        })
+    }
+}
+
+impl From<Diagnostic> for DiagnosticSet {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self::from_diagnostics([diagnostic], 0)
+    }
+}
+
+type DiagnosticKey = (usize, usize, usize, &'static str, String);
+
+/// Collect before applying the display cap; duplicate reports never use budget.
+pub(crate) struct Diagnostics {
+    entries: BTreeMap<DiagnosticKey, Diagnostic>,
+    root: usize,
+}
+
+impl Diagnostics {
+    pub fn new(root: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            root,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.entries.len() >= MAX_UNIQUE_DIAGNOSTICS
+    }
+
+    pub fn push(&mut self, diagnostic: Diagnostic) {
+        if !self.is_full() {
+            let span = diagnostic.span;
+            self.entries
+                .entry((
+                    span.source.unwrap_or(self.root),
+                    span.start,
+                    span.end,
+                    diagnostic.code,
+                    diagnostic.message.clone(),
+                ))
+                .or_insert(diagnostic);
+        }
+    }
+
+    pub fn extend(&mut self, diagnostics: impl IntoIterator<Item = Diagnostic>) {
+        for diagnostic in diagnostics {
+            self.push(diagnostic);
+            if self.is_full() {
+                break;
+            }
+        }
+    }
+
+    pub fn check(&self) -> Result<(), Diagnostic> {
+        self.entries
+            .values()
+            .next()
+            .map_or(Ok(()), |error| Err(error.clone()))
+    }
+
+    pub fn finish(self) -> DiagnosticSet {
+        let omitted_is_lower_bound = self.is_full();
+        DiagnosticSet {
+            omitted: self.entries.len().saturating_sub(MAX_REPORTED_ERRORS),
+            omitted_is_lower_bound,
+            diagnostics: self
+                .entries
+                .into_values()
+                .take(MAX_REPORTED_ERRORS)
+                .collect(),
+        }
+    }
+
+    pub fn into_vec(self) -> Vec<Diagnostic> {
+        self.entries.into_values().collect()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Span {

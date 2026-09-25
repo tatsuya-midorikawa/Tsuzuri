@@ -25,19 +25,19 @@ fn rec countdown n value = {
     if n == 0 { value } else { countdown (n - 1) value }
 }
 
-instance Classes.Score Point {
+instance Classes.Score<Point> {
     fn score point = point.x + point.y
 }
 
-instance Classes.Score i32 {
+instance Classes.Score<i32> {
     fn score value = *value
 }
 
-instance Add Point {
+instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-def score :: Classes.Score 'a => &'a -> i32
+def score :: Classes.Score<'a> => &'a -> i32
 fn score value = Classes.Score.score value
 
 export def integer :: i32 -> i32 -> i32

@@ -15,9 +15,9 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| A01 | [型適用とジェネリックなレコード](A01-generic-records.md) | P0 | L | – | todo |
-| A02 | [判別共用体（union）と列挙型](A02-union-types.md) | P0 | XL | A01 | todo |
-| A03 | [match の網羅性・到達不能節の検査](A03-match-exhaustiveness.md) | P0 | M | A02 | todo |
+| A01 | [型適用とジェネリックなレコード](A01-generic-records.md) | P0 | L | – | done |
+| A02 | [判別共用体（union）と列挙型](A02-union-types.md) | P0 | XL | A01 | done |
+| A03 | [match の網羅性・到達不能節の検査](A03-match-exhaustiveness.md) | P0 | M | A02 | done |
 | A04 | [再帰的なヒープ型（木・AST）](A04-recursive-types.md) | P1 | L | A02 | todo |
 | A05 | [型別名](A05-type-aliases.md) | P1 | S | (A01) | todo |
 | A06 | [型クラスの拡張（条件付きインスタンス・スーパークラス・デフォルトメソッド）](A06-typeclass-extensions.md) | P1 | L | A11, (A01) | todo |
@@ -31,7 +31,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| B01 | [Option／Result 標準型](B01-option-result.md) | P0 | M | A02, E02 | todo |
+| B01 | [Option／Result 標準型](B01-option-result.md) | P0 | M | A02, E02 | done |
 | B02 | [Option／Result ビルダーによる早期伝播](B02-result-propagation.md) | P1 | M | B01 | todo |
 | B03 | [break／continue](B03-break-continue.md) | P1 | M | – | todo |
 | B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](B04-active-pattern-extensions.md) | P1 | M | B01, A02 | todo |
@@ -54,7 +54,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| D01 | [表示・解析・書式化（Display／Parse／to_string）](D01-display-parse-format.md) | P0 | M | E02, B01 | todo |
+| D01 | [表示・解析・書式化（Display／Parse／to_string）](D01-display-parse-format.md) | P0 | M | E02, B01 | done |
 | D02 | [文字列ライブラリ](D02-string-library.md) | P1 | M | E02, A08, A11, C03, B01, (C02) | todo |
 | D03 | [数学関数の型汎用化と拡充](D03-generic-math.md) | P1 | M | E02 | todo |
 | D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](D04-integer-intrinsics.md) | P1 | M | E02, B01 | todo |
@@ -65,8 +65,8 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| E01 | [可視性制御（private）](E01-visibility.md) | P0 | S | – | todo |
-| E02 | [標準ライブラリの同梱機構](E02-standard-library-infrastructure.md) | P0 | M | E01 | todo |
+| E01 | [可視性制御（private）](E01-visibility.md) | P0 | S | – | done |
+| E02 | [標準ライブラリの同梱機構](E02-standard-library-infrastructure.md) | P0 | M | E01 | done |
 | E03 | [階層モジュール・サブディレクトリ](E03-hierarchical-modules.md) | P2 | L | E02 | todo |
 | E04 | [パッケージと依存管理](E04-packages.md) | P3 | XL | E03 | todo |
 | E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](E05-host-abi-buffers.md) | P1 | L | C03 | todo |
@@ -89,8 +89,8 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| G01 | [ランタイム IR ファイルの Git 追跡漏れの修正](G01-runtime-ir-tracking.md) | P0 | S | – | todo |
-| G02 | [複数エラーの同時報告](G02-multiple-diagnostics.md) | P0 | M | – | todo |
+| G01 | [ランタイム IR ファイルの Git 追跡漏れの修正](G01-runtime-ir-tracking.md) | P0 | S | – | done |
+| G02 | [複数エラーの同時報告](G02-multiple-diagnostics.md) | P0 | M | – | done |
 | G03 | [警告（未使用・到達不能・シャドーイング）](G03-warnings.md) | P1 | M | G02, (A03), (E01) | todo |
 | G04 | [トラップ発生位置の報告](G04-trap-locations.md) | P1 | M | – | todo |
 | G05 | [フォーマッター（tsuzuri fmt）](G05-formatter.md) | P1 | M | – | todo |

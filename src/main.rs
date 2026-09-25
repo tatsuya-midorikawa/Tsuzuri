@@ -222,6 +222,26 @@ fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) 
     print_with_severity("error", error, input, source, json);
 }
 
+fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Project, json: bool) {
+    for (index, error) in errors.diagnostics.iter().enumerate() {
+        if index != 0 && !json {
+            eprintln!();
+        }
+        let source = project.source_for(error);
+        print_diagnostic(error, &source.path, &source.text, json);
+    }
+    if let Some(note) = errors.omission_note() {
+        if json {
+            eprintln!(
+                "{{\"severity\":\"note\",\"message\":{}}}",
+                json_string(&note)
+            );
+        } else {
+            eprintln!("\nerror: {note}");
+        }
+    }
+}
+
 fn print_with_severity(
     severity: &str,
     diagnostic: &Diagnostic,
@@ -301,19 +321,24 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = project.analyze().and_then(|module| {
-        for warning in &module.warnings {
-            let source = project.source_for(warning);
-            print_with_severity(
-                "warning",
-                warning,
-                &source.path,
-                &source.text,
-                arguments.json,
-            );
+    let module = match project.analyze_all() {
+        Ok(module) => module,
+        Err(errors) => {
+            print_diagnostics(&errors, &project, arguments.json);
+            return ExitCode::FAILURE;
         }
-        run_action(&arguments, &project, &module)
-    });
+    };
+    for warning in &module.warnings {
+        let source = project.source_for(warning);
+        print_with_severity(
+            "warning",
+            warning,
+            &source.path,
+            &source.text,
+            arguments.json,
+        );
+    }
+    let result = run_action(&arguments, &project, &module);
     match result {
         Ok(messages) => {
             for message in messages {

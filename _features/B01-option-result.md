@@ -6,12 +6,12 @@
 | 規模 | M |
 | 依存 | A02, E02 |
 | 後続 | B02, B04, C02, C06, C07, D01, D02, D04, A08, B06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Option.tc`, `std/Result.tc`, `src/check.rs`, `src/computation.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `tests/computations.rs`, `tests/fixtures/computations/`, `tests/computations.mjs`, `examples/computations/`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
 
-予期できる失敗を例外ではなく値で表す標準の `Option 'a`／`Result 'a 'e` を追加する。これにより、検索・解析・境界検査付き変換・タスク失敗などを型で表し、後続の B02（早期伝播）、B04（Option 返却アクティブパターン）、D01（Parse）、B06（Task.parallel_results）で共通の失敗表現を使えるようにする。
+予期できる失敗を例外ではなく値で表す標準の `Option<'a>`／`Result<'a, 'e>` を追加する。これにより、検索・解析・境界検査付き変換・タスク失敗などを型で表し、後続の B02（早期伝播）、B04（Option 返却アクティブパターン）、D01（Parse）、B06（Task.parallel_results）で共通の失敗表現を使えるようにする。
 
 このチケットでは型・基本関数・コンピュテーション式ビルダー操作を標準ライブラリとして提供する。`?` 演算子や例外は導入しない（D-10）。
 
@@ -43,16 +43,16 @@
 
 ### 前提とする他チケットのインターフェース
 
-- **A01**: 型適用は D-02 の前置並置。`Option i64`, `Result i64 string`, `[Option i64]` を受理する。
-- **A02**: D-05 の union を実装済み。`union Option 'a = None | Some of 'a`、`union Result 'a 'e = Ok of 'a | Error of 'e` を `.tc` 内で宣言できる。`Type::Union(usize, Vec<Type>)`、union ケース構築、union パターン、タグ付き LLVM 表現、union payload の clone/drop が実装済み。
+- **A01**: 型適用は D-02 の `<...>`・カンマ区切り。`Option<i64>`, `Result<i64, string>`, `[Option<i64>]` を受理する。
+- **A02**: D-05 の union を実装済み。`union Option<'a> = None | Some of 'a`、`union Result<'a, 'e> = Ok of 'a | Error of 'e` を `.tc` 内で宣言できる。`Type::Union(usize, Vec<Type>)`、union ケース構築、union パターン、タグ付き LLVM 表現、union payload の clone/drop が実装済み。
 - **E02**: D-07 の標準ライブラリ同梱機構を実装済み。`std/Option.tc` と `std/Result.tc` は常にユーザーモジュールと一緒に検査され、未使用関数は IR に出力されない。
 - **E01**: E02 の依存として `private` がある想定。ただしこのチケットの提案ソースは実装容易性を優先し、公開して問題ない補助だけで構成する。
 
 ### 他チケットへの提供インターフェース
 
 - 型:
-  - `Option 'a = None | Some of 'a`
-  - `Result 'a 'e = Ok of 'a | Error of 'e`
+  - `Option<'a> = None | Some of 'a`
+  - `Result<'a, 'e> = Ok of 'a | Error of 'e`
 - ケース名:
   - `None`, `Some`, `Ok`, `Error` は D-05/D-07 に従い、同名がユーザー側で曖昧でなければ無修飾でも解決される。
   - 明示時は `Option.None`, `Option.Some`, `Result.Ok`, `Result.Error` を使う。
@@ -68,8 +68,8 @@
 ### 型と構文
 
 ```text
-union Option 'a = None | Some of 'a
-union Result 'a 'e = Ok of 'a | Error of 'e
+union Option<'a> = None | Some of 'a
+union Result<'a, 'e> = Ok of 'a | Error of 'e
 
 Type        ::= ... | "Option" TypeAtom | "Result" TypeAtom TypeAtom
 Pattern     ::= ... | "None" | "Some" Pattern | "Ok" Pattern | "Error" Pattern
@@ -78,8 +78,8 @@ BuilderExpr ::= "Option" "{" ComputationBody "}"
               | "Result" "{" ComputationBody "}"
 ```
 
-- `Option 'a` は値がないことを `None`、値があることを `Some payload` で表す。
-- `Result 'a 'e` は成功値を `Ok payload`、予期できる失敗を `Error payload` で表す。
+- `Option<'a>` は値がないことを `None`、値があることを `Some payload` で表す。
+- `Result<'a, 'e>` は成功値を `Ok payload`、予期できる失敗を `Error payload` で表す。
 - `Option`, `Result`, `Some`, `None`, `Ok`, `Error` は標準ライブラリの型／ケースであり、新しいキーワードではない。
 - 関数名は D-01 に従い snake_case、型とケースは PascalCase。
 - 関数は他モジュールから常に `Option.map` のように修飾して呼ぶ。ケースは A02 のケース解決規則で無修飾も許可する。
@@ -95,26 +95,26 @@ BuilderExpr ::= "Option" "{" ComputationBody "}"
 
 ### 型規則
 
-- `Some value : Option T` if `value : T`。
-- `None : Option T` は文脈から `T` を推論する。推論できない場合は既存の `E1015`。
-- `Ok value : Result T E` if `value : T`。
-- `Error error : Result T E` if `error : E`。`T` は文脈から推論する。
-- `Option.Bind : Option 'a -> ('a -> Option 'b) -> Option 'b`
-- `Result.Bind : Result 'a 'e -> ('a -> Result 'b 'e) -> Result 'b 'e`
+- `Some value : Option<T>` if `value : T`。
+- `None : Option<T>` は文脈から `T` を推論する。推論できない場合は既存の `E1015`。
+- `Ok value : Result<T, E>` if `value : T`。
+- `Error error : Result<T, E>` if `error : E`。`T` は文脈から推論する。
+- `Option.Bind : Option<'a> -> ('a -> Option<'b>) -> Option<'b>`
+- `Result.Bind : Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>`
 - `Result` builder の全 `let!`/`return!`/`do!`/`Combine`/`For`/`While` は同じ `'e` に単一化される。暗黙の error 型変換はしない。
-- `Option.For` と `Result.For` の phase 1 は配列のみ、かつ要素は `Copy 'a` を要求する。通常の `for...in` と同等の借用反復プロトコルは C07 の担当。
+- `Option.For` と `Result.For` の phase 1 は配列のみ、かつ要素は `Copy<'a>` を要求する。通常の `for...in` と同等の借用反復プロトコルは C07 の担当。
 - 公開 ABI は E05 まで変更しない。`Option`/`Result` を `export def` の引数・戻り値にすると既存の `E1008`。
 
 ### 所有権・借用
 
-- `Option 'a`/`Result 'a 'e` は union payload の性質に従う。
+- `Option<'a>`/`Result<'a, 'e>` は union payload の性質に従う。
   - 全 payload が Copy なら Copy。
   - payload のいずれかが `needs_drop` なら union も `needs_drop`。
   - inactive case の payload は未初期化またはゼロ化領域であり、drop/clone しない。
-- `is_some`, `is_none`, `is_ok`, `is_error` は `&Option 'a`／`&Result 'a 'e` を受け取り、payload を move しない。
+- `is_some`, `is_none`, `is_ok`, `is_error` は `&Option<'a>`／`&Result<'a, 'e>` を受け取り、payload を move しない。
 - `map`, `bind`, `default_value`, `get`, `to_result`, `to_option` は入力を消費する。
-- `map_ref`, `bind_ref`, `filter` は `&Option 'a` または `&Result 'a 'e` の payload を共有借用で扱うが、phase 1 の結果 payload は所有値に限る。
-  `Option &T` や `Result &T E` のように借用を結果へ残す使い方は、関数引数と `&Option`／`&Result` の 2 つが loan-carrying input になり、`Signature::validate_borrows` の寿命省略規則で `E1013` として拒否する。借用結果を安全に返す API は A09 の名前付きライフタイムまで延期する。
+- `map_ref`, `bind_ref`, `filter` は `&Option<'a>` または `&Result<'a, 'e>` の payload を共有借用で扱うが、phase 1 の結果 payload は所有値に限る。
+  `Option<&T>` や `Result<&T, E>` のように借用を結果へ残す使い方は、関数引数と `&Option`／`&Result` の 2 つが loan-carrying input になり、`Signature::validate_borrows` の寿命省略規則で `E1013` として拒否する。借用結果を安全に返す API は A09 の名前付きライフタイムまで延期する。
 - `Result.map_error` は `Error e` の error payload だけを消費し、`Ok a` はそのまま返す。
 - union payload からの部分 move、payload を含む drop、match 失敗時の一時値解放は A02 の union パターン規則と `src/ownership_control.rs::eval_match` の既存パターン一時値規則に従う。
 
@@ -122,13 +122,13 @@ BuilderExpr ::= "Option" "{" ComputationBody "}"
 
 A02 の union 表現を前提に、このチケットでは std 関数を通常関数として単相化するだけでよい。
 
-- `Option i64` の代表形:
+- `Option<i64>` の代表形:
   ```llvm
   ; A02 の規則。型名は実装側の決定的 mangling に従う。
   %"tz.union.Option.Option[i64]" = type { i32, [8 x i8] }
   ; tag 0 = None, tag 1 = Some
   ```
-- `Result i64 %tz.string` の代表形:
+- `Result<i64> %tz.string` の代表形:
   ```llvm
   %"tz.union.Result.Result[i64,%tz.string]" = type { i32, [16 x i8] }
   ; tag 0 = Ok, tag 1 = Error
@@ -144,114 +144,114 @@ A02 の union 表現を前提に、このチケットでは std 関数を通常�
 ### `std/Option.tc` の完全な提案ソース
 
 ```text
-union Option 'a =
+union Option<'a> =
     | None
     | Some of 'a
 
-def is_some :: &Option 'a -> bool
+def is_some :: &Option<'a> -> bool
 fn is_some option =
     match option with
     | Some _ -> true
     | None -> false
 
-def is_none :: &Option 'a -> bool
+def is_none :: &Option<'a> -> bool
 fn is_none option = ! (is_some option)
 
-def get :: Option 'a -> 'a
+def get :: Option<'a> -> 'a
 fn get option =
     match option with
     | Some value -> value
     | None -> unreachable ()
 
-def default_value :: 'a -> Option 'a -> 'a
+def default_value :: 'a -> Option<'a> -> 'a
 fn default_value fallback option =
     match option with
     | Some value -> value
     | None -> fallback
 
-def default_with :: (unit -> 'a) -> Option 'a -> 'a
+def default_with :: (unit -> 'a) -> Option<'a> -> 'a
 fn default_with fallback option =
     match option with
     | Some value -> value
     | None -> fallback ()
 
-def map :: ('a -> 'b) -> Option 'a -> Option 'b
+def map :: ('a -> 'b) -> Option<'a> -> Option<'b>
 fn map transform option =
     match option with
     | Some value -> Some (transform value)
     | None -> None
 
-def map_ref :: (&'a -> 'b) -> &Option 'a -> Option 'b
+def map_ref :: (&'a -> 'b) -> &Option<'a> -> Option<'b>
 fn map_ref transform option =
     match option with
     | Some value -> Some (transform (&value))
     | None -> None
 
-def bind :: Option 'a -> ('a -> Option 'b) -> Option 'b
+def bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>
 fn bind option next =
     match option with
     | Some value -> next value
     | None -> None
 
-def bind_ref :: &Option 'a -> (&'a -> Option 'b) -> Option 'b
+def bind_ref :: &Option<'a> -> (&'a -> Option<'b>) -> Option<'b>
 fn bind_ref option next =
     match option with
     | Some value -> next (&value)
     | None -> None
 
-def filter :: (&'a -> bool) -> Option 'a -> Option 'a
+def filter :: (&'a -> bool) -> Option<'a> -> Option<'a>
 fn filter predicate option =
     match option with
     | Some value ->
         if predicate (&value) then Some value else None
     | None -> None
 
-def or_else :: Option 'a -> (unit -> Option 'a) -> Option 'a
+def or_else :: Option<'a> -> (unit -> Option<'a>) -> Option<'a>
 fn or_else option fallback =
     match option with
     | Some value -> Some value
     | None -> fallback ()
 
-def to_result :: 'e -> Option 'a -> Result.Result 'a 'e
+def to_result :: 'e -> Option<'a> -> Result.Result<'a, 'e>
 fn to_result error option =
     match option with
     | Some value -> Result.Ok value
     | None -> Result.Error error
 
-def of_result :: Result.Result 'a 'e -> Option 'a
+def of_result :: Result.Result<'a, 'e> -> Option<'a>
 fn of_result result =
     match result with
     | Result.Ok value -> Some value
     | Result.Error _ -> None
 
-def Return :: 'a -> Option 'a
+def Return :: 'a -> Option<'a>
 fn Return value = Some value
 
-def ReturnFrom :: Option 'a -> Option 'a
+def ReturnFrom :: Option<'a> -> Option<'a>
 fn ReturnFrom option = option
 
-def Bind :: Option 'a -> ('a -> Option 'b) -> Option 'b
+def Bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>
 fn Bind option next = bind option next
 
-def Zero :: Option 'a
-fn Zero = None
+def Zero :: Option<unit>
+fn Zero = Some ()
 
-def Delay :: (unit -> Option 'a) -> (unit -> Option 'a)
+def Delay :: (unit -> Option<'a>) -> (unit -> Option<'a>)
 fn Delay body = body
 
-def Run :: (unit -> Option 'a) -> Option 'a
+def Run :: (unit -> Option<'a>) -> Option<'a>
 fn Run body = body ()
 
-def Combine :: Option unit -> (unit -> Option 'a) -> Option 'a
+def Combine :: Option<unit> -> (unit -> Option<'a>) -> Option<'a>
 fn Combine first rest =
     match first with
     | Some _ -> rest ()
     | None -> None
 
-def For :: Copy 'a => ['a] -> ('a -> Option unit) -> Option unit
+def For :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> Option<unit>
 fn For values body = for_loop values body 0
 
-private def rec for_loop :: Copy 'a => ['a] -> ('a -> Option unit) -> i64 -> Option unit
+private def rec for_loop :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> i64 -> Option<unit>
 fn rec for_loop values body index =
     if index == values.length then Some ()
     else
@@ -259,7 +259,7 @@ fn rec for_loop values body index =
         | Some _ -> for_loop values body (index + 1)
         | None -> None
 
-def rec While :: (unit -> bool) -> (unit -> Option unit) -> Option unit
+def rec While :: (unit -> bool) -> (unit -> Option<unit>) -> Option<unit>
 fn rec While guard body =
     if guard () then
         match body () with
@@ -271,119 +271,119 @@ fn rec While guard body =
 ### `std/Result.tc` の完全な提案ソース
 
 ```text
-union Result 'a 'e =
+union Result<'a, 'e> =
     | Ok of 'a
     | Error of 'e
 
-def is_ok :: &Result 'a 'e -> bool
+def is_ok :: &Result<'a, 'e> -> bool
 fn is_ok result =
     match result with
     | Ok _ -> true
     | Error _ -> false
 
-def is_error :: &Result 'a 'e -> bool
+def is_error :: &Result<'a, 'e> -> bool
 fn is_error result = ! (is_ok result)
 
-def get :: Result 'a 'e -> 'a
+def get :: Result<'a, 'e> -> 'a
 fn get result =
     match result with
     | Ok value -> value
     | Error _ -> unreachable ()
 
-def get_error :: Result 'a 'e -> 'e
+def get_error :: Result<'a, 'e> -> 'e
 fn get_error result =
     match result with
     | Error error -> error
     | Ok _ -> unreachable ()
 
-def default_value :: 'a -> Result 'a 'e -> 'a
+def default_value :: 'a -> Result<'a, 'e> -> 'a
 fn default_value fallback result =
     match result with
     | Ok value -> value
     | Error _ -> fallback
 
-def default_with :: (unit -> 'a) -> Result 'a 'e -> 'a
+def default_with :: (unit -> 'a) -> Result<'a, 'e> -> 'a
 fn default_with fallback result =
     match result with
     | Ok value -> value
     | Error _ -> fallback ()
 
-def map :: ('a -> 'b) -> Result 'a 'e -> Result 'b 'e
+def map :: ('a -> 'b) -> Result<'a, 'e> -> Result<'b, 'e>
 fn map transform result =
     match result with
     | Ok value -> Ok (transform value)
     | Error error -> Error error
 
-def map_ref :: Copy 'e => (&'a -> 'b) -> &Result 'a 'e -> Result 'b 'e
+def map_ref :: Copy<'e> => (&'a -> 'b) -> &Result<'a, 'e> -> Result<'b, 'e>
 fn map_ref transform result =
     match result with
     | Ok value -> Ok (transform (&value))
     | Error error -> Error error
 
-def map_error :: ('e -> 'f) -> Result 'a 'e -> Result 'a 'f
+def map_error :: ('e -> 'f) -> Result<'a, 'e> -> Result<'a, 'f>
 fn map_error transform result =
     match result with
     | Ok value -> Ok value
     | Error error -> Error (transform error)
 
-def bind :: Result 'a 'e -> ('a -> Result 'b 'e) -> Result 'b 'e
+def bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
 fn bind result next =
     match result with
     | Ok value -> next value
     | Error error -> Error error
 
-def bind_ref :: Copy 'e => &Result 'a 'e -> (&'a -> Result 'b 'e) -> Result 'b 'e
+def bind_ref :: Copy<'e> => &Result<'a, 'e> -> (&'a -> Result<'b, 'e>) -> Result<'b, 'e>
 fn bind_ref result next =
     match result with
     | Ok value -> next (&value)
     | Error error -> Error error
 
-def or_else :: Result 'a 'e -> (unit -> Result 'a 'e) -> Result 'a 'e
+def or_else :: Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 fn or_else result fallback =
     match result with
     | Ok value -> Ok value
     | Error _ -> fallback ()
 
-def to_option :: Result 'a 'e -> Option.Option 'a
+def to_option :: Result<'a, 'e> -> Option.Option<'a>
 fn to_option result =
     match result with
     | Ok value -> Option.Some value
     | Error _ -> Option.None
 
-def of_option :: 'e -> Option.Option 'a -> Result 'a 'e
+def of_option :: 'e -> Option.Option<'a> -> Result<'a, 'e>
 fn of_option error option =
     match option with
     | Option.Some value -> Ok value
     | Option.None -> Error error
 
-def Return :: 'a -> Result 'a 'e
+def Return :: 'a -> Result<'a, 'e>
 fn Return value = Ok value
 
-def ReturnFrom :: Result 'a 'e -> Result 'a 'e
+def ReturnFrom :: Result<'a, 'e> -> Result<'a, 'e>
 fn ReturnFrom result = result
 
-def Bind :: Result 'a 'e -> ('a -> Result 'b 'e) -> Result 'b 'e
+def Bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
 fn Bind result next = bind result next
 
-def Zero :: Result unit 'e
+def Zero :: Result<unit, 'e>
 fn Zero = Ok ()
 
-def Delay :: (unit -> Result 'a 'e) -> (unit -> Result 'a 'e)
+def Delay :: (unit -> Result<'a, 'e>) -> (unit -> Result<'a, 'e>)
 fn Delay body = body
 
-def Run :: (unit -> Result 'a 'e) -> Result 'a 'e
+def Run :: (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 fn Run body = body ()
 
-def Combine :: Result unit 'e -> (unit -> Result 'a 'e) -> Result 'a 'e
+def Combine :: Result<unit, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 fn Combine first rest =
     match first with
     | Ok _ -> rest ()
     | Error error -> Error error
 
-def For :: Copy 'a => ['a] -> ('a -> Result unit 'e) -> Result unit 'e
+def For :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> Result<unit, 'e>
 fn For values body = for_loop values body 0
 
-private def rec for_loop :: Copy 'a => ['a] -> ('a -> Result unit 'e) -> i64 -> Result unit 'e
+private def rec for_loop :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> i64 -> Result<unit, 'e>
 fn rec for_loop values body index =
     if index == values.length then Ok ()
     else
@@ -391,7 +391,7 @@ fn rec for_loop values body index =
         | Ok _ -> for_loop values body (index + 1)
         | Error error -> Error error
 
-def rec While :: (unit -> bool) -> (unit -> Result unit 'e) -> Result unit 'e
+def rec While :: (unit -> bool) -> (unit -> Result<unit, 'e>) -> Result<unit, 'e>
 fn rec While guard body =
     if guard () then
         match body () with
@@ -425,7 +425,7 @@ fn rec While guard body =
    - E02 の std 埋め込みリストに 2 ファイルを追加する。
    - 確認: `cargo test --locked --test option_result`（`running N tests` の N が 0 でないこと）で `Option { return 1 }` と `Result { return 1 }` が、ユーザー側に `.tc` ファイルなしで解決される。
 2. **A02 union との統合を確認する**
-   - `Option i64`, `Result i64 string`, `[Option i64]`, `Result (Option i64) string` が `resolve_type` で正しく解決されることをテストする。
+   - `Option<i64>`, `Result<i64, string>`, `[Option<i64>]`, `Result<Option<i64>, string>` が `resolve_type` で正しく解決されることをテストする。
    - `Some`, `None`, `Ok`, `Error` の無修飾解決が std fallback で動き、同名ケースがユーザー側にある場合は A02 の曖昧性診断へ従う。
    - 確認: `tests/option_result.rs` で受理／曖昧名 `E1004`／未解決名 `E1004` を検査。
 3. **基本関数の型・所有権を検査する**
@@ -450,7 +450,7 @@ fn rec While guard body =
    - 確認: `cargo build --release --locked && node tests/option_result.mjs target/release/tsuzuri`。
 7. **既存 examples を更新する**
    - `examples/computations/Checked.tc` は削除する（または `Checked.example.disabled` など `.tc` 以外へ改名し、自動読み込み対象から外す）。`Checked` builder を残すと、標準 `Result` ではなく疑似 `record Result { ok, value }` の例が引き続き使われるため不可。
-   - `examples/computations/Main.tz` の `divide` を `Result i64 i64`（error は例では `i64` の除数または固定コード）を返す関数へ書き換える。
+   - `examples/computations/Main.tz` の `divide` を `Result<i64, i64>`（error は例では `i64` の除数または固定コード）を返す関数へ書き換える。
    - `Checked { ... }` は `Result { ... }` に置き換える。
    - `answer.ok` / `answer.value` のフィールドアクセスは、`match answer with | Ok value -> value | Error _ -> -1` のような網羅的 `Ok`/`Error` match に置き換える。
    - ディレクトリ内に builder でない `.tc` が残らないことを確認する。必要な `.tc` は標準ライブラリ側の `std/Result.tc` だけ。
@@ -462,10 +462,10 @@ fn rec While guard body =
 
 - `tests/option_result.rs` を新規作成する。
 - 受理:
-  - `let x: Option i64 = Some 1`
-  - `let x: Option i64 = None`
-  - `let r: Result i64 string = Ok 1`
-  - `let r: Result i64 string = Error "bad"`
+  - `let x: Option<i64> = Some 1`
+  - `let x: Option<i64> = None`
+  - `let r: Result<i64, string> = Ok 1`
+  - `let r: Result<i64, string> = Error "bad"`
   - `Option.map (n -> n + 1) (Some 41)`
   - `Option.filter (n -> *n > 0) (Some 1)`
   - `Result.map_error (s -> s + "!") (Error "bad")`
@@ -480,9 +480,9 @@ fn rec While guard body =
   - `let x = Error "bad"` -> `E1015`
   - `Result { let! x = Ok 1; return! Error 2 }` where error type cannot unify -> `E1003`
   - `Option { for s in ["a"] do do! Some (); return 1 }` in phase 1 if `string` is non-Copy -> `E1005` or `E1012`（実装の Copy 制約診断に合わせて固定）
-  - `export def bad :: Option i64` -> `E1008`
-  - `let option = Some 1\nlet borrowed: Option &i64 = Option.map_ref (r -> r) (&option)\n0` -> `E1013`
-  - `let result = Ok 1\nlet borrowed: Result &i64 string = Result.bind_ref (&result) (r -> Ok r)\n0` -> `E1013`
+  - `export def bad :: Option<i64>` -> `E1008`
+  - `let option = Some 1\nlet borrowed: Option<&i64> = Option.map_ref (r -> r) (&option)\n0` -> `E1013`
+  - `let result = Ok 1\nlet borrowed: Result<&i64, string> = Result.bind_ref (&result) (r -> Ok r)\n0` -> `E1013`
 - IR 不変条件:
   - `llvm::emit` が 2 回一致。
   - WASM `emit_target` が成功。
@@ -572,7 +572,7 @@ fn trap_result_get = Result.get (Error 1)
 ## ドキュメント
 
 - `docs/language.md`:
-  - 「型とメモリ」に `Option 'a`／`Result 'a 'e` を追加。
+  - 「型とメモリ」に `Option<'a>`／`Result<'a, 'e>` を追加。
   - 「組み込み関数」または新しい「標準ライブラリ」節に `Option`/`Result` 関数一覧を追加。
   - 「コンピュテーション式」に `Option {}`／`Result {}` の例を追加し、`?` はないことを明記。
   - 「診断」の表は新コードなし。既存 `E1003`, `E1015`, `E1008` を使う。
@@ -588,25 +588,25 @@ fn trap_result_get = Result.get (Error 1)
 
 ## 受け入れ条件
 
-- [ ] `std/Option.tc` と `std/Result.tc` が std 埋め込みで常に読み込まれる。
-- [ ] `Option`/`Result` 型、ケース、関数、builder 操作が仕様どおり型検査される。
-- [ ] `Option {}`/`Result {}` の `let!` が `None`/`Error` で継続を呼ばない。
-- [ ] `Result` builder の error 型が全 `let!`/`return!` 間で単一化され、暗黙変換しない。
-- [ ] `Option.get None` と `Result.get (Error e)` が native/WASM でトラップする。
-- [ ] 組み込み `unreachable : unit -> 'a` が任意の型で使え（`def f :: string` / `fn f = unreachable ()` なども型検査を通る）、呼ぶと native/WASM × -O0/-O3 でトラップする。`unreachable` はユーザー関数名として再定義できない（`E1001`）。std の match はすべて網羅的で、A03 実装後も `E1021` にならない。
-- [ ] 所有 payload の move/drop/clone が正しく、E2E の heap tracking が各呼び出し後 `live == 0`。
-- [ ] scalar builder の既知継続が特殊化され、不要な closure allocation がないことを IR テストで確認した。
-- [ ] native/WASM × `-O0`/`-O3`、WASM import なし、IR 決定性を確認した。
-- [ ] README、`docs/language.md`、`docs/architecture.md`、必要なら `docs/benchmarks.md` を更新した。
+- [x] `std/Option.tc` と `std/Result.tc` が std 埋め込みで常に読み込まれる。
+- [x] `Option`/`Result` 型、ケース、関数、builder 操作が仕様どおり型検査される。
+- [x] `Option {}`/`Result {}` の `let!` が `None`/`Error` で継続を呼ばない。
+- [x] `Result` builder の error 型が全 `let!`/`return!` 間で単一化され、暗黙変換しない。
+- [x] `Option.get None` と `Result.get (Error e)` が native/WASM でトラップする。
+- [x] 組み込み `unreachable : unit -> 'a` が任意の型で使え（`def f :: string` / `fn f = unreachable ()` なども型検査を通る）、呼ぶと native/WASM × -O0/-O3 でトラップする。`unreachable` はユーザー関数名として再定義できない（`E1001`）。std の match はすべて網羅的で、A03 実装後も `E1021` にならない。
+- [x] 所有 payload の move/drop/clone が正しく、E2E の heap tracking が各呼び出し後 `live == 0`。
+- [x] scalar builder の既知継続が特殊化され、不要な closure allocation がないことを IR テストで確認した。
+- [x] native/WASM × `-O0`/`-O3`、WASM import なし、IR 決定性を確認した。
+- [x] README、`docs/language.md`、`docs/architecture.md`、必要なら `docs/benchmarks.md` を更新した。
 
 ## 落とし穴
 
 - `default_value` は eager。高価またはトラップしうる fallback には `default_with` を使うよう文書化する。
 - `Result.Zero` は `Ok ()`。`if condition { return value }` の else 省略で任意の `'a` を作れるわけではない。
-- `Option.Zero` は `None` なので多相だが、型文脈がなければ `E1015`。
-- `For` は phase 1 では `Copy 'a => ['a]`。通常の `for...in` のような非 Copy 要素の借用反復ではない。
-- `Delay` を定義する場合は `Run` も必要。`Delay` だけだと builder 全体が `unit -> Option 'a` になってしまう。
-- `Combine` の第 1 引数は `Option unit`／`Result unit 'e`。値を返す `return` はブロック末尾に置く。
+- `Option.Zero` は unit の成功 `Some ()`。省略した else から任意の成功型を作ることはできない（実装時の判断を参照）。
+- `For` は phase 1 では `Copy<'a> => ['a]`。通常の `for...in` のような非 Copy 要素の借用反復ではない。
+- `Delay` を定義する場合は `Run` も必要。`Delay` だけだと builder 全体が `unit -> Option<'a>` になってしまう。
+- `Combine` の第 1 引数は `Option<unit>`／`Result<unit, 'e>`。値を返す `return` はブロック末尾に置く。
 - `Option.get`/`Result.get`/`Result.get_error` は非網羅 `match` ではなく、GUIDE D-21 の `unreachable ()` を使った網羅的 `match` で書く。
 - `map_ref`/`bind_ref` は phase 1 では所有 payload を返す用途に限る。payload への共有借用を返り値に隠す使い方は、関数引数と `&Option`／`&Result` の両方が loan-carrying input になるため `E1013` で拒否し、借用結果 API は A09 まで延期する。
 - std 関数を `Builtin` にしない。組み込みにすると A02 の union 経路と性能・意味がずれる。
@@ -625,5 +625,20 @@ fn trap_result_get = Result.get (Error 1)
 - **決定済み（GUIDE D-21）:** 任意型を返す部分関数は、網羅的な `match` と発散する組み込み関数 `unreachable : unit -> 'a` で実装する。
   bottom 型・`panic : string -> 'a`・std 限定の非網羅許可は採用しない（メッセージ付きの失敗は G04 のトラップ位置報告で補う）。
   `unreachable` の追加は B01 の作業に含める。E02 が未完了で多相 builtin が使えない場合は、B01 に着手しない（E02 は依存）。
-- `For` の phase 1 を `Copy 'a => ['a]` に限定する。非 Copy payload の借用反復は C07 の反復プロトコル設計に合わせて拡張する。
+- `For` の phase 1 を `Copy<'a> => ['a]` に限定する。非 Copy payload の借用反復は C07 の反復プロトコル設計に合わせて拡張する。
 - `map_ref`/`bind_ref` の命名は `map_borrow`/`bind_borrow` も候補。既定案は D-01 の簡潔さを優先して `map_ref`/`bind_ref`。
+
+### 実装時の判断（B01）
+
+- `map_ref`／`bind_ref` を採用。適用された型の参照は既存構文に合わせ `&(Option<'a>)` のように括る。
+- 非 Copy の payload を参照経由で分解するときは、loan を含まない型に限り読み取り専用ビューを束縛する。
+  ビュー自身を ownership の仮想の根にして元の領域へ親付き共有 loan を保持し、move・生存中の元領域の変更・節外への借用を拒否する。
+  OR の側で借用／所有が混在すれば両側をビューに揃える。Copy 型は成立時に従来の複製を行い、配列等の深い複製は残る。
+- 抽象型のビューを move／変更と併用する既存の generic 関数は Copy 制約を推論し、具体化後の検査で保証する。
+- 提案の `Option.Zero = None` は、末尾の `do! Some ()` が `Bind ... (unit -> Zero())` になるため、
+  正常な非空 `For` まで失敗に変える。既存の汎用展開を特別扱いせず、`Option.Zero : Option<unit> = Some ()`
+  に修正した。空本体／省略 else／成功した `do!` は unit の成功で、明示的な失敗は `None`。
+- E2E は既存の `tests/features.mjs` の `option_result` suite に統合し、同じ native/WASM・解放追跡・trap harness を共有する。
+  スカラー継続は到達可能な直接呼び出し経路を追って無確保を確認し、未使用の汎用 adapter の定義は除外する。
+- `For`／`While` は通常の `while` で実装する。提案の値渡し再帰は配列を各反復で深く複製していたため、
+  配列を一度だけ所有し、失敗時には条件を短絡する直接ループにした。配列の再確保がない IR と大きな反復を検査する。

@@ -1,26 +1,26 @@
-record Pair 'a 'b { first: 'a, second: 'b }
-record Box 'a { value: 'a }
-record Wrap 'a { value: 'a }
+record Pair<'a, 'b> { first: 'a, second: 'b }
+record Box<'a> { value: 'a }
+record Wrap<'a> { value: 'a }
 
-def add_pair :: Pair i64 i64 -> Pair i64 i64 -> Pair i64 i64
+def add_pair :: Pair<i64, i64> -> Pair<i64, i64> -> Pair<i64, i64>
 fn add_pair a b =
     Pair { first: a.first + b.first, second: a.second + b.second }
 
-def owned :: Box string -> i64
+def owned :: Box<string> -> i64
 fn owned box =
     let text = box.value
     text.length
 
-def swap :: Pair 'a 'b -> Pair 'b 'a
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
 fn swap pair = Pair { first: pair.second, second: pair.first }
 
-def nested_length :: Wrap (Pair i64 string) -> i64
+def nested_length :: Wrap<Pair<i64, string>> -> i64
 fn nested_length wrapped = wrapped.value.first + wrapped.value.second.length
 
-def apply_boxed :: Box (i64 -> i64) -> i64 -> i64
+def apply_boxed :: Box<i64 -> i64> -> i64 -> i64
 fn apply_boxed boxed x = boxed.value x
 
-def weighted :: [Pair i64 i64] -> i64
+def weighted :: [Pair<i64, i64>] -> i64
 fn weighted pairs =
     let mut total = 0
     for Pair { first = count; second = weight } in pairs do
@@ -56,3 +56,11 @@ fn collections n =
     let pairs = [Pair { first: n, second: 2 }, Pair { first: 3, second: 4 }]
     let lists = Box { value: [|"a", "bc", "def"|] }
     weighted pairs + lists.value.length * 1000
+
+export def nested_syntax :: i64 -> i64
+fn nested_syntax n =
+    let value: Option<Pair<i64, string>>=Some (Pair { first: n, second: "abc" })
+    let work: Task<Option<Pair<i64, string>>>=task { return value }
+    match Task.run work with
+    | Some pair -> pair.first + pair.second.length
+    | None -> 0

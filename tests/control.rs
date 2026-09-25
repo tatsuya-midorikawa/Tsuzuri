@@ -115,7 +115,7 @@ fn match_origin_destructuring() {
     for source in [
         "for [x] in [[1], [2, 3]] do ()",
         "(fx [x] -> x) [1, 2]",
-        "union Maybe 'a = None | Some of 'a\nlet f = fx (Some n) -> n\nf (Some 1)",
+        "union Maybe<'a> = None | Some of 'a\nlet f = fx (Some n) -> n\nf (Some 1)",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nfor Even in [2, 3] do ()",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\n(fx Even -> 42) 3",
     ] {
@@ -362,14 +362,14 @@ fn match_place_evaluation_is_not_duplicated_by_ownership() {
 #[test]
 fn recursion_checks_include_class_methods_and_operators() {
     rejects(
-        "class C 'a { def f :: 'a -> i64 }\ninstance C i64 { fn f n = C.f n }",
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<i64> { fn f n = C.f n }",
         "E1019",
     );
     rejects(
-        "record R { x: i64 }\ninstance Add R { fn add x y = x + y }",
+        "record R { x: i64 }\ninstance Add<R> { fn add x y = x + y }",
         "E1019",
     );
     accepts(
-        "class C 'a { def f :: 'a -> i64 }\ninstance C i64 { fn rec f n = if n == 0 then 0 else C.f (n - 1) }\nC.f 4",
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<i64> { fn rec f n = if n == 0 then 0 else C.f (n - 1) }\nC.f 4",
     );
 }

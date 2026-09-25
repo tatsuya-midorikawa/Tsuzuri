@@ -27,6 +27,52 @@ fn known_continuations_use_direct_workers_and_entry_block_storage() {
 }
 
 #[test]
+fn standard_option_result_continuations_use_allocation_free_workers() {
+    let module = analyze(
+        "def option :: i64 -> i64
+         fn option offset = Option.get (Option { let! x = Some 20; return x + offset })
+         def result :: i64 -> i64
+         fn result offset =
+             let value: Result<i64, i64> = Result { let! x = Ok 20; return x + offset }
+             Result.get value",
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let mut visited = std::collections::BTreeSet::new();
+        let mut pending = Vec::new();
+        for name in ["option", "result"] {
+            assert!(body(&ir, &format!("tz.fn.Main.{name}")).contains("@tz.specialized."));
+            pending.push(format!("tz.fn.Main.{name}"));
+        }
+        // Generic adapters may allocate, but no such path may be reachable
+        // from these fully applied, scalar-only builder calls.
+        while let Some(name) = pending.pop() {
+            if !visited.insert(name.clone()) {
+                continue;
+            }
+            for line in body(&ir, &name)
+                .lines()
+                .filter(|line| line.contains("call "))
+            {
+                let (_, call) = line.split_once("call ").unwrap();
+                let (_, target) = call.split_once('@').expect("no indirect callback");
+                let target = target.split('(').next().unwrap();
+                assert_ne!(target, "tz.alloc", "{name}: {line}");
+                assert_ne!(target, "tz.closure.clone", "{name}: {line}");
+                if target.starts_with("tz.") {
+                    pending.push(target.to_owned());
+                }
+            }
+        }
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
 fn owned_captures_and_dynamic_effectful_cases_use_their_correct_paths() {
     let module = analyze_modules(&[
         (

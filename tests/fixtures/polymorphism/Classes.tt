@@ -1,3 +1,3 @@
-class Score 'a {
+class Score<'a> {
     def score :: &'a -> i32
 }

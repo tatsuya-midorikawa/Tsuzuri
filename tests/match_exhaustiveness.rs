@@ -2,7 +2,7 @@ use tsuzuri::check::CheckedModule;
 use tsuzuri::diagnostic::Diagnostic;
 use tsuzuri::{analyze, analyze_modules, llvm};
 
-const MAYBE: &str = "union Maybe 'a = None | Some of 'a\n";
+const MAYBE: &str = "union Maybe<'a> = None | Some of 'a\n";
 const SHAPE: &str = "union Shape = Empty | Circle of f64 | Rect of f64 * f64\n";
 const EVEN: &str = "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\n";
 
@@ -68,7 +68,7 @@ fn exhaustive_matches_are_accepted() {
         "match true with\n| (true as t) -> 1\n| (false: bool) -> 0".into(),
         format!("{MAYBE}match Some 42 with\n| Some n when n > 0 -> n\n| Some _ -> 0\n| None -> -1"),
         format!(
-            "{MAYBE}def f :: Maybe (Maybe bool) -> i64\nfn f x =\n    match x with\n    | Some (Some true) -> 2\n    | Some (Some false) -> 3\n    | Some None -> 1\n    | None -> 0\nf None"
+            "{MAYBE}def f :: Maybe<Maybe<bool>> -> i64\nfn f x =\n    match x with\n    | Some (Some true) -> 2\n    | Some (Some false) -> 3\n    | Some None -> 1\n    | None -> 0\nf None"
         ),
         "def (|Parts|) :: i64 -> (i64 * i64)\nfn (|Parts|) n = (n, n + 1)\nmatch 20 with\n| Parts (a, b) -> a + b".into(),
         "def (|Id|) :: bool -> bool\nfn (|Id|) b = b\nmatch true with\n| Id (true | false) -> 1".into(),
@@ -89,7 +89,7 @@ fn non_exhaustive_matches_report_a_missing_value() {
     missing("match () with\n| _ when true -> 1", "_");
     missing("match 2 with | 1 -> 0", "_");
     missing(
-        &format!("{MAYBE}def f :: Maybe i64 -> i64\nfn f x = match x with | Some n -> n\nf None"),
+        &format!("{MAYBE}def f :: Maybe<i64> -> i64\nfn f x = match x with | Some n -> n\nf None"),
         "None",
     );
     missing(
@@ -100,7 +100,7 @@ fn non_exhaustive_matches_report_a_missing_value() {
     );
     missing(
         &format!(
-            "{MAYBE}def f :: Maybe (Maybe bool) -> i64\nfn f x =\n    match x with\n    | None -> 0\n    | Some None -> 1\n    | Some (Some true) -> 2\nf None"
+            "{MAYBE}def f :: Maybe<Maybe<bool>> -> i64\nfn f x =\n    match x with\n    | None -> 0\n    | Some None -> 1\n    | Some (Some true) -> 2\nf None"
         ),
         "Some (Some false)",
     );

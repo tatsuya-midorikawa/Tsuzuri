@@ -11,7 +11,7 @@
 
 ## 目的
 
-決定的な順序で反復できる連想コンテナ `Map 'k 'v` と `Set 'k` を導入する。キーは `Ord` で整列し、挿入・削除は C01/C02 と同じく所有値を消費して新しい値を返す。一意所有時は内部 storage を in-place 更新してよい。
+決定的な順序で反復できる連想コンテナ `Map<'k, 'v>` と `Set<'k>` を導入する。キーは `Ord` で整列し、挿入・削除は C01/C02 と同じく所有値を消費して新しい値を返す。一意所有時は内部 storage を in-place 更新してよい。
 
 Phase 1 は B-tree/AVL ではなく **sorted contiguous entries** を採用する。これにより A04 recursive heap types を追加依存にしない。lookup は O(log n)、insert/remove は shift のため O(n)。将来、大規模データ向けに B-tree 実装へ移す場合は A04 を依存に追加する。
 
@@ -19,16 +19,16 @@ Phase 1 は B-tree/AVL ではなく **sorted contiguous entries** を採用す�
 
 - `Type` に Map/Set はない。
 - C02 完了後に `Vec` と `@tz.realloc` が使える。
-- A02/B01 完了後に `Option 'a` がある。
-- A11 後は `Ord` / `Eq` が borrowed signature になり、Map/Set の key comparison は key を消費しない。Phase 1 で `Copy 'k` が残るのは、key を値として返す snapshot API などに限る。
+- A02/B01 完了後に `Option<'a>` がある。
+- A11 後は `Ord` / `Eq` が borrowed signature になり、Map/Set の key comparison は key を消費しない。Phase 1 で `Copy<'k>` が残るのは、key を値として返す snapshot API などに限る。
 - レコード field は immutable で、可変共有状態はない。Map/Set も immutable value として扱う。
 
 ## 仕様
 
 ### 前提とする他チケットのインターフェース
 
-- A02/B01: `Option 'a = None | Some of 'a`。
-- A11: `Ord` / `Eq` comparison は borrowed であり、key comparison のためだけに `Copy 'k` を要求しない。
+- A02/B01: `Option<'a> = None | Some of 'a`。
+- A11: `Ord` / `Eq` comparison は borrowed であり、key comparison のためだけに `Copy<'k>` を要求しない。
 - A06: 型クラス拡張後も既存 `Ord` / `Eq` の組み込み・ユーザー instance が使える。
 - A07: `Ord` / `Eq` deriving により record/union key を使える。
 - C02: `Vec` と `@tz.realloc` の growth/drop/clone helper。
@@ -43,8 +43,8 @@ Phase 1 は B-tree/AVL ではなく **sorted contiguous entries** を採用す�
 Surface:
 
 ```text
-Map 'k 'v
-Set 'k
+Map<'k, 'v>
+Set<'k>
 ```
 
 内部:
@@ -79,33 +79,33 @@ LLVM phase 1:
 Phase 1 signatures:
 
 ```text
-Map.empty        : Map 'k 'v
-Map.singleton    : 'k -> 'v -> Map 'k 'v
-Map.length       : &Map 'k 'v -> i64
-Map.is_empty     : &Map 'k 'v -> bool
-Map.insert       : Ord 'k => Map 'k 'v -> 'k -> 'v -> Map 'k 'v
-Map.remove       : Ord 'k => Map 'k 'v -> 'k -> Map 'k 'v
-Map.contains_key : Ord 'k => &Map 'k 'v -> 'k -> bool
-Map.get          : (Ord 'k, Copy 'v) => &Map 'k 'v -> 'k -> Option 'v
-Map.at           : Ord 'k => &Map 'k 'v -> 'k -> &'v
-Map.to_array     : (Copy 'k, Copy 'v) => &Map 'k 'v -> [('k * 'v)]
-Map.keys         : Copy 'k => &Map 'k 'v -> ['k]
-Map.values       : Copy 'v => &Map 'k 'v -> ['v]
-Map.fold         : &Map 'k 'v -> 's -> ('s -> &'k -> &'v -> 's) -> 's
+Map.empty        : Map<'k, 'v>
+Map.singleton    : 'k -> 'v -> Map<'k, 'v>
+Map.length       : &Map<'k, 'v> -> i64
+Map.is_empty     : &Map<'k, 'v> -> bool
+Map.insert       : Ord<'k> => Map<'k, 'v> -> 'k -> 'v -> Map<'k, 'v>
+Map.remove       : Ord<'k> => Map<'k, 'v> -> 'k -> Map<'k, 'v>
+Map.contains_key : Ord<'k> => &Map<'k, 'v> -> 'k -> bool
+Map.get          : (Ord<'k>, Copy<'v>) => &Map<'k, 'v> -> 'k -> Option<'v>
+Map.at           : Ord<'k> => &Map<'k, 'v> -> 'k -> &'v
+Map.to_array     : (Copy<'k>, Copy<'v>) => &Map<'k, 'v> -> [('k * 'v)]
+Map.keys         : Copy<'k> => &Map<'k, 'v> -> ['k]
+Map.values       : Copy<'v> => &Map<'k, 'v> -> ['v]
+Map.fold         : &Map<'k, 'v> -> 's -> ('s -> &'k -> &'v -> 's) -> 's
 
-Set.empty        : Set 'k
-Set.singleton    : 'k -> Set 'k
-Set.length       : &Set 'k -> i64
-Set.insert       : Ord 'k => Set 'k -> 'k -> Set 'k
-Set.remove       : Ord 'k => Set 'k -> 'k -> Set 'k
-Set.contains     : Ord 'k => &Set 'k -> 'k -> bool
-Set.to_array     : Copy 'k => &Set 'k -> ['k]
-Set.union        : Ord 'k => Set 'k -> Set 'k -> Set 'k
-Set.intersect    : (Ord 'k, Copy 'k) => &Set 'k -> &Set 'k -> Set 'k
-Set.difference   : (Ord 'k, Copy 'k) => &Set 'k -> &Set 'k -> Set 'k
+Set.empty        : Set<'k>
+Set.singleton    : 'k -> Set<'k>
+Set.length       : &Set<'k> -> i64
+Set.insert       : Ord<'k> => Set<'k> -> 'k -> Set<'k>
+Set.remove       : Ord<'k> => Set<'k> -> 'k -> Set<'k>
+Set.contains     : Ord<'k> => &Set<'k> -> 'k -> bool
+Set.to_array     : Copy<'k> => &Set<'k> -> ['k]
+Set.union        : Ord<'k> => Set<'k> -> Set<'k> -> Set<'k>
+Set.intersect    : (Ord<'k>, Copy<'k>) => &Set<'k> -> &Set<'k> -> Set<'k>
+Set.difference   : (Ord<'k>, Copy<'k>) => &Set<'k> -> &Set<'k> -> Set<'k>
 ```
 
-`Map.at` は key が無ければ trap。`Map.get` は `Option` を返すが value を値として返すため `Copy 'v`。非 Copy value には `Map.at` + `clone_string` など借用 API を使う。
+`Map.at` は key が無ければ trap。`Map.get` は `Option` を返すが value を値として返すため `Copy<'v>`。非 Copy value には `Map.at` + `clone_string` など借用 API を使う。
 
 `remove` / `contains_key` / `get` / `at` の query key は値として受け取り、検索中は内部で借用して比較し、呼び出し後に drop する。既存 key を保持したい呼び出し元は `clone_string` などで明示的に所有値を用意する。将来、必要なら borrowed-key overload を別 API として追加する。
 
@@ -156,7 +156,7 @@ fn map_find(&mut self, key_ty: &Type, entries: &str, len: &str, key: &str) -> (f
 
 - lower_bound を返す。
 - `found` は `index < len && !(key < entries[index].key) && !(entries[index].key < key)`。
-- comparisons は A11 の borrowed `Ord` method を呼ぶ。query key と stored key は必要回数借用でき、比較のために `Copy 'k` を要求しない。
+- comparisons は A11 の borrowed `Ord` method を呼ぶ。query key と stored key は必要回数借用でき、比較のために `Copy<'k>` を要求しない。
 - primitive numeric key は直接 compare builtin specialization を許す。
 
 ### Insert
@@ -225,7 +225,7 @@ Set は Map の value なし版。`Set.union` は two-pointer merge:
 
 1. **型追加**
    - `Type::Map` / `Type::Set` と polymorph walkers。
-   - 確認: `Map i64 string` display。
+   - 確認: `Map<i64, string>` display。
 
 2. **LLVM drop/clone**
    - `%tz.map` / `%tz.set` header。
@@ -273,7 +273,7 @@ Set は Map の value なし版。`Set.union` は two-pointer merge:
 - non-Copy key with `Map.keys`, `Map.to_array`, `Set.to_array`, borrowed-input `Set.intersect`/`difference` → `E1005` Copy constraint。理由は返却用の値コピーであり、key comparison ではない。
 - non-Copy value with `Map.get` → `E1005` Copy constraint。
 - `let m2 = Map.insert m 1 2; Map.length (&m)` → `E1012`。
-- `export def f :: Map i64 i64` → `E1008`。
+- `export def f :: Map<i64, i64>` → `E1008`。
 
 IR:
 
@@ -311,7 +311,7 @@ Targets:
 
 ## 受け入れ条件
 
-- [ ] `Map 'k 'v` / `Set 'k` 型が使える。
+- [ ] `Map<'k, 'v>` / `Set<'k>` 型が使える。
 - [ ] key order deterministic。
 - [ ] insert/remove consumes owner and rejects move-after-use。
 - [ ] lookup by borrow allocates no storage。
@@ -339,7 +339,7 @@ Targets:
 
 ## 未決事項
 
-- A11 により key comparison 用の `Copy 'k` は不要。Phase 1 で `Copy 'k` を残すのは `Map.keys` / `Map.to_array` / `Set.to_array` / borrowed-input set algebra のように key を返却用に複製する API だけ。
+- A11 により key comparison 用の `Copy<'k>` は不要。Phase 1 で `Copy<'k>` を残すのは `Map.keys` / `Map.to_array` / `Set.to_array` / borrowed-input set algebra のように key を返却用に複製する API だけ。
 - Implementation is sorted contiguous storage。A04 は追加しない。tree に変更する場合だけ A04 を依存へ追加する。
 - `Map.at` missing key は trap、`Map.get` は Copy value Option の既定案。
 - 台帳の見直し提案: なし。D-20/A11 の borrowed `Ord` を前提にする。

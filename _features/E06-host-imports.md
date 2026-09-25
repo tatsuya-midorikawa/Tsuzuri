@@ -268,7 +268,7 @@ pub struct Program {
 
 Phase 1 では extern に typeclass constraints を許さない。
 
-`extern def show :: Display 'a => ...` は `E1008` または `E1015` で拒否する。
+`extern def show :: Display<'a> => ...` は `E1008` または `E1015` で拒否する。
 
 理由は host ABI が concrete であり polymorphic extern は symbol を決められないため。
 

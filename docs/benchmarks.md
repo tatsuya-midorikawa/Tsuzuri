@@ -217,6 +217,42 @@ node benchmarks/run-computations.mjs target/release/tsuzuri \
 | `array_for` | 8,192 要素 | 確保・seed 依存の初期化・捕捉した倍率による変換集計・解放 |
 | `array_bind` | 8,192 要素 | 配列を型注釈付き `let!` に渡し、同じ変換集計を行う |
 | `owned_capture` | 8,192 反復 | 256 要素の所有配列を捕捉し、前の結果に依存する添字で読み出す |
+| `std_option` | 2,000,000 反復 | 標準 Option の成功／失敗と、手書きの同じ union match |
+| `std_result` | 2,000,000 反復 | 標準 Result の二段の error 伝播と、手書きの同じ union match |
+| `std_option_owned` | 8,192 反復 | 所有文字列の連結・成功／失敗・解放を Option と手書き match で比較 |
+
+`std_*` は B01 で追加したため、この三種目を含む現在のソースとの `--baseline` 比較には Option／Result 対応版が必要です。
+`std_option_owned` の C++ は既知の文字列長を直接計算する最適化済みの参照であり、所有文字列のコスト比較は
+Tsuzuri の builder／手書き版の間で行います。これらの追加自体を高速化の実測結果とは扱いません。
+
+### 標準 Option／Result の測定（2026-09-25）
+
+`be5b27a` に P0 の未コミット差分を適用したコンパイラ（SHA-256
+`7e59f9bb41669b89639e1e1ffc83af94f8fd78d409d98ebe24b074816b7c661a`）を使用しました。
+Apple M1 Max（arm64、10 logical CPU）、macOS／Darwin 27.0.0、Homebrew Clang 23.1.1、Node 20.19.6。
+`generic`・`-O3`・fast-math／LTO なし、12 サンプルの中央値です。native は CPU 時間、
+WASM は warm-up 後の wall time で、起動時間は含みません。
+
+| 種目 | native C++ (ms) | native 手書き (ms) | native builder (ms) | WASM 手書き (ms) | WASM builder (ms) |
+|---|---:|---:|---:|---:|---:|
+| `std_option` | 4.666600 | 5.290500 | 5.273125 | 0.001854 | 0.002004 |
+| `std_result` | 5.168375 | 5.307625 | 5.257875 | 0.002101 | 0.002133 |
+| `std_option_owned` | 0.016241 | 0.173719 | 0.177957 | 0.014989 | 0.016846 |
+
+native の反復数は上表の仕事量、WASM は各 1024 反復です。1 回の実行だけで数 % の差を改善とはみなしません。
+特に所有文字列の C++ は確保を除去して長さを直接計算する参照なので、builder の追加コストは
+同じ所有値処理をする手書き Tsuzuri と比較してください。
+64 反復の別の計測用実行では scalar 2 種目は両版とも 0 確保、所有文字列は両版とも 55 回・605 バイトでした。
+最適化後 IR でも scalar は直接ループで確保・間接 callback なし、所有文字列は成功経路の 11 バイト確保と解放が残ります。
+SIMD・並列・GPU の加速を示す測定ではありません。
+
+生データは `target/benchmarks/p0-computations.json`、IR・アセンブリ・実行ファイルは
+`target/benchmarks/p0-computations/` に保存しました。再現コマンド:
+
+```sh
+node benchmarks/run-computations.mjs target/release/tsuzuri \
+  --artifacts target/benchmarks/p0-computations > target/benchmarks/p0-computations.json
+```
 
 C++ は符号なし整数と `std::bit_cast` で i64 の折り返しを再現し、signed overflow に依存しません。
 両版の Tsuzuri と C++ は同じ反復継続条件を使い、負の反復数を入口で拒否します。

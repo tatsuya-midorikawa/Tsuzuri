@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{CheckedModule, Local, Type, TypedExpr, TypedExprKind as E};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, Diagnostics, Span};
 use crate::syntax::BinaryOp;
 
 #[path = "ownership_control.rs"]
@@ -57,30 +57,47 @@ enum Use {
 }
 
 pub fn check(module: &CheckedModule) -> Result<(), Diagnostic> {
-    check_functions(module, false).map(|_| ())
+    check_all(module).into_iter().next().map_or(Ok(()), Err)
 }
 
-pub(crate) fn infer_copy(module: &CheckedModule) -> Result<Vec<BTreeSet<String>>, Diagnostic> {
+pub fn check_all(module: &CheckedModule) -> Vec<Diagnostic> {
+    check_functions(module, false).err().unwrap_or_default()
+}
+
+pub(crate) fn infer_copy_all(
+    module: &CheckedModule,
+) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
     check_functions(module, true)
 }
 
 fn check_functions(
     module: &CheckedModule,
     infer: bool,
-) -> Result<Vec<BTreeSet<String>>, Diagnostic> {
+) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
     let closed = closed_returns(module);
     let mut constraints = Vec::new();
+    let mut diagnostics = Diagnostics::new(0);
     for function in &module.functions {
-        constraints.push(check_body(
+        if diagnostics.is_full() {
+            break;
+        }
+        match check_body(
             module,
             &function.parameters,
             &function.body,
             infer,
             &closed,
             function.is_task,
-        )?);
+        ) {
+            Ok(required) => constraints.push(required),
+            Err(error) => diagnostics.push(error),
+        }
     }
-    Ok(constraints)
+    if diagnostics.is_empty() {
+        Ok(constraints)
+    } else {
+        Err(diagnostics.into_vec())
+    }
 }
 
 fn check_body(
@@ -993,6 +1010,7 @@ impl Checker<'_> {
             | E::String(_)
             | E::Bool(_)
             | E::Unit
+            | E::Error
             | E::Function(_)
             | E::GenericFunction(..)
             | E::CaseConstructor { .. }

@@ -71,7 +71,7 @@ slice range は `&` prefix parser の内部でだけ有効にする。裸の `xs
 - list slice は対象外。`&list[a..b]` は `E1005`。
 - string slice は対象外。`&text[a..b]` は `E1005`。D02 で UTF-8 境界規則とともに扱う。
 - slice は所有値ではないので `Vec.to_array` のような transfer はない。
-- `*slice` の dereference は owned array `[T]` を新しく作る。要素は `clone_value` されるため、非 Copy 要素では既存所有権規則に従い `E1012` または Copy 制約が必要になる。Phase 1 では `*slice` を値として使う場合 `Copy T` を要求する。
+- `*slice` の dereference は owned array `[T]` を新しく作る。要素は `clone_value` されるため、非 Copy 要素では既存所有権規則に従い `E1012` または Copy 制約が必要になる。Phase 1 では `*slice` を値として使う場合 `Copy<T>` を要求する。
 
 ### 評価順序と trap
 
@@ -333,7 +333,7 @@ guard %ok
 
 - Allocate new owned array of slice length with `allocate_array`.
 - Loop from `0..len`, load element from slice data, `clone_value`, store into new array.
-- This requires `Copy` from ownership for user-observable non-Copy moves. If generic, ownership infers `Copy 'a`.
+- This requires `Copy` from ownership for user-observable non-Copy moves. If generic, ownership infers `Copy<'a>`.
 
 `ForEach`:
 

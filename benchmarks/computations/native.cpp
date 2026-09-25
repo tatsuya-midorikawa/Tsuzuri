@@ -34,8 +34,13 @@ static NOINLINE std::int64_t cpp_loop(std::int64_t count, std::int64_t seed) {
                 const auto second = mix(first, salt);
                 state = (first & 3) == 0 ? second : second ^ salt;
             }
-        } else {
+        } else if constexpr (kind == 2) {
             state = mix(state, salt) + (mix(state ^ 71, salt) + mix(state ^ 113, salt));
+        } else if constexpr (kind == 3) {
+            state = (state & 7) == 0 ? state ^ salt : mix(state ^ salt, salt);
+        } else {
+            const auto length = (state & 7) == 0 ? 0 : 12;
+            state = mix(state, salt) ^ length;
         }
     }
     return std::bit_cast<std::int64_t>(state);
@@ -144,6 +149,9 @@ int main(int argc, char **argv) {
         WORKLOAD(array_for, cpp_array, quick ? 512 : 8192),
         WORKLOAD(array_bind, cpp_array, quick ? 512 : 8192),
         WORKLOAD(owned_capture, cpp_owned, quick ? 128 : 8192),
+        WORKLOAD(std_option, cpp_loop<3>, quick ? 1024 : 2000000),
+        WORKLOAD(std_result, cpp_loop<1>, quick ? 1024 : 2000000),
+        WORKLOAD(std_option_owned, cpp_loop<4>, quick ? 128 : 8192),
     };
     const int samples = quick ? 3 : 12;
     std::printf("{\"samples\":%d,\"clock_ticks_per_second\":%ld,\"workloads\":[",

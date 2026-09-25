@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | E02, B01 |
 | 後続 | A07, E07, G06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/`（E02 後）, `src/check.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/runtime/numeric.c`, `src/runtime/generate.py`, `src/runtime/string.ll`, `tests/display_parse.rs`, `tests/display_parse.mjs`, `tests/primitives.mjs`, `tests/numeric_casts.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `docs/benchmarks.md` |
 
 ## 目的
@@ -81,12 +81,12 @@ pub struct BuiltinScheme {
 
 型付き IR の builtin 参照は `FunctionRef::Builtin(BuiltinInstance { builtin, types })` だけを使う。
 このチケットで独自の `BuiltinSignature`、`BuiltinSignatureTemplate`、`FunctionRef::Builtin(Builtin, Vec<Type>)` を定義しない。
-B01 の `Option 'a` は `BuiltinType::Std { module: "Option", name: "Option", args: vec![BuiltinType::Var("a")] }` で表す。
+B01 の `Option<'a>` は `BuiltinType::Std { module: "Option", name: "Option", args: vec![BuiltinType::Var("a")] }` で表す。
 builtin-backed API 関数は `Builtin` entry としてだけ存在し、std source に同名 `def` を置かない。
-B01 は `Option 'a` を `std/Option.tc` に `union Option 'a = None | Some of 'a` として提供している前提にする。
+B01 は `Option<'a>` を `std/Option.tc` に `union Option<'a> = None | Some of 'a` として提供している前提にする。
 B01 の `Option.Some`/`Option.None` は std から常に解決でき、builtin lowering が値を構築できること。
-A08 は `Type::Char` 相当の `char` 型、Unicode スカラーリテラル、`Char.to_u32`, `Char.of_u32 : i32u -> Option char` を提供する前提にする。
-A08 が未完了の段階では char 用 `Display` instance と `Parse char` はこのチケット内で実装せず、スタブも置かない。
+A08 は `Type::Char` 相当の `char` 型、Unicode スカラーリテラル、`Char.to_u32`, `Char.of_u32 : i32u -> Option<char>` を提供する前提にする。
+A08 が未完了の段階では char 用 `Display` instance と `Parse<char>` はこのチケット内で実装せず、スタブも置かない。
 C03 の `&[T]` slice と C02 の `Vec` は D01 の必須依存ではないが、フェーズ 2 の string interpolation 実装で効率的な builder に使える。
 
 ### 他チケットへの提供インターフェース
@@ -117,15 +117,15 @@ InterpolatedPart   ::= RawStringText | '{{' | '}}' | '{' Expression '}'
 組み込みクラスを次の形で追加する。
 
 ```text
-class Display 'a {
+class Display<'a> {
     def display :: &'a -> string
 }
 
-class Parse 'a {
-    def parse :: &string -> Option 'a
+class Parse<'a> {
+    def parse :: &string -> Option<'a>
 }
 
-def to_string :: Display 'a => 'a -> string
+def to_string :: Display<'a> => 'a -> string
 ```
 
 `Display.display` は値を消費せず、共有借用から `string` を新しく返す。
@@ -310,7 +310,7 @@ E02 の仕様により、`"$"` を含む名前はソースから定義できな�
 
 `src/polymorph.rs` の `Classes::collect` で組み込みクラス `Display` と `Parse` を追加する。
 `Display` には method `display`、signature `&'a -> string`、operation `Operation::Builtin(Builtin::Display)` を持たせる。
-`Parse` には method `parse`、signature `&string -> Option 'a`、operation `Operation::Builtin(Builtin::Parse)` を持たせる。
+`Parse` には method `parse`、signature `&string -> Option<'a>`、operation `Operation::Builtin(Builtin::Parse)` を持たせる。
 現在の `Operation` は `Binary`/`Unary` だけなので次に拡張する。
 
 ```rust
@@ -495,17 +495,17 @@ literal segment は string literal と同じ UTF-8 bytes。
 `def f :: string; fn f = { let x = true; Display.display (&x) }`。
 `def f :: string; fn f = { let x = (); Display.display (&x) }`。
 `def f :: string; fn f = { let text = "abc"; Display.display (&text) }`。
-`def f :: Option i64; fn f = { let text = "42"; Parse.parse (&text) }`。
-`def f :: Option f64; fn f = { let text = "0.1"; Parse.parse (&text) }`。
+`def f :: Option<i64>; fn f = { let text = "42"; Parse.parse (&text) }`。
+`def f :: Option<f64>; fn f = { let text = "0.1"; Parse.parse (&text) }`。
 `let show = Display.display; let x = 1i64; show (&x)`。
-`let parse_i64: &string -> Option i64 = Parse.parse; let text = "1"; parse_i64 (&text)`。
+`let parse_i64: &string -> Option<i64> = Parse.parse; let text = "1"; parse_i64 (&text)`。
 
 拒否例:
 `record R { x: i64 }; fn f(r: R) -> string { to_string r }` は `E1005`。
-`fn f() -> Option string { let text = "x"; Parse.parse (&text) }` は `E1005`。
+`fn f() -> Option<string> { let text = "x"; Parse.parse (&text) }` は `E1005`。
 `fn f() -> string { fn local = 1; to_string local }` のような不正構文は既存 `E0002`。
 `fn to_string() -> i64 { 1 }` は builtin 名衝突で `E1001`。
-`instance Display i64 { fn display x = "" }` は組み込み instance 上書きで `E1016`。
+`instance Display<i64> { fn display x = "" }` は組み込み instance 上書きで `E1016`。
 
 IR 不変条件:
 同じ module を `llvm::emit` 2 回して完全一致。
@@ -587,18 +587,18 @@ node tests/numeric_casts.mjs target/release/tsuzuri
 
 ## 受け入れ条件
 
-- [ ] `Display`/`Parse`/`to_string` の型と所有権規則が仕様どおり。
-- [ ] `to_string` と `console_main` が全数値で同じ文字列を返す。
-- [ ] f16/f32/f64/f128 は非 NaN の display→parse が bit pattern を保つ。NaN は `nan` と canonical NaN の分類で検査する。
-- [ ] decimal は非 NaN の display→parse が数値、符号付きゼロ、special を保つ。NaN payload/sign は保持しない。
-- [ ] `Parse` は構文不正・overflow を `None` にし、トラップしない。
-- [ ] native と WASM、`-O0` と `-O3` で結果が同じ。
-- [ ] WASM imports は空。
-- [ ] `printf`/libc/libm に依存しない。
-- [ ] parse-only と to_string-only の native/WASM link test があり、`@tz_soft_parse`/`@tz_soft_format` で `numeric.ll` が連結される。
-- [ ] `numeric.ll` は `generate.py` で再生成され、手編集されていない。
-- [ ] 既存の数値演算・変換テストが壊れていない。
-- [ ] docs と README の表示仕様が実装と一致する。
+- [x] `Display`/`Parse`/`to_string` の型と所有権規則が仕様どおり。
+- [x] `to_string` と `console_main` が全数値で同じ文字列を返す。
+- [x] f16/f32/f64/f128 は非 NaN の display→parse が bit pattern を保つ。NaN は `nan` と canonical NaN の分類で検査する。
+- [x] decimal は非 NaN の display→parse が数値、符号付きゼロ、special を保つ。NaN payload/sign は保持しない。
+- [x] `Parse` は構文不正・overflow を `None` にし、トラップしない。
+- [x] native と WASM、`-O0` と `-O3` で結果が同じ。
+- [x] WASM imports は空。
+- [x] 数値の表示・解析は `printf`/libc の変換関数/libm に依存しない（既存の allocator と console の byte 出力は維持する）。
+- [x] parse-only と to_string-only の native/WASM link test があり、`@tz_soft_parse`/`@tz_soft_format` で `numeric.ll` が連結される。
+- [x] `numeric.ll` は `generate.py` で再生成され、手編集されていない。
+- [x] 既存の数値演算・変換テストが壊れていない。
+- [x] docs と README の表示仕様が実装と一致する。
 
 ## 落とし穴
 
@@ -630,9 +630,25 @@ string interpolation のフェーズ 1 実装。
 Ryu 相当の高速表を入れる場合は、生成スクリプトと表のライセンスを確認し、第三者コードをコピーしない。
 decimal の quantum を display/parse round-trip で保存するかは未決。
 既定案は保存しない正規化表示。
-`Parse string` を提供するかは未決。
+`Parse<string>` を提供するかは未決。
 既定案は提供しない。
 char の `Parse` を D01 に含めるかは A08 の完了時期次第。
 既定案は A08 側または D02 側で追加し、D01 は hook だけ用意する。
 
 台帳の見直し提案: なし。
+
+### 実装時の判断（D01）
+
+- binary の最短表示は既存の多倍長整数を使う Dragon4 の境界区間アルゴリズム。隣接値の中点・偶数 significand の
+  閉区間、2 の冪と最小 normal の非対称性を扱う。既存実装や第三者の表のコピーはしていない。
+- 指数表記は仕様の数式 `e < -6 || e >= significant_digits + 6` を優先するため、
+  例示中の `10000000.0` は `10000000` でなく `1e+7`。decimal の quantum は保持せず末尾ゼロを正規化する。
+- Parse は 4096 バイトまで全体を検査し、極端な指数は拡大前に分類する。数値の丸めは既存の有理数 `pack` と共有する。
+  `Parse<unit>`／`Parse<string>`／char／補間は追加しない。bool は LLVM と既存の文字列比較で扱う。
+- 独自 Display に対する `to_string` は型付きの借用＋メソッド呼び出しを生成し、通常の所有権検査と解放を使う。
+  再帰グラフにもこのメソッド依存を含める。string の `to_string` だけはバッファをそのまま返す。
+- E02 のカスタム std から Option を省いた場合は Parse 使用時に `E1004`。関係のないプログラムの解析は維持する。
+- 数値のコンソールはすべて `tz_soft_format` と `tz.console.write` に統一し、unit の無出力は維持する。
+- `tests/display_parse_reference.py` は Fraction による整数仮数区間の探索と Decimal の文脈で期待値を生成する。
+  全 f16、f32／f64 各 10,000、f128 2,000 のランダム値、整数全幅、decimal と構文・資源上限を両ターゲットで照合する。
+  型・所有値の E2E は `tests/features.mjs` の既存 harness と共有する。

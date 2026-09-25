@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | A02 |
 | 後続 | G03 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/check.rs`, `src/control.rs`, `src/ownership_control.rs`, `src/llvm_control.rs`, `src/main.rs`, `src/diagnostic.rs`, `src/syntax.rs`, `tests/control.rs`, `tests/fixtures/control/Main.tz`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -92,7 +92,7 @@ E1021: match is not exhaustive; missing: false
 union 例:
 
 ```text
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 match value with
 | Some x -> x
 ```
@@ -541,7 +541,7 @@ match () with
 ```
 
 ```text
-union Maybe 'a = None | Some of 'a
+union Maybe<'a> = None | Some of 'a
 match Some 42 with
 | Some n -> n
 | None -> 0
@@ -606,7 +606,7 @@ match Some 42 with
 |---|---|
 | `match true with | true -> 1` | `E1021`, missing `false` |
 | `match () with | _ when true -> 1` | `E1021`, missing `_` |
-| `union Maybe 'a = None | Some of 'a; match x with | Some n -> n` | `E1021`, missing `None` |
+| `union Maybe<'a> = None | Some of 'a; match x with | Some n -> n` | `E1021`, missing `None` |
 | `union Shape = Empty | Circle of f64 | Rect of f64 * f64; match s with | Empty -> 0 | Circle _ -> 1` | `E1021`, missing `Rect _` |
 | `match [1] with | [] -> 0 | [x] -> x` | `E1021`, missing `_` because arrays have arbitrary length |
 | `def f :: bool -> i64 fn f x | true -> 1` | `E1021`, missing `false` |
@@ -761,21 +761,21 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 
 ## 受け入れ条件
 
-- [ ] 明示 `match` が非網羅なら `E1021`。
-- [ ] 関数ガードが非網羅なら `E1021`。
-- [ ] guard 付き arm は網羅性に数えない。
-- [ ] 到達不能 arm は `W1003` warning として報告され、コンパイルは成功する。
-- [ ] warning が text / JSON CLI の両方で severity `"warning"` として出る。
-- [ ] bool, unit, union, tuple, record, array/list length, cons, OR/AND/as/annotation, active pattern を扱う。
-- [ ] list は `Nil` / `Cons` 正規化、array は `ArrayLen(n)` + other lengths として扱う。
-- [ ] active total recognizer は payload pattern が irrefutable な場合だけ coverage に寄与し、partial recognizer は決して coverage に寄与しない。
-- [ ] literal keys は型検査・丸め後の resolved Type + canonical bits/text で作り、signed zero と NaN の runtime equality を反映する。
-- [ ] pattern checking は lowering alternatives と typed `CoveragePat` を同時に返し、網羅性検査は raw AST を再解決しない。
-- [ ] integer/float/string literal の有限列挙だけでは網羅とみなさない。
-- [ ] `for` / `fx` / computation-expression destructuring の runtime trap semantics が残る。
-- [ ] resource limit 超過が `E1017`。
-- [ ] LLVM の match failure trap は削除されていない。
-- [ ] 既存 E2E の native/WASM × `-O0`/`-O3` が通る。
+- [x] 明示 `match` が非網羅なら `E1021`。
+- [x] 関数ガードが非網羅なら `E1021`。
+- [x] guard 付き arm は網羅性に数えない。
+- [x] 到達不能 arm は `W1003` warning として報告され、コンパイルは成功する。
+- [x] warning が text / JSON CLI の両方で severity `"warning"` として出る。
+- [x] bool, unit, union, tuple, record, array/list length, cons, OR/AND/as/annotation, active pattern を扱う。
+- [x] list は `Nil` / `Cons` 正規化、array は `ArrayLen(n)` + other lengths として扱う。
+- [x] active total recognizer は payload pattern が irrefutable な場合だけ coverage に寄与し、partial recognizer は決して coverage に寄与しない。
+- [x] literal keys は型検査・丸め後の resolved Type + canonical bits/text で作り、signed zero と NaN の runtime equality を反映する。
+- [x] pattern checking は lowering alternatives と typed `CoveragePat` を同時に返し、網羅性検査は raw AST を再解決しない。
+- [x] integer/float/string literal の有限列挙だけでは網羅とみなさない。
+- [x] `for` / `fx` / computation-expression destructuring の runtime trap semantics が残る。
+- [x] resource limit 超過が `E1017`。
+- [x] LLVM の match failure trap は削除されていない。
+- [x] 既存 E2E の native/WASM × `-O0`/`-O3` が通る。
 
 ## 落とし穴
 

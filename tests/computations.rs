@@ -6,6 +6,26 @@ const FLOW: &str = include_str!("fixtures/computations/Flow.tc");
 const LAZY: &str = include_str!("fixtures/computations/Lazy.tc");
 const TEXT: &str = include_str!("fixtures/computations/Text.tc");
 
+#[test]
+fn standard_builders_compose_without_local_builder_files() {
+    let module = analyze_modules(&[(
+        "Main.tz",
+        "let option = Option {
+             for n in [1, 2] do do! Some ()
+             return! Option { let! n = Some 20; return n }
+         }
+         let result: Result<i64, string> = Result {
+             while false do do! Ok ()
+             let! n = Ok 22
+             return n
+         }
+         Option.get option + Result.get result",
+    )])
+    .unwrap();
+    assert!(module.warnings.is_empty());
+    llvm::emit(&module, llvm::Entry::Library).unwrap();
+}
+
 fn sources(main: &str) -> [(&str, &str); 6] {
     [
         ("Identity.tc", IDENTITY),
@@ -314,13 +334,13 @@ fn keeps_computation_keywords_out_of_ordinary_expressions_and_lambdas() {
 #[test]
 fn enforces_file_kinds_and_one_module_or_builder_per_stem() {
     for (name, source, code) in [
-        ("Classes.tz", "class C 'a { def f :: 'a -> 'a }", "E1018"),
-        ("Builder.tc", "class C 'a { def f :: 'a -> 'a }", "E1018"),
+        ("Classes.tz", "class C<'a> { def f :: 'a -> 'a }", "E1018"),
+        ("Builder.tc", "class C<'a> { def f :: 'a -> 'a }", "E1018"),
         ("Classes.tt", "record R {}", "E1018"),
         ("Classes.tt", "def f :: i64\nfn f = 1", "E1018"),
         (
             "Classes.tt",
-            "instance Add bool { fn add a b = a }",
+            "instance Add<bool> { fn add a b = a }",
             "E1018",
         ),
         ("Main.tt", "42", "E1018"),
@@ -356,18 +376,18 @@ fn resolves_multiple_type_classes_from_one_file_in_code_and_builders() {
         ("Main.tz", "Scored { return 42i32 }"),
         (
             "Scored.tc",
-            "def Return :: (Traits.Score 'a, Traits.Size 'a) => &'a -> i64
+            "def Return :: (Traits.Score<'a>, Traits.Size<'a>) => &'a -> i64
              fn Return value = Traits.Score.score value + Traits.Size.size value",
         ),
         (
             "Traits.tt",
-            "class Score 'a { def score :: &'a -> i64 }
-             class Size 'a { def size :: &'a -> i64 }",
+            "class Score<'a> { def score :: &'a -> i64 }
+             class Size<'a> { def size :: &'a -> i64 }",
         ),
         (
             "Instances.tz",
-            "instance Traits.Score i32 { fn score n = (*n) as i64 }
-             instance Traits.Size i32 { fn size n = 0 }",
+            "instance Traits.Score<i32> { fn score n = (*n) as i64 }
+             instance Traits.Size<i32> { fn size n = 0 }",
         ),
     ]);
     assert!(module.is_err(), "Return requires a borrow, not a value");
@@ -375,18 +395,18 @@ fn resolves_multiple_type_classes_from_one_file_in_code_and_builders() {
         ("Main.tz", "let n = 42i32\nScored { return &n }"),
         (
             "Scored.tc",
-            "def Return :: (Traits.Score 'a, Traits.Size 'a) => &'a -> i64
+            "def Return :: (Traits.Score<'a>, Traits.Size<'a>) => &'a -> i64
              fn Return value = Traits.Score.score value + Traits.Size.size value",
         ),
         (
             "Traits.tt",
-            "class Score 'a { def score :: &'a -> i64 }
-             class Size 'a { def size :: &'a -> i64 }",
+            "class Score<'a> { def score :: &'a -> i64 }
+             class Size<'a> { def size :: &'a -> i64 }",
         ),
         (
             "Instances.tz",
-            "instance Traits.Score i32 { fn score n = (*n) as i64 }
-             instance Traits.Size i32 { fn size n = 0 }",
+            "instance Traits.Score<i32> { fn score n = (*n) as i64 }
+             instance Traits.Size<i32> { fn size n = 0 }",
         ),
     ])
     .unwrap();

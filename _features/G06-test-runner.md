@@ -259,8 +259,8 @@ Node wrapper は test ごとに別 process を起動し、指定 index を実行
 D01 / E02 後:
 
 ```text
-Test.equal : (Eq 'a, Display 'a) => &'a -> &'a -> unit
-Test.not_equal : (Eq 'a, Display 'a) => &'a -> &'a -> unit
+Test.equal : (Eq<'a>, Display<'a>) => &'a -> &'a -> unit
+Test.not_equal : (Eq<'a>, Display<'a>) => &'a -> &'a -> unit
 Test.is_true : bool -> unit
 ```
 

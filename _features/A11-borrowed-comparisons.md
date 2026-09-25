@@ -12,7 +12,7 @@
 
 ## 目的
 
-`==`、`!=`、`<`、`<=`、`>`、`>=` を全型で非消費にする。現状は `string` の `==`/`!=` だけが特例で非消費だが、ユーザー定義 `Eq`/`Ord`、A06 の条件付き `Eq ['a]` / `Ord (Option 'a)`、A07 の deriving、C04 の `Array.contains` / `Array.sort`、C06 の Map key 比較では、比較のためだけに非 Copy 値を move してしまう。このチケットで `Eq`/`Ord` の組み込みシグネチャを借用へ変更し、演算子 lowering と所有権検査をそれに合わせる。
+`==`、`!=`、`<`、`<=`、`>`、`>=` を全型で非消費にする。現状は `string` の `==`/`!=` だけが特例で非消費だが、ユーザー定義 `Eq`/`Ord`、A06 の条件付き `Eq<['a]>` / `Ord<Option<'a>>`、A07 の deriving、C04 の `Array.contains` / `Array.sort`、C06 の Map key 比較では、比較のためだけに非 Copy 値を move してしまう。このチケットで `Eq`/`Ord` の組み込みシグネチャを借用へ変更し、演算子 lowering と所有権検査をそれに合わせる。
 
 この変更は比較だけを対象にする。`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Bits`/`Neg` は従来どおり値を受け取り、`string + string` も両辺を消費する。
 
@@ -30,7 +30,7 @@
 - `src/llvm_frame.rs` `Frame::read_operand` は場所なら所有者を残したまま `read_place`、場所でない式なら `frame_value` で一時フレームへ materialize する。`release_operand` は場所でない一時値だけ `drop_framed` する。
 - `tests/types_ownership.rs` は `fn f() -> bool { let s = "x"; s == s && { let t = "x"; t } == s }` を受理し、`fn f() -> bool { let s = "x"; s == { let t = s; t } }` を借用競合で拒否する。これは string equality の現行非消費規則の回帰テストである。
 - `tests/polymorphism.rs` は user class / instance、method value、operator instance、数値 representation の operator specialization を検査するが、非 Copy record の `Eq`/`Ord` user instance と演算子非消費は未検査。
-- `tests/fixtures/polymorphism/Main.tz` と `examples/polymorphism/Main.tz` は `Add Point` と borrowed user class method value を使うが、`Eq Point`/`Ord Point` はない。
+- `tests/fixtures/polymorphism/Main.tz` と `examples/polymorphism/Main.tz` は `Add<Point>` と borrowed user class method value を使うが、`Eq<Point>`/`Ord<Point>` はない。
 - `docs/language.md` は「既存の string の `==`／`!=` は引き続き非消費の比較です。`Eq.eq` のような通常のメソッド適用ではシグネチャどおり引数の所有権を渡します。」と書いている。A11 後はこの文を削除し、比較全体の非消費規則と `Eq`/`Ord` の借用シグネチャへ更新する。
 
 ## 仕様
@@ -40,12 +40,12 @@
 `Eq` と `Ord` だけを次へ変更する。
 
 ```text
-class Eq 'a {
+class Eq<'a> {
     def eq :: &'a -> &'a -> bool
     def ne :: &'a -> &'a -> bool
 }
 
-class Ord 'a {
+class Ord<'a> {
     def lt :: &'a -> &'a -> bool
     def le :: &'a -> &'a -> bool
     def gt :: &'a -> &'a -> bool
@@ -56,7 +56,7 @@ class Ord 'a {
 `Add` 等は変更しない。
 
 ```text
-class Add 'a {
+class Add<'a> {
     def add :: 'a -> 'a -> 'a
 }
 ```
@@ -64,7 +64,7 @@ class Add 'a {
 メソッド値もこの型を持つ。例えば `Eq.eq` は制約付きの `&'a -> &'a -> bool`、`Ord.lt` は `&'a -> &'a -> bool` であり、次のように使う。
 
 ```text
-def same_by_method :: Eq 'a => &'a -> &'a -> bool
+def same_by_method :: Eq<'a> => &'a -> &'a -> bool
 fn same_by_method left right =
     let f: &'a -> &'a -> bool = Eq.eq;
     f left right
@@ -77,7 +77,7 @@ fn same_by_method left right =
 ```text
 record User { name: string, score: i64 }
 
-instance Eq User {
+instance Eq<User> {
     fn eq left right = left.name == right.name && left.score == right.score
     fn ne left right = !(Eq.eq left right)
 }
@@ -106,12 +106,12 @@ fn bad() -> bool {
 
 instance method の仮引数は `&T` になる。既存の field access は `Checker::autoderef` によりそのまま通る。例えば `left.x == right.x` は `left` / `right` を field access のために自動参照外ししてから、field 値を比較する。
 
-一方で、比較演算子自体は参照を自動 dereference しない。`src/check.rs` `Checker::binary_type` は左右の型をそのまま一致させて `Eq` / `Ord` 制約を課すだけで、`left == right` のような `&R` 同士の比較は `Eq (&R)` を要求する。`Eq (&R)` は存在しないため、instance method 内で同じ型の値全体を比較したい場合は `Eq.eq left right` / `Ord.lt left right` のように class method を呼ぶ。
+一方で、比較演算子自体は参照を自動 dereference しない。`src/check.rs` `Checker::binary_type` は左右の型をそのまま一致させて `Eq` / `Ord` 制約を課すだけで、`left == right` のような `&R` 同士の比較は `Eq<&R>` を要求する。`Eq<&R>` は存在しないため、instance method 内で同じ型の値全体を比較したい場合は `Eq.eq left right` / `Ord.lt left right` のように class method を呼ぶ。
 
 ```text
 record Point { x: i64, y: i64 }
 
-instance Eq Point {
+instance Eq<Point> {
     fn eq left right = left.x == right.x && left.y == right.y
     fn ne left right = !(Eq.eq left right)
 }
@@ -123,7 +123,7 @@ instance Eq Point {
 def consume :: Point -> i64
 fn consume point = point.x
 
-instance Eq Point {
+instance Eq<Point> {
     fn eq left right = consume left == consume right // E1003: left/right は &Point
     fn ne left right = !(Eq.eq left right)
 }
@@ -159,10 +159,10 @@ instance Eq Point {
 
 ### 他チケットへの提供インターフェース
 
-- A06 は `Eq ['a]`、`Ord (Option 'a)`、superclass default method を借用シグネチャで書く。`fn le x y = Ord.lt x y || Eq.eq x y` の `x`/`y` は `&'a`。
+- A06 は `Eq<['a]>`、`Ord<Option<'a>>`、superclass default method を借用シグネチャで書く。`fn le x y = Ord.lt x y || Eq.eq x y` の `x`/`y` は `&'a`。
 - A07 は derived `Eq`/`Ord` を非消費に生成できる。field/payload の比較は借用を渡し、非 Copy component を move しない。
 - C04 は `Array.equal`、`contains`、`index_of`、`binary_search`、`sort` の comparator で要素を借用して比較できる。値を返す API だけ `Copy` 等を要求する。
-- C06 は key comparison のためだけの `Copy 'k` を外せる。`Map.get` の値返却や `Map.keys` の配列生成など、値を返す操作に必要な `Copy` は残す。
+- C06 は key comparison のためだけの `Copy<'k>` を外せる。`Map.get` の値返却や `Map.keys` の配列生成など、値を返す操作に必要な `Copy` は残す。
 
 ## 設計
 
@@ -189,7 +189,7 @@ let parameters = if matches!(
 
 ### `Classes::instances`
 
-`Classes::instances` は現在の `type_expression(&substitute(ty, &substitutions), records, span)` を維持する。A11 後は `Eq Point` の method parameter が `&Point` になるため、ユーザーが `fn eq left right = left.x == right.x` と書いた場合、生成 `FunctionDecl` の parameter type が `&Point` になる。
+`Classes::instances` は現在の `type_expression(&substitute(ty, &substitutions), records, span)` を維持する。A11 後は `Eq<Point>` の method parameter が `&Point` になるため、ユーザーが `fn eq left right = left.x == right.x` と書いた場合、生成 `FunctionDecl` の parameter type が `&Point` になる。
 
 注意点:
 
@@ -199,7 +199,7 @@ let parameters = if matches!(
 
 ### `Checker::binary_type`
 
-`src/check.rs` `Checker::binary_type` の外部仕様はほぼ変更しない。左右の値型は同じでなければならず、比較演算子は `Eq T` または `Ord T` constraint を追加し、結果は `bool`。
+`src/check.rs` `Checker::binary_type` の外部仕様はほぼ変更しない。左右の値型は同じでなければならず、比較演算子は `Eq<T>` または `Ord<T>` constraint を追加し、結果は `bool`。
 
 ここで operand type を `&T` に変えないことが重要である。演算子の surface type は `T == T -> bool` のままに見えるが、所有権と lowering が内部的に借用へ変換する。
 
@@ -314,7 +314,7 @@ operator lowering では intrinsic class を `None` のまま残すため、こ�
 
 - `Classes::recursion_targets` は `Binary(Equal | Less ...)` の class/method を引き続き候補に含める。
 - `BorrowOperand` を `children` に含めることで、comparison operand 内の関数参照も漏らさない。
-- instance method body が `Eq.eq left right` / `Ord.lt left right` で同じ instance method へ再帰する場合は、従来どおり `rec` が必要。`left == right` のような参照同士の演算子比較は `Eq (&T)` を要求するため、この用途には使わない。
+- instance method body が `Eq.eq left right` / `Ord.lt left right` で同じ instance method へ再帰する場合は、従来どおり `rec` が必要。`left == right` のような参照同士の演算子比較は `Eq<&T>` を要求するため、この用途には使わない。
 
 ### tail recursion
 
@@ -356,7 +356,7 @@ operator lowering では intrinsic class を `None` のまま残すため、こ�
 3. **operator lowering**
    - `BorrowOperand`（または同等の internal borrowed operand）を追加する。
    - `Specializer::operator_call` で user `Eq`/`Ord` operator だけ borrowed operands を渡す。
-   - 確認: `record R { s: string }` の user `Eq R` で `r == r` が型検査を通る。
+   - 確認: `record R { s: string }` の user `Eq<R>` で `r == r` が型検査を通る。
 4. **所有権**
    - `E::Binary` の比較を全型 `Use::Read` にする。
    - `BorrowOperand` の loan と一時値寿命を実装する。
@@ -381,7 +381,7 @@ operator lowering では intrinsic class を `None` のまま残すため、こ�
 ```text
 record Box { value: string }
 
-instance Eq Box {
+instance Eq<Box> {
     fn eq left right = left.value == right.value
     fn ne left right = !(Eq.eq left right)
 }
@@ -397,7 +397,7 @@ fn main = {
 ```text
 record Pair { left: string, right: string }
 
-instance Ord Pair {
+instance Ord<Pair> {
     fn lt a b = a.left < b.left || (a.left == b.left && a.right < b.right)
     fn le a b = !(Ord.lt b a)
     fn gt a b = Ord.lt b a
@@ -406,7 +406,7 @@ instance Ord Pair {
 ```
 
 ```text
-def method_value :: Eq 'a => &'a -> &'a -> bool
+def method_value :: Eq<'a> => &'a -> &'a -> bool
 fn method_value left right =
     let f: &'a -> &'a -> bool = Eq.eq;
     f left right
@@ -417,9 +417,9 @@ fn method_value left right =
 | プログラム | 期待 |
 |---|---|
 | `let f: string -> string -> bool = Eq.eq` | `E1003` |
-| `record R { s: string } instance Eq R { fn eq left right = left == right; fn ne left right = !(Eq.eq left right) }` | `E1005` (`left`/`right` are `&R`; operators do not autoderef references, so this asks for `Eq (&R)`) |
-| `instance Eq R { fn eq a b = consume a == consume b ... }` where `consume : R -> i64` | `E1003` |
-| `instance Eq R { fn eq a b = consume (*a) == consume (*b) ... }` for non-Copy `R` | `E1012` |
+| `record R { s: string } instance Eq<R> { fn eq left right = left == right; fn ne left right = !(Eq.eq left right) }` | `E1005` (`left`/`right` are `&R`; operators do not autoderef references, so this asks for `Eq<&R>`) |
+| `instance Eq<R> { fn eq a b = consume a == consume b ... }` where `consume : R -> i64` | `E1003` |
+| `instance Eq<R> { fn eq a b = consume (*a) == consume (*b) ... }` for non-Copy `R` | `E1012` |
 | `let mut x = R { ... }; x == { x = R { ... }; x }` | `E1014` |
 | recursive `Eq` instance method without `rec` | `E1019` |
 
@@ -428,7 +428,7 @@ IR:
 - `fn eq_i64(x: i64, y: i64) -> bool { x == y }` の IR は wrapper call や `alloca` 経由の参照引数を含まず、A11 前と同じ `icmp` 形。
 - `fn lt_f64(x: f64, y: f64) -> bool { x < y }` は `fcmp olt` で fast-math flags なし。
 - `fn eq_string(x: string, y: string) -> bool { x == y }` は `@tz.string.equal` を直接呼ぶ。
-- user `Eq Box` の `box == box` は `$instance` method call になり、operand materialization の一時 drop が call 後にある。
+- user `Eq<Box>` の `box == box` は `$instance` method call になり、operand materialization の一時 drop が call 後にある。
 
 ### Rust: `tests/types_ownership.rs`
 
@@ -436,7 +436,7 @@ IR:
 
 ```text
 record R { s: string }
-instance Eq R {
+instance Eq<R> {
     fn eq a b = a.s == b.s
     fn ne a b = !(Eq.eq a b)
 }
@@ -451,7 +451,7 @@ fn f() -> string {
 
 ```text
 record R { s: string }
-instance Eq R {
+instance Eq<R> {
     fn eq a b = a.s == b.s
     fn ne a b = !(Eq.eq a b)
 }
@@ -476,7 +476,7 @@ fn f() -> bool {
   - loop 内で同じ record を複数回比較し、比較後に `.value.length` を読む。
   - checksum を返す。
 - `export def method_value_scalar :: i64 -> i64 -> bool` は `Eq.eq` method value を `&i64` で呼ぶ。
-- `export def method_value_record :: bool` は user `Eq Box` の method value を `&Box` で呼ぶ。
+- `export def method_value_record :: bool` は user `Eq<Box>` の method value を `&Box` で呼ぶ。
 - `export def ordered :: i64` は `tick (&mut counter)` を左右 operand に使い、評価順序が左→右であることを checksum で確認する。ただし同じ owner を比較中に変更するケースは拒否テストへ分離する。
 
 Node E2E:
@@ -513,7 +513,7 @@ node tests/primitives.mjs target/release/tsuzuri
 
 ### docs examples
 
-`examples/polymorphism` に `Eq Point` または `Eq Box` を追加し、`point == point` 後に `point` を使う例を入れる。
+`examples/polymorphism` に `Eq<Point>` または `Eq<Box>` を追加し、`point == point` 後に `point` を使う例を入れる。
 
 ## ドキュメント
 

@@ -232,7 +232,7 @@ pub struct TypeExpr {
 pub enum TypeExprKind {
     Named(String),
     Variable(String),
-    /// Prefix type application such as `Pair i64 string` or `Add 'a`; the
+    /// Type application such as `Pair<i64, string>` or `Add<'a>`; the
     /// checker decides whether the head names a record or a type class.
     /// Both parts are boxed so every `TypeExpr` and expression embedding one
     /// stays as small as before, which bounds the parser's recursion stack.

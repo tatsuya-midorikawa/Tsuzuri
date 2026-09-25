@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | E01 |
 | 後続 | B01, C01, C02, C04, D01, D02, D03, D04, D05, A08, E03, E06, E07, F04 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/`, `src/stdlib.rs`, `src/lib.rs`, `src/driver.rs`, `src/check.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/main.rs`, `tests/modules.rs`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 ## 目的
 Tsuzuri コンパイラに標準ライブラリのソースを同梱し、ユーザーが `std/` ファイルをコピーしなくても `Option`、`Array`、`Int`、`Debug` などを利用できる基盤を作る。
@@ -120,7 +120,7 @@ namespace function なら `Classes::method` を呼ばず、source function を�
 builtin の型スキームは `Scheme` と同等の情報を持つ。
 builtin の制約は通常関数制約と同じ `Constraint` として `Checker.constraints` に追加する。
 LLVM builtin symbol は concrete 型を含む決定的な名前にする。
-例: `Int.popcount : Integer 'a => 'a -> 'a` を `i64` で使う場合、内部名は `@tz.builtin.Int.popcount[i64]` または `@tz.builtin.Int.popcount.i64` のどちらかに統一する。
+例: `Int.popcount : Integer<'a> => 'a -> 'a` を `i64` で使う場合、内部名は `@tz.builtin.Int.popcount[i64]` または `@tz.builtin.Int.popcount.i64` のどちらかに統一する。
 推奨は LLVM 識別子の quoting を避けるため `@tz.builtin.Int.popcount.i64`。
 型名 mangling は `llvm.rs` に helper を置き、既存の単相化名と同じ順序で決定的にする。
 builtin の IR は `emit_builtin(instance, intrinsics)` で concrete 型を受けて生成する。
@@ -617,30 +617,30 @@ driver tests の `Project.sources` exact list は user source だけを filter �
 `README.md` の CLI 節に、`check` と `--emit llvm` は std 同梱後も LLVM 不要と明記する。
 後続チケットが std module を増やす場合は `_features/GUIDE.md` D-07 の表も同時更新する。
 ## 受け入れ条件
-- [ ] `std/` と `src/stdlib.rs` が追加され、default std が `include_str!` で埋め込まれる。
-- [ ] `analyze`、`analyze_modules`、`Project::load` のすべてで std が読み込まれる。
-- [ ] Rust tests から custom std を注入できる。
-- [ ] D-07 の予約 std module 名が user module として `E1011` で拒否される。
-- [ ] 無修飾 type/record/class 解決が user → std の順になる。
-- [ ] std origin からの無修飾 type/record/union/class 解決は user 宣言を検索しない。
-- [ ] 関数は修飾必須のまま。
-- [ ] qualified builtin が source function fallback として解決される。
-- [ ] std source の source `def` は builtin-backed API と同じ qualified name を持たないことを Rust test で保証する。
-- [ ] qualified builtin が class method 解決より前に namespace function として分類される。
-- [ ] `Task.run` / `Task.parallel` が一般 builtin namespace mechanism で動く。
-- [ ] builtin が複数引数・型変数・制約を表せる。
-- [ ] multi-argument builtin の partial application、pipeline、function value 化が closure lowering 後も正しい。
-- [ ] builtin IR emission が concrete specialization ごとに決定的に行われる。
-- [ ] `unreachable : unit -> 'a` を D-21 の symbol 形で実装できる。
-- [ ] unused std function/type/builtin wrapper が closure lowering 後の reachable set から pruning される。
-- [ ] `CheckedFunction` の origin は D-22 の `FunctionOrigin` 一つだけで、module 判定は `.origin.module` を使う。
-- [ ] generated helpers inherit `origin.module`/`origin.test` from parent and set `origin.parent`.
-- [ ] `reachable_functions` is the single emission-set computation; G06 changes only root selection.
-- [ ] user function の emission は従来通り維持される。
-- [ ] named record/union type definitions are collected only from emitted functions/wrappers/roots.
-- [ ] WASM default imports は空のまま。
-- [ ] `check` / `--emit llvm` に LLVM/Clang/LLD が不要。
-- [ ] docs と README が更新される。
+- [x] `std/` と `src/stdlib.rs` が追加され、default std が `include_str!` で埋め込まれる。
+- [x] `analyze`、`analyze_modules`、`Project::load` のすべてで std が読み込まれる。
+- [x] Rust tests から custom std を注入できる。
+- [x] D-07 の予約 std module 名が user module として `E1011` で拒否される。
+- [x] 無修飾 type/record/class 解決が user → std の順になる。
+- [x] std origin からの無修飾 type/record/union/class 解決は user 宣言を検索しない。
+- [x] 関数は修飾必須のまま。
+- [x] qualified builtin が source function fallback として解決される。
+- [x] std source の source `def` は builtin-backed API と同じ qualified name を持たないことを Rust test で保証する。
+- [x] qualified builtin が class method 解決より前に namespace function として分類される。
+- [x] `Task.run` / `Task.parallel` が一般 builtin namespace mechanism で動く。
+- [x] builtin が複数引数・型変数・制約を表せる。
+- [x] multi-argument builtin の partial application、pipeline、function value 化が closure lowering 後も正しい。
+- [x] builtin IR emission が concrete specialization ごとに決定的に行われる。
+- [x] `unreachable : unit -> 'a` を D-21 の symbol 形で実装できる。
+- [x] unused std function/type/builtin wrapper が closure lowering 後の reachable set から pruning される。
+- [x] `CheckedFunction` の origin は D-22 の `FunctionOrigin` 一つだけで、module 判定は `.origin.module` を使う。
+- [x] generated helpers inherit `origin.module`/`origin.test` from parent and set `origin.parent`.
+- [x] `reachable_functions` is the single emission-set computation; G06 changes only root selection.
+- [x] user function の emission は従来通り維持される。
+- [x] named record/union type definitions are collected only from emitted functions/wrappers/roots.
+- [x] WASM default imports は空のまま。
+- [x] `check` / `--emit llvm` に LLVM/Clang/LLD が不要。
+- [x] docs と README が更新される。
 ## 落とし穴
 std source を `Project.sources` に入れるだけでは、output protection が仮想 path を保護しようとして壊れる。
 std source を user source より前に入れると、既存の `Span.source` 期待と diagnostics source id が変わる。
@@ -697,7 +697,7 @@ custom std hook を public API として長期維持するかは未決。既定�
 - `emit_builtin` は `BuiltinInstance` と具体的な callee 型を受け取る。
 - std の関数が組み込み関数と同じ修飾名を持つ場合は、テストでの検出に加えて型検査でも `E1001` の重複として拒否する。
 - D-07 に従い、無修飾のクラス名も自モジュール → 利用者のモジュールで一意 → std の順に解決するようにした。
-  以前は他モジュールのクラスを無修飾では参照できなかった（`instance Score Point` が `E1016`）。
+  以前は他モジュールのクラスを無修飾では参照できなかった（`instance Score<Point>` が `E1016`）。
 - 予約モジュール名は std の有無に関係なく `E1011`。利用者と std のモジュール名の衝突と不正な std のパスも `E1011` で、
   衝突は利用者のソース位置を指す。std の `export def` は `E1018` で、診断表の `E1018` の説明を拡張した。
 - 生成関数の番号（`$lambda.N`、`$mono.N` など）は std の関数の数だけずれる。出力は決定的だが、std に関数を追加すると

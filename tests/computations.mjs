@@ -195,12 +195,12 @@ int main(int argc, char **argv) {
   const classes = join(invalid, "Classes.tt");
   writeFileSync(main, "Builder { return 42 }");
   writeFileSync(builder, "def Return :: 'a -> 'a\nfn Return value = value");
-  writeFileSync(classes, "class A 'a { def f :: 'a -> i64 }\nclass B 'a { def g :: 'a -> i64 }");
+  writeFileSync(classes, "class A<'a> { def f :: 'a -> i64 }\nclass B<'a> { def g :: 'a -> i64 }");
   cli(["check", classes]);
   for (const [path, text, code, original] of [
     [main, "Builder { yield 42 }", "E1018", readFileSync(main, "utf8")],
     [builder, "def Return :: i64 -> i64\nfn Return value = false", "E1003", readFileSync(builder, "utf8")],
-    [classes, "class Bad 'a { def f :: 'b -> 'b }", "E1016", readFileSync(classes, "utf8")],
+    [classes, "class Bad<'a> { def f :: 'b -> 'b }", "E1016", readFileSync(classes, "utf8")],
     [classes, "def helper :: i64\nfn helper = 42", "E1018", readFileSync(classes, "utf8")],
   ]) {
     writeFileSync(path, text);

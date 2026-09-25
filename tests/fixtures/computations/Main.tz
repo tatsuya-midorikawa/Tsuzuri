@@ -1,8 +1,8 @@
-instance Traits.Score i64 {
+instance Traits.Score<i64> {
     fn score value = *value
 }
 
-instance Traits.Size string {
+instance Traits.Size<string> {
     fn size value = value.length
 }
 

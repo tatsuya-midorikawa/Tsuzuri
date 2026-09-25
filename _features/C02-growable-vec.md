@@ -11,14 +11,14 @@
 
 ## 目的
 
-固定長の不変配列 `[T]` に加えて、構築時に効率よく伸ばせる所有コレクション `Vec 'a` を導入する。`Vec` は「伸縮可能な作業バッファ」であり、最終的な不変配列へ `Vec.to_array` で O(1) に変換できる。C01 の消費する更新と同じく、API は所有値を受け取り新しい所有値を返し、一意所有時に内部バッファを再利用する。
+固定長の不変配列 `[T]` に加えて、構築時に効率よく伸ばせる所有コレクション `Vec<'a>` を導入する。`Vec` は「伸縮可能な作業バッファ」であり、最終的な不変配列へ `Vec.to_array` で O(1) に変換できる。C01 の消費する更新と同じく、API は所有値を受け取り新しい所有値を返し、一意所有時に内部バッファを再利用する。
 
 D-13 に従い、`[T]` の `%tz.array = { ptr, i64 }` は変更しない。`Vec` は別の組み込み型であり、暗黙に `[T]` へ変換しない。
 
 ## 現状
 
 - `src/check.rs` `Type` に `Array` と `List` はあるが `Vec` はない。
-- 型適用は D-02/A01 で `TypeExprKind::Apply` を導入予定。現状 `Vec i64` のようなユーザー定義型適用は未実装。
+- 型適用は D-02/A01 で `TypeExprKind::Apply` を導入予定。現状 `Vec<i64>` のようなユーザー定義型適用は未実装。
 - LLVM の配列 descriptor は `src/llvm.rs` `emit_target` 先頭で `%tz.array = type { ptr, i64 }` として出力される。
 - 配列 clone/drop は `src/llvm.rs` `FunctionEmitter::clone_value` / `drop_value` が要素ごとに処理する。
 - 確保は `src/runtime/heap-native.ll` の `@tz.alloc` / `@tz.free` と、`src/runtime/heap-wasm.ll` の 16 MiB 上限 free-list allocator。
@@ -31,13 +31,13 @@ D-13 に従い、`[T]` の `%tz.array = { ptr, i64 }` は変更しない。`Vec`
 
 - E02: `std/Vec` module の同梱、`Vec.empty` など修飾 builtin の解決、複数引数 signature。
 - C01: 所有値消費 API の O(1) / O(n) fallback の説明と test helper。
-- B01: `Option 'a`。`Vec.pop` と `Vec.get` の戻り値に使う。`Some` / `None` ケース名は D-08 準拠。
-- A01/A02 が未完了でも、組み込み型 `Vec 'a` は `Type::Vec(Box<Type>)` として先行実装してよい。ただし一般の型適用構文がない場合は C02 内で `Vec` だけを `resolve_type` に特例追加し、A01 後に `TypeExprKind::Apply` へ移行する。
+- B01: `Option<'a>`。`Vec.pop` と `Vec.get` の戻り値に使う。`Some` / `None` ケース名は D-08 準拠。
+- A01/A02 が未完了でも、組み込み型 `Vec<'a>` は `Type::Vec(Box<Type>)` として先行実装してよい。ただし一般の型適用構文がない場合は C02 内で `Vec` だけを `resolve_type` に特例追加し、A01 後に `TypeExprKind::Apply` へ移行する。
 
 ### 他チケットへの提供インターフェース
 
 - C06 は `Map.to_array` / `Set.to_array` の構築バッファとして `Vec` を使える。
-- D02 は `Vec ubyte` と `String.from_bytes : Vec ubyte -> string` を文字列構築の推奨経路にできる。
+- D02 は `Vec<ubyte>` と `String.from_bytes : Vec<ubyte> -> string` を文字列構築の推奨経路にできる。
 - F02 は `Vec.to_array` 後の `[T]` / `&[T]` を並列 API 入力にする。
 
 ### 型と表現
@@ -45,7 +45,7 @@ D-13 に従い、`[T]` の `%tz.array = { ptr, i64 }` は変更しない。`Vec`
 Surface type:
 
 ```text
-Vec 'a
+Vec<'a>
 ```
 
 内部型:
@@ -69,8 +69,8 @@ LLVM:
 - `len` は初期化済み要素数。
 - `cap` は確保済み要素数。`0 <= len <= cap`。
 - `len..cap` の領域は未初期化。drop / clone / to_array は `len` 個だけを見る。
-- `Vec 'a` は常に non-Copy。要素が Copy でも descriptor の共有を避けるため暗黙 Copy しない。
-- 明示 clone は `Vec.clone : Copy 'a => &Vec 'a -> Vec 'a` として提供する。`string` など非 Copy 要素の複製 API は将来の `Clone` クラスまで対象外。
+- `Vec<'a>` は常に non-Copy。要素が Copy でも descriptor の共有を避けるため暗黙 Copy しない。
+- 明示 clone は `Vec.clone : Copy<'a> => &Vec<'a> -> Vec<'a>` として提供する。`string` など非 Copy 要素の複製 API は将来の `Clone` クラスまで対象外。
 
 `Type` の性質:
 
@@ -91,26 +91,26 @@ Type::Vec(element):
 ### API
 
 ```text
-Vec.empty         : Vec 'a
-Vec.with_capacity : i64 -> Vec 'a
-Vec.length        : &Vec 'a -> i64
-Vec.capacity      : &Vec 'a -> i64
-Vec.is_empty      : &Vec 'a -> bool
+Vec.empty         : Vec<'a>
+Vec.with_capacity : i64 -> Vec<'a>
+Vec.length        : &Vec<'a> -> i64
+Vec.capacity      : &Vec<'a> -> i64
+Vec.is_empty      : &Vec<'a> -> bool
 
-Vec.push          : Vec 'a -> 'a -> Vec 'a
-Vec.pop           : Vec 'a -> (Vec 'a * Option 'a)
-Vec.reserve       : Vec 'a -> i64 -> Vec 'a
-Vec.truncate      : Vec 'a -> i64 -> Vec 'a
-Vec.clear         : Vec 'a -> Vec 'a
+Vec.push          : Vec<'a> -> 'a -> Vec<'a>
+Vec.pop           : Vec<'a> -> (Vec<'a> * Option<'a>)
+Vec.reserve       : Vec<'a> -> i64 -> Vec<'a>
+Vec.truncate      : Vec<'a> -> i64 -> Vec<'a>
+Vec.clear         : Vec<'a> -> Vec<'a>
 
-Vec.set           : Vec 'a -> i64 -> 'a -> Vec 'a
-Vec.swap          : Vec 'a -> i64 -> i64 -> Vec 'a
-Vec.get           : Copy 'a => &Vec 'a -> i64 -> Option 'a
-Vec.at            : &Vec 'a -> i64 -> &'a
-Vec.clone         : Copy 'a => &Vec 'a -> Vec 'a
+Vec.set           : Vec<'a> -> i64 -> 'a -> Vec<'a>
+Vec.swap          : Vec<'a> -> i64 -> i64 -> Vec<'a>
+Vec.get           : Copy<'a> => &Vec<'a> -> i64 -> Option<'a>
+Vec.at            : &Vec<'a> -> i64 -> &'a
+Vec.clone         : Copy<'a> => &Vec<'a> -> Vec<'a>
 
-Vec.of_array      : ['a] -> Vec 'a
-Vec.to_array      : Vec 'a -> ['a]
+Vec.of_array      : ['a] -> Vec<'a>
+Vec.to_array      : Vec<'a> -> ['a]
 ```
 
 補足:
@@ -122,7 +122,7 @@ Vec.to_array      : Vec 'a -> ['a]
 - `Vec.clear v` は `Vec.truncate v 0`。
 - `Vec.pop v` は空なら `(v, None)`、非空なら最後の要素を move して `(shorter, Some value)`。
 - `Vec.get` は範囲外なら `None`、範囲内なら Copy 要素を複製して `Some value`。
-- `Vec.at` は範囲外なら trap。戻り値は `&'a` への共有借用で、寿命は `&Vec 'a` 入力に結び付く。
+- `Vec.at` は範囲外なら trap。戻り値は `&'a` への共有借用で、寿命は `&Vec<'a>` 入力に結び付く。
 - `Vec.of_array` は配列の所有バッファを O(1) で `Vec { ptr, len, cap=len }` にする。ただし `len == 0` の runtime array は `allocate_array` により non-null 1-byte allocation を持ちうるため、`Vec` の invariant `cap == 0 => ptr == null` を優先し、incoming pointer が non-null なら `@tz.free(ptr)` して `%tz.vec zeroinitializer` を返す。
 - `Vec.to_array` は O(1) で `Array { ptr, len }` を返し、`cap` は捨てる。未初期化領域 `len..cap` は drop しない。free は元ポインタに対して行われるため安全。
 
@@ -177,7 +177,7 @@ v[i]
 `src/check.rs`:
 
 - `Type::Vec(Box<Type>)` を追加。
-- `Type::display` は `Vec T`。関数型など曖昧な型は `Vec (T -> U)` のように括る。
+- `Type::display` は `Vec<T>`。関数型など曖昧な型は `Vec<T -> U>` のように括る。
 - `resolve_type` は D-02 が入っていれば `TypeExprKind::Apply("Vec", [element])` を `Type::Vec` へ解決する。D-02 前なら `TypeExprKind::Named("Vec")` の後続型 atom を読む暫定 parser を C02 内に置かず、C02 は A01/E02 完了後に着手する既定案。
 - `polymorph.rs` `map_type`、`substitute`、`bounded_type`、`Inference::resolve`、`Inference::unify`、`type_expression` に `Vec` を追加。
 - `Classes::intrinsic` は `Copy` では常に false、`Capture` / `Send` は element 再帰。
@@ -241,7 +241,7 @@ Type::Vec(_) => "%tz.vec".into()
 
 - `Vec` は `can_capture` が element に従って true なので関数環境に捕捉できる。
 - 関数値 clone では `clone_value(Type::Vec)` を呼ぶため、ここでは要素が Copy かどうかに関係なく既存 `clone_value(element)` で deep clone する。これは関数値の独立 snapshot を守る内部複製であり、ユーザーの Copy とは別。
-- `Vec.clone` API は `Copy 'a` に限定する。
+- `Vec.clone` API は `Copy<'a>` に限定する。
 
 ### realloc runtime
 
@@ -380,22 +380,22 @@ store:
 D02 との既定インターフェース:
 
 ```text
-String.from_bytes : Vec ubyte -> string
+String.from_bytes : Vec<ubyte> -> string
 String.to_bytes   : &string -> [ubyte]
 ```
 
-- `String.from_bytes` は `Vec.to_array` 相当の buffer transfer ではなく UTF-8 validation / string ownership に従う。Phase 1 では ASCII/UTF-8 validation を D02 に任せ、C02 は `Vec ubyte` を効率よく作れることだけを保証する。
+- `String.from_bytes` は `Vec.to_array` 相当の buffer transfer ではなく UTF-8 validation / string ownership に従う。Phase 1 では ASCII/UTF-8 validation を D02 に任せ、C02 は `Vec<ubyte>` を効率よく作れることだけを保証する。
 
 ## 実装手順
 
 1. **型表現追加**
    - `Type::Vec` と各再帰関数を追加。
-   - 確認: `Vec i64` の annotation を含む最小テストが `Type::display == "Vec i64"` になる。
+   - 確認: `Vec<i64>` の annotation を含む最小テストが `Type::display == "Vec<i64>"` になる。
 
 2. **LLVM 型・drop/clone**
    - `%tz.vec` を IR header に追加。
    - `llvm_type`、`drop_value`、`clone_value`、`llvm_frame.rs` `stack_size` / `field_types` を更新。
-   - 確認: `fn f :: Vec i64` を emit して `%tz.vec` が一度だけ定義される。
+   - 確認: `fn f :: Vec<i64>` を emit して `%tz.vec` が一度だけ定義される。
 
 3. **Runtime realloc**
    - `heap-native.ll` / `heap-wasm.ll` に `@tz.realloc` を追加。
@@ -432,11 +432,11 @@ String.to_bytes   : &string -> [ubyte]
 
 受理:
 
-- `def f :: Vec i64\nfn f = Vec.empty()`
-- `def f :: Vec i64\nfn f = Vec.with_capacity 10`
+- `def f :: Vec<i64>\nfn f = Vec.empty()`
+- `def f :: Vec<i64>\nfn f = Vec.with_capacity 10`
 - `def f :: i64\nfn f = Vec.length (&(Vec.push (Vec.empty()) 1))`
 - `def f :: [i64]\nfn f = Vec.to_array (Vec.push (Vec.of_array [1,2]) 3)`
-- `def f :: (Vec i64 * Option i64)\nfn f = Vec.pop (Vec.push (Vec.empty()) 1)`
+- `def f :: (Vec<i64> * Option<i64>)\nfn f = Vec.pop (Vec.push (Vec.empty()) 1)`
 - `def f :: i64\nfn f = { let v = Vec.push (Vec.empty()) "x"; (Vec.at (&v) 0).length }`
 - `for x in v do ...` と `for x in &v do ...`
 
@@ -444,10 +444,10 @@ String.to_bytes   : &string -> [ubyte]
 
 - `let v = Vec.push (Vec.empty()) "x"; let w = Vec.push v "y"; v` → `E1012`
 - `Vec.push (&v) 1` → `E1003`
-- `Vec.get (&v) 0` where element is `string` → `E1005` no `Copy string`
+- `Vec.get (&v) 0` where element is `string` → `E1005` no `Copy<string>`
 - `&mut v[0]` → `E1014`
-- `record R { v: Vec &string }` または借用を含む Vec field → `E1013`
-- `export def f :: Vec i64` → `E1008`
+- `record R { v: Vec<&string> }` または借用を含む Vec field → `E1013`
+- `export def f :: Vec<i64>` → `E1008`
 
 IR:
 
@@ -535,12 +535,12 @@ Native/WASM:
 
 - `/tmp` scratch で `Vec.push` loop を `--emit llvm -O3` → `clang -O3 -S -emit-llvm` に通し、push hot path が len/cap branch + store になっていることを確認。
 - `Vec.to_array` は O(1) transfer であることを IR で確認し、速度の CI 閾値は設けない。
-- D02 連携時は `Vec ubyte` で byte builder を測るが、UTF-8 validation cost と分けて報告する。
+- D02 連携時は `Vec<ubyte>` で byte builder を測るが、UTF-8 validation cost と分けて報告する。
 
 ## ドキュメント
 
 - `docs/language.md`
-  - 型表に `Vec 'a` を追加。
+  - 型表に `Vec<'a>` を追加。
   - 配列節に「固定長 immutable array」と「伸縮可能な作業バッファ Vec」の違い。
   - API 一覧、trap 条件、`Vec.to_array` / `Vec.of_array` の O(1) transfer。
 - `docs/architecture.md`
@@ -555,7 +555,7 @@ Native/WASM:
 
 ## 受け入れ条件
 
-- [ ] `Vec 'a` が型注釈・関数引数・戻り値・レコード field に使える。ただし借用を含む field は既存通り拒否。
+- [ ] `Vec<'a>` が型注釈・関数引数・戻り値・レコード field に使える。ただし借用を含む field は既存通り拒否。
 - [ ] `Vec` は暗黙 Copy されない。
 - [ ] `Vec.push` / `reserve` が overflow と allocation failure を trap する。
 - [ ] growth は `len + additional`、doubling、old/new byte counts の全てで overflow を trap する。
@@ -577,8 +577,8 @@ Native/WASM:
 - WASM `realloc` の in-place grow は free list のリンク更新を間違えると allocator 全体が壊れる。`tz.free` の隣接結合と同じ address-order invariant を守る。
 - WASM `realloc` は null/zero を header read より前に処理する。`old == null` や `new_size == 0` で `old - 16` を読まない。
 - native heap tracking の `tracked_realloc` は payload pointer ではなく tracker header へ戻してから libc `realloc` を呼ぶ。
-- `Vec.get` の `Option 'a` で非 Copy 要素を返すと共有借用から move になり危険。Phase 1 は `Copy 'a` 制約。
-- `Vec.at` を `Option &'a` にすると borrowed union の寿命表現が B01/A02 に依存しすぎる。Phase 1 は trap する `&'a` 返却。
+- `Vec.get` の `Option<'a>` で非 Copy 要素を返すと共有借用から move になり危険。Phase 1 は `Copy<'a>` 制約。
+- `Vec.at` を `Option<&'a>` にすると borrowed union の寿命表現が B01/A02 に依存しすぎる。Phase 1 は trap する `&'a` 返却。
 
 ## 対象外
 
@@ -593,6 +593,6 @@ Native/WASM:
 ## 未決事項
 
 - `Vec` の暗黙 Copy は導入しない既定案。要素が Copy でも大きな allocation を隠すため。
-- `Vec.clone` は `Copy 'a` 制約に限定する既定案。将来 `Clone` / `Default` クラスが入れば拡張する。
-- `Vec.at` は範囲外 trap、`Vec.get` は `Option` の既定案。`Option &'a` は borrowed union の仕様が固まるまで入れない。
-- 台帳の見直し提案: なし。D-13 の `Vec 'a` と `[T]` descriptor 不変に従う。
+- `Vec.clone` は `Copy<'a>` 制約に限定する既定案。将来 `Clone` / `Default` クラスが入れば拡張する。
+- `Vec.at` は範囲外 trap、`Vec.get` は `Option` の既定案。`Option<&'a>` は borrowed union の仕様が固まるまで入れない。
+- 台帳の見直し提案: なし。D-13 の `Vec<'a>` と `[T]` descriptor 不変に従う。

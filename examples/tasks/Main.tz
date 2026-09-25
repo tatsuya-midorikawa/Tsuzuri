@@ -4,7 +4,7 @@ fn rec sum_squares first last total =
     else { sum_squares (first + 1) last (total + first * first) }
 
 let computation = task {
-    let jobs = new [Task i64](4, chunk -> task {
+    let jobs = new [Task<i64>](4, chunk -> task {
         return sum_squares (chunk * 1000) ((chunk + 1) * 1000) 0
     })
     let! totals = Task.parallel jobs

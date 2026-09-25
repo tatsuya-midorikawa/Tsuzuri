@@ -176,9 +176,9 @@ fn reference_types_accept_keywords_and_double_ampersand() {
         "ref (i64 -> i64)",
     );
     rejects(
-        "let x: ref mut [|ref string|] * ref Task i64 = 1\n0",
+        "let x: ref mut [|ref string|] * ref Task<i64> = 1\n0",
         "E1003",
-        "(ref mut [|ref string|] * ref Task i64)",
+        "(ref mut [|ref string|] * ref Task<i64>)",
     );
     same_ir(&[
         "def f :: &mut [i64] -> &i64 -> i64\nfn f xs r = xs.length + *r",

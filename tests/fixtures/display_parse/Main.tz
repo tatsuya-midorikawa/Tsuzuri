@@ -1,0 +1,81 @@
+record Label { text: string, values: [i64] }
+
+instance Display<Label> {
+    fn display label = clone_string (&label.text)
+}
+
+instance Parse<Label> {
+    fn parse text = Some (Label { text: clone_string text, values: [20, 22] })
+}
+
+export def displays :: bool
+fn displays =
+    to_string true == "true" && to_string false == "false" && to_string () == "()" &&
+    to_string 0.1 == "0.1" && to_string 0.1f32 == "0.1" &&
+    to_string (-0.0) == "-0" && to_string (1.0 / 0.0) == "inf" &&
+    to_string (0.0 / 0.0) == "nan" &&
+    to_string (-128i8) == "-128" && to_string 255i8u == "255" &&
+    to_string 340282366920938463463374607431768211455i128u == "340282366920938463463374607431768211455"
+
+export def text_copy :: i64
+fn text_copy =
+    let text = "a\0b\n日本語 😀"
+    let copy = Display.display (&text)
+    assert (copy == text)
+    let moved = to_string text
+    assert (moved == copy)
+    copy.length + moved.length
+
+export def parse_numbers :: i64
+fn parse_numbers =
+    let text = "0x2a"
+    let result: Option<i64> = Parse.parse (&text)
+    assert (text.length == 4)
+    let real = ".5"
+    let parsed: Option<f64> = Parse.parse (&real)
+    assert (Option.get parsed == 0.5)
+    Option.get result
+
+export def parse_bool :: bool
+fn parse_bool =
+    let yes = "true"
+    let no = "false"
+    let invalid = "True"
+    let first: Option<bool> = Parse.parse (&yes)
+    let second: Option<bool> = Parse.parse (&no)
+    let third: Option<bool> = Parse.parse (&invalid)
+    Option.get first && ! (Option.get second) && Option.is_none (&third)
+
+export def malformed :: bool
+fn malformed =
+    let mut valid = true
+    for text in ["", " 1", "1 ", "1__0", "1e+", "0X10", "NaN", "1\0"] do
+        let number: Option<i128> = Parse.parse (&text)
+        let real: Option<f128> = Parse.parse (&text)
+        valid = valid && Option.is_none (&number) && Option.is_none (&real)
+    valid
+
+export def round_f64 :: f64 -> f64
+fn round_f64 value =
+    let text = to_string value
+    let result: Option<f64> = Parse.parse (&text)
+    Option.get result
+
+export def round_f32 :: f32 -> f32
+fn round_f32 value =
+    let text = to_string value
+    let result: Option<f32> = Parse.parse (&text)
+    Option.get result
+
+export def custom :: i64 -> i64
+fn custom count =
+    let mut size = 0
+    for i in 1 .. count do
+        let text = "owned"
+        let parsed: Option<Label> = Parse.parse (&text)
+        let label = Option.get parsed
+        let shown = Display.display (&label)
+        let moved = to_string label
+        assert (shown == moved)
+        size = size + shown.length + moved.length
+    size

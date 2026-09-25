@@ -7,23 +7,24 @@
 | 規模 | L |
 | 依存 | – |
 | 後続 | A02, A05, A06, A10, C05, B01 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/control.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/call_specialization.rs`, `src/computation.rs`, `src/recursion.rs`, `src/closures.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/*.rs`, `tests/*.mjs` |
 
 ## 目的
 
-Tsuzuri で `Pair 'a 'b`、`Box 'a`、`Point 'unit` のような名前付きレコードを型引数付きで定義・利用できるようにする。
-これは A02 の `union Option 'a`、B01 の `Option`／`Result` 標準型、C05 のレコード更新、A06 の汎用インスタンス拡張の基礎である。
+Tsuzuri で `Pair<'a, 'b>`、`Box<'a>`、`Point<'unit>` のような名前付きレコードを型引数付きで定義・利用できるようにする。
+これは A02 の `union Option<'a>`、B01 の `Option`／`Result` 標準型、C05 のレコード更新、A06 の汎用インスタンス拡張の基礎である。
 
 このチケットでは **型適用構文** と **ジェネリックなレコード** だけを実装する。
 union、型別名、高階型、条件付きインスタンス、標準ライブラリ同梱は別チケットに残す。
 
-## 現状
+## 導入前の調査メモ
 
 - 調査時点は `_features/GUIDE.md` にある `19d8cdd`。
+- この節の構文例は当時の旧表記を記録する。以降の仕様・使用例は現在の `<...>` 表記に従う。
 - `src/syntax.rs` の `TypeExprKind` は `Named(String)`、`Variable(String)`、`Constrained(Box<Ident>, Box<TypeExpr>)`、`Task(Box<TypeExpr>)` などを持つが、一般の型適用を表せない。
 - `src/parser.rs` の `Parser::type_atom` は `Task T` だけを特別扱いし、`Name 'a` は `TypeExprKind::Constrained` として構文解析する。
-  そのため `record Pair 'a 'b { ... }` は現行バイナリで `E0002 expected '{' after the record name` になる。
+  そのため `record Pair 'a 'b { ... }` は当時のバイナリで `E0002 expected '{' after the record name` になる。
 - `src/syntax.rs` の `RecordDecl` は `name` と `fields` だけを持ち、型パラメーターを持たない。
 - `src/check.rs` の `Type` は `Record(usize)` だけを持つ。
   `usize` は `CheckedModule.records` の宣言 ID であり、型引数は保持されない。
@@ -61,38 +62,38 @@ union、型別名、高階型、条件付きインスタンス、標準ライブ
 ```text
 TypeExpr        ::= FunctionType
 FunctionType    ::= ProductType ("->" ProductType)+ | ProductType
-ProductType     ::= TypeApply ("*" TypeApply)*
-TypeApply       ::= TypePrimary TypePrimary*
+ProductType     ::= TypePrimary ("*" TypePrimary)*
 TypePrimary     ::= TypeVariable
-                  | QualifiedTypeName
-                  | "Task" TypePrimary
+                  | QualifiedTypeName TypeArguments?
+                  | "Task" TypeArguments
                   | "[" TypeExpr "]"
                   | "[|" TypeExpr "|]"
                   | "&" "mut"? TypePrimary
                   | "(" TypeExpr ")"
                   | "fn" "(" (TypeExpr ("," TypeExpr)*)? ")" "->" TypeExpr
-RecordDecl      ::= "record" TypeName TypeParameter* "{" FieldDecl* "}"
-TypeParameter   ::= TypeVariable
+TypeArguments   ::= "<" TypeExpr ("," TypeExpr)* ","? ">"
+TypeParameters  ::= "<" TypeVariable ("," TypeVariable)* ","? ">"
+RecordDecl      ::= "record" TypeName TypeParameters? "{" FieldDecl* "}"
 FieldDecl       ::= FieldName ":" TypeExpr ","?
 QualifiedTypeName ::= Ident ("." Ident)?
 ```
 
-- 型適用は **前置の並置**だけを導入する。
-  `Pair i64 string`、`Task (Pair i64 string)`、`[Option i64]` は有効。
-  `Pair<i64,string>`、`Pair[i64]`、後置型引数は導入しない。
-- `Task T` は既存と同じ見た目だが、構文木上では従来どおり `TypeExprKind::Task` としてよい。
+- 型適用は **`<...>` 内のカンマ区切り**に統一する。
+  `Pair<i64, string>`、`Task<Pair<i64, string>>`、`[Option<i64>]` は有効。
+  旧来の空白区切り、`Pair[i64]`、後置型引数は受理しない。
+- `Task<T>` も同じ型引数リストを使い、引数は一つだけとする。構文木上では従来どおり `TypeExprKind::Task`。
   一般の `Task` レコードやモジュール名は既存仕様どおり予約済み。
-- `Add 'a` は構文解析時点では `TypeExprKind::Apply(Ident("Add"), [Variable("a")])` にする。
+- `Add<'a>` は構文解析時点では `TypeExprKind::Apply(Ident("Add"), [Variable("a")])` にする。
   その後 `Classes::inline_constraints` と `resolve_type` で「型クラス制約」か「型適用」かを分類する。
-- `Parser::type_primary` を新設し、**型適用を含まない exactly one atom** だけを読む。
+- `Parser::type_primary` は、名前の直後の `<...>` による型適用を含めて一つの型を読む。
   `Fn` は次トークンが `LeftParen` の場合だけ関数型の開始として扱う。それ以外の `fn` は型名ではないので既存の構文エラーにする。
-- `Parser::type_apply` を新設し、`head = type_primary(); args = type_primary()*` として型適用を読む。
-  引数側で貪欲な型適用 parser を再帰呼び出ししてはならない。`Option (Pair i64 string)` のような入れ子は括弧内の `type_expr` が処理する。
-  `type_product` は `type_atom` ではなく `type_apply` を呼ぶ。
-  `type_apply` は次トークンが `Arrow`, `Comma`, `RightParen`, `RightBrace`, `RightBracket`, `RightList`, `Equal`, `FatArrow`, `LeftBrace`, `Pipe`, `Star`, `End`、またはトップレベル宣言キーワードなら停止する。
-  改行は型式中では区切りにならないが、既存の `def`／`record` の本体終端規則を壊してはならない。
+- `<...>` 内の各引数は完全な `type_expr` として読み、カンマと `>` で区切る。
+  `Option<Pair<i64, string>>` や `Box<i64 -> i64>` に追加の丸括弧は不要。
+  `type_product` は `type_primary` を呼ぶ。型引数内の改行は区切りにならない。
+  型の文脈でだけ `>>`・`>>>`・`>=` から閉じ括弧を分割し、式の比較・シフトを維持する。
+  名前と `<` は隣接させ、空のリストは拒否、末尾のカンマは許す。
 - `Parser::parameters` は現行コードで comma 区切りだけを受け付ける。A01 では record field grammar もこの既存 helper に合わせ、`;` 区切りは導入しない。
-- `record Pair 'a 'b { first: 'a, second: 'b }` の型パラメーターはレコード名直後に並べる。
+- `record Pair<'a, 'b> { first: 'a, second: 'b }` の型パラメーターはレコード名直後の `<...>` にカンマ区切りで並べる。
   同じパラメーター名の重複、`'_`、フィールドで未宣言の型変数を使うこと、宣言したが使わない型パラメーターは `E1024`。
 - 非ジェネリックな既存レコード構文 `record Point { x: f64, y: f64 }` はそのまま有効。
 
@@ -101,11 +102,11 @@ QualifiedTypeName ::= Ident ("." Ident)?
 - `Type::Record(id, args)` を導入する。
   `id` は宣言 ID、`args` は宣言の型パラメーターと同じ個数の型引数である。
 - `Point` は `Type::Record(point_id, vec![])`。
-  `Pair i64 string` は `Type::Record(pair_id, vec![Type::I64, Type::String])`。
+  `Pair<i64, string>` は `Type::Record(pair_id, vec![Type::I64, Type::String])`。
 - `Pair` のような型コンストラクターだけの型は値の型として使えない。
   必要な型引数が不足していれば `E1004`、多すぎても `E1004`。
   メッセージは `"type 'Pair' expects 2 type arguments, found 1"` の形にする。
-- `Type::display(records)` は `Pair i64 string` のように表示する。
+- `Type::display(records)` は `Pair<i64, string>` のように表示する。
   関数型・タプル型が型引数に入る場合は既存表示規則と同じく必要な括弧を付ける。
 - `resolve_type` は `TypeExprKind::Apply(name, args)` を次の順に分類する。
   1. `name` が型クラスだけに解決でき、`args.len() == 1` なら `TypeExprKind::Constrained` 相当として制約回収対象にする。
@@ -117,7 +118,7 @@ QualifiedTypeName ::= Ident ("." Ident)?
 - レコード宣言のフィールド型は宣言時には型変数を含んでよい。
   ただしフィールドに現れる型変数は `CheckedRecord.parameters` に含まれていなければ `E1024`。
 - レコードリテラル `Pair { first: 1, second: "x" }` は型引数を推論する。
-  期待型が `Pair i64 string` ならその型引数を使う。
+  期待型が `Pair<i64, string>` ならその型引数を使う。
   期待型がない場合は各パラメーターに新しい `Infer` を割り当て、フィールド式との単一化で決める。
 - レコードフィールドアクセス `pair.first` の型は、宣言フィールド型の型パラメーターを `pair` の実引数で置換した型。
 - レコードパターン `Pair { first: x }` と `{ first = x }` も同じ置換を使う。
@@ -130,11 +131,11 @@ QualifiedTypeName ::= Ident ("." Ident)?
 ### 所有権・借用
 
 - レコードの所有権規則は構造的なまま。
-  `Pair string i64` は `first` が move される非 Copy レコード、`Pair i64 bool` は Copy レコード。
+  `Pair<string, i64>` は `first` が move される非 Copy レコード、`Pair<i64, bool>` は Copy レコード。
 - `Type::is_copy`, `needs_drop`, `carries_loans`, `can_capture`, `can_send` は、置換済みフィールド型に対して判定する。
   宣言フィールド型をそのまま使ってはならない。
 - `ownership::Checker::is_copy` と `require_copy` は `Type::Record(id, args)` を展開し、型変数を含むフィールドに必要な `Copy` 制約を伝播する。
-  例: `def first_twice :: Pair 'a 'b -> ('a * 'a)` で `first` を二度使うなら `Copy 'a` が推論される。
+  例: `def first_twice :: Pair<'a, 'b> -> ('a * 'a)` で `first` を二度使うなら `Copy<'a>` が推論される。
 - `closed_returns::owned` は置換済みフィールド型を見る。
 - フィールド単位の move、部分 move 後の残りフィールド利用、借用競合は既存の `Field` place 表現を維持する。
 - 可変参照を含むレコードフィールドは既存どおり `E1013` で拒否する。
@@ -321,22 +322,20 @@ pub(crate) fn validate_record_arity(
 
 ### パーサ
 
-- `Parser::program` の `record` 分岐を `record Name TypeVariable* { ... }` に変更する。
-  `{` が来るまで型変数だけを読む。
-  型変数以外が来たら `"record type parameters use variables such as 'a"` を `E0002` で返す。
-- `Parser::type_primary` は現行 `type_atom` から「後続型引数を読む処理」を除いたものにする。
-  `Task` の引数も `type_primary` で読むため、`Task Pair i64 string` は `Task Pair` ではなく構文エラーになり、`Task (Pair i64 string)` を要求する。既存の `Task i64` は有効。
+- `Parser::program` の `record` 分岐は、任意の `<...>` で型変数のカンマ区切りリストを読む。
+  型変数以外・空のリスト・区切りの欠落は `E0002`。
+- `Parser::type_primary` は名前付きの型適用を読み、`Task` には一つの型引数を要求する。
+  `Task<Pair<i64, string>>`・`Task<i64>` を同じリスト構文で読む。
   `Fn` は `LeftParen` が続くときだけ関数型として読む。
-- `Parser::type_apply` は `type_primary` を 1 個読んだ後、後続 `type_primary` を停止トークンまで読む。
-  引数として `type_apply` を呼ばない。
-  例: `Pair i64 string` は `Apply(Pair, [Named(i64), Named(string)])`、`Pair (Box i64) string` は `Apply(Pair, [Apply(Box,[i64]), string])`。
-- `Parser::type_product` は `Pair i64 string * i64` を `(Pair i64 string) * i64` と解釈する。
-  つまり `TypeApply` が `*` より強い。
+- `angle_list` は宣言の型変数リストと使用側の型引数リストで共有する。
+  型引数には `type_expr` を再帰的に適用する。
+  例: `Pair<i64, string>` は `Apply(Pair, [Named(i64), Named(string)])`、`Pair<Box<i64>, string>` は `Apply(Pair, [Apply(Box,[i64]), string])`。
+- `Parser::type_product` は `Pair<i64, string> * i64` を `(Pair<i64, string>) * i64` と解釈する。
+  つまり名前付きの型適用が `*` より強い。
 - `Parser::signature` は現行コードどおり `constraint_prefix()` を使って `=>` 付き制約 prefix を先に解析し、`ConstraintExpr { class, ty }` として保持する。
-  この明示 prefix 経路は `TypeExprKind::Apply` 化しない。A01 で変更するのは、関数型本体・注釈・instance head・record field などに現れる inline `Add 'a` の分類である。
-- `instance Add Pair i64 { ... }` は有効にする。
-  `Parser::program` の `Instance` 分岐は class 名の後で `type_apply()` を呼び、直後の `{` で停止する。
-  括弧付き `instance Add (Pair i64 i64) { ... }` も同じ AST になる。
+  この明示 prefix 経路は `TypeExprKind::Apply` 化せず、`Add<'a> =>` の `<...>` を共有 helper で読む。
+- `instance Add<Pair<i64, i64>> { ... }` は class 名の後に一つの型引数を要求する。
+  `instance Add<(Pair<i64, i64>)> { ... }` の冗長な丸括弧も同じ型になる。
 
 ### 名前解決・宣言チェック
 
@@ -356,7 +355,7 @@ pub(crate) fn validate_record_arity(
     型変数を含めるためである。
     代わりに `polymorph::bounded_type` と宣言内の型変数検査を実行する。
 - 関数シグネチャやローカル型注釈では、従来どおりその関数シグネチャに現れない型変数を `E1015` で拒否する。
-  `Pair 'a i64` の `'a` は関数シグネチャの型変数として扱われる。
+  `Pair<'a, i64>` の `'a` は関数シグネチャの型変数として扱われる。
 - `Classes::collect` はユーザー定義クラス名とレコード型名の衝突を `E1001` で拒否する。
   組み込みクラス名 `Add`, `Copy` などと同名のレコードも `duplicate()` で拒否する。
 - `Names::record` は引き続きレコード宣言 ID だけを返す。
@@ -397,8 +396,8 @@ pub(crate) fn validate_record_arity(
 
 - `polymorph::map_type`, `substitute`, `bounded_type`, `Inference::resolve`, `Inference::unify`, `variables` は `Record(_, args)` の `args` を必ず走査する。
 - `Classes::intrinsic` の `Copy`, `Capture`, `Send` は置換済みフィールド型に基づく `Type` メソッドへ委譲する。
-- `Classes::instances` は `instance Add (Pair i64 i64)` を受け付ける。
-  生成される `$instance.<id>.<method>` のシグネチャ戻し `type_expression` は `Pair i64 i64` の `Apply` を生成する。
+- `Classes::instances` は `instance Add<Pair<i64, i64>>` を受け付ける。
+  生成される `$instance.<id>.<method>` のシグネチャ戻し `type_expression` は `Pair<i64, i64>` の `Apply` を生成する。
 - `polymorph::type_expression` は `Type::Record(id, args)` を次の形へ戻す。
 
 ```rust
@@ -428,9 +427,9 @@ type LayoutSizes = BTreeMap<LayoutKey, usize>;
 - `layout_size(ty, records, cache, visiting, depth, span)` は `Type::Record(id, args)` をキーにする。
   `args` に `Variable` / `Infer` が残る呼び出しは `validate_size` ではなく `bounded_type` だけにする。
 - 具体型の `visiting` は `BTreeSet<Type>`。
-  `record Box 'a { value: Box 'a }`、`record A 'a { b: B 'a } record B 'a { a: A 'a }` は `E1010`。
-- `record Holder 'a { value: 'a }` 自体は宣言時にサイズ未確定。
-  `Holder [i64]` や `Holder (Pair i64 string)` に具体化した時点で 64 KiB 上限と深い不変性を検査する。
+  `record Box<'a> { value: Box<'a> }`、`record A<'a> { b: B<'a> } record B<'a> { a: A<'a> }` は `E1010`。
+- `record Holder<'a> { value: 'a }` 自体は宣言時にサイズ未確定。
+  `Holder<[i64]>` や `Holder<Pair<i64, string>>` に具体化した時点で 64 KiB 上限と深い不変性を検査する。
 - `layout_size` は `Array`／`List` の要素型にも再帰的に `layout_size` を呼び、現行仕様どおり再帰的なヒープ型を A04 まで拒否する。
 
 ### LLVM
@@ -456,7 +455,7 @@ fn record_instance_fields(id: usize, args: &[Type], types: &TypeContext<'_>) -> 
 
 - `canonical_type_text` は D-03 の Tsuzuri 正規表記を使う。
   型引数に LLVM 型文字列を使ってはならない。
-  例: `Pair i64 string` → `Main.Pair[i64,string]`、`Pair (Option string) [i64]` → `Main.Pair[Option.Option[string],array[i64]]`。
+  例: `Pair<i64, string>` → `Main.Pair[i64,string]`、`Pair<Option<string>, [i64]>` → `Main.Pair[Option.Option[string],array[i64]]`。
 - `named_type_llvm_name` は records/unions で共有し、`%"tz.record.Main.Pair[i64,string]"` のような引用符付き名を返す。
   非ジェネリックも同じ関数で `%"tz.record.Main.Point"` としてよいが、既存 IR 互換を優先する場合は `args.is_empty()` の旧名を許す。どちらを選んでも records/unions で一貫させる。
 - 型定義は `BTreeSet<Type>` 順に出す。
@@ -471,7 +470,7 @@ fn record_instance_fields(id: usize, args: &[Type], types: &TypeContext<'_>) -> 
 | 段 | 変更 |
 |---|---|
 | lexer | 変更なし |
-| parser | `TypeExprKind::Apply`、`type_primary`、`type_apply`、レコード型パラメーター、instance head の `type_apply` を追加 |
+| parser | `TypeExprKind::Apply`、`type_primary`、共通の `<...>` リスト、レコード型パラメーター、instance head を追加 |
 | computation::expand | `TypeExpr` 内の `Apply` とレコードパターンを再帰走査するよう更新 |
 | check | `TypeContext`, `Type::Record(id,args)`, `CheckedRecord.parameters`, class 名収集分割、型適用解決、レコードリテラル推論、フィールド置換、参照 field 禁止、具体レイアウト |
 | polymorph | `Record` 引数走査、インスタンス型式戻し、単相化後検査 |
@@ -498,7 +497,7 @@ A02 はこのチケットの以下を前提にする。
 - `substitute_type_parameters` と `type_parameter_substitutions` が `pub(crate)` で利用できる。
 - arity 検査済み前提の非 fallible `record_instance_fields` / `record_field_type` が利用できる。
 - `TypeContext<'_>` が導入済みで、A02 が `unions` を追加できる。
-- `Type::display` が `Pair i64 string` の形で型引数を表示する。
+- `Type::display` が `Pair<i64, string>` の形で型引数を表示する。
 - `canonical_type_text` と `named_type_llvm_name` が records/unions で共有できる。
 
 ## 実装手順
@@ -506,16 +505,16 @@ A02 はこのチケットの以下を前提にする。
 ### 1. Parser / AST だけを追加
 
 1. `src/syntax.rs` に `TypeExprKind::Apply` と `RecordDecl.parameters` を追加する。
-2. `src/parser.rs` の `Parser::program` の `record` 分岐で型変数列を読む。
-3. `Parser::type_primary` と `Parser::type_apply` を追加し、`type_product` と instance head parser を `type_apply` 呼び出しに変える。
+2. `src/parser.rs` の `Parser::program` の `record` 分岐で `<...>` 内の型変数列を読む。
+3. `Parser::type_primary` に型引数リストの解析を追加し、`type_product` と instance head parser でも共有する。
 4. `Parser::signature` の `ConstraintExpr` prefix 解析は現行どおり分離したままにする。
 5. `computation.rs` の `expand` が `TypeExprKind::Apply` 内の型式を漏らさないことを確認する。
 6. AST shape tests を追加する。
-   - `def f :: Pair i64 string -> i64`
-   - `def f :: Task (Pair i64 string) -> unit`
-   - `record Holder 'a { value: Pair 'a string }`
-   - `def` 境界で `Pair i64\ndef g :: ...` が前の型適用に飲まれないこと
-   - `instance Add Pair i64 { ... }` と `instance Add (Pair i64) { ... }` が同じ head になること
+   - `def f :: Pair<i64, string> -> i64`
+   - `def f :: Task<Pair<i64, string>> -> unit`
+   - `record Holder<'a> { value: Pair<'a, string> }`
+   - `def` 境界で `Pair<i64>\ndef g :: ...` が前の型適用に飲まれないこと
+   - `instance Add<Pair<i64>> { ... }` と `instance Add<(Pair<i64>)> { ... }` が同じ head になること
 
 確認:
 
@@ -526,7 +525,7 @@ cargo test --locked --test frontend
 
 `running N tests` の `N` が 0 でないことを確認する。
 この段階では型検査でまだジェネリックレコードを受け付けなくてよい。
-ただし既存の `Add 'a`、`Task i64`、`[i64]`、`i64 * string` の構文テストはすべて通す。
+ただし既存の `Add<'a>`、`Task<i64>`、`[i64]`、`i64 * string` の構文テストはすべて通す。
 
 ### 2. `Type::Record` リファクタリング（挙動変更なし）
 
@@ -620,12 +619,12 @@ Node E2E block の直前には毎回 `cargo build --release --locked` を実行�
 `tests/generic_records.rs` を追加する。
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
+record Pair<'a, 'b> { first: 'a, second: 'b }
 
-def first :: Pair 'a 'b -> 'a
+def first :: Pair<'a, 'b> -> 'a
 fn first pair = pair.first
 
-def swap :: Pair 'a 'b -> Pair 'b 'a
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
 fn swap pair = Pair { first: pair.second, second: pair.first }
 
 let p = Pair { first: 20, second: "xx" }
@@ -634,23 +633,23 @@ first p + p.second.length
 
 期待:
 
-- `Pair { first: 20, second: "xx" }` は `Pair i64 string`。
-- `swap` は `Pair 'a 'b -> Pair 'b 'a`。
-- `Type::display` を含む失敗メッセージで `Pair i64 string` と表示される。
+- `Pair { first: 20, second: "xx" }` は `Pair<i64, string>`。
+- `swap` は `Pair<'a, 'b> -> Pair<'b, 'a>`。
+- `Type::display` を含む失敗メッセージで `Pair<i64, string>` と表示される。
 
 追加受理:
 
 ```text
-record Box 'a { value: 'a }
-record Nested 'a { item: Box (Pair 'a i64) }
-def get :: Nested string -> string
+record Box<'a> { value: 'a }
+record Nested<'a> { item: Box<Pair<'a, i64>> }
+def get :: Nested<string> -> string
 fn get n = n.item.value.first
 get (Nested { item: Box { value: Pair { first: "ok", second: 1 } } })
 ```
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
-instance Add (Pair i64 i64) {
+record Pair<'a, 'b> { first: 'a, second: 'b }
+instance Add<Pair<i64, i64>> {
     fn add left right =
         Pair { first: left.first + right.first, second: left.second + right.second }
 }
@@ -659,21 +658,21 @@ p.first * 10 + p.second
 ```
 
 ```text
-record Holder 'a { value: 'a }
-def id_holder :: Holder 'a -> Holder 'a
+record Holder<'a> { value: 'a }
+def id_holder :: Holder<'a> -> Holder<'a>
 fn id_holder h = h
 id_holder (Holder { value: [1, 2, 3] }).value.length
 ```
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
+record Pair<'a, 'b> { first: 'a, second: 'b }
 match Pair { first: "a", second: 42 } with
 | Pair { first: text } -> text.length
 ```
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
-def use_unqualified :: Pair i64 i64 -> i64
+record Pair<'a, 'b> { first: 'a, second: 'b }
+def use_unqualified :: Pair<i64, i64> -> i64
 fn use_unqualified pair =
     match pair with
     | { first = x; second = y } -> x + y
@@ -686,19 +685,19 @@ use_unqualified (Pair { first: 20, second: 22 })
 
 | ソース | 期待 |
 |---|---|
-| `record Box 'a { value: i64 }` | `E1024`, unused type parameter |
-| `record Box 'a 'a { value: 'a }` | `E1024`, duplicate type parameter |
+| `record Box<'a> { value: i64 }` | `E1024`, unused type parameter |
+| `record Box<'a, 'a> { value: 'a }` | `E1024`, duplicate type parameter |
 | `record Box { value: 'a }` | `E1024`, undeclared type parameter |
-| `record Pair 'a 'b { first: 'a, second: 'b } def f :: Pair i64 -> i64 ...` | `E1004`, wrong arity |
-| `record Point { x: i64 } def f :: Point i64 -> i64 ...` | `E1004`, non-generic type applied |
-| `record Add 'a { value: 'a }` | `E1001`, conflicts with builtin class |
-| `class C 'a { def f :: 'a -> i64 } record C 'a { value: 'a }` | `E1001`, class/type conflict |
-| `record R 'a { next: R 'a }` | `E1010`, recursive value layout before A04 |
-| `record R 'a { next: [R 'a] }` | `E1010`, recursive heap type before A04 |
-| `record Pair 'a 'b { first: 'a, second: 'b } let p: Pair i64 string = Pair { first: 1, second: 2 }` | `E1003` |
-| `record Holder 'a { value: 'a } def f :: Holder (&i64) -> i64 ...` | `E1013`, substituted field contains a shared reference |
-| `record Holder 'a { value: ['a] } def f :: Holder (&mut i64) -> i64 ...` | `E1013`, nested collection contains a mutable reference |
-| `record C 'a { value: 'a } class C 'a { def f :: 'a -> i64 }` | `E1001`, class/type collision regardless of declaration order |
+| `record Pair<'a, 'b> { first: 'a, second: 'b } def f :: Pair<i64> -> i64 ...` | `E1004`, wrong arity |
+| `record Point { x: i64 } def f :: Point<i64> -> i64 ...` | `E1004`, non-generic type applied |
+| `record Add<'a> { value: 'a }` | `E1001`, conflicts with builtin class |
+| `class C<'a> { def f :: 'a -> i64 } record C<'a> { value: 'a }` | `E1001`, class/type conflict |
+| `record R<'a> { next: R<'a> }` | `E1010`, recursive value layout before A04 |
+| `record R<'a> { next: [R<'a>] }` | `E1010`, recursive heap type before A04 |
+| `record Pair<'a, 'b> { first: 'a, second: 'b } let p: Pair<i64, string> = Pair { first: 1, second: 2 }` | `E1003` |
+| `record Holder<'a> { value: 'a } def f :: Holder<&i64> -> i64 ...` | `E1013`, substituted field contains a shared reference |
+| `record Holder<'a> { value: ['a] } def f :: Holder<&mut i64> -> i64 ...` | `E1013`, nested collection contains a mutable reference |
+| `record C<'a> { value: 'a } class C<'a> { def f :: 'a -> i64 }` | `E1001`, class/type collision regardless of declaration order |
 
 ### LLVM / IR テスト
 
@@ -719,9 +718,9 @@ assert_eq!(
 入れ子型の mangle も検査する。
 
 ```text
-record Wrap 'a { value: 'a }
-record Pair 'a 'b { first: 'a, second: 'b }
-def f :: Wrap (Pair i64 string) -> i64
+record Wrap<'a> { value: 'a }
+record Pair<'a, 'b> { first: 'a, second: 'b }
+def f :: Wrap<Pair<i64, string>> -> i64
 ```
 
 IR は `tz.record.Main.Wrap[Main.Pair[i64,string]]` を含み、native と wasm32 の両方で `--emit object` または `--emit llvm` → Clang/wasm toolchain の assemble が成功すること。
@@ -731,14 +730,14 @@ IR は `tz.record.Main.Wrap[Main.Pair[i64,string]]` を含み、native と wasm3
 `tests/fixtures/generic_records/Main.tz`:
 
 ```text
-record Pair 'a 'b { first: 'a, second: 'b }
-record Box 'a { value: 'a }
+record Pair<'a, 'b> { first: 'a, second: 'b }
+record Box<'a> { value: 'a }
 
-def add_pair :: Pair i64 i64 -> Pair i64 i64 -> Pair i64 i64
+def add_pair :: Pair<i64, i64> -> Pair<i64, i64> -> Pair<i64, i64>
 fn add_pair a b =
     Pair { first: a.first + b.first, second: a.second + b.second }
 
-def owned :: Box string -> i64
+def owned :: Box<string> -> i64
 fn owned box =
     let text = box.value
     text.length
@@ -793,36 +792,36 @@ node tests/examples.mjs target/release/tsuzuri
 ## ドキュメント
 
 - `docs/language.md`
-  - 「型とメモリ」の型表に `Pair 'a 'b` のようなジェネリックレコード例を追加。
+  - 「型とメモリ」の型表に `Pair<'a, 'b>` のようなジェネリックレコード例を追加。
   - 「多相関数と型クラス」の未対応一覧から「ジェネリックなレコード宣言」を外す。
-  - レコード宣言構文、型適用構文、`Add 'a` 制約との関係を明記。
+  - レコード宣言構文、型適用構文、`Add<'a>` 制約との関係を明記。
   - 診断表に `E1024` を追加。
 - `docs/architecture.md`
   - `Type::Record(usize, Vec<Type>)`、具体型単位レイアウト、LLVM named type の決定性を記載。
   - `emit_target` が具体インスタンスを `BTreeSet` で集める不変条件を追加。
 - `README.md`
   - 冒頭の未実装一覧から「ジェネリックなレコード型」を削除。
-  - 短い例 `record Pair 'a 'b` を追加。
+  - 短い例 `record Pair<'a, 'b>` を追加。
 
 ## 受け入れ条件
 
-- [ ] `TypeExprKind::Apply(Ident, Vec<TypeExpr>)` が導入され、`Add 'a` と `Pair i64 string` が同じ構文から正しく分類される。
-- [ ] `RecordDecl.parameters` と `CheckedRecord.parameters` があり、未使用・未宣言・重複パラメーターが `E1024`。
-- [ ] `Type::Record(usize, Vec<Type>)` に移行し、既存の非ジェネリックレコードの挙動と IR が実質的に変わらない。
-- [ ] レコードリテラル、フィールドアクセス、レコードパターンで型引数が推論・置換される。
-- [ ] 型引数置換後の record field が共有・排他参照を含む concrete 型は、literal / annotation / signature / specialization の全境界で `E1013`。
-- [ ] `instance Add (Pair i64 i64)` のような具体インスタンスが使える。
-- [ ] 所有権検査が型引数内の Copy / Capture / Send / loan を正しく伝播する。
-- [ ] 具体インスタンス単位で 64 KiB レイアウト上限と再帰検出が行われる。
-- [ ] LLVM named type は D-03 の Tsuzuri canonical type text で具体インスタンスごとに 1 回だけ、実際に出力する関数から決定的順序で出力される。
-- [ ] nested generic type の native/wasm32 Clang assemble が成功する。
-- [ ] レコード型は export 不可のまま。
-- [ ] native/WASM × `-O0`/`-O3` の E2E、WASM imports なし、heap tracking `live == 0` を確認した。
-- [ ] `README.md`, `docs/language.md`, `docs/architecture.md` が更新された。
+- [x] `TypeExprKind::Apply` が導入され、`Add<'a>` と `Pair<i64, string>` が同じ構文から正しく分類される。
+- [x] `RecordDecl.parameters` と `CheckedRecord.parameters` があり、未使用・未宣言・重複パラメーターが `E1024`。
+- [x] `Type::Record(usize, Box<[Type]>)` に移行し、既存の非ジェネリックレコードの挙動と IR が実質的に変わらない。
+- [x] レコードリテラル、フィールドアクセス、レコードパターンで型引数が推論・置換される。
+- [x] 型引数置換後の record field が共有・排他参照を含む concrete 型は、literal / annotation / signature / specialization の全境界で `E1013`。
+- [x] `instance Add<Pair<i64, i64>>` のような具体インスタンスが使える。
+- [x] 所有権検査が型引数内の Copy / Capture / Send / loan を正しく伝播する。
+- [x] 具体インスタンス単位で 64 KiB レイアウト上限と再帰検出が行われる。
+- [x] LLVM named type は D-03 の Tsuzuri canonical type text で具体インスタンスごとに 1 回だけ、実際に出力する関数から決定的順序で出力される。
+- [x] nested generic type の native/wasm32 Clang assemble が成功する。
+- [x] レコード型は export 不可のまま。
+- [x] native/WASM × `-O0`/`-O3` の E2E、WASM imports なし、heap tracking `live == 0` を確認した。
+- [x] `README.md`, `docs/language.md`, `docs/architecture.md` が更新された。
 
 ## 落とし穴
 
-- `Add 'a` を parser で `Constrained` に残すと、`Pair i64 string` と同じ処理経路にならない。
+- `Add<'a>` を parser で `Constrained` に残すと、`Pair<i64, string>` と同じ処理経路にならない。
   D-02 どおり構文は `Apply` に揃え、型解決で分類する。
 - `Type::Record(id, args)` の `args` を `map_type` / `resolve` / `substitute` で走査し忘れると、単相化後に `Variable` や `Infer` が LLVM へ漏れる。
 - `Type::is_copy` と `needs_drop` は同義ではない。
@@ -830,11 +829,11 @@ node tests/examples.mjs target/release/tsuzuri
 - レコードリテラルのフィールドを宣言順に評価し直してはいけない。
   値構築の `insertvalue` 順序だけを宣言順にできる。
 - 非ジェネリックレコードの LLVM 型名を変えると既存 IR テストや fixture の文字列検査が壊れる。
-- `record_size` を宣言単位のまま残すと `record Box 'a { value: 'a }` のような型でサイズを決められない。
+- `record_size` を宣言単位のまま残すと `record Box<'a> { value: 'a }` のような型でサイズを決められない。
 - `Classes::inline_constraints` と `resolve_type` の両方で `Apply` を処理しないと、制約が落ちたり型適用が型クラスとして誤解されたりする。
-- `Pair (i64 -> i64) string` の表示と canonical mangling は別物である。LLVM 型文字列を mangle に入れず、D-03 の `fn[i64->i64]` 形式を使う。
-- レコード名と型クラス名の衝突を後回しにすると、`Add 'a` が型適用か制約か曖昧になる。
-- `type_apply` の引数で再び `type_apply` を呼ぶと `Pair Box i64 string` のような曖昧な AST になりやすい。引数は必ず `type_primary`。
+- `Pair<i64 -> i64, string>` の表示と canonical mangling は別物である。LLVM 型文字列を mangle に入れず、D-03 の `fn[i64->i64]` 形式を使う。
+- レコード名と型クラス名の衝突を後回しにすると、`Add<'a>` が型適用か制約か曖昧になる。
+- 型引数の境界はカンマと `>` で明示し、入れ子の `Box<i64>` を外側の引数列へ平坦化しない。
 - `Parser::parameters` は comma 区切りのみなので、record fields に `;` を許すと parser helper と仕様がずれる。
 
 ## 対象外
@@ -842,9 +841,8 @@ node tests/examples.mjs target/release/tsuzuri
 - `union` と列挙型（A02）。
 - 型別名 `type`（A05）。
 - 条件付きインスタンス、汎用インスタンス、スーパークラス（A06）。
-- 高階型 `F 'a` のような型コンストラクター変数（A10）。
+- 高階型 `'f<'a>` のような型コンストラクター変数（A10）。
 - レコード更新 `{ p with x = ... }`（C05）。
-- `Pair<i64,string>` 構文。
 - ジェネリック関数の export。
 - 再帰的なヒープ型の許可（A04）。
 
@@ -856,3 +854,14 @@ node tests/examples.mjs target/release/tsuzuri
   既定案は段階 1 では残し、A01 完了時点では新規 parser 出力を `Apply` に統一する。
 - 非ジェネリックレコードの LLVM 型名を既存互換で残すか、すべて引用符付きマングリングに揃えるか。
   既定案は既存互換を優先し、`args.is_empty()` の場合だけ旧名を使う。
+
+### 実装時の判断（A01）
+
+- 型適用は TypeExprKind::Apply に統一し、名前解決でクラスの制約と record／union の適用を区別する。
+  型引数は Box<[Type]> とし、Type を 32 バイトに保って深い検査のスタック消費を増やさない。
+- TypeContext の record_fields／record_field で型引数を置換し、レイアウト・Copy／drop／loan・所有権・LLVM が
+  同じ具体フィールド型を使う。参照を格納する具体化と再帰型は拒否し、64 KiB の上限を具体化後にも検査する。
+- 非ジェネリックな LLVM 型名は従来の名前を維持する。具体化した型だけを順序付き集合で集め、
+  LLVM 型文字列ではなく構造的な正規表記を引用符付きの名前に使う。
+- 未使用／重複／未宣言パラメーターは E1024。匿名の `'_` は字句規則に従い E0001 とする。
+  推論途中の型引数不一致では、不完全なレコード全体の型を診断に組み立てず、最初に異なる引数を報告する。

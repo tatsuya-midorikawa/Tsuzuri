@@ -16,12 +16,12 @@
 提案 API:
 
 ```text
-Task.parallel_results : [Task (Result 'a 'e)] -> Task (Result ['a] 'e)
+Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>
 ```
 
 意味:
 
-- 各タスクは `Result 'a 'e` を返す。
+- 各タスクは `Result<'a, 'e>` を返す。
 - すべて `Ok` なら入力順の `['a]` を `Ok` で返す。
 - どれかが `Error e` なら、決定的に選ばれた error を `Error e` で返す。
 - error 検出後、まだ開始していない index の新規実行を止め、未開始タスクの捕捉値を drop する。
@@ -31,9 +31,9 @@ Task.parallel_results : [Task (Result 'a 'e)] -> Task (Result ['a] 'e)
 
 - `docs/language.md` の「タスク」は cancellation と回復可能なタスク例外を未提供と説明している。
 - `src/check.rs::Builtin` は `TaskRun`, `TaskParallel` を持つ。
-  - `Task.parallel : [Task 'a] -> Task ['a]`
+  - `Task.parallel : [Task<'a>] -> Task<['a]>`
 - `src/closures.rs` は `task { ... }` を clone 不可の `%tz.closure` として下げる。
-- `src/ownership.rs` は `Task T` を非 Copy とし、二重実行や task の再利用可能 closure 捕捉を拒否する。
+- `src/ownership.rs` は `Task<T>` を非 Copy とし、二重実行や task の再利用可能 closure 捕捉を拒否する。
 - `src/llvm.rs::FunctionEmitter::parallel_tasks`:
   - tasks 配列を評価し、source pointer/length を取り出す。
   - result array を確保する。
@@ -56,7 +56,7 @@ Task.parallel_results : [Task (Result 'a 'e)] -> Task (Result ['a] 'e)
 
 ### 前提とする他チケットのインターフェース
 
-- **B01**: `Result 'a 'e = Ok of 'a | Error of 'e` が std で提供され、union layout/clone/drop は A02 により実装済み。
+- **B01**: `Result<'a, 'e> = Ok of 'a | Error of 'e` が std で提供され、union layout/clone/drop は A02 により実装済み。
 - **F01**: 常駐ワーカープール後も、index を単調増加で配布し、すべての開始済み work を join してから返る同期 API を提供する。F01 が `tsuzuri_task_parallel` の ABI を変える場合、B06 の runtime API は F01 の scheduler 上に同じ意味で実装する。
 
 ### 他チケットへの提供インターフェース
@@ -69,13 +69,13 @@ Task.parallel_results : [Task (Result 'a 'e)] -> Task (Result ['a] 'e)
 ### API
 
 ```text
-Task.parallel_results : [Task (Result 'a 'e)] -> Task (Result ['a] 'e)
+Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>
 ```
 
 例:
 
 ```text
-def work :: i64 -> Task (Result i64 string)
+def work :: i64 -> Task<Result<i64, string>>
 fn work n = task {
     if n < 0 then return Error "negative"
     else return Ok (n * n)
@@ -101,7 +101,7 @@ match result with
 
 ### failure / cancellation
 
-- failure は `Task (Result 'a 'e)` が `Error error` を正常に返すこと。trap ではない。
+- failure は `Task<Result<'a, 'e>>` が `Error error` を正常に返すこと。trap ではない。
 - `Error` を返したタスクを検出したら、runtime は **まだ開始していない index >= cancellation_index** の新規開始を止める。
 - すでに開始したタスクは最後まで実行し、join する。
 - 未開始タスクは実行せず、捕捉値を drop する。
@@ -124,8 +124,8 @@ match result with
 
 ### 所有権・借用
 
-- 入力 `[Task (Result 'a 'e)]` は `Task.parallel_results` が消費する。
-- `Task T` の既存不変条件を維持:
+- 入力 `[Task<Result<'a, 'e>>]` は `Task.parallel_results` が消費する。
+- `Task<T>` の既存不変条件を維持:
   - task は非 Copy。
   - 捕捉値と結果は `Send`。
   - 参照を含む結果は `E1013`。
@@ -163,7 +163,7 @@ pub enum Builtin {
 
 ```rust
 Task.parallel_results :
-    [Task (Result 'a 'e)] -> Task (Result ['a] 'e)
+    [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>
 ```
 
 内部 `Type`:
@@ -221,7 +221,7 @@ uint64_t tsuzuri_task_parallel_results(
 );
 ```
 
-- callback は index の task を実行し、result slot に `Result 'a 'e` を store し、`1` if `Error`, `0` if `Ok` を返す。
+- callback は index の task を実行し、result slot に `Result<'a, 'e>` を store し、`1` if `Error`, `0` if `Ok` を返す。
 - runtime は `uint64_t` で最小 failure index を返す。failure なしなら `UINT64_MAX`。
 - callback の C ABI は aggregate payload を C に露出しない。`void *context, uint64_t index` だけは既存方針を維持する。
 
@@ -293,14 +293,14 @@ success:
 入力型:
 
 ```rust
-tasks: [Task (Result 'a 'e)]
-result: Result ['a] 'e
+tasks: [Task<Result<'a, 'e>>]
+result: Result<['a], 'e>
 ```
 
 主要 steps:
 
 1. `tasks` を評価し、`source` pointer と `length` を取得。
-2. temporary result buffer を `length * sizeof(Result 'a 'e)` 確保する。長さ 0 でも 1 byte 以上の既存 allocator 規則に合わせる。
+2. temporary result buffer を `length * sizeof(Result<'a, 'e>)` 確保する。長さ 0 でも 1 byte 以上の既存 allocator 規則に合わせる。
 3. started bitmap `[i8]` を確保し、0 で初期化する。
 4. callback context `{ ptr source, ptr temp_results, ptr started }` を entry alloca に置く。
 5. result 型ごとの callback を決定的名で生成する。
@@ -442,9 +442,9 @@ match Task.run (Task.parallel_results jobs) with
 ```
 
 ```text
-def make :: 'a -> Task (Result 'a string)
+def make :: 'a -> Task<Result<'a, string>>
 fn make value = task { return Ok value }
-let run: [Task (Result i64 string)] -> Task (Result [i64] string) = Task.parallel_results
+let run: [Task<Result<i64, string>>] -> Task<Result<[i64], string>> = Task.parallel_results
 match Task.run (run [make 42]) with
 | Ok values -> values[0]
 | Error _ -> -1
@@ -456,8 +456,8 @@ match Task.run (run [make 42]) with
 |---|---|
 | `Task.parallel_results [task { return 1 }]` | `E1003` |
 | `let work = task { return Ok 1 }; Task.run (Task.parallel_results [work, work])` | `E1012` |
-| `export def bad :: Task (Result i64 string)` | `E1008` |
-| `def bad :: Task (Result &i64 string) ...` | `E1013` |
+| `export def bad :: Task<Result<i64, string>>` | `E1008` |
+| `def bad :: Task<Result<&i64, string>> ...` | `E1013` |
 | `Task.parallel_results [task { return Error "a" }, task { return Error 1 }]` | `E1003` |
 
 ### E2E fixture
@@ -465,7 +465,7 @@ match Task.run (run [make 42]) with
 追加 export:
 
 - `parallel_results_ok(count)`:
-  - `new [Task (Result i64 i64)](count, i -> task { return Ok (i * i) })`
+  - `new [Task<Result<i64, i64>>](count, i -> task { return Ok (i * i) })`
   - `Ok values` なら sum。
   - 期待値 JS: `sum i^2`。
 - `parallel_results_error()`:
@@ -520,7 +520,7 @@ match Task.run (run [make 42]) with
 
 ## 受け入れ条件
 
-- [ ] `Task.parallel_results : [Task (Result 'a 'e)] -> Task (Result ['a] 'e)` が型検査される。
+- [ ] `Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>` が型検査される。
 - [ ] すべて `Ok` の場合、入力順の array を `Ok` で返す。
 - [ ] `Error` がある場合、スレッド完了順に依存せず最小 input index の error を返す。
 - [ ] failure 検出後、未開始 index の新規開始を止める。

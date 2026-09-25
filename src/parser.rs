@@ -1,10 +1,25 @@
-use crate::diagnostic::{Diagnostic, Span};
-use crate::lexer::lex;
+use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::lexer::{lex, lex_all};
 use crate::syntax::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "parse_control.rs"]
 mod control;
+
+fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Def
+            | TokenKind::Fn
+            | TokenKind::Record
+            | TokenKind::Union
+            | TokenKind::Class
+            | TokenKind::Instance
+            | TokenKind::Export
+            | TokenKind::Private
+            | TokenKind::Let
+    )
+}
 
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     parse_source(source, None)
@@ -12,6 +27,20 @@ pub fn parse(source: &str) -> Result<Program, Diagnostic> {
 
 pub fn parse_with_source(source: &str, source_id: usize) -> Result<Program, Diagnostic> {
     parse_source(source, Some(source_id))
+}
+
+pub fn parse_with_source_all(source: &str, source_id: usize) -> Result<Program, Vec<Diagnostic>> {
+    let (mut tokens, mut diagnostics) = lex_all(source);
+    for error in &mut diagnostics {
+        error.span.source = Some(source_id);
+    }
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+    for token in &mut tokens {
+        token.span.source = Some(source_id);
+    }
+    Parser::new(source, tokens).program_all(true)
 }
 
 fn parse_source(source: &str, source_id: Option<usize>) -> Result<Program, Diagnostic> {
@@ -22,25 +51,14 @@ fn parse_source(source: &str, source_id: Option<usize>) -> Result<Program, Diagn
     for token in &mut tokens {
         token.span.source = source_id;
     }
-    Parser {
-        source,
-        tokens,
-        position: 0,
-        nesting: 0,
-        in_task: false,
-        stop_at_arm: false,
-        stop_at_arrow: false,
-        active_patterns: BTreeMap::new(),
-        pattern_type_arrow: false,
-        type_offside: None,
-    }
-    .program()
+    Parser::new(source, tokens).program()
 }
 
 struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     position: usize,
+    previous_end: usize,
     nesting: usize,
     in_task: bool,
     stop_at_arm: bool,
@@ -48,6 +66,24 @@ struct Parser<'a> {
     active_patterns: BTreeMap<String, ActivePattern>,
     pattern_type_arrow: bool,
     type_offside: Option<usize>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(source: &'a str, tokens: Vec<Token>) -> Self {
+        Self {
+            source,
+            tokens,
+            position: 0,
+            previous_end: 0,
+            nesting: 0,
+            in_task: false,
+            stop_at_arm: false,
+            stop_at_arrow: false,
+            active_patterns: BTreeMap::new(),
+            pattern_type_arrow: false,
+            type_offside: None,
+        }
+    }
 }
 
 impl Parser<'_> {
@@ -61,6 +97,7 @@ impl Parser<'_> {
 
     fn take(&mut self) -> Token {
         let token = self.current().clone();
+        self.previous_end = token.span.end;
         if !self.at(&TokenKind::End) {
             self.position += 1;
         }
@@ -110,7 +147,16 @@ impl Parser<'_> {
         }
     }
 
-    fn program(mut self) -> Result<Program, Diagnostic> {
+    fn program(self) -> Result<Program, Diagnostic> {
+        self.program_all(false).map_err(|errors| {
+            errors
+                .into_iter()
+                .next()
+                .expect("a failed parse has a diagnostic")
+        })
+    }
+
+    fn program_all(mut self, recovering: bool) -> Result<Program, Vec<Diagnostic>> {
         let mut program = Program {
             source_kind: None,
             records: Vec::new(),
@@ -126,25 +172,17 @@ impl Parser<'_> {
         let mut defined_names = BTreeSet::new();
         let mut signature_group = None;
         let mut definition_group = None;
-        while !self.at(&TokenKind::End) {
-            let column = self.column(self.current().span);
-            let visibility = self.visibility()?;
-            if self.eat(&TokenKind::Union) {
+        let mut diagnostics = Vec::new();
+        while !self.at(&TokenKind::End) && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
+            let start = self.position;
+            let parsed = (|| -> Result<(), Diagnostic> {
+                let column = self.column(self.current().span);
+                let visibility = self.visibility()?;
+                if self.eat(&TokenKind::Union) {
                 program.unions.push(self.union_declaration(visibility, column)?);
             } else if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
-                let mut parameters = Vec::new();
-                while self.at(&TokenKind::TypeVariable(String::new())) {
-                    if parameters.len() >= MAX_NESTING {
-                        return Err(self.error("too many record type parameters"));
-                    }
-                    parameters.push(self.type_variable()?);
-                }
-                if !self.at(&TokenKind::LeftBrace)
-                    && matches!(self.current().kind, TokenKind::Ident(_) | TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftList)
-                {
-                    return Err(self.error("record type parameters use variables such as 'a"));
-                }
+                let parameters = self.type_parameters()?;
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
                 let fields = self.parameters(TokenKind::RightBrace)?;
                 program.records.push(RecordDecl {
@@ -155,7 +193,11 @@ impl Parser<'_> {
                 });
             } else if self.eat(&TokenKind::Class) {
                 let name = self.ident()?;
-                let variable = self.type_variable()?;
+                let mut parameters = self.type_parameters()?;
+                if parameters.len() != 1 {
+                    return Err(self.error("a type class requires exactly one type parameter, as in class C<'a>"));
+                }
+                let variable = parameters.remove(0);
                 self.expect(&TokenKind::LeftBrace, "'{' after the class parameter")?;
                 let mut methods = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
@@ -172,7 +214,7 @@ impl Parser<'_> {
                 });
             } else if self.eat(&TokenKind::Instance) {
                 let class = self.qualified_ident()?;
-                let ty = self.type_apply()?;
+                let ty = self.single_type_argument()?;
                 self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
                 let mut methods = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
@@ -198,7 +240,7 @@ impl Parser<'_> {
                 self.take();
                 let recursive = self.eat(&TokenKind::Rec);
                 let name = self.ident()?;
-                if !defined_names.insert(name.text.clone()) {
+                if defined_names.contains(&name.text) {
                     return Err(Diagnostic::new("E1001", "duplicate function definition", name.span));
                 }
                 self.expect(&TokenKind::Equal, "'=' before the anonymous function")?;
@@ -208,6 +250,7 @@ impl Parser<'_> {
                 }
                 let recursion = recursive.then(|| name.text.clone());
                 definition_group = recursion.clone();
+                defined_names.insert(name.text.clone());
                 definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
             } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) {
@@ -237,7 +280,7 @@ impl Parser<'_> {
                     let mut signature = self.signature(name.clone(), exported)?;
                     signature.recursion = recursion;
                     signature.visibility = visibility;
-                    if signatures.insert(name.text.clone(), signature).is_some() {
+                    if signatures.contains_key(&name.text) {
                         return Err(Diagnostic::new(
                             "E1001",
                             "duplicate function signature",
@@ -247,10 +290,11 @@ impl Parser<'_> {
                     if self.at(&TokenKind::DoubleColon) {
                         return Err(self.error("use 'def name :: ...' for a signature; 'fn' introduces its implementation"));
                     }
+                    signatures.insert(name.text.clone(), signature);
                     self.eat(&TokenKind::Semicolon);
-                    continue;
+                    return Ok(());
                 }
-                if !defined_names.insert(name.text.clone()) {
+                if defined_names.contains(&name.text) {
                     return Err(Diagnostic::new(
                         "E1001",
                         "duplicate function definition",
@@ -263,15 +307,17 @@ impl Parser<'_> {
                     }
                     let mut definition = self.definition(name)?;
                     definition.recursion = recursion;
+                    defined_names.insert(definition.name.text.clone());
                     definitions.push(definition);
                     self.eat(&TokenKind::Semicolon);
-                    continue;
+                    return Ok(());
                 }
                 self.expect(&TokenKind::LeftParen, "'(' after the function name")?;
                 let parameters = self.parameters(TokenKind::RightParen)?;
                 self.expect(&TokenKind::Arrow, "'->' and an explicit return type")?;
                 let result = self.type_expr()?;
                 let body = self.block()?;
+                defined_names.insert(name.text.clone());
                 program.functions.push(FunctionDecl {
                     name,
                     recursion,
@@ -294,28 +340,106 @@ impl Parser<'_> {
                     ));
                 }
                 program.entry = Some(self.entry()?);
+            }
+                Ok(())
+            })();
+            if let Err(error) = parsed {
+                let resume = error.span.start.min(self.current().span.start);
+                diagnostics.push(error);
+                if !recovering {
+                    return Err(diagnostics);
+                }
+                self.recover_top_level_boundary(start, resume);
+                signature_group = None;
+                definition_group = None;
+            } else if program.entry.is_some() {
                 break;
             }
         }
-        for definition in definitions {
-            let signature = signatures.remove(&definition.name.text).ok_or_else(|| {
-                Diagnostic::new(
-                    "E0002",
-                    "function definition needs a 'def name :: ...' signature",
-                    definition.name.span,
-                )
-            })?;
-            program.functions.push(Self::define(signature, definition)?);
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
         }
-        if let Some(signature) = signatures.values().next() {
-            return Err(Diagnostic::new(
+        for definition in definitions {
+            if diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
+                break;
+            }
+            let defined = signatures
+                .remove(&definition.name.text)
+                .ok_or_else(|| {
+                    Diagnostic::new(
+                        "E0002",
+                        "function definition needs a 'def name :: ...' signature",
+                        definition.name.span,
+                    )
+                })
+                .and_then(|signature| Self::define(signature, definition));
+            match defined {
+                Ok(function) => program.functions.push(function),
+                Err(error) => {
+                    diagnostics.push(error);
+                    if !recovering {
+                        return Err(diagnostics);
+                    }
+                }
+            }
+        }
+        for signature in signatures.values() {
+            if diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
+                break;
+            }
+            diagnostics.push(Diagnostic::new(
                 "E0002",
                 "function signature has no definition",
                 signature.name.span,
             ));
+            if !recovering {
+                break;
+            }
+        }
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
         }
         program.active_patterns = self.active_patterns.into_values().collect();
         Ok(program)
+    }
+
+    fn recover_top_level_boundary(&mut self, start: usize, resume: usize) {
+        let mut delimiters = Vec::new();
+        self.position = self.tokens.len() - 1;
+        for index in start..self.tokens.len() {
+            let token = &self.tokens[index];
+            if index > start
+                && token.span.start >= resume
+                && delimiters.is_empty()
+                && self.column(token.span) == 0
+                && is_top_level_declaration_start(&token.kind)
+            {
+                self.position = index;
+                break;
+            }
+            match token.kind {
+                TokenKind::LeftParen => delimiters.push(TokenKind::RightParen),
+                TokenKind::LeftBracket => delimiters.push(TokenKind::RightBracket),
+                TokenKind::LeftList => delimiters.push(TokenKind::RightList),
+                TokenKind::LeftBrace => delimiters.push(TokenKind::RightBrace),
+                TokenKind::RightParen
+                | TokenKind::RightBracket
+                | TokenKind::RightList
+                | TokenKind::RightBrace
+                    if delimiters.last() == Some(&token.kind) =>
+                {
+                    delimiters.pop();
+                }
+                _ => {}
+            }
+        }
+        self.previous_end = self.tokens[self.position.saturating_sub(1)].span.end;
+        self.nesting = 0;
+        self.in_task = false;
+        self.stop_at_arm = false;
+        self.stop_at_arrow = false;
+        self.pattern_type_arrow = false;
+        self.type_offside = None;
     }
 
     fn visibility(&mut self) -> Result<Visibility, Diagnostic> {
@@ -341,7 +465,7 @@ impl Parser<'_> {
         Err(Diagnostic::new("E1022", message, private))
     }
 
-    /// Parses the cases after `union Name 'a* =`. `of` is contextual, and a
+    /// Parses the cases after `union Name<'a, ...> =`. `of` is contextual, and a
     /// payload type ends before a new line that is not indented past the
     /// declaration, so the entry-point code may follow the last case.
     fn union_declaration(
@@ -350,22 +474,7 @@ impl Parser<'_> {
         column: usize,
     ) -> Result<UnionDecl, Diagnostic> {
         let name = self.ident()?;
-        let mut parameters = Vec::new();
-        while self.at(&TokenKind::TypeVariable(String::new())) {
-            if parameters.len() >= MAX_NESTING {
-                return Err(self.error("too many union type parameters"));
-            }
-            parameters.push(self.type_variable()?);
-        }
-        if matches!(
-            self.current().kind,
-            TokenKind::Ident(_)
-                | TokenKind::LeftParen
-                | TokenKind::LeftBracket
-                | TokenKind::LeftList
-        ) {
-            return Err(self.error("union type parameters use variables such as 'a"));
-        }
+        let parameters = self.type_parameters()?;
         self.expect(&TokenKind::Equal, "'=' after the union name")?;
         self.eat(&TokenKind::Pipe);
         let outer = self.type_offside.replace(column);
@@ -448,6 +557,75 @@ impl Parser<'_> {
         })
     }
 
+    fn type_parameters(&mut self) -> Result<Vec<Ident>, Diagnostic> {
+        if self.at(&TokenKind::Less) {
+            self.angle_list(Self::type_variable)
+        } else if self.at(&TokenKind::TypeVariable(String::new())) {
+            Err(self.error("enclose type parameters in '<...>', as in Name<'a, 'b>"))
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn angle_list<T>(
+        &mut self,
+        element: fn(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<Vec<T>, Diagnostic> {
+        if self.at(&TokenKind::Less) && self.current().span.start != self.previous_end {
+            return Err(self.error("'<' must immediately follow the name"));
+        }
+        self.expect(&TokenKind::Less, "'<' before type parameters or arguments")?;
+        let mut elements = Vec::new();
+        loop {
+            if elements.len() >= MAX_NESTING {
+                return Err(self.error("too many type parameters or arguments"));
+            }
+            elements.push(element(self)?);
+            if !self.eat(&TokenKind::Comma) || self.at_type_close() {
+                break;
+            }
+        }
+        self.type_close()?;
+        Ok(elements)
+    }
+
+    fn single_type_argument(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let mut arguments = self.angle_list(Self::type_expr)?;
+        if arguments.len() != 1 {
+            return Err(self.error("expected exactly one type argument"));
+        }
+        Ok(arguments.remove(0))
+    }
+
+    fn at_type_close(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::Greater
+                | TokenKind::GreaterEqual
+                | TokenKind::ShiftRight
+                | TokenKind::ShiftRightUnsigned
+        )
+    }
+
+    fn type_close(&mut self) -> Result<(), Diagnostic> {
+        let remainder = match self.current().kind {
+            TokenKind::Greater => {
+                self.take();
+                return Ok(());
+            }
+            TokenKind::GreaterEqual => TokenKind::Equal,
+            TokenKind::ShiftRight => TokenKind::Greater,
+            TokenKind::ShiftRightUnsigned => TokenKind::ShiftRight,
+            _ => return Err(self.error("expected '>' after type parameters or arguments")),
+        };
+        // Consume one '>' without inserting tokens or changing expression operators.
+        let token = &mut self.tokens[self.position];
+        token.kind = remainder;
+        token.span.start += 1;
+        self.previous_end = token.span.start;
+        Ok(())
+    }
+
     fn signature(&mut self, name: Ident, exported: bool) -> Result<SignatureDecl, Diagnostic> {
         let mut constraints = Vec::new();
         // A constraint prefix always ends in => before the next declaration/body.
@@ -456,7 +634,7 @@ impl Parser<'_> {
             let grouped = self.eat(&TokenKind::LeftParen);
             loop {
                 let class = self.qualified_ident()?;
-                let ty = self.type_primary()?;
+                let ty = self.single_type_argument()?;
                 constraints.push(ConstraintExpr { class, ty });
                 if !self.eat(&TokenKind::Comma) {
                     break;
@@ -633,7 +811,6 @@ impl Parser<'_> {
         })
     }
 
-    /// Reads exactly one type atom; type arguments are left to `type_apply`.
     fn type_primary(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.enter()?;
         let start = self.current().span;
@@ -697,63 +874,24 @@ impl Parser<'_> {
         } else {
             let name = self.qualified_ident()?;
             if name.text == "Task" {
-                TypeExprKind::Task(Box::new(self.type_primary()?))
+                TypeExprKind::Task(Box::new(self.single_type_argument()?))
+            } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
+                TypeExprKind::Apply(
+                    Box::new(name),
+                    self.angle_list(Self::type_expr)?.into_boxed_slice(),
+                )
             } else {
                 TypeExprKind::Named(name.text)
             }
         };
-        let end = self.tokens[self.position - 1].span;
         self.nesting -= 1;
         Ok(TypeExpr {
             kind,
-            span: start.through(end),
+            span: Span {
+                end: self.previous_end,
+                ..start
+            },
         })
-    }
-
-    /// Reads `Head Arg*`, where each argument is one `type_primary`, so nested
-    /// applications such as `Option (Pair i64 string)` need parentheses.
-    pub(super) fn type_apply(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let head = self.type_primary()?;
-        if !self.type_argument_start() {
-            return Ok(head);
-        }
-        let TypeExprKind::Named(name) = head.kind else {
-            return Err(self.error(
-                "type arguments must follow a type name; parenthesize an applied type, as in '&(Pair i64 string)' or 'Task (Pair i64 string)'",
-            ));
-        };
-        let mut arguments = Vec::new();
-        while self.type_argument_start() {
-            if arguments.len() >= MAX_NESTING {
-                return Err(self.error("too many type arguments"));
-            }
-            arguments.push(self.type_primary()?);
-        }
-        let span = head.span.through(arguments.last().unwrap().span);
-        Ok(TypeExpr {
-            kind: TypeExprKind::Apply(
-                Box::new(Ident {
-                    text: name,
-                    span: head.span,
-                }),
-                arguments.into_boxed_slice(),
-            ),
-            span,
-        })
-    }
-
-    /// References and function types start an argument only inside
-    /// parentheses, which keeps `x: T & p` patterns and `fn (|A|) ...`
-    /// definitions after signatures unambiguous.
-    fn type_argument_start(&self) -> bool {
-        matches!(
-            self.current().kind,
-            TokenKind::TypeVariable(_)
-                | TokenKind::Ident(_)
-                | TokenKind::LeftParen
-                | TokenKind::LeftBracket
-                | TokenKind::LeftList
-        ) && !self.offside()
     }
 
     fn make(&self, kind: ExprKind, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
@@ -925,8 +1063,7 @@ impl Parser<'_> {
     }
 
     fn newline_before_current(&self) -> bool {
-        self.source[self.tokens[self.position - 1].span.end..self.current().span.start]
-            .contains(['\n', '\r'])
+        self.source[self.previous_end..self.current().span.start].contains(['\n', '\r'])
     }
 
     fn entry(&mut self) -> Result<Expr, Diagnostic> {

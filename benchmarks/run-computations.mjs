@@ -51,10 +51,14 @@ function reference(name, count, seed) {
     if (name === "bind") state = mix(state, salt);
     else if (name === "delayed") {
       state = wrap(mix(state, salt) + mix(state ^ 71n, salt) + mix(state ^ 113n, salt));
-    } else if (name === "checked") {
+    } else if (name === "checked" || name === "std_result") {
       const first = state ^ salt;
       state = (state & 7n) === 0n ? first
         : (first & 3n) === 0n ? mix(first, salt) : mix(first, salt) ^ salt;
+    } else if (name === "std_option") {
+      state = (state & 7n) === 0n ? state ^ salt : mix(state ^ salt, salt);
+    } else if (name === "std_option_owned") {
+      state = mix(state, salt) ^ ((state & 7n) === 0n ? 0n : 12n);
     } else if (name === "owned_capture") state = mix(values[Number(state & 255n)], state);
     else throw new Error(`Unknown workload ${name}`);
   }

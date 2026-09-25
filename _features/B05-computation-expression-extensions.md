@@ -199,7 +199,7 @@ B.Bind2 mx my (x -> y -> f x y)
 説明上は「2 つの builder 値と 2 引数 callback」を受ける操作だが、Tsuzuri には HKT がないため実際は通常の関数型として builder ごとに定義する。例:
 
 ```text
-def Bind2 :: Option 'a -> Option 'b -> ('a -> 'b -> 'c) -> Option 'c
+def Bind2 :: Option<'a> -> Option<'b> -> ('a -> 'b -> 'c) -> Option<'c>
 ```
 
 `Bind2` がなく `MergeSources` がある場合は `MergeSources` + `Bind`。

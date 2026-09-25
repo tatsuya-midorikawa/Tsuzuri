@@ -1,12 +1,14 @@
-def divide :: i64 -> i64 -> Checked.Result
+def divide :: i64 -> i64 -> Result<i64, i64>
 fn divide value divisor =
-    if divisor == 0 { Checked.Zero() }
-    else { Checked.Return (value / divisor) }
+    if divisor == 0 then Error divisor
+    else Ok (value / divisor)
 
-let answer = Checked {
+let answer = Result {
     let! first = divide 84 2
     let! second = divide 0 1
     return first + second
 }
 
-if answer.ok { answer.value } else { -1 }
+match answer with
+| Ok value -> value
+| Error _ -> -1

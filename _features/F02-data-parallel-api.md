@@ -60,12 +60,12 @@
 ### 型
 
 - `Parallel.init : i64 -> (i64 -> 'a) -> ['a]`
-- `Parallel.map : (Copy 'a, Send 'a, Send 'b) => ('a -> 'b) -> &['a] -> ['b]`
-- `Parallel.map_ref : (Send 'a, Send 'b) => (&'a -> 'b) -> &['a] -> ['b]`
-- `Parallel.sum : (Numeric 'a, Add 'a, Copy 'a, Send 'a) => &['a] -> 'a`
-- `Parallel.reduce : (Copy 'a, Send 'a) => 'a -> ('a -> 'a -> 'a) -> &['a] -> 'a`
-- `Parallel.init` の結果要素 `'a` には `Send 'a` を要求する。
-- `Parallel.map` は C04 の `Array.map` と同じく、共有 slice から mapper へ owned element を渡すため `Copy 'a` を要求する。
+- `Parallel.map : (Copy<'a>, Send<'a>, Send<'b>) => ('a -> 'b) -> &['a] -> ['b]`
+- `Parallel.map_ref : (Send<'a>, Send<'b>) => (&'a -> 'b) -> &['a] -> ['b]`
+- `Parallel.sum : (Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => &['a] -> 'a`
+- `Parallel.reduce : (Copy<'a>, Send<'a>) => 'a -> ('a -> 'a -> 'a) -> &['a] -> 'a`
+- `Parallel.init` の結果要素 `'a` には `Send<'a>` を要求する。
+- `Parallel.map` は C04 の `Array.map` と同じく、共有 slice から mapper へ owned element を渡すため `Copy<'a>` を要求する。
 - `Parallel.map` は各 input element を `clone_value` で複製してから mapper へ渡す。`Copy` でも配列・リスト・関数値は deep clone や closure clone を伴うため、bit copy や descriptor reuse にしてはならない。
 - `Parallel.map_ref` は非 Copy input 用で、mapper に `&'a` を渡す。
 - `Parallel.map` の入力要素 `'a` と出力要素 `'b` には `Send` を要求する。
@@ -75,7 +75,7 @@
 - `Parallel.sum` は `Parallel.reduce` の特殊形で、空入力では対象型の加法単位元を返す。
 - `Parallel.sum` の整数単位元は `0` を対象整数幅・符号にした値。
 - `Parallel.sum` の binary / decimal 浮動小数点単位元は `+0`。
-- `Parallel.sum` は string には使えない。`Add string` は存在するが `Numeric string` ではない。
+- `Parallel.sum` は string には使えない。`Add<string>` は存在するが `Numeric<string>` ではない。
 - 関数引数は reusable な関数値であり、task ではない。
 - 関数値の捕捉環境が借用を保持する場合は拒否する。
 - 未知の関数値で hidden borrowed environment があるか証明できない場合は保守的に拒否する。
@@ -205,8 +205,8 @@
 - `Checker::value_expression` に `ExprKind::Field(Name("Parallel"), field)` の分岐を追加する。
 - `Parallel` の未知 field は `E1002` で `"Parallel has no function '<name>'; use Parallel.init, Parallel.map, Parallel.map_ref, Parallel.sum, or Parallel.reduce"` とする。
 - `Parallel.init` の type check は `length: i64`, `initializer: i64 -> 'a`, result `['a]`。
-- `Parallel.map` の type check は `mapper: 'a -> 'b`, `input: &['a]`, result `['b]` で、`Copy 'a`, `Send 'a`, `Send 'b` を要求する。
-- `Parallel.map_ref` の type check は `mapper: &'a -> 'b`, `input: &['a]`, result `['b]` で、`Send 'a`, `Send 'b` を要求する。
+- `Parallel.map` の type check は `mapper: 'a -> 'b`, `input: &['a]`, result `['b]` で、`Copy<'a>`, `Send<'a>`, `Send<'b>` を要求する。
+- `Parallel.map_ref` の type check は `mapper: &'a -> 'b`, `input: &['a]`, result `['b]` で、`Send<'a>`, `Send<'b>` を要求する。
 - `Parallel.reduce` の type check は `identity: 'a`, `reducer: 'a -> 'a -> 'a`, `input: &['a]`, result `'a`。
 - `Parallel.sum` の type check は `input: &['a]`, result `'a`。
 - `Send` / `Copy` / `Numeric` / `Add` constraints を `Checker::require` で追加する。
@@ -294,7 +294,7 @@
    - input slice の shared loan を expression 終了まで保持する。
    - function value に loans があるケースを `E1013` で拒否する。
    - result / partial type の `Send` 制約を検査する。
-   - `Parallel.map` は `Copy 'a` を要求し、非 Copy input は `Parallel.map_ref` へ誘導する。
+   - `Parallel.map` は `Copy<'a>` を要求し、非 Copy input は `Parallel.map_ref` へ誘導する。
    - 確認: closure が `&n` を捕捉する `Parallel.map` を `E1013` で拒否。
 
 4. **sequential reference lowering を実装する。**
@@ -364,7 +364,7 @@
 - `docs/language.md` には chunking 式をそのまま書く。
 - `docs/language.md` には `Parallel.reduce` が左から右逐次 reduce ではないことを書く。
 - `docs/language.md` には borrowed input slice と `Send` の違いを書く。
-- `docs/language.md` には `Parallel.map` が `Copy 'a` を要求し、非 Copy input は `Parallel.map_ref` を使うことを書く。
+- `docs/language.md` には `Parallel.map` が `Copy<'a>` を要求し、非 Copy input は `Parallel.map_ref` を使うことを書く。
 - `docs/language.md` には `%tz.closure` の消費 ABI により implementation が application ごとに closure clone することは書きすぎず、利用者向けには関数値が独立 snapshot として扱われることを書く。
 - `docs/architecture.md` に lowering、closure clone、callback ABI、F01 runtime 依存を書く。
 - `README.md` に短い使用例を書く。
@@ -382,7 +382,7 @@
 - [ ] closure environment を複数 worker が同時に消費しない。
 - [ ] closure snapshot を二つ目の element に再利用して `@tz.apply.*` へ渡していない。
 - [ ] borrowed closure capture を拒否する。
-- [ ] `Parallel.map` は `Copy 'a` を要求し、borrowed slice の要素を `clone_value` してから owned mapper に渡す。
+- [ ] `Parallel.map` は `Copy<'a>` を要求し、borrowed slice の要素を `clone_value` してから owned mapper に渡す。
 - [ ] `Parallel.map_ref` は非 Copy input を shared reference で処理できる。
 - [ ] identity と input は Copy でも descriptor reuse せず、必要箇所ごとに `clone_value` する。
 - [ ] input slice は fork/join 内だけ shared borrow される。

@@ -227,11 +227,75 @@ function diagnostic(source, code) {
   const result = cli(["check", input, "--json"], { success: false });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "");
-  const error = JSON.parse(result.stderr);
+  const errors = result.stderr.trim().split("\n").map(JSON.parse);
+  assert.ok(errors.every((error) => error.severity === "error" || error.severity === "note"));
+  const error = errors[0];
   assert.equal(error.severity, "error");
   assert.equal(error.code, code);
   assert.equal(error.path, input);
   return error;
+}
+
+function multipleDiagnosticChecks() {
+  const directory = join(temporary, "multiple-diagnostics");
+  mkdirSync(directory);
+  const before = join(directory, "Before.tz");
+  const main = join(directory, "Main.tz");
+  const output = join(directory, "output");
+  writeFileSync(before, "def first :: i64\nfn first = true\n");
+  writeFileSync(main, "def bad :: Missing -> i64\nfn bad x = x\ndef main :: i64\nfn main = bad 1\n");
+  writeFileSync(output, "preserved");
+  let expected;
+  for (const args of [
+    ["check", directory, "--json"],
+    ["build", directory, "-o", output, "--json"],
+    ["run", directory, "--json"],
+  ]) {
+    const result = cli(args, {
+      success: false, env: { TSUZURI_CLANG: join(directory, "must-not-run") },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    const errors = result.stderr.trim().split("\n").map(JSON.parse);
+    assert.deepEqual(errors.map(({ code, path }) => [code, path]), [
+      ["E1003", before], ["E1004", main],
+    ]);
+    expected ??= errors;
+    assert.deepEqual(errors, expected);
+    assert.equal(readFileSync(output, "utf8"), "preserved");
+  }
+  const human = cli(["check", directory], { success: false }).stderr;
+  assert.equal((human.match(/error\[E/g) ?? []).length, 2);
+  assert.ok(human.includes("\n\n"));
+  assert.equal(readdirSync(directory).some((name) => name.startsWith(".tsuzuri-")), false);
+  writeFileSync(before, "");
+  for (const [count, note] of [
+    [62, "12 more errors not shown"],
+    [1003, "at least 950 more errors not shown"],
+  ]) {
+    writeFileSync(main, Array.from({ length: count }, (_, index) =>
+      `def f${index} :: i64\nfn f${index} = true\n`).join(""));
+    const result = cli(["check", directory, "--json"], { success: false });
+    assert.equal(result.status, 1);
+    const errors = result.stderr.trim().split("\n").map(JSON.parse);
+    assert.equal(errors.length, 51);
+    assert.deepEqual(errors.at(-1), { severity: "note", message: note });
+    assert.ok(errors.slice(0, 50).every((error) => error.code === "E1003" && error.path === main));
+    assert.equal(cli(["check", directory, "--json"], { success: false }).stderr, result.stderr);
+    assert.ok(cli(["check", directory], { success: false }).stderr.endsWith(`error: ${note}\n`));
+  }
+  for (const [source, code] of [
+    ["fn first =\nrecord R { x: i64 }\nfn second =\n", "E0002"],
+    ["@ @", "E0001"],
+    ['def consume :: string -> unit\nfn consume s = ()\ndef a :: unit\nfn a = { let s = "a"; consume s; consume s }\ndef b :: unit\nfn b = { let s = "b"; consume s; consume s }', "E1012"],
+  ]) {
+    writeFileSync(main, source);
+    const result = cli(["check", directory, "--json"], { success: false });
+    assert.equal(result.status, 1);
+    const errors = result.stderr.trim().split("\n").map(JSON.parse);
+    assert.equal(errors.length, 2, result.stderr);
+    assert.ok(errors.every((error) => error.code === code));
+  }
 }
 
 async function runtimeChecks() {
@@ -590,6 +654,7 @@ try {
   await runtimeChecks();
   await moduleChecks();
   await polymorphismChecks();
+  multipleDiagnosticChecks();
 
   for (const [type, value, expected] of [
     ["i64", "-9223372036854775808", "-9223372036854775808\n"],
@@ -613,10 +678,10 @@ try {
   diagnostic("fn f() -> i64 { 1__2 }", "E0001");
   diagnostic("record R { r: R }", "E1010");
   diagnostic("def id :: 'a -> 'a\nfn id x = x\ndef f :: unit\nfn f = { let value = id; }", "E1015");
-  diagnostic("class C 'a { def f :: 'a -> i32 }\ninstance C bool {}", "E1018");
+  diagnostic("class C<'a> { def f :: 'a -> i32 }\ninstance C<bool> {}", "E1018");
   diagnostic("def add :: 'a -> 'a -> 'a\nfn add x y = x + y\ndef f :: bool\nfn f = add true false", "E1005");
   diagnostic("fn add :: i32 -> i32 -> i32\nfn add x y = x + y", "E0002");
-  diagnostic("def f :: Add 'a -> 'a\nfn f x = x\ndef g :: bool\nfn g = f true", "E1005");
+  diagnostic("def f :: Add<'a> -> 'a\nfn f x = x\ndef g :: bool\nfn g = f true", "E1005");
   diagnostic("def f :: i64\nfn f = { let x = 1; let g: &i64 -> unit = r -> { *r = 2; }; 0 }", "E1014");
   diagnostic(Buffer.from([0xff]), "E2001");
   diagnostic(" ".repeat(1024 * 1024 + 1), "E0003");

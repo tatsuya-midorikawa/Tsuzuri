@@ -12,13 +12,13 @@
 
 ## 目的
 
-`Option`, `Result 'e`, `Array`, `List`, 将来の `Vec` など「型を受け取って型を返す型コンストラクター」を抽象化し、`Functor 'f` のような型クラスを表現できるようにする。
+`Option`, `Result<'e>`, `Array`, `List`, 将来の `Vec` など「型を受け取って型を返す型コンストラクター」を抽象化し、`Functor<'f>` のような型クラスを表現できるようにする。
 
 ただし Tsuzuri は実行時辞書・boxing・動的ディスパッチを持たない方針であり、HKT も既存の単相化モデルに収まる範囲に限定する。P3 とする理由は、A01/A06/A02/B01/E02 が安定しないと設計の土台が動くうえ、コンパイル時間・特殊化爆発・診断複雑化のリスクが高いため。
 
 ## 現状
 
-- GUIDE D-02 は型適用を `TypeExprKind::Apply(Ident, Vec<TypeExpr>)` として予定している。head は `Ident` であり、`'f 'a` のような type-constructor variable を head にできない。
+- GUIDE D-02 は型適用を `TypeExprKind::Apply(Ident, Vec<TypeExpr>)` として予定している。head は `Ident` であり、`'f<'a>` のような type-constructor variable を head にできない。
 - `src/check.rs::Type` は runtime 型を表し、`Variable(String)` は kind `Type` の型変数だけを想定する。
 - `src/polymorph.rs::variables`, `map_type`, `substitute`, `Inference::unify` は型変数を具体型へ置換するが、型コンストラクター変数や kind は持たない。
 - `src/polymorph.rs::Classes` は型クラスが type parameter 1 個を持つ前提。A06 後も class parameter は `Type` kind の値型を想定する。
@@ -36,33 +36,32 @@ kind ::= "*"
        | "(" kind ")"
 
 class-declaration ::=
-    "class" class-name class-parameter "{" ... "}"
+    "class" class-name "<" class-parameter ","? ">" "{" ... "}"
 
 class-parameter ::=
-    type-variable
-  | "(" type-variable ":" kind ")"
+    type-variable (":" kind)?
 ```
 
 例:
 
 ```text
-class Functor ('f: * -> *) {
-    def map :: ('a -> 'b) -> 'f 'a -> 'f 'b
+class Functor<'f: * -> *> {
+    def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
 }
 
-class Applicative ('f: * -> *) {
-    def pure :: 'a -> 'f 'a
-    def apply :: 'f ('a -> 'b) -> 'f 'a -> 'f 'b
+class Applicative<'f: * -> *> {
+    def pure :: 'a -> 'f<'a>
+    def apply :: 'f<'a -> 'b> -> 'f<'a> -> 'f<'b>
 }
 
-instance Functor Option {
+instance Functor<Option> {
     fn map f value =
         match value with
         | None -> None
         | Some x -> Some (f x)
 }
 
-instance Functor (Result 'e) {
+instance Functor<Result<'e>> {
     fn map f value =
         match value with
         | Error e -> Error e
@@ -70,12 +69,12 @@ instance Functor (Result 'e) {
 }
 ```
 
-`'f 'a` は type-constructor variable application。`Result 'e` は部分適用された型コンストラクターで kind `* -> *`。
+`'f<'a>` は type-constructor variable application。`Result<'e>` は部分適用された型コンストラクターで kind `* -> *`。
 
 ### kinds
 
-- `*` は値として存在できる通常の型。`i64`, `string`, `Option i64`, `[i64]` など。
-- `* -> *` は型を 1 個受け取って型を返す型コンストラクター。`Option`, `Result string`, `Array`, `List`。
+- `*` は値として存在できる通常の型。`i64`, `string`, `Option<i64>`, `[i64]` など。
+- `* -> *` は型を 1 個受け取って型を返す型コンストラクター。`Option`, `Result<string>`, `Array`, `List`。
 - `* -> * -> *` は 2 引数型コンストラクター。`Result`。
 - kind はコンパイル時だけに存在し、LLVM IR に出ない。
 
@@ -84,17 +83,17 @@ instance Functor (Result 'e) {
 既存/A01:
 
 ```text
-Option i64
-Result string i64
-Pair 'a 'b
+Option<i64>
+Result<string, i64>
+Pair<'a, 'b>
 ```
 
 HKT:
 
 ```text
-'f 'a
-'f (Option 'a)
-Result 'e       // 部分適用。kind * -> *
+'f<'a>
+'f<Option<'a>>
+Result<'e>       // 部分適用。kind * -> *
 ```
 
 型コンストラクターの部分適用は **型クラス head と型式内だけ**で使える。値の型として kind `*` でないものを要求したら `E1015`。
@@ -104,13 +103,13 @@ Result 'e       // 部分適用。kind * -> *
 - フェーズ 1 では型クラス parameter は 1 個のまま。ただし kind は `*` 以外も許す。
 - method signature 内で class parameter を型コンストラクターとして適用できる。
 - instance head は class parameter kind と一致する型コンストラクターでなければならない。
-- `instance Functor Result` は kind `* -> * -> *` なので `Functor ('f: * -> *)` には `E1015`。`instance Functor (Result string)` は可。
+- `instance Functor<Result>` は kind `* -> * -> *` なので `Functor<'f: * -> *>` には `E1015`。`instance Functor<Result<string>>` は可。
 - A06 の conditional instance と同様、overlap は kind-aware unification で検査する。
 
 ### 単相化
 
 - 実行時辞書はない。
-- `Functor.map` の呼び出しは、具体 `Option`, `Result string`, `[ ]` 等が分かった時点で instance method へ解決される。
+- `Functor.map` の呼び出しは、具体 `Option`, `Result<string>`, `[ ]` 等が分かった時点で instance method へ解決される。
 - 型コンストラクター変数は LLVM まで残らない。`Type::ApplyVariable` などの抽象表現は `Specializer::instantiate` で必ず飽和 `Type` へ置換する。
 - 特殊化上限は既存 1,024 を共有し、HKT 由来の追加展開も `E1017`。
 
@@ -141,7 +140,7 @@ pub enum TypeExprKind {
 }
 ```
 
-parser は A01 の `Apply(Ident, ...)` を `Apply(Box::new(Named(...)), ...)` として作る。`'f 'a` は `Apply(Box::new(Variable("f")), [Variable("a")])`。
+parser は A01 の `Apply(Ident, ...)` を `Apply(Box::new(Named(...)), ...)` として作る。`'f<'a>` は `Apply(Box::new(Variable("f")), [Variable("a")])`。
 
 ### Type の抽象表現
 
@@ -152,7 +151,7 @@ pub enum Type {
     // 既存
     Variable(String),                 // kind *
     ConstructorVariable(String, Kind), // kind != * も可
-    ApplyVariable(String, Vec<Type>),  // 'f 'a。kind は checker が別表で保証
+    ApplyVariable(String, Vec<Type>),  // 'f<'a>。kind は checker が別表で保証
     Partial(TypeConstructor, Vec<Type>),
 }
 
@@ -183,7 +182,7 @@ struct KindEnv {
 - primitive: `i64 : *`, `string : *`, `char : *`
 - array/list syntax: `[ ] : * -> *`, `[| |] : * -> *`
 - `Task : * -> *`
-- A01 record: `Pair : * -> * -> *` if `record Pair 'a 'b`
+- A01 record: `Pair : * -> * -> *` if `record Pair<'a, 'b>`
 - A02 union: `Result : * -> * -> *`
 - type alias: alias parameter count から kind を推定。HKT alias はフェーズ 1 対象外。
 
@@ -208,27 +207,27 @@ A06 の `InstanceTemplate.head` を kind-aware にする。
 例:
 
 ```text
-instance Functor (Result 'e)
+instance Functor<Result<'e>>
 ```
 
-head は class `Functor` の parameter kind `* -> *` を満たす `Partial(Union(Result), ['e])`。constraint `Functor (Result string)` と単一化すると `'e = string`。
+head は class `Functor` の parameter kind `* -> *` を満たす `Partial(Union(Result), ['e])`。constraint `Functor<Result<string>>` と単一化すると `'e = string`。
 
 overlap:
 
 ```text
-instance Functor (Result 'e)
-instance Functor (Result string)   // E1016
+instance Functor<Result<'e>>
+instance Functor<Result<string>>   // E1016
 ```
 
-`Option` と `Result 'e` は単一化しない。
+`Option` と `Result<'e>` は単一化しない。
 
 ### 標準クラス候補
 
 HKT が入っても、すぐに全標準ライブラリを Haskell 風にしない。候補:
 
 ```text
-class Functor ('f: * -> *) {
-    def map :: ('a -> 'b) -> 'f 'a -> 'f 'b
+class Functor<'f: * -> *> {
+    def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
 }
 ```
 
@@ -240,9 +239,9 @@ class Functor ('f: * -> *) {
 
 1. **Kind AST と parser**
    - `Kind` を `syntax.rs` または `check.rs` に追加。
-   - `class Functor ('f: * -> *)` の class parameter parser を追加。
+   - `class Functor<'f: * -> *>` の class parameter parser を追加。
    - `TypeExprKind::Apply(Box<TypeExpr>, Vec<TypeExpr>)` へ移行。A01 の構文を壊さない。
-   - 確認: parse tests for `class Functor ('f: * -> *)`.
+   - 確認: parse tests for `class Functor<'f: * -> *>`.
 2. **Kind 環境と kind checker**
    - primitive/record/union/builtin type constructors を `KindEnv` に登録。
    - `resolve_type` 前に `kind_check_type_expr` を通す。
@@ -252,11 +251,11 @@ class Functor ('f: * -> *) {
    - `ConstructorVariable`, `ApplyVariable`, `Partial` を追加。
    - `map_type`, `substitute`, `bounded_type`, `variables`, `Inference::resolve`, `Inference::unify` を更新。
    - kind が違う unification を `E1015`。
-   - 確認: `def idf :: 'f 'a -> 'f 'a` は `'f` 未宣言なら拒否。
+   - 確認: `def idf :: 'f<'a> -> 'f<'a>` は `'f` 未宣言なら拒否。
 4. **Classes 統合**
    - `Class.variable` に kind を持たせる。
    - A06 の instance template head を kind-aware にする。
-   - `instance Functor Option`、`instance Functor (Result 'e)` を受理。
+   - `instance Functor<Option>`、`instance Functor<Result<'e>>` を受理。
    - overlap を検査。
 5. **Specializer**
    - `substitute` で constructor variable を concrete constructor/partial application に置換。
@@ -268,10 +267,10 @@ class Functor ('f: * -> *) {
 
 ### フェーズ 2（設計）
 
-- kind annotation の省略推論を限定的に導入。`class Functor 'f` の method 使用から `* -> *` を推定できるようにするか検討。
+- kind annotation の省略推論を限定的に導入。`class Functor<'f>` の method 使用から `* -> *` を推定できるようにするか検討。
 - type alias の HKT parameter を許可:
   ```text
-  type Compose 'f 'g 'a = 'f ('g 'a)
+  type Compose<'f, 'g, 'a> = 'f<'g<'a>>
   ```
 - std の `Functor` を導入するか go/no-go で判断。
 
@@ -285,27 +284,27 @@ class Functor ('f: * -> *) {
 ### フェーズ 1 受理
 
 ```text
-union Option 'a = None | Some of 'a
+union Option<'a> = None | Some of 'a
 
-class Functor ('f: * -> *) {
-    def map :: ('a -> 'b) -> 'f 'a -> 'f 'b
+class Functor<'f: * -> *> {
+    def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
 }
 
-instance Functor Option {
+instance Functor<Option> {
     fn map f value =
         match value with
         | None -> None
         | Some x -> Some (f x)
 }
 
-def inc_option :: Option i64 -> Option i64
+def inc_option :: Option<i64> -> Option<i64>
 fn inc_option value = Functor.map (x -> x + 1) value
 ```
 
 ```text
-union Result 'a 'e = Ok of 'a | Error of 'e
+union Result<'a, 'e> = Ok of 'a | Error of 'e
 
-instance Functor (Result 'e) {
+instance Functor<Result<'e>> {
     fn map f value =
         match value with
         | Ok x -> Ok (f x)
@@ -318,10 +317,10 @@ instance Functor (Result 'e) {
 | プログラム | 期待 |
 |---|---|
 | `def bad :: Option -> i64` | `E1015` |
-| `instance Functor Result { ... }` | `E1015` |
-| `class Functor ('f: * -> *) { def bad :: 'f -> i64 }` | `E1015` |
-| `instance Functor (Result 'e)` と `instance Functor (Result string)` | `E1016` |
-| `def f :: 'f 'a -> 'f 'a` で `'f` 未宣言 | `E1015` |
+| `instance Functor<Result> { ... }` | `E1015` |
+| `class Functor<'f: * -> *> { def bad :: 'f -> i64 }` | `E1015` |
+| `instance Functor<Result<'e>>` と `instance Functor<Result<string>>` | `E1016` |
+| `def f :: 'f<'a> -> 'f<'a>` で `'f` 未宣言 | `E1015` |
 | 型コンストラクター再帰で kind/型展開上限超過 | `E1017` |
 
 ### E2E
@@ -348,7 +347,7 @@ instance Functor (Result 'e) {
 - [ ] kind annotation 付き class parameter を parse できる。
 - [ ] `TypeExprKind::Apply` が variable head を扱える。
 - [ ] kind checker が未適用/過適用/mismatch を `E1015` で拒否する。
-- [ ] `instance Functor Option` と `instance Functor (Result 'e)` が動作する。
+- [ ] `instance Functor<Option>` と `instance Functor<Result<'e>>` が動作する。
 - [ ] overlap が kind-aware に `E1016`。
 - [ ] 単相化後、HKT 中間型が `CheckedModule` の LLVM 入力に残らない。
 - [ ] 辞書/boxing/ランタイム型情報を生成しない。
@@ -356,7 +355,7 @@ instance Functor (Result 'e) {
 
 ## 落とし穴
 
-- D-02 の `Apply(Ident, Vec<TypeExpr>)` のままだと `'f 'a` を表せない。A10 では AST migration が必要。
+- D-02 の `Apply(Ident, Vec<TypeExpr>)` のままだと `'f<'a>` を表せない。A10 では AST migration が必要。
 - kind と Type を混ぜると、`Option` を値型として扱って LLVM へ流すバグになる。
 - partial application を concrete value type として許すと layout/ownership が定義できない。
 - HKT instance 解決で constructor variable を通常 type variable と同じに扱うと overlap を見逃す。
@@ -375,6 +374,6 @@ instance Functor (Result 'e) {
 - **台帳の見直し提案:** GUIDE D-02 の `TypeExprKind::Apply(Ident, Vec<TypeExpr>)` は HKT に不足する。A10 実装時は `Apply(Box<TypeExpr>, Vec<TypeExpr>)` へ改訂する必要がある。既定案は A01 の `Apply(Ident, ...)` を parser 互換で `Apply(Named(...), ...)` に移行する。
 - **既定案: フェーズ 1 は kind annotation 必須。** 推論は後続で検討。
 - **既定案: HKT std 導入の go/no-go 基準**
-  - go: `Functor`/`Result 'e`/`Option` の prototype が辞書なし IR、特殊化増加 20% 未満、診断が理解可能。
+  - go: `Functor`/`Result<'e>`/`Option` の prototype が辞書なし IR、特殊化増加 20% 未満、診断が理解可能。
   - no-go: 単純な `.tc` builder と比べて標準 API が複雑化する、または特殊化/compile time が制御不能。
   - no-go の場合も kind checker 実装を revert し、標準ライブラリは concrete module functions (`Option.map`, `Result.map`) を維持する。

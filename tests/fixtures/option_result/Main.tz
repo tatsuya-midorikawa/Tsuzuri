@@ -1,0 +1,187 @@
+export def option_some :: i64
+fn option_some = Option.get (Option.map (n -> n + 1) (Some 41))
+
+export def option_none_short_circuit :: i64
+fn option_none_short_circuit =
+    Option.default_value 42 (Option { let! x = None; return x / 0 })
+
+export def result_ok :: i64
+fn result_ok =
+    let result: Result<i64, i64> = Result { let! x = Ok 20; return x + 22 }
+    Result.get result
+
+export def result_error_short_circuit :: i64
+fn result_error_short_circuit =
+    let result: Result<i64, i64> = Result { let! x = Error 7; return x / 0 }
+    match result with
+    | Ok value -> value
+    | Error error -> error * 6
+
+export def option_loop :: i64 -> i64
+fn option_loop count =
+    Option.default_value (-1) (Option {
+        for n in new [i64](count, i -> i) do
+            do! if n < 0 then None else Some ()
+        return count
+    })
+
+export def result_loop :: i64 -> i64
+fn result_loop count =
+    let result: Result<i64, i64> = Result {
+        for n in new [i64](count, i -> i) do
+            do! if n < 0 then Error n else Ok ()
+        return count
+    }
+    Result.default_value (-1) result
+
+export def stopped_loops :: i64
+fn stopped_loops =
+    let option = Option {
+        for n in [1, 0, -1] do
+            do! if n == 0 then None else Some (assert (n > 0))
+        return 0 / 0
+    }
+    let result: Result<i64, i64> = Result {
+        for n in [1, 0, -1] do
+            do! if n == 0 then Error 22 else Ok (assert (n > 0))
+        return 0 / 0
+    }
+    Option.default_value 20 option + Result.get_error result
+
+export def while_and_zero :: i64
+fn while_and_zero =
+    let option = Option {
+        do! Option {}
+        if false then do! None
+        while false do do! None
+        return 20
+    }
+    let result: Result<i64, i64> = Result {
+        do! Result {}
+        if false then do! Error 1
+        while false do do! Error 1
+        return 22
+    }
+    Option.get option + Result.get result
+
+export def while_failure :: i64
+fn while_failure =
+    let option = Option { while true do do! None; return 0 / 0 }
+    let result: Result<i64, i64> = Result { while true do do! Error 22; return 0 / 0 }
+    Option.default_value 20 option + Result.get_error result
+
+export def owned_loop_failures :: i64
+fn owned_loop_failures =
+    let first: Result<unit, string> = Result {
+        for n in [1, 2, 3] do
+            do! if n == 2 then Error ("bad" + "!") else Ok (assert (n < 3))
+    }
+    let second: Result<unit, string> = Result {
+        while true do do! Error ("failure" + "!")
+    }
+    (Result.get_error first).length + (Result.get_error second).length
+
+export def remaining_functions :: i64
+fn remaining_functions =
+    let first = Option.or_else None (u -> Some 10)
+    let missing: Result<i64, string> = Error ("ba" + "d")
+    assert (Result.is_error (&missing))
+    let second = Result.or_else missing (u -> Ok 11)
+    let success: Result<i64, string> = Ok 21
+    let third = Result.or_else success (u -> unreachable ())
+    assert (Result.is_ok (&third))
+    let third = Result.bind (Result.map (n -> n + 1) third) (n -> Ok (n - 1))
+    Option.get first + Result.get second + Result.default_value 0 third
+
+export def defaults :: i64
+fn defaults =
+    let first = Option.default_with (u -> 0 / 0) (Some 10)
+    let second = Option.default_with (u -> 10) None
+    let third = Option.get (Option.or_else (Some 10) (u -> unreachable ()))
+    let result: Result<i64, string> = Ok 12
+    let fourth = Result.default_with (u -> 0 / 0) result
+    first + second + third + fourth
+
+export def conversions :: i64
+fn conversions =
+    let first = Option.to_result "missing" (Some 10)
+    let second: Result<i64, string> = Result.of_option "missing" (Some 10)
+    let third: Result<i64, string> = Error "bad"
+    let fourth: Result<i64, string> = Error "bad"
+    Result.get first + Result.get second +
+        Option.default_value 11 (Option.of_result third) +
+        Option.default_value 11 (Result.to_option fourth)
+
+def size :: &string -> i64
+fn size text = text.length
+
+export def owned :: i64 -> i64
+fn owned count =
+    let mut total = 0
+    for n in 1 .. count do
+        let option = Some ("ab" + "c")
+        let length = Option.get (Option.map_ref size (&option))
+        let copy = Option.get (Option.bind_ref (&option) (text -> Some (clone_string text)))
+        let filtered = Option.filter (text -> size text == 3) option
+        let joined = Option.get (Option.bind filtered (text -> Some (text + "!")))
+        let result: Result<string, i64> = Ok copy
+        let mapped = Result.map_ref size (&result)
+        let bound = Result.bind_ref (&result) (text -> Ok (clone_string text))
+        let error: Result<string, string> = Error ("ba" + "d")
+        let error = Result.map_error (text -> text + "!") error
+        total = total + length + joined.length + Result.get mapped +
+            (Result.get bound).length + (Result.get_error error).length + (Result.get result).length
+    total
+
+def take :: &mut (Option<'a>) -> Option<'a>
+fn take value =
+    match *value with
+    | Some item ->
+        *value = None
+        Some item
+    | None -> None
+
+export def copy_snapshot :: i64
+fn copy_snapshot =
+    let mut value = Some [20, 22]
+    let previous = take (&mut value)
+    assert (Option.is_none (&value))
+    let numbers = Option.get previous
+    numbers[0] + numbers[1]
+
+def list_size :: &([|string|]) -> i64
+fn list_size values =
+    match values with
+    | head :: tail ->
+        let mut size = head.length
+        for text in tail do size = size + text.length
+        size
+    | [||] -> 0
+
+export def borrowed_patterns :: i64
+fn borrowed_patterns =
+    let values = [|"a", "bb", "ccc"|]
+    let mut total = list_size (&values)
+    for (text, n) in [("hello", 1), ("there", 2)] do
+        total = total + text.length + n
+    let nested = Some (Some "hello")
+    total + (match &nested with
+             | Some inner -> match inner with | Some text -> text.length | None -> 0
+             | None -> 0)
+
+export def trap_option_get :: i64
+fn trap_option_get = Option.get None
+
+export def trap_result_get :: i64
+fn trap_result_get = Result.get (Error 1)
+
+export def trap_result_get_error :: i64
+fn trap_result_get_error = Result.get_error (Ok 1)
+
+export def trap_string :: i64
+fn trap_string =
+    let value: Option<string> = None
+    (Option.get value).length
+
+export def trap_eager_default :: i64
+fn trap_eager_default = Option.default_value (1 / 0) (Some 42)

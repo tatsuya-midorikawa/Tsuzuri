@@ -1,7 +1,7 @@
-class Score 'a {
+class Score<'a> {
     def score :: &'a -> i64
 }
 
-class Size 'a {
+class Size<'a> {
     def size :: &'a -> i64
 }

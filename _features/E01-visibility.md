@@ -6,7 +6,7 @@
 | 規模 | S |
 | 依存 | なし |
 | 後続 | E02, G09 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/control.rs`, `src/parse_control.rs`, `src/recursion.rs`, `src/llvm.rs`, `tests/modules.rs`, `tests/frontend.rs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -495,9 +495,9 @@ public と private が混在する `def rec` / `def and` グループを型検�
 
 `export private def f :: i64` は `E1022`。
 
-`private class C 'a { ... }` は `E1022`。
+`private class C<'a> { ... }` は `E1022`。
 
-`private instance Add T { ... }` は `E1022`。
+`private instance Add<T> { ... }` は `E1022`。
 
 他モジュールから `Secret.hidden()` を呼ぶと `E1022`。
 
@@ -571,16 +571,16 @@ E02 の標準ライブラリ説明では、補助関数を private にできる�
 
 ## 受け入れ条件
 
-- [ ] `private` が予約語として実装され、モジュール名にも識別子にも使えない。
-- [ ] `private def` と `private record` が同一モジュール内で使える。
-- [ ] 他モジュールから private 関数・レコード・型・active pattern を参照すると `E1022`。
-- [ ] `private export`、`private fn`、`private class`、`private instance` が `E1022`。
-- [ ] public signature と public record field から private 型が漏れると `E1022`。
-- [ ] private helper を持つ `.tc` が動き、operation 自体の private は `E1022`。
-- [ ] 既存の public-only コードの IR と ABI が変わらない。
-- [ ] `tz_` 公開名の互換性が保たれる。
-- [ ] `docs/language.md`、`docs/architecture.md`、`README.md` が更新される。
-- [ ] 関連 Rust テスト、E2E native/WASM × `-O0`/`-O3` が通る。
+- [x] `private` が予約語として実装され、モジュール名にも識別子にも使えない。
+- [x] `private def` と `private record` が同一モジュール内で使える。
+- [x] 他モジュールから private 関数・レコード・型・active pattern を参照すると `E1022`。
+- [x] `private export`、`private fn`、`private class`、`private instance` が `E1022`。
+- [x] public signature と public record field から private 型が漏れると `E1022`。
+- [x] private helper を持つ `.tc` が動き、operation 自体の private は `E1022`。
+- [x] 既存の public-only コードの IR と ABI が変わらない。
+- [x] `tz_` 公開名の互換性が保たれる。
+- [x] `docs/language.md`、`docs/architecture.md`、`README.md` が更新される。
+- [x] 関連 Rust テスト、E2E native/WASM × `-O0`/`-O3` が通る。
 
 ## 落とし穴
 
@@ -629,3 +629,13 @@ public signature の private leak を「同じモジュール内なら許し、�
 private 候補しかない無修飾型名を `unknown record type` にする案は却下する。既定案は情報のある `E1022`。
 
 台帳の見直し提案はない。D-09 と D-16 に従う。
+
+### 実装時の判断（E01）
+
+- `NameInfo` に可視性と所属モジュールを集約し、修飾／無修飾の型名・関数名・認識器の解決に同じ規則を使う。
+  private 候補は曖昧性に数えず、private 候補しかない場合は `E1022` とする。
+- public 宣言からの private 型の漏れは元の TypeExpr を検査し、宣言順によらず漏れた参照位置で報告する。
+  インスタンスメソッドはクラスの dispatch 経由でのみ呼ぶため、private 型のインスタンスを公開 API の漏れとは扱わない。
+- `fn`／`let`／`and` は def の可視性を継承し、`.tc` の操作は public のまま、補助だけを private にできる。
+  `export` のホスト ABI と LLVM のシンボル・通常の関数出力は変更しない。
+- union の可視性は A02 の同じ NameInfo 経路へ統合し、case は union の可視性を継承する。

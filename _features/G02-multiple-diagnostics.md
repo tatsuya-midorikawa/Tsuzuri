@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | なし |
 | 後続 | G03, G07 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/diagnostic.rs`, `src/lexer.rs`, `src/parser.rs`, `src/lib.rs`, `src/check.rs`, `src/control.rs`, `src/computation.rs`, `src/polymorph.rs`, `src/closures.rs`, `src/ownership.rs`, `src/driver.rs`, `src/main.rs`, `tests/diagnostics.rs`, `tests/modules.rs`, `tests/e2e.mjs`, `docs/language.md`, `README.md` |
 
 ## 目的
@@ -675,20 +675,20 @@ human:
 
 ## 受け入れ条件
 
-- [ ] `analyze` / `analyze_modules` の public signature が変わらない。
-- [ ] `analyze_all` / `analyze_modules_all` が追加される。
-- [ ] `tsuzuri check --json` が複数エラーを JSON lines として出す。
-- [ ] human 出力が複数診断を安定順で出す。
-- [ ] parser は top-level 宣言境界で recovery する。
-- [ ] parser recovery は delimiter nesting depth 0 の境界にだけ resync し、explicit block 内の column-1 `let` を top-level と誤認しない。
-- [ ] 関数 A の body error が関数 B の検査を止めない。
-- [ ] signature failure の関数は poisoned になり、caller 側 cascade が抑制される。
-- [ ] `Type::Error` が全 Type traversal / property / call branch を通っても secondary diagnostics や panic を出さない。
-- [ ] ownership error が関数ごとに複数報告される。
-- [ ] 診断は source id / offset で決定的に並ぶ。
-- [ ] 50 件 cap と exact omitted note、および hard limit 時の lower-bound note が動く。
-- [ ] exit code は既存仕様と同じ。
-- [ ] 既存 tests が通る。
+- [x] `analyze` / `analyze_modules` の public signature が変わらない。
+- [x] `analyze_all` / `analyze_modules_all` が追加される。
+- [x] `tsuzuri check --json` が複数エラーを JSON lines として出す。
+- [x] human 出力が複数診断を安定順で出す。
+- [x] parser は top-level 宣言境界で recovery する。
+- [x] parser recovery は delimiter nesting depth 0 の境界にだけ resync し、explicit block 内の column-1 `let` を top-level と誤認しない。
+- [x] 関数 A の body error が関数 B の検査を止めない。
+- [x] signature failure の関数は poisoned になり、caller 側 cascade が抑制される。
+- [x] `Type::Error` が全 Type traversal / property / call branch を通っても secondary diagnostics や panic を出さない。
+- [x] ownership error が関数ごとに複数報告される。
+- [x] 診断は source id / offset で決定的に並ぶ。
+- [x] 50 件 cap と exact omitted note、および hard limit 時の lower-bound note が動く。
+- [x] exit code は既存仕様と同じ。
+- [x] 既存 tests が通る。
 
 ## 落とし穴
 
@@ -719,3 +719,20 @@ human:
   内部 hard limit は `MAX_UNIQUE_DIAGNOSTICS = 1000` とし、test-only で小さくできる helper を用意する。
 - **lexer recovery の範囲。** 既定案は parser recovery に必要な最小限。不正 UTF-8 は `driver::read_source` で止まるため複数化しない。
 - **台帳の見直し提案:** なし。
+
+### 実装時の判断（G02）
+
+- 表示する `DiagnosticSet` と、最大 1000 件を保持する内部 `Diagnostics` を分離した。
+  順序付きキーで重複除去後に表示 50 件へ絞り、省略数と下限フラグを公開する。CLI の上限変更オプションは追加しない。
+  小さいテスト専用上限ではなく、実際の 1000 件を超える入力で下限 note まで検査する。
+- lex／通常の parser API は先頭エラーの形を保ち、解析の既存 API は新しい集合の先頭へ委譲する。
+  `lex_all` は回復して複数字句診断を集めるが、そのファイルを parser へは渡さず、削除 token 由来の構文 cascade を防ぐ。
+- parser は宣言ごとに Result を捕捉し、消費済み delimiter も含めて境界を探索する。
+  不正な fn／def を定義名集合へ早期登録しない。構文エラーがあれば部分 AST の signature pairing や型検査をしない。
+- `FunctionSlot` と別の Scheme 表現を並立させず、Error 返却型の Scheme を poison の唯一の表現とした。
+  `Type::Error`／`TypedExprKind::Error` と checker の taint によって、派生式や active recognizer の二次診断を抑制する。
+  有効な関数の第一の原因診断は残し、他関数・entry の検査を続ける。完全な関数内回復は対象外。
+- 所有権の最終検査だけでなく、単相化に先行する Copy 推論のエラーも集約する。
+  推論を二重実行せず結果を特殊化へ渡し、`ownership::check`／`check_all` も公開 API にした。
+- CLI は解析エラー時に生成・実行へ進まず、human は空行区切り、JSON は診断／省略 note の一行ごとのオブジェクトとする。
+  引数・I/O・LLVM ツール・実行時の単一エラー形式と終了コードは維持する。

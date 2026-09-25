@@ -15,14 +15,14 @@ fn rejects(source: &str, code: &str) {
 #[test]
 fn accepts_all_requested_declarations_and_implementations() {
     for implementation in ["fn add x y = x + y", "let add = x -> y -> x + y"] {
-        for signature in ["i32 -> i32 -> i32", "Add 'a -> 'a -> 'a"] {
+        for signature in ["i32 -> i32 -> i32", "Add<'a> -> 'a -> 'a"] {
             accepts(&format!(
                 "def add :: {signature}\n{implementation}\ndef main :: i32\nfn main = {{ let plus20 = add 20; plus20 22 }}"
             ));
         }
     }
     accepts(
-        "def add :: Add 'a -> 'a -> 'a\nlet add = x -> y -> x + y\ndef i :: i32\nfn i = add 20 22\ndef f :: f64\nfn f = add 1.5 2.5",
+        "def add :: Add<'a> -> 'a -> 'a\nlet add = x -> y -> x + y\ndef i :: i32\nfn i = add 20 22\ndef f :: f64\nfn f = add 1.5 2.5",
     );
     rejects("fn add :: i32 -> i32 -> i32\nfn add x y = x + y", "E0002");
 }
@@ -67,7 +67,7 @@ fn supports_owned_snapshots_and_function_aggregates() {
         "def main :: string\nfn main = { let prefix = \"hello\"; let f: string -> string = suffix -> prefix + suffix; f \"a\" + f \"b\" }",
     );
     accepts(
-        "def add :: Add 'a -> 'a -> 'a\nfn add x y = x + y\ndef main :: string\nfn main = { let f = add \"prefix\"; f \"a\" + f \"b\" }",
+        "def add :: Add<'a> -> 'a -> 'a\nfn add x y = x + y\ndef main :: string\nfn main = { let f = add \"prefix\"; f \"a\" + f \"b\" }",
     );
 }
 
@@ -171,8 +171,8 @@ fn rejects_invalid_definitions_and_bounds_lambda_nesting() {
     rejects("def f :: i32 -> i32\nlet f = 1", "E0002");
     rejects("def f :: i32 -> i32\nlet f = x -> x\nfn f x = x", "E1001");
     rejects("def f :: i32 -> i32 -> i32\nlet f = x -> x -> x", "E1001");
-    rejects("def f :: Missing 'a -> 'a\nfn f x = x", "E1004");
-    rejects("def f :: Copy 'a -> 'a\nfn f x = x\nf \"owned\"", "E1005");
+    rejects("def f :: Missing<'a> -> 'a\nfn f x = x", "E1004");
+    rejects("def f :: Copy<'a> -> 'a\nfn f x = x\nf \"owned\"", "E1005");
     rejects("def f :: i32 -> i32\nfn f x = x\nf 1 2", "E1006");
     rejects(
         &format!(
@@ -186,12 +186,12 @@ fn rejects_invalid_definitions_and_bounds_lambda_nesting() {
 #[test]
 fn curries_legacy_functions_and_checks_inline_constraints() {
     accepts("fn add(x: i32, y: i32) -> i32 { x + y }\nlet f = add 20\nf 22");
-    accepts("def add :: Add 'a -> 'a -> 'a\nfn add x y = x + y\nlet add = add 20i32\nadd 22");
+    accepts("def add :: Add<'a> -> 'a -> 'a\nfn add x y = x + y\nlet add = add 20i32\nadd 22");
     accepts(
         "def convert :: i32 -> bool -> i32 -> i32\nlet convert = x -> flag -> y -> if flag { x + y } else { x - y }\nlet next = convert 20 true\nnext 22",
     );
-    rejects("def f :: Add 'a -> 'a\nfn f x = x\nf true", "E1005");
-    rejects("class C 'a { fn f :: 'a -> i32 }", "E0002");
+    rejects("def f :: Add<'a> -> 'a\nfn f x = x\nf true", "E1005");
+    rejects("class C<'a> { fn f :: 'a -> i32 }", "E0002");
 }
 
 #[test]
@@ -199,12 +199,12 @@ fn curries_builtins_methods_module_functions_and_pipelines() {
     accepts("def main :: i32\nfn main = { let add = Add.add 20; 22 |> add }");
     accepts("def main :: f64\nfn main = { let f: f64 -> f64 = sqrt; 9.0 |> f }");
     accepts(
-        "class Combine 'a { def combine :: 'a -> 'a -> 'a }\ninstance Combine i32 { fn combine x = y -> x + y }\n(Combine.combine 20i32) 22",
+        "class Combine<'a> { def combine :: 'a -> 'a -> 'a }\ninstance Combine<i32> { fn combine x = y -> x + y }\n(Combine.combine 20i32) 22",
     );
     let module = analyze_modules(&[
         (
             "Arith",
-            "def add :: Add 'a -> 'a -> 'a\nlet add = x -> y -> x + y",
+            "def add :: Add<'a> -> 'a -> 'a\nlet add = x -> y -> x + y",
         ),
         ("Main", "let f = Arith.add 20i32\nf 22"),
     ])

@@ -16,6 +16,23 @@ pub(super) struct Scheme {
     pub constraints: Vec<Constraint>,
 }
 
+impl Scheme {
+    pub fn poisoned() -> Self {
+        Self {
+            signature: Signature {
+                parameters: Vec::new(),
+                result: Type::Error,
+            },
+            variables: Vec::new(),
+            constraints: Vec::new(),
+        }
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.signature.result == Type::Error
+    }
+}
+
 pub(super) fn variables(ty: &Type) -> Vec<String> {
     let mut variables = BTreeSet::new();
     map_type(ty, &mut |ty| {
@@ -63,6 +80,9 @@ pub(super) fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> T
 }
 
 pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
+    if ty.contains_error() {
+        return Ok(());
+    }
     fn visit(ty: &Type, depth: usize, count: &mut usize) -> bool {
         *count += 1;
         if depth > MAX_NESTING || *count > 4096 {
@@ -95,6 +115,9 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
 }
 
 pub(super) fn require_concrete(ty: &Type, span: Span) -> Result<(), Diagnostic> {
+    if ty.contains_error() {
+        return Ok(());
+    }
     let mut unknown = false;
     map_type(ty, &mut |ty| {
         unknown |= is_unknown(ty);
@@ -165,7 +188,7 @@ impl Inference {
     ) -> Result<(), Diagnostic> {
         let actual = self.resolve(actual);
         let expected = self.resolve(expected);
-        if actual == expected {
+        if actual == expected || actual.contains_error() || expected.contains_error() {
             return Ok(());
         }
         match (&actual, &expected) {
@@ -270,12 +293,23 @@ impl Inference {
 enum Operation {
     Binary(BinaryOp),
     Unary(UnaryOp),
+    Builtin(Builtin),
 }
 
 struct Method {
     name: String,
-    signature: Signature,
+    signature: Result<Signature, Diagnostic>,
     operation: Option<Operation>,
+}
+
+impl Method {
+    fn signature(&self, span: Span) -> Result<&Signature, Diagnostic> {
+        self.signature.as_ref().map_err(|error| {
+            let mut error = error.clone();
+            error.span = span;
+            error
+        })
+    }
 }
 
 struct Class {
@@ -307,7 +341,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 16] = [
+pub(super) const BUILTIN_CLASSES: [&str; 18] = [
     "Add",
     "Sub",
     "Mul",
@@ -324,6 +358,8 @@ pub(super) const BUILTIN_CLASSES: [&str; 16] = [
     "Copy",
     "Capture",
     "Send",
+    "Display",
+    "Parse",
 ];
 
 impl Classes {
@@ -331,6 +367,7 @@ impl Classes {
         modules: &[ModuleInput<'_>],
         names: &Names,
         types: &TypeContext<'_>,
+        diagnostics: &mut Diagnostics,
     ) -> Result<Self, Diagnostic> {
         use BinaryOp::*;
         let mut classes = Self {
@@ -380,10 +417,10 @@ impl Classes {
             };
             classes.declarations[class].methods.push(Method {
                 name: name.into(),
-                signature: Signature {
+                signature: Ok(Signature {
                     parameters: vec![a.clone(), a],
                     result,
-                },
+                }),
                 operation: Some(Operation::Binary(operator)),
             });
         }
@@ -395,11 +432,62 @@ impl Classes {
             let a = Type::Variable("a".into());
             classes.declarations[class].methods.push(Method {
                 name: name.into(),
-                signature: Signature {
+                signature: Ok(Signature {
                     parameters: vec![a.clone()],
                     result: a,
-                },
+                }),
                 operation: Some(Operation::Unary(operator)),
+            });
+        }
+        let a = Type::Variable("a".into());
+        let option = names
+            .std_type("Option", "Option", vec![a.clone()].into(), Span::default())
+            .and_then(|ty| {
+                if let Type::Union(id, args) = &ty {
+                    let union = &types.unions[*id];
+                    let cases = types.union_payloads(*id, args);
+                    if union.cases.len() == 2
+                        && union.cases.iter().zip(cases).all(|((name, _), payload)| {
+                            (name == "None" && payload.is_none())
+                                || (name == "Some" && payload == Some(a.clone()))
+                        })
+                    {
+                        return Ok(ty);
+                    }
+                }
+                Err(Diagnostic::new(
+                    "E1004",
+                    "Parse needs the standard union Option<'a> = None | Some of 'a",
+                    Span::default(),
+                ))
+            });
+        // Custom std inputs may omit Option. Only using Parse then reports
+        // its unavailable signature; unrelated programs still type-check.
+        for (class, name, builtin, signature) in [
+            (
+                "Display",
+                "display",
+                Builtin::Display,
+                Ok(Signature {
+                    parameters: vec![Type::Reference(Box::new(a), false)],
+                    result: Type::String,
+                }),
+            ),
+            (
+                "Parse",
+                "parse",
+                Builtin::Parse,
+                option.map(|result| Signature {
+                    parameters: vec![Type::Reference(Box::new(Type::String), false)],
+                    result,
+                }),
+            ),
+        ] {
+            let class = classes.names[class];
+            classes.declarations[class].methods.push(Method {
+                name: name.into(),
+                signature,
+                operation: Some(Operation::Builtin(builtin)),
             });
         }
         for &ModuleInput {
@@ -409,81 +497,94 @@ impl Classes {
         } in modules
         {
             for declaration in &program.classes {
-                let qualified = format!("{module}.{}", declaration.name.text);
-                if declaration.name.text == "_"
-                    || declaration.name.text == "Task"
-                    || classes.names.contains_key(&declaration.name.text)
-                    || classes
-                        .names
-                        .insert(qualified.clone(), classes.declarations.len())
-                        .is_some()
-                {
-                    return Err(duplicate(&declaration.name));
+                if diagnostics.is_full() {
+                    break;
                 }
-                let mut methods = Vec::new();
-                let mut seen = BTreeSet::new();
-                for method in &declaration.methods {
-                    if method.name.text == "_" || !seen.insert(&method.name.text) {
-                        return Err(duplicate(&method.name));
-                    }
-                    if !method.constraints.is_empty() {
-                        return Err(Diagnostic::new(
-                            "E1016",
-                            "class methods use the class parameter; method-specific constraints are not supported",
-                            method.name.span,
-                        ));
-                    }
-                    for ty in method
-                        .parameters
-                        .iter()
-                        .chain(std::iter::once(&method.result))
+                let collected = (|| {
+                    let qualified = format!("{module}.{}", declaration.name.text);
+                    if declaration.name.text == "_"
+                        || declaration.name.text == "Task"
+                        || classes.names.contains_key(&declaration.name.text)
+                        || classes
+                            .names
+                            .insert(qualified.clone(), classes.declarations.len())
+                            .is_some()
                     {
-                        if !classes.inline_constraints(ty, module, names)?.is_empty() {
+                        return Err(duplicate(&declaration.name));
+                    }
+                    let mut methods = Vec::new();
+                    let mut seen = BTreeSet::new();
+                    for method in &declaration.methods {
+                        if method.name.text == "_" || !seen.insert(&method.name.text) {
+                            return Err(duplicate(&method.name));
+                        }
+                        if !method.constraints.is_empty() {
                             return Err(Diagnostic::new(
                                 "E1016",
-                                "class methods cannot add constraints to the class parameter",
+                                "class methods use the class parameter; method-specific constraints are not supported",
                                 method.name.span,
                             ));
                         }
-                    }
-                    let signature = Signature {
-                        parameters: method
+                        for ty in method
                             .parameters
                             .iter()
-                            .map(|ty| resolve_type(ty, module, names))
-                            .collect::<Result<_, _>>()?,
-                        result: resolve_type(&method.result, module, names)?,
-                    };
-                    validate_size(&signature.as_type(), types, method.name.span)?;
-                    bounded_type(&signature.as_type(), method.name.span)?;
-                    if variables(&signature.as_type()) != [declaration.variable.text.clone()] {
+                            .chain(std::iter::once(&method.result))
+                        {
+                            if !classes.inline_constraints(ty, module, names)?.is_empty() {
+                                return Err(Diagnostic::new(
+                                    "E1016",
+                                    "class methods cannot add constraints to the class parameter",
+                                    method.name.span,
+                                ));
+                            }
+                        }
+                        let signature = Signature {
+                            parameters: method
+                                .parameters
+                                .iter()
+                                .map(|ty| resolve_type(ty, module, names))
+                                .collect::<Result<_, _>>()?,
+                            result: resolve_type(&method.result, module, names)?,
+                        };
+                        validate_size(&signature.as_type(), types, method.name.span)?;
+                        bounded_type(&signature.as_type(), method.name.span)?;
+                        if variables(&signature.as_type()) != [declaration.variable.text.clone()] {
+                            return Err(Diagnostic::new(
+                                "E1016",
+                                "each class method must mention exactly the declared class type variable",
+                                method.name.span,
+                            ));
+                        }
+                        methods.push(Method {
+                            name: method.name.text.clone(),
+                            signature: Ok(signature),
+                            operation: None,
+                        });
+                    }
+                    if methods.is_empty() {
                         return Err(Diagnostic::new(
                             "E1016",
-                            "each class method must mention exactly the declared class type variable",
-                            method.name.span,
+                            "a class needs at least one method",
+                            declaration.name.span,
                         ));
                     }
-                    methods.push(Method {
-                        name: method.name.text.clone(),
-                        signature,
-                        operation: None,
+                    classes.declarations.push(Class {
+                        name: qualified,
+                        variable: declaration.variable.text.clone(),
+                        methods,
+                        builtin: false,
                     });
+                    Ok(())
+                })();
+                if let Err(error) = collected {
+                    diagnostics.push(error);
                 }
-                if methods.is_empty() {
-                    return Err(Diagnostic::new(
-                        "E1016",
-                        "a class needs at least one method",
-                        declaration.name.span,
-                    ));
-                }
-                classes.declarations.push(Class {
-                    name: qualified,
-                    variable: declaration.variable.text.clone(),
-                    methods,
-                    builtin: false,
-                });
+            }
+            if diagnostics.is_full() {
+                break;
             }
         }
+        diagnostics.check()?;
         Ok(classes)
     }
 
@@ -565,6 +666,7 @@ impl Classes {
         names: &Names,
         types: &TypeContext<'_>,
         functions: &mut Vec<(String, FunctionDecl)>,
+        diagnostics: &mut Diagnostics,
     ) -> Result<(), Diagnostic> {
         for &ModuleInput {
             name: module,
@@ -573,124 +675,141 @@ impl Classes {
         } in modules
         {
             for instance in &program.instances {
-                let id = self.resolve(names, module, &instance.class)?;
-                let class = &self.declarations[id];
-                let ty = resolve_type(&instance.ty, module, names)?;
-                require_concrete(&ty, instance.ty.span)?;
-                if class.builtin && (class.methods.is_empty() || self.intrinsic(id, &ty, types)) {
-                    return Err(Diagnostic::new(
-                        "E1016",
-                        "built-in instances and marker classes cannot be overridden",
-                        instance.class.span,
-                    ));
+                if diagnostics.is_full() {
+                    break;
                 }
-                let key = (id, ty.clone());
-                if self.implementations.contains_key(&key) {
-                    return Err(Diagnostic::new(
-                        "E1016",
-                        format!(
-                            "overlapping instance for {} {}",
-                            class.name,
-                            ty.display(types)
-                        ),
-                        instance.class.span,
-                    ));
-                }
-                let mut methods = BTreeMap::new();
-                for definition in &instance.methods {
-                    if !class
-                        .methods
-                        .iter()
-                        .any(|method| method.name == definition.name.text)
+                let collected = (|| {
+                    let id = self.resolve(names, module, &instance.class)?;
+                    let class = &self.declarations[id];
+                    let ty = resolve_type(&instance.ty, module, names)?;
+                    require_concrete(&ty, instance.ty.span)?;
+                    if class.builtin && (class.methods.is_empty() || self.intrinsic(id, &ty, types))
                     {
                         return Err(Diagnostic::new(
                             "E1016",
-                            format!(
-                                "unknown method '{}' for {}",
-                                definition.name.text, class.name
-                            ),
-                            definition.name.span,
-                        ));
-                    }
-                    if methods
-                        .insert(definition.name.text.clone(), definition)
-                        .is_some()
-                    {
-                        return Err(duplicate(&definition.name));
-                    }
-                }
-                let substitutions = BTreeMap::from([(class.variable.clone(), ty)]);
-                let mut implementations = Vec::new();
-                for method in &class.methods {
-                    let definition = methods.get(&method.name).ok_or_else(|| {
-                        Diagnostic::new(
-                            "E1016",
-                            format!("missing method '{}.{}'", class.name, method.name),
+                            "built-in instances and marker classes cannot be overridden",
                             instance.class.span,
-                        )
-                    })?;
-                    let mut definition = (**definition).clone();
-                    while let ExprKind::Lambda(parameters, body) = definition.body.kind {
-                        definition.parameters.extend(parameters);
-                        definition.body = *body;
-                    }
-                    if definition.parameters.len() > method.signature.parameters.len()
-                        || (definition.parameters.is_empty()
-                            && !method.signature.parameters.is_empty())
-                    {
-                        return Err(Diagnostic::new(
-                            "E1006",
-                            format!(
-                                "method '{}' expects {} parameters",
-                                method.name,
-                                method.signature.parameters.len()
-                            ),
-                            definition.name.span,
                         ));
                     }
-                    let function_id = functions.len();
-                    let parameters = definition
-                        .parameters
-                        .iter()
-                        .zip(&method.signature.parameters)
-                        .map(|((name, mutable), ty)| Parameter {
-                            name: name.clone(),
-                            mutable: *mutable,
-                            ty: type_expression(&substitute(ty, &substitutions), types, name.span),
-                        })
-                        .collect();
-                    functions.push((
-                        (*module).into(),
-                        FunctionDecl {
-                            recursion: definition.recursion.clone(),
-                            name: Ident {
-                                text: format!("$instance.{function_id}.{}", method.name),
-                                span: definition.name.span,
-                            },
-                            visibility: Visibility::Public,
-                            exported: false,
-                            parameters,
-                            result: type_expression(
-                                &substitute(
-                                    &method
-                                        .signature
-                                        .as_type()
-                                        .after_arguments(definition.parameters.len()),
-                                    &substitutions,
-                                ),
-                                types,
-                                definition.name.span,
+                    let key = (id, ty.clone());
+                    if self.implementations.contains_key(&key) {
+                        return Err(Diagnostic::new(
+                            "E1016",
+                            format!(
+                                "overlapping instance for {}<{}>",
+                                class.name,
+                                ty.display(types)
                             ),
-                            constraints: Vec::new(),
-                            body: definition.body.clone(),
-                        },
-                    ));
-                    implementations.push(function_id);
+                            instance.class.span,
+                        ));
+                    }
+                    let mut methods = BTreeMap::new();
+                    for definition in &instance.methods {
+                        if !class
+                            .methods
+                            .iter()
+                            .any(|method| method.name == definition.name.text)
+                        {
+                            return Err(Diagnostic::new(
+                                "E1016",
+                                format!(
+                                    "unknown method '{}' for {}",
+                                    definition.name.text, class.name
+                                ),
+                                definition.name.span,
+                            ));
+                        }
+                        if methods
+                            .insert(definition.name.text.clone(), definition)
+                            .is_some()
+                        {
+                            return Err(duplicate(&definition.name));
+                        }
+                    }
+                    let substitutions = BTreeMap::from([(class.variable.clone(), ty)]);
+                    let mut implementations = Vec::new();
+                    for method in &class.methods {
+                        let signature = method.signature(instance.class.span)?;
+                        let definition = methods.get(&method.name).ok_or_else(|| {
+                            Diagnostic::new(
+                                "E1016",
+                                format!("missing method '{}.{}'", class.name, method.name),
+                                instance.class.span,
+                            )
+                        })?;
+                        let mut definition = (**definition).clone();
+                        while let ExprKind::Lambda(parameters, body) = definition.body.kind {
+                            definition.parameters.extend(parameters);
+                            definition.body = *body;
+                        }
+                        if definition.parameters.len() > signature.parameters.len()
+                            || (definition.parameters.is_empty()
+                                && !signature.parameters.is_empty())
+                        {
+                            return Err(Diagnostic::new(
+                                "E1006",
+                                format!(
+                                    "method '{}' expects {} parameters",
+                                    method.name,
+                                    signature.parameters.len()
+                                ),
+                                definition.name.span,
+                            ));
+                        }
+                        let function_id = functions.len();
+                        let parameters = definition
+                            .parameters
+                            .iter()
+                            .zip(&signature.parameters)
+                            .map(|((name, mutable), ty)| Parameter {
+                                name: name.clone(),
+                                mutable: *mutable,
+                                ty: type_expression(
+                                    &substitute(ty, &substitutions),
+                                    types,
+                                    name.span,
+                                ),
+                            })
+                            .collect();
+                        functions.push((
+                            (*module).into(),
+                            FunctionDecl {
+                                recursion: definition.recursion.clone(),
+                                name: Ident {
+                                    text: format!("$instance.{function_id}.{}", method.name),
+                                    span: definition.name.span,
+                                },
+                                visibility: Visibility::Public,
+                                exported: false,
+                                parameters,
+                                result: type_expression(
+                                    &substitute(
+                                        &signature
+                                            .as_type()
+                                            .after_arguments(definition.parameters.len()),
+                                        &substitutions,
+                                    ),
+                                    types,
+                                    definition.name.span,
+                                ),
+                                constraints: Vec::new(),
+                                body: definition.body.clone(),
+                            },
+                        ));
+                        implementations.push(function_id);
+                    }
+                    self.implementations.insert(key, implementations);
+                    Ok(())
+                })();
+                if let Err(error) = collected {
+                    diagnostics.push(error);
                 }
-                self.implementations.insert(key, implementations);
+            }
+            if diagnostics.is_full() {
+                break;
             }
         }
-        Ok(())
+        diagnostics.check()
     }
 
     pub fn method(
@@ -733,6 +852,11 @@ impl Classes {
     pub(super) fn recursion_targets(&self, expression: &TypedExpr) -> Vec<usize> {
         let (class, method, ty) = match &expression.kind {
             TypedExprKind::Method(class, method, ty) => (*class, *method, ty),
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::ToString =>
+            {
+                (self.names["Display"], 0, &instance.types[0])
+            }
             TypedExprKind::Binary(operator, left, _)
                 if !matches!(operator, BinaryOp::And | BinaryOp::Or | BinaryOp::Pipe) =>
             {
@@ -760,6 +884,9 @@ impl Classes {
     }
 
     fn intrinsic(&self, class: usize, ty: &Type, types: &TypeContext<'_>) -> bool {
+        if ty.contains_error() {
+            return true;
+        }
         if !self.declarations[class].builtin {
             return false;
         }
@@ -774,11 +901,16 @@ impl Classes {
             "Copy" => ty.is_copy(types),
             "Capture" => ty.can_capture(types),
             "Send" => ty.can_send(types),
+            "Display" => ty.is_numeric() || matches!(ty, Type::Bool | Type::Unit | Type::String),
+            "Parse" => ty.is_numeric() || *ty == Type::Bool,
             _ => false,
         }
     }
 
     fn validate(&self, constraint: &Constraint, types: &TypeContext<'_>) -> Result<(), Diagnostic> {
+        if constraint.ty.contains_error() {
+            return Ok(());
+        }
         bounded_type(&constraint.ty, constraint.span)?;
         if !variables(&constraint.ty).is_empty() {
             return Ok(());
@@ -814,7 +946,7 @@ impl Classes {
             Err(Diagnostic::new(
                 "E1005",
                 format!(
-                    "no instance for {} {}; define an instance or use a supported type",
+                    "no instance for {}<{}>; define an instance or use a supported type",
                     self.declarations[constraint.class].name,
                     constraint.ty.display(types)
                 ),
@@ -829,11 +961,15 @@ impl Classes {
             Operation::Unary(UnaryOp::Negate) => "Neg",
             Operation::Unary(UnaryOp::BitNot) => "Bits",
             Operation::Unary(UnaryOp::Not) => unreachable!(),
+            Operation::Builtin(Builtin::Display) => "Display",
+            Operation::Builtin(Builtin::Parse) => "Parse",
+            Operation::Builtin(_) => unreachable!("only Display and Parse are class operations"),
         };
         let class = self.names[name];
         let method = self.declarations[class].methods.iter().position(|method| matches!((method.operation, operation),
             (Some(Operation::Binary(a)), Operation::Binary(b)) if a == b)
-            || matches!((method.operation, operation), (Some(Operation::Unary(a)), Operation::Unary(b)) if a == b)).unwrap();
+            || matches!((method.operation, operation), (Some(Operation::Unary(a)), Operation::Unary(b)) if a == b)
+            || matches!((method.operation, operation), (Some(Operation::Builtin(a)), Operation::Builtin(b)) if a == b)).unwrap();
         (class, method)
     }
 }
@@ -1025,6 +1161,10 @@ impl Checker<'_> {
 
     pub(super) fn function(&mut self, id: usize) -> (TypedExprKind, Type) {
         let scheme = &self.signatures[id];
+        if scheme.is_poisoned() {
+            self.poisoned = true;
+            return (TypedExprKind::Error, Type::Error);
+        }
         if scheme.variables.is_empty() {
             return (
                 TypedExprKind::Function(FunctionRef::User(id)),
@@ -1053,7 +1193,7 @@ impl Checker<'_> {
         class: usize,
         method: usize,
         span: Span,
-    ) -> (TypedExprKind, Type) {
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let declaration = &self.classes.declarations[class];
         let ty = self.inference.fresh();
         let substitutions = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
@@ -1062,17 +1202,20 @@ impl Checker<'_> {
             ty: ty.clone(),
             span,
         });
-        (
+        Ok((
             TypedExprKind::Method(class, method, ty),
             substitute(
-                &declaration.methods[method].signature.as_type(),
+                &declaration.methods[method].signature(span)?.as_type(),
                 &substitutions,
             ),
-        )
+        ))
     }
 
     pub(super) fn require(&mut self, name: &str, ty: Type, span: Span) -> Result<(), Diagnostic> {
         let ty = self.inference.resolve(&ty);
+        if ty.contains_error() {
+            return Ok(());
+        }
         let constraint = Constraint {
             class: self.classes.names[name],
             ty,
@@ -1117,6 +1260,7 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<(Vec<Type>, Type), Diagnostic> {
         match self.inference.resolve(ty) {
+            Type::Error => Ok((vec![Type::Error; count], Type::Error)),
             Type::Function(parameters, result)
                 if parameters.len() >= count && (count != 0 || parameters.is_empty()) =>
             {
@@ -1354,8 +1498,8 @@ fn expression_types(
 pub(super) fn specialize(
     mut module: CheckedModule,
     classes: &Classes,
+    copy_constraints: Vec<BTreeSet<String>>,
 ) -> Result<CheckedModule, Diagnostic> {
-    let copy_constraints = crate::ownership::infer_copy(&module)?;
     for (function, copy_variables) in module.functions.iter_mut().zip(copy_constraints) {
         for name in copy_variables {
             function.constraints.push(Constraint {
@@ -1486,6 +1630,7 @@ pub(super) fn specialize(
         requests: Vec::new(),
         functions: Vec::new(),
         intrinsics: BTreeMap::new(),
+        to_strings: BTreeMap::new(),
         current: FunctionOrigin::source(ModuleOrigin::User),
         base_count: module
             .functions
@@ -1524,6 +1669,7 @@ struct Specializer<'a> {
     requests: Vec<(usize, Vec<Type>)>,
     functions: Vec<CheckedFunction>,
     intrinsics: BTreeMap<(usize, usize, Type), usize>,
+    to_strings: BTreeMap<Type, usize>,
     /// The origin that helpers generated for the function being instantiated inherit.
     current: FunctionOrigin,
     base_count: usize,
@@ -1645,6 +1791,18 @@ impl Specializer<'_> {
                         Some(Function(FunctionRef::User(id)))
                     }
                 }
+                Function(FunctionRef::Builtin(instance))
+                    if instance.builtin == Builtin::ToString
+                        && !self.classes.intrinsic(
+                            self.classes.names["Display"],
+                            &instance.types[0],
+                            &self.types,
+                        ) =>
+                {
+                    Some(Function(FunctionRef::User(
+                        self.string_function(&instance.types[0], expression.span)?,
+                    )))
+                }
                 GenericInteger(value, negative) => Some(
                     Checker::integer_literal(
                         *value,
@@ -1733,15 +1891,15 @@ impl Specializer<'_> {
         }
         let declaration = &self.classes.declarations[class];
         let method = &declaration.methods[method];
+        let template = method.signature(span)?;
         let substitutions = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
         let signature = Signature {
-            parameters: method
-                .signature
+            parameters: template
                 .parameters
                 .iter()
                 .map(|ty| substitute(ty, &substitutions))
                 .collect(),
-            result: substitute(&method.signature.result, &substitutions),
+            result: substitute(&template.result, &substitutions),
         };
         let parameters: Vec<_> = signature
             .parameters
@@ -1767,6 +1925,17 @@ impl Specializer<'_> {
                 TypedExprKind::Binary(operator, argument(0), argument(1))
             }
             Operation::Unary(operator) => TypedExprKind::Unary(operator, argument(0)),
+            Operation::Builtin(builtin) => TypedExprKind::Call(
+                Box::new(TypedExpr {
+                    kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
+                        builtin,
+                        types: vec![ty.clone()],
+                    })),
+                    ty: signature.as_type(),
+                    span,
+                }),
+                parameters.iter().map(|local| *argument(local.id)).collect(),
+            ),
         };
         let id = self.templates.len();
         let body = TypedExpr {
@@ -1790,6 +1959,64 @@ impl Specializer<'_> {
             is_task: false,
         });
         self.intrinsics.insert(key, id);
+        self.request(id, Vec::new(), span)
+    }
+
+    fn string_function(&mut self, ty: &Type, span: Span) -> Result<usize, Diagnostic> {
+        if let Some(id) = self.to_strings.get(ty) {
+            return self.request(*id, Vec::new(), span);
+        }
+        let parameter = Local {
+            id: 0,
+            ty: ty.clone(),
+            name: "value".into(),
+            mutable: false,
+            span,
+        };
+        let borrowed = Type::Reference(Box::new(ty.clone()), false);
+        let body = TypedExpr {
+            kind: TypedExprKind::Call(
+                Box::new(TypedExpr {
+                    kind: TypedExprKind::Method(self.classes.names["Display"], 0, ty.clone()),
+                    ty: Type::function(vec![borrowed.clone()], Type::String),
+                    span,
+                }),
+                vec![TypedExpr {
+                    kind: TypedExprKind::Borrow(
+                        Box::new(TypedExpr {
+                            kind: TypedExprKind::Local(0),
+                            ty: ty.clone(),
+                            span,
+                        }),
+                        false,
+                    ),
+                    ty: borrowed,
+                    span,
+                }],
+            ),
+            ty: Type::String,
+            span,
+        };
+        let id = self.templates.len();
+        self.templates.push(CheckedFunction {
+            module: "$builtin".into(),
+            origin: self.current,
+            name: format!("to_string.{id}"),
+            visibility: Visibility::Private,
+            exported: false,
+            parameters: vec![parameter],
+            signature: Signature {
+                parameters: vec![ty.clone()],
+                result: Type::String,
+            },
+            body,
+            span,
+            type_parameters: Vec::new(),
+            constraints: Vec::new(),
+            capture_count: 0,
+            is_task: false,
+        });
+        self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
     }
 }

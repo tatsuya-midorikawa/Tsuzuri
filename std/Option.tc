@@ -1,121 +1,118 @@
-union Option 'a =
+union Option<'a> =
     | None
     | Some of 'a
 
-def is_some :: &(Option 'a) -> bool
+def is_some :: &(Option<'a>) -> bool
 fn is_some option =
     match option with
     | Some _ -> true
     | None -> false
 
-def is_none :: &(Option 'a) -> bool
+def is_none :: &(Option<'a>) -> bool
 fn is_none option = ! (is_some option)
 
-def get :: Option 'a -> 'a
+def get :: Option<'a> -> 'a
 fn get option =
     match option with
     | Some value -> value
     | None -> unreachable ()
 
-def default_value :: 'a -> Option 'a -> 'a
+def default_value :: 'a -> Option<'a> -> 'a
 fn default_value fallback option =
     match option with
     | Some value -> value
     | None -> fallback
 
-def default_with :: (unit -> 'a) -> Option 'a -> 'a
+def default_with :: (unit -> 'a) -> Option<'a> -> 'a
 fn default_with fallback option =
     match option with
     | Some value -> value
     | None -> fallback ()
 
-def map :: ('a -> 'b) -> Option 'a -> Option 'b
+def map :: ('a -> 'b) -> Option<'a> -> Option<'b>
 fn map transform option =
     match option with
     | Some value -> Some (transform value)
     | None -> None
 
-def map_ref :: (&'a -> 'b) -> &(Option 'a) -> Option 'b
+def map_ref :: (&'a -> 'b) -> &(Option<'a>) -> Option<'b>
 fn map_ref transform option =
     match option with
     | Some value -> Some (transform (&value))
     | None -> None
 
-def bind :: Option 'a -> ('a -> Option 'b) -> Option 'b
+def bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>
 fn bind option next =
     match option with
     | Some value -> next value
     | None -> None
 
-def bind_ref :: &(Option 'a) -> (&'a -> Option 'b) -> Option 'b
+def bind_ref :: &(Option<'a>) -> (&'a -> Option<'b>) -> Option<'b>
 fn bind_ref option next =
     match option with
     | Some value -> next (&value)
     | None -> None
 
-def filter :: (&'a -> bool) -> Option 'a -> Option 'a
+def filter :: (&'a -> bool) -> Option<'a> -> Option<'a>
 fn filter predicate option =
     match option with
     | Some value -> if predicate (&value) then Some value else None
     | None -> None
 
-def or_else :: Option 'a -> (unit -> Option 'a) -> Option 'a
+def or_else :: Option<'a> -> (unit -> Option<'a>) -> Option<'a>
 fn or_else option fallback =
     match option with
     | Some value -> Some value
     | None -> fallback ()
 
-def to_result :: 'e -> Option 'a -> Result.Result 'a 'e
+def to_result :: 'e -> Option<'a> -> Result.Result<'a, 'e>
 fn to_result error option =
     match option with
     | Some value -> Result.Ok value
     | None -> Result.Error error
 
-def of_result :: Result.Result 'a 'e -> Option 'a
+def of_result :: Result.Result<'a, 'e> -> Option<'a>
 fn of_result result =
     match result with
     | Result.Ok value -> Some value
     | Result.Error _ -> None
 
-def Return :: 'a -> Option 'a
+def Return :: 'a -> Option<'a>
 fn Return value = Some value
 
-def ReturnFrom :: Option 'a -> Option 'a
+def ReturnFrom :: Option<'a> -> Option<'a>
 fn ReturnFrom option = option
 
-def Bind :: Option 'a -> ('a -> Option 'b) -> Option 'b
+def Bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>
 fn Bind option next = bind option next
 
-def Zero :: Option unit
+def Zero :: Option<unit>
 fn Zero = Some ()
 
-def Delay :: (unit -> Option 'a) -> (unit -> Option 'a)
+def Delay :: (unit -> Option<'a>) -> (unit -> Option<'a>)
 fn Delay body = body
 
-def Run :: (unit -> Option 'a) -> Option 'a
+def Run :: (unit -> Option<'a>) -> Option<'a>
 fn Run body = body ()
 
-def Combine :: Option unit -> (unit -> Option 'a) -> Option 'a
+def Combine :: Option<unit> -> (unit -> Option<'a>) -> Option<'a>
 fn Combine first rest =
     match first with
     | Some _ -> rest ()
     | None -> None
 
-def For :: Copy 'a => ['a] -> ('a -> Option unit) -> Option unit
-fn For values body = for_loop values body 0
+def For :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> Option<unit>
+fn For values body =
+    let mut result = Some ()
+    let mut index = 0
+    while index < values.length && is_some (&result) do
+        result = body values[index]
+        index = index + 1
+    result
 
-private def rec for_loop :: Copy 'a => ['a] -> ('a -> Option unit) -> i64 -> Option unit
-fn rec for_loop values body index =
-    if index == values.length then Some ()
-    else
-        match body values[index] with
-        | Some _ -> for_loop values body (index + 1)
-        | None -> None
-
-def rec While :: (unit -> bool) -> (unit -> Option unit) -> Option unit
-fn rec While guard body =
-    if guard () then
-        match body () with
-        | Some _ -> While guard body
-        | None -> None
-    else Some ()
+def While :: (unit -> bool) -> (unit -> Option<unit>) -> Option<unit>
+fn While guard body =
+    let mut result = Some ()
+    while (match result with | Some _ -> true | None -> false) && guard () do
+        result = body ()
+    result

@@ -103,7 +103,7 @@ One-line summary.
 制約付き:
 
 ```text
-def twice :: (Add 'a, Copy 'a) => 'a -> 'a
+def twice :: (Add<'a>, Copy<'a>) => 'a -> 'a
 ```
 
 record:
@@ -118,7 +118,7 @@ record Point {
 class:
 
 ```text
-class Score 'a {
+class Score<'a> {
   def score :: &'a -> i32
 }
 ```

@@ -12,10 +12,10 @@
 
 ## 目的
 
-`Tree 'a`、式 AST、linked structures のような再帰的データ構造を、所有権と明示的な heap allocation によって安全に扱えるようにする。
+`Tree<'a>`、式 AST、linked structures のような再帰的データ構造を、所有権と明示的な heap allocation によって安全に扱えるようにする。
 A02 までは recursive union / record を `E1010` で拒否するが、このチケットで union payload を通る再帰を許可する。
 
-構文は透明に保ち、ユーザーは `Tree 'a` と書く。
+構文は透明に保ち、ユーザーは `Tree<'a>` と書く。
 コンパイラ内部だけで再帰箇所を boxed heap cell に変換し、clone/drop は native stack に比例しない反復処理にする。
 
 ## 現状
@@ -39,9 +39,9 @@ A02 までは recursive union / record を `E1010` で拒否するが、この�
 A02 の union 構文をそのまま使う。
 
 ```text
-union Tree 'a =
+union Tree<'a> =
     | Leaf
-    | Node of Tree 'a * 'a * Tree 'a
+    | Node of Tree<'a> * 'a * Tree<'a>
 
 union Expr =
     | Int of i64
@@ -52,8 +52,8 @@ union Expr =
 records を union payload と組み合わせることもできる。
 
 ```text
-record Branch 'a { left: Tree 'a, value: 'a, right: Tree 'a }
-union Tree 'a = Leaf | Node of Branch 'a
+record Branch<'a> { left: Tree<'a>, value: 'a, right: Tree<'a> }
+union Tree<'a> = Leaf | Node of Branch<'a>
 ```
 
 ユーザーは `box`, `new`, `ptr` のような追加構文を書かない。
@@ -70,10 +70,10 @@ union Tree 'a = Leaf | Node of Branch 'a
 例:
 
 ```text
-union List 'a = Nil | Cons of 'a * List 'a
-union Rose 'a = Node of 'a * [Rose 'a]
-record PairNode 'a { left: Tree 'a, right: Tree 'a }
-union Tree 'a = Empty | Pair of PairNode 'a
+union List<'a> = Nil | Cons of 'a * List<'a>
+union Rose<'a> = Node of 'a * [Rose<'a>]
+record PairNode<'a> { left: Tree<'a>, right: Tree<'a> }
+union Tree<'a> = Empty | Pair of PairNode<'a>
 ```
 
 拒否する:
@@ -93,7 +93,7 @@ union Bad = Bad of Bad
 - generic 引数が成長する polymorphic recursion。
 
 ```text
-union Bad 'a = Bad of Bad (Tree 'a)
+union Bad<'a> = Bad of Bad<Tree<'a>>
 ```
 
 - 型引数置換が 128 depth / 4096 node 上限を超える再帰。
@@ -107,7 +107,7 @@ union Bad 'a = Bad of Bad (Tree 'a)
 ### 暗黙 boxing の規則
 
 内部表現に `Type::Boxed(Box<Type>)` を追加するが、**`CheckedRecord.fields` / `CheckedUnion.cases` の generic declaration 自体は書き換えない**。
-A01/A02 の D-03 canonical name は source form の型引数に依存するため、declaration に `Boxed` を挿入すると `Maybe` のような非再帰 instance まで誤って box したり、`Maybe (Boxed Link)` のような source に存在しない型名を mangle に混ぜたりする。
+A01/A02 の D-03 canonical name は source form の型引数に依存するため、declaration に `Boxed` を挿入すると `Maybe` のような非再帰 instance まで誤って box したり、`Maybe<Boxed<Link>>` のような source に存在しない型名を mangle に混ぜたりする。
 再帰 boxing は `TypeContext` 内の instance-sensitive `RecursiveLayout` で管理し、field/payload helper が concrete instance へ型引数を代入した後にだけ適用する。
 
 ```rust
@@ -153,7 +153,7 @@ pub enum OccurrenceStep {
 
 - `Boxed(T)` は source syntax には現れない。
 - `Type::display` は `Boxed(T)` を `T` と同じように表示する。
-  診断で `boxed Tree i64` のような内部名を出さない。
+  診断で `boxed Tree<i64>` のような内部名を出さない。
 - `canonical_type_text` は通常は `Boxed` を含まない。
   ただし実装上 `Boxed` が named type の型引数内部に現れ得る場合は、D-03 の単射性を壊さないため `boxed[...]` marker を追加する。
   例: `Main.Wrap[boxed[Main.Tree[i64]]]`。
@@ -186,7 +186,7 @@ InstanceShape = NamedDecl applied to its declared type parameters
 - tuple と inline record/union の内部は辿る。
 - **function / task / reference は barrier**。これらの中の named type は value layout の inline containment ではない。
 - **array / list は既に記述子 + heap storage の indirection なので barrier**。要素型へは graph edge を張らず、per-element boxing もしない。
-  `union Rose 'a = Rose of 'a * [Rose 'a]` は array descriptor が inline payload であり、array elements は collection heap storage 内にある。
+  `union Rose<'a> = Rose of 'a * [Rose<'a>]` は array descriptor が inline payload であり、array elements は collection heap storage 内にある。
   drop/clone は動的 elements を stack-safe traversal で走査するが、declaration graph 上の recursive inline occurrence ではない。
 
 box する occurrence:
@@ -200,23 +200,23 @@ box する occurrence:
 box しない occurrence:
 
 - 再帰 cycle に関与しない named type。
-- `record Box 'a { value: 'a }` の `'a`。
+- `record Box<'a> { value: 'a }` の `'a`。
 - function value の closure descriptor。
 - array/list element 内の occurrence。
 - function/task/reference 内の occurrence。
 
 generic args:
 
-- `Tree 'a` から `Tree 'a` に戻る inline occurrence は同一として box する。
+- `Tree<'a>` から `Tree<'a>` に戻る inline occurrence は同一として box する。
 - 型パラメーターの名前は α-renaming を許す。
-- `Bad 'a` から `Bad (Pair 'a 'a)` に戻る occurrence は型が成長するため `E1017`。
-- `Nested 'a 'b` から `Nested 'b 'a` のような permutation は A04 では拒否してよい。
+- `Bad<'a>` から `Bad<Pair<'a, 'a>>` に戻る occurrence は型が成長するため `E1017`。
+- `Nested<'a, 'b>` から `Nested<'b, 'a>` のような permutation は A04 では拒否してよい。
   メッセージは `"recursive generic type changes its arguments; use a non-growing recursive occurrence"`。
 
 ### 型検査での透明性
 
-source では `Tree 'a` と書く。
-`record_instance_fields` / `union_instance_cases` が concrete owner + occurrence path に基づいて `Boxed(Tree 'a)` を返す場合、型検査は expected type に基づき自動 box/unbox typed kind を挿入する。
+source では `Tree<'a>` と書く。
+`record_instance_fields` / `union_instance_cases` が concrete owner + occurrence path に基づいて `Boxed(Tree<'a>)` を返す場合、型検査は expected type に基づき自動 box/unbox typed kind を挿入する。
 
 追加 typed kind:
 
@@ -234,7 +234,7 @@ pub enum TypedExprKind {
 - `Checker::expression` は expected が `inner` で、実式の型が `Boxed(inner)` の projection の場合に `UnboxRecursive` view を挿入する。
 - pattern matching では `UnionPayload` や record field projection の型が `Boxed(inner)` のとき、source pattern は `inner` に対して書かれているとみなし、最初に `UnboxRecursive` projection を挟む。
 - case constructor の source-facing function type は **unboxed** のままにする。
-  例: `Node : Tree 'a * 'a * Tree 'a -> Tree 'a`。
+  例: `Node : Tree<'a> * 'a * Tree<'a> -> Tree<'a>`。
   hidden constructor body も同じ source-facing payload 型を受け取り、body 内で direct `Construct` と同じ occurrence-path boxing を行う。
 
 例:
@@ -268,7 +268,7 @@ Construct Node (box payload occurrence paths [0, 2] in Tuple(Leaf, 1, Leaf))
   成功形の代替値を返してはならない。
 - implicit boxing の allocation trap は言語上観測可能な trap なので、上記順序を deterministic に保つ。
 - first-class constructor 経由でも同じ。
-  `Node payload`、`apply Node payload`、`let make: Tree i64 * i64 * Tree i64 -> Tree i64 = Node; make payload` は payload expression の評価回数・順序・allocation path order が同一でなければならない。
+  `Node payload`、`apply Node payload`、`let make: Tree<i64> * i64 * Tree<i64> -> Tree<i64> = Node; make payload` は payload expression の評価回数・順序・allocation path order が同一でなければならない。
 
 ### pattern projection と move
 
@@ -395,7 +395,7 @@ store <inner-llvm-type> %value, ptr %cell, align 16
 ### A03 網羅性との接続
 
 A03 の coverage normalization は pattern boundary で `Boxed(T)` を消し、constructor lookup は inner `T` に対して行う。
-`Boxed(Tree i64)` payload に対する pattern `Leaf | Node _` は `Tree i64` の constructor domain として扱う。
+`Boxed(Tree<i64>)` payload に対する pattern `Leaf | Node _` は `Tree<i64>` の constructor domain として扱う。
 
 - coverage / missing witness 生成は recursive type を展開しすぎない。
   `visited: BTreeSet<Type>`、depth limit `MAX_NESTING`、node count 4,096 を持ち、再訪した recursive type は wildcard witness `_` として打ち切る。
@@ -778,11 +778,11 @@ node tests/primitives.mjs target/release/tsuzuri
 Tree:
 
 ```text
-union Tree 'a =
+union Tree<'a> =
     | Leaf
-    | Node of Tree 'a * 'a * Tree 'a
+    | Node of Tree<'a> * 'a * Tree<'a>
 
-def rec sum :: Tree i64 -> i64
+def rec sum :: Tree<i64> -> i64
 fn rec sum tree =
     match tree with
     | Leaf -> 0
@@ -796,9 +796,9 @@ Expected: `6`.
 List:
 
 ```text
-union List 'a = Nil | Cons of 'a * List 'a
+union List<'a> = Nil | Cons of 'a * List<'a>
 
-def rec length :: List 'a -> i64
+def rec length :: List<'a> -> i64
 fn rec length xs =
     match xs with
     | Nil -> 0
@@ -808,14 +808,14 @@ fn rec length xs =
 Record through union:
 
 ```text
-record Branch 'a { left: Tree 'a, value: 'a, right: Tree 'a }
-union Tree 'a = Empty | Branch of Branch 'a
+record Branch<'a> { left: Tree<'a>, value: 'a, right: Tree<'a> }
+union Tree<'a> = Empty | Branch of Branch<'a>
 ```
 
 Array/list inside recursive union:
 
 ```text
-union Rose 'a = Rose of 'a * [Rose 'a]
+union Rose<'a> = Rose of 'a * [Rose<'a>]
 ```
 
 この case は array/list が storage barrier なので per-element boxing しない。
@@ -824,7 +824,7 @@ union Rose 'a = Rose of 'a * [Rose 'a]
 Borrow subtree:
 
 ```text
-def root_value :: &Tree i64 -> i64
+def root_value :: &Tree<i64> -> i64
 fn root_value tree =
     match tree with
     | Leaf -> 0
@@ -863,8 +863,8 @@ checksum direct + checksum via_apply * 10 + checksum via_annotation * 100
 | `record Bad { next: Bad }` | `E1010` |
 | `record A { b: B } record B { a: A }` | `E1010` |
 | `union Bad = Bad of Bad` | `E1010` |
-| `union Bad 'a = Bad of Bad (Tree 'a)` | `E1017` |
-| `union Tree 'a = Leaf | Node of Tree 'a; let t = Leaf; let a = t; let b = t` | `E1012` because recursive type non-Copy |
+| `union Bad<'a> = Bad of Bad<Tree<'a>>` | `E1017` |
+| `union Tree<'a> = Leaf | Node of Tree<'a>; let t = Leaf; let a = t; let b = t` | `E1012` because recursive type non-Copy |
 | `union Tree = Leaf | Node of Tree; export def f :: Tree ...` | `E1008` |
 | recursive constructor function value を `recursion.rs` が `$case...` として報告する | 発生しないこと |
 
@@ -1015,10 +1015,10 @@ A04 の既定受け入れは:
 
 ## 受け入れ条件
 
-- [ ] `union Tree 'a = Leaf | Node of Tree 'a * 'a * Tree 'a` が受理される。
+- [ ] `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` が受理される。
 - [ ] declarations は source form のまま保持され、`RecursiveLayout` が concrete instance + occurrence path ごとに boxing を指示する。
 - [ ] `record_instance_fields` / `union_instance_cases` は型引数 substitution 後に boxing を適用する。
-- [ ] source syntax と diagnostics は `Tree 'a` のままで、内部 `Boxed` を表示しない。
+- [ ] source syntax と diagnostics は `Tree<'a>` のままで、内部 `Boxed` を表示しない。
 - [ ] `Boxed` が canonical type text の型引数に現れ得る場合は `boxed[...]` marker で単射的に mangle される。
 - [ ] record-only recursive cycle は `E1010` のまま。
 - [ ] base case なし recursive union は `E1010`。

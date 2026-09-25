@@ -52,7 +52,7 @@ E02 は複数引数 builtin と制約付き builtin signature を提供する。
 E02 の builtin interface は `BuiltinType`／`BuiltinScheme` と `FunctionRef::Builtin(BuiltinInstance { builtin, types })` だけを使う。
 このチケットで独自の `BuiltinSignatureTemplate` や `FunctionRef::Builtin(Builtin, Vec<Type>)` を定義しない。
 builtin-backed API 関数（`Int.count_ones`, `Int.checked_add` など）は `Builtin` entry としてだけ存在し、std source に同名 `def` を置かない。
-B01 は `Option 'a` を提供する。
+B01 は `Option<'a>` を提供する。
 B01 は hard dependency である。
 `checked_*` と `checked_pow` がこのチケットの中核なので、B01 が未完了ならこのチケットには着手しない。
 A08/C03/C02 は D04 の必須依存ではない。
@@ -67,12 +67,12 @@ D05 の ordered reductions は整数について結合的な wrapping 演算を�
 ### 型と戻り値
 
 基本制約:
-`Integer 'a` は全整数型。
-`SignedInteger 'a` は signed integer 型。
+`Integer<'a>` は全整数型。
+`SignedInteger<'a>` は signed integer 型。
 `UnsignedInteger` class は現状ないため、このチケットで追加する。
 
 ```text
-class UnsignedInteger 'a
+class UnsignedInteger<'a>
 ```
 
 `Classes::collect` に method なし marker として追加し、`Classes::intrinsic` は `Type::Integer(_, false)` に true。
@@ -115,16 +115,16 @@ pub struct BuiltinScheme {
 `WidenOf(Box::new(Var("a")))` は concrete call site で bits 8→16、16→32、32→64、64→128 に解決し、128 は不適用で `E1005`。
 E02 phase 1 では `UnsignedOf`/`WidenOf` は引数が呼び出し箇所で concrete の場合だけ解決する。
 型変数のまま残る generic code では使えず `E1015`。
-したがって `def f :: SignedInteger 'a => 'a -> ...; fn f x = Int.unsigned_abs x` のような汎用 wrapper は phase 1 では拒否される。
+したがって `def f :: SignedInteger<'a> => 'a -> ...; fn f x = Int.unsigned_abs x` のような汎用 wrapper は phase 1 では拒否される。
 
 ### API
 
 比較/選択:
 
 ```text
-Int.min   :: Integer 'a => 'a -> 'a -> 'a
-Int.max   :: Integer 'a => 'a -> 'a -> 'a
-Int.clamp :: Integer 'a => 'a -> 'a -> 'a -> 'a
+Int.min   :: Integer<'a> => 'a -> 'a -> 'a
+Int.max   :: Integer<'a> => 'a -> 'a -> 'a
+Int.clamp :: Integer<'a> => 'a -> 'a -> 'a -> 'a
 ```
 
 signed は signed order、unsigned は unsigned order。
@@ -134,9 +134,9 @@ signed は signed order、unsigned は unsigned order。
 abs 系:
 
 ```text
-Int.abs          :: SignedInteger 'a => 'a -> 'a
-Int.unsigned_abs :: SignedInteger 'a => 'a -> unsigned_of 'a
-Int.abs_diff     :: Integer 'a => 'a -> 'a -> unsigned_of 'a
+Int.abs          :: SignedInteger<'a> => 'a -> 'a
+Int.unsigned_abs :: SignedInteger<'a> => 'a -> unsigned_of 'a
+Int.abs_diff     :: Integer<'a> => 'a -> 'a -> unsigned_of 'a
 ```
 
 `Int.abs MIN` は wrapping で MIN を返す。
@@ -147,9 +147,9 @@ signed の場合も overflow せず unsigned へ計算する。
 bit count:
 
 ```text
-Int.count_ones     :: Integer 'a => 'a -> i64
-Int.leading_zeros  :: Integer 'a => 'a -> i64
-Int.trailing_zeros :: Integer 'a => 'a -> i64
+Int.count_ones     :: Integer<'a> => 'a -> i64
+Int.leading_zeros  :: Integer<'a> => 'a -> i64
+Int.trailing_zeros :: Integer<'a> => 'a -> i64
 ```
 
 zero input の `leading_zeros`/`trailing_zeros` は bit width を返す。
@@ -158,11 +158,11 @@ LLVM `ctlz`/`cttz` は `is_zero_undef = false`。
 rotate/byte/bit:
 
 ```text
-Int.rotate_left  :: Integer 'a => 'a -> i64 -> 'a
-Int.rotate_right :: Integer 'a => 'a -> i64 -> 'a
-Int.swap_bytes   :: Integer 'a => 'a -> 'a
-Int.reverse_bits :: Integer 'a => 'a -> 'a
-Int.is_power_of_two :: UnsignedInteger 'a => 'a -> bool
+Int.rotate_left  :: Integer<'a> => 'a -> i64 -> 'a
+Int.rotate_right :: Integer<'a> => 'a -> i64 -> 'a
+Int.swap_bytes   :: Integer<'a> => 'a -> 'a
+Int.reverse_bits :: Integer<'a> => 'a -> 'a
+Int.is_power_of_two :: UnsignedInteger<'a> => 'a -> bool
 ```
 
 rotate amount は `amount & (bits - 1)`。
@@ -176,12 +176,12 @@ signed 型の `is_power_of_two` は提供しない。
 checked arithmetic:
 
 ```text
-Int.checked_add :: Integer 'a => 'a -> 'a -> Option 'a
-Int.checked_sub :: Integer 'a => 'a -> 'a -> Option 'a
-Int.checked_mul :: Integer 'a => 'a -> 'a -> Option 'a
-Int.checked_div :: Integer 'a => 'a -> 'a -> Option 'a
-Int.checked_rem :: Integer 'a => 'a -> 'a -> Option 'a
-Int.checked_neg :: SignedInteger 'a => 'a -> Option 'a
+Int.checked_add :: Integer<'a> => 'a -> 'a -> Option<'a>
+Int.checked_sub :: Integer<'a> => 'a -> 'a -> Option<'a>
+Int.checked_mul :: Integer<'a> => 'a -> 'a -> Option<'a>
+Int.checked_div :: Integer<'a> => 'a -> 'a -> Option<'a>
+Int.checked_rem :: Integer<'a> => 'a -> 'a -> Option<'a>
+Int.checked_neg :: SignedInteger<'a> => 'a -> Option<'a>
 ```
 
 add/sub/mul overflow は `None`。
@@ -192,9 +192,9 @@ checked_neg は MIN を `None`。
 saturating arithmetic:
 
 ```text
-Int.saturating_add :: Integer 'a => 'a -> 'a -> 'a
-Int.saturating_sub :: Integer 'a => 'a -> 'a -> 'a
-Int.saturating_mul :: Integer 'a => 'a -> 'a -> 'a
+Int.saturating_add :: Integer<'a> => 'a -> 'a -> 'a
+Int.saturating_sub :: Integer<'a> => 'a -> 'a -> 'a
+Int.saturating_mul :: Integer<'a> => 'a -> 'a -> 'a
 ```
 
 signed は min/max に saturate。
@@ -204,8 +204,8 @@ LLVM に直接 intrinsic がない型/演算は overflow intrinsic + select で�
 pow:
 
 ```text
-Int.wrapping_pow :: Integer 'a => 'a -> i64 -> 'a
-Int.checked_pow  :: Integer 'a => 'a -> i64 -> Option 'a
+Int.wrapping_pow :: Integer<'a> => 'a -> i64 -> 'a
+Int.checked_pow  :: Integer<'a> => 'a -> i64 -> Option<'a>
 ```
 
 exponent が負なら `wrapping_pow` はトラップ、`checked_pow` は `None`。
@@ -217,7 +217,7 @@ checked_pow は各 multiply の overflow を検出し、overflow なら `None`�
 widening:
 
 ```text
-Int.widening_mul :: Integer 'a => 'a -> 'a -> (widen_of 'a)
+Int.widening_mul :: Integer<'a> => 'a -> 'a -> (widen_of 'a)
 ```
 
 8/16/32/64-bit だけ。
@@ -338,7 +338,7 @@ trap と Option の違いは API 名で明確にする。
 1. E02 と B01 の状態を確認する。
    確認: B01 が未完了ならこのチケットを開始しない。
 2. `UnsignedInteger` marker class を `Classes::collect` と `Classes::intrinsic` に追加する。
-   確認: `UnsignedInteger i64u` は通り、`UnsignedInteger i64` は `E1005`。
+   確認: `UnsignedInteger<i64u>` は通り、`UnsignedInteger<i64>` は `E1005`。
 3. E02 の `BuiltinScheme`/`BuiltinType::UnsignedOf`/`WidenOf` を使って型を実装する。
    確認: `Int.unsigned_abs (-1i8)` の型が `i8u`、`Int.widening_mul 1i32 2i32` の型が `i64`。generic wrapper で `UnsignedOf`/`WidenOf` が未解決なら `E1015`。
 4. `Builtin` variants と names を追加する。
@@ -371,7 +371,7 @@ trap と Option の違いは API 名で明確にする。
 `Int.rotate_left 1i32 33` は i32。
 `Int.swap_bytes 0x1234i16u` は i16u。
 `Int.reverse_bits 1i8u` は i8u。
-`Int.checked_add 1i64 2i64` は `Option i64`。
+`Int.checked_add 1i64 2i64` は `Option<i64>`。
 `Int.saturating_mul 100i8 100i8` は i8。
 `Int.unsigned_abs (-128i8)` は i8u。
 `Int.abs_diff (-128i8) 127i8` は i8u。
@@ -382,9 +382,9 @@ trap と Option の違いは API 名で明確にする。
 `Int.unsigned_abs 1i64u` は `E1005`。
 `Int.widening_mul 1i128 2i128` は `E1005`。
 `Int.count_ones 1.0` は `E1005`。
-`def f :: Integer 'a => 'a -> i64; fn f x = Int.count_ones x` は受理される。
+`def f :: Integer<'a> => 'a -> i64; fn f x = Int.count_ones x` は受理される。
 一方、戻り型に「同じ幅の unsigned」を必要とする `Int.unsigned_abs x` の汎用 wrapper は、`UnsignedOf` が concrete でないため `E1015`。
-`instance UnsignedInteger i64 {}` は marker/builtin class override の `E1016`。
+`instance UnsignedInteger<i64> {}` は marker/builtin class override の `E1016`。
 
 IR:
 ctpop/ctlz/cttz/fshl/fshr/bswap/bitreverse/sadd.with.overflow を含む。

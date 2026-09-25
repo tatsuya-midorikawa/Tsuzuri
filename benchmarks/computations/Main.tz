@@ -151,3 +151,67 @@ fn direct_owned_capture count seed = {
     let values = new [i64](256, i -> mix i seed);
     direct_owned_loop count (&values) seed
 }
+
+def rec standard_loop :: i64 -> (i64 -> i64 -> i64) -> i64 -> i64
+fn rec standard_loop remaining next state =
+    if remaining <= 0 then state
+    else standard_loop (remaining - 1) next (next state (1442695040888963407 + remaining))
+
+def option_step :: i64 -> i64 -> i64
+fn option_step state salt =
+    Option.default_value (state ^ salt) (Option {
+        let! value = if (state & 7) == 0 then None else Some (state ^ salt)
+        return mix value salt
+    })
+
+def direct_option_step :: i64 -> i64 -> i64
+fn direct_option_step state salt =
+    let value = if (state & 7) == 0 then None else Some (state ^ salt)
+    match value with
+    | Some value -> mix value salt
+    | None -> state ^ salt
+
+def result_step :: i64 -> i64 -> i64
+fn result_step state salt =
+    let result: Result.Result<i64, i64> = Result {
+        let! first = if (state & 7) == 0 then Error (state ^ salt) else Ok (state ^ salt)
+        let! second = if (first & 3) == 0 then Error (mix first salt) else Ok (mix first salt)
+        return second ^ salt
+    }
+    match result with | Ok value -> value | Error error -> error
+
+def direct_result_step :: i64 -> i64 -> i64
+fn direct_result_step state salt =
+    let first = if (state & 7) == 0 then Error (state ^ salt) else Ok (state ^ salt)
+    match first with
+    | Error error -> error
+    | Ok first ->
+        let second = if (first & 3) == 0 then Error (mix first salt) else Ok (mix first salt)
+        match second with | Error error -> error | Ok second -> second ^ salt
+
+def option_owned_step :: i64 -> i64 -> i64
+fn option_owned_step state salt =
+    let result = Option {
+        let! text = if (state & 7) == 0 then None else Some ("hello" + " world")
+        return (text + "!").length
+    }
+    mix state salt ^ Option.default_value 0 result
+
+def direct_option_owned_step :: i64 -> i64 -> i64
+fn direct_option_owned_step state salt =
+    let value = if (state & 7) == 0 then None else Some ("hello" + " world")
+    let result = match value with | Some text -> (text + "!").length | None -> 0
+    mix state salt ^ result
+
+export def ce_std_option :: i64 -> i64 -> i64
+fn ce_std_option count seed = { assert (count >= 0); standard_loop count option_step seed }
+export def direct_std_option :: i64 -> i64 -> i64
+fn direct_std_option count seed = { assert (count >= 0); standard_loop count direct_option_step seed }
+export def ce_std_result :: i64 -> i64 -> i64
+fn ce_std_result count seed = { assert (count >= 0); standard_loop count result_step seed }
+export def direct_std_result :: i64 -> i64 -> i64
+fn direct_std_result count seed = { assert (count >= 0); standard_loop count direct_result_step seed }
+export def ce_std_option_owned :: i64 -> i64 -> i64
+fn ce_std_option_owned count seed = { assert (count >= 0); standard_loop count option_owned_step seed }
+export def direct_std_option_owned :: i64 -> i64 -> i64
+fn direct_std_option_owned count seed = { assert (count >= 0); standard_loop count direct_option_owned_step seed }

@@ -1,4 +1,4 @@
-def add :: Add 'a -> 'a -> 'a
+def add :: Add<'a> -> 'a -> 'a
 let add = x -> y -> x + y
 
 def apply_twice :: ('a -> 'a) -> 'a -> 'a

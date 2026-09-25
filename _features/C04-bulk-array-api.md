@@ -29,7 +29,7 @@ D-14 に従い、浮動小数点の既定集計は左から右の逐次順序と
 - E02: `std/Array.tz` / `std/List.tz` の同梱と `Array.xxx` 修飾解決。
 - A11: `Eq`/`Ord` は borrowed signature で、`==`/`<` などの比較演算子は要素を消費しない。C04 の検索・等価・整列 API は比較のためだけに `Copy` を要求しない。
 - C03: `&['a]` が fat slice `{ ptr, i64 }` として copy なしに渡せる。
-- B01: `Option 'a`。`find` / `try_*` 系で使う。
+- B01: `Option<'a>`。`find` / `try_*` 系で使う。
 - A06/A07 は `Ord` / `Eq` の deriving を後で補強するが、C04 phase 1 は既存組み込み `Eq` / `Ord` とユーザー instance を使う。
 
 ### 他チケットへの提供インターフェース
@@ -46,24 +46,24 @@ D-14 に従い、浮動小数点の既定集計は左から右の逐次順序と
 // Phase 1: scalar/borrowed read helpers
 Array.length        : &['a] -> i64
 Array.is_empty      : &['a] -> bool
-Array.get           : Copy 'a => &['a] -> i64 -> Option 'a
+Array.get           : Copy<'a> => &['a] -> i64 -> Option<'a>
 Array.at            : &['a] -> i64 -> &'a
-Array.sub           : Copy 'a => &['a] -> i64 -> i64 -> ['a]
+Array.sub           : Copy<'a> => &['a] -> i64 -> i64 -> ['a]
 
 // Phase 1: construction / conversion
 Array.init          : i64 -> (i64 -> 'a) -> ['a]
-Array.reverse       : Copy 'a => &['a] -> ['a]
-Array.append        : Copy 'a => &['a] -> &['a] -> ['a]
-Array.concat        : Copy 'a => &[['a]] -> ['a]
-Array.zip           : (Copy 'a, Copy 'b) => &['a] -> &['b] -> [('a * 'b)]
-Array.to_list       : Copy 'a => &['a] -> [|'a|]
+Array.reverse       : Copy<'a> => &['a] -> ['a]
+Array.append        : Copy<'a> => &['a] -> &['a] -> ['a]
+Array.concat        : Copy<'a> => &[['a]] -> ['a]
+Array.zip           : (Copy<'a>, Copy<'b>) => &['a] -> &['b] -> [('a * 'b)]
+Array.to_list       : Copy<'a> => &['a] -> [|'a|]
 
 // Phase 1: callbacks that receive values require Copy input.
-Array.map           : Copy 'a => &['a] -> ('a -> 'b) -> ['b]
-Array.mapi          : Copy 'a => &['a] -> (i64 -> 'a -> 'b) -> ['b]
-Array.fold          : Copy 'a => &['a] -> 's -> ('s -> 'a -> 's) -> 's
-Array.fold_back     : Copy 'a => &['a] -> 's -> ('a -> 's -> 's) -> 's
-Array.reduce        : Copy 'a => &['a] -> ('a -> 'a -> 'a) -> Option 'a
+Array.map           : Copy<'a> => &['a] -> ('a -> 'b) -> ['b]
+Array.mapi          : Copy<'a> => &['a] -> (i64 -> 'a -> 'b) -> ['b]
+Array.fold          : Copy<'a> => &['a] -> 's -> ('s -> 'a -> 's) -> 's
+Array.fold_back     : Copy<'a> => &['a] -> 's -> ('a -> 's -> 's) -> 's
+Array.reduce        : Copy<'a> => &['a] -> ('a -> 'a -> 'a) -> Option<'a>
 
 // Phase 1: _ref variants support non-Copy input by passing element borrows.
 Array.map_ref       : &['a] -> (&'a -> 'b) -> ['b]
@@ -72,27 +72,27 @@ Array.fold_ref      : &['a] -> 's -> ('s -> &'a -> 's) -> 's
 Array.fold_back_ref : &['a] -> 's -> (&'a -> 's -> 's) -> 's
 
 // Phase 1: numeric reductions. Empty arrays return numeric identities.
-Array.sum           : (Numeric 'a, Add 'a) => &['a] -> 'a
-Array.product       : (Numeric 'a, Mul 'a) => &['a] -> 'a
+Array.sum           : (Numeric<'a>, Add<'a>) => &['a] -> 'a
+Array.product       : (Numeric<'a>, Mul<'a>) => &['a] -> 'a
 
 // Phase 1: comparison-only APIs use A11 borrowed Eq/Ord and do not require Copy.
-Array.min           : Ord 'a => &['a] -> Option &'a
-Array.max           : Ord 'a => &['a] -> Option &'a
+Array.min           : Ord<'a> => &['a] -> Option<&'a>
+Array.max           : Ord<'a> => &['a] -> Option<&'a>
 Array.any           : &['a] -> (&'a -> bool) -> bool
 Array.all           : &['a] -> (&'a -> bool) -> bool
 Array.count         : &['a] -> (&'a -> bool) -> i64
-Array.find          : &['a] -> (&'a -> bool) -> Option &'a
-Array.index_of      : Eq 'a => &['a] -> &'a -> Option i64
-Array.contains      : Eq 'a => &['a] -> &'a -> bool
-Array.equal         : Eq 'a => &['a] -> &['a] -> bool
+Array.find          : &['a] -> (&'a -> bool) -> Option<&'a>
+Array.index_of      : Eq<'a> => &['a] -> &'a -> Option<i64>
+Array.contains      : Eq<'a> => &['a] -> &'a -> bool
+Array.equal         : Eq<'a> => &['a] -> &['a] -> bool
 
 // Phase 1: sort returns an owned copy, so Copy is required for the initial clone.
-Array.sort          : (Ord 'a, Copy 'a) => &['a] -> ['a]
-Array.sort_by       : Copy 'a => &['a] -> (&'a -> &'a -> i64) -> ['a]
-Array.binary_search : Ord 'a => &['a] -> &'a -> Option i64
+Array.sort          : (Ord<'a>, Copy<'a>) => &['a] -> ['a]
+Array.sort_by       : Copy<'a> => &['a] -> (&'a -> &'a -> i64) -> ['a]
+Array.binary_search : Ord<'a> => &['a] -> &'a -> Option<i64>
 
 // Phase 2 (C02 Vec required): one-pass predicate with owned output.
-Array.filter        : Copy 'a => &['a] -> (&'a -> bool) -> ['a]
+Array.filter        : Copy<'a> => &['a] -> (&'a -> bool) -> ['a]
 ```
 
 List phase 1:
@@ -100,12 +100,12 @@ List phase 1:
 ```text
 List.length    : &[|'a|] -> i64
 List.is_empty  : &[|'a|] -> bool
-List.map       : Copy 'a => &[|'a|] -> ('a -> 'b) -> [|'b|]
+List.map       : Copy<'a> => &[|'a|] -> ('a -> 'b) -> [|'b|]
 List.map_ref   : &[|'a|] -> (&'a -> 'b) -> [|'b|]
-List.fold      : Copy 'a => &[|'a|] -> 's -> ('s -> 'a -> 's) -> 's
+List.fold      : Copy<'a> => &[|'a|] -> 's -> ('s -> 'a -> 's) -> 's
 List.fold_ref  : &[|'a|] -> 's -> ('s -> &'a -> 's) -> 's
-List.reverse   : Copy 'a => &[|'a|] -> [|'a|]
-List.to_array  : Copy 'a => &[|'a|] -> ['a]
+List.reverse   : Copy<'a> => &[|'a|] -> [|'a|]
+List.to_array  : Copy<'a> => &[|'a|] -> ['a]
 ```
 
 Phase 1 で List API は O(n) 走査に限定し、sort / binary_search は配列だけ。
@@ -141,7 +141,7 @@ Phase 1 で List API は O(n) 走査に限定し、sort / binary_search は配�
 | `sort`, `sort_by`, `binary_search` | compiler builtin IR phase 1 | stable sort と allocation/drop が複雑で、Tsuzuri source だと Vec 依存や再帰制限が強い |
 | List API | std Tsuzuri source + 必要最小 builtin | リストは contiguous でないため SIMD 期待なし |
 
-`Array.filter` は Phase 2（C02 Vec 完了後）に送る。Vec なしの two-pass 実装は predicate を 2 回呼び、副作用・trap の順序契約を壊すため採用しない。`Array.concat` は predicate を持たず二重評価の問題がないため、Phase 1 に `Copy 'a` 制約付き builtin として残す。
+`Array.filter` は Phase 2（C02 Vec 完了後）に送る。Vec なしの two-pass 実装は predicate を 2 回呼び、副作用・trap の順序契約を壊すため採用しない。`Array.concat` は predicate を持たず二重評価の問題がないため、Phase 1 に `Copy<'a>` 制約付き builtin として残す。
 
 ## 設計
 
@@ -188,7 +188,7 @@ ArraySort: (Ord a, Copy a) => &[a] -> [a]
 - Allocate scratch array of same len。
 - Alternate source/destination buffers per width。
 - Comparator:
-  - `Ord 'a` lowering through method call for generic。
+  - `Ord<'a>` lowering through method call for generic。
   - For primitive ints, direct compare can be builtin specialization。
   - For primitive `f32` / `f64`, use the sort-specific total preorder: numbers before NaNs, NaNs mutually equal/stable, signed zeros mutually equal/stable。
 - Stability: when `right < left` false, take left first。
@@ -203,7 +203,7 @@ ArraySort: (Ord a, Copy a) => &[a] -> [a]
   - Track which ranges in each buffer are initialized after each pass. At any time an element is initialized in exactly one buffer。
   - At the end, the final initialized buffer becomes the returned array. The emptied scratch buffer is freed without dropping moved-out slots. If the final data is in scratch, return a descriptor pointing at scratch and free the original result buffer; if final data is in result, free scratch。
   - On normal completion `drop_value` later drops only the returned final buffer. During sort, no value is double-dropped。
-  - Phase 1 は `Array.sort : (Ord 'a, Copy 'a) => &['a] -> ['a]` とする。`Copy` は borrowed input から owned output を作るためであり、比較のためではない。将来 Clone/Move-aware sort または consuming sort で Copy 制約を外す。
+  - Phase 1 は `Array.sort : (Ord<'a>, Copy<'a>) => &['a] -> ['a]` とする。`Copy` は borrowed input から owned output を作るためであり、比較のためではない。将来 Clone/Move-aware sort または consuming sort で Copy 制約を外す。
 
 `Array.binary_search`:
 
@@ -216,12 +216,12 @@ ArraySort: (Ord a, Copy a) => &[a] -> [a]
 
 ### Std Tsuzuri source sketches
 
-Value callback APIs require `Copy 'a` because the input is borrowed but the callback receives an owned value. Non-Copy elements use `_ref` variants.
+Value callback APIs require `Copy<'a>` because the input is borrowed but the callback receives an owned value. Non-Copy elements use `_ref` variants.
 
 `Array.fold`:
 
 ```text
-def fold :: Copy 'a => &['a] -> 's -> ('s -> 'a -> 's) -> 's
+def fold :: Copy<'a> => &['a] -> 's -> ('s -> 'a -> 's) -> 's
 fn fold xs state folder = {
     let mut acc = state;
     for x in xs do
@@ -230,18 +230,18 @@ fn fold xs state folder = {
 }
 ```
 
-この sketch は `x` が値として渡るため `Copy 'a` が必要になる。非 Copy 要素向け fold は `fold_ref : &['a] -> 's -> ('s -> &'a -> 's) -> 's` を使う。
+この sketch は `x` が値として渡るため `Copy<'a>` が必要になる。非 Copy 要素向け fold は `fold_ref : &['a] -> 's -> ('s -> &'a -> 's) -> 's` を使う。
 
 既定案:
 
 ```text
-Array.fold      : Copy 'a => &['a] -> 's -> ('s -> 'a -> 's) -> 's
+Array.fold      : Copy<'a> => &['a] -> 's -> ('s -> 'a -> 's) -> 's
 Array.fold_ref  : &['a] -> 's -> ('s -> &'a -> 's) -> 's
-Array.map       : Copy 'a => &['a] -> ('a -> 'b) -> ['b]
+Array.map       : Copy<'a> => &['a] -> ('a -> 'b) -> ['b]
 Array.map_ref   : &['a] -> (&'a -> 'b) -> ['b]
 ```
 
-要求の API 名は使いやすさ重視で `Copy 'a` 版にし、非 Copy 版は `_ref` suffix を追加する。C04 ticket 実装者はこの制約を docs に必ず書く。比較-only API は A11 により borrowed `Eq`/`Ord` を使うため Copy を要求しない。
+要求の API 名は使いやすさ重視で `Copy<'a>` 版にし、非 Copy 版は `_ref` suffix を追加する。C04 ticket 実装者はこの制約を docs に必ず書く。比較-only API は A11 により borrowed `Eq`/`Ord` を使うため Copy を要求しない。
 
 ### Determinism
 
@@ -303,7 +303,7 @@ Array.map_ref   : &['a] -> (&'a -> 'b) -> ['b]
 拒否:
 
 - `let xs = ["x"]; Array.map (&xs) (s -> s.length)` with value API → `E1005` / Copy constraint missing。
-- `let xs = ["x"]; Array.sum (&xs)` → `E1005` because `sum` is `(Numeric 'a, Add 'a)` and string is not `Numeric`。
+- `let xs = ["x"]; Array.sum (&xs)` → `E1005` because `sum` is `(Numeric<'a>, Add<'a>)` and string is not `Numeric`。
 - `let xs: [i64] = []; Array.reduce (&xs) ...` compiles and returns None, not reject。
 - `Array.sort` for non-Copy element in phase 1 → `E1005` Copy constraint missing。理由は owned output/scratch 生成であり、比較ではない。
 - Temporary borrow examples like `Array.map (&[1,2,3]) ...` should be rejected with `E1013` until temporary lifetime extension exists; tests must bind literals before borrowing。
@@ -382,9 +382,9 @@ Add optional `benchmarks/array-bulk`:
 ## 落とし穴
 
 - `filter` を two-pass predicate で実装すると副作用順序が変わる。C02 なしでは phase 1 から外す。
-- `sum` / `product` は `(Numeric 'a, Add/Mul 'a)` に限定し、空配列の identity は numeric 型だけに定義する。任意 Add 型の空配列 sum は提供しない。
+- `sum` / `product` は `Numeric<'a>` と、それぞれ `Add<'a>`／`Mul<'a>` に限定し、空配列の identity は numeric 型だけに定義する。任意 Add 型の空配列 sum は提供しない。
 - float sum を LLVM vector reduction にしない。
-- callback に要素値を渡す API は `Copy 'a` を要求する。非 Copy は `_ref`。
+- callback に要素値を渡す API は `Copy<'a>` を要求する。非 Copy は `_ref`。
 - stable sort の scratch buffer ownership は難しい。Phase 1 Copy 制約で安全にするが、比較そのものは A11 の borrowed `Ord` を使う。
 - binary operators do not autoderef borrowed targets. `Eq.eq element target` / `Ord.lt element target` または `*ref` を使う。
 - borrowed input から owned output を作る `sub` / `reverse` / `append` / `concat` / `zip` / conversions は `Copy` 制約なしに実装しない。public deep-clone contract はこのチケットでは導入しない。
@@ -400,7 +400,7 @@ Add optional `benchmarks/array-bulk`:
 
 ## 未決事項
 
-- `Array.sum` の空配列: `(Numeric 'a, Add 'a)` の numeric builtin だけ 0 identity、`product` は 1 identity。generic Add/Mul は提供せず `reduce` を使わせる。
-- `Array.sort` の Copy 制約: phase 1 は `(Ord 'a, Copy 'a)`。これは borrowed input から owned output を作るためで、比較のためではない。将来 Clone/Move-aware sort で緩和。
+- `Array.sum` の空配列: `(Numeric<'a>, Add<'a>)` の numeric builtin だけ 0 identity、`product` は 1 identity。generic Add/Mul は提供せず `reduce` を使わせる。
+- `Array.sort` の Copy 制約: phase 1 は `(Ord<'a>, Copy<'a>)`。これは borrowed input から owned output を作るためで、比較のためではない。将来 Clone/Move-aware sort で緩和。
 - float NaN sort: 既定案は sort-specific total preorder（numbers before NaNs、NaNs stable、signed zeros stable）。`min`/`max` はこの preorder を使わない。
 - 台帳の見直し提案: なし。D-14 に従い、順序違いの高速集計は別 API にする。

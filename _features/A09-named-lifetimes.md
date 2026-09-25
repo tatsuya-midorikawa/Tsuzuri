@@ -135,14 +135,14 @@ def view {r} :: &{r} [i64] -> View {r}
 fn view data = View { data: data }
 ```
 
-型引数 `'a` と region 引数 `{r}` は別 namespace。A01 の型適用 `Box 'a` と混ざる場合:
+型引数 `'a` と region 引数 `{r}` は別 namespace。A01 の型適用 `Box<'a>` と混ざる場合:
 
 ```text
-record RefBox {r} 'a { value: &{r} 'a }
-def make {r} :: &{r} i64 -> RefBox {r} i64
+record RefBox<'a> {r} { value: &{r} 'a }
+def make {r} :: &{r} i64 -> RefBox<i64> {r}
 ```
 
-region application は型名直後の `{...}`、型引数はその後の前置並置とする。`View {r}` は型式であり、record literal `View { field: value }` は式なので parser context で区別できる。
+型パラメーター／型引数は型名直後の `<...>`、region application はその後の `{...}` とする。型引数がなければ `View {r}` のまま。これは型式であり、record literal `View { field: value }` は式なので parser context で区別できる。
 
 ## 設計
 

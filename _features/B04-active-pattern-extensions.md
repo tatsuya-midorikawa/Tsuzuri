@@ -41,13 +41,13 @@
 
 ### 前提とする他チケットのインターフェース
 
-- **B01**: `Option 'a = None | Some of 'a` が std fallback で解決できる。
+- **B01**: `Option<'a> = None | Some of 'a` が std fallback で解決できる。
 - **A02**: `Type::Union(usize, Vec<Type>)`、union case pattern、case tag test、payload projection、union clone/drop が実装済み。
 - **A03**（後続）: match exhaustiveness。B04 は A03 に情報を提供するが、A03 未実装でも通常の上から順の match として動く。
 
 ### 他チケットへの提供インターフェース
 
-- D01 は `def (|Parse|_|) :: &string -> Option i64` を使い、`| Parse n -> ...` と書ける。
+- D01 は `def (|Parse|_|) :: &string -> Option<i64>` を使い、`| Parse n -> ...` と書ける。
 - A03 は `ActivePatternInfo::TotalCases`（下記）を使って、同じ recognizer の全 case が guard なしで出ている場合に exhaustiveness の材料にできる。
 
 ## 仕様
@@ -55,7 +55,7 @@
 ### Option 返却部分アクティブパターン
 
 ```text
-def (|Parse|_|) :: &string -> Option i64
+def (|Parse|_|) :: &string -> Option<i64>
 fn (|Parse|_|) text = D01.parse_i64 text
 
 match text with
@@ -215,7 +215,7 @@ struct ActivePatternAliases {
 }
 ```
 
-`ActivePatternRef` には payload `Type` を保存しない。`(|TryParse|_|) :: &string -> Option 'a` のような多相 recognizer では、呼び出しごとに `Checker::function(id)` が fresh な `Infer` を含む signature を返すため、その fresh signature から `Option` payload 型や backing union の具体 payload 型を導く。
+`ActivePatternRef` には payload `Type` を保存しない。`(|TryParse|_|) :: &string -> Option<'a>` のような多相 recognizer では、呼び出しごとに `Checker::function(id)` が fresh な `Infer` を含む signature を返すため、その fresh signature から `Option` payload 型や backing union の具体 payload 型を導く。
 
 ### Parser
 
@@ -346,7 +346,7 @@ A02 に union case test/projection helper があるならそれを使う。な�
 
 確認点:
 
-- `Some string` payload を pattern が失敗した場合、一時 `Option string` が drop される。
+- `Some string` payload を pattern が失敗した場合、一時 `Option<string>` が drop される。
 - `Int n when false` の guard 失敗でも recognizer result が drop される。
 - bool partial は一時 payload がないため従来通り。
 - matched input が `string` など非 Copy で recognizer が値取りを要求する場合、次 arm のために入力を保持できず `E1014`。`&string` を使うよう診断する。
@@ -416,7 +416,7 @@ B04 は A03 を実装しないが、以下の情報を提供する。
 Option partial:
 
 ```text
-def (|Parse|_|) :: &string -> Option i64
+def (|Parse|_|) :: &string -> Option<i64>
 fn (|Parse|_|) text =
     if text.length == 2 then Some 42 else None
 
@@ -428,7 +428,7 @@ match "42" with
 Option partial payload destructuring:
 
 ```text
-def (|Parts|_|) :: i64 -> Option (i64 * i64)
+def (|Parts|_|) :: i64 -> Option<i64 * i64>
 fn (|Parts|_|) n = if n > 0 then Some (n, n + 1) else None
 match 20 with
 | Parts (a, b) -> a + b
@@ -438,7 +438,7 @@ match 20 with
 追加引数:
 
 ```text
-def (|Divisible|_|) :: i64 -> i64 -> Option unit
+def (|Divisible|_|) :: i64 -> i64 -> Option<unit>
 fn (|Divisible|_|) divisor n =
     if n % divisor == 0 then Some () else None
 match 42 with
@@ -478,8 +478,8 @@ match 12 with
 | `union P = X; def (|A|B|) :: i64 -> P ...` | `E1020` |
 | `union Bad = A | B; def (|A|B|) :: i64 -> Bad ...` in the same module | `E1001` |
 | `def (|Even|_|) :: i64 -> bool ...; match 2 with | Even n -> n` | `E1006` |
-| `def (|Bad|_|) :: &mut i64 -> Option unit ...` | `E1014` |
-| `def (|Bad|_|) :: string -> Option unit ...; match "x" with | Bad -> 1 | _ -> 0` | `E1014` |
+| `def (|Bad|_|) :: &mut i64 -> Option<unit> ...` | `E1014` |
+| `def (|Bad|_|) :: string -> Option<unit> ...; match "x" with | Bad -> 1 | _ -> 0` | `E1014` |
 
 ### E2E
 
@@ -531,7 +531,7 @@ match 12 with
 
 ## 落とし穴
 
-- Option partial は `Some payload` の payload を pattern に渡す。`Option (unit)` の場合だけ payload pattern 省略を許す。
+- Option partial は `Some payload` の payload を pattern に渡す。`Option<unit>` の場合だけ payload pattern 省略を許す。
 - bool partial と Option partial を同じ `partial: bool` だけで表すと payload を扱えない。enum に分ける。
 - multi-case で隠し union を合成しない。型表示・ABI・exhaustiveness が複雑になるため phase 1 はユーザー宣言 union。
 - recognizer result の union payload は inactive case で読まない。

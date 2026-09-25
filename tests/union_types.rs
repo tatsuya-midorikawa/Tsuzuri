@@ -7,7 +7,7 @@ const SHAPE: &str = "union Shape =
     | Rect of f64 * f64
     | Empty
 ";
-const MAYBE: &str = "union Maybe 'a = None | Some of 'a\n";
+const MAYBE: &str = "union Maybe<'a> = None | Some of 'a\n";
 
 fn accepts(source: &str) -> CheckedModule {
     let module = analyze(source)
@@ -58,7 +58,7 @@ area (Rect (3.0, 4.0))
 "
         ),
         format!(
-            "{MAYBE}def default_value :: 'a -> Maybe 'a -> 'a
+            "{MAYBE}def default_value :: 'a -> Maybe<'a> -> 'a
 fn default_value fallback value =
     match value with
     | Some x -> x
@@ -113,7 +113,7 @@ score (Dot (Point { x: 1, y: 2 })) + score (Pair (3, \"four\")) + score (Many [1
 #[test]
 fn infers_and_monomorphizes_generic_unions() {
     let module = accepts(&format!(
-        "{MAYBE}def unwrap_or :: 'a -> Maybe 'a -> 'a
+        "{MAYBE}def unwrap_or :: 'a -> Maybe<'a> -> 'a
 fn unwrap_or fallback value =
     match value with
     | Some x -> x
@@ -132,7 +132,7 @@ fn main =
         .map(|function| function.signature.parameters[1].display(&types))
         .collect();
     instances.sort();
-    assert_eq!(instances, ["Main.Maybe i64", "Main.Maybe string"]);
+    assert_eq!(instances, ["Main.Maybe<i64>", "Main.Maybe<string>"]);
     let main = module
         .functions
         .iter()
@@ -143,7 +143,7 @@ fn main =
         &format!(
             "{MAYBE}def main :: i64
 fn main =
-    let value: Maybe string = Some 1
+    let value: Maybe<string> = Some 1
     0
 "
         ),
@@ -186,7 +186,7 @@ fn size shape =
     // Unique cases from another module resolve without qualification.
     analyze_modules(&[
         ("Main.tz", "match Some 1 with\n| Some n -> n\n| None -> 0"),
-        ("Choice.tz", "union Choice 'a = None | Some of 'a"),
+        ("Choice.tz", "union Choice<'a> = None | Some of 'a"),
     ])
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
     analyze_modules(&[
@@ -194,7 +194,7 @@ fn size shape =
             "Main.tz",
             "let x = Choice.Some 1\nmatch x with\n| Choice.Some n -> n\n| Choice.None -> 0",
         ),
-        ("Choice.tz", "union Choice 'a = None | Some of 'a"),
+        ("Choice.tz", "union Choice<'a> = None | Some of 'a"),
     ])
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
 
@@ -202,25 +202,25 @@ fn size shape =
         // `Choice.Some` names both a module case and a local union case.
         (
             "union Choice = Some\nlet x = Choice.Some\n0",
-            "union Choice 'a = None | Some of 'a",
+            "union Choice<'a> = None | Some of 'a",
             "E1004",
             "Module.Union.Case",
         ),
         (
             "let x = Choice.Choice.Missing\n0",
-            "union Choice 'a = None | Some of 'a",
+            "union Choice<'a> = None | Some of 'a",
             "E1002",
             "has no case 'Missing'",
         ),
         (
             "let x = Choice.Some 1\n0",
-            "private union Choice 'a = None | Some of 'a",
+            "private union Choice<'a> = None | Some of 'a",
             "E1022",
             "",
         ),
         (
-            "def f :: Choice.Choice i64 -> i64\nfn f x = 0",
-            "private union Choice 'a = None | Some of 'a",
+            "def f :: Choice.Choice<i64> -> i64\nfn f x = 0",
+            "private union Choice<'a> = None | Some of 'a",
             "E1022",
             "",
         ),
@@ -244,8 +244,8 @@ fn size shape =
     // Cases with one name in two other modules need qualification.
     let error = analyze_modules(&[
         ("Main.tz", "match Some 1 with\n| Some n -> n\n| None -> 0"),
-        ("Choice.tz", "union Choice 'a = None | Some of 'a"),
-        ("Other.tz", "union Other 'a = Some of 'a | Nothing"),
+        ("Choice.tz", "union Choice<'a> = None | Some of 'a"),
+        ("Other.tz", "union Other<'a> = Some of 'a | Nothing"),
     ])
     .unwrap_err();
     assert_eq!(error.code, "E1004", "{}", error.message);
@@ -263,10 +263,10 @@ fn allows_unions_in_builders_but_not_type_class_files() {
     let module = analyze_modules(&[
         (
             "Maybe.tc",
-            "union Maybe 'a = Nothing | Just of 'a
-def Return :: 'a -> Maybe 'a
+            "union Maybe<'a> = Nothing | Just of 'a
+def Return :: 'a -> Maybe<'a>
 fn Return value = Just value
-def Bind :: Maybe 'a -> ('a -> Maybe 'b) -> Maybe 'b
+def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
 fn Bind value next =
     match value with
     | Just x -> next x
@@ -301,7 +301,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "lowercase names in patterns bind",
         ),
         (
-            "union Option 'a = None",
+            "union Option<'a> = None",
             "E1024",
             "not used by any case payload",
         ),
@@ -311,7 +311,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "is not declared by union 'Option'",
         ),
         (
-            "union U 'a 'a = A of 'a",
+            "union U<'a, 'a> = A of 'a",
             "E1024",
             "duplicate type parameter",
         ),
@@ -327,14 +327,14 @@ fn rejects_invalid_declarations_patterns_and_uses() {
         ("union U = A\nunion U = B", "E1001", ""),
         ("record U { x: i64 }\nunion U = A", "E1001", ""),
         ("union U = Task", "E1001", ""),
-        ("union Add 'a = Value of 'a", "E1001", ""),
+        ("union Add<'a> = Value of 'a", "E1001", ""),
         (
-            "class C 'a { def f :: 'a -> i64 }\nunion C 'a = Value of 'a",
+            "class C<'a> { def f :: 'a -> i64 }\nunion C<'a> = Value of 'a",
             "E1001",
             "",
         ),
         (
-            "union C 'a = Value of 'a\nclass C 'a { def f :: 'a -> i64 }",
+            "union C<'a> = Value of 'a\nclass C<'a> { def f :: 'a -> i64 }",
             "E1001",
             "",
         ),
@@ -349,17 +349,17 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "",
         ),
         (
-            "union Maybe 'a = None | Some of 'a\nlet x = Some\n0",
+            "union Maybe<'a> = None | Some of 'a\nlet x = Some\n0",
             "E1015",
             "",
         ),
         (
-            "union Maybe 'a = None | Some of 'a\nmatch Some 1 with\n| Some -> 0\n| None -> 1",
+            "union Maybe<'a> = None | Some of 'a\nmatch Some 1 with\n| Some -> 0\n| None -> 1",
             "E1020",
             "carries a payload",
         ),
         (
-            "union Maybe 'a = None | Some of 'a\nmatch None with\n| None x -> x\n| Some x -> x",
+            "union Maybe<'a> = None | Some of 'a\nmatch None with\n| None x -> x\n| Some x -> x",
             "E1020",
             "has no payload",
         ),
@@ -369,7 +369,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "one tuple pattern",
         ),
         (
-            "union Tree 'a = Leaf | Node of Tree 'a",
+            "union Tree<'a> = Leaf | Node of Tree<'a>",
             "E1010",
             "recursive union layout for 'Main.Tree'",
         ),
@@ -389,7 +389,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "",
         ),
         (
-            "union Maybe 'a = None | Some of 'a\nlet x = Some 1 == Some 1\n0",
+            "union Maybe<'a> = None | Some of 'a\nlet x = Some 1 == Some 1\n0",
             "E1005",
             "",
         ),
@@ -400,12 +400,12 @@ fn rejects_invalid_declarations_patterns_and_uses() {
         ),
         ("union Holder = Hold of &i64", "E1013", "owned values"),
         (
-            "union Holder 'a = Hold of 'a\ndef f :: i64 -> i64\nfn f x =\n    let h = Hold &x\n    0",
+            "union Holder<'a> = Hold of 'a\ndef f :: i64 -> i64\nfn f x =\n    let h = Hold &x\n    0",
             "E1013",
             "would store a reference",
         ),
         (
-            "union Holder 'a = Hold of 'a\ndef f :: Holder (&mut i64) -> i64\nfn f h = 0",
+            "union Holder<'a> = Hold of 'a\ndef f :: Holder<&mut i64> -> i64\nfn f h = 0",
             "E1013",
             "would store a reference",
         ),
@@ -420,23 +420,23 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "",
         ),
         (
-            "union U = A\ndef f :: U i64 -> i64\nfn f u = 0",
+            "union U = A\ndef f :: U<i64> -> i64\nfn f u = 0",
             "E1004",
             "takes no type arguments",
         ),
         (
-            "union Maybe 'a = None | Some of 'a\ndef f :: Maybe -> i64\nfn f u = 0",
+            "union Maybe<'a> = None | Some of 'a\ndef f :: Maybe -> i64\nfn f u = 0",
             "E1004",
             "expects 1 type argument, found 0",
         ),
         ("let x = Missing 1\n0", "E1002", "unknown value 'Missing'"),
         (
-            "union Maybe 'a = None | Some of 'a\nmatch Some 1 with\n| Missing n -> n\n| _ -> 0",
+            "union Maybe<'a> = None | Some of 'a\nmatch Some 1 with\n| Missing n -> n\n| _ -> 0",
             "E1020",
             "unknown union case or active pattern 'Missing'",
         ),
         (
-            "union Maybe 'a = None | Some of 'a\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Some x)\ndef main :: i64\nfn main = grow 1",
+            "union Maybe<'a> = None | Some of 'a\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Some x)\ndef main :: i64\nfn main = grow 1",
             "E1017",
             "",
         ),
@@ -457,7 +457,7 @@ fn tracks_payload_moves_copies_and_guards() {
     // Moving a payload out of a union consumes the union.
     rejects(
         &format!(
-            "{MAYBE}def f :: Maybe string -> i64
+            "{MAYBE}def f :: Maybe<string> -> i64
 fn f value =
     match value with
     | Some text ->
@@ -512,7 +512,7 @@ fn f n =
         ),
         // Payloads can be matched as a whole and bound with `as`.
         format!(
-            "{MAYBE}def f :: Maybe (i64 * string) -> i64
+            "{MAYBE}def f :: Maybe<i64 * string> -> i64
 fn f value =
     match value with
     | Some (n, text) -> n + text.length
@@ -589,7 +589,7 @@ fn green = code Green
     );
 
     let maybe = ir(&format!(
-        "{MAYBE}def unwrap_or :: 'a -> Maybe 'a -> 'a
+        "{MAYBE}def unwrap_or :: 'a -> Maybe<'a> -> 'a
 fn unwrap_or fallback value =
     match value with
     | Some x -> x
@@ -646,7 +646,7 @@ fn main = f (A \"abc\") + f (B 4) + f C
 
     // Guards fall back to ordered tests.
     let guarded = self::ir(&format!(
-        "{MAYBE}def f :: Maybe i64 -> i64
+        "{MAYBE}def f :: Maybe<i64> -> i64
 fn f value =
     match value with
     | Some n when n > 3 -> n
@@ -664,7 +664,7 @@ fn first_class_constructors_share_one_function_per_instance() {
     let ir = ir(&format!(
         "{MAYBE}def apply :: ('a -> 'b) -> 'a -> 'b
 fn apply f x = f x
-def value :: Maybe 'a -> 'a -> 'a
+def value :: Maybe<'a> -> 'a -> 'a
 fn value m fallback =
     match m with
     | Some x -> x
@@ -736,14 +736,14 @@ fn enforces_union_layout_limits() {
     // Generic unions are measured per concrete instance.
     let error = rejects(
         &format!(
-            "{}{MAYBE}def f :: Maybe Wide -> i64\nfn f value = 0",
+            "{}{MAYBE}def f :: Maybe<Wide> -> i64\nfn f value = 0",
             wide(4096)
         ),
         "E1010",
     );
     assert!(error.message.contains("65536"), "{}", error.message);
     accepts(&format!(
-        "{}{MAYBE}def f :: Maybe Wide -> i64\nfn f value = 0\nexport def main :: i64\nfn main = 0",
+        "{}{MAYBE}def f :: Maybe<Wide> -> i64\nfn f value = 0\nexport def main :: i64\nfn main = 0",
         wide(4095)
     ));
 }

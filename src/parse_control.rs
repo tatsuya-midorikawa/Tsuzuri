@@ -209,13 +209,13 @@ impl Parser<'_> {
     }
 
     pub(super) fn type_product(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let first = self.type_apply()?;
+        let first = self.type_primary()?;
         if !self.eat(&TokenKind::Star) {
             return Ok(first);
         }
         let mut elements = vec![first];
         loop {
-            elements.push(self.type_apply()?);
+            elements.push(self.type_primary()?);
             if elements.len() > MAX_NESTING {
                 return Err(self.error("too many tuple elements"));
             }

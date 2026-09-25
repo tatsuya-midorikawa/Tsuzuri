@@ -6,7 +6,7 @@
 | 規模 | S |
 | 依存 | なし |
 | 後続 | 全チケット（新規 clone / fresh worktree が buildable であること） |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `.gitignore`, `src/runtime/string.ll`, `src/runtime/heap-native.ll`, `src/runtime/heap-wasm.ll`, `src/runtime/console.ll`, `src/runtime/numeric.ll`, `src/runtime/generate.py`, `src/llvm.rs`, `src/driver.rs`, `tests/runtime_ir_tracking.rs` または CI スクリプト |
 
 ## 目的
@@ -326,14 +326,14 @@ cargo build --locked
 
 ## 受け入れ条件
 
-- [ ] `.gitignore` が 5 つの runtime `.ll` 例外を持つ。
-- [ ] `src/runtime/string.ll`, `heap-native.ll`, `heap-wasm.ll`, `console.ll`, `numeric.ll` が Git 追跡対象である。
-- [ ] `git check-ignore --no-index -v` が上記 5 ファイルを ignore しない。
-- [ ] `src/llvm.rs` と `src/driver.rs` の `include_str!("runtime/...")` 対象がすべて存在し、追跡されている。
-- [ ] 退行防止ガードが CI または明示スクリプトとして追加されている。
-- [ ] `python3 src/runtime/generate.py` 後に `src/runtime/numeric.ll` が byte-identical である。
-- [ ] fresh worktree で `cargo build --locked` が通る。
-- [ ] ランタイム IR の内容をこのチケットで意味変更していない。
+- [x] `.gitignore` が 5 つの runtime `.ll` 例外を持つ。
+- [x] `src/runtime/string.ll`, `heap-native.ll`, `heap-wasm.ll`, `console.ll`, `numeric.ll` が Git 追跡対象である。
+- [x] `git check-ignore --no-index -v` が上記 5 ファイルを ignore しない。
+- [x] `src/llvm.rs` と `src/driver.rs` の `include_str!("runtime/...")` 対象がすべて存在し、追跡されている。
+- [x] 退行防止ガードが CI または明示スクリプトとして追加されている。
+- [x] `python3 src/runtime/generate.py` 後に `src/runtime/numeric.ll` が byte-identical である。
+- [x] fresh worktree で `cargo build --locked` が通る。
+- [x] ランタイム IR の内容をこのチケットで意味変更していない。
 
 ## 落とし穴
 
@@ -359,3 +359,13 @@ cargo build --locked
 - **`numeric.ll` の byte identity を保証する Clang 範囲。** 既定案は LLVM/Clang 17 以降を対象にし、
   新しい Clang で差分が出たら `generate.py` の正規化を更新する。
 - **台帳の見直し提案:** なし。
+
+### 実装時の判断（G01）
+
+- 五つの runtime `.ll` に `.gitignore` の例外を追加し、ソースと生成 IR をともに追跡する。
+  Cargo ビルド時に C／Clang／Python を追加実行する方式は採用しない。
+- `scripts/check-runtime-includes.sh` が include_str! の対象を抽出し、存在・Git 追跡・ignore の三点を検査する。
+  既存 CI がないため明示スクリプトと README／architecture の検証コマンドへ統合した。
+- 同梱 IR の再生成は Apple clang 21（`TSUZURI_CLANG=/usr/bin/clang python3 src/runtime/generate.py`）を使う。
+  Clang 23 の新属性／intrinsic は LLVM 17 互換でないため、単純な文字列差分の取り込みはしない。
+  生成アルゴリズムの変更はこの追跡修正と分離し、D01 等の担当チケットで行う。

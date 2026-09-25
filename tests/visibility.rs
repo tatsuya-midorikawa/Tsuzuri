@@ -168,11 +168,11 @@ fn private_is_a_keyword_and_only_precedes_def_or_record() {
         ("Main", "private 42"),
         (
             "Classes.tt",
-            "private class Show 'a { def show :: 'a -> i64 }",
+            "private class Show<'a> { def show :: 'a -> i64 }",
         ),
         (
             "Main",
-            "record T { x: i64 }\nprivate instance Add T { fn add a b = a }",
+            "record T { x: i64 }\nprivate instance Add<T> { fn add a b = a }",
         ),
     ] {
         let error = rejects(&[(name, source)], "E1022");
@@ -282,7 +282,7 @@ fn rejects_private_types_leaking_from_public_declarations() {
          private record Box { token: Token }
          private def make :: Token
          fn make = Token { value: 1 }
-         instance Add Token { fn add left right = Token { value: left.value + right.value } }",
+         instance Add<Token> { fn add left right = Token { value: left.value + right.value } }",
     )]);
 }
 

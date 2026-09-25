@@ -188,8 +188,8 @@ fn lists_specialize_across_modules_and_type_classes() {
             "Lists",
             "def identity :: [|'a|] -> [|'a|]\nfn identity a = a
                    def generate :: i64 -> (i64 -> 'a) -> [|'a|]\nfn generate n f = new [|'a|](n, f)
-                   class Size 'a { def size :: 'a -> i64 }
-                   instance Size [|i32|] { fn size a = a.length }",
+                   class Size<'a> { def size :: 'a -> i64 }
+                   instance Size<[|i32|]> { fn size a = a.length }",
         ),
         (
             "Main",

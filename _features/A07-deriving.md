@@ -24,7 +24,7 @@
 - `src/polymorph.rs` の `Classes::collect` は組み込みクラスとして `Add`, `Sub`, `Eq`, `Ord`, `Copy`, `Capture`, `Send` 等を登録するが、`Hash`/`Default` はない。
 - `Classes::instances` は user-written `InstanceDecl` から `$instance.<id>.<method>` 関数を合成して `function_declarations` へ追加する。この流れを deriving の合成 AST に再利用できる。
 - `Type::is_copy` は構造的 Copy を既に持つが、`Eq`/`Ord` はレコード/配列/リスト/関数に組み込みではない。A06 で配列/リスト/タプルの条件付き `Eq`/`Ord` が追加される前提。
-- D01 は `Display 'a { def display :: &'a -> string }` と `to_string` を提供する前提。
+- D01 は `Display<'a> { def display :: &'a -> string }` と `to_string` を提供する前提。
 
 ## 仕様
 
@@ -32,10 +32,12 @@
 
 ```text
 record-declaration ::=
-    "record" type-name type-parameter* "{" field-list? "}" deriving-clause?
+    "record" type-name type-parameters? "{" field-list? "}" deriving-clause?
 
 union-declaration ::=
-    "union" type-name type-parameter* "=" union-cases deriving-clause?
+    "union" type-name type-parameters? "=" union-cases deriving-clause?
+
+type-parameters ::= "<" type-variable ("," type-variable)* ","? ">"
 
 deriving-clause ::=
     "deriving" "(" derive-class ("," derive-class)* ","? ")"
@@ -82,7 +84,7 @@ union Shape =
   - 単一 payload: `Some 42`
   - タプル payload: `Rect (1, 2)`
   - record payload: `Named Point { x: 1, y: 2 }`
-- 構造内の string/char は **リテラル風に quote する**。standalone `Display string` が raw 文字列を返す D01 仕様と区別し、derived structural display では曖昧さを避ける。
+- 構造内の string/char は **リテラル風に quote する**。standalone `Display<string>` が raw 文字列を返す D01 仕様と区別し、derived structural display では曖昧さを避ける。
   - string は前後に `"` を付ける。各 Unicode scalar を順に処理し、`"` は `\"`、`\` は `\\`、LF/CR/TAB/NUL は `\n`/`\r`/`\t`/`\0`、その他の `U+0000..U+001F` と `U+007F` は uppercase hex の `\u{HEX}`、それ以外は UTF-8 のまま出力する。
   - char は前後に `'` を付ける。`'` は `\'`、`\` は `\\`、LF/CR/TAB/NUL は `\n`/`\r`/`\t`/`\0`、その他の `U+0000..U+001F` と `U+007F` は `\u{HEX}`、それ以外はその scalar の UTF-8 を出力する。
 - quote 処理は A07 が所有する compiler-internal builtin として実装する。利用者からは見えない `$builtin.display_quoted_string : &string -> string` と `$builtin.display_quoted_char : &char -> string` を追加し、derived Display だけが呼ぶ。D02 の文字列 API には依存しない。
@@ -93,7 +95,7 @@ union Shape =
 このチケットで組み込みクラスを追加する。
 
 ```text
-class Hash 'a {
+class Hash<'a> {
     def hash :: &'a -> i64u
 }
 ```
@@ -131,7 +133,7 @@ mix(h, byte) = (h ^ byte) * prime   // i64u wrapping multiplication
 このチケットで組み込みクラスを追加する。
 
 ```text
-class Default 'a {
+class Default<'a> {
     def default :: 'a
 }
 ```
@@ -220,16 +222,16 @@ fn synthesize_derives(
 レコード `Point { x: i64, y: i64 } deriving (Eq)`。A11 により `left`/`right` は `&Point`:
 
 ```text
-instance Eq Point {
+instance Eq<Point> {
     fn eq left right = Eq.eq (&left.x) (&right.x) && Eq.eq (&left.y) (&right.y)
     fn ne left right = !(Eq.eq left right)
 }
 ```
 
-generic record `Box 'a { value: 'a } deriving (Eq)` は A06 を使う。`left`/`right` は `&(Box 'a)`:
+generic record `Box<'a> { value: 'a } deriving (Eq)` は A06 を使う。`left`/`right` は `&(Box<'a>)`:
 
 ```text
-instance Eq 'a => Eq (Box 'a) {
+instance Eq<'a> => Eq<Box<'a>> {
     fn eq left right = Eq.eq (&left.value) (&right.value)
     fn ne left right = !(Eq.eq left right)
 }
@@ -237,15 +239,15 @@ instance Eq 'a => Eq (Box 'a) {
 
 `Ord` も同じく field/payload を明示的に借用して既存 method を呼ぶ。例えば `le` の default を使わずに生成する場合、`fn le left right = Ord.lt left right || Eq.eq left right` のように borrowed parameter 自体を渡し、逆向き比較は `Ord.lt right left` を使う。field 比較では `Ord.lt (&left.x) (&right.x)`、等価判定では `Eq.eq (&left.x) (&right.x)` を使い、`left == right` のように `&Record` 自体へ演算子を適用しない。
 
-union `Option 'a = None | Some of 'a deriving (Default)`:
+union `Option<'a> = None | Some of 'a deriving (Default)`:
 
 ```text
-instance Default (Option 'a) {
+instance Default<Option<'a>> {
     fn default = None
 }
 ```
 
-`Some` が最初の case で payload `'a` を持つなら `Default 'a => Default (Option 'a)` とし、`Some Default.default()` を生成する。
+`Some` が最初の case で payload `'a` を持つなら `Default<'a> => Default<Option<'a>>` とし、`Some Default.default()` を生成する。
 
 ### LLVM IR 形
 
@@ -285,8 +287,8 @@ instance Default (Option 'a) {
 - A11: `Eq`/`Ord` の借用シグネチャと非消費の比較演算子。
 - A06: conditional instance、superclass、default method、組み込み配列/リスト/タプル `Eq`/`Ord`。
 - A02: `Type::Union(usize, Vec<Type>)`、union case metadata、tag/payload lowering、case constructor/pattern。
-- D01: `Display 'a { def display :: &'a -> string }`、string 連結/formatting helper、`to_string`。
-- A08: `char` がある場合、Hash/Default の primitive instance と quoted char display builtin の入力型を追加する。standalone `Display char` は D01 が所有する。
+- D01: `Display<'a> { def display :: &'a -> string }`、string 連結/formatting helper、`to_string`。
+- A08: `char` がある場合、Hash/Default の primitive instance と quoted char display builtin の入力型を追加する。standalone `Display<char>` は D01 が所有する。
 
 ### 他チケットへの提供インターフェース
 
@@ -336,14 +338,14 @@ fn main = {
 ```
 
 ```text
-union Option 'a = None | Some of 'a deriving (Eq, Display, Default)
+union Option<'a> = None | Some of 'a deriving (Eq, Display, Default)
 def main :: bool
 fn main = Some 42 == Some 42 && Default.default() == None
 ```
 
 ```text
-record Box 'a { value: 'a } deriving (Eq, Hash)
-def same :: Eq 'a => Box 'a -> Box 'a -> bool
+record Box<'a> { value: 'a } deriving (Eq, Hash)
+def same :: Eq<'a> => Box<'a> -> Box<'a> -> bool
 fn same x y = x == y
 ```
 
@@ -352,9 +354,9 @@ fn same x y = x == y
 | プログラム | 期待 |
 |---|---|
 | `record R { f: i64 -> i64 } deriving (Eq)` | `E1025` |
-| `record R { t: Task i64 } deriving (Default)` | `E1025` |
+| `record R { t: Task<i64> } deriving (Default)` | `E1025` |
 | `record R { x: i64 } deriving (Eq, Eq)` | `E1001` |
-| user `instance Eq R` と `deriving (Eq)` の併用 | `E1016` |
+| user `instance Eq<R>` と `deriving (Eq)` の併用 | `E1016` |
 | component に `Display` がない型で `deriving (Display)` | `E1025` |
 | union 全 case が payload default 不可で `Default` | `E1025` |
 
@@ -412,4 +414,4 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 
 - **D-20/A11 で決定済み:** `Eq`/`Ord` は借用シグネチャで、derived comparison は呼び出し元の値を消費しない。A07 では追加の台帳見直しを提案しない。
 - **既定案: union Default は最初の case。** 別 case を指定する構文は導入しない。
-- **既定案: derived Display は structural context で string/char を quote する。** D01 の standalone `Display string` は raw のまま。
+- **既定案: derived Display は structural context で string/char を quote する。** D01 の standalone `Display<string>` は raw のまま。

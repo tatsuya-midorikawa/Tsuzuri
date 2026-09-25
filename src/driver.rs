@@ -224,6 +224,10 @@ impl Project {
     }
 
     pub fn analyze(&self) -> Result<CheckedModule, Diagnostic> {
+        self.analyze_all().map_err(crate::first_error)
+    }
+
+    pub fn analyze_all(&self) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         let sources: Vec<_> = self
             .sources
             .iter()
@@ -236,7 +240,7 @@ impl Project {
                 origin: source.origin,
             })
             .collect();
-        crate::analyze_inputs(&sources)
+        crate::analyze_inputs_all(&sources)
     }
 }
 
@@ -808,7 +812,7 @@ mod tests {
                 ),
                 (
                     "Classes.tt",
-                    "class Score 'a { def score :: 'a -> i64 }\nclass Size 'a { def size :: 'a -> i64 }",
+                    "class Score<'a> { def score :: 'a -> i64 }\nclass Size<'a> { def size :: 'a -> i64 }",
                 ),
                 ("Ignored.tzr", "not a supported source"),
             ],
@@ -890,7 +894,7 @@ mod tests {
         .unwrap();
         fs::write(
             directory.path.join("Classes.tt"),
-            "class Wrong 'a { def value :: 'b -> 'b }",
+            "class Wrong<'a> { def value :: 'b -> 'b }",
         )
         .unwrap();
         let project = Project::load(&directory.path).unwrap();
@@ -975,7 +979,7 @@ mod tests {
             &[
                 ("Main.tz", "Other.value()"),
                 ("Other.tz", "fn value() -> i64 { 42 }"),
-                ("Traits.tt", "class Score 'a { def score :: 'a -> i64 }"),
+                ("Traits.tt", "class Score<'a> { def score :: 'a -> i64 }"),
                 (
                     "Builder.tc",
                     "def Return :: 'a -> 'a\nfn Return value = value",

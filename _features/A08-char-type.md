@@ -94,7 +94,7 @@ E02 の std module 機構で `Char` モジュールを追加する。実装形�
 |---|---|---|
 | `Char.to_u32` | `char -> i32u` | scalar value を返す |
 | `Char.of_u32_unchecked` | `i32u -> char` | valid scalar なら char、範囲外/surrogate は trap |
-| `Char.of_u32` | `i32u -> Option char` | B01 完了後。invalid は `None` |
+| `Char.of_u32` | `i32u -> Option<char>` | B01 完了後。invalid は `None` |
 | `Char.is_ascii_digit` | `char -> bool` | `0`..`9` |
 | `Char.is_ascii_alphabetic` | `char -> bool` | `A`..`Z` or `a`..`z` |
 | `Char.is_ascii_lower` | `char -> bool` | `a`..`z` |
@@ -107,15 +107,15 @@ B01 が未完了の環境では `Char.of_u32` は提供しない。`Char.of_u32_
 ### パターン・match
 
 - char literal は constant pattern として使える。
-- `match c with | 'a' -> ... | '\n' -> ... | _ -> ...` は `Eq char` による通常比較。
+- `match c with | 'a' -> ... | '\n' -> ... | _ -> ...` は `Eq<char>` による通常比較。
 - `llvm_control::switch_cases` は `Type::Char` を `i32` switch/table 化対象に加える。
 - 範囲・文字クラス pattern は導入しない。
 
 ### コンソールと表示クラス
 
 - `console_main` は entry result `char` を UTF-8 に encode して改行付きで出力する。`unit` と違い出力する。
-- D01 が既に実装済みのブランチで A08 を入れる場合は、D01 の `Display char`/`Parse char` を同時に登録する。D01 が未実装なら A08 は `Display`/`Parse` を追加せず、console output と `Char` module だけを実装する。
-- D01 の `Display char` は同じ UTF-8 encoding を使い、quote しない単一文字の string を返す。derived Display の quote は A07 側。
+- D01 が既に実装済みのブランチで A08 を入れる場合は、D01 の `Display<char>`/`Parse<char>` を同時に登録する。D01 が未実装なら A08 は `Display`/`Parse` を追加せず、console output と `Char` module だけを実装する。
+- D01 の `Display<char>` は同じ UTF-8 encoding を使い、quote しない単一文字の string を返す。derived Display の quote は A07 側。
 - invalid scalar は型検査/変換で作れないため、LLVM 側で default replacement character に置換しない。
 
 ### 文字列との関係
@@ -273,8 +273,8 @@ br i1 %valid, label %ok, label %trap
 ### 前提とする他チケットのインターフェース
 
 - E02: `Char` module を標準ライブラリまたは builtin namespace として予約し、`Char.to_u32` 形式で解決できる。
-- B01: `Option char` が利用可能なら `Char.of_u32` を追加する。B01 未完了では `Char.of_u32_unchecked` のみ。
-- D01: D01 が完了済みなら `Display char`/`Parse char` を登録する。D01 未完了のブランチで A08 だけを実装する場合、`console_main` の char 出力と `Char` module だけを入れ、Display/Parse class instance は D01 側で有効化する。
+- B01: `Option<char>` が利用可能なら `Char.of_u32` を追加する。B01 未完了では `Char.of_u32_unchecked` のみ。
+- D01: D01 が完了済みなら `Display<char>`/`Parse<char>` を登録する。D01 未完了のブランチで A08 だけを実装する場合、`console_main` の char 出力と `Char` module だけを入れ、Display/Parse class instance は D01 側で有効化する。
 
 ### 他チケットへの提供インターフェース
 
@@ -386,7 +386,7 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 - [ ] D01 が同じブランチにある場合だけ `Display`/`Parse` for char が追加される。
 - [ ] A07 が同じブランチにある場合だけ `Hash`/`Default` for char が追加される。
 - [ ] `Char.to_u32`, `Char.of_u32_unchecked`, ASCII helpers が動く。
-- [ ] B01 完了時だけ `Char.of_u32 : i32u -> Option char` が提供される。
+- [ ] B01 完了時だけ `Char.of_u32 : i32u -> Option<char>` が提供される。
 - [ ] match char が `switch i32` に lower されるケースを持つ。
 - [ ] native console が UTF-8 で char result を出力し、WASM は imports を増やさない。
 - [ ] `console_main` の entry-type 診断文が `char` を含み、char console IR が `@tz.console.write` 連結経路を重複させない。

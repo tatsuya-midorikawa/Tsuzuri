@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};
 use crate::syntax::*;
 
 #[path = "closures.rs"]
@@ -21,6 +21,7 @@ pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
+    Error,
     Variable(String),
     Infer(usize),
     Integer(u16, bool),
@@ -61,6 +62,9 @@ impl Type {
     }
 
     pub(crate) fn after_arguments(&self, count: usize) -> Self {
+        if self.contains_error() {
+            return Self::Error;
+        }
         let Self::Function(parameters, result) = self else {
             unreachable!()
         };
@@ -73,6 +77,7 @@ impl Type {
 
     pub fn display(&self, types: &TypeContext<'_>) -> String {
         match self {
+            Self::Error => "an erroneous type".into(),
             Self::Variable(name) => format!("'{name}"),
             Self::Infer(_) => "an undetermined type".into(),
             Self::Integer(bits, signed) => format!("i{bits}{}", if *signed { "" } else { "u" }),
@@ -83,7 +88,7 @@ impl Type {
             Self::String => "string".into(),
             Self::Reference(ty, mutable) => {
                 let inner = ty.display(types);
-                let inner = if matches!(**ty, Self::Function(..)) || ty.is_applied() {
+                let inner = if matches!(**ty, Self::Function(..)) {
                     format!("({inner})")
                 } else {
                     inner
@@ -95,9 +100,16 @@ impl Type {
                     Self::Record(..) => types.records[*id].name.clone(),
                     _ => types.unions[*id].name.clone(),
                 };
-                for arg in args {
-                    text.push(' ');
-                    text.push_str(&arg.display_argument(types));
+                if !args.is_empty() {
+                    text.push('<');
+                    text.push_str(
+                        &args
+                            .iter()
+                            .map(|arg| arg.display(types))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    text.push('>');
                 }
                 text
             }
@@ -120,14 +132,7 @@ impl Type {
                     .collect::<Vec<_>>()
                     .join(" * ")
             ),
-            Self::Task(result) => {
-                let inner = result.display(types);
-                if matches!(**result, Self::Function(..)) || result.is_applied() {
-                    format!("Task ({inner})")
-                } else {
-                    format!("Task {inner}")
-                }
-            }
+            Self::Task(result) => format!("Task<{}>", result.display(types)),
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -149,22 +154,18 @@ impl Type {
         }
     }
 
-    /// A named type with type arguments, which needs parentheses as an argument.
-    fn is_applied(&self) -> bool {
-        matches!(self, Self::Record(_, args) | Self::Union(_, args) if !args.is_empty())
-    }
-
-    fn display_argument(&self, types: &TypeContext<'_>) -> String {
-        let text = self.display(types);
-        if self.is_applied()
-            || matches!(
-                self,
-                Self::Function(..) | Self::Reference(..) | Self::Task(_)
-            )
-        {
-            format!("({text})")
-        } else {
-            text
+    pub fn contains_error(&self) -> bool {
+        match self {
+            Self::Error => true,
+            Self::Array(ty) | Self::List(ty) | Self::Task(ty) | Self::Reference(ty, _) => {
+                ty.contains_error()
+            }
+            Self::Function(parameters, result) => {
+                parameters.iter().any(Self::contains_error) || result.contains_error()
+            }
+            Self::Tuple(elements) => elements.iter().any(Self::contains_error),
+            Self::Record(_, args) | Self::Union(_, args) => args.iter().any(Self::contains_error),
+            _ => false,
         }
     }
 
@@ -408,14 +409,17 @@ pub enum Builtin {
     TaskParallel,
     /// `unreachable : unit -> 'a` traps (GUIDE D-21).
     Unreachable,
-    /// Test-only `Int.test_add : Integer 'a => 'a -> 'a -> 'a` exercises
+    ToString,
+    Display,
+    Parse,
+    /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
     TestAdd,
-    /// Test-only `Int.test_unsigned : Integer 'a => 'a -> UnsignedOf 'a`.
+    /// Test-only `Int.test_unsigned : Integer<'a> => 'a -> UnsignedOf<'a>`.
     #[cfg(test)]
     TestUnsigned,
-    /// Test-only `Int.test_widen : Integer 'a => 'a -> WidenOf 'a`.
+    /// Test-only `Int.test_widen : Integer<'a> => 'a -> WidenOf<'a>`.
     #[cfg(test)]
     TestWiden,
 }
@@ -427,7 +431,7 @@ pub enum BuiltinType {
     Var(&'static str),
     /// A primitive, `bool`, `unit`, or `string` type; never a project id.
     Concrete(Type),
-    /// A std-origin record or union, such as `Option.Option 'a`.
+    /// A std-origin record or union, such as `Option.Option<'a>`.
     Std {
         module: &'static str,
         name: &'static str,
@@ -481,6 +485,9 @@ impl Builtin {
         Self::TaskRun,
         Self::TaskParallel,
         Self::Unreachable,
+        Self::ToString,
+        Self::Display,
+        Self::Parse,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -504,6 +511,9 @@ impl Builtin {
             Self::TaskRun => "Task.run",
             Self::TaskParallel => "Task.parallel",
             Self::Unreachable => "unreachable",
+            Self::ToString => "to_string",
+            Self::Display => "$builtin.display",
+            Self::Parse => "$builtin.parse",
             #[cfg(test)]
             Self::TestAdd => "Int.test_add",
             #[cfg(test)]
@@ -540,6 +550,28 @@ impl Builtin {
                 Vec::new(),
             ),
             Self::Unreachable => (vec![Concrete(Type::Unit)], a(), Vec::new()),
+            Self::ToString => (
+                vec![a()],
+                Concrete(Type::String),
+                vec![BuiltinConstraint {
+                    class: "Display",
+                    ty: a(),
+                }],
+            ),
+            Self::Display => (
+                vec![Reference(Box::new(a()), false)],
+                Concrete(Type::String),
+                Vec::new(),
+            ),
+            Self::Parse => (
+                vec![Reference(Box::new(Concrete(Type::String)), false)],
+                BuiltinType::Std {
+                    module: "Option",
+                    name: "Option",
+                    args: vec![a()],
+                },
+                Vec::new(),
+            ),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -827,6 +859,7 @@ impl TypedMatchArm {
 
 #[derive(Clone, Debug)]
 pub enum TypedExprKind {
+    Error,
     Int(u128),
     Float(String),
     String(String),
@@ -897,7 +930,7 @@ pub enum TypedExprKind {
     Dereference(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
-    /// A case used as a function value, `Some : 'a -> Option 'a`. After
+    /// A case used as a function value, `Some : 'a -> Option<'a>`. After
     /// specialization `closures::lower` replaces it with a generated function.
     CaseConstructor {
         union_id: usize,
@@ -920,6 +953,14 @@ pub enum TypedExprKind {
 }
 
 impl TypedExpr {
+    fn error(span: Span) -> Self {
+        Self {
+            kind: TypedExprKind::Error,
+            ty: Type::Error,
+            span,
+        }
+    }
+
     pub(crate) fn children(&self) -> Vec<&Self> {
         use TypedExprKind::*;
         match &self.kind {
@@ -1162,7 +1203,7 @@ impl<'a> NamedType<'a> {
     }
 }
 
-/// What the head of a type application such as `Add 'a` or `Pair i64 string` names.
+/// What the head of a type application such as `Add<'a>` or `Pair<i64, string>` names.
 enum TypeHead<'a> {
     Class,
     Type(NamedType<'a>),
@@ -1741,9 +1782,30 @@ fn validate_public_type(
 }
 
 pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagnostic> {
+    check_modules_all(modules).map_err(crate::first_error)
+}
+
+pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
+    let mut diagnostics = Diagnostics::new(0);
+    match check_modules_collect(modules, &mut diagnostics) {
+        Ok(module) => Ok(module),
+        Err(error) => {
+            diagnostics.push(error);
+            Err(diagnostics.finish())
+        }
+    }
+}
+
+fn check_modules_collect(
+    modules: &[ModuleInput<'_>],
+    diagnostics: &mut Diagnostics,
+) -> Result<CheckedModule, Diagnostic> {
     let mut names = Names::default();
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
+        if diagnostics.is_full() {
+            break;
+        }
         let name = module.name;
         let reserved = |at: usize| {
             Diagnostic::new(
@@ -1755,7 +1817,8 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             )
         };
         if module.origin == ModuleOrigin::User && crate::stdlib::is_reserved_module(name) {
-            return Err(reserved(source));
+            diagnostics.push(reserved(source));
+            continue;
         }
         let valid = crate::lexer::lex(name).is_ok_and(|tokens| {
             matches!(
@@ -1774,20 +1837,24 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             } else {
                 previous
             };
-            return Err(reserved(at));
+            diagnostics.push(reserved(at));
+            continue;
         }
         if !valid || previous.is_some() {
-            return Err(Diagnostic::new(
+            diagnostics.push(Diagnostic::new(
                 "E1011",
                 format!(
                     "invalid or duplicate module name '{name}'; each .tz, .tt, or .tc filename must have a unique ASCII identifier stem, not '_', 'Task', or a keyword"
                 ),
                 Span::default().in_source(source),
             ));
+            continue;
         }
         names.modules.insert(name.to_owned(), module.origin);
     }
-    names.builders = computation::collect(modules)?;
+    diagnostics.check()?;
+    names.builders = computation::collect_all(modules, diagnostics);
+    diagnostics.check()?;
     let record_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -1809,6 +1876,9 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
         })
         .collect();
     for (id, (module, record)) in record_declarations.iter().enumerate() {
+        if diagnostics.is_full() {
+            break;
+        }
         let qualified = format!("{module}.{}", record.name.text);
         let info = NameInfo {
             id,
@@ -1822,7 +1892,8 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             || polymorph::BUILTIN_CLASSES.contains(&record.name.text.as_str())
             || names.records.insert(qualified.clone(), info).is_some()
         {
-            return Err(duplicate(&record.name));
+            diagnostics.push(duplicate(&record.name));
+            continue;
         }
         names
             .record_aliases
@@ -1831,6 +1902,7 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             .push(qualified);
         names.record_arities.push(record.parameters.len());
     }
+    diagnostics.check()?;
     let union_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -1841,8 +1913,8 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
                 .map(|union| (module.name, union))
         })
         .collect();
-    collect_unions(&union_declarations, &mut names)?;
-    // Classes, records, and unions share one type namespace, so `Name 'a` always has one meaning.
+    collect_unions(&union_declarations, &mut names, diagnostics)?;
+    // Classes, records, and unions share one type namespace, so `Name<'a>` always has one meaning.
     names.classes.extend(
         polymorph::BUILTIN_CLASSES
             .iter()
@@ -1851,8 +1923,14 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
     for module in modules {
         for class in &module.program.classes {
             let qualified = format!("{}.{}", module.name, class.name.text);
-            if names.records.contains_key(&qualified) || names.unions.contains_key(&qualified) {
-                return Err(duplicate(&class.name));
+            if names.records.contains_key(&qualified)
+                || names.unions.contains_key(&qualified)
+                || names.classes.contains(&qualified)
+                || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
+                || matches!(class.name.text.as_str(), "_" | "Task")
+            {
+                diagnostics.push(duplicate(&class.name));
+                continue;
             }
             names.classes.insert(qualified.clone());
             names
@@ -1862,73 +1940,90 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
                 .push(qualified);
         }
     }
+    diagnostics.check()?;
     let mut records = Vec::new();
     for (module, record) in &record_declarations {
-        let qualified = format!("{module}.{}", record.name.text);
-        let parameters = declared_parameters("record", &record.name.text, &record.parameters)?;
-        let mut used = BTreeSet::new();
-        let mut field_names = BTreeSet::new();
-        let mut fields = Vec::new();
-        for field in &record.fields {
-            if !field_names.insert(&field.name.text) || field.name.text == "_" {
-                return Err(duplicate(&field.name));
-            }
-            reject_field_constraints(&field.ty, module, &names, "record")?;
-            let ty = resolve_type(&field.ty, module, &names)?;
-            if record.visibility == Visibility::Public {
-                validate_public_type(&field.ty, module, ("record", &qualified), &names)?;
-            }
-            polymorph::bounded_type(&ty, field.ty.span)?;
-            for variable in polymorph::variables(&ty) {
-                if !parameters.contains(&variable) {
+        if diagnostics.is_full() {
+            break;
+        }
+        let checked = (|| {
+            let qualified = format!("{module}.{}", record.name.text);
+            let parameters = declared_parameters("record", &record.name.text, &record.parameters)?;
+            let mut used = BTreeSet::new();
+            let mut field_names = BTreeSet::new();
+            let mut fields = Vec::new();
+            for field in &record.fields {
+                if !field_names.insert(&field.name.text) || field.name.text == "_" {
+                    return Err(duplicate(&field.name));
+                }
+                reject_field_constraints(&field.ty, module, &names, "record")?;
+                let ty = resolve_type(&field.ty, module, &names)?;
+                if record.visibility == Visibility::Public {
+                    validate_public_type(&field.ty, module, ("record", &qualified), &names)?;
+                }
+                polymorph::bounded_type(&ty, field.ty.span)?;
+                for variable in polymorph::variables(&ty) {
+                    if !parameters.contains(&variable) {
+                        return Err(Diagnostic::new(
+                            "E1024",
+                            format!(
+                                "type variable '{variable} is not declared by record '{}'; add it in angle brackets after the record name, as in 'record {}<'{variable}> {{ ... }}'",
+                                record.name.text, record.name.text
+                            ),
+                            field.ty.span,
+                        ));
+                    }
+                    used.insert(variable);
+                }
+                if field.mutable || ty.contains_reference() {
                     return Err(Diagnostic::new(
-                        "E1024",
-                        format!(
-                            "type variable '{variable} is not declared by record '{}'; add it after the record name, as in 'record {} '{variable} {{ ... }}'",
-                            record.name.text, record.name.text
-                        ),
-                        field.ty.span,
+                        "E1013",
+                        "record fields are immutable owned values; borrowed fields require lifetime parameters, which are not supported",
+                        field.name.span,
                     ));
                 }
-                used.insert(variable);
+                fields.push((field.name.text.clone(), ty));
             }
-            if field.mutable || ty.contains_reference() {
+            if let Some(parameter) = record
+                .parameters
+                .iter()
+                .find(|parameter| !used.contains(&parameter.text))
+            {
                 return Err(Diagnostic::new(
-                    "E1013",
-                    "record fields are immutable owned values; borrowed fields require lifetime parameters, which are not supported",
-                    field.name.span,
+                    "E1024",
+                    format!(
+                        "type parameter '{} is not used by any field; remove it or add a field that mentions it",
+                        parameter.text
+                    ),
+                    parameter.span,
                 ));
             }
-            fields.push((field.name.text.clone(), ty));
+            Ok(CheckedRecord {
+                name: qualified,
+                visibility: record.visibility,
+                origin: names.origin(module),
+                parameters,
+                fields,
+                span: record.name.span,
+                size: None,
+            })
+        })();
+        match checked {
+            Ok(record) => records.push(record),
+            Err(error) => diagnostics.push(error),
         }
-        if let Some(parameter) = record
-            .parameters
-            .iter()
-            .find(|parameter| !used.contains(&parameter.text))
-        {
-            return Err(Diagnostic::new(
-                "E1024",
-                format!(
-                    "type parameter '{} is not used by any field; remove it or add a field that mentions it",
-                    parameter.text
-                ),
-                parameter.span,
-            ));
-        }
-        records.push(CheckedRecord {
-            name: qualified,
-            visibility: record.visibility,
-            origin: names.origin(module),
-            parameters,
-            fields,
-            span: record.name.span,
-            size: None,
-        });
     }
     let mut unions = Vec::new();
     for (module, union) in &union_declarations {
-        unions.push(check_union(module, union, &names)?);
+        if diagnostics.is_full() {
+            break;
+        }
+        match check_union(module, union, &names) {
+            Ok(union) => unions.push(union),
+            Err(error) => diagnostics.push(error),
+        }
     }
+    diagnostics.check()?;
     // Generic declarations are measured with their own parameters as opaque
     // leaves, which rejects every recursive layout before any instance exists.
     let mut layouts = Layouts::new(TypeContext {
@@ -1942,7 +2037,13 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             .cloned()
             .map(Type::Variable)
             .collect();
-        layouts.size(&Type::Record(id, parameters), 0, record.span)?;
+        if let Err(error) = layouts.size(&Type::Record(id, parameters), 0, record.span) {
+            diagnostics.push(error);
+            layouts.visiting.clear();
+        }
+        if diagnostics.is_full() {
+            break;
+        }
     }
     for (id, union) in unions.iter().enumerate() {
         let parameters = union
@@ -1951,8 +2052,15 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             .cloned()
             .map(Type::Variable)
             .collect();
-        layouts.size(&Type::Union(id, parameters), 0, union.span)?;
+        if let Err(error) = layouts.size(&Type::Union(id, parameters), 0, union.span) {
+            diagnostics.push(error);
+            layouts.visiting.clear();
+        }
+        if diagnostics.is_full() {
+            break;
+        }
     }
+    diagnostics.check()?;
     let record_sizes: Vec<_> = (0..records.len())
         .map(|id| {
             layouts
@@ -1976,19 +2084,39 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
     };
     for record in &records {
         for (_, ty) in &record.fields {
-            validate_size(ty, &types, record.span)?;
+            if let Err(error) = validate_size(ty, &types, record.span) {
+                diagnostics.push(error);
+            }
+        }
+        if diagnostics.is_full() {
+            break;
         }
     }
     for union in &unions {
         for ty in union.cases.iter().filter_map(|(_, ty)| ty.as_ref()) {
-            validate_size(ty, &types, union.span)?;
+            if let Err(error) = validate_size(ty, &types, union.span) {
+                diagnostics.push(error);
+            }
+        }
+        if diagnostics.is_full() {
+            break;
         }
     }
+    diagnostics.check()?;
     let mut export_names = BTreeSet::new();
-    let mut classes = Classes::collect(modules, &names, &types)?;
-    classes.instances(modules, &names, &types, &mut function_declarations)?;
+    let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
+    classes.instances(
+        modules,
+        &names,
+        &types,
+        &mut function_declarations,
+        diagnostics,
+    )?;
     let mut signatures = Vec::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
+        if diagnostics.is_full() {
+            break;
+        }
         let qualified = format!("{module}.{}", function.name.text);
         let info = NameInfo {
             id,
@@ -2003,113 +2131,128 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
             || names.cases.contains_key(&qualified)
             || names.functions.insert(qualified.clone(), info).is_some()
         {
-            return Err(duplicate(&function.name));
+            diagnostics.push(duplicate(&function.name));
         }
-        // Instance methods are reached only through class dispatch, so an
-        // instance for a private type does not publish that type.
-        let public = function.visibility == Visibility::Public
-            && !function.name.text.starts_with("$instance.");
-        let owner = display_function_name(module, &function.name.text);
-        if public {
+    }
+    diagnostics.check()?;
+    for (module, function) in &function_declarations {
+        if diagnostics.is_full() {
+            diagnostics.check()?;
+        }
+        let checked = (|| {
+            // Instance methods are reached only through class dispatch, so an
+            // instance for a private type does not publish that type.
+            let public = function.visibility == Visibility::Public
+                && !function.name.text.starts_with("$instance.");
+            let owner = display_function_name(module, &function.name.text);
+            if public {
+                for ty in function
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.ty)
+                    .chain(std::iter::once(&function.result))
+                    .chain(function.constraints.iter().map(|constraint| &constraint.ty))
+                {
+                    validate_public_type(ty, module, ("function", &owner), &names)?;
+                }
+            }
+            if function.exported && names.origin(module) == ModuleOrigin::Std {
+                return Err(Diagnostic::new(
+                    "E1018",
+                    "the standard library cannot export functions; std modules add no C/WASM exports",
+                    function.name.span,
+                ));
+            }
+            if function.exported && function.name.text.starts_with("$active.") {
+                return Err(Diagnostic::new(
+                    "E1008",
+                    "active recognizers cannot be exported; expose an ordinary wrapper",
+                    function.name.span,
+                ));
+            }
+            if function.exported && !export_names.insert(&function.name.text) {
+                return Err(Diagnostic::new(
+                    "E1001",
+                    format!(
+                        "duplicate export 'tz_{}'; C/WASM export names must be unique across modules",
+                        function.name.text
+                    ),
+                    function.name.span,
+                ));
+            }
+            let mut parameter_names = BTreeSet::new();
+            let mut parameters = Vec::new();
+            for parameter in &function.parameters {
+                if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
+                    return Err(duplicate(&parameter.name));
+                }
+                let ty = resolve_type(&parameter.ty, module, &names)?;
+                validate_size(&ty, &types, parameter.ty.span)?;
+                parameters.push(ty);
+            }
+            let result = resolve_type(&function.result, module, &names)?;
+            validate_size(&result, &types, function.result.span)?;
+            let public_type = Type::function(parameters.clone(), result.clone());
+            let Type::Function(public_parameters, public_result) = &public_type else {
+                unreachable!()
+            };
+            if function.exported
+                && (public_parameters.iter().any(|ty| !ty.exportable())
+                    || (!public_result.exportable() && **public_result != Type::Unit))
+            {
+                return Err(Diagnostic::new(
+                    "E1008",
+                    "exports support 8/16/32/64-bit integers, f32, f64, bool, and unit results; keep wide/software numbers, strings, references, aggregates, and function values inside Tsuzuri",
+                    function.name.span,
+                ));
+            }
+            let signature = Signature { parameters, result };
+            signature.validate_borrows(&types, function.result.span)?;
+            polymorph::bounded_type(&signature.as_type(), function.name.span)?;
+            let variables = polymorph::variables(&signature.as_type());
+            let mut constraints: Vec<_> = function
+                .constraints
+                .iter()
+                .map(|constraint| {
+                    let class = classes.resolve(&names, module, &constraint.class)?;
+                    let ty = resolve_type(&constraint.ty, module, &names)?;
+                    if polymorph::variables(&ty)
+                        .iter()
+                        .any(|variable| !variables.contains(variable))
+                    {
+                        return Err(Diagnostic::new(
+                            "E1015",
+                            "constraint mentions a type variable absent from the signature",
+                            constraint.ty.span,
+                        ));
+                    }
+                    Ok(Constraint {
+                        class,
+                        ty,
+                        span: constraint.class.span,
+                    })
+                })
+                .collect::<Result<_, Diagnostic>>()?;
             for ty in function
                 .parameters
                 .iter()
                 .map(|parameter| &parameter.ty)
                 .chain(std::iter::once(&function.result))
-                .chain(function.constraints.iter().map(|constraint| &constraint.ty))
             {
-                validate_public_type(ty, module, ("function", &owner), &names)?;
+                constraints.extend(classes.inline_constraints(ty, module, &names)?);
             }
-        }
-        if function.exported && names.origin(module) == ModuleOrigin::Std {
-            return Err(Diagnostic::new(
-                "E1018",
-                "the standard library cannot export functions; std modules add no C/WASM exports",
-                function.name.span,
-            ));
-        }
-        if function.exported && function.name.text.starts_with("$active.") {
-            return Err(Diagnostic::new(
-                "E1008",
-                "active recognizers cannot be exported; expose an ordinary wrapper",
-                function.name.span,
-            ));
-        }
-        if function.exported && !export_names.insert(&function.name.text) {
-            return Err(Diagnostic::new(
-                "E1001",
-                format!(
-                    "duplicate export 'tz_{}'; C/WASM export names must be unique across modules",
-                    function.name.text
-                ),
-                function.name.span,
-            ));
-        }
-        let mut parameter_names = BTreeSet::new();
-        let mut parameters = Vec::new();
-        for parameter in &function.parameters {
-            if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
-                return Err(duplicate(&parameter.name));
-            }
-            let ty = resolve_type(&parameter.ty, module, &names)?;
-            validate_size(&ty, &types, parameter.ty.span)?;
-            parameters.push(ty);
-        }
-        let result = resolve_type(&function.result, module, &names)?;
-        validate_size(&result, &types, function.result.span)?;
-        let public_type = Type::function(parameters.clone(), result.clone());
-        let Type::Function(public_parameters, public_result) = &public_type else {
-            unreachable!()
-        };
-        if function.exported
-            && (public_parameters.iter().any(|ty| !ty.exportable())
-                || (!public_result.exportable() && **public_result != Type::Unit))
-        {
-            return Err(Diagnostic::new(
-                "E1008",
-                "exports support 8/16/32/64-bit integers, f32, f64, bool, and unit results; keep wide/software numbers, strings, references, aggregates, and function values inside Tsuzuri",
-                function.name.span,
-            ));
-        }
-        let signature = Signature { parameters, result };
-        signature.validate_borrows(&types, function.result.span)?;
-        polymorph::bounded_type(&signature.as_type(), function.name.span)?;
-        let variables = polymorph::variables(&signature.as_type());
-        let mut constraints: Vec<_> = function
-            .constraints
-            .iter()
-            .map(|constraint| {
-                let class = classes.resolve(&names, module, &constraint.class)?;
-                let ty = resolve_type(&constraint.ty, module, &names)?;
-                if polymorph::variables(&ty)
-                    .iter()
-                    .any(|variable| !variables.contains(variable))
-                {
-                    return Err(Diagnostic::new(
-                        "E1015",
-                        "constraint mentions a type variable absent from the signature",
-                        constraint.ty.span,
-                    ));
-                }
-                Ok(Constraint {
-                    class,
-                    ty,
-                    span: constraint.class.span,
-                })
+            Ok(Scheme {
+                signature,
+                variables,
+                constraints,
             })
-            .collect::<Result<_, Diagnostic>>()?;
-        for ty in function
-            .parameters
-            .iter()
-            .map(|parameter| &parameter.ty)
-            .chain(std::iter::once(&function.result))
-        {
-            constraints.extend(classes.inline_constraints(ty, module, &names)?);
-        }
-        signatures.push(Scheme {
-            signature,
-            variables,
-            constraints,
+        })();
+        signatures.push(match checked {
+            Ok(scheme) => scheme,
+            Err(error) => {
+                diagnostics.push(error);
+                Scheme::poisoned()
+            }
         });
     }
     for &ModuleInput {
@@ -2119,24 +2262,30 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
     } in modules
     {
         for active in &program.active_patterns {
+            if diagnostics.is_full() {
+                diagnostics.check()?;
+            }
             let function = names.functions[&format!("{module}.{}", active.function)].clone();
             let id = function.id;
-            let Type::Function(parameters, result) = signatures[id].signature.as_type() else {
-                unreachable!()
-            };
-            if parameters.is_empty() {
-                return Err(Diagnostic::new(
+            let signature = &signatures[id].signature;
+            if !signatures[id].is_poisoned() && signature.parameters.is_empty() {
+                diagnostics.push(Diagnostic::new(
                     "E1006",
                     "an active recognizer needs an input parameter",
                     active.name.span,
                 ));
+                signatures[id] = Scheme::poisoned();
             }
-            if active.partial && *result != Type::Bool {
-                return Err(Diagnostic::new(
+            if !signatures[id].is_poisoned()
+                && active.partial
+                && signatures[id].signature.result != Type::Bool
+            {
+                diagnostics.push(Diagnostic::new(
                     "E1003",
                     "a partial active recognizer must return bool",
                     active.name.span,
                 ));
+                signatures[id] = Scheme::poisoned();
             }
             let qualified = format!("{module}.{}", active.name.text);
             let info = NameInfo {
@@ -2149,42 +2298,59 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
                     .insert(qualified, (info, active.partial))
                     .is_some()
             {
-                return Err(duplicate(&active.name));
+                diagnostics.push(duplicate(&active.name));
             }
         }
     }
     let mut functions = Vec::new();
     let mut warnings = Vec::new();
     for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
+        if diagnostics.is_full() {
+            break;
+        }
         let scheme = &signatures[id];
+        if scheme.is_poisoned() {
+            continue;
+        }
         let signature = scheme.signature.clone();
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
-        checker.type_parameters = scheme.variables.clone();
-        let mut parameters = Vec::new();
-        for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
-            parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
+        let checked = (|| {
+            checker.type_parameters = scheme.variables.clone();
+            let mut parameters = Vec::new();
+            for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
+                parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
+            }
+            computation::expand(&mut function.body, &names)?;
+            let mut body = checker.expression(&function.body, Some(&signature.result))?;
+            if !checker.poisoned {
+                checker.finish(&mut body)?;
+                warnings.extend(checker.check_coverage()?);
+            }
+            let mut constraints = scheme.constraints.clone();
+            constraints.extend(std::mem::take(&mut checker.constraints));
+            Ok(CheckedFunction {
+                module: module.clone(),
+                origin: FunctionOrigin::source(names.origin(module)),
+                name: function.name.text.clone(),
+                visibility: function.visibility,
+                exported: function.exported,
+                parameters,
+                signature,
+                body,
+                span: function.name.span,
+                type_parameters: scheme.variables.clone(),
+                constraints,
+                capture_count: 0,
+                is_task: false,
+            })
+        })();
+        if checker.poisoned {
+            continue;
         }
-        computation::expand(&mut function.body, &names)?;
-        let mut body = checker.expression(&function.body, Some(&signature.result))?;
-        checker.finish(&mut body)?;
-        warnings.extend(checker.check_coverage()?);
-        let mut constraints = scheme.constraints.clone();
-        constraints.extend(checker.constraints);
-        functions.push(CheckedFunction {
-            module: module.clone(),
-            origin: FunctionOrigin::source(names.origin(module)),
-            name: function.name.text.clone(),
-            visibility: function.visibility,
-            exported: function.exported,
-            parameters,
-            signature,
-            body,
-            span: function.name.span,
-            type_parameters: scheme.variables.clone(),
-            constraints,
-            capture_count: 0,
-            is_task: false,
-        });
+        match checked {
+            Ok(function) => functions.push(function),
+            Err(error) => diagnostics.push(error),
+        }
     }
     let mut entry = modules
         .iter()
@@ -2201,49 +2367,68 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
         origin,
     } in modules
     {
+        if diagnostics.is_full() {
+            break;
+        }
         let Some(expression) = &program.entry else {
             continue;
         };
         if origin != ModuleOrigin::User || module != "Main" {
-            return Err(Diagnostic::new(
+            diagnostics.push(Diagnostic::new(
                 "E2004",
                 "top-level execution is only allowed in Main.tz; other modules contain record and function declarations",
                 expression.span,
             ));
+            continue;
         }
         if entry.is_some() {
-            return Err(Diagnostic::new(
+            diagnostics.push(Diagnostic::new(
                 "E2004",
                 "Main.tz must use either top-level entry-point code or 'fn main', not both",
                 expression.span,
             ));
+            continue;
         }
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
-        let mut expression = expression.clone();
-        computation::expand(&mut expression, &names)?;
-        let mut body = checker.expression(&expression, None)?;
-        checker.finish(&mut body)?;
-        warnings.extend(checker.check_coverage()?);
-        entry = Some(functions.len());
-        functions.push(CheckedFunction {
-            module: module.to_owned(),
-            origin: FunctionOrigin::source(ModuleOrigin::User),
-            name: "$entry".into(),
-            visibility: Visibility::Public,
-            exported: false,
-            parameters: Vec::new(),
-            signature: Signature {
+        let checked = (|| {
+            let mut expression = expression.clone();
+            computation::expand(&mut expression, &names)?;
+            let mut body = checker.expression(&expression, None)?;
+            if !checker.poisoned {
+                checker.finish(&mut body)?;
+                warnings.extend(checker.check_coverage()?);
+            }
+            Ok(CheckedFunction {
+                module: module.to_owned(),
+                origin: FunctionOrigin::source(ModuleOrigin::User),
+                name: "$entry".into(),
+                visibility: Visibility::Public,
+                exported: false,
                 parameters: Vec::new(),
-                result: body.ty.clone(),
-            },
-            body,
-            span: expression.span,
-            type_parameters: Vec::new(),
-            constraints: checker.constraints,
-            capture_count: 0,
-            is_task: false,
-        });
+                signature: Signature {
+                    parameters: Vec::new(),
+                    result: body.ty.clone(),
+                },
+                body,
+                span: expression.span,
+                type_parameters: Vec::new(),
+                constraints: std::mem::take(&mut checker.constraints),
+                capture_count: 0,
+                is_task: false,
+            })
+        })();
+        if checker.poisoned {
+            continue;
+        }
+        match checked {
+            Ok(function) => {
+                entry = Some(functions.len());
+                functions.push(function);
+            }
+            Err(error) => diagnostics.push(error),
+        }
     }
+    diagnostics.check()?;
     recursion::check(&functions, &function_declarations, &classes)?;
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
@@ -2254,14 +2439,27 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
         entry,
         warnings,
     };
-    let module = polymorph::specialize(module, &classes)?;
+    let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
+        let first = errors[0].clone();
+        diagnostics.extend(errors);
+        first
+    })?;
+    let module = polymorph::specialize(module, &classes, copy_constraints)?;
     let module = closures::lower(module)?;
     for function in &module.functions {
-        function
+        if let Err(error) = function
             .signature
-            .validate_borrows(&module.types(), function.span)?;
+            .validate_borrows(&module.types(), function.span)
+        {
+            diagnostics.push(error);
+        }
+        if diagnostics.is_full() {
+            break;
+        }
     }
-    crate::ownership::check(&module)?;
+    diagnostics.check()?;
+    diagnostics.extend(crate::ownership::check_all(&module));
+    diagnostics.check()?;
     Ok(module)
 }
 
@@ -2313,98 +2511,121 @@ fn starts_uppercase(name: &str) -> bool {
 fn collect_unions(
     declarations: &[(&str, &UnionDecl)],
     names: &mut Names,
+    diagnostics: &mut Diagnostics,
 ) -> Result<(), Diagnostic> {
     for (id, (module, union)) in declarations.iter().enumerate() {
-        let name = &union.name;
-        if !starts_uppercase(&name.text) {
-            return Err(Diagnostic::new(
-                "E1024",
-                format!(
-                    "union type '{}' must start with an uppercase ASCII letter",
-                    name.text
-                ),
-                name.span,
-            ));
+        if diagnostics.is_full() {
+            break;
         }
-        let qualified = format!("{module}.{}", name.text);
-        if name.text == "Task"
-            || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
-            || names.records.contains_key(&qualified)
-            || names.unions.contains_key(&qualified)
-        {
-            return Err(duplicate(name));
-        }
-        names.unions.insert(
-            qualified.clone(),
-            NameInfo {
-                id,
-                name: qualified.clone(),
-                module: (*module).to_owned(),
-                visibility: union.visibility,
-            },
-        );
-        names
-            .union_aliases
-            .entry(name.text.clone())
-            .or_default()
-            .push(qualified);
-        names.union_arities.push(union.parameters.len());
-    }
-    for (id, (module, union)) in declarations.iter().enumerate() {
-        for (case, declaration) in union.cases.iter().enumerate() {
-            let name = &declaration.name;
+        let registered = (|| {
+            let name = &union.name;
             if !starts_uppercase(&name.text) {
                 return Err(Diagnostic::new(
                     "E1024",
                     format!(
-                        "union case '{}' must start with an uppercase ASCII letter; lowercase names in patterns bind variables",
+                        "union type '{}' must start with an uppercase ASCII letter",
                         name.text
-                    ),
-                    name.span,
-                ));
-            }
-            if union.cases[..case]
-                .iter()
-                .any(|other| other.name.text == name.text)
-            {
-                return Err(Diagnostic::new(
-                    "E1024",
-                    format!(
-                        "duplicate case '{}' in union '{}'; give each case a distinct name",
-                        name.text, union.name.text
                     ),
                     name.span,
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
             if name.text == "Task"
+                || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
-                || names.cases.contains_key(&qualified)
             {
                 return Err(duplicate(name));
             }
-            names.cases.insert(
+            names.unions.insert(
                 qualified.clone(),
-                CaseInfo {
-                    info: NameInfo {
-                        id,
-                        name: qualified.clone(),
-                        module: (*module).to_owned(),
-                        visibility: union.visibility,
-                    },
-                    case,
-                    has_payload: declaration.payload.is_some(),
+                NameInfo {
+                    id,
+                    name: qualified.clone(),
+                    module: (*module).to_owned(),
+                    visibility: union.visibility,
                 },
             );
             names
-                .case_aliases
+                .union_aliases
                 .entry(name.text.clone())
                 .or_default()
                 .push(qualified);
+            names.union_arities.push(union.parameters.len());
+            Ok(())
+        })();
+        if let Err(error) = registered {
+            diagnostics.push(error);
         }
     }
-    Ok(())
+    diagnostics.check()?;
+    for (id, (module, union)) in declarations.iter().enumerate() {
+        for (case, declaration) in union.cases.iter().enumerate() {
+            if diagnostics.is_full() {
+                break;
+            }
+            let registered = (|| {
+                let name = &declaration.name;
+                if !starts_uppercase(&name.text) {
+                    return Err(Diagnostic::new(
+                        "E1024",
+                        format!(
+                            "union case '{}' must start with an uppercase ASCII letter; lowercase names in patterns bind variables",
+                            name.text
+                        ),
+                        name.span,
+                    ));
+                }
+                if union.cases[..case]
+                    .iter()
+                    .any(|other| other.name.text == name.text)
+                {
+                    return Err(Diagnostic::new(
+                        "E1024",
+                        format!(
+                            "duplicate case '{}' in union '{}'; give each case a distinct name",
+                            name.text, union.name.text
+                        ),
+                        name.span,
+                    ));
+                }
+                let qualified = format!("{module}.{}", name.text);
+                if name.text == "Task"
+                    || names.records.contains_key(&qualified)
+                    || names.unions.contains_key(&qualified)
+                    || names.cases.contains_key(&qualified)
+                {
+                    return Err(duplicate(name));
+                }
+                names.cases.insert(
+                    qualified.clone(),
+                    CaseInfo {
+                        info: NameInfo {
+                            id,
+                            name: qualified.clone(),
+                            module: (*module).to_owned(),
+                            visibility: union.visibility,
+                        },
+                        case,
+                        has_payload: declaration.payload.is_some(),
+                    },
+                );
+                names
+                    .case_aliases
+                    .entry(name.text.clone())
+                    .or_default()
+                    .push(qualified);
+                Ok(())
+            })();
+            if let Err(error) = registered {
+                diagnostics.push(error);
+            }
+        }
+        if diagnostics.is_full() {
+            break;
+        }
+    }
+    diagnostics.check()
 }
 
 /// Resolves the payload types of a union declaration.
@@ -2430,7 +2651,7 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
                 return Err(Diagnostic::new(
                     "E1024",
                     format!(
-                        "type variable '{variable} is not declared by union '{name}'; add it after the union name, as in 'union {name} '{variable} = ...'"
+                        "type variable '{variable} is not declared by union '{name}'; add it in angle brackets after the union name, as in 'union {name}<'{variable}> = ...'"
                     ),
                     expression.span,
                 ));
@@ -2496,13 +2717,13 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                 ));
             }
             match names.type_head(module, head)? {
-                // `Add 'a` constrains its argument; `Classes::inline_constraints` records the constraint.
+                // `Add<'a>` constrains its argument; `Classes::inline_constraints` records the constraint.
                 TypeHead::Class => {
                     let [ty] = &**args else {
                         return Err(Diagnostic::new(
                             "E1016",
                             format!(
-                                "type class '{}' constrains exactly one type, as in '{} 'a'",
+                                "type class '{}' constrains exactly one type, as in '{}<'a>'",
                                 head.text, head.text
                             ),
                             expression.span,
@@ -2568,7 +2789,7 @@ fn record_arity(
         )
     } else {
         format!(
-            "type '{name}' expects {expected} type argument{}, found {found}; write one type per parameter after the name",
+            "type '{name}' expects {expected} type argument{}, found {found}; write comma-separated types in '<...>' after the name",
             if expected == 1 { "" } else { "s" }
         )
     };
@@ -2742,6 +2963,9 @@ impl<'a> Layouts<'a> {
     }
 
     fn size(&mut self, ty: &Type, depth: usize, span: Span) -> Result<usize, Diagnostic> {
+        if ty.contains_error() {
+            return Ok(0);
+        }
         Ok(match ty {
             Type::Record(..) => self.record(ty, depth, span)?,
             Type::Union(..) => self.union(ty, depth, span)?,
@@ -2772,6 +2996,9 @@ impl<'a> Layouts<'a> {
 /// immutability, owned task results, and record instances whose type
 /// arguments would put a reference into a field.
 fn validate_size(ty: &Type, types: &TypeContext<'_>, span: Span) -> Result<usize, Diagnostic> {
+    if ty.contains_error() {
+        return Ok(0);
+    }
     Validation {
         layouts: Layouts::new(*types),
         instances: BTreeSet::new(),
@@ -2910,6 +3137,7 @@ struct Checker<'a> {
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
+    poisoned: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -2935,6 +3163,7 @@ impl<'a> Checker<'a> {
             families: Vec::new(),
             coverage: Vec::new(),
             borrowed: BTreeSet::new(),
+            poisoned: false,
         }
     }
 
@@ -2965,6 +3194,10 @@ impl<'a> Checker<'a> {
         expression: &Expr,
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
+        if expected.is_some_and(Type::contains_error) {
+            self.poisoned = true;
+            return Ok(TypedExpr::error(expression.span));
+        }
         // Continuations must not retain the large value-checking frame at every recursive step.
         match expression.kind {
             ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
@@ -2976,6 +3209,30 @@ impl<'a> Checker<'a> {
             | ExprKind::Block { .. } => self.composed_expression(expression, expected),
             _ => self.value_expression(expression, expected),
         }
+    }
+
+    fn finish_expression(
+        &mut self,
+        kind: TypedExprKind,
+        ty: Type,
+        expected: Option<&Type>,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let mut value = TypedExpr { kind, ty, span };
+        if self.poisoned
+            && (self.inference.resolve(&value.ty).contains_error()
+                || value
+                    .children()
+                    .iter()
+                    .any(|child| child.ty.contains_error()))
+        {
+            return Ok(TypedExpr::error(span));
+        }
+        if let Some(expected) = expected {
+            self.same(&value.ty, expected, span)?;
+        }
+        value.ty = self.inference.resolve(&value.ty);
+        Ok(value)
     }
 
     fn composed_expression(
@@ -3071,14 +3328,7 @@ impl<'a> Checker<'a> {
             }
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
-        if let Some(expected) = expected {
-            self.same(&ty, expected, expression.span)?;
-        }
-        Ok(TypedExpr {
-            kind,
-            ty: self.inference.resolve(&ty),
-            span: expression.span,
-        })
+        self.finish_expression(kind, ty, expected, expression.span)
     }
 
     fn value_expression(
@@ -3121,8 +3371,13 @@ impl<'a> Checker<'a> {
                     self.local(name).is_some()
                 })?
         };
-        let resolved = namespace
-            .or_else(|| method.map(|(class, method)| self.method(class, method, expression.span)));
+        let resolved = if namespace.is_some() {
+            namespace
+        } else {
+            method
+                .map(|(class, method)| self.method(class, method, expression.span))
+                .transpose()?
+        };
         if let Some((kind, ty)) = resolved {
             if let Some(expected) = expected {
                 self.same(&ty, expected, expression.span)?;
@@ -3389,6 +3644,9 @@ impl<'a> Checker<'a> {
             ExprKind::Field(value, field) => self.field_access(value, field)?,
             ExprKind::Index(value, index) => {
                 let value = Self::autoderef(self.expression(value, None)?);
+                if value.ty.contains_error() {
+                    return Ok(TypedExpr::error(expression.span));
+                }
                 let ty = match &value.ty {
                     Type::Array(element) | Type::List(element) => (**element).clone(),
                     Type::String => Type::Integer(8, false),
@@ -3432,6 +3690,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Dereference(value, notation) => {
                 let value = self.expression(value, None)?;
+                if value.ty.contains_error() {
+                    return Ok(TypedExpr::error(expression.span));
+                }
                 let Type::Reference(ty, _) = &value.ty else {
                     return Err(Diagnostic::new(
                         "E1005",
@@ -3447,6 +3708,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Assign(place, value) => {
                 let place = self.expression(place, None)?;
+                if place.ty.contains_error() {
+                    return Ok(TypedExpr::error(expression.span));
+                }
                 Self::require_mutable_reference(&place)?;
                 if !matches!(
                     place.kind,
@@ -3466,6 +3730,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Cast(value, ty) => {
                 let value = self.expression(value, None)?;
+                if value.ty.contains_error() {
+                    return Ok(TypedExpr::error(expression.span));
+                }
                 let ty = self.annotation(ty)?;
                 self.require("Numeric", value.ty.clone(), expression.span)?;
                 self.require("Numeric", ty.clone(), expression.span)?;
@@ -3476,14 +3743,7 @@ impl<'a> Checker<'a> {
             | ExprKind::Call(..)
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),
         };
-        if let Some(expected) = expected {
-            self.same(&ty, expected, expression.span)?;
-        }
-        Ok(TypedExpr {
-            kind,
-            ty: self.inference.resolve(&ty),
-            span: expression.span,
-        })
+        self.finish_expression(kind, ty, expected, expression.span)
     }
 
     fn require_mutable_reference(place: &TypedExpr) -> Result<(), Diagnostic> {
@@ -3581,6 +3841,7 @@ impl<'a> Checker<'a> {
         value.ty = self.inference.resolve(&value.ty);
         let value = Self::autoderef(value);
         match &value.ty {
+            Type::Error => Ok((TypedExprKind::Error, Type::Error)),
             Type::Record(id, args) => {
                 let index = self.types.records[*id]
                     .fields
@@ -3876,6 +4137,9 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Result<Type, Diagnostic> {
         use BinaryOp::*;
+        if left.ty.contains_error() || right.ty.contains_error() {
+            return Ok(Type::Error);
+        }
         self.same(&right.ty, &left.ty, right.span)?;
         if matches!(operator, And | Or) {
             self.same(&left.ty, &Type::Bool, span)?;

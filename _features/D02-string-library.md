@@ -50,7 +50,7 @@ WASM は import なしなので、`memcmp`/`memchr`/`strlen` などの外部 lib
 
 `src/polymorph.rs` の `Classes::intrinsic` は `Add` と `Eq` に string を含める。
 `Ord` は string に対して組み込み instance を持たない。
-D02 の `Ord string` は A11 の「比較は非消費（Eq/Ord は借用を受け取る）」を hard dependency として実装する。
+D02 の `Ord<string>` は A11 の「比較は非消費（Eq/Ord は借用を受け取る）」を hard dependency として実装する。
 A11 完了後、`Classes::intrinsic` と `FunctionEmitter::binary` の比較 lowering を拡張する。
 
 ## 仕様
@@ -66,8 +66,8 @@ A08 は `char` 型を Unicode scalar value として提供し、LLVM では `i32
 A11 は `Eq`/`Ord` method が `&'a -> &'a -> bool` になり、比較演算子が被演算子を消費しないことを提供する。
 C03 は slice 型 `&[T]` を提供する。
 `&[string]` は配列全体をコピーせずに `ptr + length` で借用できる。
-B01 は `Option 'a` を提供する。
-C02 の `Vec 'a` は弱依存であり、実装済みなら split/join/building の内部に使ってよい。
+B01 は `Option<'a>` を提供する。
+C02 の `Vec<'a>` は弱依存であり、実装済みなら split/join/building の内部に使ってよい。
 C02 が未完了でも D02 は二 pass allocation で実装する。
 
 ### 他チケットへの提供インターフェース
@@ -75,7 +75,7 @@ C02 が未完了でも D02 は二 pass allocation で実装する。
 D01 の string interpolation フェーズ 2 は `String.concat`/`String.Builder` 相当を使ってよい。
 E07 は trace の文字列組み立てに `String.concat`/`String.join` を使える。
 G06 は failure message の比較差分に `String.find`, `String.slice`, `String.replace` を使える。
-C06 の Map/Set は A11+D02 後の `Ord string` を前提にしてよい。
+C06 の Map/Set は A11+D02 後の `Ord<string>` を前提にしてよい。
 A07 の deriving Display は `String.concat` を使って field 表示を組み立ててもよい。
 
 ### 基本方針
@@ -89,7 +89,7 @@ byte 境界ではなく char boundary が必要な関数は、境界不正を `O
 検索失敗は `Option.None`。
 空 needle の検索は成功として扱う。
 `String.compare` は Unicode scalar の code point order と一致する UTF-8 byte lexicographic order を使う。
-`Ord string` は A11 後にこの比較を借用ベースの組み込み instance として使う。
+`Ord<string>` は A11 後にこの比較を借用ベースの組み込み instance として使う。
 ASCII 変換関数は ASCII 以外の byte を変更しない。
 すべての関数引数は左から右に一度だけ評価する。
 
@@ -123,7 +123,7 @@ separator が空の場合は `String.chars` 相当の decode pass で個数を�
 不正 UTF-8 は string 不変条件違反なので想定しない。
 allocation は結果配列 1 回 + substring 個数分。
 
-`String.find : &string -> &string -> Option i64`
+`String.find : &string -> &string -> Option<i64>`
 `String.find needle haystack`。
 最初の byte offset を返す。
 needle が空なら `Some 0`。
@@ -131,7 +131,7 @@ needle が空なら `Some 0`。
 byte pattern 検索であり、char boundary は要求しない。
 ただし haystack と needle は妥当 UTF-8 なので、見つかった offset は必ず char boundary になる。
 
-`String.rfind : &string -> &string -> Option i64`
+`String.rfind : &string -> &string -> Option<i64>`
 最後の byte offset を返す。
 needle が空なら `Some haystack.length`。
 
@@ -144,7 +144,7 @@ prefix と text を byte prefix で比較する。
 `String.ends_with : &string -> &string -> bool`
 suffix と text を byte suffix で比較する。
 
-`String.slice : &string -> i64 -> i64 -> Option string`
+`String.slice : &string -> i64 -> i64 -> Option<string>`
 `String.slice text start finish`。
 `start` は inclusive、`finish` は exclusive の byte offset。
 `0 <= start <= finish <= text.length` かつ start/finish が UTF-8 char boundary の場合だけ `Some substring`。
@@ -153,7 +153,7 @@ suffix と text を byte suffix で比較する。
 allocation は substring length が 0 なら 0 回または空 descriptor、非空なら 1 回。
 複雑度 O(length + boundary check cost)。
 
-`String.sub : &string -> i64 -> i64 -> Option string`
+`String.sub : &string -> i64 -> i64 -> Option<string>`
 `String.sub text start length`。
 length は byte 長。
 `length < 0` は `None`。
@@ -210,7 +210,7 @@ allocation は結果 1 回。
 byte lexicographic compare。
 戻り値は `<0`, `0`, `>0`。
 具体値は -1/0/1 に固定する。
-`Ord string` の `< <= > >=` はこの比較を使う。
+`Ord<string>` の `< <= > >=` はこの比較を使う。
 
 `String.to_bytes : string -> [ubyte]`
 string を消費し、同じ buffer を `[ubyte]` の所有配列へ O(1) で移す。
@@ -219,7 +219,7 @@ string を消費し、同じ buffer を `[ubyte]` の所有配列へ O(1) で移
 元の string は move 済み。
 空 string は空配列。
 
-`String.from_bytes : [ubyte] -> Option string`
+`String.from_bytes : [ubyte] -> Option<string>`
 byte array を消費する。
 UTF-8 として妥当なら O(1) で同じ buffer を string へ移し、`Some string`。
 不正なら `None` を返し、入力配列 buffer は解放する。
@@ -228,12 +228,12 @@ UTF-8 として妥当なら O(1) で同じ buffer を string へ移し、`Some s
 
 ### Ord instance
 
-`Ord string` を A11 後の組み込み instance に追加する。
+`Ord<string>` を A11 後の組み込み instance に追加する。
 `Ord.lt`/`le`/`gt`/`ge` は A11 の借用 signature `&string -> &string -> bool` で、`<`, `<=`, `>`, `>=` は被演算子を消費しない。
 結果は `String.compare` と同じ byte lexicographic order。
 UTF-8 の仕様により、これは code point order と一致する。
 locale・大文字小文字・正規化は考慮しない。
-`Eq string` は既存 `@tz.string.equal` と同じ。
+`Eq<string>` は既存 `@tz.string.equal` と同じ。
 
 ### トラップと Option
 
@@ -387,7 +387,7 @@ needle が空の特殊ケースでも、replacement/text の評価順序は同�
    確認: emoji、4 byte scalar、ASCII 混在で char 数と code point を A08 `Char.to_u32` で照合する。
 9. `String.to_bytes`/`from_bytes` の O(1) transfer を実装する。
    確認: native heap tracking で valid round-trip に追加 copy allocation がないことを検査する。
-10. A11 後に `Ord string` を `Classes::intrinsic` と `FunctionEmitter::binary` に追加する。
+10. A11 後に `Ord<string>` を `Classes::intrinsic` と `FunctionEmitter::binary` に追加する。
     確認: `"a" < "b"`、`"ä" > "z"` 等を code point order で照合する。
 11. split/join/replace/repeat の allocation/overflow/trap を実装する。
     確認: large length overflow は native child process trap と WASM RuntimeError。
@@ -400,7 +400,7 @@ needle が空の特殊ケースでも、replacement/text の評価順序は同�
 
 `tests/strings.rs` を追加する。
 受理:
-`let needle = "ll"; let text = "hello"; String.find (&needle) (&text) : Option i64`。
+`let needle = "ll"; let text = "hello"; String.find (&needle) (&text) : Option<i64>`。
 `let needle = "l"; let text = "hello"; String.rfind (&needle) (&text)`。
 `let needle = "he"; let text = "hello"; String.contains (&needle) (&text)`。
 `let prefix = "he"; let text = "hello"; String.starts_with (&prefix) (&text)`。
@@ -409,7 +409,7 @@ needle が空の特殊ケースでも、replacement/text の評価順序は同�
 `let text = "hé"; String.slice (&text) 1 2` は `None`。
 `let text = "😀"; String.decode_at (&text) 0` は char と next offset 4。
 `String.to_bytes "abc"` は `[ubyte]`。
-`String.from_bytes (new [ubyte](...))` は `Option string`。
+`String.from_bytes (new [ubyte](...))` は `Option<string>`。
 `"a" < "b"` が受理される。
 
 拒否:
@@ -417,14 +417,14 @@ needle が空の特殊ケースでも、replacement/text の評価順序は同�
 `let text = "x"; String.to_bytes (&text)` は `E1003`。
 `String.slice "x" 0 1` は `E1003`（第一引数は `&string`）。
 `let text = "x"; String.chars (&text)[0] + 1` は char に算術がないため A08 の診断。
-`instance Ord string { ... }` は組み込み instance 上書きで `E1016`。
+`instance Ord<string> { ... }` は組み込み instance 上書きで `E1016`。
 
 IR:
 WASM target IR に外部 `declare.*@memcmp`, `declare.*@memchr`, `declare.*@strlen`, `declare.*@memcpy`, `declare.*@memmove` がない。
 `declare.*@llvm.memcpy.*` と `declare.*@llvm.memmove.*` は許可し、wasm32 object/link と imports 空で確認する。
 `String.to_bytes` IR に byte copy loop がない。
 `String.from_bytes` invalid branch が `@tz.free` を呼ぶ。
-`Ord string` は `@tz.string.compare` を呼ぶ。
+`Ord<string>` は `@tz.string.compare` を呼ぶ。
 
 ### Node E2E
 
@@ -445,7 +445,7 @@ from_bytes invalid sequences: lone continuation, overlong slash, surrogate, >U+1
 compare cases: `""`, `"a"`, `"aa"`, `"b"`, `"ä"`, `"😀"`。
 replace empty needle: replacement inserted at scalar boundaries。
 split empty separator: one string per scalar。
-`string`, `[string]`, `[char]`, `Option string` は公開 ABI で直接 export できないため、E2E fixture は Tsuzuri 内部で bool/i64 checksum、byte length、code point の合計、または 64-bit 以下の分割値を返す exported helper で観測する。
+`string`, `[string]`, `[char]`, `Option<string>` は公開 ABI で直接 export できないため、E2E fixture は Tsuzuri 内部で bool/i64 checksum、byte length、code point の合計、または 64-bit 以下の分割値を返す exported helper で観測する。
 公開 ABI を広げない。
 
 trap cases:
@@ -480,7 +480,7 @@ node tests/primitives.mjs target/release/tsuzuri
 
 `docs/language.md` の UTF-8 文字列節に `String` モジュール関数表を追加する。
 「index は byte offset」「char は A08 の Unicode scalar」「slice は Option」を明記する。
-`Ord string` を型クラス表へ追加し、A11 により比較が非消費であることを書く。
+`Ord<string>` を型クラス表へ追加し、A11 により比較が非消費であることを書く。
 `README.md` に簡単な `String.split` と `String.chars` の例を追加する。
 `docs/architecture.md` の runtime 表に `string.ll` の追加 helper と libc 非依存を書く。
 `docs/benchmarks.md` は性能主張をしない限り更新不要。
@@ -494,7 +494,7 @@ node tests/primitives.mjs target/release/tsuzuri
 - [ ] decode_at と既存 indexing の trap 方針が一致する。
 - [ ] to_bytes/from_bytes は valid round-trip で O(1) transfer する。
 - [ ] invalid from_bytes は入力 buffer を解放して `None` を返す。
-- [ ] A11 後の Ord string は byte lexicographic/code point order で、比較が string を消費しない。
+- [ ] A11 後の Ord<string> は byte lexicographic/code point order で、比較が string を消費しない。
 - [ ] native/WASM `-O0`/`-O3` で同じ結果。
 - [ ] WASM imports は空。
 - [ ] IR に外部 libc string/memory call がない。`@llvm.memcpy.*`/`@llvm.memmove.*` intrinsic は wasm32 link/imports 空で検証済み。

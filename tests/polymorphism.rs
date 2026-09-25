@@ -110,7 +110,7 @@ fn infers_constraints_through_forward_calls_and_recursion() {
 #[test]
 fn supports_explicit_constraints_and_literal_specialization() {
     accepts(
-        "def increment :: (Add 'a, Integer 'a) => 'a -> 'a
+        "def increment :: (Add<'a>, Integer<'a>) => 'a -> 'a
          fn increment x = x + 1
          def fraction :: 'a -> 'a
          fn fraction x = x + 0.1
@@ -133,30 +133,30 @@ fn supports_explicit_constraints_and_literal_specialization() {
         "def number :: 'a -> 'a\nfn number x = x + 1\nnumber 1.0",
         "E1005",
     );
-    rejects("def f :: Unknown 'a => 'a -> 'a\nfn f x = x", "E1016");
-    rejects("def f :: Add 'b => 'a -> 'a\nfn f x = x", "E1015");
-    accepts("def f :: Copy (fn() -> i64) => i32\nfn f = 42");
+    rejects("def f :: Unknown<'a> => 'a -> 'a\nfn f x = x", "E1016");
+    rejects("def f :: Add<'b> => 'a -> 'a\nfn f x = x", "E1015");
+    accepts("def f :: Copy<fn() -> i64> => i32\nfn f = 42");
 }
 
 #[test]
 fn supports_user_classes_instances_and_operator_instances() {
     accepts(
         "record Point { x: i32, y: i32 }
-         class Measure 'a {
+         class Measure<'a> {
            def measure :: &'a -> i32
          }
-         instance Measure Point {
+         instance Measure<Point> {
            fn measure p = p.x + p.y
          }
-         instance Measure i32 {
+         instance Measure<i32> {
            fn measure x = *x
          }
-         instance Add Point {
+         instance Add<Point> {
            fn add p q = Point { x: p.x + q.x, y: p.y + q.y }
          }
          def sum :: 'a -> 'a -> 'a
          fn sum x y = x + y
-         def measure :: Measure 'a => &'a -> i32
+         def measure :: Measure<'a> => &'a -> i32
          fn measure x = Measure.measure x
          def main :: i32
          fn main = {
@@ -169,21 +169,21 @@ fn supports_user_classes_instances_and_operator_instances() {
         "def f :: i32\nfn f = Add.add 20 22\ndef g :: f64\nfn g = { let op: f64 -> f64 -> f64 = Mul.mul; op 2.0 3.0 }",
     );
     rejects(
-        "class C 'a { def f :: 'a -> i32 }\ninstance C bool {}\n",
+        "class C<'a> { def f :: 'a -> i32 }\ninstance C<bool> {}\n",
         "E1016",
     );
     rejects(
-        "class C 'a { def f :: 'a -> i32 }\ninstance C bool { fn f x = true }",
+        "class C<'a> { def f :: 'a -> i32 }\ninstance C<bool> { fn f x = true }",
         "E1003",
     );
     rejects(
-        "class C 'a { def f :: 'a -> i32 }\ninstance C bool { fn other x = 1 }",
+        "class C<'a> { def f :: 'a -> i32 }\ninstance C<bool> { fn other x = 1 }",
         "E1016",
     );
-    rejects("instance Add i32 { fn add x y = x - y }", "E1016");
-    rejects("instance Copy string {}", "E1016");
+    rejects("instance Add<i32> { fn add x y = x - y }", "E1016");
+    rejects("instance Copy<string> {}", "E1016");
     rejects(
-        "class C 'a { def f :: 'a -> i32 }\ninstance C bool { fn f x = 1 }\ninstance C bool { fn f x = 2 }",
+        "class C<'a> { def f :: 'a -> i32 }\ninstance C<bool> { fn f x = 1 }\ninstance C<bool> { fn f x = 2 }",
         "E1016",
     );
 }
@@ -191,8 +191,8 @@ fn supports_user_classes_instances_and_operator_instances() {
 #[test]
 fn resolves_polymorphism_across_modules_and_preserves_diagnostics() {
     let module = analyze_modules(&[
-        ("Library", "class Size 'a { def size :: &'a -> i64 }\ndef id :: 'a -> 'a\nfn id x = x\ndef size :: &'a -> i64\nfn size x = Size.size x"),
-        ("Main", "instance Library.Size string { fn size text = text.length }\nlet text = Library.id \"hello\"\nLibrary.size (&text)"),
+        ("Library", "class Size<'a> { def size :: &'a -> i64 }\ndef id :: 'a -> 'a\nfn id x = x\ndef size :: &'a -> i64\nfn size x = Size.size x"),
+        ("Main", "instance Library.Size<string> { fn size text = text.length }\nlet text = Library.id \"hello\"\nLibrary.size (&text)"),
     ]).unwrap();
     llvm::emit(&module, llvm::Entry::Console).unwrap();
     let error = analyze_modules(&[
@@ -283,11 +283,11 @@ fn honors_the_constraint_limit_and_deduplicates_repeated_requirements() {
     use std::fmt::Write;
     let mut declarations = String::new();
     for index in 0..129 {
-        writeln!(declarations, "class C{index} 'a {{ def f :: 'a -> i64 }}").unwrap();
+        writeln!(declarations, "class C{index}<'a> {{ def f :: 'a -> i64 }}").unwrap();
     }
     for (count, accepted) in [(128, true), (129, false)] {
         let constraints = (0..count)
-            .map(|index| format!("C{index} 'a"))
+            .map(|index| format!("C{index}<'a>"))
             .collect::<Vec<_>>()
             .join(", ");
         let source = format!("{declarations}def f :: ({constraints}) => 'a -> 'a\nfn f x = x");
@@ -297,7 +297,7 @@ fn honors_the_constraint_limit_and_deduplicates_repeated_requirements() {
             rejects(&source, "E1017");
         }
     }
-    let constraints = vec!["Copy 'a"; 200].join(", ");
+    let constraints = vec!["Copy<'a>"; 200].join(", ");
     accepts(&format!("def f :: ({constraints}) => 'a -> 'a\nfn f x = x"));
 }
 
@@ -305,14 +305,14 @@ fn honors_the_constraint_limit_and_deduplicates_repeated_requirements() {
 fn checks_declarations_and_specialized_layouts_even_when_unused() {
     rejects("def f :: i32 -> i32\nfn f x = x\nfn f x = x", "E1001");
     rejects("def f :: i32\ndef f :: i32\nfn f = 1", "E1001");
-    rejects("class C 'a { def f :: 'b -> 'b }", "E1016");
-    accepts("class C 'a { def f :: 'a -> [[i64]] }");
+    rejects("class C<'a> { def f :: 'b -> 'b }", "E1016");
+    accepts("class C<'a> { def f :: 'a -> [[i64]] }");
     rejects(
-        "class C 'a { def f :: 'a -> i64 }\ninstance C 'a { fn f x = 1 }",
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<'a> { fn f x = 1 }",
         "E1015",
     );
     rejects(
-        "class C 'a { def f :: 'a -> i64 }\ninstance C byte { fn f x = 1 }\ninstance C i8 { fn f x = 2 }",
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<byte> { fn f x = 1 }\ninstance C<i8> { fn f x = 2 }",
         "E1016",
     );
     accepts(
@@ -362,7 +362,7 @@ fn infers_copy_only_when_required_by_ownership() {
         "E1005",
     );
     rejects(
-        "def f :: Copy 'a => 'a -> 'a\nfn f x = x\nf [\"owned\"]",
+        "def f :: Copy<'a> => 'a -> 'a\nfn f x = x\nf [\"owned\"]",
         "E1005",
     );
     rejects(
@@ -391,5 +391,5 @@ fn specializes_operators_for_every_numeric_representation() {
     accepts(
         "def bits :: 'a -> 'a -> 'a\nfn bits x y = (~x & y | x ^ y) << y >> y >>> y % x\ndef main :: i32\nfn main = bits 42 2",
     );
-    accepts("instance Add [i32] { fn add x y = x }\ndef main :: [i32]\nfn main = [] + []");
+    accepts("instance Add<[i32]> { fn add x y = x }\ndef main :: [i32]\nfn main = [] + []");
 }

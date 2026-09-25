@@ -34,7 +34,7 @@ platform libm の `fma` を呼ぶと WASM import/libcall 問題と結果差が�
 
 E02 は `Math.fma` と `Array.sum_pairwise` の修飾 builtin/std 関数を提供できる。
 C04 は `Array` モジュール、`&[T]` slice、左から右の `Array.sum`/fold の基礎を提供している。
-D03 は `Float 'a` class、Math runtime、numeric kind dispatch を提供している前提。
+D03 は `Float<'a>` class、Math runtime、numeric kind dispatch を提供している前提。
 B01/A08/C02 は必須ではない。
 
 ### 他チケットへの提供インターフェース
@@ -47,7 +47,7 @@ D03 は `Math.fma` を basic math API とは別扱いにする。
 ### API
 
 ```text
-Math.fma :: Float 'a => 'a -> 'a -> 'a -> 'a
+Math.fma :: Float<'a> => 'a -> 'a -> 'a -> 'a
 ```
 
 `Math.fma a b c` は数学的な `a * b + c` を無限精度で計算し、対象型へ一度だけ丸める。
@@ -60,10 +60,10 @@ NaN、±inf、±0、subnormal は IEEE 754 fusedMultiplyAdd に従う。
 配列:
 
 ```text
-Array.sum_pairwise :: Float 'a => &['a] -> 'a
-Array.sum_kahan    :: Float 'a => &['a] -> 'a
-Array.dot          :: Float 'a => &['a] -> &['a] -> 'a
-Array.dot_fma      :: Float 'a => &['a] -> &['a] -> 'a
+Array.sum_pairwise :: Float<'a> => &['a] -> 'a
+Array.sum_kahan    :: Float<'a> => &['a] -> 'a
+Array.dot          :: Float<'a> => &['a] -> &['a] -> 'a
+Array.dot_fma      :: Float<'a> => &['a] -> &['a] -> 'a
 ```
 
 実際の型構文は C03/C04 に合わせて `&[T]` と書く。
@@ -116,7 +116,7 @@ pairwise dot はこのチケットでは提供しない。
 ### Math.fma lowering
 
 `Builtin::MathFma` を追加する。
-signature は `Float 'a => 'a -> 'a -> 'a -> 'a`。
+signature は `Float<'a> => 'a -> 'a -> 'a -> 'a`。
 f32/f64 native は `llvm.fma.f32/f64` を使ってよい。
 ただし clang/LLVM が libm `fma` call へ下げる target では使わず、runtime path にする。
 WASM は fma 命令がないので bundled exact implementation を使う。
