@@ -149,5 +149,50 @@ fn constrained_owned = {
 export def constrained_union :: i64
 fn constrained_union = read_choice (Geometry.Counted 42)
 
+def adjust :: ref mut i64 -> i64 -> unit
+fn adjust reference amount = deref reference = deref reference + amount
+
+def number_value :: i64 -> i64
+fn number_value number = number
+
+def borrowed_sum :: ref i64 -> i64 -> i64
+fn borrowed_sum reference amount = deref reference + amount
+
+def staged_borrow :: ref mut i64 -> i64 -> i64
+fn staged_borrow counter = {
+    deref counter = deref counter + 1;
+    fx value -> value
+}
+
+export def implicit_borrows :: i64
+fn implicit_borrows = {
+    let text = "\u{1f600}";
+    let bytes = u8"\u{1f600}";
+    let length = String.length;
+    assert (length text == length ref text);
+    assert (apply length text == 2);
+    assert ((text |> length) == 2);
+    assert (Utf8String.length bytes == 4);
+    let copied = clone_string text;
+    assert (copied == text);
+    let mut number = 1;
+    let reference = ref mut number;
+    adjust reference 2;
+    adjust reference 3;
+    let shared = borrow reference;
+    assert (number_value shared == 6);
+    let twice = value -> { adjust value 2; adjust value 3; };
+    twice reference;
+    let plus = borrowed_sum reference;
+    assert (plus 1 == 12);
+    adjust reference 1;
+    assert (number_value reference == 12);
+    assert (number == 12);
+    let mut counter = 0;
+    let ordered_value = staged_borrow counter (tick counter);
+    assert (ordered_value == 2 && counter == 2);
+    42
+}
+
 def main :: i32
 fn main = classes()

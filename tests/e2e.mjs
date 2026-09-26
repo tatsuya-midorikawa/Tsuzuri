@@ -403,6 +403,7 @@ int main(void) {
   assert(tz_constrained_partial() == 10.0);
   assert(tz_constrained_owned() == 5);
   assert(tz_constrained_union() == 42);
+  assert(tz_implicit_borrows() == 42);
   return 0;
 }
 `);
@@ -439,8 +440,9 @@ int main(void) {
     assert.equal(api.tz_constrained_partial(), 10.0);
     assert.equal(api.tz_constrained_owned(), 5n);
     assert.equal(api.tz_constrained_union(), 42n);
+    assert.equal(api.tz_implicit_borrows(), 42n);
   }
-  console.log("Polymorphism: signatures, specialization, class/function constraints, ownership, evaluation order and tail recursion at -O0/-O3");
+  console.log("Polymorphism: signatures, specialization, class/function constraints, implicit borrows, ownership, evaluation order and tail recursion at -O0/-O3");
 }
 
 async function moduleChecks() {

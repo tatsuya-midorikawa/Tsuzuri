@@ -61,6 +61,169 @@ fn keyword_and_symbol_notations_lower_identically() {
 }
 
 #[test]
+fn implicit_arguments_lower_like_explicit_borrows() {
+    let declarations = "def add :: &mut i64 -> i64 -> unit\nfn add r n = *r = *r + n\n\
+                        def read :: &i64 -> i64\nfn read r = *r\n\
+                        def value :: i64 -> i64\nfn value n = n\n";
+    same_ir(&[
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let mut x = 1; add (&mut x) 2; let r = &mut x; add (&mut *r) 3; let v = read (&*r); add (&mut *r) v; let n = value (*r); read (&x) + n }}"
+        ),
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let mut x = 1; add (ref mut x) 2; let r = ref mut x; add (ref mut r) 3; let v = read ref r; add (ref mut r) v; let n = value (deref r); read ref x + n }}"
+        ),
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let mut x = 1; add x 2; let r = ref mut x; add r 3; let v = read r; add r v; let n = value r; read x + n }}"
+        ),
+    ]);
+}
+
+#[test]
+fn implicit_arguments_accept_reference_returning_calls() {
+    let declarations = "def loan :: ref mut i64 -> ref mut i64\nfn loan r = r\n\
+                        def read :: ref i64 -> i64\nfn read r = deref r\n\
+                        def value :: i64 -> i64\nfn value n = n\n";
+    same_ir(&[
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let mut n = 3; let first = read (ref (loan (ref mut n))); let second = value (deref (loan (ref mut n))); first + second + n }}"
+        ),
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let mut n = 3; let first = read (loan n); let second = value (loan n); first + second + n }}"
+        ),
+    ]);
+    accepts(
+        "def mark :: ref mut i64 -> unit\nfn mark r = deref r = 2\n\
+         let twice = r -> { mark r; mark r; }\nlet mut n = 1\ntwice n\nn",
+    );
+}
+
+#[test]
+fn implicit_arguments_cover_places_functions_and_pipelines() {
+    let declarations = "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\n\
+                        def add :: ref i64 -> i64 -> i64\nfn add r n = deref r + n\n";
+    same_ir(&[
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let text = \"hello\"; let length = String.length; let count = apply length (ref text); let increment = add (ref count); increment (ref text |> length) }}"
+        ),
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let text = \"hello\"; let length = String.length; let count = apply length text; let increment = add count; increment (text |> length) }}"
+        ),
+    ]);
+    let declarations = "record Box { text: string }\n";
+    same_ir(&[
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let box = Box {{ text: \"record\" }}; let array = [\"array\"]; let list = [|\"list\"|]; String.length (ref box.text) + String.length (ref array[0]) + String.length (ref list[0]) }}"
+        ),
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let box = Box {{ text: \"record\" }}; let array = [\"array\"]; let list = [|\"list\"|]; String.length box.text + String.length array[0] + String.length list[0] }}"
+        ),
+    ]);
+    same_ir(&[
+        "def f :: i64\nfn f = { let text = \"\\u{1f600}\"; let bytes = u8\"\\u{1f600}\"; let copied = clone_string ref text; String.length ref text + Utf8String.length ref bytes + copied.length + text.length }",
+        "def f :: i64\nfn f = { let text = \"\\u{1f600}\"; let bytes = u8\"\\u{1f600}\"; let copied = clone_string text; String.length text + Utf8String.length bytes + copied.length + text.length }",
+    ]);
+    same_ir(&[
+        "def f :: i64\nfn f = { let text = \"lambda\"; (fx (value: ref string) -> value.length) (ref text) }",
+        "def f :: i64\nfn f = { let text = \"lambda\"; (fx (value: ref string) -> value.length) text }",
+    ]);
+    let declarations = "class Size<'a> { def size :: ref 'a -> i64 }\n\
+                        instance Size<string> { fn size text = text.length }\n";
+    same_ir(&[
+        &format!(
+            "{declarations}def f :: i64\nfn f = {{ let text = \"class\"; Size.size ref text }}"
+        ),
+        &format!("{declarations}def f :: i64\nfn f = {{ let text = \"class\"; Size.size text }}"),
+    ]);
+}
+
+#[test]
+fn implicit_arguments_preserve_inference_and_owned_parameters() {
+    accepts(
+        "def read :: ref 'a -> 'a\nfn read r = deref r\n\
+         def relay :: 'a -> 'a\nfn relay x = read x\n\
+         let n: i32 = relay 42\nn",
+    );
+    accepts(
+        "def identity :: 'a -> 'a\nfn identity x = x\n\
+         def narrow :: i32 -> [i32] -> i32\nfn narrow n values = n + values[0]\n\
+         narrow (identity 20) (identity [22])",
+    );
+    rejects(
+        "def take :: string -> i64\nfn take text = text.length\n\
+         let text = \"owned\"\nlet n = take text\ntext.length + n",
+        "E1012",
+        "moved",
+    );
+    rejects(
+        "def identity :: 'a -> 'a\nfn identity x = x\n\
+         let mut n = 1\nlet r = ref mut n\nlet moved = identity r\nderef r",
+        "E1012",
+        "moved",
+    );
+    rejects("let n = 1\nlet r: ref i64 = n\n0", "E1003", "ref i64");
+    rejects(
+        "def read :: i64 -> i64\nfn read n = n\nlet n = 1\nread ref n",
+        "E1003",
+        "expected i64",
+    );
+}
+
+#[test]
+fn implicit_arguments_preserve_borrow_safety() {
+    let mark = "def mark :: ref mut i64 -> unit\nfn mark r = deref r = 2\n";
+    for source in [
+        "let n = 1\nmark n\nn",
+        "let mut n = 1\nlet shared = ref n\nmark shared\nn",
+        "record Box { n: i64 }\nlet mut box = Box { n: 1 }\nmark box.n\n0",
+        "let mut values = [1]\nmark values[0]\n0",
+        "let mut values = [|1|]\nmark values[0]\n0",
+        "let mut n = 1\nlet shared = ref n\nmark n\nderef shared",
+    ] {
+        rejects(&format!("{mark}{source}"), "E1014", "");
+    }
+    let both = "def both :: ref mut i64 -> ref mut i64 -> unit\nfn both left right = ()\n";
+    for source in [
+        "let mut n = 1\nboth n n\nn",
+        "let mut n = 1\nlet r = ref mut n\nboth r r\nn",
+    ] {
+        rejects(&format!("{both}{source}"), "E1014", "live borrow");
+    }
+    rejects(
+        "def take :: string -> i64\nfn take text = text.length\n\
+         let text = \"owned\"\nlet r = ref text\ntake r",
+        "E1012",
+        "cannot move a non-Copy value out of a reference",
+    );
+    rejects(
+        "def identity :: ref string -> ref string\nfn identity text = text\n\
+         let escaped = { let text = \"local\"; identity text }\nescaped.length",
+        "E1013",
+        "does not live long enough",
+    );
+    rejects(
+        "def add :: ref mut i64 -> i64 -> unit\nfn add r n = deref r = deref r + n\n\
+         let mut n = 1\nlet later = add n\nlater 2\nn",
+        "E1005",
+        "cannot capture",
+    );
+    rejects(
+        "def keep :: ref string -> i64 -> i64\nfn keep text n = text.length + n\n\
+         let escaped = { let text = \"local\"; keep text }\nescaped 0",
+        "E1013",
+        "does not live long enough",
+    );
+    for argument in ["&r", "r"] {
+        rejects(
+            &format!(
+                "def read :: ref ref i64 -> i64\nfn read r = deref deref r\ndef f :: i64\nfn f = {{ let n = 42; let r = ref n; read {argument} }}"
+            ),
+            "E1013",
+            "nested borrowed values",
+        );
+    }
+}
+
+#[test]
 fn prefix_arguments_need_no_parentheses() {
     let declarations = "def add :: &mut i64 -> i64 -> unit\nfn add r n = *r = *r + n\n\
                         def read :: &i64 -> i64\nfn read r = *r\n";
@@ -216,6 +379,9 @@ fn keyword_forms_work_in_pattern_arguments_and_guards() {
         &format!(
             "{above}def f :: i64 -> i64\nfn f n = {{ let limit = 3; match n with | Above (ref limit) -> 1 | _ -> 0 }}"
         ),
+        &format!(
+            "{above}def f :: i64 -> i64\nfn f n = {{ let limit = 3; match n with | Above limit -> 1 | _ -> 0 }}"
+        ),
     ]);
     let positive = "def positive :: &i64 -> bool\nfn positive r = *r > 0\n";
     same_ir(&[
@@ -224,6 +390,9 @@ fn keyword_forms_work_in_pattern_arguments_and_guards() {
         ),
         &format!(
             "{positive}def classify :: i64 -> i64\nfn classify x\n    | positive ref x -> 1\n    | otherwise -> 0"
+        ),
+        &format!(
+            "{positive}def classify :: i64 -> i64\nfn classify x\n    | positive x -> 1\n    | otherwise -> 0"
         ),
     ]);
 }

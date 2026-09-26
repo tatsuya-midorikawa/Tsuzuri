@@ -3366,56 +3366,7 @@ impl<'a> Checker<'a> {
             ExprKind::Task(body) => {
                 return self.lambda(&[], body, expected, expression.span, true);
             }
-            ExprKind::Call(callee, arguments) => {
-                if let ExprKind::Call(inner, first) = &callee.kind {
-                    if !first.is_empty() && !arguments.is_empty() {
-                        let mut combined = first.clone();
-                        combined.extend(arguments.iter().cloned());
-                        let combined = Expr {
-                            kind: ExprKind::Call(inner.clone(), combined),
-                            span: expression.span,
-                            depth: expression.depth,
-                        };
-                        return self.expression(&combined, expected);
-                    }
-                }
-                let callee = self.expression(callee, None)?;
-                let arguments = if let [
-                    Expr {
-                        kind: ExprKind::Tuple(values),
-                        ..
-                    },
-                ] = arguments.as_slice()
-                {
-                    match &callee.ty {
-                        Type::Function(parameters, _)
-                            if parameters.len() >= values.len()
-                                && !matches!(
-                                    parameters[0],
-                                    Type::Tuple(_) | Type::Variable(_) | Type::Infer(_)
-                                ) =>
-                        {
-                            values
-                        }
-                        _ => arguments,
-                    }
-                } else {
-                    arguments
-                };
-                let (parameters, result) = self
-                    .call_signature(&callee.ty, arguments.len(), expression.span)
-                    .map_err(|error| Self::operator_spacing_hint(error, arguments))?;
-                if let Some(expected) = expected {
-                    self.same(&result, expected, expression.span)?;
-                }
-                let arguments: Vec<_> = arguments
-                    .iter()
-                    .zip(&parameters)
-                    .map(|(argument, parameter)| self.expression(argument, Some(parameter)))
-                    .collect::<Result<_, _>>()?;
-                self.solve_families(false)?;
-                (Self::call_kind(callee, arguments), result)
-            }
+            ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
                 self.scopes.push(BTreeMap::new());
                 let mut checked = Vec::new();
@@ -3446,6 +3397,80 @@ impl<'a> Checker<'a> {
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    fn call_expression(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        argument: bool,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let ExprKind::Call(callee, arguments) = &expression.kind else {
+            unreachable!("call expressions only")
+        };
+        if let ExprKind::Call(inner, first) = &callee.kind {
+            if !first.is_empty() && !arguments.is_empty() {
+                let mut combined = first.clone();
+                combined.extend(arguments.iter().cloned());
+                let combined = Expr {
+                    kind: ExprKind::Call(inner.clone(), combined),
+                    span: expression.span,
+                    depth: expression.depth,
+                };
+                return self.call_expression(&combined, expected, argument);
+            }
+        }
+        let callee = self.expression(callee, None)?;
+        let arguments = if let [
+            Expr {
+                kind: ExprKind::Tuple(values),
+                ..
+            },
+        ] = arguments.as_slice()
+        {
+            match &callee.ty {
+                Type::Function(parameters, _)
+                    if parameters.len() >= values.len()
+                        && !matches!(
+                            parameters[0],
+                            Type::Tuple(_) | Type::Variable(_) | Type::Infer(_)
+                        ) =>
+                {
+                    values
+                }
+                _ => arguments,
+            }
+        } else {
+            arguments
+        };
+        let (parameters, result) = self
+            .call_signature(&callee.ty, arguments.len(), expression.span)
+            .map_err(|error| Self::operator_spacing_hint(error, arguments))?;
+        if let Some(expected) = expected {
+            let hint = if argument {
+                self.argument_hint(&result, expected)
+            } else {
+                expected.clone()
+            };
+            self.same(&result, &hint, expression.span)?;
+        }
+        let arguments: Vec<_> = arguments
+            .iter()
+            .zip(&parameters)
+            .map(|(argument, parameter)| self.argument(argument, parameter))
+            .collect::<Result<_, _>>()?;
+        self.solve_families(false)?;
+        let value = self.finish_expression(
+            Self::call_kind(callee, arguments),
+            result,
+            if argument { None } else { expected },
+            expression.span,
+        )?;
+        if let (true, Some(expected)) = (argument, expected) {
+            self.coerce_argument(value, expected)
+        } else {
+            Ok(value)
+        }
     }
 
     fn value_expression(
@@ -3625,7 +3650,7 @@ impl<'a> Checker<'a> {
                     if let Some(expected) = expected {
                         self.same(&result, expected, expression.span)?;
                     }
-                    (self.expression(left, Some(&parameters[0]))?, right)
+                    (self.argument(left, &parameters[0])?, right)
                 } else {
                     let hint = expected.filter(|_| {
                         !matches!(
@@ -3869,6 +3894,86 @@ impl<'a> Checker<'a> {
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    fn argument(&mut self, expression: &Expr, expected: &Type) -> Result<TypedExpr, Diagnostic> {
+        match expression.kind {
+            ExprKind::Call(..) if !expected.contains_error() => {
+                self.call_expression(expression, Some(expected), true)
+            }
+            ExprKind::Name(_)
+            | ExprKind::Field(..)
+            | ExprKind::Index(..)
+            | ExprKind::Dereference(..)
+                if !expected.contains_error() =>
+            {
+                self.place_argument(expression, expected)
+            }
+            _ => self.expression(expression, Some(expected)),
+        }
+    }
+
+    fn place_argument(
+        &mut self,
+        expression: &Expr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let value = self.expression(expression, None)?;
+        self.coerce_argument(value, expected)
+    }
+
+    fn argument_hint(&self, actual: &Type, expected: &Type) -> Type {
+        let actual = self.inference.resolve(actual);
+        let expected = self.inference.resolve(expected);
+        match (&actual, &expected) {
+            (_, Type::Infer(_) | Type::Error) => expected,
+            (Type::Reference(_, mutable), Type::Reference(inner, _)) => {
+                if actual == **inner {
+                    actual
+                } else {
+                    Type::Reference(inner.clone(), *mutable)
+                }
+            }
+            (Type::Reference(inner, mutable), _) => {
+                Type::Reference(Box::new(self.argument_hint(inner, &expected)), *mutable)
+            }
+            (Type::Infer(_) | Type::Error, _) => expected,
+            (_, Type::Reference(inner, _)) => (**inner).clone(),
+            _ => expected,
+        }
+    }
+
+    fn coerce_argument(
+        &mut self,
+        mut value: TypedExpr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let expected = self.inference.resolve(expected);
+        if matches!(value.ty, Type::Infer(_)) {
+            self.same(&value.ty, &expected, value.span)?;
+            value.ty = self.inference.resolve(&value.ty);
+        }
+        if !matches!(value.ty, Type::Infer(_) | Type::Error) {
+            match &expected {
+                Type::Reference(inner, mutable) => {
+                    if value.ty != **inner {
+                        value = Self::reborrow_operand(value);
+                    }
+                    if *mutable {
+                        Self::require_mutable_reference(&value)?;
+                    }
+                    let ty = Type::Reference(Box::new(value.ty.clone()), *mutable);
+                    value = TypedExpr {
+                        span: value.span,
+                        kind: TypedExprKind::Borrow(Box::new(value), *mutable),
+                        ty,
+                    };
+                }
+                Type::Infer(_) | Type::Error => {}
+                _ => value = Self::autoderef(value),
+            }
+        }
+        self.finish_expression(value.kind, value.ty, Some(&expected), value.span)
     }
 
     fn require_mutable_reference(place: &TypedExpr) -> Result<(), Diagnostic> {

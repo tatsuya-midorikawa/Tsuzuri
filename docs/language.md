@@ -167,6 +167,11 @@ fn answer = add 20 22
 借用は括弧なしで `f ref x`／`f ref mut x`／`f deref r` と渡せます。`ref`／`ref mut`／`deref` の被演算子は一つの項なので、
 後ろにさらに引数が続く場合は `f (ref mut x) 1` と括ります（[Ownership / Borrowing](#ownership--borrowing)）。
 Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと `f &x y`／`f &mut x 1`／`f *r` のように一つの引数になります。
+引数型が分かる呼び出しでは、借用・再借用・参照外しの指定を省略できます。
+`ref string` を受け取る `String.length` には `String.length text` と書け、`String.length ref text`／`String.length &text` と同じ借用です。
+`ref mut T` 引数への可変値・排他参照、値引数への参照も必要な操作を補います。
+通常の関数・関数値・型クラスのメソッド・組み込み関数・部分適用・`|>`・認識器の追加引数で共通です。
+所有権・可変性・寿命の制限は変わりません（[Ownership / Borrowing](#ownership--borrowing)）。
 `a * b`、`a*b`、`a & b` は従来どおり二項演算、`&&` は常に論理積です。`a *b` は `a` に `*b` を渡す適用です。
 `f x.field` は `f (x.field)`、`(f x).field` は結果へのアクセスです。
 隣接した `xs[index]` は索引、`f [x, y]` は配列を渡す適用です。
@@ -670,9 +675,9 @@ fn replace text = { deref text = "next"; }
 def example :: string
 fn example = {
     let mut text = "前の値";
-    let shared = identity ref text;
+    let shared = identity text;
     let size = length shared;
-    replace ref mut text;     // shared の最終使用の後なので借用できる
+    replace text;            // shared の最終使用の後なので借用できる
     let owned = text;         // move
     owned
 }
@@ -698,6 +703,39 @@ fn example = {
 両形式は表記だけが異なり、同じ型付きの木へ変換します。型検査・所有権検査・生成コード・性能は同じで、
 一つのファイルや式の中で混在できます。エラーメッセージでは参照型を `ref T`／`ref mut T` と表示します。
 型の `&&T`／`&&mut T` は `& &T`／`& &mut T` と同じです。式の `&&` は常に論理積です。
+
+#### 呼び出し引数の暗黙の借用
+
+呼び出し先の引数型に合わせ、引数の場所や参照に次の操作を補います。
+明示的な借用を作る `ref`／`ref mut`／`&`／`&mut` も引き続き使え、その型と操作は変更しません。
+
+| 引数型 | 渡すもの | 補う操作 |
+| --- | --- | --- |
+| `ref T` | `value: T` | `ref value`／`&value` |
+| `ref mut T` | 可変な `value: T` | `ref mut value`／`&mut value` |
+| `ref T` | `reference: ref T` または `ref mut T` | `ref reference`／`&*reference` |
+| `ref mut T` | `reference: ref mut T` | `ref mut reference`／`&mut *reference` |
+| 非参照の `T` | `reference: ref T` または `ref mut T` | `deref reference`／`*reference` |
+
+```text
+let text = "😀"
+let len1 = String.length ref text
+let len2 = String.length &text
+let len3 = String.length text
+let len4 = text |> String.length
+```
+
+この例ではすべて同じ長さを返し、`text` は move も複製もされません。
+レコードのフィールドや配列・リストの要素も共有借用でき、関数から返された参照も再借用・参照外しできます。
+引数は再評価せず、左から右の評価順序とカリー化の各段階の実行時点を維持します。
+参照引数ではない所有値の引数は従来どおり値渡しで、非 Copy 値は move します。
+参照先の非 Copy 値を値引数へ渡すと、明示的な `deref` と同じく `E1012` です。
+
+補完時点で引数型が未確定の型変数だけなら、借用を勝手に推測せず従来の型推論を使います。
+ジェネリック関数でも `ref 'a`／`ref mut 'a` と宣言した引数は補完対象です。
+型注釈や先行する引数から参照型と分かった高階関数・匿名関数にも適用します。
+この補完は呼び出し引数だけで、`let r: ref T = value` や関数の戻り値へは適用しません。
+一時的な所有値からの借用と寿命延長も行わないため、一時値は先に `let` で束縛してください。
 
 `ref`／`ref mut`／`deref` の被演算子は一つの項です。項は名前・リテラル・括弧式などと、それに続く
 `.field`・`[index]`・隣接した `(...)` の呼び出し、または入れ子の前置演算（`ref deref r` など）です。
@@ -725,8 +763,10 @@ fn example = {
 共有参照に対する `ref mut` は `E1014` です。
 貸し直した参照の生存中は元の排他参照を使用・移動できません。
 参照は後続の使用がなくなれば借用を終えられますが、分岐の合流や配列要素の別名関係は保守的に検査します。
-いずれかの分岐で move した値は合流後に使えません。排他参照を引数にそのまま渡すと move します。
-Rust のような引数での暗黙の reborrow は行わないため、渡した後も使う場合は `ref mut r` と明示します。
+いずれかの分岐で move した値は合流後に使えません。排他参照を既知の参照引数にそのまま渡すと、
+引数型に応じて共有または排他で貸し直すので、貸し直しが終了すれば元の排他参照を再使用できます。
+参照を保存する戻り値や部分適用の関数値があれば、その最後の使用まで借用を維持します。
+排他参照を再利用可能な部分適用の関数値へ保存することは、明示形と同じく `Capture` 制約で拒否します。
 記号形式の `&mut r` は貸し直しではなく、参照自身の排他借用です。
 
 借用を返す関数では、借用を含む入力を一つだけ要求し、その入力に戻り値の寿命を結び付けます。
@@ -761,9 +801,10 @@ utf8string の Unicode エスケープは従来どおり1～6桁の妥当なス�
 | `<`／`<=`／`>`／`>=` | 符号なし16-bitコード単位の辞書順 | 未対応（従来どおり） |
 | 複製 | `clone_string ref text` | `Utf8String.clone ref text` |
 
-`String.length ref text`／`Utf8String.length ref bytes` は `.length` と同じ値を返す O(1) の関数です。
+`String.length text`／`Utf8String.length bytes` は `.length` と同じ値を返す O(1) の関数です。
+`String.length ref text`／`Utf8String.length ref bytes` のように借用を明示しても同じです。
 共有借用なので所有権を消費せず、文字列の複製・確保・符号化変換も行いません。
-通常の関数値として高階関数に渡したり、`ref text |> String.length` とパイプラインで使ったりできます。
+通常の関数値として高階関数に渡したり、`text |> String.length` とパイプラインで使ったりできます。
 
 ```text
 let text = "😀"

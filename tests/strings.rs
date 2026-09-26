@@ -73,10 +73,9 @@ text.length + bytes.length
         let length = body(&format!("{namespace}.length"));
         assert_eq!(length, body("Main.by_property"));
         assert!(!length.contains("call "), "{length}");
-        rejects(
-            &format!("let text = {literal}\n{namespace}.length text"),
-            "E1003",
-        );
+        accepts(&format!(
+            "let text = {literal}\nlet length = {namespace}.length text\nlength + text.length"
+        ));
         rejects(
             &format!("let text = {literal}\nlet moved = text\n{namespace}.length ref text"),
             "E1012",
@@ -84,6 +83,8 @@ text.length + bytes.length
     }
     rejects(r#"let text = u8"x"; String.length ref text"#, "E1003");
     rejects(r#"let text = "x"; Utf8String.length ref text"#, "E1003");
+    rejects(r#"let text = u8"x"; String.length text"#, "E1003");
+    rejects(r#"let text = "x"; Utf8String.length text"#, "E1003");
 }
 
 #[test]

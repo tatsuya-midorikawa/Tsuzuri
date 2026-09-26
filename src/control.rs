@@ -824,7 +824,7 @@ impl Checker<'_> {
         };
         let mut values = Vec::new();
         for (argument, ty) in arguments[..extras].iter().zip(parameters) {
-            values.push(self.expression(&Self::active_argument(argument)?, Some(ty))?);
+            values.push(self.argument(&Self::active_argument(argument)?, ty)?);
         }
         let input = self.inference.resolve(parameters.last().unwrap());
         let input = match input {
