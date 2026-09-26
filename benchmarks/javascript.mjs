@@ -91,6 +91,18 @@ function closureCapture(count, seed) {
   return state;
 }
 
+function closureChurn(count, seed) {
+  let state = seed;
+  for (let index = 0; index < count; ++index) {
+    const captured = state;
+    const transform = (captured & 1n) === 0n ? (value) => step(value, captured) : (value) => step(value, captured ^ 71n);
+    const copy = transform;
+    state = copy(state);
+    state = transform(state);
+  }
+  return state;
+}
+
 function kernel(family, name, count, seed) {
   assert.ok(Number.isSafeInteger(count) && count >= 0 && count <= 100000000);
   if (family === "cpp" && name === "task_sequence") {
@@ -180,6 +192,7 @@ function kernel(family, name, count, seed) {
       return total;
     }
     case "closure_capture": return closureCapture(count, seed);
+    case "closure_churn": return closureChurn(count, seed);
     case "integer128_mix": {
       let state = (seed << 64n) | increment;
       for (let remaining = count; remaining > 0; --remaining) state = BigInt.asUintN(128, (state ^ (state >> 43n)) * multiplier + BigInt(remaining));

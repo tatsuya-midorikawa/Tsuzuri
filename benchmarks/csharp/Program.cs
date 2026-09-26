@@ -126,6 +126,7 @@ static unsafe class Kernels
             case "array_copy": return Array(count, seed, true, false);
             case "list_sum": return List(count, seed);
             case "closure_capture": return ClosureCapture(count, seed);
+            case "closure_churn": return ClosureChurn(count, seed);
             case "record_pipeline":
                 var record = new State<ulong>(seed, count);
                 while (record.Remaining > 0) record = new State<ulong>(Step(record.Value, (ulong)record.Remaining), record.Remaining - 1);
@@ -153,6 +154,21 @@ static unsafe class Kernels
         Func<ulong, ulong> transform = (seed & 1) == 0 ? value => Step(value, seed) : value => Step(value, seed ^ 71);
         ulong state = seed;
         for (long index = 0; index < count; ++index) state = transform(state);
+        return state;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static ulong ClosureChurn(long count, ulong seed)
+    {
+        ulong state = seed;
+        for (long index = 0; index < count; ++index)
+        {
+            ulong captured = state;
+            Func<ulong, ulong> transform = (captured & 1) == 0 ? value => Step(value, captured) : value => Step(value, captured ^ 71);
+            var copy = transform;
+            state = copy(state);
+            state = transform(state);
+        }
         return state;
     }
 

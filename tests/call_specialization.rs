@@ -137,6 +137,35 @@ fn only_unobserved_single_use_copies_are_transferred() {
 }
 
 #[test]
+fn stores_single_scalar_captures_without_an_environment_allocation() {
+    for scalar in ["bool", "i8", "i16u", "i32", "i64u", "i128u", "f32", "f64"] {
+        let module = analyze(&format!(
+            "def make :: bool -> {scalar} -> (unit -> {scalar})\nfn make flag value = if flag then fx unused -> value else fx unused -> value"
+        )).unwrap();
+        for wasm in [false, true] {
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            let make = body(&ir, "tz.fn.Main.make");
+            let width = match scalar {
+                "i128u" => 128,
+                "i64u" | "f64" => 64,
+                _ => 32,
+            };
+            let fits = width <= if wasm { 32 } else { usize::BITS };
+            assert_eq!(make.contains("inttoptr"), fits, "{scalar} wasm={wasm}");
+            assert_eq!(
+                make.contains("call ptr @tz.alloc"),
+                !fits,
+                "{scalar} wasm={wasm}"
+            );
+            assert_eq!(
+                ir,
+                llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn specialization_budget_falls_back_instead_of_growing_unbounded() {
     let mut source = String::from(
         "def apply :: (i64 -> i64) -> i64 -> i64\nfn apply body value = body value

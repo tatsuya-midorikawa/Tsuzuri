@@ -205,3 +205,41 @@ fn curried_dynamic_init flag count =
     for value in array do total = total + value
     for value in list do total = total + value
     total
+
+export def curried_inline_integer :: bool -> i64u -> i64u
+fn curried_inline_integer flag value =
+    let callback: unit -> i64u =
+        if flag then fx unused -> value else fx unused -> ~value
+    let copies = [callback, callback]
+    copies[0] () ^ copies[1] () ^ callback ()
+
+export def curried_inline_float :: bool -> f64 -> f64
+fn curried_inline_float flag value =
+    let callback: unit -> f64 =
+        if flag then fx unused -> value else fx unused -> -value
+    let copy = callback
+    copy ()
+
+export def curried_inline_single :: bool -> f32 -> f32
+fn curried_inline_single flag value =
+    let callback: unit -> f32 =
+        if flag then fx unused -> value else fx unused -> -value
+    let copy = callback
+    copy ()
+
+export def curried_inline_bool :: bool -> bool -> bool
+fn curried_inline_bool flag value =
+    let callback: unit -> bool =
+        if flag then fx unused -> value else fx unused -> !value
+    let copy = callback
+    copy ()
+
+def curry_three :: i64u -> i64u -> i64u -> i64u
+fn curry_three seed left right = seed ^ (left * 17 + right)
+
+export def curried_inline_partial :: i64u -> i64u
+fn curried_inline_partial seed =
+    let first = curry_three seed
+    let copies = [first, first]
+    let second = copies[0] 7
+    second 11 + (copies[1] 13) 17

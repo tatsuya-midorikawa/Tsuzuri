@@ -126,6 +126,20 @@ fn record_pipeline count seed =
     while state.remaining > 0 do state = advance state
     state.value
 
+export def closure_churn :: i64 -> i64u -> i64u
+fn closure_churn count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = seed
+    for index in 0 .. count - 1 do
+        let captured = state
+        let transform: i64u -> i64u =
+            if (captured & 1) == 0 then fx value -> step value captured
+            else fx value -> step value (captured ^ 71)
+        let copy = transform
+        state = copy state
+        state = transform state
+    state
+
 export def integer128_mix :: i64 -> i64u -> i64u
 fn integer128_mix count seed =
     assert (count >= 0 && count <= 100000000)

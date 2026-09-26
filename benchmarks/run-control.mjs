@@ -52,6 +52,13 @@ function reference(name, size, seed) {
     for (let index = 0n; index < size; index++) seed = wrap((seed ^ (seed >> 13n)) * 6364136223846793005n + salt + 1442695040888963407n);
     return seed;
   }
+  if (name === "closure_churn") {
+    for (let index = 0n; index < size; index++) {
+      const salt = (seed & 1n) === 0n ? seed : seed ^ 71n;
+      for (let call = 0; call < 2; ++call) seed = wrap((seed ^ (seed >> 13n)) * 6364136223846793005n + salt + 1442695040888963407n);
+    }
+    return seed;
+  }
   if (name === "integer128_mix") {
     let state = (seed << 64n) | 1442695040888963407n;
     for (let remaining = size; remaining > 0n; remaining--) {
@@ -126,7 +133,7 @@ try {
   const variants = ["c", "cpp", "rust", "tsuzuri", ...(baseline ? ["before"] : [])];
   assert.equal(result.samples, variants.length * (quick ? 1 : 3));
   assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum",
-    "array_copy", "list_sum", "closure_capture", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
+    "array_copy", "list_sum", "closure_capture", "closure_churn", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
   for (const work of result.workloads) {
     assert.equal(work.checks.length, 25);
     for (const check of work.checks) {

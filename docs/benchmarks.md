@@ -16,12 +16,473 @@ WASM エンジン、ホスト呼び出しの粒度に依存します。
 | 指標 | 単位・計算方法 | 良い方向 |
 | --- | --- | --- |
 | 処理時間 | ms（ミリ秒）: 1 ms = 0.001 秒。µs（マイクロ秒）: 1 µs = 0.001 ms | **小さいほど高速** |
+| Tsuzuri 相対性能 | 最速の処理時間 / Tsuzuri の処理時間。最速を1.00000に正規化 | **大きいほど良好**。1.00000は最速と同じ、0.50000は最速の半分の性能 |
 | 時間比（Tsuzuri / 比較相手） | 単位なし。Tsuzuri の時間を比較相手の時間で割った値 | **小さいほど有利**。1未満なら Tsuzuri が速く、1なら同速、1より大きければ遅い |
 | 改善倍率（変更前 / 変更後） | 倍。変更前の時間を変更後の時間で割った値 | **大きいほど改善**。1より大きければ高速化、1未満なら低速化 |
 | 確保回数 | 回。ヒープ領域を確保した回数 | **少ないほど確保処理が少ない**。実行速度そのものではない |
 
 例えば 0.5 ms は 1.0 ms の半分の時間です。時間比なら 0.5、改善倍率なら 2倍と表します。
+サマリーの相対性能はこれらと別の指標です。最速が1 ms、Tsuzuriが2 msなら相対性能は0.50000です。
 仕事量は入力サイズであり、性能のスコアではありません。`-` は未測定で、ゼロ時間という意味ではありません。
+
+## ベンチマーク サマリー
+
+<!-- benchmark-summary:start -->
+<p><strong>処理時間は小さいほど高速です。</strong> 緑色・太字は各行の表示値で最速の実装です。同じ表示値は同率扱いです。僅差は一般的な優位性を示しません。</p>
+<p><strong>Tsuzuri 相対性能は大きいほど良好です。</strong> 最速を <code>1.00000</code> とし、最速の処理時間を Tsuzuri の処理時間で割ります。<code>0.50000</code> は最速の半分の性能（処理時間は2倍）、<code>0.80000</code> は最速の80%の性能です。小数第5位に丸めるため、ごく僅かな差は <code>1.00000</code> になります。比較できない行は <code>-</code> です。</p>
+<p>最終測定: <code>2026-09-26T12:02:10.992Z</code><br>CPU: Apple M1 Max / arm64 / native<br>Tsuzuri: <code style="overflow-wrap:anywhere">429015c246e6aa57f3e74f156750a671dfde173a4e002702080b9ef850db6bc9</code><br>C#: .NET 10.0.2 / JavaScript: v24.21.0</p>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">36種目 / native / scale 0.1 / 3回の中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri (ms)</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C (ms)</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++ (ms)</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust (ms)</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C# (ms)</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">JavaScript (ms)</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">観測最速</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap" title="この行の最速時間 / Tsuzuriの処理時間。大きいほど高速です">Tsuzuri 相対性能<br><small>最速 = 1.00000</small></th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/while_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.260250</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257583</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.260154</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.263000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.510545</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.485708</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9978837532235666" title="最速時間 / Tsuzuri時間 = 0.9978837532235666"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99788</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/for_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.261353</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.260824</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.258500</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 2.011300</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.506107</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.292542</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9977381430892066" title="最速時間 / Tsuzuri時間 = 0.9977381430892066"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99774</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.254824</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.259125</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257176</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.261824</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.509107</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.240042</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_if_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.259176</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.256813</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257562</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257625</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.506693</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36.941292</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9981233759220315" title="最速時間 / Tsuzuri時間 = 0.9981233759220315"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99812</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_builtin_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.259111</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.255437</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.259375</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.258933</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.504907</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36.971625</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9970820682211495" title="最速時間 / Tsuzuri時間 = 0.9970820682211495"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99708</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/match_dispatch</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.252333</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.254538</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.255125</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.254550</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.475707</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">46.226708</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_sum</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.166512</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.166639</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.167333</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.165629</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.582006</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.260520</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9946970788892092" title="最速時間 / Tsuzuri時間 = 0.9946970788892092"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99470</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_copy</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.134046</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.133827</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.139691</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.138662</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.398535</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.241396</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9983662324873551" title="最速時間 / Tsuzuri時間 = 0.9983662324873551"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99837</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/list_sum</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.177991</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.180562</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.179646</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.180439</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.238915</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.519678</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_capture</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.188726</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.188625</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.188880</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.189519</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.193991</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 5.226052</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.999464832614478" title="最速時間 / Tsuzuri時間 = 0.999464832614478"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99946</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_churn</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.633667</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.627406</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.627212</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.896304</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 2.353489</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.757896</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9898132615395784" title="最速時間 / Tsuzuri時間 = 0.9898132615395784"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98981</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/record_pipeline</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257353</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257813</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.258000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.256353</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.510843</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36.653375</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9992046783997812" title="最速時間 / Tsuzuri時間 = 0.9992046783997812"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99920</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/integer128_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.572865</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.510550</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.511195</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.526615</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.698290</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.155375</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.8912221902193361" title="最速時間 / Tsuzuri時間 = 0.8912221902193361"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.89122</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float32_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.879583</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.879087</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.878391</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.879708</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.880973</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 2.389458</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9986448123713169" title="最速時間 / Tsuzuri時間 = 0.9986448123713169"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99864</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float64_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.881583</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.880273</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.885750</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.882783</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.879408</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.799417</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9975328471624338" title="最速時間 / Tsuzuri時間 = 0.9975328471624338"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99753</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/integer_mix</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.136217</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.143896</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.143360</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.148664</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">65.695042</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/mandelbrot</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">243 x 243</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.033563</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.044823</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.977657</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.817850</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.058250</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9957106126697667" title="最速時間 / Tsuzuri時間 = 0.9957106126697667"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99571</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/array_sum</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.333241</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.333199</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.333425</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.163721</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.648938</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9998739650883295" title="最速時間 / Tsuzuri時間 = 0.9998739650883295"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99987</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_scan</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.006505</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.007135</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.007397</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.029312</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.066383</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_compare</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.017064</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.040177</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.019463</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.018979</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.008473</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">JavaScript</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.4965424285044538" title="最速時間 / Tsuzuri時間 = 0.4965424285044538"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.49654</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_validate</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.052943</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.054220</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.109140</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.076270</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.352653</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf8_roundtrip</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.135802</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.089322</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.105157</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.109455</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.399460</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.657736999455089" title="最速時間 / Tsuzuri時間 = 0.657736999455089"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.65774</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/format_parse</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.361152</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.287956</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.153248</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.271101</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.706445</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.7506562333864966" title="最速時間 / Tsuzuri時間 = 0.7506562333864966"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.75066</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/math_intrinsics</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.502429</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.504254</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.504626</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.505729</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.503375</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequence</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.078303</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.078511</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.078520</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.622019</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.832987</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequential</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.255049</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.257371</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.256434</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.260312</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26.283854</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_parallel</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.270801</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.271723</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.282452</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.207901</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.328333</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.7677261162255679" title="最速時間 / Tsuzuri時間 = 0.7677261162255679"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.76773</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.315597</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.314338</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.376964</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.314195</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 9.453403</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9955576257062012" title="最速時間 / Tsuzuri時間 = 0.9955576257062012"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99556</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.512117</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.502418</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.517866</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.812968</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.448646</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9810609684896224" title="最速時間 / Tsuzuri時間 = 0.9810609684896224"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98106</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.127529</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.126686</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.145697</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.181289</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 7.499083</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9933897388045071" title="最速時間 / Tsuzuri時間 = 0.9933897388045071"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99339</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000603</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000603</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000584</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001198</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.075583</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.96849087893864" title="最速時間 / Tsuzuri時間 = 0.96849087893864"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.96849</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000601</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000609</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000590</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001195</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.074818</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9816971713810317" title="最速時間 / Tsuzuri時間 = 0.9816971713810317"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98170</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002617</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002600</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002674</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.003055</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.062440</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9935040122277417" title="最速時間 / Tsuzuri時間 = 0.9935040122277417"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99350</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.503928</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.440928</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.439684</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.525974</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.823125</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.8725135336794145" title="最速時間 / Tsuzuri時間 = 0.8725135336794145"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.87251</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.512261</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.503086</code></strong></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.517902</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.747900</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.489666</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9820892084308586" title="最速時間 / Tsuzuri時間 = 0.9820892084308586"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98209</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.017409</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001514</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001808</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002098</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.057878</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">条件差あり</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" title="比較条件または測定値のため計算対象外"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">       -</code></td>
+</tr>
+</tbody></table>
+</div>
+<p><code>-</code> は未測定です。すべて wall time（ms/呼び出し）で、起動時間は含みません。C#/JavaScript は別プロセス、管理メモリの回収条件は言語ごとに異なります。<code>std_option_owned</code> は確保条件が異なるため順位を付けません。詳細な比較条件は後述します。</p>
+<!-- benchmark-summary:end -->
 
 ## C/C++・Rust・C#・JavaScript の横断比較
 
@@ -37,8 +498,22 @@ node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1 --cpu native
 npx --yes --package=node@24 node benchmarks/run-managed.mjs target/release/tsuzuri --quick
 ```
 
-既存の control 14 種目、cpp 12 種目、computations 9 種目を同じ入力・チェックサムで比較します。
-C は control の14種目、C++・Rust・C#・JavaScript は35種目に対応します。
+通常の `run-managed.mjs` が成功すると、冒頭のベンチマーク サマリーをその測定結果で自動更新します。
+`--quick` はサマリーを更新しません。文書を変更せずに測る場合は `--no-report` を指定します。
+サマリーの日時・CPU指定・仕事量・コンパイラ識別子は、その結果の条件です。異なる条件の実測は混ぜません。
+保存した同条件の結果をまとめて再表示する場合は、次のコマンドを使います。複数ファイルでは各回の中央値の中央値です。
+古い JSON に測定日時がない場合だけ、結果ファイルの更新日時を表示します。
+
+```sh
+node benchmarks/report.mjs result-1.json result-2.json result-3.json
+node tests/benchmark_report.mjs
+```
+
+サマリーは HTML テーブルです。横に収まらない場合はスクロールでき、数値は等幅・右揃えで表示します。
+表示環境が HTML の色指定を無効にしても、太字と「観測最速」の列で判別できます。
+
+現在は control 15 種目、cpp 12 種目、computations 9 種目を同じ入力・チェックサムで比較します。
+C は control の15種目、C++・Rust・C#・JavaScript は36種目に対応します。
 **実装済みの主要な実行時カテゴリを対応づけた比較であり、全 API・全型・全入力での性能証明ではありません。**
 未測定を同速・高速・対応済みと解釈しないでください。
 
@@ -47,7 +522,7 @@ C は control の14種目、C++・Rust・C#・JavaScript は35種目に対応し
 | 整数・ビット演算・末尾再帰・while/for・if/match | control の各 mix、match_dispatch、integer128_mix。狭幅整数全演算の個別速度は未測定 |
 | f32/f64・型変換・sqrt/floor/ceil/abs | float32_mix、float64_mix、mandelbrot、math_intrinsics |
 | 配列・リスト・所有権・コピー・借用・ローカル更新 | array_sum、array_copy、list_sum。確保・初期化・走査・解放を含む |
-| 関数値・カリー化・捕捉・高階関数・ジェネリックなレコード | closure_capture、record_pipeline、computations。構文差だけの機能は共通 lowering の処理へ対応づける |
+| 関数値・カリー化・捕捉・高階関数・ジェネリックなレコード | closure_capture、closure_churn、record_pipeline、computations。構文差だけの機能は共通 lowering の処理へ対応づける |
 | union・Option/Result・型クラス・ユーザービルダー | checked、std_option、std_result、9種類の computations |
 | UTF-16/UTF-8・連結・複製・走査・比較・検査・修復・変換 | utf16_scan、utf16_compare、utf16_validate、utf8_roundtrip |
 | Display/Parse | format_parse は u64 の十進表示と解析。全数値型の表示・解析速度は未測定 |
@@ -90,7 +565,72 @@ C は control の14種目、C++・Rust・C#・JavaScript は35種目に対応し
 Node 20.19.6 の V8 では反復した BigInt 参照計算で `RepresentationChangerError` による内部停止を確認したため、
 run-cpp/run-managed は Node 24 以上を要求します。JIT を無効化して比較結果を出す回避はしません。
 
-### 追加改善の実測（2026-09-26）
+### C# 同等項目の追加改善（2026-09-26）
+
+C# と同程度だった項目を再確認し、動的関数値の共通処理を改善しました。
+単一の小さなスカラー捕捉を関数記述子の環境欄へ直接格納し、環境の確保・複製・読出しを省きます。
+さらに通常の内部 adapter を値引数先頭にして、返り値を次の値引数へ移す命令を減らしました。
+特定の関数名・入力値・反復数による特別扱いはしていません。
+
+同じ M1 Max・Clang 23.1.1・Rust 1.98.1・.NET 10.0.2・Node 24.21.0、`--scale 0.1`、generic/native 各3回です。
+新旧 Tsuzuri と C/C++/Rust は同一プロセス内で交互に測定し、C#/JavaScript は別のウォームアップ済みプロセスです。
+以下は各回の中央値の中央値。**処理時間（ms）は小さいほど高速です。**
+呼び出しは10万回、作成・コピーは10万反復で1反復につき同じ関数値を2回呼びます。
+
+| CPU | 種目 | Tsuzuri 今回 (ms) | Tsuzuri 前回 (ms) | C# (ms) | C++ (ms) | Rust (ms) | JavaScript (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| generic | 動的呼び出し（closure_capture） | 0.188876 | 0.208533 | 0.193285 | 0.188593 | 0.188757 | 5.292073 |
+| native | 動的呼び出し（closure_capture） | 0.188726 | 0.213011 | 0.193991 | 0.188880 | 0.189519 | 5.226052 |
+| generic | 作成・コピー（closure_churn） | 0.633267 | 4.574000 | 2.314744 | 0.627333 | 0.901409 | 11.729500 |
+| native | 作成・コピー（closure_churn） | 0.633667 | 4.569800 | 2.353489 | 0.627212 | 0.896304 | 11.757896 |
+
+動的呼び出しは約9〜11%の時間短縮、作成・コピーは前回比約7.2倍です。
+C# と呼び出しだけの差は約2〜3%なので、一般的な優位性とは扱いません。
+新たに追加した作成・コピー種目では C# 比約3.6〜3.7倍でした。
+これは単一の不変スカラーの捕捉を比較する種目であり、所有値を含む環境全般に同じ倍率を適用できません。
+C#/JavaScript のコピーは参照のコピーでも意味が等しく、C++/Rust の環境をヒープに置くことは強制していません。
+
+最適化後の2種目の実行経路には malloc/free・環境clone/drop呼び出しがなく、ARM64 の動的ループで値の移動2命令が消えています。
+C# の作成・コピー種目は今回の JIT 条件で1反復88バイト、10万反復で8.8 MBの管理ヒープ確保でした。
+計測中の GC は時間に含みますが、管理ヒープの回収時点が Tsuzuri と同じという意味ではありません。
+1,000回・100万回でも結果を照合し、作成・コピーは前回比約9.7倍・約7.2倍でした。
+
+他の C# 同等項目も再測定しました。次は generic、**処理時間（ms）は小さいほど高速です。**
+これらの算術ループのアルゴリズムや浮動小数点の意味は変更していません。
+
+| 種目 | 仕事量 | Tsuzuri (ms) | C# (ms) | C++ (ms) | 判断 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| f32演算（float32_mix） | 400000 | 0.881955 | 0.878929 | 0.880739 | ほぼ同速・変更なし |
+| f64演算（float64_mix） | 400000 | 0.879739 | 0.882617 | 0.880087 | ほぼ同速・変更なし |
+| 数学組み込み（math_intrinsics） | 50000 | 0.502622 | 0.501804 | 0.502320 | 直接命令を維持 |
+| 単純なbind（computations/bind） | 200000 | 0.314065 | 0.318949 | 0.314175 | ほぼ同速・変更なし |
+| 独立計算の逐次実行（task_sequential） | 50000 x 16 | 1.256542 | 1.262647 | 1.255817 | 自動並列化なし |
+
+sqrt/floor/ceil/abs はすでに LLVM の直接命令です。依存した演算の再結合、暗黙の FMA、
+逐次処理の勝手な並列化は採用していません。すべての C# 同等項目で差がついたという結果ではありません。
+
+直接格納は非 Task の整数・bool・f32/f64が1個、かつターゲットのポインター幅に収まる場合だけです。
+環境欄はビット列として扱い、dereference/free しません。所有値・参照・複数捕捉・広幅値は従来経路、
+wasm32 の i64/f64 も従来経路です。WASM 全般の同倍率の高速化は主張しません。
+関数値の4欄表現・公開ABI・Taskの呼び出し規約・スナップショット・評価順序・丸めは維持します。
+native/WASM O0/O3 で、ゼロ・極値・NaN・符号付きゼロ、コピー、1捕捉から複数捕捉への部分適用、
+所有環境のフォールバック、引数評価中の関数差し替えを検査しました。
+Rust 267テスト、Clippy、プリミティブ・Task・ビルダー・制御構文・ABI・実例の実行検証も通過しています。
+
+基準コミットは `1365c05`。コンパイラ SHA-256 は前回
+`d20a3f91440bf169965a6c11105359ad70c7a0322113e9c3f5d524a971a0593b`、今回
+`429015c246e6aa57f3e74f156750a671dfde173a4e002702080b9ef850db6bc9`。
+生データは `target/benchmarks/csharp-parity-20260926/final-{generic,native}-{1,2,3}.json`、
+各条件の第1回の同名ディレクトリには入力・生成コード・元の native/WASM 結果を保存しています。
+サイズ別は `size-0.001.json` と `size-1.json` です。再現例:
+
+```sh
+node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1 \
+  --baseline target/benchmarks/csharp-parity-20260926/tsuzuri-before \
+  --artifacts target/benchmarks/csharp-parity-check
+```
+
+### 数値・UTFの追加改善（2026-09-26）
 
 初回の改善後を基準に、数値ランタイムと UTF 変換をさらに改善しました。下の初回35種目の表は履歴として残します。
 同じ M1 Max・Homebrew Clang 23.1.1・`-O3`・Node 24.21.0、`--scale 0.1` で新旧を交互に各3回実行しました。

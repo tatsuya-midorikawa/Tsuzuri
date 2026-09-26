@@ -139,7 +139,7 @@ const storage = [
   ["copy_stack()", "21", 1, (api) => api.tz_copy_stack(), 21n],
   ["concat_stack()", "1206", 2, (api) => api.tz_concat_stack(), 1206n],
   ["capture_stack()", "76", 4, (api) => api.tz_capture_stack(), 76n],
-  ["function_stack()", "4015", 1, (api) => api.tz_function_stack(), 4015n],
+  ["function_stack()", "4015", 0, (api) => api.tz_function_stack(), 4015n],
   ["loop_copies(10)", "210110", 10, (api) => api.tz_loop_copies(10n), 210110n],
   ["loop_moves(10)", "22", 30, (api) => api.tz_loop_moves(10n), 22n],
   ["tail_frames(0)", "4", 0, (api) => api.tz_tail_frames(0n), 4n],
@@ -227,6 +227,24 @@ int main(int argc, char **argv) {
     assert(tz_curried_higher() == 42 && live == 0);
     assert(tz_curried_churn(40000) == 2160054 && live == 0);
     for (int flag = 0; flag < 2; ++flag) {
+      const uint64_t integers[] = {0, 1, UINT64_MAX, UINT64_C(1) << 63, UINT64_C(0xabcdef0123456789)};
+      for (unsigned index = 0; index < sizeof(integers) / sizeof(integers[0]); ++index) {
+        uint64_t value = integers[index];
+        assert(tz_curried_inline_integer(flag, value) == (flag ? value : ~value) && live == 0);
+        assert(tz_curried_inline_partial(value) == ((value ^ 130) + (value ^ 238)) && live == 0);
+      }
+      const double numbers[] = {0.0, -0.0, 1.25, -7.5, 0x1p-1074, INFINITY, -INFINITY, NAN};
+      for (unsigned index = 0; index < sizeof(numbers) / sizeof(numbers[0]); ++index) {
+        double expected = flag ? numbers[index] : -numbers[index];
+        double value = tz_curried_inline_float(flag, numbers[index]);
+        assert((isnan(expected) ? isnan(value) : value == expected && !!signbit(value) == !!signbit(expected)) && live == 0);
+        float small = (float)numbers[index];
+        float expected_small = flag ? small : -small;
+        float actual_small = tz_curried_inline_single(flag, small);
+        assert((isnan(expected_small) ? isnan(actual_small) : actual_small == expected_small && !!signbit(actual_small) == !!signbit(expected_small)) && live == 0);
+      }
+      assert(tz_curried_inline_bool(flag, 0) == !flag && live == 0);
+      assert(tz_curried_inline_bool(flag, 1) == flag && live == 0);
       assert(tz_curried_dynamic_owned(flag) == 9 && live == 0);
       assert(tz_curried_replaced(flag) == (flag ? 101002 : 41002) && live == 0);
       for (int64_t count = 0; count <= 257; ++count) {
@@ -357,6 +375,17 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_curried_higher(), 42);
     assert.equal(api.tz_curried_churn(40000n), 2160054n);
     for (const flag of [0, 1]) {
+      for (const value of [0n, 1n, (1n << 64n) - 1n, 1n << 63n, 0xabcdef0123456789n]) {
+        assert.equal(BigInt.asUintN(64, api.tz_curried_inline_integer(flag, value)), flag ? value : BigInt.asUintN(64, ~value));
+        assert.equal(BigInt.asUintN(64, api.tz_curried_inline_partial(value)), BigInt.asUintN(64, (value ^ 130n) + (value ^ 238n)));
+      }
+      for (const value of [0, -0, 1.25, -7.5, Number.MIN_VALUE, 2 ** -149, Infinity, -Infinity, NaN]) {
+        assert.equal(api.tz_curried_inline_float(flag, value), flag ? value : -value);
+        const small = Math.fround(value);
+        assert.equal(api.tz_curried_inline_single(flag, small), flag ? small : -small);
+      }
+      assert.equal(api.tz_curried_inline_bool(flag, 0), 1 - flag);
+      assert.equal(api.tz_curried_inline_bool(flag, 1), flag);
       assert.equal(api.tz_curried_dynamic_owned(flag), 9n);
       assert.equal(api.tz_curried_replaced(flag), flag ? 101002n : 41002n);
       for (let count = 0n; count <= 257n; ++count) {

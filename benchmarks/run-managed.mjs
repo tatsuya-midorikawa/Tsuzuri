@@ -4,13 +4,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishSummary } from "./report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (Number(process.versions.node.split(".")[0]) < 24) {
   throw new Error("This benchmark requires Node.js 24+; run with a current LTS runtime without disabling JIT optimization.");
 }
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-managed.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-managed.mjs [compiler] [--quick] [--no-report] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
 const take = (name, fallback) => {
   const index = args.indexOf(name);
   if (index < 0) return fallback;
@@ -24,10 +25,12 @@ const scaleArgument = take("--scale", null);
 const baseline = take("--baseline", null);
 const artifacts = take("--artifacts", null);
 const quick = args.includes("--quick");
-const positional = args.filter((value) => value !== "--quick");
+const noReport = args.includes("--no-report");
+const positional = args.filter((value) => !["--quick", "--no-report"].includes(value));
 const scale = Number(scaleArgument ?? (quick ? "1" : "0.01"));
 if (positional.length > 1 || positional.some((value) => value.startsWith("-"))
     || args.filter((value) => value === "--quick").length > 1 || !["generic", "native"].includes(cpu)
+    || args.filter((value) => value === "--no-report").length > 1
     || !Number.isFinite(scale) || scale <= 0 || scale > 5 || (quick && scale !== 1)) throw new Error(usage);
 const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
 const dotnet = process.env.TSUZURI_DOTNET ?? "dotnet";
@@ -89,6 +92,7 @@ try {
         .map(([name, data]) => [name, variants.tsuzuri.median_wall_ms / data.median_wall_ms])) };
   });
   const result = { mode: quick ? "correctness-smoke" : "benchmark", cpu, scale,
+    measured_at: new Date().toISOString(),
     native_options: Object.fromEntries(Object.entries(native).map(([family, data]) => [family, {
       c_cpp_flags: data.c_cpp_flags ?? data.cpp_flags ?? data.native_flags,
       rust_flags: data.rust_flags,
@@ -105,6 +109,7 @@ try {
     writeFileSync(join(resolve(artifacts), "native.json"), JSON.stringify(native, null, 2));
     writeFileSync(join(resolve(artifacts), "result.json"), JSON.stringify(result, null, 2));
   }
+  if (!quick && !noReport) publishSummary([result]);
   console.log(JSON.stringify(result, null, 2));
 } finally {
   rmSync(temporary, { recursive: true, force: true });

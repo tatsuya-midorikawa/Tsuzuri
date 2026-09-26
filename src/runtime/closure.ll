@@ -1,3 +1,13 @@
+define internal ptr @tz.closure.immediate.clone(ptr %value) nounwind {
+entry:
+  ret ptr %value
+}
+
+define internal void @tz.closure.immediate.drop(ptr %value) nounwind {
+entry:
+  ret void
+}
+
 define internal %tz.closure @tz.closure.clone(%tz.closure %value) nounwind {
 entry:
   %env = extractvalue %tz.closure %value, 1

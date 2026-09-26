@@ -202,6 +202,23 @@ pub extern "C" fn rust_closure_capture(count: i64, seed: u64) -> u64 {
     state
 }
 
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_closure_churn(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    let mut state = seed;
+    for _ in 0..count {
+        let captured = state;
+        let first = |value| step(value, captured);
+        let second = |value| step(value, captured ^ 71);
+        let transform: &dyn Fn(u64) -> u64 = if captured & 1 == 0 { &first } else { &second };
+        let copy = transform;
+        state = copy(state);
+        state = transform(state);
+    }
+    state
+}
+
 struct State<Value> {
     value: Value,
     remaining: i64,

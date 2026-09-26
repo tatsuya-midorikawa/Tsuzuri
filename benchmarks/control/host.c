@@ -30,6 +30,7 @@ DECLARE(array_sum)
 DECLARE(array_copy)
 DECLARE(list_sum)
 DECLARE(closure_capture)
+DECLARE(closure_churn)
 DECLARE(record_pipeline)
 DECLARE(integer128_mix)
 DECLARE(float32_mix)
@@ -94,6 +95,7 @@ int main(int argc, char **argv) {
         WORKLOAD(array_copy, quick ? 1024 : 2000000),
         WORKLOAD(list_sum, quick ? 1024 : 100000),
         WORKLOAD(closure_capture, quick ? 1024 : 1000000),
+        WORKLOAD(closure_churn, quick ? 1024 : 1000000),
         WORKLOAD(record_pipeline, quick ? 1024 : 8000000),
         WORKLOAD(integer128_mix, quick ? 1024 : 2000000),
         WORKLOAD(float32_mix, quick ? 1024 : 4000000),

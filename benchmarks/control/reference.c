@@ -148,6 +148,19 @@ NOINLINE uint64_t KERNEL(closure_capture)(int64_t count, uint64_t seed) {
     return state;
 }
 
+NOINLINE uint64_t KERNEL(closure_churn)(int64_t count, uint64_t seed) {
+    check_count(count);
+    uint64_t state = seed;
+    for (int64_t index = 0; index < count; ++index) {
+        uint64_t captured = state;
+        uint64_t (*transform)(uint64_t, uint64_t) = (captured & 1) == 0 ? captured_first : captured_second;
+        uint64_t (*copy)(uint64_t, uint64_t) = transform;
+        state = copy(state, captured);
+        state = transform(state, captured);
+    }
+    return state;
+}
+
 struct State { uint64_t value; int64_t remaining; };
 
 static struct State advance(const struct State *state) {

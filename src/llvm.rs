@@ -319,6 +319,18 @@ fn environment_type(function: &CheckedFunction, count: usize, module: &CheckedMo
     )
 }
 
+fn immediate_capture(function: &CheckedFunction, count: usize, wasm: bool) -> bool {
+    if function.is_task || count != 1 {
+        return false;
+    }
+    let width = match function.signature.parameters[0] {
+        Type::Integer(bits, _) | Type::Binary(bits @ (32 | 64)) => u32::from(bits),
+        Type::Bool => 1,
+        _ => return false,
+    };
+    width <= if wasm { 32 } else { usize::BITS }
+}
+
 fn closure_wrappers(
     module: &CheckedModule,
     function: &CheckedFunction,
@@ -333,7 +345,8 @@ fn closure_wrappers(
     let arity = function.parameters.len();
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
-        if count != 0 {
+        let immediate = immediate_capture(function, count, globals.wasm);
+        if count != 0 && !immediate {
             if !function.is_task
                 && function.signature.parameters[..count]
                     .iter()
@@ -399,7 +412,8 @@ fn closure_wrappers(
             specializations,
         );
         let mut env = "%env".to_owned();
-        if !function.is_task
+        if !immediate
+            && !function.is_task
             && count != 0
             && function.signature.parameters[..count]
                 .iter()
@@ -462,16 +476,13 @@ fn closure_wrappers(
             }
         }
         let mut values = Vec::new();
-        for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
-            let pointer = apply.value(format!(
-                "getelementptr inbounds {environment}, ptr {env}, i32 0, i32 {index}"
-            ));
-            values.push(apply.value(format!("load {}, ptr {pointer}", apply.ty(ty))));
+        for index in 0..count {
+            values.push(apply.closure_capture_value(function, count, index, &env));
         }
         if count < arity {
             values.push("%argument".into());
         }
-        if count != 0 {
+        if count != 0 && !immediate {
             apply.instruction(format!("call void @tz.free(ptr {env})"));
         }
         let (value, result) = if values.len() == arity {
@@ -497,7 +508,7 @@ fn closure_wrappers(
         apply.instruction(format!("ret {} {value}", apply.ty(&result)));
         let argument = if count < arity {
             format!(
-                ", {} %argument",
+                "{} %argument, ",
                 apply.ty(&function.signature.parameters[count])
             )
         } else {
@@ -505,7 +516,7 @@ fn closure_wrappers(
         };
         let borrow = if function.is_task { "" } else { ", i1 %borrow" };
         output.push_str(&apply.auxiliary(&format!(
-            "{} @tz.apply.{name}.{count}(ptr %env{argument}{borrow})",
+            "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
             llvm_type(&result, module)
         )));
     }
@@ -2181,11 +2192,53 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.begin(&exit);
     }
 
+    fn closure_capture_value(
+        &mut self,
+        function: &CheckedFunction,
+        count: usize,
+        index: usize,
+        environment: &str,
+    ) -> String {
+        let ty = &function.signature.parameters[index];
+        if immediate_capture(function, count, self.globals.wasm) {
+            let integer = match ty {
+                Type::Binary(bits) => format!("i{bits}"),
+                _ => self.ty(ty),
+            };
+            let value = self.value(format!("ptrtoint ptr {environment} to {integer}"));
+            if matches!(ty, Type::Binary(_)) {
+                self.value(format!("bitcast {integer} {value} to {}", self.ty(ty)))
+            } else {
+                value
+            }
+        } else {
+            let environment_ty = environment_type(function, count, self.module);
+            let pointer = self.value(format!(
+                "getelementptr inbounds {environment_ty}, ptr {environment}, i32 0, i32 {index}"
+            ));
+            self.value(format!("load {}, ptr {pointer}", self.ty(ty)))
+        }
+    }
+
     fn make_closure(&mut self, id: usize, values: &[String]) -> String {
         let function = &self.module.functions[id];
         let count = values.len();
         let environment = if count == 0 {
             "null".to_owned()
+        } else if immediate_capture(function, count, self.globals.wasm) {
+            let ty = &function.signature.parameters[0];
+            let (integer, value) = if let Type::Binary(bits) = ty {
+                let integer = format!("i{bits}");
+                let value = self.value(format!(
+                    "bitcast {} {} to {integer}",
+                    self.ty(ty),
+                    values[0]
+                ));
+                (integer, value)
+            } else {
+                (self.ty(ty), values[0].clone())
+            };
+            self.value(format!("inttoptr {integer} {value} to ptr"))
         } else {
             let ty = environment_type(function, count, self.module);
             let environment = self.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64))"));
@@ -2215,6 +2268,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if count == 0 {
             return value;
         }
+        if immediate_capture(function, count, self.globals.wasm) {
+            let value = self.value(format!(
+                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.clone, 2"
+            ));
+            return self.value(format!(
+                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.drop, 3"
+            ));
+        }
         let value = if !function.is_task
             && function.signature.parameters[..count]
                 .iter()
@@ -2236,6 +2297,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             return self.closure_descriptor(target.function, 0, "null");
         }
         let function = &self.module.functions[target.function];
+        if immediate_capture(function, target.bound, self.globals.wasm) {
+            return self.make_closure(target.function, values);
+        }
         let environment_ty = environment_type(function, target.bound, self.module);
         let environment = self.fresh();
         self.allocas
@@ -2304,10 +2368,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let environment = self.value(format!("extractvalue %tz.closure {callee}, 1"));
         let result = ty.after_arguments(usize::from(argument.is_some()));
         let argument = argument.map_or_else(String::new, |(ty, value)| {
-            format!(", {} {value}", self.ty(ty))
+            format!("{} {value}, ", self.ty(ty))
         });
         let value = self.value(format!(
-            "call {} {code}(ptr {environment}{argument}, i1 {borrowed})",
+            "call {} {code}({argument}ptr {environment}, i1 {borrowed})",
             self.ty(&result)
         ));
         (value, result)
@@ -2529,16 +2593,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let captures = if Self::is_place(callee) {
             let value = self.expression_mode(callee, false);
             let environment = self.value(format!("extractvalue %tz.closure {value}, 1"));
-            let environment_ty = environment_type(function, target.bound, self.module);
             let mut values = Vec::new();
-            for (index, ty) in function.signature.parameters[..target.bound]
-                .iter()
-                .enumerate()
-            {
-                let pointer = self.value(format!(
-                    "getelementptr inbounds {environment_ty}, ptr {environment}, i32 0, i32 {index}",
+            for index in 0..target.bound {
+                values.push(self.closure_capture_value(
+                    function,
+                    target.bound,
+                    index,
+                    &environment,
                 ));
-                values.push(self.value(format!("load {}, ptr {pointer}", self.ty(ty))));
             }
             values
         } else {
