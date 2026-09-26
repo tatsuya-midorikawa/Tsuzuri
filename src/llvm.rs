@@ -398,10 +398,73 @@ fn closure_wrappers(
             globals,
             specializations,
         );
+        let mut env = "%env".to_owned();
+        if !function.is_task
+            && count != 0
+            && function.signature.parameters[..count]
+                .iter()
+                .all(|ty| ty.can_capture(&module.types()))
+        {
+            let target = ClosureTarget {
+                function: id,
+                bound: count,
+            };
+            let worker = if count + 1 >= arity && apply.specializations.can_borrow(target, module) {
+                if function.signature.parameters[..count]
+                    .iter()
+                    .all(|ty| !ty.needs_drop(&module.types()))
+                {
+                    Some(format!("@tz.fn.{name}"))
+                } else {
+                    apply
+                        .specializations
+                        .request(Specialization {
+                            function: id,
+                            callbacks: Vec::new(),
+                            borrowed: count,
+                        })
+                        .map(|worker| format!("@tz.specialized.{worker}"))
+                }
+            } else {
+                None
+            };
+            let entry = apply.block.clone();
+            let borrowed = apply.label();
+            let owned = apply.label();
+            apply.branch("%borrow", &borrowed, &owned);
+            apply.begin(&borrowed);
+            if let Some(worker) = worker {
+                let mut values = Vec::new();
+                for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
+                    let pointer = apply.value(format!(
+                        "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
+                    ));
+                    let value = apply.value(format!("load {}, ptr {pointer}", apply.ty(ty)));
+                    values.push(format!("{} {value}", apply.ty(ty)));
+                }
+                if count < arity {
+                    values.push(format!(
+                        "{} %argument",
+                        apply.ty(&function.signature.parameters[count])
+                    ));
+                }
+                let result = apply.ty(&function.signature.result);
+                let value = apply.value(format!("call {result} {worker}({})", values.join(", ")));
+                apply.instruction(format!("ret {result} {value}"));
+                apply.begin(&owned);
+            } else {
+                let cloned =
+                    apply.value(format!("call ptr @tz.env.clone.{name}.{count}(ptr %env)"));
+                let end = apply.block.clone();
+                apply.jump(&owned);
+                apply.begin(&owned);
+                env = apply.value(format!("phi ptr [ %env, %{entry} ], [ {cloned}, %{end} ]"));
+            }
+        }
         let mut values = Vec::new();
         for (index, ty) in function.signature.parameters[..count].iter().enumerate() {
             let pointer = apply.value(format!(
-                "getelementptr inbounds {environment}, ptr %env, i32 0, i32 {index}"
+                "getelementptr inbounds {environment}, ptr {env}, i32 0, i32 {index}"
             ));
             values.push(apply.value(format!("load {}, ptr {pointer}", apply.ty(ty))));
         }
@@ -409,7 +472,7 @@ fn closure_wrappers(
             values.push("%argument".into());
         }
         if count != 0 {
-            apply.instruction("call void @tz.free(ptr %env)");
+            apply.instruction(format!("call void @tz.free(ptr {env})"));
         }
         let (value, result) = if values.len() == arity {
             let arguments = values
@@ -440,8 +503,9 @@ fn closure_wrappers(
         } else {
             String::new()
         };
+        let borrow = if function.is_task { "" } else { ", i1 %borrow" };
         output.push_str(&apply.auxiliary(&format!(
-            "{} @tz.apply.{name}.{count}(ptr %env{argument})",
+            "{} @tz.apply.{name}.{count}(ptr %env{argument}{borrow})",
             llvm_type(&result, module)
         )));
     }
@@ -1395,9 +1459,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     self.finish_borrowed_call(&call);
                     return result;
                 }
-                let function = self.expression(callee);
-                self.apply_value(&function, &callee.ty, Some((&argument.ty, &value)))
-                    .0
+                let borrowed = Self::is_place(callee);
+                let function = self.expression_mode(callee, !borrowed);
+                self.apply_value(
+                    &function,
+                    &callee.ty,
+                    Some((&argument.ty, &value)),
+                    borrowed,
+                )
+                .0
             }
             TypedExprKind::Binary(operator, left, right) => self.binary(*operator, left, right),
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
@@ -1487,10 +1557,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     let value = if let Some(call) = &direct {
                         emitter.emit_borrowed_call(call, &[index.to_owned()])
                     } else {
-                        let function =
-                            emitter.clone_value(&initializer.ty, callee.as_ref().unwrap());
                         emitter
-                            .apply_value(&function, &initializer.ty, Some((&Type::I64, index)))
+                            .apply_value(
+                                callee.as_ref().unwrap(),
+                                &initializer.ty,
+                                Some((&Type::I64, index)),
+                                true,
+                            )
                             .0
                     };
                     let pointer = emitter.element_pointer(element, &data, index);
@@ -1519,10 +1592,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     let value = if let Some(call) = &direct {
                         emitter.emit_borrowed_call(call, &[index.to_owned()])
                     } else {
-                        let function =
-                            emitter.clone_value(&initializer.ty, callee.as_ref().unwrap());
                         emitter
-                            .apply_value(&function, &initializer.ty, Some((&Type::I64, index)))
+                            .apply_value(
+                                callee.as_ref().unwrap(),
+                                &initializer.ty,
+                                Some((&Type::I64, index)),
+                                true,
+                            )
                             .0
                     };
                     emitter.append_list(element, &tail, &value);
@@ -2222,6 +2298,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         callee: &str,
         ty: &Type,
         argument: Option<(&Type, &str)>,
+        borrowed: bool,
     ) -> (String, Type) {
         let code = self.value(format!("extractvalue %tz.closure {callee}, 0"));
         let environment = self.value(format!("extractvalue %tz.closure {callee}, 1"));
@@ -2230,7 +2307,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             format!(", {} {value}", self.ty(ty))
         });
         let value = self.value(format!(
-            "call {} {code}(ptr {environment}{argument})",
+            "call {} {code}(ptr {environment}{argument}, i1 {borrowed})",
             self.ty(&result)
         ));
         (value, result)
@@ -2324,6 +2401,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             _ => None,
         };
+        let mut borrowed = false;
         let (mut value, mut ty, consumed) = if let Some((symbol, signature, callbacks)) = known {
             let count = signature.parameters.len();
             let mut values = Vec::new();
@@ -2356,15 +2434,20 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             (value, signature.result, count)
         } else {
-            let value = self.expression(callee);
+            borrowed = Self::is_place(callee)
+                && !arguments
+                    .iter()
+                    .any(|argument| call_specialization::may_mutate(argument, self.module));
+            let value = self.expression_mode(callee, !borrowed);
             if arguments.is_empty() {
-                return self.apply_value(&value, &callee.ty, None).0;
+                return self.apply_value(&value, &callee.ty, None, borrowed).0;
             }
             (value, callee.ty.clone(), 0)
         };
         for argument in &arguments[consumed..] {
             let next = self.expression(argument);
-            (value, ty) = self.apply_value(&value, &ty, Some((&argument.ty, &next)));
+            (value, ty) = self.apply_value(&value, &ty, Some((&argument.ty, &next)), borrowed);
+            borrowed = false;
         }
         value
     }
@@ -3059,7 +3142,7 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
                 "  %buffer = alloca [128 x i8], align 16\n\
                    %count = call i32 @tz_soft_format(ptr %buffer, ptr {pointer}, i32 {})\n\
                    %length = zext i32 %count to i64\n\
-                   %r = call %tz.string @tz.string.from_utf8(ptr %buffer, i64 %length)\n\
+                   %r = call %tz.string @tz.string.from_ascii(ptr %buffer, i64 %length)\n\
                    ret %tz.string %r",
                 numeric_kind(ty),
             );
@@ -3359,7 +3442,7 @@ mod tests {
             assert!(body.contains("call %tz.string @tz.string.from_utf8("));
             assert_eq!(body.contains("call void @tz.free(ptr %data)"), consumed);
         }
-        assert!(ir.contains("call %tz.string @tz.string.from_utf8(ptr %buffer, i64 %length)"));
+        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %buffer, i64 %length)"));
         assert!(ir.contains("constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]"));
         assert!(ir.contains("call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)"));
         assert!(ir.contains("br i1 %ascii, label %parse, label %none"));

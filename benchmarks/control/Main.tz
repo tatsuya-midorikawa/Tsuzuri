@@ -85,3 +85,67 @@ fn array_sum count seed =
     let mut total = 0i64u
     for value in values do total = total + value
     total
+
+export def array_copy :: i64 -> i64u -> i64u
+fn array_copy count seed =
+    assert (count >= 0 && count <= 100000000)
+    let values = new [i64u](count, fx index -> (index as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
+    let copied = values
+    let mut total = 0i64u
+    for value in values do total = total + value
+    for value in copied do total = total + value
+    total
+
+export def list_sum :: i64 -> i64u -> i64u
+fn list_sum count seed =
+    assert (count >= 0 && count <= 100000000)
+    let values = new [|i64u|](count, fx index -> (index as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
+    let mut total = 0i64u
+    for value in values do total = total + value
+    total
+
+export def closure_capture :: i64 -> i64u -> i64u
+fn closure_capture count seed =
+    assert (count >= 0 && count <= 100000000)
+    let transform: i64u -> i64u =
+        if (seed & 1) == 0 then fx value -> step value seed
+        else fx value -> step value (seed ^ 71)
+    let mut state = seed
+    for index in 0 .. count - 1 do state = transform state
+    state
+
+record State<'value> { value: 'value, remaining: i64 }
+
+def advance :: ref State<i64u> -> State<i64u>
+fn advance state = State { value: step state.value (state.remaining as i64u), remaining: state.remaining - 1 }
+
+export def record_pipeline :: i64 -> i64u -> i64u
+fn record_pipeline count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = State { value: seed, remaining: count }
+    while state.remaining > 0 do state = advance state
+    state.value
+
+export def integer128_mix :: i64 -> i64u -> i64u
+fn integer128_mix count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = (seed as i128u << 64) | 1442695040888963407i128u
+    for remaining = count as i32 downto 1 do
+        state = (state ^ (state >> 43)) * 6364136223846793005i128u + remaining as i128u
+    (state ^ (state >> 64)) as i64u
+
+export def float32_mix :: i64 -> i64u -> i64u
+fn float32_mix count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = (seed & 65535) as f32 / 16.0f32 + 1.0f32
+    for index in 0 .. count - 1 do
+        state = state * 1.000001f32 + (index & 7) as f32 / 16.0f32
+    state as i64u
+
+export def float64_mix :: i64 -> i64u -> i64u
+fn float64_mix count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = (seed & 65535) as f64 / 16.0 + 1.0
+    for index in 0 .. count - 1 do
+        state = state * 1.0000001 + (index & 7) as f64 / 16.0
+    state as i64u

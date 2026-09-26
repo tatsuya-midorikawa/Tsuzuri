@@ -139,7 +139,7 @@ const storage = [
   ["copy_stack()", "21", 1, (api) => api.tz_copy_stack(), 21n],
   ["concat_stack()", "1206", 2, (api) => api.tz_concat_stack(), 1206n],
   ["capture_stack()", "76", 4, (api) => api.tz_capture_stack(), 76n],
-  ["function_stack()", "4015", 2, (api) => api.tz_function_stack(), 4015n],
+  ["function_stack()", "4015", 1, (api) => api.tz_function_stack(), 4015n],
   ["loop_copies(10)", "210110", 10, (api) => api.tz_loop_copies(10n), 210110n],
   ["loop_moves(10)", "22", 30, (api) => api.tz_loop_moves(10n), 22n],
   ["tail_frames(0)", "4", 0, (api) => api.tz_tail_frames(0n), 4n],
@@ -226,6 +226,15 @@ int main(int argc, char **argv) {
     assert(tz_curried_class() == 45 && live == 0);
     assert(tz_curried_higher() == 42 && live == 0);
     assert(tz_curried_churn(40000) == 2160054 && live == 0);
+    for (int flag = 0; flag < 2; ++flag) {
+      assert(tz_curried_dynamic_owned(flag) == 9 && live == 0);
+      assert(tz_curried_replaced(flag) == (flag ? 101002 : 41002) && live == 0);
+      for (int64_t count = 0; count <= 257; ++count) {
+        assert(tz_curried_dynamic(flag, count) == count * (flag ? 1 : 4) && live == 0);
+        int64_t expected = flag ? count * (count - 1) + 8 * count : 4 * count * (count - 1);
+        assert(tz_curried_dynamic_init(flag, count) == expected && live == 0);
+      }
+    }
     assert(tz_strings(1) == 18 && live == 0);
     assert(tz_strings(0) == 17 && live == 0);
     assert(tz_mutable_local() == 42);
@@ -347,6 +356,15 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_curried_class(), 45);
     assert.equal(api.tz_curried_higher(), 42);
     assert.equal(api.tz_curried_churn(40000n), 2160054n);
+    for (const flag of [0, 1]) {
+      assert.equal(api.tz_curried_dynamic_owned(flag), 9n);
+      assert.equal(api.tz_curried_replaced(flag), flag ? 101002n : 41002n);
+      for (let count = 0n; count <= 257n; ++count) {
+        assert.equal(api.tz_curried_dynamic(flag, count), count * (flag ? 1n : 4n));
+        const expected = flag ? count * (count - 1n) + 8n * count : 4n * count * (count - 1n);
+        assert.equal(api.tz_curried_dynamic_init(flag, count), expected);
+      }
+    }
     for (let n = 0n; n <= 32n; ++n) {
       assert.equal(api.tz_array_values(n), n === 0n ? 0n : 3n * n + 19n);
       assert.equal(api.tz_array_owned(n), n === 0n ? 0n : n + 6n);

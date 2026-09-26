@@ -8,14 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-computations.mjs [compiler] [--quick] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-computations.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
 const options = {};
 const positional = [];
 let quick = false;
 for (let index = 0; index < args.length; ++index) {
   const arg = args[index];
   if (arg === "--quick" && !quick) quick = true;
-  else if (["--cpu", "--baseline", "--artifacts"].includes(arg) && options[arg] === undefined) {
+  else if (["--cpu", "--baseline", "--artifacts", "--scale"].includes(arg) && options[arg] === undefined) {
     const value = args[++index];
     if (value === undefined || value.startsWith("--")) throw new Error(usage);
     options[arg] = value;
@@ -26,8 +26,10 @@ if (positional.length > 1) throw new Error(usage);
 const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
 const baseline = options["--baseline"] && resolve(options["--baseline"]);
 const cpu = options["--cpu"] ?? "generic";
-if (!["generic", "native"].includes(cpu)) throw new Error(usage);
+const scale = Number(options["--scale"] ?? "1");
+if (!["generic", "native"].includes(cpu) || !Number.isFinite(scale) || scale <= 0 || scale > 10 || (quick && scale !== 1)) throw new Error(usage);
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+const rustc = process.env.TSUZURI_RUSTC ?? process.env.RUSTC ?? "rustc";
 const run = (program, arguments_) => execFileSync(program, arguments_, {
   cwd: root, encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"],
 });
@@ -70,10 +72,14 @@ const median = (values) => {
 };
 const stats = (values) => ({ median_ms: median(values), min_ms: Math.min(...values), max_ms: Math.max(...values) });
 const flags = ["-O3", "-fPIC", "-fno-fast-math", "-ffp-contract=off", "-Wno-override-module"];
+const rustFlags = ["--edition=2021", "--crate-type=lib", "--crate-name=computation_reference",
+  "-C", "opt-level=3", "-C", "panic=abort", "-C", "force-unwind-tables=no",
+  "-C", "relocation-model=pic", "-C", "codegen-units=1", "-C", "lto=off"];
 if (cpu === "native") {
   if (["x64", "ia32"].includes(arch())) flags.push("-march=native");
   else if (["arm64", "arm"].includes(arch())) flags.push("-mcpu=native");
   else throw new Error(`Unsupported architecture for --cpu native: ${arch()}`);
+  rustFlags.push("-C", "target-cpu=native");
 }
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-computation-benchmark-"));
 const source = join(root, "benchmarks/computations/Main.tz");
@@ -138,13 +144,15 @@ try {
   const host = join(root, "benchmarks/computations/native.cpp");
   const hostFlags = ["--driver-mode=g++", ...flags, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", temporary,
     ...(baseline ? ["-DBASELINE"] : [])];
+  run(rustc, [...rustFlags, "--emit=obj,asm,llvm-ir", "benchmarks/computations/reference.rs", "--out-dir", temporary]);
+  const rustObject = join(temporary, "computation_reference.o");
   const native = join(temporary, "native");
-  run(clang, [...hostFlags, host, ...objects, "-lm", "-o", native]);
+  run(clang, [...hostFlags, host, ...objects, rustObject, "-lm", "-o", native]);
   run(clang, [...hostFlags, "-S", host, "-o", join(temporary, "cpp.s")]);
   run(clang, [...hostFlags, "-S", "-emit-llvm", host, "-o", join(temporary, "cpp.opt.ll")]);
-  const result = JSON.parse(run(native, quick ? ["--quick"] : []));
+  const result = JSON.parse(run(native, quick ? ["--quick"] : ["--scale", String(scale)]));
   const tracked = join(temporary, "tracked");
-  run(clang, [...hostFlags, "-DTRACKING", host, ...trackedObjects, "-lm", "-o", tracked]);
+  run(clang, [...hostFlags, "-DTRACKING", host, ...trackedObjects, rustObject, "-lm", "-o", tracked]);
   const allocations = JSON.parse(run(tracked, ["--quick"]));
   for (const [index, workload] of result.workloads.entries()) {
     assert.equal(workload.checks.length, 25);
@@ -153,14 +161,18 @@ try {
     }
     workload.allocations_at_size_64 = allocations.workloads[index].allocations;
     workload.native = {};
-    for (const label of ["cpp", "direct", "computation", ...(baseline ? ["before"] : [])]) {
+    for (const label of ["cpp", "rust", "direct", "computation", ...(baseline ? ["before"] : [])]) {
       const times = workload.raw.map((sample) => sample[`${label}_ms`]);
       assert.ok(times.every((time) => Number.isFinite(time) && time >= 0));
       if (!quick) assert.ok(times.every((time) => time > 0), "Clock resolution is insufficient");
       workload.native[label] = stats(times);
+      const wallTimes = workload.raw.map((sample) => sample[`${label}_wall_ms`]);
+      assert.ok(wallTimes.every((time) => Number.isFinite(time) && time >= 0));
+      workload.native[label].wall = stats(wallTimes);
     }
     const native = workload.native;
     native.computation_over_cpp = native.cpp.median_ms > 0 ? native.computation.median_ms / native.cpp.median_ms : null;
+    native.computation_over_rust = native.rust.median_ms > 0 ? native.computation.median_ms / native.rust.median_ms : null;
     native.computation_over_direct = native.direct.median_ms > 0 ? native.computation.median_ms / native.direct.median_ms : null;
     if (baseline) native.speedup = native.before.median_ms / native.computation.median_ms;
   }
@@ -229,11 +241,14 @@ try {
       baseline_rec_syntax: baselineRecSyntax,
       baseline_sha256: baseline ? createHash("sha256").update(readFileSync(baseline)).digest("hex") : null,
       clang: run(clang, ["--version"]).split(/\r?\n/)[0],
+      rustc: run(rustc, ["-vV"]).trim(),
       node: process.version, platform: platform(), os_release: release(), architecture: arch(),
       cpu: cpus()[0]?.model, logical_cpus: cpus().length,
     },
     mode: quick ? "correctness-smoke" : "benchmark",
+    scale, wall_clock: "std::chrono::steady_clock",
     native_flags: flags,
+    rust_flags: rustFlags,
     wasm_flags: ["-O3"],
     ...result,
     note: "Matched outputs, wrapping integers, no LTO/fast-math; rotating measurement order with per-variant repeat calibration. Native CPU time and warmed WASM wall time are separate. Allocations are measured in a separate instrumented executable, not in timed runs. Reference implementations are optimized candidates, not a proof of global optimality. Quick-mode timings are not meaningful.",

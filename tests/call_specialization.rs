@@ -95,15 +95,26 @@ fn owned_captures_and_dynamic_effectful_cases_use_their_correct_paths() {
             "{name}",
         );
     }
-    for name in [
-        "opt_consumed_string",
-        "opt_mutable_bound_array",
-        "opt_callee_replaced",
-    ] {
+    for name in ["opt_consumed_string", "opt_mutable_bound_array"] {
         let worker = body(&ir, &format!("tz.fn.Optimization.{name}"));
-        assert!(worker.contains("@tz.closure.clone"), "{name}");
+        assert!(worker.contains("i1 true)"), "{name}");
         assert!(!worker.contains("@tz.specialized."), "{name}");
+        let wrapper = worker
+            .lines()
+            .find_map(|line| {
+                let (_, target) = line.split_once("ptr @")?;
+                let target = target.split(',').next()?;
+                target.starts_with("tz.apply.").then_some(target)
+            })
+            .expect("a captured closure has an apply wrapper");
+        assert!(
+            body(&ir, wrapper).contains("call ptr @tz.env.clone."),
+            "{name}"
+        );
     }
+    let replaced = body(&ir, "tz.fn.Optimization.opt_callee_replaced");
+    assert!(replaced.contains("@tz.closure.clone"));
+    assert!(!replaced.contains("@tz.specialized."));
     let count = ir.matches("define internal i64 @tz.specialized.").count();
     assert!(count > 0 && count < 100);
     assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());

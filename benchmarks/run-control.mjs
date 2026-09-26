@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
   if (index < 0) return fallback;
@@ -18,12 +18,14 @@ const take = (flag, fallback) => {
   return value;
 };
 const cpu = take("--cpu", "generic");
+const scale = Number(take("--scale", "1"));
 const artifacts = take("--artifacts", null);
 const baselineArgument = take("--baseline", null);
 const baseline = baselineArgument && resolve(baselineArgument);
 const quick = args.includes("--quick");
 const positional = args.filter((arg) => arg !== "--quick");
-if (!["generic", "native"].includes(cpu) || positional.length > 1
+if (!["generic", "native"].includes(cpu) || !Number.isFinite(scale) || scale <= 0 || scale > 10
+  || (quick && scale !== 1) || positional.length > 1
     || positional.some((arg) => arg.startsWith("-")) || args.filter((arg) => arg === "--quick").length > 1) {
   throw new Error(usage);
 }
@@ -41,15 +43,35 @@ const wrap = (n) => BigInt.asUintN(64, n);
 const hex = (n) => wrap(n).toString(16).padStart(16, "0");
 const factors = [17n, 3n, 29n, 7n, 61n, 11n, 83n, 5n, 47n, 19n, 101n, 31n, 53n, 23n, 97n, 13n];
 function reference(name, size, seed) {
-  if (["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix"].includes(name)) {
+  if (["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "record_pipeline"].includes(name)) {
     for (let n = BigInt(size); n > 0n; n--) seed = wrap((seed ^ (seed >> 13n)) * 6364136223846793005n + n + 1442695040888963407n);
     return seed;
   }
-  let total = name === "array_sum" ? 0n : seed;
-  for (let i = 0n; i < size; i++) total += name === "array_sum"
+  if (name === "closure_capture") {
+    const salt = (seed & 1n) === 0n ? seed : seed ^ 71n;
+    for (let index = 0n; index < size; index++) seed = wrap((seed ^ (seed >> 13n)) * 6364136223846793005n + salt + 1442695040888963407n);
+    return seed;
+  }
+  if (name === "integer128_mix") {
+    let state = (seed << 64n) | 1442695040888963407n;
+    for (let remaining = size; remaining > 0n; remaining--) {
+      state = BigInt.asUintN(128, (state ^ (state >> 43n)) * 6364136223846793005n + remaining);
+    }
+    return wrap(state ^ (state >> 64n));
+  }
+  if (name.startsWith("float")) {
+    const round = name === "float32_mix" ? Math.fround : (value) => value;
+    let state = round(Number(seed & 65535n) / 16 + 1);
+    const factor = round(name === "float32_mix" ? 1.000001 : 1.0000001);
+    for (let index = 0; index < Number(size); index++) state = round(round(state * factor) + (index & 7) / 16);
+    return state >= 2 ** 64 ? (1n << 64n) - 1n : BigInt(Math.trunc(state));
+  }
+  const collection = ["array_sum", "array_copy", "list_sum"].includes(name);
+  let total = collection ? 0n : seed;
+  for (let i = 0n; i < size; i++) total += collection
     ? (i ^ seed) * 6364136223846793005n + 1442695040888963407n
     : factors[Number(wrap(seed + i) & 15n)] * (i + 1n);
-  return wrap(total);
+  return wrap(name === "array_copy" ? total * 2n : total);
 }
 const flags = ["-O3", "-fPIC", "-fno-fast-math", "-ffp-contract=off"];
 const rustFlags = ["--edition=2021", "--crate-type=lib", "--crate-name=control_reference",
@@ -100,10 +122,11 @@ try {
   run(clang, ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", ...(baseline ? ["-DBASELINE"] : []),
     `${fixture}/host.c`, "-I", temporary,
     ...["control.o", "c.o", "cpp.o", "control_reference.o", ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name)), "-lm", "-o", native]);
-  const result = JSON.parse(run(native, quick ? ["--quick"] : []));
+  const result = JSON.parse(run(native, quick ? ["--quick"] : ["--scale", String(scale)]));
   const variants = ["c", "cpp", "rust", "tsuzuri", ...(baseline ? ["before"] : [])];
   assert.equal(result.samples, variants.length * (quick ? 1 : 3));
-  assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum"]);
+  assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum",
+    "array_copy", "list_sum", "closure_capture", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
   for (const work of result.workloads) {
     assert.equal(work.checks.length, 25);
     for (const check of work.checks) {
@@ -114,6 +137,9 @@ try {
       const times = work.raw.map((sample) => sample[`${variant}_ms`]);
       assert.ok(times.every((time) => Number.isFinite(time) && (quick ? time >= 0 : time > 0)));
       work[`${variant}_median_ms`] = median(times);
+      const wallTimes = work.raw.map((sample) => sample[`${variant}_wall_ms`]);
+      assert.ok(wallTimes.every((time) => Number.isFinite(time) && time >= 0));
+      work[`${variant}_wall_median_ms`] = median(wallTimes);
     }
     for (const variant of ["c", "cpp", "rust"]) {
       work[`tsuzuri_over_${variant}`] = work[`${variant}_median_ms`] > 0
@@ -145,7 +171,7 @@ try {
       architecture: arch(), cpu: cpus()[0]?.model, logical_cpus: cpus().length,
     },
     mode: quick ? "correctness-smoke" : "benchmark",
-    cpu, c_cpp_flags: flags, rust_flags: rustFlags, tsuzuri_flags: tsuzuriFlags,
+    cpu, scale, wall_clock: "CLOCK_MONOTONIC", c_cpp_flags: flags, rust_flags: rustFlags, tsuzuri_flags: tsuzuriFlags,
     inspection, ...result,
     note: "Native CPU time; two warmups per variant; rotating/reversed order; no LTO. Array workloads include allocation, initialization, traversal and free. C/C++ share a C-compatible baseline; Rust uses the same system allocation with safe slice traversal. Ratios below 1 favor Tsuzuri; microbenchmarks are not a general language ranking.",
   }, null, 2));

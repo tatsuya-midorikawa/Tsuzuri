@@ -47,3 +47,101 @@ fn array_sum count seed = {
         (i ^ seed) * 6364136223846793005 + 1442695040888963407);
     sum (&values) 0 0
 }
+
+def make_text :: i64 -> i64 -> string
+fn make_text count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut text =
+        if count == 0 then ""
+        elif (seed & 1) == 0 then "Az09-_ \n"
+        else "A\0\u03A9\uD83D\uDE00\u4E2Dz\n"
+    while text.length < count do
+        let copy = clone_string ref text
+        text = copy + text
+    text
+
+def text_sum :: ref string -> i64
+fn text_sum text =
+    let mut total = 0i64
+    for value in text do total = total + value as i64
+    total
+
+export def utf16_scan :: i64 -> i64 -> i64
+fn utf16_scan count seed =
+    let text = make_text count seed
+    text_sum ref text
+
+export def utf16_compare :: i64 -> i64 -> i64
+fn utf16_compare count seed =
+    let text = make_text count seed
+    let left = clone_string ref text + (if (seed & 2) == 0 then "a" else "b")
+    let right = text + (if (seed & 4) == 0 then "a" else "b")
+    if left == right then 1 elif left < right then 2 else 4
+
+export def utf16_validate :: i64 -> i64 -> i64
+fn utf16_validate count seed =
+    let text = make_text count seed + (if (seed & 8) == 0 then "" else "\uD800")
+    let repaired = String.to_well_formed ref text
+    text_sum ref repaired + (if String.is_well_formed ref text then 1 else 0)
+
+export def utf8_roundtrip :: i64 -> i64 -> i64
+fn utf8_roundtrip count seed =
+    let text = make_text count seed
+    let bytes = Utf8String.from_string ref text
+    let restored = String.from_utf8 ref bytes
+    assert (text == restored)
+    text_sum ref restored + bytes.length
+
+export def format_parse :: i64 -> i64 -> i64
+fn format_parse count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = seed as i64u
+    for index in 0 .. count - 1 do
+        state = (state ^ (state >> 13)) * 6364136223846793005 + index as i64u + 1442695040888963407
+        let text = to_string state
+        let parsed: Option<i64u> = Parse.parse ref text
+        state = Option.get parsed ^ text.length as i64u
+    state as i64
+
+export def math_intrinsics :: i64 -> i64 -> i64
+fn math_intrinsics count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = to_float ((seed & 65535) + 1) / 16.0
+    for index in 0 .. count - 1 do
+        state = sqrt (abs state + to_float (index & 255))
+        state = floor (state * 16.0) / 16.0 + ceil state / 1024.0
+    to_int (state * 1048576.0)
+
+def task_mix :: i64 -> i64u -> i64u
+fn task_mix count seed =
+    let mut state = seed
+    for index in 0 .. count - 1 do
+        state = (state ^ (state >> 13)) * 6364136223846793005 + 1442695040888963407
+    state
+
+export def task_sequence :: i64 -> i64 -> i64
+fn task_sequence count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut state = seed as i64u
+    for index in 0 .. count - 1 do
+        state = Task.run task {
+            let! value = task { state }
+            return (value ^ (value >> 13)) * 6364136223846793005 + 1442695040888963407
+        }
+    state as i64
+
+export def task_sequential :: i64 -> i64 -> i64
+fn task_sequential count seed =
+    assert (count >= 0 && count <= 100000000)
+    let mut total = 0i64u
+    for index in 0 .. 15 do total = total + task_mix count (seed as i64u ^ index as i64u)
+    total as i64
+
+export def task_parallel :: i64 -> i64 -> i64
+fn task_parallel count seed =
+    assert (count >= 0 && count <= 100000000)
+    let work = new [Task<i64u>](16, fx index -> task { task_mix count (seed as i64u ^ index as i64u) })
+    let results = Task.run (Task.parallel work)
+    let mut total = 0i64u
+    for value in results do total = total + value
+    total as i64

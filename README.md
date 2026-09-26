@@ -622,7 +622,13 @@ node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
+node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 ```
+
+C/C++・Rust・C#・JavaScript の35種目比較には Node.js 24 以降と .NET SDK 10 を使います。
+C の基準は14種目、C++・Rust・C#・JavaScript の基準は35種目です。
+`run-managed.mjs --quick` は速度を評価せずチェックサムを照合し、通常測定は JIT のウォームアップ後の経過時間と GC 情報を保存します。
+対応範囲・比較不能な型・残る性能差・再現条件は [docs/benchmarks.md](docs/benchmarks.md) を参照してください。
 
 コンパイラが `include_str!` で埋め込むランタイム IR（`src/runtime/*.ll`）はリポジトリに同梱されており、
 新しい clone でもそのままビルドできます。`scripts/check-runtime-includes.sh` は埋め込み対象が存在し、

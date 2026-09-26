@@ -67,9 +67,23 @@ entry:
   %same = icmp eq i64 %an, %bn
   br i1 %same, label %loop, label %different
 loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ], [ %wide_next, %wide_advance ]
   %done = icmp eq i64 %i, %an
-  br i1 %done, label %equal, label %compare
+  br i1 %done, label %equal, label %probe
+probe:
+  %remaining = sub i64 %an, %i
+  %enough = icmp uge i64 %remaining, 8
+  br i1 %enough, label %wide, label %compare
+wide:
+  %wide_ap = getelementptr inbounds i8, ptr %a, i64 %i
+  %wide_bp = getelementptr inbounds i8, ptr %b, i64 %i
+  %wide_av = load i64, ptr %wide_ap, align 1
+  %wide_bv = load i64, ptr %wide_bp, align 1
+  %wide_match = icmp eq i64 %wide_av, %wide_bv
+  br i1 %wide_match, label %wide_advance, label %different
+wide_advance:
+  %wide_next = add i64 %i, 8
+  br label %loop
 compare:
   %ap = getelementptr inbounds i8, ptr %a, i64 %i
   %bp = getelementptr inbounds i8, ptr %b, i64 %i

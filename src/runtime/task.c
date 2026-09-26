@@ -58,6 +58,9 @@ void tsuzuri_task_parallel(void (*run)(void *, uint64_t), void *context, uint64_
     unsigned count = 0;
     unsigned limit = tz_task_parallelism() - 1;
     while (count < TZ_TASK_MAX_THREADS - 1 && (uint64_t)count + 1 < length) {
+        if (atomic_load_explicit(&group.next, memory_order_relaxed) >= length) {
+            break;
+        }
         unsigned active = atomic_load_explicit(&tz_task_workers, memory_order_relaxed);
         if (active >= limit) {
             break;

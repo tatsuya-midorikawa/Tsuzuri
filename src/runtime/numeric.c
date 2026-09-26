@@ -438,7 +438,9 @@ int tz_soft_format(char *out, const unsigned char *input, int kind) {
         if (negative) value = -value & mask(f.width);
         char digits[40];
         int count = 0, length = 0;
-        do { digits[count++] = (char)('0' + value % 10); value /= 10; } while (value);
+        while (value >> 64) { digits[count++] = (char)('0' + value % 10); value /= 10; }
+        u64 remaining = (u64)value;
+        do { digits[count++] = (char)('0' + remaining % 10); remaining /= 10; } while (remaining);
         if (negative) out[length++] = '-';
         while (count) out[length++] = digits[--count];
         return length;
@@ -539,8 +541,9 @@ int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
         }
         if (index == length) return 0;
         u128 limit = mask(f.width - f.sign) + (f.sign && negative);
-        u128 cutoff = limit / (u32)base, value = 0;
-        u32 last = (u32)(limit % (u32)base);
+        u128 cutoff = f.width <= 64 ? (u64)limit / (u32)base : limit / (u32)base;
+        u32 last = f.width <= 64 ? (u32)((u64)limit % (u32)base) : (u32)(limit % (u32)base);
+        u128 value = 0;
         int previous = 0;
         for (; index < length; ++index) {
             if (input[index] == '_') {

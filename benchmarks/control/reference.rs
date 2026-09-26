@@ -114,3 +114,151 @@ pub extern "C" fn rust_array_sum(count: i64, seed: u64) -> u64 {
         total
     }
 }
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_array_copy(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    unsafe {
+        let values = malloc((count as usize * 8).max(1));
+        let copied = malloc((count as usize * 8).max(1));
+        if values.is_null() || copied.is_null() {
+            abort();
+        }
+        for index in 0..count as usize {
+            values.add(index).write(
+                (index as u64 ^ seed)
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407),
+            );
+        }
+        core::ptr::copy_nonoverlapping(values, copied, count as usize);
+        let mut total = 0u64;
+        for value in core::slice::from_raw_parts(values, count as usize) {
+            total = total.wrapping_add(*value);
+        }
+        for value in core::slice::from_raw_parts(copied, count as usize) {
+            total = total.wrapping_add(*value);
+        }
+        free(copied);
+        free(values);
+        total
+    }
+}
+
+#[repr(C)]
+struct Node {
+    value: u64,
+    next: *mut Node,
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_list_sum(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    unsafe {
+        let mut head = core::ptr::null_mut::<Node>();
+        let mut tail = &mut head as *mut *mut Node;
+        for index in 0..count as u64 {
+            let node = malloc(core::mem::size_of::<Node>()).cast::<Node>();
+            if node.is_null() {
+                abort();
+            }
+            node.write(Node {
+                value: (index ^ seed)
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407),
+                next: core::ptr::null_mut(),
+            });
+            tail.write(node);
+            tail = &raw mut (*node).next;
+        }
+        let mut total = 0u64;
+        let mut node = head;
+        while !node.is_null() {
+            total = total.wrapping_add((*node).value);
+            node = (*node).next;
+        }
+        while !head.is_null() {
+            let next = (*head).next;
+            free(head.cast());
+            head = next;
+        }
+        total
+    }
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_closure_capture(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    let first = |value| step(value, seed);
+    let second = |value| step(value, seed ^ 71);
+    let transform: &dyn Fn(u64) -> u64 = if seed & 1 == 0 { &first } else { &second };
+    let mut state = seed;
+    for _ in 0..count {
+        state = transform(state);
+    }
+    state
+}
+
+struct State<Value> {
+    value: Value,
+    remaining: i64,
+}
+
+fn advance(state: &State<u64>) -> State<u64> {
+    State {
+        value: step(state.value, state.remaining as u64),
+        remaining: state.remaining - 1,
+    }
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_record_pipeline(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    let mut state = State {
+        value: seed,
+        remaining: count,
+    };
+    while state.remaining > 0 {
+        state = advance(&state);
+    }
+    state.value
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_integer128_mix(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    let mut state = ((seed as u128) << 64) | 1_442_695_040_888_963_407;
+    for remaining in (1..=count).rev() {
+        state = (state ^ (state >> 43))
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(remaining as u128);
+    }
+    (state ^ (state >> 64)) as u64
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_float32_mix(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    let mut state = (seed & 65535) as f32 / 16.0 + 1.0;
+    for index in 0..count {
+        state = state * 1.000001 + (index & 7) as f32 / 16.0;
+    }
+    state as u64
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rust_float64_mix(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    let mut state = (seed & 65535) as f64 / 16.0 + 1.0;
+    for index in 0..count {
+        state = state * 1.0000001 + (index & 7) as f64 / 16.0;
+    }
+    state as u64
+}

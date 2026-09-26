@@ -44,6 +44,27 @@ entry:
   ret %tz.string %result
 }
 
+define internal %tz.string @tz.string.from_ascii(ptr %source, i64 %length) nounwind {
+entry:
+  %result = call %tz.string @tz.string.allocate(i64 %length)
+  %data = extractvalue %tz.string %result, 0
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %copy ]
+  %done = icmp eq i64 %index, %length
+  br i1 %done, label %exit, label %copy
+copy:
+  %input = getelementptr inbounds i8, ptr %source, i64 %index
+  %byte = load i8, ptr %input
+  %unit = zext i8 %byte to i16
+  %output = getelementptr inbounds i16, ptr %data, i64 %index
+  store i16 %unit, ptr %output
+  %next = add i64 %index, 1
+  br label %loop
+exit:
+  ret %tz.string %result
+}
+
 define internal %tz.string @tz.string.concat(%tz.string %left, %tz.string %right) nounwind {
 entry:
   %a = extractvalue %tz.string %left, 0
@@ -74,9 +95,23 @@ entry:
   %same = icmp eq i64 %an, %bn
   br i1 %same, label %loop, label %different
 loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ], [ %wide_next, %wide_advance ]
   %done = icmp eq i64 %i, %an
-  br i1 %done, label %equal, label %compare
+  br i1 %done, label %equal, label %probe
+probe:
+  %remaining = sub i64 %an, %i
+  %enough = icmp uge i64 %remaining, 4
+  br i1 %enough, label %wide, label %compare
+wide:
+  %wide_ap = getelementptr inbounds i16, ptr %a, i64 %i
+  %wide_bp = getelementptr inbounds i16, ptr %b, i64 %i
+  %wide_av = load i64, ptr %wide_ap, align 2
+  %wide_bv = load i64, ptr %wide_bp, align 2
+  %wide_match = icmp eq i64 %wide_av, %wide_bv
+  br i1 %wide_match, label %wide_advance, label %different
+wide_advance:
+  %wide_next = add i64 %i, 4
+  br label %loop
 compare:
   %ap = getelementptr inbounds i16, ptr %a, i64 %i
   %bp = getelementptr inbounds i16, ptr %b, i64 %i
@@ -103,19 +138,37 @@ entry:
   %length = select i1 %shorter, i64 %an, i64 %bn
   br label %loop
 loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %i = phi i64 [ 0, %entry ], [ %wide_next, %wide_advance ]
   %done = icmp eq i64 %i, %length
-  br i1 %done, label %prefix, label %compare
+  br i1 %done, label %prefix, label %probe
+probe:
+  %remaining = sub i64 %length, %i
+  %enough = icmp uge i64 %remaining, 4
+  br i1 %enough, label %wide, label %scalar_loop
+wide:
+  %wide_ap = getelementptr inbounds i16, ptr %a, i64 %i
+  %wide_bp = getelementptr inbounds i16, ptr %b, i64 %i
+  %wide_av = load i64, ptr %wide_ap, align 2
+  %wide_bv = load i64, ptr %wide_bp, align 2
+  %wide_match = icmp eq i64 %wide_av, %wide_bv
+  br i1 %wide_match, label %wide_advance, label %scalar_loop
+wide_advance:
+  %wide_next = add i64 %i, 4
+  br label %loop
+scalar_loop:
+  %scalar_i = phi i64 [ %i, %probe ], [ %i, %wide ], [ %next, %advance ]
+  %scalar_done = icmp eq i64 %scalar_i, %length
+  br i1 %scalar_done, label %prefix, label %compare
 compare:
-  %ap = getelementptr inbounds i16, ptr %a, i64 %i
-  %bp = getelementptr inbounds i16, ptr %b, i64 %i
+  %ap = getelementptr inbounds i16, ptr %a, i64 %scalar_i
+  %bp = getelementptr inbounds i16, ptr %b, i64 %scalar_i
   %av = load i16, ptr %ap
   %bv = load i16, ptr %bp
   %match = icmp eq i16 %av, %bv
   br i1 %match, label %advance, label %different
 advance:
-  %next = add i64 %i, 1
-  br label %loop
+  %next = add i64 %scalar_i, 1
+  br label %scalar_loop
 different:
   %less = icmp ult i16 %av, %bv
   %order = select i1 %less, i32 -1, i32 1
@@ -219,12 +272,18 @@ countscalar:
   %within = icmp ule i64 %newlength, 9007199254740991
   br i1 %within, label %count, label %fail
 allocate:
+  %all_ascii = icmp eq i64 %length, %byte_length
+  br i1 %all_ascii, label %ascii_only, label %unicode
+ascii_only:
+  %ascii_result = call %tz.string @tz.string.from_ascii(ptr %source, i64 %length)
+  ret %tz.string %ascii_result
+unicode:
   %result = call %tz.string @tz.string.allocate(i64 %length)
   %data = extractvalue %tz.string %result, 0
   br label %write
 write:
-  %input = phi i64 [ 0, %allocate ], [ %inputnext, %single ], [ %inputnext, %double ]
-  %output = phi i64 [ 0, %allocate ], [ %singlenext, %single ], [ %doublenext, %double ]
+  %input = phi i64 [ 0, %unicode ], [ %inputnext, %single ], [ %inputnext, %double ]
+  %output = phi i64 [ 0, %unicode ], [ %singlenext, %single ], [ %doublenext, %double ]
   %finished = icmp eq i64 %input, %byte_length
   br i1 %finished, label %exit, label %decode
 decode:
@@ -318,12 +377,18 @@ countwidth:
   %newlength = add i64 %length, %width
   br label %count
 allocate:
+  %all_ascii = icmp eq i64 %length, %unit_length
+  br i1 %all_ascii, label %ascii_only, label %unicode
+ascii_only:
+  %ascii_result = call %tz.utf8string @tz.utf8string.from_ascii(ptr %source, i64 %length)
+  ret %tz.utf8string %ascii_result
+unicode:
   %result = call %tz.utf8string @tz.utf8string.allocate(i64 %length)
   %data = extractvalue %tz.utf8string %result, 0
   br label %write
 write:
-  %input = phi i64 [ 0, %allocate ], [ %inputnext, %single ], [ %inputnext, %lead ]
-  %output = phi i64 [ 0, %allocate ], [ %singlenext, %single ], [ %multinext, %lead ]
+  %input = phi i64 [ 0, %unicode ], [ %inputnext, %single ], [ %inputnext, %lead ]
+  %output = phi i64 [ 0, %unicode ], [ %singlenext, %single ], [ %multinext, %lead ]
   %finished = icmp eq i64 %input, %unit_length
   br i1 %finished, label %exit, label %decode
 decode:
@@ -371,6 +436,27 @@ exit:
 fail:
   call void @llvm.trap()
   unreachable
+}
+
+define internal %tz.utf8string @tz.utf8string.from_ascii(ptr %source, i64 %length) nounwind {
+entry:
+  %result = call %tz.utf8string @tz.utf8string.allocate(i64 %length)
+  %data = extractvalue %tz.utf8string %result, 0
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %copy ]
+  %done = icmp eq i64 %index, %length
+  br i1 %done, label %exit, label %copy
+copy:
+  %input = getelementptr inbounds i16, ptr %source, i64 %index
+  %unit = load i16, ptr %input
+  %byte = trunc i16 %unit to i8
+  %output = getelementptr inbounds i8, ptr %data, i64 %index
+  store i8 %byte, ptr %output
+  %next = add i64 %index, 1
+  br label %loop
+exit:
+  ret %tz.utf8string %result
 }
 
 define internal i1 @tz.string.is_well_formed(ptr %source, i64 %unit_length) nounwind {

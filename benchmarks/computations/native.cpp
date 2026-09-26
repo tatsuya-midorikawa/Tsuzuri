@@ -1,5 +1,6 @@
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
@@ -13,6 +14,17 @@
 #define NOINLINE __attribute__((noinline))
 using Kernel = std::int64_t (*)(std::int64_t, std::int64_t);
 static volatile std::int64_t sink;
+
+#define DECLARE_RUST(name) extern "C" std::int64_t rust_##name(std::int64_t, std::int64_t);
+DECLARE_RUST(bind)
+DECLARE_RUST(checked)
+DECLARE_RUST(delayed)
+DECLARE_RUST(array_for)
+DECLARE_RUST(array_bind)
+DECLARE_RUST(owned_capture)
+DECLARE_RUST(std_option)
+DECLARE_RUST(std_result)
+DECLARE_RUST(std_option_owned)
 
 static std::uint64_t mix(std::uint64_t value, std::uint64_t salt) {
     return (value ^ (value >> 13)) * UINT64_C(6364136223846793005) + salt;
@@ -102,22 +114,23 @@ extern "C" void tracked_free(void *value) {
 
 struct Workload {
     const char *name;
-    Kernel cpp, direct, computation;
+    Kernel cpp, direct, computation, rust;
 #ifdef BASELINE
     Kernel before;
 #endif
     std::int64_t size;
 };
 #ifdef BASELINE
-#define WORKLOAD(name, cpp, count) {#name, cpp, tz_direct_##name, tz_ce_##name, before_tz_ce_##name, count}
+#define WORKLOAD(name, cpp, count) {#name, cpp, tz_direct_##name, tz_ce_##name, rust_##name, before_tz_ce_##name, count}
 #else
-#define WORKLOAD(name, cpp, count) {#name, cpp, tz_direct_##name, tz_ce_##name, count}
+#define WORKLOAD(name, cpp, count) {#name, cpp, tz_direct_##name, tz_ce_##name, rust_##name, count}
 #endif
 
 #ifndef TRACKING
 static NOINLINE double measure(Kernel kernel, std::int64_t count, std::int64_t seed,
-                               int repeats, std::int64_t expected) {
+                               int repeats, std::int64_t expected, double &wall_ms) {
     volatile std::int64_t input_count = count, input_seed = seed;
+    const auto wall_start = std::chrono::steady_clock::now();
     const auto start = std::clock();
     for (int index = 0; index < repeats; ++index) {
         const auto result = kernel(input_count, input_seed);
@@ -128,6 +141,7 @@ static NOINLINE double measure(Kernel kernel, std::int64_t count, std::int64_t s
         }
     }
     const auto end = std::clock();
+    wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wall_start).count() / repeats;
     if (start == static_cast<std::clock_t>(-1) || end < start) {
         std::fputs("CPU clock is unavailable\n", stderr);
         std::exit(1);
@@ -137,11 +151,13 @@ static NOINLINE double measure(Kernel kernel, std::int64_t count, std::int64_t s
 #endif
 
 int main(int argc, char **argv) {
-    if (argc > 2 || (argc == 2 && std::strcmp(argv[1], "--quick") != 0)) {
-        std::fputs("usage: benchmark [--quick]\n", stderr);
-        return 2;
-    }
-    const bool quick = argc == 2;
+    const bool quick = argc == 2 && std::strcmp(argv[1], "--quick") == 0;
+    double scale = 1.0;
+    if (argc == 3 && std::strcmp(argv[1], "--scale") == 0) {
+        char *end;
+        scale = std::strtod(argv[2], &end);
+        if (end == argv[2] || *end || !(scale > 0.0 && scale <= 10.0)) return 2;
+    } else if (argc != 1 && !quick) return 2;
     const Workload workloads[] = {
         WORKLOAD(bind, cpp_loop<0>, quick ? 1024 : 2000000),
         WORKLOAD(checked, cpp_loop<1>, quick ? 1024 : 2000000),
@@ -153,17 +169,24 @@ int main(int argc, char **argv) {
         WORKLOAD(std_result, cpp_loop<1>, quick ? 1024 : 2000000),
         WORKLOAD(std_option_owned, cpp_loop<4>, quick ? 128 : 8192),
     };
-    const int samples = quick ? 3 : 12;
+        const int samples = (quick ? 1 : 3) *
+    #ifdef BASELINE
+        5;
+    #else
+        4;
+    #endif
     std::printf("{\"samples\":%d,\"clock_ticks_per_second\":%ld,\"workloads\":[",
                 samples, static_cast<long>(CLOCKS_PER_SEC));
     bool first = true;
-    for (const auto &work : workloads) {
-        const Kernel kernels[] = {work.cpp, work.direct, work.computation,
+    for (const auto &definition : workloads) {
+        auto work = definition;
+        if (!quick) work.size = static_cast<std::int64_t>(std::fmax(1.0, std::ceil(work.size * scale)));
+        const Kernel kernels[] = {work.cpp, work.direct, work.computation, work.rust,
 #ifdef BASELINE
             work.before,
 #endif
         };
-        const char *names[] = {"cpp", "direct", "computation",
+        const char *names[] = {"cpp", "direct", "computation", "rust",
 #ifdef BASELINE
             "before",
 #endif
@@ -193,6 +216,7 @@ int main(int argc, char **argv) {
 #ifdef TRACKING
         std::fputs("\"allocations\":{", stdout);
         for (std::size_t variant = 1; variant < variants; ++variant) {
+            if (variant == 3) continue;
             allocations = bytes = 0;
             sink = kernels[variant](64, 42);
             if (live != 0) {
@@ -207,21 +231,22 @@ int main(int argc, char **argv) {
         int repeats[variants];
         for (std::size_t variant = 0; variant < variants; ++variant) {
             const auto expected = work.cpp(work.size, 40);
-            measure(kernels[variant], work.size, 40, 1, expected);
-            const auto elapsed = measure(kernels[variant], work.size, 40, 1, expected);
+            double wall_ms;
+            measure(kernels[variant], work.size, 40, 1, expected, wall_ms);
+            const auto elapsed = measure(kernels[variant], work.size, 40, 1, expected, wall_ms);
             repeats[variant] = quick ? 1 : static_cast<int>(std::fmin(10000.0, std::ceil(20.0 / std::fmax(0.001, elapsed))));
         }
         std::fputs("\"raw\":[", stdout);
         for (int sample = 0; sample < samples; ++sample) {
             const auto expected = work.cpp(work.size, 42 + sample);
-            double durations[variants];
+            double durations[variants], wall_durations[variants];
             for (std::size_t index = 0; index < variants; ++index) {
                 const auto variant = (index + sample) % variants;
-                durations[variant] = measure(kernels[variant], work.size, 42 + sample, repeats[variant], expected);
+                durations[variant] = measure(kernels[variant], work.size, 42 + sample, repeats[variant], expected, wall_durations[variant]);
             }
-            std::printf("%s{\"checksum\":\"%016" PRIx64 "\"", sample ? "," : "", static_cast<std::uint64_t>(expected));
+            std::printf("%s{\"seed\":\"%d\",\"checksum\":\"%016" PRIx64 "\"", sample ? "," : "", 42 + sample, static_cast<std::uint64_t>(expected));
             for (std::size_t variant = 0; variant < variants; ++variant) {
-                std::printf(",\"%s_ms\":%.9f,\"%s_repeats\":%d", names[variant], durations[variant], names[variant], repeats[variant]);
+                std::printf(",\"%s_ms\":%.9f,\"%s_wall_ms\":%.9f,\"%s_repeats\":%d", names[variant], durations[variant], names[variant], wall_durations[variant], names[variant], repeats[variant]);
             }
             std::fputs("}", stdout);
         }

@@ -8,7 +8,7 @@
 
 static long processors = 4;
 static atomic_uint created, joined, outstanding, peak;
-static int fail_create, fail_join;
+static int fail_create, fail_join, drain_before_start;
 
 static long test_sysconf(int name) {
     assert(name == _SC_NPROCESSORS_ONLN);
@@ -24,6 +24,7 @@ static int test_create(pthread_t *thread, const pthread_attr_t *attributes,
     unsigned before = atomic_load(&peak);
     while (before < active && !atomic_compare_exchange_weak(&peak, &before, active)) {}
     atomic_fetch_add(&created, 1);
+    if (drain_before_start) run(context);
     return pthread_create(thread, attributes, run, context);
 }
 
@@ -46,7 +47,7 @@ enum { ITEMS = 257 };
 static atomic_uint hits[ITEMS];
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
-static unsigned arrivals;
+static unsigned arrivals, required;
 
 static void visit(void *context, uint64_t index) {
     assert(context == hits && index < ITEMS);
@@ -54,13 +55,13 @@ static void visit(void *context, uint64_t index) {
 }
 
 static void rendezvous(void *context, uint64_t index) {
-    if (index < 4) {
+    if (index < required) {
         assert(pthread_mutex_lock(&mutex) == 0);
         ++arrivals;
-        if (arrivals == 4) {
+        if (arrivals == required) {
             assert(pthread_cond_broadcast(&ready) == 0);
         }
-        while (arrivals < 4) {
+        while (arrivals < required) {
             assert(pthread_cond_wait(&ready, &mutex) == 0);
         }
         assert(pthread_mutex_unlock(&mutex) == 0);
@@ -87,6 +88,8 @@ static void reset(long available) {
     atomic_store(&created, 0);
     atomic_store(&joined, 0);
     processors = available;
+    arrivals = 0;
+    required = available < 1 ? 1 : available > TZ_TASK_MAX_THREADS ? TZ_TASK_MAX_THREADS : (unsigned)available;
     for (unsigned index = 0; index < ITEMS; ++index) {
         atomic_store(&hits[index], 0);
     }
@@ -118,6 +121,13 @@ int main(int argc, char **argv) {
     check_hits(1);
 
     reset(4);
+    drain_before_start = 1;
+    tsuzuri_task_parallel(visit, hits, ITEMS);
+    assert(atomic_load(&created) == 1);
+    check_hits(1);
+    drain_before_start = 0;
+
+    reset(4);
     tsuzuri_task_parallel(nested, hits, 32);
     assert(atomic_load(&peak) <= 3);
     check_hits(32);
@@ -134,7 +144,7 @@ int main(int argc, char **argv) {
     check_hits(8);
 
     reset(1000);
-    tsuzuri_task_parallel(visit, hits, ITEMS);
+    tsuzuri_task_parallel(rendezvous, hits, ITEMS);
     assert(atomic_load(&peak) == TZ_TASK_MAX_THREADS - 1);
     check_hits(1);
 
