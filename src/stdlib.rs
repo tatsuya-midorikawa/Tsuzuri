@@ -6,13 +6,30 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Option.tc", include_str!("../std/Option.tc")),
     ("std/Result.tc", include_str!("../std/Result.tc")),
+    ("std/String.tz", include_str!("../std/String.tz")),
+    ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
 /// ships yet; user files cannot use them as module stems.
 pub const RESERVED_MODULES: &[&str] = &[
-    "Option", "Result", "Array", "List", "Vec", "String", "Char", "Math", "Int", "Debug",
-    "Parallel", "Simd", "Map", "Set", "Test", "Gpu",
+    "Option",
+    "Result",
+    "Array",
+    "List",
+    "Vec",
+    "String",
+    "Utf8String",
+    "Char",
+    "Math",
+    "Int",
+    "Debug",
+    "Parallel",
+    "Simd",
+    "Map",
+    "Set",
+    "Test",
+    "Gpu",
 ];
 
 pub fn is_reserved_module(name: &str) -> bool {
@@ -54,7 +71,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 16);
+        assert_eq!(RESERVED_MODULES.len(), 17);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

@@ -226,8 +226,8 @@ int main(int argc, char **argv) {
     assert(tz_curried_class() == 45 && live == 0);
     assert(tz_curried_higher() == 42 && live == 0);
     assert(tz_curried_churn(40000) == 2160054 && live == 0);
-    assert(tz_strings(1) == 24 && live == 0);
-    assert(tz_strings(0) == 23 && live == 0);
+    assert(tz_strings(1) == 18 && live == 0);
+    assert(tz_strings(0) == 17 && live == 0);
     assert(tz_mutable_local() == 42);
     assert(tz_mutable_local_keywords() == 42);
     assert(tz_narrow_signed(127, 1) == -128);
@@ -388,8 +388,8 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_list_init_trap(1n), 1n);
     assert.equal(api.tz_list_length(100000n), 100000n);
     for (const [call, , , run, expected] of storage) assert.equal(run(api), expected, call);
-    assert.equal(api.tz_strings(1), 24n);
-    assert.equal(api.tz_strings(0), 23n);
+    assert.equal(api.tz_strings(1), 18n);
+    assert.equal(api.tz_strings(0), 17n);
     assert.equal(api.tz_mutable_local(), 42);
     assert.equal(api.tz_mutable_local_keywords(), 42);
     assert.equal(api.tz_narrow_signed(127, 1), -128);

@@ -71,12 +71,11 @@ pub(super) enum Constructor {
     Literal(LiteralKey),
 }
 
-/// A literal's resolved type and a canonical text that equal runtime values
-/// share: both zeros, and every decimal cohort of one value.
+/// Literal values compare by code units, or by canonical numeric text.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct LiteralKey {
-    ty: Type,
-    bits_or_text: String,
+pub(super) enum LiteralKey {
+    Number { ty: Type, bits: String },
+    Text(StringLiteral),
 }
 
 /// The arms of one explicit match or function guard.
@@ -333,7 +332,9 @@ impl Checker<'_> {
                 return Literal::Constructor(Constructor::Bool(*value));
             }
             TypedExprKind::Unit if !negative => return Literal::Constructor(Constructor::Unit),
-            TypedExprKind::String(text) if !negative => Some(text.clone()),
+            TypedExprKind::String(text) if !negative => {
+                return Literal::Constructor(Constructor::Literal(LiteralKey::Text(text.clone())));
+            }
             TypedExprKind::Int(bits) if !negative => Some(bits.to_string()),
             TypedExprKind::GenericInteger(magnitude, minus) if !negative => {
                 if ty.is_integer() {
@@ -373,7 +374,10 @@ impl Checker<'_> {
                 format!("#{distinct}")
             }
         };
-        Literal::Constructor(Constructor::Literal(LiteralKey { ty, bits_or_text }))
+        Literal::Constructor(Constructor::Literal(LiteralKey::Number {
+            ty,
+            bits: bits_or_text,
+        }))
     }
 }
 

@@ -61,9 +61,10 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Test`、`Gpu`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Test`、`Gpu`
 
-現在の std は `Option`・`Result` の型／関数／ビルダーと、仮の API `Math.zero : f64`（`0.0`）を持ちます。
+現在の std は `Option`・`Result` の型／関数／ビルダー、`String.length`／`Utf8String.length`、
+仮の API `Math.zero : f64`（`0.0`）を持ちます。
 
 `Point.tz`:
 
@@ -341,18 +342,18 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 
 | 組み込みクラス | メソッド／演算 | 組み込みインスタンス |
 |---|---|---|
-| `Add` | `add` / `+` | 全数値、string |
+| `Add` | `add` / `+` | 全数値、string、utf8string |
 | `Sub` / `Mul` / `Div` | `sub` / `mul` / `div`、`- * /` | 全数値 |
 | `Rem` | `rem` / `%` | 全整数 |
 | `Neg` | `neg` / 単項 `-` | 符号付き整数、全浮動小数点 |
-| `Eq` | `eq` / `ne`、`== !=` | 全数値、bool、unit、string |
-| `Ord` | `lt` / `le` / `gt` / `ge`、`< <= > >=` | 全数値 |
+| `Eq` | `eq` / `ne`、`== !=` | 全数値、bool、unit、string、utf8string |
+| `Ord` | `lt` / `le` / `gt` / `ge`、`< <= > >=` | 全数値、string |
 | `Bits` | `bit_and` / `bit_or` / `bit_xor` / `shl` / `shr` / `ushr` / `bit_not` | 全整数 |
 | `Integer` / `SignedInteger` / `Float` / `Numeric` | リテラル・変換の制約、メソッドなし | 全整数／符号付き整数／全浮動小数点／全数値 |
 | `Copy` | 所有権上の複製の制約、メソッドなし | 構造的に Copy な型 |
 | `Capture` | 再利用可能な捕捉環境の制約、メソッドなし | 排他参照を含まない型。string・関数値・共有参照も対象 |
 | `Send` | タスクの所有する値の制約、メソッドなし | 格納された参照を含まない型。関数の捕捉環境は別途所有権検査する |
-| `Display` | `display :: ref 'a -> string` | 全数値、bool、unit、string |
+| `Display` | `display :: ref 'a -> string` | 全数値、bool、unit、string、utf8string |
 | `Parse` | `parse :: ref string -> Option<'a>` | 全数値、bool |
 
 `Capture` は一回実行の `Task<T>`、およびそれを含む集約値も拒否します。
@@ -361,7 +362,7 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 
 演算クラスのメソッドは値を受け取り、比較だけ bool、他は入力と同じ型を返します。
 独自インスタンスも同じ左から右の評価順序と move 規則に従います。
-プリミティブの演算は既存の命令へ下げ、既存の string の `==`／`!=` は引き続き非消費の比較です。
+プリミティブの演算は直接の命令へ下げ、string／utf8string の比較演算子は所有権を消費しません。
 `Eq.eq` のような通常のメソッド適用ではシグネチャどおり引数の所有権を渡します。
 既存インスタンスの上書きと、メソッドなしの組み込みクラスへのインスタンス追加は禁止です。
 
@@ -535,8 +536,10 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 トップレベルの束縛はエントリーコード内のローカル値で、宣言済み関数からの参照や
 他モジュールへの公開はできません。右辺をソース順に評価し、結果式がなければ `unit` を返します。
 上の `Main.tz` は何も表示しません。末尾に `d` を追加すれば距離を表示します。
-結果式がある場合、その型は数値型／`bool`／`unit`／`string` に限り、
-ネイティブのホスト・ラッパーが値を表示します。文字列は埋め込み NUL を含め UTF-8 のバイト列を出力します。
+結果式がある場合、その型は数値型／`bool`／`unit`／`string`／`utf8string` に限り、
+ネイティブのホスト・ラッパーが値を表示します。string は UTF-8 に変換し、utf8string はそのまま、
+埋め込み NUL も含めて出力します。string に孤立サロゲートがあればトラップし、暗黙に置換しません。
+置換して表示する場合は、明示的に `String.to_well_formed ref text` を使います。
 
 トップレベルの実行コードと `fn main` の併用、他モジュールでのトップレベル実行はエラーです。
 `check` とライブラリ出力は `.tz`・`.tt`・`.tc` のどれも入力にでき、`Main.tz` は不要です。
@@ -553,7 +556,8 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 | `f16` / `f32` / `f64` / `f128` | IEEE 754 binary16 / binary32 / binary64 / binary128 |
 | `d32` / `d64` / `d128` | IEEE 754 decimal32 / decimal64 / decimal128（BID エンコーディング） |
 | `byte` / `ubyte` | それぞれ `i8` / `i8u` の別名 |
-| `string` | 所有する不変の UTF-8 文字列 |
+| `string` | ECMA-262 の String 値モデルに従う、所有する不変の UTF-16 コード単位列。孤立サロゲートも保持 |
+| `utf8string` | 従来の実装を保持する、所有する不変の妥当な UTF-8 文字列 |
 | `Point` など | 名前付きの不変レコード。フィールド数・型は宣言通り |
 | `Pair<i64, string>` など | `record Pair<'a, 'b> { ... }` で宣言したジェネリックレコードの具体化。型引数ごとに別の型 |
 | `Shape`・`Maybe<i64>` など | `union` で宣言した不変の共用体。いずれか一つの case と、その case の payload を持つ |
@@ -589,7 +593,7 @@ C/C++ と同じく、記憶域は生成の書き方で決まります。
 ```text
 let local = [1, 2, 3]              // 要素はスタック
 let nodes = [|1, 2, 3|]            // ノードもスタック
-let text = "hello"                 // バイト列はリテラルの静的領域をそのまま参照
+let text = "hello"                 // コード単位列はリテラルの静的領域をそのまま参照
 let point = Point { x: 1, y: 2 }   // レコード・タプルは値としてスタック
 let grid = [[1, 2], [3]]           // 入れ子のリテラルもスタック
 
@@ -638,7 +642,7 @@ Copy のコレクションを値として複製する場合（`let b = a` の後
 
 ### Ownership / Borrowing
 
-各所有値の所有者は一つです。`string` と文字列を含む集約値は、束縛・引数・結果として
+各所有値の所有者は一つです。`string`／`utf8string` と文字列を含む集約値は、束縛・引数・結果として
 値を渡すと **move** します。移動元を再使用すると `E1012` です。
 所有する文字列・配列のバッファとリストのノードはスコープ終了時に自動解放されます。
 スタック上の要素領域・ノードは解放操作を行わず、要素が所有する値だけを解放します。
@@ -713,7 +717,7 @@ fn example = {
 `name = value;`／`deref reference = value;`（`*reference = value;`）は値全体を置換し、旧所有値を解放します。
 代入式の型は unit、評価順序は右辺、代入先です。`let` の既定は引き続き不変です。
 可変参照自身の束縛は、参照先を置換するだけなら `mut` である必要はありません。
-レコードのフィールド・配列／リストの要素・文字列のバイトを書き換えることはできません。
+レコードのフィールド・配列／リストの要素・文字列のコード単位やバイトを書き換えることはできません。
 配列・リストは、入れ子や共有参照を経由する場合も含め、要素に `ref mut T` を格納できません。
 共有参照の要素は使えますが、コレクション経由の最終使用まで参照先の変更を借用検査で拒否します。
 
@@ -732,15 +736,66 @@ Rust のような引数での暗黙の reborrow は行わないため、渡し�
 一時値の借用と寿命延長は未対応です。一時値は先に `let` で所有者へ束縛してください。
 Rust の所有権モデルを採用したサブセットであり、Rust の全構文・trait・ライフタイム機能との互換ではありません。
 
-### UTF-8 文字列
+### string と utf8string
 
-`"こんにちは"` のように記述し、`\"`、`\\`、`\n`、`\r`、`\t`、`\0`、
-Unicode スカラーの `\u{1f600}` に対応します。不正なエスケープやサロゲートを拒否します。
-`string.length` は UTF-8 の **バイト数** を i64 で返し、`text[index]` は ubyte を返します。
-添字の範囲外はトラップします。文字／書記素単位の索引ではありません。
-`+` は両辺の所有権を消費して連結し、`==`／`!=` は所有権を消費せずバイト列を比較します。
-コピーが必要なら `clone_string ref text` で独立した所有値を作ります。
-文字列操作でも左から右の評価順序を維持し、比較・索引の途中で所有者を無効化する操作は借用エラーです。
+`string` は [ECMA-262 §6.1.4 の String 型](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type) と同じ、
+0～65535 の **UTF-16 コード単位** の列です。長さの上限は 2^53 - 1 コード単位で、
+実際の生成はターゲットのアドレス空間・ヒープ上限・確保可能量にも制限されます。
+上限超過・確保失敗はトラップします。Unicode 正規化は暗黙には行いません。
+
+`"こんにちは"` は string、`u8"こんにちは"` は従来の UTF-8 実装を保持する utf8string です。
+両者は別の型で、型注釈によるリテラルの切り替えや暗黙変換はありません。
+両リテラルは従来の `\"`、`\\`、`\n`、`\r`、`\t`、`\0`、`\u{1f600}` を使えます。
+string はさらに4桁の `\uXXXX` に対応し、`\uD800`／`\u{d800}` のような孤立サロゲートをそのまま保持します。
+補助平面の文字はサロゲートペアになり、`"😀"` と `"\uD83D\uDE00"` は等しい値です。
+utf8string の Unicode エスケープは従来どおり1～6桁の妥当なスカラーだけで、サロゲートを拒否します。
+
+| 操作 | string | utf8string |
+|---|---|---|
+| `.length : i64` | UTF-16 コード単位数（`"😀".length == 2`） | UTF-8 バイト数（`u8"😀".length == 4`） |
+| モジュール関数での長さ取得 | `String.length : ref string -> i64` | `Utf8String.length : ref utf8string -> i64` |
+| `text[index]` | `i16u` のコード単位 | `ubyte` のバイト |
+| `for value in text` | コード単位を `i16u` で列挙 | バイトを `ubyte` で列挙 |
+| `+` | コード単位列を連結 | バイト列を連結 |
+| `==`／`!=` | コード単位列の完全一致 | バイト列の完全一致 |
+| `<`／`<=`／`>`／`>=` | 符号なし16-bitコード単位の辞書順 | 未対応（従来どおり） |
+| 複製 | `clone_string ref text` | `Utf8String.clone ref text` |
+
+`String.length ref text`／`Utf8String.length ref bytes` は `.length` と同じ値を返す O(1) の関数です。
+共有借用なので所有権を消費せず、文字列の複製・確保・符号化変換も行いません。
+通常の関数値として高階関数に渡したり、`ref text |> String.length` とパイプラインで使ったりできます。
+
+```text
+let text = "😀"
+let bytes = u8"😀"
+assert (String.length ref text == 2)
+assert (Utf8String.length ref bytes == 4)
+assert (text.length == 2 && bytes.length == 4)
+```
+
+準拠対象は String **値モデル**とコード単位の比較・連結です。
+[ECMA-262 §22.1](https://tc39.es/ecma262/multipage/text-processing.html#sec-string-objects) の JavaScript オブジェクト、
+暗黙の型強制、全プロトタイプメソッドを導入するものではありません。
+Tsuzuri の索引は範囲検査付きの数値読み出しで、負数・範囲外は引き続きトラップします。
+列挙も索引と同じ単位であり、JavaScript のコードポイント単位の String iterator とは異なります。
+文字／書記素単位の索引ではありません。string の比較は locale に依存せず、
+補助平面と BMP の順序も Unicode スカラー値順ではなくコード単位順です。
+
+`+` は両辺の所有権を消費し、比較・索引・長さ・列挙は読み取り借用です。
+左から右の評価順序を維持し、読み取り中に所有者を無効化する操作は借用エラーです。
+両型とも非 Copy、NUL 終端なしで、スコープ終了時にバッファを解放します。
+
+| 変換・検査 | 型／契約 |
+|---|---|
+| `String.from_utf8` | `ref utf8string -> string`。UTF-8 を UTF-16 に復号した独立した所有値 |
+| `Utf8String.from_string` | `ref string -> utf8string`。UTF-16 を UTF-8 に符号化。孤立サロゲートはトラップ |
+| `String.is_well_formed` | `ref string -> bool`。孤立サロゲートがなければ true |
+| `String.to_well_formed` | `ref string -> string`。孤立サロゲートを一つずつ U+FFFD に置換した独立した所有値 |
+
+well-formed の検査・置換は ECMA-262 の `isWellFormed`／`toWellFormed` と同じコード単位規則です。
+UTF-8 変換・コンソール出力でデータを失わないよう、置換は明示的に選びます。
+旧コードでバイト単位の動作が必要な場合は、型を utf8string、リテラルを `u8"..."`、
+複製を `Utf8String.clone` に変更します。
 
 ```text
 def square :: i64 -> i64
@@ -1082,8 +1137,9 @@ start、finish を左から右へ一度ずつ評価し、両端を含みます�
 最後の要素を処理した後に終了し、カウンターの折り返しで反復し続けることはありません。
 
 `for pattern in source do body` は配列・連結リスト・文字列・整数範囲に対応します。
-source は一度だけ評価し、配列・リストは格納順、文字列は UTF-8 **バイト（ubyte）** 順に走査します。
-文字型や Unicode スカラーの列挙とは異なり、既存の `.length`／索引と単位を揃えています。
+source は一度だけ評価し、配列・リストは格納順、string は **UTF-16 コード単位（i16u）**、
+utf8string は **UTF-8 バイト（ubyte）** 順に走査します。
+文字型や Unicode スカラーの列挙とは異なり、それぞれの `.length`／索引と単位を揃えています。
 現在は汎用 `IEnumerable`、seq・set・map・ユーザー定義イテレーターのプロトコルはありません。
 
 整数範囲は `start .. finish` または `start .. step .. finish` です。
@@ -1399,7 +1455,8 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 | `to_float` | `fn(i64) -> f64`。大きな整数では丸めが発生する |
 | `to_int` | `fn(f64) -> i64`。ゼロ方向に丸め、範囲外は飽和、NaN は 0 |
 | `assert` | `fn(bool) -> unit`。false ならトラップする部分関数 |
-| `clone_string` | `fn(ref string) -> string`。独立した UTF-8 バッファを持つ所有値を作る |
+| `clone_string` | `fn(ref string) -> string`。独立した UTF-16 バッファを持つ所有値を作る |
+| `Utf8String.clone` | `fn(ref utf8string) -> utf8string`。従来の UTF-8 バッファ複製 |
 | `unreachable` | `unit -> 'a`。必ずトラップする。任意の型が必要な、到達しない分岐に置く |
 | `to_string` | `Display<'a> => 'a -> string`。値を消費して表示用の所有文字列を返す |
 
@@ -1422,9 +1479,10 @@ UI／公開 API の入力はホストでも検査してください。
 `Display.display ref value` は値を共有借用し、独立した所有文字列を返します。
 `to_string value` は値を消費し、同じ Display インスタンスで表示してから元の値を解放します。
 string の `to_string` は元のバッファの所有権をそのまま返し、余分な複製をしません。
-string の `Display.display` は複製します。どちらも NUL・改行・UTF-8 を含む生のバイト列で、
-引用符やエスケープを追加しません。bool は `true`／`false`、unit は `()` です。
-コンソールの数値・bool・string も同じ形式で末尾に改行を付けますが、unit のコンソール出力は空です。
+string の `Display.display` は孤立サロゲートも含めコード単位を正確に複製します。
+utf8string の表示・文字列化は UTF-16 に変換し、消費的な `to_string` は元の UTF-8 バッファを解放します。
+NUL・改行もそのまま保持し、引用符やエスケープは追加しません。bool は `true`／`false`、unit は `()` です。
+コンソールは同じ内容を UTF-8 で出力し末尾に改行を付けますが、unit のコンソール出力は空です。
 
 ```text
 let text = to_string 0.1
@@ -1459,7 +1517,8 @@ NaN の符号・payload は表示／解析の往復で保持しません。decim
 符号なし整数の負号（`-0` を含む）と範囲外の整数も `None` です。
 有限浮動小数点は目的の形式へ一度だけ最近接・偶数丸めし、無限大になる overflow は `None`、
 subnormal と符号付きゼロへの underflow は成功です。`inf` の入力だけが無限大を生成します。
-4096 バイトを超える入力は資源上限として `None` にし、解析の失敗で診断・トラップは発生しません。
+4096 UTF-16 コード単位を超える入力、非 ASCII（孤立サロゲートも含む）は `None` にします。
+解析の失敗で診断・トラップは発生しません。
 
 独自の具体型には `instance Display<Type>`／`instance Parse<Type>` を通常のメソッドとして定義できます。
 `to_string` も独自 Display を選択し、実行時の辞書や型分岐は追加しません。

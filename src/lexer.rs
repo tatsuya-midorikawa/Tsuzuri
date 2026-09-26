@@ -1,5 +1,5 @@
 use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
-use crate::syntax::{MAX_SOURCE_BYTES, Token, TokenKind};
+use crate::syntax::{MAX_SOURCE_BYTES, StringLiteral, Token, TokenKind};
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let (tokens, diagnostics) = tokenize(source, false);
@@ -62,7 +62,7 @@ impl Lexer<'_> {
     fn recover(&mut self, start: usize) {
         let first = self.source[start..].chars().next().unwrap();
         self.position = self.position.max(start + first.len_utf8());
-        if first == '"' {
+        if first == '"' || self.source[start..].starts_with("u8\"") {
             if !matches!(
                 self.source.as_bytes().get(self.position - 1),
                 Some(b'\n' | b'\r')
@@ -118,12 +118,15 @@ impl Lexer<'_> {
             }
             self.identifier();
             TokenKind::TypeVariable(self.source[start + 1..self.position].to_owned())
+        } else if self.rest().starts_with("u8\"") {
+            self.position += 2;
+            self.string(true)?
         } else if byte.is_ascii_alphabetic() || byte == b'_' {
             self.identifier()
         } else if byte.is_ascii_digit() {
             self.number()?
         } else if byte == b'"' {
-            self.string()?
+            self.string(false)?
         } else {
             self.symbol()?
         };
@@ -309,54 +312,33 @@ impl Lexer<'_> {
         })
     }
 
-    fn string(&mut self) -> Result<TokenKind, Diagnostic> {
+    fn string(&mut self, utf8: bool) -> Result<TokenKind, Diagnostic> {
         let start = self.position;
         self.position += 1;
-        let mut text = String::new();
+        let mut text = if utf8 {
+            StringLiteral::Utf8(String::new())
+        } else {
+            StringLiteral::Utf16(Vec::new())
+        };
         while self.position < self.source.len() {
             let ch = self.rest().chars().next().unwrap();
             self.position += ch.len_utf8();
-            match ch {
+            let codepoint = match ch {
                 '"' => return Ok(TokenKind::String(text)),
                 '\\' => {
                     let Some(escape) = self.rest().chars().next() else {
                         break;
                     };
                     self.position += escape.len_utf8();
-                    text.push(match escape {
-                        '"' => '"',
-                        '\\' => '\\',
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        '0' => '\0',
-                        'u' if self.rest().starts_with('{') => {
-                            self.position += 1;
-                            let digits = self.position;
-                            while self
-                                .source
-                                .as_bytes()
-                                .get(self.position)
-                                .is_some_and(u8::is_ascii_hexdigit)
-                            {
-                                self.position += 1;
-                            }
-                            let value = &self.source[digits..self.position];
-                            let scalar = (1..=6)
-                                .contains(&value.len())
-                                .then(|| {
-                                    u32::from_str_radix(value, 16).ok().and_then(char::from_u32)
-                                })
-                                .flatten();
-                            if !self.rest().starts_with('}') || scalar.is_none() {
-                                return Err(Diagnostic::new(
-                                    "E0001",
-                                    "invalid Unicode scalar escape",
-                                    Span::new(digits, self.position),
-                                ));
-                            }
-                            self.position += 1;
-                            scalar.unwrap()
+                    match escape {
+                        '"' => u32::from('"'),
+                        '\\' => u32::from('\\'),
+                        'n' => u32::from('\n'),
+                        'r' => u32::from('\r'),
+                        't' => u32::from('\t'),
+                        '0' => 0,
+                        'u' if !utf8 || self.rest().starts_with('{') => {
+                            self.unicode_escape(utf8)?
                         }
                         _ => {
                             return Err(Diagnostic::new(
@@ -365,7 +347,7 @@ impl Lexer<'_> {
                                 Span::new(self.position - escape.len_utf8() - 1, self.position),
                             ));
                         }
-                    });
+                    }
                 }
                 '\n' | '\r' => {
                     return Err(Diagnostic::new(
@@ -374,7 +356,20 @@ impl Lexer<'_> {
                         Span::new(start, self.position),
                     ));
                 }
-                _ => text.push(ch),
+                _ => u32::from(ch),
+            };
+            match &mut text {
+                StringLiteral::Utf16(units) if codepoint <= 0xffff => {
+                    units.push(codepoint as u16);
+                }
+                StringLiteral::Utf16(units) => {
+                    let value = codepoint - 0x10000;
+                    units.push(0xd800 | (value >> 10) as u16);
+                    units.push(0xdc00 | (value & 0x3ff) as u16);
+                }
+                StringLiteral::Utf8(text) => {
+                    text.push(char::from_u32(codepoint).expect("validated Unicode scalar"));
+                }
             }
         }
         Err(Diagnostic::new(
@@ -382,6 +377,47 @@ impl Lexer<'_> {
             "unterminated string literal",
             Span::new(start, self.position),
         ))
+    }
+
+    fn unicode_escape(&mut self, utf8: bool) -> Result<u32, Diagnostic> {
+        let braced = self.rest().starts_with('{');
+        if braced {
+            self.position += 1;
+        }
+        let digits = self.position;
+        while self
+            .source
+            .as_bytes()
+            .get(self.position)
+            .is_some_and(u8::is_ascii_hexdigit)
+            && (braced || self.position - digits < 4)
+        {
+            self.position += 1;
+        }
+        let text = &self.source[digits..self.position];
+        let value = u32::from_str_radix(text, 16)
+            .ok()
+            .filter(|value| *value <= 0x10ffff && (!utf8 || char::from_u32(*value).is_some()));
+        let valid_length = if braced {
+            !text.is_empty() && (!utf8 || text.len() <= 6)
+        } else {
+            text.len() == 4
+        };
+        if !valid_length || (braced && !self.rest().starts_with('}')) || value.is_none() {
+            return Err(Diagnostic::new(
+                "E0001",
+                if utf8 {
+                    "invalid Unicode scalar escape"
+                } else {
+                    "invalid Unicode escape"
+                },
+                Span::new(digits, self.position),
+            ));
+        }
+        if braced {
+            self.position += 1;
+        }
+        Ok(value.unwrap())
     }
 
     fn symbol(&mut self) -> Result<TokenKind, Diagnostic> {
@@ -477,6 +513,47 @@ mod tests {
         ] {
             assert!(lex(source).is_err(), "{source}");
         }
+    }
+
+    #[test]
+    fn preserves_utf16_units_and_utf8_scalars_in_separate_literals() {
+        let tokens = lex(r#""😀\uD83D\uDE00\uD800\u{dc00}\0" u8"😀\u{1f600}\0""#).unwrap();
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::String(StringLiteral::Utf16(vec![
+                0xd83d, 0xde00, 0xd83d, 0xde00, 0xd800, 0xdc00, 0,
+            ]))
+        );
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::String(StringLiteral::Utf8("😀😀\0".into()))
+        );
+        assert_eq!(
+            lex(r#""\u{00000001f600}""#).unwrap()[0].kind,
+            TokenKind::String(StringLiteral::Utf16(vec![0xd83d, 0xde00]))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_unicode_without_replacing_surrogates() {
+        for source in [
+            r#""\u""#,
+            r#""\u123""#,
+            r#""\u12xz""#,
+            r#""\u{}""#,
+            r#""\u{110000}""#,
+            r#""\u{ffffffffffffffff}""#,
+            r#""\u{12""#,
+            r#"u8"\u{d800}""#,
+            r#"u8"\u{dfff}""#,
+            r#"u8"\uD800""#,
+            r#"u8"\u{0000000}""#,
+        ] {
+            assert_eq!(lex(source).unwrap_err().code, "E0001", "{source}");
+        }
+        let (tokens, errors) = lex_all("u8\"\\u{d800}\" junk\n42");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Integer("42".into()));
     }
 
     #[test]

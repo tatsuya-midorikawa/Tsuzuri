@@ -1,5 +1,10 @@
 # A08: char（Unicode スカラー）型
 
+> この提案の UTF-8 string に関する記述は旧仕様です。
+> 現行の [文字列仕様](../docs/language.md#string-と-utf8string) では string は孤立サロゲートも保持する UTF-16、
+> utf8string は妥当な UTF-8 です。char を追加する際はスカラー値とコード単位を区別し、
+> string の索引・列挙（i16u）と utf8string の索引・列挙（ubyte）を暗黙に変更しないでください。
+
 | 項目 | 内容 |
 |---|---|
 | ID | A08 |

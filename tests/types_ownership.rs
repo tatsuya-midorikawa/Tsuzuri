@@ -211,7 +211,7 @@ fn rejects_use_after_move_borrow_conflicts_and_escaping_references() {
             "E1013",
         ),
         ("record R { s: &string }", "E1013"),
-        ("fn f() -> string { \"\\u{d800}\" }", "E0001"),
+        ("fn f() -> utf8string { u8\"\\u{d800}\" }", "E0001"),
         ("fn f() -> string { \"\\q\" }", "E0001"),
         ("export fn f(s: string) -> i64 { s.length }", "E1008"),
         ("export fn f(x: f128) -> f128 { x }", "E1008"),
@@ -240,7 +240,7 @@ fn guards_reads_while_other_operands_are_evaluated() {
         "E1014",
     );
     rejects(
-        "fn f() -> ubyte { let s = \"x\"; s[{ let t = s; 0 }] }",
+        "fn f() -> i16u { let s = \"x\"; s[{ let t = s; 0 }] }",
         "E1014",
     );
     rejects(

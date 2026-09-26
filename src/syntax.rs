@@ -27,7 +27,7 @@ pub enum TokenKind {
     TypeVariable(String),
     Integer(String),
     Float(String),
-    String(String),
+    String(StringLiteral),
     Fn,
     Fx,
     Def,
@@ -105,6 +105,25 @@ pub enum TokenKind {
     ShiftRightUnsigned,
     PipeForward,
     End,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StringLiteral {
+    Utf16(Vec<u16>),
+    Utf8(String),
+}
+
+impl StringLiteral {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Utf16(units) => units.len(),
+            Self::Utf8(text) => text.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -295,7 +314,7 @@ pub struct Expr {
 pub enum ExprKind {
     Integer(u128, Option<String>),
     Float(String, Option<String>),
-    String(String),
+    String(StringLiteral),
     Bool(bool),
     Unit,
     Name(Ident),

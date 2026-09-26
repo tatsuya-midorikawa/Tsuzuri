@@ -347,7 +347,8 @@ fn control_syntax_has_bounded_depth() {
 #[test]
 fn match_place_evaluation_is_not_duplicated_by_ownership() {
     accepts("let xs = [42]\nlet text = \"owned\"\nmatch xs[{ let moved = text; 0 }] with | n -> n");
-    accepts("let text = \"a\"\nmatch text[0] with | 97ubyte -> 42 | _ -> 0");
+    accepts("let text = \"a\"\nmatch text[0] with | 97i16u -> 42 | _ -> 0");
+    accepts("let text = u8\"a\"\nmatch text[0] with | 97ubyte -> 42 | _ -> 0");
     accepts("let text = \"owned\"\nlet r = match &text with | r -> r\nr.length");
     accepts(
         "def f :: string -> i64 -> string\nfn f text n\n    | n > 0 -> text\n    | otherwise -> text\nf \"owned\" 1",

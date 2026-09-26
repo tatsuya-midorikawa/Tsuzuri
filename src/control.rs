@@ -107,11 +107,12 @@ impl Checker<'_> {
                     }
                     let element = match &source.ty {
                         Type::Array(element) | Type::List(element) => (**element).clone(),
-                        Type::String => Type::Integer(8, false),
+                        Type::String => Type::Integer(16, false),
+                        Type::Utf8String => Type::Integer(8, false),
                         _ => {
                             return Err(Diagnostic::new(
                                 "E1005",
-                                "for...in expects an array, list, UTF-8 string, or integer range",
+                                "for...in expects an array, list, string, utf8string, or integer range",
                                 source.span,
                             ));
                         }

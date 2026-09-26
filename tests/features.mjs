@@ -182,7 +182,7 @@ const suites = {
   display_parse: {
     cases: [
       ["displays", [], 1],
-      ["text_copy", [], 36n],
+      ["text_copy", [], 20n],
       ["parse_numbers", [], 42n],
       ["parse_bool", [], 1],
       ["malformed", [], 1],

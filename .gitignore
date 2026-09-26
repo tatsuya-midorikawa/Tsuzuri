@@ -29,6 +29,7 @@ target
 !src/runtime/closure.ll
 !src/runtime/task-wasm.ll
 !src/runtime/string.ll
+!src/runtime/utf8string.ll
 !src/runtime/heap-native.ll
 !src/runtime/heap-wasm.ll
 !src/runtime/console.ll

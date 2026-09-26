@@ -79,7 +79,7 @@ export def utf8_iteration :: i64
 fn utf8_iteration =
     let mut total = 0
     let mut count = 0
-    for byte in "\u{7db4}\0" do
+    for byte in u8"\u{7db4}\0" do
         total = total + byte as i64
         count = count + 1
     total + count * 1000

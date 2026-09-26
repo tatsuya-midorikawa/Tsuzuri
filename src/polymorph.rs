@@ -944,17 +944,18 @@ impl Classes {
             return false;
         }
         match self.declarations[class].name.as_str() {
-            "Add" => ty.is_numeric() || *ty == Type::String,
-            "Sub" | "Mul" | "Div" | "Ord" | "Numeric" => ty.is_numeric(),
+            "Add" => ty.is_numeric() || ty.is_string(),
+            "Sub" | "Mul" | "Div" | "Numeric" => ty.is_numeric(),
+            "Ord" => ty.is_numeric() || *ty == Type::String,
             "Rem" | "Bits" | "Integer" => ty.is_integer(),
             "SignedInteger" => matches!(ty, Type::Integer(_, true)),
             "Neg" => ty.is_float() || matches!(ty, Type::Integer(_, true)),
             "Float" => ty.is_float(),
-            "Eq" => ty.is_scalar() || matches!(ty, Type::String | Type::Unit),
+            "Eq" => ty.is_scalar() || ty.is_string() || *ty == Type::Unit,
             "Copy" => ty.is_copy(types),
             "Capture" => ty.can_capture(types),
             "Send" => ty.can_send(types),
-            "Display" => ty.is_numeric() || matches!(ty, Type::Bool | Type::Unit | Type::String),
+            "Display" => ty.is_numeric() || ty.is_string() || matches!(ty, Type::Bool | Type::Unit),
             "Parse" => ty.is_numeric() || *ty == Type::Bool,
             _ => false,
         }

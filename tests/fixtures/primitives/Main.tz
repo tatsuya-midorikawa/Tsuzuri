@@ -15,7 +15,7 @@ export fn strings(flag: bool) -> i64 {
     let joined = if flag { moved + label.other } else { moved };
     let _ = assert(text == "changed");
     let _ = assert("a\0b".length == 3);
-    let _ = assert("日本語"[0] == 230ubyte);
+    let _ = assert("日本語"[0] == 26085i16u);
     let _ = assert({ let local = "x"; local } == "x");
     original + joined.length + (label.count as i64)
 }
@@ -137,7 +137,7 @@ export fn unsigned128_zero(x: i64) -> i64 { (1i128u / (x as i128u)) as i64 }
 export fn signed128_overflow() -> i64 {
     (-170141183460469231731687303715884105728i128 / -1i128) as i64
 }
-export fn string_bounds(index: i64) -> ubyte { "abc"[index] }
+export fn string_bounds(index: i64) -> i16u { "abc"[index] }
 
 fn rec grow(n: i64, text: string) -> i64 {
     if n == 0 { text.length } else { grow(n - 1, clone_string(&text) + text) }
@@ -145,4 +145,4 @@ fn rec grow(n: i64, text: string) -> i64 {
 
 export fn allocation_limit() -> i64 { grow(25, "a") }
 
-fn main() -> string { "UTF-8: 日本語 \u{1f600}" }
+fn main() -> utf8string { u8"UTF-8: 日本語 \u{1f600}" }

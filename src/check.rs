@@ -30,6 +30,7 @@ pub enum Type {
     Bool,
     Unit,
     String,
+    Utf8String,
     /// A record declaration and its type arguments; non-generic records have
     /// none. The arguments are boxed so `Type` stays four words, which keeps
     /// every typed expression and the checker's recursive frames small.
@@ -86,6 +87,7 @@ impl Type {
             Self::Bool => "bool".into(),
             Self::Unit => "unit".into(),
             Self::String => "string".into(),
+            Self::Utf8String => "utf8string".into(),
             Self::Reference(ty, mutable) => {
                 let inner = ty.display(types);
                 let inner = if matches!(**ty, Self::Function(..)) {
@@ -185,9 +187,14 @@ impl Type {
         matches!(self, Self::Binary(_) | Self::Decimal(_))
     }
 
+    pub fn is_string(&self) -> bool {
+        matches!(self, Self::String | Self::Utf8String)
+    }
+
     pub fn is_copy(&self, types: &TypeContext<'_>) -> bool {
         match self {
             Self::String
+            | Self::Utf8String
             | Self::Task(_)
             | Self::Reference(_, true)
             | Self::Variable(_)
@@ -202,7 +209,7 @@ impl Type {
 
     pub fn needs_drop(&self, types: &TypeContext<'_>) -> bool {
         match self {
-            Self::String | Self::Function(..) | Self::Task(_) => true,
+            Self::String | Self::Utf8String | Self::Function(..) | Self::Task(_) => true,
             Self::Record(id, args) => {
                 !types.record_fields_all(*id, args, |ty| !ty.needs_drop(types))
             }
@@ -405,6 +412,11 @@ pub enum Builtin {
     ToInt,
     Assert,
     CloneString,
+    CloneUtf8String,
+    StringFromUtf8,
+    Utf8StringFromString,
+    StringIsWellFormed,
+    StringToWellFormed,
     TaskRun,
     TaskParallel,
     /// `unreachable : unit -> 'a` traps (GUIDE D-21).
@@ -429,7 +441,7 @@ pub enum Builtin {
 #[derive(Clone, Debug)]
 pub enum BuiltinType {
     Var(&'static str),
-    /// A primitive, `bool`, `unit`, or `string` type; never a project id.
+    /// A primitive type; never a project id.
     Concrete(Type),
     /// A std-origin record or union, such as `Option.Option<'a>`.
     Std {
@@ -482,6 +494,11 @@ impl Builtin {
         Self::ToInt,
         Self::Assert,
         Self::CloneString,
+        Self::CloneUtf8String,
+        Self::StringFromUtf8,
+        Self::Utf8StringFromString,
+        Self::StringIsWellFormed,
+        Self::StringToWellFormed,
         Self::TaskRun,
         Self::TaskParallel,
         Self::Unreachable,
@@ -508,6 +525,11 @@ impl Builtin {
             Self::ToInt => "to_int",
             Self::Assert => "assert",
             Self::CloneString => "clone_string",
+            Self::CloneUtf8String => "Utf8String.clone",
+            Self::StringFromUtf8 => "String.from_utf8",
+            Self::Utf8StringFromString => "Utf8String.from_string",
+            Self::StringIsWellFormed => "String.is_well_formed",
+            Self::StringToWellFormed => "String.to_well_formed",
             Self::TaskRun => "Task.run",
             Self::TaskParallel => "Task.parallel",
             Self::Unreachable => "unreachable",
@@ -538,9 +560,29 @@ impl Builtin {
             Self::ToFloat => (vec![Concrete(Type::I64)], Concrete(Type::F64), Vec::new()),
             Self::ToInt => (vec![Concrete(Type::F64)], Concrete(Type::I64), Vec::new()),
             Self::Assert => (vec![Concrete(Type::Bool)], Concrete(Type::Unit), Vec::new()),
-            Self::CloneString => (
+            Self::CloneString | Self::StringToWellFormed => (
                 vec![Reference(Box::new(Concrete(Type::String)), false)],
                 Concrete(Type::String),
+                Vec::new(),
+            ),
+            Self::CloneUtf8String => (
+                vec![Reference(Box::new(Concrete(Type::Utf8String)), false)],
+                Concrete(Type::Utf8String),
+                Vec::new(),
+            ),
+            Self::StringFromUtf8 => (
+                vec![Reference(Box::new(Concrete(Type::Utf8String)), false)],
+                Concrete(Type::String),
+                Vec::new(),
+            ),
+            Self::Utf8StringFromString => (
+                vec![Reference(Box::new(Concrete(Type::String)), false)],
+                Concrete(Type::Utf8String),
+                Vec::new(),
+            ),
+            Self::StringIsWellFormed => (
+                vec![Reference(Box::new(Concrete(Type::String)), false)],
+                Concrete(Type::Bool),
                 Vec::new(),
             ),
             Self::TaskRun => (vec![Task(Box::new(a()))], a(), Vec::new()),
@@ -863,7 +905,7 @@ pub enum TypedExprKind {
     Error,
     Int(u128),
     Float(String),
-    String(String),
+    String(StringLiteral),
     Bool(bool),
     Unit,
     Local(usize),
@@ -3049,7 +3091,11 @@ impl<'a> Layouts<'a> {
                 }
                 size
             }
-            Type::Integer(128, _) | Type::Binary(128) | Type::Decimal(128) | Type::String => 16,
+            Type::Integer(128, _)
+            | Type::Binary(128)
+            | Type::Decimal(128)
+            | Type::String
+            | Type::Utf8String => 16,
             Type::Function(..) | Type::Task(_) => 32,
             // Small values conservatively occupy at least one pointer-sized slot.
             _ => 8,
@@ -3170,7 +3216,11 @@ impl Validation<'_> {
                 self.check(value, span)?;
                 8
             }
-            Type::Integer(128, _) | Type::Binary(128) | Type::Decimal(128) | Type::String => 16,
+            Type::Integer(128, _)
+            | Type::Binary(128)
+            | Type::Decimal(128)
+            | Type::String
+            | Type::Utf8String => 16,
             _ => 8,
         };
         if size > MAX_VALUE_BYTES {
@@ -3488,7 +3538,13 @@ impl<'a> Checker<'a> {
                     )
                 }
             }
-            ExprKind::String(text) => (TypedExprKind::String(text.clone()), Type::String),
+            ExprKind::String(text) => (
+                TypedExprKind::String(text.clone()),
+                match text {
+                    StringLiteral::Utf16(_) => Type::String,
+                    StringLiteral::Utf8(_) => Type::Utf8String,
+                },
+            ),
             ExprKind::Bool(value) => (TypedExprKind::Bool(*value), Type::Bool),
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
             ExprKind::Tuple(values) => {
@@ -3717,11 +3773,12 @@ impl<'a> Checker<'a> {
                 }
                 let ty = match &value.ty {
                     Type::Array(element) | Type::List(element) => (**element).clone(),
-                    Type::String => Type::Integer(8, false),
+                    Type::String => Type::Integer(16, false),
+                    Type::Utf8String => Type::Integer(8, false),
                     _ => {
                         return Err(Diagnostic::new(
                             "E1005",
-                            "indexing requires an array, list, or string",
+                            "indexing requires an array, list, string, or utf8string",
                             value.span,
                         ));
                     }
@@ -3928,12 +3985,12 @@ impl<'a> Checker<'a> {
             Type::Array(_) | Type::List(_) if field.text == "length" => {
                 Ok((TypedExprKind::Length(Box::new(value)), Type::I64))
             }
-            Type::String if field.text == "length" => {
+            Type::String | Type::Utf8String if field.text == "length" => {
                 Ok((TypedExprKind::StringLength(Box::new(value)), Type::I64))
             }
             _ => Err(Diagnostic::new(
                 "E1007",
-                "field access requires a record, or '.length' on an array, list, or string",
+                "field access requires a record, or '.length' on an array, list, string, or utf8string",
                 field.span,
             )),
         }
@@ -4229,6 +4286,19 @@ impl<'a> Checker<'a> {
 mod tests {
     use super::Builtin;
     use crate::analyze;
+
+    #[test]
+    fn string_comparison_borrows_do_not_make_pipelines_nonconsuming() {
+        for literal in [r#""owned""#, r#"u8"owned""#] {
+            let prefix = format!("let text = {literal}\nlet result = text |> to_string\n");
+            let error = analyze(&format!("{prefix}text.length")).unwrap_err();
+            assert_eq!(error.code, "E1012", "{}", error.message);
+            let module = analyze(&format!("{prefix}result.length")).unwrap();
+            for wasm in [false, true] {
+                crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn rejects_std_definitions_of_qualified_builtins() {

@@ -6,7 +6,7 @@ use crate::check::{
     Type, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Diagnostic, Span};
-use crate::syntax::{BinaryOp, UnaryOp};
+use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
 
 #[path = "call_specialization.rs"]
 mod call_specialization;
@@ -37,7 +37,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         validate_main(module)?;
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n",
     );
     let types = module.types();
     let reachable = reachable_functions(module);
@@ -182,9 +182,13 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
     if output.contains("@tz.closure.") {
         output.push_str(include_str!("runtime/closure.ll"));
     }
-    if output.contains("@tz.string.") || output.contains("@tz.free") || output.contains("@tz.alloc")
+    if output.contains("@tz.string.")
+        || output.contains("@tz.utf8string.")
+        || output.contains("@tz.free")
+        || output.contains("@tz.alloc")
     {
         output.push_str(include_str!("runtime/string.ll"));
+        output.push_str(include_str!("runtime/utf8string.ll"));
         output.push_str(if wasm {
             include_str!("runtime/heap-wasm.ll")
         } else {
@@ -468,6 +472,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Bool => "i1".into(),
         Type::Unit => "i8".into(),
         Type::String => "%tz.string".into(),
+        Type::Utf8String => "%tz.utf8string".into(),
         Type::Record(id, arguments) if arguments.is_empty() => {
             format!("%tz.record.{}", module.records[*id].name)
         }
@@ -525,7 +530,8 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         | Type::Decimal(_)
         | Type::Bool
         | Type::Unit
-        | Type::String => ty.display(&module.types()),
+        | Type::String
+        | Type::Utf8String => ty.display(&module.types()),
         Type::Error | Type::Variable(_) | Type::Infer(_) => {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
@@ -561,7 +567,7 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
             (bytes, bytes)
         }
         Type::Bool | Type::Unit => (1, 1),
-        Type::String | Type::Array(_) | Type::List(_) => (16, 8),
+        Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
         Type::Function(..) | Type::Task(_) => (32, 8),
         Type::Reference(..) => (8, 8),
         Type::Tuple(elements) => {
@@ -787,11 +793,14 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
         })?;
     if !main.parameters.is_empty()
         || (!main.signature.result.is_scalar()
-            && !matches!(main.signature.result, Type::Unit | Type::String))
+            && !matches!(
+                main.signature.result,
+                Type::Unit | Type::String | Type::Utf8String
+            ))
     {
         return Err(Diagnostic::new(
             "E2004",
-            "the Main.tz entry point must take no arguments and return a number, bool, unit, or string",
+            "the Main.tz entry point must take no arguments and return a number, bool, unit, string, or utf8string",
             main.span,
         ));
     }
@@ -1227,16 +1236,28 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         expression.ty.is_copy(&self.module.types()) && !last_use
     }
 
-    fn string_constant(&mut self, text: &str) -> String {
+    fn string_constant(&mut self, text: &StringLiteral) -> String {
         let name = format!("@tz.literal.{}", self.globals.definitions.len());
-        let escaped = text
-            .bytes()
-            .map(|byte| format!("\\{byte:02X}"))
-            .collect::<String>();
-        self.globals.definitions.push(format!(
-            "{name} = private unnamed_addr constant [{} x i8] c\"{escaped}\"",
-            text.len()
-        ));
+        let constant = match text {
+            StringLiteral::Utf16(units) => {
+                let values = units
+                    .iter()
+                    .map(|unit| format!("i16 {unit}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{} x i16] [{values}]", units.len())
+            }
+            StringLiteral::Utf8(text) => {
+                let escaped = text
+                    .bytes()
+                    .map(|byte| format!("\\{byte:02X}"))
+                    .collect::<String>();
+                format!("[{} x i8] c\"{escaped}\"", text.len())
+            }
+        };
+        self.globals
+            .definitions
+            .push(format!("{name} = private unnamed_addr constant {constant}"));
         name
     }
 
@@ -1296,8 +1317,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::String(text) => {
                 let name = self.string_constant(text);
+                let ty = self.ty(&expression.ty);
                 self.value(format!(
-                    "call %tz.string @tz.string.new(ptr {name}, i64 {})",
+                    "call {ty} @{}.new(ptr {name}, i64 {})",
+                    &ty[1..],
                     text.len()
                 ))
             }
@@ -1527,19 +1550,21 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
                 field
             }
-            TypedExprKind::Index(string, index) if string.ty == Type::String => {
+            TypedExprKind::Index(string, index) if string.ty.is_string() => {
                 let (value, frames) = self.read_operand(string);
                 let index = self.expression(index);
-                let data = self.value(format!("extractvalue %tz.string {value}, 0"));
-                let length = self.value(format!("extractvalue %tz.string {value}, 1"));
+                let ty = self.ty(&string.ty);
+                let element = self.ty(&expression.ty);
+                let data = self.value(format!("extractvalue {ty} {value}, 0"));
+                let length = self.value(format!("extractvalue {ty} {value}, 1"));
                 let valid = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.guard(&valid);
                 let pointer = self.value(format!(
-                    "getelementptr inbounds i8, ptr {data}, i64 {index}"
+                    "getelementptr inbounds {element}, ptr {data}, i64 {index}"
                 ));
-                let byte = self.value(format!("load i8, ptr {pointer}"));
+                let unit = self.value(format!("load {element}, ptr {pointer}"));
                 self.release_operand(string, &value, &frames);
-                byte
+                unit
             }
             TypedExprKind::Index(array, index) => {
                 let (value, frames) = self.read_operand(array);
@@ -1561,7 +1586,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::StringLength(string) => {
                 let (value, frames) = self.read_operand(string);
-                let length = self.value(format!("extractvalue %tz.string {value}, 1"));
+                let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&string.ty)));
                 self.release_operand(string, &value, &frames);
                 length
             }
@@ -1654,8 +1679,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Function(..) | Type::Task(_) => {
                 self.instruction(format!("call void @tz.closure.drop(%tz.closure {value})"))
             }
-            Type::String => {
-                let pointer = self.value(format!("extractvalue %tz.string {value}, 0"));
+            Type::String | Type::Utf8String => {
+                let pointer = self.value(format!("extractvalue {} {value}, 0", self.ty(ty)));
                 self.instruction(format!("call void @tz.free(ptr {pointer})"));
             }
             Type::Record(id, arguments) => {
@@ -1731,11 +1756,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn clone_value(&mut self, ty: &Type, value: &str) -> String {
         match ty {
             Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
-            Type::String => {
-                let pointer = self.value(format!("extractvalue %tz.string {value}, 0"));
-                let length = self.value(format!("extractvalue %tz.string {value}, 1"));
+            Type::String | Type::Utf8String => {
+                let ty = self.ty(ty);
+                let pointer = self.value(format!("extractvalue {ty} {value}, 0"));
+                let length = self.value(format!("extractvalue {ty} {value}, 1"));
                 self.value(format!(
-                    "call %tz.string @tz.string.new(ptr {pointer}, i64 {length})"
+                    "call {ty} @{}.new(ptr {pointer}, i64 {length})",
+                    &ty[1..]
                 ))
             }
             Type::Function(..) => self.value(format!(
@@ -2574,7 +2601,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn binary(&mut self, operator: BinaryOp, left: &TypedExpr, right: &TypedExpr) -> String {
         use BinaryOp::*;
-        if left.ty == Type::String {
+        if left.ty.is_string() {
             let take = operator == Add;
             // Concatenation reads both operands and then destroys them, so stack strings stay put.
             let (lhs, left_frames) = if take {
@@ -2587,14 +2614,29 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             } else {
                 self.read_operand(right)
             };
-            let result = if take {
-                self.value(format!(
-                    "call %tz.string @tz.string.concat(%tz.string {lhs}, %tz.string {rhs})"
-                ))
-            } else {
-                self.value(format!(
-                    "call i1 @tz.string.equal(%tz.string {lhs}, %tz.string {rhs})"
-                ))
+            let ty = self.ty(&left.ty);
+            let runtime = &ty[1..];
+            let result = match operator {
+                Add => self.value(format!(
+                    "call {ty} @{runtime}.concat({ty} {lhs}, {ty} {rhs})"
+                )),
+                Equal | NotEqual => {
+                    self.value(format!("call i1 @{runtime}.equal({ty} {lhs}, {ty} {rhs})"))
+                }
+                Less | LessEqual | Greater | GreaterEqual if left.ty == Type::String => {
+                    let order = self.value(format!(
+                        "call i32 @tz.string.compare({ty} {lhs}, {ty} {rhs})"
+                    ));
+                    let predicate = match operator {
+                        Less => "slt",
+                        LessEqual => "sle",
+                        Greater => "sgt",
+                        GreaterEqual => "sge",
+                        _ => unreachable!(),
+                    };
+                    self.value(format!("icmp {predicate} i32 {order}, 0"))
+                }
+                _ => unreachable!("string operator checked"),
             };
             if take {
                 self.drop_framed(&left.ty, &lhs, &left_frames);
@@ -2896,12 +2938,28 @@ fn emit_builtin(
              fail:\n  call void @llvm.trap()\n  unreachable\n\
              ok:\n  ret i8 0\n}}\n\n"
         ),
-        Builtin::CloneString => format!(
-            "define internal %tz.string @tz.builtin.{name}(ptr %x) nounwind {{\n\
-             entry:\n  %s = load %tz.string, ptr %x\n\
-             %p = extractvalue %tz.string %s, 0\n  %n = extractvalue %tz.string %s, 1\n\
-             %r = call %tz.string @tz.string.new(ptr %p, i64 %n)\n  ret %tz.string %r\n}}\n\n"
-        ),
+        Builtin::CloneString
+        | Builtin::CloneUtf8String
+        | Builtin::StringFromUtf8
+        | Builtin::Utf8StringFromString
+        | Builtin::StringIsWellFormed
+        | Builtin::StringToWellFormed => {
+            let (input, runtime) = match builtin {
+                Builtin::CloneString => ("%tz.string", "tz.string.new"),
+                Builtin::CloneUtf8String => ("%tz.utf8string", "tz.utf8string.new"),
+                Builtin::StringFromUtf8 => ("%tz.utf8string", "tz.string.from_utf8"),
+                Builtin::Utf8StringFromString => ("%tz.string", "tz.utf8string.from_string"),
+                Builtin::StringIsWellFormed => ("%tz.string", "tz.string.is_well_formed"),
+                Builtin::StringToWellFormed => ("%tz.string", "tz.string.to_well_formed"),
+                _ => unreachable!(),
+            };
+            format!(
+                "define internal {result} {symbol}(ptr %x) nounwind {{\n\
+                 entry:\n  %s = load {input}, ptr %x\n\
+                 %p = extractvalue {input} %s, 0\n  %n = extractvalue {input} %s, 1\n\
+                 %r = call {result} @{runtime}(ptr %p, i64 %n)\n  ret {result} %r\n}}\n\n"
+            )
+        }
         _ => {
             let intrinsic = match builtin {
                 Builtin::Sqrt => "sqrt",
@@ -2937,11 +2995,29 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
                %r = call %tz.string @tz.string.new(ptr %data, i64 %length)\n\
                ret %tz.string %r\n",
         ),
+        Type::Utf8String => {
+            let value = if borrowed {
+                body.push_str("  %s = load %tz.utf8string, ptr %x\n");
+                "%s"
+            } else {
+                "%x"
+            };
+            let _ = writeln!(
+                body,
+                "  %data = extractvalue %tz.utf8string {value}, 0\n\
+                   %length = extractvalue %tz.utf8string {value}, 1\n\
+                   %r = call %tz.string @tz.string.from_utf8(ptr %data, i64 %length)"
+            );
+            if !borrowed {
+                body.push_str("  call void @tz.free(ptr %data)\n");
+            }
+            body.push_str("  ret %tz.string %r\n");
+        }
         Type::Bool => {
             let _ = writeln!(
                 globals,
-                "{symbol}.true = private unnamed_addr constant [4 x i8] c\"true\"\n\
-                 {symbol}.false = private unnamed_addr constant [5 x i8] c\"false\""
+                "{symbol}.true = private unnamed_addr constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]\n\
+                 {symbol}.false = private unnamed_addr constant [5 x i16] [i16 102, i16 97, i16 108, i16 115, i16 101]"
             );
             let value = if borrowed {
                 body.push_str("  %value = load i1, ptr %x\n");
@@ -2960,7 +3036,7 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
         Type::Unit => {
             let _ = writeln!(
                 globals,
-                "{symbol}.unit = private unnamed_addr constant [2 x i8] c\"()\""
+                "{symbol}.unit = private unnamed_addr constant [2 x i16] [i16 40, i16 41]"
             );
             let _ = writeln!(
                 body,
@@ -2983,7 +3059,7 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
                 "  %buffer = alloca [128 x i8], align 16\n\
                    %count = call i32 @tz_soft_format(ptr %buffer, ptr {pointer}, i32 {})\n\
                    %length = zext i32 %count to i64\n\
-                   %r = call %tz.string @tz.string.new(ptr %buffer, i64 %length)\n\
+                   %r = call %tz.string @tz.string.from_utf8(ptr %buffer, i64 %length)\n\
                    ret %tz.string %r",
                 numeric_kind(ty),
             );
@@ -3011,8 +3087,8 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     if *payload == Type::Bool {
         let _ = writeln!(
             globals,
-            "{symbol}.true = private unnamed_addr constant [4 x i8] c\"true\"\n\
-             {symbol}.false = private unnamed_addr constant [5 x i8] c\"false\""
+            "{symbol}.true = private unnamed_addr constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]\n\
+             {symbol}.false = private unnamed_addr constant [5 x i16] [i16 102, i16 97, i16 108, i16 115, i16 101]"
         );
         let _ = writeln!(
             body,
@@ -3027,7 +3103,10 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
             "  %data = extractvalue %tz.string %text, 0\n\
                %length = extractvalue %tz.string %text, 1\n\
                %slot = alloca {value_type}, align 16\n\
-               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %data, i64 %length, i32 {})\n\
+               %buffer = alloca [4096 x i8], align 16\n\
+               %ascii = call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)\n\
+               br i1 %ascii, label %parse, label %none\nparse:\n\
+               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 %length, i32 {})\n\
                %ok = icmp ne i32 %parsed, 0\n\
                br i1 %ok, label %some, label %none\nsome:\n\
                %value = load {value_type}, ptr %slot",
@@ -3110,7 +3189,24 @@ fn console_main(module: &CheckedModule) -> String {
             );
         }
         Type::String => {
-            output.push_str("  %data = extractvalue %tz.string %result, 0\n  %length = extractvalue %tz.string %result, 1\n  %printed = call i32 @tz.console.write(ptr %data, i64 %length)\n  call void @tz.free(ptr %data)\n");
+            output.push_str(
+                "  %data = extractvalue %tz.string %result, 0\n\
+                   %length = extractvalue %tz.string %result, 1\n\
+                   %utf8 = call %tz.utf8string @tz.utf8string.from_string(ptr %data, i64 %length)\n\
+                   %bytes = extractvalue %tz.utf8string %utf8, 0\n\
+                   %byte_length = extractvalue %tz.utf8string %utf8, 1\n\
+                   %printed = call i32 @tz.console.write(ptr %bytes, i64 %byte_length)\n\
+                   call void @tz.free(ptr %bytes)\n\
+                   call void @tz.free(ptr %data)\n",
+            );
+        }
+        Type::Utf8String => {
+            output.push_str(
+                "  %data = extractvalue %tz.utf8string %result, 0\n\
+                   %length = extractvalue %tz.utf8string %result, 1\n\
+                   %printed = call i32 @tz.console.write(ptr %data, i64 %length)\n\
+                   call void @tz.free(ptr %data)\n",
+            );
         }
         Type::Unit => {}
         _ if ty.is_numeric() => {
@@ -3211,6 +3307,67 @@ mod tests {
     }
 
     #[test]
+    fn emits_distinct_string_literals_and_indexing() {
+        let ir = library(
+            "def wide :: i64 -> i16u\nfn wide index = { let text = \"A😀\"; text[index] }\n\
+             def narrow :: i64 -> i8u\nfn narrow index = { let text = u8\"A😀\"; text[index] }\n\
+             def moved :: utf8string\nfn moved = { let text = u8\"A😀\"; text }\n\
+             def ordered :: string -> string -> bool\nfn ordered left right = left < right\n\
+             def same :: utf8string -> utf8string -> bool\nfn same left right = left == right",
+        );
+        assert!(ir.contains("constant [3 x i16] [i16 65, i16 55357, i16 56832]"));
+        assert!(ir.contains("constant [5 x i8] c\"\\41\\F0\\9F\\98\\80\""));
+        for (function, element) in [("wide", "i16"), ("narrow", "i8")] {
+            let start = format!("define internal {element} @tz.fn.Main.{function}(");
+            let body = ir
+                .split(&start)
+                .nth(1)
+                .unwrap()
+                .split("\n}")
+                .next()
+                .unwrap();
+            assert!(body.contains("icmp ult i64"));
+            assert!(body.contains(&format!("getelementptr inbounds {element},")));
+            assert!(body.contains(&format!("load {element},")));
+        }
+        assert!(ir.contains("call %tz.utf8string @tz.utf8string.new("));
+        assert!(ir.contains("call i32 @tz.string.compare("));
+        assert!(ir.contains("call i1 @tz.utf8string.equal("));
+        assert_eq!(ir.matches("declare void @llvm.trap()").count(), 1);
+    }
+
+    #[test]
+    fn emits_utf16_display_and_ascii_parse() {
+        let ir = library(
+            "let bytes = u8\"42\"\n\
+             let text = Display.display ref bytes\n\
+             let consumed = to_string bytes\n\
+             let number = to_string 42\n\
+             let parsed: Option<i64> = Parse.parse ref number\n\
+             let truth = to_string true\n\
+             let parsed_bool: Option<bool> = Parse.parse ref truth\n0",
+        );
+        for (name, consumed) in [("display", false), ("to_string", true)] {
+            let start = format!("define internal %tz.string @tz.builtin.{name}.utf8string(");
+            let body = ir
+                .split(&start)
+                .nth(1)
+                .unwrap()
+                .split("\n}")
+                .next()
+                .unwrap();
+            assert!(body.contains("call %tz.string @tz.string.from_utf8("));
+            assert_eq!(body.contains("call void @tz.free(ptr %data)"), consumed);
+        }
+        assert!(ir.contains("call %tz.string @tz.string.from_utf8(ptr %buffer, i64 %length)"));
+        assert!(ir.contains("constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]"));
+        assert!(ir.contains("call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)"));
+        assert!(ir.contains("br i1 %ascii, label %parse, label %none"));
+        assert!(ir.contains("call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 %length"));
+        assert_eq!(ir.matches("declare void @llvm.trap()").count(), 1);
+    }
+
+    #[test]
     fn applies_multi_argument_constrained_builtins_like_functions() {
         let add = "define internal i32 @tz.builtin.Int.test_add.i32(i32 %x, i32 %y) nounwind";
         for source in [
@@ -3298,16 +3455,20 @@ mod tests {
         let ir = library(
             "export def f :: bool -> i64\nfn f b = if b then 1 else unreachable ()\n\
              export def g :: bool -> i64\nfn g b = if b then 2 else unreachable ()\n\
-             def h :: bool -> string\nfn h b = if b then \"x\" else unreachable ()",
+             def h :: bool -> string\nfn h b = if b then \"x\" else unreachable ()\n\
+             def u :: bool -> utf8string\nfn u b = if b then u8\"x\" else unreachable ()",
         );
         for definition in [
             "define internal i64 @tz.builtin.unreachable.i64(i8 %unit) noreturn nounwind",
             "define internal %tz.string @tz.builtin.unreachable.string(i8 %unit) noreturn nounwind",
+            "define internal %tz.utf8string @tz.builtin.unreachable.utf8string(i8 %unit) noreturn nounwind",
         ] {
             assert_eq!(ir.matches(definition).count(), 1, "{definition}\n{ir}");
         }
         let library = library("export def answer :: i64\nfn answer = 42");
         assert!(!library.contains("@tz.builtin."), "{library}");
         assert!(!library.contains("@tz.fn.Math."), "{library}");
+        assert!(!library.contains("@tz.string."), "{library}");
+        assert!(!library.contains("@tz.utf8string."), "{library}");
     }
 }

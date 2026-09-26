@@ -1,0 +1,9 @@
+def make :: i64 -> (i64 -> i64)
+fn make offset = value -> offset + value
+
+export def value :: i64
+fn value =
+    let closure = make 20
+    let copied = closure
+    let values = new [i64](2, index -> copied index)
+    values[0] + values[1] + closure 1 - 20

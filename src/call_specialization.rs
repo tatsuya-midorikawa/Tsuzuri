@@ -329,7 +329,16 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
         Length(value) | StringLength(value) | UnionTag(value) => {
             read_only(value, local, Access::Read, module)
         }
-        Binary(BinaryOp::Equal | BinaryOp::NotEqual, left, right) if left.ty == Type::String => {
+        Binary(
+            BinaryOp::Equal
+            | BinaryOp::NotEqual
+            | BinaryOp::Less
+            | BinaryOp::LessEqual
+            | BinaryOp::Greater
+            | BinaryOp::GreaterEqual,
+            left,
+            right,
+        ) if left.ty.is_string() => {
             read_only(left, local, Access::Read, module)
                 && read_only(right, local, Access::Read, module)
         }

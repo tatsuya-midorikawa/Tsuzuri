@@ -18,6 +18,7 @@ pub fn primitive(name: &str) -> Option<Type> {
         "bool" => Type::Bool,
         "unit" => Type::Unit,
         "string" => Type::String,
+        "utf8string" => Type::Utf8String,
         "byte" => Type::Integer(8, true),
         "ubyte" => Type::Integer(8, false),
         _ if name.starts_with('i') && is_numeric_name(name) => Type::Integer(

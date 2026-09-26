@@ -133,10 +133,34 @@ fn rejects_missing_or_overridden_instances_and_preserves_ownership() {
          text.length + rendered.length",
     );
     let ir = accepts("def transfer :: string -> string\nfn transfer text = to_string text");
-    assert!(!ir.contains("call %tz.string @tz.string.new"));
+    let transfer = ir
+        .split(" @tz.fn.Main.transfer(")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert!(!transfer.contains("call %tz.string @tz.string.new"));
+    let to_string = ir
+        .split("define internal %tz.string @tz.builtin.to_string.string(")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert!(to_string.contains("ret %tz.string %x"), "{to_string}");
+    assert!(!to_string.contains("call "), "{to_string}");
+    let ir = accepts("def copy :: &string -> string\nfn copy text = Display.display text");
+    let display = ir
+        .split("define internal %tz.string @tz.builtin.display.string(")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
     assert!(
-        accepts("def copy :: &string -> string\nfn copy text = Display.display text")
-            .contains("call %tz.string @tz.string.new")
+        display.contains("call %tz.string @tz.string.new"),
+        "{display}"
     );
 }
 

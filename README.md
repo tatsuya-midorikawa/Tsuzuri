@@ -41,7 +41,7 @@ fn main = answer()
 | 項目 | 初版の実装 |
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
-| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、UTF-8 `string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
+| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
@@ -75,6 +75,15 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決める生成もヒ�
 
 型は記憶域によらず同じ `[i64]`／`[|i64|]` です。スタックの値を戻り値・値渡し・捕捉などで束縛から移すときは、
 その時点で要素をヒープへ移すため、安全性と値の意味は変わりません。返すことが分かっている値は `new` で作るとこのコピーを省けます。
+
+文字列の既定型 `string` は [ECMA-262 の String 値モデル](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type)
+に従う UTF-16 コード単位列です。`"😀".length` は 2、索引・`for…in` の要素型は `i16u` で、
+`\uD800` のような孤立サロゲートも保持します。JavaScript のオブジェクト機構や String iterator を導入するものではありません。
+従来の UTF-8 は `utf8string` と `u8"..."` リテラルで使え、長さ・索引・列挙は引き続きバイト単位です。
+長さは `.length` のほか、共有借用の `String.length ref text`／`Utf8String.length ref bytes` でも取得できます。
+`String.from_utf8 ref bytes`／`Utf8String.from_string ref text` で明示的に変換し、
+UTF-8 にできない孤立サロゲートはトラップします。置換する場合だけ `String.to_well_formed ref text` を使います。
+複製はそれぞれ `clone_string`／`Utf8String.clone` です。詳しくは [文字列の仕様](docs/language.md#string-と-utf8string) を参照してください。
 
 Web 向けの小さな計算モジュールという方向性は
 [fsw のネイティブコンパイラ](https://github.com/tatsuya-midorikawa/fsw/tree/feat/fsw-native-compiler)
@@ -230,7 +239,7 @@ match add total 2 with
 
 `for…to`／`downto` は F# と同じく **i32 の両端を含む反復**です。
 `for…in` は配列・連結リスト・整数範囲 `start .. [step ..] finish` に対応し、
-文字列では既存の索引仕様と同じ UTF-8 バイトを列挙します。
+string は UTF-16 コード単位（`i16u`）、utf8string は UTF-8 バイト（`ubyte`）を列挙します。
 ループとその本体は `unit`、条件は `bool` です。
 `if condition then value else other`、`elif`、unit を返す `else` 省略も使えます。
 従来の `{ ... }` ブロック、`if condition { ... } else { ... }`、`x -> ...` も維持します。
@@ -374,7 +383,7 @@ std の関数も `Math.zero()` のように修飾して呼び、使わない std
 |---|---|
 | `Option`、`Result` | 省略可能な値と失敗 |
 | `Array`、`List`、`Vec`、`Map`、`Set` | コレクション |
-| `String`、`Char` | 文字列と文字 |
+| `String`、`Utf8String`、`Char` | UTF-16／UTF-8 文字列と文字 |
 | `Math`、`Int` | 数学関数と整数演算 |
 | `Debug`、`Test` | デバッグ出力とテスト |
 | `Parallel`、`Simd`、`Gpu` | データ並列・SIMD・GPU |
@@ -443,7 +452,7 @@ cargo build --release
 ```
 
 `Main.tz` のトップレベルの結果、または引数なしの `main` の返却型は
-数値型／`bool`／`unit`／`string` です。ネイティブ用ホスト・ラッパーが
+数値型／`bool`／`unit`／`string`／`utf8string` です。ネイティブ用ホスト・ラッパーが
 結果を表示し、成功時は終了コード 0 を返します。`unit` は何も表示しません。
 言語内に出力の副作用を持ち込む仕組みではありません。
 数値は `to_string`／`Display.display` と同じ形式です。二進浮動小数点は最短の往復可能な十進表現
@@ -451,6 +460,8 @@ cargo build --release
 `to_string value` は値を消費し、`Display.display ref value` は借用します。
 `let value: Option<f64> = Parse.parse ref text` のように解析でき、不正入力・overflow は `None` です。
 独自型にも Display／Parse インスタンスを定義できます。
+文字列の出力は UTF-8 です。string の孤立サロゲートは暗黙に置換せずトラップし、
+必要なら `String.to_well_formed` で明示的に置換します。
 
 ## Web／ゲーム
 
@@ -599,6 +610,7 @@ cargo test --locked
 cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/strings.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri

@@ -1,0 +1,276 @@
+def sample :: i64 -> string
+fn sample index =
+    match index with
+    | 0 -> ""
+    | 1 -> "A"
+    | 2 -> "é"
+    | 3 -> "e\u0301"
+    | 4 -> "日本語"
+    | 5 -> "😀"
+    | 6 -> "\uD83D\uDE00"
+    | 7 -> "\u{1f600}"
+    | 8 -> "\0A\0"
+    | 9 -> "\uD800"
+    | 10 -> "\uDC00"
+    | 11 -> "\uDC00\uD800"
+    | 12 -> "\uD800A\uDC00"
+    | 13 -> "\uD800\uD800\uDC00\uDC00"
+    | 14 -> "\u{d800}"
+    | 15 -> "\uD7FF"
+    | 16 -> "\uE000"
+    | 17 -> "\uFFFF"
+    | 18 -> "\u{10FFFF}"
+    | 19 -> "\u{10000}"
+    | 20 -> "\uFFFD"
+    | 21 -> "a"
+    | 22 -> "aa"
+    | 23 -> "a\0"
+    | 24 -> "\\\"\n\r\t\0"
+    | 25 -> "\u0001\u007F\u0080\u07FF\u0800"
+    | 26 -> "\u{000000000000000000001f600}"
+    | 27 -> "\u{00000000000000000000D800}"
+    | 28 -> "\u{000000000000000000000000}"
+    | 29 -> "\u{00000000000000000010ffff}"
+    | 30 -> "\uD801"
+    | _ -> "\uDC01"
+
+export def length :: i64 -> i64
+fn length index = (sample index).length
+
+export def module_length :: i64 -> i64
+fn module_length index =
+    let text = sample index
+    let get_length: ref string -> i64 = String.length
+    let size = String.length ref text
+    assert (size == text.length && get_length ref text == size)
+    assert ((ref text |> String.length) == size)
+    size
+
+export def utf8_module_length :: i64 -> i64
+fn utf8_module_length index =
+    let text = sample index
+    let repaired = String.to_well_formed ref text
+    let bytes = Utf8String.from_string ref repaired
+    let get_length: ref utf8string -> i64 = Utf8String.length
+    let size = Utf8String.length ref bytes
+    assert (size == bytes.length && get_length ref bytes == size)
+    assert ((ref bytes |> Utf8String.length) == size)
+    size
+
+export def unit_at :: i64 -> i64 -> i16u
+fn unit_at which index = (sample which)[index]
+
+export def iterated :: i64 -> i64
+fn iterated which =
+    let mut sum = 0
+    let mut index = 1
+    for unit in sample which do
+        let typed: i16u = unit
+        sum = sum + (typed as i64) * index
+        index = index + 1
+    sum
+
+export def compared :: i64 -> i64 -> i64
+fn compared left right =
+    let a = sample left
+    let b = sample right
+    let equal = if a == b then 1 else 0
+    let unequal = if a != b then 2 else 0
+    let less = if a < b then 4 else 0
+    let less_equal = if a <= b then 8 else 0
+    let greater = if a > b then 16 else 0
+    let greater_equal = if a >= b then 32 else 0
+    assert (a.length == (sample left).length)
+    assert (b.length == (sample right).length)
+    equal + unequal + less + less_equal + greater + greater_equal
+
+def less :: Ord<'a> => 'a -> 'a -> bool
+fn less left right = left < right
+
+def combine :: Add<'a> => 'a -> 'a -> 'a
+fn combine left right = left + right
+
+export def generic_less :: i64 -> i64 -> bool
+fn generic_less left right = less (sample left) (sample right)
+
+export def method_less :: i64 -> i64 -> bool
+fn method_less left right =
+    let compare: string -> string -> bool = Ord.lt
+    compare (sample left) (sample right)
+
+export def concat_length :: i64 -> i64 -> i64
+fn concat_length left right = (combine (sample left) (sample right)).length
+
+export def concat_unit :: i64 -> i64 -> i64 -> i16u
+fn concat_unit left right index = (combine (sample left) (sample right))[index]
+
+export def displayed :: i64 -> i64
+fn displayed which =
+    let text = sample which + ""
+    let copy = Display.display ref text
+    assert (copy == text)
+    let moved = to_string text
+    assert (moved == copy)
+    copy.length + moved.length
+
+export def display_unit :: i64 -> i64 -> i16u
+fn display_unit which index =
+    let text = sample which
+    (Display.display ref text)[index]
+
+export def well_formed :: i64 -> bool
+fn well_formed which =
+    let text = sample which
+    String.is_well_formed ref text
+
+export def repaired_length :: i64 -> i64
+fn repaired_length which =
+    let text = sample which + ""
+    let repaired = String.to_well_formed ref text
+    let again = String.to_well_formed ref repaired
+    assert (String.is_well_formed ref repaired)
+    assert (repaired == again)
+    assert (text == sample which)
+    repaired.length
+
+export def repaired_unit :: i64 -> i64 -> i16u
+fn repaired_unit which index =
+    let text = sample which
+    (String.to_well_formed ref text)[index]
+
+export def round_trip :: i64 -> i64
+fn round_trip which =
+    let text = sample which
+    let bytes = Utf8String.from_string ref text
+    let copy = Utf8String.clone ref bytes
+    assert (bytes == copy)
+    let decoded = String.from_utf8 ref bytes
+    let shown = Display.display ref copy
+    let moved = to_string copy
+    assert (decoded == text && shown == text && moved == text)
+    bytes.length
+
+export def encoded_byte :: i64 -> i64 -> ubyte
+fn encoded_byte which index =
+    let text = sample which
+    (Utf8String.from_string ref text)[index]
+
+def legacy :: utf8string
+fn legacy = u8"\0aé日本語\u{1F600}\"\\\n\r\t"
+
+export def utf8_length :: i64
+fn utf8_length = legacy().length
+
+export def utf8_byte :: i64 -> ubyte
+fn utf8_byte index = legacy()[index]
+
+export def utf8_iterated :: i64
+fn utf8_iterated =
+    let mut total = 0
+    let mut index = 1
+    for byte in legacy() do
+        let typed: ubyte = byte
+        total = total + (typed as i64) * index
+        index = index + 1
+    total
+
+export def parses :: bool
+fn parses =
+    let good = "42"
+    let parsed: Option<i64> = Parse.parse ref good
+    assert (Option.get parsed == 42)
+    let mut rejected = true
+    for text in ["４２", "é", "😀", "1\0", "\uD800", "\uDC00", "\u0131", "\u0130", "tru\u0165"] do
+        let integer: Option<i64> = Parse.parse ref text
+        let real: Option<f64> = Parse.parse ref text
+        let boolean: Option<bool> = Parse.parse ref text
+        rejected = rejected && Option.is_none ref integer &&
+            Option.is_none ref real && Option.is_none ref boolean
+    rejected
+
+record Pair<'a, 'b> { first: 'a, second: 'b }
+
+def identity :: 'a -> 'a
+fn identity value = value
+
+export def owned_paths :: i64 -> i64
+fn owned_paths count =
+    let mut total = 0
+    for _ in 1 .. count do
+        let prefix = sample 9 + ""
+        let append: string -> string = suffix -> prefix + suffix
+        let copied = append
+        let pair = Pair { first: append "\uDC00", second: copied "é" }
+        assert (pair.first == "\u{10000}" && pair.second == "\uD800é")
+        let texts = [identity pair.first, identity pair.second, sample 8]
+        let bytes = legacy() + u8""
+        let append_bytes: utf8string -> utf8string = suffix -> bytes + suffix
+        let copied_bytes = append_bytes
+        let byte_list = [|append_bytes u8"!", copied_bytes u8"?"|]
+        assert (texts[0].length == 2 && texts[1].length == 2 && texts[2].length == 3)
+        assert (byte_list[0].length == legacy().length + 1)
+        let clone = Utf8String.clone ref byte_list[1]
+        let decoded = to_string clone
+        assert (decoded == "\0aé日本語😀\"\\\n\r\t?")
+        let strings = [|clone_string ref texts[1], "\uD800é"|]
+        assert (strings[0] == strings[1])
+        total = total + 42
+    total
+
+export def task_values :: bool
+fn task_values =
+    let text = "\uD800" + "A"
+    let bytes = u8"😀" + u8"\0"
+    let texts = Task.run (Task.parallel [
+        task { return text + "\uDC00" },
+        task { return "\uDC00\uD800" }
+    ])
+    let byte_values = Task.run (Task.parallel [
+        task { return bytes + u8"é" },
+        task { return combine u8"日" u8"本" }
+    ])
+    texts[0] == "\uD800A\uDC00" && texts[1] == "\uDC00\uD800" &&
+        byte_values[0] == u8"😀\0é" && byte_values[1] == u8"日本"
+
+def consume_text :: string -> i64
+fn consume_text text = text.length
+
+export def pipeline_paths :: i64 -> i64
+fn pipeline_paths count =
+    let owned_text = "\uD800" + "😀"
+    let owned_bytes = u8"é" + u8"😀"
+    let render_text: unit -> string = ignored -> owned_text |> to_string
+    let render_bytes: unit -> string = ignored -> owned_bytes |> to_string
+    let copied_text = render_text
+    let copied_bytes = render_bytes
+    let mut total = 0
+    for _ in 1 .. count do
+        let first = render_text ()
+        let second = copied_text ()
+        let third = render_bytes ()
+        let fourth = copied_bytes ()
+        assert (first == "\uD800😀" && second == first)
+        assert (third == "é😀" && fourth == third)
+        total = total + (first |> consume_text) + (second |> consume_text) +
+            (third |> to_string |> consume_text) + (fourth |> consume_text)
+    total
+
+export def patterns :: bool
+fn patterns =
+    let text = "\uD83D\uDE00"
+    let pair = match text with | "😀" -> true | _ -> false
+    let lone = match "\u{D800}" with | "\uD800" -> true | _ -> false
+    let exact = match "é" with | "e\u0301" -> false | "é" -> true | _ -> false
+    let bytes = match u8"\u{1F600}" with | u8"😀" -> true | _ -> false
+    pair && lone && exact && bytes
+
+export def allocation_baseline :: i64
+fn allocation_baseline = ("a" + "😀").length
+
+export def allocation_move :: i64
+fn allocation_move = (to_string ("a" + "😀")).length
+
+export def allocation_repair :: i64
+fn allocation_repair =
+    let text = "a😀"
+    (String.to_well_formed ref text).length

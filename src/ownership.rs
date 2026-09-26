@@ -834,7 +834,7 @@ impl Checker<'_> {
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
         if Self::is_place(expression)
-            && !matches!(expression.kind, E::Index(ref value, _) if value.ty == Type::String)
+            && !matches!(expression.kind, E::Index(ref value, _) if value.ty.is_string())
         {
             return self.read_place(expression, usage, live);
         }
@@ -928,9 +928,16 @@ impl Checker<'_> {
                 self.eval(value, Use::Consume, &during)?;
             }
             E::Binary(operator, left, right) => {
-                let usage = if left.ty == Type::String
-                    && matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual)
-                {
+                let usage = if left.ty.is_string()
+                    && matches!(
+                        operator,
+                        BinaryOp::Equal
+                            | BinaryOp::NotEqual
+                            | BinaryOp::Less
+                            | BinaryOp::LessEqual
+                            | BinaryOp::Greater
+                            | BinaryOp::GreaterEqual
+                    ) {
                     Use::Read
                 } else {
                     Use::Consume

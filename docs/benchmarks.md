@@ -246,6 +246,10 @@ native の反復数は上表の仕事量、WASM は各 1024 反復です。1 回
 最適化後 IR でも scalar は直接ループで確保・間接 callback なし、所有文字列は成功経路の 11 バイト確保と解放が残ります。
 SIMD・並列・GPU の加速を示す測定ではありません。
 
+この測定は string が UTF-8 だった時点の結果です。現在の string は UTF-16 なので、
+文字列の確保バイト数や時間をそのまま比較できません。旧表現は utf8string として残しています。
+符号化・仕事量を揃えて再測定するまでは、この表を文字列変更の性能結果として使わないでください。
+
 生データは `target/benchmarks/p0-computations.json`、IR・アセンブリ・実行ファイルは
 `target/benchmarks/p0-computations/` に保存しました。再現コマンド:
 

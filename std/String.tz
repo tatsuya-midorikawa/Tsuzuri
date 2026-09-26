@@ -1,0 +1,2 @@
+def length :: ref string -> i64
+fn length text = text.length

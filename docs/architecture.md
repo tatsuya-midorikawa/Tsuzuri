@@ -46,7 +46,7 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/llvm_frame.rs` | `new` なしのリテラルのフレーム領域、実行時のアドレス判定、スコープ外への移動時のヒープ移送、フレームを考慮した解放 |
 | `src/call_specialization.rs` | 非 escaping な関数引数の固定点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker の特殊化予算 |
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、最短往復表示・解析 |
-| `src/runtime/string.ll` / `heap-*.ll` | UTF-8 バッファ操作、ネイティブ確保、WASM の再利用・結合可能なヒープ |
+| `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な符号化変換、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
 | `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
@@ -233,6 +233,7 @@ usefulness は行列の特殊化で求め、`Rc` の永続的な行を反復的�
 状態比較は loan の生成 ID ではなく参照先と可変性を比較し、上限を超える解析は `E1017` にします。
 ループ内の一回の構文上の使用を「実行時にも一回」とみなして所有領域を奪ってはいけません。
 反復元は一度だけ評価・読み取り借用し、配列・文字列は連続走査、リストはリンクの O(n) 走査です。
+string は i16 の UTF-16 コード単位、utf8string は従来の i8 の UTF-8 バイトを直接ロードします。
 添字を増やしてリストの先頭から繰り返し探索したり、列挙のために全体を深くコピーしたりしません。
 
 狭い整数の単位刻みは i64 の誘導変数へ拡張し、終点の次の値も表現可能にします。
@@ -410,6 +411,7 @@ decimal は BID の有限値／非正規化数／符号付きゼロ／無限大�
 Parse のシグネチャの解決失敗を使用時に報告し、無関係な解析を阻害しません。
 `to_string` の独自 Display 呼び出しは、引数を借用して表示し通常どおり drop する型付き関数を生成します。
 再帰検査もこの Display の依存辺を含めます。string の消費的な文字列化は所有権をそのまま返します。
+utf8string の Display は UTF-16 へ変換し、消費的な文字列化では変換後に元の UTF-8 領域を解放します。
 
 数値表示の入口は `tz_soft_format` に統一し、コンソール・Display・to_string が同じ形式を使います。
 整数は u128 の十進除算、binary は既存 `tzrt_big` による Dragon4 の正確な境界区間から最短の桁を生成します。
@@ -417,12 +419,28 @@ Parse のシグネチャの解決失敗を使用時に報告し、無関係な�
 同じ桁数の候補は近さと十進仮数の偶奇で選びます。decimal は既存 BID 復号を共有して末尾ゼロを正規化します。
 第三者の実装・係数テーブル、ホストの浮動小数点や libc の変換関数には依存しません。
 
-`tz_soft_parse` は 4096 バイト以下の厳密な ASCII 文法を検査し、整数は対象幅の cutoff と最終桁で overflow を判定します。
+Parse の入口は UTF-16 の string を受け、4096 コード単位以下の ASCII だけを一時バッファに狭めます。
+非 ASCII・孤立サロゲートは None で、UTF-8 変換や暗黙の置換はしません。
+`tz_soft_parse` は従来どおり 4096 バイト以下の厳密な ASCII 文法を検査し、整数は対象幅の cutoff と最終桁で overflow を判定します。
 float は十進係数・指数を正確な有理数として既存 `pack` に渡し、目的の形式へ一度だけ丸めます。
 係数 4096 桁と形式ごとの指数範囲が `LIMBS` 内に収まるよう、極端な指数は拡大前に overflow／underflow と分類します。
 失敗は 0（Option.None）で、成功時だけ出力スロットを初期化します。LLVM は成功分岐だけでスロットを読み、
 標準 Option の Some／None の tag と共通 payload 領域を組み立てます。
-表示用の一時バッファは entry alloca の 128 バイト、結果の所有文字列は既存 `tz.string.new` で作ります。
+表示用の一時バッファは entry alloca の 128 バイトで、ASCII の結果を `tz.string.from_utf8` で UTF-16 の所有値にします。
+
+**文字列:** `Type::String` と `Type::Utf8String` は別の非 Copy 型です。
+構文・型付き IR の `StringLiteral::Utf16(Vec<u16>)` は Rust の String を経由せず孤立サロゲートを保持し、
+`StringLiteral::Utf8(String)` は従来の妥当な UTF-8 を保持します。match の定数キーも符号単位を失わず比較します。
+LLVM は `%tz.string`／`%tz.utf8string` の独立した `{ ptr, i64 }` 記述子を使い、
+長さはそれぞれ UTF-16 コード単位数／UTF-8 バイト数です。
+`std/String.tz`／`std/Utf8String.tz` の `length` は共有借用の `.length` を使う通常の std 関数です。
+同じ記述子の長さを直接取り出すため、ランタイムの走査・複製・変換は不要です。
+UTF-16 の定数は `[N x i16]` として出力し、ホストの endian に依存したバイト列を埋め込みません。
+UTF-16 の確保は長さが 2^53 - 1 以下であることを検査してから2倍し、連結にも上限検査を適用します。
+索引・複製・連結は型ごとの直接の LLVM 操作で、符号化を実行時に判別する汎用 dispatch はありません。
+string の大小比較は符号なし i16 の辞書順で、暗黙の Unicode 正規化はありません。
+UTF-8 への変換・コンソール出力は孤立サロゲートでトラップし、置換は `String.to_well_formed` だけが行います。
+所有権・フレームからのヒープ移送・捕捉の複製・drop は両型に同じ規則を適用します。
 
 **タスク:** `Type::Task(T)` は非 Copy の cold な一回実行の計算です。
 型検査では `task` を引数なしの Lambda として扱い、捕捉と結果には `Capture` ではなく `Send` を課します。
@@ -617,6 +635,11 @@ decimal・整数全幅を、Python Fraction の区間内の整数仮数探索と
 最短表示、非 NaN のビット往復、NaN の分類、decimal の数値と符号付きゼロ、解析の失敗・資源上限を
 native／WASM の `-O0`／`-O3` で検査します。raw runtime harness はテスト専用で公開 ABI を増やしません。
 独自インスタンスの解放・生 UTF-8・parse-only／to_string-only のリンク・コンソールとの形式一致も検査します。
+`tests/strings.rs`／`tests/strings.mjs` は UTF-16 の型・サロゲート・符号化変換と従来の UTF-8 動作を検査します。
+Node の String を参照に、コード単位数・索引・比較を native／WASM の `-O0`／`-O3` で照合します。
+同じ runner が `tests/strings_runtime.c` の独立した整数演算の参照で全 Unicode スカラーを小分けに往復し、
+不正 UTF-8・孤立サロゲートの変換を明示的なトラップとして検証します。
+巨大な領域を確保しない記録用 allocator により、2^53 - 1 の長さ上限とコード単位当たり2バイトも照合します。
 WASM では累積の確保量がメモリ上限を超える反復を実行し、空き領域の再利用を確認します。
 カリー化では `tests/currying.rs` が型・捕捉・寿命を検査し、
 `tests/fixtures/currying` を `tests/primitives.mjs` から C／WASM の両方で実行します。

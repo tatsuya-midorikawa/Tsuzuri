@@ -1,7 +1,7 @@
 //! Stack storage for collection and string literals that are not created with `new`.
 //!
 //! A literal bound in this function (or used as a temporary operand) keeps its elements in
-//! entry-block allocas; string literals keep their bytes in the private constant. Every frame
+//! entry-block allocas; string literals keep their code units in the private constant. Every frame
 //! pointer lives only at its static position inside the value that received the literal, or in
 //! arguments lent to a borrowing worker during one call, so a run-time address test identifies it
 //! exactly even after moves, reassignment, or branch merges.
@@ -22,7 +22,7 @@ pub(super) enum Frame {
         nodes: String,
         elements: Vec<Vec<Frame>>,
     },
-    /// String bytes that stay in the literal constant `data`.
+    /// String code units that stay in the literal constant `data`.
     String { data: String, length: usize },
     /// Record or tuple fields with stack parts, by field index.
     Aggregate(BTreeMap<usize, Vec<Frame>>),
@@ -54,6 +54,7 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
         | Type::Binary(128)
         | Type::Decimal(128)
         | Type::String
+        | Type::Utf8String
         | Type::Array(_)
         | Type::List(_) => 16,
         Type::Function(..) | Type::Task(_) => 32,
@@ -113,13 +114,9 @@ impl FunctionEmitter<'_, '_> {
             }
             TypedExprKind::String(text) if !text.is_empty() => {
                 let data = self.string_constant(text);
-                let value = self.value(format!(
-                    "insertvalue %tz.string zeroinitializer, ptr {data}, 0"
-                ));
-                let value = self.value(format!(
-                    "insertvalue %tz.string {value}, i64 {}, 1",
-                    text.len()
-                ));
+                let ty = self.ty(&expression.ty);
+                let value = self.value(format!("insertvalue {ty} zeroinitializer, ptr {data}, 0"));
+                let value = self.value(format!("insertvalue {ty} {value}, i64 {}, 1", text.len()));
                 let length = text.len();
                 (value, vec![Frame::String { data, length }])
             }
@@ -440,9 +437,13 @@ impl FunctionEmitter<'_, '_> {
     /// Moves a frame's elements into new heap storage; element ownership moves along bitwise.
     fn heap_copy(&mut self, ty: &Type, frame: &Frame) -> String {
         match (ty, frame) {
-            (Type::String, Frame::String { data, length }) => self.value(format!(
-                "call %tz.string @tz.string.new(ptr {data}, i64 {length})"
-            )),
+            (Type::String | Type::Utf8String, Frame::String { data, length }) => {
+                let ty = self.ty(ty);
+                self.value(format!(
+                    "call {ty} @{}.new(ptr {data}, i64 {length})",
+                    &ty[1..]
+                ))
+            }
             (Type::Array(element), Frame::Array { buffer, elements }) => {
                 let length = elements.len().to_string();
                 let (array, data) = self.allocate_array(element, &length);
@@ -527,7 +528,7 @@ impl FunctionEmitter<'_, '_> {
 
     fn drop_frame_contents(&mut self, ty: &Type, frame: &Frame) {
         match (ty, frame) {
-            (Type::String, Frame::String { .. }) => {}
+            (Type::String | Type::Utf8String, Frame::String { .. }) => {}
             (Type::Array(element), Frame::Array { buffer, elements }) => {
                 if !element.needs_drop(&self.module.types()) {
                     return;
