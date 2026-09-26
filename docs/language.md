@@ -141,6 +141,10 @@ fn reveal n = (token n).value
 
 ### 関数の宣言と適用
 
+関数名はスネークケース（`snake_case`）を推奨します。複数の単語は小文字で書き、
+`calculate_total` や `distance_of` のように `_` で区切ります。
+これは命名上の推奨であり、構文上の必須条件ではありません。
+
 ```text
 def add :: i32 -> i32 -> i32
 fn add x y =
