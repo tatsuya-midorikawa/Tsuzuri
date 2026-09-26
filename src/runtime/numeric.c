@@ -162,11 +162,57 @@ static tzrt_format format(int kind) {
 }
 static u128 mask(int count) { return count == 128 ? ~(u128)0 : ((u128)1 << count) - 1; }
 static u128 load(const unsigned char *p, int width) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    switch (width) {
+        case 8: return *p;
+        case 16: {
+            unsigned short raw;
+            __builtin_memcpy(&raw, p, sizeof(raw));
+            return raw;
+        }
+        case 32: {
+            u32 raw;
+            __builtin_memcpy(&raw, p, sizeof(raw));
+            return raw;
+        }
+        case 64: {
+            u64 raw;
+            __builtin_memcpy(&raw, p, sizeof(raw));
+            return raw;
+        }
+        case 128: {
+            u128 raw;
+            __builtin_memcpy(&raw, p, sizeof(raw));
+            return raw;
+        }
+    }
+#endif
     u128 value = 0;
     for (int i = width / 8; i--;) value = (value << 8) | p[i];
     return value;
 }
 static void store(unsigned char *p, u128 value, int width) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    switch (width) {
+        case 8: *p = (unsigned char)value; return;
+        case 16: {
+            unsigned short raw = (unsigned short)value;
+            __builtin_memcpy(p, &raw, sizeof(raw));
+            return;
+        }
+        case 32: {
+            u32 raw = (u32)value;
+            __builtin_memcpy(p, &raw, sizeof(raw));
+            return;
+        }
+        case 64: {
+            u64 raw = (u64)value;
+            __builtin_memcpy(p, &raw, sizeof(raw));
+            return;
+        }
+        case 128: __builtin_memcpy(p, &value, sizeof(value)); return;
+    }
+#endif
     for (int i = 0; i < width / 8; ++i) { p[i] = (unsigned char)value; value >>= 8; }
 }
 static tzrt_number decode(const unsigned char *p, tzrt_format f) {
@@ -428,6 +474,8 @@ static void shortest(tzrt_number *value, tzrt_format f) {
     }
 }
 
+static __attribute__((noinline)) int format_float(char *out, const unsigned char *input, tzrt_format f);
+
 /* The caller supplies 128 bytes. No locale, host FP, or allocation is used. */
 __attribute__((visibility("hidden")))
 int tz_soft_format(char *out, const unsigned char *input, int kind) {
@@ -438,13 +486,40 @@ int tz_soft_format(char *out, const unsigned char *input, int kind) {
         if (negative) value = -value & mask(f.width);
         char digits[40];
         int count = 0, length = 0;
-        while (value >> 64) { digits[count++] = (char)('0' + value % 10); value /= 10; }
+        while (value >> 64) {
+            u32 pair = (u32)(value % 100);
+            digits[count++] = (char)('0' + pair % 10);
+            digits[count++] = (char)('0' + pair / 10);
+            value /= 100;
+        }
         u64 remaining = (u64)value;
-        do { digits[count++] = (char)('0' + remaining % 10); remaining /= 10; } while (remaining);
+        while (remaining >= 100) {
+            u32 pair = (u32)(remaining % 100);
+            digits[count++] = (char)('0' + pair % 10);
+            digits[count++] = (char)('0' + pair / 10);
+            remaining /= 100;
+        }
+        if (remaining >= 10) {
+            digits[count++] = (char)('0' + (u32)remaining % 10);
+            digits[count++] = (char)('0' + (u32)remaining / 10);
+        } else digits[count++] = (char)('0' + remaining);
         if (negative) out[length++] = '-';
         while (count) out[length++] = digits[--count];
         return length;
     }
+    if (f.base == 2) {
+        u128 raw = load(input, f.width);
+        if (!(raw & mask(f.width - 1))) {
+            int length = 0;
+            if (raw) out[length++] = '-';
+            out[length++] = '0';
+            return length;
+        }
+    }
+    return format_float(out, input, f);
+}
+
+static __attribute__((noinline)) int format_float(char *out, const unsigned char *input, tzrt_format f) {
     tzrt_number value = decode(input, f);
     int length = 0;
     if (value.negative && value.special != 2) out[length++] = '-';
@@ -493,6 +568,20 @@ static int digit_value(char c) {
     return -1;
 }
 
+static int eight_decimal_digits(const char *input, u32 *result) {
+    u64 packed;
+    __builtin_memcpy(&packed, input, sizeof(packed));
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    packed = __builtin_bswap64(packed);
+#endif
+    u64 digits = packed - 0x3030303030303030ULL;
+    if ((digits | (packed + 0x4646464646464646ULL)) & 0x8080808080808080ULL) return 0;
+    digits = (digits * 10 + (digits >> 8)) & 0x00ff00ff00ff00ffULL;
+    digits = (digits * 100 + (digits >> 16)) & 0x0000ffff0000ffffULL;
+    *result = (u32)(digits * 10000 + (digits >> 32));
+    return 1;
+}
+
 /* A null coefficient parses an exponent, saturating well beyond any format's
    range. Separators must have decimal digits on both sides in this section. */
 static int decimal_digits(const char *input, u64 length, u64 *index, tzrt_big *coefficient, int *exponent) {
@@ -524,6 +613,8 @@ static int decimal_digits(const char *input, u64 length, u64 *index, tzrt_big *c
     return count;
 }
 
+static __attribute__((noinline)) int parse_float(unsigned char *out, const char *input, u64 length, u64 index, int negative, tzrt_format f);
+
 __attribute__((visibility("hidden")))
 int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
     if (!length || length > 4096) return 0;
@@ -545,6 +636,17 @@ int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
         u32 last = f.width <= 64 ? (u32)((u64)limit % (u32)base) : (u32)(limit % (u32)base);
         u128 value = 0;
         int previous = 0;
+        u32 group;
+        if (base == 10 && length - index >= 8 && eight_decimal_digits(input + index, &group)) {
+            u128 group_cutoff = f.width <= 64 ? (u64)limit / 100000000 : limit / 100000000;
+            u32 group_last = f.width <= 64 ? (u32)((u64)limit % 100000000) : (u32)(limit % 100000000);
+            do {
+                if (value > group_cutoff || (value == group_cutoff && group > group_last)) return 0;
+                value = value * 100000000 + group;
+                previous = 1;
+                index += 8;
+            } while (length - index >= 8 && eight_decimal_digits(input + index, &group));
+        }
         for (; index < length; ++index) {
             if (input[index] == '_') {
                 if (!previous || index + 1 == length) return 0;
@@ -570,6 +672,10 @@ int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
             return 1;
         }
     }
+    return parse_float(out, input, length, index, negative, f);
+}
+
+static __attribute__((noinline)) int parse_float(unsigned char *out, const char *input, u64 length, u64 index, int negative, tzrt_format f) {
     tzrt_big coefficient = small(0), denominator = small(1);
     int integral = decimal_digits(input, length, &index, &coefficient, 0);
     if (integral < 0) return 0;

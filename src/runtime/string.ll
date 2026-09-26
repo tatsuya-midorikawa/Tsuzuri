@@ -181,7 +181,7 @@ prefix:
 }
 
 ; Return the scalar and next byte index, rejecting non-shortest UTF-8 and surrogates.
-define internal { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %length, i64 %index) nounwind {
+define internal { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %length, i64 %index, i1 %validated) nounwind {
 entry:
   %firstp = getelementptr inbounds i8, ptr %source, i64 %index
   %firstbyte = load i8, ptr %firstp
@@ -202,13 +202,15 @@ classify:
   %four = icmp ult i32 %fouroffset, 5
   %twothree = or i1 %two, %three
   %validlead = or i1 %twothree, %four
-  br i1 %validlead, label %checklength, label %fail
+  %lead_allowed = or i1 %validated, %validlead
+  br i1 %lead_allowed, label %checklength, label %fail
 checklength:
   %shortwidth = select i1 %two, i64 2, i64 3
   %width = select i1 %four, i64 4, i64 %shortwidth
   %remaining = sub i64 %length, %index
   %enough = icmp uge i64 %remaining, %width
-  br i1 %enough, label %start, label %fail
+  %length_allowed = or i1 %validated, %enough
+  br i1 %length_allowed, label %start, label %fail
 start:
   %shortmask = select i1 %two, i32 31, i32 15
   %mask = select i1 %four, i32 7, i32 %shortmask
@@ -227,7 +229,8 @@ continuation:
   %byte = load i8, ptr %p
   %tag = and i8 %byte, -64
   %valid = icmp eq i8 %tag, -128
-  br i1 %valid, label %append, label %fail
+  %continuation_allowed = or i1 %validated, %valid
+  br i1 %continuation_allowed, label %append, label %fail
 append:
   %wide = zext i8 %byte to i32
   %payload = and i32 %wide, 63
@@ -242,7 +245,8 @@ validate:
   %nonsurrogate = icmp uge i32 %surrogateoffset, 2048
   %scalar = and i1 %inrange, %nonsurrogate
   %validscalar = and i1 %shortest, %scalar
-  br i1 %validscalar, label %result, label %fail
+  %scalar_allowed = or i1 %validated, %validscalar
+  br i1 %scalar_allowed, label %result, label %fail
 result:
   %a = insertvalue { i32, i64 } zeroinitializer, i32 %value, 0
   %b = insertvalue { i32, i64 } %a, i64 %end, 1
@@ -263,7 +267,7 @@ count:
   %done = icmp eq i64 %i, %byte_length
   br i1 %done, label %allocate, label %countscalar
 countscalar:
-  %decoded = call { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %byte_length, i64 %i)
+  %decoded = call { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %byte_length, i64 %i, i1 false)
   %scalar = extractvalue { i32, i64 } %decoded, 0
   %next = extractvalue { i32, i64 } %decoded, 1
   %pair = icmp uge i32 %scalar, 65536
@@ -287,7 +291,7 @@ write:
   %finished = icmp eq i64 %input, %byte_length
   br i1 %finished, label %exit, label %decode
 decode:
-  %item = call { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %byte_length, i64 %input)
+  %item = call { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %byte_length, i64 %input, i1 true)
   %value = extractvalue { i32, i64 } %item, 0
   %inputnext = extractvalue { i32, i64 } %item, 1
   %p = getelementptr inbounds i16, ptr %data, i64 %output
@@ -319,7 +323,7 @@ fail:
 }
 
 ; Preserve lone surrogates as their code-unit value so callers choose rejection or repair.
-define internal { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %length, i64 %index) nounwind {
+define internal { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %length, i64 %index, i1 %validated) nounwind {
 entry:
   %p = getelementptr inbounds i16, ptr %source, i64 %index
   %unit = load i16, ptr %p
@@ -328,7 +332,8 @@ entry:
   %highoffset = sub i32 %value, 55296
   %high = icmp ult i32 %highoffset, 1024
   %hasnext = icmp ult i64 %next, %length
-  %possiblepair = and i1 %high, %hasnext
+  %next_allowed = or i1 %validated, %hasnext
+  %possiblepair = and i1 %high, %next_allowed
   br i1 %possiblepair, label %checklow, label %single
 checklow:
   %lowp = getelementptr inbounds i16, ptr %source, i64 %next
@@ -336,7 +341,8 @@ checklow:
   %lowvalue = zext i16 %lowunit to i32
   %lowoffset = sub i32 %lowvalue, 56320
   %low = icmp ult i32 %lowoffset, 1024
-  br i1 %low, label %pair, label %single
+  %low_allowed = or i1 %validated, %low
+  br i1 %low_allowed, label %pair, label %single
 pair:
   %shifted = shl i32 %highoffset, 10
   %offset = or i32 %shifted, %lowoffset
@@ -361,7 +367,7 @@ count:
   %done = icmp eq i64 %i, %unit_length
   br i1 %done, label %allocate, label %countscalar
 countscalar:
-  %decoded = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %i)
+  %decoded = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %i, i1 false)
   %scalar = extractvalue { i32, i64 } %decoded, 0
   %next = extractvalue { i32, i64 } %decoded, 1
   %surrogateoffset = sub i32 %scalar, 55296
@@ -392,7 +398,7 @@ write:
   %finished = icmp eq i64 %input, %unit_length
   br i1 %finished, label %exit, label %decode
 decode:
-  %item = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %input)
+  %item = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %input, i1 true)
   %value = extractvalue { i32, i64 } %item, 0
   %inputnext = extractvalue { i32, i64 } %item, 1
   %p = getelementptr inbounds i8, ptr %data, i64 %output
@@ -468,7 +474,7 @@ loop:
   %done = icmp eq i64 %i, %unit_length
   br i1 %done, label %valid, label %decode
 decode:
-  %item = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %i)
+  %item = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %i, i1 false)
   %value = extractvalue { i32, i64 } %item, 0
   %next = extractvalue { i32, i64 } %item, 1
   %surrogateoffset = sub i32 %value, 55296
@@ -490,7 +496,7 @@ loop:
   %done = icmp eq i64 %i, %unit_length
   br i1 %done, label %exit, label %decode
 decode:
-  %item = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %i)
+  %item = call { i32, i64 } @tz.string.decode_utf16(ptr %source, i64 %unit_length, i64 %i, i1 false)
   %value = extractvalue { i32, i64 } %item, 0
   %next = extractvalue { i32, i64 } %item, 1
   %surrogateoffset = sub i32 %value, 55296

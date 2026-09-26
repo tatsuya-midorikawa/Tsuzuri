@@ -48,6 +48,35 @@ function checkParse(kind, text, expected, ok, raw) {
 
 try {
   const reference = JSON.parse(execute("python3", ["tests/display_parse_reference.py"]));
+  for (const [widthIndex, bits] of [8, 16, 32, 64, 128].entries()) {
+    for (const signed of [false, true]) {
+      const kind = (signed ? 16 : 24) + widthIndex;
+      const minimum = signed ? -(1n << BigInt(bits - 1)) : 0n;
+      const maximum = (1n << BigInt(bits - Number(signed))) - 1n;
+      const addDecimal = (text) => {
+        const valid = /^[+-]?[0-9](?:_?[0-9])*$/.test(text) && (signed || !text.startsWith("-"));
+        const value = valid ? BigInt(text.replaceAll("_", "")) : null;
+        const expected = value !== null && value >= minimum && value <= maximum
+          ? BigInt.asUintN(bits, value).toString(16) : null;
+        reference.parses.push([kind, text, expected]);
+      };
+      for (let position = 0; position < 8; ++position) {
+        for (let byte = 0; byte < 256; ++byte) {
+          const text = "12345678";
+          addDecimal(text.slice(0, position) + String.fromCharCode(byte) + text.slice(position + 1));
+        }
+      }
+      for (const value of [minimum, minimum - 1n, maximum, maximum + 1n, 0n, 7n]) {
+        const negative = value < 0n;
+        const digits = (negative ? -value : value).toString();
+        for (const length of [7, 8, 9, 15, 16, 17, 19, 20, 38, 39, 40, 4095]) {
+          const text = digits.padStart(length, "0");
+          addDecimal((negative ? "-" : "") + text);
+          if (length < 4095) addDecimal((negative ? "-" : "+") + `${text.slice(0, 8)}_${text.slice(8)}`);
+        }
+      }
+    }
+  }
   const protocol = reference.formats.map(([kind, hex]) => {
     const raw = BigInt(`0x${hex}`);
     return `f ${kind} ${(raw & mask(64)).toString(16)} ${(raw >> 64n).toString(16)}\n`;
@@ -58,6 +87,13 @@ try {
   for (const optimization of [0, 3]) {
     const native = join(temporary, `runtime-O${optimization}`);
     execute(clang, [`-O${optimization}`, "-Wno-override-module", harness, runtime, "-o", native]);
+    const timings = execute(native, [], "F 27 10 2a 0\nP 27 10 3432\n").trim().split("\n");
+    assert.equal(timings.length, 2);
+    for (const [index, checksum] of ["1040", "430"].entries()) {
+      const [milliseconds, actual] = timings[index].split(" ");
+      assert.ok(Number.isFinite(Number(milliseconds)) && Number(milliseconds) >= 0);
+      assert.equal(actual, checksum, "runtime timing protocol checksum");
+    }
     const lines = execute(native, [], protocol).trimEnd().split("\n");
     assert.equal(lines.length, reference.formats.length + reference.parses.length);
     let index = 0;
