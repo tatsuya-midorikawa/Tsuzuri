@@ -6,8 +6,18 @@
 | 規模 | M |
 | 依存 | (B01) |
 | 後続 | B06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/computation.rs`, `src/check.rs`, `src/call_specialization.rs`, `tests/computations.rs`, `tests/fixtures/computations/`, `tests/computations.mjs`, `benchmarks/run-computations.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
+
+## 実装と検証（2026-09-27）
+
+- match!をBind+通常match、and!を厳格source評価+左結合MergeSources+Bindへ展開。optional BindReturn/Bind2を構文上の単純tailだけで選ぶ。
+- and!は識別子・mut・注釈・重複検査を持ち、右辺から兄弟bindingは見えない。Bind2 callbackは2引数を同時束縛してmutを保持する。
+- Option/ResultにMergeSources/BindReturn/Bind2を追加。use/tryは文脈診断E1018、taskの自動並列化は行わない。
+- 通常TypedExpr/ownership/runtimeを共有。parser/loweringの作業領域をhelperへ分離して既存の入れ子上限を維持。
+- computations23/Option9テスト、fmt/clippy成功。13追加ケースと1トラップ、既存54ケース/3トラップがnative/WASM O0/O3・確保追跡で成功。
+- BindReturn/Bind2は異なる実装結果を返すfixtureでも選択を確認し、コンパイラが意味同値を仮定しないことを固定。Noneでも右sourceのtrapを省略しない。
+- run-computations.mjsの既存9種目に加え、独立extensions欄でBind2/Merge/manualのBigInt参照と回転順測定を追加。quick照合成功、速度優位性は未主張。
 
 ## 目的
 

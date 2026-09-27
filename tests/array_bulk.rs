@@ -25,3 +25,43 @@ fn array_bulk_source_apis_and_borrowed_results() {
         }
     }
 }
+
+#[test]
+fn ordered_reductions_preserve_float_types_and_explicit_fusion() {
+    for ty in ["f16", "f32", "f64", "f128", "d32", "d64", "d128"] {
+        let source = format!(
+            "def reductions :: ref [{ty}] -> {ty}\nfn reductions values = Array.sum_pairwise values + Array.sum_kahan values + Array.dot values values + Array.dot_fma values values"
+        );
+        let module = analyze(&source).unwrap_or_else(|error| panic!("{ty}: {error:?}"));
+        for wasm in [false, true] {
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            assert!(ir.contains("@tz_soft_fma") || ir.contains("@llvm.fma."));
+            assert!(
+                !ir.contains(" contract ") && !ir.contains(" reassoc ") && !ir.contains(" fast ")
+            );
+        }
+    }
+    for name in ["sum_pairwise", "sum_kahan", "dot", "dot_fma"] {
+        let arguments = if name.starts_with("dot") {
+            "(ref values) (ref values)"
+        } else {
+            "(ref values)"
+        };
+        assert_eq!(
+            analyze(&format!("let values = [1, 2]\nArray.{name} {arguments}"))
+                .unwrap_err()
+                .code,
+            "E1005"
+        );
+    }
+    assert_eq!(
+        analyze("let left = [1.0f32]\nlet right = [1.0f64]\nArray.dot (ref left) (ref right)")
+            .unwrap_err()
+            .code,
+        "E1003"
+    );
+    let module = analyze("def separate :: f64 -> f64 -> f64 -> f64\nfn separate left right addend = left * right + addend\ndef dot :: ref [f64] -> ref [f64] -> f64\nfn dot left right = Array.dot left right").unwrap();
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(!ir.contains("@llvm.fma.") && !ir.contains("call void @tz_soft_fma("));
+    assert!(ir.contains("fmul double") && ir.contains("fadd double"));
+}

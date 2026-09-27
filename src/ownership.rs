@@ -1200,11 +1200,16 @@ impl Checker<'_> {
                 }
                 self.held.truncate(start);
             }
-            E::Array(elements) | E::List(elements) | E::Tuple(elements) => {
+            E::Array(elements)
+            | E::List(elements)
+            | E::Tuple(elements)
+            | E::HostCall(_, elements) => {
                 let start = self.held.len();
                 for element in elements {
                     let value = self.eval(element, Use::Consume, &during)?;
-                    result.loans.extend(&value.loans);
+                    if !matches!(expression.kind, E::HostCall(..)) {
+                        result.loans.extend(&value.loans);
+                    }
                     self.held.push(value);
                 }
                 self.held.truncate(start);

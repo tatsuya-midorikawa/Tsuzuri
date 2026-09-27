@@ -17,7 +17,8 @@ fn duplicate_active_case(case: &Ident) -> Diagnostic {
 fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
     matches!(
         kind,
-        TokenKind::Def
+        TokenKind::DocComment(_)
+            | TokenKind::Def
             | TokenKind::Fn
             | TokenKind::Record
             | TokenKind::Union
@@ -27,6 +28,7 @@ fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
             | TokenKind::Class
             | TokenKind::Instance
             | TokenKind::Export
+            | TokenKind::Extern
             | TokenKind::Private
             | TokenKind::Let
     )
@@ -174,11 +176,50 @@ impl Parser<'_> {
         })
     }
 
+    fn take_doc(&mut self) -> Option<Documentation> {
+        let mut documentation: Option<Documentation> = None;
+        while let TokenKind::DocComment(_) = &self.current().kind {
+            let token = self.take();
+            let TokenKind::DocComment(text) = token.kind else {
+                unreachable!()
+            };
+            if let Some(doc) = &mut documentation {
+                doc.text.push('\n');
+                doc.text.push_str(&text);
+                doc.span = doc.span.through(token.span);
+            } else {
+                documentation = Some(Documentation {
+                    text,
+                    span: token.span,
+                });
+            }
+        }
+        documentation
+    }
+
+    fn doc_target(&self) -> bool {
+        match &self.current().kind {
+            TokenKind::Def
+            | TokenKind::Extern
+            | TokenKind::Record
+            | TokenKind::Union
+            | TokenKind::Type
+            | TokenKind::Const
+            | TokenKind::Class => true,
+            TokenKind::Export => self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::Def),
+            _ => false,
+        }
+    }
+
     fn program_all(mut self, recovering: bool) -> Result<Program, Vec<Diagnostic>> {
         let mut program = Program {
             source_kind: None,
             type_aliases: Vec::new(),
             constants: Vec::new(),
+            externs: Vec::new(),
             records: Vec::new(),
             unions: Vec::new(),
             functions: Vec::new(),
@@ -197,16 +238,44 @@ impl Parser<'_> {
         while !self.at(&TokenKind::End) && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
             let start = self.position;
             let parsed = (|| -> Result<(), Diagnostic> {
+                let doc = self.take_doc();
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
-                if self.eat(&TokenKind::Type) {
-                program.type_aliases.push(self.type_alias(visibility, column)?);
+                if let Some(documentation) = &doc {
+                    if !self.doc_target() {
+                        return Err(Diagnostic::new(
+                            "E0002",
+                            "doc comments attach to API declarations such as 'def', not to implementations or expressions",
+                            documentation.span,
+                        ));
+                    }
+                }
+                if self.eat(&TokenKind::Extern) {
+                if self.eat(&TokenKind::Export) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", self.current().span)); }
+                self.expect(&TokenKind::Def, "'def' after extern")?;
+                let name = self.ident()?;
+                if defined_names.contains(&name.text) || signatures.contains_key(&name.text) { return Err(Diagnostic::new("E1001", "duplicate extern or function declaration", name.span)); }
+                self.expect(&TokenKind::DoubleColon, "'::' after the extern name")?;
+                let mut signature = self.signature(name.clone(), false, column)?;
+                signature.doc = doc;
+                signature.visibility = visibility;
+                defined_names.insert(name.text);
+                program.externs.push(signature);
+                self.eat(&TokenKind::Semicolon);
+            } else if self.eat(&TokenKind::Type) {
+                let mut declaration = self.type_alias(visibility, column)?;
+                declaration.doc = doc;
+                program.type_aliases.push(declaration);
             } else if self.eat(&TokenKind::Const) {
-                program.constants.push(self.const_declaration(visibility)?);
+                let mut declaration = self.const_declaration(visibility)?;
+                declaration.doc = doc;
+                program.constants.push(declaration);
             } else if self.at(&TokenKind::Test) {
                 program.tests.push(self.test_declaration()?);
             } else if self.eat(&TokenKind::Union) {
-                program.unions.push(self.union_declaration(visibility, column)?);
+                let mut declaration = self.union_declaration(visibility, column)?;
+                declaration.doc = doc;
+                program.unions.push(declaration);
             } else if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
                 let parameters = self.type_parameters()?;
@@ -215,6 +284,7 @@ impl Parser<'_> {
                 let fields = self.parameters(TokenKind::RightBrace)?;
                 let derives = self.derives()?;
                 program.records.push(RecordDecl {
+                    doc,
                     visibility,
                     name,
                     parameters,
@@ -234,17 +304,24 @@ impl Parser<'_> {
                 let mut methods = Vec::new();
                 let mut defaults = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
+                    let method_doc = self.take_doc();
                     let column = self.column(self.current().span);
                     if self.eat(&TokenKind::Def) {
                         let method = self.ident()?;
                         self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
-                        methods.push(self.signature(method, false, column)?);
+                        let mut signature = self.signature(method, false, column)?;
+                        signature.doc = method_doc;
+                        methods.push(signature);
                     } else {
+                        if let Some(documentation) = method_doc {
+                            return Err(Diagnostic::new("E0002", "doc comments attach to a class method's 'def', not its implementation", documentation.span));
+                        }
                         defaults.push(self.instance_method()?);
                     }
                     self.eat(&TokenKind::Semicolon);
                 }
                 program.classes.push(ClassDecl {
+                    doc,
                     name,
                     variable,
                     superclasses,
@@ -285,6 +362,7 @@ impl Parser<'_> {
             } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) {
                 let export = self.current().span;
                 let exported = self.eat(&TokenKind::Export);
+                if exported && self.at(&TokenKind::Extern) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", export)); }
                 if exported && self.at(&TokenKind::Private) {
                     return Err(Self::private_export(export.through(self.current().span)));
                 }
@@ -308,10 +386,11 @@ impl Parser<'_> {
                     let regions = if self.at(&TokenKind::LeftBrace) { self.region_list()? } else { Vec::new() };
                     self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
                     let mut signature = self.signature(name.clone(), exported, column)?;
+                    signature.doc = doc;
                     signature.regions = regions;
                     signature.recursion = recursion;
                     signature.visibility = visibility;
-                    if signatures.contains_key(&name.text) {
+                    if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
                         return Err(Diagnostic::new(
                             "E1001",
                             "duplicate function signature",
@@ -352,6 +431,7 @@ impl Parser<'_> {
                 let body = self.block()?;
                 defined_names.insert(name.text.clone());
                 program.functions.push(FunctionDecl {
+                    doc: None,
                     name,
                     regions: Vec::new(),
                     recursion,
@@ -490,7 +570,8 @@ impl Parser<'_> {
             | TokenKind::Union
             | TokenKind::Type
             | TokenKind::Const
-            | TokenKind::Def => {
+            | TokenKind::Def
+            | TokenKind::Extern => {
                 return Ok(Visibility::Private);
             }
             TokenKind::Export => return Err(Self::private_export(private.through(next.span))),
@@ -514,6 +595,7 @@ impl Parser<'_> {
         let value = self.body_expression()?;
         self.eat(&TokenKind::Semicolon);
         Ok(ConstDecl {
+            doc: None,
             visibility,
             name,
             ty,
@@ -534,6 +616,7 @@ impl Parser<'_> {
         self.type_offside = outer;
         self.eat(&TokenKind::Semicolon);
         Ok(TypeAliasDecl {
+            doc: None,
             visibility,
             name,
             parameters,
@@ -577,6 +660,7 @@ impl Parser<'_> {
         let derives = self.derives()?;
         self.eat(&TokenKind::Semicolon);
         Ok(UnionDecl {
+            doc: None,
             visibility,
             name,
             parameters,
@@ -931,6 +1015,7 @@ impl Parser<'_> {
             }
         }
         Ok(SignatureDecl {
+            doc: None,
             name,
             regions: Vec::new(),
             recursion: None,
@@ -951,7 +1036,8 @@ impl Parser<'_> {
                         .tokens
                         .get(self.position + offset + 1)
                         .is_some_and(|next| next.kind == TokenKind::LeftParen) => {}
-                TokenKind::Def
+                TokenKind::DocComment(_)
+                | TokenKind::Def
                 | TokenKind::Private
                 | TokenKind::Let
                 | TokenKind::Fn
@@ -1026,6 +1112,7 @@ impl Parser<'_> {
             }
         };
         Ok(FunctionDecl {
+            doc: signature.doc,
             name: definition.name,
             regions: signature.regions,
             recursion: definition.recursion,
@@ -1580,12 +1667,46 @@ impl Parser<'_> {
 
     fn computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
         let start = self.current().span;
+        if let TokenKind::Ident(name) = &self.current().kind {
+            let following = &self.tokens[self.position + 1..];
+            if name == "use"
+                && (following
+                    .first()
+                    .is_some_and(|token| token.kind == TokenKind::Bang)
+                    || (following
+                        .first()
+                        .is_some_and(|token| matches!(token.kind, TokenKind::Ident(_)))
+                        && following.get(1).is_some_and(|token| {
+                            matches!(token.kind, TokenKind::Equal | TokenKind::Colon)
+                        })))
+            {
+                return Err(Diagnostic::new(
+                    "E1018",
+                    "use bindings are not supported; bind the owned value with let and rely on lexical drop",
+                    start,
+                ));
+            }
+            if name == "try" && self.try_clause_ahead() {
+                return Err(Diagnostic::new(
+                    "E1018",
+                    "try expressions are not supported; represent recoverable failure with Option or Result",
+                    start,
+                ));
+            }
+        }
         if self.at(&TokenKind::If) {
             return self.computation_if();
         }
+        if self.at(&TokenKind::Match)
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::Bang)
+        {
+            return self.computation_match();
+        }
         let kind = if self.eat(&TokenKind::Let) {
-            let bind = self.eat(&TokenKind::Bang);
-            ComputationStatementKind::Let(self.binding_value(true)?, bind)
+            self.computation_binding()?
         } else if self.eat(&TokenKind::Do) {
             self.expect(&TokenKind::Bang, "'!' after 'do'")?;
             ComputationStatementKind::Do(self.expression_inner(0, true, true)?)
@@ -1623,6 +1744,108 @@ impl Parser<'_> {
         Ok(ComputationStatement {
             kind,
             span: start.through(self.tokens[self.position - 1].span),
+        })
+    }
+
+    fn computation_binding(&mut self) -> Result<ComputationStatementKind, Diagnostic> {
+        let bind = self.eat(&TokenKind::Bang);
+        let binding = self.binding_value(true)?;
+        if !bind || !self.at(&TokenKind::And) {
+            return Ok(ComputationStatementKind::Let(binding, bind));
+        }
+        let mut bindings = vec![binding];
+        let mut names = BTreeSet::from([bindings[0].name.text.clone()]);
+        while self.eat(&TokenKind::And) {
+            self.expect(&TokenKind::Bang, "'!' after and in a binding group")?;
+            let binding = self.binding_value(true)?;
+            if binding.name.text != "_" && !names.insert(binding.name.text.clone()) {
+                return Err(Diagnostic::new(
+                    "E1001",
+                    "duplicate and! binding name",
+                    binding.name.span,
+                ));
+            }
+            if bindings.len() >= MAX_NESTING {
+                return Err(Diagnostic::new(
+                    "E1017",
+                    "and! group exceeds the compiler binding limit",
+                    binding.name.span,
+                ));
+            }
+            bindings.push(binding);
+        }
+        Ok(ComputationStatementKind::LetAnd(bindings))
+    }
+
+    fn try_clause_ahead(&self) -> bool {
+        let mut depth = 0usize;
+        for token in &self.tokens[self.position + 1..] {
+            match &token.kind {
+                TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftList
+                | TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightParen
+                | TokenKind::RightBracket
+                | TokenKind::RightList
+                | TokenKind::RightBrace => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Semicolon | TokenKind::End if depth == 0 => break,
+                TokenKind::With if depth == 0 => return true,
+                TokenKind::Ident(name) if depth == 0 && name == "finally" => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn computation_match(&mut self) -> Result<ComputationStatement, Diagnostic> {
+        self.enter()?;
+        let start = self.take().span;
+        self.expect(&TokenKind::Bang, "'!' after match")?;
+        let value = self.expression(0, false)?;
+        self.expect(&TokenKind::With, "'with' after the match! computation")?;
+        let outer_arm = self.stop_at_arm;
+        let outer_arrow = self.stop_at_arrow;
+        let column = self.column(self.current().span);
+        let mut arms = Vec::new();
+        while self.at(&TokenKind::Pipe)
+            && (!self.newline_before_current() || self.column(self.current().span) == column)
+        {
+            let arm_start = self.take().span;
+            self.stop_at_arm = true;
+            self.stop_at_arrow = true;
+            let pattern = self.pattern(0)?;
+            let guard = if self.eat(&TokenKind::When) {
+                Some(self.expression_inner(0, true, true)?)
+            } else {
+                None
+            };
+            self.expect(&TokenKind::Arrow, "'->' after the match! pattern")?;
+            self.stop_at_arrow = false;
+            let body = self.computation_body()?;
+            let span = arm_start.through(body.span);
+            arms.push(ComputationMatchArm {
+                pattern,
+                guard,
+                body,
+                span,
+            });
+        }
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        self.nesting -= 1;
+        if arms.is_empty() {
+            return Err(self.error("match! requires at least one '| pattern -> computation' arm"));
+        }
+        let span = start.through(arms.last().unwrap().span);
+        Ok(ComputationStatement {
+            kind: ComputationStatementKind::Match(Box::new(value), arms),
+            span,
         })
     }
 

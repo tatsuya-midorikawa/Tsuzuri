@@ -6,8 +6,18 @@
 | 規模 | L |
 | 依存 | E02 |
 | 後続 | なし |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/llvm.rs`, `src/driver.rs`, `src/main.rs`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
+
+## 実装と検証（2026-09-27）
+
+- extern def/private extern def、具体signature、通常function namespace、duplicate/visibility/source-kind/ABI検査を実装。
+- 型付きHostCallを通常関数wrapperの本体とし、既存の部分適用・関数値・所有権を共有。readnone/readonly等を付けず、未使用externをrootから除く。
+- E05のscalar/unit/shared buffer/string/utf8string/scalar record引数と、所有buffer/scalar record結果を実装。unitはABIから省略し、狭い整数/boolを32bit正規化する。
+- 所有結果はout descriptorを検査し、native確保元・借用保持禁止は信頼するホストの契約。WASMは範囲/UTF8検査とallocatorを提供する。
+- Rust4テスト群、関連75テスト、fmt/clippy成功。host_imports.mjsでnative LLVM/object/WASM O0/O3、効果順・短絡・部分適用・狭幅521値・owned返却・Task16仕事を検証。
+- native1000回の確保追跡でlive=0、WASM1万回が16 MiB内。不正3種descriptorはトラップ。未使用import・native名衝突も確認。
+- LLVM宣言はmodule/name属性で固定。native exe/runはhost symbolを利用者が連結しない限りE2002とし、host object用CLIは追加しない。
 
 ## 目的
 

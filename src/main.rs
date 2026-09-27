@@ -12,6 +12,7 @@ Tsuzuri - a statically typed language with ownership, powered by LLVM
 Usage:
     tsuzuri lsp
   tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+    tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--filter TEXT] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32]
@@ -60,6 +61,7 @@ All UI and I/O belong to the host, not the language.";
 enum Action {
     Lsp,
     Check,
+    Doc,
     Build,
     Run,
     Fmt,
@@ -99,6 +101,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         Some("check") => {
             position = 1;
             Action::Check
+        }
+        Some("doc") => {
+            position = 1;
+            Action::Doc
         }
         Some("build") => {
             position = 1;
@@ -309,10 +315,19 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if action == Action::Test && cpu.is_some() {
         return Err("test does not use CPU tuning".into());
     }
-    if action != Action::Build
-        && (output.is_some() || emit.is_some() || target.is_some() && action != Action::Test)
+    if output.is_some() && !matches!(action, Action::Build | Action::Doc)
+        || emit.is_some() && action != Action::Build
+        || target.is_some() && !matches!(action, Action::Build | Action::Test)
     {
-        return Err("--output, --target, and --emit are build-only options".into());
+        return Err("--output requires build or doc; --target and --emit require a supported build/test action".into());
+    }
+    if action == Action::Doc {
+        if output.is_none() {
+            return Err("doc requires -o or --output with an output directory".into());
+        }
+        if optimization.is_some() || cpu.is_some() {
+            return Err("doc does not use optimization or CPU tuning".into());
+        }
     }
     if action == Action::Check && optimization.is_some() {
         return Err("check does not use an optimization level".into());
@@ -419,6 +434,10 @@ fn run_action(
     match arguments.action {
         Action::Lsp => unreachable!("LSP runs without a build project"),
         Action::Check => Ok(Vec::new()),
+        Action::Doc => driver::document(
+            project,
+            arguments.output.as_ref().expect("doc requires output"),
+        ),
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
         Action::Build => driver::build(
@@ -609,6 +628,8 @@ fn main() -> ExitCode {
     }
     let loaded = if arguments.action == Action::Test {
         Project::load_for_tests(&arguments.input)
+    } else if arguments.action == Action::Doc {
+        Project::load_for_docs(&arguments.input)
     } else {
         Project::load(&arguments.input)
     };
@@ -664,6 +685,29 @@ mod tests {
 
     fn parse(values: &[&str]) -> Result<Arguments, String> {
         parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn docs_requires_output_and_rejects_build_options() {
+        let arguments = parse(&["doc", "Library.tz", "-o", "docs", "--json"]).unwrap();
+        assert_eq!(arguments.action, Action::Doc);
+        assert_eq!(arguments.output.as_deref(), Some(Path::new("docs")));
+        assert!(arguments.json);
+        assert!(parse(&["doc", "Library.tz"]).is_err());
+        for option in [
+            vec!["--target", "native"],
+            vec!["--emit", "llvm"],
+            vec!["--cpu", "generic"],
+            vec!["-O0"],
+            vec!["-g"],
+            vec!["--debug-output"],
+            vec!["--trap-info"],
+            vec!["--wasm-feature", "simd128"],
+        ] {
+            let mut values = vec!["doc", "Library.tz", "-o", "docs"];
+            values.extend(option);
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
     }
 
     #[test]

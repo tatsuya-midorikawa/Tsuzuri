@@ -52,6 +52,8 @@ mod display;
 mod hash;
 #[path = "llvm_abi.rs"]
 mod host_abi;
+#[path = "llvm_imports.rs"]
+mod imports;
 #[path = "llvm_math.rs"]
 mod math;
 #[path = "llvm_parallel.rs"]
@@ -105,8 +107,10 @@ pub fn emit_with_trap_info(
         options.wasm,
         tests.as_deref(),
         options.debug_output,
-        true,
-        None,
+        Instrumentation {
+            traps: true,
+            ..Instrumentation::default()
+        },
     )?;
     traps::instrument(ir, module, marks.unwrap(), sources, options.wasm)
 }
@@ -133,11 +137,53 @@ pub fn emit_with_debug_info(
         options.wasm,
         tests.as_deref(),
         options.debug_output,
-        trap_info,
-        Some((sources, optimized)),
+        Instrumentation {
+            traps: trap_info,
+            debug: Some((sources, optimized)),
+            cpu_dispatch: false,
+        },
     )?;
     if let Some(marks) = marks {
         traps::instrument(ir, module, marks, sources, options.wasm)
+    } else {
+        Ok(EmitOutput {
+            ir,
+            trap_sites: Vec::new(),
+        })
+    }
+}
+
+pub fn emit_native_build(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    if options.wasm {
+        return Err(Diagnostic::new(
+            "E2000",
+            "CPU dispatch is native-only",
+            Span::default(),
+        ));
+    }
+    let trusted_array = sources.iter().any(|source| {
+        source.path == "std/Array.tz" && source.text == include_str!("../std/Array.tz")
+    });
+    let (ir, marks) = emit_program(
+        module,
+        options.entry,
+        false,
+        None,
+        options.debug_output,
+        Instrumentation {
+            traps: trap_info,
+            debug: debug.map(|optimized| (sources, optimized)),
+            cpu_dispatch: trusted_array,
+        },
+    )?;
+    if let Some(marks) = marks {
+        traps::instrument(ir, module, marks, sources, false)
     } else {
         Ok(EmitOutput {
             ir,
@@ -168,7 +214,22 @@ fn emit_selected(
     tests: Option<&[usize]>,
     debug_output: bool,
 ) -> Result<String, Diagnostic> {
-    emit_program(module, entry, wasm, tests, debug_output, false, None).map(|(ir, _)| ir)
+    emit_program(
+        module,
+        entry,
+        wasm,
+        tests,
+        debug_output,
+        Instrumentation::default(),
+    )
+    .map(|(ir, _)| ir)
+}
+
+#[derive(Default)]
+struct Instrumentation<'a> {
+    traps: bool,
+    debug: Option<(&'a [TrapSource<'a>], bool)>,
+    cpu_dispatch: bool,
 }
 
 fn emit_program(
@@ -177,8 +238,7 @@ fn emit_program(
     wasm: bool,
     tests: Option<&[usize]>,
     debug_output: bool,
-    trap_info: bool,
-    debug_info: Option<(&[TrapSource<'_>], bool)>,
+    instrumentation: Instrumentation<'_>,
 ) -> Result<(String, Option<traps::Marks>), Diagnostic> {
     validate_lowering(module)?;
     if entry == Entry::Console {
@@ -278,10 +338,11 @@ fn emit_program(
     let mut intrinsics = BTreeSet::new();
     let mut globals = Globals {
         wasm,
-        traps: trap_info.then(traps::Marks::default),
+        traps: instrumentation.traps.then(traps::Marks::default),
+        cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         ..Globals::default()
     };
-    if let Some((sources, optimized)) = debug_info {
+    if let Some((sources, optimized)) = instrumentation.debug {
         globals.debug = Some(debug::DebugContext::new(
             sources,
             optimized,
@@ -421,6 +482,9 @@ fn emit_program(
     if uses_host_abi(module) {
         output.push_str(host_abi::allocator());
     }
+    if output.contains("@tsuzuri_cpu_sum_i64(") {
+        output.push_str("declare i64 @tsuzuri_cpu_sum_i64(ptr, i64)\n");
+    }
     if output.contains("@tsuzuri_task_parallel(") {
         output.push_str(if wasm {
             include_str!("runtime/task-wasm.ll")
@@ -535,6 +599,7 @@ pub fn header(module: &CheckedModule) -> String {
          #endif\n\n",
     );
     output.push_str(&host_abi::header_types(module));
+    output.push_str(&imports::header(module));
     for function in &module.functions {
         if !function.exported {
             continue;
@@ -561,6 +626,7 @@ struct Globals {
     wasm: bool,
     traps: Option<traps::Marks>,
     debug: Option<debug::DebugContext>,
+    cpu_dispatch: bool,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
 }
@@ -589,6 +655,7 @@ impl Default for Globals {
             wasm: false,
             traps: None,
             debug: None,
+            cpu_dispatch: false,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
         }
@@ -1029,6 +1096,7 @@ fn reachable_functions(module: &CheckedModule, roots: Option<&[usize]>) -> BTree
                         && function.origin.test.is_none()
                         && function.origin.parent.is_none()
                         && function.visibility == crate::syntax::Visibility::Public)
+                        && !matches!(function.body.kind, TypedExprKind::HostCall(..))
                         || function.exported
                         || module.entry == Some(*id)
                 })
@@ -1330,7 +1398,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         for (index, parameter) in self.function.parameters.iter().enumerate() {
             self.bind_local(parameter, &format!("%p{index}"));
         }
-        self.tail(&self.function.body);
+        if self.globals.cpu_dispatch
+            && self.function.origin.module == ModuleOrigin::Std
+            && self.function.module == "Array"
+            && self.function.name.split(".$mono.").next() == Some("sum")
+            && self.function.signature.parameters
+                == [Type::Reference(
+                    Box::new(Type::Array(Box::new(Type::I64))),
+                    false,
+                )]
+            && self.function.signature.result == Type::I64
+        {
+            let data = self.value("extractvalue %tz.array %p0, 0");
+            let length = self.value("extractvalue %tz.array %p0, 1");
+            let result = self.value(format!(
+                "call i64 @tsuzuri_cpu_sum_i64(ptr {data}, i64 {length})"
+            ));
+            self.instruction(format!("ret i64 {result}"));
+        } else {
+            self.tail(&self.function.body);
+        }
         let parameters = self
             .function
             .parameters
@@ -1847,6 +1934,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 payload
             }
             TypedExprKind::Float(value) => value.clone(),
+            TypedExprKind::HostCall(import, arguments) => {
+                self.host_call(import, arguments, &expression.ty)
+            }
             TypedExprKind::Bool(value) => if *value { "1" } else { "0" }.into(),
             TypedExprKind::Unit => "0".into(),
             TypedExprKind::Break | TypedExprKind::Continue => {
@@ -3930,7 +4020,10 @@ fn emit_typed_builtin(
             if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(found)) if found == instance))
     }).expect("a builtin has its checked function wrapper");
     let mut builtins = Builtins::new();
-    let mut globals = Globals::default();
+    let mut globals = Globals {
+        wasm: shared_globals.wasm,
+        ..Globals::default()
+    };
     let globals = if shared_globals.traps.is_some() {
         shared_globals
     } else {

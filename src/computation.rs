@@ -12,6 +12,9 @@ const OPERATIONS: &[&str] = &[
     "Run",
     "For",
     "While",
+    "MergeSources",
+    "BindReturn",
+    "Bind2",
 ];
 
 pub(super) fn collect_all(
@@ -43,6 +46,7 @@ pub(super) fn collect_all(
                     .or_else(|| program.unions.first().map(|union| union.name.span))
                     .or_else(|| program.type_aliases.first().map(|alias| alias.name.span))
                     .or_else(|| program.constants.first().map(|constant| constant.name.span))
+                    .or_else(|| program.externs.first().map(|external| external.name.span))
                     .or_else(|| program.functions.first().map(|function| function.name.span))
                     .or_else(|| program.tests.first().map(|test| test.name_span))
                     .or_else(|| {
@@ -269,6 +273,23 @@ fn expand_block(body: &mut ComputationBlock, names: &Names) -> Result<(), Diagno
     for statement in &mut body.statements {
         let value = match &mut statement.kind {
             ComputationStatementKind::Let(binding, _) => &mut binding.value,
+            ComputationStatementKind::LetAnd(bindings) => {
+                for binding in bindings {
+                    expand(&mut binding.value, names)?;
+                }
+                depth = depth.max(statement.depth());
+                continue;
+            }
+            ComputationStatementKind::Match(value, arms) => {
+                for arm in arms {
+                    expand_pattern(&mut arm.pattern, names)?;
+                    if let Some(guard) = &mut arm.guard {
+                        expand(guard, names)?;
+                    }
+                    expand_block(&mut arm.body, names)?;
+                }
+                value
+            }
             ComputationStatementKind::Do(value)
             | ComputationStatementKind::Operation(_, value)
             | ComputationStatementKind::Expression(value) => value,
@@ -327,9 +348,50 @@ impl Lowering<'_> {
     fn block(&self, body: &ComputationBlock) -> Result<Expr, Diagnostic> {
         let mut result = None;
         let mut bindings = Vec::new();
-        for statement in body.statements.iter().rev() {
+        let fusion = body
+            .statements
+            .len()
+            .checked_sub(2)
+            .filter(|index| {
+                matches!(
+                    body.statements[index + 1].kind,
+                    ComputationStatementKind::Operation("Return", _)
+                )
+            })
+            .and_then(|index| match &body.statements[index].kind {
+                ComputationStatementKind::Let(_, true) if self.methods.contains("BindReturn") => {
+                    Some((index, "BindReturn"))
+                }
+                ComputationStatementKind::LetAnd(group)
+                    if group.len() == 2 && self.methods.contains("Bind2") =>
+                {
+                    Some((index, "Bind2"))
+                }
+                _ => None,
+            });
+        for (index, statement) in body.statements.iter().enumerate().rev() {
             let span = statement.span;
+            if fusion.is_some_and(|(fused, _)| index == fused + 1)
+                && let ComputationStatementKind::Operation("Return", value) = &statement.kind
+            {
+                result = Some(value.clone());
+                continue;
+            }
             let value = match &statement.kind {
+                ComputationStatementKind::LetAnd(group) => {
+                    let tail = self.finish(result, bindings, body.span)?;
+                    result = Some(self.and_bindings(
+                        group,
+                        tail,
+                        fusion.is_some_and(|(fused, _)| fused == index),
+                        span,
+                    )?);
+                    bindings = Vec::new();
+                    continue;
+                }
+                ComputationStatementKind::Match(source, arms) => {
+                    self.match_binding(source, arms, span)?
+                }
                 ComputationStatementKind::Let(binding, false) => {
                     bindings.push(binding.clone());
                     continue;
@@ -346,8 +408,15 @@ impl Lowering<'_> {
                 ComputationStatementKind::Let(binding, true) => {
                     let tail = self.finish(result, bindings, body.span)?;
                     let continuation = self.continuation(binding, tail, span)?;
-                    result =
-                        Some(self.call("Bind", vec![binding.value.clone(), continuation], span)?);
+                    result = Some(self.call(
+                        if fusion.is_some_and(|(fused, _)| fused == index) {
+                            "BindReturn"
+                        } else {
+                            "Bind"
+                        },
+                        vec![binding.value.clone(), continuation],
+                        span,
+                    )?);
                     bindings = Vec::new();
                     continue;
                 }
@@ -448,6 +517,154 @@ impl Lowering<'_> {
             bindings = Vec::new();
         }
         self.finish(result, bindings, body.span)
+    }
+
+    fn match_binding(
+        &self,
+        source: &Expr,
+        arms: &[ComputationMatchArm],
+        span: Span,
+    ) -> Result<Expr, Diagnostic> {
+        let name = ident("$computation_match", span);
+        let arms: Vec<_> = arms
+            .iter()
+            .map(|arm| {
+                Ok(MatchArm {
+                    pattern: arm.pattern.clone(),
+                    guard: arm.guard.clone(),
+                    body: self.block(&arm.body)?,
+                    span: arm.span,
+                })
+            })
+            .collect::<Result<_, Diagnostic>>()?;
+        let depth = arms
+            .iter()
+            .map(|arm| {
+                arm.body
+                    .depth
+                    .max(arm.pattern.depth)
+                    .max(arm.guard.as_ref().map_or(0, |guard| guard.depth))
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let matched = make(
+            ExprKind::Match {
+                value: Box::new(make(ExprKind::Name(name.clone()), span, 1)?),
+                arms,
+                origin: MatchOrigin::Explicit,
+            },
+            span,
+            depth,
+        )?;
+        let continuation = make(
+            ExprKind::Lambda(vec![(name, false)], Box::new(matched)),
+            span,
+            depth + 1,
+        )?;
+        self.call("Bind", vec![source.clone(), continuation], span)
+    }
+
+    fn and_bindings(
+        &self,
+        group: &[Binding],
+        tail: Expr,
+        fused: bool,
+        span: Span,
+    ) -> Result<Expr, Diagnostic> {
+        let mut staged = Vec::new();
+        let mut sources = Vec::new();
+        for (index, binding) in group.iter().enumerate() {
+            let name = ident(
+                &format!("$computation_source_{}_{}", span.start, index),
+                binding.name.span,
+            );
+            staged.push(Binding {
+                name: name.clone(),
+                mutable: false,
+                annotation: None,
+                value: binding.value.clone(),
+            });
+            sources.push(make(ExprKind::Name(name), binding.value.span, 1)?);
+        }
+        let value = if fused {
+            let mut parameters = Vec::new();
+            let mut annotations = Vec::new();
+            for (index, binding) in group.iter().enumerate() {
+                if binding.annotation.is_some() {
+                    let name = ident(&format!("$computation_callback_{index}"), binding.name.span);
+                    parameters.push((name.clone(), false));
+                    annotations.push(Binding {
+                        value: make(ExprKind::Name(name), binding.name.span, 1)?,
+                        ..binding.clone()
+                    });
+                } else {
+                    parameters.push((binding.name.clone(), binding.mutable));
+                }
+            }
+            let body = block(annotations, tail, span)?;
+            let depth = body.depth + 1;
+            let continuation = make(ExprKind::Lambda(parameters, Box::new(body)), span, depth)?;
+            let mut arguments = sources;
+            arguments.push(continuation);
+            self.call("Bind2", arguments, span)?
+        } else {
+            let mut sources = sources.into_iter();
+            let mut merged = sources.next().unwrap();
+            for source in sources {
+                merged = self.call("MergeSources", vec![merged, source], span)?;
+            }
+            let name = ident("$computation_pair", span);
+            let mut pattern = None;
+            let mut locals = Vec::new();
+            for (index, binding) in group.iter().enumerate() {
+                let name = ident(&format!("$computation_bound_{index}"), binding.name.span);
+                locals.push(Binding {
+                    value: make(ExprKind::Name(name.clone()), binding.name.span, 1)?,
+                    ..binding.clone()
+                });
+                let next = Pattern {
+                    kind: PatternKind::Binding(name),
+                    span: binding.name.span,
+                    depth: 1,
+                };
+                pattern = Some(if let Some(previous) = pattern {
+                    let previous: Pattern = previous;
+                    let depth = previous.depth + 1;
+                    Pattern {
+                        kind: PatternKind::Tuple(vec![previous, next]),
+                        span,
+                        depth,
+                    }
+                } else {
+                    next
+                });
+            }
+            let body = block(locals, tail, span)?;
+            let pattern = pattern.unwrap();
+            let depth = pattern.depth.max(body.depth) + 1;
+            let matched = make(
+                ExprKind::Match {
+                    value: Box::new(make(ExprKind::Name(name.clone()), span, 1)?),
+                    arms: vec![MatchArm {
+                        pattern,
+                        guard: None,
+                        body,
+                        span,
+                    }],
+                    origin: MatchOrigin::ComputationDestructuring,
+                },
+                span,
+                depth,
+            )?;
+            let continuation = make(
+                ExprKind::Lambda(vec![(name, false)], Box::new(matched)),
+                span,
+                depth + 1,
+            )?;
+            self.call("Bind", vec![merged, continuation], span)?
+        };
+        block(staged, value, span)
     }
 
     fn finish(

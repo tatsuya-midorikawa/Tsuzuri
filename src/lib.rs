@@ -1,6 +1,7 @@
 pub mod abi;
 pub mod check;
 pub mod diagnostic;
+pub mod docgen;
 pub mod driver;
 pub mod formatter;
 pub mod lexer;

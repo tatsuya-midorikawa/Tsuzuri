@@ -18,6 +18,10 @@ WASM SIMD128は明示opt-inです。2026-09-27の`tests/wasm_simd.mjs`ではLLVM
 `--quick`は4097要素・10反復の正しさ確認だけで、時間を性能主張に使いません。2026-09-27にchecksum -2385の一致を確認しました。
 明示SIMDが自動ベクトル化されたscalarより速いとは限らず、境界検査・ループ形状のコストを含めて判断します。F04は232参照ケースをnative generic/native・WASM scalar/SIMDのO0/O3で検証済みです。
 
+CPU dispatch比較は `node benchmarks/run-dispatch.mjs target/release/tsuzuri [--quick]` です。同じi64配列和のTsuzuri dispatch/scalar/Cを同一プロセスで順番を回転し、9回中央値・feature・variant・checksumをJSONで出します。
+2026-09-27のApple M1 Maxではfeatures=0/variant=0のbaselineを検証しました。x86 variantはクロスコンパイルとCPUID/XCR0条件の単体検査のみで、SSE4.2/AVX2の実機速度・実行は未測定です。
+quickの4097要素/10反復ではchecksum -2385が一致。短縮時間やbaseline環境からx86の加速を主張しません。各ISAの測定は対応実機で同じ入力とコンパイラ条件を使います。
+
 **処理時間は小さいほど高速です。スコアではありません。** 同じ行・同じ仕事量の値を比較してください。
 結果表は、種目・仕事量などの識別列の次に Tsuzuri を置き、その右に比較相手を並べます。
 
@@ -1023,6 +1027,12 @@ done
 ```
 
 ## コンピュテーション式の比較
+
+B05の`match!`/`and!`追加後も、既存9ワークロードと同じ参照値を確認しています。
+`run-computations.mjs`の`extensions`欄はWASM O3のBind2、MergeSources+Bind、手書きBind2を同じ整数mixで比較します。
+新構文用の小プロジェクトを一時領域に生成するため、既存の旧compiler比較用sourceは変更しません。
+複数サイズ/seedのBigInt参照、回転した測定順、通常9回/quick3回の生時間と中央値を出します。2026-09-27のquick照合は成功し、速度優位性は主張していません。
+この追加欄はWASMだけで、nativeや異なるbuilderの意味同値を推測する比較ではありません。
 
 ```sh
 cargo build --release --locked

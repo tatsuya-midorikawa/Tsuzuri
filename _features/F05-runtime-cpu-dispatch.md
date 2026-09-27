@@ -6,8 +6,18 @@
 | 規模 | L |
 | 依存 | C04 |
 | 後続 | なし |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/llvm.rs`, `src/driver.rs`, `src/main.rs`, `src/runtime/cpu.c`（新規）, `src/check.rs`, `tests/cpu_dispatch.rs`（新規）, `tests/cpu_dispatch.mjs`（新規）, `benchmarks/run-dispatch.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md` |
+
+## 実装と検証（2026-09-27）
+
+- 同梱`Array.sum<i64>`のnative exe/objectだけを対象に、cpu.cのbaseline/SSE4.2/AVX2へ接続。std差し替え・float・user関数・WASM・従来LLVM APIは変更しない。
+- C11 atomic pointerのacquire load/acq-rel cmpxchg、weak/hidden入口、CPUID/OSXSAVE/XCR0、未対応/未知forceのabortを実装。GNU ifunc/compiler-rt CPU modelは使わない。
+- target属性とdispatch IRはCからClangで生成し、Rust emitterに同じループを重複させない。driverは必要時だけtaskと同じruntime連結・DWARF保持経路を使う。
+- cpu_runtime.cの境界判定・8スレッド同時初期化・257長のi64参照がO0/O3で成功。Rustの限定lowering/決定性とdebug/trap回帰、fmt/clippy成功。
+- tests/cpu_dispatch.mjsでgeneric/native O0/O3、task共存、baseline強制、未対応拒否、WASM importなし、atomic IRを確認。AArch64の実行はbaselineのみ。
+- x86 variantsはクロスコンパイルして+avx2/xgetbvを確認。x86実機実行はこの環境では未検証。対応実機では同じハーネスが利用可能なISAを強制して参照照合する。
+- run-dispatch.mjsで回転順・9回中央値・feature/variantを記録し、quick checksum一致を確認。速度優位性は未主張。以下は着手前の設計資料。
 
 ## 目的
 

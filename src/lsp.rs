@@ -504,8 +504,17 @@ impl Session {
                     return Ok(Value::Null);
                 };
                 if method.ends_with("hover") {
+                    let mut markdown = format!("```tsuzuri\n{}\n```", entry.detail);
+                    if let Some(doc) = state
+                        .index
+                        .as_ref()
+                        .and_then(|index| index.doc_for(entry.target.unwrap_or(entry.span)))
+                    {
+                        markdown.push_str("\n\n");
+                        markdown.push_str(doc);
+                    }
                     return Ok(
-                        json!({"contents": {"kind": "markdown", "value": format!("```tsuzuri\n{}\n```", entry.detail)}, "range": state.mappers[source_id].range(&source.text, entry.span)}),
+                        json!({"contents": {"kind": "markdown", "value": markdown}, "range": state.mappers[source_id].range(&source.text, entry.span)}),
                     );
                 }
                 let Some(target) = entry.target else {

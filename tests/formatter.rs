@@ -6,6 +6,22 @@ use tsuzuri::{
 };
 
 #[test]
+fn documentation_text_survives_formatting_and_span_changes() {
+    let source = "/// First.  \r\ndef answer::i64\r\nfn answer=42\r\n/// Point.\r\nrecord Point{x:i64}\r\n/// Class.\r\nclass Measure<'a>{\r\n  /// ```tsuzuri\r\n  /// measure value\r\n  /// ```\r\n  def measure::ref 'a->i64\r\n}\r\n";
+    let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
+    let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+    assert_eq!(first.formatted, second.formatted);
+    assert!(first.formatted.contains("/// First.  \r\n"));
+    let before = parser::parse(source).unwrap();
+    let after = parser::parse(&first.formatted).unwrap();
+    assert_eq!(
+        before.classes[0].methods[0].doc.as_ref().unwrap().text,
+        after.classes[0].methods[0].doc.as_ref().unwrap().text
+    );
+    assert_eq!(ast_fingerprint(before), ast_fingerprint(after));
+}
+
+#[test]
 fn trims_only_external_whitespace_and_preserves_newline_style() {
     for (source, expected) in [
         (

@@ -1,0 +1,8 @@
+export def dispatched_sum :: ref [i64] -> i64
+fn dispatched_sum values = Array.sum values
+
+export def scalar_sum :: ref [i64] -> i64
+fn scalar_sum values =
+    let mut total = 0
+    for value in values do total = total + value
+    total

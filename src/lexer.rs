@@ -162,6 +162,22 @@ impl Lexer<'_> {
             self.position += 1;
             return Ok(None);
         }
+        if self.rest().starts_with("///") {
+            self.position += 3;
+            if self.rest().starts_with(' ') {
+                self.position += 1;
+            }
+            let text_start = self.position;
+            while self.position < self.source.len()
+                && !matches!(self.source.as_bytes()[self.position], b'\r' | b'\n')
+            {
+                self.position += 1;
+            }
+            return Ok(Some(Token {
+                kind: TokenKind::DocComment(self.source[text_start..self.position].into()),
+                span: Span::new(start, self.position),
+            }));
+        }
         if self.rest().starts_with("//") {
             while self.position < self.source.len()
                 && self.source.as_bytes()[self.position] != b'\n'
@@ -339,6 +355,7 @@ impl Lexer<'_> {
             "rec" => TokenKind::Rec,
             "and" => TokenKind::And,
             "export" => TokenKind::Export,
+            "extern" => TokenKind::Extern,
             "private" => TokenKind::Private,
             "record" => TokenKind::Record,
             "union" => TokenKind::Union,
@@ -657,6 +674,19 @@ impl Lexer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_documentation_comments_and_line_endings() {
+        let source = "/// hello\r\n///  indented\n//// slash\r\n// ignored\n/** ignored */\ndef";
+        let tokens = lex(source).unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::DocComment("hello".into()));
+        assert_eq!(tokens[1].kind, TokenKind::DocComment(" indented".into()));
+        assert_eq!(tokens[2].kind, TokenKind::DocComment("/ slash".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Def);
+        let preserved = lex_with_trivia(source).unwrap();
+        assert_eq!(preserved[0].token.kind, tokens[0].kind);
+        assert_eq!(preserved[1].leading[0].text, "\r\n");
+    }
 
     #[test]
     fn lexes_comments_numbers_and_longest_operators() {

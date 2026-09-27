@@ -12,7 +12,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-e2e-"));
-const fixture = join(root, "tests/fixtures/Semantics.tz");
+const fixture = join(temporary, "semantics-source", "Semantics.tz");
 const cases = [];
 const minimum = -(1n << 63n);
 const maximum = (1n << 63n) - 1n;
@@ -681,6 +681,8 @@ int main(void) {
 }
 
 try {
+  mkdirSync(dirname(fixture));
+  writeFileSync(fixture, readFileSync(join(root, "tests/fixtures/Semantics.tz")));
   cli(["check", fixture], { env: { TSUZURI_CLANG: join(temporary, "missing-clang") } });
   const header = join(temporary, "semantics.h");
   cli(["build", fixture, "--emit", "header", "-o", header]);

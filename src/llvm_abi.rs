@@ -11,11 +11,24 @@ pub(super) fn extended(function: &CheckedFunction) -> bool {
             || out_result(&function.signature.result))
 }
 
-pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
-    module.functions.iter().any(extended)
+fn host_function(function: &CheckedFunction) -> bool {
+    function.exported || matches!(function.body.kind, TypedExprKind::HostCall(..))
 }
 
-fn record_name(ty: &Type, module: &CheckedModule) -> String {
+pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
+    module.functions.iter().any(|function| {
+        extended(function)
+            || (matches!(function.body.kind, TypedExprKind::HostCall(..))
+                && (function
+                    .signature
+                    .parameters
+                    .iter()
+                    .any(|ty| !ty.exportable() && *ty != Type::Unit)
+                    || out_result(&function.signature.result)))
+    })
+}
+
+pub(super) fn record_name(ty: &Type, module: &CheckedModule) -> String {
     let Type::Record(id, arguments) = ty else {
         unreachable!("ABI record checked")
     };
@@ -52,7 +65,11 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
     }
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
-    for function in module.functions.iter().filter(|function| function.exported) {
+    for function in module
+        .functions
+        .iter()
+        .filter(|function| host_function(function))
+    {
         for ty in function
             .signature
             .parameters
@@ -106,7 +123,11 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
         return String::new();
     }
     let mut buffers = BTreeSet::new();
-    for function in module.functions.iter().filter(|function| function.exported) {
+    for function in module
+        .functions
+        .iter()
+        .filter(|function| host_function(function))
+    {
         for ty in function
             .signature
             .parameters
@@ -169,6 +190,9 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         parameters.push(format!("{} *out", record_name(result, module)));
     }
     for (index, ty) in function.signature.parameters.iter().enumerate() {
+        if *ty == Type::Unit {
+            continue;
+        }
         let inner = if let Type::Reference(inner, false) = ty {
             inner.as_ref()
         } else {
@@ -335,7 +359,13 @@ fn record_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
 }
 
 impl FunctionEmitter<'_, '_> {
-    fn host_pointer(&mut self, pointer: &str, bytes: &str, alignment: usize, empty_null: bool) {
+    pub(super) fn host_pointer(
+        &mut self,
+        pointer: &str,
+        bytes: &str,
+        alignment: usize,
+        empty_null: bool,
+    ) {
         let nonnull = self.value(format!("icmp ne ptr {pointer}, null"));
         let valid = if empty_null {
             let empty = self.value(format!("icmp eq i64 {bytes}, 0"));
@@ -362,7 +392,7 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
-    fn validate_host_utf8(&mut self, pointer: &str, length: &str) {
+    pub(super) fn validate_host_utf8(&mut self, pointer: &str, length: &str) {
         let index = self.spill(&Type::I64, "0");
         let check = self.label();
         let body = self.label();
@@ -404,7 +434,7 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
-    fn read_host_record(&mut self, ty: &Type, pointer: &str) -> String {
+    pub(super) fn read_host_record(&mut self, ty: &Type, pointer: &str) -> String {
         let Type::Record(id, arguments) = ty else {
             unreachable!()
         };
@@ -435,7 +465,7 @@ impl FunctionEmitter<'_, '_> {
         record
     }
 
-    fn write_host_record(&mut self, ty: &Type, value: &str, pointer: &str) {
+    pub(super) fn write_host_record(&mut self, ty: &Type, value: &str, pointer: &str) {
         let Type::Record(id, arguments) = ty else {
             unreachable!()
         };

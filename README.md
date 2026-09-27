@@ -34,6 +34,8 @@ macOSの実行ファイルは隣接する `.dwarf` を保持し、LLDBの `targe
 macOSのタスクを含むdebug objectにはClangと対応する `llvm-link`（`TSUZURI_LLVM_LINK`）、実行ファイルには `dsymutil`（`TSUZURI_DSYMUTIL`）が必要です。
 
 ホスト ABI は借用配列・UTF-16／UTF-8 入力、所有バッファ結果、スカラーのみのレコードに対応します。
+`extern def now :: unit -> i64`で同期ホスト関数を宣言できます。nativeは`tsuzuri_host_Main_now`、WASMは`tsuzuri`モジュールの`Main.now`へ接続します。
+未使用externはimportを増やしません。nativeは生成object/headerをホストと連結し、WASMは`{ tsuzuri: { "Main.now": () => 42n } }`を渡します。
 C header を生成して pointer／length と out pointer を使い、返却バッファは `tsuzuri_free` で解放します。
 [C の使用例](examples/native/main.c) と [WASM のバッファ移転例](examples/web/simulation.mjs) に往復処理があります。
 
@@ -349,7 +351,8 @@ match answer with
 同じ最適化を通常の高階関数・パイプライン・コレクション初期化にも適用します。
 未知・逃げる継続は従来の所有する関数値を使います。
 性能の条件と手書き Tsuzuri／C++ との実測は [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。
-F# の全機能互換ではなく、`and!`、例外処理、`use`、カスタム演算は未対応です。
+`match!`と`and!`、ビルダーが提供する`MergeSources`／`BindReturn`／`Bind2`に対応します。and!の右辺は左から右に一度ずつ評価し、自動並列化しません。
+F#の全機能互換ではなく、例外処理・use・カスタム演算は未対応です。use/try構文はE1018で拒否し、所有値のlet/dropとOption/Resultを使います。
 実行例は `tsuzuri run examples/computations`、
 詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) を参照してください。
 
@@ -449,6 +452,7 @@ std の関数も `Math.zero()` のように修飾して呼び、使わない std
 
 stdは`Option`・`Result`、コレクション・文字列・文字・整数・並列処理・数学APIを持ちます。
 `Math.sqrt 4.0f32`のように全float型の基本演算を使え、超越関数はf32／f64に対応します。`Math.pi()`などの定数も型を保持します。
+`Math.fma 2.0 3.0 4.0`は積和を一度だけ丸めます。`Array.sum_pairwise`は固定ペア木、`Array.sum_kahan`はNeumaier補償和、`Array.dot_fma`は順次FMA内積です。通常の`a * b + c`、`Array.sum`、`Array.dot`は融合・再結合しません。
 無修飾の型・case・クラス名は利用者の宣言を std より優先します。
 
 ```text
@@ -612,6 +616,7 @@ GUI には Tk とデスクトップ画面が必要です。`--headless` を付�
 
 ```text
 tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
 tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 ```
@@ -627,12 +632,21 @@ tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 | `--` | 以降をパスとして解釈 |
 | `--help`, `--version` | ヘルプ／バージョン |
 
+`///`で宣言に説明を添え、`tsuzuri doc examples/point -o target/api`で公開APIのMarkdownを生成できます。
+関数の説明は`fn`ではなく`def`の前に書きます。record/union/type/const/extern/classとclass methodにも対応し、誤配置はE0002です。
+`doc`は全ソースを型検査し、Mainのないライブラリディレクトリも受理します。LLVM/Clangは不要です。
+出力先は必須で、既存ディレクトリは正しい`.tsuzuri-docs` markerがある場合だけ置換します。説明のMarkdown/HTMLはそのままなので、表示側で安全性を管理してください。
+`tsuzuri doc std -o target/std-api`は同梱stdと同じファイル構成のソース宣言を文書化します。生成物はcommitせずrelease artifactにできます。
+
 ローカル実行や実行機が固定された配備では、`tsuzuri run examples/point --cpu native`、
 または `tsuzuri build examples/point --cpu native -o target/point` を使えます。
 `native` は x86/x86-64 では `-march=native`、ARM/AArch64 では `-mcpu=native` を
 Clang に渡します。SIMD 化は演算と依存関係が許す範囲で LLVM が判断し、全処理の SIMD 化や
 全 CPU コアの利用を保証する指定ではありません。生成物は古い CPU で動かない場合があります。
 他機への配布では `generic` を使い、OS・アーキテクチャ・ABI の互換性も確認してください。
+nativeの同梱`Array.sum<i64>`は能力検出後に標準カーネルを選択します。x86はSSE4.2/AVX2、AArch64と未知環境はbaselineです。
+`TSUZURI_CPU_FORCE=baseline|sse4.2|avx2`はテスト用です。未対応/未知variantは明示失敗し、環境変数は初回呼び出し前だけ設定します。
+`--emit llvm`と従来のLLVM APIは独立した従来経路を出し、native exe/objectだけruntimeを必要時に連結します。`--cpu native`生成物の移植性は従来どおり保証しません。
 `--cpu native` はネイティブの実行ファイル／オブジェクトと `run` 専用です。
 `check` への CPU 指定、WASM／LLVM IR／ヘッダーへの `native` 指定はエラーにします。
 
@@ -685,8 +699,11 @@ node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node tests/lsp_sessions.mjs target/release/tsuzuri
+node tests/docgen.mjs target/release/tsuzuri
 node tests/wasm_simd.mjs target/release/tsuzuri # llvm-objdump required; TSUZURI_OBJDUMP overrides it
 node tests/simd.mjs target/release/tsuzuri # same llvm-objdump requirement
+node tests/cpu_dispatch.mjs target/release/tsuzuri
+node tests/host_imports.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri # llvm-dwarfdump required; TSUZURI_DWARFDUMP overrides it
 python3 -m venv target/math-reference-env
 target/math-reference-env/bin/python -m pip install mpmath==1.3.0

@@ -1638,6 +1638,7 @@ fn instance_function(
         })
         .collect();
     Ok(FunctionDecl {
+        doc: None,
         regions: Vec::new(),
         recursion: definition.recursion,
         name: Ident {

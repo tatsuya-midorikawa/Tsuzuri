@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { arch, platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -21,7 +21,8 @@ const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.l
 const hex = (value) => BigInt.asUintN(64, value).toString(16).padStart(16, "0");
 
 try {
-  const input = join(root, "benchmarks/Mix.tz");
+  const input = join(temporary, "Mix.tz");
+  copyFileSync(join(root, "benchmarks/Mix.tz"), input);
   const object = join(temporary, "mix.o");
   const wasm = join(temporary, "mix.wasm");
   const native = join(temporary, platform() === "win32" ? "benchmark.exe" : "benchmark");

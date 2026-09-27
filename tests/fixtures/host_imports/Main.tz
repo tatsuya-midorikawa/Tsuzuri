@@ -1,0 +1,56 @@
+record Point { x: f64, flag: bool }
+
+extern def now :: unit -> i64
+extern def mark :: i64 -> i64
+extern def combine :: i64 -> i64 -> i64
+extern def small :: i8 -> i8
+extern def flag :: bool -> bool
+extern def host_read :: ref [i64] -> ref string -> ref utf8string -> Point -> i64
+extern def host_buffer :: [i64]
+extern def host_text :: utf8string
+extern def host_point :: ref Point -> Point
+extern def invalid_buffer :: i64 -> [i64]
+extern def unused :: i64
+
+export def effects :: bool -> i64
+fn effects condition =
+    let total = combine (mark 1) (mark 2)
+    let _discarded = mark 3
+    let _short = false && (mark 9 == 9)
+    let branch = if condition then mark 4 else mark 5
+    total + branch + now ()
+
+private def apply :: (unit -> i64) -> i64
+fn apply callback = callback ()
+
+export def function_value :: i64
+fn function_value =
+    let partial = combine 4
+    partial 2 + apply now
+
+export def normalized :: i64 -> bool
+fn normalized value =
+    let narrow = small (value as i8)
+    narrow == ((value + 1) as i8) && flag false && !(flag true)
+
+export def buffers :: i64
+fn buffers =
+    let values = [20, 22]
+    let text = "abc"
+    let utf8 = u8"xy"
+    let point = Point { x: 3.0, flag: true }
+    let read = host_read (&values) (&text) (&utf8) point
+    let result = host_buffer()
+    let returned_text = host_text()
+    let changed = host_point (&point)
+    assert (changed.x == 3.5 && changed.flag)
+    read + Array.sum (&result) + returned_text.length
+
+export def tasks :: i64
+fn tasks =
+    let jobs = new [Task<i64>](16, fx _index -> task { return now () })
+    let results = Task.run (Task.parallel jobs)
+    Array.sum (&results)
+
+export def bad_buffer :: i64 -> i64
+fn bad_buffer mode = (invalid_buffer mode).length

@@ -707,6 +707,12 @@ fn rejects(source: &str, code: &str) {
 - C07のnextは所有closureを直接呼ぶbuiltin。forは次状態を先に復元する既存while/matchへ展開し、filterは借用述語へ修正する。List.iterは参照Vecの準備O(n)、所有状態の移送による反復O(n)を採用する。
 - A09の共有record fieldはC04の交差寿命とValue.loansを継承する。古い「借用入力は必ず1個」という制限へ戻さず、複数入力の場合は全入力の寿命を保持する。排他参照fieldは禁止する。
 - A09の名前付きregionは値全体に一つとし、defの返却元を本体loanで検証する。直接完全適用のみ指定入力へ寿命を縮小し、関数値は保守的に全入力を保持する。独立複数region・高階region型は後続段階として拒否する。
+- F05は同梱`Array.sum<i64>`のnative exe/objectだけをC11のCPU runtimeへ下げる。既存LLVM API/IR出力は独立経路を維持。検出・atomic cache・target属性はCに集約し、floatやuser関数を多重化しない。
+- E06は通常の型付き関数内のHostCall wrapperで表現し、関数値/部分適用を再利用する。E05の共有buffer/recordと所有結果ABIを共用し、ホストはborrow保持禁止・所有結果のallocator契約を守る。未使用externを出力rootにしない。
+- B05はand!右辺をすべて順序付き生成letへ評価してからMergeSources/Bind2へ渡す。Bind2が選べなければMergeSourcesを要求し、ネストBindへ置換しない。optional operationの意味はビルダーが定義する。
+- D05はMath.fmaだけに単一丸めを許す。AArch64 native f32/f64は保証されたFMA命令、それ以外は同梱整数ランタイム。大きな指数差は符号付きstickyで縮約し、decimalも一度だけpackする。Arrayの集計木/左順を固定し、sum_kahanの算法はNeumaierと明記する。
+- G09はdocでもMainなしdirectoryをライブラリとして扱う。署名ASTから公開APIを描画し、constの値・instance・privateを出さない。既存出力は専用markerで所有権を確認して全体置換する。stdの完全なファイル構成を入力可能とし、builtin一覧とdoc-testは別責務とする。
+- E03の再帰探索では独立したfixture/benchmark projectを同じrootに混ぜない。旧来の直下単独ファイルSemantics/Mixはハーネスが一時rootへコピーして実行し、言語側の探索契約を弱めない。
 
 ## 10. 完了の定義（全チケット共通）
 

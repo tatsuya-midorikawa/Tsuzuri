@@ -2,6 +2,21 @@ union Result<'a, 'e> =
     | Ok of 'a
     | Error of 'e
 
+def MergeSources :: Result<'a, 'e> -> Result<'b, 'e> -> Result<('a * 'b), 'e>
+fn MergeSources left right =
+    match left with
+    | Error error -> Error error
+    | Ok first -> match right with | Error error -> Error error | Ok second -> Ok (first, second)
+
+def BindReturn :: Result<'a, 'e> -> ('a -> 'b) -> Result<'b, 'e>
+fn BindReturn value next = map next value
+
+def Bind2 :: Result<'a, 'e> -> Result<'b, 'e> -> ('a -> 'b -> 'c) -> Result<'c, 'e>
+fn Bind2 left right next =
+    match MergeSources left right with
+    | Error error -> Error error
+    | Ok (first, second) -> Ok (next first second)
+
 def is_ok :: &(Result<'a, 'e>) -> bool
 fn is_ok result =
     match result with

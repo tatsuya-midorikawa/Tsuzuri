@@ -102,6 +102,60 @@ fn sum values =
     for value in values do total = total + value
     total
 
+/// Sums adjacent pairs in a fixed tree, carrying an odd final element unchanged.
+/// Uses one working copy. Empty input returns positive zero.
+def sum_pairwise :: Float<'a> => ref ['a] -> 'a
+fn sum_pairwise values =
+    if values.length == 0 then 0i64 as 'a else
+        let mut buffer = deref values
+        let mut remaining = values.length
+        while remaining > 1 do
+            let next = remaining / 2 + remaining % 2
+            let mut index = 0
+            while index < next do
+                let left = index * 2
+                let value = if left + 1 < remaining then buffer[left] + buffer[left + 1] else buffer[left]
+                buffer = Array.set buffer index value
+                index = index + 1
+            remaining = next
+        buffer[0]
+
+/// Computes the left-to-right Kahan-Babuska-Neumaier compensated sum.
+/// Intermediate operations are not fused or reassociated.
+def sum_kahan :: Float<'a> => ref ['a] -> 'a
+fn sum_kahan values =
+    let mut total = 0i64 as 'a
+    let mut correction = 0i64 as 'a
+    for value in values do
+        let next = total + value
+        correction = correction + (if Math.abs total >= Math.abs value then (total - next) + value else (value - next) + total)
+        total = next
+    total + correction
+
+/// Computes a left-to-right dot product with separate multiply and add rounding.
+/// Unequal lengths trap before reading elements; empty inputs return positive zero.
+def dot :: Float<'a> => ref ['a] -> ref ['a] -> 'a
+fn dot left right =
+    assert (left.length == right.length)
+    let mut total = 0i64 as 'a
+    let mut index = 0
+    while index < left.length do
+        total = total + (left[index] * right[index])
+        index = index + 1
+    total
+
+/// Computes a left-to-right dot product with one rounding per explicit FMA step.
+/// Unequal lengths trap before reading elements; empty inputs return positive zero.
+def dot_fma :: Float<'a> => ref ['a] -> ref ['a] -> 'a
+fn dot_fma left right =
+    assert (left.length == right.length)
+    let mut total = 0i64 as 'a
+    let mut index = 0
+    while index < left.length do
+        total = Math.fma left[index] right[index] total
+        index = index + 1
+    total
+
 def product :: Numeric<'a> => ref ['a] -> 'a
 fn product values =
     let mut total = 1i64 as 'a

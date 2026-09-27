@@ -1,0 +1,70 @@
+export def match_some :: i64
+fn match_some = Option.get (Option { match! Some (20, 22) with | (left, right) -> return left + right })
+
+export def match_none :: bool
+fn match_none =
+    let missing: Option<i64> = None
+    let result: Option<i64> = Option { match! missing with | _ -> return 1 / 0 }
+    Option.is_none (&result)
+
+export def result_error :: i64
+fn result_error =
+    let result: Result<i64, string> = Result { let! left: i64 = Error "left" and! right: i64 = Error "right"; return left + right }
+    (Result.get_error result).length
+
+export def bind_return :: i64
+fn bind_return = Fused { let! value = 41; return value + 1 }
+
+export def bind_two :: i64
+fn bind_two = Fused { let! left = 20 and! right = 22; return left + right }
+
+export def mutable_bind_two :: i64
+fn mutable_bind_two = Fused { let! mut left: i64 = 20 and! right: i64 = 21; return { left = left + 1; left + right } }
+
+export def merge_fallback :: i64
+fn merge_fallback = Merged { let! left = 20 and! right = 22; return left + right }
+
+private def stamp :: ref mut i64 -> i64 -> i64
+fn stamp state digit =
+    deref state = deref state * 10 + digit
+    digit
+
+export def source_order :: i64
+fn source_order =
+    let mut state = 0
+    let result = Merged {
+        let! first = stamp (ref mut state) 1
+        and! second = stamp (ref mut state) 2
+        and! third = stamp (ref mut state) 3
+        return first + second + third
+    }
+    result * 1000 + state
+
+export def strict_none :: i64
+fn strict_none =
+    let mut state = 0
+    let result = Eager { let! first: i64 = None and! second = Some (stamp (ref mut state) 2); return first + second }
+    assert (Option.is_none (&result))
+    state
+
+export def mutable_group :: i64
+fn mutable_group = Merged { let! mut left: i64 = 20 and! right: i64 = 21; left = left + 1; return left + right }
+
+export def owned_match :: i64 -> i64
+fn owned_match count =
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        let result = Option {
+            match! Some "owned" with
+            | text when text.length == 5 ->
+                let! suffix = Some "value"
+                return text + suffix
+            | text -> return text
+        }
+        total = total + (Option.get result).length
+        index = index + 1
+    total
+
+export def strict_trap :: i64
+fn strict_trap = Option.get (Option { let! first: i64 = None and! second = { assert false; Some 2 }; return first + second })

@@ -1,0 +1,10 @@
+export def sum :: ref [i64] -> i64
+fn sum values = Array.sum values
+
+export def task_sum :: i64
+fn task_sum =
+    let result = Task.run (Task.parallel [task { return 20 }, task { return 22 }])
+    Array.sum (&result)
+
+def main :: i64
+fn main = task_sum()

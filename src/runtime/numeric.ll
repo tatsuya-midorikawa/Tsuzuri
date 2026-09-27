@@ -15,7 +15,7 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   %9 = alloca %struct.tzrt_big, align 4
   %10 = alloca %struct.tzrt_big, align 4
   %11 = alloca %struct.tzrt_big, align 4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #16
   switch i32 %3, label %75 [
     i32 0, label %12
     i32 1, label %21
@@ -196,10 +196,10 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   %91 = phi i32 [ 10, %12 ], [ 23, %21 ], [ 52, %30 ], [ 112, %39 ], [ 23, %48 ], [ 53, %57 ], [ 113, %66 ], [ 0, %75 ]
   %92 = phi i1 [ true, %12 ], [ true, %21 ], [ true, %30 ], [ true, %39 ], [ false, %48 ], [ false, %57 ], [ false, %66 ], [ true, %75 ]
   %93 = phi i32 [ 2, %12 ], [ 2, %21 ], [ 2, %30 ], [ 2, %39 ], [ 10, %48 ], [ 10, %57 ], [ 10, %66 ], [ 2, %75 ]
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #16
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %8) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %8, ptr noundef %2, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %8) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %8, ptr noundef %2, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
   %94 = icmp eq i32 %4, 1
   br i1 %94, label %95, label %99
 
@@ -403,9 +403,9 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   %220 = icmp eq i64 %219, %204
   br i1 %220, label %498, label %213
 221:                                              ; preds = %158
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, ptr noundef nonnull align 4 dereferenceable(5604) %7, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #16
   call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !31
   %222 = getelementptr inbounds i8, ptr %10, i64 4
   store i32 1, ptr %10, align 4, !tbaa !34, !alias.scope !31
@@ -419,9 +419,9 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   %227 = load i32, ptr %226, align 4, !tbaa !35
   %228 = tail call i32 @llvm.smin.i32(i32 %225, i32 %227)
   %229 = sub nsw i32 %225, %228
-  call fastcc void @power(ptr noundef %9, i32 noundef %93, i32 noundef %229) #16
+  call fastcc void @power(ptr noundef %9, i32 noundef %93, i32 noundef %229) #17
   %230 = sub nsw i32 %227, %228
-  call fastcc void @power(ptr noundef %8, i32 noundef %93, i32 noundef %230) #16
+  call fastcc void @power(ptr noundef %8, i32 noundef %93, i32 noundef %230) #17
   %231 = load i32, ptr %103, align 4, !tbaa !20
   %232 = icmp eq i32 %102, %231
   %233 = load i32, ptr %9, align 4, !tbaa !34
@@ -671,7 +671,7 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   br i1 %393, label %394, label %462
 
 394:                                              ; preds = %392
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #16
   tail call void @llvm.experimental.noalias.scope.decl(metadata !40)
   call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, i8 0, i64 5604, i1 false), !alias.scope !40
   %395 = load i32, ptr %7, align 4, !tbaa !34, !noalias !40
@@ -765,7 +765,7 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   br i1 %455, label %431, label %439
 456:                                              ; preds = %422, %428, %416
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, ptr noundef nonnull align 4 dereferenceable(5604) %11, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #16
   %457 = getelementptr inbounds i8, ptr %7, i64 5604
   %458 = load i32, ptr %457, align 4, !tbaa !35
   %459 = getelementptr inbounds i8, ptr %8, i64 5604
@@ -785,7 +785,7 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
 468:                                              ; preds = %273, %244, %235, %456, %462, %387
   %469 = phi i32 [ %228, %387 ], [ %461, %456 ], [ %467, %462 ], [ %228, %235 ], [ %228, %244 ], [ %228, %273 ]
   %470 = phi i32 [ %391, %387 ], [ %160, %456 ], [ %160, %462 ], [ %160, %235 ], [ %160, %244 ], [ %160, %273 ]
-  %471 = call fastcc { i64, i64 } @pack(ptr noundef %9, ptr noundef %10, i32 noundef %469, i32 noundef %470, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #16
+  %471 = call fastcc { i64, i64 } @pack(ptr noundef %9, ptr noundef %10, i32 noundef %469, i32 noundef %470, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
   %472 = extractvalue { i64, i64 } %471, 0
   %473 = extractvalue { i64, i64 } %471, 1
   %474 = zext i64 %473 to i128
@@ -839,14 +839,14 @@ define weak hidden void @tz_soft_op(ptr noundef writeonly %0, ptr noundef readon
   %496 = icmp eq i64 %495, %480
   br i1 %496, label %497, label %489
 497:                                              ; preds = %489, %481, %483, %485, %487, %488
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #16
   br label %498
 
 498:                                              ; preds = %213, %212, %211, %209, %207, %205, %497
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %8) #15
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %8) #16
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #16
   ret void
 }
 
@@ -946,7 +946,7 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   %63 = load i32, ptr %62, align 8, !tbaa !19
   %64 = and i32 %63, %56
   store i32 %64, ptr %57, align 4, !tbaa !20
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %4) #16
   %65 = icmp eq i32 %64, 0
   br i1 %65, label %77, label %66
 
@@ -992,7 +992,7 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   br i1 %95, label %96, label %87
 96:                                               ; preds = %87, %77
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %0, ptr noundef nonnull align 4 dereferenceable(5604) %4, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %4) #16
   br label %337
 
 97:                                               ; preds = %46
@@ -1039,7 +1039,7 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   %131 = select i1 %126, i32 %130, i32 %128
   %132 = getelementptr inbounds i8, ptr %0, i64 5604
   store i32 %131, ptr %132, align 4, !tbaa !35
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %5) #16
   %133 = shl nuw i128 1, %108
   %134 = select i1 %126, i128 0, i128 %133
   %135 = or i128 %134, %115
@@ -1065,7 +1065,7 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   br i1 %147, label %148, label %139
 148:                                              ; preds = %139, %125
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %0, ptr noundef nonnull align 4 dereferenceable(5604) %5, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #16
   br label %337
 
 149:                                              ; preds = %97
@@ -1140,7 +1140,7 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   %207 = phi i64 [ %203, %194 ], [ %191, %168 ]
   %208 = phi i64 [ %205, %194 ], [ %193, %168 ]
   %209 = phi i32 [ %197, %194 ], [ %182, %168 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %6) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %6) #16
   %210 = zext i64 %208 to i128
   %211 = shl nuw i128 %210, 64
   %212 = zext i64 %207 to i128
@@ -1167,8 +1167,8 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   br i1 %225, label %226, label %217
 226:                                              ; preds = %217, %206
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %0, ptr noundef nonnull align 4 dereferenceable(5604) %6, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %6) #15
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %6) #16
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #16
   call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %7, i8 0, i64 5604, i1 false), !alias.scope !56
   %227 = getelementptr inbounds i8, ptr %7, i64 4
   store i32 1, ptr %7, align 4, !tbaa !34, !alias.scope !56
@@ -1342,7 +1342,7 @@ define internal fastcc void @decode(ptr noalias nonnull sret(%struct.tzrt_number
   %335 = sub nsw i32 %209, %334
   %336 = getelementptr inbounds i8, ptr %0, i64 5604
   store i32 %335, ptr %336, align 4, !tbaa !35
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #16
   br label %337
 
 337:                                              ; preds = %148, %121, %332, %155, %96
@@ -1632,6 +1632,73 @@ define internal fastcc void @power(ptr noundef nonnull %0, i32 noundef %1, i32 n
   ret void
 }
 
+; Function Attrs: nofree norecurse nosync nounwind memory(argmem: readwrite)
+define internal fastcc void @subtract(ptr noundef nonnull %0, ptr noundef nonnull readonly %1) unnamed_addr #5 {
+  %3 = load i32, ptr %0, align 4, !tbaa !34
+  %4 = icmp sgt i32 %3, 0
+  br i1 %4, label %5, label %9
+
+5:                                                ; preds = %2
+  %6 = getelementptr inbounds i8, ptr %1, i64 4
+  %7 = getelementptr inbounds i8, ptr %0, i64 4
+  %8 = zext i32 %3 to i64
+  br label %24
+
+9:                                                ; preds = %34, %2
+  %10 = getelementptr inbounds i8, ptr %0, i64 4
+  %11 = icmp eq i32 %3, 0
+  br i1 %11, label %23, label %12
+
+12:                                               ; preds = %9
+  %13 = sext i32 %3 to i64
+  br label %14
+
+14:                                               ; preds = %20, %12
+  %15 = phi i64 [ %13, %12 ], [ %16, %20 ]
+  %16 = add nsw i64 %15, -1
+  %17 = getelementptr inbounds [1400 x i32], ptr %10, i64 0, i64 %16
+  %18 = load i32, ptr %17, align 4, !tbaa !24
+  %19 = icmp eq i32 %18, 0
+  br i1 %19, label %20, label %23
+
+20:                                               ; preds = %14
+  %21 = trunc i64 %16 to i32
+  store i32 %21, ptr %0, align 4, !tbaa !34
+  %22 = icmp eq i64 %16, 0
+  br i1 %22, label %23, label %14
+23:                                               ; preds = %14, %20, %9
+  ret void
+
+24:                                               ; preds = %5, %34
+  %25 = phi i64 [ 0, %5 ], [ %44, %34 ]
+  %26 = phi i64 [ 0, %5 ], [ %43, %34 ]
+  %27 = load i32, ptr %1, align 4, !tbaa !34
+  %28 = sext i32 %27 to i64
+  %29 = icmp slt i64 %25, %28
+  br i1 %29, label %30, label %34
+
+30:                                               ; preds = %24
+  %31 = getelementptr inbounds [1400 x i32], ptr %6, i64 0, i64 %25
+  %32 = load i32, ptr %31, align 4, !tbaa !24
+  %33 = zext i32 %32 to i64
+  br label %34
+
+34:                                               ; preds = %24, %30
+  %35 = phi i64 [ %33, %30 ], [ 0, %24 ]
+  %36 = add nuw nsw i64 %35, %26
+  %37 = getelementptr inbounds [1400 x i32], ptr %7, i64 0, i64 %25
+  %38 = load i32, ptr %37, align 4, !tbaa !24
+  %39 = zext i32 %38 to i64
+  %40 = trunc i64 %36 to i32
+  %41 = sub i32 %38, %40
+  store i32 %41, ptr %37, align 4, !tbaa !24
+  %42 = icmp samesign ugt i64 %36, %39
+  %43 = zext i1 %42 to i64
+  %44 = add nuw nsw i64 %25, 1
+  %45 = icmp eq i64 %44, %8
+  br i1 %45, label %9, label %24
+}
+
 ; Function Attrs: nounwind memory(argmem: readwrite, inaccessiblemem: readwrite)
 define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr noundef nonnull readonly %1, i32 noundef %2, i32 noundef %3, ptr noundef readonly byval(%struct.tzrt_format) align 8 %4) unnamed_addr #0 {
   %6 = alloca %struct.tzrt_big, align 4
@@ -1682,7 +1749,7 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
   br label %435
 
 45:                                               ; preds = %5
-  %46 = tail call fastcc i32 @magnitude(ptr noundef %0, ptr noundef %1, i32 noundef %20) #16
+  %46 = tail call fastcc i32 @magnitude(ptr noundef %0, ptr noundef %1, i32 noundef %20) #17
   %47 = getelementptr inbounds i8, ptr %4, i64 4
   %48 = load i32, ptr %47, align 4, !tbaa !12
   %49 = add i32 %2, 1
@@ -1727,27 +1794,27 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
   br label %435
 
 82:                                               ; preds = %45
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #16
   %83 = sub nsw i32 %2, %54
   tail call void @llvm.experimental.noalias.scope.decl(metadata !65)
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %6) #15, !noalias !65
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %6) #16, !noalias !65
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %6, ptr noundef nonnull readonly align 4 dereferenceable(5604) %0, i64 5604, i1 false), !tbaa.struct !30, !noalias !65
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #15, !noalias !65
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #16, !noalias !65
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %7, ptr noundef nonnull readonly align 4 dereferenceable(5604) %1, i64 5604, i1 false), !tbaa.struct !30, !noalias !65
   %84 = icmp sgt i32 %83, -1
   br i1 %84, label %85, label %86
 
 85:                                               ; preds = %82
-  call fastcc void @power(ptr noundef %6, i32 noundef %20, i32 noundef %83) #16, !noalias !65
+  call fastcc void @power(ptr noundef %6, i32 noundef %20, i32 noundef %83) #17, !noalias !65
   br label %88
 
 86:                                               ; preds = %82
   %87 = sub nsw i32 0, %83
-  call fastcc void @power(ptr noundef %7, i32 noundef %20, i32 noundef %87) #16, !noalias !65
+  call fastcc void @power(ptr noundef %7, i32 noundef %20, i32 noundef %87) #17, !noalias !65
   br label %88
 
 88:                                               ; preds = %86, %85
-  call fastcc void @divide(ptr nonnull sret(%struct.tzrt_big) align 4 %9, ptr noundef %6, ptr noundef %7) #16
+  call fastcc void @divide(ptr nonnull sret(%struct.tzrt_big) align 4 %9, ptr noundef %6, ptr noundef %7) #17
   %89 = load i32, ptr %6, align 4, !tbaa !34, !noalias !65
   %90 = icmp sgt i32 %89, 0
   br i1 %90, label %91, label %94
@@ -1852,7 +1919,7 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
   br i1 %156, label %197, label %157
 
 157:                                              ; preds = %152, %144
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #15, !noalias !65
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #16, !noalias !65
   call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, i8 0, i64 5604, i1 false), !alias.scope !68, !noalias !65
   %158 = getelementptr inbounds i8, ptr %8, i64 4
   store i32 1, ptr %8, align 4, !tbaa !34, !alias.scope !68, !noalias !65
@@ -1919,18 +1986,18 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
   br label %196
 
 196:                                              ; preds = %193, %164
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #15, !noalias !65
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #16, !noalias !65
   br label %197
 
 197:                                              ; preds = %147, %152, %196
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #15, !noalias !65
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %6) #15, !noalias !65
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #16, !noalias !65
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %6) #16, !noalias !65
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #16
   call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !71
   %198 = getelementptr inbounds i8, ptr %10, i64 4
   store i32 1, ptr %10, align 4, !tbaa !34, !alias.scope !71
   store i32 1, ptr %198, align 4, !tbaa !24, !alias.scope !71
-  call fastcc void @power(ptr noundef %10, i32 noundef %20, i32 noundef %48) #16
+  call fastcc void @power(ptr noundef %10, i32 noundef %20, i32 noundef %48) #17
   %199 = load i32, ptr %9, align 4, !tbaa !34
   %200 = load i32, ptr %10, align 4, !tbaa !34
   %201 = icmp eq i32 %199, %200
@@ -2075,7 +2142,7 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
   br i1 %297, label %298, label %336
 
 298:                                              ; preds = %293
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, ptr noundef nonnull align 4 dereferenceable(5604) %9, i64 5604, i1 false), !tbaa.struct !30
   %299 = load i32, ptr %11, align 4, !tbaa !34
   %300 = icmp eq i32 %299, 0
@@ -2135,7 +2202,7 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
 
 334:                                              ; preds = %331, %332
   %335 = phi i32 [ %333, %332 ], [ %291, %331 ]
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #16
   br i1 %306, label %290, label %336
 
 336:                                              ; preds = %334, %290, %293, %285
@@ -2261,8 +2328,8 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
 432:                                              ; preds = %277, %263, %368, %421, %402
   %433 = phi i64 [ %282, %277 ], [ %274, %263 ], [ %388, %368 ], [ %429, %421 ], [ %418, %402 ]
   %434 = phi i64 [ %284, %277 ], [ %276, %263 ], [ %390, %368 ], [ %431, %421 ], [ %420, %402 ]
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #16
   br label %435
 
 435:                                              ; preds = %74, %60, %432, %39
@@ -2273,12 +2340,939 @@ define internal fastcc { i64, i64 } @pack(ptr noundef nonnull readonly %0, ptr n
   ret { i64, i64 } %439
 }
 
+; Function Attrs: nounwind memory(argmem: readwrite, inaccessiblemem: readwrite)
+define weak hidden void @tz_soft_fma(ptr noundef writeonly %0, ptr noundef readonly %1, ptr noundef readonly %2, ptr noundef readonly %3, i32 noundef %4) local_unnamed_addr #0 {
+  %6 = alloca %struct.tzrt_format, align 8
+  %7 = alloca %struct.tzrt_number, align 4
+  %8 = alloca %struct.tzrt_number, align 4
+  %9 = alloca %struct.tzrt_number, align 4
+  %10 = alloca %struct.tzrt_big, align 4
+  %11 = alloca %struct.tzrt_big, align 4
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #16
+  switch i32 %4, label %75 [
+    i32 0, label %12
+    i32 1, label %21
+    i32 2, label %30
+    i32 3, label %39
+    i32 4, label %48
+    i32 5, label %57
+    i32 6, label %66
+  ]
+
+12:                                               ; preds = %5
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %13 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 11, ptr %13, align 4, !tbaa !12, !alias.scope !76
+  %14 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -24, ptr %14, align 8, !tbaa !13, !alias.scope !76
+  %15 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 5, ptr %15, align 4, !tbaa !14, !alias.scope !76
+  %16 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 10, ptr %16, align 8, !tbaa !15, !alias.scope !76
+  %17 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 15, ptr %17, align 4, !tbaa !16, !alias.scope !76
+  %18 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 16, ptr %18, align 8, !tbaa !17, !alias.scope !76
+  %19 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %19, align 4, !tbaa !18, !alias.scope !76
+  %20 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %20, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+21:                                               ; preds = %5
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %22 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 24, ptr %22, align 4, !tbaa !12, !alias.scope !76
+  %23 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -149, ptr %23, align 8, !tbaa !13, !alias.scope !76
+  %24 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 104, ptr %24, align 4, !tbaa !14, !alias.scope !76
+  %25 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 23, ptr %25, align 8, !tbaa !15, !alias.scope !76
+  %26 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 127, ptr %26, align 4, !tbaa !16, !alias.scope !76
+  %27 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 32, ptr %27, align 8, !tbaa !17, !alias.scope !76
+  %28 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %28, align 4, !tbaa !18, !alias.scope !76
+  %29 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %29, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+30:                                               ; preds = %5
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %31 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 53, ptr %31, align 4, !tbaa !12, !alias.scope !76
+  %32 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -1074, ptr %32, align 8, !tbaa !13, !alias.scope !76
+  %33 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 971, ptr %33, align 4, !tbaa !14, !alias.scope !76
+  %34 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 52, ptr %34, align 8, !tbaa !15, !alias.scope !76
+  %35 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 1023, ptr %35, align 4, !tbaa !16, !alias.scope !76
+  %36 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 64, ptr %36, align 8, !tbaa !17, !alias.scope !76
+  %37 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %37, align 4, !tbaa !18, !alias.scope !76
+  %38 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %38, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+39:                                               ; preds = %5
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %40 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 113, ptr %40, align 4, !tbaa !12, !alias.scope !76
+  %41 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -16494, ptr %41, align 8, !tbaa !13, !alias.scope !76
+  %42 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 16271, ptr %42, align 4, !tbaa !14, !alias.scope !76
+  %43 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 112, ptr %43, align 8, !tbaa !15, !alias.scope !76
+  %44 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 16383, ptr %44, align 4, !tbaa !16, !alias.scope !76
+  %45 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 128, ptr %45, align 8, !tbaa !17, !alias.scope !76
+  %46 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %46, align 4, !tbaa !18, !alias.scope !76
+  %47 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %47, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+48:                                               ; preds = %5
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %49 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 7, ptr %49, align 4, !tbaa !12, !alias.scope !76
+  %50 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -101, ptr %50, align 8, !tbaa !13, !alias.scope !76
+  %51 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 90, ptr %51, align 4, !tbaa !14, !alias.scope !76
+  %52 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 23, ptr %52, align 8, !tbaa !15, !alias.scope !76
+  %53 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 101, ptr %53, align 4, !tbaa !16, !alias.scope !76
+  %54 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 32, ptr %54, align 8, !tbaa !17, !alias.scope !76
+  %55 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %55, align 4, !tbaa !18, !alias.scope !76
+  %56 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %56, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+57:                                               ; preds = %5
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %58 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 16, ptr %58, align 4, !tbaa !12, !alias.scope !76
+  %59 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -398, ptr %59, align 8, !tbaa !13, !alias.scope !76
+  %60 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 369, ptr %60, align 4, !tbaa !14, !alias.scope !76
+  %61 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 53, ptr %61, align 8, !tbaa !15, !alias.scope !76
+  %62 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 398, ptr %62, align 4, !tbaa !16, !alias.scope !76
+  %63 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 64, ptr %63, align 8, !tbaa !17, !alias.scope !76
+  %64 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %64, align 4, !tbaa !18, !alias.scope !76
+  %65 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %65, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+66:                                               ; preds = %5
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %67 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 34, ptr %67, align 4, !tbaa !12, !alias.scope !76
+  %68 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 -6176, ptr %68, align 8, !tbaa !13, !alias.scope !76
+  %69 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 6111, ptr %69, align 4, !tbaa !14, !alias.scope !76
+  %70 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 113, ptr %70, align 8, !tbaa !15, !alias.scope !76
+  %71 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 6176, ptr %71, align 4, !tbaa !16, !alias.scope !76
+  %72 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 128, ptr %72, align 8, !tbaa !17, !alias.scope !76
+  %73 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 0, ptr %73, align 4, !tbaa !18, !alias.scope !76
+  %74 = getelementptr inbounds i8, ptr %6, i64 32
+  store i32 1, ptr %74, align 8, !tbaa !19, !alias.scope !76
+  br label %90
+
+75:                                               ; preds = %5
+  %76 = and i32 %4, 7
+  %77 = shl nuw nsw i32 8, %76
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !76
+  %78 = getelementptr inbounds i8, ptr %6, i64 4
+  store i32 %77, ptr %78, align 4, !tbaa !12, !alias.scope !76
+  %79 = getelementptr inbounds i8, ptr %6, i64 8
+  store i32 0, ptr %79, align 8, !tbaa !13, !alias.scope !76
+  %80 = getelementptr inbounds i8, ptr %6, i64 12
+  store i32 0, ptr %80, align 4, !tbaa !14, !alias.scope !76
+  %81 = getelementptr inbounds i8, ptr %6, i64 16
+  store i32 0, ptr %81, align 8, !tbaa !15, !alias.scope !76
+  %82 = getelementptr inbounds i8, ptr %6, i64 20
+  store i32 0, ptr %82, align 4, !tbaa !16, !alias.scope !76
+  %83 = getelementptr inbounds i8, ptr %6, i64 24
+  store i32 %77, ptr %83, align 8, !tbaa !17, !alias.scope !76
+  %84 = getelementptr inbounds i8, ptr %6, i64 28
+  store i32 1, ptr %84, align 4, !tbaa !18, !alias.scope !76
+  %85 = getelementptr inbounds i8, ptr %6, i64 32
+  %86 = icmp slt i32 %4, 24
+  %87 = zext i1 %86 to i32
+  store i32 %87, ptr %85, align 8, !tbaa !19, !alias.scope !76
+  %88 = shl nuw nsw i32 24, %76
+  %89 = add nuw nsw i32 %88, 8
+  br label %90
+
+90:                                               ; preds = %12, %21, %30, %39, %48, %57, %66, %75
+  %91 = phi i32 [ 16, %12 ], [ 32, %21 ], [ 64, %30 ], [ 128, %39 ], [ 32, %48 ], [ 64, %57 ], [ 128, %66 ], [ %77, %75 ]
+  %92 = phi i32 [ 31, %12 ], [ 255, %21 ], [ 2047, %30 ], [ 32767, %39 ], [ 203, %48 ], [ 797, %57 ], [ 12353, %66 ], [ 1, %75 ]
+  %93 = phi i32 [ 10, %12 ], [ 23, %21 ], [ 52, %30 ], [ 112, %39 ], [ 23, %48 ], [ 53, %57 ], [ 113, %66 ], [ 0, %75 ]
+  %94 = phi i32 [ 41, %12 ], [ 80, %21 ], [ 167, %30 ], [ 347, %39 ], [ 29, %48 ], [ 56, %57 ], [ 110, %66 ], [ %89, %75 ]
+  %95 = phi i1 [ true, %12 ], [ true, %21 ], [ true, %30 ], [ true, %39 ], [ false, %48 ], [ false, %57 ], [ false, %66 ], [ true, %75 ]
+  %96 = phi i32 [ 2, %12 ], [ 2, %21 ], [ 2, %30 ], [ 2, %39 ], [ 10, %48 ], [ 10, %57 ], [ 10, %66 ], [ 2, %75 ]
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %8) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %8, ptr noundef %2, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %9) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %9, ptr noundef %3, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  %97 = getelementptr inbounds i8, ptr %7, i64 5608
+  %98 = load i32, ptr %97, align 4, !tbaa !20
+  %99 = getelementptr inbounds i8, ptr %8, i64 5608
+  %100 = load i32, ptr %99, align 4, !tbaa !20
+  %101 = xor i32 %100, %98
+  %102 = getelementptr inbounds i8, ptr %7, i64 5612
+  %103 = load i32, ptr %102, align 4, !tbaa !23
+  %104 = icmp eq i32 %103, 2
+  %105 = getelementptr inbounds i8, ptr %8, i64 5612
+  %106 = load i32, ptr %105, align 4
+  %107 = icmp eq i32 %106, 2
+  %108 = select i1 %104, i1 true, i1 %107
+  %109 = getelementptr inbounds i8, ptr %9, i64 5612
+  %110 = load i32, ptr %109, align 4
+  %111 = icmp eq i32 %110, 2
+  %112 = select i1 %108, i1 true, i1 %111
+  br i1 %112, label %136, label %113
+
+113:                                              ; preds = %90
+  %114 = icmp ne i32 %103, 0
+  %115 = icmp ne i32 %106, 0
+  %116 = select i1 %114, i1 true, i1 %115
+  br i1 %116, label %117, label %131
+
+117:                                              ; preds = %113
+  %118 = load i32, ptr %7, align 4
+  %119 = icmp ne i32 %118, 0
+  %120 = select i1 %114, i1 true, i1 %119
+  br i1 %120, label %121, label %136
+
+121:                                              ; preds = %117
+  %122 = load i32, ptr %8, align 4
+  %123 = icmp ne i32 %122, 0
+  %124 = select i1 %115, i1 true, i1 %123
+  br i1 %124, label %125, label %136
+
+125:                                              ; preds = %121
+  %126 = icmp ne i32 %110, 0
+  %127 = getelementptr inbounds i8, ptr %9, i64 5608
+  %128 = load i32, ptr %127, align 4
+  %129 = icmp ne i32 %128, %101
+  %130 = select i1 %126, i1 %129, i1 false
+  br label %136
+
+131:                                              ; preds = %113
+  %132 = icmp eq i32 %110, 0
+  br i1 %132, label %136, label %133
+
+133:                                              ; preds = %131
+  %134 = getelementptr inbounds i8, ptr %9, i64 5608
+  %135 = load i32, ptr %134, align 4, !tbaa !20
+  br label %136
+
+136:                                              ; preds = %125, %117, %121, %90, %133, %131
+  %137 = phi i1 [ false, %133 ], [ true, %131 ], [ false, %90 ], [ false, %121 ], [ false, %117 ], [ false, %125 ]
+  %138 = phi i1 [ false, %133 ], [ false, %131 ], [ true, %90 ], [ true, %121 ], [ true, %117 ], [ %130, %125 ]
+  %139 = phi i32 [ %135, %133 ], [ %101, %131 ], [ %101, %90 ], [ %101, %121 ], [ %101, %117 ], [ %101, %125 ]
+  br i1 %137, label %196, label %140
+
+140:                                              ; preds = %136
+  %141 = sext i32 %139 to i128
+  %142 = add nsw i32 %91, -1
+  %143 = zext i32 %142 to i128
+  %144 = shl i128 %141, %143
+  br i1 %95, label %145, label %161
+
+145:                                              ; preds = %140
+  %146 = zext i32 %92 to i128
+  %147 = zext i32 %93 to i128
+  %148 = shl nuw i128 %146, %147
+  %149 = or i128 %144, %148
+  %150 = trunc i128 %149 to i64
+  %151 = lshr i128 %149, 64
+  %152 = trunc i128 %151 to i64
+  br i1 %138, label %153, label %170
+
+153:                                              ; preds = %145
+  %154 = add nsw i32 %93, -1
+  %155 = zext i32 %154 to i128
+  %156 = shl nuw i128 1, %155
+  %157 = or i128 %149, %156
+  %158 = trunc i128 %157 to i64
+  %159 = lshr i128 %157, 64
+  %160 = trunc i128 %159 to i64
+  br label %170
+
+161:                                              ; preds = %140
+  %162 = select i1 %138, i128 31, i128 30
+  %163 = add nsw i32 %91, -6
+  %164 = zext i32 %163 to i128
+  %165 = shl i128 %162, %164
+  %166 = or i128 %144, %165
+  %167 = trunc i128 %166 to i64
+  %168 = lshr i128 %166, 64
+  %169 = trunc i128 %168 to i64
+  br label %170
+
+170:                                              ; preds = %145, %153, %161
+  %171 = phi i64 [ %158, %153 ], [ %150, %145 ], [ %167, %161 ]
+  %172 = phi i64 [ %160, %153 ], [ %152, %145 ], [ %169, %161 ]
+  %173 = zext i64 %172 to i128
+  %174 = shl nuw i128 %173, 64
+  %175 = zext i64 %171 to i128
+  %176 = or i128 %174, %175
+  switch i32 %91, label %177 [
+    i32 8, label %180
+    i32 16, label %182
+    i32 32, label %184
+    i32 64, label %186
+    i32 128, label %187
+  ]
+
+177:                                              ; preds = %170
+  %178 = lshr exact i32 %91, 3
+  %179 = zext i32 %178 to i64
+  br label %188
+
+180:                                              ; preds = %170
+  %181 = trunc i64 %171 to i8
+  store i8 %181, ptr %0, align 1, !tbaa !26
+  br label %531
+
+182:                                              ; preds = %170
+  %183 = trunc i64 %171 to i16
+  store i16 %183, ptr %0, align 1
+  br label %531
+
+184:                                              ; preds = %170
+  %185 = trunc i64 %171 to i32
+  store i32 %185, ptr %0, align 1
+  br label %531
+
+186:                                              ; preds = %170
+  store i64 %171, ptr %0, align 1
+  br label %531
+
+187:                                              ; preds = %170
+  store i128 %176, ptr %0, align 1
+  br label %531
+
+188:                                              ; preds = %188, %177
+  %189 = phi i64 [ 0, %177 ], [ %194, %188 ]
+  %190 = phi i128 [ %176, %177 ], [ %193, %188 ]
+  %191 = trunc i128 %190 to i8
+  %192 = getelementptr inbounds i8, ptr %0, i64 %189
+  store i8 %191, ptr %192, align 1, !tbaa !26
+  %193 = lshr i128 %190, 8
+  %194 = add nuw nsw i64 %189, 1
+  %195 = icmp eq i64 %194, %179
+  br i1 %195, label %531, label %188
+196:                                              ; preds = %136
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #16
+  tail call void @llvm.experimental.noalias.scope.decl(metadata !79)
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !79
+  %197 = load i32, ptr %7, align 4, !tbaa !34, !noalias !79
+  %198 = load i32, ptr %8, align 4, !tbaa !34, !noalias !79
+  %199 = add nsw i32 %198, %197
+  %200 = icmp sgt i32 %199, 1400
+  br i1 %200, label %201, label %202
+
+201:                                              ; preds = %196
+  tail call void @llvm.trap()
+  unreachable
+
+202:                                              ; preds = %196
+  store i32 %199, ptr %10, align 4, !tbaa !34, !alias.scope !79
+  %203 = icmp sgt i32 %197, 0
+  br i1 %203, label %204, label %218
+
+204:                                              ; preds = %202
+  %205 = icmp sgt i32 %198, 0
+  %206 = getelementptr inbounds i8, ptr %7, i64 4
+  %207 = getelementptr inbounds i8, ptr %8, i64 4
+  %208 = getelementptr inbounds i8, ptr %10, i64 4
+  %209 = sext i32 %198 to i64
+  %210 = zext i32 %197 to i64
+  %211 = zext i32 %198 to i64
+  br label %212
+
+212:                                              ; preds = %235, %204
+  %213 = phi i64 [ 0, %204 ], [ %239, %235 ]
+  br i1 %205, label %214, label %235
+
+214:                                              ; preds = %212
+  %215 = getelementptr inbounds [1400 x i32], ptr %206, i64 0, i64 %213
+  %216 = load i32, ptr %215, align 4, !tbaa !24, !noalias !79
+  %217 = zext i32 %216 to i64
+  br label %241
+
+218:                                              ; preds = %235, %202
+  %219 = getelementptr inbounds i8, ptr %10, i64 4
+  %220 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !79
+  %221 = icmp eq i32 %220, 0
+  br i1 %221, label %258, label %222
+
+222:                                              ; preds = %218
+  %223 = sext i32 %220 to i64
+  br label %224
+
+224:                                              ; preds = %230, %222
+  %225 = phi i64 [ %223, %222 ], [ %226, %230 ]
+  %226 = add nsw i64 %225, -1
+  %227 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %226
+  %228 = load i32, ptr %227, align 4, !tbaa !24, !alias.scope !79
+  %229 = icmp eq i32 %228, 0
+  br i1 %229, label %230, label %258
+
+230:                                              ; preds = %224
+  %231 = trunc i64 %226 to i32
+  store i32 %231, ptr %10, align 4, !tbaa !34, !alias.scope !79
+  %232 = icmp eq i64 %226, 0
+  br i1 %232, label %258, label %224
+233:                                              ; preds = %241
+  %234 = trunc i64 %255 to i32
+  br label %235
+
+235:                                              ; preds = %233, %212
+  %236 = phi i32 [ 0, %212 ], [ %234, %233 ]
+  %237 = add nsw i64 %213, %209
+  %238 = getelementptr inbounds [1400 x i32], ptr %208, i64 0, i64 %237
+  store i32 %236, ptr %238, align 4, !tbaa !24, !alias.scope !79
+  %239 = add nuw nsw i64 %213, 1
+  %240 = icmp eq i64 %239, %210
+  br i1 %240, label %218, label %212
+241:                                              ; preds = %241, %214
+  %242 = phi i64 [ 0, %214 ], [ %256, %241 ]
+  %243 = phi i64 [ 0, %214 ], [ %255, %241 ]
+  %244 = getelementptr inbounds [1400 x i32], ptr %207, i64 0, i64 %242
+  %245 = load i32, ptr %244, align 4, !tbaa !24, !noalias !79
+  %246 = zext i32 %245 to i64
+  %247 = mul nuw i64 %246, %217
+  %248 = add nuw nsw i64 %242, %213
+  %249 = getelementptr inbounds [1400 x i32], ptr %208, i64 0, i64 %248
+  %250 = load i32, ptr %249, align 4, !tbaa !24, !alias.scope !79
+  %251 = zext i32 %250 to i64
+  %252 = add nuw nsw i64 %243, %251
+  %253 = add nuw i64 %252, %247
+  %254 = trunc i64 %253 to i32
+  store i32 %254, ptr %249, align 4, !tbaa !24, !alias.scope !79
+  %255 = lshr i64 %253, 32
+  %256 = add nuw nsw i64 %242, 1
+  %257 = icmp eq i64 %256, %211
+  br i1 %257, label %233, label %241
+258:                                              ; preds = %224, %230, %218
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, i8 0, i64 5604, i1 false), !alias.scope !82
+  %259 = getelementptr inbounds i8, ptr %11, i64 4
+  store i32 1, ptr %11, align 4, !tbaa !34, !alias.scope !82
+  store i32 1, ptr %259, align 4, !tbaa !24, !alias.scope !82
+  %260 = getelementptr inbounds i8, ptr %7, i64 5604
+  %261 = load i32, ptr %260, align 4, !tbaa !35
+  %262 = getelementptr inbounds i8, ptr %8, i64 5604
+  %263 = load i32, ptr %262, align 4, !tbaa !35
+  %264 = add nsw i32 %263, %261
+  %265 = load i32, ptr %10, align 4, !tbaa !34
+  %266 = icmp ne i32 %265, 0
+  %267 = load i32, ptr %9, align 4
+  %268 = icmp ne i32 %267, 0
+  %269 = select i1 %266, i1 true, i1 %268
+  br i1 %269, label %304, label %270
+
+270:                                              ; preds = %258
+  %271 = getelementptr inbounds i8, ptr %9, i64 5608
+  %272 = load i32, ptr %271, align 4, !tbaa !20
+  %273 = icmp eq i32 %139, %272
+  %274 = select i1 %273, i32 %139, i32 0
+  %275 = getelementptr inbounds i8, ptr %9, i64 5604
+  %276 = load i32, ptr %275, align 4, !tbaa !35
+  %277 = tail call i32 @llvm.smin.i32(i32 %276, i32 %264)
+  %278 = call fastcc { i64, i64 } @pack(ptr noundef %10, ptr noundef %11, i32 noundef %277, i32 noundef %274, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  %279 = extractvalue { i64, i64 } %278, 0
+  %280 = extractvalue { i64, i64 } %278, 1
+  %281 = zext i64 %280 to i128
+  %282 = shl nuw i128 %281, 64
+  %283 = zext i64 %279 to i128
+  %284 = or i128 %282, %283
+  switch i32 %91, label %285 [
+    i32 8, label %288
+    i32 16, label %290
+    i32 32, label %292
+    i32 64, label %294
+    i32 128, label %295
+  ]
+
+285:                                              ; preds = %270
+  %286 = lshr exact i32 %91, 3
+  %287 = zext i32 %286 to i64
+  br label %296
+
+288:                                              ; preds = %270
+  %289 = trunc i64 %279 to i8
+  store i8 %289, ptr %0, align 1, !tbaa !26
+  br label %530
+
+290:                                              ; preds = %270
+  %291 = trunc i64 %279 to i16
+  store i16 %291, ptr %0, align 1
+  br label %530
+
+292:                                              ; preds = %270
+  %293 = trunc i64 %279 to i32
+  store i32 %293, ptr %0, align 1
+  br label %530
+
+294:                                              ; preds = %270
+  store i64 %279, ptr %0, align 1
+  br label %530
+
+295:                                              ; preds = %270
+  store i128 %284, ptr %0, align 1
+  br label %530
+
+296:                                              ; preds = %296, %285
+  %297 = phi i64 [ 0, %285 ], [ %302, %296 ]
+  %298 = phi i128 [ %284, %285 ], [ %301, %296 ]
+  %299 = trunc i128 %298 to i8
+  %300 = getelementptr inbounds i8, ptr %0, i64 %297
+  store i8 %299, ptr %300, align 1, !tbaa !26
+  %301 = lshr i128 %298, 8
+  %302 = add nuw nsw i64 %297, 1
+  %303 = icmp eq i64 %302, %287
+  br i1 %303, label %530, label %296
+304:                                              ; preds = %258
+  br i1 %266, label %336, label %305
+
+305:                                              ; preds = %304
+  %306 = getelementptr inbounds i8, ptr %9, i64 5604
+  %307 = load i32, ptr %306, align 4, !tbaa !35
+  %308 = getelementptr inbounds i8, ptr %9, i64 5608
+  %309 = load i32, ptr %308, align 4, !tbaa !20
+  %310 = call fastcc { i64, i64 } @pack(ptr noundef %9, ptr noundef %11, i32 noundef %307, i32 noundef %309, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  %311 = extractvalue { i64, i64 } %310, 0
+  %312 = extractvalue { i64, i64 } %310, 1
+  %313 = zext i64 %312 to i128
+  %314 = shl nuw i128 %313, 64
+  %315 = zext i64 %311 to i128
+  %316 = or i128 %314, %315
+  switch i32 %91, label %317 [
+    i32 8, label %320
+    i32 16, label %322
+    i32 32, label %324
+    i32 64, label %326
+    i32 128, label %327
+  ]
+
+317:                                              ; preds = %305
+  %318 = lshr exact i32 %91, 3
+  %319 = zext i32 %318 to i64
+  br label %328
+
+320:                                              ; preds = %305
+  %321 = trunc i64 %311 to i8
+  store i8 %321, ptr %0, align 1, !tbaa !26
+  br label %530
+
+322:                                              ; preds = %305
+  %323 = trunc i64 %311 to i16
+  store i16 %323, ptr %0, align 1
+  br label %530
+
+324:                                              ; preds = %305
+  %325 = trunc i64 %311 to i32
+  store i32 %325, ptr %0, align 1
+  br label %530
+
+326:                                              ; preds = %305
+  store i64 %311, ptr %0, align 1
+  br label %530
+
+327:                                              ; preds = %305
+  store i128 %316, ptr %0, align 1
+  br label %530
+
+328:                                              ; preds = %328, %317
+  %329 = phi i64 [ 0, %317 ], [ %334, %328 ]
+  %330 = phi i128 [ %316, %317 ], [ %333, %328 ]
+  %331 = trunc i128 %330 to i8
+  %332 = getelementptr inbounds i8, ptr %0, i64 %329
+  store i8 %331, ptr %332, align 1, !tbaa !26
+  %333 = lshr i128 %330, 8
+  %334 = add nuw nsw i64 %329, 1
+  %335 = icmp eq i64 %334, %319
+  br i1 %335, label %530, label %328
+336:                                              ; preds = %304
+  br i1 %268, label %364, label %337
+
+337:                                              ; preds = %336
+  %338 = call fastcc { i64, i64 } @pack(ptr noundef %10, ptr noundef %11, i32 noundef %264, i32 noundef %139, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  %339 = extractvalue { i64, i64 } %338, 0
+  %340 = extractvalue { i64, i64 } %338, 1
+  %341 = zext i64 %340 to i128
+  %342 = shl nuw i128 %341, 64
+  %343 = zext i64 %339 to i128
+  %344 = or i128 %342, %343
+  switch i32 %91, label %345 [
+    i32 8, label %348
+    i32 16, label %350
+    i32 32, label %352
+    i32 64, label %354
+    i32 128, label %355
+  ]
+
+345:                                              ; preds = %337
+  %346 = lshr exact i32 %91, 3
+  %347 = zext i32 %346 to i64
+  br label %356
+
+348:                                              ; preds = %337
+  %349 = trunc i64 %339 to i8
+  store i8 %349, ptr %0, align 1, !tbaa !26
+  br label %530
+
+350:                                              ; preds = %337
+  %351 = trunc i64 %339 to i16
+  store i16 %351, ptr %0, align 1
+  br label %530
+
+352:                                              ; preds = %337
+  %353 = trunc i64 %339 to i32
+  store i32 %353, ptr %0, align 1
+  br label %530
+
+354:                                              ; preds = %337
+  store i64 %339, ptr %0, align 1
+  br label %530
+
+355:                                              ; preds = %337
+  store i128 %344, ptr %0, align 1
+  br label %530
+
+356:                                              ; preds = %356, %345
+  %357 = phi i64 [ 0, %345 ], [ %362, %356 ]
+  %358 = phi i128 [ %344, %345 ], [ %361, %356 ]
+  %359 = trunc i128 %358 to i8
+  %360 = getelementptr inbounds i8, ptr %0, i64 %357
+  store i8 %359, ptr %360, align 1, !tbaa !26
+  %361 = lshr i128 %358, 8
+  %362 = add nuw nsw i64 %357, 1
+  %363 = icmp eq i64 %362, %347
+  br i1 %363, label %530, label %356
+364:                                              ; preds = %336
+  %365 = getelementptr inbounds i8, ptr %9, i64 5604
+  %366 = load i32, ptr %365, align 4, !tbaa !35
+  %367 = sub nsw i32 %264, %366
+  %368 = icmp sgt i32 %367, %94
+  br i1 %368, label %369, label %373
+
+369:                                              ; preds = %364
+  %370 = getelementptr inbounds i8, ptr %9, i64 8
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5596) %370, i8 0, i64 5596, i1 false)
+  store i32 1, ptr %9, align 4, !tbaa !24
+  %371 = getelementptr inbounds i8, ptr %9, i64 4
+  store i32 1, ptr %371, align 4
+  %372 = sub nsw i32 %264, %94
+  store i32 %372, ptr %365, align 4, !tbaa !35
+  br label %379
+
+373:                                              ; preds = %364
+  %374 = sub nsw i32 %366, %264
+  %375 = icmp sgt i32 %374, %94
+  br i1 %375, label %376, label %379
+
+376:                                              ; preds = %373
+  %377 = getelementptr inbounds i8, ptr %10, i64 8
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5596) %377, i8 0, i64 5596, i1 false)
+  store i32 1, ptr %10, align 4, !tbaa !24
+  store i32 1, ptr %219, align 4
+  %378 = sub nsw i32 %366, %94
+  br label %379
+
+379:                                              ; preds = %373, %376, %369
+  %380 = phi i32 [ %264, %369 ], [ %378, %376 ], [ %264, %373 ]
+  %381 = load i32, ptr %365, align 4, !tbaa !35
+  %382 = tail call i32 @llvm.smin.i32(i32 %380, i32 %381)
+  %383 = sub nsw i32 %380, %382
+  call fastcc void @power(ptr noundef %10, i32 noundef %96, i32 noundef %383) #17
+  %384 = sub nsw i32 %381, %382
+  call fastcc void @power(ptr noundef %9, i32 noundef %96, i32 noundef %384) #17
+  %385 = getelementptr inbounds i8, ptr %9, i64 5608
+  %386 = load i32, ptr %385, align 4, !tbaa !20
+  %387 = icmp eq i32 %139, %386
+  %388 = load i32, ptr %10, align 4, !tbaa !34
+  %389 = load i32, ptr %9, align 4, !tbaa !34
+  br i1 %387, label %390, label %430
+
+390:                                              ; preds = %379
+  %391 = tail call i32 @llvm.smax.i32(i32 %388, i32 %389)
+  store i32 %391, ptr %10, align 4
+  %392 = icmp sgt i32 %391, 0
+  br i1 %392, label %393, label %502
+
+393:                                              ; preds = %390
+  %394 = getelementptr inbounds i8, ptr %9, i64 4
+  %395 = sext i32 %388 to i64
+  %396 = zext i32 %391 to i64
+  %397 = sext i32 %389 to i64
+  br label %400
+
+398:                                              ; preds = %415
+  %399 = icmp samesign ult i64 %418, 4294967296
+  br i1 %399, label %502, label %424
+
+400:                                              ; preds = %415, %393
+  %401 = phi i64 [ 0, %393 ], [ %422, %415 ]
+  %402 = phi i64 [ 0, %393 ], [ %421, %415 ]
+  %403 = icmp slt i64 %401, %395
+  br i1 %403, label %404, label %408
+
+404:                                              ; preds = %400
+  %405 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %401
+  %406 = load i32, ptr %405, align 4, !tbaa !24
+  %407 = zext i32 %406 to i64
+  br label %408
+
+408:                                              ; preds = %404, %400
+  %409 = phi i64 [ %407, %404 ], [ 0, %400 ]
+  %410 = icmp slt i64 %401, %397
+  br i1 %410, label %411, label %415
+
+411:                                              ; preds = %408
+  %412 = getelementptr inbounds [1400 x i32], ptr %394, i64 0, i64 %401
+  %413 = load i32, ptr %412, align 4, !tbaa !24
+  %414 = zext i32 %413 to i64
+  br label %415
+
+415:                                              ; preds = %411, %408
+  %416 = phi i64 [ %414, %411 ], [ 0, %408 ]
+  %417 = add nuw nsw i64 %409, %402
+  %418 = add nuw nsw i64 %417, %416
+  %419 = trunc i64 %418 to i32
+  %420 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %401
+  store i32 %419, ptr %420, align 4, !tbaa !24
+  %421 = lshr i64 %418, 32
+  %422 = add nuw nsw i64 %401, 1
+  %423 = icmp eq i64 %422, %396
+  br i1 %423, label %398, label %400
+424:                                              ; preds = %398
+  %425 = icmp eq i32 %391, 1400
+  br i1 %425, label %426, label %427
+
+426:                                              ; preds = %424
+  tail call void @llvm.trap()
+  unreachable
+
+427:                                              ; preds = %424
+  %428 = add nuw nsw i32 %391, 1
+  store i32 %428, ptr %10, align 4, !tbaa !34
+  %429 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %396
+  store i32 1, ptr %429, align 4, !tbaa !24
+  br label %502
+
+430:                                              ; preds = %379
+  %431 = icmp eq i32 %388, %389
+  br i1 %431, label %432, label %437
+
+432:                                              ; preds = %430
+  %433 = getelementptr inbounds i8, ptr %9, i64 4
+  %434 = icmp eq i32 %388, 0
+  br i1 %434, label %453, label %435
+
+435:                                              ; preds = %432
+  %436 = sext i32 %388 to i64
+  br label %442
+
+437:                                              ; preds = %430
+  %438 = icmp slt i32 %388, %389
+  %439 = select i1 %438, i32 -1, i32 1
+  br label %453
+
+440:                                              ; preds = %442
+  %441 = icmp eq i64 %444, 0
+  br i1 %441, label %453, label %442
+442:                                              ; preds = %435, %440
+  %443 = phi i64 [ %436, %435 ], [ %444, %440 ]
+  %444 = add nsw i64 %443, -1
+  %445 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %444
+  %446 = load i32, ptr %445, align 4, !tbaa !24
+  %447 = getelementptr inbounds [1400 x i32], ptr %433, i64 0, i64 %444
+  %448 = load i32, ptr %447, align 4, !tbaa !24
+  %449 = icmp eq i32 %446, %448
+  br i1 %449, label %440, label %450
+450:                                              ; preds = %442
+  %451 = icmp ult i32 %446, %448
+  %452 = select i1 %451, i32 -1, i32 1
+  br label %453
+
+453:                                              ; preds = %440, %432, %437, %450
+  %454 = phi i32 [ %439, %437 ], [ %452, %450 ], [ 0, %432 ], [ 0, %440 ]
+  %455 = icmp sgt i32 %454, -1
+  br i1 %455, label %456, label %495
+
+456:                                              ; preds = %453
+  %457 = icmp sgt i32 %388, 0
+  br i1 %457, label %458, label %462
+
+458:                                              ; preds = %456
+  %459 = getelementptr inbounds i8, ptr %9, i64 4
+  %460 = zext i32 %388 to i64
+  %461 = sext i32 %389 to i64
+  br label %475
+
+462:                                              ; preds = %483, %456
+  %463 = icmp eq i32 %388, 0
+  br i1 %463, label %497, label %464
+
+464:                                              ; preds = %462
+  %465 = sext i32 %388 to i64
+  br label %466
+
+466:                                              ; preds = %472, %464
+  %467 = phi i64 [ %465, %464 ], [ %468, %472 ]
+  %468 = add nsw i64 %467, -1
+  %469 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %468
+  %470 = load i32, ptr %469, align 4, !tbaa !24
+  %471 = icmp eq i32 %470, 0
+  br i1 %471, label %472, label %497
+
+472:                                              ; preds = %466
+  %473 = trunc i64 %468 to i32
+  store i32 %473, ptr %10, align 4, !tbaa !34
+  %474 = icmp eq i64 %468, 0
+  br i1 %474, label %497, label %466
+475:                                              ; preds = %483, %458
+  %476 = phi i64 [ 0, %458 ], [ %493, %483 ]
+  %477 = phi i64 [ 0, %458 ], [ %492, %483 ]
+  %478 = icmp slt i64 %476, %461
+  br i1 %478, label %479, label %483
+
+479:                                              ; preds = %475
+  %480 = getelementptr inbounds [1400 x i32], ptr %459, i64 0, i64 %476
+  %481 = load i32, ptr %480, align 4, !tbaa !24
+  %482 = zext i32 %481 to i64
+  br label %483
+
+483:                                              ; preds = %479, %475
+  %484 = phi i64 [ %482, %479 ], [ 0, %475 ]
+  %485 = add nuw nsw i64 %484, %477
+  %486 = getelementptr inbounds [1400 x i32], ptr %219, i64 0, i64 %476
+  %487 = load i32, ptr %486, align 4, !tbaa !24
+  %488 = zext i32 %487 to i64
+  %489 = trunc i64 %485 to i32
+  %490 = sub i32 %487, %489
+  store i32 %490, ptr %486, align 4, !tbaa !24
+  %491 = icmp samesign ugt i64 %485, %488
+  %492 = zext i1 %491 to i64
+  %493 = add nuw nsw i64 %476, 1
+  %494 = icmp eq i64 %493, %460
+  br i1 %494, label %462, label %475
+495:                                              ; preds = %453
+  call fastcc void @subtract(ptr noundef %9, ptr noundef %10) #17
+  call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, ptr noundef nonnull align 4 dereferenceable(5604) %9, i64 5604, i1 false), !tbaa.struct !30
+  %496 = load i32, ptr %385, align 4, !tbaa !20
+  br label %497
+
+497:                                              ; preds = %472, %466, %462, %495
+  %498 = phi i32 [ %496, %495 ], [ %139, %462 ], [ %139, %466 ], [ %139, %472 ]
+  %499 = load i32, ptr %10, align 4, !tbaa !34
+  %500 = icmp eq i32 %499, 0
+  %501 = select i1 %500, i32 0, i32 %498
+  br label %502
+
+502:                                              ; preds = %427, %398, %390, %497
+  %503 = phi i32 [ %501, %497 ], [ %139, %390 ], [ %139, %398 ], [ %139, %427 ]
+  %504 = call fastcc { i64, i64 } @pack(ptr noundef %10, ptr noundef %11, i32 noundef %382, i32 noundef %503, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  %505 = extractvalue { i64, i64 } %504, 0
+  %506 = extractvalue { i64, i64 } %504, 1
+  %507 = zext i64 %506 to i128
+  %508 = shl nuw i128 %507, 64
+  %509 = zext i64 %505 to i128
+  %510 = or i128 %508, %509
+  switch i32 %91, label %511 [
+    i32 8, label %514
+    i32 16, label %516
+    i32 32, label %518
+    i32 64, label %520
+    i32 128, label %521
+  ]
+
+511:                                              ; preds = %502
+  %512 = lshr exact i32 %91, 3
+  %513 = zext i32 %512 to i64
+  br label %522
+
+514:                                              ; preds = %502
+  %515 = trunc i64 %505 to i8
+  store i8 %515, ptr %0, align 1, !tbaa !26
+  br label %530
+
+516:                                              ; preds = %502
+  %517 = trunc i64 %505 to i16
+  store i16 %517, ptr %0, align 1
+  br label %530
+
+518:                                              ; preds = %502
+  %519 = trunc i64 %505 to i32
+  store i32 %519, ptr %0, align 1
+  br label %530
+
+520:                                              ; preds = %502
+  store i64 %505, ptr %0, align 1
+  br label %530
+
+521:                                              ; preds = %502
+  store i128 %510, ptr %0, align 1
+  br label %530
+
+522:                                              ; preds = %522, %511
+  %523 = phi i64 [ 0, %511 ], [ %528, %522 ]
+  %524 = phi i128 [ %510, %511 ], [ %527, %522 ]
+  %525 = trunc i128 %524 to i8
+  %526 = getelementptr inbounds i8, ptr %0, i64 %523
+  store i8 %525, ptr %526, align 1, !tbaa !26
+  %527 = lshr i128 %524, 8
+  %528 = add nuw nsw i64 %523, 1
+  %529 = icmp eq i64 %528, %513
+  br i1 %529, label %530, label %522
+530:                                              ; preds = %296, %328, %356, %522, %521, %520, %518, %516, %514, %355, %354, %352, %350, %348, %327, %326, %324, %322, %320, %295, %294, %292, %290, %288
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #16
+  br label %531
+
+531:                                              ; preds = %188, %187, %186, %184, %182, %180, %530
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %9) #16
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %8) #16
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #16
+  ret void
+}
+
 ; Function Attrs: nounwind memory(argmem: readwrite, inaccessiblemem: write)
 define weak hidden i32 @tz_soft_cmp(ptr noundef readonly %0, ptr noundef readonly %1, i32 noundef %2) local_unnamed_addr #2 {
   %4 = alloca %struct.tzrt_format, align 8
   %5 = alloca %struct.tzrt_number, align 4
   %6 = alloca %struct.tzrt_number, align 4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %4) #16
   switch i32 %2, label %70 [
     i32 0, label %7
     i32 1, label %16
@@ -2290,175 +3284,175 @@ define weak hidden i32 @tz_soft_cmp(ptr noundef readonly %0, ptr noundef readonl
   ]
 
 7:                                                ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %8 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 11, ptr %8, align 4, !tbaa !12, !alias.scope !76
+  store i32 11, ptr %8, align 4, !tbaa !12, !alias.scope !85
   %9 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -24, ptr %9, align 8, !tbaa !13, !alias.scope !76
+  store i32 -24, ptr %9, align 8, !tbaa !13, !alias.scope !85
   %10 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 5, ptr %10, align 4, !tbaa !14, !alias.scope !76
+  store i32 5, ptr %10, align 4, !tbaa !14, !alias.scope !85
   %11 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 10, ptr %11, align 8, !tbaa !15, !alias.scope !76
+  store i32 10, ptr %11, align 8, !tbaa !15, !alias.scope !85
   %12 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 15, ptr %12, align 4, !tbaa !16, !alias.scope !76
+  store i32 15, ptr %12, align 4, !tbaa !16, !alias.scope !85
   %13 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 16, ptr %13, align 8, !tbaa !17, !alias.scope !76
+  store i32 16, ptr %13, align 8, !tbaa !17, !alias.scope !85
   %14 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %14, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %14, align 4, !tbaa !18, !alias.scope !85
   %15 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %15, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %15, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 16:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %17 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 24, ptr %17, align 4, !tbaa !12, !alias.scope !76
+  store i32 24, ptr %17, align 4, !tbaa !12, !alias.scope !85
   %18 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -149, ptr %18, align 8, !tbaa !13, !alias.scope !76
+  store i32 -149, ptr %18, align 8, !tbaa !13, !alias.scope !85
   %19 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 104, ptr %19, align 4, !tbaa !14, !alias.scope !76
+  store i32 104, ptr %19, align 4, !tbaa !14, !alias.scope !85
   %20 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 23, ptr %20, align 8, !tbaa !15, !alias.scope !76
+  store i32 23, ptr %20, align 8, !tbaa !15, !alias.scope !85
   %21 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 127, ptr %21, align 4, !tbaa !16, !alias.scope !76
+  store i32 127, ptr %21, align 4, !tbaa !16, !alias.scope !85
   %22 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 32, ptr %22, align 8, !tbaa !17, !alias.scope !76
+  store i32 32, ptr %22, align 8, !tbaa !17, !alias.scope !85
   %23 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %23, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %23, align 4, !tbaa !18, !alias.scope !85
   %24 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %24, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %24, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 25:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %26 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 53, ptr %26, align 4, !tbaa !12, !alias.scope !76
+  store i32 53, ptr %26, align 4, !tbaa !12, !alias.scope !85
   %27 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -1074, ptr %27, align 8, !tbaa !13, !alias.scope !76
+  store i32 -1074, ptr %27, align 8, !tbaa !13, !alias.scope !85
   %28 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 971, ptr %28, align 4, !tbaa !14, !alias.scope !76
+  store i32 971, ptr %28, align 4, !tbaa !14, !alias.scope !85
   %29 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 52, ptr %29, align 8, !tbaa !15, !alias.scope !76
+  store i32 52, ptr %29, align 8, !tbaa !15, !alias.scope !85
   %30 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 1023, ptr %30, align 4, !tbaa !16, !alias.scope !76
+  store i32 1023, ptr %30, align 4, !tbaa !16, !alias.scope !85
   %31 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 64, ptr %31, align 8, !tbaa !17, !alias.scope !76
+  store i32 64, ptr %31, align 8, !tbaa !17, !alias.scope !85
   %32 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %32, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %32, align 4, !tbaa !18, !alias.scope !85
   %33 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %33, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %33, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 34:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %35 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 113, ptr %35, align 4, !tbaa !12, !alias.scope !76
+  store i32 113, ptr %35, align 4, !tbaa !12, !alias.scope !85
   %36 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -16494, ptr %36, align 8, !tbaa !13, !alias.scope !76
+  store i32 -16494, ptr %36, align 8, !tbaa !13, !alias.scope !85
   %37 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 16271, ptr %37, align 4, !tbaa !14, !alias.scope !76
+  store i32 16271, ptr %37, align 4, !tbaa !14, !alias.scope !85
   %38 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 112, ptr %38, align 8, !tbaa !15, !alias.scope !76
+  store i32 112, ptr %38, align 8, !tbaa !15, !alias.scope !85
   %39 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 16383, ptr %39, align 4, !tbaa !16, !alias.scope !76
+  store i32 16383, ptr %39, align 4, !tbaa !16, !alias.scope !85
   %40 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 128, ptr %40, align 8, !tbaa !17, !alias.scope !76
+  store i32 128, ptr %40, align 8, !tbaa !17, !alias.scope !85
   %41 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %41, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %41, align 4, !tbaa !18, !alias.scope !85
   %42 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %42, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %42, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 43:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %44 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 7, ptr %44, align 4, !tbaa !12, !alias.scope !76
+  store i32 7, ptr %44, align 4, !tbaa !12, !alias.scope !85
   %45 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -101, ptr %45, align 8, !tbaa !13, !alias.scope !76
+  store i32 -101, ptr %45, align 8, !tbaa !13, !alias.scope !85
   %46 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 90, ptr %46, align 4, !tbaa !14, !alias.scope !76
+  store i32 90, ptr %46, align 4, !tbaa !14, !alias.scope !85
   %47 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 23, ptr %47, align 8, !tbaa !15, !alias.scope !76
+  store i32 23, ptr %47, align 8, !tbaa !15, !alias.scope !85
   %48 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 101, ptr %48, align 4, !tbaa !16, !alias.scope !76
+  store i32 101, ptr %48, align 4, !tbaa !16, !alias.scope !85
   %49 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 32, ptr %49, align 8, !tbaa !17, !alias.scope !76
+  store i32 32, ptr %49, align 8, !tbaa !17, !alias.scope !85
   %50 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %50, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %50, align 4, !tbaa !18, !alias.scope !85
   %51 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %51, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %51, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 52:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %53 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 16, ptr %53, align 4, !tbaa !12, !alias.scope !76
+  store i32 16, ptr %53, align 4, !tbaa !12, !alias.scope !85
   %54 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -398, ptr %54, align 8, !tbaa !13, !alias.scope !76
+  store i32 -398, ptr %54, align 8, !tbaa !13, !alias.scope !85
   %55 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 369, ptr %55, align 4, !tbaa !14, !alias.scope !76
+  store i32 369, ptr %55, align 4, !tbaa !14, !alias.scope !85
   %56 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 53, ptr %56, align 8, !tbaa !15, !alias.scope !76
+  store i32 53, ptr %56, align 8, !tbaa !15, !alias.scope !85
   %57 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 398, ptr %57, align 4, !tbaa !16, !alias.scope !76
+  store i32 398, ptr %57, align 4, !tbaa !16, !alias.scope !85
   %58 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 64, ptr %58, align 8, !tbaa !17, !alias.scope !76
+  store i32 64, ptr %58, align 8, !tbaa !17, !alias.scope !85
   %59 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %59, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %59, align 4, !tbaa !18, !alias.scope !85
   %60 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %60, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %60, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 61:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %62 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 34, ptr %62, align 4, !tbaa !12, !alias.scope !76
+  store i32 34, ptr %62, align 4, !tbaa !12, !alias.scope !85
   %63 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -6176, ptr %63, align 8, !tbaa !13, !alias.scope !76
+  store i32 -6176, ptr %63, align 8, !tbaa !13, !alias.scope !85
   %64 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 6111, ptr %64, align 4, !tbaa !14, !alias.scope !76
+  store i32 6111, ptr %64, align 4, !tbaa !14, !alias.scope !85
   %65 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 113, ptr %65, align 8, !tbaa !15, !alias.scope !76
+  store i32 113, ptr %65, align 8, !tbaa !15, !alias.scope !85
   %66 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 6176, ptr %66, align 4, !tbaa !16, !alias.scope !76
+  store i32 6176, ptr %66, align 4, !tbaa !16, !alias.scope !85
   %67 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 128, ptr %67, align 8, !tbaa !17, !alias.scope !76
+  store i32 128, ptr %67, align 8, !tbaa !17, !alias.scope !85
   %68 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %68, align 4, !tbaa !18, !alias.scope !76
+  store i32 0, ptr %68, align 4, !tbaa !18, !alias.scope !85
   %69 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %69, align 8, !tbaa !19, !alias.scope !76
+  store i32 1, ptr %69, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 70:                                               ; preds = %3
   %71 = and i32 %2, 7
   %72 = shl nuw nsw i32 8, %71
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !76
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !85
   %73 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 %72, ptr %73, align 4, !tbaa !12, !alias.scope !76
+  store i32 %72, ptr %73, align 4, !tbaa !12, !alias.scope !85
   %74 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 0, ptr %74, align 8, !tbaa !13, !alias.scope !76
+  store i32 0, ptr %74, align 8, !tbaa !13, !alias.scope !85
   %75 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 0, ptr %75, align 4, !tbaa !14, !alias.scope !76
+  store i32 0, ptr %75, align 4, !tbaa !14, !alias.scope !85
   %76 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 0, ptr %76, align 8, !tbaa !15, !alias.scope !76
+  store i32 0, ptr %76, align 8, !tbaa !15, !alias.scope !85
   %77 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 0, ptr %77, align 4, !tbaa !16, !alias.scope !76
+  store i32 0, ptr %77, align 4, !tbaa !16, !alias.scope !85
   %78 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 %72, ptr %78, align 8, !tbaa !17, !alias.scope !76
+  store i32 %72, ptr %78, align 8, !tbaa !17, !alias.scope !85
   %79 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 1, ptr %79, align 4, !tbaa !18, !alias.scope !76
+  store i32 1, ptr %79, align 4, !tbaa !18, !alias.scope !85
   %80 = getelementptr inbounds i8, ptr %4, i64 32
   %81 = icmp slt i32 %2, 24
   %82 = zext i1 %81 to i32
-  store i32 %82, ptr %80, align 8, !tbaa !19, !alias.scope !76
+  store i32 %82, ptr %80, align 8, !tbaa !19, !alias.scope !85
   br label %83
 
 83:                                               ; preds = %7, %16, %25, %34, %43, %52, %61, %70
   %84 = phi i32 [ 2, %7 ], [ 2, %16 ], [ 2, %25 ], [ 2, %34 ], [ 10, %43 ], [ 10, %52 ], [ 10, %61 ], [ 2, %70 ]
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %5) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %5, ptr noundef %0, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #16
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %6) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %6, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %5) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %5, ptr noundef %0, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #17
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %6) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %6, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #17
   %85 = getelementptr inbounds i8, ptr %5, i64 5612
   %86 = load i32, ptr %85, align 4, !tbaa !23
   %87 = icmp eq i32 %86, 2
@@ -2507,9 +3501,9 @@ define weak hidden i32 @tz_soft_cmp(ptr noundef readonly %0, ptr noundef readonl
   %118 = load i32, ptr %117, align 4, !tbaa !35
   %119 = tail call i32 @llvm.smin.i32(i32 %116, i32 %118)
   %120 = sub nsw i32 %116, %119
-  call fastcc void @power(ptr noundef %5, i32 noundef %84, i32 noundef %120) #16
+  call fastcc void @power(ptr noundef %5, i32 noundef %84, i32 noundef %120) #17
   %121 = sub nsw i32 %118, %119
-  call fastcc void @power(ptr noundef %6, i32 noundef %84, i32 noundef %121) #16
+  call fastcc void @power(ptr noundef %6, i32 noundef %84, i32 noundef %121) #17
   %122 = load i32, ptr %5, align 4, !tbaa !34
   %123 = load i32, ptr %6, align 4, !tbaa !34
   %124 = icmp eq i32 %122, %123
@@ -2557,9 +3551,9 @@ define weak hidden i32 @tz_soft_cmp(ptr noundef readonly %0, ptr noundef readonl
 
 153:                                              ; preds = %92, %83, %147, %108
   %154 = phi i32 [ %110, %108 ], [ %152, %147 ], [ 2, %83 ], [ 0, %92 ]
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %6) #15
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %5) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %6) #16
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %5) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %4) #16
   ret i32 %154
 }
 
@@ -2567,7 +3561,7 @@ define weak hidden i32 @tz_soft_cmp(ptr noundef readonly %0, ptr noundef readonl
 define weak hidden void @tz_soft_hash_canonical(ptr noundef writeonly %0, ptr noundef readonly %1, i32 noundef %2) local_unnamed_addr #2 {
   %4 = alloca %struct.tzrt_format, align 8
   %5 = alloca %struct.tzrt_number, align 4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %4) #16
   switch i32 %2, label %69 [
     i32 0, label %6
     i32 1, label %15
@@ -2579,167 +3573,167 @@ define weak hidden void @tz_soft_hash_canonical(ptr noundef writeonly %0, ptr no
   ]
 
 6:                                                ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %7 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 11, ptr %7, align 4, !tbaa !12, !alias.scope !79
+  store i32 11, ptr %7, align 4, !tbaa !12, !alias.scope !88
   %8 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -24, ptr %8, align 8, !tbaa !13, !alias.scope !79
+  store i32 -24, ptr %8, align 8, !tbaa !13, !alias.scope !88
   %9 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 5, ptr %9, align 4, !tbaa !14, !alias.scope !79
+  store i32 5, ptr %9, align 4, !tbaa !14, !alias.scope !88
   %10 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 10, ptr %10, align 8, !tbaa !15, !alias.scope !79
+  store i32 10, ptr %10, align 8, !tbaa !15, !alias.scope !88
   %11 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 15, ptr %11, align 4, !tbaa !16, !alias.scope !79
+  store i32 15, ptr %11, align 4, !tbaa !16, !alias.scope !88
   %12 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 16, ptr %12, align 8, !tbaa !17, !alias.scope !79
+  store i32 16, ptr %12, align 8, !tbaa !17, !alias.scope !88
   %13 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %13, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %13, align 4, !tbaa !18, !alias.scope !88
   %14 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %14, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %14, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 15:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %16 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 24, ptr %16, align 4, !tbaa !12, !alias.scope !79
+  store i32 24, ptr %16, align 4, !tbaa !12, !alias.scope !88
   %17 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -149, ptr %17, align 8, !tbaa !13, !alias.scope !79
+  store i32 -149, ptr %17, align 8, !tbaa !13, !alias.scope !88
   %18 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 104, ptr %18, align 4, !tbaa !14, !alias.scope !79
+  store i32 104, ptr %18, align 4, !tbaa !14, !alias.scope !88
   %19 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 23, ptr %19, align 8, !tbaa !15, !alias.scope !79
+  store i32 23, ptr %19, align 8, !tbaa !15, !alias.scope !88
   %20 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 127, ptr %20, align 4, !tbaa !16, !alias.scope !79
+  store i32 127, ptr %20, align 4, !tbaa !16, !alias.scope !88
   %21 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 32, ptr %21, align 8, !tbaa !17, !alias.scope !79
+  store i32 32, ptr %21, align 8, !tbaa !17, !alias.scope !88
   %22 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %22, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %22, align 4, !tbaa !18, !alias.scope !88
   %23 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %23, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %23, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 24:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %25 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 53, ptr %25, align 4, !tbaa !12, !alias.scope !79
+  store i32 53, ptr %25, align 4, !tbaa !12, !alias.scope !88
   %26 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -1074, ptr %26, align 8, !tbaa !13, !alias.scope !79
+  store i32 -1074, ptr %26, align 8, !tbaa !13, !alias.scope !88
   %27 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 971, ptr %27, align 4, !tbaa !14, !alias.scope !79
+  store i32 971, ptr %27, align 4, !tbaa !14, !alias.scope !88
   %28 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 52, ptr %28, align 8, !tbaa !15, !alias.scope !79
+  store i32 52, ptr %28, align 8, !tbaa !15, !alias.scope !88
   %29 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 1023, ptr %29, align 4, !tbaa !16, !alias.scope !79
+  store i32 1023, ptr %29, align 4, !tbaa !16, !alias.scope !88
   %30 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 64, ptr %30, align 8, !tbaa !17, !alias.scope !79
+  store i32 64, ptr %30, align 8, !tbaa !17, !alias.scope !88
   %31 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %31, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %31, align 4, !tbaa !18, !alias.scope !88
   %32 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %32, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %32, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 33:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %34 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 113, ptr %34, align 4, !tbaa !12, !alias.scope !79
+  store i32 113, ptr %34, align 4, !tbaa !12, !alias.scope !88
   %35 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -16494, ptr %35, align 8, !tbaa !13, !alias.scope !79
+  store i32 -16494, ptr %35, align 8, !tbaa !13, !alias.scope !88
   %36 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 16271, ptr %36, align 4, !tbaa !14, !alias.scope !79
+  store i32 16271, ptr %36, align 4, !tbaa !14, !alias.scope !88
   %37 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 112, ptr %37, align 8, !tbaa !15, !alias.scope !79
+  store i32 112, ptr %37, align 8, !tbaa !15, !alias.scope !88
   %38 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 16383, ptr %38, align 4, !tbaa !16, !alias.scope !79
+  store i32 16383, ptr %38, align 4, !tbaa !16, !alias.scope !88
   %39 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 128, ptr %39, align 8, !tbaa !17, !alias.scope !79
+  store i32 128, ptr %39, align 8, !tbaa !17, !alias.scope !88
   %40 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %40, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %40, align 4, !tbaa !18, !alias.scope !88
   %41 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %41, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %41, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 42:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %43 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 7, ptr %43, align 4, !tbaa !12, !alias.scope !79
+  store i32 7, ptr %43, align 4, !tbaa !12, !alias.scope !88
   %44 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -101, ptr %44, align 8, !tbaa !13, !alias.scope !79
+  store i32 -101, ptr %44, align 8, !tbaa !13, !alias.scope !88
   %45 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 90, ptr %45, align 4, !tbaa !14, !alias.scope !79
+  store i32 90, ptr %45, align 4, !tbaa !14, !alias.scope !88
   %46 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 23, ptr %46, align 8, !tbaa !15, !alias.scope !79
+  store i32 23, ptr %46, align 8, !tbaa !15, !alias.scope !88
   %47 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 101, ptr %47, align 4, !tbaa !16, !alias.scope !79
+  store i32 101, ptr %47, align 4, !tbaa !16, !alias.scope !88
   %48 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 32, ptr %48, align 8, !tbaa !17, !alias.scope !79
+  store i32 32, ptr %48, align 8, !tbaa !17, !alias.scope !88
   %49 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %49, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %49, align 4, !tbaa !18, !alias.scope !88
   %50 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %50, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %50, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 51:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %52 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 16, ptr %52, align 4, !tbaa !12, !alias.scope !79
+  store i32 16, ptr %52, align 4, !tbaa !12, !alias.scope !88
   %53 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -398, ptr %53, align 8, !tbaa !13, !alias.scope !79
+  store i32 -398, ptr %53, align 8, !tbaa !13, !alias.scope !88
   %54 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 369, ptr %54, align 4, !tbaa !14, !alias.scope !79
+  store i32 369, ptr %54, align 4, !tbaa !14, !alias.scope !88
   %55 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 53, ptr %55, align 8, !tbaa !15, !alias.scope !79
+  store i32 53, ptr %55, align 8, !tbaa !15, !alias.scope !88
   %56 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 398, ptr %56, align 4, !tbaa !16, !alias.scope !79
+  store i32 398, ptr %56, align 4, !tbaa !16, !alias.scope !88
   %57 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 64, ptr %57, align 8, !tbaa !17, !alias.scope !79
+  store i32 64, ptr %57, align 8, !tbaa !17, !alias.scope !88
   %58 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %58, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %58, align 4, !tbaa !18, !alias.scope !88
   %59 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %59, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %59, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 60:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %61 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 34, ptr %61, align 4, !tbaa !12, !alias.scope !79
+  store i32 34, ptr %61, align 4, !tbaa !12, !alias.scope !88
   %62 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -6176, ptr %62, align 8, !tbaa !13, !alias.scope !79
+  store i32 -6176, ptr %62, align 8, !tbaa !13, !alias.scope !88
   %63 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 6111, ptr %63, align 4, !tbaa !14, !alias.scope !79
+  store i32 6111, ptr %63, align 4, !tbaa !14, !alias.scope !88
   %64 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 113, ptr %64, align 8, !tbaa !15, !alias.scope !79
+  store i32 113, ptr %64, align 8, !tbaa !15, !alias.scope !88
   %65 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 6176, ptr %65, align 4, !tbaa !16, !alias.scope !79
+  store i32 6176, ptr %65, align 4, !tbaa !16, !alias.scope !88
   %66 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 128, ptr %66, align 8, !tbaa !17, !alias.scope !79
+  store i32 128, ptr %66, align 8, !tbaa !17, !alias.scope !88
   %67 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %67, align 4, !tbaa !18, !alias.scope !79
+  store i32 0, ptr %67, align 4, !tbaa !18, !alias.scope !88
   %68 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %68, align 8, !tbaa !19, !alias.scope !79
+  store i32 1, ptr %68, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 69:                                               ; preds = %3
   %70 = and i32 %2, 7
   %71 = shl nuw nsw i32 8, %70
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !79
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !88
   %72 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 %71, ptr %72, align 4, !tbaa !12, !alias.scope !79
+  store i32 %71, ptr %72, align 4, !tbaa !12, !alias.scope !88
   %73 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 0, ptr %73, align 8, !tbaa !13, !alias.scope !79
+  store i32 0, ptr %73, align 8, !tbaa !13, !alias.scope !88
   %74 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 0, ptr %74, align 4, !tbaa !14, !alias.scope !79
+  store i32 0, ptr %74, align 4, !tbaa !14, !alias.scope !88
   %75 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 0, ptr %75, align 8, !tbaa !15, !alias.scope !79
+  store i32 0, ptr %75, align 8, !tbaa !15, !alias.scope !88
   %76 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 0, ptr %76, align 4, !tbaa !16, !alias.scope !79
+  store i32 0, ptr %76, align 4, !tbaa !16, !alias.scope !88
   %77 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 %71, ptr %77, align 8, !tbaa !17, !alias.scope !79
+  store i32 %71, ptr %77, align 8, !tbaa !17, !alias.scope !88
   %78 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 1, ptr %78, align 4, !tbaa !18, !alias.scope !79
+  store i32 1, ptr %78, align 4, !tbaa !18, !alias.scope !88
   %79 = getelementptr inbounds i8, ptr %4, i64 32
   %80 = icmp slt i32 %2, 24
   %81 = zext i1 %80 to i32
-  store i32 %81, ptr %79, align 8, !tbaa !19, !alias.scope !79
+  store i32 %81, ptr %79, align 8, !tbaa !19, !alias.scope !88
   br label %82
 
 82:                                               ; preds = %6, %15, %24, %33, %42, %51, %60, %69
@@ -2748,8 +3742,8 @@ define weak hidden void @tz_soft_hash_canonical(ptr noundef writeonly %0, ptr no
   %85 = phi i32 [ 10, %6 ], [ 23, %15 ], [ 52, %24 ], [ 112, %33 ], [ 23, %42 ], [ 53, %51 ], [ 113, %60 ], [ 0, %69 ]
   %86 = phi i32 [ 5, %6 ], [ 104, %15 ], [ 971, %24 ], [ 16271, %33 ], [ 90, %42 ], [ 369, %51 ], [ 6111, %60 ], [ 0, %69 ]
   %87 = phi i1 [ true, %6 ], [ true, %15 ], [ true, %24 ], [ true, %33 ], [ false, %42 ], [ false, %51 ], [ false, %60 ], [ true, %69 ]
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %5) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %5, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %5) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %5, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #17
   %88 = getelementptr inbounds i8, ptr %5, i64 5612
   %89 = load i32, ptr %88, align 4, !tbaa !23
   %90 = icmp eq i32 %89, 0
@@ -3058,8 +4052,8 @@ define weak hidden void @tz_soft_hash_canonical(ptr noundef writeonly %0, ptr no
   %279 = icmp eq i64 %278, %262
   br i1 %279, label %280, label %272
 280:                                              ; preds = %146, %272, %208, %271, %269, %267, %265, %263, %207, %205, %203, %201, %199, %145, %144, %142, %140, %138
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %5) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %5) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %4) #16
   ret void
 }
 
@@ -3081,7 +4075,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %18 = alloca %struct.tzrt_big, align 4
   %19 = alloca %struct.tzrt_big, align 4
   %20 = alloca %struct.tzrt_big, align 4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %5) #16
   switch i32 %2, label %84 [
     i32 0, label %21
     i32 1, label %30
@@ -3093,167 +4087,167 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   ]
 
 21:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %22 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 11, ptr %22, align 4, !tbaa !12, !alias.scope !83
+  store i32 11, ptr %22, align 4, !tbaa !12, !alias.scope !92
   %23 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -24, ptr %23, align 8, !tbaa !13, !alias.scope !83
+  store i32 -24, ptr %23, align 8, !tbaa !13, !alias.scope !92
   %24 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 5, ptr %24, align 4, !tbaa !14, !alias.scope !83
+  store i32 5, ptr %24, align 4, !tbaa !14, !alias.scope !92
   %25 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 10, ptr %25, align 8, !tbaa !15, !alias.scope !83
+  store i32 10, ptr %25, align 8, !tbaa !15, !alias.scope !92
   %26 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 15, ptr %26, align 4, !tbaa !16, !alias.scope !83
+  store i32 15, ptr %26, align 4, !tbaa !16, !alias.scope !92
   %27 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 16, ptr %27, align 8, !tbaa !17, !alias.scope !83
+  store i32 16, ptr %27, align 8, !tbaa !17, !alias.scope !92
   %28 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %28, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %28, align 4, !tbaa !18, !alias.scope !92
   %29 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %29, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %29, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 30:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %31 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 24, ptr %31, align 4, !tbaa !12, !alias.scope !83
+  store i32 24, ptr %31, align 4, !tbaa !12, !alias.scope !92
   %32 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -149, ptr %32, align 8, !tbaa !13, !alias.scope !83
+  store i32 -149, ptr %32, align 8, !tbaa !13, !alias.scope !92
   %33 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 104, ptr %33, align 4, !tbaa !14, !alias.scope !83
+  store i32 104, ptr %33, align 4, !tbaa !14, !alias.scope !92
   %34 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 23, ptr %34, align 8, !tbaa !15, !alias.scope !83
+  store i32 23, ptr %34, align 8, !tbaa !15, !alias.scope !92
   %35 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 127, ptr %35, align 4, !tbaa !16, !alias.scope !83
+  store i32 127, ptr %35, align 4, !tbaa !16, !alias.scope !92
   %36 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 32, ptr %36, align 8, !tbaa !17, !alias.scope !83
+  store i32 32, ptr %36, align 8, !tbaa !17, !alias.scope !92
   %37 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %37, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %37, align 4, !tbaa !18, !alias.scope !92
   %38 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %38, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %38, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 39:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %40 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 53, ptr %40, align 4, !tbaa !12, !alias.scope !83
+  store i32 53, ptr %40, align 4, !tbaa !12, !alias.scope !92
   %41 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -1074, ptr %41, align 8, !tbaa !13, !alias.scope !83
+  store i32 -1074, ptr %41, align 8, !tbaa !13, !alias.scope !92
   %42 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 971, ptr %42, align 4, !tbaa !14, !alias.scope !83
+  store i32 971, ptr %42, align 4, !tbaa !14, !alias.scope !92
   %43 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 52, ptr %43, align 8, !tbaa !15, !alias.scope !83
+  store i32 52, ptr %43, align 8, !tbaa !15, !alias.scope !92
   %44 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 1023, ptr %44, align 4, !tbaa !16, !alias.scope !83
+  store i32 1023, ptr %44, align 4, !tbaa !16, !alias.scope !92
   %45 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 64, ptr %45, align 8, !tbaa !17, !alias.scope !83
+  store i32 64, ptr %45, align 8, !tbaa !17, !alias.scope !92
   %46 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %46, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %46, align 4, !tbaa !18, !alias.scope !92
   %47 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %47, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %47, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 48:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %49 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 113, ptr %49, align 4, !tbaa !12, !alias.scope !83
+  store i32 113, ptr %49, align 4, !tbaa !12, !alias.scope !92
   %50 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -16494, ptr %50, align 8, !tbaa !13, !alias.scope !83
+  store i32 -16494, ptr %50, align 8, !tbaa !13, !alias.scope !92
   %51 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 16271, ptr %51, align 4, !tbaa !14, !alias.scope !83
+  store i32 16271, ptr %51, align 4, !tbaa !14, !alias.scope !92
   %52 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 112, ptr %52, align 8, !tbaa !15, !alias.scope !83
+  store i32 112, ptr %52, align 8, !tbaa !15, !alias.scope !92
   %53 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 16383, ptr %53, align 4, !tbaa !16, !alias.scope !83
+  store i32 16383, ptr %53, align 4, !tbaa !16, !alias.scope !92
   %54 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 128, ptr %54, align 8, !tbaa !17, !alias.scope !83
+  store i32 128, ptr %54, align 8, !tbaa !17, !alias.scope !92
   %55 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %55, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %55, align 4, !tbaa !18, !alias.scope !92
   %56 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %56, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %56, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 57:                                               ; preds = %4
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %58 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 7, ptr %58, align 4, !tbaa !12, !alias.scope !83
+  store i32 7, ptr %58, align 4, !tbaa !12, !alias.scope !92
   %59 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -101, ptr %59, align 8, !tbaa !13, !alias.scope !83
+  store i32 -101, ptr %59, align 8, !tbaa !13, !alias.scope !92
   %60 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 90, ptr %60, align 4, !tbaa !14, !alias.scope !83
+  store i32 90, ptr %60, align 4, !tbaa !14, !alias.scope !92
   %61 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 23, ptr %61, align 8, !tbaa !15, !alias.scope !83
+  store i32 23, ptr %61, align 8, !tbaa !15, !alias.scope !92
   %62 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 101, ptr %62, align 4, !tbaa !16, !alias.scope !83
+  store i32 101, ptr %62, align 4, !tbaa !16, !alias.scope !92
   %63 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 32, ptr %63, align 8, !tbaa !17, !alias.scope !83
+  store i32 32, ptr %63, align 8, !tbaa !17, !alias.scope !92
   %64 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %64, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %64, align 4, !tbaa !18, !alias.scope !92
   %65 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %65, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %65, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 66:                                               ; preds = %4
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %67 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 16, ptr %67, align 4, !tbaa !12, !alias.scope !83
+  store i32 16, ptr %67, align 4, !tbaa !12, !alias.scope !92
   %68 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -398, ptr %68, align 8, !tbaa !13, !alias.scope !83
+  store i32 -398, ptr %68, align 8, !tbaa !13, !alias.scope !92
   %69 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 369, ptr %69, align 4, !tbaa !14, !alias.scope !83
+  store i32 369, ptr %69, align 4, !tbaa !14, !alias.scope !92
   %70 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 53, ptr %70, align 8, !tbaa !15, !alias.scope !83
+  store i32 53, ptr %70, align 8, !tbaa !15, !alias.scope !92
   %71 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 398, ptr %71, align 4, !tbaa !16, !alias.scope !83
+  store i32 398, ptr %71, align 4, !tbaa !16, !alias.scope !92
   %72 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 64, ptr %72, align 8, !tbaa !17, !alias.scope !83
+  store i32 64, ptr %72, align 8, !tbaa !17, !alias.scope !92
   %73 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %73, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %73, align 4, !tbaa !18, !alias.scope !92
   %74 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %74, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %74, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 75:                                               ; preds = %4
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %76 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 34, ptr %76, align 4, !tbaa !12, !alias.scope !83
+  store i32 34, ptr %76, align 4, !tbaa !12, !alias.scope !92
   %77 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -6176, ptr %77, align 8, !tbaa !13, !alias.scope !83
+  store i32 -6176, ptr %77, align 8, !tbaa !13, !alias.scope !92
   %78 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 6111, ptr %78, align 4, !tbaa !14, !alias.scope !83
+  store i32 6111, ptr %78, align 4, !tbaa !14, !alias.scope !92
   %79 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 113, ptr %79, align 8, !tbaa !15, !alias.scope !83
+  store i32 113, ptr %79, align 8, !tbaa !15, !alias.scope !92
   %80 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 6176, ptr %80, align 4, !tbaa !16, !alias.scope !83
+  store i32 6176, ptr %80, align 4, !tbaa !16, !alias.scope !92
   %81 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 128, ptr %81, align 8, !tbaa !17, !alias.scope !83
+  store i32 128, ptr %81, align 8, !tbaa !17, !alias.scope !92
   %82 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %82, align 4, !tbaa !18, !alias.scope !83
+  store i32 0, ptr %82, align 4, !tbaa !18, !alias.scope !92
   %83 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %83, align 8, !tbaa !19, !alias.scope !83
+  store i32 1, ptr %83, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 84:                                               ; preds = %4
   %85 = and i32 %2, 7
   %86 = shl nuw nsw i32 8, %85
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !83
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !92
   %87 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 %86, ptr %87, align 4, !tbaa !12, !alias.scope !83
+  store i32 %86, ptr %87, align 4, !tbaa !12, !alias.scope !92
   %88 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 0, ptr %88, align 8, !tbaa !13, !alias.scope !83
+  store i32 0, ptr %88, align 8, !tbaa !13, !alias.scope !92
   %89 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 0, ptr %89, align 4, !tbaa !14, !alias.scope !83
+  store i32 0, ptr %89, align 4, !tbaa !14, !alias.scope !92
   %90 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 0, ptr %90, align 8, !tbaa !15, !alias.scope !83
+  store i32 0, ptr %90, align 8, !tbaa !15, !alias.scope !92
   %91 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 0, ptr %91, align 4, !tbaa !16, !alias.scope !83
+  store i32 0, ptr %91, align 4, !tbaa !16, !alias.scope !92
   %92 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 %86, ptr %92, align 8, !tbaa !17, !alias.scope !83
+  store i32 %86, ptr %92, align 8, !tbaa !17, !alias.scope !92
   %93 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 1, ptr %93, align 4, !tbaa !18, !alias.scope !83
+  store i32 1, ptr %93, align 4, !tbaa !18, !alias.scope !92
   %94 = getelementptr inbounds i8, ptr %5, i64 32
   %95 = icmp slt i32 %2, 24
   %96 = zext i1 %95 to i32
-  store i32 %96, ptr %94, align 8, !tbaa !19, !alias.scope !83
+  store i32 %96, ptr %94, align 8, !tbaa !19, !alias.scope !92
   br label %97
 
 97:                                               ; preds = %21, %30, %39, %48, %57, %66, %75, %84
@@ -3264,8 +4258,8 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %102 = phi i32 [ 11, %21 ], [ 24, %30 ], [ 53, %39 ], [ 113, %48 ], [ 7, %57 ], [ 16, %66 ], [ 34, %75 ], [ %86, %84 ]
   %103 = phi i1 [ true, %21 ], [ true, %30 ], [ true, %39 ], [ true, %48 ], [ false, %57 ], [ false, %66 ], [ false, %75 ], [ true, %84 ]
   %104 = phi i32 [ 2, %21 ], [ 2, %30 ], [ 2, %39 ], [ 2, %48 ], [ 10, %57 ], [ 10, %66 ], [ 10, %75 ], [ 2, %84 ]
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %6) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %6, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %6) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %6, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   switch i32 %98, label %121 [
     i32 8, label %105
     i32 16, label %108
@@ -3492,12 +4486,12 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %231 = icmp eq i64 %230, %215
   br i1 %231, label %855, label %224
 232:                                              ; preds = %183
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %7, i8 0, i64 5604, i1 false), !alias.scope !86
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %7, i8 0, i64 5604, i1 false), !alias.scope !95
   %233 = getelementptr inbounds i8, ptr %7, i64 4
-  store i32 1, ptr %7, align 4, !tbaa !34, !alias.scope !86
-  store i32 1, ptr %233, align 4, !tbaa !24, !alias.scope !86
-  %234 = call fastcc i32 @magnitude(ptr noundef %6, ptr noundef %7, i32 noundef %104) #16
+  store i32 1, ptr %7, align 4, !tbaa !34, !alias.scope !95
+  store i32 1, ptr %233, align 4, !tbaa !24, !alias.scope !95
+  %234 = call fastcc i32 @magnitude(ptr noundef %6, ptr noundef %7, i32 noundef %104) #17
   %235 = getelementptr inbounds i8, ptr %6, i64 5604
   %236 = load i32, ptr %235, align 4, !tbaa !35
   %237 = add nsw i32 %236, %234
@@ -3520,20 +4514,20 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %248 = tail call i32 @llvm.smax.i32(i32 %247, i32 %101)
   %249 = shl nsw i32 %248, 1
   %250 = sub nsw i32 %236, %249
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, ptr noundef nonnull align 4 dereferenceable(5604) %6, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, ptr noundef nonnull align 4 dereferenceable(5604) %7, i64 5604, i1 false), !tbaa.struct !30
   %251 = icmp sgt i32 %250, -1
   br i1 %251, label %252, label %253
 
 252:                                              ; preds = %244
-  call fastcc void @power(ptr noundef %8, i32 noundef %104, i32 noundef %250) #16
+  call fastcc void @power(ptr noundef %8, i32 noundef %104, i32 noundef %250) #17
   br label %255
 
 253:                                              ; preds = %244
   %254 = sub nsw i32 0, %250
-  call fastcc void @power(ptr noundef %9, i32 noundef %104, i32 noundef %254) #16
+  call fastcc void @power(ptr noundef %9, i32 noundef %104, i32 noundef %254) #17
   br label %255
 
 255:                                              ; preds = %253, %252
@@ -3570,28 +4564,28 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %279 = phi i128 [ %273, %259 ], [ %420, %418 ]
   %280 = lshr i128 %277, 1
   %281 = add i128 %280, %278
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !90
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !99
   %282 = icmp eq i128 %281, 0
   br i1 %282, label %292, label %283
 
 283:                                              ; preds = %276, %283
   %284 = phi i128 [ %290, %283 ], [ %281, %276 ]
   %285 = trunc i128 %284 to i32
-  %286 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !90
+  %286 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !99
   %287 = add nsw i32 %286, 1
-  store i32 %287, ptr %10, align 4, !tbaa !34, !alias.scope !90
+  store i32 %287, ptr %10, align 4, !tbaa !34, !alias.scope !99
   %288 = sext i32 %286 to i64
   %289 = getelementptr inbounds [1400 x i32], ptr %260, i64 0, i64 %288
-  store i32 %285, ptr %289, align 4, !tbaa !24, !alias.scope !90
+  store i32 %285, ptr %289, align 4, !tbaa !24, !alias.scope !99
   %290 = lshr i128 %284, 32
   %291 = icmp ult i128 %284, 4294967296
   br i1 %291, label %292, label %283
 292:                                              ; preds = %283, %276
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #15
-  tail call void @llvm.experimental.noalias.scope.decl(metadata !93)
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, i8 0, i64 5604, i1 false), !alias.scope !93
-  %293 = load i32, ptr %10, align 4, !tbaa !34, !noalias !93
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #16
+  tail call void @llvm.experimental.noalias.scope.decl(metadata !102)
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, i8 0, i64 5604, i1 false), !alias.scope !102
+  %293 = load i32, ptr %10, align 4, !tbaa !34, !noalias !102
   %294 = icmp sgt i32 %293, 700
   br i1 %294, label %295, label %296
 
@@ -3601,7 +4595,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 
 296:                                              ; preds = %292
   %297 = shl nsw i32 %293, 1
-  store i32 %297, ptr %11, align 4, !tbaa !34, !alias.scope !93
+  store i32 %297, ptr %11, align 4, !tbaa !34, !alias.scope !102
   %298 = icmp sgt i32 %293, 0
   br i1 %298, label %299, label %306
 
@@ -3612,12 +4606,12 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 301:                                              ; preds = %320, %299
   %302 = phi i64 [ 0, %299 ], [ %324, %320 ]
   %303 = getelementptr inbounds [1400 x i32], ptr %260, i64 0, i64 %302
-  %304 = load i32, ptr %303, align 4, !tbaa !24, !noalias !93
+  %304 = load i32, ptr %303, align 4, !tbaa !24, !noalias !102
   %305 = zext i32 %304 to i64
   br label %326
 
 306:                                              ; preds = %320, %296
-  %307 = load i32, ptr %11, align 4, !tbaa !34, !alias.scope !93
+  %307 = load i32, ptr %11, align 4, !tbaa !34, !alias.scope !102
   %308 = icmp eq i32 %307, 0
   br i1 %308, label %343, label %309
 
@@ -3629,20 +4623,20 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %312 = phi i64 [ %310, %309 ], [ %313, %317 ]
   %313 = add nsw i64 %312, -1
   %314 = getelementptr inbounds [1400 x i32], ptr %261, i64 0, i64 %313
-  %315 = load i32, ptr %314, align 4, !tbaa !24, !alias.scope !93
+  %315 = load i32, ptr %314, align 4, !tbaa !24, !alias.scope !102
   %316 = icmp eq i32 %315, 0
   br i1 %316, label %317, label %343
 
 317:                                              ; preds = %311
   %318 = trunc i64 %313 to i32
-  store i32 %318, ptr %11, align 4, !tbaa !34, !alias.scope !93
+  store i32 %318, ptr %11, align 4, !tbaa !34, !alias.scope !102
   %319 = icmp eq i64 %313, 0
   br i1 %319, label %343, label %311
 320:                                              ; preds = %326
   %321 = trunc i64 %340 to i32
   %322 = add nuw nsw i64 %302, %300
   %323 = getelementptr inbounds [1400 x i32], ptr %261, i64 0, i64 %322
-  store i32 %321, ptr %323, align 4, !tbaa !24, !alias.scope !93
+  store i32 %321, ptr %323, align 4, !tbaa !24, !alias.scope !102
   %324 = add nuw nsw i64 %302, 1
   %325 = icmp eq i64 %324, %300
   br i1 %325, label %306, label %301
@@ -3650,26 +4644,26 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %327 = phi i64 [ 0, %301 ], [ %341, %326 ]
   %328 = phi i64 [ 0, %301 ], [ %340, %326 ]
   %329 = getelementptr inbounds [1400 x i32], ptr %260, i64 0, i64 %327
-  %330 = load i32, ptr %329, align 4, !tbaa !24, !noalias !93
+  %330 = load i32, ptr %329, align 4, !tbaa !24, !noalias !102
   %331 = zext i32 %330 to i64
   %332 = mul nuw i64 %331, %305
   %333 = add nuw nsw i64 %327, %302
   %334 = getelementptr inbounds [1400 x i32], ptr %261, i64 0, i64 %333
-  %335 = load i32, ptr %334, align 4, !tbaa !24, !alias.scope !93
+  %335 = load i32, ptr %334, align 4, !tbaa !24, !alias.scope !102
   %336 = zext i32 %335 to i64
   %337 = add nuw nsw i64 %328, %336
   %338 = add nuw i64 %337, %332
   %339 = trunc i64 %338 to i32
-  store i32 %339, ptr %334, align 4, !tbaa !24, !alias.scope !93
+  store i32 %339, ptr %334, align 4, !tbaa !24, !alias.scope !102
   %340 = lshr i64 %338, 32
   %341 = add nuw nsw i64 %327, 1
   %342 = icmp eq i64 %341, %300
   br i1 %342, label %320, label %326
 343:                                              ; preds = %311, %317, %306
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %12) #15
-  tail call void @llvm.experimental.noalias.scope.decl(metadata !96)
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %12, i8 0, i64 5604, i1 false), !alias.scope !96
-  %344 = load i32, ptr %11, align 4, !tbaa !34, !noalias !96
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %12) #16
+  tail call void @llvm.experimental.noalias.scope.decl(metadata !105)
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %12, i8 0, i64 5604, i1 false), !alias.scope !105
+  %344 = load i32, ptr %11, align 4, !tbaa !34, !noalias !105
   %345 = add nsw i32 %262, %344
   %346 = icmp sgt i32 %345, 1400
   br i1 %346, label %347, label %348
@@ -3679,7 +4673,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   unreachable
 
 348:                                              ; preds = %343
-  store i32 %345, ptr %12, align 4, !tbaa !34, !alias.scope !96
+  store i32 %345, ptr %12, align 4, !tbaa !34, !alias.scope !105
   %349 = icmp sgt i32 %344, 0
   br i1 %349, label %350, label %358
 
@@ -3693,12 +4687,12 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 
 354:                                              ; preds = %352
   %355 = getelementptr inbounds [1400 x i32], ptr %261, i64 0, i64 %353
-  %356 = load i32, ptr %355, align 4, !tbaa !24, !noalias !96
+  %356 = load i32, ptr %355, align 4, !tbaa !24, !noalias !105
   %357 = zext i32 %356 to i64
   br label %380
 
 358:                                              ; preds = %374, %348
-  %359 = load i32, ptr %12, align 4, !tbaa !34, !alias.scope !96
+  %359 = load i32, ptr %12, align 4, !tbaa !34, !alias.scope !105
   %360 = icmp eq i32 %359, 0
   br i1 %360, label %397, label %361
 
@@ -3710,13 +4704,13 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %364 = phi i64 [ %362, %361 ], [ %365, %369 ]
   %365 = add nsw i64 %364, -1
   %366 = getelementptr inbounds [1400 x i32], ptr %265, i64 0, i64 %365
-  %367 = load i32, ptr %366, align 4, !tbaa !24, !alias.scope !96
+  %367 = load i32, ptr %366, align 4, !tbaa !24, !alias.scope !105
   %368 = icmp eq i32 %367, 0
   br i1 %368, label %369, label %397
 
 369:                                              ; preds = %363
   %370 = trunc i64 %365 to i32
-  store i32 %370, ptr %12, align 4, !tbaa !34, !alias.scope !96
+  store i32 %370, ptr %12, align 4, !tbaa !34, !alias.scope !105
   %371 = icmp eq i64 %365, 0
   br i1 %371, label %397, label %363
 372:                                              ; preds = %380
@@ -3727,7 +4721,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %375 = phi i32 [ 0, %352 ], [ %373, %372 ]
   %376 = add nsw i64 %353, %266
   %377 = getelementptr inbounds [1400 x i32], ptr %265, i64 0, i64 %376
-  store i32 %375, ptr %377, align 4, !tbaa !24, !alias.scope !96
+  store i32 %375, ptr %377, align 4, !tbaa !24, !alias.scope !105
   %378 = add nuw nsw i64 %353, 1
   %379 = icmp eq i64 %378, %351
   br i1 %379, label %358, label %352
@@ -3735,24 +4729,24 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %381 = phi i64 [ 0, %354 ], [ %395, %380 ]
   %382 = phi i64 [ 0, %354 ], [ %394, %380 ]
   %383 = getelementptr inbounds [1400 x i32], ptr %264, i64 0, i64 %381
-  %384 = load i32, ptr %383, align 4, !tbaa !24, !noalias !96
+  %384 = load i32, ptr %383, align 4, !tbaa !24, !noalias !105
   %385 = zext i32 %384 to i64
   %386 = mul nuw i64 %385, %357
   %387 = add nuw nsw i64 %381, %353
   %388 = getelementptr inbounds [1400 x i32], ptr %265, i64 0, i64 %387
-  %389 = load i32, ptr %388, align 4, !tbaa !24, !alias.scope !96
+  %389 = load i32, ptr %388, align 4, !tbaa !24, !alias.scope !105
   %390 = zext i32 %389 to i64
   %391 = add nuw nsw i64 %382, %390
   %392 = add nuw i64 %391, %386
   %393 = trunc i64 %392 to i32
-  store i32 %393, ptr %388, align 4, !tbaa !24, !alias.scope !96
+  store i32 %393, ptr %388, align 4, !tbaa !24, !alias.scope !105
   %394 = lshr i64 %392, 32
   %395 = add nuw nsw i64 %381, 1
   %396 = icmp eq i64 %395, %267
   br i1 %396, label %372, label %380
 397:                                              ; preds = %363, %369, %358
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, ptr noundef nonnull align 4 dereferenceable(5604) %12, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %12) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %12) #16
   %398 = load i32, ptr %11, align 4, !tbaa !34
   %399 = icmp eq i32 %398, %268
   br i1 %399, label %400, label %404
@@ -3789,41 +4783,41 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %419 = phi i1 [ %405, %404 ], [ %417, %416 ], [ true, %400 ], [ true, %406 ]
   %420 = select i1 %419, i128 %279, i128 %281
   %421 = select i1 %419, i128 %281, i128 %278
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #16
   %422 = sub i128 %420, %421
   %423 = icmp ugt i128 %422, 1
   br i1 %423, label %276, label %424
 424:                                              ; preds = %418, %257
   %425 = phi i128 [ 0, %257 ], [ %421, %418 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %13) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %13) #16
   %426 = shl i128 %425, 1
   %427 = trunc i128 %426 to i64
   %428 = or i64 %427, 1
   %429 = and i128 %426, -18446744073709551616
   %430 = zext i64 %428 to i128
   %431 = or i128 %429, %430
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %13, i8 0, i64 5604, i1 false), !alias.scope !100
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %13, i8 0, i64 5604, i1 false), !alias.scope !109
   %432 = getelementptr inbounds i8, ptr %13, i64 4
   br label %433
 
 433:                                              ; preds = %433, %424
   %434 = phi i128 [ %431, %424 ], [ %440, %433 ]
   %435 = trunc i128 %434 to i32
-  %436 = load i32, ptr %13, align 4, !tbaa !34, !alias.scope !100
+  %436 = load i32, ptr %13, align 4, !tbaa !34, !alias.scope !109
   %437 = add nsw i32 %436, 1
-  store i32 %437, ptr %13, align 4, !tbaa !34, !alias.scope !100
+  store i32 %437, ptr %13, align 4, !tbaa !34, !alias.scope !109
   %438 = sext i32 %436 to i64
   %439 = getelementptr inbounds [1400 x i32], ptr %432, i64 0, i64 %438
-  store i32 %435, ptr %439, align 4, !tbaa !24, !alias.scope !100
+  store i32 %435, ptr %439, align 4, !tbaa !24, !alias.scope !109
   %440 = lshr i128 %434, 32
   %441 = icmp ult i128 %434, 4294967296
   br i1 %441, label %442, label %433
 442:                                              ; preds = %433
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %14) #15
-  tail call void @llvm.experimental.noalias.scope.decl(metadata !103)
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %14, i8 0, i64 5604, i1 false), !alias.scope !103
-  %443 = load i32, ptr %13, align 4, !tbaa !34, !noalias !103
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %14) #16
+  tail call void @llvm.experimental.noalias.scope.decl(metadata !112)
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %14, i8 0, i64 5604, i1 false), !alias.scope !112
+  %443 = load i32, ptr %13, align 4, !tbaa !34, !noalias !112
   %444 = icmp sgt i32 %443, 700
   br i1 %444, label %445, label %446
 
@@ -3833,7 +4827,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 
 446:                                              ; preds = %442
   %447 = shl nsw i32 %443, 1
-  store i32 %447, ptr %14, align 4, !tbaa !34, !alias.scope !103
+  store i32 %447, ptr %14, align 4, !tbaa !34, !alias.scope !112
   %448 = icmp sgt i32 %443, 0
   br i1 %448, label %449, label %457
 
@@ -3845,13 +4839,13 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 452:                                              ; preds = %472, %449
   %453 = phi i64 [ 0, %449 ], [ %476, %472 ]
   %454 = getelementptr inbounds [1400 x i32], ptr %432, i64 0, i64 %453
-  %455 = load i32, ptr %454, align 4, !tbaa !24, !noalias !103
+  %455 = load i32, ptr %454, align 4, !tbaa !24, !noalias !112
   %456 = zext i32 %455 to i64
   br label %478
 
 457:                                              ; preds = %472, %446
   %458 = getelementptr inbounds i8, ptr %14, i64 4
-  %459 = load i32, ptr %14, align 4, !tbaa !34, !alias.scope !103
+  %459 = load i32, ptr %14, align 4, !tbaa !34, !alias.scope !112
   %460 = icmp eq i32 %459, 0
   br i1 %460, label %495, label %461
 
@@ -3863,20 +4857,20 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %464 = phi i64 [ %462, %461 ], [ %465, %469 ]
   %465 = add nsw i64 %464, -1
   %466 = getelementptr inbounds [1400 x i32], ptr %458, i64 0, i64 %465
-  %467 = load i32, ptr %466, align 4, !tbaa !24, !alias.scope !103
+  %467 = load i32, ptr %466, align 4, !tbaa !24, !alias.scope !112
   %468 = icmp eq i32 %467, 0
   br i1 %468, label %469, label %495
 
 469:                                              ; preds = %463
   %470 = trunc i64 %465 to i32
-  store i32 %470, ptr %14, align 4, !tbaa !34, !alias.scope !103
+  store i32 %470, ptr %14, align 4, !tbaa !34, !alias.scope !112
   %471 = icmp eq i64 %465, 0
   br i1 %471, label %495, label %463
 472:                                              ; preds = %478
   %473 = trunc i64 %492 to i32
   %474 = add nuw nsw i64 %453, %451
   %475 = getelementptr inbounds [1400 x i32], ptr %450, i64 0, i64 %474
-  store i32 %473, ptr %475, align 4, !tbaa !24, !alias.scope !103
+  store i32 %473, ptr %475, align 4, !tbaa !24, !alias.scope !112
   %476 = add nuw nsw i64 %453, 1
   %477 = icmp eq i64 %476, %451
   br i1 %477, label %457, label %452
@@ -3884,29 +4878,29 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %479 = phi i64 [ 0, %452 ], [ %493, %478 ]
   %480 = phi i64 [ 0, %452 ], [ %492, %478 ]
   %481 = getelementptr inbounds [1400 x i32], ptr %432, i64 0, i64 %479
-  %482 = load i32, ptr %481, align 4, !tbaa !24, !noalias !103
+  %482 = load i32, ptr %481, align 4, !tbaa !24, !noalias !112
   %483 = zext i32 %482 to i64
   %484 = mul nuw i64 %483, %456
   %485 = add nuw nsw i64 %479, %453
   %486 = getelementptr inbounds [1400 x i32], ptr %450, i64 0, i64 %485
-  %487 = load i32, ptr %486, align 4, !tbaa !24, !alias.scope !103
+  %487 = load i32, ptr %486, align 4, !tbaa !24, !alias.scope !112
   %488 = zext i32 %487 to i64
   %489 = add nuw nsw i64 %480, %488
   %490 = add nuw i64 %489, %484
   %491 = trunc i64 %490 to i32
-  store i32 %491, ptr %486, align 4, !tbaa !24, !alias.scope !103
+  store i32 %491, ptr %486, align 4, !tbaa !24, !alias.scope !112
   %492 = lshr i64 %490, 32
   %493 = add nuw nsw i64 %479, 1
   %494 = icmp eq i64 %493, %451
   br i1 %494, label %472, label %478
 495:                                              ; preds = %463, %469, %457
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %13, ptr noundef nonnull align 4 dereferenceable(5604) %14, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %14) #15
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %15) #15
-  tail call void @llvm.experimental.noalias.scope.decl(metadata !106)
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %15, i8 0, i64 5604, i1 false), !alias.scope !106
-  %496 = load i32, ptr %13, align 4, !tbaa !34, !noalias !106
-  %497 = load i32, ptr %9, align 4, !tbaa !34, !noalias !106
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %14) #16
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %15) #16
+  tail call void @llvm.experimental.noalias.scope.decl(metadata !115)
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %15, i8 0, i64 5604, i1 false), !alias.scope !115
+  %496 = load i32, ptr %13, align 4, !tbaa !34, !noalias !115
+  %497 = load i32, ptr %9, align 4, !tbaa !34, !noalias !115
   %498 = add nsw i32 %497, %496
   %499 = icmp sgt i32 %498, 1400
   br i1 %499, label %500, label %501
@@ -3916,7 +4910,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   unreachable
 
 501:                                              ; preds = %495
-  store i32 %498, ptr %15, align 4, !tbaa !34, !alias.scope !106
+  store i32 %498, ptr %15, align 4, !tbaa !34, !alias.scope !115
   %502 = icmp sgt i32 %496, 0
   br i1 %502, label %503, label %516
 
@@ -3935,13 +4929,13 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 
 512:                                              ; preds = %510
   %513 = getelementptr inbounds [1400 x i32], ptr %432, i64 0, i64 %511
-  %514 = load i32, ptr %513, align 4, !tbaa !24, !noalias !106
+  %514 = load i32, ptr %513, align 4, !tbaa !24, !noalias !115
   %515 = zext i32 %514 to i64
   br label %539
 
 516:                                              ; preds = %533, %501
   %517 = getelementptr inbounds i8, ptr %15, i64 4
-  %518 = load i32, ptr %15, align 4, !tbaa !34, !alias.scope !106
+  %518 = load i32, ptr %15, align 4, !tbaa !34, !alias.scope !115
   %519 = icmp eq i32 %518, 0
   br i1 %519, label %556, label %520
 
@@ -3953,13 +4947,13 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %523 = phi i64 [ %521, %520 ], [ %524, %528 ]
   %524 = add nsw i64 %523, -1
   %525 = getelementptr inbounds [1400 x i32], ptr %517, i64 0, i64 %524
-  %526 = load i32, ptr %525, align 4, !tbaa !24, !alias.scope !106
+  %526 = load i32, ptr %525, align 4, !tbaa !24, !alias.scope !115
   %527 = icmp eq i32 %526, 0
   br i1 %527, label %528, label %556
 
 528:                                              ; preds = %522
   %529 = trunc i64 %524 to i32
-  store i32 %529, ptr %15, align 4, !tbaa !34, !alias.scope !106
+  store i32 %529, ptr %15, align 4, !tbaa !34, !alias.scope !115
   %530 = icmp eq i64 %524, 0
   br i1 %530, label %556, label %522
 531:                                              ; preds = %539
@@ -3970,7 +4964,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %534 = phi i32 [ 0, %510 ], [ %532, %531 ]
   %535 = add nsw i64 %511, %507
   %536 = getelementptr inbounds [1400 x i32], ptr %506, i64 0, i64 %535
-  store i32 %534, ptr %536, align 4, !tbaa !24, !alias.scope !106
+  store i32 %534, ptr %536, align 4, !tbaa !24, !alias.scope !115
   %537 = add nuw nsw i64 %511, 1
   %538 = icmp eq i64 %537, %508
   br i1 %538, label %516, label %510
@@ -3978,24 +4972,24 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %540 = phi i64 [ 0, %512 ], [ %554, %539 ]
   %541 = phi i64 [ 0, %512 ], [ %553, %539 ]
   %542 = getelementptr inbounds [1400 x i32], ptr %505, i64 0, i64 %540
-  %543 = load i32, ptr %542, align 4, !tbaa !24, !noalias !106
+  %543 = load i32, ptr %542, align 4, !tbaa !24, !noalias !115
   %544 = zext i32 %543 to i64
   %545 = mul nuw i64 %544, %515
   %546 = add nuw nsw i64 %540, %511
   %547 = getelementptr inbounds [1400 x i32], ptr %506, i64 0, i64 %546
-  %548 = load i32, ptr %547, align 4, !tbaa !24, !alias.scope !106
+  %548 = load i32, ptr %547, align 4, !tbaa !24, !alias.scope !115
   %549 = zext i32 %548 to i64
   %550 = add nuw nsw i64 %541, %549
   %551 = add nuw i64 %550, %545
   %552 = trunc i64 %551 to i32
-  store i32 %552, ptr %547, align 4, !tbaa !24, !alias.scope !106
+  store i32 %552, ptr %547, align 4, !tbaa !24, !alias.scope !115
   %553 = lshr i64 %551, 32
   %554 = add nuw nsw i64 %540, 1
   %555 = icmp eq i64 %554, %509
   br i1 %555, label %531, label %539
 556:                                              ; preds = %522, %528, %516
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %13, ptr noundef nonnull align 4 dereferenceable(5604) %15, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %15) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %15) #16
   %557 = load i32, ptr %8, align 4, !tbaa !34
   %558 = icmp sgt i32 %557, 0
   br i1 %558, label %559, label %562
@@ -4104,12 +5098,12 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 627:                                              ; preds = %622, %614
   %628 = phi i64 [ %624, %622 ], [ %616, %614 ]
   %629 = phi i64 [ %626, %622 ], [ %618, %614 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %16) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %16) #16
   %630 = zext i64 %629 to i128
   %631 = shl nuw i128 %630, 64
   %632 = zext i64 %628 to i128
   %633 = or i128 %631, %632
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %16, i8 0, i64 5604, i1 false), !alias.scope !109
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %16, i8 0, i64 5604, i1 false), !alias.scope !118
   %634 = icmp eq i128 %633, 0
   br i1 %634, label %646, label %635
 
@@ -4120,17 +5114,17 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 637:                                              ; preds = %637, %635
   %638 = phi i128 [ %633, %635 ], [ %644, %637 ]
   %639 = trunc i128 %638 to i32
-  %640 = load i32, ptr %16, align 4, !tbaa !34, !alias.scope !109
+  %640 = load i32, ptr %16, align 4, !tbaa !34, !alias.scope !118
   %641 = add nsw i32 %640, 1
-  store i32 %641, ptr %16, align 4, !tbaa !34, !alias.scope !109
+  store i32 %641, ptr %16, align 4, !tbaa !34, !alias.scope !118
   %642 = sext i32 %640 to i64
   %643 = getelementptr inbounds [1400 x i32], ptr %636, i64 0, i64 %642
-  store i32 %639, ptr %643, align 4, !tbaa !24, !alias.scope !109
+  store i32 %639, ptr %643, align 4, !tbaa !24, !alias.scope !118
   %644 = lshr i128 %638, 32
   %645 = icmp ult i128 %638, 4294967296
   br i1 %645, label %646, label %637
 646:                                              ; preds = %637, %627
-  %647 = call fastcc { i64, i64 } @pack(ptr noundef %16, ptr noundef %7, i32 noundef %248, i32 noundef 0, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  %647 = call fastcc { i64, i64 } @pack(ptr noundef %16, ptr noundef %7, i32 noundef %248, i32 noundef 0, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   %648 = extractvalue { i64, i64 } %647, 0
   %649 = extractvalue { i64, i64 } %647, 1
   %650 = zext i64 %649 to i128
@@ -4184,11 +5178,11 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %672 = icmp eq i64 %671, %656
   br i1 %672, label %673, label %665
 673:                                              ; preds = %665, %657, %659, %661, %663, %664
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %16) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %13) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %16) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %13) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #16
   br label %855
 
 674:                                              ; preds = %181
@@ -4249,17 +5243,17 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %701 = icmp eq i64 %700, %685
   br i1 %701, label %855, label %694
 702:                                              ; preds = %674
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %17) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %17, i8 0, i64 5604, i1 false), !alias.scope !112
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %17) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %17, i8 0, i64 5604, i1 false), !alias.scope !121
   %703 = getelementptr inbounds i8, ptr %17, i64 4
-  store i32 1, ptr %17, align 4, !tbaa !34, !alias.scope !112
-  store i32 1, ptr %703, align 4, !tbaa !24, !alias.scope !112
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %18) #15
+  store i32 1, ptr %17, align 4, !tbaa !34, !alias.scope !121
+  store i32 1, ptr %703, align 4, !tbaa !24, !alias.scope !121
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %18) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %18, ptr noundef nonnull align 4 dereferenceable(5604) %6, i64 5604, i1 false), !tbaa.struct !30
   %704 = sub nsw i32 0, %676
-  call fastcc void @power(ptr noundef %17, i32 noundef %104, i32 noundef %704) #16
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %19) #15
-  call fastcc void @divide(ptr sret(%struct.tzrt_big) align 4 %19, ptr noundef %18, ptr noundef %17) #16
+  call fastcc void @power(ptr noundef %17, i32 noundef %104, i32 noundef %704) #17
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %19) #16
+  call fastcc void @divide(ptr sret(%struct.tzrt_big) align 4 %19, ptr noundef %18, ptr noundef %17) #17
   %705 = load i32, ptr %18, align 4, !tbaa !34
   %706 = icmp eq i32 %705, 0
   br i1 %706, label %707, label %731
@@ -4328,7 +5322,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   br i1 %740, label %741, label %781
 
 741:                                              ; preds = %731
-  call fastcc void @multiply_small(ptr noundef %18, i32 noundef 2) #16
+  call fastcc void @multiply_small(ptr noundef %18, i32 noundef 2) #17
   %742 = load i32, ptr %18, align 4, !tbaa !34
   %743 = load i32, ptr %17, align 4, !tbaa !34
   %744 = icmp eq i32 %742, %743
@@ -4388,11 +5382,11 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
 
 781:                                              ; preds = %766, %773, %769, %731
   %782 = phi i1 [ %737, %731 ], [ true, %766 ], [ %772, %769 ], [ %780, %773 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %20) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %20, i8 0, i64 5604, i1 false), !alias.scope !115
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %20) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %20, i8 0, i64 5604, i1 false), !alias.scope !124
   %783 = getelementptr inbounds i8, ptr %20, i64 4
-  store i32 1, ptr %20, align 4, !tbaa !34, !alias.scope !115
-  store i32 1, ptr %783, align 4, !tbaa !24, !alias.scope !115
+  store i32 1, ptr %20, align 4, !tbaa !34, !alias.scope !124
+  store i32 1, ptr %783, align 4, !tbaa !24, !alias.scope !124
   br i1 %782, label %784, label %826
 
 784:                                              ; preds = %781
@@ -4464,7 +5458,7 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   br label %826
 
 826:                                              ; preds = %823, %794, %784, %781
-  %827 = call fastcc { i64, i64 } @pack(ptr noundef %19, ptr noundef %20, i32 noundef 0, i32 noundef %734, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  %827 = call fastcc { i64, i64 } @pack(ptr noundef %19, ptr noundef %20, i32 noundef 0, i32 noundef %734, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   %828 = extractvalue { i64, i64 } %827, 0
   %829 = extractvalue { i64, i64 } %827, 1
   %830 = zext i64 %829 to i128
@@ -4518,18 +5512,18 @@ define weak hidden void @tz_soft_math_unary(ptr noundef writeonly %0, ptr nounde
   %852 = icmp eq i64 %851, %836
   br i1 %852, label %853, label %845
 853:                                              ; preds = %845, %837, %839, %841, %843, %844
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %20) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %20) #16
   br label %854
 
 854:                                              ; preds = %723, %722, %721, %719, %717, %715, %853
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %19) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %18) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %17) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %19) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %18) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %17) #16
   br label %855
 
 855:                                              ; preds = %173, %694, %224, %693, %692, %690, %688, %686, %223, %222, %220, %218, %216, %172, %171, %169, %167, %165, %854, %673
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %6) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %6) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %5) #16
   ret void
 }
 
@@ -4593,12 +5587,12 @@ define internal fastcc i32 @magnitude(ptr noundef nonnull readonly %0, ptr nound
 
 46:                                               ; preds = %91, %39
   %47 = phi i32 [ %40, %39 ], [ %92, %91 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %5) #16
   %48 = icmp sgt i32 %47, -1
   %49 = select i1 %48, ptr %1, ptr %0
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %5, ptr noundef nonnull readonly align 4 dereferenceable(5604) %49, i64 5604, i1 false)
   %50 = tail call i32 @llvm.abs.i32(i32 %47, i1 true)
-  call fastcc void @power(ptr noundef %5, i32 noundef %2, i32 noundef %50) #16
+  call fastcc void @power(ptr noundef %5, i32 noundef %2, i32 noundef %50) #17
   %51 = load i32, ptr %5, align 4, !tbaa !34
   br i1 %48, label %52, label %69
 
@@ -4663,14 +5657,14 @@ define internal fastcc i32 @magnitude(ptr noundef nonnull readonly %0, ptr nound
 
 89:                                               ; preds = %55, %67, %75, %87
   %90 = phi i1 [ %56, %55 ], [ %68, %67 ], [ %76, %75 ], [ %88, %87 ]
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #16
   br i1 %90, label %91, label %94
 
 91:                                               ; preds = %89
   %92 = add nsw i32 %47, -1
   br label %46
 93:                                               ; preds = %71, %54, %77, %57
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #16
   br label %94
 
 94:                                               ; preds = %89, %93
@@ -4681,12 +5675,12 @@ define internal fastcc i32 @magnitude(ptr noundef nonnull readonly %0, ptr nound
 97:                                               ; preds = %94, %145
   %98 = phi i32 [ %99, %145 ], [ %47, %94 ]
   %99 = add nsw i32 %98, 1
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %4) #16
   %100 = icmp sgt i32 %98, -2
   %101 = select i1 %100, ptr %1, ptr %0
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %4, ptr noundef nonnull readonly align 4 dereferenceable(5604) %101, i64 5604, i1 false)
   %102 = tail call i32 @llvm.abs.i32(i32 %99, i1 true)
-  call fastcc void @power(ptr noundef %4, i32 noundef %2, i32 noundef %102) #16
+  call fastcc void @power(ptr noundef %4, i32 noundef %2, i32 noundef %102) #17
   %103 = load i32, ptr %4, align 4, !tbaa !34
   br i1 %100, label %104, label %123
 
@@ -4755,7 +5749,7 @@ define internal fastcc i32 @magnitude(ptr noundef nonnull readonly %0, ptr nound
 
 145:                                              ; preds = %132, %110, %125, %106, %107, %120, %129, %142
   %146 = phi i32 [ %109, %107 ], [ %122, %120 ], [ %131, %129 ], [ %144, %142 ], [ 0, %106 ], [ 0, %125 ], [ 0, %110 ], [ 0, %132 ]
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %4) #16
   %147 = icmp sgt i32 %146, -1
   br i1 %147, label %97, label %148
 148:                                              ; preds = %145
@@ -4819,7 +5813,7 @@ define internal fastcc void @multiply_small(ptr noundef nonnull %0, i32 noundef 
 define internal fastcc void @divide(ptr noalias nonnull sret(%struct.tzrt_big) align 4 %0, ptr noundef nonnull %1, ptr noundef nonnull readonly %2) unnamed_addr #2 {
   %4 = alloca %struct.tzrt_big, align 4
   tail call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %0, i8 0, i64 5604, i1 false)
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %4) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %4, ptr noundef nonnull align 4 dereferenceable(5604) %2, i64 5604, i1 false), !tbaa.struct !30
   %5 = load i32, ptr %2, align 4, !tbaa !34
   %6 = icmp eq i32 %5, 0
@@ -5126,16 +6120,16 @@ define internal fastcc void @divide(ptr noalias nonnull sret(%struct.tzrt_big) a
   %212 = icmp sgt i32 %111, 0
   br i1 %212, label %109, label %98
 213:                                              ; preds = %106, %100, %21
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %4) #16
   ret void
 }
 
 ; Function Attrs: nounwind memory(read, argmem: readwrite, inaccessiblemem: write)
-define weak hidden void @tz_soft_math_binary(ptr noundef writeonly %0, ptr noundef readonly %1, ptr noundef readonly %2, i32 noundef %3, i32 noundef %4) local_unnamed_addr #5 {
+define weak hidden void @tz_soft_math_binary(ptr noundef writeonly %0, ptr noundef readonly %1, ptr noundef readonly %2, i32 noundef %3, i32 noundef %4) local_unnamed_addr #6 {
   %6 = alloca %struct.tzrt_format, align 8
   %7 = alloca %struct.tzrt_number, align 4
   %8 = alloca %struct.tzrt_number, align 4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #16
   switch i32 %3, label %72 [
     i32 0, label %9
     i32 1, label %18
@@ -5147,167 +6141,167 @@ define weak hidden void @tz_soft_math_binary(ptr noundef writeonly %0, ptr nound
   ]
 
 9:                                                ; preds = %5
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %10 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 11, ptr %10, align 4, !tbaa !12, !alias.scope !122
+  store i32 11, ptr %10, align 4, !tbaa !12, !alias.scope !131
   %11 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -24, ptr %11, align 8, !tbaa !13, !alias.scope !122
+  store i32 -24, ptr %11, align 8, !tbaa !13, !alias.scope !131
   %12 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 5, ptr %12, align 4, !tbaa !14, !alias.scope !122
+  store i32 5, ptr %12, align 4, !tbaa !14, !alias.scope !131
   %13 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 10, ptr %13, align 8, !tbaa !15, !alias.scope !122
+  store i32 10, ptr %13, align 8, !tbaa !15, !alias.scope !131
   %14 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 15, ptr %14, align 4, !tbaa !16, !alias.scope !122
+  store i32 15, ptr %14, align 4, !tbaa !16, !alias.scope !131
   %15 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 16, ptr %15, align 8, !tbaa !17, !alias.scope !122
+  store i32 16, ptr %15, align 8, !tbaa !17, !alias.scope !131
   %16 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %16, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %16, align 4, !tbaa !18, !alias.scope !131
   %17 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %17, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %17, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 18:                                               ; preds = %5
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %19 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 24, ptr %19, align 4, !tbaa !12, !alias.scope !122
+  store i32 24, ptr %19, align 4, !tbaa !12, !alias.scope !131
   %20 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -149, ptr %20, align 8, !tbaa !13, !alias.scope !122
+  store i32 -149, ptr %20, align 8, !tbaa !13, !alias.scope !131
   %21 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 104, ptr %21, align 4, !tbaa !14, !alias.scope !122
+  store i32 104, ptr %21, align 4, !tbaa !14, !alias.scope !131
   %22 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 23, ptr %22, align 8, !tbaa !15, !alias.scope !122
+  store i32 23, ptr %22, align 8, !tbaa !15, !alias.scope !131
   %23 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 127, ptr %23, align 4, !tbaa !16, !alias.scope !122
+  store i32 127, ptr %23, align 4, !tbaa !16, !alias.scope !131
   %24 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 32, ptr %24, align 8, !tbaa !17, !alias.scope !122
+  store i32 32, ptr %24, align 8, !tbaa !17, !alias.scope !131
   %25 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %25, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %25, align 4, !tbaa !18, !alias.scope !131
   %26 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %26, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %26, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 27:                                               ; preds = %5
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %28 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 53, ptr %28, align 4, !tbaa !12, !alias.scope !122
+  store i32 53, ptr %28, align 4, !tbaa !12, !alias.scope !131
   %29 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -1074, ptr %29, align 8, !tbaa !13, !alias.scope !122
+  store i32 -1074, ptr %29, align 8, !tbaa !13, !alias.scope !131
   %30 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 971, ptr %30, align 4, !tbaa !14, !alias.scope !122
+  store i32 971, ptr %30, align 4, !tbaa !14, !alias.scope !131
   %31 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 52, ptr %31, align 8, !tbaa !15, !alias.scope !122
+  store i32 52, ptr %31, align 8, !tbaa !15, !alias.scope !131
   %32 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 1023, ptr %32, align 4, !tbaa !16, !alias.scope !122
+  store i32 1023, ptr %32, align 4, !tbaa !16, !alias.scope !131
   %33 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 64, ptr %33, align 8, !tbaa !17, !alias.scope !122
+  store i32 64, ptr %33, align 8, !tbaa !17, !alias.scope !131
   %34 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %34, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %34, align 4, !tbaa !18, !alias.scope !131
   %35 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %35, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %35, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 36:                                               ; preds = %5
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %37 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 113, ptr %37, align 4, !tbaa !12, !alias.scope !122
+  store i32 113, ptr %37, align 4, !tbaa !12, !alias.scope !131
   %38 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -16494, ptr %38, align 8, !tbaa !13, !alias.scope !122
+  store i32 -16494, ptr %38, align 8, !tbaa !13, !alias.scope !131
   %39 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 16271, ptr %39, align 4, !tbaa !14, !alias.scope !122
+  store i32 16271, ptr %39, align 4, !tbaa !14, !alias.scope !131
   %40 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 112, ptr %40, align 8, !tbaa !15, !alias.scope !122
+  store i32 112, ptr %40, align 8, !tbaa !15, !alias.scope !131
   %41 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 16383, ptr %41, align 4, !tbaa !16, !alias.scope !122
+  store i32 16383, ptr %41, align 4, !tbaa !16, !alias.scope !131
   %42 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 128, ptr %42, align 8, !tbaa !17, !alias.scope !122
+  store i32 128, ptr %42, align 8, !tbaa !17, !alias.scope !131
   %43 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %43, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %43, align 4, !tbaa !18, !alias.scope !131
   %44 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %44, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %44, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 45:                                               ; preds = %5
-  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %46 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 7, ptr %46, align 4, !tbaa !12, !alias.scope !122
+  store i32 7, ptr %46, align 4, !tbaa !12, !alias.scope !131
   %47 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -101, ptr %47, align 8, !tbaa !13, !alias.scope !122
+  store i32 -101, ptr %47, align 8, !tbaa !13, !alias.scope !131
   %48 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 90, ptr %48, align 4, !tbaa !14, !alias.scope !122
+  store i32 90, ptr %48, align 4, !tbaa !14, !alias.scope !131
   %49 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 23, ptr %49, align 8, !tbaa !15, !alias.scope !122
+  store i32 23, ptr %49, align 8, !tbaa !15, !alias.scope !131
   %50 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 101, ptr %50, align 4, !tbaa !16, !alias.scope !122
+  store i32 101, ptr %50, align 4, !tbaa !16, !alias.scope !131
   %51 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 32, ptr %51, align 8, !tbaa !17, !alias.scope !122
+  store i32 32, ptr %51, align 8, !tbaa !17, !alias.scope !131
   %52 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %52, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %52, align 4, !tbaa !18, !alias.scope !131
   %53 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %53, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %53, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 54:                                               ; preds = %5
-  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %55 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 16, ptr %55, align 4, !tbaa !12, !alias.scope !122
+  store i32 16, ptr %55, align 4, !tbaa !12, !alias.scope !131
   %56 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -398, ptr %56, align 8, !tbaa !13, !alias.scope !122
+  store i32 -398, ptr %56, align 8, !tbaa !13, !alias.scope !131
   %57 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 369, ptr %57, align 4, !tbaa !14, !alias.scope !122
+  store i32 369, ptr %57, align 4, !tbaa !14, !alias.scope !131
   %58 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 53, ptr %58, align 8, !tbaa !15, !alias.scope !122
+  store i32 53, ptr %58, align 8, !tbaa !15, !alias.scope !131
   %59 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 398, ptr %59, align 4, !tbaa !16, !alias.scope !122
+  store i32 398, ptr %59, align 4, !tbaa !16, !alias.scope !131
   %60 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 64, ptr %60, align 8, !tbaa !17, !alias.scope !122
+  store i32 64, ptr %60, align 8, !tbaa !17, !alias.scope !131
   %61 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %61, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %61, align 4, !tbaa !18, !alias.scope !131
   %62 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %62, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %62, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 63:                                               ; preds = %5
-  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %64 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 34, ptr %64, align 4, !tbaa !12, !alias.scope !122
+  store i32 34, ptr %64, align 4, !tbaa !12, !alias.scope !131
   %65 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -6176, ptr %65, align 8, !tbaa !13, !alias.scope !122
+  store i32 -6176, ptr %65, align 8, !tbaa !13, !alias.scope !131
   %66 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 6111, ptr %66, align 4, !tbaa !14, !alias.scope !122
+  store i32 6111, ptr %66, align 4, !tbaa !14, !alias.scope !131
   %67 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 113, ptr %67, align 8, !tbaa !15, !alias.scope !122
+  store i32 113, ptr %67, align 8, !tbaa !15, !alias.scope !131
   %68 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 6176, ptr %68, align 4, !tbaa !16, !alias.scope !122
+  store i32 6176, ptr %68, align 4, !tbaa !16, !alias.scope !131
   %69 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 128, ptr %69, align 8, !tbaa !17, !alias.scope !122
+  store i32 128, ptr %69, align 8, !tbaa !17, !alias.scope !131
   %70 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %70, align 4, !tbaa !18, !alias.scope !122
+  store i32 0, ptr %70, align 4, !tbaa !18, !alias.scope !131
   %71 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %71, align 8, !tbaa !19, !alias.scope !122
+  store i32 1, ptr %71, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 72:                                               ; preds = %5
   %73 = and i32 %3, 7
   %74 = shl nuw nsw i32 8, %73
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !122
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !131
   %75 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 %74, ptr %75, align 4, !tbaa !12, !alias.scope !122
+  store i32 %74, ptr %75, align 4, !tbaa !12, !alias.scope !131
   %76 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 0, ptr %76, align 8, !tbaa !13, !alias.scope !122
+  store i32 0, ptr %76, align 8, !tbaa !13, !alias.scope !131
   %77 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 0, ptr %77, align 4, !tbaa !14, !alias.scope !122
+  store i32 0, ptr %77, align 4, !tbaa !14, !alias.scope !131
   %78 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 0, ptr %78, align 8, !tbaa !15, !alias.scope !122
+  store i32 0, ptr %78, align 8, !tbaa !15, !alias.scope !131
   %79 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 0, ptr %79, align 4, !tbaa !16, !alias.scope !122
+  store i32 0, ptr %79, align 4, !tbaa !16, !alias.scope !131
   %80 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 %74, ptr %80, align 8, !tbaa !17, !alias.scope !122
+  store i32 %74, ptr %80, align 8, !tbaa !17, !alias.scope !131
   %81 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 1, ptr %81, align 4, !tbaa !18, !alias.scope !122
+  store i32 1, ptr %81, align 4, !tbaa !18, !alias.scope !131
   %82 = getelementptr inbounds i8, ptr %6, i64 32
   %83 = icmp slt i32 %3, 24
   %84 = zext i1 %83 to i32
-  store i32 %84, ptr %82, align 8, !tbaa !19, !alias.scope !122
+  store i32 %84, ptr %82, align 8, !tbaa !19, !alias.scope !131
   br label %85
 
 85:                                               ; preds = %9, %18, %27, %36, %45, %54, %63, %72
@@ -5315,10 +6309,10 @@ define weak hidden void @tz_soft_math_binary(ptr noundef writeonly %0, ptr nound
   %87 = phi i32 [ 31, %9 ], [ 255, %18 ], [ 2047, %27 ], [ 32767, %36 ], [ 203, %45 ], [ 797, %54 ], [ 12353, %63 ], [ 1, %72 ]
   %88 = phi i32 [ 10, %9 ], [ 23, %18 ], [ 52, %27 ], [ 112, %36 ], [ 23, %45 ], [ 53, %54 ], [ 113, %63 ], [ 0, %72 ]
   %89 = phi i1 [ true, %9 ], [ true, %18 ], [ true, %27 ], [ true, %36 ], [ false, %45 ], [ false, %54 ], [ false, %63 ], [ true, %72 ]
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #16
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %8) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %8, ptr noundef %2, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %8) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %8, ptr noundef %2, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
   %90 = getelementptr inbounds i8, ptr %7, i64 5612
   %91 = load i32, ptr %90, align 4, !tbaa !23
   %92 = icmp eq i32 %91, 2
@@ -5562,7 +6556,7 @@ define weak hidden void @tz_soft_math_binary(ptr noundef writeonly %0, ptr nound
   %236 = icmp eq i64 %235, %219
   br i1 %236, label %309, label %229
 237:                                              ; preds = %142
-  %238 = tail call i32 @tz_soft_cmp(ptr noundef %1, ptr noundef %2, i32 noundef %3) #16
+  %238 = tail call i32 @tz_soft_cmp(ptr noundef %1, ptr noundef %2, i32 noundef %3) #17
   %239 = icmp eq i32 %4, 0
   br i1 %239, label %242, label %240
 
@@ -5694,9 +6688,9 @@ define weak hidden void @tz_soft_math_binary(ptr noundef writeonly %0, ptr nound
   %308 = icmp eq i64 %307, %292
   br i1 %308, label %309, label %301
 309:                                              ; preds = %229, %301, %134, %300, %299, %297, %295, %293, %228, %226, %224, %222, %220, %133, %132, %130, %128, %126
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %8) #15
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %8) #16
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #16
   ret void
 }
 
@@ -5711,7 +6705,7 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %11 = alloca %struct.tzrt_big, align 4
   %12 = alloca %struct.tzrt_big, align 4
   %13 = alloca %struct.tzrt_big, align 4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %5) #16
   switch i32 %2, label %77 [
     i32 0, label %14
     i32 1, label %23
@@ -5723,172 +6717,172 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   ]
 
 14:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %15 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 11, ptr %15, align 4, !tbaa !12, !alias.scope !125
+  store i32 11, ptr %15, align 4, !tbaa !12, !alias.scope !134
   %16 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -24, ptr %16, align 8, !tbaa !13, !alias.scope !125
+  store i32 -24, ptr %16, align 8, !tbaa !13, !alias.scope !134
   %17 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 5, ptr %17, align 4, !tbaa !14, !alias.scope !125
+  store i32 5, ptr %17, align 4, !tbaa !14, !alias.scope !134
   %18 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 10, ptr %18, align 8, !tbaa !15, !alias.scope !125
+  store i32 10, ptr %18, align 8, !tbaa !15, !alias.scope !134
   %19 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 15, ptr %19, align 4, !tbaa !16, !alias.scope !125
+  store i32 15, ptr %19, align 4, !tbaa !16, !alias.scope !134
   %20 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 16, ptr %20, align 8, !tbaa !17, !alias.scope !125
+  store i32 16, ptr %20, align 8, !tbaa !17, !alias.scope !134
   %21 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %21, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %21, align 4, !tbaa !18, !alias.scope !134
   %22 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %22, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %22, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 23:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %24 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 24, ptr %24, align 4, !tbaa !12, !alias.scope !125
+  store i32 24, ptr %24, align 4, !tbaa !12, !alias.scope !134
   %25 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -149, ptr %25, align 8, !tbaa !13, !alias.scope !125
+  store i32 -149, ptr %25, align 8, !tbaa !13, !alias.scope !134
   %26 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 104, ptr %26, align 4, !tbaa !14, !alias.scope !125
+  store i32 104, ptr %26, align 4, !tbaa !14, !alias.scope !134
   %27 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 23, ptr %27, align 8, !tbaa !15, !alias.scope !125
+  store i32 23, ptr %27, align 8, !tbaa !15, !alias.scope !134
   %28 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 127, ptr %28, align 4, !tbaa !16, !alias.scope !125
+  store i32 127, ptr %28, align 4, !tbaa !16, !alias.scope !134
   %29 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 32, ptr %29, align 8, !tbaa !17, !alias.scope !125
+  store i32 32, ptr %29, align 8, !tbaa !17, !alias.scope !134
   %30 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %30, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %30, align 4, !tbaa !18, !alias.scope !134
   %31 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %31, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %31, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 32:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %33 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 53, ptr %33, align 4, !tbaa !12, !alias.scope !125
+  store i32 53, ptr %33, align 4, !tbaa !12, !alias.scope !134
   %34 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -1074, ptr %34, align 8, !tbaa !13, !alias.scope !125
+  store i32 -1074, ptr %34, align 8, !tbaa !13, !alias.scope !134
   %35 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 971, ptr %35, align 4, !tbaa !14, !alias.scope !125
+  store i32 971, ptr %35, align 4, !tbaa !14, !alias.scope !134
   %36 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 52, ptr %36, align 8, !tbaa !15, !alias.scope !125
+  store i32 52, ptr %36, align 8, !tbaa !15, !alias.scope !134
   %37 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 1023, ptr %37, align 4, !tbaa !16, !alias.scope !125
+  store i32 1023, ptr %37, align 4, !tbaa !16, !alias.scope !134
   %38 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 64, ptr %38, align 8, !tbaa !17, !alias.scope !125
+  store i32 64, ptr %38, align 8, !tbaa !17, !alias.scope !134
   %39 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %39, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %39, align 4, !tbaa !18, !alias.scope !134
   %40 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %40, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %40, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 41:                                               ; preds = %4
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %42 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 113, ptr %42, align 4, !tbaa !12, !alias.scope !125
+  store i32 113, ptr %42, align 4, !tbaa !12, !alias.scope !134
   %43 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -16494, ptr %43, align 8, !tbaa !13, !alias.scope !125
+  store i32 -16494, ptr %43, align 8, !tbaa !13, !alias.scope !134
   %44 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 16271, ptr %44, align 4, !tbaa !14, !alias.scope !125
+  store i32 16271, ptr %44, align 4, !tbaa !14, !alias.scope !134
   %45 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 112, ptr %45, align 8, !tbaa !15, !alias.scope !125
+  store i32 112, ptr %45, align 8, !tbaa !15, !alias.scope !134
   %46 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 16383, ptr %46, align 4, !tbaa !16, !alias.scope !125
+  store i32 16383, ptr %46, align 4, !tbaa !16, !alias.scope !134
   %47 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 128, ptr %47, align 8, !tbaa !17, !alias.scope !125
+  store i32 128, ptr %47, align 8, !tbaa !17, !alias.scope !134
   %48 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %48, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %48, align 4, !tbaa !18, !alias.scope !134
   %49 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %49, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %49, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 50:                                               ; preds = %4
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %51 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 7, ptr %51, align 4, !tbaa !12, !alias.scope !125
+  store i32 7, ptr %51, align 4, !tbaa !12, !alias.scope !134
   %52 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -101, ptr %52, align 8, !tbaa !13, !alias.scope !125
+  store i32 -101, ptr %52, align 8, !tbaa !13, !alias.scope !134
   %53 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 90, ptr %53, align 4, !tbaa !14, !alias.scope !125
+  store i32 90, ptr %53, align 4, !tbaa !14, !alias.scope !134
   %54 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 23, ptr %54, align 8, !tbaa !15, !alias.scope !125
+  store i32 23, ptr %54, align 8, !tbaa !15, !alias.scope !134
   %55 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 101, ptr %55, align 4, !tbaa !16, !alias.scope !125
+  store i32 101, ptr %55, align 4, !tbaa !16, !alias.scope !134
   %56 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 32, ptr %56, align 8, !tbaa !17, !alias.scope !125
+  store i32 32, ptr %56, align 8, !tbaa !17, !alias.scope !134
   %57 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %57, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %57, align 4, !tbaa !18, !alias.scope !134
   %58 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %58, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %58, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 59:                                               ; preds = %4
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %60 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 16, ptr %60, align 4, !tbaa !12, !alias.scope !125
+  store i32 16, ptr %60, align 4, !tbaa !12, !alias.scope !134
   %61 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -398, ptr %61, align 8, !tbaa !13, !alias.scope !125
+  store i32 -398, ptr %61, align 8, !tbaa !13, !alias.scope !134
   %62 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 369, ptr %62, align 4, !tbaa !14, !alias.scope !125
+  store i32 369, ptr %62, align 4, !tbaa !14, !alias.scope !134
   %63 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 53, ptr %63, align 8, !tbaa !15, !alias.scope !125
+  store i32 53, ptr %63, align 8, !tbaa !15, !alias.scope !134
   %64 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 398, ptr %64, align 4, !tbaa !16, !alias.scope !125
+  store i32 398, ptr %64, align 4, !tbaa !16, !alias.scope !134
   %65 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 64, ptr %65, align 8, !tbaa !17, !alias.scope !125
+  store i32 64, ptr %65, align 8, !tbaa !17, !alias.scope !134
   %66 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %66, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %66, align 4, !tbaa !18, !alias.scope !134
   %67 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %67, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %67, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 68:                                               ; preds = %4
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %69 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 34, ptr %69, align 4, !tbaa !12, !alias.scope !125
+  store i32 34, ptr %69, align 4, !tbaa !12, !alias.scope !134
   %70 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -6176, ptr %70, align 8, !tbaa !13, !alias.scope !125
+  store i32 -6176, ptr %70, align 8, !tbaa !13, !alias.scope !134
   %71 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 6111, ptr %71, align 4, !tbaa !14, !alias.scope !125
+  store i32 6111, ptr %71, align 4, !tbaa !14, !alias.scope !134
   %72 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 113, ptr %72, align 8, !tbaa !15, !alias.scope !125
+  store i32 113, ptr %72, align 8, !tbaa !15, !alias.scope !134
   %73 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 6176, ptr %73, align 4, !tbaa !16, !alias.scope !125
+  store i32 6176, ptr %73, align 4, !tbaa !16, !alias.scope !134
   %74 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 128, ptr %74, align 8, !tbaa !17, !alias.scope !125
+  store i32 128, ptr %74, align 8, !tbaa !17, !alias.scope !134
   %75 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %75, align 4, !tbaa !18, !alias.scope !125
+  store i32 0, ptr %75, align 4, !tbaa !18, !alias.scope !134
   %76 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %76, align 8, !tbaa !19, !alias.scope !125
+  store i32 1, ptr %76, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 77:                                               ; preds = %4
   %78 = and i32 %2, 7
   %79 = shl nuw nsw i32 8, %78
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !125
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !134
   %80 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 %79, ptr %80, align 4, !tbaa !12, !alias.scope !125
+  store i32 %79, ptr %80, align 4, !tbaa !12, !alias.scope !134
   %81 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 0, ptr %81, align 8, !tbaa !13, !alias.scope !125
+  store i32 0, ptr %81, align 8, !tbaa !13, !alias.scope !134
   %82 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 0, ptr %82, align 4, !tbaa !14, !alias.scope !125
+  store i32 0, ptr %82, align 4, !tbaa !14, !alias.scope !134
   %83 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 0, ptr %83, align 8, !tbaa !15, !alias.scope !125
+  store i32 0, ptr %83, align 8, !tbaa !15, !alias.scope !134
   %84 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 0, ptr %84, align 4, !tbaa !16, !alias.scope !125
+  store i32 0, ptr %84, align 4, !tbaa !16, !alias.scope !134
   %85 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 %79, ptr %85, align 8, !tbaa !17, !alias.scope !125
+  store i32 %79, ptr %85, align 8, !tbaa !17, !alias.scope !134
   %86 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 1, ptr %86, align 4, !tbaa !18, !alias.scope !125
+  store i32 1, ptr %86, align 4, !tbaa !18, !alias.scope !134
   %87 = getelementptr inbounds i8, ptr %5, i64 32
   %88 = icmp slt i32 %2, 24
   %89 = zext i1 %88 to i32
-  store i32 %89, ptr %87, align 8, !tbaa !19, !alias.scope !125
+  store i32 %89, ptr %87, align 8, !tbaa !19, !alias.scope !134
   br label %90
 
 90:                                               ; preds = %14, %23, %32, %41, %50, %59, %68, %77
   %91 = phi i32 [ 2, %14 ], [ 2, %23 ], [ 2, %32 ], [ 2, %41 ], [ 10, %50 ], [ 10, %59 ], [ 10, %68 ], [ 2, %77 ]
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %6) #16
   switch i32 %3, label %155 [
     i32 0, label %92
     i32 1, label %101
@@ -5900,167 +6894,167 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   ]
 
 92:                                               ; preds = %90
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %93 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 11, ptr %93, align 4, !tbaa !12, !alias.scope !128
+  store i32 11, ptr %93, align 4, !tbaa !12, !alias.scope !137
   %94 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -24, ptr %94, align 8, !tbaa !13, !alias.scope !128
+  store i32 -24, ptr %94, align 8, !tbaa !13, !alias.scope !137
   %95 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 5, ptr %95, align 4, !tbaa !14, !alias.scope !128
+  store i32 5, ptr %95, align 4, !tbaa !14, !alias.scope !137
   %96 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 10, ptr %96, align 8, !tbaa !15, !alias.scope !128
+  store i32 10, ptr %96, align 8, !tbaa !15, !alias.scope !137
   %97 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 15, ptr %97, align 4, !tbaa !16, !alias.scope !128
+  store i32 15, ptr %97, align 4, !tbaa !16, !alias.scope !137
   %98 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 16, ptr %98, align 8, !tbaa !17, !alias.scope !128
+  store i32 16, ptr %98, align 8, !tbaa !17, !alias.scope !137
   %99 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %99, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %99, align 4, !tbaa !18, !alias.scope !137
   %100 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %100, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %100, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 101:                                              ; preds = %90
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %102 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 24, ptr %102, align 4, !tbaa !12, !alias.scope !128
+  store i32 24, ptr %102, align 4, !tbaa !12, !alias.scope !137
   %103 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -149, ptr %103, align 8, !tbaa !13, !alias.scope !128
+  store i32 -149, ptr %103, align 8, !tbaa !13, !alias.scope !137
   %104 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 104, ptr %104, align 4, !tbaa !14, !alias.scope !128
+  store i32 104, ptr %104, align 4, !tbaa !14, !alias.scope !137
   %105 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 23, ptr %105, align 8, !tbaa !15, !alias.scope !128
+  store i32 23, ptr %105, align 8, !tbaa !15, !alias.scope !137
   %106 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 127, ptr %106, align 4, !tbaa !16, !alias.scope !128
+  store i32 127, ptr %106, align 4, !tbaa !16, !alias.scope !137
   %107 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 32, ptr %107, align 8, !tbaa !17, !alias.scope !128
+  store i32 32, ptr %107, align 8, !tbaa !17, !alias.scope !137
   %108 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %108, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %108, align 4, !tbaa !18, !alias.scope !137
   %109 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %109, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %109, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 110:                                              ; preds = %90
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %111 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 53, ptr %111, align 4, !tbaa !12, !alias.scope !128
+  store i32 53, ptr %111, align 4, !tbaa !12, !alias.scope !137
   %112 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -1074, ptr %112, align 8, !tbaa !13, !alias.scope !128
+  store i32 -1074, ptr %112, align 8, !tbaa !13, !alias.scope !137
   %113 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 971, ptr %113, align 4, !tbaa !14, !alias.scope !128
+  store i32 971, ptr %113, align 4, !tbaa !14, !alias.scope !137
   %114 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 52, ptr %114, align 8, !tbaa !15, !alias.scope !128
+  store i32 52, ptr %114, align 8, !tbaa !15, !alias.scope !137
   %115 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 1023, ptr %115, align 4, !tbaa !16, !alias.scope !128
+  store i32 1023, ptr %115, align 4, !tbaa !16, !alias.scope !137
   %116 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 64, ptr %116, align 8, !tbaa !17, !alias.scope !128
+  store i32 64, ptr %116, align 8, !tbaa !17, !alias.scope !137
   %117 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %117, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %117, align 4, !tbaa !18, !alias.scope !137
   %118 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %118, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %118, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 119:                                              ; preds = %90
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %120 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 113, ptr %120, align 4, !tbaa !12, !alias.scope !128
+  store i32 113, ptr %120, align 4, !tbaa !12, !alias.scope !137
   %121 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -16494, ptr %121, align 8, !tbaa !13, !alias.scope !128
+  store i32 -16494, ptr %121, align 8, !tbaa !13, !alias.scope !137
   %122 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 16271, ptr %122, align 4, !tbaa !14, !alias.scope !128
+  store i32 16271, ptr %122, align 4, !tbaa !14, !alias.scope !137
   %123 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 112, ptr %123, align 8, !tbaa !15, !alias.scope !128
+  store i32 112, ptr %123, align 8, !tbaa !15, !alias.scope !137
   %124 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 16383, ptr %124, align 4, !tbaa !16, !alias.scope !128
+  store i32 16383, ptr %124, align 4, !tbaa !16, !alias.scope !137
   %125 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 128, ptr %125, align 8, !tbaa !17, !alias.scope !128
+  store i32 128, ptr %125, align 8, !tbaa !17, !alias.scope !137
   %126 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %126, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %126, align 4, !tbaa !18, !alias.scope !137
   %127 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %127, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %127, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 128:                                              ; preds = %90
-  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %129 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 7, ptr %129, align 4, !tbaa !12, !alias.scope !128
+  store i32 7, ptr %129, align 4, !tbaa !12, !alias.scope !137
   %130 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -101, ptr %130, align 8, !tbaa !13, !alias.scope !128
+  store i32 -101, ptr %130, align 8, !tbaa !13, !alias.scope !137
   %131 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 90, ptr %131, align 4, !tbaa !14, !alias.scope !128
+  store i32 90, ptr %131, align 4, !tbaa !14, !alias.scope !137
   %132 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 23, ptr %132, align 8, !tbaa !15, !alias.scope !128
+  store i32 23, ptr %132, align 8, !tbaa !15, !alias.scope !137
   %133 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 101, ptr %133, align 4, !tbaa !16, !alias.scope !128
+  store i32 101, ptr %133, align 4, !tbaa !16, !alias.scope !137
   %134 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 32, ptr %134, align 8, !tbaa !17, !alias.scope !128
+  store i32 32, ptr %134, align 8, !tbaa !17, !alias.scope !137
   %135 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %135, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %135, align 4, !tbaa !18, !alias.scope !137
   %136 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %136, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %136, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 137:                                              ; preds = %90
-  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %138 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 16, ptr %138, align 4, !tbaa !12, !alias.scope !128
+  store i32 16, ptr %138, align 4, !tbaa !12, !alias.scope !137
   %139 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -398, ptr %139, align 8, !tbaa !13, !alias.scope !128
+  store i32 -398, ptr %139, align 8, !tbaa !13, !alias.scope !137
   %140 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 369, ptr %140, align 4, !tbaa !14, !alias.scope !128
+  store i32 369, ptr %140, align 4, !tbaa !14, !alias.scope !137
   %141 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 53, ptr %141, align 8, !tbaa !15, !alias.scope !128
+  store i32 53, ptr %141, align 8, !tbaa !15, !alias.scope !137
   %142 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 398, ptr %142, align 4, !tbaa !16, !alias.scope !128
+  store i32 398, ptr %142, align 4, !tbaa !16, !alias.scope !137
   %143 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 64, ptr %143, align 8, !tbaa !17, !alias.scope !128
+  store i32 64, ptr %143, align 8, !tbaa !17, !alias.scope !137
   %144 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %144, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %144, align 4, !tbaa !18, !alias.scope !137
   %145 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %145, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %145, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 146:                                              ; preds = %90
-  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 10, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %147 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 34, ptr %147, align 4, !tbaa !12, !alias.scope !128
+  store i32 34, ptr %147, align 4, !tbaa !12, !alias.scope !137
   %148 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 -6176, ptr %148, align 8, !tbaa !13, !alias.scope !128
+  store i32 -6176, ptr %148, align 8, !tbaa !13, !alias.scope !137
   %149 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 6111, ptr %149, align 4, !tbaa !14, !alias.scope !128
+  store i32 6111, ptr %149, align 4, !tbaa !14, !alias.scope !137
   %150 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 113, ptr %150, align 8, !tbaa !15, !alias.scope !128
+  store i32 113, ptr %150, align 8, !tbaa !15, !alias.scope !137
   %151 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 6176, ptr %151, align 4, !tbaa !16, !alias.scope !128
+  store i32 6176, ptr %151, align 4, !tbaa !16, !alias.scope !137
   %152 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 128, ptr %152, align 8, !tbaa !17, !alias.scope !128
+  store i32 128, ptr %152, align 8, !tbaa !17, !alias.scope !137
   %153 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 0, ptr %153, align 4, !tbaa !18, !alias.scope !128
+  store i32 0, ptr %153, align 4, !tbaa !18, !alias.scope !137
   %154 = getelementptr inbounds i8, ptr %6, i64 32
-  store i32 1, ptr %154, align 8, !tbaa !19, !alias.scope !128
+  store i32 1, ptr %154, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 155:                                              ; preds = %90
   %156 = and i32 %3, 7
   %157 = shl nuw nsw i32 8, %156
-  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !128
+  store i32 2, ptr %6, align 8, !tbaa !4, !alias.scope !137
   %158 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 %157, ptr %158, align 4, !tbaa !12, !alias.scope !128
+  store i32 %157, ptr %158, align 4, !tbaa !12, !alias.scope !137
   %159 = getelementptr inbounds i8, ptr %6, i64 8
-  store i32 0, ptr %159, align 8, !tbaa !13, !alias.scope !128
+  store i32 0, ptr %159, align 8, !tbaa !13, !alias.scope !137
   %160 = getelementptr inbounds i8, ptr %6, i64 12
-  store i32 0, ptr %160, align 4, !tbaa !14, !alias.scope !128
+  store i32 0, ptr %160, align 4, !tbaa !14, !alias.scope !137
   %161 = getelementptr inbounds i8, ptr %6, i64 16
-  store i32 0, ptr %161, align 8, !tbaa !15, !alias.scope !128
+  store i32 0, ptr %161, align 8, !tbaa !15, !alias.scope !137
   %162 = getelementptr inbounds i8, ptr %6, i64 20
-  store i32 0, ptr %162, align 4, !tbaa !16, !alias.scope !128
+  store i32 0, ptr %162, align 4, !tbaa !16, !alias.scope !137
   %163 = getelementptr inbounds i8, ptr %6, i64 24
-  store i32 %157, ptr %163, align 8, !tbaa !17, !alias.scope !128
+  store i32 %157, ptr %163, align 8, !tbaa !17, !alias.scope !137
   %164 = getelementptr inbounds i8, ptr %6, i64 28
-  store i32 1, ptr %164, align 4, !tbaa !18, !alias.scope !128
+  store i32 1, ptr %164, align 4, !tbaa !18, !alias.scope !137
   %165 = getelementptr inbounds i8, ptr %6, i64 32
   %166 = icmp slt i32 %3, 24
   %167 = zext i1 %166 to i32
-  store i32 %167, ptr %165, align 8, !tbaa !19, !alias.scope !128
+  store i32 %167, ptr %165, align 8, !tbaa !19, !alias.scope !137
   br label %168
 
 168:                                              ; preds = %92, %101, %110, %119, %128, %137, %146, %155
@@ -6071,8 +7065,8 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %173 = phi i32 [ 10, %92 ], [ 23, %101 ], [ 52, %110 ], [ 112, %119 ], [ 23, %128 ], [ 53, %137 ], [ 113, %146 ], [ 0, %155 ]
   %174 = phi i1 [ true, %92 ], [ true, %101 ], [ true, %110 ], [ true, %119 ], [ false, %128 ], [ false, %137 ], [ false, %146 ], [ true, %155 ]
   %175 = phi i32 [ 2, %92 ], [ 2, %101 ], [ 2, %110 ], [ 2, %119 ], [ 10, %128 ], [ 10, %137 ], [ 10, %146 ], [ 2, %155 ]
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %7) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %7, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   br i1 %170, label %389, label %176
 
 176:                                              ; preds = %168
@@ -6151,15 +7145,15 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %221 = icmp eq i64 %220, %204
   br i1 %221, label %497, label %214
 222:                                              ; preds = %176
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, ptr noundef nonnull align 4 dereferenceable(5604) %7, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, i8 0, i64 5604, i1 false), !alias.scope !131
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, i8 0, i64 5604, i1 false), !alias.scope !140
   %223 = getelementptr inbounds i8, ptr %9, i64 4
-  store i32 1, ptr %9, align 4, !tbaa !34, !alias.scope !131
-  store i32 1, ptr %223, align 4, !tbaa !24, !alias.scope !131
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !134
+  store i32 1, ptr %9, align 4, !tbaa !34, !alias.scope !140
+  store i32 1, ptr %223, align 4, !tbaa !24, !alias.scope !140
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !143
   %224 = icmp eq i128 %196, 0
   br i1 %224, label %236, label %225
 
@@ -6170,12 +7164,12 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
 227:                                              ; preds = %227, %225
   %228 = phi i128 [ %196, %225 ], [ %234, %227 ]
   %229 = trunc i128 %228 to i32
-  %230 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !134
+  %230 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !143
   %231 = add nsw i32 %230, 1
-  store i32 %231, ptr %10, align 4, !tbaa !34, !alias.scope !134
+  store i32 %231, ptr %10, align 4, !tbaa !34, !alias.scope !143
   %232 = sext i32 %230 to i64
   %233 = getelementptr inbounds [1400 x i32], ptr %226, i64 0, i64 %232
-  store i32 %229, ptr %233, align 4, !tbaa !24, !alias.scope !134
+  store i32 %229, ptr %233, align 4, !tbaa !24, !alias.scope !143
   %234 = lshr i128 %228, 32
   %235 = icmp ult i128 %228, 4294967296
   br i1 %235, label %236, label %227
@@ -6186,20 +7180,20 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   br i1 %239, label %240, label %241
 
 240:                                              ; preds = %236
-  call fastcc void @power(ptr noundef %8, i32 noundef %91, i32 noundef %238) #16
+  call fastcc void @power(ptr noundef %8, i32 noundef %91, i32 noundef %238) #17
   br label %243
 
 241:                                              ; preds = %236
   %242 = sub nsw i32 0, %238
-  call fastcc void @power(ptr noundef %9, i32 noundef %91, i32 noundef %242) #16
+  call fastcc void @power(ptr noundef %9, i32 noundef %91, i32 noundef %242) #17
   br label %243
 
 243:                                              ; preds = %241, %240
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #15
-  tail call void @llvm.experimental.noalias.scope.decl(metadata !137)
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, i8 0, i64 5604, i1 false), !alias.scope !137
-  %244 = load i32, ptr %10, align 4, !tbaa !34, !noalias !137
-  %245 = load i32, ptr %9, align 4, !tbaa !34, !noalias !137
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %11) #16
+  tail call void @llvm.experimental.noalias.scope.decl(metadata !146)
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, i8 0, i64 5604, i1 false), !alias.scope !146
+  %244 = load i32, ptr %10, align 4, !tbaa !34, !noalias !146
+  %245 = load i32, ptr %9, align 4, !tbaa !34, !noalias !146
   %246 = add nsw i32 %245, %244
   %247 = icmp sgt i32 %246, 1400
   br i1 %247, label %248, label %249
@@ -6209,7 +7203,7 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   unreachable
 
 249:                                              ; preds = %243
-  store i32 %246, ptr %11, align 4, !tbaa !34, !alias.scope !137
+  store i32 %246, ptr %11, align 4, !tbaa !34, !alias.scope !146
   %250 = icmp sgt i32 %244, 0
   br i1 %250, label %251, label %264
 
@@ -6228,13 +7222,13 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
 
 260:                                              ; preds = %258
   %261 = getelementptr inbounds [1400 x i32], ptr %253, i64 0, i64 %259
-  %262 = load i32, ptr %261, align 4, !tbaa !24, !noalias !137
+  %262 = load i32, ptr %261, align 4, !tbaa !24, !noalias !146
   %263 = zext i32 %262 to i64
   br label %287
 
 264:                                              ; preds = %281, %249
   %265 = getelementptr inbounds i8, ptr %11, i64 4
-  %266 = load i32, ptr %11, align 4, !tbaa !34, !alias.scope !137
+  %266 = load i32, ptr %11, align 4, !tbaa !34, !alias.scope !146
   %267 = icmp eq i32 %266, 0
   br i1 %267, label %304, label %268
 
@@ -6246,13 +7240,13 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %271 = phi i64 [ %269, %268 ], [ %272, %276 ]
   %272 = add nsw i64 %271, -1
   %273 = getelementptr inbounds [1400 x i32], ptr %265, i64 0, i64 %272
-  %274 = load i32, ptr %273, align 4, !tbaa !24, !alias.scope !137
+  %274 = load i32, ptr %273, align 4, !tbaa !24, !alias.scope !146
   %275 = icmp eq i32 %274, 0
   br i1 %275, label %276, label %304
 
 276:                                              ; preds = %270
   %277 = trunc i64 %272 to i32
-  store i32 %277, ptr %11, align 4, !tbaa !34, !alias.scope !137
+  store i32 %277, ptr %11, align 4, !tbaa !34, !alias.scope !146
   %278 = icmp eq i64 %272, 0
   br i1 %278, label %304, label %270
 279:                                              ; preds = %287
@@ -6263,7 +7257,7 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %282 = phi i32 [ 0, %258 ], [ %280, %279 ]
   %283 = add nsw i64 %259, %255
   %284 = getelementptr inbounds [1400 x i32], ptr %254, i64 0, i64 %283
-  store i32 %282, ptr %284, align 4, !tbaa !24, !alias.scope !137
+  store i32 %282, ptr %284, align 4, !tbaa !24, !alias.scope !146
   %285 = add nuw nsw i64 %259, 1
   %286 = icmp eq i64 %285, %256
   br i1 %286, label %264, label %258
@@ -6271,24 +7265,24 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %288 = phi i64 [ 0, %260 ], [ %302, %287 ]
   %289 = phi i64 [ 0, %260 ], [ %301, %287 ]
   %290 = getelementptr inbounds [1400 x i32], ptr %223, i64 0, i64 %288
-  %291 = load i32, ptr %290, align 4, !tbaa !24, !noalias !137
+  %291 = load i32, ptr %290, align 4, !tbaa !24, !noalias !146
   %292 = zext i32 %291 to i64
   %293 = mul nuw i64 %292, %263
   %294 = add nuw nsw i64 %288, %259
   %295 = getelementptr inbounds [1400 x i32], ptr %254, i64 0, i64 %294
-  %296 = load i32, ptr %295, align 4, !tbaa !24, !alias.scope !137
+  %296 = load i32, ptr %295, align 4, !tbaa !24, !alias.scope !146
   %297 = zext i32 %296 to i64
   %298 = add nuw nsw i64 %289, %297
   %299 = add nuw i64 %298, %293
   %300 = trunc i64 %299 to i32
-  store i32 %300, ptr %295, align 4, !tbaa !24, !alias.scope !137
+  store i32 %300, ptr %295, align 4, !tbaa !24, !alias.scope !146
   %301 = lshr i64 %299, 32
   %302 = add nuw nsw i64 %288, 1
   %303 = icmp eq i64 %302, %257
   br i1 %303, label %279, label %287
 304:                                              ; preds = %270, %276, %264
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, ptr noundef nonnull align 4 dereferenceable(5604) %11, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %11) #16
   %305 = load i32, ptr %8, align 4, !tbaa !34
   %306 = load i32, ptr %10, align 4, !tbaa !34
   %307 = icmp eq i32 %305, %306
@@ -6332,8 +7326,8 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   br i1 %332, label %363, label %333
 
 333:                                              ; preds = %330
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %12) #15
-  call fastcc void @divide(ptr sret(%struct.tzrt_big) align 4 %12, ptr noundef %8, ptr noundef %9) #16
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %12) #16
+  call fastcc void @divide(ptr sret(%struct.tzrt_big) align 4 %12, ptr noundef %8, ptr noundef %9) #17
   %334 = load i32, ptr %12, align 4, !tbaa !34
   %335 = icmp sgt i32 %334, 4
   br i1 %335, label %341, label %336
@@ -6375,7 +7369,7 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %360 = shl nuw i128 %359, 64
   %361 = zext i64 %357 to i128
   %362 = or i128 %360, %361
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %12) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %12) #16
   br label %363
 
 363:                                              ; preds = %330, %356
@@ -6431,9 +7425,9 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %387 = icmp eq i64 %386, %370
   br i1 %387, label %388, label %380
 388:                                              ; preds = %380, %371, %373, %375, %377, %379
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #16
   br label %497
 
 389:                                              ; preds = %168
@@ -6539,11 +7533,11 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %453 = icmp eq i64 %452, %437
   br i1 %453, label %497, label %446
 454:                                              ; preds = %389
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %13) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %13, i8 0, i64 5604, i1 false), !alias.scope !140
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %13) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %13, i8 0, i64 5604, i1 false), !alias.scope !149
   %455 = getelementptr inbounds i8, ptr %13, i64 4
-  store i32 1, ptr %13, align 4, !tbaa !34, !alias.scope !140
-  store i32 1, ptr %455, align 4, !tbaa !24, !alias.scope !140
+  store i32 1, ptr %13, align 4, !tbaa !34, !alias.scope !149
+  store i32 1, ptr %455, align 4, !tbaa !24, !alias.scope !149
   %456 = icmp eq i32 %91, %175
   br i1 %456, label %465, label %457
 
@@ -6554,12 +7548,12 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   br i1 %460, label %461, label %462
 
 461:                                              ; preds = %457
-  call fastcc void @power(ptr noundef %7, i32 noundef %91, i32 noundef %459) #16
+  call fastcc void @power(ptr noundef %7, i32 noundef %91, i32 noundef %459) #17
   br label %464
 
 462:                                              ; preds = %457
   %463 = sub nsw i32 0, %459
-  call fastcc void @power(ptr noundef %13, i32 noundef %91, i32 noundef %463) #16
+  call fastcc void @power(ptr noundef %13, i32 noundef %91, i32 noundef %463) #17
   br label %464
 
 464:                                              ; preds = %462, %461
@@ -6571,7 +7565,7 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %467 = load i32, ptr %466, align 4, !tbaa !35
   %468 = getelementptr inbounds i8, ptr %7, i64 5608
   %469 = load i32, ptr %468, align 4, !tbaa !20
-  %470 = call fastcc { i64, i64 } @pack(ptr noundef %7, ptr noundef %13, i32 noundef %467, i32 noundef %469, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #16
+  %470 = call fastcc { i64, i64 } @pack(ptr noundef %7, ptr noundef %13, i32 noundef %467, i32 noundef %469, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %6) #17
   %471 = extractvalue { i64, i64 } %470, 0
   %472 = extractvalue { i64, i64 } %470, 1
   %473 = zext i64 %472 to i128
@@ -6625,13 +7619,13 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
   %495 = icmp eq i64 %494, %479
   br i1 %495, label %496, label %488
 496:                                              ; preds = %488, %480, %482, %484, %486, %487
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %13) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %13) #16
   br label %497
 
 497:                                              ; preds = %214, %446, %445, %444, %442, %440, %438, %213, %211, %209, %207, %205, %388, %496
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #15
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %7) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %6) #16
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %5) #16
   ret void
 }
 
@@ -6639,7 +7633,7 @@ define weak hidden void @tz_soft_cast(ptr noundef writeonly %0, ptr noundef read
 define weak hidden i32 @tz_soft_format(ptr noundef writeonly %0, ptr noundef readonly %1, i32 noundef %2) local_unnamed_addr #2 {
   %4 = alloca %struct.tzrt_format, align 8
   %5 = alloca [40 x i8], align 16
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %4) #16
   switch i32 %2, label %69 [
     i32 0, label %6
     i32 1, label %15
@@ -6651,167 +7645,167 @@ define weak hidden i32 @tz_soft_format(ptr noundef writeonly %0, ptr noundef rea
   ]
 
 6:                                                ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %7 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 11, ptr %7, align 4, !tbaa !12, !alias.scope !143
+  store i32 11, ptr %7, align 4, !tbaa !12, !alias.scope !152
   %8 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -24, ptr %8, align 8, !tbaa !13, !alias.scope !143
+  store i32 -24, ptr %8, align 8, !tbaa !13, !alias.scope !152
   %9 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 5, ptr %9, align 4, !tbaa !14, !alias.scope !143
+  store i32 5, ptr %9, align 4, !tbaa !14, !alias.scope !152
   %10 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 10, ptr %10, align 8, !tbaa !15, !alias.scope !143
+  store i32 10, ptr %10, align 8, !tbaa !15, !alias.scope !152
   %11 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 15, ptr %11, align 4, !tbaa !16, !alias.scope !143
+  store i32 15, ptr %11, align 4, !tbaa !16, !alias.scope !152
   %12 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 16, ptr %12, align 8, !tbaa !17, !alias.scope !143
+  store i32 16, ptr %12, align 8, !tbaa !17, !alias.scope !152
   %13 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %13, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %13, align 4, !tbaa !18, !alias.scope !152
   %14 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %14, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %14, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 15:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %16 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 24, ptr %16, align 4, !tbaa !12, !alias.scope !143
+  store i32 24, ptr %16, align 4, !tbaa !12, !alias.scope !152
   %17 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -149, ptr %17, align 8, !tbaa !13, !alias.scope !143
+  store i32 -149, ptr %17, align 8, !tbaa !13, !alias.scope !152
   %18 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 104, ptr %18, align 4, !tbaa !14, !alias.scope !143
+  store i32 104, ptr %18, align 4, !tbaa !14, !alias.scope !152
   %19 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 23, ptr %19, align 8, !tbaa !15, !alias.scope !143
+  store i32 23, ptr %19, align 8, !tbaa !15, !alias.scope !152
   %20 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 127, ptr %20, align 4, !tbaa !16, !alias.scope !143
+  store i32 127, ptr %20, align 4, !tbaa !16, !alias.scope !152
   %21 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 32, ptr %21, align 8, !tbaa !17, !alias.scope !143
+  store i32 32, ptr %21, align 8, !tbaa !17, !alias.scope !152
   %22 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %22, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %22, align 4, !tbaa !18, !alias.scope !152
   %23 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %23, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %23, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 24:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %25 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 53, ptr %25, align 4, !tbaa !12, !alias.scope !143
+  store i32 53, ptr %25, align 4, !tbaa !12, !alias.scope !152
   %26 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -1074, ptr %26, align 8, !tbaa !13, !alias.scope !143
+  store i32 -1074, ptr %26, align 8, !tbaa !13, !alias.scope !152
   %27 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 971, ptr %27, align 4, !tbaa !14, !alias.scope !143
+  store i32 971, ptr %27, align 4, !tbaa !14, !alias.scope !152
   %28 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 52, ptr %28, align 8, !tbaa !15, !alias.scope !143
+  store i32 52, ptr %28, align 8, !tbaa !15, !alias.scope !152
   %29 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 1023, ptr %29, align 4, !tbaa !16, !alias.scope !143
+  store i32 1023, ptr %29, align 4, !tbaa !16, !alias.scope !152
   %30 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 64, ptr %30, align 8, !tbaa !17, !alias.scope !143
+  store i32 64, ptr %30, align 8, !tbaa !17, !alias.scope !152
   %31 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %31, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %31, align 4, !tbaa !18, !alias.scope !152
   %32 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %32, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %32, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 33:                                               ; preds = %3
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %34 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 113, ptr %34, align 4, !tbaa !12, !alias.scope !143
+  store i32 113, ptr %34, align 4, !tbaa !12, !alias.scope !152
   %35 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -16494, ptr %35, align 8, !tbaa !13, !alias.scope !143
+  store i32 -16494, ptr %35, align 8, !tbaa !13, !alias.scope !152
   %36 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 16271, ptr %36, align 4, !tbaa !14, !alias.scope !143
+  store i32 16271, ptr %36, align 4, !tbaa !14, !alias.scope !152
   %37 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 112, ptr %37, align 8, !tbaa !15, !alias.scope !143
+  store i32 112, ptr %37, align 8, !tbaa !15, !alias.scope !152
   %38 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 16383, ptr %38, align 4, !tbaa !16, !alias.scope !143
+  store i32 16383, ptr %38, align 4, !tbaa !16, !alias.scope !152
   %39 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 128, ptr %39, align 8, !tbaa !17, !alias.scope !143
+  store i32 128, ptr %39, align 8, !tbaa !17, !alias.scope !152
   %40 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %40, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %40, align 4, !tbaa !18, !alias.scope !152
   %41 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %41, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %41, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 42:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %43 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 7, ptr %43, align 4, !tbaa !12, !alias.scope !143
+  store i32 7, ptr %43, align 4, !tbaa !12, !alias.scope !152
   %44 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -101, ptr %44, align 8, !tbaa !13, !alias.scope !143
+  store i32 -101, ptr %44, align 8, !tbaa !13, !alias.scope !152
   %45 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 90, ptr %45, align 4, !tbaa !14, !alias.scope !143
+  store i32 90, ptr %45, align 4, !tbaa !14, !alias.scope !152
   %46 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 23, ptr %46, align 8, !tbaa !15, !alias.scope !143
+  store i32 23, ptr %46, align 8, !tbaa !15, !alias.scope !152
   %47 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 101, ptr %47, align 4, !tbaa !16, !alias.scope !143
+  store i32 101, ptr %47, align 4, !tbaa !16, !alias.scope !152
   %48 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 32, ptr %48, align 8, !tbaa !17, !alias.scope !143
+  store i32 32, ptr %48, align 8, !tbaa !17, !alias.scope !152
   %49 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %49, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %49, align 4, !tbaa !18, !alias.scope !152
   %50 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %50, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %50, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 51:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %52 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 16, ptr %52, align 4, !tbaa !12, !alias.scope !143
+  store i32 16, ptr %52, align 4, !tbaa !12, !alias.scope !152
   %53 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -398, ptr %53, align 8, !tbaa !13, !alias.scope !143
+  store i32 -398, ptr %53, align 8, !tbaa !13, !alias.scope !152
   %54 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 369, ptr %54, align 4, !tbaa !14, !alias.scope !143
+  store i32 369, ptr %54, align 4, !tbaa !14, !alias.scope !152
   %55 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 53, ptr %55, align 8, !tbaa !15, !alias.scope !143
+  store i32 53, ptr %55, align 8, !tbaa !15, !alias.scope !152
   %56 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 398, ptr %56, align 4, !tbaa !16, !alias.scope !143
+  store i32 398, ptr %56, align 4, !tbaa !16, !alias.scope !152
   %57 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 64, ptr %57, align 8, !tbaa !17, !alias.scope !143
+  store i32 64, ptr %57, align 8, !tbaa !17, !alias.scope !152
   %58 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %58, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %58, align 4, !tbaa !18, !alias.scope !152
   %59 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %59, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %59, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 60:                                               ; preds = %3
-  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 10, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %61 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 34, ptr %61, align 4, !tbaa !12, !alias.scope !143
+  store i32 34, ptr %61, align 4, !tbaa !12, !alias.scope !152
   %62 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 -6176, ptr %62, align 8, !tbaa !13, !alias.scope !143
+  store i32 -6176, ptr %62, align 8, !tbaa !13, !alias.scope !152
   %63 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 6111, ptr %63, align 4, !tbaa !14, !alias.scope !143
+  store i32 6111, ptr %63, align 4, !tbaa !14, !alias.scope !152
   %64 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 113, ptr %64, align 8, !tbaa !15, !alias.scope !143
+  store i32 113, ptr %64, align 8, !tbaa !15, !alias.scope !152
   %65 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 6176, ptr %65, align 4, !tbaa !16, !alias.scope !143
+  store i32 6176, ptr %65, align 4, !tbaa !16, !alias.scope !152
   %66 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 128, ptr %66, align 8, !tbaa !17, !alias.scope !143
+  store i32 128, ptr %66, align 8, !tbaa !17, !alias.scope !152
   %67 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 0, ptr %67, align 4, !tbaa !18, !alias.scope !143
+  store i32 0, ptr %67, align 4, !tbaa !18, !alias.scope !152
   %68 = getelementptr inbounds i8, ptr %4, i64 32
-  store i32 1, ptr %68, align 8, !tbaa !19, !alias.scope !143
+  store i32 1, ptr %68, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 69:                                               ; preds = %3
   %70 = and i32 %2, 7
   %71 = shl nuw nsw i32 8, %70
-  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !143
+  store i32 2, ptr %4, align 8, !tbaa !4, !alias.scope !152
   %72 = getelementptr inbounds i8, ptr %4, i64 4
-  store i32 %71, ptr %72, align 4, !tbaa !12, !alias.scope !143
+  store i32 %71, ptr %72, align 4, !tbaa !12, !alias.scope !152
   %73 = getelementptr inbounds i8, ptr %4, i64 8
-  store i32 0, ptr %73, align 8, !tbaa !13, !alias.scope !143
+  store i32 0, ptr %73, align 8, !tbaa !13, !alias.scope !152
   %74 = getelementptr inbounds i8, ptr %4, i64 12
-  store i32 0, ptr %74, align 4, !tbaa !14, !alias.scope !143
+  store i32 0, ptr %74, align 4, !tbaa !14, !alias.scope !152
   %75 = getelementptr inbounds i8, ptr %4, i64 16
-  store i32 0, ptr %75, align 8, !tbaa !15, !alias.scope !143
+  store i32 0, ptr %75, align 8, !tbaa !15, !alias.scope !152
   %76 = getelementptr inbounds i8, ptr %4, i64 20
-  store i32 0, ptr %76, align 4, !tbaa !16, !alias.scope !143
+  store i32 0, ptr %76, align 4, !tbaa !16, !alias.scope !152
   %77 = getelementptr inbounds i8, ptr %4, i64 24
-  store i32 %71, ptr %77, align 8, !tbaa !17, !alias.scope !143
+  store i32 %71, ptr %77, align 8, !tbaa !17, !alias.scope !152
   %78 = getelementptr inbounds i8, ptr %4, i64 28
-  store i32 1, ptr %78, align 4, !tbaa !18, !alias.scope !143
+  store i32 1, ptr %78, align 4, !tbaa !18, !alias.scope !152
   %79 = getelementptr inbounds i8, ptr %4, i64 32
   %80 = icmp slt i32 %2, 24
   %81 = zext i1 %80 to i32
-  store i32 %81, ptr %79, align 8, !tbaa !19, !alias.scope !143
+  store i32 %81, ptr %79, align 8, !tbaa !19, !alias.scope !152
   br label %82
 
 82:                                               ; preds = %6, %15, %24, %33, %42, %51, %60, %69
@@ -6909,7 +7903,7 @@ define weak hidden i32 @tz_soft_format(ptr noundef writeonly %0, ptr noundef rea
 
 144:                                              ; preds = %136, %124
   %145 = phi i128 [ %143, %136 ], [ %130, %124 ]
-  call void @llvm.lifetime.start.p0(i64 40, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 40, ptr nonnull %5) #16
   %146 = icmp ult i128 %145, 18446744073709551616
   %147 = trunc i128 %145 to i64
   br i1 %146, label %170, label %148
@@ -7035,7 +8029,7 @@ define weak hidden i32 @tz_soft_format(ptr noundef writeonly %0, ptr noundef rea
   br i1 %235, label %236, label %227
 236:                                              ; preds = %227
   %237 = trunc i64 %233 to i32
-  call void @llvm.lifetime.end.p0(i64 40, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 40, ptr nonnull %5) #16
   br label %301
 
 238:                                              ; preds = %82
@@ -7139,17 +8133,17 @@ define weak hidden i32 @tz_soft_format(ptr noundef writeonly %0, ptr noundef rea
   br i1 %288, label %301, label %299
 
 299:                                              ; preds = %297, %238
-  %300 = tail call fastcc i32 @format_float(ptr noundef %0, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #16
+  %300 = tail call fastcc i32 @format_float(ptr noundef %0, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %4) #17
   br label %301
 
 301:                                              ; preds = %297, %299, %236
   %302 = phi i32 [ %237, %236 ], [ %300, %299 ], [ %298, %297 ]
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %4) #16
   ret i32 %302
 }
 
 ; Function Attrs: noinline nounwind memory(argmem: readwrite, inaccessiblemem: write)
-define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef readonly %1, ptr noundef readonly byval(%struct.tzrt_format) align 8 %2) unnamed_addr #6 {
+define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef readonly %1, ptr noundef readonly byval(%struct.tzrt_format) align 8 %2) unnamed_addr #7 {
   %4 = alloca [12 x i8], align 1
   %5 = alloca %struct.tzrt_big, align 4
   %6 = alloca %struct.tzrt_big, align 4
@@ -7159,8 +8153,8 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
   %10 = alloca %struct.tzrt_big, align 4
   %11 = alloca %struct.tzrt_number, align 4
   %12 = alloca [48 x i8], align 16
-  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %11) #15
-  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %11, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %2) #16
+  call void @llvm.lifetime.start.p0(i64 5616, ptr nonnull %11) #16
+  call fastcc void @decode(ptr sret(%struct.tzrt_number) align 4 %11, ptr noundef %1, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %2) #17
   %13 = getelementptr inbounds i8, ptr %11, i64 5608
   %14 = load i32, ptr %13, align 4, !tbaa !20
   %15 = icmp ne i32 %14, 0
@@ -7233,9 +8227,9 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 57:                                               ; preds = %62
   %58 = and i128 %69, 1
   %59 = icmp eq i128 %58, 0
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %5) #16
   %60 = shl i128 %70, 2
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %5, i8 0, i64 5604, i1 false), !alias.scope !150
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %5, i8 0, i64 5604, i1 false), !alias.scope !159
   %61 = icmp eq i128 %60, 0
   br i1 %61, label %83, label %72
 
@@ -7257,22 +8251,22 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 74:                                               ; preds = %74, %72
   %75 = phi i128 [ %60, %72 ], [ %81, %74 ]
   %76 = trunc i128 %75 to i32
-  %77 = load i32, ptr %5, align 4, !tbaa !34, !alias.scope !150
+  %77 = load i32, ptr %5, align 4, !tbaa !34, !alias.scope !159
   %78 = add nsw i32 %77, 1
-  store i32 %78, ptr %5, align 4, !tbaa !34, !alias.scope !150
+  store i32 %78, ptr %5, align 4, !tbaa !34, !alias.scope !159
   %79 = sext i32 %77 to i64
   %80 = getelementptr inbounds [1400 x i32], ptr %73, i64 0, i64 %79
-  store i32 %76, ptr %80, align 4, !tbaa !24, !alias.scope !150
+  store i32 %76, ptr %80, align 4, !tbaa !24, !alias.scope !159
   %81 = lshr i128 %75, 32
   %82 = icmp ult i128 %75, 4294967296
   br i1 %82, label %83, label %74
 83:                                               ; preds = %74, %57
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %6) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %6, i8 0, i64 5604, i1 false), !alias.scope !153
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %6) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %6, i8 0, i64 5604, i1 false), !alias.scope !162
   %84 = getelementptr inbounds i8, ptr %6, i64 4
-  store i32 1, ptr %6, align 4, !tbaa !34, !alias.scope !153
-  store i32 4, ptr %84, align 4, !tbaa !24, !alias.scope !153
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #15
+  store i32 1, ptr %6, align 4, !tbaa !34, !alias.scope !162
+  store i32 4, ptr %84, align 4, !tbaa !24, !alias.scope !162
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %7) #16
   %85 = zext i32 %51 to i128
   %86 = shl nuw i128 1, %85
   %87 = icmp eq i128 %70, %86
@@ -7281,15 +8275,15 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
   %90 = icmp sgt i32 %89, %49
   %91 = select i1 %87, i1 %90, i1 false
   %92 = select i1 %91, i32 1, i32 2
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %7, i8 0, i64 5604, i1 false), !alias.scope !156
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %7, i8 0, i64 5604, i1 false), !alias.scope !165
   %93 = getelementptr inbounds i8, ptr %7, i64 4
-  store i32 1, ptr %7, align 4, !tbaa !34, !alias.scope !156
-  store i32 %92, ptr %93, align 4, !tbaa !24, !alias.scope !156
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, i8 0, i64 5604, i1 false), !alias.scope !159
+  store i32 1, ptr %7, align 4, !tbaa !34, !alias.scope !165
+  store i32 %92, ptr %93, align 4, !tbaa !24, !alias.scope !165
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, i8 0, i64 5604, i1 false), !alias.scope !168
   %94 = getelementptr inbounds i8, ptr %8, i64 4
-  store i32 1, ptr %8, align 4, !tbaa !34, !alias.scope !159
-  store i32 2, ptr %94, align 4, !tbaa !24, !alias.scope !159
+  store i32 1, ptr %8, align 4, !tbaa !34, !alias.scope !168
+  store i32 2, ptr %94, align 4, !tbaa !24, !alias.scope !168
   %95 = load i32, ptr %88, align 4, !tbaa !35
   %96 = icmp sgt i32 %95, -1
   br i1 %96, label %97, label %227
@@ -7562,7 +8556,7 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
   br label %274
 
 274:                                              ; preds = %265, %154, %250, %212
-  %275 = call fastcc i32 @magnitude(ptr noundef %5, ptr noundef %6, i32 noundef 10) #16
+  %275 = call fastcc i32 @magnitude(ptr noundef %5, ptr noundef %6, i32 noundef 10) #17
   %276 = icmp sgt i32 %275, -1
   br i1 %276, label %277, label %346
 
@@ -8170,7 +9164,7 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 
 664:                                              ; preds = %651, %644, %661, %648
   %665 = phi i32 [ %650, %648 ], [ %663, %661 ], [ 0, %644 ], [ 0, %651 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #16
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, ptr noundef nonnull align 4 dereferenceable(5604) %6, i64 5604, i1 false), !tbaa.struct !30
   %666 = load i32, ptr %9, align 4, !tbaa !34
   %667 = icmp sgt i32 %666, 0
@@ -8391,26 +9385,26 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 
 805:                                              ; preds = %803, %798, %793
   %806 = phi i128 [ %804, %803 ], [ %641, %798 ], [ %641, %793 ]
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !163
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %10) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %10, i8 0, i64 5604, i1 false), !alias.scope !172
   %807 = icmp eq i128 %806, 0
   br i1 %807, label %817, label %808
 
 808:                                              ; preds = %805, %808
   %809 = phi i128 [ %815, %808 ], [ %806, %805 ]
   %810 = trunc i128 %809 to i32
-  %811 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !163
+  %811 = load i32, ptr %10, align 4, !tbaa !34, !alias.scope !172
   %812 = add nsw i32 %811, 1
-  store i32 %812, ptr %10, align 4, !tbaa !34, !alias.scope !163
+  store i32 %812, ptr %10, align 4, !tbaa !34, !alias.scope !172
   %813 = sext i32 %811 to i64
   %814 = getelementptr inbounds [1400 x i32], ptr %561, i64 0, i64 %813
-  store i32 %810, ptr %814, align 4, !tbaa !24, !alias.scope !163
+  store i32 %810, ptr %814, align 4, !tbaa !24, !alias.scope !172
   %815 = lshr i128 %809, 32
   %816 = icmp ult i128 %809, 4294967296
   br i1 %816, label %817, label %808
 817:                                              ; preds = %808, %805
   call void @llvm.memcpy.p0.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %11, ptr noundef nonnull align 4 dereferenceable(5604) %10, i64 5604, i1 false), !tbaa.struct !30
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %10) #16
   %818 = sub i32 %562, %566
   br label %899
 
@@ -8551,19 +9545,19 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 899:                                              ; preds = %894, %876, %817
   %900 = phi i32 [ %818, %817 ], [ %565, %876 ], [ %565, %894 ]
   %901 = phi i128 [ %806, %817 ], [ %641, %876 ], [ %641, %894 ]
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #16
   %902 = add nuw nsw i32 %566, 1
   br i1 %742, label %903, label %564
 903:                                              ; preds = %899
   store i32 %900, ptr %88, align 4
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %6) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %7) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %6) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %5) #16
   br label %904
 
 904:                                              ; preds = %903, %44
-  call void @llvm.lifetime.start.p0(i64 48, ptr nonnull %12) #15
+  call void @llvm.lifetime.start.p0(i64 48, ptr nonnull %12) #16
   %905 = getelementptr inbounds i8, ptr %11, i64 4
   br label %906
 
@@ -8817,7 +9811,7 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
   store i8 %1075, ptr %1076, align 1, !tbaa !26
   %1077 = sub nsw i32 1, %985
   %1078 = select i1 %1074, i32 %1077, i32 %986
-  call void @llvm.lifetime.start.p0(i64 12, ptr nonnull %4) #15
+  call void @llvm.lifetime.start.p0(i64 12, ptr nonnull %4) #16
   br label %1079
 
 1079:                                             ; preds = %1079, %1070
@@ -8854,7 +9848,7 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
   br i1 %1104, label %1105, label %1097
 1105:                                             ; preds = %1097
   %1106 = trunc i64 %1086 to i32
-  call void @llvm.lifetime.end.p0(i64 12, ptr nonnull %4) #15
+  call void @llvm.lifetime.end.p0(i64 12, ptr nonnull %4) #16
   %1107 = add nsw i32 %1092, %1106
   br label %1119
 
@@ -8875,7 +9869,7 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 
 1119:                                             ; preds = %1117, %1018, %1105
   %1120 = phi i32 [ %1107, %1105 ], [ %1019, %1018 ], [ %1118, %1117 ]
-  call void @llvm.lifetime.end.p0(i64 48, ptr nonnull %12) #15
+  call void @llvm.lifetime.end.p0(i64 48, ptr nonnull %12) #16
   br label %1123
 
 1121:                                             ; preds = %28
@@ -8884,12 +9878,12 @@ define internal fastcc i32 @format_float(ptr noundef writeonly %0, ptr noundef r
 
 1123:                                             ; preds = %1121, %1119, %40
   %1124 = phi i32 [ %1120, %1119 ], [ %41, %40 ], [ %1122, %1121 ]
-  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %11) #15
+  call void @llvm.lifetime.end.p0(i64 5616, ptr nonnull %11) #16
   ret i32 %1124
 }
 
 ; Function Attrs: nounwind
-define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef readonly %1, i64 noundef %2, i32 noundef %3) local_unnamed_addr #7 {
+define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef readonly %1, i64 noundef %2, i32 noundef %3) local_unnamed_addr #8 {
   %5 = alloca %struct.tzrt_format, align 8
   %6 = alloca i32, align 4
   %7 = add i64 %2, -4097
@@ -8897,7 +9891,7 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
   br i1 %8, label %359, label %9
 
 9:                                                ; preds = %4
-  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %5) #15
+  call void @llvm.lifetime.start.p0(i64 36, ptr nonnull %5) #16
   switch i32 %3, label %73 [
     i32 0, label %10
     i32 1, label %19
@@ -8909,167 +9903,167 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
   ]
 
 10:                                               ; preds = %9
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %11 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 11, ptr %11, align 4, !tbaa !12, !alias.scope !175
+  store i32 11, ptr %11, align 4, !tbaa !12, !alias.scope !184
   %12 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -24, ptr %12, align 8, !tbaa !13, !alias.scope !175
+  store i32 -24, ptr %12, align 8, !tbaa !13, !alias.scope !184
   %13 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 5, ptr %13, align 4, !tbaa !14, !alias.scope !175
+  store i32 5, ptr %13, align 4, !tbaa !14, !alias.scope !184
   %14 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 10, ptr %14, align 8, !tbaa !15, !alias.scope !175
+  store i32 10, ptr %14, align 8, !tbaa !15, !alias.scope !184
   %15 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 15, ptr %15, align 4, !tbaa !16, !alias.scope !175
+  store i32 15, ptr %15, align 4, !tbaa !16, !alias.scope !184
   %16 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 16, ptr %16, align 8, !tbaa !17, !alias.scope !175
+  store i32 16, ptr %16, align 8, !tbaa !17, !alias.scope !184
   %17 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %17, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %17, align 4, !tbaa !18, !alias.scope !184
   %18 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %18, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %18, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 19:                                               ; preds = %9
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %20 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 24, ptr %20, align 4, !tbaa !12, !alias.scope !175
+  store i32 24, ptr %20, align 4, !tbaa !12, !alias.scope !184
   %21 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -149, ptr %21, align 8, !tbaa !13, !alias.scope !175
+  store i32 -149, ptr %21, align 8, !tbaa !13, !alias.scope !184
   %22 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 104, ptr %22, align 4, !tbaa !14, !alias.scope !175
+  store i32 104, ptr %22, align 4, !tbaa !14, !alias.scope !184
   %23 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 23, ptr %23, align 8, !tbaa !15, !alias.scope !175
+  store i32 23, ptr %23, align 8, !tbaa !15, !alias.scope !184
   %24 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 127, ptr %24, align 4, !tbaa !16, !alias.scope !175
+  store i32 127, ptr %24, align 4, !tbaa !16, !alias.scope !184
   %25 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 32, ptr %25, align 8, !tbaa !17, !alias.scope !175
+  store i32 32, ptr %25, align 8, !tbaa !17, !alias.scope !184
   %26 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %26, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %26, align 4, !tbaa !18, !alias.scope !184
   %27 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %27, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %27, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 28:                                               ; preds = %9
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %29 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 53, ptr %29, align 4, !tbaa !12, !alias.scope !175
+  store i32 53, ptr %29, align 4, !tbaa !12, !alias.scope !184
   %30 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -1074, ptr %30, align 8, !tbaa !13, !alias.scope !175
+  store i32 -1074, ptr %30, align 8, !tbaa !13, !alias.scope !184
   %31 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 971, ptr %31, align 4, !tbaa !14, !alias.scope !175
+  store i32 971, ptr %31, align 4, !tbaa !14, !alias.scope !184
   %32 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 52, ptr %32, align 8, !tbaa !15, !alias.scope !175
+  store i32 52, ptr %32, align 8, !tbaa !15, !alias.scope !184
   %33 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 1023, ptr %33, align 4, !tbaa !16, !alias.scope !175
+  store i32 1023, ptr %33, align 4, !tbaa !16, !alias.scope !184
   %34 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 64, ptr %34, align 8, !tbaa !17, !alias.scope !175
+  store i32 64, ptr %34, align 8, !tbaa !17, !alias.scope !184
   %35 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %35, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %35, align 4, !tbaa !18, !alias.scope !184
   %36 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %36, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %36, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 37:                                               ; preds = %9
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %38 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 113, ptr %38, align 4, !tbaa !12, !alias.scope !175
+  store i32 113, ptr %38, align 4, !tbaa !12, !alias.scope !184
   %39 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -16494, ptr %39, align 8, !tbaa !13, !alias.scope !175
+  store i32 -16494, ptr %39, align 8, !tbaa !13, !alias.scope !184
   %40 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 16271, ptr %40, align 4, !tbaa !14, !alias.scope !175
+  store i32 16271, ptr %40, align 4, !tbaa !14, !alias.scope !184
   %41 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 112, ptr %41, align 8, !tbaa !15, !alias.scope !175
+  store i32 112, ptr %41, align 8, !tbaa !15, !alias.scope !184
   %42 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 16383, ptr %42, align 4, !tbaa !16, !alias.scope !175
+  store i32 16383, ptr %42, align 4, !tbaa !16, !alias.scope !184
   %43 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 128, ptr %43, align 8, !tbaa !17, !alias.scope !175
+  store i32 128, ptr %43, align 8, !tbaa !17, !alias.scope !184
   %44 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %44, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %44, align 4, !tbaa !18, !alias.scope !184
   %45 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %45, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %45, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 46:                                               ; preds = %9
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %47 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 7, ptr %47, align 4, !tbaa !12, !alias.scope !175
+  store i32 7, ptr %47, align 4, !tbaa !12, !alias.scope !184
   %48 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -101, ptr %48, align 8, !tbaa !13, !alias.scope !175
+  store i32 -101, ptr %48, align 8, !tbaa !13, !alias.scope !184
   %49 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 90, ptr %49, align 4, !tbaa !14, !alias.scope !175
+  store i32 90, ptr %49, align 4, !tbaa !14, !alias.scope !184
   %50 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 23, ptr %50, align 8, !tbaa !15, !alias.scope !175
+  store i32 23, ptr %50, align 8, !tbaa !15, !alias.scope !184
   %51 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 101, ptr %51, align 4, !tbaa !16, !alias.scope !175
+  store i32 101, ptr %51, align 4, !tbaa !16, !alias.scope !184
   %52 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 32, ptr %52, align 8, !tbaa !17, !alias.scope !175
+  store i32 32, ptr %52, align 8, !tbaa !17, !alias.scope !184
   %53 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %53, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %53, align 4, !tbaa !18, !alias.scope !184
   %54 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %54, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %54, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 55:                                               ; preds = %9
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %56 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 16, ptr %56, align 4, !tbaa !12, !alias.scope !175
+  store i32 16, ptr %56, align 4, !tbaa !12, !alias.scope !184
   %57 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -398, ptr %57, align 8, !tbaa !13, !alias.scope !175
+  store i32 -398, ptr %57, align 8, !tbaa !13, !alias.scope !184
   %58 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 369, ptr %58, align 4, !tbaa !14, !alias.scope !175
+  store i32 369, ptr %58, align 4, !tbaa !14, !alias.scope !184
   %59 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 53, ptr %59, align 8, !tbaa !15, !alias.scope !175
+  store i32 53, ptr %59, align 8, !tbaa !15, !alias.scope !184
   %60 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 398, ptr %60, align 4, !tbaa !16, !alias.scope !175
+  store i32 398, ptr %60, align 4, !tbaa !16, !alias.scope !184
   %61 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 64, ptr %61, align 8, !tbaa !17, !alias.scope !175
+  store i32 64, ptr %61, align 8, !tbaa !17, !alias.scope !184
   %62 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %62, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %62, align 4, !tbaa !18, !alias.scope !184
   %63 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %63, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %63, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 64:                                               ; preds = %9
-  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 10, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %65 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 34, ptr %65, align 4, !tbaa !12, !alias.scope !175
+  store i32 34, ptr %65, align 4, !tbaa !12, !alias.scope !184
   %66 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 -6176, ptr %66, align 8, !tbaa !13, !alias.scope !175
+  store i32 -6176, ptr %66, align 8, !tbaa !13, !alias.scope !184
   %67 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 6111, ptr %67, align 4, !tbaa !14, !alias.scope !175
+  store i32 6111, ptr %67, align 4, !tbaa !14, !alias.scope !184
   %68 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 113, ptr %68, align 8, !tbaa !15, !alias.scope !175
+  store i32 113, ptr %68, align 8, !tbaa !15, !alias.scope !184
   %69 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 6176, ptr %69, align 4, !tbaa !16, !alias.scope !175
+  store i32 6176, ptr %69, align 4, !tbaa !16, !alias.scope !184
   %70 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 128, ptr %70, align 8, !tbaa !17, !alias.scope !175
+  store i32 128, ptr %70, align 8, !tbaa !17, !alias.scope !184
   %71 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 0, ptr %71, align 4, !tbaa !18, !alias.scope !175
+  store i32 0, ptr %71, align 4, !tbaa !18, !alias.scope !184
   %72 = getelementptr inbounds i8, ptr %5, i64 32
-  store i32 1, ptr %72, align 8, !tbaa !19, !alias.scope !175
+  store i32 1, ptr %72, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 73:                                               ; preds = %9
   %74 = and i32 %3, 7
   %75 = shl nuw nsw i32 8, %74
-  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !175
+  store i32 2, ptr %5, align 8, !tbaa !4, !alias.scope !184
   %76 = getelementptr inbounds i8, ptr %5, i64 4
-  store i32 %75, ptr %76, align 4, !tbaa !12, !alias.scope !175
+  store i32 %75, ptr %76, align 4, !tbaa !12, !alias.scope !184
   %77 = getelementptr inbounds i8, ptr %5, i64 8
-  store i32 0, ptr %77, align 8, !tbaa !13, !alias.scope !175
+  store i32 0, ptr %77, align 8, !tbaa !13, !alias.scope !184
   %78 = getelementptr inbounds i8, ptr %5, i64 12
-  store i32 0, ptr %78, align 4, !tbaa !14, !alias.scope !175
+  store i32 0, ptr %78, align 4, !tbaa !14, !alias.scope !184
   %79 = getelementptr inbounds i8, ptr %5, i64 16
-  store i32 0, ptr %79, align 8, !tbaa !15, !alias.scope !175
+  store i32 0, ptr %79, align 8, !tbaa !15, !alias.scope !184
   %80 = getelementptr inbounds i8, ptr %5, i64 20
-  store i32 0, ptr %80, align 4, !tbaa !16, !alias.scope !175
+  store i32 0, ptr %80, align 4, !tbaa !16, !alias.scope !184
   %81 = getelementptr inbounds i8, ptr %5, i64 24
-  store i32 %75, ptr %81, align 8, !tbaa !17, !alias.scope !175
+  store i32 %75, ptr %81, align 8, !tbaa !17, !alias.scope !184
   %82 = getelementptr inbounds i8, ptr %5, i64 28
-  store i32 1, ptr %82, align 4, !tbaa !18, !alias.scope !175
+  store i32 1, ptr %82, align 4, !tbaa !18, !alias.scope !184
   %83 = getelementptr inbounds i8, ptr %5, i64 32
   %84 = icmp slt i32 %3, 24
   %85 = zext i1 %84 to i32
-  store i32 %85, ptr %83, align 8, !tbaa !19, !alias.scope !175
+  store i32 %85, ptr %83, align 8, !tbaa !19, !alias.scope !184
   br label %86
 
 86:                                               ; preds = %10, %19, %28, %37, %46, %55, %64, %73
@@ -9175,7 +10169,7 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
 
 154:                                              ; preds = %150, %145
   %155 = phi i32 [ %149, %145 ], [ %153, %150 ]
-  call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %6) #15
+  call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %6) #16
   %156 = sub nsw i64 %2, %121
   %157 = icmp ugt i64 %156, 7
   %158 = select i1 %119, i1 %157, i1 false
@@ -9183,7 +10177,7 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
 
 159:                                              ; preds = %154
   %160 = getelementptr inbounds i8, ptr %1, i64 %121
-  %161 = call fastcc i32 @eight_decimal_digits(ptr noundef nonnull %160, ptr noundef %6) #16
+  %161 = call fastcc i32 @eight_decimal_digits(ptr noundef nonnull %160, ptr noundef %6) #17
   %162 = icmp eq i32 %161, 0
   br i1 %162, label %228, label %163
 
@@ -9367,12 +10361,12 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
   %289 = trunc i128 %288 to i64
   %290 = lshr i128 %288, 64
   %291 = trunc i128 %290 to i64
-  tail call fastcc void @store(ptr noundef %0, i64 noundef %289, i64 noundef %291, i32 noundef %89) #16
+  tail call fastcc void @store(ptr noundef %0, i64 noundef %289, i64 noundef %291, i32 noundef %89) #17
   br label %292
 
 292:                                              ; preds = %242, %276, %222, %285
   %293 = phi i32 [ 1, %285 ], [ 0, %222 ], [ 0, %276 ], [ 0, %242 ]
-  call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %6) #15
+  call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %6) #16
   br label %357
 
 294:                                              ; preds = %100
@@ -9415,7 +10409,7 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
   %320 = trunc i128 %319 to i64
   %321 = lshr i128 %319, 64
   %322 = trunc i128 %321 to i64
-  tail call fastcc void @store(ptr noundef %0, i64 noundef %320, i64 noundef %322, i32 noundef %89) #16
+  tail call fastcc void @store(ptr noundef %0, i64 noundef %320, i64 noundef %322, i32 noundef %89) #17
   br label %357
 
 323:                                              ; preds = %304, %300
@@ -9462,16 +10456,16 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
 352:                                              ; preds = %334, %345
   %353 = phi i64 [ %342, %334 ], [ %349, %345 ]
   %354 = phi i64 [ %344, %334 ], [ %351, %345 ]
-  tail call fastcc void @store(ptr noundef %0, i64 noundef %353, i64 noundef %354, i32 noundef %89) #16
+  tail call fastcc void @store(ptr noundef %0, i64 noundef %353, i64 noundef %354, i32 noundef %89) #17
   br label %357
 
 355:                                              ; preds = %297, %329, %325, %323, %294
-  %356 = tail call fastcc i32 @parse_float(ptr noundef %0, ptr noundef nonnull %1, i64 noundef %2, i64 noundef %98, i32 noundef %95, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  %356 = tail call fastcc i32 @parse_float(ptr noundef %0, ptr noundef nonnull %1, i64 noundef %2, i64 noundef %98, i32 noundef %95, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   br label %357
 
 357:                                              ; preds = %308, %352, %292, %118, %101, %86, %355
   %358 = phi i32 [ %356, %355 ], [ 0, %86 ], [ 0, %101 ], [ %293, %292 ], [ 0, %118 ], [ 1, %352 ], [ 1, %308 ]
-  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %5) #15
+  call void @llvm.lifetime.end.p0(i64 36, ptr nonnull %5) #16
   br label %359
 
 359:                                              ; preds = %4, %357
@@ -9480,7 +10474,7 @@ define weak hidden i32 @tz_soft_parse(ptr noundef writeonly %0, ptr noundef read
 }
 
 ; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite)
-define internal fastcc i32 @eight_decimal_digits(ptr noundef readonly %0, ptr noundef nonnull writeonly %1) unnamed_addr #8 {
+define internal fastcc i32 @eight_decimal_digits(ptr noundef readonly %0, ptr noundef nonnull writeonly %1) unnamed_addr #9 {
   %3 = load i64, ptr %0, align 1
   %4 = add i64 %3, -3472328296227680304
   %5 = add i64 %3, 5063812098665367110
@@ -9511,24 +10505,24 @@ define internal fastcc i32 @eight_decimal_digits(ptr noundef readonly %0, ptr no
 }
 
 ; Function Attrs: noinline nounwind
-define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef readonly %1, i64 noundef %2, i64 noundef %3, i32 noundef %4, ptr noundef readonly byval(%struct.tzrt_format) align 8 %5) unnamed_addr #9 {
+define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef readonly %1, i64 noundef %2, i64 noundef %3, i32 noundef %4, ptr noundef readonly byval(%struct.tzrt_format) align 8 %5) unnamed_addr #10 {
   %7 = alloca i64, align 8
   %8 = alloca %struct.tzrt_big, align 4
   %9 = alloca %struct.tzrt_big, align 4
-  store i64 %3, ptr %7, align 8, !tbaa !180
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, i8 0, i64 5604, i1 false), !alias.scope !182
-  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #15
-  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, i8 0, i64 5604, i1 false), !alias.scope !185
+  store i64 %3, ptr %7, align 8, !tbaa !189
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %8) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %8, i8 0, i64 5604, i1 false), !alias.scope !191
+  call void @llvm.lifetime.start.p0(i64 5604, ptr nonnull %9) #16
+  call void @llvm.memset.p0.i64(ptr noundef nonnull align 4 dereferenceable(5604) %9, i8 0, i64 5604, i1 false), !alias.scope !194
   %10 = getelementptr inbounds i8, ptr %9, i64 4
-  store i32 1, ptr %9, align 4, !tbaa !34, !alias.scope !185
-  store i32 1, ptr %10, align 4, !tbaa !24, !alias.scope !185
-  %11 = call fastcc i32 @decimal_digits(ptr noundef %1, i64 noundef %2, ptr noundef %7, ptr noundef nonnull %8, ptr noundef null) #16
+  store i32 1, ptr %9, align 4, !tbaa !34, !alias.scope !194
+  store i32 1, ptr %10, align 4, !tbaa !24, !alias.scope !194
+  %11 = call fastcc i32 @decimal_digits(ptr noundef %1, i64 noundef %2, ptr noundef %7, ptr noundef nonnull %8, ptr noundef null) #17
   %12 = icmp slt i32 %11, 0
   br i1 %12, label %241, label %13
 
 13:                                               ; preds = %6
-  %14 = load i64, ptr %7, align 8, !tbaa !180
+  %14 = load i64, ptr %7, align 8, !tbaa !189
   %15 = icmp ult i64 %14, %2
   br i1 %15, label %16, label %24
 
@@ -9540,8 +10534,8 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
 
 20:                                               ; preds = %16
   %21 = add nuw nsw i64 %14, 1
-  store i64 %21, ptr %7, align 8, !tbaa !180
-  %22 = call fastcc i32 @decimal_digits(ptr noundef %1, i64 noundef %2, ptr noundef %7, ptr noundef nonnull %8, ptr noundef null) #16
+  store i64 %21, ptr %7, align 8, !tbaa !189
+  %22 = call fastcc i32 @decimal_digits(ptr noundef %1, i64 noundef %2, ptr noundef %7, ptr noundef nonnull %8, ptr noundef null) #17
   %23 = icmp slt i32 %22, 0
   br i1 %23, label %241, label %24
 
@@ -9552,7 +10546,7 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
   br i1 %27, label %241, label %28
 
 28:                                               ; preds = %24
-  %29 = load i64, ptr %7, align 8, !tbaa !180
+  %29 = load i64, ptr %7, align 8, !tbaa !189
   %30 = icmp ult i64 %29, %2
   br i1 %30, label %31, label %104
 
@@ -9566,7 +10560,7 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
 
 34:                                               ; preds = %31, %31
   %35 = add i64 %29, 1
-  store i64 %35, ptr %7, align 8, !tbaa !180
+  store i64 %35, ptr %7, align 8, !tbaa !189
   %36 = icmp ult i64 %35, %2
   br i1 %36, label %37, label %41
 
@@ -9591,11 +10585,11 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
 
 48:                                               ; preds = %44, %43
   %49 = add i64 %29, 2
-  store i64 %49, ptr %7, align 8, !tbaa !180
+  store i64 %49, ptr %7, align 8, !tbaa !189
   br label %50
 
 50:                                               ; preds = %48, %44, %41
-  %51 = load i64, ptr %7, align 8, !tbaa !180
+  %51 = load i64, ptr %7, align 8, !tbaa !189
   %52 = icmp ult i64 %51, %2
   br i1 %52, label %53, label %96
 
@@ -9695,7 +10689,7 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
   br i1 %110, label %111, label %142
 
 111:                                              ; preds = %106
-  %112 = call fastcc { i64, i64 } @pack(ptr noundef %8, ptr noundef %9, i32 noundef %108, i32 noundef %4, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  %112 = call fastcc { i64, i64 } @pack(ptr noundef %8, ptr noundef %9, i32 noundef %108, i32 noundef %4, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   %113 = extractvalue { i64, i64 } %112, 0
   %114 = extractvalue { i64, i64 } %112, 1
   %115 = getelementptr inbounds i8, ptr %5, i64 24
@@ -9755,7 +10749,7 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
   %141 = icmp eq i64 %140, %125
   br i1 %141, label %241, label %134
 142:                                              ; preds = %106
-  %143 = call fastcc i32 @magnitude(ptr noundef %8, ptr noundef %9, i32 noundef 10) #16
+  %143 = call fastcc i32 @magnitude(ptr noundef %8, ptr noundef %9, i32 noundef 10) #17
   %144 = add nsw i32 %143, %108
   %145 = load i32, ptr %5, align 8, !tbaa !4
   %146 = icmp eq i32 %145, 10
@@ -9817,17 +10811,17 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
   br i1 %180, label %181, label %182
 
 181:                                              ; preds = %179
-  call fastcc void @power(ptr noundef %8, i32 noundef 10, i32 noundef %108) #16
+  call fastcc void @power(ptr noundef %8, i32 noundef 10, i32 noundef %108) #17
   br label %184
 
 182:                                              ; preds = %179
   %183 = sub nsw i32 0, %108
-  call fastcc void @power(ptr noundef %9, i32 noundef 10, i32 noundef %183) #16
+  call fastcc void @power(ptr noundef %9, i32 noundef 10, i32 noundef %183) #17
   br label %184
 
 184:                                              ; preds = %181, %182, %177, %174
   %185 = phi i32 [ %176, %174 ], [ %108, %177 ], [ 0, %182 ], [ 0, %181 ]
-  %186 = call fastcc { i64, i64 } @pack(ptr noundef %8, ptr noundef %9, i32 noundef %185, i32 noundef %4, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #16
+  %186 = call fastcc { i64, i64 } @pack(ptr noundef %8, ptr noundef %9, i32 noundef %185, i32 noundef %4, ptr noundef nonnull byval(%struct.tzrt_format) align 8 %5) #17
   %187 = extractvalue { i64, i64 } %186, 0
   %188 = extractvalue { i64, i64 } %186, 1
   %189 = zext i64 %188 to i128
@@ -9921,23 +10915,23 @@ define internal fastcc i32 @parse_float(ptr noundef writeonly %0, ptr noundef re
   br i1 %240, label %241, label %233
 241:                                              ; preds = %233, %134, %99, %104, %213, %169, %96, %121, %126, %128, %130, %132, %133, %220, %225, %227, %229, %231, %232, %20, %24, %6
   %242 = phi i32 [ 0, %6 ], [ 0, %20 ], [ 0, %24 ], [ 0, %99 ], [ 0, %104 ], [ 0, %169 ], [ 0, %213 ], [ 0, %96 ], [ 1, %121 ], [ 1, %126 ], [ 1, %128 ], [ 1, %130 ], [ 1, %132 ], [ 1, %133 ], [ 1, %220 ], [ 1, %225 ], [ 1, %227 ], [ 1, %229 ], [ 1, %231 ], [ 1, %232 ], [ 1, %134 ], [ 1, %233 ]
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #15
-  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #15
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %9) #16
+  call void @llvm.lifetime.end.p0(i64 5604, ptr nonnull %8) #16
   ret i32 %242
 }
 
 ; Function Attrs: mustprogress nocallback nofree nounwind willreturn memory(argmem: write)
-declare void @llvm.memset.p0.i64(ptr writeonly, i8, i64, i1 immarg) #10
+declare void @llvm.memset.p0.i64(ptr writeonly, i8, i64, i1 immarg) #11
 
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
-declare void @llvm.trap() #11
+declare void @llvm.trap() #12
 
 ; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
-declare i32 @llvm.ctlz.i32(i32, i1 immarg) #12
+declare i32 @llvm.ctlz.i32(i32, i1 immarg) #13
 
 ; Function Attrs: nounwind memory(argmem: readwrite, inaccessiblemem: write)
 define internal fastcc i32 @decimal_digits(ptr noundef readonly %0, i64 noundef %1, ptr noundef nonnull %2, ptr noundef %3, ptr noundef %4) unnamed_addr #2 {
-  %6 = load i64, ptr %2, align 8, !tbaa !180
+  %6 = load i64, ptr %2, align 8, !tbaa !189
   %7 = icmp ult i64 %6, %1
   br i1 %7, label %8, label %105
 
@@ -10079,7 +11073,7 @@ define internal fastcc i32 @decimal_digits(ptr noundef readonly %0, i64 noundef 
   %94 = phi i64 [ %92, %90 ], [ %20, %22 ]
   %95 = phi i32 [ %91, %90 ], [ %12, %22 ]
   %96 = phi i32 [ 0, %90 ], [ 2, %22 ]
-  store i64 %94, ptr %2, align 8, !tbaa !180
+  store i64 %94, ptr %2, align 8, !tbaa !189
   br label %97
 
 97:                                               ; preds = %93, %27, %17, %19, %22
@@ -10108,37 +11102,38 @@ define internal fastcc i32 @decimal_digits(ptr noundef readonly %0, i64 noundef 
 }
 
 ; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
-declare i32 @llvm.smin.i32(i32, i32) #13
+declare i32 @llvm.smin.i32(i32, i32) #14
 
 ; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
-declare i32 @llvm.scmp.i32.i32(i32, i32) #13
+declare i32 @llvm.scmp.i32.i32(i32, i32) #14
 
 ; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
-declare i32 @llvm.abs.i32(i32, i1 immarg) #13
+declare i32 @llvm.abs.i32(i32, i1 immarg) #14
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(inaccessiblemem: readwrite)
-declare void @llvm.experimental.noalias.scope.decl(metadata) #14
+declare void @llvm.experimental.noalias.scope.decl(metadata) #15
 
 ; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
-declare i32 @llvm.smax.i32(i32, i32) #13
+declare i32 @llvm.smax.i32(i32, i32) #14
 
 attributes #0 = { nounwind memory(argmem: readwrite, inaccessiblemem: readwrite) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
 attributes #1 = { mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
 attributes #2 = { nounwind memory(argmem: readwrite, inaccessiblemem: write) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
 attributes #3 = { mustprogress nocallback nofree nounwind willreturn memory(argmem: readwrite) }
 attributes #4 = { nofree norecurse nosync nounwind memory(argmem: write) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
-attributes #5 = { nounwind memory(read, argmem: readwrite, inaccessiblemem: write) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
-attributes #6 = { noinline nounwind memory(argmem: readwrite, inaccessiblemem: write) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
-attributes #7 = { nounwind "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
-attributes #8 = { mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
-attributes #9 = { noinline nounwind "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
-attributes #10 = { mustprogress nocallback nofree nounwind willreturn memory(argmem: write) }
-attributes #11 = { cold noreturn nounwind memory(inaccessiblemem: write) }
-attributes #12 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
-attributes #13 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
-attributes #14 = { nocallback nofree nosync nounwind willreturn memory(inaccessiblemem: readwrite) }
-attributes #15 = { nounwind }
-attributes #16 = { nobuiltin "no-builtins" }
+attributes #5 = { nofree norecurse nosync nounwind memory(argmem: readwrite) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #6 = { nounwind memory(read, argmem: readwrite, inaccessiblemem: write) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #7 = { noinline nounwind memory(argmem: readwrite, inaccessiblemem: write) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #8 = { nounwind "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #9 = { mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #10 = { noinline nounwind "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #11 = { mustprogress nocallback nofree nounwind willreturn memory(argmem: write) }
+attributes #12 = { cold noreturn nounwind memory(inaccessiblemem: write) }
+attributes #13 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #14 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #15 = { nocallback nofree nosync nounwind willreturn memory(inaccessiblemem: readwrite) }
+attributes #16 = { nounwind }
+attributes #17 = { nobuiltin "no-builtins" }
 
 
 !0 = !{i32 1, !"wchar_size", i32 4}
@@ -10221,113 +11216,122 @@ attributes #16 = { nobuiltin "no-builtins" }
 !77 = distinct !{!77, !78, !"format: argument 0"}
 !78 = distinct !{!78, !"format"}
 !79 = !{!80}
-!80 = distinct !{!80, !81, !"format: argument 0"}
-!81 = distinct !{!81, !"format"}
-!82 = distinct !{!82, !28, !29}
-!83 = !{!84}
-!84 = distinct !{!84, !85, !"format: argument 0"}
-!85 = distinct !{!85, !"format"}
-!86 = !{!87}
-!87 = distinct !{!87, !88, !"small: argument 0"}
-!88 = distinct !{!88, !"small"}
-!89 = distinct !{!89, !28, !29}
-!90 = !{!91}
-!91 = distinct !{!91, !92, !"small: argument 0"}
-!92 = distinct !{!92, !"small"}
-!93 = !{!94}
-!94 = distinct !{!94, !95, !"multiply: argument 0"}
-!95 = distinct !{!95, !"multiply"}
-!96 = !{!97}
-!97 = distinct !{!97, !98, !"multiply: argument 0"}
-!98 = distinct !{!98, !"multiply"}
-!99 = distinct !{!99, !28, !29}
-!100 = !{!101}
-!101 = distinct !{!101, !102, !"small: argument 0"}
-!102 = distinct !{!102, !"small"}
-!103 = !{!104}
-!104 = distinct !{!104, !105, !"multiply: argument 0"}
-!105 = distinct !{!105, !"multiply"}
-!106 = !{!107}
-!107 = distinct !{!107, !108, !"multiply: argument 0"}
-!108 = distinct !{!108, !"multiply"}
+!80 = distinct !{!80, !81, !"multiply: argument 0"}
+!81 = distinct !{!81, !"multiply"}
+!82 = !{!83}
+!83 = distinct !{!83, !84, !"small: argument 0"}
+!84 = distinct !{!84, !"small"}
+!85 = !{!86}
+!86 = distinct !{!86, !87, !"format: argument 0"}
+!87 = distinct !{!87, !"format"}
+!88 = !{!89}
+!89 = distinct !{!89, !90, !"format: argument 0"}
+!90 = distinct !{!90, !"format"}
+!91 = distinct !{!91, !28, !29}
+!92 = !{!93}
+!93 = distinct !{!93, !94, !"format: argument 0"}
+!94 = distinct !{!94, !"format"}
+!95 = !{!96}
+!96 = distinct !{!96, !97, !"small: argument 0"}
+!97 = distinct !{!97, !"small"}
+!98 = distinct !{!98, !28, !29}
+!99 = !{!100}
+!100 = distinct !{!100, !101, !"small: argument 0"}
+!101 = distinct !{!101, !"small"}
+!102 = !{!103}
+!103 = distinct !{!103, !104, !"multiply: argument 0"}
+!104 = distinct !{!104, !"multiply"}
+!105 = !{!106}
+!106 = distinct !{!106, !107, !"multiply: argument 0"}
+!107 = distinct !{!107, !"multiply"}
+!108 = distinct !{!108, !28, !29}
 !109 = !{!110}
 !110 = distinct !{!110, !111, !"small: argument 0"}
 !111 = distinct !{!111, !"small"}
 !112 = !{!113}
-!113 = distinct !{!113, !114, !"small: argument 0"}
-!114 = distinct !{!114, !"small"}
+!113 = distinct !{!113, !114, !"multiply: argument 0"}
+!114 = distinct !{!114, !"multiply"}
 !115 = !{!116}
-!116 = distinct !{!116, !117, !"small: argument 0"}
-!117 = distinct !{!117, !"small"}
-!118 = distinct !{!118, !28, !29}
-!119 = distinct !{!119, !28, !29}
-!120 = distinct !{!120, !28, !29}
-!121 = distinct !{!121, !28, !29}
-!122 = !{!123}
-!123 = distinct !{!123, !124, !"format: argument 0"}
-!124 = distinct !{!124, !"format"}
-!125 = !{!126}
-!126 = distinct !{!126, !127, !"format: argument 0"}
-!127 = distinct !{!127, !"format"}
-!128 = !{!129}
-!129 = distinct !{!129, !130, !"format: argument 0"}
-!130 = distinct !{!130, !"format"}
+!116 = distinct !{!116, !117, !"multiply: argument 0"}
+!117 = distinct !{!117, !"multiply"}
+!118 = !{!119}
+!119 = distinct !{!119, !120, !"small: argument 0"}
+!120 = distinct !{!120, !"small"}
+!121 = !{!122}
+!122 = distinct !{!122, !123, !"small: argument 0"}
+!123 = distinct !{!123, !"small"}
+!124 = !{!125}
+!125 = distinct !{!125, !126, !"small: argument 0"}
+!126 = distinct !{!126, !"small"}
+!127 = distinct !{!127, !28, !29}
+!128 = distinct !{!128, !28, !29}
+!129 = distinct !{!129, !28, !29}
+!130 = distinct !{!130, !28, !29}
 !131 = !{!132}
-!132 = distinct !{!132, !133, !"small: argument 0"}
-!133 = distinct !{!133, !"small"}
+!132 = distinct !{!132, !133, !"format: argument 0"}
+!133 = distinct !{!133, !"format"}
 !134 = !{!135}
-!135 = distinct !{!135, !136, !"small: argument 0"}
-!136 = distinct !{!136, !"small"}
+!135 = distinct !{!135, !136, !"format: argument 0"}
+!136 = distinct !{!136, !"format"}
 !137 = !{!138}
-!138 = distinct !{!138, !139, !"multiply: argument 0"}
-!139 = distinct !{!139, !"multiply"}
+!138 = distinct !{!138, !139, !"format: argument 0"}
+!139 = distinct !{!139, !"format"}
 !140 = !{!141}
 !141 = distinct !{!141, !142, !"small: argument 0"}
 !142 = distinct !{!142, !"small"}
 !143 = !{!144}
-!144 = distinct !{!144, !145, !"format: argument 0"}
-!145 = distinct !{!145, !"format"}
-!146 = distinct !{!146, !28, !29}
-!147 = distinct !{!147, !28, !29}
-!148 = distinct !{!148, !28, !29}
-!149 = distinct !{!149, !28, !29}
-!150 = !{!151}
-!151 = distinct !{!151, !152, !"small: argument 0"}
-!152 = distinct !{!152, !"small"}
-!153 = !{!154}
-!154 = distinct !{!154, !155, !"small: argument 0"}
-!155 = distinct !{!155, !"small"}
-!156 = !{!157}
-!157 = distinct !{!157, !158, !"small: argument 0"}
-!158 = distinct !{!158, !"small"}
+!144 = distinct !{!144, !145, !"small: argument 0"}
+!145 = distinct !{!145, !"small"}
+!146 = !{!147}
+!147 = distinct !{!147, !148, !"multiply: argument 0"}
+!148 = distinct !{!148, !"multiply"}
+!149 = !{!150}
+!150 = distinct !{!150, !151, !"small: argument 0"}
+!151 = distinct !{!151, !"small"}
+!152 = !{!153}
+!153 = distinct !{!153, !154, !"format: argument 0"}
+!154 = distinct !{!154, !"format"}
+!155 = distinct !{!155, !28, !29}
+!156 = distinct !{!156, !28, !29}
+!157 = distinct !{!157, !28, !29}
+!158 = distinct !{!158, !28, !29}
 !159 = !{!160}
 !160 = distinct !{!160, !161, !"small: argument 0"}
 !161 = distinct !{!161, !"small"}
-!162 = distinct !{!162, !28, !29}
-!163 = !{!164}
-!164 = distinct !{!164, !165, !"small: argument 0"}
-!165 = distinct !{!165, !"small"}
-!166 = distinct !{!166, !29}
-!167 = distinct !{!167, !28, !29}
-!168 = distinct !{!168, !28, !29}
-!169 = distinct !{!169, !28, !29}
-!170 = distinct !{!170, !28, !29}
+!162 = !{!163}
+!163 = distinct !{!163, !164, !"small: argument 0"}
+!164 = distinct !{!164, !"small"}
+!165 = !{!166}
+!166 = distinct !{!166, !167, !"small: argument 0"}
+!167 = distinct !{!167, !"small"}
+!168 = !{!169}
+!169 = distinct !{!169, !170, !"small: argument 0"}
+!170 = distinct !{!170, !"small"}
 !171 = distinct !{!171, !28, !29}
-!172 = distinct !{!172, !28, !29}
-!173 = distinct !{!173, !28, !29}
-!174 = distinct !{!174, !28, !29}
-!175 = !{!176}
-!176 = distinct !{!176, !177, !"format: argument 0"}
-!177 = distinct !{!177, !"format"}
+!172 = !{!173}
+!173 = distinct !{!173, !174, !"small: argument 0"}
+!174 = distinct !{!174, !"small"}
+!175 = distinct !{!175, !29}
+!176 = distinct !{!176, !28, !29}
+!177 = distinct !{!177, !28, !29}
 !178 = distinct !{!178, !28, !29}
 !179 = distinct !{!179, !28, !29}
-!180 = !{!181, !181, i64 0}
-!181 = !{!"long long", !7, i64 0}
-!182 = !{!183}
-!183 = distinct !{!183, !184, !"small: argument 0"}
-!184 = distinct !{!184, !"small"}
-!185 = !{!186}
-!186 = distinct !{!186, !187, !"small: argument 0"}
-!187 = distinct !{!187, !"small"}
+!180 = distinct !{!180, !28, !29}
+!181 = distinct !{!181, !28, !29}
+!182 = distinct !{!182, !28, !29}
+!183 = distinct !{!183, !28, !29}
+!184 = !{!185}
+!185 = distinct !{!185, !186, !"format: argument 0"}
+!186 = distinct !{!186, !"format"}
+!187 = distinct !{!187, !28, !29}
 !188 = distinct !{!188, !28, !29}
-!189 = distinct !{!189, !28, !29}
+!189 = !{!190, !190, i64 0}
+!190 = !{!"long long", !7, i64 0}
+!191 = !{!192}
+!192 = distinct !{!192, !193, !"small: argument 0"}
+!193 = distinct !{!193, !"small"}
+!194 = !{!195}
+!195 = distinct !{!195, !196, !"small: argument 0"}
+!196 = distinct !{!196, !"small"}
+!197 = distinct !{!197, !28, !29}
+!198 = distinct !{!198, !28, !29}

@@ -1,0 +1,14 @@
+def Return :: 'a -> 'a
+fn Return value = value
+
+def Bind :: 'a -> ('a -> 'b) -> 'b
+fn Bind value next = next value
+
+def MergeSources :: 'a -> 'b -> ('a * 'b)
+fn MergeSources left right = (left, right)
+
+def BindReturn :: i64 -> (i64 -> i64) -> i64
+fn BindReturn value next = next value + 1000
+
+def Bind2 :: i64 -> i64 -> (i64 -> i64 -> i64) -> i64
+fn Bind2 left right next = next left right + 2000

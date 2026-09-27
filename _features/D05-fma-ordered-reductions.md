@@ -6,8 +6,18 @@
 | 規模 | S |
 | 依存 | E02, C04 |
 | 後続 | F02, F04, F05 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Math.tz`, `std/Array.tz`, `src/check.rs`, `src/llvm.rs`, `src/runtime/numeric.c`, `src/runtime/generate.py`, `src/runtime/wasm.ll`, `tests/fma_reductions.rs`, `tests/fma_reductions.mjs`, `benchmarks/`, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md` |
+
+## 実装と検証（2026-09-27）
+
+- Math.fmaをFloat builtinへ追加。AArch64 native f32/f64はllvm.fma、WASMと他のnative target/Float形式は同梱tz_soft_fma。既存演算の融合やlibm依存は追加しない。
+- 既存decode/multiply/packで単一丸め。3p+8桁を超える指数差は小項を符号付きsticky digitに縮約し、既存LIMBS上限を維持。decimalをbinary経由にしない。
+- 4つの集計をstd/Array.tzへ実装。pairwiseは一回の作業コピー、Neumaierは指定式、dot/dot_fmaは長さ検査後の左順ループ。
+- 無接尾辞のfloat literalは現行どおり文脈で推論するため、型混在の拒否は明示f64/f32で検証。Float以外はE1005。
+- tests/math.rsとarray_bulk.rsに型/IR回帰、既存math.mjsへFMAのBigInt exact参照を追加。基本演算759675件がnative/WASM O0/O3で一致し、WASM importなし。
+- features.mjsのfma_reductionsは872ケース/2トラップで固定木・Neumaier・内積、全7形式の取消し/±0/NaN/inf、評価順/部分適用、ヒープ回収を検証。
+- fma_runtime.cはC fma/fmafと20513組を照合し、ASan/UBSanも成功。AArch64 O3の生成assemblyでfmaddを確認。性能測定と速度優位性の主張は追加しない。
 
 ## 目的
 
@@ -240,15 +250,15 @@ SIMD/parallel を主張しない。
 
 ## 受け入れ条件
 
-- [ ] `Math.fma` が単一丸めである。
-- [ ] 通常 `a * b + c` は融合されない。
-- [ ] WASM で FMA/libm import がない。
-- [ ] f16/f32/f64/f128/decimal の fma が native/WASM で同一。
-- [ ] `sum_pairwise` の tree shape が仕様どおり。
-- [ ] `sum_kahan` が Neumaier steps どおり。
-- [ ] `dot` と `dot_fma` の違いがテストされている。
-- [ ] length mismatch は trap。
-- [ ] docs に順序契約と非目標が明記されている。
+- [x] `Math.fma` が単一丸めである。
+- [x] 通常 `a * b + c` は融合されない。
+- [x] WASM で FMA/libm import がない。
+- [x] f16/f32/f64/f128/decimal の fma が native/WASM で同一。
+- [x] `sum_pairwise` の tree shape が仕様どおり。
+- [x] `sum_kahan` が Neumaier steps どおり。
+- [x] `dot` と `dot_fma` の違いがテストされている。
+- [x] length mismatch は trap。
+- [x] docs に順序契約と非目標が明記されている。
 
 ## 落とし穴
 

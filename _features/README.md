@@ -19,6 +19,19 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 - C/C++・Rust・C#・JavaScriptの36種目を`run-managed.mjs --quick`で照合。Task／Parallelのquickと整数mixも成功。短縮実行の時間は性能の証拠として扱いません。
 - ASan／TSan等の追加検証と性能の実測条件・退行は担当チケットと`docs/benchmarks.md`を参照。P2/P3の機能はこの完了範囲に含めません。
 
+## P2 実装・総合検証
+
+P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更新しました。判断は各チケットとGUIDEに記録しています。
+
+- runtime同梱チェック16ファイル、fmt/clippy、全Rustテストと最新release buildが成功。
+- README記載の全E2Eがnative/WASM O0/O3で成功。featureは4911ケース、整数intrinsicは263182参照、型変換は1585参照を検証。
+- MathはFMAを含む基本759675件と超越26376件の計786051参照が一致。CのFMA20513参照はASan/UBSanでも成功。
+- SIMD有無・generic/native・CPU dispatch、host import、DWARF検証、doc golden/出力保護、LSP UTF8/UTF16実セッションが成功。
+- Map/Set26、Seq26、借用record10ケースはASanでも成功。全featureで所有heap回収とWASMメモリ上限を確認。
+- CE/SIMD/dispatchのquick比較と整数mix100000反復のチェックサムが一致。短縮時間は性能の根拠にしない。
+- A09は完全指定の借用fieldと単一regionの名前付き契約まで。設計段階の独立した複数record regionは未対応。
+- F05のx86経路はクロスコンパイル済みで、対応実機での実行・速度は未検証。ARM baselineは実行検証済み。P3には着手していません。
+
 ## 一覧
 
 ### A. 型システム
@@ -45,7 +58,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | B02 | [Option／Result ビルダーによる早期伝播](B02-result-propagation.md) | P1 | M | B01 | done |
 | B03 | [break／continue](B03-break-continue.md) | P1 | M | – | done |
 | B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](B04-active-pattern-extensions.md) | P1 | M | B01, A02 | done |
-| B05 | [コンピュテーション式の拡張（match!／and!／use／try）](B05-computation-expression-extensions.md) | P2 | M | (B01) | todo |
+| B05 | [コンピュテーション式の拡張（match!／and!／use／try）](B05-computation-expression-extensions.md) | P2 | M | (B01) | done |
 | B06 | [タスクのキャンセルと失敗の伝播](B06-task-cancellation.md) | P3 | L | B01, F01 | todo |
 
 ### C. コレクション・データ
@@ -68,7 +81,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | D02 | [文字列ライブラリ](D02-string-library.md) | P1 | M | E02, A08, A11, C03, B01, (C02) | done |
 | D03 | [数学関数の型汎用化と拡充](D03-generic-math.md) | P1 | M | E02 | done |
 | D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](D04-integer-intrinsics.md) | P1 | M | E02, B01 | done |
-| D05 | [明示 FMA と順序を定めた集計 API](D05-fma-ordered-reductions.md) | P2 | S | E02, C04 | todo |
+| D05 | [明示 FMA と順序を定めた集計 API](D05-fma-ordered-reductions.md) | P2 | S | E02, C04 | done |
 | D06 | [コンパイル時定数（const）](D06-compile-time-constants.md) | P2 | M | – | done |
 
 ### E. モジュール・ホスト連携
@@ -80,7 +93,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | E03 | [階層モジュール・サブディレクトリ](E03-hierarchical-modules.md) | P2 | L | E02 | done |
 | E04 | [パッケージと依存管理](E04-packages.md) | P3 | XL | E03 | todo |
 | E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](E05-host-abi-buffers.md) | P1 | L | C03 | done |
-| E06 | [ホスト関数のインポート](E06-host-imports.md) | P2 | L | E02 | todo |
+| E06 | [ホスト関数のインポート](E06-host-imports.md) | P2 | L | E02 | done |
 | E07 | [デバッグ出力（Debug.print／trace）](E07-debug-output.md) | P1 | S | D01, E02 | done |
 
 ### F. 並列・性能バックエンド
@@ -91,7 +104,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | F02 | [データ並列 API（Parallel.init／map／reduce）](F02-data-parallel-api.md) | P1 | M | F01, C03, C04 | done |
 | F03 | [WASM SIMD128](F03-wasm-simd128.md) | P2 | M | – | done |
 | F04 | [移植可能な SIMD ベクトル型](F04-portable-simd-types.md) | P2 | L | E02, (F03) | done |
-| F05 | [実行時の CPU 命令セット判定と関数の複数版](F05-runtime-cpu-dispatch.md) | P2 | L | C04 | todo |
+| F05 | [実行時の CPU 命令セット判定と関数の複数版](F05-runtime-cpu-dispatch.md) | P2 | L | C04 | done |
 | F06 | [WASM threads バックエンド](F06-wasm-threads.md) | P3 | L | F01 | todo |
 | F07 | [GPU バックエンド](F07-gpu-backend.md) | P3 | XL | F02, E05, B01 | todo |
 
@@ -107,7 +120,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | G06 | [言語内テスト（test 宣言と tsuzuri test）](G06-test-runner.md) | P1 | M | (D01) | done |
 | G07 | [LSP（言語サーバー）](G07-lsp.md) | P2 | L | G02 | done |
 | G08 | [デバッグ情報（DWARF／WASM）](G08-debug-info.md) | P2 | M | – | done |
-| G09 | [ドキュメントコメントと API 文書生成](G09-doc-comments.md) | P2 | S | E01 | todo |
+| G09 | [ドキュメントコメントと API 文書生成](G09-doc-comments.md) | P2 | S | E01 | done |
 | G10 | [Windows ネイティブ対応](G10-windows.md) | P3 | M | – | todo |
 | G11 | [増分ビルド・キャッシュ](G11-incremental-build.md) | P3 | L | (E03) | todo |
 

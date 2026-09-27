@@ -1,6 +1,21 @@
 use tsuzuri::{analyze_modules, analyze_modules_with_semantics, llvm};
 
 #[test]
+fn semantic_docs_follow_function_and_type_definition_targets() {
+    let main = "/// Keeps the value.\ndef identity :: 'a -> 'a\nfn identity value = value\ndef read :: i64 -> i64\nfn read value = identity value\ndef point :: Shapes.Point -> i64\nfn point value = value.x";
+    let shapes = "/// Coordinates.\nrecord Point { x: i64 }";
+    let (_, index) =
+        analyze_modules_with_semantics(&[("Main.tz", main), ("Shapes.tz", shapes)]).unwrap();
+    let function = index.at(0, main.find("identity value").unwrap()).unwrap();
+    assert_eq!(
+        index.doc_for(function.target.unwrap()),
+        Some("Keeps the value.")
+    );
+    let record = index.at(0, main.find("Shapes.Point").unwrap()).unwrap();
+    assert_eq!(index.doc_for(record.target.unwrap()), Some("Coordinates."));
+}
+
+#[test]
 fn semantic_index_preserves_source_types_and_definitions() {
     let main = "def identity :: 'a -> 'a\nfn identity value = value\n\
         def use_value :: i64 -> i64\nfn use_value number = identity number\n\

@@ -94,6 +94,7 @@ fn collect_locals<'a>(
         | Unary(..)
         | Binary(..)
         | Call(..)
+        | HostCall(..)
         | Closure(..)
         | TaskRun(_)
         | TaskParallel(_)
@@ -546,6 +547,24 @@ impl TypeReferences<'_> {
         use ComputationStatementKind::*;
         for statement in &block.statements {
             match &statement.kind {
+                LetAnd(bindings) => {
+                    for binding in bindings {
+                        if let Some(ty) = &binding.annotation {
+                            self.ty(ty);
+                        }
+                        self.expression(&binding.value);
+                    }
+                }
+                Match(value, arms) => {
+                    self.expression(value);
+                    for arm in arms {
+                        self.pattern(&arm.pattern);
+                        if let Some(guard) = &arm.guard {
+                            self.expression(guard);
+                        }
+                        self.computation(&arm.body);
+                    }
+                }
                 Let(binding, _) => {
                     if let Some(ty) = &binding.annotation {
                         self.ty(ty);

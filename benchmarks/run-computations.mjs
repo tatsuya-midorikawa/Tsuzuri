@@ -227,6 +227,42 @@ try {
     work.wasm.computation_over_direct = work.wasm.times.current.median_ms / work.wasm.times.direct.median_ms;
     if (baseline) work.wasm.speedup = work.wasm.times.before.median_ms / work.wasm.times.current.median_ms;
   }
+  const extensionSource = join(temporary, "extension-source");
+  mkdirSync(extensionSource);
+  const operations = "def Return :: 'a -> 'a\nfn Return value = value\ndef Bind :: 'a -> ('a -> 'b) -> 'b\nfn Bind value next = next value\ndef MergeSources :: 'a -> 'b -> ('a * 'b)\nfn MergeSources left right = (left, right)\n";
+  writeFileSync(join(extensionSource, "Merged.tc"), operations);
+  writeFileSync(join(extensionSource, "Fused.tc"), `${operations}def Bind2 :: 'a -> 'b -> ('a -> 'b -> 'c) -> 'c\nfn Bind2 left right next = next left right\n`);
+  const extensionBodies = {
+    bind2: "Fused { let! left = state ^ index and! right = state | 1; return left * 6364136223846793005 + right }",
+    merge: "Merged { let! left = state ^ index and! right = state | 1; return left * 6364136223846793005 + right }",
+    manual: "Fused.Bind2 (state ^ index) (state | 1) (fx left right -> left * 6364136223846793005 + right)",
+  };
+  writeFileSync(join(extensionSource, "Main.tz"), Object.entries(extensionBodies).map(([name, body]) => `export def ${name} :: i64 -> i64 -> i64\nfn ${name} count seed =\n    let mut state = seed\n    let mut index = 0\n    while index < count do\n        state = ${body}\n        index = index + 1\n    state\n`).join("\n"));
+  const extensionWasm = join(temporary, "extensions.wasm");
+  run(compiler, ["build", extensionSource, "--target", "wasm32", "-O3", "-o", extensionWasm]);
+  const extensionModule = new WebAssembly.Module(readFileSync(extensionWasm));
+  assert.deepEqual(WebAssembly.Module.imports(extensionModule), []);
+  const extensionApi = new WebAssembly.Instance(extensionModule).exports;
+  const extensionReference = (count, seed) => {
+    let state = seed;
+    for (let index = 0n; index < count; index++) state = BigInt.asIntN(64, (state ^ index) * 6364136223846793005n + (state | 1n));
+    return state;
+  };
+  for (const count of [0n, 1n, 2n, 17n, 128n]) for (const seed of [0n, 40n, -1n]) for (const name of Object.keys(extensionBodies)) assert.equal(extensionApi[`tz_${name}`](count, seed), extensionReference(count, seed));
+  const extensionCount = quick ? 128n : 10000n;
+  const extensionRepeats = quick ? 1 : 100;
+  const extensionSamples = Object.fromEntries(Object.keys(extensionBodies).map((name) => [name, []]));
+  for (let sample = 0; sample < (quick ? 3 : 9); sample++) {
+    const names = Object.keys(extensionBodies);
+    for (let offset = 0; offset < names.length; offset++) {
+      const name = names[(sample + offset) % names.length];
+      const expected = extensionReference(extensionCount, 40n);
+      const start = performance.now();
+      for (let repeat = 0; repeat < extensionRepeats; repeat++) assert.equal(extensionApi[`tz_${name}`](extensionCount, 40n), expected);
+      extensionSamples[name].push((performance.now() - start) / extensionRepeats);
+    }
+  }
+  result.extensions = { target: "wasm32", count: Number(extensionCount), repeats: extensionRepeats, raw_ms: extensionSamples, times: Object.fromEntries(Object.entries(extensionSamples).map(([name, samples]) => [name, stats(samples)])) };
   if (options["--artifacts"]) {
     const destination = resolve(options["--artifacts"]);
     mkdirSync(destination, { recursive: true });

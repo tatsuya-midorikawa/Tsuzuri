@@ -372,6 +372,56 @@ void tz_soft_op(unsigned char *out, const unsigned char *left, const unsigned ch
 }
 
 __attribute__((visibility("hidden")))
+void tz_soft_fma(unsigned char *out, const unsigned char *left, const unsigned char *right, const unsigned char *addend, int kind) {
+    tzrt_format descriptor = format(kind);
+    tzrt_number first = decode(left, descriptor);
+    tzrt_number second = decode(right, descriptor);
+    tzrt_number last = decode(addend, descriptor);
+    int negative = first.negative ^ second.negative;
+    int exceptional = 0;
+    if (first.special == 2 || second.special == 2 || last.special == 2) exceptional = 2;
+    else if (first.special || second.special) {
+        if ((!first.special && !first.coefficient.n) || (!second.special && !second.coefficient.n)) exceptional = 2;
+        else if (last.special && last.negative != negative) exceptional = 2;
+        else exceptional = 1;
+    } else if (last.special) { exceptional = 1; negative = last.negative; }
+    if (exceptional) { store(out, special(descriptor, exceptional, negative), descriptor.width); return; }
+    tzrt_big product = multiply(&first.coefficient, &second.coefficient);
+    tzrt_big one = small(1);
+    int exponent = first.exponent + second.exponent;
+    if (!product.n && !last.coefficient.n) {
+        if (negative != last.negative) negative = 0;
+        if (last.exponent < exponent) exponent = last.exponent;
+        store(out, pack(&product, &one, exponent, negative, descriptor), descriptor.width);
+        return;
+    }
+    if (!product.n) { store(out, pack(&last.coefficient, &one, last.exponent, last.negative, descriptor), descriptor.width); return; }
+    if (!last.coefficient.n) { store(out, pack(&product, &one, exponent, negative, descriptor), descriptor.width); return; }
+     /* Product and addend have at most 2p and p digits. Beyond this gap the
+         smaller nonzero term can only break a rounding tie; retain its sign
+         as a sticky digit without aligning the full exponent range. */
+     int guard_digits = 3 * descriptor.precision + 8;
+    if (exponent - last.exponent > guard_digits) {
+        last.coefficient = small(1);
+        last.exponent = exponent - guard_digits;
+    } else if (last.exponent - exponent > guard_digits) {
+        product = small(1);
+        exponent = last.exponent - guard_digits;
+    }
+    int common = exponent < last.exponent ? exponent : last.exponent;
+    power(&product, descriptor.base, exponent - common);
+    power(&last.coefficient, descriptor.base, last.exponent - common);
+    if (negative == last.negative) add(&product, &last.coefficient);
+    else {
+        int order = compare(&product, &last.coefficient);
+        if (order >= 0) subtract(&product, &last.coefficient);
+        else { subtract(&last.coefficient, &product); product = last.coefficient; negative = last.negative; }
+        if (!product.n) negative = 0;
+    }
+    store(out, pack(&product, &one, common, negative, descriptor), descriptor.width);
+}
+
+__attribute__((visibility("hidden")))
 int tz_soft_cmp(const unsigned char *left, const unsigned char *right, int kind) {
     tzrt_format f = format(kind);
     tzrt_number a = decode(left, f), b = decode(right, f);

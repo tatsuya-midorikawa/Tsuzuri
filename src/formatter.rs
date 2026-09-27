@@ -130,12 +130,23 @@ pub fn ast_fingerprint(program: Program) -> String {
 
 fn canonicalize(mut program: Program) -> (String, Hints) {
     let mut canonical = Canonical::default();
+    for external in &mut program.externs {
+        Canonical::doc(&mut external.doc);
+        canonical.ident(&mut external.name);
+        for parameter in &mut external.parameters {
+            canonical.ty(parameter);
+        }
+        canonical.ty(&mut external.result);
+        canonical.constraints(&mut external.constraints);
+    }
     for constant in &mut program.constants {
+        Canonical::doc(&mut constant.doc);
         canonical.ident(&mut constant.name);
         canonical.ty(&mut constant.ty);
         canonical.expression(&mut constant.value);
     }
     for alias in &mut program.type_aliases {
+        Canonical::doc(&mut alias.doc);
         canonical.hints.type_headers.insert(alias.name.span.end);
         canonical.ident(&mut alias.name);
         for parameter in &mut alias.parameters {
@@ -144,6 +155,7 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         canonical.ty(&mut alias.target);
     }
     for record in &mut program.records {
+        Canonical::doc(&mut record.doc);
         for region in &mut record.regions {
             canonical.ident(region);
         }
@@ -160,6 +172,7 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         }
     }
     for union in &mut program.unions {
+        Canonical::doc(&mut union.doc);
         for (_, span) in &mut union.derives {
             *span = Span::default();
         }
@@ -176,6 +189,7 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         }
     }
     for function in &mut program.functions {
+        Canonical::doc(&mut function.doc);
         for region in &mut function.regions {
             canonical.ident(region);
         }
@@ -188,11 +202,13 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         canonical.expression(&mut function.body);
     }
     for class in &mut program.classes {
+        Canonical::doc(&mut class.doc);
         canonical.hints.type_headers.insert(class.name.span.end);
         canonical.ident(&mut class.name);
         canonical.ident(&mut class.variable);
         canonical.constraints(&mut class.superclasses);
         for method in &mut class.methods {
+            Canonical::doc(&mut method.doc);
             canonical.ident(&mut method.name);
             for parameter in &mut method.parameters {
                 canonical.ty(parameter);
@@ -377,6 +393,7 @@ impl Layout {
                     | TokenKind::Type
                     | TokenKind::Const
                     | TokenKind::Test
+                    | TokenKind::Extern
                     | TokenKind::Class
                     | TokenKind::Instance
                     | TokenKind::Private
@@ -634,6 +651,12 @@ struct Canonical {
 }
 
 impl Canonical {
+    fn doc(doc: &mut Option<Documentation>) {
+        if let Some(doc) = doc {
+            doc.span = Span::default();
+        }
+    }
+
     fn ident(&mut self, name: &mut Ident) {
         name.span = Span::default();
         if name.provenance == Provenance::Generated {
@@ -949,7 +972,23 @@ impl Canonical {
         for statement in &mut block.statements {
             statement.span = Span::default();
             match &mut statement.kind {
+                Match(value, arms) => {
+                    self.expression(value);
+                    for arm in arms {
+                        self.pattern(&mut arm.pattern);
+                        if let Some(guard) = &mut arm.guard {
+                            self.expression(guard);
+                        }
+                        self.computation(&mut arm.body);
+                        arm.span = Span::default();
+                    }
+                }
                 Let(binding, _) => self.binding(binding),
+                LetAnd(bindings) => {
+                    for binding in bindings {
+                        self.binding(binding);
+                    }
+                }
                 Do(value) | Operation(_, value) | Expression(value) => self.expression(value),
                 If(condition, yes, no) => {
                     self.expression(condition);

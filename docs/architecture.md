@@ -30,6 +30,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/diagnostic.rs` | ソース ID とファイル内位置、診断の順序・重複除去・表示／収集上限、human／JSON lines |
 | `src/syntax.rs` | トークン、構文木、構文資源上限 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント、数値 |
+| `src/docgen.rs` | 宣言ASTからの公開API Markdown、型・制約・regionの描画、決定的ページ順 |
 | `src/parser.rs` | Pratt parser、宣言と式、トップレベルのエントリーコード、深さの制限 |
 | `src/parse_control.rs` | インデント本体、for／while／match、関数ガード、fx、パターンと認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR、レイアウト、公開 ABI |
@@ -44,6 +45,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
 | `src/llvm_debug.rs` | 共通採番によるDWARFメタデータ、型・変数・関数と式のソース位置 |
+| `src/llvm_imports.rs` | externのABI wrapper、WASM import属性、所有結果の受領検査 |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit vector/mask型、lane型族、境界検査とLLVM vector lowering |
 | `src/llvm_control.rs` | 直接の反復・switch・定数表、パターン手順の分岐と全経路の解放 |
 | `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定 merge sort の型付き builtin lowering |
@@ -56,6 +58,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、最短往復表示・解析 |
 | `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な符号化変換、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
+| `src/runtime/cpu.c` | native標準i64配列和、CPUID/OSXSAVE/XCR0、atomicなvariant cache |
 | `src/runtime/heap-*.ll` の `tz.realloc` | native realloc と、WASM の隣接空き領域再利用・確保コピー fallback |
 | `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
@@ -63,6 +66,13 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護 |
 | `src/main.rs` | CLI オプションと診断・警告の表示 |
 | `src/lsp.rs` / `src/semantic.rs` | stdio言語サーバー、Unicode位置変換、単相化前の型・定義位置インデックス |
+
+doc commentはlexerのDocComment tokenとして保持し、parserで宣言のDocumentation(text, span)へ添付します。
+def/fn結合では署名側から引き継ぎ、誤配置はE0002です。生成するchecked functionにはdocsを複製せず、型/ownership/LLVMの意味は変えません。
+docコマンドは通常のproject検査後にソースASTから署名を描画します。再parseは文書の構文情報だけに使い、独立した型推論やLLVM生成は行いません。
+private/instance実装を除き、.tz/.tcを共有するstd moduleは一ページに結合します。constの初期化式は省略し、builtin一覧は言語仕様を参照します。
+driverの専用公開処理はmarker・ソース包含・symlinkを検査し、一時ディレクトリから全体をrenameします。旧出力の退避と失敗時復元はbuildのファイル出力処理とは独立です。
+formatterのfingerprintはdoc本文を比較しspanだけを消去します。SemanticIndexは宣言位置ごとに本文を一回保持し、hoverは既存のtarget spanから説明を取得します。
 
 ## 性能設計の原則
 
@@ -78,7 +88,7 @@ LLVM に渡すだけで高速と判断せず、生成コードと実測で経路
 |---|---|
 | スカラー CPU | i8〜i64／i8u〜i64u と f32／f64 の変換は LLVM の直接命令・飽和 intrinsic。`as` と変換 builtin の意味・性能経路を揃える |
 | SIMD | `-O3` のループ／SLP 自動ベクトル化。連続配列・型の特殊化・不要コピーの除去で最適化可能な IR を生成する。`--cpu native` はビルド機の命令セットを有効化 |
-| 移植性 | 既定の `--cpu generic` は Clang のターゲット既定を維持。`native` は明示指定し、CPU 要件を配布条件に含める。実行時 ISA 判定・複数版の選択は今後の実装 |
+| 移植性 | 既定の`--cpu generic`はターゲットbaseline。同梱i64配列和だけ実行時ISA選択。`native`は配布条件にビルド機ISAを含める |
 | 複数 CPU コア | `Task.parallel` の遅延起動する常駐プール。CPU 数で追加スレッド数を制限し、呼び出し元も自分のグループを進行する。WASM は逐次 fallback。自動並列化は未実装 |
 | GPU | バックエンドは未実装。今後は能力検出、所有権を保つバッファ、転送・同期・カーネル選択、CPU 経路と合わせた実行基盤を設計する |
 | WASM | bulk-memory対応、SIMD128は明示的な--wasm-feature simd128で有効。既定は非SIMD。threads／GPU経路は未実装 |
@@ -102,6 +112,17 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 
 WASM featureは現段階でsimd128だけなのでBuildOptions.wasm_simdのboolで表します。driverは有効時-msimd128、既定-mno-simd128を渡します。
 LLVM IR出力はfeature要件をコメントへ記録します。tests/wasm_simd.mjsはllvm-objdumpの命令解析とBigInt参照で検証し、即値の0xfdをSIMD opcodeと誤認しません。
+
+nativeのCPU dispatchは同梱Arrayソースを確認したemit_native_buildでだけ有効にします。対象は単相化したArray.sumのref [i64] -> i64です。
+通常のLLVM API/--emit llvmは従来の独立IRを維持し、driverのexe/objectはtsuzuri_cpu_sum_i64出現時だけcpu.cをtask runtimeと同じC連結経路へ追加します。
+C11のatomic関数ポインターをacquire load/acq-rel cmpxchgで一度選択します。feature bit0=SSE4.2、bit1=AVX2で、AVX2はOSXSAVE/AVX/XCR0のXMM+YMM状態を要求します。
+baseline/SSE4.2/AVX2はuint64 wrapping sumで同一結果。ISA属性はCのtarget属性からClangが生成し、GNU ifuncやcompiler-rtのCPU modelには依存しません。
+AArch64と未知環境はbaseline、SVE/SVE2・float dispatch・任意ユーザー関数の多重化は未実装です。公開runtime入口はweak/hiddenです。
+
+externはProgram.externsにsignatureを持ち、通常関数の型付きHostCall wrapperへ下げます。外部ABIは型検査で具体型へ確定し、通常の関数値/部分適用/所有権/特殊化を共有します。
+HostCallは副作用ありとしてchildren/may_mutate/ownershipへ登録し、extern wrapper自体は到達性のrootから外します。
+宣言はBTreeSetで一度生成し、WASM属性でmodule/nameを固定します。E05のrecord正規化・buffer型・pointer/UTF検査とallocatorを再利用します。
+所有buffer結果はout descriptorのlenを-1で初期化し、未設定・負数・overflow・不正範囲を受領時に拒否してから通常のdropへ渡します。
 
 ## 不変条件
 
@@ -341,6 +362,9 @@ string は i16 の UTF-16 コード単位、utf8string は従来の i8 の UTF-8
 ループ用 metadata は同梱数値ランタイムの ID 範囲と分離し、全 IR を決定的に生成します。
 
 **コンピュテーション式:** `.tc` の全関数名を順序付き集合に収集し、ファイル名をビルダー名にします。
+match!はBind+通常match、and!はsourceを先に順序付きの生成letへ保持してからMergeSourcesの左結合+Bindへ展開します。
+構文的に最後の2文がlet!+return、または2要素and!+returnのときだけ、存在するBindReturn/Bind2を選びます。Bind2のcontinuationは2引数を同時に束縛し、mut/注釈を保持します。
+追加した解析・展開は専用helperへ分離し、既存の深さ128と2 MiBテストスレッドのスタックを維持します。新TypedExpr/runtimeは追加しません。
 使用側の `Builder { ... }` は元の Span を持つ専用の構文 AST とし、各関数・エントリーの型検査前に
 `Bind`／`Return`／`ReturnFrom`／`Yield`／`YieldFrom`／`Zero`／`Combine`／`For`／`While`
 への通常の関数呼び出しと匿名関数へ展開します。`Delay`／`Run` は存在するときだけ使います。
@@ -923,12 +947,18 @@ math生成器は必要なmusl 1.2.5ソースを個別にコンパイルし、llv
 Cargoビルド時のClang／llvm-link依存は追加しません。upstreamのライセンスと取得元hashはruntime/muslに同梱します。
 
 Floatのsqrt／丸めはf32/f64で型付きintrinsic・明示演算、他の形式では既存の整数数値ランタイムを使います。
+明示Math.fmaだけをAArch64 nativeのf32/f64でllvm.fmaへ下げ、命令を保証できないnative targetとWASM、他のFloat形式ではtz_soft_fmaを使います。
+通常のfmul/faddにcontract/fast-mathは付けず、libmのfma importも作りません。builtin専用Globalsにもtargetのwasm設定を引き継ぎます。
+soft FMAは係数の積と加数を符号付き多倍長整数として合成し、既存packで一度だけ丸めます。指数差が3p+8桁を超える非ゼロの小項は、丸めtieへの方向だけを保つsticky digitへ縮約します。
+これにより既存の固定LIMBS領域を拡大せず、f128/decimal128の極端な指数差も扱います。特殊値を先に処理し、decimalは十進のまま計算します。
+Arrayのpairwise/Neumaier/dot/dot_fmaは通常のstd関数です。pairwiseは一回の所有コピーをArray.setで更新し、各段の隣接ペア木を維持します。既存sumと通常dotは左順・別丸めのままです。
 soft sqrtは目的の量子指数を求め、整数二乗比較で係数を探索し、二つの丸め候補の中点の二乗と比較して一度だけ丸めます。
 decimalからbinaryへの変換は行いません。min/maxはNaN伝播と符号付き0、clampは順序検査を保ちます。
 Elementaryはf32/f64だけです。muslの通常f64 atan2が1 ulpを超えたため、有限の通常比はdouble-double範囲縮小とdegree31級数へ置き換えました。
 |reduced|は1/8以下、係数は256-bitからhigh/lowに分け、特殊値と極端な比はupstream処理を維持します。
-速度向上の主張はしません。`tests/math.mjs`はBigInt参照の基本演算745486件と256-bit mpmath参照の超越関数26376件をnative/WASM O0/O3で照合します。
+速度向上の主張はしません。`tests/math.mjs`はFMAを含むBigInt参照の基本演算759675件と256-bit mpmath参照の超越関数26376件をnative/WASM O0/O3で照合します。
 f16の単項基本演算は全65536パターン、広幅形式は各1000乱数を含み、非NaNのbit一致と実行時heap非確保も検査します。
+featuresのfma_reductionsは長さ0..17と1025までの境界・奇数長で872ケースと2トラップを検証し、Cのfma_runtimeはホストfma/fmafと20513組をASan/UBSanでも照合します。
 
 生成時だけ Clang を使い、通常の Cargo ビルド・型検査・LLVM IR 出力には LLVM のインストールを要求しません。
 生成器はホストの target triple／データレイアウト／CPU 属性と新しい IR 限定の属性を除き、

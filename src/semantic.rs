@@ -20,9 +20,23 @@ pub struct DocumentSymbol {
 pub struct SemanticIndex {
     pub entries: Vec<SemanticEntry>,
     pub symbols: Vec<DocumentSymbol>,
+    pub documentation: Vec<(Span, String)>,
 }
 
 impl SemanticIndex {
+    pub fn doc_for(&self, target: Span) -> Option<&str> {
+        self.documentation
+            .iter()
+            .find(|(span, _)| *span == target)
+            .map(|(_, text)| text.as_str())
+    }
+
+    fn document(&mut self, name: &Ident, doc: Option<&Documentation>) {
+        if let Some(doc) = doc {
+            self.documentation.push((name.span, doc.text.clone()));
+        }
+    }
+
     pub fn at(&self, source: usize, offset: usize) -> Option<&SemanticEntry> {
         self.entries
             .iter()
@@ -57,12 +71,19 @@ pub(super) fn collect(
     types: TypeContext<'_>,
 ) -> SemanticIndex {
     let mut index = SemanticIndex::default();
-    for module in modules
-        .iter()
-        .filter(|module| module.origin == ModuleOrigin::User)
-    {
+    for module in modules {
         let program = module.program;
+        for external in &program.externs {
+            index.document(&external.name, external.doc.as_ref());
+            index.symbol(
+                &external.name,
+                12,
+                external.result.span,
+                format!("extern def {}.{}", module.name, external.name.text),
+            );
+        }
         for record in &program.records {
+            index.document(&record.name, record.doc.as_ref());
             index.symbol(
                 &record.name,
                 23,
@@ -77,6 +98,7 @@ pub(super) fn collect(
             }
         }
         for union in &program.unions {
+            index.document(&union.name, union.doc.as_ref());
             index.symbol(
                 &union.name,
                 10,
@@ -92,6 +114,7 @@ pub(super) fn collect(
             }
         }
         for alias in &program.type_aliases {
+            index.document(&alias.name, alias.doc.as_ref());
             index.symbol(
                 &alias.name,
                 26,
@@ -101,6 +124,7 @@ pub(super) fn collect(
             type_entry(&mut index, &alias.target, module.name, names, &types);
         }
         for constant in &program.constants {
+            index.document(&constant.name, constant.doc.as_ref());
             let detail = resolve_type(&constant.ty, module.name, names)
                 .map(|ty| {
                     format!(
@@ -115,6 +139,7 @@ pub(super) fn collect(
             type_entry(&mut index, &constant.ty, module.name, names, &types);
         }
         for declaration in &program.functions {
+            index.document(&declaration.name, declaration.doc.as_ref());
             if let Some(function) = functions.iter().find(|function| {
                 function.module == module.name && function.name == declaration.name.text
             }) {
@@ -135,6 +160,7 @@ pub(super) fn collect(
             type_entry(&mut index, &declaration.result, module.name, names, &types);
         }
         for class in &program.classes {
+            index.document(&class.name, class.doc.as_ref());
             index.symbol(
                 &class.name,
                 5,
@@ -145,6 +171,7 @@ pub(super) fn collect(
                 format!("class {}.{}", module.name, class.name.text),
             );
             for method in &class.methods {
+                index.document(&method.name, method.doc.as_ref());
                 index.symbol(
                     &method.name,
                     6,

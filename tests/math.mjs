@@ -26,9 +26,9 @@ const formats = [
   { name: "d64", bits: 64, precision: 16, minimum: -398, maximum: 369, fraction: 53, bias: 398, decimal: true },
   { name: "d128", bits: 128, precision: 34, minimum: -6176, maximum: 6111, fraction: 113, bias: 6176, decimal: true },
 ];
-const operations = ["sqrt", "floor", "ceil", "trunc", "round", "round_even", "abs", "min", "max", "clamp", "copysign", "is_nan", "is_infinite", "is_finite", "pi", "e"];
+const operations = ["sqrt", "floor", "ceil", "trunc", "round", "round_even", "abs", "min", "max", "clamp", "fma", "copysign", "is_nan", "is_infinite", "is_finite", "pi", "e"];
 const elementary = ["sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "exp2", "log", "log2", "log10", "pow", "cbrt", "hypot"];
-const arity = (name) => name === "pi" || name === "e" ? 0 : name === "clamp" ? 3 : ["min", "max", "copysign", "atan2", "pow", "hypot"].includes(name) ? 2 : 1;
+const arity = (name) => name === "pi" || name === "e" ? 0 : ["clamp", "fma"].includes(name) ? 3 : ["min", "max", "copysign", "atan2", "pow", "hypot"].includes(name) ? 2 : 1;
 const numberBits = (value, bits) => {
   const buffer = new ArrayBuffer(8), view = new DataView(buffer);
   if (bits === 32) { view.setFloat32(0, value, true); return BigInt(view.getUint32(0, true)); }
@@ -129,6 +129,22 @@ function rootInteger(value) {
 
 function reference(name, raw, otherRaw, boundRaw, format) {
   const value = unpack(raw, format), other = unpack(otherRaw, format);
+  if (name === "fma") {
+    const addend = unpack(boundRaw, format);
+    const negative = value.negative !== other.negative;
+    if ([value, other, addend].some((part) => part.kind === "nan")) return special(format, "nan");
+    if (value.kind || other.kind) {
+      if ((!value.kind && !value.coefficient) || (!other.kind && !other.coefficient) || (addend.kind && addend.negative !== negative)) return special(format, "nan");
+      return special(format, "inf", negative);
+    }
+    if (addend.kind) return special(format, "inf", addend.negative);
+    const exponent = Math.min(value.exponent + other.exponent, addend.exponent);
+    const product = value.coefficient * other.coefficient * power(format, value.exponent + other.exponent - exponent);
+    const last = addend.coefficient * power(format, addend.exponent - exponent);
+    const total = (negative ? -product : product) + (addend.negative ? -last : last);
+    if (!total) return encode(0n, 0, !product && !last && negative && addend.negative, format);
+    return roundedRational(total < 0n ? -total : total, 1n, exponent, total < 0n, format);
+  }
   if (name === "pi" || name === "e") {
     const digits = name === "pi" ? "3141592653589793238462643383279502884197169399375105820974944592307816406286208998628034825342117067982148086513282306647" : "2718281828459045235360287471352662497757247093699959574966967627724076630353547594571382178525166427427466391932003059922";
     return roundedRational(BigInt(digits), 10n ** BigInt(digits.length - 1), 0, false, format);
@@ -218,6 +234,17 @@ for (const [formatIndex, format] of formats.entries()) {
       continue;
     }
     const inputsToTest = count === 0 ? [0n] : (!quick && type === "f16" && count === 1 ? Array.from({ length: 65536 }, (_, index) => BigInt(index)) : values);
+    if (name === "fma") {
+      const specialValues = values.slice(0, 8).concat(encode(1n, 0, false, format), encode(1n, 0, true, format));
+      for (const left of specialValues) for (const right of specialValues) for (const addend of specialValues) cases.push({ id, formatIndex, name, args: [left, right, addend], expected: reference(name, left, right, addend, format) });
+      const unit = power(format, format.precision - 1);
+      const triples = [
+        [encode(unit + 1n, 1 - format.precision, false, format), encode(unit - 1n, 1 - format.precision, false, format), encode(1n, 0, true, format)],
+        [encode(1n, format.minimum, false, format), encode(1n, format.minimum, false, format), encode(1n, format.maximum, true, format)],
+        [encode(1n, format.maximum, false, format), encode(1n, format.maximum, false, format), encode(1n, format.minimum, true, format)],
+      ];
+      for (const args of triples) cases.push({ id, formatIndex, name, args, expected: reference(name, ...args, format) });
+    }
     for (const [index, raw] of inputsToTest.entries()) {
       const other = values[(index * 13 + 5) % values.length], bound = values[(index * 7 + 3) % values.length];
       cases.push({ id, formatIndex, name, args: [raw, other, bound], expected: reference(name, raw, other, bound, format) });
@@ -240,6 +267,9 @@ try {
   cli(["build", source, "--emit", "llvm", "-o", again]);
   const ir = readFileSync(irPath, "utf8");
   assert.equal(ir, readFileSync(again, "utf8"));
+  const wasmIrPath = join(temporary, "math-wasm.ll");
+  cli(["build", source, "--target", "wasm32", "--emit", "llvm", "-o", wasmIrPath]);
+  const wasmIr = readFileSync(wasmIrPath, "utf8");
   const declarations = ir.match(/^declare .*$/gm) ?? [];
   assert.equal(new Set(declarations).size, declarations.length);
   assert.ok(!/\b(fast|reassoc|contract|afn|nnan|ninf)\b|llvm\.fmuladd/.test(ir));
@@ -248,6 +278,7 @@ try {
   }
   const probe = `\n@math_result = internal global i128 0, align 16\ndefine i64 @math_low() { %value = load i128, ptr @math_result %low = trunc i128 %value to i64 ret i64 %low }\ndefine i64 @math_high() { %value = load i128, ptr @math_result %upper = lshr i128 %value, 64 %high = trunc i128 %upper to i64 ret i64 %high }\ndefine void @math_probe(i32 %id, i64 %low0, i64 %high0, i64 %low1, i64 %high1, i64 %low2, i64 %high2) {\nentry:\n switch i32 %id, label %bad [${wrappers.map((_, id) => `i32 ${id}, label %case${id}`).join(" ")}]\n${wrappers.join("\n")}\nbad: call void @llvm.trap() unreachable\n}\n`;
   writeFileSync(irPath, ir.replaceAll("@malloc", "@math_test_malloc") + probe);
+  writeFileSync(wasmIrPath, wasmIr.replaceAll("@malloc", "@math_test_malloc") + probe);
   const host = join(temporary, "host.c");
   writeFileSync(host, `#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <inttypes.h>\nvoid *math_test_malloc(uint64_t size) { (void)size; abort(); }\nextern void math_probe(int, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\nextern uint64_t math_low(void), math_high(void);\nint main(void) { int id; uint64_t values[6]; while(scanf("%d %" SCNx64 " %" SCNx64 " %" SCNx64 " %" SCNx64 " %" SCNx64 " %" SCNx64, &id, &values[0], &values[1], &values[2], &values[3], &values[4], &values[5]) == 7) { math_probe(id, values[0], values[1], values[2], values[3], values[4], values[5]); printf("%016" PRIx64 "%016" PRIx64 "\\n", math_high(), math_low()); } return 0; }\n`);
   const input = cases.map((test) => [test.id, ...test.args.flatMap((value) => [value & mask(64), value >> 64n]).map((value) => value.toString(16))].join(" ")).join("\n");
@@ -277,7 +308,7 @@ try {
     output.forEach((value, index) => validate(value, index, `native O${optimization}`));
     baseline ??= output;
     const object = join(temporary, `math-${optimization}.o`), runtime = join(temporary, `runtime-${optimization}.o`), wasm = join(temporary, `math-${optimization}.wasm`);
-    execute(clang, ["--target=wasm32", `-O${optimization}`, "-ffp-contract=off", "-Wno-override-module", "-c", irPath, "-o", object]);
+    execute(clang, ["--target=wasm32", `-O${optimization}`, "-ffp-contract=off", "-Wno-override-module", "-c", wasmIrPath, "-o", object]);
     execute(clang, ["--target=wasm32", `-O${optimization}`, "-Wno-override-module", "-c", resolve("src/runtime/wasm.ll"), "-o", runtime]);
     execute(process.env.TSUZURI_WASM_LD ?? "wasm-ld", [object, runtime, "--no-entry", "--export=math_probe", "--export=math_low", "--export=math_high", "--export-memory", "-z", "stack-size=1048576", "--max-memory=16777216", "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));

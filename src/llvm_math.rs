@@ -103,6 +103,20 @@ impl FunctionEmitter<'_, '_> {
                 "2.718281828459045235360287471352662497757247093699959574966967627724076630353547594571382178525166427427466391932003059922"
             }, ty, Span::default()).unwrap();
         }
+        if operation == MathFma {
+            if cfg!(target_arch = "aarch64")
+                && !self.globals.wasm
+                && matches!(ty, Type::Binary(32 | 64))
+            {
+                return self.math_intrinsic("fma", ty, &["%arg0", "%arg1", "%arg2"]);
+            }
+            let left = self.spill(ty, "%arg0");
+            let right = self.spill(ty, "%arg1");
+            let addend = self.spill(ty, "%arg2");
+            let output = self.slot(ty);
+            self.instruction(format!("call void @tz_soft_fma(ptr {output}, ptr {left}, ptr {right}, ptr {addend}, i32 {})", numeric_kind(ty)));
+            return self.value(format!("load {lowered}, ptr {output}"));
+        }
         if matches!(
             operation,
             MathAbs | MathCopysign | MathIsNan | MathIsInfinite | MathIsFinite

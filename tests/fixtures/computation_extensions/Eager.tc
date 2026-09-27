@@ -1,0 +1,8 @@
+def Return :: 'a -> Option.Option<'a>
+fn Return value = Option.Some value
+
+def Bind :: Option.Option<'a> -> ('a -> Option.Option<'b>) -> Option.Option<'b>
+fn Bind value next = Option.Bind value next
+
+def MergeSources :: Option.Option<'a> -> Option.Option<'b> -> Option.Option<('a * 'b)>
+fn MergeSources left right = Option.MergeSources left right

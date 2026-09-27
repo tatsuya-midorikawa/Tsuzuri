@@ -25,7 +25,7 @@ fn basic_math_preserves_each_float_type_and_old_signatures() {
                 "def {name}_value :: {ty} -> bool\nfn {name}_value value = Math.{name} value\n"
             ));
         }
-        source.push_str(&format!("def clamp_value :: {ty} -> {ty} -> {ty} -> {ty}\nfn clamp_value value low high = Math.clamp value low high\ndef pi_value :: {ty}\nfn pi_value = Math.pi()\ndef e_value :: {ty}\nfn e_value = Math.e()"));
+        source.push_str(&format!("def clamp_value :: {ty} -> {ty} -> {ty} -> {ty}\nfn clamp_value value low high = Math.clamp value low high\ndef fma_value :: {ty} -> {ty} -> {ty} -> {ty}\nfn fma_value left right addend = Math.fma left right addend\ndef pi_value :: {ty}\nfn pi_value = Math.pi()\ndef e_value :: {ty}\nfn e_value = Math.e()"));
         let module = analyze(&source).unwrap_or_else(|error| panic!("{ty}: {error:?}"));
         for wasm in [false, true] {
             let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
@@ -34,6 +34,10 @@ fn basic_math_preserves_each_float_type_and_old_signatures() {
                 llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
             );
             assert!(!ir.contains("@llvm.round.") && !ir.contains("@llvm.rint."));
+            if wasm {
+                assert!(!ir.contains("@llvm.fma."));
+                assert!(ir.contains("call void @tz_soft_fma("));
+            }
         }
     }
     analyze("sqrt 4.0 + floor 1.5 + ceil 1.5 + abs (-1.0)").unwrap();
@@ -61,6 +65,11 @@ fn basic_math_preserves_each_float_type_and_old_signatures() {
         );
     }
     assert_eq!(analyze("Math.sqrt 4i64").unwrap_err().code, "E1005");
+    assert_eq!(analyze("Math.fma 1 2 3").unwrap_err().code, "E1005");
+    assert_eq!(
+        analyze("Math.fma 1.0f64 2.0f32 3.0f64").unwrap_err().code,
+        "E1003"
+    );
     assert_eq!(
         analyze("let value: f64 = Math.pi\nvalue").unwrap_err().code,
         "E1003"

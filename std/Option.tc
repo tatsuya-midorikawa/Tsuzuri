@@ -2,6 +2,21 @@ union Option<'a> =
     | None
     | Some of 'a
 
+def MergeSources :: Option<'a> -> Option<'b> -> Option<('a * 'b)>
+fn MergeSources left right =
+    match left with
+    | None -> None
+    | Some first -> match right with | None -> None | Some second -> Some (first, second)
+
+def BindReturn :: Option<'a> -> ('a -> 'b) -> Option<'b>
+fn BindReturn value next = map next value
+
+def Bind2 :: Option<'a> -> Option<'b> -> ('a -> 'b -> 'c) -> Option<'c>
+fn Bind2 left right next =
+    match MergeSources left right with
+    | None -> None
+    | Some (first, second) -> Some (next first second)
+
 def is_some :: &(Option<'a>) -> bool
 fn is_some option =
     match option with

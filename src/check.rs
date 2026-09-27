@@ -500,6 +500,7 @@ pub enum Builtin {
     MathMin,
     MathMax,
     MathClamp,
+    MathFma,
     MathCopysign,
     MathIsNan,
     MathIsInfinite,
@@ -712,6 +713,7 @@ impl Builtin {
         Self::MathMin,
         Self::MathMax,
         Self::MathClamp,
+        Self::MathFma,
         Self::MathCopysign,
         Self::MathIsNan,
         Self::MathIsInfinite,
@@ -870,6 +872,7 @@ impl Builtin {
             Self::MathMin => "Math.min",
             Self::MathMax => "Math.max",
             Self::MathClamp => "Math.clamp",
+            Self::MathFma => "Math.fma",
             Self::MathCopysign => "Math.copysign",
             Self::MathIsNan => "Math.is_nan",
             Self::MathIsInfinite => "Math.is_infinite",
@@ -1418,6 +1421,7 @@ impl Builtin {
             | Self::MathMin
             | Self::MathMax
             | Self::MathClamp
+            | Self::MathFma
             | Self::MathCopysign
             | Self::MathIsNan
             | Self::MathIsInfinite
@@ -1427,7 +1431,7 @@ impl Builtin {
                 let count = match self {
                     Self::MathPi | Self::MathE => 0,
                     Self::MathMin | Self::MathMax | Self::MathCopysign => 2,
-                    Self::MathClamp => 3,
+                    Self::MathClamp | Self::MathFma => 3,
                     _ => 1,
                 };
                 let result = if matches!(
@@ -1914,6 +1918,12 @@ impl TypedMatchArm {
 }
 
 #[derive(Clone, Debug)]
+pub struct HostImport {
+    pub native_symbol: String,
+    pub wasm_name: String,
+}
+
+#[derive(Clone, Debug)]
 pub enum TypedExprKind {
     Error,
     Int(u128),
@@ -1937,6 +1947,7 @@ pub enum TypedExprKind {
     Unary(UnaryOp, Box<TypedExpr>),
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(Box<TypedExpr>, Vec<TypedExpr>),
+    HostCall(Box<HostImport>, Vec<TypedExpr>),
     Lambda {
         parameters: Vec<Local>,
         captures: Vec<Local>,
@@ -2111,6 +2122,7 @@ impl TypedExpr {
                 .chain(fields.iter().map(|(_, value)| value))
                 .collect(),
             Array(values)
+            | HostCall(_, values)
             | List(values)
             | Tuple(values)
             | Closure(_, values)
@@ -2201,6 +2213,7 @@ impl TypedExpr {
                 .chain(fields.iter_mut().map(|(_, value)| value))
                 .collect(),
             Array(values)
+            | HostCall(_, values)
             | List(values)
             | Tuple(values)
             | Closure(_, values)
@@ -3121,6 +3134,7 @@ fn check_modules_collect(
             function_declarations.push((
                 module.name.to_owned(),
                 FunctionDecl {
+                    doc: None,
                     name,
                     regions: Vec::new(),
                     recursion: None,
@@ -3130,6 +3144,69 @@ fn check_modules_collect(
                     result: constant.ty.clone(),
                     constraints: Vec::new(),
                     body: constant.value.clone(),
+                },
+            ));
+        }
+    }
+    let mut external_functions = BTreeMap::new();
+    let mut external_symbols = BTreeSet::new();
+    for module in modules {
+        for external in &module.program.externs {
+            for ty in external.parameters.iter().chain([&external.result]) {
+                regions::reject_local(ty)?;
+            }
+            let native_symbol = format!(
+                "tsuzuri_host_{}_{}",
+                module.name.replace('.', "_"),
+                external.name.text
+            );
+            if !external_symbols.insert(native_symbol.clone()) {
+                return Err(duplicate(&external.name));
+            }
+            if !external.constraints.is_empty() || !external.regions.is_empty() {
+                return Err(Diagnostic::new(
+                    "E1008",
+                    "extern declarations cannot have constraints or named regions",
+                    external.name.span,
+                ));
+            }
+            external_functions.insert(
+                function_declarations.len(),
+                HostImport {
+                    native_symbol,
+                    wasm_name: format!("{}.{}", module.name, external.name.text),
+                },
+            );
+            function_declarations.push((
+                module.name.to_owned(),
+                FunctionDecl {
+                    doc: None,
+                    name: external.name.clone(),
+                    regions: Vec::new(),
+                    recursion: None,
+                    visibility: external.visibility,
+                    exported: false,
+                    parameters: external
+                        .parameters
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| Parameter {
+                            name: Ident {
+                                text: format!("$host_arg{index}"),
+                                span: ty.span,
+                                provenance: Provenance::Generated,
+                            },
+                            mutable: false,
+                            ty: ty.clone(),
+                        })
+                        .collect(),
+                    result: external.result.clone(),
+                    constraints: Vec::new(),
+                    body: Expr {
+                        kind: ExprKind::Unit,
+                        span: external.name.span,
+                        depth: 1,
+                    },
                 },
             ));
         }
@@ -3159,6 +3236,7 @@ fn check_modules_collect(
             function_declarations.push((
                 module.name.into(),
                 FunctionDecl {
+                    doc: None,
                     name: Ident {
                         text: format!("$test.{index}"),
                         span: test.name_span,
@@ -3626,6 +3704,27 @@ fn check_modules_collect(
             let signature = Signature { parameters, result };
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
+            if external_functions.contains_key(&id) {
+                if !variables.is_empty() {
+                    return Err(Diagnostic::new(
+                        "E1015",
+                        "extern signatures must be concrete; provide a scalar ABI type",
+                        function.name.span,
+                    ));
+                }
+                if signature
+                    .parameters
+                    .iter()
+                    .any(|ty| !crate::abi::parameter(ty, &types) && *ty != Type::Unit)
+                    || !crate::abi::result(&signature.result, &types)
+                {
+                    return Err(Diagnostic::new(
+                        "E1008",
+                        "extern signatures support scalar/unit, shared ABI buffers and scalar records, and owned ABI buffer or scalar record results",
+                        function.name.span,
+                    ));
+                }
+            }
             if names.constants.contains(&id) && !variables.is_empty() {
                 return Err(constants::failure(
                     function.result.span,
@@ -3801,7 +3900,25 @@ fn check_modules_collect(
                 parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
             }
             computation::expand(&mut function.body, &names)?;
-            let body = checker.expression(&function.body, Some(&signature.result))?;
+            let body = if let Some(import) = external_functions.get(&id) {
+                TypedExpr {
+                    kind: TypedExprKind::HostCall(
+                        Box::new(import.clone()),
+                        parameters
+                            .iter()
+                            .map(|local| TypedExpr {
+                                kind: TypedExprKind::Local(local.id),
+                                ty: local.ty.clone(),
+                                span: local.span,
+                            })
+                            .collect(),
+                    ),
+                    ty: signature.result.clone(),
+                    span: function.name.span,
+                }
+            } else {
+                checker.expression(&function.body, Some(&signature.result))?
+            };
             Ok(CheckedFunction {
                 module: module.clone(),
                 region_sources,

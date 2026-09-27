@@ -235,6 +235,7 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
     matches!(
         expression.kind,
         TypedExprKind::Assign(..)
+            | TypedExprKind::HostCall(..)
             | TypedExprKind::Borrow(_, true)
             | TypedExprKind::StructuralCompare(..)
             | TypedExprKind::StructuralHash(_)

@@ -7,6 +7,159 @@ const LAZY: &str = include_str!("fixtures/computations/Lazy.tc");
 const TEXT: &str = include_str!("fixtures/computations/Text.tc");
 
 #[test]
+fn recognizes_optional_builder_operations_and_rejects_exception_syntax() {
+    for operation in ["MergeSources", "BindReturn", "Bind2"] {
+        analyze_modules(&[(
+            "Only.tc",
+            &format!("def {operation} :: i64 -> i64\nfn {operation} value = value"),
+        )])
+        .unwrap();
+    }
+    for source in [
+        "Identity { use value = 1; return value }",
+        "Identity { use! value = 1; return value }",
+        "Identity { try return 1 with | _ -> return 0 }",
+        "Identity { try return 1 finally () }",
+    ] {
+        assert_eq!(
+            analyze_modules(&[("Identity.tc", IDENTITY), ("Main.tz", source)])
+                .unwrap_err()
+                .code,
+            "E1018",
+            "{source}"
+        );
+    }
+    analyze_modules(&[(
+        "Main.tz",
+        "fn use(value: i64) -> i64 { value }\nfn try(value: i64) -> i64 { value }\nuse 20 + try 22",
+    )])
+    .unwrap();
+}
+
+#[test]
+fn match_bang_uses_bind_and_normal_pattern_semantics() {
+    for source in [
+        "Option.get (Option { match! Some 1 with | 1 -> return 42 | _ -> return 0 })",
+        "let result: Result<i64, string> = Result { match! Ok (20, 22) with | (left, right) -> return left + right }\nResult.get result",
+        "let missing: Option<i64> = None\nlet result: Option<i64> = Option { match! missing with | _ -> return 1 / 0 }\nOption.is_none (&result)",
+        "Option {\n    match! Some \"owned\" with\n    | value when value.length == 5 ->\n        let! other = Some \"text\"\n        return value + other\n    | value -> return value\n}",
+    ] {
+        let module = analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        for wasm in [false, true] {
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        }
+        let formatted =
+            tsuzuri::formatter::format_source("Main.tz", source, tsuzuri::syntax::SourceKind::Code)
+                .unwrap();
+        analyze_modules(&[("Main.tz", &formatted.formatted)]).unwrap();
+    }
+    let source = "Option { match! Some true with | true -> return 42 }";
+    assert_eq!(
+        analyze_modules(&[("Main.tz", source)]).unwrap_err().code,
+        "E1021"
+    );
+    assert!(
+        tsuzuri::analyze("task { match! task { return 1 } with | value -> return value }").is_err()
+    );
+}
+
+#[test]
+fn applicative_bindings_use_optional_fused_operations() {
+    let fallback = "def Return :: 'a -> 'a\nfn Return value = value\ndef Bind :: 'a -> ('a -> 'b) -> 'b\nfn Bind value next = next value\ndef MergeSources :: 'a -> 'b -> ('a * 'b)\nfn MergeSources left right = (left, right)";
+    let fused = format!(
+        "{fallback}\ndef BindReturn :: 'a -> ('a -> 'b) -> 'b\nfn BindReturn value next = next value\ndef Bind2 :: 'a -> 'b -> ('a -> 'b -> 'c) -> 'c\nfn Bind2 left right next = next left right"
+    );
+    for (builder, operation, source) in [
+        (
+            &fused,
+            "BindReturn",
+            "Builder { let! value = 41; return value + 1 }",
+        ),
+        (
+            &fused,
+            "Bind2",
+            "Builder { let! left = 20 and! right = 22; return left + right }",
+        ),
+        (
+            &fused,
+            "Bind2",
+            "Builder { let! mut left: i64 = 20 and! right = 21; return { left = left + 1; left + right } }",
+        ),
+        (
+            &fallback.to_owned(),
+            "MergeSources",
+            "Builder { let! left = 20 and! right = 22; return left + right }",
+        ),
+        (
+            &fused,
+            "MergeSources",
+            "Builder { let! left = 10 and! middle = 20 and! right = 12; return left + middle + right }",
+        ),
+        (
+            &fallback.to_owned(),
+            "MergeSources",
+            "Builder { let! mut left: i64 = 20 and! right: i64 = 21; left = left + 1; return left + right }",
+        ),
+    ] {
+        let module = analyze_modules(&[("Builder.tc", builder), ("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+        assert!(
+            ir.contains(&format!("@tz.fn.Builder.{operation}")),
+            "{operation}"
+        );
+        let formatted =
+            tsuzuri::formatter::format_source("Main.tz", source, tsuzuri::syntax::SourceKind::Code)
+                .unwrap();
+        analyze_modules(&[("Builder.tc", builder), ("Main.tz", &formatted.formatted)]).unwrap();
+    }
+    analyze_modules(&[(
+        "Main.tz",
+        "Option.get (Option { let! left = Some 20 and! right = Some 22; return left + right })",
+    )])
+    .unwrap();
+    analyze_modules(&[("Main.tz", "let result: Result<i64, string> = Result { let! left = Ok 20 and! right = Ok 22; return left + right }\nResult.get result")]).unwrap();
+    analyze_modules(&[("Identity.tc", IDENTITY), ("Main.tz", "fn try(value: unit) -> unit { value }\nIdentity { try (match 1 with | _ -> ()); return 42 }")]).unwrap();
+    assert_eq!(
+        analyze_modules(&[
+            ("Identity.tc", IDENTITY),
+            (
+                "Main.tz",
+                "Identity { let! left = 20 and! right = 22; return left + right }"
+            )
+        ])
+        .unwrap_err()
+        .code,
+        "E1018"
+    );
+    assert_eq!(
+        analyze_modules(&[
+            ("Builder.tc", &fused),
+            (
+                "Main.tz",
+                "Builder { let! left = 1 and! right = left; return right }"
+            )
+        ])
+        .unwrap_err()
+        .code,
+        "E1002"
+    );
+    assert_eq!(
+        analyze_modules(&[
+            ("Builder.tc", &fused),
+            (
+                "Main.tz",
+                "Builder { let! left = 1 and! left = 2; return left }"
+            )
+        ])
+        .unwrap_err()
+        .code,
+        "E1001"
+    );
+}
+
+#[test]
 fn result_propagation_operations_exist() {
     let module = analyze_modules(&[(
         "Main.tz",

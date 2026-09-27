@@ -1,0 +1,89 @@
+private def input :: i64 -> i64 -> f64
+fn input index seed =
+    match (index * 37 + seed) % 8 with
+    | 0 -> 1e16
+    | 1 -> 1.0
+    | 2 -> -1e16
+    | 3 -> 3.0
+    | 4 -> -3.0
+    | 5 -> 0.5
+    | 6 -> -0.25
+    | _ -> 1e-38
+
+export def ordered64 :: i64 -> i64 -> i64 -> f64
+fn ordered64 count seed operation =
+    let values = new [f64](count, index -> input index seed)
+    let other = new [f64](count, index -> input index (seed + 3))
+    match operation with
+    | 0 -> Array.sum (ref values)
+    | 1 -> Array.sum_pairwise (ref values)
+    | 2 -> Array.sum_kahan (ref values)
+    | _ -> Array.dot (ref values) (ref other)
+
+export def ordered32 :: i64 -> i64 -> i64 -> f32
+fn ordered32 count seed operation =
+    let values = new [f32](count, index -> (input index seed) as f32)
+    let other = new [f32](count, index -> (input index (seed + 3)) as f32)
+    match operation with
+    | 0 -> Array.sum (ref values)
+    | 1 -> Array.sum_pairwise (ref values)
+    | 2 -> Array.sum_kahan (ref values)
+    | _ -> Array.dot (ref values) (ref other)
+
+export def fused_order :: i64 -> bool
+fn fused_order count =
+    let left = new [f64](count, index -> input index 0)
+    let right = new [f64](count, index -> input index 3)
+    let mut expected = 0.0
+    for index in 0i64 .. (count - 1) do expected = Math.fma left[index] right[index] expected
+    Array.dot_fma (ref left) (ref right) == expected
+
+private def format_cases :: Float<'a> => 'a -> bool
+fn format_cases epsilon =
+    let zero = 0i64 as 'a
+    let one = 1i64 as 'a
+    let fused = Math.fma (one + epsilon) (one - epsilon) (-one)
+    assert (fused == -(epsilon * epsilon))
+    assert ((one + epsilon) * (one - epsilon) - one == zero)
+    let left = [-one, one + epsilon]
+    let right = [one, one - epsilon]
+    assert (Array.dot (ref left) (ref right) == zero)
+    assert (Array.dot_fma (ref left) (ref right) == fused)
+    let values = [one, one + one, one + one + one, one, one]
+    assert (Array.sum_pairwise (ref values) == 8i64 as 'a)
+    assert (Array.sum_kahan (ref values) == 8i64 as 'a)
+    let empty: ['a] = []
+    assert (Array.sum_pairwise (ref empty) == zero && Array.sum_kahan (ref empty) == zero)
+    assert (Array.dot (ref empty) (ref empty) == zero && Array.dot_fma (ref empty) (ref empty) == zero)
+    let negative = [-zero]
+    assert (Math.copysign one (Array.sum_pairwise (ref negative)) == -one)
+    assert (Math.copysign one (Array.sum_kahan (ref negative)) == one)
+    let infinities = [one / zero, -one / zero]
+    assert (Math.is_nan (Array.sum_pairwise (ref infinities)))
+    assert (Math.is_nan (Array.sum_kahan (ref infinities)))
+    let missing = [zero / zero, one]
+    Math.is_nan (Array.sum_pairwise (ref missing)) && Math.is_nan (Array.dot_fma (ref missing) (ref missing))
+
+export def all_formats :: bool
+fn all_formats =
+    assert (format_cases 0.0009765625f16)
+    assert (format_cases 0.00000011920928955078125f32)
+    assert (format_cases 0.0000000000000002220446049250313080847263336181640625f64)
+    assert (format_cases 1.925929944387235853055977942584927318538101648215388195239938795566558837890625e-34f128)
+    assert (format_cases 1e-6d32)
+    assert (format_cases 1e-15d64)
+    format_cases 1e-33d128
+
+export def evaluation_order :: i64
+fn evaluation_order =
+    let mut order = 0
+    let result = Math.fma ({ order = order * 10 + 1; 2.0 }) ({ order = order * 10 + 2; 3.0 }) ({ order = order * 10 + 3; 4.0 })
+    let partial: f64 -> f64 -> f64 = Math.fma 2.0
+    assert (result == 10.0 && partial 3.0 4.0 == result)
+    order
+
+export def mismatch :: i64 -> f64
+fn mismatch mode =
+    let left = [1.0]
+    let right: [f64] = []
+    if mode == 0 then Array.dot (ref left) (ref right) else Array.dot_fma (ref left) (ref right)

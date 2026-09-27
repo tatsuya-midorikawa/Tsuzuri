@@ -24,6 +24,7 @@ impl SourceKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident(String),
+    DocComment(String),
     TypeVariable(String),
     Integer(String),
     Float(String),
@@ -36,6 +37,7 @@ pub enum TokenKind {
     Rec,
     And,
     Export,
+    Extern,
     Private,
     Record,
     Union,
@@ -158,6 +160,7 @@ pub struct Program {
     pub source_kind: Option<SourceKind>,
     pub type_aliases: Vec<TypeAliasDecl>,
     pub constants: Vec<ConstDecl>,
+    pub externs: Vec<SignatureDecl>,
     pub records: Vec<RecordDecl>,
     pub unions: Vec<UnionDecl>,
     pub functions: Vec<FunctionDecl>,
@@ -190,7 +193,14 @@ pub enum Visibility {
 }
 
 #[derive(Clone, Debug)]
+pub struct Documentation {
+    pub text: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct TypeAliasDecl {
+    pub doc: Option<Documentation>,
     pub visibility: Visibility,
     pub name: Ident,
     pub parameters: Vec<Ident>,
@@ -199,6 +209,7 @@ pub struct TypeAliasDecl {
 
 #[derive(Clone, Debug)]
 pub struct ConstDecl {
+    pub doc: Option<Documentation>,
     pub visibility: Visibility,
     pub name: Ident,
     pub ty: TypeExpr,
@@ -207,6 +218,7 @@ pub struct ConstDecl {
 
 #[derive(Clone, Debug)]
 pub struct RecordDecl {
+    pub doc: Option<Documentation>,
     pub visibility: Visibility,
     pub name: Ident,
     pub parameters: Vec<Ident>,
@@ -217,6 +229,7 @@ pub struct RecordDecl {
 
 #[derive(Clone, Debug)]
 pub struct UnionDecl {
+    pub doc: Option<Documentation>,
     pub visibility: Visibility,
     pub name: Ident,
     pub parameters: Vec<Ident>,
@@ -253,6 +266,7 @@ pub struct UnionCaseDecl {
 
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
+    pub doc: Option<Documentation>,
     pub name: Ident,
     pub regions: Vec<Ident>,
     pub recursion: Option<String>,
@@ -266,6 +280,7 @@ pub struct FunctionDecl {
 
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
+    pub doc: Option<Documentation>,
     pub name: Ident,
     pub regions: Vec<Ident>,
     pub recursion: Option<String>,
@@ -298,6 +313,7 @@ pub enum ConstraintName {
 
 #[derive(Debug)]
 pub struct ClassDecl {
+    pub doc: Option<Documentation>,
     pub name: Ident,
     pub variable: Ident,
     pub superclasses: Vec<ConstraintExpr>,
@@ -549,6 +565,8 @@ pub struct ComputationStatement {
 #[derive(Clone, Debug)]
 pub enum ComputationStatementKind {
     Let(Binding, bool),
+    LetAnd(Vec<Binding>),
+    Match(Box<Expr>, Vec<ComputationMatchArm>),
     Do(Expr),
     Operation(&'static str, Expr),
     If(Expr, ComputationBlock, Option<ComputationBlock>),
@@ -557,11 +575,35 @@ pub enum ComputationStatementKind {
     Expression(Expr),
 }
 
+#[derive(Clone, Debug)]
+pub struct ComputationMatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: ComputationBlock,
+    pub span: Span,
+}
+
 impl ComputationStatement {
     pub fn depth(&self) -> usize {
         use ComputationStatementKind::*;
         match &self.kind {
             Let(binding, _) => binding.value.depth,
+            LetAnd(bindings) => bindings
+                .iter()
+                .map(|binding| binding.value.depth)
+                .max()
+                .unwrap_or(0),
+            Match(value, arms) => arms
+                .iter()
+                .map(|arm| {
+                    arm.pattern
+                        .depth
+                        .max(arm.body.depth)
+                        .max(arm.guard.as_ref().map_or(0, |guard| guard.depth))
+                })
+                .max()
+                .unwrap_or(0)
+                .max(value.depth),
             Do(value) | Operation(_, value) | Expression(value) => value.depth,
             If(condition, yes, no) => condition
                 .depth

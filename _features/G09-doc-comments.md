@@ -6,8 +6,18 @@
 | 規模 | S |
 | 依存 | E01（可視性制御 private） |
 | 後続 | G06（doc-test）、G07（hover への docs 表示）、E02（std docs 生成） |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/lexer.rs`, `src/syntax.rs`, `src/parser.rs`, `src/check.rs`, `src/driver.rs`, `src/main.rs`, `tests/docs.rs`, `tests/docgen.mjs`, `README.md`, `docs/language.md`, `docs/architecture.md` |
+
+## 実装と検証（2026-09-27）
+
+- DocComment tokenとDocumentation(text, span)を追加し、def/extern/record/union/type/const/class/methodへ添付。誤配置E0002、通常IR不変。
+- docgenはASTから型変数・class/module-function制約・region・active pattern名を描画。privateとinstanceを除外し、署名の位置で並べる。constは型だけを表示する。
+- doc CLIは出力先必須、LLVM不要、全project検査後に生成。Mainなしdirectoryもライブラリとして扱う。stdの完全なファイル構成を同梱std originとして扱い、.tz/.tcを一ページにまとめる。
+- 出力/marker symlink・無印directory・ソース包含・index/case-insensitiveページ衝突をE2003。markerは通常file・4096byte以内。全ページをstage後に退避/renameし、失敗時復元と復元不能時の退避保持を行う。
+- formatterはdoc本文を保ち位置だけ正規化。SemanticIndexは説明を宣言ごとに一度保持し、hoverへ表示。HTML sanitizationとdoc-testは追加しない。
+- docs.rsの5テスト、lexer/driver/CLI/formatter/LSP回帰、全Rustテスト、fmt/clippyが成功。docgen.mjsでgolden・全file種・階層・再生成・失敗時保持・Clangなしstd生成を検証し、LSPのUTF8/UTF16実セッションでもhoverを確認。
+- builtinそのものの自動一覧は対象外で、入力sourceの宣言を文書化する。生成Markdownはcommitせずrelease artifactとする。
 
 ## 目的
 
@@ -304,13 +314,13 @@ pub enum Visibility { Public, Private }
 
 ## 受け入れ条件
 
-- [ ] `///` docs が指定対象に添付される。
-- [ ] misplaced docs が `E0002` で拒否される。
-- [ ] `tsuzuri doc input -o outdir` が deterministic Markdown を生成する。
-- [ ] private 宣言が出力されない。
-- [ ] output protection が既存 user directory を壊さない。
-- [ ] golden tests が通る。
-- [ ] `cargo fmt --all -- --check`、`cargo test --locked`、`node tests/docgen.mjs target/release/tsuzuri` が通る。
+- [x] `///` docs が指定対象に添付される。
+- [x] misplaced docs が `E0002` で拒否される。
+- [x] `tsuzuri doc input -o outdir` が deterministic Markdown を生成する。
+- [x] private 宣言が出力されない。
+- [x] output protection が既存 user directory を壊さない。
+- [x] golden tests が通る。
+- [x] `cargo fmt --all -- --check`、`cargo test --locked`、`node tests/docgen.mjs target/release/tsuzuri` が通る。
 
 ## 落とし穴
 

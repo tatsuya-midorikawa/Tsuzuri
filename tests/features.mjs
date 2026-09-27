@@ -29,10 +29,44 @@ const cValue = (n) => typeof n !== "bigint" ? String(n)
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`
     : n > max ? `UINT64_C(${n})` : `INT64_C(${n})`;
 
+function orderedReferences(count, seed, bits) {
+  const rounded = bits === 32 ? Math.fround : (value) => value;
+  const input = (index, salt) => rounded([1e16, 1, -1e16, 3, -3, 0.5, -0.25, 1e-38][(index * 37 + salt) % 8]);
+  const values = Array.from({ length: count }, (_, index) => input(index, seed));
+  let level = values;
+  while (level.length > 1) level = Array.from({ length: Math.ceil(level.length / 2) }, (_, index) => index * 2 + 1 < level.length ? rounded(level[index * 2] + level[index * 2 + 1]) : level[index * 2]);
+  let total = 0, correction = 0, dot = 0;
+  for (const [index, value] of values.entries()) {
+    const next = rounded(total + value);
+    correction = rounded(correction + (Math.abs(total) >= Math.abs(value) ? rounded(rounded(total - next) + value) : rounded(rounded(value - next) + total)));
+    total = next;
+    dot = rounded(dot + rounded(value * input(index, seed + 3)));
+  }
+  return [total, level[0] ?? 0, rounded(total + correction), dot];
+}
+
 // Each suite is a fixture directory whose exports are called with the listed
 // arguments. Native hosts track every allocation, so each call must leave no
 // live heap bytes; WASM modules must stay import-free.
 const suites = {
+  fma_reductions: {
+    cases: [
+      ...[32, 64].flatMap((bits) => [...Array.from({ length: 18 }, (_, index) => index), 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025].flatMap((count) => [0, 1, 7].flatMap((seed) => orderedReferences(count, seed, bits).map((expected, operation) => [`ordered${bits}`, [BigInt(count), BigInt(seed), BigInt(operation)], expected])))),
+      ...[0n, 1n, 2n, 3n, 17n, 1025n].map((count) => ["fused_order", [count], 1]),
+      ["all_formats", [], 1], ["evaluation_order", [], 123n],
+    ],
+    traps: [["mismatch", [0n]], ["mismatch", [1n]]],
+  },
+  computation_extensions: {
+    cases: [
+      ["match_some", [], 42n], ["match_none", [], 1], ["result_error", [], 4n],
+      ["bind_return", [], 1042n], ["bind_two", [], 2042n], ["merge_fallback", [], 42n],
+      ["mutable_bind_two", [], 2042n],
+      ["source_order", [], 6123n], ["strict_none", [], 2n], ["mutable_group", [], 42n],
+      ...[0n, 1n, 10000n].map((count) => ["owned_match", [count], count * 10n]),
+    ],
+    traps: [["strict_trap", []]],
+  },
   simd: {
     cases: [
       ...[8, 16, 32, 64].flatMap((bits) => [false, true].flatMap((unsigned) => [0n, 1n, -1n, 127n, -129n, 2147483647n, -(1n << 63n)].flatMap((seed) => [0n, 1n, BigInt(bits), BigInt(bits + 1)].map((shift) => {

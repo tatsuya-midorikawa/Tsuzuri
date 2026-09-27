@@ -69,7 +69,7 @@ async function session(encoding) {
   const nestedUri = pathToFileURL(join(root, "Geometry/Point.tz")).href;
   writeFileSync(join(root, "Geometry/Point.tz"), "fn nested() -> i64 { 42 }");
   const invalid = "fn bad() -> i64 { let text = \"\u65e5\u{1f600}\"; true }";
-  const valid = "def identity :: 'a -> 'a\nfn identity value = value\n"
+  const valid = "/// Keeps the value.\ndef identity :: 'a -> 'a\nfn identity value = value\n"
     + "def read :: i64 -> i64\nfn read number = { let text = \"\u65e5\u{1f600}\"; let result = identity number; assert (text.length == 3); result }\n"
     + "def point :: Shapes.Point -> i64\nfn point value = value.x\n"
     + "fn nested_read() -> i64 { Geometry.Point.nested() }\n";
@@ -85,11 +85,13 @@ async function session(encoding) {
     notify("textDocument/didChange", { textDocument: { uri, version: 2 }, contentChanges: [{ text: valid }] });
     const hovered = await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "number; assert") });
     assert.match(hovered.result.contents.value, /number: i64/);
+    const documented = await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") });
+    assert.match(documented.result.contents.value, /Keeps the value\./);
     const cleared = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === uri && message.params.version === 2);
     assert.deepEqual(cleared.params.diagnostics, []);
     const definition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "identity number") });
     assert.equal(definition.result.uri, uri);
-    assert.deepEqual(definition.result.range.start, { line: 1, character: 3 });
+    assert.deepEqual(definition.result.range.start, position(valid, "identity value"));
     const record = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Shapes.Point") });
     assert.equal(record.result.uri, pathToFileURL(join(root, "Shapes.tz")).href);
     const symbols = await request("textDocument/documentSymbol", { textDocument: { uri } });
