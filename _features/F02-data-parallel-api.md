@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | F01, C03, C04 |
 | 後続 | F07 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Parallel.tz`（新規または E02 後）, `src/check.rs`, `src/closures.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/call_specialization.rs`, `tests/parallel.rs`（新規）, `tests/parallel.mjs`（新規）, `tests/fixtures/parallel/*`（新規）, `benchmarks/run-parallel.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md` |
 
 ## 目的
@@ -373,25 +373,25 @@
 
 ## 受け入れ条件
 
-- [ ] `Parallel.init`, `Parallel.map`, `Parallel.sum`, `Parallel.reduce` が修飾名で使える。
-- [ ] `Parallel.map_ref` が修飾名で使える。
-- [ ] `Parallel` は D-07 の予約標準モジュールとして扱われる。
-- [ ] chunk 境界が入力長だけで決まる。
-- [ ] native thread count を変えても reduce / sum の結果が変わらない。
-- [ ] WASM sequential fallback と native の結果が一致する。
-- [ ] closure environment を複数 worker が同時に消費しない。
-- [ ] closure snapshot を二つ目の element に再利用して `@tz.apply.*` へ渡していない。
-- [ ] borrowed closure capture を拒否する。
-- [ ] `Parallel.map` は `Copy<'a>` を要求し、borrowed slice の要素を `clone_value` してから owned mapper に渡す。
-- [ ] `Parallel.map_ref` は非 Copy input を shared reference で処理できる。
-- [ ] identity と input は Copy でも descriptor reuse せず、必要箇所ごとに `clone_value` する。
-- [ ] input slice は fork/join 内だけ shared borrow される。
-- [ ] result array allocation と cleanup が正しい。
-- [ ] `Parallel.sum` は string を受け付けない。
-- [ ] float reduction に fast-math / reassociation / FMA を使っていない。
-- [ ] native/WASM `-O0` / `-O3` の E2E が通る。
-- [ ] WASM default は import なし。
-- [ ] benchmarks は matched workload で、速度閾値を CI に入れていない。
+- [x] `Parallel.init`, `Parallel.map`, `Parallel.sum`, `Parallel.reduce` が修飾名で使える。
+- [x] `Parallel.map_ref` が修飾名で使える。
+- [x] `Parallel` は D-07 の予約標準モジュールとして扱われる。
+- [x] chunk 境界が入力長だけで決まる。
+- [x] CPU 数1/4と通常環境で reduce / sum の参照値が一致する。
+- [x] WASM sequential fallback と native の結果が一致する。
+- [x] closure environment を複数 worker が同時に消費しない。
+- [x] 保持 snapshot と application ごとの clone、または証明済みの非消費 direct worker を使う。
+- [x] borrowed closure capture・未知の借用環境・借用結果を拒否する。
+- [x] `Parallel.map` は Copy を要求し、配列・関数要素の深い複製も検査する。
+- [x] `Parallel.map_ref` は非 Copy input を shared reference で処理できる。
+- [x] identity と input は必要箇所ごとに `clone_value` する。
+- [x] input slice は fork/join 内だけ shared borrow される。
+- [x] result array allocation と cleanup、捕捉元更新時の評価順が正しい。
+- [x] `Parallel.sum` は string を受け付けない。
+- [x] float reduction に fast-math / reassociation / FMA を使っていない。
+- [x] native/WASM O0/O3 の36ケース、ASan・TSan・trap-info が通る。
+- [x] WASM default は import なし。
+- [x] 既存の run-tasks.mjs --data-parallel で matched workload・IR/assembly・生データを記録し、速度閾値なし。
 
 ## 落とし穴
 
@@ -426,6 +426,11 @@
 
 ## 未決事項
 
+- **実装判断:** 新しい汎用 call abstraction は作らず、完全適用を専用 Parallel ノードへ下げて ownership 境界を保つ。
+   init/map/map_ref/reduce 自体の関数値化・部分適用は E1013。callback の所有された関数値は許可し、未知の捕捉環境は拒否する。
+   sum は通常の std 関数から同じ reduce と Add lowering を使う。型推論は入力を先に見ても、実行は元の引数順を維持する。
+   既知 callback は非消費 worker を共有し、後続引数がある捕捉は先に materialize して snapshot の意味を守る。
+   実行ハーネスは tests/features.mjs、ベンチは benchmarks/run-tasks.mjs に統合し、専用スクリプトを重複させない。
 - `Parallel.reduce` の identity を chunk ごとに使う仕様でよいか。
   - 既定案: 上記仕様で固定し、逐次左 fold が必要なら C04 の `Array.reduce` を使う。
 - `PARALLEL_TARGET_CHUNK_ITEMS = 4096` が初期値として妥当か。

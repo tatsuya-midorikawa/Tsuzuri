@@ -12,6 +12,67 @@ fn rejects(source: &str, code: &str) {
 }
 
 #[test]
+fn record_updates_preserve_types_and_block_parsing() {
+    for source in [
+        "record Point { x: i64, y: i64 }\nlet point = Point { x: 1, y: 2 }\n{ point with x = 3 }.x",
+        "record Point { x: i64, y: i64 }\nlet point = Point { x: 1, y: 2 }\n{ point with x: 3, y: 4, }.y",
+        "record Point { x: i64 }\nlet point = Point { x: 1 }\n{ match point with | { x = value } -> value }",
+        "record Point { x: i64 }\nlet point = Point { x: 1 }\n{ (match true with | true -> point | false -> point) with x = 42 }.x",
+        "record Pair<'a, 'b> { first: 'a, second: 'b }\ndef update :: Pair<i64, string> -> Pair<i64, string>\nfn update pair = { pair with second = \"updated\" }",
+        "record Owned { text: string, count: i64 }\ndef update :: Owned -> Owned\nfn update value = { value with count = 2 }",
+        "record Point { x: i64 }\nlet point = Point { x: 1 }\nlet other = { point with x = 2 }\npoint.x + other.x",
+        "record Point { x: i64 }\nlet point = Point { x: 1 }\nlet update = value -> { point with x = value }\nupdate 42",
+        "record Point { x: i64 }\nlet point = Point { x: 1 }\n{ point with x = Option.get (Option { return 42 }) }.x",
+    ] {
+        accepts(source);
+    }
+    let module = analyze("record Point { x: i64 }\ndef update :: Point -> Point\nfn update point = { point with x = 42 }").unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert!(ir.contains("insertvalue %tz.record.Main.Point"));
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
+fn record_updates_reject_invalid_fields_and_ownership() {
+    rejects("{ 1 with x = 2 }", "E1005");
+    for (update, code) in [
+        ("{ point with missing = 1 }", "E1007"),
+        ("{ point with x = 1; x = 2 }", "E1001"),
+        ("{ point with x = true }", "E1003"),
+    ] {
+        rejects(
+            &format!("record Point {{ x: i64 }}\nlet point = Point {{ x: 1 }}\n{update}.x"),
+            code,
+        );
+    }
+    rejects(
+        "record Pair<'a> { value: 'a }\nlet pair: Pair<i64> = Pair { value: 1 }\n{ pair with value = \"text\" }",
+        "E1003",
+    );
+    rejects(
+        "record Owned { text: string, count: i64 }\nlet value = Owned { text: \"text\", count: 1 }\nlet other = { value with count = 2 }\nvalue.text.length",
+        "E1012",
+    );
+    rejects(
+        "record Owned { text: string, count: i64 }\nlet value = Owned { text: \"text\", count: 1 }\nlet borrowed = ref value.text\nlet other = { value with count = 2 }\nborrowed.length",
+        "E1014",
+    );
+    rejects(
+        "record Owned { text: string, count: i64 }\ndef update :: ref Owned -> Owned\nfn update borrowed = { deref borrowed with count = 2 }",
+        "E1012",
+    );
+    rejects(
+        "record Owned { text: string, count: i64 }\nlet value = Owned { text: \"text\", count: 1 }\n{ value with count = value.text.length }",
+        "E1012",
+    );
+}
+
+#[test]
 fn checks_every_integer_width_signedness_and_boundary() {
     for bits in [8, 16, 32, 64, 128] {
         let signed_max = (1u128 << (bits - 1)) - 1;
@@ -133,6 +194,7 @@ fn accepts_moves_borrows_partial_moves_and_local_mutation() {
         "fn f(s: &string) -> i64 { s.length } fn g() -> i64 { let s = \"日本語\"; f(&s) + f(&s) }",
         "fn f() -> string { let s = \"x\"; let r = &s; let _ = r.length; s }",
         "fn id(s: &string) -> &string { s } fn f() -> i64 { let s = \"x\"; id(&s).length }",
+        "fn choose(left: &string, right: &string) -> &string { left } fn use() -> i64 { let left = \"left\"; let right = \"right\"; choose(&left, &right).length }",
         "fn first(s: &[string]) -> &string { &s[0] } fn f() -> string { let a = [\"a\", \"b\"]; clone_string(first(&a)) }",
         "fn f(x: &mut i64) -> unit { *x = *x + 1; } fn g() -> i64 { let mut x = 1; f(&mut x); x }",
         "fn f() -> string { let mut x = \"a\"; let r = &mut x; *r = \"b\"; x }",
@@ -197,7 +259,10 @@ fn rejects_use_after_move_borrow_conflicts_and_escaping_references() {
         ),
         ("fn f() -> &string { let s = \"x\"; &s }", "E1013"),
         ("fn f(s: &string) -> &string { let t = \"x\"; &t }", "E1013"),
-        ("fn f(s: &string, t: &string) -> &string { s }", "E1013"),
+        (
+            "fn choose(left: &string, right: &string) -> &string { left } fn use() -> i64 { let left = \"left\"; let borrowed = { let right = \"right\"; choose(&left, &right) }; borrowed.length }",
+            "E1013",
+        ),
         (
             "fn f() -> i64 { let r = { let s = \"x\"; &s }; r.length }",
             "E1013",

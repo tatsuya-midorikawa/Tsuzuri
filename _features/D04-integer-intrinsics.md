@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | E02, B01 |
 | 後続 | C04, F04, F05 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Int.tz`, `src/check.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/runtime/wasm.ll`, `tests/integers.rs`, `tests/integer_intrinsics.mjs`, `tests/primitives.mjs`, `tests/numeric_casts.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -475,17 +475,17 @@ shift/rotate amount mask、checked vs trapping operator、saturating semantics�
 
 ## 受け入れ条件
 
-- [ ] `Int.*` API が仕様の型で使える。
-- [ ] checked 系は `Option` を使い、trap しない。
-- [ ] trapping operator の既存意味は変わらない。
-- [ ] shift/rotate amount mask が既存 shift と一致する。
-- [ ] count result は i64。
-- [ ] unsigned_abs/abs_diff/widening_mul の型が width から正しく計算される。
-- [ ] `UnsignedOf`/`WidenOf` は concrete call site だけで解決し、generic code では `E1015`。
-- [ ] LLVM intrinsic 宣言は重複せず決定的。
-- [ ] i128 checked/saturating multiply を含む WASM build で `__muloti4` を含む undefined libcall/import がない。
-- [ ] native/WASM `-O0`/`-O3` で BigInt reference と一致。
-- [ ] docs が checked/saturating/wrapping/trapping の差を明記している。
+- [x] `Int.*` API が仕様の型で使える。
+- [x] checked 系は `Option` を使い、trap しない。
+- [x] trapping operator の既存意味は変わらない。
+- [x] shift/rotate amount mask が既存 shift と一致する。
+- [x] count result は i64。
+- [x] unsigned_abs/abs_diff/widening_mul の型が width から正しく計算される。
+- [x] `UnsignedOf`/`WidenOf` は concrete call site だけで解決し、generic code では `E1015`。
+- [x] LLVM intrinsic 宣言は重複せず決定的。
+- [x] i128 checked/saturating multiply を含む WASM build で `__muloti4` を含む undefined libcall/import がない。
+- [x] native/WASM `-O0`/`-O3` で BigInt reference と一致。
+- [x] docs が checked/saturating/wrapping/trapping の差を明記している。
 
 ## 落とし穴
 
@@ -516,6 +516,12 @@ checked shift。
 division with Euclidean remainder。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: i128 の overflow multiply は compiler-generated 64-bit limb 判定を使い、
+   新しい `__muloti4` ランタイムを増やさない。部分積は上位・下位 64-bit を i128 へ拡張して正確に計算する。
+   具体的な 128-bit widening は `E1005`、未確定の汎用型族は `E1015` と区別した。
+   `tests/integer_intrinsics.mjs` は全幅・全符号、8-bit 全値、各型 1000 組の疑似乱数を含む 263182 ケースを検査する。
+   Node 24.21.0 で native/WASM `-O0`/`-O3` を確認。速度の合否閾値はない。
 
 `UnsignedInteger` marker class を D04 で追加するか、A06 型クラス拡張まで待つか。
 既定案は D04 で method なし builtin marker として追加する。

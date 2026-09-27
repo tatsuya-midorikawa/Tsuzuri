@@ -41,7 +41,9 @@ pub(super) fn collect_all(
                     .first()
                     .map(|record| record.name.span)
                     .or_else(|| program.unions.first().map(|union| union.name.span))
+                    .or_else(|| program.type_aliases.first().map(|alias| alias.name.span))
                     .or_else(|| program.functions.first().map(|function| function.name.span))
+                    .or_else(|| program.tests.first().map(|test| test.name_span))
                     .or_else(|| {
                         program
                             .instances
@@ -52,7 +54,7 @@ pub(super) fn collect_all(
                 if let Some(span) = invalid {
                     return Err(Diagnostic::new(
                         "E1018",
-                        "a .tt file contains only type class declarations; put records, unions, functions, and instances in .tz or .tc files",
+                        "a .tt file contains only type class declarations; put records, unions, type aliases, functions, and instances in .tz or .tc files",
                         span,
                     ));
                 }
@@ -120,7 +122,10 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
     let children: Vec<&mut Expr> = match &mut expression.kind {
         ExprKind::Computation(builder, body) => {
             expand_block(body, names)?;
-            *expression = lower(builder, body, names)?;
+            let lowered = lower(builder, body, names)?;
+            expression.depth = lowered.depth;
+            expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
+            bounded_depth(expression.depth, span)?;
             return Ok(());
         }
         ExprKind::Record { name, fields }
@@ -131,7 +136,15 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
                 span,
                 depth: 1,
             };
-            *expression = lower(name, &body, names)?;
+            let lowered = lower(name, &body, names)?;
+            expression.depth = lowered.depth;
+            expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
+            bounded_depth(expression.depth, span)?;
+            return Ok(());
+        }
+        ExprKind::ComputationBoundary(value) => {
+            expand(value, names)?;
+            expression.depth = value.depth;
             return Ok(());
         }
         ExprKind::Unary(_, value)
@@ -193,14 +206,25 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
             .chain(std::iter::once(result.as_mut()))
             .collect(),
         ExprKind::Record { fields, .. } => fields.iter_mut().map(|(_, value)| value).collect(),
+        ExprKind::Slice { value, start, end } => std::iter::once(value.as_mut())
+            .chain(start.iter_mut().map(Box::as_mut))
+            .chain(end.iter_mut().map(Box::as_mut))
+            .collect(),
+        ExprKind::RecordUpdate { base, fields } => std::iter::once(base.as_mut())
+            .chain(fields.iter_mut().map(|(_, value)| value))
+            .collect(),
         ExprKind::Array(values) | ExprKind::List(values) | ExprKind::Tuple(values) => {
             values.iter_mut().collect()
         }
         ExprKind::Integer(..)
         | ExprKind::Float(..)
         | ExprKind::String(_)
+        | ExprKind::Char(_)
+        | ExprKind::Utf8Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Unit
+        | ExprKind::Break
+        | ExprKind::Continue
         | ExprKind::Name(_)
         | ExprKind::TypeFunction(..)
         | ExprKind::QualifiedFunction(_) => Vec::new(),
@@ -518,6 +542,7 @@ fn ident(name: &str, span: Span) -> Ident {
     Ident {
         text: name.to_owned(),
         span,
+        provenance: Provenance::Generated,
     }
 }
 

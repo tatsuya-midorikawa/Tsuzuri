@@ -27,6 +27,7 @@ impl Place {
 #[derive(Clone, Default)]
 struct Value {
     loans: BTreeSet<usize>,
+    closed_result: [bool; 2],
 }
 
 struct Loan {
@@ -113,6 +114,8 @@ fn check_body(
         state: State::default(),
         loans: Vec::new(),
         held: Vec::new(),
+        loop_flows: Vec::new(),
+        reachable: true,
         external: BTreeSet::new(),
         infer,
         copy_variables: BTreeSet::new(),
@@ -156,98 +159,100 @@ fn check_body(
 }
 
 // Unknown results retain their input loans. Only proven closed snapshots can end a curried stage's loans.
-fn closed_returns(module: &CheckedModule) -> Vec<bool> {
-    fn owned(ty: &Type, module: &CheckedModule) -> bool {
-        match ty {
-            Type::Variable(_) | Type::Infer(_) | Type::Reference(..) | Type::Function(..) => false,
-            Type::Array(element) | Type::List(element) => owned(element, module),
-            Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
-            Type::Record(id, arguments) => module
-                .types()
-                .record_fields(*id, arguments)
-                .iter()
-                .all(|ty| owned(ty, module)),
-            Type::Union(id, arguments) => module
-                .types()
-                .union_payloads(*id, arguments)
-                .iter()
-                .flatten()
-                .all(|ty| owned(ty, module)),
-            _ => true,
-        }
+fn owned(ty: &Type, module: &CheckedModule) -> bool {
+    if module.types().recursive(ty) {
+        return !ty.carries_loans(&module.types());
     }
-    fn closed(
-        expression: &TypedExpr,
-        module: &CheckedModule,
-        known: &[bool],
-        locals: &BTreeMap<usize, bool>,
-    ) -> bool {
-        if owned(&expression.ty, module) {
-            return true;
+    match ty {
+        Type::Variable(_) | Type::Infer(_) | Type::Reference(..) | Type::Function(..) => false,
+        Type::Array(element) | Type::List(element) | Type::Vec(element) => owned(element, module),
+        Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
+        Type::Record(id, arguments) => module
+            .types()
+            .record_fields(*id, arguments)
+            .iter()
+            .all(|ty| owned(ty, module)),
+        Type::Union(id, arguments) => module
+            .types()
+            .union_payloads(*id, arguments)
+            .iter()
+            .flatten()
+            .all(|ty| owned(ty, module)),
+        _ => true,
+    }
+}
+fn closed(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    known: &[bool],
+    locals: &BTreeMap<usize, bool>,
+) -> bool {
+    if owned(&expression.ty, module) {
+        return true;
+    }
+    match &expression.kind {
+        E::Function(_)
+        | E::GenericFunction(..)
+        | E::CaseConstructor { .. }
+        | E::Method(..)
+        | E::TypeFunction { .. }
+        | E::TaskRun(_)
+        | E::TaskParallel(_)
+        | E::Parallel(..) => true,
+        E::Local(id) => locals.get(id).copied().unwrap_or(false),
+        E::Construct { payload, .. } => payload
+            .as_ref()
+            .is_none_or(|value| closed(value, module, known, locals)),
+        E::Lambda { captures, .. } => captures
+            .iter()
+            .all(|local| owned(&local.ty, module) || locals.get(&local.id) == Some(&true)),
+        E::Closure(_, captures) | E::Array(captures) | E::List(captures) | E::Tuple(captures) => {
+            captures
+                .iter()
+                .all(|value| closed(value, module, known, locals))
         }
-        match &expression.kind {
-            E::Function(_)
-            | E::GenericFunction(..)
-            | E::CaseConstructor { .. }
-            | E::Method(..)
-            | E::TypeFunction { .. }
-            | E::TaskRun(_)
-            | E::TaskParallel(_) => true,
-            E::Local(id) => locals.get(id).copied().unwrap_or(false),
-            E::Construct { payload, .. } => payload
-                .as_ref()
-                .is_none_or(|value| closed(value, module, known, locals)),
-            E::Lambda { captures, .. } => captures
-                .iter()
-                .all(|local| owned(&local.ty, module) || locals.get(&local.id) == Some(&true)),
-            E::Closure(_, captures)
-            | E::Array(captures)
-            | E::List(captures)
-            | E::Tuple(captures) => captures
-                .iter()
-                .all(|value| closed(value, module, known, locals)),
-            E::NewArray(_, initializer)
-            | E::NewList(_, initializer)
-            | E::NewLiteral(initializer) => closed(initializer, module, known, locals),
-            E::Record(fields) => fields
-                .iter()
-                .all(|(_, value)| closed(value, module, known, locals)),
-            E::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                closed(then_branch, module, known, locals)
-                    && closed(else_branch, module, known, locals)
+        E::NewArray(_, initializer) | E::NewList(_, initializer) | E::NewLiteral(initializer) => {
+            closed(initializer, module, known, locals)
+        }
+        E::Record(_) | E::RecordUpdate { .. } => expression
+            .children()
+            .into_iter()
+            .all(|value| closed(value, module, known, locals)),
+        E::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            closed(then_branch, module, known, locals) && closed(else_branch, module, known, locals)
+        }
+        E::Block { bindings, result } => {
+            let mut locals = locals.clone();
+            for (local, value) in bindings {
+                let value = !local.mutable && closed(value, module, known, &locals);
+                locals.insert(local.id, value);
             }
-            E::Block { bindings, result } => {
-                let mut locals = locals.clone();
-                for (local, value) in bindings {
-                    let value = !local.mutable && closed(value, module, known, &locals);
-                    locals.insert(local.id, value);
+            closed(result, module, known, &locals)
+        }
+        E::Call(callee, arguments) => {
+            let complete_closed = match callee.kind {
+                E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+                    arguments.len() == module.functions[id].parameters.len() && known[id]
                 }
-                closed(result, module, known, &locals)
-            }
-            E::Call(callee, arguments) => {
-                let complete_closed = match callee.kind {
-                    E::Function(crate::check::FunctionRef::User(id))
-                    | E::GenericFunction(id, _) => {
-                        arguments.len() == module.functions[id].parameters.len() && known[id]
-                    }
-                    _ => false,
-                };
-                complete_closed
-                    || (closed(callee, module, known, locals)
-                        && arguments
-                            .iter()
-                            .all(|value| closed(value, module, known, locals)))
-            }
-            E::Field(value, _) | E::Index(value, _) | E::UnionPayload { value, .. } => {
-                closed(value, module, known, locals)
-            }
-            _ => false,
+                _ => false,
+            };
+            complete_closed
+                || (closed(callee, module, known, locals)
+                    && arguments
+                        .iter()
+                        .all(|value| closed(value, module, known, locals)))
         }
+        E::Field(value, _) | E::Index(value, _) | E::UnionPayload { value, .. } => {
+            closed(value, module, known, locals)
+        }
+        _ => false,
     }
+}
+fn closed_returns(module: &CheckedModule) -> Vec<bool> {
     let mut known = vec![false; module.functions.len()];
     loop {
         let mut changed = false;
@@ -272,6 +277,8 @@ struct Checker<'a> {
     state: State,
     loans: Vec<Loan>,
     held: Vec<Value>,
+    loop_flows: Vec<control::LoopFlow>,
+    reachable: bool,
     external: BTreeSet<usize>,
     infer: bool,
     copy_variables: BTreeSet<String>,
@@ -279,7 +286,48 @@ struct Checker<'a> {
 }
 
 impl Checker<'_> {
+    fn callback_returns_closed(&self, expression: &TypedExpr, arity: usize) -> bool {
+        if let E::Call(callee, arguments) = &expression.kind {
+            return self.callback_returns_closed(callee, arity + arguments.len());
+        }
+        let (body, parameters, captures) = match &expression.kind {
+            E::Lambda {
+                body,
+                parameters,
+                captures,
+            } => (body.as_ref(), parameters.as_slice(), captures.as_slice()),
+            E::Function(crate::check::FunctionRef::User(id))
+            | E::GenericFunction(id, _)
+            | E::Closure(id, _) => {
+                let function = &self.module.functions[*id];
+                (
+                    &function.body,
+                    &function.parameters[function.capture_count..],
+                    &function.parameters[..function.capture_count],
+                )
+            }
+            _ => return false,
+        };
+        if parameters.len() > arity {
+            return parameters[..arity]
+                .iter()
+                .all(|parameter| !parameter.ty.contains_reference());
+        }
+        if parameters.len() < arity {
+            return false;
+        }
+        let mut locals: BTreeMap<_, _> = parameters
+            .iter()
+            .map(|parameter| (parameter.id, !parameter.ty.contains_reference()))
+            .collect();
+        locals.extend(captures.iter().map(|capture| (capture.id, true)));
+        closed(body, self.module, self.closed, &locals)
+    }
+
     fn is_copy(&self, ty: &Type) -> bool {
+        if self.module.types().recursive(ty) {
+            return false;
+        }
         match ty {
             Type::Variable(name) => self.copy_variables.contains(name),
             Type::Array(element) | Type::List(element) => self.is_copy(element),
@@ -302,6 +350,9 @@ impl Checker<'_> {
     }
 
     fn require_copy(&mut self, ty: &Type) -> bool {
+        if self.module.types().recursive(ty) {
+            return false;
+        }
         if !self.infer {
             return false;
         }
@@ -358,7 +409,10 @@ impl Checker<'_> {
         }
     }
 
-    fn loan(&mut self, place: Place, mutable: bool, parents: BTreeSet<usize>) -> usize {
+    fn loan(&mut self, place: Place, mutable: bool, mut parents: BTreeSet<usize>) -> usize {
+        if let Some((_, value)) = self.state.locals.get(&place.root) {
+            parents.extend(&value.loans);
+        }
         let id = self.loans.len();
         self.loans.push(Loan {
             place,
@@ -487,7 +541,9 @@ impl Checker<'_> {
                 }
                 Ok(places)
             }
-            E::Index(value, index) if matches!(value.ty, Type::Array(_) | Type::List(_)) => {
+            E::Index(value, index)
+                if matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) =>
+            {
                 let mut places = self.place(value, live)?;
                 let mut guard = Value::default();
                 for (place, via) in &places {
@@ -538,7 +594,8 @@ impl Checker<'_> {
                 Self::is_place(value)
             }
             E::Index(value, _) => {
-                matches!(value.ty, Type::Array(_) | Type::List(_)) && Self::is_place(value)
+                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_))
+                    && Self::is_place(value)
             }
             _ => false,
         }
@@ -577,7 +634,19 @@ impl Checker<'_> {
                 expression.span,
             ));
         }
-        let mut value = Value::default();
+        let mut value = Value {
+            closed_result: std::array::from_fn(|index| {
+                places.iter().all(|(place, _)| {
+                    place.fields.is_empty()
+                        && self
+                            .state
+                            .locals
+                            .get(&place.root)
+                            .is_some_and(|(_, value)| value.closed_result[index])
+                })
+            }),
+            ..Value::default()
+        };
         for (place, via) in places {
             self.revive_generic_moves(&place);
             if moving
@@ -618,6 +687,8 @@ impl Checker<'_> {
             if expression.ty.carries_loans(&self.module.types()) {
                 if let Some((_, stored)) = self.state.locals.get(&place.root) {
                     value.loans.extend(stored.loans.iter().copied());
+                } else if self.external.contains(&place.root) {
+                    value.loans.extend(&via);
                 } else {
                     return Err(error(
                         "E1013",
@@ -787,6 +858,9 @@ impl Checker<'_> {
                 }
                 if expression.ty.carries_loans(&self.module.types()) {
                     result = current;
+                    result.closed_result = std::array::from_fn(|index| {
+                        self.callback_returns_closed(expression, index + 1)
+                    });
                 }
                 self.held.truncate(start);
             }
@@ -795,6 +869,9 @@ impl Checker<'_> {
                 captures,
                 body,
             } => {
+                result.closed_result = std::array::from_fn(|index| {
+                    self.callback_returns_closed(expression, index + 1)
+                });
                 let mut locals = captures.clone();
                 locals.extend(parameters.iter().cloned());
                 self.copy_variables.extend(check_body(
@@ -843,6 +920,37 @@ impl Checker<'_> {
         uses(expression, &mut during);
         let mut result = Value::default();
         match &expression.kind {
+            E::Function(crate::check::FunctionRef::Builtin(instance))
+                if instance.builtin.is_parallel() =>
+            {
+                return Err(error(
+                    "E1013",
+                    "parallel operations must be fully applied directly; their ownership boundary cannot be erased into an ordinary function value",
+                    expression.span,
+                ));
+            }
+            E::Function(_) | E::GenericFunction(..) | E::Method(..) | E::TypeFunction { .. } => {
+                result.closed_result = std::array::from_fn(|index| {
+                    self.callback_returns_closed(expression, index + 1)
+                });
+            }
+            E::Break | E::Continue => {
+                self.eval_loop_jump(matches!(expression.kind, E::Break), expression.span)?;
+            }
+            E::BorrowOperand(value) => {
+                result = self.eval(value, Use::Read, &during)?;
+            }
+            E::Slice { value, start, end } => {
+                for (place, via) in self.place(value, &during)? {
+                    self.access(&place, &via, Use::Borrow, expression.span)?;
+                    result.loans.insert(self.loan(place, false, via));
+                }
+                self.held.push(result.clone());
+                for bound in start.iter().chain(end) {
+                    self.eval(bound, Use::Consume, &during)?;
+                }
+                self.held.pop();
+            }
             E::Borrow(value, mutable) => {
                 for (place, via) in self.place(value, &during)? {
                     self.access(
@@ -897,21 +1005,35 @@ impl Checker<'_> {
             } => {
                 self.eval(condition, Use::Consume, &during)?;
                 let before = self.state.clone();
+                let before_reachable = self.reachable;
                 let then_value = self.eval(then_branch, usage, live)?;
                 let then_state = self.state.clone();
+                let then_reachable = self.reachable;
                 self.state = before;
+                self.reachable = before_reachable;
                 let else_value = self.eval(else_branch, usage, live)?;
-                self.merge(&then_state);
-                result.loans.extend(then_value.loans);
-                result.loans.extend(else_value.loans);
+                result.closed_result = std::array::from_fn(|index| {
+                    then_value.closed_result[index] && else_value.closed_result[index]
+                });
+                if self.reachable {
+                    result.loans.extend(else_value.loans);
+                }
+                self.merge_reachable(&then_state, then_reachable);
+                if then_reachable {
+                    result.loans.extend(then_value.loans);
+                }
             }
             E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
                 self.eval(left, Use::Consume, &during)?;
                 let before = self.state.clone();
+                let before_reachable = self.reachable;
                 self.eval(right, Use::Consume, &during)?;
-                self.merge(&before);
+                self.merge_reachable(&before, before_reachable);
             }
             E::Closure(_, captures) => {
+                result.closed_result = std::array::from_fn(|index| {
+                    self.callback_returns_closed(expression, index + 1)
+                });
                 for capture in captures {
                     let value = self.eval(capture, Use::Consume, &during)?;
                     if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
@@ -927,17 +1049,77 @@ impl Checker<'_> {
             E::TaskRun(value) | E::TaskParallel(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
+            E::StructuralCompare(_, arguments)
+            | E::StructuralHash(arguments)
+            | E::StructuralDisplay(arguments) => {
+                for argument in arguments {
+                    self.eval(argument, Use::Consume, &during)?;
+                }
+            }
+            E::Parallel(operation, arguments) => {
+                let callback = usize::from(matches!(
+                    operation,
+                    crate::check::Builtin::ParallelInit | crate::check::Builtin::ParallelReduce
+                ));
+                let input = if *operation == crate::check::Builtin::ParallelInit {
+                    None
+                } else {
+                    Some(arguments.len() - 1)
+                };
+                let base = self.held.len();
+                for (index, argument) in arguments.iter().enumerate() {
+                    let value = self.eval(argument, Use::Consume, &during)?;
+                    if Some(index) == input {
+                        let Type::Reference(array, _) = &argument.ty else {
+                            unreachable!("parallel input is borrowed")
+                        };
+                        let Type::Array(element) = array.as_ref() else {
+                            unreachable!("parallel input is an array")
+                        };
+                        if element.carries_loans(&self.module.types())
+                            && value.loans.iter().any(|id| {
+                                !self.loans[*id].parents.is_empty()
+                                    || self.external.contains(&self.loans[*id].place.root)
+                            })
+                        {
+                            return Err(error(
+                                "E1013",
+                                "parallel input elements must have proven owned environments",
+                                argument.span,
+                            ));
+                        }
+                    } else if !value.loans.is_empty() {
+                        return Err(error(
+                            "E1013",
+                            "parallel callbacks and values cannot retain borrowed environments",
+                            argument.span,
+                        ));
+                    }
+                    if index == callback
+                        && expression.ty.carries_loans(&self.module.types())
+                        && !value.closed_result
+                            [usize::from(*operation == crate::check::Builtin::ParallelReduce)]
+                    {
+                        return Err(error(
+                            "E1013",
+                            "parallel callback results must be proven free of borrowed environments",
+                            argument.span,
+                        ));
+                    }
+                    self.held.push(value);
+                }
+                self.held.truncate(base);
+            }
             E::Binary(operator, left, right) => {
-                let usage = if left.ty.is_string()
-                    && matches!(
-                        operator,
-                        BinaryOp::Equal
-                            | BinaryOp::NotEqual
-                            | BinaryOp::Less
-                            | BinaryOp::LessEqual
-                            | BinaryOp::Greater
-                            | BinaryOp::GreaterEqual
-                    ) {
+                let usage = if matches!(
+                    operator,
+                    BinaryOp::Equal
+                        | BinaryOp::NotEqual
+                        | BinaryOp::Less
+                        | BinaryOp::LessEqual
+                        | BinaryOp::Greater
+                        | BinaryOp::GreaterEqual
+                ) {
                     Use::Read
                 } else {
                     Use::Consume
@@ -952,9 +1134,9 @@ impl Checker<'_> {
                     result.loans.extend(callee.loans);
                 }
             }
-            E::Record(fields) => {
+            E::Record(_) | E::RecordUpdate { .. } => {
                 let start = self.held.len();
-                for (_, field) in fields {
+                for field in expression.children() {
                     let value = self.eval(field, Use::Consume, &during)?;
                     result.loans.extend(&value.loans);
                     self.held.push(value);
@@ -1019,11 +1201,7 @@ impl Checker<'_> {
             | E::Bool(_)
             | E::Unit
             | E::Error
-            | E::Function(_)
-            | E::GenericFunction(..)
             | E::CaseConstructor { .. }
-            | E::Method(..)
-            | E::TypeFunction { .. }
             | E::GenericInteger(..)
             | E::GenericFloat(_) => {}
             E::Local(_) | E::Dereference(_) | E::ListTail(..) => {

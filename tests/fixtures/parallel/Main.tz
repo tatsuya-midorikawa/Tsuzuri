@@ -1,0 +1,88 @@
+export def parallel_init_sum :: i64 -> i64
+fn parallel_init_sum count =
+    let values = Parallel.init count (index -> index + 1)
+    Parallel.sum (ref values)
+
+export def parallel_large_length :: i64 -> i64
+fn parallel_large_length count = (Parallel.init count (index -> index as ubyte)).length
+
+export def parallel_subtract :: i64 -> i64
+fn parallel_subtract count =
+    let values = new [i64](count, index -> index % 7)
+    Parallel.reduce 10 (left -> right -> left - right) (ref values)
+
+export def parallel_slice :: i64
+fn parallel_slice =
+    let values = [1, 2, 3, 4, 5]
+    let mapped = Parallel.map (value -> value * 2) (ref values[1..4])
+    Array.sum (ref mapped) + values[0]
+
+export def parallel_strings :: i64 -> i64
+fn parallel_strings count =
+    let values = new [string](count, _index -> "he" + "llo")
+    let lengths = Parallel.map_ref (value -> value.length) (ref values)
+    Parallel.sum (ref lengths)
+
+export def parallel_copy_arrays :: i64 -> i64
+fn parallel_copy_arrays count =
+    let values = new [[i64]](count, index -> [index, 1])
+    let mapped = Parallel.map (row -> Array.sum (ref row)) (ref values)
+    Array.sum (ref mapped)
+
+export def parallel_copy_functions :: i64
+fn parallel_copy_functions =
+    let text = "hello"
+    let reader = delta -> text.length + delta
+    let functions = [reader, reader]
+    let copied = Parallel.map (function -> function) (ref functions)
+    let results = Parallel.map (function -> function 1) (ref functions)
+    copied[0] 0 + copied[1] 0 + Array.sum (ref results)
+
+export def parallel_callback_snapshots :: i64 -> i64
+fn parallel_callback_snapshots count =
+    let seed = Vec.push Vec.empty() 7
+    let callback = index -> { let values = Vec.push seed index; Vec.length (ref values) }
+    let values = Parallel.init count callback
+    Array.sum (ref values)
+
+export def parallel_copy_reduce :: i64 -> i64
+fn parallel_copy_reduce count =
+    let values = new [[i64]](count, index -> [index])
+    let identity = [1i64]
+    let result = Parallel.reduce identity (left -> right -> [left[0] + right[0]]) (ref values)
+    result[0]
+
+export def parallel_float :: i64 -> i64
+fn parallel_float count =
+    let values = new [f64](count, index -> if index % 3 == 0 then 1e16 else if index % 3 == 1 then 1.0 else -1e16)
+    Parallel.sum (ref values) as i64
+
+export def parallel_float_special :: i64
+fn parallel_float_special =
+    let zeros = [-0.0, -0.0]
+    let zero = Parallel.sum (ref zeros)
+    let values = [1.0, 0.0 / 0.0, 2.0]
+    let nan = Parallel.sum (ref values)
+    if zero == 0.0 && 1.0 / zero > 0.0 && nan != nan then 1 else 0
+
+export def parallel_order :: i64
+fn parallel_order =
+    let mut state = 0
+    let values = [1, 2]
+    let mapped = Parallel.map ({ state = state * 10 + 1; value -> value }) ({ state = state * 10 + 2; ref values })
+    state * 100 + Array.sum (ref mapped)
+
+export def parallel_trap :: i64
+fn parallel_trap = (Parallel.init 8192 (index -> { assert (index != 4096); index })).length
+
+export def parallel_capture_order :: i64
+fn parallel_capture_order =
+    let mut weights = new [10i64, 20]
+    let values = [1i64, 2]
+    let mapped = Parallel.map (value -> value + weights[0]) ({ weights = new [30i64, 40]; ref values })
+    Array.sum (ref mapped) + weights[0]
+
+export def parallel_wrapping :: i64
+fn parallel_wrapping =
+    let values = [120i8, 120i8]
+    Parallel.sum (ref values) as i64

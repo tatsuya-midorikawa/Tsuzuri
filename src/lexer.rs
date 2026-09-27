@@ -10,6 +10,78 @@ pub fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     tokenize(source, true)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TriviaKind {
+    Whitespace,
+    Newline,
+    LineComment,
+    BlockComment,
+}
+
+#[derive(Clone, Debug)]
+pub struct Trivia {
+    pub kind: TriviaKind,
+    pub text: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct TokenWithTrivia {
+    pub token: Token,
+    pub leading: Vec<Trivia>,
+}
+
+pub fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic> {
+    let tokens = lex(source)?;
+    let mut scanner = Lexer {
+        source,
+        position: if source.starts_with('\u{feff}') { 3 } else { 0 },
+    };
+    let mut result = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let mut leading = Vec::new();
+        while scanner.position < token.span.start {
+            let start = scanner.position;
+            let kind = if scanner.rest().starts_with("/*") {
+                scanner.comment()?;
+                TriviaKind::BlockComment
+            } else if scanner.rest().starts_with("//") {
+                scanner.position = source[start..]
+                    .find('\n')
+                    .map_or(source.len(), |offset| start + offset);
+                if scanner.position < source.len()
+                    && source.as_bytes()[scanner.position - 1] == b'\r'
+                {
+                    scanner.position -= 1;
+                }
+                TriviaKind::LineComment
+            } else if scanner.rest().starts_with("\r\n") {
+                scanner.position += 2;
+                TriviaKind::Newline
+            } else if scanner.rest().starts_with(['\r', '\n']) {
+                scanner.position += 1;
+                TriviaKind::Newline
+            } else {
+                while scanner.position < token.span.start
+                    && source.as_bytes()[scanner.position].is_ascii_whitespace()
+                    && !matches!(source.as_bytes()[scanner.position], b'\r' | b'\n')
+                {
+                    scanner.position += 1;
+                }
+                TriviaKind::Whitespace
+            };
+            leading.push(Trivia {
+                kind,
+                text: source[start..scanner.position].to_owned(),
+                span: Span::new(start, scanner.position),
+            });
+        }
+        scanner.position = token.span.end;
+        result.push(TokenWithTrivia { token, leading });
+    }
+    Ok(result)
+}
+
 fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     if source.len() > MAX_SOURCE_BYTES {
         return (
@@ -103,21 +175,10 @@ impl Lexer<'_> {
             return Ok(None);
         }
         let kind = if byte == b'\'' {
-            self.position += 1;
-            if !self
-                .source
-                .as_bytes()
-                .get(self.position)
-                .is_some_and(|b| b.is_ascii_alphabetic())
-            {
-                return Err(Diagnostic::new(
-                    "E0001",
-                    "a type variable starts with an apostrophe and an ASCII letter",
-                    Span::new(start, self.position),
-                ));
-            }
-            self.identifier();
-            TokenKind::TypeVariable(self.source[start + 1..self.position].to_owned())
+            self.char_or_type_variable()?
+        } else if self.rest().starts_with("u8'") {
+            self.position += 2;
+            self.character(true)?
         } else if self.rest().starts_with("u8\"") {
             self.position += 2;
             self.string(true)?
@@ -138,6 +199,103 @@ impl Lexer<'_> {
 
     fn rest(&self) -> &str {
         &self.source[self.position..]
+    }
+
+    fn char_or_type_variable(&mut self) -> Result<TokenKind, Diagnostic> {
+        let start = self.position;
+        if self.source.as_bytes().get(start + 1) == Some(&b'_')
+            && self.source.as_bytes().get(start + 2) != Some(&b'\'')
+        {
+            self.position += 1;
+            return Err(Diagnostic::new(
+                "E0001",
+                "a type variable starts with an apostrophe and an ASCII letter",
+                Span::new(start, self.position),
+            ));
+        }
+        if self
+            .source
+            .as_bytes()
+            .get(start + 1)
+            .is_some_and(u8::is_ascii_alphabetic)
+        {
+            self.position += 1;
+            self.identifier();
+            if !self.rest().starts_with('\'') {
+                return Ok(TokenKind::TypeVariable(
+                    self.source[start + 1..self.position].to_owned(),
+                ));
+            }
+            if self.position - start != 2 {
+                self.position += 1;
+                return Err(Diagnostic::new(
+                    "E0001",
+                    "a char literal contains exactly one UTF-16 code unit",
+                    Span::new(start, self.position),
+                ));
+            }
+            self.position = start;
+        }
+        self.character(false)
+    }
+
+    fn character(&mut self, utf8: bool) -> Result<TokenKind, Diagnostic> {
+        let start = self.position;
+        self.position += 1;
+        let error = |end| {
+            Diagnostic::new(
+                "E0001",
+                if utf8 {
+                    "a utf8char literal contains exactly one Unicode scalar"
+                } else {
+                    "a char literal contains exactly one UTF-16 code unit"
+                },
+                Span::new(start, end),
+            )
+        };
+        let Some(character) = self.rest().chars().next() else {
+            return Err(error(self.position));
+        };
+        self.position += character.len_utf8();
+        let value = match character {
+            '\'' | '\n' | '\r' => return Err(error(self.position)),
+            '\\' => {
+                let Some(escape) = self.rest().chars().next() else {
+                    return Err(error(self.position));
+                };
+                self.position += escape.len_utf8();
+                match escape {
+                    '\'' => u32::from('\''),
+                    '\\' => u32::from('\\'),
+                    'n' => 10,
+                    'r' => 13,
+                    't' => 9,
+                    '0' => 0,
+                    'u' if !utf8 || self.rest().starts_with('{') => {
+                        let before = self.position;
+                        let value = self.unicode_escape(utf8)?;
+                        if self.position - before > 8 {
+                            return Err(error(self.position));
+                        }
+                        value
+                    }
+                    _ => return Err(error(self.position)),
+                }
+            }
+            _ => u32::from(character),
+        };
+        if !self.rest().starts_with('\'')
+            || (!utf8 && value > 0xffff)
+            || (utf8 && char::from_u32(value).is_none())
+        {
+            return Err(error(self.position));
+        }
+        self.position += 1;
+        Ok(if utf8 {
+            TokenKind::Utf8Char(value)
+        } else {
+            TokenKind::Char(value as u16)
+        })
     }
 
     fn comment(&mut self) -> Result<(), Diagnostic> {
@@ -184,8 +342,11 @@ impl Lexer<'_> {
             "private" => TokenKind::Private,
             "record" => TokenKind::Record,
             "union" => TokenKind::Union,
+            "type" => TokenKind::Type,
+            "test" => TokenKind::Test,
             "class" => TokenKind::Class,
             "instance" => TokenKind::Instance,
+            "deriving" => TokenKind::Deriving,
             "let" => TokenKind::Let,
             "task" => TokenKind::Task,
             "do" => TokenKind::Do,
@@ -196,6 +357,8 @@ impl Lexer<'_> {
             "to" => TokenKind::To,
             "downto" => TokenKind::Downto,
             "while" => TokenKind::While,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
             "mut" => TokenKind::Mut,
             "ref" => TokenKind::Ref,
             "deref" => TokenKind::Deref,

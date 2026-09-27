@@ -6,10 +6,18 @@
 | 規模 | M |
 | 依存 | E02 |
 | 後続 | D05, F04, F05 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Math.tz`, `src/check.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/numeric.rs`, `src/runtime/numeric.c`, `src/runtime/generate.py`, `src/runtime/wasm.ll`, `tests/math.rs`, `tests/math.mjs`, `tests/primitives.mjs`, `tests/numeric_casts.mjs`, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md` |
 
 ## 目的
+
+実装済み（GUIDE D-27）。全31個のMath API、旧f64互換名、Float／Elementaryの制約を実装した。
+基本数学は型付きLLVMとnumeric.cの正確な整数演算、超越関数は固定版musl 1.2.5を同梱し、通常f64 atan2だけ補償演算で精度補強した。
+math.c／muslからgenerate_math.pyで生成し、numeric.llの後ろへmetadata／attributeを割り当てる。
+再生成はApple Clang 21＋llvm-link 21で検証し、IR保存前にもClang検証する。新しいLLVMの署名・表記へ無理に合わせない。
+検証: 基本745486件＋超越26376件＝771862参照ケース、native/WASM O0/O3、非NaN bit一致、ヒープ非確保、trap-info・関数値・LTR評価。
+超越の参照はmpmath 1.3.0の256-bit、各型10000超の乱数・特殊値。基本はf16全パターンと広幅各1000乱数を含む。
+再生成のbyte一致、Math Rust2件、fmt/clippyを検証した。性能の高速化は主張しない。
 
 現行の `sqrt`/`floor`/`ceil`/`abs` は `f64 -> f64` の無修飾 builtin に限られている。
 D03 はこれを `Math` モジュールの型汎用 API へ拡張し、f16/f32/f64/f128/decimal を同じ仕様で扱う土台を作る。
@@ -528,19 +536,14 @@ NaN/signed zero/minimum/maximum semantics を書く。
 
 ## 受け入れ条件
 
-- [ ] `Math.*` API が仕様の型で使える。
-- [ ] 旧 f64 builtin が壊れない。
-- [ ] f32/f64 basic は typed LLVM intrinsic/direct lowering。
-- [ ] f16/f128/decimal basic は bundled runtime で正確。
-- [ ] transcendental は platform libm に依存しない。f32/f64 は `math.c`（縮約なしの IEEE 演算）で実装し、`math.ll` に `llvm.fmuladd`・fast-math フラグ・libm 呼び出しが無い。
-- [ ] `Elementary` は f32/f64 だけを受理し、f16/f128/decimal は `E1005` で拒否される。
-- [ ] native/WASM `-O0`/`-O3` で非 NaN 結果は同一 bit pattern、NaN は分類で一致する。
-- [ ] WASM imports は空。
-- [ ] wasm32 object/link 検証で round/floor/ceil/trunc/copysign/minimum/maximum/sqrt/transcendental が未解決 libcall を出さない。
-- [ ] `math.ll` と `numeric.ll` の metadata/attribute ID が衝突しない。
-- [ ] fast-math、reassociation、implicit FMA がない。
-- [ ] NaN、signed zero、subnormal、infinity のテストがある。
-- [ ] docs に精度と未対応範囲が正直に書かれている。
+- [x] Math APIが型を保持し、旧f64 builtinと名前以外のIRが一致する。
+- [x] f32/f64は型付きLLVM、f16/f128/decimalは正確な整数演算を使う。
+- [x] 超越関数は同梱実装のみ、libm・FMA・fast-math・拡張精度なし。
+- [x] Elementaryはf32/f64だけで、他の形式はE1005。
+- [x] native/WASM O0/O3の非NaN bit一致、NaN分類、importなし、未解決libcallなしを検証した。
+- [x] numeric/math/生成source markerのmetadataとattribute範囲を分離した。
+- [x] NaN/±0/subnormal/inf、精度1ulp、f16全パターン、関数値・定数・評価順・heap非確保を検証した。
+- [x] 精度・サポート範囲・再生成・依存ライセンスを文書化した。
 
 ## 落とし穴
 
@@ -568,6 +571,9 @@ BigFloat。
 性能最適化された platform-specific libm dispatch。
 
 ## 未決事項
+
+- 実装判断（D-27）: 超越関数の係数・範囲縮小は既存musl 1.2.5を再利用した。f64 atan2だけ元実装の1.035ulp誤差が再現したため、通常範囲をdouble-doubleへ補強した。元ソースは未変更で同梱する。
+- Math.abs_intは重複を避け、既存Int.absに委ねた。pi/eは120桁弱の十進定数からnumeric.rsで目的型へ一度だけ丸める。
 
 transcendental の対応型は組み込みマーカークラス `Elementary` で表す（決定済み。「サポート行列」参照）。
 フェーズ 1 は f32/f64 だけ。f16/f128/decimal の transcendental は後続チケットで `numeric.c` に実装し、`Elementary` の対象型を増やす。

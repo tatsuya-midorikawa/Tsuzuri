@@ -1,0 +1,40 @@
+record Inner { tiny: i8, wide: i16u, flag: bool }
+record Outer { inner: Inner, amount: f64 }
+record Empty {}
+
+export def sum :: ref [i64] -> i64
+fn sum values = Array.sum values
+
+export def sum_float :: ref [f64] -> f64
+fn sum_float values = Array.sum values
+
+export def checksum :: ref [ubyte] -> i64
+fn checksum values = Array.fold values 0 (total -> value -> total + value as i64)
+
+export def make_bytes :: i64 -> [ubyte]
+fn make_bytes count = new [ubyte](count, index -> index as ubyte)
+
+export def copy_values :: ref [i64] -> [i64]
+fn copy_values values = Array.map values (value -> value)
+
+export def copy_text :: ref string -> string
+fn copy_text text = clone_string text
+
+export def copy_utf8 :: ref utf8string -> utf8string
+fn copy_utf8 text = Utf8String.clone text
+
+export def text_length :: ref string -> i64
+fn text_length text = text.length
+
+export def byte_length :: ref utf8string -> i64
+fn byte_length text = text.length
+
+export def update :: ref Outer -> Outer
+fn update value =
+    Outer { inner: Inner { tiny: value.inner.tiny, wide: value.inner.wide, flag: value.inner.flag }, amount: value.amount + 1.0 }
+
+export def owned_record :: Outer -> f64
+fn owned_record value = value.amount + value.inner.tiny as f64
+
+export def empty_record :: Empty -> Empty
+fn empty_record value = value

@@ -1,6 +1,91 @@
 record Holder { values: [i64], name: string }
 record Named { names: [string], id: i64 }
 record Nothing {}
+record UpdateOrder { first: i64, second: i64 }
+record UpdateItem<'a> { item: 'a, stamp: i64 }
+record UpdateCallable { reader: i64 -> i64, count: i64 }
+
+export def debug_trace_transfer :: i64
+fn debug_trace_transfer =
+    let text = "he" + "llo"
+    let moved = Debug.trace text
+    moved.length
+
+export def string_join_allocation :: i64
+fn string_join_allocation =
+    let parts = ["a", "bb", "ccc"]
+    let separator = "-"
+    (String.join (ref separator) (ref parts)).length
+
+export def utf8_join_allocation :: i64
+fn utf8_join_allocation =
+    let parts = [u8"a", u8"bb", u8"ccc"]
+    let separator = u8"-"
+    (Utf8String.join (ref separator) (ref parts)).length
+
+export def string_replace_allocation :: i64
+fn string_replace_allocation =
+    let text = "hello hello"
+    let needle = "l"
+    let replacement = "--"
+    (String.replace (ref needle) (ref replacement) (ref text)).length
+
+export def utf8_repeat_allocation :: i64
+fn utf8_repeat_allocation =
+    let text = u8"hello"
+    (Utf8String.repeat (ref text) 3).length
+
+export def transferred_array_update :: i64
+fn transferred_array_update =
+    let values = new [1, 2, 3]
+    let updated = Array.set values 0 42
+    updated[0]
+
+export def copied_array_update :: i64
+fn copied_array_update =
+    let values = new [1, 2, 3]
+    let updated = Array.set values 0 42
+    values[0] + updated[0]
+
+export def stack_array_update :: i64
+fn stack_array_update =
+    let values = [1, 2, 3]
+    let updated = Array.set values 0 42
+    updated[0]
+
+export def record_update_owned :: i64
+fn record_update_owned =
+    let holder = Holder { values: new [20, 22], name: "old" + "name" }
+    let updated = { holder with name = "new" + "name" }
+    updated.values[0] + updated.values[1] + updated.name.length
+
+export def record_update_all :: i64
+fn record_update_all =
+    let holder = Holder { values: new [20, 22], name: "old" + "name" }
+    let updated = { holder with name = "new" + "name"; values = new [2] }
+    updated.values[0] + updated.name.length
+
+export def record_update_order :: i64
+fn record_update_order =
+    let mut state = 0
+    let updated = {
+        { state = state * 10 + 1; UpdateOrder { first: 0, second: 0 } }
+        with second = { state = state * 10 + 2; state };
+             first = { state = state * 10 + 3; state }
+    }
+    state * 1000000 + updated.first * 1000 + updated.second
+
+export def record_update_generic :: i64
+fn record_update_generic =
+    let value: UpdateItem<string> = UpdateItem { item: "old" + "text", stamp: 42 }
+    let updated = { value with item = "new" + "text" }
+    updated.stamp + updated.item.length
+
+export def record_update_copy :: i64
+fn record_update_copy =
+    let original = UpdateCallable { reader: value -> value + 1, count: 2 }
+    let updated = { original with count = 40 }
+    original.reader original.count + updated.reader updated.count
 
 def total :: &[i64] -> i64
 fn total values =

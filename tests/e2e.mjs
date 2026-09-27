@@ -445,6 +445,66 @@ int main(void) {
   console.log("Polymorphism: signatures, specialization, class/function constraints, implicit borrows, ownership, evaluation order and tail recursion at -O0/-O3");
 }
 
+async function typeAliasChecks() {
+  const source = join(root, "tests/fixtures/type_aliases");
+  const directory = join(temporary, "type-aliases");
+  mkdirSync(directory);
+  const header = join(directory, "aliases.h");
+  const ir = join(directory, "aliases.ll");
+  const repeated = join(directory, "repeated.ll");
+  const tracked = join(directory, "tracked.ll");
+  const host = join(directory, "host.c");
+  cli(["build", source, "--emit", "header", "-o", header]);
+  cli(["build", source, "--emit", "llvm", "-o", ir]);
+  cli(["build", source, "--emit", "llvm", "-o", repeated]);
+  const text = readFileSync(ir, "utf8");
+  assert.equal(text, readFileSync(repeated, "utf8"));
+  assert.doesNotMatch(text, /Meters|Pair2|Borrowed/);
+  writeFileSync(tracked, text.replaceAll("@malloc(", "@alias_tracked_alloc(")
+    .replaceAll("@free(", "@alias_tracked_free("));
+  writeFileSync(host, `
+#include <assert.h>
+#include <stdlib.h>
+#include "aliases.h"
+static size_t live;
+void *alias_tracked_alloc(uint64_t size) {
+  void *memory = malloc(size ? (size_t)size : 1);
+  assert(memory != NULL);
+  live++;
+  return memory;
+}
+void alias_tracked_free(void *memory) {
+  if (memory != NULL) { assert(live > 0); live--; free(memory); }
+}
+int main(void) {
+  assert(tz_alias_add(20.5, 21.5) == 42.0);
+  for (int64_t index = 0; index < 4096; index++) {
+    assert(tz_alias_record(index) == index + 42);
+    assert(tz_alias_owned(index) == index + 6);
+    assert(live == 0);
+  }
+  return 0;
+}
+`);
+  for (const optimization of [0, 3]) {
+    const native = join(directory, `host-${optimization}`);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-override-module", `-O${optimization}`,
+      host, tracked, "-o", native]);
+    execute(native, []);
+    const wasm = join(directory, `aliases-${optimization}.wasm`);
+    cli(["build", source, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+    const { instance, module } = await WebAssembly.instantiate(readFileSync(wasm));
+    assert.deepEqual(WebAssembly.Module.imports(module), []);
+    assert.equal(instance.exports.tz_alias_add(20.5, 21.5), 42);
+    for (let index = 0n; index < 4096n; index++) {
+      assert.equal(instance.exports.tz_alias_record(index), index + 42n);
+      assert.equal(instance.exports.tz_alias_owned(index), index + 6n);
+    }
+    assert.ok(instance.exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
+  }
+  console.log("Type aliases: transparent scalar/generic/owned types, deterministic IR and balanced allocations at native/WASM -O0/-O3");
+}
+
 async function moduleChecks() {
   const directory = join(temporary, "modules");
   mkdirSync(directory);
@@ -492,7 +552,7 @@ export fn hypotenuse(x: f64, y: f64) -> f64 {
 record Value { x: i64 }
 fn value(v: Value) -> i64 { v.x + 1 }
 `,
-    "Odd.tz": "fn rec test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
+    "Odd.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { false } else { Even.accepts(n - 1) } }",
     "Loop.tz": `
 fn rec sum(n: i64, values: [i64]) -> i64 {
   let total = values[0];
@@ -505,7 +565,7 @@ record Value { x: i64 }
 fn value(v: Value) -> i64 { v.x }
 fn main() -> i64 { 999 }
 `,
-    "Even.tz": "fn rec test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
+    "Even.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { true } else { Odd.accepts(n - 1) } }",
     "Main.tz": `
 record Callback { distance: fn(Point.Point) -> f64 }
 fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
@@ -519,7 +579,7 @@ export fn module_result() -> f64 {
 }
 export fn module_tail() -> i64 { Loop.sum(1_000_000, [0, 1]) }
 export fn module_pipe() -> i64 { Loop.down(1_000_000) }
-export fn module_even(n: i64) -> bool { Even.test(n) }
+export fn module_even(n: i64) -> bool { Even.accepts(n) }
 fn main() -> f64 { module_result() }
 `,
   };
@@ -670,6 +730,7 @@ try {
   await runtimeChecks();
   await moduleChecks();
   await polymorphismChecks();
+  await typeAliasChecks();
   multipleDiagnosticChecks();
 
   for (const [type, value, expected] of [

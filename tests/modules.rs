@@ -121,11 +121,11 @@ fn resolves_cross_module_recursion_and_qualified_self_tail_calls() {
     let module = analyze_modules(&[
         (
             "Even",
-            "fn rec test(n: i64) -> bool { if n == 0 { true } else { Odd.test(n - 1) } }",
+            "fn rec accepts(n: i64) -> bool { if n == 0 { true } else { Odd.accepts(n - 1) } }",
         ),
         (
             "Odd",
-            "fn rec test(n: i64) -> bool { if n == 0 { false } else { Even.test(n - 1) } }",
+            "fn rec accepts(n: i64) -> bool { if n == 0 { false } else { Even.accepts(n - 1) } }",
         ),
         (
             "Loop",
@@ -135,12 +135,12 @@ fn resolves_cross_module_recursion_and_qualified_self_tail_calls() {
              }
              fn rec down(n: i64) -> i64 { if n == 0 { 0 } else { n - 1 |> Loop.down } }",
         ),
-        ("Main", "Even.test(100)"),
+        ("Main", "Even.accepts(100)"),
     ])
     .unwrap();
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    assert!(ir.contains("call i1 @tz.fn.Odd.test"));
-    assert!(ir.contains("call i1 @tz.fn.Even.test"));
+    assert!(ir.contains("call i1 @tz.fn.Odd.accepts"));
+    assert!(ir.contains("call i1 @tz.fn.Even.accepts"));
     for name in ["sum", "down"] {
         let body = ir
             .split(&format!("define internal i64 @tz.fn.Loop.{name}("))

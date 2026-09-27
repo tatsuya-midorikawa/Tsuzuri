@@ -7,11 +7,33 @@ const LAZY: &str = include_str!("fixtures/computations/Lazy.tc");
 const TEXT: &str = include_str!("fixtures/computations/Text.tc");
 
 #[test]
+fn result_propagation_operations_exist() {
+    let module = analyze_modules(&[(
+        "Main.tz",
+        "let option = Option.Run (Option.Delay (_ ->
+             Option.Combine (Option.Zero()) (_ ->
+                 Option.Bind (Option.Return 20) (value -> Option.ReturnFrom (Some value)))))
+         let result: Result.Result<i64, string> = Result.Run (Result.Delay (_ ->
+             Result.Combine (Result.Zero()) (_ ->
+                 Result.Bind (Result.Return 22) (value -> Result.ReturnFrom (Ok value)))))
+         Option.get option + Result.get result",
+    )])
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
 fn standard_builders_compose_without_local_builder_files() {
     let module = analyze_modules(&[(
         "Main.tz",
         "let option = Option {
-             for n in [1, 2] do do! Some ()
+               for _n in [1, 2] do do! Some ()
              return! Option { let! n = Some 20; return n }
          }
          let result: Result<i64, string> = Result {
@@ -24,6 +46,57 @@ fn standard_builders_compose_without_local_builder_files() {
     .unwrap();
     assert!(module.warnings.is_empty());
     llvm::emit(&module, llvm::Entry::Library).unwrap();
+}
+
+#[test]
+fn option_result_builder_expansion() {
+    for source in [
+        "Option.get (Option { let! left = Some 20; let! right = Some 22; return left + right })",
+        "Option { let! _: unit = None; return 1i64 / 0 }",
+        "Result { let! _: unit = Error 42i64; return 1i64 / 0 }",
+        "Option.get (Option { let! mut value = Some 20; value = value + 2; do! Some (); return! Some (value + 20) })",
+        "let value: Result.Result<i64, string> = Result { let first = 20; assert true; do! Ok (); let! second = Ok 22; return first + second }\nResult.get value",
+        "Result.get (Result { let! value = Option.to_result 42i64 (Some 20); return value + 22 })",
+        "let result: Result.Result<i64, string> = Ok 42i64\nOption.get (Option { let! value = Result.to_option result; return value })",
+        "Option { if true { do! Some () } else { do! None }; for value in [1, 2] do do! Some (); while false do do! Some (); return 42 }",
+    ] {
+        let module = analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+        for wasm in [false, true] {
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            assert_eq!(
+                ir,
+                llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn result_builder_rejects_mismatched_error_types() {
+    for (source, code) in [
+        (
+            "Result { let! _: unit = Error \"bad\"; let! _: unit = Error 1i64; return 0i64 }",
+            "E1003",
+        ),
+        (
+            "Option { let! value = Error \"bad\"; return value }",
+            "E1003",
+        ),
+        ("Result { let! value = None; return value }", "E1003"),
+        ("let value = Option { return None }\n()", "E1015"),
+        ("Result { if true { return 1i64 } }", "E1003"),
+        ("Option { if true { return 1i64 } }", "E1003"),
+        ("Option { do! Some 1i64; return 42 }", "E1003"),
+        ("Result { do! Ok 1i64; return 42 }", "E1003"),
+        (
+            "Option { for text in [\"owned\"] do do! Some (); return 1 }",
+            "E1005",
+        ),
+    ] {
+        let error = analyze_modules(&[("Main.tz", source)]).expect_err(source);
+        assert_eq!(error.code, code, "{source}\n{}", error.message);
+    }
 }
 
 fn sources(main: &str) -> [(&str, &str); 6] {
@@ -174,11 +247,9 @@ fn preserves_owned_values_and_borrow_lifetimes() {
          let result: &i64 = Identity { return r }
          *result",
     );
-    let error = rejects(
+    accepts(
         "let n = 42\nlet r = &n\nlet result: &i64 = Identity { let! value = r; return value }\n*result",
-        "E1013",
     );
-    assert_eq!(error.span.source, Some(0));
     rejects(
         "let text = \"owned\"\nlet _ = Text { return text }\ntext",
         "E1012",

@@ -1,0 +1,17 @@
+def is_ascii_digit :: char -> bool
+fn is_ascii_digit value = value >= '0' && value <= '9'
+
+def is_ascii_lower :: char -> bool
+fn is_ascii_lower value = value >= 'a' && value <= 'z'
+
+def is_ascii_upper :: char -> bool
+fn is_ascii_upper value = value >= 'A' && value <= 'Z'
+
+def is_ascii_alphabetic :: char -> bool
+fn is_ascii_alphabetic value = is_ascii_lower value || is_ascii_upper value
+
+def to_ascii_upper :: char -> char
+fn to_ascii_upper value = if is_ascii_lower value then Char.of_u16 (Char.to_u16 value - 32i16u) else value
+
+def to_ascii_lower :: char -> char
+fn to_ascii_lower value = if is_ascii_upper value then Char.of_u16 (Char.to_u16 value + 32i16u) else value

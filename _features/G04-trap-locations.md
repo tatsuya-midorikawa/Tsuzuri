@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | なし |
 | 後続 | E07, G08 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `.gitignore`, `src/diagnostic.rs`, `src/check.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/driver.rs`, `src/main.rs`, `src/runtime/trap-native.ll` または `src/runtime/*.ll`, `src/runtime/numeric.c`, `src/runtime/generate.py`, `tests/trap_locations.rs`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -584,18 +584,18 @@ G04 専用 test では `-O0` / `-O3` の両方で trap site id が一致する�
 
 ## 受け入れ条件
 
-- [ ] `tsuzuri run` の trap が source path / line / column / kind を報告する。
-- [ ] `--json` の run failure stderr が JSON object のみになる。
-- [ ] `tsuzuri build --trap-info` が native reporter または WASM side table を出す。
-- [ ] `tsuzuri build` 既定では trap info を出さない。
-- [ ] WASM trap info は import を追加しない。
-- [ ] WASM は `tsuzuri_trap_site()` getter function を export し、trap 後に id を読める。
-- [ ] side table JSON は deterministic で atomic に publish される。
-- [ ] assert, bounds, integer division, match failure, allocation size/failure, range step zero が分類される。
-- [ ] `--trap-info` false の IR は既存と同一。
-- [ ] `--trap-info` true の report/store は failure block のみ。trap-capable helper call の site id operand 増加は許容する。
-- [ ] 新しい runtime `.ll` を追加した場合、`.gitignore` 例外と `git ls-files --error-unmatch` 検査がある。
-- [ ] native/WASM × `-O0`/`-O3` の trap tests が通る。
+- [x] `tsuzuri run` の trap が source path / line / column / kind を報告する。
+- [x] `--json` の run failure stderr が JSON object のみになる。
+- [x] `tsuzuri build --trap-info` が native reporter または WASM side table を出す。
+- [x] `tsuzuri build` 既定では trap info を出さない。
+- [x] WASM trap info は import を追加しない。
+- [x] WASM は `tsuzuri_trap_site()` getter function を export し、trap 後に id を読める。
+- [x] side table JSON は deterministic で、個別の atomic rename と公開エラー時の rollback を使う。
+- [x] assert, bounds, integer division, pattern/match failure, allocation size/failure, range step zero が分類される。
+- [x] `--trap-info` false の代表 native/WASM IR は実装前の保存基準と byte-identical。
+- [x] `--trap-info` true の report/store は failure block のみ。context は内部 callable の追加引数で伝える。
+- [x] reporter は小さな生成 IR とし、新しい runtime `.ll` は追加しない。
+- [x] native/WASM × `-O0`/`-O3` の trap tests、全 Rust、既存 E2E と全 feature suite が通る。
 
 ## 落とし穴
 
@@ -620,6 +620,12 @@ G04 専用 test では `-O0` / `-O3` の両方で trap site id が一致する�
 
 ## 未決事項
 
+- **実装判断（2026-09-27）:** 既定の runtime ABI と生成物を変更せず、有効時だけ生成 IR を構造走査して context 引数を内部関数・同梱 runtime・間接 call へ伝播する。
+  公開 ABI・pthread callback は維持し、source span と失敗理由の組を side table にする。numeric.c の再生成は不要。
+  `emit_with_trap_info` を追加し、既存 emit API は互換。native reporter は write(2) と short-write loop、WASM は global/getter。
+  後からリンクする compiler-rt／wasm.ll の 128-bit helper 内部は未計測。ソースの整数除算 guard は事前に分類する。
+  side table と成果物は別々の atomic rename と rollback で公開するが、プロセスクラッシュを跨ぐ二ファイル同時 atomicity は保証しない。
+  `tests/trap_locations.rs` は位置・決定性・実行・closure/collection/Task ABI・JSON・出力保護を検証する。
 - **native reporter の実装方式。** 既定案は `fprintf(stderr, ...)`。より小さくするなら `fwrite` + global string table。
 - **side table path。** 既定案は `<output>.trap.json`。`--emit object` でも同じ。
 - **runtime helper signature 変更の範囲。** 既定案は G04 で `@tz.alloc`、string helpers、closure clone adapters、

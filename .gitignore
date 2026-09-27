@@ -33,7 +33,12 @@ target
 !src/runtime/heap-native.ll
 !src/runtime/heap-wasm.ll
 !src/runtime/console.ll
+!src/runtime/character.ll
+!src/runtime/debug.ll
+!src/runtime/recursive.ll
+!src/runtime/display.ll
 !src/runtime/numeric.ll
+!src/runtime/math.ll
 *.dylib
 *.so
 *.dll

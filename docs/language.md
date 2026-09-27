@@ -10,8 +10,8 @@
 
 - `.tz`（コード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）。
   UTF-8、先頭 BOM、LF／CRLF。識別子は ASCII の英字または `_` に続く英数字／`_`。
-- 予約語は `fn` `fx` `def` `rec` `and` `export` `private` `record` `union` `class` `instance` `let` `task` `do` `return` `yield`
-  `for` `in` `to` `downto` `while` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
+- 予約語は `fn` `fx` `def` `rec` `and` `export` `private` `record` `union` `type` `test` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
+    `for` `in` `to` `downto` `while` `break` `continue` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
   `true` `false` です。関数・変数・フィールド・モジュールの名前には使えません（`refs` や `ref_count` は使えます）。
   `of` は `union` の case 宣言の中だけで意味を持つ文脈キーワードで、それ以外では通常の識別子です。
 - `//` 行コメントと、入れ子可能な `/* ... */` コメント。
@@ -19,11 +19,20 @@
   浅いインデントで終了します。明示的な `{ ... }` も使えます。空白適用は改行をまたぎません。
   インデント本体の `let`・式列は改行で区切り、中間の結果式は unit を要求します。
   明示ブロックの `let` は引き続き `;` で区切ります。
-- 型宣言は `def`／`export def`／`private def`、実装は `fn` または宣言に対応する `let` と匿名関数。ほかに `record`／`private record`、`union`／`private union`、`class`、`instance` があります。
+- 型宣言は `def`／`export def`／`private def`、実装は `fn` または宣言に対応する `let` と匿名関数。ほかに `record`／`private record`、`union`／`private union`、`type`／`private type`、`class`、`instance` があります。
 - `Main.tz` に限り、宣言の後にトップレベルの `let` と最後の結果式を書けます。
 - ソースは **1 ファイルごとに最大 1 MiB**、構文と式の深さは最大 128。長い式は `let` で分割します。
 
 ### 1 ファイル = 1 モジュール
+
+`tsuzuri fmt [--check] <file|directory> [--json]` は空白とインデントを保守的に整えます。
+ディレクトリは直下の `.tz`／`.tt`／`.tc` だけが対象で、型検査・LLVM・エントリーポイントを必要としません。
+4スペースのインデント、演算子や区切りの空白、コメント外の末尾空白、末尾1改行を整えます。
+行幅による折り返し、宣言の並べ替え、式の組み替えは行いません。呼び出し・索引と空白適用の違いを保持します。
+コメント本文とリテラルはバイト単位で保持し、BOM を維持します。生成する改行は CRLF が lone LF より多ければ CRLF、それ以外は LF です。
+整形前後の AST を位置情報を除いて比較し、意味が変わる場合は書き込みません。
+`--check` はファイルを変更せず、差分があれば終了コード 1。通常は変更するファイルだけを atomic replace します。
+権限を保持し、symlink と特殊ファイルは拒否します。hard link は rename によって切り離し、他のリンク先を変更しません。
 
 各 `.tz`・`.tt`・`.tc` ファイルは、拡張子を除いたファイル名と同じ名前のモジュールを一つだけ定義します。
 モジュール名は大文字小文字を区別する ASCII 識別子で、`_` 単独や字句上の予約語は使えません。
@@ -33,9 +42,9 @@
 
 | 拡張子 | 許可する内容 |
 |---|---|
-| `.tz` | `record`、`union`、`def`／`fn`、`instance`。`Main.tz` ではトップレベル実行も可 |
-| `.tt` | 複数の `class` 宣言。レコード・union・関数実装・インスタンス・トップレベル実行は不可 |
-| `.tc` | ファイル名を名前とする一つのビルダーの操作・補助関数・レコード・union・インスタンス。トップレベル実行は不可 |
+| `.tz` | `record`、`union`、`type`、`def`／`fn`、`instance`。`Main.tz` ではトップレベル実行も可 |
+| `.tt` | 複数の `class` 宣言とその中のデフォルトメソッド。レコード・union・型別名・トップレベル関数・インスタンス・実行は不可 |
+| `.tc` | ファイル名を名前とする一つのビルダーの操作・補助関数・レコード・union・型別名・インスタンス。トップレベル実行は不可 |
 
 `.tz`／`.tc` 内の関数・レコード・union の数や `.tt` 内の型クラス数に「一つだけ」という制約はありません。
 `.tc` には少なくとも一つのビルダー操作を実装します。ビルダー宣言や入れ子のビルダーはありません。
@@ -55,16 +64,16 @@
 コンパイラは標準ライブラリ（std）のモジュールを埋め込み、すべてのプロジェクトで利用者のモジュールの後に読み込みます。
 インポートや追加のファイルは不要で、std の関数も他モジュールと同じく `Math.zero()` のように修飾して呼びます。
 std のソースは未使用でも常に型検査しますが、到達しない std の関数・レコード・union・組み込み関数のラッパーは IR に出力しません。
-std は `export` を持たず C／WASM のシンボルを追加しません。WASM の import も追加しません。
+std は `export` を持たず C／WASM のシンボルを追加しません。WASM の import も既定では追加せず、Debug 出力だけは明示オプションで有効にできます。
 std の `private` 関数は std の中だけで使え、利用者のコードから参照すると `E1022` です。
 
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Test`、`Gpu`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Test`、`Gpu`
 
-現在の std は `Option`・`Result` の型／関数／ビルダー、`String.length`／`Utf8String.length`、
-仮の API `Math.zero : f64`（`0.0`）を持ちます。
+現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
+型汎用の数学関数を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
 
 `Point.tz`:
 
@@ -102,11 +111,11 @@ union 型も同じ規則で解決します（`Shapes.Shape` など）。
 **`export` は C／WASM ホストへの公開指定で、モジュール間の可視性とは無関係です。**
 上の `distance` のような通常の `fn` も他モジュールから呼び出せます。
 レコード・配列・関数値をモジュール間で渡すこともできます。
-`export def` のスカラー ABI 制限はホスト境界にだけ適用します。
+`export def` の公開 ABI 制限はホスト境界にだけ適用します。
 
 #### 可視性（`private`）
 
-宣言は既定で public です。`private def`・`private record`・`private union` は、宣言したモジュールの中だけで参照できます。
+宣言は既定で public です。`private def`・`private record`・`private union`・`private type` は、宣言したモジュールの中だけで参照できます。
 `private union` はその case も private にします。
 `fn`／`and`／`let` の実装は対応する `def` の可視性を継承するため、実装側には `private` を書きません。
 
@@ -129,7 +138,7 @@ fn reveal n = (token n).value
   診断は漏れた型参照の位置を指します。private 関数・private レコード・private union の中では private 型を使えます。
 - active pattern は認識器の `def` の可視性に従います。
 - `.tc` の補助関数は private にできますが、`Bind` や `Return` などのビルダー操作は private にできません。
-- `private` は `def`・`record`・`union` の直前だけに置けます。`private fn`／`private let`／`private class`／`private instance`、
+- `private` は `def`・`record`・`union`・`type` の直前だけに置けます。`private fn`／`private let`／`private class`／`private instance`、
   `private export`／`export private` は `E1022` です。型クラスとインスタンスは常に public です。
 - ローカル変数がモジュールと同名の場合は、従来どおりフィールドアクセスを優先します。
 - `private` はコンパイル時の名前解決だけを変え、評価順序・所有権・生成 IR・公開 ABI は変えません。
@@ -339,8 +348,8 @@ fn score value = Traits.Score.score value
 ```
 
 型クラスは型変数を一つ持ち、各メソッドのシグネチャにはその変数だけを含めます。
-`instance クラス名<具体型>` 内のメソッド型はクラスから取得するので再記述しません。
-全メソッドを `fn` または `let method = x -> ...` でちょうど一回ずつ実装します。
+`instance クラス名<型>` 内のメソッド型はクラスから取得するので再記述しません。
+メソッドを `fn` または `let method = x -> ...` で実装し、クラスにデフォルトがあるメソッドだけ省略できます。
 メソッドは `Traits.Score.score`、制約とインスタンスのクラス名は `Traits.Score` のように
 ファイルのモジュール名とクラス名で修飾します。組み込みメソッドは `Add.add` のように書きます。
 無修飾のクラス名（`instance Score<Point>` など）は、自モジュール、利用者のモジュールで一意なクラス、
@@ -351,31 +360,69 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 同じクラスと型の組み合わせをプロジェクト全体で一つだけ許し、ファイル順による選択は行いません。
 具体型の型別名（`byte` と `i8` など）も同じインスタンスとして扱います。
 
+条件付きインスタンス、スーパークラス、デフォルトメソッドを使えます。
+
+```text
+class Eq<'a> => Total<'a> {
+    def same :: ref 'a -> ref 'a -> bool
+    fn same left right = Eq.eq left right
+}
+
+record Box<'a> { value: 'a }
+instance Eq<'a> => Eq<Box<'a>> {
+    fn eq left right = left.value == right.value
+    fn ne left right = !(Eq.eq left right)
+}
+instance Eq<'a> => Total<Box<'a>> {}
+```
+
+クラス宣言は`.tt`、レコードとインスタンスは`.tz`／`.tc`に置きます。
+`C<T>`が成立すれば、宣言した全スーパークラスも成立します。組み込み`Ord<T>`は`Eq<T>`を要求します。
+スーパークラスの循環、headにない変数を使うinstance context、メソッド本体に必要な未宣言の制約は`E1027`です。
+デフォルトはインスタンスがなくても抽象型で検査し、再帰する本体には`fn rec`が必要です。
+デフォルトを使うインスタンスは、元の宣言モジュール・ソース位置を保つ一つの汎用テンプレートを特殊化します。
+
+同じクラスでheadが単一化可能なら、contextの強弱にかかわらず`E1016`です。
+例えば`Eq<Box<'a>>`と`Eq<Box<i64>>`は併存できません。組み込みの条件付き比較も上書きできません。
+`Eq<Box<'a>>`の比較からは`Eq<'a>`のような残余制約が呼び出し元へ伝播します。
+解決は深さ64、一つの制約から128個の異なる要件、overlap検査は1024組を上限とし、超過は`E1017`です。
+
 | 組み込みクラス | メソッド／演算 | 組み込みインスタンス |
 |---|---|---|
 | `Add` | `add` / `+` | 全数値、string、utf8string |
 | `Sub` / `Mul` / `Div` | `sub` / `mul` / `div`、`- * /` | 全数値 |
 | `Rem` | `rem` / `%` | 全整数 |
 | `Neg` | `neg` / 単項 `-` | 符号付き整数、全浮動小数点 |
-| `Eq` | `eq` / `ne`、`== !=` | 全数値、bool、unit、string、utf8string |
-| `Ord` | `lt` / `le` / `gt` / `ge`、`< <= > >=` | 全数値、string |
+| `Eq` | `eq` / `ne :: ref 'a -> ref 'a -> bool`、`== !=` | 全数値、bool、unit、string、utf8string、char、utf8char。全要素がEqの配列・リスト・タプル |
+| `Ord`（`Eq`を要求） | `lt` / `le` / `gt` / `ge :: ref 'a -> ref 'a -> bool`、`< <= > >=` | 全数値、string、utf8string、char、utf8char。全要素がOrdの配列・リスト・タプル |
 | `Bits` | `bit_and` / `bit_or` / `bit_xor` / `shl` / `shr` / `ushr` / `bit_not` | 全整数 |
 | `Integer` / `SignedInteger` / `Float` / `Numeric` | リテラル・変換の制約、メソッドなし | 全整数／符号付き整数／全浮動小数点／全数値 |
+| `UnsignedInteger` | メソッドなしの符号なし整数制約 | i8u／i16u／i32u／i64u／i128u |
 | `Copy` | 所有権上の複製の制約、メソッドなし | 構造的に Copy な型 |
 | `Capture` | 再利用可能な捕捉環境の制約、メソッドなし | 排他参照を含まない型。string・関数値・共有参照も対象 |
 | `Send` | タスクの所有する値の制約、メソッドなし | 格納された参照を含まない型。関数の捕捉環境は別途所有権検査する |
 | `Display` | `display :: ref 'a -> string` | 全数値、bool、unit、string、utf8string |
 | `Parse` | `parse :: ref string -> Option<'a>` | 全数値、bool |
+| `Hash` | `hash :: ref 'a -> i64u` | 全数値、bool、unit、文字列・文字。全要素がHashの配列・リスト・タプル |
+| `Default` | `default :: 'a`（`Default.default()`で呼ぶ） | 数値の0、false、unit、空文字列、文字の0、空配列・空リスト、全要素がDefaultのタプル |
+| `Elementary` | 超越関数用のメソッドなし制約 | f32／f64のみ。利用者はinstanceを追加できない |
 
 `Capture` は一回実行の `Task<T>`、およびそれを含む集約値も拒否します。
 `Send` はタスクの捕捉値と結果から推論され、特殊化時にも再検査します。
 関数型の引数・返却型に参照が現れることと、関数値が参照を捕捉していることは区別します。
 
-演算クラスのメソッドは値を受け取り、比較だけ bool、他は入力と同じ型を返します。
-独自インスタンスも同じ左から右の評価順序と move 規則に従います。
-プリミティブの演算は直接の命令へ下げ、string／utf8string の比較演算子は所有権を消費しません。
-`Eq.eq` のような通常のメソッド適用ではシグネチャどおり引数の所有権を渡します。
+比較クラス `Eq`／`Ord` のメソッドは共有借用を受け取り bool を返します。算術・ビット演算のクラスは従来どおり値を受け取ります。
+比較演算子 `==`／`!=`／`<`／`<=`／`>`／`>=` は全型で非消費です。左から右に場所を共有借用し、
+一時値なら比較中だけ内部スロットに保持して、比較後に左・右の順に解放します。比較中に同じ所有者を move・置換・排他借用すると `E1014` です。
+ユーザーの比較インスタンスの仮引数も `ref T` になり、フィールドアクセスは自動参照外しされます。
+演算子自体は参照を自動参照外ししないため、借用引数を別の比較へ渡すときは `Eq.eq left right` などのメソッドを使います。
+ソースで書く一時値の借用は従来どおり拒否します。組み込みの演算子は直接の LLVM 命令・文字列ランタイム呼び出しを維持します。
 既存インスタンスの上書きと、メソッドなしの組み込みクラスへのインスタンス追加は禁止です。
+
+配列・リストの等値比較は、長さが違えば要素を読まずに終了します。同じ長さなら先頭から借用して比較します。
+タプルはフィールド順、順序比較は最初の等しくない要素で決まる辞書式です。同じprefixなら短い方が小さくなります。
+NaNは等しくなく、最初の不一致で順序比較がfalseなら後続へ進みません。`-0 == +0`も既存の意味を保ちます。
+リストは左右のノードを同時に一回走査します。比較のための要素move・Copy制約・コレクション複製はありません。
 
 単相化により、利用された型の組み合わせごとに一つの関数を生成します。
 クラスの辞書や実行時の型検査はなく、ネイティブ／WASM で同じ具体的な IR を使います。
@@ -384,8 +431,7 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 整数リテラルは `Integer`、負の整数は `SignedInteger`、小数は `Float` の制約を課し、
 整数から浮動小数点への暗黙変換は行いません。
 
-高ランク多相、高階型、型クラスの継承、メソッド固有の型変数・制約、
-デフォルトメソッド、条件付き／汎用インスタンスは未対応です。
+高ランク多相、高階型、複数のクラス型パラメーター、メソッド固有の型変数・制約は未対応です。
 型が増大し続ける多相再帰は資源制限エラーになります。追加の特殊化は最大 1,024、
 型の深さは 128、型の構成要素は 4,096 です。関数に伝播する型クラス制約とモジュール関数制約は、それぞれ最大 128 要件です。
 
@@ -463,7 +509,25 @@ Copy・move・drop・借用・タスクへの送信の可否は、置換後の�
 使われない巨大な具体化はエラーになりません。
 `instance Add<Pair<i64, i64>>` のように具体化した型へのインスタンスは定義できますが、
 `instance Add<Pair<'a, 'b>>` のような汎用インスタンスは未対応です。
-レコード型は従来どおり `export def` の引数・返却型にできません。
+スカラーのみのレコードは `export def` の引数・返却型にでき、ホストでは正規化した struct の pointer／out pointer を使います。
+
+### 型別名
+
+```text
+type Meters = f64
+type Pair2<'a> = Pair<'a, 'a>
+type BorrowedText = ref string
+```
+
+`type Name<'a, ...> = T` は透過的な型別名です。別名は元の型と同一であり、
+所有権・借用・型クラス・公開 ABI・実行時表現は変わりません。診断は原則として展開後の型を表示します。
+型名は ASCII 大文字で始め、型パラメーターは重複せず、右辺ですべて使用します。
+未宣言・未使用・重複パラメーター、型引数の個数違い、循環別名は `E1024`、
+展開の深さ 128 または処理する構成要素数 4096 の超過は `E1017` です。
+右辺の名前は宣言元で、型引数は使用元で解決し、宣言順には依存しません。
+別名は型注釈に使い、レコードの構築・パターンには元のレコード名を使います。
+`private type` も既存の可視性規則に従い、public 別名から private 型を漏らすことはできません。
+型別名を使ったインスタンスも展開後の型で重複検査します。区別される型が必要なら単一ケースの union を使います。
 
 ### 共用体（union）
 
@@ -516,20 +580,83 @@ payload のない case は名前だけを書きます。payload の有無と数�
 衝突する union・case は `E1001` です。case と所属する union の同名（`union Pair = Pair of ...`）も同じ名前空間のため `E1001` です。
 
 Copy・move・drop・借用・タスクへの送信の可否は、具体化した payload 型から構造的に決まります。
-全 payload が Copy なら union も Copy で、`Maybe<[i64]>` の複製は payload の配列も複製します。
+非再帰の union は全 payload が Copy なら Copy で、`Maybe<[i64]>` の複製は payload の配列も複製します。
 所有する union からパターンで束縛した非 Copy の payload は move され、その後の union 全体の使用は `E1012` です。
 ガード中の束縛は読み取り専用なので、ガードが不成立なら後続の節で同じ union を照合できます。
 配列・リスト要素や参照先の非 Copy payload は、借用を含まなければ読み取り専用のビューとして束縛できます。
 ビューは節の中で借用できますが、move はできません。生存中は元の記憶域の置換・move・排他借用を拒否します。
-payload に参照を含む union（`Hold of &i64` や `Holder<&i64>` の具体化）は `E1013` です。
+ジェネリック union は `Option<ref T>` のような共有参照ペイロードを持てます。元所有者の loan を保持し、
+コピー・パターン・関数返却を通じてもその寿命を越えられません。排他参照の格納、`Hold of &i64` のような
+直接の借用 payload 宣言、レコードの借用フィールドは、名前付きライフタイム導入まで `E1013` です。
 
 レイアウトは tag と、最大の payload を収める領域です。
 保守的なサイズは payload のない union が 8 バイト、それ以外が 16 バイトと最大の payload を 16 バイト境界に切り上げた値の和で、
 64 KiB の上限（`E1010`）は具体化ごとに検査します。
-自身を直接・コレクション経由で含む再帰的な union は `E1010` です。
-`==`・`<` などの比較と表示は組み込みではなく、union への適用は `E1005` です。
+再帰する具体的な union は所有ヒープノードへのポインターで、値レイアウトは保守的に8バイトです。
+unionの比較・表示はインスタンスの実装か、以下の`deriving`で追加します。なければ`E1005`です。
 union 型は `export def` の引数・返却型にできません（`E1008`）。
 match の網羅性はコンパイル時に検査し、case の不足は `E1021` です（[match と分解](#match-と分解)）。
+
+#### 再帰的なデータ型
+
+```text
+union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>
+record BranchData { left: Tree<i64>, right: Tree<i64> }
+union Rose = Branch of [Rose]
+record Link { next: Option<Link> }
+```
+
+union の payload を通る循環を許可します。配列・リスト・Vec の空値も有限値の基点になります。
+union を通らないレコードの循環、有限値を持たない `union Bad = Loop of Bad` は `E1010`、
+型引数を成長・入れ替えする再帰は `E1017` です。型展開の深さ128・名前付き具体型4096の上限も維持します。
+`Option<Link>` と `Option<i64>` の表現は別々に決まり、非再帰の具体型は従来の値表現を保ちます。
+
+再帰型は非 Copy です。部分 move、共有借用の match、ガードの規則は非再帰型と同じです。
+構築子は payload 全体を一度だけ左から右に評価してからノードを確保します。
+payload のない最初の case は null で表し、確保しません。他の case はヒープ上に保持します。
+追加の `new`／`box` 構文はありません。確保失敗はトラップし、WASM のヒープ上限は16 MiBのままです。
+
+解放は追加確保なしの反復走査です。関数値の捕捉環境を複製するときも、再帰ノードと
+その配列・リスト・Vec を同じ反復走査で深く複製し、木の深さに比例する実行スタックを使いません。
+関数環境を何重にも捕捉する一般的な再帰、利用者が書いた非末尾再帰関数まではこの保証の対象ではありません。
+ノード共有・循環した実行時グラフ・GC・参照カウントは導入しません。
+
+#### 自動導出（`deriving`）
+
+```text
+record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
+union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display)
+```
+
+宣言直後の`deriving (...)`は同じモジュールに通常の条件付きインスタンスを生成します。
+重複は`E1001`、手書きインスタンスとのoverlapは`E1016`、導出できない要素・クラスは`E1025`です。
+生成は1024インスタンス、各導出の式4096ノード・深さ128までで、超過は`E1017`です。
+
+- `Eq`はフィールド順、unionはtag一致後にpayloadを比較し、最初のfalseで短絡します。
+- `Ord`はEqを別途要求します。フィールドの辞書式、unionはcase宣言順です。NaNの最初の不一致で比較がfalseなら後続へ進みません。
+- `Default`は全フィールド、unionは最初のcaseだけを生成します。空collectionに要素Defaultは不要です。最初のcaseが再帰して終了しない既定値は拒否します。
+- `Display`は`Point { x: 1, y: 2 }`、`Empty`、`Rect (1, 2)`の形式です。配列は`[a, b]`、リストは`[|a, b|]`、タプルは`(a, b)`です。
+- 構造内の文字列・文字はリテラル風に引用します。`string`／`char`は`"..."`／`'...'`、UTF-8型は`u8`接頭辞を付けます。引用符・逆斜線とLF/CR/TAB/NULをescapeし、他の制御文字・DEL・孤立surrogateはuppercase4桁の`\uXXXX`（UTF-8型では`\u{XXXX}`）です。正しいsurrogate pairは保持します。単体のDisplayは従来どおりrawです。
+
+再帰型も導出できますが、比較・表示・Hashの利用者メソッド呼び出しは一般の再帰です。
+深さに比例しない保証は再帰型のclone/dropだけであり、導出した走査は深さによってスタックを消費します。
+
+Hashは64-bit FNV-1a（offset `14695981039346656037`、prime `1099511628211`）です。
+各呼び出しはoffsetから始め、すべてのタグ・長さ・index・子Hashは8バイトlittle-endianで混ぜます。
+整数・浮動小数点payloadは幅どおり、文字列は格納単位を順に混ぜ、ポインター・パディングは使いません。
+
+| 型 | Canonical Stream |
+|---|---|
+| bool／unit | tag `0x01`＋0/1、tag `0x02`のみ |
+| 整数／binary／decimal | tag `0x10`／`0x20`／`0x30`＋`log2(幅/8)`、payload bits |
+| string／utf8string | tag `0x53`／`0x73`、unit／byte長、UTF-16 unitを2バイト／UTF-8 byte |
+| char／utf8char | tag `0x43`／`0x63`、UTF-16 unitを2バイト／scalarを4バイト |
+| tuple／array／list／record | tag `0x54`／`0x41`／`0x4C`／`0x52`、個数、各indexと子Hash |
+| union | tag `0x55`、case index、payloadのHash（なければ全bit 1） |
+
+浮動小数点Hashは±0を同一にし、NaNを型ごとの正のquiet NaNへ正規化します。
+decimalは非ゼロの係数末尾の0を除き、指数を表現上限まで上げたBIDへ正規化し、等しいcohortで同じHashにします。
+Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ちません。
 
 ### アプリケーションのエントリーポイント
 
@@ -538,7 +665,7 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 `Main.tz` では次のどちらか一方を使います。
 
 - 宣言の後にトップレベルの `let` を順に書き、必要なら最後に結果式を書く。
-- 引数なしで数値型／`bool`／`unit`／`string` を返す `fn main` を定義する。
+- 引数なしで数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` を返す `fn main` を定義する。
 
 トップレベルの `let` の区切りは `;`、改行、またはファイル末尾です。
 右辺を次の行へ続ける場合は演算子の直後で改行するか、括弧・配列・レコード・ブロックの内側に書きます。
@@ -547,14 +674,85 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 トップレベルの束縛はエントリーコード内のローカル値で、宣言済み関数からの参照や
 他モジュールへの公開はできません。右辺をソース順に評価し、結果式がなければ `unit` を返します。
 上の `Main.tz` は何も表示しません。末尾に `d` を追加すれば距離を表示します。
-結果式がある場合、その型は数値型／`bool`／`unit`／`string`／`utf8string` に限り、
+結果式がある場合、その型は数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` に限り、
 ネイティブのホスト・ラッパーが値を表示します。string は UTF-8 に変換し、utf8string はそのまま、
 埋め込み NUL も含めて出力します。string に孤立サロゲートがあればトラップし、暗黙に置換しません。
 置換して表示する場合は、明示的に `String.to_well_formed ref text` を使います。
+両文字型も UTF-8 と改行で出力し、`char` の孤立サロゲートはトラップします。
 
 トップレベルの実行コードと `fn main` の併用、他モジュールでのトップレベル実行はエラーです。
 `check` とライブラリ出力は `.tz`・`.tt`・`.tc` のどれも入力にでき、`Main.tz` は不要です。
 ライブラリ／WASM 出力はホストの `export def` で公開した関数の呼び出しで実行し、トップレベルのエントリーコードを自動実行しません。
+
+## トラップ位置
+
+`tsuzuri run` はトラップ位置を既定で有効にし、失敗理由・ファイル・行・列を `E2005` で報告します。
+`build` は既定では位置情報を含めず、`--trap-info` を指定すると native の stderr reporter、または WASM の getter を追加します。
+成果物の隣に `<output>.trap.json` の単一 JSON ファイルを出し、`--emit llvm`／object でも同じ表を生成します。check／header との併用は拒否します。
+WASM は import を追加せず、トラップ後に `instance.exports.tsuzuri_trap_site()` の ID を side table と照合できます。
+ID は最後に記録したトラップで、通常の呼び出し開始時にはリセットしません。
+
+assert、整数のゼロ除算・符号付き除算 overflow、添字、確保サイズ・確保失敗、range のゼロ step、パターン不一致を区別します。
+整数除算はゼロ判定を先に行います。文字列長・Unicode 変換・Debug 出力・soft numeric 内の失敗も報告対象です。
+成功経路に reporter 呼び出しや現在位置の global store は追加せず、内部 helper へ ID を引数で渡します。
+位置情報が無効な IR は従来と同一です。native/WASM の公開 ABI は変えません。
+`run --json` の失敗時は子プロセスの stderr を診断 message へ含め、生の trap 行を別に出しません。
+正常終了時の stdout／stderr は従来どおり転送します。例外処理・巻き戻し・stack trace を追加する機能ではありません。
+
+ビルド失敗時は既存成果物と表を保持し、公開時に成果物の rename が失敗したら表を復元します。
+二つのファイルを跨ぐ OS レベルの原子的トランザクションではないため、公開途中のプロセスクラッシュへの一括 rollback は保証しません。
+後からリンクする compiler-rt／WASM 128-bit 補助関数の内部 trap は対象外ですが、ソースの整数除算 guard はその呼び出し前に検査します。
+
+## デバッグ出力
+
+`Debug.print :: Display<'a> => ref 'a -> unit` は借用した値を表示し、所有者を残します。
+`Debug.trace :: Display<'a> => 'a -> 'a` は値を一度受け取って表示し、同じ所有値を返します。非 Copy 値の追加 clone はありません。
+表示には通常の `Display.display` を使い、副作用は型で区別しません。開発用の最小 API であり、本番用 logging framework ではありません。
+native は stderr に UTF-8 と改行を書き、stdout の entry result とは分離します。部分書き込みを繰り返し、ゼロ進捗・書き込みエラーはトラップします。
+UTF-16 の孤立 surrogate は出力時の厳密な UTF-8 変換でトラップします。並列 Task の出力順序・行全体の不可分性は保証しません。
+
+WASM は既定で no-op ですが、引数・Display の評価と文字列の解放は行います。式や Display 内のトラップは消えません。
+`build --debug-output` は、Debug が到達する場合だけ `tsuzuri_debug.write(ptr, i64)` を import します。
+既存の memory export を維持し、有効な Debug 呼び出しのある出力では明示的にも memory を export します。
+ホストは `instance.exports.memory` から UTF-8 バイト列を呼び出し中にコピーし、一行として改行を付けます。返却後にポインターを保持してはいけません。
+Debug が未使用ならオプションの有無で成果物は変わりません。native の同オプションは動作を変えず、`check`・`fmt`・`test`・header 出力では拒否します。
+内部の `Debug.__print_string` は std の Debug モジュール専用で、利用者の直接呼び出しは `E1022` です。
+
+```javascript
+let instance;
+const imports = { tsuzuri_debug: { write(pointer, length) {
+    const bytes = new Uint8Array(instance.exports.memory.buffer, pointer, Number(length)).slice();
+    console.error(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+} } };
+instance = (await WebAssembly.instantiate(wasmBytes, imports)).instance;
+```
+
+## 言語内テスト
+
+`.tz`／`.tc` の宣言部分に `test "名前" = 本体` を書けます。`.tt` と埋め込み std では `E1018` です。
+名前は妥当な Unicode 文字列で、空名・重複名も許可します。モジュールと宣言順の index で識別します。
+`private`／`export`／`rec` は付けられず、通常の関数名前空間には入りません。
+本体は unit を返し、通常の型・所有権検査を受けます。同じモジュールの private helper も使えます。
+
+```text
+test "adds numbers" = assert (1 + 2 == 3)
+test "compares strings" =
+    let expected = "ok"
+    let actual = "ok"
+    Test.equal expected actual
+```
+
+`check`／通常の `build` でも全テストを型検査しますが、テスト本体・専用ラムダ・専用特殊化は通常の成果物へ出力しません。
+`Test.equal`／`Test.not_equal` は `Eq<'a> => ref 'a -> ref 'a -> unit`、`Test.is_true` は `bool -> unit` です。
+比較対象を消費せず、不一致は assert と同じトラップです。詳細な値の表示や custom assertion message はまだありません。
+
+`tsuzuri test <file|directory> [--filter TEXT] [--json] [-O0..-O3] [--target native|wasm32]` で実行します。
+ディレクトリは直下のソースを読み、Main.tz は不要です。filter は `Module.名前` の部分一致です。
+既定は native・O0。`--cpu`・`--emit`・`--output` は使えません。WASM は Node.js が必要で、生成モジュールの imports は空です。
+各テストを別プロセスで実行し、CPU 数・32・選択件数の最小値まで並列化します。結果は宣言順に報告します。
+トラップ・非ゼロ終了・30秒 timeout は失敗とし、他のテストは続行します。timeout の設定オプションはありません。
+JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr です。失敗時は最初の失敗した名前の位置で `E2006`、終了コード 1 になります。
+全成功または選択テストなしは終了コード 0。filter で除外された件数は ignored に数えます。
 
 ## 型とメモリ
 
@@ -569,12 +767,15 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 | `byte` / `ubyte` | それぞれ `i8` / `i8u` の別名 |
 | `string` | ECMA-262 の String 値モデルに従う、所有する不変の UTF-16 コード単位列。孤立サロゲートも保持 |
 | `utf8string` | 従来の実装を保持する、所有する不変の妥当な UTF-8 文字列 |
+| `char` | 全 UTF-16 コード単位。`'A'`、`'\uD800'` などの Copy 値 |
+| `utf8char` | Unicode スカラー。`u8'A'`、`u8'\u{1F600}'` などの Copy 値 |
 | `Point` など | 名前付きの不変レコード。フィールド数・型は宣言通り |
 | `Pair<i64, string>` など | `record Pair<'a, 'b> { ... }` で宣言したジェネリックレコードの具体化。型引数ごとに別の型 |
 | `Shape`・`Maybe<i64>` など | `union` で宣言した不変の共用体。いずれか一つの case と、その case の payload を持つ |
 | `Option<'a>`／`Result<'a, 'e>` | 標準の union。`None`／`Some value`、`Ok value`／`Error error` |
 | `i64 * string` など | `(42, "text")` のような不変タプル。要素ごとに型・Copy・move・drop を持つ |
 | `[i32]` など | 要素型だけが静的に決まり、長さは実行時に決められる不変配列 |
+| `Vec<i32>` など | 常に非 Copy の伸縮可能な所有バッファ。長さと容量を別に保持 |
 | `[\|i32\|]` など | 要素型だけが静的に決まる不変の単方向連結リスト |
 | `i32 -> i32` など | 名前付き関数／クラスメソッド／組み込み関数への静的参照 |
 | `Task<i32>` など | 結果型だけが静的に決まる、所有権を持つ一回実行の遅延計算 |
@@ -593,13 +794,14 @@ LLVM がスカラー化やコピー除去を行います。
 それ以外は 16 バイトと最大の payload の切り上げの和として計算）です。
 文字列・配列のバッファ本体、リストのノード、関数の捕捉環境はこの値レイアウトに含めません。
 配列・リストの要素数に 1024 の上限はなく、実際に確保できるメモリ量に制約されます。
-相互参照や配列・リスト経由も含め、再帰的なレコード型・union 型は未対応です。
+union を通り有限値を作れる再帰型は、上記の所有ヒープノードで扱います。union を通らないレコードの循環は未対応です。
 関数値は固定サイズの記述子で環境は別に保持するため、循環した値レイアウトにはなりません。
 
 ### スタックとヒープ（`new`）
 
 C/C++ と同じく、記憶域は生成の書き方で決まります。
 **`new` で生成した値はヒープに、`new` を使わずに生成して束縛した値はスタック（関数のフレーム）に置きます。**
+再帰 union のノードは例外で、構築子が暗黙にヒープへ確保します。
 
 ```text
 let local = [1, 2, 3]              // 要素はスタック
@@ -662,7 +864,7 @@ Copy のコレクションを値として複製する場合（`let b = a` の後
 レコードからのフィールド単位の move も可能で、残りのフィールドは引き続き使え、個別に解放されます。
 非 Copy 要素を配列・リストから取り出す move と、参照を通じた非 Copy 値の move はできません。
 
-数値、bool、unit、関数値、`ref T` は **Copy** です。関数値は前述の環境の複製を伴う場合があります。
+数値、bool、unit、char、utf8char、関数値、`ref T` は **Copy** です。関数値は前述の環境の複製を伴う場合があります。
 レコード・タプル・配列・リストは、全フィールド／全要素が Copy なら自動的に Copy になります。
 配列・リストの Copy は独立したバッファ／ノードと要素の複製を伴います。長さに比例するコストがあるため、
 読み取りだけの関数では `ref [T]`／`ref [|T|]` を使うとコレクション全体のコピーを避けられます。
@@ -775,12 +977,39 @@ let len4 = text |> String.length
 排他参照を再利用可能な部分適用の関数値へ保存することは、明示形と同じく `Capture` 制約で拒否します。
 記号形式の `&mut r` は貸し直しではなく、参照自身の排他借用です。
 
-借用を返す関数では、借用を含む入力を一つだけ要求し、その入力に戻り値の寿命を結び付けます。
+借用を返す関数では、本体が返す loan が入力由来であることを検査し、呼び出し側では借用を含む全入力の寿命に戻り値を結び付けます。
+借用を持たない `None` や必ずトラップする関数の返却型に参照が含まれても、借用入力の個数だけで拒否しません。
+複数入力のどれを返したかによる寿命の短縮は行わず、パターンの一時ローカルへの参照を外へ返すこともできません。
 匿名関数では捕捉した借用も入力に数えます。借用を保持しうる関数値の引数も保守的に入力に数えます。
 ローカル所有値への参照、ブロックを抜けると無効になる参照、寿命を超える代入を拒否します。
 名前付きライフタイム、借用フィールドを持つレコード、一般的な入れ子参照の寿命推論、
 一時値の借用と寿命延長は未対応です。一時値は先に `let` で所有者へ束縛してください。
 Rust の所有権モデルを採用したサブセットであり、Rust の全構文・trait・ライフタイム機能との互換ではありません。
+
+### char と utf8char
+
+`char` は 0～65535 の UTF-16 コード単位、`utf8char` は U+0000～U+10FFFF からサロゲートを除いた Unicode スカラーです。
+`'A'`／`u8'A'` のように単一引用符を使い、`\'`、`\\`、`\n`、`\r`、`\t`、`\0` を使えます。
+char は `\uXXXX`／`\u{...}` でサロゲートも指定できますが、補助平面の一文字は入りません。
+utf8char は braced Unicode escape だけを許し、補助平面は受理、サロゲートは拒否します。
+閉じる引用符のない `'a` は従来どおり型変数です。空・複数文字のリテラルは `E0001` です。
+
+両型は Copy/Eq/Ord ですが Numeric ではありません。順序は符号なしコード単位順／スカラー値順です。
+算術、整数との `as`、両文字型間の暗黙変換、公開 ABI への直接 export はできません。
+
+| API | 型／契約 |
+|---|---|
+| `Char.to_u16`／`of_u16` | `char -> i16u`／`i16u -> char`。全65536値で往復 |
+| `Utf8Char.to_u32` | `utf8char -> i32u` |
+| `Utf8Char.of_u32` | `i32u -> Option<utf8char>`。不正スカラーは None |
+| `Utf8Char.of_u32_unchecked` | `i32u -> utf8char`。不正スカラーはトラップ |
+| 両モジュールの `is_ascii_digit`／`is_ascii_alphabetic`／`is_ascii_lower`／`is_ascii_upper` | 対応する文字型を受け bool を返す |
+| 両モジュールの `to_ascii_lower`／`to_ascii_upper` | 同じ文字型を返し、非 ASCII は変えない |
+
+Display の結果は両型とも UTF-16 string です。char は1コード単位、utf8char の補助平面は2コード単位になります。
+Parse は char ならちょうど1コード単位、utf8char ならちょうど1スカラーの string だけに成功します。
+char のサロゲートは Display/Parse で保持できますが、UTF-8 のコンソールへ出すとトラップします。
+既存の string の索引・列挙は `i16u`、utf8string は `ubyte` のままです。
 
 ### string と utf8string
 
@@ -804,7 +1033,7 @@ utf8string の Unicode エスケープは従来どおり1～6桁の妥当なス�
 | `for value in text` | コード単位を `i16u` で列挙 | バイトを `ubyte` で列挙 |
 | `+` | コード単位列を連結 | バイト列を連結 |
 | `==`／`!=` | コード単位列の完全一致 | バイト列の完全一致 |
-| `<`／`<=`／`>`／`>=` | 符号なし16-bitコード単位の辞書順 | 未対応（従来どおり） |
+| `<`／`<=`／`>`／`>=` | 符号なし16-bitコード単位の辞書順 | 符号なし UTF-8 バイトの辞書順 |
 | 複製 | `clone_string ref text` | `Utf8String.clone ref text` |
 
 `String.length text`／`Utf8String.length bytes` は `.length` と同じ値を返す O(1) の関数です。
@@ -831,6 +1060,42 @@ Tsuzuri の索引は範囲検査付きの数値読み出しで、負数・範囲
 `+` は両辺の所有権を消費し、比較・索引・長さ・列挙は読み取り借用です。
 左から右の評価順序を維持し、読み取り中に所有者を無効化する操作は借用エラーです。
 両型とも非 Copy、NUL 終端なしで、スコープ終了時にバッファを解放します。
+
+`String`／`Utf8String` は以下の同名 API を持ちます。`text`・`needle`・`replacement`・`separator`・`parts` は共有借用です。
+戻り文字列・配列は独立した所有値であり、入力を消費しません。offset と長さは String がコード単位、Utf8String がバイトです。
+
+| API の引数順 | 結果／契約 |
+|---|---|
+| `concat parts`／`join separator parts` | 同じ符号化の文字列。空配列は空文字列 |
+| `split separator text` | 同じ符号化の文字列配列。非空区切りの先頭・末尾・連続一致では空要素も保持 |
+| `find needle text`／`rfind needle text` | `Option<i64>`。最初／最後の一致。空 needle は 0／text.length |
+| `contains needle text`／`starts_with prefix text`／`ends_with suffix text` | `bool`。空の検索値は true |
+| `slice text first last`／`sub text first count` | `Option<string>`／`Option<utf8string>`。終了位置は含まない |
+| `decode_at text offset` | `(char * i64)`／`(utf8char * i64)`。文字と次の offset。範囲・復号境界違反はトラップ |
+| `chars text`／`char_count text` | `[char]` とコード単位数／`[utf8char]` とスカラー数 |
+| `trim text`／`trim_start text`／`trim_end text` | ASCII whitespace（9～13、32）だけを除いた所有文字列 |
+| `to_ascii_lower text`／`to_ascii_upper text` | ASCII の大小文字だけを変換した所有文字列 |
+| `replace needle replacement text` | 左から右の重ならない一致を置換。replacement を再解釈しない |
+| `repeat text count` | count 回の連結。負数は空 text に対してもトラップ |
+| `compare left right` | 演算子と同じ辞書順の -1／0／1（`i64`） |
+
+slice／sub は負数・逆順・範囲外・加算 overflow で None です。String はペアの途中も有効で、surrogate を保持します。
+Utf8String は両端がスカラー境界であることを要求し、continuation byte の位置は空区間でも None です。
+空 separator の split と空 needle の replace は、String がコード単位、Utf8String がスカラーの間を区切ります。
+split は端の空要素を付けず、空 text は空配列。replace は両端にも挿入し、空 text にも1回挿入します。
+`String.chars "😀"` は2要素、`Utf8String.chars u8"😀"` は1要素です。
+UTF-8 のバイト順はスカラー値順と一致しますが、UTF-16 のコード単位順とは異なることがあります。
+検索は追加確保なしの直接走査で最悪 O(text.length * needle.length) です。SIMD・並列加速は保証しません。
+連結・join・replace・repeat は結果長を検査後に非空の結果バッファを1回確保し、超過はトラップします。
+
+| 所有権移送 API | 型／契約 |
+|---|---|
+| `String.to_code_units`／`from_code_units` | `string -> [i16u]`／`[i16u] -> string`。surrogate も保持 |
+| `Utf8String.to_bytes` | `utf8string -> [ubyte]` |
+| `Utf8String.from_bytes` | `[ubyte] -> Option<utf8string>`。O(bytes) で検証し、不正なら入力を解放して None |
+
+移送 API は入力を消費します。既に所有するヒープバッファは追加コピー・確保なしで移します。
+スタック・静的領域の値は通常のヒープ移送が先に必要です。符号化変換とは異なり、要素の表現は変えません。
 
 | 変換・検査 | 型／契約 |
 |---|---|
@@ -878,8 +1143,9 @@ case は無修飾でも使えますが、利用者の同名 case があればそ
 | `Option.of_result value`／`Result.to_option value` | `Ok` を `Some`、`Error` を解放して `None` へ変換 |
 
 `Result.map_ref`／`bind_ref` は失敗値を複製するため `Copy<'e>` を要求します。成功 payload に `Copy` は不要です。
-union に参照を格納できないため、`Option<&T>` や `Result<&T, E>` を返す使い方は `E1013` です。
-ビューの借用は節の外へ返せません。Copy の payload は従来どおり束縛時に複製し、
+ジェネリック union は `Option<&T>` や `Result<&T, E>` の共有借用 payload を保持できます。
+返却する実際の loan を検査し、呼び出し側では借用を持つ全入力の寿命に制限します。排他参照は保持できません。
+パターンで作ったローカルなビューへの借用は節の外へ返せません。Copy の payload は従来どおり束縛時に複製し、
 配列・リストなどの Copy 値には深い複製のコストがあります。
 `get` の失敗は `unreachable ()` によるトラップで、回復可能な失敗・例外ではありません。
 union は公開 ABI の引数・戻り値にできません（`E1008`）。
@@ -942,6 +1208,11 @@ match answer with
 空本体と省略した else は unit の成功（`Option.Zero() = Some ()`、`Result.Zero() = Ok ()`）です。
 値を返す `return` は末尾に置きます。`For` は `Copy<'a> => ['a]` の配列だけを受け取り、
 通常の `for…in` の非 Copy 要素の借用反復とは異なります。`?`、例外、暗黙の error 変換はありません。
+`return` は関数からの早期脱出ではなく、成功値の生成です。早期伝播は `Bind`／`Combine` が
+失敗値を受けたときに継続を呼ばないことで起こり、`Result` は最初の error をそのまま返します。
+失敗より前に書いた通常の `let` や unit 式は省略せず、そのトラップを失敗値へ変換しません。
+`do!` の成功 payload は unit に限ります。`Option` と `Result` の相互変換は
+`Option.to_result error value`／`Result.to_option value` を明示して行います。
 
 ### 操作と展開規則
 
@@ -1124,14 +1395,15 @@ Copy の配列や関数値を捕捉すると既存の規則で独立したスナ
 
 ### 実行バックエンドと失敗
 
-ネイティブの `Task.parallel` は POSIX pthreads の fork/join です。
+ネイティブの `Task.parallel` は POSIX pthreads の常駐プールを使う同期的な fork/join です。
 呼び出し元も仕事を実行し、ランタイム全体の追加スレッド数を
 `min(オンライン CPU 数, 32) - 1` 以下に制限します。
 独立したホストスレッドからの呼び出し元そのものはこの追加スレッド数に含みません。
-入れ子のグループでも同じ枠を共有し、枠が埋まれば呼び出し元で逐次実行するため、
-ワーカーを待つタスク同士の待ち合わせによるデッドロックを作りません。
-CPU 数を取得できなければ逐次実行します。常駐ワーカープールはまだありません。
-短い仕事ではスレッド起動・確保・コピー・同期の方が高くつくため、処理をまとめて渡してください。
+0件・1件ではプールを起動せず、初回の複数仕事で追加 worker を遅延起動し、以降は再利用します。
+入れ子でも呼び出し元が自分のグループを進めるため、空き worker を待ち続ける枠枯渇を避けます。
+CPU 数を取得できなければ追加 worker なしの逐次実行です。idle worker は条件変数で待ちます。
+返却時に全 callback と結果の公開は完了していますが、OS スレッド自体は待機し、通常のプロセス終了で join します。
+ユーザー向けの detach はありません。短い仕事では確保・コピー・同期が支配する場合があり、常駐化が常に高速とは限りません。
 
 WASM は同じ型・所有権・結果順序のまま、インポート不要の逐次バックエンドを使います。
 WASM threads、GPU、ホストの非同期 I/O／イベントループとは連携しません。
@@ -1198,7 +1470,13 @@ step が 0 ならトラップします。次の値が整数型の範囲を越え
 ビルダーの `For` に渡す値は従来どおりその操作の引数型に従います。
 
 ループも本体も unit 型です。`while condition do body` は各反復の前に bool の条件を評価し、
-最初から false なら本体を実行しません。break／continue はなく、必要なら条件をローカル状態で表します。
+最初から false なら本体を実行しません。
+`break` は最内の通常ループから抜け、`continue` は次の反復へ進みます。
+範囲の `continue` は終端とオーバーフローの検査を省略しません。ジャンプ後の同じ経路の式は実行しませんが、
+型・所有権は検査します。評価済みの所有ローカル・パターン一時値・引数やコレクションの生成途中の値は、ジャンプ前に解放します。
+両方とも unit 型なので `if condition then break else 1` は `E1003` です。値付き・ラベル付きのジャンプはありません。
+ループ外、lambda・task・コンピュテーション式の境界を越えるジャンプ、ビルダー自身の `For`／`While` へのジャンプは `E1023` です。
+ビルダーの通常式の中で作る通常ループ（`Option { let value = { while true do break; 42 }; return value }`）は使えます。
 for の分解パターンは網羅性を検査せず、一致しない要素ではトラップし、黙って要素をスキップしません。
 
 反復のためだけにコレクション全体をコピーしません。ループ中は列挙元を読み取り借用し、
@@ -1312,8 +1590,10 @@ match "hello" with
 ```
 
 単一ケースの全域認識器 `(|Name|)` は結果を後続パターンへ渡し、
-部分認識器 `(|Name|_|)` は F# 9 の bool 形式で成立／不成立を返します。
-ケース名は大文字始まりです。別モジュールでは `Module.Name` で指定します。
+部分認識器 `(|Name|_|)` は bool または `Option<T>` を返します。bool 形式に payload はなく、Option は Some の payload を後続パターンへ渡します。
+None は次の節へ進みます。Option<unit> だけは payload パターンを省略できます。
+ケース名は大文字始まりです。無修飾名は自モジュール、可視な利用者モジュールで一意な名前、std の順です。
+曖昧なら `E1004` で `Module.Name` を要求します。std の認識器は利用者モジュールを探索しません。
 追加引数は対象の前に評価して渡せます。例えば `(|Divisible|_|) :: i64 -> i64 -> bool` は
 `Divisible (divisor + 1)` と使用できます。全域形式は追加引数の後に結果のパターンを指定します。
 unit 結果だけは結果パターンを省略できます。
@@ -1326,9 +1606,20 @@ unit 結果だけは結果パターンを省略できます。
 `Parity true` と `Parity false` のように複数の節へ分けた結果のパターンは合わせても網羅とみなしません。
 不足の例は認識器の名前ではなく、対象の型の値で示します。
 再利用できる通常の関数であり、`fx` と for のパターンでも使えます。
-option 返却の部分形式と複数ケース形式は未対応です。判別共用体は前述の `union` で宣言しますが、
-標準の `Option`／`Result` 型は同梱していますが、Option 返却の部分認識器は未対応です。
-文字型・null・.NET の実行時型テストもありません。
+複数ケース全域 `(|First|Second|)` は、同じ case 数の union を返します。active case と backing union case は宣言順で対応します。
+同じモジュールでは case 名を別名にし、名前衝突は `E1001`、個数不一致は `E1020` です。隠し union は生成しません。
+各 case は対応する payload を既存のパターンへ渡します。payload なしの case にパターンは付けられません。
+複数ケースと `_` の併用宣言 `(|First|Second|_|)` は未対応です。
+認識器は節ごとに再評価されるため、複数ケースが全部あっても当面は `_` フォールバックが必要です。
+追加引数に副作用がある場合にも正しく次の節へ進み、結果を勝手にキャッシュしません。
+
+```text
+def (|Parsed|_|) :: ref string -> Option<i64>
+fn (|Parsed|_|) text = Parse.parse text
+match "42" with | Parsed value -> value | _ -> 0
+```
+
+null・.NET の実行時型テストはありません。
 
 ## 式と評価順序
 
@@ -1396,7 +1687,22 @@ WASM のヒープ上限は文字列・捕捉環境などと合計して 16 MiB �
 配列の添字も `i64`。負値や `length` 以上の添字はトラップします。
 空配列は、戻り型・引数型・`let` の型注釈などから要素型が決まる場合に書けます。
 各要素は同じ型で、生成後の長さ・要素は不変です。動的な伸縮や要素の代入はありません。
+所有値を受け取って更新値を返す `Array.set values index value`、`Array.update values index (old -> replacement)`、
+`Array.swap values first second` は使えます。引数をすべて左から右に評価してから境界検査を行い、
+成功後にだけ要素へアクセスします。`set` は旧要素を解放し、`update` は旧要素の所有権を関数へ渡します。
+`swap` は同じ添字なら要素を変更せず、異なる添字でも複製・解放をせずに入れ替えます。
+非 Copy 配列は消費され、Copy 配列の元値を後で観測する場合は独立したコピーを更新します。
+唯一使用の所有ヒープ配列はバッファを再利用し、スタック上の配列を渡す場合は先にヒープへ移送します。
 `let mut`／`ref mut [T]` でできるのは配列全体の別の配列への置換だけで、既存の配列を変更しません。
+
+`ref values[start..end]`（`&values[start..end]`）は、終了位置を含まない共有スライスを返します。
+`ref values[start..]`／`ref values[..end]` も使え、型は配列全体の共有参照と同じ `ref [T]` です。
+元配列、開始式、終了式を左から右に評価し、`0 <= start <= end <= length` に違反するとトラップします。
+同じ開始・終了位置の空スライスも有効です。読み取り・`.length`・`for` は要素をコピーしません。
+元の配列や別スライスを再スライスでき、スライスは共有 loan を引き継ぎます。生存中の元配列の move・置換・排他借用は拒否します。
+`deref slice` を所有配列として使う場合は要素の Copy を要求し、独立した配列へ複製します。
+裸の `values[start..end]`、`ref mut values[start..end]`、両端を省略した `ref values[..]` は使えません。
+全体の借用は `ref values` と書きます。リスト・文字列の部分参照はこの構文の対象外です。
 
 連結リスト型は `[|T|]`、リテラルは `[|a, b, c|]`、空リストは `[||]` です。
 開始・終了の区切りはそれぞれ `[|`・`|]` と続けて書きます。末尾のカンマも使えます。
@@ -1419,14 +1725,90 @@ first_list ref values
 `.length` は O(1)、読み取り専用の `values[index]` は先頭から辿る O(index + 1) で、
 負の添字・範囲外はトラップします。配列とリストは異なる型で、暗黙の相互変換はありません。
 `[|[i32]|]`、`[[|i32|]]`、`[|[|i32|]|]` の入れ子も使えます。
-生成後の長さ・要素は不変で、ノードのリンクも公開しません。追加・削除・要素代入の操作はありません。
+生成後の長さ・要素は不変で、ノードのリンクも公開しません。既存リストへの直接の追加・削除・要素代入はありません。
+`List.cons value values` は所有リストへ先頭要素を追加した新しい値、`List.tail values` は先頭を除いた所有リストを返します。
+`tail` は空ならトラップし、先頭要素と先頭ノードを解放します。Copy リストの旧値を観測する場合は通常のコピー規則に従います。
 `let mut`／`ref mut [|T|]` で可能なのはリスト全体の置換だけです。
 配列・リストとも、`ref mut values[0]` や入れ子の要素の書き換えは拒否します。
 `[ref mut T]`／`[|ref mut T|]`、共有参照の奥にある可変参照も拒否し、多相関数の具体化でも同じ規則を適用します。
 関数型の引数・返却型に `ref mut T` を使うこと自体は可能ですが、関数値による排他参照の捕捉は禁止です。
 
 レコードリテラルは全フィールドをちょうど一回ずつ指定し、並び順は任意です。
+`{ point with x = 42; y = 0 }` は既存レコードを消費し、指定したフィールドを置換した新しい値を作ります。
+元レコードを一度評価した後、更新値を記述順にすべて評価し、新しいレコードを組み立ててから置換された旧フィールドを解放します。
+指定しないフィールドは元の値から移し、元の型と型引数は変えません。Copy 型の元レコードは後から再使用できますが、
+非 Copy 型では更新後や更新値の評価中に元の束縛を再使用できません。借用との競合も通常どおり拒否します。
+フィールド名の重複は `E1001`、未知のフィールドは `E1007`、型不一致は `E1003`、レコード以外の更新は `E1005` です。
+代入記号は `:`、区切りは `,` も使えます。空の更新やフィールド名だけの省略形は使えません。
 レコード・配列・リスト・関数の `==` は組み込みではありません。比較したい具体型に `Eq` インスタンスを定義します。
+
+### Vec
+
+`Vec<T>` は常に非 Copy で、`Vec.empty()`／`Vec.with_capacity count` で作ります。
+`Vec.length`・`Vec.capacity`・`Vec.is_empty`・`Vec.get`・`Vec.at`・`Vec.clone` は共有借用を受け、
+その他の操作は所有 Vec を受け取って更新値を返します。`Vec.get`／`clone` は要素に Copy を要求します。
+`push` は末尾追加、`reserve` は追加個数分の容量確保、`truncate`・`clear` は削除要素を先頭から解放、
+`pop` は `(残りのVec, Option<末尾要素>)` を返します。`set`・`swap` は既存位置の更新です。
+`at` は共有要素参照を返し、範囲外ならトラップします。`get` は範囲外で None です。
+添字と `for` にも対応し、非 Copy 要素は借用して扱います。要素の排他借用はできません。
+
+容量は初回 4 から倍増し、長さ・容量・バイト数の overflow と負の容量指定はトラップします。
+初期化済みの長さだけを drop・clone し、余った容量は読みません。
+`Vec.of_array`／`Vec.to_array` は所有バッファを移し、要素をコピーしません。ただし Copy 配列の引数取得や
+スタック配列のヒープ移送は通常の所有権規則に従います。空の入力配列の確保は解放し、空 Vec を正規化します。
+閉包に捕捉した Vec は、閉包のコピー時に独立した内部スナップショットを作ります。
+
+### データ並列 API
+
+`Parallel.init length initializer` は配列を生成し、`Parallel.map mapper input` と `Parallel.map_ref mapper input` は共有配列・スライスを変換します。
+`Parallel.reduce identity reducer input` と `Parallel.sum input` は固定チャンク順で集計します。いずれも同期処理で、返却時には全 worker が完了しています。
+
+| API | 型・制約 |
+|---|---|
+| `init` | `Send<'a> => i64 -> (i64 -> 'a) -> ['a]` |
+| `map` | `(Copy<'a>, Send<'a>, Send<'b>) => ('a -> 'b) -> ref ['a] -> ['b]` |
+| `map_ref` | `(Send<'a>, Send<'b>) => (ref 'a -> 'b) -> ref ['a] -> ['b]` |
+| `reduce` | `(Copy<'a>, Send<'a>) => 'a -> ('a -> 'a -> 'a) -> ref ['a] -> 'a` |
+| `sum` | `(Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => ref ['a] -> 'a` |
+
+map は各要素を複製して渡します。Copy でも配列・関数値には深い複製があり、非 Copy 要素には map_ref を使います。
+callback の借用捕捉、借用を含む結果、所有環境を証明できない未知の callback／関数要素は `E1013` で拒否します。
+初版の init/map/map_ref/reduce は直接の完全適用が必要で、これらの演算自体の関数値化・部分適用は未対応です。
+callback 引数は、所有環境を証明できる通常の関数値・部分適用・ラムダを使えます。input の共有借用は fork/join 内に閉じます。
+引数は記載順に一度だけ評価し、後続引数の副作用で先に作った callback の snapshot を変えません。
+
+入力長を n とし、空ならチャンク数 k は0、それ以外は `min(1024, n / 4096 + (n % 4096 != 0 ? 1 : 0))` です。
+チャンク c の開始は `(n / k) * c + ((n % k) * c) / k`、終了は同じ式の c を c+1 にした位置です。
+除算は整数除算で、終了位置は含みません。境界は CPU 数や backend に依存しません。
+各チャンクで identity の複製から添字昇順に fold し、完了後に呼び出し元で identity からチャンク順に partial を結合します。
+空入力は identity、sum の identity は対象数値型の正のゼロです。非結合演算や浮動小数点では逐次 Array.reduce/sum と結果が異なることがあります。
+fast-math・reassociation・暗黙 FMA は使いません。native は常駐プール、WASM は同じチャンク順の import-free 逐次 fallback です。
+チャンク間の開始・完了順は未規定で、トラップ時の部分結果解放・キャンセルは保証しません。
+
+### 配列・リスト API
+
+Array の逐次集計と [データ並列 API](#データ並列-api) は別の演算順序です。自動で Parallel へ切り替えません。
+
+読み取りは `ref [T]`／`ref [|T|]` を受け、コレクション全体を複製しません。
+Array は `length`・`is_empty`・`get`・`at`・`sub`・`init`・`reverse`・`append`・`concat`・`zip`・`to_list`、
+`map`・`mapi`・`fold`・`fold_back`・`reduce`、各 `_ref` 版、`sum`・`product`・`min`・`max`、
+`any`・`all`・`count`・`find`・`index_of`・`contains`・`equal`・`sort`・`sort_by`・`binary_search`・`filter` を提供します。
+List は `length`・`is_empty`・`map`・`map_ref`・`fold`・`fold_ref`・`reverse`・`to_array` を提供します。
+
+値を読み出す callback・新しい所有コレクションへのコピーは要素に Copy を要求します。
+`_ref` 版、比較・検索は要素を借用し、非 Copy 要素も扱えます。`find`／`min`／`max` は `Option<ref T>`、
+`get`／`reduce` は `Option<T>`、`index_of`／`binary_search` は `Option<i64>` を返します。
+`at` は範囲外でトラップ、`get` は None、`sub values start count` は不正な範囲でトラップします。
+`zip` は長さが一致しなければトラップします。
+
+走査は先頭から、`fold_back` だけ末尾からです。`any`・`all`・`find`・`index_of`・`contains`・`equal` は短絡します。
+`filter` は述語を各要素に一度だけ呼び、採用した Copy 要素を入力順に出力します。
+`sum`／`product` は数値専用で、空では 0／1、浮動小数点も左から右に逐次集計します。
+`min`／`max` は比較で改善したときだけ最良値を置換し、同値・符号付きゼロ・先頭 NaN の順序を保ちます。
+`sort`／`sort_by` は幅 1, 2, 4, ... の bottom-up stable merge です。
+`sort_by` の comparator は左・右の共有借用を受け、負・ゼロ・正の i64 を返します。両 run に値がある間、現在の左右を一回比較します。
+f32/f64 では comparator 呼び出し後に NaN を数値の後ろへ配置し、NaN 同士・既定比較の符号付きゼロの入力順を保ちます。
+`binary_search` は同じ順序で整列した入力を要求し、重複の先頭インデックスを返します。
 
 ### 演算子
 
@@ -1520,6 +1902,69 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 `tsuzuri run` は異常終了を診断しますが、言語内の回復可能な例外機構はありません。
 UI／公開 API の入力はホストでも検査してください。
 メモリ確保失敗もトラップします。トラップ時のスタック巻き戻しや destructor 実行は保証しません。
+
+### 数学 API
+
+`Math`の基本APIは`Float<'a>`制約で、f16／f32／f64／f128／d32／d64／d128の型を保持します。
+整数からの暗黙変換はありません。旧`sqrt`／`floor`／`ceil`／`abs`はf64専用の互換名で、同じloweringを使います。
+
+| API | 型 |
+|---|---|
+| `sqrt`、`floor`、`ceil`、`trunc`、`round`、`round_even`、`abs` | `'a -> 'a` |
+| `min`、`max`、`copysign` | `'a -> 'a -> 'a` |
+| `clamp` | `'a -> 'a -> 'a -> 'a`（値・下限・上限） |
+| `is_nan`、`is_infinite`、`is_finite` | `'a -> bool` |
+| `pi`、`e` | 0引数で`'a`を返す。`Math.pi()`のように呼ぶ |
+
+平方根は対象型へ正しく最近接・偶数丸めし、負の有限値／負の無限大はNaN、`sqrt(-0)`は`-0`です。
+`floor`は負方向、`ceil`は正方向、`trunc`は0方向、`round`はちょうど半分を0から遠い方、
+`round_even`はちょうど半分を偶数へ丸めます。丸め結果が0なら元の符号を保ちます。
+`abs`は符号bitを消し、`copysign`は第一引数の絶対値へ第二引数の符号bitを付けます。
+`min`／`max`はNaNを伝播し、異符号の0にはそれぞれ`-0`／`+0`を返します。
+`clamp x low high`は`low <= high`がfalseならNaN、それ以外は`min(max(x, low), high)`です。
+定数は十分な桁数の十進定数から目的の形式へ一度だけ丸めます。bare `Math.pi`は値ではなく関数値です。
+
+次の超越関数は`Elementary<'a>`制約でf32／f64に対応します。
+
+| API | 型 |
+|---|---|
+| `sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`exp`、`exp2`、`log`、`log2`、`log10`、`cbrt` | `'a -> 'a` |
+| `atan2`、`pow`、`hypot` | `'a -> 'a -> 'a`（atan2はy・x） |
+
+精度契約は最終結果1 ulp以内で、正確丸めとは区別します。非NaNの結果はnative／WASM、O0／O3で同じbit列です。
+ホストlibmには依存せず、同梱musl 1.2.5と補強したf64 atan2を使います。fast-math・再結合・暗黙FMAは無効です。
+f16／f128／decimalの超越関数は`E1005`で拒否し、f64近似へ置き換えません。
+
+- 三角関数の無限大、asin／acosの範囲外、logの負数はNaNです。logの±0は負の無限大です。
+- sin／tan／asin／atan／cbrtの±0は符号を保持し、exp／exp2の負の無限大は+0、正の無限大は正の無限大です。
+- atan2は符号付き0と象限を保持します。`atan2(±0, 負数)`は±π、`atan2(±0, 正数)`は±0です。
+- `pow(x, ±0)`と`pow(1, NaN)`と`pow(-1, ±inf)`は1です。負の底と非整数指数はNaNです。負の0／無限大と奇整数指数は符号を保持します。
+- hypotは拡大縮小して中間のoverflow／underflowを避け、無限大はNaNより優先して正の無限大を返します。
+
+Math演算自体はヒープを確保しません。一般の部分適用関数値は通常の捕捉環境を確保することがあります。
+整数の絶対値は`Int.abs`を使います。Math.fma、SIMDのMath、変更可能な丸めモードは対象外です。
+
+### 整数 API
+
+`Int` の関数は全整数幅を保持し、暗黙の数値変換をしません。
+
+| API | 結果と規則 |
+|---|---|
+| `min`／`max`／`clamp` | 入力型の符号に従う選択。`clamp value low high` は `low > high` でトラップ |
+| `abs`／`unsigned_abs` | 符号付き整数用。MIN の `abs` は MIN、`unsigned_abs` は同幅の符号なし絶対値 |
+| `abs_diff` | 同幅の符号なし絶対差 |
+| `count_ones`／`leading_zeros`／`trailing_zeros` | i64 の個数。ゼロの leading/trailing は型のビット幅 |
+| `rotate_left`／`rotate_right` | 回転量は i64 で、負数も含め `amount & (bits - 1)` |
+| `swap_bytes`／`reverse_bits` | バイト／ビット順の反転。8-bit の byte swap は恒等 |
+| `is_power_of_two` | 符号なし専用の bool。ゼロは false |
+| `checked_add`／`checked_sub`／`checked_mul`／`checked_div`／`checked_rem`／`checked_neg` | 成功は `Some`、overflow・ゼロ除算・MIN/-1 は `None`。neg は符号付き専用 |
+| `saturating_add`／`saturating_sub`／`saturating_mul` | 数学的結果を入力型の最小・最大値に飽和 |
+| `wrapping_pow`／`checked_pow` | i64 の指数で二乗法。指数ゼロは 1、負指数は wrapping がトラップ、checked が None |
+| `widening_mul` | 同じ符号の倍幅整数。128-bit 入力は `E1005` |
+
+`unsigned_abs`／`abs_diff`／`widening_mul` の型族は呼び出し時に具体的な整数幅が必要です。
+型変数のまま残す汎用ラッパーは `E1015` で拒否します。通常の `+`／`-`／`*` の折り返し、
+`/`／`%` のトラップ、整数同士の `as` の下位ビット保持は変更しません。
 
 ### 表示と解析
 
@@ -1632,15 +2077,44 @@ private な関数はホストヘッダーにも公開シンボルにも現れま
 | `f32` / `f64` | `float` / `double` | f32 / f64 / `Number` |
 | `bool` | `int32_t` | i32 / `Number` |
 | `unit`（返却値のみ） | `void` | 返却値なし / `undefined` |
+| `ref [i64]`／`ref [f64]`／`ref [ubyte]`（入力のみ） | `const T *arg_ptr, int64_t arg_len` | pointer は Number、長さは BigInt |
+| `ref string`（入力のみ） | `const uint16_t *arg_ptr, int64_t arg_len` | UTF-16 コード単位、長さは BigInt |
+| `ref utf8string`（入力のみ） | `const uint8_t *arg_ptr, int64_t arg_len` | 検証済み UTF-8 バイト、長さは BigInt |
+| `[i64]`／`[f64]`／`[ubyte]`／`string`／`utf8string`（結果のみ） | 先頭の `tsuzuri_*_buffer *out` へ `{ ptr, len }` を書き、void を返す | 先頭引数の out pointer へ descriptor を書く |
+| スカラーだけのレコード／その共有参照 | 入力は `const tz_record_* *`、結果は先頭の `tz_record_* *out` | 正規化した struct の pointer |
 
 bool 引数の 0 は false、非 0 は true。結果は 0/1 に正規化します。
 8／16-bit 整数は ABI 境界で下位ビットへ切り詰め、返却時に符号／ゼロ拡張して i32 に正規化します。
 WASM の i32／i64 の JavaScript 返却値は符号付きとして見えるので、必要なら
 `value >>> 0`／`BigInt.asUintN(64, value)` で符号なしに解釈してください。
-`i128`／`i128u`、f16／f128、decimal、string、参照、unit の引数、
-レコード、union、タプル、配列、リスト、関数値、タスクはエクスポートできません。これらの型もモジュール内部・モジュール間では使用できます。
-公開値にホストのポインターや寿命管理を要求しないための初版の制約です。
-ホストからアクセス可能な線形メモリが出力に含まれていても、そのレイアウトは公開 API ではありません。
+`i128`／`i128u`、f16／f128、decimal、char／utf8char、unit の引数、union、タプル、リスト、関数値、タスクは直接 export できません。
+所有する配列・文字列の入力、排他参照、参照を返す ABI、i64/f64/ubyte 以外の配列要素も拒否します。
+レコードは ABI scalar または同条件の入れ子レコードだけを許し、具体化したジェネリック record も使えます。
+レコードの bool／狭い整数フィールドも32-bit に正規化し、内部 LLVM レイアウトや C の by-value struct 分類には依存しません。
+typedef 名はモジュール名の長さ接頭辞と型引数の符号化で区別し、C/C++ の予約語フィールドには `tz_` を付けます。変換後の名前衝突は `E1008` です。
+
+借用バッファは呼び出し中だけ読み取り、コピー・解放しません。ホストは自然 alignment と len 要素の有効領域を保証し、呼び出し中に変更・解放してはいけません。
+負の長さ・サイズ overflow・不正な null・alignment は内部呼び出し前にトラップします。null と長さ0は許可します。
+WASM は現在の memory 内の範囲も検査します。native の任意 pointer の有効性は一般には検証できず、ホストの責任です。
+string は孤立 surrogate もそのまま保持し、utf8string の不正バイト列だけをトラップさせます。符号化の暗黙変換はしません。
+
+結果バッファは所有権をホストへ移し、ホストが `tsuzuri_free(out.ptr)` で一度だけ解放します。借用入力を誤って解放してはいけません。
+拡張 ABI を使うモジュールは `void *tsuzuri_alloc(int64_t size)` と `void tsuzuri_free(void *ptr)` を公開します。
+alloc の0は最低1バイトを確保し、負数・確保失敗はトラップ。free の null は何もしません。返却値か allocator の pointer 以外を free できません。
+WASM は allocator と memory を export し、`{ ptr, len }` の配置は offset 0 に i32 pointer、offset 8 に i64 length、size 16／alignment 8 です。
+allocator や公開関数の呼び出しで memory が grow し得るため、DataView／TypedArray は呼び出し後に作り直します。
+scalar-only モジュールの allocator export は増やしません。上記以外の内部メモリレイアウトは安定 API ではありません。
+
+```javascript
+const out = api.tsuzuri_alloc(16n);
+api.tz_make_bytes(out, 4n);
+const view = new DataView(api.memory.buffer);
+const pointer = view.getUint32(Number(out), true);
+const length = Number(view.getBigInt64(Number(out) + 8, true));
+const bytes = new Uint8Array(api.memory.buffer, pointer, length).slice();
+api.tsuzuri_free(pointer);
+api.tsuzuri_free(out);
+```
 
 ```sh
 tsuzuri build Kernel.tz --emit object -o kernel.o
@@ -1664,8 +2138,12 @@ LLD により到達しないコードを削除します。
 字句エラーがあるファイルは構文検査へ、構文エラーがあるプロジェクトは型検査へ進めません。
 構文エラーは括弧の外側・行頭の宣言境界で回復し、壊れた AST は後段へ渡しません。
 名前空間など後続の検査を信用できない段階では、集めた診断を報告して停止します。
-警告はコンパイルを止めず、終了コードも変えません。検査が成功した場合だけ、`check`・`build`・`run` の処理の前に
+警告は既定ではコンパイルを止めず、終了コードも変えません。検査が成功した場合だけ、`check`・`build`・`run` の処理の前に
 ファイルごとに位置順で stderr へ出力します（`Main.tz:5:7: warning[W1003]: ...`）。
+`--deny-warnings` を指定すると警告だけでも終了コード 1 とし、コード生成・実行の前に止め、既存の出力を変更しません。
+JSON の severity は warning のままです。ソースエラーがある場合は警告を出しません。
+未使用ローカルは `_`／`_name` のように名前を `_` で始めると抑制できます。move・借用・ガード・捕捉も使用として数えます。
+標準ライブラリとコンパイラ生成の束縛は抑制します。非公開宣言は公開 API・entry・instance・active pattern などからの到達性で判定します。
 `check` は実行入口の有無・返却型や LLVM の有無を検査せず、
 プロジェクト全体の構文・型・公開 ABI とファイル単位のモジュール規則を検査します。
 エラーは入力ファイルにまとめず、実際に問題があるモジュールのパスとそのファイル内の位置を報告します。
@@ -1680,10 +2158,11 @@ LLD により到達しないコードを削除します。
 human 出力は診断ごとに空行で区切ります。表示は最初の 50 件までで、収集は重複しない 1000 件まで続けます。
 1000 件未満なら残りは `error: 12 more errors not shown` のように正確な件数、
 収集上限に達した場合は `error: at least 950 more errors not shown` のように下限を示します。
+警告にも同じ上限を適用し、その省略通知は `warning: 12 more warnings not shown` の形式です。
 JSON の省略通知はコードなしの `{"severity":"note","message":"12 more errors not shown"}` です。
 コンパイルエラーがある `build`／`run` は LLVM・リンク・実行へ進まず、既存の出力も変更しません。
 CLI 引数・入力読み込み・外部ツール・実行時のエラーは従来どおり単一の診断です。
-ソースの警告 `W1003` は `"severity":"warning"` の同じ形式の JSON オブジェクト、
+ソースの警告は `"severity":"warning"` の同じ形式の JSON オブジェクト、
 ツールの警告は `W2001` の JSON オブジェクトです。
 一時領域を OS が削除できなかった際の最後のクリーンアップ警告は通常のテキストです。
 
@@ -1697,14 +2176,21 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1014` | 借用の競合、不変値への可変アクセス |
 | `E1015` | 曖昧な型変数、無限の推論型、不適切な多相性、検査時に参照かどうか未確定の `ref` の被演算子 |
 | `E1016` | 型クラス・インスタンスの不正な宣言や重複 |
-| `E1017` | 多相型・制約・特殊化・パターン展開・網羅性検査・反復解析の資源制限 |
+| `E1017` | 多相型・型別名・制約・特殊化・パターン展開・網羅性検査・反復解析の資源制限 |
 | `E1018` | ソースファイルの種別違反、未知のビルダー、必要なビルダー操作の不存在、std の `export` |
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |
 | `E1020` | 不正なパターン、OR 束縛の不一致、未対応の認識器形式、union case の payload の不一致 |
 | `E1021` | 明示の `match`・関数ガードの網羅性の不足（不足する値の例を示す） |
 | `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定 |
-| `E1024` | ジェネリックなレコード・union の型パラメーターの重複・未使用、フィールド・payload での未宣言の型変数、union・case 名の大文字始まり違反、union 内の case 名の重複 |
+| `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue` |
+| `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
+| `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |
+| `E1025` | 導出できないクラス・要素型、終了しない再帰Default |
+| `W1001` | 未使用のローカル・引数・パターン束縛（警告） |
+| `W1002` | 公開 API から到達しない private 関数・レコード・union・型別名（警告） |
 | `W1003` | 前の節で覆われる到達不能な match の節（警告） |
+| `W1004` | 同じ字句スコープでのシャドーイング。内部オプションのみ、既定無効 |
 | `E2000` | CLI／オプション／拡張子 |
 | `E2001` / `E2002` | I/O／LLVM ツール |
 | `E2003` / `E2004` / `E2005` | 出力保護／入口条件／実行時の異常終了 |
+| `E2006` | 言語内テストの失敗 |

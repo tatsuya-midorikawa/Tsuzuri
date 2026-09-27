@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | C07, G03 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/check.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `src/polymorph.rs`, `src/closures.rs`, `src/recursion.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `tests/control.rs`, `tests/fixtures/control/`, `tests/control.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -569,15 +569,15 @@ for s in xs do {
 
 ## 受け入れ条件
 
-- [ ] `break`/`continue` が通常 `while`, `for...in`, `for...to`, `downto` の最内 loop を対象にする。
-- [ ] ループ外、lambda/task/computation 境界、builder loop で `E1023`。
-- [ ] phase 1 の型規則として unit 型に制限し、`if c then break else 1` は拒否される。
-- [ ] break/continue edge を含む所有権固定点が move/loan を正しく検査する。
-- [ ] ジャンプ前に body locals、pattern temporaries、owned temporaries が drop され、heap tracking `live == 0`。
-- [ ] `for_each` の temporary source owner が break exit でも解放される。
-- [ ] `range_loop`/`narrow_range_loop` の endpoint/overflow semantics が変わらない。
-- [ ] tail recursion lowering と通常 loop continue target が混同されない。
-- [ ] native/WASM × `-O0`/`-O3`、WASM import なし、IR 決定性を確認した。
+- [x] `break`/`continue` が通常 `while`, `for...in`, `for...to`, `downto` の最内 loop を対象にする。
+- [x] ループ外、lambda/task/computation 境界、builder loop で `E1023`。
+- [x] phase 1 の型規則として unit 型に制限し、`if c then break else 1` は拒否される。
+- [x] break/continue edge を含む所有権固定点が move/loan を正しく検査する。
+- [x] ジャンプ前に body locals、pattern temporaries、owned temporaries が drop され、heap tracking `live == 0`。
+- [x] `for_each` の temporary source owner が break exit でも解放される。
+- [x] `range_loop`/`narrow_range_loop` の endpoint/overflow semantics が変わらない。
+- [x] tail recursion lowering と通常 loop continue target が混同されない。
+- [x] native/WASM × `-O0`/`-O3`、WASM import なし、IR 決定性を確認した。
 
 ## 落とし穴
 
@@ -598,6 +598,11 @@ for s in xs do {
 - bottom/Never 型。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: ビルダーは型検査より前に展開されるため、展開後の AST に深さを増やさない
+  `ComputationBoundary` を残して通常ループ文脈を切る。所有権には scoped flow と到達可能性を使う。
+  LLVM はローカルのスコープに加えて評価途中の所有値も追跡し、配列・リストは初期化済み接頭部だけを解放する。
+  再帰・関数・task の ABI は変更しない。
 
 - **既定案:** phase 1 は unit 型に制限する。より表現力の高い bottom 型は、`TypedExprKind::If` の phi incoming、所有権の到達不能経路、LLVM dead block 管理をまとめて設計する phase 2 に回す。
 - **phase 2 候補:** label 構文は `break label` ではなく、将来のブロック label 設計と合わせて決める。現時点では予約しない。

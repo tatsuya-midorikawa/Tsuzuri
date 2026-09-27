@@ -3,6 +3,21 @@ use std::{collections::BTreeMap, fmt::Write};
 pub const MAX_REPORTED_ERRORS: usize = 50;
 pub const MAX_UNIQUE_DIAGNOSTICS: usize = 1000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticSet {
     pub diagnostics: Vec<Diagnostic>,
@@ -31,13 +46,28 @@ impl DiagnosticSet {
     pub fn omission_note(&self) -> Option<String> {
         (self.omitted != 0).then(|| {
             format!(
-                "{}{} more errors not shown",
+                "{}{} more {} not shown",
                 if self.omitted_is_lower_bound {
                     "at least "
                 } else {
                     ""
                 },
                 self.omitted,
+                if self
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.severity == Severity::Warning)
+                {
+                    "warnings"
+                } else if self
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == Severity::Warning)
+                {
+                    "diagnostics"
+                } else {
+                    "errors"
+                },
             )
         })
     }
@@ -49,7 +79,7 @@ impl From<Diagnostic> for DiagnosticSet {
     }
 }
 
-type DiagnosticKey = (usize, usize, usize, &'static str, String);
+type DiagnosticKey = (usize, usize, usize, Severity, &'static str, String);
 
 /// Collect before applying the display cap; duplicate reports never use budget.
 pub(crate) struct Diagnostics {
@@ -81,6 +111,7 @@ impl Diagnostics {
                     span.source.unwrap_or(self.root),
                     span.start,
                     span.end,
+                    diagnostic.severity,
                     diagnostic.code,
                     diagnostic.message.clone(),
                 ))
@@ -100,7 +131,7 @@ impl Diagnostics {
     pub fn check(&self) -> Result<(), Diagnostic> {
         self.entries
             .values()
-            .next()
+            .find(|diagnostic| diagnostic.severity == Severity::Error)
             .map_or(Ok(()), |error| Err(error.clone()))
     }
 
@@ -155,6 +186,7 @@ impl Span {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
+    pub severity: Severity,
     pub code: &'static str,
     pub message: String,
     pub span: Span,
@@ -163,6 +195,16 @@ pub struct Diagnostic {
 impl Diagnostic {
     pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
         Self {
+            severity: Severity::Error,
+            code,
+            message: message.into(),
+            span,
+        }
+    }
+
+    pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Self {
+        Self {
+            severity: Severity::Warning,
             code,
             message: message.into(),
             span,
@@ -170,7 +212,7 @@ impl Diagnostic {
     }
 
     pub fn render(&self, path: &str, source: &str) -> String {
-        self.render_with_severity("error", path, source)
+        self.render_with_severity(self.severity.as_str(), path, source)
     }
 
     /// Renders the diagnostic as `path:line:column: severity[code]: message`.
@@ -191,7 +233,7 @@ impl Diagnostic {
     }
 
     pub fn json(&self, path: &str, source: &str) -> String {
-        self.json_with_severity("error", path, source)
+        self.json_with_severity(self.severity.as_str(), path, source)
     }
 
     /// Renders the diagnostic as one JSON object with the given severity.

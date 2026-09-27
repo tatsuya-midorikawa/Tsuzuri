@@ -1,0 +1,114 @@
+record Box<'a> { value: 'a }
+instance Eq<'a> => Eq<Box<'a>> {
+    fn eq left right = left.value == right.value
+    fn ne left right = !(Eq.eq left right)
+}
+instance Ord<'a> => Ord<Box<'a>> {
+    fn lt left right = left.value < right.value
+    fn le left right = left.value <= right.value
+    fn gt left right = left.value > right.value
+    fn ge left right = left.value >= right.value
+}
+instance Eq<'a> => EqualDefault<Box<'a>> {}
+instance Sized<string> { fn size value = value.length }
+instance Sized<'a> => Sized<Box<'a>> { fn size value = Sized.size (ref value.value) }
+
+instance Eq<'a> => Eq<Option<'a>> {
+    fn eq left right =
+        match left with
+        | None -> (match right with | None -> true | Some _ -> false)
+        | Some value -> (match right with | Some other -> Eq.eq value other | None -> false)
+    fn ne left right = !(Eq.eq left right)
+}
+
+export def optional_values :: i64
+fn optional_values =
+    let left = Some (Box { value: "a" + "bc" })
+    let right = Some (Box { value: "a" + "bc" })
+    (if left == right then 20 else 0) + (if left != None then 22 else 0)
+
+def flags :: Ord<'a> => 'a -> 'a -> i64
+fn flags left right =
+    (if left == right then 1 else 0) +
+    (if left != right then 2 else 0) +
+    (if left < right then 4 else 0) +
+    (if left <= right then 8 else 0) +
+    (if left > right then 16 else 0) +
+    (if left >= right then 32 else 0)
+
+export def array_mask :: i64 -> i64 -> i64
+fn array_mask left right = flags [1, left] [1, right]
+export def list_mask :: i64 -> i64 -> i64
+fn list_mask left right = flags [|1, left|] [|1, right|]
+export def tuple_mask :: i64 -> i64 -> i64
+fn tuple_mask left right = flags (1, Box { value: left }) (1, Box { value: right })
+
+export def prefixes :: i64
+fn prefixes = flags [1] [1, 0] + flags [|1|] [|1, 0|] * 100 + flags [0] [] * 10000
+
+export def defaults :: i64
+fn defaults =
+    let left = Box { value: "hello" + "!" }
+    let right = Box { value: "hello" + "!" }
+    let same = EqualDefault.same (ref left)
+    (if same (ref right) then 40 else 0) +
+    (if Sized.is_empty (ref left) then 0 else 2)
+
+export def noncopy_elements :: i64
+fn noncopy_elements =
+    let left = [Box { value: "a" + "bc" }, Box { value: "d" + "ef" }]
+    let right = [Box { value: "a" + "bc" }, Box { value: "d" + "ef" }]
+    let equal = left == right
+    let linked_left = [|("a" + "bc", 1), ("d" + "ef", 2)|]
+    let linked_right = [|("a" + "bc", 1), ("d" + "ef", 3)|]
+    let less = linked_left < linked_right
+    let first_length = match ref linked_left[0] with | (text, _) -> text.length
+    (if equal && less then 30 else 0) + left[0].value.length + right[1].value.length + first_length
+
+export def nested_collections :: i64
+fn nested_collections = flags [[1, 2], [3]] [[1, 2], [4]] + flags ([|[1]|], [2]) ([|[1]|], [3]) * 100
+
+export def floating_masks :: i64 -> i64
+fn floating_masks mode =
+    let nan = 0.0 / 0.0
+    if mode == 0 then flags [nan, -1.0] [nan, 1.0]
+    elif mode == 1 then flags [|-0.0|] [|0.0|]
+    else flags (nan, -1.0) (nan, 1.0)
+
+export def long_lists :: i64 -> i64
+fn long_lists count =
+    let values = Array.init count (index -> index)
+    let left = Array.to_list (ref values)
+    let right = Array.to_list (ref values)
+    if left == right then left.length else -1
+
+record Staged { text: string }
+instance Eq<Staged> {
+    fn eq left = { let length = left.text.length; right -> length == right.text.length }
+    fn ne left right = !(Eq.eq left right)
+}
+export def staged_comparison :: i64
+fn staged_comparison =
+    let left = Staged { text: "abc" }
+    let right = Staged { text: "xyz" }
+    (if left == right then 20 else 0) +
+    (if [left] == [right] then 22 else 0)
+
+record Guarded { value: i64 }
+instance Eq<Guarded> {
+    fn eq left right = { assert (left.value != 99 && right.value != 99); left.value == right.value }
+    fn ne left right = !(Eq.eq left right)
+}
+instance Ord<Guarded> {
+    fn lt left right = left.value < right.value
+    fn le left right = left.value <= right.value
+    fn gt left right = left.value > right.value
+    fn ge left right = left.value >= right.value
+}
+export def short_circuits :: i64
+fn short_circuits =
+    let length_differs = [Guarded { value: 99 }] != []
+    let first_differs = [Guarded { value: 0 }, Guarded { value: 99 }] != [Guarded { value: 1 }, Guarded { value: 99 }]
+    let list_less = [|Guarded { value: 0 }, Guarded { value: 99 }|] < [|Guarded { value: 1 }, Guarded { value: 99 }|]
+    let tuple_less = (0, Guarded { value: 99 }) < (1, Guarded { value: 99 })
+    if length_differs && first_differs && list_less && tuple_less then 42 else 0

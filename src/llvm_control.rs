@@ -15,6 +15,43 @@ struct SwitchPlan {
 }
 
 impl FunctionEmitter<'_, '_> {
+    fn loop_body(&mut self, body: &TypedExpr, exit: &str, advance: &str) {
+        self.loop_targets.push(LoopTargets {
+            exit: exit.to_owned(),
+            advance: advance.to_owned(),
+            scope_base: self.scopes.len(),
+            temporary_base: self.temporaries.len(),
+        });
+        self.expression(body);
+        self.loop_targets.pop();
+    }
+
+    pub(super) fn emit_loop_jump(&mut self, breaking: bool) {
+        let target = self
+            .loop_targets
+            .last()
+            .expect("loop context checked before lowering");
+        let label = if breaking {
+            &target.exit
+        } else {
+            &target.advance
+        }
+        .clone();
+        let scope_base = target.scope_base;
+        let temporary_base = target.temporary_base;
+        let temporaries = self.temporaries.clone();
+        for (ty, value, frames) in temporaries[temporary_base..].iter().rev() {
+            self.drop_framed(ty, value, frames);
+        }
+        for scope in self.scopes[scope_base..].to_vec().iter().rev() {
+            self.drop_scope(scope);
+        }
+        self.temporaries = temporaries;
+        self.jump(&label);
+        let dead = self.label();
+        self.begin(&dead);
+    }
+
     pub(super) fn while_loop(&mut self, condition: &TypedExpr, body: &TypedExpr) {
         let test = self.label();
         let work = self.label();
@@ -24,7 +61,7 @@ impl FunctionEmitter<'_, '_> {
         let condition = self.expression(condition);
         self.branch(&condition, &work, &exit);
         self.begin(&work);
-        self.expression(body);
+        self.loop_body(body, &exit, &test);
         self.jump(&test);
         self.hint_loop(body);
         self.begin(&exit);
@@ -60,6 +97,7 @@ impl FunctionEmitter<'_, '_> {
             return;
         }
         if one || minus_one {
+            let latch = self.label();
             let order = match (signed, minus_one) {
                 (true, false) => "sle",
                 (true, true) => "sge",
@@ -76,7 +114,9 @@ impl FunctionEmitter<'_, '_> {
                 "store {ty} {current}, ptr {}",
                 self.locals[&local.id]
             ));
-            self.expression(body);
+            self.loop_body(body, &exit, &latch);
+            self.jump(&latch);
+            self.begin(&latch);
             // Test the inclusive endpoint before incrementing, including MIN/MAX.
             let done = self.value(format!("icmp eq {ty} {current}, {last}"));
             self.branch(&done, &exit, &advance);
@@ -86,7 +126,7 @@ impl FunctionEmitter<'_, '_> {
             self.hint_loop(body);
         } else {
             let nonzero = self.value(format!("icmp ne {ty} {stride}, 0"));
-            self.guard(&nonzero);
+            self.guard(&nonzero, TrapKind::RangeStepZero);
             let positive = if signed {
                 self.value(format!("icmp sgt {ty} {stride}, 0"))
             } else {
@@ -114,7 +154,7 @@ impl FunctionEmitter<'_, '_> {
                 "store {ty} {current}, ptr {}",
                 self.locals[&local.id]
             ));
-            self.expression(body);
+            self.loop_body(body, &exit, &advance);
             self.jump(&advance);
             self.begin(&advance);
             let intrinsic = format!(
@@ -178,7 +218,7 @@ impl FunctionEmitter<'_, '_> {
             "store {ty} {narrowed}, ptr {}",
             self.locals[&local.id]
         ));
-        self.expression(body);
+        self.loop_body(body, &exit, &advance);
         self.jump(&advance);
         self.begin(&advance);
         // A narrow range's first out-of-range value still fits i64, including signed/unsigned extrema.
@@ -203,16 +243,16 @@ impl FunctionEmitter<'_, '_> {
         ));
         self.borrowed_locals.insert(local.id);
         if let Type::List(element) = &source.ty {
-            self.list_loop(&data, &length, |emitter, node| {
+            self.list_loop_control(&data, &length, |emitter, node, exit, advance| {
                 let pointer = emitter.list_element_pointer(element, node);
                 emitter.locals.insert(local.id, pointer);
-                emitter.expression(body);
+                emitter.loop_body(body, exit, advance);
             });
         } else {
-            self.array_loop(&length, |emitter, index| {
+            self.array_loop_control(&length, |emitter, index, exit, advance| {
                 let pointer = emitter.element_pointer(&local.ty, &data, index);
                 emitter.locals.insert(local.id, pointer);
-                emitter.expression(body);
+                emitter.loop_body(body, exit, advance);
             });
         }
         self.borrowed_locals.remove(&local.id);
@@ -222,7 +262,7 @@ impl FunctionEmitter<'_, '_> {
     /// Recognizes arms that only compare the subject, or a union subject's tag, with constants.
     fn switch_plan(&self, local: &Local, arms: &[TypedMatchArm]) -> Option<SwitchPlan> {
         let tag = match local.ty {
-            Type::Integer(..) | Type::Bool | Type::Unit => false,
+            Type::Integer(..) | Type::Bool | Type::Unit | Type::Char | Type::Utf8Char => false,
             Type::Union(..) => true,
             _ => return None,
         };
@@ -425,12 +465,16 @@ impl FunctionEmitter<'_, '_> {
         let labels: Vec<_> = arms.iter().map(|_| self.label()).collect();
         let switch = self.switch_plan(local, arms);
         if let Some(plan) = &switch {
-            // The union tag is the first field, so one load reads it from the subject's slot.
-            let subject = self.value(format!(
-                "load {}, ptr {}",
-                self.ty(&plan.selector),
-                self.locals[&local.id]
-            ));
+            let subject = if plan.tag && self.module.types().recursive(&local.ty) {
+                let node = self.value(format!("load ptr, ptr {}", self.locals[&local.id]));
+                self.recursive_tag(&local.ty, &node)
+            } else {
+                self.value(format!(
+                    "load {}, ptr {}",
+                    self.ty(&plan.selector),
+                    self.locals[&local.id]
+                ))
+            };
             let default = plan
                 .default
                 .map_or(failure.as_str(), |index| labels[index].as_str());
@@ -450,7 +494,9 @@ impl FunctionEmitter<'_, '_> {
             self.jump(&labels[0]);
         }
         let mut incoming = Vec::new();
+        let temporary_base = self.temporaries.len();
         for (index, arm) in arms.iter().enumerate() {
+            self.temporaries.truncate(temporary_base);
             self.begin(&labels[index]);
             let next_arm = labels.get(index + 1).unwrap_or(&failure);
             let bindings = &arm.alternatives[0].bindings;
@@ -487,6 +533,7 @@ impl FunctionEmitter<'_, '_> {
                         match step {
                             PatternStep::Bind(local, expression) => {
                                 let value = self.expression(expression);
+                                self.forget_temporary(&value);
                                 self.instruction(format!(
                                     "store {} {value}, ptr {}",
                                     self.ty(&local.ty),
@@ -599,8 +646,9 @@ impl FunctionEmitter<'_, '_> {
             self.scopes.pop();
             self.scopes.pop();
         }
+        self.temporaries.truncate(temporary_base);
         self.begin(&failure);
-        self.instruction("call void @llvm.trap()");
+        self.emit_trap(TrapKind::PatternMismatch);
         self.instruction("unreachable");
         self.borrowed_locals.remove(&local.id);
         self.frame_locals.remove(&local.id);

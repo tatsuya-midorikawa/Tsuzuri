@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,11 +122,11 @@ int main(int argc, char **argv) {
     const scheduler = join(temporary, `scheduler-${optimization}`);
     execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`,
       "-pthread", "tests/task_runtime.c", "-o", scheduler]);
-    execute(scheduler, []);
-    for (const operation of ["create", "join"]) {
+    for (const topology of ["-1", "0", "1", "4", "1000"]) execute(scheduler, [topology]);
+    for (const operation of ["create", "join", "mutex_lock", "mutex_unlock", "cond_wait", "cond_broadcast", "once", "atexit"]) {
       const failed = execute(scheduler, [operation], false);
       assert.notEqual(failed.status, 0, `pthread_${operation} failures must be reported`);
-      assert.match(failed.stderr, new RegExp(`Tsuzuri task runtime: pthread_${operation} failed`));
+      assert.match(failed.stderr, new RegExp(`Tsuzuri task runtime: ${operation === "atexit" ? "atexit" : `pthread_${operation}`} failed`));
     }
 
     const native = join(temporary, `native-${optimization}`);
@@ -170,12 +170,27 @@ int main(int argc, char **argv) {
   writeFileSync(join(other, "Other.tz"), `
 export def other :: i64
 fn other = { let values = Task.run (Task.parallel [task { 42 }]); values[0] }
+test "other result" = assert (other() == 42)
 `);
   const otherObject = join(other, "other.o");
   cli(["build", join(other, "Other.tz"), "--emit", "object", "-o", otherObject]);
   execute(clang, ["-std=c11", "-DOTHER", host, join(temporary, "tasks-3.o"), otherObject, "-pthread", "-lm",
     "-o", join(temporary, "combined")]);
   execute(join(temporary, "combined"), []);
+  assert.equal(execute("nm", [join(temporary, "combined")]).stdout.split("\n").filter((line) => /\b[TtWw]\s+_?tsuzuri_task_parallel$/.test(line)).length, 1);
+  const hooks = join(temporary, "pool-hooks.h"), wrapper = join(temporary, "clang-pool.mjs");
+  writeFileSync(hooks, `#include <pthread.h>\nextern int count_pool_create(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);\n#define TZ_TASK_PTHREAD_CREATE count_pool_create\n#define TZ_TASK_SYSCONF(name) 4\n`);
+  writeFileSync(wrapper, `#!${process.execPath}\nimport {spawnSync} from "node:child_process";\nconst args=process.argv.slice(2); if(args.includes("-std=c11")) args.push("-include", ${JSON.stringify(hooks)}); const result=spawnSync(${JSON.stringify(clang)},args,{stdio:"inherit"}); if(result.error) throw result.error; process.exit(result.status ?? 1);\n`);
+  chmodSync(wrapper, 0o755);
+  const countedFirst = join(temporary, "counted-first.o"), countedSecond = join(temporary, "counted-second.o");
+  cli(["build", fixture, "--emit", "object", "-O3", "-o", countedFirst], true, { TSUZURI_CLANG: wrapper });
+  writeFileSync(join(other, "Other.tz"), "export def other :: i64\nfn other = { let values = Task.run (Task.parallel [task { 20 }, task { 22 }]); values[0] + values[1] }");
+  cli(["build", join(other, "Other.tz"), "--emit", "object", "-O3", "-o", countedSecond], true, { TSUZURI_CLANG: wrapper });
+  const concurrentHost = join(temporary, "concurrent.c"), concurrent = join(temporary, "concurrent");
+  writeFileSync(concurrentHost, `#include <assert.h>\n#include <pthread.h>\n#include <stdatomic.h>\n#include <stdint.h>\nstatic atomic_uint created;\nint count_pool_create(pthread_t *thread,const pthread_attr_t *attributes,void *(*run)(void *),void *context) { atomic_fetch_add(&created,1); return pthread_create(thread,attributes,run,context); }\nextern int64_t tz_parallel_sum(int64_t), tz_other(void);\nstatic pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t ready=PTHREAD_COND_INITIALIZER; static unsigned arrivals;\nstatic void *invoke(void *pointer) { uintptr_t which=(uintptr_t)pointer; assert(pthread_mutex_lock(&mutex)==0); if(++arrivals==8) assert(pthread_cond_broadcast(&ready)==0); while(arrivals<8) assert(pthread_cond_wait(&ready,&mutex)==0); assert(pthread_mutex_unlock(&mutex)==0); for(unsigned index=0;index<64;++index) { if(which&1) assert(tz_other()==42); else assert(tz_parallel_sum(257)==5625216); } return 0; }\nint main(void) { pthread_t callers[8]; for(uintptr_t index=0;index<8;++index) assert(pthread_create(&callers[index],0,invoke,(void *)index)==0); for(unsigned index=0;index<8;++index) assert(pthread_join(callers[index],0)==0); assert(atomic_load(&created)==3); return 0; }\n`);
+  execute(clang, ["-std=c11", "-O3", "-Wall", "-Wextra", "-Werror", concurrentHost, countedFirst, countedSecond, "-pthread", "-lm", "-o", concurrent]);
+  execute(concurrent, []);
+  assert.equal(execute("nm", [concurrent]).stdout.split("\n").filter((line) => /\b[TtWw]\s+_?tsuzuri_task_parallel$/.test(line)).length, 1);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

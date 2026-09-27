@@ -1,0 +1,84 @@
+def (|Parsed|_|) :: ref string -> Option<i64>
+fn (|Parsed|_|) text = Parse.parse text
+
+export def active_option :: i32 -> i64
+fn active_option which =
+    let text = if which == 0 then "42" else "bad"
+    match text with | Parsed number -> number + 1 | _ -> -1
+
+def (|Owned|_|) :: i64 -> Option<string>
+fn (|Owned|_|) number = if number < 0 then None else Some ("he" + "llo")
+
+export def active_owned :: i64 -> i64
+fn active_owned count =
+    let mut total = 0
+    for index in 0i64 .. count - 1 do
+        total = total + (match index with
+            | Owned "missing" -> 100
+            | Owned text when false -> text.length
+            | Owned text -> text.length
+            | _ -> 0)
+    total
+
+union ParityView = ParityEven | ParityOdd
+def (|Even|Odd|) :: i64 -> ParityView
+fn (|Even|Odd|) number = if number % 2 == 0 then ParityEven else ParityOdd
+
+export def active_parity :: i64 -> i64
+fn active_parity number = match number with | Even -> 0 | Odd -> 1 | _ -> -1
+
+union TextView = TextSmall of string | TextLarge of string
+def (|Small|Large|) :: i64 -> TextView
+fn (|Small|Large|) number =
+    if number % 2 == 0 then TextSmall ("sm" + "all")
+    else TextLarge ("la" + "rge")
+
+export def active_multi_owned :: i64 -> i64
+fn active_multi_owned count =
+    let mut total = 0
+    for index in 0i64 .. count - 1 do
+        total = total + (match index with
+            | Small text when false -> text.length
+            | Large text when false -> text.length
+            | Small text -> text.length
+            | Large text -> text.length
+            | _ -> 0)
+    total
+
+def tick :: ref mut i64 -> i64
+fn tick state = { deref state = deref state + 1; deref state }
+
+def (|Combined|_|) :: i64 -> i64 -> i64 -> Option<i64>
+fn (|Combined|_|) left right value = Some (left * 100 + right * 10 + value)
+
+export def active_order :: i64
+fn active_order =
+    let mut state = 0
+    let result = match tick (ref mut state) with
+        | Combined (tick (ref mut state)) (tick (ref mut state)) value -> value
+        | _ -> 0
+    state * 1000 + result
+
+def (|Left|Right|) :: ref mut i64 -> i64 -> ParityView
+fn (|Left|Right|) state _value =
+    if tick state % 2 == 0 then ParityEven else ParityOdd
+
+export def active_conservative :: i64
+fn active_conservative =
+    let mut state = 0
+    match 42 with | Left (ref mut state) -> 100 | Right (ref mut state) -> 200 | _ -> state
+
+def (|Head|_|) :: ref [string] -> Option<ref string>
+fn (|Head|_|) values = Array.find values (text -> text.length > 3)
+
+export def active_borrowed :: i64
+fn active_borrowed =
+    let texts = ["hello", "bye"]
+    let length = match ref texts with | Head text -> text.length | _ -> 0
+    length + texts[1].length
+
+def (|Checked|_|) :: i64 -> Option<unit>
+fn (|Checked|_|) number = { assert (number != 0); Some () }
+
+export def active_trap :: i64
+fn active_trap = match 0 with | Checked -> 1 | _ -> 0

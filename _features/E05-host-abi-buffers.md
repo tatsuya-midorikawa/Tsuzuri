@@ -6,7 +6,7 @@
 | 規模 | L |
 | 依存 | C03 |
 | 後続 | F07 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/check.rs`, `src/llvm.rs`, `src/driver.rs`, `src/runtime/string.ll`, `src/runtime/heap-native.ll`, `src/runtime/heap-wasm.ll`, `src/main.rs`, `tests/e2e.mjs`, `examples/native`, `examples/web`, `examples/desktop`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -94,7 +94,7 @@ owned array/string parameter は E05 では export 不可。
 
 `&[ubyte]` は binary buffer。
 
-`&string` は UTF-8 buffer。
+`&string` は UTF-16 コード単位 buffer、`&utf8string` は妥当な UTF-8 buffer。両方を受理する。
 
 `&[i64]` と `&[f64]` は host memory を call 中だけ借用する。
 
@@ -114,12 +114,14 @@ Header は次の helper types を出す。
 typedef struct { const int64_t *ptr; int64_t len; } tsuzuri_i64_slice;
 typedef struct { const double *ptr; int64_t len; } tsuzuri_f64_slice;
 typedef struct { const uint8_t *ptr; int64_t len; } tsuzuri_ubyte_slice;
-typedef struct { const uint8_t *ptr; int64_t len; } tsuzuri_string_slice;
+typedef struct { const uint16_t *ptr; int64_t len; } tsuzuri_string_slice;
+typedef struct { const uint8_t *ptr; int64_t len; } tsuzuri_utf8string_slice;
 
 typedef struct { int64_t *ptr; int64_t len; } tsuzuri_i64_buffer;
 typedef struct { double *ptr; int64_t len; } tsuzuri_f64_buffer;
 typedef struct { uint8_t *ptr; int64_t len; } tsuzuri_ubyte_buffer;
-typedef struct { uint8_t *ptr; int64_t len; } tsuzuri_string_buffer;
+typedef struct { uint16_t *ptr; int64_t len; } tsuzuri_string_buffer;
+typedef struct { uint8_t *ptr; int64_t len; } tsuzuri_utf8string_buffer;
 
 void *tsuzuri_alloc(int64_t size);
 void tsuzuri_free(void *ptr);
@@ -238,11 +240,11 @@ C03 後、shared `&[T]` の internal LLVM type は `%tz.array` by value なの�
 
 descriptor の alloca と pointer passing は `&string` と shared record references だけで使う。
 
-`&string` wrapper validates UTF-8 before internal call.
+`&utf8string` wrapper validates UTF-8 before internal call. `&string` preserves every UTF-16 code unit, including lone surrogates.
 
 host-provided invalid UTF-8 traps.
 
-理由: Tsuzuri string invariant は UTF-8 であり、現行 ABI に error return channel がないため。
+理由: utf8string は妥当な UTF-8 だけを保持し、ABI に error return channel がないため。string とは混同しない。
 
 return array wrapper:
 
@@ -721,20 +723,20 @@ WASM allocator exports と JS glue を書く。
 
 ## 受け入れ条件
 
-- [ ] scalar ABI の既存挙動が変わらない。
-- [ ] borrowed `&[i64]` / `&[f64]` / `&[ubyte]` / `&string` input が C/WASM から使える。
-- [ ] borrowed `&[T]` wrapper は C03 後の `%tz.array` by-value internal ABI に直接渡し、descriptor pointer alloca を作らない。
-- [ ] `[i64]` / `[f64]` / `[ubyte]` / `string` result が out pointer + `tsuzuri_free` で使える。
-- [ ] scalar-only record が pointer ABI で使える。
-- [ ] header record names are collision-free and C keyword-safe; nested record conversion follows scalar ABI normalization.
-- [ ] by-value C struct ABI classification に依存しない。
-- [ ] invalid UTF-8, negative len, null invalid pointer が trap する。
-- [ ] host borrowed pointers are documented as aligned and valid for `len` elements during the call.
-- [ ] native/WASM × `-O0`/`-O3` が通る。
-- [ ] heap tracking live == 0。
-- [ ] native and WASM allocator exports are documented and present when needed.
-- [ ] WASM uses `--export-memory`, pointer i32/Number, i64 BigInt, and defined out-record offsets.
-- [ ] D-17 の `tz_` / `tsuzuri_` naming を守る。
+- [x] scalar ABI の既存挙動を維持する。
+- [x] borrowed i64/f64/ubyte 配列、UTF-16 string、UTF-8 utf8string を C/WASM から使える。
+- [x] shared array は `%tz.array` SSA descriptor で内部へ直接渡し、確保・コピーしない。
+- [x] 所有配列と両文字列型の結果は out pointer と tsuzuri_free で使える。
+- [x] scalar-only record、空 record、具体化した generic record は pointer ABI で使える。
+- [x] 型名はモジュール境界と型引数を保持し、C/C++ header・keyword field の正規化と衝突拒否を検査する。
+- [x] by-value C struct ABI classification に依存しない。
+- [x] invalid UTF-8、negative/overflow length、null・alignment・WASM 範囲外を trap する。
+- [x] ホストは呼び出し中の有効領域・alignment・非変更を保証する契約を文書化した。
+- [x] native/WASM O0/O3、trap-info との併用が通る。
+- [x] heap tracking live == 0、borrowed input は無確保で解放しない。
+- [x] allocator は拡張 ABI 使用時に両ターゲットへ公開する。
+- [x] WASM の pointer/length 型と out descriptor の offset・memory view 再取得を文書化した。
+- [x] D-17 の tz_/tsuzuri_ を守る。
 
 ## 落とし穴
 
@@ -778,6 +780,10 @@ GPU pinned memory は F07。
 
 ## 未決事項
 
+- **実装判断:** 現在の言語仕様に合わせ、string は UTF-16 コード単位、utf8string は UTF-8 バイトとした。旧案の string=UTF-8 は採用しない。
+   UTF-8 検証は既存 decoder を使い、借用はどちらもコピー・確保なし。出力 buffer はそのまま所有権移転する。
+   空 record の ABI struct は1バイトの tz_empty field とし、generic record は具体型ごとに typedef を作る。
+   検証は tests/host_abi.rs に C/JS・C++ header・heap tracking・trap-info をまとめ、既存 Physics に C/JS の buffer 使用例を追加した。
 WASM allocator を scalar-only module でも常に export するかは未決。既定案は E05 ABI 使用時だけ export。
 
 record nested fields を Phase 1 で許すかは未決。既定案は scalar-only record なら再帰的に許す。

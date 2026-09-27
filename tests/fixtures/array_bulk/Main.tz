@@ -1,0 +1,131 @@
+record Keyed { key: i64, ordinal: i64, read: i64 -> i64 }
+
+instance Eq<Keyed> {
+    fn eq left right = left.key == right.key
+    fn ne left right = left.key != right.key
+}
+
+instance Ord<Keyed> {
+    fn lt left right = left.key < right.key
+    fn le left right = left.key <= right.key
+    fn gt left right = left.key > right.key
+    fn ge left right = left.key >= right.key
+}
+
+export def array_basics :: i64
+fn array_basics =
+    let values = Array.init 5 (index -> index + 1)
+    let sub = Array.sub (ref values) 1 3
+    let reversed = Array.reverse (ref sub)
+    let joined = Array.append (ref sub) (ref reversed)
+    let pairs = Array.zip (ref sub) (ref reversed)
+    let nested = [sub, reversed]
+    let concatenated = Array.concat (ref nested)
+    Array.length (ref values) + Array.sum (ref joined) + Array.sum (ref concatenated) + pairs.length
+
+export def borrowed_search :: i64
+fn borrowed_search =
+    let values = new ["one" + "!", "longer" + "!", "last" + "!"]
+    let needle = "longer" + "!"
+    let found = Array.find (ref values) (text -> text.length == 7)
+    let smallest = Array.min (ref values)
+    let largest = Array.max (ref values)
+    assert (Array.contains (ref values) (ref needle))
+    assert (Option.get (Array.index_of (ref values) (ref needle)) == 1)
+    (Option.get found).length + (Option.get smallest).length + (Option.get largest).length
+
+export def bulk_callbacks :: i64
+fn bulk_callbacks =
+    let values = [1, 2, 3]
+    let mapped = Array.map (ref values) (value -> value * 2)
+    let indexed = Array.mapi (ref values) (index -> value -> value + index)
+    let forward = Array.fold (ref values) 0 (state -> value -> state * 10 + value)
+    let backward = Array.fold_back (ref values) 0 (value -> state -> state * 10 + value)
+    let refs = Array.map_ref (ref values) (value -> deref value + 1)
+    let indexed_refs = Array.mapi_ref (ref values) (index -> value -> deref value + index)
+    let folded_refs = Array.fold_ref (ref values) 0 (state -> value -> state + deref value)
+    let folded_back = Array.fold_back_ref (ref values) 0 (value -> state -> state + deref value)
+    forward + backward + Array.sum (ref mapped) + Array.sum (ref indexed) + Array.sum (ref refs) + Array.sum (ref indexed_refs) + folded_refs + folded_back
+
+export def bulk_empty :: i64
+fn bulk_empty =
+    let values: [i64] = []
+    assert (Array.is_empty (ref values))
+    assert (Array.all (ref values) (value -> unreachable ()))
+    assert (!(Array.any (ref values) (value -> unreachable ())))
+    let reduced = Array.reduce (ref values) (left -> right -> left + right)
+    let smallest = Array.min (ref values)
+    assert (Option.is_none (ref reduced))
+    assert (Option.is_none (ref smallest))
+    Array.sum (ref values) + Array.product (ref values)
+
+export def bulk_short_circuit :: bool
+fn bulk_short_circuit =
+    let values = [1, 0]
+    let predicate: ref i64 -> bool = value -> { assert (deref value != 0); true }
+    let rejecting: ref i64 -> bool = value -> { assert (deref value != 0); false }
+    Array.any (ref values) predicate && !(Array.all (ref values) rejecting) && *(Option.get (Array.find (ref values) predicate)) == 1
+
+export def bulk_list :: i64
+fn bulk_list =
+    let values = [1, 2, 3]
+    let list = Array.to_list (ref values)
+    let mapped = List.map (ref list) (value -> value + 1)
+    let reversed = List.reverse (ref mapped)
+    let array = List.to_array (ref reversed)
+    let strings = new [|"one" + "!", "two" + "!"|]
+    let sizes = List.map_ref (ref strings) (text -> text.length)
+    let total = List.fold (ref sizes) 0 (state -> value -> state + value)
+    let borrowed_total = List.fold_ref (ref strings) 0 (state -> text -> state + text.length)
+    Array.fold (ref array) 0 (state -> value -> state * 10 + value) + total + borrowed_total
+
+export def sort_numbers :: i64 -> i64
+fn sort_numbers count =
+    let values = new [i64](count, index -> (index * 13 + 7) % 19)
+    let sorted = Array.sort (ref values)
+    let weighted = Array.mapi (ref sorted) (index -> value -> (index + 1) * value)
+    Array.sum (ref weighted)
+
+export def sort_stable_owned :: i64
+fn sort_stable_owned =
+    let captured = "owned" + "!"
+    let values = new [Keyed](6, index -> Keyed { key: index % 2, ordinal: index, read: value -> value + captured.length })
+    let sorted = Array.sort (ref values)
+    Array.fold (ref sorted) 0 (state -> value -> state * 10 + value.read value.ordinal)
+
+export def sort_float :: bool
+fn sort_float =
+    let nan = 0.0 / 0.0
+    let values = [nan, 3.0, -0.0, 2.0, 0.0, nan, -1.0]
+    let sorted = Array.sort (ref values)
+    sorted[0] == -1.0 && 1.0 / sorted[1] == -1.0 / 0.0 && 1.0 / sorted[2] == 1.0 / 0.0 && sorted[3] == 2.0 && sorted[4] == 3.0 && sorted[5] != sorted[5] && sorted[6] != sorted[6]
+
+export def reductions :: bool
+fn reductions =
+    let ordered = [10000000000000000.0, -10000000000000000.0, 1.0]
+    let values = [0.0 / 0.0, 1.0]
+    let best = deref (Option.get (Array.min (ref values)))
+    Array.sum (ref ordered) == 1.0 && best != best
+
+export def first_duplicate :: i64
+fn first_duplicate =
+    let values = [1, 2, 2, 2, 3]
+    let needle = 2
+    Option.get (Array.binary_search (ref values) (ref needle))
+
+export def filtered :: i64
+fn filtered =
+    let values = [1, 2, 3, 4, 5]
+    let selected = Array.filter (ref values) (value -> deref value % 2 == 1)
+    Array.fold (ref selected) 0 (state -> value -> state * 10 + value)
+
+export def trap_sub :: i64
+fn trap_sub =
+    let values = [1, 2]
+    (Array.sub (ref values) 1 2).length
+
+export def trap_zip :: i64
+fn trap_zip =
+    let left = [1]
+    let right = [2, 3]
+    (Array.zip (ref left) (ref right)).length

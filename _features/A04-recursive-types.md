@@ -7,10 +7,34 @@
 | 規模 | L |
 | 依存 | A02 |
 | 後続 | C06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/check.rs`, `src/polymorph.rs`, `src/control.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/call_specialization.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/*.rs`, `tests/*.mjs` |
 
-## 目的
+## 実装仕様（採用版）
+
+GUIDE D-24により、sourceの型と構築子を変えず、**再帰する具体的なunion全体を所有ノードへのポインター**として実装した。
+`Type::Boxed`、box/unbox typed kind、occurrence単位の書き換えは不要になった。
+`src/recursive.rs` は置換後の具体型・tuple・array/list/Vecの格納辺を調べ、SCCと有限値を検査する。
+function/task/referenceは境界。結果は宣言ごとの型引数キャッシュで共有し、非再帰の具体化へ影響しない。
+レコードはinlineを維持する。再帰ADTは非Copy、unionを通らない循環と有限値のない型はE1010、型引数の成長・入れ替えはE1017。
+
+ノードは `{ next, drop_action, clone_action, tag, payload }`。最初のnullary caseだけはnullで、確保しない。
+payload全体を一度だけ左から右に評価し、その後でノードを確保する。直接構築子と関数値は同じloweringを使う。
+既存の所有place・payload投影・部分moveを保ち、子スロットをゼロ化して親ノードを一度だけ解放する。
+`src/llvm_recursive.rs` が型ごとのstepを、`src/runtime/recursive.ll` が反復ループを担当する。
+dropは解放予定ノードのnext、cloneは複製先ノードのヘッダーを待ちリストとして再利用する。
+動的コレクションも同じ待ちリストへ子を登録し、別work itemの確保や深さ比例の再帰呼び出しはない。
+一般の関数捕捉環境の多重連鎖や利用者の非末尾再帰は、このADT走査の保証とは別である。
+
+検証: `cargo test --locked --test recursive_types`（4件）、union/generic-recordの既存テスト、Rust全体、fmt、clippy。
+`node tests/features.mjs target/release/tsuzuri recursive_types` は23共通ケースをnative/WASM O0/O3で実行し、
+native専用100万ノード解放・25万ノード複製、WASM確保上限トラップ、trap-info併用を追加検証する。
+heap trackingは各呼び出し後live=0。ASanでも深い木・相互再帰・Vec・record・部分moveを検証した。
+
+以下の「目的」から「ドキュメント」までは**当初設計案の保存**であり、実装指示ではない。
+採用版と矛盾する `Boxed`／occurrence boxing／array barrierの記述は本節とD-24で置き換える。
+
+## 目的（当初設計）
 
 `Tree<'a>`、式 AST、linked structures のような再帰的データ構造を、所有権と明示的な heap allocation によって安全に扱えるようにする。
 A02 までは recursive union / record を `E1010` で拒否するが、このチケットで union payload を通る再帰を許可する。
@@ -1015,29 +1039,17 @@ A04 の既定受け入れは:
 
 ## 受け入れ条件
 
-- [ ] `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` が受理される。
-- [ ] declarations は source form のまま保持され、`RecursiveLayout` が concrete instance + occurrence path ごとに boxing を指示する。
-- [ ] `record_instance_fields` / `union_instance_cases` は型引数 substitution 後に boxing を適用する。
-- [ ] source syntax と diagnostics は `Tree<'a>` のままで、内部 `Boxed` を表示しない。
-- [ ] `Boxed` が canonical type text の型引数に現れ得る場合は `boxed[...]` marker で単射的に mangle される。
-- [ ] record-only recursive cycle は `E1010` のまま。
-- [ ] base case なし recursive union は `E1010`。
-- [ ] generic args growth は `E1017`。
-- [ ] recursive ADT は非 Copy。
-- [ ] constructor は payload expression 全体を一度だけ左から右に評価し、その後 deterministic occurrence-path order で implicit allocation する。
-- [ ] direct constructor、`apply` 経由、注釈付き constructor function value 経由で評価順序と allocation path order が同一。
-- [ ] pattern matching で boxed subtree を透明に分解できる。
-- [ ] `UnboxRecursive` take は owning pointer slot に `ptr null` を store し、subtree move 後に dangling pointer / 二重解放しない。
-- [ ] `UnionPayload` / `UnboxRecursive` は ownership と LLVM place path に参加し、guard failure / OR alternatives / nested payload move / tail loops で exact slot zeroing が保たれる。
-- [ ] drop は native stack depth に比例せず、1,000,000 node native case で stack overflow しない。
-- [ ] clone は native stack depth に比例せず、tree を捕捉した lambda をコピーして両 environment を解放しても `live == 0`。
-- [ ] recursive traversal は nested aggregates と dynamic array/list elements を scan し、recursive elements に既存 `drop_value` / `clone_value` を再帰呼び出ししない。
-- [ ] successfully constructed value の implicit drop は worklist allocation failure で trap しない（drop helper は allocation-free）。
-- [ ] `deep_discard(1_000_000)` が native で成功し、intact destructor traversal を検査する。
-- [ ] normal completion 後 heap tracking `live == 0`。
-- [ ] WASM imports empty、`%needed = (%size + 31) & -16` に基づく safe/trap sizes が検査され、16 MiB limit 超過は trap。
-- [ ] A03 は `Boxed` を pattern boundary で消して recursive constructors の網羅性を検査する。
-- [ ] docs が更新される。
+- [x] Tree、record経由・array/list/Vec経由の再帰、Option<Link>、相互再帰を受理する。
+- [x] 元の宣言・source型・canonical nameを維持し、具体化ごとの表現を決める。Boxed表記は追加しない。
+- [x] recordのみの循環・有限値なしはE1010、成長・入れ替えはE1017。既存64 KiB境界も維持する。
+- [x] 再帰ADTは非Copy。借用の寿命、taskの隠れた借用、全体と部分の二重moveを拒否する。
+- [x] 直接・高階適用・注釈付き構築子は同じ構築経路、payload一回・左から右評価を保つ。
+- [x] 部分move・ガード失敗・OR・末尾ループは正確な子スロットのゼロ化と一回解放を保つ。
+- [x] native100万ノードの未分解の木をstack-safeに解放し、捕捉した木の複製も独立所有する。
+- [x] dynamic collectionも同じ反復走査を使い、dropは追加確保なし、正常終了後live=0。
+- [x] WASM importなし、16 MiB内正常、上限超過トラップ、trap-infoのcallback ABIを検証する。
+- [x] 既存の網羅性解析を再利用し、不足caseと到達不能caseをsourceの型で診断する。
+- [x] README・言語仕様・アーキテクチャ・D-24を更新した。
 
 ## 落とし穴
 
@@ -1069,6 +1081,7 @@ A04 の既定受け入れは:
 
 ## 未決事項
 
+- 実装時決定: D-24のunionノード方式を採用し、以下の当初案にあるBoxed variant追加は行わない。WASM上限を上げず、native100万ノード／WASM上限内正常＋超過トラップを採用した。
 - 台帳の見直し提案（WASM 1,000,000-node 検証）:
   現行 `heap-wasm.ll` は 16 MiB 上限で、`@tz.alloc` は `%needed = (%size + 31) & -16` により各 block を少なくとも 32 bytes に丸める。
   1,000,000 recursive nodes を個別 `@tz.alloc` すると最小でも約 32 MiB を必要とするため、WASM 正常系としては実現不能。

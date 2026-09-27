@@ -36,6 +36,20 @@ function rangeReference(first, step, last, unsigned = false) {
 }
 
 const cases = [
+  ["break_while", [0n], 0n],
+  ["break_while", [100n], 42n],
+  ["continue_endpoints", [], 16n],
+  ["break_nested", [], 309n],
+  ["break_sources", [1], 2n],
+  ["break_sources", [0], 5n],
+  ["break_match_owned", [], 44n],
+  ["break_skips_trap", [1], 42n],
+  ["continue_temporaries", [4096n], 4096n],
+  ["nested_jump_temporaries", [], 10n],
+  ["branch_jump_temporaries", [0], 4n],
+  ["branch_jump_temporaries", [1], 0n],
+  ["match_jump_temporaries", [0], 4n],
+  ["match_jump_temporaries", [1], 0n],
   ["inclusive", [1, 4, 0], 10n],
   ["inclusive", [4, 1, 1], 10n],
   ["inclusive", [4, 1, 0], 0n],
@@ -85,6 +99,14 @@ const cases = [
   ["recursion_owned", [8192n], 32773n],
   ["recursion_temporaries", [100000n], 100000n],
 ];
+for (const count of [0n, 1n, 2n, 3n, 10n, 4096n]) {
+  let total = 0n;
+  for (let index = 0n; index < count; index++) if (index % 3n !== 0n) total += index;
+  cases.push(["continue_sum", [count], total]);
+  cases.push(["break_owned", [count], (count < 4n ? count : 4n) * 4n]);
+  cases.push(["continue_owned", [count], count / 2n * 4n]);
+}
+for (let kind = 0; kind <= 10; kind++) cases.push(["break_temporaries", [kind], 1n]);
 for (const n of [0, 1, 2, 126, 127, -1, -2, -127, -128]) {
   cases.push(["recursion_down8", [n], BigInt.asUintN(8, BigInt(n))]);
   cases.push(["recursion_up8", [n], BigInt.asUintN(8, -BigInt(n))]);
@@ -132,7 +154,7 @@ const patternValues = new Map([[-3n, 17n], [-1n, 17n], [0n, 3n], [1n, 29n], [2n,
   [4n, 11n], [5n, 83n], [6n, 5n], [7n, 47n], [8n, 19n], [9n, 101n]]);
 for (let n = -5n; n <= 12n; n++) cases.push(["patterns", [n], patternValues.get(n) ?? 42n]);
 cases.push(["patterns", [142n], 42n], ["patterns", [max], max - 100n]);
-const traps = ["trap_step", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked"];
+const traps = ["trap_step", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked", "break_traps_without_jump"];
 const cValue = (n) => typeof n !== "bigint" ? Number.isNaN(n) ? "NAN"
   : n === Infinity ? "INFINITY" : n === -Infinity ? "-INFINITY" : Object.is(n, -0) ? "-0.0" : String(n)
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`

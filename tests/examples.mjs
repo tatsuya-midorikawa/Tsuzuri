@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { loadPhysics, stepBody } from "../examples/web/simulation.mjs";
+import { loadPhysics, stepBody, stepPositions } from "../examples/web/simulation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -68,6 +68,9 @@ try {
   const page = await (await fetch(base)).text();
   assert.match(page, /id="game"/);
   const api = await loadPhysics(`${base}/physics.wasm`);
+  assert.deepEqual([...stepPositions(api, [9, 1], [3, -3], 1, 10)], [8, 2]);
+  assert.deepEqual([...stepPositions(api, [], [], 1, 10)], []);
+  assert.throws(() => stepPositions(api, [1], [], 1, 10), WebAssembly.RuntimeError);
   await assert.rejects(loadPhysics(`${base}/missing.wasm`), /404/);
 
   for (const [position, velocity, dt, extent, nextPosition, nextVelocity] of [

@@ -213,13 +213,9 @@ fn implicit_arguments_preserve_borrow_safety() {
         "does not live long enough",
     );
     for argument in ["&r", "r"] {
-        rejects(
-            &format!(
-                "def read :: ref ref i64 -> i64\nfn read r = deref deref r\ndef f :: i64\nfn f = {{ let n = 42; let r = ref n; read {argument} }}"
-            ),
-            "E1013",
-            "nested borrowed values",
-        );
+        accepts(&format!(
+            "def read :: ref ref i64 -> i64\nfn read r = deref deref r\ndef f :: i64\nfn f = {{ let n = 42; let r = ref n; read {argument} }}"
+        ));
     }
 }
 

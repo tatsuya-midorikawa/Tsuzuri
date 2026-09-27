@@ -369,14 +369,14 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "one tuple pattern",
         ),
         (
-            "union Tree<'a> = Leaf | Node of Tree<'a>",
+            "union Tree<'a> = Node of Tree<'a>",
             "E1010",
-            "recursive union layout for 'Main.Tree'",
+            "recursive union has no finite value",
         ),
         (
-            "union Tree = Leaf | Node of [Tree]",
+            "union First = Next of Second\nunion Second = Back of First",
             "E1010",
-            "recursive union layout",
+            "recursive union has no finite value",
         ),
         (
             "union U = A of i64\nexport def f :: U -> i64\nfn f u = 0",
@@ -400,14 +400,14 @@ fn rejects_invalid_declarations_patterns_and_uses() {
         ),
         ("union Holder = Hold of &i64", "E1013", "owned values"),
         (
-            "union Holder<'a> = Hold of 'a\ndef f :: i64 -> i64\nfn f x =\n    let h = Hold &x\n    0",
+            "union Holder<'a> = Hold of 'a\ndef f :: i64 -> Holder<&i64>\nfn f value = Hold (ref value)",
             "E1013",
-            "would store a reference",
+            "cannot return a reference",
         ),
         (
             "union Holder<'a> = Hold of 'a\ndef f :: Holder<&mut i64> -> i64\nfn f h = 0",
             "E1013",
-            "would store a reference",
+            "mutable references",
         ),
         (
             "union Shape = Circle of f64\nlet s = Circle 1\n0",

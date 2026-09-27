@@ -7,10 +7,19 @@
 | 規模 | L |
 | 依存 | A11, (A01) |
 | 後続 | A07, C06, C07, A10 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/computation.rs`, `src/recursion.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/polymorphism.rs`, `tests/modules.rs`, `tests/fixtures/*` |
 
 ## 目的
+
+実装済み: ASTの既存signature列を維持し、superclass/context/default列を追加した。
+instance templateを唯一の定義集合とし、`matching_instance`／`resolved_method`はメソッドIDと正規化した型引数を返す。
+別のconcrete実装表は持たず、既存Specializerキャッシュを再利用する。
+`normalize`はactive/completedを分けた反復展開で、残余要件・superclass・要素制約を同じ固定点へ伝播する。
+defaultは宣言モジュールに一つの汎用関数として合成し、未使用でも検査する。
+リストのlockstepに必要な最小のLLVM内部命令`StructuralCompare`を合成関数内に使い、要素の具体メソッド参照を通常の子として保持する。
+検証: Rust全体・fmt・clippy、多相性31テスト、typeclassesの39ケースをnative/WASM O0/O3、heap live=0。
+ASanも実行済み。NaN/±0、非Copy要素、短絡、10万要素リスト、段階的メソッド適用、IRの2本のcursorを検査した。
 
 現在の「クラス 1 型引数 + 具体型インスタンス」だけでは、`Eq<Box<'a>>`、`Eq<Option<'a>>`、`Ord<'a> => ...` のような標準ライブラリに不可欠な制約を表せない。このチケットで次を追加する。
 
@@ -429,17 +438,17 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 
 ## 受け入れ条件
 
-- [ ] `instance Eq<'a> => Eq<Box<'a>>` と `instance Eq<'a> => Eq<Option<'a>>` を parse/typecheck できる。
-- [ ] user `instance Eq<'a> => Eq<['a]>`、`instance Ord<'a> => Ord<[|'a|]>`、tuple の user Eq/Ord instance は組み込み条件付き intrinsic と overlap して `E1016`。
-- [ ] overlapping generic/concrete instance を `E1016` で拒否する。
-- [ ] `resolve_instance` が `method_type_arguments` を返し、`Specializer::request(method_id, method_type_arguments, span)` で generic method template を特殊化する。
-- [ ] abstract obligation normalization により `Eq<['a]>` から `Eq<'a>`、`Eq<Box<'a>>` から `Eq<'a>` が残余 obligation として伝播する。
-- [ ] `Ord<T>` が `Eq<T>` を entail し、`Ord` instance 宣言時に `Eq` 不足を `E1027`。
-- [ ] default method は class ごとに 1 つの generic template として無条件に検査され、instance では検証済み template を参照する。
-- [ ] 配列/リスト/タプルの `Eq`/`Ord` が element constraint を伝播する。
-- [ ] リスト `Eq`/`Ord` は O(n) の lockstep node traversal で、IR テストが先頭再走査を禁止する。
-- [ ] 辞書・boxing・実行時型検査を生成しない。
-- [ ] native/WASM × `-O0`/`-O3` の E2E、IR 決定性、heap `live == 0`。
+- [x] `instance Eq<'a> => Eq<Box<'a>>` と `instance Eq<'a> => Eq<Option<'a>>` を parse/typecheck できる。
+- [x] userの配列・リスト・tuple Eq/Ord instanceは組み込み条件付きintrinsicとoverlapしてE1016。
+- [x] generic/concrete instanceの単一化可能なheadをE1016で拒否する。
+- [x] `resolved_method`がIDと型引数を返し、既存`Specializer::request`で特殊化する。
+- [x] `Eq<['a]>`・`Eq<Box<'a>>`を残余`Eq<'a>`へ正規化して伝播する。
+- [x] OrdはEqをentailし、instance宣言で不足する前提はE1027。
+- [x] defaultはメソッドごとに一つのtemplateを無条件に検査し、元のモジュール・spanを保持する。
+- [x] 配列・リスト・タプルの要素要件を伝播し、借用のまま短絡比較する。
+- [x] リストは2本のnode cursorを同時に進め、IR検査で先頭再走査と追加確保を禁止する。
+- [x] 辞書・汎用boxing・実行時型検査を追加しない。
+- [x] native/WASM O0/O3、IR決定性、heap live=0、ASan、型解決上限を検証した。
 
 ## 落とし穴
 
@@ -460,6 +469,8 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 
 ## 未決事項
 
+- 実装判断: `ClassMethodDecl`への全面置換とconcrete instance二重キャッシュは追加せず、既存ASTとSpecializerを再利用した。LLVM-onlyの`StructuralCompare`はlistの二重走査を避けるために限定導入した。
+- 段階的な比較メソッドの直接呼び出しが関数値をboolと扱う既存問題も共通呼び出しで修正した。抽象クラスdispatchの再帰検査に加え、具体化後のSCCも同じ検査器で確認する。
 - **既定案: 条件付き Eq/Ord for arrays/lists/tuples は A06 で実装する。** A07 は record/union deriving に集中する。
 - **既定案: `Ord` は `Eq` を superclass にする。** 既存の組み込み数値・文字列以外の `Ord` user instance は `Eq` も要求される。
 - **既定案: instance context だけに現れる型変数は `E1027`。** 将来 HKT/関連型で必要になったら A10 以降で見直す。

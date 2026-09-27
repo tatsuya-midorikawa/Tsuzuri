@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,6 +10,10 @@ use crate::check::{CheckedModule, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::llvm::{self, Entry};
 use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
+
+#[path = "test_runner.rs"]
+mod test_runner;
+pub use test_runner::{TestOptions, TestReport, TestResult, run_tests};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -38,6 +42,8 @@ pub struct BuildOptions {
     pub emit: Emit,
     pub optimization: u8,
     pub cpu: Cpu,
+    pub debug_output: bool,
+    pub trap_info: bool,
 }
 
 impl Default for BuildOptions {
@@ -47,12 +53,26 @@ impl Default for BuildOptions {
             emit: Emit::Executable,
             optimization: 3,
             cpu: Cpu::Generic,
+            debug_output: false,
+            trap_info: false,
         }
     }
 }
 
 impl BuildOptions {
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.trap_info && self.emit == Emit::Header {
+            return Err(driver_error(
+                "E2000",
+                "--trap-info is not valid for header output",
+            ));
+        }
+        if self.debug_output && self.emit == Emit::Header {
+            return Err(driver_error(
+                "E2000",
+                "--debug-output is not valid for header output",
+            ));
+        }
         if self.optimization > 3 {
             return Err(driver_error(
                 "E2000",
@@ -152,6 +172,35 @@ impl SourceFile {
 }
 
 impl Project {
+    pub fn load_for_tests(input: &Path) -> Result<Self, SourceError> {
+        let metadata = fs::metadata(input).map_err(|error| {
+            SourceError::new(input, io_error("inspect test input", input, error))
+        })?;
+        if !metadata.is_dir() {
+            return Self::load(input);
+        }
+        let mut sources = fs::read_dir(input)
+            .map_err(|error| SourceError::new(input, io_error("list test sources", input, error)))?
+            .map(|entry| {
+                entry.map(|entry| entry.path()).map_err(|error| {
+                    SourceError::new(input, io_error("list test sources", input, error))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        sources.retain(|path| source_kind(path).is_some());
+        sources.sort();
+        let source = sources.first().ok_or_else(|| {
+            SourceError::new(
+                input,
+                driver_error(
+                    "E2000",
+                    "test input directory has no .tz, .tt, or .tc sources",
+                ),
+            )
+        })?;
+        Self::load(source)
+    }
+
     pub fn load(input: &Path) -> Result<Self, SourceError> {
         let metadata = fs::metadata(input)
             .map_err(|error| SourceError::new(input, io_error("inspect source", input, error)))?;
@@ -219,6 +268,26 @@ impl Project {
         &self.sources[self.root].path
     }
 
+    fn with_trap_sources<Output>(
+        &self,
+        operation: impl FnOnce(&[crate::trap::TrapSource<'_>]) -> Output,
+    ) -> Output {
+        let paths: Vec<_> = self
+            .sources
+            .iter()
+            .map(|source| source.path.to_string_lossy())
+            .collect();
+        let sources: Vec<_> = paths
+            .iter()
+            .zip(&self.sources)
+            .map(|(path, source)| crate::trap::TrapSource {
+                path,
+                text: &source.text,
+            })
+            .collect();
+        operation(&sources)
+    }
+
     pub fn source_for(&self, error: &Diagnostic) -> &SourceFile {
         &self.sources[error.span.source.unwrap_or(self.root)]
     }
@@ -275,6 +344,102 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
     Ok(source)
 }
 
+pub fn format_sources(input: &Path, check_only: bool) -> Result<Vec<PathBuf>, SourceError> {
+    let metadata = fs::symlink_metadata(input).map_err(|error| {
+        SourceError::new(input, io_error("inspect formatting input", input, error))
+    })?;
+    let mut paths = if metadata.is_dir() {
+        fs::read_dir(input)
+            .map_err(|error| {
+                SourceError::new(input, io_error("list formatting input", input, error))
+            })?
+            .map(|entry| {
+                entry.map(|entry| entry.path()).map_err(|error| {
+                    SourceError::new(input, io_error("list formatting input", input, error))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|path| source_kind(path).is_some())
+            .collect::<Vec<_>>()
+    } else {
+        vec![input.to_owned()]
+    };
+    paths.sort();
+    let mut updates = Vec::new();
+    for path in paths {
+        let update = (|| {
+            require_regular_source(&path)?;
+            let kind = source_kind(&path)
+                .ok_or_else(|| driver_error("E2000", "fmt accepts .tz, .tt, or .tc files"))?;
+            let source = read_source(&path)?;
+            let result = crate::formatter::format_source(&path.to_string_lossy(), &source, kind)?;
+            Ok::<_, Diagnostic>((source, result))
+        })()
+        .map_err(|error| SourceError::new(&path, error))?;
+        if update.1.changed {
+            updates.push((path, update.0, update.1.formatted));
+        }
+    }
+    if !check_only {
+        for (path, original, formatted) in &updates {
+            replace_source_atomically(path, original, formatted)
+                .map_err(|error| SourceError::new(path, error))?;
+        }
+    }
+    Ok(updates.into_iter().map(|(path, _, _)| path).collect())
+}
+
+fn require_regular_source(path: &Path) -> Result<fs::Metadata, Diagnostic> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| io_error("inspect source", path, error))?;
+    if !metadata.file_type().is_file() {
+        return Err(driver_error(
+            "E2003",
+            "fmt refuses symlinks, directories, and special files",
+        ));
+    }
+    Ok(metadata)
+}
+
+fn replace_source_atomically(
+    path: &Path,
+    original: &str,
+    formatted: &str,
+) -> Result<(), Diagnostic> {
+    let metadata = require_regular_source(path)?;
+    if read_source(path)? != original {
+        return Err(driver_error(
+            "E2003",
+            "source changed during formatting; no replacement made",
+        ));
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let temporary = TemporaryDirectory::new(parent)?;
+    let staged = temporary.path.join("formatted");
+    let mut file = fs::File::create_new(&staged)
+        .map_err(|error| io_error("create formatted source", &staged, error))?;
+    file.write_all(formatted.as_bytes())
+        .map_err(|error| io_error("write formatted source", &staged, error))?;
+    file.set_permissions(metadata.permissions())
+        .map_err(|error| io_error("preserve source permissions", &staged, error))?;
+    file.sync_all()
+        .map_err(|error| io_error("flush formatted source", &staged, error))?;
+    drop(file);
+    require_regular_source(path)?;
+    if read_source(path)? != original {
+        return Err(driver_error(
+            "E2003",
+            "source changed during formatting; no replacement made",
+        ));
+    }
+    fs::rename(&staged, path).map_err(|error| io_error("replace source", path, error))?;
+    Ok(())
+}
+
 fn source_kind(path: &Path) -> Option<SourceKind> {
     path.extension()
         .and_then(OsStr::to_str)
@@ -287,6 +452,15 @@ pub fn build(
     output: &Path,
     options: BuildOptions,
 ) -> Result<Vec<String>, Diagnostic> {
+    build_complete(module, project, output, options).map(|(messages, _)| messages)
+}
+
+fn build_complete(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
     if options.emit == Emit::Executable
         && project.input().file_name() != Some(OsStr::new("Main.tz"))
@@ -302,24 +476,35 @@ pub fn build(
             "a WebAssembly module needs at least one 'export def' entry point",
         ));
     }
+    let mut trap_sites = Vec::new();
     let mut text = if options.emit == Emit::Header {
         llvm::header(module)
     } else {
-        llvm::emit_target(
-            module,
-            if options.emit == Emit::Executable {
+        let emission = llvm::EmitOptions {
+            entry: if options.emit == Emit::Executable {
                 Entry::Console
             } else {
                 Entry::Library
             },
-            options.target == Target::Wasm32,
-        )?
+            wasm: options.target == Target::Wasm32,
+            debug_output: options.debug_output,
+        };
+        if options.trap_info {
+            let output = project.with_trap_sources(|sources| {
+                llvm::emit_with_trap_info(module, emission, sources)
+            })?;
+            trap_sites = output.trap_sites;
+            output.ir
+        } else {
+            llvm::emit_with_options(module, emission)?
+        }
     };
     if options.target == Target::Wasm32 && options.emit != Emit::Header {
         text.push_str(include_str!("runtime/wasm.ll"));
     }
     let task_runtime =
         options.target == Target::Native && text.contains("declare void @tsuzuri_task_parallel(");
+    let debug_import = options.target == Target::Wasm32 && text.contains("@tsuzuri_debug_write(");
     if task_runtime && !cfg!(unix) && !matches!(options.emit, Emit::Llvm | Emit::Header) {
         return Err(driver_error(
             "E2002",
@@ -327,13 +512,17 @@ pub fn build(
         ));
     }
     protect_sources(project, output)?;
+    let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
+    if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+    }
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)
         .map_err(|error| io_error("create output directory", parent, error))?;
-    let temporary = TemporaryDirectory::new(parent)?;
+    let mut temporary = TemporaryDirectory::new(parent)?;
     let artifact = temporary
         .path
         .join(if options.emit == Emit::Executable && cfg!(windows) {
@@ -342,6 +531,13 @@ pub fn build(
             "artifact"
         });
     let mut messages = Vec::new();
+    let staged_sidecar = temporary.path.join("sites.json");
+    if sidecar.is_some() {
+        let table =
+            project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
+        fs::write(&staged_sidecar, table)
+            .map_err(|error| io_error("write trap side table", &staged_sidecar, error))?;
+    }
     if matches!(options.emit, Emit::Llvm | Emit::Header) {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
@@ -414,6 +610,9 @@ pub fn build(
         if task_runtime && options.emit == Emit::Object {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker.args(["-r", "-nostdlib"]);
+            if cfg!(target_os = "macos") {
+                linker.arg("-Wl,-keep_private_externs");
+            }
             if cfg!(target_os = "linux") {
                 linker.arg("-no-pie");
             }
@@ -439,6 +638,19 @@ pub fn build(
                 .arg("-z")
                 .arg("stack-size=1048576")
                 .arg("--max-memory=16777216");
+            if debug_import {
+                linker.arg("--export-memory");
+            }
+            if llvm::uses_host_abi(module) {
+                linker.args([
+                    "--export=tsuzuri_alloc",
+                    "--export=tsuzuri_free",
+                    "--export-memory",
+                ]);
+            }
+            if options.trap_info {
+                linker.arg("--export=tsuzuri_trap_site");
+            }
             for function in &module.functions {
                 if function.exported {
                     linker.arg(format!("--export=tz_{}", function.name));
@@ -456,9 +668,49 @@ pub fn build(
     }
     // Recheck immediately before publishing; never replace a source through a path alias.
     protect_sources(project, output)?;
-    fs::rename(&artifact, output).map_err(|error| io_error("publish output", output, error))?;
+    if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+        let backup = temporary.path.join("previous-sites.json");
+        let previous = match fs::symlink_metadata(sidecar) {
+            Ok(_) => {
+                fs::hard_link(sidecar, &backup)
+                    .map_err(|error| io_error("back up trap side table", sidecar, error))?;
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(io_error("inspect trap side table", sidecar, error)),
+        };
+        fs::rename(&staged_sidecar, sidecar)
+            .map_err(|error| io_error("publish trap side table", sidecar, error))?;
+        if let Err(error) = fs::rename(&artifact, output) {
+            let restored = if previous {
+                fs::rename(&backup, sidecar)
+            } else {
+                fs::remove_file(sidecar)
+            };
+            if let Err(restore_error) = restored {
+                temporary.removed = true;
+                return Err(driver_error(
+                    "E2003",
+                    format!(
+                        "output publication failed ({error}) and the side table could not be restored ({restore_error}); recovery files remain in '{}'",
+                        temporary.path.display()
+                    ),
+                ));
+            }
+            return Err(io_error("publish output", output, error));
+        }
+    } else {
+        fs::rename(&artifact, output).map_err(|error| io_error("publish output", output, error))?;
+    }
     temporary.close()?;
-    Ok(messages)
+    Ok((messages, trap_sites))
+}
+
+pub fn trap_sidecar_path(output: &Path) -> PathBuf {
+    let mut name = output.as_os_str().to_owned();
+    name.push(".trap.json");
+    PathBuf::from(name)
 }
 
 pub fn run(
@@ -478,19 +730,52 @@ pub fn run(
     } else {
         "program"
     });
-    let messages = build(module, project, &output, options)?;
-    let status = Command::new(&output)
-        .status()
+    let (messages, sites) = build_complete(
+        module,
+        project,
+        &output,
+        BuildOptions {
+            trap_info: true,
+            ..options
+        },
+    )?;
+    let result = Command::new(&output)
+        .output()
         .map_err(|error| io_error("run executable", &output, error))?;
     temporary.close()?;
-    if !status.success() {
-        return Err(driver_error(
-            "E2005",
+    io::stdout()
+        .write_all(&result.stdout)
+        .map_err(|error| io_error("relay program stdout", &output, error))?;
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let span = project
+            .with_trap_sources(|sources| {
+                sites
+                    .iter()
+                    .find(|site| {
+                        site.message(sources)
+                            .is_ok_and(|message| stderr.contains(&message))
+                    })
+                    .map(|site| site.span)
+            })
+            .unwrap_or_default();
+        let message = if stderr.trim().is_empty() {
             format!(
-                "program terminated with {status}; integer division, indexing, assert, or allocation may have trapped"
-            ),
-        ));
+                "program terminated with {}; integer division, indexing, assert, or allocation may have trapped",
+                result.status
+            )
+        } else {
+            format!(
+                "program terminated with {}:\n{}",
+                result.status,
+                stderr.trim_end()
+            )
+        };
+        return Err(Diagnostic::new("E2005", message, span));
     }
+    io::stderr()
+        .write_all(&result.stderr)
+        .map_err(|error| io_error("relay program stderr", &output, error))?;
     Ok(messages)
 }
 

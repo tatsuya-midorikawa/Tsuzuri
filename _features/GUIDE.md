@@ -498,8 +498,8 @@ fn rejects(source: &str, code: &str) {
   | `Array` | 配列の一括操作・関数的更新 | C04、C01 |
   | `List` | 連結リストの操作 | C04 |
   | `Vec` | 伸縮可能な配列 | C02 |
-  | `String` | 文字列操作 | D02 |
-  | `Char` | 文字の変換・分類 | A08 |
+  | `String`／`Utf8String` | UTF-16／UTF-8 文字列操作 | D02 |
+  | `Char`／`Utf8Char` | UTF-16 コード単位／Unicode スカラーの変換・分類 | A08 |
   | `Math` | 浮動小数点の数学関数、FMA | D03、D05 |
   | `Int` | 整数 intrinsic | D04 |
   | `Debug` | デバッグ出力 | E07 |
@@ -511,6 +511,7 @@ fn rejects(source: &str, code: &str) {
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
+  `UnsignedInteger`（D04）は符号なし整数だけが満たす組み込みマーカークラスとして予約する。
 
 ### D-08 Option と Result
 - `std/Option.tc`: `union Option<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
@@ -531,9 +532,9 @@ fn rejects(source: &str, code: &str) {
 - 早期脱出の `?` 演算子は導入しない。伝播は `Option { }`／`Result { }` ビルダーで書く（B02）。
 
 ### D-11 表示と解析
-- 組み込みクラス `Display<'a> { def display :: &'a -> string }`。数値・bool・unit・string・char に組み込みインスタンス。
+- 組み込みクラス `Display<'a> { def display :: &'a -> string }`。数値・bool・unit・string・utf8string・char・utf8char に組み込みインスタンス。
 - 組み込み関数 `to_string :: Display<'a> => 'a -> string`（値を受け取り、内部で借用して `display` し、値を解放する）。
-- 組み込みクラス `Parse<'a> { def parse :: &string -> Option<'a> }`。数値・bool に組み込みインスタンス。
+- 組み込みクラス `Parse<'a> { def parse :: &string -> Option<'a> }`。数値・bool・char・utf8char に組み込みインスタンス。
 - 数値の文字列表現は、`to_string` とコンソール出力（`console_main`、`tz_soft_format`）で **同じ実装・同じ形式** にする。
 - **決定（2026-09-23 承認）:** 二進浮動小数点（f16／f32／f64／f128）は、同じ型へ解析し直すと元の値に戻る
   **最短の十進表現**で表示する（例: `0.1` は `0.1`。現在の `%.17g` 相当の `0.10000000000000001` はやめる）。
@@ -542,26 +543,34 @@ fn rejects(source: &str, code: &str) {
 - 組み込みクラス `Hash`（A07）と `Default`（A07）は deriving のチケットで定義する。
 
 ### D-12 文字型
-- 型名 `char`（Unicode スカラー値 U+0000–U+D7FF, U+E000–U+10FFFF）。LLVM では `i32`。リテラル `'a'`、`'\n'`、`'\u{1F600}'`。
-- 字句解析: `'` の後に 1 文字（またはエスケープ）と `'` が続けば文字リテラル、それ以外は従来の型変数 `'a`。
-- Copy・Eq・Ord・Display。算術なし。整数との変換は `Char` モジュールの関数（`Char.to_u32`、`Char.of_u32 : i32u -> Option<char>`）。
+- **決定（2026-09-27）:** `char` は全 UTF-16 コード単位（LLVM `i16`）、`utf8char` は Unicode スカラー（LLVM `i32`）とする。
+- リテラルは `'a'`／`u8'a'`。char は surrogate を許し補助平面を拒否、utf8char は補助平面を許し surrogate を拒否する。型変数 `'a` は維持する。
+- Copy・Eq・Ord・Display・Parse、算術と暗黙変換なし。`Char.to_u16`／`of_u16`、`Utf8Char.to_u32`／`of_u32`／`of_u32_unchecked` で明示変換する。
+- string／utf8string の既存の索引・列挙は i16u／ubyte のまま。char の孤立 surrogate は Display/Parse で保持し、UTF-8 コンソール出力ではトラップする。
 
 ### D-13 コレクションの更新・伸縮・部分参照
 - **消費する関数的更新**: `Array.set : ['a] -> i64 -> 'a -> ['a]` のように所有値を受け取り新しい値を返す。
   所有権により唯一の所有者であることが保証されるため、実装はバッファをその場で書き換えてよい（観測できない最適化）。
 - 伸縮可能な配列は組み込み型 `Vec<'a>`（C02）。`[T]` の記述子 `{ ptr, i64 }` は変更しない。
 - 部分参照（スライス）は **`&[T]` そのもの**（C03）。`&xs[a..b]` で作る。`&mut [T]` は従来どおり配列全体の置換用。
+- **決定（2026-09-27、推奨仕様での実装を承認）:** ジェネリック union の共有借用ペイロードを許可し、
+  C04 の `Option<&T>` を提供する。コンテナ借用は格納値の loan を親として引き継ぐ。
+  返却値は本体の実 loan を検査し、呼び出し側では借用を持つ全入力の寿命に制限する。
+  `None` のように loan を持たない値は借用入力なしでも返せる。直接の借用 payload 宣言・排他参照・レコードの借用フィールドは引き続き拒否する。
+- 以降の機能についても、利用者が推奨仕様での実装を承認済み（2026-09-27）。判断は各チケットと本台帳へ記録し、未実装を実装済み扱いにしない。
 
 ### D-14 決定性と数値演算の順序
 - 一括演算は評価・集計の順序を API 契約として文書化する。浮動小数点の集計は既定で左から右の逐次。
   別の順序（pairwise、Kahan、並列チャンク）は名前で区別した別 API にする（`Array.sum` と `Array.sum_pairwise`）。
 - 並列処理の分割境界は入力長だけで決め、スレッド数に依存させない（どの機械でも同じ結果）。
 - 整数の折り返し加算のように結合的な演算だけは、順序を変えても結果が同じなので SIMD・並列化してよい。
+- F02 の初版は init/map/map_ref/reduce の直接完全適用で所有権境界を保持する。演算自体の関数値化は未対応だが、callback は所有環境を証明できる関数値を受ける。
+  チャンク数は4096要素目標・最大1024、各チャンクと最終結合の両方を identity から始める。Array の逐次集計とは別の順序である。
 
 ### D-15 キーワード・演算子の追加一覧
 新しい予約語: `union`（A02）、`type`（A05）、`private`（E01）、`break`／`continue`（B03）、`deriving`（A07）、
 `const`（D06）、`test`（G06）、`extern`（E06）。`of` は union 宣言の中だけの文脈キーワード（A02。予約語にしない）。
-文字リテラル `'x'`（A08）。範囲の部分参照 `xs[a..b]`（C03）。
+文字リテラル `'x'`／`u8'x'`（A08）。範囲の部分参照 `xs[a..b]`（C03）。
 レコード更新 `{ base with field = value }`（C05）。キーワード追加時は 6.1 を実施する。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
@@ -590,6 +599,8 @@ fn rejects(source: &str, code: &str) {
 ### D-17 ABI とシンボル
 - 公開 ABI（`tz_<name>`）の型の範囲は E05 まで変更しない。内部シンボルは `@tz.*`、外部ランタイムは `tsuzuri_*`。
 - 追加の公開エントリー（例: WASM の確保関数）は `tz_` の名前空間を避けて `tsuzuri_` を使い、文書化する。
+- E05 は現在の文字列モデルに合わせ、string の ABI を UTF-16/i16u のコード単位、utf8string を妥当な UTF-8/ubyte のバイト列とする。
+  借用時の暗黙変換・コピーは行わず、返却 buffer の所有権だけをホストへ移す。レコードは scalar field を正規化した pointer/out pointer ABI にする。
 
 ### D-18 WASM とオプトイン機能
 - WASM の既定はインポートなし・逐次・SIMD なし。SIMD128（F03）、threads（F06）、ホストのインポート（E06）、
@@ -608,7 +619,7 @@ fn rejects(source: &str, code: &str) {
   被演算子は左から右に評価し、場所（ローカル・フィールドなど）なら借用、一時値なら内部の一時スロットに置いて借用し、
   比較後に解放する（利用者が書く `&` の一時値借用が未対応であることとは別の、コンパイラ内部の処理）。
   所有権検査では被演算子を `Use::Read` として扱う（`ownership.rs` の `E::Binary` 分岐の文字列特例を一般化）。
-- 組み込みインスタンス（数値・bool・unit・string・char）の生成コードは変えない（`icmp`／`fcmp`／`@tz.string.equal` のまま、
+- 組み込みインスタンス（数値・bool・unit・string・utf8string・char・utf8char）の直接 lowering を保つ（`icmp`／`fcmp`／型別文字列比較のまま、
   参照の受け渡しを生成しない）。ユーザー／条件付きインスタンスだけ `Call(method, [&left, &right])` に下げる。
 - 算術・ビット演算のクラス（`Add` など）は従来どおり値を受け取る（文字列の `+` は両辺を消費する）。
 - 実装はチケット **A11**。A06（条件付き `Eq<['a]>` など）、A07（deriving）、C04（`Array.sort`、`contains` など）、
@@ -629,19 +640,54 @@ fn rejects(source: &str, code: &str) {
   ```rust
   pub struct FunctionOrigin {
       pub module: ModuleOrigin,          // E02: User | Std
-      pub provenance: Provenance,        // G03: User | Generated(GeneratedKind)
+      pub provenance: Provenance,        // G03: User | Generated
       pub parent: Option<usize>,         // E02: 生成関数（$lambda/$task/$builtin/$export/union 構築子など）の持ち主の関数 id
       pub test: Option<usize>,           // G06: test 宣言の本体、またはその本体からだけ生成された関数なら test の番号
   }
   ```
 - 各チケットは自分の担当フィールドを追加する: E02 が `FunctionOrigin` を導入して `module` と `parent` を持たせ、
   G03 が `provenance` を、G06 が `test` を追加する（先に実装されたチケットがなければ、その時点で構造体を導入する）。
-  生成関数は持ち主の `module`・`test` を継承し、`provenance` は `Generated(kind)` にする。
+  生成関数は持ち主の `module`・`test` を継承し、`provenance` は `Generated` にする。
 - 出力する関数の集合（到達可能性）の計算は一か所（E02 の `reachable_functions`）にまとめ、G06 の通常ビルド／テストビルドの
   切り替えは、その計算の根（root）の選び方として実装する。
 - ローカル束縛の由来（G03 の未使用警告）は `Local` に `provenance: Provenance` を追加して表す。
 
 ---
+
+### D-23 アクティブパターンの再評価
+
+- **決定（2026-09-27）:** B04 の複数ケース認識器は既存 union と宣言順で対応させ、隠し union を作らない。
+- 認識器と追加引数は節ごとに再評価する。副作用で結果が変わり得るため、全 active case の列挙だけで網羅的とはみなさず、現段階ではフォールバックを要求する。
+- case のメタデータは維持する。将来の網羅性拡張では、同一入力・同一追加引数と再評価の安全性を証明するか、明示的な一回評価の契約を別に設計する。
+
+### D-24 再帰型は具体的な union の所有ノードで表す
+
+- A04は当初案の `Type::Boxed`／box/unbox typed kindを追加しない。宣言とcanonical nameを保ち、具体型のSCC内にあるunionだけを所有ポインターへ下げる。レコードはinline、非再帰の具体化は従来表現のまま。
+- array/list/Vecも再帰の格納グラフへ含める。空collectionを有限値の基点とし、全循環はunionを通る必要がある。function/task/referenceは境界。
+- payloadを一度だけ左から右へ評価し、その後でノードを確保する。最初のnullary caseだけはnullで表す。
+- 解放予定ノード／複製先ノードを待ちリストに使い、collection要素も一つの反復走査へ登録する。dropに追加確保はない。sourceの型・所有権・constructor signatureは変えない。
+- nativeは100万ノード正常、WASMは16 MiB内正常と100万ノードの確保トラップを検証する。A04の旧手順よりこの決定とチケット冒頭の実装仕様を優先する。
+
+### D-25 型クラスの条件付き解決と構造比較
+
+- A06は単一のinstance template集合と既存Specializerのキャッシュを使う。signatureとdefault本体は既存AST列に保持して名前で関連付ける。
+- OrdのEq前提、defaultの無条件検査、headだけでのoverlap拒否、深さ64・要件128・overlap1024組を採用する。
+- 配列・リスト・タプルは借用要素メソッドを持つ合成関数へ下げる。内部のStructuralCompareはlistのlockstep単一走査用で、公開構文・辞書・boxingを増やさない。
+- 型が縮むinstance展開は実行時の再帰とは区別し、具体化後も共有SCC検査でrec指定を検証する。
+
+### D-26 導出の文字モデルとcanonical Hash
+
+- A07の旧scalar文字モデルをA08に合わせる。string/charはUTF-16 unit、utf8string/utf8charはUTF-8 byte/scalar。引用はUTF-16の4桁escape、UTF-8型のu8接頭辞・braced escapeで孤立surrogateを保持する。
+- Hashのタグはstring/utf8stringが0x53/0x73、char/utf8charが0x43/0x63。文字列長はunit/byte数、unitは2byte、scalarは4byte、すべてlittle-endian。
+- 数値Hashのwidth codeはlog2(width/8)。±0とNaNを正規化し、decimalは係数末尾0を除いたBIDへ正規化する。等しいdecimal cohortが異なるHashになる旧案は採用しない。
+- 通常ASTのinstance合成を維持し、コレクションHash/Displayの単一走査だけLLVM内部helperへ下げる。構造Displayの引用builtinはD02ソースに依存しない。
+
+### D-27 数学ランタイムの再利用と生成環境
+
+- D03の基本Mathは全float形式、Elementaryはf32/f64のみ。既存numericランタイムでsoft sqrt／丸めを正確に実装する。
+- 超越関数は固定musl 1.2.5の必要ソースをライセンス込みで同梱する。通常f64 atan2は1ulp契約を守る補償演算で補強し、速度の改善は未主張。
+- Clangとllvm-linkは対応版を揃える。検証済みはApple Clang 21とllvm-link 21。22/23はlifetime署名・浮動小数点定数表記が変わるため使用しない。
+- numeric生成後にmathも生成し、metadata／attribute範囲を分離する。source markerは両ランタイムの後に配置する。保存前のIRコンパイル検証を必須にする。
 
 ## 10. 完了の定義（全チケット共通）
 

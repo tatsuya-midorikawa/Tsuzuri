@@ -95,8 +95,10 @@ fn generic_less left right = less (sample left) (sample right)
 
 export def method_less :: i64 -> i64 -> bool
 fn method_less left right =
-    let compare: string -> string -> bool = Ord.lt
-    compare (sample left) (sample right)
+    let compare: ref string -> ref string -> bool = Ord.lt
+    let first = sample left
+    let second = sample right
+    compare (ref first) (ref second)
 
 export def concat_length :: i64 -> i64 -> i64
 fn concat_length left right = (combine (sample left) (sample right)).length

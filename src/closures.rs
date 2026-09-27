@@ -39,7 +39,10 @@ impl Checker<'_> {
             }
             parameters.push(self.bind(name, ty, *mutable));
         }
-        let body = self.expression(body, Some(&result))?;
+        let outer_loop_depth = std::mem::take(&mut self.normal_loop_depth);
+        let body = self.expression(body, Some(&result));
+        self.normal_loop_depth = outer_loop_depth;
+        let body = body?;
         self.scopes.pop();
         let mut used = BTreeSet::new();
         free_locals(&body, &mut used);
@@ -140,6 +143,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                     name: format!("arg{id}"),
                     mutable: false,
                     span: function.span,
+                    provenance: Provenance::Generated,
                 })
                 .collect();
             let callee = TypedExpr {
@@ -266,6 +270,7 @@ fn lower_expression(
                         },
                         mutable: false,
                         span: expression.span,
+                        provenance: Provenance::Generated,
                     })
                     .collect();
                 let callee = TypedExpr {
@@ -348,6 +353,7 @@ fn lower_expression(
                     name: "payload".into(),
                     mutable: false,
                     span: expression.span,
+                    provenance: Provenance::Generated,
                 };
                 let id = functions.len();
                 let union = &unions[union_id];

@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | なし |
 | 後続 | F02, F06, B06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/runtime/task.c`, `tests/task_runtime.c`, `tests/tasks.mjs`, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `benchmarks/run-tasks.mjs`（新規）, `benchmarks/tasks/*`（新規） |
 
 ## 目的
@@ -376,28 +376,28 @@
 
 ## 受け入れ条件
 
-- [ ] `src/runtime/task.c` は lazy persistent worker pool を持つ。
-- [ ] `tsuzuri_task_parallel` の C ABI は変わっていない。
-- [ ] `tsuzuri_task_parallel` は weak/hidden のまま。
-- [ ] 追加 C helper は `static` で、公開 ABI を増やしていない。
-- [ ] global 追加 worker 数は `min(online CPUs, 32) - 1` を超えない。
-- [ ] CPU 数が取れない場合は追加 worker なしで逐次実行する。
-- [ ] `length == 0` と `length == 1` は pool 起動なしで動く。
-- [ ] caller が仕事を実行する。
-- [ ] `remaining` は completion publish に acq-rel RMW を使い、caller は戻る前に acquire load で 0 を確認する。
-- [ ] 入れ子 group が枠枯渇で deadlock しない。
-- [ ] callback 実行中に global mutex を保持しない。
-- [ ] idle worker は condvar で park する。
-- [ ] group 追加と完了時に wakeup が行われる。
-- [ ] `pthread_create` 失敗は既存メッセージ形式で abort する。
-- [ ] `pthread_join` 失敗も明示診断で abort する。
-- [ ] `tests/task_runtime.c` は timing に依存しない同時実行検査を持つ。
-- [ ] CPU topology / failure tests は persistent pool singleton を同一 process で reset しようとしない。
-- [ ] 複数 Tsuzuri object を同時リンクしても単一 pool instance であることを link map と concurrent counter test で証明する。
-- [ ] native/WASM の `tests/tasks.mjs` が `-O0` / `-O3` で通る。
-- [ ] WASM の `task-wasm.ll` はこのチケットで import を増やしていない。
-- [ ] docs は actual support と planned support を分けている。
-- [ ] task overhead ベンチは matched workload で、CI に速度閾値を入れていない。
+- [x] `src/runtime/task.c` は lazy persistent worker pool を持つ。
+- [x] `tsuzuri_task_parallel` の C ABI は変わっていない。
+- [x] `tsuzuri_task_parallel` は weak/hidden のまま。
+- [x] 追加 C helper は `static` で、公開 ABI を増やしていない。
+- [x] global 追加 worker 数は `min(online CPUs, 32) - 1` を超えない。
+- [x] CPU 数が取れない場合は追加 worker なしで逐次実行する。
+- [x] `length == 0` と `length == 1` は pool 起動なしで動く。
+- [x] caller が自分のグループの仕事を実行する。
+- [x] `remaining` は acq-rel RMW、caller は acquire load で0を確認する。非 atomic な結果の公開も検査する。
+- [x] 入れ子 group が枠枯渇で deadlock しない。
+- [x] callback 実行中に global mutex を保持しない。
+- [x] idle worker は condvar で park する。
+- [x] group 追加と完了時に wakeup が行われる。
+- [x] `pthread_create` 失敗は既存メッセージ形式で abort する。
+- [x] `pthread_join` と mutex/condvar/once/atexit の失敗を注入し、診断を検査する。
+- [x] `tests/task_runtime.c` は timing に依存しない同時実行検査を持つ。
+- [x] CPU topology / failure tests は別プロセスで実行する。
+- [x] 複数 object の単一 runtime を nm と concurrent worker counter で証明する。
+- [x] native/WASM の `tests/tasks.mjs` が `-O0` / `-O3` で通る。
+- [x] WASM の `task-wasm.ll` は import なしの逐次経路を維持する。
+- [x] docs は actual support と planned support を分けている。
+- [x] matched task ベンチを追加し、生データと warm/cold の利点・退行を記録する。CI 速度閾値なし。
 
 ## 落とし穴
 
@@ -430,6 +430,10 @@
 
 ## 未決事項
 
+- **実装判断:** next と active list は mutex、remaining は acq-rel/acquire で管理する。caller は自分のグループだけを進め、別グループの仕事を再帰的に抱え込まない。
+   callback 完了後の最終 decrement 以降は group を参照せず、共有 condvar だけを通知する。ASan/UBSan と TSan を通過。
+   macOS の中間 relocatable link が weak/hidden を local 化するため、driver に `-keep_private_externs` を追加した。
+   旧 runtime と同一 LLVM の7標本比較は docs/benchmarks.md に記録。warm tiny/small は短縮したが、bulk は遅く、全用途の高速化を主張しない。
 - pool shutdown を本番で必ず `atexit` 登録するか、テスト専用 hook に限定するか。
   - 既定案: ASan/TSan と leak 検査のため、本番でも `atexit` shutdown を登録する。
 - active list の公平性を FIFO にするか LIFO にするか。

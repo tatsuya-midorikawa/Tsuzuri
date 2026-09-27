@@ -4,6 +4,29 @@
 コードは **`.tz`**、型クラス宣言は **`.tt`**、コンピュテーション式のビルダー実装は **`.tc`**。
 Rust 製のフロントエンドで型検査し、LLVM によりネイティブコードと WebAssembly を生成します。
 
+未使用の束縛・private 宣言・到達不能な match 節は警告します。意図的な未使用ローカルは `_name` で明示できます。
+`check`／`build`／`run` の `--deny-warnings` は警告だけでも失敗させ、コード生成・実行前に停止します。
+
+`tsuzuri fmt [--check] <file|directory> [--json]` でソースを保守的に整形できます。
+`--check` は書き換えず差分があれば終了コード 1。ディレクトリは直下の `.tz`／`.tt`／`.tc` だけを対象にし、LLVM は不要です。
+
+`test "adds numbers" = assert (1 + 2 == 3)` のようにテストを書き、`tsuzuri test <file|directory>` で実行できます。
+`--filter TEXT`、`--json`、`-O0`～`-O3`、`--target native|wasm32` に対応します。WASM 実行には Node.js が必要です。
+テストは常に型検査しますが通常ビルドには含めず、実行時は別プロセスで隔離します。Main.tz は不要です。
+
+アクティブパターンは bool／Option を返す部分形式と、宣言した union に対応する複数ケース形式を使えます。
+`def (|Parsed|_|) :: ref string -> Option<i64>` と `fn (|Parsed|_|) text = Parse.parse text` により、`Parsed value` で解析結果を照合できます。
+
+`Debug.print value` は借用して表示し、`Debug.trace value` は表示して同じ所有値を返します。native は stderr、WASM は既定で no-op です。
+WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
+
+`run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
+WASM では import なしの `tsuzuri_trap_site()` と、隣接する `.trap.json` の表を使います。
+
+ホスト ABI は借用配列・UTF-16／UTF-8 入力、所有バッファ結果、スカラーのみのレコードに対応します。
+C header を生成して pointer／length と out pointer を使い、返却バッファは `tsuzuri_free` で解放します。
+[C の使用例](examples/native/main.c) と [WASM のバッファ移転例](examples/web/simulation.mjs) に往復処理があります。
+
 現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、
 ネイティブのデスクトップ・ホスト、ブラウザーのゲーム例を含みます。
 C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であり、現時点の達成保証ではありません。
@@ -13,7 +36,8 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、
 `Task.parallel` による明示的な CPU 並列処理も使えます。
 GPU バックエンドと自動マルチスレッド化は未実装です。
-伸縮可能なコレクション、
+整数の checked／saturating 演算、popcount、rotate などは `Int` モジュールで利用できます。
+伸縮可能な所有バッファ `Vec<T>` と配列・リストの標準 API を利用できます。
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
 記憶域は C/C++ と同じ方式で、`new` で生成した値はヒープ、`new` を使わずに生成して束縛した値はスタックに置きます。
@@ -42,8 +66,8 @@ fn main = answer()
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
-| 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
-| 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
+| 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
+| 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
@@ -54,6 +78,8 @@ fn main = answer()
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
 
 配列型は `[i32]` のように要素型だけを指定します。
+`ref values[start..end]` で終了位置を含まない共有スライスを作り、コピーなしで読み取れます。型は `ref [T]` です。
+`Array.set values index value`／`Array.update`／`Array.swap` は所有値を受け取り更新値を返します。元値を後で使う Copy 配列は独立コピーを保ちます。
 `new [i32](count, i -> i as i32)` は実行時の `count: i64` 個の要素を添字順に初期化します。
 `[1, 2, 3]` のリテラルも使え、生成後の長さ・要素は不変です。
 旧 `[i32; 4]` 形式は `[i32]` へ移行してください。
@@ -84,6 +110,11 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決める生成もヒ�
 `String.from_utf8 ref bytes`／`Utf8String.from_string ref text` で明示的に変換し、
 UTF-8 にできない孤立サロゲートはトラップします。置換する場合だけ `String.to_well_formed ref text` を使います。
 複製はそれぞれ `clone_string`／`Utf8String.clone` です。詳しくは [文字列の仕様](docs/language.md#string-と-utf8string) を参照してください。
+
+文字型は UTF-16 コード単位の `char`（`'A'`）と Unicode スカラーの `utf8char`（`u8'😀'`）です。
+`String`／`Utf8String` は検索・分割・連結・置換・切り出し・ASCII 変換を提供します。
+`String.split "" "😀"` と `String.chars "😀"` は2要素、UTF-8 版は1要素です。
+`Char`／`Utf8Char` の明示的な整数変換を使い、既存の文字列索引・列挙の要素型は変えません。
 
 Web 向けの小さな計算モジュールという方向性は
 [fsw のネイティブコンパイラ](https://github.com/tatsuya-midorikawa/fsw/tree/feat/fsw-native-compiler)
@@ -132,6 +163,7 @@ fn distance_of value = 'T.distance value
 すべての関数はカリー化され、`add 20 22` と `(add 20) 22` は同じ適用です。
 型クラスによるメソッド選択はコンパイル時に完了し、辞書や型クラスの
 動的ディスパッチを実行時に持ち込みません。利用した型の組み合わせごとにコードを生成します。
+比較演算子は値を消費せず、`Eq`／`Ord` のメソッドは共有借用を受け取ります。算術メソッドは従来どおり値を受け取ります。
 
 匿名関数は `x -> x + offset` のように外側の値を捕捉できます。
 捕捉した所有値は関数値が管理し、関数値のコピーでは捕捉環境を独立したスナップショットにします。
@@ -212,10 +244,14 @@ area (Rect (3.0, 4.0))
 
 match は tag の `switch` に下げ、payload の move・解放・複製も case ごとに行います。
 標準の `Option<'a>`／`Result<'a, 'e>` と、変換・借用・失敗伝播の関数も同梱しています。
-case が不足する match は `E1021` のコンパイルエラーです。再帰的な union・`==` などの組み込み比較は未対応です。
+case が不足する match は `E1021` のコンパイルエラーです。
+record／union宣言の後に `deriving (Eq, Ord, Display, Hash, Default)` を指定して構造的な実装を生成できます。
+`union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のような木・ASTも使えます。
+再帰型は非 Copy の所有ヒープノードで、解放と捕捉環境の複製は深さに比例するスタックを使いません。
 詳細は [言語仕様](docs/language.md#共用体union) を参照してください。
 
-初版はランク1の関数多相です。高階型・条件付きの汎用インスタンスは未対応です。
+初版はランク1の関数多相です。条件付きの汎用インスタンス、スーパークラス、デフォルトメソッドに対応します。高階型は未対応です。
+配列・リスト・タプルは、要素の `Eq`／`Ord` を使って借用のまま構造比較できます。
 公開する関数も言語内ではカリー化され、C／WASM 境界では全引数を渡す既存ABIを維持します。
 旧 `fn name :: ...` は `def name :: ...` へ置き換えます。
 旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
@@ -283,6 +319,7 @@ match answer with
 
 `let!` は `Result.Bind value continuation`、`return` は `Result.Return value` に相当します。
 `Error`／`None` なら続きを呼ばず、error 型の暗黙変換はしません。
+`return` 自体は関数脱出ではなく成功値の生成です。失敗前の通常の `let`・式は実行し、トラップは失敗値に変換しません。
 `Option.map_ref` などは所有する payload を借用して扱い、`get` は失敗値に対してトラップします。
 `ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While` も必要に応じて定義でき、
 `Delay`／`Run` があれば本体を包んで遅延・実行の仕方を制御します。
@@ -317,7 +354,7 @@ Task.run computation
 F# の通常の `task` と異なり、作成しただけでは開始しません。
 `let!` で前の計算の結果を受け取り、`return` で結果を返します。
 独立した計算は `Task.parallel` に配列で渡し、入力順の結果配列を受け取ります。
-`Task.run` は計算を消費して実行し、すべての子処理とスレッドの回収が完了してから戻ります。
+`Task.run` は計算を消費して実行し、すべての子処理と結果の公開が完了してから戻ります。常駐スレッド自体は待機して再利用します。
 スレッドの開始・join・detach をユーザーが管理する必要はありません。
 
 捕捉する値は Copy／move でタスク自身が所有します。参照や、借用を保持した関数値の
@@ -326,10 +363,13 @@ F# の通常の `task` と異なり、作成しただけでは開始しません
 本体を実行せず捕捉値を解放します。計算を繰り返す場合は、タスクを返す関数を呼び直します。
 
 ネイティブの並列区間は POSIX threads を使い、利用可能 CPU 数と最大32実行スレッドを目安に、
-ランタイム全体で追加スレッド数を制限します。入れ子で枠が埋まっても呼び出し元で処理を進めます。
+ランタイム全体で追加スレッド数を制限した常駐プールを遅延起動します。入れ子でも呼び出し元が自分の仕事を進めます。
 WASM はインポート不要の **逐次フォールバック** です。WASM threads、非同期 I/O、
-キャンセル、常駐ワーカープールは未対応で、`Task.run` は呼び出し元をブロックします。
-小さい仕事では確保・コピー・スレッド起動の方が高くつくため、ある程度まとまった計算を渡してください。
+キャンセルは未対応で、`Task.run` は呼び出し元をブロックします。worker はプロセス終了時に join します。
+小さい仕事では確保・コピー・同期が支配する場合があり、常駐化だけで常に速くなるわけではありません。
+`Parallel.init`／`map`／`map_ref`／`reduce`／`sum` は Task 配列を作らず固定チャンクで処理します。
+例えば `let values = Parallel.init 10000 (index -> index * index)` の後、`Parallel.sum (ref values)` で集計できます。
+reduce/sum の順序は逐次 Array 版と異なります。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。
 実行例は `tsuzuri run examples/tasks`、詳細は [タスクの仕様](docs/language.md#タスク) を参照してください。
 
 ## ファイルとモジュール
@@ -389,7 +429,8 @@ std の関数も `Math.zero()` のように修飾して呼び、使わない std
 | `Debug`、`Test` | デバッグ出力とテスト |
 | `Parallel`、`Simd`、`Gpu` | データ並列・SIMD・GPU |
 
-現在の std は `Option`・`Result` の型／関数／ビルダーと仮の API `Math.zero : f64` を持ちます。
+stdは`Option`・`Result`、コレクション・文字列・文字・整数・並列処理・数学APIを持ちます。
+`Math.sqrt 4.0f32`のように全float型の基本演算を使え、超越関数はf32／f64に対応します。`Math.pi()`などの定数も型を保持します。
 無修飾の型・case・クラス名は利用者の宣言を std より優先します。
 
 ```text
@@ -616,9 +657,13 @@ node tests/tasks.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
+node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
+python3 -m venv target/math-reference-env
+target/math-reference-env/bin/python -m pip install mpmath==1.3.0
+node tests/math.mjs target/release/tsuzuri
 node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
@@ -627,6 +672,8 @@ node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 ```
 
 C/C++・Rust・C#・JavaScript の36種目比較には Node.js 24 以降と .NET SDK 10 を使います。
+Math参照テストのPythonは`TSUZURI_MATH_PYTHON`で変更できます。`--quick`は境界集合、`--basic-only`／`--elementary-only`は対象を限定します。
+ランタイム再生成にはClangとllvm-linkの17〜21系を揃えます。検証済みはApple Clang 21＋llvm-link 21です。
 C の基準は15種目、C++・Rust・C#・JavaScript の基準は36種目です。
 `run-managed.mjs --quick` は速度を評価せずチェックサムを照合し、通常測定は JIT のウォームアップ後の経過時間と GC 情報を保存します。
 対応範囲・比較不能な型・残る性能差・再現条件は [docs/benchmarks.md](docs/benchmarks.md) を参照してください。

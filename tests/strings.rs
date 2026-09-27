@@ -247,25 +247,69 @@ fn show value = Display.display value
 let text = join "😀" "\uD800"
 let bytes = join u8"😀" u8"é"
 let output = show ref bytes
-let compare: string -> string -> bool = Ord.lt
+let compare: ref string -> ref string -> bool = Ord.lt
+let first = "a"
+let second = "b"
 assert (less "\uD800" "\uE000")
-assert (compare "a" "b")
-assert (Eq.eq (clone_string ref text) (clone_string ref text))
-assert (Eq.eq (Utf8String.clone ref bytes) (Utf8String.clone ref bytes))
+assert (compare (ref first) (ref second))
+assert (Eq.eq (ref text) (ref text))
+assert (Eq.eq (ref bytes) (ref bytes))
 text == text && bytes == bytes && output.length == 3
 "#,
     );
+    accepts(
+        r#"let left = u8"a"
+        let right = u8"b"
+        left < right && Ord.lt (ref left) (ref right)"#,
+    );
+    rejects(r#"u8"a" < "b""#, "E1003");
+}
+
+#[test]
+fn string_library_buffer_primitives_preserve_encodings() {
     for source in [
-        r#"u8"a" < u8"b""#,
-        r#"u8"a" <= u8"b""#,
-        r#"u8"a" > u8"b""#,
-        r#"u8"a" >= u8"b""#,
-        r#"Ord.lt u8"a" u8"b""#,
-        r#"def less :: Ord<'a> => 'a -> 'a -> bool
-           fn less left right = left < right
-           less u8"a" u8"b""#,
+        "let text = String.from_code_units [55296i16u, 0i16u]\nlet values = String.to_code_units text\nvalues[0] == 55296i16u",
+        "let bytes = Utf8String.to_bytes u8\"hello\"\nlet text = Utf8String.from_bytes bytes\n(Option.get text).length",
+        "let text = u8\"\\u{1f600}\"\nmatch Utf8String.decode_at (ref text) 0 with | (value, next) -> Utf8Char.to_u32 value == 128512i32u && next == 4",
+        "let left = u8\"a\"\nlet right = u8\"b\"\nUtf8String.compare (ref left) (ref right)",
     ] {
-        rejects(source, "E1005");
+        let module = tsuzuri::analyze(source).unwrap();
+        for wasm in [false, true] {
+            tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Library, wasm).unwrap();
+        }
+    }
+}
+
+#[test]
+fn string_library_std_apis_preserve_units_and_types() {
+    for module in ["String", "Utf8String"] {
+        let prefix = if module == "String" { "" } else { "u8" };
+        for call in [
+            "find (ref needle) (ref text)",
+            "rfind (ref needle) (ref text)",
+            "contains (ref needle) (ref text)",
+            "starts_with (ref needle) (ref text)",
+            "ends_with (ref needle) (ref text)",
+            "slice (ref text) 0 1",
+            "sub (ref text) 0 1",
+            "decode_at (ref text) 0",
+            "chars (ref text)",
+            "trim (ref text)",
+            "trim_start (ref text)",
+            "trim_end (ref text)",
+            "to_ascii_upper (ref text)",
+            "to_ascii_lower (ref text)",
+            "split (ref needle) (ref text)",
+            "replace (ref needle) (ref needle) (ref text)",
+            "repeat (ref text) 3",
+        ] {
+            let source = format!(
+                "let text = {prefix}\"hello\"\nlet needle = {prefix}\"l\"\nlet result = {module}.{call}\n()"
+            );
+            let module = tsuzuri::analyze(&source)
+                .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+            tsuzuri::llvm::emit(&module, tsuzuri::llvm::Entry::Library).unwrap();
+        }
     }
 }
 
@@ -356,13 +400,16 @@ classify "\u{1f600}"
 }
 
 #[test]
-fn neither_encoding_is_exportable_through_the_scalar_c_abi() {
+fn both_encodings_use_borrowed_inputs_and_owned_out_buffers() {
     for (ty, literal) in [("string", r#""x""#), ("utf8string", r#"u8"x""#)] {
         rejects(
             &format!("export def f :: {ty} -> i64\nfn f text = text.length"),
             "E1008",
         );
-        rejects(&format!("export def f :: {ty}\nfn f = {literal}"), "E1008");
+        accepts(&format!("export def f :: {ty}\nfn f = {literal}"));
+        accepts(&format!(
+            "export def f :: ref {ty} -> i64\nfn f text = text.length"
+        ));
     }
 }
 

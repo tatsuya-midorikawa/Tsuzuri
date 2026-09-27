@@ -11,6 +11,9 @@ Tsuzuri - a statically typed language with ownership, powered by LLVM
 
 Usage:
   tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+    tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
+    tsuzuri test source.tz|directory [--filter TEXT] [--json] [-O0|-O1|-O2|-O3]
+                             [--target native|wasm32]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 
@@ -31,6 +34,10 @@ Build options:
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --json                 Emit machine-readable diagnostics on stderr
+    --deny-warnings        Fail check/build/run before code generation on warnings
+    --debug-output         Enable WASM Debug output imports (native always writes)
+    --trap-info            Report trap locations and emit an output.trap.json table
+                                                 Enabled by default for run; disabled by default for build
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -49,6 +56,8 @@ enum Action {
     Check,
     Build,
     Run,
+    Fmt,
+    Test,
 }
 
 #[derive(Debug)]
@@ -58,6 +67,9 @@ struct Arguments {
     output: Option<PathBuf>,
     options: BuildOptions,
     json: bool,
+    deny_warnings: bool,
+    format_check: bool,
+    test_filter: Option<String>,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -75,6 +87,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             position = 1;
             Action::Run
         }
+        Some("fmt") => {
+            position = 1;
+            Action::Fmt
+        }
+        Some("test") => {
+            position = 1;
+            Action::Test
+        }
         _ => Action::Build,
     };
     let mut input = None;
@@ -84,6 +104,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut optimization = None;
     let mut cpu = None;
     let mut json = false;
+    let mut deny_warnings = false;
+    let mut format_check = false;
+    let mut test_filter = None;
+    let mut debug_output = false;
+    let mut trap_info = false;
     let mut paths_only = false;
     while position < arguments.len() {
         let argument = &arguments[position];
@@ -96,6 +121,46 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--json") => {
                     json = true;
+                    continue;
+                }
+                Some("--deny-warnings") => {
+                    if deny_warnings {
+                        return Err("deny-warnings specified more than once".into());
+                    }
+                    deny_warnings = true;
+                    continue;
+                }
+                Some("--check") => {
+                    if format_check {
+                        return Err("check specified more than once".into());
+                    }
+                    format_check = true;
+                    continue;
+                }
+                Some("--filter") => {
+                    if test_filter.is_some() {
+                        return Err("filter specified more than once".into());
+                    }
+                    test_filter = Some(
+                        next_value(arguments, &mut position, "--filter")?
+                            .to_str()
+                            .ok_or("test filter must be UTF-8")?
+                            .to_owned(),
+                    );
+                    continue;
+                }
+                Some("--debug-output") => {
+                    if debug_output {
+                        return Err("debug-output specified more than once".into());
+                    }
+                    debug_output = true;
+                    continue;
+                }
+                Some("--trap-info") => {
+                    if trap_info {
+                        return Err("trap-info specified more than once".into());
+                    }
+                    trap_info = true;
                     continue;
                 }
                 Some("-o" | "--output") => {
@@ -176,7 +241,29 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         }
     }
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
-    if action != Action::Build && (output.is_some() || target.is_some() || emit.is_some()) {
+    if debug_output && !matches!(action, Action::Build | Action::Run) {
+        return Err("--debug-output is only valid with build or run".into());
+    }
+    if trap_info && !matches!(action, Action::Build | Action::Run) {
+        return Err("--trap-info is only valid with build or run".into());
+    }
+    if format_check && action != Action::Fmt {
+        return Err("--check is only valid with fmt".into());
+    }
+    if action == Action::Fmt && (optimization.is_some() || cpu.is_some() || deny_warnings) {
+        return Err(
+            "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
+        );
+    }
+    if action != Action::Test && test_filter.is_some() {
+        return Err("--filter is only valid with test".into());
+    }
+    if action == Action::Test && cpu.is_some() {
+        return Err("test does not use CPU tuning".into());
+    }
+    if action != Action::Build
+        && (output.is_some() || emit.is_some() || target.is_some() && action != Action::Test)
+    {
         return Err("--output, --target, and --emit are build-only options".into());
     }
     if action == Action::Check && optimization.is_some() {
@@ -193,8 +280,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         } else {
             Emit::Executable
         }),
-        optimization: optimization.unwrap_or(3),
+        optimization: optimization.unwrap_or(if action == Action::Test { 0 } else { 3 }),
         cpu: cpu.unwrap_or(Cpu::Generic),
+        debug_output,
+        trap_info: trap_info || action == Action::Run,
     };
     options.validate().map_err(|error| error.message)?;
     Ok(Arguments {
@@ -203,6 +292,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         output,
         options,
         json,
+        deny_warnings,
+        format_check,
+        test_filter,
     })
 }
 
@@ -219,7 +311,7 @@ fn next_value<'a>(
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
-    print_with_severity("error", error, input, source, json);
+    print_with_severity(error.severity.as_str(), error, input, source, json);
 }
 
 fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Project, json: bool) {
@@ -237,7 +329,16 @@ fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Proj
                 json_string(&note)
             );
         } else {
-            eprintln!("\nerror: {note}");
+            let severity = if errors
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == tsuzuri::diagnostic::Severity::Error)
+            {
+                "error"
+            } else {
+                "warning"
+            };
+            eprintln!("\n{severity}: {note}");
         }
     }
 }
@@ -267,6 +368,8 @@ fn run_action(
 ) -> Result<Vec<String>, Diagnostic> {
     match arguments.action {
         Action::Check => Ok(Vec::new()),
+        Action::Fmt => unreachable!("formatting runs before compilation"),
+        Action::Test => unreachable!("tests use an isolated runner"),
         Action::Build => driver::build(
             module,
             project,
@@ -277,6 +380,135 @@ fn run_action(
             arguments.options,
         ),
         Action::Run => driver::run(module, project, arguments.options),
+    }
+}
+
+fn run_formatter(arguments: &Arguments) -> ExitCode {
+    match driver::format_sources(&arguments.input, arguments.format_check) {
+        Ok(changed) => {
+            if arguments.format_check {
+                for path in &changed {
+                    if arguments.json {
+                        eprintln!(
+                            "{{\"severity\":\"error\",\"code\":\"E2000\",\"message\":\"file is not formatted\",\"path\":{}}}",
+                            json_string(&path.to_string_lossy())
+                        );
+                    } else {
+                        eprintln!("{}: not formatted", path.display());
+                    }
+                }
+                if !changed.is_empty() {
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            let source = driver::read_source(&error.path).unwrap_or_default();
+            print_diagnostic(&error.diagnostic, &error.path, &source, arguments.json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_test_action(
+    arguments: &Arguments,
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+) -> ExitCode {
+    let report = match driver::run_tests(
+        module,
+        &driver::TestOptions {
+            target: arguments.options.target,
+            optimization: arguments.options.optimization,
+            filter: arguments.test_filter.clone(),
+        },
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            let source = project.source_for(&error);
+            print_diagnostic(&error, &source.path, &source.text, arguments.json);
+            return ExitCode::FAILURE;
+        }
+    };
+    for message in &report.messages {
+        if arguments.json {
+            eprintln!(
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            eprintln!("{}", message.trim());
+        }
+    }
+    for result in &report.results {
+        let case = &result.case;
+        if arguments.json {
+            let failure = result.failure.as_ref().map_or_else(String::new, |failure| {
+                format!(",\"failure\":{}", json_string(failure))
+            });
+            println!(
+                "{{\"type\":\"test\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"{}\"{},\"duration_ms\":{}}}",
+                case.index,
+                json_string(&case.module),
+                json_string(&case.name),
+                if result.failure.is_some() {
+                    "failed"
+                } else {
+                    "passed"
+                },
+                failure,
+                result.duration_ms
+            );
+        } else {
+            println!(
+                "{} {} - {} {}",
+                if result.failure.is_some() {
+                    "not ok"
+                } else {
+                    "ok"
+                },
+                case.index + 1,
+                case.module,
+                case.name.escape_debug()
+            );
+            if let Some(failure) = &result.failure {
+                println!("  failure: {failure}");
+            }
+        }
+    }
+    let failed = report
+        .results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .count();
+    let passed = report.results.len() - failed;
+    if arguments.json {
+        println!(
+            "{{\"type\":\"summary\",\"passed\":{passed},\"failed\":{failed},\"ignored\":{},\"duration_ms\":{}}}",
+            report.ignored, report.duration_ms
+        );
+    } else {
+        println!(
+            "\n{passed} passed; {failed} failed; {} ignored",
+            report.ignored
+        );
+    }
+    if let Some(first) = report
+        .results
+        .iter()
+        .find(|result| result.failure.is_some())
+    {
+        let diagnostic = Diagnostic::new(
+            "E2006",
+            format!("{failed} test{} failed", if failed == 1 { "" } else { "s" }),
+            first.case.span,
+        );
+        let source = project.source_for(&diagnostic);
+        print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -314,7 +546,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let project = match Project::load(&arguments.input) {
+    if arguments.action == Action::Fmt {
+        return run_formatter(&arguments);
+    }
+    let loaded = if arguments.action == Action::Test {
+        Project::load_for_tests(&arguments.input)
+    } else {
+        Project::load(&arguments.input)
+    };
+    let project = match loaded {
         Ok(project) => project,
         Err(error) => {
             print_diagnostic(&error.diagnostic, &error.path, "", arguments.json);
@@ -328,15 +568,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    for warning in &module.warnings {
-        let source = project.source_for(warning);
-        print_with_severity(
-            "warning",
-            warning,
-            &source.path,
-            &source.text,
-            arguments.json,
-        );
+    let warnings =
+        tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(module.warnings.iter().cloned(), 0);
+    print_diagnostics(&warnings, &project, arguments.json);
+    if arguments.deny_warnings && !warnings.is_empty() {
+        return ExitCode::FAILURE;
+    }
+    if arguments.action == Action::Test {
+        return run_test_action(&arguments, &project, &module);
     }
     let result = run_action(&arguments, &project, &module);
     match result {
@@ -371,6 +610,23 @@ mod tests {
 
     #[test]
     fn selects_target_defaults_and_honors_path_separator() {
+        let tests = parse(&[
+            "test", "Sources", "--filter", "name", "--target", "wasm32", "--json",
+        ])
+        .unwrap();
+        assert_eq!(tests.action, Action::Test);
+        assert_eq!(tests.options.optimization, 0);
+        assert_eq!(tests.test_filter.as_deref(), Some("name"));
+        let formatting = parse(&["fmt", "--check", "Sources", "--json"]).unwrap();
+        assert_eq!(formatting.action, Action::Fmt);
+        assert!(formatting.format_check);
+        for action in ["check", "build", "run"] {
+            assert!(
+                parse(&[action, "Main.tz", "--deny-warnings", "--json"])
+                    .unwrap()
+                    .deny_warnings
+            );
+        }
         let arguments = parse(&["build", "A.tz", "--target", "wasm32", "-O0"]).unwrap();
         assert_eq!(arguments.options.emit, Emit::Wasm);
         assert_eq!(arguments.options.optimization, 0);
@@ -395,6 +651,26 @@ mod tests {
     fn rejects_ambiguous_or_unused_arguments() {
         for values in [
             vec!["check"],
+            vec!["check", "Main.tz", "--trap-info"],
+            vec!["test", "Main.tz", "--trap-info"],
+            vec!["build", "Main.tz", "--emit", "header", "--trap-info"],
+            vec!["build", "Main.tz", "--trap-info", "--trap-info"],
+            vec!["check", "Main.tz", "--debug-output"],
+            vec!["test", "Main.tz", "--debug-output"],
+            vec!["build", "Main.tz", "--emit", "header", "--debug-output"],
+            vec!["check", "Main.tz", "--filter", "name"],
+            vec!["test", "Main.tz", "--filter"],
+            vec!["test", "Main.tz", "--filter", "a", "--filter", "b"],
+            vec!["test", "Main.tz", "--cpu", "native"],
+            vec!["test", "Main.tz", "--emit", "llvm"],
+            vec!["test", "Main.tz", "-o", "output"],
+            vec!["check", "Main.tz", "--check"],
+            vec!["fmt", "Main.tz", "--check", "--check"],
+            vec!["fmt", "Main.tz", "--deny-warnings"],
+            vec!["fmt", "Main.tz", "-O0"],
+            vec!["fmt", "Main.tz", "--cpu", "native"],
+            vec!["fmt", "Main.tz", "-o", "Other.tz"],
+            vec!["check", "Main.tz", "--deny-warnings", "--deny-warnings"],
             vec!["A.tz", "B.tz"],
             vec!["build", "Main.tz", "-O9"],
             vec!["build", "Main.tz", "--output"],

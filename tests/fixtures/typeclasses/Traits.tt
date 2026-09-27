@@ -1,0 +1,10 @@
+class Eq<'a> => EqualDefault<'a> {
+    def same :: ref 'a -> ref 'a -> bool
+    fn same left right = Eq.eq left right
+}
+
+class Sized<'a> {
+    def size :: ref 'a -> i64
+    def is_empty :: ref 'a -> bool
+    let is_empty = value -> Sized.size value == 0
+}

@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | G02, 弱依存 A03, 弱依存 E01（`W1002` の非公開判定） |
 | 後続 | G07 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/diagnostic.rs`, `src/lib.rs`, `src/check.rs`, `src/control.rs`, `src/ownership.rs`, `src/main.rs`, `src/driver.rs`, `tests/warnings.rs`, `tests/e2e.mjs`, `docs/language.md`, `README.md` |
 
 ## 目的
@@ -745,18 +745,18 @@ warning 追加により既存 CLI tests の stderr が変わる場合は、fixtu
 
 ## 受け入れ条件
 
-- [ ] `Diagnostic` が severity を持ち、既存 error JSON が維持される。
-- [ ] `W1001` が user-visible unused local を検出する。
-- [ ] move-only use、capture、guard-only use が使用として数えられる。
-- [ ] `_` prefix と `$` generated names が warning を抑制する。
-- [ ] warning 判定は名前や span ではなく `Provenance::User` / `Generated(kind)` に基づく。
-- [ ] std source の warning を抑制する hook がある。
-- [ ] `W1003` が少なくとも wildcard 後の到達不能 arm を検出する。
-- [ ] `W1002` は E01 visibility がない場合 no-op、ある場合 full root set から到達不能な private user node にだけ出る。
-- [ ] `W1004` は内部 option あり、CLI 既定では出ない。
-- [ ] `--deny-warnings` で warning-only compile が exit code 1 になる。
-- [ ] JSON の warning は `"severity":"warning"`。
-- [ ] 既存 tests が通る。
+- [x] `Diagnostic` が severity を持ち、既存 error JSON が維持される。
+- [x] `W1001` が user-visible unused local を検出する。
+- [x] move-only use、capture、guard-only use が使用として数えられる。
+- [x] `_` prefix と生成された束縛を抑制する。
+- [x] warning 判定は名前や span ではなく `Provenance::User` / `Generated` に基づく。
+- [x] std source の warning を抑制する。
+- [x] `W1003` は A03 の網羅性・到達性解析を使う。
+- [x] `W1002` は E01 visibility と full root set を使い、到達不能な private user node にだけ出る。
+- [x] `W1004` は内部 option あり、CLI 既定では出ない。
+- [x] `--deny-warnings` で warning-only compile が exit code 1 になり、成果物を保持する。
+- [x] JSON の warning は `"severity":"warning"`。既存と同じ50件上限を適用する。
+- [x] 全 Rust tests、clippy、native/WASM O0/O3 の既存 E2E が通る。
 
 ## 落とし穴
 
@@ -781,6 +781,9 @@ warning 追加により既存 CLI tests の stderr が変わる場合は、fixtu
 
 ## 未決事項
 
+- **実装（2026-09-27）:** 既存の `CheckedModule.warnings` を再利用し、重複する analysis 結果型は追加しない。
+  provenance は既存の `User`／`Generated` の二値をソース Ident から Local へ引き継ぎ、未使用の生成種別 enum は増やさない。
+  W1002 は再帰検査の呼び出しグラフと消去前の型注釈を使う。CLI の検証は既存 Rust 統合テスト `tests/warnings.rs` にまとめる。
 - **W1002 と E01 の依存。** チケット一覧では G03 は E01 に依存していないが、D-16 の W1002 は
   「非公開」を前提にする。既定案は E01 がなければ W1002 no-op にする。
 - **warning を error と同時に出すか。** 既定案は error がある compile では warning を出さない。

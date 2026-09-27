@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | A11, E02, C03, B01 |
 | 後続 | D05, F02, F05 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Array.tz`、`std/List.tz`、`src/check.rs` `Builtin`、`src/llvm.rs` `emit_builtin` / `FunctionEmitter::{array_loop, checked_element_pointer, clone_value}`、`src/call_specialization.rs`、`benchmarks/array`、`tests/array_bulk.rs`、`tests/fixtures/array_bulk/Main.tz`、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md` |
 
 ## 目的
@@ -367,17 +367,17 @@ Add optional `benchmarks/array-bulk`:
 
 ## 受け入れ条件
 
-- [ ] Phase 1 API が `Array` / `List` 修飾名で利用できる。
-- [ ] 読み取り API は `&[T]` を受け、配列全体を clone しない。
-- [ ] 順序契約が tests/docs に反映される。
-- [ ] `Array.sum f32/f64` は左から右で、fast-math / reassociation なし。
-- [ ] `Array.sort` は stable。
-- [ ] `Array.sort` の primitive float は sort-specific total preorder（numbers before NaNs、NaNs stable、signed zeros stable）を守る。
-- [ ] `Array.binary_search` は重複時 first index。
-- [ ] `Array.contains` / `index_of` / `equal` / `binary_search` は non-Copy 要素・target を比較だけの理由で拒否しない。
-- [ ] bounds-before-GEP。
-- [ ] native/WASM × `-O0`/`-O3`、heap tracking、WASM imports empty。
-- [ ] 性能主張をする場合は IR inspection と matched benchmark を docs に記録し、CI threshold なし。
+- [x] Phase 1 API と Vec を使う Phase 2 filter が `Array` / `List` 修飾名で利用できる。
+- [x] 読み取り API は `&[T]` を受け、配列全体を clone しない。
+- [x] 順序契約が tests/docs に反映される。
+- [x] `Array.sum f32/f64` は左から右で、fast-math / reassociation なし。
+- [x] `Array.sort` は stable。
+- [x] `Array.sort` の primitive float は sort-specific total preorder（numbers before NaNs、NaNs stable、signed zeros stable）を守る。
+- [x] `Array.binary_search` は重複時 first index。
+- [x] `Array.contains` / `index_of` / `equal` / `binary_search` は non-Copy 要素・target を比較だけの理由で拒否しない。
+- [x] bounds-before-GEP。
+- [x] native/WASM × `-O0`/`-O3`、heap tracking、WASM imports empty。
+- [x] SIMD・並列高速化は主張せず、CI の速度 threshold なし。
 
 ## 落とし穴
 
@@ -399,6 +399,20 @@ Add optional `benchmarks/array-bulk`:
 - list sort。
 
 ## 未決事項
+
+- 実装時点（2026-09-27）: 通常の走査・生成・検索・binary_search は std ソースを優先し、既存の特殊化を使う。
+  `concat`・リスト変換・stable sort など所有領域の処理を `llvm_bulk.rs` にまとめる。`zip` は長さ不一致でトラップ。
+  sort_by は comparator を呼んだ後、f32/f64 の NaN を末尾へ安定配置する。filter は Vec を使って述語を一回評価する。
+
+- **解決（2026-09-27、推奨仕様での実装を承認）:** Phase 1 の `Array.find`／`min`／`max` は `Option<&'a>` を要求するが、
+  A02/B01 と現行言語仕様は union payload への参照格納を `E1013` で拒否する。
+  `src/check.rs` の `Validation::check` と `tests/option_result.rs` の
+  `rejects_unresolved_types_invalid_errors_noncopy_iteration_and_abi` がこの禁止を保証している。
+  単にこの検査を外すだけでは union の case ごとの loan・move・借用返却の安全性を保証できない。
+  推奨案は、C04 の公開 API を維持するため、A09 の領域に関わる借用 union payload の所有権追跡を先行追加すること。
+  代替はこれらの返却 API をインデックスへ変更するか、該当 API を後続へ延期することだが、いずれも仕様・受け入れ条件を変える。
+  ジェネリック union の共有借用ペイロードを許可し、返却 loan は全入力の寿命に制限する。
+  排他参照・レコードの借用フィールド・直接の借用 payload 宣言は引き続き拒否する。C04 の公開 API は維持する。
 
 - `Array.sum` の空配列: `(Numeric<'a>, Add<'a>)` の numeric builtin だけ 0 identity、`product` は 1 identity。generic Add/Mul は提供せず `reduce` を使わせる。
 - `Array.sort` の Copy 制約: phase 1 は `(Ord<'a>, Copy<'a>)`。これは borrowed input から owned output を作るためで、比較のためではない。将来 Clone/Move-aware sort で緩和。

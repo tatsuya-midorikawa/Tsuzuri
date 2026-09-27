@@ -26,7 +26,7 @@ fn is_place(expression: &TypedExpr) -> bool {
         | TypedExprKind::ListTail(value, _)
         | TypedExprKind::UnionPayload { value, .. } => is_place(value),
         TypedExprKind::Index(value, _) => {
-            matches!(value.ty, Type::Array(_) | Type::List(_)) && is_place(value)
+            matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) && is_place(value)
         }
         _ => false,
     }
@@ -63,10 +63,16 @@ impl Checker<'_> {
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
         let kind = match &expression.kind {
-            ExprKind::While { condition, body } => TypedExprKind::While {
-                condition: Box::new(self.expression(condition, Some(&Type::Bool))?),
-                body: Box::new(self.expression(body, Some(&Type::Unit))?),
-            },
+            ExprKind::While { condition, body } => {
+                let condition = self.expression(condition, Some(&Type::Bool))?;
+                self.normal_loop_depth += 1;
+                let body = self.expression(body, Some(&Type::Unit));
+                self.normal_loop_depth -= 1;
+                TypedExprKind::While {
+                    condition: Box::new(condition),
+                    body: Box::new(body?),
+                }
+            }
             ExprKind::For {
                 pattern,
                 source,
@@ -106,7 +112,9 @@ impl Checker<'_> {
                         return Ok(TypedExpr::error(expression.span));
                     }
                     let element = match &source.ty {
-                        Type::Array(element) | Type::List(element) => (**element).clone(),
+                        Type::Array(element) | Type::List(element) | Type::Vec(element) => {
+                            (**element).clone()
+                        }
                         Type::String => Type::Integer(16, false),
                         Type::Utf8String => Type::Integer(8, false),
                         _ => {
@@ -121,19 +129,21 @@ impl Checker<'_> {
                 };
                 self.scopes.push(BTreeMap::new());
                 let simple_binding = matches!(&pattern.kind, PatternKind::Binding(name)
-                    if self.active_recognizer(name).is_none()
+                    if self.active_recognizer(name)?.is_none()
                         && matches!(self.names.case_path(self.module, &name.text, name.span), Ok(None)));
                 let name = match &pattern.kind {
                     PatternKind::Binding(name) if simple_binding => name.clone(),
                     _ => Ident {
                         text: format!("$iteration{}", pattern.span.start),
                         span: pattern.span,
+                        provenance: Provenance::Generated,
                     },
                 };
                 let local = self.bind(&name, element, false);
                 if source.is_some() {
                     self.borrowed.insert(local.id);
                 }
+                self.normal_loop_depth += 1;
                 let body = if simple_binding || matches!(pattern.kind, PatternKind::Wildcard) {
                     self.expression(body, Some(&Type::Unit))?
                 } else {
@@ -150,6 +160,7 @@ impl Checker<'_> {
                         false,
                     )?
                 };
+                self.normal_loop_depth -= 1;
                 self.scopes.pop();
                 if let Some((start, step, finish)) = range {
                     TypedExprKind::ForRange {
@@ -165,6 +176,7 @@ impl Checker<'_> {
                         &Ident {
                             text: "$enumerable".into(),
                             span: source.span,
+                            provenance: Provenance::Generated,
                         },
                         source.ty.clone(),
                         false,
@@ -208,7 +220,7 @@ impl Checker<'_> {
             TypedExprKind::Local(id) => self.borrowed.contains(id),
             TypedExprKind::Dereference(_) => true,
             TypedExprKind::Index(value, _) | TypedExprKind::ListTail(value, _) => {
-                matches!(value.ty, Type::Array(_) | Type::List(_)) && is_place(value)
+                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) && is_place(value)
             }
             TypedExprKind::Field(value, _) | TypedExprKind::UnionPayload { value, .. } => {
                 self.borrowed_place(value)
@@ -244,6 +256,7 @@ impl Checker<'_> {
             &Ident {
                 text: format!("$match{}", span.start),
                 span,
+                provenance: Provenance::Generated,
             },
             matched.ty.clone(),
             false,
@@ -368,7 +381,7 @@ impl Checker<'_> {
                 if let Some(case) = self.pattern_case(name)? {
                     return self.case_pattern(name, case, &[], matched);
                 }
-                if self.active_recognizer(name).is_some() {
+                if self.active_recognizer(name)?.is_some() {
                     return self.active_pattern(name, &[], matched);
                 }
                 if name.text.contains('.') {
@@ -600,7 +613,9 @@ impl Checker<'_> {
         };
         if !name.text.contains('.')
             && case.info.module != self.module
-            && self.active_recognizer(name).is_some()
+            && self
+                .names
+                .has_active_pattern(self.module, &format!("{}.{}", self.module, name.text))
         {
             return Err(Diagnostic::new(
                 "E1004",
@@ -706,14 +721,9 @@ impl Checker<'_> {
         ))
     }
 
-    fn active_recognizer(&self, name: &Ident) -> Option<String> {
-        let local = format!("{}.{}", self.module, name.text);
-        if self.names.has_active_pattern(self.module, &local) {
-            return Some(local);
-        }
+    fn active_recognizer(&self, name: &Ident) -> Result<Option<(usize, ActiveCase)>, Diagnostic> {
         self.names
-            .has_active_pattern(self.module, &name.text)
-            .then(|| name.text.clone())
+            .active_pattern(self.module, &name.text, name.span)
     }
 
     fn active_argument(pattern: &Pattern) -> Result<Expr, Diagnostic> {
@@ -724,6 +734,7 @@ impl Checker<'_> {
                 let mut kind = ExprKind::Name(Ident {
                     text: root.into(),
                     span: name.span,
+                    provenance: name.provenance,
                 });
                 for (depth, field) in segments.enumerate() {
                     let value = Expr {
@@ -736,6 +747,7 @@ impl Checker<'_> {
                         Ident {
                             text: field.into(),
                             span: name.span,
+                            provenance: name.provenance,
                         },
                     );
                 }
@@ -771,17 +783,13 @@ impl Checker<'_> {
         arguments: &[Pattern],
         matched: TypedExpr,
     ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
-        let recognizer = self.active_recognizer(name).ok_or_else(|| {
+        let (id, active_case) = self.active_recognizer(name)?.ok_or_else(|| {
             Diagnostic::new(
                 "E1020",
                 format!("unknown union case or active pattern '{}'", name.text),
                 name.span,
             )
         })?;
-        let (id, partial) = self
-            .names
-            .active_pattern(self.module, &recognizer, name.span)?
-            .expect("active recognizer exists");
         let (kind, ty) = self.function(id);
         if ty.contains_error() {
             return Ok((
@@ -796,28 +804,56 @@ impl Checker<'_> {
             unreachable!("recognizer signature checked")
         };
         let extras = parameters.len() - 1;
-        let payload = if partial {
-            if arguments.len() != extras {
-                return Err(Diagnostic::new(
-                    "E1006",
-                    format!(
-                        "partial recognizer '{}' expects {extras} arguments and has no payload",
-                        name.text
-                    ),
-                    name.span,
-                ));
+        let union_case = match active_case {
+            ActiveCase::OptionPartial => {
+                let Type::Union(union_id, _) = result.as_ref() else {
+                    unreachable!("Option result checked")
+                };
+                Some((
+                    *union_id,
+                    self.types.unions[*union_id]
+                        .cases
+                        .iter()
+                        .position(|(case, _)| case == "Some")
+                        .unwrap(),
+                ))
             }
-            None
-        } else if arguments.len() == extras + 1 {
+            ActiveCase::TotalCase { index, .. } => {
+                let Type::Union(union_id, _) = result.as_ref() else {
+                    unreachable!("union result checked")
+                };
+                Some((*union_id, index))
+            }
+            _ => None,
+        };
+        let payload_type = match active_case {
+            ActiveCase::BoolPartial => None,
+            ActiveCase::TotalSingle => Some(result.as_ref().clone()),
+            ActiveCase::OptionPartial | ActiveCase::TotalCase { .. } => {
+                let Type::Union(union_id, args) = result.as_ref() else {
+                    unreachable!()
+                };
+                self.types
+                    .union_payload(*union_id, args, union_case.unwrap().1)
+            }
+        };
+        let payload = if arguments.len() == extras + 1 && payload_type.is_some() {
             arguments.last()
-        } else if arguments.len() == extras && **result == Type::Unit {
+        } else if arguments.len() == extras
+            && payload_type.as_ref().is_none_or(|ty| *ty == Type::Unit)
+        {
             None
         } else {
             return Err(Diagnostic::new(
                 "E1006",
                 format!(
-                    "total recognizer '{}' expects {extras} arguments followed by a payload pattern",
-                    name.text
+                    "recognizer '{}' expects {extras} arguments{}",
+                    name.text,
+                    match &payload_type {
+                        Some(Type::Unit) => " and an optional unit payload pattern",
+                        Some(_) => " followed by a payload pattern",
+                        None => " and no payload pattern",
+                    }
                 ),
                 name.span,
             ));
@@ -866,7 +902,7 @@ impl Checker<'_> {
             result_type.clone(),
             name.span,
         );
-        if partial {
+        if active_case == ActiveCase::BoolPartial {
             return Ok((
                 vec![Alternative {
                     steps: vec![PatternStep::Test(call)],
@@ -879,11 +915,31 @@ impl Checker<'_> {
             &Ident {
                 text: format!("$recognizer{}", self.next_local),
                 span: name.span,
+                provenance: Provenance::Generated,
             },
             result_type,
             false,
         );
-        let (mut alternatives, payload) = if let Some(payload) = payload {
+        let (mut alternatives, payload) = if let Some((union_id, case_id)) = union_case {
+            let wildcard = Pattern {
+                kind: PatternKind::Wildcard,
+                span: name.span,
+                depth: 1,
+            };
+            let has_payload = payload_type.is_some();
+            let patterns = if has_payload {
+                std::slice::from_ref(payload.unwrap_or(&wildcard))
+            } else {
+                &[]
+            };
+            let (alternatives, _) = self.case_pattern(
+                name,
+                (union_id, case_id, has_payload),
+                patterns,
+                local_value(&local),
+            )?;
+            (alternatives, None)
+        } else if let Some(payload) = payload {
             let (alternatives, coverage) =
                 self.pattern_alternatives(payload, local_value(&local))?;
             (alternatives, Some(Box::new(coverage)))
@@ -901,7 +957,16 @@ impl Checker<'_> {
                 .steps
                 .insert(0, PatternStep::Bind(local.clone(), call.clone()));
         }
-        Ok((alternatives, CoveragePat::Total(payload)))
+        let coverage = match active_case {
+            ActiveCase::TotalSingle => CoveragePat::Total(payload),
+            ActiveCase::TotalCase { index, count } => CoveragePat::ActiveCase {
+                function: id,
+                index,
+                count,
+            },
+            _ => CoveragePat::Opaque,
+        };
+        Ok((alternatives, coverage))
     }
 
     fn length_test(matched: &TypedExpr, count: usize, operator: BinaryOp, span: Span) -> TypedExpr {

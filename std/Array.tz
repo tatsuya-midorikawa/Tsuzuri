@@ -1,0 +1,187 @@
+def length :: ref ['a] -> i64
+fn length values = values.length
+
+def is_empty :: ref ['a] -> bool
+fn is_empty values = values.length == 0
+
+def get :: Copy<'a> => ref ['a] -> i64 -> Option.Option<'a>
+fn get values index =
+    if index < 0 || index >= values.length then Option.None else Option.Some values[index]
+
+def at :: ref ['a] -> i64 -> ref 'a
+fn at values index = ref values[index]
+
+def init :: i64 -> (i64 -> 'a) -> ['a]
+fn init count initializer = new ['a](count, initializer)
+
+def sub :: Copy<'a> => ref ['a] -> i64 -> i64 -> ['a]
+fn sub values start count =
+    assert (start >= 0 && start <= values.length && count >= 0 && count <= values.length - start)
+    let selected = ref values[start..start + count]
+    deref selected
+
+def reverse :: Copy<'a> => ref ['a] -> ['a]
+fn reverse values = new ['a](values.length, index -> values[values.length - 1 - index])
+
+def append :: Copy<'a> => ref ['a] -> ref ['a] -> ['a]
+fn append left right =
+    assert (left.length <= 9223372036854775807 - right.length)
+    new ['a](left.length + right.length, index -> if index < left.length then left[index] else right[index - left.length])
+
+def zip :: ref ['a] -> ref ['b] -> [('a * 'b)]
+fn zip left right =
+    assert (left.length == right.length)
+    new [('a * 'b)](left.length, index -> (left[index], right[index]))
+
+def map :: Copy<'a> => ref ['a] -> ('a -> 'b) -> ['b]
+fn map values transform = new ['b](values.length, index -> transform values[index])
+
+def mapi :: Copy<'a> => ref ['a] -> (i64 -> 'a -> 'b) -> ['b]
+fn mapi values transform = new ['b](values.length, index -> transform index values[index])
+
+def map_ref :: ref ['a] -> (ref 'a -> 'b) -> ['b]
+fn map_ref values transform = new ['b](values.length, index -> transform (ref values[index]))
+
+def mapi_ref :: ref ['a] -> (i64 -> ref 'a -> 'b) -> ['b]
+fn mapi_ref values transform = new ['b](values.length, index -> transform index (ref values[index]))
+
+def fold :: Copy<'a> => ref ['a] -> 'state -> ('state -> 'a -> 'state) -> 'state
+fn fold values initial folder =
+    let mut state = initial
+    for value in values do state = folder state value
+    state
+
+def fold_ref :: ref ['a] -> 'state -> ('state -> ref 'a -> 'state) -> 'state
+fn fold_ref values initial folder =
+    let mut state = initial
+    let mut index = 0
+    while index < values.length do
+        state = folder state (ref values[index])
+        index = index + 1
+    state
+
+def fold_back :: Copy<'a> => ref ['a] -> 'state -> ('a -> 'state -> 'state) -> 'state
+fn fold_back values initial folder =
+    let mut state = initial
+    let mut index = values.length
+    while index > 0 do
+        index = index - 1
+        state = folder values[index] state
+    state
+
+def fold_back_ref :: ref ['a] -> 'state -> (ref 'a -> 'state -> 'state) -> 'state
+fn fold_back_ref values initial folder =
+    let mut state = initial
+    let mut index = values.length
+    while index > 0 do
+        index = index - 1
+        state = folder (ref values[index]) state
+    state
+
+def reduce :: Copy<'a> => ref ['a] -> ('a -> 'a -> 'a) -> Option.Option<'a>
+fn reduce values folder =
+    if values.length == 0 then Option.None else
+        let mut state = values[0]
+        let mut index = 1
+        while index < values.length do
+            state = folder state values[index]
+            index = index + 1
+        Option.Some state
+
+def sum :: Numeric<'a> => ref ['a] -> 'a
+fn sum values =
+    let mut total = 0i64 as 'a
+    for value in values do total = total + value
+    total
+
+def product :: Numeric<'a> => ref ['a] -> 'a
+fn product values =
+    let mut total = 1i64 as 'a
+    for value in values do total = total * value
+    total
+
+def min :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+fn min values =
+    if values.length == 0 then Option.None else
+        let mut best = 0
+        let mut index = 1
+        while index < values.length do
+            if values[index] < values[best] then best = index
+            index = index + 1
+        Option.Some (ref values[best])
+
+def max :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+fn max values =
+    if values.length == 0 then Option.None else
+        let mut best = 0
+        let mut index = 1
+        while index < values.length do
+            if values[index] > values[best] then best = index
+            index = index + 1
+        Option.Some (ref values[best])
+
+def any :: ref ['a] -> (ref 'a -> bool) -> bool
+fn any values predicate =
+    let mut index = 0
+    while index < values.length && !(predicate (ref values[index])) do index = index + 1
+    index < values.length
+
+def all :: ref ['a] -> (ref 'a -> bool) -> bool
+fn all values predicate =
+    let mut index = 0
+    while index < values.length && predicate (ref values[index]) do index = index + 1
+    index == values.length
+
+def count :: ref ['a] -> (ref 'a -> bool) -> i64
+fn count values predicate =
+    let mut found = 0
+    let mut index = 0
+    while index < values.length do
+        if predicate (ref values[index]) then found = found + 1
+        index = index + 1
+    found
+
+def find :: ref ['a] -> (ref 'a -> bool) -> Option.Option<ref 'a>
+fn find values predicate =
+    let mut index = 0
+    while index < values.length && !(predicate (ref values[index])) do index = index + 1
+    if index < values.length then Option.Some (ref values[index]) else Option.None
+
+def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Option.Option<i64>
+fn index_of values target =
+    let mut index = 0
+    while index < values.length && !(Eq.eq (ref values[index]) target) do index = index + 1
+    if index < values.length then Option.Some index else Option.None
+
+def contains :: Eq<'a> => ref ['a] -> ref 'a -> bool
+fn contains values target =
+    let result = index_of values target
+    Option.is_some (ref result)
+
+def equal :: Eq<'a> => ref ['a] -> ref ['a] -> bool
+fn equal left right =
+    if left.length != right.length then false else
+        let mut index = 0
+        while index < left.length && left[index] == right[index] do index = index + 1
+        index == left.length
+
+def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Option.Option<i64>
+fn binary_search values target =
+    let mut lower = 0
+    let mut upper = values.length
+    while lower < upper do
+        let middle = lower + (upper - lower) / 2
+        if Ord.lt (ref values[middle]) target then lower = middle + 1 else upper = middle
+    if lower < values.length && !(Ord.lt target (ref values[lower])) then Option.Some lower else Option.None
+
+def sort :: Ord<'a> => ref ['a] -> ['a]
+fn sort values = Array.sort_by values (left -> right -> if Ord.lt right left then 1i64 else 0i64)
+
+def filter :: Copy<'a> => ref ['a] -> (ref 'a -> bool) -> ['a]
+fn filter values predicate =
+    let mut selected = Vec.empty()
+    let mut index = 0
+    while index < values.length do
+        if predicate (ref values[index]) then selected = Vec.push selected values[index]
+        index = index + 1
+    Vec.to_array selected

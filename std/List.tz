@@ -1,0 +1,11 @@
+def length :: ref [|'a|] -> i64
+fn length values = values.length
+
+def is_empty :: ref [|'a|] -> bool
+fn is_empty values = values.length == 0
+
+def fold :: Copy<'a> => ref [|'a|] -> 'state -> ('state -> 'a -> 'state) -> 'state
+fn fold values initial folder =
+    let mut state = initial
+    for value in values do state = folder state value
+    state

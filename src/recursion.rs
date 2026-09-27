@@ -6,13 +6,14 @@ pub(super) fn check(
     classes: &Classes,
     names: &Names,
     types: &TypeContext<'_>,
-) -> Result<(), Diagnostic> {
+) -> Result<Vec<Vec<usize>>, Diagnostic> {
     fn references(
         expression: &TypedExpr,
         classes: &Classes,
         names: &Names,
         types: &TypeContext<'_>,
         result: &mut BTreeSet<usize>,
+        caller: usize,
     ) -> Result<(), Diagnostic> {
         if let TypedExprKind::Function(FunctionRef::User(id))
         | TypedExprKind::GenericFunction(id, _) = expression.kind
@@ -57,20 +58,55 @@ pub(super) fn check(
                 )?);
             }
         }
-        result.extend(classes.recursion_targets(expression));
+        result.extend(classes.recursion_targets(expression, types, caller));
         for child in expression.children() {
-            references(child, classes, names, types, result)?;
+            references(child, classes, names, types, result, caller)?;
         }
         Ok(())
     }
     let graph: Vec<_> = functions
         .iter()
-        .map(|function| {
+        .enumerate()
+        .map(|(caller, function)| {
             let mut edges = BTreeSet::new();
-            references(&function.body, classes, names, types, &mut edges)?;
+            references(&function.body, classes, names, types, &mut edges, caller)?;
             Ok(edges.into_iter().collect::<Vec<_>>())
         })
         .collect::<Result<_, Diagnostic>>()?;
+    check_graph(functions, &graph, |id| {
+        declarations
+            .get(id)
+            .is_some_and(|(_, declaration)| declaration.recursion.is_none())
+    })?;
+    Ok(graph)
+}
+
+pub(super) fn check_specialized(
+    functions: &[CheckedFunction],
+    requires_rec: &[bool],
+) -> Result<(), Diagnostic> {
+    let graph: Vec<_> = functions
+        .iter()
+        .map(|function| {
+            let mut pending = vec![&function.body];
+            let mut targets = BTreeSet::new();
+            while let Some(expression) = pending.pop() {
+                if let TypedExprKind::Function(FunctionRef::User(function)) = expression.kind {
+                    targets.insert(function);
+                }
+                pending.extend(expression.children());
+            }
+            targets.into_iter().collect()
+        })
+        .collect();
+    check_graph(functions, &graph, |id| requires_rec[id])
+}
+
+fn check_graph(
+    functions: &[CheckedFunction],
+    graph: &[Vec<usize>],
+    requires_rec: impl Fn(usize) -> bool,
+) -> Result<(), Diagnostic> {
     let mut reverse = vec![Vec::new(); graph.len()];
     for (caller, edges) in graph.iter().enumerate() {
         for &callee in edges {
@@ -107,10 +143,7 @@ pub(super) fn check(
         }
         if component.len() > 1 || graph[root].contains(&root) {
             for id in component {
-                if declarations
-                    .get(id)
-                    .is_some_and(|(_, declaration)| declaration.recursion.is_none())
-                {
+                if requires_rec(id) {
                     return Err(Diagnostic::new(
                         "E1019",
                         format!(

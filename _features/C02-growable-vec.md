@@ -6,7 +6,7 @@
 | 規模 | L |
 | 依存 | E02, C01, B01 |
 | 後続 | C06, D02 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Vec.tz` または `src/check.rs` `Type` / `Builtin`、`src/parser.rs` / `src/polymorph.rs` 型適用、`src/llvm.rs` `llvm_type` / `drop_value` / `clone_value` / `expression_mode` / `emit_target`、`src/llvm_frame.rs`、`src/ownership.rs`、`src/call_specialization.rs`、`src/runtime/heap-native.ll`、`src/runtime/heap-wasm.ll`、`docs/language.md`、`docs/architecture.md`、`README.md`、`tests/vec.rs`、`tests/fixtures/vec/Vec.tz` |
 
 ## 目的
@@ -37,7 +37,7 @@ D-13 に従い、`[T]` の `%tz.array = { ptr, i64 }` は変更しない。`Vec`
 ### 他チケットへの提供インターフェース
 
 - C06 は `Map.to_array` / `Set.to_array` の構築バッファとして `Vec` を使える。
-- D02 は `Vec<ubyte>` と `String.from_bytes : Vec<ubyte> -> string` を文字列構築の推奨経路にできる。
+- D02 は UTF-16 を `Vec<i16u>`、UTF-8 を `Vec<ubyte>` で構築し、`Vec.to_array` と各符号化の所有権移送 API を使う。
 - F02 は `Vec.to_array` 後の `[T]` / `&[T]` を並列 API 入力にする。
 
 ### 型と表現
@@ -555,18 +555,18 @@ Native/WASM:
 
 ## 受け入れ条件
 
-- [ ] `Vec<'a>` が型注釈・関数引数・戻り値・レコード field に使える。ただし借用を含む field は既存通り拒否。
-- [ ] `Vec` は暗黙 Copy されない。
-- [ ] `Vec.push` / `reserve` が overflow と allocation failure を trap する。
-- [ ] growth は `len + additional`、doubling、old/new byte counts の全てで overflow を trap する。
-- [ ] `Vec.pop` / `get` が B01 `Option` と正しく連携する。
-- [ ] `Vec.at` の借用寿命が `&Vec` 入力に結び付き、所有者より長生きしない。
-- [ ] `Vec.to_array` / `Vec.of_array` が要素 copy なし。
-- [ ] `Vec.of_array` は `len == 0` の incoming array allocation を free し、`%tz.vec zeroinitializer` に正規化する。
-- [ ] `drop_value` が `len` 個だけ drop し、未初期化 capacity を読まない。
-- [ ] `@tz.realloc` が native/WASM で実装され、WASM imports を増やさない。
-- [ ] native/WASM × `-O0`/`-O3` E2E、heap tracking `live == 0`。
-- [ ] 生成 IR が決定的。
+- [x] `Vec<'a>` が型注釈・関数引数・戻り値・レコード field に使える。ただし借用を含む field は既存通り拒否。
+- [x] `Vec` は暗黙 Copy されない。
+- [x] `Vec.push` / `reserve` が overflow と allocation failure を trap する。
+- [x] growth は `len + additional`、doubling、old/new byte counts の全てで overflow を trap する。
+- [x] `Vec.pop` / `get` が B01 `Option` と正しく連携する。
+- [x] `Vec.at` の借用寿命が `&Vec` 入力に結び付き、所有者より長生きしない。
+- [x] `Vec.to_array` / `Vec.of_array` が要素 copy なし。
+- [x] `Vec.of_array` は `len == 0` の incoming array allocation を free し、`%tz.vec zeroinitializer` に正規化する。
+- [x] `drop_value` が `len` 個だけ drop し、未初期化 capacity を読まない。
+- [x] `@tz.realloc` が native/WASM で実装され、WASM imports を増やさない。
+- [x] native/WASM × `-O0`/`-O3` E2E、heap tracking `live == 0`。
+- [x] 生成 IR が決定的。
 
 ## 落とし穴
 
@@ -591,6 +591,10 @@ Native/WASM:
 - Public C/WASM ABI で `Vec` を渡すこと。
 
 ## 未決事項
+
+- 実装時点（2026-09-27）: non-Copy・倍増容量・所有バッファ移転を採用。WASM realloc は隣接領域の分割・吸収と
+  コピー fallback を実装し、`tests/features.mjs ... vec` が allocator のアドレス・データ保持を直接検査する。
+  fallback コピーは同梱 IR のバイトループで、追加の import や重複 intrinsic 宣言を持たない。
 
 - `Vec` の暗黙 Copy は導入しない既定案。要素が Copy でも大きな allocation を隠すため。
 - `Vec.clone` は `Copy<'a>` 制約に限定する既定案。将来 `Clone` / `Default` クラスが入れば拡張する。

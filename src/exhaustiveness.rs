@@ -29,6 +29,11 @@ pub(super) enum CoveragePat {
     /// A total recognizer covers every value only with an irrefutable payload
     /// pattern: the payload's domain cannot be mapped back to the input's.
     Total(Option<Box<CoveragePat>>),
+    ActiveCase {
+        function: usize,
+        index: usize,
+        count: usize,
+    },
     /// Values the checker cannot describe, such as those a partial recognizer
     /// accepts. They never count as covered, and they never make an arm
     /// unreachable.
@@ -214,7 +219,7 @@ impl Checker<'_> {
                     }
                 }
                 if !useful {
-                    warnings.push(Diagnostic::new(
+                    warnings.push(Diagnostic::warning(
                         "W1003",
                         "unreachable match arm; previous patterns already cover this arm",
                         arm.span,
@@ -547,6 +552,14 @@ impl Search<'_, '_> {
                 }
             }
             CoveragePat::Opaque => self.opaque(mode),
+            CoveragePat::ActiveCase {
+                function,
+                index,
+                count,
+            } => {
+                debug_assert!(*function < self.checker.signatures.len() && index < count);
+                self.opaque(mode)
+            }
         })
     }
 

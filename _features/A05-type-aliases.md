@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | (A01) |
 | 後続 | A06, A07, E01, 標準ライブラリ各チケット |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/computation.rs`, `src/driver.rs`, `src/main.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/types_ownership.rs`, `tests/polymorphism.rs`, `tests/modules.rs` |
 
 ## 目的
@@ -325,13 +325,13 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 
 ## 受け入れ条件
 
-- [ ] `type Name = T` がすべての型注釈位置で使える。
-- [ ] A01 後、`type Name<'a>... = T` の置換と arity 検査が動作する。
-- [ ] alias cycle、未使用/未宣言/重複パラメーターが `E1024`。
-- [ ] `.tt` の alias が `E1018`。
-- [ ] alias 展開後の型で instance overlap と組み込み上書きが検査される。
-- [ ] 生成 LLVM IR に alias 専用表現がなく、native/WASM × `-O0`/`-O3` の E2E が通る。
-- [ ] README/docs の予約語・診断・型説明が更新されている。
+- [x] `type Name = T` がすべての型注釈位置で使える。
+- [x] A01 後、`type Name<'a>... = T` の置換と arity 検査が動作する。
+- [x] alias cycle、未使用/未宣言/重複パラメーターが `E1024`。
+- [x] `.tt` の alias が `E1018`。
+- [x] alias 展開後の型で instance overlap と組み込み上書きが検査される。
+- [x] 生成 LLVM IR に alias 専用表現がなく、native/WASM × `-O0`/`-O3` の E2E が通る。
+- [x] README/docs の予約語・診断・型説明が更新されている。
 
 ## 落とし穴
 
@@ -349,6 +349,10 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 - alias 名を診断に保持してプリティ表示する機能。初版は展開後型を表示する。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: A01/A02/E01/E02 は完了済み。現行の `NamedType` と型名の tier 解決を共有し、
+  型式を宣言元で修飾してから引数を置換する。`Type` に別名を残さない。展開の走査上限は既存の `bounded_type` と同じ 4096。
+  E2E は既存の `tests/e2e.mjs` に統合し、専用 fixture の native/WASM `-O0`/`-O3` と解放追跡を検査する。
 
 - **既定案: alias の診断表示は展開後型だけ。** 利用者に書いた alias 名を残したい要望が出たら、別チケットで `TypeOrigin` を設計する。
 - **既定案: `.tt` では alias 禁止。** A06 の default method body を `.tt` に許しても、型宣言まで許すと typeclass-only ファイルの境界が曖昧になるため。

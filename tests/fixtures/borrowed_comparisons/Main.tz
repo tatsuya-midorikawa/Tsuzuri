@@ -1,0 +1,67 @@
+record Named { text: string, rank: i64 }
+
+instance Eq<Named> {
+    fn eq left right = left.text == right.text && left.rank == right.rank
+    fn ne left right = !(Eq.eq left right)
+}
+
+instance Ord<Named> {
+    fn lt left right = left.text < right.text || (left.text == right.text && left.rank < right.rank)
+    fn le left right = !(Ord.lt right left)
+    fn gt left right = Ord.lt right left
+    fn ge left right = !(Ord.lt left right)
+}
+
+export def compare_loop :: i64 -> i64
+fn compare_loop count =
+    let values = new [Named](2, index -> Named { text: "own" + "ed", rank: index })
+    let mut total = 0
+    for index in 1 .. count do
+        assert (values[0] == values[0])
+        assert (values[0] != values[1])
+        assert (values[0] < values[1])
+        assert (values[0] <= values[0])
+        assert (values[1] > values[0])
+        assert (values[1] >= values[1])
+        let same = Named { text: "own" + "ed", rank: index } == Named { text: "own" + "ed", rank: index }
+        total = total + (if same then values[0].text.length else 0)
+    total
+
+export def method_scalar :: i64 -> i64 -> bool
+fn method_scalar left right =
+    let compare: ref i64 -> ref i64 -> bool = Eq.eq
+    compare (ref left) (ref right)
+
+export def method_float :: f64 -> f64 -> bool
+fn method_float left right =
+    Eq.eq (ref left) (ref right) == (left == right) &&
+    Ord.lt (ref left) (ref right) == (left < right)
+
+export def method_record :: i64
+fn method_record =
+    let left = Named { text: "a" + "b", rank: 1 }
+    let right = Named { text: "a" + "b", rank: 1 }
+    let compare: ref Named -> ref Named -> bool = Eq.eq
+    let partial = compare (ref left)
+    assert (partial (ref right))
+    left.text.length + right.text.length
+
+def tick :: ref mut i64 -> i64 -> Named
+fn tick state digit =
+    deref state = deref state * 10 + digit
+    Named { text: "a" + "b", rank: digit }
+
+export def comparison_order :: i64
+fn comparison_order =
+    let mut state = 0
+    let ordered = tick (ref mut state) 1 < tick (ref mut state) 2
+    state + (if ordered then 100 else 0)
+
+export def comparison_jump :: i64
+fn comparison_jump =
+    let mut count = 0
+    while true do
+        count = count + 1
+        let same = Named { text: "a" + "b", rank: 1 } == { break; Named { text: "", rank: 0 } }
+        assert same
+    count

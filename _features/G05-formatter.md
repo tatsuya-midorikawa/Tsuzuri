@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | なし |
 | 後続 | G07, G09 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/lexer.rs`, `src/parser.rs`, `src/syntax.rs`, `src/diagnostic.rs`, `src/driver.rs`, `src/main.rs`, `src/formatter.rs`, `tests/formatter.rs`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -521,21 +521,21 @@ node tests/e2e.mjs target/release/tsuzuri
 
 ## 受け入れ条件
 
-- [ ] `tsuzuri fmt` subcommand がある。
-- [ ] `--check` が file を変更しない。
-- [ ] file / directory 入力に対応し、directory は直下のみ。
-- [ ] comments が保持される。
-- [ ] trailing whitespace removal は comment 外の whitespace trivia にだけ適用され、comment token text は byte-for-byte で保持される。
-- [ ] BOM / CRLF が保持される。
-- [ ] CRLF majority 判定は lone LF だけを LF として数える。
-- [ ] `f (1, 2)` / `f(1, 2)` と `f [x]` / `f[x]` の意味を変えない。
-- [ ] grammar-aware layout stack により nested body / match arm / else の indent を壊さない。
-- [ ] formatter output が parse でき、AST fingerprint が一致する。
-- [ ] `fmt(fmt(x)) == fmt(x)`。
-- [ ] repo 内すべての `.tz/.tt/.tc` corpus test が通る。
-- [ ] source update は atomic replace。
-- [ ] parse / formatting failure で file を変更しない。
-- [ ] 既存 `lex` / parser / compiler behavior が変わらない。
+- [x] `tsuzuri fmt` subcommand がある。
+- [x] `--check` が file を変更しない。
+- [x] file / directory 入力に対応し、directory は直下のみ。
+- [x] comments が保持される。
+- [x] trailing whitespace removal は comment 外の whitespace trivia にだけ適用され、comment token text は byte-for-byte で保持される。
+- [x] BOM / CRLF が保持される。
+- [x] CRLF majority 判定は lone LF だけを LF として数える。
+- [x] `f (1, 2)` / `f(1, 2)` と `f [x]` / `f[x]` の意味を変えない。
+- [x] grammar-aware layout stack により nested body / match arm / else の indent を壊さない。
+- [x] formatter output が parse でき、AST fingerprint が一致する。
+- [x] `fmt(fmt(x)) == fmt(x)`。
+- [x] std・tests/fixtures・examples・benchmarks の全 `.tz/.tt/.tc` corpus test が通る。
+- [x] source update は atomic replace。mode 保持、symlink 拒否、hard link 分離も検査する。
+- [x] parse / formatting failure で file を変更しない。
+- [x] 既存 `lex` / parser / compiler behavior が変わらない。
 
 ## 落とし穴
 
@@ -560,6 +560,9 @@ node tests/e2e.mjs target/release/tsuzuri
 
 ## 未決事項
 
+- **実装（2026-09-27）:** `formatter::format_source` と `lex_with_trivia` を追加。AST は実フィールドを正規化して比較し、Debug 文字列を文字列置換する方法は使わない。
+  既存 `TemporaryDirectory` を同じ親ディレクトリに作り、書き込み・mode 継承・sync・rename を行う。全ファイルを整形確認してから書き込み、処理中の内容変更も検査する。
+  CLI・ファイル安全性・corpus の検証は `tests/formatter.rs` にまとめ、利用者の既存ソースを一括変更しない。
 - **AST equality の実装方式。** 既定案は span/depth を除いた fingerprint。
 - **hard link の扱い。** 既定案は rename により link を切ることを許容し、docs に明記する。
 - **phase 1 の record literal spacing。** `Name {}` が computation expression と曖昧なため、AST equality を最終判定にする。

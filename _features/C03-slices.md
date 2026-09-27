@@ -6,7 +6,7 @@
 | 規模 | L |
 | 依存 | – |
 | 後続 | C04, D02, E05, F02 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs` `ExprKind`、`src/parser.rs` `postfix` / `expression_inner`、`src/check.rs` `Type::Reference` handling / `TypedExprKind`、`src/ownership.rs`、`src/ownership_control.rs`、`src/polymorph.rs`、`src/closures.rs`、`src/call_specialization.rs`、`src/llvm.rs`、`src/llvm_control.rs`、`src/llvm_frame.rs`、`docs/language.md`、`docs/architecture.md`、`tests/slices.rs`、`tests/fixtures/slices/Main.tz` |
 
 ## 目的
@@ -475,17 +475,17 @@ Targets:
 
 ## 受け入れ条件
 
-- [ ] `&xs[a..b]`, `&xs[a..]`, `&xs[..b]` が受理される。
-- [ ] 裸 `xs[a..b]` は `E0002` で拒否され、`Borrow(Slice)` による `&&[T]` を作らない。
-- [ ] `&[T]` は shared array reference として `%tz.array` に下がる。
-- [ ] `&mut [T]`、`&string` は既存 pointer reference のまま。
-- [ ] `layout_size` / `validate_size` / `llvm_frame::stack_size` は shared `&[T]` を 16 bytes として扱う。
-- [ ] bounds check が GEP/load より前。
-- [ ] slice は owner の loan を運び、move/assignment/`&mut` 競合を拒否。
-- [ ] `s.length`, `s[i]`, `for x in s` は owned array copy なし。
-- [ ] `*s` は owned copy を作り、drop/clone が正しい。
-- [ ] record field / task boundary の reference 禁止が維持される。
-- [ ] native/WASM × `-O0`/`-O3` E2E、heap tracking、WASM imports empty。
+- [x] `&xs[a..b]`, `&xs[a..]`, `&xs[..b]` が受理される。
+- [x] 裸 `xs[a..b]` は `E0002` で拒否され、`Borrow(Slice)` による `&&[T]` を作らない。
+- [x] `&[T]` は shared array reference として `%tz.array` に下がる。
+- [x] `&mut [T]`、`&string` は既存 pointer reference のまま。
+- [x] `layout_size` / `validate_size` / `llvm_frame::stack_size` は shared `&[T]` を 16 bytes として扱う。
+- [x] bounds check が GEP/load より前。
+- [x] slice は owner の loan を運び、move/assignment/`&mut` 競合を拒否。
+- [x] `s.length`, `s[i]`, `for x in s` は owned array copy なし。
+- [x] `*s` は owned copy を作り、drop/clone が正しい。
+- [x] record field / task boundary の reference 禁止が維持される。
+- [x] native/WASM × `-O0`/`-O3` E2E、heap tracking、WASM imports empty。
 
 ## 落とし穴
 
@@ -509,6 +509,10 @@ Targets:
 - Parallel splitting（F02）。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: 共有配列参照を直接 `%tz.array` に移行し、`ref` と `&` の両方を扱う。
+    パターンが全体記述子の場所を必要とする場合は entry の内部一時スロットを使うが、可変の場所としては公開しない。
+    E2E は `tests/features.mjs ... slices` へ追加し、専用のスクリプトは増やさない。
 
 - 既定案は direct migration: `Type::Reference(Array,false)` の LLVM 型を `%tz.array` にする。内部 `Type::Slice` は作らない。
 - もし実装中に `Type::Reference` special-case が既存関数値・closure ABI と衝突する場合、段階移行案として `Type::Slice(Box<Type>)` を内部型に追加し、`display` だけ `&[T]` にする。その場合は GUIDE §9 D-13 に「台帳の見直し提案」を追記する。

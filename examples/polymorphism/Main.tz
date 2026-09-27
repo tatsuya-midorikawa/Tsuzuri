@@ -7,6 +7,11 @@ instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
+instance Eq<Point> {
+    fn eq left right = left.x == right.x && left.y == right.y
+    fn ne left right = !(Eq.eq left right)
+}
+
 instance Classes.Score<Point> {
     fn score point = point.x + point.y
 }
@@ -15,4 +20,5 @@ def score :: Classes.Score<'a> => ref 'a -> i32
 fn score value = Classes.Score.score value
 
 let point = add (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 })
+assert (point == point)
 score ref point

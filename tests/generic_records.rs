@@ -314,7 +314,7 @@ fn rejects_invalid_declarations_and_applications() {
             "",
         ),
         (
-            "record Pair<'a, 'b> { first: 'a, second: 'b }\nexport def f :: Pair<i64, i64> -> i64\nfn f p = p.first",
+            "record Pair<'a, 'b> { first: 'a, second: 'b }\nexport def f :: Pair<i64, string> -> i64\nfn f p = p.first",
             "E1008",
             "",
         ),

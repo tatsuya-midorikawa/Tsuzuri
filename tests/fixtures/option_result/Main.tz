@@ -17,6 +17,44 @@ fn result_error_short_circuit =
     | Ok value -> value
     | Error error -> error * 6
 
+export def propagation_first_owned_error :: i64
+fn propagation_first_owned_error =
+    let result: Result<string, string> = Result {
+        let! text = Ok ("own" + "ed")
+        do! Error ("first" + " error")
+        return text + (unreachable ())
+    }
+    (Result.get_error result).length
+
+export def propagation_explicit_conversion :: i64
+fn propagation_explicit_conversion =
+    let result = Result {
+        let! value = Option.to_result ("missing" + "!") (Some 20)
+        return value + 22
+    }
+    Option.get (Result.to_option result)
+
+export def propagation_selected_branch :: bool -> i64
+fn propagation_selected_branch stop =
+    Option.default_value 42 (Option {
+        if stop then do! None else do! Some (assert false)
+        return 1 / 0
+    })
+
+export def propagation_eager_let :: i64 -> i64
+fn propagation_eager_let denominator =
+    Option.default_value 42 (Option {
+        let value = 1 / denominator
+        do! None
+        return value
+    })
+
+export def trap_propagation_eager_let :: i64
+fn trap_propagation_eager_let = propagation_eager_let 0
+
+export def trap_propagation_statement :: i64
+fn trap_propagation_statement = propagation_selected_branch false
+
 export def option_loop :: i64 -> i64
 fn option_loop count =
     Option.default_value (-1) (Option {
@@ -83,23 +121,23 @@ fn owned_loop_failures =
 
 export def remaining_functions :: i64
 fn remaining_functions =
-    let first = Option.or_else None (u -> Some 10)
+    let first = Option.or_else None (_unit -> Some 10)
     let missing: Result<i64, string> = Error ("ba" + "d")
     assert (Result.is_error (&missing))
-    let second = Result.or_else missing (u -> Ok 11)
+    let second = Result.or_else missing (_unit -> Ok 11)
     let success: Result<i64, string> = Ok 21
-    let third = Result.or_else success (u -> unreachable ())
+    let third = Result.or_else success (_unit -> unreachable ())
     assert (Result.is_ok (&third))
     let third = Result.bind (Result.map (n -> n + 1) third) (n -> Ok (n - 1))
     Option.get first + Result.get second + Result.default_value 0 third
 
 export def defaults :: i64
 fn defaults =
-    let first = Option.default_with (u -> 0 / 0) (Some 10)
-    let second = Option.default_with (u -> 10) None
-    let third = Option.get (Option.or_else (Some 10) (u -> unreachable ()))
+    let first = Option.default_with (_unit -> 0 / 0) (Some 10)
+    let second = Option.default_with (_unit -> 10) None
+    let third = Option.get (Option.or_else (Some 10) (_unit -> unreachable ()))
     let result: Result<i64, string> = Ok 12
-    let fourth = Result.default_with (u -> 0 / 0) result
+    let fourth = Result.default_with (_unit -> 0 / 0) result
     first + second + third + fourth
 
 export def conversions :: i64
@@ -118,7 +156,7 @@ fn size text = text.length
 export def owned :: i64 -> i64
 fn owned count =
     let mut total = 0
-    for n in 1 .. count do
+    for _index in 1 .. count do
         let option = Some ("ab" + "c")
         let length = Option.get (Option.map_ref size (&option))
         let copy = Option.get (Option.bind_ref (&option) (text -> Some (clone_string text)))

@@ -19,6 +19,107 @@ fn rejects(source: &str, code: &str) {
 }
 
 #[test]
+fn break_continue_parse_keywords() {
+    for jump in ["break", "continue"] {
+        parser::parse(&format!("while true do {jump}")).unwrap();
+        parser::parse(&format!(
+            "for index = 0 to 3 do {{ if index == 1 then {jump} else () }}"
+        ))
+        .unwrap();
+        let error = parser::parse(&format!("let {jump} = 1\n{jump}")).unwrap_err();
+        assert_eq!(error.code, "E0002");
+        assert!(parser::parse(&format!("record Record {{ {jump}: i64 }}")).is_err());
+    }
+}
+
+#[test]
+fn break_continue_type_contexts() {
+    for jump in ["break", "continue"] {
+        for source in [
+            format!("while false do {jump}"),
+            format!("for index = 0 to 1 do {jump}"),
+            format!("for index in [1, 2] do {jump}"),
+            format!("Option {{ let value = {{ while false do {jump}; 42 }}; return value }}"),
+            format!("let work = task {{ while false do {jump}; return 42 }}\nTask.run work"),
+            format!("let run = value -> {{ while false do {jump}; value }}\nrun 42"),
+        ] {
+            analyze(&source)
+                .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+        }
+        for source in [
+            jump.to_owned(),
+            format!("while true do {{ let run = value -> {jump}; run 0 }}"),
+            format!("while true do {{ let work = task {{ {jump} }}; () }}"),
+            format!("while true do {{ let value = Option {{ return {jump} }}; () }}"),
+            format!("Option {{ while true do {jump} }}"),
+        ] {
+            rejects(&source, "E1023");
+        }
+        rejects(
+            &format!("while true do {{ if true then {jump} else 1; }}"),
+            "E1003",
+        );
+    }
+}
+
+#[test]
+fn break_continue_ir_shapes() {
+    for source in [
+        "while true do break",
+        "for index = 0 to 3 do continue",
+        "for index = 3 downto 0 do if index == 1 then break else continue",
+        "for index in 9223372036854775806 .. 9223372036854775807 do continue",
+        "for index in -9223372036854775807 .. -1 .. -9223372036854775808 do continue",
+        "for index in 0 .. 3 .. 10 do continue",
+        "for index in [1, 2, 3] do if index == 1 then continue else break",
+        "for text in [|\"first\", \"second\"|] do if text.length == 5 then continue else break",
+        "for code in \"text\" do continue",
+        "for outer = 0 to 2 do { while true do break; continue }",
+        "for outer = 0 to 2 do match outer with | 0 -> continue | _ -> break",
+    ] {
+        let ir = accepts(source);
+        assert!(ir.contains("br label"));
+    }
+}
+
+#[test]
+fn break_continue_ownership() {
+    let consume = "def consume :: string -> unit\nfn consume text = ()\n";
+    for body in [
+        "let text = \"owned\"\nwhile true do { consume text; break }",
+        "let text = \"owned\"\nfor index = 0 to 3 do { consume text; break }",
+        "let text = \"owned\"\nwhile true do { if true then { consume text; break } else (); let size = text.length; }",
+        "let text = \"owned\"\nwhile true do { match true with | true -> { consume text; break } | false -> (); let size = text.length; }",
+        "let text = \"owned\"\nwhile true do { while true do break; consume text; break }",
+        "let mut text = \"owned\"\nfor index = 0 to 3 do { consume text; text = \"next\"; continue }",
+    ] {
+        accepts(&format!("{consume}{body}"));
+    }
+    for body in [
+        "let text = \"owned\"\nwhile true do { consume text; continue }",
+        "let mut text = \"owned\"\nwhile true do { consume text; continue; text = \"next\"; }",
+        "let mut text = \"owned\"\nwhile true do { consume text; break; text = \"next\"; }\ntext.length",
+        "let text = \"owned\"\nwhile true do { consume text; break }\ntext.length",
+    ] {
+        rejects(&format!("{consume}{body}"), "E1012");
+    }
+    for jump in ["break", "continue"] {
+        rejects(
+            &format!(
+                "let seed = 0\nlet mut borrowed = ref seed\nwhile true do {{ let local = 1; borrowed = ref local; {jump} }}\nderef borrowed"
+            ),
+            "E1013",
+        );
+        rejects(
+            &format!(
+                "let mut values = [\"first\", \"second\"]\nfor value in values do {{ values = [\"next\"]; {jump} }}"
+            ),
+            "E1014",
+        );
+    }
+}
+
+#[test]
 fn conditional_keywords_and_optional_else() {
     for source in [
         "if true then 1 else 2",
@@ -113,7 +214,7 @@ fn matches_patterns_and_guards() {
 fn match_origin_destructuring() {
     // Destructuring keeps its runtime trap instead of the exhaustiveness check.
     for source in [
-        "for [x] in [[1], [2, 3]] do ()",
+        "for [_x] in [[1], [2, 3]] do ()",
         "(fx [x] -> x) [1, 2]",
         "union Maybe<'a> = None | Some of 'a\nlet f = fx (Some n) -> n\nf (Some 1)",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nfor Even in [2, 3] do ()",
@@ -134,6 +235,110 @@ fn match_origin_destructuring() {
     assert!(module.warnings.is_empty());
     // A written match is checked even when it only destructures.
     rejects("match [1] with | [x] -> x", "E1021");
+}
+
+#[test]
+fn active_option_payloads_use_fresh_types_and_existing_ownership() {
+    for source in [
+        "def (|Parsed|_|) :: ref string -> Option<i64>\nfn (|Parsed|_|) text = Parse.parse text\nmatch \"42\" with | Parsed number -> number | _ -> 0",
+        "def (|Parts|_|) :: i64 -> Option<i64 * i64>\nfn (|Parts|_|) number = if number > 0 then Some (number, number + 1) else None\nmatch 20 with | Parts (left, right) -> left + right | _ -> 0",
+        "def (|Divisible|_|) :: i64 -> i64 -> Option<unit>\nfn (|Divisible|_|) divisor number = if number % divisor == 0 then Some () else None\nmatch 42 with | Divisible (1 + 2) -> 1 | _ -> 0",
+        "def (|Present|_|) :: 'a -> Option<'a>\nfn (|Present|_|) value = Some value\nlet first = match 1 with | Present number -> number | _ -> 0\nlet second = match true with | Present flag -> flag | _ -> false\nif second then first else 0",
+    ] {
+        accepts(source);
+    }
+    rejects(
+        "def (|Parsed|_|) :: i64 -> Option<i64>\nfn (|Parsed|_|) value = Some value\nmatch 1 with | Parsed -> 1 | _ -> 0",
+        "E1006",
+    );
+    rejects(
+        "def (|Owned|_|) :: string -> Option<string>\nfn (|Owned|_|) value = Some value\nmatch \"text\" with | Owned value -> value.length | _ -> 0",
+        "E1014",
+    );
+}
+
+#[test]
+fn active_multiple_cases_validate_backing_unions_and_payloads() {
+    rejects(
+        "record A { value: i64 }\nunion View = First | Second\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = First\nmatch 1 with | A -> 1 | _ -> 0",
+        "E1001",
+    );
+    accepts(
+        "union Parity = IsEven | IsOdd\ndef (|Even|Odd|) :: i64 -> Parity\nfn (|Even|Odd|) number = if number % 2 == 0 then IsEven else IsOdd\nmatch 41 with | Even -> 0 | Odd -> 1 | _ -> -1",
+    );
+    accepts(
+        "union View<'a> = First of 'a | Second of 'a\ndef (|Small|Large|) :: 'a -> View<'a>\nfn (|Small|Large|) value = First value\nlet first = match 2 with | Small number -> number | Large number -> number | _ -> 0\nlet second = match true with | Small flag -> flag | Large flag -> flag | _ -> false\nif second then first else 0",
+    );
+    for (source, code) in [
+        (
+            "def (|A|B|_|) :: i64 -> bool\nfn (|A|B|_|) value = true",
+            "E1020",
+        ),
+        (
+            "def (|a|B|) :: i64 -> bool\nfn (|a|B|) value = true",
+            "E1020",
+        ),
+        (
+            "def (|A|A|) :: i64 -> bool\nfn (|A|A|) value = true",
+            "E1020",
+        ),
+        (
+            "def (|A|B|) :: i64 -> bool\nfn (|A|B|) value = true",
+            "E1003",
+        ),
+        (
+            "union View = Only\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = Only",
+            "E1020",
+        ),
+        (
+            "union View = Only\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = Only\nmatch 1 with | B -> 1 | _ -> 0",
+            "E1020",
+        ),
+        (
+            "union View = A | B\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = A",
+            "E1001",
+        ),
+    ] {
+        rejects(source, code);
+    }
+    rejects(
+        "union View = First | Second\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = First\nmatch 1 with | A -> 1 | B -> 2",
+        "E1021",
+    );
+}
+
+#[test]
+fn active_aliases_follow_module_origin_and_report_ambiguity() {
+    let recognizer = "def (|Identity|) :: i64 -> i64\nfn (|Identity|) value = value";
+    let source = "match 42 with | Identity value -> value";
+    analyze_modules(&[("Main.tz", source), ("First.tz", recognizer)]).unwrap();
+    let error = analyze_modules(&[
+        ("Main.tz", source),
+        ("First.tz", recognizer),
+        ("Second.tz", recognizer),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1004");
+    analyze_modules(&[
+        ("Main.tz", "match 42 with | First.Identity value -> value"),
+        ("First.tz", recognizer),
+        ("Second.tz", recognizer),
+    ])
+    .unwrap();
+    tsuzuri::analyze_modules_with_std(
+        &[("Main.tz", source), ("First.tz", recognizer)],
+        &[("std/Option.tz", recognizer)],
+    )
+    .unwrap();
+    let error = tsuzuri::analyze_modules_with_std(
+        &[("Main.tz", "0"), ("First.tz", recognizer)],
+        &[(
+            "std/Option.tz",
+            "def invoke :: i64\nfn invoke = match 42 with | Identity value -> value",
+        )],
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "E1020");
 }
 
 #[test]

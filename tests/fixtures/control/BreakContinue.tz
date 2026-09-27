@@ -1,0 +1,179 @@
+record JumpHeld { text: string, value: i64 }
+record JumpUnit { text: string, finished: unit }
+
+def discard :: string -> unit -> unit
+fn discard text finished = ()
+
+def reader :: string -> i64 -> i64
+fn reader text = value -> text.length + value
+
+export def break_while :: i64 -> i64
+fn break_while limit =
+    let mut count = 0
+    while count < limit do
+        count = count + 1
+        if count == 42 then break
+    count
+
+export def continue_sum :: i64 -> i64
+fn continue_sum count =
+    let mut total = 0
+    for index in 0 .. (count - 1) do
+        if index % 3 == 0 then continue
+        total = total + index
+    total
+
+export def continue_endpoints :: i64
+fn continue_endpoints =
+    let mut count = 0
+    for index = 2147483646 to 2147483647 do { count = count + 1; continue }
+    for index = -2147483647 downto -2147483648 do { count = count + 1; continue }
+    for index in 254i8u .. 255i8u do { count = count + 1; continue }
+    for index in 9223372036854775806 .. 9223372036854775807 do { count = count + 1; continue }
+    for index in -9223372036854775807 .. -1 .. -9223372036854775808 do { count = count + 1; continue }
+    for index in 170141183460469231731687303715884105726i128 .. 170141183460469231731687303715884105727i128 do { count = count + 1; continue }
+    for index in -170141183460469231731687303715884105727i128 .. -1i128 .. -170141183460469231731687303715884105728i128 do { count = count + 1; continue }
+    for index in 18446744073709551614i64u .. 18446744073709551615i64u do { count = count + 1; continue }
+    count
+
+export def break_nested :: i64
+fn break_nested =
+    let mut total = 0
+    for outer = 1 to 3 do
+        for inner = 1 to 10 do
+            if inner == 3 then break
+            if inner == 2 then continue
+            total = total + (outer + inner) as i64
+        total = total + 100
+    total
+
+export def break_owned :: i64 -> i64
+fn break_owned count =
+    let mut total = 0
+    for index in 0 .. (count - 1) do
+        let values = new ["ab" + "cd"]
+        total = total + values[0].length
+        if index >= 3 then break
+    total
+
+export def continue_owned :: i64 -> i64
+fn continue_owned count =
+    let mut total = 0
+    for index in 0 .. (count - 1) do
+        let values = new ["a" + "b", "c" + "d"]
+        if index % 2 == 0 then continue
+        total = total + values[0].length + values[1].length
+    total
+
+export def break_sources :: bool -> i64
+fn break_sources list =
+    let mut total = 0
+    if list then
+        for text in new [|"a" + "b", "c" + "d"|] do
+            total = total + text.length
+            break
+    else
+        for (text, count) in new [("a" + "b", 3), ("c" + "d", 4)] do
+            total = total + text.length + count
+            break
+    total
+
+export def break_match_owned :: i64
+fn break_match_owned =
+    let mut total = 0
+    while true do
+        match JumpHeld { text: "a" + "b", value: 42 } with
+        | { text = text; value = value } ->
+            total = text.length + value
+            break
+    total
+
+export def break_temporaries :: i32 -> i64
+fn break_temporaries kind =
+    let mut count = 0
+    while true do
+        count = count + 1
+        if kind == 0 then
+            discard ("a" + "b") ({ break; () })
+        elif kind == 1 then
+            let value = JumpUnit { text: "a" + "b", finished: { break; () } }
+            ()
+        elif kind == 2 then
+            let values = new ["a" + "b", { break; "" }];
+            ()
+        elif kind == 3 then
+            let values = new [|"a" + "b", { break; "" }|];
+            ()
+        elif kind == 4 then
+            let values = ["a" + "b", { break; "" }]
+            ()
+        elif kind == 5 then
+            let values = [|"a" + "b", { break; "" }|]
+            ()
+        elif kind == 6 then
+            let value = JumpHeld { text: "a" + "b", value: 1 }
+            let updated = { value with value = { break; 42 } }
+            ()
+        elif kind == 7 then
+            let same = ("a" + "b") == { break; "ab" }
+            ()
+        elif kind == 8 then
+            let value = reader ("a" + "b") ({ break; 0 })
+            ()
+        elif kind == 9 then
+            let values = new [{ break; "" }];
+            ()
+        elif kind == 10 then
+            let values = new [|{ break; "" }|];
+            ()
+        else
+            break
+    count
+
+export def continue_temporaries :: i64 -> i64
+fn continue_temporaries limit =
+    let mut count = 0
+    while count < limit do
+        count = count + 1
+        discard ("a" + "b") ({ continue; () })
+        assert false
+    count
+
+export def nested_jump_temporaries :: i64
+fn nested_jump_temporaries =
+    let mut count = 0
+    for index = 0 to 9 do
+        discard ("a" + "b") ({ while true do break; () })
+        count = count + 1
+        continue
+    count
+
+export def branch_jump_temporaries :: bool -> i64
+fn branch_jump_temporaries stop =
+    let mut total = 0
+    while true do
+        let text = ("a" + "b") + (if stop then { break; "" } else "c" + "d")
+        total = text.length
+        break
+    total
+
+export def match_jump_temporaries :: bool -> i64
+fn match_jump_temporaries stop =
+    let mut total = 0
+    while true do
+        let text = ("a" + "b") + (match stop with | true -> { break; "" } | false -> "c" + "d")
+        total = text.length
+        break
+    total
+
+export def break_skips_trap :: bool -> i64
+fn break_skips_trap stop =
+    while true do
+        if stop then break
+        assert false
+    42
+
+export def break_traps_without_jump :: unit
+fn break_traps_without_jump =
+    let value = break_skips_trap false
+    ()

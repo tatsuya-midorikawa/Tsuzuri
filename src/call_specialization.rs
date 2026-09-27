@@ -220,7 +220,7 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
     fn mutable_reference(ty: &Type, module: &CheckedModule) -> bool {
         match ty {
             Type::Reference(_, true) => true,
-            Type::Array(ty) | Type::List(ty) | Type::Reference(ty, false) => {
+            Type::Array(ty) | Type::List(ty) | Type::Vec(ty) | Type::Reference(ty, false) => {
                 mutable_reference(ty, module)
             }
             Type::Record(id, arguments) => module
@@ -234,7 +234,11 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
     }
     matches!(
         expression.kind,
-        TypedExprKind::Assign(..) | TypedExprKind::Borrow(_, true)
+        TypedExprKind::Assign(..)
+            | TypedExprKind::Borrow(_, true)
+            | TypedExprKind::StructuralCompare(..)
+            | TypedExprKind::StructuralHash(_)
+            | TypedExprKind::StructuralDisplay(_)
     ) || mutable_reference(&expression.ty, module)
         || !all_children(expression, &mut |child| !may_mutate(child, module))
 }
@@ -309,6 +313,14 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
             },
             module,
         ),
+        BorrowOperand(value) => read_only(value, local, Access::Read, module),
+        Slice { value, start, end } => {
+            read_only(value, local, Access::Read, module)
+                && start
+                    .iter()
+                    .chain(end)
+                    .all(|bound| read_only(bound, local, Access::Consume, module))
+        }
         Assign(place, value) => {
             read_only(place, local, Access::Write, module)
                 && read_only(value, local, Access::Consume, module)
@@ -338,7 +350,7 @@ fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &Chec
             | BinaryOp::GreaterEqual,
             left,
             right,
-        ) if left.ty.is_string() => {
+        ) => {
             read_only(left, local, Access::Read, module)
                 && read_only(right, local, Access::Read, module)
         }

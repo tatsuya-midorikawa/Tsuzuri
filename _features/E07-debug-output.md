@@ -6,7 +6,7 @@
 | 規模 | S |
 | 依存 | D01, E02 |
 | 後続 | なし |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Debug.tz`, `src/check.rs`, `src/llvm.rs`, `src/driver.rs`, `src/main.rs`, `src/runtime/debug.ll`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -568,17 +568,17 @@ WASM host example must copy bytes from `instance.exports.memory`.
 
 ## 受け入れ条件
 
-- [ ] `Debug.print : Display<'a> => &'a -> unit` が使える。
-- [ ] `Debug.trace : Display<'a> => 'a -> 'a` が値を一度評価して返す。
-- [ ] native は stderr に line output する。
-- [ ] WASM default は imports 空で no-op だが argument evaluation/traps は維持する。
-- [ ] WASM `--debug-output` は明示 import を追加する。
-- [ ] WASM `--debug-output` は reachable debug import がある場合だけ memory を export する。
-- [ ] debug call は LLVM で pure 扱いされない。
-- [ ] task 内呼び出しが動き、順序保証を過剰にテストしない。
-- [ ] native/WASM × `-O0`/`-O3` が通る。
-- [ ] heap tracking live == 0。
-- [ ] `src/runtime/debug.ll` is tracked despite `*.ll` ignore, verified with `git ls-files`.
+- [x] `Debug.print : Display<'a> => &'a -> unit` が使える。
+- [x] `Debug.trace : Display<'a> => 'a -> 'a` が値を一度評価して返す。
+- [x] native は stderr に line output し、short/zero/error write を検証する。
+- [x] WASM default は imports 空で no-op だが argument/Display evaluation とその traps は維持する。
+- [x] WASM `--debug-output` は到達する Debug に明示 import を追加する。
+- [x] reachable debug import がある場合に memory export を明示し、既存の memory export は維持する。未使用時は成果物が byte-identical。
+- [x] debug call は LLVM で pure 扱いされない。
+- [x] task 内呼び出しが動き、出力順は仮定しない。
+- [x] native/WASM × `-O0`/`-O3` が通る。
+- [x] heap tracking live == 0。trace は元の値・Display・UTF-8 の3確保で、元の値の追加 clone なし。
+- [x] `src/runtime/debug.ll` は ignore 対象外で、`git ls-files --cached --others --exclude-standard` の追加対象に含まれる。
 
 ## 落とし穴
 
@@ -617,6 +617,11 @@ browser console glue generator。
 file/network I/O。
 
 ## 未決事項
+
+**実装判断（2026-09-27）:** 既存の emit API は変更せず、EmitOptions を受ける API を追加した。
+現行 WASM は memory を既に export しているため、それを削らず、debug が到達する場合に明示的な export 指定を加える。
+native は byte 列と改行を書き、WASM host は一回の import 呼び出しの byte 列へ改行を付ける。
+検証は `tests/debug_output.rs`、`tests/features.mjs ... debug_output`、`tests/primitives.mjs` に統合。変更は未コミットのまま。
 
 `Debug.trace` に label 付き overload を追加するかは未決。既定案は追加しない。
 

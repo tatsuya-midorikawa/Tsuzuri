@@ -1,0 +1,90 @@
+def sum :: ref [i64] -> i64
+fn sum values =
+    let mut result = 0
+    for value in values do result = result + value
+    result
+
+def middle :: ref [i64] -> i64 -> i64 -> ref [i64]
+fn middle values start finish = ref values[start..finish]
+
+export def slice_sum :: i64 -> i64 -> i64 -> i64
+fn slice_sum count start finish =
+    let values = new [i64](count, index -> index)
+    sum (middle (ref values) start finish)
+
+export def slice_nested :: i64
+fn slice_nested =
+    let values = [10, 20, 30, 40]
+    let first = ref values[1..]
+    let second = ref first[..2]
+    let third = ref second[1..2]
+    second.length * 100 + third[0]
+
+def first :: ref [string] -> ref string
+fn first values = ref values[0]
+
+export def slice_string_refs :: i64
+fn slice_string_refs =
+    let values = new ["first" + "!", "second" + "!"]
+    let borrowed = first (ref values[1..])
+    let copied = clone_string borrowed
+    copied.length + values[0].length
+
+def copy_middle :: unit -> [i64]
+fn copy_middle unused =
+    let values = new [1, 2, 3, 4]
+    let slice = ref values[1..3]
+    deref slice
+
+export def slice_copy_owned :: i64
+fn slice_copy_owned =
+    let values = copy_middle ()
+    values[0] * 10 + values[1]
+
+def add_length :: ref [i64] -> i64 -> i64
+fn add_length values offset = values.length + offset
+
+export def slice_closures :: i64
+fn slice_closures =
+    let values = [10, 20, 30, 40]
+    let slice = ref values[1..3]
+    let read = unused -> slice[0] + slice.length
+    let partial = add_length slice
+    let function = middle
+    read () + partial 10 + (function (ref values) 0 1).length
+
+export def slice_aggregates :: i64
+fn slice_aggregates =
+    let values = [1, 2, 3]
+    let views = [ref values[..1], ref values[1..]]
+    let pair = (views[0], views[1])
+    match pair with | (left, right) -> left[0] + right[0] + right[1]
+
+export def slice_reborrow :: i64
+fn slice_reborrow =
+    let mut values = [1, 2, 3]
+    let exclusive = ref mut values
+    let shared = ref exclusive
+    let sliced = ref shared[1..]
+    sliced[0] + sliced.length
+
+export def slice_borrowed_match :: i64
+fn slice_borrowed_match =
+    let values = new ["one" + "!", "two" + "!"]
+    let slice = ref values[..2]
+    match slice with | [first; second] -> first.length + second.length | _ -> 0
+
+export def trap_slice_start :: i64
+fn trap_slice_start = slice_sum 3 (-1) 2
+
+export def trap_slice_end :: i64
+fn trap_slice_end = slice_sum 3 0 4
+
+export def trap_slice_order :: i64
+fn trap_slice_order = slice_sum 3 2 1
+
+export def trap_slice_index :: i64
+fn trap_slice_index =
+    let values = [1, 2, 3]
+    let slice = ref values[1..2]
+    slice[1]

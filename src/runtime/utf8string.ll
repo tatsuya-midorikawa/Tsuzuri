@@ -99,3 +99,55 @@ equal:
 different:
   ret i1 false
 }
+
+define internal i32 @tz.utf8string.compare(%tz.utf8string %left, %tz.utf8string %right) nounwind {
+entry:
+  %left_data = extractvalue %tz.utf8string %left, 0
+  %left_length = extractvalue %tz.utf8string %left, 1
+  %right_data = extractvalue %tz.utf8string %right, 0
+  %right_length = extractvalue %tz.utf8string %right, 1
+  %shorter = icmp ult i64 %left_length, %right_length
+  %length = select i1 %shorter, i64 %left_length, i64 %right_length
+  br label %test
+test:
+  %index = phi i64 [ 0, %entry ], [ %wide_next, %wide_equal ]
+  %done = icmp eq i64 %index, %length
+  br i1 %done, label %prefix, label %width
+width:
+  %remaining = sub i64 %length, %index
+  %wide = icmp uge i64 %remaining, 8
+  br i1 %wide, label %compare_wide, label %scalar
+compare_wide:
+  %left_pointer = getelementptr inbounds i8, ptr %left_data, i64 %index
+  %right_pointer = getelementptr inbounds i8, ptr %right_data, i64 %index
+  %left_word = load i64, ptr %left_pointer, align 1
+  %right_word = load i64, ptr %right_pointer, align 1
+  %words_equal = icmp eq i64 %left_word, %right_word
+  br i1 %words_equal, label %wide_equal, label %scalar
+wide_equal:
+  %wide_next = add i64 %index, 8
+  br label %test
+scalar:
+  %offset = phi i64 [ %index, %width ], [ %index, %compare_wide ], [ %next, %equal ]
+  %end = icmp eq i64 %offset, %length
+  br i1 %end, label %prefix, label %compare
+compare:
+  %left_at = getelementptr inbounds i8, ptr %left_data, i64 %offset
+  %right_at = getelementptr inbounds i8, ptr %right_data, i64 %offset
+  %left_byte = load i8, ptr %left_at
+  %right_byte = load i8, ptr %right_at
+  %same = icmp eq i8 %left_byte, %right_byte
+  br i1 %same, label %equal, label %different
+equal:
+  %next = add i64 %offset, 1
+  br label %scalar
+different:
+  %less = icmp ult i8 %left_byte, %right_byte
+  %order = select i1 %less, i32 -1, i32 1
+  ret i32 %order
+prefix:
+  %same_length = icmp eq i64 %left_length, %right_length
+  %length_order = select i1 %shorter, i32 -1, i32 1
+  %result = select i1 %same_length, i32 0, i32 %length_order
+  ret i32 %result
+}

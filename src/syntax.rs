@@ -28,6 +28,8 @@ pub enum TokenKind {
     Integer(String),
     Float(String),
     String(StringLiteral),
+    Char(u16),
+    Utf8Char(u32),
     Fn,
     Fx,
     Def,
@@ -37,8 +39,11 @@ pub enum TokenKind {
     Private,
     Record,
     Union,
+    Type,
+    Test,
     Class,
     Instance,
+    Deriving,
     Let,
     Task,
     Do,
@@ -49,6 +54,8 @@ pub enum TokenKind {
     To,
     Downto,
     While,
+    Break,
+    Continue,
     Mut,
     Ref,
     Deref,
@@ -136,23 +143,40 @@ pub struct Token {
 pub struct Ident {
     pub text: String,
     pub span: Span,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provenance {
+    User,
+    Generated,
 }
 
 #[derive(Debug)]
 pub struct Program {
     pub source_kind: Option<SourceKind>,
+    pub type_aliases: Vec<TypeAliasDecl>,
     pub records: Vec<RecordDecl>,
     pub unions: Vec<UnionDecl>,
     pub functions: Vec<FunctionDecl>,
     pub classes: Vec<ClassDecl>,
     pub instances: Vec<InstanceDecl>,
     pub active_patterns: Vec<ActivePattern>,
+    pub tests: Vec<TestDecl>,
     pub entry: Option<Expr>,
 }
 
 #[derive(Clone, Debug)]
+pub struct TestDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct ActivePattern {
-    pub name: Ident,
+    pub cases: Vec<Ident>,
     pub function: String,
     pub partial: bool,
 }
@@ -164,11 +188,20 @@ pub enum Visibility {
 }
 
 #[derive(Clone, Debug)]
+pub struct TypeAliasDecl {
+    pub visibility: Visibility,
+    pub name: Ident,
+    pub parameters: Vec<Ident>,
+    pub target: TypeExpr,
+}
+
+#[derive(Clone, Debug)]
 pub struct RecordDecl {
     pub visibility: Visibility,
     pub name: Ident,
     pub parameters: Vec<Ident>,
     pub fields: Vec<Parameter>,
+    pub derives: Vec<(DeriveClass, Span)>,
 }
 
 #[derive(Clone, Debug)]
@@ -177,6 +210,28 @@ pub struct UnionDecl {
     pub name: Ident,
     pub parameters: Vec<Ident>,
     pub cases: Vec<UnionCaseDecl>,
+    pub derives: Vec<(DeriveClass, Span)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeriveClass {
+    Eq,
+    Ord,
+    Display,
+    Hash,
+    Default,
+}
+
+impl DeriveClass {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Eq => "Eq",
+            Self::Ord => "Ord",
+            Self::Display => "Display",
+            Self::Hash => "Hash",
+            Self::Default => "Default",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -232,13 +287,16 @@ pub enum ConstraintName {
 pub struct ClassDecl {
     pub name: Ident,
     pub variable: Ident,
+    pub superclasses: Vec<ConstraintExpr>,
     pub methods: Vec<SignatureDecl>,
+    pub defaults: Vec<Definition>,
 }
 
 #[derive(Debug)]
 pub struct InstanceDecl {
     pub class: Ident,
     pub ty: TypeExpr,
+    pub constraints: Vec<ConstraintExpr>,
     pub methods: Vec<Definition>,
 }
 
@@ -315,8 +373,12 @@ pub enum ExprKind {
     Integer(u128, Option<String>),
     Float(String, Option<String>),
     String(StringLiteral),
+    Char(u16),
+    Utf8Char(u32),
     Bool(bool),
     Unit,
+    Break,
+    Continue,
     Name(Ident),
     QualifiedFunction(Ident),
     TypeFunction(Box<Ident>, Box<Ident>),
@@ -327,6 +389,7 @@ pub enum ExprKind {
     Task(Box<Expr>),
     TaskRun(Box<Expr>),
     Computation(Ident, Box<ComputationBlock>),
+    ComputationBoundary(Box<Expr>),
     If {
         condition: Box<Expr>,
         then_branch: Box<Expr>,
@@ -358,7 +421,11 @@ pub enum ExprKind {
         result: Box<Expr>,
     },
     Record {
-        name: Ident,
+        name: Box<Ident>,
+        fields: Vec<(Ident, Expr)>,
+    },
+    RecordUpdate {
+        base: Box<Expr>,
         fields: Vec<(Ident, Expr)>,
     },
     Array(Vec<Expr>),
@@ -370,6 +437,11 @@ pub enum ExprKind {
     NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
+    Slice {
+        value: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     Borrow(Box<Expr>, bool, Notation),
     Dereference(Box<Expr>, Notation),
     Assign(Box<Expr>, Box<Expr>),

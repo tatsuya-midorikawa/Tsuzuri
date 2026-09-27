@@ -3,7 +3,59 @@ use crate::check::PatternStep;
 
 type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
 
+pub(super) struct LoopFlow {
+    locals: BTreeSet<usize>,
+    breaks: Vec<State>,
+    continues: Vec<State>,
+}
+
 impl Checker<'_> {
+    pub(super) fn merge_reachable(&mut self, other: &State, reachable: bool) {
+        if reachable {
+            if self.reachable {
+                self.merge(other);
+            } else {
+                self.state = other.clone();
+            }
+        }
+        self.reachable |= reachable;
+    }
+
+    pub(super) fn eval_loop_jump(&mut self, breaking: bool, span: Span) -> Result<(), Diagnostic> {
+        if !self.reachable {
+            return Ok(());
+        }
+        let flow = self
+            .loop_flows
+            .last()
+            .expect("loop context checked before ownership");
+        if flow.breaks.len() + flow.continues.len() >= 4096 {
+            return Err(error(
+                "E1017",
+                "too many loop exit paths; split the loop body",
+                span,
+            ));
+        }
+        let locals = self
+            .state
+            .locals
+            .keys()
+            .copied()
+            .filter(|id| !flow.locals.contains(id))
+            .collect();
+        let state = self.state.clone();
+        self.finish_control_scope(&locals, &Value::default(), span)?;
+        let edge = std::mem::replace(&mut self.state, state);
+        let flow = self.loop_flows.last_mut().unwrap();
+        if breaking {
+            flow.breaks.push(edge);
+        } else {
+            flow.continues.push(edge);
+        }
+        self.reachable = false;
+        Ok(())
+    }
+
     fn alias_source(
         &mut self,
         local: &Local,
@@ -137,22 +189,41 @@ impl Checker<'_> {
         live: &BTreeSet<usize>,
     ) -> Result<(), Diagnostic> {
         let entry = self.state.clone();
+        let entry_reachable = self.reachable;
         let ids: BTreeSet<_> = entry.locals.keys().copied().collect();
         let live: BTreeSet<_> = live.intersection(&ids).copied().collect();
         for _ in 0..=crate::syntax::MAX_NESTING {
             let before = self.loop_summary();
+            self.reachable = entry_reachable;
             if let Some(condition) = condition {
                 self.eval(condition, Use::Consume, &live)?;
             }
             let exit = self.state.clone();
+            let exit_reachable = self.reachable;
+            self.loop_flows.push(LoopFlow {
+                locals: ids.clone(),
+                breaks: Vec::new(),
+                continues: Vec::new(),
+            });
             self.eval(body, Use::Consume, &live)?;
-            self.state.moved.retain(|place| ids.contains(&place.root));
-            self.state
-                .generic_moves
-                .retain(|place, _| ids.contains(&place.root));
-            self.merge(&entry);
+            let mut flow = self.loop_flows.pop().unwrap();
+            if self.reachable {
+                self.state.moved.retain(|place| ids.contains(&place.root));
+                self.state
+                    .generic_moves
+                    .retain(|place, _| ids.contains(&place.root));
+                flow.continues.push(self.state.clone());
+            }
+            self.state = entry.clone();
+            for edge in flow.continues {
+                self.merge(&edge);
+            }
             if self.loop_summary() == before {
                 self.state = exit;
+                self.reachable = exit_reachable;
+                for edge in flow.breaks {
+                    self.merge_reachable(&edge, true);
+                }
                 return Ok(());
             }
         }
@@ -244,13 +315,17 @@ impl Checker<'_> {
     ) -> Result<Value, Diagnostic> {
         let temporary = self.alias_source(subject, matched, during)?;
         let mut pending = self.state.clone();
+        let mut pending_reachable = self.reachable;
         let mut exits: Option<State> = None;
         let mut result = Value::default();
         for arm in arms {
             let mut pattern_pending = pending.clone();
+            let mut pattern_pending_reachable = pending_reachable;
             let mut failed = pending.clone();
+            let mut failed_reachable = pending_reachable;
             for alternative in &arm.alternatives {
                 self.state = pattern_pending.clone();
+                self.reachable = pattern_pending_reachable;
                 let protected = self.protect(subject, during)?;
                 self.held.push(protected);
                 let mut temporaries = BTreeSet::new();
@@ -268,10 +343,13 @@ impl Checker<'_> {
                         PatternStep::Test(condition) => {
                             self.eval(condition, Use::Consume, during)?;
                             let success = self.state.clone();
+                            let success_reachable = self.reachable;
                             self.finish_control_scope(&temporaries, &Value::default(), span)?;
-                            self.merge(&pattern_pending);
+                            self.merge_reachable(&pattern_pending, pattern_pending_reachable);
                             pattern_pending = self.state.clone();
+                            pattern_pending_reachable = self.reachable;
                             self.state = success;
+                            self.reachable = success_reachable;
                         }
                     }
                 }
@@ -289,10 +367,13 @@ impl Checker<'_> {
                     self.state.aliases.remove(id);
                 }
                 let success = self.state.clone();
+                let success_reachable = self.reachable;
                 self.finish_control_scope(&temporaries, &Value::default(), span)?;
-                self.merge(&failed);
+                self.merge_reachable(&failed, failed_reachable);
                 failed = self.state.clone();
+                failed_reachable = self.reachable;
                 self.state = success;
+                self.reachable = success_reachable;
                 // Pattern variables acquire their values only after the guard succeeds.
                 if !subject.ty.carries_loans(&self.module.types()) {
                     self.state
@@ -321,17 +402,22 @@ impl Checker<'_> {
                 let value = self.eval(&arm.body, Use::Consume, live)?;
                 ids.extend(temporaries);
                 self.finish_control_scope(&ids, &value, span)?;
-                result.loans.extend(value.loans);
-                if let Some(other) = &exits {
-                    self.merge(other);
+                if self.reachable {
+                    result.loans.extend(value.loans);
+                    if let Some(other) = &exits {
+                        self.merge(other);
+                    }
+                    exits = Some(self.state.clone());
                 }
-                exits = Some(self.state.clone());
             }
             self.state = pattern_pending;
-            self.merge(&failed);
+            self.reachable = pattern_pending_reachable;
+            self.merge_reachable(&failed, failed_reachable);
             pending = self.state.clone();
+            pending_reachable = self.reachable;
         }
-        self.state = exits.expect("the parser requires match arms");
+        self.reachable = exits.is_some();
+        self.state = exits.unwrap_or(pending);
         if temporary {
             self.finish_control_scope(&BTreeSet::from([subject.id]), &result, span)?;
         } else {

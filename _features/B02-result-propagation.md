@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | B01 |
 | 後続 | D01, D02, D04, C02, C06, C07, B06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Option.tc`, `std/Result.tc`, `src/computation.rs`, `src/parser.rs`, `src/check.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `tests/computations.rs`, `tests/fixtures/computations/`, `tests/computations.mjs`, `tests/call_specialization.rs`, `benchmarks/run-computations.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `docs/benchmarks.md` |
 
 ## 目的
@@ -458,14 +458,14 @@ fn result_explicit_conversion =
 
 ## 受け入れ条件
 
-- [ ] `Option { let! ... }` が `None` で後続を呼ばない。
-- [ ] `Result { let! ... }` が `Error` で後続を呼ばない。
-- [ ] `return`/`return!`/`do!`/通常 `let`/通常式/`if`/`for`/`while` の展開規則がドキュメントと一致する。
-- [ ] `Result` error 型の不一致が安定した既存診断で拒否される。
-- [ ] `Option` と `Result` の相互変換は明示関数だけで、暗黙変換しない。
-- [ ] 既知継続の特殊化により、scalar payload の代表ケースで不要な heap closure allocation がない。
-- [ ] native/WASM × `-O0`/`-O3`、heap tracking `live == 0`、WASM import なしを確認した。
-- [ ] benchmark は追加されているが、速度閾値を CI 合否にしていない。
+- [x] `Option { let! ... }` が `None` で後続を呼ばない。
+- [x] `Result { let! ... }` が `Error` で後続を呼ばない。
+- [x] `return`/`return!`/`do!`/通常 `let`/通常式/`if`/`for`/`while` の展開規則がドキュメントと一致する。
+- [x] `Result` error 型の不一致が安定した既存診断で拒否される。
+- [x] `Option` と `Result` の相互変換は明示関数だけで、暗黙変換しない。
+- [x] 既知継続の特殊化により、scalar payload の代表ケースで不要な heap closure allocation がない。
+- [x] native/WASM × `-O0`/`-O3`、heap tracking `live == 0`、WASM import なしを確認した。
+- [x] benchmark は追加されているが、速度閾値を CI 合否にしていない。
 
 ## 落とし穴
 
@@ -486,6 +486,12 @@ fn result_explicit_conversion =
 - 非 Copy 配列・リスト・ユーザー定義 iterator の builder `For`。C07 の担当。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: 基本操作・短絡は B01 の std に実装済みのため再実装しない。
+  `For`／`While` は現行では通常の while とローカル状態で実装され、結果の失敗判定を guard 呼び出しより先に行う。
+  `tests/computations.rs` に操作・展開・型エラーの検査を追加した。Copy 配列の制約違反は `E1005`。
+  E2E は `node tests/features.mjs target/release/tsuzuri option_result` へ統合されており、専用スクリプトは新設しない。
+  既知継続の確保なし検査と既存の std ビルダー対手書き比較 3 種目を再利用し、全 9 種目の `--quick` を検証した。
 
 - `Option.For`/`Result.For` の phase 1 制約違反診断は、A02/A06 の実装後に `Copy` 制約エラーとして `E1005` か `E1016` かが決まる。既定案は既存の型クラス制約不足と同じ診断に合わせ、テストは実装後に固定する。
 - `Result { if flag { return 1 } }` を便利にするため `Zero : Result<'a, 'e>` を導入する案は、error payload を作れないため採用しない。

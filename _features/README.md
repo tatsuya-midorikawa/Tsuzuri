@@ -9,6 +9,16 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
 
+## P1 実装・総合検証
+
+P1の25件を実装し、すべて`done`へ更新しました。仕様上の選択は各チケットとGUIDEの設計決定台帳に記録しています。
+
+- `check-runtime-includes.sh`（15ファイル）、`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、Rust全テストが成功。
+- README記載の全E2Eがnative/WASM O0/O3で成功。追加feature 3721ケース、整数intrinsic 263182参照ケース、Math 771862参照ケース、Unicode全scalar・表示解析・所有heap・タスク・サンプルを検証。
+- Mathは基本745486件と256-bit参照の超越26376件。非NaNのbit一致、NaN分類、heap非確保、trap-info、関数値と評価順を検証。
+- C/C++・Rust・C#・JavaScriptの36種目を`run-managed.mjs --quick`で照合。Task／Parallelのquickと整数mixも成功。短縮実行の時間は性能の証拠として扱いません。
+- ASan／TSan等の追加検証と性能の実測条件・退行は担当チケットと`docs/benchmarks.md`を参照。P2/P3の機能はこの完了範囲に含めません。
+
 ## 一覧
 
 ### A. 型システム
@@ -18,23 +28,23 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 | A01 | [型適用とジェネリックなレコード](A01-generic-records.md) | P0 | L | – | done |
 | A02 | [判別共用体（union）と列挙型](A02-union-types.md) | P0 | XL | A01 | done |
 | A03 | [match の網羅性・到達不能節の検査](A03-match-exhaustiveness.md) | P0 | M | A02 | done |
-| A04 | [再帰的なヒープ型（木・AST）](A04-recursive-types.md) | P1 | L | A02 | todo |
-| A05 | [型別名](A05-type-aliases.md) | P1 | S | (A01) | todo |
-| A06 | [型クラスの拡張（条件付きインスタンス・スーパークラス・デフォルトメソッド）](A06-typeclass-extensions.md) | P1 | L | A11, (A01) | todo |
-| A07 | [deriving（Eq／Ord／Display／Hash／Default の自動導出）](A07-deriving.md) | P1 | M | A11, A06, A02, D01 | todo |
-| A08 | [char（Unicode スカラー）型](A08-char-type.md) | P1 | M | E02, (B01) | todo |
+| A04 | [再帰的なヒープ型（木・AST）](A04-recursive-types.md) | P1 | L | A02 | done |
+| A05 | [型別名](A05-type-aliases.md) | P1 | S | (A01) | done |
+| A06 | [型クラスの拡張（条件付きインスタンス・スーパークラス・デフォルトメソッド）](A06-typeclass-extensions.md) | P1 | L | A11, (A01) | done |
+| A07 | [deriving（Eq／Ord／Display／Hash／Default の自動導出）](A07-deriving.md) | P1 | M | A11, A06, A02, D01 | done |
+| A08 | [char（UTF-16）型と utf8char（Unicode スカラー）型](A08-char-type.md) | P1 | M | E02, (B01) | done |
 | A09 | [名前付きライフタイムと借用フィールド](A09-named-lifetimes.md) | P2 | XL | – | todo |
 | A10 | [高階型（HKT）](A10-higher-kinded-types.md) | P3 | XL | A01, A06 | todo |
-| A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](A11-borrowed-comparisons.md) | P1 | M | – | todo |
+| A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](A11-borrowed-comparisons.md) | P1 | M | – | done |
 
 ### B. エラー処理・制御
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
 | B01 | [Option／Result 標準型](B01-option-result.md) | P0 | M | A02, E02 | done |
-| B02 | [Option／Result ビルダーによる早期伝播](B02-result-propagation.md) | P1 | M | B01 | todo |
-| B03 | [break／continue](B03-break-continue.md) | P1 | M | – | todo |
-| B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](B04-active-pattern-extensions.md) | P1 | M | B01, A02 | todo |
+| B02 | [Option／Result ビルダーによる早期伝播](B02-result-propagation.md) | P1 | M | B01 | done |
+| B03 | [break／continue](B03-break-continue.md) | P1 | M | – | done |
+| B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](B04-active-pattern-extensions.md) | P1 | M | B01, A02 | done |
 | B05 | [コンピュテーション式の拡張（match!／and!／use／try）](B05-computation-expression-extensions.md) | P2 | M | (B01) | todo |
 | B06 | [タスクのキャンセルと失敗の伝播](B06-task-cancellation.md) | P3 | L | B01, F01 | todo |
 
@@ -42,11 +52,11 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| C01 | [所有権に基づく関数的更新（一意所有時は in-place）](C01-consuming-update.md) | P1 | M | E02 | todo |
-| C02 | [伸縮可能な配列 Vec](C02-growable-vec.md) | P1 | L | E02, C01, B01 | todo |
-| C03 | [スライス（`&xs[a..b]`）](C03-slices.md) | P1 | L | – | todo |
-| C04 | [配列の一括操作 API](C04-bulk-array-api.md) | P1 | M | A11, E02, C03, B01 | todo |
-| C05 | [レコードのコピーと更新 `{ p with x = … }`](C05-record-update-syntax.md) | P1 | S | (A01) | todo |
+| C01 | [所有権に基づく関数的更新（一意所有時は in-place）](C01-consuming-update.md) | P1 | M | E02 | done |
+| C02 | [伸縮可能な配列 Vec](C02-growable-vec.md) | P1 | L | E02, C01, B01 | done |
+| C03 | [スライス（`&xs[a..b]`）](C03-slices.md) | P1 | L | – | done |
+| C04 | [配列の一括操作 API](C04-bulk-array-api.md) | P1 | M | A11, E02, C03, B01 | done |
+| C05 | [レコードのコピーと更新 `{ p with x = … }`](C05-record-update-syntax.md) | P1 | S | (A01) | done |
 | C06 | [Map／Set](C06-map-set.md) | P2 | L | A11, A02, A06, A07, C02, B01 | todo |
 | C07 | [ユーザー定義の反復プロトコル](C07-iteration-protocol.md) | P2 | L | B01, A06 | todo |
 
@@ -55,9 +65,9 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
 | D01 | [表示・解析・書式化（Display／Parse／to_string）](D01-display-parse-format.md) | P0 | M | E02, B01 | done |
-| D02 | [文字列ライブラリ](D02-string-library.md) | P1 | M | E02, A08, A11, C03, B01, (C02) | todo |
-| D03 | [数学関数の型汎用化と拡充](D03-generic-math.md) | P1 | M | E02 | todo |
-| D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](D04-integer-intrinsics.md) | P1 | M | E02, B01 | todo |
+| D02 | [文字列ライブラリ](D02-string-library.md) | P1 | M | E02, A08, A11, C03, B01, (C02) | done |
+| D03 | [数学関数の型汎用化と拡充](D03-generic-math.md) | P1 | M | E02 | done |
+| D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](D04-integer-intrinsics.md) | P1 | M | E02, B01 | done |
 | D05 | [明示 FMA と順序を定めた集計 API](D05-fma-ordered-reductions.md) | P2 | S | E02, C04 | todo |
 | D06 | [コンパイル時定数（const）](D06-compile-time-constants.md) | P2 | M | – | todo |
 
@@ -69,16 +79,16 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 | E02 | [標準ライブラリの同梱機構](E02-standard-library-infrastructure.md) | P0 | M | E01 | done |
 | E03 | [階層モジュール・サブディレクトリ](E03-hierarchical-modules.md) | P2 | L | E02 | todo |
 | E04 | [パッケージと依存管理](E04-packages.md) | P3 | XL | E03 | todo |
-| E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](E05-host-abi-buffers.md) | P1 | L | C03 | todo |
+| E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](E05-host-abi-buffers.md) | P1 | L | C03 | done |
 | E06 | [ホスト関数のインポート](E06-host-imports.md) | P2 | L | E02 | todo |
-| E07 | [デバッグ出力（Debug.print／trace）](E07-debug-output.md) | P1 | S | D01, E02 | todo |
+| E07 | [デバッグ出力（Debug.print／trace）](E07-debug-output.md) | P1 | S | D01, E02 | done |
 
 ### F. 並列・性能バックエンド
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| F01 | [常駐ワーカープール](F01-worker-pool.md) | P1 | M | – | todo |
-| F02 | [データ並列 API（Parallel.init／map／reduce）](F02-data-parallel-api.md) | P1 | M | F01, C03, C04 | todo |
+| F01 | [常駐ワーカープール](F01-worker-pool.md) | P1 | M | – | done |
+| F02 | [データ並列 API（Parallel.init／map／reduce）](F02-data-parallel-api.md) | P1 | M | F01, C03, C04 | done |
 | F03 | [WASM SIMD128](F03-wasm-simd128.md) | P2 | M | – | todo |
 | F04 | [移植可能な SIMD ベクトル型](F04-portable-simd-types.md) | P2 | L | E02, (F03) | todo |
 | F05 | [実行時の CPU 命令セット判定と関数の複数版](F05-runtime-cpu-dispatch.md) | P2 | L | C04 | todo |
@@ -91,10 +101,10 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 |---|---|---|---|---|---|
 | G01 | [ランタイム IR ファイルの Git 追跡漏れの修正](G01-runtime-ir-tracking.md) | P0 | S | – | done |
 | G02 | [複数エラーの同時報告](G02-multiple-diagnostics.md) | P0 | M | – | done |
-| G03 | [警告（未使用・到達不能・シャドーイング）](G03-warnings.md) | P1 | M | G02, (A03), (E01) | todo |
-| G04 | [トラップ発生位置の報告](G04-trap-locations.md) | P1 | M | – | todo |
-| G05 | [フォーマッター（tsuzuri fmt）](G05-formatter.md) | P1 | M | – | todo |
-| G06 | [言語内テスト（test 宣言と tsuzuri test）](G06-test-runner.md) | P1 | M | (D01) | todo |
+| G03 | [警告（未使用・到達不能・シャドーイング）](G03-warnings.md) | P1 | M | G02, (A03), (E01) | done |
+| G04 | [トラップ発生位置の報告](G04-trap-locations.md) | P1 | M | – | done |
+| G05 | [フォーマッター（tsuzuri fmt）](G05-formatter.md) | P1 | M | – | done |
+| G06 | [言語内テスト（test 宣言と tsuzuri test）](G06-test-runner.md) | P1 | M | (D01) | done |
 | G07 | [LSP（言語サーバー）](G07-lsp.md) | P2 | L | G02 | todo |
 | G08 | [デバッグ情報（DWARF／WASM）](G08-debug-info.md) | P2 | M | – | todo |
 | G09 | [ドキュメントコメントと API 文書生成](G09-doc-comments.md) | P2 | S | E01 | todo |

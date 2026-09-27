@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | 弱依存 D01 |
 | 後続 | G07 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/llvm.rs`, `src/driver.rs`, `src/main.rs`, `tests/test_runner.rs`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md`, 将来 `std/Test.tz` |
 
 ## 目的
@@ -718,23 +718,23 @@ G06 は runtime / numeric semantics を変えないが、runner は trap を扱�
 
 ## 受け入れ条件
 
-- [ ] `test` が予約語になる。
-- [ ] `test "name" = body` が parse される。
-- [ ] `.tz` / `.tc` で tests が許可され、`.tt` では `E1018`。
-- [ ] test body は `unit` 型でなければ `E1003`。
-- [ ] `check` / `build` は tests を型検査する。
-- [ ] normal build の LLVM / object / wasm に test runner が含まれない。
-- [ ] normal build に test functions、test-only lambdas、test-only specializations が含まれない。
-- [ ] `tsuzuri test` が native runner を build し、各 test を別 process で実行する。
-- [ ] native runner は `atoi` ではなく strict parse を使い、malformed/out-of-range index は exit code 2。
-- [ ] trap は test failure になる。
-- [ ] failure summary は `E2006`。
-- [ ] `--filter`, `--json`, `-O0..3`, `--target native|wasm32` が動く。
-- [ ] parallel execution でも report order は deterministic。
-- [ ] timeout がある。
-- [ ] WASM mode は Node がある場合に動き、imports を増やさない。
-- [ ] Node がない explicit wasm32 は error。
-- [ ] D01/E02 がなくても `assert` fallback で使える。
+- [x] `test` が予約語になる。
+- [x] `test "name" = body` が parse される。
+- [x] `.tz` / `.tc` で tests が許可され、`.tt` では `E1018`。
+- [x] test body は `unit` 型でなければ `E1003`。
+- [x] `check` / `build` は tests を型検査する。
+- [x] normal build の LLVM / object / wasm に test runner が含まれない。
+- [x] normal build に test functions、test-only lambdas、test-only specializations が含まれない。
+- [x] `tsuzuri test` が native runner を build し、各 test を別 process で実行する。
+- [x] native runner は `strtoull`・errno・endptr の strict parse を使い、malformed/out-of-range index は exit code 2。
+- [x] trap は test failure になり、後続を続行する。
+- [x] failure summary は最初の失敗位置の `E2006`。
+- [x] `--filter`, `--json`, `-O0..3`, `--target native|wasm32` が動く。
+- [x] parallel execution でも report order は deterministic。
+- [x] 30秒 timeout と子プロセスの停止・回収がある。短縮した内部テストでも検証する。
+- [x] WASM mode は Node がある場合に動き、imports を増やさない。
+- [x] Node がない explicit wasm32 は `E2002`。
+- [x] `assert` fallback と、既存 std 機構を使う Test helper を提供する。
 
 ## 落とし穴
 
@@ -761,6 +761,11 @@ G06 は runtime / numeric semantics を変えないが、runner は trap を扱�
 
 ## 未決事項
 
+- **実装判断（2026-09-27）:** テストの名前は報告・filter 用の妥当な Unicode 文字列に限定し、孤立 surrogate の名前は `E0002`。
+  metadata は本体を重複保持せず、通常の内部 callable を指す。内部 symbol は既存の `@tz.fn.Module.$test.index` を再利用する。
+  共有特殊化は呼び出し元ごとに複製せず、public/entry roots と選択 test roots からの共通到達性解析で分離する。
+  Test.equal/not_equal は比較だけを行うため Eq 制約だけとし、未使用の Display 制約を課さない。詳細表示は対象外のまま。
+  timeout は30秒固定、短縮は内部テストだけ。CLI・native/WASM O0/O3・不正 index・子回収は `tests/test_runner.rs` と driver unit test で検証する。
 - **timeout の設定手段。** 既定案は 30 秒固定。CI のため短縮 hook が必要なら `TSUZURI_TEST_TIMEOUT_MS` を追加する。
 - **`.tc` で test を許可するか。** 既定案は許可。builder 操作を同じ module で検査できるため。
 - **`--cpu native` の扱い。** 既定案は G06 では非対応。必要なら後続で追加。

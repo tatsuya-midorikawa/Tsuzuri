@@ -1,0 +1,8 @@
+def equal :: Eq<'a> => ref 'a -> ref 'a -> unit
+fn equal expected actual = assert (Eq.eq expected actual)
+
+def not_equal :: Eq<'a> => ref 'a -> ref 'a -> unit
+fn not_equal expected actual = assert (Eq.ne expected actual)
+
+def is_true :: bool -> unit
+fn is_true value = assert value

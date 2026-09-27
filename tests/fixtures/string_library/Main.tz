@@ -1,0 +1,155 @@
+def sample :: i64 -> string
+fn sample index = match index with
+    | 0 -> ""
+    | 1 -> "hello hello"
+    | 2 -> "l"
+    | 3 -> "a\0b"
+    | 4 -> "\u{1F600}"
+    | 5 -> "\uE000"
+    | 6 -> " \tAbC\r\n"
+    | 7 -> "\uD800"
+    | 8 -> "\uDE00"
+    | _ -> "aa"
+
+def utf8_sample :: i64 -> utf8string
+fn utf8_sample index =
+    let text = sample index
+    Utf8String.from_string (ref text)
+
+def hash :: string -> i64
+fn hash text =
+    let mut value = text.length
+    for unit in text do value = value * 31 + unit as i64
+    value
+
+def hash_utf8 :: utf8string -> i64
+fn hash_utf8 text =
+    let mut value = text.length
+    for byte in text do value = value * 31 + byte as i64
+    value
+
+export def text_operation :: i32 -> i64 -> i64 -> i64
+fn text_operation operation first second =
+    let text = sample first
+    let needle = sample second
+    let replacement = "-"
+    match operation with
+    | 0 -> Option.default_value (-1) (String.find (ref needle) (ref text))
+    | 1 -> Option.default_value (-1) (String.rfind (ref needle) (ref text))
+    | 2 -> if String.contains (ref needle) (ref text) then 1 else 0
+    | 3 -> if String.starts_with (ref needle) (ref text) then 1 else 0
+    | 4 -> if String.ends_with (ref needle) (ref text) then 1 else 0
+    | 5 -> hash (String.replace (ref needle) (ref replacement) (ref text))
+    | 6 ->
+        let parts = String.split (ref needle) (ref text)
+        let mut total = parts.length
+        for part in parts do total = total * 31 + hash (clone_string (ref part))
+        total
+    | 7 ->
+        let parts = [text, needle]
+        hash (String.concat (ref parts))
+    | 8 ->
+        let parts = [text, needle]
+        hash (String.join (ref replacement) (ref parts))
+    | 9 -> hash (String.trim (ref text))
+    | 10 -> hash (String.to_ascii_lower (ref text))
+    | 11 -> hash (String.to_ascii_upper (ref text))
+    | 12 -> String.compare (ref text) (ref needle)
+    | 13 -> hash (String.repeat (ref text) 2)
+    | _ -> 0
+
+export def utf8_operation :: i32 -> i64 -> i64 -> i64
+fn utf8_operation operation first second =
+    let text = utf8_sample first
+    let needle = utf8_sample second
+    let replacement = u8"-"
+    match operation with
+    | 0 -> Option.default_value (-1) (Utf8String.find (ref needle) (ref text))
+    | 1 -> Option.default_value (-1) (Utf8String.rfind (ref needle) (ref text))
+    | 2 -> if Utf8String.contains (ref needle) (ref text) then 1 else 0
+    | 3 -> if Utf8String.starts_with (ref needle) (ref text) then 1 else 0
+    | 4 -> if Utf8String.ends_with (ref needle) (ref text) then 1 else 0
+    | 5 -> hash_utf8 (Utf8String.replace (ref needle) (ref replacement) (ref text))
+    | 6 ->
+        let parts = Utf8String.split (ref needle) (ref text)
+        let mut total = parts.length
+        for part in parts do total = total * 31 + hash_utf8 (Utf8String.clone (ref part))
+        total
+    | 7 ->
+        let parts = [text, needle]
+        hash_utf8 (Utf8String.concat (ref parts))
+    | 8 ->
+        let parts = [text, needle]
+        hash_utf8 (Utf8String.join (ref replacement) (ref parts))
+    | 9 -> hash_utf8 (Utf8String.trim (ref text))
+    | 10 -> hash_utf8 (Utf8String.to_ascii_lower (ref text))
+    | 11 -> hash_utf8 (Utf8String.to_ascii_upper (ref text))
+    | 12 ->
+        let order = Utf8String.compare (ref text) (ref needle)
+        assert ((order < 0) == (text < needle) && (order > 0) == (text > needle))
+        order
+    | 13 -> hash_utf8 (Utf8String.repeat (ref text) 2)
+    | _ -> 0
+
+export def text_slice :: i64 -> i64 -> i64 -> i64
+fn text_slice which first last =
+    let text = sample which
+    match String.slice (ref text) first last with | Some value -> hash value | None -> -1
+
+export def utf8_slice :: i64 -> i64 -> i64 -> i64
+fn utf8_slice which first last =
+    let text = utf8_sample which
+    match Utf8String.slice (ref text) first last with | Some value -> hash_utf8 value | None -> -1
+
+export def character_units :: i64
+fn character_units =
+    let text = "\u65E5\u672C\u8A9E\u{1F600}"
+    let bytes = Utf8String.from_string (ref text)
+    let units = String.chars (ref text)
+    let scalars = Utf8String.chars (ref bytes)
+    assert (units.length == 5 && scalars.length == 4)
+    let first = match String.decode_at (ref text) 3 with | (value, next) -> Char.to_u16 value as i64 + next
+    let second = match Utf8String.decode_at (ref bytes) 9 with | (value, next) -> Utf8Char.to_u32 value as i64 + next
+    first + second + String.char_count (ref text) + Utf8String.char_count (ref bytes)
+
+export def all_unit_transfer :: i64
+fn all_unit_transfer =
+    let units = new [i16u](65536, index -> index as i16u)
+    let text = String.from_code_units units
+    let moved = String.to_code_units text
+    Array.fold (ref moved) 0 (total -> value -> total + value as i64)
+
+export def validate_bytes :: i32 -> i64
+fn validate_bytes which =
+    let bytes: [ubyte] = match which with
+        | 0 -> []
+        | 1 -> [0]
+        | 2 -> [128]
+        | 3 -> [192, 128]
+        | 4 -> [237, 160, 128]
+        | 5 -> [244, 143, 191, 191]
+        | 6 -> [244, 144, 128, 128]
+        | 7 -> [239, 187, 191]
+        | 8 -> [240, 159, 152]
+        | _ -> [65, 0, 66]
+    match Utf8String.from_bytes bytes with | Some text -> text.length | None -> -1
+
+export def trap_decode_end :: i64
+fn trap_decode_end =
+    let text = ""
+    match String.decode_at (ref text) 0 with | (_, next) -> next
+
+export def trap_decode_continuation :: i64
+fn trap_decode_continuation =
+    let text = u8"\u{1F600}"
+    match Utf8String.decode_at (ref text) 1 with | (_, next) -> next
+
+export def trap_repeat_negative :: i64
+fn trap_repeat_negative =
+    let text = ""
+    (String.repeat (ref text) (-1)).length
+
+export def trap_repeat_overflow :: i64
+fn trap_repeat_overflow =
+    let text = "four"
+    (String.repeat (ref text) 9223372036854775807).length

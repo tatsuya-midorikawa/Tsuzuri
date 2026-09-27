@@ -183,6 +183,19 @@ prefix:
 ; Return the scalar and next byte index, rejecting non-shortest UTF-8 and surrogates.
 define internal { i32, i64 } @tz.string.decode_utf8(ptr %source, i64 %length, i64 %index, i1 %validated) nounwind {
 entry:
+  %decoded = call { i32, i64 } @tz.string.try_decode_utf8(ptr %source, i64 %length, i64 %index, i1 %validated)
+  %value = extractvalue { i32, i64 } %decoded, 0
+  %valid = icmp sge i32 %value, 0
+  br i1 %valid, label %done, label %fail
+fail:
+  call void @llvm.trap()
+  unreachable
+done:
+  ret { i32, i64 } %decoded
+}
+
+define internal { i32, i64 } @tz.string.try_decode_utf8(ptr %source, i64 %length, i64 %index, i1 %validated) nounwind {
+entry:
   %firstp = getelementptr inbounds i8, ptr %source, i64 %index
   %firstbyte = load i8, ptr %firstp
   %first = zext i8 %firstbyte to i32
@@ -252,8 +265,7 @@ result:
   %b = insertvalue { i32, i64 } %a, i64 %end, 1
   ret { i32, i64 } %b
 fail:
-  call void @llvm.trap()
-  unreachable
+  ret { i32, i64 } { i32 -1, i64 -1 }
 }
 
 define internal %tz.string @tz.string.from_utf8(ptr %source, i64 %byte_length) nounwind {

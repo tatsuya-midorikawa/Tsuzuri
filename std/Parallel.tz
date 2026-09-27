@@ -1,0 +1,2 @@
+def sum :: (Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => ref ['a] -> 'a
+fn sum values = Parallel.reduce (0i64 as 'a) (left -> right -> left + right) values

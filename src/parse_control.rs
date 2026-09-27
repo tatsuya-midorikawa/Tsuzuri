@@ -6,41 +6,65 @@ impl Parser<'_> {
             return self.ident();
         }
         self.expect(&TokenKind::Pipe, "'|' before an active pattern name")?;
-        let case = self.ident()?;
-        if !case.text.as_bytes()[0].is_ascii_uppercase() {
-            return Err(Diagnostic::new(
-                "E1020",
-                "an active pattern case starts with an uppercase letter",
-                case.span,
-            ));
-        }
-        self.expect(&TokenKind::Pipe, "'|' after the active pattern case")?;
-        let partial = if matches!(&self.current().kind, TokenKind::Ident(name) if name == "_") {
-            self.take();
-            self.expect(&TokenKind::Pipe, "'|' after '_'")?;
-            true
-        } else {
-            false
+        let mut cases = Vec::new();
+        let partial = loop {
+            let case = self.ident()?;
+            if !case.text.as_bytes()[0].is_ascii_uppercase() {
+                return Err(Diagnostic::new(
+                    "E1020",
+                    "an active pattern case starts with an uppercase letter",
+                    case.span,
+                ));
+            }
+            if cases
+                .iter()
+                .any(|previous: &Ident| previous.text == case.text)
+            {
+                return Err(duplicate_active_case(&case));
+            }
+            if cases.len() == MAX_NESTING {
+                return Err(self.error("too many active pattern cases"));
+            }
+            cases.push(case);
+            self.expect(&TokenKind::Pipe, "'|' after the active pattern case")?;
+            if matches!(&self.current().kind, TokenKind::Ident(name) if name == "_") {
+                if cases.len() != 1 {
+                    return Err(Diagnostic::new(
+                        "E1020",
+                        "partial active patterns have exactly one case",
+                        self.current().span,
+                    ));
+                }
+                self.take();
+                self.expect(&TokenKind::Pipe, "'|' after '_'")?;
+                break true;
+            }
+            if self.at(&TokenKind::RightParen) {
+                break false;
+            }
         };
-        self.expect(
-            &TokenKind::RightParen,
-            "')'; active patterns currently have one case",
-        )?;
+        self.expect(&TokenKind::RightParen, "')' after active pattern cases")?;
         let function = format!(
             "$active.{}.{}",
-            case.text,
+            cases
+                .iter()
+                .map(|case| case.text.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
             if partial { "partial" } else { "total" }
         );
+        let span = cases[0].span;
         self.active_patterns
             .entry(function.clone())
             .or_insert_with(|| ActivePattern {
-                name: case.clone(),
+                cases,
                 function: function.clone(),
                 partial,
             });
         Ok(Ident {
             text: function,
-            span: case.span,
+            span,
+            provenance: Provenance::Generated,
         })
     }
 
@@ -146,6 +170,7 @@ impl Parser<'_> {
                     | TokenKind::Private
                     | TokenKind::Record
                     | TokenKind::Union
+                    | TokenKind::Test
                     | TokenKind::Class
                     | TokenKind::Instance
             ) || self.column(self.current().span) < indent
@@ -157,6 +182,7 @@ impl Parser<'_> {
                     name: Ident {
                         text: "_".into(),
                         span: value.span,
+                        provenance: Provenance::Generated,
                     },
                     mutable: false,
                     annotation: Some(TypeExpr {
@@ -175,6 +201,7 @@ impl Parser<'_> {
                         name: Ident {
                             text: "_".into(),
                             span: value.span,
+                            provenance: Provenance::Generated,
                         },
                         mutable: false,
                         annotation: None,
@@ -323,6 +350,7 @@ impl Parser<'_> {
                     let name = Ident {
                         text: format!("$fx{}", pattern.span.start),
                         span: pattern.span,
+                        provenance: Provenance::Generated,
                     };
                     patterns.push((name.clone(), pattern));
                     name
@@ -507,6 +535,8 @@ impl Parser<'_> {
                             | TokenKind::Integer(_)
                             | TokenKind::Float(_)
                             | TokenKind::String(_)
+                            | TokenKind::Char(_)
+                            | TokenKind::Utf8Char(_)
                             | TokenKind::True
                             | TokenKind::False
                             | TokenKind::Ref
@@ -635,9 +665,11 @@ impl Parser<'_> {
                     1,
                 )
             }
-            TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::String(_) => {
-                (PatternKind::Literal(Box::new(self.literal()?)), 1)
-            }
+            TokenKind::Integer(_)
+            | TokenKind::Float(_)
+            | TokenKind::String(_)
+            | TokenKind::Char(_)
+            | TokenKind::Utf8Char(_) => (PatternKind::Literal(Box::new(self.literal()?)), 1),
             _ => return Err(self.error("expected a pattern")),
         };
         let span = start.through(self.tokens[self.position - 1].span);
@@ -668,6 +700,8 @@ impl Parser<'_> {
                         | TokenKind::Integer(_)
                         | TokenKind::Float(_)
                         | TokenKind::String(_)
+                        | TokenKind::Char(_)
+                        | TokenKind::Utf8Char(_)
                         | TokenKind::True
                         | TokenKind::False
                         | TokenKind::Minus

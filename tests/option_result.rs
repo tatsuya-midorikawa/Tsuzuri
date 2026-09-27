@@ -68,14 +68,6 @@ fn rejects_unresolved_types_invalid_errors_noncopy_iteration_and_abi() {
         ),
         ("export def bad :: Option<i64>\nfn bad = Some 42", "E1008"),
         (
-            "let option = Some 1\nlet borrowed: Option<&i64> = Option.map_ref (r -> r) (&option)\n0",
-            "E1013",
-        ),
-        (
-            "let result: Result<i64, i64> = Ok 1\nlet borrowed: Result<&i64, i64> = Result.bind_ref (&result) (r -> Ok r)\n0",
-            "E1013",
-        ),
-        (
             "let result: Result<i64, string> = Ok 1\nlet mapped = Result.map_ref (r -> *r) (&result)\n0",
             "E1005",
         ),
@@ -84,6 +76,42 @@ fn rejects_unresolved_types_invalid_errors_noncopy_iteration_and_abi() {
         rejects(source, code);
     }
     accepts("def fail :: string\nfn fail = unreachable ()");
+}
+
+#[test]
+fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
+    for source in [
+        "let owner = 42\nlet borrowed: Option<&i64> = Some (ref owner)\n*(Option.get borrowed)",
+        "let owner = 42\nlet borrowed: Result<&i64, i64> = Ok (ref owner)\n*(Result.get borrowed)",
+        "def first :: ref [string] -> Option<ref string>\nfn first values = if values.length == 0 then None else Some (ref values[0])\nlet values = [\"owned\"]\n(Option.get (first (ref values))).length",
+        "let number = 42\nlet value = Some (Some (ref number))\nlet copy = value\nmatch copy with | Some (Some borrowed) -> deref borrowed | _ -> 0",
+        "def choose :: ref i64 -> ref i64 -> Option<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet right = 22\nderef (Option.get (choose (ref left) (ref right)))",
+    ] {
+        let module = accepts(source);
+        for wasm in [false, true] {
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        }
+    }
+    for source in [
+        "def nested :: ref (Option<ref i64>) -> ref i64\nfn nested value = Option.get (deref value)\nlet mut owner = 42\nlet container = Some (ref owner)\nlet borrowed = nested (ref container)\nowner = 1\nderef borrowed",
+        "def nested :: ref (Option<ref i64>) -> ref i64\nfn nested value = Option.get (deref value)\nlet owner = 42\nlet borrowed = { let container = Some (ref owner); nested (ref container) }\nderef borrowed",
+        "let option = Some 42\nlet borrowed: Option<&i64> = Option.map_ref (value -> value) (&option)\n*(Option.get borrowed)",
+        "let result: Result<i64, i64> = Ok 42\nlet borrowed: Result<&i64, i64> = Result.bind_ref (&result) (value -> Ok value)\n*(Result.get borrowed)",
+        "let borrowed = { let value = 42; Some (ref value) }\n*(Option.get borrowed)",
+        "let mut value = 42\nlet borrowed = Some (ref value)\nvalue = 1\n*(Option.get borrowed)",
+        "let mut value = 42\nlet borrowed = Some (ref mut value)\n()",
+        "record Stored { value: Option<ref i64> }",
+        "let value = 42\nlet borrowed = Some (ref value)\nlet work = task { return borrowed }\n()",
+        "def choose :: ref i64 -> ref i64 -> Option<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet borrowed = { let right = 22; choose (ref left) (ref right) }\n*(Option.get borrowed)",
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert!(
+            matches!(error.code, "E1013" | "E1014"),
+            "{source}\n{}: {}",
+            error.code,
+            error.message
+        );
+    }
 }
 
 #[test]

@@ -64,8 +64,8 @@ fn exhaustive_matches_are_accepted() {
         "match [|1, 2|] with\n| [||] -> 0\n| [|x|] -> x\n| _ :: _ :: _ -> 2".into(),
         "match [|true|] with\n| true :: _ -> 1\n| [|false|] -> 2\n| false :: _ :: _ -> 3\n| [||] -> 0".into(),
         "match (true, false) with\n| (true, _) | (_, true) -> 1\n| (false, false) -> 0".into(),
-        "match (true, false) with\n| (true, _) & (_, b) -> 1\n| (false, _) -> 0".into(),
-        "match true with\n| (true as t) -> 1\n| (false: bool) -> 0".into(),
+        "match (true, false) with\n| (true, _) & (_, _b) -> 1\n| (false, _) -> 0".into(),
+        "match true with\n| (true as _t) -> 1\n| (false: bool) -> 0".into(),
         format!("{MAYBE}match Some 42 with\n| Some n when n > 0 -> n\n| Some _ -> 0\n| None -> -1"),
         format!(
             "{MAYBE}def f :: Maybe<Maybe<bool>> -> i64\nfn f x =\n    match x with\n    | Some (Some true) -> 2\n    | Some (Some false) -> 3\n    | Some None -> 1\n    | None -> 0\nf None"

@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | E02 |
 | 後続 | C02 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Array.tz` または `src/check.rs` `Builtin`、`src/llvm.rs` `emit_builtin` / `FunctionEmitter::{expression_mode, clone_value, drop_value, checked_element_pointer}`、`src/llvm_frame.rs` `relocate`、`src/ownership.rs`、`src/call_specialization.rs`、`docs/language.md`、`docs/architecture.md`、`README.md`、`tests/arrays.rs`、`tests/fixtures/arrays/ConsumingUpdate.tz` |
 
 ## 目的
@@ -356,17 +356,17 @@ IR 検査:
 
 ## 受け入れ条件
 
-- [ ] `Array.set` / `Array.update` / `Array.swap` / `List.cons` / `List.tail` が修飾名で解決される。
-- [ ] すべての API が値渡しで動作し、非 Copy コレクションの move 後使用は `E1012`、非 Copy コレクションの借用競合は `E1014`、Copy コレクションの旧値観測は clone により preserved。
-- [ ] 境界検査または空リスト検査が GEP / load より前にある。
-- [ ] 旧要素の drop が `Array.set` と `List.tail` で漏れない。
-- [ ] `Array.update` は旧要素を `f` に move し、二重 drop しない。
-- [ ] Copy array の複数使用では元配列が変わらない。
-- [ ] Copy array の共有借用が生存する場合も受理され、借用は旧値を読む。
-- [ ] 唯一所有の heap array では全体 clone なしに同じバッファを返す。
-- [ ] native/WASM × `-O0`/`-O3` E2E が通り、WASM imports は空、native heap tracking は `live == 0`。
-- [ ] 生成 IR が決定的で、追加 wrapper 名順が `BTreeMap` / `BTreeSet` 由来。
-- [ ] README / docs を更新済み。
+- [x] `Array.set` / `Array.update` / `Array.swap` / `List.cons` / `List.tail` が修飾名で解決される。
+- [x] すべての API が値渡しで動作し、非 Copy コレクションの move 後使用は `E1012`、非 Copy コレクションの借用競合は `E1014`、Copy コレクションの旧値観測は clone により preserved。
+- [x] 境界検査または空リスト検査が GEP / load より前にある。
+- [x] 旧要素の drop が `Array.set` と `List.tail` で漏れない。
+- [x] `Array.update` は旧要素を `f` に move し、二重 drop しない。
+- [x] Copy array の複数使用では元配列が変わらない。
+- [x] Copy array の共有借用が生存する場合も受理され、借用は旧値を読む。
+- [x] 唯一所有の heap array では全体 clone なしに同じバッファを返す。
+- [x] native/WASM × `-O0`/`-O3` E2E が通り、WASM imports は空、native heap tracking は `live == 0`。
+- [x] 生成 IR が決定的で、追加 wrapper 名順が `BTreeMap` / `BTreeSet` 由来。
+- [x] README / docs を更新済み。
 
 ## 落とし穴
 
@@ -390,6 +390,11 @@ IR 検査:
 - トラップ時の巻き戻し・destructor 保証。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: E02 の builtin 機構と既存 LLVM emitter を再利用する。`Array.update` の
+  関数値は通常の非借用 apply ABI に所有権を渡し、apply adapter が環境を解放するので明示の二重 drop は行わない。
+  呼び出し引数の暗黙参照外しが既に導入されているため、Copy 配列の参照引数は既存規則による所有コピーとして渡せる。
+  非 Copy 値の移動禁止・部分要素の可変借用禁止は変えない。E2E は `tests/features.mjs ... consuming_update` と storage の確保回数検査。
 
 - `Array.update` の関数引数を `('a -> 'a)` にする既定案を採用する。`&'a -> 'a` だと非 Copy 要素の置換で旧要素の所有権が曖昧になる。
 - `List.cons` の引数順は `value -> list -> list` を既定案にする。パイプライン重視の `list -> value -> list` は `List.cons_to` など別 API が必要になった時に検討する。

@@ -1,0 +1,44 @@
+def work :: i64 -> i64 -> i64
+fn work rounds index =
+    let mut value = index
+    for _round in 1i64 .. rounds do
+        value = (value * 1664525 + 1013904223) & 2147483647
+    value
+
+export def parallel_batch :: i64 -> i64 -> i64
+fn parallel_batch count rounds =
+    let tasks = new [Task<i64>](count, index -> task { return work rounds index })
+    let results = Task.run (Task.parallel tasks)
+    Array.sum (ref results)
+
+export def sequential_batch :: i64 -> i64 -> i64
+fn sequential_batch count rounds =
+    let results = new [i64](count, index -> work rounds index)
+    Array.sum (ref results)
+
+export def data_parallel_batch :: i64 -> i64 -> i64
+fn data_parallel_batch count rounds =
+    let results = Parallel.init count (index -> work rounds index)
+    Array.sum (ref results)
+
+export def data_map_batch :: i64 -> i64 -> i64
+fn data_map_batch count rounds =
+    let source = new [i64](count, index -> index)
+    let results = Parallel.map (index -> work rounds index) (ref source)
+    Array.sum (ref results)
+
+export def sequential_map_batch :: i64 -> i64 -> i64
+fn sequential_map_batch count rounds =
+    let source = new [i64](count, index -> index)
+    let results = Array.map (ref source) (index -> work rounds index)
+    Array.sum (ref results)
+
+export def data_reduce_batch :: i64 -> i64 -> i64
+fn data_reduce_batch count rounds =
+    let source = new [i64](count, index -> work rounds index)
+    Parallel.sum (ref source)
+
+export def sequential_reduce_batch :: i64 -> i64 -> i64
+fn sequential_reduce_batch count rounds =
+    let source = new [i64](count, index -> work rounds index)
+    Array.sum (ref source)

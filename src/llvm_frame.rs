@@ -30,12 +30,16 @@ pub(super) enum Frame {
 
 /// Conservative stack bytes of one value, matching the documented value-layout rule.
 pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
+    if matches!(ty, Type::Union(..)) && module.types().recursive(ty) {
+        return 8;
+    }
     let fields = |types: &mut dyn Iterator<Item = &Type>| {
         types.fold(0usize, |total, ty| {
             total.saturating_add(stack_size(ty, module).next_multiple_of(16))
         })
     };
     match ty {
+        Type::Reference(_, false) if ty.shared_array_element().is_some() => 16,
         Type::Record(id, arguments) => {
             fields(&mut module.types().record_fields(*id, arguments).iter())
         }
@@ -57,7 +61,7 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
         | Type::Utf8String
         | Type::Array(_)
         | Type::List(_) => 16,
-        Type::Function(..) | Type::Task(_) => 32,
+        Type::Function(..) | Type::Task(_) | Type::Vec(_) => 32,
         _ => 8,
     }
 }
@@ -105,6 +109,16 @@ impl FunctionEmitter<'_, '_> {
     }
 
     pub(super) fn frame_inner(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
+        let previous = std::mem::replace(&mut self.current_span, expression.span);
+        let base = self.temporaries.len();
+        let (value, frames) = self.emit_frame_inner(expression);
+        self.temporaries.truncate(base);
+        self.remember_temporary(&expression.ty, &value, &frames);
+        self.current_span = previous;
+        (value, frames)
+    }
+
+    fn emit_frame_inner(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
         match &expression.kind {
             TypedExprKind::Array(elements) if !elements.is_empty() => {
                 self.frame_array(expression, elements)
@@ -137,6 +151,7 @@ impl FunctionEmitter<'_, '_> {
                 else_branch,
             } => {
                 let condition = self.expression(condition);
+                let temporary_base = self.temporaries.len();
                 let yes = self.label();
                 let no = self.label();
                 let merge = self.label();
@@ -145,10 +160,12 @@ impl FunctionEmitter<'_, '_> {
                 let (then_value, mut frames) = self.frame_inner(then_branch);
                 let then_end = self.block.clone();
                 self.jump(&merge);
+                self.temporaries.truncate(temporary_base);
                 self.begin(&no);
                 let (else_value, else_frames) = self.frame_inner(else_branch);
                 let else_end = self.block.clone();
                 self.jump(&merge);
+                self.temporaries.truncate(temporary_base);
                 self.begin(&merge);
                 frames.extend(else_frames);
                 let value = self.value(format!(
@@ -322,6 +339,9 @@ impl FunctionEmitter<'_, '_> {
 
     /// Reads an operand that is only inspected; temporaries may use stack storage.
     pub(super) fn read_operand(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
+        if let Some(reference) = Self::shared_array_deref(expression) {
+            return (self.expression_mode(reference, false), Vec::new());
+        }
         if Self::is_place(expression) {
             (self.read_place(expression, false, false), Vec::new())
         } else {
@@ -337,7 +357,9 @@ impl FunctionEmitter<'_, '_> {
             } else {
                 self.frame_of_place(expression)
             };
-            (self.read_place(expression, true, false), frames)
+            let value = self.read_place(expression, true, false);
+            self.remember_temporary(&expression.ty, &value, &frames);
+            (value, frames)
         } else {
             self.frame_value(expression)
         }
@@ -492,6 +514,7 @@ impl FunctionEmitter<'_, '_> {
 
     /// Drops a value that may still use the given stack parts; stack storage is never freed.
     pub(super) fn drop_framed(&mut self, ty: &Type, value: &str, frames: &[Frame]) {
+        self.forget_temporary(value);
         if frames.is_empty() {
             return self.drop_value(ty, value);
         }

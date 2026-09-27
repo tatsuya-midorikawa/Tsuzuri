@@ -1,6 +1,8 @@
+pub mod abi;
 pub mod check;
 pub mod diagnostic;
 pub mod driver;
+pub mod formatter;
 pub mod lexer;
 pub mod llvm;
 pub mod numeric;
@@ -8,6 +10,7 @@ pub mod ownership;
 pub mod parser;
 pub mod stdlib;
 pub mod syntax;
+pub mod trap;
 
 use check::{ModuleInput, ModuleOrigin};
 use diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};

@@ -32,3 +32,8 @@ fn next_position position velocity dt extent =
 export def next_velocity :: f64 -> f64 -> f64 -> f64 -> f64
 fn next_velocity position velocity dt extent =
     (step position velocity dt extent).velocity
+
+export def next_positions :: ref [f64] -> ref [f64] -> f64 -> f64 -> [f64]
+fn next_positions positions velocities dt extent =
+    assert (positions.length == velocities.length)
+    new [f64](positions.length, index -> (step positions[index] velocities[index] dt extent).position)

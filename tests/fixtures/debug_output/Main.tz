@@ -1,0 +1,26 @@
+export def debug_answer :: i64
+fn debug_answer =
+    let text = "hello\0\u{1F600}"
+    Debug.print text
+    Debug.trace 42
+
+export def debug_owned :: i64 -> i64
+fn debug_owned count =
+    let mut total = 0
+    for _index in 0i64 .. count - 1 do
+        let text = Debug.trace ("he" + "llo")
+        total = total + text.length
+    total
+
+record Broken { value: i64 }
+instance Display<Broken> {
+    fn display _value = { assert false; "" }
+}
+
+export def debug_display_trap :: i64
+fn debug_display_trap =
+    let broken = Broken { value: 0 }
+    Debug.print broken
+    1
+
+debug_answer()

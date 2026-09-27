@@ -1,0 +1,66 @@
+export def update_numbers :: i64 -> i64 -> i64 -> i64
+fn update_numbers count index value =
+    let values = new [i64](count, offset -> offset)
+    let updated = Array.set values index value
+    let mut total = 0
+    for item in updated do total = total + item
+    total
+
+export def update_snapshot :: i64
+fn update_snapshot =
+    let values = new [1, 2, 3]
+    let borrowed = ref values[..2]
+    let updated = Array.swap values 0 2
+    borrowed[0] * 1000 + values[0] * 100 + updated[0] * 10 + updated[2]
+
+export def update_callback :: i64
+fn update_callback =
+    let values = new ["old" + "!", "last" + "!"]
+    let suffix = "new" + "!"
+    let updated = Array.update values 0 (text -> text + suffix)
+    updated[0].length + updated[1].length
+
+export def update_owned :: i64 -> i64
+fn update_owned count =
+    let mut values = new ["start" + "!", "last" + "!"]
+    for index in 1 .. count do
+        values = Array.set values 0 ("next" + "!")
+    values[0].length + values[1].length
+
+export def update_partial :: i64
+fn update_partial =
+    let set = Array.set [1, 2, 3] 0
+    let values = set 42
+    values[0] + values[2]
+
+export def update_list :: i64
+fn update_list =
+    let values = new [|"first" + "!", "second" + "!"|]
+    let values = List.cons ("head" + "!") values
+    let values = List.tail values
+    values[0].length + values[1].length
+
+export def update_list_snapshot :: i64
+fn update_list_snapshot =
+    let values = new [|1, 2|]
+    let tail = List.tail values
+    let added = List.cons 3 values
+    values[0] * 100 + tail[0] * 10 + added[0]
+
+export def swap_same :: i64
+fn swap_same =
+    let values = Array.swap (new ["first" + "!", "second" + "!"]) 1 1
+    values[0].length + values[1].length
+
+export def trap_update_index :: i64
+fn trap_update_index = update_numbers 2 2 42
+
+export def trap_swap_index :: i64
+fn trap_swap_index =
+    let values = Array.swap [1, 2] 0 2
+    values.length
+
+export def trap_empty_tail :: i64
+fn trap_empty_tail =
+    let values: [|i64|] = List.tail [||]
+    values.length

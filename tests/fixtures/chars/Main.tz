@@ -1,0 +1,60 @@
+export def all_code_units :: i64
+fn all_code_units =
+    let mut count = 0
+    for number in 0 .. 65535 do
+        let value = Char.of_u16 (number as i16u)
+        assert (Char.to_u16 value == number as i16u)
+        let text = to_string value
+        assert (text.length == 1 && text[0] == number as i16u)
+        let parsed: Option<char> = Parse.parse (ref text)
+        assert (Option.get parsed == value)
+        let upper = Char.to_u16 (Char.to_ascii_upper value)
+        let lower = Char.to_u16 (Char.to_ascii_lower value)
+        assert (upper == (if number >= 97 && number <= 122 then number - 32 else number) as i16u)
+        assert (lower == (if number >= 65 && number <= 90 then number + 32 else number) as i16u)
+        assert (Char.is_ascii_digit value == (number >= 48 && number <= 57))
+        assert (Char.is_ascii_alphabetic value == ((number >= 65 && number <= 90) || (number >= 97 && number <= 122)))
+        count = count + 1
+    count
+
+export def scalar_roundtrip :: i32u -> bool
+fn scalar_roundtrip number =
+    match Utf8Char.of_u32 number with
+    | Some value ->
+        let text = to_string value
+        let parsed: Option<utf8char> = Parse.parse (ref text)
+        Utf8Char.to_u32 value == number && Option.get parsed == value
+    | None -> number > 1114111i32u || (number >= 55296i32u && number <= 57343i32u)
+
+export def character_patterns :: i64
+fn character_patterns =
+    let unit = match '\uD800' with | 'a' -> 0 | '\uD800' -> 20 | _ -> 1
+    let scalar = match u8'\u{1F600}' with | u8'a' -> 0 | u8'\u{1F600}' -> 22 | _ -> 1
+    unit + scalar
+
+export def character_order :: bool
+fn character_order = '\uD800' > '\uD7FF' && '\uFFFF' > '\0' && u8'\u{1F600}' > u8'\u{FFFF}'
+
+export def parse_characters :: bool
+fn parse_characters =
+    let pair = "\u{1F600}"
+    let lone = "\uD800"
+    let empty = ""
+    let multiple = "ab"
+    let pair_unit: Option<char> = Parse.parse (ref pair)
+    let pair_scalar: Option<utf8char> = Parse.parse (ref pair)
+    let lone_unit: Option<char> = Parse.parse (ref lone)
+    let lone_scalar: Option<utf8char> = Parse.parse (ref lone)
+    let empty_scalar: Option<utf8char> = Parse.parse (ref empty)
+    let multi_scalar: Option<utf8char> = Parse.parse (ref multiple)
+    Option.is_none (ref pair_unit) && Option.get pair_scalar == u8'\u{1F600}' && Option.get lone_unit == '\uD800' && Option.is_none (ref lone_scalar) && Option.is_none (ref empty_scalar) && Option.is_none (ref multi_scalar)
+
+export def utf8_ascii :: bool
+fn utf8_ascii =
+    Utf8Char.to_ascii_upper u8'a' == u8'A' && Utf8Char.to_ascii_lower u8'Z' == u8'z' && Utf8Char.to_ascii_upper u8'\u{1F600}' == u8'\u{1F600}' && Utf8Char.is_ascii_digit u8'9' && Utf8Char.is_ascii_alphabetic u8'Z'
+
+export def trap_surrogate :: i32u
+fn trap_surrogate = Utf8Char.to_u32 (Utf8Char.of_u32_unchecked 55296i32u)
+
+export def trap_outside :: i32u
+fn trap_outside = Utf8Char.to_u32 (Utf8Char.of_u32_unchecked 1114112i32u)

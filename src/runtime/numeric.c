@@ -390,6 +390,106 @@ int tz_soft_cmp(const unsigned char *left, const unsigned char *right, int kind)
 }
 
 __attribute__((visibility("hidden")))
+void tz_soft_hash_canonical(unsigned char *out, const unsigned char *input, int kind) {
+    tzrt_format descriptor = format(kind);
+    tzrt_number value = decode(input, descriptor);
+    if (value.special) {
+        store(out, special(descriptor, value.special, value.special == 2 ? 0 : value.negative), descriptor.width);
+        return;
+    }
+    u128 coefficient = narrow(&value.coefficient);
+    if (!coefficient) {
+        store(out, (u128)descriptor.bias << descriptor.fraction, descriptor.width);
+        return;
+    }
+    while (value.exponent < descriptor.maximum && coefficient % 10 == 0) {
+        coefficient /= 10;
+        ++value.exponent;
+    }
+    u128 encoded = (u128)value.negative << (descriptor.width - 1);
+    int exponent = value.exponent + descriptor.bias;
+    if (descriptor.width != 128 && coefficient >> descriptor.fraction) {
+        encoded |= ((u128)3 << (descriptor.width - 3)) | ((u128)exponent << (descriptor.fraction - 2)) | (coefficient & mask(descriptor.fraction - 2));
+    } else {
+        encoded |= ((u128)exponent << descriptor.fraction) | coefficient;
+    }
+    store(out, encoded, descriptor.width);
+}
+
+__attribute__((visibility("hidden")))
+void tz_soft_math_unary(unsigned char *out, const unsigned char *input, int kind, int operation) {
+    tzrt_format descriptor = format(kind);
+    tzrt_number value = decode(input, descriptor);
+    u128 raw = load(input, descriptor.width);
+    if (value.special == 2 || (value.special == 1 && (operation != 0 || !value.negative)) || (!value.special && !value.coefficient.n)) {
+        store(out, raw, descriptor.width);
+        return;
+    }
+    if (operation == 0) {
+        if (value.negative) {
+            store(out, special(descriptor, 2, 0), descriptor.width);
+            return;
+        }
+        tzrt_big one = small(1);
+        int exponent = magnitude(&value.coefficient, &one, descriptor.base) + value.exponent;
+        int quantum = (exponent >= 0 ? exponent / 2 : (exponent - 1) / 2) - descriptor.precision + 1;
+        if (quantum < descriptor.minimum) quantum = descriptor.minimum;
+        int scale = value.exponent - 2 * quantum;
+        tzrt_big numerator = value.coefficient, denominator = one;
+        if (scale >= 0) power(&numerator, descriptor.base, scale);
+        else power(&denominator, descriptor.base, -scale);
+        u128 lower = 0, upper = 1;
+        for (int digit = 0; digit < descriptor.precision; ++digit) upper *= (u32)descriptor.base;
+        while (upper - lower > 1) {
+            u128 middle = lower + (upper - lower) / 2;
+            tzrt_big candidate = small(middle);
+            tzrt_big square = multiply(&candidate, &candidate);
+            square = multiply(&square, &denominator);
+            if (compare(&square, &numerator) <= 0) lower = middle;
+            else upper = middle;
+        }
+        tzrt_big midpoint = small(2 * lower + 1);
+        midpoint = multiply(&midpoint, &midpoint);
+        midpoint = multiply(&midpoint, &denominator);
+        multiply_small(&numerator, 4);
+        int order = compare(&numerator, &midpoint);
+        if (order > 0 || (order == 0 && (lower & 1))) ++lower;
+        tzrt_big coefficient = small(lower);
+        store(out, pack(&coefficient, &one, quantum, 0, descriptor), descriptor.width);
+        return;
+    }
+    if (value.exponent >= 0) { store(out, raw, descriptor.width); return; }
+    tzrt_big denominator = small(1), remainder = value.coefficient;
+    power(&denominator, descriptor.base, -value.exponent);
+    tzrt_big integral = divide(&remainder, &denominator);
+    if (!remainder.n) { store(out, raw, descriptor.width); return; }
+    int increment = (operation == 1 && value.negative) || (operation == 2 && !value.negative);
+    if (operation == 4 || operation == 5) {
+        multiply_small(&remainder, 2);
+        int order = compare(&remainder, &denominator);
+        increment = order > 0 || (order == 0 && (operation == 4 || (integral.n && (integral.w[0] & 1))));
+    }
+    tzrt_big one = small(1);
+    if (increment) add(&integral, &one);
+    store(out, pack(&integral, &one, 0, value.negative, descriptor), descriptor.width);
+}
+
+__attribute__((visibility("hidden")))
+void tz_soft_math_binary(unsigned char *out, const unsigned char *left, const unsigned char *right, int kind, int maximum) {
+    tzrt_format descriptor = format(kind);
+    tzrt_number first = decode(left, descriptor), second = decode(right, descriptor);
+    if (first.special == 2 || second.special == 2) { store(out, special(descriptor, 2, 0), descriptor.width); return; }
+    if (!first.special && !second.special && !first.coefficient.n && !second.coefficient.n) {
+        int negative = maximum ? first.negative && second.negative : first.negative || second.negative;
+        u128 raw = load(left, descriptor.width) & mask(descriptor.width - 1);
+        store(out, raw | ((u128)negative << (descriptor.width - 1)), descriptor.width);
+        return;
+    }
+    int order = tz_soft_cmp(left, right, kind);
+    store(out, load((maximum ? order >= 0 : order <= 0) ? left : right, descriptor.width), descriptor.width);
+}
+
+__attribute__((visibility("hidden")))
 void tz_soft_cast(unsigned char *out, const unsigned char *input, int from, int to) {
     tzrt_format source = format(from), target = format(to);
     tzrt_number value = decode(input, source);

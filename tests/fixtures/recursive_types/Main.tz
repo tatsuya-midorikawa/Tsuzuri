@@ -1,0 +1,157 @@
+union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>
+
+def build :: i64 -> Tree<i64>
+fn build count =
+    let mut tree = Leaf
+    for index in 1i64 .. count do tree = Node (tree, index, Leaf)
+    tree
+
+def root :: ref Tree<i64> -> i64
+fn root tree = match tree with | Leaf -> 0 | Node (_, value, _) -> value
+
+export def deep_drop :: i64 -> i64
+fn deep_drop count =
+    let tree = build count
+    root (ref tree)
+
+export def deep_clone :: i64 -> i64
+fn deep_clone count =
+    let tree = build count
+    let read = offset -> root (ref tree) + offset
+    let copied = read
+    copied 1 + read 2
+
+export def subtree_move :: i64
+fn subtree_move =
+    let tree = Node (Node (Leaf, 20, Leaf), 1, Node (Leaf, 21, Leaf))
+    match tree with | Node (left, _, right) -> root (ref left) + root (ref right) | Leaf -> 0
+
+export def consuming_walk :: i64 -> i64
+fn consuming_walk count =
+    let mut tree = build count
+    let mut total = 0
+    let mut walking = true
+    while walking do
+        match tree with
+        | Leaf -> walking = false
+        | Node (left, value, _right) -> { total = total + value; tree = left; }
+    total
+
+union Rose = Branch of [Rose]
+export def rose_clone :: i64 -> i64
+fn rose_clone count =
+    let mut tree = Branch []
+    for _index in 1i64 .. count do tree = Branch [tree]
+    let read = offset -> (match ref tree with | Branch children -> children.length) + offset
+    let copied = read
+    copied 1 + read 2
+
+union Linked = Links of [|Linked|]
+export def list_drop :: i64 -> i64
+fn list_drop count =
+    let mut tree = Links [||]
+    for _index in 1i64 .. count do tree = Links [|tree|]
+    match ref tree with | Links children -> children.length
+
+export def list_clone :: i64 -> i64
+fn list_clone count =
+    let mut tree = Links [||]
+    for _index in 1i64 .. count do tree = Links [|tree|]
+    let read = offset -> (match ref tree with | Links children -> children.length) + offset
+    let copied = read
+    copied 1 + read 2
+
+record BranchData { left: RecordTree, text: string, right: RecordTree }
+union RecordTree = Empty | Filled of BranchData
+export def record_clone :: i64 -> i64
+fn record_clone count =
+    let mut tree = Empty
+    for _index in 1i64 .. count do tree = Filled (BranchData { left: tree, text: "he" + "llo", right: Empty })
+    let read = offset -> (match ref tree with | Empty -> 0 | Filled branch -> branch.text.length) + offset
+    let copied = read
+    copied 1 + read 2
+
+record Link { next: Option<Link> }
+export def generic_container :: i64
+fn generic_container =
+    let last = Link { next: None }
+    let first = Link { next: Some last }
+    let child = Option.get first.next
+    if Option.is_none (ref child.next) then 42 else 0
+
+union Stops = FirstStop | OtherStop | Next of Stops
+export def second_empty :: i64
+fn second_empty = match Next OtherStop with | Next OtherStop -> 42 | _ -> 0
+
+def apply :: ('a -> 'b) -> 'a -> 'b
+fn apply function value = function value
+export def constructor_value :: i64
+fn constructor_value =
+    let tree = apply Node (Leaf, 42i64, Leaf)
+    root (ref tree)
+
+union Jobs = Done | Job of Task<i64> * Jobs
+export def task_payload :: i64
+fn task_payload =
+    let jobs = Job (task { return 42 }, Done)
+    match jobs with | Done -> 0 | Job (work, _tail) -> Task.run work
+
+union BufferTree = Children of Vec<BufferTree>
+export def vec_clone :: i64 -> i64
+fn vec_clone count =
+    let mut tree = Children (Vec.empty())
+    for _index in 1i64 .. count do tree = Children (Vec.push (Vec.empty()) tree)
+    let read = offset -> (match ref tree with | Children children -> children.length) + offset
+    let copied = read
+    copied 1 + read 2
+
+union First = Stop | ToSecond of Second | ToThird of Third
+union Second = ToFirst of First
+union Third = ToBack of Second
+export def mutual_clone :: i64 -> i64
+fn mutual_clone count =
+    let mut tree = Stop
+    for _index in 1i64 .. count do tree = ToThird (ToBack (ToFirst tree))
+    let read = offset -> (match ref tree with | ToThird (ToBack (ToFirst _)) -> 20 | _ -> 0) + offset
+    let copied = read
+    copied 1 + read 2
+
+export def guard_cleanup :: i64
+fn guard_cleanup =
+    let tree = Node (Node (Leaf, 20, Leaf), 1, Node (Leaf, 21, Leaf))
+    match tree with
+    | Node (left, value, right) when value < 0 -> root (ref left) + root (ref right)
+    | Node (left, value, right) -> root (ref left) + value + root (ref right)
+    | Leaf -> 0
+
+export def task_tree :: i64 -> i64
+fn task_tree count =
+    let tree = build count
+    let work = task { return tree }
+    let result = Task.run work
+    root (ref result)
+
+export def constructor_order :: i64 -> i64
+fn constructor_order mode =
+    let mut order = 0
+    let make: Tree<i64> * i64 * Tree<i64> -> Tree<i64> = Node
+    let tree =
+        if mode == 0 then
+            Node ({ order = order * 10 + 1; Leaf }, { order = order * 10 + 2; 42 }, { order = order * 10 + 3; Leaf })
+        else
+            make ({ order = order * 10 + 1; Leaf }, { order = order * 10 + 2; 42 }, { order = order * 10 + 3; Leaf })
+    root (ref tree) * 1000 + order
+
+def rec tail_sum :: Tree<i64> -> i64 -> i64
+fn rec tail_sum tree total =
+    match tree with | Leaf -> total | Node (left, value, _right) -> tail_sum left (total + value)
+
+export def tail_walk :: i64 -> i64
+fn tail_walk count = tail_sum (build count) 0
+
+export def alternative_cleanup :: i64
+fn alternative_cleanup =
+    let tree = Node (Node (Leaf, 1, Leaf), 42, Leaf)
+    match tree with
+    | Node (Leaf, value, _) | Node (_, value, Leaf) -> value
+    | _ -> 0

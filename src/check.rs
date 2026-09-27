@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};
+pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
 #[path = "closures.rs"]
@@ -9,12 +10,18 @@ mod closures;
 mod computation;
 #[path = "control.rs"]
 mod control;
+#[path = "derive.rs"]
+mod deriving;
 #[path = "exhaustiveness.rs"]
 mod exhaustiveness;
 #[path = "polymorph.rs"]
 mod polymorph;
 #[path = "recursion.rs"]
 mod recursion;
+#[path = "recursive.rs"]
+mod recursive;
+#[path = "warnings.rs"]
+mod warnings;
 use polymorph::{Classes, Constraint, Inference, Scheme};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
@@ -29,6 +36,8 @@ pub enum Type {
     Decimal(u16),
     Bool,
     Unit,
+    Char,
+    Utf8Char,
     String,
     Utf8String,
     /// A record declaration and its type arguments; non-generic records have
@@ -39,6 +48,7 @@ pub enum Type {
     Union(usize, Box<[Type]>),
     Array(Box<Type>),
     List(Box<Type>),
+    Vec(Box<Type>),
     Tuple(Vec<Type>),
     Task(Box<Type>),
     Function(Vec<Type>, Box<Type>),
@@ -48,6 +58,16 @@ pub enum Type {
 impl Type {
     pub const I64: Self = Self::Integer(64, true);
     pub const F64: Self = Self::Binary(64);
+
+    pub(crate) fn shared_array_element(&self) -> Option<&Type> {
+        match self {
+            Self::Reference(inner, false) => match inner.as_ref() {
+                Self::Array(element) => Some(element),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 
     pub(crate) fn function(mut parameters: Vec<Type>, mut result: Type) -> Self {
         if !parameters.is_empty() {
@@ -85,6 +105,8 @@ impl Type {
             Self::Binary(bits) => format!("f{bits}"),
             Self::Decimal(bits) => format!("d{bits}"),
             Self::Bool => "bool".into(),
+            Self::Char => "char".into(),
+            Self::Utf8Char => "utf8char".into(),
             Self::Unit => "unit".into(),
             Self::String => "string".into(),
             Self::Utf8String => "utf8string".into(),
@@ -115,6 +137,7 @@ impl Type {
                 }
                 text
             }
+            Self::Vec(element) => format!("Vec<{}>", element.display(types)),
             Self::Array(element) => {
                 format!("[{}]", element.display(types))
             }
@@ -159,9 +182,11 @@ impl Type {
     pub fn contains_error(&self) -> bool {
         match self {
             Self::Error => true,
-            Self::Array(ty) | Self::List(ty) | Self::Task(ty) | Self::Reference(ty, _) => {
-                ty.contains_error()
-            }
+            Self::Array(ty)
+            | Self::List(ty)
+            | Self::Vec(ty)
+            | Self::Task(ty)
+            | Self::Reference(ty, _) => ty.contains_error(),
             Self::Function(parameters, result) => {
                 parameters.iter().any(Self::contains_error) || result.contains_error()
             }
@@ -172,7 +197,7 @@ impl Type {
     }
 
     pub fn is_scalar(&self) -> bool {
-        self.is_numeric() || *self == Self::Bool
+        self.is_numeric() || matches!(self, Self::Bool | Self::Char | Self::Utf8Char)
     }
 
     pub fn is_numeric(&self) -> bool {
@@ -192,9 +217,13 @@ impl Type {
     }
 
     pub fn is_copy(&self, types: &TypeContext<'_>) -> bool {
+        if types.recursive(self) {
+            return false;
+        }
         match self {
             Self::String
             | Self::Utf8String
+            | Self::Vec(_)
             | Self::Task(_)
             | Self::Reference(_, true)
             | Self::Variable(_)
@@ -208,6 +237,9 @@ impl Type {
     }
 
     pub fn needs_drop(&self, types: &TypeContext<'_>) -> bool {
+        if types.recursive(self) {
+            return true;
+        }
         match self {
             Self::String | Self::Utf8String | Self::Function(..) | Self::Task(_) => true,
             Self::Record(id, args) => {
@@ -216,19 +248,20 @@ impl Type {
             Self::Union(id, args) => {
                 !types.union_payloads_all(*id, args, |ty| !ty.needs_drop(types))
             }
-            Self::Array(_) | Self::List(_) => true,
+            Self::Array(_) | Self::List(_) | Self::Vec(_) => true,
             Self::Tuple(elements) => elements.iter().any(|ty| ty.needs_drop(types)),
             _ => false,
         }
     }
 
-    /// Record and union instances never store references: `validate_size`
-    /// rejects type arguments that would put one into a field or payload.
     pub fn contains_reference(&self) -> bool {
         match self {
             Self::Reference(..) => true,
-            Self::Array(element) | Self::List(element) => element.contains_reference(),
+            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
+                element.contains_reference()
+            }
             Self::Tuple(elements) => elements.iter().any(Self::contains_reference),
+            Self::Union(_, arguments) => arguments.iter().any(Self::contains_reference),
             _ => false,
         }
     }
@@ -236,19 +269,28 @@ impl Type {
     fn contains_mutable_reference(&self) -> bool {
         match self {
             Self::Reference(_, true) => true,
-            Self::Reference(value, false) | Self::Array(value) | Self::List(value) => {
-                value.contains_mutable_reference()
-            }
+            Self::Reference(value, false)
+            | Self::Array(value)
+            | Self::List(value)
+            | Self::Vec(value) => value.contains_mutable_reference(),
             Self::Tuple(elements) => elements.iter().any(Self::contains_mutable_reference),
+            Self::Union(_, arguments) => arguments.iter().any(Self::contains_mutable_reference),
             // Function signatures describe calls, not stored references; captures are checked separately.
             _ => false,
         }
     }
 
     pub(crate) fn carries_loans(&self, types: &TypeContext<'_>) -> bool {
+        if types.recursive(self) {
+            return !types.stored_all(self, |ty| {
+                !matches!(ty, Type::Reference(..) | Type::Function(..))
+            });
+        }
         match self {
             Self::Reference(..) | Self::Function(..) => true,
-            Self::Array(element) | Self::List(element) => element.carries_loans(types),
+            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
+                element.carries_loans(types)
+            }
             Self::Tuple(elements) => elements.iter().any(|ty| ty.carries_loans(types)),
             Self::Record(id, args) => {
                 !types.record_fields_all(*id, args, |ty| !ty.carries_loans(types))
@@ -261,9 +303,16 @@ impl Type {
     }
 
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {
+        if types.recursive(self) {
+            return types.stored_all(self, |ty| {
+                !matches!(ty, Type::Reference(_, true) | Type::Task(_))
+            });
+        }
         match self {
             Self::Reference(_, true) | Self::Task(_) => false,
-            Self::Array(element) | Self::List(element) => element.can_capture(types),
+            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
+                element.can_capture(types)
+            }
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_capture(types)),
             Self::Record(id, args) => {
                 types.record_fields_all(*id, args, |ty| ty.can_capture(types))
@@ -283,9 +332,14 @@ impl Type {
     }
 
     pub(crate) fn can_send(&self, types: &TypeContext<'_>) -> bool {
+        if types.recursive(self) {
+            return types.stored_all(self, |ty| !matches!(ty, Type::Reference(..)));
+        }
         match self {
             Self::Reference(..) => false,
-            Self::Array(element) | Self::List(element) => element.can_send(types),
+            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
+                element.can_send(types)
+            }
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(types)),
             Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.can_send(types)),
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.can_send(types)),
@@ -408,6 +462,37 @@ pub enum Builtin {
     Floor,
     Ceil,
     Abs,
+    MathSqrt,
+    MathFloor,
+    MathCeil,
+    MathTrunc,
+    MathRound,
+    MathRoundEven,
+    MathAbs,
+    MathMin,
+    MathMax,
+    MathClamp,
+    MathCopysign,
+    MathIsNan,
+    MathIsInfinite,
+    MathIsFinite,
+    MathPi,
+    MathE,
+    MathSin,
+    MathCos,
+    MathTan,
+    MathAsin,
+    MathAcos,
+    MathAtan,
+    MathAtan2,
+    MathExp,
+    MathExp2,
+    MathLog,
+    MathLog2,
+    MathLog10,
+    MathPow,
+    MathCbrt,
+    MathHypot,
     ToFloat,
     ToInt,
     Assert,
@@ -419,11 +504,88 @@ pub enum Builtin {
     StringToWellFormed,
     TaskRun,
     TaskParallel,
+    ParallelInit,
+    ParallelMap,
+    ParallelMapRef,
+    ParallelReduce,
     /// `unreachable : unit -> 'a` traps (GUIDE D-21).
     Unreachable,
     ToString,
+    DebugPrintString,
     Display,
     Parse,
+    Default,
+    Hash,
+    HashMix,
+    DisplayQuoted,
+    ArraySet,
+    ArrayUpdate,
+    ArraySwap,
+    ListCons,
+    ListTail,
+    ArrayConcat,
+    ArrayToList,
+    ArraySortBy,
+    ListMap,
+    ListMapRef,
+    ListReverse,
+    ListToArray,
+    ListFoldRef,
+    VecEmpty,
+    VecWithCapacity,
+    VecLength,
+    VecCapacity,
+    VecIsEmpty,
+    VecPush,
+    VecPop,
+    VecReserve,
+    VecTruncate,
+    VecClear,
+    VecSet,
+    VecSwap,
+    VecGet,
+    VecAt,
+    VecClone,
+    VecOfArray,
+    VecToArray,
+    CharToU16,
+    CharOfU16,
+    Utf8CharToU32,
+    Utf8CharOfU32,
+    Utf8CharOfU32Unchecked,
+    StringToCodeUnits,
+    StringFromCodeUnits,
+    Utf8StringToBytes,
+    Utf8StringFromBytes,
+    Utf8StringDecodeAt,
+    StringCompare,
+    Utf8StringCompare,
+    IntMin,
+    IntMax,
+    IntClamp,
+    IntAbs,
+    IntUnsignedAbs,
+    IntAbsDiff,
+    IntCountOnes,
+    IntLeadingZeros,
+    IntTrailingZeros,
+    IntRotateLeft,
+    IntRotateRight,
+    IntSwapBytes,
+    IntReverseBits,
+    IntIsPowerOfTwo,
+    IntCheckedAdd,
+    IntCheckedSub,
+    IntCheckedMul,
+    IntCheckedDiv,
+    IntCheckedRem,
+    IntCheckedNeg,
+    IntSaturatingAdd,
+    IntSaturatingSub,
+    IntSaturatingMul,
+    IntWrappingPow,
+    IntCheckedPow,
+    IntWideningMul,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -451,6 +613,7 @@ pub enum BuiltinType {
     },
     Array(Box<BuiltinType>),
     List(Box<BuiltinType>),
+    Vec(Box<BuiltinType>),
     Tuple(Vec<BuiltinType>),
     Task(Box<BuiltinType>),
     Reference(Box<BuiltinType>, bool),
@@ -490,6 +653,37 @@ impl Builtin {
         Self::Floor,
         Self::Ceil,
         Self::Abs,
+        Self::MathSqrt,
+        Self::MathFloor,
+        Self::MathCeil,
+        Self::MathTrunc,
+        Self::MathRound,
+        Self::MathRoundEven,
+        Self::MathAbs,
+        Self::MathMin,
+        Self::MathMax,
+        Self::MathClamp,
+        Self::MathCopysign,
+        Self::MathIsNan,
+        Self::MathIsInfinite,
+        Self::MathIsFinite,
+        Self::MathPi,
+        Self::MathE,
+        Self::MathSin,
+        Self::MathCos,
+        Self::MathTan,
+        Self::MathAsin,
+        Self::MathAcos,
+        Self::MathAtan,
+        Self::MathAtan2,
+        Self::MathExp,
+        Self::MathExp2,
+        Self::MathLog,
+        Self::MathLog2,
+        Self::MathLog10,
+        Self::MathPow,
+        Self::MathCbrt,
+        Self::MathHypot,
         Self::ToFloat,
         Self::ToInt,
         Self::Assert,
@@ -501,10 +695,87 @@ impl Builtin {
         Self::StringToWellFormed,
         Self::TaskRun,
         Self::TaskParallel,
+        Self::ParallelInit,
+        Self::ParallelMap,
+        Self::ParallelMapRef,
+        Self::ParallelReduce,
         Self::Unreachable,
         Self::ToString,
+        Self::DebugPrintString,
         Self::Display,
         Self::Parse,
+        Self::Default,
+        Self::Hash,
+        Self::HashMix,
+        Self::DisplayQuoted,
+        Self::ArraySet,
+        Self::ArrayUpdate,
+        Self::ArraySwap,
+        Self::ListCons,
+        Self::ListTail,
+        Self::ArrayConcat,
+        Self::ArrayToList,
+        Self::ArraySortBy,
+        Self::ListMap,
+        Self::ListMapRef,
+        Self::ListReverse,
+        Self::ListToArray,
+        Self::ListFoldRef,
+        Self::VecEmpty,
+        Self::VecWithCapacity,
+        Self::VecLength,
+        Self::VecCapacity,
+        Self::VecIsEmpty,
+        Self::VecPush,
+        Self::VecPop,
+        Self::VecReserve,
+        Self::VecTruncate,
+        Self::VecClear,
+        Self::VecSet,
+        Self::VecSwap,
+        Self::VecGet,
+        Self::VecAt,
+        Self::VecClone,
+        Self::VecOfArray,
+        Self::VecToArray,
+        Self::CharToU16,
+        Self::CharOfU16,
+        Self::Utf8CharToU32,
+        Self::Utf8CharOfU32,
+        Self::Utf8CharOfU32Unchecked,
+        Self::StringToCodeUnits,
+        Self::StringFromCodeUnits,
+        Self::Utf8StringToBytes,
+        Self::Utf8StringFromBytes,
+        Self::Utf8StringDecodeAt,
+        Self::StringCompare,
+        Self::Utf8StringCompare,
+        Self::IntMin,
+        Self::IntMax,
+        Self::IntClamp,
+        Self::IntAbs,
+        Self::IntUnsignedAbs,
+        Self::IntAbsDiff,
+        Self::IntCountOnes,
+        Self::IntLeadingZeros,
+        Self::IntTrailingZeros,
+        Self::IntRotateLeft,
+        Self::IntRotateRight,
+        Self::IntSwapBytes,
+        Self::IntReverseBits,
+        Self::IntIsPowerOfTwo,
+        Self::IntCheckedAdd,
+        Self::IntCheckedSub,
+        Self::IntCheckedMul,
+        Self::IntCheckedDiv,
+        Self::IntCheckedRem,
+        Self::IntCheckedNeg,
+        Self::IntSaturatingAdd,
+        Self::IntSaturatingSub,
+        Self::IntSaturatingMul,
+        Self::IntWrappingPow,
+        Self::IntCheckedPow,
+        Self::IntWideningMul,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -521,6 +792,37 @@ impl Builtin {
             Self::Floor => "floor",
             Self::Ceil => "ceil",
             Self::Abs => "abs",
+            Self::MathSqrt => "Math.sqrt",
+            Self::MathFloor => "Math.floor",
+            Self::MathCeil => "Math.ceil",
+            Self::MathTrunc => "Math.trunc",
+            Self::MathRound => "Math.round",
+            Self::MathRoundEven => "Math.round_even",
+            Self::MathAbs => "Math.abs",
+            Self::MathMin => "Math.min",
+            Self::MathMax => "Math.max",
+            Self::MathClamp => "Math.clamp",
+            Self::MathCopysign => "Math.copysign",
+            Self::MathIsNan => "Math.is_nan",
+            Self::MathIsInfinite => "Math.is_infinite",
+            Self::MathIsFinite => "Math.is_finite",
+            Self::MathPi => "Math.pi",
+            Self::MathE => "Math.e",
+            Self::MathSin => "Math.sin",
+            Self::MathCos => "Math.cos",
+            Self::MathTan => "Math.tan",
+            Self::MathAsin => "Math.asin",
+            Self::MathAcos => "Math.acos",
+            Self::MathAtan => "Math.atan",
+            Self::MathAtan2 => "Math.atan2",
+            Self::MathExp => "Math.exp",
+            Self::MathExp2 => "Math.exp2",
+            Self::MathLog => "Math.log",
+            Self::MathLog2 => "Math.log2",
+            Self::MathLog10 => "Math.log10",
+            Self::MathPow => "Math.pow",
+            Self::MathCbrt => "Math.cbrt",
+            Self::MathHypot => "Math.hypot",
             Self::ToFloat => "to_float",
             Self::ToInt => "to_int",
             Self::Assert => "assert",
@@ -532,10 +834,87 @@ impl Builtin {
             Self::StringToWellFormed => "String.to_well_formed",
             Self::TaskRun => "Task.run",
             Self::TaskParallel => "Task.parallel",
+            Self::ParallelInit => "Parallel.init",
+            Self::ParallelMap => "Parallel.map",
+            Self::ParallelMapRef => "Parallel.map_ref",
+            Self::ParallelReduce => "Parallel.reduce",
             Self::Unreachable => "unreachable",
             Self::ToString => "to_string",
+            Self::DebugPrintString => "Debug.__print_string",
             Self::Display => "$builtin.display",
             Self::Parse => "$builtin.parse",
+            Self::Default => "$builtin.default",
+            Self::Hash => "$builtin.hash",
+            Self::HashMix => "$builtin.hash_mix",
+            Self::DisplayQuoted => "$builtin.display_quoted",
+            Self::ArraySet => "Array.set",
+            Self::ArrayUpdate => "Array.update",
+            Self::ArraySwap => "Array.swap",
+            Self::ListCons => "List.cons",
+            Self::ListTail => "List.tail",
+            Self::ArrayConcat => "Array.concat",
+            Self::ArrayToList => "Array.to_list",
+            Self::ArraySortBy => "Array.sort_by",
+            Self::ListMap => "List.map",
+            Self::ListMapRef => "List.map_ref",
+            Self::ListReverse => "List.reverse",
+            Self::ListToArray => "List.to_array",
+            Self::ListFoldRef => "List.fold_ref",
+            Self::VecEmpty => "Vec.empty",
+            Self::VecWithCapacity => "Vec.with_capacity",
+            Self::VecLength => "Vec.length",
+            Self::VecCapacity => "Vec.capacity",
+            Self::VecIsEmpty => "Vec.is_empty",
+            Self::VecPush => "Vec.push",
+            Self::VecPop => "Vec.pop",
+            Self::VecReserve => "Vec.reserve",
+            Self::VecTruncate => "Vec.truncate",
+            Self::VecClear => "Vec.clear",
+            Self::VecSet => "Vec.set",
+            Self::VecSwap => "Vec.swap",
+            Self::VecGet => "Vec.get",
+            Self::VecAt => "Vec.at",
+            Self::VecClone => "Vec.clone",
+            Self::VecOfArray => "Vec.of_array",
+            Self::VecToArray => "Vec.to_array",
+            Self::CharToU16 => "Char.to_u16",
+            Self::CharOfU16 => "Char.of_u16",
+            Self::Utf8CharToU32 => "Utf8Char.to_u32",
+            Self::Utf8CharOfU32 => "Utf8Char.of_u32",
+            Self::Utf8CharOfU32Unchecked => "Utf8Char.of_u32_unchecked",
+            Self::StringToCodeUnits => "String.to_code_units",
+            Self::StringFromCodeUnits => "String.from_code_units",
+            Self::Utf8StringToBytes => "Utf8String.to_bytes",
+            Self::Utf8StringFromBytes => "Utf8String.from_bytes",
+            Self::Utf8StringDecodeAt => "Utf8String.decode_at",
+            Self::StringCompare => "String.compare",
+            Self::Utf8StringCompare => "Utf8String.compare",
+            Self::IntMin => "Int.min",
+            Self::IntMax => "Int.max",
+            Self::IntClamp => "Int.clamp",
+            Self::IntAbs => "Int.abs",
+            Self::IntUnsignedAbs => "Int.unsigned_abs",
+            Self::IntAbsDiff => "Int.abs_diff",
+            Self::IntCountOnes => "Int.count_ones",
+            Self::IntLeadingZeros => "Int.leading_zeros",
+            Self::IntTrailingZeros => "Int.trailing_zeros",
+            Self::IntRotateLeft => "Int.rotate_left",
+            Self::IntRotateRight => "Int.rotate_right",
+            Self::IntSwapBytes => "Int.swap_bytes",
+            Self::IntReverseBits => "Int.reverse_bits",
+            Self::IntIsPowerOfTwo => "Int.is_power_of_two",
+            Self::IntCheckedAdd => "Int.checked_add",
+            Self::IntCheckedSub => "Int.checked_sub",
+            Self::IntCheckedMul => "Int.checked_mul",
+            Self::IntCheckedDiv => "Int.checked_div",
+            Self::IntCheckedRem => "Int.checked_rem",
+            Self::IntCheckedNeg => "Int.checked_neg",
+            Self::IntSaturatingAdd => "Int.saturating_add",
+            Self::IntSaturatingSub => "Int.saturating_sub",
+            Self::IntSaturatingMul => "Int.saturating_mul",
+            Self::IntWrappingPow => "Int.wrapping_pow",
+            Self::IntCheckedPow => "Int.checked_pow",
+            Self::IntWideningMul => "Int.widening_mul",
             #[cfg(test)]
             Self::TestAdd => "Int.test_add",
             #[cfg(test)]
@@ -554,12 +933,387 @@ impl Builtin {
             ty: a(),
         };
         let (parameters, result, constraints) = match self {
+            Self::StringToCodeUnits => (
+                vec![Concrete(Type::String)],
+                Array(Box::new(Concrete(Type::Integer(16, false)))),
+                Vec::new(),
+            ),
+            Self::StringFromCodeUnits => (
+                vec![Array(Box::new(Concrete(Type::Integer(16, false))))],
+                Concrete(Type::String),
+                Vec::new(),
+            ),
+            Self::Utf8StringToBytes => (
+                vec![Concrete(Type::Utf8String)],
+                Array(Box::new(Concrete(Type::Integer(8, false)))),
+                Vec::new(),
+            ),
+            Self::Utf8StringFromBytes => (
+                vec![Array(Box::new(Concrete(Type::Integer(8, false))))],
+                BuiltinType::Std {
+                    module: "Option",
+                    name: "Option",
+                    args: vec![Concrete(Type::Utf8String)],
+                },
+                Vec::new(),
+            ),
+            Self::Utf8StringDecodeAt => (
+                vec![
+                    Reference(Box::new(Concrete(Type::Utf8String)), false),
+                    Concrete(Type::I64),
+                ],
+                BuiltinType::Tuple(vec![Concrete(Type::Utf8Char), Concrete(Type::I64)]),
+                Vec::new(),
+            ),
+            Self::StringCompare | Self::Utf8StringCompare => {
+                let ty = if self == Self::StringCompare {
+                    Type::String
+                } else {
+                    Type::Utf8String
+                };
+                (
+                    vec![
+                        Reference(Box::new(Concrete(ty.clone())), false),
+                        Reference(Box::new(Concrete(ty)), false),
+                    ],
+                    Concrete(Type::I64),
+                    Vec::new(),
+                )
+            }
+            Self::CharToU16 => (
+                vec![Concrete(Type::Char)],
+                Concrete(Type::Integer(16, false)),
+                Vec::new(),
+            ),
+            Self::CharOfU16 => (
+                vec![Concrete(Type::Integer(16, false))],
+                Concrete(Type::Char),
+                Vec::new(),
+            ),
+            Self::Utf8CharToU32 => (
+                vec![Concrete(Type::Utf8Char)],
+                Concrete(Type::Integer(32, false)),
+                Vec::new(),
+            ),
+            Self::Utf8CharOfU32Unchecked => (
+                vec![Concrete(Type::Integer(32, false))],
+                Concrete(Type::Utf8Char),
+                Vec::new(),
+            ),
+            Self::Utf8CharOfU32 => (
+                vec![Concrete(Type::Integer(32, false))],
+                BuiltinType::Std {
+                    module: "Option",
+                    name: "Option",
+                    args: vec![Concrete(Type::Utf8Char)],
+                },
+                Vec::new(),
+            ),
+            Self::VecEmpty
+            | Self::VecWithCapacity
+            | Self::VecLength
+            | Self::VecCapacity
+            | Self::VecIsEmpty
+            | Self::VecPush
+            | Self::VecPop
+            | Self::VecReserve
+            | Self::VecTruncate
+            | Self::VecClear
+            | Self::VecSet
+            | Self::VecSwap
+            | Self::VecGet
+            | Self::VecAt
+            | Self::VecClone
+            | Self::VecOfArray
+            | Self::VecToArray => {
+                let vector = || BuiltinType::Vec(Box::new(a()));
+                let borrowed = || Reference(Box::new(vector()), false);
+                let option = || BuiltinType::Std {
+                    module: "Option",
+                    name: "Option",
+                    args: vec![a()],
+                };
+                let parameters = match self {
+                    Self::VecEmpty => vec![],
+                    Self::VecWithCapacity => vec![Concrete(Type::I64)],
+                    Self::VecLength | Self::VecCapacity | Self::VecIsEmpty | Self::VecClone => {
+                        vec![borrowed()]
+                    }
+                    Self::VecGet | Self::VecAt => vec![borrowed(), Concrete(Type::I64)],
+                    Self::VecPush => vec![vector(), a()],
+                    Self::VecReserve | Self::VecTruncate => vec![vector(), Concrete(Type::I64)],
+                    Self::VecSet => vec![vector(), Concrete(Type::I64), a()],
+                    Self::VecSwap => vec![vector(), Concrete(Type::I64), Concrete(Type::I64)],
+                    Self::VecOfArray => vec![Array(Box::new(a()))],
+                    _ => vec![vector()],
+                };
+                let result = match self {
+                    Self::VecLength | Self::VecCapacity => Concrete(Type::I64),
+                    Self::VecIsEmpty => Concrete(Type::Bool),
+                    Self::VecPop => BuiltinType::Tuple(vec![vector(), option()]),
+                    Self::VecGet => option(),
+                    Self::VecAt => Reference(Box::new(a()), false),
+                    Self::VecToArray => Array(Box::new(a())),
+                    _ => vector(),
+                };
+                let constraints = if matches!(self, Self::VecGet | Self::VecClone) {
+                    vec![BuiltinConstraint {
+                        class: "Copy",
+                        ty: a(),
+                    }]
+                } else {
+                    Vec::new()
+                };
+                (parameters, result, constraints)
+            }
+            Self::ArrayConcat
+            | Self::ArrayToList
+            | Self::ArraySortBy
+            | Self::ListMap
+            | Self::ListMapRef
+            | Self::ListReverse
+            | Self::ListToArray
+            | Self::ListFoldRef => {
+                let list = || BuiltinType::List(Box::new(a()));
+                let array = || Array(Box::new(a()));
+                let borrowed = || Reference(Box::new(a()), false);
+                let read_list = || Reference(Box::new(list()), false);
+                let read_array = || Reference(Box::new(array()), false);
+                let copy = vec![BuiltinConstraint {
+                    class: "Copy",
+                    ty: a(),
+                }];
+                match self {
+                    Self::ArrayConcat => (
+                        vec![Reference(Box::new(Array(Box::new(array()))), false)],
+                        array(),
+                        copy,
+                    ),
+                    Self::ArrayToList => (vec![read_array()], list(), copy),
+                    Self::ArraySortBy => (
+                        vec![
+                            read_array(),
+                            BuiltinType::Function(
+                                vec![borrowed(), borrowed()],
+                                Box::new(Concrete(Type::I64)),
+                            ),
+                        ],
+                        array(),
+                        copy,
+                    ),
+                    Self::ListMap | Self::ListMapRef => {
+                        let input = if self == Self::ListMap {
+                            a()
+                        } else {
+                            borrowed()
+                        };
+                        (
+                            vec![
+                                read_list(),
+                                BuiltinType::Function(vec![input], Box::new(Var("b"))),
+                            ],
+                            BuiltinType::List(Box::new(Var("b"))),
+                            if self == Self::ListMap {
+                                copy
+                            } else {
+                                Vec::new()
+                            },
+                        )
+                    }
+                    Self::ListReverse => (vec![read_list()], list(), copy),
+                    Self::ListToArray => (vec![read_list()], array(), copy),
+                    Self::ListFoldRef => (
+                        vec![
+                            read_list(),
+                            Var("state"),
+                            BuiltinType::Function(
+                                vec![Var("state"), borrowed()],
+                                Box::new(Var("state")),
+                            ),
+                        ],
+                        Var("state"),
+                        Vec::new(),
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+            Self::ArraySet | Self::ArrayUpdate | Self::ArraySwap => {
+                let third = match self {
+                    Self::ArraySet => a(),
+                    Self::ArrayUpdate => BuiltinType::Function(vec![a()], Box::new(a())),
+                    _ => Concrete(Type::I64),
+                };
+                (
+                    vec![Array(Box::new(a())), Concrete(Type::I64), third],
+                    Array(Box::new(a())),
+                    Vec::new(),
+                )
+            }
+            Self::ListCons => (
+                vec![a(), BuiltinType::List(Box::new(a()))],
+                BuiltinType::List(Box::new(a())),
+                Vec::new(),
+            ),
+            Self::ListTail => (
+                vec![BuiltinType::List(Box::new(a()))],
+                BuiltinType::List(Box::new(a())),
+                Vec::new(),
+            ),
+            Self::IntMin
+            | Self::IntMax
+            | Self::IntClamp
+            | Self::IntAbs
+            | Self::IntUnsignedAbs
+            | Self::IntAbsDiff
+            | Self::IntCountOnes
+            | Self::IntLeadingZeros
+            | Self::IntTrailingZeros
+            | Self::IntRotateLeft
+            | Self::IntRotateRight
+            | Self::IntSwapBytes
+            | Self::IntReverseBits
+            | Self::IntIsPowerOfTwo
+            | Self::IntCheckedAdd
+            | Self::IntCheckedSub
+            | Self::IntCheckedMul
+            | Self::IntCheckedDiv
+            | Self::IntCheckedRem
+            | Self::IntCheckedNeg
+            | Self::IntSaturatingAdd
+            | Self::IntSaturatingSub
+            | Self::IntSaturatingMul
+            | Self::IntWrappingPow
+            | Self::IntCheckedPow
+            | Self::IntWideningMul => {
+                let parameters = match self {
+                    Self::IntAbs
+                    | Self::IntUnsignedAbs
+                    | Self::IntCountOnes
+                    | Self::IntLeadingZeros
+                    | Self::IntTrailingZeros
+                    | Self::IntSwapBytes
+                    | Self::IntReverseBits
+                    | Self::IntIsPowerOfTwo
+                    | Self::IntCheckedNeg => vec![a()],
+                    Self::IntRotateLeft
+                    | Self::IntRotateRight
+                    | Self::IntWrappingPow
+                    | Self::IntCheckedPow => vec![a(), Concrete(Type::I64)],
+                    Self::IntClamp => vec![a(), a(), a()],
+                    _ => vec![a(), a()],
+                };
+                let result = match self {
+                    Self::IntCountOnes | Self::IntLeadingZeros | Self::IntTrailingZeros => {
+                        Concrete(Type::I64)
+                    }
+                    Self::IntIsPowerOfTwo => Concrete(Type::Bool),
+                    Self::IntUnsignedAbs | Self::IntAbsDiff => {
+                        BuiltinType::UnsignedOf(Box::new(a()))
+                    }
+                    Self::IntWideningMul => BuiltinType::WidenOf(Box::new(a())),
+                    Self::IntCheckedAdd
+                    | Self::IntCheckedSub
+                    | Self::IntCheckedMul
+                    | Self::IntCheckedDiv
+                    | Self::IntCheckedRem
+                    | Self::IntCheckedNeg
+                    | Self::IntCheckedPow => BuiltinType::Std {
+                        module: "Option",
+                        name: "Option",
+                        args: vec![a()],
+                    },
+                    _ => a(),
+                };
+                let class = match self {
+                    Self::IntAbs | Self::IntUnsignedAbs | Self::IntCheckedNeg => "SignedInteger",
+                    Self::IntIsPowerOfTwo => "UnsignedInteger",
+                    _ => "Integer",
+                };
+                (
+                    parameters,
+                    result,
+                    vec![BuiltinConstraint { class, ty: a() }],
+                )
+            }
+            Self::MathSqrt
+            | Self::MathFloor
+            | Self::MathCeil
+            | Self::MathTrunc
+            | Self::MathRound
+            | Self::MathRoundEven
+            | Self::MathAbs
+            | Self::MathMin
+            | Self::MathMax
+            | Self::MathClamp
+            | Self::MathCopysign
+            | Self::MathIsNan
+            | Self::MathIsInfinite
+            | Self::MathIsFinite
+            | Self::MathPi
+            | Self::MathE => {
+                let count = match self {
+                    Self::MathPi | Self::MathE => 0,
+                    Self::MathMin | Self::MathMax | Self::MathCopysign => 2,
+                    Self::MathClamp => 3,
+                    _ => 1,
+                };
+                let result = if matches!(
+                    self,
+                    Self::MathIsNan | Self::MathIsInfinite | Self::MathIsFinite
+                ) {
+                    Concrete(Type::Bool)
+                } else {
+                    a()
+                };
+                (
+                    vec![a(); count],
+                    result,
+                    vec![BuiltinConstraint {
+                        class: "Float",
+                        ty: a(),
+                    }],
+                )
+            }
+            Self::MathSin
+            | Self::MathCos
+            | Self::MathTan
+            | Self::MathAsin
+            | Self::MathAcos
+            | Self::MathAtan
+            | Self::MathAtan2
+            | Self::MathExp
+            | Self::MathExp2
+            | Self::MathLog
+            | Self::MathLog2
+            | Self::MathLog10
+            | Self::MathPow
+            | Self::MathCbrt
+            | Self::MathHypot => {
+                let count = if matches!(self, Self::MathAtan2 | Self::MathPow | Self::MathHypot) {
+                    2
+                } else {
+                    1
+                };
+                (
+                    vec![a(); count],
+                    a(),
+                    vec![BuiltinConstraint {
+                        class: "Elementary",
+                        ty: a(),
+                    }],
+                )
+            }
             Self::Sqrt | Self::Floor | Self::Ceil | Self::Abs => {
                 (vec![Concrete(Type::F64)], Concrete(Type::F64), Vec::new())
             }
             Self::ToFloat => (vec![Concrete(Type::I64)], Concrete(Type::F64), Vec::new()),
             Self::ToInt => (vec![Concrete(Type::F64)], Concrete(Type::I64), Vec::new()),
             Self::Assert => (vec![Concrete(Type::Bool)], Concrete(Type::Unit), Vec::new()),
+            Self::DebugPrintString => (
+                vec![Concrete(Type::String)],
+                Concrete(Type::Unit),
+                Vec::new(),
+            ),
             Self::CloneString | Self::StringToWellFormed => (
                 vec![Reference(Box::new(Concrete(Type::String)), false)],
                 Concrete(Type::String),
@@ -591,6 +1345,66 @@ impl Builtin {
                 Task(Box::new(Array(Box::new(a())))),
                 Vec::new(),
             ),
+            Self::ParallelInit => (
+                vec![
+                    Concrete(Type::I64),
+                    BuiltinType::Function(vec![Concrete(Type::I64)], Box::new(a())),
+                ],
+                Array(Box::new(a())),
+                vec![BuiltinConstraint {
+                    class: "Send",
+                    ty: a(),
+                }],
+            ),
+            Self::ParallelMap | Self::ParallelMapRef => {
+                let input = if self == Self::ParallelMapRef {
+                    Reference(Box::new(a()), false)
+                } else {
+                    a()
+                };
+                let mut constraints = vec![
+                    BuiltinConstraint {
+                        class: "Send",
+                        ty: a(),
+                    },
+                    BuiltinConstraint {
+                        class: "Send",
+                        ty: BuiltinType::Var("b"),
+                    },
+                ];
+                if self == Self::ParallelMap {
+                    constraints.push(BuiltinConstraint {
+                        class: "Copy",
+                        ty: a(),
+                    });
+                }
+                (
+                    vec![
+                        BuiltinType::Function(vec![input], Box::new(BuiltinType::Var("b"))),
+                        Reference(Box::new(Array(Box::new(a()))), false),
+                    ],
+                    Array(Box::new(BuiltinType::Var("b"))),
+                    constraints,
+                )
+            }
+            Self::ParallelReduce => (
+                vec![
+                    a(),
+                    BuiltinType::Function(vec![a(), a()], Box::new(a())),
+                    Reference(Box::new(Array(Box::new(a()))), false),
+                ],
+                a(),
+                vec![
+                    BuiltinConstraint {
+                        class: "Copy",
+                        ty: a(),
+                    },
+                    BuiltinConstraint {
+                        class: "Send",
+                        ty: a(),
+                    },
+                ],
+            ),
             Self::Unreachable => (vec![Concrete(Type::Unit)], a(), Vec::new()),
             Self::ToString => (
                 vec![a()],
@@ -604,6 +1418,25 @@ impl Builtin {
                 vec![Reference(Box::new(a()), false)],
                 Concrete(Type::String),
                 Vec::new(),
+            ),
+            Self::Default => (Vec::new(), a(), Vec::new()),
+            Self::Hash => (
+                vec![Reference(Box::new(a()), false)],
+                Concrete(Type::Integer(64, false)),
+                Vec::new(),
+            ),
+            Self::HashMix => (
+                vec![Concrete(Type::Integer(64, false)); 2],
+                Concrete(Type::Integer(64, false)),
+                Vec::new(),
+            ),
+            Self::DisplayQuoted => (
+                vec![Reference(Box::new(a()), false)],
+                Concrete(Type::String),
+                vec![BuiltinConstraint {
+                    class: "Display",
+                    ty: a(),
+                }],
             ),
             Self::Parse => (
                 vec![Reference(Box::new(Concrete(Type::String)), false)],
@@ -657,6 +1490,7 @@ impl BuiltinType {
             }
             Self::Array(ty)
             | Self::List(ty)
+            | Self::Vec(ty)
             | Self::Task(ty)
             | Self::Reference(ty, _)
             | Self::UnsignedOf(ty)
@@ -666,6 +1500,15 @@ impl BuiltinType {
                 result.variables(found);
             }
         }
+    }
+}
+
+impl Builtin {
+    pub(crate) fn is_parallel(self) -> bool {
+        matches!(
+            self,
+            Self::ParallelInit | Self::ParallelMap | Self::ParallelMapRef | Self::ParallelReduce
+        )
     }
 }
 
@@ -685,24 +1528,6 @@ impl Signature {
     fn as_type(&self) -> Type {
         Type::function(self.parameters.clone(), self.result.clone())
     }
-
-    fn validate_borrows(&self, types: &TypeContext<'_>, span: Span) -> Result<(), Diagnostic> {
-        if self.result.contains_reference()
-            && self
-                .parameters
-                .iter()
-                .filter(|ty| ty.carries_loans(types))
-                .count()
-                != 1
-        {
-            return Err(Diagnostic::new(
-                "E1013",
-                "a borrowed result requires exactly one borrowed input for lifetime elision",
-                span,
-            ));
-        }
-        Ok(())
-    }
 }
 
 /// Whether a module comes from the user's project or the standard library.
@@ -710,13 +1535,6 @@ impl Signature {
 pub enum ModuleOrigin {
     User,
     Std,
-}
-
-/// Whether a function is written in source or generated by the compiler.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Provenance {
-    User,
-    Generated,
 }
 
 /// Where a function comes from (GUIDE D-22). Generated helpers inherit the
@@ -764,8 +1582,18 @@ pub struct CheckedModule {
     pub unions: Vec<CheckedUnion>,
     pub functions: Vec<CheckedFunction>,
     pub entry: Option<usize>,
+    pub tests: Vec<CheckedTest>,
     /// Warnings in source traversal order; they never fail a check or build.
     pub warnings: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CheckedTest {
+    pub module: String,
+    pub name: String,
+    pub index: usize,
+    pub function: usize,
+    pub span: Span,
 }
 
 impl CheckedModule {
@@ -788,6 +1616,7 @@ pub struct CheckedRecord {
     /// Value layout size of a non-generic record; generic instances are
     /// measured per concrete type.
     size: Option<usize>,
+    recursive: recursive::Cache,
 }
 
 /// A union declaration. Cases keep declaration order, and a case's index is
@@ -802,6 +1631,7 @@ pub struct CheckedUnion {
     pub span: Span,
     /// Value layout size of a non-generic union, like `CheckedRecord::size`.
     size: Option<usize>,
+    recursive: recursive::Cache,
 }
 
 impl CheckedUnion {
@@ -842,6 +1672,7 @@ pub struct Local {
     pub name: String,
     pub mutable: bool,
     pub span: Span,
+    pub provenance: Provenance,
 }
 
 #[derive(Clone, Debug)]
@@ -908,6 +1739,8 @@ pub enum TypedExprKind {
     String(StringLiteral),
     Bool(bool),
     Unit,
+    Break,
+    Continue,
     Local(usize),
     Function(FunctionRef),
     GenericFunction(usize, Vec<Type>),
@@ -930,6 +1763,10 @@ pub enum TypedExprKind {
     Closure(usize, Vec<TypedExpr>),
     TaskRun(Box<TypedExpr>),
     TaskParallel(Box<TypedExpr>),
+    Parallel(Builtin, Vec<TypedExpr>),
+    StructuralCompare(BinaryOp, Vec<TypedExpr>),
+    StructuralHash(Vec<TypedExpr>),
+    StructuralDisplay(Vec<TypedExpr>),
     If {
         condition: Box<TypedExpr>,
         then_branch: Box<TypedExpr>,
@@ -962,6 +1799,10 @@ pub enum TypedExprKind {
         result: Box<TypedExpr>,
     },
     Record(Vec<(usize, TypedExpr)>),
+    RecordUpdate {
+        base: Box<TypedExpr>,
+        fields: Vec<(usize, TypedExpr)>,
+    },
     Array(Vec<TypedExpr>),
     List(Vec<TypedExpr>),
     Tuple(Vec<TypedExpr>),
@@ -972,9 +1813,15 @@ pub enum TypedExprKind {
     NewLiteral(Box<TypedExpr>),
     Field(Box<TypedExpr>, usize),
     Index(Box<TypedExpr>, Box<TypedExpr>),
+    Slice {
+        value: Box<TypedExpr>,
+        start: Option<Box<TypedExpr>>,
+        end: Option<Box<TypedExpr>>,
+    },
     Length(Box<TypedExpr>),
     StringLength(Box<TypedExpr>),
     Borrow(Box<TypedExpr>, bool),
+    BorrowOperand(Box<TypedExpr>),
     Dereference(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
@@ -1014,6 +1861,7 @@ impl TypedExpr {
         match &self.kind {
             Unary(_, value)
             | Borrow(value, _)
+            | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
             | Field(value, _)
@@ -1073,9 +1921,22 @@ impl TypedExpr {
                 .chain(std::iter::once(result.as_ref()))
                 .collect(),
             Record(fields) => fields.iter().map(|(_, value)| value).collect(),
-            Array(values) | List(values) | Tuple(values) | Closure(_, values) => {
-                values.iter().collect()
-            }
+            Slice { value, start, end } => std::iter::once(value.as_ref())
+                .chain(start.iter().map(Box::as_ref))
+                .chain(end.iter().map(Box::as_ref))
+                .collect(),
+            RecordUpdate { base, fields } => std::iter::once(base.as_ref())
+                .chain(fields.iter().map(|(_, value)| value))
+                .collect(),
+            Array(values)
+            | List(values)
+            | Tuple(values)
+            | Closure(_, values)
+            | Parallel(_, values)
+            | StructuralCompare(_, values)
+            | StructuralHash(values)
+            | StructuralDisplay(values) => values.iter().collect(),
+            Break | Continue => Vec::new(),
             _ => Vec::new(),
         }
     }
@@ -1085,6 +1946,7 @@ impl TypedExpr {
         match &mut self.kind {
             Unary(_, value)
             | Borrow(value, _)
+            | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
             | Field(value, _)
@@ -1149,9 +2011,22 @@ impl TypedExpr {
                 .chain(std::iter::once(result.as_mut()))
                 .collect(),
             Record(fields) => fields.iter_mut().map(|(_, value)| value).collect(),
-            Array(values) | List(values) | Tuple(values) | Closure(_, values) => {
-                values.iter_mut().collect()
-            }
+            Slice { value, start, end } => std::iter::once(value.as_mut())
+                .chain(start.iter_mut().map(Box::as_mut))
+                .chain(end.iter_mut().map(Box::as_mut))
+                .collect(),
+            RecordUpdate { base, fields } => std::iter::once(base.as_mut())
+                .chain(fields.iter_mut().map(|(_, value)| value))
+                .collect(),
+            Array(values)
+            | List(values)
+            | Tuple(values)
+            | Closure(_, values)
+            | Parallel(_, values)
+            | StructuralCompare(_, values)
+            | StructuralHash(values)
+            | StructuralDisplay(values) => values.iter_mut().collect(),
+            Break | Continue => Vec::new(),
             _ => Vec::new(),
         }
     }
@@ -1200,8 +2075,11 @@ impl NameInfo {
 
 #[derive(Default)]
 struct Names {
+    warning_options: warnings::WarningOptions,
     modules: BTreeMap<String, ModuleOrigin>,
     builders: BTreeMap<String, BTreeSet<String>>,
+    type_aliases: BTreeMap<String, (NameInfo, TypeAliasDecl)>,
+    type_alias_names: BTreeMap<String, Vec<String>>,
     records: BTreeMap<String, NameInfo>,
     record_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
@@ -1218,7 +2096,16 @@ struct Names {
     /// Qualified user class names by unqualified name.
     class_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, NameInfo>,
-    active_patterns: BTreeMap<String, (NameInfo, bool)>,
+    active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
+    active_aliases: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveCase {
+    TotalSingle,
+    BoolPartial,
+    OptionPartial,
+    TotalCase { index: usize, count: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -1234,12 +2121,13 @@ struct CaseInfo {
 enum NamedType<'a> {
     Record(&'a NameInfo),
     Union(&'a NameInfo),
+    Alias(&'a NameInfo),
 }
 
 impl<'a> NamedType<'a> {
     fn info(self) -> &'a NameInfo {
         match self {
-            Self::Record(info) | Self::Union(info) => info,
+            Self::Record(info) | Self::Union(info) | Self::Alias(info) => info,
         }
     }
 
@@ -1247,6 +2135,7 @@ impl<'a> NamedType<'a> {
         match self {
             Self::Record(_) => "record",
             Self::Union(_) => "union",
+            Self::Alias(_) => "type alias",
         }
     }
 }
@@ -1398,6 +2287,14 @@ impl Names {
                 ),
                 span,
             )),
+            NamedType::Alias(info) => Err(Diagnostic::new(
+                "E1004",
+                format!(
+                    "'{}' is a type alias; use the original record name to construct or match a value",
+                    info.name
+                ),
+                span,
+            )),
         }
     }
 
@@ -1421,12 +2318,20 @@ impl Names {
         if let Some(info) = self.unions.get(&own) {
             return Choice::Found(NamedType::Union(info), 0);
         }
+        if let Some((info, _)) = self.type_aliases.get(&own) {
+            return Choice::Found(NamedType::Alias(info), 0);
+        }
         if self.searchable_path(module, name) {
             let exact = self
                 .records
                 .get(name)
                 .map(NamedType::Record)
-                .or_else(|| self.unions.get(name).map(NamedType::Union));
+                .or_else(|| self.unions.get(name).map(NamedType::Union))
+                .or_else(|| {
+                    self.type_aliases
+                        .get(name)
+                        .map(|(info, _)| NamedType::Alias(info))
+                });
             if let Some(named) = exact {
                 return if named.info().visible_from(module) {
                     Choice::Found(named, 0)
@@ -1448,6 +2353,13 @@ impl Names {
                     .flatten()
                     .map(|qualified| NamedType::Union(&self.unions[qualified])),
             )
+            .chain(
+                self.type_alias_names
+                    .get(name)
+                    .into_iter()
+                    .flatten()
+                    .map(|qualified| NamedType::Alias(&self.type_aliases[qualified].0)),
+            )
             .collect();
         self.choose(
             module,
@@ -1468,7 +2380,7 @@ impl Names {
             Choice::Hidden(named) => Err(named.info().private_error("type", span)),
             Choice::Missing => Err(Diagnostic::new(
                 "E1004",
-                format!("unknown record or union type '{name}'"),
+                format!("unknown record, union, or type alias '{name}'"),
                 span,
             )),
             Choice::Ambiguous(visible, _) => {
@@ -1775,27 +2687,60 @@ impl Names {
     fn active_pattern(
         &self,
         requester: &str,
-        qualified: &str,
+        name: &str,
         span: Span,
-    ) -> Result<Option<(usize, bool)>, Diagnostic> {
-        if !self.searchable_path(requester, qualified) {
+    ) -> Result<Option<(usize, ActiveCase)>, Diagnostic> {
+        if let Some((info, case)) = self.active_patterns.get(&format!("{requester}.{name}")) {
+            return Ok(Some((info.id, *case)));
+        }
+        if name.contains('.') {
+            if self.searchable_path(requester, name) {
+                if let Some((info, case)) = self.active_patterns.get(name) {
+                    info.require_visible("active pattern", requester, span)?;
+                    return Ok(Some((info.id, *case)));
+                }
+            }
             return Ok(None);
         }
-        let Some((info, partial)) = self.active_patterns.get(qualified) else {
-            return Ok(None);
-        };
-        info.require_visible("active pattern", requester, span)?;
-        Ok(Some((info.id, *partial)))
+        let candidates: Vec<_> = self
+            .active_aliases
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|qualified| &self.active_patterns[qualified])
+            .collect();
+        match self.choose(
+            requester,
+            &candidates,
+            |(info, _)| self.origin(&info.module),
+            |(info, _)| info.visible_from(requester),
+        ) {
+            Choice::Found((info, case), _) => Ok(Some((info.id, *case))),
+            Choice::Ambiguous(candidates, _) => Err(Diagnostic::new(
+                "E1004",
+                format!(
+                    "ambiguous active pattern '{name}'; qualify one of {}",
+                    candidates
+                        .iter()
+                        .map(|(info, _)| info.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                span,
+            )),
+            Choice::Hidden((info, _)) => Err(info.private_error("active pattern", span)),
+            Choice::Missing => Ok(None),
+        }
     }
 }
 
 fn display_function_name(module: &str, name: &str) -> String {
     match name
         .strip_prefix("$active.")
-        .and_then(|name| name.split_once('.'))
+        .and_then(|name| name.rsplit_once('.'))
     {
         Some((case, "partial")) => format!("{module}.(|{case}|_|)"),
-        Some((case, _)) => format!("{module}.(|{case}|)"),
+        Some((cases, _)) => format!("{module}.(|{}|)", cases.replace('.', "|")),
         None => format!("{module}.{name}"),
     }
 }
@@ -1831,7 +2776,9 @@ fn validate_public_type(
             Ok(())
         }
         TypeExprKind::Apply(head, args) => {
-            if let TypeHead::Type(named) = names.type_head(module, head)? {
+            if head.text != "Vec"
+                && let TypeHead::Type(named) = names.type_head(module, head)?
+            {
                 let info = named.info();
                 if info.visibility == Visibility::Private {
                     let (kind, owner) = owner;
@@ -1871,7 +2818,11 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
 
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
-    match check_modules_collect(modules, &mut diagnostics) {
+    match check_modules_collect(
+        modules,
+        &mut diagnostics,
+        warnings::WarningOptions::default(),
+    ) {
         Ok(module) => Ok(module),
         Err(error) => {
             diagnostics.push(error);
@@ -1883,8 +2834,12 @@ pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, D
 fn check_modules_collect(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
+    warning_options: warnings::WarningOptions,
 ) -> Result<CheckedModule, Diagnostic> {
-    let mut names = Names::default();
+    let mut names = Names {
+        warning_options,
+        ..Names::default()
+    };
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
         if diagnostics.is_full() {
@@ -1959,6 +2914,50 @@ fn check_modules_collect(
                 .map(|function| (module.name.to_owned(), function.clone()))
         })
         .collect();
+    let mut tests = Vec::new();
+    let mut test_functions = BTreeMap::new();
+    for module in modules {
+        for test in &module.program.tests {
+            if module.origin == ModuleOrigin::Std {
+                diagnostics.push(Diagnostic::new(
+                    "E1018",
+                    "embedded standard-library sources cannot declare tests",
+                    test.name_span,
+                ));
+                continue;
+            }
+            let index = tests.len();
+            let function = function_declarations.len();
+            test_functions.insert(function, index);
+            tests.push(CheckedTest {
+                module: module.name.into(),
+                name: test.name.clone(),
+                index,
+                function,
+                span: test.name_span,
+            });
+            function_declarations.push((
+                module.name.into(),
+                FunctionDecl {
+                    name: Ident {
+                        text: format!("$test.{index}"),
+                        span: test.name_span,
+                        provenance: Provenance::Generated,
+                    },
+                    recursion: None,
+                    visibility: Visibility::Private,
+                    exported: false,
+                    parameters: Vec::new(),
+                    result: TypeExpr {
+                        kind: TypeExprKind::Named("unit".into()),
+                        span: test.body.span,
+                    },
+                    constraints: Vec::new(),
+                    body: test.body.clone(),
+                },
+            ));
+        }
+    }
     for (id, (module, record)) in record_declarations.iter().enumerate() {
         if diagnostics.is_full() {
             break;
@@ -1972,7 +2971,7 @@ fn check_modules_collect(
         };
         if crate::numeric::primitive(&record.name.text).is_some()
             || record.name.text == "_"
-            || record.name.text == "Task"
+            || matches!(record.name.text.as_str(), "Task" | "Vec")
             || polymorph::BUILTIN_CLASSES.contains(&record.name.text.as_str())
             || names.records.insert(qualified.clone(), info).is_some()
         {
@@ -2011,7 +3010,7 @@ fn check_modules_collect(
                 || names.unions.contains_key(&qualified)
                 || names.classes.contains(&qualified)
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
-                || matches!(class.name.text.as_str(), "_" | "Task")
+                || matches!(class.name.text.as_str(), "_" | "Task" | "Vec")
             {
                 diagnostics.push(duplicate(&class.name));
                 continue;
@@ -2022,6 +3021,101 @@ fn check_modules_collect(
                 .entry(class.name.text.clone())
                 .or_default()
                 .push(qualified);
+        }
+    }
+    diagnostics.check()?;
+    for module in modules {
+        for alias in &module.program.type_aliases {
+            if diagnostics.is_full() {
+                break;
+            }
+            let qualified = format!("{}.{}", module.name, alias.name.text);
+            if crate::numeric::primitive(&alias.name.text).is_some()
+                || matches!(alias.name.text.as_str(), "_" | "Task" | "Vec")
+                || polymorph::BUILTIN_CLASSES.contains(&alias.name.text.as_str())
+                || names.records.contains_key(&qualified)
+                || names.unions.contains_key(&qualified)
+                || names.cases.contains_key(&qualified)
+                || names.classes.contains(&qualified)
+                || names.type_aliases.contains_key(&qualified)
+            {
+                diagnostics.push(duplicate(&alias.name));
+                continue;
+            }
+            if !starts_uppercase(&alias.name.text) {
+                diagnostics.push(Diagnostic::new(
+                    "E1024",
+                    "a type alias name must start with an uppercase ASCII letter",
+                    alias.name.span,
+                ));
+                continue;
+            }
+            names.type_aliases.insert(
+                qualified.clone(),
+                (
+                    NameInfo {
+                        id: names.type_aliases.len(),
+                        name: qualified.clone(),
+                        module: module.name.to_owned(),
+                        visibility: alias.visibility,
+                    },
+                    alias.clone(),
+                ),
+            );
+            names
+                .type_alias_names
+                .entry(alias.name.text.clone())
+                .or_default()
+                .push(qualified);
+        }
+    }
+    diagnostics.check()?;
+    for (info, alias) in names.type_aliases.values() {
+        if diagnostics.is_full() {
+            break;
+        }
+        let checked = (|| {
+            let parameters =
+                declared_parameters("type alias", &alias.name.text, &alias.parameters)?;
+            let ty = resolve_type(&alias.target, &info.module, &names)?;
+            polymorph::bounded_type(&ty, alias.target.span)?;
+            let used = polymorph::variables(&ty);
+            if let Some(variable) = used.iter().find(|variable| !parameters.contains(variable)) {
+                return Err(Diagnostic::new(
+                    "E1024",
+                    format!(
+                        "type variable '{variable} is not declared by type alias '{}'; add it to the alias parameters",
+                        alias.name.text
+                    ),
+                    alias.target.span,
+                ));
+            }
+            if let Some(parameter) = alias
+                .parameters
+                .iter()
+                .find(|parameter| !used.contains(&parameter.text))
+            {
+                return Err(Diagnostic::new(
+                    "E1024",
+                    format!(
+                        "type parameter '{} is not used by the alias target; remove it or use it in the target",
+                        parameter.text
+                    ),
+                    parameter.span,
+                ));
+            }
+            if alias.visibility == Visibility::Public {
+                validate_public_type(
+                    &alias.target,
+                    &info.module,
+                    ("type alias", &info.name),
+                    &names,
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = checked {
+            diagnostics.push(error);
         }
     }
     diagnostics.check()?;
@@ -2090,6 +3184,7 @@ fn check_modules_collect(
                 fields,
                 span: record.name.span,
                 size: None,
+                recursive: Default::default(),
             })
         })();
         match checked {
@@ -2201,6 +3296,9 @@ fn check_modules_collect(
         if diagnostics.is_full() {
             break;
         }
+        if test_functions.contains_key(&id) {
+            continue;
+        }
         let qualified = format!("{module}.{}", function.name.text);
         let info = NameInfo {
             id,
@@ -2281,17 +3379,18 @@ fn check_modules_collect(
                 unreachable!()
             };
             if function.exported
-                && (public_parameters.iter().any(|ty| !ty.exportable())
-                    || (!public_result.exportable() && **public_result != Type::Unit))
+                && (public_parameters
+                    .iter()
+                    .any(|ty| !crate::abi::parameter(ty, &types))
+                    || !crate::abi::result(public_result, &types))
             {
                 return Err(Diagnostic::new(
                     "E1008",
-                    "exports support 8/16/32/64-bit integers, f32, f64, bool, and unit results; keep wide/software numbers, strings, references, aggregates, and function values inside Tsuzuri",
+                    "exports support scalar values, borrowed i64/f64/ubyte arrays and string/utf8string inputs, owned buffer results, and scalar-only records with distinct C field names; mutable borrows, owned buffer inputs, wide numbers, and other aggregates are not supported",
                     function.name.span,
                 ));
             }
             let signature = Signature { parameters, result };
-            signature.validate_borrows(&types, function.result.span)?;
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
             let mut constraints = Vec::new();
@@ -2363,33 +3462,81 @@ fn check_modules_collect(
                 diagnostics.push(Diagnostic::new(
                     "E1006",
                     "an active recognizer needs an input parameter",
-                    active.name.span,
+                    active.cases[0].span,
                 ));
                 signatures[id] = Scheme::poisoned();
             }
+            let option_result = matches!(&signatures[id].signature.result, Type::Union(union_id, _) if names.unions.get("Option.Option").is_some_and(|info| info.id == *union_id));
             if !signatures[id].is_poisoned()
                 && active.partial
                 && signatures[id].signature.result != Type::Bool
+                && !option_result
             {
                 diagnostics.push(Diagnostic::new(
                     "E1003",
-                    "a partial active recognizer must return bool",
-                    active.name.span,
+                    "a partial active recognizer must return bool or Option payload",
+                    active.cases[0].span,
                 ));
                 signatures[id] = Scheme::poisoned();
             }
-            let qualified = format!("{module}.{}", active.name.text);
-            let info = NameInfo {
-                name: qualified.clone(),
-                ..function
-            };
-            if names.cases.contains_key(&qualified)
-                || names
+            if active.cases.len() > 1 && !signatures[id].is_poisoned() {
+                let error = match &signatures[id].signature.result {
+                    Type::Union(union_id, _)
+                        if unions[*union_id].cases.len() == active.cases.len() =>
+                    {
+                        None
+                    }
+                    Type::Union(..) => Some(Diagnostic::new(
+                        "E1020",
+                        "active pattern and backing union must have the same case count",
+                        active.cases[0].span,
+                    )),
+                    _ => Some(Diagnostic::new(
+                        "E1003",
+                        "a multi-case active recognizer must return a union",
+                        active.cases[0].span,
+                    )),
+                };
+                if let Some(error) = error {
+                    diagnostics.push(error);
+                    signatures[id] = Scheme::poisoned();
+                }
+            }
+            for (index, case) in active.cases.iter().enumerate() {
+                let qualified = format!("{module}.{}", case.text);
+                let kind = if active.cases.len() > 1 {
+                    ActiveCase::TotalCase {
+                        index,
+                        count: active.cases.len(),
+                    }
+                } else if !active.partial {
+                    ActiveCase::TotalSingle
+                } else if option_result {
+                    ActiveCase::OptionPartial
+                } else {
+                    ActiveCase::BoolPartial
+                };
+                let info = NameInfo {
+                    name: qualified.clone(),
+                    ..function.clone()
+                };
+                if names.cases.contains_key(&qualified)
+                    || names.records.contains_key(&qualified)
+                    || names.unions.contains_key(&qualified)
+                    || names.type_aliases.contains_key(&qualified)
+                    || names.active_patterns.contains_key(&qualified)
+                {
+                    diagnostics.push(duplicate(case));
+                    continue;
+                }
+                names
                     .active_patterns
-                    .insert(qualified, (info, active.partial))
-                    .is_some()
-            {
-                diagnostics.push(duplicate(&active.name));
+                    .insert(qualified.clone(), (info, kind));
+                names
+                    .active_aliases
+                    .entry(case.text.clone())
+                    .or_default()
+                    .push(qualified);
             }
         }
     }
@@ -2417,7 +3564,11 @@ fn check_modules_collect(
             let body = checker.expression(&function.body, Some(&signature.result))?;
             Ok(CheckedFunction {
                 module: module.clone(),
-                origin: FunctionOrigin::source(names.origin(module)),
+                origin: FunctionOrigin {
+                    provenance: function.name.provenance,
+                    test: test_functions.get(&id).copied(),
+                    ..FunctionOrigin::source(names.origin(module))
+                },
                 name: function.name.text.clone(),
                 visibility: function.visibility,
                 exported: function.exported,
@@ -2440,7 +3591,7 @@ fn check_modules_collect(
                 functions.push(function);
                 pending.push(checker);
             }
-            Err(error) => diagnostics.push(error),
+            Err(error) => diagnostics.push(classes.derived_error(id, error)),
         }
     }
     let mut entry = modules
@@ -2487,7 +3638,10 @@ fn check_modules_collect(
             let body = checker.expression(&expression, None)?;
             Ok(CheckedFunction {
                 module: module.to_owned(),
-                origin: FunctionOrigin::source(ModuleOrigin::User),
+                origin: FunctionOrigin {
+                    provenance: Provenance::Generated,
+                    ..FunctionOrigin::source(ModuleOrigin::User)
+                },
                 name: "$entry".into(),
                 visibility: Visibility::Public,
                 exported: false,
@@ -2523,7 +3677,12 @@ fn check_modules_collect(
     for (function, mut checker) in functions.iter_mut().zip(pending) {
         let checked = (|| {
             checker.finish(&mut function.body)?;
-            warnings.extend(checker.check_coverage()?);
+            let coverage = checker.check_coverage()?;
+            if function.origin.module == ModuleOrigin::User {
+                warnings.extend(coverage);
+                warnings.extend(warnings::unused_locals(function));
+                warnings.append(&mut checker.shadowing_warnings);
+            }
             if function.name == "$entry" {
                 function.signature.result = function.body.ty.clone();
             }
@@ -2532,11 +3691,25 @@ fn check_modules_collect(
             Ok(())
         })();
         if let Err(error) = checked {
-            diagnostics.push(error);
+            let id = names
+                .functions
+                .get(&function.qualified_name())
+                .map_or(usize::MAX, |info| info.id);
+            diagnostics.push(classes.derived_error(id, error));
         }
     }
     diagnostics.check()?;
-    recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
+    let references =
+        recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
+    warnings.extend(warnings::unused_private(
+        &functions,
+        &function_declarations,
+        modules,
+        &names,
+        types,
+        &references,
+        entry,
+    ));
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
     let module = CheckedModule {
@@ -2544,6 +3717,7 @@ fn check_modules_collect(
         unions,
         functions,
         entry,
+        tests,
         warnings,
     };
     let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
@@ -2551,20 +3725,19 @@ fn check_modules_collect(
         diagnostics.extend(errors);
         first
     })?;
-    let module = polymorph::specialize(module, &classes, &names, copy_constraints)?;
+    let recursive_functions = function_declarations
+        .iter()
+        .enumerate()
+        .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
+        .collect();
+    let module = polymorph::specialize(
+        module,
+        &classes,
+        &names,
+        copy_constraints,
+        &recursive_functions,
+    )?;
     let module = closures::lower(module)?;
-    for function in &module.functions {
-        if let Err(error) = function
-            .signature
-            .validate_borrows(&module.types(), function.span)
-        {
-            diagnostics.push(error);
-        }
-        if diagnostics.is_full() {
-            break;
-        }
-    }
-    diagnostics.check()?;
     diagnostics.extend(crate::ownership::check_all(&module));
     diagnostics.check()?;
     Ok(module)
@@ -2637,7 +3810,7 @@ fn collect_unions(
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
-            if name.text == "Task"
+            if matches!(name.text.as_str(), "Task" | "Vec")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -2697,7 +3870,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if name.text == "Task"
+                if matches!(name.text.as_str(), "Task" | "Vec")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.cases.contains_key(&qualified)
@@ -2796,11 +3969,22 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
         cases,
         span: union.name.span,
         size: None,
+        recursive: Default::default(),
     })
 }
 
 fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Type, Diagnostic> {
     Ok(match &expression.kind {
+        TypeExprKind::Apply(head, args) if head.text == "Vec" => {
+            let [element] = &**args else {
+                return Err(Diagnostic::new(
+                    "E1004",
+                    "Vec expects exactly one element type",
+                    expression.span,
+                ));
+            };
+            Type::Vec(Box::new(resolve_type(element, module, names)?))
+        }
         TypeExprKind::Named(name) => match crate::numeric::primitive(name) {
             Some(ty) => ty,
             None => {
@@ -2809,6 +3993,12 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                 match named {
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
                     NamedType::Union(info) => Type::Union(info.id, Box::default()),
+                    NamedType::Alias(_) => {
+                        let expanded = expand_type_aliases(expression, module, names)?;
+                        let ty = resolve_type(&expanded, module, names)?;
+                        polymorph::bounded_type(&ty, expression.span)?;
+                        ty
+                    }
                 }
             }
         },
@@ -2840,6 +4030,12 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                 }
                 TypeHead::Type(named) => {
                     record_arity(names, named, &head.text, args.len(), expression.span)?;
+                    if matches!(named, NamedType::Alias(_)) {
+                        let expanded = expand_type_aliases(expression, module, names)?;
+                        let ty = resolve_type(&expanded, module, names)?;
+                        polymorph::bounded_type(&ty, expression.span)?;
+                        return Ok(ty);
+                    }
                     let args = args
                         .iter()
                         .map(|ty| resolve_type(ty, module, names))
@@ -2847,6 +4043,7 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                     match named {
                         NamedType::Record(info) => Type::Record(info.id, args),
                         NamedType::Union(info) => Type::Union(info.id, args),
+                        NamedType::Alias(_) => unreachable!(),
                     }
                 }
             }
@@ -2886,6 +4083,7 @@ fn record_arity(
     let expected = match named {
         NamedType::Record(info) => names.record_arities[info.id],
         NamedType::Union(info) => names.union_arities[info.id],
+        NamedType::Alias(info) => names.type_aliases[&info.name].1.parameters.len(),
     };
     if expected == found {
         return Ok(());
@@ -2900,12 +4098,221 @@ fn record_arity(
             if expected == 1 { "" } else { "s" }
         )
     };
-    Err(Diagnostic::new("E1004", message, span))
+    let code = if matches!(named, NamedType::Alias(_)) {
+        "E1024"
+    } else {
+        "E1004"
+    };
+    Err(Diagnostic::new(code, message, span))
+}
+
+fn expand_type_aliases(
+    expression: &TypeExpr,
+    module: &str,
+    names: &Names,
+) -> Result<TypeExpr, Diagnostic> {
+    TypeAliasExpansion {
+        names,
+        active: Vec::new(),
+        nodes: 0,
+    }
+    .expand(expression, module, 0)
+}
+
+struct TypeAliasExpansion<'a> {
+    names: &'a Names,
+    active: Vec<String>,
+    nodes: usize,
+}
+
+impl TypeAliasExpansion<'_> {
+    fn expand(
+        &mut self,
+        expression: &TypeExpr,
+        module: &str,
+        depth: usize,
+    ) -> Result<TypeExpr, Diagnostic> {
+        self.nodes += 1;
+        if depth > MAX_NESTING || self.nodes > 4096 {
+            return Err(Diagnostic::new(
+                "E1017",
+                "type alias expansion exceeds the compiler limit; simplify the aliases",
+                expression.span,
+            ));
+        }
+        let kind = match &expression.kind {
+            TypeExprKind::Apply(head, args) if head.text == "Vec" => TypeExprKind::Apply(
+                head.clone(),
+                args.iter()
+                    .map(|arg| self.expand(arg, module, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            ),
+            TypeExprKind::Named(name) if crate::numeric::primitive(name).is_none() => {
+                let named = self.names.named_type(module, name, expression.span)?;
+                if let NamedType::Alias(info) = named {
+                    return self.alias(info, &[], module, expression.span, depth);
+                }
+                TypeExprKind::Named(named.info().name.clone())
+            }
+            TypeExprKind::Apply(head, args) if crate::numeric::primitive(&head.text).is_none() => {
+                let name = match self.names.type_head(module, head)? {
+                    TypeHead::Type(NamedType::Alias(info)) => {
+                        return self.alias(info, args, module, expression.span, depth);
+                    }
+                    TypeHead::Type(named) => named.info().name.clone(),
+                    TypeHead::Class => self
+                        .names
+                        .class(module, &head.text, head.span)?
+                        .expect("a classified class has a resolved name")
+                        .to_owned(),
+                };
+                TypeExprKind::Apply(
+                    Box::new(Ident {
+                        text: name,
+                        span: head.span,
+                        provenance: head.provenance,
+                    }),
+                    args.iter()
+                        .map(|arg| self.expand(arg, module, depth + 1))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
+            TypeExprKind::Reference(inner, mutable) => {
+                TypeExprKind::Reference(Box::new(self.expand(inner, module, depth + 1)?), *mutable)
+            }
+            TypeExprKind::Array(inner) => {
+                TypeExprKind::Array(Box::new(self.expand(inner, module, depth + 1)?))
+            }
+            TypeExprKind::List(inner) => {
+                TypeExprKind::List(Box::new(self.expand(inner, module, depth + 1)?))
+            }
+            TypeExprKind::Task(inner) => {
+                TypeExprKind::Task(Box::new(self.expand(inner, module, depth + 1)?))
+            }
+            TypeExprKind::Tuple(elements) => TypeExprKind::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.expand(element, module, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            ),
+            TypeExprKind::Function(parameters, result) => TypeExprKind::Function(
+                parameters
+                    .iter()
+                    .map(|parameter| self.expand(parameter, module, depth + 1))
+                    .collect::<Result<_, _>>()?,
+                Box::new(self.expand(result, module, depth + 1)?),
+            ),
+            _ => expression.kind.clone(),
+        };
+        Ok(TypeExpr {
+            kind,
+            span: expression.span,
+        })
+    }
+
+    fn alias(
+        &mut self,
+        info: &NameInfo,
+        args: &[TypeExpr],
+        module: &str,
+        span: Span,
+        depth: usize,
+    ) -> Result<TypeExpr, Diagnostic> {
+        record_arity(
+            self.names,
+            NamedType::Alias(info),
+            &info.name,
+            args.len(),
+            span,
+        )?;
+        let arguments = args
+            .iter()
+            .map(|arg| self.expand(arg, module, depth + 1))
+            .collect::<Result<Vec<_>, _>>()?;
+        if self.active.contains(&info.name) {
+            return Err(Diagnostic::new(
+                "E1024",
+                format!(
+                    "cyclic type alias '{}'; remove the recursive alias reference",
+                    info.name
+                ),
+                span,
+            ));
+        }
+        self.active.push(info.name.clone());
+        let alias = &self.names.type_aliases[&info.name].1;
+        let result = self.expand(&alias.target, &info.module, depth + 1);
+        self.active.pop();
+        let mut result = result?;
+        let substitutions = alias
+            .parameters
+            .iter()
+            .map(|parameter| parameter.text.clone())
+            .zip(arguments)
+            .collect();
+        self.substitute(&mut result, &substitutions, depth)?;
+        Ok(result)
+    }
+
+    fn substitute(
+        &mut self,
+        expression: &mut TypeExpr,
+        substitutions: &BTreeMap<String, TypeExpr>,
+        depth: usize,
+    ) -> Result<(), Diagnostic> {
+        self.nodes += 1;
+        if depth > MAX_NESTING || self.nodes > 4096 {
+            return Err(Diagnostic::new(
+                "E1017",
+                "type alias expansion exceeds the compiler limit; simplify the aliases",
+                expression.span,
+            ));
+        }
+        let empty = BTreeMap::new();
+        let substitutions = if let TypeExprKind::Variable(name) = &expression.kind
+            && let Some(argument) = substitutions.get(name)
+        {
+            *expression = argument.clone();
+            &empty
+        } else {
+            substitutions
+        };
+        let children: Vec<&mut TypeExpr> = match &mut expression.kind {
+            TypeExprKind::Apply(_, args) => args.iter_mut().collect(),
+            TypeExprKind::Reference(inner, _)
+            | TypeExprKind::Array(inner)
+            | TypeExprKind::List(inner)
+            | TypeExprKind::Task(inner) => vec![inner],
+            TypeExprKind::Tuple(elements) => elements.iter_mut().collect(),
+            TypeExprKind::Function(parameters, result) => parameters
+                .iter_mut()
+                .chain(std::iter::once(result.as_mut()))
+                .collect(),
+            TypeExprKind::Named(_) | TypeExprKind::Variable(_) => Vec::new(),
+        };
+        for child in children {
+            self.substitute(child, substitutions, depth + 1)?;
+        }
+        Ok(())
+    }
 }
 
 /// Record fields and union payloads describe stored values, so they cannot
 /// carry the inline class constraints that function signatures accept.
 fn reject_field_constraints(
+    expression: &TypeExpr,
+    module: &str,
+    names: &Names,
+    owner: &str,
+) -> Result<(), Diagnostic> {
+    if names.type_aliases.is_empty() {
+        return reject_expanded_field_constraints(expression, module, names, owner);
+    }
+    let expanded = expand_type_aliases(expression, module, names)?;
+    reject_expanded_field_constraints(&expanded, module, names, owner)
+}
+
+fn reject_expanded_field_constraints(
     expression: &TypeExpr,
     module: &str,
     names: &Names,
@@ -2942,7 +4349,7 @@ fn reject_field_constraints(
     };
     children
         .into_iter()
-        .try_for_each(|child| reject_field_constraints(child, module, names, owner))
+        .try_for_each(|child| reject_expanded_field_constraints(child, module, names, owner))
 }
 
 fn size_error(span: Span) -> Diagnostic {
@@ -2974,6 +4381,7 @@ impl<'a> Layouts<'a> {
     }
 
     fn record(&mut self, ty: &Type, depth: usize, span: Span) -> Result<usize, Diagnostic> {
+        self.types.recursive_checked(ty, span)?;
         let Type::Record(id, args) = ty else {
             unreachable!()
         };
@@ -3022,6 +4430,9 @@ impl<'a> Layouts<'a> {
     /// pointer-sized slot, and payload storage adds 16 tag bytes to the
     /// largest payload rounded up to 16 bytes.
     fn union(&mut self, ty: &Type, depth: usize, span: Span) -> Result<usize, Diagnostic> {
+        if self.types.recursive_checked(ty, span)? {
+            return Ok(8);
+        }
         let Type::Union(id, args) = ty else {
             unreachable!()
         };
@@ -3074,6 +4485,11 @@ impl<'a> Layouts<'a> {
             return Ok(0);
         }
         Ok(match ty {
+            Type::Vec(element) => {
+                self.size(element, depth, span)?;
+                32
+            }
+            Type::Reference(_, false) if ty.shared_array_element().is_some() => 16,
             Type::Record(..) => self.record(ty, depth, span)?,
             Type::Union(..) => self.union(ty, depth, span)?,
             Type::Array(element) | Type::List(element) => {
@@ -3128,7 +4544,7 @@ impl Validation<'_> {
             Type::Record(id, args) => {
                 // Declared fields were validated with the record; an instance
                 // only needs its substituted fields checked, once per call.
-                if !args.is_empty() && self.instances.insert(ty.clone()) {
+                if self.instances.insert(ty.clone()) {
                     let types = self.layouts.types;
                     let record = &types.records[*id];
                     for ((name, _), field) in
@@ -3151,7 +4567,7 @@ impl Validation<'_> {
                 self.layouts.record(ty, 0, span)?
             }
             Type::Union(id, args) => {
-                if !args.is_empty() && self.instances.insert(ty.clone()) {
+                if self.instances.insert(ty.clone()) {
                     let types = self.layouts.types;
                     let union = &types.unions[*id];
                     for ((name, _), payload) in
@@ -3161,11 +4577,11 @@ impl Validation<'_> {
                             continue;
                         };
                         polymorph::bounded_type(&payload, span)?;
-                        if payload.contains_reference() {
+                        if payload.contains_mutable_reference() {
                             return Err(Diagnostic::new(
                                 "E1013",
                                 format!(
-                                    "union payloads are owned values; {} would store a reference in case '{name}', and borrowed payloads require lifetime parameters, which are not supported",
+                                    "union payloads cannot store mutable references; {} would store one in case '{name}'; use a shared borrow",
                                     ty.display(&types)
                                 ),
                                 span,
@@ -3183,7 +4599,7 @@ impl Validation<'_> {
                 }
                 size
             }
-            Type::Array(element) | Type::List(element) => {
+            Type::Array(element) | Type::List(element) | Type::Vec(element) => {
                 if element.contains_mutable_reference() {
                     return Err(Diagnostic::new(
                         "E1005",
@@ -3192,7 +4608,7 @@ impl Validation<'_> {
                     ));
                 }
                 self.check(element, span)?;
-                16
+                if matches!(ty, Type::Vec(_)) { 32 } else { 16 }
             }
             Type::Function(parameters, result) => {
                 for parameter in parameters {
@@ -3214,7 +4630,11 @@ impl Validation<'_> {
             }
             Type::Reference(value, _) => {
                 self.check(value, span)?;
-                8
+                if ty.shared_array_element().is_some() {
+                    16
+                } else {
+                    8
+                }
             }
             Type::Integer(128, _)
             | Type::Binary(128)
@@ -3243,6 +4663,7 @@ struct Checker<'a> {
     type_parameters: Vec<String>,
     scopes: Vec<BTreeMap<String, Local>>,
     next_local: usize,
+    normal_loop_depth: usize,
     /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
     undecided_borrows: Vec<(Type, Span)>,
     /// Builtin result types that wait for a concrete integer argument type.
@@ -3250,6 +4671,7 @@ struct Checker<'a> {
     /// Explicit matches and function guards, in the order the checker reaches
     /// them; `check_coverage` inspects them once inference has finished.
     coverage: Vec<exhaustiveness::MatchCoverage>,
+    shadowing_warnings: Vec<Diagnostic>,
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
@@ -3276,21 +4698,42 @@ impl<'a> Checker<'a> {
             type_parameters: Vec::new(),
             scopes: vec![BTreeMap::new()],
             next_local: 0,
+            normal_loop_depth: 0,
             undecided_borrows: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
+            shadowing_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
             poisoned: false,
         }
     }
 
     fn bind(&mut self, name: &Ident, ty: Type, mutable: bool) -> Local {
+        if self.names.warning_options.shadowing
+            && name.provenance == Provenance::User
+            && !name.text.starts_with('_')
+            && self
+                .scopes
+                .last()
+                .and_then(|scope| scope.get(&name.text))
+                .is_some_and(|previous| previous.provenance == Provenance::User)
+        {
+            self.shadowing_warnings.push(Diagnostic::warning(
+                "W1004",
+                format!(
+                    "local '{}' shadows an earlier binding in the same scope",
+                    name.text
+                ),
+                name.span,
+            ));
+        }
         let local = Local {
             id: self.next_local,
             ty,
             name: name.text.clone(),
             mutable,
             span: name.span,
+            provenance: name.provenance,
         };
         self.next_local += 1;
         if name.text != "_" {
@@ -3317,6 +4760,12 @@ impl<'a> Checker<'a> {
         }
         // Continuations must not retain the large value-checking frame at every recursive step.
         match expression.kind {
+            ExprKind::ComputationBoundary(ref body) => {
+                let outer = std::mem::take(&mut self.normal_loop_depth);
+                let result = self.expression(body, expected);
+                self.normal_loop_depth = outer;
+                result
+            }
             ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
                 self.control_expression(expression, expected)
             }
@@ -3454,11 +4903,16 @@ impl<'a> Checker<'a> {
             };
             self.same(&result, &hint, expression.span)?;
         }
-        let arguments: Vec<_> = arguments
-            .iter()
-            .zip(&parameters)
-            .map(|(argument, parameter)| self.argument(argument, parameter))
-            .collect::<Result<_, _>>()?;
+        let arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
+        {
+            self.parallel_arguments(arguments, &parameters)?
+        } else {
+            arguments
+                .iter()
+                .zip(&parameters)
+                .map(|(argument, parameter)| self.argument(argument, parameter))
+                .collect::<Result<_, _>>()?
+        };
         self.solve_families(false)?;
         let value = self.finish_expression(
             Self::call_kind(callee, arguments),
@@ -3708,6 +5162,35 @@ impl<'a> Checker<'a> {
             ExprKind::Record { name, fields } => {
                 self.record_literal(name, fields, expected, expression.span)?
             }
+            ExprKind::RecordUpdate { base, fields } => {
+                self.record_update(base, fields, expression.span)?
+            }
+            ExprKind::Char(value) => (TypedExprKind::Int(u128::from(*value)), Type::Char),
+            ExprKind::Utf8Char(value) => (TypedExprKind::Int(u128::from(*value)), Type::Utf8Char),
+            ExprKind::Slice { value, start, end } => {
+                self.slice(value, start.as_deref(), end.as_deref(), expression.span)?
+            }
+            ExprKind::Break | ExprKind::Continue => {
+                let breaking = matches!(expression.kind, ExprKind::Break);
+                if self.normal_loop_depth == 0 {
+                    let keyword = if breaking { "break" } else { "continue" };
+                    return Err(Diagnostic::new(
+                        "E1023",
+                        format!(
+                            "{keyword} can only target an enclosing for or while loop in the same function, task, or computation; return a value across boundaries"
+                        ),
+                        expression.span,
+                    ));
+                }
+                (
+                    if breaking {
+                        TypedExprKind::Break
+                    } else {
+                        TypedExprKind::Continue
+                    },
+                    Type::Unit,
+                )
+            }
             ExprKind::Array(values) | ExprKind::List(values) => {
                 let list = matches!(expression.kind, ExprKind::List(_));
                 let mut element_type = match (list, expected) {
@@ -3797,7 +5280,9 @@ impl<'a> Checker<'a> {
                     return Ok(TypedExpr::error(expression.span));
                 }
                 let ty = match &value.ty {
-                    Type::Array(element) | Type::List(element) => (**element).clone(),
+                    Type::Array(element) | Type::List(element) | Type::Vec(element) => {
+                        (**element).clone()
+                    }
                     Type::String => Type::Integer(16, false),
                     Type::Utf8String => Type::Integer(8, false),
                     _ => {
@@ -3891,6 +5376,7 @@ impl<'a> Checker<'a> {
             ExprKind::Lambda(..)
             | ExprKind::Task(_)
             | ExprKind::Call(..)
+            | ExprKind::ComputationBoundary(_)
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
@@ -4062,6 +5548,94 @@ impl<'a> Checker<'a> {
         Ok((TypedExprKind::Record(values), ty))
     }
 
+    fn slice(
+        &mut self,
+        source: &Expr,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let mut source = self.expression(source, None)?;
+        source.ty = self.inference.resolve(&source.ty);
+        let source = Self::autoderef(source);
+        if source.ty == Type::Error {
+            return Ok((TypedExprKind::Error, Type::Error));
+        }
+        if !matches!(source.ty, Type::Array(_)) {
+            return Err(Diagnostic::new(
+                "E1005",
+                "a slice requires an array; lists and strings do not support array slicing",
+                span,
+            ));
+        }
+        let start = start
+            .map(|value| self.expression(value, Some(&Type::I64)).map(Box::new))
+            .transpose()?;
+        let end = end
+            .map(|value| self.expression(value, Some(&Type::I64)).map(Box::new))
+            .transpose()?;
+        let ty = Type::Reference(Box::new(source.ty.clone()), false);
+        Ok((
+            TypedExprKind::Slice {
+                value: Box::new(source),
+                start,
+                end,
+            },
+            ty,
+        ))
+    }
+
+    fn record_update(
+        &mut self,
+        base: &Expr,
+        fields: &[(Ident, Expr)],
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let mut base = self.expression(base, None)?;
+        base.ty = self.inference.resolve(&base.ty);
+        let base = Self::autoderef(base);
+        if base.ty == Type::Error {
+            return Ok((TypedExprKind::Error, Type::Error));
+        }
+        let Type::Record(id, args) = &base.ty else {
+            return Err(Diagnostic::new(
+                "E1005",
+                "record update requires a record value",
+                span,
+            ));
+        };
+        let types = self.types;
+        let record = &types.records[*id];
+        let field_types = types.record_fields(*id, args);
+        let ty = base.ty.clone();
+        let mut values = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (field, value) in fields {
+            if !seen.insert(&field.text) {
+                return Err(duplicate(field));
+            }
+            let index = record
+                .fields
+                .iter()
+                .position(|(name, _)| name == &field.text)
+                .ok_or_else(|| {
+                    Diagnostic::new(
+                        "E1007",
+                        format!("record '{}' has no field '{}'", record.name, field.text),
+                        field.span,
+                    )
+                })?;
+            values.push((index, self.expression(value, Some(&field_types[index]))?));
+        }
+        Ok((
+            TypedExprKind::RecordUpdate {
+                base: Box::new(base),
+                fields: values,
+            },
+            ty,
+        ))
+    }
+
     fn field_access(
         &mut self,
         value: &Expr,
@@ -4087,7 +5661,7 @@ impl<'a> Checker<'a> {
                 let ty = self.types.record_field(*id, args, index);
                 Ok((TypedExprKind::Field(Box::new(value), index), ty))
             }
-            Type::Array(_) | Type::List(_) if field.text == "length" => {
+            Type::Array(_) | Type::List(_) | Type::Vec(_) if field.text == "length" => {
                 Ok((TypedExprKind::Length(Box::new(value)), Type::I64))
             }
             Type::String | Type::Utf8String if field.text == "length" => {
@@ -4346,8 +5920,30 @@ impl<'a> Checker<'a> {
 
     /// A fully applied case constructor builds its union value directly,
     /// without a call.
+    fn parallel_arguments(
+        &mut self,
+        arguments: &[Expr],
+        parameters: &[Type],
+    ) -> Result<Vec<TypedExpr>, Diagnostic> {
+        let last = arguments.len() - 1;
+        let input = self.argument(&arguments[last], &parameters[last])?;
+        let mut checked = arguments[..last]
+            .iter()
+            .zip(&parameters[..last])
+            .map(|(argument, parameter)| self.argument(argument, parameter))
+            .collect::<Result<Vec<_>, _>>()?;
+        checked.push(input);
+        Ok(checked)
+    }
+
     fn call_kind(callee: TypedExpr, mut arguments: Vec<TypedExpr>) -> TypedExprKind {
         match callee.kind {
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin.is_parallel()
+                    && arguments.len() == instance.builtin.scheme().parameters.len() =>
+            {
+                TypedExprKind::Parallel(instance.builtin, arguments)
+            }
             TypedExprKind::CaseConstructor {
                 union_id, case_id, ..
             } if arguments.len() == 1 => TypedExprKind::Construct {
@@ -4429,8 +6025,10 @@ mod tests {
                 "{} is listed twice",
                 builtin.name()
             );
-            // Arity 0 would make a builtin a value rather than a function.
-            assert!(!scheme.parameters.is_empty(), "{}", builtin.name());
+            if *builtin == Builtin::VecEmpty {
+                assert!(scheme.parameters.is_empty());
+                assert_eq!(scheme.variables, ["a"]);
+            }
             let mut variables = Vec::new();
             for constraint in &scheme.constraints {
                 constraint.ty.variables(&mut variables);
@@ -4490,7 +6088,10 @@ mod tests {
             ("fn f() -> i64 { -9223372036854775809 }", "E1009"),
             ("fn f() -> i64 { let xs = []; 0 }", "E1004"),
             ("fn f() -> i64 { let xs = [1, true]; 0 }", "E1003"),
-            ("fn f() -> bool { [1] == [1] }", "E1005"),
+            (
+                "record R { x: i64 } fn f() -> bool { [R { x: 1 }] == [R { x: 1 }] }",
+                "E1005",
+            ),
             ("record R { x: i64 } fn f() -> R { R {} }", "E1007"),
             ("record R { x: i64 } fn f() -> R { R { z: 1 } }", "E1007"),
             (
@@ -4498,7 +6099,7 @@ mod tests {
                 "E1007",
             ),
             (
-                "record R { x: i64 } export fn f(r: R) -> i64 { r.x }",
+                "record R { x: string } export fn f(r: R) -> i64 { r.x.length }",
                 "E1008",
             ),
             ("export fn f(x: unit) -> i64 { 1 }", "E1008"),

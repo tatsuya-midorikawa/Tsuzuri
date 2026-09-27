@@ -6,7 +6,7 @@
 | 規模 | S |
 | 依存 | (A01) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs` `ExprKind`、`src/parser.rs` `primary` / `record` / `block`、`src/check.rs` `Checker::value_expression`、`src/ownership.rs`、`src/polymorph.rs`、`src/closures.rs`、`src/call_specialization.rs`、`src/llvm.rs` `expression_mode`、`docs/language.md`、`tests/records.rs` または `tests/frontend.rs` |
 
 ## 目的
@@ -376,14 +376,14 @@ IR:
 
 ## 受け入れ条件
 
-- [ ] `{ base with field = value }` が parse/typecheck/lower される。
-- [ ] block / match の `with` と誤認しない。
-- [ ] base first、field values source order。
-- [ ] unknown field `E1007`、duplicate `E1001`、type mismatch `E1003`。
-- [ ] base consume と borrow conflict が既存診断で出る。
-- [ ] old replaced field が drop され、未置換 field は結果へ move/copy。
-- [ ] A01 後も type-changing update を拒否。
-- [ ] docs 更新。
+- [x] `{ base with field = value }` が parse/typecheck/lower される。
+- [x] block / match の `with` と誤認しない。
+- [x] base first、field values source order。
+- [x] unknown field `E1007`、duplicate `E1001`、type mismatch `E1003`。
+- [x] base consume と borrow conflict が既存診断で出る。
+- [x] old replaced field が drop され、未置換 field は結果へ move/copy。
+- [x] A01 後も type-changing update を拒否。
+- [x] docs 更新。
 
 ## 落とし穴
 
@@ -402,6 +402,11 @@ IR:
 - with での field 削除/追加。
 
 ## 未決事項
+
+- 実装時点（2026-09-26）: A01 後の `Type::Record(id, args)` で型引数を維持する。
+  `Block` + `Field` + `Record` への展開は Copy 配列の射影が余分な複製を生むため採用せず、専用 IR を使う。
+  元レコードと全更新値を先に評価し、旧フィールドの解放後に `insertvalue` で差し替える。
+  Rust の検査は `tests/types_ownership.rs`、解放・確保回数・評価順の E2E は storage fixture と `tests/primitives.mjs` に追加。
 
 - Separator は `;` と `,` 両方を受理する既定案。formatter G05 では `;` に正規化する。
 - `:` も受理する既定案。ただし docs は `=` を標準形にする。

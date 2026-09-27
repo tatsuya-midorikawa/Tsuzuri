@@ -3,11 +3,18 @@
 /// Embedded std sources as `(virtual path, text)` in load order. Programs
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
+    ("std/Array.tz", include_str!("../std/Array.tz")),
+    ("std/Char.tz", include_str!("../std/Char.tz")),
+    ("std/Debug.tz", include_str!("../std/Debug.tz")),
+    ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Option.tc", include_str!("../std/Option.tc")),
+    ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
     ("std/Result.tc", include_str!("../std/Result.tc")),
     ("std/String.tz", include_str!("../std/String.tz")),
+    ("std/Test.tz", include_str!("../std/Test.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
+    ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -21,6 +28,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "String",
     "Utf8String",
     "Char",
+    "Utf8Char",
     "Math",
     "Int",
     "Debug",
@@ -71,7 +79,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 17);
+        assert_eq!(RESERVED_MODULES.len(), 18);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

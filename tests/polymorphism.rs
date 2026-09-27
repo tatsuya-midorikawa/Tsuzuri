@@ -15,6 +15,260 @@ fn rejects(source: &str, code: &str) {
 }
 
 #[test]
+fn parses_typeclass_contexts_and_default_methods() {
+    let source = "class (Eq<'a>, Ord<'a>) => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\nrecord Box<'a> { value: 'a }\ninstance Eq<'a> => Eq<Box<'a>> { fn eq left right = left.value == right.value; let ne = left -> right -> !(Eq.eq left right) }";
+    let program = tsuzuri::parser::parse(source).unwrap();
+    assert_eq!(program.classes[0].superclasses.len(), 2);
+    assert_eq!(program.classes[0].methods.len(), 1);
+    assert_eq!(program.classes[0].defaults.len(), 1);
+    assert_eq!(program.classes[0].defaults[0].name.text, "same");
+    assert_eq!(program.instances[0].constraints.len(), 1);
+    assert_eq!(program.instances[0].methods.len(), 2);
+}
+
+#[test]
+fn borrowed_comparison_method_signatures() {
+    for (method, ty) in [
+        ("Eq.eq", "i64"),
+        ("Eq.ne", "string"),
+        ("Ord.lt", "f64"),
+        ("Ord.ge", "string"),
+    ] {
+        accepts(&format!(
+            "def compare :: &{ty} -> &{ty} -> bool\nfn compare left right = {{ let method: &{ty} -> &{ty} -> bool = {method}; method left right }}"
+        ));
+    }
+    accepts(
+        "def compare :: Eq<'a> => &'a -> &'a -> bool\nfn compare left right = Eq.eq left right\nlet left = 42\nlet right = 42\ncompare (ref left) (ref right)",
+    );
+    accepts(
+        "record Named { text: string }\ninstance Eq<Named> { fn eq left right = left.text == right.text; fn ne left right = !(Eq.eq left right) }\nlet left = Named { text: \"text\" }\nlet right = Named { text: \"text\" }\nEq.eq (ref left) (ref right)",
+    );
+    rejects("let method: string -> string -> bool = Eq.eq\n()", "E1003");
+    rejects("let method: i64 -> i64 -> bool = Ord.lt\n()", "E1003");
+    accepts("let method: i64 -> i64 -> i64 = Add.add\nmethod 20 22");
+}
+
+#[test]
+fn superclasses_are_resolved_and_required() {
+    accepts(
+        "class Eq<'a> => Total<'a> { def same :: ref 'a -> ref 'a -> bool }\ninstance Total<i64> { fn same left right = Eq.eq left right }\nlet number = 42\nTotal.same (ref number) (ref number)",
+    );
+    accepts(
+        "class Later<'a> => Earlier<'a> { def first :: 'a -> i64 }\nclass Later<'a> { def last :: 'a -> i64 }\ninstance Earlier<bool> { fn first _value = 1 }\ninstance Later<bool> { fn last _value = 2 }\nEarlier.first true",
+    );
+    for source in [
+        "class Missing<'a> => C<'a> { def value :: 'a -> i64 }",
+        "class Eq<'b> => C<'a> { def value :: 'a -> i64 }",
+        "class B<'a> => A<'a> { def first :: 'a -> i64 }\nclass A<'a> => B<'a> { def second :: 'a -> i64 }",
+        "record Point { value: i64 }\ninstance Ord<Point> { fn lt left right = left.value < right.value; fn le left right = left.value <= right.value; fn gt left right = left.value > right.value; fn ge left right = left.value >= right.value }",
+    ] {
+        rejects(source, "E1027");
+    }
+}
+
+#[test]
+fn generic_class_dispatch_keeps_explicit_recursion() {
+    for recursive in [false, true] {
+        let marker = if recursive { "rec " } else { "" };
+        let source = format!(
+            "class G<'a> {{ def value :: 'a -> i64 }}\ndef {marker}forward :: G<'a> => 'a -> i64\nfn {marker}forward value = G.value value\ninstance G<i64> {{ fn {marker}value value = forward value }}"
+        );
+        let result = analyze(&source);
+        if recursive {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert_eq!(result.as_ref().err().map(|error| error.code), Some("E1019"));
+        }
+    }
+}
+
+#[test]
+fn conditional_instances_normalize_and_specialize_method_arguments() {
+    let context = "record Box<'a> { value: 'a }\ninstance Eq<'a> => Eq<Box<'a>> { fn eq left right = left.value == right.value; fn ne left right = !(Eq.eq left right) }\n";
+    for source in [
+        "let left = Box { value: 42 }\nlet right = Box { value: 42 }\nleft == right",
+        "def same :: ref Box<'a> -> ref Box<'a> -> bool\nfn same left right = Eq.eq left right\nlet left = Box { value: \"abc\" }\nlet right = Box { value: \"abc\" }\nsame (ref left) (ref right)",
+        "let left = Box { value: 42 }\nlet same: ref Box<i64> -> ref Box<i64> -> bool = Eq.eq\nsame (ref left) (ref left)",
+    ] {
+        accepts(&format!("{context}{source}"));
+    }
+    rejects(
+        &format!(
+            "{context}instance Eq<Box<i64>> {{ fn eq _left _right = true; fn ne _left _right = false }}"
+        ),
+        "E1016",
+    );
+    rejects(
+        "record Box<'a> { value: 'a }\ninstance Eq<'b> => Eq<Box<'a>> { fn eq _left _right = true; fn ne _left _right = false }",
+        "E1027",
+    );
+    rejects(
+        &format!(
+            "{context}record NoEquality {{ number: i64 }}\nlet left = Box {{ value: NoEquality {{ number: 1 }} }}\nleft == left"
+        ),
+        "E1005",
+    );
+    rejects(
+        "class C<'a> { def value :: 'a -> i64 }\ninstance C<'a> => C<'a> { fn value _value = 0 }\nC.value 1",
+        "E1017",
+    );
+    accepts(
+        "instance Eq<'a> => Eq<Option<'a>> { fn eq left right = match left with | None -> (match right with | None -> true | Some _ -> false) | Some value -> (match right with | Some other -> Eq.eq value other | None -> false); fn ne left right = !(Eq.eq left right) }\nlet left = Some \"abc\"\nlet right = Some \"abc\"\nleft == right",
+    );
+}
+
+#[test]
+fn default_methods_are_checked_once_even_without_instances() {
+    accepts(
+        "class C<'a> { def value :: 'a -> i64; fn value _value = 42 }\ninstance C<bool> {}\nC.value true",
+    );
+    accepts(
+        "class Eq<'a> => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\ninstance Total<i64> {}\nlet number = 42\nTotal.same (ref number) (ref number)",
+    );
+    accepts(
+        "record Box<'a> { value: 'a }\nclass Size<'a> { def size :: ref 'a -> i64; def empty :: ref 'a -> bool; fn empty value = Size.size value == 0 }\ninstance Size<'a> => Size<Box<'a>> { fn size value = Size.size (ref value.value) }\ninstance Size<string> { fn size value = value.length }\nlet value = Box { value: \"abc\" }\nSize.empty (ref value)",
+    );
+    for (source, code) in [
+        (
+            "class C<'a> { def value :: 'a -> i64; fn value _value = true }",
+            "E1003",
+        ),
+        (
+            "class C<'a> { def value :: 'a -> i64; fn missing _value = 42 }",
+            "E1016",
+        ),
+        (
+            "class C<'a> { def value :: 'a -> i64; fn value value = C.value value }",
+            "E1019",
+        ),
+        (
+            "class C<'a> { def twice :: 'a -> 'a; fn twice value = value + value }",
+            "E1027",
+        ),
+        (
+            "class C<'a> { def twice :: 'a -> 'a }\ninstance C<'a> { fn twice value = value + value }",
+            "E1027",
+        ),
+    ] {
+        rejects(source, code);
+    }
+    let error = analyze_modules(&[
+        (
+            "Traits.tt",
+            "class C<'a> { def value :: 'a -> i64; fn value _value = true }",
+        ),
+        ("Main.tz", "42"),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1003");
+    assert_eq!(error.span.source, Some(0));
+}
+
+#[test]
+fn structural_comparisons_propagate_element_constraints() {
+    for source in [
+        "[1, 2] == [1, 2]",
+        "[|1, 2|] < [|1, 2, 0|]",
+        "(1, \"abc\") != (1, \"abd\")",
+        "def equal :: ref ['a] -> ref ['a] -> bool\nfn equal left right = Eq.eq left right\nlet left = [\"abc\"]\nequal (ref left) (ref left)",
+        "record Box<'a> { value: 'a }\ninstance Eq<'a> => Eq<Box<'a>> { fn eq left right = left.value == right.value; fn ne left right = !(Eq.eq left right) }\n[Box { value: \"abc\" }] == [Box { value: \"abc\" }]",
+    ] {
+        accepts(source);
+    }
+    for source in [
+        "instance Eq<'a> => Eq<['a]> { fn eq _left _right = true; fn ne _left _right = false }",
+        "instance Ord<'a> => Ord<[|'a|]> { fn lt _left _right = false; fn le _left _right = true; fn gt _left _right = false; fn ge _left _right = true }",
+        "instance Eq<'a * 'b> { fn eq _left _right = true; fn ne _left _right = false }",
+    ] {
+        rejects(source, "E1016");
+    }
+    rejects(
+        "record NoEquality { value: i64 }\n[NoEquality { value: 1 }] == [NoEquality { value: 1 }]",
+        "E1005",
+    );
+    let module =
+        accepts("export def compare :: i64 -> bool\nfn compare number = [|1, number|] < [|1, 3|]");
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(ir.matches("phi ptr").count() >= 2);
+    let elements = vec!["i64"; 100].join(" * ");
+    accepts(&format!(
+        "def compare :: ref ({elements}) -> ref ({elements}) -> bool\nfn compare left right = Ord.lt left right"
+    ));
+}
+
+#[test]
+fn instance_resolution_limits_and_alpha_renaming_are_enforced() {
+    rejects(
+        "record Box<'a> { value: 'a }\nclass C<'a> { def value :: 'a -> i64 }\ninstance C<Box<'a>> => C<'a> { fn value _value = 0 }\nC.value 1",
+        "E1017",
+    );
+    rejects(
+        "record Pair<'a, 'b> { first: 'a, second: 'b }\nclass C<'a> { def value :: 'a -> i64 }\ninstance C<Pair<'a, i64>> { fn value _value = 0 }\ninstance C<Pair<bool, 'b>> { fn value _value = 1 }",
+        "E1016",
+    );
+    let declarations = (0..47)
+        .map(|index| {
+            format!(
+                "record R{index} {{ value: i64 }}\ninstance C<R{index}> {{ fn value _value = 0 }}\n"
+            )
+        })
+        .collect::<String>();
+    rejects(
+        &format!("class C<'a> {{ def value :: 'a -> i64 }}\n{declarations}"),
+        "E1017",
+    );
+    let error = analyze_modules(&[("Main.tz", "record Box<'a> { value: 'a }\ninstance Eq<'missing> => Eq<Box<i64>> { fn eq _left _right = true; fn ne _left _right = false }")]).unwrap_err();
+    assert_eq!(error.code, "E1027");
+    assert_eq!(error.span.source, Some(0));
+}
+
+const BORROWED_EQUALITY: &str = "record Named { text: string }\n\
+    instance Eq<Named> { fn eq left right = left.text == right.text; fn ne left right = !(Eq.eq left right) }\n";
+
+#[test]
+fn borrowed_comparison_operators_preserve_noncopy_values() {
+    for source in [
+        "let value = Named { text: \"text\" }\nlet same = value == value\nsame && value.text.length == 4",
+        "Named { text: \"text\" } == Named { text: \"text\" }",
+        "let values = new [Named { text: \"text\" }, Named { text: \"text\" }]\nvalues[0] == values[1] && values[0].text.length == 4",
+        "let values = new [|Named { text: \"text\" }, Named { text: \"text\" }|]\nvalues[0] == values[1]",
+        "def same :: Eq<'a> => 'a -> 'a -> bool\nfn same left right = left == right\nsame (Named { text: \"text\" }) (Named { text: \"text\" })",
+    ] {
+        accepts(&format!("{BORROWED_EQUALITY}{source}"));
+    }
+    accepts(
+        "record Key { name: string, rank: i64 }\ninstance Eq<Key> { fn eq left right = left.name == right.name && left.rank == right.rank; fn ne left right = !(Eq.eq left right) }\ninstance Ord<Key> { fn lt left right = left.name < right.name || (left.name == right.name && left.rank < right.rank); fn le left right = !(Ord.lt right left); fn gt left right = Ord.lt right left; fn ge left right = !(Ord.lt left right) }\nlet key = Key { name: \"same\", rank: 42 }\nkey <= key && key.rank == 42",
+    );
+}
+
+#[test]
+fn borrowed_comparisons_preserve_conflicts_and_source_borrow_rules() {
+    for source in [
+        "let value = Named { text: \"text\" }\nvalue == { let moved = value; moved }",
+        "let mut value = Named { text: \"text\" }\nvalue == { value = Named { text: \"next\" }; value }",
+    ] {
+        rejects(&format!("{BORROWED_EQUALITY}{source}"), "E1014");
+    }
+    rejects(
+        &format!("{BORROWED_EQUALITY}let value = ref (Named {{ text: \"text\" }})\n()"),
+        "E1013",
+    );
+    rejects(
+        "record Named { text: string }\ninstance Eq<Named> { fn eq left right = left == right; fn ne left right = false }",
+        "E1005",
+    );
+    rejects(
+        "record Named { text: string }\ndef consume :: Named -> i64\nfn consume value = value.text.length\ninstance Eq<Named> { fn eq left right = consume (*left) == consume (*right); fn ne left right = false }",
+        "E1012",
+    );
+    rejects(
+        "record Named { text: string }\ninstance Eq<Named> { fn eq left right = Eq.eq left right; fn ne left right = false }",
+        "E1019",
+    );
+}
+
+#[test]
 fn accepts_the_requested_signatures_and_space_separated_arguments() {
     accepts("def add :: i32 -> i32 -> i32\nfn add x y =\n  x + y\nadd 20 22");
     let module = accepts(
@@ -595,10 +849,7 @@ fn checks_declarations_and_specialized_layouts_even_when_unused() {
     rejects("def f :: i32\ndef f :: i32\nfn f = 1", "E1001");
     rejects("class C<'a> { def f :: 'b -> 'b }", "E1016");
     accepts("class C<'a> { def f :: 'a -> [[i64]] }");
-    rejects(
-        "class C<'a> { def f :: 'a -> i64 }\ninstance C<'a> { fn f x = 1 }",
-        "E1015",
-    );
+    accepts("class C<'a> { def f :: 'a -> i64 }\ninstance C<'a> { fn f _value = 1 }");
     rejects(
         "class C<'a> { def f :: 'a -> i64 }\ninstance C<byte> { fn f x = 1 }\ninstance C<i8> { fn f x = 2 }",
         "E1016",

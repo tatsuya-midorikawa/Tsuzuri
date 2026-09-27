@@ -139,3 +139,100 @@ joinprevious:
 exit:
   ret void
 }
+
+define internal ptr @tz.realloc(ptr %old, i64 %old_size, i64 %new_size) nounwind {
+entry:
+  %zero = icmp eq i64 %new_size, 0
+  br i1 %zero, label %release, label %check
+release:
+  call void @tz.free(ptr %old)
+  ret ptr null
+check:
+  %fits = icmp ule i64 %new_size, 16777184
+  br i1 %fits, label %nonnull, label %fail
+nonnull:
+  %null = icmp eq ptr %old, null
+  br i1 %null, label %allocate, label %inspect
+allocate:
+  %fresh = call ptr @tz.alloc(i64 %new_size)
+  ret ptr %fresh
+inspect:
+  %small = trunc i64 %new_size to i32
+  %rounded = add i32 %small, 31
+  %needed = and i32 %rounded, -16
+  %payload = ptrtoint ptr %old to i32
+  %block = sub i32 %payload, 16
+  %header = inttoptr i32 %block to ptr
+  %capacity = load i32, ptr %header
+  %enough = icmp ule i32 %needed, %capacity
+  br i1 %enough, label %reused, label %adjacent
+adjacent:
+  %wanted = add i32 %block, %capacity
+  %head = load i32, ptr @tz.heap.free
+  br label %search
+search:
+  %current = phi i32 [ %head, %adjacent ], [ %following, %advance ]
+  %previous = phi ptr [ @tz.heap.free, %adjacent ], [ %next_link, %advance ]
+  %found = icmp eq i32 %current, %wanted
+  br i1 %found, label %combine, label %before
+before:
+  %empty = icmp eq i32 %current, 0
+  %later = icmp ugt i32 %current, %wanted
+  %missing = or i1 %empty, %later
+  br i1 %missing, label %fallback, label %advance
+advance:
+  %current_header = inttoptr i32 %current to ptr
+  %next_link = getelementptr i8, ptr %current_header, i32 4
+  %following = load i32, ptr %next_link
+  br label %search
+combine:
+  %neighbor = inttoptr i32 %current to ptr
+  %neighbor_size = load i32, ptr %neighbor
+  %combined = add i32 %capacity, %neighbor_size
+  %available = icmp uge i32 %combined, %needed
+  br i1 %available, label %unlink, label %fallback
+unlink:
+  %neighbor_link = getelementptr i8, ptr %neighbor, i32 4
+  %neighbor_next = load i32, ptr %neighbor_link
+  %remaining = sub i32 %combined, %needed
+  %split = icmp uge i32 %remaining, 32
+  br i1 %split, label %split_block, label %whole
+split_block:
+  %rest = add i32 %block, %needed
+  %rest_header = inttoptr i32 %rest to ptr
+  store i32 %remaining, ptr %rest_header
+  %rest_link = getelementptr i8, ptr %rest_header, i32 4
+  store i32 %neighbor_next, ptr %rest_link
+  store i32 %rest, ptr %previous
+  store i32 %needed, ptr %header
+  br label %reused
+whole:
+  store i32 %neighbor_next, ptr %previous
+  store i32 %combined, ptr %header
+  br label %reused
+reused:
+  ret ptr %old
+fallback:
+  %replacement = call ptr @tz.alloc(i64 %new_size)
+  %smaller = icmp ult i64 %old_size, %new_size
+  %bytes = select i1 %smaller, i64 %old_size, i64 %new_size
+  %count = trunc i64 %bytes to i32
+  br label %copy_test
+copy_test:
+  %index = phi i32 [ 0, %fallback ], [ %next_index, %copy ]
+  %more = icmp ult i32 %index, %count
+  br i1 %more, label %copy, label %copied
+copy:
+  %source = getelementptr i8, ptr %old, i32 %index
+  %target = getelementptr i8, ptr %replacement, i32 %index
+  %byte = load i8, ptr %source
+  store i8 %byte, ptr %target
+  %next_index = add i32 %index, 1
+  br label %copy_test
+copied:
+  call void @tz.free(ptr %old)
+  ret ptr %replacement
+fail:
+  call void @llvm.trap()
+  unreachable
+}

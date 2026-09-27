@@ -6,6 +6,14 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "parse_control.rs"]
 mod control;
 
+fn duplicate_active_case(case: &Ident) -> Diagnostic {
+    Diagnostic::new(
+        "E1020",
+        format!("duplicate active pattern case '{}'", case.text),
+        case.span,
+    )
+}
+
 fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
     matches!(
         kind,
@@ -13,6 +21,8 @@ fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
             | TokenKind::Fn
             | TokenKind::Record
             | TokenKind::Union
+            | TokenKind::Type
+            | TokenKind::Test
             | TokenKind::Class
             | TokenKind::Instance
             | TokenKind::Export
@@ -66,6 +76,8 @@ struct Parser<'a> {
     active_patterns: BTreeMap<String, ActivePattern>,
     pattern_type_arrow: bool,
     type_offside: Option<usize>,
+    slice_context: bool,
+    stop_at_slice_dotdot: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -82,6 +94,8 @@ impl<'a> Parser<'a> {
             active_patterns: BTreeMap::new(),
             pattern_type_arrow: false,
             type_offside: None,
+            slice_context: false,
+            stop_at_slice_dotdot: false,
         }
     }
 }
@@ -139,6 +153,7 @@ impl Parser<'_> {
             let result = Ident {
                 text: text.clone(),
                 span: self.current().span,
+                provenance: Provenance::User,
             };
             self.take();
             Ok(result)
@@ -159,12 +174,14 @@ impl Parser<'_> {
     fn program_all(mut self, recovering: bool) -> Result<Program, Vec<Diagnostic>> {
         let mut program = Program {
             source_kind: None,
+            type_aliases: Vec::new(),
             records: Vec::new(),
             unions: Vec::new(),
             functions: Vec::new(),
             classes: Vec::new(),
             instances: Vec::new(),
             active_patterns: Vec::new(),
+            tests: Vec::new(),
             entry: None,
         };
         let mut signatures = BTreeMap::new();
@@ -178,20 +195,27 @@ impl Parser<'_> {
             let parsed = (|| -> Result<(), Diagnostic> {
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
-                if self.eat(&TokenKind::Union) {
+                if self.eat(&TokenKind::Type) {
+                program.type_aliases.push(self.type_alias(visibility, column)?);
+            } else if self.at(&TokenKind::Test) {
+                program.tests.push(self.test_declaration()?);
+            } else if self.eat(&TokenKind::Union) {
                 program.unions.push(self.union_declaration(visibility, column)?);
             } else if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
                 let parameters = self.type_parameters()?;
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
                 let fields = self.parameters(TokenKind::RightBrace)?;
+                let derives = self.derives()?;
                 program.records.push(RecordDecl {
                     visibility,
                     name,
                     parameters,
                     fields,
+                    derives,
                 });
             } else if self.eat(&TokenKind::Class) {
+                let superclasses = self.constraints()?;
                 let name = self.ident()?;
                 let mut parameters = self.type_parameters()?;
                 if parameters.len() != 1 {
@@ -200,40 +224,36 @@ impl Parser<'_> {
                 let variable = parameters.remove(0);
                 self.expect(&TokenKind::LeftBrace, "'{' after the class parameter")?;
                 let mut methods = Vec::new();
+                let mut defaults = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
                     let column = self.column(self.current().span);
-                    self.expect(&TokenKind::Def, "a 'def' method signature or '}'")?;
-                    let method = self.ident()?;
-                    self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
-                    methods.push(self.signature(method, false, column)?);
+                    if self.eat(&TokenKind::Def) {
+                        let method = self.ident()?;
+                        self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
+                        methods.push(self.signature(method, false, column)?);
+                    } else {
+                        defaults.push(self.instance_method()?);
+                    }
                     self.eat(&TokenKind::Semicolon);
                 }
                 program.classes.push(ClassDecl {
                     name,
                     variable,
+                    superclasses,
                     methods,
+                    defaults,
                 });
             } else if self.eat(&TokenKind::Instance) {
+                let constraints = self.constraints()?;
                 let class = self.qualified_ident()?;
                 let ty = self.single_type_argument()?;
                 self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
                 let mut methods = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
-                    let anonymous = self.eat(&TokenKind::Let);
-                    if !anonymous {
-                        self.expect(&TokenKind::Fn, "a 'fn' or 'let' method definition, or '}'")?;
-                    }
-                    let recursive = self.eat(&TokenKind::Rec);
-                    let name = self.ident()?;
-                    let mut definition = self.definition(name.clone())?;
-                    definition.recursion = recursive.then_some(name.text);
-                    if anonymous && (!definition.parameters.is_empty() || !matches!(definition.body.kind, ExprKind::Lambda(..))) {
-                        return Err(Diagnostic::new("E0002", "a 'let' method implementation needs a lambda", definition.name.span));
-                    }
-                    methods.push(definition);
+                    methods.push(self.instance_method()?);
                     self.eat(&TokenKind::Semicolon);
                 }
-                program.instances.push(InstanceDecl { class, ty, methods });
+                program.instances.push(InstanceDecl { class, ty, constraints, methods });
             } else if self.at(&TokenKind::Let)
                 && self.tokens.get(self.position + if self.tokens.get(self.position + 1).is_some_and(|token| token.kind == TokenKind::Rec) { 2 } else { 1 }).is_some_and(|token|
                     matches!(&token.kind, TokenKind::Ident(name) if signatures.contains_key(name) && !defined_names.contains(name)))
@@ -441,6 +461,8 @@ impl Parser<'_> {
         self.stop_at_arrow = false;
         self.pattern_type_arrow = false;
         self.type_offside = None;
+        self.slice_context = false;
+        self.stop_at_slice_dotdot = false;
     }
 
     fn visibility(&mut self) -> Result<Visibility, Diagnostic> {
@@ -450,7 +472,7 @@ impl Parser<'_> {
         }
         let next = self.current();
         let message = match next.kind {
-            TokenKind::Record | TokenKind::Union | TokenKind::Def => {
+            TokenKind::Record | TokenKind::Union | TokenKind::Type | TokenKind::Def => {
                 return Ok(Visibility::Private);
             }
             TokenKind::Export => return Err(Self::private_export(private.through(next.span))),
@@ -461,9 +483,29 @@ impl Parser<'_> {
             TokenKind::Instance => {
                 "instances take part in global coherence and are always public; remove 'private'"
             }
-            _ => "'private' must be followed by 'def', 'record', or 'union'",
+            _ => "'private' must be followed by 'def', 'record', 'union', or 'type'",
         };
         Err(Diagnostic::new("E1022", message, private))
+    }
+
+    fn type_alias(
+        &mut self,
+        visibility: Visibility,
+        column: usize,
+    ) -> Result<TypeAliasDecl, Diagnostic> {
+        let name = self.ident()?;
+        let parameters = self.type_parameters()?;
+        self.expect(&TokenKind::Equal, "'=' after the type alias name")?;
+        let outer = self.type_offside.replace(column);
+        let target = self.type_expr()?;
+        self.type_offside = outer;
+        self.eat(&TokenKind::Semicolon);
+        Ok(TypeAliasDecl {
+            visibility,
+            name,
+            parameters,
+            target,
+        })
     }
 
     /// Parses the cases after `union Name<'a, ...> =`. `of` is contextual, and a
@@ -499,13 +541,53 @@ impl Parser<'_> {
             }
         }
         self.type_offside = outer;
+        let derives = self.derives()?;
         self.eat(&TokenKind::Semicolon);
         Ok(UnionDecl {
             visibility,
             name,
             parameters,
             cases,
+            derives,
         })
+    }
+
+    fn derives(&mut self) -> Result<Vec<(DeriveClass, Span)>, Diagnostic> {
+        let mut derives = Vec::new();
+        if !self.eat(&TokenKind::Deriving) {
+            return Ok(derives);
+        }
+        self.expect(&TokenKind::LeftParen, "'(' after 'deriving'")?;
+        loop {
+            let name = self.ident()?;
+            let class = match name.text.as_str() {
+                "Eq" => DeriveClass::Eq,
+                "Ord" => DeriveClass::Ord,
+                "Display" => DeriveClass::Display,
+                "Hash" => DeriveClass::Hash,
+                "Default" => DeriveClass::Default,
+                _ => {
+                    return Err(Diagnostic::new(
+                        "E1025",
+                        "only Eq, Ord, Display, Hash and Default can be derived",
+                        name.span,
+                    ));
+                }
+            };
+            if derives.iter().any(|(previous, _)| *previous == class) {
+                return Err(Diagnostic::new(
+                    "E1001",
+                    "duplicate derived class",
+                    name.span,
+                ));
+            }
+            derives.push((class, name.span));
+            if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RightParen) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RightParen, "')' after derived classes")?;
+        Ok(derives)
     }
 
     /// Whether the current token starts a new line at or left of the
@@ -555,6 +637,7 @@ impl Parser<'_> {
         Ok(Ident {
             text,
             span: token.span,
+            provenance: Provenance::User,
         })
     }
 
@@ -627,12 +710,29 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn signature(
-        &mut self,
-        name: Ident,
-        exported: bool,
-        column: usize,
-    ) -> Result<SignatureDecl, Diagnostic> {
+    fn instance_method(&mut self) -> Result<Definition, Diagnostic> {
+        let anonymous = self.eat(&TokenKind::Let);
+        if !anonymous {
+            self.expect(&TokenKind::Fn, "a 'fn' or 'let' method definition, or '}'")?;
+        }
+        let recursive = self.eat(&TokenKind::Rec);
+        let name = self.ident()?;
+        let mut definition = self.definition(name.clone())?;
+        definition.recursion = recursive.then_some(name.text);
+        if anonymous
+            && (!definition.parameters.is_empty()
+                || !matches!(definition.body.kind, ExprKind::Lambda(..)))
+        {
+            return Err(Diagnostic::new(
+                "E0002",
+                "a 'let' method implementation needs a lambda",
+                definition.name.span,
+            ));
+        }
+        Ok(definition)
+    }
+
+    fn constraints(&mut self) -> Result<Vec<ConstraintExpr>, Diagnostic> {
         let mut constraints = Vec::new();
         // A constraint prefix always ends in => before the next declaration/body.
         let has_constraints = self.constraint_prefix();
@@ -654,6 +754,16 @@ impl Parser<'_> {
             }
             self.expect(&TokenKind::FatArrow, "'=>' after constraints")?;
         }
+        Ok(constraints)
+    }
+
+    fn signature(
+        &mut self,
+        name: Ident,
+        exported: bool,
+        column: usize,
+    ) -> Result<SignatureDecl, Diagnostic> {
+        let mut constraints = self.constraints()?;
         let ty = self.type_expr()?;
         let (mut parameters, mut result) = match ty.kind {
             TypeExprKind::Function(parameters, result) => (parameters, *result),
@@ -968,23 +1078,50 @@ impl Parser<'_> {
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
         let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let result = if matches!(
+            self.current().kind,
+            TokenKind::Let | TokenKind::Return | TokenKind::Do | TokenKind::RightBrace
+        ) {
+            self.block_after_open(start, None)
+        } else {
+            let first = self.expression(0, true)?;
+            if self.eat(&TokenKind::With) {
+                self.record_update(start, first)
+            } else {
+                self.block_after_open(start, Some(first))
+            }
+        };
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        self.nesting -= 1;
+        result
+    }
+
+    fn block_after_open(
+        &mut self,
+        start: Span,
+        mut first: Option<Expr>,
+    ) -> Result<Expr, Diagnostic> {
         let mut bindings = Vec::new();
         let mut depth = 0;
         let result = loop {
-            if self.eat(&TokenKind::Let) {
+            if first.is_none() && self.eat(&TokenKind::Let) {
                 let binding = self.binding(self.in_task)?;
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
-            } else if self.at(&TokenKind::Return) {
+            } else if first.is_none() && self.at(&TokenKind::Return) {
                 break self.task_return()?;
-            } else if self.at(&TokenKind::Do) {
+            } else if first.is_none() && self.at(&TokenKind::Do) {
                 let binding = self.task_do()?;
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
-            } else if self.at(&TokenKind::RightBrace) {
+            } else if first.is_none() && self.at(&TokenKind::RightBrace) {
                 break self.make(ExprKind::Unit, self.current().span, 1)?;
             } else {
-                let value = self.expression(0, true)?;
+                let value = match first.take() {
+                    Some(value) => value,
+                    None => self.expression(0, true)?,
+                };
                 if !self.eat(&TokenKind::Semicolon)
                     && !(self.newline_before_current() && !self.at(&TokenKind::RightBrace))
                 {
@@ -995,6 +1132,7 @@ impl Parser<'_> {
                     name: Ident {
                         text: "_".into(),
                         span: value.span,
+                        provenance: Provenance::Generated,
                     },
                     mutable: false,
                     annotation: None,
@@ -1004,9 +1142,6 @@ impl Parser<'_> {
         };
         depth = depth.max(result.depth) + 1;
         let end = self.expect(&TokenKind::RightBrace, "'}' after the result expression")?;
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
-        self.nesting -= 1;
         self.make(
             ExprKind::Block {
                 bindings,
@@ -1014,6 +1149,34 @@ impl Parser<'_> {
             },
             start.through(end.span),
             depth,
+        )
+    }
+
+    fn record_update(&mut self, start: Span, base: Expr) -> Result<Expr, Diagnostic> {
+        let mut fields = Vec::new();
+        let mut depth = base.depth;
+        loop {
+            let name = self.ident()?;
+            if !self.eat(&TokenKind::Equal) {
+                self.expect(&TokenKind::Colon, "'=' or ':' after the update field name")?;
+            }
+            let value = self.expression(0, true)?;
+            depth = depth.max(value.depth);
+            fields.push((name, value));
+            if !(self.eat(&TokenKind::Semicolon) || self.eat(&TokenKind::Comma))
+                || self.at(&TokenKind::RightBrace)
+            {
+                break;
+            }
+        }
+        let end = self.expect(&TokenKind::RightBrace, "'}' after the record update")?;
+        self.make(
+            ExprKind::RecordUpdate {
+                base: Box::new(base),
+                fields,
+            },
+            start.through(end.span),
+            depth + 1,
         )
     }
 
@@ -1061,6 +1224,7 @@ impl Parser<'_> {
             name: Ident {
                 text: "_".into(),
                 span,
+                provenance: Provenance::Generated,
             },
             mutable: false,
             annotation: Some(TypeExpr {
@@ -1159,7 +1323,10 @@ impl Parser<'_> {
             .unwrap_or(0)
             + 1;
         self.make(
-            ExprKind::Record { name, fields },
+            ExprKind::Record {
+                name: Box::new(name),
+                fields,
+            },
             start.through(end.span),
             depth,
         )
@@ -1364,7 +1531,7 @@ impl Parser<'_> {
             if self.stop_at_arm && self.at(&TokenKind::Pipe) {
                 break;
             }
-            if minimum == 0 && self.eat(&TokenKind::DotDot) {
+            if minimum == 0 && !self.stop_at_slice_dotdot && self.eat(&TokenKind::DotDot) {
                 left = self.range_expression(left, allow_record, stop_at_newline)?;
                 continue;
             }
@@ -1487,6 +1654,8 @@ impl Parser<'_> {
                 | TokenKind::Integer(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
+                | TokenKind::Char(_)
+                | TokenKind::Utf8Char(_)
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::New
@@ -1530,28 +1699,74 @@ impl Parser<'_> {
                 let depth = left.depth + 1;
                 self.make(ExprKind::Field(Box::new(left), field), span, depth)
             }
-            TokenKind::LeftBracket => {
-                let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-                let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-                let index = self.expression(0, true)?;
-                let end = self.expect(&TokenKind::RightBracket, "']'")?;
-                self.stop_at_arm = outer_arm;
-                self.stop_at_arrow = outer_arrow;
-                let span = left.span.through(end.span);
-                let depth = left.depth.max(index.depth) + 1;
-                self.make(
-                    ExprKind::Index(Box::new(left), Box::new(index)),
-                    span,
-                    depth,
-                )
-            }
+            TokenKind::LeftBracket => self.index_or_slice(left),
             _ => unreachable!("postfix operators are checked by expression"),
         }
+    }
+
+    fn index_or_slice(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let borrowed = std::mem::replace(&mut self.slice_context, false);
+        let outer_range = std::mem::replace(&mut self.stop_at_slice_dotdot, true);
+        let first = if self.at(&TokenKind::DotDot) {
+            None
+        } else {
+            Some(self.expression(0, true)?)
+        };
+        let slice = self.eat(&TokenKind::DotDot);
+        let last = if slice && !self.at(&TokenKind::RightBracket) {
+            Some(self.expression(0, true)?)
+        } else {
+            None
+        };
+        let end = self.expect(&TokenKind::RightBracket, "']'")?;
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        self.slice_context = borrowed;
+        self.stop_at_slice_dotdot = outer_range;
+        let span = left.span.through(end.span);
+        let depth = first
+            .iter()
+            .chain(&last)
+            .map(|value| value.depth)
+            .max()
+            .unwrap_or(0)
+            .max(left.depth)
+            + 1;
+        let kind = if slice {
+            if !borrowed {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "array slices must be shared borrows; write 'ref xs[start..end]' or '&xs[start..end]'",
+                    span,
+                ));
+            }
+            if first.is_none() && last.is_none() {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "a slice needs at least one bound; borrow the whole array with 'ref xs'",
+                    span,
+                ));
+            }
+            ExprKind::Slice {
+                value: Box::new(left),
+                start: first.map(Box::new),
+                end: last.map(Box::new),
+            }
+        } else {
+            ExprKind::Index(
+                Box::new(left),
+                Box::new(first.expect("an index has one expression")),
+            )
+        };
+        self.make(kind, span, depth)
     }
 
     fn expressions(&mut self, end: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
         let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let outer_slice = std::mem::replace(&mut self.slice_context, false);
         let mut values = Vec::new();
         if !self.at(&end) {
             loop {
@@ -1564,6 +1779,7 @@ impl Parser<'_> {
         self.expect(&end, "the closing delimiter")?;
         self.stop_at_arm = outer_arm;
         self.stop_at_arrow = outer_arrow;
+        self.slice_context = outer_slice;
         Ok(values)
     }
 
@@ -1675,7 +1891,11 @@ impl Parser<'_> {
             TokenKind::While => return self.while_expression(),
             TokenKind::For => return self.for_expression(),
             TokenKind::Match => return self.match_expression(),
-            TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::String(_) => {
+            TokenKind::Integer(_)
+            | TokenKind::Float(_)
+            | TokenKind::String(_)
+            | TokenKind::Char(_)
+            | TokenKind::Utf8Char(_) => {
                 return self.literal();
             }
             TokenKind::Ampersand
@@ -1694,47 +1914,17 @@ impl Parser<'_> {
             TokenKind::True | TokenKind::False => {
                 ExprKind::Bool(self.take().kind == TokenKind::True)
             }
+            TokenKind::Break => {
+                self.take();
+                ExprKind::Break
+            }
+            TokenKind::Continue => {
+                self.take();
+                ExprKind::Continue
+            }
             TokenKind::TypeVariable(_) => return self.type_function_expression(),
             TokenKind::Ident(_) => {
-                let mut name = self.ident()?;
-                if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
-                    return self.lambda(name, stop_at_newline);
-                }
-                if allow_record
-                    && self.at(&TokenKind::Dot)
-                    && (!stop_at_newline || !self.newline_before_current())
-                    && self.tokens.get(self.position + 2).is_some_and(|token| {
-                        token.kind == TokenKind::LeftBrace
-                            && (!stop_at_newline
-                                || !self.source
-                                    [self.tokens[self.position + 1].span.end..token.span.start]
-                                    .contains(['\n', '\r']))
-                    })
-                {
-                    self.take();
-                    let record = self.ident()?;
-                    name.text.push('.');
-                    name.text.push_str(&record.text);
-                    name.span = name.span.through(record.span);
-                }
-                if allow_record
-                    && self.at(&TokenKind::LeftBrace)
-                    && (!stop_at_newline || !self.newline_before_current())
-                {
-                    let record = self.tokens.get(self.position + 1).is_some_and(|token| {
-                        token.kind == TokenKind::RightBrace
-                            || (matches!(token.kind, TokenKind::Ident(_))
-                                && self
-                                    .tokens
-                                    .get(self.position + 2)
-                                    .is_some_and(|next| next.kind == TokenKind::Colon))
-                    });
-                    if !record {
-                        return self.computation(name);
-                    }
-                    return self.record(name);
-                }
-                ExprKind::Name(name)
+                return self.identifier_expression(allow_record, stop_at_newline);
             }
             TokenKind::LeftParen => return self.grouped_expression(),
             TokenKind::LeftBracket | TokenKind::LeftList => return self.collection_literal(),
@@ -1744,6 +1934,87 @@ impl Parser<'_> {
         };
         let end = self.tokens[self.position - 1].span;
         self.make(kind, start.through(end), 1)
+    }
+
+    fn test_declaration(&mut self) -> Result<TestDecl, Diagnostic> {
+        let start = self.take().span;
+        let token = self.take();
+        let name = match token.kind {
+            TokenKind::String(StringLiteral::Utf16(units)) => {
+                String::from_utf16(&units).map_err(|_| {
+                    Diagnostic::new(
+                        "E0002",
+                        "test names must contain valid Unicode scalars",
+                        token.span,
+                    )
+                })?
+            }
+            TokenKind::String(StringLiteral::Utf8(name)) => name,
+            _ => {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "expected a string literal test name",
+                    token.span,
+                ));
+            }
+        };
+        self.expect(&TokenKind::Equal, "'=' after the test name")?;
+        let body = self.body_expression()?;
+        let span = start.through(body.span);
+        self.eat(&TokenKind::Semicolon);
+        Ok(TestDecl {
+            name,
+            name_span: token.span,
+            body,
+            span,
+        })
+    }
+
+    fn identifier_expression(
+        &mut self,
+        allow_record: bool,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
+        let mut name = self.ident()?;
+        if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
+            return self.lambda(name, stop_at_newline);
+        }
+        if allow_record
+            && self.at(&TokenKind::Dot)
+            && (!stop_at_newline || !self.newline_before_current())
+            && self.tokens.get(self.position + 2).is_some_and(|token| {
+                token.kind == TokenKind::LeftBrace
+                    && (!stop_at_newline
+                        || !self.source[self.tokens[self.position + 1].span.end..token.span.start]
+                            .contains(['\n', '\r']))
+            })
+        {
+            self.take();
+            let record = self.ident()?;
+            name.text.push('.');
+            name.text.push_str(&record.text);
+            name.span = name.span.through(record.span);
+        }
+        if allow_record
+            && self.at(&TokenKind::LeftBrace)
+            && (!stop_at_newline || !self.newline_before_current())
+        {
+            let record = self.tokens.get(self.position + 1).is_some_and(|token| {
+                token.kind == TokenKind::RightBrace
+                    || (matches!(token.kind, TokenKind::Ident(_))
+                        && self
+                            .tokens
+                            .get(self.position + 2)
+                            .is_some_and(|next| next.kind == TokenKind::Colon))
+            });
+            return if record {
+                self.record(name)
+            } else {
+                self.computation(name)
+            };
+        }
+        let span = name.span;
+        self.make(ExprKind::Name(name), span, 1)
     }
 
     fn type_function_expression(&mut self) -> Result<Expr, Diagnostic> {
@@ -1791,6 +2062,8 @@ impl Parser<'_> {
                 ExprKind::Float(value.to_owned(), suffix.map(str::to_owned))
             }
             TokenKind::String(text) => ExprKind::String(text.clone()),
+            TokenKind::Char(value) => ExprKind::Char(*value),
+            TokenKind::Utf8Char(value) => ExprKind::Utf8Char(*value),
             _ => unreachable!("literal token checked"),
         };
         self.make(kind, token.span, 1)
@@ -1806,11 +2079,20 @@ impl Parser<'_> {
     ) -> Result<Expr, Diagnostic> {
         let token = self.take();
         let mutable = token.kind == TokenKind::Ampersand && self.eat(&TokenKind::Mut);
+        let shared = token.kind == TokenKind::Ampersand && !mutable;
+        let outer_slice = std::mem::replace(&mut self.slice_context, shared);
         let value = if term {
             self.term(allow_record, stop_at_newline)?
         } else {
             self.expression_inner(13, allow_record, stop_at_newline)?
         };
+        self.slice_context = outer_slice;
+        if shared && matches!(value.kind, ExprKind::Slice { .. }) {
+            return Ok(Expr {
+                span: token.span.through(value.span),
+                ..value
+            });
+        }
         let span = token.span.through(value.span);
         let depth = value.depth + 1;
         let value = Box::new(value);
@@ -1833,7 +2115,10 @@ impl Parser<'_> {
     ) -> Result<Expr, Diagnostic> {
         let token = self.take();
         let mutable = token.kind == TokenKind::Ref && self.eat(&TokenKind::Mut);
+        let shared = token.kind == TokenKind::Ref && !mutable;
+        let outer_slice = std::mem::replace(&mut self.slice_context, shared);
         let value = self.term(allow_record, stop_at_newline)?;
+        self.slice_context = outer_slice;
         if self.space_argument() {
             let keyword = if token.kind == TokenKind::Ref {
                 "ref"
@@ -1851,6 +2136,9 @@ impl Parser<'_> {
             )));
         }
         let span = token.span.through(value.span);
+        if shared && matches!(value.kind, ExprKind::Slice { .. }) {
+            return Ok(Expr { span, ..value });
+        }
         let depth = value.depth + 1;
         let value = Box::new(value);
         let kind = if token.kind == TokenKind::Ref {
@@ -1935,7 +2223,8 @@ impl Parser<'_> {
         if self.at(&TokenKind::Else) {
             self.take();
         }
-        if self.at(&TokenKind::If) || self.at(&TokenKind::Elif) {
+        if self.at(&TokenKind::Elif) || (self.at(&TokenKind::If) && !self.newline_before_current())
+        {
             self.enter()?;
             let branch = self.conditional()?;
             self.nesting -= 1;
@@ -1994,6 +2283,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keeps_following_statements_in_a_multiline_else_block() {
+        let program = parse("def choose :: unit\nfn choose =\n    if true then ()\n    else\n        if false then ()\n        ()").unwrap();
+        let ExprKind::Block { result, .. } = &program.functions[0].body.kind else {
+            panic!("function layout block")
+        };
+        let ExprKind::If { else_branch, .. } = &result.kind else {
+            panic!("outer conditional")
+        };
+        let ExprKind::Block { bindings, result } = &else_branch.kind else {
+            panic!("multiline else is a block")
+        };
+        assert_eq!(bindings.len(), 1);
+        assert!(matches!(result.kind, ExprKind::Unit));
+    }
+
+    #[test]
+    fn parses_only_borrowed_partial_array_slices() {
+        for prefix in ["&", "ref "] {
+            for range in ["1..3", "1..", "..3", "1 + 2..3 + 4"] {
+                let program = parse(&format!("{prefix}values[{range}]")).unwrap();
+                let debug = format!("{program:?}");
+                assert!(debug.contains("Slice"));
+                assert!(!debug.contains("Borrow("));
+            }
+        }
+        for source in [
+            "values[0..1]",
+            "values[..1]",
+            "values[1..]",
+            "&values[..]",
+            "ref mut values[0..1]",
+            "&mut values[0..1]",
+            "ref identity(values[0..1])",
+        ] {
+            assert_eq!(parse(source).unwrap_err().code, "E0002", "{source}");
+        }
+        parse("values[1 + 2]").unwrap();
+    }
+
+    #[test]
+    fn distinguishes_record_updates_from_blocks_and_matches() {
+        for source in [
+            "{ value with x = 1; y: 2, }",
+            "{ (match flag with | true -> left | false -> right) with x = 1 }",
+            "def update :: R -> R\nfn update value = { value with x = 1 }",
+        ] {
+            let program = parse(source).unwrap();
+            assert!(format!("{program:?}").contains("RecordUpdate"), "{source}");
+        }
+        for source in [
+            "{ match value with | { x = field } -> field }",
+            "{ (); let value = 1; value }",
+            "{ let value = 1; value }",
+        ] {
+            let program = parse(source).unwrap();
+            assert!(!format!("{program:?}").contains("RecordUpdate"), "{source}");
+        }
+        assert!(parse("{ value with }").is_err());
+        assert!(parse("{ value with x }").is_err());
+    }
+
+    #[test]
+    fn parses_transparent_type_alias_declarations() {
+        let program =
+            parse("type Meters = f64\nprivate type Pair2<'a> = Pair<'a, 'a>\n42").unwrap();
+        assert_eq!(program.type_aliases.len(), 2);
+        assert_eq!(program.type_aliases[0].name.text, "Meters");
+        assert_eq!(program.type_aliases[1].visibility, Visibility::Private);
+        assert_eq!(program.type_aliases[1].parameters[0].text, "a");
+        assert!(matches!(
+            program.type_aliases[1].target.kind,
+            TypeExprKind::Apply(..)
+        ));
+        assert!(program.entry.is_some());
+        assert!(parse("let type = 1\ntype").is_err());
+        assert!(parse("type Empty<> = i64").is_err());
+        assert!(parse("type Bad =").is_err());
+    }
+
+    #[test]
     fn parses_application_syntax() {
         let source = "
             record Pair { x: i64, y: f64, }
@@ -2036,6 +2405,7 @@ mod tests {
             ("[|", "|]"),
             ("new [i64](1, i -> ", ")"),
             ("new [|i64|](1, i -> ", ")"),
+            ("{ value with x = ", " }"),
             ("- ", ""),
         ] {
             let source = format!(

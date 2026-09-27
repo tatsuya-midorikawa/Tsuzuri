@@ -7,10 +7,16 @@
 | 規模 | M |
 | 依存 | A11, A06, A02, D01 |
 | 後続 | C06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/control.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/polymorphism.rs`, `tests/control.rs`, `tests/primitives.mjs`, `tests/fixtures/*` |
 
 ## 目的
+
+実装済み。`derive.rs`の通常AST合成をA06のinstance経路へ渡す。Hash/DefaultとコレクションHash/Display、private引用builtinを実装した。
+検証: deriving Rust7件、Rust全体、fmt/clippy、209参照ケースをnative/WASM O0/O3・heap live=0・ASanで確認した。
+以下の旧文字モデルはGUIDE D-26と言語仕様で更新する。string/charはUTF-16、utf8string/utf8charはUTF-8/scalar。
+HashはUTF-16 unit／UTF-8 byteを別tagで混ぜ、decimal cohort、±0、NaNを正規化する。
+引用はUTF-16を4桁escape、UTF-8型をu8接頭辞とbraced escapeにし、孤立surrogateを失わない。
 
 レコードと A02 の判別共用体に対し、構造的な `Eq`/`Ord`/`Display`/`Hash`/`Default` インスタンスを自動生成する。標準ライブラリの `Map`/`Set`/`Result`/`Option` と利用者定義データ型を実用的に組み合わせるため、A06 の条件付きインスタンスと D01 の `Display` 基盤を使う。
 
@@ -384,15 +390,13 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 
 ## 受け入れ条件
 
-- [ ] record/union で `deriving (Eq, Ord, Display, Hash, Default)` を parse できる。
-- [ ] 合成 instance が user instance と同じ coherence 検査を受ける。
-- [ ] generic record/union が A06 の conditional instance を生成する。
-- [ ] Eq/Ord の field/case 順、float semantics、短絡が仕様通り。
-- [ ] Display 文字列が仕様通り quote/escape される。
-- [ ] `$builtin.display_quoted_string` と `$builtin.display_quoted_char` が native/WASM で同じ escaping を行い、D02 に依存しない。
-- [ ] Hash が canonical stream 仕様通り native/WASM で一致し、JS 独立実装と一致する。
-- [ ] Default が 0 引数 method として動作する。
-- [ ] native/WASM × `-O0`/`-O3`、heap `live == 0`、IR 決定性。
+- [x] record/unionの5クラス導出、重複・対象外・生成上限を検証した。
+- [x] genericの合成instanceも手書きinstanceと同じcoherence・context検査を受ける。
+- [x] Eq/Ordの宣言順・短絡・NaN/±0、再帰構造の比較を検証した。
+- [x] DisplayQuotedを型別に具体化し、UTF-16/UTF-8の引用・制御文字・surrogate境界を照合した。D02なしでも動く。
+- [x] canonical Hashは全数値幅・文字・文字列・構造でJS独立実装と一致する。
+- [x] Defaultは0引数、空collection、先頭union case、非終了の再帰Default拒否を検証した。
+- [x] native/WASM O0/O3、heap live=0、IR決定性、ASan、既存numeric回帰が通る。
 
 ## 落とし穴
 
@@ -412,6 +416,8 @@ GUIDE §3 に従い、Node E2E の直前に必ず `cargo build --release --locke
 
 ## 未決事項
 
+- 実装判断（D-26）: A08後のUTF-16/UTF-8モデルへquoteとHash streamを更新し、Hashの±0・NaN・decimal cohortを正規化した。数値自体は変更しない。内部quoteは4種類の型を一つの多相builtinで扱う。
+- 再帰ADTの比較・Display・Hashは通常の再帰メソッドであり、stack-safe保証はA04のclone/dropだけ。Defaultの再帰的先頭caseはE1025。
 - **D-20/A11 で決定済み:** `Eq`/`Ord` は借用シグネチャで、derived comparison は呼び出し元の値を消費しない。A07 では追加の台帳見直しを提案しない。
 - **既定案: union Default は最初の case。** 別 case を指定する構文は導入しない。
 - **既定案: derived Display は structural context で string/char を quote する。** D01 の standalone `Display<string>` は raw のまま。

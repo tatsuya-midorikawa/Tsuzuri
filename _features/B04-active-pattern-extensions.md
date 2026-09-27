@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | B01, A02 |
 | 後続 | A03, D01 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/check.rs`, `src/control.rs`, `src/ownership_control.rs`, `src/llvm_control.rs`, `src/llvm.rs`, `tests/control.rs`, `tests/fixtures/control/`, `tests/control.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -92,6 +92,7 @@ fn (|Even|Odd|) n =
 match 41 with
 | Even -> 0
 | Odd -> 1
+| _ -> unreachable ()
 ```
 
 payload あり:
@@ -109,6 +110,7 @@ match token with
 | Int n -> n
 | Word word -> word.length
 | Symbol byte -> byte as i64
+| _ -> unreachable ()
 ```
 
 制約:
@@ -455,6 +457,7 @@ fn (|Even|Odd|) n = if n % 2 == 0 then ParityEven else ParityOdd
 match 41 with
 | Even -> 0
 | Odd -> 1
+| _ -> unreachable ()
 ```
 
 multi-case payload:
@@ -466,6 +469,7 @@ fn (|Small|Large|) n = if n < 10 then ViewSmall n else ViewLarge n
 match 12 with
 | Small n -> n
 | Large n -> n + 30
+| _ -> unreachable ()
 ```
 
 ### Rust 拒否
@@ -517,17 +521,17 @@ match 12 with
 
 ## 受け入れ条件
 
-- [ ] `(|Name|_|) :: input -> bool` の既存コードがそのまま動く。
-- [ ] `(|Name|_|) :: input -> Option payload` で `Name payload_pattern` が使える。
-- [ ] `None` の場合に次 arm へ進み、一時 payload/recognizer result を解放する。
-- [ ] `(|A|B|) :: input -> BackingUnionWithSameCaseCount` が宣言順対応で case ごとの pattern として使える。
-- [ ] multi-case の active case 数と backing union case 数の不一致を `E1020` で拒否する。
-- [ ] 同一モジュール内で active case と union case が同名なら A02 と同じく `E1001`。
-- [ ] active recognizer resolver が current module → unique visible user → std、std requester は user を見ない、曖昧なら `E1004` を満たす。
-- [ ] 多相 recognizer の payload 型は各使用箇所の fresh instantiated signature から導き、alias 登録時の `Type` を cache しない。
-- [ ] mutable input や非 Copy consuming input の既存安全性を破らない。
-- [ ] native/WASM × `-O0`/`-O3`、heap tracking、WASM import なし、IR 決定性を確認した。
-- [ ] A03 が利用できる recognizer/case metadata を保持する。
+- [x] `(|Name|_|) :: input -> bool` の既存コードがそのまま動く。
+- [x] `(|Name|_|) :: input -> Option payload` で `Name payload_pattern` が使える。
+- [x] `None` の場合に次 arm へ進み、一時 payload/recognizer result を解放する。
+- [x] `(|A|B|) :: input -> BackingUnionWithSameCaseCount` が宣言順対応で case ごとの pattern として使える。
+- [x] multi-case の active case 数と backing union case 数の不一致を `E1020` で拒否する。
+- [x] 同一モジュール内で active case と union case が同名なら A02 と同じく `E1001`。
+- [x] active recognizer resolver が current module → unique visible user → std、std requester は user を見ない、曖昧なら `E1004` を満たす。
+- [x] 多相 recognizer の payload 型は各使用箇所の fresh instantiated signature から導き、alias 登録時の `Type` を cache しない。
+- [x] mutable input や非 Copy consuming input の既存安全性を破らない。
+- [x] native/WASM × `-O0`/`-O3`、heap tracking、WASM import なし、IR 決定性を確認した。
+- [x] A03 が利用できる recognizer/case metadata を保持する。
 
 ## 落とし穴
 
@@ -548,6 +552,9 @@ match 12 with
 
 ## 未決事項
 
+- **実装判断（2026-09-27）:** 宣言は `cases` と既存 `partial`、解決後は `ActiveCase` enum と関数 ID を保持し、payload Type を cache しない。
+  複数ケースの網羅性は再評価・副作用を考慮して保守的に扱い、`_` の fallback を要求する（GUIDE D-23）。追加引数で結果が変わり、全 case を通過する実行テストも含む。
+  15ケースとトラップ・heap tracking は既存 `tests/features.mjs ... active_patterns` に統合し、別の実行ハーネスを増やさない。
 - **既定案:** multi-case total の戻り値はユーザー宣言 union とし、active case と backing union case は宣言順で対応する。case 名一致は要求せず、同一モジュールで同名なら A02 により `E1001`。
 - hidden union を合成する案は、型表示・ドキュメント・A03 連携・LLVM 型名の決定性が増えるため、このチケットでは採用しない。
 - active pattern alias の cross-module 曖昧性は `E1004` で修飾要求する。resolver は `Result<Option<_>, Diagnostic>` とし、曖昧性を unknown pattern に潰さない。

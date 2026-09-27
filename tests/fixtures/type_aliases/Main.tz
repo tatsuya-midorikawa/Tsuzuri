@@ -1,0 +1,25 @@
+type Meters = f64
+type Text = string
+type Texts = [Text]
+type Nodes = [|Text|]
+type Borrowed<'a> = ref 'a
+
+record Pair<'a, 'b> { left: 'a, right: 'b }
+type Pair2<'a> = Pair<'a, 'a>
+
+export def alias_add :: Meters -> Meters -> Meters
+fn alias_add left right = left + right
+
+export def alias_record :: i64 -> i64
+fn alias_record value =
+    let pair: Pair2<i64> = Pair { left: value, right: 42 }
+    pair.left + pair.right
+
+def text_length :: Borrowed<Texts> -> i64
+fn text_length texts = texts[0].length
+
+export def alias_owned :: i64 -> i64
+fn alias_owned value =
+    let texts: Texts = new ["a" + "bc"]
+    let nodes: Nodes = new [|"xy" + "z"|]
+    text_length ref texts + nodes[0].length + value

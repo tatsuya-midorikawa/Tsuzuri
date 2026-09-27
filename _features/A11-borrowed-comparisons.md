@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | A06, A07, C04, C06 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/polymorph.rs`, `src/check.rs`, `src/ownership.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/polymorphism.rs`, `tests/types_ownership.rs`, `tests/fixtures/polymorphism/*`, `examples/polymorphism/*` |
 
 ## 目的
@@ -530,15 +530,15 @@ node tests/primitives.mjs target/release/tsuzuri
 
 ## 受け入れ条件
 
-- [ ] `Eq.eq`/`Eq.ne`/`Ord.lt`/`le`/`gt`/`ge` の class signature が `&'a -> &'a -> bool`。
-- [ ] `==`/`!=`/`<`/`<=`/`>`/`>=` は全型で operand を消費しない。
-- [ ] user `Eq`/`Ord` instance operator call は borrowed operands を渡し、comparison 後に一時値を左から右へ解放する。
-- [ ] source-level `&temporary` は引き続き拒否され、operator 内部一時借用だけが許可される。
-- [ ] intrinsic numeric/bool/unit/string/char comparisons は direct `icmp`/`fcmp`/`@tz.string.equal`/D02 の `@tz.string.compare` を維持し、scalar operator IR に参照 traffic を増やさない。
-- [ ] `Eq.eq`/`Ord.lt` method value は `&T -> &T -> bool` として使える。
-- [ ] non-Copy record/string を含む値の比較 loop が native/WASM × `-O0`/`-O3` で leak/double free なし。
-- [ ] 比較中の借用競合は既存 `E1014`、borrowed parameter の誤用は既存 `E1003`/`E1012` で安定する。
-- [ ] A06/A07/C04/C06 の ticket が A11 を hard dependency として参照し、比較のためだけの `Copy` 要求を残さない。
+- [x] `Eq.eq`/`Eq.ne`/`Ord.lt`/`le`/`gt`/`ge` の class signature が `&'a -> &'a -> bool`。
+- [x] `==`/`!=`/`<`/`<=`/`>`/`>=` は全型で operand を消費しない。
+- [x] user `Eq`/`Ord` instance operator call は borrowed operands を渡し、comparison 後に一時値を左から右へ解放する。
+- [x] source-level `&temporary` は引き続き拒否され、operator 内部一時借用だけが許可される。
+- [x] 実装済み intrinsic comparisons は direct lowering を維持（char は A08 で追加）。
+- [x] `Eq.eq`/`Ord.lt` method value は `&T -> &T -> bool` として使える。
+- [x] non-Copy record/string を含む値の比較 loop が native/WASM × `-O0`/`-O3` で leak/double free なし。
+- [x] 比較中の借用競合は既存 `E1014`、borrowed parameter の誤用は既存診断で安定する。
+- [x] A06/A07/C04/C06 の ticket が A11 を hard dependency として参照し、比較のためだけの `Copy` 要求を残さない。
 
 ## 落とし穴
 

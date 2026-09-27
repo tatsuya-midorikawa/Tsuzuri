@@ -24,3 +24,24 @@ export function stepBody(api, body, dt, width, height) {
     vy: api.tz_next_velocity(y, body.vy, dt, extentY),
   };
 }
+
+export function stepPositions(api, positions, velocities, dt, extent) {
+  let positionPointer = 0, velocityPointer = 0, outputPointer = 0, resultPointer = 0;
+  try {
+    positionPointer = api.tsuzuri_alloc(BigInt(positions.length) * 8n);
+    velocityPointer = api.tsuzuri_alloc(BigInt(velocities.length) * 8n);
+    outputPointer = api.tsuzuri_alloc(16n);
+    new Float64Array(api.memory.buffer, positionPointer, positions.length).set(positions);
+    new Float64Array(api.memory.buffer, velocityPointer, velocities.length).set(velocities);
+    api.tz_next_positions(outputPointer, positionPointer, BigInt(positions.length), velocityPointer, BigInt(velocities.length), dt, extent);
+    const view = new DataView(api.memory.buffer);
+    resultPointer = view.getUint32(outputPointer, true);
+    const length = Number(view.getBigInt64(outputPointer + 8, true));
+    return new Float64Array(api.memory.buffer, resultPointer, length).slice();
+  } finally {
+    api.tsuzuri_free(resultPointer);
+    api.tsuzuri_free(outputPointer);
+    api.tsuzuri_free(velocityPointer);
+    api.tsuzuri_free(positionPointer);
+  }
+}

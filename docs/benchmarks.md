@@ -530,7 +530,7 @@ C は control の15種目、C++・Rust・C#・JavaScript は36種目に対応し
 | f16/f128・decimal32/64/128 の正確な演算 | 正確性の参照検査は実施。5言語で同じ標準型・丸め・表示契約が揃わず横断速度比較は未実施。C# decimal は Tsuzuri d128 の代替ではない |
 | モジュール・private・型推論・借用検査・網羅性・診断 | 主にコンパイル時の機能。実行時ディスパッチではない。コンパイル時間は今回未測定 |
 | C ABI・WASM・コンソール | 外部 ABI 経由の測定と native/WASM O0/O3 の検証。I/O・GUI 全体の速度比較ではない |
-| GPU・常駐 worker pool・自動並列化 | Tsuzuri では未実装。今回も追加しておらず、加速を主張しない |
+| GPU・常駐 worker pool・自動並列化 | この過去の計測時点では未実装。常駐 pool の後続測定は下の専用節に分離 |
 
 ### 条件と読み方
 
@@ -832,14 +832,65 @@ JSON の主な項目:
 上の C／WASM 比較は GC、動的メモリ、文字列、巨大配列、I/O、GUI、ゲーム全体、
 C++／F#／C# の包括的比較を測っていません。
 
-`Task.parallel` はネイティブの bounded fork/join を実装していますが、上の既存比較は
+`Task.parallel` は現在ネイティブの常駐 pool による bounded fork/join を実装していますが、上の既存比較は
 タスクの速度比較ではありません。`examples/tasks` とタスクのテストも、同時実行・結果・
 資源回収を示すもので、速度向上の証拠には使いません。
 並列処理を比較する場合は同じ仕事・分割・コピー条件で、タスクの生成、捕捉の複製、
 結果領域の確保、スレッドの起動、同期、全 join／解放を含む wall time を測ります。
 CPU time は複数スレッドの時間を合計するため、逐次版との経過時間比較には使えません。
-常駐ワーカープールは未実装で、小さい仕事は起動費用に負ける可能性があります。
+常駐 pool の起動・同期費用も入力依存であり、初回と再利用時を分けて測る必要があります。
 WASM のタスクは逐次フォールバックであり、マルチコア性能として報告しません。
+
+## Task プール
+
+```sh
+cargo build --release --locked
+node benchmarks/run-tasks.mjs target/release/tsuzuri --quick
+node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f01-task-before.o --artifacts target/benchmarks/f01-measured
+```
+
+baseline-runtime は同じターゲット・Clang・O3/PIC で事前に保存した旧 task runtime object を指定します。
+同一の LLVM IR を両 runtime へリンクし、タスク生成・捕捉・結果確保・実行・完了待ち・解放を含めます。
+cold は初回呼び出しと遅延起動、warm は同一プロセスでの再利用です。コンパイル、プロセス起動、終了時 shutdown は計時外です。
+`--quick` は独立した整数参照値との一致を調べる smoke で、速度の合否閾値はありません。
+通常測定は7標本で実行順を交互にし、環境・IR/runtime hash・全標本を result.json へ記録します。
+
+F01 作業時の Apple M1 Max（10 logical CPU）、macOS Darwin 27、Apple Clang 21、O3 generic／fast-math なしの測定:
+
+| 仕事 | 要素数／反復 | 新 pool cold ms | 旧 runtime cold ms | 新 pool warm us/call | 旧 runtime warm us/call |
+|---|---|---|---|---|---|
+| tiny | 4／0 | 0.079 | 0.070 | 1.319 | 45.147 |
+| small | 32／16 | 0.109 | 0.096 | 4.578 | 42.996 |
+| bulk | 1024／256 | 0.641 | 0.426 | 423.500 | 309.187 |
+
+小さい時間が良い指標です。tiny/small の warm は短縮しましたが、cold と bulk は旧版より遅く、全般的な高速化とは主張しません。
+要素ごとの割当・通知・mutex 競合が残ります。大量要素には F02 の固定チャンク API を別に評価します。
+生データは `target/benchmarks/f01-measured/result.json`、同一 IR は同ディレクトリの tasks.ll です。
+この結果を上の過去の言語間比較へ混ぜず、共有 CI に速度閾値を追加しません。
+
+## データ並列 API
+
+```sh
+cargo build --release --locked
+node benchmarks/run-tasks.mjs target/release/tsuzuri --data-parallel --quick
+node benchmarks/run-tasks.mjs target/release/tsuzuri --data-parallel --artifacts target/benchmarks/f02-measured
+```
+
+既存ハーネスの比較モードを使い、Array/Parallel の init・map・sum を同じ入力と整数演算で比較します。
+input/output の確保・捕捉・計算・同期・解放を計時します。sum の入力生成も含むため、加算カーネル単体の比較ではありません。
+整数加算は順序が違っても同じ値となり、各測定を独立した参照値と照合します。WASM は18件の正しさだけを検査し、並列加速とは報告しません。
+7標本の生データ、環境、hash、IR、assembly を保存します。assembly で専用 chunk callback と `tsuzuri_task_parallel` の呼び出しを確認しました。
+
+F02 作業時の Apple M1 Max（10 logical CPU）、Apple Clang 21、O3 generic の warm 中央値（ms/call、小さい方が良い）:
+
+| 要素数／計算反復 | Parallel.init | Array.init | Parallel.map | Array.map | Parallel.sum | Array.sum |
+|---|---|---|---|---|---|---|
+| 64／8 | 0.000258 | 0.000281 | 0.000297 | 0.000320 | 0.000313 | 0.000266 |
+| 8193／16 | 0.068719 | 0.061656 | 0.074875 | 0.062750 | 0.103906 | 0.062188 |
+| 262144／32 | 1.244375 | 5.511875 | 1.188750 | 5.566500 | 5.489375 | 5.378500 |
+
+大きい入力の生成・map は短縮しましたが、チャンク境界付近と集計では逐次版に負けています。小さい時間差を一般的な優位性と解釈しません。
+結果は `target/benchmarks/f02-measured/result.json` に保存済みです。SIMD/GPU 加速は主張せず、共有 CI に速度閾値を追加しません。
 
 ## C++20 とのネイティブ比較
 
@@ -999,6 +1050,20 @@ node benchmarks/run-computations.mjs target/release/tsuzuri \
 `std_*` は B01 で追加したため、この三種目を含む現在のソースとの `--baseline` 比較には Option／Result 対応版が必要です。
 `std_option_owned` の C++ は既知の文字列長を直接計算する最適化済みの参照であり、所有文字列のコスト比較は
 Tsuzuri の builder／手書き版の間で行います。これらの追加自体を高速化の実測結果とは扱いません。
+
+### B02 の検証（2026-09-26）
+
+早期伝播の比較には既存の `std_option`／`std_result`／`std_option_owned` と手書き版を再利用します。
+Node 24.21.0、Apple Clang 21、Apple M1 Max で全 9 種目の `--quick` 検証を通過しました。
+これは `correctness-smoke` モードであり、速度改善や他言語に対する優位性の測定結果ではありません。
+速度閾値を合否条件にはしません。JSON は `target/p1-computations.json`、IR・アセンブリなどは
+`target/benchmarks/p1-computations/` に保存しています。
+
+```sh
+cargo build --release --locked
+npx --yes --package=node@24 node benchmarks/run-computations.mjs target/release/tsuzuri \
+  --quick --artifacts target/benchmarks/p1-computations > target/p1-computations.json
+```
 
 ### 標準 Option／Result の測定（2026-09-25）
 

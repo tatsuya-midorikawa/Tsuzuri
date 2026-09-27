@@ -43,11 +43,17 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
 | `src/llvm_control.rs` | 直接の反復・switch・定数表、パターン手順の分岐と全経路の解放 |
+| `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定 merge sort の型付き builtin lowering |
+| `src/llvm_compare.rs` | 配列・リスト・タプルの借用構造比較、短絡と段階的メソッド適用 |
+| `src/derive.rs` / `src/llvm_hash.rs` / `src/llvm_display.rs` | 導出instanceのAST合成、canonical Hash、引用・コレクション表示 |
+| `src/llvm_math.rs` / `src/runtime/math.c` / `src/runtime/musl/` | Float基本数学と型別Elementary関数、固定版の移植可能な数学実装 |
+| `src/recursive.rs` / `src/llvm_recursive.rs` / `src/runtime/recursive.ll` | 具体型ごとの再帰成分、所有ノード、追加確保なしの解放と反復複製 |
 | `src/llvm_frame.rs` | `new` なしのリテラルのフレーム領域、実行時のアドレス判定、スコープ外への移動時のヒープ移送、フレームを考慮した解放 |
 | `src/call_specialization.rs` | 非 escaping な関数引数の固定点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker の特殊化予算 |
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、最短往復表示・解析 |
 | `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な符号化変換、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
+| `src/runtime/heap-*.ll` の `tz.realloc` | native realloc と、WASM の隣接空き領域再利用・確保コピー fallback |
 | `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
 | `src/stdlib.rs` / `std/` | 埋め込みの標準ライブラリのソース、予約 std モジュール名、std の仮想パス |
@@ -69,7 +75,7 @@ LLVM に渡すだけで高速と判断せず、生成コードと実測で経路
 | スカラー CPU | i8〜i64／i8u〜i64u と f32／f64 の変換は LLVM の直接命令・飽和 intrinsic。`as` と変換 builtin の意味・性能経路を揃える |
 | SIMD | `-O3` のループ／SLP 自動ベクトル化。連続配列・型の特殊化・不要コピーの除去で最適化可能な IR を生成する。`--cpu native` はビルド機の命令セットを有効化 |
 | 移植性 | 既定の `--cpu generic` は Clang のターゲット既定を維持。`native` は明示指定し、CPU 要件を配布条件に含める。実行時 ISA 判定・複数版の選択は今後の実装 |
-| 複数 CPU コア | `Task.parallel` の明示的な fork/join。CPU 数・共有枠で追加スレッド数を制限し、入れ子も呼び出し元で進行できる。自動並列化・常駐ワーカープールは未実装 |
+| 複数 CPU コア | `Task.parallel` の遅延起動する常駐プール。CPU 数で追加スレッド数を制限し、呼び出し元も自分のグループを進行する。WASM は逐次 fallback。自動並列化は未実装 |
 | GPU | バックエンドは未実装。今後は能力検出、所有権を保つバッファ、転送・同期・カーネル選択、CPU 経路と合わせた実行基盤を設計する |
 | WASM | 現在は bulk-memory 対応の CPU 実行。専用 SIMD／threads／GPU 経路は未実装であり、将来もエンジンの能力要件を明示する |
 
@@ -154,11 +160,47 @@ Span はソース ID とファイル内バイト位置を保ち、字句・構�
 
 `analyze_all`／`analyze_modules_all`／`analyze_modules_with_std_all`／`Project::analyze_all` は
 `DiagnosticSet` を返し、従来の API はこの集合の先頭一件を返すラッパーです。
-収集用 `Diagnostics` は `(source.unwrap_or(root), start, end, code, message)` の順序付きキーで重複除去します。
+収集用 `Diagnostics` は `(source.unwrap_or(root), start, end, severity, code, message)` の順序付きキーで重複除去します。
 収集上限 1000 件と表示上限 50 件を分け、打ち切り前なら省略数を正確に数え、収集を打ち切った場合だけ下限とします。
 表示用の note は Diagnostic／診断コードではありません。user／std の source ID の順序は E02 のまま維持します。
 
+警告は型検査後・特殊化前に `CheckedModule.warnings` へ集め、ソースエラーがある場合は表示しません。
+`Ident.provenance` を `Local` へ引き継ぎ、W1001 はローカル ID の使用、W1002 は再帰検査と共有する呼び出しグラフと型参照の到達性で判定します。
+型別名は消去前の注釈も走査します。std と生成束縛を抑制し、生成名の文字列から由来を推測しません。
+W1003 は既存の網羅性解析、W1004 は既定無効の字句スコープ検査です。`--deny-warnings` はコード生成前に失敗させます。
+
+`Program.tests` は通常の名前空間と分離し、検査時に unit の内部 callable と `CheckedModule.tests` のメタデータへ変換します。
+`FunctionOrigin.test` を局所生成関数へ引き継ぎ、共有特殊化は一つだけ生成して root 集合からの到達性で選択します。
+通常出力は public 宣言・export・entry、テスト出力は選択したテストを根にし、同じ `reachable_functions` を使います。
+内部 callable は既存の `@tz.fn.Module.$test.index` の命名規則を使い、runner だけが `tsuzuri_test_count`／`tsuzuri_test_run` を公開します。
+native の C entry は `strtoull`・errno・endptr で index を厳密に検査し、WASM の Node entry は imports が空であることも検査します。
+`driver::run_tests` は一度だけ runner をビルドし、上限付き worker が各テストを別プロセスで実行します。30秒 timeout では停止して wait し、結果を元 index 順へ戻します。
+
+Debug.print/trace は通常の std 関数で、Display の所有 string を private builtin へ渡します。
+native は既存の厳密な UTF-8 変換と `runtime/debug.ll` の write(2) ループを使い、変換前後の所有バッファを解放します。
+WASM の既定は UTF-16 の表示結果を解放するだけです。opt-in は UTF-8 を `tsuzuri_debug.write` へ同期転送して解放し、ホストに改行を委ねます。
+新しい `llvm::EmitOptions` と `emit_with_options` が出力フラグを受け、従来の `emit`／`emit_target` は既定値の wrapper として維持します。
+
+`llvm::emit_with_trap_info` は source map を明示的に受け、IR と TrapSite を返します。既定 API では計測を行いません。
+有効時だけ生成 call/trap に一時的な source marker を付け、`llvm_traps.rs` が生成 IR の関数・呼び出し・括弧付き引数を走査します。
+内部 callable と同梱 runtime の最後の引数へ context ID を追加し、間接呼び出しも同じ ABI にします。公開 export・main・pthread callback は元の ABI を維持します。
+標準 helper は呼び出し元 context を伝播し、利用者関数は実際の式 span を採用します。失敗理由ごとの ID は context と enum の offset から作ります。
+soft numeric の生成済み IR もこの有効時だけの変換対象であり、numeric.c／numeric.ll の既定 ABI は変更しません。
+失敗 block だけが cold reporter を呼び、native は write(2)、WASM は internal global と getter を使います。成功前の current-site store はありません。
+変換で副作用が変わる helper/call の attribute group は引き継ぎません。source marker は最終 IR から除去します。
+driver は side table を一時領域へ作り、ソース保護を再検査し、成果物公開の失敗時には表を rollback します。二ファイルの crash-atomic 更新ではありません。
+
+Option 部分認識器と複数ケース全域認識器は、通常の呼び出しを `PatternStep::Bind` で保持し、既存の union case の tag test と payload 投影へ下げます。
+失敗したパターン・ガードの一時結果は既存の cleanup を使い、追加の所有権規則は導入しません。
+名前表は関数 ID と case 種別だけを保持し、payload 型は使用ごとに fresh instantiate した signature から得ます。
+複数ケースの CoveragePat は認識器・case index・case 数を保持しますが、再評価を伴う現在の意味では保守的に opaque とし、フォールバックを要求します。
+
 `lex_all` は不正な一文字・数値・文字列から復帰し、未終端コメントは EOF で止めます。
+formatter 用の `lex_with_trivia` は同じ token/span と、トークン間の空白・改行・コメントを保持します。
+`formatter::format_source` は AST の型・単項演算子・本体終端・分岐の位置を利用して空白だけを整えます。
+整形前後の AST を位置と depth を除いて比較し、位置由来の生成名は provenance に基づいて正規化します。
+CLI は全入力の parse/整形を確認してから、同じ親ディレクトリの一時領域へ書き込み・flush・rename します。
+`--check` と不変のファイルは書き込まず、symlink を拒否し、通常ファイルの mode を維持します。
 字句エラーのあるファイルはその字句診断だけを返し、欠けた token から構文エラーを増やしません。
 `parse_with_source_all` は宣言単位で回復し、消費済みの token も含め `()`・`[]`・`[| |]`・`{}` を追跡して、
 深さ 0・column 1 の def／fn／record／union／class／instance／export／private／let だけで再同期します。
@@ -238,6 +280,14 @@ usefulness は行列の特殊化で求め、`Rc` の永続的な行を反復的�
 `Project::source_for` の該当ファイルで表示します。
 
 所有権の反復解析はループ入口・条件・本体・バックエッジの move と loan の合流を固定点まで検査します。
+`break`／`continue` は unit 型の専用 IR です。型検査の通常ループ文脈は lambda・task・ビルダー境界で切り、
+ビルダー展開後には深さを増やさない内部の `ComputationBoundary` を残して外側ループへのジャンプを拒否します。
+所有権解析は到達可能な通常継続、break、continue の状態を分離し、後二者の一時ローカルを除去して借用を検査します。
+通常継続と continue だけを固定点のバックエッジへ、条件 false と break を出口へ合流し、各反復で辺の収集をやり直します。
+辺の収集はループごとに最大 4096、固定点の回数は従来の上限を保ちます。上限超過は `E1017` です。
+LLVM はループごとの分岐先・ローカルと評価済み一時値の深さを保持し、ジャンプ前に内側の所有値を解放します。
+部分的に初期化した配列・リストは初期化済みの接頭部だけを解放し、未初期化領域を読みません。
+所有値を呼び出しや格納へ渡すと一時値の追跡から外します。ジャンプ後は到達不能ブロックを開始し、既存の phi 生成を維持します。
 新しい反復のローカルは再初期化し、外側に出した参照が反復ローカルを指す場合は拒否します。
 状態比較は loan の生成 ID ではなく参照先と可変性を比較し、上限を超える解析は `E1017` にします。
 ループ内の一回の構文上の使用を「実行時にも一回」とみなして所有領域を奪ってはいけません。
@@ -280,7 +330,7 @@ string は i16 の UTF-16 コード単位、utf8string は従来の i8 の UTF-8
 **多相性:** 明示シグネチャの型変数は rigid、各関数参照で導入する推論変数だけを単一化します。
 occurs check と型の深さ・構成要素数の上限を適用し、型が決まらない関数値は拒否します。
 型クラスの要件は演算・メソッド・所有権から収集し、呼び出しグラフ上の固定点まで伝播します。
-クラスと具体型の組み合わせにはインスタンスを一つだけ認め、型別名も正規化した後に比較します。
+クラスとheadの単一化可能性でoverlapを拒否し、型別名も正規化した後に比較します。
 インスタンスの本体は未使用でも通常の関数と同じ検査を受けます。
 ジェネリック本体も宣言時に抽象型で検査し、特殊化時には型・所有権・寿命・レイアウト・
 リテラル範囲の具体的な条件を再確認します。テンプレートを呼び出し時だけ検査する方式ではありません。
@@ -288,6 +338,30 @@ occurs check と型の深さ・構成要素数の上限を適用し、型が決�
 型変数、未解決のメソッド、未エンコードのリテラルは LLVM に渡しません。
 ランタイム辞書・仮想呼び出し・汎用値の boxing は不要です。
 旧宣言構文は互換テストとして残し、新しい例は分離シグネチャと空白適用を使います。
+
+`ClassDecl`は既存のsignature列にsuperclassとdefault定義列を加え、名前で関連付けます。
+`Classes.instances`はhead・context・メソッドIDと型引数を持つ一つのtemplate集合です。
+別のconcrete instance cacheは作らず、既存Specializerの`(関数ID, 型引数)`キャッシュを使います。
+headの型変数だけをfreshな推論変数にし、要求側の抽象変数はrigidに保って照合します。
+`normalize`はsuperclass・条件付きinstance・構造比較の要素要件を反復的に展開し、残余制約を固定点へ渡します。
+activeとcompletedを区別し、循環を成功扱いせず、重複要件だけを除きます。深さ64・異なる要件128・overlap1024組を上限とします。
+デフォルトは宣言モジュールの汎用`$instance.default`関数を一つ合成し、未使用でも通常の型・所有権検査を行います。
+本体から増えた制約はclass／instanceの明示contextで証明できる必要があります。
+抽象段階の保守的な再帰候補に加え、具体化後も同じSCC検査を使い、型が縮むtemplate展開と実際の循環を区別します。
+
+条件付きEq/Ordは通常の単相化済み関数の内部に`StructuralCompare`を持ちます。
+子には左右の共有参照と具体的な要素メソッド参照を保持し、通常の到達性・型走査を共有します。
+LLVMでは配列の添字、リストの2本のnode phi、タプルのfield GEPを使い、最初の不一致で短絡します。
+各要素は既存の借用ABIを使い、部分適用のメソッドは残りの引数も順に適用します。辞書・汎用boxing・要素コピーは追加しません。
+
+**導出:**
+`derive::instances`はrecord/union宣言から通常の`InstanceDecl`／式／パターンASTを合成し、手書きinstanceと同じcoherence・型検査・所有権・特殊化へ通します。
+生成名と内部クラス参照はprovenanceで区別し、同名モジュールへ誤解決しません。診断はderiving指定のspanを維持します。
+派生した構造要件に限って同じクラスの再帰を許し、Defaultの循環は拒否します。一般の循環instanceは引き続きE1017です。
+Hashのプリミティブは幅別の整数load/shift/xor/wrapping multiply、decimalはnumeric.cのdecode/encodeを共有します。
+`StructuralHash`／`StructuralDisplay`は合成されたコレクションhelper内で使い、子の具体メソッドを通常の到達性走査に含めます。
+表示は内部DisplayQuoted builtinを具体型へ解決し、`runtime/display.ll`がUTF-16引用と部品の一括結合を行います。D02のstdソースには依存しません。
+Hashのcanonical streamと文字型別の引用規則は言語仕様を参照してください。numeric.llは生成器から再生成し、手編集しません。
 
 **関数シグネチャの制約行:** インデントした `@'T : Class, #function` を `ConstraintExpr` の
 クラス名／関数名に区別して保持します。クラスは従来の `Constraint` へ下げ、インラインの `Class<'T>` と前置制約も維持します。
@@ -304,7 +378,43 @@ occurs check と型の深さ・構成要素数の上限を適用し、型が決�
 `private` の検査は参照元モジュールを維持し、呼び出し元や具体型のモジュールへ権限を置き換えません。
 型変数による関数参照を LLVM へ渡さず、専用のランタイムや動的探索は追加しません。
 
-**型パラメーターの構文:** レコード・union・型クラスの宣言、型の適用、制約・インスタンス、
+**整数 intrinsic:** `Int.*` は通常の多相 builtin として、各整数幅の LLVM intrinsic・命令へ下げます。
+count のゼロ未定義指定は false、rotate 量は明示的にマスクし、checked 系は既存の Option union 構築を共有します。
+i128 の checked／saturating 乗算は 64-bit limb の部分積と carry によって上位 128-bit の存在を調べ、
+符号付きでは絶対値の限界も検査します。通常の i128 乗算補助だけを使い、未同梱の `__muloti4` を要求しません。
+べき乗は二乗法で、最後の指数ビットの処理後に不要な二乗を行いません。速度の優位性は主張しません。
+
+**消費型コレクション更新:** `Array.set`／`update`／`swap`、`List.cons`／`tail` は通常の多相 `BuiltinInstance` です。
+既存の builtin ラッパーと emitter の境界検査・drop・関数適用を共有し、別の関数本体フックは持ちません。
+呼び出し側の Copy／move とフレーム移送を済ませた所有バッファだけを更新し、builtin 本体で全体複製しません。
+`update` の旧要素と関数環境は通常の所有するクロージャ適用へ渡すため、適用後に二重解放しません。
+`tail` は次リンクを読む前に空を検査し、先頭だけを解放します。確保回数は storage E2E で単一使用・旧値再利用・スタック移送を区別します。
+
+**共有配列ビュー:** `ref [T]` は `%tz.array = { ptr, i64 }` の非所有記述子で渡し、サイズは 16 バイトです。
+`Vec<T>` は `%tz.vec = { ptr, i64, i64 }`（データ・長さ・容量）で、保守的な型サイズは 32 バイトです。
+常に non-Copy ですが、捕捉環境の内部 clone は容量を保って独立複製します。drop は長さ以内の要素だけを解放します。
+再確保は native realloc、WASM は隣接 free block の分割・吸収を試み、失敗時に領域を確保してコピー・解放します。
+null／zero をヘッダー読み取りより先に扱い、WASM の 16 MiB 上限は維持します。
+`ref mut [T]` と他の参照は引き続き `ptr` です。型の共通レイアウト・閉包・引数・返却値もこの表現を使います。
+`Slice` は元配列の loan を張ってから範囲式を検査し、LLVM は全境界検査の後にだけ GEP と長さの差を生成します。
+共有配列参照の非消費な参照外しはビューを読み、所有値としての参照外しは従来の配列複製を使います。
+要素の借用はビューから直接要素ポインターを計算します。パターンで全体の射影が必要な場合だけ entry の一時記述子へ保存し、
+利用者にはこの記述子への可変アクセスを公開しません。スライス自体は clone・drop でバッファを操作しません。
+
+**比較の借用:** `Eq`／`Ord` のメソッド型は共有借用を受け取り、比較演算子の所有権検査は全型で `Use::Read` です。
+非 intrinsic の演算子だけを `Call(method, BorrowOperand(left), BorrowOperand(right))` へ単相化し、
+場所ならポインター、一時値なら `frame_value` の SSA 値を entry のスロットへ保存して渡します。
+一時値は呼び出し後に左から右へ `drop_framed` で解放します。ソースの `Borrow` の制約は変えません。
+数値・文字列の組み込み演算子は直接 lowering を保ち、メソッド値のラッパーだけが借用を参照外しして同じ演算を使います。
+
+**型別名:** `Names.type_aliases` は宣言元・可視性・右辺の `TypeExpr` を保持し、レコード・union と
+同じ型名解決を使います。`TypeAliasExpansion` は右辺と引数をそれぞれのモジュールで解決してから
+型式を置換します。型クラスの適用も型式として保ち、`inline_constraints` と格納型の制約検査へ引き継ぎます。
+循環は `E1024`、深さ 128・走査要素数 4096 の超過は `E1017` で拒否し、展開結果に `bounded_type` も適用します。
+未使用の宣言も検査し、public 別名の右辺には既存の private 型漏れ検査を適用します。
+`Type`・型付き IR・LLVM に別名専用表現を残さず、インスタンスと特殊化は展開後の型だけを使います。
+
+**型パラメーターの構文:** レコード・union・型別名・型クラスの宣言、型の適用、制約・インスタンス、
 `Task<T>` は共通の `<...>`・カンマ区切りで解析します。名前と `<` は隣接させ、
 型引数内は完全な `type_expr` を読むため、入れ子の型適用・関数型・借用型に追加の括弧は不要です。
 空のリストは拒否し、末尾のカンマは許します。個数と再帰の深さには既存の 128 上限を適用します。
@@ -330,6 +440,12 @@ LLVM では非ジェネリックなレコードを従来どおり `%tz.record.M.
 `fn[T,U->R]`・`ref[T]`・`refmut[T]`・`task[T]`）で、ジェネリックな宣言自体の LLVM 型は出力しません。
 集合の順序と正規名は入力順やハッシュに依存せず、native／WASM で同じ決定的な IR になります。
 
+**レコード更新:** `{ base with field = value; ... }` は最初の式を通常のパーサーで読んでから残った `with` で判別します。
+`match` 内の `with` をトークン走査で探しません。AST は `RecordUpdate` として元の値と更新フィールドを保持します。
+元の値と更新値を記述順に保持する専用の型付き `RecordUpdate` に下げ、children の走査順と所有権検査も同じ順にします。
+LLVM は元レコードと全更新値を先に評価し、置換する旧フィールドを解放してから `insertvalue` で差し替えます。
+未置換のフィールドには通常のフィールド射影による Copy を行わず、元の aggregate を直接引き継ぎます。
+
 **共用体（union）:** 構文 AST の `UnionDecl` は case ごとに 0／1 個の payload 型を持ち、`of` は
 case 宣言の中だけの文脈キーワードです。union 名はクラス・レコードと同じ型の名前空間、case 名は
 同じモジュールの型名・関数名・active pattern と衝突しない値の名前空間に入り、衝突は宣言順によらず `E1001` です。
@@ -349,7 +465,7 @@ payload の move は union の部分 move で、移動元の payload 領域を 0
 
 保守的なレイアウト（`Layouts::union` と `llvm_frame::stack_size` で共有）は payload なしで 8 バイト、
 それ以外は 16 バイトと最大の payload を 16 バイト境界に切り上げた値の和で、64 KiB 上限と再帰の検出（`E1010`）を
-具体化ごとに行います。再帰的な union は A04 まで `E1010` です。
+具体化ごとに行います。再帰する union は以下の所有ノード表現を使います。
 LLVM の表現は `UnionLayout` で決めます。全 case に payload がなければ `i32`（`Enum`）、
 全 payload が同じ LLVM 型なら `{ i32, T }`（`Common`）、それ以外は `{ i32, [K x i128] }`（`General`）です。
 K は 64-bit ターゲットの正確な格納サイズ（i128 を 16 バイト整列、wasm32 以上）の最大値を 16 で切り上げた数で、
@@ -358,6 +474,23 @@ payload は領域への GEP と payload 型での load／store で読み書き�
 `named_instances` の閉包で具体インスタンスだけを決定的な順序で一回ずつ定義します。
 解放・複製は tag の `switch` で所有値を持つ case の payload だけを処理し、非活性の payload を読んだり解放したりしません。
 `Construct` はフレーム経路の対象外で、union の値は `new` なしのリテラルのフレーム領域を持ちません。
+
+`recursive::analyze` は具体的な record/union と、tuple・array・list・Vec の格納辺を調べます。
+function/task/reference は格納グラフの境界です。同一の具体型へ戻る循環とSCCを分類し、
+有限値の固定点、union を通らない循環、型引数の成長・変更を検査します。
+結果は宣言ごとの型引数キャッシュに保持し、元の宣言・`Type`・canonical name を書き換えません。
+レコードは inline のまま、再帰SCC内の union のみ `ptr` に下げます。最初のnullary caseはnullです。
+ノードは `{ next, drop_action, clone_action, tag, payload }` で、タグとpayloadは別のGEPで参照します。
+構築子の直接適用と関数値は同じ `construct_value` を使い、payload 評価後に一回確保します。
+部分 move は子の所有スロットをゼロ化し、親ノードは残ったpayloadとともに一度だけ解放します。
+
+`runtime/recursive.ll` は共通の反復ループ、`llvm_recursive` は具体型ごとのstepを生成します。
+drop は解放予定ノードの `next` を待ちリストに使い、子を登録してから親をfreeするため追加確保しません。
+clone は複製先ノードを待ちリストに使い、一時的にstepとsourceをヘッダーへ保存し、
+payloadを埋めた後で通常のdrop/cloneヘッダーへ戻します。別のwork itemは確保しません。
+動的コレクションはその場で走査し、再帰する子は同じ待ちリストへ登録します。
+LLVM-only helperは到達した関数の要求分だけ生成し、公開ABIや利用者の関数・警告・テストrootへ追加しません。
+100万ノードのnative解放、WASMの上限内の深い複製と16 MiB超過トラップを検証します。
 
 match は `llvm_control::SwitchPlan` が、ガードのない全節の条件が単一の tag（整数・bool・unit の場合は値）の
 定数比較で、束縛が同じ射影の経路を持つ場合に限り、対象の領域から tag を一度だけ load する `switch i32` にします。
@@ -467,6 +600,12 @@ float は十進係数・指数を正確な有理数として既存 `pack` に渡
 標準 Option の Some／None の tag と共通 payload 領域を組み立てます。
 表示用の一時バッファは entry alloca の 128 バイトで、ASCII の結果を `tz.string.from_ascii` で UTF-16 の所有値にします。
 
+**文字型:** `Type::Char` は全ビットパターンが有効な LLVM `i16`、`Type::Utf8Char` は検査済み Unicode スカラーの `i32` です。
+ソースの別々の literal variant を型検査後は既存の整数定数ノードで保持し、型で区別します。
+比較は符号なし、match はそれぞれ `switch i16`／`switch i32` に下げます。整数 cast と公開 ABI は許可しません。
+`runtime/character.ll` は Display/Parse と最大4バイトの UTF-8 出力を共有し、char のサロゲート出力だけを拒否します。
+必要時だけ既存の console/string runtime と連結し、WASM import は増やしません。
+
 **文字列:** `Type::String` と `Type::Utf8String` は別の非 Copy 型です。
 構文・型付き IR の `StringLiteral::Utf16(Vec<u16>)` は Rust の String を経由せず孤立サロゲートを保持し、
 `StringLiteral::Utf8(String)` は従来の妥当な UTF-8 を保持します。match の定数キーも符号単位を失わず比較します。
@@ -478,6 +617,11 @@ UTF-16 の定数は `[N x i16]` として出力し、ホストの endian に依�
 UTF-16 の確保は長さが 2^53 - 1 以下であることを検査してから2倍し、連結にも上限検査を適用します。
 索引・複製・連結は型ごとの直接の LLVM 操作で、符号化を実行時に判別する汎用 dispatch はありません。
 string の大小比較は符号なし i16 の辞書順で、暗黙の Unicode 正規化はありません。
+utf8string は符号なし i8 の辞書順です。モジュールの compare と比較演算子は同じ型別 helper を使います。
+検索・構築・切り出しは通常の std ソースと Vec の単相化を使い、必要な容量を先に確保します。
+`llvm_bulk.rs` の型付き builtin が string/i16u 配列、utf8string/ubyte 配列の所有 descriptor を移送します。
+UTF-8 検証は既存 decoder の失敗を値で返す内部版を共有し、from_bytes は解放して None、厳密な復号はトラップします。
+未使用の std 関数は型検査だけを行い、利用者側から呼ばれた関数だけを特殊化するため、未使用 std は特殊化上限を消費しません。
 UTF-8 への変換・コンソール出力は孤立サロゲートでトラップし、置換は `String.to_well_formed` だけが行います。
 所有権・フレームからのヒープ移送・捕捉の複製・drop は両型に同じ規則を適用します。
 
@@ -498,11 +642,17 @@ callback の C 境界は `(void *context, uint64_t index)` のみで、集約値
 全 callback が完了してから入力の配列領域を解放し、初期化済みの結果配列を返します。
 グループの context を含め、反復で使う alloca は関数 entry に置きます。
 
-ネイティブランタイムはグループごとの atomic index と、ランタイム共有の atomic なスレッド枠を持ちます。
-呼び出し元も実行し、追加スレッドを `min(sysconf(_SC_NPROCESSORS_ONLN), 32) - 1` 以下に制限します。
-CPU 数が取得できなければ追加スレッドなし、枠のない入れ子も呼び出し元で進めます。
-枠は join 後に返すため、完了して未回収の OS スレッドも数えます。detach・常駐 pool・待ちキューはありません。
-pthread の失敗は stderr の診断と abort で明示し、成功形の結果を返しません。
+ネイティブランタイムは pthread_once により `min(sysconf(_SC_NPROCESSORS_ONLN), 32) - 1` 本の常駐 worker を遅延起動します。
+CPU 数取得失敗時は追加 worker なしです。0件・1件はプール起動なしで呼び出し元が処理します。
+mutex が FIFO の active group list と next index の割当を保護し、callback 中には保持しません。caller は自分のグループを進めます。
+remaining は callback の結果 store 後に acq-rel RMW で減らし、caller が acquire で0を確認してから mutex 下で group を外します。
+最終 decrement 後の worker は group を読まず、共有の完了条件変数だけを通知するため、stack group の寿命を超えてアクセスしません。
+Parallel の完全適用は専用 `TypedExprKind::Parallel` とし、通常の Call へ消去する前に callback と結果の所有環境を検査します。
+借用結果の検査は curried callback の1引数／2引数適用段階を区別します。mapper-first API は入力型を先に推論しますが、実行時の引数順は変えません。
+`llvm_parallel.rs` は4096要素目標・最大1024チャンクの分割式と `void(ptr, i64)` callback を生成し、Task 配列を作らず同じ runtime を呼びます。
+証明済みの非消費 callback は既存の特殊化を直接呼び、その他はチャンクごとの保持 snapshot と full application ごとの clone を使います。
+入力・identity は必要箇所で `clone_value` を使い、結果領域は worker 起動前に確保します。reduce の最終結合はチャンク index 順です。
+idle worker は条件変数で待ち、atexit shutdown が停止・wake・join を行います。pthread・同期・atexit の失敗は stderr と abort で明示します。
 WASM は同じ callback を添字順に呼び、ホストのスレッド機能を要求しません。
 独立した仕事の実行順は未規定ですが、各仕事の内部の評価順序と結果配列の順序は保持します。
 
@@ -510,6 +660,8 @@ WASM は同じ callback を添字順に呼び、ホストのスレッド機能�
 driver は必要なときだけ同梱 C をコンパイルし、実行ファイルには `-pthread` 付きでリンク、
 オブジェクトには relocatable link で組み込みます。ランタイム入口は weak/hidden で、
 複数の生成オブジェクトを同時リンクしても一つに統合します。
+macOS の relocatable link は `-keep_private_externs` を使い、中間リンクで weak/hidden 入口が局所化されるのを防ぎます。
+単一シンボルと、二 object の同時実行で合計 worker 数が上限内であることをテストします。
 生のネイティブ LLVM IR を直接リンクする利用者は `src/runtime/task.c` と `-pthread` を追加します。
 LLVM IR／ヘッダーの出力と Cargo ビルドには、引き続き LLVM・pthread ヘッダーを要求しません。
 
@@ -530,7 +682,7 @@ LLVM IR／ヘッダーの出力と Cargo ビルドには、引き続き LLVM・p
 配列の Copy と捕捉環境の複製ではバッファを独立に複製し、要素の clone／drop も反復します。
 要素型がスカラーでもバッファの解放が必要なため、すべての配列で `needs_drop` は true です。
 長さの取得・索引・借用だけで配列全体を複製せず、要素取得に必要な複製と一時所有値の解放だけを行います。
-単相化・型クラスのインスタンス選択に配列長は関与しません。再帰的なヒープ型は引き続き拒否します。
+単相化・型クラスのインスタンス選択に配列長は関与しません。再帰 union の要素は上記の反復走査へ登録します。
 
 **連結リスト:** `Type::List` は `[|T|]` に対応し、LLVM では `%tz.list = { ptr, i64 }`
 （先頭・長さ）と `{ ptr, T }`（次のノード・要素）に下げます。
@@ -616,9 +768,13 @@ memory.grow の失敗・16 MiB 上限超過ではトラップし、成功した�
 
 **ホスト:** Tsuzuri 関数には外部関数をインポートしません。
 コンソールの putchar は生成したエントリー・ラッパーだけが持ちます。数値の printf 依存はありません。
-公開 ABI は 64-bit 以下の整数／f32／f64／正規化した bool／void に限定します。
-8／16-bit 整数のホスト ABI は 32-bit に正規化します。128-bit 値、ソフトウェア浮動小数点、
-文字列・参照の所有権やホスト依存レイアウトを公開しません。
+公開 ABI は従来の scalar に加え、借用 i64/f64/ubyte 配列と両文字列型の入力、所有バッファ結果、scalar-only record を扱います。
+`abi.rs` が型・方向・record field 名を共通分類し、`llvm_abi.rs` が header と wrapper を生成します。
+buffer 入力は pointer/length から直接 descriptor を構築し、shared array は SSA 値、文字列は stack descriptor の参照を渡します。
+string は i16 のコード単位、utf8string は i8 のバイトです。UTF-8 検証は既存の失敗を値で返す decoder を使い、入力を確保・変換しません。
+record は専用 ABI struct と内部型の間で再帰的に変換し、bool/狭い整数は32-bit。結果は out pointer に書き、buffer の所有権だけをホストへ渡します。
+allocator は拡張 ABI 使用時だけ weak な tsuzuri_alloc/free を公開し、native の malloc/free または既存 WASM heap を使います。
+128-bit 値、ソフトウェア浮動小数点、任意の所有入力、借用返却、関数環境の ABI は公開しません。
 GUI、入力、永続化、非同期 I/O／イベントループはホストの境界で扱います。
 
 **出力:** 入力全体の検査後、出力先と同じファイルシステムの専用ディレクトリでビルドします。
@@ -642,6 +798,7 @@ node tests/tasks.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
+node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
@@ -701,6 +858,22 @@ WASM では累積の確保量がメモリ上限を超える反復を実行し、
 
 数値ランタイムの変更時は `src/runtime/numeric.c` を編集し、
 `python3 src/runtime/generate.py` で `numeric.ll` を再生成します。
+続けて`python3 src/runtime/generate_math.py`でmath.llも再生成し、metadata／attribute IDをnumeric.llの最大値より後へ割り当てます。
+Mathを使う場合だけnumeric.llの後にmath.llを連結し、重複するLLVM intrinsic宣言を除きます。
+trap／ループ用の生成metadataは両ランタイムの最大IDより後へ予約します。
+math生成器は必要なmusl 1.2.5ソースを個別にコンパイルし、llvm-linkで結合します。
+検証済み環境はApple Clang 21とllvm-link 21です。`TSUZURI_CLANG`／`TSUZURI_LLVM_LINK`で指定します。
+保存前に同じClangでIRをコンパイル検証し、未解決外部関数・FMA・fast-math・拡張精度を拒否します。
+Cargoビルド時のClang／llvm-link依存は追加しません。upstreamのライセンスと取得元hashはruntime/muslに同梱します。
+
+Floatのsqrt／丸めはf32/f64で型付きintrinsic・明示演算、他の形式では既存の整数数値ランタイムを使います。
+soft sqrtは目的の量子指数を求め、整数二乗比較で係数を探索し、二つの丸め候補の中点の二乗と比較して一度だけ丸めます。
+decimalからbinaryへの変換は行いません。min/maxはNaN伝播と符号付き0、clampは順序検査を保ちます。
+Elementaryはf32/f64だけです。muslの通常f64 atan2が1 ulpを超えたため、有限の通常比はdouble-double範囲縮小とdegree31級数へ置き換えました。
+|reduced|は1/8以下、係数は256-bitからhigh/lowに分け、特殊値と極端な比はupstream処理を維持します。
+速度向上の主張はしません。`tests/math.mjs`はBigInt参照の基本演算745486件と256-bit mpmath参照の超越関数26376件をnative/WASM O0/O3で照合します。
+f16の単項基本演算は全65536パターン、広幅形式は各1000乱数を含み、非NaNのbit一致と実行時heap非確保も検査します。
+
 生成時だけ Clang を使い、通常の Cargo ビルド・型検査・LLVM IR 出力には LLVM のインストールを要求しません。
 生成器はホストの target triple／データレイアウト／CPU 属性と新しい IR 限定の属性を除き、
 対応する little-endian ネイティブ／wasm32 で同じ整数アルゴリズムを使います。

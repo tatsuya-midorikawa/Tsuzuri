@@ -1,0 +1,5 @@
+def print :: Display<'a> => ref 'a -> unit
+fn print value = Debug.__print_string (Display.display value)
+
+def trace :: Display<'a> => 'a -> 'a
+fn trace value = { Debug.print (ref value); value }

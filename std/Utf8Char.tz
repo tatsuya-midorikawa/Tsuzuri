@@ -1,0 +1,17 @@
+def is_ascii_digit :: utf8char -> bool
+fn is_ascii_digit value = value >= u8'0' && value <= u8'9'
+
+def is_ascii_lower :: utf8char -> bool
+fn is_ascii_lower value = value >= u8'a' && value <= u8'z'
+
+def is_ascii_upper :: utf8char -> bool
+fn is_ascii_upper value = value >= u8'A' && value <= u8'Z'
+
+def is_ascii_alphabetic :: utf8char -> bool
+fn is_ascii_alphabetic value = is_ascii_lower value || is_ascii_upper value
+
+def to_ascii_upper :: utf8char -> utf8char
+fn to_ascii_upper value = if is_ascii_lower value then Utf8Char.of_u32_unchecked (Utf8Char.to_u32 value - 32i32u) else value
+
+def to_ascii_lower :: utf8char -> utf8char
+fn to_ascii_lower value = if is_ascii_upper value then Utf8Char.of_u32_unchecked (Utf8Char.to_u32 value + 32i32u) else value
