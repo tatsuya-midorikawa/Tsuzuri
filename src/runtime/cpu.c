@@ -1,3 +1,6 @@
+#if defined(_WIN32)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -12,7 +15,11 @@
 #define TZ_CPU_X86 0
 #endif
 
+#if defined(_WIN32)
+#define TZ_CPU_API
+#else
 #define TZ_CPU_API __attribute__((weak, visibility("hidden")))
+#endif
 
 static uint64_t tz_cpu_decode(unsigned features, unsigned extended, uint64_t xcr0) {
     uint64_t result = (features & (1u << 20)) ? 1 : 0;

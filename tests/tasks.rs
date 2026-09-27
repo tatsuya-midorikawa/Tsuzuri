@@ -15,6 +15,37 @@ fn rejects(source: &str, code: &str) {
 }
 
 #[test]
+fn task_parallel_results_typechecks() {
+    for source in [
+        "let jobs: [Task<Result<i64, string>>] = [task { Result.Ok 20 }, task { Result.Ok 22 }]\nlet result = Task.run (Task.parallel_results jobs)\nmatch result with | Result.Ok values -> values[0] + values[1] | Result.Error _ -> -1",
+        "def make :: 'a -> Task<Result<'a, string>>\nfn make value = task { Result.Ok value }\nlet run: [Task<Result<i64, string>>] -> Task<Result<[i64], string>> = Task.parallel_results\nlet result = Task.run (run [make 42])\nmatch result with | Result.Ok values -> values[0] | Result.Error _ -> -1",
+    ] {
+        accepts(source);
+    }
+    rejects("Task.parallel_results [task { 1 }]", "E1003");
+    rejects(
+        "let work: Task<Result<i64, string>> = task { Result.Ok 1 }\nTask.parallel_results [work, work]",
+        "E1012",
+    );
+    rejects(
+        "Task.parallel_results [task { Result.Error \"a\" }, task { Result.Error 1 }]",
+        "E1003",
+    );
+    let ir = accepts(
+        "let jobs: [Task<Result<i64, string>>] = []\nTask.run (Task.parallel_results jobs)",
+    );
+    assert_eq!(
+        ir.matches("declare i64 @tsuzuri_task_parallel_results(")
+            .count(),
+        1
+    );
+    rejects(
+        "let value = 42\nTask.parallel_results [task { Result.Ok (&value) }]",
+        "E1013",
+    );
+}
+
+#[test]
 fn composes_tasks_with_bind_return_and_return_from() {
     accepts(
         "def value :: i64 -> Task<i64>

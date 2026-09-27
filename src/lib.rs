@@ -1,14 +1,17 @@
 pub mod abi;
+pub mod cache;
 pub mod check;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;
 pub mod formatter;
+pub mod gpu;
 pub mod lexer;
 pub mod llvm;
 pub mod lsp;
 pub mod numeric;
 pub mod ownership;
+pub mod package;
 pub mod parser;
 pub mod simd;
 pub mod stdlib;

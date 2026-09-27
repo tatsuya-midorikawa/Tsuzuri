@@ -426,7 +426,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
         ),
         (
             "union Maybe<'a> = None | Some of 'a\ndef f :: Maybe -> i64\nfn f u = 0",
-            "E1004",
+            "E1015",
             "expects 1 type argument, found 0",
         ),
         ("let x = Missing 1\n0", "E1002", "unknown value 'Missing'"),

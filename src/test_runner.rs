@@ -193,12 +193,14 @@ fn build_runner(
     let mut text = llvm::emit_test_runner(module, selected, wasm)?;
     if wasm {
         text.push_str(include_str!("runtime/wasm.ll"));
+    } else if cfg!(windows) {
+        text = llvm::windows_abi(text, module);
     }
     let task_runtime = !wasm && text.contains("declare void @tsuzuri_task_parallel(");
-    if task_runtime && !cfg!(unix) {
+    if task_runtime && !cfg!(any(unix, windows)) {
         return Err(driver_error(
             "E2002",
-            "native parallel tasks require POSIX pthreads",
+            "native parallel tasks require POSIX or Windows threads",
         ));
     }
     let ir = directory.join("tests.ll");
@@ -223,6 +225,7 @@ fn build_runner(
             .arg(&object);
     } else {
         let main = directory.join("main.c");
+        clang.args(native_compile_args(cfg!(windows)));
         fs::write(&main, include_str!("runtime/test-runner.c"))
             .map_err(|error| io_error("write test entry", &main, error))?;
         clang
@@ -237,7 +240,14 @@ fn build_runner(
             let runtime = directory.join("task.c");
             fs::write(&runtime, include_str!("runtime/task.c"))
                 .map_err(|error| io_error("write task runtime", &runtime, error))?;
-            clang.arg(&runtime).arg("-pthread");
+            clang.arg(&runtime);
+            if cfg!(windows) {
+                let header = directory.join("task-windows.h");
+                fs::write(&header, include_str!("runtime/task-windows.h"))
+                    .map_err(|error| io_error("write Win32 task adapter", &header, error))?;
+            } else {
+                clang.arg("-pthread");
+            }
         }
     }
     collect_message(

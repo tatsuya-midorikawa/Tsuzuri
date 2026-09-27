@@ -282,7 +282,7 @@ fn lower_expression(
                 };
                 let kind = match builtin {
                     Builtin::TaskRun => TaskRun(Box::new(local_value(&parameters[0]))),
-                    Builtin::TaskParallel => {
+                    Builtin::TaskParallel | Builtin::TaskParallelResults => {
                         let Type::Task(result) = &signature.result else {
                             unreachable!()
                         };
@@ -290,7 +290,11 @@ fn lower_expression(
                             parameters: Vec::new(),
                             captures: vec![parameters[0].clone()],
                             body: Box::new(TypedExpr {
-                                kind: TaskParallel(Box::new(local_value(&parameters[0]))),
+                                kind: if builtin == Builtin::TaskParallelResults {
+                                    TaskParallelResults(Box::new(local_value(&parameters[0])))
+                                } else {
+                                    TaskParallel(Box::new(local_value(&parameters[0])))
+                                },
                                 ty: (**result).clone(),
                                 span: expression.span,
                             }),
@@ -306,7 +310,10 @@ fn lower_expression(
                     ty: signature.result.clone(),
                     span: expression.span,
                 };
-                if builtin == Builtin::TaskParallel {
+                if matches!(
+                    builtin,
+                    Builtin::TaskParallel | Builtin::TaskParallelResults
+                ) {
                     lower_expression(&mut body, functions, unions, generated, origin)?;
                 }
                 let id = functions.len();

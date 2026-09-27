@@ -98,6 +98,7 @@ fn collect_locals<'a>(
         | Closure(..)
         | TaskRun(_)
         | TaskParallel(_)
+        | TaskParallelResults(_)
         | If { .. }
         | While { .. }
         | Record(_)

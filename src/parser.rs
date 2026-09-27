@@ -295,11 +295,11 @@ impl Parser<'_> {
             } else if self.eat(&TokenKind::Class) {
                 let superclasses = self.constraints()?;
                 let name = self.ident()?;
-                let mut parameters = self.type_parameters()?;
+                let mut parameters = self.angle_list(Self::class_parameter)?;
                 if parameters.len() != 1 {
                     return Err(self.error("a type class requires exactly one type parameter, as in class C<'a>"));
                 }
-                let variable = parameters.remove(0);
+                let (variable, kind) = parameters.remove(0);
                 self.expect(&TokenKind::LeftBrace, "'{' after the class parameter")?;
                 let mut methods = Vec::new();
                 let mut defaults = Vec::new();
@@ -324,6 +324,7 @@ impl Parser<'_> {
                     doc,
                     name,
                     variable,
+                    kind,
                     superclasses,
                     methods,
                     defaults,
@@ -829,6 +830,49 @@ impl Parser<'_> {
         })
     }
 
+    fn class_parameter(&mut self) -> Result<(Ident, Kind), Diagnostic> {
+        let variable = self.type_variable()?;
+        let kind = if self.eat(&TokenKind::Colon) {
+            self.kind_expression()?
+        } else {
+            Kind::Type
+        };
+        Ok((variable, kind))
+    }
+
+    fn kind_expression(&mut self) -> Result<Kind, Diagnostic> {
+        self.enter()?;
+        let left = if self.eat(&TokenKind::Star) {
+            Kind::Type
+        } else if self.eat(&TokenKind::LeftParen) {
+            let kind = self.kind_expression()?;
+            self.expect(&TokenKind::RightParen, "')' after kind")?;
+            kind
+        } else {
+            return Err(self.error("expected '*' or a parenthesized kind"));
+        };
+        let result = if self.eat(&TokenKind::Arrow) {
+            Kind::Arrow(Box::new(left), Box::new(self.kind_expression()?))
+        } else {
+            left
+        };
+        self.nesting -= 1;
+        Ok(result)
+    }
+
+    fn variable_type(&mut self) -> Result<TypeExprKind, Diagnostic> {
+        let mut variable = self.type_variable()?;
+        if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
+            variable.text.insert(0, '\'');
+            Ok(TypeExprKind::Apply(
+                Box::new(variable),
+                self.angle_list(Self::type_expr)?.into_boxed_slice(),
+            ))
+        } else {
+            Ok(TypeExprKind::Variable(variable.text))
+        }
+    }
+
     fn type_parameters(&mut self) -> Result<Vec<Ident>, Diagnostic> {
         if self.at(&TokenKind::Less) {
             self.angle_list(Self::type_variable)
@@ -1192,7 +1236,7 @@ impl Parser<'_> {
                 false,
             )
         } else if self.at(&TokenKind::TypeVariable(String::new())) {
-            TypeExprKind::Variable(self.type_variable()?.text)
+            self.variable_type()?
         } else if self.eat(&TokenKind::LeftParen) {
             let ty = self.type_expr()?;
             self.expect(&TokenKind::RightParen, "')' after the type")?;
@@ -1232,7 +1276,7 @@ impl Parser<'_> {
             }
         } else {
             let name = self.qualified_ident()?;
-            if name.text == "Task" {
+            if name.text == "Task" && self.at(&TokenKind::Less) {
                 TypeExprKind::Task(Box::new(self.single_type_argument()?))
             } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
                 TypeExprKind::Apply(

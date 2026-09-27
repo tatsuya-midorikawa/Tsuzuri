@@ -1,11 +1,15 @@
 #include <assert.h>
 #include <errno.h>
+#if defined(_WIN32)
+#include "../src/runtime/task-windows.h"
+#else
 #include <pthread.h>
+#include <unistd.h>
+#endif
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 static long processors = 4;
 static atomic_uint created, joined, outstanding, peak;
@@ -138,6 +142,30 @@ static void check_hits(unsigned expected) {
     assert(tz_task_pool.groups == NULL && tz_task_pool.tail == NULL);
 }
 
+static uint32_t result_visit(void *context, uint64_t index) {
+    visit(context, index);
+    return 0;
+}
+
+static uint32_t result_failure(void *context, uint64_t index) {
+    visit(context, index);
+    if (required > 1 && index == 2) {
+        tz_task_lock();
+        while (tz_task_pool.groups->failure == UINT64_MAX)
+            tz_task_wait(&tz_task_pool.work_available);
+        tz_task_unlock();
+    }
+    if (index == 7) {
+        return 1;
+    }
+    return index == 2;
+}
+
+static uint32_t result_stop(void *context, uint64_t index) {
+    visit(context, index);
+    return index == 3;
+}
+
 int main(int argc, char **argv) {
     worker_condition = &tz_task_pool.work_available;
     if (argc == 2 && (argv[1][0] < '0' || argv[1][0] > '9') && argv[1][0] != '-') {
@@ -189,6 +217,17 @@ int main(int argc, char **argv) {
         assert(pthread_mutex_unlock(&observation) == 0);
         assert(atomic_load(&broadcasts) > 0);
     }
+    reset_hits();
+    assert(tsuzuri_task_parallel_results(result_visit, hits, ITEMS) == UINT64_MAX);
+    check_hits(1);
+    reset_hits();
+    assert(tsuzuri_task_parallel_results(result_stop, hits, ITEMS) == 3);
+    for (unsigned index = 0; index <= 3; ++index) assert(atomic_load(&hits[index]) == 1);
+    if (required == 1) for (unsigned index = 4; index < ITEMS; ++index) assert(atomic_load(&hits[index]) == 0);
+    reset_hits();
+    assert(tsuzuri_task_parallel_results(result_failure, hits, ITEMS) == 2);
+    assert(atomic_load(&hits[2]) == 1);
+    assert(tsuzuri_task_parallel_results(NULL, NULL, 0) == UINT64_MAX);
     tz_task_shutdown();
     tz_task_shutdown();
     assert(atomic_load(&created) == atomic_load(&joined));

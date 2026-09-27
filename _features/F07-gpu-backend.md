@@ -6,7 +6,7 @@
 | 規模 | XL |
 | 依存 | F02, E05, B01（`Gpu.request` が `Result` を返すため） |
 | 後続 | なし |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Gpu.tz`（新規）, `src/gpu.rs`（新規）, `src/check.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/driver.rs`, `src/main.rs`, `src/runtime/gpu-*`（新規候補）, `tests/gpu.rs`（新規）, `tests/gpu.mjs`（新規）, `benchmarks/run-gpu.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md` |
 
 ## 目的
@@ -219,16 +219,16 @@
 
 ## 受け入れ条件
 
-- [ ] `Gpu` は標準モジュールとして予約される。
-- [ ] `Gpu.init/map` の Phase 1 subset が明確に検査される。
-- [ ] CPU reference path がある。
-- [ ] WGSL output が deterministic。
-- [ ] GPU unavailable は明示 error。
-- [ ] 自動 CPU fallback は explicit request では行わない。
-- [ ] float contraction / fast-math を使わない。
-- [ ] GPU なし CI で subset / WGSL / CPU reference を検査できる。
-- [ ] benchmarks は transfer / dispatch / synchronization / startup を含めて記録する。
-- [ ] docs が実装済みと計画を分けている。
+- [x] `Gpu` は標準モジュールとして予約される。
+- [x] `Gpu.init/map` の Phase 1 subset が明確に検査される。
+- [x] CPU reference path がある。
+- [x] WGSL output が deterministic。
+- [x] GPU unavailable は明示 error。
+- [x] 自動 CPU fallback は explicit request では行わない。
+- [x] float contraction / fast-math を使わない。
+- [x] GPU なし CI で subset / WGSL / CPU reference を検査できる。
+- [x] benchmarks は transfer / dispatch / synchronization / startup を含めて記録する。
+- [x] docs が実装済みと計画を分けている。
 
 ## 落とし穴
 
@@ -258,3 +258,12 @@
 - compiler が sidecar GPU IR を出す CLI を追加するか。
   - 既定案: go/no-go 後に別チケット化する。
 - 反映済み: `Gpu.request` の利用不可は D-10 に従い `Result` で返すため、B01 を正式な依存に追加した。
+
+## 実装結果（2026-09-28）
+
+- Phase 1の型付きkernel抽出・既存LLVMによるCPU参照・WGSL生成を実装。opaque non-Copy Device/Buffer、直接適用とcaptureなしcallbackの検査を追加した。
+- GUIDE D-29に従いWGSLはstrict i32/i32uに限定。公式WGSL仕様は64-bit scalarを持たずfloatのfusion/reassociation/subnormal差を許すため、strict float/64-bit/div/remはshaderで拒否する。CPUの元契約は維持する。
+- 通常言語runtimeは明示CpuReferenceだけに成功し、GPU要求はResult.Error Unavailable。実GPUは別のWebGPU host試作で実行し、暗黙fallback・通常runtimeとの自動接続はしない。
+- --emit wgslで単一exportを公開する。Node hostのdevice常駐buffer・init/map/readback・一回消費・error scope・資源上限を実装。examples/gpu/run.mjsを実行検証した。
+- Dawn 0.6.1/Metal実adapterで783整数参照、0/1/255/256/257件境界、resident chainが一致。native/WASM O0/O3、float CPU境界、heap回収、未対応型の出力保護が成功。
+- fmt/clippy、全Rustテスト、CPU-only benchmark quickが成功。測定試作はstartup/compile/transfer/dispatch/syncを分け、速度優位は主張しない。

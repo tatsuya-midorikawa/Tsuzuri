@@ -1,10 +1,16 @@
+#if defined(_WIN32)
+#include "task-windows.h"
+#define TZ_TASK_API
+#else
 #include <pthread.h>
+#include <unistd.h>
+#define TZ_TASK_API __attribute__((weak, visibility("hidden")))
+#endif
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #ifndef TZ_TASK_SYSCONF
 #define TZ_TASK_SYSCONF sysconf
@@ -40,10 +46,12 @@ static atomic_uint tz_task_limit;
 
 struct tz_task_group {
     void (*run)(void *, uint64_t);
+    uint32_t (*run_result)(void *, uint64_t);
     void *context;
     uint64_t length;
     uint64_t next;
     _Atomic uint64_t remaining;
+    uint64_t failure;
     struct tz_task_group *next_group;
 };
 
@@ -101,12 +109,28 @@ static void tz_task_wake(pthread_cond_t *condition) {
 }
 
 static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
-    group->run(group->context, index);
-    if (atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_acq_rel) == 1) {
-        tz_task_lock();
-        tz_task_wake(&tz_task_pool.work_done);
-        tz_task_unlock();
+    if (!group->run_result) {
+        group->run(group->context, index);
+        if (atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_acq_rel) == 1) {
+            tz_task_lock();
+            tz_task_wake(&tz_task_pool.work_done);
+            tz_task_unlock();
+        }
+        return;
     }
+    uint32_t failed = group->run_result(group->context, index);
+    tz_task_lock();
+    if (failed && index < group->failure) {
+        group->failure = index;
+        uint64_t skipped = group->next < group->length ? group->length - group->next : 0;
+        group->length = index;
+        atomic_fetch_sub_explicit(&group->remaining, skipped, memory_order_relaxed);
+        tz_task_wake(&tz_task_pool.work_available);
+    }
+    if (atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_release) == 1) {
+        tz_task_wake(&tz_task_pool.work_done);
+    }
+    tz_task_unlock();
 }
 
 static void *tz_task_worker_main(void *pointer) {
@@ -114,7 +138,7 @@ static void *tz_task_worker_main(void *pointer) {
     tz_task_lock();
     while (!tz_task_pool.stopping) {
         struct tz_task_group *group = tz_task_pool.groups;
-        while (group && group->next == group->length) group = group->next_group;
+        while (group && group->next >= group->length) group = group->next_group;
         if (!group) {
             tz_task_wait(&tz_task_pool.work_available);
             continue;
@@ -152,16 +176,22 @@ static void tz_task_start_pool(void) {
     }
 }
 
-__attribute__((weak, visibility("hidden")))
-void tsuzuri_task_parallel(void (*run)(void *, uint64_t), void *context, uint64_t length) {
-    if (length == 0) return;
-    if (length == 1) { run(context, 0); return; }
+static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(void *, uint64_t), void *context, uint64_t length) {
+    if (length == 0) return UINT64_MAX;
+    if (length == 1) {
+        if (run_result) return run_result(context, 0) ? 0 : UINT64_MAX;
+        run(context, 0);
+        return UINT64_MAX;
+    }
     tz_task_check("pthread_once", TZ_TASK_ONCE(&tz_task_once, tz_task_start_pool));
     if (tz_task_parallelism() == 1) {
-        for (uint64_t index = 0; index < length; ++index) run(context, index);
-        return;
+        for (uint64_t index = 0; index < length; ++index) {
+            if (run_result) { if (run_result(context, index)) return index; }
+            else run(context, index);
+        }
+        return UINT64_MAX;
     }
-    struct tz_task_group group = { run, context, length, 0, length, NULL };
+    struct tz_task_group group = { run, run_result, context, length, 0, length, UINT64_MAX, NULL };
     tz_task_lock();
     if (tz_task_pool.stopping) tz_task_fail("submit after shutdown", EINVAL);
     if (tz_task_pool.tail) tz_task_pool.tail->next_group = &group;
@@ -184,4 +214,15 @@ void tsuzuri_task_parallel(void (*run)(void *, uint64_t), void *context, uint64_
     *link = group.next_group;
     if (tz_task_pool.tail == &group) tz_task_pool.tail = previous;
     tz_task_unlock();
+    return group.failure;
+}
+
+TZ_TASK_API
+void tsuzuri_task_parallel(void (*run)(void *, uint64_t), void *context, uint64_t length) {
+    (void)tz_task_submit(run, NULL, context, length);
+}
+
+TZ_TASK_API
+uint64_t tsuzuri_task_parallel_results(uint32_t (*run)(void *, uint64_t), void *context, uint64_t length) {
+    return tz_task_submit(NULL, run, context, length);
 }

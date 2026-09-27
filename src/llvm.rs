@@ -42,6 +42,75 @@ pub struct EmitOptions {
     pub debug_output: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportStyle {
+    Default,
+    Dllexport,
+}
+
+pub fn emit_with_export_style(
+    module: &CheckedModule,
+    options: EmitOptions,
+    style: ExportStyle,
+) -> Result<String, Diagnostic> {
+    if options.wasm && style == ExportStyle::Dllexport {
+        return Err(Diagnostic::new(
+            "E2000",
+            "dllexport requires a native target",
+            Span::default(),
+        ));
+    }
+    let ir = emit_with_options(module, options)?;
+    Ok(if style == ExportStyle::Dllexport {
+        windows_abi(ir, module)
+    } else {
+        ir
+    })
+}
+
+pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
+    let mut output = String::with_capacity(ir.len());
+    let exports: BTreeSet<_> = module
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .map(|function| format!("tz_{}", function.name))
+        .collect();
+    let has_write = ir.contains("declare i64 @write(i32, ptr, i64)");
+    let has_console = ir.contains("define internal i32 @tz.console.write(");
+    let mut console = false;
+    for line in ir.lines() {
+        if line == "declare i64 @write(i32, ptr, i64)" {
+            continue;
+        }
+        if line.starts_with("define ")
+            && line
+                .split_once('@')
+                .and_then(|(_, suffix)| suffix.split_once('('))
+                .is_some_and(|(name, _)| exports.contains(name))
+        {
+            let _ = writeln!(output, "define dllexport {}", &line[7..]);
+        } else {
+            let _ = writeln!(output, "{line}");
+        }
+        if line.starts_with("define internal i32 @tz.console.write(") {
+            console = true;
+        }
+        if console && line == "entry:" {
+            output.push_str("  %binary_mode = call i32 @_setmode(i32 1, i32 32768)\n");
+            console = false;
+        }
+    }
+    if has_console || has_write {
+        output.push_str("declare i32 @_setmode(i32, i32)\n");
+    }
+    if has_write {
+        output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
+    }
+    output.push_str(include_str!("runtime/wasm.ll"));
+    output
+}
+
 #[path = "llvm_bulk.rs"]
 mod bulk;
 #[path = "llvm_compare.rs"]
@@ -62,6 +131,8 @@ mod parallel;
 mod recursive;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_task.rs"]
+mod task;
 pub(crate) use host_abi::uses_host_abi;
 
 pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> {
@@ -141,6 +212,7 @@ pub fn emit_with_debug_info(
             traps: trap_info,
             debug: Some((sources, optimized)),
             cpu_dispatch: false,
+            wasm_threads: false,
         },
     )?;
     if let Some(marks) = marks {
@@ -180,10 +252,41 @@ pub fn emit_native_build(
             traps: trap_info,
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
+            wasm_threads: false,
         },
     )?;
     if let Some(marks) = marks {
         traps::instrument(ir, module, marks, sources, false)
+    } else {
+        Ok(EmitOutput {
+            ir,
+            trap_sites: Vec::new(),
+        })
+    }
+}
+
+pub(crate) fn emit_wasm_threads_build(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    let (ir, marks) = emit_program(
+        module,
+        options.entry,
+        true,
+        None,
+        options.debug_output,
+        Instrumentation {
+            traps: trap_info,
+            debug: debug.map(|optimized| (sources, optimized)),
+            cpu_dispatch: false,
+            wasm_threads: true,
+        },
+    )?;
+    if let Some(marks) = marks {
+        traps::instrument(ir, module, marks, sources, true)
     } else {
         Ok(EmitOutput {
             ir,
@@ -230,6 +333,7 @@ struct Instrumentation<'a> {
     traps: bool,
     debug: Option<(&'a [TrapSource<'a>], bool)>,
     cpu_dispatch: bool,
+    wasm_threads: bool,
 }
 
 fn emit_program(
@@ -277,12 +381,13 @@ fn emit_program(
                 .filter(|ty| matches!(ty, Type::Record(..)))
                 .cloned(),
         );
+    let mut record_definitions = String::new();
     for ty in record_types {
         let Type::Record(id, arguments) = &ty else {
             unreachable!("only record types are collected")
         };
         let _ = writeln!(
-            output,
+            record_definitions,
             "{} = type {{ {} }}",
             llvm_type(&ty, module),
             types
@@ -309,11 +414,14 @@ fn emit_program(
                 .filter(|ty| matches!(ty, Type::Union(..)))
                 .cloned(),
         );
+    let mut union_definitions = String::new();
     for ty in union_types {
         let Type::Union(id, arguments) = &ty else {
             unreachable!("only union types are collected")
         };
-        let layout = match union_layout(*id, arguments, module) {
+        let shape = union_layout(*id, arguments, module);
+        let is_enum = matches!(shape, UnionLayout::Enum);
+        let layout = match shape {
             UnionLayout::Enum => "i32".into(),
             UnionLayout::Common(payload) => format!("{{ i32, {} }}", llvm_type(&payload, module)),
             UnionLayout::General(count) => format!("{{ i32, [{count} x i128] }}"),
@@ -325,14 +433,21 @@ fn emit_program(
                 UnionLayout::General(count) => format!("[{count} x i128]"),
             };
             let _ = writeln!(
-                output,
+                union_definitions,
                 "{} = type {{ ptr, ptr, ptr, i32, {fields} }}",
                 recursive::node_type(&ty, module)
             );
         } else {
-            let _ = writeln!(output, "{} = type {layout}", llvm_type(&ty, module));
+            let destination = if is_enum {
+                &mut output
+            } else {
+                &mut union_definitions
+            };
+            let _ = writeln!(destination, "{} = type {layout}", llvm_type(&ty, module));
         }
     }
+    output.push_str(&record_definitions);
+    output.push_str(&union_definitions);
     output.push_str("\ndeclare void @llvm.trap()\n\n");
     let mut builtins = Builtins::new();
     let mut intrinsics = BTreeSet::new();
@@ -485,11 +600,13 @@ fn emit_program(
     if output.contains("@tsuzuri_cpu_sum_i64(") {
         output.push_str("declare i64 @tsuzuri_cpu_sum_i64(ptr, i64)\n");
     }
-    if output.contains("@tsuzuri_task_parallel(") {
-        output.push_str(if wasm {
+    if output.contains("@tsuzuri_task_parallel(")
+        || output.contains("@tsuzuri_task_parallel_results(")
+    {
+        output.push_str(if wasm && !instrumentation.wasm_threads {
             include_str!("runtime/task-wasm.ll")
         } else {
-            "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\n"
+            "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n"
         });
     }
     if output.contains("@tz.debug.write") {
@@ -529,6 +646,9 @@ fn emit_program(
     if output.contains("@tz.character.") {
         output.push_str(include_str!("runtime/character.ll"));
     }
+    if instrumentation.wasm_threads {
+        output.push_str(include_str!("runtime/heap-wasm-threads.ll"));
+    }
     if output.contains("@tz.string.")
         || output.contains("@tz.utf8string.")
         || output.contains("@tz.free")
@@ -537,21 +657,30 @@ fn emit_program(
     {
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
-        output.push_str(if wasm {
-            include_str!("runtime/heap-wasm.ll")
+        if instrumentation.wasm_threads {
+            output.push_str(
+                &include_str!("runtime/heap-wasm.ll")
+                    .replace("@tz.alloc(", "@tz.heap.alloc.unlocked(")
+                    .replace("@tz.free(", "@tz.heap.free.unlocked(")
+                    .replace("@tz.realloc(", "@tz.heap.realloc.unlocked("),
+            );
         } else {
-            include_str!("runtime/heap-native.ll")
-        });
+            output.push_str(if wasm {
+                include_str!("runtime/heap-wasm.ll")
+            } else {
+                include_str!("runtime/heap-native.ll")
+            });
+        }
     }
     Ok((output, globals.traps))
 }
 
 fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
     let check = |ty: &Type, span| {
-        if ty.contains_error() {
+        if ty.contains_error() || ty.contains_constructor() {
             Err(Diagnostic::new(
                 "E1015",
-                "internal compiler error: erroneous typed IR cannot be lowered",
+                "internal compiler error: erroneous or unsaturated typed IR cannot be lowered",
                 span,
             ))
         } else {
@@ -929,7 +1058,11 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
         Type::Reference(_, false) if ty.shared_array_element().is_some() => "%tz.array".into(),
         Type::Reference(..) => "ptr".into(),
-        Type::Error | Type::Variable(_) | Type::Infer(_) => {
+        Type::Error
+        | Type::Variable(_)
+        | Type::Infer(_)
+        | Type::Partial(_)
+        | Type::Application(..) => {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
     }
@@ -975,7 +1108,11 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         | Type::Utf8Char
         | Type::String
         | Type::Utf8String => ty.display(&module.types()),
-        Type::Error | Type::Variable(_) | Type::Infer(_) => {
+        Type::Error
+        | Type::Variable(_)
+        | Type::Infer(_)
+        | Type::Partial(_)
+        | Type::Application(..) => {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
     }
@@ -1043,7 +1180,11 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
             }
             UnionLayout::General(count) => (16 + 16 * count, 16),
         },
-        Type::Error | Type::Variable(_) | Type::Infer(_) => {
+        Type::Error
+        | Type::Variable(_)
+        | Type::Infer(_)
+        | Type::Partial(_)
+        | Type::Application(..) => {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
     }
@@ -2082,6 +2223,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 ))
             }
             TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
+            TypedExprKind::TaskParallelResults(tasks) => {
+                self.parallel_result_tasks(tasks, &expression.ty)
+            }
             TypedExprKind::If {
                 condition,
                 then_branch,

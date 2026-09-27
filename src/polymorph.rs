@@ -103,6 +103,14 @@ pub(super) fn is_unknown(ty: &Type) -> bool {
 
 fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
     match ty {
+        Type::Partial(partial) => Type::Partial(Box::new(Partial {
+            constructor: partial.constructor.clone(),
+            trailing: partial.trailing.iter().map(|ty| map_type(ty, f)).collect(),
+        })),
+        Type::Application(head, arguments) => higher_kinds::apply(
+            map_type(head, f),
+            arguments.iter().map(|ty| map_type(ty, f)).collect(),
+        ),
         Type::Array(element) => Type::Array(Box::new(map_type(element, f))),
         Type::List(element) => Type::List(Box::new(map_type(element, f))),
         Type::Vec(element) => Type::Vec(Box::new(map_type(element, f))),
@@ -143,6 +151,14 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
             return false;
         }
         match ty {
+            Type::Partial(partial) => partial
+                .trailing
+                .iter()
+                .all(|ty| visit(ty, depth + 1, count)),
+            Type::Application(head, arguments) => {
+                visit(head, depth + 1, count)
+                    && arguments.iter().all(|ty| visit(ty, depth + 1, count))
+            }
             Type::Array(ty)
             | Type::List(ty)
             | Type::Vec(ty)
@@ -212,6 +228,14 @@ impl Inference {
             }
         }
         match ty {
+            Type::Partial(partial) => Type::Partial(Box::new(Partial {
+                constructor: partial.constructor.clone(),
+                trailing: partial.trailing.iter().map(|ty| self.resolve(ty)).collect(),
+            })),
+            Type::Application(head, arguments) => higher_kinds::apply(
+                self.resolve(head),
+                arguments.iter().map(|ty| self.resolve(ty)).collect(),
+            ),
             Type::Array(element) => Type::Array(Box::new(self.resolve(element))),
             Type::List(element) => Type::List(Box::new(self.resolve(element))),
             Type::Vec(element) => Type::Vec(Box::new(self.resolve(element))),
@@ -249,6 +273,47 @@ impl Inference {
             return Ok(());
         }
         match (&actual, &expected) {
+            (Type::Partial(left), Type::Partial(right))
+                if left.constructor == right.constructor
+                    && left.trailing.len() == right.trailing.len() =>
+            {
+                for (left, right) in left.trailing.iter().zip(&right.trailing) {
+                    self.unify(left, right, types, span)?;
+                }
+                return Ok(());
+            }
+            (Type::Application(left, left_args), Type::Application(right, right_args))
+                if left_args.len() == right_args.len() =>
+            {
+                self.unify(left, right, types, span)?;
+                for (left, right) in left_args.iter().zip(right_args) {
+                    self.unify(left, right, types, span)?;
+                }
+                return Ok(());
+            }
+            (Type::Application(head, arguments), concrete)
+            | (concrete, Type::Application(head, arguments))
+                if !matches!(concrete, Type::Infer(_)) =>
+            {
+                if let Some((constructor, complete)) = higher_kinds::decompose(concrete)
+                    && complete.len() >= arguments.len()
+                {
+                    let partial = Type::Partial(Box::new(Partial {
+                        constructor,
+                        trailing: complete[arguments.len()..].into(),
+                    }));
+                    self.unify(head, &partial, types, span)?;
+                    for (argument, actual) in arguments.iter().zip(&complete) {
+                        self.unify(argument, actual, types, span)?;
+                    }
+                    return Ok(());
+                }
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "type constructor application has an incompatible kind",
+                    span,
+                ));
+            }
             (Type::Infer(id), ty) | (ty, Type::Infer(id)) => {
                 let mut occurs = false;
                 map_type(ty, &mut |ty| {
@@ -374,6 +439,7 @@ impl Method {
 struct Class {
     name: String,
     variable: String,
+    arity: usize,
     superclasses: Vec<Constraint>,
     methods: Vec<Method>,
     builtin: bool,
@@ -458,6 +524,7 @@ impl Classes {
             classes.declarations.push(Class {
                 name: name.into(),
                 variable: "a".into(),
+                arity: 0,
                 superclasses: Vec::new(),
                 methods: Vec::new(),
                 builtin: true,
@@ -629,6 +696,8 @@ impl Classes {
                     }
                     let mut methods = Vec::new();
                     let mut seen = BTreeSet::new();
+                    let arity = higher_kinds::arity(&declaration.kind, declaration.variable.span)?;
+                    let kinds = BTreeMap::from([(declaration.variable.text.clone(), arity)]);
                     for method in &declaration.methods {
                         if method.name.text == "_" || !seen.insert(&method.name.text) {
                             return Err(duplicate(&method.name));
@@ -657,13 +726,17 @@ impl Classes {
                             parameters: method
                                 .parameters
                                 .iter()
-                                .map(|ty| resolve_type(ty, module, names))
+                                .map(|ty| resolve_type_with_kinds(ty, module, names, &kinds))
                                 .collect::<Result<_, _>>()?,
-                            result: resolve_type(&method.result, module, names)?,
+                            result: resolve_type_with_kinds(&method.result, module, names, &kinds)?,
                         };
                         validate_size(&signature.as_type(), types, method.name.span)?;
                         bounded_type(&signature.as_type(), method.name.span)?;
-                        if variables(&signature.as_type()) != [declaration.variable.text.clone()] {
+                        let signature_variables = variables(&signature.as_type());
+                        if !signature_variables.contains(&declaration.variable.text)
+                            || (arity == 0
+                                && signature_variables != [declaration.variable.text.clone()])
+                        {
                             return Err(Diagnostic::new(
                                 "E1016",
                                 "each class method must mention exactly the declared class type variable",
@@ -687,6 +760,7 @@ impl Classes {
                     classes.declarations.push(Class {
                         name: qualified,
                         variable: declaration.variable.text.clone(),
+                        arity,
                         superclasses: Vec::new(),
                         methods,
                         builtin: false,
@@ -707,6 +781,9 @@ impl Classes {
                 let id = classes.names[&format!("{}.{}", input.name, declaration.name.text)];
                 let constraints =
                     classes.resolve_constraints(&declaration.superclasses, input.name, names)?;
+                if constraints.iter().any(|constraint| matches!(&constraint.ty, Type::Variable(name) if name == &declaration.variable.text) && classes.declarations[constraint.class].arity != classes.declarations[id].arity) {
+                    return Err(Diagnostic::new("E1015", "superclass parameter kind does not match the class parameter", declaration.variable.span));
+                }
                 if constraints.iter().any(|constraint| {
                     variables(&constraint.ty)
                         .iter()
@@ -723,6 +800,55 @@ impl Classes {
         }
         classes.validate_superclasses()?;
         Ok(classes)
+    }
+
+    pub(super) fn constraint_kinds(
+        &self,
+        expressions: &[ConstraintExpr],
+        module: &str,
+        names: &Names,
+    ) -> Result<BTreeMap<String, usize>, Diagnostic> {
+        let mut kinds = BTreeMap::new();
+        for expression in expressions {
+            if let (ConstraintName::Class(name), TypeExprKind::Variable(variable)) =
+                (&expression.name, &expression.ty.kind)
+            {
+                let class = self.resolve(names, module, name)?;
+                let arity = self.declarations[class].arity;
+                if kinds
+                    .insert(variable.clone(), arity)
+                    .is_some_and(|previous| previous != arity)
+                {
+                    return Err(Diagnostic::new(
+                        "E1015",
+                        "type variable is constrained at incompatible kinds",
+                        expression.ty.span,
+                    ));
+                }
+            }
+        }
+        Ok(kinds)
+    }
+
+    pub(super) fn constraint_type(
+        &self,
+        expression: &ConstraintExpr,
+        module: &str,
+        names: &Names,
+        kinds: &BTreeMap<String, usize>,
+    ) -> Result<Type, Diagnostic> {
+        if let ConstraintName::Class(name) = &expression.name {
+            let class = self.resolve(names, module, name)?;
+            if self.declarations[class].arity > 0 {
+                return higher_kinds::resolve_constructor(
+                    &expression.ty,
+                    self.declarations[class].arity,
+                    module,
+                    names,
+                );
+            }
+        }
+        resolve_type_with_kinds(&expression.ty, module, names, kinds)
     }
 
     fn resolve_constraints(
@@ -752,7 +878,12 @@ impl Classes {
                     error.code = "E1027";
                     error
                 })?;
-                let ty = resolve_type(&expression.ty, module, names)?;
+                let ty = higher_kinds::resolve_constructor(
+                    &expression.ty,
+                    self.declarations[class].arity,
+                    module,
+                    names,
+                )?;
                 bounded_type(&ty, expression.ty.span)?;
                 Ok(Constraint {
                     class,
@@ -884,6 +1015,7 @@ impl Classes {
                 if crate::numeric::primitive(&head.text).is_none() =>
             {
                 if head.text != "Vec"
+                    && !head.text.starts_with('\'')
                     && let TypeHead::Class = names.type_head(module, head)?
                 {
                     // `resolve_type` reports a class applied to zero or several types.
@@ -997,7 +1129,19 @@ impl Classes {
                 let collected = (|| {
                     let id = self.resolve(names, module, &instance.class)?;
                     let class = &self.declarations[id];
-                    let ty = resolve_type(&instance.ty, module, names)?;
+                    let ty = higher_kinds::resolve_constructor(
+                        &instance.ty,
+                        class.arity,
+                        module,
+                        names,
+                    )?;
+                    if class.arity > 0 && matches!(ty, Type::Variable(_)) {
+                        return Err(Diagnostic::new(
+                            "E1015",
+                            "higher-kinded instances require a named constructor head",
+                            instance.ty.span,
+                        ));
+                    }
                     bounded_type(&ty, instance.ty.span)?;
                     let type_parameters = variables(&ty);
                     let context = self.resolve_constraints(&instance.constraints, module, names)?;
@@ -1091,7 +1235,17 @@ impl Classes {
                         let signature = method.signature(instance.class.span)?;
                         let Some(definition) = methods.get(&method.name) else {
                             if let Some(function) = method.default {
-                                implementations.push((function, vec![ty.clone()]));
+                                let arguments = variables(&signature.as_type())
+                                    .into_iter()
+                                    .map(|variable| {
+                                        if variable == class.variable {
+                                            ty.clone()
+                                        } else {
+                                            Type::Variable(variable)
+                                        }
+                                    })
+                                    .collect();
+                                implementations.push((function, arguments));
                                 continue;
                             }
                             return Err(Diagnostic::new(
@@ -1101,10 +1255,29 @@ impl Classes {
                             ));
                         };
                         let function_id = functions.len();
+                        let renamed: BTreeMap<_, _> = variables(&signature.as_type())
+                            .into_iter()
+                            .filter(|variable| {
+                                variable != &class.variable && type_parameters.contains(variable)
+                            })
+                            .map(|variable| {
+                                let unique =
+                                    Type::Variable(format!("$method.{function_id}.{variable}"));
+                                (variable, unique)
+                            })
+                            .collect();
+                        let signature = Signature {
+                            parameters: signature
+                                .parameters
+                                .iter()
+                                .map(|ty| substitute(ty, &renamed))
+                                .collect(),
+                            result: substitute(&signature.result, &renamed),
+                        };
                         functions.push((
                             (*module).into(),
                             instance_function(
-                                signature,
+                                &signature,
                                 &substitutions,
                                 definition,
                                 format!("$instance.{function_id}.{}", method.name),
@@ -1114,9 +1287,8 @@ impl Classes {
                         ));
                         implementations.push((
                             function_id,
-                            type_parameters
-                                .iter()
-                                .cloned()
+                            variables(&substitute(&signature.as_type(), &substitutions))
+                                .into_iter()
                                 .map(Type::Variable)
                                 .collect(),
                         ));
@@ -1711,6 +1883,36 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                     .collect(),
             )
         }
+        Type::Application(head, arguments) => TypeExprKind::Apply(
+            Box::new(Ident {
+                text: head.display(types),
+                span,
+                provenance: Provenance::Generated,
+            }),
+            arguments
+                .iter()
+                .map(|ty| type_expression(ty, types, span))
+                .collect(),
+        ),
+        Type::Partial(partial) => {
+            let name = partial.constructor.name(types);
+            if partial.trailing.is_empty() {
+                TypeExprKind::Named(name)
+            } else {
+                TypeExprKind::Apply(
+                    Box::new(Ident {
+                        text: name,
+                        span,
+                        provenance: Provenance::Generated,
+                    }),
+                    partial
+                        .trailing
+                        .iter()
+                        .map(|ty| type_expression(ty, types, span))
+                        .collect(),
+                )
+            }
+        }
         Type::Infer(_) => unreachable!("instance types are concrete"),
         _ => TypeExprKind::Named(ty.display(types)),
     };
@@ -2008,7 +2210,13 @@ impl Checker<'_> {
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let declaration = &self.classes.declarations[class];
         let ty = self.inference.fresh();
-        let substitutions = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
+        let signature = declaration.methods[method].signature(span)?.as_type();
+        let mut substitutions = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
+        for variable in variables(&signature) {
+            substitutions
+                .entry(variable)
+                .or_insert_with(|| self.inference.fresh());
+        }
         self.constraints.push(Constraint {
             class,
             ty: ty.clone(),
@@ -2016,10 +2224,7 @@ impl Checker<'_> {
         });
         Ok((
             TypedExprKind::Method(class, method, ty),
-            substitute(
-                &declaration.methods[method].signature(span)?.as_type(),
-                &substitutions,
-            ),
+            substitute(&signature, &substitutions),
         ))
     }
 
@@ -2098,7 +2303,7 @@ impl Checker<'_> {
             self.module,
             self.names,
         )?);
-        let ty = resolve_type(expression, self.module, self.names)?;
+        let ty = resolve_type_with_kinds(expression, self.module, self.names, &self.kinds)?;
         if variables(&ty)
             .iter()
             .any(|name| !self.type_parameters.contains(name))
@@ -2904,6 +3109,30 @@ impl Specializer<'_> {
                         self.classes
                             .resolved_method(*class, *method, ty, &self.types)
                     {
+                        let arguments = if self.classes.declarations[*class].arity > 0 {
+                            let target = &self.templates[function];
+                            let mut inference = Inference::default();
+                            let variables: Vec<_> = target
+                                .type_parameters
+                                .iter()
+                                .map(|_| inference.fresh())
+                                .collect();
+                            let substitutions = target
+                                .type_parameters
+                                .iter()
+                                .cloned()
+                                .zip(variables.iter().cloned())
+                                .collect();
+                            inference.unify(
+                                &substitute(&target.signature.as_type(), &substitutions),
+                                &expression.ty,
+                                &self.types,
+                                expression.span,
+                            )?;
+                            variables.iter().map(|ty| inference.resolve(ty)).collect()
+                        } else {
+                            arguments
+                        };
                         Some(Function(FunctionRef::User(self.request(
                             function,
                             arguments,

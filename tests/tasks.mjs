@@ -21,6 +21,12 @@ function execute(program, args, success = true, environment = {}) {
 }
 const cli = (args, success, environment) => execute(compiler, args, success, environment);
 const cases = [
+  ["parallel_results_recursive", [0], 2n], ["parallel_results_recursive", [1], 5n],
+  ...[0n, 1n, 257n].map(count => ["parallel_results_ok", [count], count * (count - 1n) * (2n * count - 1n) / 6n]),
+  ["parallel_results_lowest", [], 2n],
+  ...[0n, 1n, 257n, 2048n].map(count => ["parallel_results_owned", [count], count === 0n ? 0n : 6n]),
+  ["parallel_results_values", [], 10n], ["parallel_results_functions", [], 42n],
+  ["parallel_results_nested", [], 2016n], ["parallel_results_first_class", [], 42n], ["parallel_results_cold", [], 42n],
   ["task_parallel", [], 42n],
   ["sequence", [20n], 41n],
   ["parallel_sum", [0n], 0n],
@@ -48,7 +54,7 @@ const cases = [
   ["parallel_cycles", [128n], 896n],
   ["monad_laws", [20n], 1],
 ];
-const traps = ["trap_task", "trap_parallel", "trap_allocation"];
+const traps = ["trap_task", "trap_parallel", "trap_allocation", "trap_parallel_results"];
 
 try {
   cli(["check", fixture]);
@@ -159,6 +165,13 @@ int main(int argc, char **argv) {
       assert.ok(instance.exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
     }
     console.log(`Tasks -O${optimization}: ${cases.length} native/WASM results, ${traps.length} traps, bounded/joined threads, owned memory reclaimed`);
+    const instrumented = join(temporary, `results-traps-${optimization}.wasm`);
+    cli(["build", fixture, "--target", "wasm32", "--trap-info", `-O${optimization}`, "-o", instrumented]);
+    const trapped = (await WebAssembly.instantiate(readFileSync(instrumented))).instance;
+    assert.equal(trapped.exports.tz_parallel_results_lowest(), 2n);
+    assert.equal(trapped.exports.tz_parallel_results_recursive(1), 5n);
+    assert.throws(() => trapped.exports.tz_trap_parallel_results(), WebAssembly.RuntimeError);
+    assert.notEqual(trapped.exports.tsuzuri_trap_site(), 0);
   }
 
   assert.equal(cli(["run", "examples/tasks", "-O0"]).stdout, "21325334000\n");

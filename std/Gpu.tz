@@ -1,0 +1,28 @@
+union Backend = CpuReference | WebGpu | Vulkan | Cuda | Metal | Auto
+union Error = Unavailable
+record Device { backend: Backend }
+record Buffer<'a> { values: ['a] }
+
+def request :: Backend -> Result.Result<Device, Error>
+fn request backend = match backend with
+    | CpuReference -> Result.Ok (Device { backend: backend })
+    | _ -> Result.Error Unavailable
+
+def backend :: ref Device -> Backend
+fn backend device = device.backend
+
+def init :: ref Device -> i64 -> (i32 -> 'a) -> Buffer<'a>
+fn init _device count initializer =
+    assert (count >= 0 && count <= 2147483647)
+    Buffer { values: Array.init count (fx index -> initializer (index as i32)) }
+
+def map :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
+fn map _device transform buffer =
+    let values = buffer.values
+    Buffer { values: Array.map (ref values) transform }
+
+def from_array :: Copy<'a> => ref Device -> ref ['a] -> Buffer<'a>
+fn from_array _device values = Buffer { values: deref values }
+
+def to_array :: Buffer<'a> -> ['a]
+fn to_array buffer = buffer.values

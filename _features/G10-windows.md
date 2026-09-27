@@ -6,7 +6,7 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | G08（Windows debug 形式の拡張）、F01（ワーカープールの Windows 実装） |
-| 状態 | todo |
+| 状態 | blocked |
 | 主な影響ファイル | `src/driver.rs`, `src/llvm.rs`, `src/runtime/task.c`, `tests/task_runtime.c`, `tests/*.mjs`, `.github/workflows/*`, `README.md`, `docs/architecture.md` |
 
 ## 目的
@@ -308,3 +308,13 @@ LLVM/Clang の PATH は runner image の Visual Studio / LLVM を確認し、不
 
 - **atomic replacement**: 既定案は `std::fs::rename` で既存 file 置換が安全にできるか Windows CI で確認する。できない場合、safe Rust だけで `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` 相当を呼ぶ手段がないため、既存 output がある Windows build を error にするか、依存追加 / unsafe 許可を人間が判断する。
 - **COFF task runtime symbol**: Phase 1 は exe を優先し、object の task runtime 統合は保守的に制限する。複数 object link を公式サポートするなら COFF weak / linkonce_odr の検証が必要。
+- 2026-09-28判断: stable RustのWindows MetadataExtのfile_index/volume_serial_numberは不安定APIのため、Windows限定でsame-file 1.0.6を追加する。利用者の判断委任に基づき、unsafe禁止とhardlink保護を維持する選択とした（GUIDE D-29）。
+- 実装は完了したが、このmacOS環境にはWindows実行hostがなくWindows CIの実行結果も取得していないため、実行受け入れゲートをblockedとする。クロス型検査/COFF/PE linkだけをWindows実行成功とは扱わない。
+
+## 実装と検証（2026-09-28）
+
+- native flags、公開wrapper限定dllexport、CRT UTF-8 bytes、safe hardlink identity、Win32常駐pool/Result cancellation、言語内test runner、専用E2E/CIを実装。
+- COFF同梱runtime objectはチケットの既定案どおりE2002。明示LLVMとruntimeの一回linkは可能。Windows CPU dispatchはbaseline。
+- 実Windows SDK/CRTでruntime/failure harnessを-Wall/-Wextra/-WerrorでCOFF化し、生成IR+Win32 runtimeをO0/O3でPEへlink。Rust全targetのWindows cfgとfmt/clippyが成功。
+- 既存macOS tasks41件/4trap、examples32600steps、test runner、native/WASM O0/O3は成功。
+- 未確認: Windows runner上のcargo test、native実行、Win32 failure injectionの実行、hardlinkと既存outputの置換実行。追加したwindows.yml/windows.mjsが確認手順。

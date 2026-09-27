@@ -49,6 +49,14 @@ function orderedReferences(count, seed, bits) {
 // arguments. Native hosts track every allocation, so each call must leave no
 // live heap bytes; WASM modules must stay import-free.
 const suites = {
+  higher_kinds: {
+    cases: [
+      ...[min, -1n, 0n, 41n, max].flatMap(seed => [["option_map", [seed], BigInt.asIntN(64, seed + 1n)], ["result_map", [seed], BigInt.asIntN(64, seed * 3n)]]),
+      ["result_error", [], 6n], ["all_constructors", [], 210n], ["binary_constructor", [], 42n], ["first_class", [], 42n],
+      ...[0n, 1n, 10000n].map(count => ["owned_option", [count], count * 6n]),
+    ],
+    inspect(ir) { assert.doesNotMatch(ir, /%tz\.hkt|dictionary/); },
+  },
   fma_reductions: {
     cases: [
       ...[32, 64].flatMap((bits) => [...Array.from({ length: 18 }, (_, index) => index), 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025].flatMap((count) => [0, 1, 7].flatMap((seed) => orderedReferences(count, seed, bits).map((expected, operation) => [`ordered${bits}`, [BigInt(count), BigInt(seed), BigInt(operation)], expected])))),

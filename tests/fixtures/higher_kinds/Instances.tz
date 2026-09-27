@@ -1,0 +1,20 @@
+record Box<'a> { value: 'a }
+
+instance Functor<Option> {
+    fn map transform value = match value with
+        | Option.None -> Option.None
+        | Option.Some inner -> Option.Some (transform inner)
+}
+
+instance Functor<Result<'a>> {
+    fn map transform value = match value with
+        | Result.Ok inner -> Result.Ok (transform inner)
+        | Result.Error error -> Result.Error error
+}
+
+instance Keep<Array> { fn keep value = value }
+instance Keep<List> { fn keep value = value }
+instance Keep<Vec> { fn keep value = value }
+instance Keep<Task> { fn keep value = value }
+instance Keep<Box> { fn keep value = value }
+instance BinaryKeep<Result> { fn keep value = value }

@@ -714,6 +714,25 @@ fn rejects(source: &str, code: &str) {
 - G09はdocでもMainなしdirectoryをライブラリとして扱う。署名ASTから公開APIを描画し、constの値・instance・privateを出さない。既存出力は専用markerで所有権を確認して全体置換する。stdの完全なファイル構成を入力可能とし、builtin一覧とdoc-testは別責務とする。
 - E03の再帰探索では独立したfixture/benchmark projectを同じrootに混ぜない。旧来の直下単独ファイルSemantics/Mixはハーネスが一時rootへコピーして実行し、言語側の探索契約を弱めない。
 
+### D-29 P3 の実装判断
+
+- 2026-09-28、利用者がP3全件と必要な設計判断を承認。各チケットの対象段階を実装し、未検証のプラットフォームや後続段階を完了と混同しない。
+- E04は指定どおりlocal pathとstrict manifestのみ。PackageIdはSourceFile.packageに保持し、コンパイラのUser/Std分類は変更しない。依存の名前空間をrelative_pathへ付けて既存の解析・可視性・所有権を再利用する。
+- manifestも読み込み・出力保護対象とする。全graphでpackage1024・深さ128・source4096、名前空間衝突・循環・symlinkを拒否する。git、lockfile、build scriptは導入しない。
+- F06は手書きLLVM queueではなくfreestanding C11 runtimeをClangで生成する。既存callback ABIとallocatorを共有し、threadsだけshared/import-memory、atomic、heap lock wrapperを有効にする。
+- Nodeホストは明示countを一回初期化し、初回groupのspawn_workersで同数を起動する。各instanceの__stack_pointerを256KiB sliceへ設定する。失敗はpoisonで全waitを解除し、再利用しない。browser本番glueは対象外。
+- F07のPhase 1は型付きkernel抽出・CPU参照・WGSL生成。WGSL仕様には具体的i64/f64がなく、floatのfusion/reassociation/subnormal差を許すため、strict shaderはi32/i32uだけとする。CPU参照では元の64-bit/floatを保持し、明示GPU要求をCPU成功へ変換しない。動的除算・剰余もtrap契約が異なるのでshaderでは拒否する。
+- Gpu.Deviceは各操作へ共有借用で渡すnon-Copy型。初版のGpu.requestは明示CpuReferenceだけに成功し、GPU backendはUnavailable。WebGPU host試作は別の実device所有経路として実行検証する。initのcallback indexはi32、count上限はi32::MAX。--emit wgslは単一exportの専用projectを受ける。
+- A10は既存Apply(Ident,args)のheadに`'f`を保持し、全AST移行を避ける。class.kindと制約からのkind環境、Partial/Applicationのcompile-time型、既存Inference/Specializerを使う。型の四wordサイズと全解析上限を維持する。
+- A10の部分適用は末尾引数を固定する。Result<'a,'e>の既存順序とチケットの「エラー型固定」を両立させ、Functor<Result<string>>はResult<'a,string>を表す。通常の完全適用の意味は変更しない。
+- A10初版は値型を引数に取るrank-1 constructor、HKT method固有の値型変数、default/条件付きinstance、generic関数制約を対象とする。higher-order kind引数、HKT aliases、標準Functor導入は対象外。値型位置の未適用record/unionはE1015、対象外aliasの診断は従来E1024。
+- B06は既存native/threads poolの同一groupでcallback種別と最小failureを管理する。queue lock内で未配布範囲を切り、開始済みをjoinする。通常Task.parallelの軽いcompletion経路は維持。startedはi8で、一時Result領域はraw freeのみとして移動済みpayloadの再dropを避ける。
+- G10のMetadataExt::file_index/volume_serial_numberはstableでwindows_by_handle不安定APIだったため、Windows限定same-file 1.0.6のsafe APIを採用する。unsafe禁止・stable Rust・hardlink出力保護を維持する。COFFのtask/CPU runtime埋め込みobjectは保守的にE2002、exeと明示LLVM+runtimeリンクを提供する。
+- G11は既存serde_jsonでmetadataを保存し、SHA-256はチケット指定どおり内部実装してNIST検証する。compiler実行file全体のdigestを使い、git commit/mtimeだけの開発版識別は採用しない。
+- G11は毎回解析/IRを生成してから生成物cacheを照合する。全source/manifest/origin、IR/runtime、options/action、tool binary/version/env、nativeCPU macroを長さ付きhashへ含める。macOS debug exeだけoutput pathを含めてDWARF参照を保つ。
+- G11は専用marker、digest/size検証、非待機writer lock、directory atomic rename、既存publish_outputsを使う。部分/破損entryはmiss、cache障害はW2001。GCは2GiB/30日のsoft上限で4096走査/128削除まで。
+- A10のinstance head変数とmethod固有変数は別binderとして扱い、同名ならinstance関数生成時にmethod側を内部名へalpha分離する。Result<'a>の'aがmapの入力型'aを捕捉しない。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。

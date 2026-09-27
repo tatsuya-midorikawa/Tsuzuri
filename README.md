@@ -47,7 +47,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 この方針はコンパイラだけでなく、組み込み関数と今後の標準ライブラリにも適用します。
 現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、
 `Task.parallel` による明示的な CPU 並列処理も使えます。
-GPU バックエンドと自動マルチスレッド化は未実装です。
+GPUは実験的なstrict整数WGSL生成・WebGPUホスト試作と明示CPU参照に対応します。通常runtimeへの実GPU接続と自動offloadは未実装です。
 整数の checked／saturating 演算、popcount、rotate などは `Int` モジュールで利用できます。
 伸縮可能な所有バッファ `Vec<T>` と配列・リストの標準 API を利用できます。
 順序付きの不透明型 `Map<K, V>`／`Set<K>` も使えます。`Map.insert (Map.empty()) 1 "value"` は所有値を消費して更新し、`Map.at (&map) 1` で値を借用します。
@@ -56,7 +56,7 @@ GPU バックエンドと自動マルチスレッド化は未実装です。
 128-bitの `f32x4`・`f64x2`・整数vectorとlane maskを使えます。`let values: i32x4 = Simd.splat 1i32`、`Simd.load`・`extract`・`select`・順序付き`sum_lanes`を提供します。
 nativeはLLVMの対応命令、WASMは既定でscalar fallback、`--wasm-feature simd128`でv128へ下げます。高速化の保証ではありません。
 ユーザー型は `Module.iter` を明示してSeqを返します。Array/List/Vec/Map/Setの`iter`は要素を借用し、通常の直接for反復は従来経路のままです。
-パッケージ管理、GUI/OS の標準ライブラリは未実装です。
+ローカルpathパッケージに対応します。git・registry・版解決とGUI/OSの標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
 レコードに共有借用を格納でき、`def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string`で返却元の入力を指定できます。
 名前付き契約は直接の完全適用に反映し、関数値経由は保守的に全入力の寿命を保持します。排他借用フィールドと、レコード内の独立した複数regionは未対応です。
@@ -277,6 +277,10 @@ record／union宣言の後に `deriving (Eq, Ord, Display, Hash, Default)` を�
 旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
 詳細と制約一覧は [言語仕様](docs/language.md#多相関数と型クラス) を参照してください。
 
+kindを明示したrank-1高階型にも対応します。`class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`を定義し、OptionやResult等のconstructorごとにinstanceを実装できます。
+`Result<string>`の部分適用は末尾のエラー型を固定します。辞書/boxingを追加せず通常の単相化へ下げます。kind省略推論や標準Functorは未導入です。
+例と制約は[HKT仕様](docs/language.md#高階型hkt)を参照してください。
+
 ## 制御構文とパターン
 
 ```text
@@ -385,13 +389,22 @@ F# の通常の `task` と異なり、作成しただけでは開始しません
 
 ネイティブの並列区間は POSIX threads を使い、利用可能 CPU 数と最大32実行スレッドを目安に、
 ランタイム全体で追加スレッド数を制限した常駐プールを遅延起動します。入れ子でも呼び出し元が自分の仕事を進めます。
-WASM はインポート不要の **逐次フォールバック** です。WASM threads、非同期 I/O、
-キャンセルは未対応で、`Task.run` は呼び出し元をブロックします。worker はプロセス終了時に join します。
+WASM の既定はインポート不要の **逐次フォールバック** です。ホストの非同期 I/O、
+外部キャンセルトークンは未対応で、`Task.run` は呼び出し元をブロックします。worker はプロセス終了時に join します。
 小さい仕事では確保・コピー・同期が支配する場合があり、常駐化だけで常に速くなるわけではありません。
 `Parallel.init`／`map`／`map_ref`／`reduce`／`sum` は Task 配列を作らず固定チャンクで処理します。
 例えば `let values = Parallel.init 10000 (index -> index * index)` の後、`Parallel.sum (ref values)` で集計できます。
 reduce/sum の順序は逐次 Array 版と異なります。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。
 実行例は `tsuzuri run examples/tasks`、詳細は [タスクの仕様](docs/language.md#タスク) を参照してください。
+
+Resultを返す仕事には`Task.parallel_results`を使えます。最小入力indexのErrorを返し、未開始分を停止して捕捉値を回収します。開始済みは全件joinし、trapをErrorへ変換しません。
+
+```text
+let jobs: [Task<Result<i64, string>>] = [task { Result.Ok 20 }, task { Result.Error "failed" }]
+match Task.run (Task.parallel_results jobs) with
+| Result.Ok values -> Array.sum (&values)
+| Result.Error _ -> -1
+```
 
 ## ファイルとモジュール
 
@@ -468,13 +481,26 @@ fn length point = sqrt (square point.x + square point.y)
 上の例では最後の `d` を表示します。結果式を省略すると `unit` になり、何も表示しません。
 実行例は `./target/release/tsuzuri run examples/point` です。
 
+rootに`Tsuzuri.toml`を置くと、ローカル依存を同じ`check`／`build`／`run`コマンドで利用できます。
+
+```toml
+[package]
+name = "app"
+version = "0.1.0"
+[dependencies]
+geometry-core = { path = "../geometry-core" }
+```
+
+依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore.Point`で参照し、依存内でも完全修飾します。
+限定TOML、相対pathだけに対応し、ネットワークやbuild scriptは実行しません。詳細は[言語仕様](docs/language.md#ローカルパッケージ)を参照してください。
+
 ## ビルド
 
 - Rust 1.85 以降。浮動小数点リテラルの正確な丸めに `rustc_apfloat` を使います。
 - LLVM/Clang 17 以降。WASM のリンクには `wasm-ld`（LLD）も必要です。
 - 検証には Node.js 20 以降と Python 3.9 以降。
-- macOS と Linux を CI 対象にしています。Windows のネイティブ・ツールチェーンは未検証です。
-- ネイティブの `Task.parallel` は POSIX pthread ヘッダーとライブラリが必要です。
+- macOS/Linuxに加えx86_64 Windows MSVC ABIの実装とCIを追加しています。Windowsは実SDKでO0/O3クロスリンク済みですが、Windows runnerでの実行結果は未確認です。
+- POSIXの `Task.parallel` は pthread ヘッダーとライブラリが必要です。WindowsではWin32常駐threadを使います。
   `build`／`run` はランタイムを同梱します。オブジェクトを C/C++ ホストへリンクするときは `-pthread` を付けます。
 
 macOS の例（Rust は rustup 管理を推奨）:
@@ -500,6 +526,11 @@ cargo build --release
 パスを指定できます。`check`／`--emit llvm`／`--emit header` には LLVM の実行環境は不要です。
 標準ライブラリはコンパイラに埋め込まれているため、これらも追加のファイルなしで動きます。
 コンパイラはシェルを経由せずツールを起動し、失敗したツールの診断を報告します。
+
+WindowsではLLVMの`clang`、Windows SDK、Visual Studio Build Tools（MSVC/CRT）を用意し、Developer PowerShellでビルドします。clang-cl専用の引数形式は対象外です。
+compilerは`--target=x86_64-pc-windows-msvc`を指定し、`-fPIC`/`-pthread`/`-lm`を渡しません。公開wrapperはdllexportで、出力拡張子はexe/objです。
+Task/CPU runtimeを埋め込むCOFF object結合はE2002です。exeへ直接ビルドするか、--emit llvmとruntime/task.cを一度だけホストへリンクします。
+UTF-8 bytesを出力しコードページを変更しません。対話コンソールはWindows Terminal等のUTF-8対応環境を推奨します。PDB/ARM64/MinGW/DLL import library自動生成は対象外です。
 
 ## コンソール
 
@@ -612,6 +643,14 @@ python3 examples/desktop/app.py target/examples/physics.so
 GUI には Tk とデスクトップ画面が必要です。`--headless` を付けると Tk をロードせず、
 同じネイティブ ABI で 600 ステップを計算します。GUI ツールキット自体は言語に含めていません。
 
+## GPU（実験的）
+
+単一のexportされた`i32 -> i32`または`i32u -> i32u` kernelを持つprojectから、`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl`でWGSLを生成できます。
+Nodeの実行例は`node examples/gpu/run.mjs kernel.wgsl`です。検証用bindingは`npm install --prefix target/webgpu-runtime --no-save --package-lock=false webgpu@0.6.1`で導入でき、コンパイラの配布依存には含みません。
+同梱host試作はWebGPU bufferをdevice上に保持し、明示的に読み戻します。GPUなし・shaderエラー・資源上限はエラーで、CPUへ黙って切り替えません。
+通常の言語APIでは`Gpu.request Gpu.CpuReference`だけが成功し、他backendの要求はUnavailableです。64-bit/floatはCPU参照のみで、strict WGSLでは拒否します。
+詳細は[言語仕様](docs/language.md#gpu-kernel実験的-phase-1)を参照してください。自動GPU選択や速度優位を保証する機能ではありません。
+
 ## CLI
 
 ```text
@@ -651,7 +690,26 @@ nativeの同梱`Array.sum<i64>`は能力検出後に標準カーネルを選択�
 `check` への CPU 指定、WASM／LLVM IR／ヘッダーへの `native` 指定はエラーにします。
 
 `build --target wasm32 --wasm-feature simd128` はWASM SIMD128を明示的に有効にします。既定はSIMDなしで、relaxed SIMD・fast-mathは有効にしません。
-指定した成果物にはSIMD128対応エンジンが必要です。`--emit llvm`では要件をコメントに記録し、そのIRのコンパイルには `-msimd128` を指定します。
+
+`build --target wasm32 --wasm-feature threads`はTask/ParallelをNode Workerへ分散します。WASM/object専用でsimd128と併用可能です。
+同梱のNode.js 20+ホストを使用してください。未対応hostやWorker失敗を逐次成功に置き換えません。
+
+```javascript
+import { readFile } from "node:fs/promises";
+import { createThreadPool } from "./src/runtime/wasm-threads.mjs";
+const pool = await createThreadPool(await readFile("app.wasm"));
+try { console.log(pool.call("tz_answer")); }
+finally { await pool.close(); }
+```
+
+main 1MiB、各Worker 256KiBのstackを含め共有memoryは最大16MiBです。Browser用本番glueは対象外で、[Webホスト要件](examples/web/README.md)を参照してください。
+SIMD128を指定した成果物には対応エンジンが必要です。`--emit llvm`ではSIMD要件をコメントに記録し、そのIRのコンパイルには `-msimd128` を指定します。
+
+build/runの成果物cacheは既定で有効です。`--no-cache`で読み書きを完全に無効化し、`TSUZURI_CACHE_DIR`で保存先を指定できます。check/headerは対象外です。
+既定の保存先はmacOSの`$HOME/Library/Caches/tsuzuri/build-cache`、Linuxの`$XDG_CACHE_HOME/tsuzuri/build-cache`（未設定なら`$HOME/.cache`）、Windowsの`%LOCALAPPDATA%\Tsuzuri\Cache\build-cache`です。
+コンパイラ・ツール・ソース・設定・runtimeをSHA-256で識別し、hitでも出力保護を通します。破損は再ビルド、cacheのI/O失敗はW2001です。
+markerで管理対象を識別し、既存の非cacheディレクトリを転用しません。2GiB/30日を目安に一回最大128件を回収します。明示的に削除する場合はこの専用cacheディレクトリだけを削除してください。
+解析とIR生成は毎回行うPhase 1のwhole-build cacheです。macOSのdebug executableはDWARFの出力先依存を保つため出力パスもキーへ含めます。
 
 入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tz` を選びます。
 ディレクトリ入力はそのディレクトリ、ファイル入力は親ディレクトリをルートにし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に読み込み、
@@ -691,6 +749,9 @@ node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/strings.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
+node tests/wasm_threads.mjs target/release/tsuzuri
+node tests/gpu.mjs target/release/tsuzuri # CPU/reference validation; TSUZURI_WEBGPU=1 enables actual WebGPU tests
+node tests/cache.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri

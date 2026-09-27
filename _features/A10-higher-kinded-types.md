@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | A01, A06 |
 | 後続 | 長期的な標準ライブラリ抽象化（Functor/Applicative/Monad/Traversable 等） |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/computation.rs`, `src/recursion.rs`, `src/ownership.rs`, `src/llvm.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/polymorphism.rs`, `tests/computations.rs`, `tests/fixtures/*` |
 
 ## 目的
@@ -344,14 +344,14 @@ instance Functor<Result<'e>> {
 
 ## 受け入れ条件
 
-- [ ] kind annotation 付き class parameter を parse できる。
-- [ ] `TypeExprKind::Apply` が variable head を扱える。
-- [ ] kind checker が未適用/過適用/mismatch を `E1015` で拒否する。
-- [ ] `instance Functor<Option>` と `instance Functor<Result<'e>>` が動作する。
-- [ ] overlap が kind-aware に `E1016`。
-- [ ] 単相化後、HKT 中間型が `CheckedModule` の LLVM 入力に残らない。
-- [ ] 辞書/boxing/ランタイム型情報を生成しない。
-- [ ] native/WASM × `-O0`/`-O3`、IR 決定性、heap `live == 0`。
+- [x] kind annotation 付き class parameter を parse できる。
+- [x] `TypeExprKind::Apply` が variable head を扱える。
+- [x] kind checker が未適用/過適用/mismatch を `E1015` で拒否する。
+- [x] `instance Functor<Option>` と `instance Functor<Result<'e>>` が動作する。
+- [x] overlap が kind-aware に `E1016`。
+- [x] 単相化後、HKT 中間型が `CheckedModule` の LLVM 入力に残らない。
+- [x] 辞書/boxing/ランタイム型情報を生成しない。
+- [x] native/WASM × `-O0`/`-O3`、IR 決定性、heap `live == 0`。
 
 ## 落とし穴
 
@@ -377,3 +377,12 @@ instance Functor<Result<'e>> {
   - go: `Functor`/`Result<'e>`/`Option` の prototype が辞書なし IR、特殊化増加 20% 未満、診断が理解可能。
   - no-go: 単純な `.tc` builder と比べて標準 API が複雑化する、または特殊化/compile time が制御不能。
   - no-go の場合も kind checker 実装を revert し、標準ライブラリは concrete module functions (`Option.map`, `Result.map`) を維持する。
+
+## 実装結果（2026-09-28）
+
+- GUIDE D-29に従いPhase 1のrank-1 constructorを実装。ApplyのIdent headに`'f`を保持し、ClassDecl.kind・制約由来kind環境・Partial/Applicationを既存推論と特殊化へ統合した。
+- Resultの例の引数順の曖昧さを解消し、部分適用は末尾固定とする。Functor<Result<string>>はResult<'a,string>で、既存の完全適用の順序を変えない。
+- Option/Result、Array/List/Vec/Task/record、二引数constructor、default method、method固有変数、制約付きgeneric関数、ローカル注釈、first-class methodを検証。
+- kind mismatch/未適用/overlap/未確定型を拒否。LLVM入口でHKT中間値型を拒否し、runtime辞書/boxingを追加しない。
+- HKT Rust5件・内部正規化1件、全Rustテスト、fmt/clippy、formatter/doc、native/WASM O0/O3の17ケースとheap回収が成功。instance headとmethod固有変数の同名衝突は生成時のalpha分離で防ぐ。
+- 型別名HKT・高階kind引数・kind省略推論・std Functor/Monadは対象外。通常kindのmethod固有型変数やmethod固有制約は引き続き拒否する。

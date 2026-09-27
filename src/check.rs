@@ -16,6 +16,9 @@ mod control;
 mod deriving;
 #[path = "exhaustiveness.rs"]
 mod exhaustiveness;
+#[path = "higher_kinds.rs"]
+mod higher_kinds;
+pub use higher_kinds::{Constructor, Partial};
 #[path = "polymorph.rs"]
 mod polymorph;
 #[path = "recursion.rs"]
@@ -37,6 +40,8 @@ pub enum Type {
     Error,
     Variable(String),
     Infer(usize),
+    Partial(Box<Partial>),
+    Application(Box<Type>, Box<[Type]>),
     Integer(u16, bool),
     Binary(u16),
     Decimal(u16),
@@ -108,6 +113,16 @@ impl Type {
             Self::Error => "an erroneous type".into(),
             Self::Variable(name) => format!("'{name}"),
             Self::Infer(_) => "an undetermined type".into(),
+            Self::Partial(partial) => partial.display(types),
+            Self::Application(head, arguments) => format!(
+                "{}<{}>",
+                head.display(types),
+                arguments
+                    .iter()
+                    .map(|ty| ty.display(types))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Integer(bits, signed) => format!("i{bits}{}", if *signed { "" } else { "u" }),
             Self::Binary(bits) => format!("f{bits}"),
             Self::Decimal(bits) => format!("d{bits}"),
@@ -190,6 +205,10 @@ impl Type {
     pub fn contains_error(&self) -> bool {
         match self {
             Self::Error => true,
+            Self::Partial(partial) => partial.trailing.iter().any(Self::contains_error),
+            Self::Application(head, arguments) => {
+                head.contains_error() || arguments.iter().any(Self::contains_error)
+            }
             Self::Array(ty)
             | Self::List(ty)
             | Self::Vec(ty)
@@ -200,6 +219,25 @@ impl Type {
             }
             Self::Tuple(elements) => elements.iter().any(Self::contains_error),
             Self::Record(_, args) | Self::Union(_, args) => args.iter().any(Self::contains_error),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn contains_constructor(&self) -> bool {
+        match self {
+            Self::Partial(_) | Self::Application(..) => true,
+            Self::Array(ty)
+            | Self::List(ty)
+            | Self::Vec(ty)
+            | Self::Task(ty)
+            | Self::Reference(ty, _) => ty.contains_constructor(),
+            Self::Function(parameters, result) => {
+                parameters.iter().any(Self::contains_constructor) || result.contains_constructor()
+            }
+            Self::Tuple(elements) => elements.iter().any(Self::contains_constructor),
+            Self::Record(_, arguments) | Self::Union(_, arguments) => {
+                arguments.iter().any(Self::contains_constructor)
+            }
             _ => false,
         }
     }
@@ -225,7 +263,7 @@ impl Type {
     }
 
     pub fn is_copy(&self, types: &TypeContext<'_>) -> bool {
-        if types.recursive(self) || self.sequence_element(types).is_some() {
+        if types.recursive(self) || self.is_noncopy_record(types) {
             return false;
         }
         match self {
@@ -234,6 +272,8 @@ impl Type {
             | Self::Vec(_)
             | Self::Task(_)
             | Self::Reference(_, true)
+            | Self::Partial(_)
+            | Self::Application(..)
             | Self::Variable(_)
             | Self::Infer(_) => false,
             Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.is_copy(types)),
@@ -260,6 +300,10 @@ impl Type {
             Self::Tuple(elements) => elements.iter().any(|ty| ty.needs_drop(types)),
             _ => false,
         }
+    }
+
+    pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer"))
     }
 
     pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
@@ -533,6 +577,7 @@ pub enum Builtin {
     StringToWellFormed,
     TaskRun,
     TaskParallel,
+    TaskParallelResults,
     ParallelInit,
     ParallelMap,
     ParallelMapRef,
@@ -746,6 +791,7 @@ impl Builtin {
         Self::StringToWellFormed,
         Self::TaskRun,
         Self::TaskParallel,
+        Self::TaskParallelResults,
         Self::ParallelInit,
         Self::ParallelMap,
         Self::ParallelMapRef,
@@ -905,6 +951,7 @@ impl Builtin {
             Self::StringToWellFormed => "String.to_well_formed",
             Self::TaskRun => "Task.run",
             Self::TaskParallel => "Task.parallel",
+            Self::TaskParallelResults => "Task.parallel_results",
             Self::ParallelInit => "Parallel.init",
             Self::ParallelMap => "Parallel.map",
             Self::ParallelMapRef => "Parallel.map_ref",
@@ -1522,6 +1569,18 @@ impl Builtin {
                 Task(Box::new(Array(Box::new(a())))),
                 Vec::new(),
             ),
+            Self::TaskParallelResults => {
+                let result = |value| BuiltinType::Std {
+                    module: "Result",
+                    name: "Result",
+                    args: vec![value, Var("e")],
+                };
+                (
+                    vec![Array(Box::new(Task(Box::new(result(a())))))],
+                    Task(Box::new(result(Array(Box::new(a()))))),
+                    Vec::new(),
+                )
+            }
             Self::ParallelInit => (
                 vec![
                     Concrete(Type::I64),
@@ -1956,6 +2015,7 @@ pub enum TypedExprKind {
     Closure(usize, Vec<TypedExpr>),
     TaskRun(Box<TypedExpr>),
     TaskParallel(Box<TypedExpr>),
+    TaskParallelResults(Box<TypedExpr>),
     Parallel(Builtin, Vec<TypedExpr>),
     StructuralCompare(BinaryOp, Vec<TypedExpr>),
     StructuralHash(Vec<TypedExpr>),
@@ -2062,6 +2122,7 @@ impl TypedExpr {
             | StringLength(value)
             | TaskRun(value)
             | TaskParallel(value)
+            | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
             | UnionPayload { value, .. }
@@ -2148,6 +2209,7 @@ impl TypedExpr {
             | StringLength(value)
             | TaskRun(value)
             | TaskParallel(value)
+            | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
             | UnionPayload { value, .. }
@@ -2966,6 +3028,7 @@ fn validate_public_type(
         }
         TypeExprKind::Apply(head, args) => {
             if head.text != "Vec"
+                && !head.text.starts_with('\'')
                 && let TypeHead::Type(named) = names.type_head(module, head)?
             {
                 let info = named.info();
@@ -3675,15 +3738,16 @@ fn check_modules_collect(
             }
             let mut parameter_names = BTreeSet::new();
             let mut parameters = Vec::new();
+            let kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
             for parameter in &function.parameters {
                 if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
                     return Err(duplicate(&parameter.name));
                 }
-                let ty = resolve_type(&parameter.ty, module, &names)?;
+                let ty = resolve_type_with_kinds(&parameter.ty, module, &names, &kinds)?;
                 validate_size(&ty, &types, parameter.ty.span)?;
                 parameters.push(ty);
             }
-            let result = resolve_type(&function.result, module, &names)?;
+            let result = resolve_type_with_kinds(&function.result, module, &names, &kinds)?;
             validate_size(&result, &types, function.result.span)?;
             let public_type = Type::function(parameters.clone(), result.clone());
             let Type::Function(public_parameters, public_result) = &public_type else {
@@ -3734,7 +3798,7 @@ fn check_modules_collect(
             let mut constraints = Vec::new();
             let mut members = Vec::new();
             for constraint in &function.constraints {
-                let ty = resolve_type(&constraint.ty, module, &names)?;
+                let ty = classes.constraint_type(constraint, module, &names, &kinds)?;
                 if polymorph::variables(&ty)
                     .iter()
                     .any(|variable| !variables.contains(variable))
@@ -3894,6 +3958,7 @@ fn check_modules_collect(
         let checked = (|| {
             let region_sources = regions::contract(function, module, &names, types)?;
             checker.type_parameters = scheme.variables.clone();
+            checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
             checker.members = scheme.members.clone();
             let mut parameters = Vec::new();
             for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
@@ -4103,6 +4168,9 @@ fn check_modules_collect(
     )?;
     let module = closures::lower(module)?;
     diagnostics.extend(crate::ownership::check_all(&module));
+    if let Err(error) = crate::gpu::validate_calls(&module) {
+        diagnostics.push(error);
+    }
     diagnostics.check()?;
     Ok(module)
 }
@@ -4338,8 +4406,32 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
 }
 
 fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Type, Diagnostic> {
+    resolve_type_with_kinds(expression, module, names, &BTreeMap::new())
+}
+
+fn resolve_type_with_kinds(
+    expression: &TypeExpr,
+    module: &str,
+    names: &Names,
+    kinds: &BTreeMap<String, usize>,
+) -> Result<Type, Diagnostic> {
+    let resolve = |ty: &TypeExpr| resolve_type_with_kinds(ty, module, names, kinds);
     Ok(match &expression.kind {
-        TypeExprKind::Regions(inner, _) => resolve_type(inner, module, names)?,
+        TypeExprKind::Regions(inner, _) => resolve(inner)?,
+        TypeExprKind::Apply(head, args) if head.text.starts_with('\'') => {
+            let variable = &head.text[1..];
+            if kinds.get(variable) != Some(&args.len()) || args.is_empty() {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "type constructor variable requires a matching explicit class kind annotation",
+                    head.span,
+                ));
+            }
+            Type::Application(
+                Box::new(Type::Variable(variable.into())),
+                args.iter().map(resolve).collect::<Result<_, _>>()?,
+            )
+        }
         TypeExprKind::Apply(head, args) if head.text == "Vec" => {
             let [element] = &**args else {
                 return Err(Diagnostic::new(
@@ -4348,19 +4440,24 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                     expression.span,
                 ));
             };
-            Type::Vec(Box::new(resolve_type(element, module, names)?))
+            Type::Vec(Box::new(resolve(element)?))
         }
         TypeExprKind::Named(name) => match crate::numeric::primitive(name) {
             Some(ty) => ty,
             None => {
                 let named = names.named_type(module, name, expression.span)?;
-                record_arity(names, named, name, 0, expression.span)?;
+                record_arity(names, named, name, 0, expression.span).map_err(|mut error| {
+                    if !matches!(named, NamedType::Alias(_)) {
+                        error.code = "E1015";
+                    }
+                    error
+                })?;
                 match named {
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
                     NamedType::Union(info) => Type::Union(info.id, Box::default()),
                     NamedType::Alias(_) => {
                         let expanded = expand_type_aliases(expression, module, names)?;
-                        let ty = resolve_type(&expanded, module, names)?;
+                        let ty = resolve(&expanded)?;
                         polymorph::bounded_type(&ty, expression.span)?;
                         ty
                     }
@@ -4391,20 +4488,17 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                             expression.span,
                         ));
                     };
-                    resolve_type(ty, module, names)?
+                    resolve(ty)?
                 }
                 TypeHead::Type(named) => {
                     record_arity(names, named, &head.text, args.len(), expression.span)?;
                     if matches!(named, NamedType::Alias(_)) {
                         let expanded = expand_type_aliases(expression, module, names)?;
-                        let ty = resolve_type(&expanded, module, names)?;
+                        let ty = resolve(&expanded)?;
                         polymorph::bounded_type(&ty, expression.span)?;
                         return Ok(ty);
                     }
-                    let args = args
-                        .iter()
-                        .map(|ty| resolve_type(ty, module, names))
-                        .collect::<Result<_, _>>()?;
+                    let args = args.iter().map(resolve).collect::<Result<_, _>>()?;
                     match named {
                         NamedType::Record(info) => Type::Record(info.id, args),
                         NamedType::Union(info) => Type::Union(info.id, args),
@@ -4413,27 +4507,26 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
                 }
             }
         }
-        TypeExprKind::Variable(name) => Type::Variable(name.clone()),
-        TypeExprKind::Reference(ty, mutable) => {
-            Type::Reference(Box::new(resolve_type(ty, module, names)?), *mutable)
+        TypeExprKind::Variable(name) => {
+            if kinds.get(name).is_some_and(|arity| *arity > 0) {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "a type constructor must be fully applied in a value type",
+                    expression.span,
+                ));
+            }
+            Type::Variable(name.clone())
         }
-        TypeExprKind::Array(element) => {
-            Type::Array(Box::new(resolve_type(element, module, names)?))
+        TypeExprKind::Reference(ty, mutable) => Type::Reference(Box::new(resolve(ty)?), *mutable),
+        TypeExprKind::Array(element) => Type::Array(Box::new(resolve(element)?)),
+        TypeExprKind::List(element) => Type::List(Box::new(resolve(element)?)),
+        TypeExprKind::Tuple(elements) => {
+            Type::Tuple(elements.iter().map(resolve).collect::<Result<_, _>>()?)
         }
-        TypeExprKind::List(element) => Type::List(Box::new(resolve_type(element, module, names)?)),
-        TypeExprKind::Tuple(elements) => Type::Tuple(
-            elements
-                .iter()
-                .map(|ty| resolve_type(ty, module, names))
-                .collect::<Result<_, _>>()?,
-        ),
-        TypeExprKind::Task(result) => Type::Task(Box::new(resolve_type(result, module, names)?)),
+        TypeExprKind::Task(result) => Type::Task(Box::new(resolve(result)?)),
         TypeExprKind::Function(parameters, result) => Type::function(
-            parameters
-                .iter()
-                .map(|parameter| resolve_type(parameter, module, names))
-                .collect::<Result<_, _>>()?,
-            resolve_type(result, module, names)?,
+            parameters.iter().map(resolve).collect::<Result<_, _>>()?,
+            resolve(result)?,
         ),
     })
 }
@@ -4506,12 +4599,16 @@ impl TypeAliasExpansion<'_> {
             ));
         }
         let kind = match &expression.kind {
-            TypeExprKind::Apply(head, args) if head.text == "Vec" => TypeExprKind::Apply(
-                head.clone(),
-                args.iter()
-                    .map(|arg| self.expand(arg, module, depth + 1))
-                    .collect::<Result<_, _>>()?,
-            ),
+            TypeExprKind::Apply(head, args)
+                if head.text == "Vec" || head.text.starts_with('\'') =>
+            {
+                TypeExprKind::Apply(
+                    head.clone(),
+                    args.iter()
+                        .map(|arg| self.expand(arg, module, depth + 1))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             TypeExprKind::Named(name) if crate::numeric::primitive(name).is_none() => {
                 let named = self.names.named_type(module, name, expression.span)?;
                 if let NamedType::Alias(info) = named {
@@ -5049,6 +5146,7 @@ struct Checker<'a> {
     members: Vec<polymorph::MemberConstraint>,
     type_parameters: Vec<String>,
     scopes: Vec<BTreeMap<String, Local>>,
+    kinds: BTreeMap<String, usize>,
     next_local: usize,
     normal_loop_depth: usize,
     /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
@@ -5084,6 +5182,7 @@ impl<'a> Checker<'a> {
             members: Vec::new(),
             type_parameters: Vec::new(),
             scopes: vec![BTreeMap::new()],
+            kinds: BTreeMap::new(),
             next_local: 0,
             normal_loop_depth: 0,
             undecided_borrows: Vec::new(),
@@ -5623,7 +5722,7 @@ impl<'a> Checker<'a> {
                 let module = self.value_path(value).unwrap();
                 let message = if module == "Task" {
                     format!(
-                        "Task has no function '{}'; use Task.run or Task.parallel",
+                        "Task has no function '{}'; use Task.run, Task.parallel, or Task.parallel_results",
                         field.text
                     )
                 } else {

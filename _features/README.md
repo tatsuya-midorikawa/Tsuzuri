@@ -32,6 +32,20 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 - A09は完全指定の借用fieldと単一regionの名前付き契約まで。設計段階の独立した複数record regionは未対応。
 - F05のx86経路はクロスコンパイル済みで、対応実機での実行・速度は未検証。ARM baselineは実行検証済み。P3には着手していません。
 
+## P3 実装・総合検証
+
+P3の全7件に実装を追加しました。各チケットの初期段階の範囲で6件を`done`とし、G10だけはWindows実行ゲート未確認のため`blocked`です。
+
+- E04: strict manifestとローカルpath依存、namespace/循環/出力保護。git/registry/lockfile解決は対象外。
+- F06: Node Workerの共有メモリ・独立stack・atomic queue・thread-safe heap。既定WASMはimportなし。Browser本番glueは対象外。
+- F07: kernel抽出・CPU参照・strict i32/i32u WGSL・WebGPU host試作。実Metal adapterで783参照が一致。float/64-bit GPU、通常言語runtimeへの自動接続は対象外。
+- A10: 明示kind付きrank-1 HKT、部分適用、default/generic methodと通常単相化。HKT aliases/標準Functor導入は対象外。
+- B06: Task.parallel_results、最小indexのerror、未開始停止・全開始済みjoin・所有値回収。ASan/UBSan/TSanも成功。
+- G11: SHA-256のwhole-build cache、no-cache、破損/同時保存/eviction、tool/source/依存/sidecar検証。parse/check/IR cacheは対象外。
+- G10: MSVC ABI・Win32 runtime・safe hardlink保護・専用CIを実装。実Windows SDKでO0/O3 COFF/PE linkとRust全targetのcross checkは成功。Windows上のcargo test・native実行・file置換は未確認。
+- runtime19ファイル、fmt/clippy、全Rustテスト、READMEの全ローカルE2Eが成功。feature4928、Task41結果/4trap、整数intrinsic263182、型変換1585、Math786051参照を検証。
+- 36種目の多言語quick、Task/Parallel、CE/SIMD/dispatch、cache/GPU参照quickが成功。短縮時間は性能優位の根拠にしません。比較harnessのMix入力は独立したrootへ修正しました。
+
 ## 一覧
 
 ### A. 型システム
@@ -47,7 +61,7 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 | A07 | [deriving（Eq／Ord／Display／Hash／Default の自動導出）](A07-deriving.md) | P1 | M | A11, A06, A02, D01 | done |
 | A08 | [char（UTF-16）型と utf8char（Unicode スカラー）型](A08-char-type.md) | P1 | M | E02, (B01) | done |
 | A09 | [名前付きライフタイムと借用フィールド](A09-named-lifetimes.md) | P2 | XL | – | done |
-| A10 | [高階型（HKT）](A10-higher-kinded-types.md) | P3 | XL | A01, A06 | todo |
+| A10 | [高階型（HKT）](A10-higher-kinded-types.md) | P3 | XL | A01, A06 | done |
 | A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](A11-borrowed-comparisons.md) | P1 | M | – | done |
 
 ### B. エラー処理・制御
@@ -59,7 +73,7 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 | B03 | [break／continue](B03-break-continue.md) | P1 | M | – | done |
 | B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](B04-active-pattern-extensions.md) | P1 | M | B01, A02 | done |
 | B05 | [コンピュテーション式の拡張（match!／and!／use／try）](B05-computation-expression-extensions.md) | P2 | M | (B01) | done |
-| B06 | [タスクのキャンセルと失敗の伝播](B06-task-cancellation.md) | P3 | L | B01, F01 | todo |
+| B06 | [タスクのキャンセルと失敗の伝播](B06-task-cancellation.md) | P3 | L | B01, F01 | done |
 
 ### C. コレクション・データ
 
@@ -91,7 +105,7 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 | E01 | [可視性制御（private）](E01-visibility.md) | P0 | S | – | done |
 | E02 | [標準ライブラリの同梱機構](E02-standard-library-infrastructure.md) | P0 | M | E01 | done |
 | E03 | [階層モジュール・サブディレクトリ](E03-hierarchical-modules.md) | P2 | L | E02 | done |
-| E04 | [パッケージと依存管理](E04-packages.md) | P3 | XL | E03 | todo |
+| E04 | [パッケージと依存管理](E04-packages.md) | P3 | XL | E03 | done |
 | E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](E05-host-abi-buffers.md) | P1 | L | C03 | done |
 | E06 | [ホスト関数のインポート](E06-host-imports.md) | P2 | L | E02 | done |
 | E07 | [デバッグ出力（Debug.print／trace）](E07-debug-output.md) | P1 | S | D01, E02 | done |
@@ -105,8 +119,8 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 | F03 | [WASM SIMD128](F03-wasm-simd128.md) | P2 | M | – | done |
 | F04 | [移植可能な SIMD ベクトル型](F04-portable-simd-types.md) | P2 | L | E02, (F03) | done |
 | F05 | [実行時の CPU 命令セット判定と関数の複数版](F05-runtime-cpu-dispatch.md) | P2 | L | C04 | done |
-| F06 | [WASM threads バックエンド](F06-wasm-threads.md) | P3 | L | F01 | todo |
-| F07 | [GPU バックエンド](F07-gpu-backend.md) | P3 | XL | F02, E05, B01 | todo |
+| F06 | [WASM threads バックエンド](F06-wasm-threads.md) | P3 | L | F01 | done |
+| F07 | [GPU バックエンド](F07-gpu-backend.md) | P3 | XL | F02, E05, B01 | done |
 
 ### G. ツール・開発体験
 
@@ -121,8 +135,8 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 | G07 | [LSP（言語サーバー）](G07-lsp.md) | P2 | L | G02 | done |
 | G08 | [デバッグ情報（DWARF／WASM）](G08-debug-info.md) | P2 | M | – | done |
 | G09 | [ドキュメントコメントと API 文書生成](G09-doc-comments.md) | P2 | S | E01 | done |
-| G10 | [Windows ネイティブ対応](G10-windows.md) | P3 | M | – | todo |
-| G11 | [増分ビルド・キャッシュ](G11-incremental-build.md) | P3 | L | (E03) | todo |
+| G10 | [Windows ネイティブ対応](G10-windows.md) | P3 | M | – | blocked |
+| G11 | [増分ビルド・キャッシュ](G11-incremental-build.md) | P3 | L | (E03) | done |
 
 ## 推奨フェーズ
 

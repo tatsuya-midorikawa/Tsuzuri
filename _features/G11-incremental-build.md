@@ -6,7 +6,7 @@
 | 規模 | L |
 | 依存 | 弱依存 E03（Phase 1 は不要。Phase 2/3 では必須。未決事項参照） |
 | 後続 | E04（package cache）、G07（LSP 解析 cache 共有） |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/driver.rs`, `src/main.rs`, `src/lib.rs`, `src/llvm.rs`, `src/check.rs`, `Cargo.toml`, `build.rs`, `tests/cache.rs`, `tests/cache.mjs`, `README.md`, `docs/architecture.md`, `docs/benchmarks.md` |
 
 ## 目的
@@ -331,13 +331,13 @@ cache hit でも output path の parent 作成と atomic publish は miss と同
 
 ## 受け入れ条件
 
-- [ ] 同一入力の 2 回目 build が cache hit し、byte-identical output を生成する。
-- [ ] source / options / compiler / tool version / runtime bytes の変更で cache miss する。
-- [ ] cache hit でも output protection を迂回しない。
-- [ ] `--no-cache` が cache load/store を行わない。
-- [ ] cache entry の部分書き込みや同時 store で壊れた artifact を返さない。
-- [ ] SHA-256 test vectors が通る。
-- [ ] 速度の改善を主張する場合は `docs/benchmarks.md` に測定条件と結果を記録する。
+- [x] 同一入力の 2 回目 build が cache hit し、byte-identical output を生成する。
+- [x] source / options / compiler / tool version / runtime bytes の変更で cache miss する。
+- [x] cache hit でも output protection を迂回しない。
+- [x] `--no-cache` が cache load/store を行わない。
+- [x] cache entry の部分書き込みや同時 store で壊れた artifact を返さない。
+- [x] SHA-256 test vectors が通る。
+- [x] 速度の改善を主張する場合は `docs/benchmarks.md` に測定条件と結果を記録する。
 
 ## 落とし穴
 
@@ -361,3 +361,12 @@ cache hit でも output path の parent 作成と atomic publish は miss と同
 - **E03 依存の評価**: README は G11 の依存を E03 としているが、Phase 1 の whole-build cache は現行の flat directory project だけで正しく実装できるため、E03 は hard dependency ではない。E03 は Phase 2/3 で module graph / subdirectory path / stable item id を cache key と invalidation に組み込む時点の hard dependency、と結論づける。README の依存表は `(E03)` の弱い依存へ見直す提案をする。
 - **`TSUZURI_CACHE_DIR`**: 既定案は採用する。採用しない場合、tests で user cache を汚さないための injection API が別途必要。
 - **debug build fingerprint**: git commit が `unknown` の開発 build で stale cache を避けるため、compiler binary mtime や `option_env!("PROFILE")` を key に入れるか要判断。既定案は profile と version/commit を入れ、commit unknown でも cache を有効にする。
+
+## 実装判断（2026-09-28）
+
+- GUIDE D-29に従いcompiler binary全体のSHAを使い、未コミット版を含めて区別する。build.rsは不要とした。
+- metadataは既存serde_jsonを再利用。SHA-256はNISTと分割境界を検証した内部実装。artifact/trap/DWARFのsize/digest/modeと診断を保存する。
+- --no-cache、OS別保存先/TSUZURI_CACHE_DIR、marker、破損miss、atomic保存、非待機writer lock、bounded GCを実装。
+- 解析/IR生成は毎回実行する。絶対source map/package identity、nativeCPU macro、tool binary/versionをキーへ含める。debug exeのDWARFだけはoutput pathも区別する。
+- CLI E2Eでhit/miss、tool版変更、破損修復、同時build、無効化、hardlink/manifest保護、exe権限、trap/DWARF復元、依存変更を確認。benchmark quickはbyte/checksum一致を確認し、速度保証に使わない。
+- cache単体2件、CLI3件、全Rustテスト、fmt/clippy、READMEの全E2Eが成功。cache既定有効でも既存native/WASM O0/O3の意味・診断・所有heap回収を維持した。

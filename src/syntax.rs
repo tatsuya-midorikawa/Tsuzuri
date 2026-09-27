@@ -316,9 +316,33 @@ pub struct ClassDecl {
     pub doc: Option<Documentation>,
     pub name: Ident,
     pub variable: Ident,
+    pub kind: Kind,
     pub superclasses: Vec<ConstraintExpr>,
     pub methods: Vec<SignatureDecl>,
     pub defaults: Vec<Definition>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    #[default]
+    Type,
+    Arrow(Box<Kind>, Box<Kind>),
+}
+
+impl Kind {
+    pub fn display(&self) -> String {
+        match self {
+            Self::Type => "*".into(),
+            Self::Arrow(argument, result) => {
+                let left = if matches!(**argument, Self::Arrow(..)) {
+                    format!("({})", argument.display())
+                } else {
+                    argument.display()
+                };
+                format!("{left} -> {}", result.display())
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -34,6 +34,7 @@ pub enum Emit {
     Llvm,
     Header,
     Wasm,
+    Wgsl,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +47,8 @@ pub struct BuildOptions {
     pub trap_info: bool,
     pub debug_info: bool,
     pub wasm_simd: bool,
+    pub wasm_threads: bool,
+    pub cache: bool,
 }
 
 impl Default for BuildOptions {
@@ -59,12 +62,36 @@ impl Default for BuildOptions {
             trap_info: false,
             debug_info: false,
             wasm_simd: false,
+            wasm_threads: false,
+            cache: true,
         }
     }
 }
 
 impl BuildOptions {
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.emit == Emit::Wgsl
+            && (self.target != Target::Native
+                || self.cpu != Cpu::Generic
+                || self.debug_info
+                || self.debug_output
+                || self.trap_info
+                || self.wasm_simd
+                || self.wasm_threads)
+        {
+            return Err(driver_error(
+                "E2000",
+                "WGSL output does not use target, CPU, debug, or WASM feature options",
+            ));
+        }
+        if self.wasm_threads
+            && (self.target != Target::Wasm32 || !matches!(self.emit, Emit::Wasm | Emit::Object))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature threads requires wasm32 object or WASM output",
+            ));
+        }
         if self.wasm_simd && (self.target != Target::Wasm32 || self.emit == Emit::Header) {
             return Err(driver_error(
                 "E2000",
@@ -124,6 +151,7 @@ impl BuildOptions {
             Emit::Llvm => "ll",
             Emit::Header => "h",
             Emit::Wasm => "wasm",
+            Emit::Wgsl => "wgsl",
         })
     }
 }
@@ -139,6 +167,14 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
     }
 }
 
+fn native_compile_args(windows: bool) -> &'static [&'static str] {
+    if windows {
+        &["--target=x86_64-pc-windows-msvc"]
+    } else {
+        &["-fPIC"]
+    }
+}
+
 #[derive(Debug)]
 pub struct SourceFile {
     /// A file path, or a virtual `std/Name.tz` path for std sources.
@@ -147,11 +183,13 @@ pub struct SourceFile {
     pub name: String,
     pub text: String,
     pub origin: ModuleOrigin,
+    pub package: Option<crate::package::PackageId>,
 }
 
 #[derive(Debug)]
 pub struct Project {
     pub sources: Vec<SourceFile>,
+    pub manifests: Vec<SourceFile>,
     pub root: usize,
 }
 
@@ -185,11 +223,12 @@ impl SourceFile {
             name: name.to_owned(),
             text,
             origin: ModuleOrigin::User,
+            package: None,
         })
     }
 }
 
-fn collect_sources(root: &Path) -> Result<Vec<PathBuf>, SourceError> {
+fn collect_sources(root: &Path, package_roots: &[PathBuf]) -> Result<Vec<PathBuf>, SourceError> {
     let mut pending = vec![(root.to_owned(), 0)];
     let mut directories = 0;
     let mut paths = Vec::new();
@@ -238,7 +277,9 @@ fn collect_sources(root: &Path) -> Result<Vec<PathBuf>, SourceError> {
                     ));
                 }
             } else if kind.is_dir() {
-                pending.push((path, depth + 1));
+                if !package_roots.contains(&path) {
+                    pending.push((path, depth + 1));
+                }
             } else if source_kind(&path).is_some() {
                 if !kind.is_file() {
                     return Err(SourceError::new(
@@ -258,6 +299,167 @@ fn collect_sources(root: &Path) -> Result<Vec<PathBuf>, SourceError> {
     }
     paths.sort_by_cached_key(|path| path.to_string_lossy().replace('\\', "/"));
     Ok(paths)
+}
+
+struct LoadedPackage {
+    id: crate::package::PackageId,
+    manifest: crate::package::Manifest,
+    text: String,
+}
+
+fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let manifest_path = directory.join("Tsuzuri.toml");
+    match fs::symlink_metadata(&manifest_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(SourceError::new(
+                &manifest_path,
+                io_error("inspect manifest", &manifest_path, error),
+            ));
+        }
+        Ok(_) => {}
+    }
+    let root = fs::canonicalize(directory).map_err(|error| {
+        SourceError::new(
+            directory,
+            io_error("resolve package root", directory, error),
+        )
+    })?;
+    let mut pending = vec![(root, None::<(String, PathBuf, Span)>, false)];
+    let mut active = BTreeSet::new();
+    let mut loaded = BTreeMap::<PathBuf, LoadedPackage>::new();
+    let mut namespaces = BTreeMap::new();
+    while let Some((root, expected, leaving)) = pending.pop() {
+        if leaving {
+            active.remove(&root);
+            continue;
+        }
+        let path = root.join("Tsuzuri.toml");
+        if active.contains(&root) {
+            return Err(SourceError::new(
+                &path,
+                driver_error("E1011", "cyclic package dependency"),
+            ));
+        }
+        if !loaded.contains_key(&root) {
+            if loaded.len() >= 1024 || active.len() >= 128 {
+                return Err(SourceError::new(
+                    &path,
+                    driver_error("E1017", "package graph exceeds 1024 packages or depth 128"),
+                ));
+            }
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                SourceError::new(&path, io_error("inspect package manifest", &path, error))
+            })?;
+            if !metadata.is_file() || metadata.is_symlink() {
+                return Err(SourceError::new(
+                    &path,
+                    driver_error(
+                        "E1011",
+                        "package manifests must be regular files, not symbolic links",
+                    ),
+                ));
+            }
+            let text = read_source_text(&path).map_err(|error| SourceError::new(&path, error))?;
+            let manifest = crate::package::parse_manifest(&text, 0)
+                .map_err(|error| SourceError::new(&path, error))?;
+            if crate::stdlib::is_reserved_module(&manifest.namespace)
+                || manifest.namespace == "Task"
+            {
+                return Err(SourceError::new(
+                    &path,
+                    driver_error(
+                        "E1011",
+                        "package namespace is reserved by the standard library",
+                    ),
+                ));
+            }
+            if namespaces
+                .insert(manifest.namespace.clone(), root.clone())
+                .is_some()
+            {
+                return Err(SourceError::new(
+                    &path,
+                    driver_error(
+                        "E1011",
+                        "package name or namespace resolves to multiple roots",
+                    ),
+                ));
+            }
+            active.insert(root.clone());
+            pending.push((root.clone(), None, true));
+            for (name, dependency) in manifest.dependencies.iter().rev() {
+                let mut dependency_root = root.clone();
+                for component in dependency.path.components() {
+                    match component {
+                        std::path::Component::CurDir => continue,
+                        std::path::Component::ParentDir => {
+                            dependency_root.pop();
+                        }
+                        std::path::Component::Normal(part) => dependency_root.push(part),
+                        _ => {
+                            return Err(SourceError::new(
+                                &path,
+                                Diagnostic::new(
+                                    "E1011",
+                                    "dependency paths must be relative",
+                                    dependency.span,
+                                ),
+                            ));
+                        }
+                    }
+                    let metadata = fs::symlink_metadata(&dependency_root).map_err(|error| {
+                        SourceError::new(
+                            &path,
+                            io_error("inspect dependency directory", &dependency_root, error),
+                        )
+                    })?;
+                    if !metadata.is_dir() || metadata.is_symlink() {
+                        return Err(SourceError::new(
+                            &path,
+                            Diagnostic::new(
+                                "E1011",
+                                "dependency paths must traverse real directories, not symbolic links",
+                                dependency.span,
+                            ),
+                        ));
+                    }
+                }
+                pending.push((
+                    dependency_root,
+                    Some((name.clone(), path.clone(), dependency.span)),
+                    false,
+                ));
+            }
+            loaded.insert(
+                root.clone(),
+                LoadedPackage {
+                    id: crate::package::PackageId {
+                        name: manifest.name.clone(),
+                        root: root.clone(),
+                    },
+                    manifest,
+                    text,
+                },
+            );
+        }
+        if let Some((name, path, span)) = expected
+            && loaded[&root].manifest.name != name
+        {
+            return Err(SourceError::new(
+                &path,
+                Diagnostic::new(
+                    "E1011",
+                    "dependency key must match the dependency package name",
+                    span,
+                ),
+            ));
+        }
+    }
+    let mut packages: Vec<_> = loaded.into_values().collect();
+    packages.sort_by(|left, right| left.manifest.namespace.cmp(&right.manifest.namespace));
+    Ok(packages)
 }
 
 impl Project {
@@ -285,7 +487,6 @@ impl Project {
                 && let Some(parent) = path
                     .parent()
                     .and_then(|parent| fs::canonicalize(parent).ok())
-                && parent.starts_with(&directory)
             {
                 if text.len() > MAX_SOURCE_BYTES {
                     return Err(SourceError::new(
@@ -299,12 +500,11 @@ impl Project {
                         driver_error("E1011", "a source file needs a filename"),
                     )
                 })?);
-                if path
-                    .strip_prefix(&directory)
-                    .unwrap()
-                    .components()
-                    .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
-                {
+                if path.strip_prefix(&directory).is_ok_and(|relative| {
+                    relative
+                        .components()
+                        .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+                }) {
                     continue;
                 }
                 normalized.insert(path, text.clone());
@@ -318,49 +518,103 @@ impl Project {
         selected: Option<&Path>,
         overlays: &std::collections::BTreeMap<PathBuf, String>,
     ) -> Result<Self, SourceError> {
-        let mut paths: std::collections::BTreeMap<_, _> = collect_sources(directory)?
-            .into_iter()
-            .map(|path| (path, None))
+        let packages = load_packages(directory)?;
+        let canonical;
+        let directory = if packages.is_empty() {
+            directory
+        } else {
+            canonical = fs::canonicalize(directory).map_err(|error| {
+                SourceError::new(
+                    directory,
+                    io_error("resolve project root", directory, error),
+                )
+            })?;
+            &canonical
+        };
+        let mut roots: Vec<_> = packages
+            .iter()
+            .map(|package| package.id.root.clone())
             .collect();
-        for (path, text) in overlays {
-            paths.insert(path.clone(), Some(text));
+        if roots.is_empty() {
+            roots.push(directory.to_owned());
         }
-        if paths.len() > 4096 {
-            return Err(SourceError::new(
-                directory,
-                driver_error("E1017", "module discovery exceeds 4096 source files"),
-            ));
-        }
-        let mut paths: Vec<_> = paths.into_iter().collect();
-        paths.sort_by_cached_key(|(path, _)| path.to_string_lossy().replace('\\', "/"));
         let mut sources = Vec::new();
-        for (path, overlay) in paths {
-            let relative_path = path
-                .strip_prefix(directory)
-                .map_err(|_| {
+        for root in &roots {
+            let package = packages.iter().find(|package| package.id.root == *root);
+            let mut paths: std::collections::BTreeMap<_, _> = collect_sources(root, &roots)?
+                .into_iter()
+                .map(|path| (path, None))
+                .collect();
+            for (path, text) in overlays {
+                if path.starts_with(root)
+                    && !roots.iter().any(|other| {
+                        other != root && other.starts_with(root) && path.starts_with(other)
+                    })
+                {
+                    paths.insert(path.clone(), Some(text));
+                }
+            }
+            for (path, overlay) in paths {
+                let relative = path.strip_prefix(root).map_err(|_| {
                     SourceError::new(
                         &path,
-                        driver_error("E1011", "source is outside the project root"),
+                        driver_error("E1011", "source is outside its package root"),
                     )
-                })?
-                .to_owned();
-            let name = crate::module_name_from_relative(&relative_path)
-                .map_err(|error| SourceError::new(&path, error))?;
-            if let Some(text) = overlay {
-                sources.push(SourceFile {
-                    path,
-                    relative_path,
-                    name,
-                    text: text.clone(),
-                    origin: ModuleOrigin::User,
-                });
-            } else {
-                let mut source = SourceFile::read(&path)?;
+                })?;
+                if relative
+                    .components()
+                    .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+                {
+                    continue;
+                }
+                let relative_path = if root != directory {
+                    Path::new(&package.unwrap().manifest.namespace).join(relative)
+                } else {
+                    if packages.iter().any(|package| {
+                        package.id.root != directory
+                            && relative.components().next().is_some_and(|part| {
+                                Path::new(part.as_os_str()).file_stem()
+                                    == Some(OsStr::new(&package.manifest.namespace))
+                            })
+                    }) {
+                        return Err(SourceError::new(
+                            &path,
+                            driver_error(
+                                "E1011",
+                                "root module collides with a dependency namespace",
+                            ),
+                        ));
+                    }
+                    relative.to_owned()
+                };
+                let name = crate::module_name_from_relative(&relative_path)
+                    .map_err(|error| SourceError::new(&path, error))?;
+                let mut source = if let Some(text) = overlay {
+                    SourceFile {
+                        path,
+                        relative_path: relative_path.clone(),
+                        name: name.clone(),
+                        text: text.clone(),
+                        origin: ModuleOrigin::User,
+                        package: None,
+                    }
+                } else {
+                    SourceFile::read(&path)?
+                };
                 source.relative_path = relative_path;
                 source.name = name;
+                source.package = package.map(|package| package.id.clone());
                 sources.push(source);
+                if sources.len() > 4096 {
+                    return Err(SourceError::new(
+                        directory,
+                        driver_error("E1017", "package graph exceeds 4096 source files"),
+                    ));
+                }
             }
         }
+        sources
+            .sort_by_cached_key(|source| source.relative_path.to_string_lossy().replace('\\', "/"));
         let root = if let Some(selected) = selected {
             sources.iter().position(|source| source.relative_path == selected).ok_or_else(|| SourceError::new(&directory.join(selected), driver_error("E1011", "source filename must match its directory entry exactly, including case")))?
         } else {
@@ -378,9 +632,25 @@ impl Project {
                     .to_owned(),
                 text: (*text).to_owned(),
                 origin: ModuleOrigin::Std,
+                package: None,
             }
         }));
-        Ok(Self { sources, root })
+        let manifests = packages
+            .into_iter()
+            .map(|package| SourceFile {
+                path: package.id.root.join("Tsuzuri.toml"),
+                relative_path: PathBuf::from("Tsuzuri.toml"),
+                name: package.manifest.namespace,
+                text: package.text,
+                origin: ModuleOrigin::User,
+                package: Some(package.id),
+            })
+            .collect();
+        Ok(Self {
+            sources,
+            manifests,
+            root,
+        })
     }
 
     pub fn load_for_tests(input: &Path) -> Result<Self, SourceError> {
@@ -491,7 +761,10 @@ impl Project {
     }
 
     pub fn source_for(&self, error: &Diagnostic) -> &SourceFile {
-        &self.sources[error.span.source.unwrap_or(self.root)]
+        let index = error.span.source.unwrap_or(self.root);
+        self.sources
+            .get(index)
+            .unwrap_or_else(|| &self.manifests[index - self.sources.len()])
     }
 
     pub fn analyze(&self) -> Result<CheckedModule, Diagnostic> {
@@ -603,9 +876,14 @@ fn protect_documentation(project: &Project, output: &Path) -> Result<bool, Diagn
     }
     let destination = fs::canonicalize(output)
         .map_err(|error| io_error("resolve documentation output", output, error))?;
-    if project.sources.iter().any(|source| {
-        fs::canonicalize(&source.path).is_ok_and(|source| source.starts_with(&destination))
-    }) {
+    if project
+        .sources
+        .iter()
+        .chain(&project.manifests)
+        .any(|source| {
+            fs::canonicalize(&source.path).is_ok_and(|source| source.starts_with(&destination))
+        })
+    {
         return Err(driver_error(
             "E2003",
             "documentation output must not contain project sources",
@@ -621,6 +899,10 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
             "input files must use '.tz' (code), '.tt' (type classes), or '.tc' (computation builder); rename old '.tzr' code files to '.tz'",
         ));
     }
+    read_source_text(path)
+}
+
+fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
@@ -753,7 +1035,7 @@ pub fn build(
     output: &Path,
     options: BuildOptions,
 ) -> Result<Vec<String>, Diagnostic> {
-    build_complete(module, project, output, options).map(|(messages, _)| messages)
+    build_complete(module, project, output, options, "build").map(|(messages, _)| messages)
 }
 
 fn build_complete(
@@ -761,6 +1043,7 @@ fn build_complete(
     project: &Project,
     output: &Path,
     options: BuildOptions,
+    action: &str,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
     if options.emit == Emit::Executable
@@ -780,6 +1063,21 @@ fn build_complete(
     let mut trap_sites = Vec::new();
     let mut text = if options.emit == Emit::Header {
         llvm::header(module)
+    } else if options.emit == Emit::Wgsl {
+        let exports: Vec<_> = module
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, function)| function.exported)
+            .map(|(id, _)| id)
+            .collect();
+        if exports.len() != 1 {
+            return Err(driver_error(
+                "E2004",
+                "WGSL output requires exactly one exported scalar kernel; use a dedicated source project",
+            ));
+        }
+        crate::gpu::extract_kernel(module, exports[0])?.wgsl()?
     } else {
         let emission = llvm::EmitOptions {
             entry: if options.emit == Emit::Executable {
@@ -795,6 +1093,18 @@ fn build_complete(
         {
             let output = project.with_trap_sources(|sources| {
                 llvm::emit_native_build(
+                    module,
+                    emission,
+                    sources,
+                    options.debug_info.then_some(options.optimization != 0),
+                    options.trap_info,
+                )
+            })?;
+            trap_sites = output.trap_sites;
+            output.ir
+        } else if options.wasm_threads {
+            let output = project.with_trap_sources(|sources| {
+                llvm::emit_wasm_threads_build(
                     module,
                     emission,
                     sources,
@@ -826,6 +1136,12 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
+    if cfg!(windows)
+        && options.target == Target::Native
+        && !matches!(options.emit, Emit::Header | Emit::Wgsl)
+    {
+        text = llvm::windows_abi(text, module);
+    }
     if options.target == Target::Wasm32 && options.emit != Emit::Header {
         if options.wasm_simd {
             text.insert_str(
@@ -841,10 +1157,19 @@ fn build_complete(
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
     let native_runtime = task_runtime || cpu_runtime;
     let debug_import = options.target == Target::Wasm32 && text.contains("@tsuzuri_debug_write(");
-    if task_runtime && !cfg!(unix) && !matches!(options.emit, Emit::Llvm | Emit::Header) {
+    if task_runtime
+        && !cfg!(any(unix, windows))
+        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+    {
         return Err(driver_error(
             "E2002",
-            "native parallel tasks require a POSIX pthread toolchain; wasm32 provides the portable sequential backend",
+            "native parallel tasks require a POSIX or Windows toolchain; wasm32 provides the portable sequential backend",
+        ));
+    }
+    if cfg!(windows) && native_runtime && options.emit == Emit::Object {
+        return Err(driver_error(
+            "E2002",
+            "Windows COFF objects with embedded task or CPU runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
     protect_sources(project, output)?;
@@ -886,7 +1211,64 @@ fn build_complete(
         fs::write(&staged_sidecar, table)
             .map_err(|error| io_error("write trap side table", &staged_sidecar, error))?;
     }
-    if matches!(options.emit, Emit::Llvm | Emit::Header) {
+    let mut cache_paths =
+        std::collections::BTreeMap::from([("artifact".to_owned(), artifact.clone())]);
+    if sidecar.is_some() {
+        cache_paths.insert("traps".into(), staged_sidecar.clone());
+    }
+    if dwarf_sidecar.is_some() {
+        cache_paths.insert("dwarf".into(), staged_dwarf.clone());
+    }
+    let cache = if options.cache && options.emit != Emit::Header {
+        let prepared = (|| -> io::Result<_> {
+            let root = crate::cache::default_root()
+                .ok_or_else(|| io::Error::other("no cache directory is configured"))?;
+            let key = crate::cache::build_key(project, options, action, &text, output)?;
+            let cache = crate::cache::BuildCache::open(&root)?;
+            Ok((cache, key))
+        })();
+        match prepared {
+            Ok(value) => Some(value),
+            Err(error) => {
+                messages.push(format!("build cache disabled: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut cached = None;
+    if let Some((cache, key)) = &cache {
+        match cache.load(key) {
+            Ok(Some(artifact)) if artifact.files.keys().eq(cache_paths.keys()) => {
+                cached = Some(artifact)
+            }
+            Ok(_) => {}
+            Err(error) => messages.push(format!("build cache read failed; rebuilding: {error}")),
+        }
+    }
+    let cache_hit = cached.is_some();
+    if let Some(cached) = cached {
+        for (name, file) in cached.files {
+            let path = &cache_paths[&name];
+            fs::write(path, file.bytes)
+                .map_err(|error| io_error("restore cached artifact", path, error))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(file.mode))
+                    .map_err(|error| io_error("restore cached file mode", path, error))?;
+            }
+            #[cfg(not(unix))]
+            debug_assert_eq!(file.mode, 0);
+        }
+        messages.extend(cached.messages);
+        if let Some((cache, _)) = &cache
+            && let Err(error) = cache.evict()
+        {
+            messages.push(format!("build cache cleanup failed: {error}"));
+        }
+    } else if matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Wgsl) {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
         let mut ir = temporary.path.join("module.ll");
@@ -898,6 +1280,11 @@ fn build_complete(
             && options.emit == Emit::Object;
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
+            if cfg!(windows) && task_runtime {
+                let header = temporary.path.join("task-windows.h");
+                fs::write(&header, include_str!("runtime/task-windows.h"))
+                    .map_err(|error| io_error("write Win32 task adapter", &header, error))?;
+            }
             let source = format!(
                 "{}\n{}",
                 if task_runtime {
@@ -915,9 +1302,10 @@ fn build_complete(
                 .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
-                .args(["-std=c11", "-fPIC", "-c"])
+                .args(["-std=c11", "-c"])
+                .args(native_compile_args(cfg!(windows)))
                 .arg(format!("-O{}", options.optimization));
-            if task_runtime {
+            if task_runtime && !cfg!(windows) {
                 runtime.arg("-pthread");
             }
             if options.debug_info {
@@ -934,7 +1322,7 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut runtime,
-                    "parallel tasks require Clang and POSIX pthread headers",
+                    "native runtime requires Clang and the platform C/OS SDK headers",
                 )?,
             );
             if merge_debug_ir {
@@ -957,6 +1345,34 @@ fn build_complete(
             }
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+        let threads_object = temporary.path.join("threads.o");
+        if options.wasm_threads {
+            let source = temporary.path.join("threads.c");
+            fs::write(&source, include_str!("runtime/task-wasm-threads.c"))
+                .map_err(|error| io_error("write WASM thread runtime", &source, error))?;
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args([
+                    "--target=wasm32-unknown-unknown",
+                    "-std=c11",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                    "-matomics",
+                    "-mbulk-memory",
+                    "-c",
+                ])
+                .arg(format!("-O{}", options.optimization))
+                .arg(&source)
+                .arg("-o")
+                .arg(&threads_object);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut runtime,
+                    "WASM threads require Clang atomics and bulk-memory support",
+                )?,
+            );
+        }
         clang
             .arg("-x")
             .arg("ir")
@@ -969,13 +1385,16 @@ fn build_complete(
             clang
                 .arg("--target=wasm32-unknown-unknown")
                 .arg("-mbulk-memory");
+            if options.wasm_threads {
+                clang.arg("-matomics");
+            }
             clang.arg(if options.wasm_simd {
                 "-msimd128"
             } else {
                 "-mno-simd128"
             });
         } else {
-            clang.arg("-fPIC");
+            clang.args(native_compile_args(cfg!(windows)));
             if options.cpu == Cpu::Native {
                 clang.arg(native_cpu_flag(env::consts::ARCH)?);
             }
@@ -987,6 +1406,7 @@ fn build_complete(
         clang.arg(&ir).arg("-o").arg(
             if options.emit == Emit::Wasm
                 || dwarf_sidecar.is_some()
+                || (options.wasm_threads && options.emit == Emit::Object)
                 || (native_runtime && options.emit == Emit::Object && !merge_debug_ir)
             {
                 &object
@@ -999,7 +1419,7 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if task_runtime {
+            if task_runtime && !cfg!(windows) {
                 clang.arg("-pthread");
             }
         }
@@ -1063,6 +1483,22 @@ fn build_complete(
                 )?,
             );
         }
+        if options.wasm_threads && options.emit == Emit::Object {
+            let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
+            linker
+                .arg("-r")
+                .arg(&object)
+                .arg(&threads_object)
+                .arg("-o")
+                .arg(&artifact);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut linker,
+                    "WASM threads require wasm-ld relocatable linking",
+                )?,
+            );
+        }
         if options.emit == Emit::Wasm {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
             linker
@@ -1071,6 +1507,23 @@ fn build_complete(
                 .arg("-z")
                 .arg("stack-size=1048576")
                 .arg("--max-memory=16777216");
+            if options.wasm_threads {
+                linker
+                    .args([
+                        "--shared-memory",
+                        "--import-memory",
+                        "--export-memory",
+                        "--export=__stack_pointer",
+                        "--export=tsuzuri_thread_stack_alloc",
+                        "--export=tsuzuri_thread_stack_size",
+                        "--export=tsuzuri_thread_stack_probe",
+                        "--export=tsuzuri_thread_heap_live_bytes",
+                        "--export=tsuzuri_thread_entry",
+                        "--export=tsuzuri_threads_init",
+                        "--export=tsuzuri_threads_control",
+                    ])
+                    .arg(&threads_object);
+            }
             if !options.debug_info {
                 linker.arg("--strip-all");
             }
@@ -1108,6 +1561,12 @@ fn build_complete(
         .into_iter()
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
         .collect();
+    if !cache_hit
+        && let Some((cache, key)) = &cache
+        && let Err(error) = cache.store(key, &cache_paths, &messages)
+    {
+        messages.push(format!("build cache write failed: {error}"));
+    }
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
     temporary.close()?;
     Ok((messages, trap_sites))
@@ -1196,6 +1655,7 @@ pub fn run(
             trap_info: true,
             ..options
         },
+        "run",
     )?;
     let result = Command::new(&output)
         .output()
@@ -1271,7 +1731,7 @@ fn collect_message(messages: &mut Vec<String>, message: String) {
 }
 
 fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
-    for source in &project.sources {
+    for source in project.sources.iter().chain(&project.manifests) {
         // Std sources are embedded, so no output can overwrite them.
         if source.origin == ModuleOrigin::User {
             protect_source(&source.path, output)?;
@@ -1299,7 +1759,7 @@ fn protect_source(input: &Path, output: &Path) -> Result<(), Diagnostic> {
                 .map_err(|error| io_error("resolve source", input, error))?;
             let destination = fs::canonicalize(output)
                 .map_err(|error| io_error("resolve output", output, error))?;
-            if source == destination || same_file(input, &metadata)? {
+            if source == destination || same_file(input, output, &metadata)? {
                 return Err(driver_error(
                     "E2003",
                     "refusing to overwrite the input source",
@@ -1313,15 +1773,25 @@ fn protect_source(input: &Path, output: &Path) -> Result<(), Diagnostic> {
 }
 
 #[cfg(unix)]
-fn same_file(input: &Path, output: &fs::Metadata) -> Result<bool, Diagnostic> {
+fn same_file(input: &Path, _output_path: &Path, output: &fs::Metadata) -> Result<bool, Diagnostic> {
     use std::os::unix::fs::MetadataExt;
     let input_metadata =
         fs::metadata(input).map_err(|error| io_error("inspect source", input, error))?;
     Ok(input_metadata.dev() == output.dev() && input_metadata.ino() == output.ino())
 }
 
-#[cfg(not(unix))]
-fn same_file(_input: &Path, _output: &fs::Metadata) -> Result<bool, Diagnostic> {
+#[cfg(windows)]
+fn same_file(input: &Path, output: &Path, _metadata: &fs::Metadata) -> Result<bool, Diagnostic> {
+    same_file::is_same_file(input, output)
+        .map_err(|error| io_error("compare file identity", output, error))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file(
+    _input: &Path,
+    _output_path: &Path,
+    _output: &fs::Metadata,
+) -> Result<bool, Diagnostic> {
     // Atomic replacement never modifies the contents of other hard links.
     Ok(false)
 }
@@ -1339,24 +1809,26 @@ fn io_error(action: &str, path: &Path, error: io::Error) -> Diagnostic {
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-struct TemporaryDirectory {
-    path: PathBuf,
+pub(crate) struct TemporaryDirectory {
+    pub(crate) path: PathBuf,
     removed: bool,
 }
 
 impl TemporaryDirectory {
-    fn new(parent: &Path) -> Result<Self, Diagnostic> {
+    pub(crate) fn new(parent: &Path) -> Result<Self, Diagnostic> {
         let parent = fs::canonicalize(parent)
             .map_err(|error| io_error("resolve temporary directory parent", parent, error))?;
         for _ in 0..128 {
             let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!(".tsuzuri-{}-{id}", std::process::id()));
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o700);
-            }
+                builder
+            };
             match builder.create(&path) {
                 Ok(()) => {
                     return Ok(Self {
@@ -1374,7 +1846,7 @@ impl TemporaryDirectory {
         ))
     }
 
-    fn close(mut self) -> Result<(), Diagnostic> {
+    pub(crate) fn close(mut self) -> Result<(), Diagnostic> {
         fs::remove_dir_all(&self.path)
             .map_err(|error| io_error("remove temporary directory", &self.path, error))?;
         self.removed = true;
@@ -1534,6 +2006,11 @@ mod tests {
 
     #[test]
     fn validates_native_cpu_tuning_and_selects_architecture_flags() {
+        assert_eq!(
+            native_compile_args(true),
+            ["--target=x86_64-pc-windows-msvc"]
+        );
+        assert_eq!(native_compile_args(false), ["-fPIC"]);
         assert_eq!(BuildOptions::default().cpu, Cpu::Generic);
         for architecture in ["x86", "x86_64"] {
             assert_eq!(native_cpu_flag(architecture).unwrap(), "-march=native");
@@ -1769,6 +2246,7 @@ mod tests {
             name: "Broken".to_owned(),
             text: "def broken :: i64\nfn broken = false".to_owned(),
             origin: ModuleOrigin::Std,
+            package: None,
         });
         let error = project.analyze().unwrap_err();
         assert_eq!(error.code, "E1003");

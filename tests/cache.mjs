@@ -1,0 +1,144 @@
+import assert from "node:assert/strict";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+
+const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
+const directory = mkdtempSync(join(tmpdir(), "tsuzuri-cache-e2e-"));
+const cache = join(directory, "cache");
+const project = join(directory, "project");
+mkdirSync(project);
+const source = join(project, "Main.tz");
+const env = { ...process.env, TSUZURI_CACHE_DIR: cache };
+const entries = () => readdirSync(cache).filter(name => /^[0-9a-f]{64}$/.test(name));
+function cli(args, success = true, overrides = {}) {
+  const result = spawnSync(compiler, args, { encoding: "utf8", timeout: 180000, env: { ...env, ...overrides }, maxBuffer: 4 * 1024 * 1024 });
+  assert.ifError(result.error);
+  if (success) assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+  return result;
+}
+function concurrent(args) {
+  return new Promise((resolveChild, reject) => {
+    const child = spawn(compiler, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("exit", code => code === 0 ? resolveChild() : reject(new Error(stderr)));
+  });
+}
+try {
+  writeFileSync(source, "export def answer :: i64\nfn answer = 42\n42\n");
+  const first = join(directory, "first.ll");
+  const second = join(directory, "second.ll");
+  cli(["build", source, "--emit", "llvm", "-o", first]);
+  assert.equal(entries().length, 1);
+  const key = entries()[0];
+  const metadataPath = join(cache, key, "metadata.json");
+  const meta = JSON.parse(readFileSync(metadataPath));
+  meta.last_used_unix_ms = 0;
+  writeFileSync(metadataPath, JSON.stringify(meta));
+  cli(["build", source, "--emit", "llvm", "-o", second]);
+  assert.deepEqual(readFileSync(first), readFileSync(second));
+  assert.equal(entries().length, 1);
+  assert.ok(JSON.parse(readFileSync(metadataPath)).last_used_unix_ms > 0);
+  const digest = createHash("sha256").update(readFileSync(first)).digest("hex");
+  assert.equal(JSON.parse(readFileSync(metadataPath)).files.artifact.sha256, digest);
+  writeFileSync(join(cache, key, "artifact"), "corrupt");
+  cli(["build", source, "--emit", "llvm", "-o", second]);
+  assert.deepEqual(readFileSync(first), readFileSync(second));
+  assert.equal(createHash("sha256").update(readFileSync(join(cache, key, "artifact"))).digest("hex"), digest);
+  rmSync(metadataPath);
+  cli(["build", source, "--emit", "llvm", "-o", second]);
+  assert.ok(JSON.parse(readFileSync(metadataPath)).files.artifact);
+  const noCacheRoot = join(directory, "no-cache");
+  cli(["build", source, "--emit", "llvm", "--no-cache", "-o", second], true, { TSUZURI_CACHE_DIR: noCacheRoot });
+  assert.throws(() => statSync(noCacheRoot), /ENOENT/);
+  const beforeNoCache = readFileSync(metadataPath);
+  cli(["build", source, "--emit", "llvm", "--no-cache", "-o", second]);
+  assert.deepEqual(readFileSync(metadataPath), beforeNoCache);
+  cli(["build", source, "--emit", "llvm", "-O0", "-o", second]);
+  assert.equal(entries().length, 2);
+  writeFileSync(source, "export def answer :: i64\nfn answer = 43\n43\n");
+  cli(["build", source, "--emit", "llvm", "-o", second]);
+  assert.equal(entries().length, 3);
+  const alias = join(directory, "alias.ll");
+  linkSync(source, alias);
+  assert.equal(JSON.parse(cli(["build", source, "--emit", "llvm", "-o", alias, "--json"], false).stderr).code, "E2003");
+  assert.equal(JSON.parse(cli(["check", source, "--no-cache", "--json"], false).stderr).code, "E2000");
+  assert.equal(cli(["run", source]).stdout, "43\n");
+  assert.equal(cli(["run", source]).stdout, "43\n");
+  const executable = join(directory, process.platform === "win32" ? "program.exe" : "program");
+  cli(["build", source, "-o", executable]);
+  rmSync(executable);
+  cli(["build", source, "-o", executable]);
+  const executed = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.equal(executed.stdout, "43\n");
+  if (process.platform !== "win32") assert.ok(statSync(executable).mode & 0o100);
+  const wasm = join(directory, "answer.wasm");
+  cli(["build", source, "--target", "wasm32", "--trap-info", "-o", wasm]);
+  const oldWasm = readFileSync(wasm);
+  const oldTable = readFileSync(`${wasm}.trap.json`);
+  rmSync(wasm); rmSync(`${wasm}.trap.json`);
+  cli(["build", source, "--target", "wasm32", "--trap-info", "-o", wasm]);
+  assert.deepEqual(readFileSync(wasm), oldWasm);
+  assert.deepEqual(readFileSync(`${wasm}.trap.json`), oldTable);
+  assert.equal((await WebAssembly.instantiate(oldWasm)).instance.exports.tz_answer(), 43n);
+  writeFileSync(source, "export def answer :: i64\nfn answer = 44\n44\n");
+  await Promise.all(Array.from({ length: 6 }, (_, index) => concurrent(["build", source, "--emit", "llvm", "-o", join(directory, `race-${index}.ll`)])));
+  for (let index = 1; index < 6; index++) assert.deepEqual(readFileSync(join(directory, "race-0.ll")), readFileSync(join(directory, `race-${index}.ll`)));
+  if (process.platform !== "win32") {
+    const realClang = spawnSync("which", [process.env.TSUZURI_CLANG ?? "clang"], { encoding: "utf8" }).stdout.trim();
+    const log = join(directory, "tools.log");
+    const version = join(directory, "version");
+    writeFileSync(version, "v1");
+    const wrapper = join(directory, "clang-wrapper.mjs");
+    writeFileSync(wrapper, `#!${process.execPath}\nimport { appendFileSync, readFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nconst args = process.argv.slice(2);\nif (args.includes("--version")) { console.log("test clang " + readFileSync(${JSON.stringify(version)}, "utf8")); } else { appendFileSync(${JSON.stringify(log)}, "compile\\n"); const result = spawnSync(${JSON.stringify(realClang)}, args, { stdio: "inherit" }); process.exitCode = result.status ?? 1; }\n`);
+    chmodSync(wrapper, 0o755);
+    const toolEnv = { TSUZURI_CLANG: wrapper };
+    const object = join(directory, "tool.o");
+    cli(["build", source, "--emit", "object", "-o", object], true, toolEnv);
+    const firstLog = readFileSync(log, "utf8");
+    cli(["build", source, "--emit", "object", "-o", object], true, toolEnv);
+    assert.equal(readFileSync(log, "utf8"), firstLog);
+    writeFileSync(version, "v2");
+    cli(["build", source, "--emit", "object", "-o", object], true, toolEnv);
+    assert.notEqual(readFileSync(log, "utf8"), firstLog);
+    const protectedDirectory = join(directory, "cache-link");
+    symlinkSync(cache, protectedDirectory);
+    const warning = cli(["build", source, "--emit", "llvm", "-o", second], true, { TSUZURI_CACHE_DIR: protectedDirectory });
+    assert.match(warning.stderr, /cache disabled/);
+  }
+  const unrelated = join(directory, "unrelated");
+  mkdirSync(unrelated); writeFileSync(join(unrelated, "keep"), "preserved");
+  assert.match(cli(["build", source, "--emit", "llvm", "-o", second], true, { TSUZURI_CACHE_DIR: unrelated }).stderr, /cache disabled/);
+  assert.equal(readFileSync(join(unrelated, "keep"), "utf8"), "preserved");
+  const dependency = join(directory, "dep");
+  mkdirSync(dependency);
+  writeFileSync(join(dependency, "Tsuzuri.toml"), '[package]\nname = "dependency"\nversion = "1"\n');
+  writeFileSync(join(dependency, "Value.tz"), 'def value :: i64\nfn value = 50\n');
+  writeFileSync(join(project, "Tsuzuri.toml"), '[package]\nname = "app"\nversion = "1"\n[dependencies]\ndependency = { path = "../dep" }\n');
+  writeFileSync(source, "Dependency.Value.value()\n");
+  assert.equal(cli(["run", source]).stdout, "50\n");
+  const beforeDependency = entries().length;
+  writeFileSync(join(dependency, "Value.tz"), 'def value :: i64\nfn value = 51\n');
+  assert.equal(cli(["run", source]).stdout, "51\n");
+  assert.ok(entries().length > beforeDependency);
+  const manifestAlias = join(directory, "manifest-alias.ll");
+  linkSync(join(dependency, "Tsuzuri.toml"), manifestAlias);
+  assert.equal(JSON.parse(cli(["build", source, "--emit", "llvm", "-o", manifestAlias, "--json"], false).stderr).code, "E2003");
+  if (process.platform === "darwin") {
+    const debug = join(directory, "debug-program");
+    cli(["build", source, "-g", "-o", debug]);
+    const previous = readFileSync(`${debug}.dwarf`);
+    rmSync(debug); rmSync(`${debug}.dwarf`);
+    cli(["build", source, "-g", "-o", debug]);
+    assert.deepEqual(readFileSync(`${debug}.dwarf`), previous);
+    assert.equal(spawnSync(debug, [], { encoding: "utf8" }).stdout, "51\n");
+  }
+  console.log("Cache: SHA-256, byte-identical hits, source/options/tools invalidation, corruption repair, concurrent writes, no-cache, output protection, executable permissions and sidecars passed");
+} finally {
+  rmSync(directory, { recursive: true, force: true });
+}

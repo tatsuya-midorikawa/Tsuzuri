@@ -6,6 +6,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Array.tz", include_str!("../std/Array.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
+    ("std/Gpu.tz", include_str!("../std/Gpu.tz")),
     ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
@@ -50,7 +51,10 @@ pub fn is_reserved_module(name: &str) -> bool {
 }
 
 pub(crate) fn opaque_record(name: &str) -> bool {
-    matches!(name, "Map.Map" | "Map.Entry" | "Set.Set" | "Seq.Seq")
+    matches!(
+        name,
+        "Map.Map" | "Map.Entry" | "Set.Set" | "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer"
+    )
 }
 
 /// The module name of a flat std source path such as `std/Option.tc`, or

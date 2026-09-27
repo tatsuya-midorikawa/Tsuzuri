@@ -1,0 +1,52 @@
+def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>
+fn fmap transform value =
+    let result: 'f<'b> = Functor.mapped transform value
+    result
+
+export def option_map :: i64 -> i64
+fn option_map seed = Option.get (fmap (fx value -> value + 1) (Option.Some seed))
+
+export def result_map :: i64 -> i64
+fn result_map seed =
+    let input: Result<i64, string> = Result.Ok seed
+    let result: Result<i64, string> = fmap (fx value -> value * 3) input
+    Result.get result
+
+export def result_error :: i64
+fn result_error =
+    let input: Result<i64, string> = Result.Error "failed"
+    let result: Result<i64, string> = fmap (fx value -> value + 1) input
+    match result with
+    | Result.Ok value -> value
+    | Result.Error message -> message.length
+
+def text_length :: string -> i64
+fn text_length text = text.length
+
+export def owned_option :: i64 -> i64
+fn owned_option count =
+    let mut total = 0
+    for _index in 0i64 .. (count - 1) do
+        let value = Option.Some ("hello" + "!")
+        let result = fmap text_length value
+        total = total + Option.get result
+    total
+
+export def all_constructors :: i64
+fn all_constructors =
+    let array = Keep.keep [42]
+    let list = Keep.keep [|42|]
+    let vector = Keep.keep (Vec.push (Vec.empty()) 42)
+    let boxed = Keep.keep (Instances.Box { value: 42 })
+    let work = Keep.keep task { 42 }
+    array[0] + list[0] + Option.get (Vec.get (& vector) 0) + boxed.value + Task.run work
+
+export def binary_constructor :: i64
+fn binary_constructor =
+    let input: Result<i64, string> = Result.Ok 42
+    Result.get (BinaryKeep.keep input)
+
+export def first_class :: i64
+fn first_class =
+    let mapper: (i64 -> i64) -> Option<i64> -> Option<i64> = Functor.map
+    Option.get (mapper (fx value -> value + 2) (Option.Some 40))

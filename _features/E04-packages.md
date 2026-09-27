@@ -6,7 +6,7 @@
 | 規模 | XL |
 | 依存 | E03 |
 | 後続 | なし |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/driver.rs`, `src/lib.rs`, `src/check.rs`, `src/main.rs`, `src/diagnostic.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/modules.rs`, `tests/e2e.mjs` |
 
 ## 目的
@@ -415,14 +415,14 @@ IR deterministic。
 
 ## 受け入れ条件
 
-- [ ] `Tsuzuri.toml` strict subset を parse できる。
-- [ ] manifest なし project は既存通り。
-- [ ] local path dependency を namespace prefix 付きで読み込む。
-- [ ] dependency `Main.tz` は entry にならない。
-- [ ] package name collision と cycle を拒否する。
-- [ ] build scripts や arbitrary command は存在しない。
-- [ ] output protection が dependency source にも効く。
-- [ ] native/WASM × `-O0`/`-O3` の package E2E が通る。
+- [x] `Tsuzuri.toml` strict subset を parse できる。
+- [x] manifest なし project は既存通り。
+- [x] local path dependency を namespace prefix 付きで読み込む。
+- [x] dependency `Main.tz` は entry にならない。
+- [x] package name collision と cycle を拒否する。
+- [x] build scripts や arbitrary command は存在しない。
+- [x] output protection が dependency source にも効く。
+- [x] native/WASM × `-O0`/`-O3` の package E2E が通る。
 
 ## 落とし穴
 
@@ -466,4 +466,7 @@ lockfile hash algorithm は未決。既定案は git 導入時に SHA-256 か BL
 
 package namespace を manifest で上書き可能にするかは未決。既定案は package name 由来で固定。
 
-台帳の見直し提案はない。
+2026-09-28実装: Phase 1を完了。GUIDE D-29の判断によりPackageIdはSourceFile.packageに保持し、User/Stdの型検査分類は変更しない。
+manifestのUTF-8読み込みとサイズ制限はsourceと共有。graphは明示スタック、canonical root共有、依存名一致、namespace衝突・循環・symlink拒否を行う。
+依存rootの親からの二重探索を防ぎ、外部依存のLSP overlayを反映する。manifest/sourceの出力保護はbuild/docとも対象。
+parser2件、modules14件、LSP5件、driver13件、fmt/clippy、全e2e.mjs（package native/WASM O0/O3を含む）が成功。git/lockfile等の対象外は未実装のまま。

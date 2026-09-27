@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -142,8 +142,12 @@ try {
   const objects = [];
   for (const [source, name] of [["benchmarks/Mix.tz", "mix"], ["benchmarks/cpp/Kernels.tz", "kernels"]]) {
     const object = join(temporary, `${name}.o`);
-    run(compiler, ["build", source, "--emit", "object", ...tsuzuriFlags, "-o", object]);
-    run(compiler, ["build", source, "--emit", "header", "-o", join(temporary, `${name}.h`)]);
+    const inputDirectory = join(temporary, name);
+    mkdirSync(inputDirectory);
+    const input = join(inputDirectory, basename(source));
+    copyFileSync(source, input);
+    run(compiler, ["build", input, "--emit", "object", ...tsuzuriFlags, "-o", object]);
+    run(compiler, ["build", input, "--emit", "header", "-o", join(temporary, `${name}.h`)]);
     objects.push(object);
   }
   const native = join(temporary, platform() === "win32" ? "benchmark.exe" : "benchmark");
@@ -184,7 +188,7 @@ try {
   }
   if (artifacts) {
     mkdirSync(resolve(artifacts), { recursive: true });
-    for (const name of readdirSync(temporary)) copyFileSync(join(temporary, name), join(resolve(artifacts), name));
+    for (const name of readdirSync(temporary)) cpSync(join(temporary, name), join(resolve(artifacts), name), { recursive: true });
   }
   console.log(JSON.stringify({
     environment: {

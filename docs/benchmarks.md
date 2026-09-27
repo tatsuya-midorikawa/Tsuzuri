@@ -11,7 +11,22 @@ WASM エンジン、ホスト呼び出しの粒度に依存します。
 WASM SIMD128は明示opt-inです。2026-09-27の`tests/wasm_simd.mjs`ではLLVM21逆アセンブルでO3のベクトル命令を確認し、既定出力にはないことと結果一致を検証しました。
 これは速度の測定ではありません。SIMDによる加速を主張する場合はfeature有無・同じ入力/配列長/最適化・エンジン版を揃えた中央値と生成命令を併記し、共有CIへ速度閾値を追加しません。
 
+WASM threadsは2026-09-28にNode Workerのatomic barrierで同時参加とheap回収を確認しました。速度の優位性は未測定です。
+比較時は同じTask/Parallel入力を用い、WASM逐次とthreadsのwall time、pool初回起動込みの時間、再利用時の時間を分けます。
+Worker数・Node版・CPU・最適化・SIMD指定・memory/stack量を記録し、生成WASMのatomic wait/notify経路を確認します。
+global heap/queue lockは競合時の上限です。per-worker allocatorやwork-stealingは未実装で、実測なしに加速を主張しません。
+
+GPUの測定試作は`node benchmarks/run-gpu.mjs target/release/tsuzuri [--quick]`です。quickはCPU参照の検証だけです。
+`TSUZURI_WEBGPU=1`では実adapterを要求し、device初期化・pipeline生成・転送/dispatch/同期/読み戻し・常駐3段処理を分けてJSONへ出します。
+常駐時間は転送と最終読み戻しを除外しますが各dispatchの同期を含みます。CPU欄はWASM scalar exportのhost呼び出しであり、GPU bulkとの速度比を示すものではありません。
+2026-09-28、Dawn Node binding 0.6.1のMetal backendでstrict i32 shaderのinit/map/resident chainを参照照合しました。速度優位は未主張で、float GPUや自動offloadは対象外です。
+制約の根拠は[WGSL仕様](https://gpuweb.github.io/gpuweb/wgsl/#floating-point-accuracy)です。具体的な64-bit整数はなく、floatではreassociation/fusion/subnormal差が許されます。
+
 ## 表の読み方
+
+whole-build cacheの合成比較は`node benchmarks/run-cache.mjs target/release/tsuzuri`です。200moduleでuncachedとwarmの7回中央値をmsで出し、byte一致と実行checksumも照合します。
+`--quick`は10module/2回の検証だけです。2026-09-28にこの経路を確認しましたが、短縮時間から一般的な速度優位は主張しません。
+時間にはparse/check/IR、compiler/tool fingerprint、copy/publishを含みます。parse cacheではないためこの処理時間はhitでも残ります。
 
 明示SIMDのmatched比較は `cargo build --release --locked && node benchmarks/run-simd.mjs target/release/tsuzuri` です。
 同じi64配列、wrapped sum、generic O3、プロセス内の反復でTsuzuri scalar/SIMD/Cを照合し、5回中央値をmsで表示します。配列生成は計測外です。

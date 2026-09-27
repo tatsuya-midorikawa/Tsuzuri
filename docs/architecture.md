@@ -60,7 +60,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
 | `src/runtime/cpu.c` | native標準i64配列和、CPUID/OSXSAVE/XCR0、atomicなvariant cache |
 | `src/runtime/heap-*.ll` の `tz.realloc` | native realloc と、WASM の隣接空き領域再利用・確保コピー fallback |
-| `src/runtime/task.c` / `task-wasm.ll` | 全 worker の join を保証する bounded fork/join と、インポート不要の WASM 逐次バックエンド |
+| `src/runtime/task.c` / `task-wasm.ll` / `task-wasm-threads.c` | native pool、WASM既定逐次、opt-in共有メモリWorker pool |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
 | `src/stdlib.rs` / `std/` | 埋め込みの標準ライブラリのソース、予約 std モジュール名、std の仮想パス |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護 |
@@ -90,8 +90,8 @@ LLVM に渡すだけで高速と判断せず、生成コードと実測で経路
 | SIMD | `-O3` のループ／SLP 自動ベクトル化。連続配列・型の特殊化・不要コピーの除去で最適化可能な IR を生成する。`--cpu native` はビルド機の命令セットを有効化 |
 | 移植性 | 既定の`--cpu generic`はターゲットbaseline。同梱i64配列和だけ実行時ISA選択。`native`は配布条件にビルド機ISAを含める |
 | 複数 CPU コア | `Task.parallel` の遅延起動する常駐プール。CPU 数で追加スレッド数を制限し、呼び出し元も自分のグループを進行する。WASM は逐次 fallback。自動並列化は未実装 |
-| GPU | バックエンドは未実装。今後は能力検出、所有権を保つバッファ、転送・同期・カーネル選択、CPU 経路と合わせた実行基盤を設計する |
-| WASM | bulk-memory対応、SIMD128は明示的な--wasm-feature simd128で有効。既定は非SIMD。threads／GPU経路は未実装 |
+| GPU | 実験的kernel抽出・CPU参照・strict整数WGSLとWebGPU host試作。通常のTsuzuri runtimeへの実GPU自動接続、float GPU、自動offloadは未実装 |
+| WASM | bulk-memory対応。SIMD128とthreadsは独立した明示opt-in。既定は非SIMD・importなし・逐次 |
 
 新しい builtin／標準ライブラリでは、要素ごとの汎用関数呼び出しだけを基本実装にせず、
 型・連続性・サイズが分かる一括操作を設計してください。正確な基準実装を持ち、
@@ -110,8 +110,17 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 同条件の C/C++ 比較を用意します。共有 CI は正しさと経路の退行を検査し、
 性能の閾値判定は安定した専用環境で行います。
 
-WASM featureは現段階でsimd128だけなのでBuildOptions.wasm_simdのboolで表します。driverは有効時-msimd128、既定-mno-simd128を渡します。
+WASM featureはBuildOptions.wasm_simd/wasm_threadsで表します。driverはSIMD有効時-msimd128、既定-mno-simd128を渡します。
 LLVM IR出力はfeature要件をコメントへ記録します。tests/wasm_simd.mjsはllvm-objdumpの命令解析とBigInt参照で検証し、即値の0xfdをSIMD opcodeと誤認しません。
+
+threadsはWASM/object出力専用です。C11のfreestanding task-wasm-threads.cを-matomics/-mbulk-memoryで生成し、wasm-ldのshared/import-memoryで結合します。
+heap-wasm.llの同一allocatorを内部名へ変更し、heap-wasm-threads.llのlock wrapperから呼ぶため、reallocの内部alloc/freeも一回のlock内です。
+共有状態はlinear memoryに置き、wasm-ldの一回限りのdata初期化を使用します。各instanceの__stack_pointerだけをhostが設定します。
+groupはcaller stackに置き、queue lock内でatomicに仕事を取得してからcallbackを実行します。remaining公開後にgroupを参照せず、callerはlock内でunlinkして戻ります。
+callerも仕事を進め、入れ子は自groupを優先して他groupも手伝います。epochのwait/notifyでidle待機し、heap lock内で利用者callbackを呼びません。
+Nodeホストsrc/runtime/wasm-threads.mjsが明示worker数を初期化し、初回groupでspawn_workersを呼びます。各workerの256KiB stackをheapから確保し、closeは完了後にWorkerを終了します。
+Worker trap/初期化失敗は共有failedとlock poison bitを公開して全waitを解除します。以後の実行は拒否し、trap後の解放は保証しません。通常の言語Resultとは別です。
+tests/wasm_threads.mjsはO0/O3のstack sentinel、atomic barrier、heap残量、入れ子、bulk、失敗、object、SIMD/debug併用と決定性を検証します。
 
 nativeのCPU dispatchは同梱Arrayソースを確認したemit_native_buildでだけ有効にします。対象は単相化したArray.sumのref [i64] -> i64です。
 通常のLLVM API/--emit llvmは従来の独立IRを維持し、driverのexe/objectはtsuzuri_cpu_sum_i64出現時だけcpu.cをtask runtimeと同じC連結経路へ追加します。
@@ -125,6 +134,49 @@ HostCallは副作用ありとしてchildren/may_mutate/ownershipへ登録し、e
 所有buffer結果はout descriptorのlenを-1で初期化し、未設定・負数・overflow・不正範囲を受領時に拒否してから通常のdropへ渡します。
 
 ## 不変条件
+
+**Whole-build cache:** cache.rsはSHA-256のstreaming実装とNISTベクトルを持ち、既存serde_jsonでmetadataを扱います。parse/check/IRのcacheは作りません。
+compiler executable全体のhashを使い、同じgit commitにある未コミット開発版も区別します。build.rsのgit文字列だけには依存しません。
+キーは長さ付きfieldでversion/host/options/action、全sourceとmanifestのpath/bytes/origin、生成IR、compiler/tool binary digest、tool --version、関連環境変数を含みます。
+cpu nativeはClangのtarget macro群も含めます。pathはUnicode正規化せずOS表現を保ち、絶対source mapとpackage identityも区別します。
+artifact/traps/dwarfを通常ステージへ復元し、実行権限とsidecarを保持してpublish_outputsへ渡します。hit/missともsource/manifest/hardlink保護を迂回しません。
+cache rootは専用markerが必要で、symlinkを拒否します。各fileのsizeとSHAを検証し、metadata欠落・破損・未知formatはmissです。trust boundaryは同一OSユーザーのprivate cacheです。
+保存はキーごとの非待機create-new lockで重複writerを避け、全file完成後にdirectory renameします。lock競合は保存を省き、ビルドを待たせません。I/O失敗は警告で元ビルドを維持します。
+GCは4096entryまで走査し、last-used/2GiB/30日を使って最大128件だけ回収します。古い部分entry・lock・一時領域も対象で、上限はsoftです。
+macOS debug exeのDWARFは出力名を持つため、その場合だけoutput pathもキーへ含めます。普段の別出力先へのartifact再利用は維持します。
+tests/cache.mjsが実CLIのhit（tool起動数）、miss、破損、同時writer、no-cache、実行権限、trap/DWARF、依存変更を検証します。
+
+**Windows MSVC:** native_compile_argsがx86_64-pc-windows-msvcとPOSIXフラグを分離します。Win32 task adapterは既存schedulerへSRWLOCK/CONDITION_VARIABLE/INIT_ONCE/CreateThread/WaitForSingleObject/CloseHandleを提供します。
+windows_abiは型検査済みexport一覧にだけdllexportを付け、writeをCRT _writeの32-bit count/resultから安全に拡張します。UTF-8 bytes保持のため出力fdをbinary modeにし、コードページは変えません。
+Windowsにも既存128-bit helperを同梱し、MSVC CRTだけでlinkできます。CPU dispatchはWindowsではportable baselineです。
+Rustのfile identityはWindows限定same-fileのsafe APIを使い、unsafe禁止を維持します。fs::renameの既存出力置換とhardlink保護はWindows専用テストで検証します。
+COFFのruntime同梱object結合はE2002です。exeを優先し、LLVM+runtimeを一度だけ明示linkする経路を残します。
+Windows CIとtests/windows.mjsを追加。macOSで実Windows SDKによるC/IRのO0/O3 COFF/PE link、全Rust targetのWindows cfgを確認済みですが、Windows runnerでの実行ゲートは未確認です。
+
+**結果付きTask:** Task.parallel_resultsは通常builtin schemeとcold task closureを経由し、専用TypedExprKindをllvm_task.rsへ下げます。
+runtime ABIはi64 tsuzuri_task_parallel_results(i32 (*run)(context,index),context,length)で、戻り値-1が成功、他は最小失敗indexです。
+native/threadsの既存groupにrun_result/failureを加え、queue lock内で未配布lengthを短縮してremainingから未開始分を引きます。開始済み分のremainingが0になるまで戻りません。
+LLVMは一時Result配列とi8 started配列を確保します。callbackは環境を消費して結果を書いた後にstartedを公開し、join後はそのflagで初期化済み結果と未開始closureを区別します。
+成功payloadを出力へ、選択errorだけを返却へ移動し、他を既存dropで解放します。一時Result配列にはaggregate dropを行わずraw bufferだけfreeするため、移動済みslotを再dropしません。
+recursive Resultの外側nodeもpayload移動後にfreeします。trap-infoは既存callback ABIを保ち、task codeへだけcontextを伝播します。
+tests/tasks.mjsとwasm_threads.mjsは41結果・4trap、所有配列/closure/再帰payload、順序、最小error、冷たい破棄を検証します。C schedulerはASan/UBSan/TSanでも検証済みです。
+
+**HKT:** ClassDecl.kindは明示kindを持ち、TypeExprKind::ApplyのIdent headが`'f`なら型変数適用です。既存の名前付きhead/formatter経路を維持します。
+Classesのconstructor arityと署名/制約からのkind環境を使い、値型位置は飽和を要求します。初版のkind引数はすべてTypeで、higher-order kind/型別名は拒否します。
+Type::Partialはconstructor宣言と末尾固定引数、Applicationはheadと適用引数を持ちます。Type全体は四wordを維持し、map_type/substitute/Inference::resolveで飽和時に既存Record/Union/Array/List/Vec/Taskへ正規化します。
+HKT methodはclass receiverと固有の値型変数をfreshにし、具体instanceの完全signatureからmethod特殊化引数を決定します。default methodも既存の内部関数と共有Specializerを使います。
+instance headとmethodで同名の変数を使う場合は、生成関数のmethod変数をalpha分離して名前捕捉を防ぎます。
+値の型にPartial/Applicationが残った場合はLLVM入口の検査でE1015です。名前付きgeneric宣言の通常Type::Variableは従来どおり残せます。
+tests/higher_kinds.rsとfeatures.mjs higher_kindsがOption/Result・default・generic関数・ローカル注釈・全constructor形状・owned heapを検査します。stdへFunctorを自動導入しません。
+
+**GPU Phase 1:** gpu.rsは通常の型付き・単相化済みIRを検査し、既知呼び出しの有界graphを抽出します。独立した型推論・数値評価器は作りません。
+GpuKernel.cpu_referenceは既存LLVM emitterを再利用します。Gpu.init/mapのcallback制限はclosure lowering後に検査し、first-class APIによる回避を拒否します。
+std/Gpu.tzは明示CpuReferenceだけを構築します。opaque Device/Bufferのnon-Copy性はTypeと記号的所有権検査で共通に扱い、格納fieldへのアクセスは既存opaque gateを使います。
+WGSLは各値を一時letへ順序付きで評価し、if/短絡の分岐内でだけ対応する式を評価します。同幅整数castはbitcast、符号付き算術はu32のwrapを経由します。
+WGSLの型・float/trap契約からi64/f64/strict float/div/remはshaderで拒否します。CPU参照での許可とshader生成の許可を混同しません。
+CLIの--emit wgslは単一exportのkernel projectを通常の出力保護経路で公開します。WebGPU host試作はdevice limits・shader診断・所有buffer・error scope・queue同期を扱い、明示要求をCPUに縮退させません。
+LLVMのenum scalar aliasは前方参照できないため、全enum aliasをrecord/union構造体定義より先に生成します。構造体の相互前方参照は従来どおりです。
+検証はcargo test --test gpuとtests/gpu.mjs。TSUZURI_WEBGPU=1では実adapter上のshader・init/map・resident chain・境界も実行します。
 
 **モジュール:** 1 ファイルに 1 モジュールを強制し、名前はファイル名から取得します。
 root配下を再帰探索し、`SourceFile.relative_path`を正規化した順で処理します。`Geometry/Point.tz`の名前は`Geometry.Point`です。
@@ -144,6 +196,11 @@ source4096・directory1024・module16要素/255byteを上限とし、標準ラ�
 型付き IR・LLVM の内部シンボル・公開 ABI を変えません。他モジュールの private 候補は
 無修飾レコード名の解決先にも曖昧性の候補にもなりません。public 宣言からの private 型の漏れは
 解決済みの `Type` ではなく元の `TypeExpr` を走査して、漏れた型参照の位置で報告します。
+
+**パッケージ:** 読み込み層は`Tsuzuri.toml`のlocal path依存も扱います。`package.rs`が限定文法を解析し、driverは明示スタックでgraphの循環・名前・上限を検査します。
+`SourceFile.package`にcanonical rootとnameのPackageIdを保存し、依存namespaceをrelative_pathへ付けます。型検査のUser/Std分類やprivateの境界は変更しません。
+manifestは`Project.manifests`に保持し、source_forでは通常sourceの後のIDを使用します。ビルド・文書出力保護は両集合を対象にします。
+全sourceはlogical path順、stdは末尾です。依存rootを親の探索から除き、同一rootを一度だけ読みます。build script・ネットワーク実行はありません。
 
 **標準ライブラリ:** `std/` のソースは `stdlib::SOURCES` として `include_str!` で埋め込み、
 `analyze`／`analyze_modules`／`Project::load` のすべてで利用者のソースの後に追加します。

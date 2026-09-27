@@ -14,6 +14,207 @@ export fn hypotenuse(x: f64, y: f64) -> f64 {
 ";
 
 #[test]
+fn loads_and_protects_local_package_graphs() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tsuzuri::{check::ModuleOrigin, driver::Project};
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-packages-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let write_package = |name: &str, dependencies: &str, file: &str, source: &str| {
+        fs::create_dir_all(root.join(name)).unwrap();
+        fs::write(
+            root.join(name).join("Tsuzuri.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n[dependencies]\n{dependencies}"
+            ),
+        )
+        .unwrap();
+        fs::write(root.join(name).join(file), source).unwrap();
+    };
+    write_package(
+        "app",
+        "geometry-core = { path = \"../geometry-core\" }\nother = { path = \"../other\" }",
+        "Main.tz",
+        "def main :: i64\nfn main = GeometryCore.Point.value() + Other.Library.value()",
+    );
+    write_package(
+        "geometry-core",
+        "",
+        "Point.tz",
+        "def value :: i64\nfn value = Option.get (Option.Some 42)\nprivate def hidden :: i64\nfn hidden = 0",
+    );
+    fs::write(
+        root.join("geometry-core/Main.tz"),
+        "def main :: i64\nfn main = 99",
+    )
+    .unwrap();
+    write_package(
+        "other",
+        "geometry-core = { path = \"../geometry-core\" }",
+        "Library.tz",
+        "def value :: i64\nfn value = GeometryCore.Main.main() - 99",
+    );
+    let app = root.join("app");
+    let project = Project::load(&app).unwrap();
+    let module = project.analyze().unwrap();
+    assert_eq!(
+        module.functions[module.entry.unwrap()].qualified_name(),
+        "Main.main"
+    );
+    assert_eq!(project.manifests.len(), 3);
+    assert_eq!(
+        project
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::User)
+            .count(),
+        4
+    );
+    assert!(
+        project
+            .sources
+            .iter()
+            .any(|source| source.name == "GeometryCore.Point"
+                && source.package.as_ref().unwrap().name == "geometry-core")
+    );
+    let overlays = std::collections::BTreeMap::from([(
+        root.join("geometry-core/Point.tz"),
+        "def value :: i64\nfn value = false".to_owned(),
+    )]);
+    assert_eq!(
+        Project::load_with_overlays(&app, &overlays)
+            .unwrap()
+            .analyze()
+            .unwrap_err()
+            .code,
+        "E1003"
+    );
+    for wasm in [false, true] {
+        assert_eq!(
+            llvm::emit_target(&module, llvm::Entry::Console, wasm).unwrap(),
+            llvm::emit_target(&project.analyze().unwrap(), llvm::Entry::Console, wasm).unwrap()
+        );
+    }
+    for file in [
+        "geometry-core/Point.tz",
+        "geometry-core/Tsuzuri.toml",
+        "app/Tsuzuri.toml",
+    ] {
+        let before = fs::read(root.join(file)).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args([
+                "build",
+                app.to_str().unwrap(),
+                "--emit",
+                "llvm",
+                "-o",
+                root.join(file).to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("E2003"));
+        assert_eq!(fs::read(root.join(file)).unwrap(), before);
+    }
+    fs::write(app.join("Main.tz"), "GeometryCore.Point.hidden()").unwrap();
+    assert_eq!(
+        Project::load(&app).unwrap().analyze().unwrap_err().code,
+        "E1022"
+    );
+    fs::write(app.join("Main.tz"), "0").unwrap();
+    fs::write(
+        root.join("geometry-core/Point.tz"),
+        "def broken :: i64\nfn broken = false",
+    )
+    .unwrap();
+    let project = Project::load(&app).unwrap();
+    assert_eq!(
+        project.source_for(&project.analyze().unwrap_err()).path,
+        fs::canonicalize(root.join("geometry-core/Point.tz")).unwrap()
+    );
+    write_package(
+        "geometry-core",
+        "app = { path = \"../app\" }",
+        "Point.tz",
+        "",
+    );
+    let error = Project::load(&app).unwrap_err();
+    assert_eq!(error.diagnostic.code, "E1011");
+    assert!(error.diagnostic.message.contains("cyclic"));
+    write_package("geometry-core", "", "Point.tz", "");
+    fs::create_dir(root.join("duplicate")).unwrap();
+    fs::copy(
+        root.join("geometry-core/Tsuzuri.toml"),
+        root.join("duplicate/Tsuzuri.toml"),
+    )
+    .unwrap();
+    write_package(
+        "other",
+        "geometry-core = { path = \"../duplicate\" }",
+        "Library.tz",
+        "",
+    );
+    assert_eq!(Project::load(&app).unwrap_err().diagnostic.code, "E1011");
+    write_package("other", "", "Library.tz", "");
+    fs::create_dir(app.join("GeometryCore")).unwrap();
+    fs::write(app.join("GeometryCore/Local.tz"), "").unwrap();
+    assert_eq!(Project::load(&app).unwrap_err().diagnostic.code, "E1011");
+    fs::remove_dir_all(app.join("GeometryCore")).unwrap();
+    fs::create_dir(app.join("Local")).unwrap();
+    fs::write(
+        app.join("Local/Tsuzuri.toml"),
+        "[package]\nname = \"local\"\nversion = \"1\"\n",
+    )
+    .unwrap();
+    fs::write(app.join("Local/Value.tz"), "def value :: i64\nfn value = 7").unwrap();
+    write_package(
+        "app",
+        "local = { path = \"Local\" }",
+        "Main.tz",
+        "Local.Value.value()",
+    );
+    let project = Project::load(&app).unwrap();
+    project.analyze().unwrap();
+    assert_eq!(
+        project
+            .sources
+            .iter()
+            .filter(|source| source.name == "Local.Value")
+            .count(),
+        1
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(root.join("geometry-core"), root.join("link")).unwrap();
+        write_package(
+            "app",
+            "geometry-core = { path = \"../link\" }",
+            "Main.tz",
+            "0",
+        );
+        assert_eq!(Project::load(&app).unwrap_err().diagnostic.code, "E1011");
+        fs::remove_file(root.join("link")).unwrap();
+        fs::remove_file(app.join("Tsuzuri.toml")).unwrap();
+        std::os::unix::fs::symlink(
+            root.join("geometry-core/Tsuzuri.toml"),
+            app.join("Tsuzuri.toml"),
+        )
+        .unwrap();
+        assert_eq!(Project::load(&app).unwrap_err().diagnostic.code, "E1011");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn module_paths_map_to_bounded_dotted_names() {
     let module = analyze_modules(&[("Geometry/Point.tz", "fn value() -> i64 { 42 }")]).unwrap();
     assert!(

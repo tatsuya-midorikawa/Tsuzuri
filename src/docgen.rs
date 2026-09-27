@@ -368,10 +368,15 @@ fn render_declarations(program: &Program) -> String {
             })
             .collect::<Vec<_>>();
         let code = format!(
-            "class {}{}<'{}> {{\n{}\n}}",
+            "class {}{}<'{}{}> {{\n{}\n}}",
             constraints_text(&declaration.superclasses),
             declaration.name.text,
             declaration.variable.text,
+            if declaration.kind == crate::syntax::Kind::Type {
+                String::new()
+            } else {
+                format!(": {}", declaration.kind.display())
+            },
             methods
                 .iter()
                 .map(|method| format!("  {method}"))

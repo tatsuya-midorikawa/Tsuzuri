@@ -248,7 +248,7 @@ fn rejects_invalid_declarations_and_applications() {
         ),
         (
             "record Box<'a> { value: 'a }\ndef f :: Box -> i64\nfn f p = 0",
-            "E1004",
+            "E1015",
             "expects 1 type argument, found 0",
         ),
         (
@@ -526,7 +526,6 @@ fn rejects_legacy_and_malformed_generic_syntax() {
         "let x: Result<i64,, string> = Ok 1\n0",
         "let x: Option<i64 = Some 1\n0",
         "def f :: Task<i64, string> -> i64\nfn f t = 0",
-        "def f :: 'a<i64> -> i64\nfn f x = 0",
         "def f :: Copy<> => i64\nfn f = 0",
         "def f :: Copy<i64, string> => i64\nfn f = 0",
         "instance C<> { fn f x = x }",
@@ -535,6 +534,7 @@ fn rejects_legacy_and_malformed_generic_syntax() {
         let error = parser::parse(source).expect_err(source);
         assert_eq!(error.code, "E0002", "{source}\n{}", error.message);
     }
+    rejects("def f :: 'a<i64> -> i64\nfn f x = 0", "E1015");
 }
 
 #[test]

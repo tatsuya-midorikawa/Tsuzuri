@@ -680,6 +680,40 @@ int main(void) {
   console.log("Modules: file namespaces, Main.tz entry, higher-order calls, records, recursion, per-file diagnostics, source protection");
 }
 
+async function packageChecks() {
+  const directory = join(temporary, "packages");
+  const app = join(directory, "app");
+  const dependency = join(directory, "geometry-core");
+  mkdirSync(app, { recursive: true });
+  mkdirSync(dependency);
+  writeFileSync(join(app, "Tsuzuri.toml"), '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\ngeometry-core = { path = "../geometry-core" }\n');
+  writeFileSync(join(dependency, "Tsuzuri.toml"), '[package]\nname = "geometry-core"\nversion = "0.1.0"\n');
+  writeFileSync(join(dependency, "Point.tz"), "def distance :: f64 -> f64 -> f64\nfn distance x y = Math.sqrt (x * x + y * y)\n");
+  writeFileSync(join(dependency, "Main.tz"), "def main :: i64\nfn main = 99\n");
+  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore.Point.distance 3.0 4.0\n");
+  const host = join(directory, "host.c");
+  writeFileSync(host, "extern double tz_answer(void);\nint main(void) { return tz_answer() == 5.0 ? 0 : 1; }\n");
+  const first = join(directory, "first.ll");
+  const second = join(directory, "second.ll");
+  cli(["build", app, "--emit", "llvm", "-o", first]);
+  cli(["build", app, "--emit", "llvm", "-o", second]);
+  assert.deepEqual(readFileSync(first), readFileSync(second));
+  for (const optimization of [0, 3]) {
+    const object = join(directory, `package-${optimization}.o`);
+    const native = join(directory, `host-${optimization}${process.platform === "win32" ? ".exe" : ""}`);
+    const wasm = join(directory, `package-${optimization}.wasm`);
+    cli(["build", app, "--emit", "object", `-O${optimization}`, "-o", object]);
+    execute(clang, [host, object, "-o", native, ...(process.platform === "win32" ? [] : ["-lm"])]);
+    execute(native, []);
+    cli(["build", app, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+    const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
+    assert.deepEqual(WebAssembly.Module.imports(module), []);
+    assert.equal(instance.exports.tz_answer(), 5);
+    assert.ok(instance.exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
+  }
+  console.log("Packages: local dependency linking, namespace isolation, deterministic IR, native/WASM O0/O3");
+}
+
 try {
   mkdirSync(dirname(fixture));
   writeFileSync(fixture, readFileSync(join(root, "tests/fixtures/Semantics.tz")));
@@ -731,6 +765,7 @@ try {
   }
   await runtimeChecks();
   await moduleChecks();
+  await packageChecks();
   await polymorphismChecks();
   await typeAliasChecks();
   multipleDiagnosticChecks();

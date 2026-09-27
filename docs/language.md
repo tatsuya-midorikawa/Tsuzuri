@@ -94,7 +94,27 @@ classは常にpublicでmethodを含み、instance実装は文書化しません�
 ドット始まりのファイル・ディレクトリは無視し、ソースsymlink・ディレクトリsymlinkを `E1011` で拒否します。
 深さ16要素・名前255バイト・4096ソース・1024ディレクトリの上限を超えると `E1017` です。
 関数・型・レコード・case・クラス・ビルダーは `Geometry.Point.distance` のように完全修飾でき、同名のローカル値があればフィールドアクセスを優先します。
-標準ライブラリは従来の `Option.map` 等のままです。外部パッケージ、検索パスはありません。
+標準ライブラリは従来の `Option.map` 等のままです。任意の検索パスはありません。
+
+#### ローカルパッケージ
+
+rootの`Tsuzuri.toml`があると、ローカルpath依存を追加で読み込みます。manifestなしの探索規則は変わりません。
+
+```toml
+[package]
+name = "app"
+version = "0.1.0"
+[dependencies]
+geometry-core = { path = "../geometry-core" }
+```
+
+各依存にもname/versionを持つmanifestが必要で、依存キーは実際のnameと一致させます。versionは非空文字列で、版解決には使いません。
+nameは小文字ASCII kebab-case（各要素は英字始まり、255byteまで）。`geometry-core`の名前空間は`GeometryCore`です。
+依存の`Point.tz`は`GeometryCore.Point`になり、依存内部からも完全修飾します。rootにはprefixを付けず、依存の`Main.tz`は入口にしません。
+同一の正規化rootは共有し、循環、同名の別root、rootとの名前空間衝突、予約名前空間、symlinkをE1011で拒否します。
+グラフは1024package・深さ128・全4096sourceまでで、超過はE1017です。ネストした依存rootを親packageとして二重に探索しません。
+文法は上記のsection/keyだけの限定TOMLです。コメント`#`、空行、CRLF、引用符付きUTF-8文字列と`\"`・`\\`・`\n`・`\r`・`\t`を許し、それ以外のキー・escape・構文はE0002です。
+manifestと依存sourceも出力保護の対象です。ネットワーク、git、lockfile、版解決、build script、言語内import宣言は導入しません。
 
 #### 標準ライブラリ
 
@@ -427,7 +447,7 @@ def score :: Traits.Score<'a> => ref 'a -> i32
 fn score value = Traits.Score.score value
 ```
 
-型クラスは型変数を一つ持ち、各メソッドのシグネチャにはその変数だけを含めます。
+型クラスは型変数を一つ持ち、通常の値型kindでは各メソッドのシグネチャにその変数だけを含めます。HKTでは後述のkind注釈とメソッド固有の値型変数を使えます。
 `instance クラス名<型>` 内のメソッド型はクラスから取得するので再記述しません。
 メソッドを `fn` または `let method = x -> ...` で実装し、クラスにデフォルトがあるメソッドだけ省略できます。
 メソッドは `Traits.Score.score`、制約とインスタンスのクラス名は `Traits.Score` のように
@@ -511,7 +531,34 @@ NaNは等しくなく、最初の不一致で順序比較がfalseなら後続へ
 整数リテラルは `Integer`、負の整数は `SignedInteger`、小数は `Float` の制約を課し、
 整数から浮動小数点への暗黙変換は行いません。
 
-高ランク多相、高階型、複数のクラス型パラメーター、メソッド固有の型変数・制約は未対応です。
+高ランク多相、複数のクラス型パラメーター、通常kindのメソッド固有型変数、メソッド固有の制約は未対応です。
+
+#### 高階型（HKT）
+
+```text
+class Functor<'f: * -> *> {
+    def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
+}
+instance Functor<Option> {
+    fn map transform value = match value with
+        | Option.None -> Option.None
+        | Option.Some inner -> Option.Some (transform inner)
+}
+def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>
+fn fmap transform value = Functor.map transform value
+```
+
+`*`は値型、`* -> *`は一引数の型コンストラクターです。kindは右結合で、classには明示注釈が必要です。省略は`*`を意味します。
+この段階は引数がすべて`*`のrank-1コンストラクターを扱い、`(* -> *) -> *`のような高階kind引数はE1015で拒否します。
+record/unionの型パラメーター数に応じたkindと、Array/List/Vec/Taskコンストラクターに対応します。値型の配列・リスト表記は従来どおりです。
+`'f<'a>`はkind付き変数への適用です。classの注釈、または通常関数の`Functor<'f>`制約からkindを決め、ローカル注釈にも引き継ぎます。未宣言のconstructor変数はE1015です。
+kindが値型でないclassでは、method固有の`'a`・`'b`等の値型変数を使えます。default methodと既存の条件付きinstance・overlap検査も同じ特殊化機構を使います。
+
+部分適用はclass head/制約のconstructor位置で**末尾の引数を固定**します。`Result<string>`は`'a`を受けて`Result<'a, string>`を作る`* -> *`です。
+完全な`Result<'a, 'e>`の引数順は変更しません。`instance Functor<Result<'e>>`はエラー型を固定し、`instance BinaryKeep<Result>`は二引数のkindを要求します。
+kind不一致、未適用constructorを値型へ使うこと、過適用はE1015です。同じkindのgeneric/specific instanceのoverlapはE1016です。
+型の深さ・関数の特殊化上限は既存と共通です。constructor適用は単相化時に通常の型へ消去し、辞書・boxing・ランタイム型情報を追加しません。
+HKT型別名、kind省略推論、標準Functor/Applicative/Monadの導入は対象外です。通常のOption.map/Result.mapや計算式は引き続き使えます。
 型が増大し続ける多相再帰は資源制限エラーになります。追加の特殊化は最大 1,024、
 型の深さは 128、型の構成要素は 4,096 です。関数に伝播する型クラス制約とモジュール関数制約は、それぞれ最大 128 要件です。
 
@@ -1459,6 +1506,7 @@ Task.run computation
 | `do! work` | `Task<unit>` を実行し、続きを実行する |
 | `Task.run : Task<'a> -> 'a` | タスクを消費して完了まで実行し、所有する結果を返す |
 | `Task.parallel : [Task<'a>] -> Task<['a]>` | タスク配列を消費し、並列区間を表す遅延タスクを作る。結果配列は入力順 |
+| `Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>` | 最小入力indexのErrorで未開始分を停止し、開始済みをjoinする遅延タスク |
 
 `task` は専用のビルダー記法であり、任意の型コンストラクターを抽象化する高階型・汎用 Monad クラスではありません。
 他の計算の合成方法は `.tc` のユーザー定義ビルダーで記述できますが、`task` 自体の再定義はできません。
@@ -1487,7 +1535,13 @@ Task.run computation
 グループ内の本体の実行順序・完了順序は未規定ですが、結果の添字は入力に対応します。
 空配列なら空の結果配列になり、タスク本体の実行はありません。
 結果型が異なる仕事を同じ配列には入れられません。`and!`、detach、スレッド ID、
-共有状態、キャンセル、回復可能なタスク例外は提供しません。
+共有状態、外部キャンセルトークン、回復可能なタスク例外は提供しません。
+
+`Task.parallel_results`はResultを返すタスク配列を消費します。全件Okなら入力順の配列をOkで返し、空入力はOk []です。
+Errorを検出したらそのindex以降の未配布タスクを開始せず、既に開始したタスクは最後までjoinします。返るerrorは完了順によらず最小入力indexのErrorです。
+未開始closureの捕捉値、未採用のOk/Error payload、一時bufferを解放します。開始済み環境を二重にdropしません。通常のTask.parallelは従来どおり全件実行します。
+既定WASMは逐次で最初のError後を実行せず、native/opt-in WASM threadsも同じエラー選択契約です。
+trap・実行基盤失敗・メモリ不足はErrorへ変換せず、従来どおり失敗します。強制停止・unwind・外部キャンセルトークンは導入しません。
 
 タスク自身と捕捉した所有値は move で別スコープや関数へ渡せます。
 実行していない計算を返すだけならスレッドは存在せず、寿命はその計算の所有者に従います。
@@ -1510,7 +1564,7 @@ Copy の配列や関数値を捕捉すると既存の規則で独立したスナ
 
 ### 実行バックエンドと失敗
 
-ネイティブの `Task.parallel` は POSIX pthreads の常駐プールを使う同期的な fork/join です。
+ネイティブの `Task.parallel` は POSIX pthreadsまたはWindowsのWin32常駐プールを使う同期的な fork/join です。
 呼び出し元も仕事を実行し、ランタイム全体の追加スレッド数を
 `min(オンライン CPU 数, 32) - 1` 以下に制限します。
 独立したホストスレッドからの呼び出し元そのものはこの追加スレッド数に含みません。
@@ -1520,10 +1574,19 @@ CPU 数を取得できなければ追加 worker なしの逐次実行です。id
 返却時に全 callback と結果の公開は完了していますが、OS スレッド自体は待機し、通常のプロセス終了で join します。
 ユーザー向けの detach はありません。短い仕事では確保・コピー・同期が支配する場合があり、常駐化が常に高速とは限りません。
 
-WASM は同じ型・所有権・結果順序のまま、インポート不要の逐次バックエンドを使います。
-WASM threads、GPU、ホストの非同期 I/O／イベントループとは連携しません。
+WASM は既定では同じ型・所有権・結果順序のまま、インポート不要の逐次バックエンドを使います。
+`build --target wasm32 --wasm-feature threads`は共有メモリWorkerを明示的に有効にし、`Task.parallel`と`Parallel.*`に同じcallback ABIを使います。
+threadsはWASM/object出力専用でsimd128と併用できます。native、run、check、header、LLVMテキスト出力への指定はE2000です。
+Node.js 20以降のworker_threadsとSharedArrayBuffer/shared WebAssembly.Memoryが必要です。importはenv.memoryとtsuzuri_threads.spawn_workers/worker_readyです。
+同梱Nodeホスト`src/runtime/wasm-threads.mjs`のcreateThreadPoolで生成し、callで同期実行、最後にcloseをawaitします。初回groupでmin(CPU数,32)-1 workerを生成し、以後再利用します。
+workersは0〜31を明示指定でき、初期化に失敗した場合は逐次成功へ置き換えません。ホスト不備はinstantiation error、起動失敗・Worker trapは実行失敗になります。
+各workerに256KiBのstack、mainに1MiBを割り当て、memory上限16MiBにstack/data/heapすべてを含めます。Nodeホストは全256pageを最初に確保します。
+並列groupが戻るまで全callbackの完了と結果公開を待ちます。正常時の所有heapは回収します。Worker stackはpool寿命に従い、trap後のpoolは再利用せずcloseします。
+externを使うWorkerには同じホスト定義が必要で、createThreadPoolのimportsModuleが各instance用createImports({memory,workerId,data})を返します。
+BrowserにはCOOP: same-origin、COEP: require-corpとcross-origin isolation、独立したWorkerホストが必要です。Node用ホストをそのままbrowserにimportできません。
+browser本番glue、GPU、ホストの非同期I/O／イベントループとの連携はこの機能には含みません。
 `Task.run` は両ターゲットで同期的な入口であり、UI スレッドをノンブロッキングにする API ではありません。
-POSIX 以外でネイティブ並列出力を要求するとビルドエラーです。
+POSIX/Windows以外のネイティブ並列出力はビルドエラーです。Windowsのruntimeを埋め込むCOFF object結合は未対応で、exeまたは明示LLVM+runtimeリンクを使います。
 ネイティブのスレッド作成／join 失敗は診断を出してプロセスを終了し、黙って成功扱いにしません。
 本体の trap、メモリ不足、非停止の規則は通常の式と同じで、
 失敗時のスタック巻き戻し・捕捉値の解放・兄弟タスクのキャンセルは保証しません。
@@ -1899,6 +1962,28 @@ callback 引数は、所有環境を証明できる通常の関数値・部分�
 空入力は identity、sum の identity は対象数値型の正のゼロです。非結合演算や浮動小数点では逐次 Array.reduce/sum と結果が異なることがあります。
 fast-math・reassociation・暗黙 FMA は使いません。native は常駐プール、WASM は同じチャンク順の import-free 逐次 fallback です。
 チャンク間の開始・完了順は未規定で、トラップ時の部分結果解放・キャンセルは保証しません。
+
+### GPU Kernel（実験的 Phase 1）
+
+`Gpu`はkernel抽出・CPU参照・WGSL生成の実装です。通常のTsuzuri実行へ実GPU runtimeを自動リンクしません。
+`Gpu.request Gpu.CpuReference`だけが`Result.Ok Device`を返し、`WebGpu`・`Vulkan`・`Cuda`・`Metal`・`Auto`は`Result.Error Gpu.Unavailable`です。
+明示GPU要求をCPU成功に置き換えません。`Auto`もCPU fallbackの指定ではありません。
+
+`Gpu.Device`と`Gpu.Buffer<'a>`はopaque・non-Copyの所有型です。Deviceは各操作へ共有借用で渡します。
+`Gpu.init (&device) count (fx index -> index * index)`のindexはi32、countはi64の0〜2147483647です。
+`Gpu.map (&device) transform buffer`はbufferを消費し、`Gpu.from_array (&device) (&values)`は配列をコピー、`Gpu.to_array buffer`はbufferを消費して配列を返します。
+CPU参照bufferの要素はi32/i32u/i64/i64u/f32/f64です。通常の配列allocatorとdropを使い、GPU常駐であるとは主張しません。
+init/map/from_arrayは直接の完全適用だけに対応します。init/map callbackは既知の関数かcaptureなしlambdaで、scalar局所値・算術・比較・cast・if・既知呼び出しを許します。
+確保・借用・host call・task・ループ・再帰・assert・未知の関数値はE1018、抽出の深さ128・関数1024・式65536超過はE1017です。
+
+`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl`は一つのexportされた単引数scalar関数からshaderを生成します。専用projectを使い、target/optimization/cpu/debugオプションを付けません。
+WGSLのstrict経路はi32/i32uのみで、整数間castはbit保持、shiftは下位5bit、加減乗算はwrapです。除算・剰余はtrap契約が異なるため拒否します。
+WGSLには具体的な64-bit整数型がなく、floatのfusion/reassociation/subnormal差を許すため、64-bit/floatのshader生成はE1018です。CPU参照の数値契約は変更しません。
+出力はworkgroup_size(256)、map_main/init_main、binding0=入力storage、1=出力storage、2=lengthを含むuniformです。initは入力bindingを使いません。
+
+ホスト試作`src/runtime/webgpu.mjs`はWebGPU adapterを明示要求し、fromArray/init/mapの結果をdevice上へ保持、toArrayだけが同期読み戻しを行います。
+map/toArrayはhost bufferを一回消費し、queue完了後に旧bufferを破棄します。失敗・device制限は例外で返し、CPU fallbackはありません。closeをawaitして資源を終了します。
+Node実行例は`examples/gpu/run.mjs`です。任意のWebGPU bindingまたはbrowserのnavigator.gpuを使い、compiler自体にはGPU driver依存を追加しません。
 
 ### SIMD 値型
 

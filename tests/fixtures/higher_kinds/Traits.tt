@@ -1,0 +1,13 @@
+class Functor<'f: * -> *> {
+    def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
+    def mapped :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
+    fn mapped transform value = Functor.map transform value
+}
+
+class Keep<'f: * -> *> {
+    def keep :: 'f<i64> -> 'f<i64>
+}
+
+class BinaryKeep<'f: * -> * -> *> {
+    def keep :: 'f<'a, 'b> -> 'f<'a, 'b>
+}

@@ -32,6 +32,7 @@ target
 !src/runtime/utf8string.ll
 !src/runtime/heap-native.ll
 !src/runtime/heap-wasm.ll
+!src/runtime/heap-wasm-threads.ll
 !src/runtime/console.ll
 !src/runtime/character.ll
 !src/runtime/debug.ll

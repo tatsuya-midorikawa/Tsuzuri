@@ -216,6 +216,7 @@ fn closed(
         | E::TypeFunction { .. }
         | E::TaskRun(_)
         | E::TaskParallel(_)
+        | E::TaskParallelResults(_)
         | E::Parallel(..) => true,
         E::Local(id) => locals.get(id).copied().unwrap_or(false),
         E::Construct { payload, .. } => payload
@@ -348,8 +349,7 @@ impl Checker<'_> {
     }
 
     fn is_copy(&self, ty: &Type) -> bool {
-        if self.module.types().recursive(ty) || ty.sequence_element(&self.module.types()).is_some()
-        {
+        if self.module.types().recursive(ty) || ty.is_noncopy_record(&self.module.types()) {
             return false;
         }
         match ty {
@@ -374,7 +374,7 @@ impl Checker<'_> {
     }
 
     fn require_copy(&mut self, ty: &Type) -> bool {
-        if ty.sequence_element(&self.module.types()).is_some() {
+        if ty.is_noncopy_record(&self.module.types()) {
             return false;
         }
         if self.module.types().recursive(ty) {
@@ -1103,7 +1103,7 @@ impl Checker<'_> {
                     result.loans.extend(value.loans);
                 }
             }
-            E::TaskRun(value) | E::TaskParallel(value) => {
+            E::TaskRun(value) | E::TaskParallel(value) | E::TaskParallelResults(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
             E::StructuralCompare(_, arguments)

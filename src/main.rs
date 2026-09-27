@@ -32,13 +32,14 @@ Other source inputs can be checked or built as libraries.
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
   --target native|wasm32  Target (default: native)
-    --wasm-feature simd128  Opt in to WASM SIMD128 (wasm32 build only)
-  --emit KIND            exe, object, llvm, header, or wasm
+    --wasm-feature <name>   Opt in to simd128 or threads (wasm32 build only)
+    --emit KIND            exe, object, llvm, header, wasm, or wgsl
                          Default: exe for native, wasm for wasm32
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --json                 Emit machine-readable diagnostics on stderr
+    --no-cache             Disable build/run artifact cache reads and writes
     -g, --debug-info        Emit source-level DWARF debug information
     --deny-warnings        Fail check/build/run before code generation on warnings
     --debug-output         Enable WASM Debug output imports (native always writes)
@@ -138,6 +139,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut trap_info = false;
     let mut debug_info = false;
     let mut wasm_simd = false;
+    let mut wasm_threads = false;
+    let mut no_cache = false;
     let mut paths_only = false;
     while position < arguments.len() {
         let argument = &arguments[position];
@@ -150,6 +153,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--json") => {
                     json = true;
+                    continue;
+                }
+                Some("--no-cache") => {
+                    if no_cache {
+                        return Err("no-cache specified more than once".into());
+                    }
+                    no_cache = true;
                     continue;
                 }
                 Some("--deny-warnings") => {
@@ -224,15 +234,15 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     continue;
                 }
                 Some("--wasm-feature") => {
-                    if wasm_simd {
+                    let feature = match next_value(arguments, &mut position, "--wasm-feature")?.to_str() {
+                        Some("simd128") => &mut wasm_simd,
+                        Some("threads") => &mut wasm_threads,
+                        _ => return Err("supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported".into()),
+                    };
+                    if *feature {
                         return Err("WASM feature specified more than once".into());
                     }
-                    if next_value(arguments, &mut position, "--wasm-feature")?.to_str()
-                        != Some("simd128")
-                    {
-                        return Err("the only supported WASM feature is 'simd128'; relaxed SIMD is not supported".into());
-                    }
-                    wasm_simd = true;
+                    *feature = true;
                     continue;
                 }
                 Some("--emit") => {
@@ -246,9 +256,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("llvm") => Emit::Llvm,
                             Some("header") => Emit::Header,
                             Some("wasm") => Emit::Wasm,
+                            Some("wgsl") => Emit::Wgsl,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, or wasm".into()
+                                    "emit kind must be exe, object, llvm, header, wasm, or wgsl"
+                                        .into(),
                                 );
                             }
                         },
@@ -289,7 +301,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         }
     }
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
-    if wasm_simd && action != Action::Build {
+    if no_cache && !matches!(action, Action::Build | Action::Run) {
+        return Err("--no-cache is only valid with build or run".into());
+    }
+    if emit == Some(Emit::Wgsl) && (target.is_some() || optimization.is_some() || cpu.is_some()) {
+        return Err("WGSL output does not use target, optimization, or CPU options".into());
+    }
+    if (wasm_simd || wasm_threads) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
     if debug_info && !matches!(action, Action::Build | Action::Run) {
@@ -349,6 +367,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         trap_info: trap_info || action == Action::Run,
         debug_info,
         wasm_simd,
+        wasm_threads,
+        cache: !no_cache,
     };
     options.validate().map_err(|error| error.message)?;
     Ok(Arguments {
@@ -712,6 +732,78 @@ mod tests {
 
     #[test]
     fn selects_target_defaults_and_honors_path_separator() {
+        assert!(
+            !parse(&["build", "Main.tz", "--no-cache"])
+                .unwrap()
+                .options
+                .cache
+        );
+        assert!(
+            !parse(&["run", "Main.tz", "--no-cache"])
+                .unwrap()
+                .options
+                .cache
+        );
+        assert!(parse(&["check", "Main.tz", "--no-cache"]).is_err());
+        assert!(parse(&["build", "Main.tz", "--no-cache", "--no-cache"]).is_err());
+        assert_eq!(
+            parse(&["build", "Kernel.tz", "--emit", "wgsl"])
+                .unwrap()
+                .options
+                .emit,
+            Emit::Wgsl
+        );
+        assert!(parse(&["build", "Kernel.tz", "--emit", "wgsl", "-O3"]).is_err());
+        assert!(parse(&["build", "Kernel.tz", "--emit", "wgsl", "--target", "wasm32"]).is_err());
+        let threads = parse(&[
+            "build",
+            "Main.tz",
+            "--target",
+            "wasm32",
+            "--wasm-feature",
+            "threads",
+            "--wasm-feature",
+            "simd128",
+        ])
+        .unwrap();
+        assert!(threads.options.wasm_threads && threads.options.wasm_simd);
+        for values in [
+            vec!["build", "Main.tz", "--wasm-feature", "threads"],
+            vec!["check", "Main.tz", "--wasm-feature", "threads"],
+            vec!["run", "Main.tz", "--wasm-feature", "threads"],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--emit",
+                "llvm",
+                "--wasm-feature",
+                "threads",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--emit",
+                "header",
+                "--wasm-feature",
+                "threads",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "threads",
+                "--wasm-feature",
+                "threads",
+            ],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
         assert!(
             parse(&[
                 "build",

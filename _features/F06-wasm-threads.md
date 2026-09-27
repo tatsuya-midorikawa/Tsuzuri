@@ -6,7 +6,7 @@
 | 規模 | L |
 | 依存 | F01 |
 | 後続 | なし |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/llvm.rs`, `src/runtime/task-wasm.ll`, `src/runtime/task-wasm-threads.ll`（新規）, `src/runtime/heap-wasm.ll`, `tests/wasm_threads.mjs`（新規）, `examples/web/*`, `docs/language.md`, `docs/architecture.md`, `README.md`, `docs/benchmarks.md` |
 
 ## 目的
@@ -201,15 +201,15 @@
 
 ## 受け入れ条件
 
-- [ ] default wasm32 output は imports 空・逐次のまま。
-- [ ] `--wasm-feature threads` は explicit opt-in。
-- [ ] unsupported host / toolchain は明示エラー。
-- [ ] shared memory と atomics を使う。
-- [ ] `heap-wasm.ll` 相当の allocator が thread-safe。
-- [ ] worker ごとに stack が分離される。
-- [ ] `tsuzuri_task_parallel` は全 callback 完了まで戻らない。
-- [ ] caller participation と nested group が動く。
-- [ ] docs に COOP/COEP / SharedArrayBuffer / Worker glue が書かれている。
+- [x] default wasm32 output は imports 空・逐次のまま。
+- [x] `--wasm-feature threads` は explicit opt-in。
+- [x] unsupported host / toolchain は明示エラー。
+- [x] shared memory と atomics を使う。
+- [x] `heap-wasm.ll` 相当の allocator が thread-safe。
+- [x] worker ごとに stack が分離される。
+- [x] `tsuzuri_task_parallel` は全 callback 完了まで戻らない。
+- [x] caller participation と nested group が動く。
+- [x] docs に COOP/COEP / SharedArrayBuffer / Worker glue が書かれている。
 
 ## 落とし穴
 
@@ -238,3 +238,12 @@
 - stack size を 256 KiB に固定するか CLI 化するか。
   - 既定案: Phase 1 は固定。CLI は対象外。
 - 台帳の見直し提案: なし。D-18 と整合する。
+
+## 実装結果（2026-09-28）
+
+- GUIDE D-29の判断でqueueはfreestanding C11を採用。allocator本体は共通で、threadsだけlock wrapperを付ける。
+- Nodeホストは明示worker数を初期化後、初回groupで同数を起動。shared memoryは16MiB、main stack1MiB、worker stack256KiB。mutable __stack_pointerを各instanceに設定する。
+- queue/remaining/epochのatomic操作、caller participation、nested join、失敗poisonと全wait解除を実装。trap後の解放や再利用は保証しない。
+- O0/O3でstack sentinel、3参加者atomic barrier、順序、入れ子、Task/Parallel、heap残量、Worker失敗、host不備、objectリンク、決定性、SIMD/debug併用が成功。
+- 既存tasks.mjsの26結果・3trapがnative/WASM O0/O3で成功。Rust tasks12件、fmt/clippy、C11 -Wall/-Wextra/-Werror、Node構文検査、runtime同梱18件も成功。
+- Browserは要件と移植手順まで。本番glue、速度優位、WASI threadsは未実装・未主張。

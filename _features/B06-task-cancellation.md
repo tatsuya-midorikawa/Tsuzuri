@@ -6,7 +6,7 @@
 | 規模 | L |
 | 依存 | B01, F01 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/check.rs`, `src/closures.rs`, `src/ownership.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/runtime/task.c`, `src/runtime/task-wasm.ll`, `src/driver.rs`, `tests/tasks.rs`, `tests/fixtures/tasks/`, `tests/tasks.mjs`, `tests/task_runtime.c`, `docs/language.md`, `docs/architecture.md`, `README.md` |
 
 ## 目的
@@ -520,16 +520,16 @@ match Task.run (run [make 42]) with
 
 ## 受け入れ条件
 
-- [ ] `Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>` が型検査される。
-- [ ] すべて `Ok` の場合、入力順の array を `Ok` で返す。
-- [ ] `Error` がある場合、スレッド完了順に依存せず最小 input index の error を返す。
-- [ ] failure 検出後、未開始 index の新規開始を止める。
-- [ ] 開始済み task はすべて join してから返る。detached worker を残さない。
-- [ ] 未開始 task captures、未採用 Ok/Error payload、temporary buffers が drop/free され、heap tracking `live == 0`。
-- [ ] trap/runtime abort は `Error` に変換されない。
-- [ ] WASM は import なし、逐次で native と同じ結果。
-- [ ] native/WASM × `-O0`/`-O3`、object link path、runtime C tests が通る。
-- [ ] 既存 `Task.parallel` ABI と挙動を壊さない。
+- [x] `Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>` が型検査される。
+- [x] すべて `Ok` の場合、入力順の array を `Ok` で返す。
+- [x] `Error` がある場合、スレッド完了順に依存せず最小 input index の error を返す。
+- [x] failure 検出後、未開始 index の新規開始を止める。
+- [x] 開始済み task はすべて join してから返る。detached worker を残さない。
+- [x] 未開始 task captures、未採用 Ok/Error payload、temporary buffers が drop/free され、heap tracking `live == 0`。
+- [x] trap/runtime abort は `Error` に変換されない。
+- [x] WASM は import なし、逐次で native と同じ結果。
+- [x] native/WASM × `-O0`/`-O3`、object link path、runtime C tests が通る。
+- [x] 既存 `Task.parallel` ABI と挙動を壊さない。
 
 ## 落とし穴
 
@@ -557,3 +557,11 @@ match Task.run (run [make 42]) with
 - **既定案:** runtime ABI は `uint64_t tsuzuri_task_parallel_results(uint32_t (*run)(void *, uint64_t), void *context, uint64_t length)` とし、callback は aggregate を返さない。
 - F01 が worker pool ABI を変更済みの場合、B06 は上記 ABI を外部に保つ wrapper として実装するか、F01 の内部 scheduler に `cancel_after` を追加する。公開 LLVM 側 symbol は `tsuzuri_task_parallel_results` を維持する。
 - started bitmap の型は `i8` 配列を既定とする。bitset はメモリを減らせるが、drop loop が複雑になるため phase 1 では採用しない。
+
+## 実装結果（2026-09-28）
+
+- GUIDE D-29の同一pool拡張、専用builtin/typed lowering、i8 started、raw一時buffer回収を採用した。
+- 通常Task.parallelのABIとcompletion fast pathを維持。nativeとF06 threadsは最小failure/未配布打切り/全開始済みjoinを同じqueue lockで扱う。
+- 型/所有権13テスト、native/WASM O0/O3の41結果・4trap、object・複数objectリンク、trap-info、実Workerが成功。
+- owned string/array/function/recursive Result、未開始captures、cold破棄、empty、nested、first-class builtinを検証。nativeのlive=0、threadsのheapがstack予約分へ戻ることを確認。
+- C schedulerで失敗完了順を条件変数で反転して最小indexを確認。CPU数不明/1/4/上限、失敗注入、ASan/UBSan/TSan、fmt/clippyが成功。
