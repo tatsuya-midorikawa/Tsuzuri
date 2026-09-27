@@ -6,8 +6,15 @@
 | 規模 | M |
 | 依存 | なし |
 | 後続 | F04 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/llvm.rs`, `tests/e2e.mjs`, `tests/numeric_casts.mjs`, `tests/wasm_simd.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md` |
+
+## 実装と検証（2026-09-27）
+
+- --wasm-feature simd128をwasm32 build専用に追加。featureは一種類なのでCopyなBuildOptions.wasm_simdを使い、将来用の集合は追加しない。
+- Clangに有効時-msimd128、既定-mno-simd128を渡す。LLVM IR出力ではコメントに必要flagを記録。relaxed-simd・不正target/action・重複をE2000で拒否する。
+- CLIテスト成功。tests/wasm_simd.mjsで28参照ケースをfeature有無/O0/O3で照合し、importsなし・validation成功を確認。
+- LLVM21 objdumpで既定出力にベクトル命令なし、opt-in O3に実ベクトル命令あり。生バイトscanでは即値を誤認するため逆アセンブルを採用。速度優位性は未主張。
 
 ## 目的
 

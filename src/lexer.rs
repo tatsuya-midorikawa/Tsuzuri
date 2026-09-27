@@ -343,6 +343,7 @@ impl Lexer<'_> {
             "record" => TokenKind::Record,
             "union" => TokenKind::Union,
             "type" => TokenKind::Type,
+            "const" => TokenKind::Const,
             "test" => TokenKind::Test,
             "class" => TokenKind::Class,
             "instance" => TokenKind::Instance,

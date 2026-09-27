@@ -8,6 +8,8 @@ use crate::syntax::*;
 mod closures;
 #[path = "computation.rs"]
 mod computation;
+#[path = "constants.rs"]
+mod constants;
 #[path = "control.rs"]
 mod control;
 #[path = "derive.rs"]
@@ -20,6 +22,10 @@ mod polymorph;
 mod recursion;
 #[path = "recursive.rs"]
 mod recursive;
+#[path = "regions.rs"]
+mod regions;
+#[path = "semantic.rs"]
+pub mod semantic;
 #[path = "warnings.rs"]
 mod warnings;
 use polymorph::{Classes, Constraint, Inference, Scheme};
@@ -34,6 +40,7 @@ pub enum Type {
     Integer(u16, bool),
     Binary(u16),
     Decimal(u16),
+    Simd(crate::simd::SimdType),
     Bool,
     Unit,
     Char,
@@ -104,6 +111,7 @@ impl Type {
             Self::Integer(bits, signed) => format!("i{bits}{}", if *signed { "" } else { "u" }),
             Self::Binary(bits) => format!("f{bits}"),
             Self::Decimal(bits) => format!("d{bits}"),
+            Self::Simd(ty) => ty.name(),
             Self::Bool => "bool".into(),
             Self::Char => "char".into(),
             Self::Utf8Char => "utf8char".into(),
@@ -217,7 +225,7 @@ impl Type {
     }
 
     pub fn is_copy(&self, types: &TypeContext<'_>) -> bool {
-        if types.recursive(self) {
+        if types.recursive(self) || self.sequence_element(types).is_some() {
             return false;
         }
         match self {
@@ -251,6 +259,18 @@ impl Type {
             Self::Array(_) | Self::List(_) | Self::Vec(_) => true,
             Self::Tuple(elements) => elements.iter().any(|ty| ty.needs_drop(types)),
             _ => false,
+        }
+    }
+
+    pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
+        match self {
+            Self::Record(id, arguments)
+                if types.records[*id].origin == ModuleOrigin::Std
+                    && types.records[*id].name == "Seq.Seq" =>
+            {
+                arguments.first()
+            }
+            _ => None,
         }
     }
 
@@ -300,6 +320,14 @@ impl Type {
             }
             _ => false,
         }
+    }
+
+    pub(crate) fn contains_stored_reference(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !matches!(ty, Self::Reference(..)))
+    }
+
+    pub(crate) fn contains_stored_mutable_reference(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !ty.contains_mutable_reference())
     }
 
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {
@@ -532,6 +560,25 @@ pub enum Builtin {
     ListToArray,
     ListFoldRef,
     VecEmpty,
+    SeqNext,
+    SimdSplat,
+    SimdOfLanes2,
+    SimdOfLanes4,
+    SimdOfLanes8,
+    SimdOfLanes16,
+    SimdExtract,
+    SimdReplace,
+    SimdLoad,
+    SimdSum,
+    SimdEq,
+    SimdNe,
+    SimdLt,
+    SimdLe,
+    SimdGt,
+    SimdGe,
+    SimdSelect,
+    SimdAll,
+    SimdAny,
     VecWithCapacity,
     VecLength,
     VecCapacity,
@@ -623,6 +670,8 @@ pub enum BuiltinType {
     /// The integer type of twice the width and the same signedness;
     /// undefined for 128-bit integers.
     WidenOf(Box<BuiltinType>),
+    SimdLane(Box<BuiltinType>, Option<u16>),
+    SimdMask(Box<BuiltinType>),
 }
 
 #[derive(Clone, Debug)]
@@ -722,6 +771,25 @@ impl Builtin {
         Self::ListToArray,
         Self::ListFoldRef,
         Self::VecEmpty,
+        Self::SeqNext,
+        Self::SimdSplat,
+        Self::SimdOfLanes2,
+        Self::SimdOfLanes4,
+        Self::SimdOfLanes8,
+        Self::SimdOfLanes16,
+        Self::SimdExtract,
+        Self::SimdReplace,
+        Self::SimdLoad,
+        Self::SimdSum,
+        Self::SimdEq,
+        Self::SimdNe,
+        Self::SimdLt,
+        Self::SimdLe,
+        Self::SimdGt,
+        Self::SimdGe,
+        Self::SimdSelect,
+        Self::SimdAll,
+        Self::SimdAny,
         Self::VecWithCapacity,
         Self::VecLength,
         Self::VecCapacity,
@@ -861,6 +929,25 @@ impl Builtin {
             Self::ListToArray => "List.to_array",
             Self::ListFoldRef => "List.fold_ref",
             Self::VecEmpty => "Vec.empty",
+            Self::SeqNext => "Seq.next",
+            Self::SimdSplat => "Simd.splat",
+            Self::SimdOfLanes2 => "Simd.of_lanes2",
+            Self::SimdOfLanes4 => "Simd.of_lanes4",
+            Self::SimdOfLanes8 => "Simd.of_lanes8",
+            Self::SimdOfLanes16 => "Simd.of_lanes16",
+            Self::SimdExtract => "Simd.extract",
+            Self::SimdReplace => "Simd.replace",
+            Self::SimdLoad => "Simd.load",
+            Self::SimdSum => "Simd.sum_lanes",
+            Self::SimdEq => "Simd.eq",
+            Self::SimdNe => "Simd.ne",
+            Self::SimdLt => "Simd.lt",
+            Self::SimdLe => "Simd.le",
+            Self::SimdGt => "Simd.gt",
+            Self::SimdGe => "Simd.ge",
+            Self::SimdSelect => "Simd.select",
+            Self::SimdAll => "Simd.all",
+            Self::SimdAny => "Simd.any",
             Self::VecWithCapacity => "Vec.with_capacity",
             Self::VecLength => "Vec.length",
             Self::VecCapacity => "Vec.capacity",
@@ -933,6 +1020,75 @@ impl Builtin {
             ty: a(),
         };
         let (parameters, result, constraints) = match self {
+            Self::SimdSplat
+            | Self::SimdOfLanes2
+            | Self::SimdOfLanes4
+            | Self::SimdOfLanes8
+            | Self::SimdOfLanes16
+            | Self::SimdExtract
+            | Self::SimdReplace
+            | Self::SimdLoad
+            | Self::SimdSum
+            | Self::SimdEq
+            | Self::SimdNe
+            | Self::SimdLt
+            | Self::SimdLe
+            | Self::SimdGt
+            | Self::SimdGe
+            | Self::SimdSelect
+            | Self::SimdAll
+            | Self::SimdAny => {
+                let count = match self {
+                    Self::SimdOfLanes2 => Some(2),
+                    Self::SimdOfLanes4 => Some(4),
+                    Self::SimdOfLanes8 => Some(8),
+                    Self::SimdOfLanes16 => Some(16),
+                    _ => None,
+                };
+                let lane = || BuiltinType::SimdLane(Box::new(a()), count);
+                let mask = || BuiltinType::SimdMask(Box::new(a()));
+                let parameters = match self {
+                    Self::SimdSplat => vec![lane()],
+                    Self::SimdExtract => vec![a(), Concrete(Type::I64)],
+                    Self::SimdReplace => vec![a(), Concrete(Type::I64), lane()],
+                    Self::SimdLoad => vec![
+                        Reference(Box::new(Array(Box::new(lane()))), false),
+                        Concrete(Type::I64),
+                    ],
+                    Self::SimdSum | Self::SimdAll | Self::SimdAny => vec![a()],
+                    Self::SimdSelect => vec![mask(), a(), a()],
+                    _ if count.is_some() => vec![lane(); usize::from(count.unwrap())],
+                    _ => vec![a(), a()],
+                };
+                let result = match self {
+                    Self::SimdExtract | Self::SimdSum => lane(),
+                    Self::SimdAll | Self::SimdAny => Concrete(Type::Bool),
+                    Self::SimdEq
+                    | Self::SimdNe
+                    | Self::SimdLt
+                    | Self::SimdLe
+                    | Self::SimdGt
+                    | Self::SimdGe => mask(),
+                    _ => a(),
+                };
+                let class = match self {
+                    Self::SimdAll | Self::SimdAny => "SimdMask",
+                    Self::SimdLoad
+                    | Self::SimdSum
+                    | Self::SimdEq
+                    | Self::SimdNe
+                    | Self::SimdLt
+                    | Self::SimdLe
+                    | Self::SimdGt
+                    | Self::SimdGe => "SimdNumeric",
+                    _ => "SimdVector",
+                };
+                (
+                    parameters,
+                    result,
+                    vec![BuiltinConstraint { class, ty: a() }],
+                )
+            }
             Self::StringToCodeUnits => (
                 vec![Concrete(Type::String)],
                 Array(Box::new(Concrete(Type::Integer(16, false)))),
@@ -1009,6 +1165,23 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
+            Self::SeqNext => {
+                let sequence = BuiltinType::Std {
+                    module: "Seq",
+                    name: "Seq",
+                    args: vec![a()],
+                };
+                let option = BuiltinType::Std {
+                    module: "Option",
+                    name: "Option",
+                    args: vec![a()],
+                };
+                (
+                    vec![sequence.clone()],
+                    BuiltinType::Tuple(vec![sequence, option]),
+                    Vec::new(),
+                )
+            }
             Self::VecEmpty
             | Self::VecWithCapacity
             | Self::VecLength
@@ -1494,7 +1667,9 @@ impl BuiltinType {
             | Self::Task(ty)
             | Self::Reference(ty, _)
             | Self::UnsignedOf(ty)
-            | Self::WidenOf(ty) => ty.variables(found),
+            | Self::WidenOf(ty)
+            | Self::SimdLane(ty, _)
+            | Self::SimdMask(ty) => ty.variables(found),
             Self::Function(parameters, result) => {
                 parameters.iter().for_each(|ty| ty.variables(found));
                 result.variables(found);
@@ -1619,6 +1794,12 @@ pub struct CheckedRecord {
     recursive: recursive::Cache,
 }
 
+impl CheckedRecord {
+    pub(crate) fn opaque(&self) -> bool {
+        self.origin == ModuleOrigin::Std && crate::stdlib::opaque_record(&self.name)
+    }
+}
+
 /// A union declaration. Cases keep declaration order, and a case's index is
 /// its runtime `i32` tag.
 #[derive(Clone, Debug)]
@@ -1644,6 +1825,7 @@ impl CheckedUnion {
 #[derive(Clone, Debug)]
 pub struct CheckedFunction {
     pub module: String,
+    pub(crate) region_sources: Option<BTreeSet<usize>>,
     pub origin: FunctionOrigin,
     pub name: String,
     pub visibility: Visibility,
@@ -2096,6 +2278,7 @@ struct Names {
     /// Qualified user class names by unqualified name.
     class_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, NameInfo>,
+    constants: BTreeSet<usize>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
     active_aliases: BTreeMap<String, Vec<String>>,
 }
@@ -2195,7 +2378,7 @@ impl Names {
     /// Whether `requester` may name the module of a qualified `Module.name`.
     fn searchable_path(&self, requester: &str, qualified: &str) -> bool {
         qualified
-            .split_once('.')
+            .rsplit_once('.')
             .is_some_and(|(module, _)| self.searchable(requester, module))
     }
 
@@ -2438,7 +2621,7 @@ impl Names {
         self.choose(
             module,
             &candidates,
-            |class| self.origin(class.split_once('.').map_or("", |(module, _)| module)),
+            |class| self.origin(class.rsplit_once('.').map_or("", |(module, _)| module)),
             |_| true,
         )
     }
@@ -2583,38 +2766,31 @@ impl Names {
         path: &str,
         span: Span,
     ) -> Result<Option<&CaseInfo>, Diagnostic> {
-        let segments: Vec<&str> = path.split('.').collect();
-        match segments.as_slice() {
-            [name] => self.case(requester, name, span),
-            [prefix, name] => {
-                let qualified = if self.searchable(requester, prefix) {
-                    let case = self.cases.get(&format!("{prefix}.{name}"));
-                    if let Some(case) = case {
-                        case.info.require_visible("union case", requester, span)?;
-                    }
-                    case
-                } else {
-                    None
-                };
-                let local = if self.unions.contains_key(&format!("{requester}.{prefix}")) {
-                    self.union_case(requester, requester, prefix, name, span)
-                } else {
-                    Ok(None)
-                };
-                match (qualified, local) {
-                    (Some(case), Ok(Some(local))) if case.info.name != local.info.name => {
-                        Err(Self::ambiguous_path(path, span))
-                    }
-                    // A missing case of a local union is reported only when
-                    // the prefix does not name a module that has the case.
-                    (Some(case), _) => Ok(Some(case)),
-                    (None, local) => local,
-                }
+        let Some((prefix, name)) = path.rsplit_once('.') else {
+            return self.case(requester, path, span);
+        };
+        let qualified = if self.searchable(requester, prefix) {
+            let case = self.cases.get(path);
+            if let Some(case) = case {
+                case.info.require_visible("union case", requester, span)?;
             }
-            [module, union, name] if self.searchable(requester, module) => {
-                self.union_case(requester, module, union, name, span)
+            case
+        } else {
+            None
+        };
+        let local = if let Some((module, union)) = prefix.rsplit_once('.') {
+            self.union_case(requester, module, union, name, span)
+        } else if self.unions.contains_key(&format!("{requester}.{prefix}")) {
+            self.union_case(requester, requester, prefix, name, span)
+        } else {
+            Ok(None)
+        };
+        match (qualified, local) {
+            (Some(case), Ok(Some(local))) if case.info.name != local.info.name => {
+                Err(Self::ambiguous_path(path, span))
             }
-            _ => Ok(None),
+            (Some(case), _) => Ok(Some(case)),
+            (None, local) => local,
         }
     }
 
@@ -2796,7 +2972,8 @@ fn validate_public_type(
                 .try_for_each(|arg| validate_public_type(arg, module, owner, names))
         }
         TypeExprKind::Variable(_) => Ok(()),
-        TypeExprKind::Reference(inner, _)
+        TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::List(inner)
         | TypeExprKind::Task(inner) => validate_public_type(inner, module, owner, names),
@@ -2817,11 +2994,19 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
 }
 
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
+    check_modules_indexed_all(modules, None)
+}
+
+pub(crate) fn check_modules_indexed_all(
+    modules: &[ModuleInput<'_>],
+    semantic: Option<&mut semantic::SemanticIndex>,
+) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
         modules,
         &mut diagnostics,
         warnings::WarningOptions::default(),
+        semantic,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -2835,6 +3020,7 @@ fn check_modules_collect(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
     warning_options: warnings::WarningOptions,
+    semantic: Option<&mut semantic::SemanticIndex>,
 ) -> Result<CheckedModule, Diagnostic> {
     let mut names = Names {
         warning_options,
@@ -2855,16 +3041,28 @@ fn check_modules_collect(
                 Span::default().in_source(at),
             )
         };
-        if module.origin == ModuleOrigin::User && crate::stdlib::is_reserved_module(name) {
+        if name.len() > 255 || name.split('.').count() > 16 {
+            diagnostics.push(Diagnostic::new(
+                "E1017",
+                "module paths are limited to 16 segments and 255 bytes",
+                Span::default().in_source(source),
+            ));
+            continue;
+        }
+        if module.origin == ModuleOrigin::User
+            && crate::stdlib::is_reserved_module(name.split('.').next().unwrap_or(name))
+        {
             diagnostics.push(reserved(source));
             continue;
         }
-        let valid = crate::lexer::lex(name).is_ok_and(|tokens| {
-            matches!(
-                tokens.as_slice(),
-                [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
-                    if text == name && name != "_" && name != "Task"
-            )
+        let valid = name.split('.').all(|name| {
+            crate::lexer::lex(name).is_ok_and(|tokens| {
+                matches!(
+                    tokens.as_slice(),
+                    [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
+                        if text == name && name != "_" && name != "Task"
+                )
+            })
         });
         let previous = sources.insert(name, (source, module.origin));
         if let Some((previous, origin)) = previous
@@ -2914,6 +3112,28 @@ fn check_modules_collect(
                 .map(|function| (module.name.to_owned(), function.clone()))
         })
         .collect();
+    for module in modules {
+        for constant in &module.program.constants {
+            constants::validate(&constant.value)?;
+            names.constants.insert(function_declarations.len());
+            let mut name = constant.name.clone();
+            name.provenance = Provenance::Generated;
+            function_declarations.push((
+                module.name.to_owned(),
+                FunctionDecl {
+                    name,
+                    regions: Vec::new(),
+                    recursion: None,
+                    visibility: constant.visibility,
+                    exported: false,
+                    parameters: Vec::new(),
+                    result: constant.ty.clone(),
+                    constraints: Vec::new(),
+                    body: constant.value.clone(),
+                },
+            ));
+        }
+    }
     let mut tests = Vec::new();
     let mut test_functions = BTreeMap::new();
     for module in modules {
@@ -2944,6 +3164,7 @@ fn check_modules_collect(
                         span: test.name_span,
                         provenance: Provenance::Generated,
                     },
+                    regions: Vec::new(),
                     recursion: None,
                     visibility: Visibility::Private,
                     exported: false,
@@ -3136,7 +3357,10 @@ fn check_modules_collect(
                 }
                 reject_field_constraints(&field.ty, module, &names, "record")?;
                 let ty = resolve_type(&field.ty, module, &names)?;
-                if record.visibility == Visibility::Public {
+                if record.visibility == Visibility::Public
+                    && !(names.origin(module) == ModuleOrigin::Std
+                        && crate::stdlib::opaque_record(&qualified))
+                {
                     validate_public_type(&field.ty, module, ("record", &qualified), &names)?;
                 }
                 polymorph::bounded_type(&ty, field.ty.span)?;
@@ -3153,10 +3377,10 @@ fn check_modules_collect(
                     }
                     used.insert(variable);
                 }
-                if field.mutable || ty.contains_reference() {
+                if field.mutable {
                     return Err(Diagnostic::new(
                         "E1013",
-                        "record fields are immutable owned values; borrowed fields require lifetime parameters, which are not supported",
+                        "record fields are immutable; use an owned update instead of a mutable field",
                         field.name.span,
                     ));
                 }
@@ -3263,6 +3487,14 @@ fn check_modules_collect(
     };
     for record in &records {
         for (_, ty) in &record.fields {
+            if ty.contains_stored_mutable_reference(&types) {
+                diagnostics.push(Diagnostic::new(
+                    "E1013",
+                    "record fields cannot store mutable references; use a shared borrow",
+                    record.span,
+                ));
+                continue;
+            }
             if let Err(error) = validate_size(ty, &types, record.span) {
                 diagnostics.push(error);
             }
@@ -3283,6 +3515,7 @@ fn check_modules_collect(
     }
     diagnostics.check()?;
     let mut export_names = BTreeSet::new();
+    regions::validate_modules(modules, &names, types)?;
     let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
     classes.instances(
         modules,
@@ -3317,7 +3550,7 @@ fn check_modules_collect(
         }
     }
     diagnostics.check()?;
-    for (module, function) in &function_declarations {
+    for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
             diagnostics.check()?;
         }
@@ -3393,6 +3626,12 @@ fn check_modules_collect(
             let signature = Signature { parameters, result };
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
+            if names.constants.contains(&id) && !variables.is_empty() {
+                return Err(constants::failure(
+                    function.result.span,
+                    "constant types must be concrete; remove type variables",
+                ));
+            }
             let mut constraints = Vec::new();
             let mut members = Vec::new();
             for constraint in &function.constraints {
@@ -3554,6 +3793,7 @@ fn check_modules_collect(
         let signature = scheme.signature.clone();
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
         let checked = (|| {
+            let region_sources = regions::contract(function, module, &names, types)?;
             checker.type_parameters = scheme.variables.clone();
             checker.members = scheme.members.clone();
             let mut parameters = Vec::new();
@@ -3564,6 +3804,7 @@ fn check_modules_collect(
             let body = checker.expression(&function.body, Some(&signature.result))?;
             Ok(CheckedFunction {
                 module: module.clone(),
+                region_sources,
                 origin: FunctionOrigin {
                     provenance: function.name.provenance,
                     test: test_functions.get(&id).copied(),
@@ -3602,7 +3843,8 @@ fn check_modules_collect(
                 && matches!(module.program.source_kind, None | Some(SourceKind::Code))
         })
         .then(|| names.functions.get("Main.main").map(|info| info.id))
-        .flatten();
+        .flatten()
+        .filter(|id| !names.constants.contains(id));
     for &ModuleInput {
         name: module,
         program,
@@ -3638,6 +3880,7 @@ fn check_modules_collect(
             let body = checker.expression(&expression, None)?;
             Ok(CheckedFunction {
                 module: module.to_owned(),
+                region_sources: None,
                 origin: FunctionOrigin {
                     provenance: Provenance::Generated,
                     ..FunctionOrigin::source(ModuleOrigin::User)
@@ -3699,6 +3942,10 @@ fn check_modules_collect(
         }
     }
     diagnostics.check()?;
+    if let Some(index) = semantic {
+        *index = semantic::collect(modules, &functions, &names, types);
+    }
+    constants::fold(&mut functions, &names.constants)?;
     let references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
     warnings.extend(warnings::unused_private(
@@ -3975,6 +4222,7 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
 
 fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Type, Diagnostic> {
     Ok(match &expression.kind {
+        TypeExprKind::Regions(inner, _) => resolve_type(inner, module, names)?,
         TypeExprKind::Apply(head, args) if head.text == "Vec" => {
             let [element] = &**args else {
                 return Err(Diagnostic::new(
@@ -4180,6 +4428,10 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Reference(inner, mutable) => {
                 TypeExprKind::Reference(Box::new(self.expand(inner, module, depth + 1)?), *mutable)
             }
+            TypeExprKind::Regions(inner, regions) => TypeExprKind::Regions(
+                Box::new(self.expand(inner, module, depth + 1)?),
+                regions.clone(),
+            ),
             TypeExprKind::Array(inner) => {
                 TypeExprKind::Array(Box::new(self.expand(inner, module, depth + 1)?))
             }
@@ -4279,7 +4531,8 @@ impl TypeAliasExpansion<'_> {
         };
         let children: Vec<&mut TypeExpr> = match &mut expression.kind {
             TypeExprKind::Apply(_, args) => args.iter_mut().collect(),
-            TypeExprKind::Reference(inner, _)
+            TypeExprKind::Regions(inner, _)
+            | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner) => vec![inner],
@@ -4336,7 +4589,8 @@ fn reject_expanded_field_constraints(
             }
             args.iter().collect()
         }
-        TypeExprKind::Reference(inner, _)
+        TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::List(inner)
         | TypeExprKind::Task(inner) => vec![inner],
@@ -4485,6 +4739,7 @@ impl<'a> Layouts<'a> {
             return Ok(0);
         }
         Ok(match ty {
+            Type::Simd(_) => 16,
             Type::Vec(element) => {
                 self.size(element, depth, span)?;
                 32
@@ -4551,11 +4806,11 @@ impl Validation<'_> {
                         record.fields.iter().zip(types.record_fields(*id, args))
                     {
                         polymorph::bounded_type(&field, span)?;
-                        if field.contains_reference() {
+                        if field.contains_stored_mutable_reference(&types) {
                             return Err(Diagnostic::new(
                                 "E1013",
                                 format!(
-                                    "record fields are immutable owned values; {} would store a reference in field '{name}', and borrowed fields require lifetime parameters, which are not supported",
+                                    "{} would store a mutable reference in field '{name}'; use a shared borrow",
                                     ty.display(&types)
                                 ),
                                 span,
@@ -4577,7 +4832,7 @@ impl Validation<'_> {
                             continue;
                         };
                         polymorph::bounded_type(&payload, span)?;
-                        if payload.contains_mutable_reference() {
+                        if payload.contains_stored_mutable_reference(&types) {
                             return Err(Diagnostic::new(
                                 "E1013",
                                 format!(
@@ -4600,7 +4855,7 @@ impl Validation<'_> {
                 size
             }
             Type::Array(element) | Type::List(element) | Type::Vec(element) => {
-                if element.contains_mutable_reference() {
+                if element.contains_stored_mutable_reference(&self.layouts.types) {
                     return Err(Diagnostic::new(
                         "E1005",
                         "array and list elements cannot contain mutable references; collections are deeply immutable",
@@ -4618,7 +4873,7 @@ impl Validation<'_> {
                 32
             }
             Type::Task(result) => {
-                if result.contains_reference() {
+                if result.contains_stored_reference(&self.layouts.types) {
                     return Err(Diagnostic::new(
                         "E1013",
                         "task results must be owned values, not references",
@@ -4649,6 +4904,21 @@ impl Validation<'_> {
             Ok(size)
         }
     }
+}
+
+fn expression_path(expression: &Expr) -> Option<(String, &Ident)> {
+    let mut names = Vec::new();
+    let mut current = expression;
+    while let ExprKind::Field(value, field) = &current.kind {
+        names.push(field.text.as_str());
+        current = value;
+    }
+    let ExprKind::Name(root) = &current.kind else {
+        return None;
+    };
+    names.push(&root.text);
+    names.reverse();
+    Some((names.join("."), root))
 }
 
 struct Checker<'a> {
@@ -4903,7 +5173,7 @@ impl<'a> Checker<'a> {
             };
             self.same(&result, &hint, expression.span)?;
         }
-        let arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
+        let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
         {
             self.parallel_arguments(arguments, &parameters)?
         } else {
@@ -4914,6 +5184,7 @@ impl<'a> Checker<'a> {
                 .collect::<Result<_, _>>()?
         };
         self.solve_families(false)?;
+        self.constant_borrows(&callee, &mut arguments, &result, expression.span)?;
         let value = self.finish_expression(
             Self::call_kind(callee, arguments),
             result,
@@ -4940,24 +5211,10 @@ impl<'a> Checker<'a> {
         };
         // `Module.name` names a module function or a qualified builtin such
         // as `Task.run` before any class method.
-        let namespace = match &expression.kind {
-            ExprKind::Field(value, field) if case.is_none() => match &value.kind {
-                ExprKind::Name(module) if self.local(&module.text).is_none() => {
-                    let qualified = format!("{}.{}", module.text, field.text);
-                    if let Some(id) = self.names.function(self.module, &qualified, field.span)? {
-                        Some(self.function(id))
-                    } else if let Some(builtin) = Builtin::ALL
-                        .iter()
-                        .find(|builtin| builtin.name() == qualified)
-                    {
-                        Some(self.builtin(*builtin, expression.span)?)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            },
-            _ => None,
+        let namespace = if case.is_none() && matches!(expression.kind, ExprKind::Field(..)) {
+            self.namespace_value(expression)?
+        } else {
+            None
         };
         let method = if namespace.is_some() || case.is_some() {
             None
@@ -5052,19 +5309,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Name(name) => self.name(name)?,
             ExprKind::TypeFunction(variable, name) => self.type_function(variable, name)?,
-            ExprKind::QualifiedFunction(name) => {
-                let id = self
-                    .names
-                    .function(self.module, &name.text, name.span)?
-                    .ok_or_else(|| {
-                        Diagnostic::new(
-                            "E1002",
-                            format!("unknown function '{}'", name.text),
-                            name.span,
-                        )
-                    })?;
-                self.function(id)
-            }
+            ExprKind::QualifiedFunction(name) => self.qualified_function(name)?,
             ExprKind::TaskRun(value) => {
                 let result = expected.cloned().unwrap_or_else(|| self.inference.fresh());
                 let value = self.expression(value, Some(&Type::Task(Box::new(result.clone()))))?;
@@ -5254,13 +5499,12 @@ impl<'a> Checker<'a> {
                 self.case_value(union_id, case_id)
             }
             ExprKind::Field(value, field)
-                if matches!(&value.kind, ExprKind::Name(name)
-                    if self.local(&name.text).is_none() && self.is_namespace(&name.text)) =>
+                if self
+                    .value_path(value)
+                    .is_some_and(|name| self.is_namespace(&name)) =>
             {
-                let ExprKind::Name(module) = &value.kind else {
-                    unreachable!()
-                };
-                let message = if module.text == "Task" {
+                let module = self.value_path(value).unwrap();
+                let message = if module == "Task" {
                     format!(
                         "Task has no function '{}'; use Task.run or Task.parallel",
                         field.text
@@ -5268,7 +5512,7 @@ impl<'a> Checker<'a> {
                 } else {
                     format!(
                         "module '{}' has no function or union case '{}'",
-                        module.text, field.text
+                        module, field.text
                     )
                 };
                 return Err(Diagnostic::new("E1002", message, field.span));
@@ -5498,6 +5742,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let id = self.names.record(self.module, &name.text, name.span)?;
+        self.record_storage(id, name.span)?;
         let types = self.types;
         let record = &types.records[id];
         // Type arguments come from the expected type when it names this
@@ -5604,6 +5849,7 @@ impl<'a> Checker<'a> {
                 span,
             ));
         };
+        self.record_storage(*id, span)?;
         let types = self.types;
         let record = &types.records[*id];
         let field_types = types.record_fields(*id, args);
@@ -5647,6 +5893,7 @@ impl<'a> Checker<'a> {
         match &value.ty {
             Type::Error => Ok((TypedExprKind::Error, Type::Error)),
             Type::Record(id, args) => {
+                self.record_storage(*id, field.span)?;
                 let index = self.types.records[*id]
                     .fields
                     .iter()
@@ -5673,6 +5920,26 @@ impl<'a> Checker<'a> {
                 field.span,
             )),
         }
+    }
+
+    fn record_storage(&self, id: usize, span: Span) -> Result<(), Diagnostic> {
+        let record = &self.types.records[id];
+        if record.opaque()
+            && record
+                .name
+                .rsplit_once('.')
+                .is_some_and(|(module, _)| module != self.module)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                format!(
+                    "the representation of '{}' is opaque; use its module API",
+                    record.name
+                ),
+                span,
+            ));
+        }
+        Ok(())
     }
 
     /// Keyword `ref r` on a reference `r` builds the same tree as the symbol reborrow `&*r`.
@@ -5800,7 +6067,16 @@ impl<'a> Checker<'a> {
     /// Whether `name.x` can only mean a function or case of the namespace
     /// `name`: a visible module, a std module, or a builtin prefix such as `Task`.
     fn is_namespace(&self, name: &str) -> bool {
+        let prefix = format!("{name}.");
         self.names.searchable(self.module, name)
+            || self
+                .names
+                .modules
+                .range(prefix.clone()..)
+                .next()
+                .is_some_and(|(module, _)| {
+                    module.starts_with(&prefix) && self.names.searchable(self.module, module)
+                })
             || crate::stdlib::is_reserved_module(name)
             || Builtin::ALL.iter().any(|builtin| {
                 builtin
@@ -5808,6 +6084,23 @@ impl<'a> Checker<'a> {
                     .split_once('.')
                     .is_some_and(|(prefix, _)| prefix == name)
             })
+    }
+
+    fn qualified_function(&mut self, name: &Ident) -> Result<(TypedExprKind, Type), Diagnostic> {
+        if let Some(id) = self.names.function(self.module, &name.text, name.span)? {
+            return Ok(self.function(id));
+        }
+        if let Some(builtin) = Builtin::ALL
+            .iter()
+            .find(|builtin| builtin.name() == name.text)
+        {
+            return self.builtin(*builtin, name.span);
+        }
+        Err(Diagnostic::new(
+            "E1002",
+            format!("unknown function '{}'", name.text),
+            name.span,
+        ))
     }
 
     fn name(&mut self, name: &Ident) -> Result<(TypedExprKind, Type), Diagnostic> {
@@ -5867,16 +6160,29 @@ impl<'a> Checker<'a> {
     /// The dotted path of names that `expression` spells, when its root is
     /// not a local binding.
     fn value_path(&self, expression: &Expr) -> Option<String> {
-        match &expression.kind {
-            ExprKind::Name(name) => self.local(&name.text).is_none().then(|| name.text.clone()),
-            ExprKind::Field(value, field) => {
-                let mut path = self.value_path(value)?;
-                path.push('.');
-                path.push_str(&field.text);
-                Some(path)
-            }
-            _ => None,
+        let (path, root) = expression_path(expression)?;
+        self.local(&root.text).is_none().then_some(path)
+    }
+
+    fn namespace_value(
+        &mut self,
+        expression: &Expr,
+    ) -> Result<Option<(TypedExprKind, Type)>, Diagnostic> {
+        let Some(path) = self.value_path(expression) else {
+            return Ok(None);
+        };
+        let span = match &expression.kind {
+            ExprKind::Field(_, field) => field.span,
+            _ => expression.span,
+        };
+        if let Some(id) = self.names.function(self.module, &path, span)? {
+            return Ok(Some(self.function(id)));
         }
+        Builtin::ALL
+            .iter()
+            .find(|builtin| builtin.name() == path)
+            .map(|builtin| self.builtin(*builtin, expression.span))
+            .transpose()
     }
 
     /// Resolves `Module.Case`, the current module's `Union.Case`, and
@@ -5887,9 +6193,8 @@ impl<'a> Checker<'a> {
             return Ok(None);
         };
         let span = expression.span;
-        if let Some((prefix, name)) = path.split_once('.') {
-            let function = !name.contains('.')
-                && self.names.searchable(self.module, prefix)
+        if let Some((prefix, name)) = path.rsplit_once('.') {
+            let function = self.names.searchable(self.module, prefix)
                 && self
                     .names
                     .functions

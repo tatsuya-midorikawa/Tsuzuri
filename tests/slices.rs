@@ -52,7 +52,7 @@ fn slices_reject_escaping_loans_and_source_mutations() {
         ("let values = [|1, 2|]\nref values[..1]", "E1005"),
         ("let text = \"text\"\nref text[1..]", "E1005"),
         ("let values = [1, 2]\nref values[true..]", "E1003"),
-        ("record Stored { values: ref [i64] }", "E1013"),
+        ("record Stored { values: ref mut [i64] }", "E1013"),
         (
             "let slice = { let values = [1, 2]; ref values[..1] }\nslice.length",
             "E1013",

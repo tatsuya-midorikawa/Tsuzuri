@@ -22,6 +22,7 @@ fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
             | TokenKind::Record
             | TokenKind::Union
             | TokenKind::Type
+            | TokenKind::Const
             | TokenKind::Test
             | TokenKind::Class
             | TokenKind::Instance
@@ -78,6 +79,7 @@ struct Parser<'a> {
     type_offside: Option<usize>,
     slice_context: bool,
     stop_at_slice_dotdot: bool,
+    region_suffix: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -96,6 +98,7 @@ impl<'a> Parser<'a> {
             type_offside: None,
             slice_context: false,
             stop_at_slice_dotdot: false,
+            region_suffix: true,
         }
     }
 }
@@ -175,6 +178,7 @@ impl Parser<'_> {
         let mut program = Program {
             source_kind: None,
             type_aliases: Vec::new(),
+            constants: Vec::new(),
             records: Vec::new(),
             unions: Vec::new(),
             functions: Vec::new(),
@@ -197,6 +201,8 @@ impl Parser<'_> {
                 let visibility = self.visibility()?;
                 if self.eat(&TokenKind::Type) {
                 program.type_aliases.push(self.type_alias(visibility, column)?);
+            } else if self.eat(&TokenKind::Const) {
+                program.constants.push(self.const_declaration(visibility)?);
             } else if self.at(&TokenKind::Test) {
                 program.tests.push(self.test_declaration()?);
             } else if self.eat(&TokenKind::Union) {
@@ -204,6 +210,7 @@ impl Parser<'_> {
             } else if self.eat(&TokenKind::Record) {
                 let name = self.ident()?;
                 let parameters = self.type_parameters()?;
+                let regions = if self.region_list_ahead() { self.region_list()? } else { Vec::new() };
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
                 let fields = self.parameters(TokenKind::RightBrace)?;
                 let derives = self.derives()?;
@@ -211,6 +218,7 @@ impl Parser<'_> {
                     visibility,
                     name,
                     parameters,
+                    regions,
                     fields,
                     derives,
                 });
@@ -297,8 +305,10 @@ impl Parser<'_> {
                 };
                 *group = recursion.clone();
                 if declaration {
+                    let regions = if self.at(&TokenKind::LeftBrace) { self.region_list()? } else { Vec::new() };
                     self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
                     let mut signature = self.signature(name.clone(), exported, column)?;
+                    signature.regions = regions;
                     signature.recursion = recursion;
                     signature.visibility = visibility;
                     if signatures.contains_key(&name.text) {
@@ -336,11 +346,14 @@ impl Parser<'_> {
                 self.expect(&TokenKind::LeftParen, "'(' after the function name")?;
                 let parameters = self.parameters(TokenKind::RightParen)?;
                 self.expect(&TokenKind::Arrow, "'->' and an explicit return type")?;
+                let outer = std::mem::replace(&mut self.region_suffix, false);
                 let result = self.type_expr()?;
+                self.region_suffix = outer;
                 let body = self.block()?;
                 defined_names.insert(name.text.clone());
                 program.functions.push(FunctionDecl {
                     name,
+                    regions: Vec::new(),
                     recursion,
                     visibility: Visibility::Public,
                     exported,
@@ -463,6 +476,7 @@ impl Parser<'_> {
         self.type_offside = None;
         self.slice_context = false;
         self.stop_at_slice_dotdot = false;
+        self.region_suffix = true;
     }
 
     fn visibility(&mut self) -> Result<Visibility, Diagnostic> {
@@ -472,7 +486,11 @@ impl Parser<'_> {
         }
         let next = self.current();
         let message = match next.kind {
-            TokenKind::Record | TokenKind::Union | TokenKind::Type | TokenKind::Def => {
+            TokenKind::Record
+            | TokenKind::Union
+            | TokenKind::Type
+            | TokenKind::Const
+            | TokenKind::Def => {
                 return Ok(Visibility::Private);
             }
             TokenKind::Export => return Err(Self::private_export(private.through(next.span))),
@@ -483,9 +501,24 @@ impl Parser<'_> {
             TokenKind::Instance => {
                 "instances take part in global coherence and are always public; remove 'private'"
             }
-            _ => "'private' must be followed by 'def', 'record', 'union', or 'type'",
+            _ => "'private' must be followed by 'def', 'record', 'union', 'type', or 'const'",
         };
         Err(Diagnostic::new("E1022", message, private))
+    }
+
+    fn const_declaration(&mut self, visibility: Visibility) -> Result<ConstDecl, Diagnostic> {
+        let name = self.ident()?;
+        self.expect(&TokenKind::Colon, "':' and an explicit constant type")?;
+        let ty = self.type_expr()?;
+        self.expect(&TokenKind::Equal, "'=' before the constant value")?;
+        let value = self.body_expression()?;
+        self.eat(&TokenKind::Semicolon);
+        Ok(ConstDecl {
+            visibility,
+            name,
+            ty,
+            value,
+        })
     }
 
     fn type_alias(
@@ -606,8 +639,72 @@ impl Parser<'_> {
         )
     }
 
+    fn region_list_ahead(&self) -> bool {
+        if !self.at(&TokenKind::LeftBrace) {
+            return false;
+        }
+        let mut named = false;
+        for token in &self.tokens[self.position + 1..] {
+            match token.kind {
+                TokenKind::Ident(_) => named = true,
+                TokenKind::Comma => {}
+                TokenKind::RightBrace => return named,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    fn region_list(&mut self) -> Result<Vec<Ident>, Diagnostic> {
+        self.expect(&TokenKind::LeftBrace, "'{' before region names")?;
+        let mut regions = Vec::new();
+        let mut used = BTreeSet::new();
+        while !self.eat(&TokenKind::RightBrace) {
+            let region = self.ident()?;
+            if !region.text.as_bytes()[0].is_ascii_lowercase()
+                || !region
+                    .text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+                || !used.insert(region.text.clone())
+            {
+                return Err(Diagnostic::new(
+                    "E1013",
+                    "region names must be distinct lowercase identifiers",
+                    region.span,
+                ));
+            }
+            if regions.len() >= MAX_NESTING {
+                return Err(Diagnostic::new(
+                    "E1017",
+                    "too many region parameters",
+                    region.span,
+                ));
+            }
+            regions.push(region);
+            self.eat(&TokenKind::Comma);
+        }
+        if regions.is_empty() {
+            return Err(self.error("a region list must not be empty"));
+        }
+        Ok(regions)
+    }
+
+    fn member_ident(&mut self) -> Result<Ident, Diagnostic> {
+        if self.at(&TokenKind::Union) {
+            let token = self.take();
+            Ok(Ident {
+                text: "union".into(),
+                span: token.span,
+                provenance: Provenance::User,
+            })
+        } else {
+            self.ident()
+        }
+    }
+
     fn qualified_ident(&mut self) -> Result<Ident, Diagnostic> {
-        self.qualified_path(2)
+        self.qualified_path(18)
     }
 
     /// Reads up to `segments` dot-separated identifiers, as in
@@ -622,6 +719,13 @@ impl Parser<'_> {
             name.text.push('.');
             name.text.push_str(&member.text);
             name.span = name.span.through(member.span);
+        }
+        if self.at(&TokenKind::Dot) {
+            return Err(Diagnostic::new(
+                "E1017",
+                "qualified names exceed the 18-segment compiler limit",
+                name.span,
+            ));
         }
         Ok(name)
     }
@@ -828,6 +932,7 @@ impl Parser<'_> {
         }
         Ok(SignatureDecl {
             name,
+            regions: Vec::new(),
             recursion: None,
             visibility: Visibility::Public,
             exported,
@@ -922,6 +1027,7 @@ impl Parser<'_> {
         };
         Ok(FunctionDecl {
             name: definition.name,
+            regions: signature.regions,
             recursion: definition.recursion,
             visibility: signature.visibility,
             exported: signature.exported,
@@ -982,8 +1088,7 @@ impl Parser<'_> {
         self.enter()?;
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
-            let mutable = self.eat(&TokenKind::Mut);
-            TypeExprKind::Reference(Box::new(self.type_primary()?), mutable)
+            self.reference_type(start)?
         } else if self.eat(&TokenKind::AndAnd) {
             // As in Rust, `&&T` is `& &T` and `&&mut T` is `& &mut T`.
             let mutable = self.eat(&TokenKind::Mut);
@@ -1052,13 +1157,62 @@ impl Parser<'_> {
             }
         };
         self.nesting -= 1;
-        Ok(TypeExpr {
+        self.finish_type_primary(kind, start)
+    }
+
+    fn reference_type(&mut self, start: Span) -> Result<TypeExprKind, Diagnostic> {
+        let mutable = self.eat(&TokenKind::Mut);
+        let regions = if self.at(&TokenKind::LeftBrace) {
+            self.region_list()?
+        } else {
+            Vec::new()
+        };
+        let inner = self.type_primary()?;
+        let span = start.through(inner.span);
+        let reference = TypeExprKind::Reference(Box::new(inner), mutable);
+        if regions.is_empty() {
+            return Ok(reference);
+        }
+        if regions.len() != 1 {
+            return Err(Diagnostic::new(
+                "E1013",
+                "a reference has exactly one region",
+                span,
+            ));
+        }
+        Ok(TypeExprKind::Regions(
+            Box::new(TypeExpr {
+                kind: reference,
+                span,
+            }),
+            regions.into_boxed_slice(),
+        ))
+    }
+
+    fn finish_type_primary(
+        &mut self,
+        kind: TypeExprKind,
+        start: Span,
+    ) -> Result<TypeExpr, Diagnostic> {
+        let mut ty = TypeExpr {
             kind,
             span: Span {
                 end: self.previous_end,
                 ..start
             },
-        })
+        };
+        if self.region_suffix && self.region_list_ahead() && !self.newline_before_current() {
+            let regions = self.region_list()?;
+            let span = Span {
+                end: self.previous_end,
+                ..ty.span
+            };
+            ty = TypeExpr {
+                kind: TypeExprKind::Regions(Box::new(ty), regions.into_boxed_slice()),
+                span,
+            };
+        }
+        Ok(ty)
     }
 
     fn make(&self, kind: ExprKind, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
@@ -1694,7 +1848,7 @@ impl Parser<'_> {
                 self.make(ExprKind::Call(Box::new(left), arguments), span, depth)
             }
             TokenKind::Dot => {
-                let field = self.ident()?;
+                let field = self.member_ident()?;
                 let span = left.span.through(field.span);
                 let depth = left.depth + 1;
                 self.make(ExprKind::Field(Box::new(left), field), span, depth)
@@ -1979,21 +2133,39 @@ impl Parser<'_> {
         if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
             return self.lambda(name, stop_at_newline);
         }
-        if allow_record
-            && self.at(&TokenKind::Dot)
-            && (!stop_at_newline || !self.newline_before_current())
-            && self.tokens.get(self.position + 2).is_some_and(|token| {
+        if allow_record {
+            let mut end = self.position;
+            while self
+                .tokens
+                .get(end)
+                .is_some_and(|token| token.kind == TokenKind::Dot)
+                && self
+                    .tokens
+                    .get(end + 1)
+                    .is_some_and(|token| matches!(token.kind, TokenKind::Ident(_)))
+            {
+                end += 2;
+            }
+            if self.tokens.get(end).is_some_and(|token| {
                 token.kind == TokenKind::LeftBrace
                     && (!stop_at_newline
-                        || !self.source[self.tokens[self.position + 1].span.end..token.span.start]
-                            .contains(['\n', '\r']))
-            })
-        {
-            self.take();
-            let record = self.ident()?;
-            name.text.push('.');
-            name.text.push_str(&record.text);
-            name.span = name.span.through(record.span);
+                        || !self.source[name.span.end..token.span.start].contains(['\n', '\r']))
+            }) {
+                if end - self.position > 34 {
+                    return Err(Diagnostic::new(
+                        "E1017",
+                        "qualified names exceed the 18-segment compiler limit",
+                        name.span,
+                    ));
+                }
+                while self.position < end {
+                    self.take();
+                    let member = self.ident()?;
+                    name.text.push('.');
+                    name.text.push_str(&member.text);
+                    name.span = name.span.through(member.span);
+                }
+            }
         }
         if allow_record
             && self.at(&TokenKind::LeftBrace)

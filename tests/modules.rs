@@ -14,6 +14,215 @@ export fn hypotenuse(x: f64, y: f64) -> f64 {
 ";
 
 #[test]
+fn module_paths_map_to_bounded_dotted_names() {
+    let module = analyze_modules(&[("Geometry/Point.tz", "fn value() -> i64 { 42 }")]).unwrap();
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|function| function.qualified_name() == "Geometry.Point.value")
+    );
+    for path in [
+        "../Point.tz",
+        "/Point.tz",
+        "Geometry.Point.tz",
+        "Bad-Name/Point.tz",
+        "Geometry/fn/Point.tz",
+        "Geometry/_/Point.tz",
+        "Option/Point.tz",
+        "Geometry/Task/Point.tz",
+    ] {
+        assert_eq!(
+            analyze_modules(&[(path, "fn value() -> i64 { 42 }")])
+                .unwrap_err()
+                .code,
+            "E1011",
+            "{path}"
+        );
+    }
+    let deep = format!("{}Point.tz", "Nested/".repeat(16));
+    assert_eq!(analyze_modules(&[(&deep, "")]).unwrap_err().code, "E1017");
+    let long = format!("{}.tz", "A".repeat(256));
+    assert_eq!(analyze_modules(&[(&long, "")]).unwrap_err().code, "E1017");
+    assert_eq!(
+        analyze_modules(&[("Geometry/Point.tz", ""), ("Geometry/Point.tt", "")])
+            .unwrap_err()
+            .code,
+        "E1011"
+    );
+}
+
+#[test]
+fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
+    let main = "def use_point :: Geometry.Point.Point -> i64\nfn use_point point = Geometry.Traits.Score.score (&point)\n\
+        let point = Geometry.Point.Point { x: 40 }\n\
+        let value = Geometry.Builder { return use_point point }\n\
+        let extra = match Geometry.Point.Payload value with | Geometry.Point.Value.Payload inner -> inner\n\
+        let checked = match extra with | Geometry.Patterns.Even -> extra | _ -> 0\n\
+        Geometry.Point.distance (Geometry.Point.Point { x: checked }) + Geometry.Point.Offset";
+    let module = analyze_modules(&[
+        ("Geometry/Point.tz", "record Point { x: i64 }\nunion Value = Payload of i64\nconst Offset: i64 = 2\nfn distance(point: Point) -> i64 { point.x }\ninstance Geometry.Traits.Score<Point> { fn score point = point.x }"),
+        ("Geometry/Traits.tt", "class Score<'a> { def score :: &'a -> i64 }"),
+        ("Geometry/Builder.tc", "def Return :: 'a -> 'a\nfn Return value = value"),
+        ("Geometry/Patterns.tz", "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) value = value % 2 == 0"),
+        ("Main.tz", main),
+    ]).unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Console, wasm).unwrap();
+        assert!(ir.contains("@tz.fn.Geometry.Point.distance"));
+        assert!(ir.contains("%tz.record.Geometry.Point.Point"));
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Console, wasm).unwrap()
+        );
+    }
+    let shadowed = "record Inner { distance: i64 -> i64 }\nrecord Outer { Point: Inner }\nlet Geometry = Outer { Point: Inner { distance: fx value -> value + 1 } }\nGeometry.Point.distance 41";
+    analyze_modules(&[
+        (
+            "Geometry/Point.tz",
+            "fn distance(value: i64) -> i64 { value }",
+        ),
+        ("Main.tz", shadowed),
+    ])
+    .unwrap();
+    for (declaration, expression, code) in [
+        (
+            "fn value() -> i64 { 1 }",
+            "Geometry.Point.missing()",
+            "E1002",
+        ),
+        (
+            "private def value :: i64\nfn value = 1",
+            "Geometry.Point.value()",
+            "E1022",
+        ),
+    ] {
+        assert_eq!(
+            analyze_modules(&[("Geometry/Point.tz", declaration), ("Main.tz", expression)])
+                .unwrap_err()
+                .code,
+            code
+        );
+    }
+}
+
+#[test]
+fn recursively_loads_sources_and_preserves_explicit_project_roots() {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tsuzuri::{check::ModuleOrigin, driver::Project};
+    let directory = std::env::temp_dir().join(format!(
+        "tsuzuri-hierarchy-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(directory.join("Geometry")).unwrap();
+    fs::create_dir_all(directory.join(".hidden")).unwrap();
+    fs::write(directory.join("Main.tz"), "Geometry.Point.value()").unwrap();
+    fs::write(
+        directory.join("Geometry/Point.tz"),
+        "fn value() -> i64 { 42 }",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("Geometry/Main.tz"),
+        "fn main() -> i64 { 99 }",
+    )
+    .unwrap();
+    fs::write(directory.join(".hidden/Bad.tz"), "bad syntax").unwrap();
+    let project = Project::load(&directory).unwrap();
+    project.analyze().unwrap();
+    let users: Vec<_> = project
+        .sources
+        .iter()
+        .filter(|source| source.origin == ModuleOrigin::User)
+        .map(|source| source.name.as_str())
+        .collect();
+    assert_eq!(users, ["Geometry.Main", "Geometry.Point", "Main"]);
+    assert_eq!(
+        project.sources[1].relative_path,
+        std::path::Path::new("Geometry/Point.tz")
+    );
+    let nested = Project::load(&directory.join("Geometry/Point.tz")).unwrap();
+    assert!(nested.sources.iter().any(|source| source.name == "Point"));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(directory.join("Main.tz"), directory.join("Link.tz")).unwrap();
+        assert_eq!(
+            Project::load(&directory).unwrap_err().diagnostic.code,
+            "E1011"
+        );
+        fs::remove_file(directory.join("Link.tz")).unwrap();
+        std::os::unix::fs::symlink(&directory, directory.join("Loop")).unwrap();
+        assert_eq!(
+            Project::load(&directory).unwrap_err().diagnostic.code,
+            "E1011"
+        );
+        fs::remove_file(directory.join("Loop")).unwrap();
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn source_discovery_enforces_file_directory_and_depth_limits() {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tsuzuri::driver::Project;
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-module-limits-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("Main.tz"), "0").unwrap();
+    let mut path = root.clone();
+    for _ in 0..15 {
+        path.push("Nested");
+        fs::create_dir(&path).unwrap();
+    }
+    fs::write(path.join("Value.tz"), "").unwrap();
+    Project::load(&root).unwrap().analyze().unwrap();
+    fs::create_dir(path.join("TooDeep")).unwrap();
+    assert_eq!(Project::load(&root).unwrap_err().diagnostic.code, "E1017");
+    fs::remove_dir_all(root.join("Nested")).unwrap();
+    for index in 0..4095 {
+        fs::write(root.join(format!("Value{index}.tz")), "").unwrap();
+    }
+    assert_eq!(
+        Project::load(&root)
+            .unwrap()
+            .sources
+            .iter()
+            .filter(|source| source.origin == tsuzuri::check::ModuleOrigin::User)
+            .count(),
+        4096
+    );
+    fs::write(root.join("TooMany.tz"), "").unwrap();
+    assert_eq!(Project::load(&root).unwrap_err().diagnostic.code, "E1017");
+    fs::remove_file(root.join("TooMany.tz")).unwrap();
+    for index in 0..4095 {
+        fs::remove_file(root.join(format!("Value{index}.tz"))).unwrap();
+    }
+    for index in 0..1023 {
+        fs::create_dir(root.join(format!("Directory{index}"))).unwrap();
+    }
+    Project::load(&root).unwrap();
+    fs::create_dir(root.join("TooMany")).unwrap();
+    assert_eq!(Project::load(&root).unwrap_err().diagnostic.code, "E1017");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn accepts_the_point_example_with_top_level_bindings() {
     let module = analyze_modules(&[
         ("Point", POINT),

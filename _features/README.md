@@ -33,7 +33,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | A06 | [型クラスの拡張（条件付きインスタンス・スーパークラス・デフォルトメソッド）](A06-typeclass-extensions.md) | P1 | L | A11, (A01) | done |
 | A07 | [deriving（Eq／Ord／Display／Hash／Default の自動導出）](A07-deriving.md) | P1 | M | A11, A06, A02, D01 | done |
 | A08 | [char（UTF-16）型と utf8char（Unicode スカラー）型](A08-char-type.md) | P1 | M | E02, (B01) | done |
-| A09 | [名前付きライフタイムと借用フィールド](A09-named-lifetimes.md) | P2 | XL | – | todo |
+| A09 | [名前付きライフタイムと借用フィールド](A09-named-lifetimes.md) | P2 | XL | – | done |
 | A10 | [高階型（HKT）](A10-higher-kinded-types.md) | P3 | XL | A01, A06 | todo |
 | A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](A11-borrowed-comparisons.md) | P1 | M | – | done |
 
@@ -57,8 +57,8 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | C03 | [スライス（`&xs[a..b]`）](C03-slices.md) | P1 | L | – | done |
 | C04 | [配列の一括操作 API](C04-bulk-array-api.md) | P1 | M | A11, E02, C03, B01 | done |
 | C05 | [レコードのコピーと更新 `{ p with x = … }`](C05-record-update-syntax.md) | P1 | S | (A01) | done |
-| C06 | [Map／Set](C06-map-set.md) | P2 | L | A11, A02, A06, A07, C02, B01 | todo |
-| C07 | [ユーザー定義の反復プロトコル](C07-iteration-protocol.md) | P2 | L | B01, A06 | todo |
+| C06 | [Map／Set](C06-map-set.md) | P2 | L | A11, A02, A06, A07, C02, B01 | done |
+| C07 | [ユーザー定義の反復プロトコル](C07-iteration-protocol.md) | P2 | L | B01, A06 | done |
 
 ### D. 文字列・数値・組み込み関数
 
@@ -69,7 +69,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | D03 | [数学関数の型汎用化と拡充](D03-generic-math.md) | P1 | M | E02 | done |
 | D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](D04-integer-intrinsics.md) | P1 | M | E02, B01 | done |
 | D05 | [明示 FMA と順序を定めた集計 API](D05-fma-ordered-reductions.md) | P2 | S | E02, C04 | todo |
-| D06 | [コンパイル時定数（const）](D06-compile-time-constants.md) | P2 | M | – | todo |
+| D06 | [コンパイル時定数（const）](D06-compile-time-constants.md) | P2 | M | – | done |
 
 ### E. モジュール・ホスト連携
 
@@ -77,7 +77,7 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 |---|---|---|---|---|---|
 | E01 | [可視性制御（private）](E01-visibility.md) | P0 | S | – | done |
 | E02 | [標準ライブラリの同梱機構](E02-standard-library-infrastructure.md) | P0 | M | E01 | done |
-| E03 | [階層モジュール・サブディレクトリ](E03-hierarchical-modules.md) | P2 | L | E02 | todo |
+| E03 | [階層モジュール・サブディレクトリ](E03-hierarchical-modules.md) | P2 | L | E02 | done |
 | E04 | [パッケージと依存管理](E04-packages.md) | P3 | XL | E03 | todo |
 | E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](E05-host-abi-buffers.md) | P1 | L | C03 | done |
 | E06 | [ホスト関数のインポート](E06-host-imports.md) | P2 | L | E02 | todo |
@@ -89,8 +89,8 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 |---|---|---|---|---|---|
 | F01 | [常駐ワーカープール](F01-worker-pool.md) | P1 | M | – | done |
 | F02 | [データ並列 API（Parallel.init／map／reduce）](F02-data-parallel-api.md) | P1 | M | F01, C03, C04 | done |
-| F03 | [WASM SIMD128](F03-wasm-simd128.md) | P2 | M | – | todo |
-| F04 | [移植可能な SIMD ベクトル型](F04-portable-simd-types.md) | P2 | L | E02, (F03) | todo |
+| F03 | [WASM SIMD128](F03-wasm-simd128.md) | P2 | M | – | done |
+| F04 | [移植可能な SIMD ベクトル型](F04-portable-simd-types.md) | P2 | L | E02, (F03) | done |
 | F05 | [実行時の CPU 命令セット判定と関数の複数版](F05-runtime-cpu-dispatch.md) | P2 | L | C04 | todo |
 | F06 | [WASM threads バックエンド](F06-wasm-threads.md) | P3 | L | F01 | todo |
 | F07 | [GPU バックエンド](F07-gpu-backend.md) | P3 | XL | F02, E05, B01 | todo |
@@ -105,8 +105,8 @@ P1の25件を実装し、すべて`done`へ更新しました。仕様上の選�
 | G04 | [トラップ発生位置の報告](G04-trap-locations.md) | P1 | M | – | done |
 | G05 | [フォーマッター（tsuzuri fmt）](G05-formatter.md) | P1 | M | – | done |
 | G06 | [言語内テスト（test 宣言と tsuzuri test）](G06-test-runner.md) | P1 | M | (D01) | done |
-| G07 | [LSP（言語サーバー）](G07-lsp.md) | P2 | L | G02 | todo |
-| G08 | [デバッグ情報（DWARF／WASM）](G08-debug-info.md) | P2 | M | – | todo |
+| G07 | [LSP（言語サーバー）](G07-lsp.md) | P2 | L | G02 | done |
+| G08 | [デバッグ情報（DWARF／WASM）](G08-debug-info.md) | P2 | M | – | done |
 | G09 | [ドキュメントコメントと API 文書生成](G09-doc-comments.md) | P2 | S | E01 | todo |
 | G10 | [Windows ネイティブ対応](G10-windows.md) | P3 | M | – | todo |
 | G11 | [増分ビルド・キャッシュ](G11-incremental-build.md) | P3 | L | (E03) | todo |

@@ -6,8 +6,17 @@
 | 規模 | L |
 | 依存 | E02 |
 | 後続 | E04, G11 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/driver.rs`, `src/lib.rs`, `src/check.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/polymorph.rs`, `src/llvm.rs`, `tests/modules.rs`, `tests/e2e.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
+
+## 実装レビューと検証（2026-09-27）
+
+- `SourceFile.relative_path`を保持し、lib/driver/LSPへ共通のpath-aware解析を接続。通常・test・overlayの探索を共有する。
+- 型・関数・レコード・union case・class method・active pattern・builder・constの完全修飾に対応。既存のlocal優先・private診断位置・公開ABIを維持する。
+- 16要素/255byte、4096source/1024directoryの境界、hidden無視、source/directory symlink拒否を実装。file入力は親をrootとし、rootを推測しない。
+- LSPは明示workspace root内の子ファイル変更で全体を無効化・再解析する。fmtは従来の直下だけという独立契約を維持する。
+- modules13テスト、driver11、LSP4と関連diagnostics/visibility/formatter/polymorphism/test_runner67件が成功。fmt/clippy成功。
+- `features.mjs ... hierarchical`の3ケースがnative/WASM O0/O3で成功。LSPは両encodingで階層定義ジャンプ・子ファイル編集・エラー時の古いindex破棄を再確認。
 
 ## 目的
 

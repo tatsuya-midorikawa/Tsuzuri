@@ -7,8 +7,18 @@
 | 規模 | XL |
 | 依存 | – |
 | 後続 | C03, E05, A10 以降の高度な型機能 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `docs/language.md`, `docs/architecture.md`, `README.md`, `tests/types_ownership.rs`, `tests/control.rs`, `tests/primitives.mjs` |
+
+## 実装レビューと検証（2026-09-27）
+
+- 完全指定の第1段階を実装し、共有borrow field、generic/nested view、copy/partial move/capture、Task拒否を既存loan解析へ統合した。現行C04の交差寿命を維持する。
+- 名前付きregionは`def name {r s}`・`ref {r} T`・`record View {r}`・`View<T> {r}`を追加。一つの値全体へ一つのregionを割り当て、本体の返却元と直接完全適用の入力loanを検査する。
+- フェーズ3の独立した複数regionのfield別追跡、高階region関数型は未実装。関数値経由は全入力の交差寿命を維持し、安全な形を受理・未対応の指定はE1013で拒否する。
+- `ref [T]`は既存C03のdescriptor、他の参照fieldはptrで、通常Type/LLVMにregionは残さない。排他参照field・localへの返却・borrowed値のTask送信を拒否する。
+- Rust5テスト群と全Rustテスト・fmt/clippyが成功。10ケースがnative/WASM O0/O3で成功し、確保追跡・IR決定性を確認した。
+- 旧仕様のrecord共有借用拒否テストを受理/排他借用拒否へ更新。region parserの作業領域をhelperへ分け、最大型深さテストも維持する。
+- 以下は段階別の設計資料。doneは完全指定の第1段階と上記名前付き契約の範囲を示し、フェーズ3以降の完成を意味しない。
 
 ## 目的
 
@@ -417,6 +427,7 @@ fn choose flag a b = if flag { a } else { b }
 
 ## 未決事項
 
+- 着手時レビュー（2026-09-27）: C04以降は複数の借用入力を交差寿命で保持する実装になっている。GUIDE D-13に合わせ、共有recordでも既存の交差寿命を維持し、2入力を一律拒否する古い記述は採用しない。C03の共有array参照はptrではなくview descriptorである。
 - **既定案: 名前付き lifetime 構文は `&{r} T`。** Rust-style `&'r T` は既存 type variable token と衝突するため採用しない。
 - **既定案: フェーズ 1 は shared borrowed fields のみ。** `&mut` field は名前付き region と aliasing 仕様を入れるまで拒否。
 - **既定案: 未宣言/未使用 region は `E1013`。** 将来 warnings が整備されたら未使用 region は warning にしてもよい。

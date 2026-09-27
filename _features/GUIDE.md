@@ -506,6 +506,7 @@ fn rejects(source: &str, code: &str) {
   | `Parallel` | データ並列 API | F02 |
   | `Simd` | SIMD ベクトル型の操作 | F04 |
   | `Map`／`Set` | 順序付きの連想コンテナ | C06 |
+  | `Seq` | 明示的な一回消費の遅延反復 | C07 |
   | `Test` | テスト用の比較・報告 | G06 |
   | `Gpu` | GPU 実行 API | F07 |
 
@@ -688,6 +689,24 @@ fn rejects(source: &str, code: &str) {
 - 超越関数は固定musl 1.2.5の必要ソースをライセンス込みで同梱する。通常f64 atan2は1ulp契約を守る補償演算で補強し、速度の改善は未主張。
 - Clangとllvm-linkは対応版を揃える。検証済みはApple Clang 21とllvm-link 21。22/23はlifetime署名・浮動小数点定数表記が変わるため使用しない。
 - numeric生成後にmathも生成し、metadata／attribute範囲を分離する。source markerは両ランタイムの後に配置する。保存前のIRコンパイル検証を必須にする。
+
+### D-28 定数とP2の実装判断
+
+- 2026-09-27、P2全件と必要な判断を利用者が承認。安全性・数値意味・既存契約を優先して判断し、実装内容を各チケットに記録する。
+- D06は独立した型検査器を作らず、内部宣言で通常の型検査を行ってから型付きリテラルへ評価・展開する。参照依存は明示スタック、binary演算はAPFloat。decimal演算は拒否する。
+- aggregateは既存literal/frame/relocateを再利用し、専用global templateやConst型付き命令を増やさない。`private const`も通常の可視性に揃える。
+- 定数の直接借用は単一段階の完全適用・loanを持たない結果だけ。保存・返却・段階適用では明示let束縛を要求し、static lifetimeを導入しない。
+- 定数の依存深さ128・探索1024件・評価／展開1048576ノードの上限超過はD06の専用診断E1026を使う。
+- G07のJSONにはチケットで検討可能としたserde_jsonを採用する。独自JSONパーサーを作らず、深さ128とメッセージ16 MiBの上限を保つ。
+- G08は既存Span/TrapSourceとmetadata採番を共有する。decimalはBID保存ビットをunsignedとして表示。macOSのdebug task objectは対応版llvm-linkでIR結合し、executableはフラットなoutput.dwarfを保存する。O3の公開wrapperにもscopeを保持する。
+- E03はrelative_pathを保存して全ソースを再帰探索。file入力の親とdirectory入力を明示rootにし、上位を推測しない。std予約は先頭namespace、LSPは明示workspace rootを使用する。fmtの対象は既存どおり直下のみ。
+- C06はcompiler登録のopaque標準recordとVecで表し、構築・field・pattern・updateを定義モジュールに限定する。型と所有権の走査を重複させず、既存の確保・移動・clone/dropを共有する。
+- C06のSet.unionと予約語の衝突を解決するため、unionだけはmodule関数の宣言名とdot後のmember名でも許可する。変数・型・moduleの名前としては引き続き予約する。
+- C06のsingletonは無制約で任意の1要素を保持。検索・更新・集合演算の比較時はEqの反射性を確認してNaNをトラップし、Ordの一貫性は利用者のinstance契約とする。Set.unionは線形の出力領域を一つ確保し、左の代表値を保持する。
+- C07はopaqueなSeq.Seqを常にnon-Copyにし、Optionの単一要素と通常closureの遅延stepで表す。明示的なSeq.defer/unfoldをユーザー反復の構築口とする。
+- C07のnextは所有closureを直接呼ぶbuiltin。forは次状態を先に復元する既存while/matchへ展開し、filterは借用述語へ修正する。List.iterは参照Vecの準備O(n)、所有状態の移送による反復O(n)を採用する。
+- A09の共有record fieldはC04の交差寿命とValue.loansを継承する。古い「借用入力は必ず1個」という制限へ戻さず、複数入力の場合は全入力の寿命を保持する。排他参照fieldは禁止する。
+- A09の名前付きregionは値全体に一つとし、defの返却元を本体loanで検証する。直接完全適用のみ指定入力へ寿命を縮小し、関数値は保守的に全入力を保持する。独立複数region・高階region型は後続段階として拒否する。
 
 ## 10. 完了の定義（全チケット共通）
 

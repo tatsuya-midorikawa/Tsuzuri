@@ -6,7 +6,7 @@ LLVM の C API／Rust バインディングには結合しません。
 `cargo build` に LLVM 開発ヘッダーや CMake は不要です。
 
 ```text
-UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
+UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main.tz)
    -> driver -> sorted source files + filename-based module names and source kinds
              + embedded std sources (stdlib::SOURCES) appended after user sources
    -> lexer -> tokens + per-file byte spans
@@ -39,9 +39,12 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、モジュール関数制約の解決、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉、lambda lifting、公開ABIの完全適用ラッパー |
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
+| `src/constants.rs` | 定数の依存順評価、型別演算と資源上限、既存リテラルへの展開、一時借用引数 |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
+| `src/llvm_debug.rs` | 共通採番によるDWARFメタデータ、型・変数・関数と式のソース位置 |
+| `src/simd.rs` / `src/llvm_simd.rs` | 128-bit vector/mask型、lane型族、境界検査とLLVM vector lowering |
 | `src/llvm_control.rs` | 直接の反復・switch・定数表、パターン手順の分岐と全経路の解放 |
 | `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定 merge sort の型付き builtin lowering |
 | `src/llvm_compare.rs` | 配列・リスト・タプルの借用構造比較、短絡と段階的メソッド適用 |
@@ -59,6 +62,7 @@ UTF-8 .tz / .tt / .tc files in one directory (application entry: Main.tz)
 | `src/stdlib.rs` / `std/` | 埋め込みの標準ライブラリのソース、予約 std モジュール名、std の仮想パス |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護 |
 | `src/main.rs` | CLI オプションと診断・警告の表示 |
+| `src/lsp.rs` / `src/semantic.rs` | stdio言語サーバー、Unicode位置変換、単相化前の型・定義位置インデックス |
 
 ## 性能設計の原則
 
@@ -77,7 +81,7 @@ LLVM に渡すだけで高速と判断せず、生成コードと実測で経路
 | 移植性 | 既定の `--cpu generic` は Clang のターゲット既定を維持。`native` は明示指定し、CPU 要件を配布条件に含める。実行時 ISA 判定・複数版の選択は今後の実装 |
 | 複数 CPU コア | `Task.parallel` の遅延起動する常駐プール。CPU 数で追加スレッド数を制限し、呼び出し元も自分のグループを進行する。WASM は逐次 fallback。自動並列化は未実装 |
 | GPU | バックエンドは未実装。今後は能力検出、所有権を保つバッファ、転送・同期・カーネル選択、CPU 経路と合わせた実行基盤を設計する |
-| WASM | 現在は bulk-memory 対応の CPU 実行。専用 SIMD／threads／GPU 経路は未実装であり、将来もエンジンの能力要件を明示する |
+| WASM | bulk-memory対応、SIMD128は明示的な--wasm-feature simd128で有効。既定は非SIMD。threads／GPU経路は未実装 |
 
 新しい builtin／標準ライブラリでは、要素ごとの汎用関数呼び出しだけを基本実装にせず、
 型・連続性・サイズが分かる一括操作を設計してください。正確な基準実装を持ち、
@@ -96,10 +100,15 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 同条件の C/C++ 比較を用意します。共有 CI は正しさと経路の退行を検査し、
 性能の閾値判定は安定した専用環境で行います。
 
+WASM featureは現段階でsimd128だけなのでBuildOptions.wasm_simdのboolで表します。driverは有効時-msimd128、既定-mno-simd128を渡します。
+LLVM IR出力はfeature要件をコメントへ記録します。tests/wasm_simd.mjsはllvm-objdumpの命令解析とBigInt参照で検証し、即値の0xfdをSIMD opcodeと誤認しません。
+
 ## 不変条件
 
 **モジュール:** 1 ファイルに 1 モジュールを強制し、名前はファイル名から取得します。
-同じディレクトリ直下の全 `.tz`・`.tt`・`.tc` をファイル名順に処理し、サブディレクトリは探索しません。
+root配下を再帰探索し、`SourceFile.relative_path`を正規化した順で処理します。`Geometry/Point.tz`の名前は`Geometry.Point`です。
+file入力のrootは親、directory入力はそのディレクトリです。hidden項目を無視し、source/directory symlinkは拒否します。
+source4096・directory1024・module16要素/255byteを上限とし、標準ライブラリの予約は先頭の名前空間に適用します。
 `.tz` はコード、`.tt` は複数の型クラス宣言、`.tc` は一つのビルダー実装です。
 型クラスは `.tt` に限定し、インスタンスは `.tz`／`.tc` の通常の実装です。
 拡張子を除いた名前が重複するファイルは拒否します。旧 `.tzr` は直接入力を拒否し、自動列挙の対象外です。
@@ -120,7 +129,7 @@ GPU 等を明示要求した場合の利用不可・実行失敗は診断し、�
 parse 順は入力順なので、利用者のソース ID と `Project.root` は std の有無で変わりません。
 `analyze_modules_with_std` は Rust テスト向けに std を差し替えます（空スライスは std なし）。
 各モジュールは `ModuleOrigin`（`User`／`Std`）を持ち、`stdlib::RESERVED_MODULES` の名前は利用者のモジュールに使えません。
-std のパスは `std/Name.ext` の平坦な仮想パスで、出力保護の対象外です。
+std のパスは `std/Name.ext` の平坦な仮想パスで、出力保護の対象外です。userのrelative_pathと混同しません。
 無修飾の型・case・レコード・クラスの解決は、自モジュール、完全修飾名の後、参照元が利用者なら
 利用者のモジュール、std のモジュールの順に段階ごとに一意な候補を探し、参照元が std なら std だけを探します。
 std の `export def` は拒否し、std の関数は利用者の関数と同じく修飾必須です。
@@ -150,6 +159,33 @@ LLVM の定義は具体化ごとに一度だけ `@tz.builtin.name` に型引数�
 関数 ID を保持します。両者の併用は拒否し、他モジュールや `Main.tc` の `main` は入口に選びません。
 トップレベルの `let` は通常のローカル束縛へ下げ、モジュールの共有状態は導入しません。
 ライブラリ出力にはコンソール・ラッパーやトップレベルコードの自動実行を追加しません。
+
+**定数:** `Program.constants` を内部の引数なし宣言として収集し、関数と同じ名前・可視性・型検査を使います。
+特殊化・所有権検査の前に依存を明示スタックで辿り、評価結果をキャッシュして参照を型付きリテラルへ展開します。
+通常の型検査は両分岐を検査し、評価器だけが短絡します。APFloatでbinaryの幅ごとに計算し、decimal演算は拒否します。
+内部宣言は非公開にして出力のrootから外します。独立した定数ランタイムや共有所有領域は作らず、既存のstring global・aggregate生成・frame/relocate/dropを共有します。
+定数の一時借用引数は `BorrowOperand` で生成・呼び出し後解放し、型検査で単一段階の完全適用とloanを運ばない結果を要求します。
+検証は `cargo test --locked --test constants` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri constants` です。
+
+**デバッグ情報:** `llvm::emit_with_debug_info` は既存の `TrapSource` source mapを明示的に受け、通常APIはデバッグ情報を生成しません。
+DIFile/DICompileUnit/DISubprogram/DILocationと変数・型を `Globals.next_metadata` で採番し、loop metadata・trap marker・同梱runtimeと範囲を共有します。
+式位置は既存current_spanを使い、switchのcase行ではなく命令終端へ付けます。ローカルのentry alloca後にdbg.declareを置きます。
+公開ABI/console wrapperにもスコープを付け、O3で内部関数をinlineしてもソース情報を保持します。生成関数名は親と既存の決定的な内部名を併用します。
+binary floatは幅どおりのDW_ATE_float、decimalはBID storageをDW_ATE_unsignedとして記録します。unionの詳細payload表示は対象外です。
+Clangに-gを渡し、WASMは--strip-allを外します。macOSのdebug task objectは対応するllvm-linkでIRを結合してから一つのobjectへ生成し、ld -rでDWARFが失われる問題を避けます。
+macOSのdebug executableは保持したmodule.oからlinkし、一時領域を消す前にdsymutil --flatで隣接するoutput.dwarfを生成します。
+DWARFとtrap表は共通のsource保護・backup・公開失敗時rollbackを使います。複数ファイルのcrash-atomic更新ではありません。
+Cargo release profileのstripはコンパイラ自身だけに適用されます。検証は `tests/debug_info.mjs` のnative/WASM O0/O3とllvm-dwarfdump --verifyです。
+
+**言語サーバー:** `tsuzuri lsp` はLSP 3.17のstdio framingとserde_jsonを使い、メッセージ16 MiB・header8 KiB・JSON深さ128を上限とします。
+UTF-8位置を交渉し、既定はUTF-16です。byte spanからの変換は改行表と文字境界を使い、CRLF・補助平面の文字を保持します。
+`Project::load_with_overlays` は保存前の置換と新規ファイルを含め、root配下のプロジェクトを再解析します。ソースへの書き込みは行いません。
+LSPのworkspaceFolders/rootUriを明示rootとして使い、指定がなければ各fileの親を使います。ネストしたroot指定は最長prefixを選びます。
+変更を200msで集約し、問い合わせ時は必要な解析を先に完了します。開いたバッファは合計32 MiB・1024ファイルまでです。
+reader threadは上限付きキューへ受信し、キャンセルIDを共有します。解析前・応答前にキャンセルを確認し、stdoutにはframed JSONだけを出します。
+`analyze_modules_with_semantics` は通常の解析結果と `SemanticIndex` を返します。型検査後、定数展開・単相化・closure lowering前に採取し、通常解析では採取しません。
+後続の所有権検査などが失敗した場合もindexを公開せず、以前の成功結果を破棄します。hover・定義・symbol以外のcapabilityは宣言しません。
+検証は `cargo test --locked --test lsp` と `cargo build --release --locked && node tests/lsp_sessions.mjs target/release/tsuzuri` です。
 
 **フロントエンド:** 全ファイルのシグネチャを先に収集するため、宣言順・ファイル順に依存しません。
 ローカル束縛は一意な ID に解決します。コード生成時に名前解決や型推測をやり直しません。
@@ -389,6 +425,22 @@ i128 の checked／saturating 乗算は 64-bit limb の部分積と carry によ
 呼び出し側の Copy／move とフレーム移送を済ませた所有バッファだけを更新し、builtin 本体で全体複製しません。
 `update` の旧要素と関数環境は通常の所有するクロージャ適用へ渡すため、適用後に二重解放しません。
 `tail` は次リンクを読む前に空を検査し、先頭だけを解放します。確保回数は storage E2E で単一使用・旧値再利用・スタック移送を区別します。
+
+**遅延反復:** Seq.Seqはopaque標準recordで常にnon-Copyです。headはOption要素、stepはOption closureを持ち、空・onceは環境確保を必要としません。
+Seq.nextだけは型付きbuiltinで表現を検証し、headを移送するか、step closureを所有モードで一度呼び出します。反復ごとの環境の全体cloneは行いません。
+defer/unfold/map/filter/to_arrayは通常のstdソースで、Captureとloan伝播を共有します。filterは要素を失わないよう借用述語にします。
+Seq forは型検査時に既存Block/While/Match/Assign/Breakへ展開し、毎回next stateを復元してからユーザーpattern/bodyを検査します。
+生成名と完全修飾builtin参照を用い、ローカルのSeq名で展開先は変わりません。既存の固定点所有権・loop cleanupを共有し、直接collection forを変更しません。
+Array/Vec/Map/Setは共有参照とindexでstepを構築し、Listはfold_refで参照Vecを一回作って所有状態として移送します。
+検証は `cargo test --locked --test iteration_protocol` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri iteration_protocol` です。
+
+**順序付きコンテナ:** Map.Map/Map.Entry/Set.Setをopaque標準recordとして登録し、構築・field・pattern・updateを定義モジュールに限定します。
+型名は通常のgeneric recordで、Mapは`Vec<Entry<K,V>>`、Setは`Vec<K>`を保持します。Vecの非Copy・確保・clone/dropを共有し、新しいランタイム表現を増やしません。
+lower_boundで借用比較し、更新はVec.push/pop/swapによる所有値の移動です。重複Map挿入は旧keyを保持してvalueだけ置換します。
+Set.unionは末尾から比較・popして一つの逆順出力を作って反転し、intersect/differenceは前方の二本のindexで選択します。
+opaque recordには共有参照を格納できますが、排他参照を拒否し、通常のrecordへ隠して格納する経路も検査します。
+NLLのloan情報解放では、生きたloanの参照先と親を辿り、読み出しに必要な元所有者の情報を保持します。callbackの参照判定も実際の格納型を使います。
+検証は `cargo test --locked --test map_set` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri map_set` です。
 
 **共有配列ビュー:** `ref [T]` は `%tz.array = { ptr, i64 }` の非所有記述子で渡し、サイズは 16 バイトです。
 `Vec<T>` は `%tz.vec = { ptr, i64, i64 }`（データ・長さ・容量）で、保守的な型サイズは 32 バイトです。
@@ -669,7 +721,11 @@ LLVM IR／ヘッダーの出力と Cargo ビルドには、引き続き LLVM・p
 引数などの一時的な loan も、後続オペランドの評価が終わるまで保持します。
 再借用は元の loan を親として追跡し、子の生存中に元の排他参照を使用・移動できません。
 参照を結果・外側の束縛へ移すときは、参照先の所有者が生存していることを検証します。
-借用を返す関数は単一の借用入力に寿命を結び付けます。参照フィールドと名前付きライフタイムは未対応です。
+共有借用フィールドを許し、格納型の走査はrecord/union/collectionを通して参照・排他参照を検査します。借用省略は入力loanの交差を保持します。
+`TypeExprKind::Regions`と宣言のregionリストを`regions.rs`で検査し、単一regionの返却契約をCheckedFunction.region_sourcesへ保持します。
+所有権検査は返却loanのexternal rootが契約に含まれることを確認し、直接の完全適用だけ指定入力のloanを戻り値へ伝えます。
+通常のType/LLVMからはregionを消去し、関数値・部分適用は全入力の保守的追跡を維持します。複数regionのfield別追跡と高階region型は未対応です。
+参照型の構文解析は別helperへ分離し、既存の深さ128でパーサーのスタック使用量を維持します。
 レコード／配列／リストの Copy は構造的に決まり、文字列を含む値は所有権を移動します。
 
 **配列:** `Type::Array` は要素型だけを保持し、LLVM では `%tz.array = { ptr, i64 }` に下げます。
@@ -949,8 +1005,7 @@ overflow、評価順序を両ターゲットで確認します。
 
 ## 初版の次に必要な設計
 
-伸縮可能なコレクション、共有可変キャプチャ、
-外部パッケージ、階層モジュール、効果の型付け、デバッグ情報、IDE／LSP は未実装です。
-所有権は文字列と不変集約値を対象に実装していますが、名前付きライフタイム、
-借用フィールド、再帰的なヒープ型（再帰的なレコード・union）、任意の destructor、ホストをまたぐ所有権は未対応です。
+共有可変キャプチャ、外部パッケージ、効果の型付けは未実装です。
+借用record・単一regionの名前付き契約・再帰的なヒープ型は実装済みですが、独立した複数regionのfield別追跡、
+任意のdestructor、一般的なホストをまたぐ所有権は未対応です。
 これらを追加するときも、寿命・ホスト境界・失敗モデルを型検査と一緒に設計する必要があります。

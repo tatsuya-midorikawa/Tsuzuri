@@ -6,8 +6,18 @@
 | 規模 | L |
 | 依存 | E02, (F03) |
 | 後続 | F05 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Simd.tz`（新規）, `src/numeric.rs`, `src/check.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/call_specialization.rs`, `tests/simd.rs`（新規）, `tests/simd.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `README.md`, `docs/benchmarks.md` |
+
+## 実装と検証（2026-09-27）
+
+- 10数値vector/4mask型をType::Simdで実装。LLVMの128-bit vectorとlane数のi1 maskへ直接下げ、ABIは禁止。保守的layout16bytes、union/debugはmaskの実保存幅を使う。
+- splat/of_lanes2/4/8/16/extract/replace/load、算術/Bits/Neg、mask比較/select/all/any、lane0始点の左順sumを実装。型族解決は具体vector型を要求する。
+- lane/loadはaccess前にbounds guard。integer wrap・shift mask、floatのNaN/±0/順序を維持し、fast-mathやoverflow flagを付けない。
+- Rust2テスト群、libとpolymorphism/generic/recursive/ABI/constants/debug回帰、fmt/clippy成功。
+- tests/simd.mjsの232ケースと5トラップがnative generic/native、WASM scalar/SIMDのO0/O3で成功。確保追跡・trap-info・決定的IR、fallbackにv128なし/opt-inにv128ありを確認。
+- benchmarks/run-simd.mjsに同一i64和のscalar/SIMD/C比較を追加し、quickの結果一致を確認。短縮時間は性能根拠にせず、速度優位性は未主張。
+- store/256bit/整数除算等は元仕様どおり対象外。Simd APIはBuiltinにのみ置き、同名std wrapperを増やさない。
 
 ## 目的
 

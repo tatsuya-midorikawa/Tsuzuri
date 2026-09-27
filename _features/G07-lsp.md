@@ -6,8 +6,17 @@
 | 規模 | L |
 | 依存 | G02（複数エラーの同時報告） |
 | 後続 | G05（フォーマッター連携）、G09（doc hover 拡張）、G03（警告表示拡張） |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/lib.rs`, `src/diagnostic.rs`, `src/check.rs`, `src/polymorph.rs`, `src/closures.rs`, `src/syntax.rs`, `tests/lsp.rs`, `tests/lsp_sessions.mjs`, `README.md`, `docs/architecture.md` |
+
+## 実装レビューと検証（2026-09-27）
+
+- 現行G02の`DiagnosticSet.diagnostics`と解析APIを利用。`analyze_modules_with_semantics`が必要時だけ定数展開・単相化前のindexを採取し、後段エラー時にも返さない。
+- `Project::load_with_overlays`を追加。未保存の置換・新規ファイル、200ms集約、full sync、診断更新、hover・definition・documentSymbol、キャンセル、shutdown/exitを実装。
+- JSONは下記の承認済み判断でserde_json。CargoがRust 1.85互換版を解決。通常依存はserde_jsonとitoa/memchr/serde_core/zmij。追加後のrelease binaryは3,858,944 bytesで、差分サイズ・速度の優位性は未主張。
+- framing/位置変換2テスト、意味情報/overlay/実サーバー4テスト、CLIとmodules/polymorphism/computationsの回帰が成功。fmt/clippy成功。
+- `tests/lsp_sessions.mjs`は実プロセスのUTF-16/UTF-8両セッションで、日本語・絵文字、診断消去、未保存新規ファイル、定義位置、無効化・不正URI/位置・キャンセル・終了を確認。ディスク内容は変更しない。
+- 以下は着手前設計資料。独自JSON parserではなくserde_jsonを採用した点を除き、Phase 1の提供範囲を維持する。
 
 ## 目的
 
@@ -375,6 +384,7 @@ impl Project {
 
 ## 未決事項
 
+- 2026-09-27の包括的な判断承認に基づき、JSONは`serde_json`を採用。Unicode escape・数値・不正入力の独自パーサー保守を避けるため。既定の深さ128制限に加え、framingで16 MiB上限を適用する。Rust 1.85互換と依存・バイナリ影響を検証する。
 - **G02 API 名**: 本チケットでは `DiagnosticSet` / `analyze_modules_report` を仮定した。実際の G02 実装名が異なる場合は薄い adapter を作る。
 - **JSON crate**: 既定案は新 crate なしの最小 parser。人間が保守性を優先するなら `serde_json` 追加を検討できるが、依存追加の理由と MSRV / binary size 影響を PR に記録する。
 - **debounce 時間**: 既定 200ms。大規模 project で遅い場合は設定追加を G11 / 将来の workspace 設定へ回す。

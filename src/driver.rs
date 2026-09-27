@@ -44,6 +44,8 @@ pub struct BuildOptions {
     pub cpu: Cpu,
     pub debug_output: bool,
     pub trap_info: bool,
+    pub debug_info: bool,
+    pub wasm_simd: bool,
 }
 
 impl Default for BuildOptions {
@@ -55,12 +57,26 @@ impl Default for BuildOptions {
             cpu: Cpu::Generic,
             debug_output: false,
             trap_info: false,
+            debug_info: false,
+            wasm_simd: false,
         }
     }
 }
 
 impl BuildOptions {
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.wasm_simd && (self.target != Target::Wasm32 || self.emit == Emit::Header) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature simd128 requires wasm32 object, LLVM IR, or WASM output",
+            ));
+        }
+        if self.debug_info && self.emit == Emit::Header {
+            return Err(driver_error(
+                "E2000",
+                "--debug-info is not valid for header output",
+            ));
+        }
         if self.trap_info && self.emit == Emit::Header {
             return Err(driver_error(
                 "E2000",
@@ -127,6 +143,7 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
 pub struct SourceFile {
     /// A file path, or a virtual `std/Name.tz` path for std sources.
     pub path: PathBuf,
+    pub relative_path: PathBuf,
     pub name: String,
     pub text: String,
     pub origin: ModuleOrigin,
@@ -164,6 +181,7 @@ impl SourceFile {
         })?;
         Ok(Self {
             path: path.to_owned(),
+            relative_path: path.file_name().map(PathBuf::from).unwrap_or_default(),
             name: name.to_owned(),
             text,
             origin: ModuleOrigin::User,
@@ -171,89 +189,190 @@ impl SourceFile {
     }
 }
 
-impl Project {
-    pub fn load_for_tests(input: &Path) -> Result<Self, SourceError> {
-        let metadata = fs::metadata(input).map_err(|error| {
-            SourceError::new(input, io_error("inspect test input", input, error))
-        })?;
-        if !metadata.is_dir() {
-            return Self::load(input);
-        }
-        let mut sources = fs::read_dir(input)
-            .map_err(|error| SourceError::new(input, io_error("list test sources", input, error)))?
-            .map(|entry| {
-                entry.map(|entry| entry.path()).map_err(|error| {
-                    SourceError::new(input, io_error("list test sources", input, error))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        sources.retain(|path| source_kind(path).is_some());
-        sources.sort();
-        let source = sources.first().ok_or_else(|| {
-            SourceError::new(
-                input,
-                driver_error(
-                    "E2000",
-                    "test input directory has no .tz, .tt, or .tc sources",
-                ),
-            )
-        })?;
-        Self::load(source)
-    }
-
-    pub fn load(input: &Path) -> Result<Self, SourceError> {
-        let metadata = fs::metadata(input)
-            .map_err(|error| SourceError::new(input, io_error("inspect source", input, error)))?;
-        let input = if metadata.is_dir() {
-            input.join("Main.tz")
-        } else {
-            input.to_owned()
-        };
-        let root = SourceFile::read(&input)?;
-        let parent = input
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let entries = fs::read_dir(parent).map_err(|error| {
-            SourceError::new(parent, io_error("list module directory", parent, error))
-        })?;
-        let mut paths = Vec::new();
-        let mut found_root = false;
-        for entry in entries {
-            let path = entry
-                .map_err(|error| {
-                    SourceError::new(parent, io_error("list module directory", parent, error))
-                })?
-                .path();
-            if path.file_name() == input.file_name() {
-                found_root = true;
-            } else if source_kind(&path).is_some() {
-                paths.push(path);
-            }
-        }
-        if !found_root {
+fn collect_sources(root: &Path) -> Result<Vec<PathBuf>, SourceError> {
+    let mut pending = vec![(root.to_owned(), 0)];
+    let mut directories = 0;
+    let mut paths = Vec::new();
+    while let Some((directory, depth)) = pending.pop() {
+        directories += 1;
+        if directories > 1024 || depth >= 16 {
             return Err(SourceError::new(
-                &input,
+                &directory,
                 driver_error(
-                    "E1011",
-                    "source filename must match its directory entry exactly, including case",
+                    "E1017",
+                    "module discovery exceeds 1024 directories or 16 path segments",
                 ),
             ));
         }
-        paths.sort();
-        let mut sources = vec![root];
-        for path in paths {
-            sources.push(SourceFile::read(&path)?);
+        for entry in fs::read_dir(&directory).map_err(|error| {
+            SourceError::new(
+                &directory,
+                io_error("list module directory", &directory, error),
+            )
+        })? {
+            let entry = entry.map_err(|error| {
+                SourceError::new(
+                    &directory,
+                    io_error("list module directory", &directory, error),
+                )
+            })?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|error| {
+                SourceError::new(&path, io_error("inspect module path", &path, error))
+            })?;
+            if kind.is_symlink() {
+                let target = fs::metadata(&path);
+                if source_kind(&path).is_some()
+                    || target.as_ref().is_ok_and(|metadata| metadata.is_dir())
+                    || target.is_err()
+                {
+                    return Err(SourceError::new(
+                        &path,
+                        driver_error(
+                            "E1011",
+                            "module discovery does not follow source or directory symbolic links",
+                        ),
+                    ));
+                }
+            } else if kind.is_dir() {
+                pending.push((path, depth + 1));
+            } else if source_kind(&path).is_some() {
+                if !kind.is_file() {
+                    return Err(SourceError::new(
+                        &path,
+                        driver_error("E1011", "module sources must be regular files"),
+                    ));
+                }
+                paths.push(path);
+                if paths.len() > 4096 {
+                    return Err(SourceError::new(
+                        root,
+                        driver_error("E1017", "module discovery exceeds 4096 source files"),
+                    ));
+                }
+            }
         }
-        sources.sort_by(|left, right| left.path.file_name().cmp(&right.path.file_name()));
-        let root = sources
-            .iter()
-            .position(|source| source.path == input)
-            .unwrap();
-        // The embedded standard library follows the user sources.
+    }
+    paths.sort_by_cached_key(|path| path.to_string_lossy().replace('\\', "/"));
+    Ok(paths)
+}
+
+impl Project {
+    pub fn load_with_overlays(
+        input: &Path,
+        overlays: &std::collections::BTreeMap<PathBuf, String>,
+    ) -> Result<Self, SourceError> {
+        let directory = if input.is_dir() {
+            input
+        } else {
+            input
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+        };
+        let directory = fs::canonicalize(directory).map_err(|error| {
+            SourceError::new(
+                directory,
+                io_error("resolve module directory", directory, error),
+            )
+        })?;
+        let mut normalized = std::collections::BTreeMap::new();
+        for (path, text) in overlays {
+            if source_kind(path).is_some()
+                && let Some(parent) = path
+                    .parent()
+                    .and_then(|parent| fs::canonicalize(parent).ok())
+                && parent.starts_with(&directory)
+            {
+                if text.len() > MAX_SOURCE_BYTES {
+                    return Err(SourceError::new(
+                        path,
+                        driver_error("E0003", "source exceeds the 1 MiB limit"),
+                    ));
+                }
+                let path = parent.join(path.file_name().ok_or_else(|| {
+                    SourceError::new(
+                        path,
+                        driver_error("E1011", "a source file needs a filename"),
+                    )
+                })?);
+                if path
+                    .strip_prefix(&directory)
+                    .unwrap()
+                    .components()
+                    .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+                {
+                    continue;
+                }
+                normalized.insert(path, text.clone());
+            }
+        }
+        Self::load_from_root(&directory, None, &normalized)
+    }
+
+    fn load_from_root(
+        directory: &Path,
+        selected: Option<&Path>,
+        overlays: &std::collections::BTreeMap<PathBuf, String>,
+    ) -> Result<Self, SourceError> {
+        let mut paths: std::collections::BTreeMap<_, _> = collect_sources(directory)?
+            .into_iter()
+            .map(|path| (path, None))
+            .collect();
+        for (path, text) in overlays {
+            paths.insert(path.clone(), Some(text));
+        }
+        if paths.len() > 4096 {
+            return Err(SourceError::new(
+                directory,
+                driver_error("E1017", "module discovery exceeds 4096 source files"),
+            ));
+        }
+        let mut paths: Vec<_> = paths.into_iter().collect();
+        paths.sort_by_cached_key(|(path, _)| path.to_string_lossy().replace('\\', "/"));
+        let mut sources = Vec::new();
+        for (path, overlay) in paths {
+            let relative_path = path
+                .strip_prefix(directory)
+                .map_err(|_| {
+                    SourceError::new(
+                        &path,
+                        driver_error("E1011", "source is outside the project root"),
+                    )
+                })?
+                .to_owned();
+            let name = crate::module_name_from_relative(&relative_path)
+                .map_err(|error| SourceError::new(&path, error))?;
+            if let Some(text) = overlay {
+                sources.push(SourceFile {
+                    path,
+                    relative_path,
+                    name,
+                    text: text.clone(),
+                    origin: ModuleOrigin::User,
+                });
+            } else {
+                let mut source = SourceFile::read(&path)?;
+                source.relative_path = relative_path;
+                source.name = name;
+                sources.push(source);
+            }
+        }
+        let root = if let Some(selected) = selected {
+            sources.iter().position(|source| source.relative_path == selected).ok_or_else(|| SourceError::new(&directory.join(selected), driver_error("E1011", "source filename must match its directory entry exactly, including case")))?
+        } else {
+            sources
+                .iter()
+                .position(|source| source.name == "Main")
+                .unwrap_or(0)
+        };
         sources.extend(crate::stdlib::SOURCES.iter().map(|(path, text)| {
             SourceFile {
                 path: PathBuf::from(path),
+                relative_path: PathBuf::from(path),
                 name: crate::stdlib::module_name(path)
                     .expect("embedded std paths are flat")
                     .to_owned(),
@@ -262,6 +381,56 @@ impl Project {
             }
         }));
         Ok(Self { sources, root })
+    }
+
+    pub fn load_for_tests(input: &Path) -> Result<Self, SourceError> {
+        let metadata = fs::symlink_metadata(input).map_err(|error| {
+            SourceError::new(input, io_error("inspect test input", input, error))
+        })?;
+        if !metadata.is_dir() {
+            return Self::load(input);
+        }
+        let project = Self::load_from_root(input, None, &std::collections::BTreeMap::new())?;
+        if !project
+            .sources
+            .iter()
+            .any(|source| source.origin == ModuleOrigin::User)
+        {
+            return Err(SourceError::new(
+                input,
+                driver_error(
+                    "E2000",
+                    "test input directory has no .tz, .tt, or .tc sources",
+                ),
+            ));
+        }
+        Ok(project)
+    }
+
+    pub fn load(input: &Path) -> Result<Self, SourceError> {
+        let metadata = fs::symlink_metadata(input)
+            .map_err(|error| SourceError::new(input, io_error("inspect source", input, error)))?;
+        if metadata.is_symlink() {
+            return Err(SourceError::new(
+                input,
+                driver_error("E1011", "source inputs must not be symbolic links"),
+            ));
+        }
+        let input = if metadata.is_dir() {
+            input.join("Main.tz")
+        } else {
+            input.to_owned()
+        };
+        read_source(&input).map_err(|error| SourceError::new(&input, error))?;
+        let parent = input
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        Self::load_from_root(
+            parent,
+            input.file_name().map(Path::new),
+            &std::collections::BTreeMap::new(),
+        )
     }
 
     pub fn input(&self) -> &Path {
@@ -302,7 +471,7 @@ impl Project {
             .iter()
             .map(|source| crate::SourceInput {
                 path: match source.origin {
-                    ModuleOrigin::User => source.path.file_name().unwrap().to_str().unwrap(),
+                    ModuleOrigin::User => source.relative_path.to_str().unwrap(),
                     ModuleOrigin::Std => source.path.to_str().unwrap(),
                 },
                 text: &source.text,
@@ -489,7 +658,19 @@ fn build_complete(
             wasm: options.target == Target::Wasm32,
             debug_output: options.debug_output,
         };
-        if options.trap_info {
+        if options.debug_info {
+            let output = project.with_trap_sources(|sources| {
+                llvm::emit_with_debug_info(
+                    module,
+                    emission,
+                    sources,
+                    options.optimization != 0,
+                    options.trap_info,
+                )
+            })?;
+            trap_sites = output.trap_sites;
+            output.ir
+        } else if options.trap_info {
             let output = project.with_trap_sources(|sources| {
                 llvm::emit_with_trap_info(module, emission, sources)
             })?;
@@ -500,6 +681,12 @@ fn build_complete(
         }
     };
     if options.target == Target::Wasm32 && options.emit != Emit::Header {
+        if options.wasm_simd {
+            text.insert_str(
+                0,
+                "; wasm-feature: simd128; compile this IR with -msimd128\n",
+            );
+        }
         text.push_str(include_str!("runtime/wasm.ll"));
     }
     let task_runtime =
@@ -513,7 +700,18 @@ fn build_complete(
     }
     protect_sources(project, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
+    let dwarf_sidecar = (cfg!(target_os = "macos")
+        && options.debug_info
+        && options.emit == Emit::Executable)
+        .then(|| {
+            let mut path = output.as_os_str().to_owned();
+            path.push(".dwarf");
+            PathBuf::from(path)
+        });
     if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+    }
+    if let Some(sidecar) = &dwarf_sidecar {
         protect_sources(project, sidecar)?;
     }
     let parent = output
@@ -532,6 +730,7 @@ fn build_complete(
         });
     let mut messages = Vec::new();
     let staged_sidecar = temporary.path.join("sites.json");
+    let staged_dwarf = temporary.path.join("symbols.dwarf");
     if sidecar.is_some() {
         let table =
             project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
@@ -541,9 +740,13 @@ fn build_complete(
     if matches!(options.emit, Emit::Llvm | Emit::Header) {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
-        let ir = temporary.path.join("module.ll");
+        let mut ir = temporary.path.join("module.ll");
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
+        let merge_debug_ir = cfg!(target_os = "macos")
+            && options.debug_info
+            && task_runtime
+            && options.emit == Emit::Object;
         if task_runtime {
             let runtime_source = temporary.path.join("task.c");
             fs::write(&runtime_source, include_str!("runtime/task.c"))
@@ -552,6 +755,12 @@ fn build_complete(
             runtime
                 .args(["-std=c11", "-fPIC", "-pthread", "-c"])
                 .arg(format!("-O{}", options.optimization));
+            if options.debug_info {
+                runtime.arg("-g");
+            }
+            if merge_debug_ir {
+                runtime.args(["-S", "-emit-llvm"]);
+            }
             if options.cpu == Cpu::Native {
                 runtime.arg(native_cpu_flag(env::consts::ARCH)?);
             }
@@ -563,6 +772,24 @@ fn build_complete(
                     "parallel tasks require Clang and POSIX pthread headers",
                 )?,
             );
+            if merge_debug_ir {
+                let combined = temporary.path.join("combined.ll");
+                let mut linker = Command::new(tool("TSUZURI_LLVM_LINK", "llvm-link"));
+                linker
+                    .arg(&ir)
+                    .arg(&runtime_object)
+                    .arg("-S")
+                    .arg("-o")
+                    .arg(&combined);
+                collect_message(
+                    &mut messages,
+                    run_tool(
+                        &mut linker,
+                        "macOS debug objects with tasks require llvm-link matching Clang; set TSUZURI_LLVM_LINK",
+                    )?,
+                );
+                ir = combined;
+            }
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         clang
@@ -570,31 +797,42 @@ fn build_complete(
             .arg("ir")
             .arg("-Wno-override-module")
             .arg(format!("-O{}", options.optimization));
+        if options.debug_info {
+            clang.arg("-g");
+        }
         if options.target == Target::Wasm32 {
             clang
                 .arg("--target=wasm32-unknown-unknown")
                 .arg("-mbulk-memory");
+            clang.arg(if options.wasm_simd {
+                "-msimd128"
+            } else {
+                "-mno-simd128"
+            });
         } else {
             clang.arg("-fPIC");
             if options.cpu == Cpu::Native {
                 clang.arg(native_cpu_flag(env::consts::ARCH)?);
             }
         }
-        if options.emit != Emit::Executable {
+        if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
             clang.arg("-c");
         }
         let object = temporary.path.join("module.o");
         clang.arg(&ir).arg("-o").arg(
-            if options.emit == Emit::Wasm || (task_runtime && options.emit == Emit::Object) {
+            if options.emit == Emit::Wasm
+                || dwarf_sidecar.is_some()
+                || (task_runtime && options.emit == Emit::Object && !merge_debug_ir)
+            {
                 &object
             } else {
                 &artifact
             },
         );
-        if options.emit == Emit::Executable && !cfg!(windows) {
+        if options.emit == Emit::Executable && !cfg!(windows) && dwarf_sidecar.is_none() {
             clang.arg("-lm");
         }
-        if task_runtime && options.emit == Emit::Executable {
+        if task_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang
                 .args(["-x", "none"])
                 .arg(&runtime_object)
@@ -607,7 +845,35 @@ fn build_complete(
                 "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
             )?,
         );
-        if task_runtime && options.emit == Emit::Object {
+        if dwarf_sidecar.is_some() {
+            let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
+            linker.arg(&object).args(["-g", "-lm"]);
+            if task_runtime {
+                linker.arg(&runtime_object).arg("-pthread");
+            }
+            linker.arg("-o").arg(&artifact);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut linker,
+                    "native debug executables require the Clang linker",
+                )?,
+            );
+            let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
+            symbols
+                .arg("--flat")
+                .arg(&artifact)
+                .arg("-o")
+                .arg(&staged_dwarf);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut symbols,
+                    "macOS debug executables require dsymutil; set TSUZURI_DSYMUTIL",
+                )?,
+            );
+        }
+        if task_runtime && options.emit == Emit::Object && !merge_debug_ir {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker.args(["-r", "-nostdlib"]);
             if cfg!(target_os = "macos") {
@@ -633,11 +899,13 @@ fn build_complete(
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
             linker
                 .arg("--no-entry")
-                .arg("--strip-all")
                 .arg("--stack-first")
                 .arg("-z")
                 .arg("stack-size=1048576")
                 .arg("--max-memory=16777216");
+            if !options.debug_info {
+                linker.arg("--strip-all");
+            }
             if debug_import {
                 linker.arg("--export-memory");
             }
@@ -666,25 +934,49 @@ fn build_complete(
             );
         }
     }
-    // Recheck immediately before publishing; never replace a source through a path alias.
+    let sidecars: Vec<_> = sidecar
+        .as_ref()
+        .map(|path| (&staged_sidecar, path))
+        .into_iter()
+        .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
+        .collect();
+    publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
+    temporary.close()?;
+    Ok((messages, trap_sites))
+}
+
+fn publish_outputs(
+    project: &Project,
+    artifact: &Path,
+    output: &Path,
+    sidecars: &[(&PathBuf, &PathBuf)],
+    temporary: &mut TemporaryDirectory,
+) -> Result<(), Diagnostic> {
     protect_sources(project, output)?;
-    if let Some(sidecar) = &sidecar {
-        protect_sources(project, sidecar)?;
-        let backup = temporary.path.join("previous-sites.json");
-        let previous = match fs::symlink_metadata(sidecar) {
-            Ok(_) => {
-                fs::hard_link(sidecar, &backup)
-                    .map_err(|error| io_error("back up trap side table", sidecar, error))?;
-                true
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(io_error("inspect trap side table", sidecar, error)),
-        };
-        fs::rename(&staged_sidecar, sidecar)
-            .map_err(|error| io_error("publish trap side table", sidecar, error))?;
-        if let Err(error) = fs::rename(&artifact, output) {
+    let mut published = Vec::new();
+    let result = (|| {
+        for (index, (staged, sidecar)) in sidecars.iter().enumerate() {
+            protect_sources(project, sidecar)?;
+            let backup = temporary.path.join(format!("previous-sidecar-{index}"));
+            let previous = match fs::symlink_metadata(sidecar) {
+                Ok(_) => {
+                    fs::hard_link(sidecar, &backup)
+                        .map_err(|error| io_error("back up output sidecar", sidecar, error))?;
+                    true
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(io_error("inspect output sidecar", sidecar, error)),
+            };
+            fs::rename(staged, sidecar)
+                .map_err(|error| io_error("publish output sidecar", sidecar, error))?;
+            published.push((*sidecar, backup, previous));
+        }
+        fs::rename(artifact, output).map_err(|error| io_error("publish output", output, error))
+    })();
+    if let Err(error) = result {
+        for (sidecar, backup, previous) in published.into_iter().rev() {
             let restored = if previous {
-                fs::rename(&backup, sidecar)
+                fs::rename(backup, sidecar)
             } else {
                 fs::remove_file(sidecar)
             };
@@ -693,18 +985,16 @@ fn build_complete(
                 return Err(driver_error(
                     "E2003",
                     format!(
-                        "output publication failed ({error}) and the side table could not be restored ({restore_error}); recovery files remain in '{}'",
+                        "output publication failed ({}) and a sidecar could not be restored ({restore_error}); recovery files remain in '{}'",
+                        error.message,
                         temporary.path.display()
                     ),
                 ));
             }
-            return Err(io_error("publish output", output, error));
         }
-    } else {
-        fs::rename(&artifact, output).map_err(|error| io_error("publish output", output, error))?;
+        return Err(error);
     }
-    temporary.close()?;
-    Ok((messages, trap_sites))
+    Ok(())
 }
 
 pub fn trap_sidecar_path(output: &Path) -> PathBuf {
@@ -1038,8 +1328,8 @@ mod tests {
             ],
             "",
         );
-        fs::create_dir(directory.path.join("nested")).unwrap();
-        fs::write(directory.path.join("nested/Hidden.tz"), "invalid").unwrap();
+        fs::create_dir(directory.path.join(".hidden")).unwrap();
+        fs::write(directory.path.join(".hidden/Hidden.tz"), "invalid").unwrap();
         assert_eq!(project.input(), directory.path.join("Main.tz"));
         assert_eq!(
             project
@@ -1230,6 +1520,7 @@ mod tests {
         let (directory, mut project) = project(&[("Main.tz", "0")], "Main.tz");
         project.sources.push(SourceFile {
             path: PathBuf::from("std/Broken.tz"),
+            relative_path: PathBuf::from("std/Broken.tz"),
             name: "Broken".to_owned(),
             text: "def broken :: i64\nfn broken = false".to_owned(),
             origin: ModuleOrigin::Std,

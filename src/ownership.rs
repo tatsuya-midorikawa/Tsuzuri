@@ -89,6 +89,7 @@ fn check_functions(
             infer,
             &closed,
             function.is_task,
+            function.region_sources.as_ref(),
         ) {
             Ok(required) => constraints.push(required),
             Err(error) => diagnostics.push(error),
@@ -108,6 +109,7 @@ fn check_body(
     infer: bool,
     closed: &[bool],
     task: bool,
+    region_sources: Option<&BTreeSet<usize>>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut checker = Checker {
         module,
@@ -142,6 +144,12 @@ fn check_body(
             .insert(parameter.id, (parameter.clone(), value));
     }
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    let allowed_roots: Option<BTreeSet<_>> = region_sources.map(|sources| {
+        sources
+            .iter()
+            .map(|index| usize::MAX - parameters[*index].id)
+            .collect()
+    });
     for id in result.loans {
         if task || !checker.external.contains(&checker.loans[id].place.root) {
             return Err(error(
@@ -151,6 +159,16 @@ fn check_body(
                 } else {
                     "cannot return a reference to a local value"
                 },
+                body.span,
+            ));
+        }
+        if allowed_roots
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&checker.loans[id].place.root))
+        {
+            return Err(error(
+                "E1013",
+                "returned borrow does not match the declared result region; return a borrow from an input with that region",
                 body.span,
             ));
         }
@@ -311,21 +329,27 @@ impl Checker<'_> {
         if parameters.len() > arity {
             return parameters[..arity]
                 .iter()
-                .all(|parameter| !parameter.ty.contains_reference());
+                .all(|parameter| !parameter.ty.contains_stored_reference(&self.module.types()));
         }
         if parameters.len() < arity {
             return false;
         }
         let mut locals: BTreeMap<_, _> = parameters
             .iter()
-            .map(|parameter| (parameter.id, !parameter.ty.contains_reference()))
+            .map(|parameter| {
+                (
+                    parameter.id,
+                    !parameter.ty.contains_stored_reference(&self.module.types()),
+                )
+            })
             .collect();
         locals.extend(captures.iter().map(|capture| (capture.id, true)));
         closed(body, self.module, self.closed, &locals)
     }
 
     fn is_copy(&self, ty: &Type) -> bool {
-        if self.module.types().recursive(ty) {
+        if self.module.types().recursive(ty) || ty.sequence_element(&self.module.types()).is_some()
+        {
             return false;
         }
         match ty {
@@ -350,6 +374,9 @@ impl Checker<'_> {
     }
 
     fn require_copy(&mut self, ty: &Type) -> bool {
+        if ty.sequence_element(&self.module.types()).is_some() {
+            return false;
+        }
         if self.module.types().recursive(ty) {
             return false;
         }
@@ -421,6 +448,31 @@ impl Checker<'_> {
             view: None,
         });
         id
+    }
+
+    fn retain_live_loans(&mut self, live: &BTreeSet<usize>) {
+        let mut keep = live.clone();
+        let mut pending: Vec<_> = self
+            .state
+            .locals
+            .iter()
+            .filter(|(id, _)| live.contains(id))
+            .flat_map(|(_, (_, value))| value.loans.iter())
+            .chain(self.held.iter().flat_map(|value| value.loans.iter()))
+            .copied()
+            .collect();
+        let mut visited = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if visited.insert(id) {
+                keep.insert(self.loans[id].place.root);
+                pending.extend(&self.loans[id].parents);
+            }
+        }
+        for (id, (_, value)) in &mut self.state.locals {
+            if !keep.contains(id) {
+                value.loans.clear();
+            }
+        }
     }
 
     fn active(&self) -> BTreeSet<usize> {
@@ -791,11 +843,7 @@ impl Checker<'_> {
                     ids.insert(local.id);
                     let mut keep = live.clone();
                     keep.extend(future.keys().copied());
-                    for (id, (_, value)) in &mut self.state.locals {
-                        if !keep.contains(id) {
-                            value.loans.clear();
-                        }
-                    }
+                    self.retain_live_loans(&keep);
                 }
                 result = self.eval(tail, Use::Consume, live)?;
                 for id in &result.loans {
@@ -836,11 +884,19 @@ impl Checker<'_> {
                 let boundary = known
                     .map(|id| self.module.functions[id].parameters.len())
                     .filter(|count| *count <= arguments.len());
+                let region_sources = known.and_then(|id| {
+                    let function = &self.module.functions[id];
+                    (arguments.len() == function.parameters.len())
+                        .then_some(function.region_sources.as_ref())
+                        .flatten()
+                });
                 let mut current = value.clone();
                 self.held.push(value);
                 for (index, argument) in arguments.iter().enumerate() {
                     let value = self.eval(argument, Use::Consume, &during)?;
-                    current.loans.extend(&value.loans);
+                    if region_sources.is_none_or(|sources| sources.contains(&index)) {
+                        current.loans.extend(&value.loans);
+                    }
                     self.held.push(value);
                     if boundary == Some(index + 1) {
                         let id = known.unwrap();
@@ -881,6 +937,7 @@ impl Checker<'_> {
                     self.infer,
                     self.closed,
                     matches!(expression.ty, Type::Task(_)),
+                    None,
                 )?);
                 for capture in captures {
                     let value = TypedExpr {

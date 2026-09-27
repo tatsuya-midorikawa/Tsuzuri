@@ -40,6 +40,7 @@ pub enum TokenKind {
     Record,
     Union,
     Type,
+    Const,
     Test,
     Class,
     Instance,
@@ -156,6 +157,7 @@ pub enum Provenance {
 pub struct Program {
     pub source_kind: Option<SourceKind>,
     pub type_aliases: Vec<TypeAliasDecl>,
+    pub constants: Vec<ConstDecl>,
     pub records: Vec<RecordDecl>,
     pub unions: Vec<UnionDecl>,
     pub functions: Vec<FunctionDecl>,
@@ -196,10 +198,19 @@ pub struct TypeAliasDecl {
 }
 
 #[derive(Clone, Debug)]
+pub struct ConstDecl {
+    pub visibility: Visibility,
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub value: Expr,
+}
+
+#[derive(Clone, Debug)]
 pub struct RecordDecl {
     pub visibility: Visibility,
     pub name: Ident,
     pub parameters: Vec<Ident>,
+    pub regions: Vec<Ident>,
     pub fields: Vec<Parameter>,
     pub derives: Vec<(DeriveClass, Span)>,
 }
@@ -243,6 +254,7 @@ pub struct UnionCaseDecl {
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub name: Ident,
+    pub regions: Vec<Ident>,
     pub recursion: Option<String>,
     pub visibility: Visibility,
     pub exported: bool,
@@ -255,6 +267,7 @@ pub struct FunctionDecl {
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
     pub name: Ident,
+    pub regions: Vec<Ident>,
     pub recursion: Option<String>,
     pub visibility: Visibility,
     pub exported: bool,
@@ -322,6 +335,7 @@ pub enum TypeExprKind {
     /// Both parts are boxed so every `TypeExpr` and expression embedding one
     /// stays as small as before, which bounds the parser's recursion stack.
     Apply(Box<Ident>, Box<[TypeExpr]>),
+    Regions(Box<TypeExpr>, Box<[Ident]>),
     Array(Box<TypeExpr>),
     List(Box<TypeExpr>),
     Tuple(Vec<TypeExpr>),

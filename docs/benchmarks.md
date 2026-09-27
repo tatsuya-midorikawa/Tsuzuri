@@ -8,7 +8,15 @@ WASM エンジン、ホスト呼び出しの粒度に依存します。
 型付きの LLVM 値、既定の `-O3`、WASM の不要コード削除です。
 安全検査や IEEE 754 の意味を捨てて速く見せる最適化は使いません。
 
+WASM SIMD128は明示opt-inです。2026-09-27の`tests/wasm_simd.mjs`ではLLVM21逆アセンブルでO3のベクトル命令を確認し、既定出力にはないことと結果一致を検証しました。
+これは速度の測定ではありません。SIMDによる加速を主張する場合はfeature有無・同じ入力/配列長/最適化・エンジン版を揃えた中央値と生成命令を併記し、共有CIへ速度閾値を追加しません。
+
 ## 表の読み方
+
+明示SIMDのmatched比較は `cargo build --release --locked && node benchmarks/run-simd.mjs target/release/tsuzuri` です。
+同じi64配列、wrapped sum、generic O3、プロセス内の反復でTsuzuri scalar/SIMD/Cを照合し、5回中央値をmsで表示します。配列生成は計測外です。
+`--quick`は4097要素・10反復の正しさ確認だけで、時間を性能主張に使いません。2026-09-27にchecksum -2385の一致を確認しました。
+明示SIMDが自動ベクトル化されたscalarより速いとは限らず、境界検査・ループ形状のコストを含めて判断します。F04は232参照ケースをnative generic/native・WASM scalar/SIMDのO0/O3で検証済みです。
 
 **処理時間は小さいほど高速です。スコアではありません。** 同じ行・同じ仕事量の値を比較してください。
 結果表は、種目・仕事量などの識別列の次に Tsuzuri を置き、その右に比較相手を並べます。

@@ -4,6 +4,14 @@ fn length values = values.length
 def is_empty :: ref ['a] -> bool
 fn is_empty values = values.length == 0
 
+private def rec iter_from :: ref ['a] -> i64 -> Seq.Seq<ref 'a>
+fn rec iter_from values index = Seq.defer (fx () ->
+    if index < values.length then (iter_from values (index + 1), Option.Some (ref values[index]))
+    else (Seq.empty(), Option.None))
+
+def iter :: ref ['a] -> Seq.Seq<ref 'a>
+fn iter values = iter_from values 0
+
 def get :: Copy<'a> => ref ['a] -> i64 -> Option.Option<'a>
 fn get values index =
     if index < 0 || index >= values.length then Option.None else Option.Some values[index]

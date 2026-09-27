@@ -6,14 +6,18 @@
 非停止、スタック枯渇、検査違反によるトラップはあり、全関数の停止は保証しません。
 コンパイル時に扱えない構文・型を、別の意味へ暗黙に置き換えることはありません。
 
+WASMのSIMD128は `build --target wasm32 --wasm-feature simd128` で明示的に有効にします。既定ではSIMDを要求しません。
+native/check/run/header、重複・未知feature・relaxed-simd指定は `E2000` です。演算順序・NaN・符号付きゼロ・トラップは変えず、対応しないエンジンではopt-in成果物のvalidationが失敗します。
+
 ## ソースと宣言
 
 - `.tz`（コード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）。
   UTF-8、先頭 BOM、LF／CRLF。識別子は ASCII の英字または `_` に続く英数字／`_`。
-- 予約語は `fn` `fx` `def` `rec` `and` `export` `private` `record` `union` `type` `test` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
+- 予約語は `fn` `fx` `def` `rec` `and` `export` `private` `record` `union` `type` `const` `test` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
     `for` `in` `to` `downto` `while` `break` `continue` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
   `true` `false` です。関数・変数・フィールド・モジュールの名前には使えません（`refs` や `ref_count` は使えます）。
   `of` は `union` の case 宣言の中だけで意味を持つ文脈キーワードで、それ以外では通常の識別子です。
+    `Set.union`のため、`union`だけはモジュール関数の宣言名とdot後のメンバー名にも使えます。変数・型・モジュール名には使えません。
 - `//` 行コメントと、入れ子可能な `/* ... */` コメント。
 - `=`, `then`, `do`, `->` に続く複数行の本体は、最初の式のインデントを基準にし、
   浅いインデントで終了します。明示的な `{ ... }` も使えます。空白適用は改行をまたぎません。
@@ -34,30 +38,34 @@
 `--check` はファイルを変更せず、差分があれば終了コード 1。通常は変更するファイルだけを atomic replace します。
 権限を保持し、symlink と特殊ファイルは拒否します。hard link は rename によって切り離し、他のリンク先を変更しません。
 
-各 `.tz`・`.tt`・`.tc` ファイルは、拡張子を除いたファイル名と同じ名前のモジュールを一つだけ定義します。
+各 `.tz`・`.tt`・`.tc` ファイルは、rootからの相対パスで一つのモジュールを定義します。`Geometry/Point.tz` は `Geometry.Point` です。
 モジュール名は大文字小文字を区別する ASCII 識別子で、`_` 単独や字句上の予約語は使えません。
 `Task` は組み込みの型・名前空間であり、モジュール・レコード・型クラス名には使えません。
-`module`／`namespace` 宣言、入れ子のモジュール、同じモジュールの複数ファイルへの分割はできません。
+`module`／`namespace` 宣言、同じモジュールの複数ファイルへの分割はできません。階層はディレクトリで表し、`open`・alias・相対参照は導入しません。
 拡張子ごとの内容は次のとおりです。
 
 | 拡張子 | 許可する内容 |
 |---|---|
-| `.tz` | `record`、`union`、`type`、`def`／`fn`、`instance`。`Main.tz` ではトップレベル実行も可 |
+| `.tz` | `record`、`union`、`type`、`const`、`def`／`fn`、`instance`。`Main.tz` ではトップレベル実行も可 |
 | `.tt` | 複数の `class` 宣言とその中のデフォルトメソッド。レコード・union・型別名・トップレベル関数・インスタンス・実行は不可 |
-| `.tc` | ファイル名を名前とする一つのビルダーの操作・補助関数・レコード・union・型別名・インスタンス。トップレベル実行は不可 |
+| `.tc` | ファイル名を名前とする一つのビルダーの操作・補助関数・定数・レコード・union・型別名・インスタンス。トップレベル実行は不可 |
 
 `.tz`／`.tc` 内の関数・レコード・union の数や `.tt` 内の型クラス数に「一つだけ」という制約はありません。
 `.tc` には少なくとも一つのビルダー操作を実装します。ビルダー宣言や入れ子のビルダーはありません。
-拡張子が違っても同じファイル名本体は使えません。`Name.tz` と `Name.tt`／`Name.tc` の併存はエラーです。
+同じ相対パスでは拡張子が違っても同じファイル名本体は使えません。`Name.tz` と `Name.tt`／`Name.tc` の併存はエラーです。別ディレクトリの同じ本体名は別モジュールです。
 旧 `.tzr` は入力として拒否します。`.tz` へ改名し、`class` 宣言は `.tt` に分離してください。
 旧拡張子や無関係な拡張子の隣接ファイルは自動読み込みの対象外です。
 
-コンパイラは入力ファイルと同じディレクトリ直下の **全 `.tz`・`.tt`・`.tc` ファイル** を
-ファイル名順に読み込み、一つのプロジェクトとして検査・コンパイルします。
+コンパイラはroot配下の **全 `.tz`・`.tt`・`.tc` ファイル** を再帰的に探索し、正規化した相対パスのバイト順で検査・コンパイルします。
 未参照のモジュール・ビルダーも検査対象です。
-ディレクトリを入力すると、その直下の `Main.tz` を選びます。
+ディレクトリ入力はそのディレクトリをrootにして、直下の `Main.tz` を選びます。`App/Main.tz` はこのrootでは `App.Main` であり、入口ではありません。
+ファイル入力は親をrootにし、上位rootを推測しません。例えば `Geometry/Point.tz` を直接入力すると、そのプロジェクトでは `Point` モジュールです。
 インポート宣言や CLI での複数ソースの列挙は不要です。
-サブディレクトリの再帰探索、外部パッケージ、検索パスはありません。
+各パス要素はASCII識別子で、`_`・`Task`・予約語を拒否します。標準ライブラリの予約モジュールは先頭要素に使えません。
+ドット始まりのファイル・ディレクトリは無視し、ソースsymlink・ディレクトリsymlinkを `E1011` で拒否します。
+深さ16要素・名前255バイト・4096ソース・1024ディレクトリの上限を超えると `E1017` です。
+関数・型・レコード・case・クラス・ビルダーは `Geometry.Point.distance` のように完全修飾でき、同名のローカル値があればフィールドアクセスを優先します。
+標準ライブラリは従来の `Option.map` 等のままです。外部パッケージ、検索パスはありません。
 
 #### 標準ライブラリ
 
@@ -70,7 +78,7 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Test`、`Gpu`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Seq`、`Test`、`Gpu`
 
 現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
 型汎用の数学関数を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
@@ -147,6 +155,31 @@ fn reveal n = (token n).value
 同名関数のシグネチャによるオーバーロードは行わず、型による実装の選択は型クラスに限定します。
 暗黙の数値変換、可変引数、モジュール共有の状態、外部関数宣言はありません。
 組み込み関数名はトップレベル関数の名前として再定義できません。
+
+### コンパイル時定数
+
+`const Name: Type = expression` は明示的な具体型を持つ不変値です。`.tz`／`.tc` で宣言でき、`.tt` では `E1018` です。
+`private const` は宣言モジュール内だけで参照でき、通常の定数も他モジュールからは `Module.Name` と修飾します。
+関数と同じ値の名前空間を使い、重複は `E1001` です。前方参照を許し、未使用の定数も型検査・評価します。
+
+```text
+const Answer: i64 = Later + 2
+const Later: i64 = 40
+const Greeting: string = "hello"
+const Table: [i64] = [20, 22]
+```
+
+リテラル（UTF-16／UTF-8文字列・文字を含む）、配列・タプル・レコード、定数参照、単項・二項演算、`if`、数値castを使えます。
+両分岐を型検査し、`if`／`&&`／`||` は選択した式だけを評価します。整数は幅ごとに折り返し、シフト量をマスクします。
+整数のゼロ除算・MIN/-1、循環、未対応式は `E1026` です。binary浮動小数点は各型の最近接・偶数丸めで評価し、NaN・符号付きゼロ・subnormalを保ちます。
+浮動小数点から整数へのcastは実行時と同じゼロ方向の切り捨て・飽和・NaNから0です。
+decimalはリテラル・符号・恒等castだけを許し、演算・比較・形式間castは拒否します。
+関数／クラスメソッド呼び出し、list、`new`、索引・フィールド投影、ループ・match・lambda・task・借用・代入は定数式に書けません。
+
+各参照を評価済みのリテラルとして生成し、所有値を共有しません。`Greeting + Greeting` は二つの値ですが、束縛後のmove規則は通常どおりです。
+`String.length (&Greeting)` の一時借用は、単一段階の完全適用で借用を含まない結果を返す呼び出し中だけ有効です。
+返却・保存・段階適用には `let value = Greeting` と束縛してから借用します。定数にstatic lifetimeはありません。
+依存参照は深さ128・一つの探索で1024定数まで、評価・展開は最大1048576ノードです。超過はcompiler limitを示す `E1026` です。
 
 ### 関数の宣言と適用
 
@@ -503,8 +536,8 @@ total (Box { value: Pair { first: 20, second: 22 } })
 フィールドアクセスと `Pair { first = x }` などのレコードパターンは、宣言のフィールド型を実際の型引数で置換した型になります。
 Copy・move・drop・借用・タスクへの送信の可否は、置換後のフィールド型から構造的に決まります。
 `Pair<i64, bool>` は Copy、`Pair<string, i64>` はフィールド単位で move する非 Copy のレコードです。
-型引数に参照を含む具体化（`Box<ref i64>` など）はフィールドに参照を格納するので、
-リテラル・型注釈・シグネチャ・多相関数の具体化のいずれでも `E1013` です。
+型引数に共有参照を含む具体化（`Box<ref i64>` など）は元所有者の寿命を保持します。
+排他参照を格納する具体化は、リテラル・型注釈・シグネチャ・多相関数の具体化のいずれでも `E1013` です。
 64 KiB のレイアウト上限と再帰的なレイアウトの検出（`E1010`）は具体化ごとに行い、
 使われない巨大な具体化はエラーになりません。
 `instance Add<Pair<i64, i64>>` のように具体化した型へのインスタンスは定義できますが、
@@ -587,7 +620,7 @@ Copy・move・drop・借用・タスクへの送信の可否は、具体化し�
 ビューは節の中で借用できますが、move はできません。生存中は元の記憶域の置換・move・排他借用を拒否します。
 ジェネリック union は `Option<ref T>` のような共有参照ペイロードを持てます。元所有者の loan を保持し、
 コピー・パターン・関数返却を通じてもその寿命を越えられません。排他参照の格納、`Hold of &i64` のような
-直接の借用 payload 宣言、レコードの借用フィールドは、名前付きライフタイム導入まで `E1013` です。
+直接の借用 payload 宣言は引き続き `E1013` です。レコードの共有借用フィールドは所有者の寿命内で利用できます。
 
 レイアウトは tag と、最大の payload を収める領域です。
 保守的なサイズは payload のない union が 8 バイト、それ以外が 16 バイトと最大の payload を 16 バイト境界に切り上げた値の和で、
@@ -979,12 +1012,30 @@ let len4 = text |> String.length
 
 借用を返す関数では、本体が返す loan が入力由来であることを検査し、呼び出し側では借用を含む全入力の寿命に戻り値を結び付けます。
 借用を持たない `None` や必ずトラップする関数の返却型に参照が含まれても、借用入力の個数だけで拒否しません。
-複数入力のどれを返したかによる寿命の短縮は行わず、パターンの一時ローカルへの参照を外へ返すこともできません。
+省略形では複数入力のどれを返したかによる寿命の短縮は行わず、パターンの一時ローカルへの参照を外へ返すこともできません。
 匿名関数では捕捉した借用も入力に数えます。借用を保持しうる関数値の引数も保守的に入力に数えます。
 ローカル所有値への参照、ブロックを抜けると無効になる参照、寿命を超える代入を拒否します。
-名前付きライフタイム、借用フィールドを持つレコード、一般的な入れ子参照の寿命推論、
-一時値の借用と寿命延長は未対応です。一時値は先に `let` で所有者へ束縛してください。
+共有借用フィールドを持つレコードは、コピー・移動・部分move・入れ子・closure捕捉を通してloanを保持します。元所有者を越える返却、Taskへの送信、排他借用fieldを拒否します。
+一般的な入れ子参照の高度な推論、一時値の借用と寿命延長は未対応です。一時値は先に `let` で所有者へ束縛してください。
 Rust の所有権モデルを採用したサブセットであり、Rust の全構文・trait・ライフタイム機能との互換ではありません。
+
+#### 名前付き Region
+
+```text
+record View<'a> {r} { value: ref {r} 'a }
+def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string
+fn first left right = { assert (right.length > 0); left }
+def view {r} :: ref {r} i64 -> View<i64> {r}
+fn view value = View { value: value }
+```
+
+region名は小文字ASCII識別子で、`def`名の後の `{r s}`（カンマ区切りも可）で宣言します。型変数とは別名前空間です。
+`ref {r} T`／`&{r} T`、`ref mut {r} T`／`&mut {r} T`で参照を指定し、`View<T> {r}`で借用aggregate全体を指定します。
+戻り値のregionと同名の入力を借用元とし、本体の実loanがその入力以外を指せば `E1013` です。入力が複数ならその交差寿命を保持します。
+直接の完全適用では無関係な入力のloanを戻り値から除きます。関数値・部分適用ではこの契約を型へ持ち上げず、従来どおり全入力の寿命を保持します。
+一つのparameter/resultと一つのrecordは一つの共有regionだけを持てます。region省略は既存の推論を使い、static lifetimeはありません。
+未宣言・未使用region、scalarへの指定、独立複数regionの混在、高階関数型内部・alias・union・const・ローカル型注釈へのregion指定は `E1013` です。
+レコード内の複数regionの独立追跡、regionを保持する関数値型、排他借用field、参照経由のborrowed aggregate置換は後続段階です。
 
 ### char と utf8char
 
@@ -1785,6 +1836,87 @@ callback 引数は、所有環境を証明できる通常の関数値・部分�
 fast-math・reassociation・暗黙 FMA は使いません。native は常駐プール、WASM は同じチャンク順の import-free 逐次 fallback です。
 チャンク間の開始・完了順は未規定で、トラップ時の部分結果解放・キャンセルは保証しません。
 
+### SIMD 値型
+
+数値vectorは `f32x4`・`f64x2`・`i8x16`・`i16x8`・`i32x4`・`i64x2`・`i8ux16`・`i16ux8`・`i32ux4`・`i64ux2`です。
+maskは `mask8x16`・`mask16x8`・`mask32x4`・`mask64x2`で、laneごとのboolを持ちます。全型はCopy/Send/Capture、drop不要、公開ABIには出せません。
+record/union/tuple/array/list/closureに格納でき、値サイズの保守的な見積もりは16bytesです。maskの実LLVM保存幅はlane数bitです。
+
+```text
+let values: i32x4 = Simd.of_lanes4 1i32 2i32 3i32 4i32
+let shifted = values + Simd.splat 1i32
+let mask = Simd.gt shifted values
+assert (Simd.all mask)
+Simd.sum_lanes shifted
+```
+
+構築は `Simd.splat scalar`、`Simd.of_lanes2/4/8/16`。結果vector型を明示し、lane型と個数を照合します。
+`Simd.extract vector index`／`replace vector index scalar`は負またはlane数以上でトラップします。
+`Simd.load (&array) index`は数値vectorのみで、全laneが範囲内かをload前に検査し、unalignedな連続読み出しを行います。storeは未提供です。
+数値vectorはAdd/Sub/Mul、float vectorはDiv、signed integer/floatはNeg、integer/maskはBitsを持ちます。
+整数はlaneごとに折り返し、shift countは各lane幅-1でマスクします。integer Div/Rem、暗黙scalar/vector変換はありません。
+`Simd.eq/ne/lt/le/gt/ge`はmaskを返し、通常Eq/Ord instanceはありません。NaNのeq/順序比較はfalse、neはtrueで、±0は等しいままです。
+`Simd.select mask yes no`、`Simd.all mask`、`Simd.any mask`で選択・bool還元を行います。
+`Simd.sum_lanes`はlane0を初期値とし、1,2,...の順で加算します。floatの再結合・暗黙FMA・fast-mathはありません。
+組み込みmarkerはSimdVector（全vector）、SimdNumeric（数値）、SimdMask（mask）です。lane/mask型族を使うAPIは呼び出し位置で具体vector型を必要とします。
+256-bit vector、gather/scatter、integer division、可変slice storeは後続段階です。
+
+### Seq と明示的な反復
+
+`Seq<'a>`は同期的な一回消費の遅延列です。常にnon-Copyで、`Seq.next sequence`は所有状態を消費して `(Seq<'a> * Option<'a>)` を返します。
+空ならNone、要素があればSomeと次状態です。`for pattern in sequence do body`もsequenceを一度だけ消費し、各stepで次状態を戻してからbodyを実行します。
+break/continueは通常のループと同じで、残った列・未消費要素を解放します。borrowed要素は元所有者を超えて生存できず、iteration localへの借用も持ち出せません。
+配列・リスト・文字列・整数範囲の直接forは既存の走査を維持します。独自型のiter関数は暗黙探索せず、`for item in Module.iter (&source) do ...`と書きます。
+
+```text
+let sequence = Seq.unfold 0 (fx value ->
+    if value < 10 then Option.Some (value, value + 1) else Option.None)
+let doubled = Seq.map sequence (fx value -> value * 2)
+let selected = Seq.filter doubled (fx value -> deref value % 3 == 0)
+let result = Seq.to_array selected
+```
+
+- `Seq.empty()`は空、`Seq.once value`は一要素です。onceはTaskや所有文字列も保持し、未実行でも正しくdropします。
+- `Seq.defer step`は `unit -> (Seq<'a> * Option<'a>)` の次stepを遅延します。next前には呼び出しません。
+- `Seq.unfold state generator`は `state -> Option<('a * state)>` を繰り返します。stateには通常closureのCapture制約があります。
+- `Seq.map sequence transform`は `'a -> 'b`、`Seq.filter sequence predicate`は `ref 'a -> bool` を遅延適用します。保存する入力要素にはCaptureを要求します。
+- `Seq.to_array`は列を消費し、Vecで集めて所有配列へ移します。無限列には停止を保証しません。
+- `Array.iter`／`Vec.iter`／`List.iter`／`Set.iter`は要素への共有参照、`Map.iter`は `(ref K * ref V)` のSeqを返します。元コンテナの寿命・借用競合を維持します。
+- List.iterはリンクを一回走査して要素参照のVecを準備します。準備O(n)時間/領域、全反復O(n)で、要素自体はコピーしません。直接list forは準備領域を必要としません。
+
+内部表現の構築・field参照・pattern・record更新はできません。列のnextは所有するclosure環境をcloneせず呼び出します。
+builderのFor操作は従来どおりビルダーのAPIへ展開され、言語のSeq forへ書き換えません。展開後の入れ子にも深さ128の資源上限を適用します。
+
+### Map / Set
+
+`Map<'key, 'value>`と`Set<'key>`は、常に非Copyの所有する順序付きコンテナです。
+内部表現は不透明で、record構築・field参照・pattern分解・record更新によるアクセスは `E1022` です。公開ABIには出せません。
+キー比較は `Ord` の共有借用で行い、検索・更新にキーのCopy制約を要求しません。利用者のOrdは一貫した順序を定義する必要があります。
+比較時にキーの反射的等価性を検査し、NaN等はトラップします。制約のないsingletonは任意の1要素を保持できますが、その後の比較時にも検査します。
+
+```text
+let map = Map.insert (Map.singleton 2 "two") 1 "one"
+let word = Map.at (&map) 1
+assert (word.length == 3)
+let map = Map.remove map 2
+```
+
+Map APIは `empty()`、`singleton key value`、`length (&map)`、`is_empty (&map)`、`insert map key value`、`remove map key`、
+`contains_key (&map) key`、`get (&map) key`、`at (&map) key`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold (&map) initial folder`です。
+getはCopy値の `Option<V>`、atは存在しなければトラップする `ref V` を返します。検索キーは値渡しして呼び出し後に解放します。
+同じキーへのinsertは最初のキー代表値を保持し、新しいキーと旧値を解放して値だけを置換します。removeで存在しないキーは変更しません。
+to_arrayはキー・値、keysはキー、valuesは値にだけCopyを要求します。foldのcallbackは `state -> ref K -> ref V -> state` です。
+
+Set APIは `empty()`、`singleton key`、`length`、`is_empty`、`insert set key`、`remove set key`、`contains (&set) key`、
+`to_array (&set)`、`fold (&set) initial folder`、`union left right`、`intersect (&left) (&right)`、`difference (&left) (&right)`です。
+unionは両所有値を消費し、重複時は左の代表値を保持します。intersect/difference/to_arrayは返却用のキーにCopyを要求します。
+foldのcallbackは `state -> ref K -> state` で、非Copyキーにも使えます。
+
+検索O(log n)、挿入・削除O(n)、snapshot/fold O(n)、集合演算O(n+m)です。挿入・削除は既存Vecの領域を再利用し、容量不足だけ再確保します。
+unionは一つの出力領域へ移動し、intersect/differenceは借用入力からコピーします。全snapshot/foldはキー昇順です。
+共有参照の格納では元の所有者の寿命を引き継ぎ、排他参照は格納できません。Map.atの借用中はmapを移動・置換できません。
+捕捉環境の複製は独立したstorageを持ちます。HashMap・木構造・可変iterator・公開ABIは対象外です。
+
 ### 配列・リスト API
 
 Array の逐次集計と [データ並列 API](#データ並列-api) は別の演算順序です。自動で Parallel へ切り替えません。
@@ -2186,6 +2318,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
 | `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |
 | `E1025` | 導出できないクラス・要素型、終了しない再帰Default |
+| `E1026` | 定数評価のトラップ・循環・上限超過・未対応の定数式 |
 | `W1001` | 未使用のローカル・引数・パターン束縛（警告） |
 | `W1002` | 公開 API から到達しない private 関数・レコード・union・型別名（警告） |
 | `W1003` | 前の節で覆われる到達不能な match の節（警告） |

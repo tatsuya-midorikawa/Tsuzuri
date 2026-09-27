@@ -54,7 +54,8 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
             .map_or(8, |payload| {
                 16usize.saturating_add(payload.next_multiple_of(16))
             }),
-        Type::Integer(128, _)
+        Type::Simd(_)
+        | Type::Integer(128, _)
         | Type::Binary(128)
         | Type::Decimal(128)
         | Type::String

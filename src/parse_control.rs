@@ -3,7 +3,7 @@ use super::*;
 impl Parser<'_> {
     pub(super) fn function_name(&mut self) -> Result<Ident, Diagnostic> {
         if !self.eat(&TokenKind::LeftParen) {
-            return self.ident();
+            return self.member_ident();
         }
         self.expect(&TokenKind::Pipe, "'|' before an active pattern name")?;
         let mut cases = Vec::new();
@@ -677,7 +677,7 @@ impl Parser<'_> {
     }
 
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
-        let name = self.qualified_path(3)?;
+        let name = self.qualified_path(18)?;
         if name.text == "null" {
             return Err(Diagnostic::new(
                 "E1020",

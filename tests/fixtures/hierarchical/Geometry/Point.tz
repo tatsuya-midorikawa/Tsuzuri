@@ -1,0 +1,4 @@
+record Point { x: f64, y: f64 }
+
+def distance :: Point -> f64
+fn distance point = sqrt (point.x * point.x + point.y * point.y)

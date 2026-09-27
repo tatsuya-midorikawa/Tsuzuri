@@ -33,7 +33,7 @@ pub fn primitive(name: &str) -> Option<Type> {
         _ if name.starts_with('d') && is_numeric_name(name) => {
             Type::Decimal(name[1..].parse().unwrap())
         }
-        _ => return None,
+        _ => return crate::simd::SimdType::named(name).map(Type::Simd),
     })
 }
 

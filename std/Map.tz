@@ -1,0 +1,103 @@
+private record Entry<'key, 'value> { key: 'key, value: 'value }
+record Map<'key, 'value> { entries: Vec<Entry<'key, 'value>> }
+
+def empty :: Map<'key, 'value>
+fn empty = Map { entries: Vec.empty() }
+
+def singleton :: 'key -> 'value -> Map<'key, 'value>
+fn singleton key value = Map { entries: Vec.push (Vec.empty()) (Entry { key: key, value: value }) }
+
+def length :: ref Map<'key, 'value> -> i64
+fn length map = Vec.length (ref map.entries)
+
+def is_empty :: ref Map<'key, 'value> -> bool
+fn is_empty map = length map == 0
+
+private def lower_bound :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> i64
+fn lower_bound map key =
+	assert (Eq.eq key key)
+	let mut lower = 0
+	let mut upper = length map
+	while lower < upper do
+		let middle = lower + (upper - lower) / 2
+		assert (Eq.eq (ref map.entries[middle].key) (ref map.entries[middle].key))
+		if Ord.lt (ref map.entries[middle].key) key then lower = middle + 1 else upper = middle
+	lower
+
+private def found :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> i64 -> bool
+fn found map key index = index < length map && !(Ord.lt key (ref map.entries[index].key))
+
+def contains_key :: Ord<'key> => ref Map<'key, 'value> -> 'key -> bool
+fn contains_key map key = found map (ref key) (lower_bound map (ref key))
+
+def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Option.Option<'value>
+fn get map key =
+	let index = lower_bound map (ref key)
+	if found map (ref key) index then Option.Some map.entries[index].value else Option.None
+
+def at :: Ord<'key> => ref Map<'key, 'value> -> 'key -> ref 'value
+fn at map key =
+	let index = lower_bound map (ref key)
+	assert (found map (ref key) index)
+	ref map.entries[index].value
+
+def insert :: Ord<'key> => Map<'key, 'value> -> 'key -> 'value -> Map<'key, 'value>
+fn insert map key value =
+	let index = lower_bound (ref map) (ref key)
+	let count = length (ref map)
+	if found (ref map) (ref key) index then
+		let entries = Vec.swap map.entries index (count - 1)
+		match Vec.pop entries with
+		| (remaining, Option.Some old) ->
+			let replacement = Entry { key: old.key, value: value }
+			Map { entries: Vec.swap (Vec.push remaining replacement) index (count - 1) }
+		| (_, Option.None) -> unreachable ()
+	else
+		let mut entries = Vec.push map.entries (Entry { key: key, value: value })
+		let mut position = count
+		while position > index do
+			entries = Vec.swap entries position (position - 1)
+			position = position - 1
+		Map { entries: entries }
+
+def remove :: Ord<'key> => Map<'key, 'value> -> 'key -> Map<'key, 'value>
+fn remove map key =
+	let index = lower_bound (ref map) (ref key)
+	let count = length (ref map)
+	if found (ref map) (ref key) index then
+		let mut entries = map.entries
+		let mut position = index
+		while position < count - 1 do
+			entries = Vec.swap entries position (position + 1)
+			position = position + 1
+		match Vec.pop entries with
+		| (remaining, _removed) -> Map { entries: remaining }
+	else map
+
+def to_array :: (Copy<'key>, Copy<'value>) => ref Map<'key, 'value> -> [('key * 'value)]
+fn to_array map = new [('key * 'value)](length map, index -> (map.entries[index].key, map.entries[index].value))
+
+def keys :: Copy<'key> => ref Map<'key, 'value> -> ['key]
+fn keys map = new ['key](length map, index -> map.entries[index].key)
+
+def values :: Copy<'value> => ref Map<'key, 'value> -> ['value]
+fn values map = new ['value](length map, index -> map.entries[index].value)
+
+def fold :: ref Map<'key, 'value> -> 'state -> ('state -> ref 'key -> ref 'value -> 'state) -> 'state
+fn fold map initial folder =
+	let mut state = initial
+	let mut index = 0
+	while index < length map do
+		state = folder state (ref map.entries[index].key) (ref map.entries[index].value)
+		index = index + 1
+	state
+
+private def rec iter_from :: ref Map<'key, 'value> -> i64 -> Seq.Seq<(ref 'key * ref 'value)>
+fn rec iter_from map index = Seq.defer (fx () ->
+	if index < length map then (iter_from map (index + 1), Option.Some (ref map.entries[index].key, ref map.entries[index].value))
+	else (Seq.empty(), Option.None))
+
+def iter :: ref Map<'key, 'value> -> Seq.Seq<(ref 'key * ref 'value)>
+fn iter map = iter_from map 0
+
+

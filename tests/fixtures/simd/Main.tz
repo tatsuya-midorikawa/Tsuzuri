@@ -1,0 +1,116 @@
+export def vector_i8 :: i64 -> i64 -> i64
+fn vector_i8 seed shift =
+    let base: i8x16 = Simd.splat (seed as i8)
+    let values = Simd.replace base 0 ((seed + 7) as i8)
+    let shifts: i8x16 = Simd.splat (shift as i8)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def vector_i8u :: i64 -> i64 -> i64
+fn vector_i8u seed shift =
+    let base: i8ux16 = Simd.splat (seed as ubyte)
+    let values = Simd.replace base 0 ((seed + 7) as ubyte)
+    let shifts: i8ux16 = Simd.splat (shift as ubyte)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def vector_i16 :: i64 -> i64 -> i64
+fn vector_i16 seed shift =
+    let base: i16x8 = Simd.splat (seed as i16)
+    let values = Simd.replace base 0 ((seed + 7) as i16)
+    let shifts: i16x8 = Simd.splat (shift as i16)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def vector_i16u :: i64 -> i64 -> i64
+fn vector_i16u seed shift =
+    let base: i16ux8 = Simd.splat (seed as i16u)
+    let values = Simd.replace base 0 ((seed + 7) as i16u)
+    let shifts: i16ux8 = Simd.splat (shift as i16u)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def vector_i32 :: i64 -> i64 -> i64
+fn vector_i32 seed shift =
+    let base: i32x4 = Simd.splat (seed as i32)
+    let values = Simd.replace base 0 ((seed + 7) as i32)
+    let shifts: i32x4 = Simd.splat (shift as i32)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def vector_i32u :: i64 -> i64 -> i64
+fn vector_i32u seed shift =
+    let base: i32ux4 = Simd.splat (seed as i32u)
+    let values = Simd.replace base 0 ((seed + 7) as i32u)
+    let shifts: i32ux4 = Simd.splat (shift as i32u)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def vector_i64 :: i64 -> i64 -> i64
+fn vector_i64 seed shift =
+    let base: i64x2 = Simd.splat seed
+    let values = Simd.replace base 0 (seed + 7)
+    let shifts: i64x2 = Simd.splat shift
+    Simd.sum_lanes ((values * values + values) << shifts)
+
+export def vector_i64u :: i64 -> i64 -> i64
+fn vector_i64u seed shift =
+    let base: i64ux2 = Simd.splat (seed as i64u)
+    let values = Simd.replace base 0 ((seed + 7) as i64u)
+    let shifts: i64ux2 = Simd.splat (shift as i64u)
+    (Simd.sum_lanes ((values * values + values) << shifts)) as i64
+
+export def float_semantics :: bool
+fn float_semantics =
+    let nan = 0.0f32 / 0.0f32
+    let values: f32x4 = Simd.of_lanes4 (-0.0f32) 0.0f32 nan 2.0f32
+    let equal = Simd.eq values values
+    let unequal = Simd.ne values values
+    let greater = Simd.gt values (Simd.splat 1.0f32)
+    let selected = Simd.select greater values (Simd.splat (-1.0f32))
+    Simd.extract equal 0 && Simd.extract unequal 2 && !(Simd.extract equal 2) && Simd.extract selected 3 == 2.0f32 && Simd.extract selected 0 == -1.0f32 && 1.0f32 / (Simd.extract values 0) < 0.0f32 && Simd.any unequal
+
+export def float_order :: bool
+fn float_order =
+    let ordered: f32x4 = Simd.of_lanes4 1e20f32 1.0f32 (-1e20f32) 1.0f32
+    let negative: f64x2 = Simd.splat (-0.0)
+    let divided = (Simd.splat 1.0) / negative
+    Simd.sum_lanes ordered == 1.0f32 && 1.0 / (Simd.sum_lanes negative) < 0.0 && Simd.all (Simd.lt divided negative)
+
+record Owned { vector: i32x4, name: string }
+union Wrapped = Empty | Full of Owned
+
+export def simd_owned :: i64
+fn simd_owned =
+    let vector: i32x4 = Simd.of_lanes4 10i32 10i32 10i32 12i32
+    let value = Full (Owned { vector: vector, name: "owned" })
+    let read = fx () -> match value with | Empty -> 0i32 | Full owned -> Simd.sum_lanes owned.vector
+    assert (read () == 42i32)
+    let vectors = [vector, vector]
+    let _list = [|vector|]
+    (Simd.extract vectors[1] 3) as i64 + 30
+
+record Masked { small: i8, mask: mask32x4, vector: i32x4 }
+union MaskValue = EmptyMask | WithMask of (mask32x4 * string)
+
+export def mask_storage :: bool
+fn mask_storage =
+    let vector: i32x4 = Simd.splat 1i32
+    let mask = Simd.eq vector vector
+    let values = [Masked { small: 1i8, mask: mask, vector: vector }]
+    let wrapped = WithMask (mask, "owned")
+    let from_union = match wrapped with | EmptyMask -> Simd.splat false | WithMask (mask, _text) -> mask
+    Simd.all values[0].mask && Simd.all from_union && !(Simd.any (~mask))
+
+export def simd_load :: i64 -> i64
+fn simd_load index =
+    let data = [1i32, 2i32, 3i32, 4i32, 5i32, 6i32, 7i32, 8i32]
+    let vector: i32x4 = Simd.load (ref data[0..8]) index
+    (Simd.sum_lanes vector) as i64
+
+export def simd_extract_trap :: i64 -> i64
+fn simd_extract_trap index =
+    let vector: i32x4 = Simd.splat 1i32
+    (Simd.extract vector index) as i64
+
+export def operator_method :: i64 -> i64
+fn operator_method value =
+    let left: i64x2 = Simd.splat value
+    let right: i64x2 = Simd.splat 1
+    let sum = Add.add left right
+    assert (Simd.all (Simd.eq sum (left + right)))
+    Simd.extract sum 0

@@ -6,8 +6,19 @@
 | 規模 | L |
 | 依存 | B01, A06 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Seq.tz`、`src/check.rs` `Type` / `Builtin` / `TypedExprKind::ForEach`、`src/control.rs` `Checker::control_expression`、`src/ownership_control.rs`、`src/llvm_control.rs` `for_each`、`src/llvm.rs` closure/task helpers、`src/computation.rs` builder `For` lowering、`docs/language.md`、`docs/architecture.md`、`tests/iteration_protocol.rs`、`tests/fixtures/iteration_protocol/Main.tz` |
+
+## 実装レビューと検証（2026-09-27）
+
+- opaque Seq.Seqと既存Option/closureを再利用し、常にnon-Copy。empty/once/defer/unfold/map/filter/to_arrayとArray/List/Vec/Map/Set.iterを提供する。
+- Seq.nextは表現を型検査で検証するbuiltinで、headを移送またはclosureを所有モードで呼び、次stepのために環境をcloneしない。Taskのonce/nextも扱う。
+- Seq forは状態復元を先に行うwhile/matchへ展開。既存所有権固定点・break/continue/dropを共有し、直接collection forとbuilder Forは維持する。
+- 元仕様の値渡しfilter述語は非Copy要素を失うため共有借用へ修正。unfoldのstate、map/filterの保存する要素は通常のCapture制約に従う。
+- List.iterは要素参照のVecを一回準備して所有状態として移す。準備O(n)時間/領域、全反復O(n)で、要素copy・先頭からの繰り返し索引は行わない。
+- Rust5テスト群、関連136テストとfmt/clippyが成功。26ケースがnative/WASM O0/O3で成功し、確保追跡・決定的IR・importsなしを確認。
+- Counter.iter、遅延性、1万要素の合成/文字列/list、借用、Task、途中終了・continue、ローカルSeq名の遮蔽、展開上限、改変stdの拒否を確認。速度優位性は未主張。
+- 以下は着手前の設計資料。新Type/ForSeq/runtimeではなく上記の既存表現を共有する。
 
 ## 目的
 
@@ -407,6 +418,7 @@ Targets:
 
 ## 未決事項
 
+- 2026-09-27: C06のopaque標準recordを再利用し、Seqは常にnon-Copyにする。empty/onceはOption payload、遅延stepは通常closureで表し、ユーザーのiter構築用にSeq.defer/unfoldを提供する。専用runtime表現を増やさない。
 - 推奨は Option A: builtin `Seq<'a>`。Option B/C は不採用。
 - `Seq.to_array` は C02 Vec がある場合だけ phase 2 で実装。C07 phase 1 では省略可。
 - `for x in source` の暗黙 `Module.iter` は将来 associated type が入るまで導入しない。

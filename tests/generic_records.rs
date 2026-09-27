@@ -289,24 +289,24 @@ fn rejects_invalid_declarations_and_applications() {
             "recursive value layout",
         ),
         (
-            "record Holder<'a> { value: 'a }\ndef f :: Holder<&i64> -> i64\nfn f h = 0",
+            "record Holder<'a> { value: 'a }\ndef f :: Holder<&mut i64> -> i64\nfn f h = 0",
             "E1013",
-            "would store a reference in field 'value'",
+            "would store a mutable reference in field 'value'",
         ),
         (
             "record Holder<'a> { value: ['a] }\ndef f :: Holder<&mut i64> -> i64\nfn f h = 0",
             "E1013",
-            "would store a reference",
+            "would store a mutable reference",
         ),
         (
-            "record Holder<'a> { value: 'a }\ndef wrap :: 'a -> Holder<'a>\nfn wrap x = Holder { value: x }\ndef f :: i64 -> i64\nfn f x =\n    let h = wrap &x\n    0",
+            "record Holder<'a> { value: 'a }\ndef wrap :: 'a -> Holder<'a>\nfn wrap x = Holder { value: x }\ndef f :: i64 -> i64\nfn f mut x =\n    let h = wrap (&mut x)\n    0",
             "E1013",
-            "would store a reference",
+            "would store a mutable reference",
         ),
         (
-            "record Holder<'a> { value: 'a }\ndef f :: i64 -> i64\nfn f x =\n    let h = Holder { value: &x }\n    0",
+            "record Holder<'a> { value: 'a }\ndef f :: i64 -> i64\nfn f mut x =\n    let h = Holder { value: &mut x }\n    0",
             "E1013",
-            "would store a reference",
+            "would store a mutable reference",
         ),
         (
             "record Box<'a> { value: 'a }\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Box { value: x })\ndef main :: i64\nfn main = grow 1",

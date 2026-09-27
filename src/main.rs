@@ -10,6 +10,7 @@ const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
 
 Usage:
+    tsuzuri lsp
   tsuzuri check source.tz|source.tt|source.tc|directory [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--filter TEXT] [--json] [-O0|-O1|-O2|-O3]
@@ -21,19 +22,23 @@ Each source file is one module named after its filename:
   .tz  Code (records, unions, functions, and type class instances)
   .tt  Type class declarations (multiple classes per file)
   .tc  One computation expression builder (its operations and helpers)
-All sibling .tz, .tt, and .tc files are loaded together.
+All .tz, .tt, and .tc files below the project root are loaded recursively.
+Subdirectories form dotted modules (Geometry/Point.tz becomes Geometry.Point).
+File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
 
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
   --target native|wasm32  Target (default: native)
+    --wasm-feature simd128  Opt in to WASM SIMD128 (wasm32 build only)
   --emit KIND            exe, object, llvm, header, or wasm
                          Default: exe for native, wasm for wasm32
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --json                 Emit machine-readable diagnostics on stderr
+    -g, --debug-info        Emit source-level DWARF debug information
     --deny-warnings        Fail check/build/run before code generation on warnings
     --debug-output         Enable WASM Debug output imports (native always writes)
     --trap-info            Report trap locations and emit an output.trap.json table
@@ -53,6 +58,7 @@ All UI and I/O belong to the host, not the language.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
+    Lsp,
     Check,
     Build,
     Run,
@@ -73,6 +79,21 @@ struct Arguments {
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
+    if arguments.first().is_some_and(|argument| argument == "lsp") {
+        if arguments.len() != 1 {
+            return Err("lsp takes no paths or build options".into());
+        }
+        return Ok(Arguments {
+            action: Action::Lsp,
+            input: PathBuf::new(),
+            output: None,
+            options: BuildOptions::default(),
+            json: false,
+            deny_warnings: false,
+            format_check: false,
+            test_filter: None,
+        });
+    }
     let mut position = 0;
     let action = match arguments.first().and_then(|value| value.to_str()) {
         Some("check") => {
@@ -109,6 +130,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_filter = None;
     let mut debug_output = false;
     let mut trap_info = false;
+    let mut debug_info = false;
+    let mut wasm_simd = false;
     let mut paths_only = false;
     while position < arguments.len() {
         let argument = &arguments[position];
@@ -163,6 +186,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     trap_info = true;
                     continue;
                 }
+                Some("-g" | "--debug-info") => {
+                    if debug_info {
+                        return Err("debug information specified more than once".into());
+                    }
+                    debug_info = true;
+                    continue;
+                }
                 Some("-o" | "--output") => {
                     if output.is_some() {
                         return Err("output specified more than once".into());
@@ -185,6 +215,18 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             _ => return Err("target must be 'native' or 'wasm32'".into()),
                         },
                     );
+                    continue;
+                }
+                Some("--wasm-feature") => {
+                    if wasm_simd {
+                        return Err("WASM feature specified more than once".into());
+                    }
+                    if next_value(arguments, &mut position, "--wasm-feature")?.to_str()
+                        != Some("simd128")
+                    {
+                        return Err("the only supported WASM feature is 'simd128'; relaxed SIMD is not supported".into());
+                    }
+                    wasm_simd = true;
                     continue;
                 }
                 Some("--emit") => {
@@ -235,12 +277,18 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         }
         if input.replace(PathBuf::from(argument)).is_some() {
             return Err(
-                "pass one .tz, .tt, or .tc file or project directory; sibling modules are loaded automatically"
+                "pass one .tz, .tt, or .tc file or project directory; modules are loaded recursively"
                     .into(),
             );
         }
     }
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
+    if wasm_simd && action != Action::Build {
+        return Err("--wasm-feature is only valid with build".into());
+    }
+    if debug_info && !matches!(action, Action::Build | Action::Run) {
+        return Err("--debug-info is only valid with build or run".into());
+    }
     if debug_output && !matches!(action, Action::Build | Action::Run) {
         return Err("--debug-output is only valid with build or run".into());
     }
@@ -284,6 +332,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         cpu: cpu.unwrap_or(Cpu::Generic),
         debug_output,
         trap_info: trap_info || action == Action::Run,
+        debug_info,
+        wasm_simd,
     };
     options.validate().map_err(|error| error.message)?;
     Ok(Arguments {
@@ -367,6 +417,7 @@ fn run_action(
     module: &tsuzuri::check::CheckedModule,
 ) -> Result<Vec<String>, Diagnostic> {
     match arguments.action {
+        Action::Lsp => unreachable!("LSP runs without a build project"),
         Action::Check => Ok(Vec::new()),
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
@@ -546,6 +597,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if arguments.action == Action::Lsp {
+        return ExitCode::from(tsuzuri::lsp::serve(
+            std::io::stdin(),
+            std::io::stdout().lock(),
+            std::io::stderr().lock(),
+        ) as u8);
+    }
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
     }
@@ -610,6 +668,42 @@ mod tests {
 
     #[test]
     fn selects_target_defaults_and_honors_path_separator() {
+        assert!(
+            parse(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128"
+            ])
+            .unwrap()
+            .options
+            .wasm_simd
+        );
+        assert!(
+            parse(&["build", "Main.tz", "-g"])
+                .unwrap()
+                .options
+                .debug_info
+        );
+        assert!(
+            parse(&["run", "Main.tz", "--debug-info"])
+                .unwrap()
+                .options
+                .debug_info
+        );
+        for values in [
+            ["check", "Main.tz", "-g"],
+            ["fmt", "Main.tz", "-g"],
+            ["test", "Main.tz", "-g"],
+        ] {
+            assert!(parse(&values).is_err());
+        }
+        assert_eq!(parse(&["lsp"]).unwrap().action, Action::Lsp);
+        for options in [["lsp", "-O0"], ["lsp", "--json"], ["lsp", "Main.tz"]] {
+            assert!(parse(&options).is_err());
+        }
         let tests = parse(&[
             "test", "Sources", "--filter", "name", "--target", "wasm32", "--json",
         ])
@@ -649,6 +743,41 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_or_unused_arguments() {
+        for values in [
+            vec!["build", "Main.tz", "--wasm-feature", "simd128"],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "relaxed-simd",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-feature",
+                "simd128",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--emit",
+                "header",
+                "--wasm-feature",
+                "simd128",
+            ],
+            vec!["check", "Main.tz", "--wasm-feature", "simd128"],
+            vec!["run", "Main.tz", "--wasm-feature", "simd128"],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
         for values in [
             vec!["check"],
             vec!["check", "Main.tz", "--trap-info"],

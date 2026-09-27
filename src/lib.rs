@@ -5,9 +5,11 @@ pub mod driver;
 pub mod formatter;
 pub mod lexer;
 pub mod llvm;
+pub mod lsp;
 pub mod numeric;
 pub mod ownership;
 pub mod parser;
+pub mod simd;
 pub mod stdlib;
 pub mod syntax;
 pub mod trap;
@@ -82,6 +84,13 @@ pub(crate) fn first_error(errors: DiagnosticSet) -> Diagnostic {
 pub(crate) fn analyze_inputs_all(
     inputs: &[SourceInput<'_>],
 ) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_inputs_indexed_all(inputs, None)
+}
+
+pub(crate) fn analyze_inputs_indexed_all(
+    inputs: &[SourceInput<'_>],
+    semantic: Option<&mut check::semantic::SemanticIndex>,
+) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
     for (id, input) in inputs.iter().enumerate() {
@@ -116,6 +125,16 @@ pub(crate) fn analyze_inputs_all(
                     )
                 }
             };
+            let name = if input.origin == ModuleOrigin::User {
+                module_name_from_relative(std::path::Path::new(input.path)).map_err(
+                    |mut error| {
+                        error.span.source = Some(id);
+                        vec![error]
+                    },
+                )?
+            } else {
+                name.to_owned()
+            };
             parser::parse_with_source_all(input.text, id).map(|mut program| {
                 program.source_kind = extension.and_then(syntax::SourceKind::from_extension);
                 (name, program)
@@ -138,5 +157,61 @@ pub(crate) fn analyze_inputs_all(
             origin: input.origin,
         })
         .collect();
-    check::check_modules_all(&modules)
+    check::check_modules_indexed_all(&modules, semantic)
+}
+
+pub fn analyze_modules_with_semantics(
+    sources: &[(&str, &str)],
+) -> Result<(check::CheckedModule, check::semantic::SemanticIndex), DiagnosticSet> {
+    let inputs: Vec<_> = sources
+        .iter()
+        .map(|(path, text)| SourceInput {
+            path,
+            text,
+            origin: ModuleOrigin::User,
+        })
+        .chain(stdlib::SOURCES.iter().map(|(path, text)| SourceInput {
+            path,
+            text,
+            origin: ModuleOrigin::Std,
+        }))
+        .collect();
+    let mut index = check::semantic::SemanticIndex::default();
+    let module = analyze_inputs_indexed_all(&inputs, Some(&mut index))?;
+    Ok((module, index))
+}
+
+pub(crate) fn module_name_from_relative(path: &std::path::Path) -> Result<String, Diagnostic> {
+    use std::path::Component;
+    let invalid = || {
+        Diagnostic::new(
+            "E1011",
+            "source paths must be relative ASCII module segments without traversal or dots",
+            Span::default(),
+        )
+    };
+    let mut segments = Vec::new();
+    let components: Vec<_> = path.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(value) = component else {
+            return Err(invalid());
+        };
+        let value = value.to_str().ok_or_else(invalid)?;
+        let value = if index + 1 == components.len() {
+            value
+                .rsplit_once('.')
+                .filter(|(_, extension)| syntax::SourceKind::from_extension(extension).is_some())
+                .map_or(value, |(stem, _)| stem)
+        } else {
+            value
+        };
+        if value.contains('.') {
+            return Err(invalid());
+        }
+        segments.push(value);
+    }
+    if segments.is_empty() {
+        return Err(invalid());
+    }
+    Ok(segments.join("."))
 }

@@ -12,7 +12,7 @@ fn vec_types_are_parametric_owned_and_noncopy() {
             "def twice :: Vec<i64> -> Vec<i64>\nfn twice value = { let copy = value; value }",
             "E1012",
         ),
-        ("record Invalid { value: Vec<ref i64> }", "E1013"),
+        ("record Invalid { value: Vec<ref mut i64> }", "E1013"),
         (
             "export def bad :: Vec<i64> -> i64\nfn bad values = values.length",
             "E1008",

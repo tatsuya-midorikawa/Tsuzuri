@@ -410,7 +410,10 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 22] = [
+pub(super) const BUILTIN_CLASSES: [&str; 25] = [
+    "SimdVector",
+    "SimdNumeric",
+    "SimdMask",
     "Add",
     "Sub",
     "Mul",
@@ -900,7 +903,8 @@ impl Classes {
             TypeExprKind::Array(ty)
             | TypeExprKind::List(ty)
             | TypeExprKind::Task(ty)
-            | TypeExprKind::Reference(ty, _) => {
+            | TypeExprKind::Reference(ty, _)
+            | TypeExprKind::Regions(ty, _) => {
                 constraints.extend(self.expanded_inline_constraints(ty, module, names)?)
             }
             TypeExprKind::Function(parameters, result) => {
@@ -1375,25 +1379,15 @@ impl Classes {
         let ExprKind::Field(value, method) = &expression.kind else {
             return Ok(None);
         };
-        let class_name = match &value.kind {
-            ExprKind::Name(name) if !is_local(&name.text) => {
-                if name.provenance == Provenance::Generated {
-                    name.text
-                        .strip_prefix("$class.")
-                        .unwrap_or(&name.text)
-                        .to_owned()
-                } else {
-                    name.text.clone()
-                }
-            }
-            ExprKind::Field(root, class) => match &root.kind {
-                ExprKind::Name(name) if !is_local(&name.text) => {
-                    format!("{}.{}", name.text, class.text)
-                }
-                _ => return Ok(None),
-            },
-            _ => return Ok(None),
+        let Some((mut class_name, root)) = expression_path(value) else {
+            return Ok(None);
         };
+        if is_local(&root.text) {
+            return Ok(None);
+        }
+        if root.provenance == Provenance::Generated && class_name.starts_with("$class.") {
+            class_name = class_name["$class.".len()..].to_owned();
+        }
         let Some(class) = self.find(names, module, &class_name, value.span)? else {
             return Ok(None);
         };
@@ -1487,6 +1481,18 @@ impl Classes {
         }
         if !self.declarations[class].builtin {
             return false;
+        }
+        if let Type::Simd(vector) = ty {
+            use crate::simd::SimdKind;
+            return match self.declarations[class].name.as_str() {
+                "SimdVector" | "Copy" | "Capture" | "Send" => true,
+                "SimdNumeric" | "Add" | "Sub" | "Mul" => vector.kind != SimdKind::Mask,
+                "SimdMask" => vector.kind == SimdKind::Mask,
+                "Div" => vector.kind == SimdKind::Float,
+                "Bits" => vector.kind != SimdKind::Float,
+                "Neg" => matches!(vector.kind, SimdKind::Float | SimdKind::Signed),
+                _ => false,
+            };
         }
         match self.declarations[class].name.as_str() {
             "Add" => ty.is_numeric() || ty.is_string(),
@@ -1632,6 +1638,7 @@ fn instance_function(
         })
         .collect();
     Ok(FunctionDecl {
+        regions: Vec::new(),
         recursion: definition.recursion,
         name: Ident {
             text: name,
@@ -1712,10 +1719,17 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
 /// A pending `UnsignedOf` or `WidenOf` result of a builtin use: `output` is
 /// solved once `input` is a concrete integer type.
 pub(super) struct Family {
-    widen: bool,
+    kind: FamilyKind,
     input: Type,
     output: Type,
     span: Span,
+}
+
+enum FamilyKind {
+    Unsigned,
+    Widen,
+    SimdLane(Option<u16>),
+    SimdMask,
 }
 
 impl Checker<'_> {
@@ -1747,12 +1761,56 @@ impl Checker<'_> {
             .copied()
             .zip(types.iter().cloned())
             .collect();
-        let parameters = scheme
+        let parameters: Vec<Type> = scheme
             .parameters
             .iter()
             .map(|ty| self.builtin_type(ty, &bindings, span))
             .collect::<Result<_, _>>()?;
         let result = self.builtin_type(&scheme.result, &bindings, span)?;
+        if builtin == Builtin::SeqNext {
+            let Type::Record(id, arguments) = &parameters[0] else {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "Seq.next requires the standard Seq record",
+                    span,
+                ));
+            };
+            let Type::Tuple(results) = &result else {
+                unreachable!("Seq.next scheme is a tuple");
+            };
+            let callback = Type::function(vec![Type::Unit], result.clone());
+            let step = self
+                .names
+                .std_type("Option", "Option", vec![callback].into(), span)?;
+            if self.types.record_fields(*id, arguments) != vec![results[1].clone(), step] {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "Seq.next requires the standard head and step representation",
+                    span,
+                ));
+            }
+            let Type::Union(option, option_arguments) = &results[1] else {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "Seq.next requires the standard Option union",
+                    span,
+                ));
+            };
+            let cases = &self.types.unions[*option].cases;
+            if cases.len() != 2
+                || cases[0].0 != "None"
+                || cases[0].1.is_some()
+                || cases[1].0 != "Some"
+                || cases[1].1.is_none()
+                || self.types.union_payload(*option, option_arguments, 1) != Some(types[0].clone())
+            {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "Seq.next requires Option.None and Option.Some in standard order",
+                    span,
+                ));
+            }
+        }
         for constraint in &scheme.constraints {
             let ty = self.builtin_type(&constraint.ty, &bindings, span)?;
             self.require(constraint.class, ty, span)?;
@@ -1798,11 +1856,19 @@ impl Checker<'_> {
                     .collect::<Result<_, _>>()?,
                 self.builtin_type(result, bindings, span)?,
             ),
-            BuiltinType::UnsignedOf(input) | BuiltinType::WidenOf(input) => {
+            BuiltinType::UnsignedOf(input)
+            | BuiltinType::WidenOf(input)
+            | BuiltinType::SimdLane(input, _)
+            | BuiltinType::SimdMask(input) => {
                 let input = self.builtin_type(input, bindings, span)?;
                 let output = self.inference.fresh();
                 self.families.push(Family {
-                    widen: matches!(ty, BuiltinType::WidenOf(_)),
+                    kind: match ty {
+                        BuiltinType::WidenOf(_) => FamilyKind::Widen,
+                        BuiltinType::SimdLane(_, lanes) => FamilyKind::SimdLane(*lanes),
+                        BuiltinType::SimdMask(_) => FamilyKind::SimdMask,
+                        _ => FamilyKind::Unsigned,
+                    },
                     input,
                     output: output.clone(),
                     span,
@@ -1817,11 +1883,42 @@ impl Checker<'_> {
     /// phase 1 resolves them only at concrete call sites.
     pub(super) fn solve_families(&mut self, last: bool) -> Result<(), Diagnostic> {
         for family in std::mem::take(&mut self.families) {
+            if matches!(family.kind, FamilyKind::SimdLane(_) | FamilyKind::SimdMask) {
+                let input = self.inference.resolve(&family.input);
+                let Type::Simd(vector) = input else {
+                    if is_unknown(&input) && !last {
+                        self.families.push(family);
+                        continue;
+                    }
+                    return Err(Diagnostic::new(
+                        if is_unknown(&input) { "E1015" } else { "E1005" },
+                        "this SIMD operation needs a concrete vector type; add a vector type annotation",
+                        family.span,
+                    ));
+                };
+                let output = match family.kind {
+                    FamilyKind::SimdLane(lanes) => {
+                        if lanes.is_some_and(|lanes| lanes != vector.lanes()) {
+                            return Err(Diagnostic::new(
+                                "E1005",
+                                "of_lanes count does not match the vector type",
+                                family.span,
+                            ));
+                        }
+                        vector.element()
+                    }
+                    _ => Type::Simd(vector.mask()),
+                };
+                self.same(&family.output, &output, family.span)?;
+                continue;
+            }
             let output = match self.inference.resolve(&family.input) {
-                Type::Integer(bits, signed) if family.widen && bits < 128 => {
+                Type::Integer(bits, signed)
+                    if matches!(family.kind, FamilyKind::Widen) && bits < 128 =>
+                {
                     Type::Integer(bits * 2, signed)
                 }
-                Type::Integer(128, _) if family.widen => {
+                Type::Integer(128, _) if matches!(family.kind, FamilyKind::Widen) => {
                     return Err(Diagnostic::new(
                         "E1005",
                         "128-bit integers have no wider integer type",
@@ -1867,6 +1964,19 @@ impl Checker<'_> {
             return (TypedExprKind::Error, Type::Error);
         }
         if scheme.variables.is_empty() {
+            if self.names.constants.contains(&id) {
+                return (
+                    TypedExprKind::Call(
+                        Box::new(TypedExpr {
+                            kind: TypedExprKind::Function(FunctionRef::User(id)),
+                            ty: scheme.signature.as_type(),
+                            span: Span::default(),
+                        }),
+                        Vec::new(),
+                    ),
+                    scheme.signature.result.clone(),
+                );
+            }
             return (
                 TypedExprKind::Function(FunctionRef::User(id)),
                 scheme.signature.as_type(),
@@ -1981,6 +2091,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn annotation(&mut self, expression: &TypeExpr) -> Result<Type, Diagnostic> {
+        regions::reject_local(expression)?;
         self.constraints.extend(self.classes.inline_constraints(
             expression,
             self.module,
@@ -3101,6 +3212,7 @@ impl Specializer<'_> {
         };
         self.templates.push(CheckedFunction {
             module: "$intrinsic".into(),
+            region_sources: None,
             origin: self.current,
             name: format!("{}.{}.{id}", declaration.name, method.name),
             visibility: Visibility::Public,
@@ -3158,6 +3270,7 @@ impl Specializer<'_> {
         let id = self.templates.len();
         self.templates.push(CheckedFunction {
             module: "$builtin".into(),
+            region_sources: None,
             origin: self.current,
             name: format!("to_string.{id}"),
             visibility: Visibility::Private,

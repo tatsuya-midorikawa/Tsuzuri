@@ -42,6 +42,7 @@ pub(super) fn collect_all(
                     .map(|record| record.name.span)
                     .or_else(|| program.unions.first().map(|union| union.name.span))
                     .or_else(|| program.type_aliases.first().map(|alias| alias.name.span))
+                    .or_else(|| program.constants.first().map(|constant| constant.name.span))
                     .or_else(|| program.functions.first().map(|function| function.name.span))
                     .or_else(|| program.tests.first().map(|test| test.name_span))
                     .or_else(|| {

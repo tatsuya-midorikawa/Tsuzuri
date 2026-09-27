@@ -9,6 +9,7 @@ repository = "https://github.com/tatsuya-midorikawa/Tsuzuri"
 
 [dependencies]
 rustc_apfloat = "0.2"
+serde_json = "1.0"
 
 [profile.release]
 lto = "thin"

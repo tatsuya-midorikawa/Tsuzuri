@@ -340,7 +340,8 @@ impl TypeReferences<'_> {
             TypeExprKind::Array(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
-            | TypeExprKind::Reference(inner, _) => self.ty(inner),
+            | TypeExprKind::Reference(inner, _)
+            | TypeExprKind::Regions(inner, _) => self.ty(inner),
             TypeExprKind::Tuple(elements) => {
                 for element in elements {
                     self.ty(element);
@@ -590,6 +591,7 @@ mod tests {
                 &modules,
                 &mut Diagnostics::new(0),
                 WarningOptions { shadowing: enabled },
+                None,
             )
             .unwrap();
             let warnings: Vec<_> = module

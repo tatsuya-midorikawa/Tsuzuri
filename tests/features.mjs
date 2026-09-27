@@ -11,6 +11,8 @@ const only = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const sanitizerKind = process.env.TSUZURI_TSAN === "1" ? "thread" : process.env.TSUZURI_ASAN === "1" ? "address" : null;
 const sanitizer = sanitizerKind ? [`-fsanitize=${sanitizerKind}`] : [];
+const nativeOptions = process.env.TSUZURI_TEST_CPU === "native" ? [process.arch === "arm64" ? "-mcpu=native" : "-march=native"] : [];
+const wasmOptions = process.env.TSUZURI_TEST_WASM_SIMD === "1" ? ["--wasm-feature", "simd128"] : [];
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
 
@@ -31,6 +33,109 @@ const cValue = (n) => typeof n !== "bigint" ? String(n)
 // arguments. Native hosts track every allocation, so each call must leave no
 // live heap bytes; WASM modules must stay import-free.
 const suites = {
+  simd: {
+    cases: [
+      ...[8, 16, 32, 64].flatMap((bits) => [false, true].flatMap((unsigned) => [0n, 1n, -1n, 127n, -129n, 2147483647n, -(1n << 63n)].flatMap((seed) => [0n, 1n, BigInt(bits), BigInt(bits + 1)].map((shift) => {
+        const cast = (value) => unsigned ? BigInt.asUintN(bits, value) : BigInt.asIntN(bits, value);
+        let expected = 0n;
+        for (let lane = 0; lane < 128 / bits; lane++) {
+          const value = cast(seed + (lane === 0 ? 7n : 0n));
+          expected = cast(expected + cast((value * value + value) << (shift & BigInt(bits - 1))));
+        }
+        return [`vector_i${bits}${unsigned ? "u" : ""}`, [seed, shift], BigInt.asIntN(64, expected)];
+      })))),
+      ["float_semantics", [], 1], ["float_order", [], 1], ["simd_owned", [], 42n], ["mask_storage", [], 1],
+      ...[0n, 1n, 4n].map((index) => ["simd_load", [index], 10n + index * 4n]),
+      ["operator_method", [41n], 42n],
+    ],
+    traps: [["simd_extract_trap", [-1n]], ["simd_extract_trap", [4n]], ["simd_load", [-1n]], ["simd_load", [5n]], ["simd_load", [9223372036854775807n]]],
+    inspect(ir) {
+      for (const type of ["<16 x i8>", "<8 x i16>", "<4 x i32>", "<2 x i64>", "<4 x float>", "<2 x double>", "<4 x i1>"]) assert.ok(ir.includes(type), type);
+      assert.doesNotMatch(ir, /(?:fadd|fmul) fast|add nsw <|add nuw </);
+    },
+  },
+  borrowed_records: {
+    cases: [
+      ...[0n, 1n, 42n, 10000n].map((count) => ["view_sum", [count], count * (count + 1n)]),
+      ["text_view", [], 16n], ["partial_view", [], 13n],
+      ["view_iteration", [10000n], 60000n], ["pair_view", [], 3n],
+      ["named_view", [], 10n], ["named_reference", [], 42n],
+    ],
+  },
+  iteration_protocol: {
+    cases: [
+      ["seq_once", [], 42n], ["seq_empty", [], 0n], ["seq_cold", [], 42n],
+      ...[0n, 1n, 10n, 1000n, 10000n].flatMap((count) => {
+        let filtered = 0n;
+        let textLength = 0n;
+        for (let value = 0n; value < count; value++) {
+          if (value % 3n === 0n) filtered += value * 2n;
+          if (String(value).length % 2 === 0) textLength += BigInt(String(value).length);
+        }
+        return [["seq_range_sum", [count], count * (count - 1n) / 2n], ["seq_list", [count], count * (count - 1n) / 2n], ["seq_map_filter", [count], filtered], ["seq_owned", [count], textLength]];
+      }),
+      ["seq_borrowed", [], 25n], ["seq_early_exit", [], 100n], ["seq_task", [], 42n],
+    ],
+    inspect(ir) {
+      const next = [...ir.matchAll(/^define internal [^\n]*@tz\.builtin\.Seq\.next[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(next.length > 0);
+      for (const [, body] of next) {
+        assert.doesNotMatch(body, /@tz\.closure\.clone/);
+        assert.match(body, /i1 (?:false|0)\)/);
+      }
+    },
+  },
+  map_set: {
+    cases: [
+      ...[0n, 1n, 33n, 257n, 1024n].flatMap((count) => {
+        const map = new Map();
+        const text = new Map();
+        const left = new Set();
+        const right = new Set();
+        for (let index = 0n; index < count; index++) {
+          map.set(index * 37n % 101n, index * 3n);
+          text.set(String(index % 9n), String(index));
+          if (index % 2n === 0n) left.add(index);
+          if (index % 3n === 0n) right.add(index);
+        }
+        const checksum = [...map].sort(([left], [right]) => Number(left - right)).reduce((total, [key, value]) => BigInt.asIntN(64, total * 31n + key * 7n + value), 0n);
+        const sum = (values) => [...values].reduce((total, value) => total + value, 0n);
+        const union = new Set([...left, ...right]);
+        const common = [...left].filter((value) => right.has(value));
+        const different = [...left].filter((value) => !right.has(value));
+        const oddCount = count / 2n;
+        return [
+          ["map_insert_lookup", [count], checksum],
+          ["map_replace_drop", [count], BigInt([...text].reduce((total, [key, value]) => total + key.length + value.length, 0))],
+          ["map_remove", [count], 3n * oddCount * oddCount],
+          ["set_algebra", [count], sum(union) * 1000000n + sum(common) * 1000n + sum(different)],
+        ];
+      }),
+      ["set_owned_union", [], 2n], ["map_capture", [], 84n], ["map_borrowed_values", [], 8n],
+      ["first_representative", [], 1], ["map_task_drop", [], 0n], ["owned_record_keys", [], 42n],
+    ],
+    traps: [["map_at_missing", []], ["nan_query", []], ["nan_stored", []]],
+    inspect(ir) {
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Map\.(?:lower_bound|found|get|at|contains_key)[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(lookups.length > 0);
+      for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+    },
+  },
+  hierarchical: {
+    cases: [
+      ["distance_sum", [3n, 4n, 5n, 12n], 18n],
+      ["distance_sum", [0n, 0n, 8n, 15n], 17n],
+      ["distance_sum", [-3n, -4n, 20n, 21n], 34n],
+    ],
+  },
+  constants: {
+    cases: [
+      ["integer_values", [], 42n], ["owned_values", [], 42n],
+      ["borrowed_values", [], 8n], ["float_values", [], 1],
+      ["repeat_values", [100000n], 600000n], ["captured_values", [], 42n],
+      ["wide_values", [], 1], ["float_reference", [1.0009765625, 0.00048828125], 1],
+    ],
+  },
   deriving: {
     cases: [
       ["record_flags", [0n, 1n], 14n], ["record_flags", [1n, 0n], 50n], ["record_flags", [1n, 1n], 50n],
@@ -607,7 +712,7 @@ int main(int argc, char **argv) {
 `);
     for (const optimization of ["0", "3"]) {
       const native = join(temporary, `${name}-O${optimization}`);
-      execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer,
+      execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
         `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), "-lm", "-o", native]);
       execute(native, []);
       if (name === "parallel" && optimization === "3") {
@@ -625,7 +730,7 @@ int main(int argc, char **argv) {
         assert.ok(result.status !== 0 || result.signal, `${name} native O${optimization}: ${traps[index][0]} must trap`);
       }
       const wasm = join(temporary, `${name}-O${optimization}.wasm`);
-      cli(["build", fixture, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+      cli(["build", fixture, "--target", "wasm32", ...wasmOptions, `-O${optimization}`, "-o", wasm]);
       const module = new WebAssembly.Module(readFileSync(wasm));
       assert.deepEqual(WebAssembly.Module.imports(module), [], `${name}: WASM has no imports`);
       const exports = new WebAssembly.Instance(module).exports;
@@ -639,7 +744,7 @@ int main(int argc, char **argv) {
       }
       if (name === "recursive_types") {
         const measured = join(temporary, `recursive-traps-${optimization}.wasm`);
-        cli(["build", fixture, "--target", "wasm32", "--trap-info", `-O${optimization}`, "-o", measured]);
+        cli(["build", fixture, "--target", "wasm32", ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", measured]);
         const checked = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(measured))).exports;
         assert.equal(checked.tz_deep_clone(50000n), 100003n);
         assert.equal(checked.tz_mutual_clone(20000n), 43n);

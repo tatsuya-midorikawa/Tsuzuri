@@ -17,6 +17,8 @@ pub use traps::EmitOutput;
 mod call_specialization;
 #[path = "llvm_control.rs"]
 mod control;
+#[path = "llvm_debug.rs"]
+mod debug;
 #[path = "llvm_frame.rs"]
 mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
@@ -56,6 +58,8 @@ mod math;
 mod parallel;
 #[path = "llvm_recursive.rs"]
 mod recursive;
+#[path = "llvm_simd.rs"]
+mod simd;
 pub(crate) use host_abi::uses_host_abi;
 
 pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> {
@@ -102,8 +106,44 @@ pub fn emit_with_trap_info(
         tests.as_deref(),
         options.debug_output,
         true,
+        None,
     )?;
     traps::instrument(ir, module, marks.unwrap(), sources, options.wasm)
+}
+
+pub fn emit_with_debug_info(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    optimized: bool,
+    trap_info: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    if sources.is_empty() {
+        return Err(Diagnostic::new(
+            "E2000",
+            "debug information requires a source map",
+            Span::default(),
+        ));
+    }
+    let tests =
+        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let (ir, marks) = emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        trap_info,
+        Some((sources, optimized)),
+    )?;
+    if let Some(marks) = marks {
+        traps::instrument(ir, module, marks, sources, options.wasm)
+    } else {
+        Ok(EmitOutput {
+            ir,
+            trap_sites: Vec::new(),
+        })
+    }
 }
 
 pub fn emit_test_runner(
@@ -128,7 +168,7 @@ fn emit_selected(
     tests: Option<&[usize]>,
     debug_output: bool,
 ) -> Result<String, Diagnostic> {
-    emit_program(module, entry, wasm, tests, debug_output, false).map(|(ir, _)| ir)
+    emit_program(module, entry, wasm, tests, debug_output, false, None).map(|(ir, _)| ir)
 }
 
 fn emit_program(
@@ -138,6 +178,7 @@ fn emit_program(
     tests: Option<&[usize]>,
     debug_output: bool,
     trap_info: bool,
+    debug_info: Option<(&[TrapSource<'_>], bool)>,
 ) -> Result<(String, Option<traps::Marks>), Diagnostic> {
     validate_lowering(module)?;
     if entry == Entry::Console {
@@ -240,6 +281,15 @@ fn emit_program(
         traps: trap_info.then(traps::Marks::default),
         ..Globals::default()
     };
+    if let Some((sources, optimized)) = debug_info {
+        globals.debug = Some(debug::DebugContext::new(
+            sources,
+            optimized,
+            wasm,
+            &mut globals.next_metadata,
+            &mut globals.definitions,
+        ));
+    }
     let mut specializations = Specializations::new(module);
     for (id, function) in module.functions.iter().enumerate() {
         if !emitted[id] {
@@ -266,8 +316,8 @@ fn emit_program(
             &mut specializations,
         ));
         if function.exported {
-            if host_abi::extended(function) {
-                output.push_str(&host_abi::wrapper(
+            let wrapper = if host_abi::extended(function) {
+                host_abi::wrapper(
                     module,
                     function,
                     id,
@@ -275,10 +325,17 @@ fn emit_program(
                     &mut intrinsics,
                     &mut globals,
                     &mut specializations,
-                ));
+                )
             } else {
-                output.push_str(&export_wrapper(function, module));
-            }
+                export_wrapper(function, module)
+            };
+            output.push_str(&debug::wrapper(
+                wrapper,
+                module,
+                function,
+                &format!("@tz_{}", function.name),
+                &mut globals,
+            ));
         }
         if let Some(marks) = &mut globals.traps {
             marks.source(&output[start..], function);
@@ -325,7 +382,13 @@ fn emit_program(
         let _ = writeln!(output, "{intrinsic}");
     }
     if entry == Entry::Console {
-        output.push_str(&console_main(module));
+        output.push_str(&debug::wrapper(
+            console_main(module),
+            module,
+            &module.functions[module.entry.unwrap()],
+            "@main",
+            &mut globals,
+        ));
     }
     if let Some(selected) = tests {
         let _ = writeln!(
@@ -497,6 +560,7 @@ struct Globals {
     next_metadata: usize,
     wasm: bool,
     traps: Option<traps::Marks>,
+    debug: Option<debug::DebugContext>,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
 }
@@ -524,6 +588,7 @@ impl Default for Globals {
             next_metadata,
             wasm: false,
             traps: None,
+            debug: None,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
         }
@@ -760,6 +825,11 @@ fn c_type(ty: &Type) -> String {
 
 fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
     match ty {
+        Type::Simd(vector) => format!(
+            "<{} x {}>",
+            vector.lanes(),
+            llvm_type(&vector.element(), module)
+        ),
         Type::Integer(bits, _) | Type::Decimal(bits) | Type::Binary(bits @ (16 | 128)) => {
             format!("i{bits}")
         }
@@ -828,7 +898,8 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
-        Type::Integer(..)
+        Type::Simd(_)
+        | Type::Integer(..)
         | Type::Binary(_)
         | Type::Decimal(_)
         | Type::Bool
@@ -867,6 +938,14 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
         (size.next_multiple_of(align), align)
     };
     match ty {
+        Type::Simd(vector) => {
+            if vector.kind == crate::simd::SimdKind::Mask {
+                let bytes = usize::from(vector.lanes()).div_ceil(8);
+                (bytes, bytes)
+            } else {
+                (16, 16)
+            }
+        }
         Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
             let bytes = usize::from(*bits).div_ceil(8);
             (bytes, bytes)
@@ -1142,6 +1221,9 @@ struct FunctionEmitter<'a, 'b> {
     intrinsics: &'b mut BTreeSet<String>,
     lines: Vec<String>,
     allocas: Vec<String>,
+    debug_declarations: Vec<String>,
+    debug_scope: Option<usize>,
+    debug_switch: bool,
     locals: BTreeMap<usize, String>,
     next_value: usize,
     next_block: usize,
@@ -1196,6 +1278,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             clone_pending: None,
             lines: Vec::new(),
             allocas: Vec::new(),
+            debug_declarations: Vec::new(),
+            debug_scope: None,
+            debug_switch: false,
             locals: BTreeMap::new(),
             next_value: 0,
             next_block: 0,
@@ -1237,6 +1322,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn emit(mut self) -> String {
+        self.debug_scope = self
+            .globals
+            .debug_subprogram(self.module, self.function, &self.symbol);
         self.single_use = call_specialization::single_use_locals(&self.function.body);
         self.block = "loop".into();
         for (index, parameter) in self.function.parameters.iter().enumerate() {
@@ -1251,13 +1339,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .map(|(index, parameter)| format!("{} %arg{index}", self.ty(&parameter.ty)))
             .collect::<Vec<_>>()
             .join(", ");
+        let debug = self
+            .debug_scope
+            .map_or_else(String::new, |scope| format!(" !dbg !{scope}"));
         let mut output = format!(
-            "define internal {} {}({parameters}) nounwind {{\nentry:\n",
+            "define internal {} {}({parameters}) nounwind{debug} {{\nentry:\n",
             self.ty(&self.function.signature.result),
             self.symbol
         );
         for alloca in self.allocas {
             let _ = writeln!(output, "  {alloca}");
+        }
+        for declaration in self.debug_declarations {
+            let _ = writeln!(output, "  {declaration}");
         }
         output.push_str("  br label %loop\nloop:\n");
         for (index, parameter) in self.function.parameters.iter().enumerate() {
@@ -1291,6 +1385,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn instruction(&mut self, text: impl Into<String>) {
         let mut text = text.into();
+        if text.trim_start().starts_with("switch ") && text.trim_end().ends_with('[') {
+            self.debug_switch = true;
+        } else if text.trim() == "]" {
+            self.debug_switch = false;
+        }
+        if let Some(scope) = self.debug_scope
+            && !self.debug_switch
+            && let Some(location) = self.globals.debug_location(scope, self.current_span)
+        {
+            let _ = write!(text, ", !dbg !{location}");
+        }
         if text.contains("call ") {
             if let Some(marks) = &mut self.globals.traps {
                 let id = self.globals.next_metadata;
@@ -1425,6 +1530,25 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn bind_local(&mut self, local: &Local, value: &str) {
         self.forget_temporary(value);
         let slot = self.slot(&local.ty);
+        if let Some(scope) = self.debug_scope
+            && local.provenance == crate::syntax::Provenance::User
+            && local.name != "_"
+        {
+            let parameter = self
+                .function
+                .parameters
+                .iter()
+                .position(|parameter| parameter.id == local.id)
+                .map(|index| index + 1);
+            if let Some((variable, location)) =
+                self.globals
+                    .debug_variable(self.module, scope, local, parameter)
+            {
+                self.intrinsics
+                    .insert("declare void @llvm.dbg.declare(metadata, metadata, metadata)".into());
+                self.debug_declarations.push(format!("call void @llvm.dbg.declare(metadata ptr {slot}, metadata !{variable}, metadata !DIExpression()), !dbg !{location}"));
+            }
+        }
         self.instruction(format!("store {} {value}, ptr {slot}", self.ty(&local.ty)));
         self.locals.insert(local.id, slot.clone());
         if local.ty.needs_drop(&self.module.types()) && !self.borrowed_locals.contains(&local.id) {
@@ -1805,6 +1929,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Unary(operator, operand) => {
                 let value = self.expression(operand);
+                if let Type::Simd(vector) = operand.ty {
+                    return self.simd_unary(*operator, vector, &value);
+                }
                 let ty = self.ty(&operand.ty);
                 self.value(match operator {
                     UnaryOp::Negate if matches!(operand.ty, Type::Binary(32 | 64)) => {
@@ -3394,6 +3521,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         let lhs = self.expression(left);
         let mut rhs = self.expression(right);
+        if let Type::Simd(vector) = left.ty {
+            return self.simd_binary(operator, vector, &lhs, &rhs);
+        }
         let ty = self.ty(&left.ty);
         if matches!(left.ty, Type::Decimal(_) | Type::Binary(16 | 128)) {
             let a = self.spill(&left.ty, &lhs);
@@ -3676,10 +3806,13 @@ fn emit_builtin(
         return definition;
     }
     match builtin {
+        builtin if builtin.name().starts_with("Simd.") => {
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
         builtin if builtin.name().starts_with("Math.") => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
-        Builtin::Hash | Builtin::HashMix | Builtin::DisplayQuoted => {
+        Builtin::Hash | Builtin::HashMix | Builtin::DisplayQuoted | Builtin::SeqNext => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         Builtin::Default => format!(
@@ -3830,6 +3963,10 @@ fn emit_typed_builtin(
             builtin,
             types: vec![Type::F64],
         })
+    } else if instance.builtin.name().starts_with("Simd.") {
+        emitter.simd_builtin(instance)
+    } else if instance.builtin == Builtin::SeqNext {
+        emitter.sequence_next(ty)
     } else if instance.builtin.name().starts_with("Math.") {
         emitter.math_builtin(instance)
     } else if instance.builtin == Builtin::DisplayQuoted {
@@ -3940,6 +4077,71 @@ fn emit_typed_builtin(
 }
 
 impl FunctionEmitter<'_, '_> {
+    fn sequence_next(&mut self, ty: &Type) -> String {
+        let Type::Function(parameters, _) = ty else {
+            unreachable!("builtin function type");
+        };
+        let sequence = &parameters[0];
+        let Type::Record(id, arguments) = sequence else {
+            unreachable!("validated sequence representation");
+        };
+        let fields = self.module.types().record_fields(*id, arguments);
+        let head_type = &fields[0];
+        let step_type = &fields[1];
+        let result_type = ty.after_arguments(1);
+        let callback_type = Type::function(vec![Type::Unit], result_type.clone());
+        let result_slot = self.slot(&result_type);
+        let head = self.value(format!("extractvalue {} %arg0, 0", self.ty(sequence)));
+        let step = self.value(format!("extractvalue {} %arg0, 1", self.ty(sequence)));
+        let tag = if self.module.types().recursive(head_type) {
+            self.recursive_tag(head_type, &head)
+        } else {
+            self.value(format!("extractvalue {} {head}, 0", self.ty(head_type)))
+        };
+        let has_head = self.value(format!("icmp eq i32 {tag}, 1"));
+        let ready = self.label();
+        let deferred = self.label();
+        let invoke = self.label();
+        let empty = self.label();
+        let done = self.label();
+        self.branch(&has_head, &ready, &deferred);
+        self.begin(&ready);
+        self.drop_value(step_type, &step);
+        let result = self.value(format!(
+            "insertvalue {} zeroinitializer, {} {head}, 1",
+            self.ty(&result_type),
+            self.ty(head_type)
+        ));
+        self.instruction(format!(
+            "store {} {result}, ptr {result_slot}",
+            self.ty(&result_type)
+        ));
+        self.jump(&done);
+        self.begin(&deferred);
+        self.drop_value(head_type, &head);
+        let tag = self.value(format!("extractvalue {} {step}, 0", self.ty(step_type)));
+        let has_step = self.value(format!("icmp eq i32 {tag}, 1"));
+        self.branch(&has_step, &invoke, &empty);
+        self.begin(&invoke);
+        let callback = self.payload_value(step_type, &step, &callback_type);
+        let result = self
+            .apply_value(&callback, &callback_type, Some((&Type::Unit, "0")), false)
+            .0;
+        self.instruction(format!(
+            "store {} {result}, ptr {result_slot}",
+            self.ty(&result_type)
+        ));
+        self.jump(&done);
+        self.begin(&empty);
+        self.instruction(format!(
+            "store {} zeroinitializer, ptr {result_slot}",
+            self.ty(&result_type)
+        ));
+        self.jump(&done);
+        self.begin(&done);
+        self.value(format!("load {}, ptr {result_slot}", self.ty(&result_type)))
+    }
+
     fn integer_builtin(&mut self, instance: &BuiltinInstance, signature: &Type) -> String {
         use Builtin::*;
         let Type::Integer(bits, signed) = instance.types[0] else {

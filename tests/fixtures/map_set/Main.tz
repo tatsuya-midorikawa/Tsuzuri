@@ -1,0 +1,114 @@
+export def map_insert_lookup :: i64 -> i64
+fn map_insert_lookup count =
+    let mut map: Map<i64, i64> = Map.empty()
+    let mut index = 0
+    while index < count do
+        map = Map.insert map (index * 37 % 101) (index * 3)
+        index = index + 1
+    let keys = Map.keys (&map)
+    let values = Map.values (&map)
+    let pairs = Map.to_array (&map)
+    assert (keys.length == values.length && values.length == pairs.length)
+    index = 0
+    while index < keys.length do
+        assert (Map.contains_key (&map) keys[index])
+        assert (Option.get (Map.get (&map) keys[index]) == values[index])
+        index = index + 1
+    Map.fold (&map) 0 (fx total key value -> total * 31 + deref key * 7 + deref value)
+
+export def map_replace_drop :: i64 -> i64
+fn map_replace_drop count =
+    let mut map: Map<string, string> = Map.empty()
+    let mut index = 0
+    while index < count do
+        map = Map.insert map (to_string (index % 9)) (to_string index)
+        index = index + 1
+    Map.fold (&map) 0 (fx total key value -> total + key.length + value.length)
+
+export def map_remove :: i64 -> i64
+fn map_remove count =
+    let mut map: Map<i64, i64> = Map.empty()
+    let mut index = 0
+    while index < count do
+        map = Map.insert map index (index * 2)
+        index = index + 1
+    index = 0
+    while index < count do
+        map = Map.remove map index
+        index = index + 2
+    map = Map.remove map (-1)
+    Map.fold (&map) 0 (fx total key value -> total + deref key + deref value)
+
+export def set_algebra :: i64 -> i64
+fn set_algebra count =
+    let mut left: Set<i64> = Set.empty()
+    let mut right: Set<i64> = Set.empty()
+    let mut index = 0
+    while index < count do
+        if index % 2 == 0 then left = Set.insert left index
+        if index % 3 == 0 then right = Set.insert right index
+        index = index + 1
+    let common = Set.intersect (&left) (&right)
+    let different = Set.difference (&left) (&right)
+    let combined = Set.union left right
+    let combined_values = Set.to_array (&combined)
+    let common_values = Set.to_array (&common)
+    let different_values = Set.to_array (&different)
+    Array.sum (&combined_values) * 1000000 + Array.sum (&common_values) * 1000 + Array.sum (&different_values)
+
+export def set_owned_union :: i64
+fn set_owned_union =
+    let combined = Set.union (Set.singleton "a") (Set.insert (Set.singleton "a") "b")
+    assert (Set.contains (&combined) "a" && Set.contains (&combined) "b")
+    Set.fold (&combined) 0 (fx total key -> total + key.length)
+
+export def map_capture :: i64
+fn map_capture =
+    let map = Map.singleton "answer" 42
+    let read = fx () -> Option.get (Map.get (&map) "answer")
+    read () + read ()
+
+export def map_borrowed_values :: i64
+fn map_borrowed_values =
+    let text = "borrowed"
+    let map = Map.singleton 1 (ref text)
+    let value = Map.at (&map) 1
+    value.length
+
+export def first_representative :: bool
+fn first_representative =
+    let map = Map.insert (Map.singleton (-0.0) 1) 0.0 2
+    let keys = Map.keys (&map)
+    let set = Set.union (Set.singleton (-0.0)) (Set.singleton 0.0)
+    let set_keys = Set.to_array (&set)
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Option.get (Map.get (&map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+
+export def map_task_drop :: i64
+fn map_task_drop =
+    let text = "owned capture"
+    let map = Map.singleton 1 (task { return text.length })
+    let empty = Map.remove map 1
+    Map.length (&empty)
+
+record Key { name: string } deriving (Eq, Ord)
+
+export def owned_record_keys :: i64
+fn owned_record_keys =
+    let map = Map.insert (Map.empty()) (Key { name: "answer" }) 42
+    Option.get (Map.get (&map) (Key { name: "answer" }))
+
+export def map_at_missing :: i64
+fn map_at_missing =
+    let map: Map<i64, string> = Map.empty()
+    let value = Map.at (&map) 1
+    value.length
+
+export def nan_query :: i64
+fn nan_query =
+    let map = Map.insert (Map.empty()) (0.0 / 0.0) 1
+    Map.length (&map)
+
+export def nan_stored :: bool
+fn nan_stored =
+    let map = Map.singleton (0.0 / 0.0) 1
+    Map.contains_key (&map) 1.0

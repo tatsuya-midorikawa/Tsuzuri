@@ -6,8 +6,17 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | G04（トラップ発生位置の報告）、G07（hover と実行時位置情報の整合）、G10（Windows PDB / CodeView 検討） |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/llvm.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/diagnostic.rs`, `tests/debug_info.rs`, `tests/debug_info.mjs`, `README.md`, `docs/architecture.md` |
+
+## 実装レビューと検証（2026-09-27）
+
+- 現行G04のcurrent_span・TrapSource・共通metadata採番を再利用し、互換APIは変更しない。`emit_with_debug_info`で-g/trap-infoの併用に対応。
+- 関数・ソース行・ローカル・型情報、entryのdbg.declare、型キャッシュ、公開wrapperのdebug scopeを実装。decimalはBIDの保存ビットをunsignedで表示し、union payload詳細は省略する。
+- macOSのld -rがDWARFを失うことを実測で確認したため、debug task objectだけ対応版llvm-linkでIRを結合。実行ファイルはdsymutil --flatでoutput.dwarfを保存する。LLDBではtarget symbols addで指定する。
+- Rust2テスト、trap関連7テスト、fmt/clippyが成功。`tests/debug_info.mjs`はLLVM 21のllvm-dwarfdump --verify、native/WASM O0/O3、record/tuple/array/list/Vec/closure/task、WASM debug section、通常buildでのsection非出力を検証。
+- 既存`tests/e2e.mjs`も成功。400結果/15トラップをO0/O3で照合し、128-bit runtime・modules・polymorphism・所有heap・CLIを確認。
+- 以下は着手前設計資料。source mapの追加型ではなくTrapSource、macOSの保存方式は上記を採用する。
 
 ## 目的
 

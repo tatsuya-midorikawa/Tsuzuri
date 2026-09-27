@@ -10,6 +10,9 @@ Rust 製のフロントエンドで型検査し、LLVM によりネイティブ�
 `tsuzuri fmt [--check] <file|directory> [--json]` でソースを保守的に整形できます。
 `--check` は書き換えず差分があれば終了コード 1。ディレクトリは直下の `.tz`／`.tt`／`.tc` だけを対象にし、LLVM は不要です。
 
+`tsuzuri lsp` はエディターから起動するstdio言語サーバーです。未保存の全量同期、複数診断、型のhover、関数・レコード・ローカルへの定義ジャンプ、シンボル一覧に対応します。
+UTF-8位置を交渉できないクライアントにはUTF-16位置を返します。補完・rename・LSP経由の整形はまだ提供しません。
+
 `test "adds numbers" = assert (1 + 2 == 3)` のようにテストを書き、`tsuzuri test <file|directory>` で実行できます。
 `--filter TEXT`、`--json`、`-O0`～`-O3`、`--target native|wasm32` に対応します。WASM 実行には Node.js が必要です。
 テストは常に型検査しますが通常ビルドには含めず、実行時は別プロセスで隔離します。Main.tz は不要です。
@@ -17,11 +20,18 @@ Rust 製のフロントエンドで型検査し、LLVM によりネイティブ�
 アクティブパターンは bool／Option を返す部分形式と、宣言した union に対応する複数ケース形式を使えます。
 `def (|Parsed|_|) :: ref string -> Option<i64>` と `fn (|Parsed|_|) text = Parse.parse text` により、`Parsed value` で解析結果を照合できます。
 
+`const Answer: i64 = 40 + 2` で型付きのコンパイル時定数を宣言できます。前方参照・`private const`・他モジュールからの修飾参照に対応します。
+整数とbinary浮動小数点の演算、文字列・配列・タプル・レコードを扱い、利用ごとに通常の所有値を生成します。関数呼び出しとdecimal演算は定数式では拒否します。
+
 `Debug.print value` は借用して表示し、`Debug.trace value` は表示して同じ所有値を返します。native は stderr、WASM は既定で no-op です。
 WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
 
 `run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
 WASM では import なしの `tsuzuri_trap_site()` と、隣接する `.trap.json` の表を使います。
+
+`build`／`run` の `-g`（`--debug-info`）で関数・行・ローカル変数・型のDWARF情報を追加できます。WASMではdebug custom sectionを保持します。
+macOSの実行ファイルは隣接する `.dwarf` を保持し、LLDBの `target symbols add <output>.dwarf` で読み込めます。`-O3`では変数が最適化で消える場合があります。
+macOSのタスクを含むdebug objectにはClangと対応する `llvm-link`（`TSUZURI_LLVM_LINK`）、実行ファイルには `dsymutil`（`TSUZURI_DSYMUTIL`）が必要です。
 
 ホスト ABI は借用配列・UTF-16／UTF-8 入力、所有バッファ結果、スカラーのみのレコードに対応します。
 C header を生成して pointer／length と out pointer を使い、返却バッファは `tsuzuri_free` で解放します。
@@ -38,8 +48,16 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 GPU バックエンドと自動マルチスレッド化は未実装です。
 整数の checked／saturating 演算、popcount、rotate などは `Int` モジュールで利用できます。
 伸縮可能な所有バッファ `Vec<T>` と配列・リストの標準 API を利用できます。
+順序付きの不透明型 `Map<K, V>`／`Set<K>` も使えます。`Map.insert (Map.empty()) 1 "value"` は所有値を消費して更新し、`Map.at (&map) 1` で値を借用します。
+検索はO(log n)、挿入・削除はO(n)です。`Set.union`／`intersect`／`difference`と借用foldに対応し、キー順に列挙します。
+一回消費の `Seq<T>` を `for value in Seq.once 42 do ...` のように反復できます。`Seq.unfold`・`map`・借用述語の`filter`・`to_array`を提供します。
+128-bitの `f32x4`・`f64x2`・整数vectorとlane maskを使えます。`let values: i32x4 = Simd.splat 1i32`、`Simd.load`・`extract`・`select`・順序付き`sum_lanes`を提供します。
+nativeはLLVMの対応命令、WASMは既定でscalar fallback、`--wasm-feature simd128`でv128へ下げます。高速化の保証ではありません。
+ユーザー型は `Module.iter` を明示してSeqを返します。Array/List/Vec/Map/Setの`iter`は要素を借用し、通常の直接for反復は従来経路のままです。
 パッケージ管理、GUI/OS の標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
+レコードに共有借用を格納でき、`def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string`で返却元の入力を指定できます。
+名前付き契約は直接の完全適用に反映し、関数値経由は保守的に全入力の寿命を保持します。排他借用フィールドと、レコード内の独立した複数regionは未対応です。
 記憶域は C/C++ と同じ方式で、`new` で生成した値はヒープ、`new` を使わずに生成して束縛した値はスタックに置きます。
 
 `Main.tz`:
@@ -618,11 +636,16 @@ Clang に渡します。SIMD 化は演算と依存関係が許す範囲で LLVM 
 `--cpu native` はネイティブの実行ファイル／オブジェクトと `run` 専用です。
 `check` への CPU 指定、WASM／LLVM IR／ヘッダーへの `native` 指定はエラーにします。
 
+`build --target wasm32 --wasm-feature simd128` はWASM SIMD128を明示的に有効にします。既定はSIMDなしで、relaxed SIMD・fast-mathは有効にしません。
+指定した成果物にはSIMD128対応エンジンが必要です。`--emit llvm`では要件をコメントに記録し、そのIRのコンパイルには `-msimd128` を指定します。
+
 入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tz` を選びます。
-どちらも同じディレクトリ直下の全 `.tz`・`.tt`・`.tc` をファイル名順に読み込み、
+ディレクトリ入力はそのディレクトリ、ファイル入力は親ディレクトリをルートにし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に読み込み、
 未参照のモジュール・ビルダーも検査します。
-サブディレクトリは探索しません。ファイル名は大文字小文字を区別する ASCII 識別子で、
+`Geometry/Point.tz` は `Geometry.Point` になり、`Geometry.Point.distance` や `Geometry.Point.Point` と完全修飾して参照します。
+隠し項目を無視し、ソース・ディレクトリのsymlinkを拒否します。各パス要素は大文字小文字を区別する ASCII 識別子で、
 `_` 単独や予約語は使えません。
+モジュールは16要素・255バイト、探索は4096ソース・1024ディレクトリまでです。上位のrootは推測せず、階層全体にはrootディレクトリを指定します。
 `run`／`--emit exe` の入力は `Main.tz` またはそのディレクトリに限ります。
 `check`／ライブラリ出力では `.tz`・`.tt`・`.tc` を指定でき、`Main.tz` は不要です。
 
@@ -661,6 +684,10 @@ node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
+node tests/lsp_sessions.mjs target/release/tsuzuri
+node tests/wasm_simd.mjs target/release/tsuzuri # llvm-objdump required; TSUZURI_OBJDUMP overrides it
+node tests/simd.mjs target/release/tsuzuri # same llvm-objdump requirement
+node tests/debug_info.mjs target/release/tsuzuri # llvm-dwarfdump required; TSUZURI_DWARFDUMP overrides it
 python3 -m venv target/math-reference-env
 target/math-reference-env/bin/python -m pip install mpmath==1.3.0
 node tests/math.mjs target/release/tsuzuri

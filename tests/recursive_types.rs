@@ -28,7 +28,7 @@ fn recursive_patterns_and_loans_keep_existing_safety_rules() {
             "def send :: ref i64 -> Task<Chain<i64 -> i64>>\nfn send number = { let callback = value -> value + deref number; let tree = Link (callback, End); task { return tree } }",
             "E1013",
         ),
-        ("record Holder { tree: Chain<ref i64> }", "E1013"),
+        ("record Holder { tree: Chain<ref mut i64> }", "E1013"),
         (
             "let tree = Link (1, End)\nmatch tree with | Link (_, tail) as whole -> { let moved = tail; match whole with | End -> 0 | Link _ -> 1 } | End -> 0",
             "E1012",

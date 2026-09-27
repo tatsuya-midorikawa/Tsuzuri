@@ -1,0 +1,61 @@
+const Answer: i64 = Later + 2
+const Later: i64 = 40
+const Text: string = "abc"
+const Values: [i64] = [10, 20, 12]
+const Half: f16 = 1.0009765625 + 0.00048828125
+const NegativeZero: f64 = -0.0 * 1.0
+const Infinity: f32 = 1.0 / 0.0
+const Nan: f128 = 0.0 / 0.0
+const Wide: f128 = 1.0000000000000000000000000000000002 + 0.0
+const LargeInteger: i128u = 340282366920938463463374607431768211455
+const RoundedInteger: f128 = LargeInteger as f128
+record Data { name: string, values: [i64] }
+const Stored: Data = Data { name: Text, values: Values }
+const Pair: i64 * i64 = (20, 22)
+
+export def integer_values :: i64
+fn integer_values = Answer
+
+private def get_values :: Data
+fn get_values = Stored
+
+export def owned_values :: i64
+fn owned_values =
+    let data = get_values()
+    let other = Stored
+    let joined = Text + Text
+    let total = Array.sum data.values
+    assert (other.name.length == 3 && joined.length == 6)
+    total
+
+export def borrowed_values :: i64
+fn borrowed_values = String.length (&Text) + Array.length (&Values) + String.length ref Text - 1
+
+export def float_values :: bool
+fn float_values = Half == 1.001953125f16 && 1.0 / NegativeZero < 0.0 && Infinity > 1.0f32 && Nan != Nan
+
+export def wide_values :: bool
+fn wide_values = Wide > 1.0f128 && RoundedInteger == 340282366920938463463374607431768211456.0f128 && (Infinity as i8) == 127i8 && (Nan as i128) == 0i128
+
+export def float_reference :: f64 -> f64 -> bool
+fn float_reference left right = Half == (left as f16) + (right as f16)
+
+export def repeat_values :: i64 -> i64
+fn repeat_values count =
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        let data = Stored
+        let joined = Text + Text
+        total = total + data.name.length + data.values.length
+        assert (joined.length == 6)
+        index = index + 1
+    total
+
+export def captured_values :: i64
+fn captured_values =
+    let data = Stored
+    let read = fx () -> Array.sum data.values
+    let answer = match Pair with | (left, right) -> left + right
+    assert (read () == answer)
+    answer

@@ -167,8 +167,9 @@ fn aliases_preserve_ownership_and_borrow_rules() {
         "E1013",
     );
     rejects(
-        "type Borrowed<'a> = &'a\nrecord Bad { value: Borrowed<i64> }",
+        "type Borrowed<'a> = &mut 'a\nrecord Bad { value: Borrowed<i64> }",
         "E1013",
     );
+    analyze("type Borrowed<'a> = &'a\nrecord View { value: Borrowed<i64> }\nlet value = 42\nlet view = View { value: &value }\nderef view.value").unwrap();
     analyze("type Borrowed = ref i64\nfn read(value: Borrowed) -> i64 { deref value }").unwrap();
 }

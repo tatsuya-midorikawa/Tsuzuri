@@ -86,6 +86,7 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
         "def first :: ref [string] -> Option<ref string>\nfn first values = if values.length == 0 then None else Some (ref values[0])\nlet values = [\"owned\"]\n(Option.get (first (ref values))).length",
         "let number = 42\nlet value = Some (Some (ref number))\nlet copy = value\nmatch copy with | Some (Some borrowed) -> deref borrowed | _ -> 0",
         "def choose :: ref i64 -> ref i64 -> Option<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet right = 22\nderef (Option.get (choose (ref left) (ref right)))",
+        "record Stored { value: Option<ref i64> }\nlet owner = 42\nlet stored = Stored { value: Some (ref owner) }\nderef (Option.get stored.value)",
     ] {
         let module = accepts(source);
         for wasm in [false, true] {
@@ -100,7 +101,7 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
         "let borrowed = { let value = 42; Some (ref value) }\n*(Option.get borrowed)",
         "let mut value = 42\nlet borrowed = Some (ref value)\nvalue = 1\n*(Option.get borrowed)",
         "let mut value = 42\nlet borrowed = Some (ref mut value)\n()",
-        "record Stored { value: Option<ref i64> }",
+        "record Stored { value: Option<ref mut i64> }",
         "let value = 42\nlet borrowed = Some (ref value)\nlet work = task { return borrowed }\n()",
         "def choose :: ref i64 -> ref i64 -> Option<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet borrowed = { let right = 22; choose (ref left) (ref right) }\n*(Option.get borrowed)",
     ] {

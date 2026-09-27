@@ -154,6 +154,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             let arguments = parameters.iter().map(local_value).collect();
             bridges.push(CheckedFunction {
                 module: "$export".into(),
+                region_sources: None,
                 origin: function.origin.generated(id),
                 name: function.name.clone(),
                 visibility: Visibility::Public,
@@ -211,6 +212,7 @@ fn lower_expression(
             let mut all_parameters = captures.clone();
             all_parameters.extend(parameters.iter().cloned());
             functions.push(CheckedFunction {
+                region_sources: None,
                 module: if matches!(expression.ty, Type::Task(_)) {
                     "$task"
                 } else {
@@ -310,6 +312,7 @@ fn lower_expression(
                 let id = functions.len();
                 functions.push(CheckedFunction {
                     module: "$builtin".into(),
+                    region_sources: None,
                     origin,
                     // Instances of a polymorphic builtin get distinct symbols.
                     name: if scheme.variables.is_empty() {
@@ -365,6 +368,7 @@ fn lower_expression(
                 };
                 functions.push(CheckedFunction {
                     module: "$case".into(),
+                    region_sources: None,
                     origin,
                     name: format!("{}.{}{instance}", union.name, union.cases[case_id].0),
                     visibility: Visibility::Public,

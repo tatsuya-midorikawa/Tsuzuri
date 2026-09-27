@@ -7,14 +7,18 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/List.tz", include_str!("../std/List.tz")),
+    ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Option.tc", include_str!("../std/Option.tc")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
     ("std/Result.tc", include_str!("../std/Result.tc")),
+    ("std/Seq.tz", include_str!("../std/Seq.tz")),
+    ("std/Set.tz", include_str!("../std/Set.tz")),
     ("std/String.tz", include_str!("../std/String.tz")),
     ("std/Test.tz", include_str!("../std/Test.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
+    ("std/Vec.tz", include_str!("../std/Vec.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -36,12 +40,17 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Simd",
     "Map",
     "Set",
+    "Seq",
     "Test",
     "Gpu",
 ];
 
 pub fn is_reserved_module(name: &str) -> bool {
     RESERVED_MODULES.contains(&name)
+}
+
+pub(crate) fn opaque_record(name: &str) -> bool {
+    matches!(name, "Map.Map" | "Map.Entry" | "Set.Set" | "Seq.Seq")
 }
 
 /// The module name of a flat std source path such as `std/Option.tc`, or
@@ -79,7 +88,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 18);
+        assert_eq!(RESERVED_MODULES.len(), 19);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

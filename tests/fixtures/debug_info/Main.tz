@@ -1,0 +1,26 @@
+record Point { x: i64, label: string }
+
+export def answer :: i64 -> i64
+fn answer input =
+    let point = Point { x: input + 2, label: "point" }
+    let values = [point.x]
+    let chain = [|input|]
+    let capacity: Vec<i64> = Vec.with_capacity 2
+    let pair = (input + 2, true)
+    assert (chain.length == 1 && Vec.length (&capacity) == 0)
+    assert (values[0] == point.x)
+    let captured = fx offset -> point.x + offset
+    let expected = match pair with | (value, flag) -> if flag then value else 0
+    assert (captured 0 == expected)
+    match input with
+    | 0 -> 2
+    | 1 -> 3
+    | _ -> expected
+
+export def parallel :: i64
+fn parallel =
+    let results = Task.run (Task.parallel [task { return 20 }, task { return 22 }])
+    Array.sum (&results)
+
+def main :: i64
+fn main = answer 40

@@ -130,6 +130,11 @@ pub fn ast_fingerprint(program: Program) -> String {
 
 fn canonicalize(mut program: Program) -> (String, Hints) {
     let mut canonical = Canonical::default();
+    for constant in &mut program.constants {
+        canonical.ident(&mut constant.name);
+        canonical.ty(&mut constant.ty);
+        canonical.expression(&mut constant.value);
+    }
     for alias in &mut program.type_aliases {
         canonical.hints.type_headers.insert(alias.name.span.end);
         canonical.ident(&mut alias.name);
@@ -139,6 +144,9 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         canonical.ty(&mut alias.target);
     }
     for record in &mut program.records {
+        for region in &mut record.regions {
+            canonical.ident(region);
+        }
         for (_, span) in &mut record.derives {
             *span = Span::default();
         }
@@ -168,6 +176,9 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         }
     }
     for function in &mut program.functions {
+        for region in &mut function.regions {
+            canonical.ident(region);
+        }
         canonical.ident(&mut function.name);
         for parameter in &mut function.parameters {
             canonical.parameter(parameter);
@@ -364,6 +375,7 @@ impl Layout {
                     | TokenKind::Record
                     | TokenKind::Union
                     | TokenKind::Type
+                    | TokenKind::Const
                     | TokenKind::Test
                     | TokenKind::Class
                     | TokenKind::Instance
@@ -658,6 +670,12 @@ impl Canonical {
         }
         ty.span = Span::default();
         match &mut ty.kind {
+            TypeExprKind::Regions(inner, regions) => {
+                self.ty(inner);
+                for region in regions {
+                    self.ident(region);
+                }
+            }
             TypeExprKind::Apply(name, arguments) => {
                 self.ident(name);
                 for argument in arguments {

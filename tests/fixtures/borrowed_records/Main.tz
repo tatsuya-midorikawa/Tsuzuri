@@ -1,0 +1,73 @@
+record View { data: ref [i64] }
+record Nested { view: View }
+record TextView { text: ref string }
+record OwnedView { text: ref string, owned: string }
+record PairView { left: ref string, right: ref string }
+
+private def make_view :: ref [i64] -> Nested
+fn make_view values = Nested { view: View { data: values } }
+
+export def view_sum :: i64 -> i64
+fn view_sum count =
+    let values = new [i64](count, fx index -> index + 1)
+    let nested = make_view (&values)
+    let copy = nested
+    Array.sum nested.view.data + Array.sum copy.view.data
+
+export def text_view :: i64
+fn text_view =
+    let text = "borrowed"
+    let view = TextView { text: ref text }
+    let read = fx () -> view.text.length
+    read () + read ()
+
+export def partial_view :: i64
+fn partial_view =
+    let text = "borrowed"
+    let view = OwnedView { text: ref text, owned: "owned" }
+    let owned = view.owned
+    view.text.length + owned.length
+
+export def view_iteration :: i64 -> i64
+fn view_iteration count =
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        let values = [1, 2, 3]
+        let view = View { data: ref values }
+        for value in Array.iter view.data do total = total + deref value
+        index = index + 1
+    total
+
+private def pair :: ref string -> ref string -> PairView
+fn pair left right = PairView { left: left, right: right }
+
+export def pair_view :: i64
+fn pair_view =
+    let left = "a"
+    let right = "bc"
+    let view = pair (ref left) (ref right)
+    view.left.length + view.right.length
+
+record NamedView {r} { text: ref {r} string }
+
+private def select_view {r s} :: ref {r} string -> ref {s} string -> NamedView {r}
+fn select_view text temporary =
+    assert (temporary.length > 0)
+    NamedView { text: text }
+
+export def named_view :: i64
+fn named_view =
+    let text = "long lived"
+    let view = { let temporary = "short"; select_view (ref text) (ref temporary) }
+    view.text.length
+
+private def first {r} :: ref {r} [i64] -> ref {r} i64
+fn first values = ref values[0]
+
+export def named_reference :: i64
+fn named_reference =
+    let values = [42]
+    let value = first (ref values)
+    deref value
+

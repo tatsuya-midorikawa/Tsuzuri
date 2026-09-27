@@ -6,8 +6,18 @@
 | 規模 | L |
 | 依存 | A11, A02, A06, A07, C02, B01 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `std/Map.tz`、`std/Set.tz`、`src/check.rs` `Type` / `Builtin`、`src/polymorph.rs`、`src/llvm.rs`、`src/llvm_frame.rs`、`src/ownership.rs`、`src/call_specialization.rs`、`docs/language.md`、`docs/architecture.md`、`tests/map_set.rs`、`tests/fixtures/map_set/Main.tz` |
+
+## 実装レビューと検証（2026-09-27）
+
+- GUIDE D-28のopaque標準record方式で実装。Map/Entry/Setは外部から構築・field参照・pattern・updateできず、Vecの既存所有権・確保・clone/dropを再利用する。
+- 全APIとSet.fold/is_emptyを実装。lower_boundは借用比較、insert/removeは所有値のswap/push/pop、Set.unionは一つの出力領域への線形マージと反転。新Type variant・重複ランタイムは追加しない。
+- 同じMapキーは最初の代表値を保ってvalueを置換。Set.unionは左代表を保持。比較時にNaN等の非反射的キーをトラップし、Ordの一貫性を要求する。
+- 共有参照を持つコンテナでNLLが親のloan情報を早く消さないよう補強。排他参照格納・参照脱出・通常recordへの隠蔽格納を拒否する。
+- Rust3テスト群、全Rustテスト、fmt/clippyが成功。JavaScript Map/Set参照の26ケースと3トラップがnative/WASM O0/O3・確保追跡で成功。
+- 所有文字列/record key、値置換/削除、順序、±0代表値、closure snapshot、Task drop、借用値、lookup本体の非確保IRを確認。速度の優位性は未主張。
+- 旧例のOption比較は現行のOption.get、derivingは括弧付きへ読み替える。Set.unionの予約語衝突は関数名・dot後だけの文脈規則で解決した。
 
 ## 目的
 
@@ -339,6 +349,7 @@ Targets:
 
 ## 未決事項
 
+- 2026-09-27: 通常のgeneric recordとVecの所有権・clone/drop・loweringを再利用する。Map.Map/Set.Setはcompiler登録のopaque標準型とし、外部からの構築・field・pattern・updateをE1022で拒否する。新しいType variantや同等のstorage runtimeは追加しない。
 - A11 により key comparison 用の `Copy<'k>` は不要。Phase 1 で `Copy<'k>` を残すのは `Map.keys` / `Map.to_array` / `Set.to_array` / borrowed-input set algebra のように key を返却用に複製する API だけ。
 - Implementation is sorted contiguous storage。A04 は追加しない。tree に変更する場合だけ A04 を依存へ追加する。
 - `Map.at` missing key は trap、`Map.get` は Copy value Option の既定案。

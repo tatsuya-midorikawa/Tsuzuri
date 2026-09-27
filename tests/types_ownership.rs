@@ -275,7 +275,7 @@ fn rejects_use_after_move_borrow_conflicts_and_escaping_references() {
             "fn f() -> i64 { let r = &\"temporary\"; r.length }",
             "E1013",
         ),
-        ("record R { s: &string }", "E1013"),
+        ("record R { s: &mut string }", "E1013"),
         ("fn f() -> utf8string { u8\"\\u{d800}\" }", "E0001"),
         ("fn f() -> string { \"\\q\" }", "E0001"),
         ("export fn f(s: string) -> i64 { s.length }", "E1008"),

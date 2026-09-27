@@ -1,0 +1,18 @@
+export def scalar_sum :: ref [i64] -> i64
+fn scalar_sum values =
+    let mut total = 0
+    for value in values do total = total + value
+    total
+
+export def vector_sum :: ref [i64] -> i64
+fn vector_sum values =
+    let mut total: i64x2 = Simd.splat 0
+    let mut index = 0
+    while index <= values.length - 2 do
+        total = total + Simd.load values index
+        index = index + 2
+    let mut result = Simd.sum_lanes total
+    while index < values.length do
+        result = result + values[index]
+        index = index + 1
+    result

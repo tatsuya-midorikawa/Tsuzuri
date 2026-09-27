@@ -111,6 +111,12 @@ impl Checker<'_> {
                     if source.ty.contains_error() {
                         return Ok(TypedExpr::error(expression.span));
                     }
+                    if source.ty.sequence_element(&self.types).is_some() {
+                        if let Some(expected) = expected {
+                            self.same(&Type::Unit, expected, expression.span)?;
+                        }
+                        return self.sequence_loop(source, pattern, body, expression.span);
+                    }
                     let element = match &source.ty {
                         Type::Array(element) | Type::List(element) | Type::Vec(element) => {
                             (**element).clone()
@@ -120,7 +126,7 @@ impl Checker<'_> {
                         _ => {
                             return Err(Diagnostic::new(
                                 "E1005",
-                                "for...in expects an array, list, string, utf8string, or integer range",
+                                "for...in expects an array, list, string, utf8string, integer range, or Seq; call Module.iter explicitly for user-defined types",
                                 source.span,
                             ));
                         }
@@ -209,6 +215,127 @@ impl Checker<'_> {
             self.same(&Type::Unit, expected, expression.span)?;
         }
         Ok(value(kind, Type::Unit, expression.span))
+    }
+
+    fn sequence_loop(
+        &mut self,
+        source: TypedExpr,
+        pattern: &Pattern,
+        body: &Expr,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let depth = body.depth.max(pattern.depth) + 12 * (self.normal_loop_depth + 1);
+        if depth > MAX_NESTING {
+            return Err(Diagnostic::new(
+                "E1017",
+                "sequence loop expansion exceeds the compiler depth limit; extract the body into a function",
+                span,
+            ));
+        }
+        let ident = |name: &str| Ident {
+            text: format!("$sequence_{name}_{}", span.start),
+            span,
+            provenance: Provenance::Generated,
+        };
+        let owner_name = ident("owner");
+        let next_name = ident("next");
+        let item_name = ident("item");
+        let make = |kind| Expr { kind, span, depth };
+        let binding_pattern = |name: Ident| Pattern {
+            kind: PatternKind::Binding(name),
+            span,
+            depth: 1,
+        };
+        let named = |text: &str| Ident {
+            text: text.into(),
+            span,
+            provenance: Provenance::Generated,
+        };
+        let advance = make(ExprKind::Assign(
+            Box::new(make(ExprKind::Name(owner_name.clone()))),
+            Box::new(make(ExprKind::Name(next_name.clone()))),
+        ));
+        let item_body = make(ExprKind::Match {
+            value: Box::new(make(ExprKind::Name(item_name.clone()))),
+            arms: vec![MatchArm {
+                pattern: pattern.clone(),
+                guard: None,
+                body: body.clone(),
+                span: body.span,
+            }],
+            origin: MatchOrigin::ComputationDestructuring,
+        });
+        let after_advance = |result| {
+            make(ExprKind::Block {
+                bindings: vec![Binding {
+                    name: ident("advance"),
+                    mutable: false,
+                    annotation: None,
+                    value: advance.clone(),
+                }],
+                result: Box::new(result),
+            })
+        };
+        let step = make(ExprKind::Call(
+            Box::new(make(ExprKind::QualifiedFunction(named("Seq.next")))),
+            vec![make(ExprKind::Name(owner_name.clone()))],
+        ));
+        let arms = vec![
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Tuple(vec![
+                        binding_pattern(next_name.clone()),
+                        Pattern {
+                            kind: PatternKind::Apply(
+                                named("Option.Option.Some"),
+                                vec![binding_pattern(item_name)],
+                            ),
+                            span,
+                            depth: 3,
+                        },
+                    ]),
+                    span,
+                    depth: 4,
+                },
+                guard: None,
+                body: after_advance(item_body),
+                span,
+            },
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Tuple(vec![
+                        binding_pattern(next_name),
+                        binding_pattern(named("Option.Option.None")),
+                    ]),
+                    span,
+                    depth: 3,
+                },
+                guard: None,
+                body: after_advance(make(ExprKind::Break)),
+                span,
+            },
+        ];
+        let body = make(ExprKind::Match {
+            value: Box::new(step),
+            arms,
+            origin: MatchOrigin::ComputationDestructuring,
+        });
+        let loop_expression = make(ExprKind::While {
+            condition: Box::new(make(ExprKind::Bool(true))),
+            body: Box::new(body),
+        });
+        self.scopes.push(BTreeMap::new());
+        let owner = self.bind(&owner_name, source.ty.clone(), true);
+        let result = self.expression(&loop_expression, Some(&Type::Unit));
+        self.scopes.pop();
+        Ok(value(
+            TypedExprKind::Block {
+                bindings: vec![(owner, source)],
+                result: Box::new(result?),
+            },
+            Type::Unit,
+            span,
+        ))
     }
 
     /// Whether `place` lies behind a reference, inside a collection element
@@ -494,6 +621,7 @@ impl Checker<'_> {
                         pattern.span,
                     ));
                 };
+                self.record_storage(id, pattern.span)?;
                 let mut seen = BTreeSet::new();
                 let field_count = self.types.records[id].fields.len();
                 let mut coverage = vec![CoveragePat::Wildcard; field_count];

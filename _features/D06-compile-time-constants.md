@@ -6,8 +6,17 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | G06, E05, F04 |
-| 状態 | todo |
+| 状態 | done |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/check.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/llvm_control.rs`, `src/numeric.rs`, `tests/constants.rs`, `tests/constants.mjs`, `docs/language.md`, `docs/architecture.md`, `README.md` |
+
+## 実装レビューと検証（2026-09-27）
+
+- GUIDE D-28を実装仕様とする。通常の型検査後に評価済みの型付きliteralへ展開し、専用Const IR・aggregate globalを増やさず、既存の所有値生成・frame/relocate/dropを再利用する。
+- `private const`、UTF-16／UTF-8文字列・文字を現行実装に合わせて追加。旧例の`length`は`Array.length`／`String.length`へ読み替える。
+- const直接借用は呼び出し中に限定し、段階適用やloanを持つ結果はE1013。明示let束縛では従来の借用規則を使う。
+- Rust8テスト、既存全Rustテスト、fmt、clippyが成功。`tests/features.mjs ... constants`の8ケースがnative/WASM O0/O3で成功し、確保追跡・importなし・決定的IRを確認。
+- binary全幅の丸め・NaN・符号付きゼロ・飽和、整数wrap・シフト、前方参照・循環・評価上限、未使用定数・可視性・整形、所有aggregate・捕捉・10万回反復を検証。
+- 以下は着手前の設計資料。専用template表現ではなく上記の既存literal経路を採用した。decimal演算・list定数は対象外のまま。
 
 ## 目的
 
