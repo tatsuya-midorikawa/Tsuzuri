@@ -1,12 +1,34 @@
 use super::*;
 
-pub(super) fn entry(module: &CheckedModule) -> String {
-    let main = &module.functions[module.entry.unwrap()];
-    let result = llvm_type(&main.signature.result, module);
-    format!(
-        "define i32 @tsuzuri_main() {{\nentry:\n  %action = call {result} @tz.fn.{}()\n  %work = extractvalue {result} %action, 0\n  %code = extractvalue %tz.closure %work, 0\n  %environment = extractvalue %tz.closure %work, 1\n  %result = call i8 %code(i8 0, ptr %environment, i1 false)\n  ret i32 0\n}}\n",
+pub(super) fn entry(mut emitter: FunctionEmitter<'_, '_>) -> String {
+    let main = emitter.function;
+    let Type::Record(_, arguments) = &main.signature.result else {
+        unreachable!()
+    };
+    let payload = &arguments[0];
+    let result_type = emitter.ty(&main.signature.result);
+    let action = emitter.value(format!(
+        "call {result_type} @tz.fn.{}()",
         main.qualified_name()
-    )
+    ));
+    let work = emitter.value(format!("extractvalue {result_type} {action}, 0"));
+    let code = emitter.value(format!("extractvalue %tz.closure {work}, 0"));
+    let environment = emitter.value(format!("extractvalue %tz.closure {work}, 1"));
+    let result = emitter.value(format!(
+        "call {} {code}(i8 0, ptr {environment}, i1 false)",
+        emitter.ty(payload)
+    ));
+    emitter.drop_value(payload, &result);
+    emitter.instruction("ret i32 0");
+    let mut output = String::from("define i32 @tsuzuri_main() {\nentry:\n");
+    for line in emitter.allocas {
+        let _ = writeln!(output, "  {line}");
+    }
+    for line in emitter.lines {
+        let _ = writeln!(output, "{line}");
+    }
+    output.push_str("}\n");
+    output
 }
 
 impl FunctionEmitter<'_, '_> {

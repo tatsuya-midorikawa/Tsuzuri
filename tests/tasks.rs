@@ -162,15 +162,19 @@ fn preserves_module_task_types_and_diagnostics() {
 #[test]
 fn rejects_task_syntax_outside_computations_and_non_task_binds() {
     for source in [
-        "let! x = task { 1 }\nx",
-        "{ return 1 }",
-        "{ do! task {} }",
         "task { return 1; return 2 }",
         "task { return 1; let x = 2; x }",
-        "task { let f = n -> { let! x = task { n }; x }; f 1 }",
         "task { do task {} }",
     ] {
         rejects(source, "E0002");
+    }
+    for source in [
+        "let! x = task { 1 }\nx",
+        "{ return 1 }",
+        "{ do! task {} }",
+        "task { let f = n -> { let! x = task { n }; x }; f 1 }",
+    ] {
+        accepts(source);
     }
     rejects("task { let! x = 1; x }", "E1003");
     rejects("task { return! 1 }", "E1003");

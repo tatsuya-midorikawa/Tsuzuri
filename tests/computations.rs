@@ -7,6 +7,263 @@ const LAZY: &str = include_str!("fixtures/computations/Lazy.tc");
 const TEXT: &str = include_str!("fixtures/computations/Text.tc");
 
 #[test]
+fn parses_implicit_computation_bodies() {
+    for source in [
+        "def answer :: Option<i64>\nfn answer =\n    let! value = Some 42\n    return value",
+        "def answer :: Option<i64>\nfn answer = { do assert true; let! value = Some 42; return value }",
+        "let! value = Some 42\nreturn value",
+        "task { let! value = task { return 42 }; return value }",
+        "Option { let! value = Some 42; return value }",
+    ] {
+        tsuzuri::parser::parse(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+}
+
+#[test]
+fn implicit_computation_binds_follow_source_types() {
+    for source in [
+        "def answer :: Option<i64>\nfn answer =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nOption.get (answer())",
+        "def answer :: bool -> Result<i64, string>\nfn answer valid =\n    let source: Result<i64, string> = if valid then Ok 20 else Error \"failure\"\n    let! first = source\n    return first + 22\nResult.get (answer true)",
+        "def answer :: Option<i64>\nfn answer =\n    let increment: fn(i64) -> i64 = value -> value + 1\n    let! value = Some 41\n    return increment value\nOption.get (answer())",
+        "def main :: IO<Option<unit>>\nfn main =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value",
+        "fn main =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value",
+        "fn main =\n    let! value = IO.pure (Some \"owned\")\n    let! text = value\n    return text",
+        "def main :: IO<Option<i64>>\nfn main =\n    do! IO.pure ()\n    return! Some 42",
+        "fn main =\n    do! IO.pure ()\n    return! task { return 42 }",
+    ] {
+        let module = analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        for wasm in [false, true] {
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        }
+        llvm::emit(&module, llvm::Entry::Console).unwrap();
+    }
+}
+
+#[test]
+fn implicit_computations_work_in_all_function_bodies() {
+    let helpers = "private def choose :: bool -> i64 -> Option<i64>
+fn choose enabled input =
+    let! value = if enabled then Some input else None
+    do assert enabled
+    return value + 1
+
+def answer :: i64
+fn answer = Option.get (choose true 41)
+
+def identity :: Capture<'a> => Option<'a> -> Option<'a>
+fn identity source =
+    let! value = source
+    return value
+
+def curried :: i64 -> Option<i64> -> Option<i64>
+fn curried offset = source ->
+    let! value = source
+    return value + offset
+
+def implemented_with_let :: i64 -> Option<i64>
+let implemented_with_let = input ->
+    let! value = Some input
+    return value + 1
+
+def rec repeated :: i64 -> Option<i64>
+fn rec repeated count =
+    let! value = Some count
+    if value == 0 then return 42
+    else return! repeated (value - 1)
+
+def echo :: Capture<'a> => IO<Option<'a>> -> IO<Option<'a>>
+fn echo source =
+    let! option = source
+    let! value = option
+    return value
+
+instance Computed<i64> {
+    fn selected input =
+        let! value = Some input
+        return value + 1
+}
+";
+    let traits = "class Computed<'a> {
+    def selected :: 'a -> Option<i64>
+    def defaulted :: 'a -> Option<i64>
+    fn defaulted _input =
+        let! value = Some 41
+        return value + 1
+}";
+    let builder = format!(
+        "{IDENTITY}\ndef forwarded :: Option<i64> -> Option<i64>\nfn forwarded source =\n    let! value = source\n    return value + 1"
+    );
+    let main = "let transform: i64 -> Option<i64> = fx input ->
+    let! value = Some input
+    return value + 1
+let _first = Helpers.answer()
+let _second = Helpers.identity (Some \"owned\")
+let add_one = Helpers.curried 1
+let _third = add_one (Some 41)
+let _fourth = Helpers.implemented_with_let 41
+let _fifth = Helpers.repeated 2
+let _sixth = Computed.selected 41i64
+let _seventh = Computed.defaulted 0i64
+let _eighth = Builder.forwarded (Some 41)
+let _ninth = transform 41
+IO {
+    let! value = Helpers.echo (IO.pure (Some \"owned\"))
+    do! IO.write_line (Option.get value)
+}";
+    let sources = [
+        ("Helpers.tz", helpers),
+        ("Traits.tt", traits),
+        ("Builder.tc", builder.as_str()),
+        ("Main.tz", main),
+    ];
+    let module = analyze_modules(&sources).unwrap_or_else(|error| panic!("{error:?}"));
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+    for (path, source) in &sources {
+        let extension = std::path::Path::new(path)
+            .extension()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let kind = tsuzuri::syntax::SourceKind::from_extension(extension).unwrap();
+        let formatted = tsuzuri::formatter::format_source(path, source, kind).unwrap();
+        tsuzuri::parser::parse(&formatted.formatted).unwrap();
+    }
+}
+
+#[test]
+fn implicit_tasks_preserve_cold_values_and_foreign_short_circuiting() {
+    for source in [
+        "def work :: Task<i64>\nfn work =\n    let! first = task { return 20 }\n    let! second = task { return 22 }\n    return first + second\nTask.run (work())",
+        "def work :: Task<Option<i64>>\nfn work =\n    let! option = task { return Some 20 }\n    let! first = option\n    let! second = task { return 22 }\n    return first + second\nOption.get (Task.run (work()))",
+        "fn main =\n    let! first = IO.pure 20\n    let! second = task { return 22 }\n    do! IO.write_line (first + second)",
+        "def work :: Task<i64>\nfn work =\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = task { return number }\n        sum = sum + value\n    while false do do! task {}\n    return sum\nTask.run (work())",
+    ] {
+        let module = analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        for wasm in [false, true] {
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        }
+    }
+}
+
+#[test]
+fn implicit_match_and_applicative_bindings_select_source_builders() {
+    for source in [
+        "def answer :: Option<i64>\nfn answer =\n    let! mut first: i64 = Some 20\n    and! second = Some 21\n    first = first + 1\n    return first + second\nOption.get (answer())",
+        "def answer :: Option<i64>\nfn answer =\n    let! first = Some 20\n    and! second = Some 22\n    return first + second\nOption.get (answer())",
+        "def main :: IO<Option<i64>>\nfn main =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.write_line (first + second)\n    return first + second",
+        "fn main =\n    let! source = IO.pure (Some (20, 22))\n    match! source with\n    | (first, second) ->\n        do! IO.write_line (first + second)",
+        "def answer :: Option<i64>\nfn answer =\n    match! Some true with\n    | true -> return 42\n    | false -> return 0\nOption.get (answer())",
+    ] {
+        let module = analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        for wasm in [false, true] {
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        }
+        let formatted =
+            tsuzuri::formatter::format_source("Main.tz", source, tsuzuri::syntax::SourceKind::Code)
+                .unwrap();
+        analyze_modules(&[("Main.tz", &formatted.formatted)]).unwrap();
+    }
+}
+
+#[test]
+fn implicit_builders_use_signatures_and_generic_composition_operations() {
+    let deferred = "record Action<'a> { work: unit -> 'a }
+        def Return :: Capture<'a> => 'a -> Action<'a>
+        fn Return value = Action { work: fx () -> value }
+        def Bind :: Action<'a> -> ('a -> Action<'b>) -> Action<'b>
+        fn Bind source next = Action { work: fx () -> (next (source.work ())).work () }
+        def Zero :: Action<unit>
+        fn Zero = Return ()
+        def Delay :: (unit -> Action<'a>) -> Action<'a>
+        fn Delay source = Action { work: fx () -> (source ()).work () }
+        def Using :: (('a -> 'b) -> 'c) -> ('a -> Action<'b>) -> Action<'c>
+        fn Using source next = Action { work: fx () -> source (value -> (next value).work ()) }";
+    for (builder, source) in [
+        (
+            deferred,
+            "def answer :: Deferred.Action<Option<i64>>\nfn answer =\n    let! first = Deferred.Return 20\n    let! second = Some 22\n    return first + second\nOption.get ((answer()).work ())",
+        ),
+        (
+            deferred,
+            "def answer :: Option<Result<i64, string>>\nfn answer =\n    let! first = Some 20\n    let second: Result<i64, string> = Ok 22\n    let! value = second\n    return first + value\nResult.get (Option.get (answer()))",
+        ),
+    ] {
+        let module = analyze_modules(&[("Deferred.tc", builder), ("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        for wasm in [false, true] {
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            assert_eq!(
+                ir,
+                llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
+    let builder = "def Return :: 'a -> Option<'a>\nfn Return value = Some value\ndef Bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>\nfn Bind value next = Option.bind value next";
+    let error = analyze_modules(&[
+        ("First.tc", builder),
+        ("Second.tc", builder),
+        ("Main.tz", "let! value = Some 42\nreturn value"),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1018");
+    assert!(error.message.contains("ambiguous"));
+    analyze_modules(&[
+        ("First.tc", builder),
+        ("Second.tc", builder),
+        ("Main.tz", "Option { let! value = Some 42; return value }"),
+    ])
+    .unwrap();
+    for (source, code) in [
+        ("let! value = 42\nreturn value", "E1018"),
+        (
+            "def answer :: Option<i64>\nfn answer =\n    let mut counter = 0\n    let! value = Some 42\n    counter = value\n    return counter",
+            "E1014",
+        ),
+        (
+            "def answer :: Option<i64>\nfn answer =\n    let work = task { return 22 }\n    let! first = Some 20\n    let! second = work\n    return first + second",
+            "E1005",
+        ),
+        (
+            "def work :: Task<i64>\nfn work =\n    let source = task { return 21 }\n    let! first = source\n    let! second = source\n    return first + second",
+            "E1012",
+        ),
+        (
+            "def answer :: Option<i64>\nfn answer =\n    let! first = Some 1\n    and! second = Some first\n    return second",
+            "E1002",
+        ),
+    ] {
+        let error = analyze_modules(&[("Main.tz", source)]).unwrap_err();
+        assert_eq!(error.code, code, "{source}\n{error:?}");
+    }
+    for (result, binding) in [
+        ("Option<i64>", "Some 1"),
+        ("Task<i64>", "task { return 1 }"),
+    ] {
+        let source = format!(
+            "def answer :: {result}\nfn answer =\n{}    return 42",
+            format!("    let! _value = {binding}\n").repeat(128)
+        );
+        assert_eq!(
+            analyze_modules(&[("Main.tz", &source)]).unwrap_err().code,
+            "E0002"
+        );
+    }
+}
+
+#[test]
 fn recognizes_optional_builder_operations_and_rejects_exception_syntax() {
     for operation in ["MergeSources", "BindReturn", "Bind2"] {
         analyze_modules(&[(
@@ -537,21 +794,25 @@ fn supports_partial_worker_definitions_and_custom_iteration_source_types() {
 }
 
 #[test]
-fn keeps_computation_keywords_out_of_ordinary_expressions_and_lambdas() {
+fn implicit_bodies_do_not_relax_malformed_computation_syntax() {
     for source in [
-        "return 1",
-        "yield 1",
         "for n in [1] { n }",
         "while false {}",
         "Identity { return 1; return 2 }",
         "Identity { return! 1; let x = 2 }",
-        "Identity { let f = n -> { return n }; return f 1 }",
-        "Identity { let x = { return 1 }; return x }",
         "task { yield 1 }",
         "Identity { let x = 1 let y = 2; return x + y }",
-        "Identity { do () }",
     ] {
         rejects(source, "E0002");
+    }
+    rejects("yield 1", "E1018");
+    for source in [
+        "return 1",
+        "Identity { let f = n -> { return n }; return f 1 }",
+        "Identity { let x = { return 1 }; return x }",
+        "Identity { do () }",
+    ] {
+        accepts(source);
     }
 }
 

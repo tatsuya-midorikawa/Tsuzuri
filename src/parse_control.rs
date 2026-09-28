@@ -141,12 +141,17 @@ impl Parser<'_> {
                 return Err(self.error("expected a body expression"));
             }
             Ok(body)
+        } else if self.implicit_computation_ahead(Some(self.column(self.current().span))) {
+            self.implicit_computation(Some(self.column(self.current().span)), true)
         } else {
             self.expression_inner(0, true, true)
         }
     }
 
     pub(super) fn layout_block(&mut self, indent: usize) -> Result<Expr, Diagnostic> {
+        if self.implicit_computation_ahead(Some(indent)) {
+            return self.implicit_computation(Some(indent), false);
+        }
         self.enter()?;
         let start = self.current().span;
         let mut bindings = Vec::new();

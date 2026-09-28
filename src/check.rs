@@ -5171,6 +5171,7 @@ struct Checker<'a> {
     kinds: BTreeMap<String, usize>,
     next_local: usize,
     normal_loop_depth: usize,
+    computation_depth: usize,
     /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
     undecided_borrows: Vec<(Type, Span)>,
     /// Builtin result types that wait for a concrete integer argument type.
@@ -5207,6 +5208,7 @@ impl<'a> Checker<'a> {
             kinds: BTreeMap::new(),
             next_local: 0,
             normal_loop_depth: 0,
+            computation_depth: 0,
             undecided_borrows: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
@@ -5268,6 +5270,9 @@ impl<'a> Checker<'a> {
         }
         // Continuations must not retain the large value-checking frame at every recursive step.
         match expression.kind {
+            ExprKind::Computation(ref builder, ref body) => {
+                computation::check_implicit(self, builder, body, expected)
+            }
             ExprKind::ComputationBoundary(ref body) => {
                 let outer = std::mem::take(&mut self.normal_loop_depth);
                 let result = self.expression(body, expected);

@@ -277,6 +277,153 @@ IO {
   const trapped = execute(compiler, ["run", source, "--json"], { input: Buffer.from([0xff, 10]) }, false);
   assert.equal(trapped.status, 1);
   assert.equal(JSON.parse(trapped.stderr.trim()).code, "E2005");
+
+  writeFileSync(join(root, "Gate.tc"), `union Value<'a> = Stop of string | Next of 'a
+def Return :: 'a -> Value<'a>
+fn Return value = Next value
+def Bind :: Value<'a> -> ('a -> Value<'b>) -> Value<'b>
+fn Bind value next = match value with | Stop message -> Stop message | Next payload -> next payload
+def Zero :: Value<unit>
+fn Zero = Next ()
+def Delay :: (unit -> Value<'a>) -> (unit -> Value<'a>)
+fn Delay body = body
+def Run :: (unit -> Value<'a>) -> Value<'a>
+fn Run body = body ()
+def forwarded :: Option<i64> -> Option<i64>
+fn forwarded source =
+  let! value = source
+  return value + 1
+`);
+  writeFileSync(join(root, "Computed.tt"), `class Computed<'a> {
+  def selected :: 'a -> Option<i64>
+  def defaulted :: 'a -> Option<i64>
+  fn defaulted _input =
+    let! value = Some 41
+    return value + 1
+}
+`);
+  writeFileSync(join(root, "Helpers.tz"), `private def advance :: i64 -> Option<i64>
+fn advance input =
+  let! value = Some input
+  return value + 1
+def identity :: Capture<'a> => Option<'a> -> Option<'a>
+fn identity source =
+  let! value = source
+  return value
+def curried :: i64 -> Option<i64> -> Option<i64>
+fn curried offset = source ->
+  let! value = source
+  return value + offset
+def implemented_with_let :: i64 -> Option<i64>
+let implemented_with_let = input ->
+  let! value = Some input
+  return value + 1
+def rec repeated :: i64 -> Option<i64>
+fn rec repeated count =
+  let! value = Some count
+  if value == 0 then return 42
+  else return! repeated (value - 1)
+def echo :: Capture<'a> => IO<Option<'a>> -> IO<Option<'a>>
+fn echo source =
+  let! option = source
+  let! value = option
+  return value
+instance Computed<i64> {
+  fn selected input =
+    let! value = Some input
+    return value + 1
+}
+def functions :: i64
+fn functions =
+  let transform: i64 -> Option<i64> = fx input ->
+    let! value = Some input
+    return value + 1
+  let add_one = curried 1
+  Option.get (advance 41) + Option.get (identity (Some 42)) +
+    Option.get (add_one (Some 41)) + Option.get (implemented_with_let 41) +
+    Option.get (repeated 2) + Option.get (transform 41) +
+    Option.get (Computed.selected 41i64) + Option.get (Computed.defaulted 0i64) +
+    Option.get (Gate.forwarded (Some 41))
+`);
+  const implicitCases = [
+    ["read", `fn main =
+    let! line = IO.read_line ()
+    let! value = line
+    do! IO.write_line value
+    do! IO.write_line "done"
+`, "hello\ndone\n", ""],
+    ["result", `def gather :: IO<Result<Option<string>, IO.Error>>
+fn gather =
+    let! result = IO.try_read_line ()
+    let! option = result
+    let! text = option
+    return text
+fn main =
+    let! result = gather()
+    do! IO.write_line (match result with
+        | Ok (Some text) -> text
+        | Ok None -> "eof"
+        | Error _ -> "failed")
+`, "hello\n", "eof\n"],
+    ["custom", `def gather :: IO<Gate.Value<Option<unit>>>
+fn gather =
+    let! line = IO.read_line ()
+    let source = if Option.is_none (ref line) then Gate.Stop "stopped" else Gate.Next line
+    let! option = source
+    let! text = option
+    do! IO.write_line text
+    return ()
+fn main =
+    let! result = gather()
+    do! IO.write_line (match result with | Gate.Stop message -> message | Gate.Next _ -> "done")
+`, "hello\ndone\n", "stopped\n"],
+    ["drop", `fn main =
+    let! line = IO.read_line ()
+    let! text = line
+    return new [text]
+`, "", ""],
+    ["functions", `fn main =
+    let! line = IO.read_line ()
+    let! option = Helpers.echo (IO.pure line)
+    let! text = option
+    do! IO.write_line text
+    do! IO.write_line (Helpers.functions())
+  `, "hello\n378\n", ""],
+  ];
+  for (const [name, text, successOutput, eofOutput] of implicitCases) {
+    writeFileSync(source, text);
+    for (const optimization of ["-O0", "-O3"]) {
+      const executable = join(root, `implicit-${name}${optimization}`);
+      execute(compiler, ["build", source, optimization, "-o", executable]);
+      assert.equal(execute(executable, [], { input: "hello\n" }).stdout, successOutput, name);
+      assert.equal(execute(executable, [], { input: "" }).stdout, eofOutput, `${name} EOF`);
+      const wasm = `${executable}.wasm`;
+      execute(compiler, ["build", source, "--target", "wasm32", optimization, "-o", wasm]);
+      const module = new WebAssembly.Module(readFileSync(wasm));
+      for (const [lines, expectedOutput] of [[["hello"], successOutput], [[], eofOutput]]) {
+        const result = host(module, lines);
+        assert.equal(result.reads, 0);
+        assert.equal(result.instance.exports.tsuzuri_main(), 0);
+        assert.equal(result.reads, 1);
+        assert.equal(result.stdout, expectedOutput, `${name} WASM ${optimization}`);
+      }
+      if (name === "result") {
+        assert.equal(execute(executable, [], { input: Buffer.from([0xff, 10]) }).stdout, "failed\n");
+        const failed = host(module, [], { readFailure: true });
+        assert.equal(failed.instance.exports.tsuzuri_main(), 0);
+        assert.equal(failed.stdout, "failed\n");
+      }
+      if (name === "drop") {
+        execute(compiler, ["build", source, "--emit", "llvm", "-o", irPath]);
+        writeFileSync(irPath, readFileSync(irPath, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc"));
+        const tracked = join(root, `implicit-tracked${optimization}`);
+        execute(clang, [optimization, "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-Wno-override-module", irPath, "src/runtime/io.c", harness, "-lm", "-o", tracked]);
+        execute(tracked, [], { input: "hello\n".repeat(256) });
+        execute(tracked, [], { input: "" });
+      }
+    }
+  }
+  console.log("Implicit computations: IO/Option/Result/custom builders, short circuiting, preserved errors and owned results passed on native/WASM -O0/-O3");
   console.log("IO: EOF/CRLF/long lines, encoding/errors, ABI guards, composition, interactive prompts, object linking and ASan/UBSan zero-live allocations passed");
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -242,7 +242,7 @@ LLVM の定義は具体化ごとに一度だけ `@tz.builtin.name` に型引数�
 **標準入出力:** std/IO.tcはopaqueな`IO.IO<'a>`に通常の`unit -> 'a` closureを保持します。pure/bind/map/Delay/Combine/For/While/MergeSourcesは通常ソースであり、別のタスク・GC・effect interpreterは導入しません。
 IO.__read_line/__writeはstd由来のIOモジュールだけが参照できるbuiltinです。低水準readは`(i32 * [ubyte])`、writeはstatusを返し、Option/ResultとUTF変換はstdが処理します。
 LLVMは既存のhost_result_slot/read_host_resultを再利用してdescriptorを初期化・検査します。IO専用の外部呼び出しに純粋性属性は付けず、所有バッファは同じallocator/dropを使います。
-`IO<unit>`の入口だけが`tsuzuri_main`を生成し、通常closure ABIの`unit, env, borrow=false`で一度消費実行します。native executableはmainから呼び、object/WASMは明示ホスト呼び出しで、結果表示は付けません。
+`IO<T>`の入口が`tsuzuri_main`を生成し、通常closure ABIの`unit, env, borrow=false`で一度消費実行します。結果TはFunctionEmitterの既存drop_valueで解放し、再帰型の解放登録も共有します。native executableはmainから呼び、object/WASMは明示ホスト呼び出しで、結果表示は付けません。
 nativeのio.cは既存task/CPU runtimeと同じC結合経路へ必要時だけ追加します。fgetcのstdio bufferで行を読み、幾何増加bufferを通常allocatorで管理します。EINTRを再試行し、LF/CRLFを除きます。fwriteは部分書き込みを進め、flush失敗もstatusへ返します。
 WASMはtsuzuri_ioの同期read_line/writeとmemory/allocatorを必要時だけ公開し、ホスト不在をno-opにしません。既定の計算専用モジュールにはimportを増やしません。
 driverのrunはstdin/stdoutを継承し、stderrを読みながら転送します。JSON診断の場合だけstderrを保持し、異常終了診断へ含めます。
@@ -453,6 +453,17 @@ match!はBind+通常match、and!はsourceを先に順序付きの生成letへ保
 空の `Name {}` は収集済みビルダーを優先し、それ以外は既存の空レコードです。
 組み込み `task` の cold・非 Copy・Send・一回消費の経路は別のまま維持します。
 カスタム展開によって通常の関数値へ一回実行タスクや排他参照を捕捉させる特例は導入しません。
+
+暗黙本体は同じComputation ASTにユーザーが書けない生成名を付けて保持し、型検査時に段階的に展開します。
+結果型または最初のbind入力型と公開操作のsignatureから候補を選び、候補照合には既存Inferenceの独立コピーを使います。
+候補照合で本体を再型検査せず、実際に検査した右辺は生成localへ一度だけ保持します。曖昧性はE1018です。
+通常のprefixと型決定に使った最初の右辺も、選択したDelay/Taskのclosureの内側に置きます。
+同一builderは従来の操作、異種は外側Returnによる入れ子、Usingがあれば通常の高階関数による合成です。
+Usingへ渡すsourceは異種builderのBind/Return/Delay/Runを共有loweringで組み立て、IOはそのcallbackのIOを実行時に消費します。
+closureの捕捉・Capture/Send・サイズ検査はchecked_lambdaを共有します。専用TypedExprやruntime interpreterは追加しません。
+大きなAST構築helperを再帰型検査から分離し、暗黙展開にも既存の深さ128制限を適用します。
+引数なし・非再帰・署名なしmainはparserで既存entryへ変換し、他モジュールやトップレベルとの併用は既存の入口検査で拒否します。
+tests/computations.rsとcomputations.mjs、io.mjsで型・曖昧性・短絡・cold・所有値解放・native/WASM O0/O3を検証します。
 
 **多相性:** 明示シグネチャの型変数は rigid、各関数参照で導入する推論変数だけを単一化します。
 occurs check と型の深さ・構成要素数の上限を適用し、型が決まらない関数値は拒否します。

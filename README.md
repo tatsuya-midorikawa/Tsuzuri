@@ -29,6 +29,7 @@ UTF-8位置を交渉できないクライアントにはUTF-16位置を返しま
 WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
 
 標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。
+ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Option／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
 `IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
 
 `run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
@@ -93,7 +94,7 @@ fn main = answer()
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
-| コンピュテーション式 | `.tc` のユーザー定義ビルダー。`let!`／`do!`、`return`／`yield`、条件分岐・反復を通常の関数呼び出しへ展開 |
+| コンピュテーション式 | `.tc` のユーザー定義ビルダー。明示ブロックと型で解決する暗黙本体。束縛・短絡・分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
 | メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
@@ -736,7 +737,7 @@ markerで管理対象を識別し、既存の非cacheディレクトリを転用
 ネイティブの並列タスクを含む生の IR を直接リンクする場合は、
 `clang kernel.ll src/runtime/task.c -pthread -lm ...` のようにタスクランタイムも渡します。
 `--emit object` にはランタイム本体が含まれ、別途 C ソースを渡す必要はありません。
-WASM は少なくとも一つの `export def` が必要です。
+WASM は `IO<T>` の入口または少なくとも一つの `export def` が必要です。
 ホスト向けの公開名 `tz_name` は維持するため、エクスポート名はプロジェクト全体で一意にします。
 `--emit object --target wasm32` はリンク前の WASM オブジェクトも生成できます。
 コンパイル／リンク失敗では既存出力を変更せず、成功した成果物だけを同じファイルシステム上で置換します。

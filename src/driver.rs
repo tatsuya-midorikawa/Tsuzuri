@@ -1060,7 +1060,7 @@ fn build_complete(
     {
         return Err(driver_error(
             "E2004",
-            "a WebAssembly module needs an IO<unit> main or at least one 'export def' entry point",
+            "a WebAssembly module needs an IO<T> main or at least one 'export def' entry point",
         ));
     }
     let mut trap_sites = Vec::new();

@@ -53,6 +53,12 @@ def ReturnFrom :: IO<'a> -> IO<'a>
 def Bind :: IO<'a> -> ('a -> IO<'b>) -> IO<'b>
 ```
 
+## `Using`
+
+```tsuzuri
+def Using :: (('a -> 'b) -> 'c) -> ('a -> IO<'b>) -> IO<'c>
+```
+
 ## `Zero`
 
 ```tsuzuri

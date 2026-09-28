@@ -12,7 +12,7 @@ IO {
 }
 ```
 
-この例は独立した Main.tz です。入口が返す `IO<unit>` を実行環境が一度実行します。通常の値を返す入口と異なり、追加の結果表示や改行はありません。
+この例は独立した Main.tz です。入口が返す `IO<T>` を実行環境が一度実行し、結果を解放します。通常の値を返す入口と異なり、追加の結果表示や改行はありません。
 
 引数なしの `def main :: IO<unit>` と `fn main = IO { ... }` でも同じ動作です。IO を作るだけでは実行しません。例えば `let _unused = IO.write_line "unused"` は何も出力しません。
 
@@ -36,6 +36,19 @@ printf 'Tsuzuri\n' | ./target/release/tsuzuri run examples/io
 ```
 
 `let!` はアクションの結果を束縛し、`do!` は `IO<unit>` を実行して次へ進みます。通常の let、式、関数呼び出しには `!` を付けません。`return value` は値を IO に包み、`return! action` は別の IO を続けます。文は改行で区切れます。
+
+IO ブロックを省略し、Option の短絡も同じ本体で使えます。
+
+```tsuzuri
+fn main =
+    let! line = IO.read_line ()
+    let! value = line
+    do! IO.write_line value
+```
+
+EOF なら二つ目の let! で残りの文を中断します。結果の型は `IO<Option<unit>>` です。
+Result や独自ビルダーの失敗値も保持します。入口は None／Error を表示せず終了コード 0 で終えるため、
+失敗を報告する場合は名前付き関数から IO の結果を受け取り、match で処理してください。
 
 ## API
 

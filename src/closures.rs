@@ -44,6 +44,18 @@ impl Checker<'_> {
         self.normal_loop_depth = outer_loop_depth;
         let body = body?;
         self.scopes.pop();
+        self.checked_lambda(parameters, body, &outer, expected, span, task)
+    }
+
+    pub(super) fn checked_lambda(
+        &mut self,
+        parameters: Vec<Local>,
+        body: TypedExpr,
+        outer: &BTreeMap<usize, Local>,
+        expected: Option<&Type>,
+        span: Span,
+        task: bool,
+    ) -> Result<TypedExpr, Diagnostic> {
         let mut used = BTreeSet::new();
         free_locals(&body, &mut used);
         let mut captures = Vec::new();

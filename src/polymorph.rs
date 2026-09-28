@@ -206,7 +206,7 @@ pub(super) fn require_concrete(ty: &Type, span: Span) -> Result<(), Diagnostic> 
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Inference {
     solutions: Vec<Option<Type>>,
     defaults: BTreeMap<usize, Type>,

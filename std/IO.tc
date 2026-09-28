@@ -23,6 +23,9 @@ fn ReturnFrom action = action
 def Bind :: IO<'a> -> ('a -> IO<'b>) -> IO<'b>
 fn Bind action next = bind action next
 
+def Using :: (('a -> 'b) -> 'c) -> ('a -> IO<'b>) -> IO<'c>
+fn Using source next = IO { work: fx () -> source (value -> (next value).work ()) }
+
 def Zero :: IO<unit>
 fn Zero = pure ()
 

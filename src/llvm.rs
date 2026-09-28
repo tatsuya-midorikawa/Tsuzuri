@@ -552,6 +552,19 @@ fn emit_program(
             &mut globals,
         ));
     }
+    let io_wrapper = if entry != Entry::TestRunner && io_entry(module) {
+        Some(io::entry(FunctionEmitter::new(
+            module,
+            &module.functions[module.entry.unwrap()],
+            module.entry.unwrap(),
+            &mut builtins,
+            &mut intrinsics,
+            &mut globals,
+            &mut specializations,
+        )))
+    } else {
+        None
+    };
     output.push_str(&recursive::emit_helpers(
         module,
         &mut builtins,
@@ -562,9 +575,9 @@ fn emit_program(
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
-    if entry != Entry::TestRunner && io_entry(module) {
+    if let Some(io_wrapper) = io_wrapper {
         output.push_str(&debug::wrapper(
-            io::entry(module),
+            io_wrapper,
             module,
             &module.functions[module.entry.unwrap()],
             "@tsuzuri_main",
@@ -1409,9 +1422,9 @@ pub fn io_entry(module: &CheckedModule) -> bool {
     main.parameters.is_empty()
         && module.records[*id].origin == ModuleOrigin::Std
         && module.records[*id].name == "IO.IO"
-        && arguments.as_ref() == [Type::Unit]
+        && arguments.len() == 1
         && module.types().record_fields(*id, arguments)
-            == [Type::function(vec![Type::Unit], Type::Unit)]
+            == [Type::function(vec![Type::Unit], arguments[0].clone())]
 }
 
 fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
@@ -1435,7 +1448,7 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
     {
         return Err(Diagnostic::new(
             "E2004",
-            "the Main.tz entry point must take no arguments and return IO<unit>, a number, bool, char, utf8char, unit, string, or utf8string",
+            "the Main.tz entry point must take no arguments and return IO<T>, a number, bool, char, utf8char, unit, string, or utf8string",
             main.span,
         ));
     }

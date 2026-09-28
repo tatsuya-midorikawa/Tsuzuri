@@ -478,6 +478,22 @@ impl Parser<'_> {
             if diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
                 break;
             }
+            if definition.name.text == "main"
+                && definition.parameters.is_empty()
+                && definition.recursion.is_none()
+                && !signatures.contains_key("main")
+            {
+                if program.entry.is_some() {
+                    diagnostics.push(Diagnostic::new(
+                        "E2004",
+                        "use either top-level entry-point code or 'fn main', not both",
+                        definition.name.span,
+                    ));
+                } else {
+                    program.entry = Some(definition.body);
+                }
+                continue;
+            }
             let defined = signatures
                 .remove(&definition.name.text)
                 .ok_or_else(|| {
@@ -1363,7 +1379,12 @@ impl Parser<'_> {
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
         let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let result = if matches!(
+        let result = if self.implicit_computation_ahead(None) {
+            let mut body = self.implicit_computation(None, false)?;
+            let end = self.expect(&TokenKind::RightBrace, "'}' after the computation")?;
+            body.span = start.through(end.span);
+            Ok(body)
+        } else if matches!(
             self.current().kind,
             TokenKind::Let | TokenKind::Return | TokenKind::Do | TokenKind::RightBrace
         ) {
@@ -1627,6 +1648,93 @@ impl Parser<'_> {
         self.make(ExprKind::Computation(builder, Box::new(body)), span, depth)
     }
 
+    fn implicit_computation_ahead(&self, indent: Option<usize>) -> bool {
+        if self.in_task {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut statement = true;
+        let mut previous_end = self.previous_end;
+        for (offset, token) in self.tokens[self.position..].iter().enumerate() {
+            let newline = self.source[previous_end..token.span.start].contains(['\n', '\r']);
+            if depth == 0 {
+                statement |=
+                    newline && indent.is_none_or(|indent| self.column(token.span) == indent);
+                if matches!(
+                    token.kind,
+                    TokenKind::End
+                        | TokenKind::RightBrace
+                        | TokenKind::RightParen
+                        | TokenKind::RightBracket
+                        | TokenKind::RightList
+                ) || (statement
+                    && matches!(
+                        token.kind,
+                        TokenKind::Def
+                            | TokenKind::Fn
+                            | TokenKind::Export
+                            | TokenKind::Private
+                            | TokenKind::Const
+                            | TokenKind::Test
+                    ))
+                    || indent.is_some_and(|indent| newline && self.column(token.span) < indent)
+                {
+                    break;
+                }
+                if statement
+                    && (matches!(
+                        token.kind,
+                        TokenKind::Do | TokenKind::Return | TokenKind::Yield
+                    ) || (matches!(token.kind, TokenKind::Let | TokenKind::Match)
+                        && self
+                            .tokens
+                            .get(self.position + offset + 1)
+                            .is_some_and(|next| next.kind == TokenKind::Bang)))
+                {
+                    return true;
+                }
+                statement = token.kind == TokenKind::Semicolon;
+            }
+            match token.kind {
+                TokenKind::LeftBrace
+                | TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftList => depth += 1,
+                TokenKind::RightBrace
+                | TokenKind::RightParen
+                | TokenKind::RightBracket
+                | TokenKind::RightList => depth -= 1,
+                _ => {}
+            }
+            previous_end = token.span.end;
+        }
+        false
+    }
+
+    fn implicit_computation(
+        &mut self,
+        indent: Option<usize>,
+        single: bool,
+    ) -> Result<Expr, Diagnostic> {
+        self.enter()?;
+        let body = self.computation_sequence(indent, single)?;
+        self.nesting -= 1;
+        let span = body.span;
+        let depth = body.depth + 1;
+        self.make(
+            ExprKind::Computation(
+                Ident {
+                    text: "$implicit".into(),
+                    span,
+                    provenance: Provenance::Generated,
+                },
+                Box::new(body),
+            ),
+            span,
+            depth,
+        )
+    }
+
     fn computation_block(&mut self) -> Result<ComputationBlock, Diagnostic> {
         self.enter()?;
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
@@ -1665,6 +1773,12 @@ impl Parser<'_> {
                         TokenKind::Else
                             | TokenKind::Elif
                             | TokenKind::Pipe
+                            | TokenKind::Def
+                            | TokenKind::Fn
+                            | TokenKind::Export
+                            | TokenKind::Private
+                            | TokenKind::Const
+                            | TokenKind::Test
                             | TokenKind::RightParen
                             | TokenKind::RightBracket
                             | TokenKind::RightList
@@ -1752,8 +1866,13 @@ impl Parser<'_> {
         let kind = if self.eat(&TokenKind::Let) {
             self.computation_binding()?
         } else if self.eat(&TokenKind::Do) {
-            self.expect(&TokenKind::Bang, "'!' after 'do'")?;
-            ComputationStatementKind::Do(self.expression_inner(0, true, true)?)
+            let bind = self.eat(&TokenKind::Bang);
+            let value = self.expression_inner(0, true, true)?;
+            if bind {
+                ComputationStatementKind::Do(value)
+            } else {
+                ComputationStatementKind::Expression(value)
+            }
         } else if self.at(&TokenKind::Return) || self.at(&TokenKind::Yield) {
             let returns = self.take().kind == TokenKind::Return;
             let from = self.eat(&TokenKind::Bang);
@@ -2474,7 +2593,11 @@ impl Parser<'_> {
     fn lambda(&mut self, name: Ident, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
         let outer = self.in_task;
         self.in_task = false;
-        let body = self.expression_inner(0, true, stop_at_newline)?;
+        let body = if self.implicit_computation_ahead(Some(self.column(self.current().span))) {
+            self.body_expression()?
+        } else {
+            self.expression_inner(0, true, stop_at_newline)?
+        };
         self.in_task = outer;
         let span = name.span.through(body.span);
         let depth = body.depth + 1;
