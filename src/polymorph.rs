@@ -1943,6 +1943,15 @@ impl Checker<'_> {
         builtin: Builtin,
         span: Span,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        if matches!(builtin, Builtin::IOReadLine | Builtin::IOWrite)
+            && !(self.module == "IO" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "IO primitives are private to the standard IO module; compose IO actions instead",
+                span,
+            ));
+        }
         if builtin == Builtin::DebugPrintString
             && !(self.module == "Debug" && self.names.origin(self.module) == ModuleOrigin::Std)
         {

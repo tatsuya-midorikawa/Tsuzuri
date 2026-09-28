@@ -60,7 +60,15 @@ let base = 40
 base + 2
 ```
 
-トップレベル実行コードは root 直下の `Main.tz` にだけ置けます。`main` とトップレベル実行コードを同じ入口として併用しないでください。結果の型は数値、`bool`、`unit`、`string`、`utf8string`、`char`、`utf8char` のいずれかです。`unit` の結果は表示されません。
+トップレベル実行コードは root 直下の `Main.tz` にだけ置けます。`main` とトップレベル実行コードを同じ入口として併用しないでください。結果の型は `IO<unit>`、数値、`bool`、`unit`、`string`、`utf8string`、`char`、`utf8char` のいずれかです。`unit` の結果は表示されません。`IO<unit>` はアクションを実行し、追加の結果表示はしません。
+
+標準入出力は IO 計算式で明示できます。
+
+```tsuzuri run=Hello
+IO { do! IO.write_line "Hello" }
+```
+
+入力には `let! line = IO.read_line ()` を使います。[IO のガイド](library-reference/io.md)と[対話サンプル](../examples/io/Main.tz)に、EOF・失敗の処理を含む使い方があります。
 
 ## 実行ファイルの生成
 
@@ -115,4 +123,4 @@ fn main = add 20 22
 | 他ファイルの関数が見つからない | `Module.function` のように修飾する。`open` はない |
 | 所有値を後から使えない | 値渡しは move になり得る。読み取りだけなら `ref` を使う |
 | F# の例が通らない | `fn`、`let mut`、`==`、配列 `[1, 2]` など Tsuzuri の構文に合わせる |
-| WASM だけ画面や出力がない | WASM は計算モジュール。画面や通常の I/O はホスト側に実装する |
+| WASM だけ画面や出力がない | IO は tsuzuri_io ホストと tsuzuri_main の呼び出しが必要。画面はホスト側に実装する |

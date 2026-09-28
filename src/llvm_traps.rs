@@ -296,6 +296,7 @@ pub(super) fn instrument(
     external.extend(
         [
             "@main",
+            "@tsuzuri_main",
             "@tsuzuri_test_count",
             "@tsuzuri_test_run",
             "@tsuzuri_task_parallel",

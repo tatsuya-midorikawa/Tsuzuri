@@ -17,6 +17,7 @@
 | [Math](math.md) | Float、Elementary、FMA、固定順の集計 |
 | [Int](integers.md) | checked、saturating、bit、rotate、widening |
 | [表示と解析](formatting-and-parsing.md) | Display、Parse、to_string |
+| [IO と標準入出力](io.md) | IO モナド、stdin / stdout / stderr、EOF と失敗 |
 | [基本組み込み、Debug、Test](builtins.md) | 固定型の互換関数、assert、出力とテスト |
 | [Parallel](parallel.md) | 配列の同期並列生成・変換・還元 |
 | [Simd](simd.md) | 明示 128-bit vector と mask |
@@ -45,6 +46,7 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 | Seq | [Seq](api/Seq.md) | [Seq](sequences.md) |
 | Option | [Option](api/Option.md) | [Option / Result](option-result.md) |
 | Result | [Result](api/Result.md) | [Option / Result](option-result.md) |
+| IO | [IO](api/IO.md) | [IO と標準入出力](io.md) |
 | String | [String](api/String.md) | [文字列](text.md) |
 | Utf8String | [Utf8String](api/Utf8String.md) | [文字列](text.md) |
 | Char | [Char](api/Char.md) | [文字型](../language-reference/strings-and-characters.md) |
@@ -57,7 +59,7 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 
 **生成宣言だけでは全 API の一覧にはなりません。** Int、Simd、Task と、Vec / Math などの組み込み操作はコンパイラに実装され、上の手書き解説に含めています。また、本文で推論される Copy などの制約をすべてソース署名へ書き戻す生成器ではありません。
 
-不透明な Map / Set / Seq / Gpu の内部フィールドがソース宣言として見えても、利用者による直接構築・分解を許可するものではありません。解説ページの所有権・可視性契約を優先します。
+不透明な Map / Set / Seq / Gpu / IO の内部フィールドがソース宣言として見えても、利用者による直接構築・分解を許可するものではありません。解説ページの所有権・可視性契約を優先します。
 
 ## 失敗と互換性
 

@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-WASM は計算モジュールとして生成します。既定では WASI、.NET、JavaScript ランタイムの import は不要です。DOM、イベント、ネットワーク、通常の I/O はホスト側で実装します。
+WASM は計算モジュールとして生成します。入出力を使わないプログラムでは WASI、.NET、JavaScript ランタイムの import は不要です。標準入出力には [IO](../library-reference/io.md) を使い、tsuzuri_io のホスト関数へ接続します。DOM、イベント、ファイル、ネットワークはホスト側で実装します。
 
 ## モジュールを作る
 

@@ -128,7 +128,7 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
-    fn host_result_slot(&mut self, ty: &Type) -> String {
+    pub(super) fn host_result_slot(&mut self, ty: &Type) -> String {
         let llvm = if matches!(ty, Type::Record(..)) {
             format!("%{}", host_abi::record_name(ty, self.module))
         } else {
@@ -147,7 +147,7 @@ impl FunctionEmitter<'_, '_> {
         slot
     }
 
-    fn read_host_result(&mut self, ty: &Type, slot: &str) -> String {
+    pub(super) fn read_host_result(&mut self, ty: &Type, slot: &str) -> String {
         if matches!(ty, Type::Record(..)) {
             return self.read_host_record(ty, slot);
         }

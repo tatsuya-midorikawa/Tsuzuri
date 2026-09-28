@@ -31,6 +31,7 @@ Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み
 
 - [Option / Result](library-reference/option-result.md)、[Array / List / スライス](library-reference/arrays-and-lists.md)、[Vec](library-reference/vec.md)、[Map / Set](library-reference/map-set.md)、[Seq](library-reference/sequences.md)
 - [文字列 API](library-reference/text.md)、[Math と順序付き集計](library-reference/math.md)、[Int](library-reference/integers.md)、[表示と解析](library-reference/formatting-and-parsing.md)
+- [IO と標準入出力](library-reference/io.md): IO アクション、対話入力、EOF と失敗、native / WASM の接続。
 - [Parallel](library-reference/parallel.md)、[Simd](library-reference/simd.md)、[基本組み込み・Debug・Test](library-reference/builtins.md)
 - [std のソース宣言一覧](library-reference/api/index.md): 自動生成の補助資料。組み込み API と不透明型の制約は解説を併用します。
 

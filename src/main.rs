@@ -469,7 +469,9 @@ fn run_action(
                 .unwrap_or_else(|| arguments.options.output_path(project.input())),
             arguments.options,
         ),
-        Action::Run => driver::run(module, project, arguments.options),
+        Action::Run => {
+            driver::run_with_diagnostics(module, project, arguments.options, arguments.json)
+        }
     }
 }
 

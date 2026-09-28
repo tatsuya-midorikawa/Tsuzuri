@@ -1,7 +1,7 @@
 # Tsuzuri 0.1 言語仕様
 
 初版は **ファイル単位のモジュール、ランク1の多相性、厳格評価、所有権と借用を持つ式指向言語** です。
-値の計算と所有するローカル状態を対象とし、OS／GUI／DOM／ネットワーク／ファイル I/O はホスト側に置きます。
+値の計算と所有するローカル状態、IO モナドによる標準入出力を対象とし、OS／GUI／DOM／ネットワーク／ファイル I/O はホスト側に置きます。
 可変状態へのアクセスには排他的な借用を要求し、共有可変状態は導入しません。
 非停止、スタック枯渇、検査違反によるトラップはあり、全関数の停止は保証しません。
 コンパイル時に扱えない構文・型を、別の意味へ暗黙に置き換えることはありません。
@@ -121,13 +121,13 @@ manifestと依存sourceも出力保護の対象です。ネットワーク、git
 コンパイラは標準ライブラリ（std）のモジュールを埋め込み、すべてのプロジェクトで利用者のモジュールの後に読み込みます。
 インポートや追加のファイルは不要で、std の関数も他モジュールと同じく `Math.zero()` のように修飾して呼びます。
 std のソースは未使用でも常に型検査しますが、到達しない std の関数・レコード・union・組み込み関数のラッパーは IR に出力しません。
-std は `export` を持たず C／WASM のシンボルを追加しません。WASM の import も既定では追加せず、Debug 出力だけは明示オプションで有効にできます。
+std は `export` を持ちません。IO の入口・ランタイム境界には専用シンボルを追加します。WASM の import は到達する IO／extern 呼び出しと明示的な Debug 出力にだけ追加します。
 std の `private` 関数は std の中だけで使え、利用者のコードから参照すると `E1022` です。
 
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Seq`、`Test`、`Gpu`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Seq`、`Test`、`Gpu`、`IO`
 
 現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
 型汎用の数学関数を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
@@ -792,7 +792,7 @@ Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ち�
 `Main.tz` では次のどちらか一方を使います。
 
 - 宣言の後にトップレベルの `let` を順に書き、必要なら最後に結果式を書く。
-- 引数なしで数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` を返す `fn main` を定義する。
+- 引数なしで `IO<unit>` または数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` を返す `fn main` を定義する。
 
 トップレベルの `let` の区切りは `;`、改行、またはファイル末尾です。
 右辺を次の行へ続ける場合は演算子の直後で改行するか、括弧・配列・レコード・ブロックの内側に書きます。
@@ -801,7 +801,8 @@ Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ち�
 トップレベルの束縛はエントリーコード内のローカル値で、宣言済み関数からの参照や
 他モジュールへの公開はできません。右辺をソース順に評価し、結果式がなければ `unit` を返します。
 上の `Main.tz` は何も表示しません。末尾に `d` を追加すれば距離を表示します。
-結果式がある場合、その型は数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` に限り、
+結果式が `IO<unit>` ならアクションだけを実行し、結果の自動表示はしません。
+それ以外は数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` に限り、
 ネイティブのホスト・ラッパーが値を表示します。string は UTF-8 に変換し、utf8string はそのまま、
 埋め込み NUL も含めて出力します。string に孤立サロゲートがあればトラップし、暗黙に置換しません。
 置換して表示する場合は、明示的に `String.to_well_formed ref text` を使います。
@@ -810,6 +811,38 @@ Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ち�
 トップレベルの実行コードと `fn main` の併用、他モジュールでのトップレベル実行はエラーです。
 `check` とライブラリ出力は `.tz`・`.tt`・`.tc` のどれも入力にでき、`Main.tz` は不要です。
 ライブラリ／WASM 出力はホストの `export def` で公開した関数の呼び出しで実行し、トップレベルのエントリーコードを自動実行しません。
+`IO<unit>` の入口がある場合は `tsuzuri_main() -> i32` を追加し、ホストからの明示呼び出しで実行します。WASM はこの入口だけでもビルドできます。
+
+## IO と標準入出力
+
+`IO<T>` は不透明な遅延アクションです。`IO.pure`、`IO.bind`、`IO.map` と通常の `.tc` ビルダーを提供し、合成・生成・破棄では入出力しません。
+内部は所有する通常の `unit -> T` 関数値です。内部表現・低水準 builtin は std の IO モジュールだけが参照でき、利用者には `IO.run` や Task への変換を公開しません。
+既存の Debug／extern の副作用は互換性のため維持します。IO 型は標準入出力の境界であり、言語全体の純粋性を保証する effect system ではありません。
+
+```text
+IO {
+    do! IO.write "Name: "
+    let! line = IO.read_line ()
+    do! IO.write_line (Option.default_value "world" line)
+}
+```
+
+`IO.read_line : unit -> IO<Option<string>>` は stdin、`write`／`write_line` は stdout、`write_error`／`write_error_line` は stderr を扱います。
+出力は `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` で、表示自体も実行時に行います。`try_` 接頭辞の各 API は結果を `Result<..., IO.Error>` で包みます。
+Error は ReadFailed／WriteFailed／InvalidEncoding。通常 API は Error でトラップします。EOF は None、空行は Some ""、改行なしの最終行も Some です。
+LF／CRLF を除去し、UTF-8 から string へ厳密変換します。出力は UTF-8、line 版だけ LF を付加します。孤立サロゲートは失敗で、NUL を含む内容は保持します。
+native は C stdio のバッファと逐次処理、出力ごとの flush を使います。書き込み途中の失敗は既出力を取り消しません。資源枯渇・ABI 違反・OS シグナルは回復可能な Result の対象外です。
+
+`let!`／`do!`／`return`／`return!`／`match!`、条件分岐、配列の for、while、and! を既存規則で展開します。and! は左から右に逐次実行します。
+IO 値も通常の Capture／Copy／借用規則に従い、継続を跨ぐ外側の可変状態や一回実行 Task の捕捉は導入しません。
+`run` は stdin／stdout を引き継ぎ、通常モードの stderr も逐次転送します。JSON モードは stderr だけを終了まで保持します。
+
+WASM は到達する操作だけを `tsuzuri_io.read_line(ptr) -> i32`／`tsuzuri_io.write(i32, ptr, i64) -> i32` として import し、未提供時に無視しません。
+read_line は改行を除いた所有 UTF-8 bytes の descriptor（offset0 pointer、offset8 i64 length、size16）を全経路で設定し、0=行／1=EOF／2=失敗を返します。
+所有バッファは `tsuzuri_alloc` で確保し、空行・EOF・失敗は NULL／0 にできます。状態・長さ・NULL・範囲を受領時に検査し、UTF-8 検査は通常の from_bytes で行います。
+write は fd1／fd2 と借用 UTF-8 bytes を受け、0=全量書き込み・flush 成功、非0=失敗です。ホストは変更・解放・非同期保持をせず、line 版の LF を重複追加しません。
+IO を使わないプログラムの import 要件は変えません。WASI や非同期イベントループは追加しません。
+API と詳しい利用例は [IO リファレンス](../_docs/library-reference/io.md)にあります。
 
 ## トラップ位置
 

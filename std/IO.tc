@@ -1,0 +1,96 @@
+record IO<'a> { work: unit -> 'a }
+
+union Error = ReadFailed | WriteFailed | InvalidEncoding
+
+def pure :: Capture<'a> => 'a -> IO<'a>
+fn pure value = IO { work: fx () -> value }
+
+def bind :: IO<'a> -> ('a -> IO<'b>) -> IO<'b>
+fn bind action next = IO { work: fx () -> {
+    let value = action.work ();
+    (next value).work ()
+} }
+
+def map :: ('a -> 'b) -> IO<'a> -> IO<'b>
+fn map transform action = IO { work: fx () -> transform (action.work ()) }
+
+def Return :: Capture<'a> => 'a -> IO<'a>
+fn Return value = pure value
+
+def ReturnFrom :: IO<'a> -> IO<'a>
+fn ReturnFrom action = action
+
+def Bind :: IO<'a> -> ('a -> IO<'b>) -> IO<'b>
+fn Bind action next = bind action next
+
+def Zero :: IO<unit>
+fn Zero = pure ()
+
+def Delay :: (unit -> IO<'a>) -> IO<'a>
+fn Delay body = IO { work: fx () -> (body ()).work () }
+
+def Combine :: IO<unit> -> IO<'a> -> IO<'a>
+fn Combine first rest = IO { work: fx () -> {
+    first.work ();
+    rest.work ()
+} }
+
+def For :: (Copy<'a>, Capture<'a>) => ['a] -> ('a -> IO<unit>) -> IO<unit>
+fn For values body = IO { work: fx () -> for value in values do (body value).work () }
+
+def While :: (unit -> bool) -> IO<unit> -> IO<unit>
+fn While guard body = IO { work: fx () -> while guard () do body.work () }
+
+def MergeSources :: IO<'a> -> IO<'b> -> IO<('a * 'b)>
+fn MergeSources first second = IO { work: fx () -> (first.work (), second.work ()) }
+
+def BindReturn :: IO<'a> -> ('a -> 'b) -> IO<'b>
+fn BindReturn action transform = map transform action
+
+def try_read_line :: unit -> IO<Result.Result<Option.Option<string>, Error>>
+fn try_read_line _unit = IO { work: fx () ->
+    match IO.__read_line () with
+    | (0, bytes) ->
+        match Utf8String.from_bytes bytes with
+        | Option.Some text -> Result.Ok (Option.Some (String.from_utf8 (ref text)))
+        | Option.None -> Result.Error InvalidEncoding
+    | (1, _) -> Result.Ok Option.None
+    | _ -> Result.Error ReadFailed
+}
+
+def read_line :: unit -> IO<Option.Option<string>>
+fn read_line _unit = map Result.get (try_read_line ())
+
+private def try_output :: (Display<'a>, Capture<'a>) => i32 -> bool -> 'a -> IO<Result.Result<unit, Error>>
+fn try_output destination newline value = IO { work: fx () ->
+    let text = Display.display (ref value)
+    if String.is_well_formed (ref text) then
+        let output = if newline then text + "\n" else text
+        let bytes = Utf8String.from_string (ref output)
+        if IO.__write destination (ref bytes) == 0 then Result.Ok () else Result.Error WriteFailed
+    else Result.Error InvalidEncoding
+}
+
+def try_write :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+fn try_write value = try_output 1i32 false value
+
+def try_write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+fn try_write_line value = try_output 1i32 true value
+
+def try_write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+fn try_write_error value = try_output 2i32 false value
+
+def try_write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+fn try_write_error_line value = try_output 2i32 true value
+
+def write :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
+fn write value = map Result.get (try_write value)
+
+def write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
+fn write_line value = map Result.get (try_write_line value)
+
+def write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
+fn write_error value = map Result.get (try_write_error value)
+
+def write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
+fn write_error_line value = map Result.get (try_write_error_line value)

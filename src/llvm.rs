@@ -70,12 +70,15 @@ pub fn emit_with_export_style(
 
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     let mut output = String::with_capacity(ir.len());
-    let exports: BTreeSet<_> = module
+    let mut exports: BTreeSet<_> = module
         .functions
         .iter()
         .filter(|function| function.exported)
         .map(|function| format!("tz_{}", function.name))
         .collect();
+    if io_entry(module) {
+        exports.insert("tsuzuri_main".into());
+    }
     let has_write = ir.contains("declare i64 @write(i32, ptr, i64)");
     let has_console = ir.contains("define internal i32 @tz.console.write(");
     let mut console = false;
@@ -123,6 +126,8 @@ mod hash;
 mod host_abi;
 #[path = "llvm_imports.rs"]
 mod imports;
+#[path = "llvm_io.rs"]
+mod io;
 #[path = "llvm_math.rs"]
 mod math;
 #[path = "llvm_parallel.rs"]
@@ -349,7 +354,7 @@ fn emit_program(
         validate_main(module)?;
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
     let types = module.types();
     output.push_str(&host_abi::type_definitions(module));
@@ -557,6 +562,15 @@ fn emit_program(
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
+    if entry != Entry::TestRunner && io_entry(module) {
+        output.push_str(&debug::wrapper(
+            io::entry(module),
+            module,
+            &module.functions[module.entry.unwrap()],
+            "@tsuzuri_main",
+            &mut globals,
+        ));
+    }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
             console_main(module),
@@ -594,7 +608,7 @@ fn emit_program(
     if output.contains("@tz.rec.") {
         output.push_str(include_str!("runtime/recursive.ll"));
     }
-    if uses_host_abi(module) {
+    if uses_host_abi(module) || output.contains("@tsuzuri_io_") {
         output.push_str(host_abi::allocator());
     }
     if output.contains("@tsuzuri_cpu_sum_i64(") {
@@ -728,6 +742,9 @@ pub fn header(module: &CheckedModule) -> String {
          #endif\n\n",
     );
     output.push_str(&host_abi::header_types(module));
+    if io_entry(module) {
+        output.push_str("int32_t tsuzuri_main(void);\n");
+    }
     output.push_str(&imports::header(module));
     for function in &module.functions {
         if !function.exported {
@@ -1382,6 +1399,21 @@ fn abi_type(ty: &Type) -> String {
     }
 }
 
+pub fn io_entry(module: &CheckedModule) -> bool {
+    let Some(main) = module.entry.map(|id| &module.functions[id]) else {
+        return false;
+    };
+    let Type::Record(id, arguments) = &main.signature.result else {
+        return false;
+    };
+    main.parameters.is_empty()
+        && module.records[*id].origin == ModuleOrigin::Std
+        && module.records[*id].name == "IO.IO"
+        && arguments.as_ref() == [Type::Unit]
+        && module.types().record_fields(*id, arguments)
+            == [Type::function(vec![Type::Unit], Type::Unit)]
+}
+
 fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
     let main = module
         .entry
@@ -1394,7 +1426,8 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
             )
         })?;
     if !main.parameters.is_empty()
-        || (!main.signature.result.is_scalar()
+        || (!io_entry(module)
+            && !main.signature.result.is_scalar()
             && !matches!(
                 main.signature.result,
                 Type::Unit | Type::String | Type::Utf8String
@@ -1402,7 +1435,7 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
     {
         return Err(Diagnostic::new(
             "E2004",
-            "the Main.tz entry point must take no arguments and return a number, bool, char, utf8char, unit, string, or utf8string",
+            "the Main.tz entry point must take no arguments and return IO<unit>, a number, bool, char, utf8char, unit, string, or utf8string",
             main.span,
         ));
     }
@@ -4046,9 +4079,12 @@ fn emit_builtin(
         builtin if builtin.name().starts_with("Math.") => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
-        Builtin::Hash | Builtin::HashMix | Builtin::DisplayQuoted | Builtin::SeqNext => {
-            emit_typed_builtin(instance, ty, module, intrinsics, globals)
-        }
+        Builtin::Hash
+        | Builtin::HashMix
+        | Builtin::DisplayQuoted
+        | Builtin::SeqNext
+        | Builtin::IOReadLine
+        | Builtin::IOWrite => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
@@ -4204,6 +4240,8 @@ fn emit_typed_builtin(
         emitter.simd_builtin(instance)
     } else if instance.builtin == Builtin::SeqNext {
         emitter.sequence_next(ty)
+    } else if matches!(instance.builtin, Builtin::IOReadLine | Builtin::IOWrite) {
+        emitter.io_builtin(instance.builtin, ty)
     } else if instance.builtin.name().starts_with("Math.") {
         emitter.math_builtin(instance)
     } else if instance.builtin == Builtin::DisplayQuoted {
@@ -4996,6 +5034,9 @@ fn test_builtin(
 }
 
 fn console_main(module: &CheckedModule) -> String {
+    if io_entry(module) {
+        return "define i32 @main() {\nentry:\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
+    }
     let main = &module.functions[module.entry.unwrap()];
     let ty = &main.signature.result;
     let mut output = match ty {

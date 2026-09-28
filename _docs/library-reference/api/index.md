@@ -4,6 +4,7 @@
 - [Char](Char.md)
 - [Debug](Debug.md)
 - [Gpu](Gpu.md)
+- [IO](IO.md)
 - [List](List.md)
 - [Map](Map.md)
 - [Math](Math.md)

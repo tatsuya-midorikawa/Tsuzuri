@@ -586,6 +586,8 @@ pub enum Builtin {
     Unreachable,
     ToString,
     DebugPrintString,
+    IOReadLine,
+    IOWrite,
     Display,
     Parse,
     Default,
@@ -799,6 +801,8 @@ impl Builtin {
         Self::Unreachable,
         Self::ToString,
         Self::DebugPrintString,
+        Self::IOReadLine,
+        Self::IOWrite,
         Self::Display,
         Self::Parse,
         Self::Default,
@@ -959,6 +963,8 @@ impl Builtin {
             Self::Unreachable => "unreachable",
             Self::ToString => "to_string",
             Self::DebugPrintString => "Debug.__print_string",
+            Self::IOReadLine => "IO.__read_line",
+            Self::IOWrite => "IO.__write",
             Self::Display => "$builtin.display",
             Self::Parse => "$builtin.parse",
             Self::Default => "$builtin.default",
@@ -1070,6 +1076,22 @@ impl Builtin {
             ty: a(),
         };
         let (parameters, result, constraints) = match self {
+            Self::IOReadLine => (
+                vec![Concrete(Type::Unit)],
+                BuiltinType::Tuple(vec![
+                    Concrete(Type::Integer(32, true)),
+                    Array(Box::new(Concrete(Type::Integer(8, false)))),
+                ]),
+                Vec::new(),
+            ),
+            Self::IOWrite => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Reference(Box::new(Concrete(Type::Utf8String)), false),
+                ],
+                Concrete(Type::Integer(32, true)),
+                Vec::new(),
+            ),
             Self::SimdSplat
             | Self::SimdOfLanes2
             | Self::SimdOfLanes4

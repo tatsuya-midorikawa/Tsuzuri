@@ -1,0 +1,7 @@
+def main :: IO<unit>
+fn main = IO {
+    do! IO.write "Name: "
+    let! line = IO.read_line ()
+    let name = Option.default_value "world" line
+    do! IO.write_line ("Hello, " + name + "!")
+}

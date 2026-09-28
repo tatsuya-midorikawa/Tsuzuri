@@ -7,6 +7,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Gpu.tz", include_str!("../std/Gpu.tz")),
+    ("std/IO.tc", include_str!("../std/IO.tc")),
     ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
@@ -44,6 +45,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Seq",
     "Test",
     "Gpu",
+    "IO",
 ];
 
 pub fn is_reserved_module(name: &str) -> bool {
@@ -53,7 +55,7 @@ pub fn is_reserved_module(name: &str) -> bool {
 pub(crate) fn opaque_record(name: &str) -> bool {
     matches!(
         name,
-        "Map.Map" | "Map.Entry" | "Set.Set" | "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer"
+        "Map.Map" | "Map.Entry" | "Set.Set" | "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "IO.IO"
     )
 }
 
@@ -92,7 +94,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 19);
+        assert_eq!(RESERVED_MODULES.len(), 20);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));
@@ -104,6 +106,46 @@ mod tests {
         for (path, _) in SOURCES {
             let name = module_name(path).unwrap_or_else(|| panic!("invalid std path {path}"));
             assert!(is_reserved_module(name), "{path} must be a reserved module");
+        }
+    }
+
+    #[test]
+    fn io_actions_are_opaque_and_composable() {
+        let module = crate::analyze(
+            "let action = IO { let! value = IO.pure 40; do! IO.pure (); return value + 2 }\n()",
+        )
+        .unwrap_or_else(|error| panic!("{}", error.message));
+        crate::llvm::emit(&module, crate::llvm::Entry::Console).unwrap();
+        let error = crate::analyze("let action = IO.pure 42\nTask.run action.work").unwrap_err();
+        assert!(error.message.contains("opaque"), "{}", error.message);
+        for source in [
+            "IO.__read_line ()",
+            "let call = IO.__write\n()",
+            "IO.IO { work: fx () -> 42 }",
+        ] {
+            assert_eq!(
+                crate::analyze(source).unwrap_err().code,
+                "E1022",
+                "{source}"
+            );
+        }
+        for source in [
+            "IO { let! line = IO.read_line (); do! IO.write_line (Option.default_value \"\" line) }",
+            "IO { for number in [1, 2] do do! IO.write_line number }",
+            "IO { while false do do! IO.write_line 1 }",
+            "IO {\n    let! left = IO.pure 20\n    and! right = IO.pure 22\n    return left + right\n}",
+        ] {
+            let module =
+                crate::analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+            for wasm in [false, true] {
+                let ir =
+                    crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
+                if crate::llvm::io_entry(&module) {
+                    assert!(ir.contains("define i32 @tsuzuri_main()"));
+                    assert!(!ir.contains("define i32 @main()"));
+                    assert!(!ir.contains("@tz.console.write"));
+                }
+            }
         }
     }
 

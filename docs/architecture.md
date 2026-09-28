@@ -46,6 +46,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
 | `src/llvm_debug.rs` | 共通採番によるDWARFメタデータ、型・変数・関数と式のソース位置 |
 | `src/llvm_imports.rs` | externのABI wrapper、WASM import属性、所有結果の受領検査 |
+| `std/IO.tc` / `src/llvm_io.rs` / `src/runtime/io.c` | 不透明なIOモナド、入口での実行、標準ストリーム、WASMホスト境界 |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit vector/mask型、lane型族、境界検査とLLVM vector lowering |
 | `src/llvm_control.rs` | 直接の反復・switch・定数表、パターン手順の分岐と全経路の解放 |
 | `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定 merge sort の型付き builtin lowering |
@@ -237,6 +238,15 @@ LLVM の定義は具体化ごとに一度だけ `@tz.builtin.name` に型引数�
 関数 ID を保持します。両者の併用は拒否し、他モジュールや `Main.tc` の `main` は入口に選びません。
 トップレベルの `let` は通常のローカル束縛へ下げ、モジュールの共有状態は導入しません。
 ライブラリ出力にはコンソール・ラッパーやトップレベルコードの自動実行を追加しません。
+
+**標準入出力:** std/IO.tcはopaqueな`IO.IO<'a>`に通常の`unit -> 'a` closureを保持します。pure/bind/map/Delay/Combine/For/While/MergeSourcesは通常ソースであり、別のタスク・GC・effect interpreterは導入しません。
+IO.__read_line/__writeはstd由来のIOモジュールだけが参照できるbuiltinです。低水準readは`(i32 * [ubyte])`、writeはstatusを返し、Option/ResultとUTF変換はstdが処理します。
+LLVMは既存のhost_result_slot/read_host_resultを再利用してdescriptorを初期化・検査します。IO専用の外部呼び出しに純粋性属性は付けず、所有バッファは同じallocator/dropを使います。
+`IO<unit>`の入口だけが`tsuzuri_main`を生成し、通常closure ABIの`unit, env, borrow=false`で一度消費実行します。native executableはmainから呼び、object/WASMは明示ホスト呼び出しで、結果表示は付けません。
+nativeのio.cは既存task/CPU runtimeと同じC結合経路へ必要時だけ追加します。fgetcのstdio bufferで行を読み、幾何増加bufferを通常allocatorで管理します。EINTRを再試行し、LF/CRLFを除きます。fwriteは部分書き込みを進め、flush失敗もstatusへ返します。
+WASMはtsuzuri_ioの同期read_line/writeとmemory/allocatorを必要時だけ公開し、ホスト不在をno-opにしません。既定の計算専用モジュールにはimportを増やしません。
+driverのrunはstdin/stdoutを継承し、stderrを読みながら転送します。JSON診断の場合だけstderrを保持し、異常終了診断へ含めます。
+tests/io.mjsはnative/WASM O0/O3、cold/順序/EOF/符号化/失敗/ABI境界、対話CLI、object、ASan/UBSanと未解放byte0を検証します。
 
 **定数:** `Program.constants` を内部の引数なし宣言として収集し、関数と同じ名前・可視性・型検査を使います。
 特殊化・所有権検査の前に依存を明示スタックで辿り、評価結果をキャッシュして参照を型付きリテラルへ展開します。

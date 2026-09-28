@@ -3,7 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::check::{CheckedModule, ModuleOrigin};
@@ -1054,10 +1054,13 @@ fn build_complete(
             "an application must start from Main.tz; pass Main.tz or its directory, or use '--emit object' for a library",
         ));
     }
-    if options.emit == Emit::Wasm && !module.functions.iter().any(|function| function.exported) {
+    if options.emit == Emit::Wasm
+        && !llvm::io_entry(module)
+        && !module.functions.iter().any(|function| function.exported)
+    {
         return Err(driver_error(
             "E2004",
-            "a WebAssembly module needs at least one 'export def' entry point",
+            "a WebAssembly module needs an IO<unit> main or at least one 'export def' entry point",
         ));
     }
     let mut trap_sites = Vec::new();
@@ -1155,7 +1158,9 @@ fn build_complete(
         options.target == Target::Native && text.contains("declare void @tsuzuri_task_parallel(");
     let cpu_runtime =
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
-    let native_runtime = task_runtime || cpu_runtime;
+    let io_runtime = text.contains("declare i32 @tsuzuri_io_");
+    let native_runtime =
+        task_runtime || cpu_runtime || (options.target == Target::Native && io_runtime);
     let debug_import = options.target == Target::Wasm32 && text.contains("@tsuzuri_debug_write(");
     if task_runtime
         && !cfg!(any(unix, windows))
@@ -1169,7 +1174,7 @@ fn build_complete(
     if cfg!(windows) && native_runtime && options.emit == Emit::Object {
         return Err(driver_error(
             "E2002",
-            "Windows COFF objects with embedded task or CPU runtime are not supported; emit LLVM and link the runtime once, or build an executable",
+            "Windows COFF objects with embedded task, CPU, or IO runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
     protect_sources(project, output)?;
@@ -1286,7 +1291,7 @@ fn build_complete(
                     .map_err(|error| io_error("write Win32 task adapter", &header, error))?;
             }
             let source = format!(
-                "{}\n{}",
+                "{}\n{}\n{}",
                 if task_runtime {
                     include_str!("runtime/task.c")
                 } else {
@@ -1294,6 +1299,11 @@ fn build_complete(
                 },
                 if cpu_runtime {
                     include_str!("runtime/cpu.c")
+                } else {
+                    ""
+                },
+                if io_runtime {
+                    include_str!("runtime/io.c")
                 } else {
                     ""
                 }
@@ -1530,12 +1540,15 @@ fn build_complete(
             if debug_import {
                 linker.arg("--export-memory");
             }
-            if llvm::uses_host_abi(module) {
+            if llvm::uses_host_abi(module) || io_runtime {
                 linker.args([
                     "--export=tsuzuri_alloc",
                     "--export=tsuzuri_free",
                     "--export-memory",
                 ]);
+            }
+            if llvm::io_entry(module) {
+                linker.arg("--export=tsuzuri_main");
             }
             if options.trap_info {
                 linker.arg("--export=tsuzuri_trap_site");
@@ -1635,6 +1648,15 @@ pub fn run(
     project: &Project,
     options: BuildOptions,
 ) -> Result<Vec<String>, Diagnostic> {
+    run_with_diagnostics(module, project, options, false)
+}
+
+pub fn run_with_diagnostics(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    json: bool,
+) -> Result<Vec<String>, Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
             "E2000",
@@ -1657,15 +1679,41 @@ pub fn run(
         },
         "run",
     )?;
-    let result = Command::new(&output)
-        .output()
+    let mut child = Command::new(&output)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| io_error("run executable", &output, error))?;
+    let mut stderr = Vec::new();
+    let relay = (|| -> io::Result<()> {
+        let mut stream = child.stderr.take().expect("stderr is piped");
+        let mut buffer = [0; 8192];
+        loop {
+            let count = match stream.read(&mut buffer) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                return Ok(());
+            }
+            stderr.extend_from_slice(&buffer[..count]);
+            if !json {
+                io::stderr().write_all(&buffer[..count])?;
+            }
+        }
+    })();
+    if let Err(error) = relay {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io_error("relay program stderr", &output, error));
+    }
+    let status = child
+        .wait()
+        .map_err(|error| io_error("wait for executable", &output, error))?;
     temporary.close()?;
-    io::stdout()
-        .write_all(&result.stdout)
-        .map_err(|error| io_error("relay program stdout", &output, error))?;
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         let span = project
             .with_trap_sources(|sources| {
                 sites
@@ -1677,23 +1725,20 @@ pub fn run(
                     .map(|site| site.span)
             })
             .unwrap_or_default();
-        let message = if stderr.trim().is_empty() {
+        let message = if !json || stderr.trim().is_empty() {
             format!(
-                "program terminated with {}; integer division, indexing, assert, or allocation may have trapped",
-                result.status
+                "program terminated with {status}; integer division, indexing, assert, or allocation may have trapped"
             )
         } else {
-            format!(
-                "program terminated with {}:\n{}",
-                result.status,
-                stderr.trim_end()
-            )
+            format!("program terminated with {}:\n{}", status, stderr.trim_end())
         };
         return Err(Diagnostic::new("E2005", message, span));
     }
-    io::stderr()
-        .write_all(&result.stderr)
-        .map_err(|error| io_error("relay program stderr", &output, error))?;
+    if json {
+        io::stderr()
+            .write_all(&stderr)
+            .map_err(|error| io_error("relay program stderr", &output, error))?;
+    }
     Ok(messages)
 }
 

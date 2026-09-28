@@ -86,7 +86,7 @@ pub(super) fn type_definitions(module: &CheckedModule) -> String {
     if !uses_host_abi(module) {
         return String::new();
     }
-    let mut output = String::from("%tz.abi.buffer = type { ptr, i64 }\n");
+    let mut output = String::new();
     for ty in record_types(module) {
         let Type::Record(id, arguments) = &ty else {
             unreachable!()

@@ -28,6 +28,9 @@ UTF-8位置を交渉できないクライアントにはUTF-16位置を返しま
 `Debug.print value` は借用して表示し、`Debug.trace value` は表示して同じ所有値を返します。native は stderr、WASM は既定で no-op です。
 WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
 
+標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。
+`IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
+
 `run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
 WASM では import なしの `tsuzuri_trap_site()` と、隣接する `.trap.json` の表を使います。
 
@@ -86,7 +89,7 @@ fn main = answer()
 
 | 項目 | 初版の実装 |
 |---|---|
-| 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。共有可変状態・I/O・外部関数インポートなし |
+| 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。標準入出力は IO、外部機能は extern。共有可変状態はなし |
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`fx`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
@@ -96,7 +99,7 @@ fn main = answer()
 | メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
-| ホスト連携 | 64-bit 以下の整数、f32／f64、bool の C ABI と WASM エクスポート。UI／I/O はホストの責務 |
+| ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。標準入出力は IO、UI・ファイル・ネットワークはホストの責務 |
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
 
 配列型は `[i32]` のように要素型だけを指定します。
@@ -141,7 +144,7 @@ UTF-8 にできない孤立サロゲートはトラップします。置換す�
 Web 向けの小さな計算モジュールという方向性は
 [fsw のネイティブコンパイラ](https://github.com/tatsuya-midorikawa/fsw/tree/feat/fsw-native-compiler)
 を参考にしています。fsw の直接 WASM 出力とは異なり、Tsuzuri は **LLVM を共通基盤** にして
-ネイティブ／WASM の両方へ出力します。生成 WASM は JavaScript ランタイムのインポートを必要としません。
+ネイティブ／WASM の両方へ出力します。入出力を使わない生成 WASM は JavaScript ランタイムのインポートを必要としません。
 
 ## 関数と型クラス
 
@@ -767,6 +770,7 @@ node tests/wasm_simd.mjs target/release/tsuzuri # llvm-objdump required; TSUZURI
 node tests/simd.mjs target/release/tsuzuri # same llvm-objdump requirement
 node tests/cpu_dispatch.mjs target/release/tsuzuri
 node tests/host_imports.mjs target/release/tsuzuri
+node tests/io.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri # llvm-dwarfdump required; TSUZURI_DWARFDUMP overrides it
 python3 -m venv target/math-reference-env
 target/math-reference-env/bin/python -m pip install mpmath==1.3.0
