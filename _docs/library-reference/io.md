@@ -14,13 +14,12 @@ IO {
 
 この例は独立した Main.tz です。入口が返す `IO<T>` を実行環境が一度実行し、結果を解放します。通常の値を返す入口と異なり、追加の結果表示や改行はありません。
 
-引数なしの `def main :: IO<unit>` と `fn main = IO { ... }` でも同じ動作です。IO を作るだけでは実行しません。例えば `let _unused = IO.write_line "unused"` は何も出力しません。
+引数なしの `def main :: IO<unit> = IO { ... }` でも同じ動作です。IO を作るだけでは実行しません。例えば `let _unused = IO.write_line "unused"` は何も出力しません。
 
 ## 読み書きする
 
 ```tsuzuri
-def main :: IO<unit>
-fn main = IO {
+def main :: IO<unit> = IO {
     do! IO.write "Name: "
     let! line = IO.read_line ()
     let name = Option.default_value "world" line
@@ -40,7 +39,7 @@ printf 'Tsuzuri\n' | ./target/release/tsuzuri run examples/io
 IO ブロックを省略し、Option の短絡も同じ本体で使えます。
 
 ```tsuzuri
-fn main =
+def main :: IO<Option<unit>> =
     let! line = IO.read_line ()
     let! value = line
     do! IO.write_line value

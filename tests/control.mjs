@@ -69,6 +69,7 @@ const cases = [
   ["guard_once", [], 42n],
   ["function_forms", [], 46n],
   ["lambda_nested", [], 9n],
+  ["inline_forms", [], 42n],
   ["partial_moves", [], 47n],
   ["owned_guard", [], 4n],
   ["owned_replacements", [0n], 3n],

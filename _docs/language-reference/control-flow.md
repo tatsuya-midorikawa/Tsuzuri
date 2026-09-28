@@ -7,8 +7,7 @@
 ## if、elif、else
 
 ```tsuzuri run=42
-def clamp :: i64 -> i64
-fn clamp value =
+def clamp :: i64 -> i64 = \value ->
     if value < 0 then 0
     elif value > 42 then 42
     else value

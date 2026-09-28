@@ -14,8 +14,7 @@ Result<T, E> = Ok of T | Error of E
 case は `Option.Some` / `Result.Error` と修飾できます。無修飾名は利用者の同名 case に隠れる可能性があるので、公開例や複数モジュールでは修飾名が明確です。
 
 ```tsuzuri run=42
-def parse_count :: ref string -> Result<i64, string>
-fn parse_count text = Option.to_result "invalid count" (Parse.parse text)
+def parse_count :: ref string -> Result<i64, string> = \text -> Option.to_result "invalid count" (Parse.parse text)
 
 let first = "20"
 let second = "22"

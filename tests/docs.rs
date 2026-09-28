@@ -94,9 +94,24 @@ fn renders_declared_constraints_regions_and_class_method_docs() {
 #[test]
 fn renders_active_pattern_names_and_module_function_constraints() {
     let source = "/// Extract.\ndef (|Whole|) :: i64 -> i64\nfn (|Whole|) value = value\n\
-        def use :: 'a -> 'a\n    @'a: #identity\nfn use value = value";
+        def use :: 'a -> 'a\n    @'a: #identity\nfn use value = value\n\
+        /// Classify.\ndef (|Small|Large|) :: i64 -> 'T = \\value -> if value < 10 then Small value else Large value";
     let rendered = docgen::render_module("Main", &parser::parse(source).unwrap());
     assert!(rendered.contains("## `(|Whole|)`\n\n```tsuzuri\ndef (|Whole|) :: i64 -> i64"));
     assert!(rendered.contains("def use :: 'a -> 'a\n    @'a: #identity"));
     assert!(!rendered.contains("#identity<'a>"));
+    assert!(rendered.contains("def (|Small|Large|) :: i64 -> 'T"));
+    assert!(rendered.contains("Classify."));
+    assert!(!rendered.contains("Active$"));
+    assert!(!rendered.contains("$active_payload"));
+}
+
+#[test]
+fn inline_definitions_keep_docs_on_functions_and_typed_continuations() {
+    let source = "/// Even.\ndef rec even :: i64 -> bool = \\value -> if value == 0 then true else odd (value - 1)\n/// Odd.\nand odd :: i64 -> bool = \\value -> if value == 0 then false else even (value - 1)\nclass Answer<'a> {\n/// Answer.\ndef answer :: 'a -> i64 = \\_value -> 42\n}\ninstance Answer<i64> {}\nAnswer.answer 0i64";
+    let program = parser::parse(source).unwrap();
+    assert_eq!(program.functions[0].doc.as_ref().unwrap().text, "Even.");
+    assert_eq!(program.functions[1].doc.as_ref().unwrap().text, "Odd.");
+    assert_eq!(program.classes[0].defaults.len(), 1);
+    analyze(source).unwrap();
 }

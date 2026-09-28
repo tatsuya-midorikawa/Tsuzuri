@@ -254,17 +254,14 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
 
 ```text
 type Meters = f64
-def add_distance :: Meters -> Meters -> Meters
-fn add_distance x y = x + y
-def main :: Meters
-fn main = add_distance 20.5 21.5
+def add_distance :: Meters -> Meters -> Meters = \x y -> x + y
+def main :: Meters = add_distance 20.5 21.5
 ```
 
 ```text
 record Pair { left: i64, right: i64 }
 type PairAlias = Pair
-def sum :: PairAlias -> i64
-fn sum p = p.left + p.right
+def sum :: PairAlias -> i64 = \p -> p.left + p.right
 ```
 
 A01 後:
@@ -272,8 +269,7 @@ A01 後:
 ```text
 record Pair<'a, 'b> { left: 'a, right: 'b }
 type Pair2<'a> = Pair<'a, 'a>
-def first :: Pair2<i32> -> i32
-fn first p = p.left
+def first :: Pair2<i32> -> i32 = \p -> p.left
 ```
 
 `.tc`:
@@ -281,8 +277,7 @@ fn first p = p.left
 ```text
 // Id.tc
 type Boxed = i64
-def Return :: Boxed -> Boxed
-fn Return x = x
+def Return :: Boxed -> Boxed = \x -> x
 ```
 
 ### Rust 拒否テスト

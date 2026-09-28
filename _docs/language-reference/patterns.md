@@ -7,8 +7,7 @@
 ## match と when
 
 ```tsuzuri run=42
-def classify :: i64 -> i64
-fn classify value =
+def classify :: i64 -> i64 = \value ->
     match value with
     | 0 | 1 -> 0
     | larger when larger > 100 -> larger - 100

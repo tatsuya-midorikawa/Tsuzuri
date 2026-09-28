@@ -410,25 +410,20 @@ Lowering 後は通常の `ExprKind::Call`, `Lambda`, `Match`, `Block` になる�
 ```text
 record Pair { ok: bool, value: i64 }
 
-def Return :: i64 -> Pair
-fn Return value = Pair { ok: true, value: value }
+def Return :: i64 -> Pair = \value -> Pair { ok: true, value: value }
 
-def Bind :: Pair -> (i64 -> Pair) -> Pair
-fn Bind value next = if value.ok then next value.value else value
+def Bind :: Pair -> (i64 -> Pair) -> Pair = \value next -> if value.ok then next value.value else value
 
-def MergeSources :: Pair -> Pair -> Pair
-fn MergeSources left right =
+def MergeSources :: Pair -> Pair -> Pair = \left right ->
     if left.ok then
         if right.ok then Pair { ok: true, value: left.value * 1000 + right.value }
         else right
     else left
 
-def BindReturn :: Pair -> (i64 -> i64) -> Pair
-fn BindReturn value next =
+def BindReturn :: Pair -> (i64 -> i64) -> Pair = \value next ->
     if value.ok then Pair { ok: true, value: next value.value } else value
 
-def Bind2 :: Pair -> Pair -> (i64 -> i64 -> i64) -> Pair
-fn Bind2 left right next =
+def Bind2 :: Pair -> Pair -> (i64 -> i64 -> i64) -> Pair = \left right next ->
     if left.ok then
         if right.ok then Pair { ok: true, value: next left.value right.value }
         else right

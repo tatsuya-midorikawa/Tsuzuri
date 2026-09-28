@@ -686,8 +686,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-def area :: Shape -> f64
-fn area shape =
+def area :: Shape -> f64 = \shape ->
     match shape with
     | Circle r -> r * r * 3.141592653589793
     | Rect (w, h) -> w * h
@@ -701,8 +700,7 @@ Option-like:
 ```text
 union Maybe<'a> = None | Some of 'a
 
-def default_value :: 'a -> Maybe<'a> -> 'a
-fn default_value fallback value =
+def default_value :: 'a -> Maybe<'a> -> 'a = \fallback value ->
     match value with
     | Some x -> x
     | None -> fallback
@@ -715,8 +713,7 @@ Enum:
 ```text
 union Color = Red | Green | Blue
 
-def code :: Color -> i64
-fn code color =
+def code :: Color -> i64 = \color ->
     match color with
     | Red -> 1
     | Green -> 2
@@ -729,8 +726,7 @@ First-class constructor:
 
 ```text
 union Maybe<'a> = None | Some of 'a
-def apply :: ('a -> 'b) -> 'a -> 'b
-fn apply f x = f x
+def apply :: ('a -> 'b) -> 'a -> 'b = \f x -> f x
 match apply Some 42 with
 | Some n -> n
 | None -> 0
@@ -810,8 +806,7 @@ SwitchPlan / payload binding:
 
 ```text
 union U = A of string | B of i64 | C
-def f :: U -> i64
-fn f value =
+def f :: U -> i64 = \value ->
     match value with
     | A text -> text.length
     | B n -> n
@@ -853,43 +848,36 @@ union Shape =
 union Maybe<'a> = None | Some of 'a
 union Color = Red | Green | Blue
 
-def area :: Shape -> f64
-fn area shape =
+def area :: Shape -> f64 = \shape ->
     match shape with
     | Circle r -> r * r * 3.141592653589793
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe<'a> -> 'a
-fn default_value fallback value =
+def default_value :: 'a -> Maybe<'a> -> 'a = \fallback value ->
     match value with
     | Some x -> x
     | None -> fallback
 
-def color_code :: Color -> i64
-fn color_code color =
+def color_code :: Color -> i64 = \color ->
     match color with
     | Red -> 1
     | Green -> 2
     | Blue -> 3
 
-export def shape_area_scaled :: i64
-fn shape_area_scaled =
+export def shape_area_scaled :: i64 =
     let a = area (Circle 2.0)
     let b = area (Rect (3.0, 4.0))
     to_int ((a + b) * 1000.0)
 
-export def maybe_number :: i64
-fn maybe_number =
+export def maybe_number :: i64 =
     default_value 10 (Some 42)
 
-export def maybe_string_length :: i64
-fn maybe_string_length =
+export def maybe_string_length :: i64 =
     let value = default_value "fallback" (Some "owned")
     value.length
 
-export def color_sum :: i64
-fn color_sum =
+export def color_sum :: i64 =
     color_code Red * 100 + color_code Green * 10 + color_code Blue
 ```
 

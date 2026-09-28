@@ -54,11 +54,9 @@ WASM tests は import が空であることを既定として検査する。
 `std/Debug.tz` に次を提供する。
 
 ```text
-def print :: Display<'a> => &'a -> unit
-fn print value = Debug.__print_string (display value)
+def print :: Display<'a> => &'a -> unit = \value -> Debug.__print_string (display value)
 
-def trace :: Display<'a> => 'a -> 'a
-fn trace value = {
+def trace :: Display<'a> => 'a -> 'a = \value -> {
     Debug.print (&value);
     value
 }
@@ -483,8 +481,7 @@ If D01 Display constraint missing, `Debug.print (&record_without_display)` is cl
 fixture:
 
 ```text
-export def answer :: i64
-fn answer = {
+export def answer :: i64 = {
     let message = "hello";
     Debug.print (&message);
     Debug.trace 42

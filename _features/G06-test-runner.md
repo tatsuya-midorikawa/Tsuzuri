@@ -622,15 +622,13 @@ assert!(!ir.contains("@tz.test."));
 test-only lambda / specialization exclusion:
 
 ```text
-def id :: 'a -> 'a
-fn id x = x
+def id :: 'a -> 'a = \x -> x
 
 test "uses generic and lambda" =
     let f = x -> id x
     assert (f 1 == 1)
 
-export def f :: i64
-fn f = 42
+export def f :: i64 = 42
 ```
 
 期待:
@@ -654,8 +652,7 @@ runner IR:
 fixture:
 
 ```text
-def add :: i64 -> i64 -> i64
-fn add x y = x + y
+def add :: i64 -> i64 -> i64 = \x y -> x + y
 
 test "adds numbers" = assert (add 1 2 == 3)
 test "trap is failure" = assert false

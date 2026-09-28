@@ -1,3 +1,13 @@
+def (|Absent|Present|) :: bool -> 'T = \flag ->
+    let _first = Absent
+    if flag then Present "owned" else Absent
+
+export def active_repeated_case :: i32 -> i64 = \flag ->
+    match flag != 0 with
+    | Absent -> 0
+    | Present text -> text.length
+    | _ -> -1
+
 def (|Parsed|_|) :: ref string -> Option<i64>
 fn (|Parsed|_|) text = Parse.parse text
 
@@ -20,18 +30,15 @@ fn active_owned count =
             | _ -> 0)
     total
 
-union ParityView = ParityEven | ParityOdd
-def (|Even|Odd|) :: i64 -> ParityView
-fn (|Even|Odd|) number = if number % 2 == 0 then ParityEven else ParityOdd
+def (|Even|Odd|) :: i64 -> 'T =
+    \number -> if number % 2 == 0 then Even else Odd
 
 export def active_parity :: i64 -> i64
 fn active_parity number = match number with | Even -> 0 | Odd -> 1 | _ -> -1
 
-union TextView = TextSmall of string | TextLarge of string
-def (|Small|Large|) :: i64 -> TextView
-fn (|Small|Large|) number =
-    if number % 2 == 0 then TextSmall ("sm" + "all")
-    else TextLarge ("la" + "rge")
+def (|Small|Large|) :: i64 -> 'T = \number ->
+    if number % 2 == 0 then Small ("sm" + "all")
+    else Large ("la" + "rge")
 
 export def active_multi_owned :: i64 -> i64
 fn active_multi_owned count =
@@ -59,9 +66,8 @@ fn active_order =
         | _ -> 0
     state * 1000 + result
 
-def (|Left|Right|) :: ref mut i64 -> i64 -> ParityView
-fn (|Left|Right|) state _value =
-    if tick state % 2 == 0 then ParityEven else ParityOdd
+def (|Left|Right|) :: ref mut i64 -> i64 -> 'T = \state _value ->
+    if tick state % 2 == 0 then Left else Right
 
 export def active_conservative :: i64
 fn active_conservative =

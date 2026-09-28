@@ -7,8 +7,7 @@
 ## 型変数と制約
 
 ```tsuzuri run=42
-def twice :: (Add<'value>, Copy<'value>) => 'value -> 'value
-fn twice value = value + value
+def twice :: (Add<'value>, Copy<'value>) => 'value -> 'value = \value -> value + value
 
 twice 21
 ```
@@ -38,8 +37,7 @@ class Score<'value> {
 }
 
 class Eq<'value> => Comparable<'value> {
-    def same :: ref 'value -> ref 'value -> bool
-    fn same left right = Eq.eq left right
+    def same :: ref 'value -> ref 'value -> bool = \left right -> Eq.eq left right
 }
 ```
 
@@ -118,16 +116,14 @@ assert (left == right)
 
 ```tsuzuri project=module-constraint file=Point.tz
 record Point { horizontal: i64, vertical: i64 }
-def total :: Point -> i64
-fn total point = point.horizontal + point.vertical
+def total :: Point -> i64 = \point -> point.horizontal + point.vertical
 ```
 
 `Main.tz`:
 
 ```tsuzuri project=module-constraint file=Main.tz run=42
 def total_of :: 'value -> 'result
-    @'value : #total
-fn total_of value = 'value.total value
+    @'value : #total = \value -> 'value.total value
 
 total_of (Point.Point { horizontal: 20, vertical: 22 })
 ```

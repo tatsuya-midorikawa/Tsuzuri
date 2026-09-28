@@ -621,8 +621,7 @@ fn warnings(source: &str) -> Vec<Diagnostic> {
 W1001:
 
 ```text
-def f :: i64
-fn f =
+def f :: i64 =
     let unused = 1
     42
 ```
@@ -644,10 +643,8 @@ fn f = { let _unused = 1; 42 }
 使用例:
 
 ```text
-def consume :: string -> unit
-fn consume s = ()
-def f :: unit
-fn f = { let text = "x"; consume text }
+def consume :: string -> unit = \s -> ()
+def f :: unit = { let text = "x"; consume text }
 ```
 
 期待: `text` は move で使用済み、warning なし。
@@ -655,8 +652,7 @@ fn f = { let text = "x"; consume text }
 guard-only:
 
 ```text
-def f :: i64
-fn f =
+def f :: i64 =
     let threshold = 10
     match 20 with
     | n when n > threshold -> n
@@ -668,8 +664,7 @@ fn f =
 capture:
 
 ```text
-def f :: i64
-fn f =
+def f :: i64 =
     let offset = 1
     let g = x -> x + offset
     g 41
@@ -693,8 +688,7 @@ W1002 roots:
 W1003:
 
 ```text
-def f :: i64 -> i64
-fn f x =
+def f :: i64 -> i64 = \x ->
     match x with
     | _ -> 0
     | 1 -> 1

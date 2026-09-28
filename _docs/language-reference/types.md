@@ -43,8 +43,7 @@ Tsuzuri は静的型付きの言語です。関数の境界とレコードのフ
 ## タプル
 
 ```tsuzuri run=42
-def first :: i64 * bool -> i64
-fn first pair =
+def first :: i64 * bool -> i64 = \pair ->
     match pair with
     | (number, _) -> number
 
@@ -72,8 +71,7 @@ wide + 2
 名前付き関数のシグネチャの `'a` は呼び出しごとに具体化されます。同じ型変数は同じ型、異なる変数は独立した型です。
 
 ```tsuzuri run=42
-def identity :: 'a -> 'a
-fn identity value = value
+def identity :: 'a -> 'a = \value -> value
 
 let amount = identity 42
 let text = identity "ready"

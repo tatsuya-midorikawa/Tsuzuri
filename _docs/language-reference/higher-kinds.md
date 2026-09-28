@@ -35,8 +35,7 @@ instance Traits.Functor<Result<string>> {
     fn map transform value = Result.map transform value
 }
 
-def fmap :: Traits.Functor<'container> => ('input -> 'output) -> 'container<'input> -> 'container<'output>
-fn fmap transform value = Traits.Functor.map transform value
+def fmap :: Traits.Functor<'container> => ('input -> 'output) -> 'container<'input> -> 'container<'output> = \transform value -> Traits.Functor.map transform value
 
 let original: Result<i64, string> = Result.Ok 40
 let result = fmap (value -> value + 2) original

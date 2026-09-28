@@ -422,6 +422,114 @@ pub struct Expr {
     pub depth: usize,
 }
 
+impl Expr {
+    pub(crate) fn visit(&self, visitor: &mut impl FnMut(&Expr)) {
+        visitor(self);
+        use ExprKind::*;
+        match &self.kind {
+            Unary(_, value)
+            | Lambda(_, value)
+            | Task(value)
+            | TaskRun(value)
+            | ComputationBoundary(value)
+            | NewLiteral(value)
+            | Field(value, _)
+            | Borrow(value, ..)
+            | Dereference(value, _)
+            | Cast(value, _) => value.visit(visitor),
+            Binary(_, left, right)
+            | Index(left, right)
+            | Assign(left, right)
+            | NewArray(_, left, right)
+            | NewList(_, left, right) => {
+                left.visit(visitor);
+                right.visit(visitor);
+            }
+            Call(callee, arguments) => {
+                callee.visit(visitor);
+                for argument in arguments {
+                    argument.visit(visitor);
+                }
+            }
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.visit(visitor);
+                then_branch.visit(visitor);
+                else_branch.visit(visitor);
+            }
+            While { condition, body } => {
+                condition.visit(visitor);
+                body.visit(visitor);
+            }
+            For {
+                pattern,
+                source,
+                body,
+            } => {
+                pattern.visit_expressions(visitor);
+                source.visit(visitor);
+                body.visit(visitor);
+            }
+            Range {
+                start,
+                step,
+                finish,
+                ..
+            } => {
+                start.visit(visitor);
+                if let Some(step) = step {
+                    step.visit(visitor);
+                }
+                finish.visit(visitor);
+            }
+            Match { value, arms, .. } => {
+                value.visit(visitor);
+                for arm in arms {
+                    arm.pattern.visit_expressions(visitor);
+                    if let Some(guard) = &arm.guard {
+                        guard.visit(visitor);
+                    }
+                    arm.body.visit(visitor);
+                }
+            }
+            Block { bindings, result } => {
+                for binding in bindings {
+                    binding.value.visit(visitor);
+                }
+                result.visit(visitor);
+            }
+            Record { fields, .. } => {
+                for (_, value) in fields {
+                    value.visit(visitor);
+                }
+            }
+            RecordUpdate { base, fields } => {
+                base.visit(visitor);
+                for (_, value) in fields {
+                    value.visit(visitor);
+                }
+            }
+            Array(values) | List(values) | Tuple(values) => {
+                for value in values {
+                    value.visit(visitor);
+                }
+            }
+            Slice { value, start, end } => {
+                value.visit(visitor);
+                for bound in start.iter().chain(end) {
+                    bound.visit(visitor);
+                }
+            }
+            Computation(_, body) => body.visit_expressions(visitor),
+            Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit
+            | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     Integer(u128, Option<String>),
@@ -536,6 +644,31 @@ pub enum PatternKind {
     Annotated(Box<Pattern>, TypeExpr),
 }
 
+impl Pattern {
+    fn visit_expressions(&self, visitor: &mut impl FnMut(&Expr)) {
+        use PatternKind::*;
+        match &self.kind {
+            Literal(value) | Argument(value) => value.visit(visitor),
+            Apply(_, patterns) | Tuple(patterns) | Array(patterns) | List(patterns) => {
+                for pattern in patterns {
+                    pattern.visit_expressions(visitor);
+                }
+            }
+            Record(_, fields) => {
+                for (_, pattern) in fields {
+                    pattern.visit_expressions(visitor);
+                }
+            }
+            Cons(left, right) | Or(left, right) | And(left, right) => {
+                left.visit_expressions(visitor);
+                right.visit_expressions(visitor);
+            }
+            As(pattern, _) | Annotated(pattern, _) => pattern.visit_expressions(visitor),
+            Wildcard | Binding(_) => {}
+        }
+    }
+}
+
 /// Where a `match` comes from. Explicit matches and function guards must be
 /// exhaustive; destructuring keeps its runtime trap when a value does not fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -605,6 +738,49 @@ pub struct ComputationMatchArm {
     pub guard: Option<Expr>,
     pub body: ComputationBlock,
     pub span: Span,
+}
+
+impl ComputationBlock {
+    fn visit_expressions(&self, visitor: &mut impl FnMut(&Expr)) {
+        use ComputationStatementKind::*;
+        for statement in &self.statements {
+            match &statement.kind {
+                Let(binding, _) => binding.value.visit(visitor),
+                LetAnd(bindings) => {
+                    for binding in bindings {
+                        binding.value.visit(visitor);
+                    }
+                }
+                Do(value) | Operation(_, value) | Expression(value) => value.visit(visitor),
+                Match(value, arms) => {
+                    value.visit(visitor);
+                    for arm in arms {
+                        arm.pattern.visit_expressions(visitor);
+                        if let Some(guard) = &arm.guard {
+                            guard.visit(visitor);
+                        }
+                        arm.body.visit_expressions(visitor);
+                    }
+                }
+                If(condition, yes, no) => {
+                    condition.visit(visitor);
+                    yes.visit_expressions(visitor);
+                    if let Some(no) = no {
+                        no.visit_expressions(visitor);
+                    }
+                }
+                For(pattern, source, body) => {
+                    pattern.visit_expressions(visitor);
+                    source.visit(visitor);
+                    body.visit_expressions(visitor);
+                }
+                While(condition, body) => {
+                    condition.visit(visitor);
+                    body.visit_expressions(visitor);
+                }
+            }
+        }
+    }
 }
 
 impl ComputationStatement {

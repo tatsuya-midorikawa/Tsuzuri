@@ -75,14 +75,11 @@ record View { data: &[i64], title: &string }
 ```text
 record View { data: &[i64] }
 
-def view :: &[i64] -> View
-fn view data = View { data: data }
+def view :: &[i64] -> View = \data -> View { data: data }
 
-def first :: View -> i64
-fn first v = v.data[0]
+def first :: View -> i64 = \v -> v.data[0]
 
-def main :: i64
-fn main = {
+def main :: i64 = {
     let values = [10, 20];
     let v = view (&values);
     first v
@@ -94,8 +91,7 @@ fn main = {
 ```text
 record View { data: &[i64] }
 
-def bad :: View
-fn bad = {
+def bad :: View = {
     let values = [1, 2];
     View { data: &values }   // E1013
 }
@@ -105,8 +101,8 @@ fn bad = {
 
 ```text
 record PairView { left: &string, right: &string }
-def pair :: &string -> &string -> PairView
-fn pair a b = PairView { left: a, right: b } // E1013
+def pair :: &string -> &string -> PairView = \a b -> PairView { left: a, right: b }
+ // E1013
 ```
 
 ### フェーズ 2: 名前付き region 構文
@@ -124,11 +120,9 @@ region-name ::= ASCII lower identifier, "_" 以外
 例:
 
 ```text
-def first {r} :: &{r} [i64] -> &{r} i64
-fn first values = &values[0]
+def first {r} :: &{r} [i64] -> &{r} i64 = \values -> &values[0]
 
-def choose {r} :: bool -> &{r} string -> &{r} string -> &{r} string
-fn choose flag a b = if flag { a } else { b }
+def choose {r} :: bool -> &{r} string -> &{r} string -> &{r} string = \flag a b -> if flag { a } else { b }
 ```
 
 `&{r} T` は `'r` 型変数と衝突せず、既存 lexer の `{`/`}` token を使える。`&mut{r} T` と `&mut {r} T` の両方を受理してよいが、docs では `&mut {r} T` を推奨する。
@@ -141,8 +135,7 @@ record 宣言で region parameter を明示できる。
 record View {r} { data: &{r} [i64] }
 record PairView {a b} { left: &{a} string, right: &{b} string }
 
-def view {r} :: &{r} [i64] -> View {r}
-fn view data = View { data: data }
+def view {r} :: &{r} [i64] -> View {r} = \data -> View { data: data }
 ```
 
 型引数 `'a` と region 引数 `{r}` は別 namespace。A01 の型適用 `Box<'a>` と混ざる場合:
@@ -332,24 +325,19 @@ region 検査は型検査時に宣言済み region name をスコープ管理す
 
 ```text
 record View { data: &[i64] }
-def view :: &[i64] -> View
-fn view xs = View { data: xs }
-def first :: View -> i64
-fn first v = v.data[0]
-def main :: i64
-fn main = { let xs = [10, 20]; first (view (&xs)) }
+def view :: &[i64] -> View = \xs -> View { data: xs }
+def first :: View -> i64 = \v -> v.data[0]
+def main :: i64 = { let xs = [10, 20]; first (view (&xs)) }
 ```
 
 ```text
 record TextView { text: &string }
-def len :: TextView -> i64
-fn len v = v.text.length
+def len :: TextView -> i64 = \v -> v.text.length
 ```
 
 ```text
 record Nested { view: View }
-def nested :: &[i64] -> Nested
-fn nested xs = Nested { view: View { data: xs } }
+def nested :: &[i64] -> Nested = \xs -> Nested { view: View { data: xs } }
 ```
 
 ### フェーズ 1 拒否
@@ -369,13 +357,11 @@ fn nested xs = Nested { view: View { data: xs } }
 
 ```text
 record PairView {a b} { left: &{a} string, right: &{b} string }
-def pair {a b} :: &{a} string -> &{b} string -> PairView {a b}
-fn pair a b = PairView { left: a, right: b }
+def pair {a b} :: &{a} string -> &{b} string -> PairView {a b} = \a b -> PairView { left: a, right: b }
 ```
 
 ```text
-def choose {r} :: bool -> &{r} string -> &{r} string -> &{r} string
-fn choose flag a b = if flag { a } else { b }
+def choose {r} :: bool -> &{r} string -> &{r} string -> &{r} string = \flag a b -> if flag { a } else { b }
 ```
 
 ### E2E

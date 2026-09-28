@@ -315,6 +315,9 @@ soft numeric の生成済み IR もこの有効時だけの変換対象であり
 driver は side table を一時領域へ作り、ソース保護を再検査し、成果物公開の失敗時には表を rollback します。二ファイルの crash-atomic 更新ではありません。
 
 Option 部分認識器と複数ケース全域認識器は、通常の呼び出しを `PatternStep::Bind` で保持し、既存の union case の tag test と payload 投影へ下げます。
+複数ケースの `def ... -> 'T = ラムダ式` は parser が認識器専用の UnionDecl を生成します。Checker は本体内の case 名を通常のコンストラクタへ解決し、nullary case も参照のたびに値を作ります。内部名には利用者が書けない文字を含め、型・case の名前空間を混同しません。
+payload の有無は本体内の case の直接適用から取り、型は既存 Checker による本体検査で確定して関数の scheme へ反映します。別の型推論器や union runtime は追加しません。
+生成 union は API 文書と document symbol から除外し、API 署名には元の `'T` を表示します。
 失敗したパターン・ガードの一時結果は既存の cleanup を使い、追加の所有権規則は導入しません。
 名前表は関数 ID と case 種別だけを保持し、payload 型は使用ごとに fresh instantiate した signature から得ます。
 複数ケースの CoveragePat は認識器・case index・case 数を保持しますが、再評価を伴う現在の意味では保守的に opaque とし、フォールバックを要求します。
@@ -366,7 +369,8 @@ Type／式の Error は検査中だけの状態で、成功した CheckedModule 
 再帰指定は構文 AST に保持します。型検査後・単相化前の参照グラフを反復的な SCC 走査で検査し、
 自己・相互参照・関数値・認識器・インスタンスのメソッド／演算子の循環に `rec` を要求します。
 抽象型のクラス呼び出しは該当クラスの実装を保守的に候補とします。
-`def rec`／`def and` と実装のグループを一致させ、非再帰の前方参照は維持します。
+`def ... = ラムダ式` は従来の署名と実装を結合する `Parser::define` を共有します。`def rec ... =` と型付き `and ... :: ... =` は同じ再帰グループを持ちます。
+分離形式の `def rec`／`def and` と実装のグループも一致させ、非再帰の前方参照は維持します。
 
 パターンは左から順序付きの `Test`／`Bind` 手順と、成功時の束縛元へ展開します。
 OR は束縛名・型を揃え、最初に成立した側でガードを一回評価します。

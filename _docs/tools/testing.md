@@ -9,8 +9,7 @@ test 宣言は通常のソースと同じ型・所有権検査を受ける unit 
 Main のないライブラリでも、例えば `Checks.tz` に置けます。
 
 ```tsuzuri project=checks file=Checks.tz
-private def add :: i64 -> i64 -> i64
-fn add left right = left + right
+private def add :: i64 -> i64 -> i64 = \left right -> left + right
 
 test "adds integers" = assert (add 20 22 == 42)
 

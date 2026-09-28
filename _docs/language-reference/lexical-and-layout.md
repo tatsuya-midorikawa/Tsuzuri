@@ -44,8 +44,7 @@ with when true false
 ## インデント本体
 
 ```tsuzuri run=42
-def answer :: i64 -> i64
-fn answer base =
+def answer :: i64 -> i64 = \base ->
     let increment = 2
     let result = base + increment
     result
@@ -60,8 +59,7 @@ answer 40
 ## 明示ブロック
 
 ```tsuzuri run=42
-def answer :: i64
-fn answer = {
+def answer :: i64 = {
     let base = 40;
     let increment = 2;
     base + increment

@@ -9,8 +9,7 @@
 独立した `target/debug-demo/Main.tz` の例です。
 
 ```tsuzuri run=42
-def main :: i64
-fn main =
+def main :: i64 =
     let answer = 40 + 2
     Debug.print ref answer
     answer
@@ -27,8 +26,7 @@ WASM の既定は no-op ですが、引数・Display の評価と表示文字列
 独立した `target/debug-wasm/Kernel.tz`:
 
 ```tsuzuri project=debug-wasm file=Kernel.tz
-export def echo :: i64 -> i64
-fn echo value = Debug.trace value
+export def echo :: i64 -> i64 = \value -> Debug.trace value
 ```
 
 ```sh

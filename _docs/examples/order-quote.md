@@ -36,11 +36,9 @@ Total: 5400 JPY
 ```tsuzuri run=Subtotal%3A%205400%20JPY%0AShipping%3A%200%20JPY%0ATotal%3A%205400%20JPY
 record Quote { subtotal: i64, shipping: i64, total: i64 }
 
-def parse_integer :: ref string -> Result<i64, string>
-fn parse_integer text = Option.to_result "Enter a valid integer." (Parse.parse text)
+def parse_integer :: ref string -> Result<i64, string> = \text -> Option.to_result "Enter a valid integer." (Parse.parse text)
 
-def quote :: i64 -> i64 -> Result<Quote, string>
-fn quote unit_price quantity =
+def quote :: i64 -> i64 -> Result<Quote, string> = \unit_price quantity ->
     if unit_price < 0 then Result.Error "Price must not be negative."
     elif quantity <= 0 then Result.Error "Quantity must be positive."
     else Result {
@@ -49,15 +47,13 @@ fn quote unit_price quantity =
         return Quote { subtotal: subtotal, shipping: shipping, total: subtotal + shipping }
     }
 
-def parse_quote :: ref string -> ref string -> Result<Quote, string>
-fn parse_quote price_text quantity_text = Result {
+def parse_quote :: ref string -> ref string -> Result<Quote, string> = \price_text quantity_text -> Result {
     let! unit_price = parse_integer price_text
     let! quantity = parse_integer quantity_text
     return! quote unit_price quantity
 }
 
-def format_quote :: ref Quote -> string
-fn format_quote value =
+def format_quote :: ref Quote -> string = \value ->
     "Subtotal: " + to_string value.subtotal + " JPY\n" +
     "Shipping: " + to_string value.shipping + " JPY\n" +
     "Total: " + to_string value.total + " JPY"
@@ -90,8 +86,7 @@ test "rejects nonnumeric input" =
     let result = parse_quote (ref price) (ref quantity)
     assert (Result.is_error ref result)
 
-def main :: string
-fn main =
+def main :: string =
     let price = "1800"
     let quantity = "3"
     match parse_quote (ref price) (ref quantity) with

@@ -45,8 +45,7 @@ Stats はライブラリなので Main.tz は不要です。Node.js が export �
 `Stats.tz` の全内容です。返却配列の順序を「合計、最小、最大、平均」と定めます。
 
 ```tsuzuri project=statistics file=Stats.tz
-export def summarize :: ref [f64] -> [f64]
-fn summarize values =
+export def summarize :: ref [f64] -> [f64] = \values ->
     assert (values.length > 0)
     let total = Array.sum_kahan values
     let minimum = Option.get (Array.min values)

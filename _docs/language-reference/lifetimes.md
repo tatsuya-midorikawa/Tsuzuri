@@ -7,8 +7,7 @@
 ## 返却元を指定する
 
 ```tsuzuri run=5
-def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string
-fn first left right =
+def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string = \left right ->
     assert (right.length > 0)
     left
 
@@ -30,8 +29,7 @@ region 名は小文字で始まる ASCII 識別子で、型変数とは別の名
 ```tsuzuri run=42
 record View<'value> {r} { value: ref {r} 'value }
 
-def view {r} :: ref {r} i64 -> View<i64> {r}
-fn view value = View { value: value }
+def view {r} :: ref {r} i64 -> View<i64> {r} = \value -> View { value: value }
 
 let owner = 42
 let borrowed = view ref owner

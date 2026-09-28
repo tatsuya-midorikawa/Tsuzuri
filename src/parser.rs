@@ -205,7 +205,8 @@ impl Parser<'_> {
             | TokenKind::Union
             | TokenKind::Type
             | TokenKind::Const
-            | TokenKind::Class => true,
+            | TokenKind::Class
+            | TokenKind::And => true,
             TokenKind::Export => self
                 .tokens
                 .get(self.position + 1)
@@ -309,8 +310,12 @@ impl Parser<'_> {
                     if self.eat(&TokenKind::Def) {
                         let method = self.ident()?;
                         self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
-                        let mut signature = self.signature(method, false, column)?;
+                        let mut signature = self.signature(method.clone(), false, column)?;
                         signature.doc = method_doc;
+                        if self.eat(&TokenKind::Equal) {
+                            let body = if self.at(&TokenKind::Backslash) { self.explicit_lambda()? } else { self.body_expression()? };
+                            defaults.push(Definition { name: method, recursion: None, parameters: Vec::new(), body });
+                        }
                         methods.push(signature);
                     } else {
                         if let Some(documentation) = method_doc {
@@ -374,6 +379,15 @@ impl Parser<'_> {
                 }
                 let recursive = !continuation && self.eat(&TokenKind::Rec);
                 let name = self.function_name()?;
+                let typed_continuation = !declaration && continuation && (self.at(&TokenKind::DoubleColon) || self.region_list_ahead());
+                let declaration = declaration || typed_continuation;
+                if doc.is_some() && !declaration {
+                    return Err(self.error("doc comments attach to typed declarations, not to implementations"));
+                }
+                let multiple_cases = self.active_patterns.get(&name.text).is_some_and(|active| active.cases.len() > 1);
+                if multiple_cases && !declaration {
+                    return Err(self.error("multi-case active patterns use 'def (|First|Second|) :: Input -> 'T = \\value -> ...'"));
+                }
                 let group = if declaration { &mut signature_group } else { &mut definition_group };
                 let recursion = if continuation {
                     Some(group.clone().ok_or_else(|| Diagnostic::new(
@@ -389,7 +403,7 @@ impl Parser<'_> {
                     let mut signature = self.signature(name.clone(), exported, column)?;
                     signature.doc = doc;
                     signature.regions = regions;
-                    signature.recursion = recursion;
+                    signature.recursion = recursion.clone();
                     signature.visibility = visibility;
                     if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
                         return Err(Diagnostic::new(
@@ -400,6 +414,23 @@ impl Parser<'_> {
                     }
                     if self.at(&TokenKind::DoubleColon) {
                         return Err(self.error("use 'def name :: ...' for a signature; 'fn' introduces its implementation"));
+                    }
+                    if self.eat(&TokenKind::Equal) {
+                        if defined_names.contains(&name.text) {
+                            return Err(Diagnostic::new("E1001", "duplicate function definition", name.span));
+                        }
+                        let body = if self.at(&TokenKind::Backslash) {
+                            self.explicit_lambda()?
+                        } else {
+                            self.body_expression()?
+                        };
+                        definition_group = recursion.clone();
+                        defined_names.insert(name.text.clone());
+                        definitions.push(Definition { name: name.clone(), recursion, parameters: Vec::new(), body });
+                    } else if multiple_cases {
+                        return Err(self.error("multi-case active patterns require an inline lambda and the implicit result type 'T"));
+                    } else if typed_continuation {
+                        return Err(self.error("a typed 'and' declaration requires '= ...'"));
                     }
                     signatures.insert(name.text.clone(), signature);
                     self.eat(&TokenKind::Semicolon);
@@ -503,7 +534,8 @@ impl Parser<'_> {
                         definition.name.span,
                     )
                 })
-                .and_then(|signature| Self::define(signature, definition));
+                .and_then(|signature| Self::define(signature, definition))
+                .and_then(|function| self.implicit_active_union(function, &mut program.unions));
             match defined {
                 Ok(function) => program.functions.push(function),
                 Err(error) => {

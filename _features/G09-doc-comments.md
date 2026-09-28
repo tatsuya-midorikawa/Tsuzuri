@@ -39,8 +39,7 @@
 ```text
 /// One-line summary.
 /// More details.
-def answer :: i64
-fn answer = 42
+def answer :: i64 = 42
 ```
 
 - `///` は doc comment。行末までを text とし、先頭の `///` の直後に 1 個の空白があれば取り除く。

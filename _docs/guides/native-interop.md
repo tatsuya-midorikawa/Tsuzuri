@@ -9,8 +9,7 @@ Tsuzuri の計算を既存の C / C++ アプリケーションから呼び出せ
 独立したディレクトリの `Kernel.tz`:
 
 ```tsuzuri project=native file=Kernel.tz
-export def sum :: ref [i64] -> i64
-fn sum values = Array.sum values
+export def sum :: ref [i64] -> i64 = \values -> Array.sum values
 ```
 
 次の例ではそのディレクトリを `target/host-demo` とします。
@@ -89,8 +88,7 @@ i128、f16 / f128、decimal、char / utf8char、union、タプル、List、Vec�
 ```tsuzuri project=clock file=Clock.tz
 extern def now :: unit -> i64
 
-export def answer :: i64
-fn answer = now () + 2
+export def answer :: i64 = now () + 2
 ```
 
 native ホストは `tsuzuri_host_Clock_now` を実装します。

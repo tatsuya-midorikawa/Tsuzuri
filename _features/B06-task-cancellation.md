@@ -442,8 +442,7 @@ match Task.run (Task.parallel_results jobs) with
 ```
 
 ```text
-def make :: 'a -> Task<Result<'a, string>>
-fn make value = task { return Ok value }
+def make :: 'a -> Task<Result<'a, string>> = \value -> task { return Ok value }
 let run: [Task<Result<i64, string>>] -> Task<Result<[i64], string>> = Task.parallel_results
 match Task.run (run [make 42]) with
 | Ok values -> values[0]

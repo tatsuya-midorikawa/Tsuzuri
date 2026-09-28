@@ -245,6 +245,7 @@ const suites = {
       ["active_option", [0], 43n], ["active_option", [1], -1n],
       ["active_owned", [0n], 0n], ["active_owned", [64n], 320n], ["active_owned", [10000n], 50000n],
       ["active_parity", [-1n], 1n], ["active_parity", [0n], 0n], ["active_parity", [1n], 1n], ["active_parity", [14n], 0n],
+      ["active_repeated_case", [0], 0n], ["active_repeated_case", [1], 5n],
       ["active_multi_owned", [0n], 0n], ["active_multi_owned", [64n], 320n], ["active_multi_owned", [10000n], 50000n],
       ["active_order", [], 3231n], ["active_conservative", [], 2n], ["active_borrowed", [], 8n],
     ],

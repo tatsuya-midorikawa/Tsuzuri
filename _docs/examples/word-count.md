@@ -35,13 +35,11 @@ tsuzuri: 2
 作業ディレクトリ `target/word-count` の `Main.tz` に置く、一つのプログラムです。
 
 ```tsuzuri run=21%3A%201%0Allvm%3A%201%0Arust%3A%202%0Atsuzuri%3A%202
-def is_word_unit :: i16u -> bool
-fn is_word_unit value =
+def is_word_unit :: i16u -> bool = \value ->
     (value >= 97i16u && value <= 122i16u) ||
     (value >= 48i16u && value <= 57i16u)
 
-def count_words :: ref string -> Map<string, i64>
-fn count_words text =
+def count_words :: ref string -> Map<string, i64> = \text ->
     let normalized = String.to_ascii_lower text
     let mut counts: Map<string, i64> = Map.empty()
     let mut index = 0
@@ -58,8 +56,7 @@ fn count_words text =
             index = index + 1
     counts
 
-def format_counts :: ref Map<string, i64> -> string
-fn format_counts counts =
+def format_counts :: ref Map<string, i64> -> string = \counts ->
     if Map.is_empty counts then "(no words)"
     else Map.fold counts "" (\report word count ->
         let separator = if report.length == 0 then "" else "\n"
@@ -94,8 +91,7 @@ test "treats non-ASCII text as separators" =
     assert (Map.contains_key (ref counts) "one")
     assert (Map.contains_key (ref counts) "two")
 
-def main :: string
-fn main =
+def main :: string =
     let text = "Rust rust; Tsuzuri, TSUZURI! LLVM 21."
     let counts = count_words ref text
     format_counts ref counts

@@ -1,29 +1,22 @@
-def increment :: 'a -> 'a
-fn increment value = value + 1
-def add :: 'a -> 'a -> 'a
-fn add a b = a + b
-def triple :: 'a -> 'a
-fn triple value = value * 3
+def increment :: 'a -> 'a = \value -> value + 1
+def add :: 'a -> 'a -> 'a = \a b -> a + b
+def triple :: 'a -> 'a = \value -> value * 3
 
-def map :: ('a -> 'b) -> ['a] -> ['b]
-fn map f values =
+def map :: ('a -> 'b) -> ['a] -> ['b] = \f values ->
     new ['b](values.length, i -> f values[i])
 
-def rec fold :: ('b -> 'a -> 'b) -> ['a] -> i64 -> 'b -> 'b
-fn rec fold f values index total =
+def rec fold :: ('b -> 'a -> 'b) -> ['a] -> i64 -> 'b -> 'b = \f values index total ->
     if index == values.length {
         total
     } else {
         fold f values (index + 1) (f total values[index])
     }
 
-export def transform :: i64 -> i64 -> i64 -> i64 -> i64
-fn transform a b c d = {
+export def transform :: i64 -> i64 -> i64 -> i64 -> i64 = \a b c d -> {
     let increment_all = map increment;
     let values = increment_all [a, b, c, d];
     let sum = fold add values 0;
     sum 0 |> triple
 }
 
-def main :: i64
-fn main = transform 1 2 3 4
+def main :: i64 = transform 1 2 3 4

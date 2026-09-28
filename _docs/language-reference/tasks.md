@@ -7,8 +7,7 @@
 ## 作成と実行
 
 ```tsuzuri run=42
-def next :: i64 -> Task<i64>
-fn next value = task { return value + 1 }
+def next :: i64 -> Task<i64> = \value -> task { return value + 1 }
 
 let work = task {
     let! first = next 19
@@ -38,8 +37,7 @@ Array.sum ref results
 ## Result を返す並列計算
 
 ```tsuzuri run=42
-def job :: i64 -> Task<Result<i64, string>>
-fn job value = task {
+def job :: i64 -> Task<Result<i64, string>> = \value -> task {
     if value == 2 { return Result.Error "stopped" }
     else { return Result.Ok (value * 2) }
 }

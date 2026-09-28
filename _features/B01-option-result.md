@@ -148,119 +148,96 @@ union Option<'a> =
     | None
     | Some of 'a
 
-def is_some :: &Option<'a> -> bool
-fn is_some option =
+def is_some :: &Option<'a> -> bool = \option ->
     match option with
     | Some _ -> true
     | None -> false
 
-def is_none :: &Option<'a> -> bool
-fn is_none option = ! (is_some option)
+def is_none :: &Option<'a> -> bool = \option -> ! (is_some option)
 
-def get :: Option<'a> -> 'a
-fn get option =
+def get :: Option<'a> -> 'a = \option ->
     match option with
     | Some value -> value
     | None -> unreachable ()
 
-def default_value :: 'a -> Option<'a> -> 'a
-fn default_value fallback option =
+def default_value :: 'a -> Option<'a> -> 'a = \fallback option ->
     match option with
     | Some value -> value
     | None -> fallback
 
-def default_with :: (unit -> 'a) -> Option<'a> -> 'a
-fn default_with fallback option =
+def default_with :: (unit -> 'a) -> Option<'a> -> 'a = \fallback option ->
     match option with
     | Some value -> value
     | None -> fallback ()
 
-def map :: ('a -> 'b) -> Option<'a> -> Option<'b>
-fn map transform option =
+def map :: ('a -> 'b) -> Option<'a> -> Option<'b> = \transform option ->
     match option with
     | Some value -> Some (transform value)
     | None -> None
 
-def map_ref :: (&'a -> 'b) -> &Option<'a> -> Option<'b>
-fn map_ref transform option =
+def map_ref :: (&'a -> 'b) -> &Option<'a> -> Option<'b> = \transform option ->
     match option with
     | Some value -> Some (transform (&value))
     | None -> None
 
-def bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>
-fn bind option next =
+def bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b> = \option next ->
     match option with
     | Some value -> next value
     | None -> None
 
-def bind_ref :: &Option<'a> -> (&'a -> Option<'b>) -> Option<'b>
-fn bind_ref option next =
+def bind_ref :: &Option<'a> -> (&'a -> Option<'b>) -> Option<'b> = \option next ->
     match option with
     | Some value -> next (&value)
     | None -> None
 
-def filter :: (&'a -> bool) -> Option<'a> -> Option<'a>
-fn filter predicate option =
+def filter :: (&'a -> bool) -> Option<'a> -> Option<'a> = \predicate option ->
     match option with
     | Some value ->
         if predicate (&value) then Some value else None
     | None -> None
 
-def or_else :: Option<'a> -> (unit -> Option<'a>) -> Option<'a>
-fn or_else option fallback =
+def or_else :: Option<'a> -> (unit -> Option<'a>) -> Option<'a> = \option fallback ->
     match option with
     | Some value -> Some value
     | None -> fallback ()
 
-def to_result :: 'e -> Option<'a> -> Result.Result<'a, 'e>
-fn to_result error option =
+def to_result :: 'e -> Option<'a> -> Result.Result<'a, 'e> = \error option ->
     match option with
     | Some value -> Result.Ok value
     | None -> Result.Error error
 
-def of_result :: Result.Result<'a, 'e> -> Option<'a>
-fn of_result result =
+def of_result :: Result.Result<'a, 'e> -> Option<'a> = \result ->
     match result with
     | Result.Ok value -> Some value
     | Result.Error _ -> None
 
-def Return :: 'a -> Option<'a>
-fn Return value = Some value
+def Return :: 'a -> Option<'a> = \value -> Some value
 
-def ReturnFrom :: Option<'a> -> Option<'a>
-fn ReturnFrom option = option
+def ReturnFrom :: Option<'a> -> Option<'a> = \option -> option
 
-def Bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>
-fn Bind option next = bind option next
+def Bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b> = \option next -> bind option next
 
-def Zero :: Option<unit>
-fn Zero = Some ()
+def Zero :: Option<unit> = Some ()
 
-def Delay :: (unit -> Option<'a>) -> (unit -> Option<'a>)
-fn Delay body = body
+def Delay :: (unit -> Option<'a>) -> (unit -> Option<'a>) = \body -> body
 
-def Run :: (unit -> Option<'a>) -> Option<'a>
-fn Run body = body ()
+def Run :: (unit -> Option<'a>) -> Option<'a> = \body -> body ()
 
-def Combine :: Option<unit> -> (unit -> Option<'a>) -> Option<'a>
-fn Combine first rest =
+def Combine :: Option<unit> -> (unit -> Option<'a>) -> Option<'a> = \first rest ->
     match first with
     | Some _ -> rest ()
     | None -> None
 
-def For :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> Option<unit>
-fn For values body = for_loop values body 0
+def For :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> Option<unit> = \values body -> for_loop values body 0
 
-private def rec for_loop :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> i64 -> Option<unit>
-fn rec for_loop values body index =
+private def rec for_loop :: Copy<'a> => ['a] -> ('a -> Option<unit>) -> i64 -> Option<unit> = \values body index ->
     if index == values.length then Some ()
     else
         match body values[index] with
         | Some _ -> for_loop values body (index + 1)
         | None -> None
 
-def rec While :: (unit -> bool) -> (unit -> Option<unit>) -> Option<unit>
-fn rec While guard body =
+def rec While :: (unit -> bool) -> (unit -> Option<unit>) -> Option<unit> = \guard body ->
     if guard () then
         match body () with
         | Some _ -> While guard body
@@ -275,124 +252,100 @@ union Result<'a, 'e> =
     | Ok of 'a
     | Error of 'e
 
-def is_ok :: &Result<'a, 'e> -> bool
-fn is_ok result =
+def is_ok :: &Result<'a, 'e> -> bool = \result ->
     match result with
     | Ok _ -> true
     | Error _ -> false
 
-def is_error :: &Result<'a, 'e> -> bool
-fn is_error result = ! (is_ok result)
+def is_error :: &Result<'a, 'e> -> bool = \result -> ! (is_ok result)
 
-def get :: Result<'a, 'e> -> 'a
-fn get result =
+def get :: Result<'a, 'e> -> 'a = \result ->
     match result with
     | Ok value -> value
     | Error _ -> unreachable ()
 
-def get_error :: Result<'a, 'e> -> 'e
-fn get_error result =
+def get_error :: Result<'a, 'e> -> 'e = \result ->
     match result with
     | Error error -> error
     | Ok _ -> unreachable ()
 
-def default_value :: 'a -> Result<'a, 'e> -> 'a
-fn default_value fallback result =
+def default_value :: 'a -> Result<'a, 'e> -> 'a = \fallback result ->
     match result with
     | Ok value -> value
     | Error _ -> fallback
 
-def default_with :: (unit -> 'a) -> Result<'a, 'e> -> 'a
-fn default_with fallback result =
+def default_with :: (unit -> 'a) -> Result<'a, 'e> -> 'a = \fallback result ->
     match result with
     | Ok value -> value
     | Error _ -> fallback ()
 
-def map :: ('a -> 'b) -> Result<'a, 'e> -> Result<'b, 'e>
-fn map transform result =
+def map :: ('a -> 'b) -> Result<'a, 'e> -> Result<'b, 'e> = \transform result ->
     match result with
     | Ok value -> Ok (transform value)
     | Error error -> Error error
 
-def map_ref :: Copy<'e> => (&'a -> 'b) -> &Result<'a, 'e> -> Result<'b, 'e>
-fn map_ref transform result =
+def map_ref :: Copy<'e> => (&'a -> 'b) -> &Result<'a, 'e> -> Result<'b, 'e> = \transform result ->
     match result with
     | Ok value -> Ok (transform (&value))
     | Error error -> Error error
 
-def map_error :: ('e -> 'f) -> Result<'a, 'e> -> Result<'a, 'f>
-fn map_error transform result =
+def map_error :: ('e -> 'f) -> Result<'a, 'e> -> Result<'a, 'f> = \transform result ->
     match result with
     | Ok value -> Ok value
     | Error error -> Error (transform error)
 
-def bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
-fn bind result next =
+def bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e> = \result next ->
     match result with
     | Ok value -> next value
     | Error error -> Error error
 
-def bind_ref :: Copy<'e> => &Result<'a, 'e> -> (&'a -> Result<'b, 'e>) -> Result<'b, 'e>
-fn bind_ref result next =
+def bind_ref :: Copy<'e> => &Result<'a, 'e> -> (&'a -> Result<'b, 'e>) -> Result<'b, 'e> = \result next ->
     match result with
     | Ok value -> next (&value)
     | Error error -> Error error
 
-def or_else :: Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
-fn or_else result fallback =
+def or_else :: Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e> = \result fallback ->
     match result with
     | Ok value -> Ok value
     | Error _ -> fallback ()
 
-def to_option :: Result<'a, 'e> -> Option.Option<'a>
-fn to_option result =
+def to_option :: Result<'a, 'e> -> Option.Option<'a> = \result ->
     match result with
     | Ok value -> Option.Some value
     | Error _ -> Option.None
 
-def of_option :: 'e -> Option.Option<'a> -> Result<'a, 'e>
-fn of_option error option =
+def of_option :: 'e -> Option.Option<'a> -> Result<'a, 'e> = \error option ->
     match option with
     | Option.Some value -> Ok value
     | Option.None -> Error error
 
-def Return :: 'a -> Result<'a, 'e>
-fn Return value = Ok value
+def Return :: 'a -> Result<'a, 'e> = \value -> Ok value
 
-def ReturnFrom :: Result<'a, 'e> -> Result<'a, 'e>
-fn ReturnFrom result = result
+def ReturnFrom :: Result<'a, 'e> -> Result<'a, 'e> = \result -> result
 
-def Bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
-fn Bind result next = bind result next
+def Bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e> = \result next -> bind result next
 
-def Zero :: Result<unit, 'e>
-fn Zero = Ok ()
+def Zero :: Result<unit, 'e> = Ok ()
 
-def Delay :: (unit -> Result<'a, 'e>) -> (unit -> Result<'a, 'e>)
-fn Delay body = body
+def Delay :: (unit -> Result<'a, 'e>) -> (unit -> Result<'a, 'e>) = \body -> body
 
-def Run :: (unit -> Result<'a, 'e>) -> Result<'a, 'e>
-fn Run body = body ()
+def Run :: (unit -> Result<'a, 'e>) -> Result<'a, 'e> = \body -> body ()
 
-def Combine :: Result<unit, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
-fn Combine first rest =
+def Combine :: Result<unit, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e> = \first rest ->
     match first with
     | Ok _ -> rest ()
     | Error error -> Error error
 
-def For :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> Result<unit, 'e>
-fn For values body = for_loop values body 0
+def For :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> Result<unit, 'e> = \values body -> for_loop values body 0
 
-private def rec for_loop :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> i64 -> Result<unit, 'e>
-fn rec for_loop values body index =
+private def rec for_loop :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> i64 -> Result<unit, 'e> = \values body index ->
     if index == values.length then Ok ()
     else
         match body values[index] with
         | Ok _ -> for_loop values body (index + 1)
         | Error error -> Error error
 
-def rec While :: (unit -> bool) -> (unit -> Result<unit, 'e>) -> Result<unit, 'e>
-fn rec While guard body =
+def rec While :: (unit -> bool) -> (unit -> Result<unit, 'e>) -> Result<unit, 'e> = \guard body ->
     if guard () then
         match body () with
         | Ok _ -> While guard body
@@ -494,32 +447,27 @@ fn rec While guard body =
 `tests/fixtures/option_result/Main.tz` に以下を含める。
 
 ```text
-export def option_some :: i64
-fn option_some =
+export def option_some :: i64 =
     match Option.map (n -> n + 1) (Some 41) with
     | Some value -> value
     | None -> -1
 
-export def option_none_short_circuit :: i64
-fn option_none_short_circuit =
+export def option_none_short_circuit :: i64 =
     match Option { let! x = None; return x / 0 } with
     | Some value -> value
     | None -> 42
 
-export def result_ok :: i64
-fn result_ok =
+export def result_ok :: i64 =
     match Result { let! x = Ok 20; return x + 22 } with
     | Ok value -> value
     | Error _ -> -1
 
-export def result_error_short_circuit :: i64
-fn result_error_short_circuit =
+export def result_error_short_circuit :: i64 =
     match Result { let! x = Error 7; return x / 0 } with
     | Ok value -> value
     | Error error -> error * 6
 
-export def option_loop :: i64 -> i64
-fn option_loop count =
+export def option_loop :: i64 -> i64 = \count ->
     match Option {
         for n in new [i64](count, i -> i) do
             do! if n < 0 then None else Some ()
@@ -528,8 +476,7 @@ fn option_loop count =
     | Some value -> value
     | None -> -1
 
-export def result_loop :: i64 -> i64
-fn result_loop count =
+export def result_loop :: i64 -> i64 = \count ->
     match Result {
         for n in new [i64](count, i -> i) do
             do! if n < 0 then Error n else Ok ()
@@ -538,11 +485,9 @@ fn result_loop count =
     | Ok value -> value
     | Error error -> error
 
-export def trap_option_get :: i64
-fn trap_option_get = Option.get None
+export def trap_option_get :: i64 = Option.get None
 
-export def trap_result_get :: i64
-fn trap_result_get = Result.get (Error 1)
+export def trap_result_get :: i64 = Result.get (Error 1)
 ```
 
 `tests/option_result.mjs`:

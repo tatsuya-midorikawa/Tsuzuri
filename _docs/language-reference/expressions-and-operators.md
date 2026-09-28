@@ -7,8 +7,7 @@ Tsuzuri は厳格評価の式指向言語です。ブロックの最後の式が
 ## ブロックの結果
 
 ```tsuzuri run=42
-def calculate :: i64 -> i64
-fn calculate value = {
+def calculate :: i64 -> i64 = \value -> {
     let adjusted = value + 1;
     let adjusted = adjusted * 2;
     adjusted

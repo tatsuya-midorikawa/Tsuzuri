@@ -10,7 +10,7 @@
 | --- | --- |
 | [ソースとインデント](lexical-and-layout.md) | ファイル、識別子、予約語、コメント、空白 |
 | [値と定数](values-and-constants.md) | let、mut、const、定数式 |
-| [関数](functions.md) | def / fn、lambda、カリー化、捕捉、再帰 |
+| [関数](functions.md) | def と lambda、カリー化、捕捉、再帰、分離形式 |
 | [型と推論](types.md) | 基本型、タプル、型の構成、推論の境界 |
 | [数値](numbers.md) | リテラル、折り返し、丸め、明示変換 |
 | [文字列と文字](strings-and-characters.md) | UTF-16 / UTF-8、コード単位、スカラー |

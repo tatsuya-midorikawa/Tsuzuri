@@ -8,6 +8,8 @@
 
 関数とローカル値は snake_case、型とモジュールは読み分けやすい大文字始まりを推奨します。識別子は ASCII です。型名や case 名に大文字始まりが必須な規則と、関数名の推奨を区別します。
 
+通常のコード例とサンプルは `def name :: 型 = \引数 -> 本体` を基本にします。引数なしの関数は `def name :: 型 = 本体` です。分離した `def` / `fn` / `let` は構文の比較説明で使い、型クラスの instance など署名を継承する実装はその専用形式に従います。
+
 4 スペースのインデントを使い、複雑な式は let で分けます。空白適用が改行をまたがないこと、明示ブロックの let はセミコロン区切りであることを意識します。機械的な空白は fmt で統一します。
 
 ## 読み取り、消費、更新を分ける
@@ -17,11 +19,9 @@
 ```tsuzuri run=42
 record Counter { value: i64 }
 
-def current :: ref Counter -> i64
-fn current counter = counter.value
+def current :: ref Counter -> i64 = \counter -> counter.value
 
-def increment :: Counter -> Counter
-fn increment counter =
+def increment :: Counter -> Counter = \counter ->
     let next = counter.value + 1
     { counter with value = next }
 

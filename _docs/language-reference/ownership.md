@@ -25,8 +25,7 @@ Copy 配列やリストの複製は独立したバッファやノードを作り
 ## 共有借用
 
 ```tsuzuri run=10
-def length :: ref string -> i64
-fn length text = text.length
+def length :: ref string -> i64 = \text -> text.length
 
 let text = "hello"
 let first = length ref text
@@ -41,8 +40,7 @@ first + second
 ## 排他借用と置換
 
 ```tsuzuri run=7
-def replace :: ref mut string -> string -> unit
-fn replace target replacement = { deref target = replacement; }
+def replace :: ref mut string -> string -> unit = \target replacement -> { deref target = replacement; }
 
 let mut text = "old"
 let shared = ref text

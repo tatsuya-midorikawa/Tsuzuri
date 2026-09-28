@@ -130,8 +130,7 @@ fn function_forms =
     let tuple = \(a, b) -> add a b
     tuple (20, 20) + guarded 3 4
 
-export def lambda_nested :: i64
-fn lambda_nested =
+export def lambda_nested :: i64 =
     let increment = \value -> value + 1
     assert (increment 41 == 42)
     let f = \x -> \y -> \z -> x + y + z
@@ -145,6 +144,17 @@ fn lambda_nested =
     assert ((prefix "b").length == 7)
     assert ((prefix "cd").length == 8)
     f 2 3 4
+
+def inline_add :: i64 -> i64 -> i64 = \left -> \right -> left + right
+
+def rec inline_even :: i64 -> bool = \value -> if value == 0 then true else inline_odd (value - 1)
+and inline_odd :: i64 -> bool = \value -> if value == 0 then false else inline_even (value - 1)
+
+export def inline_forms :: i64 =
+    let add_twenty = inline_add 20
+    assert (inline_even 42)
+    assert (inline_odd 41)
+    add_twenty 22
 
 export def partial_moves :: i64
 fn partial_moves =

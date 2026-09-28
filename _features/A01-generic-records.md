@@ -621,11 +621,9 @@ Node E2E block の直前には毎回 `cargo build --release --locked` を実行�
 ```text
 record Pair<'a, 'b> { first: 'a, second: 'b }
 
-def first :: Pair<'a, 'b> -> 'a
-fn first pair = pair.first
+def first :: Pair<'a, 'b> -> 'a = \pair -> pair.first
 
-def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
-fn swap pair = Pair { first: pair.second, second: pair.first }
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a> = \pair -> Pair { first: pair.second, second: pair.first }
 
 let p = Pair { first: 20, second: "xx" }
 first p + p.second.length
@@ -642,8 +640,7 @@ first p + p.second.length
 ```text
 record Box<'a> { value: 'a }
 record Nested<'a> { item: Box<Pair<'a, i64>> }
-def get :: Nested<string> -> string
-fn get n = n.item.value.first
+def get :: Nested<string> -> string = \n -> n.item.value.first
 get (Nested { item: Box { value: Pair { first: "ok", second: 1 } } })
 ```
 
@@ -659,8 +656,7 @@ p.first * 10 + p.second
 
 ```text
 record Holder<'a> { value: 'a }
-def id_holder :: Holder<'a> -> Holder<'a>
-fn id_holder h = h
+def id_holder :: Holder<'a> -> Holder<'a> = \h -> h
 id_holder (Holder { value: [1, 2, 3] }).value.length
 ```
 
@@ -672,8 +668,7 @@ match Pair { first: "a", second: 42 } with
 
 ```text
 record Pair<'a, 'b> { first: 'a, second: 'b }
-def use_unqualified :: Pair<i64, i64> -> i64
-fn use_unqualified pair =
+def use_unqualified :: Pair<i64, i64> -> i64 = \pair ->
     match pair with
     | { first = x; second = y } -> x + y
 use_unqualified (Pair { first: 20, second: 22 })
@@ -733,22 +728,18 @@ IR は `tz.record.Main.Wrap[Main.Pair[i64,string]]` を含み、native と wasm3
 record Pair<'a, 'b> { first: 'a, second: 'b }
 record Box<'a> { value: 'a }
 
-def add_pair :: Pair<i64, i64> -> Pair<i64, i64> -> Pair<i64, i64>
-fn add_pair a b =
+def add_pair :: Pair<i64, i64> -> Pair<i64, i64> -> Pair<i64, i64> = \a b ->
     Pair { first: a.first + b.first, second: a.second + b.second }
 
-def owned :: Box<string> -> i64
-fn owned box =
+def owned :: Box<string> -> i64 = \box ->
     let text = box.value
     text.length
 
-export def numbers :: i64
-fn numbers =
+export def numbers :: i64 =
     let p = add_pair (Pair { first: 20, second: 1 }) (Pair { first: 22, second: 2 })
     p.first * 100 + p.second
 
-export def strings :: i64
-fn strings =
+export def strings :: i64 =
     owned (Box { value: "hello" })
 ```
 

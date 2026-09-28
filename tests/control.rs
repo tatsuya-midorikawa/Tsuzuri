@@ -258,51 +258,68 @@ fn active_option_payloads_use_fresh_types_and_existing_ownership() {
 }
 
 #[test]
-fn active_multiple_cases_validate_backing_unions_and_payloads() {
+fn multi_case_active_patterns_generate_implicit_unions() {
+    let source = "def (|Even|Odd|) :: i64 -> 'T =\n  \\value -> if value % 2 == 0 then Even else Odd\nmatch 42 with | Even -> 42 | Odd -> 0 | _ -> -1";
+    accepts(source);
+    let program = parser::parse(source).unwrap();
+    assert_eq!(program.unions.len(), 1);
+    assert_eq!(program.unions[0].cases.len(), 2);
+    assert_eq!(program.functions[0].parameters.len(), 1);
+    accepts(
+        "def (|Small|Large|) :: i64 -> 'T = \\value -> if value < 10 then Small (\"sm\" + \"all\") else Large (\"lar\" + \"ge\")\nmatch 42 with | Small text -> text.length | Large text -> text.length | _ -> 0",
+    );
+    accepts(
+        "def (|First|Second|) :: 'a -> 'T = \\value -> if true then First value else Second value\nlet number = match 42 with | First value -> value | Second value -> value | _ -> 0\nlet flag = match true with | First value -> value | Second value -> value | _ -> false\nif flag then number else 0",
+    );
+    accepts(
+        "def (|Missing|Present|) :: i64 -> 'T = \\value -> if value == 0 then Missing else Present value\nmatch 42 with | Present value -> value | Missing -> 0 | _ -> -1",
+    );
+    accepts(
+        "def (|Absent|Present|) :: bool -> 'T = \\flag -> { let _first = Absent; if flag then Present \"owned\" else Absent }\nmatch false with | Absent -> 42 | Present text -> text.length | _ -> 0",
+    );
     rejects(
-        "record A { value: i64 }\nunion View = First | Second\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = First\nmatch 1 with | A -> 1 | _ -> 0",
+        "def (|First|Second|) :: i64 -> 'T = \\value -> if value == 0 then First 42i64 else First true",
+        "E1003",
+    );
+    for source in [
+        "union Parity = EvenValue | OddValue\ndef (|Even|Odd|) :: i64 -> Parity\nfn (|Even|Odd|) value = EvenValue",
+        "union Parity = EvenValue | OddValue\ndef (|Even|Odd|) :: i64 -> Parity = \\value -> EvenValue",
+    ] {
+        assert!(parser::parse(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn active_multiple_cases_validate_implicit_results_and_payloads() {
+    rejects(
+        "record A { value: i64 }\ndef (|A|B|) :: i64 -> 'T = \\value -> A\nmatch 1 with | A -> 1 | _ -> 0",
         "E1001",
     );
     accepts(
-        "union Parity = IsEven | IsOdd\ndef (|Even|Odd|) :: i64 -> Parity\nfn (|Even|Odd|) number = if number % 2 == 0 then IsEven else IsOdd\nmatch 41 with | Even -> 0 | Odd -> 1 | _ -> -1",
+        "def (|Even|Odd|) :: i64 -> 'T = \\number -> if number % 2 == 0 then Even else Odd\nmatch 41 with | Even -> 0 | Odd -> 1 | _ -> -1",
     );
     accepts(
-        "union View<'a> = First of 'a | Second of 'a\ndef (|Small|Large|) :: 'a -> View<'a>\nfn (|Small|Large|) value = First value\nlet first = match 2 with | Small number -> number | Large number -> number | _ -> 0\nlet second = match true with | Small flag -> flag | Large flag -> flag | _ -> false\nif second then first else 0",
+        "def (|Small|Large|) :: 'a -> 'T = \\value -> if true then Small value else Large value\nlet first = match 2 with | Small number -> number | Large number -> number | _ -> 0\nlet second = match true with | Small flag -> flag | Large flag -> flag | _ -> false\nif second then first else 0",
     );
     for (source, code) in [
+        ("def (|A|B|_|) :: i64 -> bool = \\value -> true", "E1020"),
+        ("def (|a|B|) :: i64 -> 'T = \\value -> true", "E1020"),
+        ("def (|A|A|) :: i64 -> 'T = \\value -> A", "E1020"),
+        ("def (|A|B|) :: i64 -> bool = \\value -> true", "E1020"),
         (
-            "def (|A|B|_|) :: i64 -> bool\nfn (|A|B|_|) value = true",
+            "union View = Only\ndef (|A|B|) :: i64 -> View = \\value -> Only",
             "E1020",
         ),
+        ("def (|A|B|) :: 'T -> 'T = \\value -> A", "E1020"),
         (
-            "def (|a|B|) :: i64 -> bool\nfn (|a|B|) value = true",
-            "E1020",
-        ),
-        (
-            "def (|A|A|) :: i64 -> bool\nfn (|A|A|) value = true",
-            "E1020",
-        ),
-        (
-            "def (|A|B|) :: i64 -> bool\nfn (|A|B|) value = true",
-            "E1003",
-        ),
-        (
-            "union View = Only\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = Only",
-            "E1020",
-        ),
-        (
-            "union View = Only\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = Only\nmatch 1 with | B -> 1 | _ -> 0",
-            "E1020",
-        ),
-        (
-            "union View = A | B\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = A",
+            "union View = A | B\ndef (|A|B|) :: i64 -> 'T = \\value -> A",
             "E1001",
         ),
     ] {
         rejects(source, code);
     }
     rejects(
-        "union View = First | Second\ndef (|A|B|) :: i64 -> View\nfn (|A|B|) value = First\nmatch 1 with | A -> 1 | B -> 2",
+        "def (|A|B|) :: i64 -> 'T = \\value -> A\nmatch 1 with | A -> 1 | B -> 2",
         "E1021",
     );
 }
@@ -452,6 +469,59 @@ fn rejects_malformed_backslash_lambdas() {
 fn fx_is_an_identifier_not_a_lambda_keyword() {
     accepts("let fx = \\value -> value + 1\nfx 41");
     assert!(tsuzuri::analyze("let increment = fx value -> value + 1\nincrement 41").is_err());
+}
+
+#[test]
+fn inline_definitions_share_types_currying_and_recursion() {
+    for (split, inline) in [
+        (
+            "def add :: i64 -> i64 -> i64\nfn add left right = left + right\nadd 20 22",
+            "def add :: i64 -> i64 -> i64 = \\left -> \\right -> left + right\nadd 20 22",
+        ),
+        (
+            "def rec sum :: i64 -> i64 -> i64\nfn rec sum remaining total = if remaining == 0 then total else sum (remaining - 1) (total + remaining)\nsum 100 0",
+            "def rec sum :: i64 -> i64 -> i64 = \\remaining total -> if remaining == 0 then total else sum (remaining - 1) (total + remaining)\nsum 100 0",
+        ),
+    ] {
+        assert_eq!(accepts(split), accepts(inline));
+    }
+    for source in [
+        "def add :: i64 -> i64 -> i64 = \\left -> \\right -> left + right\nadd 20 22",
+        "def add :: i64 -> i64 -> i64 =\n  \\left -> \\right -> left + right\nlet add_twenty = add 20\nadd_twenty 22",
+        "private def identity :: 'a -> 'a = \\value -> value\nexport def answer :: i64 = identity 42",
+        "def rec even :: i64 -> bool = \\value -> if value == 0 then true else odd (value - 1)\nand odd :: i64 -> bool = \\value -> if value == 0 then false else even (value - 1)\nif even 42 then 42 else 0",
+        "def (|Even|_|) :: i64 -> bool =\n  \\value -> value % 2 == 0\nmatch 42 with | Even -> 42 | _ -> 0",
+        "def (|Parsed|_|) :: ref string -> Option<i64> = \\text -> Parse.parse text\nmatch \"42\" with | Parsed value -> value | _ -> 0",
+        "def (|Length|) :: ref string -> i64 = \\text -> text.length\nmatch \"answer\" with | Length value -> value",
+        "def (|Divisible|_|) :: i64 -> i64 -> bool = \\divisor -> \\value -> value % divisor == 0\nmatch 42 with | Divisible 3 -> 42 | _ -> 0",
+        "def answer :: Option<i64> =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nOption.get (answer())",
+        "def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string = \\left _right -> left\nlet left = \"kept\"\nlet right = \"other\"\n(first (ref left) (ref right)).length",
+    ] {
+        accepts(source);
+    }
+    for (source, code) in [
+        ("def duplicate :: i64 = 1\nfn duplicate = 2", "E1001"),
+        (
+            "def duplicate :: i64 = 1\ndef duplicate :: i64 = 2",
+            "E1001",
+        ),
+        ("def wrong :: i64 -> bool = \\value -> value", "E1003"),
+        ("and orphan :: i64 -> i64 = \\value -> value", "E1019"),
+        (
+            "def repeated :: i64 -> i64 = \\value -> repeated value",
+            "E1019",
+        ),
+        (
+            "def rec even :: i64 -> bool = \\even -> \\value -> true",
+            "E1006",
+        ),
+        (
+            "def rec first :: i64 -> i64 = \\value -> value\nand second :: i64 -> i64",
+            "E0002",
+        ),
+    ] {
+        rejects(source, code);
+    }
 }
 
 #[test]

@@ -222,11 +222,11 @@ fn render_declarations(program: &Program) -> String {
                 ""
             }
         );
-        let name = if let Some(pattern) = program
+        let pattern = program
             .active_patterns
             .iter()
-            .find(|pattern| pattern.function == declaration.name.text)
-        {
+            .find(|pattern| pattern.function == declaration.name.text);
+        let name = if let Some(pattern) = pattern {
             let mut cases: Vec<_> = pattern
                 .cases
                 .iter()
@@ -239,13 +239,19 @@ fn render_declarations(program: &Program) -> String {
         } else {
             declaration.name.text.clone()
         };
+        let implicit_result = pattern
+            .filter(|pattern| pattern.cases.len() > 1)
+            .map(|_| TypeExpr {
+                kind: TypeExprKind::Variable("T".into()),
+                span: declaration.result.span,
+            });
         let code = signature(
             &prefix,
             &name,
             &declaration.regions,
             &declaration.constraints,
             declaration.parameters.iter().map(|parameter| &parameter.ty),
-            &declaration.result,
+            implicit_result.as_ref().unwrap_or(&declaration.result),
         );
         let position = declaration
             .parameters
@@ -295,7 +301,9 @@ fn render_declarations(program: &Program) -> String {
         ));
     }
     for declaration in &program.unions {
-        if declaration.visibility == Visibility::Private {
+        if declaration.visibility == Visibility::Private
+            || declaration.name.provenance == Provenance::Generated
+        {
             continue;
         }
         let cases = declaration

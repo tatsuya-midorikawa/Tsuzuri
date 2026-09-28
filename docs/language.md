@@ -26,7 +26,7 @@ native exe/objectの同梱`Array.sum<i64>`は実行時CPU選択の対象です�
   浅いインデントで終了します。明示的な `{ ... }` も使えます。空白適用は改行をまたぎません。
   インデント本体の `let`・式列は改行で区切り、中間の結果式は unit を要求します。
   明示ブロックの `let` は引き続き `;` で区切ります。
-- 型宣言は `def`／`export def`／`private def`、実装は `fn` または宣言に対応する `let` と匿名関数。ほかに `record`／`private record`、`union`／`private union`、`type`／`private type`、`class`、`instance` があります。
+- 関数は `def name :: 型 = ラムダ式`、公開 ABI 付きは `export def`、非公開は `private def`。従来の `def` と `fn`／`let` を分離する形式も受理します。ほかに `record`／`private record`、`union`／`private union`、`type`／`private type`、`class`、`instance` があります。
 - `Main.tz` に限り、宣言の後にトップレベルの `let` と最後の結果式を書けます。
 - ソースは **1 ファイルごとに最大 1 MiB**、構文と式の深さは最大 128。長い式は `let` で分割します。
 
@@ -34,8 +34,7 @@ native exe/objectの同梱`Array.sum<i64>`は実行時CPU選択の対象です�
 
 ```text
 /// Returns the answer.
-def answer :: i64
-fn answer = 42
+def answer :: i64 = 42
 ```
 
 `///`は直後のAPI宣言に付く説明です。直後の空白を一個だけ取り除き、複数行を改行で結合します。`////`の本文は`/`で始まります。
@@ -137,11 +136,9 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 ```text
 record Point { x: f64, y: f64 }
 
-def distance :: Point -> f64
-fn distance point = sqrt (point.x * point.x + point.y * point.y)
+def distance :: Point -> f64 = \point -> sqrt (point.x * point.x + point.y * point.y)
 
-export def hypotenuse :: f64 -> f64 -> f64
-fn hypotenuse x y = distance (Point { x: x, y: y })
+export def hypotenuse :: f64 -> f64 -> f64 = \x y -> distance (Point { x: x, y: y })
 ```
 
 同じディレクトリの `Main.tz`:
@@ -179,11 +176,9 @@ union 型も同じ規則で解決します（`Shapes.Shape` など）。
 ```text
 private record Token { value: i64 }
 
-private def token :: i64 -> Token
-fn token value = Token { value: value }
+private def token :: i64 -> Token = \value -> Token { value: value }
 
-def reveal :: i64 -> i64
-fn reveal n = (token n).value
+def reveal :: i64 -> i64 = \n -> (token n).value
 ```
 
 - 他モジュールから private な関数・レコード・union・union case・active pattern を参照すると `E1022` です。
@@ -255,23 +250,22 @@ decimalはリテラル・符号・恒等castだけを許し、演算・比較・
 これは命名上の推奨であり、構文上の必須条件ではありません。
 
 ```text
-def add :: i32 -> i32 -> i32
-fn add x y =
+def add :: i32 -> i32 -> i32 = \x y ->
     x + y
 
-export def answer :: i32
-fn answer = add 20 22
+export def answer :: i32 = add 20 22
 ```
 
-`def name :: 引数型 -> ... -> 返却型` と `fn name 引数名 ... = 式` を同じファイルに一つずつ
-書きます。`fn` 実装との隣接・前後関係は必須ではありません。`export` は `def` 側に付けます。
-`def` より後に `let name = \x -> \y -> 式` と書いても実装できます。この `let` は
-通常のエントリーコードの束縛ではなく、全モジュールから参照できる関数の定義です。
+`def name :: 引数型 -> ... -> 返却型 = \引数 -> 本体` で宣言と実装を一緒に書きます。
+`= \left -> \right -> body` と `= \left right -> body` は同じカリー化を表します。型の後の `=` で改行しても書けます。
+従来の `def name :: 型` と `fn name 引数名 ... = 式`、または `let name = ラムダ式` を
+同じファイルに分離して書く形式も受理します。隣接・前後関係は必須ではありません。
+その `let` は通常のエントリーコードの束縛ではなく、モジュール関数の定義です。`export` は `def` 側に付けます。
 宣言・定義の重複、宣言だけで実装がない場合はエラーです。
 引数は半角スペースで区切ります。実装が一部の引数だけを名前で受け取る場合、本体は残りの関数型を返します。
-引数なしの場合は `def answer :: i32`／`fn answer = ...` と宣言し、`answer()` で呼びます。
+引数なしの場合は `def answer :: i32 = ...` と本体を直接書き、`answer()` で呼びます。
 `unit` は通常の一引数型であり、引数なしとは異なります。
-可変な引数束縛は `fn update mut value = ...` と書けます。
+可変な引数束縛は `def update :: i64 -> i64 = \mut value -> ...` と書けます。
 
 **すべての関数はカリー化されています。** `add x y` は `(add x) y` と同じ左結合の適用で、
 `add x` は残りの引数を受け取る関数値です。名前付き関数・匿名関数・型クラスのメソッド・
@@ -308,11 +302,9 @@ Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと
 ### 匿名関数と捕捉
 
 ```text
-def add :: Add<'a> -> 'a -> 'a
-let add = \x -> \y -> x + y
+def add :: Add<'a> -> 'a -> 'a = \x -> \y -> x + y
 
-def main :: i32
-fn main = {
+def main :: i32 = {
     let offset: i32 = 20;
     let shift = \x -> x + offset;
     let increment = add 1i32;
@@ -331,7 +323,7 @@ fn main = {
 `f (x, y)` はタプル引数を渡せます。互換のカリー化関数が複数の非タプル引数を要求する場合は、
 従来のカンマ区切り適用としても受理します。曖昧さを避けるにはタプルを先に束縛するか `f x y` を使います。
 匿名関数の本体は作成時ではなく適用時に評価します。
-再帰は `def rec` に対応する `fn rec`／`let rec` の名前付き関数を使います。
+再帰は `def rec name :: 型 = ラムダ式` の名前付き関数を使います。分離形式では `fn rec`／`let rec` と対応させます。
 ローカルな `let` は非再帰で単相です。
 
 外側の値は作成時に捕捉します。Copy 値はコピー、string などの非 Copy 値は関数値へ move します。
@@ -363,15 +355,12 @@ fn main = {
 値の引数は従来どおり空白で適用し、配列 `[T]`・リスト `[|T|]`・借用 `ref T` の固有の型構文も維持します。
 
 ```text
-def identity :: 'a -> 'a
-fn identity x = x
+def identity :: 'a -> 'a = \x -> x
 
-def add :: Add<'a> -> 'a -> 'a
-fn add x y =
+def add :: Add<'a> -> 'a -> 'a = \x y ->
     x + y
 
-def apply :: ('a -> 'b) -> 'a -> 'b
-fn apply f x = f x
+def apply :: ('a -> 'b) -> 'a -> 'b = \f x -> f x
 
 let n: i32 = add 20 22
 let text = identity "owned"
@@ -392,8 +381,7 @@ apply identity n
 次の明示的な制約は推論された制約へ追加されます。
 
 ```text
-def twice :: (Add<'a>, Copy<'a>) => 'a -> 'a
-fn twice x = x + x
+def twice :: (Add<'a>, Copy<'a>) => 'a -> 'a = \x -> x + x
 ```
 
 `def` の次の行に、インデントした `@型変数 : 制約, ...` と書くこともできます。
@@ -401,13 +389,11 @@ fn twice x = x + x
 
 ```text
 def increment :: 'a -> 'a
-    @'a : Add, Integer
-fn increment value = value + 1
+    @'a : Add, Integer = \value -> value + 1
 
 def keep :: 'a -> 'b -> 'a
     @'a : Add, Integer
-    @'b : Copy
-fn keep value other = value
+    @'b : Copy = \value other -> value
 ```
 
 制約の対象はシグネチャ中の型変数に限り、型引数の内部に現れる変数も対象にできます。
@@ -445,8 +431,7 @@ instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-def score :: Traits.Score<'a> => ref 'a -> i32
-fn score value = Traits.Score.score value
+def score :: Traits.Score<'a> => ref 'a -> i32 = \value -> Traits.Score.score value
 ```
 
 型クラスは型変数を一つ持ち、通常の値型kindでは各メソッドのシグネチャにその変数だけを含めます。HKTでは後述のkind注釈とメソッド固有の値型変数を使えます。
@@ -546,8 +531,7 @@ instance Functor<Option> {
         | Option.None -> Option.None
         | Option.Some inner -> Option.Some (transform inner)
 }
-def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>
-fn fmap transform value = Functor.map transform value
+def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b> = \transform value -> Functor.map transform value
 ```
 
 `*`は値型、`* -> *`は一引数の型コンストラクターです。kindは右結合で、classには明示注釈が必要です。省略は`*`を意味します。
@@ -572,8 +556,7 @@ HKT型別名、kind省略推論、標準Functor/Applicative/Monadの導入は対
 
 ```text
 def func :: 'T -> 'U
-    @'T : #distance
-fn func value = 'T.distance value
+    @'T : #distance = \value -> 'T.distance value
 
 let distance = func (Point { x: 3.0, y: 4.0 })
 distance
@@ -603,11 +586,9 @@ distance
 record Pair<'a, 'b> { first: 'a, second: 'b }
 record Box<'a> { value: 'a }
 
-def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
-fn swap pair = Pair { first: pair.second, second: pair.first }
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a> = \pair -> Pair { first: pair.second, second: pair.first }
 
-def total :: Box<Pair<i64, i64>> -> i64
-fn total box = box.value.first + box.value.second
+def total :: Box<Pair<i64, i64>> -> i64 = \box -> box.value.first + box.value.second
 
 let p = Pair { first: 20, second: "text" }
 let q: Pair<string, i64> = swap p
@@ -669,15 +650,13 @@ union Shape =
 union Maybe<'a> = None | Some of 'a
 union Color = Red | Green | Blue
 
-def area :: Shape -> f64
-fn area shape =
+def area :: Shape -> f64 = \shape ->
     match shape with
     | Circle r -> r * r * 3.141592653589793
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe<'a> -> 'a
-fn default_value fallback value =
+def default_value :: 'a -> Maybe<'a> -> 'a = \fallback value ->
     match value with
     | Some x -> x
     | None -> fallback
@@ -1038,15 +1017,11 @@ Rust の明示的な `derive(Copy)` と異なり、宣言による opt-in は不
 `Task<T>` も結果型によらず非 Copy です。未実行のタスクはスコープ終了時に捕捉値だけを解放します。
 
 ```text
-def length :: ref string -> i64
-fn length text = text.length
-def identity :: ref string -> ref string
-fn identity text = text
-def replace :: ref mut string -> unit
-fn replace text = { deref text = "next"; }
+def length :: ref string -> i64 = \text -> text.length
+def identity :: ref string -> ref string = \text -> text
+def replace :: ref mut string -> unit = \text -> { deref text = "next"; }
 
-def example :: string
-fn example = {
+def example :: string = {
     let mut text = "前の値";
     let shared = identity text;
     let size = length shared;
@@ -1155,10 +1130,8 @@ Rust の所有権モデルを採用したサブセットであり、Rust の全�
 
 ```text
 record View<'a> {r} { value: ref {r} 'a }
-def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string
-fn first left right = { assert (right.length > 0); left }
-def view {r} :: ref {r} i64 -> View<i64> {r}
-fn view value = View { value: value }
+def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string = \left right -> { assert (right.length > 0); left }
+def view {r} :: ref {r} i64 -> View<i64> {r} = \value -> View { value: value }
 ```
 
 region名は小文字ASCII識別子で、`def`名の後の `{r s}`（カンマ区切りも可）で宣言します。型変数とは別名前空間です。
@@ -1293,14 +1266,10 @@ UTF-8 変換・コンソール出力でデータを失わないよう、置換�
 複製を `Utf8String.clone` に変更します。
 
 ```text
-def square :: i64 -> i64
-fn square x = x * x
-def apply :: (i64 -> i64) -> i64 -> i64
-fn apply f x = f x
-def choose :: bool -> (i64 -> i64)
-fn choose flag = if flag { square } else { identity }
-def identity :: 'a -> 'a
-fn identity x = x
+def square :: i64 -> i64 = \x -> x * x
+def apply :: (i64 -> i64) -> i64 -> i64 = \f x -> f x
+def choose :: bool -> (i64 -> i64) = \flag -> if flag { square } else { identity }
+def identity :: 'a -> 'a = \x -> x
 ```
 
 関数値は引数、戻り値、レコード、配列に格納できます。匿名関数・部分適用・名前付き関数は同じ関数型を使います。
@@ -1345,17 +1314,13 @@ F# の [computation expressions](https://learn.microsoft.com/en-us/dotnet/fsharp
 例えば `Identity.tc` は通常の多相関数だけで定義できます。
 
 ```text
-def Return :: 'a -> 'a
-fn Return value = value
+def Return :: 'a -> 'a = \value -> value
 
-def ReturnFrom :: 'a -> 'a
-fn ReturnFrom value = value
+def ReturnFrom :: 'a -> 'a = \value -> value
 
-def Bind :: 'a -> ('a -> 'b) -> 'b
-fn Bind value next = next value
+def Bind :: 'a -> ('a -> 'b) -> 'b = \value next -> next value
 
-def Zero :: unit
-fn Zero = ()
+def Zero :: unit = ()
 ```
 
 `Main.tz`:
@@ -1578,8 +1543,7 @@ use/tryはグローバル予約語にしませんが、計算式のuse束縛・t
 型変数を使った `Task<'a>`、`Task<[i64]>`、`Task<i64 -> i64>`、`Task<Task<i64>>` も扱えます。
 
 ```text
-def next :: i64 -> Task<i64>
-fn next n = task { return n + 1 }
+def next :: i64 -> Task<i64> = \n -> task { return n + 1 }
 
 let computation = task {
     let! first = next 19
@@ -1851,11 +1815,9 @@ bool 条件だけの節はガード付きの節と同じく網羅に数えない
 ### アクティブパターン
 
 ```text
-def (|Even|_|) :: i64 -> bool
-fn (|Even|_|) n = n % 2 == 0
+def (|Even|_|) :: i64 -> bool = \n -> n % 2 == 0
 
-def (|Length|) :: ref string -> i64
-fn (|Length|) text = text.length
+def (|Length|) :: ref string -> i64 = \text -> text.length
 
 match "hello" with
 | Length 5 -> 42
@@ -1879,16 +1841,18 @@ unit 結果だけは結果パターンを省略できます。
 `Parity true` と `Parity false` のように複数の節へ分けた結果のパターンは合わせても網羅とみなしません。
 不足の例は認識器の名前ではなく、対象の型の値で示します。
 再利用できる通常の関数であり、ラムダ式と for のパターンでも使えます。
-複数ケース全域 `(|First|Second|)` は、同じ case 数の union を返します。active case と backing union case は宣言順で対応します。
-同じモジュールでは case 名を別名にし、名前衝突は `E1001`、個数不一致は `E1020` です。隠し union は生成しません。
-各 case は対応する payload を既存のパターンへ渡します。payload なしの case にパターンは付けられません。
+複数ケース全域は `def (|First|Second|) :: 入力型 -> 'T = ラムダ式` と書きます。
+`'T` は認識器ごとの暗黙 union を表す印で、入力型・制約の汎用型変数には使いません。明示的な union を返す旧形式と、複数 case の宣言・実装を分離する形式は廃止しました。
+case は宣言順の tag を持ち、本体内だけで `First`・`Second` などの結果用の名前を束縛します。外側には認識パターンだけを公開し、内部の union 名はソースで参照できません。
+本体で `Case value` または `value |> Case` と直接適用する case は payload を持ち、その型を通常の型推論で確定します。間接適用だけでは payload の有無を推論しません。
+異なる case の payload は別の型でもよく、入力の汎用型変数を含められます。型が決まらなければ注釈を要求し、型不一致・所有権・借用の検査を省略しません。
+各 case は対応する payload を既存のパターンへ渡します。payload なしの case にパターンは付けられません。認識パターンと既存の型・case の名前衝突は `E1001` です。
 複数ケースと `_` の併用宣言 `(|First|Second|_|)` は未対応です。
 認識器は節ごとに再評価されるため、複数ケースが全部あっても当面は `_` フォールバックが必要です。
 追加引数に副作用がある場合にも正しく次の節へ進み、結果を勝手にキャッシュしません。
 
 ```text
-def (|Parsed|_|) :: ref string -> Option<i64>
-fn (|Parsed|_|) text = Parse.parse text
+def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text
 match "42" with | Parsed value -> value | _ -> 0
 ```
 
@@ -1897,8 +1861,7 @@ null・.NET の実行時型テストはありません。
 ## 式と評価順序
 
 ```text
-def calculate :: i64 -> i64
-fn calculate value = {
+def calculate :: i64 -> i64 = \value -> {
     let offset: i64 = 2;
     let adjusted = value + offset;
     let adjusted = adjusted * 2;
@@ -1925,20 +1888,15 @@ fn calculate value = {
 ### 配列・連結リストとレコード
 
 ```text
-def first :: ref [i64] -> i64
-fn first values = values[0]
-def empty :: [i64]
-fn empty = []
-def squares :: i64 -> [i64]
-fn squares count = new [i64](count, i -> i * i)
-def length :: i64 -> i64
-fn length count = {
+def first :: ref [i64] -> i64 = \values -> values[0]
+def empty :: [i64] = []
+def squares :: i64 -> [i64] = \count -> new [i64](count, i -> i * i)
+def length :: i64 -> i64 = \count -> {
     let values: [i64] = squares count;
     values.length
 }
 
-def choose :: bool -> [i32]
-fn choose flag = if flag { [1] } else { [2, 3, 4] }
+def choose :: bool -> [i32] = \flag -> if flag { [1] } else { [2, 3, 4] }
 ```
 
 配列型は `[T]` で、長さは型の一部ではありません。異なる長さの配列を同じ引数・返却型・
@@ -1981,12 +1939,9 @@ WASM のヒープ上限は文字列・捕捉環境などと合計して 16 MiB �
 開始・終了の区切りはそれぞれ `[|`・`|]` と続けて書きます。末尾のカンマも使えます。
 
 ```text
-def first_list :: ref [|i32|] -> i32
-fn first_list values = values[0]
-def squares_list :: i64 -> [|i32|]
-fn squares_list count = new [|i32|](count, i -> (i * i) as i32)
-def empty_list :: [|i32|]
-fn empty_list = [||]
+def first_list :: ref [|i32|] -> i32 = \values -> values[0]
+def squares_list :: i64 -> [|i32|] = \count -> new [|i32|](count, i -> (i * i) as i32)
+def empty_list :: [|i32|] = [||]
 
 let values: [|i32|] = [|10, 20, 30|]
 first_list ref values
@@ -2425,21 +2380,18 @@ subnormal と符号付きゼロへの underflow は成功です。`inf` の入�
 
 再帰は明示します。直接呼び出しだけでなく、関数値・クラスメソッド・演算子・アクティブ認識器を
 経由する参照グラフの循環も検査します。再帰する通常関数とインスタンスメソッドには `rec` が必要です。
-`def` と実装の再帰指定・グループは一致させます。非再帰の前方参照は引き続き許可します。
+直接実装は `def rec name :: 型 = ラムダ式`、後続は `and name :: 型 = ラムダ式` です。分離形式では `def` と実装の再帰指定・グループを一致させます。非再帰の前方参照は引き続き許可します。
 
 ```text
-def rec sum :: i64 -> i64 -> i64
-fn rec sum n total =
+def rec sum :: i64 -> i64 -> i64 = \n total ->
     if n == 0 then total else sum (n - 1) (total + n)
 
-def rec even :: i64 -> bool
-def and odd :: i64 -> bool
-fn rec even n = if n == 0 then true else odd (n - 1)
-and odd n = if n == 0 then false else even (n - 1)
+def rec even :: i64 -> bool = \n -> if n == 0 then true else odd (n - 1)
+and odd :: i64 -> bool = \n -> if n == 0 then false else even (n - 1)
 ```
 
-`and` は先行する再帰グループを引き継ぎ、単独では使えません。
-別々の `def rec`／`fn rec` による相互参照や、各関数を `rec` とするモジュール間の循環も許可します。
+`and` は先行する再帰グループを引き継ぎ、単独では使えません。型付き `and` には `= 本体` が必要です。関数自身は名前で参照でき、自己名をラムダの追加引数として束縛しません。
+別々の `def rec` による相互参照や、各関数を `rec` とするモジュール間の循環も許可します。
 `let rec name = \value -> ...` と互換の `fn rec name(x: T) -> T { ... }` にも同じ規則を適用します。
 `rec` は最適化の指定ではなく名前参照の契約で、不要な場所に指定しても再帰を発生させません。
 

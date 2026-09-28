@@ -3,8 +3,7 @@ record Axis {
     velocity: f64,
 }
 
-def step :: f64 -> f64 -> f64 -> f64 -> Axis
-fn step position velocity dt extent = {
+def step :: f64 -> f64 -> f64 -> f64 -> Axis = \position velocity dt extent -> {
     let _ = assert(extent >= 1.0 && extent <= 1_000_000.0);
     let _ = assert(position >= 0.0 && position <= extent);
     let _ = assert(abs(velocity) <= 1_000_000.0 && dt >= 0.0 && dt <= 1.0);
@@ -25,15 +24,12 @@ fn step position velocity dt extent = {
     Axis { position: next_position, velocity: next_velocity }
 }
 
-export def next_position :: f64 -> f64 -> f64 -> f64 -> f64
-fn next_position position velocity dt extent =
+export def next_position :: f64 -> f64 -> f64 -> f64 -> f64 = \position velocity dt extent ->
     (step position velocity dt extent).position
 
-export def next_velocity :: f64 -> f64 -> f64 -> f64 -> f64
-fn next_velocity position velocity dt extent =
+export def next_velocity :: f64 -> f64 -> f64 -> f64 -> f64 = \position velocity dt extent ->
     (step position velocity dt extent).velocity
 
-export def next_positions :: ref [f64] -> ref [f64] -> f64 -> f64 -> [f64]
-fn next_positions positions velocities dt extent =
+export def next_positions :: ref [f64] -> ref [f64] -> f64 -> f64 -> [f64] = \positions velocities dt extent ->
     assert (positions.length == velocities.length)
     new [f64](positions.length, index -> (step positions[index] velocities[index] dt extent).position)

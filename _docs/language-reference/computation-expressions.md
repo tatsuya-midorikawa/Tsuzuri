@@ -9,7 +9,7 @@
 関数本体やトップレベルへ直接 `let!`／`do!` を書けます。右辺の型からビルダーを解決するため、IO と Option も同じ本体で扱えます。
 
 ```tsuzuri
-fn main =
+def main :: IO<Option<unit>> =
     let! line = IO.read_line ()
     let! value = line
     do! IO.write_line value
@@ -18,8 +18,7 @@ fn main =
 EOF の None では後続の出力を実行しません。この例の入口の型は `IO<Option<unit>>` であり、失敗情報を消さずに結果へ保持します。入口はその IO を一度実行して結果を解放し、追加の出力を行いません。
 
 ```tsuzuri run=42
-def answer :: Option<i64>
-fn answer =
+def answer :: Option<i64> =
     let! first = Some 20
     let! second = Some 22
     return first + second
@@ -78,17 +77,13 @@ match answer with
 `Identity.tc`:
 
 ```tsuzuri project=identity file=Identity.tc
-def Return :: 'value -> 'value
-fn Return value = value
+def Return :: 'value -> 'value = \value -> value
 
-def ReturnFrom :: 'value -> 'value
-fn ReturnFrom value = value
+def ReturnFrom :: 'value -> 'value = \value -> value
 
-def Bind :: 'value -> ('value -> 'result) -> 'result
-fn Bind value next = next value
+def Bind :: 'value -> ('value -> 'result) -> 'result = \value next -> next value
 
-def Zero :: unit
-fn Zero = ()
+def Zero :: unit = ()
 ```
 
 `Main.tz`:

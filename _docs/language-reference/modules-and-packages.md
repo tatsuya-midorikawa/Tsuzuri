@@ -11,11 +11,9 @@ root から見た `Geometry/Point.tz`:
 ```tsuzuri project=modules file=Geometry/Point.tz
 record Point { horizontal: f64, vertical: f64 }
 
-private def squared_length :: ref Point -> f64
-fn squared_length point = point.horizontal * point.horizontal + point.vertical * point.vertical
+private def squared_length :: ref Point -> f64 = \point -> point.horizontal * point.horizontal + point.vertical * point.vertical
 
-def distance :: ref Point -> f64
-fn distance point = sqrt (squared_length point)
+def distance :: ref Point -> f64 = \point -> sqrt (squared_length point)
 ```
 
 root 直下の `Main.tz`:
@@ -47,7 +45,7 @@ dot で始まるファイル・ディレクトリは無視します。ソース�
 
 宣言は既定で public です。`private def`, `private record`, `private union`, `private type`, `private const` は宣言モジュール内だけで参照できます。private union の case も private です。
 
-fn / let の実装は def の可視性を引き継ぎます。`private fn` とは書きません。public の関数・型・制約から同じモジュールの private 型を漏らすこともできません。違反は `E1022` です。
+分離形式の fn / let の実装も def の可視性を引き継ぎます。`private fn` とは書きません。public の関数・型・制約から同じモジュールの private 型を漏らすこともできません。違反は `E1022` です。
 
 型クラスとインスタンスは常に public です。ビルダー操作は private にできませんが、補助関数は private にできます。可視性は名前解決の規則で、ランタイム上のアクセス制御ではありません。
 

@@ -806,8 +806,7 @@ union Tree<'a> =
     | Leaf
     | Node of Tree<'a> * 'a * Tree<'a>
 
-def rec sum :: Tree<i64> -> i64
-fn rec sum tree =
+def rec sum :: Tree<i64> -> i64 = \tree ->
     match tree with
     | Leaf -> 0
     | Node (left, value, right) -> sum left + value + sum right
@@ -822,8 +821,7 @@ List:
 ```text
 union List<'a> = Nil | Cons of 'a * List<'a>
 
-def rec length :: List<'a> -> i64
-fn rec length xs =
+def rec length :: List<'a> -> i64 = \xs ->
     match xs with
     | Nil -> 0
     | Cons (_, tail) -> 1 + length tail
@@ -848,8 +846,7 @@ union Rose<'a> = Rose of 'a * [Rose<'a>]
 Borrow subtree:
 
 ```text
-def root_value :: &Tree<i64> -> i64
-fn root_value tree =
+def root_value :: &Tree<i64> -> i64 = \tree ->
     match tree with
     | Leaf -> 0
     | Node (_, value, _) -> value
@@ -860,11 +857,9 @@ Constructor equivalence:
 ```text
 union Tree = Leaf | Node of Tree * i64 * Tree
 
-def apply :: (Tree * i64 * Tree -> Tree) -> (Tree * i64 * Tree) -> Tree
-fn apply f payload = f payload
+def apply :: (Tree * i64 * Tree -> Tree) -> (Tree * i64 * Tree) -> Tree = \f payload -> f payload
 
-def checksum :: Tree -> i64
-fn checksum tree =
+def checksum :: Tree -> i64 = \tree ->
     match tree with
     | Leaf -> 0
     | Node (left, value, right) -> checksum left + value + checksum right
@@ -924,22 +919,18 @@ union List =
     | Nil
     | Cons of i64 * List
 
-def rec make :: i64 -> List -> List
-fn rec make n acc =
+def rec make :: i64 -> List -> List = \n acc ->
     if n == 0 then acc else make (n - 1) (Cons (n, acc))
 
-def rec sum :: List -> i64 -> i64
-fn rec sum xs total =
+def rec sum :: List -> i64 -> i64 = \xs total ->
     match xs with
     | Nil -> total
     | Cons (head, tail) -> sum tail (total + head)
 
-export def small_sum :: i64
-fn small_sum =
+export def small_sum :: i64 =
     sum (make 1000 Nil) 0
 
-export def deep_drop :: i64 -> i64
-fn deep_drop n =
+export def deep_drop :: i64 -> i64 = \n ->
     let xs = make n Nil
     xs.length_if_this_function_does_not_exist
 ```
@@ -949,12 +940,10 @@ fn deep_drop n =
 正しい fixture:
 
 ```text
-export def deep_sum :: i64 -> i64
-fn deep_sum n =
+export def deep_sum :: i64 -> i64 = \n ->
     sum (make n Nil) 0
 
-export def deep_discard :: i64 -> i64
-fn deep_discard n =
+export def deep_discard :: i64 -> i64 = \n ->
     let xs = make n Nil
     42
 ```
@@ -976,12 +965,10 @@ union RList = RNil | RCons of i64 * [|RList|]
 - closure clone case:
 
 ```text
-def make_counter :: Tree -> (unit -> i64)
-fn make_counter tree =
+def make_counter :: Tree -> (unit -> i64) = \tree ->
     \() -> checksum tree
 
-export def closure_clone :: i64
-fn closure_clone =
+export def closure_clone :: i64 =
     let tree = make 10000 Nil
     let f = make_counter tree
     let g = f

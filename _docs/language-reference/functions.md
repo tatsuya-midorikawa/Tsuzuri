@@ -2,21 +2,22 @@
 
 [ドキュメントのトップ](../README.md)
 
-関数は値として渡せます。型は `def` で明示し、実装は `fn`、または対応する `let` と匿名関数で記述します。すべての関数はカリー化されます。
+関数は値として渡せます。型は `def` で明示し、その右辺のラムダ式で実装します。すべての関数はカリー化されます。
 
 ## 宣言と実装
 
 ```tsuzuri run=42
-def add :: i64 -> i64 -> i64
-fn add left right = left + right
+def add :: i64 -> i64 -> i64 =
+    \left -> \right -> left + right
 
-def answer :: i64
-fn answer = add 20 22
+def answer :: i64 = add 20 22
 
 answer()
 ```
 
-`def` と `fn` は同じファイルに一つずつ置きます。隣接している必要はありません。`def` だけで実装がない関数は、ホスト関数を宣言する `extern def` を除いてエラーです。
+`def name :: 型 = ラムダ式` で宣言と実装を一緒に書けます。`fn` や `let` を重ねて書く必要はありません。`=` は型と実装、`->` はラムダの引数と本体の区切りです。
+
+引数なしの関数は `def answer :: i64 = 式` のように本体を直接書きます。`def` だけで実装がない関数は、ホスト関数を宣言する `extern def` や型クラスのメソッド宣言を除いてエラーです。
 
 引数なしの `answer()` と、`unit` 引数を渡す `accept ()` は異なります。前者の宣言は `def answer :: i64`、後者は `def accept :: unit -> i64` です。引数なしの関数値の型は `fn() -> i64` と表せます。
 
@@ -25,8 +26,7 @@ answer()
 ## カリー化と部分適用
 
 ```tsuzuri run=42
-def add :: i64 -> i64 -> i64
-let add = \left -> \right -> left + right
+def add :: i64 -> i64 -> i64 = \left -> \right -> left + right
 
 let add_twenty = add 20
 22 |> add_twenty
@@ -41,8 +41,7 @@ let add_twenty = add 20
 ## 匿名関数と高階関数
 
 ```tsuzuri run=42
-def apply :: (i64 -> i64) -> i64 -> i64
-fn apply transform value = transform value
+def apply :: (i64 -> i64) -> i64 -> i64 = \transform value -> transform value
 
 let offset = 2
 let increment = \value -> value + offset
@@ -78,39 +77,50 @@ f 2 3 4
 
 引数は左から右へ評価し、適用は二項演算より強く結合します。式を引数にする場合は `add (base + 1) (step * 2)` と書きます。
 
-`fn calculate left right = body` の `body` は両方の引数がそろってから評価します。一方、`fn calculate left = { ...; \right -> body }` は最初の適用でブロックを評価し、次の関数を返します。後続引数の評価をこの段階の前へ移動してよいという規則はありません。
+`\left -> \right -> body` の `body` は両方の引数がそろってから評価します。一方、`\left -> { ...; \right -> body }` は最初の適用でブロックを評価し、次の関数を返します。後続引数の評価をこの段階の前へ移動してよいという規則はありません。
 
 借用を引数にする場合、`transform ref value` と書けます。さらに引数を続けるときは `transform (ref value) other` と括ると明確です。引数型から分かる借用・再借用・参照外しは省略できますが、所有権と寿命の検査は常に行われます。
 
 ## 再帰
 
 ```tsuzuri run=5050
-def rec sum :: i64 -> i64 -> i64
-fn rec sum remaining total =
+def rec sum :: i64 -> i64 -> i64 = \remaining total ->
     if remaining <= 0 then total
     else sum (remaining - 1) (total + remaining)
 
 sum 100 0
 ```
 
-自己再帰には `def rec` と `fn rec`、相互再帰には明示的な再帰グループを使います。直接の自己末尾再帰は `-O0` でもループへ変換しますが、非末尾再帰や関数値を経由する再帰が必ずループになるわけではありません。深い木の処理などではスタック使用量を考慮します。
+自己再帰には `def rec`、相互再帰には明示的な再帰グループを使います。直接の自己末尾再帰は `-O0` でもループへ変換しますが、非末尾再帰や関数値を経由する再帰が必ずループになるわけではありません。深い木の処理などではスタック使用量を考慮します。
 
 停止性は保証されません。再帰するデータ型の解放が反復実装でも、利用者の再帰関数がスタック安全になるとは限りません。
 
-相互再帰は宣言と実装のグループを対応させます。
+相互再帰は `def rec` に続けて、型と実装を持つ `and` を書きます。
 
 ```tsuzuri run=42
-def rec even :: i64 -> bool
-def and odd :: i64 -> bool
-fn rec even value = if value == 0 then true else odd (value - 1)
-and odd value = if value == 0 then false else even (value - 1)
+def rec even :: i64 -> bool = \value -> if value == 0 then true else odd (value - 1)
+and odd :: i64 -> bool = \value -> if value == 0 then false else even (value - 1)
 
 if even 42 then 42 else 0
 ```
 
-and は先行グループを引き継ぐため、単独では使えません。別々の rec 関数やモジュール間の再帰も、各関数で明示します。借用を持つ引数や、借用を保持し得る関数値の引数では、参照先フレームの再利用を避けるため直接の末尾ループ変換も行いません。
+`and` は先行グループを引き継ぐため、単独では使えません。関数名は `def rec` が束縛するため、ラムダの先頭に `\even ->` のような自己名の引数を追加しません。別々の rec 関数やモジュール間の再帰も、各関数で明示します。借用を持つ引数や、借用を保持し得る関数値の引数では、参照先フレームの再利用を避けるため直接の末尾ループ変換も行いません。
 
 ## 互換構文
+
+宣言と実装を分離する従来の形式も受理します。
+
+```tsuzuri run=42
+def add :: i64 -> i64 -> i64
+fn add left right = left + right
+
+def identity :: i64 -> i64
+let identity = \value -> value
+
+identity (add 20 22)
+```
+
+この形式では `def` と対応する `fn` または `let` を同じファイルに一つずつ置きます。隣接や前後関係は必須ではありません。再帰指定も宣言と実装で対応させます。通常のドキュメント例とサンプルは `def ... = ラムダ式` を基本にします。
 
 従来の `value -> expression` は互換構文として受理します。新しいコードでは `\value -> expression` を使います。旧 `fx value -> expression` は廃止され、`fx` は通常の識別子です。
 

@@ -1,13 +1,10 @@
-def rec sum :: i64 -> i64 -> i64
-fn rec sum n total =
+def rec sum :: i64 -> i64 -> i64 = \n total ->
     if n <= 0 {
         total
     } else {
         sum (n - 1) (total + n)
     }
 
-export def answer :: i64
-fn answer = sum 100 0
+export def answer :: i64 = sum 100 0
 
-def main :: i64
-fn main = answer()
+def main :: i64 = answer()

@@ -51,8 +51,7 @@ scalar のローカル値、算術、比較、cast、if、既知の関数呼び�
 専用プロジェクトの `Kernel.tz`:
 
 ```tsuzuri project=wgsl file=Kernel.tz
-export def transform :: i32u -> i32u
-fn transform value = value * 3i32u + 1i32u
+export def transform :: i32u -> i32u = \value -> value * 3i32u + 1i32u
 ```
 
 ```sh

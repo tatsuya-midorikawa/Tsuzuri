@@ -391,8 +391,7 @@ instance Eq<'a> => Eq<Box<'a>> {
     fn ne left right = !(Eq.eq left right)
 }
 
-def same_box :: Eq<'a> => &(Box<'a>) -> &(Box<'a>) -> bool
-fn same_box a b = Eq.eq a b
+def same_box :: Eq<'a> => &(Box<'a>) -> &(Box<'a>) -> bool = \a b -> Eq.eq a b
 ```
 
 ### 拒否プログラム

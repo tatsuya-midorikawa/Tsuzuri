@@ -1,7 +1,6 @@
 record Point { x: i32, y: i32 }
 
-def add :: 'a -> 'a -> 'a
-fn add x y = x + y
+def add :: 'a -> 'a -> 'a = \x y -> x + y
 
 instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
@@ -16,8 +15,7 @@ instance Classes.Score<Point> {
     fn score point = point.x + point.y
 }
 
-def score :: Classes.Score<'a> => ref 'a -> i32
-fn score value = Classes.Score.score value
+def score :: Classes.Score<'a> => ref 'a -> i32 = \value -> Classes.Score.score value
 
 let point = add (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 })
 assert (point == point)

@@ -35,11 +35,9 @@ record Item { title: string, completed: bool }
 record Board { next_id: i64, items: Map<i64, Item> }
 union Command = AddItem of string | CompleteItem of i64 | RemoveItem of i64
 
-def empty :: Board
-fn empty = Board { next_id: 1, items: Map.empty() }
+def empty :: Board = Board { next_id: 1, items: Map.empty() }
 
-def apply :: Board -> ref Command -> Board * Result<unit, string>
-fn apply board command =
+def apply :: Board -> ref Command -> Board * Result<unit, string> = \board command ->
     match command with
     | AddItem title ->
         let cleaned = String.trim (ref title)
@@ -64,8 +62,7 @@ fn apply board command =
             let items = Map.remove board.items identifier
             (Board { next_id: next_id, items: items }, Result.Ok ())
 
-def render :: ref Board -> string
-fn render board =
+def render :: ref Board -> string = \board ->
     if Map.is_empty (ref board.items) then "(empty)"
     else Map.fold (ref board.items) "" (\report identifier item ->
         let separator = if report.length == 0 then "" else "\n"
@@ -117,8 +114,7 @@ Board が成功値の内側にしかない `Result<Board, string>` だと、Erro
 次が同じディレクトリの `Main.tz` です。
 
 ```tsuzuri project=todo file=Main.tz run=Error%3A%20Item%20not%20found.%0A%5Bx%5D%201%3A%20Write%20docs%0A%5B%20%5D%203%3A%20Review%20code
-def main :: string
-fn main =
+def main :: string =
     let commands = [
         Tasks.AddItem "Write docs",
         Tasks.AddItem "Ship release",

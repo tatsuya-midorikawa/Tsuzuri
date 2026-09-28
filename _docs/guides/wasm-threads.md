@@ -9,8 +9,7 @@ WASM の並列実行は明示的な opt-in です。既定の import-free な逐
 独立した `target/thread-demo/Kernel.tz`:
 
 ```tsuzuri project=threads file=Kernel.tz
-export def sum_squares :: i64 -> i64
-fn sum_squares count =
+export def sum_squares :: i64 -> i64 = \count ->
     let jobs = new [Task<i64>](count, index -> task { return index * index })
     let results = Task.run (Task.parallel jobs)
     Array.sum ref results

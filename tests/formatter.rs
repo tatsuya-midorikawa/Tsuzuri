@@ -88,6 +88,21 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
 }
 
 #[test]
+fn inline_definitions_and_implicit_unions_preserve_layout_and_fingerprints() {
+    for source in [
+        "def add::i64->i64->i64 =\n  \\left->\\right->left+right\nadd 20 22\n",
+        "def rec even::i64->bool=\\value->if value==0 then true else odd (value-1)\nand odd::i64->bool=\\value->if value==0 then false else even (value-1)\n",
+        "def (|Even|Odd|)::i64->'T =\n  \\value->if value%2==0 then Even else Odd\nmatch 42 with |Even->42|Odd->0|_-> -1\n",
+        "def (|Small|Large|)::'a->'T=\\value->if true then Small value else Large value\n",
+    ] {
+        let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
+        let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+        assert_eq!(first.formatted, second.formatted);
+        tsuzuri::analyze(&first.formatted).unwrap();
+    }
+}
+
+#[test]
 fn layout_tracks_bodies_delimiters_and_else_owners() {
     for (source, expected) in [
         (

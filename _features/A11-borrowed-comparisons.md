@@ -64,8 +64,7 @@ class Add<'a> {
 メソッド値もこの型を持つ。例えば `Eq.eq` は制約付きの `&'a -> &'a -> bool`、`Ord.lt` は `&'a -> &'a -> bool` であり、次のように使う。
 
 ```text
-def same_by_method :: Eq<'a> => &'a -> &'a -> bool
-fn same_by_method left right =
+def same_by_method :: Eq<'a> => &'a -> &'a -> bool = \left right ->
     let f: &'a -> &'a -> bool = Eq.eq;
     f left right
 ```
@@ -82,8 +81,7 @@ instance Eq<User> {
     fn ne left right = !(Eq.eq left right)
 }
 
-def compare_twice :: User -> bool
-fn compare_twice user = {
+def compare_twice :: User -> bool = \user -> {
     let same = user == user;
     same && user.name.length > 0
 }
@@ -120,8 +118,7 @@ instance Eq<Point> {
 ただし、仮引数そのものを値として消費するコードは壊れる。移行では、値渡し関数を借用版へ変更するか、必要な field だけを読む。
 
 ```text
-def consume :: Point -> i64
-fn consume point = point.x
+def consume :: Point -> i64 = \point -> point.x
 
 instance Eq<Point> {
     fn eq left right = consume left == consume right // E1003: left/right は &Point
@@ -386,8 +383,7 @@ instance Eq<Box> {
     fn ne left right = !(Eq.eq left right)
 }
 
-def main :: bool
-fn main = {
+def main :: bool = {
     let box = Box { value: "x" };
     let same = box == box;
     same && box.value.length == 1
@@ -406,8 +402,7 @@ instance Ord<Pair> {
 ```
 
 ```text
-def method_value :: Eq<'a> => &'a -> &'a -> bool
-fn method_value left right =
+def method_value :: Eq<'a> => &'a -> &'a -> bool = \left right ->
     let f: &'a -> &'a -> bool = Eq.eq;
     f left right
 ```

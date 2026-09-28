@@ -572,11 +572,9 @@ fn b =
 複数関数 body error:
 
 ```text
-def a :: i64
-fn a = true
+def a :: i64 = true
 
-def b :: i64
-fn b = "text"
+def b :: i64 = "text"
 ```
 
 期待:
@@ -587,14 +585,11 @@ fn b = "text"
 signature poison と cascade suppression:
 
 ```text
-def bad :: Missing -> i64
-fn bad x = x
+def bad :: Missing -> i64 = \x -> x
 
-def caller :: i64
-fn caller = bad 1
+def caller :: i64 = bad 1
 
-def independent :: i64
-fn independent = true
+def independent :: i64 = true
 ```
 
 期待:
@@ -606,14 +601,11 @@ fn independent = true
 ownership per function:
 
 ```text
-def consume :: string -> unit
-fn consume s = ()
+def consume :: string -> unit = \s -> ()
 
-def a :: unit
-fn a = { let s = "a"; consume s; consume s }
+def a :: unit = { let s = "a"; consume s; consume s }
 
-def b :: unit
-fn b = { let s = "b"; consume s; consume s }
+def b :: unit = { let s = "b"; consume s; consume s }
 ```
 
 期待:

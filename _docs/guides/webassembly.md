@@ -9,11 +9,9 @@ WASM は計算モジュールとして生成します。入出力を使わない
 独立した `target/wasm-demo/Kernel.tz` の例です。
 
 ```tsuzuri project=wasm file=Kernel.tz
-export def add :: i64 -> i64 -> i64
-fn add left right = left + right
+export def add :: i64 -> i64 -> i64 = \left right -> left + right
 
-export def make_bytes :: i64 -> [ubyte]
-fn make_bytes count = new [ubyte](count, index -> index as ubyte)
+export def make_bytes :: i64 -> [ubyte] = \count -> new [ubyte](count, index -> index as ubyte)
 ```
 
 ```sh

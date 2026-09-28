@@ -20,7 +20,7 @@ UTF-8位置を交渉できないクライアントにはUTF-16位置を返しま
 テストは常に型検査しますが通常ビルドには含めず、実行時は別プロセスで隔離します。Main.tz は不要です。
 
 アクティブパターンは bool／Option を返す部分形式と、宣言した union に対応する複数ケース形式を使えます。
-`def (|Parsed|_|) :: ref string -> Option<i64>` と `fn (|Parsed|_|) text = Parse.parse text` により、`Parsed value` で解析結果を照合できます。
+`def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text` により、`Parsed value` で解析結果を照合できます。
 
 `const Answer: i64 = 40 + 2` で型付きのコンパイル時定数を宣言できます。前方参照・`private const`・他モジュールからの修飾参照に対応します。
 整数とbinary浮動小数点の演算、文字列・配列・タプル・レコードを扱い、利用ごとに通常の所有値を生成します。関数呼び出しとdecimal演算は定数式では拒否します。
@@ -71,19 +71,16 @@ nativeはLLVMの対応命令、WASMは既定でscalar fallback、`--wasm-feature
 `Main.tz`:
 
 ```text
-def rec sum :: i64 -> i64 -> i64
-fn rec sum n total =
+def rec sum :: i64 -> i64 -> i64 = \n total ->
     if n <= 0 {
         total
     } else {
         sum (n - 1) (total + n)
     }
 
-export def answer :: i64
-fn answer = sum 100 0
+export def answer :: i64 = sum 100 0
 
-def main :: i64
-fn main = answer()
+def main :: i64 = answer()
 ```
 
 ## 設計と実装済みの範囲
@@ -92,7 +89,7 @@ fn main = answer()
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。標準入出力は IO、外部機能は extern。共有可変状態はなし |
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
-| 書きやすさ | `def` と `fn`／`let`、カリー化・部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
+| 書きやすさ | `def ... = ラムダ式`、カリー化・部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。明示ブロックと型で解決する暗黙本体。束縛・短絡・分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
@@ -149,16 +146,14 @@ Web 向けの小さな計算モジュールという方向性は
 
 ## 関数と型クラス
 
-型を `def` で宣言し、`fn` または `let` と匿名関数で実装します。引数は半角スペースで区切ります。
+`def name :: 型 = \引数 -> 本体` で型と実装をまとめて記述します。引数は半角スペースで区切ります。従来の `def` と `fn`／`let` を分離する形式も受理します。
 同じ型変数は同じ型を表し、呼び出しごとに引数・返却値の文脈から具体型を決めます。
 関数名は `calculate_total` のようなスネークケース（`snake_case`）を推奨します。構文上の必須条件ではありません。
 
 ```text
-def add :: Add<'a> -> 'a -> 'a
-let add = \x -> \y -> x + y
+def add :: Add<'a> -> 'a -> 'a = \x -> \y -> x + y
 
-def identity :: 'a -> 'a
-fn identity x = x
+def identity :: 'a -> 'a = \x -> x
 
 let add20 = add 20i32
 let integer = add20 22
@@ -173,12 +168,10 @@ integer
 
 ```text
 def increment :: 'a -> 'a
-    @'a : Add, Integer
-fn increment value = value + 1
+    @'a : Add, Integer = \value -> value + 1
 
 def distance_of :: 'T -> 'U
-    @'T : Copy, #distance
-fn distance_of value = 'T.distance value
+    @'T : Copy, #distance = \value -> 'T.distance value
 ```
 
 `#distance` は具体的なレコード・union の定義元モジュールにある関数を要求します。
@@ -238,8 +231,7 @@ instance Classes.Score<Point> {
 ```text
 record Pair<'a, 'b> { first: 'a, second: 'b }
 
-def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
-fn swap pair = Pair { first: pair.second, second: pair.first }
+def swap :: Pair<'a, 'b> -> Pair<'b, 'a> = \pair -> Pair { first: pair.second, second: pair.first }
 
 let pair: Pair<string, i64> = swap (Pair { first: 42, second: "answer" })
 pair.second
@@ -259,8 +251,7 @@ union Shape =
 
 union Maybe<'a> = None | Some of 'a
 
-def area :: Shape -> f64
-fn area shape =
+def area :: Shape -> f64 = \shape ->
     match shape with
     | Circle r -> r * r * 3.141592653589793
     | Rect (w, h) -> w * h
@@ -322,8 +313,8 @@ string は UTF-16 コード単位（`i16u`）、utf8string は UTF-8 バイト�
 `IEnumerable` 全般との互換を意味しません。コレクションの記号は従来どおり、
 配列が `[ ... ]`、連結リストが `[| ... |]` です。
 
-再帰関数には `def rec` と `fn rec` が必要です。相互再帰は先頭を `rec`、
-続く宣言を `def and`、実装を `and` で記述できます。既存コードも明示指定へ移行してください。
+再帰関数は `def rec name :: 型 = ラムダ式` と書きます。相互再帰は先頭を `def rec`、
+後続を `and name :: 型 = ラムダ式` で記述します。分離形式では宣言と実装の再帰指定を対応させます。
 ループは LLVM の直接分岐、配列は連続走査、リストは一方向走査へ下げます。
 `match` 内の直接自己末尾再帰も `-O0` からループ化します。
 速度の実測と未達の比較は [制御構文のベンチマーク](docs/benchmarks.md#制御構文の比較)、
@@ -434,11 +425,9 @@ match Task.run (Task.parallel_results jobs) with
 ```text
 record Point { x: f64, y: f64 }
 
-def distance :: Point -> f64
-fn distance point = sqrt (point.x * point.x + point.y * point.y)
+def distance :: Point -> f64 = \point -> sqrt (point.x * point.x + point.y * point.y)
 
-export def hypotenuse :: f64 -> f64 -> f64
-fn hypotenuse x y = distance (Point { x: x, y: y })
+export def hypotenuse :: f64 -> f64 -> f64 = \x y -> distance (Point { x: x, y: y })
 ```
 
 同じディレクトリの `Main.tz`:
@@ -476,11 +465,9 @@ stdは`Option`・`Result`、コレクション・文字列・文字・整数・�
 無修飾の型・case・クラス名は利用者の宣言を std より優先します。
 
 ```text
-private def square :: f64 -> f64
-fn square x = x * x
+private def square :: f64 -> f64 = \x -> x * x
 
-def length :: Point -> f64
-fn length point = sqrt (square point.x + square point.y)
+def length :: Point -> f64 = \point -> sqrt (square point.x + square point.y)
 ```
 
 アプリケーションは **`Main.tz`** から開始します。
@@ -595,13 +582,10 @@ WASM は bulk-memory 対応の現在のブラウザー／Node.js を対象にし
 ## 所有権と借用
 
 ```text
-def length :: ref string -> i64
-fn length text = text.length
-def replace :: ref mut string -> unit
-fn replace text = { deref text = "updated"; }
+def length :: ref string -> i64 = \text -> text.length
+def replace :: ref mut string -> unit = \text -> { deref text = "updated"; }
 
-def main :: string
-fn main = {
+def main :: string = {
     let mut text = "こんにちは";
     let size = length ref text; // 借用後も所有者を使える
     replace ref mut text;       // この呼び出し中は排他的に借用

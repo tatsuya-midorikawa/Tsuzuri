@@ -297,8 +297,7 @@ instance Functor<Option> {
         | Some x -> Some (f x)
 }
 
-def inc_option :: Option<i64> -> Option<i64>
-fn inc_option value = Functor.map (x -> x + 1) value
+def inc_option :: Option<i64> -> Option<i64> = \value -> Functor.map (x -> x + 1) value
 ```
 
 ```text

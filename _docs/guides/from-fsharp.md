@@ -8,7 +8,7 @@
 
 | 意図 | F# の代表的な表記 | Tsuzuri |
 | --- | --- | --- |
-| 名前付き関数 | `let add left right = ...` | def に型を宣言し、fn または対応する let で実装 |
+| 名前付き関数 | `let add left right = ...` | `def add :: 型 = \left right -> ...` |
 | 匿名関数 | `fun value -> ...` | `\value -> ...` |
 | 可変ローカル | `let mutable count = 0` | `let mut count = 0` |
 | 代入 | `<-` | `=` |
@@ -33,8 +33,7 @@ Tsuzuri の名前付き関数はシグネチャを明示します。ローカル
 F# の GC で管理する値の共有を、Tsuzuri の値渡しへそのまま移すことはできません。string は非 Copy で move し、Copy 配列を複製すれば独立したバッファになります。
 
 ```tsuzuri run=10
-def size :: ref string -> i64
-fn size text = text.length
+def size :: ref string -> i64 = \text -> text.length
 
 let text = "hello"
 size text + size text

@@ -1,15 +1,12 @@
-def rec even :: i64 -> bool
-def and odd :: i64 -> bool
-fn rec even n = if n == 0 then true else odd (n - 1)
-and odd n = if n == 0 then false else even (n - 1)
+def rec even :: i64 -> bool = \n -> if n == 0 then true else odd (n - 1)
+and odd :: i64 -> bool = \n -> if n == 0 then false else even (n - 1)
 
-def (|Even|_|) :: i64 -> bool
-fn (|Even|_|) n = n % 2 == 0
+def (|Even|_|) :: i64 -> bool = \n -> n % 2 == 0
 
-def positive :: i64 -> i64
-fn positive n
+def positive :: i64 -> i64 = \number ->
+    match number with
     | value when value > 0 -> value
-    | otherwise -> 0
+    | _ -> 0
 
 let mut total = 0
 for (x, y) in [(1, 2), (3, 4)] do

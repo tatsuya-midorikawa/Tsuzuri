@@ -68,6 +68,97 @@ impl Parser<'_> {
         })
     }
 
+    pub(super) fn implicit_active_union(
+        &self,
+        mut function: FunctionDecl,
+        unions: &mut Vec<UnionDecl>,
+    ) -> Result<FunctionDecl, Diagnostic> {
+        let Some(active) = self.active_patterns.get(&function.name.text) else {
+            return Ok(function);
+        };
+        if active.cases.len() < 2 {
+            return Ok(function);
+        }
+        if !matches!(&function.result.kind, TypeExprKind::Variable(name) if name == "T") {
+            return Err(Diagnostic::new(
+                "E1020",
+                "multi-case active patterns use the implicit result type 'T, not an explicit union",
+                function.result.span,
+            ));
+        }
+        let union_name = Ident {
+            text: format!("Active{}$result", active.function.replace('.', "$")),
+            span: function.name.span,
+            provenance: Provenance::Generated,
+        };
+        let mut payload_cases = BTreeSet::new();
+        function.body.visit(&mut |expression| {
+            let callee = match &expression.kind {
+                ExprKind::Call(callee, arguments) if !arguments.is_empty() => Some(callee),
+                ExprKind::Binary(BinaryOp::Pipe, _, callee) => Some(callee),
+                _ => None,
+            };
+            if let Some(Expr {
+                kind: ExprKind::Name(name),
+                ..
+            }) = callee.map(Box::as_ref)
+            {
+                if active.cases.iter().any(|case| case.text == name.text) {
+                    payload_cases.insert(name.text.clone());
+                }
+            }
+        });
+        let parameters: Vec<_> = active
+            .cases
+            .iter()
+            .enumerate()
+            .filter(|(_, case)| payload_cases.contains(&case.text))
+            .map(|(index, case)| Ident {
+                text: format!("$active_payload{index}"),
+                span: case.span,
+                provenance: Provenance::Generated,
+            })
+            .collect();
+        let arguments: Box<[_]> = parameters
+            .iter()
+            .map(|parameter| TypeExpr {
+                kind: TypeExprKind::Variable(parameter.text.clone()),
+                span: parameter.span,
+            })
+            .collect();
+        function.result.kind = if arguments.is_empty() {
+            TypeExprKind::Named(union_name.text.clone())
+        } else {
+            TypeExprKind::Apply(Box::new(union_name.clone()), arguments)
+        };
+        let mut cases = Vec::new();
+        let mut payloads = parameters.iter();
+        for case in &active.cases {
+            let payload = payload_cases.contains(&case.text).then(|| {
+                let parameter = payloads.next().unwrap();
+                TypeExpr {
+                    kind: TypeExprKind::Variable(parameter.text.clone()),
+                    span: case.span,
+                }
+            });
+            let name = Ident {
+                text: format!("{}${}", union_name.text, case.text),
+                span: case.span,
+                provenance: Provenance::Generated,
+            };
+            cases.push(UnionCaseDecl { name, payload });
+        }
+        unions.push(UnionDecl {
+            doc: None,
+            visibility: function.visibility,
+            name: union_name,
+            parameters,
+            cases,
+            derives: Vec::new(),
+        });
+        Ok(function)
+    }
+
     pub(super) fn range_expression(
         &mut self,
         first: Expr,

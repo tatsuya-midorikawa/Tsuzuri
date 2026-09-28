@@ -98,6 +98,9 @@ pub(super) fn collect(
             }
         }
         for union in &program.unions {
+            if union.name.provenance == Provenance::Generated {
+                continue;
+            }
             index.document(&union.name, union.doc.as_ref());
             index.symbol(
                 &union.name,

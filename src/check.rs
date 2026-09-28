@@ -3869,6 +3869,7 @@ fn check_modules_collect(
             }
         });
     }
+    let mut active_results = BTreeMap::new();
     for &ModuleInput {
         name: module,
         program,
@@ -3904,6 +3905,7 @@ fn check_modules_collect(
                 signatures[id] = Scheme::poisoned();
             }
             if active.cases.len() > 1 && !signatures[id].is_poisoned() {
+                active_results.insert(id, active);
                 let error = match &signatures[id].signature.result {
                     Type::Union(union_id, _)
                         if unions[*union_id].cases.len() == active.cases.len() =>
@@ -3964,6 +3966,32 @@ fn check_modules_collect(
             }
         }
     }
+    for (&id, active) in &active_results {
+        if signatures[id].is_poisoned() {
+            continue;
+        }
+        let (module, function) = &function_declarations[id];
+        match infer_active_result(
+            module,
+            function,
+            &names,
+            types,
+            &signatures,
+            &classes,
+            active,
+        ) {
+            Ok(Some(result)) => {
+                signatures[id].signature.result = result;
+                signatures[id].variables =
+                    polymorph::variables(&signatures[id].signature.as_type());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                diagnostics.push(error);
+                signatures[id] = Scheme::poisoned();
+            }
+        }
+    }
     let mut functions = Vec::new();
     let mut pending = Vec::new();
     let mut warnings = Vec::new();
@@ -3977,6 +4005,9 @@ fn check_modules_collect(
         }
         let signature = scheme.signature.clone();
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
+        if let Some(active) = active_results.get(&id) {
+            checker.use_active_result(&signature.result, active);
+        }
         let checked = (|| {
             let region_sources = regions::contract(function, module, &names, types)?;
             checker.type_parameters = scheme.variables.clone();
@@ -4195,6 +4226,54 @@ fn check_modules_collect(
     }
     diagnostics.check()?;
     Ok(module)
+}
+
+fn infer_active_result(
+    module: &str,
+    function: &FunctionDecl,
+    names: &Names,
+    types: TypeContext<'_>,
+    signatures: &[Scheme],
+    classes: &Classes,
+    active: &crate::syntax::ActivePattern,
+) -> Result<Option<Type>, Diagnostic> {
+    let id = names.functions[&format!("{module}.{}", function.name.text)].id;
+    let scheme = &signatures[id];
+    if scheme.variables.iter().any(|name| name == "T") {
+        return Err(Diagnostic::new(
+            "E1020",
+            "'T is reserved for the implicit active-pattern result, not an input type variable",
+            function.result.span,
+        ));
+    }
+    let Type::Union(union_id, arguments) = &scheme.signature.result else {
+        return Ok(None);
+    };
+    if arguments.is_empty() {
+        return Ok(None);
+    }
+    let mut checker = Checker::new(module, names, types, signatures, classes);
+    checker.type_parameters = scheme.variables.clone();
+    checker.kinds = classes.constraint_kinds(&function.constraints, module, names)?;
+    checker.members = scheme.members.clone();
+    for (parameter, ty) in function.parameters.iter().zip(&scheme.signature.parameters) {
+        checker.bind(&parameter.name, ty.clone(), parameter.mutable);
+    }
+    let result = Type::Union(
+        *union_id,
+        arguments
+            .iter()
+            .map(|_| checker.inference.fresh())
+            .collect(),
+    );
+    checker.use_active_result(&result, active);
+    let mut source = function.body.clone();
+    computation::expand(&mut source, names)?;
+    let mut body = checker.expression(&source, Some(&result))?;
+    checker.finish(&mut body)?;
+    let result = checker.inference.resolve(&result);
+    validate_size(&result, &types, function.result.span)?;
+    Ok(Some(result))
 }
 
 fn duplicate(name: &Ident) -> Diagnostic {
@@ -5157,6 +5236,12 @@ fn expression_path(expression: &Expr) -> Option<(String, &Ident)> {
     Some((names.join("."), root))
 }
 
+struct ActiveResult {
+    union_id: usize,
+    arguments: Box<[Type]>,
+    cases: BTreeMap<String, usize>,
+}
+
 struct Checker<'a> {
     module: &'a str,
     names: &'a Names,
@@ -5167,6 +5252,7 @@ struct Checker<'a> {
     constraints: Vec<Constraint>,
     members: Vec<polymorph::MemberConstraint>,
     type_parameters: Vec<String>,
+    active_result: Option<Box<ActiveResult>>,
     scopes: Vec<BTreeMap<String, Local>>,
     kinds: BTreeMap<String, usize>,
     next_local: usize,
@@ -5204,6 +5290,7 @@ impl<'a> Checker<'a> {
             constraints: Vec::new(),
             members: Vec::new(),
             type_parameters: Vec::new(),
+            active_result: None,
             scopes: vec![BTreeMap::new()],
             kinds: BTreeMap::new(),
             next_local: 0,
@@ -5215,6 +5302,21 @@ impl<'a> Checker<'a> {
             shadowing_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
             poisoned: false,
+        }
+    }
+
+    fn use_active_result(&mut self, result: &Type, active: &crate::syntax::ActivePattern) {
+        if let Type::Union(union_id, arguments) = result {
+            self.active_result = Some(Box::new(ActiveResult {
+                union_id: *union_id,
+                arguments: arguments.clone(),
+                cases: active
+                    .cases
+                    .iter()
+                    .enumerate()
+                    .map(|(index, case)| (case.text.clone(), index))
+                    .collect(),
+            }));
         }
     }
 
@@ -6350,6 +6452,11 @@ impl<'a> Checker<'a> {
         if let Some(local) = self.local(&name.text) {
             return Ok((TypedExprKind::Local(local.id), local.ty.clone()));
         }
+        if let Some(active) = &self.active_result {
+            if let Some(&case_id) = active.cases.get(&name.text) {
+                return Ok(self.case_value(active.union_id, case_id));
+            }
+        }
         if let Some(id) = self.names.function(
             self.module,
             &format!("{}.{}", self.module, name.text),
@@ -6378,7 +6485,10 @@ impl<'a> Checker<'a> {
     /// with a payload is a one-argument constructor function.
     fn case_value(&mut self, union_id: usize, case_id: usize) -> (TypedExprKind, Type) {
         let arity = self.types.unions[union_id].parameters.len();
-        let args: Box<[Type]> = (0..arity).map(|_| self.inference.fresh()).collect();
+        let args: Box<[Type]> = match &self.active_result {
+            Some(active) if active.union_id == union_id => active.arguments.clone(),
+            _ => (0..arity).map(|_| self.inference.fresh()).collect(),
+        };
         let union = Type::Union(union_id, args.clone());
         match self.types.union_payload(union_id, &args, case_id) {
             None => (

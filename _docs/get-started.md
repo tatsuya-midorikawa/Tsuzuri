@@ -35,14 +35,12 @@ Windows 向けには x86_64 MSVC ABI の実装がありますが、現時点で�
 独立した作業ディレクトリの `Main.tz` に、次のようなプログラムを置きます。
 
 ```tsuzuri run=42
-def add :: i64 -> i64 -> i64
-fn add left right = left + right
+def add :: i64 -> i64 -> i64 = \left right -> left + right
 
-def main :: i64
-fn main = add 20 22
+def main :: i64 = add 20 22
 ```
 
-`def` は引数と返却値の型、`fn` は実装です。`i64` は符号付き 64-bit 整数です。関数呼び出しの引数は空白で区切り、`main` の最後の式がプログラムの結果になります。
+`def` の型の後に `= \引数 -> 本体` を書きます。引数なしの関数では本体を直接書きます。`i64` は符号付き 64-bit 整数です。関数呼び出しの引数は空白で区切り、`main` の最後の式がプログラムの結果になります。
 
 ここではそのディレクトリを `target/first-program` とすると、次のように検査・実行できます。
 
@@ -84,13 +82,11 @@ IO { do! IO.write_line "Hello" }
 次はテストを含む独立したプログラムです。
 
 ```tsuzuri run=42
-def add :: i64 -> i64 -> i64
-fn add left right = left + right
+def add :: i64 -> i64 -> i64 = \left right -> left + right
 
 test "adds two integers" = assert (add 20 22 == 42)
 
-def main :: i64
-fn main = add 20 22
+def main :: i64 = add 20 22
 ```
 
 ```sh

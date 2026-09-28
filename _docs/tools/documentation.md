@@ -10,8 +10,7 @@
 
 ```tsuzuri project=api-docs file=Numbers.tz
 /// 入力に一つ加えます。整数の演算は型幅で折り返します。
-def increment :: i64 -> i64
-fn increment value = value + 1
+def increment :: i64 -> i64 = \value -> value + 1
 
 /// 計算で使用する固定値です。
 const Answer: i64 = 42

@@ -9,8 +9,7 @@
 ```tsuzuri run=42
 record Point { horizontal: i64, vertical: i64 }
 
-def total :: ref Point -> i64
-fn total point = point.horizontal + point.vertical
+def total :: ref Point -> i64 = \point -> point.horizontal + point.vertical
 
 let point = Point { horizontal: 20, vertical: 22 }
 total ref point
@@ -44,8 +43,7 @@ updated.horizontal + updated.vertical
 ```tsuzuri run=42
 record Pair<'left, 'right> { first: 'left, second: 'right }
 
-def swap :: Pair<'left, 'right> -> Pair<'right, 'left>
-fn swap pair = Pair { first: pair.second, second: pair.first }
+def swap :: Pair<'left, 'right> -> Pair<'right, 'left> = \pair -> Pair { first: pair.second, second: pair.first }
 
 let result: Pair<string, i64> = swap (Pair { first: 42, second: "answer" })
 result.second
@@ -63,8 +61,7 @@ result.second
 type Count = i64
 type PairOf<'value> = 'value * 'value
 
-def total :: PairOf<Count> -> Count
-fn total pair =
+def total :: PairOf<Count> -> Count = \pair ->
     match pair with
     | (left, right) -> left + right
 

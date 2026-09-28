@@ -7,8 +7,7 @@
 ## bool を返す部分パターン
 
 ```tsuzuri run=42
-def (|Even|_|) :: i64 -> bool
-fn (|Even|_|) value = value % 2 == 0
+def (|Even|_|) :: i64 -> bool = \value -> value % 2 == 0
 
 match 42 with
 | Even -> 42
@@ -20,8 +19,7 @@ match 42 with
 ## Option を返す部分パターン
 
 ```tsuzuri run=42
-def (|Parsed|_|) :: ref string -> Option<i64>
-fn (|Parsed|_|) text = Parse.parse text
+def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text
 
 match "42" with
 | Parsed value -> value
@@ -35,8 +33,7 @@ match "42" with
 ## 全域パターン
 
 ```tsuzuri run=42
-def (|Length|) :: ref string -> i64
-fn (|Length|) text = text.length
+def (|Length|) :: ref string -> i64 = \text -> text.length
 
 match "answer" with
 | Length size -> size * 7
@@ -49,8 +46,7 @@ match "answer" with
 ## 追加引数
 
 ```tsuzuri run=42
-def (|Divisible|_|) :: i64 -> i64 -> bool
-fn (|Divisible|_|) divisor value = value % divisor == 0
+def (|Divisible|_|) :: i64 -> i64 -> bool = \divisor value -> value % divisor == 0
 
 match 42 with
 | Divisible 3 -> 42
@@ -62,10 +58,8 @@ match 42 with
 ## 複数 case の全域パターン
 
 ```tsuzuri run=42
-union ParityValue = EvenValue | OddValue
-
-def (|Even|Odd|) :: i64 -> ParityValue
-fn (|Even|Odd|) value = if value % 2 == 0 then EvenValue else OddValue
+def (|Even|Odd|) :: i64 -> 'T =
+    \value -> if value % 2 == 0 then Even else Odd
 
 match 42 with
 | Even -> 42
@@ -73,15 +67,29 @@ match 42 with
 | _ -> -1
 ```
 
-戻り値には認識 case と同じ個数の case を持つ明示的な union を使います。両者は宣言順に対応します。同じモジュールでは名前が衝突しないよう、上の `Even` と `EvenValue` のように区別します。
+戻り値の `'T` は、この認識器専用の union を暗黙生成する印です。通常の汎用型変数ではなく、入力型や制約には使いません。明示的な union と別名の case は不要です。本体内では、宣言した case 名を結果の値として使います。
 
-隠し union は生成しません。payload 付き case は対応する payload パターンを要求します。`(|First|Second|_|)` のように複数 case と部分形式を組み合わせることはできません。
+payload の型は本体から推論します。
+
+```tsuzuri run=42
+def (|Small|Large|) :: i64 -> 'T = \value ->
+    if value < 10 then Small value else Large value
+
+match 42 with
+| Small value -> value
+| Large value -> value
+| _ -> 0
+```
+
+本体で `Case value` または `value |> Case` と直接適用した case は payload を持ちます。間接適用だけでは payload の有無を推論しません。payload 付き case は対応する payload パターンを要求します。本体から型が決まらない場合は値に型注釈を付けます。`(|First|Second|_|)` のように複数 case と部分形式を組み合わせることはできません。
+
+明示的な union 型を返す旧形式と、複数 case の `def` / `fn` を分離する旧形式は廃止しました。`def (|First|Second|) :: 入力型 -> 'T = ラムダ式` へ移行します。
 
 認識器は節ごとに再評価されるため、現在は全 case を並べても `_` のフォールバックが必要です。認識結果を勝手にキャッシュして副作用や評価順を変えることはありません。
 
 ## 名前、可視性、診断
 
-認識 case は大文字で始めます。他モジュールの候補が曖昧なら `Module.Name` で修飾し、private な認識器は外から使用できません。定義の case 数不一致は `E1020`、名前衝突は `E1001` です。
+認識 case は大文字で始めます。他モジュールの候補が曖昧なら `Module.Name` で修飾し、private な認識器は外から使用できません。不正な複数 case 形式は `E1020`、名前衝突は `E1001` です。結果を作る case 名は認識器本体内だけの束縛で、外側では認識パターンとして使います。
 
 match に加え、ラムダ式の引数や for の分解にも使えます。ただし後者の不一致はトラップです。null や .NET の実行時型テストを提供する仕組みではありません。
 

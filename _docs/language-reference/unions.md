@@ -12,8 +12,7 @@ union Measurement =
     | Single of i64
     | Pair of i64 * i64
 
-def total :: Measurement -> i64
-fn total measurement =
+def total :: Measurement -> i64 = \measurement ->
     match measurement with
     | Missing -> 0
     | Single value -> value
@@ -33,8 +32,7 @@ union 名と case 名は ASCII 大文字で始めます。同じモジュール�
 ```tsuzuri run=42
 union Choice<'value> = Absent | Present of 'value
 
-def value_or :: 'value -> Choice<'value> -> 'value
-fn value_or fallback choice =
+def value_or :: 'value -> Choice<'value> -> 'value = \fallback choice ->
     match choice with
     | Absent -> fallback
     | Present value -> value
@@ -63,8 +61,7 @@ case は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case
 ```tsuzuri run=42
 union Tree = Empty | Node of Tree * i64 * Tree
 
-def rec sum :: Tree -> i64
-fn rec sum tree =
+def rec sum :: Tree -> i64 = \tree ->
     match tree with
     | Empty -> 0
     | Node (left, value, right) -> sum left + value + sum right

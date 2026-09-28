@@ -361,25 +361,19 @@ br i1 %valid, label %ok, label %trap
 ### 受理
 
 ```text
-def newline :: char
-fn newline = '\n'
+def newline :: char = '\n'
 
-def surrogate :: char
-fn surrogate = '\uD800'
+def surrogate :: char = '\uD800'
 
-def smile :: utf8char
-fn smile = u8'\u{1F600}'
+def smile :: utf8char = u8'\u{1F600}'
 
-def compare :: bool
-fn compare = 'A' < 'a' && 'a' == '\u{61}'
+def compare :: bool = 'A' < 'a' && 'a' == '\u{61}'
 
-def compare_utf8 :: bool
-fn compare_utf8 = u8'A' < u8'a' && u8'a' == u8'\u{61}'
+def compare_utf8 :: bool = u8'A' < u8'a' && u8'a' == u8'\u{61}'
 ```
 
 ```text
-def classify :: char -> i64
-fn classify c =
+def classify :: char -> i64 = \c ->
     match c with
     | '0' -> 0
     | 'A' -> 1
@@ -387,8 +381,7 @@ fn classify c =
     | '\uD800' -> 3
     | _ -> 4
 
-  def classify_utf8 :: utf8char -> i64
-  fn classify_utf8 c =
+  def classify_utf8 :: utf8char -> i64 = \c ->
     match c with
     | u8'A' -> 1
     | u8'\u{1F600}' -> 2
@@ -396,14 +389,11 @@ fn classify c =
 ```
 
 ```text
-def upper :: char -> char
-fn upper c = Char.to_ascii_upper c
+def upper :: char -> char = \c -> Char.to_ascii_upper c
 
-def upper_utf8 :: utf8char -> utf8char
-fn upper_utf8 c = Utf8Char.to_ascii_upper c
+def upper_utf8 :: utf8char -> utf8char = \c -> Utf8Char.to_ascii_upper c
 
-def surrogate_code :: i16u
-fn surrogate_code = Char.to_u16 (Char.of_u16 55296i16u)
+def surrogate_code :: i16u = Char.to_u16 (Char.of_u16 55296i16u)
 ```
 
 ### 拒否

@@ -16,15 +16,13 @@
 ユーザーが書く形:
 
 ```text
-def parse_pair :: &string -> &string -> Result<i64 * i64, string>
-fn parse_pair left right = Result {
+def parse_pair :: &string -> &string -> Result<i64 * i64, string> = \left right -> Result {
     let! a = D01.parse_i64 left
     let! b = D01.parse_i64 right
     return (a, b)
 }
 
-def find_positive :: [i64] -> Option<i64>
-fn find_positive values = Option {
+def find_positive :: [i64] -> Option<i64> = \values -> Option {
     for n in values do
         do! if n > 0 then Some () else None
     return values[0]
@@ -357,8 +355,7 @@ Result {
 ### 受理プログラム
 
 ```text
-export def option_chain :: i64
-fn option_chain =
+export def option_chain :: i64 =
     match Option {
         let! a = Some 20
         let! b = Some 22
@@ -369,8 +366,7 @@ fn option_chain =
 ```
 
 ```text
-export def option_stop :: i64
-fn option_stop =
+export def option_stop :: i64 =
     match Option {
         let! _: unit = None
         return 1 / 0
@@ -380,8 +376,7 @@ fn option_stop =
 ```
 
 ```text
-export def result_chain :: i64
-fn result_chain =
+export def result_chain :: i64 =
     match Result {
         let! a = Ok 20
         let! b = Ok 22
@@ -392,8 +387,7 @@ fn result_chain =
 ```
 
 ```text
-export def result_stop :: i64
-fn result_stop =
+export def result_stop :: i64 =
     match Result {
         let! _: unit = Error 42
         return 1 / 0
@@ -403,8 +397,7 @@ fn result_stop =
 ```
 
 ```text
-export def result_explicit_conversion :: i64
-fn result_explicit_conversion =
+export def result_explicit_conversion :: i64 =
     match Result {
         let! value = Option.to_result 42 (Some 20)
         return value + 22

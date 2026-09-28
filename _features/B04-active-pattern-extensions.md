@@ -18,7 +18,26 @@
 
 これにより、D01 の `Parse`、字句分類、軽量な view pattern を、所有権と静的型検査を保ったまま表現できる。
 
-## 現状
+## 現在の構文
+
+2026-09-29 の構文変更後は、複数ケースを次のように直接実装します。
+
+```tsuzuri
+def (|Even|Odd|) :: i64 -> 'T =
+  \value -> if value % 2 == 0 then Even else Odd
+
+match 42 with
+| Even -> 42
+| Odd -> 0
+| _ -> -1
+```
+
+`'T` は認識器専用の暗黙 union の印です。payload の型は本体から推論し、case 名は本体内でコンストラクタとして解決します。型検査・tag 判定・payload 投影・所有値の解放は既存経路を共有します。
+明示的な backing union 型と別名 case を要求する旧構文は廃止しました。現行契約は [言語仕様](../docs/language.md#アクティブパターン) と [利用者向け説明](../_docs/language-reference/active-patterns.md) を参照してください。
+
+以下は初回実装時の検討・検証記録です。旧構文との比較を含む設計資料であり、そのコードを現行の使用例としては扱いません。
+
+## 初回実装前の状況
 
 - `docs/language.md` の「アクティブパターン」:
   - 単一ケース全域 `(|Name|) :: input -> payload` は対応済み。
@@ -55,8 +74,7 @@
 ### Option 返却部分アクティブパターン
 
 ```text
-def (|Parse|_|) :: &string -> Option<i64>
-fn (|Parse|_|) text = D01.parse_i64 text
+def (|Parse|_|) :: &string -> Option<i64> = \text -> D01.parse_i64 text
 
 match text with
 | Parse n -> n + 1
@@ -418,8 +436,7 @@ B04 は A03 を実装しないが、以下の情報を提供する。
 Option partial:
 
 ```text
-def (|Parse|_|) :: &string -> Option<i64>
-fn (|Parse|_|) text =
+def (|Parse|_|) :: &string -> Option<i64> = \text ->
     if text.length == 2 then Some 42 else None
 
 match "42" with
@@ -430,8 +447,7 @@ match "42" with
 Option partial payload destructuring:
 
 ```text
-def (|Parts|_|) :: i64 -> Option<i64 * i64>
-fn (|Parts|_|) n = if n > 0 then Some (n, n + 1) else None
+def (|Parts|_|) :: i64 -> Option<i64 * i64> = \n -> if n > 0 then Some (n, n + 1) else None
 match 20 with
 | Parts (a, b) -> a + b
 | _ -> 0
@@ -440,8 +456,7 @@ match 20 with
 追加引数:
 
 ```text
-def (|Divisible|_|) :: i64 -> i64 -> Option<unit>
-fn (|Divisible|_|) divisor n =
+def (|Divisible|_|) :: i64 -> i64 -> Option<unit> = \divisor n ->
     if n % divisor == 0 then Some () else None
 match 42 with
 | Divisible (1 + 2) -> 1

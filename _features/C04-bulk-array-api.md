@@ -221,8 +221,7 @@ Value callback APIs require `Copy<'a>` because the input is borrowed but the cal
 `Array.fold`:
 
 ```text
-def fold :: Copy<'a> => &['a] -> 's -> ('s -> 'a -> 's) -> 's
-fn fold xs state folder = {
+def fold :: Copy<'a> => &['a] -> 's -> ('s -> 'a -> 's) -> 's = \xs state folder -> {
     let mut acc = state;
     for x in xs do
         acc = folder acc x;

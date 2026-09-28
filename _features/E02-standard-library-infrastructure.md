@@ -151,11 +151,9 @@ named record/union type instance の収集は D-03 に従い、実際に emit �
 E02 の本体では大きな実 std API は追加しない。
 機構を検査するため、最小の `std/Math.tz` を追加する。
 ```text
-private def identity_f64 :: f64 -> f64
-fn identity_f64 value = value
+private def identity_f64 :: f64 -> f64 = \value -> value
 
-def zero :: f64
-fn zero = identity_f64 0.0
+def zero :: f64 = identity_f64 0.0
 ```
 `Math.zero` は実用 API ではなく、機構検査用の最小 public 関数。
 ゼロ引数関数は `fn() -> T` の値なので、利用例は必ず `Math.zero()` と呼ぶ。
@@ -594,8 +592,7 @@ custom std に未使用 module を置いた program で、未使用 std function
 ### E2E
 fixture `tests/fixtures/stdlib/Main.tz`:
 ```text
-export def answer :: i64
-fn answer = (Math.zero() as i64) + 42
+export def answer :: i64 = (Math.zero() as i64) + 42
 ```
 実際には `f64 as i64` の変換が入るため期待値は 42。
 C host は `tz_answer() == 42` を確認する。

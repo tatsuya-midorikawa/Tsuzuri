@@ -335,8 +335,7 @@ instance Default<Option<'a>> {
 
 ```text
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
-def main :: bool
-fn main = {
+def main :: bool = {
     let p = Point { x: 1, y: 2 };
     let q = Point { x: 1, y: 3 };
     p != q && p < q
@@ -345,14 +344,12 @@ fn main = {
 
 ```text
 union Option<'a> = None | Some of 'a deriving (Eq, Display, Default)
-def main :: bool
-fn main = Some 42 == Some 42 && Default.default() == None
+def main :: bool = Some 42 == Some 42 && Default.default() == None
 ```
 
 ```text
 record Box<'a> { value: 'a } deriving (Eq, Hash)
-def same :: Eq<'a> => Box<'a> -> Box<'a> -> bool
-fn same x y = x == y
+def same :: Eq<'a> => Box<'a> -> Box<'a> -> bool = \x y -> x == y
 ```
 
 ### 拒否
