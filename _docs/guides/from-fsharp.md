@@ -9,7 +9,7 @@
 | 意図 | F# の代表的な表記 | Tsuzuri |
 | --- | --- | --- |
 | 名前付き関数 | `let add left right = ...` | def に型を宣言し、fn または対応する let で実装 |
-| 匿名関数 | `fun value -> ...` | `value -> ...` または `fx value -> ...` |
+| 匿名関数 | `fun value -> ...` | `\value -> ...` |
 | 可変ローカル | `let mutable count = 0` | `let mut count = 0` |
 | 代入 | `<-` | `=` |
 | 等値・不等値 | `=` / `<>` | `==` / `!=` |

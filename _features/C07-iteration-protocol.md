@@ -28,7 +28,7 @@
 
 - `src/control.rs` `Checker::control_expression` は `for...in` source を `Type::Array` / `Type::List` / `Type::String` / integer range に限定する。その他は `E1005`。
 - `src/llvm_control.rs` `FunctionEmitter::for_each` は `%tz.array` / `%tz.list` / string descriptor を直接走査する。
-- `.tc` builder の `For` は `src/computation.rs` で `B.For values (fx element -> body)` へ展開され、通常の言語 `for...in` protocol とは別。
+- `.tc` builder の `For` は `src/computation.rs` で `B.For values (\element -> body)` へ展開され、通常の言語 `for...in` protocol とは別。
 - `src/polymorph.rs` `Classes::collect` はユーザー定義 class を型変数 1 個に限定し、各 method はその型変数だけを含む必要がある。`Iterator source element` や associated type `Element source` は現状表現できない。
 
 ## 仕様
@@ -273,7 +273,7 @@ IR shape:
 
 ### Computation builder `For`
 
-Existing builder `For` lowering in `src/computation.rs` remains unchanged: it calls `B.For values (fx element -> body)` and does not use language for-in protocol. This is intentional.
+Existing builder `For` lowering in `src/computation.rs` remains unchanged: it calls `B.For values (\element -> body)` and does not use language for-in protocol. This is intentional.
 
 Interplay:
 

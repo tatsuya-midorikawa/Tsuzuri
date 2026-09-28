@@ -336,7 +336,7 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn fx(&mut self) -> Result<Expr, Diagnostic> {
+    pub(super) fn explicit_lambda(&mut self) -> Result<Expr, Diagnostic> {
         self.enter()?;
         let start = self.take().span;
         let mut parameters = Vec::new();
@@ -353,7 +353,7 @@ impl Parser<'_> {
                 }
                 _ => {
                     let name = Ident {
-                        text: format!("$fx{}", pattern.span.start),
+                        text: format!("$lambda{}", pattern.span.start),
                         span: pattern.span,
                         provenance: Provenance::Generated,
                     };
@@ -368,7 +368,7 @@ impl Parser<'_> {
         }
         if parameters.is_empty() {
             return Err(
-                self.error("'fx' requires at least one parameter; use 'fx () -> ...' for unit")
+                self.error("a lambda requires at least one parameter; use '\\() -> ...' for unit")
             );
         }
         let outer = self.in_task;
@@ -388,7 +388,7 @@ impl Parser<'_> {
                         body,
                         span,
                     }],
-                    origin: MatchOrigin::FxDestructuring,
+                    origin: MatchOrigin::LambdaDestructuring,
                 },
                 span,
                 depth,
@@ -788,7 +788,11 @@ impl Parser<'_> {
     fn pattern_argument_expression(&self) -> bool {
         if matches!(
             self.current().kind,
-            TokenKind::Ampersand | TokenKind::If | TokenKind::Fx | TokenKind::Task | TokenKind::New
+            TokenKind::Ampersand
+                | TokenKind::If
+                | TokenKind::Backslash
+                | TokenKind::Task
+                | TokenKind::New
         ) {
             return true;
         }

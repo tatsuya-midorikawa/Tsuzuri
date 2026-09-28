@@ -48,7 +48,7 @@ fn buffers =
 
 export def tasks :: i64
 fn tasks =
-    let jobs = new [Task<i64>](16, fx _index -> task { return now () })
+    let jobs = new [Task<i64>](16, \_index -> task { return now () })
     let results = Task.run (Task.parallel jobs)
     Array.sum (&results)
 

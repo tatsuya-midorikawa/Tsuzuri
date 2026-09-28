@@ -55,7 +55,7 @@ fn while_checks n =
 
 export def collection_sum :: i64 -> i64 -> i64
 fn collection_sum n seed =
-    let values = new [i64](n, fx i -> (i * 17) ^ seed)
+    let values = new [i64](n, \i -> (i * 17) ^ seed)
     let mut total = 0
     for value in values do total = total + value
     total + values.length
@@ -63,7 +63,7 @@ fn collection_sum n seed =
 export def list_sum :: i64 -> i64
 fn list_sum n =
     let mut total = 0
-    for value in new [|i64|](n, fx i -> i * 3) do total = total + value
+    for value in new [|i64|](n, \i -> i * 3) do total = total + value
     total
 
 export def destructuring :: i64
@@ -126,9 +126,25 @@ fn guarded x y
 export def function_forms :: i64
 fn function_forms =
     let offset = 2
-    let add = fx (x: i64) y -> x + y + offset
-    let tuple = fx (a, b) -> add a b
+    let add = \(x: i64) y -> x + y + offset
+    let tuple = \(a, b) -> add a b
     tuple (20, 20) + guarded 3 4
+
+export def lambda_nested :: i64
+fn lambda_nested =
+    let increment = \value -> value + 1
+    assert (increment 41 == 42)
+    let f = \x -> \y -> \z -> x + y + z
+    let with_two = f 2
+    let with_three = with_two 3
+    assert (with_three 4 == 9)
+    assert (with_three 5 == 10)
+    let text = "owned"
+    let join = \left -> \right -> text + left + right
+    let prefix = join "a"
+    assert ((prefix "b").length == 7)
+    assert ((prefix "cd").length == 8)
+    f 2 3 4
 
 export def partial_moves :: i64
 fn partial_moves =
@@ -145,7 +161,7 @@ fn owned_guard =
 export def loop_copies :: i64 -> i64
 fn loop_copies n =
     let values = [20, 22]
-    let callback = fx i -> values[0] + values[1] + i
+    let callback = \i -> values[0] + values[1] + i
     let mut total = 0
     for i in 0 .. n - 1 do
         let copy = values
@@ -212,7 +228,7 @@ fn active_patterns =
     let a = match 42 with | Even & Divisible (1 + 2) -> 42 | _ -> 0
     let b = match 20 with | Parts (x, y) when x < y -> x + y | _ -> 0
     let c = match "abc" with | Length 3 -> 3 | _ -> 0
-    let get = fx (Length n) -> n
+    let get = \(Length n) -> n
     let mut total = get "hello"
     for Length n in ["a", "bc"] do total = total + n
     a + b + c + total
@@ -309,10 +325,10 @@ export def trap_pattern :: unit
 fn trap_pattern = for [x] in [[1], [2, 3]] do ()
 
 export def trap_lambda :: i64
-fn trap_lambda = (fx [x] -> x) [1, 2]
+fn trap_lambda = (\[x] -> x) [1, 2]
 
 export def trap_for_active :: unit
 fn trap_for_active = for Even in [2, 3] do ()
 
 export def trap_fx_active :: i64
-fn trap_fx_active = (fx Even -> 42) 3
+fn trap_fx_active = (\Even -> 42) 3

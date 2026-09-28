@@ -10,7 +10,7 @@ Map はキーと値、Set は重複しないキーを保持する順序付きコ
 let dictionary = Map.insert (Map.singleton 2 "two") 1 "one"
 let first = Map.at (ref dictionary) 1
 assert (first.length == 3)
-Map.fold (ref dictionary) 0 (fx total _key value -> total + value.length)
+Map.fold (ref dictionary) 0 (\total _key value -> total + value.length)
 ```
 
 読み取りは Map を共有借用し、更新は所有する Map を消費します。上の値は非 Copy の string ですが、at と fold は借用するので複製を要求しません。
@@ -39,7 +39,7 @@ Map.fold (ref dictionary) 0 (fx total _key value -> total + value.length)
 let left = Set.insert (Set.singleton 20) 22
 let right = Set.singleton 22
 let combined = Set.union left right
-Set.fold (ref combined) 0 (fx total key -> total + deref key)
+Set.fold (ref combined) 0 (\total key -> total + deref key)
 ```
 
 union は両方の所有値を消費します。重複したキーは一つになり、左の代表値を保持します。

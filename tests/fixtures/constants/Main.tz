@@ -55,7 +55,7 @@ fn repeat_values count =
 export def captured_values :: i64
 fn captured_values =
     let data = Stored
-    let read = fx () -> Array.sum data.values
+    let read = \() -> Array.sum data.values
     let answer = match Pair with | (left, right) -> left + right
     assert (read () == answer)
     answer

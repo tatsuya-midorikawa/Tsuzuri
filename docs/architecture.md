@@ -32,7 +32,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント、数値 |
 | `src/docgen.rs` | 宣言ASTからの公開API Markdown、型・制約・regionの描画、決定的ページ順 |
 | `src/parser.rs` | Pratt parser、宣言と式、トップレベルのエントリーコード、深さの制限 |
-| `src/parse_control.rs` | インデント本体、for／while／match、関数ガード、fx、パターンと認識器名 |
+| `src/parse_control.rs` | インデント本体、for／while／match、関数ガード、ラムダ式、パターンと認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR、レイアウト、公開 ABI |
 | `src/control.rs` / `recursion.rs` | 型付きループ、短絡するパターン手順と束縛、認識器呼び出し、参照グラフの再帰検査 |
 | `src/exhaustiveness.rs` | 型付きの被覆パターン、usefulness による match の網羅性・到達不能な節の検査、不足する値の例（check の子モジュール） |
@@ -387,7 +387,7 @@ OR 展開は最大 1,024 通りで、構文・展開後の深さにも既存の 
 
 網羅性（`exhaustiveness.rs`）は、`control::pattern_alternatives` が lowering と同じ名前・認識器の解決から
 同時に返す型付きの `CoveragePat` を使い、構文 AST を再解決しません。
-記録するのは `MatchOrigin::{Explicit, FunctionGuard}` の match だけで、`fx`・source の `for`・
+記録するのは `MatchOrigin::{Explicit, FunctionGuard}` の match だけで、ラムダ式・source の `for`・
 コンピュテーション式の分解は検査せず実行時のトラップを維持します。
 定数の鍵は既定の型を確定した後の型に依存するため、検査は関数ごとの `finish` の後に行います。
 鍵は解決済みの型と実行時の等価性に合わせた正規形（整数のビット、浮動小数点数の ±0 の同一視と NaN の空パターン、

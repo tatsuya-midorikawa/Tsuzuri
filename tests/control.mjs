@@ -68,6 +68,7 @@ const cases = [
   ["structural_patterns", [], 55n],
   ["guard_once", [], 42n],
   ["function_forms", [], 46n],
+  ["lambda_nested", [], 9n],
   ["partial_moves", [], 47n],
   ["owned_guard", [], 4n],
   ["owned_replacements", [0n], 3n],

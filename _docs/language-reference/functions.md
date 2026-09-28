@@ -26,7 +26,7 @@ answer()
 
 ```tsuzuri run=42
 def add :: i64 -> i64 -> i64
-let add = left -> right -> left + right
+let add = \left -> \right -> left + right
 
 let add_twenty = add 20
 22 |> add_twenty
@@ -45,13 +45,22 @@ def apply :: (i64 -> i64) -> i64 -> i64
 fn apply transform value = transform value
 
 let offset = 2
-let increment = fx value -> value + offset
+let increment = \value -> value + offset
 apply increment 40
 ```
 
-`value -> expression` と `fx value -> expression` を使えます。複数引数は `fx left right -> left + right`、型注釈は `fx (value: i64) -> value + 1` です。
+匿名関数は Haskell と同じ `\引数 -> 本体` の形式で書きます。複数引数は `\left right -> left + right`、型注釈は `\(value: i64) -> value + 1` です。
 
-`fx (left, right) -> left + right` のような分解や `fx () -> 42` の unit パターンも使えます。関数引数のパターンは `match` と異なり網羅性検査の対象ではなく、適用時に不一致ならトラップします。
+`\(left, right) -> left + right` のような分解や `\() -> 42` の unit パターンも使えます。関数引数のパターンは `match` と異なり網羅性検査の対象ではなく、適用時に不一致ならトラップします。
+
+ラムダ式はネストできます。
+
+```tsuzuri run=9
+let f = \x -> \y -> \z -> x + y + z
+f 2 3 4
+```
+
+`f 2` は残りの二引数を待つ関数値、`f 2 3` は残りの一引数を待つ関数値です。`\x y z -> x + y + z` と書いても同じカリー化になります。
 
 ローカルな `let` は単相かつ非再帰です。同じ関数値を i64 用と string 用の両方へ一般化することはできません。汎用 API には型変数を含む名前付きの `def` を使います。
 
@@ -69,7 +78,7 @@ apply increment 40
 
 引数は左から右へ評価し、適用は二項演算より強く結合します。式を引数にする場合は `add (base + 1) (step * 2)` と書きます。
 
-`fn calculate left right = body` の `body` は両方の引数がそろってから評価します。一方、`fn calculate left = { ...; right -> body }` は最初の適用でブロックを評価し、次の関数を返します。後続引数の評価をこの段階の前へ移動してよいという規則はありません。
+`fn calculate left right = body` の `body` は両方の引数がそろってから評価します。一方、`fn calculate left = { ...; \right -> body }` は最初の適用でブロックを評価し、次の関数を返します。後続引数の評価をこの段階の前へ移動してよいという規則はありません。
 
 借用を引数にする場合、`transform ref value` と書けます。さらに引数を続けるときは `transform (ref value) other` と括ると明確です。引数型から分かる借用・再借用・参照外しは省略できますが、所有権と寿命の検査は常に行われます。
 
@@ -102,6 +111,8 @@ if even 42 then 42 else 0
 and は先行グループを引き継ぐため、単独では使えません。別々の rec 関数やモジュール間の再帰も、各関数で明示します。借用を持つ引数や、借用を保持し得る関数値の引数では、参照先フレームの再利用を避けるため直接の末尾ループ変換も行いません。
 
 ## 互換構文
+
+従来の `value -> expression` は互換構文として受理します。新しいコードでは `\value -> expression` を使います。旧 `fx value -> expression` は廃止され、`fx` は通常の識別子です。
 
 従来の `fn name(value: i64) -> i64 { value }`、`name(value)`、カンマ区切りの呼び出しも受理します。新しいコードでは `def` と空白適用を推奨します。旧 `fn name :: ...` は型宣言として受理せず、`def name :: ...` へ移行します。
 

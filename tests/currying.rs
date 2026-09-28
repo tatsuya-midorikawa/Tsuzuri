@@ -139,9 +139,9 @@ fn checks_capture_lifetimes_moves_and_mutability() {
 #[test]
 fn borrows_dynamic_calls_without_changing_owned_capture_fallbacks() {
     for (case, captures) in [
-        "let offset = seed; let transform: i64 -> i64 = if flag then fx value -> value + offset else fx value -> value - offset; transform seed",
-        "let text = to_string seed; let transform: i64 -> i64 = if flag then fx value -> text.length + value else fx value -> text.length - value; transform seed",
-        "let text = to_string seed; let transform: string -> string = if flag then fx value -> text + value else fx value -> value + text; (transform \"a\" + transform \"b\").length",
+        "let offset = seed; let transform: i64 -> i64 = if flag then \\value -> value + offset else \\value -> value - offset; transform seed",
+        "let text = to_string seed; let transform: i64 -> i64 = if flag then \\value -> text.length + value else \\value -> text.length - value; transform seed",
+        "let text = to_string seed; let transform: string -> string = if flag then \\value -> text + value else \\value -> value + text; (transform \"a\" + transform \"b\").length",
     ].into_iter().enumerate() {
         let module = analyze(&format!(
             "export def invoke :: bool -> i64 -> i64\nfn invoke flag seed = {{ {captures} }}"

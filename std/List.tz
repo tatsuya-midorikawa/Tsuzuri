@@ -12,8 +12,8 @@ fn fold values initial folder =
 
 def iter :: ref [|'a|] -> Seq.Seq<ref 'a>
 fn iter values =
-    let references = List.fold_ref values (Vec.empty()) (fx state value -> Vec.push state value)
-    Seq.unfold (references, 0) (fx state ->
+    let references = List.fold_ref values (Vec.empty()) (\state value -> Vec.push state value)
+    Seq.unfold (references, 0) (\state ->
         match state with
         | (references, index) ->
             if index < Vec.length (ref references) then

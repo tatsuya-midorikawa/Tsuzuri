@@ -13,19 +13,19 @@ def defer :: (unit -> (Seq<'a> * Option.Option<'a>)) -> Seq<'a>
 fn defer step = Seq { head: Option.None, step: Option.Some step }
 
 def rec unfold :: Capture<'state> => 'state -> ('state -> Option.Option<('a * 'state)>) -> Seq<'a>
-fn rec unfold state generator = defer (fx () ->
+fn rec unfold state generator = defer (\() ->
     match generator state with
     | Option.Some (value, remaining) -> (unfold remaining generator, Option.Some value)
     | Option.None -> (empty(), Option.None))
 
 def rec map :: Capture<'a> => Seq<'a> -> ('a -> 'b) -> Seq<'b>
-fn rec map sequence transform = defer (fx () ->
+fn rec map sequence transform = defer (\() ->
     match Seq.next sequence with
     | (remaining, Option.Some value) -> (map remaining transform, Option.Some (transform value))
     | (_, Option.None) -> (empty(), Option.None))
 
 def rec filter :: Capture<'a> => Seq<'a> -> (ref 'a -> bool) -> Seq<'a>
-fn rec filter sequence predicate = defer (fx () ->
+fn rec filter sequence predicate = defer (\() ->
     let mut current = sequence
     let mut selected: Option.Option<'a> = Option.None
     let mut finished = false

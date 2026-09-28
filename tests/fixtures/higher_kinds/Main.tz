@@ -4,18 +4,18 @@ fn fmap transform value =
     result
 
 export def option_map :: i64 -> i64
-fn option_map seed = Option.get (fmap (fx value -> value + 1) (Option.Some seed))
+fn option_map seed = Option.get (fmap (\value -> value + 1) (Option.Some seed))
 
 export def result_map :: i64 -> i64
 fn result_map seed =
     let input: Result<i64, string> = Result.Ok seed
-    let result: Result<i64, string> = fmap (fx value -> value * 3) input
+    let result: Result<i64, string> = fmap (\value -> value * 3) input
     Result.get result
 
 export def result_error :: i64
 fn result_error =
     let input: Result<i64, string> = Result.Error "failed"
-    let result: Result<i64, string> = fmap (fx value -> value + 1) input
+    let result: Result<i64, string> = fmap (\value -> value + 1) input
     match result with
     | Result.Ok value -> value
     | Result.Error message -> message.length
@@ -49,4 +49,4 @@ fn binary_constructor =
 export def first_class :: i64
 fn first_class =
     let mapper: (i64 -> i64) -> Option<i64> -> Option<i64> = Functor.map
-    Option.get (mapper (fx value -> value + 2) (Option.Some 40))
+    Option.get (mapper (\value -> value + 2) (Option.Some 40))

@@ -140,7 +140,7 @@ fn only_unobserved_single_use_copies_are_transferred() {
 fn stores_single_scalar_captures_without_an_environment_allocation() {
     for scalar in ["bool", "i8", "i16u", "i32", "i64u", "i128u", "f32", "f64"] {
         let module = analyze(&format!(
-            "def make :: bool -> {scalar} -> (unit -> {scalar})\nfn make flag value = if flag then fx unused -> value else fx unused -> value"
+            "def make :: bool -> {scalar} -> (unit -> {scalar})\nfn make flag value = if flag then \\unused -> value else \\unused -> value"
         )).unwrap();
         for wasm in [false, true] {
             let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();

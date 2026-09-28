@@ -32,7 +32,6 @@ pub enum TokenKind {
     Char(u16),
     Utf8Char(u32),
     Fn,
-    Fx,
     Def,
     Rec,
     And,
@@ -96,6 +95,7 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    Backslash,
     Percent,
     Bang,
     Tilde,
@@ -544,8 +544,8 @@ pub enum MatchOrigin {
     Explicit,
     /// The clauses of `fn f x | pattern -> ...`.
     FunctionGuard,
-    /// A destructuring `fx` parameter.
-    FxDestructuring,
+    /// A destructuring lambda parameter.
+    LambdaDestructuring,
     /// A destructuring `for` inside a computation expression.
     ComputationDestructuring,
 }

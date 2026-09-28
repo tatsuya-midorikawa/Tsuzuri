@@ -140,7 +140,7 @@ fn task_sequential count seed =
 export def task_parallel :: i64 -> i64 -> i64
 fn task_parallel count seed =
     assert (count >= 0 && count <= 100000000)
-    let work = new [Task<i64u>](16, fx index -> task { task_mix count (seed as i64u ^ index as i64u) })
+    let work = new [Task<i64u>](16, \index -> task { task_mix count (seed as i64u ^ index as i64u) })
     let results = Task.run (Task.parallel work)
     let mut total = 0i64u
     for value in results do total = total + value

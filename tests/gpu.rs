@@ -80,7 +80,7 @@ fn generates_deterministic_strict_integer_wgsl() {
 #[test]
 fn gpu_reference_api_is_explicit_opaque_and_owned() {
     let prefix = "let device = Result.get (Gpu.request Gpu.CpuReference)\n";
-    let module = analyze(&format!("{prefix}let buffer = Gpu.init (&device) 8 (fx index -> index * index)\nlet mapped = Gpu.map (&device) (fx value -> value + 1) buffer\nlet values = Gpu.to_array mapped\nArray.sum (&values)")).unwrap();
+    let module = analyze(&format!("{prefix}let buffer = Gpu.init (&device) 8 (\\index -> index * index)\nlet mapped = Gpu.map (&device) (\\value -> value + 1) buffer\nlet values = Gpu.to_array mapped\nArray.sum (&values)")).unwrap();
     for wasm in [false, true] {
         let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
         let enum_line = ir
@@ -95,19 +95,19 @@ fn gpu_reference_api_is_explicit_opaque_and_owned() {
     }
     for (body, code) in [
         (
-            "Gpu.init (&device) 2 (fx index -> { assert (index >= 0); index })",
+            "Gpu.init (&device) 2 (\\index -> { assert (index >= 0); index })",
             "E1018",
         ),
         (
-            "let initialize = Gpu.init\ninitialize (&device) 2 (fx index -> { assert (index >= 0); index })",
+            "let initialize = Gpu.init\ninitialize (&device) 2 (\\index -> { assert (index >= 0); index })",
             "E1018",
         ),
         (
-            "let offset = 1i32\nGpu.init (&device) 2 (fx index -> index + offset)",
+            "let offset = 1i32\nGpu.init (&device) 2 (\\index -> index + offset)",
             "E1018",
         ),
         (
-            "let buffer = Gpu.init (&device) 2 (fx index -> index)\nlet first = Gpu.to_array buffer\nGpu.to_array buffer",
+            "let buffer = Gpu.init (&device) 2 (\\index -> index)\nlet first = Gpu.to_array buffer\nGpu.to_array buffer",
             "E1012",
         ),
         ("device.backend", "E1022"),

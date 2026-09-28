@@ -43,7 +43,7 @@
 
 | キーワード | 主な説明 |
 | --- | --- |
-| def / fn / fx / rec / and | [関数](functions.md) |
+| def / fn / `\` / rec / and | [関数](functions.md) |
 | let / mut / const | [値と定数](values-and-constants.md) |
 | record / type / with | [レコード](records.md) |
 | union / of | [union](unions.md) |

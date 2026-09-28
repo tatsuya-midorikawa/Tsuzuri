@@ -350,7 +350,6 @@ impl Lexer<'_> {
         }
         match &self.source[start..self.position] {
             "fn" => TokenKind::Fn,
-            "fx" => TokenKind::Fx,
             "def" => TokenKind::Def,
             "rec" => TokenKind::Rec,
             "and" => TokenKind::And,
@@ -650,6 +649,7 @@ impl Lexer<'_> {
             '-' => Minus,
             '*' => Star,
             '/' => Slash,
+            '\\' => Backslash,
             '%' => Percent,
             '!' => Bang,
             '~' => Tilde,
@@ -674,6 +674,21 @@ impl Lexer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexes_backslash_lambdas_without_changing_literal_escapes() {
+        let tokens = lex(r#"\value -> "\\" '\\'"#).unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Backslash);
+        assert_eq!(tokens[0].span, Span::new(0, 1));
+        assert_eq!(tokens[1].kind, TokenKind::Ident("value".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Arrow);
+        assert_eq!(
+            tokens[3].kind,
+            TokenKind::String(StringLiteral::Utf16(vec![u16::from(b'\\')]))
+        );
+        assert_eq!(tokens[4].kind, TokenKind::Char(u16::from(b'\\')));
+        assert_eq!(lex("fx").unwrap()[0].kind, TokenKind::Ident("fx".into()));
+    }
 
     #[test]
     fn preserves_documentation_comments_and_line_endings() {

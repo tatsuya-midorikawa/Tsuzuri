@@ -978,7 +978,7 @@ union RList = RNil | RCons of i64 * [|RList|]
 ```text
 def make_counter :: Tree -> (unit -> i64)
 fn make_counter tree =
-    fx () -> checksum tree
+    \() -> checksum tree
 
 export def closure_clone :: i64
 fn closure_clone =

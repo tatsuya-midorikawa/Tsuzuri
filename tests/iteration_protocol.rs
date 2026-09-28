@@ -7,7 +7,7 @@ fn sequences_are_opaque_linear_values_with_owned_or_borrowed_elements() {
         "let sequence: Seq<i64> = Seq.empty()\nmatch Seq.next sequence with | (_, value) -> Option.is_none (&value)",
         "let text = \"borrowed\"\nlet sequence = Seq.once (ref text)\nmatch Seq.next sequence with | (_, Option.Some value) -> value.length | (_, Option.None) -> 0",
         "let sequence = Seq.once (task { return 42 })\nmatch Seq.next sequence with | (_, Option.Some value) -> Task.run value | (_, Option.None) -> 0",
-        "let sequence = Seq.defer (fx () -> (Seq.empty(), Option.Some 42))\nmatch Seq.next sequence with | (_, value) -> Option.get value",
+        "let sequence = Seq.defer (\\() -> (Seq.empty(), Option.Some 42))\nmatch Seq.next sequence with | (_, value) -> Option.get value",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
         for wasm in [false, true] {
@@ -76,13 +76,13 @@ fn sequence_loops_consume_state_and_preserve_existing_control_rules() {
 #[test]
 fn lazy_combinators_and_explicit_iterators_preserve_loans() {
     for source in [
-        "let sequence = Seq.unfold 0 (fx value -> if value < 4 then Option.Some (value, value + 1) else Option.None)\nlet mapped = Seq.map sequence (fx value -> value * 2)\nlet filtered = Seq.filter mapped (fx value -> deref value > 2)\nlet values = Seq.to_array filtered\nArray.sum (&values)",
+        "let sequence = Seq.unfold 0 (\\value -> if value < 4 then Option.Some (value, value + 1) else Option.None)\nlet mapped = Seq.map sequence (\\value -> value * 2)\nlet filtered = Seq.filter mapped (\\value -> deref value > 2)\nlet values = Seq.to_array filtered\nArray.sum (&values)",
         "let strings = [\"a\", \"bc\"]\nlet mut total = 0\nfor value in Array.iter (&strings) do total = total + value.length\ntotal",
         "let strings = [|\"a\", \"bc\"|]\nlet mut total = 0\nfor value in List.iter (&strings) do total = total + value.length\ntotal",
         "let values = Vec.push (Vec.empty()) \"owned\"\nlet mut total = 0\nfor value in Vec.iter (&values) do total = total + value.length\ntotal",
         "let map = Map.singleton \"key\" \"value\"\nlet mut total = 0\nfor (key, value) in Map.iter (&map) do total = total + key.length + value.length\ntotal",
         "let set = Set.singleton \"key\"\nlet mut total = 0\nfor key in Set.iter (&set) do total = total + key.length\ntotal",
-        "let sequence = Seq.filter (Seq.once \"value\") (fx value -> value.length > 0)\nlet values = Seq.to_array sequence\nvalues[0].length",
+        "let sequence = Seq.filter (Seq.once \"value\") (\\value -> value.length > 0)\nlet values = Seq.to_array sequence\nvalues[0].length",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
         for wasm in [false, true] {

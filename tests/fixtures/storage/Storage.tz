@@ -282,7 +282,7 @@ export def capture_stack :: i64
 fn capture_stack =
     let values = [3, 4]
     let names = ["cap"]
-    let read = fx i -> values[i] + names[0].length
+    let read = \i -> values[i] + names[0].length
     read 0 + read 1 * 10
 
 export def copy_stack :: i64
@@ -323,7 +323,7 @@ fn wide_stack =
 export def function_stack :: i64
 fn function_stack =
     let offset = 5
-    let functions = [fx x -> x + offset, fx x -> x * 2]
+    let functions = [\x -> x + offset, \x -> x * 2]
     functions[0] 10 + functions[1] 20 * 100
 
 def forward :: &mut [string] -> unit
@@ -360,5 +360,5 @@ export def lent_capture :: i64
 fn lent_capture =
     let names = ["ab", "cde"]
     let labels = ["wxyz"]
-    let generated = new [i64](3, fx i -> i + labels[0].length)
-    apply_twice (fx x -> x + names[1].length) 10 + generated[2] * 100
+    let generated = new [i64](3, \i -> i + labels[0].length)
+    apply_twice (\x -> x + names[1].length) 10 + generated[2] * 100

@@ -114,7 +114,7 @@ Array.sum / product は数値を左から右に集計し、空なら 0 / 1 で�
 
 ```tsuzuri run=42
 let values = List.cons 20 [|22|]
-List.fold (ref values) 0 (fx total value -> total + value)
+List.fold (ref values) 0 (\total value -> total + value)
 ```
 
 List は `length`, `is_empty`, `map`, `map_ref`, `fold`, `fold_ref`, `reverse`, `to_array`, `iter` を提供します。map と fold の引数順は Array と同様にリストが先です。値を取り出す callback と所有する複製結果には Copy、借用版には不要です。要素は O(n) の直接走査で処理します。

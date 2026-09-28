@@ -1,5 +1,5 @@
 private def rec iter_from :: ref Vec<'a> -> i64 -> Seq.Seq<ref 'a>
-fn rec iter_from values index = Seq.defer (fx () ->
+fn rec iter_from values index = Seq.defer (\() ->
     if index < Vec.length values then (iter_from values (index + 1), Option.Some (ref values[index]))
     else (Seq.empty(), Option.None))
 

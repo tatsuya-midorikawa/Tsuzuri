@@ -39,10 +39,10 @@ fn ordered_containers_are_opaque_noncopy_owned_values() {
 #[test]
 fn ordered_lookup_updates_and_snapshots_use_only_required_constraints() {
     for source in [
-        "let map = Map.insert (Map.singleton \"b\" 2) \"a\" 1\nlet value = Map.at (&map) \"b\"\nassert (deref value == 2)\nMap.fold (&map) 0 (fx total key value -> total + key.length + deref value)",
+        "let map = Map.insert (Map.singleton \"b\" 2) \"a\" 1\nlet value = Map.at (&map) \"b\"\nassert (deref value == 2)\nMap.fold (&map) 0 (\\total key value -> total + key.length + deref value)",
         "let map = Map.insert (Map.singleton 2 \"old\") 2 \"new\"\nlet value = Map.at (&map) 2\nvalue.length",
         "let map = Map.insert (Map.singleton 2 20) 1 10\nlet keys = Map.keys (&map)\nlet values = Map.values (&map)\nlet pairs = Map.to_array (&map)\nlet map = Map.remove map 2\nassert (Option.get (Map.get (&map) 1) == 10)\nkeys[0] + values[0] + pairs.length",
-        "let set = Set.remove (Set.insert (Set.singleton \"a\") \"b\") \"a\"\nSet.fold (&set) 0 (fx total key -> total + key.length)",
+        "let set = Set.remove (Set.insert (Set.singleton \"a\") \"b\") \"a\"\nSet.fold (&set) 0 (\\total key -> total + key.length)",
         "record Key { name: string } deriving (Eq, Ord)\nlet map = Map.insert (Map.empty()) (Key { name: \"x\" }) 42\nMap.get (&map) (Key { name: \"x\" })",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -79,7 +79,7 @@ fn set_algebra_and_borrowed_map_values_preserve_ownership() {
     assert_eq!(analyze("let union = 1\nunion").unwrap_err().code, "E0002");
     for source in [
         "let left = Set.insert (Set.singleton 1) 2\nlet right = Set.insert (Set.singleton 2) 3\nlet common = Set.intersect (&left) (&right)\nlet different = Set.difference (&left) (&right)\nlet both = Set.union left right\nSet.length (&common) + Set.length (&different) + Set.length (&both)",
-        "let set = Set.union (Set.singleton \"x\") (Set.insert (Set.singleton \"x\") \"y\")\nSet.fold (&set) 0 (fx total key -> total + key.length)",
+        "let set = Set.union (Set.singleton \"x\") (Set.insert (Set.singleton \"x\") \"y\")\nSet.fold (&set) 0 (\\total key -> total + key.length)",
         "let text = \"borrowed\"\nlet map = Map.singleton 1 (ref text)\nlet value = Map.at (&map) 1\nvalue.length",
         "let map = Map.singleton 1 (task { return 42 })\nlet map = Map.remove map 1\nMap.length (&map)",
     ] {

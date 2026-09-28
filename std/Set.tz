@@ -132,7 +132,7 @@ def difference :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> S
 fn difference left right = select left right false
 
 private def rec iter_from :: ref Set<'key> -> i64 -> Seq.Seq<ref 'key>
-fn rec iter_from set index = Seq.defer (fx () ->
+fn rec iter_from set index = Seq.defer (\() ->
 	if index < length set then (iter_from set (index + 1), Option.Some (ref set.entries[index]))
 	else (Seq.empty(), Option.None))
 

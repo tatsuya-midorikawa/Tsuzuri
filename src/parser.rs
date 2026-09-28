@@ -353,7 +353,7 @@ impl Parser<'_> {
                 self.expect(&TokenKind::Equal, "'=' before the anonymous function")?;
                 let body = self.body_expression()?;
                 if !matches!(body.kind, ExprKind::Lambda(..)) {
-                    return Err(Diagnostic::new("E0002", "a declared top-level 'let' function needs a lambda such as 'x -> y -> x + y'", body.span));
+                    return Err(Diagnostic::new("E0002", "a declared top-level 'let' function needs a lambda such as '\\x -> \\y -> x + y'", body.span));
                 }
                 let recursion = recursive.then(|| name.text.clone());
                 definition_group = recursion.clone();
@@ -2200,7 +2200,7 @@ impl Parser<'_> {
                 | TokenKind::False
                 | TokenKind::New
                 | TokenKind::Task
-                | TokenKind::Fx
+                | TokenKind::Backslash
                 | TokenKind::Ref
                 | TokenKind::Deref
                 | TokenKind::LeftParen
@@ -2426,7 +2426,7 @@ impl Parser<'_> {
         let start = self.current().span;
         let kind = match &self.current().kind {
             TokenKind::Task => return self.task(),
-            TokenKind::Fx => return self.fx(),
+            TokenKind::Backslash => return self.explicit_lambda(),
             TokenKind::New => return self.new_collection(),
             TokenKind::While => return self.while_expression(),
             TokenKind::For => return self.for_expression(),

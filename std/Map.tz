@@ -93,7 +93,7 @@ fn fold map initial folder =
 	state
 
 private def rec iter_from :: ref Map<'key, 'value> -> i64 -> Seq.Seq<(ref 'key * ref 'value)>
-fn rec iter_from map index = Seq.defer (fx () ->
+fn rec iter_from map index = Seq.defer (\() ->
 	if index < length map then (iter_from map (index + 1), Option.Some (ref map.entries[index].key, ref map.entries[index].value))
 	else (Seq.empty(), Option.None))
 

@@ -161,7 +161,7 @@ fn borrowed_sum reference amount = deref reference + amount
 def staged_borrow :: ref mut i64 -> i64 -> i64
 fn staged_borrow counter = {
     deref counter = deref counter + 1;
-    fx value -> value
+    \value -> value
 }
 
 export def implicit_borrows :: i64

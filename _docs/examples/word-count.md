@@ -61,7 +61,7 @@ fn count_words text =
 def format_counts :: ref Map<string, i64> -> string
 fn format_counts counts =
     if Map.is_empty counts then "(no words)"
-    else Map.fold counts "" (fx report word count ->
+    else Map.fold counts "" (\report word count ->
         let separator = if report.length == 0 then "" else "\n"
         report + separator + clone_string word + ": " + to_string (deref count))
 

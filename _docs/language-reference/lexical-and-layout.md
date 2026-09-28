@@ -25,7 +25,7 @@ Tsuzuri のソースは UTF-8 のテキストです。空白で関数を適用�
 ## 予約語
 
 ```text
-fn fx def rec and export extern private record union type const test
+fn def rec and export extern private record union type const test
 class instance deriving let task do return yield for in to downto
 while break continue mut ref deref new as if then elif else match
 with when true false

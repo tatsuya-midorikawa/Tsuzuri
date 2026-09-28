@@ -16,7 +16,7 @@ native exe/objectの同梱`Array.sum<i64>`は実行時CPU選択の対象です�
 
 - `.tz`（コード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）。
   UTF-8、先頭 BOM、LF／CRLF。識別子は ASCII の英字または `_` に続く英数字／`_`。
-- 予約語は `fn` `fx` `def` `rec` `and` `export` `extern` `private` `record` `union` `type` `const` `test` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
+- 予約語は `fn` `def` `rec` `and` `export` `extern` `private` `record` `union` `type` `const` `test` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
     `for` `in` `to` `downto` `while` `break` `continue` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
   `true` `false` です。関数・変数・フィールド・モジュールの名前には使えません（`refs` や `ref_count` は使えます）。
   `of` は `union` の case 宣言の中だけで意味を持つ文脈キーワードで、それ以外では通常の識別子です。
@@ -265,7 +265,7 @@ fn answer = add 20 22
 
 `def name :: 引数型 -> ... -> 返却型` と `fn name 引数名 ... = 式` を同じファイルに一つずつ
 書きます。`fn` 実装との隣接・前後関係は必須ではありません。`export` は `def` 側に付けます。
-`def` より後に `let name = x -> y -> 式` と書いても実装できます。この `let` は
+`def` より後に `let name = \x -> \y -> 式` と書いても実装できます。この `let` は
 通常のエントリーコードの束縛ではなく、全モジュールから参照できる関数の定義です。
 宣言・定義の重複、宣言だけで実装がない場合はエラーです。
 引数は半角スペースで区切ります。実装が一部の引数だけを名前で受け取る場合、本体は残りの関数型を返します。
@@ -297,8 +297,8 @@ Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと
 `(i32 -> i32) -> i32` のように関数を引数にする場合は括弧が必要です。
 部分適用した型も通常の関数型であり、レコード・配列・関数の引数や結果として使えます。
 関数でない結果にさらに引数を適用するとエラーです。
-`fn f x y = body` は `x -> y -> body` の略記で、body は両方の引数がそろってから評価します。
-一方、`fn f x = { ...; y -> body }` のブロックは `f x` の時点で評価します。
+`fn f x y = body` は `\x -> \y -> body` の略記で、body は両方の引数がそろってから評価します。
+一方、`fn f x = { ...; \y -> body }` のブロックは `f x` の時点で評価します。
 後続引数の評価をこの段階より前へ移動することはありません。
 互換用に `fn f(x: i32) -> i32 { x }`、`f(x)`、`fn(i32) -> i32` も受理します。
 旧形式の複数引数もカリー化され、`f(x, y)` は `f x y` と同じ適用です。
@@ -309,22 +309,24 @@ Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと
 
 ```text
 def add :: Add<'a> -> 'a -> 'a
-let add = x -> y -> x + y
+let add = \x -> \y -> x + y
 
 def main :: i32
 fn main = {
     let offset: i32 = 20;
-    let shift = x -> x + offset;
+    let shift = \x -> x + offset;
     let increment = add 1i32;
     increment (shift 21)
 }
 ```
 
-`fx x y -> 式` は匿名関数です。既存の `x -> y -> 式` も同じカリー化と捕捉へ下げます。
+匿名関数は Haskell と同じ `\引数 -> 本体` の形式です。`\x y -> 式` のほか、`\x -> \y -> 式` のようにネストできます。
+例えば `let f = \x -> \y -> \z -> x + y + z` に対して `f 2 3 4` の結果は `9` です。
 引数型は型注釈・呼び出し・本体から推論します。
-`let f: i32 -> i32 = x -> x + 1;` のように注釈を付けられます。
-`fx (x: i32) y -> x + y`、`fx (f: i64 -> i64) x -> f x`、
-`fx (x, y) -> x + y`、`fx () -> 42` のように注釈・分解・unit パターンも指定できます。
+`let f: i32 -> i32 = \x -> x + 1;` のように注釈を付けられます。
+`\(x: i32) y -> x + y`、`\(f: i64 -> i64) x -> f x`、
+`\(x, y) -> x + y`、`\() -> 42` のように注釈・分解・unit パターンも指定できます。
+旧 `fx x -> 式` は廃止し、`fx` は通常の識別子です。従来の `x -> y -> 式` は互換構文として引き続き受理します。
 引数のパターンは網羅性を検査せず、適用時の不一致はトラップします。`f ()` は unit 一引数で、引数なしの `f()` とは異なります。
 `f (x, y)` はタプル引数を渡せます。互換のカリー化関数が複数の非タプル引数を要求する場合は、
 従来のカンマ区切り適用としても受理します。曖昧さを避けるにはタプルを先に束縛するか `f x y` を使います。
@@ -1003,7 +1005,7 @@ C/C++ のような寿命切れのポインターは作りません。所有権�
 その時点で要素領域をヒープへ移してから渡します。要素の所有権はそのまま移るので、要素の複製や二重解放はありません。
 `ref mut` で貸す場合も、借り手が値全体を置換・解放できるように先にヒープへ移します。
 共有借用 `ref x`、索引、`.length`、`for`、パターンの読み取りはスタック上のまま行い、確保しません。
-呼び先が既知で外へ逃げない一時的な関数値（`let!` の継続、`new [T](n, f)` の初期化関数、高階関数に直接渡す `fx` など）の
+呼び先が既知で外へ逃げない一時的な関数値（`let!` の継続、`new [T](n, f)` の初期化関数、高階関数に直接渡すラムダ式など）の
 捕捉も、[コンピュテーション式の性能](#コンピュテーション式の性能) の特殊化で呼び出しの間だけ値を貸すため、ヒープへ移しません。
 束縛せずに直接返す・渡すリテラル（`fn f = [1, 2]`、`g [1, 2]`）は、この移動を省いて最初からヒープに作ります。
 返すことが分かっている値、何度も束縛から移す値は `new` で作ると移動時のコピーを省けます。
@@ -1398,7 +1400,7 @@ match answer with
 ### ビルダー名を省略した本体
 
 関数本体、通常のブロック、Main.tz のトップレベルでは、直接 `let!`／`do!`／`match!`／`return`／`yield` を書けます。
-main 専用ではなく、引数付き・private・別モジュール・ジェネリック・再帰関数、`fx`／`x ->` の匿名関数、
+main 専用ではなく、引数付き・private・別モジュール・ジェネリック・再帰関数、`\value ->` の匿名関数、
 `let` による関数実装、クラスの既定メソッドとインスタンス実装、`.tc` の補助関数でも同じ規則を使います。
 通常の名前付き関数では `def` が必要です。main だけの例外は入口の署名省略であり、CE の利用範囲ではありません。
 明示的な `Builder { ... }` は従来どおり単一ビルダーの操作へ展開し、その意味は変更しません。
@@ -1469,7 +1471,7 @@ Task の and!／yield／match! は追加せず、明示 task の規則も変更�
 | `if condition { C1 } else { C2 }` | 通常の `if` で選んだ分岐だけを実行 |
 | `if condition { C }` | `else { B.Zero() }` を補う |
 | `C1; C2` | `B.Combine C1 (delay(C2))`。通常の束縛・通常式・bind は上記の規則を使う |
-| `for pattern in values do C` | `B.For values (fx element -> pattern を分解して C)` |
+| `for pattern in values do C` | `B.For values (\element -> pattern を分解して C)` |
 | `while condition do C` | `B.While (u -> condition) (B.Delay (u -> C))` |
 
 式全体は `delay(C)` で包み、`Run` があればさらに `B.Run (delay(C))` とします。
@@ -1559,7 +1561,7 @@ Option.get result
 
 and!は単純な識別子のlet!に続けます。mut・型注釈を許し、同じgroup内の重複名はE1001、他の束縛の右辺からgroupの名前を参照することはできません。
 全右辺を左から右へ一度ずつ評価してからMergeSourcesを左結合し、Bindへ渡します。右辺評価は失敗値によって短絡せず、トラップは巻き戻しません。
-ビルダーにBind2があり、ちょうど2束縛と末尾returnだけなら、`Bind2 left right (fx first second -> result)`へ展開します。それ以外ではMergeSourcesが必要で、不在ならE1018です。
+ビルダーにBind2があり、ちょうど2束縛と末尾returnだけなら、`Bind2 left right (\first second -> result)`へ展開します。それ以外ではMergeSourcesが必要で、不在ならE1018です。
 単純なlet!と末尾returnだけでは、存在する場合に限ってBindReturnを使います。存在しなければBind+Returnです。型不一致なら通常の型エラーで、別経路へ黙って戻しません。
 これらはビルダーが定義した操作であり、コンパイラはモナド則やoperationの意味同値を仮定しません。Option/Resultは3操作を提供し、Resultは左のErrorを優先します。
 Delayがある場合の全体の遅延・Capture・外部可変変数の禁止は従来どおりです。and!はタスクを自動開始/並列化しません。
@@ -1785,7 +1787,7 @@ OR の一部の側だけが到達不能な場合は警告しません。
 定数の重複は実行時の比較と同じ規則で判定し、`0.0` と `-0.0`、`1.0d64` と `1.00d64` は同じ値です。
 
 網羅性を検査した後も、生成コードは全節が不成立の場合のトラップを防御として残します。
-`for`・`fx` の引数・コンピュテーション式の `for` の分解パターンは網羅性を検査せず、
+`for`・ラムダ式の引数・コンピュテーション式の `for` の分解パターンは網羅性を検査せず、
 一致しない値は実行時にトラップします。暗黙の 0 や空文字列は返しません。
 F# の MatchFailureException のような回復可能な例外機構は現状ありません。
 
@@ -1876,7 +1878,7 @@ unit 結果だけは結果パターンを省略できます。
 全域認識器は結果のパターンが単独で網羅的（`Length _`・`Length n` など）な場合だけ対象の任意の値に一致するとみなし、
 `Parity true` と `Parity false` のように複数の節へ分けた結果のパターンは合わせても網羅とみなしません。
 不足の例は認識器の名前ではなく、対象の型の値で示します。
-再利用できる通常の関数であり、`fx` と for のパターンでも使えます。
+再利用できる通常の関数であり、ラムダ式と for のパターンでも使えます。
 複数ケース全域 `(|First|Second|)` は、同じ case 数の union を返します。active case と backing union case は宣言順で対応します。
 同じモジュールでは case 名を別名にし、名前衝突は `E1001`、個数不一致は `E1020` です。隠し union は生成しません。
 各 case は対応する payload を既存のパターンへ渡します。payload なしの case にパターンは付けられません。
@@ -2063,7 +2065,7 @@ fast-math・reassociation・暗黙 FMA は使いません。native は常駐プ�
 明示GPU要求をCPU成功に置き換えません。`Auto`もCPU fallbackの指定ではありません。
 
 `Gpu.Device`と`Gpu.Buffer<'a>`はopaque・non-Copyの所有型です。Deviceは各操作へ共有借用で渡します。
-`Gpu.init (&device) count (fx index -> index * index)`のindexはi32、countはi64の0〜2147483647です。
+`Gpu.init (&device) count (\index -> index * index)`のindexはi32、countはi64の0〜2147483647です。
 `Gpu.map (&device) transform buffer`はbufferを消費し、`Gpu.from_array (&device) (&values)`は配列をコピー、`Gpu.to_array buffer`はbufferを消費して配列を返します。
 CPU参照bufferの要素はi32/i32u/i64/i64u/f32/f64です。通常の配列allocatorとdropを使い、GPU常駐であるとは主張しません。
 init/map/from_arrayは直接の完全適用だけに対応します。init/map callbackは既知の関数かcaptureなしlambdaで、scalar局所値・算術・比較・cast・if・既知呼び出しを許します。
@@ -2111,10 +2113,10 @@ break/continueは通常のループと同じで、残った列・未消費要素
 配列・リスト・文字列・整数範囲の直接forは既存の走査を維持します。独自型のiter関数は暗黙探索せず、`for item in Module.iter (&source) do ...`と書きます。
 
 ```text
-let sequence = Seq.unfold 0 (fx value ->
+let sequence = Seq.unfold 0 (\value ->
     if value < 10 then Option.Some (value, value + 1) else Option.None)
-let doubled = Seq.map sequence (fx value -> value * 2)
-let selected = Seq.filter doubled (fx value -> deref value % 3 == 0)
+let doubled = Seq.map sequence (\value -> value * 2)
+let selected = Seq.filter doubled (\value -> deref value % 3 == 0)
 let result = Seq.to_array selected
 ```
 
@@ -2438,7 +2440,7 @@ and odd n = if n == 0 then false else even (n - 1)
 
 `and` は先行する再帰グループを引き継ぎ、単独では使えません。
 別々の `def rec`／`fn rec` による相互参照や、各関数を `rec` とするモジュール間の循環も許可します。
-`let rec name = fx ...` と互換の `fn rec name(x: T) -> T { ... }` にも同じ規則を適用します。
+`let rec name = \value -> ...` と互換の `fn rec name(x: T) -> T { ... }` にも同じ規則を適用します。
 `rec` は最適化の指定ではなく名前参照の契約で、不要な場所に指定しても再帰を発生させません。
 
 自己への直接の呼び出しが関数の結果になる場合、LLVM IR の phi とループへ変換します。

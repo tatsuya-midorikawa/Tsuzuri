@@ -19,7 +19,7 @@ D-14 に従い、浮動小数点の既定集計は左から右の逐次順序と
 
 - 配列・リストの primitive 操作は `.length`、`[index]`、`for...in`、literal / `new` のみ。
 - `src/llvm_control.rs` `for_each` は配列を data + length の単純 loop に下げる。scratch で `clang -O3 -S -emit-llvm` を確認すると、整数配列の初期化・加算 loop は `vector.body` と `<2 x i64>` / `llvm.vector.reduce.add.v2i64` に最適化される。ただし浮動小数点 sum は順序保持のため vector reduction を期待しない。
-- `src/call_specialization.rs` は既知の non-escaping callback を特殊化できるため、`Array.map xs (fx x -> ...)` のような API は std 実装でも callback 間接呼び出しを省ける可能性がある。
+- `src/call_specialization.rs` は既知の non-escaping callback を特殊化できるため、`Array.map xs (\x -> ...)` のような API は std 実装でも callback 間接呼び出しを省ける可能性がある。
 - `Builtin` は現状 scalar だけ。E02/C03 後に `Array.xxx` namespace と `&[T]` が使える。
 
 ## 仕様

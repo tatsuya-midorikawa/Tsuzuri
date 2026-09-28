@@ -335,7 +335,7 @@ instance Computed<i64> {
 }
 def functions :: i64
 fn functions =
-  let transform: i64 -> Option<i64> = fx input ->
+  let transform: i64 -> Option<i64> = \\input ->
     let! value = Some input
     return value + 1
   let add_one = curried 1

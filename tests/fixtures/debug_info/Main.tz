@@ -9,7 +9,7 @@ fn answer input =
     let pair = (input + 2, true)
     assert (chain.length == 1 && Vec.length (&capacity) == 0)
     assert (values[0] == point.x)
-    let captured = fx offset -> point.x + offset
+    let captured = \offset -> point.x + offset
     let expected = match pair with | (value, flag) -> if flag then value else 0
     assert (captured 0 == expected)
     match input with

@@ -47,7 +47,7 @@ pub struct Diagnostic {
 | ローカル未使用 | `Local { id, name, span }`, `TypedExpr::children`, `ownership::count_uses`, `ownership::uses` |
 | 捕捉 | `TypedExprKind::Lambda { captures, .. }`, `closures::free_locals` |
 | guard 内使用 | `TypedMatchArm.guard`, `PatternStep::Test`, `TypedExpr::children` |
-| generated names | 現状は `$match...`, `$iteration...`, `$recognizer...`, `$instance...`, `$fx...` などの名前で生成物を区別しているが、`closures::lower` は `$export` bridge と `arg{id}` parameter、`polymorph::intrinsic_function` は `$intrinsic` function と `arg{id}` parameter も作るため、warning 判定は名前推測ではなく明示 provenance が必要 |
+| generated names | 現状は `$match...`, `$iteration...`, `$recognizer...`, `$instance...`, `$lambda...` などの名前で生成物を区別しているが、`closures::lower` は `$export` bridge と `arg{id}` parameter、`polymorph::intrinsic_function` は `$intrinsic` function と `arg{id}` parameter も作るため、warning 判定は名前推測ではなく明示 provenance が必要 |
 | 到達不能 match 節 | A03 が `E1021` / `W1003` の解析を追加予定 |
 | private 未使用 | E01 が `private` 可視性を追加予定。現時点の `export` は host ABI 指定であり、モジュール間可視性ではない |
 
@@ -155,7 +155,7 @@ pub enum GeneratedKind {
     Entry,
     ComputationExpansion,
     PatternLowering,
-    FxParameter,
+    LambdaParameter,
     InstanceMethod,
     LambdaLift,
     BuiltinWrapper,
@@ -175,7 +175,7 @@ lint は `Provenance::User` の宣言 site だけを見る。
 - `$match...`
 - `$iteration...`
 - `$recognizer...`
-- `$fx...`
+- `$lambda...`
 - `$enumerable`
 - `$entry`
 - `$active...`
@@ -195,7 +195,7 @@ warning は利用者が書いた span に紐づく `Provenance::User` の宣言�
 - `let` / block binding。
 - pattern binding。
 - `for` の loop local。
-- `fx` の pattern から生成された user-visible binding。
+- ラムダ式の pattern から生成された user-visible binding。
 
 対象外:
 
@@ -290,7 +290,7 @@ unused private type '<Module.Name>'; remove it or make it public
 
 - `match value with | ...` の arm。
 - function guard の arm。
-- `for` / `fx` pattern mismatch 用に合成された single-arm match は対象外。
+- `for` / lambda pattern mismatch 用に合成された single-arm match は対象外。
 
 A03 が exhaustiveness / usefulness 解析を導入している場合、その結果を warning として受け取る。
 G03 単独では、既存の単純な明らかに到達不能な場合だけ実装してよい。
@@ -499,7 +499,7 @@ A03 が未導入の場合、simple pass:
 - unconditional alternative は `steps.is_empty()` か `PatternStep::Test(Bool(true))` のみ。
 - その後の arm を W1003 にする。
 
-generated single-arm match は `local.name` が `$iteration` / `$fx` / `$recognizer` 由来なら除外する。
+generated single-arm match は `local.name` が `$iteration` / `$lambda` / `$recognizer` 由来なら除外する。
 
 ### 前提とする他チケットのインターフェース
 
@@ -680,7 +680,7 @@ fn f =
 generated code:
 
 - computation expression fixture を使い、`Generated(ComputationExpansion)` binding に warning が出ないこと。
-- `fx (x, y) -> x` では user binding `y` は W1001、内部 `Generated(FxParameter)` はなし。
+- `\(x, y) -> x` では user binding `y` は W1001、内部 `Generated(LambdaParameter)` はなし。
 - `$export` bridge、`$intrinsic` wrapper、`$builtin` wrapper の `arg0` に W1001/W1002 が出ないこと。
 
 W1002 roots:

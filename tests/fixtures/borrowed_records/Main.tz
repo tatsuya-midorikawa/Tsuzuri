@@ -9,7 +9,7 @@ fn make_view values = Nested { view: View { data: values } }
 
 export def view_sum :: i64 -> i64
 fn view_sum count =
-    let values = new [i64](count, fx index -> index + 1)
+    let values = new [i64](count, \index -> index + 1)
     let nested = make_view (&values)
     let copy = nested
     Array.sum nested.view.data + Array.sum copy.view.data
@@ -18,7 +18,7 @@ export def text_view :: i64
 fn text_view =
     let text = "borrowed"
     let view = TextView { text: ref text }
-    let read = fx () -> view.text.length
+    let read = \() -> view.text.length
     read () + read ()
 
 export def partial_view :: i64

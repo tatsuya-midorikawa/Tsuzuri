@@ -123,8 +123,8 @@ fn implicit_arguments_cover_places_functions_and_pipelines() {
         "def f :: i64\nfn f = { let text = \"\\u{1f600}\"; let bytes = u8\"\\u{1f600}\"; let copied = clone_string text; String.length text + Utf8String.length bytes + copied.length + text.length }",
     ]);
     same_ir(&[
-        "def f :: i64\nfn f = { let text = \"lambda\"; (fx (value: ref string) -> value.length) (ref text) }",
-        "def f :: i64\nfn f = { let text = \"lambda\"; (fx (value: ref string) -> value.length) text }",
+        "def f :: i64\nfn f = { let text = \"lambda\"; (\\(value: ref string) -> value.length) (ref text) }",
+        "def f :: i64\nfn f = { let text = \"lambda\"; (\\(value: ref string) -> value.length) text }",
     ]);
     let declarations = "class Size<'a> { def size :: ref 'a -> i64 }\n\
                         instance Size<string> { fn size text = text.length }\n";

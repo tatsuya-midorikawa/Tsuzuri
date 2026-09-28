@@ -215,10 +215,10 @@ fn match_origin_destructuring() {
     // Destructuring keeps its runtime trap instead of the exhaustiveness check.
     for source in [
         "for [_x] in [[1], [2, 3]] do ()",
-        "(fx [x] -> x) [1, 2]",
-        "union Maybe<'a> = None | Some of 'a\nlet f = fx (Some n) -> n\nf (Some 1)",
+        "(\\[x] -> x) [1, 2]",
+        "union Maybe<'a> = None | Some of 'a\nlet f = \\(Some n) -> n\nf (Some 1)",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nfor Even in [2, 3] do ()",
-        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\n(fx Even -> 42) 3",
+        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\n(\\Even -> 42) 3",
     ] {
         let ir = accepts(source);
         assert!(ir.contains("@llvm.trap"), "{source}");
@@ -349,8 +349,8 @@ fn active_recognizers_are_typed_calls_with_ordered_patterns() {
         "def (|Parts|) :: i64 -> (i64 * i64)\nfn (|Parts|) n = (n, n + 1)\nmatch 20 with | Parts (a, b) when a < b -> a + b | _ -> 0",
         "def (|Length|) :: &string -> i64\nfn (|Length|) s = s.length\nmatch \"abc\" with | Length 3 -> 42 | _ -> 0",
         "def (|Copy|) :: &string -> string\nfn (|Copy|) s = clone_string s\nmatch \"abc\" with | Copy s when s.length == 9 -> s | Copy s -> s",
-        "def (|Length|) :: &string -> i64\nfn (|Length|) s = s.length\nlet f = fx (Length n) -> n\nf \"abc\"",
-        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nlet f = fx Even -> 42\nf 2",
+        "def (|Length|) :: &string -> i64\nfn (|Length|) s = s.length\nlet f = \\(Length n) -> n\nf \"abc\"",
+        "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nlet f = \\Even -> 42\nf 2",
         "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) n = n % 2 == 0\nfor Even in [2, 4] do ()",
         "def (|Length|) :: &string -> i64\nfn (|Length|) s = s.length\nlet mut n = 0\nfor Length size in [\"a\", \"bc\"] do n = n + size\nn",
         "def positive :: i64 -> bool\nfn positive n = n > 0\ndef f :: i64 -> i64\nfn f n\n    | positive n -> 42\n    | otherwise -> 0\nf 1",
@@ -411,23 +411,47 @@ fn builder_control_keywords_and_patterns_use_normal_checks() {
 }
 
 #[test]
-fn fx_preserves_currying_patterns_and_capture_rules() {
+fn backslash_lambdas_preserve_currying_patterns_and_capture_rules() {
     for source in [
-        "let f = fx x y -> x + y\nf 20 22",
-        "let n = 20\nlet f = fx x -> x + n\nf 22",
-        "let f = fx (x: i32) y -> x + y\nf 20 22",
-        "let f = fx (g: i64 -> i64) x -> g x\nf (fx n -> n + 1) 41",
-        "let text = \"owned\"\nlet f: &string -> i64 = fx (r: &string) -> r.length\nf (&text)",
-        "let text = \"owned\"\nlet f: &string -> &string = fx R -> R\n(f (&text)).length",
-        "let f = fx (x, y) -> x + y\nf (20, 22)",
-        "let f = fx () -> 42\nf ()",
-        "let f = fx [x; y] -> x + y\nf [20, 22]",
-        "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\napply (fx x -> x + 1) 41",
+        "let increment = \\value -> value + 1\nincrement 41",
+        "let f = \\x -> \\y -> \\z -> x + y + z\nf 2 3 4",
+        "let f = \\x y -> x + y\nf 20 22",
+        "let n = 20\nlet f = \\x -> x + n\nf 22",
+        "let f = \\(x: i32) y -> x + y\nf 20 22",
+        "let f = \\(g: i64 -> i64) x -> g x\nf (\\n -> n + 1) 41",
+        "let text = \"owned\"\nlet f: &string -> i64 = \\(r: &string) -> r.length\nf (&text)",
+        "let text = \"owned\"\nlet f: &string -> &string = \\R -> R\n(f (&text)).length",
+        "let f = \\(x, y) -> x + y\nf (20, 22)",
+        "let f = \\() -> 42\nf ()",
+        "let f = \\[x; y] -> x + y\nf [20, 22]",
+        "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\napply (\\x -> x + 1) 41",
+        "let increment = \\value ->\n    let step = 1\n    value + step\nincrement 41",
+        "let increment = \\mut value -> { value = value + 1; value }\nincrement 41",
+        "def apply :: (i64 -> i64) -> i64\nfn apply transform = transform 41\napply \\value -> value + 1",
     ] {
         accepts(source);
     }
-    rejects("let f = fx x x -> x\nf 1 2", "E1001");
-    rejects("let mut x = 0\nlet f = fx _ -> x = 1\nf ()", "E1014");
+    rejects("let f = \\x x -> x\nf 1 2", "E1001");
+    rejects("let mut x = 0\nlet f = \\_ -> x = 1\nf ()", "E1014");
+}
+
+#[test]
+fn rejects_malformed_backslash_lambdas() {
+    for source in [
+        "\\",
+        "\\ -> 42",
+        "\\value",
+        "\\value ->",
+        "\\value -> \\ -> value",
+    ] {
+        assert_eq!(parser::parse(source).unwrap_err().code, "E0002", "{source}");
+    }
+}
+
+#[test]
+fn fx_is_an_identifier_not_a_lambda_keyword() {
+    accepts("let fx = \\value -> value + 1\nfx 41");
+    assert!(tsuzuri::analyze("let increment = fx value -> value + 1\nincrement 41").is_err());
 }
 
 #[test]
@@ -436,7 +460,7 @@ fn recursion_is_explicit_including_mutual_and_function_values() {
         "def rec sum :: i64 -> i64 -> i64\nfn rec sum n acc = if n == 0 then acc else sum (n - 1) (acc + n)",
         "def rec even :: i64 -> bool\ndef and odd :: i64 -> bool\nfn rec even n = if n == 0 then true else odd (n - 1)\nand odd n = if n == 0 then false else even (n - 1)",
         "fn rec f(n: i64) -> i64 { if n == 0 { 0 } else { f(n - 1) } }",
-        "def rec f :: i64 -> i64\nlet rec f = fx n -> if n == 0 then 0 else f (n - 1)",
+        "def rec f :: i64 -> i64\nlet rec f = \\n -> if n == 0 then 0 else f (n - 1)",
         "def f :: i64 -> i64\nfn f x = g x\ndef g :: i64 -> i64\nfn g x = x",
     ] {
         accepts(source);
@@ -533,7 +557,7 @@ fn control_syntax_has_bounded_depth() {
         ("while true do (", ")"),
         ("for x in 1..2 do (", ")"),
         ("if true then (", ") else ()"),
-        ("fx x -> (", ")"),
+        ("\\x -> (", ")"),
         ("match 1 with | _ -> (", ")"),
     ] {
         assert!(parser::parse(&format!("{}(){}", prefix.repeat(200), suffix.repeat(200))).is_err());

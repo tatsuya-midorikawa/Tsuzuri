@@ -114,8 +114,8 @@ try {
   writeFileSync(source, `export def pipeline :: i64
 fn pipeline = {
     let device = Result.get (Gpu.request Gpu.CpuReference);
-    let buffer = Gpu.init (&device) 8 (fx index -> index * index);
-    let mapped = Gpu.map (&device) (fx value -> value + 1) buffer;
+    let buffer = Gpu.init (&device) 8 (\\index -> index * index);
+    let mapped = Gpu.map (&device) (\\value -> value + 1) buffer;
     let values = Gpu.to_array mapped;
     Array.sum (&values) as i64
 }
@@ -124,7 +124,7 @@ fn float_reference value = {
     let device = Result.get (Gpu.request Gpu.CpuReference);
     let values = [value];
     let buffer = Gpu.from_array (&device) (&values);
-    let mapped = Gpu.map (&device) (fx item -> item * item + item) buffer;
+    let mapped = Gpu.map (&device) (\\item -> item * item + item) buffer;
     let result = Gpu.to_array mapped;
     result[0]
 }

@@ -66,6 +66,19 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "Option{let! value=Some 1;return value}",
             "Option { let! value = Some 1; return value }\n",
         ),
+        (
+            "let f=\\ x->\\ y->\\ z->x+y+z\nf 2 3 4",
+            "let f = \\x -> \\y -> \\z -> x + y + z\nf 2 3 4\n",
+        ),
+        (
+            "let add=\\ left right->left+right\nadd 20 22",
+            "let add = \\left right -> left + right\nadd 20 22\n",
+        ),
+        (
+            "(\\ (value:i64)->value+1) 41",
+            "(\\(value: i64) -> value + 1) 41\n",
+        ),
+        ("(\\ ()->42) ()", "(\\() -> 42) ()\n"),
         ("let value = - 1\nvalue", "let value = - 1\nvalue\n"),
     ] {
         let formatted = format_source("Main.tz", source, SourceKind::Code)
@@ -129,8 +142,8 @@ fn fingerprints_ignore_positions_but_preserve_program_structure() {
     for (before, after) in [
         ("let value=1\nvalue", "let value = 1\nvalue\n"),
         (
-            "(fx (left, right) -> left+right) (1,2)",
-            "(fx (left, right) -> left + right) (1, 2)\n",
+            "(\\(left, right) -> left+right) (1,2)",
+            "(\\(left, right) -> left + right) (1, 2)\n",
         ),
         (
             "def (|Whole|) :: i64 -> i64\nfn (|Whole|) value=value",

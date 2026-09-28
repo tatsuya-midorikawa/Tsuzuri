@@ -432,7 +432,7 @@ E02 の std 到達可能性 pruning は `CheckedFunction.visibility` と `origin
    - 確認: `private record R {}`、`private def f :: i64` を受理し、`private fn f() -> i64 { 1 }`、`private export def f :: i64`、`export private def f :: i64` を `E1022` で拒否する。
 
 5. `Parser::program` の signatures/definitions 結合で visibility を保持する。
-   - 確認: `private def f :: i64\nfn f = 1` と `private def f :: i64\nlet f = fx () -> 1` の `CheckedFunction.visibility` が `Private` になる。
+   - 確認: `private def f :: i64\nfn f = 1` と `private def f :: i64\nlet f = \() -> 1` の `CheckedFunction.visibility` が `Private` になる。
 
 6. `Names` を `NameInfo` ベースに変更する。
    - 確認: `tests/modules.rs` の既存ケース、特に同名レコード曖昧性と別モジュール同名関数が従来通り動く。

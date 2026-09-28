@@ -22,7 +22,7 @@ let mut count = 0
 while count < 3 do
     total = total + 1
     count = count + 1
-let add = fx x y -> x + y
+let add = \x y -> x + y
 match add total 20 with
 | Even as answer when even answer -> positive answer
 | _ -> 0

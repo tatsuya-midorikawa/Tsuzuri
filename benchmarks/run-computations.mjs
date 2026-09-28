@@ -235,7 +235,7 @@ try {
   const extensionBodies = {
     bind2: "Fused { let! left = state ^ index and! right = state | 1; return left * 6364136223846793005 + right }",
     merge: "Merged { let! left = state ^ index and! right = state | 1; return left * 6364136223846793005 + right }",
-    manual: "Fused.Bind2 (state ^ index) (state | 1) (fx left right -> left * 6364136223846793005 + right)",
+    manual: "Fused.Bind2 (state ^ index) (state | 1) (\\left right -> left * 6364136223846793005 + right)",
   };
   writeFileSync(join(extensionSource, "Main.tz"), Object.entries(extensionBodies).map(([name, body]) => `export def ${name} :: i64 -> i64 -> i64\nfn ${name} count seed =\n    let mut state = seed\n    let mut index = 0\n    while index < count do\n        state = ${body}\n        index = index + 1\n    state\n`).join("\n"));
   const extensionWasm = join(temporary, "extensions.wasm");

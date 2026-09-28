@@ -21,8 +21,8 @@ Auto も「CPU fallback を選ぶ」という意味ではありません。明�
 
 ```tsuzuri run=18
 let device = Result.get (Gpu.request Gpu.CpuReference)
-let initial = Gpu.init (ref device) 4 (fx index -> index * index)
-let mapped = Gpu.map (ref device) (fx value -> value + 1i32) initial
+let initial = Gpu.init (ref device) 4 (\index -> index * index)
+let mapped = Gpu.map (ref device) (\value -> value + 1i32) initial
 let values = Gpu.to_array mapped
 Array.sum ref values
 ```

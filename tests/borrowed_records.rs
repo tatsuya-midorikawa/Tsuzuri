@@ -25,7 +25,7 @@ fn named_regions_validate_declarations_and_returned_borrows() {
         "def bad {r} :: i64 {r} -> i64\nfn bad value = value",
         "record View { text: ref {r} string }",
         "record View {r} { text: ref {r} string }\ndef bad {r s} :: ref {r} string -> ref {s} string -> View {r}\nfn bad left right = View { text: right }",
-        "def bad {r s} :: ref {r} string -> ref {s} string -> ref {r} string\nfn bad left = fx right -> right",
+        "def bad {r s} :: ref {r} string -> ref {s} string -> ref {r} string\nfn bad left = \\right -> right",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
     }
@@ -68,7 +68,7 @@ fn shared_borrowed_fields_nesting_and_generic_views_are_supported() {
         "record TextView { text: &string }\nrecord Nested { view: TextView }\nfn wrap(text: &string) -> Nested { Nested { view: TextView { text: text } } }\nlet text = \"borrowed\"\nlet view = wrap (&text)\nview.view.text.length",
         "record Holder<'a> { value: 'a }\nlet text = \"borrowed\"\nlet view = Holder { value: &text }\nlet other = view\nview.value.length + other.value.length",
         "record View { text: &string, owned: string }\nlet text = \"borrowed\"\nlet view = View { text: &text, owned: \"owned\" }\nlet owned = view.owned\nview.text.length + owned.length",
-        "record View { text: &string }\nlet text = \"borrowed\"\nlet view = View { text: &text }\nlet read = fx () -> view.text.length\nread () + read ()",
+        "record View { text: &string }\nlet text = \"borrowed\"\nlet view = View { text: &text }\nlet read = \\() -> view.text.length\nread () + read ()",
         "record PairView { left: &string, right: &string }\nfn pair(left: &string, right: &string) -> PairView { PairView { left: left, right: right } }\nlet left = \"a\"\nlet right = \"bc\"\nlet view = pair (&left) (&right)\nview.left.length + view.right.length",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));

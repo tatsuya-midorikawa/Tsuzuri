@@ -37,7 +37,7 @@ fn parses_explicit_kinds_and_variable_application_heads() {
 fn resolves_functor_instances_without_runtime_dictionaries() {
     let traits = "class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>\ndef mapped :: ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn mapped transform value = Functor.map transform value }";
     let implementation = "instance Functor<Option> { fn map transform value = match value with | Option.None -> Option.None | Option.Some inner -> Option.Some (transform inner) }\ninstance Functor<Result<'e>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }";
-    let main = "def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn fmap transform value = Functor.mapped transform value\nexport def result :: i64\nfn result = { let option = fmap (fx value -> value + 1) (Option.Some 41); let result: Result<i64, string> = Functor.map (fx value -> value + 2) (Result.Ok 40); Option.get option + Result.get result }";
+    let main = "def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn fmap transform value = Functor.mapped transform value\nexport def result :: i64\nfn result = { let option = fmap (\\value -> value + 1) (Option.Some 41); let result: Result<i64, string> = Functor.map (\\value -> value + 2) (Result.Ok 40); Option.get option + Result.get result }";
     let module = tsuzuri::analyze_modules(&[
         ("Traits.tt", traits),
         ("Instances.tz", implementation),
@@ -95,7 +95,7 @@ fn rejects_kind_mismatches_unsaturated_values_and_overlap() {
 
 #[test]
 fn instance_head_variables_do_not_capture_method_variables() {
-    let source = "class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }\ninstance Functor<Result<'a>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }\ndef mapped :: Result<i64, bool> -> Result<string, bool>\nfn mapped input = Functor.map (fx _value -> \"mapped\") input";
+    let source = "class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }\ninstance Functor<Result<'a>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }\ndef mapped :: Result<i64, bool> -> Result<string, bool>\nfn mapped input = Functor.map (\\_value -> \"mapped\") input";
     let module = tsuzuri::analyze(source).unwrap();
     tsuzuri::llvm::emit(&module, tsuzuri::llvm::Entry::Library).unwrap();
 }
@@ -114,6 +114,6 @@ fn runtime_fixture_covers_constructor_shapes_and_local_annotations() {
     for wasm in [false, true] {
         tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Library, wasm).unwrap();
     }
-    let error = tsuzuri::analyze("class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }\ninstance Functor<Result<'e>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }\nFunctor.map (fx value -> value + 1) (Result.Ok 1)").unwrap_err();
+    let error = tsuzuri::analyze("class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }\ninstance Functor<Result<'e>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }\nFunctor.map (\\value -> value + 1) (Result.Ok 1)").unwrap_err();
     assert_eq!(error.code, "E1015");
 }

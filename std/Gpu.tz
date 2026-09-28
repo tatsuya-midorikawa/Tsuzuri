@@ -14,7 +14,7 @@ fn backend device = device.backend
 def init :: ref Device -> i64 -> (i32 -> 'a) -> Buffer<'a>
 fn init _device count initializer =
     assert (count >= 0 && count <= 2147483647)
-    Buffer { values: Array.init count (fx index -> initializer (index as i32)) }
+    Buffer { values: Array.init count (\index -> initializer (index as i32)) }
 
 def map :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
 fn map _device transform buffer =

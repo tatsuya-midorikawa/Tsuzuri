@@ -595,8 +595,10 @@ fn spacing(
     if matches!(
         current.kind,
         Comma | Semicolon | Colon | RightParen | RightBracket | RightList
-    ) || matches!(previous.kind, LeftParen | LeftBracket | LeftList)
-    {
+    ) || matches!(
+        previous.kind,
+        LeftParen | LeftBracket | LeftList | Backslash
+    ) {
         return "";
     }
     if current.kind == RightBrace {

@@ -1,7 +1,7 @@
 export def transform :: i64 -> i32 -> i64
 fn transform count seed =
-    let input = new [i32](count, fx index -> (index as i32) + seed)
-    let output = Array.map (&input) (fx value -> value * 3i32 + 7i32)
+    let input = new [i32](count, \index -> (index as i32) + seed)
+    let output = Array.map (&input) (\value -> value * 3i32 + 7i32)
     let mut total = 0
     for value in output do total = total + (value as i64)
     total

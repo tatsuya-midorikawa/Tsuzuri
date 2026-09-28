@@ -157,10 +157,10 @@ fn curried_churn n = curry_loop n 0
 
 export def curried_dynamic :: bool -> i64 -> i64
 fn curried_dynamic flag count =
-    let owner = new [i64](4, fx index -> index + 1)
+    let owner = new [i64](4, \index -> index + 1)
     let transform: i64 -> i64 =
-        if flag then fx value -> value + owner[0]
-        else fx value -> value + owner[3]
+        if flag then \value -> value + owner[0]
+        else \value -> value + owner[3]
     let mut total = 0i64
     for index in 0 .. count - 1 do total = transform total
     total
@@ -170,8 +170,8 @@ fn curried_dynamic_owned flag =
     let literal = "abc"
     let prefix = clone_string ref literal
     let transform: string -> string =
-        if flag then fx suffix -> prefix + suffix
-        else fx suffix -> suffix + prefix
+        if flag then \suffix -> prefix + suffix
+        else \suffix -> suffix + prefix
     let first = transform "x"
     let second = "yz" |> transform
     assert (first == (if flag then "abcx" else "xabc"))
@@ -180,15 +180,15 @@ fn curried_dynamic_owned flag =
 
 def curry_switch :: ref mut (i64 -> i64) -> i64
 fn curry_switch callback =
-    deref callback = fx value -> value + 1000
+    deref callback = \value -> value + 1000
     3
 
 export def curried_replaced :: bool -> i64
 fn curried_replaced flag =
     let seed = 7i64
     let mut callback: i64 -> i64 =
-        if flag then fx value -> seed + value
-        else fx value -> seed - value
+        if flag then \value -> seed + value
+        else \value -> seed - value
     let original = callback (curry_switch ref mut callback)
     original * 10000 + callback 2
 
@@ -197,8 +197,8 @@ fn curried_dynamic_init flag count =
     let literal = "abcd"
     let text = clone_string ref literal
     let initialize: i64 -> i64 =
-        if flag then fx index -> index + text.length
-        else fx index -> index * text.length
+        if flag then \index -> index + text.length
+        else \index -> index * text.length
     let array = new [i64](count, initialize)
     let list = new [|i64|](count, initialize)
     let mut total = 0i64
@@ -209,28 +209,28 @@ fn curried_dynamic_init flag count =
 export def curried_inline_integer :: bool -> i64u -> i64u
 fn curried_inline_integer flag value =
     let callback: unit -> i64u =
-        if flag then fx unused -> value else fx unused -> ~value
+        if flag then \unused -> value else \unused -> ~value
     let copies = [callback, callback]
     copies[0] () ^ copies[1] () ^ callback ()
 
 export def curried_inline_float :: bool -> f64 -> f64
 fn curried_inline_float flag value =
     let callback: unit -> f64 =
-        if flag then fx unused -> value else fx unused -> -value
+        if flag then \unused -> value else \unused -> -value
     let copy = callback
     copy ()
 
 export def curried_inline_single :: bool -> f32 -> f32
 fn curried_inline_single flag value =
     let callback: unit -> f32 =
-        if flag then fx unused -> value else fx unused -> -value
+        if flag then \unused -> value else \unused -> -value
     let copy = callback
     copy ()
 
 export def curried_inline_bool :: bool -> bool -> bool
 fn curried_inline_bool flag value =
     let callback: unit -> bool =
-        if flag then fx unused -> value else fx unused -> !value
+        if flag then \unused -> value else \unused -> !value
     let copy = callback
     copy ()
 

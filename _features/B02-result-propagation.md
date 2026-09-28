@@ -41,7 +41,7 @@ fn find_positive values = Option {
   - `return! value` → `B.ReturnFrom value`
   - `if condition { C1 } else { C2 }` → 通常の `if` で選んだ分岐だけ実行
   - `C1; C2` → `B.Combine C1 (delay(C2))`
-  - `for pattern in values do C` → `B.For values (fx element -> match element with pattern -> C)`
+  - `for pattern in values do C` → `B.For values (\element -> match element with pattern -> C)`
   - `while condition do C` → `B.While (unit -> condition) (B.Delay (unit -> C))`
 - `src/parser.rs::computation_sequence` は `return`/`return!` がブロック末尾にあることを構文上検査する。
 - `src/call_specialization.rs` は builder 名を特別扱いせず、通常の高階関数として既知継続を特殊化する。
@@ -202,7 +202,7 @@ B {
 }
 ```
 
-- 既存展開は `B.For values (fx element -> match element with | pattern -> C)`。
+- 既存展開は `B.For values (\element -> match element with | pattern -> C)`。
 - B01 phase 1 の `Option.For`/`Result.For` は `Copy<'a> => ['a]` の配列だけを受ける。
 - `values` は一度だけ評価する。
 - 各要素は添字順に処理し、最初の `None`/`Error` で後続要素と `return value` を実行しない。

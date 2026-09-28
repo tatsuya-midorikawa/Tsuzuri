@@ -13,7 +13,7 @@ fn seq_empty =
 
 export def seq_cold :: i64
 fn seq_cold =
-    let _sequence: Seq<i64> = Seq.defer (fx () -> { assert false; (Seq.empty(), Option.Some 0) })
+    let _sequence: Seq<i64> = Seq.defer (\() -> { assert false; (Seq.empty(), Option.Some 0) })
     42
 
 export def seq_range_sum :: i64 -> i64
@@ -25,7 +25,7 @@ fn seq_range_sum count =
 
 export def seq_list :: i64 -> i64
 fn seq_list count =
-    let values = new [|i64|](count, fx index -> index)
+    let values = new [|i64|](count, \index -> index)
     let mut total = 0
     for value in List.iter (&values) do total = total + deref value
     total
@@ -33,16 +33,16 @@ fn seq_list count =
 export def seq_map_filter :: i64 -> i64
 fn seq_map_filter count =
     let counter = Counter { start: 0, finish: count }
-    let mapped = Seq.map (Counter.iter (&counter)) (fx value -> value * 2)
-    let filtered = Seq.filter mapped (fx value -> deref value % 6 == 0)
+    let mapped = Seq.map (Counter.iter (&counter)) (\value -> value * 2)
+    let filtered = Seq.filter mapped (\value -> deref value % 6 == 0)
     let values = Seq.to_array filtered
     Array.sum (&values)
 
 export def seq_owned :: i64 -> i64
 fn seq_owned count =
     let counter = Counter { start: 0, finish: count }
-    let text = Seq.map (Counter.iter (&counter)) (fx value -> to_string value)
-    let filtered = Seq.filter text (fx value -> value.length % 2 == 0)
+    let text = Seq.map (Counter.iter (&counter)) (\value -> to_string value)
+    let filtered = Seq.filter text (\value -> value.length % 2 == 0)
     let mut total = 0
     for value in filtered do total = total + value.length
     total
@@ -62,7 +62,7 @@ fn seq_borrowed =
 
 export def seq_early_exit :: i64
 fn seq_early_exit =
-    let sequence = Seq.unfold 0 (fx value -> { assert (value <= 20); Option.Some (value, value + 1) })
+    let sequence = Seq.unfold 0 (\value -> { assert (value <= 20); Option.Some (value, value + 1) })
     let mut total = 0
     for value in sequence do
         if value == 20 then break

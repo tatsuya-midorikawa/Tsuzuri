@@ -41,8 +41,8 @@ fn fail = {
 }
 export def bulk :: i64
 fn bulk = {
-    let values = Parallel.init 20000 (fx index -> index);
-    let mapped = Parallel.map (fx value -> value + 1) values;
+    let values = Parallel.init 20000 (\\index -> index);
+    let mapped = Parallel.map (\\value -> value + 1) values;
     Array.sum (&mapped)
 }
 `);

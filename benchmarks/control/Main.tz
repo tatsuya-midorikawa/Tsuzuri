@@ -81,7 +81,7 @@ fn match_dispatch count seed =
 export def array_sum :: i64 -> i64u -> i64u
 fn array_sum count seed =
     assert (count >= 0 && count <= 100000000)
-    let values = new [i64u](count, fx i -> (i as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
+    let values = new [i64u](count, \i -> (i as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
     let mut total = 0i64u
     for value in values do total = total + value
     total
@@ -89,7 +89,7 @@ fn array_sum count seed =
 export def array_copy :: i64 -> i64u -> i64u
 fn array_copy count seed =
     assert (count >= 0 && count <= 100000000)
-    let values = new [i64u](count, fx index -> (index as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
+    let values = new [i64u](count, \index -> (index as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
     let copied = values
     let mut total = 0i64u
     for value in values do total = total + value
@@ -99,7 +99,7 @@ fn array_copy count seed =
 export def list_sum :: i64 -> i64u -> i64u
 fn list_sum count seed =
     assert (count >= 0 && count <= 100000000)
-    let values = new [|i64u|](count, fx index -> (index as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
+    let values = new [|i64u|](count, \index -> (index as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
     let mut total = 0i64u
     for value in values do total = total + value
     total
@@ -108,8 +108,8 @@ export def closure_capture :: i64 -> i64u -> i64u
 fn closure_capture count seed =
     assert (count >= 0 && count <= 100000000)
     let transform: i64u -> i64u =
-        if (seed & 1) == 0 then fx value -> step value seed
-        else fx value -> step value (seed ^ 71)
+        if (seed & 1) == 0 then \value -> step value seed
+        else \value -> step value (seed ^ 71)
     let mut state = seed
     for index in 0 .. count - 1 do state = transform state
     state
@@ -133,8 +133,8 @@ fn closure_churn count seed =
     for index in 0 .. count - 1 do
         let captured = state
         let transform: i64u -> i64u =
-            if (captured & 1) == 0 then fx value -> step value captured
-            else fx value -> step value (captured ^ 71)
+            if (captured & 1) == 0 then \value -> step value captured
+            else \value -> step value (captured ^ 71)
         let copy = transform
         state = copy state
         state = transform state

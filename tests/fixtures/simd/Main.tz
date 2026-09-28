@@ -78,7 +78,7 @@ export def simd_owned :: i64
 fn simd_owned =
     let vector: i32x4 = Simd.of_lanes4 10i32 10i32 10i32 12i32
     let value = Full (Owned { vector: vector, name: "owned" })
-    let read = fx () -> match value with | Empty -> 0i32 | Full owned -> Simd.sum_lanes owned.vector
+    let read = \() -> match value with | Empty -> 0i32 | Full owned -> Simd.sum_lanes owned.vector
     assert (read () == 42i32)
     let vectors = [vector, vector]
     let _list = [|vector|]

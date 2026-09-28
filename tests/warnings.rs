@@ -39,7 +39,7 @@ fn suppresses_generated_and_standard_library_bindings() {
     let diagnostics = warnings(
         "export def curried :: i64 -> i64 -> i64\nfn curried value = next -> value + next\n\
         def optional :: Option<i64>\nfn optional = Option { let! unused = Some 1; return 2 }\n\
-        def destructured :: (i64 * i64) -> i64\nfn destructured pair = (fx (first, _) -> first) pair",
+        def destructured :: (i64 * i64) -> i64\nfn destructured pair = (\\(first, _) -> first) pair",
     );
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert!(diagnostics[0].message.contains("'unused'"));

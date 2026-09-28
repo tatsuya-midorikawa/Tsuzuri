@@ -289,7 +289,7 @@ fn parallel_results_values =
 
 export def parallel_results_functions :: i64
 fn parallel_results_functions =
-    let jobs: [Task<Result.Result<i64 -> i64, string>>] = [task { let text = "hello"; Result.Ok (fx value -> value + text.length) }]
+    let jobs: [Task<Result.Result<i64 -> i64, string>>] = [task { let text = "hello"; Result.Ok (\value -> value + text.length) }]
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> values[0] 37
     | Result.Error _ -> 0

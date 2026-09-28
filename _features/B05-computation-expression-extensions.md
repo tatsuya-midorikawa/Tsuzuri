@@ -141,14 +141,14 @@ Option {
 2 個の場合:
 
 ```text
-B.Bind (B.MergeSources m1 m2) (fx (x, y) -> C)
+B.Bind (B.MergeSources m1 m2) (\(x, y) -> C)
 ```
 
 3 個以上の場合は左結合:
 
 ```text
 let merged = B.MergeSources (B.MergeSources m1 m2) m3
-B.Bind merged (fx ((x, y), z) -> C)
+B.Bind merged (\((x, y), z) -> C)
 ```
 
 `MergeSources` がない場合:
@@ -159,7 +159,7 @@ B.Bind merged (fx ((x, y), z) -> C)
 pattern:
 
 - `let! (x, y) = ... and! z = ...` のように各 binding は既存 `binding_value` と同じ名前・`mut`・型注釈を受ける。
-- phase 1 では `and!` の binding pattern は単純な識別子だけに制限する。`fx` と同じ一般 pattern へ拡張するのは別段階。
+- phase 1 では `and!` の binding pattern は単純な識別子だけに制限する。ラムダ式と同じ一般 pattern へ拡張するのは別段階。
 - `let! mut x` は通常 `let!` と同様に継続内の local を可変にする。
 
 ### `BindReturn`
@@ -318,7 +318,7 @@ let matched = self.call("Bind", vec![value, continuation], span)?;
 continuation body:
 
 ```text
-fx $computation.match ->
+\$computation.match ->
     match $computation.match with
     | p1 when g1 -> lower(C1)
     | p2 -> lower(C2)
@@ -548,5 +548,5 @@ fn Bind2 left right next =
 ## 未決事項
 
 - **既定案:** `Bind2` callback は curried `('a -> 'b -> 'c)` とする。tuple callback `(('a * 'b) -> 'c)` は採用しない。Tsuzuri の関数がカリー化されていることと既存 `Bind` 形に合わせる。
-- `and!` binding に一般 pattern を許すかは phase 2。既定案は単純識別子のみで開始し、必要なら `fx` の pattern lowering を再利用して拡張する。
+- `and!` binding に一般 pattern を許すかは phase 2。既定案は単純識別子のみで開始し、必要ならラムダ式の pattern lowering を再利用して拡張する。
 - unsupported `use`/`try` の診断コードは既存の「builder 操作やファイル種別の不正」に近い `E1018` を既定とする。構文段階でしか検出できない場合だけ `E0002` になりうるが、ユーザー向けには `E1018` を目標にする。

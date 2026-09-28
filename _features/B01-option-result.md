@@ -23,7 +23,7 @@
   - `OPERATIONS` は `Bind`, `Return`, `ReturnFrom`, `Yield`, `YieldFrom`, `Zero`, `Combine`, `Delay`, `Run`, `For`, `While` を収集する。
   - `collect` は `.tc` に少なくとも一つの操作があることを検査し、操作名を `Names.builders` に入れる。
   - `expand` は型検査前に `ExprKind::Computation` を通常の関数呼び出しへ変換する。
-  - `Lowering::block` は `let!`/`do!` を `B.Bind value (x -> tail)`、`return` を `B.Return value`、`return!` を `B.ReturnFrom value`、空本体を `B.Zero()`、`for` を `B.For source (fx element -> body)`、`while` を `B.While (unit -> condition) (B.Delay (unit -> body))` へ下げる。
+  - `Lowering::block` は `let!`/`do!` を `B.Bind value (x -> tail)`、`return` を `B.Return value`、`return!` を `B.ReturnFrom value`、空本体を `B.Zero()`、`for` を `B.For source (\element -> body)`、`while` を `B.While (unit -> condition) (B.Delay (unit -> body))` へ下げる。
   - `Lowering::delay` は `Delay` がある場合だけ `B.Delay (unit -> body)` を挿入し、`Run` があれば全体を `B.Run delayed` で包む。
 - `src/call_specialization.rs`:
   - `Specializations::new` は非 escaping な関数引数を固定点で判定する。

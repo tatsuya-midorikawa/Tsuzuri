@@ -277,7 +277,7 @@ fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
             llvm::emit_target(&module, llvm::Entry::Console, wasm).unwrap()
         );
     }
-    let shadowed = "record Inner { distance: i64 -> i64 }\nrecord Outer { Point: Inner }\nlet Geometry = Outer { Point: Inner { distance: fx value -> value + 1 } }\nGeometry.Point.distance 41";
+    let shadowed = "record Inner { distance: i64 -> i64 }\nrecord Outer { Point: Inner }\nlet Geometry = Outer { Point: Inner { distance: \\value -> value + 1 } }\nGeometry.Point.distance 41";
     analyze_modules(&[
         (
             "Geometry/Point.tz",

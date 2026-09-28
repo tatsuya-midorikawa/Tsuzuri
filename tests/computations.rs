@@ -94,7 +94,7 @@ instance Computed<i64> {
     let builder = format!(
         "{IDENTITY}\ndef forwarded :: Option<i64> -> Option<i64>\nfn forwarded source =\n    let! value = source\n    return value + 1"
     );
-    let main = "let transform: i64 -> Option<i64> = fx input ->
+    let main = "let transform: i64 -> Option<i64> = \\input ->
     let! value = Some input
     return value + 1
 let _first = Helpers.answer()
@@ -178,15 +178,15 @@ fn implicit_match_and_applicative_bindings_select_source_builders() {
 fn implicit_builders_use_signatures_and_generic_composition_operations() {
     let deferred = "record Action<'a> { work: unit -> 'a }
         def Return :: Capture<'a> => 'a -> Action<'a>
-        fn Return value = Action { work: fx () -> value }
+        fn Return value = Action { work: \\() -> value }
         def Bind :: Action<'a> -> ('a -> Action<'b>) -> Action<'b>
-        fn Bind source next = Action { work: fx () -> (next (source.work ())).work () }
+        fn Bind source next = Action { work: \\() -> (next (source.work ())).work () }
         def Zero :: Action<unit>
         fn Zero = Return ()
         def Delay :: (unit -> Action<'a>) -> Action<'a>
-        fn Delay source = Action { work: fx () -> (source ()).work () }
+        fn Delay source = Action { work: \\() -> (source ()).work () }
         def Using :: (('a -> 'b) -> 'c) -> ('a -> Action<'b>) -> Action<'c>
-        fn Using source next = Action { work: fx () -> source (value -> (next value).work ()) }";
+        fn Using source next = Action { work: \\() -> source (value -> (next value).work ()) }";
     for (builder, source) in [
         (
             deferred,

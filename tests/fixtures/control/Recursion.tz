@@ -109,7 +109,7 @@ fn recursion_owned n = owned n "first" 0
 
 def rec temporaries :: i64 -> i64 -> i64
 fn rec temporaries n total =
-    if n == 0 then total else temporaries (n - new [i64](1, fx i -> i).length) (total + 1)
+    if n == 0 then total else temporaries (n - new [i64](1, \i -> i).length) (total + 1)
 
 export def recursion_temporaries :: i64 -> i64
 fn recursion_temporaries n = temporaries n 0

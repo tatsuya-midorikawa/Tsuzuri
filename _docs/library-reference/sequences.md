@@ -7,10 +7,10 @@
 ## 遅延変換
 
 ```tsuzuri run=36
-let sequence = Seq.unfold 0 (fx value ->
+let sequence = Seq.unfold 0 (\value ->
     if value < 10 then Option.Some (value, value + 1) else Option.None)
-let doubled = Seq.map sequence (fx value -> value * 2)
-let selected = Seq.filter doubled (fx value -> deref value % 3 == 0)
+let doubled = Seq.map sequence (\value -> value * 2)
+let selected = Seq.filter doubled (\value -> deref value % 3 == 0)
 let result = Seq.to_array selected
 Array.sum ref result
 ```

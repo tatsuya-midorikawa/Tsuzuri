@@ -468,7 +468,7 @@ def apply :: ('a -> 'b) -> 'a -> 'b
 fn apply action value = action value
 def unbox :: 'T -> 'U
   @'T : #unwrap
-fn unbox value = (fx item -> 'T.unwrap item) value
+fn unbox value = (\\item -> 'T.unwrap item) value
 def scaled :: 'T -> (f64 -> 'T)
   @'T : #scale
 fn scaled value = 'T.scale value

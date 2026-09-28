@@ -30,7 +30,7 @@ G03 の本格的な警告基盤は未実装なので、A03 では最小限の wa
   A02 で union tag に拡張される。
 - `src/parse_control.rs::guarded_definition` は関数ガードを `ExprKind::Match` に変換する。
   bool predicate だけの節は wildcard pattern + guard として表される。
-- `src/parse_control.rs::fx` は分解パターン引数を synthetic `ExprKind::Match` に変換する。
+- `src/parse_control.rs::explicit_lambda` は分解パターン引数を synthetic `ExprKind::Match` に変換する。
   `src/control.rs` の `For` 分岐も、単純束縛でない `for pattern in ...` を 1-arm match に変換する。
   これらは現行仕様上「不一致なら runtime trap」であり、A03 で compile error にしてはいけない。
 - CLI の診断は `src/diagnostic.rs::Diagnostic::render` / `json` が常に `"error"` を出す。
@@ -50,14 +50,14 @@ G03 の本格的な警告基盤は未実装なので、A03 では最小限の wa
 対象外で runtime trap を維持:
 
 - `for pattern in values do ...` の分解パターン
-- `fx pattern -> ...` の分解パターン
+- `\pattern -> ...` の分解パターン
 - コンピュテーション式の `for pattern in ... do` が lowering で作る分解パターン
 - active recognizer の部分認識器失敗
 - guard だけで網羅される可能性がある match
 
 理由:
 
-- `for` と `fx` は現行仕様で「分解不一致時に trap」と文書化されており、A03 で破壊的に拒否すると既存の `trap_pattern`, `trap_lambda`, `trap_for_active` と利用者コードを壊す。
+- `for` とラムダ式は現行仕様で「分解不一致時に trap」と文書化されており、A03 で破壊的に拒否すると既存の `trap_pattern`, `trap_lambda`, `trap_for_active` と利用者コードを壊す。
 - guard は任意式であり、コンパイラは一般には真偽を証明できない。
   guard 付き arm は網羅性に数えない。
 - B01/D-21 の `unreachable : unit -> 'a` は、`Option.get` のような部分関数を **網羅的な match** の中で明示 trap させるために使う。
@@ -209,7 +209,7 @@ pub(super) fn check_match(
 pub enum MatchOrigin {
     Explicit,
     FunctionGuard,
-    FxDestructuring,
+    LambdaDestructuring,
     ComputationDestructuring,
 }
 
@@ -366,7 +366,7 @@ A03 の explicit match 検査をそのまま適用する。
 | 段 | 変更 |
 |---|---|
 | lexer | 変更なし |
-| parser | `MatchOrigin::{Explicit, FunctionGuard, FxDestructuring, ComputationDestructuring}` を source AST に持たせる |
+| parser | `MatchOrigin::{Explicit, FunctionGuard, LambdaDestructuring, ComputationDestructuring}` を source AST に持たせる |
 | computation::expand | computation expression の destructuring lowering で作る match を `ComputationDestructuring` にする |
 | check | `CheckedModule.warnings`、typed `CoveragePat`、exhaustiveness module、`Checker::match_value` から呼び出し |
 | polymorph | 変更なし |
@@ -383,12 +383,12 @@ A03 の explicit match 検査をそのまま適用する。
 | driver | 変更なし |
 | main | warnings 出力を追加 |
 
-### for / fx の trap semantics
+### for / lambda の trap semantics
 
 `control.rs::Checker::control_expression` の `For` 分岐は、分解 pattern を 1-arm match と同じ lowering で型検査する。
-この call には source AST を作らず `MatchOrigin::FxDestructuring` とは別の destructuring-trap context を直接 `match_value` に渡す。
+この call には source AST を作らず `MatchOrigin::LambdaDestructuring` とは別の destructuring-trap context を直接 `match_value` に渡す。
 
-`parse_control.rs::fx` が生成する synthetic match は source 上の `fx` parameter に由来する。
+`parse_control.rs::explicit_lambda` が生成する synthetic match は source 上の lambda parameter に由来する。
 `Checker::lambda` が body を検査するときに通常の `ExprKind::Match` と区別できない場合、AST に marker がない。
 既定案:
 
@@ -398,7 +398,7 @@ A03 の explicit match 検査をそのまま適用する。
 pub enum MatchOrigin {
     Explicit,
     FunctionGuard,
-    FxDestructuring,
+    LambdaDestructuring,
     ComputationDestructuring,
 }
 
@@ -410,7 +410,7 @@ ExprKind::Match {
 ```
 
 - `Parser::match_expression` と `guarded_definition` は `Explicit` / `FunctionGuard`。
-- `fx` synthetic match は `FxDestructuring`。
+- lambda synthetic match は `LambdaDestructuring`。
 - computation expression lowering が pattern destructuring 用に生成する match は `ComputationDestructuring`。
 - source `for pattern in ...` は AST origin ではなく `control.rs` から destructuring-trap context を直接渡す。
 
@@ -444,7 +444,7 @@ cargo test --locked --test frontend
 ### 2. MatchOrigin の追加
 
 1. `src/syntax.rs` に `MatchOrigin` を追加し、`ExprKind::Match` に `origin` を持たせる。
-2. `parse_control.rs::match_expression`, `guarded_definition`, `fx` を origin 付きにする。
+2. `parse_control.rs::match_expression`, `guarded_definition`, `explicit_lambda` を origin 付きにする。
 3. `computation.rs` の destructuring lowering が生成する match を `ComputationDestructuring` にする。
 4. `control_expression` の source `for` は `match_value` に destructuring-trap context を直接渡す。
 5. `TypedExpr` 生成側を更新する。
@@ -697,7 +697,7 @@ for [x] in [[1], [2, 3]] do ()
 期待: compile success、runtime trap は既存 E2E のまま。`E1021` にしない。
 
 ```text
-(fx [x] -> x) [1, 2]
+(\[x] -> x) [1, 2]
 ```
 
 期待: compile success、runtime trap。`E1021` にしない。
@@ -732,7 +732,7 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 - `tests/control.rs`
   - `matches_patterns_and_guards` に非網羅拒否テストを追加する。
   - `control_lowering_is_direct_and_tail_calls_stay_loops` の `match n with | 0 -> 42 | _ -> ...` はそのまま有効。
-  - `fx` / `for` / computation destructuring trap tests は `MatchOrigin::FxDestructuring` / `ComputationDestructuring` と source `for` の direct destructuring-trap context により維持する。
+  - lambda / `for` / computation destructuring trap tests は `MatchOrigin::LambdaDestructuring` / `ComputationDestructuring` と source `for` の direct destructuring-trap context により維持する。
 - `tests/fixtures/control/Main.tz` の `trap_pattern`, `trap_lambda`, `trap_for_active` は更新しない。
   これらは A03 対象外の runtime trap として残す。
 - `benchmarks/control/Main.tz`, `examples/control/Main.tz`, `tests/fixtures/storage/Storage.tz`, `tests/fixtures/control/Recursion.tz` は調査範囲では wildcard / variable / exhaustive constructors があり、更新不要。
@@ -751,7 +751,7 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 - `docs/language.md`
   - `match` 節に「明示 match と関数ガードは網羅性をコンパイル時に検査する」を追加。
   - guard 付き arm は網羅性に数えないことを明記。
-  - `for` / `fx` destructuring は不一致時 runtime trap のまま、と明記。
+  - `for` / lambda destructuring は不一致時 runtime trap のまま、と明記。
   - 診断表に `E1021`, `W1003` を追加。
 - `docs/architecture.md`
   - pattern lowering の不変条件に compile-time usefulness/exhaustiveness を追加。
@@ -772,7 +772,7 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 - [x] literal keys は型検査・丸め後の resolved Type + canonical bits/text で作り、signed zero と NaN の runtime equality を反映する。
 - [x] pattern checking は lowering alternatives と typed `CoveragePat` を同時に返し、網羅性検査は raw AST を再解決しない。
 - [x] integer/float/string literal の有限列挙だけでは網羅とみなさない。
-- [x] `for` / `fx` / computation-expression destructuring の runtime trap semantics が残る。
+- [x] `for` / lambda / computation-expression destructuring の runtime trap semantics が残る。
 - [x] resource limit 超過が `E1017`。
 - [x] LLVM の match failure trap は削除されていない。
 - [x] 既存 E2E の native/WASM × `-O0`/`-O3` が通る。
@@ -782,7 +782,7 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 - `PatternAlternative` だけから網羅性を判断すると、array/list 長さや union case missing example を作りにくい。
   source pattern + type で実装する。
 - guard 付き `_ when condition` を coverage に数えると、実行時に guard false で trap するプログラムを誤って受理する。
-- `fx [x] -> ...` を E1021 にすると既存仕様を壊す。
+- `\[x] -> ...` を E1021 にすると既存仕様を壊す。
   `MatchOrigin` で synthetic destructuring を区別する。
 - computation expression lowering が作る destructuring match に `Explicit` origin を付けると、builder code が不必要に `E1021` になる。
 - warning を `Diagnostic::render` の既存 `"error"` のまま出すと JSON severity が誤る。
@@ -806,7 +806,7 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 ## 未決事項
 
 - `ExprKind::Match` に `MatchOrigin` を追加する既定案を採る。
-  代替は `Checker::match_value` に呼び出し元 context を渡すだけだが、`fx` が生成した synthetic match は通常の lambda body と区別できない。
+  代替は `Checker::match_value` に呼び出し元 context を渡すだけだが、ラムダ式が生成した synthetic match は通常の lambda body と区別できない。
 - warning channel は `CheckedModule.warnings: Vec<Diagnostic>` の最小実装とする。
   G03 で severity enum、複数 warning 種、抑制設定へ拡張する。
 - `W1003` を JSON で出す順序は source traversal 順とする。
@@ -814,7 +814,7 @@ Flow { for (x, y) in [(20, 22)] do { yield x + y } }
 
 ### 実装時の判断（A03）
 
-- 上の未決事項は既定案どおり `ExprKind::Match` に `MatchOrigin { Explicit, FunctionGuard, FxDestructuring, ComputationDestructuring }` を持たせ、
+- 上の未決事項は既定案どおり `ExprKind::Match` に `MatchOrigin { Explicit, FunctionGuard, LambdaDestructuring, ComputationDestructuring }` を持たせ、
   warning channel は `CheckedModule.warnings: Vec<Diagnostic>` にした。重大度は enum ではなく
   `Diagnostic::render_with_severity`／`json_with_severity` の引数で、`render`／`json` は従来どおり `"error"`。
 - 被覆パターンは `control::pattern_alternatives`（と `case_pattern`／`active_pattern`）が lowering の選択肢と同時に返す
