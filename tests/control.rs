@@ -211,6 +211,176 @@ fn matches_patterns_and_guards() {
 }
 
 #[test]
+fn lambda_guards_with_where_bindings() {
+    for source in [
+        r#"def judge_score :: i32 -> i32 -> string = \left -> \right ->
+    | diff > 10 -> "win"
+    | diff > 5 -> "close"
+    | otherwise -> "even"
+    where
+        diff = Int.abs (left - right)
+
+judge_score 30 10"#,
+        "def choose :: i64 -> i64 -> i64 = \\left right -> | left > right -> left | otherwise -> right\nchoose 20 42",
+        "def choose :: i64 -> i64\nfn choose value\n    | diff > 10 -> diff\n    | otherwise -> 0\n    where\n        diff = Int.abs value\nchoose 42",
+        "let offset = 2\nlet choose = \\value ->\n    | next > 40 -> next\n    | otherwise -> offset\n    where\n        base: i64 = value + 1\n        next = base + 1\nchoose 40",
+        "let choose = \\(first, second) ->\n    | total > 0 -> total\n    | otherwise -> 0\n    where\n        total = first + second\nchoose (20, 22)",
+        "def choose :: bool -> i64 = \\flag ->\n    | true -> answer\n    | false -> 0\n    where\n        answer = 42\nchoose true",
+        "let where = 40\nlet choose = \\increment -> | otherwise -> where + increment\nchoose 2",
+        r#"def choose :: i64 -> i64 = \value ->
+    | value > 0 ->
+        let nested = \input ->
+            | delta > 0 -> delta
+            | otherwise -> 0
+            where
+                delta = input + 1
+        nested value
+    | otherwise -> fallback
+    where
+        fallback = 42
+choose 41"#,
+    ] {
+        accepts(source);
+    }
+}
+
+#[test]
+fn lambda_guards_preserve_diagnostics_and_scope() {
+    for (source, code) in [
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | value > 0 -> value",
+            "E1021",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value -> | value > 0 -> true | otherwise -> 0",
+            "E1003",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> value\n    where",
+            "E0002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> answer\n    where\n    answer = value",
+            "E0002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> answer\n    where\n        answer 42",
+            "E0002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> second\n    where\n        first = value\n            second = first",
+            "E0002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> first\n    where\n        first = second\n        second = value",
+            "E1002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | named -> answer\n    where\n        answer = named",
+            "E1002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> answer\n    where\n        answer = value\nlet result = choose 42\nanswer",
+            "E1002",
+        ),
+        (
+            "def choose :: i64 -> i64 = \\value ->\n    | otherwise -> { answer = 42; answer }\n    where\n        answer = value",
+            "E1014",
+        ),
+        (
+            "def choose :: bool -> ref string = \\flag ->\n    | true -> view\n    | false -> view\n    where\n        text = \"owned\"\n        view = ref text",
+            "E1013",
+        ),
+    ] {
+        rejects(source, code);
+    }
+}
+
+#[test]
+fn lambda_guards_lower_to_existing_blocks_and_matches() {
+    let guarded = accepts(
+        "def choose :: i64 -> i64 = \\value ->\n    | diff > 10 -> diff\n    | otherwise -> 0\n    where\n        diff = Int.abs value",
+    );
+    let explicit = accepts(
+        "def choose :: i64 -> i64 = \\value ->\n    let diff = Int.abs value\n    match () with\n    | _ when diff > 10 -> diff\n    | _ -> 0",
+    );
+    assert_eq!(guarded, explicit);
+}
+
+#[test]
+fn active_patterns_accept_lambda_guards_and_where() {
+    for source in [
+        r#"def (|Even|Odd|) :: i64 -> 'T = \value ->
+    | value % 2 == 0 -> Even
+    | otherwise -> Odd
+match 42 with | Even -> 42 | Odd -> 0 | _ -> -1"#,
+        r#"def (|Even|Odd|) :: i64 -> 'T = \value ->
+    | remainder == 0 -> Even value
+    | otherwise -> Odd value
+    where
+        remainder = value % 2
+match 42 with | Even number -> number | Odd _ -> 0 | _ -> -1"#,
+        r#"def (|Positive|_|) :: i64 -> Option<i64> = \value ->
+    | value > 0 -> Some value
+    | otherwise -> None
+match 42 with | Positive number -> number | _ -> 0"#,
+    ] {
+        accepts(source);
+    }
+    rejects(
+        "def (|Even|Odd|) :: i64 -> 'T = \\value -> | value % 2 == 0 -> Even | value % 2 != 0 -> Odd",
+        "E1021",
+    );
+}
+
+#[test]
+fn lambda_guards_accept_at_constraints() {
+    let ordinary = r#"def increment :: 'number -> 'number
+    @'number : Add, Integer = \value ->
+    | next > value -> next
+    | otherwise -> value
+    where
+        next = value + 1
+"#;
+    accepts(&format!("{ordinary}\nincrement 41i32"));
+    rejects(&format!("{ordinary}\nincrement 41.0"), "E1005");
+
+    let active = r#"def (|Even|Odd|) :: 'number -> 'T
+    @'number : Integer = \value ->
+    | value % 2 == 0 -> Even
+    | otherwise -> Odd
+"#;
+    accepts(&format!(
+        "{active}\nmatch 42i32 with | Even -> 42 | Odd -> 0 | _ -> -1"
+    ));
+    rejects(
+        &format!("{active}\nmatch 42.0 with | Even -> 42 | Odd -> 0 | _ -> -1"),
+        "E1005",
+    );
+
+    let payload = r#"def (|Even|Odd|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | remainder == 0 -> Even value
+    | otherwise -> Odd value
+    where
+        remainder = value % 2
+"#;
+    accepts(&format!(
+        "{payload}\nmatch 42i64 with | Even number -> number | Odd _ -> 0 | _ -> -1"
+    ));
+    rejects(
+        &format!("{payload}\nmatch 42.0 with | Even number -> number | Odd _ -> 0.0 | _ -> -1.0"),
+        "E1005",
+    );
+}
+
+#[test]
+fn lambda_guards_respect_nesting_limits() {
+    let source = format!("{}0", "\\value -> | otherwise -> ".repeat(150));
+    assert!(parser::parse(&source).is_err());
+}
+
+#[test]
 fn match_origin_destructuring() {
     // Destructuring keeps its runtime trap instead of the exhaustiveness check.
     for source in [

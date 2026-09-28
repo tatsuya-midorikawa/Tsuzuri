@@ -156,6 +156,78 @@ export def inline_forms :: i64 =
     assert (inline_odd 41)
     add_twenty 22
 
+def judge_score :: i32 -> i32 -> string = \left -> \right ->
+    | diff > 10 -> "win"
+    | diff > 5 -> "close"
+    | otherwise -> "even"
+    where
+        diff = Int.abs (left - right)
+
+export def lambda_guard_score :: i32 -> i32 -> i64 = \left right ->
+    let judge = judge_score left
+    match judge right with
+    | "win" -> 2
+    | "close" -> 1
+    | "even" -> 0
+    | _ -> -1
+
+def guard_where_mark :: ref mut i64 -> i64 -> i64 = \log value ->
+    deref log = deref log * 10 + value
+    value
+
+def guarded_where_order :: ref mut i64 -> i64 -> i64 = \log input ->
+    | guard_where_mark log 3 == 0 -> unreachable ()
+    | input > 0 -> result
+    | otherwise -> -result
+    where
+        first = guard_where_mark log 1
+        second = guard_where_mark log (first + 1)
+        result = first + second
+
+export def lambda_guard_where_order :: i64 =
+    let mut log = 0
+    let first = guarded_where_order (ref mut log) 1
+    assert (log == 123)
+    log = 0
+    let second = guarded_where_order (ref mut log) 0
+    assert (log == 123)
+    first - second
+
+export def lambda_guard_where_owned :: i64 =
+    let suffix = "!"
+    let choose = \value ->
+        | value > 0 -> text
+        | otherwise -> "fallback"
+        where
+            text = "owned" + suffix
+    let first = choose 1
+    let second = choose 0
+    first.length + second.length
+
+def (|GuardEven|GuardOdd|) :: 'number -> 'T
+    @'number : Integer = \value ->
+    | value % 2 == 0 -> GuardEven
+    | otherwise -> GuardOdd
+
+def (|GuardEvenValue|GuardOddValue|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | remainder == 0 -> GuardEvenValue value
+    | otherwise -> GuardOddValue value
+    where
+        remainder = value % 2
+
+export def active_lambda_guards :: i64 -> i64 = \value ->
+    let parity = match value with
+        | GuardEven -> 0
+        | GuardOdd -> 1
+        | _ -> unreachable ()
+    let recovered = match value with
+        | GuardEvenValue original -> original
+        | GuardOddValue original -> original
+        | _ -> unreachable ()
+    assert (recovered == value)
+    parity
+
 export def partial_moves :: i64
 fn partial_moves =
     let p = Pair { number: 42, text: "owned" }

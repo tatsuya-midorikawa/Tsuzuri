@@ -103,6 +103,28 @@ fn inline_definitions_and_implicit_unions_preserve_layout_and_fingerprints() {
 }
 
 #[test]
+fn lambda_guards_and_where_preserve_layout() {
+    for source in [
+        "def choose::i64->i64=\\value->\n  |diff>10->diff\n  |otherwise->0\n  where\n    diff=Int.abs value\n",
+        "def choose::i64->i64\nfn choose value\n  |diff>10->diff\n  |otherwise->0\n  where\n    diff=Int.abs value\n",
+        "let choose=\\left->\\right->\n  |total>0->total\n  |otherwise->0\n  where\n    first:i64=left+1\n    total=first+right\nchoose 20 21\n",
+        "def (|Even|Odd|)::i64->'T=\\value->\n  |value%2==0->Even\n  |otherwise->Odd\nmatch 42 with |Even->42|Odd->0|_-> -1\n",
+        "def (|Even|Odd|)::i64->'T=\\value->\n  |remainder==0->Even value\n  |otherwise->Odd value\n  where\n    remainder=value%2\nmatch 42 with |Even number->number|Odd _->0|_-> -1\n",
+        "def (|Even|Odd|)::'number->'T\n  @'number:Integer,Copy=\\value->\n  |remainder==0->Even value\n  |otherwise->Odd value\n  where\n    remainder=value%2\nmatch 42i32 with |Even number->number|Odd _->0|_-> -1\n",
+    ] {
+        let first = format_source("Main.tz", source, SourceKind::Code)
+            .unwrap_or_else(|error| panic!("{source}: {}", error.message));
+        let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+        assert_eq!(first.formatted, second.formatted);
+        assert_eq!(
+            ast_fingerprint(parser::parse(source).unwrap()),
+            ast_fingerprint(parser::parse(&first.formatted).unwrap())
+        );
+        tsuzuri::analyze(&first.formatted).unwrap();
+    }
+}
+
+#[test]
 fn layout_tracks_bodies_delimiters_and_else_owners() {
     for (source, expected) in [
         (

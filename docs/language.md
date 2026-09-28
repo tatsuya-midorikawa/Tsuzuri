@@ -20,6 +20,7 @@ native exe/objectの同梱`Array.sum<i64>`は実行時CPU選択の対象です�
     `for` `in` `to` `downto` `while` `break` `continue` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
   `true` `false` です。関数・変数・フィールド・モジュールの名前には使えません（`refs` や `ref_count` は使えます）。
   `of` は `union` の case 宣言の中だけで意味を持つ文脈キーワードで、それ以外では通常の識別子です。
+    `where` も関数ガードの後置束縛を始める位置だけの文脈キーワードです。
     `Set.union`のため、`union`だけはモジュール関数の宣言名とdot後のメンバー名にも使えます。変数・型・モジュール名には使えません。
 - `//` 行コメントと、入れ子可能な `/* ... */` コメント。
 - `=`, `then`, `do`, `->` に続く複数行の本体は、最初の式のインデントを基準にし、
@@ -1791,26 +1792,43 @@ Copy の複製と借用の寿命は通常どおり検査します。
 ### 関数ガード
 
 ```text
-def choose :: i64 -> i64 -> i64
-fn choose x y
-    | x > y -> x
-    | otherwise -> y
+def choose :: i64 -> i64 -> i64 = \left right ->
+    | left > right -> left
+    | otherwise -> right
 
-def describe :: i64 -> string
-fn describe n
+def describe :: i64 -> string = \number ->
     | 0 -> "zero"
     | value when value < 0 -> "negative"
     | otherwise -> "positive"
 ```
 
-`=` の代わりに節を並べます。Haskell 風の bool の条件と、
+ラムダの `->` の直後に節を並べます。従来の `fn name 引数` に `=` を付けず節を並べる形式も受理します。
+Haskell 風の bool の条件と、
 `pattern [when condition] -> result` の両方を使えます。
-パターン節は一引数ならその値、複数引数なら引数のタプルに対する通常の match と同じです。
+パターン節は直前のラムダの引数が一つならその値、複数なら引数のタプルに対する通常の match と同じです。
+例えば `\left -> \right ->` のパターン節は `right` に照合し、bool 条件からは両方の引数を参照できます。
 複数引数の非 Copy 値をタプルとして分解するときは、消費した元の引数でなくパターン変数を使います。
 bool 条件だけの節では引数のタプルを作らず、元の引数を保持します。
 `otherwise` は無条件の節です。節・ガード・所有権・網羅性の検査は match と同じです。
 bool 条件だけの節はガード付きの節と同じく網羅に数えないため、最後に `otherwise` などの無条件の節が必要です。
 網羅性の `E1021` は最初の節の `|` の位置に報告します。
+
+ガード本体に共通するローカル値は、省略可能な後置 `where` で定義できます。
+
+```text
+def judgeScore :: i32 -> i32 -> string = \left -> \right ->
+    | diff > 10 -> "圧勝"
+    | diff > 5 -> "接戦"
+    | otherwise -> "互角"
+    where
+        diff = Int.abs (left - right)
+```
+
+`where` は `|` と同じインデントの独立した行に置き、その下に一つ以上の `名前 [: 型] = 式` をより深い同じインデントで並べます。
+`let` は付けません。初期化式はそのラムダの本体に入ったとき、最初のガード判定より前に記述順で一度ずつ評価します。
+遅延評価や相互再帰ではなく、未使用の値も評価します。引数・外側の値・先行する束縛を参照でき、後続の束縛や節のパターン変数は参照できません。
+すべてのガードと結果式から利用でき、スコープはこのガード本体に限ります。型推論・所有権・借用・寿命は通常のローカル `let` と同じです。
+整数の絶対値には `Int.abs` を使います。無修飾の `abs` は従来どおり `f64` 専用です。
 
 ### アクティブパターン
 

@@ -58,8 +58,9 @@ match 42 with
 ## 複数 case の全域パターン
 
 ```tsuzuri run=42
-def (|Even|Odd|) :: i64 -> 'T =
-    \value -> if value % 2 == 0 then Even else Odd
+def (|Even|Odd|) :: i64 -> 'T = \value ->
+    | value % 2 == 0 -> Even
+    | otherwise -> Odd
 
 match 42 with
 | Even -> 42
@@ -68,6 +69,8 @@ match 42 with
 ```
 
 戻り値の `'T` は、この認識器専用の union を暗黙生成する印です。通常の汎用型変数ではなく、入力型や制約には使いません。明示的な union と別名の case は不要です。本体内では、宣言した case 名を結果の値として使います。
+
+認識器本体でも[関数ガード](patterns.md#関数ガード)と後置の `where` を使えます。payload 付きの case や部分パターンでも同じです。bool 条件だけなら `otherwise` などの無条件の節が必要です。
 
 payload の型は本体から推論します。
 

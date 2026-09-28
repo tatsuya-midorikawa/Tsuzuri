@@ -464,7 +464,11 @@ impl Parser<'_> {
         }
         let outer = self.in_task;
         self.in_task = false;
-        let mut body = self.body_expression()?;
+        let mut body = if self.at(&TokenKind::Pipe) {
+            self.guarded_definition(&parameters)?
+        } else {
+            self.body_expression()?
+        };
         self.in_task = outer;
         for (name, pattern) in patterns.into_iter().rev() {
             let value = self.make(ExprKind::Name(name.clone()), name.span, 1)?;
@@ -505,6 +509,7 @@ impl Parser<'_> {
         &mut self,
         parameters: &[(Ident, bool)],
     ) -> Result<Expr, Diagnostic> {
+        self.enter()?;
         let start = self.current().span;
         let values = parameters
             .iter()
@@ -522,7 +527,49 @@ impl Parser<'_> {
         {
             value = self.make(ExprKind::Unit, start, 1)?;
         }
-        self.make_match(value, arms, start, MatchOrigin::FunctionGuard)
+        let result = self.make_match(value, arms, start, MatchOrigin::FunctionGuard)?;
+        if !matches!(&self.current().kind, TokenKind::Ident(name) if name == "where")
+            || !self.newline_before_current()
+            || self.column(self.current().span) != self.column(start)
+        {
+            self.nesting -= 1;
+            return Ok(result);
+        }
+        self.take();
+        let indent = self.column(self.current().span);
+        if !self.newline_before_current() || indent <= self.column(start) {
+            return Err(self.error("expected indented bindings after 'where'"));
+        }
+        let mut bindings = Vec::new();
+        loop {
+            bindings.push(self.binding_value(true)?);
+            if self.at(&TokenKind::End)
+                || !self.newline_before_current()
+                || self.column(self.current().span) < indent
+            {
+                break;
+            }
+            if self.column(self.current().span) != indent {
+                return Err(self.error("where bindings must have the same indentation"));
+            }
+        }
+        let span = start.through(bindings.last().unwrap().value.span);
+        let depth = bindings
+            .iter()
+            .map(|binding| binding.value.depth)
+            .max()
+            .unwrap()
+            .max(result.depth)
+            + 1;
+        self.nesting -= 1;
+        self.make(
+            ExprKind::Block {
+                bindings,
+                result: Box::new(result),
+            },
+            span,
+            depth,
+        )
     }
 
     fn make_match(

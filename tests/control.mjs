@@ -70,6 +70,8 @@ const cases = [
   ["function_forms", [], 46n],
   ["lambda_nested", [], 9n],
   ["inline_forms", [], 42n],
+  ["lambda_guard_where_order", [], 6n],
+  ["lambda_guard_where_owned", [], 14n],
   ["partial_moves", [], 47n],
   ["owned_guard", [], 4n],
   ["owned_replacements", [0n], 3n],
@@ -101,6 +103,12 @@ const cases = [
   ["recursion_owned", [8192n], 32773n],
   ["recursion_temporaries", [100000n], 100000n],
 ];
+for (const diff of [-11, -10, -6, -5, 0, 5, 6, 10, 11]) {
+  cases.push(["lambda_guard_score", [20 + diff, 20], Math.abs(diff) > 10 ? 2n : Math.abs(diff) > 5 ? 1n : 0n]);
+}
+for (const value of [min, -3n, -2n, -1n, 0n, 1n, 2n, 3n, 42n, max]) {
+  cases.push(["active_lambda_guards", [value], value % 2n === 0n ? 0n : 1n]);
+}
 for (const count of [0n, 1n, 2n, 3n, 10n, 4096n]) {
   let total = 0n;
   for (let index = 0n; index < count; index++) if (index % 3n !== 0n) total += index;
