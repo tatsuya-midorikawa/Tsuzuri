@@ -252,6 +252,7 @@ fn build_runner(
                 let header = directory.join("task-windows.h");
                 fs::write(&header, include_str!("runtime/task-windows.h"))
                     .map_err(|error| io_error("write Win32 task adapter", &header, error))?;
+                clang.arg("-I").arg(directory);
             } else {
                 clang.arg("-pthread");
             }

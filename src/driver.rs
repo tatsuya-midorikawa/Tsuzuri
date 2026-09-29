@@ -1321,6 +1321,8 @@ fn build_complete(
                 .arg(format!("-O{}", options.optimization));
             if task_runtime && !cfg!(windows) {
                 runtime.arg("-pthread");
+            } else if task_runtime {
+                runtime.arg("-I").arg(&temporary.path);
             }
             if options.debug_info {
                 runtime.arg("-g");
