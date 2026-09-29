@@ -239,6 +239,7 @@ fn document_path(params: &Value) -> Result<PathBuf, (i64, String)> {
 }
 
 struct OpenBuffer {
+    uri: String,
     text: String,
     version: i64,
 }
@@ -257,7 +258,7 @@ struct Session {
     buffers: BTreeMap<PathBuf, OpenBuffer>,
     projects: BTreeMap<PathBuf, ProjectState>,
     pending: BTreeMap<PathBuf, (PathBuf, Instant)>,
-    closed: BTreeSet<PathBuf>,
+    closed: BTreeMap<PathBuf, String>,
 }
 
 impl Default for Session {
@@ -270,7 +271,7 @@ impl Default for Session {
             buffers: BTreeMap::new(),
             projects: BTreeMap::new(),
             pending: BTreeMap::new(),
-            closed: BTreeSet::new(),
+            closed: BTreeMap::new(),
         }
     }
 }
@@ -300,10 +301,16 @@ impl Session {
         path: &Path,
         diagnostics: Vec<Value>,
     ) -> io::Result<()> {
-        if self.closed.contains(path) && !diagnostics.is_empty() {
+        if self.closed.contains_key(path) && !diagnostics.is_empty() {
             return Ok(());
         }
-        let mut params = json!({"uri": file_uri(path), "diagnostics": diagnostics});
+        let uri = self
+            .buffers
+            .get(path)
+            .map(|buffer| buffer.uri.clone())
+            .or_else(|| self.closed.get(path).cloned())
+            .or_else(|| file_uri(path));
+        let mut params = json!({"uri": uri, "diagnostics": diagnostics});
         if let Some(buffer) = self.buffers.get(path) {
             params["version"] = json!(buffer.version);
         }
@@ -429,6 +436,9 @@ impl Session {
             }
             "textDocument/didOpen" | "textDocument/didChange" => {
                 let path = document_path(params)?;
+                let uri = params["textDocument"]["uri"]
+                    .as_str()
+                    .ok_or_else(|| invalid("textDocument.uri is required"))?;
                 let version = params["textDocument"]["version"]
                     .as_i64()
                     .ok_or_else(|| invalid("document version is required"))?;
@@ -474,6 +484,7 @@ impl Session {
                 self.buffers.insert(
                     path.clone(),
                     OpenBuffer {
+                        uri: uri.to_owned(),
                         text: text.to_owned(),
                         version,
                     },
@@ -485,7 +496,10 @@ impl Session {
             "textDocument/didClose" => {
                 let path = document_path(params)?;
                 self.buffers.remove(&path);
-                self.closed.insert(path.clone());
+                let uri = params["textDocument"]["uri"]
+                    .as_str()
+                    .ok_or_else(|| invalid("textDocument.uri is required"))?;
+                self.closed.insert(path.clone(), uri.to_owned());
                 self.schedule(&path);
                 self.publish(output, &path, Vec::new())
                     .map_err(|error| (-32603, error.to_string()))?;
@@ -556,7 +570,7 @@ impl Session {
                     return Ok(Value::Null);
                 };
                 Ok(
-                    json!({"uri": file_uri(&target_source.path), "range": state.mappers[target_id].range(&target_source.text, target)}),
+                    json!({"uri": self.buffers.get(&target_source.path).map(|buffer| buffer.uri.clone()).or_else(|| file_uri(&target_source.path)), "range": state.mappers[target_id].range(&target_source.text, target)}),
                 )
             }
             _ => Err((-32601, format!("method not found: {method}"))),

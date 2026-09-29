@@ -104,6 +104,7 @@ Linux の GUI なし環境では `xvfb-run -a npm test` を使います。
 
 `npm run toolchain` は LLVM、再配置した共有ライブラリ、Zig 0.16.0 の SDK／libc、コンパイラ、対応環境の CodeLLDB 1.12.3 を同梱します。
 LLVM IR のオブジェクト化は Clang、C runtime とリンクは SDK を内包する Zig が担当します。意味を変更する fast-math は追加しません。
+Windows ARM64 では Zig 0.16.0 がリンク中に異常終了するため、Zig の代わりに llvm-mingw 20251216（LLVM 21.1.8）の MinGW-w64 sysroot と compiler-rt を同梱し、C runtime とリンクも同梱 Clang と ld.lld が担当します。
 ダウンロードは固定 SHA-256 で検証し、ライセンスを同梱します。生成物は git 管理せず、npm の lockfile とビルドスクリプトを管理します。
 
 `npm run vsix` は manifest と全ツールのハッシュを検証してから platform-specific VSIX を作り、アーカイブ内の全ツールのハッシュ・実行権限・必須ファイルを再検証します。

@@ -167,6 +167,21 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
     }
 }
 
+/// Inlines the Win32 adapter: Clang cannot resolve quoted includes next to
+/// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim.
+pub(crate) fn task_runtime_source() -> String {
+    let source = include_str!("runtime/task.c");
+    if cfg!(windows) {
+        source.replacen(
+            "#include \"task-windows.h\"",
+            include_str!("runtime/task-windows.h"),
+            1,
+        )
+    } else {
+        source.to_owned()
+    }
+}
+
 fn native_compile_args(windows: bool, architecture: &str) -> &'static [&'static str] {
     if windows {
         if architecture == "aarch64" {
@@ -1289,17 +1304,12 @@ fn build_complete(
             && options.emit == Emit::Object;
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
-            if cfg!(windows) && task_runtime {
-                let header = temporary.path.join("task-windows.h");
-                fs::write(&header, include_str!("runtime/task-windows.h"))
-                    .map_err(|error| io_error("write Win32 task adapter", &header, error))?;
-            }
             let source = format!(
                 "{}\n{}\n{}",
                 if task_runtime {
-                    include_str!("runtime/task.c")
+                    task_runtime_source()
                 } else {
-                    ""
+                    String::new()
                 },
                 if cpu_runtime {
                     include_str!("runtime/cpu.c")
@@ -2051,6 +2061,15 @@ mod tests {
             .is_err()
         );
         directory.close().unwrap();
+    }
+
+    #[test]
+    fn task_runtime_source_inlines_the_win32_adapter() {
+        let include = "#include \"task-windows.h\"";
+        assert!(include_str!("runtime/task.c").contains(include));
+        let source = task_runtime_source();
+        assert_eq!(source.contains(include), !cfg!(windows));
+        assert_eq!(source.contains("TZ_TASK_WINDOWS_H"), cfg!(windows));
     }
 
     #[test]

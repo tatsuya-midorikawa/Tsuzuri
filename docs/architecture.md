@@ -267,6 +267,7 @@ Cargo release profileのstripはコンパイラ自身だけに適用されます
 
 **言語サーバー:** `tsuzuri lsp` はLSP 3.17のstdio framingとserde_jsonを使い、メッセージ16 MiB・header8 KiB・JSON深さ128を上限とします。
 UTF-8位置を交渉し、既定はUTF-16です。byte spanからの変換は改行表と文字境界を使い、CRLF・補助平面の文字を保持します。
+開いた文書のURIはクライアントから受信した表記を保持し、診断と同一文書への定義位置にそのまま返します。
 `Project::load_with_overlays` は保存前の置換と新規ファイルを含め、root配下のプロジェクトを再解析します。ソースへの書き込みは行いません。
 LSPのworkspaceFolders/rootUriを明示rootとして使い、指定がなければ各fileの親を使います。ネストしたroot指定は最長prefixを選びます。
 変更を200msで集約し、問い合わせ時は必要な解析を先に完了します。開いたバッファは合計32 MiB・1024ファイルまでです。

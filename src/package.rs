@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 use crate::{
     diagnostic::{Diagnostic, Span},
@@ -108,7 +111,13 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 }
                 cursor.expect("=")?;
                 let path = cursor.string()?;
-                if path.is_empty() || path.contains('\0') || PathBuf::from(&path).is_absolute() {
+                // Windows treats `/dir` and `C:dir` as non-absolute, but both escape the package root.
+                let rooted = Path::new(&path).has_root()
+                    || matches!(
+                        Path::new(&path).components().next(),
+                        Some(Component::Prefix(_))
+                    );
+                if path.is_empty() || path.contains('\0') || rooted {
                     return Err(cursor.error("dependency path must be a nonempty relative path"));
                 }
                 cursor.expect("}")?;

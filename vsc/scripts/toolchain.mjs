@@ -18,9 +18,14 @@ const platforms = {
   'darwin-x64': ['x86_64-macos', '0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7'],
   'linux-arm64': ['aarch64-linux', 'ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17'],
   'linux-x64': ['x86_64-linux', '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'],
-  'win32-arm64': ['aarch64-windows', 'aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef'],
   'win32-x64': ['x86_64-windows', '68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e'],
 };
+// Zig 0.16.0 crashes while linking on ARM64 Windows hosts; this release matches the bundled LLVM 21.1.8.
+const mingwVersion = '20251216';
+const mingwChecksums = {
+  'win32-arm64': '60c06bd255feb2ef1eb6fce7ee6b307d8f78ee6639660f49861c7c10a8a86164',
+};
+const llvmTools = ['clang', 'wasm-ld', ...(process.platform === 'darwin' ? ['dsymutil', 'llvm-link'] : []), ...(mingwChecksums[host] ? ['ld.lld'] : [])];
 const debuggerVersion = '1.12.3';
 const debuggerChecksums = {
   'darwin-arm64': '2f114a990e1b368dd1dbd33c80c0e719767af2d228391ec0df0571c957f9ac91',
@@ -117,13 +122,26 @@ async function entries(directory, prefix = '') {
   return result;
 }
 
+function extractArchive(archive, directory) {
+  if (process.platform !== 'win32') {
+    run('tar', ['-xf', archive, '-C', directory]);
+    return;
+  }
+  // A PSModulePath inherited from PowerShell 7 makes Windows PowerShell load incompatible modules.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'));
+  execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:TSUZURI_ARCHIVE -DestinationPath $env:TSUZURI_EXTRACTED -Force',
+  ], { cwd: repository, stdio: 'inherit', env: { ...env, TSUZURI_ARCHIVE: archive, TSUZURI_EXTRACTED: directory } });
+}
+
 async function verify() {
   const manifest = JSON.parse(await readFile(path.join(destination, 'manifest.json'), 'utf8'));
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) { throw new Error('Toolchain host mismatch.'); }
   const files = await entries(destination);
   if (JSON.stringify(files) !== JSON.stringify(manifest.files)) { throw new Error('Toolchain contents differ from the verified manifest. Rebuild the bundle.'); }
   if (createHash('sha256').update(JSON.stringify(files)).digest('hex') !== manifest.id) { throw new Error('Invalid toolchain identity.'); }
-  for (const name of ['tsuzuri', 'tsuzuri-clang', 'clang', 'wasm-ld', ...(process.platform === 'darwin' ? ['dsymutil', 'llvm-link'] : [])]) {
+  for (const name of ['tsuzuri', 'tsuzuri-clang', ...llvmTools]) {
     const file = path.join(destination, 'bin', name + suffix);
     if (!await exists(file)) { throw new Error(`Missing required tool: ${name}`); }
     if (process.platform !== 'win32' && !((await lstat(file)).mode & 0o111)) { throw new Error(`Tool is not executable: ${name}`); }
@@ -136,7 +154,7 @@ async function verify() {
 }
 
 async function bundle() {
-  if (!platforms[host]) { throw new Error(`Unsupported IDE host: ${host}. Current VS Code does not support x86 (32-bit).`); }
+  if (!platforms[host] && !mingwChecksums[host]) { throw new Error(`Unsupported IDE host: ${host}. Current VS Code does not support x86 (32-bit).`); }
   const rustHost = /^host: (.+)$/m.exec(run('rustc', ['-vV'], true))?.[1];
   const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
   if (!rustHost?.startsWith(`${architecture}-`)) { throw new Error(`Rust host ${rustHost} does not match the native extension host ${host}.`); }
@@ -144,17 +162,11 @@ async function bundle() {
   if (!llvm || !path.isAbsolute(llvm)) { throw new Error('Set LLVM_PREFIX to an LLVM 21 installation with Clang and LLVM utilities.'); }
   const clang = path.join(llvm, 'bin', `clang${suffix}`);
   if (!/clang version 21\./.test(run(clang, ['--version'], true))) { throw new Error('Use LLVM 21 to match the embedded runtime IR.'); }
-  const [zigPlatform, checksum] = platforms[host];
-  const archiveName = `zig-${zigPlatform}-${zigVersion}.${process.platform === 'win32' ? 'zip' : 'tar.xz'}`;
   const cache = path.join(repository, 'target', 'vsc-downloads');
   await mkdir(cache, { recursive: true });
-  const archive = path.join(cache, archiveName);
-  await download(`https://ziglang.org/download/${zigVersion}/${archiveName}`, archive, checksum);
   const extracted = await mkdtemp(path.join(cache, 'extract-'));
   const stage = await mkdtemp(path.join(extension, '.toolchain-stage-'));
   try {
-    run('tar', ['-xf', archive, '-C', extracted]);
-    const zig = path.join(extracted, `zig-${zigPlatform}-${zigVersion}`);
     await mkdir(path.join(stage, 'bin'), { recursive: true });
     await mkdir(path.join(stage, 'lib'), { recursive: true });
     await mkdir(path.join(stage, 'licenses'), { recursive: true });
@@ -163,12 +175,41 @@ async function bundle() {
       await download(`https://github.com/vadimcn/codelldb/releases/download/v${debuggerVersion}/codelldb-${host}.vsix`, debuggerArchive, debuggerChecksums[host]);
       await copyFile(debuggerArchive, path.join(stage, 'codelldb.vsix'));
     }
-    await mkdir(path.join(stage, 'zig'), { recursive: true });
-    await copyFile(path.join(zig, `zig${suffix}`), path.join(stage, 'zig', `zig${suffix}`));
-    await cp(path.join(zig, 'lib'), path.join(stage, 'zig', 'lib'), { recursive: true, dereference: true });
-    await copyFile(path.join(zig, 'LICENSE'), path.join(stage, 'licenses', 'Zig.txt'));
-    if (process.platform !== 'win32') { await chmod(path.join(stage, 'zig', 'zig'), 0o755); }
-
+    if (mingwChecksums[host]) {
+      const name = `llvm-mingw-${mingwVersion}-ucrt-${architecture}`;
+      const archive = path.join(cache, `${name}.zip`);
+      await download(`https://github.com/mstorsjo/llvm-mingw/releases/download/${mingwVersion}/${name}.zip`, archive, mingwChecksums[host]);
+      extractArchive(archive, extracted);
+      const source = path.join(extracted, name);
+      const sysroot = path.join(stage, 'mingw');
+      const triple = `${architecture}-w64-mingw32`;
+      const resources = path.join('lib', 'clang', '21');
+      const builtins = path.join(resources, 'lib', 'windows', `libclang_rt.builtins-${architecture}.a`);
+      await cp(path.join(source, triple, 'lib'), path.join(sysroot, triple, 'lib'), { recursive: true, dereference: true });
+      await cp(path.join(source, 'include'), path.join(sysroot, 'include'), {
+        recursive: true, dereference: true, filter: file => file !== path.join(source, 'include', 'c++'),
+      });
+      await cp(path.join(source, resources, 'include'), path.join(sysroot, resources, 'include'), { recursive: true, dereference: true });
+      await mkdir(path.dirname(path.join(sysroot, builtins)), { recursive: true });
+      await copyFile(path.join(source, builtins), path.join(sysroot, builtins));
+      await copyFile(path.join(source, 'LICENSE.TXT'), path.join(stage, 'licenses', 'llvm-mingw.txt'));
+      const notices = path.join(source, triple, 'share', 'mingw32');
+      for (const file of await readdir(notices)) {
+        await copyFile(path.join(notices, file), path.join(stage, 'licenses', `mingw-w64-${file}`));
+      }
+    } else {
+      const [zigPlatform, checksum] = platforms[host];
+      const archiveName = `zig-${zigPlatform}-${zigVersion}.${process.platform === 'win32' ? 'zip' : 'tar.xz'}`;
+      const archive = path.join(cache, archiveName);
+      await download(`https://ziglang.org/download/${zigVersion}/${archiveName}`, archive, checksum);
+      extractArchive(archive, extracted);
+      const zig = path.join(extracted, `zig-${zigPlatform}-${zigVersion}`);
+      await mkdir(path.join(stage, 'zig'), { recursive: true });
+      await copyFile(path.join(zig, `zig${suffix}`), path.join(stage, 'zig', `zig${suffix}`));
+      await cp(path.join(zig, 'lib'), path.join(stage, 'zig', 'lib'), { recursive: true, dereference: true });
+      await copyFile(path.join(zig, 'LICENSE'), path.join(stage, 'licenses', 'Zig.txt'));
+      if (process.platform !== 'win32') { await chmod(path.join(stage, 'zig', 'zig'), 0o755); }
+    }
     const copied = new Map();
     const destinations = new Map();
     const licensed = new Set();
@@ -235,7 +276,7 @@ async function bundle() {
       }
       return target;
     }
-    for (const name of ['clang', 'wasm-ld', ...(process.platform === 'darwin' ? ['dsymutil', 'llvm-link'] : [])]) {
+    for (const name of llvmTools) {
       let source = path.join(llvm, 'bin', name + suffix);
       if (name === 'wasm-ld' && process.env.TSUZURI_WASM_LD) { source = process.env.TSUZURI_WASM_LD; }
       await native(source, path.join(stage, 'bin', name + suffix));
@@ -256,7 +297,8 @@ async function bundle() {
     const manifest = {
       version: 1, platform: process.platform, arch: process.arch,
       compiler: run(path.join(stage, 'bin', `tsuzuri${suffix}`), ['--version'], true).trim(),
-      zig: zigVersion, llvm: 21, debugger: debuggerChecksums[host] ? debuggerVersion : null,
+      zig: platforms[host] ? zigVersion : null, mingw: mingwChecksums[host] ? mingwVersion : null,
+      llvm: 21, debugger: debuggerChecksums[host] ? debuggerVersion : null,
       id: createHash('sha256').update(JSON.stringify(files)).digest('hex'), files,
     };
     await writeFile(path.join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');

@@ -42,7 +42,28 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 				async () => { await vscode.commands.executeCommand('workbench.extensions.installExtension', source); }).then(() => undefined);
 			try { await debuggerInstallation; } finally { debuggerInstallation = undefined; }
 		}
-		const debuggerExtension = vscode.extensions.getExtension('vadimcn.vscode-lldb');
+		let debuggerExtension = vscode.extensions.getExtension('vadimcn.vscode-lldb');
+		if (!debuggerExtension) {
+			await new Promise<void>(resolve => {
+				let subscription: vscode.Disposable | undefined;
+				let timeout: ReturnType<typeof setTimeout> | undefined;
+				let settled = false;
+				const finish = () => {
+					if (settled) { return; }
+					settled = true;
+					if (timeout) { clearTimeout(timeout); }
+					subscription?.dispose();
+					resolve();
+				};
+				subscription = vscode.extensions.onDidChange(() => {
+					if (vscode.extensions.getExtension('vadimcn.vscode-lldb')) { finish(); }
+				});
+				timeout = setTimeout(finish, 10000);
+				debuggerExtension = vscode.extensions.getExtension('vadimcn.vscode-lldb');
+				if (debuggerExtension) { finish(); }
+			});
+			debuggerExtension = vscode.extensions.getExtension('vadimcn.vscode-lldb');
+		}
 		if (!debuggerExtension) { throw new Error('CodeLLDB could not be installed. See Tsuzuri Output and retry Debug.'); }
 		await debuggerExtension.activate();
 	}

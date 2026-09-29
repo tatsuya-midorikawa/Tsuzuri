@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "tsuzuri-lsp-")));
+
+function assertFileUri(uri, path) {
+  const actual = statSync(fileURLToPath(uri), { bigint: true });
+  const expected = statSync(path, { bigint: true });
+  assert.deepEqual([actual.dev, actual.ino], [expected.dev, expected.ino]);
+}
 
 async function session(encoding) {
   const child = spawn(compiler, ["lsp"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -33,11 +39,15 @@ async function session(encoding) {
       else { const [waiter] = waiters.splice(index, 1); clearTimeout(waiter.timer); waiter.resolve(message); }
     }
   });
-  function wait(predicate) {
+  function wait(predicate, description) {
     const index = messages.findIndex(predicate);
     if (index >= 0) return Promise.resolve(messages.splice(index, 1)[0]);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { child.kill(); reject(new Error(`LSP response timeout\n${errors}`)); }, 30_000);
+      const timeout = process.platform === "win32" ? 120_000 : 30_000;
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error(`Timed out waiting for ${description}\nReceived: ${JSON.stringify(messages)}\n${errors}`));
+      }, timeout);
       waiters.push({ predicate, resolve, timer });
     });
   }
@@ -49,7 +59,7 @@ async function session(encoding) {
   function request(method, params = {}) {
     const id = nextId++;
     send({ id, method, params });
-    return wait((message) => message.id === id);
+    return wait((message) => message.id === id, `${method} response (id ${id})`);
   }
   const notify = (method, params) => send({ method, params });
   function position(source, needle) {
@@ -59,7 +69,10 @@ async function session(encoding) {
     return { line: prefix.length - 1, character: encoding === "utf-8" ? Buffer.byteLength(prefix.at(-1)) : prefix.at(-1).length };
   }
   const path = join(root, "Main.tz");
-  const uri = pathToFileURL(path).href;
+  const mainUri = pathToFileURL(path).href;
+  const uri = process.platform === "win32"
+    ? mainUri.replace(/^file:\/\/\/([A-Za-z]):/, (_, drive) => `file:///${drive === drive.toLowerCase() ? drive.toUpperCase() : drive.toLowerCase()}:`)
+    : mainUri;
   const extra = join(root, "Extra.tz");
   const extraUri = pathToFileURL(extra).href;
   const original = "fn disk() -> i64 { 7 }";
@@ -79,7 +92,7 @@ async function session(encoding) {
     assert.equal(initialized.result.capabilities.textDocumentSync.change, 1);
     notify("initialized", {});
     notify("textDocument/didOpen", { textDocument: { uri, languageId: "tsuzuri", version: 1, text: invalid } });
-    const diagnosed = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === uri && message.params.version === 1);
+    const diagnosed = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === uri && message.params.version === 1, "diagnostics for Main.tz version 1");
     assert.equal(diagnosed.params.diagnostics[0].code, "E1003");
     assert.deepEqual(diagnosed.params.diagnostics[0].range.start, position(invalid, "true"));
     notify("textDocument/didChange", { textDocument: { uri, version: 2 }, contentChanges: [{ text: valid }] });
@@ -87,17 +100,17 @@ async function session(encoding) {
     assert.match(hovered.result.contents.value, /number: i64/);
     const documented = await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") });
     assert.match(documented.result.contents.value, /Keeps the value\./);
-    const cleared = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === uri && message.params.version === 2);
+    const cleared = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === uri && message.params.version === 2, "diagnostics for Main.tz version 2");
     assert.deepEqual(cleared.params.diagnostics, []);
     const definition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "identity number") });
     assert.equal(definition.result.uri, uri);
     assert.deepEqual(definition.result.range.start, position(valid, "identity value"));
     const record = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Shapes.Point") });
-    assert.equal(record.result.uri, pathToFileURL(join(root, "Shapes.tz")).href);
+    assertFileUri(record.result.uri, join(root, "Shapes.tz"));
     const symbols = await request("textDocument/documentSymbol", { textDocument: { uri } });
     assert.deepEqual(symbols.result.map((symbol) => symbol.name), ["identity", "read", "point", "nested_read"]);
     const nestedDefinition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Geometry.Point.nested") });
-    assert.equal(nestedDefinition.result.uri, nestedUri);
+    assertFileUri(nestedDefinition.result.uri, join(root, "Geometry/Point.tz"));
     const shapesUri = pathToFileURL(join(root, "Shapes.tz")).href;
     writeFileSync(join(root, "Shapes.tz"), "record Point { x: bool }");
     notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
@@ -123,7 +136,7 @@ async function session(encoding) {
     notify("$/cancelRequest", { id: nextId });
     assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: { line: 0, character: 0 } })).error.code, -32800);
     notify("textDocument/didClose", { textDocument: { uri: extraUri } });
-    const closed = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === extraUri && message.params.version === undefined);
+    const closed = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === extraUri && message.params.version === undefined, "diagnostics for closed Extra.tz");
     assert.deepEqual(closed.params.diagnostics, []);
     assert.equal(readFileSync(path, "utf8"), original);
     assert.equal((await request("shutdown")).result, null);
