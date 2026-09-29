@@ -129,7 +129,11 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [F12](../_features/F12-bounds-check-elimination.md) 境界検査の除去 | 境界検査は F12、整数範囲と算術フラグは PR02 |
 | [F13](../_features/F13-custom-allocators.md) allocator の差し替え | ホスト提供の allocator は F13、内部 allocator の性能は PM05 |
 | [G11](../_features/_completed/G11-incremental-build.md) whole-build cache | PB01 の事前ビルド成果物は G11 と同じ cache の規則を使う |
-| [G17](../_features/G17-incremental-compilation.md) 増分コンパイル | 並列コード生成・モジュール単位の解析キャッシュ・上限は G17、フロントエンドの並列化は PB04、関数単位の増分は PB07 |
+| [G17](../_features/G17-incremental-compilation.md) 増分コンパイル | モジュール単位のフロントエンド cache（構文解析の結果と interface の要約、ディスク上）は G17、常駐プロセスと watch は PB06、関数単位の増分コード生成と codegen unit の並列コンパイルは PB07、フロントエンドの並列化は PB04。旧 G17 Phase 0 の計測は PX01・PX03 が持つ |
+| [F10](../_features/F10-concurrency-primitives.md) 並行プリミティブ | `Atomic`・`Mutex` の利用者 API は F10、task プールの実装は PR06。内部可変な型の判定 `Type::has_interior_mutability` は F10、属性への反映（`Type::is_frozen`）は PR01 |
+| [E12](../_features/E12-ffi-extensions.md) FFI の拡張 | `extern` の構文とリンク指定は E12、bitcode 出力と言語間 LTO は PR08 |
+| [D07](../_features/D07-string-interpolation.md) 文字列補間 | 書式指定で `numeric.ll` に関数を足すのは D07（要承認）、数値の表示・解析の高速化は PR04 |
+| [G18](../_features/G18-bench-coverage.md) 言語内ベンチマーク | 利用者向けの `tsuzuri bench` は G18、リポジトリの計測基盤は PX01–PX03 |
 | [A15](../_features/A15-copy-cost-visibility.md) 暗黙の複製の可視化 | 複製の除去そのものは PM07 |
 | [A16](../_features/A16-fixed-arrays.md) 固定長配列 | 値型の配列による確保の削減は A16、既存の型の配置は PM01 |
 | [D10](../_features/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
@@ -185,4 +189,38 @@ graph LR
 - 着手時に状態を `doing`、完了時に `done` にし、`done` のチケットは `git mv` で `_completed/` へ移してリンクを更新する。
 - 計測結果は、日付・計測機・コミット・コンパイラの版・生データの保存先とともに [docs/benchmarks.md](../docs/benchmarks.md) に記録する。
 - 高速化の効果が計測で確認できない場合は、既定の経路にせず、チケットに結果を記録して判断を仰ぐ。
-- 言語仕様・内部表現・既定の出力を変える施策は、チケットの「未決事項」に判断を求め、承認を得てから実装する。
+- 言語仕様・内部表現・既定の出力を変える施策は、チケットの「決定事項」で `要承認` とし、承認を得てから実装する。
+
+## 実装担当者へ
+
+各チケットは 2026-09-29 に HEAD `f8dc655` で、小さいモデルでも設計判断なしに実装できる粒度まで詳細化しています（コードの参照は grep で確認済み、
+手順ごとに確認コマンド付き）。着手の前に [_features/GUIDE.md](../_features/GUIDE.md) の §0・§1・§3.1・§11.1・§13・§14 を読んでください。
+共通の計測手順は GUIDE §14、結果の形式は PX01、ビルド時間の計測は PX03 にあります。
+
+承認が必要な決定（承認までは該当する Phase／段に着手しない）:
+
+| チケット | 要承認の決定 |
+| --- | --- |
+| PX02 | D7（Zig・Go の計測機への導入と Phase 3） |
+| PX03 | D9（Phase 2: Go・Zig との比較） |
+| PX01 | D3（生データの長期保管）、D8（Linux 計測機） |
+| PR03 | D3（Phase 3 の型付き IR での展開） |
+| PR04 | D4（表の追加による約 20 KB の増加） |
+| PR05 | D7（Phase 2） |
+| PR06 | なし（D1・D4・D7 は起票時の案を置き換える既定案。見直し提案を確認する） |
+| PM01 | D1・D2（Phase 1）、D5（Phase 2）、D7（Phase 3a）、D10（Phase 3b） |
+| PM02 | D1（関数値の表現） |
+| PM03 | D1（チケット全体） |
+| PM04 | D1（チケット全体） |
+| PM05 | D2（Phase 2）、D10（Phase 3: 既定の切り替え） |
+| PM06 | D1（確保失敗・スタック枯渇の文言） |
+| PM08 | D8（`wasm-opt`） |
+| PM09 | D1（末尾呼び出しの保証）、D6（`--wasm-feature tail-call`） |
+| PB01 | D9（Phase 2）、D10（Phase 3） |
+| PB02 | D9（Phase 2） |
+| PB03 | D6（Linux の既定リンカー）、D7（bitcode の受け渡し） |
+| PB04 | D8（Phase 2） |
+| PB05 | D1・D2・D3（チケット全体。D12 の既定のバックエンドの変更は本チケットでは行わない） |
+| PB06 | D2（Phase 2: 常駐サーバー） |
+| PB07 | D1（既定の codegen unit 分割）、D10（Phase 2） |
+| PR01・PR02・PR07・PR08・PM07 | なし |

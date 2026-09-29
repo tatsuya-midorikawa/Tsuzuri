@@ -1,48 +1,61 @@
 # 実装チケット共通ガイド
 
-このガイドは `_features/` の全チケット（完了済みは `_features/_completed/`）に共通する前提・手順・設計決定をまとめたものです。
+このガイドは `_features/` の全チケット（完了済みは `_features/_completed/`）と `_perfs/` の性能チケットに共通する前提・手順・設計決定をまとめたものです。
 **チケットに着手する前に、このファイル全体と対象チケット、`AGENTS.md`、`docs/language.md`、
 `docs/architecture.md` の関連節を必ず読んでください。** チケットとこのガイドが矛盾する場合は、
-このガイドの「9. 設計決定台帳」を優先し、矛盾をチケットの「未決事項」に追記して人間に報告します。
+このガイドの「9. 設計決定台帳」を優先し、矛盾をチケットの「決定事項」（旧いチケットでは「未決事項」）に追記して人間に報告します。
 
 調査時点のコミットは `19d8cdd`（2026-09-23）です。行番号は変わりやすいため、コード参照は
 「ファイル + 関数名／型名」で書いています。見つからない場合は `grep` で関数名を探してください。
+第2期（A12–G20）と `_perfs/` のチケットは 2026-09-29 に HEAD `f8dc655` で実装担当者向けに詳細化し、このガイドに
+§3.1（テスト選択）・§4.3（P2 以降のモジュール）・§6.9・§7.4（suite の追加）・§11.1（既知の落とし穴）・§12（構文）・
+§13（停止条件と完了報告）・§14（性能チケットの共通手順）を足しました。
 
 ---
 
 ## 0. チケットの使い方（実装担当モデル向け）
 
-1. 対象チケットの「依存」がすべて完了しているか `_features/README.md` の状態欄で確認する。
-   未完了の依存があれば着手しない（先に依存チケットを実装する）。
+1. 対象チケットの「依存」がすべて完了しているか `_features/README.md`（性能チケットは `_perfs/README.md`）の状態欄で確認する。
+   未完了の依存があれば着手しない（先に依存チケットを実装する）。メタ情報の「承認」行と「決定事項」で `要承認` の項目は、
+   人間の承認が記録されるまで該当する Phase／段に着手しない。承認済みか分からなければ人間に尋ねる。
 2. 「現状」節に書かれたコードを実際に開き、記述が今のコードと一致するか確認する。
    一致しない場合は、チケットの意図を保ったまま現在のコードに合わせる（差分をチケット末尾に追記）。
    **P2／P3 のチケットは独立レビューを受けていないため、着手前にその時点のコードと台帳に対してレビューを行い、
    指摘を反映してから実装する**（README の「レビュー状況」参照）。
 3. 「実装手順」を **上から一段ずつ** 実施し、各段の「確認」に書かれたテストを通してから次へ進む。
    複数段をまとめて書いてから一度にテストしない。
-4. 仕様に書かれていない挙動を推測で追加しない。必要なら「未決事項」の既定案に従い、
-   既定案がなければ最も保守的な挙動（コンパイルエラーで拒否）を選ぶ。
+4. 仕様に書かれていない挙動を推測で追加しない。必要なら「決定事項」（旧いチケットでは「未決事項」の既定案）に従い、
+   該当する決定がなければ最も保守的な挙動（コンパイルエラーで拒否）を選ぶ。チケットの「停止条件」と §13 に
+   当てはまったら、即興で回避せず作業を止めて報告する。
 5. 完了したら「受け入れ条件」の全項目を確認し、`_features/README.md` の状態を `done` に更新する。
-   チケットは `_features/_completed/` へ移動し、README と `_docs/feature-status.md` のリンクも更新する。
+   チケットは `_features/_completed/` へ移動し、README と `_docs/feature-status.md` のリンクも更新する
+   （性能チケットは `_perfs/_completed/` と `_perfs/README.md`）。最後に §13 の書式で完了報告を書く。
+6. チケット中の `/tmp/tz-*` のパスは再現用の一時ディレクトリの例である。記載のソースから作り直して使い、リポジトリには置かない。
+   「検証済み」と書かれたサンプルも、着手時の HEAD で `tsuzuri check` し直してから使う。
 
 ### チケットの共通構成
 
 | 節 | 内容 |
-|---|---|
-| メタ情報 | ID、優先度（P0–P3）、規模（S/M/L/XL）、依存、後続、影響ファイル |
+| --- | --- |
+| メタ情報 | ID、優先度（P0–P3）、規模（S/M/L/XL）、依存、後続、状態、承認（`不要` か `要承認: D<n>…`）、手本にする既存実装、影響ファイル |
 | 目的 | なぜ必要か、利用者にとっての価値 |
-| 現状 | 現在の実装・仕様・制約（コード参照付き） |
-| 仕様 | 構文（EBNF 風）、型規則、評価順序、所有権・借用、数値の意味、診断、native/WASM の差 |
-| 設計 | データ構造の変更、各コンパイラ段の変更点、アルゴリズム、生成 IR の形 |
-| 実装手順 | 小さく検証可能な段階。各段に「確認」方法 |
-| テスト計画 | Rust テスト（受理／拒否と診断コード）、fixture、Node E2E（native/WASM × -O0/-O3）、解放追跡、性能測定 |
+| 着手条件と停止条件 | 依存・承認・基準コマンド（§2.3）と、即興で回避せず止めて報告する条件（§13 に加えるチケット固有の条件） |
+| 現状 | 現在の実装・仕様・制約（コード参照付き、再現コマンド付き） |
+| 仕様 | 構文（EBNF 風）、型規則、評価順序、所有権・借用、数値の意味、診断（コード・条件・英語メッセージ・位置）、native/WASM の差、資源上限、例 |
+| 設計 | データ構造の変更、段ごとの変更表（ファイル・関数・変更内容）、アルゴリズム、生成 IR の形 |
+| 実装手順 | 小さく検証可能な段階。各段に「変更」「内容」「確認」（正確なコマンドと期待結果） |
+| テスト計画 | Rust テスト（受理／拒否と診断コード）、fixture、Node E2E（native/WASM × -O0/-O3）、解放追跡、既存テストへの影響、性能測定 |
 | ドキュメント | 更新すべき README／docs の節 |
 | 受け入れ条件 | チェックリスト |
-| 落とし穴 | 間違えやすい点 |
+| 落とし穴 | 間違えやすい点と検出方法 |
 | 対象外 | このチケットでやらないこと |
-| 未決事項 | 人間の判断が望ましい点と、その既定案 |
+| 決定事項 | 判断の結果（`D<n>`: 決定・理由・状態）。状態は「既定案（実装者はこの案に従う）」か「要承認（承認前は該当する Phase に着手しない）」。完了済みの古いチケットでは「未決事項」 |
+
+性能チケット（`_perfs/`）は「現状と計測」「目標と指標」「変えてはいけない意味」「計測手順」「生成コードの確認」を加えた構成で、
+共通の計測手順は §14 にまとめています。
 
 規模の目安: S = 1〜2 日、M = 3〜5 日、L = 1〜3 週、XL = 1 か月以上または複数チケットへの分割が前提。
+XL と大きい L のチケットは Phase に分かれています。**人間が求めない限り Phase 1 だけを実装します。**
 
 ---
 
@@ -78,14 +91,27 @@
 - Rust 1.85 以降（edition 2024）、LLVM/Clang 17 以降、`wasm-ld`、Node.js 20 以降、Python 3.9 以降。
 - macOS: `brew install llvm lld` の後 `export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"`。
 - `TSUZURI_CLANG`／`TSUZURI_WASM_LD` で実行ファイルを指定できる。
+- 2026-09-29 の詳細化で使った作業機: Apple M1 Max（10 コア）、macOS、Apple clang 21.0.0、rustc 1.98.1、Node v20.19.6。
+  LLVM 21 の単体ツールは `/opt/homebrew/opt/llvm@21/bin/`（`llvm-objdump`・`llvm-link`・`llvm-dwarfdump`・`llvm-profdata` など）。
+  Go・Zig は入っていない。x86_64 の実行ファイルは起動できない（Rosetta 2 なし。x86 は cross-compile だけ確認できる）。
+- テストが読む主な環境変数: `TSUZURI_OBJDUMP`（`llvm-objdump`）、`TSUZURI_LLVM_LINK`・`TSUZURI_DWARFDUMP`（`tests/debug_info.mjs`）、
+  `TSUZURI_MATH_PYTHON`（`tests/math.mjs`）、`TSUZURI_ASAN`・`TSUZURI_TSAN`（sanitizer 付きの harness）、`TSUZURI_WEBGPU=1`（実 GPU）。
+- BigInt を多用する suite は Node 20 の V8 で異常終了することがある（§11.1）。その場合は Node 24 で実行する:
+  `npx --yes --package=node@24 node tests/<suite>.mjs target/release/tsuzuri`。
 
-### 2.2 既知の落とし穴: ランタイム IR が Git 管理外
+### 2.2 ランタイムの追跡と生成
 
-`.gitignore` の `*.ll` により、`src/runtime/string.ll`、`heap-native.ll`、`heap-wasm.ll`、`console.ll`、
-`numeric.ll` が **追跡されていません**（`git ls-files src/runtime` で確認できる）。`src/llvm.rs` は
-これらを `include_str!` するため、新しい clone や worktree ではビルドできません。
-チケット **G01** で修正します。G01 が未完了なら、既存の作業ディレクトリからこれらのファイルをコピーしてから作業してください。
-新しいランタイム `.ll` を追加するチケットは、`.gitignore` の例外行（`!src/runtime/xxx.ll`）も追加します。
+`src/runtime/` の埋め込みファイルはすべて Git で追跡している（G01 で解決済み）。ただし `.gitignore` は `*.ll` を無視し、
+追跡する `.ll` だけを `!src/runtime/<name>.ll` の例外行で戻している。
+
+- 新しいランタイム `.ll` を足すチケットは、`.gitignore` に例外行を足し、`sh scripts/check-runtime-includes.sh` で
+  「runtime includes are tracked: N files」の N が増えたことを確かめる（`include_str!` した全ファイルの存在・追跡・非無視を検査する）。
+- `numeric.ll` と `math.ll` は生成物で、**手で直さない**。`numeric.c` を変えたら両方をこの順で作り直す（metadata の番号の範囲が
+  連動するため）:
+  `TSUZURI_CLANG=/usr/bin/clang python3 src/runtime/generate.py` の後に
+  `TSUZURI_CLANG=/usr/bin/clang TSUZURI_LLVM_LINK=/opt/homebrew/opt/llvm@21/bin/llvm-link python3 src/runtime/generate_math.py`。
+  Apple Clang 21 と llvm-link 21 の組だけを使う（LLVM 22／23 は lifetime の署名と浮動小数点の定数表記が変わり、生成 IR が大きく変わる）。
+- `Globals::FIRST_METADATA` は両ランタイムの metadata の範囲より上に保つ（重なると trap-info が math の metadata を消す）。
 
 ### 2.3 ベースラインの確認
 
@@ -149,6 +175,43 @@ EOF
 target/release/tsuzuri run /tmp/tz-try
 target/release/tsuzuri build /tmp/tz-try --emit llvm -O0 -o /tmp/tz-try/Main.ll
 ```
+
+### 3.1 テスト選択表と必ず実行する回帰テスト
+
+`cargo test --locked <pattern>` は一致するテストが 0 件でも成功する。**出力の `running N tests` の N が 0 でなく、期待した数であることを毎回見る。**
+Node の E2E は `target/release/tsuzuri` を使うので、直前に `cargo build --release --locked` を実行する。
+
+どの変更でも、最後に次の回帰テストを実行する。上限や stack の大きさを上げて通してはいけない（§11.1）。
+
+```sh
+cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion
+cargo test --locked --lib bounds_recursive_and_flat_expression_depth
+cargo test --locked --test computations bounds_nested_builder_expansion_not_just_source_syntax
+cargo test --locked honors_the_exact_specialization_limit
+```
+
+| 変更の種類 | Rust テスト（手本のファイル） | E2E（`node tests/<名前>.mjs target/release/tsuzuri`） |
+| --- | --- | --- |
+| 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs` | `examples.mjs`、`features.mjs`（関係する suite） |
+| 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
+| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs` |
+| 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
+| 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
+| コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
+| 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
+| 数値・数学 | `tests/integers.rs`、`tests/math.rs` | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24） |
+| 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite） |
+| Task・並列・WASM threads | `tests/tasks.rs`、`tests/parallel.rs` | `tasks.mjs`、`wasm_threads.mjs`、`TSUZURI_TSAN=1` の実行 |
+| SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs` |
+| host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
+| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs` | `cache.mjs`、`examples.mjs` |
+| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs` | — |
+| LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
+| 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
+| `_docs/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
+
+表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行する。
+最終確認は §3 の全体（fmt・clippy・`cargo test --locked`・関係する E2E）と `sh scripts/check-runtime-includes.sh`。
 
 ---
 
@@ -214,6 +277,43 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/runtime/console.ll` | `@tz.console.write`（putchar） | ネイティブのコンソール入口だけ |
 | `src/runtime/task.c` / `task-wasm.ll` | `tsuzuri_task_parallel`（pthread の bounded fork/join／WASM 逐次） | `@tsuzuri_task_parallel(` が現れる。native は driver が task.c をコンパイル |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・シフトの補助（`__multi3` は `noinline optnone` 必須） | WASM で driver が常に追加 |
+
+### 4.3 P2 以降に追加されたモジュール
+
+4.1 と 4.2 は P1 の時点の地図です。HEAD `f8dc655` の `src/` には次のモジュールもあります（括弧は導入したチケット）。
+詳細化した第2期・性能チケットの「段ごとの変更」表は、関数名を HEAD で grep 確認しています。着手時にもう一度 grep してください。
+
+| ファイル | 役割 |
+| --- | --- |
+| `src/abi.rs`、`src/llvm_abi.rs` | host ABI の型の対応、公開 wrapper と C header（E05） |
+| `src/cache.rs` | 全ビルドの cache。SHA-256、metadata、writer lock、GC（G11） |
+| `src/constants.rs` | 定数の評価と型付きリテラルへの展開（D06） |
+| `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
+| `src/docgen.rs` | API 文書の生成（G09） |
+| `src/exhaustiveness.rs` | match の網羅性検査（A03） |
+| `src/formatter.rs` | `tsuzuri fmt`（`format_source`、`SourceKind`） |
+| `src/gpu.rs` | GPU kernel の抽出と WGSL 生成（F07） |
+| `src/higher_kinds.rs` | 高カインド型の正規化（A10） |
+| `src/llvm_bulk.rs` | 配列の一括 API（C04） |
+| `src/llvm_compare.rs`、`src/llvm_hash.rs`、`src/llvm_display.rs` | 構造比較・構造 Hash・表示（A06・A07・A11・D01） |
+| `src/llvm_debug.rs` | DWARF（G08） |
+| `src/llvm_imports.rs` | host import（E06） |
+| `src/llvm_io.rs` | IO の入口（`std/IO.tc`） |
+| `src/llvm_math.rs` | 数学関数と FMA（D03・D05） |
+| `src/llvm_parallel.rs`、`src/llvm_task.rs` | データ並列と `Task.parallel_results`（F02・B06） |
+| `src/llvm_recursive.rs`、`src/recursive.rs` | 再帰型の判定・ノード・反復的な drop／clone（A04） |
+| `src/llvm_simd.rs`、`src/simd.rs` | SIMD 型（F03・F04） |
+| `src/llvm_traps.rs`、`src/trap.rs` | trap の種類・位置・計装（G04） |
+| `src/lsp.rs`、`src/semantic.rs` | LSP サーバーと `SemanticIndex`（G07） |
+| `src/package.rs` | manifest と package graph（E04） |
+| `src/regions.rs` | 名前付き region の検査（A09） |
+| `src/stdlib.rs` | std ソースの埋め込み（`SOURCES`）、予約モジュール、opaque record |
+| `src/test_runner.rs` | `tsuzuri test`（G06） |
+| `src/warnings.rs` | 警告 W1001–W1004（G03） |
+
+実行時ランタイムも増えています（`character.ll`、`display.ll`、`debug.ll`、`recursive.ll`、`utf8string.ll`、`math.ll`、
+`heap-wasm-threads.ll`、`task-wasm-threads.c`、`task-windows.h`、`cpu.c`、`io.c`、`test-runner.c`）。連結条件は `src/llvm.rs` と
+`src/driver.rs` の `include_str!` の周辺を読んで確認します（§2.2）。
 
 ---
 
@@ -333,6 +433,21 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
   `driver.rs` の `Options`（`validate` で不正な組み合わせを `E2000` にする）、README の CLI 表を更新する。
 - 使えない組み合わせは黙って無視せずエラーにする（`--cpu native` と WASM の組み合わせの扱いが手本）。
 
+### 6.9 P2 以降に増えた走査箇所
+
+6.2〜6.4 の表は P1 の時点のものです。P2 以降のモジュール（§4.3）にも `ExprKind`・`TypedExprKind`・`Type` を辿る match があり、
+`_ =>` の fallback で新しい variant を黙って無視するものがあります。新しい variant を足したら、次の手順で漏れを探します。
+
+1. 性質の近い既存 variant の名前で全体を grep し、出現する関数を全部列挙する。
+   例: 式なら `grep -rn "ExprKind::RecordUpdate\|ExprKind::NewLiteral" src/`、型付き IR なら
+   `grep -rn "TypedExprKind::TaskParallelResults\|TypedExprKind::StructuralHash" src/`、型なら `grep -rn "Type::Char\|Type::Simd" src/`。
+2. 列挙した各 match で、新しい variant が fallback に落ちて正しいかを一つずつ判断し、正しくなければ arm を足す。
+   判断の結果（変更なし、を含む）はチケットの「段ごとの変更」表と照合する。
+3. 特に確認するもの: `src/formatter.rs`（整形）、`src/semantic.rs`（LSP の索引）、`src/docgen.rs`（署名の描画）、
+   `src/computation.rs` の `expand`、`src/constants.rs`、`src/derive.rs`、`src/warnings.rs`、`src/regions.rs`、`src/exhaustiveness.rs`、
+   `src/llvm_debug.rs`、`src/llvm_compare.rs`・`src/llvm_hash.rs`・`src/llvm_display.rs`、`src/abi.rs`・`src/llvm_abi.rs`、`src/gpu.rs`。
+4. 新しい variant を使う最小のソースで `tsuzuri fmt --check`・`tsuzuri doc`・LSP の hover（`tests/lsp.rs` の手本）も通ることを確かめる。
+
 ---
 
 ## 7. テストの書き方
@@ -388,6 +503,27 @@ fn rejects(source: &str, code: &str) {
 
 性能を主張するチケットは、`benchmarks/` に同条件の C/C++（必要なら Rust）比較と、生成 IR／アセンブリの確認手順を追加し、
 `docs/benchmarks.md` に日付・環境・コミット・中央値・生データの保存先を記録します。速度閾値を CI に入れません。
+性能チケットの共通手順は §14 です。
+
+### 7.4 `tests/features.mjs` への suite の追加
+
+多くのチケットは、新しい E2E を独立した `.mjs` ではなく `tests/features.mjs` の suite として足します。
+
+1. fixture を `tests/fixtures/<suite 名>/` に置く。入口は `Main.tz`（必要なら他のモジュール・`.tt`・`.tc`）。
+   検査したい関数は `export def` で公開する（公開 ABI の型だけ。複雑な値は内部で計算して整数のチェックサムにする）。
+   置いたら `target/release/tsuzuri check tests/fixtures/<suite 名>` が通ることを確かめる。
+2. `tests/features.mjs` の `const suites = { ... }` に `<suite 名>: { cases: [...], traps: [...], inspect(ir) { ... } }` を足す。
+   - `cases` の各要素は `["<export 名>", [引数...], 期待値]`。引数と期待値は BigInt（`42n`）で書き、期待値は JavaScript の
+     独立した計算で作る（`BigInt.asIntN(64, ...)` などで折り返しを表す）。**コンパイラの出力を期待値に写さない。**
+   - `traps` は `["<export 名>", [引数...]]`。trap することだけを確かめる。
+   - `inspect(ir)` は省略できる。生成 IR の不変条件（確保がない、intrinsic が一度だけ宣言される等）を `assert` で書く。
+   既存の suite（`map_set`・`higher_kinds`・`simd` など）の書き方をそのまま真似る。
+3. harness の共通部分（suite のループ `for (const [name, suite] of Object.entries(suites))` から呼ばれる処理）が、
+   `@malloc`／`@free`／`@realloc` を追跡関数に置き換えた native の実行、wasm32 の `-O0`／`-O3` の build と
+   `WebAssembly.Module.imports(module)` が空であることの検査を行う。足す前にこのループと suite の関数を読み、何が自動で検査されるかを確かめる。
+4. 一つの suite だけを実行する: `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri <suite 名>`。
+   全 suite は第 2 引数なしで実行する。
+5. suite 名は `_features/README.md` の完了記録と `README.md` の検証コマンドの説明に合わせて書く（件数を記録する）。
 
 ---
 
@@ -767,6 +903,60 @@ fn rejects(source: &str, code: &str) {
 | std | `Atomic`／`Mutex`／`Channel` | F10 |
 | std | `Bench` | G18 |
 
+2026-09-29 の詳細化で、各チケットが次の名前を仮に決めた（衝突を避けるための台帳。確定は各チケットの決定事項と承認に従う）。
+`要承認` の欄は、そのチケットで承認が必要な名前であることを示す。
+
+| 種別 | 仮の名前 | チケット | 要承認 |
+| --- | --- | --- | --- |
+| 構文 | `$"..."`・`u8$"..."`（文字列補間） | D07 | はい |
+| 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | はい |
+| 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | はい |
+| 構文 | `const def` | D11 | いいえ（Phase 1） |
+| 組み込みクラス・builtin | `AtomicValue`、`Task.scope`、構築関数 `create`（`new` は予約語） | F10 | はい |
+| std | `Gpu.map_relaxed`・`Gpu.init_relaxed` | F09 | はい |
+| std | `Bench.now`・`Bench.consume`・`Bench.with`・`Bench.of` | G18 | はい（`bench` と共に） |
+| std | `Json.Numeral`（`Json` の数値の record） | D08 | はい（`Json` と共に） |
+| std | `Os.encode`・`Os.error_of_status`（E09 と共有） | E08 | はい（モジュール名と共に） |
+| 予約モジュール | `Regex`・`Unicode` | D09 | はい |
+| サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
+| サブコマンド | `tsuzuri bindgen` | E11 | はい |
+| サブコマンド | `tsuzuri fetch` | E10 | はい |
+| サブコマンド | `tsuzuri repl`（Phase 2 の `tsuzuri script` は要承認） | G13 | Phase 2 だけ |
+| サブコマンド | `tsuzuri bench` | G18 | はい |
+| サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
+| CLI | `--warn implicit-copy` | A15 | はい |
+| CLI | `--allocator system\|host`（F13）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
+| CLI | `--wasm-max-memory`・`--wasm-stack-size` | F11 | 2 GiB を超える上限だけ |
+| CLI | `--emit bitcode` | PR08 | いいえ |
+| CLI | `--emit bindings-js`（出力 `<name>.mjs`・`<name>.d.mts`） | E13 | いいえ |
+| CLI | `--emit wgsl-relaxed`・`--wasm-feature webgpu` | F09 | はい |
+| CLI | `--wasm-feature tail-call` | PM09 | はい |
+| CLI | `--wasm-host wasi` | E08 | はい |
+| CLI | `--trap-mode`（Phase 2） | E14 | はい |
+| CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | はい |
+| CLI | `--profile-generate`・`--profile-use` | PR07 | いいえ |
+| CLI | `-Os`・`-Oz`・`--strip` | PM08 | いいえ |
+| CLI | `--backend llvm\|fast` | PB05 | はい |
+| CLI | `--samples`・`--coverage` | G18 | `bench` と共に |
+| CLI | `--no-server`・`--idle-timeout` | PB06 | はい（Phase 2） |
+| 環境変数 | `TSUZURI_THREADS` | PB04 | いいえ |
+| 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（既定の変更） |
+| 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | はい（Phase 2） |
+| 環境変数 | `TSUZURI_SYSROOT`・`TSUZURI_CROSS_LINK`（テスト用） | G15 | いいえ |
+| 環境変数 | `TSUZURI_LLVM_PROFDATA` | PR07 | いいえ |
+| 環境変数 | `TSUZURI_TIME_PASSES` | PX01 | いいえ |
+| 環境変数 | `TSUZURI_ZIG`・`TSUZURI_GO` | PX02 | 計測機への導入だけ |
+| 環境変数 | `TSUZURI_TEST_ALLOCATOR`（テスト用） | F13 | いいえ |
+| 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ |
+| 環境変数 | `TSUZURI_BASELINE`（テスト用） | PM03 | はい（PM03 全体） |
+| 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` | F13 | いいえ |
+| 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`） | F08・PR05 | いいえ |
+| 公開記号 | `tsuzuri_try_<name>`（Phase 2） | E14 | はい |
+| ランタイム | `format.ll`（D07）、`string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`os.c`（E08）、`net.c`（E09） | 各チケット | 各チケットの承認に従う |
+
+新しい `.ll` を足すときは §2.2 の `.gitignore` の例外行と `scripts/check-runtime-includes.sh` を忘れない。
+Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の `Trap`・`TrapInfo` など）は、承認のときに割り当てる。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
@@ -780,6 +970,8 @@ fn rejects(source: &str, code: &str) {
 - [ ] 性能を主張する場合は実測と生成コードの確認結果を `docs/benchmarks.md` に記録した。
 - [ ] `_features/README.md` の状態欄を更新し、チケットの「未決事項」に実装時の判断を追記した。
 - [ ] 完了したチケットを `_features/_completed/` へ移動し、参照リンクを更新した。
+- [ ] `要承認` の項目に承認なしで着手していない。§3.1 の回帰テストが通る。
+- [ ] §13.2 の書式で完了報告を書いた（チケット末尾の `## 実装と検証（YYYY-MM-DD）` と人間への報告）。
 
 ## 11. 小さいモデルで実装するときの追加指示
 
@@ -788,3 +980,150 @@ fn rejects(source: &str, code: &str) {
 - `unreachable!()` を追加する前に、型検査でその状態が本当に排除されているかを確認する。
 - エラーを握りつぶしたり、テストの期待値をコンパイラの現在の出力に合わせて書き換えたりしない。
 - 迷ったら、チケットの「未決事項」の既定案 → この台帳 → 最も保守的な選択（拒否）の順に従う。
+  詳細化済みのチケットでは「決定事項」の既定案に従い、`要承認` の項目は承認まで着手しない。
+- チケットの手順は「変更 → 内容 → 確認」の順に一つずつ進め、確認のコマンドの結果（通過したテストの数を含む）を控えておく。
+  控えは §13 の完了報告にそのまま使う。
+
+### 11.1 既知の落とし穴（過去の実装から）
+
+- **stack の深さ。** debug ビルドのテストは 2 MiB の stack で動く。`syntax` の enum の variant を小さく保ち（大きい field は `Box`）、
+  `Parser::primary` の分岐を小さく保ち、引数の検査の入口は小さな振り分けにして重い処理は再帰しない補助関数へ出す。
+  parser の再帰する補助関数は入れ子の数を必ず増減する（減らし忘れて深さ 128 の前に溢れた例がある）。
+  上限や stack の大きさを上げてテストを通してはいけない。回帰テストは §3.1 の 3 つ（`bounds_type_growing_polymorphic_recursion`、
+  `bounds_recursive_and_flat_expression_depth`、`bounds_nested_builder_expansion_not_just_source_syntax`）。
+- **`_ =>` の fallback。** 新しい variant を黙って無視する match が多い。§6.9 の手順で全出現を確かめる。
+- **std の generic 関数と特殊化の予算。** 単相化は利用者の非 generic 関数からだけ始める。std の generic 関数を先に特殊化すると、
+  利用者の 1,024 件の予算を消費する（`honors_the_exact_specialization_limit`）。std に API を足したら必ずこのテストを実行する。
+- **LLVM の型の出力順。** enum の別名（`= type i32`）は、どの record／union の struct 定義よりも前に出す（LLVM は非 struct の別名を前方参照できない）。
+- **生成ランタイム。** `numeric.ll`・`math.ll` は手で直さず、§2.2 の手順で両方を作り直す。`Globals::FIRST_METADATA` の範囲を保つ。
+  数値ランタイムに静的な表を足した形が Clang 23 の wasm32 `-O0` で不正なコードになった例がある。新しいランタイムの形は
+  native と WASM の `-O0`／`-O3` で必ず確かめる。
+- **Node のバージョン。** Node 20.19.6 は BigInt の重い suite で V8 の `RepresentationChangerError` により異常終了することがある。Node 24 を使う（§2.1）。
+- **macOS の再配置可能リンク。** `clang -r -nostdlib` は weak／hidden の記号を局所化するので、`-Wl,-keep_private_externs` を保つ。
+- **閉包の immediate capture。** 生成・stack 上の閉包・adapter・借用読み出し・clone／drop のすべてが同じ規則に従う必要がある
+  （`tests/primitives.mjs`・`tests/tasks.mjs` で検査）。
+- **複製の省略。** `clones_on_take` が Copy の複製を省くのは、一度だけ使う局所変数の全体だけ（`Field` の場所は対象外）。
+- **整数の cast。** 整数から整数への cast はビットを保つ（幅が変わるときは切り捨て／符号拡張）。飽和するのは浮動小数点から整数だけ。
+- **再帰的なソース探索。** E03 以降、ディレクトリ内のソースは再帰的に読み込まれる。テストのプロジェクトは一つずつ別の一時 root に置く
+  （既存の harness は fixture を一時ディレクトリへ写してから使う）。
+- **期待値の源。** テストの期待値は独立した参照（JavaScript の BigInt、Python、C）から作り、コンパイラの現在の出力を写さない。
+- **テストの件数。** `cargo test --locked <pattern>` は 0 件でも成功する（§3.1）。
+- **文書。** `_docs/` を変えたら `node scripts/check-docs.mjs <ページ>`。`_docs/feature-status.md` の行は `_features/README.md` の ID と同じ順序に保つ。
+
+## 12. Tsuzuri 構文の早見表と落とし穴
+
+fixture・例・再現用のソースを書くときの早見表です。仕様は `docs/language.md`、実行可能な例は `_docs/language-reference/*.md`
+（`scripts/check-docs.mjs` で検証済み）と `tests/fixtures/**` にあります。**書いたソースは必ず `tsuzuri check` か `run` で確かめます。**
+
+次のプログラムは 2026-09-29 に release コンパイラで `target/release/tsuzuri run <dir>` を実行し、`33` を出すことを確かめました。
+
+```tsuzuri
+union Reading = Missing | Value of i64
+
+record Point { x: i64, y: i64 }
+
+def twice :: Add<'a> -> 'a = \v -> v + v
+
+def describe :: Reading -> i64 = \reading ->
+    match reading with
+    | Missing -> 0
+    | Value v -> v
+
+def first :: (i64 * i64) -> i64 = \pair ->
+    match pair with
+    | (left, _) -> left
+
+def classify :: i64 -> i64 = \n ->
+    if n < 0 then
+        -1
+    elif n == 0 then
+        0
+    else
+        1
+
+def sum_to :: i64 -> i64 = \count ->
+    let mut total = 0
+    for i in 0i64 .. (count - 1) do
+        total = total + i
+    total
+
+export def answer :: i64 -> i64 = \seed -> seed + 1
+
+let point: Point = Point { x: 3, y: 4 }
+let text = to_string (twice 21)
+let shown = Display.display point.x
+let bytes = u8"abc"
+let magnitude = Int.abs (-5i64) + (Math.abs (-2.0) |> to_int)
+describe (Value 10) + first (5, 6) + classify (-3) + sum_to 4 + text.length + shown.length + bytes.length + magnitude
+```
+
+要点:
+
+- 定義は `def name :: Type = \args -> body`。再帰は `def rec` と `and name :: Type = ...`。引数のない定義は `def name :: Type = expression`。
+- 制約付きの generic は制約を型の位置に書く（`Add<'a> -> 'a`）。
+- 値の型注釈は `let name: Type = value`。可変な局所変数は `let mut` と `=` の代入。
+- `for x in a .. b` は **両端を含む**。長さ `n` の配列の添字は `0i64 .. (n - 1)`。`for name = a to b` は i32 だけ。
+- 複数行の条件の連鎖は `if` ／ `elif` ／ `else`。同じ行の `else if` は使えるが、複数行の `else` の中の `if` は連鎖ではなくブロックになる。
+- 文字列への変換は `to_string value`（消費）か `Display.display value`（借用）。UTF-8 の文字列リテラルは `u8"..."`。
+- 絶対値: `abs` は f64 だけ、`Math.abs` は Float、符号付き整数は `Int.abs`（MIN は MIN のまま）。
+- `export def` の引数・結果は 8／16／32／64-bit の整数、f32、f64、bool（結果は unit も可）だけ。
+
+| 誤りの例 | 結果（2026-09-29 に確認） | 正しい書き方 |
+| --- | --- | --- |
+| `pair.0` | `E0002` expected an identifier | `match pair with \| (first, _) -> first` |
+| `(5: i64)` | `E0002` expected the closing delimiter | `let x: i64 = 5` |
+| `Display.to_string 5` | `E1002` type class 'Display' has no method 'to_string' | `to_string 5` か `Display.display 5` |
+| `let new = 1`（`Atomic.new` なども） | `E0002`（`new` は予約語） | 別の名前（例: `create`） |
+| `abs (-2)`（整数） | `E1003` expected f64, found i64 | `Int.abs (-2)` |
+| task の中の `if c then return v` | `E0002` | `if c { return v } else { return w }` |
+| 対の `def` で `fn name () = ...` | 古い署名として解釈される | `fn name _unit = ...` |
+| union を record の波括弧で書く | 構文エラー | `union Reading = Missing \| Value of i64` |
+
+- 通常の明示ブロックは文の区切りに `;` が要る。`and!` は次の行の `let!` に続けて書き、前に `;` を置かない。
+  通常の `match` の節は `do!` を直接受けない（値を選んでから `do!` するか `match!` を使う）。
+- 無名関数は `\x -> body`。`x -> body` は互換のための形なので新しいコードでは使わない。
+
+## 13. 停止条件と完了報告
+
+### 13.1 止めて報告する条件（全チケット共通）
+
+次のどれかに当てはまったら、即興で回避せず作業を止め、状況・原因の候補・選択肢を人間に報告します。チケット固有の停止条件はチケットの
+「着手条件と停止条件」にあります。
+
+- `要承認` の決定事項が承認されていないのに、その Phase／段の変更が必要になった。
+- チケットの記述と HEAD のコードが食い違い、チケットの意図を保ったまま合わせる方法が一つに決まらない。
+- `unsafe`、新しい crate、既定の WASM import、fast-math や意味を変える最適化が必要に見える。
+- 既存のテストの期待値を変えないと通らない（チケットの「既存テストへの影響」に書かれたものを除く）。
+- §3.1 の回帰テストが失敗する、または上限・stack の大きさを上げたくなった。
+- 生成 IR が非決定的になった、または native と WASM、`-O0` と `-O3` で結果が違う。
+- 同じ失敗を直す試みが 2 回続けて失敗した。
+
+### 13.2 完了報告の書式
+
+作業の終わりに、チケットの末尾へ `## 実装と検証（YYYY-MM-DD）` の節を足し、同じ内容を人間にも報告します。
+
+- 実装した Phase と手順、実装しなかったもの（対象外・未承認）。
+- 実行した確認コマンドと結果（通過したテストの件数、E2E の suite 名と件数、native／WASM × `-O0`／`-O3`、`live == 0`）。
+- 計測した場合は計測条件と結果の保存先（§14）。性能を主張しない場合はそう書く。
+- チケットから外れた判断（決定事項への追記）と、見つけた問題・残作業。
+- 変更したファイルの一覧。コミットは人間の指示があるまで作らない。
+
+## 14. 性能チケットの共通手順
+
+`_perfs/` のチケットと、性能に触れる機能チケットに共通する手順です。個々の指標・workload・コマンドは各チケットと PX01・PX03 にあります。
+
+1. **before を保存する。** 着手直前の release コンパイラを `target/perf/<チケット ID>/tsuzuri-before` に写し、以後の比較に使う。
+   生データは PX01 の形式（JSON Lines）で `target/perf/<run_id>/` に置く。run_id は `<チケット ID>-before`・`<チケット ID>-after` の形にする。
+   `target/` はコミットしない。
+2. **環境を記録する。** CPU・コア数・OS・Clang・rustc・Node の版、コミット、未コミットの変更の有無（PX01 の record の `host` 欄）。
+3. **標本。** 一つの組につき 9 回以上測り、中央値と最小・最大を記録する。warm-up は各 runner の既定に従う。
+   計測中は他の重い処理を動かさない。時間の比較は同じ機械・同じ条件の before と after だけで行う。
+4. **意味を先に確かめる。** 計測の前に、チケットの「テスト計画」の suite と §3.1 の回帰テストを通す。結果が変わる最適化は計測しない。
+5. **生成コードを確かめる。** 速くなった理由を IR か機械語で示す:
+   `target/release/tsuzuri build <dir> --emit llvm -O3 -o /tmp/<name>.ll` と
+   `/opt/homebrew/opt/llvm@21/bin/llvm-objdump -d --no-show-raw-insn <実行ファイル>`。チケットの「生成コードの確認」の形を探す。
+6. **プロファイル。** 必要なら strip しない release を別の target dir に作る:
+   `CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir /tmp/tzperf/target`、macOS では `sample <pid>`。
+7. **記録と主張。** `docs/benchmarks.md` に日付・環境・コミット・中央値・生データの保存先を書く。計測していない効果を書かない。
+   CI に速度の合否の閾値を入れない。実装済みと計画を区別する。
+8. **fast-math・再結合・暗黙の FMA・二重丸め・未対応命令の無条件使用で速くしない**（AGENTS.md）。

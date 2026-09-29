@@ -394,3 +394,47 @@ graph LR
 - レビューで確定した横断的な決定は GUIDE の台帳に追加済み: D-20（比較は非消費、A11）、D-21（`unreachable`）、
   D-22（関数の由来情報 `FunctionOrigin`）、D-03（型名の正規マングリング）、D-07（参照元に応じた名前解決、組み込みと std の関係）、
   D-10（網羅性検査後の方針）。
+
+## 第2期チケットの詳細化（2026-09-29）
+
+第2期の 38 件と G10 を、HEAD `f8dc655` のコードと突き合わせて、小さいモデルでも設計判断なしに実装できる粒度まで詳細化しました
+（性能チケット `_perfs/` の 27 件も同様）。各チケットには次があります。
+
+- 着手条件と停止条件（即興で回避せず止めて報告する条件）、grep で確認したコード参照、段ごとの変更表。
+- 手順ごとの確認コマンドと期待結果、名前付きの Rust テストと E2E の suite、独立した参照による期待値。
+- 「未決事項」を置き換えた「決定事項」。各項目は「既定案（実装者はこの案に従う）」か「要承認（承認前は該当 Phase に着手しない）」。
+
+共通の手順は [GUIDE](GUIDE.md) の §0・§3.1・§11.1・§12・§13・§14 に追加しました。仮に決めた名前（CLI・環境変数・std・構文）は
+[D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) の台帳にあります。承認が必要な決定は次のとおりです（承認なしの Phase 1 から
+着手できるチケットは F12・G10・G12・G16・G20・D10 など、表にないものと「Phase 2 以降」の行のもの）。
+
+| チケット | 要承認の決定 |
+| --- | --- |
+| [A12](A12-multiple-regions.md) | D10（region の上限を 64 へ下げる）、D13（Phase 2） |
+| [A13](A13-exclusive-borrow-fields.md) | D1（D-28「排他参照 field は禁止」の変更。チケット全体）、D5 |
+| [A14](A14-dynamic-dispatch.md) | D1（`dyn`・`Dyn.of`・`E1028`） |
+| [A15](A15-copy-cost-visibility.md) | D3（`--warn implicit-copy` と `W1006`） |
+| [A16](A16-fixed-arrays.md) | D1（`[T; N]` の再導入）、D10（Phase 2） |
+| [B07](B07-user-drop.md) | D1（`Drop`）、D2（`drop` の引数を `ref mut`）、D4（Drop 型からの move の禁止） |
+| [B08](B08-async.md) | D1（`Async`）、D10（Phase 2） |
+| [C08](C08-mutable-slices.md) | D1（D-13 の変更。チケット全体）、D11（Phase 2） |
+| C09・C10・C11 | Phase 2 以降だけ（C09 D11、C10 D13・D14、C11 D9） |
+| [D07](D07-string-interpolation.md) | D1（`$"..."`・`u8$"..."`）、D9（`numeric.ll` の増分） |
+| [D08](D08-json-serialization.md) | D1（`Json`・`Encode`／`Decode`） |
+| [D09](D09-regex-unicode.md) | D1（`Regex`・`Unicode` の予約）、D11（Phase 2） |
+| [D11](D11-const-evaluation.md) | D10（Phase 2 の static データ） |
+| [E08](E08-os-api.md) | D1（7 つの std 名）、D9（`IO<i32>` の終了コード）、D10（`--wasm-host wasi`）、D12（段 B の `File.Handle` と B07 D5） |
+| [E09](E09-network.md) | D1（`Net`）、D11（wasm32 の将来の opt-in） |
+| [E10](E10-package-registry.md) | D1（`tsuzuri fetch` と `git`、`E2007`、D-29 の E04 記録の更新）、D10（Phase 2） |
+| [E11](E11-c-bindgen.md) | D1（`bindgen` と `W2002`） |
+| [E12](E12-ffi-extensions.md) | D1（`extern "symbol" def`）、D3（`extern type` の意味）、D6（`--link`・`-l`・`-L`）、D8（コールバックを Phase 1 に含める） |
+| E13・E14・F08・F11・F13・G13・G14 | Phase 2 以降だけ |
+| [F09](F09-gpu-float-runtime.md) | D1（relaxed f32 の契約と名前）、D9・D10（Phase 2・3） |
+| [F10](F10-concurrency-primitives.md) | D1（`Atomic`・`Mutex`・`Sync`・`AtomicValue`・`Task.scope`）、D10（Phase 2 の `Channel`） |
+| [G15](G15-platform-targets.md) | D8（CI の `targets.yml`） |
+| [G17](G17-incremental-compilation.md) | D5（`check`・`test`・`doc` の既定の cache）、D10・D11（Phase 2・3） |
+| [G18](G18-bench-coverage.md) | D1（予約語 `bench`） |
+| [G19](G19-editions-compatibility.md) | D1（manifest の `edition`）、D4（`@deprecated` と `W1005`）、D9（Phase 2） |
+
+詳細化の過程で見つけた、チケット外の食い違い: G10 の記録と `README.md`・`_features/README.md`・`docs/architecture.md`・`_docs/tools/build-and-cache.md` は
+Windows 専用の CI があるように書いているが、`.github/workflows/windows.yml` は `16d4fa9` で削除されている（G10 の手順で復元する）。
