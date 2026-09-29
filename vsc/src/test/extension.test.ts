@@ -22,7 +22,7 @@ export async function run(): Promise<void> {
 	const document = await vscode.workspace.openTextDocument(uri);
 	await vscode.window.showTextDocument(document);
 	assert.equal(document.languageId, 'tsuzuri');
-	const extension = vscode.extensions.getExtension<NonNullable<Awaited<ReturnType<typeof activate>>>>('tsuzuri.tsuzuri');
+	const extension = vscode.extensions.getExtension<NonNullable<Awaited<ReturnType<typeof activate>>>>('tmidorikawa.tsuzuri');
 	assert.ok(extension);
 	if (process.env.TSUZURI_TEST_INSTALLED === '1') {
 		assert.ok(extension.extensionPath.includes(`${path.sep}extensions${path.sep}`), extension.extensionPath);

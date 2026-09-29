@@ -4,7 +4,7 @@
   "description": "Tsuzuri IDE",
   "icon": "media/icon.png",
   "version": "0.1.0",
-  "publisher": "tsuzuri",
+  "publisher": "tmidorikawa",
   "license": "Apache-2.0",
   "repository": {"type": "git", "url": "https://github.com/tatsuya-midorikawa/Tsuzuri.git", "directory": "vsc"},
   "engines": {
@@ -36,7 +36,7 @@
     "snippets": [{"language": "tsuzuri", "path": "./snippets/tsuzuri.json"}],
     "configurationDefaults": {
       "[tsuzuri]": {
-        "editor.defaultFormatter": "tsuzuri.tsuzuri",
+        "editor.defaultFormatter": "tmidorikawa.tsuzuri",
         "editor.insertSpaces": true,
         "editor.tabSize": 4,
         "editor.wordBasedSuggestions": "matchingDocuments"

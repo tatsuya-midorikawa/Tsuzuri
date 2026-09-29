@@ -109,7 +109,7 @@ $env:LLVM_PREFIX = 'C:\Program Files\LLVM'
 - [media/icon.png](media/icon.png): 採用済みの A 案。512 × 512 PNG。
 - [../LICENSE](../LICENSE): Apache-2.0。LLVM・Zig・CodeLLDB 等の再配布条件と同梱ライセンスも確認。
 
-現在の拡張 ID は `tsuzuri.tsuzuri`、バージョンは `0.1.0` です。
+現在の拡張 ID は `tmidorikawa.tsuzuri`、バージョンは `0.1.0` です。
 コンパイラ自身のバージョンは [../Cargo.toml](../Cargo.toml) にあり、拡張機能のバージョンとは別に管理します。
 
 更新公開では、新しい拡張バージョンを先に設定し、すべての target を作り直します。例えば次のコマンドは `0.1.1` に更新します。
@@ -199,14 +199,14 @@ code --install-extension ./dist/tsuzuri-0.1.0-darwin-arm64.vsix
 2. **Create publisher** から Publisher ID と表示名を登録します。既存 Publisher を使う場合は公開権限を確認します。
 3. [package.json](package.json) の `publisher` と登録した ID を一致させます。
 
-設定値 `tsuzuri` の取得・所有状況は、このリポジトリでは保証していません。
+設定値 `tmidorikawa` の取得・所有状況は、このリポジトリでは保証していません。
 Publisher ID は作成後に変更できません。別の ID を使う場合は、**初回公開前に**拡張 ID 全体を確定させてください。
 
 Publisher を変更する場合、少なくとも以下も更新してから VSIX を作り直します。
 
 - [package.json](package.json) の `contributes.configurationDefaults.[tsuzuri].editor.defaultFormatter`。
 - [src/test/extension.test.ts](src/test/extension.test.ts) の `getExtension` に渡す拡張 ID。
-- 公開 URL、インストールコマンド、ドキュメント等に記載した `tsuzuri.tsuzuri`。
+- 公開 URL、インストールコマンド、ドキュメント等に記載した `tmidorikawa.tsuzuri`。
 
 既に公開した拡張では、`publisher`／`name` の変更は単なるバージョン更新ではありません。既存利用者の自動更新や設定への影響を確認してください。
 
@@ -231,13 +231,13 @@ Entra ID 方式では、公開に用いる ID を Marketplace Publisher のメ�
 5. 次を実行し、PAT はターミナルの非表示入力へ直接入力します。
 
 ```sh
-npx --no-install vsce login tsuzuri
-npx --no-install vsce verify-pat tsuzuri
+npx --no-install vsce login tmidorikawa
+npx --no-install vsce verify-pat tmidorikawa
 ```
 
-`tsuzuri` は実際の Publisher ID に読み替えます。
+`tmidorikawa` は実際の Publisher ID に読み替えます。
 PAT をコマンド引数、ソース、`.env`、Markdown、チャット、スクリーンショット、ビルドログに書かないでください。
-共有環境に認証情報を残す必要がなくなった場合は `npx --no-install vsce logout tsuzuri` を使います。漏えいの疑いがある PAT はログアウトだけでなく発行元で失効させます。
+共有環境に認証情報を残す必要がなくなった場合は `npx --no-install vsce logout tmidorikawa` を使います。漏えいの疑いがある PAT はログアウトだけでなく発行元で失効させます。
 
 ## 9. Marketplace へ公開する
 
@@ -292,11 +292,11 @@ CLI 認証を使わず、[Marketplace の管理画面](https://marketplace.visua
 - Windows ARM64 はデバッグのみ非対応と表示され、他の機能が使用できることを確認する。
 - 公開したコミット、全 VSIX、ビルド時の SHA-256、CI run、実機試験結果をリリース記録として残す。
 
-Publisher と拡張名が現在の設定なら、公開先 URL は `https://marketplace.visualstudio.com/items?itemName=tsuzuri.tsuzuri` です。
+Publisher と拡張名が現在の設定なら、公開先 URL は `https://marketplace.visualstudio.com/items?itemName=tmidorikawa.tsuzuri` です。
 この URL の記載は、公開済みであることを意味しません。
 
 ```sh
-code --install-extension tsuzuri.tsuzuri
+code --install-extension tmidorikawa.tsuzuri
 ```
 
 以後の更新も、バージョン更新、対象ホストでの再生成・試験、完成済み VSIX のアップロードの順で行います。
