@@ -734,6 +734,39 @@ fn rejects(source: &str, code: &str) {
 - G11は専用marker、digest/size検証、非待機writer lock、directory atomic rename、既存publish_outputsを使う。部分/破損entryはmiss、cache障害はW2001。GCは2GiB/30日のsoft上限で4096走査/128削除まで。
 - A10のinstance head変数とmethod固有変数は別binderとして扱い、同名ならinstance関数生成時にmethod側を内部名へalpha分離する。Result<'a>の'aがmapの入力型'aを捕捉しない。
 
+### D-30 第2期計画の仮割り当て（未承認）
+
+- 2026-09-29、C/C++・Rust・C#/F# との比較で見える劣位を改善する第2期のチケット（A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20）を起票した。
+  調査時点はコミット `9012e92`。一覧と対応表は [README の第2期](README.md#第2期-他言語比較で見える劣位の改善計画) にある。
+- 以下は計画上の仮割り当てで、人間の承認と各チケットの着手前レビューを経て確定する。確定したら該当行を D-07（std）・D-15（予約語）・D-16（診断コード）へ移し、この表から削除する。
+- 既存の予約語の組み合わせで表せる構文（`extern type`、`extern "symbol" def`、`const def`、`const N: i64`）を優先し、新しい予約語を増やさない。G19 の edition を導入した後は、新しい予約語を新しい edition でだけ予約する。
+- 言語の意味や既存の決定を変える提案は承認まで着手しない: C08（D-13 の `&mut [T]` の意味の変更）、A16（旧 `[T; N]` 構文の再導入）、C10 Phase 2（参照カウントの導入）、D11 Phase 2（static データ。D-28 の変更）。
+- 新しいホスト機能（WASI、乱数 seed の設定、非同期の再開、GPU runtime）は D-18 に従い明示的な opt-in とし、既定の WASM に import を追加しない。
+
+| 種別 | 仮割り当て | チケット |
+|---|---|---|
+| 予約語 | `dyn` | A14 |
+| 予約語 | `bench` | G18 |
+| 診断 | `E1028` dyn 互換でない型クラス | A14 |
+| 診断 | `E2007` 依存の取得・検証の失敗（lockfile の不一致、キャッシュの欠落） | E10 |
+| 警告 | `W1005` 非推奨の宣言の使用 | G19 |
+| 警告 | `W1006` 長さに比例する暗黙の複製（既定無効） | A15 |
+| 警告 | `W2002` bindgen で変換できない C 宣言の省略 | E11 |
+| 組み込みクラス | `Drop` | B07 |
+| 組み込みクラス | `Encode`／`Decode` | D08 |
+| 組み込みクラス | `Sync`（仮称） | F10 |
+| std | `HashMap`／`HashSet` | C09 |
+| std | `Arena` | C10 |
+| std | `Matrix` | C11 |
+| std | `FixedArray` | A16 |
+| std | `Json` | D08 |
+| std | `Regex`／`Unicode` | D09 |
+| std | `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Os` | E08 |
+| std | `Net` | E09 |
+| std | `Async` | B08 |
+| std | `Atomic`／`Mutex`／`Channel` | F10 |
+| std | `Bench` | G18 |
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。

@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下に残るのは G10（`blocked`）だけです。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 38 件があります。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -47,6 +47,75 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 - runtime19ファイル、fmt/clippy、全Rustテスト、READMEの全ローカルE2Eが成功。feature4928、Task41結果/4trap、整数intrinsic263182、型変換1585、Math786051参照を検証。
 - 36種目の多言語quick、Task/Parallel、CE/SIMD/dispatch、cache/GPU参照quickが成功。短縮時間は性能優位の根拠にしません。比較harnessのMix入力は独立したrootへ修正しました。
 
+## 第2期: 他言語比較で見える劣位の改善計画
+
+[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。
+
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。状態はすべて `todo` です。
+- 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
+- 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
+- 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
+- 言語の意味や既存の設計決定を変える提案（C08 の D-13 変更、A16 の `[T; N]` 再導入、C10 Phase 2 の参照カウント、D11 Phase 2 の static データ）は、着手前に人間の承認が必要です。
+
+### 改善の方針
+
+- AGENTS.md の原則を変えない。数値・評価順序・トラップ・所有権の意味を保ち、ハードウェア依存の経路には能力確認と明示的なエラーを持たせる。
+- 新しいホスト機能（WASI、乱数 seed、非同期、GPU）は明示的な opt-in とし、既定の WASM の import なしを保つ（D-18）。
+- 劣位の解消を名目に GC、例外による巻き戻し、暗黙の fast-math、黙った fallback を導入しない。
+- 性能の改善は計測と生成コードの確認を先に行い、実装済みと計画を区別して文書に書く。
+- 既定の出力を変えない。新しい機能を使わないプログラムの IR・import・ABI が同一であることを各チケットの受け入れ条件に含める。
+
+### why-tsuzuri に記載された劣位と対応
+
+| 比較対象 | 劣位点 | 対応チケット |
+|---|---|---|
+| C/C++ | ポインター・メモリ配置・allocator・任意の外部 ABI の制御の自由度 | E12, F13, A16, E11 |
+| C/C++ | OS・デバイス・既存ライブラリとの接続にホスト実装が必要 | E08, E09, E11, E12 |
+| C/C++ | 既存の C/C++ コードをそのまま取り込めない | E11, E12 |
+| C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（G10 の完了が前提）, C11, F08, G16, G19 |
+| C/C++ | GPU が実験段階 | F09 |
+| C/C++ | 安全検査・所有値の複製・ホスト境界の変換のコスト | F12, A15, A16, E13 |
+| Rust | 可変スライス・排他借用フィールド・レコード内の独立した複数 region がない | C08, A13, A12 |
+| Rust | Copy のコストモデル（配列・捕捉の深い複製） | A15, A16, C10 |
+| Rust | Cargo／crates.io・非同期 I/O・低水準 API・開発ツールの成熟度 | E10, B08, E12, F13, G12, G14, G18 |
+| C#/F# | .NET の標準ライブラリ・NuGet・GUI／Web／DB・ファイル／ネットワーク API | E08, E09, E10, E13, D08, D09, C09 |
+| C#/F# | GC に任せられる共有データ・循環構造 | C10, A14 |
+| C#/F# | async／await、対話環境、IDE 支援 | B08, G13, G12, G20 |
+
+### why-tsuzuri に記載のない劣位と対応
+
+| 劣位点 | 比較の基準 | 対応チケット |
+|---|---|---|
+| native ホストへ組み込んだ関数のトラップでホストのプロセス全体が終了し、スタック枯渇は理由なしに異常終了する | Rust の `catch_unwind`、C# の例外 | E14 |
+| WASM の線形メモリが stack・data・heap 合計 16 MiB に固定 | Rust／C++ の wasm32（最大 4 GiB） | F11 |
+| 実行時多相がなく、異種コレクションを作れず、単相化のコードサイズと特殊化上限を避けられない | C++ の仮想関数、Rust の `dyn`、C# のインターフェース | A14 |
+| 長さを型に含む値型の配列がない | C/C++ の `T[N]`、Rust の `[T; N]` | A16 |
+| メモリ以外の資源を所有値として解放できない | Rust の `Drop`、C++ の RAII、C# の `IDisposable` | B07 |
+| ハッシュ表がなく、Map の挿入・削除が O(n) | C# の `Dictionary`、Rust の `HashMap` | C09 |
+| 文字列補間・書式指定・直列化・正規表現がない | C#/F#、Rust | D07, D08, D09 |
+| 既存の C 関数を直接呼べず（`tsuzuri_host_` 名の shim が必要）、実行ファイルへホストのライブラリをリンクする CLI がない | C/C++、Rust の FFI | E12 |
+| 関数内のエラーから回復しないため、一度に得られる診断が少ない | rustc、C# コンパイラ | G20 |
+| 毎回の全体コンパイルと固定上限（特殊化 1,024、ソース 1 MiB など） | C/C++ の分割コンパイル、Rust の増分コンパイル | G17 |
+| VS Code 拡張以外では LLVM・Clang・LLD の導入が必要 | rustup、.NET SDK | G14 |
+| 利用者コードのベンチマーク・カバレッジ・プロパティテストがない | cargo bench、BenchmarkDotNet、coverlet | G18 |
+| f16 が常にソフトウェア演算 | C/C++ の `_Float16` | D10 |
+| コンパイル時評価の範囲が狭い | C++ の `constexpr`、Rust の `const fn` | D11 |
+| 共有状態・パイプラインの並行プリミティブがない | C++、Rust、C# | F10 |
+| ホストバインディングの生成と、ブラウザー向けの WASM threads glue がない | wasm-bindgen、Emscripten | E13 |
+| 言語版・非推奨の管理と公開 API の差分検査がない | Rust の edition、C# の言語版 | G19 |
+
+### 採用しない改善
+
+| 候補 | 理由 |
+|---|---|
+| GC・サイクルコレクター | 所有権による決定的な解放という設計目標と矛盾する。循環は C10 の Arena／Handle と Weak で扱う |
+| 例外と巻き戻し、`?` 演算子 | D-10 の方針。ホスト境界の失敗は E14 の opt-in 境界で返し、言語内の失敗は Option／Result で表す |
+| 暗黙の fast-math・再結合、GPU・SIMD での黙った精度変更 | 数値の意味を変える。緩い演算は名前で区別した別 API にする（F09、C11） |
+| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルで受け渡す |
+| 利用者が境界検査を無効にするオプション・unchecked API | 安全性を下げる。検査のコストは F12 の証明と計測で減らす |
+| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況](../_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う |
+| GUI・Web フレームワークの同梱 | ホストの責務。E13 の生成 glue で既存のフレームワークと接続する |
+
 ## 一覧
 
 ### A. 型システム
@@ -64,6 +133,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A09 | [名前付きライフタイムと借用フィールド](_completed/A09-named-lifetimes.md) | P2 | XL | – | done |
 | A10 | [高階型（HKT）](_completed/A10-higher-kinded-types.md) | P3 | XL | A01, A06 | done |
 | A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](_completed/A11-borrowed-comparisons.md) | P1 | M | – | done |
+| A12 | [レコード内の独立した複数 region と region 付き関数値型](A12-multiple-regions.md) | P2 | XL | A09 | todo |
+| A13 | [排他借用フィールドと参照経由の更新](A13-exclusive-borrow-fields.md) | P2 | L | A12 | todo |
+| A14 | [型クラスによる動的ディスパッチ（dyn 値）](A14-dynamic-dispatch.md) | P2 | L | A06, (B07) | todo |
+| A15 | [暗黙の深いコピーの可視化](A15-copy-cost-visibility.md) | P2 | M | G03, (G12) | todo |
+| A16 | [固定長配列と const ジェネリクス](A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | todo |
 
 ### B. エラー処理・制御
 
@@ -75,6 +149,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](_completed/B04-active-pattern-extensions.md) | P1 | M | B01, A02 | done |
 | B05 | [コンピュテーション式の拡張（match!／and!／use／try）](_completed/B05-computation-expression-extensions.md) | P2 | M | (B01) | done |
 | B06 | [タスクのキャンセルと失敗の伝播](_completed/B06-task-cancellation.md) | P3 | L | B01, F01 | done |
+| B07 | [ユーザー定義の解放処理（Drop）とリソース型](B07-user-drop.md) | P1 | L | A06 | todo |
+| B08 | [非同期計算（Async）とホスト駆動の実行](B08-async.md) | P3 | XL | B05, B07, (E08), (E13) | todo |
 
 ### C. コレクション・データ
 
@@ -87,6 +163,10 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C05 | [レコードのコピーと更新 `{ p with x = … }`](_completed/C05-record-update-syntax.md) | P1 | S | (A01) | done |
 | C06 | [Map／Set](_completed/C06-map-set.md) | P2 | L | A11, A02, A06, A07, C02, B01 | done |
 | C07 | [ユーザー定義の反復プロトコル](_completed/C07-iteration-protocol.md) | P2 | L | B01, A06 | done |
+| C08 | [可変スライスと要素のその場更新](C08-mutable-slices.md) | P2 | L | C03, (A13) | todo |
+| C09 | [HashMap／HashSet](C09-hash-map.md) | P1 | M | A07, C02, C06 | todo |
+| C10 | [共有所有と循環構造（Arena・Handle・Rc／Arc）](C10-shared-ownership.md) | P2 | XL | C02, (B07), (F10) | todo |
+| C11 | [多次元配列と数値カーネル](C11-multidimensional-arrays.md) | P3 | L | A16, F02, F04, (C08), (F08) | todo |
 
 ### D. 文字列・数値・組み込み関数
 
@@ -98,6 +178,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](_completed/D04-integer-intrinsics.md) | P1 | M | E02, B01 | done |
 | D05 | [明示 FMA と順序を定めた集計 API](_completed/D05-fma-ordered-reductions.md) | P2 | S | E02, C04 | done |
 | D06 | [コンパイル時定数（const）](_completed/D06-compile-time-constants.md) | P2 | M | – | done |
+| D07 | [文字列補間と書式指定](D07-string-interpolation.md) | P1 | M | D01 | todo |
+| D08 | [構造化データの直列化（JSON）と Encode／Decode の導出](D08-json-serialization.md) | P2 | L | A07, D02, (C09) | todo |
+| D09 | [正規表現と Unicode テキスト処理](D09-regex-unicode.md) | P2 | L | D02, A08 | todo |
+| D10 | [f16 のハードウェア演算経路](D10-f16-hardware.md) | P3 | M | D03 | todo |
+| D11 | [コンパイル時評価の拡張（const 関数・表の生成）](D11-const-evaluation.md) | P3 | L | D06, (A16) | todo |
 
 ### E. モジュール・ホスト連携
 
@@ -110,6 +195,13 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](_completed/E05-host-abi-buffers.md) | P1 | L | C03 | done |
 | E06 | [ホスト関数のインポート](_completed/E06-host-imports.md) | P2 | L | E02 | done |
 | E07 | [デバッグ出力（Debug.print／trace）](_completed/E07-debug-output.md) | P1 | S | D01, E02 | done |
+| E08 | [標準 OS API（ファイル・環境・時刻・乱数・プロセス）](E08-os-api.md) | P1 | XL | B07, E06 | todo |
+| E09 | [ネットワーク API](E09-network.md) | P3 | XL | E08, B08 | todo |
+| E10 | [git／registry 依存・lockfile・版解決](E10-package-registry.md) | P2 | XL | E04, G11 | todo |
+| E11 | [C ヘッダーからの extern 生成](E11-c-bindgen.md) | P2 | L | E12 | todo |
+| E12 | [FFI の拡張（リンク名・ホストのリンク指定・不透明ハンドル・コールバック）](E12-ffi-extensions.md) | P1 | L | E05, E06, (B07) | todo |
+| E13 | [ホスト言語バインディングと Web glue の生成](E13-host-bindings.md) | P2 | L | E05, E12, (F06), (F11) | todo |
+| E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | todo |
 
 ### F. 並列・性能バックエンド
 
@@ -122,6 +214,12 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | F05 | [実行時の CPU 命令セット判定と関数の複数版](_completed/F05-runtime-cpu-dispatch.md) | P2 | L | C04 | done |
 | F06 | [WASM threads バックエンド](_completed/F06-wasm-threads.md) | P3 | L | F01 | done |
 | F07 | [GPU バックエンド](_completed/F07-gpu-backend.md) | P3 | XL | F02, E05, B01 | done |
+| F08 | [256／512-bit SIMD と関数単位の CPU 多版化](F08-wide-simd-multiversioning.md) | P2 | XL | F04, F05, (C08) | todo |
+| F09 | [GPU の浮動小数点・64-bit カーネルと実行時接続](F09-gpu-float-runtime.md) | P3 | XL | F07, (C11) | todo |
+| F10 | [並行処理プリミティブ（Atomic・Mutex・Channel）](F10-concurrency-primitives.md) | P3 | XL | F01, B07, (A13), (C10) | todo |
+| F11 | [WASM メモリ上限の設定と拡張](F11-wasm-memory-limit.md) | P1 | M | – | todo |
+| F12 | [境界検査の除去と検査コストの計測](F12-bounds-check-elimination.md) | P2 | L | – | todo |
+| F13 | [アロケーターの差し替え・確保統計・freestanding 出力](F13-custom-allocators.md) | P2 | L | (F11), (E12), (E14) | todo |
 
 ### G. ツール・開発体験
 
@@ -138,6 +236,15 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G09 | [ドキュメントコメントと API 文書生成](_completed/G09-doc-comments.md) | P2 | S | E01 | done |
 | G10 | [Windows ネイティブ対応](G10-windows.md) | P3 | M | – | blocked |
 | G11 | [増分ビルド・キャッシュ](_completed/G11-incremental-build.md) | P3 | L | (E03) | done |
+| G12 | [LSP の拡張（補完・rename・参照・整形・inlay hints）](G12-lsp-extensions.md) | P1 | L | G07, G20 | todo |
+| G13 | [REPL とスクリプト実行](G13-repl.md) | P2 | L | G11, (G20), (G17) | todo |
+| G14 | [自己完結ツールチェーンの配布](G14-toolchain-distribution.md) | P1 | M | (G10) | todo |
+| G15 | [対応ターゲットの拡張とクロスコンパイル](G15-platform-targets.md) | P3 | XL | G10, G14, (F13) | todo |
+| G16 | [デバッガー体験（型の表示・PDB）](G16-debugger-experience.md) | P2 | M | G08, (G10), (G14) | todo |
+| G17 | [モジュール単位の増分コンパイルと規模上限の見直し](G17-incremental-compilation.md) | P2 | XL | G11, E03, (G20) | todo |
+| G18 | [ベンチマーク・カバレッジ・プロパティテスト](G18-bench-coverage.md) | P2 | M | G06, (D07), (E08) | todo |
+| G19 | [言語版（edition）と互換性・非推奨の管理](G19-editions-compatibility.md) | P3 | M | E04, G09, (E10) | todo |
+| G20 | [関数内の型・所有権エラーからの回復](G20-error-recovery.md) | P1 | L | G02 | todo |
 
 ## 推奨フェーズ
 
@@ -151,6 +258,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 3. 実用化・性能 | ホスト連携・並列・ツール | E05、F01 → F02、C02、G05、G06、G03、A04、D06 |
 | 4. エコシステム | 大規模開発と高度な最適化 | G07、G08、E03、C06、C07、A09、F03、F04、F05、E06、B05、D05、G09 |
 | 5. 長期 | 研究開発を伴う大型機能 | E04、F06、F07、A10、B06、G10、G11 |
+| 6. 第2期・導入障壁 | 既存アプリへの組み込みと日常の開発を妨げる劣位を除く | G20 → G12、G14、F11、E12、E14、B07 → E08、C09、D07 |
+| 7. 第2期・表現力と性能 | 所有権モデルの表現力・性能・エコシステムの差を縮める | A15、A12 → A13 → C08、A14、A16、F12、F13、F08、C10、D08、D09、E11、E13、E10、G16、G18、G17、G13 |
+| 8. 第2期・長期 | 研究開発や外部環境の整備を伴う機能 | B08 → E09、F09、F10、C11、D10、D11、G15、G19 |
 
 ## 依存関係図
 
@@ -207,6 +317,62 @@ graph LR
   A06 --> A10
 ```
 
+第2期のチケットの主な依存です。第1期のチケットは G10 を除いて完了しています。点線は弱い依存です。
+
+```mermaid
+graph LR
+  G02 --> G20 --> G12
+  G07 --> G12
+  G20 -.-> G13
+  G11 --> G13
+  G11 --> G17
+  E03 --> G17
+  A06 --> B07
+  B07 --> E08
+  E06 --> E08
+  E05 --> E12
+  E06 --> E12
+  B07 -.-> E12
+  E12 --> E11
+  E12 --> E13
+  G04 --> E14
+  E05 --> E14
+  A07 --> C09
+  C06 --> C09
+  D01 --> D07
+  A09 --> A12 --> A13
+  C03 --> C08
+  A13 -.-> C08
+  A06 --> A14
+  G03 --> A15
+  A01 --> A16
+  D06 --> A16
+  A16 --> C11
+  F04 --> C11
+  A07 --> D08
+  D02 --> D09
+  D03 --> D10
+  D06 --> D11
+  C02 --> C10
+  B05 --> B08
+  B07 --> B08
+  E08 --> E09
+  B08 --> E09
+  E04 --> E10
+  G11 --> E10
+  F04 --> F08
+  F05 --> F08
+  F07 --> F09
+  F01 --> F10
+  B07 --> F10
+  G10 --> G15
+  G14 --> G15
+  G08 --> G16
+  G06 --> G18
+  E04 --> G19
+  G09 --> G19
+```
+
 ## 運用ルール
 
 - 着手時に状態を `doing`、完了時に `done` にする。判断待ちは `blocked` にして、チケットの「未決事項」に理由を書く。
@@ -223,6 +389,8 @@ graph LR
   レビュー（GUIDE §0 の手順 2）を必ず行う。
 - 人間による承認（2026-09-23）: D-20（比較演算は非消費。A11）と D-11（浮動小数点は最短往復表現で表示し、
   コンソール出力も揃える。D01）を承認済み。P2／P3 は着手前に再レビューする運用で合意済み。
+- **第2期のチケット**（A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20、2026-09-29 起票）は、コミット `9012e92` 時点のコードと文書を調べて書いた計画です。
+  独立レビューと人間の承認は未実施です。着手前に GUIDE §0 の手順 2 のレビューを行い、[D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) の仮割り当てを確定してから実装します。
 - レビューで確定した横断的な決定は GUIDE の台帳に追加済み: D-20（比較は非消費、A11）、D-21（`unreachable`）、
   D-22（関数の由来情報 `FunctionOrigin`）、D-03（型名の正規マングリング）、D-07（参照元に応じた名前解決、組み込みと std の関係）、
   D-10（網羅性検査後の方針）。

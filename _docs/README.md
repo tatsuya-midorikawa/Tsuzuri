@@ -39,7 +39,7 @@ Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み
 
 - [実践ガイド](guides/README.md): C、WASM、Worker、GPU、性能、API 設計。
 - [開発ツール](tools/README.md): CLI、診断、テスト、fmt / LSP、デバッグ、文書生成、cache。
-- [全機能の対応状況](feature-status.md): 全55機能チケットと詳細記事の対応、部分対応と未実装。
+- [全機能の対応状況](feature-status.md): 全93機能チケット（第2期の計画38件を含む）と詳細記事の対応、部分対応と未実装。
 
 GPU は実験的な CPU 参照・WGSL・WebGPU host の段階です。Windows の実装はありますが、Windows 上の実行検証は未完了です。将来の計画を現在の提供機能として扱わないでください。
 

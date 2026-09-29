@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](README.md)
 
-対象は Tsuzuri 0.1.0、2026-09-28 時点のリポジトリです。機能チケット全55件について、現在の提供範囲と利用者向けの説明を対応付けています。チケットの done は、そのチケットで合意した段階の完了であり、当初の設計案の全項目や他言語との互換性を意味しません。
+対象は Tsuzuri 0.1.0、2026-09-29 時点のリポジトリです。機能チケット全93件（第1期の55件と、2026-09-29 に起票した第2期の計画38件）について、現在の提供範囲と利用者向けの説明を対応付けています。チケットの done は、そのチケットで合意した段階の完了であり、当初の設計案の全項目や他言語との互換性を意味しません。「未着手（計画）」の行は改善計画であり、現在の提供機能ではありません。
 
 ## 基礎言語
 
@@ -23,6 +23,11 @@
 | A09 | 共有借用フィールドと単一 region の名前付き契約 | [lifetime](language-reference/lifetimes.md) | [A09](../_features/_completed/A09-named-lifetimes.md) |
 | A10 | 明示 kind、rank-1 HKT、末尾固定の部分適用 | [高階型](language-reference/higher-kinds.md) | [A10](../_features/_completed/A10-higher-kinded-types.md) |
 | A11 | 比較の非消費化、借用 Eq / Ord、構造比較 | [比較クラス](language-reference/generics-and-typeclasses.md) | [A11](../_features/_completed/A11-borrowed-comparisons.md) |
+| A12 | 未着手（計画）: レコード内の独立した複数 region、region 付き関数値型 | [lifetime](language-reference/lifetimes.md) | [A12](../_features/A12-multiple-regions.md) |
+| A13 | 未着手（計画）: 排他借用フィールド | [lifetime](language-reference/lifetimes.md) | [A13](../_features/A13-exclusive-borrow-fields.md) |
+| A14 | 未着手（計画）: 型クラスによる動的ディスパッチ | [型クラス](language-reference/generics-and-typeclasses.md) | [A14](../_features/A14-dynamic-dispatch.md) |
+| A15 | 未着手（計画）: 暗黙の深い複製の警告と明示複製 API | [所有権](language-reference/ownership.md) | [A15](../_features/A15-copy-cost-visibility.md) |
+| A16 | 未着手（計画）: 固定長配列と const ジェネリクス | [型](language-reference/types.md) | [A16](../_features/A16-fixed-arrays.md) |
 
 ## B エラー処理と制御
 
@@ -34,6 +39,8 @@
 | B04 | bool / Option の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
 | B05 | match! / and!、BindReturn / Bind2。use / try は未対応 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
 | B06 | parallel_results の未開始停止と最小 index の Error | [Task](language-reference/tasks.md) | [B06](../_features/_completed/B06-task-cancellation.md) |
+| B07 | 未着手（計画）: 利用者定義の Drop とリソース型 | [所有権](language-reference/ownership.md) | [B07](../_features/B07-user-drop.md) |
+| B08 | 未着手（計画）: 非同期計算とホスト駆動の実行 | [Task](language-reference/tasks.md) | [B08](../_features/B08-async.md) |
 
 ## C コレクションとデータ
 
@@ -46,6 +53,10 @@
 | C05 | 所有レコードのフィールド更新 | [レコード更新](language-reference/records.md) | [C05](../_features/_completed/C05-record-update-syntax.md) |
 | C06 | 不透明な順序付き Map / Set、非 Copy キーの借用 | [Map / Set](library-reference/map-set.md) | [C06](../_features/_completed/C06-map-set.md) |
 | C07 | 一回消費 Seq、明示 iter、借用要素の反復 | [Seq](library-reference/sequences.md) | [C07](../_features/_completed/C07-iteration-protocol.md) |
+| C08 | 未着手（計画）: 可変スライスと要素のその場更新 | [Array / List](library-reference/arrays-and-lists.md) | [C08](../_features/C08-mutable-slices.md) |
+| C09 | 未着手（計画）: HashMap / HashSet | [Map / Set](library-reference/map-set.md) | [C09](../_features/C09-hash-map.md) |
+| C10 | 未着手（計画）: Arena / Handle による循環構造、参照カウントの検討 | [所有権](language-reference/ownership.md) | [C10](../_features/C10-shared-ownership.md) |
+| C11 | 未着手（計画）: 多次元配列と行列カーネル | [Array / List](library-reference/arrays-and-lists.md) | [C11](../_features/C11-multidimensional-arrays.md) |
 
 ## D 文字列と数値
 
@@ -57,6 +68,11 @@
 | D04 | checked / saturating、bit、rotate、拡大乗算 | [Int](library-reference/integers.md) | [D04](../_features/_completed/D04-integer-intrinsics.md) |
 | D05 | 明示 FMA、固定木、補償和、順序付き内積 | [数値集計](library-reference/math.md) | [D05](../_features/_completed/D05-fma-ordered-reductions.md) |
 | D06 | 具体型 const、前方参照、限られた式の評価 | [定数](language-reference/values-and-constants.md) | [D06](../_features/_completed/D06-compile-time-constants.md) |
+| D07 | 未着手（計画）: 文字列補間と書式指定 | [表示と解析](library-reference/formatting-and-parsing.md) | [D07](../_features/D07-string-interpolation.md) |
+| D08 | 未着手（計画）: JSON と Encode / Decode の導出 | [deriving](language-reference/deriving.md) | [D08](../_features/D08-json-serialization.md) |
+| D09 | 未着手（計画）: 線形時間の正規表現、Unicode 正規化と書記素 | [文字列 API](library-reference/text.md) | [D09](../_features/D09-regex-unicode.md) |
+| D10 | 未着手（計画）: 意味を保った f16 のハードウェア演算 | [数値](language-reference/numbers.md) | [D10](../_features/D10-f16-hardware.md) |
+| D11 | 未着手（計画）: const 関数と表のコンパイル時生成 | [定数](language-reference/values-and-constants.md) | [D11](../_features/D11-const-evaluation.md) |
 
 ## E モジュールとホスト
 
@@ -69,6 +85,13 @@
 | E05 | 借用入力、所有バッファ結果、スカラーレコード | [C ABI](guides/native-interop.md)、[WASM](guides/webassembly.md) | [E05](../_features/_completed/E05-host-abi-buffers.md) |
 | E06 | 同期 extern、到達する import のみ生成 | [外部関数](guides/native-interop.md) | [E06](../_features/_completed/E06-host-imports.md) |
 | E07 | Debug.print / trace、native stderr と WASM opt-in | [Debug](tools/debugging.md) | [E07](../_features/_completed/E07-debug-output.md) |
+| E08 | 未着手（計画）: ファイル・環境・時刻・乱数・終了コード、WASI の opt-in | [IO](library-reference/io.md) | [E08](../_features/E08-os-api.md) |
+| E09 | 未着手（計画）: TCP / UDP | [IO](library-reference/io.md) | [E09](../_features/E09-network.md) |
+| E10 | 未着手（計画）: git 依存、lockfile、版解決と registry | [パッケージ](language-reference/modules-and-packages.md) | [E10](../_features/E10-package-registry.md) |
+| E11 | 未着手（計画）: C ヘッダーからの extern 生成 | [C ABI](guides/native-interop.md) | [E11](../_features/E11-c-bindgen.md) |
+| E12 | 未着手（計画）: リンク名、ホストのリンク指定、不透明ハンドル | [外部関数](guides/native-interop.md) | [E12](../_features/E12-ffi-extensions.md) |
+| E13 | 未着手（計画）: TypeScript などのバインディングと Web glue の生成 | [WASM](guides/webassembly.md) | [E13](../_features/E13-host-bindings.md) |
+| E14 | 未着手（計画）: 埋め込み時のトラップ境界、スタック枯渇の報告 | [トラップ位置](tools/debugging.md) | [E14](../_features/E14-trap-boundary.md) |
 
 ## F 並列とバックエンド
 
@@ -81,6 +104,12 @@
 | F05 | native の同梱 i64 配列和に限る CPU dispatch | [CPU 選択](guides/performance.md) | [F05](../_features/_completed/F05-runtime-cpu-dispatch.md) |
 | F06 | opt-in の共有メモリと Node Worker ホスト | [WASM threads](guides/wasm-threads.md) | [F06](../_features/_completed/F06-wasm-threads.md) |
 | F07 | 実験的 CPU 参照、strict 整数 WGSL、WebGPU host | [GPU](guides/gpu.md) | [F07](../_features/_completed/F07-gpu-backend.md) |
+| F08 | 未着手（計画）: 256-bit SIMD と関数単位の CPU 多版化 | [Simd](library-reference/simd.md) | [F08](../_features/F08-wide-simd-multiversioning.md) |
+| F09 | 未着手（計画）: strict な float / 64-bit GPU カーネルと実行時接続 | [GPU](guides/gpu.md) | [F09](../_features/F09-gpu-float-runtime.md) |
+| F10 | 未着手（計画）: Atomic / Mutex / Channel とスコープ付き並列 | [Task](language-reference/tasks.md) | [F10](../_features/F10-concurrency-primitives.md) |
+| F11 | 未着手（計画）: WASM のメモリ上限とスタックの指定 | [WASM](guides/webassembly.md) | [F11](../_features/F11-wasm-memory-limit.md) |
+| F12 | 未着手（計画）: 境界検査の除去状況の計測と意味を保つ除去 | [性能](guides/performance.md) | [F12](../_features/F12-bounds-check-elimination.md) |
+| F13 | 未着手（計画）: ホスト提供の allocator、確保統計、freestanding 出力 | [C ABI](guides/native-interop.md) | [F13](../_features/F13-custom-allocators.md) |
 
 ## G 開発ツール
 
@@ -97,6 +126,15 @@
 | G09 | 宣言の doc comment、公開 API Markdown、hover | [文書生成](tools/documentation.md) | [G09](../_features/_completed/G09-doc-comments.md) |
 | G10 | Windows MSVC 実装あり。Windows 実行ゲート未確認で blocked | [Windows](tools/build-and-cache.md) | [G10](../_features/G10-windows.md) |
 | G11 | フロントエンド処理後の whole-build artifact cache | [cache](tools/build-and-cache.md) | [G11](../_features/_completed/G11-incremental-build.md) |
+| G12 | 未着手（計画）: LSP の補完、rename、参照、整形、inlay hints | [LSP](tools/editor-tools.md) | [G12](../_features/G12-lsp-extensions.md) |
+| G13 | 未着手（計画）: REPL と単一ファイルのスクリプト実行 | [CLI](tools/command-line.md) | [G13](../_features/G13-repl.md) |
+| G14 | 未着手（計画）: CLI 向けの自己完結ツールチェーンの配布 | [ビルド](tools/build-and-cache.md) | [G14](../_features/G14-toolchain-distribution.md) |
+| G15 | 未着手（計画）: クロスコンパイルと対応ターゲットの階層 | [ビルド](tools/build-and-cache.md) | [G15](../_features/G15-platform-targets.md) |
+| G16 | 未着手（計画）: LLDB の型表示、PDB | [デバッグ](tools/debugging.md) | [G16](../_features/G16-debugger-experience.md) |
+| G17 | 未着手（計画）: 並列コード生成、モジュール単位の解析キャッシュ、上限の見直し | [cache](tools/build-and-cache.md) | [G17](../_features/G17-incremental-compilation.md) |
+| G18 | 未着手（計画）: bench 宣言、カバレッジ、プロパティテスト | [テスト](tools/testing.md) | [G18](../_features/G18-bench-coverage.md) |
+| G19 | 未着手（計画）: edition、非推奨の警告、API 差分の検査 | [パッケージ](language-reference/modules-and-packages.md) | [G19](../_features/G19-editions-compatibility.md) |
+| G20 | 未着手（計画）: 関数内の型エラーからの回復 | [診断](tools/diagnostics.md) | [G20](../_features/G20-error-recovery.md) |
 
 ## 特に注意する未対応範囲
 
@@ -110,6 +148,8 @@
 - Windows の実機実行検証、PDB、ARM64 Windows、MinGW。
 
 F# の class / 継承 / 型プロバイダー、.NET runtime、GC、REPL、標準 OS / GUI / ネットワーク API を提供する言語ではありません。外部機能はホストに置きます。
+
+これらの多くは、各表の「未着手（計画）」のチケットで改善を計画しています。REPL、標準 OS / ネットワーク API などの計画も、実装されるまでは上記のとおり未提供です。対応表と方針は[チケット一覧の第2期](../_features/README.md#第2期-他言語比較で見える劣位の改善計画)にあります。
 
 ## 根拠と読み方
 
