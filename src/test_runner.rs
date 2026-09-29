@@ -245,15 +245,10 @@ fn build_runner(
         }
         if task_runtime {
             let runtime = directory.join("task.c");
-            fs::write(&runtime, include_str!("runtime/task.c"))
+            fs::write(&runtime, crate::driver::task_runtime_source())
                 .map_err(|error| io_error("write task runtime", &runtime, error))?;
             clang.arg(&runtime);
-            if cfg!(windows) {
-                let header = directory.join("task-windows.h");
-                fs::write(&header, include_str!("runtime/task-windows.h"))
-                    .map_err(|error| io_error("write Win32 task adapter", &header, error))?;
-                clang.arg("-I").arg(directory);
-            } else {
+            if !cfg!(windows) {
                 clang.arg("-pthread");
             }
         }
