@@ -94,6 +94,7 @@ npm run test:unit
 npm run test:toolchain
 npm test
 npm run vsix
+npm run test:installed
 ```
 
 Homebrew の LLVM と lld が別パッケージの場合は `TSUZURI_WASM_LD=/absolute/path/to/wasm-ld` も指定します。
@@ -108,4 +109,6 @@ LLVM IR のオブジェクト化は Clang、C runtime とリンクは SDK を内
 `npm run vsix` は manifest と全ツールのハッシュを検証してから platform-specific VSIX を作り、アーカイブ内の全ツールのハッシュ・実行権限・必須ファイルを再検証します。
 `dist/tsuzuri-0.1.0-<target>.vsix` と SHA-256 ファイルが成果物です。`npm run vsix:verify` で再検証できます。
 検証は native／WASM O0／O3、同梱物の別パス移動、システム Clang／SDK の遮断、IO、並列テスト、Unicode 診断、複数 root、実際の LLDB 停止と変数を含みます。
+`test:installed` は空の拡張プロファイルへ VSIX をインストールし、開発フォルダーではなく配布物のコードで同じ IDE 試験を行います。macOS ARM64 では VS Code 1.103.2 と作業環境の VS Code で確認済みです。
+秘密情報検査は拡張コードと同梱文書に対して実行し、大きなバイナリ群は manifest の全件ハッシュ検証で管理します。
 CI は自動公開せず成果物を保存します。Marketplace の publisher 登録・署名・公開は別のリリース作業です。

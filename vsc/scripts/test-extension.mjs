@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath, runTests } from '@vscode/test-electron';
@@ -25,7 +25,8 @@ try {
   let developmentPath = extension;
   if (process.argv.includes('--installed')) {
     const [cli, ...args] = resolveCliArgsFromVSCodeExecutablePath(executable, { reuseMachineInstall: true });
-    const artifact = path.join(extension, 'dist', `tsuzuri-0.1.0-${process.platform}-${process.arch}.vsix`);
+    const manifest = JSON.parse(await readFile(path.join(extension, 'package.json'), 'utf8'));
+    const artifact = path.join(extension, 'dist', `tsuzuri-${manifest.version}-${process.platform}-${process.arch}.vsix`);
     const result = spawnSync(cli, [...args, '--extensions-dir', extensions, '--user-data-dir', userData, '--install-extension', artifact, '--force'],
       { stdio: 'inherit', shell: process.platform === 'win32' });
     if (result.error || result.status !== 0) { throw result.error ?? new Error(`VSIX installation failed: ${result.status}`); }

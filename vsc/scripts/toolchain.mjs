@@ -137,6 +137,9 @@ async function verify() {
 
 async function bundle() {
   if (!platforms[host]) { throw new Error(`Unsupported IDE host: ${host}. Current VS Code does not support x86 (32-bit).`); }
+  const rustHost = /^host: (.+)$/m.exec(run('rustc', ['-vV'], true))?.[1];
+  const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+  if (!rustHost?.startsWith(`${architecture}-`)) { throw new Error(`Rust host ${rustHost} does not match the native extension host ${host}.`); }
   const llvm = process.env.LLVM_PREFIX;
   if (!llvm || !path.isAbsolute(llvm)) { throw new Error('Set LLVM_PREFIX to an LLVM 21 installation with Clang and LLVM utilities.'); }
   const clang = path.join(llvm, 'bin', `clang${suffix}`);
