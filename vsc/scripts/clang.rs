@@ -140,7 +140,18 @@ fn main() -> ExitCode {
 
 fn execute(command: &mut Command) -> ExitCode {
     match command.status() {
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!(
+                "'{}' failed ({status})",
+                command.get_program().to_string_lossy()
+            );
+            // Truncating a Windows NTSTATUS such as 0xC0000005 could report success.
+            match status.code() {
+                Some(code @ 1..=255) => ExitCode::from(code as u8),
+                _ => ExitCode::FAILURE,
+            }
+        }
         Err(error) => {
             eprintln!("cannot start the bundled toolchain: {error}");
             ExitCode::FAILURE
