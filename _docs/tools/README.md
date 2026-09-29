@@ -6,6 +6,7 @@ Tsuzuri の検査、生成、実行、テスト、編集、調査に使うツー
 
 | 記事 | 内容 |
 | --- | --- |
+| [VS Code IDE](../../vsc/README.md) | コンパイラ同梱拡張、編集、ビルド、テスト、デバッグ、CPU 別配布 |
 | [コマンドライン](command-line.md) | 全コマンド、出力形式、オプション、環境変数、入口 |
 | [診断と警告](diagnostics.md) | エラーコード、複数診断、JSON、位置、deny-warnings |
 | [テスト](testing.md) | test 宣言、filter、隔離、timeout、native / WASM |

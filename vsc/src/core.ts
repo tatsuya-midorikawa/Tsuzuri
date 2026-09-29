@@ -1,0 +1,154 @@
+import { spawn } from 'node:child_process';
+import { access, stat } from 'node:fs/promises';
+import * as path from 'node:path';
+
+export const sourcePattern = '**/*.{tz,tt,tc}';
+export const excludedPattern = '**/{node_modules,target,toolchain,.git,.tsuzuri,.vscode-test}/**';
+
+export function supportsDebug(platform: string = process.platform, architecture: string = process.arch): boolean {
+	return ['darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64', 'win32-x64'].includes(`${platform}-${architecture}`);
+}
+
+export async function exists(file: string): Promise<boolean> {
+	try {
+		await access(file);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function projectRoot(file: string, workspaceRoot?: string): Promise<string> {
+	let directory = path.dirname(file);
+	try {
+		if ((await stat(file)).isDirectory()) { directory = file; }
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+	}
+	const fallback = workspaceRoot ?? directory;
+	while (true) {
+		if (await exists(path.join(directory, 'Tsuzuri.toml')) || await exists(path.join(directory, 'Main.tz'))) {
+			return directory;
+		}
+		if (directory === workspaceRoot || path.dirname(directory) === directory) {
+			return fallback;
+		}
+		directory = path.dirname(directory);
+	}
+}
+
+export type Action = 'check' | 'build' | 'run' | 'test' | 'debug' | 'wasm';
+
+export function commandArguments(action: Action, root: string, optimization = 3, denyWarnings = false): string[] {
+	if (!Number.isInteger(optimization) || optimization < 0 || optimization > 3) {
+		throw new Error('Optimization must be between 0 and 3.');
+	}
+	const args = [action === 'debug' || action === 'wasm' ? 'build' : action, root];
+	if (action !== 'check') {
+		args.push(`-O${action === 'debug' || action === 'test' ? 0 : optimization}`);
+	}
+	if (denyWarnings) {
+		args.push('--deny-warnings');
+	}
+	if (action === 'debug') {
+		args.push('-g', '--trap-info');
+	}
+	if (action === 'wasm') {
+		args.push('--target', 'wasm32');
+	}
+	if (action === 'build' || action === 'debug' || action === 'wasm') {
+		args.push('-o', outputPath(root, action));
+	}
+	return args;
+}
+
+export function outputPath(root: string, action: Action): string {
+	return path.join(root, '.tsuzuri', action === 'debug' ? 'debug' : 'bin',
+		`Main${action === 'wasm' ? '.wasm' : process.platform === 'win32' ? '.exe' : ''}`);
+}
+
+export interface ProcessResult {
+	code: number;
+	stdout: string;
+	stderr: string;
+}
+
+export interface ProcessOptions {
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+	signal?: AbortSignal;
+	onOutput?: (text: string) => void;
+	timeout?: number;
+}
+
+export function runProcess(command: string, args: string[], options: ProcessOptions = {}): Promise<ProcessResult> {
+	return new Promise((resolve, reject) => {
+		if (options.signal?.aborted) {
+			reject(new Error('Operation cancelled.'));
+			return;
+		}
+		const child = spawn(command, args, {
+			cwd: options.cwd, env: options.env, windowsHide: true,
+			detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let stdout = '';
+		let stderr = '';
+		let size = 0;
+		let failure: Error | undefined;
+		let killTimer: NodeJS.Timeout | undefined;
+		const stop = (error: Error) => {
+			if (failure) {
+				return;
+			}
+			failure = error;
+			if (!child.pid) {
+				return;
+			}
+			if (process.platform === 'win32') {
+				const taskkill = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+				const killer = spawn(taskkill, ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+				killer.on('error', () => child.kill());
+			} else {
+				const kill = (signal: NodeJS.Signals) => {
+					try { process.kill(-child.pid!, signal); } catch { return; }
+				};
+				kill('SIGTERM');
+				killTimer = setTimeout(() => kill('SIGKILL'), 1000);
+				killTimer.unref();
+			}
+		};
+		const cancel = () => stop(new Error('Operation cancelled.'));
+		options.signal?.addEventListener('abort', cancel, { once: true });
+		const timer = options.timeout ? setTimeout(() => stop(new Error('Compiler operation timed out.')), options.timeout) : undefined;
+		for (const [stream, name] of [[child.stdout, 'stdout'], [child.stderr, 'stderr']] as const) {
+			stream.setEncoding('utf8');
+			stream.on('data', (text: string) => {
+				size += Buffer.byteLength(text);
+				if (size > 32 * 1024 * 1024) {
+					stop(new Error('Compiler output exceeded 32 MiB.'));
+					return;
+				}
+				if (name === 'stdout') { stdout += text; } else { stderr += text; }
+				options.onOutput?.(text);
+			});
+		}
+		child.on('error', error => { failure = error; });
+		child.on('close', code => {
+			clearTimeout(timer);
+			clearTimeout(killTimer);
+			options.signal?.removeEventListener('abort', cancel);
+			if (failure) { reject(failure); } else { resolve({ code: code ?? 1, stdout, stderr }); }
+		});
+		if (options.signal?.aborted) { cancel(); }
+	});
+}
+
+export function jsonLines(text: string): Record<string, unknown>[] {
+	return text.split(/\r?\n/).filter(line => line.trim()).map(line => {
+		const value: unknown = JSON.parse(line);
+		if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+			throw new Error('Invalid compiler JSON response.');
+		}
+		return value as Record<string, unknown>;
+	});
+}

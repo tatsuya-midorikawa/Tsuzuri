@@ -6,6 +6,9 @@ Rust 製のフロントエンドで型検査し、LLVM によりネイティブ�
 
 **[日本語ドキュメント](_docs/README.md)**: [入門](_docs/get-started.md)・[言語リファレンス](_docs/language-reference/README.md)・[標準ライブラリ](_docs/library-reference/README.md)・[実践ガイド](_docs/guides/README.md)・[開発ツール](_docs/tools/README.md)・[対応状況](_docs/feature-status.md)。
 
+**[VS Code 拡張機能](vsc/README.md)**: コンパイラ・LLVM・SDK を含む OS／CPU 別 VSIX、編集支援、ビルド、実行、テスト、ソースデバッグを提供します。
+x64／ARM64 が対象で、Windows ARM64 はデバッグだけ未対応です。導入・開発方法と各環境の検証状況は拡張機能の README を参照してください。
+
 未使用の束縛・private 宣言・到達不能な match 節は警告します。意図的な未使用ローカルは `_name` で明示できます。
 `check`／`build`／`run` の `--deny-warnings` は警告だけでも失敗させ、コード生成・実行前に停止します。
 

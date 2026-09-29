@@ -1,0 +1,119 @@
+name: Tsuzuri IDE
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - vsc/**
+      - src/**
+      - std/**
+      - tests/**
+      - Cargo.*
+      - .github/workflows/vscode.yml
+  push:
+    tags:
+      - vsc-v*
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: windows-2022
+            target: win32-x64
+          - os: windows-11-arm
+            target: win32-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: vsc
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: vsc/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check host architecture
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_TARGET) process.exit(1)'
+      - name: LLVM on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@21 lld
+          printf 'LLVM_PREFIX=%s\n' "$(brew --prefix llvm@21)" >> "$GITHUB_ENV"
+          printf 'TSUZURI_WASM_LD=%s/bin/wasm-ld\n' "$(brew --prefix lld)" >> "$GITHUB_ENV"
+      - name: LLVM on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y ca-certificates wget gnupg patchelf xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo -n tee /usr/share/keyrings/llvm.gpg >/dev/null
+          printf 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main\n' | sudo -n tee /etc/apt/sources.list.d/llvm21.list >/dev/null
+          sudo -n apt-get update
+          sudo -n apt-get install -y clang-21 lld-21 llvm-21
+          printf 'LLVM_PREFIX=/usr/lib/llvm-21\n' >> "$GITHUB_ENV"
+      - name: LLVM on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ('${{ matrix.target }}' -eq 'win32-arm64') {
+            $asset = 'LLVM-21.1.8-woa64.exe'
+            $expected = '1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e'
+          } else {
+            $asset = 'LLVM-21.1.8-win64.exe'
+            $expected = '7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113'
+          }
+          $installer = Join-Path $env:RUNNER_TEMP $asset
+          Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$asset" -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'LLVM checksum mismatch' }
+          $prefix = Join-Path $env:RUNNER_TEMP 'llvm21'
+          $process = Start-Process $installer -ArgumentList '/S', "/D=$prefix" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "LLVM installation failed: $($process.ExitCode)" }
+          "LLVM_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - run: npm ci
+      - run: cargo fmt --manifest-path ../Cargo.toml --check
+      - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
+      - run: npm run test:unit
+      - run: npm run toolchain
+      - name: Compiler LSP protocol
+        run: node ../tests/lsp_sessions.mjs "toolchain/bin/tsuzuri${{ runner.os == 'Windows' && '.exe' || '' }}"
+      - run: npm run test:toolchain
+      - name: VS Code integration on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm test
+      - name: VS Code integration on Windows and macOS
+        if: runner.os != 'Linux'
+        run: npm test
+      - run: npm run vsix
+      - name: Installed VSIX integration on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:installed
+      - name: Installed VSIX integration on Windows and macOS
+        if: runner.os != 'Linux'
+        run: npm run test:installed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsuzuri-${{ matrix.target }}
+          path: |
+            vsc/dist/*.vsix
+            vsc/dist/*.sha256
+          if-no-files-found: error

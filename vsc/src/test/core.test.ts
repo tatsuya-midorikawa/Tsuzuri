@@ -1,0 +1,58 @@
+import * as assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { test } from 'node:test';
+import { commandArguments, jsonLines, projectRoot, runProcess, supportsDebug } from '../core';
+
+test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
+	assert.equal(supportsDebug('win32', 'arm64'), false);
+	assert.equal(supportsDebug('win32', 'ia32'), false);
+	for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'x64'], ['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
+		assert.equal(supportsDebug(platform, architecture), true);
+	}
+	for (const action of ['check', 'build', 'run', 'test', 'wasm'] as const) {
+		assert.ok(commandArguments(action, '/project').length);
+	}
+});
+
+test('compiler arguments keep paths literal and debug builds unoptimized', () => {
+	const root = path.join(os.tmpdir(), 'space & quote\' project');
+	const args = commandArguments('debug', root, 3);
+	assert.equal(args[1], root);
+	assert.ok(args.includes('-O0'));
+	assert.ok(args.includes('-g'));
+	assert.ok(args.includes('--trap-info'));
+	assert.ok(!args.includes('-O3'));
+	assert.deepEqual(commandArguments('check', root, 0, true), ['check', root, '--deny-warnings']);
+	assert.throws(() => commandArguments('build', root, 4));
+});
+
+test('project root respects nested projects and source subdirectories', async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-project-'));
+	try {
+		const app = path.join(root, 'app');
+		await mkdir(path.join(app, 'Geometry'), { recursive: true });
+		await writeFile(path.join(app, 'Main.tz'), '42');
+		const file = path.join(app, 'Geometry', 'Point.tz');
+		await writeFile(file, '');
+		assert.equal(await projectRoot(file, root), app);
+		assert.equal(await projectRoot(path.join(app, 'Geometry', 'Unsaved.tz'), root), app);
+		await writeFile(path.join(root, 'Library.tz'), '');
+		assert.equal(await projectRoot(path.join(root, 'Library.tz'), root), root);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('process execution captures Unicode without a shell and can be cancelled', async () => {
+	const value = 'space & $() \' " \u{1f600}';
+	const result = await runProcess(process.execPath, ['-e', 'process.stdout.write(process.argv[1]); process.stderr.write("err")', value]);
+	assert.equal(result.stdout, value);
+	assert.equal(result.stderr, 'err');
+	assert.equal(result.code, 0);
+	const controller = new AbortController();
+	const running = runProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { signal: controller.signal });
+	controller.abort();
+	await assert.rejects(running, /cancelled/);
+	assert.deepEqual(jsonLines('{"index":0}\r\n{"index":1}\n'), [{ index: 0 }, { index: 1 }]);
+	assert.throws(() => jsonLines('null'));
+});

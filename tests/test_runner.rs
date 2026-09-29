@@ -12,6 +12,7 @@ fn native_and_wasm_tests_are_isolated_filtered_and_ordered() {
                 target,
                 optimization,
                 filter: None,
+                indices: Vec::new(),
             };
             let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
             assert_eq!(
@@ -150,6 +151,76 @@ fn normal_emission_excludes_test_only_code_and_specializations() {
 }
 
 #[test]
+fn cli_discovers_without_tools_and_selects_duplicate_names_by_index() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-discovery-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("Specs.tz"), "/* test \"not a test\" = () */\ntest \"same \u{1f600}\" = assert false\ntest \"same \u{1f600}\" = assert true").unwrap();
+    let listing = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("test")
+        .arg(&root)
+        .args(["--list", "--json"])
+        .env("PATH", root.join("missing-tools"))
+        .env("TSUZURI_CLANG", root.join("missing-clang"))
+        .output()
+        .unwrap();
+    assert!(listing.status.success(), "{listing:?}");
+    let cases: Vec<serde_json::Value> = String::from_utf8(listing.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(cases.len(), 2);
+    assert_eq!(cases[0]["index"], 0);
+    assert_eq!(cases[1]["index"], 1);
+    assert_eq!(cases[0]["name"], cases[1]["name"]);
+    assert_eq!(
+        cases[0]["range"]["start"],
+        serde_json::json!({"line": 1, "character": 5})
+    );
+    assert_eq!(cases[0]["range"]["end"]["character"], 14);
+    assert_eq!(cases[0]["path"], root.join("Specs.tz").to_str().unwrap());
+    for target in ["native", "wasm32"] {
+        for optimization in ["-O0", "-O3"] {
+            let selected = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+                .arg("test")
+                .arg(&root)
+                .args(["--json", "--index", "1", "--target", target, optimization])
+                .output()
+                .unwrap();
+            assert!(selected.status.success(), "{selected:?}");
+            let output = String::from_utf8(selected.stdout).unwrap();
+            assert!(output.contains("\"index\":1"), "{output}");
+            assert!(!output.contains("\"index\":0"), "{output}");
+            assert!(
+                output.contains("\"passed\":1,\"failed\":0,\"ignored\":1"),
+                "{output}"
+            );
+        }
+    }
+    let invalid = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("test")
+        .arg(&root)
+        .args(["--list", "--index", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("E2000"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn tests_are_checked_and_keep_private_dependencies_reachable() {
     let module = tsuzuri::analyze("private def helper :: i64 -> i64\nfn helper value = value + 1\n\
         test \"uses private and lambda\" = { let calculate = value -> helper value; assert (calculate 1 == 2) }\n\
@@ -216,6 +287,7 @@ fn shared_specializations_work_in_normal_and_selected_test_roots() {
                 target,
                 optimization: 3,
                 filter: None,
+                indices: Vec::new(),
             },
         )
         .unwrap();

@@ -167,9 +167,13 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
     }
 }
 
-fn native_compile_args(windows: bool) -> &'static [&'static str] {
+fn native_compile_args(windows: bool, architecture: &str) -> &'static [&'static str] {
     if windows {
-        &["--target=x86_64-pc-windows-msvc"]
+        if architecture == "aarch64" {
+            &["--target=aarch64-pc-windows-msvc"]
+        } else {
+            &["--target=x86_64-pc-windows-msvc"]
+        }
     } else {
         &["-fPIC"]
     }
@@ -1313,7 +1317,7 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c"])
-                .args(native_compile_args(cfg!(windows)))
+                .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
             if task_runtime && !cfg!(windows) {
                 runtime.arg("-pthread");
@@ -1404,7 +1408,7 @@ fn build_complete(
                 "-mno-simd128"
             });
         } else {
-            clang.args(native_compile_args(cfg!(windows)));
+            clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
             if options.cpu == Cpu::Native {
                 clang.arg(native_cpu_flag(env::consts::ARCH)?);
             }
@@ -2052,10 +2056,15 @@ mod tests {
     #[test]
     fn validates_native_cpu_tuning_and_selects_architecture_flags() {
         assert_eq!(
-            native_compile_args(true),
+            native_compile_args(true, "x86_64"),
             ["--target=x86_64-pc-windows-msvc"]
         );
-        assert_eq!(native_compile_args(false), ["-fPIC"]);
+        assert_eq!(
+            native_compile_args(true, "aarch64"),
+            ["--target=aarch64-pc-windows-msvc"]
+        );
+        assert_eq!(native_compile_args(false, "x86_64"), ["-fPIC"]);
+        assert_eq!(native_compile_args(false, "aarch64"), ["-fPIC"]);
         assert_eq!(BuildOptions::default().cpu, Cpu::Generic);
         for architecture in ["x86", "x86_64"] {
             assert_eq!(native_cpu_flag(architecture).unwrap(), "-march=native");

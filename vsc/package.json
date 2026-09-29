@@ -1,0 +1,161 @@
+{
+  "name": "tsuzuri",
+  "displayName": "Tsuzuri",
+  "description": "Tsuzuri IDE",
+  "version": "0.1.0",
+  "publisher": "tsuzuri",
+  "license": "Apache-2.0",
+  "repository": {"type": "git", "url": "https://github.com/tatsuya-midorikawa/Tsuzuri.git", "directory": "vsc"},
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Formatters",
+    "Testing"
+  ],
+  "activationEvents": ["onDebugResolve:tsuzuri", "onDebugInitialConfigurations:tsuzuri", "workspaceContains:Main.tz", "workspaceContains:Tsuzuri.toml"],
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": {"supported": false},
+    "virtualWorkspaces": {"supported": false}
+  },
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tsuzuri",
+        "aliases": ["Tsuzuri", "tsuzuri"],
+        "extensions": [".tz", ".tt", ".tc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [{"language": "tsuzuri", "scopeName": "source.tsuzuri", "path": "./syntaxes/tsuzuri.tmLanguage.json"}],
+    "snippets": [{"language": "tsuzuri", "path": "./snippets/tsuzuri.json"}],
+    "configurationDefaults": {
+      "[tsuzuri]": {
+        "editor.defaultFormatter": "tsuzuri.tsuzuri",
+        "editor.insertSpaces": true,
+        "editor.tabSize": 4,
+        "editor.wordBasedSuggestions": "matchingDocuments"
+      }
+    },
+    "commands": [
+      {"command": "tsuzuri.build", "title": "Build Project", "category": "Tsuzuri", "icon": "$(tools)"},
+      {"command": "tsuzuri.run", "title": "Run Project", "category": "Tsuzuri", "icon": "$(play)"},
+      {"command": "tsuzuri.debug", "title": "Debug Project", "category": "Tsuzuri", "icon": "$(debug-alt)", "enablement": "tsuzuri.debugAvailable"},
+      {"command": "tsuzuri.check", "title": "Check Project", "category": "Tsuzuri"},
+      {"command": "tsuzuri.test", "title": "Test Project", "category": "Tsuzuri", "icon": "$(beaker)"},
+      {"command": "tsuzuri.wasm", "title": "Build WebAssembly", "category": "Tsuzuri"},
+      {"command": "tsuzuri.newProject", "title": "New Project", "category": "Tsuzuri"},
+      {"command": "tsuzuri.openDocumentation", "title": "Open Documentation", "category": "Tsuzuri"},
+      {"command": "tsuzuri.showToolchain", "title": "Show Toolchain", "category": "Tsuzuri"},
+      {"command": "tsuzuri.actions", "title": "Project Actions", "category": "Tsuzuri"},
+      {
+        "command": "tsuzuri.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "Tsuzuri"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {"command": "tsuzuri.run", "when": "editorLangId == tsuzuri", "group": "navigation@1"},
+        {"command": "tsuzuri.debug", "when": "editorLangId == tsuzuri && tsuzuri.debugAvailable", "group": "navigation@2"},
+        {"command": "tsuzuri.build", "when": "editorLangId == tsuzuri", "group": "navigation@3"}
+      ],
+      "explorer/context": [
+        {"command": "tsuzuri.run", "when": "resourceLangId == tsuzuri", "group": "tsuzuri@1"},
+        {"command": "tsuzuri.debug", "when": "resourceLangId == tsuzuri && tsuzuri.debugAvailable", "group": "tsuzuri@2"}
+      ]
+    },
+    "taskDefinitions": [{
+      "type": "tsuzuri", "required": ["action"],
+      "properties": {
+        "action": {"type": "string", "enum": ["build", "check", "run", "test", "debug", "wasm"]},
+        "project": {"type": "string", "description": "Project directory, relative to the workspace folder or absolute."}
+      }
+    }],
+    "problemMatchers": [{
+      "name": "tsuzuri", "owner": "tsuzuri-task", "source": "Tsuzuri", "fileLocation": "absolute",
+      "pattern": {"regexp": "^(.*):(\\d+):(\\d+): (error|warning)\\[([^\\]]+)\\]: (.*)$", "file": 1, "line": 2, "column": 3, "severity": 4, "code": 5, "message": 6}
+    }],
+    "debuggers": [{
+      "type": "tsuzuri", "label": "Tsuzuri", "languages": ["tsuzuri"],
+      "configurationAttributes": {"launch": {
+        "required": [], "properties": {
+          "project": {"type": "string", "description": "Project directory. Defaults to the current Tsuzuri project."},
+          "args": {"type": "array", "items": {"type": "string"}, "default": []},
+          "stopOnEntry": {"type": "boolean", "default": false},
+          "env": {"type": "object", "additionalProperties": {"type": "string"}}
+        }
+      }},
+      "initialConfigurations": [{"type": "tsuzuri", "request": "launch", "name": "Debug Tsuzuri"}],
+      "configurationSnippets": [{"label": "Tsuzuri: Debug Project", "body": {"type": "tsuzuri", "request": "launch", "name": "Debug Tsuzuri"}}]
+    }],
+    "breakpoints": [{"language": "tsuzuri"}],
+    "configuration": {
+      "title": "Tsuzuri",
+      "properties": {
+        "tsuzuri.projectPath": {"type": "string", "default": "", "scope": "resource", "description": "Project directory relative to the workspace folder. Empty detects the project from Main.tz or Tsuzuri.toml."},
+        "tsuzuri.optimization": {"type": "integer", "enum": [0, 1, 2, 3], "default": 3, "scope": "resource", "description": "Optimization for builds and runs. Debug builds always use O0."},
+        "tsuzuri.denyWarnings": {"type": "boolean", "default": false, "scope": "resource", "description": "Fail builds and checks on compiler warnings."},
+        "tsuzuri.toolchainPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Absolute path to a development toolchain directory. Empty uses the bundled toolchain."
+        },
+        "tsuzuri.compilerPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Absolute path to a development compiler. Empty uses the bundled compiler."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run toolchain:verify && npm run package && node scripts/package.mjs --scan",
+    "compile": "npm run resources && npm run check-types && npm run lint && node esbuild.js",
+    "resources": "node scripts/toolchain.mjs --resources",
+    "toolchain": "node scripts/toolchain.mjs",
+    "toolchain:verify": "node scripts/toolchain.mjs --verify",
+    "vsix": "node scripts/package.mjs",
+    "vsix:verify": "node scripts/package.mjs --verify",
+    "test:toolchain": "node scripts/smoke.mjs",
+    "test:unit": "npm run compile-tests && node --test out/test/core.test.js out/test/grammar.test.js",
+    "test:installed": "npm run compile-tests && node scripts/test-extension.mjs --installed",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run resources && npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "node scripts/test-extension.mjs"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.103.0",
+    "@types/node": "24.x",
+    "typescript-eslint": "^8.61.1",
+    "eslint": "^10.5.0",
+    "esbuild": "^0.28.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "4.0.0",
+    "vscode-textmate": "9.3.2",
+    "vscode-oniguruma": "2.0.1",
+    "yauzl": "^3.4.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}

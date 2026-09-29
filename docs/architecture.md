@@ -147,7 +147,7 @@ GCは4096entryまで走査し、last-used/2GiB/30日を使って最大128件だ�
 macOS debug exeのDWARFは出力名を持つため、その場合だけoutput pathもキーへ含めます。普段の別出力先へのartifact再利用は維持します。
 tests/cache.mjsが実CLIのhit（tool起動数）、miss、破損、同時writer、no-cache、実行権限、trap/DWARF、依存変更を検証します。
 
-**Windows MSVC:** native_compile_argsがx86_64-pc-windows-msvcとPOSIXフラグを分離します。Win32 task adapterは既存schedulerへSRWLOCK/CONDITION_VARIABLE/INIT_ONCE/CreateThread/WaitForSingleObject/CloseHandleを提供します。
+**Windows MSVC:** native_compile_argsはコンパイラのCPUに合わせてx86_64-pc-windows-msvcまたはaarch64-pc-windows-msvcを選び、POSIXフラグと分離します。Win32 task adapterは既存schedulerへSRWLOCK/CONDITION_VARIABLE/INIT_ONCE/CreateThread/WaitForSingleObject/CloseHandleを提供します。
 windows_abiは型検査済みexport一覧にだけdllexportを付け、writeをCRT _writeの32-bit count/resultから安全に拡張します。UTF-8 bytes保持のため出力fdをbinary modeにし、コードページは変えません。
 Windowsにも既存128-bit helperを同梱し、MSVC CRTだけでlinkできます。CPU dispatchはWindowsではportable baselineです。
 Rustのfile identityはWindows限定same-fileのsafe APIを使い、unsafe禁止を維持します。fs::renameの既存出力置換とhardlink保護はWindows専用テストで検証します。

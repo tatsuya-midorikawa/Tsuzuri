@@ -8,6 +8,7 @@ pub struct TestOptions {
     pub target: Target,
     pub optimization: u8,
     pub filter: Option<String>,
+    pub indices: Vec<usize>,
 }
 
 impl Default for TestOptions {
@@ -16,7 +17,18 @@ impl Default for TestOptions {
             target: Target::Native,
             optimization: 0,
             filter: None,
+            indices: Vec::new(),
         }
+    }
+}
+
+impl TestOptions {
+    pub fn includes(&self, test: &crate::check::CheckedTest) -> bool {
+        (self.indices.is_empty() || self.indices.contains(&test.index))
+            && self
+                .filter
+                .as_ref()
+                .is_none_or(|filter| format!("{}.{}", test.module, test.name).contains(filter))
     }
 }
 
@@ -60,12 +72,7 @@ fn run_with_timeout(
     let selected: Vec<_> = module
         .tests
         .iter()
-        .filter(|test| {
-            options
-                .filter
-                .as_ref()
-                .is_none_or(|filter| format!("{}.{}", test.module, test.name).contains(filter))
-        })
+        .filter(|test| options.includes(test))
         .cloned()
         .collect();
     let ignored = module.tests.len() - selected.len();
@@ -225,7 +232,7 @@ fn build_runner(
             .arg(&object);
     } else {
         let main = directory.join("main.c");
-        clang.args(native_compile_args(cfg!(windows)));
+        clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
         fs::write(&main, include_str!("runtime/test-runner.c"))
             .map_err(|error| io_error("write test entry", &main, error))?;
         clang

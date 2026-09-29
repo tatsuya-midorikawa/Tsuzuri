@@ -1,0 +1,40 @@
+{
+  "name": "Tsuzuri",
+  "scopeName": "source.tsuzuri",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "name": "entity.name.function.tsuzuri", "match": "(?<=\\bdef\\s)(?:rec\\s+)?[A-Za-z_][A-Za-z_0-9]*" },
+    { "name": "entity.name.type.tsuzuri", "match": "(?<=\\brecord\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bunion\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bclass\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\btype\\s)[A-Za-z_][A-Za-z_0-9]*" },
+    { "name": "storage.type.generic.tsuzuri", "match": "'[A-Za-z_][A-Za-z_0-9]*\\b" },
+    { "name": "constant.language.tsuzuri", "match": "\\b(?:true|false)\\b" },
+    { "name": "storage.type.tsuzuri", "match": "\\b(?:unit|bool|string|utf8string|char|utf8char|byte|ubyte|i(?:8|16|32|64|128)u?(?:x[248]|x16)?|f(?:16|32|64|128)(?:x[248])?|d(?:32|64|128))\\b" },
+    { "name": "keyword.control.tsuzuri", "match": "\\b(?:if|then|elif|else|match|with|when|where|for|in|to|downto|while|break|continue|return|yield|do|and|let)(?:!)?\\b|\\b(?:return|yield|do|and|let|match)!" },
+    { "name": "keyword.declaration.tsuzuri", "match": "\\b(?:def|fn|rec|export|extern|private|record|union|type|const|test|class|instance|deriving|task|mut|ref|deref|new|as|of)\\b" },
+    { "name": "constant.numeric.tsuzuri", "match": "(?<![\\w.])(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*(?:\\.[0-9_]+)?(?:[eE][+-]?[0-9_]+)?)(?:i(?:8|16|32|64|128)u?|f(?:16|32|64|128)|d(?:32|64|128))?\\b" },
+    { "name": "entity.name.namespace.tsuzuri", "match": "\\b[A-Z][A-Za-z_0-9]*(?=\\.)" },
+    { "name": "keyword.operator.tsuzuri", "match": "\\|>|->|=>|::|\\.\\.|[+*/%=!<>&|^~?\\\\-]+" },
+    { "name": "punctuation.separator.tsuzuri", "match": "[,;.:]" },
+    { "name": "punctuation.section.tsuzuri", "match": "[{}()\\[\\]]" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.documentation.tsuzuri", "begin": "///", "end": "$" },
+        { "name": "comment.line.double-slash.tsuzuri", "begin": "//", "end": "$" },
+        { "include": "#blockComment" }
+      ]
+    },
+    "blockComment": {
+      "name": "comment.block.tsuzuri", "begin": "/\\*", "end": "\\*/",
+      "patterns": [{ "include": "#blockComment" }]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.double.tsuzuri", "begin": "(?:u8)?\"", "end": "\"", "patterns": [{ "include": "#escape" }] },
+        { "name": "string.quoted.single.tsuzuri", "match": "(?:u8)?'(?:\\\\(?:u\\{[0-9a-fA-F]+\\}|u[0-9a-fA-F]{4}|.)|[^'\\\\\\r\\n])'" }
+      ]
+    },
+    "escape": { "name": "constant.character.escape.tsuzuri", "match": "\\\\(?:u\\{[0-9a-fA-F]+\\}|u[0-9a-fA-F]{4}|.)" }
+  }
+}

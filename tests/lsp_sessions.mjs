@@ -98,6 +98,13 @@ async function session(encoding) {
     assert.deepEqual(symbols.result.map((symbol) => symbol.name), ["identity", "read", "point", "nested_read"]);
     const nestedDefinition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Geometry.Point.nested") });
     assert.equal(nestedDefinition.result.uri, nestedUri);
+    const shapesUri = pathToFileURL(join(root, "Shapes.tz")).href;
+    writeFileSync(join(root, "Shapes.tz"), "record Point { x: bool }");
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
+    assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result, null);
+    writeFileSync(join(root, "Shapes.tz"), "record Point { x: i64 }");
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
+    assert.ok((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result);
     notify("textDocument/didOpen", { textDocument: { uri: nestedUri, languageId: "tsuzuri", version: 1, text: "fn nested() -> i64 { true }" } });
     assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result, null);
     notify("textDocument/didChange", { textDocument: { uri: nestedUri, version: 2 }, contentChanges: [{ text: "fn nested() -> i64 { 42 }" }] });

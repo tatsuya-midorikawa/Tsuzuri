@@ -899,6 +899,11 @@ test "compares strings" =
 JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr です。失敗時は最初の失敗した名前の位置で `E2006`、終了コード 1 になります。
 全成功または選択テストなしは終了コード 0。filter で除外された件数は ignored に数えます。
 
+`--list` は型検査だけでテストを列挙し、LLVM・Node.js を起動せずテスト本体も実行しません。
+`--list --json` は各テストの `type: "test"`、`index`、`module`、`name`、`path` と、名前の0始まり UTF-16 `range` を stdout に出します。
+`--index N` は宣言順の0始まり index を指定し、複数指定は和集合、`--filter` との併用は積集合です。重複名も個別に選択できます。
+存在しない index は `E2000` です。編集後には再び一覧を取得してください。
+
 ## 型とメモリ
 
 | 型 | 値／挙動 |

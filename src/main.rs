@@ -14,7 +14,7 @@ Usage:
   tsuzuri check source.tz|source.tt|source.tc|directory [--json]
     tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
-    tsuzuri test source.tz|directory [--filter TEXT] [--json] [-O0|-O1|-O2|-O3]
+    tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
@@ -79,6 +79,8 @@ struct Arguments {
     deny_warnings: bool,
     format_check: bool,
     test_filter: Option<String>,
+    test_list: bool,
+    test_indices: Vec<usize>,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -95,6 +97,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             deny_warnings: false,
             format_check: false,
             test_filter: None,
+            test_list: false,
+            test_indices: Vec::new(),
         });
     }
     let mut position = 0;
@@ -135,6 +139,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut deny_warnings = false;
     let mut format_check = false;
     let mut test_filter = None;
+    let mut test_list = false;
+    let mut test_indices = Vec::new();
     let mut debug_output = false;
     let mut trap_info = false;
     let mut debug_info = false;
@@ -174,6 +180,25 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("check specified more than once".into());
                     }
                     format_check = true;
+                    continue;
+                }
+                Some("--list") => {
+                    if test_list {
+                        return Err("list specified more than once".into());
+                    }
+                    test_list = true;
+                    continue;
+                }
+                Some("--index") => {
+                    let value = next_value(arguments, &mut position, "--index")?
+                        .to_str()
+                        .filter(|value| {
+                            !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                        .ok_or("test index must be a nonnegative integer")?
+                        .parse::<usize>()
+                        .map_err(|_| "test index is too large")?;
+                    test_indices.push(value);
                     continue;
                 }
                 Some("--filter") => {
@@ -327,8 +352,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
         );
     }
-    if action != Action::Test && test_filter.is_some() {
-        return Err("--filter is only valid with test".into());
+    if action != Action::Test && (test_filter.is_some() || test_list || !test_indices.is_empty()) {
+        return Err("--filter, --list, and --index are only valid with test".into());
     }
     if action == Action::Test && cpu.is_some() {
         return Err("test does not use CPU tuning".into());
@@ -380,6 +405,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         deny_warnings,
         format_check,
         test_filter,
+        test_list,
+        test_indices,
     })
 }
 
@@ -508,14 +535,57 @@ fn run_test_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
 ) -> ExitCode {
-    let report = match driver::run_tests(
-        module,
-        &driver::TestOptions {
-            target: arguments.options.target,
-            optimization: arguments.options.optimization,
-            filter: arguments.test_filter.clone(),
-        },
-    ) {
+    let options = driver::TestOptions {
+        target: arguments.options.target,
+        optimization: arguments.options.optimization,
+        filter: arguments.test_filter.clone(),
+        indices: arguments.test_indices.clone(),
+    };
+    if options
+        .indices
+        .iter()
+        .any(|index| *index >= module.tests.len())
+    {
+        print_diagnostic(
+            &Diagnostic::new(
+                "E2000",
+                "test index is out of range; refresh the test list",
+                Span::default(),
+            ),
+            project.input(),
+            "",
+            arguments.json,
+        );
+        return ExitCode::FAILURE;
+    }
+    if arguments.test_list {
+        for case in module.tests.iter().filter(|case| options.includes(case)) {
+            if arguments.json {
+                let source = project.source_for(&Diagnostic::new("E2000", "", case.span));
+                let mapper = tsuzuri::lsp::PositionMapper::new(
+                    &source.text,
+                    tsuzuri::lsp::PositionEncoding::Utf16,
+                );
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "type": "test", "index": case.index, "module": case.module,
+                        "name": case.name, "path": source.path,
+                        "range": mapper.range(&source.text, case.span),
+                    })
+                );
+            } else {
+                println!(
+                    "{} {}.{}",
+                    case.index,
+                    case.module,
+                    case.name.escape_debug()
+                );
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+    let report = match driver::run_tests(module, &options) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
@@ -707,6 +777,23 @@ mod tests {
 
     fn parse(values: &[&str]) -> Result<Arguments, String> {
         parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn test_discovery_and_index_arguments_are_scoped() {
+        let arguments =
+            parse(&["test", "Specs.tz", "--list", "--index", "0", "--index", "2"]).unwrap();
+        assert!(arguments.test_list);
+        assert_eq!(arguments.test_indices, vec![0, 2]);
+        for values in [
+            vec!["check", "Specs.tz", "--list"],
+            vec!["run", "Main.tz", "--index", "0"],
+            vec!["test", "Specs.tz", "--list", "--list"],
+            vec!["test", "Specs.tz", "--index", "-1"],
+            vec!["test", "Specs.tz", "--index", ""],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
     }
 
     #[test]

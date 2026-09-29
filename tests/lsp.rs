@@ -1,5 +1,22 @@
 use tsuzuri::{analyze_modules, analyze_modules_with_semantics, llvm};
 
+#[cfg(windows)]
+#[test]
+fn windows_file_uris_round_trip_drive_letters_and_canonical_paths() {
+    use std::path::{Path, PathBuf};
+    use tsuzuri::lsp::{file_uri, uri_path};
+    let uri = "file:///C:/space%20%23/Main.tz";
+    assert_eq!(
+        file_uri(Path::new(r"C:\space #\Main.tz")).as_deref(),
+        Some(uri)
+    );
+    assert_eq!(
+        file_uri(Path::new(r"\\?\C:\space #\Main.tz")).as_deref(),
+        Some(uri)
+    );
+    assert_eq!(uri_path(uri).unwrap(), PathBuf::from(r"C:/space #/Main.tz"));
+}
+
 #[test]
 fn semantic_docs_follow_function_and_type_definition_targets() {
     let main = "/// Keeps the value.\ndef identity :: 'a -> 'a\nfn identity value = value\ndef read :: i64 -> i64\nfn read value = identity value\ndef point :: Shapes.Point -> i64\nfn point value = value.x";

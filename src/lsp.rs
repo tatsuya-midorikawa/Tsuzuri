@@ -149,9 +149,20 @@ fn invalid(message: &str) -> (i64, String) {
 }
 
 pub fn file_uri(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
+    #[cfg(windows)]
+    let normalized = path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('\\', "/");
+    #[cfg(windows)]
+    let path = normalized.as_str();
     let mut uri = String::from("file://");
-    for byte in path.to_str()?.bytes() {
-        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+    if cfg!(windows) && path.as_bytes().get(1) == Some(&b':') {
+        uri.push('/');
+    }
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~:".contains(&byte) {
             uri.push(char::from(byte));
         } else {
             use std::fmt::Write;
@@ -192,6 +203,14 @@ pub fn uri_path(uri: &str) -> Result<PathBuf, String> {
     if path.contains('\0') {
         return Err("a file URI cannot contain NUL".into());
     }
+    #[cfg(windows)]
+    let path = path
+        .strip_prefix('/')
+        .filter(|path| {
+            path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && path.as_bytes().get(1) == Some(&b':')
+        })
+        .unwrap_or(&path);
     Ok(PathBuf::from(path))
 }
 
@@ -396,6 +415,13 @@ impl Session {
         }
         match method {
             "initialized" | "$/cancelRequest" => Ok(Value::Null),
+            "workspace/didChangeWatchedFiles" => {
+                let paths: Vec<_> = self.buffers.keys().cloned().collect();
+                for path in paths {
+                    self.schedule(&path);
+                }
+                Ok(Value::Null)
+            }
             "shutdown" => {
                 self.shutdown = true;
                 self.pending.clear();

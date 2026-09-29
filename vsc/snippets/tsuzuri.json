@@ -1,0 +1,47 @@
+{
+  "Function": {
+    "prefix": "def",
+    "body": ["def ${1:name} :: ${2:i64} -> ${3:i64} = \\\\${4:value} ->", "    $0"],
+    "description": "Inline typed function"
+  },
+  "Recursive function": {
+    "prefix": "defrec",
+    "body": ["def rec ${1:name} :: ${2:i64} -> ${3:i64} = \\\\${4:value} ->", "    $0"],
+    "description": "Recursive inline typed function"
+  },
+  "Console entry": {
+    "prefix": "main",
+    "body": ["def main :: IO<unit> =", "    do! IO.write_line \"${1:Hello, Tsuzuri!}\"", "    $0"],
+    "description": "Main.tz console entry"
+  },
+  "Test": {
+    "prefix": "test",
+    "body": ["test \"${1:description}\" =", "    assert (${2:true})$0"],
+    "description": "Discoverable test"
+  },
+  "Record": {
+    "prefix": "record",
+    "body": ["record ${1:Name} {", "    ${2:field}: ${3:i64}", "}$0"],
+    "description": "Record declaration"
+  },
+  "Union": {
+    "prefix": "union",
+    "body": ["union ${1:Name} =", "    | ${2:First} of ${3:i64}", "    | ${4:Second}$0"],
+    "description": "Tagged union declaration"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": ["match ${1:value} with", "| ${2:Some item} -> ${3:item}", "| ${4:None} -> $0"],
+    "description": "Pattern matching"
+  },
+  "Type class": {
+    "prefix": "class",
+    "body": ["class ${1:Name}<'a> {", "    def ${2:method} :: ref 'a -> ${3:i64}", "}$0"],
+    "description": "Type class in a .tt file"
+  },
+  "Documentation": {
+    "prefix": "doc",
+    "body": ["/// ${1:Description.}", "$0"],
+    "description": "Declaration documentation"
+  }
+}
