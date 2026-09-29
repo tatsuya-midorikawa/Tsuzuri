@@ -117,6 +117,17 @@ async function entries(directory, prefix = '') {
   return result;
 }
 
+function extractArchive(archive, directory) {
+  if (process.platform !== 'win32') {
+    run('tar', ['-xf', archive, '-C', directory]);
+    return;
+  }
+  execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:TSUZURI_ARCHIVE -DestinationPath $env:TSUZURI_EXTRACTED -Force',
+  ], { cwd: repository, stdio: 'inherit', env: { ...process.env, TSUZURI_ARCHIVE: archive, TSUZURI_EXTRACTED: directory } });
+}
+
 async function verify() {
   const manifest = JSON.parse(await readFile(path.join(destination, 'manifest.json'), 'utf8'));
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) { throw new Error('Toolchain host mismatch.'); }
@@ -153,7 +164,7 @@ async function bundle() {
   const extracted = await mkdtemp(path.join(cache, 'extract-'));
   const stage = await mkdtemp(path.join(extension, '.toolchain-stage-'));
   try {
-    run('tar', ['-xf', archive, '-C', extracted]);
+    extractArchive(archive, extracted);
     const zig = path.join(extracted, `zig-${zigPlatform}-${zigVersion}`);
     await mkdir(path.join(stage, 'bin'), { recursive: true });
     await mkdir(path.join(stage, 'lib'), { recursive: true });
