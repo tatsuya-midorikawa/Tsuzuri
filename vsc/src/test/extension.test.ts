@@ -16,7 +16,8 @@ async function waitFor<Value>(description: string, value: () => Value | undefine
 }
 
 export async function run(): Promise<void> {
-	const root = process.env.TSUZURI_TEST_PROJECT!;
+	// Match VS Code's fsPath form, which lowercases Windows drive letters.
+	const root = vscode.Uri.file(process.env.TSUZURI_TEST_PROJECT!).fsPath;
 	const uri = vscode.Uri.file(path.join(root, 'Main.tz'));
 	const document = await vscode.workspace.openTextDocument(uri);
 	await vscode.window.showTextDocument(document);
