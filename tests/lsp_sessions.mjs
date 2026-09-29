@@ -63,7 +63,10 @@ async function session(encoding) {
     return { line: prefix.length - 1, character: encoding === "utf-8" ? Buffer.byteLength(prefix.at(-1)) : prefix.at(-1).length };
   }
   const path = join(root, "Main.tz");
-  const uri = pathToFileURL(path).href;
+  const mainUri = pathToFileURL(path).href;
+  const uri = process.platform === "win32"
+    ? mainUri.replace(/^file:\/\/\/([A-Za-z]):/, (_, drive) => `file:///${drive === drive.toLowerCase() ? drive.toUpperCase() : drive.toLowerCase()}:`)
+    : mainUri;
   const extra = join(root, "Extra.tz");
   const extraUri = pathToFileURL(extra).href;
   const original = "fn disk() -> i64 { 7 }";
