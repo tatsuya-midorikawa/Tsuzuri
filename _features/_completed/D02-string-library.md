@@ -1,6 +1,6 @@
 # D02: string / utf8string 文字列ライブラリ
 
-> 現行の [文字列仕様](../docs/language.md#string-と-utf8string) と [A08](A08-char-type.md) に合わせ、
+> 現行の [文字列仕様](../../docs/language.md#string-と-utf8string) と [A08](A08-char-type.md) に合わせ、
 > UTF-16 の string / char は String、UTF-8 の utf8string / utf8char は Utf8String で扱います。
 > 既存の索引・列挙・文字列変換の契約を維持し、両モジュールの追加 API を実装済みです。
 

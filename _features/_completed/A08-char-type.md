@@ -1,6 +1,6 @@
 # A08: char（UTF-16 コード単位）型と utf8char（Unicode スカラー）型
 
-> 現行の [文字列仕様](../docs/language.md#string-と-utf8string) に合わせ、
+> 現行の [文字列仕様](../../docs/language.md#string-と-utf8string) に合わせ、
 > string 向けの char と utf8string 向けの utf8char を別の型として追加します。
 > string の索引・列挙（i16u）と utf8string の索引・列挙（ubyte）は変更しません。
 

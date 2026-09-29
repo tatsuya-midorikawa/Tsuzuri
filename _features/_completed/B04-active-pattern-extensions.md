@@ -33,7 +33,7 @@ match 42 with
 ```
 
 `'T` は認識器専用の暗黙 union の印です。payload の型は本体から推論し、case 名は本体内でコンストラクタとして解決します。型検査・tag 判定・payload 投影・所有値の解放は既存経路を共有します。
-明示的な backing union 型と別名 case を要求する旧構文は廃止しました。現行契約は [言語仕様](../docs/language.md#アクティブパターン) と [利用者向け説明](../_docs/language-reference/active-patterns.md) を参照してください。
+明示的な backing union 型と別名 case を要求する旧構文は廃止しました。現行契約は [言語仕様](../../docs/language.md#アクティブパターン) と [利用者向け説明](../../_docs/language-reference/active-patterns.md) を参照してください。
 
 以下は初回実装時の検討・検証記録です。旧構文との比較を含む設計資料であり、そのコードを現行の使用例としては扱いません。
 

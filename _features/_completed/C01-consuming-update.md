@@ -251,7 +251,7 @@ br i1 %same, label %return, label %check_j
 ## 実装手順
 
 1. **E02 前提確認**
-   - `_features/E02-standard-library-infrastructure.md` の実装が完了し、修飾 builtin・複数引数 signature が使えることを確認する。
+   - `_features/_completed/E02-standard-library-infrastructure.md` の実装が完了し、修飾 builtin・複数引数 signature が使えることを確認する。
    - 確認: `Array.length` など E02 の代表 builtin が `analyze_modules` と driver の両方で解決できる。
 
 2. **Builtin 定義追加**
