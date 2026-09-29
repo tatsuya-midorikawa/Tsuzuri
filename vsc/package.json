@@ -2,6 +2,7 @@
   "name": "tsuzuri",
   "displayName": "Tsuzuri",
   "description": "Tsuzuri IDE",
+  "icon": "media/icon.png",
   "version": "0.1.0",
   "publisher": "tsuzuri",
   "license": "Apache-2.0",

@@ -19,6 +19,7 @@ async function verifyArchive(file) {
   const tools = JSON.parse(await readFile(path.join(extension, 'toolchain', 'manifest.json'), 'utf8'));
   const expected = new Map(tools.files.map(item => [`extension/toolchain/${item.path}`, item]));
   const required = new Set(['extension/dist/extension.js', 'extension/package.json', 'extension/language-configuration.json',
+    `extension/${manifest.icon}`,
     'extension/syntaxes/tsuzuri.tmLanguage.json', 'extension/snippets/tsuzuri.json', 'extension/resources/completions.json',
     'extension/resources/handbook/_docs/README.md', 'extension/LICENSE.txt', 'extension/toolchain/manifest.json']);
   await new Promise((resolve, reject) => {

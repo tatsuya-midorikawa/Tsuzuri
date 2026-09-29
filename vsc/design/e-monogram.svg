@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Tsuzuri: E / Monogram</title>
+  <desc id="description">Retained variation: a compact geometric TZ monogram in two blues.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#FBFDFF"/>
+  <rect x="17" y="17" width="478" height="478" rx="107" stroke="#DCE6F5" stroke-width="2"/>
+  <path d="M96 140H264V198H210V374H150V198H96Z" fill="#2459D5"/>
+  <path d="M280 140H416V190L318 316H416V374H240V324L338 198H280Z" fill="#69B8F5"/>
+</svg>

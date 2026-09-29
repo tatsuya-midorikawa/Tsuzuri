@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1320" height="584" viewBox="0 0 1320 584" role="img" aria-labelledby="title description">
+  <title id="title">Tsuzuri: primary icon and retained variations</title>
+  <desc id="description">A is the selected primary icon. B, the reverse-color version, and E, the TZ monogram, are retained variations. Each has a small-size preview.</desc>
+  <defs>
+    <symbol id="light-tile" viewBox="0 0 512 512">
+      <rect x="16" y="16" width="480" height="480" rx="108" fill="#FBFDFF"/>
+      <rect x="17" y="17" width="478" height="478" rx="107" fill="none" stroke="#DCE6F5" stroke-width="2"/>
+    </symbol>
+    <symbol id="blue-tile" viewBox="0 0 512 512">
+      <rect x="16" y="16" width="480" height="480" rx="108" fill="#2459D5"/>
+    </symbol>
+    <mask id="upper-thread" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="white"/>
+      <path d="M208 152 304 200" stroke="black" stroke-width="80"/>
+    </mask>
+    <mask id="lower-thread" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="white"/>
+      <path d="M208 312 304 360" stroke="black" stroke-width="80"/>
+    </mask>
+    <path id="right-bracket" d="M160 128 384 240Q408 256 384 272L160 384" fill="none" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="left-bracket" d="M352 128 128 240Q104 256 128 272L352 384" fill="none" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <symbol id="candidate-a" viewBox="0 0 512 512">
+      <use xlink:href="#light-tile" width="512" height="512"/>
+      <use xlink:href="#right-bracket" stroke="#2459D5" mask="url(#lower-thread)"/>
+      <use xlink:href="#left-bracket" stroke="#69B8F5" mask="url(#upper-thread)"/>
+    </symbol>
+
+    <symbol id="candidate-b" viewBox="0 0 512 512">
+      <use xlink:href="#blue-tile" width="512" height="512"/>
+      <use xlink:href="#right-bracket" stroke="#FFFFFF" mask="url(#lower-thread)"/>
+      <use xlink:href="#left-bracket" stroke="#93D8FF" mask="url(#upper-thread)"/>
+    </symbol>
+
+    <symbol id="candidate-e" viewBox="0 0 512 512">
+      <use xlink:href="#light-tile" width="512" height="512"/>
+      <path d="M96 140H264V198H210V374H150V198H96Z" fill="#2459D5"/>
+      <path d="M280 140H416V190L318 316H416V374H240V324L338 198H280Z" fill="#69B8F5"/>
+    </symbol>
+
+  </defs>
+
+  <rect width="1320" height="584" fill="#EFF4FA"/>
+  <g font-family="Avenir Next, DejaVu Sans, sans-serif" fill="#193350">
+    <text x="94" y="77" font-size="44" font-weight="700">Tsuzuri</text>
+    <text x="96" y="111" font-size="16" fill="#60738C">PRIMARY ICON + VARIATIONS</text>
+    <text x="1224" y="80" text-anchor="end" font-size="16" fill="#60738C">A / B / E</text>
+    <path d="M94 137H1226" stroke="#D2DEEC"/>
+
+    <use xlink:href="#candidate-a" x="94" y="166" width="312" height="312"/>
+    <use xlink:href="#candidate-b" x="504" y="166" width="312" height="312"/>
+    <use xlink:href="#candidate-e" x="914" y="166" width="312" height="312"/>
+    <text x="104" y="516" font-size="21" font-weight="700">A / PRIMARY</text>
+    <text x="514" y="516" font-size="21" font-weight="700">B / REVERSE</text>
+    <text x="924" y="516" font-size="21" font-weight="700">E / MONOGRAM</text>
+    <text x="104" y="541" font-size="15" fill="#60738C">Selected primary mark</text>
+    <text x="514" y="541" font-size="15" fill="#60738C">Variation: blue background</text>
+    <text x="924" y="541" font-size="15" fill="#60738C">Variation: geometric TZ</text>
+    <use xlink:href="#candidate-a" x="366" y="491" width="40" height="40"/>
+    <use xlink:href="#candidate-b" x="776" y="491" width="40" height="40"/>
+    <use xlink:href="#candidate-e" x="1186" y="491" width="40" height="40"/>
+  </g>
+</svg>
