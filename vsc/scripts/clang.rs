@@ -127,11 +127,32 @@ fn main() -> ExitCode {
         arguments[input] = OsString::from(object);
         temporary = Some(directory);
     }
-    let result = execute(
-        Command::new(zig)
-            .args(["cc", "-target", &target])
-            .args(arguments),
-    );
+    // Zig 0.16.0 crashes while linking on ARM64 Windows hosts, so that bundle ships llvm-mingw.
+    let mut command = if cfg!(all(windows, target_arch = "aarch64")) && !wasm {
+        let sysroot = root.join("mingw");
+        let mut command = Command::new(&clang);
+        command
+            .args(["-target", &llvm_target, "--sysroot"])
+            .arg(&sysroot)
+            .arg("-resource-dir")
+            .arg(sysroot.join("lib").join("clang").join("21"));
+        if !arguments
+            .iter()
+            .any(|argument| argument == "-c" || argument == "-S" || argument == "-E")
+        {
+            let mut linker = OsString::from("--ld-path=");
+            linker.push(root.join("bin").join("ld.lld.exe"));
+            command
+                .args(["-fuse-ld=lld", "-rtlib=compiler-rt", "-unwindlib=none"])
+                .arg(linker);
+        }
+        command
+    } else {
+        let mut command = Command::new(zig);
+        command.args(["cc", "-target", &target]);
+        command
+    };
+    let result = execute(command.args(arguments));
     if let Some(directory) = temporary {
         let _ = fs::remove_dir_all(directory);
     }
