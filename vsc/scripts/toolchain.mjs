@@ -122,10 +122,12 @@ function extractArchive(archive, directory) {
     run('tar', ['-xf', archive, '-C', directory]);
     return;
   }
+  // A PSModulePath inherited from PowerShell 7 makes Windows PowerShell load incompatible modules.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'));
   execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command',
     '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:TSUZURI_ARCHIVE -DestinationPath $env:TSUZURI_EXTRACTED -Force',
-  ], { cwd: repository, stdio: 'inherit', env: { ...process.env, TSUZURI_ARCHIVE: archive, TSUZURI_EXTRACTED: directory } });
+  ], { cwd: repository, stdio: 'inherit', env: { ...env, TSUZURI_ARCHIVE: archive, TSUZURI_EXTRACTED: directory } });
 }
 
 async function verify() {
