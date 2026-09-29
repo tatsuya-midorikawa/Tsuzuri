@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "tsuzuri-lsp-")));
+
+function assertFileUri(uri, path) {
+  const actual = statSync(fileURLToPath(uri), { bigint: true });
+  const expected = statSync(path, { bigint: true });
+  assert.deepEqual([actual.dev, actual.ino], [expected.dev, expected.ino]);
+}
 
 async function session(encoding) {
   const child = spawn(compiler, ["lsp"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -100,11 +106,11 @@ async function session(encoding) {
     assert.equal(definition.result.uri, uri);
     assert.deepEqual(definition.result.range.start, position(valid, "identity value"));
     const record = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Shapes.Point") });
-    assert.equal(record.result.uri, pathToFileURL(join(root, "Shapes.tz")).href);
+    assertFileUri(record.result.uri, join(root, "Shapes.tz"));
     const symbols = await request("textDocument/documentSymbol", { textDocument: { uri } });
     assert.deepEqual(symbols.result.map((symbol) => symbol.name), ["identity", "read", "point", "nested_read"]);
     const nestedDefinition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Geometry.Point.nested") });
-    assert.equal(nestedDefinition.result.uri, nestedUri);
+    assertFileUri(nestedDefinition.result.uri, join(root, "Geometry/Point.tz"));
     const shapesUri = pathToFileURL(join(root, "Shapes.tz")).href;
     writeFileSync(join(root, "Shapes.tz"), "record Point { x: bool }");
     notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
