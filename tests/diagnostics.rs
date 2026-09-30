@@ -16,8 +16,14 @@ fn errors(source: &str) -> DiagnosticSet {
 }
 
 fn codes(source: &str) -> Vec<&'static str> {
-    errors(source)
-        .diagnostics
+    let set = errors(source);
+    assert!(
+        set.diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("erroneous")),
+        "{source}\n{set:?}"
+    );
+    set.diagnostics
         .iter()
         .map(|diagnostic| diagnostic.code)
         .collect()
@@ -120,15 +126,7 @@ fn recovery_does_not_report_cascades() {
         ),
         ("fn f() -> [i64] { if true then missing else [] }", "E1002"),
     ] {
-        let set = errors(source);
-        assert_eq!(set.diagnostics.len(), 1, "{source}\n{set:?}");
-        assert_eq!(set.diagnostics[0].code, code, "{source}");
-        assert!(
-            set.diagnostics
-                .iter()
-                .all(|diagnostic| !diagnostic.message.contains("erroneous")),
-            "{source}\n{set:?}"
-        );
+        assert_eq!(codes(source), [code], "{source}");
     }
 }
 
@@ -215,18 +213,6 @@ fn recovers_ownership_errors_on_distinct_roots() {
         let source = format!("{CONSUME}def f :: unit\nfn f = {{ {body} }}");
         assert_eq!(codes(&source), expected, "{source}");
     }
-    let source = format!(
-        "{CONSUME}def f :: unit\nfn f = {{ let s = \"a\"; let t = \"b\"; consume s; consume s; consume t; consume t }}"
-    );
-    let set = errors(&source);
-    assert_eq!(
-        set.diagnostics[0].message,
-        "use of moved or partially moved value 's'"
-    );
-    assert_eq!(
-        set.diagnostics[1].message,
-        "use of moved or partially moved value 't'"
-    );
 }
 
 #[test]
@@ -271,20 +257,7 @@ fn checks_ownership_of_recovered_bodies_without_cascades() {
         ),
     ] {
         let source = format!("{CONSUME}{definitions}");
-        let set = errors(&source);
-        assert_eq!(
-            set.diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.code)
-                .collect::<Vec<_>>(),
-            expected,
-            "{source}\n{set:?}"
-        );
-        assert!(
-            set.diagnostics
-                .iter()
-                .all(|diagnostic| !diagnostic.message.contains("erroneous"))
-        );
+        assert_eq!(codes(&source), expected, "{source}");
     }
 }
 

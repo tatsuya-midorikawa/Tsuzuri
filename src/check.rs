@@ -5500,9 +5500,19 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Result<TypedExpr, Diagnostic> {
         match result {
-            Err(error) if self.recovering => self.recover_expression(error, mark, span),
+            Err(error) if self.recovering => {
+                self.scopes.truncate(mark.scopes);
+                self.normal_loop_depth = mark.normal_loop_depth;
+                self.computation_depth = mark.computation_depth;
+                self.recover_expression(error, span)
+            }
             result => result,
         }
+    }
+
+    // Erroneous sibling types would hide the next sibling's independent errors.
+    fn sibling_hint<'t>(&self, ty: Option<&'t Type>) -> Option<&'t Type> {
+        ty.filter(|ty| !self.recovering || !ty.contains_error())
     }
 
     #[cold]
@@ -5510,15 +5520,11 @@ impl<'a> Checker<'a> {
     fn recover_expression(
         &mut self,
         error: Diagnostic,
-        mark: RecoveryMark,
         span: Span,
     ) -> Result<TypedExpr, Diagnostic> {
         if error.code == "E1017" || self.recovered.len() >= MAX_UNIQUE_DIAGNOSTICS {
             return Err(error);
         }
-        self.scopes.truncate(mark.scopes);
-        self.normal_loop_depth = mark.normal_loop_depth;
-        self.computation_depth = mark.computation_depth;
         self.recovered.push(error);
         self.poisoned = true;
         Ok(TypedExpr::error(span))
@@ -5566,12 +5572,7 @@ impl<'a> Checker<'a> {
         })();
         match annotation {
             Err(error) if self.recovering => {
-                let mark = RecoveryMark {
-                    scopes: self.scopes.len(),
-                    normal_loop_depth: self.normal_loop_depth,
-                    computation_depth: self.computation_depth,
-                };
-                self.recover_expression(error, mark, binding.name.span)?;
+                self.recover_expression(error, binding.name.span)?;
                 Ok(Some(Type::Error))
             }
             annotation => annotation,
@@ -5598,9 +5599,7 @@ impl<'a> Checker<'a> {
                 let mut checked = Vec::new();
                 for binding in bindings {
                     let annotation = self.binding_annotation(binding)?;
-                    let expected = annotation
-                        .as_ref()
-                        .filter(|ty| !self.recovering || !ty.contains_error());
+                    let expected = self.sibling_hint(annotation.as_ref());
                     let value = self.expression(&binding.value, expected)?;
                     let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
                         Type::Error
@@ -5739,15 +5738,11 @@ impl<'a> Checker<'a> {
             });
             if Self::untyped_number(left) && !Self::untyped_number(right) {
                 let right = self.expression(right, hint)?;
-                let expected = Some(&right.ty)
-                    .filter(|ty| !self.recovering || !ty.contains_error())
-                    .or(hint);
+                let expected = self.sibling_hint(Some(&right.ty)).or(hint);
                 (self.expression(left, expected)?, right)
             } else {
                 let left = self.expression(left, hint)?;
-                let expected = Some(&left.ty)
-                    .filter(|ty| !self.recovering || !ty.contains_error())
-                    .or(hint);
+                let expected = self.sibling_hint(Some(&left.ty)).or(hint);
                 let right = self.expression(right, expected)?;
                 (left, right)
             }
@@ -5919,9 +5914,7 @@ impl<'a> Checker<'a> {
             } => {
                 let condition = self.expression(condition, Some(&Type::Bool))?;
                 let then_branch = self.expression(then_branch, expected)?;
-                let expected = Some(&then_branch.ty)
-                    .filter(|ty| !self.recovering || !ty.contains_error())
-                    .or(expected);
+                let expected = self.sibling_hint(Some(&then_branch.ty)).or(expected);
                 let else_branch = self.expression(else_branch, expected)?;
                 let ty = then_branch.ty.clone();
                 (
@@ -5975,11 +5968,9 @@ impl<'a> Checker<'a> {
                 };
                 let mut checked = Vec::new();
                 for value in values {
-                    let expected = element_type
-                        .as_ref()
-                        .filter(|ty| !self.recovering || !ty.contains_error());
+                    let expected = self.sibling_hint(element_type.as_ref());
                     let value = self.expression(value, expected)?;
-                    if !self.recovering || !value.ty.contains_error() {
+                    if self.sibling_hint(Some(&value.ty)).is_some() {
                         element_type = Some(value.ty.clone());
                     }
                     checked.push(value);

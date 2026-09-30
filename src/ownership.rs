@@ -147,7 +147,7 @@ fn check_body(
         infer,
         copy_variables: BTreeSet::new(),
         closed,
-        recovered: std::mem::take(recovered),
+        recovered,
         reported: BTreeSet::new(),
     };
     for parameter in parameters {
@@ -170,44 +170,40 @@ fn check_body(
             .locals
             .insert(parameter.id, (parameter.clone(), value));
     }
-    let checked = (|| {
-        let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
-        let allowed_roots: Option<BTreeSet<_>> = region_sources.map(|sources| {
-            sources
-                .iter()
-                .map(|index| usize::MAX - parameters[*index].id)
-                .collect()
-        });
-        for id in result.loans {
-            if checker.reported.contains(&checker.loans[id].place.root) {
-                continue;
-            }
-            if task || !checker.external.contains(&checker.loans[id].place.root) {
-                return Err(error(
-                    "E1013",
-                    if task {
-                        "task results cannot retain borrowed values"
-                    } else {
-                        "cannot return a reference to a local value"
-                    },
-                    body.span,
-                ));
-            }
-            if allowed_roots
-                .as_ref()
-                .is_some_and(|allowed| !allowed.contains(&checker.loans[id].place.root))
-            {
-                return Err(error(
-                    "E1013",
-                    "returned borrow does not match the declared result region; return a borrow from an input with that region",
-                    body.span,
-                ));
-            }
+    let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    let allowed_roots: Option<BTreeSet<_>> = region_sources.map(|sources| {
+        sources
+            .iter()
+            .map(|index| usize::MAX - parameters[*index].id)
+            .collect()
+    });
+    for id in result.loans {
+        if checker.reported.contains(&checker.loans[id].place.root) {
+            continue;
         }
-        Ok(std::mem::take(&mut checker.copy_variables))
-    })();
-    *recovered = std::mem::take(&mut checker.recovered);
-    checked
+        if task || !checker.external.contains(&checker.loans[id].place.root) {
+            return Err(error(
+                "E1013",
+                if task {
+                    "task results cannot retain borrowed values"
+                } else {
+                    "cannot return a reference to a local value"
+                },
+                body.span,
+            ));
+        }
+        if allowed_roots
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&checker.loans[id].place.root))
+        {
+            return Err(error(
+                "E1013",
+                "returned borrow does not match the declared result region; return a borrow from an input with that region",
+                body.span,
+            ));
+        }
+    }
+    Ok(checker.copy_variables)
 }
 
 // Unknown results retain their input loans. Only proven closed snapshots can end a curried stage's loans.
@@ -336,7 +332,7 @@ struct Checker<'a> {
     infer: bool,
     copy_variables: BTreeSet<String>,
     closed: &'a [bool],
-    recovered: Vec<Diagnostic>,
+    recovered: &'a mut Vec<Diagnostic>,
     reported: BTreeSet<usize>,
 }
 
@@ -996,7 +992,7 @@ impl Checker<'_> {
                     self.closed,
                     matches!(expression.ty, Type::Task(_)),
                     None,
-                    &mut self.recovered,
+                    self.recovered,
                 )?);
                 for capture in captures {
                     let value = TypedExpr {
