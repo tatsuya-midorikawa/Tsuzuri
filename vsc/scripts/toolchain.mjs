@@ -80,6 +80,7 @@ async function resources() {
   });
   await mkdir(path.join(root, 'handbook', 'vsc'), { recursive: true });
   await copyFile(path.join(extension, 'README.md'), path.join(root, 'handbook', 'vsc', 'README.md'));
+  await cp(path.join(extension, 'images'), path.join(root, 'handbook', 'vsc', 'images'), { recursive: true });
   await copyFile(path.join(repository, 'README.md'), path.join(root, 'handbook', 'README.md'));
   const completions = new Map();
   for (const name of (await readdir(path.join(repository, 'std'))).sort()) {

@@ -1,7 +1,7 @@
 # Tsuzuri IDE のパッケージ作成と Marketplace 公開
 
 この文書は、Tsuzuri の VS Code 拡張を OS／CPU 別の VSIX にまとめ、Visual Studio Marketplace に公開するための手順です。
-利用者向けの操作説明は [README.md](README.md) を参照してください。
+利用者向けの操作説明は [README.md](README.md)、開発環境と検証の詳細は [Development.md](Development.md) を参照してください。
 
 確認日: 2026-09-29。認証や Marketplace の制約は変更されるため、公開前に[公式の公開ガイド](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)も確認してください。
 
@@ -104,7 +104,7 @@ $env:LLVM_PREFIX = 'C:\Program Files\LLVM'
 公開前に次の内容を確定させます。Publisher が変わる場合は、次の「Publisher の登録」を先に行ってください。
 
 - [package.json](package.json): `name`、`publisher`、`version`、`engines.vscode`、`repository`。
-- [README.md](README.md): Marketplace に表示する機能、導入方法、対応環境、制限。
+- [README.md](README.md): Marketplace に表示する機能、導入方法、対応環境、制限。画像は [images](images) に置き、Marketplace が GitHub の既定ブランチから読み込むため、公開前に push します。
 - [CHANGELOG.md](CHANGELOG.md): このバージョンの変更内容。
 - [media/icon.png](media/icon.png): 採用済みの A 案。512 × 512 PNG。
 - [../LICENSE](../LICENSE): Apache-2.0。LLVM・Zig・CodeLLDB 等の再配布条件と同梱ライセンスも確認。

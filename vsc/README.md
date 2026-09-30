@@ -1,115 +1,224 @@
-# Tsuzuri IDE
+# Tsuzuri for Visual Studio Code
 
-Tsuzuri の編集・ビルド・実行・テスト・ソースデバッグを VS Code に統合します。
-OS／CPU 別 VSIX にコンパイラとビルド用ツールチェーンを同梱し、利用者による Rust・Clang・Zig・OS SDK の追加インストールは不要です。
+[Tsuzuri](https://github.com/tatsuya-midorikawa/Tsuzuri) は、関数型の式と所有権モデルを備え、LLVM でネイティブコードと WebAssembly を生成するプログラミング言語です。
+この拡張機能をインストールするだけで、VS Code で Tsuzuri のコーディング / 実行 / テスト / デバッグ ができます。
 
-## 導入
+![ブレークポイントで停止し、ローカル変数と呼び出し履歴を表示している画面](images/debugging.png)
 
-1. VS Code 1.103 以降を用意します。
-2. 拡張ホストの OS／CPU に合った `tsuzuri-0.1.0-<target>.vsix` を、拡張機能ビューの **Install from VSIX...** からインストールします。
-3. Tsuzuri のプロジェクトフォルダーを開いて信頼し、`.tz`・`.tt`・`.tc` を開きます。
+## 特長
 
-新規プロジェクトは **Tsuzuri: New Project** で空フォルダーを選びます。Main.tz、Tsuzuri.toml、.gitignore を作成します。既存ファイルは上書きしません。
-通常のプロジェクトに tasks.json／launch.json の作成は不要です。実行ファイルは `.tsuzuri/` 以下へ生成します。
-デバッグ対応環境では、初回 F5 時に同梱の公式 CodeLLDB VSIX を自動インストールします。Marketplace への接続は不要です。
-既に CodeLLDB が入っている場合はそれを使い、勝手にダウングレードしません。
+- **追加のインストールが不要**: コンパイラ、LLVM、リンカー、C ランタイム、デバッガーを同梱していますので、追加のランタイム インストールなどは不要です。
+- **書きながら確認**: 保存前からエラーと警告を表示し、ホバーで型とドキュメントを確認できます。
+- **ボタンひとつで実行**: エディター右上のボタンでビルド、実行、デバッグができます。tasks.json や launch.json は不要です。
+- **テスト**: `test` 宣言を Test Explorer に表示し、まとめて、または 1 件ずつ実行できます。
+- **デバッグ**: ブレークポイント、ステップ実行、呼び出し履歴、ローカル変数を利用できます。
+- **オフラインのドキュメント**: 日本語の言語ハンドブックを同梱しています。
 
-## 配布対象
+## はじめに
 
-| target | 編集・診断・整形・ビルド・実行・テスト | ソースデバッグ |
+### 1. インストール
+
+拡張機能ビュー（Windows / Linux は `Ctrl+Shift+X`、macOS は `Cmd+Shift+X`）で **Tsuzuri** を検索し、**Install** を選びます。
+OS と CPU に合ったパッケージが自動で選ばれます。対応している OS と CPU は、後述の「対応環境」を参照してください。
+
+### 2. プロジェクトを作る
+
+1. コマンドパレット（Windows / Linux は `Ctrl+Shift+P`、macOS は `Cmd+Shift+P`）で **Tsuzuri: New Project** を実行します。
+2. 空のフォルダーを選びます。次のファイルが作られ、そのフォルダーが新しいウィンドウで開きます。
+
+| ファイル | 内容 |
+| --- | --- |
+| Main.tz | プログラムの入口とテストの例 |
+| Tsuzuri.toml | パッケージ名とバージョン |
+| .gitignore | ビルド結果を置く `.tsuzuri/` を Git の管理から除外 |
+
+フォルダーを信頼するかどうか確認されたら、信頼を選びます。信頼していないフォルダーでは、コンパイラやプログラムを起動しません。
+既存のフォルダーでも、Main.tz か Tsuzuri.toml があれば Tsuzuri のプロジェクトとして扱います。
+
+### 3. Hello, World を表示する
+
+Main.tz を開き、次の内容にします。
+
+```tsuzuri
+def main :: IO<unit> =
+    do! IO.write_line "Hello, World!"
+
+test "adds numbers" = assert (1 + 2 == 3)
+```
+
+- `def main :: IO<unit>` はプログラムの入口です。`IO<unit>` は、入出力を行い、値を返さない処理を表します。
+- `do! IO.write_line "..."` は、文字列と改行を標準出力へ書き込みます。字下げした行が `main` の本体です。
+- `test "名前" = assert (条件)` はテストです。通常のビルドには含まれません。
+
+エディター右上の ▷（**Run Project**）を押します。ファイルを保存してビルドし、ターミナルに `Hello, World!` を表示します。
+
+![Run Project でビルドし、ターミナルに Hello, World! を表示した画面](images/hello-world.png)
+
+## 使い方
+
+### コードを書く
+
+- 構文の色分け、括弧の補完、コメントの切り替え、折りたたみ。
+- 入力中の構文・型・所有権のエラーと警告。保存していない変更も検査します。
+- 型とドキュメントコメント（`///`）のホバー表示、定義への移動、アウトライン、パンくずリスト。
+- Format Document（Windows / Linux は `Shift+Alt+F`、macOS は `Shift+Option+F`）による公式フォーマッターでの整形。
+- キーワード、型、標準ライブラリの関数の補完。
+- `def`、`main`、`test`、`record`、`union`、`match`、`class`、`doc` などのスニペット。
+
+![関数にカーソルを合わせ、型とドキュメントコメントを表示した画面](images/hover.png)
+
+エラーは波線と問題パネルに表示します。
+
+![保存前の型エラーを波線と問題パネルに表示した画面](images/diagnostics.png)
+
+`IO.` のようにモジュール名に続けて入力すると、標準ライブラリの関数を補完します。
+
+![IO. に続けて標準ライブラリの関数を補完している画面](images/completion.png)
+
+### 実行とビルド
+
+エディター右上のボタン、コマンドパレット、ステータスバー左下の **Tsuzuri** から操作します。
+実行前には未保存のファイルを保存します。
+
+| 操作 | 方法 | 結果 |
 | --- | --- | --- |
-| darwin-x64 | 有効 | CodeLLDB |
-| darwin-arm64 | 有効 | CodeLLDB |
-| linux-x64 | 有効 | CodeLLDB |
-| linux-arm64 | 有効 | CodeLLDB |
-| win32-x64 | 有効 | CodeLLDB |
-| win32-arm64 | 有効 | 未対応。ほかの機能には影響しません |
+| 実行 | ▷ ボタン、**Tsuzuri: Run Project** | ビルドしてターミナルで実行。`IO.read_line` による入力も可能 |
+| ビルド | **Tsuzuri: Build Project**、**Tasks: Run Build Task** | `.tsuzuri/bin/Main`（Windows は `Main.exe`）を作成 |
+| 検査 | **Tsuzuri: Check Project** | 実行ファイルを作らずにエラーだけを確認 |
+| WebAssembly | **Tsuzuri: Build WebAssembly** | `.tsuzuri/bin/Main.wasm` を作成 |
 
-x86 32-bit は非対応です。Windows ARM64 ではデバッグ用依存を要求せず、デバッグボタンも表示しません。
-Linux は glibc ベースの VS Code 対応環境を対象とし、Alpine/musl の拡張ホストは対象外です。生成する Linux プログラムは同梱 musl を使います。
-Remote SSH／WSL／Dev Containers では拡張機能をリモート側へ導入し、その拡張ホストに合う VSIX を選択します。Web 版 VS Code／仮想ワークスペースは対象外です。
+ビルドと実行は既定で `-O3` の最適化を行います。設定の `tsuzuri.optimization` で変更できます。
+WebAssembly を動かすブラウザーや Node.js などのホストは、別に用意してください。
 
-**検証状況:** macOS ARM64 では実際の VS Code 上の編集からデバッグまで確認済みです。
-他の OS／CPU の実機試験は、この作業環境では実行していません。6 環境の CI は、そのホスト上のテストに成功した場合だけ VSIX を保存します。
-OS の最小版は VS Code、同梱 LLVM バイナリ、CodeLLDB の要件をすべて満たす必要があります。別 OS での動作保証をクロスコンパイルだけで主張しません。
+![コマンドパレットに Tsuzuri のコマンドを表示した画面](images/commands.png)
 
-## 編集機能
+### テスト
 
-- シンタックスハイライト、入れ子コメント、型変数、文字・文字列、数値接尾辞。
-- 未保存バッファのエラー・警告、UTF-16 位置、外部ファイル変更の再診断。
-- 型とドキュメントのホバー、定義ジャンプ、アウトライン、パンくず。
-- キーワード・型・標準ライブラリ関数の基本補完、関数・ラムダ・test 等のスニペット。
-- 公式 formatter による整形、括弧補完、コメント切り替え、インデント、折りたたみ。
-- 複数ワークスペース、プロジェクト別言語サーバー、再起動コマンド。
-- **Tsuzuri: Open Documentation** から利用できる同梱日本語ハンドブック。
+テストは `test "名前" = assert (条件)` と書きます。次の例では、`main` の返した値 `360` が実行時に表示されます。
 
-型に基づく完全な補完、参照検索、rename、signature help、code action はまだ提供しません。
-整形は未保存テキストを専用一時領域へ渡し、公式 formatter の AST 保存検査に成功した編集だけを返します。ディスク上のソースを直接上書きしません。
+```tsuzuri
+record Order { price: i64, quantity: i64 }
 
-## ビルド・実行・テスト
+/// 注文の小計を計算します。
+def subtotal :: Order -> i64 = \order ->
+    let amount = order.price * order.quantity
+    amount
 
-エディター右上の実行・デバッグ・ビルドボタン、コマンドパレット、ステータスバーの **Tsuzuri** から操作します。
-**Tasks: Run Build Task** にも Tsuzuri のタスクを提供します。ビルド・実行・テストの前に保存します。
-Run は統合ターミナルを使うため、IO.read_line の標準入力も利用できます。
+def main :: i64 =
+    let order = Order { price: 120, quantity: 3 }
+    subtotal order
 
-Test Explorer はコンパイラの `test --list --json` で検出し、検出時にテスト本体や LLVM を実行しません。
-同名テストも index で区別し、個別実行、全件実行、失敗位置、所要時間、キャンセル、O0／O3 のプロファイル、保存後の再検出を扱います。
-宣言の編集で index が変わった古いテスト選択は拒否し、誤ったテストを実行しません。
+test "subtotal multiplies price by quantity" =
+    assert (subtotal (Order { price: 120, quantity: 3 }) == 360)
 
-**Tsuzuri: Build WebAssembly** は同梱 Clang／wasm-ld で WASM を生成します。
-WASM のホスト実行・ブラウザーデバッグ、CLI の `test --target wasm32` に必要な外部 Node.js は、この拡張機能の通常の native テスト／デバッグとは別です。
+test "empty order costs nothing" =
+    assert (subtotal (Order { price: 120, quantity: 0 }) == 0)
+```
 
-## デバッグ
+アクティビティバーの Testing ビューに、プロジェクト内のテストが自動で表示されます。
+すべてのテストをまとめて実行するほか、行番号の横の ▷ から 1 件ずつ実行できます。
+結果には成否と所要時間が表示され、失敗したテストはその位置にメッセージを表示します。
+既定では `-O0` でビルドします。Testing ビューの実行ボタンの横にあるメニューで `Native (O3)` のプロファイルを選ぶと、最適化したコードでテストできます。
 
-F5 または **Tsuzuri: Debug Project** は `-O0 -g --trap-info` でビルドして CodeLLDB を起動します。
-ブレークポイント、ステップ、呼び出しスタック、ローカル変数、Watch、Debug Console、統合ターミナルが利用できます。
-macOS の `.dwarf` は自動で読み込みます。現状は DWARF に記録された低水準の型表示で、Tsuzuri 専用 pretty printer や完全な Tsuzuri 式評価はありません。
-テスト単体のソースデバッグは未対応です。Windows ARM64 はデバッグ開始時に非対応を説明し、通常の実行・テストは利用できます。
-必要な場合だけ launch.json で `type: "tsuzuri"`、`request: "launch"`、`project`、`args`、`env`、`stopOnEntry` を指定します。
+![Testing ビューと行番号の横にテスト結果を表示した画面](images/testing.png)
+
+### デバッグ
+
+1. 行番号の左をクリックして、ブレークポイントを置きます。
+2. `F5` を押すか、エディター右上のデバッグボタン（**Debug Project**）を押します。
+
+デバッグ情報付きでビルドし、ブレークポイントで停止します。変数、ウォッチ式、呼び出し履歴、ステップ実行を利用できます。
+冒頭の画面は、上の例で `subtotal` の中に止め、引数 `order` とローカル変数 `amount` を表示したものです。
+
+初回のデバッグでは、同梱しているデバッガー拡張機能 [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) を自動でインストールします。インターネット接続は不要です。
+既に CodeLLDB をインストールしている場合は、それを使います。
+
+通常は launch.json を作る必要はありません。プログラムに引数や環境変数を渡す場合は、次のように指定します。
+
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "tsuzuri",
+            "request": "launch",
+            "name": "Debug Tsuzuri",
+            "args": ["input.txt"],
+            "env": { "LOG_LEVEL": "debug" }
+        }
+    ]
+}
+```
+
+`project` でプロジェクトのフォルダー、`stopOnEntry` で開始直後の停止も指定できます。
+
+### ドキュメントを読む
+
+**Tsuzuri: Open Documentation** で、入門、言語リファレンス、標準ライブラリを含む日本語ハンドブックを VS Code の中に開きます。
+同じ内容は [GitHub](../_docs/README.md) でも読めます。
+
+## コマンド
+
+| コマンド | 内容 |
+| --- | --- |
+| Tsuzuri: New Project | 空のフォルダーに新しいプロジェクトを作る |
+| Tsuzuri: Run Project | ビルドしてターミナルで実行する |
+| Tsuzuri: Debug Project | デバッグ用にビルドしてデバッガーを起動する |
+| Tsuzuri: Build Project | 実行ファイルを `.tsuzuri/bin/` に作る |
+| Tsuzuri: Check Project | ビルドせずにエラーを検査する |
+| Tsuzuri: Test Project | プロジェクトのすべてのテストを実行する |
+| Tsuzuri: Build WebAssembly | WebAssembly を `.tsuzuri/bin/` に作る |
+| Tsuzuri: Open Documentation | 同梱のハンドブックを開く |
+| Tsuzuri: Project Actions | 主な操作を一覧から選ぶ。ステータスバーの **Tsuzuri** と同じ |
+| Tsuzuri: Show Toolchain | 使用中のコンパイラとツールチェーンを出力パネルに表示する |
+| Tsuzuri: Restart Language Server | 言語サーバーを再起動する |
 
 ## 設定
 
-| 設定 | 既定値 | 用途 |
+| 設定 | 既定値 | 内容 |
 | --- | --- | --- |
-| tsuzuri.projectPath | 空 | workspace からの相対、または絶対プロジェクトディレクトリ。空なら Main.tz／Tsuzuri.toml を探索 |
-| tsuzuri.optimization | 3 | build／run の最適化。debug は常に O0 |
-| tsuzuri.denyWarnings | false | 警告でも check／build／run を失敗させる |
-| tsuzuri.compilerPath | 空 | 開発用コンパイラの絶対パス。通常は変更不要 |
-| tsuzuri.toolchainPath | 空 | 開発用ツールチェーンの絶対パス。通常は同梱物を使用 |
+| `tsuzuri.optimization` | `3` | ビルドと実行の最適化レベル（0〜3）。デバッグは常に 0 |
+| `tsuzuri.denyWarnings` | `false` | 警告があれば検査、ビルド、実行を失敗させる |
+| `tsuzuri.projectPath` | 空 | プロジェクトのフォルダー。空なら、開いたファイルから最も近い Main.tz か Tsuzuri.toml を探す |
+| `tsuzuri.compilerPath` | 空 | 開発用。同梱以外のコンパイラを使う場合の絶対パス |
+| `tsuzuri.toolchainPath` | 空 | 開発用。同梱以外のツールチェーンを使う場合の絶対パス |
 
-通常は最も近い Main.tz／Tsuzuri.toml をプロジェクト root とします。親 root の下に独立プロジェクトを置く構成は、別 workspace folder に分けるか projectPath を明示してください。
-信頼していない workspace ではコード・コンパイラ・設定由来のプログラムを起動しません。テレメトリは追加していません。
-プロセスは引数配列で起動し、ユーザーのパスをシェルのコードとして評価しません。
+1 つのフォルダーに複数のプロジェクトを入れる場合は、プロジェクトごとにワークスペースフォルダーを分けるか、`tsuzuri.projectPath` を指定してください。
 
-## 拡張機能の開発
+## 対応環境
 
-以下は拡張機能を作る人向けです。完成した VSIX の利用者には不要です。
-Rust stable、Node.js 24、npm、LLVM 21 が必要です。macOS の再配置には install_name_tool／codesign、Linux には patchelf、Windows には Rust のビルド用 MSVC 環境を使います。
+VS Code 1.103 以降が必要です。
 
-```sh
-cd vsc
-npm ci
-LLVM_PREFIX=/absolute/path/to/llvm21 npm run toolchain
-npm run test:unit
-npm run test:toolchain
-npm test
-npm run vsix
-npm run test:installed
-```
+| OS | CPU | 編集・実行・テスト | デバッグ |
+| --- | --- | --- | --- |
+| macOS | x64、Apple シリコン（ARM64） | 対応 | 対応 |
+| Linux（glibc） | x64、ARM64 | 対応 | 対応 |
+| Windows | x64 | 対応 | 対応 |
+| Windows | ARM64 | 対応 | 未対応 |
 
-Homebrew の LLVM と lld が別パッケージの場合は `TSUZURI_WASM_LD=/absolute/path/to/wasm-ld` も指定します。
-Windows は環境変数 LLVM_PREFIX に LLVM 21 のインストール先を指定します。ターゲットの CPU と Node／Rust／LLVM の CPU を一致させてください。
-`npm test` は隔離された VS Code 1.103.2 を取得します。既存 VS Code を使う場合は VSCODE_EXECUTABLE_PATH を実行ファイルの絶対パスにします。
-Linux の GUI なし環境では `xvfb-run -a npm test` を使います。
+- 32-bit x86、Alpine Linux など musl ベースの環境で動く VS Code、Web 版 VS Code は対象外です。
+- Remote - SSH、WSL、Dev Containers では、リモート側に拡張機能をインストールしてください。
+- Linux で作る実行ファイルは、同梱の musl を使います。
 
-`npm run toolchain` は LLVM、再配置した共有ライブラリ、Zig 0.16.0 の SDK／libc、コンパイラ、対応環境の CodeLLDB 1.12.3 を同梱します。
-LLVM IR のオブジェクト化は Clang、C runtime とリンクは SDK を内包する Zig が担当します。意味を変更する fast-math は追加しません。
-Windows ARM64 では Zig 0.16.0 がリンク中に異常終了するため、Zig の代わりに llvm-mingw 20251216（LLVM 21.1.8）の MinGW-w64 sysroot と compiler-rt を同梱し、C runtime とリンクも同梱 Clang と ld.lld が担当します。
-ダウンロードは固定 SHA-256 で検証し、ライセンスを同梱します。生成物は git 管理せず、npm の lockfile とビルドスクリプトを管理します。
+## 現在の制限
 
-`npm run vsix` は manifest と全ツールのハッシュを検証してから platform-specific VSIX を作り、アーカイブ内の全ツールのハッシュ・実行権限・必須ファイルを再検証します。
-`dist/tsuzuri-0.1.0-<target>.vsix` と SHA-256 ファイルが成果物です。`npm run vsix:verify` で再検証できます。
-検証は native／WASM O0／O3、同梱物の別パス移動、システム Clang／SDK の遮断、IO、並列テスト、Unicode 診断、複数 root、実際の LLDB 停止と変数を含みます。
-`test:installed` は空の拡張プロファイルへ VSIX をインストールし、開発フォルダーではなく配布物のコードで同じ IDE 試験を行います。macOS ARM64 では VS Code 1.103.2 と作業環境の VS Code で確認済みです。
-秘密情報検査は拡張コードと同梱文書に対して実行し、大きなバイナリ群は manifest の全件ハッシュ検証で管理します。
-CI は自動公開せず成果物を保存します。Marketplace の publisher 登録・署名・公開は別のリリース作業です。
+- 補完はキーワード、型、標準ライブラリの関数が対象です。型に基づく補完、参照の検索、名前の変更、シグネチャヘルプ、クイックフィックスには未対応です。
+- デバッガーの変数表示は DWARF に基づく低水準の表示です。Tsuzuri の式の評価には対応していません。
+- テストを 1 件だけデバッグする機能には未対応です。
+- 既知の問題: macOS では、`IO` を使うプログラム（New Project で作る例を含む）のブレークポイントで停止しません。`IO` を使わないプログラムでは停止します。
+
+## セキュリティとプライバシー
+
+- 信頼していないワークスペースでは、コード、コンパイラ、設定に由来するプログラムを起動しません。
+- この拡張機能は利用状況のデータ（テレメトリ）を送信しません。
+
+## リンク
+
+- [Tsuzuri のリポジトリ](https://github.com/tatsuya-midorikawa/Tsuzuri)
+- [日本語ドキュメント](../_docs/README.md)
+- [問題の報告](https://github.com/tatsuya-midorikawa/Tsuzuri/issues)
+- [拡張機能の開発者向け情報](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/main/vsc/Development.md)
+
+## ライセンス
+
+Apache License 2.0 です。同梱している LLVM、Zig、CodeLLDB などは、それぞれのライセンスに従います。各ライセンスはパッケージに含まれています。

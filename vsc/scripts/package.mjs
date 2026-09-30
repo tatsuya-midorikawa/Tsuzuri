@@ -67,8 +67,12 @@ if (process.argv.includes('--scan')) {
   console.log(`Secret scan passed: ${files.length} extension and documentation files. Toolchain integrity is verified separately.`);
 } else {
   if (!process.argv.includes('--verify')) {
+    // vsce ignores repository.directory, so point README-relative links at vsc/ explicitly.
+    const repository = manifest.repository.url.replace(/\.git$/, '');
     await createVSIX({ cwd: extension, packagePath: output, target, dependencies: false,
-      allowPackageAllSecrets: true, allowPackageEnvFile: true });
+      allowPackageAllSecrets: true, allowPackageEnvFile: true,
+      baseContentUrl: `${repository}/blob/HEAD/${manifest.repository.directory}`,
+      baseImagesUrl: `${repository}/raw/HEAD/${manifest.repository.directory}` });
   }
   await verifyArchive(output);
   const hash = createHash('sha256');
