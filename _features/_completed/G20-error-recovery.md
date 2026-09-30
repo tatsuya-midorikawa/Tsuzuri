@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | G02 |
 | 後続 | G12, G13, G17 |
-| 状態 | todo |
+| 状態 | done（2026-09-30: Phase 1・Phase 2。実装時の補正と検証結果は末尾） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要 |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: 一度のビルドで得られる診断が rustc や C# コンパイラより少なく、編集途中のコードで LSP の診断が一件ずつしか出ない |
@@ -143,14 +143,17 @@ e: E1012 use of moved or partially moved value 's'        （'t' の E1012 は�
 
 - R1 回復点: 関数本体と entry を検査する `Checker` だけ `recovering`（新規）を true にする。`Checker::expression` の dispatch が `Err(d)` を
   返したら、`d` を `Checker::recovered`（新規）へ積み、`self.poisoned = true` にして `Ok(TypedExpr::error(expression.span))` を返す。
-  `expression` を通る部分式はすべて回復点で、最も内側の `expression` が捕まえる。親は子の `Type::Error` を見て R3 で黙る。
+  引数専用経路の `Checker::argument` も同じ回復点にする。最も内側の回復点が捕まえ、親は子の `Type::Error` を見て R3 で黙る。
+  大きい結果分岐は非再帰の `finish_recovery` に分離する。
 - R2 ブロックの束縛: `Checker::composed_expression` の `ExprKind::Block` arm で、注釈の解決（`self.annotation`）か `validate_size` が
   失敗したら、その診断を `recovered` へ積み、値は期待型なし（`None`）で検査し、束縛は `Type::Error` にする。値の失敗は R1 が
   `TypedExpr::error` にするので、束縛は自動的に `Type::Error` になる（未定義名を束縛した `let x = missing` の `x` は `Type::Error`）。
-- R3 cascade 抑制: 既存の規則をそのまま使う。`self.poisoned` のとき、`Checker::finish_expression` は値の型か子の型が `Type::Error` を
+- R3 cascade 抑制: G02 の規則を使う。`self.poisoned` のとき、`Checker::finish_expression` は値の型か子の型が `Type::Error` を
   含む式を診断なしで `TypedExpr::error` にする。`unify` は `Type::Error` と何でも一致する。フィールド・添字・呼び出し・演算・match・for の
   `contains_error` 分岐も既存のまま。したがって `Type::Error` の部分式を含む式は、それ以上何も報告しない。
   兄弟の部分式が持つ独立したエラーは、それぞれの R1 で先に報告される（`missing_one + missing_two` は 2 件）。
+  回復中は兄弟式の erroneous な型ヒントを外すが、有効な外側の期待型・コレクション注釈は保持する。
+  所有権回復用にブロックの正常な文は保持し、ブロックの型だけを `Error` にする。その他の壊れた式は Error 節点に置き換える。
 - R4 状態の復元: R1 で回復するとき、`Checker` の入れ子状態を dispatch 前の値へ戻す。対象は `scopes` の長さ、`normal_loop_depth`、
   `computation_depth` の 3 つ（`RecoveryMark`（新規））。`Block` arm の `self.scopes.push` の後で `?` が抜けると scope が残るため。
   蓄積だけの field（`constraints`、`members`、`undecided_borrows`、`families`、`coverage`、`borrowed`、`shadowing_warnings`）は戻さない。
@@ -158,6 +161,7 @@ e: E1012 use of moved or partially moved value 's'        （'t' の E1012 は�
   唯一の診断にする。`recovered` を持つ関数は従来の poisoned と同じく二つ目の loop（`finish`・`check_coverage`）へ進めないので、
   そこで出る `E1015`・`E1021`・undecided borrow などは、回復したエラーのない関数でだけ報告される。`infer_active_result` など本体以外の
   `Checker` は `recovering` が false のままで、`Err` をそのまま返す。
+  資源制限の `E1017` も回復せず、その本体を打ち切る。途中で中断した生成式を所有権検査へ渡さない。
 - R6 本体の後: `recovered` の各診断を `classes.derived_error(id, _)`（entry はそのまま）で `diagnostics` へ入れ、続いて `Err` があれば
   従来どおり入れる。`checker.poisoned` の関数は `functions` へ入れない（従来どおり）。
 - R7 上限: `recovered.len()` が `MAX_UNIQUE_DIAGNOSTICS` に達したら R1 は捕まえずに `Err` を返し、その本体の検査を終える。
@@ -169,6 +173,7 @@ e: E1012 use of moved or partially moved value 's'        （'t' の E1012 は�
   `Ok(())`、なければ診断を `recovered`（新規）へ積み、root を `reported` へ入れて `Ok(())` を返す。競合では競合した各 loan の
   `place.root` も `reported` へ入れる。`access` は `report` の後すぐ `Ok(())` で戻る。`access` 以外の `E1012`／`E1013`／`E1014` の
   `return Err` は変えない（その本体の最後の診断になる）。`infer` の真偽どちらでも同じ。
+  診断済み root に由来する返却・ブロック脱出・代入の寿命診断と、移動済み参照の参照外しによる二次診断は抑制する。
 - O2 型エラーのあるプロジェクト: 二つ目の loop の後でエラーがあり、`diagnostics.is_full()` でなければ、`recovery_module`（新規）で
   関数 ID と添字をそろえた `CheckedModule` を作り、`ownership::check_recovered`（新規）の診断を `diagnostics` へ入れてから、従来どおり
   `diagnostics.check()?` で止まる。検査する関数は、二つ目の loop を通った関数と、`checker.finish` が成功した回復済みの関数。
@@ -177,9 +182,10 @@ e: E1012 use of moved or partially moved value 's'        （'t' の E1012 は�
   `signature` が Scheme の `signature` の `CheckedFunction` で埋める。stub の本体は検査しない。stub への呼び出しの結果は loan を持たない
   （`closed_returns` と `Checker::callback_returns_closed` は本体が `E::Error` の関数を closed とみなす）。
 - O4 Error 節点: `Checker::eval_value` は既に `E::Error` を何もしない arm に持つ。R3 が親の式ごと `TypedExpr::error` にするので、
-  壊れた呼び出しの引数の move・借用は所有権検査に現れない。`report` は root の局所変数の型が `contains_error` なら診断を捨てる。
+  壊れた呼び出しの引数の move・借用は所有権検査に現れない。Error 型の局所変数の使用も `finish_expression` が Error 節点にする。
 - O5 結果: 回復は偽陰性（修正後に初めて見えるエラー）を許し、偽陽性を許さない。回復 pass は Copy 制約を捨て、特殊化後の
   `ownership::check_all` は従来どおりエラーのないプロジェクトでだけ走る。
+  Error stub は loan を持たないので、回復 pass は access の診断だけを残し、寿命などの `Err` は型の修正後に報告する。
 
 ### 順序・上限・出力
 
@@ -206,8 +212,9 @@ e: E1012 use of moved or partially moved value 's'        （'t' の E1012 は�
 
 ### 資源上限
 
-- 回復は新しい再帰を足さない。深さは従来どおり `MAX_NESTING = 128`（`src/syntax.rs`）で制限され、R1 は `expression` の各段で
-  `RecoveryMark`（usize 3 個）だけを frame に足す。回復の処理は `#[cold]`・`#[inline(never)]` の `Checker::recover_expression`（新規）へ出す。
+- 回復は新しい再帰を足さない。深さは従来どおり `MAX_NESTING = 128`（`src/syntax.rs`）で制限する。
+  R1 の状態は `RecoveryMark`（usize 3 個）。結果分岐は非再帰の `finish_recovery`、失敗処理は
+  `#[cold]`・`#[inline(never)]` の `recover_expression` に分離する。二項式も専用 dispatcher にして大きい汎用フレームを避ける。
 - 一つの本体の回復済み診断は R7 で `MAX_UNIQUE_DIAGNOSTICS` 件まで。所有権の `recovered` も同じ上限で止める。
 
 ### 例
@@ -276,7 +283,9 @@ pub(crate) fn check_recovered(module: &CheckedModule, checkable: &[bool]) -> Vec
 | 検査 | `src/check.rs` | `check_modules_collect` の関数 loop と entry loop | 本体前の処理の後で `checker.recovering = true`。R6。Phase 2 のため `ids`（新規、`functions` と並ぶ宣言 ID）と回復済みの関数 `(id, CheckedFunction, Checker)` を残す |
 | 検査 | `src/check.rs` | `check_modules_collect` の二つ目の loop の後 | O2。`diagnostics.check()` が `Err` のときだけ `recovery_module` と `ownership::check_recovered` |
 | 検査 | `src/check.rs` | `recovery_module`（新規） | O3。長さ `function_declarations.len()`（entry があれば +1）の `functions` を作る |
-| 検査 | `src/check.rs` | `Checker::finish_expression`, `infer_active_result` | 変更なし |
+| 検査 | `src/check.rs` | `Checker::finish_expression` | 回復中のブロックは正常な文を保持して型だけ Error にする |
+| 検査 | `src/check.rs` | `Checker::argument`, `finish_recovery`, `binary_expression` | 引数回復、非再帰の結果分岐、二項式の小さい dispatcher |
+| 検査 | `src/check.rs` | `infer_active_result` | 変更なし |
 | 検査 | `src/polymorph.rs` | `Checker::function`, `unify`, `Checker::finish`, `solve_members` | 変更なし（`Type::Error` の既存分岐をそのまま使う） |
 | 検査 | `src/control.rs`, `src/computation.rs` | `control_expression`, `check_implicit` | 変更なし。停止条件の範囲で `contains_error` 分岐を足すことだけ許す |
 | 所有権 | `src/ownership.rs` | `Checker`, `check_body`, `check_functions` | `recovered`・`reported`。`check_functions` は `Err` の前に `recovered` を `diagnostics` へ入れる |
@@ -473,7 +482,8 @@ node tests/e2e.mjs target/release/tsuzuri
   1,100 個では、表示 50、`omitted == 950`、`omitted_is_lower_bound`、`Some("at least 950 more errors not shown")`。
   list の要素数と束縛数は `MAX_NESTING`（128）未満に保つ。
 - (5) `recovery_keeps_stack_depth_bounded`: r（括弧 100 段の `missing` と `let b: bool = 1`）が `["E1002", "E1003"]`。
-  `(0..100).fold("missing100".to_string(), |inner, i| format!("(missing{i} + {inner})"))` を本体にした関数で、表示 50、`omitted == 51`。
+  101 個の `missing0`–`missing100` を括弧なしの ` + ` で結んだ左結合式で、表示 50、`omitted == 51`。
+  元の括弧付き右入れ子案は型検査前に `E0002`（`syntax nesting exceeds 128`）になるため、parser を変えず入力を補正した。
   debug build の既定のテスト thread（2 MiB）で走らせ、thread を作らない。
 - (10) `cli_json_lists_every_recovered_error_in_order`: `tests/warnings.rs` の `cli_caps_warnings_and_denies_before_touching_artifacts` と
   同じ temp dir・`Command` の作り方で、a を `check <dir> --json` する。終了コード 1、stderr は 3 行、各行が `{"severity":"error","code":"`
@@ -508,13 +518,13 @@ codegen を変えないので新しい E2E suite は作らない。`node tests/e
 
 ## 受け入れ条件
 
-- [ ] 「例」の a–e と「テスト計画」の表のすべてのソースで、コードの列が期待と一致する。
-- [ ] cascade-negative（c、h、i、j、k、o、p）で余分な診断がなく、どの message も `erroneous` を含まない。
-- [ ] 表示 50 件・収集 1,000 件・省略通知・JSON lines の形式が変わらない（(4)、(10)、`tests/e2e.mjs`）。
-- [ ] エラーのない examples の IR が `-O0`／`-O3` で byte 単位で同じ。エラーがあれば LLVM へ進まない。
-- [ ] stack-depth の 7 件が成功し、stack サイズ・`MAX_NESTING`・上限を変えていない。
-- [ ] 既存テストの期待値を変えていない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] 「例」の a–e と「テスト計画」の表のすべてのソースで、コードの列が期待と一致する。
+- [x] cascade-negative（c、h、i、j、k、o、p）で余分な診断がなく、どの message も `erroneous` を含まない。
+- [x] 表示 50 件・収集 1,000 件・省略通知・JSON lines の形式が変わらない（(4)、(10)、`tests/e2e.mjs`）。
+- [x] エラーのない examples の IR が `-O0`／`-O3` で byte 単位で同じ。エラーがあれば LLVM へ進まない。
+- [x] stack-depth の 7 件が成功し、stack サイズ・`MAX_NESTING`・上限を変えていない。
+- [x] 既存テストの期待値を変えていない。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -541,14 +551,15 @@ codegen を変えないので新しい E2E suite は作らない。`node tests/e
 
 ### D1: 回復点
 
-- 決定: 回復点は `Checker::expression`（R1）とブロック束縛の注釈（R2）だけにし、関数本体と entry の検査でだけ有効にする。
-- 理由: すべての部分式が `expression` を通るので、一か所で最も内側の失敗を捕まえられる。本体以外の `Checker` の用途（active pattern の
+- 決定: 回復点は `Checker::expression`・引数専用の `Checker::argument`（R1）とブロック束縛の注釈（R2）にし、関数本体と entry でだけ有効にする。
+- 理由: 引数は `expression` を迂回する経路もあるため同じ回復を適用する。本体以外の `Checker` の用途（active pattern の
   結果型の推論）は `Err` に依存する。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D2: 二次エラーの抑制
 
 - 決定: 新しい抑制規則を作らず、G02 の `poisoned` と `finish_expression`・`unify`・既存の `contains_error` 分岐を使う。
+- 実装時の補正: 有効な外側の型ヒントは保持し、回復中のブロックだけは正常な文を保持して型を Error にする。
 - 理由: G02 のテストが 26 の式の形で抑制を確かめている。規則を一つに保つと LSP と CLI で結果が一致する。
 - 状態: 既定案（実装者はこの案に従う）
 
@@ -581,6 +592,8 @@ codegen を変えないので新しい E2E suite は作らない。`node tests/e
 ### D7: 偽陽性を出さない
 
 - 決定: Error 節点は所有権で何もしない。stub は closed。root の型が `contains_error` の診断は捨てる。回復済みの関数の `finish` の `Err` は捨てる。
+- 実装時の補正: 診断済み root の寿命 cascade を抑制し、回復 pass は access の診断だけを残す。root の型の検査は
+  `finish_expression` が Error 型の局所変数の使用を Error 節点にするため不要だった。
 - 理由: 回復は偽陰性を許し偽陽性を許さない（O5）。修正後の再検査で残りのエラーは見える。
 - 状態: 既定案（実装者はこの案に従う）
 
@@ -603,3 +616,93 @@ codegen を変えないので新しい E2E suite は作らない。`node tests/e
 - 決定: 旧 API は並べた集合の先頭を返す規則を保つ。回復で既存テストの先頭が変わる場合は期待値を変えず停止する。
 - 理由: 期待値の変更は人間の判断を要する（GUIDE §13）。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 初回の停止記録（2026-09-30）
+
+以下は初回停止時点の履歴。利用者の「まずはあなたの案で検証を進め、最適だと考える方法で実装・修正をして」により再開し、
+停止原因を解消した。現在の結果は次の「実装と検証」を参照。
+
+### 実装した範囲
+
+- 手順 1–3 と手順 4 の実装・診断テストまで。Phase 2 は未着手。
+- [src/check.rs](../../src/check.rs) に `RecoveryMark`、`recovering`、`recovered`、cold な `recover_expression` を追加した。
+  本体と entry でだけ回復を有効にし、回復済み診断と最後の `Err` を poison に触れた場合も収集する。
+- [tests/diagnostics.rs](../../tests/diagnostics.rs) に `codes` と手順 4 の 2 テストを追加した。既存の期待値は変更していない。
+- `unsafe`、crate、診断コード、stack サイズ、`MAX_NESTING`、収集・表示上限は変更していない。
+
+### チケットの補正と確認すべき点
+
+- 元の R3 だけでは兄弟式の独立したエラーを取りこぼす。`missing_one + missing_two` は、左辺の `Type::Error` が
+  右辺の期待型に渡り、`expression` 先頭の既存分岐によって右辺を検査せず、1 件しか報告しなかった。
+  回復中だけ、演算子・コレクション・`if` の兄弟式へ渡す erroneous な期待型を外した。期待型が健全な経路は変えていない。
+- `argument` は `call_expression` と `place_argument` を直接呼ぶため、すべての部分式が `expression` の dispatch を通るという
+  D1 の前提は成立しない。引数にも同じ回復を追加し、`add (true 1) false` の `E1005`・`E1003` を確認した。
+  ただし、この変更を含む段で下記の深さテストが失敗しており、フレーム設計は未確定。
+- Phase 2 の前に確認すべき点: `finish_expression` が壊れたブロック全体を `Error` に置き換えると、内部の正常な文も消える。
+  O2 の再現例 a に必要な所有権検査の対象を保持できるか、ブロックの回復表現を検証する必要がある。まだ変更していない。
+
+### 検証結果
+
+| 確認 | 結果 |
+| --- | --- |
+| 変更前の `cargo build --release --locked`・`cargo test --locked` | 成功 |
+| 変更前の診断テスト・指定の深さテスト 7 件 | `11 passed`・各 `1 passed` |
+| a–s と j2 の JSON、examples の IR | 20 ケースと native/WASM × `-O0`/`-O3` の 20 IR を `/tmp/tz-g20-20260930/before/` に保存。除外なし |
+| 手順 3（回復無効）の診断・深さ・全 Rust テスト | `11 passed`・7 件すべて成功・全体成功 |
+| 手順 3 の `cargo fmt --all`・`cargo clippy --locked --all-targets -- -D warnings` | 成功 |
+| 手順 4 の独立エラーテスト・診断テスト | `1 passed`・`13 passed`。既存の 26 poison ケースも成功 |
+| 手順 4 の parser・polymorphism 深さテスト | 各 `1 passed` |
+| 手順 4 の `bounds_nested_builder_expansion_not_just_source_syntax` | `stack overflow`、SIGABRT。停止条件に従い中断 |
+| 手順 4 の残り 4 深さテスト・全 Rust テスト、IR 前後比較、E2E | 上記の失敗で未実行 |
+
+`expression` の呼び出し元を、チケットの 4 ファイルに加えて [src/closures.rs](../../src/closures.rs) でも棚卸しした。
+推測的な `.ok()`・`.is_err()`・別経路の試行はなく、`?`、末尾の返却、`Result` の集約、状態を戻してからの返却だった。
+入れ子状態の復元対象はスコープ長・ループ深さ・計算式深さの 3 つ。性能の前後比較はまだ行っていない。
+
+### 停止原因の候補と再開案
+
+回復有効化前は同じ深さテストが成功し、有効化と引数回復の追加後に失敗した。引数検査の再帰フレーム増加、または
+計算式の深さ制限エラーから回復して検査を続ける経路が原因候補であり、どちらかはまだ確定していない。
+
+再開する場合は、まず `argument` を小さい dispatcher に保ち、結果処理を非再帰の補助関数へ分離する案を検証する。
+同じ失敗テストを最初に再実行し、stack サイズや既存上限を増やさない。チケットの停止条件による中断後のため、
+この修正を試すか、人間の判断を待つ。ブロック注釈の回復・所有権回復・仕様文書の更新・最終検証は残作業。
+
+## 実装と検証（2026-09-30）
+
+### 実装範囲と補正
+
+- Phase 1・Phase 2 と手順 1–11 を実装。Phase 3（文単位の構文回復・回復本体の意味索引）は対象外。
+- 引数も回復点に追加し、結果分岐を `finish_recovery` へ分離して初回の計算式 stack overflow を解消した。
+  深い二項式は `binary_expression` に分離。stack サイズ・深さ上限・表示／収集上限は変更していない。
+- 元の深い右入れ子テストは parser の `E0002` で止まるため、同じ 101 エラー・省略 51 件を持つ左結合式へ補正した。
+  既存テストの期待値は変更していない。
+- 演算子・分岐・コレクションは有効な外側の型ヒントを保持。ブロックは正常な文を残し、型だけを Error にする。
+- 所有権は root ごとの最初の access 診断を収集し、入れ子でも診断を共有。診断済み root の寿命と参照外しの cascade を抑制する。
+- `E1017` は本体を打ち切る。回復用 module は宣言 ID を維持し、型確定に失敗した本体を Error 本体にして全関数を infer mode で検査する。
+  回復 pass は access の診断だけを残す。借用返却値の依存解析を持たず、寿命の偽陽性を防ぐ（偽陰性は許す）。
+- `unsafe`・crate・診断コード・LLVM・CLI・LSP・ランタイムの変更なし。コミット・ブランチは作成していない。
+
+### 最終検証
+
+| コマンド／確認 | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check`・`cargo clippy --locked --all-targets -- -D warnings` | 成功 |
+| `cargo test --locked --test diagnostics` | `19 passed`（既存 11 件と新規 8 件） |
+| `cargo test --locked --quiet` | 全 Rust テスト成功。宣言 ID の debug assertion も成功 |
+| 指定の stack-depth テスト 7 件 | 各 `1 passed`。既定のテスト stack のまま |
+| a–s と j2 の release JSON | 20 ケースすべて期待どおり。省略形式・cascade-negative・CLI の位置順も成功 |
+| hello/control/functional/polymorphism/tasks の IR | native/WASM × `-O0`/`-O3` の 20 ファイルが変更前と byte 単位で一致 |
+| `cargo build --release --locked`・`node tests/e2e.mjs target/release/tsuzuri` | 成功。各 O0/O3 に native/WASM の 400 結果・15 traps、インポートなし |
+| E2E の modules/packages/polymorphism/type aliases/CLI | 決定的 IR・JSON lines・50/1000 件の上限・出力保護・balanced allocations が成功 |
+| `node tests/examples.mjs target/release/tsuzuri` | console/host/WASM と 32,600 game steps が成功 |
+| `npx --yes --package=node@24 node benchmarks/run-managed.mjs target/release/tsuzuri --quick` | quick の全チェックサム照合が成功。時間・比率は性能の根拠に使わない |
+| `sh scripts/check-runtime-includes.sh` | 20 ファイルすべて追跡済み |
+| `_docs/tools/diagnostics.md`・`_docs/feature-status.md` の文書チェック | 成功 |
+
+再現スクリプト、変更前後の release バイナリ／JSON／IR と `/usr/bin/time -l` の記録は `/tmp/tz-g20-20260930/`。
+`check examples/control` の単発計測は before `0.02 s`・after `0.03 s`、最大 RSS は `15,368,192`・`15,335,424` bytes。
+丸めの大きい単発標本であり、性能改善・退行の主張や合否閾値には使わない。
+
+変更ファイルは `src/check.rs`、`src/ownership.rs`、`tests/diagnostics.rs`、`docs/language.md`、`docs/architecture.md`、
+`_docs/tools/diagnostics.md`、`_docs/feature-status.md`、`_features/README.md` とこのチケット。未承認項目・対象内の残作業なし。

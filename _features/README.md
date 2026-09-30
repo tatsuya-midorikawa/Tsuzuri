@@ -244,7 +244,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G17 | [モジュール単位の増分コンパイルと規模上限の見直し](G17-incremental-compilation.md) | P2 | XL | G11, E03, (G20) | todo |
 | G18 | [ベンチマーク・カバレッジ・プロパティテスト](G18-bench-coverage.md) | P2 | M | G06, (D07), (E08) | todo |
 | G19 | [言語版（edition）と互換性・非推奨の管理](G19-editions-compatibility.md) | P3 | M | E04, G09, (E10) | todo |
-| G20 | [関数内の型・所有権エラーからの回復](G20-error-recovery.md) | P1 | L | G02 | todo |
+| G20 | [関数内の型・所有権エラーからの回復](_completed/G20-error-recovery.md) | P1 | L | G02 | done |
 
 ## 推奨フェーズ
 
