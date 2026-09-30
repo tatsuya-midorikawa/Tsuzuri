@@ -134,7 +134,7 @@
 | G17 | 未着手（計画）: 並列コード生成、モジュール単位の解析キャッシュ、上限の見直し | [cache](tools/build-and-cache.md) | [G17](../_features/G17-incremental-compilation.md) |
 | G18 | 未着手（計画）: bench 宣言、カバレッジ、プロパティテスト | [テスト](tools/testing.md) | [G18](../_features/G18-bench-coverage.md) |
 | G19 | 未着手（計画）: edition、非推奨の警告、API 差分の検査 | [パッケージ](language-reference/modules-and-packages.md) | [G19](../_features/G19-editions-compatibility.md) |
-| G20 | 未着手（計画）: 関数内の型エラーからの回復 | [診断](tools/diagnostics.md) | [G20](../_features/G20-error-recovery.md) |
+| G20 | 対応: 関数内の型・所有権エラー回復、二次エラーの抑制 | [診断](tools/diagnostics.md) | [G20](../_features/_completed/G20-error-recovery.md) |
 
 ## 特に注意する未対応範囲
 

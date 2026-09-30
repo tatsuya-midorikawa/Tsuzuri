@@ -339,9 +339,19 @@ and は回復境界ではありません。失敗した宣言は定義名集合�
 構造が壊れた段階では停止します。全関数名を登録した後、シグネチャを個別に解決します。
 不正なシグネチャは名前と ID を残し、返却型が `Type::Error` の poisoned Scheme として表します。
 関数参照と依存する式は `TypedExprKind::Error` を伝播し、poison に触れた本体の未確定制約・網羅性・二次診断は出しません。
-他の有効なシグネチャの本体と entry は独立して検査します。エラーがあれば特殊化・closure lowering へは進めません。
-Copy 制約の推論段階も関数ごとに所有権エラーを集め、推論結果を特殊化へ一度だけ渡します。
-具体的な借用シグネチャと `ownership::check_all` も関数単位で収集します。
+本体と entry だけで `Checker::expression`・`argument` の失敗を回復し、ブロック注釈・サイズ検証も個別に回復します。
+回復時は `RecoveryMark` のスコープ長・ループ深さ・計算式深さを復元します。回復中の erroneous な期待型は「不明な文脈」として渡し、
+兄弟式・match の節・呼び出せない対象の引数も検査します。空のコレクション・型なしリテラル・lambda の引数・汎用の引数など文脈で型が決まる部分だけを Error にし、
+依存する式は既存の `finish_expression`・`contains_error` で抑制します。ブロックは型だけを `Error` にして正常な文を保持します。
+大きい結果分岐は非再帰の `finish_recovery`、失敗処理は cold な `recover_expression` に分離します。
+二項式も専用 dispatcher にし、深い式で汎用の値検査フレームを保持しません。`E1017` と収集上限では本体を打ち切ります。
+型エラーがあるときだけ、宣言 ID と添字をそろえた `recovery_module` を構築します。検査できない本体は closed な Error stub にし、
+型確定に失敗した本体も Error 本体にし、`ownership::check_recovered` が infer mode で全関数を検査します。
+Error stub は loan を持たないため、この pass は access の診断だけを残し、寿命などの `Err` と Copy 制約は捨てます。
+所有権の `access` は root ごとの最初の診断を保存し、診断済み root に起因する寿命・移動後の参照外しの二次診断を抑制します。
+入れ子の本体も回復済み診断を共有します。その他の所有権エラーは本体を打ち切ります。
+他の有効なシグネチャの本体と entry は独立して検査します。エラーがあれば意味索引・特殊化・closure lowering へは進めません。
+エラーのないプロジェクトでは従来どおり Copy 制約を推論し、特殊化後に `ownership::check_all` を行います。
 Type／式の Error は検査中だけの状態で、成功した CheckedModule には存在せず、LLVM 入口も明示的に拒否します。
 
 **借用の表記:** キーワードの `ref`／`ref mut`／`deref` と Rust 互換の `&`／`&mut`／`*` は、構文 AST の
@@ -975,7 +985,8 @@ node tests/features.mjs target/release/tsuzuri
 Rust のテストは LLVM なしで走ります。字句・型・失敗例・レイアウト・IR の不変条件・
 6,500 パターンの決定的なソース変異を検査します。
 `tests/diagnostics.rs` と CLI E2E は複数ファイル・宣言境界・括弧内の行頭 let・壊れたシグネチャ／認識器の抑制、
-型／所有権の関数単位の継続、50 件を超える正確な省略数と 1000 件の収集上限、JSON lines・出力保護を検査します。
+型／所有権の関数内の回復・スコープ復元・壊れた関数の借用返却値からの二次エラー抑制、50 件を超える正確な省略数と 1000 件の収集上限、
+既定スタックでの深い回復、JSON lines・出力保護を検査します。
 所有権では正常な move／共有借用／排他借用に加え、move 後の使用、部分 move、
 分岐・短絡評価、再借用、寿命切れ、オペランド評価中の参照先の無効化を検査します。
 Node の E2E は本物の Clang／LLD、ネイティブ C ホスト、WebAssembly エンジンを使い、

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
@@ -3992,7 +3992,10 @@ fn check_modules_collect(
             }
         }
     }
+    let declaration_count = function_declarations.len();
     let mut functions = Vec::new();
+    let mut ids = Vec::new();
+    let mut recovered_functions = Vec::new();
     let mut pending = Vec::new();
     let mut warnings = Vec::new();
     for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
@@ -4018,6 +4021,7 @@ fn check_modules_collect(
                 parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
             }
             computation::expand(&mut function.body, &names)?;
+            checker.recovering = true;
             let body = if let Some(import) = external_functions.get(&id) {
                 TypedExpr {
                     kind: TypedExprKind::HostCall(
@@ -4059,14 +4063,18 @@ fn check_modules_collect(
                 is_task: false,
             })
         })();
-        if checker.poisoned {
-            continue;
-        }
+        diagnostics.extend(
+            std::mem::take(&mut checker.recovered)
+                .into_iter()
+                .map(|error| classes.derived_error(id, error)),
+        );
         match checked {
-            Ok(function) => {
+            Ok(function) if !checker.poisoned => {
                 functions.push(function);
+                ids.push(id);
                 pending.push(checker);
             }
+            Ok(function) => recovered_functions.push((id, function, checker)),
             Err(error) => diagnostics.push(classes.derived_error(id, error)),
         }
     }
@@ -4112,6 +4120,7 @@ fn check_modules_collect(
         let checked = (|| {
             let mut expression = expression.clone();
             computation::expand(&mut expression, &names)?;
+            checker.recovering = true;
             let body = checker.expression(&expression, None)?;
             Ok(CheckedFunction {
                 module: module.to_owned(),
@@ -4137,15 +4146,15 @@ fn check_modules_collect(
                 is_task: false,
             })
         })();
-        if checker.poisoned {
-            continue;
-        }
+        diagnostics.extend(std::mem::take(&mut checker.recovered));
         match checked {
-            Ok(function) => {
+            Ok(function) if !checker.poisoned => {
                 entry = Some(functions.len());
                 functions.push(function);
+                ids.push(declaration_count);
                 pending.push(checker);
             }
+            Ok(function) => recovered_functions.push((declaration_count, function, checker)),
             Err(error) => diagnostics.push(error),
         }
     }
@@ -4169,6 +4178,8 @@ fn check_modules_collect(
             Ok(())
         })();
         if let Err(error) = checked {
+            // Unfinished types must not reach the ownership recovery pass.
+            function.body = TypedExpr::error(function.span);
             let id = names
                 .functions
                 .get(&function.qualified_name())
@@ -4176,6 +4187,31 @@ fn check_modules_collect(
             diagnostics.push(classes.derived_error(id, error));
         }
     }
+    if let Err(error) = diagnostics.check() {
+        if !diagnostics.is_full() {
+            let recovered: Vec<_> = recovered_functions
+                .into_iter()
+                .map(|(id, mut function, mut checker)| {
+                    if checker.finish(&mut function.body).is_err() {
+                        function.body = TypedExpr::error(function.span);
+                    }
+                    (id, function)
+                })
+                .collect();
+            let module = recovery_module(
+                records,
+                unions,
+                &function_declarations,
+                ids.into_iter().zip(functions).chain(recovered),
+            );
+            diagnostics.extend(crate::ownership::check_recovered(&module));
+        }
+        return Err(error);
+    }
+    debug_assert_eq!(
+        ids[..declaration_count],
+        (0..declaration_count).collect::<Vec<_>>()
+    );
     diagnostics.check()?;
     if let Some(index) = semantic {
         *index = semantic::collect(modules, &functions, &names, types);
@@ -4226,6 +4262,53 @@ fn check_modules_collect(
     }
     diagnostics.check()?;
     Ok(module)
+}
+
+// The ownership checker indexes functions by declaration ID.
+fn recovery_module(
+    records: Vec<CheckedRecord>,
+    unions: Vec<CheckedUnion>,
+    declarations: &[(String, FunctionDecl)],
+    checked: impl Iterator<Item = (usize, CheckedFunction)>,
+) -> CheckedModule {
+    let mut functions: Vec<_> = declarations
+        .iter()
+        .map(|(module, declaration)| CheckedFunction {
+            module: module.clone(),
+            region_sources: None,
+            origin: FunctionOrigin::source(ModuleOrigin::User),
+            name: declaration.name.text.clone(),
+            visibility: declaration.visibility,
+            exported: false,
+            parameters: Vec::new(),
+            signature: Signature {
+                parameters: Vec::new(),
+                result: Type::Error,
+            },
+            body: TypedExpr::error(declaration.body.span),
+            span: declaration.name.span,
+            type_parameters: Vec::new(),
+            constraints: Vec::new(),
+            members: Vec::new(),
+            capture_count: 0,
+            is_task: false,
+        })
+        .collect();
+    for (id, function) in checked {
+        if id == functions.len() {
+            functions.push(function);
+        } else {
+            functions[id] = function;
+        }
+    }
+    CheckedModule {
+        records,
+        unions,
+        functions,
+        entry: None,
+        tests: Vec::new(),
+        warnings: Vec::new(),
+    }
 }
 
 fn infer_active_result(
@@ -5242,6 +5325,13 @@ struct ActiveResult {
     cases: BTreeMap<String, usize>,
 }
 
+#[derive(Clone, Copy)]
+struct RecoveryMark {
+    scopes: usize,
+    normal_loop_depth: usize,
+    computation_depth: usize,
+}
+
 struct Checker<'a> {
     module: &'a str,
     names: &'a Names,
@@ -5270,6 +5360,8 @@ struct Checker<'a> {
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
     poisoned: bool,
+    recovering: bool,
+    recovered: Vec<Diagnostic>,
 }
 
 impl<'a> Checker<'a> {
@@ -5302,6 +5394,8 @@ impl<'a> Checker<'a> {
             shadowing_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
             poisoned: false,
+            recovering: false,
+            recovered: Vec::new(),
         }
     }
 
@@ -5368,10 +5462,21 @@ impl<'a> Checker<'a> {
     ) -> Result<TypedExpr, Diagnostic> {
         if expected.is_some_and(Type::contains_error) {
             self.poisoned = true;
-            return Ok(TypedExpr::error(expression.span));
+            // During recovery an erroneous context is unknown: still check the operand unless its type needs that context.
+            if !self.recovering
+                || Self::untyped_number(expression)
+                || matches!(expression.kind, ExprKind::Computation(..))
+            {
+                return Ok(TypedExpr::error(expression.span));
+            }
         }
+        let mark = RecoveryMark {
+            scopes: self.scopes.len(),
+            normal_loop_depth: self.normal_loop_depth,
+            computation_depth: self.computation_depth,
+        };
         // Continuations must not retain the large value-checking frame at every recursive step.
-        match expression.kind {
+        let result = match expression.kind {
             ExprKind::Computation(ref builder, ref body) => {
                 computation::check_implicit(self, builder, body, expected)
             }
@@ -5384,12 +5489,80 @@ impl<'a> Checker<'a> {
             ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
                 self.control_expression(expression, expected)
             }
+            ExprKind::Binary(..) => self.binary_expression(expression, expected),
             ExprKind::Lambda(..)
             | ExprKind::Task(_)
             | ExprKind::Call(..)
             | ExprKind::Block { .. } => self.composed_expression(expression, expected),
             _ => self.value_expression(expression, expected),
+        };
+        self.finish_recovery(result, mark, expression.span)
+    }
+
+    fn finish_recovery(
+        &mut self,
+        result: Result<TypedExpr, Diagnostic>,
+        mark: RecoveryMark,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        match result {
+            Err(error) if self.recovering => {
+                self.scopes.truncate(mark.scopes);
+                self.normal_loop_depth = mark.normal_loop_depth;
+                self.computation_depth = mark.computation_depth;
+                self.recover_expression(error, span)
+            }
+            result => result,
         }
+    }
+
+    // A broken sibling keeps a valid hint, otherwise it passes its Error on as an unknown context.
+    fn sibling_hint<'t>(&self, ty: &'t Type, hint: Option<&'t Type>) -> Option<&'t Type> {
+        if self.recovering && ty.contains_error() {
+            hint.or(Some(ty))
+        } else {
+            Some(ty)
+        }
+    }
+
+    // A non-callable target still lets its operands report their own errors.
+    fn recover_signature(
+        &mut self,
+        signature: Result<(Vec<Type>, Type), Diagnostic>,
+        count: usize,
+        span: Span,
+    ) -> Result<(Vec<Type>, Type), Diagnostic> {
+        match signature {
+            Err(error) if self.recovering => {
+                self.recover_expression(error, span)?;
+                Ok((vec![Type::Error; count], Type::Error))
+            }
+            signature => signature,
+        }
+    }
+
+    // Parameters that only the lost context would have typed stay unknown.
+    fn unknown_parameters(&self, parameters: &mut [Type]) {
+        for parameter in parameters {
+            if polymorph::is_unknown(&self.inference.resolve(parameter)) {
+                *parameter = Type::Error;
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn recover_expression(
+        &mut self,
+        error: Diagnostic,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        if error.code == "E1017" || self.recovered.len() >= MAX_UNIQUE_DIAGNOSTICS {
+            return Err(error);
+        }
+        self.recovered.push(error);
+        self.poisoned = true;
+        Ok(TypedExpr::error(span))
     }
 
     fn finish_expression(
@@ -5407,6 +5580,10 @@ impl<'a> Checker<'a> {
                     .iter()
                     .any(|child| child.ty.contains_error()))
         {
+            if self.recovering && matches!(value.kind, TypedExprKind::Block { .. }) {
+                value.ty = Type::Error;
+                return Ok(value);
+            }
             return Ok(TypedExpr::error(span));
         }
         if let Some(expected) = expected {
@@ -5414,6 +5591,27 @@ impl<'a> Checker<'a> {
         }
         value.ty = self.inference.resolve(&value.ty);
         Ok(value)
+    }
+
+    fn binding_annotation(&mut self, binding: &Binding) -> Result<Option<Type>, Diagnostic> {
+        let annotation = (|| {
+            let annotation = binding
+                .annotation
+                .as_ref()
+                .map(|ty| self.annotation(ty))
+                .transpose()?;
+            if let Some(ty) = &annotation {
+                validate_size(ty, &self.types, binding.name.span)?;
+            }
+            Ok(annotation)
+        })();
+        match annotation {
+            Err(error) if self.recovering => {
+                self.recover_expression(error, binding.name.span)?;
+                Ok(Some(Type::Error))
+            }
+            annotation => annotation,
+        }
     }
 
     fn composed_expression(
@@ -5435,16 +5633,14 @@ impl<'a> Checker<'a> {
                 self.scopes.push(BTreeMap::new());
                 let mut checked = Vec::new();
                 for binding in bindings {
-                    let annotation = binding
-                        .annotation
-                        .as_ref()
-                        .map(|ty| self.annotation(ty))
-                        .transpose()?;
-                    if let Some(ty) = &annotation {
-                        validate_size(ty, &self.types, binding.name.span)?;
-                    }
+                    let annotation = self.binding_annotation(binding)?;
                     let value = self.expression(&binding.value, annotation.as_ref())?;
-                    let local = self.bind(&binding.name, value.ty.clone(), binding.mutable);
+                    let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
+                        Type::Error
+                    } else {
+                        value.ty.clone()
+                    };
+                    let local = self.bind(&binding.name, ty, binding.mutable);
                     checked.push((local, value));
                 }
                 let result = self.expression(result, expected)?;
@@ -5507,9 +5703,11 @@ impl<'a> Checker<'a> {
         } else {
             arguments
         };
-        let (parameters, result) = self
+        let signature = self
             .call_signature(&callee.ty, arguments.len(), expression.span)
-            .map_err(|error| Self::operator_spacing_hint(error, arguments))?;
+            .map_err(|error| Self::operator_spacing_hint(error, arguments));
+        let (mut parameters, result) =
+            self.recover_signature(signature, arguments.len(), expression.span)?;
         if let Some(expected) = expected {
             let hint = if argument {
                 self.argument_hint(&result, expected)
@@ -5517,6 +5715,9 @@ impl<'a> Checker<'a> {
                 expected.clone()
             };
             self.same(&result, &hint, expression.span)?;
+        }
+        if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
+            self.unknown_parameters(&mut parameters);
         }
         let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
         {
@@ -5541,6 +5742,66 @@ impl<'a> Checker<'a> {
         } else {
             Ok(value)
         }
+    }
+
+    fn binary_expression(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let ExprKind::Binary(operator, left, right) = &expression.kind else {
+            unreachable!("binary expressions only")
+        };
+        let expected = expected.map(|ty| self.inference.resolve(ty));
+        let expected = expected.as_ref();
+        let (left, right) = if *operator == BinaryOp::Pipe {
+            let right = self.expression(right, None)?;
+            let signature = self.call_signature(&right.ty, 1, right.span);
+            let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
+            if let Some(expected) = expected {
+                self.same(&result, expected, expression.span)?;
+            }
+            (self.argument(left, &parameters[0])?, right)
+        } else {
+            let hint = expected.filter(|_| {
+                !matches!(
+                    operator,
+                    BinaryOp::Equal
+                        | BinaryOp::NotEqual
+                        | BinaryOp::Less
+                        | BinaryOp::LessEqual
+                        | BinaryOp::Greater
+                        | BinaryOp::GreaterEqual
+                        | BinaryOp::And
+                        | BinaryOp::Or
+                )
+            });
+            if Self::untyped_number(left) && !Self::untyped_number(right) {
+                let right = self.expression(right, hint)?;
+                let expected = self.sibling_hint(&right.ty, hint);
+                (self.expression(left, expected)?, right)
+            } else {
+                let left = self.expression(left, hint)?;
+                let expected = self.sibling_hint(&left.ty, hint);
+                let right = self.expression(right, expected)?;
+                (left, right)
+            }
+        };
+        let result = if *operator == BinaryOp::Pipe {
+            let signature = self.call_signature(&right.ty, 1, right.span);
+            let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
+            self.same(&left.ty, &parameters[0], left.span)?;
+            self.solve_families(false)?;
+            result
+        } else {
+            self.binary_type(*operator, &left, &right, expression.span)?
+        };
+        self.finish_expression(
+            TypedExprKind::Binary(*operator, Box::new(left), Box::new(right)),
+            result,
+            expected,
+            expression.span,
+        )
     }
 
     fn value_expression(
@@ -5633,10 +5894,13 @@ impl<'a> Checker<'a> {
                     Some(Type::Tuple(types)) if types.len() == values.len() => Some(types),
                     _ => None,
                 };
+                let unknown = expected.filter(|ty| matches!(ty, Type::Error));
                 let values = values
                     .iter()
                     .enumerate()
-                    .map(|(index, value)| self.expression(value, types.map(|types| &types[index])))
+                    .map(|(index, value)| {
+                        self.expression(value, types.map(|types| &types[index]).or(unknown))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let ty = Type::Tuple(values.iter().map(|value| value.ty.clone()).collect());
                 validate_size(&ty, &self.types, expression.span)?;
@@ -5687,50 +5951,6 @@ impl<'a> Checker<'a> {
                 let ty = operand.ty.clone();
                 (TypedExprKind::Unary(*operator, Box::new(operand)), ty)
             }
-            ExprKind::Binary(operator, left, right) => {
-                let (left, right) = if *operator == BinaryOp::Pipe {
-                    let right = self.expression(right, None)?;
-                    let (parameters, result) = self.call_signature(&right.ty, 1, right.span)?;
-                    if let Some(expected) = expected {
-                        self.same(&result, expected, expression.span)?;
-                    }
-                    (self.argument(left, &parameters[0])?, right)
-                } else {
-                    let hint = expected.filter(|_| {
-                        !matches!(
-                            operator,
-                            BinaryOp::Equal
-                                | BinaryOp::NotEqual
-                                | BinaryOp::Less
-                                | BinaryOp::LessEqual
-                                | BinaryOp::Greater
-                                | BinaryOp::GreaterEqual
-                                | BinaryOp::And
-                                | BinaryOp::Or
-                        )
-                    });
-                    if Self::untyped_number(left) && !Self::untyped_number(right) {
-                        let right = self.expression(right, hint)?;
-                        (self.expression(left, Some(&right.ty))?, right)
-                    } else {
-                        let left = self.expression(left, hint)?;
-                        let right = self.expression(right, Some(&left.ty))?;
-                        (left, right)
-                    }
-                };
-                let result = if *operator == BinaryOp::Pipe {
-                    let (parameters, result) = self.call_signature(&right.ty, 1, right.span)?;
-                    self.same(&left.ty, &parameters[0], left.span)?;
-                    self.solve_families(false)?;
-                    result
-                } else {
-                    self.binary_type(*operator, &left, &right, expression.span)?
-                };
-                (
-                    TypedExprKind::Binary(*operator, Box::new(left), Box::new(right)),
-                    result,
-                )
-            }
             ExprKind::If {
                 condition,
                 then_branch,
@@ -5738,7 +5958,8 @@ impl<'a> Checker<'a> {
             } => {
                 let condition = self.expression(condition, Some(&Type::Bool))?;
                 let then_branch = self.expression(then_branch, expected)?;
-                let else_branch = self.expression(else_branch, Some(&then_branch.ty))?;
+                let expected = self.sibling_hint(&then_branch.ty, expected);
+                let else_branch = self.expression(else_branch, expected)?;
                 let ty = then_branch.ty.clone();
                 (
                     TypedExprKind::If {
@@ -5787,12 +6008,15 @@ impl<'a> Checker<'a> {
                     (false, Some(Type::Array(element))) | (true, Some(Type::List(element))) => {
                         Some((**element).clone())
                     }
+                    (_, Some(Type::Error)) => Some(Type::Error),
                     _ => None,
                 };
                 let mut checked = Vec::new();
                 for value in values {
                     let value = self.expression(value, element_type.as_ref())?;
-                    element_type = Some(value.ty.clone());
+                    if !element_type.as_ref().is_some_and(Type::contains_error) {
+                        element_type = self.sibling_hint(&value.ty, element_type.as_ref()).cloned();
+                    }
                     checked.push(value);
                 }
                 let element = element_type.ok_or_else(|| {
@@ -5894,6 +6118,7 @@ impl<'a> Checker<'a> {
                             {
                                 Some(ty.as_ref())
                             }
+                            Some(Type::Error) => expected,
                             _ => None,
                         };
                         self.expression(value, hint)?
@@ -5962,7 +6187,8 @@ impl<'a> Checker<'a> {
                 self.require("Numeric", ty.clone(), expression.span)?;
                 (TypedExprKind::Cast(Box::new(value)), ty)
             }
-            ExprKind::Lambda(..)
+            ExprKind::Binary(..)
+            | ExprKind::Lambda(..)
             | ExprKind::Task(_)
             | ExprKind::Call(..)
             | ExprKind::ComputationBoundary(_)
@@ -5972,7 +6198,12 @@ impl<'a> Checker<'a> {
     }
 
     fn argument(&mut self, expression: &Expr, expected: &Type) -> Result<TypedExpr, Diagnostic> {
-        match expression.kind {
+        let mark = RecoveryMark {
+            scopes: self.scopes.len(),
+            normal_loop_depth: self.normal_loop_depth,
+            computation_depth: self.computation_depth,
+        };
+        let result = match expression.kind {
             ExprKind::Call(..) if !expected.contains_error() => {
                 self.call_expression(expression, Some(expected), true)
             }
@@ -5985,7 +6216,8 @@ impl<'a> Checker<'a> {
                 self.place_argument(expression, expected)
             }
             _ => self.expression(expression, Some(expected)),
-        }
+        };
+        self.finish_recovery(result, mark, expression.span)
     }
 
     fn place_argument(
@@ -6094,6 +6326,7 @@ impl<'a> Checker<'a> {
         // record; otherwise the field values determine them.
         let args = match expected.map(|ty| self.inference.resolve(ty)) {
             Some(Type::Record(expected_id, args)) if expected_id == id => args,
+            Some(Type::Error) => record.parameters.iter().map(|_| Type::Error).collect(),
             _ => record
                 .parameters
                 .iter()

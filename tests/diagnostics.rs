@@ -15,6 +15,20 @@ fn errors(source: &str) -> DiagnosticSet {
     first
 }
 
+fn codes(source: &str) -> Vec<&'static str> {
+    let set = errors(source);
+    assert!(
+        set.diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("erroneous")),
+        "{source}\n{set:?}"
+    );
+    set.diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect()
+}
+
 #[test]
 fn collects_function_errors_in_source_order_without_changing_legacy_api() {
     let source = "def z :: i64\nfn z = true\ndef a :: i64\nfn a = \"text\"\n";
@@ -30,6 +44,300 @@ fn collects_function_errors_in_source_order_without_changing_legacy_api() {
     assert!(!set.omitted_is_lower_bound);
     let set = errors("fn a() -> i64 { true }\nfn b() -> i64 { false }");
     assert_eq!(set.diagnostics.len(), 2);
+}
+
+#[test]
+fn recovers_independent_type_errors_within_one_function() {
+    let cases: &[(&str, &[&str])] = &[
+        (
+            "fn f() -> i64 { let a: i64 = true; let b: bool = 1; 0 }",
+            &["E1003", "E1003"],
+        ),
+        (
+            "fn f() -> i64 { missing_one + missing_two }",
+            &["E1002", "E1002"],
+        ),
+        (
+            "fn f() -> i64 { if true then missing_one else missing_two }",
+            &["E1002", "E1002"],
+        ),
+        (
+            "def add :: i64 -> i64 -> i64\nfn add x y = x + y\ndef f :: i64\nfn f = add missing true",
+            &["E1002", "E1003"],
+        ),
+        (
+            "def add :: i64 -> i64 -> i64\nfn add x y = x + y\ndef f :: i64\nfn f = add (true 1) false",
+            &["E1005", "E1003"],
+        ),
+        (
+            "fn f() -> i64 { let l = [m0, m1, m2]; 0 }",
+            &["E1002", "E1002", "E1002"],
+        ),
+        (
+            "fn f() -> i64 { let values: [i64] = [true, false]; 0 }",
+            &["E1003", "E1003"],
+        ),
+        ("missing_one + missing_two", &["E1002", "E1002"]),
+        (
+            "def bad :: Missing -> i64\nfn bad x = x\ndef caller :: i64\nfn caller = { let a = bad 1; let b: i64 = true; 0 }",
+            &["E1004", "E1003"],
+        ),
+        (
+            "fn f() -> i64 { let x: Missing = 1; let y: i64 = true; 0 }",
+            &["E1004", "E1003"],
+        ),
+        (
+            "fn f() -> i64 { let x: Missing = missing; let y: i64 = true; 0 }",
+            &["E1004", "E1002", "E1003"],
+        ),
+        (
+            "fn f() -> i64 { let x = match 1 with | 0 -> missing_one | _ -> missing_two; 0 }",
+            &["E1002", "E1002"],
+        ),
+        (
+            "fn f() -> i64 { missing_one(missing_two) }",
+            &["E1002", "E1002"],
+        ),
+        (
+            "fn f() -> i64 { missing_one |> missing_two }",
+            &["E1002", "E1002"],
+        ),
+        ("fn f() -> i64 { 1 missing }", &["E1005", "E1002"]),
+        ("fn f() -> i64 { missing |> 1 }", &["E1002", "E1005"]),
+        (
+            "fn f() -> i64 { let x = missing; let v = []; 0 }",
+            &["E1002", "E1004"],
+        ),
+    ];
+    for &(source, expected) in cases {
+        assert_eq!(codes(source), expected, "{source}");
+    }
+    let set = errors("fn f() -> i64 { missing_one + missing_two }");
+    assert_eq!(set.diagnostics[0].message, "unknown value 'missing_one'");
+    assert_eq!(set.diagnostics[1].message, "unknown value 'missing_two'");
+}
+
+#[test]
+fn recovery_does_not_report_cascades() {
+    for (source, code) in [
+        (
+            "fn f() -> i64 { let x = missing; let y = x + 1; let z = y.field; x }",
+            "E1002",
+        ),
+        (
+            "fn f() -> i64 { let x = missing; if x then 1 else x }",
+            "E1002",
+        ),
+        (
+            "fn f() -> i64 { let x = missing; match x with | Some y -> y | None -> 0 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { let g = y -> missing; g 1 }", "E1002"),
+        ("fn f() -> i64 { let x: Missing = 1; x + 1 }", "E1004"),
+        (
+            "fn f() -> i64 { let values: [[i64]] = [true, []]; 0 }",
+            "E1003",
+        ),
+        (
+            "fn f() -> i64 { let values: [[i64]] = [missing, []]; 0 }",
+            "E1002",
+        ),
+        ("fn f() -> [i64] { if true then missing else [] }", "E1002"),
+        ("fn f() -> i64 { let v = [missing, []]; 0 }", "E1002"),
+        (
+            "fn f() -> i64 { let v = if true then missing else []; 0 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { let x: Missing = []; 0 }", "E1004"),
+        (
+            "fn f() -> i64 { let v = [missing, \\x -> x.name]; 0 }",
+            "E1002",
+        ),
+        (
+            "fn f() -> i64 { let x = match 1 with | 0 -> missing | _ -> []; 0 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { missing_fn (\\x -> x.name) }", "E1002"),
+        ("fn f() -> i64 { missing_fn (Some []) }", "E1002"),
+        ("fn f() -> i64 { missing_fn (1, \\x -> x.name) }", "E1002"),
+        (
+            "fn f() -> i64 { missing_fn 300000000000000000000 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { missing_fn &[] }", "E1002"),
+    ] {
+        assert_eq!(codes(source), [code], "{source}");
+    }
+}
+
+#[test]
+fn recovery_restores_scopes_after_a_failed_construct() {
+    let source = "fn f() -> i64 { let r = match (1, 2) with | (y, true) -> y | _ -> 0; y }";
+    assert_eq!(codes(source), ["E1003", "E1002"]);
+    let set = errors(source);
+    assert_eq!(set.diagnostics[1].message, "unknown value 'y'");
+}
+
+#[test]
+fn recovery_limits_match_the_existing_caps() {
+    let values = (0..62)
+        .map(|index| format!("missing{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let set = errors(&format!("fn f() -> i64 {{ let values = [{values}]; 0 }}"));
+    assert_eq!(set.diagnostics.len(), MAX_REPORTED_ERRORS);
+    assert_eq!(set.omitted, 12);
+    assert!(!set.omitted_is_lower_bound);
+    assert_eq!(
+        set.omission_note().as_deref(),
+        Some("12 more errors not shown")
+    );
+
+    let bindings: String = (0..11)
+        .map(|group| {
+            let values = (0..100)
+                .map(|index| format!("missing{}", group * 100 + index))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("let values{group} = [{values}]; ")
+        })
+        .collect();
+    let set = errors(&format!("fn f() -> i64 {{ {bindings}0 }}"));
+    assert_eq!(set.diagnostics.len(), MAX_REPORTED_ERRORS);
+    assert_eq!(set.omitted, MAX_UNIQUE_DIAGNOSTICS - MAX_REPORTED_ERRORS);
+    assert!(set.omitted_is_lower_bound);
+    assert_eq!(
+        set.omission_note().as_deref(),
+        Some("at least 950 more errors not shown")
+    );
+}
+
+#[test]
+fn recovery_keeps_stack_depth_bounded() {
+    let nested = format!("{}missing{}", "(".repeat(100), ")".repeat(100));
+    let source = format!("fn f() -> i64 {{ let a = {nested}; let b: bool = 1; 0 }}");
+    assert_eq!(codes(&source), ["E1002", "E1003"]);
+    let nested = (0..=100)
+        .map(|index| format!("missing{index}"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let set = errors(&format!("fn f() -> i64 {{ {nested} }}"));
+    assert_eq!(set.diagnostics.len(), MAX_REPORTED_ERRORS);
+    assert_eq!(set.omitted, 51);
+    assert!(!set.omitted_is_lower_bound);
+}
+
+const CONSUME: &str = "def consume :: string -> unit\nfn consume s = ()\n";
+const MIXED_ERRORS: &str = "def consume :: string -> unit\nfn consume s = ()\ndef f :: i64\nfn f = { let a = missing_one; let s = \"x\"; consume s; consume s; let b = missing_two; 0 }";
+
+#[test]
+fn recovers_ownership_errors_on_distinct_roots() {
+    for (body, expected) in [
+        (
+            "let s = \"a\"; let t = \"b\"; consume s; consume s; consume t; consume t",
+            &["E1012", "E1012"][..],
+        ),
+        (
+            "let s = \"a\"; consume s; consume s; consume s",
+            &["E1012"][..],
+        ),
+        (
+            "let s = \"a\"; let r = &s; consume s; r; let t = \"b\"; consume t; consume t",
+            &["E1014", "E1012"][..],
+        ),
+        (
+            "let s = \"a\"; let g = _ -> { let t = \"b\"; consume t; consume t }; consume s; consume s; g ()",
+            &["E1012", "E1012"][..],
+        ),
+    ] {
+        let source = format!("{CONSUME}def f :: unit\nfn f = {{ {body} }}");
+        assert_eq!(codes(&source), expected, "{source}");
+    }
+}
+
+#[test]
+fn checks_ownership_of_recovered_bodies_without_cascades() {
+    assert_eq!(codes(MIXED_ERRORS), ["E1002", "E1012", "E1002"]);
+    for (definitions, expected) in [
+        (
+            "def f :: unit\nfn f = { let s = \"a\"; missing s; consume s }",
+            &["E1002"][..],
+        ),
+        (
+            "def f :: unit\nfn f = { let x = missing; consume x; consume x }",
+            &["E1002"][..],
+        ),
+        (
+            "def g :: i64\nfn g = true\ndef f :: unit\nfn f = { let s = \"a\"; consume s; consume s }",
+            &["E1003", "E1012"][..],
+        ),
+        (
+            "def h :: string -> string\nfn h s = missing\ndef f :: unit\nfn f = { let s = \"a\"; let t = h s; consume s }",
+            &["E1002", "E1012"][..],
+        ),
+        (
+            "let x = missing; let s = \"a\"; consume s; consume s",
+            &["E1002", "E1012"][..],
+        ),
+        (
+            "def f :: unit\nfn f = { let x: Missing = \"a\"; consume x; consume x }",
+            &["E1004"][..],
+        ),
+        (
+            "def h :: &i64 -> &i64\nfn h n = missing\ndef f :: i64 -> i64\nfn f n = { let r = h &n; *r }",
+            &["E1002"][..],
+        ),
+        (
+            "def h :: &i64 -> &i64\nfn h n = { let x = missing; n }\ndef f :: i64 -> i64\nfn f n = { let r = h &n; *r }",
+            &["E1002"][..],
+        ),
+        (
+            "def h :: &i64 -> &i64\nfn h n = missing\ndef g :: &i64 -> &i64\nfn g n = h n\ndef f :: i64 -> i64\nfn f n = { let r = g &n; *r }",
+            &["E1002"][..],
+        ),
+    ] {
+        let source = format!("{CONSUME}{definitions}");
+        assert_eq!(codes(&source), expected, "{source}");
+    }
+}
+
+#[test]
+fn cli_json_lists_every_recovered_error_in_order() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-recovered-diagnostics-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("Main.tz"), MIXED_ERRORS).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&root)
+        .arg("--json")
+        .output()
+        .unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<_> = stderr.lines().collect();
+    assert_eq!(lines.len(), 3, "{stderr}");
+    for (line, expected) in lines.iter().zip(["E1002", "E1012", "E1002"]) {
+        assert!(
+            line.starts_with("{\"severity\":\"error\",\"code\":\""),
+            "{line}"
+        );
+        let diagnostic: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(diagnostic["code"], expected);
+    }
 }
 
 #[test]

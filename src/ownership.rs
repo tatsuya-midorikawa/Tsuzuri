@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{CheckedModule, Local, Type, TypedExpr, TypedExprKind as E};
-use crate::diagnostic::{Diagnostic, Diagnostics, Span};
+use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
 use crate::syntax::BinaryOp;
 
 #[path = "ownership_control.rs"]
@@ -71,6 +71,25 @@ pub(crate) fn infer_copy_all(
     check_functions(module, true)
 }
 
+// ponytail: access errors only while types are broken; Error stubs lack loans, so lifetimes wait.
+pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
+    let closed = closed_returns(module);
+    let mut recovered = Vec::new();
+    for function in &module.functions {
+        let _ = check_body(
+            module,
+            &function.parameters,
+            &function.body,
+            true,
+            &closed,
+            function.is_task,
+            function.region_sources.as_ref(),
+            &mut recovered,
+        );
+    }
+    recovered
+}
+
 fn check_functions(
     module: &CheckedModule,
     infer: bool,
@@ -82,7 +101,8 @@ fn check_functions(
         if diagnostics.is_full() {
             break;
         }
-        match check_body(
+        let mut recovered = Vec::new();
+        let checked = check_body(
             module,
             &function.parameters,
             &function.body,
@@ -90,7 +110,10 @@ fn check_functions(
             &closed,
             function.is_task,
             function.region_sources.as_ref(),
-        ) {
+            &mut recovered,
+        );
+        diagnostics.extend(recovered);
+        match checked {
             Ok(required) => constraints.push(required),
             Err(error) => diagnostics.push(error),
         }
@@ -102,6 +125,7 @@ fn check_functions(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_body(
     module: &CheckedModule,
     parameters: &[Local],
@@ -110,6 +134,7 @@ fn check_body(
     closed: &[bool],
     task: bool,
     region_sources: Option<&BTreeSet<usize>>,
+    recovered: &mut Vec<Diagnostic>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut checker = Checker {
         module,
@@ -122,6 +147,8 @@ fn check_body(
         infer,
         copy_variables: BTreeSet::new(),
         closed,
+        recovered,
+        reported: BTreeSet::new(),
     };
     for parameter in parameters {
         let mut value = Value::default();
@@ -151,6 +178,9 @@ fn check_body(
             .collect()
     });
     for id in result.loans {
+        if checker.reported.contains(&checker.loans[id].place.root) {
+            continue;
+        }
         if task || !checker.external.contains(&checker.loans[id].place.root) {
             return Err(error(
                 "E1013",
@@ -302,6 +332,8 @@ struct Checker<'a> {
     infer: bool,
     copy_variables: BTreeSet<String>,
     closed: &'a [bool],
+    recovered: &'a mut Vec<Diagnostic>,
+    reported: BTreeSet<usize>,
 }
 
 impl Checker<'_> {
@@ -327,6 +359,9 @@ impl Checker<'_> {
             }
             _ => return false,
         };
+        if matches!(body.kind, E::Error) {
+            return true;
+        }
         if parameters.len() > arity {
             return parameters[..arity]
                 .iter()
@@ -495,6 +530,17 @@ impl Checker<'_> {
         active
     }
 
+    fn report(&mut self, place: &Place, diagnostic: Diagnostic) -> Result<(), Diagnostic> {
+        if !self.reported.insert(place.root) {
+            return Ok(());
+        }
+        if self.recovered.len() >= MAX_UNIQUE_DIAGNOSTICS {
+            return Err(diagnostic);
+        }
+        self.recovered.push(diagnostic);
+        Ok(())
+    }
+
     fn access(
         &mut self,
         place: &Place,
@@ -511,11 +557,14 @@ impl Checker<'_> {
                 .locals
                 .get(&place.root)
                 .map_or("value", |(local, _)| local.name.as_str());
-            return Err(error(
-                "E1012",
-                format!("use of moved or partially moved value '{name}'"),
-                span,
-            ));
+            return self.report(
+                place,
+                error(
+                    "E1012",
+                    format!("use of moved or partially moved value '{name}'"),
+                    span,
+                ),
+            );
         }
         if matches!(usage, Use::MutBorrow | Use::Write) {
             let mutable = if via.is_empty() {
@@ -527,7 +576,7 @@ impl Checker<'_> {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
             if !mutable || !place.fields.is_empty() {
-                return Err(error(
+                return self.report(place, error(
                     "E1014",
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
                     span,
@@ -546,7 +595,7 @@ impl Checker<'_> {
                         continue;
                     }
                 }
-                return Err(error(
+                return self.report(place, error(
                     "E1014",
                     "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
                     span,
@@ -623,6 +672,9 @@ impl Checker<'_> {
                     places.push((loan.place.clone(), via));
                 }
                 if places.is_empty() {
+                    if matches!(reference.kind, E::Local(id) if self.reported.contains(&id)) {
+                        return Ok(places);
+                    }
                     return Err(error(
                         "E1013",
                         "reference has no live owner",
@@ -847,7 +899,9 @@ impl Checker<'_> {
                 }
                 result = self.eval(tail, Use::Consume, live)?;
                 for id in &result.loans {
-                    if ids.contains(&self.loans[*id].place.root) {
+                    if ids.contains(&self.loans[*id].place.root)
+                        && !self.reported.contains(&self.loans[*id].place.root)
+                    {
                         return Err(error(
                             "E1013",
                             "borrowed value does not live long enough to leave this block",
@@ -857,10 +911,10 @@ impl Checker<'_> {
                 }
                 for (id, (_, value)) in &self.state.locals {
                     if !ids.contains(id)
-                        && value
-                            .loans
-                            .iter()
-                            .any(|loan| ids.contains(&self.loans[*loan].place.root))
+                        && value.loans.iter().any(|loan| {
+                            ids.contains(&self.loans[*loan].place.root)
+                                && !self.reported.contains(&self.loans[*loan].place.root)
+                        })
                     {
                         return Err(error(
                             "E1013",
@@ -938,6 +992,7 @@ impl Checker<'_> {
                     self.closed,
                     matches!(expression.ty, Type::Task(_)),
                     None,
+                    self.recovered,
                 )?);
                 for capture in captures {
                     let value = TypedExpr {
