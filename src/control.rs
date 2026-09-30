@@ -454,7 +454,9 @@ impl Checker<'_> {
                 .map(|guard| self.expression(guard, Some(&Type::Bool)))
                 .transpose()?;
             let body = self.expression(&arm.body, result.as_ref())?;
-            result = Some(body.ty.clone());
+            if !result.as_ref().is_some_and(Type::contains_error) {
+                result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
+            }
             self.scopes.pop();
             checked.push(TypedMatchArm {
                 alternatives: plans,

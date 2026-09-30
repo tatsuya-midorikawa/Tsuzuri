@@ -340,7 +340,8 @@ and は回復境界ではありません。失敗した宣言は定義名集合�
 不正なシグネチャは名前と ID を残し、返却型が `Type::Error` の poisoned Scheme として表します。
 関数参照と依存する式は `TypedExprKind::Error` を伝播し、poison に触れた本体の未確定制約・網羅性・二次診断は出しません。
 本体と entry だけで `Checker::expression`・`argument` の失敗を回復し、ブロック注釈・サイズ検証も個別に回復します。
-回復時は `RecoveryMark` のスコープ長・ループ深さ・計算式深さを復元します。兄弟式には erroneous な型ヒントを渡さず、
+回復時は `RecoveryMark` のスコープ長・ループ深さ・計算式深さを復元します。回復中の erroneous な期待型は「不明な文脈」として渡し、
+兄弟式・match の節・呼び出せない対象の引数も検査します。空のコレクション・型なしリテラル・lambda の引数・汎用の引数など文脈で型が決まる部分だけを Error にし、
 依存する式は既存の `finish_expression`・`contains_error` で抑制します。ブロックは型だけを `Error` にして正常な文を保持します。
 大きい結果分岐は非再帰の `finish_recovery`、失敗処理は cold な `recover_expression` に分離します。
 二項式も専用 dispatcher にし、深い式で汎用の値検査フレームを保持しません。`E1017` と収集上限では本体を打ち切ります。

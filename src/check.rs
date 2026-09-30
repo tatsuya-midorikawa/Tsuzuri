@@ -5462,7 +5462,13 @@ impl<'a> Checker<'a> {
     ) -> Result<TypedExpr, Diagnostic> {
         if expected.is_some_and(Type::contains_error) {
             self.poisoned = true;
-            return Ok(TypedExpr::error(expression.span));
+            // During recovery an erroneous context is unknown: still check the operand unless its type needs that context.
+            if !self.recovering
+                || Self::untyped_number(expression)
+                || matches!(expression.kind, ExprKind::Computation(..))
+            {
+                return Ok(TypedExpr::error(expression.span));
+            }
         }
         let mark = RecoveryMark {
             scopes: self.scopes.len(),
@@ -5510,9 +5516,38 @@ impl<'a> Checker<'a> {
         }
     }
 
-    // Erroneous sibling types would hide the next sibling's independent errors.
-    fn sibling_hint<'t>(&self, ty: Option<&'t Type>) -> Option<&'t Type> {
-        ty.filter(|ty| !self.recovering || !ty.contains_error())
+    // A broken sibling keeps a valid hint, otherwise it passes its Error on as an unknown context.
+    fn sibling_hint<'t>(&self, ty: &'t Type, hint: Option<&'t Type>) -> Option<&'t Type> {
+        if self.recovering && ty.contains_error() {
+            hint.or(Some(ty))
+        } else {
+            Some(ty)
+        }
+    }
+
+    // A non-callable target still lets its operands report their own errors.
+    fn recover_signature(
+        &mut self,
+        signature: Result<(Vec<Type>, Type), Diagnostic>,
+        count: usize,
+        span: Span,
+    ) -> Result<(Vec<Type>, Type), Diagnostic> {
+        match signature {
+            Err(error) if self.recovering => {
+                self.recover_expression(error, span)?;
+                Ok((vec![Type::Error; count], Type::Error))
+            }
+            signature => signature,
+        }
+    }
+
+    // Parameters that only the lost context would have typed stay unknown.
+    fn unknown_parameters(&self, parameters: &mut [Type]) {
+        for parameter in parameters {
+            if polymorph::is_unknown(&self.inference.resolve(parameter)) {
+                *parameter = Type::Error;
+            }
+        }
     }
 
     #[cold]
@@ -5599,8 +5634,7 @@ impl<'a> Checker<'a> {
                 let mut checked = Vec::new();
                 for binding in bindings {
                     let annotation = self.binding_annotation(binding)?;
-                    let expected = self.sibling_hint(annotation.as_ref());
-                    let value = self.expression(&binding.value, expected)?;
+                    let value = self.expression(&binding.value, annotation.as_ref())?;
                     let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
                         Type::Error
                     } else {
@@ -5669,9 +5703,11 @@ impl<'a> Checker<'a> {
         } else {
             arguments
         };
-        let (parameters, result) = self
+        let signature = self
             .call_signature(&callee.ty, arguments.len(), expression.span)
-            .map_err(|error| Self::operator_spacing_hint(error, arguments))?;
+            .map_err(|error| Self::operator_spacing_hint(error, arguments));
+        let (mut parameters, result) =
+            self.recover_signature(signature, arguments.len(), expression.span)?;
         if let Some(expected) = expected {
             let hint = if argument {
                 self.argument_hint(&result, expected)
@@ -5679,6 +5715,9 @@ impl<'a> Checker<'a> {
                 expected.clone()
             };
             self.same(&result, &hint, expression.span)?;
+        }
+        if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
+            self.unknown_parameters(&mut parameters);
         }
         let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
         {
@@ -5717,7 +5756,8 @@ impl<'a> Checker<'a> {
         let expected = expected.as_ref();
         let (left, right) = if *operator == BinaryOp::Pipe {
             let right = self.expression(right, None)?;
-            let (parameters, result) = self.call_signature(&right.ty, 1, right.span)?;
+            let signature = self.call_signature(&right.ty, 1, right.span);
+            let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
             if let Some(expected) = expected {
                 self.same(&result, expected, expression.span)?;
             }
@@ -5738,17 +5778,18 @@ impl<'a> Checker<'a> {
             });
             if Self::untyped_number(left) && !Self::untyped_number(right) {
                 let right = self.expression(right, hint)?;
-                let expected = self.sibling_hint(Some(&right.ty)).or(hint);
+                let expected = self.sibling_hint(&right.ty, hint);
                 (self.expression(left, expected)?, right)
             } else {
                 let left = self.expression(left, hint)?;
-                let expected = self.sibling_hint(Some(&left.ty)).or(hint);
+                let expected = self.sibling_hint(&left.ty, hint);
                 let right = self.expression(right, expected)?;
                 (left, right)
             }
         };
         let result = if *operator == BinaryOp::Pipe {
-            let (parameters, result) = self.call_signature(&right.ty, 1, right.span)?;
+            let signature = self.call_signature(&right.ty, 1, right.span);
+            let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
             self.same(&left.ty, &parameters[0], left.span)?;
             self.solve_families(false)?;
             result
@@ -5853,10 +5894,13 @@ impl<'a> Checker<'a> {
                     Some(Type::Tuple(types)) if types.len() == values.len() => Some(types),
                     _ => None,
                 };
+                let unknown = expected.filter(|ty| matches!(ty, Type::Error));
                 let values = values
                     .iter()
                     .enumerate()
-                    .map(|(index, value)| self.expression(value, types.map(|types| &types[index])))
+                    .map(|(index, value)| {
+                        self.expression(value, types.map(|types| &types[index]).or(unknown))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let ty = Type::Tuple(values.iter().map(|value| value.ty.clone()).collect());
                 validate_size(&ty, &self.types, expression.span)?;
@@ -5914,7 +5958,7 @@ impl<'a> Checker<'a> {
             } => {
                 let condition = self.expression(condition, Some(&Type::Bool))?;
                 let then_branch = self.expression(then_branch, expected)?;
-                let expected = self.sibling_hint(Some(&then_branch.ty)).or(expected);
+                let expected = self.sibling_hint(&then_branch.ty, expected);
                 let else_branch = self.expression(else_branch, expected)?;
                 let ty = then_branch.ty.clone();
                 (
@@ -5964,30 +6008,28 @@ impl<'a> Checker<'a> {
                     (false, Some(Type::Array(element))) | (true, Some(Type::List(element))) => {
                         Some((**element).clone())
                     }
+                    (_, Some(Type::Error)) => Some(Type::Error),
                     _ => None,
                 };
                 let mut checked = Vec::new();
                 for value in values {
-                    let expected = self.sibling_hint(element_type.as_ref());
-                    let value = self.expression(value, expected)?;
-                    if self.sibling_hint(Some(&value.ty)).is_some() {
-                        element_type = Some(value.ty.clone());
+                    let value = self.expression(value, element_type.as_ref())?;
+                    if !element_type.as_ref().is_some_and(Type::contains_error) {
+                        element_type = self.sibling_hint(&value.ty, element_type.as_ref()).cloned();
                     }
                     checked.push(value);
                 }
-                let element = element_type
-                    .or_else(|| (!checked.is_empty()).then_some(Type::Error))
-                    .ok_or_else(|| {
-                        Diagnostic::new(
-                            "E1004",
-                            if list {
-                                "an empty list needs a type annotation, for example '[|i64|]'"
-                            } else {
-                                "an empty array needs a type annotation, for example '[i64]'"
-                            },
-                            expression.span,
-                        )
-                    })?;
+                let element = element_type.ok_or_else(|| {
+                    Diagnostic::new(
+                        "E1004",
+                        if list {
+                            "an empty list needs a type annotation, for example '[|i64|]'"
+                        } else {
+                            "an empty array needs a type annotation, for example '[i64]'"
+                        },
+                        expression.span,
+                    )
+                })?;
                 let (kind, ty) = if list {
                     (TypedExprKind::List(checked), Type::List(Box::new(element)))
                 } else {
@@ -6076,6 +6118,7 @@ impl<'a> Checker<'a> {
                             {
                                 Some(ty.as_ref())
                             }
+                            Some(Type::Error) => expected,
                             _ => None,
                         };
                         self.expression(value, hint)?
@@ -6283,6 +6326,7 @@ impl<'a> Checker<'a> {
         // record; otherwise the field values determine them.
         let args = match expected.map(|ty| self.inference.resolve(ty)) {
             Some(Type::Record(expected_id, args)) if expected_id == id => args,
+            Some(Type::Error) => record.parameters.iter().map(|_| Type::Error).collect(),
             _ => record
                 .parameters
                 .iter()

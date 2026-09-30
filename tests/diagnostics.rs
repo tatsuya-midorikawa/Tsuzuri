@@ -90,6 +90,24 @@ fn recovers_independent_type_errors_within_one_function() {
             "fn f() -> i64 { let x: Missing = missing; let y: i64 = true; 0 }",
             &["E1004", "E1002", "E1003"],
         ),
+        (
+            "fn f() -> i64 { let x = match 1 with | 0 -> missing_one | _ -> missing_two; 0 }",
+            &["E1002", "E1002"],
+        ),
+        (
+            "fn f() -> i64 { missing_one(missing_two) }",
+            &["E1002", "E1002"],
+        ),
+        (
+            "fn f() -> i64 { missing_one |> missing_two }",
+            &["E1002", "E1002"],
+        ),
+        ("fn f() -> i64 { 1 missing }", &["E1005", "E1002"]),
+        ("fn f() -> i64 { missing |> 1 }", &["E1002", "E1005"]),
+        (
+            "fn f() -> i64 { let x = missing; let v = []; 0 }",
+            &["E1002", "E1004"],
+        ),
     ];
     for &(source, expected) in cases {
         assert_eq!(codes(source), expected, "{source}");
@@ -125,6 +143,28 @@ fn recovery_does_not_report_cascades() {
             "E1002",
         ),
         ("fn f() -> [i64] { if true then missing else [] }", "E1002"),
+        ("fn f() -> i64 { let v = [missing, []]; 0 }", "E1002"),
+        (
+            "fn f() -> i64 { let v = if true then missing else []; 0 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { let x: Missing = []; 0 }", "E1004"),
+        (
+            "fn f() -> i64 { let v = [missing, \\x -> x.name]; 0 }",
+            "E1002",
+        ),
+        (
+            "fn f() -> i64 { let x = match 1 with | 0 -> missing | _ -> []; 0 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { missing_fn (\\x -> x.name) }", "E1002"),
+        ("fn f() -> i64 { missing_fn (Some []) }", "E1002"),
+        ("fn f() -> i64 { missing_fn (1, \\x -> x.name) }", "E1002"),
+        (
+            "fn f() -> i64 { missing_fn 300000000000000000000 }",
+            "E1002",
+        ),
+        ("fn f() -> i64 { missing_fn &[] }", "E1002"),
     ] {
         assert_eq!(codes(source), [code], "{source}");
     }
