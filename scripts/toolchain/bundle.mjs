@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const host = `${process.platform}-${process.arch}`;
@@ -53,29 +54,36 @@ export async function download(urls, file, expected) {
   if (await exists(file) && await digest(file) === expected) { return; }
   const temporary = `${file}.partial`;
   const failures = [];
-  for (const url of urls) {
-    console.log(`Downloading ${url}`);
-    const controller = new AbortController();
-    let timer;
-    const alive = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => controller.abort(new Error('no data for 30 seconds')), 30000);
-    };
-    try {
-      alive();
-      const response = await fetch(url, { signal: controller.signal });
-      if (!response.ok || !response.body) { throw new Error(`HTTP ${response.status}`); }
-      await pipeline(Readable.fromWeb(response.body), async function* (chunks) {
-        for await (const chunk of chunks) { alive(); yield chunk; }
-      }, createWriteStream(temporary));
-      if (await digest(temporary) !== expected) { throw new Error('SHA-256 mismatch'); }
-      await rename(temporary, file);
-      return;
-    } catch (error) {
-      failures.push(`${url}: ${error.message}`);
-      console.warn(`Download failed: ${error.message}`);
-    } finally {
-      clearTimeout(timer);
+  // GitHub releases and mirrors fail transiently (HTTP 5xx), so retry every source after a pause.
+  for (let pass = 1; pass <= 3; pass++) {
+    if (pass > 1) {
+      console.warn(`Retrying every source in ${pass * 10} seconds`);
+      await delay(pass * 10000);
+    }
+    for (const url of urls) {
+      console.log(`Downloading ${url}`);
+      const controller = new AbortController();
+      let timer;
+      const alive = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(new Error('no data for 30 seconds')), 30000);
+      };
+      try {
+        alive();
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok || !response.body) { throw new Error(`HTTP ${response.status}`); }
+        await pipeline(Readable.fromWeb(response.body), async function* (chunks) {
+          for await (const chunk of chunks) { alive(); yield chunk; }
+        }, createWriteStream(temporary));
+        if (await digest(temporary) !== expected) { throw new Error('SHA-256 mismatch'); }
+        await rename(temporary, file);
+        return;
+      } catch (error) {
+        failures.push(`${url}: ${error.message}`);
+        console.warn(`Download failed: ${error.message}`);
+      } finally {
+        clearTimeout(timer);
+      }
     }
   }
   await rm(temporary, { force: true });

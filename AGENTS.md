@@ -37,9 +37,11 @@ Lessons from the PR #3 and #4 VS Code workflow failures:
   to separate inherited failures from new ones.
 - Fetch pinned third-party archives with `download()` in
   `scripts/toolchain/bundle.mjs`: it tries each source in order, verifies the
-  pinned SHA-256, and skips a source silent for 30 seconds. Do not depend on one
-  origin with a total timeout; ziglang.org is a single server, so Zig comes from
-  shuffled community mirrors first. Refresh that snapshot when bumping Zig.
+  pinned SHA-256, skips a source silent for 30 seconds, and makes up to three
+  passes because GitHub release downloads also return transient 5xx errors.
+  Do not depend on one origin with a total timeout; ziglang.org is a single
+  server, so Zig comes from shuffled community mirrors first. Refresh that
+  snapshot when bumping Zig.
 - `fs::canonicalize` returns verbatim `\\?\` paths on Windows. Use
   `cache::real_path` for paths shown to users or passed to child tools, and
   normalize expected paths in tests the same way.
