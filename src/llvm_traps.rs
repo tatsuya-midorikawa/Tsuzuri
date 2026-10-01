@@ -158,7 +158,9 @@ fn marked<'a>(line: &'a str, marks: &Marks) -> (&'a str, Option<(Span, Option<Tr
 }
 
 fn runtime_kind(function: &str) -> TrapKind {
-    if function.contains("builtin.assert") {
+    if function == "@tz.stack.check" {
+        TrapKind::StackOverflow
+    } else if function.contains("builtin.assert") {
         TrapKind::Assert
     } else if function.contains("builtin.unreachable") {
         TrapKind::MatchFailure

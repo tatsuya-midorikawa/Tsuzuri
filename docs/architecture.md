@@ -956,6 +956,7 @@ wasm64 は `heap-wasm64.ll`（header は i64 の capacity・next、`memory.size`
 stack は尽きると 0 の下へ折り返ります。wasm32 の 2 GiB 超と threads（worker の stack は heap の block）ではその先が memory 内になり得るため、`llvm::with_stack_checks` が全関数の entry block の static alloca の後へ `@tz.stack.check` を入れます。
 alloca を呼び出しの前へ集めるのは、inline 展開が entry block を分けたときに動的 alloca（ループで stack が増え続け、SROA も効かない）にならないためです。
 検査は `llvm.frameaddress(0)`（prologue 後の stack pointer。副作用なし）を `[__stack_low + 4096, __stack_high]` と比べ、外れたら `llvm.trap` です。`llvm.stacksave` は副作用を持ち LICM・vectorize を妨げます。
+検査は trap-info の計測より前に入れるため、`@tz.stack.check` も context を受け取り、溢れを `stack overflow` として報告します。計測が後から足す reporter と `tsuzuri_trap_site` は検査を持たず、stack pointer が範囲外のままでも呼べます。
 threads では wasm global の `tsuzuri_stack_base`・`tsuzuri_stack_top`（instance ごと、`!invariant.load`）が 0 なら main、そうでなければ worker の範囲です。余白 4096 は検査のない `task-wasm-threads.c` と `wasm.ll` の frame の合計（O0 で 640 bytes）を含みます。
 threads は import の max も同じ値になり、`--emit object` はヒープの定数だけを持ちます。cache key は options と置換後の IR で上限を含みます。
 `tests/wasm_memory.mjs` は O0/O3 で既定出力の不変、2 GiB 超の room 形式と境界、stack 検査、manifest、診断を、`tests/wasm_threads.mjs` は worker の溢れが隣の block を書かないことを、`tests/wasm64.mjs`（Node.js 24）は wasm64 の上限・境界・4 GiB 超の host buffer・test を検証します。

@@ -143,7 +143,7 @@ fn bulk = {
       console.log(`WASM threads O${optimization}: imported shared memory, isolated worker stacks and concurrent heap reuse`);
       // Without entry checks, deep 64 on a 256 KiB worker stack overwrote the heap block below it.
       const deep = join(directory, `deep-${optimization}.wasm`);
-      cli(["build", deepSource, "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", deep]);
+      cli(["build", deepSource, "--target", "wasm32", "--wasm-feature", "threads", "--trap-info", `-O${optimization}`, "-o", deep]);
       const deepModule = new WebAssembly.Module(readFileSync(deep));
       const deepMemory = new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true });
       const deepApi = new WebAssembly.Instance(deepModule, { env: { memory: deepMemory }, tsuzuri_threads: threadImports }).exports;
@@ -160,6 +160,9 @@ fn bulk = {
       };
       assert.equal((await runWorker({ ...stackData, argument: 4n })).result, expectedDeep(4n));
       assert.equal((await runWorker({ ...stackData, argument: 64n })).result, "trap");
+      // The worker records its site in shared memory, where the main instance reads it.
+      const deepSites = JSON.parse(readFileSync(`${deep}.trap.json`, "utf8")).sites;
+      assert.equal(deepSites.find((site) => site.id === deepApi.tsuzuri_trap_site())?.kind, "stack overflow");
       assert.ok(new Uint8Array(deepMemory.buffer, neighbor, 262144).every(value => value === 0xa5));
       assert.equal(deepApi.tz_deep_call(64n), expectedDeep(64n));
       assert.throws(() => deepApi.tz_deep_call(200n), WebAssembly.RuntimeError);

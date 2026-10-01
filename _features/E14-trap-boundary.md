@@ -155,7 +155,7 @@ export function createBoundary(module, { imports = {}, sites = [] } = {}) {
 
 | 失敗 | WASM（Phase 1） | native `run`／`test`（Phase 1） | native object（Phase 2、要承認） |
 | --- | --- | --- | --- |
-| `TrapKind` の 14 種（生成 IR と数値 runtime の `@llvm.trap`） | `reason: "trap"` と site | 変更なし（既存の site の報告） | status 1 と `tsuzuri_trap_info` |
+| `TrapKind` の 15 種（生成 IR、数値 runtime、WASM の stack 検査の `@llvm.trap`） | `reason: "trap"` と site | 変更なし（既存の site の報告） | status 1 と `tsuzuri_trap_info` |
 | スタック枯渇 | `reason: "stack"`（V8 は `RangeError`、検証済み） | SIGSEGV／SIGBUS の推定 message（D5） | 対象外（プロセス終了のまま。Phase 3） |
 | エンジンのトラップ（`TrapKind::WasmRuntime` の site を持たないもの） | `reason: "trap"`、site 0 | — | — |
 | ホスト関数（extern・import）の失敗 | 再送出して instance を捨てる | 対象外 | 対象外（ホストのフレームは跨がない） |
@@ -214,7 +214,7 @@ boundary.call("tz_div", 9n, 3n);      // 新しい instance で { ok: true, valu
 
 - Tsuzuri が作る native 実行ファイル（`build --emit exe`、`run`、`test`）だけで、runtime が `sigaltstack` と SIGSEGV／SIGBUS の handler を登録する（D9）。
   故障アドレスが主 thread・worker の guard 範囲なら `write(2, "stack overflow\n", 15)` の後に `abort()` し、範囲外は既定動作へ戻して再送する。
-- `TrapKind::StackOverflow`（新規）を足し、`run` は `E2005` で `stack overflow` を報告する。object・ライブラリ出力はホストの signal 設定を変えない。
+- 既存の `TrapKind::StackOverflow`（WASM の入口検査で追加済み）を native でも使い、`run` は `E2005` で `stack overflow` を報告する。object・ライブラリ出力はホストの signal 設定を変えない。
 
 ## 設計
 
@@ -244,7 +244,7 @@ JS 側の状態は closure の変数 3 つ（`instance`、`hostError`、包ん�
 | Phase 2（要承認） | `src/llvm_abi.rs` | header と wrapper の生成 | `tsuzuri_try_<name>` の thunk と header の prototype、`tsuzuri_trap_info` の typedef |
 | Phase 2（要承認） | `src/runtime/trap.c`（新規） | `tsuzuri_boundary_run`、`tsuzuri_trap_raise`、確保 list | `setjmp` は C の中だけで行う（D6） |
 | Phase 2（要承認） | `src/runtime/task.c` | `tz_task_execute`、`tz_task_submit`、`struct tz_task_group` | worker 境界と group のトラップ記録（D7） |
-| Phase 3（要承認） | `src/runtime/`、`src/trap.rs` | signal handler（新規）、`TrapKind::StackOverflow`（新規） | D9 |
+| Phase 3（要承認） | `src/runtime/`、`src/trap.rs` | signal handler（新規）、既存の `TrapKind::StackOverflow` | D9 |
 
 ### 生成 IR とランタイム
 

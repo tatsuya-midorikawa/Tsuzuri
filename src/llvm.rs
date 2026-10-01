@@ -390,7 +390,8 @@ pub fn emit_native_build(
     }
 }
 
-/// Emits a WASM build with shared-memory threads or 64-bit memory.
+/// Emits a WASM build with shared-memory threads, 64-bit memory, or stack checks.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_wasm_build(
     module: &CheckedModule,
     options: EmitOptions,
@@ -399,6 +400,7 @@ pub(crate) fn emit_wasm_build(
     trap_info: bool,
     threads: bool,
     memory64: bool,
+    stack_checks: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     let (ir, marks) = emit_program(
         module,
@@ -414,6 +416,12 @@ pub(crate) fn emit_wasm_build(
             memory64,
         },
     )?;
+    // Before trap instrumentation, so an overflow reports the site of the checked function.
+    let ir = if stack_checks {
+        with_stack_checks(ir, threads)
+    } else {
+        ir
+    };
     if let Some(marks) = marks {
         traps::instrument(ir, module, marks, sources, true)
     } else {

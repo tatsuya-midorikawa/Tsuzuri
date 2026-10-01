@@ -176,6 +176,13 @@ try {
     const top = new Uint8Array(checked.memory.buffer, MAX_WASM32 - MiB, MiB).fill(0x5a);
     assert.throws(() => checked.tz_deep_call(200n), WebAssembly.RuntimeError);
     assert.ok(top.every((value) => value === 0x5a));
+    // The getter has no check, so the host can still read the site with the stack pointer below the limit.
+    const traced = deepBuild("traced", "--wasm-max-memory", "4194240KiB", "--trap-info");
+    assert.throws(() => traced.tz_deep_call(200n), WebAssembly.RuntimeError);
+    const tracedSites = JSON.parse(readFileSync(join(directory, `deep-traced-${optimization}.wasm.trap.json`), "utf8")).sites;
+    const overflow = tracedSites.find((site) => site.id === traced.tsuzuri_trap_site());
+    assert.equal(overflow?.kind, "stack overflow");
+    assert.ok(overflow.path.endsWith("Main.tz") && overflow.span.line <= 3, JSON.stringify(overflow));
 
     const failing = execute(compiler, ["test", root, "--target", "wasm32", `-O${optimization}`], false);
     assert.equal(failing.status, 1, `${failing.stdout}\n${failing.stderr}`);

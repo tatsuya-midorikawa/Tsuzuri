@@ -1197,6 +1197,8 @@ fn build_complete(
         ));
     }
     let mut trap_sites = Vec::new();
+    let stack_checks = options.emit != Emit::Header
+        && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     let mut text = if options.emit == Emit::Header {
         llvm::header(module)
     } else if options.emit == Emit::Wgsl {
@@ -1238,7 +1240,7 @@ fn build_complete(
             })?;
             trap_sites = output.trap_sites;
             output.ir
-        } else if options.wasm_threads || options.target == Target::Wasm64 {
+        } else if options.wasm_threads || options.target == Target::Wasm64 || stack_checks {
             let output = project.with_trap_sources(|sources| {
                 llvm::emit_wasm_build(
                     module,
@@ -1248,6 +1250,7 @@ fn build_complete(
                     options.trap_info,
                     options.wasm_threads,
                     options.target == Target::Wasm64,
+                    stack_checks,
                 )
             })?;
             trap_sites = output.trap_sites;
@@ -1280,13 +1283,8 @@ fn build_complete(
     {
         text = llvm::windows_abi(text, module);
     }
-    let stack_checks = options.emit != Emit::Header
-        && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
-        if stack_checks {
-            text = llvm::with_stack_checks(text, options.wasm_threads);
-        }
         if options.wasm_simd {
             text.insert_str(
                 0,

@@ -116,7 +116,7 @@ max-memory = "256MiB"
 stack-size = "4MiB"
 ```
 
-wasm32 で 2 GiB を超える上限では、各関数が frame を確保した後で stack pointer が stack の範囲にあるかを検査します。stack が尽きると 0 の下へ折り返ってヒープの末尾へ届き得るためで、溢れは frame を使う前にトラップします。呼び出しの多い再帰はこの検査の分だけ遅くなるため、必要なときだけ 2 GiB を超える値を使います。
+wasm32 で 2 GiB を超える上限では、各関数が frame を確保した後で stack pointer が stack の範囲にあるかを検査します。stack が尽きると 0 の下へ折り返ってヒープの末尾へ届き得るためで、溢れは frame を使う前にトラップします。呼び出しの多い再帰はこの検査の分だけ遅くなるため、必要なときだけ 2 GiB を超える値を使います。`--trap-info` では `tsuzuri_trap_site()` が理由 `stack overflow` の site を返します。
 
 `--emit object` は上限をヒープの検査に埋め込むだけです。自分で wasm-ld を実行するときは同じ値を `--max-memory` に渡し、stack は `-z stack-size` で指定します。`--wasm-stack-size` は WASM 出力と test だけです。値が食い違うと、どちらか小さい側で確保がトラップします。
 
