@@ -15,8 +15,8 @@ x64／ARM64 が対象で、Windows ARM64 はデバッグだけ未対応です。
 `tsuzuri fmt [--check] <file|directory> [--json]` でソースを保守的に整形できます。
 `--check` は書き換えず差分があれば終了コード 1。ディレクトリは直下の `.tz`／`.tt`／`.tc` だけを対象にし、LLVM は不要です。
 
-`tsuzuri lsp` はエディターから起動するstdio言語サーバーです。未保存の全量同期、複数診断、型のhover、関数・レコード・ローカルへの定義ジャンプ、シンボル一覧に対応します。
-UTF-8位置を交渉できないクライアントにはUTF-16位置を返します。補完・rename・LSP経由の整形はまだ提供しません。
+`tsuzuri lsp` はエディターから起動するstdio言語サーバーです。未保存の全量同期、複数診断、型のhover、定義ジャンプ、シンボル一覧に加え、参照検索・rename・workspace symbol・補完・signature help・semantic tokens・未使用ローカルのquick fix・LSP経由の整形に対応します。
+renameとquick fixは編集後のプロジェクトを再解析し、意味が変わらない編集だけを返します。UTF-8位置を交渉できないクライアントにはUTF-16位置を返します。詳細は[フォーマッターと LSP](_docs/tools/editor-tools.md)。
 
 `test "adds numbers" = assert (1 + 2 == 3)` のようにテストを書き、`tsuzuri test <file|directory>` で実行できます。
 `--filter TEXT`、`--json`、`-O0`～`-O3`、`--target native|wasm32` に対応します。WASM 実行には Node.js が必要です。
@@ -492,6 +492,10 @@ geometry-core = { path = "../geometry-core" }
 限定TOML、相対pathだけに対応し、ネットワークやbuild scriptは実行しません。詳細は[言語仕様](docs/language.md#ローカルパッケージ)を参照してください。
 
 ## ビルド
+
+LLVM を導入せずに使う場合は、コンパイラ・Clang・LLD・SDK/libc をまとめたホスト別の配布物（`tsuzuri-<version>-<host>.tar.gz`）を使えます。
+導入・確認・削除の手順は[はじめに](_docs/get-started.md#配布物を使う)を参照してください。
+コンパイラは各ツールを環境変数 → 配布物の `bin/` → `PATH` の順に探します（`tsuzuri toolchain info` で確認できます）。
 
 - Rust 1.85 以降。浮動小数点リテラルの正確な丸めに `rustc_apfloat` を使います。
 - LLVM/Clang 17 以降。WASM のリンクには `wasm-ld`（LLD）も必要です。

@@ -723,12 +723,17 @@ Phase 1（手順 1–12）を実装した。D9（公証・Authenticode）、D10�
   `node scripts/toolchain/smoke.mjs target/dist/tsuzuri-0.1.0-darwin-arm64.tar.gz --discover`: いずれも native `-O0`/`-O3`（`-g`・IO・言語内テスト・Task）、
   WASM `-O0`/`-O3`、`fmt` が成功。`vsc/toolchain/bin/tsuzuri toolchain info` は 4 行とも `bundled`。
 - archive: 199,032,269 bytes（tree は約 802 MiB）。`shasum -a 256 -c` が OK、最上位は `tsuzuri-0.1.0-darwin-arm64` だけ、`._` の entry は 0。
-- `cargo test --locked --test toolchain`: 6 passed。`cargo test --locked` 全体、fmt・clippy が成功。
+- `cargo test --locked --test toolchain`: 6 passed。`cargo test --locked` 全体（G12 と合わせた最終状態で 57 suite）、fmt・clippy が成功。
   `node tests/cache.mjs target/release/tsuzuri`・`node tests/e2e.mjs target/release/tsuzuri`: 成功（開発用ビルドは HEAD と同じツールを使う）。
-- `vsc`: `npm run test:unit`・`npm test`・`npm run vsix`・`npm run test:installed`（結果は下の「VS Code」）。
+- `vsc`: `npm run test:unit` が 5/5、`npm run vsix`（Node 24。型検査・lint・secret scan・archive 検証）が成功。VSIX に
+  `extension/resources/codelldb.vsix` があり、`extension/toolchain/codelldb.vsix` はない。VSIX の `toolchain/manifest.json` と CLI archive の
+  manifest は同じ `id`（`c7ea54c0…`）。`npm test` は編集支援の段の後、`vscode.executeCompletionItemProvider` で止まった。HEAD の拡張機能でも
+  同じ段で止まるため作業機の状態によると判断し（G12 の「残作業」）、`npm test` と `npm run test:installed` は未完了。CodeLLDB の導入（デバッグの段）は
+  このため実機で確かめていない。
 - CI（手順 10）は push が要るため未実行。人間が `workflow_dispatch` で 6 個の `tsuzuri-cli-<target>` artifact を確かめる。
 
 ### 残作業
 
 - CI の実行と、darwin-x64・linux-x64・linux-arm64 の「CI で検証」の確認。win32 の archive は G10 が done になるまで未検証。
+- 負荷の低い環境で `vsc` の `npm test`・`npm run test:installed` を再実行し、`resources/codelldb.vsix` からの CodeLLDB の導入を確かめる。
 - D9〜D11 の承認と Phase 2。コミットは作っていない。

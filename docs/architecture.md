@@ -64,9 +64,9 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/task.c` / `task-wasm.ll` / `task-wasm-threads.c` | native pool、WASM既定逐次、opt-in共有メモリWorker pool |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・シフトの freestanding 補助 |
 | `src/stdlib.rs` / `std/` | 埋め込みの標準ライブラリのソース、予約 std モジュール名、std の仮想パス |
-| `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護 |
-| `src/main.rs` | CLI オプションと診断・警告の表示 |
-| `src/lsp.rs` / `src/semantic.rs` | stdio言語サーバー、Unicode位置変換、単相化前の型・定義位置インデックス |
+| `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの 2 段上に `manifest.json`）の `bin/` → `PATH` の順に解決（`resolve_tool`。cache key も同じ解決を使う） |
+| `src/main.rs` | CLI オプションと診断・警告の表示、`toolchain info` |
+| `src/lsp.rs` / `src/semantic.rs` | stdio言語サーバー、Unicode位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカルの有効範囲・record 型の式を索引し、型付き木が落とすフィールド・record・case 名は checker の `name_uses` から集める。rename と quick fix は編集後の再解析で診断と名前の結び付きの不変を確かめる。入力中の補完・signature help・semantic tokens は直前の成功索引を共通の接頭辞・接尾辞で写して使う |
 
 doc commentはlexerのDocComment tokenとして保持し、parserで宣言のDocumentation(text, span)へ添付します。
 def/fn結合では署名側から引き継ぎ、誤配置はE0002です。生成するchecked functionにはdocsを複製せず、型/ownership/LLVMの意味は変えません。

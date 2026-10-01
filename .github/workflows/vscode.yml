@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - vsc/**
+      - scripts/toolchain/**
       - src/**
       - std/**
       - tests/**
@@ -97,6 +98,20 @@ jobs:
       - name: Compiler LSP protocol
         run: node ../tests/lsp_sessions.mjs "toolchain/bin/tsuzuri${{ runner.os == 'Windows' && '.exe' || '' }}"
       - run: npm run test:toolchain
+      - run: node ../scripts/toolchain/archive.mjs toolchain ../target/dist
+      - name: Standalone archive smoke
+        run: |
+          shopt -s nullglob
+          set -- ../target/dist/tsuzuri-*-${{ matrix.target }}.tar.gz ../target/dist/tsuzuri-*-${{ matrix.target }}.zip
+          node ../scripts/toolchain/smoke.mjs "$1" --discover
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsuzuri-cli-${{ matrix.target }}
+          path: |
+            target/dist/tsuzuri-*.tar.gz
+            target/dist/tsuzuri-*.zip
+            target/dist/tsuzuri-*.sha256
+          if-no-files-found: error
       - name: VS Code integration on Linux
         if: runner.os == 'Linux'
         run: xvfb-run -a npm test

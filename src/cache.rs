@@ -165,7 +165,7 @@ pub(crate) fn build_key(
         }
     }
     for (variable, fallback) in tools {
-        let tool = std::env::var_os(variable).unwrap_or_else(|| fallback.into());
+        let tool = crate::driver::resolve_tool(variable, fallback).1;
         let path = executable_path(&tool)?;
         hash.field("tool-path", path.as_os_str().as_encoded_bytes());
         hash.field("tool-binary", &file_digest(&path)?);
@@ -197,7 +197,7 @@ pub(crate) fn build_key(
     Ok(hash.hex())
 }
 
-fn executable_path(tool: &std::ffi::OsStr) -> io::Result<PathBuf> {
+pub fn executable_path(tool: &std::ffi::OsStr) -> io::Result<PathBuf> {
     let path = Path::new(tool);
     if path.components().count() > 1 || path.is_absolute() {
         return fs::canonicalize(path);

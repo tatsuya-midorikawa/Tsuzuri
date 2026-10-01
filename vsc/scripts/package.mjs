@@ -58,7 +58,7 @@ async function verifyArchive(file) {
 
 if (process.argv.includes('--scan')) {
   const files = (await listFiles({ cwd: extension, dependencies: false }))
-    .filter(file => !file.startsWith('toolchain/') && !/\.(jpg|jpeg|png|gif|svg)$/i.test(file))
+    .filter(file => !file.startsWith('toolchain/') && !/\.(jpg|jpeg|png|gif|svg|vsix)$/i.test(file))
     .map(file => path.join(extension, file));
   const scanned = await lintFiles(files, true, true);
   if (!scanned.ok) {

@@ -428,6 +428,7 @@ impl Checker<'_> {
                             })?
                             .clone();
                         self.same(&projection.ty, &local.ty, name.span)?;
+                        self.note_name(&name, NameTarget::Local(local.id));
                         local
                     };
                     if self.borrowed_place(&projection) {
@@ -624,6 +625,9 @@ impl Checker<'_> {
                     ));
                 };
                 self.record_storage(id, pattern.span)?;
+                if let Some(name) = name {
+                    self.note_name(name, NameTarget::Record(id));
+                }
                 let mut seen = BTreeSet::new();
                 let field_count = self.types.records[id].fields.len();
                 let mut coverage = vec![CoveragePat::Wildcard; field_count];
@@ -642,6 +646,7 @@ impl Checker<'_> {
                                 name.span,
                             )
                         })?;
+                    self.note_name(name, NameTarget::Field(id, index));
                     let ty = self
                         .inference
                         .resolve(&self.types.record_field(id, &arguments, index));
@@ -768,6 +773,7 @@ impl Checker<'_> {
         arguments: &[Pattern],
         matched: TypedExpr,
     ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
+        self.note_case(name, union_id, case_id);
         let payload = match (has_payload, arguments) {
             (false, []) => None,
             (true, [payload]) => Some(payload),

@@ -692,6 +692,10 @@ Phase 1 の 8 機能（手順 1–14）を実装した。Phase 2（inlay hint �
 
 ### 残作業
 
-- VS Code での目視確認（手順 14 の後半）は未実施。`vsc` の `npm test`・`npm run test:installed` は既存の LSP 機能の回帰として通した。
+- VS Code での目視確認（手順 14 の後半）は未実施。`vsc` の `npm test` は hover・outline・定義・診断の段まで成功し、次の
+  `vscode.executeCompletionItemProvider` で応答が返らず止まった。新しい capability をすべて隠す proxy を挟んだ場合も、HEAD の拡張機能（一時的な
+  worktree）でも同じ段で止まるため、この変更ではなく作業機の状態（load average 約 37、login shell の起動 15 秒で VS Code の shell 環境の解決が
+  時間切れ）によると判断した。LSP の通信を記録し、サーバーがすべての要求に応答していることを確かめた。負荷の低い環境か CI で
+  `npm test`・`npm run test:installed` を再実行する。
 - D1 の見直し提案（依存欄を `G07, (G20)` にする）は、G20 が done になったため不要になった。
 - コミットは作っていない。

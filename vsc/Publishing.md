@@ -144,9 +144,9 @@ xvfb-run -a npm run test:installed
 
 処理の内容は次のとおりです。
 
-1. `toolchain` が現在のソースからコンパイラをビルドし、対応する LLVM・SDK・デバッガーとライセンスを収集します。
+1. `toolchain` が現在のソースからコンパイラをビルドし、対応する LLVM・SDK・デバッガーとライセンスを収集します。同梱処理は CLI 配布物と共通の `scripts/toolchain/bundle.mjs` で、`toolchain/` の中身は CLI 配布物と同一です（manifest の `id` が一致します）。CodeLLDB は VSIX 専用として `resources/codelldb.vsix` に置きます。
 2. `test:unit` が共通処理、プラットフォーム分岐、TextMate 文法を検証します。
-3. `test:toolchain` が同梱物を別パスへ移し、システムの Clang／SDK に頼らず native／WASM の O0／O3 を試験します。
+3. `test:toolchain` が同梱物を別パスへ移し、システムの Clang／SDK に頼らず native／WASM の O0／O3 を試験します（`scripts/toolchain/smoke.mjs`）。
 4. `test` が実際の VS Code 上で編集・診断・ビルド・実行・テストと、対応環境のデバッグを試験します。
 5. `vsix` が型検査、lint、バンドル、秘密情報検査を行い、生成したアーカイブの必須ファイル・同梱ツールのハッシュ・実行権限を検証します。
 6. `test:installed` が空のプロファイルへ完成した VSIX をインストールし、開発フォルダーではなく配布物で IDE 試験を行います。
@@ -180,6 +180,19 @@ Linux では `sha256sum -c`、Windows では `Get-FileHash -Algorithm SHA256` �
 code --install-extension ./dist/tsuzuri-0.1.0-darwin-arm64.vsix
 ```
 
+### CLI 配布物
+
+同じ `toolchain/` から、VS Code を使わない利用者向けの archive を作れます。
+
+```sh
+node ../scripts/toolchain/archive.mjs toolchain ../target/dist
+node ../scripts/toolchain/smoke.mjs ../target/dist/tsuzuri-0.1.0-darwin-arm64.tar.gz --discover
+```
+
+`archive.mjs` は `toolchain/` を検証して `tsuzuri-<version>-<host>.tar.gz`（Windows は `.zip`）と `.sha256` を書き、展開した中身をもう一度検証します。
+`--discover` の smoke は `TSUZURI_*` を設定せず、`PATH` にコンパイラだけを置いて、同梱ツールを自動で見つけることを試します。
+配る archive は CI のものだけを使います（開発機で作ると Homebrew の LLVM がその macOS を最小版として要求します）。署名・公証・Release への自動公開はまだ行いません。
+
 ## 6. CI で全プラットフォームを作成する
 
 [Tsuzuri IDE ワークフロー](../.github/workflows/vscode.yml)は、6 種類のホストでパッケージ作成と試験を行います。
@@ -188,6 +201,7 @@ code --install-extension ./dist/tsuzuri-0.1.0-darwin-arm64.vsix
 2. GitHub の **Actions > Tsuzuri IDE > Run workflow** で、そのコミットを含むブランチを選択して実行します。
 3. 6 target のジョブが成功し、特に `Installed VSIX integration` が通ったことを確認します。
 4. 各ジョブの `tsuzuri-<target>` artifact をダウンロードし、VSIX とチェックサムを保存します。
+5. CLI 配布物は `tsuzuri-cli-<target>` artifact です。各ジョブは archive を展開し、配布物だけの環境で `Standalone archive smoke` を通します。Windows の archive は作成しますが、Windows 対応（G10）が完了するまで未検証として扱います。
 
 ワークフローは PR と `vsc-v*` タグの push でも起動します。
 **現在の CI は成果物を保存するだけで、Marketplace には公開しません。** 公開用の認証情報も要求しません。

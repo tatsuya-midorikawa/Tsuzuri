@@ -3120,6 +3120,7 @@ fn check_modules_collect(
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
 ) -> Result<CheckedModule, Diagnostic> {
+    let indexing = semantic.is_some();
     let mut names = Names {
         warning_options,
         ..Names::default()
@@ -4008,6 +4009,7 @@ fn check_modules_collect(
         }
         let signature = scheme.signature.clone();
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
+        checker.indexing = indexing;
         if let Some(active) = active_results.get(&id) {
             checker.use_active_result(&signature.result, active);
         }
@@ -4117,6 +4119,7 @@ fn check_modules_collect(
             continue;
         }
         let mut checker = Checker::new(module, &names, types, &signatures, &classes);
+        checker.indexing = indexing;
         let checked = (|| {
             let mut expression = expression.clone();
             computation::expand(&mut expression, &names)?;
@@ -4161,7 +4164,9 @@ fn check_modules_collect(
     if diagnostics.check().is_ok() {
         polymorph::solve_members(&mut functions, &mut pending)?;
     }
+    let mut name_uses = Vec::new();
     for (function, mut checker) in functions.iter_mut().zip(pending) {
+        name_uses.push(std::mem::take(&mut checker.name_uses));
         let checked = (|| {
             checker.finish(&mut function.body)?;
             let coverage = checker.check_coverage()?;
@@ -4214,7 +4219,7 @@ fn check_modules_collect(
     );
     diagnostics.check()?;
     if let Some(index) = semantic {
-        *index = semantic::collect(modules, &functions, &names, types);
+        *index = semantic::collect(modules, &functions, &name_uses, &names, types);
     }
     constants::fold(&mut functions, &names.constants)?;
     let references =
@@ -5332,6 +5337,17 @@ struct RecoveryMark {
     computation_depth: usize,
 }
 
+/// A source name that the typed tree does not keep, recorded for the semantic index.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NameTarget {
+    Record(usize),
+    Union(usize),
+    Field(usize, usize),
+    Case(usize, usize),
+    /// A later OR-pattern alternative binding an earlier alternative's local.
+    Local(usize),
+}
+
 struct Checker<'a> {
     module: &'a str,
     names: &'a Names,
@@ -5362,6 +5378,8 @@ struct Checker<'a> {
     poisoned: bool,
     recovering: bool,
     recovered: Vec<Diagnostic>,
+    indexing: bool,
+    name_uses: Vec<(Span, NameTarget)>,
 }
 
 impl<'a> Checker<'a> {
@@ -5396,6 +5414,57 @@ impl<'a> Checker<'a> {
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),
+            indexing: false,
+            name_uses: Vec::new(),
+        }
+    }
+
+    /// Records the last segment of a possibly dotted name.
+    #[inline(never)]
+    fn note_name(&mut self, name: &Ident, target: NameTarget) {
+        if self.indexing && name.provenance == Provenance::User {
+            let last = name.text.rsplit('.').next().unwrap_or(&name.text);
+            let start = name.span.end.saturating_sub(last.len());
+            self.name_uses.push((Span { start, ..name.span }, target));
+        }
+    }
+
+    /// Records a case name and a `Union.Case` qualifier spelled in one dotted name.
+    #[inline(never)]
+    fn note_case(&mut self, name: &Ident, union: usize, case: usize) {
+        if !self.indexing || name.provenance == Provenance::Generated {
+            return;
+        }
+        self.note_name(name, NameTarget::Case(union, case));
+        let mut segments = name.text.rsplit('.');
+        let last = segments.next().unwrap_or_default();
+        let short = self.types.unions[union].name.rsplit('.').next();
+        if let Some(qualifier) = segments.next().filter(|segment| Some(*segment) == short) {
+            let end = name.span.end.saturating_sub(last.len() + 1);
+            let start = end.saturating_sub(qualifier.len());
+            let span = Span {
+                start,
+                end,
+                ..name.span
+            };
+            self.name_uses.push((span, NameTarget::Union(union)));
+        }
+    }
+
+    /// Records `Case`, `Union.Case`, and `Module.Union.Case` written as field paths.
+    #[inline(never)]
+    fn note_case_path(&mut self, expression: &Expr, union: usize, case: usize) {
+        let ExprKind::Field(value, field) = &expression.kind else {
+            return;
+        };
+        self.note_name(field, NameTarget::Case(union, case));
+        let short = self.types.unions[union].name.rsplit('.').next();
+        let qualifier = match &value.kind {
+            ExprKind::Name(name) | ExprKind::Field(_, name) => name,
+            _ => return,
+        };
+        if Some(qualifier.text.as_str()) == short {
+            self.note_name(qualifier, NameTarget::Union(union));
         }
     }
 
@@ -6065,6 +6134,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Field(..) if case.is_some() => {
                 let (union_id, case_id) = case.unwrap();
+                self.note_case_path(expression, union_id, case_id);
                 self.case_value(union_id, case_id)
             }
             ExprKind::Field(value, field)
@@ -6320,6 +6390,7 @@ impl<'a> Checker<'a> {
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let id = self.names.record(self.module, &name.text, name.span)?;
         self.record_storage(id, name.span)?;
+        self.note_name(name, NameTarget::Record(id));
         let types = self.types;
         let record = &types.records[id];
         // Type arguments come from the expected type when it names this
@@ -6351,6 +6422,7 @@ impl<'a> Checker<'a> {
                         field.span,
                     )
                 })?;
+            self.note_name(field, NameTarget::Field(id, index));
             values.push((index, self.expression(value, Some(&field_types[index]))?));
         }
         let missing: Vec<_> = record
@@ -6428,9 +6500,10 @@ impl<'a> Checker<'a> {
             ));
         };
         self.record_storage(*id, span)?;
+        let id = *id;
         let types = self.types;
-        let record = &types.records[*id];
-        let field_types = types.record_fields(*id, args);
+        let record = &types.records[id];
+        let field_types = types.record_fields(id, args);
         let ty = base.ty.clone();
         let mut values = Vec::new();
         let mut seen = BTreeSet::new();
@@ -6449,6 +6522,7 @@ impl<'a> Checker<'a> {
                         field.span,
                     )
                 })?;
+            self.note_name(field, NameTarget::Field(id, index));
             values.push((index, self.expression(value, Some(&field_types[index]))?));
         }
         Ok((
@@ -6484,6 +6558,8 @@ impl<'a> Checker<'a> {
                         )
                     })?;
                 let ty = self.types.record_field(*id, args, index);
+                let id = *id;
+                self.note_name(field, NameTarget::Field(id, index));
                 Ok((TypedExprKind::Field(Box::new(value), index), ty))
             }
             Type::Array(_) | Type::List(_) | Type::Vec(_) if field.text == "length" => {
@@ -6705,6 +6781,7 @@ impl<'a> Checker<'a> {
         }
         if let Some(case) = self.names.case(self.module, &name.text, name.span)? {
             let (union_id, case_id) = (case.info.id, case.case);
+            self.note_name(name, NameTarget::Case(union_id, case_id));
             return Ok(self.case_value(union_id, case_id));
         }
         Err(Diagnostic::new(

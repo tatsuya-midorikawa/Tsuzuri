@@ -18,6 +18,7 @@ Usage:
                              [--target native|wasm32]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri toolchain info
 
 Each source file is one module named after its filename:
   .tz  Code (records, unions, functions, and type class instances)
@@ -52,6 +53,9 @@ Build options:
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
+  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
+  TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
+  Each tool comes from its variable, then a distribution's bin/, then PATH.
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code or fn main.
@@ -674,6 +678,84 @@ fn run_test_action(
     }
 }
 
+fn toolchain_info() -> String {
+    let mut info = format!("tsuzuri {}\n", env!("CARGO_PKG_VERSION"));
+    match driver::distribution_root() {
+        Some(root) => {
+            let id = std::fs::read_to_string(root.join("manifest.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|manifest| manifest["id"].as_str()?.get(..12).map(str::to_owned));
+            info += &format!(
+                "distribution: {} (id {})\n",
+                root.display(),
+                id.as_deref().unwrap_or("unavailable")
+            );
+        }
+        None => info += "distribution: none\n",
+    }
+    for (variable, fallback) in [
+        ("TSUZURI_CLANG", "clang"),
+        ("TSUZURI_WASM_LD", "wasm-ld"),
+        ("TSUZURI_LLVM_LINK", "llvm-link"),
+        ("TSUZURI_DSYMUTIL", "dsymutil"),
+    ] {
+        let (source, tool) = driver::resolve_tool(variable, fallback);
+        info += &tool_line(variable, source, &tool);
+    }
+    info + &tool_line("node", driver::ToolSource::Path, "node".as_ref())
+}
+
+fn tool_line(name: &str, source: driver::ToolSource, tool: &std::ffi::OsStr) -> String {
+    let source = match source {
+        driver::ToolSource::Env => "env",
+        driver::ToolSource::Bundled => "bundled",
+        driver::ToolSource::Path => "path",
+    };
+    match tsuzuri::cache::executable_path(tool) {
+        Ok(path) => format!(
+            "{name}: {source} {} ({})\n",
+            path.display(),
+            version_line(&path)
+        ),
+        Err(_) => format!("{name}: {source} {} (not found)\n", tool.to_string_lossy()),
+    }
+}
+
+/// The first `--version` line naming a version, or else its first nonempty line.
+fn version_line(tool: &Path) -> String {
+    // Some Clang drivers write files into the working directory, so probe from a scratch one.
+    let scratch = env::temp_dir().join(format!("tsuzuri-version-{}", std::process::id()));
+    let output = std::fs::create_dir_all(&scratch).and_then(|()| {
+        std::process::Command::new(tool)
+            .arg("--version")
+            .current_dir(&scratch)
+            .stdin(std::process::Stdio::null())
+            .output()
+    });
+    let _ = std::fs::remove_dir_all(&scratch);
+    let output = match output {
+        Ok(output) if output.status.success() => output,
+        _ => return "unavailable".into(),
+    };
+    let bytes = if output.stdout.iter().all(u8::is_ascii_whitespace) {
+        output.stderr
+    } else {
+        output.stdout
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<_> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines
+        .iter()
+        .find(|line| line.to_ascii_lowercase().contains("version"))
+        .or(lines.first())
+        .map_or_else(|| "unavailable".into(), |line| (*line).to_owned())
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -693,6 +775,10 @@ fn main() -> ExitCode {
     }
     if raw.len() == 1 && raw[0] == "--version" {
         println!("tsuzuri {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if raw.len() == 2 && raw[0] == "toolchain" && raw[1] == "info" {
+        print!("{}", toolchain_info());
         return ExitCode::SUCCESS;
     }
     let json = flags.iter().any(|argument| *argument == "--json");
