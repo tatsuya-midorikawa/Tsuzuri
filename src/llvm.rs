@@ -114,6 +114,124 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     output
 }
 
+/// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
+/// lines match, so string constants containing the same text stay unchanged.
+pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
+    if limit == crate::driver::DEFAULT_WASM_MAX_MEMORY {
+        return ir;
+    }
+    let mut output = String::with_capacity(ir.len());
+    for line in ir.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let ending = &line[body.len()..];
+        let _ = match body {
+            "  %fits = icmp ule i64 %size, 16777184"
+            | "  %fits = icmp ule i64 %new_size, 16777184" => {
+                let (prefix, _) = body
+                    .rsplit_once(' ')
+                    .expect("heap limit lines end with a constant");
+                write!(output, "{prefix} {}{ending}", limit - 32)
+            }
+            "  %within = icmp ule i64 %end, 16777216" => {
+                write!(output, "  %within = icmp ule i64 %end, {limit}{ending}")
+            }
+            // Above 2 GiB `%begin + %needed` can wrap in i32; `%begin` never exceeds the limit.
+            "  %within = icmp ule i32 %end, 16777216" if limit > 1 << 31 => write!(
+                output,
+                "  %room = sub i32 {limit}, %begin{ending}  %within = icmp ule i32 %needed, %room{ending}"
+            ),
+            "  %within = icmp ule i32 %end, 16777216" => {
+                write!(output, "  %within = icmp ule i32 %end, {limit}{ending}")
+            }
+            _ => write!(output, "{line}"),
+        };
+    }
+    output
+}
+
+/// Bytes kept below every checked frame for unchecked code: the threads runtime
+/// C and the appended i128 helpers, whose frames total under 1 KiB.
+const STACK_CHECK_MARGIN: u32 = 4096;
+
+/// Checks every function's stack pointer, after its static frame is allocated,
+/// against its stack, so an overflow traps before the frame is used instead of
+/// wrapping below address 0 into grown memory or running into a worker stack's neighbor.
+pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
+    let mut output = String::with_capacity(ir.len() + ir.len() / 8);
+    let mut lines = ir.split_inclusive('\n').peekable();
+    while let Some(line) = lines.next() {
+        output.push_str(line);
+        let header = line.trim_end();
+        if !header.starts_with("define ") || !header.ends_with('{') {
+            continue;
+        }
+        if let Some(label) = lines.next_if(|next| {
+            let label = next.split(';').next().unwrap_or_default().trim_end();
+            !label.starts_with([' ', '\t']) && label.ends_with(':')
+        }) {
+            output.push_str(label);
+        }
+        // Inlining the check splits the entry block, so its static allocas move
+        // ahead of the call to stay static allocations that SROA can promote.
+        let mut allocas = String::new();
+        let mut rest = String::new();
+        for next in lines.by_ref() {
+            let body = next.trim_start();
+            if body.split_once(" = ").is_some_and(|(_, value)| {
+                value.starts_with("alloca ")
+                    && !value.contains(", i32 %")
+                    && !value.contains(", i64 %")
+            }) {
+                allocas.push_str(next);
+                continue;
+            }
+            rest.push_str(next);
+            if ["br ", "ret", "switch ", "unreachable", "indirectbr "]
+                .iter()
+                .any(|terminator| body.starts_with(terminator))
+            {
+                break;
+            }
+        }
+        output.push_str(&allocas);
+        output.push_str("  call void @tz.stack.check()\n");
+        output.push_str(&rest);
+    }
+    // The frame address is the stack pointer after the static frame. Unlike
+    // stacksave it has no side effects, and hosts set worker bounds before any
+    // call, so LLVM can merge inlined checks and hoist them out of loops.
+    output.push_str(
+        "declare ptr @llvm.frameaddress.p0(i32 immarg)\n@__stack_low = external global i8\n@__stack_high = external global i8\n",
+    );
+    let bounds = if workers {
+        "@tsuzuri_stack_base = addrspace(1) global i32 0\n@tsuzuri_stack_top = addrspace(1) global i32 0\n\
+         ; Zero bounds mean the main stack, so a worker whose host never set its\n\
+         ; bounds traps on its first call instead of running unchecked.\n\
+         define internal void @tz.stack.check() nounwind {\nentry:\n\
+         \x20 %pointer = call ptr @llvm.frameaddress.p0(i32 0)\n\
+         \x20 %sp = ptrtoint ptr %pointer to i32\n\
+         \x20 %worker_top = load i32, ptr addrspace(1) @tsuzuri_stack_top, !invariant.load !{}\n\
+         \x20 %main = icmp eq i32 %worker_top, 0\n\
+         \x20 %main_top = ptrtoint ptr @__stack_high to i32\n\
+         \x20 %top = select i1 %main, i32 %main_top, i32 %worker_top\n\
+         \x20 %worker_base = load i32, ptr addrspace(1) @tsuzuri_stack_base, !invariant.load !{}\n\
+         \x20 %main_base = ptrtoint ptr @__stack_low to i32\n\
+         \x20 %base = select i1 %main, i32 %main_base, i32 %worker_base\n"
+    } else {
+        "define internal void @tz.stack.check() nounwind {\nentry:\n\
+         \x20 %pointer = call ptr @llvm.frameaddress.p0(i32 0)\n\
+         \x20 %sp = ptrtoint ptr %pointer to i32\n\
+         \x20 %top = ptrtoint ptr @__stack_high to i32\n\
+         \x20 %base = ptrtoint ptr @__stack_low to i32\n"
+    };
+    output.push_str(bounds);
+    let _ = write!(
+        output,
+        "  %limit = add i32 %base, {STACK_CHECK_MARGIN}\n  %offset = sub i32 %sp, %limit\n  %range = sub i32 %top, %limit\n  %inside = icmp ule i32 %offset, %range\n  br i1 %inside, label %done, label %overflow\noverflow:\n  call void @llvm.trap()\n  unreachable\ndone:\n  ret void\n}}\n"
+    );
+    output
+}
+
 #[path = "llvm_bulk.rs"]
 mod bulk;
 #[path = "llvm_compare.rs"]
@@ -218,6 +336,7 @@ pub fn emit_with_debug_info(
             debug: Some((sources, optimized)),
             cpu_dispatch: false,
             wasm_threads: false,
+            memory64: false,
         },
     )?;
     if let Some(marks) = marks {
@@ -258,6 +377,7 @@ pub fn emit_native_build(
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
             wasm_threads: false,
+            memory64: false,
         },
     )?;
     if let Some(marks) = marks {
@@ -270,12 +390,15 @@ pub fn emit_native_build(
     }
 }
 
-pub(crate) fn emit_wasm_threads_build(
+/// Emits a WASM build with shared-memory threads or 64-bit memory.
+pub(crate) fn emit_wasm_build(
     module: &CheckedModule,
     options: EmitOptions,
     sources: &[TrapSource<'_>],
     debug: Option<bool>,
     trap_info: bool,
+    threads: bool,
+    memory64: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     let (ir, marks) = emit_program(
         module,
@@ -287,7 +410,8 @@ pub(crate) fn emit_wasm_threads_build(
             traps: trap_info,
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: false,
-            wasm_threads: true,
+            wasm_threads: threads,
+            memory64,
         },
     )?;
     if let Some(marks) = marks {
@@ -305,6 +429,15 @@ pub fn emit_test_runner(
     selected: &[usize],
     wasm: bool,
 ) -> Result<String, Diagnostic> {
+    emit_test_runner_for(module, selected, wasm, false)
+}
+
+pub(crate) fn emit_test_runner_for(
+    module: &CheckedModule,
+    selected: &[usize],
+    wasm: bool,
+    memory64: bool,
+) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
         return Err(Diagnostic::new(
             "E2000",
@@ -312,7 +445,18 @@ pub fn emit_test_runner(
             Span::default(),
         ));
     }
-    emit_selected(module, Entry::TestRunner, wasm, Some(selected), false)
+    emit_program(
+        module,
+        Entry::TestRunner,
+        wasm,
+        Some(selected),
+        false,
+        Instrumentation {
+            memory64,
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
 }
 
 fn emit_selected(
@@ -339,6 +483,7 @@ struct Instrumentation<'a> {
     debug: Option<(&'a [TrapSource<'a>], bool)>,
     cpu_dispatch: bool,
     wasm_threads: bool,
+    memory64: bool,
 }
 
 fn emit_program(
@@ -458,6 +603,7 @@ fn emit_program(
     let mut intrinsics = BTreeSet::new();
     let mut globals = Globals {
         wasm,
+        memory64: instrumentation.memory64,
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         ..Globals::default()
@@ -466,7 +612,7 @@ fn emit_program(
         globals.debug = Some(debug::DebugContext::new(
             sources,
             optimized,
-            wasm,
+            wasm && !instrumentation.memory64,
             &mut globals.next_metadata,
             &mut globals.definitions,
         ));
@@ -692,7 +838,9 @@ fn emit_program(
                     .replace("@tz.realloc(", "@tz.heap.realloc.unlocked("),
             );
         } else {
-            output.push_str(if wasm {
+            output.push_str(if instrumentation.memory64 {
+                include_str!("runtime/heap-wasm64.ll")
+            } else if wasm {
                 include_str!("runtime/heap-wasm.ll")
             } else {
                 include_str!("runtime/heap-native.ll")
@@ -783,6 +931,7 @@ struct Globals {
     definitions: Vec<String>,
     next_metadata: usize,
     wasm: bool,
+    memory64: bool,
     traps: Option<traps::Marks>,
     debug: Option<debug::DebugContext>,
     cpu_dispatch: bool,
@@ -812,6 +961,7 @@ impl Default for Globals {
             definitions: Vec::new(),
             next_metadata,
             wasm: false,
+            memory64: false,
             traps: None,
             debug: None,
             cpu_dispatch: false,
@@ -832,7 +982,7 @@ fn environment_type(function: &CheckedFunction, count: usize, module: &CheckedMo
     )
 }
 
-fn immediate_capture(function: &CheckedFunction, count: usize, wasm: bool) -> bool {
+fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals) -> bool {
     if function.is_task || count != 1 {
         return false;
     }
@@ -841,7 +991,14 @@ fn immediate_capture(function: &CheckedFunction, count: usize, wasm: bool) -> bo
         Type::Bool => 1,
         _ => return false,
     };
-    width <= if wasm { 32 } else { usize::BITS }
+    width
+        <= if globals.memory64 {
+            64
+        } else if globals.wasm {
+            32
+        } else {
+            usize::BITS
+        }
 }
 
 fn closure_wrappers(
@@ -858,7 +1015,7 @@ fn closure_wrappers(
     let arity = function.parameters.len();
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
-        let immediate = immediate_capture(function, count, globals.wasm);
+        let immediate = immediate_capture(function, count, globals);
         if count != 0 && !immediate {
             if !function.is_task
                 && function.signature.parameters[..count]
@@ -3121,7 +3278,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         environment: &str,
     ) -> String {
         let ty = &function.signature.parameters[index];
-        if immediate_capture(function, count, self.globals.wasm) {
+        if immediate_capture(function, count, self.globals) {
             let integer = match ty {
                 Type::Binary(bits) => format!("i{bits}"),
                 _ => self.ty(ty),
@@ -3146,7 +3303,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let count = values.len();
         let environment = if count == 0 {
             "null".to_owned()
-        } else if immediate_capture(function, count, self.globals.wasm) {
+        } else if immediate_capture(function, count, self.globals) {
             let ty = &function.signature.parameters[0];
             let (integer, value) = if let Type::Binary(bits) = ty {
                 let integer = format!("i{bits}");
@@ -3189,7 +3346,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if count == 0 {
             return value;
         }
-        if immediate_capture(function, count, self.globals.wasm) {
+        if immediate_capture(function, count, self.globals) {
             let value = self.value(format!(
                 "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.clone, 2"
             ));
@@ -3218,7 +3375,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             return self.closure_descriptor(target.function, 0, "null");
         }
         let function = &self.module.functions[target.function];
-        if immediate_capture(function, target.bound, self.globals.wasm) {
+        if immediate_capture(function, target.bound, self.globals) {
             return self.make_closure(target.function, values);
         }
         let environment_ty = environment_type(function, target.bound, self.module);
@@ -5371,5 +5528,119 @@ mod tests {
         assert!(!library.contains("@tz.fn.Math."), "{library}");
         assert!(!library.contains("@tz.string."), "{library}");
         assert!(!library.contains("@tz.utf8string."), "{library}");
+    }
+
+    const HEAP_LIMIT_LINES: [&str; 3] = [
+        "  %fits = icmp ule i64 %size, 16777184",
+        "  %within = icmp ule i32 %end, 16777216",
+        "  %fits = icmp ule i64 %new_size, 16777184",
+    ];
+
+    #[test]
+    fn wasm_heap_limit_lines_are_unique() {
+        let heap = include_str!("runtime/heap-wasm.ll");
+        let heap64 = include_str!("runtime/heap-wasm64.ll");
+        let threads = include_str!("runtime/heap-wasm-threads.ll");
+        for target in HEAP_LIMIT_LINES {
+            assert_eq!(heap.lines().filter(|line| *line == target).count(), 1);
+            assert_eq!(threads.lines().filter(|line| *line == target).count(), 0);
+            let target64 = target.replace("i32 %end", "i64 %end");
+            assert_eq!(heap64.lines().filter(|line| *line == target64).count(), 1);
+        }
+        assert!(!heap64.contains("i32 %end"));
+    }
+
+    #[test]
+    fn wasm_heap_limit_above_2_gib_compares_the_remaining_room() {
+        let heap = include_str!("runtime/heap-wasm.ll");
+        let rewritten = with_wasm_heap_limit(heap.to_owned(), 4294901760);
+        assert!(rewritten.contains(
+            "  %end = add i32 %begin, %needed\n  %room = sub i32 4294901760, %begin\n  %within = icmp ule i32 %needed, %room\n"
+        ));
+        assert_eq!(rewritten.matches("4294901728\n").count(), 2);
+        assert_eq!(rewritten.lines().count(), heap.lines().count() + 1);
+        let at_2_gib = with_wasm_heap_limit(heap.to_owned(), 1 << 31);
+        assert!(at_2_gib.contains("  %within = icmp ule i32 %end, 2147483648\n"));
+        let heap64 = include_str!("runtime/heap-wasm64.ll");
+        let rewritten = with_wasm_heap_limit(heap64.to_owned(), 1 << 34);
+        assert!(rewritten.contains("  %within = icmp ule i64 %end, 17179869184\n"));
+        assert_eq!(rewritten.matches("17179869152\n").count(), 2);
+        assert_eq!(rewritten.lines().count(), heap64.lines().count());
+    }
+
+    #[test]
+    fn stack_checks_follow_static_allocas_in_every_definition() {
+        let ir = "@text = constant [8 x i8] c\"define {\"\ndeclare void @external()\ndefine internal i64 @a(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\ndefine void @b() {\n  ret void\n}\ndefine i32 @c() {\n0: ; entry\n  ret i32 0\n}\n";
+        let call = "  call void @tz.stack.check()\n";
+        for workers in [false, true] {
+            let checked = with_stack_checks(ir.to_owned(), workers);
+            assert!(checked.contains(&format!("nounwind {{\nentry:\n{call}  ret i64 %x")));
+            assert!(checked.contains(&format!("@b() {{\n{call}  ret void")));
+            assert!(checked.contains(&format!("@c() {{\n0: ; entry\n{call}  ret i32 0")));
+            assert_eq!(checked.matches(call).count(), 3);
+            assert_eq!(
+                checked
+                    .matches("define internal void @tz.stack.check()")
+                    .count(),
+                1
+            );
+            assert!(checked.contains("add i32 %base, 4096"));
+            assert_eq!(
+                checked.contains("@tsuzuri_stack_top = addrspace(1) global i32 0"),
+                workers
+            );
+            assert!(checked.replace(call, "").starts_with(ir));
+            assert_eq!(
+                checked
+                    .matches("declare ptr @llvm.frameaddress.p0(i32 immarg)")
+                    .count(),
+                1
+            );
+        }
+        let allocas = "define void @d(i64 %n) {\nentry:\n  %slot = alloca i64, align 16\n  store i64 %n, ptr %slot\n  %buffer = alloca [128 x i8], align 16\n  %dynamic = alloca i8, i64 %n, align 16\n  br label %next\nnext:\n  %late = alloca i8, align 1\n  ret void\n}\n";
+        assert!(with_stack_checks(allocas.to_owned(), false).starts_with(&format!(
+            "define void @d(i64 %n) {{\nentry:\n  %slot = alloca i64, align 16\n  %buffer = alloca [128 x i8], align 16\n{call}  store i64 %n, ptr %slot\n  %dynamic = alloca i8, i64 %n, align 16\n  br label %next\nnext:\n  %late = alloca i8, align 1\n  ret void\n}}\n"
+        )));
+    }
+
+    #[test]
+    fn wasm_heap_limit_default_is_identity() {
+        let heap = include_str!("runtime/heap-wasm.ll");
+        for text in [heap.to_owned(), heap.replace('\n', "\r\n")] {
+            assert_eq!(with_wasm_heap_limit(text.clone(), 16777216), text);
+        }
+    }
+
+    #[test]
+    fn wasm_heap_limit_rewrites_whole_lines_only() {
+        let constant =
+            "@s = private constant [39 x i8] c\"  %within = icmp ule i32 %end, 16777216\"";
+        let heap = format!("{constant}\n{}", include_str!("runtime/heap-wasm.ll"));
+        for (text, ending) in [(heap.clone(), "\n"), (heap.replace('\n', "\r\n"), "\r\n")] {
+            let rewritten = with_wasm_heap_limit(text.clone(), 67108864);
+            let (first, body) = rewritten.split_once(ending).unwrap();
+            assert_eq!(first, constant);
+            for line in [
+                "  %fits = icmp ule i64 %size, 67108832",
+                "  %within = icmp ule i32 %end, 67108864",
+                "  %fits = icmp ule i64 %new_size, 67108832",
+            ] {
+                assert_eq!(
+                    body.matches(&format!("{line}{ending}")).count(),
+                    1,
+                    "{line}"
+                );
+            }
+            assert!(!body.contains("16777184") && !body.contains("16777216"));
+            assert_eq!(
+                rewritten.matches(ending).count(),
+                text.matches(ending).count()
+            );
+            assert_eq!(rewritten.matches('\n').count(), text.matches('\n').count());
+            let restored = rewritten
+                .replace("67108832", "16777184")
+                .replace("67108864", "16777216");
+            assert_eq!(restored, text);
+        }
     }
 }

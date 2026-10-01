@@ -31,7 +31,7 @@ const { instance } = await WebAssembly.instantiate(await readFile("target/kernel
 const api = instance.exports;
 console.log(api.tz_add(20n, 22n).toString());
 
-const out = api.tsuzuri_alloc(16n);
+const out = api.tsuzuri_alloc(16n) >>> 0;
 let pointer = 0;
 try {
     api.tz_make_bytes(out, 4n);
@@ -46,7 +46,7 @@ try {
 }
 ```
 
-最初は `42`、次は 0、1、2、3 のバイト配列を表示します。ホストへ複製する前にバッファを free しないでください。トラップ後の回復やランタイムの再利用を一般に保証する例ではありません。
+最初は `42`、次は 0、1、2、3 のバイト配列を表示します。ホストへ複製する前にバッファを free しないでください。トラップ後の回復やランタイムの再利用を一般に保証する例ではありません。`>>> 0` は上限が 2 GiB を超えるとき、それ以上のアドレスの pointer を符号なしで受け取ります。
 
 ## scalar ABI
 
@@ -56,13 +56,13 @@ WASM の整数の返却値は符号付きとして見えるため、符号なし
 
 ## buffer ABI
 
-入力の借用バッファは pointer が Number、要素数が BigInt です。長さの単位は i64 / f64 配列なら要素、UTF-16 ならコード単位、UTF-8 ならバイトです。文字列の暗黙変換はありません。
+入力の借用バッファは pointer が Number（wasm64 は BigInt）、要素数が BigInt です。長さの単位は i64 / f64 配列なら要素、UTF-16 ならコード単位、UTF-8 ならバイトです。文字列の暗黙変換はありません。
 
 所有結果は先頭引数の out pointer に次の descriptor を書きます。
 
 | offset | フィールド |
 | --- | --- |
-| 0 | i32 pointer |
+| 0 | pointer（wasm32 は i32、wasm64 は i64） |
 | 8 | i64 length |
 | 全体 | 16 byte、alignment 8 |
 
@@ -98,9 +98,41 @@ WebAssembly.instantiate の第二引数へ渡します。到達する extern だ
 
 ブラウザーでは fetch で取得した bytes を instantiate できます。instantiateStreaming を使うならサーバーの MIME を application/wasm にします。通常の WASM サンプルは SharedArrayBuffer を要求しません。
 
-通常の構成は 1 MiB の stack-first 領域と、16 MiB の線形メモリ上限を持ちます。文字列、配列、捕捉環境なども同じ上限を共有します。呼び出しスタックは WASM エンジンの制限も受けます。
+既定の構成は 1 MiB の stack-first 領域と、16 MiB の線形メモリ上限を持ちます。文字列、配列、捕捉環境なども同じ上限を共有します。呼び出しスタックは WASM エンジンの制限も受けます。
+
+大きなデータを扱う場合は、上限と main の stack を build 時に指定します。
+
+```sh
+./target/release/tsuzuri build target/wasm-demo/Kernel.tz --target wasm32 --wasm-max-memory 256MiB --wasm-stack-size 4MiB -o target/kernel-large.wasm
+```
+
+値はバイト数か、`KiB`・`MiB`・`GiB` を付けた整数です。上限は 64 KiB の倍数で wasm32 は最大 4 GiB − 64 KiB、wasm64 は最大 16 GiB、stack + 64 KiB 以上にします。stack は 16 の倍数で 64 KiB 以上です。ヒープは必要な分だけ memory.grow し、上限を超える確保はトラップします。`tsuzuri test --target wasm32` も同じオプションを受けます。
+
+package の既定値は root の `Tsuzuri.toml` に書けます。コマンドラインの指定が優先し、依存 package の `[wasm]` は読みません。
+
+```toml
+[wasm]
+max-memory = "256MiB"
+stack-size = "4MiB"
+```
+
+wasm32 で 2 GiB を超える上限では、各関数が frame を確保した後で stack pointer が stack の範囲にあるかを検査します。stack が尽きると 0 の下へ折り返ってヒープの末尾へ届き得るためで、溢れは frame を使う前にトラップします。呼び出しの多い再帰はこの検査の分だけ遅くなるため、必要なときだけ 2 GiB を超える値を使います。
+
+`--emit object` は上限をヒープの検査に埋め込むだけです。自分で wasm-ld を実行するときは同じ値を `--max-memory` に渡し、stack は `-z stack-size` で指定します。`--wasm-stack-size` は WASM 出力と test だけです。値が食い違うと、どちらか小さい側で確保がトラップします。
 
 run は native の実行コマンドです。WASM の言語内テストには `tsuzuri test --target wasm32`、アプリケーションの実行にはこのようなホストを使います。
+
+## wasm64
+
+4 GiB を超えるデータには `--target wasm64` で 64-bit の線形メモリ（memory64）を使います。上限は最大 16 GiB です。
+
+```sh
+./target/release/tsuzuri build target/wasm-demo/Kernel.tz --target wasm64 --wasm-max-memory 8GiB -o target/kernel64.wasm
+```
+
+pointer は i64 なので、`tsuzuri_alloc` の結果・バッファの pointer・out pointer は BigInt です。TypedArray の offset には `Number(pointer)` を渡し、descriptor の pointer は `getBigUint64` で読みます。
+memory64 対応のエンジン（Node.js 24 以降など）が必要で、`tsuzuri test --target wasm64` は PATH の Node.js が未対応なら `E2002` です。threads は wasm32 だけです。
+自分で `--emit object` をリンクするときは wasm-ld に `-mwasm64` を渡します。stack は溢れると 0 の下へ折り返って常に線形メモリの外になるため、入口の検査は入りません。
 
 ## 関連項目
 

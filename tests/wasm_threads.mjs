@@ -9,10 +9,42 @@ import { createThreadPool } from "../src/runtime/wasm-threads.mjs";
 
 const threadImports = { spawn_workers() { throw new Error("test requires the thread pool"); }, worker_ready() {} };
 
+// Independent of memoryLimits in the host: flags and page limits of the first memory import.
+function importedMemory(bytes) {
+  let position = 8;
+  const leb = () => { let value = 0, shift = 0, byte; do { byte = bytes[position++]; value += (byte & 127) * 2 ** shift; shift += 7; } while (byte & 128); return value; };
+  const skipName = () => { const length = leb(); position += length; };
+  while (position < bytes.length) {
+    const id = bytes[position++], size = leb(), end = position + size;
+    for (let count = id === 2 ? leb() : 0; count > 0; count--) {
+      skipName();
+      skipName();
+      const kind = bytes[position++];
+      if (kind === 2) {
+        const flags = bytes[position++], minimum = leb();
+        return { flags, minimum, maximum: flags & 1 ? leb() : null };
+      }
+      if (kind === 0) leb(); else if (kind === 3) position += 2; else throw new Error(`unexpected import kind ${kind}`);
+    }
+    position = end;
+  }
+  return null;
+}
+
 if (!isMainThread) {
-  const instance = new WebAssembly.Instance(workerData.module, { env: { memory: workerData.memory }, tsuzuri_threads: threadImports });
-  instance.exports.__stack_pointer.value = workerData.top;
-  parentPort.postMessage({ address: instance.exports.tsuzuri_thread_stack_probe(), result: instance.exports.tz_frame(40n) });
+  const { module, memory, base, top, name, argument } = workerData;
+  const exports = new WebAssembly.Instance(module, { env: { memory }, tsuzuri_threads: threadImports }).exports;
+  exports.__stack_pointer.value = top;
+  exports.tsuzuri_stack_base.value = base;
+  exports.tsuzuri_stack_top.value = top;
+  const address = exports.tsuzuri_thread_stack_probe();
+  let result;
+  try {
+    result = exports[name](argument);
+  } catch (error) {
+    result = error instanceof WebAssembly.RuntimeError ? "trap" : String(error);
+  }
+  parentPort.postMessage({ address, result });
 } else {
   const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
   const directory = mkdtempSync(join(tmpdir(), "tsuzuri-wasm-threads-"));
@@ -20,10 +52,24 @@ if (!isMainThread) {
     const result = spawnSync(compiler, args, { encoding: "utf8", timeout: 120000 });
     assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
   }
+  const runWorker = (workerData) => new Promise((resolveWorker, reject) => {
+    const worker = new Worker(new URL(import.meta.url), { workerData });
+    worker.once("error", reject);
+    worker.once("message", (message) => worker.once("exit", code => code === 0 ? resolveWorker(message) : reject(new Error(`worker exit ${code}`))));
+  });
   try {
     mkdirSync(join(directory, "frame"));
     const source = join(directory, "frame", "Main.tz");
     writeFileSync(source, "export def frame :: i64 -> i64\nfn frame seed = { let values = new [seed, seed + 1, seed + 2]; values[2] }\n");
+    // Each level keeps an 8,000-byte frame array alive across a call that is not a tail call.
+    mkdirSync(join(directory, "deep"));
+    const deepSource = join(directory, "deep", "Main.tz");
+    writeFileSync(deepSource, `def rec deep :: i64 -> i64 = \\n ->
+    let values = [${Array.from({ length: 1000 }, (_, index) => `n + ${index}`).join(", ")}]
+    if n == 0 then 0 else values[deep (n - 1) % 1000]
+
+export def deep_call :: i64 -> i64 = \\n -> deep n
+`);
     const barrierDirectory = join(directory, "barrier");
     mkdirSync(barrierDirectory);
     const barrierSource = join(barrierDirectory, "Main.tz");
@@ -86,21 +132,50 @@ fn bulk = {
         new Uint32Array(memory.buffer, base, 1)[0] = 0x12345678;
         return { base, top: base + size };
       });
-      await Promise.all(ranges.map(({ base, top }) => new Promise((resolveWorker, reject) => {
-        const worker = new Worker(new URL(import.meta.url), { workerData: { module, memory, top } });
-        worker.once("error", reject);
-        worker.once("message", ({ address, result }) => {
-          try {
-            assert.equal(result, 42n);
-            assert.ok(address >= base && address < top);
-            assert.ok(mainAddress < base || mainAddress >= top);
-            assert.equal(new Uint32Array(memory.buffer, base, 1)[0], 0x12345678);
-          } catch (error) { reject(error); return; }
-          worker.once("exit", code => code === 0 ? resolveWorker() : reject(new Error(`worker exit ${code}`)));
-        });
-      })));
+      await Promise.all(ranges.map(async ({ base, top }) => {
+        const { address, result } = await runWorker({ module, memory, base, top, name: "tz_frame", argument: 40n });
+        assert.equal(result, 42n);
+        assert.ok(address >= base && address < top);
+        assert.ok(mainAddress < base || mainAddress >= top);
+        assert.equal(new Uint32Array(memory.buffer, base, 1)[0], 0x12345678);
+      }));
       assert.equal(instance.exports.tz_frame(40n), 42n);
       console.log(`WASM threads O${optimization}: imported shared memory, isolated worker stacks and concurrent heap reuse`);
+      // Without entry checks, deep 64 on a 256 KiB worker stack overwrote the heap block below it.
+      const deep = join(directory, `deep-${optimization}.wasm`);
+      cli(["build", deepSource, "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", deep]);
+      const deepModule = new WebAssembly.Module(readFileSync(deep));
+      const deepMemory = new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true });
+      const deepApi = new WebAssembly.Instance(deepModule, { env: { memory: deepMemory }, tsuzuri_threads: threadImports }).exports;
+      const neighbor = deepApi.tsuzuri_thread_stack_alloc() >>> 0;
+      const stack = deepApi.tsuzuri_thread_stack_alloc() >>> 0;
+      const stackTop = stack + deepApi.tsuzuri_thread_stack_size();
+      assert.equal(stack, neighbor + 262144 + 16);
+      new Uint8Array(deepMemory.buffer, neighbor, 262144).fill(0xa5);
+      const stackData = { module: deepModule, memory: deepMemory, base: stack, top: stackTop, name: "tz_deep_call" };
+      const expectedDeep = (count) => {
+        let value = 0n;
+        for (let level = 1n; level <= count; level++) value = level + value % 1000n;
+        return value;
+      };
+      assert.equal((await runWorker({ ...stackData, argument: 4n })).result, expectedDeep(4n));
+      assert.equal((await runWorker({ ...stackData, argument: 64n })).result, "trap");
+      assert.ok(new Uint8Array(deepMemory.buffer, neighbor, 262144).every(value => value === 0xa5));
+      assert.equal(deepApi.tz_deep_call(64n), expectedDeep(64n));
+      assert.throws(() => deepApi.tz_deep_call(200n), WebAssembly.RuntimeError);
+      console.log(`WASM threads O${optimization}: a worker stack overflow traps before writing the heap block below it`);
+      // Checked frames keep STACK_CHECK_MARGIN (4096 bytes, src/llvm.rs) for the unchecked thread runtime and i128 helpers.
+      let unchecked = 0;
+      for (const [language, input, flags] of [
+        ["c", "src/runtime/task-wasm-threads.c", ["-std=c11", "-ffreestanding", "-fno-stack-protector", "-matomics"]],
+        ["ir", "src/runtime/wasm.ll", ["-Wno-override-module"]],
+      ]) {
+        const object = join(directory, `unchecked-${language}-${optimization}.o`);
+        const compiled = spawnSync(process.env.TSUZURI_CLANG ?? "clang", ["-x", language, "--target=wasm32-unknown-unknown", "-mbulk-memory", `-O${optimization}`, "-fstack-usage", ...flags, "-c", resolve(input), "-o", object], { encoding: "utf8", timeout: 120000 });
+        assert.equal(compiled.status, 0, `${compiled.error ?? ""}\n${compiled.stderr}`);
+        for (const line of readFileSync(object.replace(/\.o$/, ".su"), "utf8").trim().split("\n")) unchecked += Number(line.split("\t")[1]);
+      }
+      assert.ok(unchecked > 0 && unchecked <= 4096, `${unchecked}`);
       const tasks = join(directory, `tasks-${optimization}.wasm`);
       cli(["build", resolve("tests/fixtures/tasks/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", tasks]);
       const repeated = join(directory, `repeated-${optimization}.wasm`);
@@ -108,6 +183,7 @@ fn bulk = {
       assert.deepEqual(readFileSync(tasks), readFileSync(repeated));
       const pool = await createThreadPool(readFileSync(tasks), { workers: 2 });
       try {
+        assert.equal(pool.memory.buffer.byteLength, 16 * 1024 * 1024);
         assert.equal(pool.workerCount, 0);
         for (const count of [0n, 1n, 64n, 1024n]) {
           assert.equal(pool.call("tz_parallel_sum", count), count * (count - 1n) * (2n * count - 1n) / 6n);
@@ -138,6 +214,24 @@ fn bulk = {
       } finally {
         await pool.close();
       }
+      const large = join(directory, `tasks-64-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/tasks/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "--wasm-max-memory", "64MiB", `-O${optimization}`, "-o", large]);
+      const largeBytes = readFileSync(large);
+      const declared = importedMemory(largeBytes);
+      assert.equal(declared.flags, 3);
+      assert.equal(declared.maximum, 1024);
+      assert.equal(declared.minimum, importedMemory(readFileSync(tasks)).minimum);
+      const largePool = await createThreadPool(largeBytes, { workers: 2 });
+      try {
+        assert.equal(largePool.memory.buffer.byteLength, 67108864);
+        for (const count of [0n, 1n, 64n, 1024n]) {
+          assert.equal(largePool.call("tz_parallel_sum", count), count * (count - 1n) * (2n * count - 1n) / 6n);
+        }
+        assert.equal(largePool.call("tsuzuri_thread_heap_live_bytes"), 2n * (262144n + 16n));
+      } finally {
+        await largePool.close();
+      }
+      console.log(`WASM threads O${optimization}: --wasm-max-memory 64MiB declares 1024 shared pages and the host reserves them`);
       assert.throws(() => new WebAssembly.Instance(new WebAssembly.Module(readFileSync(tasks)), { env: { memory } }));
       const unavailable = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(tasks)), { env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true }) }, tsuzuri_threads: { spawn_workers: () => -1, worker_ready() {} } });
       unavailable.exports.tsuzuri_threads_init(2);
@@ -167,6 +261,7 @@ fn bulk = {
       const plain = join(directory, `plain-${optimization}.wasm`);
       cli(["build", source, "--target", "wasm32", `-O${optimization}`, "-o", plain]);
       assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(plain))), []);
+      await assert.rejects(createThreadPool(readFileSync(plain)), TypeError);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

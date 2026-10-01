@@ -13,6 +13,8 @@ const sanitizerKind = process.env.TSUZURI_TSAN === "1" ? "thread" : process.env.
 const sanitizer = sanitizerKind ? [`-fsanitize=${sanitizerKind}`] : [];
 const nativeOptions = process.env.TSUZURI_TEST_CPU === "native" ? [process.arch === "arm64" ? "-mcpu=native" : "-march=native"] : [];
 const wasmOptions = process.env.TSUZURI_TEST_WASM_SIMD === "1" ? ["--wasm-feature", "simd128"] : [];
+// wasm64 needs Node.js 24 or newer.
+const wasmTarget = process.env.TSUZURI_TEST_WASM_TARGET ?? "wasm32";
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
 
@@ -773,7 +775,7 @@ int main(int argc, char **argv) {
         assert.ok(result.status !== 0 || result.signal, `${name} native O${optimization}: ${traps[index][0]} must trap`);
       }
       const wasm = join(temporary, `${name}-O${optimization}.wasm`);
-      cli(["build", fixture, "--target", "wasm32", ...wasmOptions, `-O${optimization}`, "-o", wasm]);
+      cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, `-O${optimization}`, "-o", wasm]);
       const module = new WebAssembly.Module(readFileSync(wasm));
       assert.deepEqual(WebAssembly.Module.imports(module), [], `${name}: WASM has no imports`);
       const exports = new WebAssembly.Instance(module).exports;
@@ -787,7 +789,7 @@ int main(int argc, char **argv) {
       }
       if (name === "recursive_types") {
         const measured = join(temporary, `recursive-traps-${optimization}.wasm`);
-        cli(["build", fixture, "--target", "wasm32", ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", measured]);
+        cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", measured]);
         const checked = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(measured))).exports;
         assert.equal(checked.tz_deep_clone(50000n), 100003n);
         assert.equal(checked.tz_mutual_clone(20000n), 43n);

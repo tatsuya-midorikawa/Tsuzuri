@@ -661,10 +661,12 @@ tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 | オプション | 内容 |
 |---|---|
 | `-o`, `--output PATH` | 出力先。親ディレクトリは作成される |
-| `--target native\|wasm32` | 既定は native |
-| `--emit exe\|object\|llvm\|header\|wasm` | 既定は native なら exe、wasm32 なら wasm |
+| `--target native\|wasm32\|wasm64` | 既定は native。wasm64 は 64-bit の線形メモリ（memory64） |
+| `--emit exe\|object\|llvm\|header\|wasm` | 既定は native なら exe、wasm32・wasm64 なら wasm |
 | `-O0` ～ `-O3` | 既定は `-O3`。fast-math は使わない |
 | `--cpu generic\|native` | 既定は `generic`（Clang のターゲット既定）。`native` はビルド機の命令セットとスケジューリングに最適化 |
+| `--wasm-max-memory SIZE` | WASM の build（object・llvm・wasm）と test の線形メモリ上限。既定 16MiB、64KiB の倍数で wasm32 は最大 4GiB-64KiB、wasm64 は最大 16GiB |
+| `--wasm-stack-size SIZE` | WASM 出力と test の main stack。既定 1MiB、16 の倍数で 64KiB 以上 |
 | `--json` | 標準エラーへ 1 行 1 JSON オブジェクトで診断を出力 |
 | `--` | 以降をパスとして解釈 |
 | `--help`, `--version` | ヘルプ／バージョン |
@@ -689,6 +691,12 @@ nativeの同梱`Array.sum<i64>`は能力検出後に標準カーネルを選択�
 
 `build --target wasm32 --wasm-feature simd128` はWASM SIMD128を明示的に有効にします。既定はSIMDなしで、relaxed SIMD・fast-mathは有効にしません。
 
+WASMは既定でstack 1MiB・線形メモリ上限16MiBです。`build --target wasm32 --wasm-max-memory 256MiB --wasm-stack-size 4MiB`のように、SIZE（バイト数か`KiB`/`MiB`/`GiB`付きの整数）でwasm32は最大4GiB-64KiB、wasm64は最大16GiBまで変更できます。`test --target wasm32`／`wasm64`も同じ指定を受けます。
+既定値の明示と省略は同じ成果物です。`--emit object`/`llvm`はヒープの上限だけを持つため、自分でリンクするときはwasm-ldへ同じ`--max-memory`を渡します。stack指定はWASM出力とtestだけです。
+root packageの`Tsuzuri.toml`の`[wasm]`に`max-memory = "256MiB"`・`stack-size = "4MiB"`を書くと既定値になり、コマンドラインの指定が優先します。依存packageの`[wasm]`は読みません。
+wasm32で2GiBを超える上限とthreadsでは、各関数がframe確保後にstackの範囲を検査し、溢れはframeを使う前にトラップします（O3の計測で、呼び出しの多い再帰は1.1〜1.4倍、ループ中心の処理は誤差内）。
+`--target wasm64`はpointerが64-bitになり、ホストABIのpointerはBigIntです。memory64対応のNode.js 24以降などのエンジンが必要で、threadsはwasm32だけです。
+
 `build --target wasm32 --wasm-feature threads`はTask/ParallelをNode Workerへ分散します。WASM/object専用でsimd128と併用可能です。
 同梱のNode.js 20+ホストを使用してください。未対応hostやWorker失敗を逐次成功に置き換えません。
 
@@ -700,7 +708,7 @@ try { console.log(pool.call("tz_answer")); }
 finally { await pool.close(); }
 ```
 
-main 1MiB、各Worker 256KiBのstackを含め共有memoryは最大16MiBです。Browser用本番glueは対象外で、[Webホスト要件](examples/web/README.md)を参照してください。
+main（既定1MiB）、各Worker 256KiBのstackを含め共有memoryは既定で最大16MiBです。同梱ホストはmoduleが宣言した最大page数（`--wasm-max-memory`）を最初に確保し、各Workerのstack範囲を`tsuzuri_stack_base`・`tsuzuri_stack_top`へ設定します。Browser用本番glueは対象外で、[Webホスト要件](examples/web/README.md)を参照してください。
 SIMD128を指定した成果物には対応エンジンが必要です。`--emit llvm`ではSIMD要件をコメントに記録し、そのIRのコンパイルには `-msimd128` を指定します。
 
 build/runの成果物cacheは既定で有効です。`--no-cache`で読み書きを完全に無効化し、`TSUZURI_CACHE_DIR`で保存先を指定できます。check/headerは対象外です。
@@ -748,6 +756,8 @@ node tests/primitives.mjs target/release/tsuzuri
 node tests/strings.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
 node tests/wasm_threads.mjs target/release/tsuzuri
+node tests/wasm_memory.mjs target/release/tsuzuri
+npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri # memory64 requires Node.js 24 or newer
 node tests/gpu.mjs target/release/tsuzuri # CPU/reference validation; TSUZURI_WEBGPU=1 enables actual WebGPU tests
 node tests/cache.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
@@ -756,7 +766,7 @@ node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
-node tests/features.mjs target/release/tsuzuri
+node tests/features.mjs target/release/tsuzuri # TSUZURI_TEST_WASM_TARGET=wasm64 under Node.js 24 runs its WASM cases on wasm64
 node tests/lsp_sessions.mjs target/release/tsuzuri
 node tests/docgen.mjs target/release/tsuzuri
 node tests/wasm_simd.mjs target/release/tsuzuri # llvm-objdump required; TSUZURI_OBJDUMP overrides it

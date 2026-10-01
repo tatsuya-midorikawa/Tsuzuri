@@ -7,12 +7,12 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | F13, E13 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D9（Phase 2: 2 GiB を超える上限と memory64）。Phase 1 は承認不要 |
+| 承認 | D9（Phase 2: 2 GiB を超える上限と memory64）は 2026-10-01 に承認。stack の溢れの検出方法は実装者に一任された（D11）。Phase 1 は承認不要 |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: WASM の線形メモリが stack・data・heap 合計 16 MiB に固定され、Rust／C++ の wasm32（最大 4 GiB）より扱えるデータが小さい |
 | 手本にする既存実装 | 値を取るオプションと重複の検出: `src/main.rs` の `parse_arguments` の `--target`・`--cpu` の分岐と `next_value`。組み合わせの検証: `src/driver.rs` の `BuildOptions::validate` の `wasm_simd`・`wasm_threads` の分岐（`E2000`）。runtime 断片の文字列置換: `src/llvm.rs` の `emit_program` が threads のときに `heap-wasm.ll` の `@tz.alloc(` などを `.unlocked` へ置換する箇所。heap だけを wasm にする検査: `tests/features.mjs` の `wasmReallocationChecks` |
-| 主な影響ファイル | `src/main.rs`（`parse_arguments`・`run_test_action`・ヘルプ文・tests）, `src/driver.rs`（`BuildOptions`・`validate`・`build_complete` の wasm-ld 引数）, `src/test_runner.rs`（`TestOptions`・`run_tests`・`build_runner`）, `src/llvm.rs`（`Instrumentation`・`emit_program`・tests）, `src/runtime/wasm-threads.mjs`（`createThreadPool`）, `tests/wasm_memory.mjs`（新規）, `tests/fixtures/wasm_memory/Main.tz`（新規）, `tests/wasm_threads.mjs`, `tests/test_runner.rs`, `README.md`（E2E コマンドの一覧）, `docs/language.md`, `docs/architecture.md`, `_docs/guides/webassembly.md`, `_docs/guides/wasm-threads.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md`。変更しないことを確認するもの: `src/cache.rs`, `src/runtime/heap-wasm.ll`, `src/runtime/heap-wasm-threads.ll`, `src/runtime/task-wasm-threads.c` |
+| 主な影響ファイル | `src/main.rs`（`parse_arguments`・`run_test_action`・ヘルプ文・tests）, `src/driver.rs`（`BuildOptions`・`validate`・`build_complete` の wasm-ld 引数）, `src/test_runner.rs`（`TestOptions`・`run_tests`・`build_runner`）, `src/llvm.rs`（`Instrumentation`・`emit_program`・tests）, `src/runtime/wasm-threads.mjs`（`createThreadPool`）, `tests/wasm_memory.mjs`（新規）, `tests/fixtures/wasm_memory/Main.tz`（新規）, `tests/wasm_threads.mjs`, `tests/test_runner.rs`, `README.md`（E2E コマンドの一覧）, `docs/language.md`, `docs/architecture.md`, `_docs/guides/webassembly.md`, `_docs/guides/wasm-threads.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md`。変更しないことを確認するもの: `src/cache.rs`, `src/runtime/heap-wasm.ll`, `src/runtime/heap-wasm-threads.ll`, `src/runtime/task-wasm-threads.c`。Phase 2 で追加: `src/runtime/heap-wasm64.ll`（新規）, `.gitignore`, `src/package.rs`, `src/llvm_abi.rs`, `src/runtime/wasm-threads.mjs`（worker の stack の範囲）, `tests/wasm64.mjs`（新規）, `tests/features.mjs`, `examples/web/simulation.mjs`, `_docs/language-reference/modules-and-packages.md` |
 
 ## 目的
 
@@ -20,7 +20,7 @@
 既定値（上限 16 MiB、stack 1 MiB）と既定の出力（IR・`.wasm` の byte 列）は変えず、明示した場合だけ変える。
 
 実装者は Phase 1（上限 2 GiB まで、wasm32 のまま）だけを実装する。Phase 2（2 GiB を超える上限、memory64、manifest の `[wasm]`）は
-人間が求め、D9 が承認された場合だけ着手する。
+人間が求め、D9 が承認された場合だけ着手する。2026-10-01 に D9 が承認され、Phase 2 も実装した（末尾の「Phase 2 の実装と検証」）。
 
 ## 着手条件と停止条件
 
@@ -257,6 +257,8 @@ native の `build app --wasm-max-memory 64MiB`、`build app --target wasm32 --em
 - memory64（`--target wasm64`）: pointer・`%tz.abi.buffer`・descriptor が 64-bit になり、host glue の ABI 版を分ける。Node の対応版を確かめる。
 - manifest の `[wasm]`（`max-memory`・`stack-size`。root package だけ、CLI が優先）（D10）。
 
+実装した形は D10–D12 と末尾の「Phase 2 の実装と検証」にある。heap は `%room` の形、frame の大きさは prologue 後の入口検査（D11）で
+扱い、probe も拒否も要らなくなった。
 ## 設計
 
 ### データ構造
@@ -570,7 +572,7 @@ cargo test --locked --test trap_locations --test host_abi --test test_runner
 ## 対象外
 
 - 複数 memory、memory の縮小、GC 型との連携、worker の stack の大きさの指定。
-- 2 GiB を超える上限、memory64、manifest の `[wasm]`（Phase 2）。
+- wasm64 の threads（shared な memory64）、wasm64 で 16 GiB を超える上限（Phase 2 の後も対象外。D12）。
 - ブラウザー用のホスト（同梱のホストは Node だけ）。COOP・COEP の設定。
 
 ## 決定事項
@@ -635,11 +637,195 @@ cargo test --locked --test trap_locations --test host_abi --test test_runner
 
 - 決定: 2 GiB 超から 4 GiB − 64 KiB までの上限と memory64（`--target wasm64`）は Phase 2 とし、「Phase 2（設計方針）」の監査の後に着手する。
 - 理由: heap の命令、JS の glue、stack の溢れの保証、E05・E13 の ABI を変える。memory64 は ABI の版を分ける。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-01）。上限は wasm32 が 4 GiB − 64 KiB、wasm64 が 16 GiB（D12）。
 
 ### D10: manifest の `[wasm]`
 
 - 決定: 旧版の `[wasm] max-memory`・`stack-size` は名前を保ったまま Phase 2 へ移す。Phase 1 は CLI だけ。
+  Phase 2 の形: `[package]` の後に `[dependencies]` と `[wasm]` をそれぞれ一度まで、順序は問わない。値は CLI と同じ書式の引用符付き文字列（`"64MiB"`）。
+  書式・未知の key・重複は manifest の `E0002`。root package の値だけを `Project::wasm` に持ち、依存 package の `[wasm]` は読まない。
+  `main` が project の読み込み後に `BuildOptions::with_manifest_wasm` で CLI が未指定のものだけを補う（上限は WASM の object・llvm・wasmと test、
+  stack は WASM の wasm 出力と test。native と header では無視）。補った後に `validate` し、範囲外は `Tsuzuri.toml` を示す `E2000` に
+  `(after applying the root package's [wasm])` を足す。
 - 理由: `src/package.rs` の `parse_manifest` は `[package]` と `[dependencies]` の順序と一回だけの出現を検査しており、節の追加は manifest の
-  形式の変更になる。依存 package の `[wasm]` の扱い（root だけを読む）と CLI との優先順位も決める必要がある。
-- 状態: 既定案（実装者はこの案に従う）
+  形式の変更になる。依存 package の値を読むと、library の都合で application の上限が黙って変わる。CLI が優先するのは一時的な上書きのため。
+  範囲の検査は target に依存するので manifest の解析では書式だけを見て、範囲は CLI と同じ `wasm_memory_limits` に任せる。
+- 状態: 既定案（Phase 2 で実装）
+
+### D11: stack の溢れの検出
+
+- 決定: wasm32 で上限が 2 GiB を超える build と threads の build（test runner も同じ条件）では、`llvm::with_stack_checks` が生成後の IR の
+  全関数の entry block に `call void @tz.stack.check()` を入れる。entry block の static alloca は呼び出しの前へ集める。
+  検査は `llvm.frameaddress(0)`（prologue 後の stack pointer）を `[base + 4096, top]` と符号なしの 1 比較で照合し、外れたら `llvm.trap`。
+  範囲は単一 thread なら linker の `__stack_low`・`__stack_high`、threads は instance ごとの wasm global `tsuzuri_stack_base`・
+  `tsuzuri_stack_top`（両方 0 は main の stack。`!invariant.load`）。同梱ホストは worker ごとに設定し、driver は threads の `--emit wasm` で export する。
+  wasm32 で 2 GiB 以下の単一 thread と wasm64 には入れない（既定の出力は byte 単位で不変）。
+- 理由: stack は尽きると 0 の下へ折り返る。2 GiB 以下の wasm32 と wasm64 ではその先は常に範囲外だが、4 GiB − 64 KiB の上限では 64 KiB を超える
+  frame（frame 配列は 1 つ 64 KiB までで、複数持てる）や、使わない frame を積む再帰で heap の末尾へ届く。worker の stack は heap の block なので、
+  溢れは隣の block を黙って壊す（Phase 2 の調査で `deep 64` が 259,419 bytes を上書きした HEAD からの不具合）。
+  検査を prologue の後に置くので、その関数自身の frame（64 KiB 超も）を使う前に捕まえ、probe や frame の拒否を要しない。
+  余白 4096 は検査しない `task-wasm-threads.c` と `wasm.ll` の frame の合計（O0 で 432 + 208 = 640 bytes。`tests/wasm_threads.mjs` が 4096 以下を表明）を含む。
+  `llvm.stacksave` ではなく `llvm.frameaddress` と invariant な load を使うのは、inline 展開後に LLVM が重複した検査をまとめ、
+  ループの外へ出せるため（stacksave 版は配列の初期化ループが threads で 2.4 倍遅かった）。alloca を集めないと inline 展開が entry block を分け、
+  後ろの alloca が動的 alloca になってループごとに stack を消費した。範囲を設定しないホストの worker は main の範囲で検査され、最初の呼び出しで
+  トラップする（黙って無検査にしない。そのための select 1 組は fib で約 5% の費用）。
+- 状態: 実装者への一任に基づく決定（Phase 2 で実装）
+
+### D12: wasm64 の範囲
+
+- 決定: `--target wasm64` は build（wasm・object・llvm）と test。上限は 16 GiB（wasm-ld の上限）、threads は wasm32 だけ。
+  heap は `heap-wasm64.ll`（`heap-wasm.ll` の i64 版。header は +0 の i64 capacity と +8 の i64 next）。`Instrumentation::memory64` が host ABI の
+  `memory.size.i64`、scalar capture の幅（64）、DWARF の pointer 幅を選ぶ。pointer は JS で BigInt。test は PATH の Node.js が memory64 を
+  検証できなければ `E2002`（Node.js 24 以降）。
+- 理由: memory64 では stack の折り返り先が常に範囲外で、heap の計算も i64 で折り返らない。shared な memory64 と thread runtime の 64-bit 化は
+  別の設計が要る。Node.js 20 は memory64 を持たず、24 で BigInt の pointer と `grow` を確認した。
+- 状態: 実装者への一任に基づく決定（Phase 2 で実装）
+
+## 実装と検証（2026-10-01、Phase 1）
+
+Phase 1（手順 1–10）を実装した。D9（2 GiB を超える上限と memory64）と D10（manifest の `[wasm]`）は Phase 2 のため実装していない。
+着手時の HEAD は `5d9c4a7`。
+
+### 実装
+
+- `src/driver.rs`: 定数 `DEFAULT_WASM_MAX_MEMORY`・`DEFAULT_WASM_STACK_SIZE`、`BuildOptions` の `wasm_max_memory`・`wasm_stack_size`
+  （`Option<u64>`）、`validate` の最後の 2 検査、`wasm_memory_limits`。`build_complete` は wasm32 の分岐の先頭で `llvm::with_wasm_heap_limit` を呼び、
+  wasm-ld の `-z stack-size=`・`--max-memory=` を実効値から作る。
+- `src/llvm.rs`: `with_wasm_heap_limit`。3 行を行全体の一致で置換し、元の行末を保つ。上限が既定なら入力をそのまま返す。
+- `src/main.rs`: 2 オプションの解析（`parse_size`）、重複・action・test の target の検査、`HELP`、`run_test_action`。
+- `src/test_runner.rs`: `TestOptions` の 2 field、`run_with_timeout` の検査、`build_runner` の IR の置換と link 引数。
+- `src/runtime/wasm-threads.mjs`: `memoryLimits`（新規 export）。`createThreadPool` は `memory` の省略時に env.memory の宣言の max から作る（D5）。
+- テスト: `src/llvm.rs` 3 件、`src/driver.rs` 2 件、`src/main.rs` の `parses_wasm_memory_sizes`（新規）と `rejects_ambiguous_or_unused_arguments`（拡張）、
+  `tests/test_runner.rs` の `wasm_memory_options_reach_the_wasm_test_link`、`tests/wasm_memory.mjs` と `tests/fixtures/wasm_memory/Main.tz`（新規）、
+  `tests/wasm_threads.mjs`。
+- 文書: 「ドキュメント」の各ファイルに加え、`_docs/tools/testing.md`、`examples/web/README.md`、`_perfs/README.md`（F11 へのリンク）を更新した。
+
+### 決定事項への追記（チケットから外れた判断）
+
+- D8 の hint は `tsuzuri test --target wasm32` の link（`build_runner`）にも同じ条件で足す（共通の `wasm_link_hint`）。
+- `driver::run_tests` も、native の target とメモリのオプションの組を CLI と同じ文の `E2000` で拒否する。API から黙って無視しないため。
+- `parse_size` の例示値（`67108864 or 64MiB`／`4194304 or 4MiB`）は option 名で選ぶ。署名はチケットどおり。
+- link の失敗の `E2002` は、既存の driver の診断と同じく `Span::default()` で、表示は project の入力ファイルの `1:1` になる（「診断」の表の
+  `<command line>` は `parse_arguments` と `validate` の `E2000` だけに当たる）。
+- fixture の lambda は GUIDE §12 に合わせて `\index -> ...` にした（「例」は互換の形 `index -> ...`）。`HELP` の 2 行は桁をそろえた。
+- E2E は fixture を一時 root へ一度だけ複写し、出力はすべて root の外に置く（root を汚さないので case ごとの複写は不要）。
+  加えて、64 MiB の `.wasm` と IR を同じ入力で 2 回 build して一致すること、D8 の hint（70,000 単位の文字列定数を `-O0`、
+  `--wasm-max-memory 128KiB --wasm-stack-size 64KiB` で build すると `E2002`。`-O3` は Clang が長さを畳み込み data が消えるので成功する）を確かめる。
+- `memoryLimits` は wasm の magic を確かめ、import の走査を section の終端で止める。戻り値は `{ flags, minimum, maximum }`（page 数）。
+  `tests/wasm_threads.mjs` はこれを使わず、独立した parser（`importedMemory`）で照合する。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD 23.1.1、rustc 1.98.1、Node v20.17.0）
+
+- 着手条件: `heap-wasm.ll` の `16777184` が 2 回、`16777216` が 1 回、`heap-wasm-threads.ll` は 0 回。HEAD の `cargo test --locked` は 506 passed。
+  「再現」は HEAD で `memory flags 1 min 17 max 256`・`import env memory flags 3 min 17 max 256` を再現した。
+- 手順 1・5: tasks fixture の plain／threads の `.wasm` と `--emit llvm`（それぞれ `-O0`・`-O3`）の 6 ファイルが、HEAD の出力と、省略・既定値の明示
+  （`--wasm-max-memory 16MiB --wasm-stack-size 1MiB`、threads は `16777216`・`1024KiB`、IR は上限だけ）のどちらでも `cmp` で一致した。
+  `--wasm-max-memory 64MiB` は plain が `memory flags 1 min 17 max 1024`、threads が `import env memory flags 3 min 17 max 1024`。
+- Rust: `--lib wasm_heap_limit` 3 passed、`--lib wasm_memory` 2 passed、`--bin tsuzuri` の `parses_wasm_memory_sizes`・
+  `rejects_ambiguous_or_unused_arguments` 各 1 passed、`--test test_runner wasm_memory_options_reach_the_wasm_test_link` 1 passed。
+  `cargo test --locked` 全体は 513 passed・0 failed。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、§3.1 の回帰テスト 4 件、
+  `sh scripts/check-runtime-includes.sh`（20 files、変更なし）が成功。
+- `node tests/wasm_memory.mjs target/release/tsuzuri`: `-O0`・`-O3` で E2E 1〜8（既定の不変、64 MiB で 32・62 MiB 成功と 63 MiB のトラップ、
+  stack 4 MiB の min が +48、2 GiB の max 32768、IR 3 種、object の手動 link、heap の境界 L = 64 MiB と 2 GiB、`tsuzuri test` が 1 failed から
+  2 passed）、拒否 9 件の `E2000`、`E2002` の hint、決定性が成功。WASM の import は空。
+- `node tests/wasm_threads.mjs target/release/tsuzuri`: `-O0`・`-O3` で既定の pool が 16 MiB、64 MiB の threads が import の max 1024・pool の
+  67108864 bytes・`tz_parallel_sum` の 0／1／64／1024・live bytes `2 * (262144 + 16)`、非 threads の `.wasm` の `TypeError` が成功。
+- 既存の suite（手順 9）: e2e（`-O0`・`-O3` の各 400 native/WASM 結果）、primitives、strings（3973 件）、control（270 件）、computations（70 件）、
+  tasks（41 結果・4 trap）、host_imports、cache、features（4930 件。WASM realloc を含む）、display_parse（88063 表示・111282 解析）、
+  math（Node 24.21.0、786051 参照）、examples、wasm_simd（`TSUZURI_OBJDUMP` は llvm@21）が成功。display_parse は作業機の `/usr/bin/python3`（3.9.6）に `sys.set_int_max_str_digits` がないため、
+  `PATH` の先頭に Homebrew の Python 3.14 を置いて実行した（F11 と無関係の環境の問題）。
+- 文書: `node scripts/check-docs.mjs` が対象ページ（5 pages）と全体（83 pages、740 links、136 examples、244 native runs、9 test projects）で成功。
+  変更した Markdown の診断は増えていない（`_features/README.md` の MD060 は既存の表の区切り行）。
+- 変更していないことの確認: `src/cache.rs`、`src/runtime/heap-wasm.ll`、`src/runtime/heap-wasm-threads.ll`、`src/runtime/task-wasm-threads.c`。
+- 性能: 既定の出力が byte 単位で同じなので計測していない。性能は主張しない。
+
+### 残作業（Phase 1 の時点）
+
+- D9（2 GiB を超える上限・memory64）と D10（manifest の `[wasm]`）の Phase 2。D9 は承認が必要。（→ 下の Phase 2 で実装した。）
+- ブラウザー用のホストは対象外のまま。コミットは作っていない。
+
+## Phase 2 の実装と検証（2026-10-01）
+
+D9 の承認（Phase 2 のすべてと、stack の溢れの扱いの一任）を受けて、2 GiB を超える wasm32 の上限、memory64（`--target wasm64`）、
+manifest の `[wasm]`、stack の溢れの検出を実装した。基準は Phase 1 を適用した作業ツリー（HEAD `5d9c4a7`、未コミット）。
+
+### 実装
+
+- `src/driver.rs`: `Target::Wasm64` と `Target::is_wasm`。定数を `u64` にし、`MAX_WASM32_MEMORY`（4 GiB − 64 KiB）・`MAX_WASM64_MEMORY`（16 GiB）。
+  `wasm_memory_limits(target, max, stack)` は target ごとの上限と文を持つ。`wasm_stack_checks`（D11 の条件）、`BuildOptions::with_manifest_wasm`、
+  `Project::wasm`（root package の `[wasm]`）。`build_complete` は wasm64 と threads を `llvm::emit_wasm_build` で生成し、heap の置換の後に
+  `llvm::with_stack_checks` を入れ、clang に `--target=wasm64-unknown-unknown`、wasm-ld に `-mwasm64` を渡す。検査付きの threads の
+  `--emit wasm` は `tsuzuri_stack_base`・`tsuzuri_stack_top` を export する。
+- `src/llvm.rs`: `with_wasm_heap_limit(ir, u64)` は 2 GiB を超えると `%within` を `%room` の 2 行に置き換え、wasm64 の `i64 %end` の行も扱う。
+  `with_stack_checks`（D11）、`emit_wasm_build`（旧 `emit_wasm_threads_build` に memory64 を足したもの）、`emit_test_runner_for`、
+  `Instrumentation::memory64`・`Globals::memory64`（heap の選択、`immediate_capture` の幅、DWARF の pointer 幅）。
+- `src/llvm_abi.rs`: memory64 では host ABI の範囲検査に `llvm.wasm.memory.size.i64` を使う。
+- `src/runtime/heap-wasm64.ll`（新規、`.gitignore` の例外を追加。runtime includes は 21 files）: `heap-wasm.ll` の i64 版。上限の 3 行は同じ形。
+- `src/package.rs`: `WasmSettings`、`parse_size`（CLI と共有）、`[wasm]` の解析（D10）。
+- `src/main.rs`: `--target wasm64`、test の target の検査（wasm32 か wasm64）、wasm64 の既定 emit、manifest の適用と再検証、`HELP`。
+- `src/test_runner.rs`: wasm64 の生成と link、memory64 を検証できない Node の `E2002`、wasm32 の 2 GiB 超での stack 検査。
+- `src/runtime/wasm-threads.mjs`: worker へ `base` も渡し、`tsuzuri_stack_base`・`tsuzuri_stack_top` を設定してから `tsuzuri_thread_entry` を呼ぶ。
+  `tsuzuri_thread_stack_alloc` と `tsuzuri_threads_control` の pointer は `>>> 0`。
+- `examples/web/simulation.mjs`: `tsuzuri_alloc` の pointer を `>>> 0`（「Phase 2（設計方針）」の glue の監査）。
+- テスト: `src/llvm.rs`（heap の行の一意性に wasm64、`wasm_heap_limit_above_2_gib_compares_the_remaining_room`、
+  `stack_checks_follow_static_allocas_in_every_definition`）、`src/driver.rs`（limits を target 別に、`stack_checks_cover_threads_and_wasm32_memory_above_2_gib`、
+  `manifest_wasm_fills_only_unset_options_for_applicable_outputs`、validate の wasm64）、`src/package.rs`（`parses_wasm_sizes_in_any_section_order`、拒否 7 件）、
+  `src/main.rs`（wasm64 の解析と拒否）、`tests/test_runner.rs`（4 GiB − 64 KiB と wasm64。Node が memory64 を持たなければ `E2002` を表明）、
+  `tests/wasm_memory.mjs`、`tests/wasm_threads.mjs`、`tests/wasm64.mjs`（新規、Node 24）、`tests/features.mjs`（`TSUZURI_TEST_WASM_TARGET`）。
+- 文書: README、`docs/language.md`、`docs/architecture.md`、`_docs/guides/webassembly.md`・`wasm-threads.md`、`_docs/tools/command-line.md`・`testing.md`、
+  `_docs/language-reference/modules-and-packages.md`、`_docs/feature-status.md`、`_features/README.md`、GUIDE の §2.1 と D-30、`examples/web/README.md`。
+
+### 決定事項への追記（チケットから外れた判断）
+
+- 「Phase 2（設計方針）」の「64 KiB を超える frame の扱い（probe か拒否）」は、prologue の後の入口検査（D11）で不要になった。
+- HEAD からの不具合として、threads の worker の stack の溢れが隣の heap block を黙って上書きしていた（調査の probe で `deep 64` が 259,419 bytes）。
+  Phase 2 の stack 検査で直し、`tests/wasm_threads.mjs` で表明した。
+- 範囲を設定しない独自ホストの worker は最初の呼び出しでトラップする（D11）。Phase 1 までの手順で worker を自前で起動するホストは、
+  2 つの global の設定を足す必要がある。同梱ホストと文書の手順は更新した。
+- wasm64 の `--emit llvm` の IR には target triple がない（既存の IR と同じ）。自分でコンパイルするときは `--target=wasm64` を渡す。
+- manifest の書式の誤り（`E0002`）は既存の manifest の診断と同じく `Tsuzuri.toml:1:1` に出る。範囲外の値は `Tsuzuri.toml` を示す `E2000` に
+  `(after applying the root package's [wasm])` が付く。
+- VS Code 拡張（`vsc/src/core.ts`）は WASM の target として wasm32 だけを渡す。wasm64 の選択は拡張に足していない。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD 23.1.1、rustc 1.98.1、Node v20.17.0 と v24.21.0）
+
+- 既定の出力: tasks fixture の plain の `.wasm` と `--emit llvm`（`-O0`・`-O3`）の 4 ファイルが、F11 着手前のコンパイラの出力と `cmp` で一致した。
+  threads の `.wasm` は D11 の検査が入るので変わる（意図どおり）。threads と wasm64 の build の繰り返しは byte 単位で一致した（E2E で表明）。
+- Rust: `cargo test --locked` は 518 passed・0 failed（Phase 1 後の 513 に新規 5 件。§3.1 の回帰テスト 4 件を含む）。
+  `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（21 files）が成功。
+  `tests/test_runner.rs` の wasm64 は Node 20 の PATH では `E2002`、Node 24 を PATH の先頭に置くと既定で 1 failed、64 MiB で 2 passed。
+- 調査の probe（再現と修正の確認）: 256 KiB の worker stack で `deep 64`（1 段 8,000 bytes）は HEAD で隣の block を 259,419 bytes 上書きし、
+  Phase 2 では `RuntimeError` で 0 bytes。4 GiB − 64 KiB まで grow した wasm32 の main stack の溢れはトラップし、memory の末尾 1 MiB は不変。
+  O3 の逆アセンブルで検査が prologue（`i32.const 8000; i32.sub; global.set`）の後にあることを確かめた。wasm64 の host ABI は 4.36 GB の
+  アドレスの buffer で `tz_sum`・`tz_copy_values` が動き、RSS は 48 MiB だった。
+- E2E（Node v20.17.0。wasm64・math・features の wasm64 は v24.21.0）: e2e（`-O0`・`-O3` の各 400 native/WASM 結果、15 trap）、primitives、
+  strings、tasks（41 結果・4 trap）、wasm_threads（worker の溢れのトラップ、`-fstack-usage` の検査なし frame の合計 4096 以下を含む）、
+  wasm_memory（4 GiB − 64 KiB、room 形式の境界 4 種、stack 検査、manifest、拒否 10 件）、wasm64、gpu（783 参照）、cache、computations（70 結果・3 trap）、
+  control（270 件）、numeric_casts（1585 件）、integer_intrinsics（263182 件）、display_parse（88063 表示・111282 解析。Homebrew の Python）、
+  examples、features（wasm32 で 4930 件）、features の wasm64（`TSUZURI_TEST_WASM_TARGET=wasm64` で 4930 件）、lsp_sessions、docgen、
+  wasm_simd・simd（`TSUZURI_OBJDUMP` は llvm@21、232 件）、cpu_dispatch、host_imports、io、debug_info、math（786051 参照）がすべて成功。
+- 文書: `node scripts/check-docs.mjs` が 83 pages、740 links、136 examples、244 native runs、9 test projects で成功。他の suite と同時に既定の
+  cache root で走らせた回だけ `build cache write failed`（W2001）が 2 回出たが、専用の `TSUZURI_CACHE_DIR` で単独に走らせた回は 0 回だった
+  （cache の既存の競合で、F11 とは無関係）。変更した Markdown の診断は増えていない（`_features/README.md` の MD060 は既存の表）。
+
+### 性能
+
+目的は安全性（stack の溢れの検出）で、速度の向上は主張しない。費用は同じコンパイラで検査の有無だけを変えた build（一時的な局所スイッチで検査を外し、
+計測後に削除）を、O3・Node v20.17.0 で比べた。各値は 3 回の warm-up の後の 9 回の中央値で、これを 3 回繰り返した範囲。
+script・source・生の出力は `target/perf/F11-stack-checks/`（`bench-matched.mjs`、`Main.tz`、`results.txt`）にある。
+
+| workload | wasm32 の 2 GiB 超 | threads（main instance） |
+| --- | --- | --- |
+| `fib 32`（frame のない再帰。最悪の場合） | 1.12〜1.22 倍 | 1.25〜1.40 倍 |
+| `tree 27`（8 要素の frame 配列の再帰） | 0.86〜0.97 倍 | 0.89〜0.99 倍 |
+| `sum 4M`（closure による配列の初期化と合計） | 0.98〜1.05 倍 | 1.00〜1.04 倍 |
+| `text 200k`（f64 の文字列化） | 0.93〜0.99 倍 | 0.92〜0.97 倍 |
+
+1 未満の値は配置などの揺れで、速くなったとは主張しない。O3 の逆アセンブルでは、検査は prologue の後に 1 回だけ残り、inline 展開された
+重複は 1 つにまとまってループの外へ出た。`llvm.stacksave` を使った版は `sum` が 1.30 倍（2 GiB 超）・2.40 倍（threads）、
+alloca を集めない版はループごとに stack を消費したため、D11 の形にした。
+
+### 残作業
+
+- wasm64 の threads（shared memory64 と thread runtime の 64-bit 化）、16 GiB を超える wasm64 の上限、ブラウザー用のホスト、
+  VS Code 拡張の wasm64 の選択は対象外のまま。コミットは作っていない。

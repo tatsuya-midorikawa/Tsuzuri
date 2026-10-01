@@ -28,9 +28,10 @@ export function stepBody(api, body, dt, width, height) {
 export function stepPositions(api, positions, velocities, dt, extent) {
   let positionPointer = 0, velocityPointer = 0, outputPointer = 0, resultPointer = 0;
   try {
-    positionPointer = api.tsuzuri_alloc(BigInt(positions.length) * 8n);
-    velocityPointer = api.tsuzuri_alloc(BigInt(velocities.length) * 8n);
-    outputPointer = api.tsuzuri_alloc(16n);
+    // wasm32 pointers at or above 2 GiB arrive as negative numbers.
+    positionPointer = api.tsuzuri_alloc(BigInt(positions.length) * 8n) >>> 0;
+    velocityPointer = api.tsuzuri_alloc(BigInt(velocities.length) * 8n) >>> 0;
+    outputPointer = api.tsuzuri_alloc(16n) >>> 0;
     new Float64Array(api.memory.buffer, positionPointer, positions.length).set(positions);
     new Float64Array(api.memory.buffer, velocityPointer, velocities.length).set(velocities);
     api.tz_next_positions(outputPointer, positionPointer, BigInt(positions.length), velocityPointer, BigInt(velocities.length), dt, extent);

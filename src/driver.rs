@@ -19,6 +19,13 @@ pub use test_runner::{TestOptions, TestReport, TestResult, run_tests};
 pub enum Target {
     Native,
     Wasm32,
+    Wasm64,
+}
+
+impl Target {
+    pub fn is_wasm(self) -> bool {
+        matches!(self, Self::Wasm32 | Self::Wasm64)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +44,13 @@ pub enum Emit {
     Wgsl,
 }
 
+pub const DEFAULT_WASM_MAX_MEMORY: u64 = 16 * 1024 * 1024;
+pub const DEFAULT_WASM_STACK_SIZE: u64 = 1024 * 1024;
+/// The wasm32 heap's `%ceil = add i32 %end, 65535` must not wrap.
+pub const MAX_WASM32_MEMORY: u64 = (1 << 32) - 65536;
+/// wasm-ld's limit for 64-bit memories.
+pub const MAX_WASM64_MEMORY: u64 = 1 << 34;
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
     pub target: Target,
@@ -48,6 +62,10 @@ pub struct BuildOptions {
     pub debug_info: bool,
     pub wasm_simd: bool,
     pub wasm_threads: bool,
+    /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
+    pub wasm_max_memory: Option<u64>,
+    /// `None` selects [`DEFAULT_WASM_STACK_SIZE`].
+    pub wasm_stack_size: Option<u64>,
     pub cache: bool,
 }
 
@@ -63,6 +81,8 @@ impl Default for BuildOptions {
             debug_info: false,
             wasm_simd: false,
             wasm_threads: false,
+            wasm_max_memory: None,
+            wasm_stack_size: None,
             cache: true,
         }
     }
@@ -92,10 +112,10 @@ impl BuildOptions {
                 "--wasm-feature threads requires wasm32 object or WASM output",
             ));
         }
-        if self.wasm_simd && (self.target != Target::Wasm32 || self.emit == Emit::Header) {
+        if self.wasm_simd && (!self.target.is_wasm() || self.emit == Emit::Header) {
             return Err(driver_error(
                 "E2000",
-                "--wasm-feature simd128 requires wasm32 object, LLVM IR, or WASM output",
+                "--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output",
             ));
         }
         if self.debug_info && self.emit == Emit::Header {
@@ -123,11 +143,11 @@ impl BuildOptions {
             ));
         }
         if (self.emit == Emit::Executable && self.target != Target::Native)
-            || (self.emit == Emit::Wasm && self.target != Target::Wasm32)
+            || (self.emit == Emit::Wasm && !self.target.is_wasm())
         {
             return Err(driver_error(
                 "E2000",
-                "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32'",
+                "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'",
             ));
         }
         if self.cpu == Cpu::Native {
@@ -139,7 +159,35 @@ impl BuildOptions {
             }
             native_cpu_flag(env::consts::ARCH)?;
         }
+        if self.wasm_max_memory.is_some()
+            && (!self.target.is_wasm()
+                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+            ));
+        }
+        if self.wasm_stack_size.is_some() && (!self.target.is_wasm() || self.emit != Emit::Wasm) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size",
+            ));
+        }
+        wasm_memory_limits(self.target, self.wasm_max_memory, self.wasm_stack_size)?;
         Ok(())
+    }
+
+    /// Fills options the command line left unset from the root manifest's
+    /// `[wasm]`, for the outputs where each option applies.
+    pub fn with_manifest_wasm(mut self, wasm: crate::package::WasmSettings) -> Self {
+        if self.target.is_wasm() && matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm) {
+            self.wasm_max_memory = self.wasm_max_memory.or(wasm.max_memory);
+        }
+        if self.target.is_wasm() && self.emit == Emit::Wasm {
+            self.wasm_stack_size = self.wasm_stack_size.or(wasm.stack_size);
+        }
+        self
     }
 
     pub fn output_path(self, input: &Path) -> PathBuf {
@@ -153,6 +201,60 @@ impl BuildOptions {
             Emit::Wasm => "wasm",
             Emit::Wgsl => "wgsl",
         })
+    }
+}
+
+/// Stacks wrap below address 0, which is always out of bounds on wasm64 and on
+/// single-threaded wasm32 up to 2 GiB; only other builds need entry checks.
+pub(crate) fn wasm_stack_checks(target: Target, threads: bool, max_memory: u64) -> bool {
+    target == Target::Wasm32 && (threads || max_memory > 1 << 31)
+}
+
+/// Returns the effective (maximum memory, stack size) in bytes.
+pub fn wasm_memory_limits(
+    target: Target,
+    max: Option<u64>,
+    stack: Option<u64>,
+) -> Result<(u64, u64), Diagnostic> {
+    let stack = stack.unwrap_or(DEFAULT_WASM_STACK_SIZE);
+    let max = max.unwrap_or(DEFAULT_WASM_MAX_MEMORY);
+    if stack % 16 != 0 || stack < 65536 {
+        return Err(driver_error(
+            "E2000",
+            "--wasm-stack-size must be a multiple of 16 bytes and at least 64 KiB",
+        ));
+    }
+    let (ceiling, message) = if target == Target::Wasm64 {
+        (
+            MAX_WASM64_MEMORY,
+            "--wasm-max-memory must be a multiple of 64 KiB and at most 16 GiB on wasm64",
+        )
+    } else {
+        (
+            MAX_WASM32_MEMORY,
+            "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32",
+        )
+    };
+    if max % 65536 != 0 || max > ceiling {
+        return Err(driver_error("E2000", message));
+    }
+    if max < stack.saturating_add(65536) {
+        return Err(driver_error(
+            "E2000",
+            "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size",
+        ));
+    }
+    Ok((max, stack))
+}
+
+/// Explicit memory options can make static data exceed the limit at link time.
+fn wasm_link_hint(hint: &str, max: Option<u64>, stack: Option<u64>) -> String {
+    if max.is_some() || stack.is_some() {
+        format!(
+            "{hint}; if the memory limit is too small, raise --wasm-max-memory or lower --wasm-stack-size"
+        )
+    } else {
+        hint.to_owned()
     }
 }
 
@@ -210,6 +312,8 @@ pub struct Project {
     pub sources: Vec<SourceFile>,
     pub manifests: Vec<SourceFile>,
     pub root: usize,
+    /// The root package's `[wasm]` section.
+    pub wasm: crate::package::WasmSettings,
 }
 
 #[derive(Debug)]
@@ -654,6 +758,10 @@ impl Project {
                 package: None,
             }
         }));
+        let wasm = packages
+            .iter()
+            .find(|package| package.id.root == directory)
+            .map_or_else(Default::default, |package| package.manifest.wasm);
         let manifests = packages
             .into_iter()
             .map(|package| SourceFile {
@@ -669,6 +777,7 @@ impl Project {
             sources,
             manifests,
             root,
+            wasm,
         })
     }
 
@@ -1065,6 +1174,11 @@ fn build_complete(
     action: &str,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
+    let (max_memory, stack_size) = wasm_memory_limits(
+        options.target,
+        options.wasm_max_memory,
+        options.wasm_stack_size,
+    )?;
     if options.emit == Emit::Executable
         && project.input().file_name() != Some(OsStr::new("Main.tz"))
     {
@@ -1107,7 +1221,7 @@ fn build_complete(
             } else {
                 Entry::Library
             },
-            wasm: options.target == Target::Wasm32,
+            wasm: options.target.is_wasm(),
             debug_output: options.debug_output,
         };
         if options.target == Target::Native
@@ -1124,14 +1238,16 @@ fn build_complete(
             })?;
             trap_sites = output.trap_sites;
             output.ir
-        } else if options.wasm_threads {
+        } else if options.wasm_threads || options.target == Target::Wasm64 {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_wasm_threads_build(
+                llvm::emit_wasm_build(
                     module,
                     emission,
                     sources,
                     options.debug_info.then_some(options.optimization != 0),
                     options.trap_info,
+                    options.wasm_threads,
+                    options.target == Target::Wasm64,
                 )
             })?;
             trap_sites = output.trap_sites;
@@ -1164,7 +1280,13 @@ fn build_complete(
     {
         text = llvm::windows_abi(text, module);
     }
-    if options.target == Target::Wasm32 && options.emit != Emit::Header {
+    let stack_checks = options.emit != Emit::Header
+        && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+    if options.target.is_wasm() && options.emit != Emit::Header {
+        text = llvm::with_wasm_heap_limit(text, max_memory);
+        if stack_checks {
+            text = llvm::with_stack_checks(text, options.wasm_threads);
+        }
         if options.wasm_simd {
             text.insert_str(
                 0,
@@ -1180,7 +1302,7 @@ fn build_complete(
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let native_runtime =
         task_runtime || cpu_runtime || (options.target == Target::Native && io_runtime);
-    let debug_import = options.target == Target::Wasm32 && text.contains("@tsuzuri_debug_write(");
+    let debug_import = options.target.is_wasm() && text.contains("@tsuzuri_debug_write(");
     if task_runtime
         && !cfg!(any(unix, windows))
         && !matches!(options.emit, Emit::Llvm | Emit::Header)
@@ -1405,9 +1527,13 @@ fn build_complete(
         if options.debug_info {
             clang.arg("-g");
         }
-        if options.target == Target::Wasm32 {
+        if options.target.is_wasm() {
             clang
-                .arg("--target=wasm32-unknown-unknown")
+                .arg(if options.target == Target::Wasm64 {
+                    "--target=wasm64-unknown-unknown"
+                } else {
+                    "--target=wasm32-unknown-unknown"
+                })
                 .arg("-mbulk-memory");
             if options.wasm_threads {
                 clang.arg("-matomics");
@@ -1529,8 +1655,11 @@ fn build_complete(
                 .arg("--no-entry")
                 .arg("--stack-first")
                 .arg("-z")
-                .arg("stack-size=1048576")
-                .arg("--max-memory=16777216");
+                .arg(format!("stack-size={stack_size}"))
+                .arg(format!("--max-memory={max_memory}"));
+            if options.target == Target::Wasm64 {
+                linker.arg("-mwasm64");
+            }
             if options.wasm_threads {
                 linker
                     .args([
@@ -1547,6 +1676,9 @@ fn build_complete(
                         "--export=tsuzuri_threads_control",
                     ])
                     .arg(&threads_object);
+            }
+            if stack_checks && options.wasm_threads {
+                linker.args(["--export=tsuzuri_stack_base", "--export=tsuzuri_stack_top"]);
             }
             if !options.debug_info {
                 linker.arg("--strip-all");
@@ -1577,7 +1709,11 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "install LLVM LLD or set TSUZURI_WASM_LD to the wasm-ld executable",
+                    &wasm_link_hint(
+                        "install LLVM LLD or set TSUZURI_WASM_LD to the wasm-ld executable",
+                        options.wasm_max_memory,
+                        options.wasm_stack_size,
+                    ),
                 )?,
             );
         }
@@ -2102,6 +2238,189 @@ mod tests {
     }
 
     #[test]
+    fn wasm_memory_limits_accept_boundaries_and_reject_invalid_values() {
+        let wasm32 = |max, stack| wasm_memory_limits(Target::Wasm32, max, stack);
+        let wasm64 = |max, stack| wasm_memory_limits(Target::Wasm64, max, stack);
+        assert_eq!(wasm32(None, None).unwrap(), (16777216, 1048576));
+        assert_eq!(wasm64(None, None).unwrap(), (16777216, 1048576));
+        assert_eq!(
+            wasm32(Some(4294901760), None).unwrap(),
+            (4294901760, 1048576)
+        );
+        assert_eq!(
+            wasm64(Some(17179869184), Some(4294967296)).unwrap(),
+            (17179869184, 4294967296)
+        );
+        assert_eq!(wasm32(Some(131072), Some(65536)).unwrap(), (131072, 65536));
+        let memory =
+            "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32";
+        let memory64 =
+            "--wasm-max-memory must be a multiple of 64 KiB and at most 16 GiB on wasm64";
+        let stack = "--wasm-stack-size must be a multiple of 16 bytes and at least 64 KiB";
+        let relation = "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size";
+        for (target, max, size, message) in [
+            (Target::Wasm32, Some(4294967296), None, memory),
+            (Target::Wasm32, Some(17179869184), None, memory),
+            (Target::Wasm32, Some(100000), None, memory),
+            (Target::Wasm64, Some(17179934720), None, memory64),
+            (Target::Wasm64, Some(100000), None, memory64),
+            (Target::Wasm32, Some(0), None, relation),
+            (Target::Wasm32, Some(1048576), None, relation),
+            (Target::Wasm32, Some(131072), Some(65552), relation),
+            (Target::Wasm32, None, Some(16777216), relation),
+            (Target::Wasm64, None, Some(u64::MAX - 15), relation),
+            (Target::Wasm32, None, Some(1000), stack),
+            (Target::Wasm32, None, Some(32768), stack),
+            (Target::Wasm64, Some(100000), Some(1000), stack),
+        ] {
+            let error = wasm_memory_limits(target, max, size).unwrap_err();
+            assert_eq!(
+                (error.code, error.message.as_str()),
+                ("E2000", message),
+                "{target:?} {max:?} {size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stack_checks_cover_threads_and_wasm32_memory_above_2_gib() {
+        for (target, threads, max, checked) in [
+            (Target::Wasm32, false, DEFAULT_WASM_MAX_MEMORY, false),
+            (Target::Wasm32, false, 1 << 31, false),
+            (Target::Wasm32, false, (1 << 31) + 65536, true),
+            (Target::Wasm32, true, DEFAULT_WASM_MAX_MEMORY, true),
+            (Target::Wasm64, false, 1 << 34, false),
+            (Target::Native, false, DEFAULT_WASM_MAX_MEMORY, false),
+        ] {
+            assert_eq!(
+                wasm_stack_checks(target, threads, max),
+                checked,
+                "{target:?} {threads} {max}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_wasm_fills_only_unset_options_for_applicable_outputs() {
+        let manifest = crate::package::WasmSettings {
+            max_memory: Some(268435456),
+            stack_size: Some(4194304),
+        };
+        let options = |target, emit, max| BuildOptions {
+            target,
+            emit,
+            wasm_max_memory: max,
+            ..BuildOptions::default()
+        };
+        for (target, emit, cli, max, stack) in [
+            (
+                Target::Wasm32,
+                Emit::Wasm,
+                None,
+                Some(268435456),
+                Some(4194304),
+            ),
+            (
+                Target::Wasm64,
+                Emit::Wasm,
+                None,
+                Some(268435456),
+                Some(4194304),
+            ),
+            (
+                Target::Wasm32,
+                Emit::Wasm,
+                Some(65536 * 1024),
+                Some(65536 * 1024),
+                Some(4194304),
+            ),
+            (Target::Wasm32, Emit::Object, None, Some(268435456), None),
+            (Target::Wasm64, Emit::Llvm, None, Some(268435456), None),
+            (Target::Wasm32, Emit::Header, None, None, None),
+            (Target::Native, Emit::Executable, None, None, None),
+            (Target::Native, Emit::Llvm, None, None, None),
+        ] {
+            let merged = options(target, emit, cli).with_manifest_wasm(manifest);
+            assert_eq!(
+                (merged.wasm_max_memory, merged.wasm_stack_size),
+                (max, stack),
+                "{target:?} {emit:?}"
+            );
+            merged.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn validate_rejects_wasm_memory_options_outside_wasm_outputs() {
+        let memory = Some(67108864);
+        let stack = Some(2097152);
+        let options = |target, emit, wasm_max_memory, wasm_stack_size, wasm_threads| BuildOptions {
+            target,
+            emit,
+            wasm_max_memory,
+            wasm_stack_size,
+            wasm_threads,
+            ..BuildOptions::default()
+        };
+        let limit = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let size = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
+        for (target, emit, max, stack, message) in [
+            (Target::Native, Emit::Executable, memory, None, limit),
+            (Target::Native, Emit::Object, memory, None, limit),
+            (Target::Native, Emit::Llvm, memory, None, limit),
+            (Target::Native, Emit::Wgsl, memory, None, limit),
+            (Target::Wasm32, Emit::Header, memory, None, limit),
+            (Target::Wasm64, Emit::Header, memory, None, limit),
+            (Target::Native, Emit::Executable, None, stack, size),
+            (Target::Wasm32, Emit::Object, None, stack, size),
+            (Target::Wasm32, Emit::Llvm, None, stack, size),
+            (Target::Wasm64, Emit::Llvm, None, stack, size),
+            (Target::Wasm32, Emit::Header, None, stack, size),
+            (Target::Wasm32, Emit::Object, memory, stack, size),
+        ] {
+            let error = options(target, emit, max, stack, false)
+                .validate()
+                .unwrap_err();
+            assert_eq!(
+                (error.code, error.message.as_str()),
+                ("E2000", message),
+                "{target:?} {emit:?}"
+            );
+        }
+        for (emit, max, stack, threads) in [
+            (Emit::Object, memory, None, false),
+            (Emit::Llvm, memory, None, false),
+            (Emit::Wasm, memory, stack, false),
+            (Emit::Wasm, None, stack, false),
+            (Emit::Wasm, memory, stack, true),
+            (Emit::Object, memory, None, true),
+        ] {
+            options(Target::Wasm32, emit, max, stack, threads)
+                .validate()
+                .unwrap();
+            if !threads {
+                options(Target::Wasm64, emit, max, stack, threads)
+                    .validate()
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            options(Target::Wasm64, Emit::Wasm, None, None, true)
+                .validate()
+                .unwrap_err()
+                .message,
+            "--wasm-feature threads requires wasm32 object or WASM output"
+        );
+        assert_eq!(
+            options(Target::Wasm32, Emit::Wasm, Some(1048576), None, false)
+                .validate()
+                .unwrap_err()
+                .code,
+            "E2000"
+        );
+    }
+
+    #[test]
     fn task_runtime_source_inlines_the_win32_adapter() {
         let include = "#include \"task-windows.h\"";
         assert!(include_str!("runtime/task.c").contains(include));
@@ -2133,6 +2452,7 @@ mod tests {
         for (target, emit) in [
             (Target::Wasm32, Emit::Wasm),
             (Target::Wasm32, Emit::Object),
+            (Target::Wasm64, Emit::Wasm),
             (Target::Native, Emit::Llvm),
             (Target::Native, Emit::Header),
         ] {

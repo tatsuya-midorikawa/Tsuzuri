@@ -38,25 +38,27 @@ library / WASM 出力はトップレベルコードを自動実行しません�
 | emit | 内容 |
 | --- | --- |
 | `exe` | native 実行ファイル |
-| `object` | ホストでリンクする object。wasm32 の未リンク object も可能 |
+| `object` | ホストでリンクする object。wasm32・wasm64 の未リンク object も可能 |
 | `llvm` | ライブラリ用テキスト LLVM IR。コンソール wrapper は付けない |
 | `header` | C / C++ 用ヘッダー |
 | `wasm` | リンク済み WASM |
 | `wgsl` | 実験的な単一 scalar export の GPU カーネル |
 
-既定の target は native、既定 emit は native で exe、wasm32 で wasm です。LLVM IR と header の生成に LLVM の実行環境は不要です。生の native タスク IR を直接リンクする場合はランタイム C も必要ですが、通常の object 出力には同梱します。
+既定の target は native、既定 emit は native で exe、wasm32・wasm64 で wasm です。LLVM IR と header の生成に LLVM の実行環境は不要です。生の native タスク IR を直接リンクする場合はランタイム C も必要ですが、通常の object 出力には同梱します。
 
 ## build と run の主なオプション
 
 | オプション | 契約 |
 | --- | --- |
 | `-o PATH`, `--output PATH` | build の出力先。親を作成し、成功した成果物を公開 |
-| `--target native`, `--target wasm32` | 生成ターゲット。run は native のみ |
+| `--target native`, `--target wasm32`, `--target wasm64` | 生成ターゲット。run は native のみ。wasm64 は memory64 |
 | `--emit KIND` | 出力形式 |
 | `-O0` から `-O3` | build / run の既定は O3。test は O0 |
 | `--cpu generic`, `--cpu native` | native exe / object / run の CPU 選択 |
 | `--wasm-feature simd128` | WASM SIMD を明示要求 |
-| `--wasm-feature threads` | WASM / object の Worker 対応を明示要求 |
+| `--wasm-feature threads` | WASM / object の Worker 対応を明示要求（wasm32 のみ） |
+| `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16MiB、64 KiB の倍数で wasm32 は最大 4GiB-64KiB、wasm64 は最大 16GiB |
+| `--wasm-stack-size SIZE` | WASM の main stack。既定 1MiB、16 の倍数で 64 KiB 以上 |
 | `--no-cache` | build / run の成果物 cache の読み書きを無効化 |
 | `-g`, `--debug-info` | DWARF 情報を追加 |
 | `--trap-info` | トラップ理由・位置と side table を追加。run は既定で有効 |
@@ -64,6 +66,9 @@ library / WASM 出力はトップレベルコードを自動実行しません�
 | `--deny-warnings` | check / build / run を警告だけでも失敗させる |
 
 native CPU 指定を WASM / LLVM IR / header に使うことはできません。WASM feature は check / run / native / header には指定できず、threads は LLVM テキスト出力にも指定できません。未知・重複 feature はエラーです。
+
+SIZE はバイト数か、`KiB`・`MiB`・`GiB` を付けた整数です（例 `67108864`、`64MiB`）。接尾辞は大文字小文字を区別し、値は次の引数で渡します（`=` 形式は受けません）。`--wasm-max-memory` は WASM の build（wasm・object・llvm 出力）と `test --target wasm32`／`wasm64`、`--wasm-stack-size` は WASM の wasm 出力と test だけで使えます。上限は stack + 64 KiB 以上が必要です。それ以外の action・出力、範囲外の値、重複は `E2000` で、静的データが上限に収まらないリンクは `E2002` です。object / llvm を自分でリンクするときは wasm-ld へ同じ `--max-memory` を渡します（wasm64 は `-mwasm64` も）。
+root package の `Tsuzuri.toml` の `[wasm]` の `max-memory`・`stack-size` は、その指定が効く出力での既定値で、コマンドラインが優先します。詳しくは[WebAssembly ガイド](../guides/webassembly.md#ブラウザーとメモリ)を参照してください。
 
 WGSL 出力は専用の制約を持ち、target / optimization / cpu / debug オプションを付けません。詳細は[GPU ガイド](../guides/gpu.md)を参照してください。
 

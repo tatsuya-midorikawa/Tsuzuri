@@ -45,7 +45,7 @@ try {
 | --- | --- |
 | `createThreadPool(bytes, options)` | bytes または WebAssembly.Module を受ける非同期の初期化 |
 | `workers` | 追加 worker 数 0 から 31。既定は min(CPU 数, 32) - 1 |
-| `memory` | shared な WebAssembly.Memory。既定は initial / maximum 256 page |
+| `memory` | shared な WebAssembly.Memory。既定は module が宣言した env.memory の最大 page 数を initial / maximum にしたもの |
 | `importsModule`, `importData` | 各 instance 用のホスト import を生成するモジュールとデータ |
 | `call(name, ...args)` | 同期実行。完了または失敗まで戻らない |
 | `workerCount` | 起動済み worker 数 |
@@ -56,9 +56,22 @@ Worker は初回の並列グループで遅延起動し、以後再利用しま�
 
 ## import と stack
 
-必要な import は env.memory と tsuzuri_threads の spawn_workers / worker_ready です。ホストが共通の Module と shared Memory を各 Worker へ渡し、各 instance の stack pointer を設定します。
+必要な import は env.memory と tsuzuri_threads の spawn_workers / worker_ready です。ホストが共通の Module と shared Memory を各 Worker へ渡し、各 instance の stack pointer と stack の範囲を設定します。
 
-main の stack は 1 MiB、各追加 worker は 256 KiB です。stack、data、heap はすべて 16 MiB の上限に含まれます。同梱 Node ホストは全 256 page を最初に確保します。
+main の stack は既定 1 MiB、各追加 worker は 256 KiB です。stack、data、heap はすべて線形メモリの上限（既定 16 MiB、最大 4 GiB − 64 KiB）に含まれます。上限は build の `--wasm-max-memory`、main の stack は `--wasm-stack-size` で変更でき、値は env.memory の import の最大 page 数になります。
+
+worker の stack は heap の block なので、各関数は frame を確保した後で stack pointer が自分の stack の範囲にあるかを検査し、溢れは隣の block を書く前にトラップします。
+独自のホストは各 worker instance で `tsuzuri_thread_entry` を呼ぶ前に、次の exported global を設定します（`base` は `tsuzuri_thread_stack_alloc() >>> 0`、`top` はそれに `tsuzuri_thread_stack_size()` を足した値）。
+
+```javascript
+instance.exports.__stack_pointer.value = top;
+instance.exports.tsuzuri_stack_base.value = base;
+instance.exports.tsuzuri_stack_top.value = top;
+```
+
+両方 0 のままは main の stack を表すため、範囲を設定しない worker は最初の呼び出しでトラップします。`--emit object` を自分でリンクするときは、この 2 つの global も export します。
+
+同梱 Node ホストは、module が宣言した最大 page 数（既定 256 page）を最初に確保します。threads では memory を伸ばしません。確保できない場合は RangeError で、より小さい上限で build し直します。bytes ではなく WebAssembly.Module を渡す場合は宣言を読めないため既定の 256 page になるので、16 MiB 以外の module では同じ大きさの `memory` を明示してください。threads でない module を渡すと TypeError です。
 
 共有 allocator と atomic queue を使い、返却前に全 callback の完了と結果公開を待ちます。通常終了時の所有 heap は回収しますが、worker stack は pool の寿命に従います。
 
@@ -75,7 +88,7 @@ Worker の trap・起動失敗は共有状態を失敗にし、待機を解除�
 1. HTTPS または localhost で COOP: same-origin と COEP: require-corp を配信する。
 2. crossOriginIsolated と shared Memory を検査する。
 3. 計算の呼び出し元も Worker に置き、UI thread で atomic wait しない。
-4. 各 instance に独立した stack を割り当てる。
+4. 各 instance に独立した stack を割り当て、`tsuzuri_stack_base`・`tsuzuri_stack_top` を設定する。
 5. 初期化、失敗状態、待機解除、正常完了後の終了を実装する。
 
 要件を満たさない明示 threads 要求を、黙って逐次実行へ変更しないでください。

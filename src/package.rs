@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
 };
 
@@ -20,6 +20,34 @@ pub struct Manifest {
     pub version: String,
     pub namespace: String,
     pub dependencies: BTreeMap<String, Dependency>,
+    pub wasm: WasmSettings,
+}
+
+/// `[wasm]` sizes in bytes. Builds read only the root package's section, and
+/// command-line options take precedence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WasmSettings {
+    pub max_memory: Option<u64>,
+    pub stack_size: Option<u64>,
+}
+
+/// Parses a byte count with an optional binary `KiB`, `MiB`, or `GiB` suffix.
+pub fn parse_size(text: &str) -> Option<u64> {
+    let (digits, suffix) = text.split_at(
+        text.find(|character: char| !character.is_ascii_digit())
+            .unwrap_or(text.len()),
+    );
+    let scale: u64 = match suffix {
+        "" => 1,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        _ => return None,
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u64>().ok()?.checked_mul(scale)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,8 +91,10 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         ));
     }
     let mut section = "";
+    let mut sections = BTreeSet::new();
     let mut fields = BTreeMap::new();
     let mut dependencies = BTreeMap::new();
+    let mut wasm = WasmSettings::default();
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
         let span = Span::new(offset, offset + line.trim_end().len()).in_source(source_id);
@@ -78,13 +108,20 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             continue;
         }
         if cursor.rest.starts_with('[') {
-            if section.is_empty() && cursor.take("[package]") {
-                section = "package";
-            } else if section == "package" && cursor.take("[dependencies]") {
-                section = "dependencies";
+            let next = if section.is_empty() {
+                cursor.take("[package]").then_some("package")
+            } else if cursor.take("[dependencies]") {
+                Some("dependencies")
             } else {
-                return Err(cursor
-                    .error("expected [package] followed by optional [dependencies], each once"));
+                cursor.take("[wasm]").then_some("wasm")
+            };
+            match next {
+                Some(next) if sections.insert(next) => section = next,
+                _ => {
+                    return Err(cursor.error(
+                        "expected [package] followed by optional [dependencies] and [wasm], each once",
+                    ));
+                }
             }
             cursor.finish()?;
             continue;
@@ -145,6 +182,24 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     ));
                 }
             }
+            "wasm" => {
+                let slot = match key.as_str() {
+                    "max-memory" => &mut wasm.max_memory,
+                    "stack-size" => &mut wasm.stack_size,
+                    _ => {
+                        return Err(
+                            cursor.error("unknown wasm key; expected max-memory or stack-size")
+                        );
+                    }
+                };
+                let text = cursor.string()?;
+                let size = parse_size(&text).ok_or_else(|| {
+                    cursor.error("WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\"")
+                })?;
+                if slot.replace(size).is_some() {
+                    return Err(cursor.error("wasm keys must occur at most once"));
+                }
+            }
             _ => return Err(cursor.error("expected [package] before fields")),
         }
         cursor.finish()?;
@@ -157,6 +212,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         name,
         version,
         dependencies,
+        wasm,
     })
 }
 
@@ -267,6 +323,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_wasm_sizes_in_any_section_order() {
+        for source in [
+            format!(
+                "{PACKAGE}[wasm]\nmax-memory = \"256MiB\"\nstack-size = \"65536\" # bytes\n[dependencies]\n"
+            ),
+            format!(
+                "{PACKAGE}[dependencies]\n[wasm]\nstack-size = \"64KiB\"\nmax-memory = \"1GiB\"\n"
+            ),
+        ] {
+            let wasm = parse_manifest(&source, 0).unwrap().wasm;
+            assert_eq!(wasm.stack_size, Some(65536));
+            assert!(matches!(wasm.max_memory, Some(268435456 | 1073741824)));
+        }
+        assert_eq!(
+            parse_manifest(PACKAGE, 0).unwrap().wasm,
+            WasmSettings::default()
+        );
+        for (text, size) in [
+            ("0", Some(0)),
+            ("16GiB", Some(1 << 34)),
+            ("64MB", None),
+            ("MiB", None),
+            ("1.5GiB", None),
+            (" 64MiB", None),
+            ("18446744073709551615", Some(u64::MAX)),
+            ("18446744073709551616", None),
+            ("17179869184GiB", None),
+        ] {
+            assert_eq!(parse_size(text), size, "{text}");
+        }
+    }
+
+    #[test]
     fn rejects_unknown_duplicate_and_malformed_fields() {
         for (suffix, code) in [
             ("name = \"other\"", "E0002"),
@@ -288,6 +377,15 @@ mod tests {
             ("[dependencies]\nBad_Name = { path = \"../foo\" }", "E1011"),
             ("[dependencies]\nfoo = { path = \"/absolute\" }", "E0002"),
             ("[dependencies]\nfoo = { path = \"\\u0041\" }", "E0002"),
+            ("[wasm]\n[wasm]", "E0002"),
+            ("[wasm]\n[package]", "E0002"),
+            ("[wasm]\nmemory = \"64MiB\"", "E0002"),
+            ("[wasm]\nmax-memory = 67108864", "E0002"),
+            ("[wasm]\nmax-memory = \"64MB\"", "E0002"),
+            (
+                "[wasm]\nstack-size = \"1MiB\"\nstack-size = \"2MiB\"",
+                "E0002",
+            ),
         ] {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}"), 5).unwrap_err();
             assert_eq!(error.code, code, "{suffix}: {error:?}");
@@ -297,6 +395,7 @@ mod tests {
             "",
             "[package]\nname = \"app\"",
             "[package]\nversion = \"1\"",
+            "[wasm]\n[package]\nname = \"app\"\nversion = \"1\"",
         ] {
             assert_eq!(parse_manifest(source, 0).unwrap_err().code, "E0002");
         }

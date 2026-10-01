@@ -381,8 +381,12 @@ impl FunctionEmitter<'_, '_> {
             self.guard(&aligned, TrapKind::BoundsCheck);
         }
         if self.globals.wasm {
-            let pages = self.value("call i32 @llvm.wasm.memory.size.i32(i32 0)");
-            let pages = self.value(format!("zext i32 {pages} to i64"));
+            let pages = if self.globals.memory64 {
+                self.value("call i64 @llvm.wasm.memory.size.i64(i32 0)")
+            } else {
+                let pages = self.value("call i32 @llvm.wasm.memory.size.i32(i32 0)");
+                self.value(format!("zext i32 {pages} to i64"))
+            };
             let memory = self.value(format!("shl i64 {pages}, 16"));
             let fits = self.value(format!("icmp ule i64 {address}, {memory}"));
             self.guard(&fits, TrapKind::BoundsCheck);

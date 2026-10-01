@@ -1,0 +1,4 @@
+export def bytes_length :: i64 -> i64 = \count -> (new [ubyte](count, \index -> index as ubyte)).length
+
+test "allocates the requested bytes" = assert (bytes_length 1024 == 1024)
+test "allocates 32 MiB" = assert (bytes_length 33554432 == 33554432)

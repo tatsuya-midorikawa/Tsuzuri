@@ -81,9 +81,17 @@ geometry-core = { path = "../geometry-core" }
 
 同じ正規化 root は共有し、循環、同名の別 root、名前空間の衝突、symlink は拒否します。ネストした依存 root を親パッケージのソースとして二重に読みません。
 
+root の manifest には WASM の build・test の既定値を書けます。値はコマンドラインの `--wasm-max-memory`・`--wasm-stack-size` と同じ書式の文字列で、コマンドラインの指定が優先します。依存パッケージの `[wasm]` は読みません。
+
+```toml
+[wasm]
+max-memory = "256MiB"
+stack-size = "4MiB"
+```
+
 ## manifest の文法と制限
 
-上の section と key だけを認める限定 TOML です。コメント、空行、CRLF、引用符付き UTF-8 文字列と対応 escape を使えますが、任意の TOML 構文を受け付けるわけではありません。未知の key・構文は `E0002` です。
+上の section と key だけを認める限定 TOML です。`[package]` を最初に置き、`[dependencies]` と `[wasm]` はその後にそれぞれ一度まで、順序は問いません。コメント、空行、CRLF、引用符付き UTF-8 文字列と対応 escape を使えますが、任意の TOML 構文を受け付けるわけではありません。未知の key・構文は `E0002` です。
 
 registry、git 依存、ネットワーク取得、lockfile、版解決、build script は未実装です。manifest がなければ従来の探索規則を使います。
 

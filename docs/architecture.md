@@ -116,12 +116,13 @@ LLVM IR出力はfeature要件をコメントへ記録します。tests/wasm_simd
 
 threadsはWASM/object出力専用です。C11のfreestanding task-wasm-threads.cを-matomics/-mbulk-memoryで生成し、wasm-ldのshared/import-memoryで結合します。
 heap-wasm.llの同一allocatorを内部名へ変更し、heap-wasm-threads.llのlock wrapperから呼ぶため、reallocの内部alloc/freeも一回のlock内です。
-共有状態はlinear memoryに置き、wasm-ldの一回限りのdata初期化を使用します。各instanceの__stack_pointerだけをhostが設定します。
+共有状態はlinear memoryに置き、wasm-ldの一回限りのdata初期化を使用します。各instanceの__stack_pointerとstackの範囲（tsuzuri_stack_base・tsuzuri_stack_top、mainは0）だけをhostが設定します。
 groupはcaller stackに置き、queue lock内でatomicに仕事を取得してからcallbackを実行します。remaining公開後にgroupを参照せず、callerはlock内でunlinkして戻ります。
 callerも仕事を進め、入れ子は自groupを優先して他groupも手伝います。epochのwait/notifyでidle待機し、heap lock内で利用者callbackを呼びません。
 Nodeホストsrc/runtime/wasm-threads.mjsが明示worker数を初期化し、初回groupでspawn_workersを呼びます。各workerの256KiB stackをheapから確保し、closeは完了後にWorkerを終了します。
+memory省略時はbytesのimport sectionからenv.memoryのmaxを読み、initial/maximumともそのpage数でshared memoryを作ります（既定256page、WebAssembly.Moduleを渡した場合も256page）。
 Worker trap/初期化失敗は共有failedとlock poison bitを公開して全waitを解除します。以後の実行は拒否し、trap後の解放は保証しません。通常の言語Resultとは別です。
-tests/wasm_threads.mjsはO0/O3のstack sentinel、atomic barrier、heap残量、入れ子、bulk、失敗、object、SIMD/debug併用と決定性を検証します。
+tests/wasm_threads.mjsはO0/O3のstack sentinel、workerのstack溢れのトラップ、atomic barrier、heap残量、入れ子、bulk、失敗、object、SIMD/debug併用と決定性を検証します。
 
 nativeのCPU dispatchは同梱Arrayソースを確認したemit_native_buildでだけ有効にします。対象は単相化したArray.sumのref [i64] -> i64です。
 通常のLLVM API/--emit llvmは従来の独立IRを維持し、driverのexe/objectはtsuzuri_cpu_sum_i64出現時だけcpu.cをtask runtimeと同じC連結経路へ追加します。
@@ -568,7 +569,7 @@ NLLのloan情報解放では、生きたloanの参照先と親を辿り、読み
 `Vec<T>` は `%tz.vec = { ptr, i64, i64 }`（データ・長さ・容量）で、保守的な型サイズは 32 バイトです。
 常に non-Copy ですが、捕捉環境の内部 clone は容量を保って独立複製します。drop は長さ以内の要素だけを解放します。
 再確保は native realloc、WASM は隣接 free block の分割・吸収を試み、失敗時に領域を確保してコピー・解放します。
-null／zero をヘッダー読み取りより先に扱い、WASM の 16 MiB 上限は維持します。
+null／zero をヘッダー読み取りより先に扱い、WASM の上限（既定 16 MiB）は維持します。
 `ref mut [T]` と他の参照は引き続き `ptr` です。型の共通レイアウト・閉包・引数・返却値もこの表現を使います。
 `Slice` は元配列の loan を張ってから範囲式を検査し、LLVM は全境界検査の後にだけ GEP と長さの差を生成します。
 共有配列参照の非消費な参照外しはビューを読み、所有値としての参照外しは従来の配列複製を使います。
@@ -664,7 +665,7 @@ clone は複製先ノードを待ちリストに使い、一時的にstepとsour
 payloadを埋めた後で通常のdrop/cloneヘッダーへ戻します。別のwork itemは確保しません。
 動的コレクションはその場で走査し、再帰する子は同じ待ちリストへ登録します。
 LLVM-only helperは到達した関数の要求分だけ生成し、公開ABIや利用者の関数・警告・テストrootへ追加しません。
-100万ノードのnative解放、WASMの上限内の深い複製と16 MiB超過トラップを検証します。
+100万ノードのnative解放、WASMの上限内の深い複製と既定16 MiB超過トラップを検証します。
 
 match は `llvm_control::SwitchPlan` が、ガードのない全節の条件が単一の tag（整数・bool・unit の場合は値）の
 定数比較で、束縛が同じ射影の経路を持つ場合に限り、対象の領域から tag を一度だけ load する `switch i32` にします。
@@ -942,7 +943,22 @@ LLVM 23 は limb の乗算式を再び i128 乗算として認識するため、
 アプリケーション関数の最適化は維持します。
 weak/hidden な補助はオブジェクト間で重複を許容し、未使用なら LLD が削除します。
 WASM ヒープはアドレス順の空き領域リストを使い、分割・隣接領域の結合を行います。
-memory.grow の失敗・16 MiB 上限超過ではトラップし、成功した形の無効ポインターを返しません。
+memory.grow の失敗・上限（既定 16 MiB）超過ではトラップし、成功した形の無効ポインターを返しません。
+上限と main stack は `BuildOptions`／`TestOptions` の `wasm_max_memory`・`wasm_stack_size`（`--wasm-max-memory`・`--wasm-stack-size`、`None` は既定値）です。
+main は project の読み込み後、未指定のものを root package の `[wasm]`（`Project::wasm`、`BuildOptions::with_manifest_wasm`）で補い、適用後にもう一度検証します。
+`driver::wasm_memory_limits` が target ごとの範囲（wasm32 は 4 GiB − 64 KiB、wasm64 は 16 GiB）を一か所で検査して実効値を返し、build と test runner はその値だけから wasm-ld の `-z stack-size=` と `--max-memory=` を作ります。
+ヒープ側は `heap-wasm.ll` を変えず、`llvm::with_wasm_heap_limit` が生成後の IR の `%fits` 2 行と `%within` 1 行だけを行全体の一致で置換します。
+利用者の文字列定数は `c"..."` の行の途中にあるため変わらず、既定値では何もしないので既定の IR と `.wasm` は不変です。
+上限が 2 GiB 以下なら `i32` の終端 `%begin + %needed` は折り返りません。超えるときは `%within` を `%room = sub i32 LIMIT, %begin` との比較の 2 行に置き換えます（`%begin` は上限を超えません）。
+上限を 4 GiB − 64 KiB までにするのは `%ceil = add i32 %end, 65535` が折り返らないためです。JS の同梱ホストは pointer を `>>> 0` で受け取ります。
+wasm64 は `heap-wasm64.ll`（header は i64 の capacity・next、`memory.size`/`grow` は i64）を使い、同じ 3 行の置換で上限を入れます。
+`Instrumentation::memory64` は host ABI の memory 範囲検査、scalar capture の幅、DWARF の pointer 幅を 64-bit にし、clang は `--target=wasm64-unknown-unknown`、wasm-ld は `-mwasm64` です。threads は wasm32 だけです。
+stack は尽きると 0 の下へ折り返ります。wasm32 の 2 GiB 超と threads（worker の stack は heap の block）ではその先が memory 内になり得るため、`llvm::with_stack_checks` が全関数の entry block の static alloca の後へ `@tz.stack.check` を入れます。
+alloca を呼び出しの前へ集めるのは、inline 展開が entry block を分けたときに動的 alloca（ループで stack が増え続け、SROA も効かない）にならないためです。
+検査は `llvm.frameaddress(0)`（prologue 後の stack pointer。副作用なし）を `[__stack_low + 4096, __stack_high]` と比べ、外れたら `llvm.trap` です。`llvm.stacksave` は副作用を持ち LICM・vectorize を妨げます。
+threads では wasm global の `tsuzuri_stack_base`・`tsuzuri_stack_top`（instance ごと、`!invariant.load`）が 0 なら main、そうでなければ worker の範囲です。余白 4096 は検査のない `task-wasm-threads.c` と `wasm.ll` の frame の合計（O0 で 640 bytes）を含みます。
+threads は import の max も同じ値になり、`--emit object` はヒープの定数だけを持ちます。cache key は options と置換後の IR で上限を含みます。
+`tests/wasm_memory.mjs` は O0/O3 で既定出力の不変、2 GiB 超の room 形式と境界、stack 検査、manifest、診断を、`tests/wasm_threads.mjs` は worker の溢れが隣の block を書かないことを、`tests/wasm64.mjs`（Node.js 24）は wasm64 の上限・境界・4 GiB 超の host buffer・test を検証します。
 
 **ホスト:** Tsuzuri 関数には外部関数をインポートしません。
 コンソールの putchar は生成したエントリー・ラッパーだけが持ちます。数値の printf 依存はありません。
@@ -980,6 +996,8 @@ node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
+node tests/wasm_memory.mjs target/release/tsuzuri
+npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri
 ```
 
 Rust のテストは LLVM なしで走ります。字句・型・失敗例・レイアウト・IR の不変条件・
@@ -1083,7 +1101,7 @@ LLVM 23 系の Clang はサイズ引数のない `llvm.lifetime.*` など LLVM 1
 単相化、捕捉、寿命、未実装操作、展開深さ、未使用ビルダーの検査を確認します。
 `tests/computations.mjs` は native／WASM の `-O0`／`-O3` で独自の短絡・複数 yield・
 入れ子の反復・Delay／Run の有無・評価順序・数値境界・trap・タスクとの合成を実行します。
-ネイティブでは全呼び出し後の未解放バイトを 0 と照合し、WASM では 16 MiB を超える累積確保の
+ネイティブでは全呼び出し後の未解放バイトを 0 と照合し、WASM では既定の 16 MiB を超える累積確保の
 反復を行います。注釈なしの配列 bind と手書きの操作呼び出しの確保量も一致させます。
 `.tt`／`.tc` の診断先・出力保護と、決定的な IR／WASM も確認します。
 `tests/call_specialization.rs` と `tests/fixtures/computations/Optimization.tz` は既知・動的・
