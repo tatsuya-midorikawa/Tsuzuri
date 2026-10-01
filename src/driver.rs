@@ -1902,7 +1902,7 @@ pub enum ToolSource {
 
 /// The distribution root two levels above the compiler, marked by `manifest.json`.
 pub fn distribution_root() -> Option<PathBuf> {
-    let executable = fs::canonicalize(env::current_exe().ok()?).ok()?;
+    let executable = crate::cache::real_path(&env::current_exe().ok()?).ok()?;
     let root = executable.parent()?.parent()?;
     root.join("manifest.json")
         .is_file()
