@@ -1,26 +1,27 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cp, mkdtemp, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = path.resolve(process.argv[2] ?? path.join(extension, 'toolchain'));
+const [input, ...flags] = process.argv.slice(2);
+if (!input || flags.some(flag => flag !== '--discover')) {
+  throw new Error('usage: node scripts/toolchain/smoke.mjs <toolchain directory|archive> [--discover]');
+}
+const discover = flags.includes('--discover');
+const source = path.resolve(input);
+const archived = /\.(tar\.gz|zip)$/.test(source);
 const directory = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri IDE space-'));
-const tools = path.join(directory, 'relocated toolchain');
+let tools = path.join(directory, 'relocated toolchain');
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const environment = { ...process.env, SDKROOT: path.join(directory, 'missing-sdk'), DEVELOPER_DIR: path.join(directory, 'missing-developer-tools') };
 for (const key of Object.keys(environment)) {
   if (/^(PATH|TSUZURI_|ZIG_|DYLD_|LD_LIBRARY_PATH)/i.test(key)) { delete environment[key]; }
 }
-environment.PATH = path.join(tools, 'bin');
 environment.ZIG_GLOBAL_CACHE_DIR = path.join(directory, 'zig-global');
 environment.ZIG_LOCAL_CACHE_DIR = path.join(directory, 'zig-local');
 environment.TSUZURI_CACHE_DIR = path.join(directory, 'cache');
-for (const [name, variable] of Object.entries({ 'tsuzuri-clang': 'TSUZURI_CLANG', 'wasm-ld': 'TSUZURI_WASM_LD', 'llvm-link': 'TSUZURI_LLVM_LINK', dsymutil: 'TSUZURI_DSYMUTIL' })) {
-  environment[variable] = path.join(tools, 'bin', name + suffix);
-}
+const variables = { 'tsuzuri-clang': 'TSUZURI_CLANG', 'wasm-ld': 'TSUZURI_WASM_LD', 'llvm-link': 'TSUZURI_LLVM_LINK', dsymutil: 'TSUZURI_DSYMUTIL' };
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: directory, env: environment, encoding: 'utf8', timeout: 180000, ...options });
@@ -30,8 +31,42 @@ function run(command, args, options = {}) {
 }
 
 try {
-  await cp(source, tools, { recursive: true });
-  const compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
+  if (archived) {
+    const extracted = path.join(directory, 'extracted archive');
+    await mkdir(extracted);
+    if (process.platform === 'win32') {
+      execFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', source, '-C', extracted], { stdio: 'inherit' });
+    } else {
+      execFileSync('tar', ['-xzf', source, '-C', extracted], { stdio: 'inherit' });
+    }
+    const roots = await readdir(extracted);
+    assert.equal(roots.length, 1, `an archive has one top-level directory: ${roots}`);
+    tools = path.join(extracted, roots[0]);
+  } else {
+    await cp(source, tools, { recursive: true });
+  }
+  let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
+  if (discover) {
+    // Only the compiler is on PATH; it must find the bundled tools itself.
+    const only = path.join(directory, 'path-only');
+    await mkdir(only);
+    if (process.platform !== 'win32') {
+      await symlink(compiler, path.join(only, 'tsuzuri'));
+      compiler = path.join(only, 'tsuzuri');
+    }
+    environment.PATH = only;
+    const real = await realpath(tools);
+    const info = run(compiler, ['toolchain', 'info']).stdout;
+    for (const [name, variable] of Object.entries(variables).slice(0, 2)) {
+      assert.match(info, new RegExp(`^${variable}: bundled ${(path.join(real, 'bin', name + suffix)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} `, 'm'), info);
+    }
+    console.log(info.trim());
+  } else {
+    environment.PATH = path.join(tools, 'bin');
+    for (const [name, variable] of Object.entries(variables)) {
+      environment[variable] = path.join(tools, 'bin', name + suffix);
+    }
+  }
   const project = path.join(directory, 'project # [one]');
   await mkdir(project);
   await writeFile(path.join(project, 'Main.tz'),
@@ -67,6 +102,13 @@ try {
     console.log(`Bundled WASM ${optimization}: linked and executed.`);
   }
   run(compiler, ['fmt', path.join(kernel, 'Main.tz')]);
+  if (discover) {
+    const rejected = run(compiler, ['build', kernel, '--target', 'wasm32', '--no-cache', '-o', path.join(directory, 'rejected.wasm')], {
+      env: { ...environment, TSUZURI_WASM_LD: path.join(directory, 'not-a-linker') }, expectedCode: 1,
+    });
+    assert.match(rejected.stderr, /E2002/);
+    console.log('Discovery: bundled tools found from PATH; an explicit variable still wins.');
+  }
   console.log('Relocated toolchain passed without system compiler, SDK, or PATH tools.');
 } finally {
   await rm(directory, { recursive: true, force: true });

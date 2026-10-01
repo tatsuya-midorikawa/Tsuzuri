@@ -15,6 +15,7 @@
 | `fmt INPUT` | 空白・インデントを保守的に整形 |
 | `doc INPUT -o DIRECTORY` | 公開 API の Markdown を生成 |
 | `lsp` | stdin / stdout の言語サーバー。パスやビルドオプションは付けない |
+| `toolchain info` | 選ばれた外部ツール（環境変数・配布物・`PATH` のどれか）とその版、配布物の識別子を表示。ほかの引数は付けない |
 
 ```sh
 ./target/release/tsuzuri check examples/hello/Main.tz --json
@@ -76,12 +77,20 @@ WGSL 出力は専用の制約を持ち、target / optimization / cpu / debug オ
 
 | 変数 | 用途 |
 | --- | --- |
-| `TSUZURI_CLANG` | Clang の実行ファイル。既定 clang |
+| `TSUZURI_CLANG` | Clang の実行ファイル。配布物では `bin/tsuzuri-clang`、それ以外は clang |
 | `TSUZURI_WASM_LD` | WASM linker。既定 wasm-ld |
-| `TSUZURI_LLVM_LINK` | macOS の debug runtime object 等で使う対応版 llvm-link |
-| `TSUZURI_DSYMUTIL` | macOS の debug executable の DWARF 抽出 |
+| `TSUZURI_LLVM_LINK` | macOS の debug runtime object 等で使う対応版 llvm-link。既定 llvm-link |
+| `TSUZURI_DSYMUTIL` | macOS の debug executable の DWARF 抽出。既定 dsymutil |
 | `TSUZURI_CACHE_DIR` | 専用成果物 cache の保存先 |
 | `TSUZURI_CPU_FORCE` | テスト用 baseline / sse4.2 / avx2 強制。初回呼び出し前だけ設定 |
+
+4 つのツールは、環境変数（空文字列も設定済みとみなす）→ 配布物の `bin/` → `PATH` の順に決めます。配布物は、実行ファイルの実体（symlink を解決したパス）の 2 段上に `manifest.json` があるディレクトリです。開発用ビルド（`target/release/tsuzuri`）は配布物とみなしません。
+
+```sh
+./target/release/tsuzuri toolchain info
+```
+
+各ツールの行は `<変数>: <env|bundled|path> <解決したパス> (<--version の版の行>)` の形で、見つからないツールは `(not found)` です。WASM の言語内テストが起動する `node` は常に `PATH` から探します。
 
 外部ツールはシェルを介さず起動します。ツールのパスと引数を一つの環境変数へ連結しないでください。CPU 強制は未対応・未知なら停止します。
 

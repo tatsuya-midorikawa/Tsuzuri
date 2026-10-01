@@ -126,9 +126,9 @@
 | G09 | 宣言の doc comment、公開 API Markdown、hover | [文書生成](tools/documentation.md) | [G09](../_features/_completed/G09-doc-comments.md) |
 | G10 | Windows MSVC 実装あり。Windows 実行ゲート未確認で blocked | [Windows](tools/build-and-cache.md) | [G10](../_features/G10-windows.md) |
 | G11 | フロントエンド処理後の whole-build artifact cache | [cache](tools/build-and-cache.md) | [G11](../_features/_completed/G11-incremental-build.md) |
-| G12 | 未着手（計画）: LSP の補完、rename、参照、整形、inlay hints | [LSP](tools/editor-tools.md) | [G12](../_features/G12-lsp-extensions.md) |
+| G12 | 対応（Phase 1）: LSP の参照・rename・workspace symbol・補完・signature help・semantic tokens・quick fix・整形。inlay hints は計画 | [LSP](tools/editor-tools.md) | [G12](../_features/_completed/G12-lsp-extensions.md) |
 | G13 | 未着手（計画）: REPL と単一ファイルのスクリプト実行 | [CLI](tools/command-line.md) | [G13](../_features/G13-repl.md) |
-| G14 | 未着手（計画）: CLI 向けの自己完結ツールチェーンの配布 | [ビルド](tools/build-and-cache.md) | [G14](../_features/G14-toolchain-distribution.md) |
+| G14 | 対応（Phase 1）: コンパイラ・Clang・LLD・SDK/libc をまとめた CLI 配布物、`toolchain info`。署名・公証・Release 公開は計画、Windows は未検証 | [ビルド](tools/build-and-cache.md) | [G14](../_features/_completed/G14-toolchain-distribution.md) |
 | G15 | 未着手（計画）: クロスコンパイルと対応ターゲットの階層 | [ビルド](tools/build-and-cache.md) | [G15](../_features/G15-platform-targets.md) |
 | G16 | 未着手（計画）: LLDB の型表示、PDB | [デバッグ](tools/debugging.md) | [G16](../_features/G16-debugger-experience.md) |
 | G17 | 未着手（計画）: 並列コード生成、モジュール単位の解析キャッシュ、上限の見直し | [cache](tools/build-and-cache.md) | [G17](../_features/G17-incremental-compilation.md) |

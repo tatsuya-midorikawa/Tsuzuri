@@ -1756,8 +1756,46 @@ pub fn run_with_diagnostics(
     Ok(messages)
 }
 
+/// Where a compiler tool was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolSource {
+    Env,
+    Bundled,
+    Path,
+}
+
+/// The distribution root two levels above the compiler, marked by `manifest.json`.
+pub fn distribution_root() -> Option<PathBuf> {
+    let executable = fs::canonicalize(env::current_exe().ok()?).ok()?;
+    let root = executable.parent()?.parent()?;
+    root.join("manifest.json")
+        .is_file()
+        .then(|| root.to_path_buf())
+}
+
+/// Resolves a tool from its variable (even when empty), the distribution, then `PATH`.
+pub fn resolve_tool(variable: &str, fallback: &str) -> (ToolSource, OsString) {
+    if let Some(value) = env::var_os(variable) {
+        return (ToolSource::Env, value);
+    }
+    let name = if variable == "TSUZURI_CLANG" {
+        "tsuzuri-clang"
+    } else {
+        fallback
+    };
+    if let Some(root) = distribution_root() {
+        let path = root
+            .join("bin")
+            .join(format!("{name}{}", env::consts::EXE_SUFFIX));
+        if path.is_file() {
+            return (ToolSource::Bundled, path.into_os_string());
+        }
+    }
+    (ToolSource::Path, fallback.into())
+}
+
 fn tool(variable: &str, fallback: &str) -> OsString {
-    env::var_os(variable).unwrap_or_else(|| fallback.into())
+    resolve_tool(variable, fallback).1
 }
 
 fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {

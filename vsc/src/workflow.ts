@@ -30,13 +30,12 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 	context.subscriptions.push(diagnostics);
 	const diagnosticsByRoot = new Map<string, vscode.Uri[]>();
 	let debuggerInstallation: PromiseLike<void> | undefined;
-	async function ensureDebugger(resource?: vscode.Uri) {
+	async function ensureDebugger() {
 		if (!supportsDebug()) {
 			throw new Error('Source debugging is not yet available on Windows ARM64. Editing, checking, building, running, and testing are supported.');
 		}
 		if (!vscode.extensions.getExtension('vadimcn.vscode-lldb')) {
-			const tools = await toolchain(context, resource);
-			const archive = path.join(tools.root, 'codelldb.vsix');
+			const archive = vscode.Uri.joinPath(context.extensionUri, 'resources', 'codelldb.vsix').fsPath;
 			const source = await exists(archive) ? vscode.Uri.file(archive) : 'vadimcn.vscode-lldb';
 			debuggerInstallation ??= vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Tsuzuri: Installing CodeLLDB' },
 				async () => { await vscode.commands.executeCommand('workbench.extensions.installExtension', source); }).then(() => undefined);
@@ -152,7 +151,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 	async function debugConfiguration(folder: vscode.WorkspaceFolder | undefined, configuration: vscode.DebugConfiguration,
 		token: vscode.CancellationToken): Promise<vscode.DebugConfiguration | undefined> {
 		try {
-			await ensureDebugger(folder?.uri);
+			await ensureDebugger();
 			if (!await vscode.workspace.saveAll(false)) { return undefined; }
 			const root = configuration.project ? path.resolve(folder?.uri.fsPath ?? '', configuration.project)
 				: await projectFor(folder?.uri);

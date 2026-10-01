@@ -14,7 +14,7 @@ function assertFileUri(uri, path) {
   assert.deepEqual([actual.dev, actual.ino], [expected.dev, expected.ino]);
 }
 
-async function session(encoding) {
+function connect(encoding) {
   const child = spawn(compiler, ["lsp"], { stdio: ["pipe", "pipe", "pipe"] });
   const messages = [];
   const waiters = [];
@@ -68,6 +68,12 @@ async function session(encoding) {
     const prefix = source.slice(0, offset).split("\n");
     return { line: prefix.length - 1, character: encoding === "utf-8" ? Buffer.byteLength(prefix.at(-1)) : prefix.at(-1).length };
   }
+  return { child, exited, waiters, wait, request, notify, position, get errors() { return errors; }, get nextId() { return nextId; } };
+}
+
+async function session(encoding) {
+  const connection = connect(encoding);
+  const { child, exited, waiters, wait, request, notify, position } = connection;
   const path = join(root, "Main.tz");
   const mainUri = pathToFileURL(path).href;
   const uri = process.platform === "win32"
@@ -133,7 +139,7 @@ async function session(encoding) {
     assert.equal(badUri.error.code, -32602);
     const badPosition = await request("textDocument/hover", { textDocument: { uri }, position: { line: 1000, character: 0 } });
     assert.equal(badPosition.error.code, -32602);
-    notify("$/cancelRequest", { id: nextId });
+    notify("$/cancelRequest", { id: connection.nextId });
     assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: { line: 0, character: 0 } })).error.code, -32800);
     notify("textDocument/didClose", { textDocument: { uri: extraUri } });
     const closed = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === extraUri && message.params.version === undefined, "diagnostics for closed Extra.tz");
@@ -143,8 +149,8 @@ async function session(encoding) {
     assert.equal((await request("textDocument/documentSymbol", { textDocument: { uri } })).error.code, -32600);
     notify("exit", {});
     child.stdin.end();
-    assert.equal(await exited, 0, errors);
-    assert.equal(errors, "");
+    assert.equal(await exited, 0, connection.errors);
+    assert.equal(connection.errors, "");
     console.log(`lsp: ${encoding} session passed`);
   } finally {
     for (const waiter of waiters) clearTimeout(waiter.timer);
@@ -152,5 +158,86 @@ async function session(encoding) {
   }
 }
 
-try { await session("utf-16"); await session("utf-8"); }
+const range = (line, start, end) => ({ start: { line, character: start }, end: { line, character: end } });
+
+/** Decodes relative semantic tokens into absolute [line, start, length, type, modifiers] rows. */
+function decode(data) {
+  const rows = [];
+  let line = 0;
+  let start = 0;
+  for (let index = 0; index < data.length; index += 5) {
+    line += data[index];
+    start = data[index] === 0 ? start + data[index + 1] : data[index + 1];
+    rows.push([line, start, ...data.slice(index + 2, index + 5)]);
+  }
+  return rows;
+}
+
+async function features(encoding) {
+  const connection = connect(encoding);
+  const { child, exited, waiters, wait, request, notify, position } = connection;
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "tsuzuri-lsp-features-")));
+  const main = "def read :: i64 -> i64\nfn read number = { let text = \"\u65e5\u{1f600}\"; let result = number + text.length; result }\n"
+    + "def point :: Shapes.Point -> i64\nfn point value = value.x\ndef twice :: i64 -> i64\nfn twice n = read (read n)\n";
+  const shapes = "record Point { x: i64 }\n";
+  const warn = "fn warn() -> i64 { let spare = 1; 2 }\n";
+  const files = { "Main.tz": main, "Shapes.tz": shapes, "Warn.tz": warn };
+  const uris = {};
+  const shift = encoding === "utf-8" ? 4 : 0;
+  try {
+    for (const [name, text] of Object.entries(files)) {
+      writeFileSync(join(directory, name), text);
+      uris[name] = pathToFileURL(join(directory, name)).href;
+    }
+    const initialized = await request("initialize", { rootUri: pathToFileURL(directory).href, capabilities: encoding === "utf-8" ? { general: { positionEncodings: ["utf-8"] } } : {} });
+    assert.equal(initialized.result.capabilities.renameProvider.prepareProvider, true);
+    notify("initialized", {});
+    for (const [name, text] of Object.entries(files)) {
+      notify("textDocument/didOpen", { textDocument: { uri: uris[name], languageId: "tsuzuri", version: 1, text } });
+    }
+    const document = (name) => ({ uri: uris[name] });
+    const references = await request("textDocument/references", { textDocument: document("Main.tz"), position: position(main, "number ="), context: { includeDeclaration: true } });
+    assert.deepEqual(references.result, [{ uri: uris["Main.tz"], range: range(1, 8, 14) }, { uri: uris["Main.tz"], range: range(1, 50 + shift, 56 + shift) }]);
+    const highlights = await request("textDocument/documentHighlight", { textDocument: document("Main.tz"), position: position(main, "result =") });
+    assert.deepEqual(highlights.result, [{ range: range(1, 41 + shift, 47 + shift), kind: 3 }, { range: range(1, 72 + shift, 78 + shift), kind: 2 }]);
+    const renamed = await request("textDocument/rename", { textDocument: document("Main.tz"), position: position(main, "result ="), newName: "total" });
+    assert.deepEqual(renamed.result, { changes: { [uris["Main.tz"]]: [{ range: range(1, 41 + shift, 47 + shift), newText: "total" }, { range: range(1, 72 + shift, 78 + shift), newText: "total" }] } });
+    const field = await request("textDocument/rename", { textDocument: document("Shapes.tz"), position: position(shapes, "x:"), newName: "y" });
+    assert.deepEqual(field.result, { changes: { [uris["Main.tz"]]: [{ range: range(3, 23, 24), newText: "y" }], [uris["Shapes.tz"]]: [{ range: range(0, 15, 16), newText: "y" }] } });
+    notify("textDocument/didChange", { textDocument: { uri: uris["Main.tz"], version: 2 }, contentChanges: [{ text: main.replace("= value.x", "= value.") }] });
+    const completed = await request("textDocument/completion", { textDocument: document("Main.tz"), position: { line: 3, character: 23 } });
+    assert.deepEqual(completed.result, { isIncomplete: false, items: [{ label: "x", kind: 5, detail: "x: i64", sortText: "2_x" }] });
+    notify("textDocument/didChange", { textDocument: { uri: uris["Main.tz"], version: 3 }, contentChanges: [{ text: main }] });
+    const signature = await request("textDocument/signatureHelp", { textDocument: document("Main.tz"), position: position(main, "n)") });
+    assert.deepEqual(signature.result, { signatures: [{ label: "read (number: i64) -> i64", parameters: [{ label: "number: i64" }] }], activeSignature: 0, activeParameter: 0 });
+    const shapeTokens = await request("textDocument/semanticTokens/full", { textDocument: document("Shapes.tz") });
+    assert.deepEqual(shapeTokens.result, { data: [0, 7, 5, 1, 1, 0, 8, 1, 4, 1] });
+    const mainTokens = await request("textDocument/semanticTokens/full", { textDocument: document("Main.tz") });
+    assert.deepEqual(decode(mainTokens.result.data).filter((row) => row[0] === 1), [
+      [1, 3, 4, 8, 1], [1, 8, 6, 10, 1], [1, 23, 4, 9, 1], [1, 41 + shift, 6, 9, 1],
+      [1, 50 + shift, 6, 10, 0], [1, 59 + shift, 4, 9, 0], [1, 72 + shift, 6, 9, 0],
+    ]);
+    const published = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === uris["Warn.tz"] && message.params.diagnostics.length > 0, "W1001 for Warn.tz");
+    const actions = await request("textDocument/codeAction", { textDocument: document("Warn.tz"), range: range(0, 0, 37), context: { diagnostics: [], only: ["quickfix"] } });
+    assert.equal(actions.result.length, 1);
+    assert.equal(actions.result[0].title, "Prefix 'spare' with '_'");
+    assert.deepEqual(actions.result[0].diagnostics, published.params.diagnostics);
+    assert.deepEqual(actions.result[0].edit, { changes: { [uris["Warn.tz"]]: [{ range: range(0, 23, 28), newText: "_spare" }] } });
+    const formatted = await request("textDocument/formatting", { textDocument: document("Warn.tz"), options: { tabSize: 4, insertSpaces: true } });
+    assert.deepEqual(formatted.result, []);
+    for (const [name, text] of Object.entries(files)) assert.equal(readFileSync(join(directory, name), "utf8"), text);
+    assert.equal((await request("shutdown")).result, null);
+    notify("exit", {});
+    child.stdin.end();
+    assert.equal(await exited, 0, connection.errors);
+    assert.equal(connection.errors, "");
+    console.log(`lsp: ${encoding} features passed`);
+  } finally {
+    for (const waiter of waiters) clearTimeout(waiter.timer);
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+try { await session("utf-16"); await session("utf-8"); await features("utf-16"); await features("utf-8"); }
 finally { rmSync(root, { recursive: true, force: true }); }

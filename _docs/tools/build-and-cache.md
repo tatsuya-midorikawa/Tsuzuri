@@ -22,6 +22,7 @@ native と WASM の成果物には LLVM / Clang 17 以降、WASM には wasm-ld 
 | 環境 | 条件・現在の状態 |
 | --- | --- |
 | macOS / Linux native | 通常の LLVM とシステム開発環境。POSIX Task は pthread |
+| 配布物（darwin / linux の arm64・x64） | コンパイラ・Clang・LLD・Zig の SDK/libc を同梱し、LLVM の別途導入が不要。darwin-arm64 は実機で検証。ほかは CI の同じ検査で確認する。導入手順は[はじめに](../get-started.md#配布物を使う) |
 | wasm32 | Clang / LLD と対応 WASM engine。既定は SIMD / threads 不要 |
 | x86_64 Windows MSVC | 実装・専用 CI・実 SDK による cross-link は存在。Windows 上の実行ゲートは未確認 |
 
@@ -58,6 +59,8 @@ TSUZURI_CACHE_DIR="$PWD/target/tsuzuri-build-cache" ./target/release/tsuzuri bui
 ## キーと検証
 
 コンパイラ実行ファイル、外部ツール本体と版、ソースと manifest、設定、生成 IR、関連環境を SHA-256 で識別します。同じ Git commit でも異なる開発版 compiler は区別します。native CPU 設定や、macOS debug executable の出力先依存も考慮します。
+
+外部ツールは環境変数 → 配布物の `bin/` → `PATH` の順に決め（[CLI](command-line.md#ツールと環境変数)）、key には解決後のパス・digest・`--version` を含めます。同梱のツールと `PATH` のツールでは key が変わり、成果物を取り違えません。
 
 hit でも各ファイルのサイズ・digest・権限を検査し、通常の出力保護を通して公開します。trap table や DWARF などの sidecar も対象です。破損、欠落、未知形式は miss として再生成します。
 

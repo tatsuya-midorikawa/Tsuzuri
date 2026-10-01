@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | G07, G20 |
 | 後続 | A15 Phase 2, G13 |
-| 状態 | todo |
+| 状態 | done（Phase 1） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要 |
-| 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: IDE 支援が発展途上（[同](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: IDE 支援が発展途上（[同](../../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | 要求の処理: `src/lsp.rs` の `Session::handle` の hover・definition・documentSymbol を処理する arm（`Session::refresh`、`PositionMapper::offset`・`range`、`SemanticIndex::at`）。索引の収集: `src/semantic.rs` の `collect`・`SemanticIndex::symbol`・`type_entry`・`type_target`。整形の安全検査: `src/formatter.rs` の `format_source`（`ast_fingerprint` の一致）。テスト: `tests/lsp.rs` の `semantic_index_preserves_source_types_and_definitions`、`tests/lsp_sessions.mjs` の `session`・`request`・`position` |
 | 主な影響ファイル | `src/lsp.rs`, `src/semantic.rs`, `src/check.rs`（名前の使用位置の side table だけ）, `src/control.rs`（record pattern・case pattern の使用位置だけ）, `src/lib.rs`（変更なし。`analyze_modules_with_semantics` を使う）, `src/formatter.rs`・`src/lexer.rs`（変更なし。`format_source`・`lex_all` を呼ぶ）, `tests/lsp.rs`, `tests/lsp_sessions.mjs`, `vsc/README.md`（`vsc/package.json`・`vsc/src/extension.ts` は変更なし。D8）, `README.md`, `_docs/tools/editor-tools.md`, `docs/architecture.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -648,3 +648,57 @@ P1 の 2 行目は `日`（UTF-16 で 1、UTF-8 で 3）と `😀`（2 と 4）�
   `arg<i>`（1 始まり）。parameter の label は文字列で、trigger は空白と `(`、retrigger は `,`。
 - 理由: 引数名が一意なので文字列 label が label 内で一意に定まり、UTF-16 の offset 計算が要らない。空白の適用がカリー化の段を表す。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-01）
+
+Phase 1 の 8 機能（手順 1–14）を実装した。Phase 2（inlay hint など）は対象外のまま。着手時の HEAD は `1e4c2ba`（G20 は done）。
+
+### 実装
+
+- `src/check.rs`・`src/control.rs`: `NameTarget` と `Checker::indexing`・`name_uses`。record 名・フィールド・case・`Union.Case` の修飾を
+  `note_name`／`note_case`／`note_case_path`（いずれも `#[inline(never)]`）で記録する。索引ありの解析だけが push する。
+- `src/semantic.rs`: `Definition`・`Reference`・`Role`・`SymbolKind`・`LocalScope`・`receivers` と `occurrence_at`・`occurrences`。
+  宣言の定義を先に作る `define_declarations` と、本体ごとの `index_function` に分けた。
+- `src/lib.rs`: `analyze_inputs_semantic`（新規。`analyze_inputs_indexed_all` を呼んだ後に `SemanticIndex::retain_spelled`）。
+- `src/lsp.rs`: 8 メソッド、`Session::document`・`good`（D6）・`ProjectState::diagnostics`、`StaleMap`、`function_heads`（A2）、
+  `verify_edits`（D5）、`call_context`（signature help の token 走査）、`semantic_tokens`、`format_document`。
+- `tests/lsp.rs`（21 件。Windows 専用の 1 件を含めると 22 件）、`src/lsp.rs` の単体テスト 3 件、`tests/lsp_sessions.mjs` の `connect`・`features`（S1–S10）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+- `NameTarget::Local(usize)` を足した。checker は OR パターンの 2 つ目以降の alternative に 1 つ目と同じ `Local` を使うので（`match_value`）、
+  「別の Local」を前提にした A1 の規則では 2 つ目の束縛名が索引から落ちる。その名前を `Declaration` の参照として記録する。
+- 定数の参照は `Call(Function, [])` で、callee の span が `Span::default()` だった（`polymorph.rs` の `Checker::function`）。この形は外側の span を使う。
+- 型式の参照は、宣言（record・union・型別名・const・関数・extern・class の method・instance）に加え、関数本体の `let` の型注釈・`as`・`new` の型も
+  集める（本体の型注釈は hover の項目を足さない）。型別名の使用は、末尾の区切りが record／union の名前と一致しないので参照にしない（D4）。
+- 索引の全参照を、ソースの該当範囲が定義名と一致するものだけに絞る（`retain_spelled`）。生成コードの span による誤った参照を除く安全策。
+  `analyze_inputs_indexed_all` 内で行うと、その frame が parser の再帰の下にあるため `bounds_type_growing_polymorphic_recursion` が 2 MiB の stack で
+  overflow した。別関数 `analyze_inputs_semantic` に出して解消した（上限・stack は変えていない）。
+- `def`・`fn` の head（A2）は `lsp.rs` の `analyze`（`refresh` と D5 の共通処理）で索引へ足す。`function_heads` は括弧の深さ 0 の token だけを見る
+  （PR #3 のレビュー対応。class・instance の `{}` 内の method が同名のモジュール関数の宣言として数えられ、参照・rename が誤った span を含んでいた）。
+- completion のメンバー文脈 (b) は、union の出現が入力中で索引にないとき、同じモジュール（修飾があればそのモジュール）の同名の union を名前で引く。
+  signature help の head も同様に名前で引く。どちらも別モジュールの `private` な宣言は引かない（PR #3 のレビュー対応）。
+  `(` の直後のように `(` の中に head がないときは、外側の呼び出しの入力中の引数として数える（`read (|` が `read` の 0 番）。
+- `scripted`（`tests/lsp.rs`）は通知も含むメッセージ列を受け取る形にした（completion の D6 の試験で `didChange` を挟むため）。
+
+### 確認
+
+- `cargo test --locked --test lsp`: 21 passed（レビュー対応の `stale_fallbacks_hide_private_declarations_of_other_modules` を含む。修正前の
+  `src/lsp.rs` では失敗することを確かめた）。`cargo test --locked --lib lsp::`: 5 passed（新規 3 件）。
+- `cargo test --locked`: 全 56 suite 成功。`cargo fmt --all -- --check`・`cargo clippy --all-targets --locked -- -D warnings`: 成功。
+- stack の回帰 3 件（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・
+  `bounds_nested_builder_expansion_not_just_source_syntax`）: 各 1 passed。
+- `node tests/lsp_sessions.mjs target/release/tsuzuri`: utf-16／utf-8 の既存 session と features（S1–S10）の 4 つが成功。
+- 生成 IR・ランタイム・既定の WASM import は変更なし（`semantic_index_preserves_source_types_and_definitions` が索引ありとなしの IR の一致を確認）。
+- 性能（合否にしない）: 200 ファイル × 50 関数の生成 project、release build、didChange 直後（`refresh` を含む）の 9 回の中央値で
+  references 390 ms、rename 888 ms（D5 の再解析を含む）、completion 393 ms。VS Code の統合試験を並行して実行していた時の値で、性能の主張はしない。
+
+### 残作業
+
+- VS Code での目視確認（手順 14 の後半）は未実施。`vsc` の `npm test` は hover・outline・定義・診断の段まで成功し、次の
+  `vscode.executeCompletionItemProvider` で応答が返らず止まった。新しい capability をすべて隠す proxy を挟んだ場合も、HEAD の拡張機能（一時的な
+  worktree）でも同じ段で止まるため、この変更ではなく作業機の状態（load average 約 37、login shell の起動 15 秒で VS Code の shell 環境の解決が
+  時間切れ）によると判断した。LSP の通信を記録し、サーバーがすべての要求に応答していることを確かめた。負荷の低い環境か CI で
+  `npm test`・`npm run test:installed` を再実行する。
+- D1 の見直し提案（依存欄を `G07, (G20)` にする）は、G20 が done になったため不要になった。
+- コミットは作っていない。

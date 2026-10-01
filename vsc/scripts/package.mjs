@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { createVSIX, listFiles } from '@vscode/vsce';
+import { debuggerChecksums } from './toolchain.mjs';
 
 const require = createRequire(import.meta.url);
 const yauzl = require('yauzl');
@@ -18,6 +19,10 @@ await mkdir(path.dirname(output), { recursive: true });
 async function verifyArchive(file) {
   const tools = JSON.parse(await readFile(path.join(extension, 'toolchain', 'manifest.json'), 'utf8'));
   const expected = new Map(tools.files.map(item => [`extension/toolchain/${item.path}`, item]));
+  // CodeLLDB is outside the toolchain manifest; check it against the pinned release digest.
+  if (debuggerChecksums[target]) {
+    expected.set('extension/resources/codelldb.vsix', { sha256: debuggerChecksums[target] });
+  }
   const required = new Set(['extension/dist/extension.js', 'extension/package.json', 'extension/language-configuration.json',
     `extension/${manifest.icon}`,
     'extension/syntaxes/tsuzuri.tmLanguage.json', 'extension/snippets/tsuzuri.json', 'extension/resources/completions.json',
@@ -30,7 +35,7 @@ async function verifyArchive(file) {
         required.delete(entry.fileName);
         const record = expected.get(entry.fileName);
         if (!record) { zip.readEntry(); return; }
-        if (entry.uncompressedSize !== record.size) { zip.close(); reject(new Error(`Wrong archive size: ${entry.fileName}`)); return; }
+        if (record.size !== undefined && entry.uncompressedSize !== record.size) { zip.close(); reject(new Error(`Wrong archive size: ${entry.fileName}`)); return; }
         if (process.platform !== 'win32' && /extension\/toolchain\/(?:bin\/|zig\/zig$)/.test(entry.fileName)
           && !((entry.externalFileAttributes >>> 16) & 0o111)) {
           zip.close(); reject(new Error(`Archive lost executable permissions: ${entry.fileName}`)); return;
@@ -58,7 +63,7 @@ async function verifyArchive(file) {
 
 if (process.argv.includes('--scan')) {
   const files = (await listFiles({ cwd: extension, dependencies: false }))
-    .filter(file => !file.startsWith('toolchain/') && !/\.(jpg|jpeg|png|gif|svg)$/i.test(file))
+    .filter(file => !file.startsWith('toolchain/') && !/\.(jpg|jpeg|png|gif|svg|vsix)$/i.test(file))
     .map(file => path.join(extension, file));
   const scanned = await lintFiles(files, true, true);
   if (!scanned.ok) {

@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-CLI の整形と、エディター向けの言語サーバーを提供します。どちらもソースの意味を変えないことを優先し、現在の提供範囲を超える補完やリファクタリングは行いません。
+CLI の整形と、エディター向けの言語サーバーを提供します。どちらもソースの意味を変えないことを優先します。rename と quick fix は、編集後のプロジェクトを内部で再解析して意味が変わらないことを確かめてから返します。
 
 ## フォーマッター
 
@@ -48,11 +48,29 @@ VS Code の通常設定だけで任意の言語サーバーが自動起動する
 | hover | 型と宣言に添えた説明 |
 | definition | 関数、レコード、ローカル等の定義位置 |
 | documentSymbol | ファイル内の宣言一覧 |
+| references / documentHighlight | 名前の定義と参照。`def` と `fn` の両方の宣言名を含む |
+| prepareRename / rename | ローカル、関数、const、record、union、union case、フィールドの名前変更 |
+| workspace/symbol | 解析済みプロジェクトの宣言を名前の部分一致で検索 |
+| completion | `.` の後のフィールド・モジュールのメンバー・union case、見えているローカル、同じモジュールの宣言、モジュール名、予約語 |
+| signatureHelp | 呼び出し中の関数の引数と、入力中の引数の位置（カリー化した適用は空白区切りで数える） |
+| semanticTokens/full | 名前の出現だけを色分けする。予約語・リテラル・コメントは TextMate 文法に任せる |
+| codeAction | `W1001`（未使用のローカル）に `_` を前置する quick fix |
+| formatting | CLI の `tsuzuri fmt` と同じ結果で文書全体を置き換える。構文エラーのときは何も返さない |
 | cancelRequest、shutdown / exit | リクエスト中止と終了 |
-| completion、rename、semanticTokens | 未提供 |
-| LSP formatting | 未提供。CLI fmt を使う |
 
-変更は短い間隔で集約して解析します。未保存の新規ソースも overlay として扱い、ディスクを書き換えません。解析失敗後に古い成功時の型情報を返し続けることはしません。
+変更は短い間隔で集約して解析します。未保存の新規ソースも overlay として扱い、ディスクを書き換えません。解析失敗後に古い成功時の型情報を hover・definition・references・rename で返すことはしません。入力中で解析に失敗している間は、completion・signatureHelp・semanticTokens だけが直前に成功した解析を、変更されていない前後のテキストに写して使います。
+
+### rename と quick fix の制限
+
+次の場合は rename を拒否し、理由をエラーで返します。
+
+- プロジェクトにエラーがある。
+- 標準ライブラリの定義、`export` した関数（export 名は ABI の一部）。
+- 型別名、class、method、extern、test、モジュール（未対応）。
+- 新しい名前が識別子でない、予約語である、同じ名前空間の定義や見えているローカルと衝突する。
+- 10,000 か所を超える変更、または再解析で診断が増える・名前の結び付きが変わる変更。
+
+quick fix はサーバーが公開した診断だけから作り、同じ検査を通ったものだけを返します。
 
 ## root と位置の単位
 
@@ -60,7 +78,7 @@ client が通知した workspace root のうち、対象ファイルを含む最
 
 client が UTF-8 position を提案すれば UTF-8 を使い、そうでなければ LSP 既定の UTF-16 code unit を使います。位置の行・character は LSP の 0 始まりです。CLI の 1 始まりの Unicode 文字列 column をそのまま送らないでください。
 
-ライブラリの補完、rename、workspace 全体のリファクタリングが利用可能という意味ではありません。サーバーが公開する capability に従ってクライアント機能を有効にします。
+inlay hint、call hierarchy、関数の抽出などの自動リファクタリング、project root をまたぐ rename は提供しません。サーバーが公開する capability に従ってクライアント機能を有効にします。
 
 ## 関連項目
 

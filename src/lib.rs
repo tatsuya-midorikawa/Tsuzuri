@@ -164,6 +164,17 @@ pub(crate) fn analyze_inputs_indexed_all(
     check::check_modules_indexed_all(&modules, semantic)
 }
 
+/// Checks `inputs` and fills `index`, keeping only references spelled in the sources.
+pub(crate) fn analyze_inputs_semantic(
+    inputs: &[SourceInput<'_>],
+    index: &mut check::semantic::SemanticIndex,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    let checked = analyze_inputs_indexed_all(inputs, Some(&mut *index));
+    let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
+    index.retain_spelled(&texts);
+    checked
+}
+
 pub fn analyze_modules_with_semantics(
     sources: &[(&str, &str)],
 ) -> Result<(check::CheckedModule, check::semantic::SemanticIndex), DiagnosticSet> {
@@ -181,7 +192,7 @@ pub fn analyze_modules_with_semantics(
         }))
         .collect();
     let mut index = check::semantic::SemanticIndex::default();
-    let module = analyze_inputs_indexed_all(&inputs, Some(&mut index))?;
+    let module = analyze_inputs_semantic(&inputs, &mut index)?;
     Ok((module, index))
 }
 

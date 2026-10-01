@@ -30,6 +30,32 @@ Linux ではディストリビューションの Clang / LLD と Rust を用意�
 
 Windows 向けには x86_64 MSVC ABI の実装がありますが、現時点では Windows 上の実行検証が完了していません。Windows SDK、Visual Studio Build Tools、LLVM が必要です。詳細な条件は[リポジトリのビルド手順](../README.md#ビルド)を参照してください。
 
+### 配布物を使う
+
+LLVM を導入しない場合は、コンパイラ・Clang・LLD・リンク用の SDK/libc をまとめたホスト別の配布物 `tsuzuri-<version>-<host>.tar.gz`（Windows は `.zip`）と、そのチェックサム `.sha256` を使えます。VS Code 拡張機能の VSIX と同じツールチェーンです。
+
+macOS・Linux では、archive と `.sha256` を同じディレクトリへ取得してから次を実行します。導入先は例です。
+
+```sh
+v=0.1.0 host=darwin-arm64
+shasum -a 256 -c "tsuzuri-$v-$host.tar.gz.sha256"   # Linux は sha256sum -c
+mkdir -p "$HOME/.local/share/tsuzuri" "$HOME/.local/bin"
+tar -xzf "tsuzuri-$v-$host.tar.gz" -C "$HOME/.local/share/tsuzuri"
+ln -sf "$HOME/.local/share/tsuzuri/tsuzuri-$v-$host/bin/tsuzuri" "$HOME/.local/bin/tsuzuri"
+tsuzuri toolchain info
+```
+
+- `PATH` に置くのは `tsuzuri` の symlink だけにします。配布物の `bin/` を `PATH` へ足すと、同梱の `clang`・`wasm-ld` がシステムのツールを隠します。
+- コンパイラは各ツールを環境変数（`TSUZURI_CLANG` など）→ 配布物の `bin/` → `PATH` の順に探します。`tsuzuri toolchain info` は選ばれたツールと配布物の識別子（manifest の `id`）を表示します。
+- `.sha256` は破損を検出するだけで、配布元の改ざんは検出しません。配布物はまだ署名・公証していません。
+- macOS: ブラウザーで取得したファイルには `com.apple.quarantine` が付き、公証していない実行ファイルは Gatekeeper が止めます。`curl -fLO` で取得するか、チェックサムの確認後に `xattr -dr com.apple.quarantine "$HOME/.local/share/tsuzuri/tsuzuri-$v-$host"` を実行します。
+- Linux: 同梱の LLVM は作成した環境（Ubuntu 24.04）の glibc 以上を要求します。生成した実行ファイルは Zig の musl（MIT）を静的に含むので、再配布するときは配布物の `licenses/` の表示を添えてください。
+- Windows（未検証）: `Get-FileHash -Algorithm SHA256` の値を `.sha256` と比べ、`Expand-Archive` で `%LOCALAPPDATA%\Tsuzuri\` へ展開して `bin` を利用者の `PATH` に足します。同梱の `clang` などが `PATH` の他のツールを隠す点に注意してください。
+- WASM の言語内テストには別途 Node.js が必要です。配布物に Node.js は含まれません。
+- 削除は symlink（Windows は `PATH` の項目）と展開したディレクトリを消します。必要なら[ビルドキャッシュ](tools/build-and-cache.md)も消します。複数の版は別ディレクトリに並べ、symlink を張り替えて切り替えます。
+
+検証状況: darwin-arm64 は実機で、配布物だけの環境の検査（native と WASM の `-O0`／`-O3`）を通しています。darwin-x64・linux-x64・linux-arm64 は CI の同じ検査で確認します。win32-x64・win32-arm64 の配布物は作成しますが未検証です。
+
 ## 最初のプログラム
 
 独立した作業ディレクトリの `Main.tz` に、次のようなプログラムを置きます。

@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | (G10) |
 | 後続 | G15, G16 |
-| 状態 | todo |
+| 状態 | done（Phase 1） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要。要承認: D9（macOS の公証・Windows の Authenticode 署名）, D10（配布物の署名・来歴証明と GitHub Releases への自動公開）, D11（Node.js の同梱）。いずれも Phase 2 |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: VS Code 拡張以外では LLVM・Clang・LLD・Node.js を利用者が別途導入する必要がある（rustup や .NET SDK に相当する一括導入がない） |
@@ -686,3 +686,58 @@ script の場所だけが変わる。
 - 決定: 新しい workflow を作らず、`.github/workflows/vscode.yml` の job `package` に 3 step と `paths` の 1 行を足す。artifact 名は `tsuzuri-cli-<target>`。
 - 理由: 同じ job が既に toolchain を作るので、追加は archive と smoke の数分だけで済む。trigger・権限は変えない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-01）
+
+Phase 1（手順 1–12）を実装した。D9（公証・Authenticode）、D10（署名・来歴証明・Release への公開）、D11（Node.js の同梱）、D12（導入スクリプト）は
+実装していない。着手時の HEAD は `1e4c2ba`。
+
+### 実装
+
+- `scripts/toolchain/bundle.mjs`（新規）: `vsc/scripts/toolchain.mjs` の同梱処理を移して export。destination を引数にし、stage・backup は
+  `path.dirname(destination)` に作る。CodeLLDB を除き、`licenses/musl-COPYRIGHT.txt`・`licenses/rust-crates.txt`・`licenses/crate-*`（D6）と
+  manifest の `toolVersions` を足した。manifest から `debugger` を除いた。
+- `scripts/toolchain/clang.rs`・`smoke.mjs`: `git mv`。shim の内容は変えていない。smoke は第 1 引数を必須にし、`.tar.gz`／`.zip` を展開して試す。
+  `--discover` は `TSUZURI_*` を設定せず、`PATH` に compiler の symlink だけを置き、`toolchain info` の `bundled` と、変数が同梱に勝つこと（E2002）を確かめる。
+- `scripts/toolchain/archive.mjs`（新規）: verify → archive → `.sha256` → 展開して再 verify と manifest の `id` の一致。
+- `vsc/scripts/toolchain.mjs`: `resources` と CodeLLDB（`resources/codelldb.vsix`）だけを残し、`bundle(<vsc>/toolchain)` を呼ぶ。
+  `vsc/src/workflow.ts` は `context.extensionUri` の `resources/codelldb.vsix` を使う（`ensureDebugger` の未使用の引数を除いた）。
+  `vsc/scripts/package.mjs` の secret scan は `.vsix` を除外し、代わりに VSIX の検証で `extension/resources/codelldb.vsix` を
+  `debuggerChecksums`（`vsc/scripts/toolchain.mjs` から export）の固定 SHA-256 と照合する（対応 host だけ。PR #3 のレビュー対応）。
+  `vsc/scripts/toolchain.mjs` は直接実行されたときだけ処理を走らせる。`vsc/package.json` の `test:toolchain` は共有の smoke を使う。
+- `src/driver.rs`: `ToolSource`・`distribution_root`・`resolve_tool`。`src/cache.rs` の key は `resolve_tool` を使い、`executable_path` を `pub` にした。
+- `src/main.rs`: `tsuzuri toolchain info`（引数がちょうど 2 つのときだけ）と `HELP`。
+- `tests/toolchain.rs`（新規）: 6 件。`.github/workflows/vscode.yml`: `paths` と 3 step。
+
+### 決定事項への追記（チケットから外れた判断）
+
+- `toolchain info` の `--version` は、空の一時ディレクトリを作業ディレクトリにして実行し、終わったら消す。同梱の `tsuzuri-clang --version` は
+  `zig cc --version` まで進み、作業ディレクトリに `a.o` を残すため（shim の不具合で、G14 では shim を変えない）。cache key の `--version` は従来どおり。
+- `tests/toolchain.rs` の helper `info` は `PATH` を引数で受け取る（`prefers_bundled_tools_over_path` が `PATH` に空の `clang` を置くため）。
+
+### 確認（darwin-arm64、Node 20.17.0）
+
+- `npm run toolchain`（`LLVM_PREFIX=llvm@21`、`TSUZURI_WASM_LD=lld`）: `Verified darwin-arm64: 19585 files, c7ea54c0…`。手順 2・3 の比較で、
+  消えた path は `codelldb.vsix` だけ、増えた path は `licenses/musl-COPYRIGHT.txt`・`licenses/rust-crates.txt`・`licenses/crate-*`（15 files）だけ。
+  `toolVersions` は clang・dsymutil・llvm-link が 21.1.8、wasm-ld が Homebrew LLD 23.1.1（落とし穴の記載どおり。配る archive は CI の物）。
+  `rust-crates.txt` に `rustc_apfloat`・`serde_json` があり、`same-file` はない。
+- `npm run test:toolchain`（明示）、`node scripts/toolchain/smoke.mjs vsc/toolchain --discover`、
+  `node scripts/toolchain/smoke.mjs target/dist/tsuzuri-0.1.0-darwin-arm64.tar.gz --discover`: いずれも native `-O0`/`-O3`（`-g`・IO・言語内テスト・Task）、
+  WASM `-O0`/`-O3`、`fmt` が成功。`vsc/toolchain/bin/tsuzuri toolchain info` は 4 行とも `bundled`。
+- archive: 199,032,269 bytes（tree は約 802 MiB）。`shasum -a 256 -c` が OK、最上位は `tsuzuri-0.1.0-darwin-arm64` だけ、`._` の entry は 0。
+- `cargo test --locked --test toolchain`: 6 passed。`cargo test --locked` 全体（G12 と合わせた最終状態で 57 suite）、fmt・clippy が成功。
+  `node tests/cache.mjs target/release/tsuzuri`・`node tests/e2e.mjs target/release/tsuzuri`: 成功（開発用ビルドは HEAD と同じツールを使う）。
+- `vsc`: `npm run test:unit` が 5/5、`npm run vsix`（Node 24。型検査・lint・secret scan・archive 検証）が成功。VSIX に
+  `extension/resources/codelldb.vsix` があり、`extension/toolchain/codelldb.vsix` はない。VSIX の `toolchain/manifest.json` と CLI archive の
+  manifest は同じ `id`（`c7ea54c0…`）。`npm test` は編集支援の段の後、`vscode.executeCompletionItemProvider` で止まった。HEAD の拡張機能でも
+  同じ段で止まるため作業機の状態によると判断し（G12 の「残作業」）、`npm test` と `npm run test:installed` は未完了。CodeLLDB の導入（デバッグの段）は
+  このため実機で確かめていない。
+- レビュー対応後の `npm run vsix:verify`（Node 24）: 既存の VSIX で成功。`extension/resources/codelldb.vsix` を `zip -d` で抜いた複製では
+  `Incomplete VSIX: extension/resources/codelldb.vsix` で失敗した（確認後に元の VSIX へ戻し、`.sha256` の照合が OK）。
+- CI（手順 10）は push が要るため未実行。人間が `workflow_dispatch` で 6 個の `tsuzuri-cli-<target>` artifact を確かめる。
+
+### 残作業
+
+- CI の実行と、darwin-x64・linux-x64・linux-arm64 の「CI で検証」の確認。win32 の archive は G10 が done になるまで未検証。
+- 負荷の低い環境で `vsc` の `npm test`・`npm run test:installed` を再実行し、`resources/codelldb.vsix` からの CodeLLDB の導入を確かめる。
+- D9〜D11 の承認と Phase 2。コミットは作っていない。
