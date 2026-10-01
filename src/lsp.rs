@@ -1129,11 +1129,20 @@ fn analyze(project: &Project) -> (Option<SemanticIndex>, Vec<Diagnostic>) {
     }
 }
 
-/// Names after `def`, `fn`, `and` (skipping `rec`), and a column-0 `let`.
+/// Names after top-level `def`, `fn`, `and` (skipping `rec`), and a column-0 `let`.
 fn function_heads(source: &str) -> Vec<(String, Span)> {
     let (tokens, _) = crate::lexer::lex_all(source);
     let mut heads = Vec::new();
+    let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
+        if opens(&token.kind) {
+            depth += 1;
+        } else if closes(&token.kind) {
+            depth = depth.saturating_sub(1);
+        }
+        if depth > 0 {
+            continue;
+        }
         let introduces = match token.kind {
             TokenKind::Def | TokenKind::Fn | TokenKind::And => true,
             TokenKind::Let => {
@@ -1564,6 +1573,7 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
                     index.definitions.iter().position(|item| {
                         item.kind == SymbolKind::Union
                             && item.module == owner
+                            && (item.public || owner == module)
                             && item.name == ident(last)
                     })
                 })
@@ -1835,6 +1845,7 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     };
     let index = view.index;
     let chain = dotted_chain(&tokens, head);
+    let module = view.module().unwrap_or_default();
     let owner = if chain.len() > 1 {
         chain[..chain.len() - 1]
             .iter()
@@ -1842,12 +1853,15 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             .collect::<Vec<_>>()
             .join(".")
     } else {
-        view.module().unwrap_or_default()
+        module.clone()
     };
     let callable = |kind: SymbolKind| matches!(kind, SymbolKind::Function | SymbolKind::Extern);
     let definition = view.definition_at(tokens[head].span).or_else(|| {
         index.definitions.iter().position(|item| {
-            callable(item.kind) && item.module == owner && item.name == ident(&tokens[head])
+            callable(item.kind)
+                && item.module == owner
+                && (item.public || owner == module)
+                && item.name == ident(&tokens[head])
         })
     });
     let Some(item) = definition
@@ -2179,7 +2193,7 @@ mod tests {
 
     #[test]
     fn function_heads_find_def_fn_and_and() {
-        let source = "def rec even :: i64 -> bool\nand odd :: i64 -> bool = \\n -> n == 1\nfn even n = n == 0\nlet twice = \\x -> x\n  let inner = 1\nfn (";
+        let source = "def rec even :: i64 -> bool\nand odd :: i64 -> bool = \\n -> n == 1\nfn even n = n == 0\nlet twice = \\x -> x\n  let inner = 1\nclass Twice<'a> {\n    def twice :: 'a -> 'a\n}\ninstance Twice<i64> {\n    fn twice n = n\n    and odd n = n\n}\nfn (";
         let heads: Vec<_> = function_heads(source)
             .into_iter()
             .map(|(name, span)| (name, span.start))

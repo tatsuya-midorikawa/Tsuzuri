@@ -662,7 +662,7 @@ Phase 1 の 8 機能（手順 1–14）を実装した。Phase 2（inlay hint �
 - `src/lib.rs`: `analyze_inputs_semantic`（新規。`analyze_inputs_indexed_all` を呼んだ後に `SemanticIndex::retain_spelled`）。
 - `src/lsp.rs`: 8 メソッド、`Session::document`・`good`（D6）・`ProjectState::diagnostics`、`StaleMap`、`function_heads`（A2）、
   `verify_edits`（D5）、`call_context`（signature help の token 走査）、`semantic_tokens`、`format_document`。
-- `tests/lsp.rs`（20 件。Windows 専用の 1 件を含めると 21 件）、`src/lsp.rs` の単体テスト 3 件、`tests/lsp_sessions.mjs` の `connect`・`features`（S1–S10）。
+- `tests/lsp.rs`（21 件。Windows 専用の 1 件を含めると 22 件）、`src/lsp.rs` の単体テスト 3 件、`tests/lsp_sessions.mjs` の `connect`・`features`（S1–S10）。
 
 ### 決定事項への追記（チケットから外れた判断）
 
@@ -674,14 +674,17 @@ Phase 1 の 8 機能（手順 1–14）を実装した。Phase 2（inlay hint �
 - 索引の全参照を、ソースの該当範囲が定義名と一致するものだけに絞る（`retain_spelled`）。生成コードの span による誤った参照を除く安全策。
   `analyze_inputs_indexed_all` 内で行うと、その frame が parser の再帰の下にあるため `bounds_type_growing_polymorphic_recursion` が 2 MiB の stack で
   overflow した。別関数 `analyze_inputs_semantic` に出して解消した（上限・stack は変えていない）。
-- `def`・`fn` の head（A2）は `lsp.rs` の `analyze`（`refresh` と D5 の共通処理）で索引へ足す。
+- `def`・`fn` の head（A2）は `lsp.rs` の `analyze`（`refresh` と D5 の共通処理）で索引へ足す。`function_heads` は括弧の深さ 0 の token だけを見る
+  （PR #3 のレビュー対応。class・instance の `{}` 内の method が同名のモジュール関数の宣言として数えられ、参照・rename が誤った span を含んでいた）。
 - completion のメンバー文脈 (b) は、union の出現が入力中で索引にないとき、同じモジュール（修飾があればそのモジュール）の同名の union を名前で引く。
-  signature help の head も同様に名前で引く。`(` の直後のように `(` の中に head がないときは、外側の呼び出しの入力中の引数として数える（`read (|` が `read` の 0 番）。
+  signature help の head も同様に名前で引く。どちらも別モジュールの `private` な宣言は引かない（PR #3 のレビュー対応）。
+  `(` の直後のように `(` の中に head がないときは、外側の呼び出しの入力中の引数として数える（`read (|` が `read` の 0 番）。
 - `scripted`（`tests/lsp.rs`）は通知も含むメッセージ列を受け取る形にした（completion の D6 の試験で `didChange` を挟むため）。
 
 ### 確認
 
-- `cargo test --locked --test lsp`: 20 passed。`cargo test --locked --lib lsp::`: 5 passed（新規 3 件）。
+- `cargo test --locked --test lsp`: 21 passed（レビュー対応の `stale_fallbacks_hide_private_declarations_of_other_modules` を含む。修正前の
+  `src/lsp.rs` では失敗することを確かめた）。`cargo test --locked --lib lsp::`: 5 passed（新規 3 件）。
 - `cargo test --locked`: 全 56 suite 成功。`cargo fmt --all -- --check`・`cargo clippy --all-targets --locked -- -D warnings`: 成功。
 - stack の回帰 3 件（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・
   `bounds_nested_builder_expansion_not_just_source_syntax`）: 各 1 passed。

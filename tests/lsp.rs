@@ -399,6 +399,55 @@ fn signature_help_counts_curried_arguments() {
     assert_eq!(active, [json!(0), json!(0), json!(1), json!(1)]);
 }
 
+#[test]
+fn stale_fallbacks_hide_private_declarations_of_other_modules() {
+    use serde_json::json;
+    let main = "def run :: i64 -> i64\nfn run n = n\n";
+    let secret = "private union Hidden = Gone | Here\nunion Shown = Up | Down\nprivate def helper :: i64 -> i64\nfn helper n = n + 1\ndef open :: i64 -> i64\nfn open n = helper n\n";
+    let stale = [
+        "Secret.Hidden.",
+        "Secret.Shown.",
+        "Secret.helper ",
+        "Secret.open ",
+    ]
+    .map(|tail| main.replace("= n\n", &format!("= {tail}\n")));
+    let responses = scripted(
+        &[("Main.tz", main), ("Secret.tz", secret)],
+        "utf-16",
+        |uri| {
+            let main = uri("Main.tz");
+            let mut steps = vec![
+                json!({"id": 0, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}}),
+            ];
+            for (version, (text, method)) in stale
+                .iter()
+                .zip(["completion", "completion", "signatureHelp", "signatureHelp"])
+                .enumerate()
+            {
+                let line = text.lines().nth(1).unwrap();
+                steps.push(json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": version + 2}, "contentChanges": [{"text": text}]}}));
+                steps.push(json!({"id": version + 1, "method": format!("textDocument/{method}"), "params": {"textDocument": {"uri": main}, "position": {"line": 1, "character": line.len()}}}));
+            }
+            steps
+        },
+    );
+    let labels = |response: &serde_json::Value| -> Vec<String> {
+        response["result"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{response}"))
+            .iter()
+            .map(|item| item["label"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(labels(&responses[1]).is_empty(), "{}", responses[1]);
+    assert_eq!(labels(&responses[2]), ["Down", "Up"]);
+    assert!(responses[3]["result"].is_null(), "{}", responses[3]);
+    assert_eq!(
+        responses[4]["result"]["signatures"][0]["label"],
+        "open (n: i64) -> i64"
+    );
+}
+
 /// Decodes relative semantic tokens into absolute `[line, start, length, type, modifiers]`.
 fn decode(data: &serde_json::Value) -> Vec<[u64; 5]> {
     let data: Vec<_> = data

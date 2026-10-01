@@ -7,7 +7,7 @@ const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const destination = path.join(extension, 'toolchain');
 const codelldb = path.join(extension, 'resources', 'codelldb.vsix');
 const debuggerVersion = '1.12.3';
-const debuggerChecksums = {
+export const debuggerChecksums = {
   'darwin-arm64': '2f114a990e1b368dd1dbd33c80c0e719767af2d228391ec0df0571c957f9ac91',
   'darwin-x64': 'e25cc716b94c62c07fec268ff2785d2b797245b160502baef8b9c970a0c4d8e8',
   'linux-arm64': '0887f67d440554617894266f80706b700907c36b95e6e49d23b95a0e05318101',
@@ -77,12 +77,14 @@ async function resources() {
   console.log(`Prepared offline handbook, licenses, and ${completions.size} standard-library completions.`);
 }
 
-try {
-  if (process.argv.includes('--verify')) { await verify(destination); await verifyDebugger(); }
-  else if (process.argv.includes('--resources')) { await resources(); }
-  else { await resources(); await bundle(destination); await debuggerPackage(); await verifyDebugger(); }
-} catch (error) {
-  console.error(error);
-  process.exitCode = 1;
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    if (process.argv.includes('--verify')) { await verify(destination); await verifyDebugger(); }
+    else if (process.argv.includes('--resources')) { await resources(); }
+    else { await resources(); await bundle(destination); await debuggerPackage(); await verifyDebugger(); }
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
 }
 

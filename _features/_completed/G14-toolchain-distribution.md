@@ -702,7 +702,9 @@ Phase 1（手順 1–12）を実装した。D9（公証・Authenticode）、D10�
 - `scripts/toolchain/archive.mjs`（新規）: verify → archive → `.sha256` → 展開して再 verify と manifest の `id` の一致。
 - `vsc/scripts/toolchain.mjs`: `resources` と CodeLLDB（`resources/codelldb.vsix`）だけを残し、`bundle(<vsc>/toolchain)` を呼ぶ。
   `vsc/src/workflow.ts` は `context.extensionUri` の `resources/codelldb.vsix` を使う（`ensureDebugger` の未使用の引数を除いた）。
-  `vsc/scripts/package.mjs` の secret scan は `.vsix` を除外。`vsc/package.json` の `test:toolchain` は共有の smoke を使う。
+  `vsc/scripts/package.mjs` の secret scan は `.vsix` を除外し、代わりに VSIX の検証で `extension/resources/codelldb.vsix` を
+  `debuggerChecksums`（`vsc/scripts/toolchain.mjs` から export）の固定 SHA-256 と照合する（対応 host だけ。PR #3 のレビュー対応）。
+  `vsc/scripts/toolchain.mjs` は直接実行されたときだけ処理を走らせる。`vsc/package.json` の `test:toolchain` は共有の smoke を使う。
 - `src/driver.rs`: `ToolSource`・`distribution_root`・`resolve_tool`。`src/cache.rs` の key は `resolve_tool` を使い、`executable_path` を `pub` にした。
 - `src/main.rs`: `tsuzuri toolchain info`（引数がちょうど 2 つのときだけ）と `HELP`。
 - `tests/toolchain.rs`（新規）: 6 件。`.github/workflows/vscode.yml`: `paths` と 3 step。
@@ -730,6 +732,8 @@ Phase 1（手順 1–12）を実装した。D9（公証・Authenticode）、D10�
   manifest は同じ `id`（`c7ea54c0…`）。`npm test` は編集支援の段の後、`vscode.executeCompletionItemProvider` で止まった。HEAD の拡張機能でも
   同じ段で止まるため作業機の状態によると判断し（G12 の「残作業」）、`npm test` と `npm run test:installed` は未完了。CodeLLDB の導入（デバッグの段）は
   このため実機で確かめていない。
+- レビュー対応後の `npm run vsix:verify`（Node 24）: 既存の VSIX で成功。`extension/resources/codelldb.vsix` を `zip -d` で抜いた複製では
+  `Incomplete VSIX: extension/resources/codelldb.vsix` で失敗した（確認後に元の VSIX へ戻し、`.sha256` の照合が OK）。
 - CI（手順 10）は push が要るため未実行。人間が `workflow_dispatch` で 6 個の `tsuzuri-cli-<target>` artifact を確かめる。
 
 ### 残作業
