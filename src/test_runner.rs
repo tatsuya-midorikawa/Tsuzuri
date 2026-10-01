@@ -9,6 +9,10 @@ pub struct TestOptions {
     pub optimization: u8,
     pub filter: Option<String>,
     pub indices: Vec<usize>,
+    /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`]; only valid for WASM targets.
+    pub wasm_max_memory: Option<u64>,
+    /// `None` selects [`DEFAULT_WASM_STACK_SIZE`]; only valid for WASM targets.
+    pub wasm_stack_size: Option<u64>,
 }
 
 impl Default for TestOptions {
@@ -18,6 +22,8 @@ impl Default for TestOptions {
             optimization: 0,
             filter: None,
             indices: Vec::new(),
+            wasm_max_memory: None,
+            wasm_stack_size: None,
         }
     }
 }
@@ -62,11 +68,34 @@ fn run_with_timeout(
             "test optimization must be between 0 and 3",
         ));
     }
+    if !options.target.is_wasm()
+        && (options.wasm_max_memory.is_some() || options.wasm_stack_size.is_some())
+    {
+        return Err(driver_error(
+            "E2000",
+            "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64",
+        ));
+    }
+    wasm_memory_limits(
+        options.target,
+        options.wasm_max_memory,
+        options.wasm_stack_size,
+    )?;
     let started = Instant::now();
-    if options.target == Target::Wasm32 {
+    if options.target.is_wasm() {
         run_tool(
             Command::new("node").arg("--version"),
             "WASM tests require Node.js on PATH",
+        )?;
+    }
+    if options.target == Target::Wasm64 {
+        // Validates an empty module with one 64-bit memory.
+        run_tool(
+            Command::new("node").args([
+                "-e",
+                "process.exit(WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,5,3,1,4,0])) ? 0 : 1)",
+            ]),
+            "WASM64 tests require Node.js with memory64 support (Node.js 24 or newer)",
         )?;
     }
     let selected: Vec<_> = module
@@ -196,9 +225,19 @@ fn build_runner(
     directory: &Path,
     messages: &mut Vec<String>,
 ) -> Result<Runner, Diagnostic> {
-    let wasm = options.target == Target::Wasm32;
-    let mut text = llvm::emit_test_runner(module, selected, wasm)?;
+    let wasm = options.target.is_wasm();
+    let memory64 = options.target == Target::Wasm64;
+    let (max_memory, stack_size) = wasm_memory_limits(
+        options.target,
+        options.wasm_max_memory,
+        options.wasm_stack_size,
+    )?;
+    let mut text = llvm::emit_test_runner_for(module, selected, wasm, memory64)?;
     if wasm {
+        text = llvm::with_wasm_heap_limit(text, max_memory);
+        if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
+            text = llvm::with_stack_checks(text, false);
+        }
         text.push_str(include_str!("runtime/wasm.ll"));
     } else if cfg!(windows) {
         text = llvm::windows_abi(text, module);
@@ -227,7 +266,12 @@ fn build_runner(
         .arg(&ir);
     if wasm {
         clang
-            .args(["--target=wasm32-unknown-unknown", "-mbulk-memory", "-c"])
+            .arg(if memory64 {
+                "--target=wasm64-unknown-unknown"
+            } else {
+                "--target=wasm32-unknown-unknown"
+            })
+            .args(["-mbulk-memory", "-c"])
             .arg("-o")
             .arg(&object);
     } else {
@@ -265,17 +309,25 @@ fn build_runner(
                 "--strip-all",
                 "--stack-first",
                 "-z",
-                "stack-size=1048576",
-                "--max-memory=16777216",
+                &format!("stack-size={stack_size}"),
+                &format!("--max-memory={max_memory}"),
                 "--export=tsuzuri_test_count",
                 "--export=tsuzuri_test_run",
             ])
+            .args(memory64.then_some("-mwasm64"))
             .arg(&object)
             .arg("-o")
             .arg(&artifact);
         collect_message(
             messages,
-            run_tool(&mut linker, "WASM tests require wasm-ld or TSUZURI_WASM_LD")?,
+            run_tool(
+                &mut linker,
+                &wasm_link_hint(
+                    "WASM tests require wasm-ld or TSUZURI_WASM_LD",
+                    options.wasm_max_memory,
+                    options.wasm_stack_size,
+                ),
+            )?,
         );
         let script = directory.join("run.mjs");
         fs::write(&script, include_str!("runtime/test-runner.mjs"))

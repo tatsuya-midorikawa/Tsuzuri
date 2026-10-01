@@ -13,6 +13,8 @@ fn native_and_wasm_tests_are_isolated_filtered_and_ordered() {
                 optimization,
                 filter: None,
                 indices: Vec::new(),
+                wasm_max_memory: None,
+                wasm_stack_size: None,
             };
             let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
             assert_eq!(
@@ -49,6 +51,63 @@ fn native_and_wasm_tests_are_isolated_filtered_and_ordered() {
             );
         }
     }
+}
+
+#[test]
+fn wasm_memory_options_reach_the_wasm_test_link() {
+    let module = tsuzuri::analyze(include_str!("fixtures/wasm_memory/Main.tz")).unwrap();
+    let failures = |wasm_max_memory| {
+        tsuzuri::driver::run_tests(
+            &module,
+            &tsuzuri::driver::TestOptions {
+                target: tsuzuri::driver::Target::Wasm32,
+                wasm_max_memory,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .map(|result| result.case.name.clone())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(failures(None), ["allocates 32 MiB"]);
+    assert!(failures(Some(67108864)).is_empty());
+    // Above 2 GiB the heap compares the remaining room and functions check the stack.
+    assert!(failures(Some(4294901760)).is_empty());
+    let wasm64 = tsuzuri::driver::run_tests(
+        &module,
+        &tsuzuri::driver::TestOptions {
+            target: tsuzuri::driver::Target::Wasm64,
+            ..Default::default()
+        },
+    );
+    match wasm64 {
+        Ok(report) => assert_eq!(
+            report
+                .results
+                .iter()
+                .filter(|result| result.failure.is_some())
+                .map(|result| result.case.name.as_str())
+                .collect::<Vec<_>>(),
+            ["allocates 32 MiB"]
+        ),
+        // Node.js before 24 has no memory64; tests/wasm64.mjs covers the run on Node.js 24.
+        Err(error) => assert!(
+            error.code == "E2002" && error.message.contains("memory64 support"),
+            "{error:?}"
+        ),
+    }
+    let native = tsuzuri::driver::run_tests(
+        &module,
+        &tsuzuri::driver::TestOptions {
+            wasm_max_memory: Some(67108864),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(native.code, "E2000");
 }
 
 #[test]
@@ -288,6 +347,8 @@ fn shared_specializations_work_in_normal_and_selected_test_roots() {
                 optimization: 3,
                 filter: None,
                 indices: Vec::new(),
+                wasm_max_memory: None,
+                wasm_stack_size: None,
             },
         )
         .unwrap();

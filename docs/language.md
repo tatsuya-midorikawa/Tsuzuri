@@ -723,7 +723,7 @@ union を通らないレコードの循環、有限値を持たない `union Bad
 再帰型は非 Copy です。部分 move、共有借用の match、ガードの規則は非再帰型と同じです。
 構築子は payload 全体を一度だけ左から右に評価してからノードを確保します。
 payload のない最初の case は null で表し、確保しません。他の case はヒープ上に保持します。
-追加の `new`／`box` 構文はありません。確保失敗はトラップし、WASM のヒープ上限は16 MiBのままです。
+追加の `new`／`box` 構文はありません。確保失敗はトラップし、WASM のヒープは線形メモリの上限（既定 16 MiB）を超えません。
 
 解放は追加確保なしの反復走査です。関数値の捕捉環境を複製するときも、再帰ノードと
 その配列・リスト・Vec を同じ反復走査で深く複製し、木の深さに比例する実行スタックを使いません。
@@ -891,9 +891,9 @@ test "compares strings" =
 `Test.equal`／`Test.not_equal` は `Eq<'a> => ref 'a -> ref 'a -> unit`、`Test.is_true` は `bool -> unit` です。
 比較対象を消費せず、不一致は assert と同じトラップです。詳細な値の表示や custom assertion message はまだありません。
 
-`tsuzuri test <file|directory> [--filter TEXT] [--json] [-O0..-O3] [--target native|wasm32]` で実行します。
+`tsuzuri test <file|directory> [--filter TEXT] [--json] [-O0..-O3] [--target native|wasm32|wasm64]` で実行します。
 ディレクトリは直下のソースを読み、Main.tz は不要です。filter は `Module.名前` の部分一致です。
-既定は native・O0。`--cpu`・`--emit`・`--output` は使えません。WASM は Node.js が必要で、生成モジュールの imports は空です。
+既定は native・O0。`--cpu`・`--emit`・`--output` は使えません。WASM は Node.js（wasm64 は memory64 対応の Node.js 24 以降。未対応なら `E2002`）が必要で、生成モジュールの imports は空です。
 各テストを別プロセスで実行し、CPU 数・32・選択件数の最小値まで並列化します。結果は宣言順に報告します。
 トラップ・非ゼロ終了・30秒 timeout は失敗とし、他のテストは続行します。timeout の設定オプションはありません。
 JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr です。失敗時は最初の失敗した名前の位置で `E2006`、終了コード 1 になります。
@@ -1645,7 +1645,10 @@ threadsはWASM/object出力専用でsimd128と併用できます。native、run�
 Node.js 20以降のworker_threadsとSharedArrayBuffer/shared WebAssembly.Memoryが必要です。importはenv.memoryとtsuzuri_threads.spawn_workers/worker_readyです。
 同梱Nodeホスト`src/runtime/wasm-threads.mjs`のcreateThreadPoolで生成し、callで同期実行、最後にcloseをawaitします。初回groupでmin(CPU数,32)-1 workerを生成し、以後再利用します。
 workersは0〜31を明示指定でき、初期化に失敗した場合は逐次成功へ置き換えません。ホスト不備はinstantiation error、起動失敗・Worker trapは実行失敗になります。
-各workerに256KiBのstack、mainに1MiBを割り当て、memory上限16MiBにstack/data/heapすべてを含めます。Nodeホストは全256pageを最初に確保します。
+各workerに256KiBのstack、mainに既定1MiBを割り当て、memory上限（既定16MiB、`--wasm-max-memory`で変更）にstack/data/heapすべてを含めます。Nodeホストはmoduleが宣言したenv.memoryの最大page数（既定256page）を最初に確保し、memory.growは起きません。
+各関数はframe確保後にstack pointerを検査し、溢れはframeを使う前にトラップします。workerのstackはheap上にあり、隣のblockを上書きしないためです。
+ホストは各worker instanceで`tsuzuri_thread_entry`の前に`__stack_pointer`をstackの上端、`tsuzuri_stack_base`・`tsuzuri_stack_top`をstackの範囲へ設定します。両方0はmainのstackを表すため、範囲を設定しないworkerは最初の呼び出しでトラップします。
+`--emit object`を自分でリンクするときは、これらのglobalと`__stack_pointer`・thread runtime関数を`--export`します。
 並列groupが戻るまで全callbackの完了と結果公開を待ちます。正常時の所有heapは回収します。Worker stackはpool寿命に従い、trap後のpoolは再利用せずcloseします。
 externを使うWorkerには同じホスト定義が必要で、createThreadPoolのimportsModuleが各instance用createImports({memory,workerId,data})を返します。
 BrowserにはCOOP: same-origin、COEP: require-corpとcross-origin isolation、独立したWorkerホストが必要です。Node用ホストをそのままbrowserにimportできません。
@@ -1932,7 +1935,7 @@ def choose :: bool -> [i32] = \flag -> if flag { [1] } else { [2, 3, 4] }
 長さ 0 では初期化関数の式は評価しますが、関数自体は呼びません。
 全要素の初期化を終えてから配列を返し、未初期化の要素や暗黙の既定値はありません。
 初期化関数には通常の捕捉・複製・借用規則が適用され、文字列・レコード・配列・関数値も生成できます。
-WASM のヒープ上限は文字列・捕捉環境などと合計して 16 MiB です。
+WASM のヒープは文字列・捕捉環境などと合わせて線形メモリの上限（既定 16 MiB）を共有します。
 
 `[a, b, c]` は要素を左から右へ一度ずつ評価します。束縛したリテラルの要素は
 [スタックとヒープ](#スタックとヒープnew) のとおりスタックに置き、`new [a, b, c]` は同じ評価順序でヒープに確保します。
@@ -2430,7 +2433,18 @@ WASM は従来の引数生成順を使い、言語としての評価順序・数
 
 関数値経由の再帰、相互再帰、呼び出した後に演算が続く再帰には、定数スタックの保証はありません。
 ネイティブのスタック上限は OS に依存します。
-WASM は stack-first 配置で 1 MiB のスタック、線形メモリ上限 16 MiB を設定します。
+WASM は stack-first 配置で既定 1 MiB のスタック、既定 16 MiB の線形メモリ上限を設定します。
+`build` と `test` は `--target wasm32`・`--target wasm64` で `--wasm-max-memory SIZE` により上限を、`--wasm-stack-size SIZE` で main のスタックを変更できます。
+SIZE はバイト数か、`KiB`・`MiB`・`GiB` を付けた整数です（`64MiB` など。大文字小文字を区別し、`=` 形式は受けません）。
+上限は 64 KiB の倍数で、wasm32 は 4 GiB − 64 KiB 以下、wasm64 は 16 GiB 以下、どちらもスタック + 64 KiB 以上です。スタックは 16 の倍数で 64 KiB 以上です。WASM の build・test 以外での指定、範囲外の値、重複、上限の header 出力、スタックの object／LLVM IR 出力への指定は `E2000` です。
+root package の `Tsuzuri.toml` の `[wasm]`（`max-memory = "256MiB"`・`stack-size = "4MiB"`。値は同じ書式の文字列）は、その指定が効く出力と test の既定値です。
+コマンドラインの指定が優先し、依存 package の `[wasm]` は読みません。書式の誤りは `E0002`、適用後の範囲外は `E2000` です。
+上限は stack・静的データ・ヒープの合計に適用し、ヒープは必要な分だけ `memory.grow` します。上限を超える確保や `memory.grow` の失敗はトラップです。
+`--emit object`／`--emit llvm` ではヒープの検査だけに上限が入るため、リンク時に wasm-ld へ同じ `--max-memory` を渡します（wasm64 は `-mwasm64` も）。静的データが上限に収まらないリンクは `E2002` です。
+既定値の明示と省略は同じ成果物です。threads の worker のスタック（256 KiB）は変わりません。
+スタックが尽きると stack pointer はアドレス 0 の下へ折り返ります。wasm32 の threads なしで上限が 2 GiB 以下のときと wasm64 では、その先は常に線形メモリの外でトラップします。
+wasm32 で 2 GiB を超える上限と threads では、各関数が static frame の確保後に stack pointer が自分の stack の範囲（下端に 4 KiB の余白）にあるかを検査し、溢れは frame を使う前にトラップします。
+余白は検査のない threads runtime と i128 補助関数の frame（合計 1 KiB 未満）のためです。検査は関数の入口だけで、inline 展開後は LLVM が重複をまとめてループの外へ出します。
 文字列バッファはスタック・静的領域の後のヒープへ確保し、解放済み領域を再利用・結合します。
 ネイティブでは malloc/free を使います。WASM の呼び出しスタック上限は実行エンジンに依存します。
 スタックに置くリテラルの領域と配列の一時領域は関数の入口で確保するので、末尾ループの反復で蓄積しません。
@@ -2456,7 +2470,7 @@ private な関数はホストヘッダーにも公開シンボルにも現れま
 | `f32` / `f64` | `float` / `double` | f32 / f64 / `Number` |
 | `bool` | `int32_t` | i32 / `Number` |
 | `unit`（返却値のみ） | `void` | 返却値なし / `undefined` |
-| `ref [i64]`／`ref [f64]`／`ref [ubyte]`（入力のみ） | `const T *arg_ptr, int64_t arg_len` | pointer は Number、長さは BigInt |
+| `ref [i64]`／`ref [f64]`／`ref [ubyte]`（入力のみ） | `const T *arg_ptr, int64_t arg_len` | pointer は Number（wasm64 は BigInt）、長さは BigInt |
 | `ref string`（入力のみ） | `const uint16_t *arg_ptr, int64_t arg_len` | UTF-16 コード単位、長さは BigInt |
 | `ref utf8string`（入力のみ） | `const uint8_t *arg_ptr, int64_t arg_len` | 検証済み UTF-8 バイト、長さは BigInt |
 | `[i64]`／`[f64]`／`[ubyte]`／`string`／`utf8string`（結果のみ） | 先頭の `tsuzuri_*_buffer *out` へ `{ ptr, len }` を書き、void を返す | 先頭引数の out pointer へ descriptor を書く |
@@ -2466,6 +2480,8 @@ bool 引数の 0 は false、非 0 は true。結果は 0/1 に正規化しま�
 8／16-bit 整数は ABI 境界で下位ビットへ切り詰め、返却時に符号／ゼロ拡張して i32 に正規化します。
 WASM の i32／i64 の JavaScript 返却値は符号付きとして見えるので、必要なら
 `value >>> 0`／`BigInt.asUintN(64, value)` で符号なしに解釈してください。
+wasm32 で上限が 2 GiB を超えると 2 GiB 以上の pointer は負の Number になるため、pointer も `>>> 0` で受け取ります。
+wasm64 では pointer（`tsuzuri_alloc` の結果、バッファとレコードの引数、out pointer）が i64 で BigInt です。
 `i128`／`i128u`、f16／f128、decimal、char／utf8char、unit の引数、union、タプル、リスト、関数値、タスクは直接 export できません。
 所有する配列・文字列の入力、排他参照、参照を返す ABI、i64/f64/ubyte 以外の配列要素も拒否します。
 レコードは ABI scalar または同条件の入れ子レコードだけを許し、具体化したジェネリック record も使えます。
@@ -2480,12 +2496,12 @@ string は孤立 surrogate もそのまま保持し、utf8string の不正バイ
 結果バッファは所有権をホストへ移し、ホストが `tsuzuri_free(out.ptr)` で一度だけ解放します。借用入力を誤って解放してはいけません。
 拡張 ABI を使うモジュールは `void *tsuzuri_alloc(int64_t size)` と `void tsuzuri_free(void *ptr)` を公開します。
 alloc の0は最低1バイトを確保し、負数・確保失敗はトラップ。free の null は何もしません。返却値か allocator の pointer 以外を free できません。
-WASM は allocator と memory を export し、`{ ptr, len }` の配置は offset 0 に i32 pointer、offset 8 に i64 length、size 16／alignment 8 です。
+WASM は allocator と memory を export し、`{ ptr, len }` の配置は offset 0 に pointer（wasm32 は i32、wasm64 は i64）、offset 8 に i64 length、size 16／alignment 8 です。
 allocator や公開関数の呼び出しで memory が grow し得るため、DataView／TypedArray は呼び出し後に作り直します。
 scalar-only モジュールの allocator export は増やしません。上記以外の内部メモリレイアウトは安定 API ではありません。
 
 ```javascript
-const out = api.tsuzuri_alloc(16n);
+const out = api.tsuzuri_alloc(16n) >>> 0;
 api.tz_make_bytes(out, 4n);
 const view = new DataView(api.memory.buffer);
 const pointer = view.getUint32(Number(out), true);

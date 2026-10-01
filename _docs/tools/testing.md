@@ -34,7 +34,9 @@ test は `.tz` / `.tc` の宣言部分に置きます。`.tt` と埋め込み st
 ./target/release/tsuzuri test target/test-demo --json
 ```
 
-既定は native / O0 です。O0 から O3、native / wasm32 を指定できます。WASM 実行には Node.js が必要です。cpu、emit、output のオプションは使えません。
+既定は native / O0 です。O0 から O3、native / wasm32 / wasm64 を指定できます。WASM 実行には Node.js が必要で、wasm64 は memory64 対応の Node.js 24 以降が PATH にあることを確認し、未対応なら `E2002` です。cpu、emit、output のオプションは使えません。
+
+WASM のテストは build と同じ線形メモリ上限（既定 16 MiB）と main stack（既定 1 MiB）で動きます。大きなデータを確保するテストは `--target wasm32 --wasm-max-memory 64MiB` のように上限を、必要なら `--wasm-stack-size` で stack を指定します。root package の `Tsuzuri.toml` の `[wasm]` も既定値になります。native のテストには指定できません。
 
 Main は不要で、現在のプロジェクト loader でソースを探索します。filter は `Module.テスト名` の部分一致で、正規表現ではありません。除外したテストも型検査自体から除かれるわけではありません。
 

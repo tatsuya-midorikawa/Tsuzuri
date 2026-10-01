@@ -21,7 +21,7 @@ async function debuggerPackage() {
   const cache = path.join(repository, 'target', 'vsc-downloads');
   await mkdir(cache, { recursive: true });
   const archive = path.join(cache, `codelldb-${debuggerVersion}-${host}.vsix`);
-  await download(`https://github.com/vadimcn/codelldb/releases/download/v${debuggerVersion}/codelldb-${host}.vsix`, archive, debuggerChecksums[host]);
+  await download([`https://github.com/vadimcn/codelldb/releases/download/v${debuggerVersion}/codelldb-${host}.vsix`], archive, debuggerChecksums[host]);
   await mkdir(path.dirname(codelldb), { recursive: true });
   await copyFile(archive, codelldb);
 }

@@ -63,7 +63,8 @@ run は既定でトラップ位置を有効にします。build は既定で含�
 ./target/release/tsuzuri build examples/hello --trap-info -o target/hello-with-traps
 ```
 
-成果物の隣に `<output>.trap.json` を出します。assert、整数ゼロ除算、符号付き除算 overflow、添字、確保、範囲のゼロ step、パターン不一致、Unicode 変換などの理由を区別します。
+成果物の隣に `<output>.trap.json` を出します。assert、整数ゼロ除算、符号付き除算 overflow、添字、確保、範囲のゼロ step、パターン不一致、Unicode 変換、WASM の stack 溢れなどの理由を区別します。
+stack 溢れは wasm32 の 2 GiB 超と threads の入口検査が検出し、溢れた関数の定義位置（std の内部ならそれを呼んだ位置）を報告します。
 
 native は stderr の reporter、WASM は import 不要の `tsuzuri_trap_site()` を使います。WASM でトラップを受けたホストは、その ID と side table を照合します。ID は最後に記録した失敗であり、通常の呼び出し開始時にリセットされません。
 

@@ -95,7 +95,8 @@ XL と大きい L のチケットは Phase に分かれています。**人間�
   LLVM 21 の単体ツールは `/opt/homebrew/opt/llvm@21/bin/`（`llvm-objdump`・`llvm-link`・`llvm-dwarfdump`・`llvm-profdata` など）。
   Go・Zig は入っていない。x86_64 の実行ファイルは起動できない（Rosetta 2 なし。x86 は cross-compile だけ確認できる）。
 - テストが読む主な環境変数: `TSUZURI_OBJDUMP`（`llvm-objdump`）、`TSUZURI_LLVM_LINK`・`TSUZURI_DWARFDUMP`（`tests/debug_info.mjs`）、
-  `TSUZURI_MATH_PYTHON`（`tests/math.mjs`）、`TSUZURI_ASAN`・`TSUZURI_TSAN`（sanitizer 付きの harness）、`TSUZURI_WEBGPU=1`（実 GPU）。
+  `TSUZURI_MATH_PYTHON`（`tests/math.mjs`）、`TSUZURI_ASAN`・`TSUZURI_TSAN`（sanitizer 付きの harness）、`TSUZURI_WEBGPU=1`（実 GPU）、
+  `TSUZURI_TEST_WASM_TARGET=wasm64`（`tests/features.mjs` の WASM を memory64 で実行。Node 24 が必要）。
 - BigInt を多用する suite は Node 20 の V8 で異常終了することがある（§11.1）。その場合は Node 24 で実行する:
   `npx --yes --package=node@24 node tests/<suite>.mjs target/release/tsuzuri`。
 
@@ -926,7 +927,8 @@ fn rejects(source: &str, code: &str) {
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
 | CLI | `--warn implicit-copy` | A15 | はい |
 | CLI | `--allocator system\|host`（F13）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
-| CLI | `--wasm-max-memory`・`--wasm-stack-size` | F11 | 2 GiB を超える上限だけ |
+| CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
+| CLI | `--target wasm64` | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--emit bitcode` | PR08 | いいえ |
 | CLI | `--emit bindings-js`（出力 `<name>.mjs`・`<name>.d.mts`） | E13 | いいえ |
 | CLI | `--emit wgsl-relaxed`・`--wasm-feature webgpu` | F09 | はい |
@@ -949,10 +951,12 @@ fn rejects(source: &str, code: &str) {
 | 環境変数 | `TSUZURI_TEST_ALLOCATOR`（テスト用） | F13 | いいえ |
 | 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ |
 | 環境変数 | `TSUZURI_BASELINE`（テスト用） | PM03 | はい（PM03 全体） |
+| 環境変数 | `TSUZURI_TEST_WASM_TARGET`（テスト用。`tests/features.mjs` の WASM を `wasm64` で実行） | F11 | いいえ |
 | 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` | F13 | いいえ |
 | 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`） | F08・PR05 | いいえ |
 | 公開記号 | `tsuzuri_try_<name>`（Phase 2） | E14 | はい |
-| ランタイム | `format.ll`（D07）、`string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`os.c`（E08）、`net.c`（E09） | 各チケット | 各チケットの承認に従う |
+| 公開記号 | wasm global `tsuzuri_stack_base`・`tsuzuri_stack_top`（threads の worker の stack の範囲） | F11 | いいえ（Phase 2 実装済み） |
+| ランタイム | `format.ll`（D07）、`string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`os.c`（E08）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み） | 各チケット | 各チケットの承認に従う |
 
 新しい `.ll` を足すときは §2.2 の `.gitignore` の例外行と `scripts/check-runtime-includes.sh` を忘れない。
 Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の `Trap`・`TrapInfo` など）は、承認のときに割り当てる。

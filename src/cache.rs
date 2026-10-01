@@ -197,20 +197,32 @@ pub(crate) fn build_key(
     Ok(hash.hex())
 }
 
+/// `fs::canonicalize` without the Windows verbatim prefix (`\\?\`) when the plain path
+/// names the same file, so users and child tools see `C:\...`.
+pub(crate) fn real_path(path: &Path) -> io::Result<PathBuf> {
+    let real = fs::canonicalize(path)?;
+    let plain = real
+        .to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .filter(|plain| fs::canonicalize(plain).is_ok_and(|again| again == real))
+        .map(PathBuf::from);
+    Ok(plain.unwrap_or(real))
+}
+
 pub fn executable_path(tool: &std::ffi::OsStr) -> io::Result<PathBuf> {
     let path = Path::new(tool);
     if path.components().count() > 1 || path.is_absolute() {
-        return fs::canonicalize(path);
+        return real_path(path);
     }
     for root in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let candidate = root.join(tool);
         if candidate.is_file() {
-            return fs::canonicalize(candidate);
+            return real_path(&candidate);
         }
         if cfg!(windows) && candidate.extension().is_none() {
             let candidate = candidate.with_extension("exe");
             if candidate.is_file() {
-                return fs::canonicalize(candidate);
+                return real_path(&candidate);
             }
         }
     }

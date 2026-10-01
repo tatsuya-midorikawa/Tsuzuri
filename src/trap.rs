@@ -17,10 +17,11 @@ pub enum TrapKind {
     WasmRuntime,
     Encoding,
     DebugOutput,
+    StackOverflow,
 }
 
 impl TrapKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Assert,
         Self::IntegerDivisionByZero,
         Self::IntegerDivisionOverflow,
@@ -35,6 +36,7 @@ impl TrapKind {
         Self::WasmRuntime,
         Self::Encoding,
         Self::DebugOutput,
+        Self::StackOverflow,
     ];
 
     pub fn description(self) -> &'static str {
@@ -53,6 +55,7 @@ impl TrapKind {
             Self::WasmRuntime => "wasm runtime trap",
             Self::Encoding => "invalid Unicode encoding",
             Self::DebugOutput => "debug output failed",
+            Self::StackOverflow => "stack overflow",
         }
     }
 }

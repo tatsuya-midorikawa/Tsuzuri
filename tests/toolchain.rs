@@ -9,7 +9,13 @@ fn scratch(test: &str) -> PathBuf {
         std::env::temp_dir().join(format!("tsuzuri-toolchain-{}-{test}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).unwrap();
-    fs::canonicalize(directory).unwrap()
+    // The compiler reports Windows paths without the verbatim `\\?\` prefix.
+    let directory = fs::canonicalize(directory).unwrap();
+    let plain = directory
+        .to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .map(PathBuf::from);
+    plain.unwrap_or(directory)
 }
 
 /// Copies the compiler to `root/bin` with empty bundled tools and, optionally, a manifest.

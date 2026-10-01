@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -15,7 +15,7 @@ Usage:
     tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
-                             [--target native|wasm32]
+                             [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri toolchain info
@@ -32,10 +32,14 @@ Other source inputs can be checked or built as libraries.
 
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
-  --target native|wasm32  Target (default: native)
-    --wasm-feature <name>   Opt in to simd128 or threads (wasm32 build only)
+  --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
+    --wasm-feature <name>   Opt in to simd128 (WASM build) or threads (wasm32 build)
+    --wasm-max-memory SIZE  WASM linear memory limit (WASM build/test; default 16MiB,
+                            at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
+    --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
+                            Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
     --emit KIND            exe, object, llvm, header, wasm, or wgsl
-                         Default: exe for native, wasm for wasm32
+                         Default: exe for native, wasm for wasm32 and wasm64
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
@@ -150,6 +154,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
+    let mut wasm_max_memory = None;
+    let mut wasm_stack_size = None;
     let mut no_cache = false;
     let mut paths_only = false;
     while position < arguments.len() {
@@ -257,7 +263,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         match next_value(arguments, &mut position, "--target")?.to_str() {
                             Some("native") => Target::Native,
                             Some("wasm32") => Target::Wasm32,
-                            _ => return Err("target must be 'native' or 'wasm32'".into()),
+                            Some("wasm64") => Target::Wasm64,
+                            _ => {
+                                return Err("target must be 'native', 'wasm32', or 'wasm64'".into());
+                            }
                         },
                     );
                     continue;
@@ -272,6 +281,21 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("WASM feature specified more than once".into());
                     }
                     *feature = true;
+                    continue;
+                }
+                Some(option @ ("--wasm-max-memory" | "--wasm-stack-size")) => {
+                    let (slot, name) = if option == "--wasm-max-memory" {
+                        (&mut wasm_max_memory, "maximum memory")
+                    } else {
+                        (&mut wasm_stack_size, "stack size")
+                    };
+                    if slot.is_some() {
+                        return Err(format!("WASM {name} specified more than once"));
+                    }
+                    *slot = Some(parse_size(
+                        next_value(arguments, &mut position, option)?,
+                        option,
+                    )?);
                     continue;
                 }
                 Some("--emit") => {
@@ -339,6 +363,18 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if (wasm_simd || wasm_threads) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
+    if wasm_max_memory.is_some() || wasm_stack_size.is_some() {
+        if !matches!(action, Action::Build | Action::Test) {
+            return Err(
+                "--wasm-max-memory and --wasm-stack-size are only valid with build or test".into(),
+            );
+        }
+        if action == Action::Test && !target.is_some_and(Target::is_wasm) {
+            return Err(
+                "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64".into(),
+            );
+        }
+    }
     if debug_info && !matches!(action, Action::Build | Action::Run) {
         return Err("--debug-info is only valid with build or run".into());
     }
@@ -385,7 +421,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let target = target.unwrap_or(Target::Native);
     let options = BuildOptions {
         target,
-        emit: emit.unwrap_or(if target == Target::Wasm32 {
+        emit: emit.unwrap_or(if target.is_wasm() {
             Emit::Wasm
         } else {
             Emit::Executable
@@ -397,6 +433,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         debug_info,
         wasm_simd,
         wasm_threads,
+        wasm_max_memory,
+        wasm_stack_size,
         cache: !no_cache,
     };
     options.validate().map_err(|error| error.message)?;
@@ -424,6 +462,23 @@ fn next_value<'a>(
         .ok_or_else(|| format!("{option} needs a value"))?;
     *position += 1;
     Ok(value)
+}
+
+/// Parses a byte count with an optional binary `KiB`, `MiB`, or `GiB` suffix.
+fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
+    value
+        .to_str()
+        .and_then(tsuzuri::package::parse_size)
+        .ok_or_else(|| {
+            let example = if option == "--wasm-stack-size" {
+                "4194304 or 4MiB"
+            } else {
+                "67108864 or 64MiB"
+            };
+            format!(
+                "{option} must be a byte count or a number followed by KiB, MiB, or GiB, such as {example}"
+            )
+        })
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
@@ -544,6 +599,8 @@ fn run_test_action(
         optimization: arguments.options.optimization,
         filter: arguments.test_filter.clone(),
         indices: arguments.test_indices.clone(),
+        wasm_max_memory: arguments.options.wasm_max_memory,
+        wasm_stack_size: arguments.options.wasm_stack_size,
     };
     if options
         .indices
@@ -818,6 +875,25 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let mut arguments = arguments;
+    arguments.options = arguments.options.with_manifest_wasm(project.wasm);
+    // Command-line values were validated during parsing, so only manifest values can fail here.
+    if let Err(error) = arguments.options.validate() {
+        print_diagnostic(
+            &Diagnostic::new(
+                error.code,
+                format!(
+                    "{} (after applying the root package's [wasm])",
+                    error.message
+                ),
+                Span::default(),
+            ),
+            Path::new("Tsuzuri.toml"),
+            "",
+            arguments.json,
+        );
+        return ExitCode::FAILURE;
+    }
     let module = match project.analyze_all() {
         Ok(module) => module,
         Err(errors) => {
@@ -1125,8 +1201,368 @@ mod tests {
             vec!["build", "Main.tz", "--target", "wasm32", "--cpu", "native"],
             vec!["build", "Main.tz", "--emit", "llvm", "--cpu", "native"],
             vec!["build", "Main.tz", "--emit", "header", "--cpu", "native"],
+            vec!["run", "Main.tz", "--wasm-max-memory", "64MiB"],
+            vec!["check", "Main.tz", "--wasm-stack-size", "2MiB"],
+            vec!["doc", "Main.tz", "-o", "docs", "--wasm-max-memory", "64MiB"],
+            vec!["fmt", "Main.tz", "--wasm-stack-size", "2MiB"],
+            vec!["test", "Main.tz", "--wasm-max-memory", "64MiB"],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-max-memory",
+                "64MiB",
+                "--wasm-max-memory",
+                "64MiB",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-max-memory=64MiB",
+            ],
         ] {
             assert!(parse(&values).is_err(), "{values:?}");
         }
+        let unused = "--wasm-max-memory and --wasm-stack-size are only valid with build or test";
+        let untargeted =
+            "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64";
+        let output = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let stack_output = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
+        let memory_range =
+            "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32";
+        let memory64_range =
+            "--wasm-max-memory must be a multiple of 64 KiB and at most 16 GiB on wasm64";
+        let stack_range = "--wasm-stack-size must be a multiple of 16 bytes and at least 64 KiB";
+        let relation = "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size";
+        for (values, message) in [
+            (vec!["run", "app", "--wasm-max-memory", "64MiB"], unused),
+            (vec!["check", "app", "--wasm-stack-size", "2MiB"], unused),
+            (
+                vec!["doc", "app", "-o", "docs", "--wasm-max-memory", "64MiB"],
+                unused,
+            ),
+            (vec!["fmt", "app", "--wasm-stack-size", "2MiB"], unused),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-max-memory",
+                    "64MiB",
+                    "--wasm-max-memory",
+                    "128MiB",
+                ],
+                "WASM maximum memory specified more than once",
+            ),
+            (
+                vec![
+                    "test",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-stack-size",
+                    "2MiB",
+                    "--wasm-stack-size",
+                    "2MiB",
+                ],
+                "WASM stack size specified more than once",
+            ),
+            (
+                vec!["test", "app", "--wasm-max-memory", "64MiB"],
+                untargeted,
+            ),
+            (
+                vec![
+                    "test",
+                    "app",
+                    "--target",
+                    "native",
+                    "--wasm-stack-size",
+                    "2MiB",
+                ],
+                untargeted,
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-max-memory=64MiB",
+                ],
+                "unknown option '--wasm-max-memory=64MiB'; use --help",
+            ),
+            (
+                vec!["build", "app", "--target", "wasm32", "--wasm-stack-size"],
+                "--wasm-stack-size needs a value",
+            ),
+            (vec!["build", "app", "--wasm-max-memory", "64MiB"], output),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--emit",
+                    "wgsl",
+                    "--wasm-max-memory",
+                    "64MiB",
+                ],
+                output,
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "header",
+                    "--wasm-max-memory",
+                    "64MiB",
+                ],
+                output,
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "object",
+                    "--wasm-stack-size",
+                    "2MiB",
+                ],
+                stack_output,
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-max-memory",
+                    "100000",
+                ],
+                memory_range,
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-max-memory",
+                    "4GiB",
+                ],
+                memory_range,
+            ),
+            (
+                vec![
+                    "test",
+                    "app",
+                    "--target",
+                    "wasm64",
+                    "--wasm-max-memory",
+                    "17GiB",
+                ],
+                memory64_range,
+            ),
+            (
+                vec!["build", "app", "--target", "wasm128"],
+                "target must be 'native', 'wasm32', or 'wasm64'",
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm64",
+                    "--wasm-feature",
+                    "threads",
+                ],
+                "--wasm-feature threads requires wasm32 object or WASM output",
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-max-memory",
+                    "1MiB",
+                ],
+                relation,
+            ),
+            (
+                vec![
+                    "test",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-stack-size",
+                    "16MiB",
+                ],
+                relation,
+            ),
+            (
+                vec![
+                    "build",
+                    "app",
+                    "--target",
+                    "wasm32",
+                    "--wasm-stack-size",
+                    "1000",
+                ],
+                stack_range,
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn parses_wasm_memory_sizes() {
+        for (text, bytes) in [
+            ("0", 0),
+            ("65536", 65536),
+            ("4KiB", 4096),
+            ("64MiB", 67108864),
+            ("1GiB", 1073741824),
+            ("17179869183GiB", 17179869183 << 30),
+        ] {
+            assert_eq!(
+                parse_size(OsStr::new(text), "--wasm-max-memory"),
+                Ok(bytes),
+                "{text}"
+            );
+        }
+        for text in [
+            "64MB",
+            "64 MiB",
+            "",
+            "0x10",
+            "1.5MiB",
+            "+64MiB",
+            "-1",
+            "MiB",
+            "64mib",
+            "64MiB ",
+            "18446744073709551616",
+            "17179869184GiB",
+        ] {
+            assert_eq!(
+                parse_size(OsStr::new(text), "--wasm-stack-size").unwrap_err(),
+                "--wasm-stack-size must be a byte count or a number followed by KiB, MiB, or GiB, such as 4194304 or 4MiB",
+                "{text}"
+            );
+        }
+        assert_eq!(
+            parse(&[
+                "build",
+                "app",
+                "--target",
+                "wasm32",
+                "--wasm-max-memory",
+                "64MB"
+            ])
+            .unwrap_err(),
+            "--wasm-max-memory must be a byte count or a number followed by KiB, MiB, or GiB, such as 67108864 or 64MiB"
+        );
+        let build = parse(&[
+            "build",
+            "app",
+            "--target",
+            "wasm32",
+            "--wasm-max-memory",
+            "256MiB",
+            "--wasm-stack-size",
+            "4MiB",
+        ])
+        .unwrap();
+        assert_eq!(
+            (build.options.wasm_max_memory, build.options.wasm_stack_size),
+            (Some(268435456), Some(4194304))
+        );
+        let test = parse(&[
+            "test",
+            "app",
+            "--wasm-stack-size",
+            "65536",
+            "--target",
+            "wasm32",
+            "--wasm-max-memory",
+            "2GiB",
+        ])
+        .unwrap();
+        assert_eq!(test.action, Action::Test);
+        assert_eq!(
+            (test.options.wasm_max_memory, test.options.wasm_stack_size),
+            (Some(2147483648), Some(65536))
+        );
+        for emit in ["object", "llvm"] {
+            let arguments = parse(&[
+                "build",
+                "app",
+                "--target",
+                "wasm32",
+                "--emit",
+                emit,
+                "--wasm-max-memory",
+                "64MiB",
+            ])
+            .unwrap();
+            assert_eq!(arguments.options.wasm_max_memory, Some(67108864));
+        }
+        let threads = parse(&[
+            "build",
+            "app",
+            "--target",
+            "wasm32",
+            "--wasm-feature",
+            "threads",
+            "--wasm-max-memory",
+            "1GiB",
+        ])
+        .unwrap();
+        assert_eq!(threads.options.wasm_max_memory, Some(1073741824));
+        let defaults = parse(&["build", "app", "--target", "wasm32"]).unwrap();
+        assert_eq!(
+            (
+                defaults.options.wasm_max_memory,
+                defaults.options.wasm_stack_size
+            ),
+            (None, None)
+        );
+        let wasm64 = parse(&[
+            "build",
+            "app",
+            "--target",
+            "wasm64",
+            "--wasm-max-memory",
+            "16GiB",
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                wasm64.options.target,
+                wasm64.options.emit,
+                wasm64.options.wasm_max_memory
+            ),
+            (Target::Wasm64, Emit::Wasm, Some(17179869184))
+        );
+        let near_4_gib = parse(&[
+            "test",
+            "app",
+            "--target",
+            "wasm32",
+            "--wasm-max-memory",
+            "4194240KiB",
+        ])
+        .unwrap();
+        assert_eq!(near_4_gib.options.wasm_max_memory, Some(4294901760));
     }
 }

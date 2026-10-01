@@ -48,6 +48,7 @@ Mac で作った VSIX の名前を変更したり、`--target` だけを変更�
 
 必要なのは Node.js 24、npm、Rust stable、LLVM 21、ネットワーク接続です。
 ツールチェーン生成時には公式の Zig と CodeLLDB を取得し、固定 SHA-256 と照合します。
+Zig は ziglang.org が案内するコミュニティミラーを無作為な順に試し、最後に ziglang.org から取得します。
 Windows ARM64 では CodeLLDB を同梱しません。
 
 リポジトリのルートから実行します。

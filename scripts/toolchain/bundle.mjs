@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const host = `${process.platform}-${process.arch}`;
@@ -18,6 +19,15 @@ export const platforms = {
   'linux-x64': ['x86_64-linux', '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'],
   'win32-x64': ['x86_64-windows', '68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e'],
 };
+// ziglang.org is one server and asks automation to try these mirrors in random order first; the pinned
+// SHA-256 authenticates every source. Snapshot of https://ziglang.org/download/community-mirrors.txt.
+const zigMirrors = [
+  'https://pkg.hexops.org/zig', 'https://zigmirror.hryx.net/zig', 'https://zig.linus.dev/zig', 'https://zig.squirl.dev',
+  'https://zig.mirror.mschae23.de/zig', 'https://ziglang.freetls.fastly.net', 'https://zig.tilok.dev',
+  'https://zig-mirror.tsimnet.eu/zig', 'https://zig.karearl.com/zig', 'https://pkg.earth/zig', 'https://fs.liujiacai.net/zigbuilds',
+  'https://zigmirror.com', 'https://zig.chainsafe.dev', 'https://zig.savalione.com', 'https://zig.bcr.ist',
+  'https://zig.vortan.dev/zig', 'https://pkg.alexrp.com/zig',
+];
 // Zig 0.16.0 crashes while linking on ARM64 Windows hosts; this release matches the bundled LLVM 21.1.8.
 export const mingwVersion = '20251216';
 export const mingwChecksums = {
@@ -39,18 +49,45 @@ export async function digest(file) {
   return hash.digest('hex');
 }
 
-export async function download(url, file, expected) {
+/** Saves the first of `urls` whose bytes match `expected`; a source silent for 30 seconds is skipped. */
+export async function download(urls, file, expected) {
   if (await exists(file) && await digest(file) === expected) { return; }
-  console.log(`Downloading ${url}`);
-  const response = await fetch(url, { signal: AbortSignal.timeout(300000) });
-  if (!response.ok || !response.body) { throw new Error(`Download failed: ${response.status} ${url}`); }
   const temporary = `${file}.partial`;
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary));
-  if (await digest(temporary) !== expected) {
-    await rm(temporary, { force: true });
-    throw new Error(`SHA-256 mismatch: ${url}`);
+  const failures = [];
+  // GitHub releases and mirrors fail transiently (HTTP 5xx), so retry every source after a pause.
+  for (let pass = 1; pass <= 3; pass++) {
+    if (pass > 1) {
+      console.warn(`Retrying every source in ${pass * 10} seconds`);
+      await delay(pass * 10000);
+    }
+    for (const url of urls) {
+      console.log(`Downloading ${url}`);
+      const controller = new AbortController();
+      let timer;
+      const alive = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(new Error('no data for 30 seconds')), 30000);
+      };
+      try {
+        alive();
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok || !response.body) { throw new Error(`HTTP ${response.status}`); }
+        await pipeline(Readable.fromWeb(response.body), async function* (chunks) {
+          for await (const chunk of chunks) { alive(); yield chunk; }
+        }, createWriteStream(temporary));
+        if (await digest(temporary) !== expected) { throw new Error('SHA-256 mismatch'); }
+        await rename(temporary, file);
+        return;
+      } catch (error) {
+        failures.push(`${url}: ${error.message}`);
+        console.warn(`Download failed: ${error.message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
   }
-  await rename(temporary, file);
+  await rm(temporary, { force: true });
+  throw new Error(`Download failed from every source:\n${failures.join('\n')}`);
 }
 
 export async function entries(directory, prefix = '') {
@@ -154,7 +191,7 @@ export async function bundle(destination) {
     if (mingwChecksums[host]) {
       const name = `llvm-mingw-${mingwVersion}-ucrt-${architecture}`;
       const archive = path.join(cache, `${name}.zip`);
-      await download(`https://github.com/mstorsjo/llvm-mingw/releases/download/${mingwVersion}/${name}.zip`, archive, mingwChecksums[host]);
+      await download([`https://github.com/mstorsjo/llvm-mingw/releases/download/${mingwVersion}/${name}.zip`], archive, mingwChecksums[host]);
       extractArchive(archive, extracted);
       const source = path.join(extracted, name);
       const sysroot = path.join(stage, 'mingw');
@@ -177,7 +214,9 @@ export async function bundle(destination) {
       const [zigPlatform, checksum] = platforms[host];
       const archiveName = `zig-${zigPlatform}-${zigVersion}.${process.platform === 'win32' ? 'zip' : 'tar.xz'}`;
       const archive = path.join(cache, archiveName);
-      await download(`https://ziglang.org/download/${zigVersion}/${archiveName}`, archive, checksum);
+      const mirrors = zigMirrors.map(mirror => [Math.random(), `${mirror}/${archiveName}?source=tsuzuri-toolchain`])
+        .sort(([left], [right]) => left - right).map(([, url]) => url);
+      await download([...mirrors, `https://ziglang.org/download/${zigVersion}/${archiveName}`], archive, checksum);
       extractArchive(archive, extracted);
       const zig = path.join(extracted, `zig-${zigPlatform}-${zigVersion}`);
       await mkdir(path.join(stage, 'zig'), { recursive: true });

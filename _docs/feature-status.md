@@ -107,7 +107,7 @@
 | F08 | 未着手（計画）: 256-bit SIMD と関数単位の CPU 多版化 | [Simd](library-reference/simd.md) | [F08](../_features/F08-wide-simd-multiversioning.md) |
 | F09 | 未着手（計画）: strict な float / 64-bit GPU カーネルと実行時接続 | [GPU](guides/gpu.md) | [F09](../_features/F09-gpu-float-runtime.md) |
 | F10 | 未着手（計画）: Atomic / Mutex / Channel とスコープ付き並列 | [Task](language-reference/tasks.md) | [F10](../_features/F10-concurrency-primitives.md) |
-| F11 | 未着手（計画）: WASM のメモリ上限とスタックの指定 | [WASM](guides/webassembly.md) | [F11](../_features/F11-wasm-memory-limit.md) |
+| F11 | 対応（Phase 1・2）: WASM の build・test で `--wasm-max-memory`（wasm32 は最大 4 GiB − 64 KiB、wasm64 は 16 GiB）と `--wasm-stack-size`、root manifest の `[wasm]`、`--target wasm64`（memory64。Node.js 24 以降）。wasm32 の 2 GiB 超と threads は stack 溢れを入口で検査。既定は 16 MiB・1 MiB のまま。wasm64 の threads は対象外 | [WASM](guides/webassembly.md) | [F11](../_features/_completed/F11-wasm-memory-limit.md) |
 | F12 | 未着手（計画）: 境界検査の除去状況の計測と意味を保つ除去 | [性能](guides/performance.md) | [F12](../_features/F12-bounds-check-elimination.md) |
 | F13 | 未着手（計画）: ホスト提供の allocator、確保統計、freestanding 出力 | [C ABI](guides/native-interop.md) | [F13](../_features/F13-custom-allocators.md) |
 
