@@ -529,6 +529,19 @@ const suites = {
       assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf|@memcmp/);
     },
   },
+  bounds_checks: {
+    cases: [
+      // `3 * i + 1` for i < n sums to 3n(n - 1)/2 + n.
+      ...[0n, 1n, 5n, 1000n].flatMap((count) => ["forward", "backward", "builtin_length"]
+        .map((name) => [name, [count], 3n * count * (count - 1n) / 2n + count])),
+      ...[-1n, 0n, 2n, 3n, min, max].map((index) => ["pick", [index], 30n + (index >= 0n && index < 3n ? [10n, 20n, 30n][Number(index)] : 0n)]),
+      ["replaced", [0n], 0n], ["replaced", [1n], 0n],
+      ...[0n, 5n].map((count) => ["while_sum", [count], 3n * count * (count - 1n) / 2n + count]),
+      ...[-1n, 0n, 1n, 2n, 3n, 4n].map((start) => ["tail_walk", [start], start >= 0n && start < 3n ? [10n, 20n, 30n].slice(Number(start)).reduce((sum, value) => sum + value, 0n) : 0n]),
+    ],
+    traps: [["replaced", [2n]], ["other", [1n]], ["past_end", [0n]], ["past_end", [3n]], ["literal_past", [0n]]],
+    inspect(ir) { assert.doesNotMatch(ir, /llvm\.assume|!range| nsw | nuw /); },
+  },
 };
 
 const stringSamples = ["", "hello hello", "l", "a\0b", "\u{1f600}", "\ue000", " \tAbC\r\n", "\ud800", "\ude00", "aa"];

@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 34 件があります。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 32 件があります。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -51,7 +51,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、F11 は `done`（Phase 1・2）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1。Phase 2・3 は要承認で未着手）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1）、ほかは `todo` です。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
@@ -199,9 +199,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E09 | [ネットワーク API](E09-network.md) | P3 | XL | E08, B08 | todo |
 | E10 | [git／registry 依存・lockfile・版解決](E10-package-registry.md) | P2 | XL | E04, G11 | todo |
 | E11 | [C ヘッダーからの extern 生成](E11-c-bindgen.md) | P2 | L | E12 | todo |
-| E12 | [FFI の拡張（リンク名・ホストのリンク指定・不透明ハンドル・コールバック）](E12-ffi-extensions.md) | P1 | L | E05, E06, (B07) | todo |
+| E12 | [FFI の拡張（リンク名・ホストのリンク指定・不透明ハンドル・コールバック）](_completed/E12-ffi-extensions.md) | P1 | L | E05, E06, (B07) | done |
 | E13 | [ホスト言語バインディングと Web glue の生成](E13-host-bindings.md) | P2 | L | E05, E12, (F06), (F11) | todo |
-| E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | todo |
+| E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](_completed/E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | done |
 
 ### F. 並列・性能バックエンド
 
@@ -218,7 +218,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | F09 | [GPU の浮動小数点・64-bit カーネルと実行時接続](F09-gpu-float-runtime.md) | P3 | XL | F07, (C11) | todo |
 | F10 | [並行処理プリミティブ（Atomic・Mutex・Channel）](F10-concurrency-primitives.md) | P3 | XL | F01, B07, (A13), (C10) | todo |
 | F11 | [WASM メモリ上限の設定と拡張](_completed/F11-wasm-memory-limit.md) | P1 | M | – | done |
-| F12 | [境界検査の除去と検査コストの計測](F12-bounds-check-elimination.md) | P2 | L | – | todo |
+| F12 | [境界検査の除去と検査コストの計測](_completed/F12-bounds-check-elimination.md) | P2 | L | – | done |
 | F13 | [アロケーターの差し替え・確保統計・freestanding 出力](F13-custom-allocators.md) | P2 | L | (F11), (E12), (E14) | todo |
 
 ### G. ツール・開発体験
@@ -427,7 +427,7 @@ graph LR
 | [E09](E09-network.md) | D1（`Net`）、D11（wasm32 の将来の opt-in） |
 | [E10](E10-package-registry.md) | D1（`tsuzuri fetch` と `git`、`E2007`、D-29 の E04 記録の更新）、D10（Phase 2） |
 | [E11](E11-c-bindgen.md) | D1（`bindgen` と `W2002`） |
-| [E12](E12-ffi-extensions.md) | D1（`extern "symbol" def`）、D3（`extern type` の意味）、D6（`--link`・`-l`・`-L`）、D8（コールバックを Phase 1 に含める） |
+| [E12](_completed/E12-ffi-extensions.md) | D1（`extern "symbol" def`）、D3（`extern type` の意味）、D6（`--link`・`-l`・`-L`）、D8（コールバックを Phase 1 に含める）。すべて承認済みで実装済み |
 | E13・E14・F08・F13・G13・G14 | Phase 2 以降だけ（F11 の Phase 2 は承認済みで実装済み） |
 | [F09](F09-gpu-float-runtime.md) | D1（relaxed f32 の契約と名前）、D9・D10（Phase 2・3） |
 | [F10](F10-concurrency-primitives.md) | D1（`Atomic`・`Mutex`・`Sync`・`AtomicValue`・`Task.scope`）、D10（Phase 2 の `Channel`） |

@@ -151,14 +151,16 @@ impl FunctionEmitter<'_, '_> {
                 then_branch,
                 else_branch,
             } => {
-                let condition = self.expression(condition);
+                let test = self.expression(condition);
                 let temporary_base = self.temporaries.len();
                 let yes = self.label();
                 let no = self.label();
                 let merge = self.label();
-                self.branch(&condition, &yes, &no);
+                self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                let facts = self.ranges.enter_condition(self.module, condition);
                 let (then_value, mut frames) = self.frame_inner(then_branch);
+                self.ranges.leave_condition(facts);
                 let then_end = self.block.clone();
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);

@@ -61,9 +61,10 @@ impl FunctionEmitter<'_, '_> {
         let condition = self.expression(condition);
         self.branch(&condition, &work, &exit);
         self.begin(&work);
+        let reads = self.proven_reads;
         self.loop_body(body, &exit, &test);
         self.jump(&test);
-        self.hint_loop(body);
+        self.hint_loop(body, reads);
         self.begin(&exit);
     }
 
@@ -77,6 +78,7 @@ impl FunctionEmitter<'_, '_> {
     ) {
         let first = self.expression(start);
         let stride = self.expression(step);
+        // ranges.rs (R1, R2) relies on start, step and finish being evaluated once, before the loop.
         let last = self.expression(finish);
         let Type::Integer(bits, signed) = local.ty else {
             unreachable!("integer range checked")
@@ -114,6 +116,7 @@ impl FunctionEmitter<'_, '_> {
                 "store {ty} {current}, ptr {}",
                 self.locals[&local.id]
             ));
+            let reads = self.proven_reads;
             self.loop_body(body, &exit, &latch);
             self.jump(&latch);
             self.begin(&latch);
@@ -123,7 +126,7 @@ impl FunctionEmitter<'_, '_> {
             self.begin(&advance);
             self.instruction(format!("{next} = add {ty} {current}, {stride}"));
             self.jump(&work);
-            self.hint_loop(body);
+            self.hint_loop(body, reads);
         } else {
             let nonzero = self.value(format!("icmp ne {ty} {stride}, 0"));
             self.guard(&nonzero, TrapKind::RangeStepZero);
@@ -154,6 +157,7 @@ impl FunctionEmitter<'_, '_> {
                 "store {ty} {current}, ptr {}",
                 self.locals[&local.id]
             ));
+            let reads = self.proven_reads;
             self.loop_body(body, &exit, &advance);
             self.jump(&advance);
             self.begin(&advance);
@@ -169,7 +173,7 @@ impl FunctionEmitter<'_, '_> {
             self.instruction(format!("{next} = extractvalue {{ {ty}, i1 }} {sum}, 0"));
             let overflow = self.value(format!("extractvalue {{ {ty}, i1 }} {sum}, 1"));
             self.branch(&overflow, &exit, &test);
-            self.hint_loop(body);
+            self.hint_loop(body, reads);
         }
         self.begin(&exit);
     }
@@ -218,6 +222,7 @@ impl FunctionEmitter<'_, '_> {
             "store {ty} {narrowed}, ptr {}",
             self.locals[&local.id]
         ));
+        let reads = self.proven_reads;
         self.loop_body(body, &exit, &advance);
         self.jump(&advance);
         self.begin(&advance);
@@ -227,7 +232,7 @@ impl FunctionEmitter<'_, '_> {
             if descending { -1 } else { 1 }
         ));
         self.jump(&test);
-        self.hint_loop(body);
+        self.hint_loop(body, reads);
         self.begin(&exit);
     }
 

@@ -138,6 +138,16 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         }
         canonical.ty(&mut external.result);
         canonical.constraints(&mut external.constraints);
+        if let Some(link) = &mut external.link {
+            link.span = Span::default();
+            if let Some((_, span)) = &mut link.module {
+                *span = Span::default();
+            }
+        }
+    }
+    for handle in &mut program.extern_types {
+        Canonical::doc(&mut handle.doc);
+        canonical.ident(&mut handle.name);
     }
     for constant in &mut program.constants {
         Canonical::doc(&mut constant.doc);

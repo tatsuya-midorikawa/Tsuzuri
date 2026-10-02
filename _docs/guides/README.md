@@ -8,7 +8,7 @@
 | --- | --- |
 | [F# からの移行](from-fsharp.md) | 似た構文の違い、所有権、task、非互換機能 |
 | [API 設計とスタイル](style-and-design.md) | 型と所有権の選択、データ構造、失敗、テスト |
-| [C ホスト連携](native-interop.md) | object / header、export、extern、バッファ、信頼境界 |
+| [C ホスト連携](native-interop.md) | object / header、export、extern、リンク名、ハンドル、コールバック、ホストのリンク指定、バッファ、信頼境界 |
 | [WebAssembly](webassembly.md) | Number / BigInt、memory、文字列、SIMD opt-in |
 | [WASM threads](wasm-threads.md) | Node Worker pool、shared memory、失敗、ブラウザーの条件 |
 | [GPU](gpu.md) | CPU 参照、strict WGSL、WebGPU host、現在の限界 |

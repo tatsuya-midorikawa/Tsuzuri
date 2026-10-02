@@ -6,6 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "parse_control.rs"]
 mod control;
 
+/// What follows `extern` at the top level.
+enum ExternDeclaration {
+    Type(ExternTypeDecl),
+    Function(SignatureDecl),
+}
+
 fn duplicate_active_case(case: &Ident) -> Diagnostic {
     Diagnostic::new(
         "E1020",
@@ -221,6 +227,7 @@ impl Parser<'_> {
             type_aliases: Vec::new(),
             constants: Vec::new(),
             externs: Vec::new(),
+            extern_types: Vec::new(),
             records: Vec::new(),
             unions: Vec::new(),
             functions: Vec::new(),
@@ -252,16 +259,15 @@ impl Parser<'_> {
                     }
                 }
                 if self.eat(&TokenKind::Extern) {
-                if self.eat(&TokenKind::Export) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", self.current().span)); }
-                self.expect(&TokenKind::Def, "'def' after extern")?;
-                let name = self.ident()?;
-                if defined_names.contains(&name.text) || signatures.contains_key(&name.text) { return Err(Diagnostic::new("E1001", "duplicate extern or function declaration", name.span)); }
-                self.expect(&TokenKind::DoubleColon, "'::' after the extern name")?;
-                let mut signature = self.signature(name.clone(), false, column)?;
-                signature.doc = doc;
-                signature.visibility = visibility;
-                defined_names.insert(name.text);
-                program.externs.push(signature);
+                match self.extern_declaration(doc, visibility, column, &|name| {
+                    defined_names.contains(name) || signatures.contains_key(name)
+                })? {
+                    ExternDeclaration::Type(declaration) => program.extern_types.push(declaration),
+                    ExternDeclaration::Function(signature) => {
+                        defined_names.insert(signature.name.text.clone());
+                        program.externs.push(signature);
+                    }
+                }
                 self.eat(&TokenKind::Semicolon);
             } else if self.eat(&TokenKind::Type) {
                 let mut declaration = self.type_alias(visibility, column)?;
@@ -1116,6 +1122,7 @@ impl Parser<'_> {
             parameters,
             result,
             constraints,
+            link: None,
         })
     }
 
@@ -2506,6 +2513,101 @@ impl Parser<'_> {
         };
         let end = self.tokens[self.position - 1].span;
         self.make(kind, start.through(end), 1)
+    }
+
+    /// Parses what follows `extern`: an optional link name, then `type Name`
+    /// or `def name :: signature`. `taken` tells whether a name is declared already.
+    /// This stays out of `program_all` so the top-level loop's frame does not grow.
+    fn extern_declaration(
+        &mut self,
+        doc: Option<Documentation>,
+        visibility: Visibility,
+        column: usize,
+        taken: &dyn Fn(&str) -> bool,
+    ) -> Result<ExternDeclaration, Diagnostic> {
+        let link = self.link_name()?;
+        if self.eat(&TokenKind::Type) {
+            if let Some(link) = &link {
+                let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "extern type declarations take no link name; remove the string",
+                    first,
+                ));
+            }
+            let name = self.ident()?;
+            if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "extern type declarations have no type parameters or definition",
+                    self.current().span,
+                ));
+            }
+            return Ok(ExternDeclaration::Type(ExternTypeDecl {
+                doc,
+                visibility,
+                name,
+            }));
+        }
+        if self.eat(&TokenKind::Export) {
+            return Err(Diagnostic::new(
+                "E1008",
+                "extern declarations cannot be exported",
+                self.current().span,
+            ));
+        }
+        self.expect(&TokenKind::Def, "'def' after extern")?;
+        let name = self.ident()?;
+        if taken(&name.text) {
+            return Err(Diagnostic::new(
+                "E1001",
+                "duplicate extern or function declaration",
+                name.span,
+            ));
+        }
+        self.expect(&TokenKind::DoubleColon, "'::' after the extern name")?;
+        let mut signature = self.signature(name, false, column)?;
+        signature.doc = doc;
+        signature.visibility = visibility;
+        signature.link = link;
+        Ok(ExternDeclaration::Function(signature))
+    }
+
+    /// Reads the optional strings of `extern "symbol" def` and `extern "module" "symbol" def`.
+    fn link_name(&mut self) -> Result<Option<Box<LinkName>>, Diagnostic> {
+        let mut strings = Vec::new();
+        while matches!(self.current().kind, TokenKind::String(_)) {
+            let token = self.take();
+            if strings.len() == 2 {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "extern takes at most two link name strings; write extern \"symbol\" def or extern \"module\" \"symbol\" def",
+                    token.span,
+                ));
+            }
+            let text = match token.kind {
+                TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16(&units)
+                    .map_err(|_| {
+                        Diagnostic::new(
+                            "E0002",
+                            "extern link names must contain valid Unicode scalars",
+                            token.span,
+                        )
+                    })?,
+                TokenKind::String(StringLiteral::Utf8(text)) => text,
+                _ => unreachable!("the loop admits only string tokens"),
+            };
+            strings.push((text, token.span));
+        }
+        let symbol = strings.pop();
+        let module = strings.pop();
+        Ok(symbol.map(|(symbol, span)| {
+            Box::new(LinkName {
+                module,
+                symbol,
+                span,
+            })
+        }))
     }
 
     fn test_declaration(&mut self) -> Result<TestDecl, Diagnostic> {

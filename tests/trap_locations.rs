@@ -46,6 +46,50 @@ fn emitted_guards_record_source_sites_without_success_path_reports() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn run_reports_probable_stack_exhaustion() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-stack-cli-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    // The multiplication keeps the recursion non-tail, so LLVM cannot turn it into a loop.
+    fs::write(
+        root.join("Main.tz"),
+        "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\nexport def deep :: i64 -> i64\nfn deep n = depth n\n\ndef main :: i64 = deep 100000000\n",
+    )
+    .unwrap();
+    for optimization in ["-O0", "-O3"] {
+        for json in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
+            command.arg("run").arg(&root);
+            if json {
+                command.arg("--json");
+            }
+            let result = command.arg(optimization).output().unwrap();
+            assert_eq!(result.status.code(), Some(1));
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert!(stderr.contains("E2005"), "{stderr}");
+            assert!(
+                stderr.contains("the stack was probably exhausted by deep recursion"),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("may have trapped"), "{stderr}");
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn trap_table_is_deterministic_and_uses_the_source_map() {
     let sources = [

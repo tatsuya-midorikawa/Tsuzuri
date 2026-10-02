@@ -1,0 +1,56 @@
+extern type Counter
+extern "sqrt" def c_sqrt :: f64 -> f64
+extern "env" "e12_host_now" def host_now :: unit -> i64
+extern "e12_counter_new" def counter_new :: i64 -> Counter
+extern "e12_counter_add" def counter_add :: ref Counter -> i64 -> i64
+extern "e12_counter_free" def counter_free :: Counter -> i64
+extern "e12_add_one" def add_one :: i64 -> i64
+extern "e12_apply_twice" def apply_twice :: (i64 -> i64) -> i64 -> i64
+extern "e12_fold" def fold_host :: (i64 -> i64 -> i64) -> i64 -> i64
+extern "e12_run" def run_host :: (unit -> i64) -> i64
+extern "e12_visit" def visit :: (ref Counter -> i64) -> ref Counter -> i64
+
+private def triple :: i64 -> i64
+fn triple value = value * 3
+
+private def via_host :: i64 -> i64
+fn via_host value = add_one value
+
+private def boom :: i64 -> i64
+fn boom value =
+    assert (value < 0)
+    value
+
+private def add_pair :: i64 -> i64 -> i64
+fn add_pair total item = total + item
+
+private def answer :: unit -> i64
+fn answer _ = 42
+
+private def peek_five :: ref Counter -> i64
+fn peek_five counter = counter_add counter 5
+
+export def counters :: i64 -> i64
+fn counters start =
+    let counter = counter_new start
+    let first = counter_add (&counter) 5
+    let second = counter_add (&counter) 7
+    first + second + counter_free counter
+
+export def callbacks :: i64 -> i64
+fn callbacks value = apply_twice triple value + apply_twice via_host 1
+
+export def callback_shapes :: i64 -> i64
+fn callback_shapes start =
+    let counter = counter_new start
+    let seen = visit peek_five (&counter)
+    seen + counter_free counter + fold_host add_pair 4 + run_host answer
+
+export def callback_trap :: i64 -> i64
+fn callback_trap value = apply_twice boom value
+
+export def misc :: f64 -> i64
+fn misc value = if c_sqrt value == 1.5 then host_now () else 0
+
+export def pass_through :: Counter -> Counter
+fn pass_through counter = counter

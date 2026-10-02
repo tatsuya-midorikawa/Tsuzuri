@@ -1,5 +1,5 @@
 use super::*;
-use crate::abi::{Buffer, field_name, out_result};
+use crate::abi::{Buffer, abi_scalar, field_name, out_result};
 
 pub(super) fn extended(function: &CheckedFunction) -> bool {
     function.exported
@@ -7,7 +7,7 @@ pub(super) fn extended(function: &CheckedFunction) -> bool {
             .signature
             .parameters
             .iter()
-            .any(|ty| !ty.exportable())
+            .any(|ty| !abi_scalar(ty))
             || out_result(&function.signature.result))
 }
 
@@ -19,13 +19,59 @@ pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
     module.functions.iter().any(|function| {
         extended(function)
             || (matches!(function.body.kind, TypedExprKind::HostCall(..))
-                && (function
-                    .signature
-                    .parameters
-                    .iter()
-                    .any(|ty| !ty.exportable() && *ty != Type::Unit)
-                    || out_result(&function.signature.result)))
+                && (function.signature.parameters.iter().any(|ty| {
+                    !abi_scalar(ty) && *ty != Type::Unit && !matches!(ty, Type::Function(..))
+                }) || out_result(&function.signature.result)))
     })
+}
+
+/// The C typedef name of an `extern type`, spelled like `record_name` so that
+/// module boundaries cannot collide (`A_B.C` and `A.B_C` differ).
+pub(super) fn handle_c_name(name: &str) -> String {
+    let mut text = String::from("tz_handle");
+    for segment in name.split('.') {
+        let _ = write!(text, "_{}{segment}", segment.len());
+    }
+    text
+}
+
+/// Typedefs for the extern handles that the header's prototypes mention, in name order.
+pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
+    fn visit(ty: &Type, names: &mut BTreeSet<String>) {
+        match ty {
+            Type::Handle(name) => {
+                names.insert(name.to_string());
+            }
+            Type::Reference(inner, _) => visit(inner, names),
+            Type::Function(parameters, result) => {
+                parameters.iter().for_each(|ty| visit(ty, names));
+                visit(result, names);
+            }
+            _ => {}
+        }
+    }
+    let mut names = BTreeSet::new();
+    for function in module.functions.iter().filter(|function| {
+        // An explicit import has no prototype in the header.
+        host_function(function)
+            && !matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.explicit)
+    }) {
+        for ty in function
+            .signature
+            .parameters
+            .iter()
+            .chain([&function.signature.result])
+        {
+            visit(ty, &mut names);
+        }
+    }
+    names
+        .iter()
+        .map(|name| {
+            let c_name = handle_c_name(name);
+            format!("typedef struct {c_name}_s *{c_name};\n")
+        })
+        .collect()
 }
 
 pub(super) fn record_name(ty: &Type, module: &CheckedModule) -> String {
@@ -193,6 +239,16 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         if *ty == Type::Unit {
             continue;
         }
+        if let Type::Function(inputs, output) = ty {
+            // A callback is a C function pointer; a lone `unit` input is `void`.
+            let inputs = if matches!(inputs.as_slice(), [Type::Unit]) {
+                "void".to_owned()
+            } else {
+                inputs.iter().map(c_type).collect::<Vec<_>>().join(", ")
+            };
+            parameters.push(format!("{} (*arg{index})({inputs})", c_type(output)));
+            continue;
+        }
         let inner = if let Type::Reference(inner, false) = ty {
             inner.as_ref()
         } else {
@@ -218,10 +274,21 @@ pub(super) fn allocator() -> &'static str {
     "\ndefine weak ptr @tsuzuri_alloc(i64 %size) nounwind {\nentry:\n  %valid = icmp sge i64 %size, 0\n  br i1 %valid, label %allocate, label %bad\nbad:\n  call void @llvm.trap()\n  unreachable\nallocate:\n  %empty = icmp eq i64 %size, 0\n  %bytes = select i1 %empty, i64 1, i64 %size\n  %value = call ptr @tz.alloc(i64 %bytes)\n  ret ptr %value\n}\ndefine weak void @tsuzuri_free(ptr %value) nounwind {\nentry:\n  call void @tz.free(ptr %value)\n  ret void\n}\n"
 }
 
+/// What a C-ABI wrapper is for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WrapperKind {
+    /// The public `tz_<name>` of an `export def`.
+    Export,
+    /// An internal `tz.callback.<name>` whose address goes to the host.
+    Callback,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn wrapper(
     module: &CheckedModule,
     function: &CheckedFunction,
     id: usize,
+    kind: WrapperKind,
     builtins: &mut Builtins,
     intrinsics: &mut BTreeSet<String>,
     globals: &mut Globals,
@@ -250,6 +317,11 @@ pub(super) fn wrapper(
     }
     let mut values = Vec::new();
     for (index, ty) in function.signature.parameters.iter().enumerate() {
+        // A callback over `unit` has no C parameter.
+        if *ty == Type::Unit {
+            values.push(format!("{} 0", emitter.ty(ty)));
+            continue;
+        }
         let inner = if let Type::Reference(inner, false) = ty {
             inner.as_ref()
         } else {
@@ -298,6 +370,13 @@ pub(super) fn wrapper(
                 value
             };
             values.push(format!("{} {value}", emitter.ty(ty)));
+        } else if let Type::Reference(handle, false) = ty
+            && matches!(handle.as_ref(), Type::Handle(_))
+        {
+            // The host passes the handle itself; a borrow needs it in a slot.
+            parameters.push(format!("ptr %arg{index}"));
+            let slot = emitter.spill(handle, &format!("%arg{index}"));
+            values.push(format!("ptr {slot}"));
         } else {
             parameters.push(format!("{} %arg{index}", abi_type(ty)));
             let value = emitter.decode_host_scalar(ty, &format!("%arg{index}"));
@@ -332,13 +411,15 @@ pub(super) fn wrapper(
     } else {
         abi_type(result)
     };
-    emitter
-        .auxiliary(&format!(
-            "{result} @tz_{}({})",
-            function.name,
-            parameters.join(", ")
-        ))
-        .replacen("define internal ", "define ", 1)
+    let name = match kind {
+        WrapperKind::Export => format!("tz_{}", function.name),
+        WrapperKind::Callback => format!("tz.callback.{}", function.qualified_name()),
+    };
+    let definition = emitter.auxiliary(&format!("{result} @{name}({})", parameters.join(", ")));
+    match kind {
+        WrapperKind::Export => definition.replacen("define internal ", "define ", 1),
+        WrapperKind::Callback => definition,
+    }
 }
 
 fn record_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {

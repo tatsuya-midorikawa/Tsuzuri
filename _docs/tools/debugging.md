@@ -70,6 +70,32 @@ native は stderr の reporter、WASM は import 不要の `tsuzuri_trap_site()`
 
 run の異常終了は E2005 です。run --json では子プロセスの stderr を診断 message に含め、生の trap 行を別に出しません。正常時の stdout / stderr は通常どおり転送します。
 
+トラップの位置が出ないまま SIGSEGV / SIGBUS で終わった場合、run は「スタック枯渇の可能性が高い」ことを E2005 で報告します。再帰が深すぎるときの典型的な終わり方で、再帰を浅くするかループにします。`tsuzuri test` も同じ signal の失敗理由に、スタック枯渇の可能性を書き添えます。これは子プロセスの終了状態からの推定で、メモリ破壊の確認ではありません。
+
+WASM のホストは、同梱の `createBoundary` でトラップを値として受け取れます。`sites` に side table の `sites` を渡すと、トラップの種類と位置まで返します。
+
+```sh
+./target/release/tsuzuri build target/wasm-demo/Div.tz --target wasm32 --trap-info -o target/div.wasm
+```
+
+```javascript
+import { readFileSync } from "node:fs";
+import { createBoundary } from "./src/runtime/trap-boundary.mjs";
+
+const module = new WebAssembly.Module(readFileSync("target/div.wasm"));
+const { sites } = JSON.parse(readFileSync("target/div.wasm.trap.json", "utf8"));
+const boundary = createBoundary(module, { sites });
+
+console.log(boundary.call("tz_div", 7n, 2n));
+// { ok: true, value: 3n }
+console.log(boundary.call("tz_div", 7n, 0n));
+// { ok: false, trap: { reason: "trap", site, kind: "integer division by zero", path, line, column } }
+```
+
+`reason` は `"trap"`（`WebAssembly.RuntimeError`）と `"stack"`（V8 の `RangeError`）です。`site` が 0 の `"trap"` は、`--trap-info` なしの build か、Tsuzuri の位置を持たないエンジンのトラップです。トラップは巻き戻さないため、失敗した instance の heap と shadow stack は途中の状態です。境界はその instance を捨て、次の `call` で同じ module から作り直します。ホストの import 関数が投げた例外は、同じ object のまま再送出します。
+
+threads の module は `createBoundary` に渡せません。`createThreadPool` の pool が単位で、worker の失敗後は pool を再利用せず閉じてください。
+
 trap-info は例外処理、巻き戻し、完全な stack trace を追加しません。ソース位置と理由を付ける機能です。後からリンクする補助関数の内部 trap は対象外の場合があります。
 
 ## ソースレベルのデバッグ

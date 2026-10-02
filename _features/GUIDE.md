@@ -910,7 +910,7 @@ fn rejects(source: &str, code: &str) {
 | 種別 | 仮の名前 | チケット | 要承認 |
 | --- | --- | --- | --- |
 | 構文 | `$"..."`・`u8$"..."`（文字列補間） | D07 | はい |
-| 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | はい |
+| 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | いいえ（承認済み・実装済み） |
 | 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | はい |
 | 構文 | `const def` | D11 | いいえ（Phase 1） |
 | 組み込みクラス・builtin | `AtomicValue`、`Task.scope`、構築関数 `create`（`new` は予約語） | F10 | はい |
@@ -935,7 +935,7 @@ fn rejects(source: &str, code: &str) {
 | CLI | `--wasm-feature tail-call` | PM09 | はい |
 | CLI | `--wasm-host wasi` | E08 | はい |
 | CLI | `--trap-mode`（Phase 2） | E14 | はい |
-| CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | はい |
+| CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | いいえ（承認済み・実装済み） |
 | CLI | `--profile-generate`・`--profile-use` | PR07 | いいえ |
 | CLI | `-Os`・`-Oz`・`--strip` | PM08 | いいえ |
 | CLI | `--backend llvm\|fast` | PB05 | はい |

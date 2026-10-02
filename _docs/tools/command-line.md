@@ -60,12 +60,16 @@ library / WASM 出力はトップレベルコードを自動実行しません�
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16MiB、64 KiB の倍数で wasm32 は最大 4GiB-64KiB、wasm64 は最大 16GiB |
 | `--wasm-stack-size SIZE` | WASM の main stack。既定 1MiB、16 の倍数で 64 KiB 以上 |
 | `--no-cache` | build / run の成果物 cache の読み書きを無効化 |
+| `--link PATH` | native の実行ファイルへホストの object / static library をリンク。繰り返し可 |
+| `-l NAME`, `-L DIR` | system library を名前（`-l sqlite3`）でリンクし、`-L` で探索先を追加。繰り返し可 |
 | `-g`, `--debug-info` | DWARF 情報を追加 |
 | `--trap-info` | トラップ理由・位置と side table を追加。run は既定で有効 |
 | `--debug-output` | WASM の Debug 出力をホスト import へ接続 |
 | `--deny-warnings` | check / build / run を警告だけでも失敗させる |
 
 native CPU 指定を WASM / LLVM IR / header に使うことはできません。WASM feature は check / run / native / header には指定できず、threads は LLVM テキスト出力にも指定できません。未知・重複 feature はエラーです。
+
+`--link`・`-l`・`-L` は値を次の引数で渡し（`=` 形式は受けません）、合計 256 個までです。`-l` は `lib` 接頭辞と拡張子を付けない名前です。root package の `Tsuzuri.toml` の `[native]`（`link`・`libraries`・`search`）も同じ入力を指定し、コマンドラインより前に連結します。入力は build / run / test が native の実行ファイルを作るときだけ有効で、WASM、exe 以外の `--emit`、check / fmt への指定、同じ入力の重複、不正な `-l` 名、依存 package の `[native]` は `E2000` です（manifest の `[native]` は前者では無視します）。入力がある間は成果物 cache を使いません。詳しくは [C ホスト連携](../guides/native-interop.md#ホストの-object-とライブラリをリンクする)を参照してください。
 
 SIZE はバイト数か、`KiB`・`MiB`・`GiB` を付けた整数です（例 `67108864`、`64MiB`）。接尾辞は大文字小文字を区別し、値は次の引数で渡します（`=` 形式は受けません）。`--wasm-max-memory` は WASM の build（wasm・object・llvm 出力）と `test --target wasm32`／`wasm64`、`--wasm-stack-size` は WASM の wasm 出力と test だけで使えます。上限は stack + 64 KiB 以上が必要です。それ以外の action・出力、範囲外の値、重複は `E2000` で、静的データが上限に収まらないリンクは `E2002` です。object / llvm を自分でリンクするときは wasm-ld へ同じ `--max-memory` を渡します（wasm64 は `-mwasm64` も）。
 root package の `Tsuzuri.toml` の `[wasm]` の `max-memory`・`stack-size` は、その指定が効く出力での既定値で、コマンドラインが優先します。詳しくは[WebAssembly ガイド](../guides/webassembly.md#ブラウザーとメモリ)を参照してください。
@@ -101,7 +105,7 @@ WGSL 出力は専用の制約を持ち、target / optimization / cpu / debug オ
 
 ## 出力保護と終了コード
 
-出力省略時は選択した入力ファイルの拡張子を変更します。失敗時は既存成果物を維持し、ソースや manifest、その別名、symlink への出力を拒否します。文書生成ディレクトリには別の marker 規則があります。
+出力省略時は選択した入力ファイルの拡張子を変更します。失敗時は既存成果物を維持し、ソースや manifest、その別名、symlink への出力を拒否します。リンク入力を上書きする出力も拒否し（`E2003`）、読めないリンク入力は `E2001` です。文書生成ディレクトリには別の marker 規則があります。
 
 終了コードは成功 0、ソース・I/O・ツール・実行エラー 1、CLI 引数構成の誤り 2 です。拡張子や入力ファイル種別の拒否はソースエラーとして 1 になる場合があります。
 

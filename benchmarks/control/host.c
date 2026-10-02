@@ -27,6 +27,7 @@ DECLARE(for_mix)
 DECLARE(tail_mix)
 DECLARE(match_dispatch)
 DECLARE(array_sum)
+DECLARE(array_index_sum)
 DECLARE(array_copy)
 DECLARE(list_sum)
 DECLARE(closure_capture)
@@ -92,6 +93,7 @@ int main(int argc, char **argv) {
         WORKLOAD_AS(tail_mix, tail_builtin_mix, quick ? 1024 : 8000000),
         WORKLOAD(match_dispatch, quick ? 1024 : 8000000),
         WORKLOAD(array_sum, quick ? 1024 : 4000000),
+        WORKLOAD(array_index_sum, quick ? 1024 : 4000000),
         WORKLOAD(array_copy, quick ? 1024 : 2000000),
         WORKLOAD(list_sum, quick ? 1024 : 100000),
         WORKLOAD(closure_capture, quick ? 1024 : 1000000),

@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | G04, E05, (B06) |
 | 後続 | F13 Phase 2 |
-| 状態 | todo |
+| 状態 | done（Phase 1。Phase 2・3 は要承認で未着手） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要。要承認: D6（Phase 2: native object の setjmp/longjmp 境界と `--trap-mode return`）, D7（Phase 2: 確保 list と worker の境界）, D9（Phase 3: signal handler によるスタック枯渇の報告） |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: native ホストに組み込んだ関数のトラップでホストのプロセス全体が終了し、スタック枯渇は理由なしに異常終了する |
@@ -563,3 +563,51 @@ Phase 1 は生成コードを変えないので計測しない。`createBoundary
 - 理由: GUIDE D-30 の割り当て対象（予約語・診断コード・組み込みクラス・std 名）ではない。runtime の `tsuzuri_` 接頭辞は `tz_` の export と衝突しない。
   元の `tz_try_name` は `export def try_name` の `tz_try_name` と衝突する（見直し提案として改名した）。
 - 状態: 既定案（実装者はこの案に従う。Phase 2・3 の名前は D6・D9 の承認に含める）
+
+## 実装と検証（2026-10-02、Phase 1）
+
+Phase 1（手順 1–9）を実装した。Phase 2（D6: native object の `setjmp`/`longjmp` 境界と `--trap-mode return`、D7: 確保 list と worker の境界）と
+Phase 3（D9: signal handler によるスタック枯渇の報告）は要承認のため着手していない（`setjmp`・`sigaction`・`--trap-mode` を使っていない）。
+F12 と同じ作業ツリーで実装した（着手時の HEAD は `30b2d1d`、未コミット）。コミットは作っていない。
+
+### 実装
+
+- `src/driver.rs`: `probable_stack_exhaustion`（unix では `ExitStatusExt::signal` が SIGSEGV と SIGBUS のとき真。SIGBUS は Linux で 7、macOS・BSD で 10。
+  unix 以外は常に偽）、`run` の既定の message（site が見つからず推定が真のとき診断表の文。`--json` で stderr がある場合の既存の分岐は変えない）、
+  単体テスト `probable_stack_exhaustion_matches_segv_and_bus`。
+- `src/test_runner.rs`: `termination_reason`（子プロセスの終了理由。`code()` があれば従来の `trapped or exited with code N`、SIGSEGV／SIGBUS なら
+  `terminated by signal N; the stack was probably exhausted by deep recursion`、ほかの signal は従来の `trapped or terminated by signal`）、
+  単体テスト `execute_test_names_stack_exhaustion_signals`。
+- `src/runtime/trap-boundary.mjs`（新規、57 行）: `createBoundary(module, { imports, sites })`。D2–D4 の規則（例外が出た instance を捨てる、古い instance へは
+  `tsuzuri_trap_site` を一度だけ呼ぶ、ホストの例外は同じ object を再送出、threads の module は拒否、未知の export は `TypeError`）。`node:` の import・class・非同期 API は使っていない。
+- テスト: `tests/trap_boundary.mjs`（新規、17 case × `-O0`・`-O3`）、`tests/fixtures/trap_boundary/Main.tz`・`tests/fixtures/trap_boundary_host/Main.tz`（新規）、
+  `tests/trap_locations.rs` の `run_reports_probable_stack_exhaustion`（新規）。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/tools/debugging.md`、`_docs/guides/webassembly.md`、`_docs/guides/native-interop.md`、
+  `README.md`（テスト一覧）、`_docs/feature-status.md`、`_features/README.md`。生成 IR・object・`.wasm`・header・`.trap.json`・runtime の C と `.ll` は変えていない。
+
+### 決定事項への追記（チケットから外れた判断）
+
+- 判断なし。仕様の message・分類・名前（D1–D5、D10）のまま実装した。終了理由の組み立ては `execute_test` の分岐ではなく関数 `termination_reason` に出した
+  （`code()` の分岐も同じ関数に入る。表示される文字列は変わらない）。
+- `tests/trap_locations.rs` の既存 7 テストは変えていない。新しい 1 件を足して 8 件になった。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD 23.1.1、rustc 1.98.1、Node v20.17.0 と v24.21.0）
+
+- 手順 1: `cargo test --locked --test trap_locations` が 7 passed。tasks・wasm_threads の suite が成功。sample（`/tmp/tz-e14/deep`）の IR・object・wasm・`.trap.json` を `/tmp/tz-e14/before.*` に保存した。
+- 手順 2–4: `cargo test --locked --lib probable_stack_exhaustion` が 1 passed、`--test trap_locations` が 8 passed、`--lib execute_test_names_stack_exhaustion_signals` が 1 passed、
+  `--lib test_runner` が成功。実機で `tsuzuri run /tmp/tz-e14/deep -O3` が `E2005: program terminated with signal: 11 (SIGSEGV); the stack was probably exhausted by deep recursion; reduce the recursion depth or use a loop`、
+  `tsuzuri test /tmp/tz-e14/deeptest` が `failure: terminated by signal 11; the stack was probably exhausted by deep recursion` を報告した。
+- 手順 5・6: `node --check src/runtime/trap-boundary.mjs` が成功し、`grep -n "node:"` は何も出さない。`node tests/trap_boundary.mjs target/release/tsuzuri` が Node 20.17.0 と 24.21.0 で
+  `Trap boundary -O0: 17 cases` と `Trap boundary -O3: 17 cases` を出して成功（import 空、`site` と行・列の照合、スタック枯渇後の再実行、ホスト例外の同一性、threads の拒否を含む）。
+- 手順 7: 最終のコンパイラで sample を同じ 3 つの形に build し直し、`before.ll`・`before.o`・`before.wasm`・`before.wasm.trap.json` と `cmp` で一致した（4 組）。
+- 手順 8: `node scripts/check-docs.mjs` が全体で成功した（83 pages・746 links・141 checked examples・246 native runs（O0/O3）・9 test projects）。`git diff --check` が空。
+- 手順 9: `node tests/trap_boundary.mjs`（17 case、Node 20.17.0 と 24.21.0）、`tests/tasks.mjs`（41 結果・4 trap）、`tests/wasm_threads.mjs`、`tests/host_imports.mjs` を含む
+  29 項目の gate script がすべて成功した（29 PASS・0 FAIL。内訳は E12 の記録と同じ）。
+- 全体: `cargo test --locked` は 548 passed・0 failed（F12・E12 を含む作業ツリー全体）。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。
+  §3.1 の stack-depth 3 テストが成功。`git diff --check` が空。
+- 性能: 生成コードを変えていないので計測していない。`createBoundary` の作り直しの費用は計測していないので主張しない。
+
+### 残作業
+
+- Phase 2（native object の境界、`tsuzuri_try_<name>`、確保 list）と Phase 3（signal handler）。いずれも D6・D7・D9 の承認が前提。
+- native の `tsuzuri run`／`test` の報告は終了 signal からの推定で、実行ファイル自身は理由を出さない。ホストへ組み込んだ native object のトラップはプロセスを終了させるまま。

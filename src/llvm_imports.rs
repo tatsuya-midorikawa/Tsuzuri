@@ -8,6 +8,10 @@ pub(super) fn header(module: &CheckedModule) -> String {
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        // An explicit symbol belongs to the host, whose own header declares it.
+        if import.explicit {
+            continue;
+        }
         let parameters = host_abi::c_parameters(function, module);
         let _ = writeln!(
             output,
@@ -41,6 +45,19 @@ impl FunctionEmitter<'_, '_> {
             None
         };
         for argument in arguments {
+            if matches!(argument.ty, Type::Function(..)) {
+                // A callback reaches the host as the address of its C-ABI wrapper.
+                let TypedExprKind::Function(FunctionRef::User(id)) = &argument.kind else {
+                    unreachable!("validated callback arguments name a function");
+                };
+                self.globals.callbacks.insert(*id);
+                types.push("ptr".into());
+                values.push(format!(
+                    "ptr @tz.callback.{}",
+                    self.module.functions[*id].qualified_name()
+                ));
+                continue;
+            }
             let value = self.expression(argument);
             if argument.ty == Type::Unit {
                 continue;
@@ -75,6 +92,13 @@ impl FunctionEmitter<'_, '_> {
                 values.push(format!("ptr {slot}"));
                 continue;
             }
+            if matches!(argument.ty, Type::Reference(..)) && matches!(inner, Type::Handle(_)) {
+                // The host takes the handle itself, not the address of the borrowed slot.
+                let handle = self.value(format!("load ptr, ptr {value}"));
+                types.push("ptr".into());
+                values.push(format!("ptr {handle}"));
+                continue;
+            }
             let input = self.ty(&argument.ty);
             let abi = abi_type(&argument.ty);
             let value = match argument.ty {
@@ -94,8 +118,8 @@ impl FunctionEmitter<'_, '_> {
         };
         let attributes = if self.globals.wasm {
             format!(
-                " \"wasm-import-module\"=\"tsuzuri\" \"wasm-import-name\"=\"{}\"",
-                import.wasm_name
+                " \"wasm-import-module\"=\"{}\" \"wasm-import-name\"=\"{}\"",
+                import.wasm_module, import.wasm_name
             )
         } else {
             String::new()

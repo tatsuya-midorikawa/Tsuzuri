@@ -45,7 +45,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
 | `src/llvm_debug.rs` | 共通採番によるDWARFメタデータ、型・変数・関数と式のソース位置 |
-| `src/llvm_imports.rs` | externのABI wrapper、WASM import属性、所有結果の受領検査 |
+| `src/llvm_imports.rs` | externのABI wrapper、リンク名とWASM import属性、コールバック引数、所有結果の受領検査 |
 | `std/IO.tc` / `src/llvm_io.rs` / `src/runtime/io.c` | 不透明なIOモナド、入口での実行、標準ストリーム、WASMホスト境界 |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit vector/mask型、lane型族、境界検査とLLVM vector lowering |
 | `src/llvm_control.rs` | 直接の反復・switch・定数表、パターン手順の分岐と全経路の解放 |
@@ -56,6 +56,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/recursive.rs` / `src/llvm_recursive.rs` / `src/runtime/recursive.ll` | 具体型ごとの再帰成分、所有ノード、追加確保なしの解放と反復複製 |
 | `src/llvm_frame.rs` | `new` なしのリテラルのフレーム領域、実行時のアドレス判定、スコープ外への移動時のヒープ移送、フレームを考慮した解放 |
 | `src/call_specialization.rs` | 非 escaping な関数引数の固定点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker の特殊化予算 |
+| `src/ranges.rs` | 型付き IR 上の配列添字の範囲証明（規則 R1–R5）と関数ごとの `RangeFacts`。証明できた添字だけ境界検査の分岐を省く |
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数による f16／f128／decimal 演算、比較、広幅／形式間の変換、最短往復表示・解析 |
 | `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な符号化変換、ネイティブ確保、WASM の再利用・結合可能なヒープ |
 | `src/runtime/closure.ll` | 関数値の環境の複製と解放。環境ごとの処理は LLVM emitter が生成 |
@@ -124,6 +125,12 @@ memory省略時はbytesのimport sectionからenv.memoryのmaxを読み、initia
 Worker trap/初期化失敗は共有failedとlock poison bitを公開して全waitを解除します。以後の実行は拒否し、trap後の解放は保証しません。通常の言語Resultとは別です。
 tests/wasm_threads.mjsはO0/O3のstack sentinel、workerのstack溢れのトラップ、atomic barrier、heap残量、入れ子、bulk、失敗、object、SIMD/debug併用と決定性を検証します。
 
+src/runtime/trap-boundary.mjsは単一スレッドのWASM向けの同梱JSホストで、コンパイラは参照せず、生成物も変えません。createBoundary(module, { imports, sites })のcallがexport呼び出し1回を境界にします。
+WebAssembly.RuntimeErrorは{ reason: "trap", site }とside tableの位置、V8のRangeError（SpiderMonkeyはInternalError）によるstack枯渇は{ reason: "stack" }で返します。ホストimportの例外は同じobjectのまま再送出します。
+トラップは巻き戻さないため、例外の出たinstanceは分類のためtsuzuri_trap_siteを一度呼ぶ以外は二度と使わず、次のcallで同じmoduleから作り直します。threadsのmoduleは拒否し、単位は既存のcreateThreadPoolのpoolです。
+nativeではdriver::probable_stack_exhaustionがtsuzuri run／testの子プロセスの終了signal（SIGSEGV、SIGBUS）から推定してE2005／テスト失敗の理由を付けます。実行ファイル自身のsignal handlerとnative objectの境界（setjmpによる隔離）はE14のPhase 2・3で、要承認のため未実装です。
+tests/trap_boundary.mjsがO0/O3の17 caseを、tests/trap_locations.rsのrun_reports_probable_stack_exhaustionがnativeのO0/O3とJSON出力を検証します。
+
 nativeのCPU dispatchは同梱Arrayソースを確認したemit_native_buildでだけ有効にします。対象は単相化したArray.sumのref [i64] -> i64です。
 通常のLLVM API/--emit llvmは従来の独立IRを維持し、driverのexe/objectはtsuzuri_cpu_sum_i64出現時だけcpu.cをtask runtimeと同じC連結経路へ追加します。
 C11のatomic関数ポインターをacquire load/acq-rel cmpxchgで一度選択します。feature bit0=SSE4.2、bit1=AVX2で、AVX2はOSXSAVE/AVX/XCR0のXMM+YMM状態を要求します。
@@ -134,6 +141,19 @@ externはProgram.externsにsignatureを持ち、通常関数の型付きHostCall
 HostCallは副作用ありとしてchildren/may_mutate/ownershipへ登録し、extern wrapper自体は到達性のrootから外します。
 宣言はBTreeSetで一度生成し、WASM属性でmodule/nameを固定します。E05のrecord正規化・buffer型・pointer/UTF検査とallocatorを再利用します。
 所有buffer結果はout descriptorのlenを-1で初期化し、未設定・負数・overflow・不正範囲を受領時に拒否してから通常のdropへ渡します。
+
+externはlink名（`extern "symbol" def`、`extern "module" "symbol" def`）を持てます。HostImportのexplicitがtrueなら、symbolをそのままnative名とWASM nameにし、moduleを`wasm_module`（既定`tsuzuri`）にします。指定がないexternの名前・IR・header・WASM importは変わりません。
+symbolは255byte以下のC識別子で、`tz_`・`tsuzuri`・`__`で始まる名前とRESERVED_HOST_SYMBOLS（生成IRとnumeric runtimeが自分で宣言する名前。abi.rsのテストが宣言との差を検出）を拒否します。同じsymbolの複数宣言は、関数型とWASM moduleが一致すれば一つのdeclareにまとまります。明示symbolの宣言はホストのheaderが持つので、生成headerにprototypeを出しません。
+
+`extern type Name`はType::Handle（修飾名）で、Copyでもcloneでもなくdrop glueを持たない葉の型です。LLVMではptr（wasm32ではi32）で、`ref H`はslotから読んだhandle自体をホストへ渡します。
+ABIに置けるのはextern・export・コールバックの引数と結果だけで、record fieldとbuffer要素には置けません。Type::exportableは変えず、abi.rsのabi_scalarで区別します。headerは`typedef struct tz_handle_<長さ付きの修飾名>_s *`をprototypeより前に一度だけ出します。
+
+リンク入力は`--link`・`-l`・`-L`と根packageのmanifestの`[native]`で、nativeの実行ファイルだけが対象です。clangへは既存の引数の後に、manifestの後にCLIの順で`-L`・path・`-l`を足します。
+build cacheのキーはリンク入力の内容を知らないので、入力がある間はcacheを使いません。出力pathが入力と同じならE2003で、他のtarget・出力・check/fmt/docでの指定はE2000です。
+
+コールバックは、関数型の引数を持つextern（callback extern）を直接・全引数で呼び、その位置にトップレベルの利用者関数の名前だけを渡す場合に限ります。check.rsのvalidate_callbacksが型付け後に全関数を辿って検査し、他の形はE1008です。
+呼び出し側が`host_call`を直接出し、callback externの関数本体は出さず`%tz.closure`も作りません。関数型の実引数は`ptr @tz.callback.<修飾名>`で、`llvm_abi::wrapper`がinternalなC ABI wrapperを関数ごとに一つ、id順にexport wrapperの後で生成します。
+wasm32ではwrapperのアドレスが関数tableの添字になるので、IRに`@tz.callback.`があるときだけwasm-ldへ`--export-table`を渡します。callbackのないプログラムの出力は変わりません。
 
 ## 不変条件
 
@@ -576,6 +596,13 @@ null／zero をヘッダー読み取りより先に扱い、WASM の上限（既
 要素の借用はビューから直接要素ポインターを計算します。パターンで全体の射影が必要な場合だけ entry の一時記述子へ保存し、
 利用者にはこの記述子への可変アクセスを公開しません。スライス自体は clone・drop でバッファを操作しません。
 
+**境界検査の省略:** `ranges.rs` は関数ごとに一度、型付き IR を worklist で走査して `RangeFacts` を作ります（節点が 65,536 を超える関数は事実なしで、検査をすべて残します）。
+`Type::Array` の添字は、閉じた規則だけで必ず範囲内と示せたときに検査の分岐を省きます。規則は、`0 .. len - 1` と `len - 1 .. -1 .. 0` のループ（`len` は `.length` と std の `Array.length`）、定数端点のループ、リテラル・`new` による定数長、`if` の条件 `i >= 0 && i < len` の then 側です。
+配列の局所変数は、関数内で一度だけ宣言され、代入も可変借用もされないときだけ安定とみなします。`Vec`・リスト・文字列、`ref mut [T]`、`Array.set` などの builtin、公開 ABI の入口は対象外で、検査を残します。
+省略しても `getelementptr inbounds` と `load` はそのまま出し、`llvm.assume`・`!range`・`nsw`・`nuw` は新しく出しません。解析は LLVM より前なので `-O0`・`-O3`・native・WASM で同じ判断になり、省略した位置は trap 表に現れません。残した検査の `TrapKind::BoundsCheck` と位置は変わりません。
+検査を省いた読み出しを含む整数 reduction のループには、`hint_loop` が `llvm.loop.unroll.enable` を付けません。検査が消えたループにこのヒントを付けると、LLVM がベクトル化より先に実行時展開して `array_index_sum` が遅くなりました（[実測](benchmarks.md#境界検査の残り方f12)）。検査が残るループのヒントは変えていません。
+検証は `cargo test --locked --lib ranges`、`cargo test --locked --test bounds_checks` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri bounds_checks` です。
+
 **比較の借用:** `Eq`／`Ord` のメソッド型は共有借用を受け取り、比較演算子の所有権検査は全型で `Use::Read` です。
 非 intrinsic の演算子だけを `Call(method, BorrowOperand(left), BorrowOperand(right))` へ単相化し、
 場所ならポインター、一時値なら `frame_value` の SSA 値を entry のスロットへ保存して渡します。
@@ -970,6 +997,8 @@ string は i16 のコード単位、utf8string は i8 のバイトです。UTF-8
 record は専用 ABI struct と内部型の間で再帰的に変換し、bool/狭い整数は32-bit。結果は out pointer に書き、buffer の所有権だけをホストへ渡します。
 allocator は拡張 ABI 使用時だけ weak な tsuzuri_alloc/free を公開し、native の malloc/free または既存 WASM heap を使います。
 128-bit 値、ソフトウェア浮動小数点、任意の所有入力、借用返却、関数環境の ABI は公開しません。
+import は利用者の extern だけから生じ、link 名・ハンドル・コールバックを使わないプログラムの IR・header・WASM import は変わりません。
+リンク入力は native の実行ファイルだけで有効です。wasm-ld の `--export-table` は callback の wrapper があるときだけ渡し、捕捉のある関数値は ABI に渡しません。
 GUI、入力、永続化、非同期 I/O／イベントループはホストの境界で扱います。
 
 **出力:** 入力全体の検査後、出力先と同じファイルシステムの専用ディレクトリでビルドします。

@@ -48,6 +48,21 @@ try {
 
 最初は `42`、次は 0、1、2、3 のバイト配列を表示します。ホストへ複製する前にバッファを free しないでください。トラップ後の回復やランタイムの再利用を一般に保証する例ではありません。`>>> 0` は上限が 2 GiB を超えるとき、それ以上のアドレスの pointer を符号なしで受け取ります。
 
+トラップを値として受け取るには、同梱の `createBoundary` を使います。
+
+```javascript
+import { readFile } from "node:fs/promises";
+import { createBoundary } from "./src/runtime/trap-boundary.mjs";
+
+const module = new WebAssembly.Module(await readFile("target/kernel.wasm"));
+const boundary = createBoundary(module);
+console.log(boundary.call("tz_add", 20n, 22n));
+```
+
+`{ ok: true, value: 42n }` を表示します。トラップは `{ ok: false, trap: { reason: "trap", site } }`、スタック枯渇は `reason: "stack"` で返ります。`--trap-info` の side table の `sites` を渡すと、トラップの種類と位置も付きます。詳しくは[トラップの理由と位置](../tools/debugging.md#トラップの理由と位置)を参照してください。
+
+失敗した呼び出しでは、その instance を linear memory ごと捨てます。古い instance から得た pointer、`memory.buffer` の view、未解放の所有結果は無効です。バッファは次の `call` の前に複製して `tsuzuri_free` で解放し、`boundary.exports` は `call` の後に取り直します。
+
 ## scalar ABI
 
 公開名は `tz_name` です。i32 と f32 / f64 は JavaScript の Number、i64 は BigInt です。i64 引数へ `42` ではなく `42n` を渡します。
@@ -83,6 +98,48 @@ const imports = {
 ```
 
 WebAssembly.instantiate の第二引数へ渡します。到達する extern だけを import し、未使用 extern のためにダミー実装を用意する必要はありません。同期呼び出しであり、Promise を返す非同期ホスト関数の自動待機はありません。
+
+### module と symbol を指定する
+
+`extern "symbol" def` は module が `tsuzuri`、name が symbol の import になります。`extern "module" "symbol" def` は module と name を指定します。native は同じ宣言から symbol だけを使います。
+
+```tsuzuri project=wasm_link_names
+extern "log_value" def log_value :: i64 -> unit
+extern "env" "host_now" def host_now :: unit -> i64
+
+export def stamp :: i64 -> i64
+fn stamp value =
+    log_value value
+    host_now () + value
+```
+
+```javascript
+const imports = {
+    tsuzuri: { log_value: (value) => console.log(value) },
+    env: { host_now: () => 40n },
+};
+```
+
+module は `[A-Za-z0-9_.-]` の 1〜255 byte で、`tsuzuri_` で始まらない名前です（`tsuzuri` は使えます）。リンク名を使わない extern の import は従来どおりで、リンク入力（`--link`・`-l`・`-L`）は native の実行ファイル専用なので wasm32・wasm64 では `E2000` です。
+
+### ハンドルとコールバック
+
+`extern type` のハンドルは i32 の number として渡ります（wasm64 は i64 の BigInt）。ホストは任意の整数をハンドルにでき、`Map` で管理する実装などが使えます。
+
+extern の引数に関数型を書くと、渡した関数は関数 table の index（number）として import に届きます。ビルドは `__indirect_function_table` を export し、ホストはそこから関数を取って呼びます。i64 の引数と結果は BigInt です。
+
+```javascript
+const imports = {
+    tsuzuri: {
+        apply_twice: (index, value) => {
+            const callback = instance.exports.__indirect_function_table.get(index);
+            return callback(callback(value));
+        },
+    },
+};
+```
+
+table を export するのはコールバックを使うプログラムだけです。コールバックの中のトラップは `WebAssembly.RuntimeError` として export の呼び出し元へ伝わります。トラップした instance は使い続けず、[トラップを値として受け取る境界](#nodejs-から呼ぶ)で作り直します。
 
 ## SIMD128
 

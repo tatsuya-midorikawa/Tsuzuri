@@ -49,10 +49,10 @@ F12（詳細化済み）が `src/ranges.rs` に次を定める。PR02 はこの�
 // src/ranges.rs（F12 で新規。F12 の「データ構造」の抜粋）
 pub(crate) const NODE_BUDGET: usize = 65_536;
 pub(crate) struct RangeFacts { /* below_length, constant, lengths, stable, guards（F12 が定める private field） */ }
-pub(crate) fn analyze(function: &CheckedFunction) -> RangeFacts;
+pub(crate) fn analyze(module: &CheckedModule, function: &CheckedFunction) -> RangeFacts; // F12 の実装は module も受ける（std の `Array.length` を呼び出しから見分けるため）
 impl RangeFacts {
     pub(crate) fn index_in_bounds(&self, array: &TypedExpr, index: &TypedExpr) -> bool;
-    pub(crate) fn enter_condition(&mut self, condition: &TypedExpr) -> usize;
+    pub(crate) fn enter_condition(&mut self, module: &CheckedModule, condition: &TypedExpr) -> usize;
     pub(crate) fn leave_condition(&mut self, pushed: usize);
 }
 // src/llvm.rs の FunctionEmitter（F12 で新規の field。FunctionEmitter::emit で analyze の結果を入れる）

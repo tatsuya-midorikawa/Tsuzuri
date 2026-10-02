@@ -86,6 +86,14 @@ fn array_sum count seed =
     for value in values do total = total + value
     total
 
+export def array_index_sum :: i64 -> i64u -> i64u
+fn array_index_sum count seed =
+    assert (count >= 0 && count <= 100000000)
+    let values = new [i64u](count, \i -> (i as i64u ^ seed) * 6364136223846793005 + 1442695040888963407)
+    let mut total = 0i64u
+    for i in 0 .. values.length - 1 do total = total + values[i]
+    total
+
 export def array_copy :: i64 -> i64u -> i64u
 fn array_copy count seed =
     assert (count >= 0 && count <= 100000000)

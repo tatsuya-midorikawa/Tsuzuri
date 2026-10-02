@@ -117,6 +117,32 @@ pub extern "C" fn rust_array_sum(count: i64, seed: u64) -> u64 {
 
 #[no_mangle]
 #[inline(never)]
+pub extern "C" fn rust_array_index_sum(count: i64, seed: u64) -> u64 {
+    check_count(count);
+    unsafe {
+        let values = malloc((count as usize * 8).max(1));
+        if values.is_null() {
+            abort();
+        }
+        for index in 0..count as usize {
+            values.add(index).write(
+                (index as u64 ^ seed)
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407),
+            );
+        }
+        let mut total = 0u64;
+        let slice = core::slice::from_raw_parts(values, count as usize);
+        for index in 0..slice.len() {
+            total = total.wrapping_add(slice[index]);
+        }
+        free(values);
+        total
+    }
+}
+
+#[no_mangle]
+#[inline(never)]
 pub extern "C" fn rust_array_copy(count: i64, seed: u64) -> u64 {
     check_count(count);
     unsafe {

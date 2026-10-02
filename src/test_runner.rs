@@ -54,12 +54,22 @@ pub struct TestReport {
 }
 
 pub fn run_tests(module: &CheckedModule, options: &TestOptions) -> Result<TestReport, Diagnostic> {
-    run_with_timeout(module, options, Duration::from_secs(30))
+    run_tests_linked(module, options, &LinkInputs::default())
+}
+
+/// Like [`run_tests`], linking the host `links` into the native test executable.
+pub fn run_tests_linked(
+    module: &CheckedModule,
+    options: &TestOptions,
+    links: &LinkInputs,
+) -> Result<TestReport, Diagnostic> {
+    run_with_timeout(module, options, links, Duration::from_secs(30))
 }
 
 fn run_with_timeout(
     module: &CheckedModule,
     options: &TestOptions,
+    links: &LinkInputs,
     timeout: Duration,
 ) -> Result<TestReport, Diagnostic> {
     if options.optimization > 3 {
@@ -67,6 +77,16 @@ fn run_with_timeout(
             "E2000",
             "test optimization must be between 0 and 3",
         ));
+    }
+    if !links.is_empty() {
+        if options.target.is_wasm() {
+            return Err(driver_error(
+                "E2000",
+                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+            ));
+        }
+        links.check_shape()?;
+        links.check_readable()?;
     }
     if !options.target.is_wasm()
         && (options.wasm_max_memory.is_some() || options.wasm_stack_size.is_some())
@@ -119,6 +139,7 @@ fn run_with_timeout(
         module,
         &selected.iter().map(|test| test.index).collect::<Vec<_>>(),
         options,
+        links,
         &temporary.path,
         &mut messages,
     )?;
@@ -184,12 +205,7 @@ fn execute_test(
     loop {
         match child.try_wait() {
             Ok(Some(result)) => {
-                return Ok((!result.success()).then(|| {
-                    result.code().map_or_else(
-                        || "trapped or terminated by signal".into(),
-                        |code| format!("trapped or exited with code {code}"),
-                    )
-                }));
+                return Ok((!result.success()).then(|| termination_reason(&result)));
             }
             Ok(None) => {}
             Err(error) => {
@@ -218,10 +234,27 @@ fn execute_test(
     }
 }
 
+fn termination_reason(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("trapped or exited with code {code}");
+    }
+    #[cfg(unix)]
+    if probable_stack_exhaustion(status) {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!(
+                "terminated by signal {signal}; the stack was probably exhausted by deep recursion"
+            );
+        }
+    }
+    "trapped or terminated by signal".into()
+}
+
 fn build_runner(
     module: &CheckedModule,
     selected: &[usize],
     options: &TestOptions,
+    links: &LinkInputs,
     directory: &Path,
     messages: &mut Vec<String>,
 ) -> Result<Runner, Diagnostic> {
@@ -296,6 +329,7 @@ fn build_runner(
                 clang.arg("-pthread");
             }
         }
+        links.add_to(&mut clang);
     }
     collect_message(
         messages,
@@ -357,6 +391,7 @@ mod tests {
             &module,
             &[0, 1],
             &TestOptions::default(),
+            &LinkInputs::default(),
             &temporary.path,
             &mut Vec::new(),
         )
@@ -398,5 +433,30 @@ mod tests {
                 .is_none()
         );
         temporary.close().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_test_names_stack_exhaustion_signals() {
+        for (script, expected) in [
+            (
+                "kill -SEGV $$",
+                "terminated by signal 11; the stack was probably exhausted by deep recursion",
+            ),
+            ("kill -TRAP $$", "trapped or terminated by signal"),
+            ("exit 1", "trapped or exited with code 1"),
+        ] {
+            let runner = Runner {
+                program: "/bin/sh".into(),
+                arguments: vec!["-c".into(), script.into()],
+            };
+            assert_eq!(
+                execute_test(&runner, 0, Duration::from_secs(5))
+                    .unwrap()
+                    .as_deref(),
+                Some(expected),
+                "{script}"
+            );
+        }
     }
 }

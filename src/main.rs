@@ -43,6 +43,11 @@ Build options:
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
+  --link PATH            Link a host object or static library into a native executable
+  -l NAME                Link a system library by name, such as -l sqlite3
+  -L DIR                 Search DIR for system libraries
+                         These three repeat and apply to build, run, and test of native
+                         executables; Tsuzuri.toml [native] link/libraries/search come first
   --json                 Emit machine-readable diagnostics on stderr
     --no-cache             Disable build/run artifact cache reads and writes
     -g, --debug-info        Emit source-level DWARF debug information
@@ -83,6 +88,7 @@ struct Arguments {
     input: PathBuf,
     output: Option<PathBuf>,
     options: BuildOptions,
+    links: driver::LinkInputs,
     json: bool,
     deny_warnings: bool,
     format_check: bool,
@@ -101,6 +107,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             input: PathBuf::new(),
             output: None,
             options: BuildOptions::default(),
+            links: driver::LinkInputs::default(),
             json: false,
             deny_warnings: false,
             format_check: false,
@@ -157,6 +164,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
     let mut no_cache = false;
+    let mut links = driver::LinkInputs::default();
     let mut paths_only = false;
     while position < arguments.len() {
         let argument = &arguments[position];
@@ -340,6 +348,29 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     );
                     continue;
                 }
+                Some("--link") => {
+                    links.paths.push(PathBuf::from(next_value(
+                        arguments,
+                        &mut position,
+                        "--link",
+                    )?));
+                    continue;
+                }
+                Some("-L") => {
+                    links
+                        .search
+                        .push(PathBuf::from(next_value(arguments, &mut position, "-L")?));
+                    continue;
+                }
+                Some("-l") => {
+                    links.libraries.push(
+                        next_value(arguments, &mut position, "-l")?
+                            .to_str()
+                            .ok_or("library names must be UTF-8")?
+                            .to_owned(),
+                    );
+                    continue;
+                }
                 Some(value) if value.starts_with('-') => {
                     return Err(format!("unknown option '{value}'; use --help"));
                 }
@@ -438,11 +469,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         cache: !no_cache,
     };
     options.validate().map_err(|error| error.message)?;
+    links.check_shape().map_err(|error| error.message)?;
+    if !links.is_empty() && !links_apply(action, &options) {
+        return Err("link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe".into());
+    }
     Ok(Arguments {
         action,
         input,
         output,
         options,
+        links,
         json,
         deny_warnings,
         format_check,
@@ -450,6 +486,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_list,
         test_indices,
     })
+}
+
+/// Whether the action links a native executable, the only output that takes host link inputs.
+fn links_apply(action: Action, options: &BuildOptions) -> bool {
+    match action {
+        Action::Run => true,
+        Action::Build => options.target == Target::Native && options.emit == Emit::Executable,
+        Action::Test => options.target == Target::Native,
+        _ => false,
+    }
 }
 
 fn next_value<'a>(
@@ -536,6 +582,7 @@ fn run_action(
     arguments: &Arguments,
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
+    links: &driver::LinkInputs,
 ) -> Result<Vec<String>, Diagnostic> {
     match arguments.action {
         Action::Lsp => unreachable!("LSP runs without a build project"),
@@ -546,7 +593,7 @@ fn run_action(
         ),
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
-        Action::Build => driver::build(
+        Action::Build => driver::build_linked(
             module,
             project,
             &arguments
@@ -554,9 +601,10 @@ fn run_action(
                 .clone()
                 .unwrap_or_else(|| arguments.options.output_path(project.input())),
             arguments.options,
+            links,
         ),
         Action::Run => {
-            driver::run_with_diagnostics(module, project, arguments.options, arguments.json)
+            driver::run_with_diagnostics(module, project, arguments.options, links, arguments.json)
         }
     }
 }
@@ -593,6 +641,7 @@ fn run_test_action(
     arguments: &Arguments,
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
+    links: &driver::LinkInputs,
 ) -> ExitCode {
     let options = driver::TestOptions {
         target: arguments.options.target,
@@ -646,7 +695,7 @@ fn run_test_action(
         }
         return ExitCode::SUCCESS;
     }
-    let report = match driver::run_tests(module, &options) {
+    let report = match driver::run_tests_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
@@ -901,6 +950,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The manifest's [native] inputs come first and apply only where the command line's would.
+    let links = if links_apply(arguments.action, &arguments.options) {
+        project.native.clone().followed_by(&arguments.links)
+    } else {
+        driver::LinkInputs::default()
+    };
     let warnings =
         tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(module.warnings.iter().cloned(), 0);
     print_diagnostics(&warnings, &project, arguments.json);
@@ -908,9 +963,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     if arguments.action == Action::Test {
-        return run_test_action(&arguments, &project, &module);
+        return run_test_action(&arguments, &project, &module, &links);
     }
-    let result = run_action(&arguments, &project, &module);
+    let result = run_action(&arguments, &project, &module, &links);
     match result {
         Ok(messages) => {
             for message in messages {
@@ -1564,5 +1619,91 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(near_4_gib.options.wasm_max_memory, Some(4294901760));
+    }
+
+    #[test]
+    fn parses_link_inputs() {
+        let arguments = parse(&[
+            "build", "Main.tz", "--link", "host.o", "-L", "lib", "-l", "sqlite3", "--link",
+            "util.a", "-l", "m",
+        ])
+        .unwrap();
+        assert_eq!(
+            arguments.links.paths,
+            [PathBuf::from("host.o"), PathBuf::from("util.a")]
+        );
+        assert_eq!(arguments.links.libraries, ["sqlite3", "m"]);
+        assert_eq!(arguments.links.search, [PathBuf::from("lib")]);
+        for action in ["run", "test"] {
+            assert!(
+                parse(&[action, "Main.tz", "--link", "host.o"]).is_ok(),
+                "{action}"
+            );
+        }
+        assert!(parse(&["build", "Main.tz", "--emit", "exe", "-l", "m"]).is_ok());
+        assert!(parse(&["build", "Main.tz"]).unwrap().links.is_empty());
+        for (values, message) in [
+            (vec!["build", "Main.tz", "-l"], "-l needs a value"),
+            (vec!["run", "Main.tz", "--link"], "--link needs a value"),
+            (vec!["run", "Main.tz", "-L"], "-L needs a value"),
+            (
+                vec!["run", "Main.tz", "-l", "libm"],
+                "invalid library name 'libm'; pass the name without the 'lib' prefix or extension, for example -l sqlite3",
+            ),
+            (
+                vec!["run", "Main.tz", "-l", "m.a"],
+                "invalid library name 'm.a'; pass the name without the 'lib' prefix or extension, for example -l sqlite3",
+            ),
+            (
+                vec!["run", "Main.tz", "-l", "a/b"],
+                "invalid library name 'a/b'; pass the name without the 'lib' prefix or extension, for example -l sqlite3",
+            ),
+            (
+                vec!["run", "Main.tz", "--link", "a.o", "--link", "a.o"],
+                "link input 'a.o' specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "-l", "m", "-l", "m"],
+                "link input 'm' specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "-L", "d", "-L", "d"],
+                "link input 'd' specified more than once",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        let many: Vec<String> = (0..=256)
+            .flat_map(|index| ["--link".to_owned(), format!("object{index}.o")])
+            .collect();
+        let mut values = vec!["run", "Main.tz"];
+        values.extend(many.iter().map(String::as_str));
+        assert_eq!(
+            parse(&values).unwrap_err(),
+            "too many link inputs; at most 256 are supported"
+        );
+        values.truncate(2 + 2 * 256);
+        assert!(parse(&values).is_ok());
+    }
+
+    #[test]
+    fn rejects_link_inputs_outside_native_executables() {
+        let message = "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe";
+        for values in [
+            vec!["build", "Main.tz", "--target", "wasm32", "--link", "host.o"],
+            vec!["build", "Main.tz", "--target", "wasm64", "-l", "m"],
+            vec!["build", "Main.tz", "--emit", "object", "-l", "m"],
+            vec!["build", "Main.tz", "--emit", "llvm", "-L", "lib"],
+            vec!["build", "Main.tz", "--emit", "header", "--link", "host.o"],
+            vec!["check", "Main.tz", "--link", "host.o"],
+            vec!["doc", "Main.tz", "-o", "docs", "-l", "m"],
+            vec!["fmt", "Main.tz", "-L", "lib"],
+            vec!["test", "Main.tz", "--target", "wasm32", "--link", "host.o"],
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        // Without link inputs every one of these stays valid.
+        assert!(parse(&["build", "Main.tz", "--target", "wasm32"]).is_ok());
+        assert!(parse(&["build", "Main.tz", "--emit", "object"]).is_ok());
     }
 }

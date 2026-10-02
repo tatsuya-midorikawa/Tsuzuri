@@ -13,6 +13,7 @@ pub mod numeric;
 pub mod ownership;
 pub mod package;
 pub mod parser;
+mod ranges;
 pub mod simd;
 pub mod stdlib;
 pub mod syntax;
