@@ -73,12 +73,16 @@ impl Specializations {
         *self.readable.entry(target).or_insert_with(|| {
             let function = &module.functions[target.function];
             !function.is_task
+                && !function.owned_captures
                 && target.bound <= function.parameters.len()
                 && !function.signature.result.carries_loans(&module.types())
                 && function.parameters[..target.bound].iter().all(|parameter| {
                     parameter.ty.can_capture(&module.types())
                         && (!parameter.ty.needs_drop(&module.types())
-                            || read_only(&function.body, parameter.id, Access::Consume, module))
+                            || function
+                                .body
+                                .consuming_use(parameter.id, &module.types())
+                                .is_none())
                 })
         })
     }
@@ -285,78 +289,6 @@ fn non_escaping(
         }
         _ => all_children(expression, &mut |child| {
             non_escaping(child, local, eligible, module)
-        }),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Access {
-    Consume,
-    Read,
-    Write,
-}
-
-fn read_only(expression: &TypedExpr, local: usize, access: Access, module: &CheckedModule) -> bool {
-    use TypedExprKind::*;
-    match &expression.kind {
-        Local(id) if *id == local => match access {
-            Access::Consume => expression.ty.is_copy(&module.types()),
-            Access::Read => true,
-            Access::Write => false,
-        },
-        Borrow(value, mutable) => read_only(
-            value,
-            local,
-            if *mutable {
-                Access::Write
-            } else {
-                Access::Read
-            },
-            module,
-        ),
-        BorrowOperand(value) => read_only(value, local, Access::Read, module),
-        Slice { value, start, end } => {
-            read_only(value, local, Access::Read, module)
-                && start
-                    .iter()
-                    .chain(end)
-                    .all(|bound| read_only(bound, local, Access::Consume, module))
-        }
-        Assign(place, value) => {
-            read_only(place, local, Access::Write, module)
-                && read_only(value, local, Access::Consume, module)
-        }
-        Field(value, _) | Index(value, _) | UnionPayload { value, .. }
-            if FunctionEmitter::is_place(expression) =>
-        {
-            let access = match access {
-                Access::Consume if expression.ty.is_copy(&module.types()) => Access::Read,
-                other => other,
-            };
-            read_only(value, local, access, module)
-                && match &expression.kind {
-                    Index(_, index) => read_only(index, local, Access::Consume, module),
-                    _ => true,
-                }
-        }
-        Length(value) | StringLength(value) | UnionTag(value) => {
-            read_only(value, local, Access::Read, module)
-        }
-        Binary(
-            BinaryOp::Equal
-            | BinaryOp::NotEqual
-            | BinaryOp::Less
-            | BinaryOp::LessEqual
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEqual,
-            left,
-            right,
-        ) => {
-            read_only(left, local, Access::Read, module)
-                && read_only(right, local, Access::Read, module)
-        }
-        _ => all_children(expression, &mut |child| {
-            read_only(child, local, Access::Consume, module)
         }),
     }
 }

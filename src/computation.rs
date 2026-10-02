@@ -435,6 +435,7 @@ impl Lowering<'_> {
                     bindings.push(Binding {
                         name: ident("_", span),
                         mutable: false,
+                        using: false,
                         annotation: Some(annotation("unit", span)),
                         value: value.clone(),
                     });
@@ -460,6 +461,7 @@ impl Lowering<'_> {
                     let binding = Binding {
                         name: ident("_", span),
                         mutable: false,
+                        using: false,
                         annotation: Some(annotation("unit", span)),
                         value: value.clone(),
                     };
@@ -530,6 +532,7 @@ impl Lowering<'_> {
                         vec![Binding {
                             name: name.clone(),
                             mutable: false,
+                            using: false,
                             annotation: Some(annotation("bool", condition.span)),
                             value: condition.clone(),
                         }],
@@ -627,6 +630,7 @@ impl Lowering<'_> {
             staged.push(Binding {
                 name: name.clone(),
                 mutable: false,
+                using: false,
                 annotation: None,
                 value: binding.value.clone(),
             });
@@ -727,7 +731,7 @@ impl Lowering<'_> {
     }
 
     fn continuation(&self, binding: &Binding, body: Expr, span: Span) -> Result<Expr, Diagnostic> {
-        if binding.annotation.is_none() {
+        if binding.annotation.is_none() && !binding.using {
             let depth = body.depth + 1;
             return make(
                 ExprKind::Lambda(
@@ -745,6 +749,7 @@ impl Lowering<'_> {
             vec![Binding {
                 name: binding.name.clone(),
                 mutable: binding.mutable,
+                using: binding.using,
                 annotation: binding.annotation.clone(),
                 value,
             }],
@@ -764,6 +769,7 @@ impl Lowering<'_> {
             &Binding {
                 name: ident("_", span),
                 mutable: false,
+                using: false,
                 annotation: Some(annotation("unit", span)),
                 value: make(ExprKind::Unit, span, 1)?,
             },
@@ -1037,6 +1043,7 @@ impl Checker<'_> {
                     ComputationStatementKind::Expression(value) => Binding {
                         name: ident("_", statement.span),
                         mutable: false,
+                        using: false,
                         annotation: Some(annotation("unit", statement.span)),
                         value: value.clone(),
                     },
@@ -1048,6 +1055,7 @@ impl Checker<'_> {
                     .map(|ty| self.annotation(ty))
                     .transpose()?;
                 let value = self.expression(&binding.value, expected.as_ref())?;
+                self.require_use(&binding, &value.ty)?;
                 let local = self.bind(&binding.name, value.ty.clone(), binding.mutable);
                 prefix.push((local, value));
                 count += 1;
@@ -1100,7 +1108,14 @@ impl Checker<'_> {
             };
             let result = self.implicit_task_sequence(&remaining, Some(&required))?;
             let result = typed_block(prefix, result, body.span);
-            return self.checked_lambda(Vec::new(), result, outer, expected, body.span, true);
+            return self.checked_lambda(
+                Vec::new(),
+                result,
+                outer,
+                expected,
+                body.span,
+                LambdaKind::Task,
+            );
         }
         let names = self.names;
         let methods = &names.builders[&builder];
@@ -1129,8 +1144,14 @@ impl Checker<'_> {
         let mut result = typed_block(prefix, result, body.span);
         if let Some(delay) = delay {
             let parameter = self.bind(&ident("$implicit.unit", body.span), Type::Unit, false);
-            let closure =
-                self.checked_lambda(vec![parameter], result, outer, None, body.span, false)?;
+            let closure = self.checked_lambda(
+                vec![parameter],
+                result,
+                outer,
+                None,
+                body.span,
+                LambdaKind::Function,
+            )?;
             result = self.implicit_apply(delay, vec![closure], body.span)?;
         }
         if let Some(run) = run {
@@ -1191,6 +1212,7 @@ impl Checker<'_> {
                 ComputationStatementKind::Expression(value) => Binding {
                     name: ident("_", statement.span),
                     mutable: false,
+                    using: false,
                     annotation: Some(annotation("unit", statement.span)),
                     value: value.clone(),
                 },
@@ -1275,12 +1297,14 @@ impl Checker<'_> {
             ComputationStatementKind::Do(value) => Binding {
                 name: ident("_", first.span),
                 mutable: false,
+                using: false,
                 annotation: Some(annotation("unit", first.span)),
                 value: value.clone(),
             },
             ComputationStatementKind::Match(value, _) => Binding {
                 name: ident("$computation_match", first.span),
                 mutable: false,
+                using: false,
                 annotation: None,
                 value: (**value).clone(),
             },
@@ -1346,6 +1370,7 @@ impl Checker<'_> {
                             Binding {
                                 name: payload,
                                 mutable: false,
+                                using: false,
                                 annotation: None,
                                 value: binding.value.clone(),
                             },
@@ -1483,6 +1508,7 @@ impl Checker<'_> {
                 handler_sources.push(Binding {
                     name,
                     mutable: false,
+                    using: false,
                     annotation: None,
                     value: binding.value.clone(),
                 });
@@ -1598,6 +1624,7 @@ impl Checker<'_> {
                     ComputationStatementKind::Do(value) => Binding {
                         name: ident("_", first.span),
                         mutable: false,
+                        using: false,
                         annotation: Some(annotation("unit", first.span)),
                         value: value.clone(),
                     },
@@ -1640,6 +1667,7 @@ impl Checker<'_> {
                 vec![Binding {
                     name: ident("_", first.span),
                     mutable: false,
+                    using: false,
                     annotation: Some(annotation("unit", first.span)),
                     value: value.clone(),
                 }],
@@ -1660,6 +1688,7 @@ impl Checker<'_> {
                     vec![Binding {
                         name: ident("_", first.span),
                         mutable: false,
+                        using: false,
                         annotation: Some(annotation("unit", first.span)),
                         value,
                     }],
@@ -1680,6 +1709,7 @@ impl Checker<'_> {
                     vec![Binding {
                         name: ident("_", first.span),
                         mutable: false,
+                        using: false,
                         annotation: Some(annotation("unit", first.span)),
                         value,
                     }],
@@ -1707,6 +1737,7 @@ impl Checker<'_> {
                         vec![Binding {
                             name: ident("_", first.span),
                             mutable: false,
+                            using: false,
                             annotation: Some(annotation("unit", first.span)),
                             value: branch,
                         }],

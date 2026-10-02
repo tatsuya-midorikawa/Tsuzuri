@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 32 件があります。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 30 件があります。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -51,7 +51,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、B07 は `done`（Phase 1・2）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
@@ -149,7 +149,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | B04 | [アクティブパターンの拡張（Option 返却・複数ケース）](_completed/B04-active-pattern-extensions.md) | P1 | M | B01, A02 | done |
 | B05 | [コンピュテーション式の拡張（match!／and!／use／try）](_completed/B05-computation-expression-extensions.md) | P2 | M | (B01) | done |
 | B06 | [タスクのキャンセルと失敗の伝播](_completed/B06-task-cancellation.md) | P3 | L | B01, F01 | done |
-| B07 | [ユーザー定義の解放処理（Drop）とリソース型](B07-user-drop.md) | P1 | L | A06 | todo |
+| B07 | [ユーザー定義の解放処理（Drop）とリソース型](_completed/B07-user-drop.md) | P1 | L | A06 | done |
 | B08 | [非同期計算（Async）とホスト駆動の実行](B08-async.md) | P3 | XL | B05, B07, (E08), (E13) | todo |
 
 ### C. コレクション・データ
@@ -415,7 +415,7 @@ graph LR
 | [A14](A14-dynamic-dispatch.md) | D1（`dyn`・`Dyn.of`・`E1028`） |
 | [A15](A15-copy-cost-visibility.md) | D3（`--warn implicit-copy` と `W1006`） |
 | [A16](A16-fixed-arrays.md) | D1（`[T; N]` の再導入）、D10（Phase 2） |
-| [B07](B07-user-drop.md) | D1（`Drop`）、D2（`drop` の引数を `ref mut`）、D4（Drop 型からの move の禁止） |
+| [B07](_completed/B07-user-drop.md) | D1（`Drop`）、D2（`drop` の引数を `ref mut`）、D4（Drop 型からの move の禁止）、Phase 2（`use`・`use!`、`Owned` の早期解放と関数値）。すべて承認済みで実装済み（2026-10-02） |
 | [B08](B08-async.md) | D1（`Async`）、D10（Phase 2） |
 | [C08](C08-mutable-slices.md) | D1（D-13 の変更。チケット全体）、D11（Phase 2） |
 | C09・C10・C11 | Phase 2 以降だけ（C09 D11、C10 D13・D14、C11 D9） |

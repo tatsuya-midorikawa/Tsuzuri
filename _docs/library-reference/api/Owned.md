@@ -1,0 +1,14 @@
+# Owned
+
+## `Function`
+
+```tsuzuri
+record Function<'a, 'b> {
+  run: ('a -> 'b)
+}
+```
+
+A function value that owns the values it captures. `Owned.function`
+builds one and `Owned.call` calls it through a borrow. It is not Copy,
+and dropping it drops the captured values once.
+

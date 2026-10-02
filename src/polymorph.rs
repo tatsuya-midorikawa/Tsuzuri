@@ -476,7 +476,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 25] = [
+pub(super) const BUILTIN_CLASSES: [&str; 26] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -502,6 +502,7 @@ pub(super) const BUILTIN_CLASSES: [&str; 25] = [
     "Hash",
     "Default",
     "Elementary",
+    "Drop",
 ];
 
 impl Classes {
@@ -670,6 +671,17 @@ impl Classes {
                     result: Type::Integer(64, false),
                 }),
                 operation: Some(Operation::Builtin(Builtin::Hash)),
+                default: None,
+            });
+        classes.declarations[classes.names["Drop"]]
+            .methods
+            .push(Method {
+                name: "drop".into(),
+                signature: Ok(Signature {
+                    parameters: vec![Type::Reference(Box::new(Type::Variable("a".into())), true)],
+                    result: Type::Unit,
+                }),
+                operation: None,
                 default: None,
             });
         for &ModuleInput {
@@ -1168,6 +1180,14 @@ impl Classes {
                             instance.class.span,
                         ));
                     }
+                    if class.builtin && class.name == "Drop" {
+                        validate_drop_instance(
+                            &ty,
+                            !instance.constraints.is_empty(),
+                            types,
+                            instance.class.span,
+                        )?;
+                    }
                     for previous in self
                         .instances
                         .iter()
@@ -1311,7 +1331,25 @@ impl Classes {
                 break;
             }
         }
-        diagnostics.check()?;
+        diagnostics.check()
+    }
+
+    /// Heads of the `Drop` instances: the records and unions with a user drop (B07).
+    pub(super) fn drop_heads(&self) -> impl Iterator<Item = &Type> {
+        let drop = self.names["Drop"];
+        self.instances
+            .iter()
+            .filter(move |instance| instance.class == drop)
+            .map(|instance| &instance.head)
+    }
+
+    /// Checks that every instance context entails the class's superclasses. It runs after the
+    /// `Drop` marks are set, so `Copy`-like superclasses see the final type properties.
+    pub fn check_superclasses(
+        &self,
+        types: &TypeContext<'_>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<(), Diagnostic> {
         for instance in &self.instances {
             let constraint = Constraint {
                 class: instance.class,
@@ -1574,6 +1612,13 @@ impl Classes {
                     method.span,
                 )
             })?;
+        if self.declarations[class].builtin && self.declarations[class].name == "Drop" {
+            return Err(Diagnostic::new(
+                "E1016",
+                "'Drop.drop' runs automatically when a value is dropped; let the value go out of scope or pass it to a function that consumes it",
+                method.span,
+            ));
+        }
         Ok(Some((class, index)))
     }
 
@@ -1771,6 +1816,50 @@ impl Classes {
             || matches!((method.operation, operation), (Some(Operation::Builtin(a)), Operation::Builtin(b)) if a == b)).unwrap();
         (class, method)
     }
+}
+
+/// A `Drop` instance covers every instantiation of a record or union declared in user code, so
+/// whether a type runs a user drop never depends on its type arguments (B07 D1).
+fn validate_drop_instance(
+    head: &Type,
+    constrained: bool,
+    types: &TypeContext<'_>,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    let (origin, arguments) = match head {
+        Type::Record(id, arguments) => (types.records[*id].origin, arguments.as_ref()),
+        Type::Union(id, arguments) => (types.unions[*id].origin, arguments.as_ref()),
+        _ => (ModuleOrigin::Std, [].as_slice()),
+    };
+    if origin != ModuleOrigin::User {
+        return Err(Diagnostic::new(
+            "E1016",
+            "only records and unions declared in this program can implement Drop",
+            span,
+        ));
+    }
+    let variables: BTreeSet<_> = arguments
+        .iter()
+        .filter_map(|argument| match argument {
+            Type::Variable(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    if variables.len() != arguments.len() {
+        return Err(Diagnostic::new(
+            "E1016",
+            "a Drop instance must cover every instantiation; write every type parameter as a distinct type variable",
+            span,
+        ));
+    }
+    if constrained {
+        return Err(Diagnostic::new(
+            "E1016",
+            "Drop instances cannot have constraints; drop must work for every instantiation",
+            span,
+        ));
+    }
+    Ok(())
 }
 
 fn instance_function(
@@ -2019,6 +2108,24 @@ impl Checker<'_> {
                 return Err(Diagnostic::new(
                     "E1005",
                     "Seq.next requires Option.None and Option.Some in standard order",
+                    span,
+                ));
+            }
+        }
+        if matches!(builtin, Builtin::OwnedFunction | Builtin::OwnedCall) {
+            let owned = match &parameters[0] {
+                Type::Reference(owned, false) if builtin == Builtin::OwnedCall => owned.as_ref(),
+                _ => &result,
+            };
+            let run = Type::function(vec![types[0].clone()], types[1].clone());
+            if !matches!(owned, Type::Record(id, arguments) if self.types.record_fields(*id, arguments) == [run])
+            {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "{} requires the standard Owned.Function record",
+                        builtin.name()
+                    ),
                     span,
                 ));
             }
@@ -2421,10 +2528,22 @@ impl Checker<'_> {
         })? {
             self.require(class, ty, span)?;
         }
-        for constraint in &mut self.constraints {
+        let mut constraints = std::mem::take(&mut self.constraints);
+        for constraint in &mut constraints {
             constraint.ty = self.inference.resolve(&constraint.ty);
-            self.classes.validate(constraint, &self.types)?;
+            if let Err(error) = self.classes.validate(constraint, &self.types) {
+                let error = if self.use_bindings.contains(&constraint.span)
+                    && self.classes.declarations[constraint.class].name == "Drop"
+                {
+                    self.use_error(error, &constraint.ty, constraint.span)
+                } else {
+                    error
+                };
+                self.constraints = constraints;
+                return Err(error);
+            }
         }
+        self.constraints = constraints;
         for member in &mut self.members {
             *member = member.resolved(&self.inference);
         }
@@ -2607,18 +2726,20 @@ fn captures(
                         .map(|argument| ("Capture", argument.ty.clone(), argument.span)),
                 )
             }
-            TypedExprKind::Lambda { captures, body, .. } => {
-                let class = if matches!(expression.ty, Type::Task(_)) {
-                    "Send"
-                } else {
-                    "Capture"
-                };
+            TypedExprKind::Lambda {
+                captures,
+                body,
+                owned,
+                ..
+            } => {
+                let task = matches!(expression.ty, Type::Task(_));
+                let class = if task || *owned { "Send" } else { "Capture" };
                 result.extend(
                     captures
                         .iter()
                         .map(|capture| (class, capture.ty.clone(), expression.span)),
                 );
-                if class == "Send" {
+                if task {
                     result.push(("Send", body.ty.clone(), body.span));
                 }
             }
@@ -2913,11 +3034,46 @@ pub(super) fn specialize(
         })
         .collect();
     let mut next = 0;
-    while next < specializer.requests.len() {
-        let (id, types) = specializer.requests[next].clone();
-        let function = specializer.instantiate(id, &types, next)?;
-        specializer.functions.push(function);
-        next += 1;
+    let mut user_drops = BTreeMap::new();
+    let drops = classes.drop_heads().next().is_some();
+    let mut scanned = 0;
+    let mut seen = BTreeSet::new();
+    loop {
+        while next < specializer.requests.len() {
+            let (id, types) = specializer.requests[next].clone();
+            let function = specializer.instantiate(id, &types, next)?;
+            specializer.functions.push(function);
+            next += 1;
+        }
+        if !drops {
+            break;
+        }
+        // Drop glue calls the user drop of every Drop type that a specialized function holds;
+        // the drops can hold more Drop types, so this runs to a fixed point (B07 D6).
+        let types = specializer.types;
+        let mut found = BTreeSet::new();
+        for function in &mut specializer.functions[scanned..] {
+            for parameter in &function.parameters {
+                drop_components(&parameter.ty, &types, &mut seen, &mut found);
+            }
+            drop_components(&function.signature.as_type(), &types, &mut seen, &mut found);
+            expression_types(&mut function.body, &mut |ty, _| {
+                drop_components(ty, &types, &mut seen, &mut found);
+                Ok(())
+            })?;
+        }
+        scanned = specializer.functions.len();
+        if found.is_empty() {
+            break;
+        }
+        let class = classes.names["Drop"];
+        for ty in found {
+            let (function, arguments) = classes
+                .resolved_method(class, 0, &ty, &types)
+                .expect("a Drop instance covers every instantiation of its type");
+            let span = specializer.templates[function].span;
+            user_drops.insert(ty, specializer.request(function, arguments, span)?);
+        }
     }
     let requires_rec: Vec<_> = specializer
         .requests
@@ -2935,7 +3091,39 @@ pub(super) fn specialize(
         entry,
         tests,
         warnings: module.warnings,
+        user_drops,
     })
+}
+
+/// Adds the Drop types that a value of `ty` owns, itself included; borrows and function
+/// environments own nothing that their type shows.
+fn drop_components(
+    ty: &Type,
+    types: &TypeContext<'_>,
+    seen: &mut BTreeSet<Type>,
+    found: &mut BTreeSet<Type>,
+) {
+    let mut pending = vec![ty.clone()];
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        if ty.has_user_drop(types) {
+            found.insert(ty.clone());
+        }
+        match &ty {
+            Type::Record(id, arguments) => pending.extend(types.record_fields(*id, arguments)),
+            Type::Union(id, arguments) => {
+                pending.extend(types.union_payloads(*id, arguments).into_iter().flatten())
+            }
+            Type::Tuple(elements) => pending.extend(elements.iter().cloned()),
+            Type::Array(element)
+            | Type::List(element)
+            | Type::Vec(element)
+            | Type::Task(element) => pending.push((**element).clone()),
+            _ => {}
+        }
+    }
 }
 
 struct Specializer<'a> {
@@ -3465,6 +3653,7 @@ impl Specializer<'_> {
             members: Vec::new(),
             capture_count: 0,
             is_task: false,
+            owned_captures: false,
         });
         self.intrinsics.insert(key, id);
         self.request(id, Vec::new(), span)
@@ -3526,6 +3715,7 @@ impl Specializer<'_> {
             members: Vec::new(),
             capture_count: 0,
             is_task: false,
+            owned_captures: false,
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)

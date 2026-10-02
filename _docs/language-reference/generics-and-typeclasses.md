@@ -99,8 +99,9 @@ assert (left == right)
 | `Parse` | `parse :: ref string -> Option<T>` |
 | `Hash` | `hash :: ref T -> i64u` |
 | `Default` | `default :: T`。`Default.default()` で呼ぶ |
+| `Drop` | `drop :: ref mut T -> unit`。値の終わりに一度だけ自動で呼ばれる（[利用者定義の解放](ownership.md#利用者定義の解放drop)） |
 
-メソッドを持たない組み込み分類クラスへ利用者のインスタンスは追加できません。`Capture` は排他参照や Task を含む型を拒否し、`Send` は格納された借用を含む型を拒否します。関数の引数型に参照があることと、関数値が参照を捕捉することは別に検査します。
+メソッドを持たない組み込み分類クラスへ利用者のインスタンスは追加できません。`Capture` は排他参照や Task を含む型を拒否し、`Send` は格納された借用を含む型を拒否します。関数の引数型に参照があることと、関数値が参照を捕捉することは別に検査します。`Drop` のインスタンスは、利用者が宣言した record・union に全ての型引数を型変数で書いた head（`Drop<Handle<'a>>`）だけで、制約や `deriving (Drop)` は使えません。
 
 ## 比較は非消費
 

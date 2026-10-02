@@ -30,7 +30,7 @@
 
 | 記事 | 内容 |
 | --- | --- |
-| [所有権と記憶域](ownership.md) | move、Copy、ref、ref mut、new、drop |
+| [所有権と記憶域](ownership.md) | move、Copy、ref、ref mut、new、drop、利用者定義の Drop |
 | [名前付き lifetime](lifetimes.md) | 返却元、借用フィールド、region の制限 |
 | [条件とループ](control-flow.md) | if、for、while、範囲、break / continue |
 | [パターンマッチ](patterns.md) | 分解、網羅性、OR / AND、ガード |

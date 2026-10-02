@@ -649,10 +649,12 @@ fn rejects(source: &str, code: &str) {
   | `Seq` | 明示的な一回消費の遅延反復 | C07 |
   | `Test` | テスト用の比較・報告 | G06 |
   | `Gpu` | GPU 実行 API | F07 |
+  | `Owned` | 早期解放（`Owned.drop`）と Drop 型を捕捉できる関数値（`Owned.Function`） | B07 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
   `UnsignedInteger`（D04）は符号なし整数だけが満たす組み込みマーカークラスとして予約する。
+  `Drop`（B07）は利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-31）。
 
 ### D-08 Option と Result
 - `std/Option.tc`: `union Option<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
@@ -891,7 +893,6 @@ fn rejects(source: &str, code: &str) {
 | 警告 | `W1005` 非推奨の宣言の使用 | G19 |
 | 警告 | `W1006` 長さに比例する暗黙の複製（既定無効） | A15 |
 | 警告 | `W2002` bindgen で変換できない C 宣言の省略 | E11 |
-| 組み込みクラス | `Drop` | B07 |
 | 組み込みクラス | `Encode`／`Decode` | D08 |
 | 組み込みクラス | `Sync`（仮称） | F10 |
 | std | `HashMap`／`HashSet` | C09 |
@@ -962,6 +963,26 @@ fn rejects(source: &str, code: &str) {
 
 新しい `.ll` を足すときは §2.2 の `.gitignore` の例外行と `scripts/check-runtime-includes.sh` を忘れない。
 Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の `Trap`・`TrapInfo` など）は、承認のときに割り当てる。
+
+### D-31 利用者定義の解放（B07）
+
+- 2026-10-02、利用者の「B07 の実装を完遂して」という依頼を D1・D2・D4 の承認として扱い、Phase 1 を実装した。組み込みクラス `Drop` は D-07 へ移した。
+- LLVM は move 済みの領域を `zeroinitializer` で埋め、その解放を無処理にする規則で動く。この規則を変えずに利用者の `drop` を一度だけ呼ぶため、
+  非再帰の Drop 型は値の末尾に `i8` の生存フラグを持ち、構築で 1 にする。drop glue はフラグが 0 の値で `drop` を呼ばない。
+  全 case が nullary の Drop union は素の `i32` tag ではなく `General(0)` の配置にする。
+- 再帰する Drop union は先頭の nullary case もノードに置く（null は move 済みだけ）。型ごとの drop helper がノードごとに `drop` を呼ぶ。
+- Drop 型は ABI の scalar record にしない。一時値から Copy の field・payload を読むときは、値を壊さず全体を解放する（非 Copy の取り出しは `E1012`）。
+- record の field は元々代入できないので、`drop` 本体での引数全体の置換の診断は field への代入ではなく読み出し・借用を勧める。
+- Drop の印は instance の収集直後に立て、instance の superclass 検査（`Classes::check_superclasses`）はその後に行う。
+- 2026-10-02、利用者の「Phase 2 以降もすべて実装を完了させて」を受けて Phase 2 を実装した。
+  - `use`／`use!` は予約語にしない（`use`・`use!` の後に名前と `=`／`:`、または `mut` が続くときだけ束縛）。意味は `let` と同じ lexical drop で、型に `Drop` を要求する。
+    計算式の `use` はビルダーの `Using` を呼ばない（既存の `Using` は別のビルダーへの接続に使う）。
+  - 新しい std モジュール `Owned`（D-07）。`Owned.drop`・`Owned.function`・`Owned.call` は組み込み関数で、`std/Owned.tz` は opaque な
+    non-Copy の `Owned.Function<'a, 'b>` だけを宣言する。std の関数を足すと生成関数の番号がずれ、Drop を使わないプログラムの IR が変わるため。
+  - 関数値への Drop 型の捕捉（D5）は `Owned.function` の引数に直接書いた一引数のラムダだけに許す。捕捉は `Send`（参照なし）、
+    本体は解放の要る捕捉値を move できない（`E1012`）。環境は複製しないので `Owned.Function` は Copy でも `Capture` でもない。
+  - `extern type` への直接の `Drop` は入れない。ハンドルの表現に生存フラグを足すと ABI が変わり、null／0 を move 済みの印にすると
+    整数のハンドル 0 を閉じられない。record で包む方法（E12 D3）を維持する。
 
 ## 10. 完了の定義（全チケット共通）
 

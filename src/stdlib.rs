@@ -12,6 +12,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Option.tc", include_str!("../std/Option.tc")),
+    ("std/Owned.tz", include_str!("../std/Owned.tz")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
     ("std/Result.tc", include_str!("../std/Result.tc")),
     ("std/Seq.tz", include_str!("../std/Seq.tz")),
@@ -46,6 +47,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Test",
     "Gpu",
     "IO",
+    "Owned",
 ];
 
 pub fn is_reserved_module(name: &str) -> bool {
@@ -55,7 +57,14 @@ pub fn is_reserved_module(name: &str) -> bool {
 pub(crate) fn opaque_record(name: &str) -> bool {
     matches!(
         name,
-        "Map.Map" | "Map.Entry" | "Set.Set" | "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "IO.IO"
+        "Map.Map"
+            | "Map.Entry"
+            | "Set.Set"
+            | "Seq.Seq"
+            | "Gpu.Device"
+            | "Gpu.Buffer"
+            | "IO.IO"
+            | "Owned.Function"
     )
 }
 
@@ -94,7 +103,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 20);
+        assert_eq!(RESERVED_MODULES.len(), 21);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

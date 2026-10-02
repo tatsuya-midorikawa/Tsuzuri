@@ -1,5 +1,16 @@
 use super::*;
 
+/// The value a lambda expression becomes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LambdaKind {
+    /// A reusable function value. Copying it copies the captures, which need `Capture`.
+    Function,
+    /// A single-use `task`. Its captures and result need `Send`.
+    Task,
+    /// The argument of `Owned.function` (B07): one parameter and borrowed `Send` captures.
+    Owned,
+}
+
 impl Checker<'_> {
     pub(super) fn lambda(
         &mut self,
@@ -7,9 +18,16 @@ impl Checker<'_> {
         body: &Expr,
         expected: Option<&Type>,
         span: Span,
-        task: bool,
+        kind: LambdaKind,
     ) -> Result<TypedExpr, Diagnostic> {
-        let (parameter_types, result) = if task {
+        if kind == LambdaKind::Owned && names.len() != 1 {
+            return Err(Diagnostic::new(
+                "E1006",
+                "Owned.function takes a lambda with one parameter; take a tuple or return another function",
+                span,
+            ));
+        }
+        let (parameter_types, result) = if kind == LambdaKind::Task {
             let result = self.inference.fresh();
             if let Some(expected) = expected {
                 self.same(&Type::Task(Box::new(result.clone())), expected, span)?;
@@ -44,7 +62,7 @@ impl Checker<'_> {
         self.normal_loop_depth = outer_loop_depth;
         let body = body?;
         self.scopes.pop();
-        self.checked_lambda(parameters, body, &outer, expected, span, task)
+        self.checked_lambda(parameters, body, &outer, expected, span, kind)
     }
 
     pub(super) fn checked_lambda(
@@ -54,8 +72,9 @@ impl Checker<'_> {
         outer: &BTreeMap<usize, Local>,
         expected: Option<&Type>,
         span: Span,
-        task: bool,
+        kind: LambdaKind,
     ) -> Result<TypedExpr, Diagnostic> {
+        let task = kind == LambdaKind::Task;
         let mut used = BTreeSet::new();
         free_locals(&body, &mut used);
         let mut captures = Vec::new();
@@ -64,11 +83,25 @@ impl Checker<'_> {
                 let mut capture = local.clone();
                 capture.ty = self.inference.resolve(&capture.ty);
                 capture.mutable = false;
-                self.require(
-                    if task { "Send" } else { "Capture" },
-                    capture.ty.clone(),
-                    span,
-                )?;
+                let class = if kind == LambdaKind::Function {
+                    "Capture"
+                } else {
+                    "Send"
+                };
+                self.require(class, capture.ty.clone(), span)
+                    .map_err(|error| {
+                        if kind != LambdaKind::Owned || error.code != "E1013" {
+                            return error;
+                        }
+                        Diagnostic::new(
+                            "E1013",
+                            format!(
+                                "an owned function captures only owned values; {} contains a reference",
+                                capture.ty.display(&self.types)
+                            ),
+                            span,
+                        )
+                    })?;
                 captures.push(capture);
             }
         }
@@ -94,6 +127,7 @@ impl Checker<'_> {
                 parameters,
                 captures,
                 body: Box::new(body),
+                owned: kind == LambdaKind::Owned,
             },
             span,
         })
@@ -131,10 +165,14 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
     for id in 0..original_count {
         let mut body = module.functions[id].body.clone();
         let origin = module.functions[id].origin.generated(id);
+        let types = TypeContext {
+            records: &module.records,
+            unions: &module.unions,
+        };
         lower_expression(
             &mut body,
             &mut module.functions,
-            &module.unions,
+            &types,
             &mut generated,
             origin,
         )?;
@@ -187,6 +225,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 members: Vec::new(),
                 capture_count: 0,
                 is_task: false,
+                owned_captures: false,
             });
             function.exported = false;
         }
@@ -208,7 +247,7 @@ fn local_value(local: &Local) -> TypedExpr {
 fn lower_expression(
     expression: &mut TypedExpr,
     functions: &mut Vec<CheckedFunction>,
-    unions: &[CheckedUnion],
+    types: &TypeContext<'_>,
     generated: &mut Generated,
     origin: FunctionOrigin,
 ) -> Result<(), Diagnostic> {
@@ -218,8 +257,27 @@ fn lower_expression(
             parameters,
             captures,
             body,
+            owned,
         } => {
-            lower_expression(body, functions, unions, generated, origin)?;
+            lower_expression(body, functions, types, generated, origin)?;
+            if *owned {
+                // The environment outlives each call, so the body must not move captures.
+                for capture in captures.iter() {
+                    if !capture.ty.needs_drop(types) {
+                        continue;
+                    }
+                    if let Some(span) = body.consuming_use(capture.id, types) {
+                        return Err(Diagnostic::new(
+                            "E1012",
+                            format!(
+                                "cannot move '{}' out of an owned function; borrow it with 'ref' instead",
+                                capture.name
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            }
             let id = functions.len();
             let mut all_parameters = captures.clone();
             all_parameters.extend(parameters.iter().cloned());
@@ -250,6 +308,7 @@ fn lower_expression(
                 members: Vec::new(),
                 capture_count: captures.len(),
                 is_task: matches!(expression.ty, Type::Task(_)),
+                owned_captures: *owned,
             });
             expression.kind = Closure(id, captures.iter().map(local_value).collect());
         }
@@ -263,11 +322,11 @@ fn lower_expression(
                 let builtin = instance.builtin;
                 let scheme = builtin.scheme();
                 let arity = scheme.parameters.len();
-                let Type::Function(types, _) = &expression.ty else {
+                let Type::Function(parameter_types, _) = &expression.ty else {
                     unreachable!()
                 };
                 let signature = Signature {
-                    parameters: types[..arity].to_vec(),
+                    parameters: parameter_types[..arity].to_vec(),
                     result: expression.ty.after_arguments(arity),
                 };
                 let parameters: Vec<_> = signature
@@ -310,6 +369,7 @@ fn lower_expression(
                                 ty: (**result).clone(),
                                 span: expression.span,
                             }),
+                            owned: false,
                         }
                     }
                     _ => Call(
@@ -326,7 +386,7 @@ fn lower_expression(
                     builtin,
                     Builtin::TaskParallel | Builtin::TaskParallelResults
                 ) {
-                    lower_expression(&mut body, functions, unions, generated, origin)?;
+                    lower_expression(&mut body, functions, types, generated, origin)?;
                 }
                 let id = functions.len();
                 functions.push(CheckedFunction {
@@ -350,6 +410,7 @@ fn lower_expression(
                     members: Vec::new(),
                     capture_count: 0,
                     is_task: false,
+                    owned_captures: false,
                 });
                 generated.builtins.insert(key, id);
                 id
@@ -378,7 +439,7 @@ fn lower_expression(
                     provenance: Provenance::Generated,
                 };
                 let id = functions.len();
-                let union = &unions[union_id];
+                let union = &types.unions[union_id];
                 // Instances of a generic union get distinct symbols.
                 let instance = if args.is_empty() {
                     std::string::String::new()
@@ -412,6 +473,7 @@ fn lower_expression(
                     members: Vec::new(),
                     capture_count: 0,
                     is_task: false,
+                    owned_captures: false,
                 });
                 generated.cases.insert(key, id);
                 id
@@ -420,7 +482,7 @@ fn lower_expression(
         }
         _ => {
             for child in expression.children_mut() {
-                lower_expression(child, functions, unions, generated, origin)?;
+                lower_expression(child, functions, types, generated, origin)?;
             }
         }
     }

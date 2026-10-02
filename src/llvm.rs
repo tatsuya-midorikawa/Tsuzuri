@@ -608,6 +608,7 @@ fn emit_program(
                 .record_fields(*id, arguments)
                 .iter()
                 .map(|ty| llvm_type(ty, module))
+                .chain(drop_flag(&ty, module).map(|_| "i8".to_owned()))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -635,10 +636,17 @@ fn emit_program(
         };
         let shape = union_layout(*id, arguments, module);
         let is_enum = matches!(shape, UnionLayout::Enum);
+        let flag = if drop_flag(&ty, module).is_some() {
+            ", i8"
+        } else {
+            ""
+        };
         let layout = match shape {
             UnionLayout::Enum => "i32".into(),
-            UnionLayout::Common(payload) => format!("{{ i32, {} }}", llvm_type(&payload, module)),
-            UnionLayout::General(count) => format!("{{ i32, [{count} x i128] }}"),
+            UnionLayout::Common(payload) => {
+                format!("{{ i32, {}{flag} }}", llvm_type(&payload, module))
+            }
+            UnionLayout::General(count) => format!("{{ i32, [{count} x i128]{flag} }}"),
         };
         if module.types().recursive(&ty) {
             let fields = match union_layout(*id, arguments, module) {
@@ -1139,6 +1147,7 @@ fn closure_wrappers(
         let immediate = immediate_capture(function, count, globals);
         if count != 0 && !immediate {
             if !function.is_task
+                && !function.owned_captures
                 && function.signature.parameters[..count]
                     .iter()
                     .all(|ty| ty.can_capture(&module.types()))
@@ -1192,6 +1201,44 @@ fn closure_wrappers(
             drop.instruction("ret void");
             output
                 .push_str(&drop.auxiliary(&format!("void @tz.env.drop.{name}.{count}(ptr %env)")));
+        }
+        if function.owned_captures && count != 0 && !immediate {
+            // The body borrows the captures; only a consuming call drops the environment.
+            let mut apply = FunctionEmitter::new(
+                module,
+                function,
+                id,
+                builtins,
+                intrinsics,
+                globals,
+                specializations,
+            );
+            let mut values = Vec::new();
+            for index in 0..count {
+                values.push(apply.closure_capture_value(function, count, index, "%env"));
+            }
+            values.push("%argument".into());
+            let arguments = values
+                .iter()
+                .zip(&function.signature.parameters)
+                .map(|(value, ty)| format!("{} {value}", apply.ty(ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let result = apply.ty(&function.signature.result);
+            let value = apply.value(format!("call {result} @tz.fn.{name}({arguments})"));
+            let release = apply.label();
+            let done = apply.label();
+            apply.branch("%borrow", &done, &release);
+            apply.begin(&release);
+            apply.instruction(format!("call void @tz.env.drop.{name}.{count}(ptr %env)"));
+            apply.jump(&done);
+            apply.begin(&done);
+            apply.instruction(format!("ret {result} {value}"));
+            let argument = apply.ty(&function.signature.parameters[count]);
+            output.push_str(&apply.auxiliary(&format!(
+                "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
+            )));
+            continue;
         }
         let mut apply = FunctionEmitter::new(
             module,
@@ -1481,13 +1528,19 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
                 .types()
                 .record_fields(*id, arguments)
                 .iter()
-                .map(|ty| storage_layout(ty, module)),
+                .map(|ty| storage_layout(ty, module))
+                .chain(drop_flag(ty, module).map(|_| (1, 1))),
         ),
         Type::Union(..) if module.types().recursive(ty) => (8, 8),
         Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
             UnionLayout::Enum => (4, 4),
-            UnionLayout::Common(payload) => {
-                aggregate(&mut [(4, 4), storage_layout(&payload, module)].into_iter())
+            UnionLayout::Common(payload) => aggregate(
+                &mut [(4, 4), storage_layout(&payload, module)]
+                    .into_iter()
+                    .chain(drop_flag(ty, module).map(|_| (1, 1))),
+            ),
+            UnionLayout::General(count) if drop_flag(ty, module).is_some() => {
+                aggregate(&mut [(4, 4), (16 * count, 16), (1, 1)].into_iter())
             }
             UnionLayout::General(count) => (16 + 16 * count, 16),
         },
@@ -1509,7 +1562,12 @@ fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionL
         .flatten()
         .collect();
     let Some(first) = payloads.first() else {
-        return UnionLayout::Enum;
+        // A Drop union keeps its live flag after the tag, so it is never a bare tag.
+        return if module.unions[id].user_drop {
+            UnionLayout::General(0)
+        } else {
+            UnionLayout::Enum
+        };
     };
     let llvm = llvm_type(first, module);
     if payloads.iter().all(|ty| llvm_type(ty, module) == llvm) {
@@ -1521,6 +1579,21 @@ fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionL
         .max()
         .unwrap_or(0);
     UnionLayout::General(bytes.div_ceil(16))
+}
+
+/// The index of the live flag (`i8 1`) that follows the fields of a Drop record, or the tag and
+/// payload of a non-recursive Drop union. Moved-out storage is zero, which clears the flag, so
+/// the drop glue skips the user drop there (B07). Recursive Drop unions use a null node instead.
+fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
+    match ty {
+        Type::Record(id, _) if module.records[*id].user_drop => {
+            Some(module.records[*id].fields.len())
+        }
+        Type::Union(id, _) if module.unions[*id].user_drop && !module.types().recursive(ty) => {
+            Some(2)
+        }
+        _ => None,
+    }
 }
 
 /// The functions that the program needs: user functions, exports, and the
@@ -1557,6 +1630,8 @@ fn reachable_functions(module: &CheckedModule, roots: Option<&[usize]>) -> BTree
         },
         <[usize]>::to_vec,
     );
+    // Drop glue calls the user drops without a reference in any body.
+    pending.extend(module.user_drops.values().copied());
     let mut reachable = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
@@ -1807,7 +1882,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             symbol: format!("@tz.fn.{}", function.qualified_name()),
             specializations,
             known_closures: BTreeMap::new(),
-            borrowed_locals: BTreeSet::new(),
+            // An owned function's environment outlives each call (B07).
+            borrowed_locals: if function.owned_captures {
+                function.parameters[..function.capture_count]
+                    .iter()
+                    .map(|parameter| parameter.id)
+                    .collect()
+            } else {
+                BTreeSet::new()
+            },
             single_use: BTreeSet::new(),
             ranges: crate::ranges::RangeFacts::default(),
             proven_reads: 0,
@@ -2410,6 +2493,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::UnionPayload { value, .. } => {
                 let union = self.expression(value);
                 let payload = self.payload_value(&value.ty, &union, &expression.ty);
+                if value.ty.has_user_drop(&self.module.types()) {
+                    // The whole value meets its user drop; ownership allows only Copy payloads here.
+                    let payload = if expression.ty.needs_drop(&self.module.types()) {
+                        self.clone_value(&expression.ty, &payload)
+                    } else {
+                        payload
+                    };
+                    self.drop_value(&value.ty, &union);
+                    return payload;
+                }
                 if self.module.types().recursive(&value.ty) {
                     self.forget_temporary(&union);
                     self.instruction(format!("call void @tz.free(ptr {union})"));
@@ -2621,7 +2714,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                         self.ty(&field.ty)
                     ));
                 }
-                record
+                self.mark_live(&expression.ty, record)
             }
             TypedExprKind::Tuple(elements) => {
                 let mut tuple = "zeroinitializer".into();
@@ -2714,6 +2807,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     "extractvalue {} {value}, {index}",
                     self.ty(&record.ty)
                 ));
+                if record.ty.has_user_drop(&self.module.types()) {
+                    // The whole value meets its user drop; ownership allows only Copy fields here.
+                    let field = if expression.ty.needs_drop(&self.module.types()) {
+                        self.clone_value(&expression.ty, &field)
+                    } else {
+                        field
+                    };
+                    self.drop_value(&record.ty, &value);
+                    return field;
+                }
                 if record.ty.needs_drop(&self.module.types()) {
                     let remainder = self.value(format!(
                         "insertvalue {} {value}, {} zeroinitializer, {index}",
@@ -2815,17 +2918,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn is_place(expression: &TypedExpr) -> bool {
-        match &expression.kind {
-            TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
-            TypedExprKind::Field(value, _)
-            | TypedExprKind::ListTail(value, _)
-            | TypedExprKind::UnionPayload { value, .. } => Self::is_place(value),
-            TypedExprKind::Index(value, _) => {
-                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_))
-                    && Self::is_place(value)
-            }
-            _ => false,
-        }
+        expression.is_place()
     }
 
     fn place(&mut self, expression: &TypedExpr) -> String {
@@ -2891,6 +2984,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn drop_value(&mut self, ty: &Type, value: &str) {
         self.forget_temporary(value);
+        let value = &self
+            .user_drop(ty, value)
+            .unwrap_or_else(|| value.to_owned());
         match ty {
             Type::Union(..) if self.module.types().recursive(ty) => {
                 self.globals.recursive_types.insert(ty.clone());
@@ -2979,7 +3075,55 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             _ => {}
         }
     }
+
+    /// Sets the live flag of a new Drop record or union value.
+    fn mark_live(&mut self, ty: &Type, value: String) -> String {
+        match drop_flag(ty, self.module) {
+            Some(flag) => self.value(format!("insertvalue {} {value}, i8 1, {flag}", self.ty(ty))),
+            None => value,
+        }
+    }
+
+    /// Calls the user drop of a live Drop record or union and returns the value whose fields
+    /// drop next. Moved-out storage is zero, so its cleared flag skips the call.
+    fn user_drop(&mut self, ty: &Type, value: &str) -> Option<String> {
+        let flag = drop_flag(ty, self.module)?;
+        let llvm = self.ty(ty);
+        let stored = self.value(format!("extractvalue {llvm} {value}, {flag}"));
+        let live = self.value(format!("icmp ne i8 {stored}, 0"));
+        let entry = self.block.clone();
+        let call = self.label();
+        let join = self.label();
+        self.branch(&live, &call, &join);
+        self.begin(&call);
+        let dropped = self.call_user_drop(ty, value);
+        let end = self.block.clone();
+        self.jump(&join);
+        self.begin(&join);
+        Some(self.value(format!(
+            "phi {llvm} [ {value}, %{entry} ], [ {dropped}, %{end} ]"
+        )))
+    }
+
+    /// Runs `Drop.drop` on `value` in a slot and reads the value back, since `drop` takes
+    /// `ref mut` and its fields drop afterwards.
+    pub(super) fn call_user_drop(&mut self, ty: &Type, value: &str) -> String {
+        let module = self.module;
+        let function = &module.functions[module.user_drops[ty]];
+        let slot = self.spill(ty, value);
+        self.instruction(format!(
+            "call {} @tz.fn.{}(ptr {slot})",
+            llvm_type(&function.signature.result, module),
+            function.qualified_name()
+        ));
+        self.value(format!("load {}, ptr {slot}", self.ty(ty)))
+    }
+
     fn clone_value(&mut self, ty: &Type, value: &str) -> String {
+        assert!(
+            !ty.has_user_drop(&self.module.types()) && !ty.is_owned_function(&self.module.types()),
+            "Drop types and owned functions are never cloned"
+        );
         match ty {
             Type::Union(..) if self.module.types().recursive(ty) => {
                 self.globals.recursive_types.insert(ty.clone());
@@ -3134,6 +3278,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let tagged = self.value(format!(
             "insertvalue {llvm} zeroinitializer, i32 {case_id}, 0"
         ));
+        let tagged = self.mark_live(ty, tagged);
         let Some((value, payload_type)) = payload else {
             return tagged;
         };
@@ -3518,6 +3663,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             ));
         }
         let value = if !function.is_task
+            && !function.owned_captures
             && function.signature.parameters[..count]
                 .iter()
                 .all(|ty| ty.can_capture(&self.module.types()))
@@ -4421,6 +4567,9 @@ fn emit_builtin(
         | Builtin::HashMix
         | Builtin::DisplayQuoted
         | Builtin::SeqNext
+        | Builtin::OwnedDrop
+        | Builtin::OwnedFunction
+        | Builtin::OwnedCall
         | Builtin::IOReadLine
         | Builtin::IOWrite => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
@@ -4578,6 +4727,31 @@ fn emit_typed_builtin(
         emitter.simd_builtin(instance)
     } else if instance.builtin == Builtin::SeqNext {
         emitter.sequence_next(ty)
+    } else if instance.builtin == Builtin::OwnedDrop {
+        emitter.drop_value(element, "%arg0");
+        "0".to_owned()
+    } else if instance.builtin == Builtin::OwnedFunction {
+        let owned = emitter.ty(&ty.after_arguments(1));
+        emitter.value(format!(
+            "insertvalue {owned} zeroinitializer, %tz.closure %arg0, 0"
+        ))
+    } else if instance.builtin == Builtin::OwnedCall {
+        // The call borrows the environment, which the owned function keeps.
+        let Type::Function(parameters, _) = ty else {
+            unreachable!("builtin has function type")
+        };
+        let Type::Reference(owned, false) = &parameters[0] else {
+            unreachable!("Owned.call borrows the owned function")
+        };
+        let run = Type::function(vec![parameters[1].clone()], ty.after_arguments(2));
+        let owned = emitter.ty(owned);
+        let field = emitter.value(format!(
+            "getelementptr inbounds {owned}, ptr %arg0, i32 0, i32 0"
+        ));
+        let closure = emitter.value(format!("load %tz.closure, ptr {field}"));
+        emitter
+            .apply_value(&closure, &run, Some((&parameters[1], "%arg1")), true)
+            .0
     } else if matches!(instance.builtin, Builtin::IOReadLine | Builtin::IOWrite) {
         emitter.io_builtin(instance.builtin, ty)
     } else if instance.builtin.name().starts_with("Math.") {

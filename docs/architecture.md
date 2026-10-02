@@ -159,7 +159,7 @@ HostCallは副作用ありとしてchildren/may_mutate/ownershipへ登録し、e
 externはlink名（`extern "symbol" def`、`extern "module" "symbol" def`）を持てます。HostImportのexplicitがtrueなら、symbolをそのままnative名とWASM nameにし、moduleを`wasm_module`（既定`tsuzuri`）にします。指定がないexternの名前・IR・header・WASM importは変わりません。
 symbolは255byte以下のC識別子で、`tz_`・`tsuzuri`・`__`で始まる名前とRESERVED_HOST_SYMBOLS（生成IRとnumeric runtimeが自分で宣言する名前。abi.rsのテストが宣言との差を検出）を拒否します。同じsymbolの複数宣言は、関数型とWASM moduleが一致すれば一つのdeclareにまとまります。明示symbolの宣言はホストのheaderが持つので、生成headerにprototypeを出しません。
 
-`extern type Name`はType::Handle（修飾名）で、Copyでもcloneでもなくdrop glueを持たない葉の型です。LLVMではptr（wasm32ではi32）で、`ref H`はslotから読んだhandle自体をホストへ渡します。
+`extern type Name`はType::Handle（修飾名）で、Copyでもcloneでもなくdrop glueを持たない葉の型です。自動で閉じるにはDropを持つrecordで包みます。LLVMではptr（wasm32ではi32）で、`ref H`はslotから読んだhandle自体をホストへ渡します。
 ABIに置けるのはextern・export・コールバックの引数と結果だけで、record fieldとbuffer要素には置けません。Type::exportableは変えず、abi.rsのabi_scalarで区別します。headerは`typedef struct tz_handle_<長さ付きの修飾名>_s *`をprototypeより前に一度だけ出します。
 
 リンク入力は`--link`・`-l`・`-L`と根packageのmanifestの`[native]`で、nativeの実行ファイルだけが対象です。clangへは既存の引数の後に、manifestの後にCLIの順で`-L`・path・`-l`を足します。
@@ -708,6 +708,26 @@ payloadを埋めた後で通常のdrop/cloneヘッダーへ戻します。別の
 LLVM-only helperは到達した関数の要求分だけ生成し、公開ABIや利用者の関数・警告・テストrootへ追加しません。
 100万ノードのnative解放、WASMの上限内の深い複製と既定16 MiB超過トラップを検証します。
 
+**利用者定義の解放（B07）:** 組み込みクラス`Drop`のinstanceのheadは`CheckedRecord::user_drop`／`CheckedUnion::user_drop`の印になります。
+印はinstanceの収集直後、superclassの検査と関数本体の型検査の前に立て、`Type::has_user_drop`が`is_noncopy_record`（Copy判定の3か所が最初に見る）・`needs_drop`・`can_capture`へ伝えます。
+単相化の後、特殊化済みの関数の型が所有するDrop型（field・payload・要素・Taskの結果。参照と関数型は辿らない）を集めて`drop`を特殊化し、
+固定点の結果を`CheckedModule::user_drops`（`BTreeMap<Type, usize>`）に置きます。Drop instanceがなければ走査せず、IRも変わりません。
+所有権検査は`Place::through_drop`でDrop型を通るfield・payloadの場所を記録し、そこからのmove、Drop型の`RecordUpdate`、`drop`本体の引数全体への代入を拒否します。
+LLVMはmove済みの領域をzeroinitializerで埋め、その解放を無処理にする規則を保ちます。そのため非再帰のDrop型はrecordのfieldの後（unionはtagとpayloadの後）に
+`i8`の生存フラグを持ち、構築（recordリテラル・フレームの集約・`construct_value`）で1にします。全caseがnullaryのDrop unionは素のtagではなく`General(0)`です。
+drop glue（`drop_value`と`drop_framed`）はフラグが0でなければ値をentryのslotへ置いて`drop`を直接呼び、読み直した値のfieldを宣言順に解放します。
+zeroの領域はフラグも0なので`drop`を呼ばず、fieldの解放も従来どおり無処理です。一時値のCopyのfield・payloadを読むときは値を壊さず全体を解放します。
+再帰するDrop unionは先頭のnullary caseもノードに置き（nullはmove済みだけを表す）、型ごとのdrop helperがノードごとに`drop`を呼んでから子を待ちリストへ積みます。
+`user_drops`の関数は本体から参照されないので到達可能性の根に加えます。Drop recordはABIのscalar recordにしません。
+
+`use`束縛は`syntax::Binding::using`を持つ`let`で、型検査が値の型に`Drop`を要求します。計算式の`use!`は生成した継続の引数を`use`で束縛し直し、`task`の`use!`は`let!`と同じ`TaskRun`です。
+`Owned.drop`・`Owned.function`・`Owned.call`は組み込み関数で、`std/Owned.tz`はopaqueなnon-Copyの`Owned.Function<'a, 'b> { run: 'a -> 'b }`だけを宣言します（std関数を足すと生成関数の番号がずれ、既存のIRが変わるため）。
+`Owned.function`の引数に直接書いたラムダは`TypedExprKind::Lambda::owned`になり、捕捉に`Capture`の代わりに`Send`を要求します（単相化後の再検査も同じ）。
+`closures::lower`は持ち上げた関数に`owned_captures`を立て、`TypedExpr::consuming_use`で、解放の要る捕捉値を本体がmoveしないことを確かめます。
+LLVMはその関数の捕捉引数を借用ローカルとして生成し、applyは本体を呼んでから、消費する呼び出しのときだけ`@tz.env.drop`を呼びます。
+環境のcloneは生成せず（記述子のclone pointerはnull）、`can_borrow`は偽にして既知のclosureの直接呼び出しと借用workerの特殊化に乗せません。
+`Owned.call`は環境の借用（`i1 true`）でapplyを呼び、`Owned.Function`は`can_capture`を満たさず、`clone_value`へ渡りません。
+
 match は `llvm_control::SwitchPlan` が、ガードのない全節の条件が単一の tag（整数・bool・unit の場合は値）の
 定数比較で、束縛が同じ射影の経路を持つ場合に限り、対象の領域から tag を一度だけ load する `switch i32` にします。
 束縛は `UnionPayload`／フィールドの射影のポインターから読み、対象全体の領域を別名にしません。
@@ -1198,6 +1218,6 @@ overflow、評価順序を両ターゲットで確認します。
 ## 初版の次に必要な設計
 
 共有可変キャプチャ、外部パッケージ、効果の型付けは未実装です。
-借用record・単一regionの名前付き契約・再帰的なヒープ型は実装済みですが、独立した複数regionのfield別追跡、
-任意のdestructor、一般的なホストをまたぐ所有権は未対応です。
+借用record・単一regionの名前付き契約・再帰的なヒープ型・利用者定義のDropは実装済みですが、独立した複数regionのfield別追跡、
+トラップ時の巻き戻しと解放、一般的なホストをまたぐ所有権は未対応です。
 これらを追加するときも、寿命・ホスト境界・失敗モデルを型検査と一緒に設計する必要があります。

@@ -12,6 +12,10 @@ fn empty_case(ty: &Type, module: &CheckedModule) -> Option<usize> {
     let Type::Union(id, _) = ty else {
         unreachable!()
     };
+    // Every value of a Drop union owns a node, so null only marks moved-out storage (B07).
+    if module.unions[*id].user_drop {
+        return None;
+    }
     module.unions[*id]
         .cases
         .iter()
@@ -55,21 +59,27 @@ pub(super) fn emit_helpers(
             specializations,
         );
         drop.drop_pending = Some("%pending".into());
+        // The user drop runs once per node, before the node's children are queued (B07 D8).
+        let node = if module.unions[*id].user_drop {
+            drop.call_user_drop(&ty, "%node")
+        } else {
+            "%node".to_owned()
+        };
         let cases: Vec<_> = payloads
             .iter()
             .filter(|(_, ty)| ty.needs_drop(&module.types()))
             .cloned()
             .collect();
-        let (labels, done) = drop.case_switch(&ty, "%node", &cases);
+        let (labels, done) = drop.case_switch(&ty, &node, &cases);
         for ((_, payload), label) in cases.iter().zip(labels) {
             drop.begin(&label);
-            let pointer = drop.recursive_payload(&ty, "%node");
+            let pointer = drop.recursive_payload(&ty, &node);
             let value = drop.value(format!("load {}, ptr {pointer}", drop.ty(payload)));
             drop.drop_value(payload, &value);
             drop.jump(&done);
         }
         drop.begin(&done);
-        drop.instruction("call void @tz.free(ptr %node)");
+        drop.instruction(format!("call void @tz.free(ptr {node})"));
         drop.instruction("ret void");
         let drop_name = action(&ty, module, "drop");
         output.push_str(&drop.auxiliary(&format!("void {drop_name}(ptr %node, ptr %pending)")));

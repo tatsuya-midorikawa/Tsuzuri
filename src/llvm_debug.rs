@@ -402,16 +402,27 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Reference(_, false) if ty.shared_array_element().is_some() => (16, 8),
         Type::Reference(..) | Type::Handle(_) => (pointer, pointer),
         Type::Function(..) | Type::Task(_) => (4 * pointer, pointer),
-        Type::Record(id, arguments) => {
-            aggregate(module.types().record_fields(*id, arguments), module, wasm)
-        }
+        Type::Record(id, arguments) => aggregate(
+            module
+                .types()
+                .record_fields(*id, arguments)
+                .into_iter()
+                .chain(drop_flag(ty, module).map(|_| Type::Integer(8, false))),
+            module,
+            wasm,
+        ),
         Type::Tuple(elements) => aggregate(elements.iter().cloned(), module, wasm),
         Type::Union(..) if module.types().recursive(ty) => (pointer, pointer),
         Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
             UnionLayout::Enum => (4, 4),
-            UnionLayout::Common(payload) => {
-                aggregate([Type::Integer(32, true), payload], module, wasm)
-            }
+            UnionLayout::Common(payload) => aggregate(
+                [Type::Integer(32, true), payload]
+                    .into_iter()
+                    .chain(drop_flag(ty, module).map(|_| Type::Integer(8, false))),
+                module,
+                wasm,
+            ),
+            UnionLayout::General(count) if drop_flag(ty, module).is_some() => (32 + count * 16, 16),
             UnionLayout::General(count) => (16 + count * 16, 16),
         },
         _ => (0, 1),

@@ -271,7 +271,7 @@ impl TypeContext<'_> {
         }
     }
 
-    pub(super) fn stored_all(&self, root: &Type, predicate: fn(&Type) -> bool) -> bool {
+    pub(super) fn stored_all(&self, root: &Type, predicate: impl Fn(&Type) -> bool) -> bool {
         let mut seen = BTreeSet::new();
         let mut pending = vec![root.clone()];
         while let Some(ty) = pending.pop() {

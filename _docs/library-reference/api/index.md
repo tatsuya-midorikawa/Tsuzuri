@@ -9,6 +9,7 @@
 - [Map](Map.md)
 - [Math](Math.md)
 - [Option](Option.md)
+- [Owned](Owned.md)
 - [Parallel](Parallel.md)
 - [Result](Result.md)
 - [Seq](Seq.md)

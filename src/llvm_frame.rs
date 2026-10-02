@@ -38,22 +38,33 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
             total.saturating_add(stack_size(ty, module).next_multiple_of(16))
         })
     };
+    // A Drop record or union also stores its live flag.
+    let flag = if drop_flag(ty, module).is_some() {
+        16
+    } else {
+        0
+    };
     match ty {
         Type::Reference(_, false) if ty.shared_array_element().is_some() => 16,
         Type::Record(id, arguments) => {
-            fields(&mut module.types().record_fields(*id, arguments).iter())
+            fields(&mut module.types().record_fields(*id, arguments).iter()).saturating_add(flag)
         }
         Type::Tuple(elements) => fields(&mut elements.iter()),
-        Type::Union(id, arguments) => module
-            .types()
-            .union_payloads(*id, arguments)
-            .iter()
-            .flatten()
-            .map(|ty| stack_size(ty, module))
-            .max()
-            .map_or(8, |payload| {
-                16usize.saturating_add(payload.next_multiple_of(16))
-            }),
+        Type::Union(id, arguments) => {
+            let payload = module
+                .types()
+                .union_payloads(*id, arguments)
+                .iter()
+                .flatten()
+                .map(|ty| stack_size(ty, module))
+                .max();
+            match (payload, flag) {
+                (None, 0) => 8,
+                (payload, _) => 16usize
+                    .saturating_add(payload.unwrap_or(0).next_multiple_of(16))
+                    .saturating_add(flag),
+            }
+        }
         Type::Simd(_)
         | Type::Integer(128, _)
         | Type::Binary(128)
@@ -308,6 +319,7 @@ impl FunctionEmitter<'_, '_> {
                 frames.insert(*index, field_frames);
             }
         }
+        let aggregate = self.mark_live(ty, aggregate);
         if frames.is_empty() {
             (aggregate, Vec::new())
         } else {
@@ -522,6 +534,9 @@ impl FunctionEmitter<'_, '_> {
             return self.drop_value(ty, value);
         }
         if let Some(types) = self.field_types(ty) {
+            let value = &self
+                .user_drop(ty, value)
+                .unwrap_or_else(|| value.to_owned());
             let llvm = self.ty(ty);
             let fields = Self::field_frames(frames);
             for (index, field) in types.iter().enumerate() {

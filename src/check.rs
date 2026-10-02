@@ -6,6 +6,7 @@ use crate::syntax::*;
 
 #[path = "closures.rs"]
 mod closures;
+use closures::LambdaKind;
 #[path = "computation.rs"]
 mod computation;
 #[path = "constants.rs"]
@@ -289,7 +290,7 @@ impl Type {
     }
 
     pub fn needs_drop(&self, types: &TypeContext<'_>) -> bool {
-        if types.recursive(self) {
+        if types.recursive(self) || self.has_user_drop(types) {
             return true;
         }
         match self {
@@ -307,7 +308,22 @@ impl Type {
     }
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
-        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer"))
+        self.has_user_drop(types)
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function"))
+    }
+
+    /// The std `Owned.Function`, whose environment has no clone (B07).
+    pub(crate) fn is_owned_function(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Owned.Function")
+    }
+
+    /// A record or union with a user `Drop` instance, whatever its type arguments (B07).
+    pub(crate) fn has_user_drop(&self, types: &TypeContext<'_>) -> bool {
+        match self {
+            Self::Record(id, _) => types.records[*id].user_drop,
+            Self::Union(id, _) => types.unions[*id].user_drop,
+            _ => false,
+        }
     }
 
     pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
@@ -379,12 +395,17 @@ impl Type {
     }
 
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {
+        // Copying a function value copies its captures, which would drop a resource twice.
+        if self.has_user_drop(types) || self.is_owned_function(types) {
+            return false;
+        }
         if types.recursive(self) {
             return types.stored_all(self, |ty| {
                 !matches!(
                     ty,
                     Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
-                )
+                ) && !ty.has_user_drop(types)
+                    && !ty.is_owned_function(types)
             });
         }
         match self {
@@ -688,6 +709,12 @@ pub enum Builtin {
     IntWrappingPow,
     IntCheckedPow,
     IntWideningMul,
+    /// `Owned.drop :: 'a -> unit` drops its argument now (B07).
+    OwnedDrop,
+    /// `Owned.function :: ('a -> 'b) -> Owned.Function<'a, 'b>` (B07).
+    OwnedFunction,
+    /// `Owned.call :: ref Owned.Function<'a, 'b> -> 'a -> 'b` (B07).
+    OwnedCall,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -903,6 +930,9 @@ impl Builtin {
         Self::IntWrappingPow,
         Self::IntCheckedPow,
         Self::IntWideningMul,
+        Self::OwnedDrop,
+        Self::OwnedFunction,
+        Self::OwnedCall,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1065,6 +1095,9 @@ impl Builtin {
             Self::IntWrappingPow => "Int.wrapping_pow",
             Self::IntCheckedPow => "Int.checked_pow",
             Self::IntWideningMul => "Int.widening_mul",
+            Self::OwnedDrop => "Owned.drop",
+            Self::OwnedFunction => "Owned.function",
+            Self::OwnedCall => "Owned.call",
             #[cfg(test)]
             Self::TestAdd => "Int.test_add",
             #[cfg(test)]
@@ -1712,6 +1745,24 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
+            Self::OwnedDrop => (vec![a()], Concrete(Type::Unit), Vec::new()),
+            Self::OwnedFunction | Self::OwnedCall => {
+                let run = BuiltinType::Function(vec![a()], Box::new(Var("b")));
+                let owned = BuiltinType::Std {
+                    module: "Owned",
+                    name: "Function",
+                    args: vec![a(), Var("b")],
+                };
+                if self == Self::OwnedFunction {
+                    (vec![run], owned, Vec::new())
+                } else {
+                    (
+                        vec![Reference(Box::new(owned), false), a()],
+                        Var("b"),
+                        Vec::new(),
+                    )
+                }
+            }
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -1852,6 +1903,8 @@ pub struct CheckedModule {
     pub tests: Vec<CheckedTest>,
     /// Warnings in source traversal order; they never fail a check or build.
     pub warnings: Vec<Diagnostic>,
+    /// Concrete Drop type -> specialized `Drop.drop` function id. Empty without Drop instances.
+    pub user_drops: BTreeMap<Type, usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -1880,6 +1933,8 @@ pub struct CheckedRecord {
     pub parameters: Vec<String>,
     pub fields: Vec<(String, Type)>,
     pub span: Span,
+    /// Every instance of the record has a user `Drop` instance (B07).
+    pub user_drop: bool,
     /// Value layout size of a non-generic record; generic instances are
     /// measured per concrete type.
     size: Option<usize>,
@@ -1902,6 +1957,8 @@ pub struct CheckedUnion {
     pub parameters: Vec<String>,
     pub cases: Vec<(String, Option<Type>)>,
     pub span: Span,
+    /// Every instance of the union has a user `Drop` instance (B07).
+    pub user_drop: bool,
     /// Value layout size of a non-generic union, like `CheckedRecord::size`.
     size: Option<usize>,
     recursive: recursive::Cache,
@@ -1931,6 +1988,8 @@ pub struct CheckedFunction {
     members: Vec<polymorph::MemberConstraint>,
     pub(crate) capture_count: usize,
     pub(crate) is_task: bool,
+    /// A lambda passed directly to `Owned.function` (B07); its body borrows the captures.
+    pub(crate) owned_captures: bool,
 }
 
 impl CheckedFunction {
@@ -2046,6 +2105,8 @@ pub enum TypedExprKind {
         parameters: Vec<Local>,
         captures: Vec<Local>,
         body: Box<TypedExpr>,
+        /// Passed directly to `Owned.function` (B07); the body borrows the captures.
+        owned: bool,
     },
     Closure(usize, Vec<TypedExpr>),
     TaskRun(Box<TypedExpr>),
@@ -2135,12 +2196,97 @@ pub enum TypedExprKind {
     },
 }
 
+#[derive(Clone, Copy)]
+enum LocalAccess {
+    Consume,
+    Read,
+    Write,
+}
+
 impl TypedExpr {
     fn error(span: Span) -> Self {
         Self {
             kind: TypedExprKind::Error,
             ty: Type::Error,
             span,
+        }
+    }
+
+    /// Whether code generation can address the value in place.
+    pub(crate) fn is_place(&self) -> bool {
+        match &self.kind {
+            TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
+            TypedExprKind::Field(value, _)
+            | TypedExprKind::ListTail(value, _)
+            | TypedExprKind::UnionPayload { value, .. } => value.is_place(),
+            TypedExprKind::Index(value, _) => {
+                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_))
+                    && value.is_place()
+            }
+            _ => false,
+        }
+    }
+
+    /// The first use that consumes or mutates `local`; without one the local can stay borrowed.
+    pub(crate) fn consuming_use(&self, local: usize, types: &TypeContext<'_>) -> Option<Span> {
+        self.local_use(local, LocalAccess::Consume, types)
+    }
+
+    fn local_use(
+        &self,
+        local: usize,
+        access: LocalAccess,
+        types: &TypeContext<'_>,
+    ) -> Option<Span> {
+        use TypedExprKind::*;
+        let read = |value: &Self| value.local_use(local, LocalAccess::Read, types);
+        let consume = |value: &Self| value.local_use(local, LocalAccess::Consume, types);
+        match &self.kind {
+            Local(id) if *id == local => match access {
+                LocalAccess::Consume if self.ty.is_copy(types) => None,
+                LocalAccess::Read => None,
+                LocalAccess::Consume | LocalAccess::Write => Some(self.span),
+            },
+            Borrow(value, mutable) => value.local_use(
+                local,
+                if *mutable {
+                    LocalAccess::Write
+                } else {
+                    LocalAccess::Read
+                },
+                types,
+            ),
+            BorrowOperand(value) => read(value),
+            Slice { value, start, end } => {
+                read(value).or_else(|| start.iter().chain(end).find_map(|bound| consume(bound)))
+            }
+            Assign(place, value) => place
+                .local_use(local, LocalAccess::Write, types)
+                .or_else(|| consume(value)),
+            Field(value, _) | Index(value, _) | UnionPayload { value, .. } if self.is_place() => {
+                let access = match access {
+                    LocalAccess::Consume if self.ty.is_copy(types) => LocalAccess::Read,
+                    other => other,
+                };
+                value
+                    .local_use(local, access, types)
+                    .or_else(|| match &self.kind {
+                        Index(_, index) => consume(index),
+                        _ => None,
+                    })
+            }
+            Length(value) | StringLength(value) | UnionTag(value) => read(value),
+            Binary(
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual,
+                left,
+                right,
+            ) => read(left).or_else(|| read(right)),
+            _ => self.children().into_iter().find_map(consume),
         }
     }
 
@@ -3655,6 +3801,7 @@ fn check_modules_collect(
                 parameters,
                 fields,
                 span: record.name.span,
+                user_drop: false,
                 size: None,
                 recursive: Default::default(),
             })
@@ -3774,6 +3921,18 @@ fn check_modules_collect(
         &mut function_declarations,
         diagnostics,
     )?;
+    for head in classes.drop_heads() {
+        match head {
+            Type::Record(id, _) => records[*id].user_drop = true,
+            Type::Union(id, _) => unions[*id].user_drop = true,
+            _ => unreachable!("Drop instances are validated to name records and unions"),
+        }
+    }
+    let types = TypeContext {
+        records: &records,
+        unions: &unions,
+    };
+    classes.check_superclasses(&types, diagnostics)?;
     let mut signatures = Vec::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
@@ -4183,6 +4342,7 @@ fn check_modules_collect(
                 members: Vec::new(),
                 capture_count: 0,
                 is_task: false,
+                owned_captures: false,
             })
         })();
         diagnostics.extend(
@@ -4267,6 +4427,7 @@ fn check_modules_collect(
                 members: Vec::new(),
                 capture_count: 0,
                 is_task: false,
+                owned_captures: false,
             })
         })();
         diagnostics.extend(std::mem::take(&mut checker.recovered));
@@ -4362,6 +4523,7 @@ fn check_modules_collect(
         entry,
         tests,
         warnings,
+        user_drops: BTreeMap::new(),
     };
     validate_callbacks(&module)?;
     let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
@@ -4485,6 +4647,7 @@ fn recovery_module(
             members: Vec::new(),
             capture_count: 0,
             is_task: false,
+            owned_captures: false,
         })
         .collect();
     for (id, function) in checked {
@@ -4501,6 +4664,7 @@ fn recovery_module(
         entry: None,
         tests: Vec::new(),
         warnings: Vec::new(),
+        user_drops: BTreeMap::new(),
     }
 }
 
@@ -4779,6 +4943,7 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
         parameters,
         cases,
         span: union.name.span,
+        user_drop: false,
         size: None,
         recursive: Default::default(),
     })
@@ -5560,6 +5725,8 @@ struct Checker<'a> {
     computation_depth: usize,
     /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
     undecided_borrows: Vec<(Type, Span)>,
+    /// Values of `use` bindings whose `Drop` requirement waits for inference.
+    use_bindings: Vec<Span>,
     /// Builtin result types that wait for a concrete integer argument type.
     families: Vec<polymorph::Family>,
     /// Explicit matches and function guards, in the order the checker reaches
@@ -5601,6 +5768,7 @@ impl<'a> Checker<'a> {
             normal_loop_depth: 0,
             computation_depth: 0,
             undecided_borrows: Vec::new(),
+            use_bindings: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
@@ -5886,10 +6054,16 @@ impl<'a> Checker<'a> {
         let expected = expected.as_ref();
         let (kind, ty) = match &expression.kind {
             ExprKind::Lambda(parameters, body) => {
-                return self.lambda(parameters, body, expected, expression.span, false);
+                return self.lambda(
+                    parameters,
+                    body,
+                    expected,
+                    expression.span,
+                    LambdaKind::Function,
+                );
             }
             ExprKind::Task(body) => {
-                return self.lambda(&[], body, expected, expression.span, true);
+                return self.lambda(&[], body, expected, expression.span, LambdaKind::Task);
             }
             ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
@@ -5903,6 +6077,7 @@ impl<'a> Checker<'a> {
                     } else {
                         value.ty.clone()
                     };
+                    self.require_use(binding, &ty)?;
                     let local = self.bind(&binding.name, ty, binding.mutable);
                     checked.push((local, value));
                 }
@@ -5920,6 +6095,31 @@ impl<'a> Checker<'a> {
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    /// A `use` binding is a `let` whose value type must implement `Drop` (B07).
+    pub(super) fn require_use(&mut self, binding: &Binding, ty: &Type) -> Result<(), Diagnostic> {
+        if !binding.using {
+            return Ok(());
+        }
+        let span = binding.value.span;
+        self.use_bindings.push(span);
+        self.require("Drop", ty.clone(), span)
+            .map_err(|error| self.use_error(error, ty, span))
+    }
+
+    pub(super) fn use_error(&self, error: Diagnostic, ty: &Type, span: Span) -> Diagnostic {
+        if error.code != "E1005" {
+            return error;
+        }
+        Diagnostic::new(
+            "E1005",
+            format!(
+                "'use' needs a value whose type implements Drop; {} does not, so bind it with 'let'",
+                self.inference.resolve(ty).display(&self.types)
+            ),
+            span,
+        )
     }
 
     fn call_expression(
@@ -5982,6 +6182,7 @@ impl<'a> Checker<'a> {
         if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
             self.unknown_parameters(&mut parameters);
         }
+        let owned = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::OwnedFunction);
         let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
         {
             self.parallel_arguments(arguments, &parameters)?
@@ -5989,7 +6190,13 @@ impl<'a> Checker<'a> {
             arguments
                 .iter()
                 .zip(&parameters)
-                .map(|(argument, parameter)| self.argument(argument, parameter))
+                .enumerate()
+                .map(|(index, (argument, parameter))| match &argument.kind {
+                    ExprKind::Lambda(names, body) if owned && index == 0 => {
+                        self.owned_lambda(names, body, argument.span, parameter)
+                    }
+                    _ => self.argument(argument, parameter),
+                })
                 .collect::<Result<_, _>>()?
         };
         self.solve_families(false)?;
@@ -6459,6 +6666,29 @@ impl<'a> Checker<'a> {
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    /// The lambda written directly as the argument of `Owned.function` (B07).
+    fn owned_lambda(
+        &mut self,
+        names: &[(Ident, bool)],
+        body: &Expr,
+        span: Span,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        if expected.contains_error() {
+            self.poisoned = true;
+            if !self.recovering {
+                return Ok(TypedExpr::error(span));
+            }
+        }
+        let mark = RecoveryMark {
+            scopes: self.scopes.len(),
+            normal_loop_depth: self.normal_loop_depth,
+            computation_depth: self.computation_depth,
+        };
+        let result = self.lambda(names, body, Some(expected), span, LambdaKind::Owned);
+        self.finish_recovery(result, mark, span)
     }
 
     fn argument(&mut self, expression: &Expr, expected: &Type) -> Result<TypedExpr, Diagnostic> {

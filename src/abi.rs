@@ -158,6 +158,10 @@ pub fn scalar_record(ty: &Type, types: &TypeContext<'_>) -> bool {
         if depth >= crate::syntax::MAX_NESTING {
             return false;
         }
+        // A Drop record carries a hidden live flag and owns a resource, not plain data.
+        if types.records[*id].user_drop {
+            return false;
+        }
         let names: BTreeSet<_> = types.records[*id]
             .fields
             .iter()

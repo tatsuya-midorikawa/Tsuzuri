@@ -1,0 +1,256 @@
+extern def drop_log :: i64 -> unit
+
+record Resource { id: i64, name: string }
+
+instance Drop<Resource> {
+    fn drop value = drop_log value.id
+}
+
+record Outer { id: i64, first: Resource, second: Resource }
+
+instance Drop<Outer> {
+    fn drop value = drop_log value.id
+}
+
+record Handle<'a> { id: i64, value: 'a }
+
+instance Drop<Handle<'a>> {
+    fn drop value = drop_log value.id
+}
+
+union Chain = End | Link of Resource * Chain
+
+union Counted = Stop | More of Counted
+
+instance Drop<Counted> {
+    fn drop _value = drop_log 1
+}
+
+record Formatted { id: i64 }
+
+instance Drop<Formatted> {
+    fn drop value =
+        let text = to_string value.id
+        drop_log text.length
+}
+
+record Pair { left: Resource, right: Resource }
+
+union Light = Off | On of i64
+
+instance Drop<Light> {
+    fn drop value =
+        match value with
+        | Off -> drop_log 20
+        | On level -> drop_log level
+}
+
+union Mode = Fast | Slow
+
+instance Drop<Mode> {
+    fn drop value =
+        match value with
+        | Fast -> drop_log 30
+        | Slow -> drop_log 31
+}
+
+private def resource :: i64 -> Resource = \id -> Resource { id: id, name: "resource" }
+
+private def take :: Resource -> i64 = \value -> value.id
+
+private def job :: i64 -> Task<i64>
+fn job index =
+    let owned = resource index
+    task { return owned.id }
+
+private def rec chain_length :: ref Chain -> i64 = \links ->
+    match links with
+    | End -> 0
+    | Link (_, rest) -> 1 + chain_length (ref rest)
+
+export def scopes :: i64
+fn scopes =
+    let first = Resource { id: 1, name: "a" }
+    let second = Resource { id: 2, name: "b" }
+    first.id + second.id
+
+export def fields :: i64
+fn fields =
+    let outer = Outer { id: 1, first: resource 10, second: resource 11 }
+    outer.id
+
+export def reassign :: i64
+fn reassign =
+    let mut current = resource 1
+    current = resource 2
+    current.id
+
+export def consume :: i64
+fn consume =
+    let owned = resource 7
+    take owned
+
+export def loop_break :: i64
+fn loop_break =
+    let mut count = 0
+    let mut index = 0
+    while true do
+        let current = resource index
+        count = count + 1
+        if current.id == 3 then break
+        index = index + 1
+    count
+
+export def array :: i64
+fn array =
+    let values = [resource 1, resource 2, resource 3]
+    values.length
+
+export def map_remove :: i64
+fn map_remove =
+    let map = Map.insert (Map.insert (Map.insert (Map.empty()) 1 (resource 1)) 2 (resource 2)) 3 (resource 3)
+    let rest = Map.remove map 2
+    drop_log 100
+    Map.length (ref rest)
+
+export def generic :: i64
+fn generic =
+    let number = Handle { id: 4, value: 4 }
+    let text = Handle { id: 5, value: "five" }
+    number.id + text.id
+
+export def chain :: i64
+fn chain =
+    let links = Link (resource 1, Link (resource 2, Link (resource 3, End)))
+    chain_length (ref links)
+
+export def long_chain :: i64 -> i64
+fn long_chain count =
+    let mut counted = Stop
+    let mut index = 0
+    while index < count do
+        counted = More counted
+        index = index + 1
+    index
+
+export def task_owned :: i64
+fn task_owned =
+    let owned = resource 7
+    Task.run (task { return owned.id })
+
+export def task_unstarted :: i64
+fn task_unstarted =
+    let owned = resource 8
+    let _pending = task { return owned.id }
+    0
+
+export def tasks_parallel :: i64
+fn tasks_parallel =
+    let jobs = new [Task<i64>](16, job)
+    let results = Task.run (Task.parallel jobs)
+    Array.sum (&results)
+
+export def drop_allocates :: i64
+fn drop_allocates =
+    let formatted = Formatted { id: 5 }
+    formatted.id
+
+export def moved_field :: i64
+fn moved_field =
+    let pair = Pair { left: resource 1, right: resource 2 }
+    take pair.left
+
+export def temporary_field :: i64
+fn temporary_field = (resource 6).id
+
+export def unions :: i64
+fn unions =
+    let on = On 21
+    let off = Off
+    let mode = Slow
+    (match on with | On level -> level | Off -> 0) + (match mode with | Fast -> 1 | Slow -> 2) + (match off with | Off -> 100 | On _ -> 0)
+
+export def use_scopes :: i64
+fn use_scopes =
+    use first = resource 1
+    use _guard = resource 2
+    first.id
+
+export def use_computation :: i64
+fn use_computation =
+    let first = Option {
+        use _held = resource 3
+        let! value = Option.Some 10
+        return value + 1
+    }
+    let second = Option {
+        use! bound = Option.Some (resource 4)
+        return bound.id
+    }
+    Option.default_value 0 first + Option.default_value 0 second
+
+export def use_task :: i64
+fn use_task =
+    let work = task {
+        use! inner = task { return resource 5 }
+        return inner.id + 1
+    }
+    Task.run work
+
+export def early_drop :: i64
+fn early_drop =
+    let first = resource 1
+    let second = resource 2
+    Owned.drop first
+    drop_log 100
+    second.id
+
+export def owned_function :: i64
+fn owned_function =
+    let held = resource 7
+    let add = Owned.function (\amount -> amount + held.id)
+    let first = Owned.call (ref add) 10
+    let second = Owned.call (ref add) 20
+    drop_log 100
+    first + second
+
+export def owned_task :: i64
+fn owned_task =
+    let held = resource 8
+    let length = Owned.function (\extra -> String.length (ref held.name) + extra)
+    let work = task { return Owned.call (ref length) 1 }
+    Task.run work
+
+export def owned_unused :: i64
+fn owned_unused =
+    let held = resource 9
+    let _unused = Owned.function (\value -> value + held.id)
+    0
+
+export def owned_array :: i64
+fn owned_array =
+    let first = resource 1
+    let second = resource 2
+    let functions = [Owned.function (\x -> x + first.id), Owned.function (\x -> x * second.id)]
+    Owned.call (ref functions[0]) 10 + Owned.call (ref functions[1]) 10
+
+export def owned_nested :: i64
+fn owned_nested =
+    let held = resource 3
+    let inner = Owned.function (\x -> x + held.id)
+    let outer = Owned.function (\x -> Owned.call (ref inner) x * 2)
+    Owned.call (ref outer) 1
+
+private def keep :: 'a -> Owned.Function<i64, i64>
+fn keep value = Owned.function (\x -> { let _borrowed = ref value; x + 1 })
+
+export def owned_generic :: i64
+fn owned_generic =
+    let function = keep (resource 4)
+    Owned.call (ref function) 1
+
+export def trap_after_create :: i64
+fn trap_after_create =
+    let owned = resource 9
+    assert false
+    owned.id

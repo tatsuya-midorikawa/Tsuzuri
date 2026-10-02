@@ -18,7 +18,7 @@
 | [Int](integers.md) | checked、saturating、bit、rotate、widening |
 | [表示と解析](formatting-and-parsing.md) | Display、Parse、to_string |
 | [IO と標準入出力](io.md) | IO モナド、stdin / stdout / stderr、EOF と失敗 |
-| [基本組み込み、Debug、Test](builtins.md) | 固定型の互換関数、assert、出力とテスト |
+| [基本組み込み、Debug、Owned、Test](builtins.md) | 固定型の互換関数、assert、出力とテスト、Owned の早期解放と資源を持つ関数値 |
 | [Parallel](parallel.md) | 配列の同期並列生成・変換・還元 |
 | [Simd](simd.md) | 明示 128-bit vector と mask |
 | [Task](../language-reference/tasks.md) | 遅延計算の組み合わせと並列実行 |
@@ -54,12 +54,13 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 | Math | [Math](api/Math.md) | [Math](math.md) |
 | Parallel | [Parallel](api/Parallel.md) | [Parallel](parallel.md) |
 | Debug | [Debug](api/Debug.md) | [Debug](builtins.md) |
+| Owned | [Owned](api/Owned.md) | [Owned](builtins.md#owned) |
 | Test | [Test](api/Test.md) | [Test](builtins.md) |
 | Gpu | [Gpu](api/Gpu.md) | [GPU](../guides/gpu.md) |
 
-**生成宣言だけでは全 API の一覧にはなりません。** Int、Simd、Task と、Vec / Math などの組み込み操作はコンパイラに実装され、上の手書き解説に含めています。また、本文で推論される Copy などの制約をすべてソース署名へ書き戻す生成器ではありません。
+**生成宣言だけでは全 API の一覧にはなりません。** Int、Simd、Task、Owned の関数と、Vec / Math などの組み込み操作はコンパイラに実装され、上の手書き解説に含めています。また、本文で推論される Copy などの制約をすべてソース署名へ書き戻す生成器ではありません。
 
-不透明な Map / Set / Seq / Gpu / IO の内部フィールドがソース宣言として見えても、利用者による直接構築・分解を許可するものではありません。解説ページの所有権・可視性契約を優先します。
+不透明な Map / Set / Seq / Gpu / IO / Owned の内部フィールドがソース宣言として見えても、利用者による直接構築・分解を許可するものではありません。解説ページの所有権・可視性契約を優先します。
 
 ## 失敗と互換性
 
