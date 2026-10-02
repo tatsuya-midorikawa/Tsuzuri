@@ -90,6 +90,20 @@ NOINLINE uint64_t KERNEL(array_sum)(int64_t count, uint64_t seed) {
     return total;
 }
 
+NOINLINE uint64_t KERNEL(array_index_sum)(int64_t count, uint64_t seed) {
+    check_count(count);
+    uint64_t *values = (uint64_t *)malloc(count == 0 ? 1 : (size_t)count * sizeof(uint64_t));
+    if (!values) abort();
+    for (int64_t index = 0; index < count; ++index) {
+        values[index] = ((uint64_t)index ^ seed) * UINT64_C(6364136223846793005)
+            + UINT64_C(1442695040888963407);
+    }
+    uint64_t total = 0;
+    for (int64_t index = 0; index < count; ++index) total += values[index];
+    free(values);
+    return total;
+}
+
 NOINLINE uint64_t KERNEL(array_copy)(int64_t count, uint64_t seed) {
     check_count(count);
     size_t bytes = (size_t)count * sizeof(uint64_t);

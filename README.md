@@ -46,6 +46,8 @@ macOSのタスクを含むdebug objectにはClangと対応する `llvm-link`（`
 `extern def now :: unit -> i64`で同期ホスト関数を宣言できます。nativeは`tsuzuri_host_Main_now`、WASMは`tsuzuri`モジュールの`Main.now`へ接続します。
 未使用externはimportを増やしません。nativeは生成object/headerをホストと連結し、WASMは`{ tsuzuri: { "Main.now": () => 42n } }`を渡します。
 C header を生成して pointer／length と out pointer を使い、返却バッファは `tsuzuri_free` で解放します。
+`extern "sqrt" def c_sqrt :: f64 -> f64` のようにリンク名を付けると既存の C 関数を shim なしで呼べ、`extern type Counter` で不透明ハンドルを、関数型の引数で捕捉のないトップレベル関数をホストへ渡せます。
+native の実行ファイルは `--link PATH`・`-l NAME`・`-L DIR` や `Tsuzuri.toml` の `[native]` でホストの object・library を直接リンクできます。
 [C の使用例](examples/native/main.c) と [WASM のバッファ移転例](examples/web/simulation.mjs) に往復処理があります。
 
 現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、
@@ -100,7 +102,7 @@ def main :: i64 = answer()
 | メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
-| ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。標準入出力は IO、UI・ファイル・ネットワークはホストの責務 |
+| ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。extern のリンク名・不透明ハンドル・静的コールバック、native のホストリンク指定。標準入出力は IO、UI・ファイル・ネットワークはホストの責務 |
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
 
 配列型は `[i32]` のように要素型だけを指定します。
@@ -757,6 +759,9 @@ node tests/strings.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/trap_boundary.mjs target/release/tsuzuri
+node tests/trap_return.mjs target/release/tsuzuri # native --trap-mode return, the C trap runtime (asan/ubsan/tsan builds); Linux and macOS
+node tests/stack_overflow.mjs target/release/tsuzuri # native stack overflow report; Linux and macOS
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri # memory64 requires Node.js 24 or newer
 node tests/gpu.mjs target/release/tsuzuri # CPU/reference validation; TSUZURI_WEBGPU=1 enables actual WebGPU tests
 node tests/cache.mjs target/release/tsuzuri
@@ -773,6 +778,7 @@ node tests/wasm_simd.mjs target/release/tsuzuri # llvm-objdump required; TSUZURI
 node tests/simd.mjs target/release/tsuzuri # same llvm-objdump requirement
 node tests/cpu_dispatch.mjs target/release/tsuzuri
 node tests/host_imports.mjs target/release/tsuzuri
+node tests/ffi_extensions.mjs target/release/tsuzuri # wasm64 runs under Node.js 24 or newer; older engines only link it
 node tests/io.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri # llvm-dwarfdump required; TSUZURI_DWARFDUMP overrides it
 python3 -m venv target/math-reference-env

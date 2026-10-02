@@ -73,7 +73,7 @@ function reference(name, size, seed) {
     for (let index = 0; index < Number(size); index++) state = round(round(state * factor) + (index & 7) / 16);
     return state >= 2 ** 64 ? (1n << 64n) - 1n : BigInt(Math.trunc(state));
   }
-  const collection = ["array_sum", "array_copy", "list_sum"].includes(name);
+  const collection = ["array_sum", "array_index_sum", "array_copy", "list_sum"].includes(name);
   let total = collection ? 0n : seed;
   for (let i = 0n; i < size; i++) total += collection
     ? (i ^ seed) * 6364136223846793005n + 1442695040888963407n
@@ -133,7 +133,7 @@ try {
   const variants = ["c", "cpp", "rust", "tsuzuri", ...(baseline ? ["before"] : [])];
   assert.equal(result.samples, variants.length * (quick ? 1 : 3));
   assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum",
-    "array_copy", "list_sum", "closure_capture", "closure_churn", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
+    "array_index_sum", "array_copy", "list_sum", "closure_capture", "closure_churn", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
   for (const work of result.workloads) {
     assert.equal(work.checks.length, 25);
     for (const check of work.checks) {

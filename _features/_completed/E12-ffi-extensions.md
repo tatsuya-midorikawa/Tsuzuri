@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | E05, E06, (B07) |
 | 後続 | E11, E13, E08, F13 |
-| 状態 | todo |
+| 状態 | done（Phase 1 の段 A–D） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（リンク名の構文 `extern "symbol" def`・`extern "module" "symbol" def`）, D3（`extern type` の意味）, D6（リンク入力の CLI `--link`・`-l`・`-L` と manifest `[native]`）, D8（静的コールバックを Phase 1 に含める） |
-| 改善する劣位 | C/C++ 比: 任意の外部 ABI・既存ライブラリとの接続の自由度が小さい（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 承認 | D1（リンク名の構文 `extern "symbol" def`・`extern "module" "symbol" def`）, D3（`extern type` の意味）, D6（リンク入力の CLI `--link`・`-l`・`-L` と manifest `[native]`）, D8（静的コールバックを Phase 1 に含める）は 2026-10-02 に既定案どおり承認された |
+| 改善する劣位 | C/C++ 比: 任意の外部 ABI・既存ライブラリとの接続の自由度が小さい（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | リンク名: `src/check.rs` の `HostImport` を作る loop（`external_symbols` の衝突検査）と `src/llvm_imports.rs` の `FunctionEmitter::host_call`（`declare` と WASM 属性）。CLI: `src/main.rs` の `--cpu`・`--wasm-feature` の解析と `src/driver.rs` の `BuildOptions`、実行ファイルのリンク（`clang.arg("-lm")` の箇所）。manifest: `src/package.rs` の `parse_manifest` の `[dependencies]` 節。ハンドル型: Copy でない葉の型 `Type::Task` の型性質（`Type::is_copy`）と `Type::is_noncopy_record`、header 名の決定的な符号化 `src/llvm_abi.rs` の `record_name`。コールバック: `src/llvm_abi.rs` の `wrapper`（公開 ABI の wrapper）と `c_parameters` |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/check.rs`, `src/abi.rs`, `src/llvm.rs`, `src/llvm_abi.rs`, `src/llvm_imports.rs`, `src/llvm_debug.rs`, `src/driver.rs`, `src/main.rs`, `src/package.rs`, `tests/host_imports.rs`, `tests/ffi_extensions.rs`（新規）, `tests/ffi_extensions.mjs`（新規）, `tests/ffi_extensions_host.c`（新規）, `tests/fixtures/ffi_extensions/Main.tz`（新規）, `docs/language.md`, `docs/architecture.md`, `_docs/guides/native-interop.md`, `_docs/guides/webassembly.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -555,8 +555,8 @@ fn pass_through counter = counter
 ## 対象外
 
 - `unsafe`・生ポインター型、C++ ABI、可変長引数関数、externref、共有 library の出力（E13）、bitcode・LTO（PR08）。
-- 捕捉のある関数値のコールバック、i128・f16・タプル・固定長配列（A16）の ABI、`Option<H>` と NULL の対応、依存 package の `[native]`、
-  `extern type` への `Drop` instance（B07 の拡張）。
+- 捕捉のある関数値のコールバック、i128・f16・タプル・固定長配列（A16）の ABI、`Option<H>` と NULL の対応、
+  `extern type` への `Drop` instance（B07 の拡張）。依存 package の `[native]` は root の `native = true` による opt-in として後から実装した（「追加した拡張と確認」）。
 - Phase 2（設計方針）: 捕捉のある関数値は `{ 関数 pointer, void *context }` として呼び出し中だけ貸す（非 escaping。保存しないことはホストとの契約）。
   ABI 型の追加は E05 の buffer・out 引数の型の上に足す。Windows でのリンク入力の検証は G10 と行う。
 
@@ -632,7 +632,7 @@ fn pass_through counter = counter
 ### D10: 再入・スレッド・trap
 
 - 決定: コールバックは名前のない `export def` と同じ規則で呼べる（再入可、いつでも呼べる）。コールバック中の trap は通常の trap と同じで、WASM では
-  trap 後に instance を使い続けてはいけない。E2E は同じスレッドの同期呼び出しと再入だけを検証する。
+  trap 後に instance を使い続けてはいけない。当初の E2E は同じスレッドの同期呼び出しと再入だけを検証した（ホストの別スレッドからの呼び出しと同時呼び出しは、後の「追加した拡張と確認」で native について検証した）。
 - 理由: Tsuzuri は可変の大域状態を持たないので再入で壊れる状態がない。回復可能なトラップ境界は E14 が定める。
 - 状態: 既定案（実装者はこの案に従う）
 
@@ -653,3 +653,107 @@ fn pass_through counter = counter
 - 決定: 導入しない。低水準の操作はホスト側に置き、ハンドルで受け渡す。
 - 理由: 生ポインターは `unsafe` と借用規則の例外を要し、GUIDE §1 の安全性の方針に反する。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-02）
+
+D1・D3・D6・D8 の承認（四つとも既定案どおり）を 2026-10-02 に受け、Phase 1 の段 A → B → C → D（手順 1–10）をこの順に実装した。
+「対象外」の項（捕捉のある関数値のコールバック、依存 package の `[native]`、`Option<H>` と NULL の対応、`extern type` への `Drop`、
+i128・f16・タプル・固定長配列の ABI、生ポインター）は実装していない。着手時の作業ツリーは HEAD `30b2d1d` に F12 と E14 の未コミットの変更を
+加えたもの（チケットの確認時の HEAD は `f8dc655`）。コミットは作っていない。
+
+### 実装
+
+- 段 A（D1・D2）: `src/syntax.rs`（`LinkName`、`SignatureDecl::link`）、`src/parser.rs`（`Parser::link_name`。トップレベルの `extern` の読み取りは
+  別 method の `Parser::extern_declaration`。下の判断 3）、`src/formatter.rs`（literal の綴りを保つ）、`src/check.rs`（`HostImport` の
+  `wasm_module`・`explicit`・`callbacks`。`explicit_symbols` の表で同じ symbol の再宣言を照合）、`src/abi.rs`（`RESERVED_HOST_SYMBOLS`、
+  `link_name_error`）、`src/llvm_imports.rs`（WASM 属性の module、明示 symbol の prototype を header に出さない）。
+- 段 B（D6・D7）: `src/driver.rs`（`LinkInputs`、`library_name_error`、`check_shape`、`check_readable`、`add_to`、`protect_links`、`build_linked`、
+  `run_with_diagnostics`。リンク入力があれば build cache を使わない）、`src/test_runner.rs`（`run_tests_linked`、`build_runner`）、
+  `src/main.rs`（`--link`・`-l`・`-L`、`links_apply`、HELP）、`src/package.rs`（`[native]`、`Manifest::native`）。
+- 段 C（D3–D5）: `Type::Handle(Box<str>)`、`NamedType::Handle`、`Names::handles`・`handle_aliases`（`src/check.rs`）、`ExternTypeDecl`・`extern type`
+  （`src/syntax.rs`、`src/parser.rs`）、`src/formatter.rs`・`src/docgen.rs`・`src/semantic.rs`・`src/higher_kinds.rs`、`abi_scalar`・`is_handle`（`src/abi.rs`）、
+  `handle_c_name`・`handle_typedefs`・`extended`・`uses_host_abi`・`c_parameters`・`wrapper`（`src/llvm_abi.rs`）、`llvm_type`・`c_type`・`abi_type`・
+  `canonical_type`・`clone_value`（`src/llvm.rs`）、`src/llvm_debug.rs`、`src/llvm_imports.rs`。
+- 段 D（D8–D10）: `src/check.rs`（コールバック型の検査、`validate_callbacks`）、`src/llvm.rs`（`Globals::callbacks`、callback extern の本体を出さない、
+  `FunctionEmitter::call` から `host_call` を直接出す、特殊化の後に wrapper を出す）、`src/llvm_imports.rs`（`host_call` の関数型の引数）、
+  `src/llvm_abi.rs`（`WrapperKind`、`wrapper` の名前と linkage、unit 引数の省略、header の関数 pointer 引数）、`src/driver.rs`（`--export-table`）。
+- テスト: `tests/ffi_extensions.rs`（新規、10 件）、`tests/ffi_extensions.mjs`・`tests/ffi_extensions_host.c`・`tests/fixtures/ffi_extensions/Main.tz`（新規）、
+  `src/main.rs` の `parses_link_inputs`・`rejects_link_inputs_outside_native_executables`、`src/package.rs` の `parses_native_link_section`・
+  `rejects_malformed_native_link_section`、`src/abi.rs` の `reserved_symbols_cover_the_runtime_names`、`tests/host_imports.rs`（1 行。判断 1）。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/guides/native-interop.md`、`_docs/guides/webassembly.md`、`_docs/tools/command-line.md`、
+  `_docs/guides/README.md`、`_docs/language-reference/functions.md`、`_docs/feature-status.md`、`README.md`、`_features/README.md`、
+  `_features/GUIDE.md`（D-30 の台帳）、`_perfs/README.md`（リンク）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. `tests/host_imports.rs` の期待値を 1 行変えた。`extern def bad :: (i64 -> i64) -> i64`（E1008）を `(string -> i64) -> i64`（E1008）にした。
+   D8 の承認で `(i64 -> i64) -> i64` は受理されるコールバックになるため、「既存テストへの影響: なし」からの意図した逸脱である。ほかの既存テストの期待値は変えていない。
+2. `CheckedModule::callbacks`（「データ構造」）は作らなかった。コールバックとして渡される関数は emit 中に `Globals::callbacks`（`BTreeSet<usize>`）へ集め、
+   特殊化の emit の後に id 順で wrapper を出す。到達性を二重に持たず、到達しない関数のコールバックに wrapper を出さないため。driver は IR の `@tz.callback.`
+   の有無で `--export-table` を決める（`io_runtime` などの IR 走査と同じ形）。
+3. `extern` の読み取りは別 method の `Parser::extern_declaration` に切り出した。`program_all` の closure に足すと `bounds_type_growing_polymorphic_recursion` が
+   2 MiB の stack で溢れた（GUIDE §11.1。上限は変えていない）。
+4. `RESERVED_HOST_SYMBOLS` は手順 3 の grep の出力に加え、numeric runtime が定義する内部名（`decode`、`power` など）も含む。明示 symbol がこれらと同名だと
+   clang が再定義で失敗した。`reserved_symbols_cover_the_runtime_names` が、runtime の定義と予約一覧の食い違いを検出する。
+5. `llvm_abi::wrapper` は 8 引数になったので `#[allow(clippy::too_many_arguments)]` を付けた（`src/llvm.rs` の既存の例と同じ）。
+6. WASM の E2E は wasm64 も扱う。Node.js 24 以降は instance を作って実行し、それ未満（20.17.0）は link だけを確かめる。wasm64 ではハンドルと関数 table の index が BigInt。
+7. `unit` を唯一の引数とするコールバックの wrapper は C の引数を持たず、Tsuzuri の関数を `i8 0` で呼ぶ。ホストの prototype は `(*arg0)(void)`。
+8. E2E の fixture に `callback_shapes`（unit 引数・2 引数・`ref` ハンドルのコールバック）を足し、「E2E」の例より広く確かめた。期待値 82（= 15 + 15 + 10 + 42）は C の参照実装の手計算。
+9. 診断は D12 のとおり既存のコードだけを使った。`doc` に `--link` を付けると、リンク入力の E2000 より先に `-o` の要求（E2000）が報告される。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD 23.1.1、rustc 1.98.1、Node v20.17.0 と v24.21.0）
+
+- ベースライン: `tests/fixtures/host_imports` の IR・wasm32 IR・header を `/tmp/tz-e12/before*` に保存した（F12・E14 適用済みのコンパイラ）。
+  手順 3・7・8 の後に出し直した 3 組が `cmp` で一致（`SAME`）。wasm32 の `.wasm` も一致した。
+- 段ごとの Rust: `cargo test --locked --test ffi_extensions` が段 A で 3、段 C で 8、段 D で 10 passed。`--bin tsuzuri` の `parses_link_inputs`・
+  `rejects_link_inputs_outside_native_executables`、`--lib` の `parses_native_link_section`・`rejects_malformed_native_link_section`・
+  `reserved_symbols_cover_the_runtime_names` が passed。`--test host_imports` 4、`--test host_abi` 4、`--test formatter` 13 passed。
+  §3.1 の stack-depth 3 テスト（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・
+  `bounds_nested_builder_expansion_not_just_source_syntax`）は各段の後と最後に成功した。
+- 全体: `cargo test --locked` は 548 passed・0 failed（E12 の前は 533）。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。
+  `cargo check --locked --all-targets --target x86_64-pc-windows-msvc` と `aarch64-pc-windows-msvc` が成功（Windows での実行は未検証）。
+- 出力の不変: 変更前（F12・E14 適用済み）のコンパイラと新しいコンパイラで、`tests/fixtures/*`・`examples/*`・`benchmarks/{control,computations,tasks}` の
+  各 project について `--emit llvm`（native と wasm32）と `--emit header` の出力・終了状態・診断を比べ、192 組すべてが一致した（E12 の fixture は除く）。
+- E2E: `node tests/ffi_extensions.mjs target/release/tsuzuri` が Node 20.17.0 と 24.21.0 のどちらでも `ffi extensions: native -O0 passed`・`native -O3 passed`・
+  `run passed`・`WASM -O0 passed`・`WASM -O3 passed` の 5 行を出して終了コード 0（native は `live == 0` と counter 数 0 を各呼び出しの後に検査、
+  `callback_trap` は別プロセスで異常終了、`run` は `--link`・`-l`/`-L`・`[native]` のどれでも stdout `98`、`build -g` の実行ファイルと `tsuzuri test`（2 passed）も `--link` を受ける、wasm32 の import は表の 10 個に一致し
+  `__indirect_function_table` を export、コールバックのない `tests/fixtures/host_imports` は table を export しない、Node 24 では wasm64 も実行）。
+  拒否: wasm32 への `--link`、不正な `-l`、存在しない path・directory、出力と入力が同じ、unresolved symbol、依存 package の `[native]` が
+  それぞれ `E2000`・`E2001`・`E2003`・`E2002` で失敗する。`tests/host_imports.mjs` は `-O0`・`-O3` で成功。
+- 既存の suite（release、native/WASM × `-O0`・`-O3`）: 29 項目を一つの gate script で実行し、すべて成功した（29 PASS・0 FAIL）。
+  Node 20.17.0 を使い、primitives・features・wasm64 の suite と、trap_boundary・ffi_extensions の二回目は Node 24.21.0。
+  `check-runtime-includes.sh`（21 files、変更なし）、host_imports、trap_boundary（17 case）、e2e、primitives、strings、tasks（41 結果・4 trap）、
+  computations（70）、control（270）、numeric_casts（1585）、integer_intrinsics（263182）、display_parse、features（4958）、
+  features の wasm64 `bounds_checks`（28）、examples、wasm_threads、wasm_memory、wasm64、io、cache、simd（232）、wasm_simd、cpu_dispatch、debug_info、
+  docgen、lsp_sessions。display_parse は作業機の `/usr/bin/python3`（3.9.6）に `sys.set_int_max_str_digits` がないため、`PATH` の先頭に Homebrew の Python を置いて実行した。
+- 文書: `node scripts/check-docs.mjs` が全体で成功した（83 pages・746 links・141 checked examples・246 native runs（O0/O3）・9 test projects）。
+  変更した Markdown の診断は増えていない（`_features/README.md` の MD060 は既存の表の区切り行）。`git diff --check` が空。
+- 性能: link 名・ハンドル・コールバックを使わないプログラムの IR・header・WASM import が同一なので計測していない。性能は主張しない。
+
+### 残作業
+
+- 捕捉のある関数値のコールバック（Phase 2 の設計方針）、`Option<H>` と NULL の対応、`extern type` への `Drop`（B07 の拡張）、i128・f16・タプル・固定長配列の ABI は未実装。
+  依存 package の `[native]` は、次の「追加した拡張と確認」で root の `native = true` による opt-in として実装した。
+- Windows でのリンク入力は、`-L`・`-l` が MSVC の linker へ `-libpath:` と `<name>.lib` として渡ることを `clang -###` の dry run で確かめた（単体テスト）。Windows での実際のリンクと実行は未検証。
+- この環境の WASM の build は `build cache disabled: tool version query failed` を表示する。変更前のコンパイラでも同じで、E12 とは無関係。
+
+## 追加した拡張と確認（2026-10-02、包括承認の後）
+
+「未実装・未検証の項目をすべて実装・検証する。判断は実装者に任せる」との指示を受けて、残作業のうち次を実装・検証した。
+
+- 依存 package の `[native]`（D6 の拡張）: root の `[dependencies]` に `lib1 = { path = "lib1", native = true }` と書いた**直接の**依存だけが `[native]` を持てる。許可のない依存と、
+  依存の依存が自分で書いた `native = true`（root が許可していない）は `E2000`（`only the root package and dependencies it marks with native = true may declare [native] link settings; …`）。
+  許可した依存の path は、その依存の root からの相対で解決し、root の入力の後に連結する。`src/package.rs`（`Dependency::native`、`parses_the_native_opt_in_of_a_dependency`）、
+  `src/driver.rs`（`Project::load_from_root` の `trusted`）、`tests/ffi_extensions.mjs`（許可なし・許可あり（stdout `42`）・連鎖の 3 case）。供給網の観点で、許可は root が一つずつ書く形にした。
+- ホストの別スレッドからのコールバック: fixture に `threaded`（ホストの `e12_apply_threaded` が自分で pthread を起こしてコールバックを呼び、join してから戻る）を足し、native の host main が
+  8 スレッドから 200 回ずつ `tz_counters`・`tz_callbacks`・`tz_threaded` を同時に呼んで期待値と `live == 0` を検査する。`-O0`・`-O3`、object と IR のリンクの両方で成功した。
+  WASM の import 表に `e12_apply_threaded` が増え（11 個）、`tz_threaded` も検査する。host の object が pthread を使うので、E2E のリンクに `-pthread`・`-l pthread` を足した。
+- Windows の link 入力: `driver::tests::link_inputs_reach_the_msvc_linker_as_libpath_and_lib_names`（`clang -###` で x86_64・aarch64 の `windows-msvc` に `-L libs -l sqlite3 host.obj` を渡し、
+  linker 行に `-libpath:libs`・`"sqlite3.lib"`・`host.obj` が出ることを確かめる。Clang がない環境では何も検査しない）。
+- 実装しなかったもの（理由）: 捕捉のある関数値のコールバック（`{ 関数 pointer, void *context }` の契約、closure の呼び出し ABI の trampoline、型検査の変更が要り、E14 の境界・B07 と一緒に設計するほうが安全）、
+  `Option<H>` と NULL の対応（`abi_scalar` が型の文脈を持たないため、ABI 判定の関数すべてに文脈を通す変更になる）、i128・f16・タプル（D11 のとおり C ABI と JS の変換が target ごとに異なる）、
+  `extern type` への `Drop`（B07 が未実装）。いずれも既存の診断（E1008）のままで、挙動は変えていない。
+
+## スレッド検証のレビュー修正（2026-10-02）
+
+`tests/ffi_extensions_host.c` は `assert` にスレッド生成・待機を含むので、`assert.h` の前で `NDEBUG` を解除し、検証を常に有効にした。`tests/ffi_extensions.mjs` は native の `-O0`・`-O3` の host と、リンク入力に使う host object に明示的に `-DNDEBUG` を渡す。別スレッドのコールバックと 8 スレッドの同時呼び出しが、その設定でも実行・検証されることを確かめる。

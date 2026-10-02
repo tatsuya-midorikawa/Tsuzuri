@@ -151,6 +151,13 @@ pub(super) fn resolve_constructor(
                     expression.span,
                 ));
             }
+            NamedType::Handle(_) => {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "an extern type takes no type arguments, so it is not a type constructor",
+                    expression.span,
+                ));
+            }
         },
     };
     if constructor.arity().checked_sub(arguments.len()) != Some(expected) {

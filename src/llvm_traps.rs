@@ -31,13 +31,13 @@ pub struct EmitOutput {
     pub trap_sites: Vec<TrapSite>,
 }
 
-struct Callable<'a> {
-    name: &'a str,
-    open: usize,
-    close: usize,
+pub(super) struct Callable<'a> {
+    pub name: &'a str,
+    pub open: usize,
+    pub close: usize,
 }
 
-fn callable(line: &str, definition: bool) -> Option<Callable<'_>> {
+pub(super) fn callable(line: &str, definition: bool) -> Option<Callable<'_>> {
     let bytes = line.as_bytes();
     let mut cursor = if definition {
         line.find('@')?
@@ -224,6 +224,7 @@ pub(super) fn instrument(
     marks: Marks,
     sources: &[TrapSource<'_>],
     wasm: bool,
+    raise: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     if sources.is_empty() {
         return Err(Diagnostic::new(
@@ -417,7 +418,20 @@ pub(super) fn instrument(
                 text.len()
             );
         }
-        output.push_str("define internal void @tz.trap.report(i32 %site) cold nounwind {\nentry:\n  switch i32 %site, label %done [\n");
+        // Sites are `1 + n * kinds + kind`; inside a trap boundary the report returns to the host.
+        let boundary = if raise {
+            output.push_str("declare void @tsuzuri_trap_raise(i32, i32)\n");
+            format!(
+                "  %offset = sub i32 %site, 1\n  %kind = urem i32 %offset, {}\n  call void @tsuzuri_trap_raise(i32 %site, i32 %kind)\n",
+                TrapKind::ALL.len()
+            )
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            output,
+            "define internal void @tz.trap.report(i32 %site) cold nounwind {{\nentry:\n{boundary}  switch i32 %site, label %done [\n"
+        );
         for site in &trap_sites {
             let _ = writeln!(output, "    i32 {}, label %site{}", site.id, site.id);
         }

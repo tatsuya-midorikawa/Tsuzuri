@@ -1,0 +1,4 @@
+extern def fail_host :: i64 -> i64
+
+export def call_host :: i64 -> i64
+fn call_host n = fail_host n + 1

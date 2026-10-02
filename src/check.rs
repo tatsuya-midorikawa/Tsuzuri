@@ -63,6 +63,8 @@ pub enum Type {
     Vec(Box<Type>),
     Tuple(Vec<Type>),
     Task(Box<Type>),
+    /// An `extern type`: an opaque host handle named by its qualified name.
+    Handle(Box<str>),
     Function(Vec<Type>, Box<Type>),
     Reference(Box<Type>, bool),
 }
@@ -181,6 +183,7 @@ impl Type {
                     .join(" * ")
             ),
             Self::Task(result) => format!("Task<{}>", result.display(types)),
+            Self::Handle(name) => name.to_string(),
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -271,6 +274,7 @@ impl Type {
             | Self::Utf8String
             | Self::Vec(_)
             | Self::Task(_)
+            | Self::Handle(_)
             | Self::Reference(_, true)
             | Self::Partial(_)
             | Self::Application(..)
@@ -377,11 +381,14 @@ impl Type {
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {
         if types.recursive(self) {
             return types.stored_all(self, |ty| {
-                !matches!(ty, Type::Reference(_, true) | Type::Task(_))
+                !matches!(
+                    ty,
+                    Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
+                )
             });
         }
         match self {
-            Self::Reference(_, true) | Self::Task(_) => false,
+            Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
             Self::Array(element) | Self::List(element) | Self::Vec(element) => {
                 element.can_capture(types)
             }
@@ -2001,7 +2008,13 @@ impl TypedMatchArm {
 #[derive(Clone, Debug)]
 pub struct HostImport {
     pub native_symbol: String,
+    /// The WASM import module: `tsuzuri` unless the extern names one.
+    pub wasm_module: String,
     pub wasm_name: String,
+    /// Declared with a link name: the symbol is the host's own, so the header omits its prototype.
+    pub explicit: bool,
+    /// Takes a function-typed parameter: a callback the host calls through a C function pointer.
+    pub callbacks: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -2361,6 +2374,9 @@ struct Names {
     type_alias_names: BTreeMap<String, Vec<String>>,
     records: BTreeMap<String, NameInfo>,
     record_aliases: BTreeMap<String, Vec<String>>,
+    /// `extern type` handles share the type namespace with records and unions.
+    handles: BTreeMap<String, NameInfo>,
+    handle_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
     /// Unions share the type namespace with records and classes.
@@ -2396,18 +2412,19 @@ struct CaseInfo {
     has_payload: bool,
 }
 
-/// A record or union type name.
+/// A record, union, alias or extern type name.
 #[derive(Clone, Copy)]
 enum NamedType<'a> {
     Record(&'a NameInfo),
     Union(&'a NameInfo),
     Alias(&'a NameInfo),
+    Handle(&'a NameInfo),
 }
 
 impl<'a> NamedType<'a> {
     fn info(self) -> &'a NameInfo {
         match self {
-            Self::Record(info) | Self::Union(info) | Self::Alias(info) => info,
+            Self::Record(info) | Self::Union(info) | Self::Alias(info) | Self::Handle(info) => info,
         }
     }
 
@@ -2416,6 +2433,7 @@ impl<'a> NamedType<'a> {
             Self::Record(_) => "record",
             Self::Union(_) => "union",
             Self::Alias(_) => "type alias",
+            Self::Handle(_) => "extern type",
         }
     }
 }
@@ -2575,6 +2593,14 @@ impl Names {
                 ),
                 span,
             )),
+            NamedType::Handle(info) => Err(Diagnostic::new(
+                "E1004",
+                format!(
+                    "'{name}' names the extern type '{}', not a record type; host handles have no fields and cannot be constructed",
+                    info.name
+                ),
+                span,
+            )),
         }
     }
 
@@ -2601,12 +2627,16 @@ impl Names {
         if let Some((info, _)) = self.type_aliases.get(&own) {
             return Choice::Found(NamedType::Alias(info), 0);
         }
+        if let Some(info) = self.handles.get(&own) {
+            return Choice::Found(NamedType::Handle(info), 0);
+        }
         if self.searchable_path(module, name) {
             let exact = self
                 .records
                 .get(name)
                 .map(NamedType::Record)
                 .or_else(|| self.unions.get(name).map(NamedType::Union))
+                .or_else(|| self.handles.get(name).map(NamedType::Handle))
                 .or_else(|| {
                     self.type_aliases
                         .get(name)
@@ -2632,6 +2662,13 @@ impl Names {
                     .into_iter()
                     .flatten()
                     .map(|qualified| NamedType::Union(&self.unions[qualified])),
+            )
+            .chain(
+                self.handle_aliases
+                    .get(name)
+                    .into_iter()
+                    .flatten()
+                    .map(|qualified| NamedType::Handle(&self.handles[qualified])),
             )
             .chain(
                 self.type_alias_names
@@ -3241,14 +3278,37 @@ fn check_modules_collect(
             for ty in external.parameters.iter().chain([&external.result]) {
                 regions::reject_local(ty)?;
             }
-            let native_symbol = format!(
-                "tsuzuri_host_{}_{}",
-                module.name.replace('.', "_"),
-                external.name.text
-            );
-            if !external_symbols.insert(native_symbol.clone()) {
-                return Err(duplicate(&external.name));
-            }
+            let import = if let Some(link) = &external.link {
+                if let Some(error) = crate::abi::link_name_error(link) {
+                    return Err(error);
+                }
+                HostImport {
+                    native_symbol: link.symbol.clone(),
+                    wasm_module: link
+                        .module
+                        .as_ref()
+                        .map_or_else(|| "tsuzuri".to_owned(), |(module, _)| module.clone()),
+                    wasm_name: link.symbol.clone(),
+                    explicit: true,
+                    callbacks: false,
+                }
+            } else {
+                let native_symbol = format!(
+                    "tsuzuri_host_{}_{}",
+                    module.name.replace('.', "_"),
+                    external.name.text
+                );
+                if !external_symbols.insert(native_symbol.clone()) {
+                    return Err(duplicate(&external.name));
+                }
+                HostImport {
+                    native_symbol,
+                    wasm_module: "tsuzuri".to_owned(),
+                    wasm_name: format!("{}.{}", module.name, external.name.text),
+                    explicit: false,
+                    callbacks: false,
+                }
+            };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
                 return Err(Diagnostic::new(
                     "E1008",
@@ -3256,13 +3316,7 @@ fn check_modules_collect(
                     external.name.span,
                 ));
             }
-            external_functions.insert(
-                function_declarations.len(),
-                HostImport {
-                    native_symbol,
-                    wasm_name: format!("{}.{}", module.name, external.name.text),
-                },
-            );
+            external_functions.insert(function_declarations.len(), import);
             function_declarations.push((
                 module.name.to_owned(),
                 FunctionDecl {
@@ -3370,6 +3424,34 @@ fn check_modules_collect(
             .push(qualified);
         names.record_arities.push(record.parameters.len());
     }
+    for module in modules {
+        for handle in &module.program.extern_types {
+            if diagnostics.is_full() {
+                break;
+            }
+            let qualified = format!("{}.{}", module.name, handle.name.text);
+            let info = NameInfo {
+                id: names.handles.len(),
+                name: qualified.clone(),
+                module: module.name.to_owned(),
+                visibility: handle.visibility,
+            };
+            if crate::numeric::primitive(&handle.name.text).is_some()
+                || matches!(handle.name.text.as_str(), "_" | "Task" | "Vec")
+                || polymorph::BUILTIN_CLASSES.contains(&handle.name.text.as_str())
+                || names.records.contains_key(&qualified)
+                || names.handles.insert(qualified.clone(), info).is_some()
+            {
+                diagnostics.push(duplicate(&handle.name));
+                continue;
+            }
+            names
+                .handle_aliases
+                .entry(handle.name.text.clone())
+                .or_default()
+                .push(qualified);
+        }
+    }
     diagnostics.check()?;
     let union_declarations: Vec<_> = modules
         .iter()
@@ -3393,6 +3475,7 @@ fn check_modules_collect(
             let qualified = format!("{}.{}", module.name, class.name.text);
             if names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
+                || names.handles.contains_key(&qualified)
                 || names.classes.contains(&qualified)
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
                 || matches!(class.name.text.as_str(), "_" | "Task" | "Vec")
@@ -3420,6 +3503,7 @@ fn check_modules_collect(
                 || polymorph::BUILTIN_CLASSES.contains(&alias.name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
+                || names.handles.contains_key(&qualified)
                 || names.cases.contains_key(&qualified)
                 || names.classes.contains(&qualified)
                 || names.type_aliases.contains_key(&qualified)
@@ -3679,6 +3763,8 @@ fn check_modules_collect(
     }
     diagnostics.check()?;
     let mut export_names = BTreeSet::new();
+    // The function type and WASM module of each explicit extern symbol; a symbol may be declared again only identically.
+    let mut explicit_symbols: BTreeMap<String, (Type, String)> = BTreeMap::new();
     regions::validate_modules(modules, &names, types)?;
     let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
     classes.instances(
@@ -3802,14 +3888,42 @@ fn check_modules_collect(
                 if signature
                     .parameters
                     .iter()
-                    .any(|ty| !crate::abi::parameter(ty, &types) && *ty != Type::Unit)
-                    || !crate::abi::result(&signature.result, &types)
+                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty))
+                {
+                    return Err(Diagnostic::new(
+                        "E1008",
+                        "extern callback parameters support functions over scalar, unit and extern handle types; buffers, records and nested functions are not supported",
+                        function.name.span,
+                    ));
+                }
+                if signature.parameters.iter().any(|ty| {
+                    !crate::abi::parameter(ty, &types)
+                        && *ty != Type::Unit
+                        && !matches!(ty, Type::Function(..))
+                }) || !crate::abi::result(&signature.result, &types)
                 {
                     return Err(Diagnostic::new(
                         "E1008",
                         "extern signatures support scalar/unit, shared ABI buffers and scalar records, and owned ABI buffer or scalar record results",
                         function.name.span,
                     ));
+                }
+                let import = &external_functions[&id];
+                if import.explicit {
+                    let declared = (signature.as_type(), import.wasm_module.clone());
+                    let known = explicit_symbols
+                        .entry(import.native_symbol.clone())
+                        .or_insert_with(|| declared.clone());
+                    if *known != declared {
+                        return Err(Diagnostic::new(
+                            "E1008",
+                            format!(
+                                "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
+                                import.native_symbol
+                            ),
+                            function.name.span,
+                        ));
+                    }
                 }
             }
             if names.constants.contains(&id) && !variables.is_empty() {
@@ -3950,6 +4064,7 @@ fn check_modules_collect(
                 if names.cases.contains_key(&qualified)
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
+                    || names.handles.contains_key(&qualified)
                     || names.type_aliases.contains_key(&qualified)
                     || names.active_patterns.contains_key(&qualified)
                 {
@@ -4025,9 +4140,14 @@ fn check_modules_collect(
             computation::expand(&mut function.body, &names)?;
             checker.recovering = true;
             let body = if let Some(import) = external_functions.get(&id) {
+                let mut import = import.clone();
+                import.callbacks = signature
+                    .parameters
+                    .iter()
+                    .any(|ty| matches!(ty, Type::Function(..)));
                 TypedExpr {
                     kind: TypedExprKind::HostCall(
-                        Box::new(import.clone()),
+                        Box::new(import),
                         parameters
                             .iter()
                             .map(|local| TypedExpr {
@@ -4243,6 +4363,7 @@ fn check_modules_collect(
         tests,
         warnings,
     };
+    validate_callbacks(&module)?;
     let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
         let first = errors[0].clone();
         diagnostics.extend(errors);
@@ -4267,6 +4388,73 @@ fn check_modules_collect(
     }
     diagnostics.check()?;
     Ok(module)
+}
+
+/// Callback externs run only through direct calls with every argument, and each
+/// callback argument names a top-level user function: no lambda, local, partial
+/// application, generic function, std function, or extern. The host gets a
+/// static C function pointer, so nothing needs a context or a lifetime.
+fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
+    let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
+    if !(0..module.functions.len()).any(is_callback_extern) {
+        return Ok(());
+    }
+    let callback_extern = |expression: &TypedExpr| match &expression.kind {
+        TypedExprKind::Function(FunctionRef::User(id)) if is_callback_extern(*id) => Some(*id),
+        _ => None,
+    };
+    let direct_only = |id: usize, span: Span| {
+        Diagnostic::new(
+            "E1008",
+            format!(
+                "extern '{}' takes a callback and must be called directly with all arguments",
+                module.functions[id].name
+            ),
+            span,
+        )
+    };
+    let plain_function = |argument: &TypedExpr| match &argument.kind {
+        TypedExprKind::Function(FunctionRef::User(id)) => {
+            let function = &module.functions[*id];
+            function.origin.module == ModuleOrigin::User
+                && function.origin.provenance == Provenance::User
+                && function.origin.parent.is_none()
+                && function.origin.test.is_none()
+                && function.type_parameters.is_empty()
+                && !matches!(function.body.kind, TypedExprKind::HostCall(..))
+        }
+        _ => false,
+    };
+    for function in &module.functions {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expression.kind
+                && let Some(id) = callback_extern(callee)
+            {
+                let target = &module.functions[id];
+                if arguments.len() != target.parameters.len() {
+                    return Err(direct_only(id, expression.span));
+                }
+                for (parameter, argument) in target.signature.parameters.iter().zip(arguments) {
+                    if matches!(parameter, Type::Function(..)) && !plain_function(argument) {
+                        return Err(Diagnostic::new(
+                            "E1008",
+                            "callback arguments must name a top-level user function without captures; move the logic into a 'def' and pass its name",
+                            argument.span,
+                        ));
+                    }
+                }
+                // The callee is the extern itself; only the arguments can hold other uses.
+                pending.extend(arguments.iter());
+                continue;
+            }
+            if let Some(id) = callback_extern(expression) {
+                return Err(direct_only(id, expression.span));
+            }
+            pending.extend(expression.children());
+        }
+    }
+    Ok(())
 }
 
 // The ownership checker indexes functions by declaration ID.
@@ -4435,6 +4623,7 @@ fn collect_unions(
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
+                || names.handles.contains_key(&qualified)
             {
                 return Err(duplicate(name));
             }
@@ -4494,6 +4683,7 @@ fn collect_unions(
                 if matches!(name.text.as_str(), "Task" | "Vec")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
+                    || names.handles.contains_key(&qualified)
                     || names.cases.contains_key(&qualified)
                 {
                     return Err(duplicate(name));
@@ -4644,6 +4834,7 @@ fn resolve_type_with_kinds(
                 match named {
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
                     NamedType::Union(info) => Type::Union(info.id, Box::default()),
+                    NamedType::Handle(info) => Type::Handle(info.name.as_str().into()),
                     NamedType::Alias(_) => {
                         let expanded = expand_type_aliases(expression, module, names)?;
                         let ty = resolve(&expanded)?;
@@ -4691,6 +4882,8 @@ fn resolve_type_with_kinds(
                     match named {
                         NamedType::Record(info) => Type::Record(info.id, args),
                         NamedType::Union(info) => Type::Union(info.id, args),
+                        // `record_arity` rejected the arguments of an extern type.
+                        NamedType::Handle(_) => unreachable!("extern types take no arguments"),
                         NamedType::Alias(_) => unreachable!(),
                     }
                 }
@@ -4731,6 +4924,7 @@ fn record_arity(
         NamedType::Record(info) => names.record_arities[info.id],
         NamedType::Union(info) => names.union_arities[info.id],
         NamedType::Alias(info) => names.type_aliases[&info.name].1.parameters.len(),
+        NamedType::Handle(_) => 0,
     };
     if expected == found {
         return Ok(());

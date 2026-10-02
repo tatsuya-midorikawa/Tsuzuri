@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（Phase 0・1） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要 |
-| 改善する劣位 | C/C++ 比: 安全検査のコスト（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: 安全検査のコスト（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | 関数単位の事前解析: `src/call_specialization.rs` の `single_use_locals`（`FunctionEmitter::emit` の冒頭で一度計算し、field `FunctionEmitter::single_use` に保持）。保守的な変更検出: 同ファイルの `may_mutate`。子の走査: `src/check.rs` の `TypedExpr::children`。検査の省略先: `src/llvm.rs` の `element_pointer`（検査なしの GEP）と `checked_element_pointer`（検査付き）。E2E の suite と trap: `tests/features.mjs` の `simd` suite（`cases`・`traps`） |
 | 主な影響ファイル | `src/ranges.rs`（新規）, `src/lib.rs`, `src/llvm.rs`, `tests/bounds_checks.rs`（新規）, `tests/fixtures/bounds_checks/Main.tz`（新規）, `tests/features.mjs`, `tests/trap_locations.rs`, `benchmarks/control/Main.tz`, `benchmarks/control/host.c`, `benchmarks/control/reference.c`, `benchmarks/control/reference.rs`, `benchmarks/run-control.mjs`, `docs/benchmarks.md`, `docs/architecture.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -597,3 +597,85 @@ done > target/perf/F12/shapes-after.txt
 - 決定: 省略した位置は trap 表に載せない。表の形式、残った位置の `TrapKind` と `TrapSite::span` は変えない。
 - 理由: 省略した位置はトラップしないことが証明済みで、報告されることがない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-02、Phase 0・1）
+
+Phase 0・1（手順 1–12）を実装した。Phase 2（ループの版分けと `llvm.assume`、「Phase 2（設計方針、実装しない）」の項）は、実測で不要と判断して実装していない（末尾の「Phase 2 の判断」）。承認は不要。
+着手時の HEAD は `30b2d1d`。コミットは作っていない。このチケットは、人間が E12 と書くつもりで F12 と指示した取り違えのために先に実装した。
+2026-10-02 に人間が「完了扱い」にすると決めたので、記録と `docs/benchmarks.md` を仕上げた。
+
+### 実装
+
+- `src/ranges.rs`（新規）: `RangeFacts`、`analyze(module, function)`、`index_in_bounds`、`enter_condition`・`leave_condition`、`NODE_BUDGET`（65,536）。
+  規則 R1–R5・P1–P3、単体テスト 7 件。
+- `src/lib.rs`: `mod ranges;`。
+- `src/llvm.rs`: `FunctionEmitter` の field `ranges`・`proven_reads`、`emit` の `analyze`、`indexed_pointer`（証明済みなら検査のない GEP。`Index` の 2 つの arm が共有）、
+  `If` の arm の `enter_condition`・`leave_condition`、`hint_loop(body, reads)`。
+- `src/llvm_frame.rs`: `If` の arm（チケットが挙げていない 3 か所目）。
+- `src/llvm_control.rs`: 各ループの emit で `proven_reads` を控えて `hint_loop` へ渡す。R1・R2 が依存する評価順序のコメント。
+- `benchmarks/control/*`・`benchmarks/run-control.mjs`: workload `array_index_sum`（16 個目）。
+- テスト: `tests/bounds_checks.rs`（新規、5 件）、`tests/fixtures/bounds_checks/Main.tz`（新規）、`tests/features.mjs` の suite `bounds_checks`（28 case）。
+- 文書: `docs/benchmarks.md`（`array_index_sum` の行、「境界検査の残り方（F12）」「境界検査の省略の実測（2026-10-02）」）、`docs/architecture.md`、
+  `_docs/guides/performance.md`、`_docs/feature-status.md`、`_features/README.md`、`_perfs/README.md`・`_perfs/PR02-integer-ranges.md`（F12 の完了への追従）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. `analyze(module, function)`・`enter_condition(module, condition)`: `Array.length` の呼び出しを型付き IR で見分けるため、チケットの `analyze(function)` に `module` を足した。
+2. `If` の emit にあたる箇所は、チケットの 2 か所に加えて `src/llvm_frame.rs` にもあり、同じ push と pop を入れた。
+3. 同じ id が複数の scope で宣言されている local は不安定として事実を持たせない（保守側）。
+4. fixture に `walk`・`tail_walk`（tail 位置の `If` の R5）を足し、E2E の suite は 22 から 28 case に、`tests/bounds_checks.rs` の省略する形は 5 から 7 形になった（`TAIL_GUARD` の形を含む）。
+5. 新しい決定（`llvm.loop.unroll.enable` の扱い）: 最初の実装は `array_index_sum` を `-O3` で約 32% 遅くした。検査が消えたループに `hint_loop` が付ける展開ヒントが原因で、
+   LLVM が `LoopVectorize` より前に実行時展開を行い、ベクトル化が弱い形になった。検査を省いた読み出しを本体に持つループにはヒントを付けない（`hint_loop(body, reads)`）ことで、
+   変更前と同じ生成コードに戻した。`tests/bounds_checks.rs` の `unroll_hint_is_dropped_only_where_a_guard_was_removed` が境界を固定する。「D2: LLVM への事実を出さない」の範囲内の変更だが、
+   ヒントの出し方を変えるので決定事項として追記する。
+6. 計測は Node.js v20.17.0 で行い、BigInt の重い suite と wasm64 は Node 24.21.0 で実行した。計測した target は arm64 macOS だけで、x86_64 Linux は未計測（D8）。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD 23.1.1、rustc 1.98.1）
+
+- 手順 1: `cargo test --locked --test trap_locations` が 7 passed、§3.1 の stack-depth 3 テストが成功、`run-control.mjs --quick` が 15 workload を出した。
+  HEAD のコンパイラを `/tmp/tz-f12/tsuzuri-before` と `target/perf/F12/tsuzuri-before`（SHA-256 `722dab3c…`）に保存した。
+- 手順 2・3: `run-control.mjs --quick` が 16 workload（`array_index_sum` を含む）。fixture と suite `bounds_checks` は省略を入れる前の HEAD のコンパイラで全 case が成功した（22 case）。
+- 手順 4: 形ごとの記録を `target/perf/F12/shapes-{before,after}.txt`・`shapes-{before,after}.O0.txt` に保存した（結果は `docs/benchmarks.md` の表）。
+  `-O0` の `llvm.trap` は `forward` 2→1、`backward` 2→1、`sum_all` 1→0、`pick` 2→0、ほかの形は変更前と同じ。`-O3` は 9 関数すべてで変更前後が一致。
+- 手順 5–9: `cargo test --locked --lib ranges` が 7 passed（R1–R5、不安定化、閉包、予算）。省略した形の `@tz.fn.Main.sum`・`pick` から `icmp ult` が消えた。
+- 手順 10: `cargo test --locked --test bounds_checks` が 5 passed（チケットの 4 件と `unroll_hint_is_dropped_only_where_a_guard_was_removed`）。
+- 手順 11: `cargo test --locked` は 548 passed・0 failed（E14・E12 を含む作業ツリー全体）。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。
+  `cargo test --locked --test trap_locations` は 8 passed（E14 の 1 件を含む）。E2E は 29 項目の gate script がすべて成功した（29 PASS・0 FAIL）。
+  suite `bounds_checks`（28 case）は native・WASM × `-O0`・`-O3` で features（4958 case）の中で成功し、Node 24.21.0 の
+  `TSUZURI_TEST_WASM_TARGET=wasm64` でも 28 case 成功した。primitives（Node 24）、control（270）、tasks（41 結果・4 trap）、computations（70）、simd（232）、
+  e2e、strings、numeric_casts、integer_intrinsics、display_parse、examples、wasm_memory、wasm_threads、io、cache、debug_info、docgen、lsp_sessions も成功した。
+- 手順 12: `node scripts/check-docs.mjs` が全体で成功した（83 pages・746 links・141 checked examples・246 native runs（O0/O3）・9 test projects）。`git diff --check` が空。
+- 差分の検査: HEAD のコンパイラと新しいコンパイラで、省略する形・残す形ごとの trap site の数と `TrapSite::span` を比べる差分スクリプトを書いて確認した。さらにランダムな添字プログラムを
+  両方で WASM `-O0`・`-O3` に build して結果とトラップを比べる差分テストを書いた（`/tmp/tz-f12/fuzz.mjs`）。最終のコンパイラで seed 201・202・203 の各 12 module
+  （合計 16,632 比較、トラップ 1,946・1,631・1,567 件を含む）を実行し、不一致は 0 件だった。
+- 計測（`docs/benchmarks.md` 「境界検査の省略の実測（2026-10-02）」）: `array_index_sum` は変更前 1.788 ms・変更後 1.786 ms（改善倍率 0.998、3 回の範囲 0.995–1.001）、
+  C 1.784 ms・Rust 1.782 ms。全 16 種目の改善倍率は 0.993–1.020。展開ヒントを抑えない最初の実装は変更後 2.371 ms で改善倍率 0.761（約 32% 遅い）だった。
+  生データ・IR・アセンブリは `target/perf/F12/control-{1,2,3}.json`・`control-prefix-{1,2,3}.json` と同名ディレクトリ。
+- **速度の改善は主張しない。** `-O3` では LLVM が変更前から単純なループの検査を消すので、実行時間は変わらなかった。効果は `-O0` の IR と trap 表から検査が消えること。
+  CI に速度の合否の閾値は追加していない。
+
+### 残作業
+
+- Phase 2 は実装しない判断をした（下の「Phase 2 の判断（2026-10-02）」）。PR02（整数の範囲と overflow フラグ）が `src/ranges.rs` の上に算術の事実を足す。
+- x86_64 Linux の計測は未実施。
+- 検査が残る形（`replaced`・`other`・`past_end`・`while_sum`・`literal_past` など）は R1–R5 の外なので、`-O0` では従来どおり検査が残る。
+
+## Phase 2 の判断（2026-10-02）
+
+Phase 2 の設計方針（ループの版分け、`while` の帰納変数、`assert` による支配、`min(len(a), len(b))` の上限、入れ子の配列）は、「コードサイズの増加を計測してから決める」とあった。
+着手前の問いは「`-O3` で、いまの証明規則の外の形が証明のある形より遅いか」である。`benchmarks/bounds_shapes/`（新規。`Main.tz` と C の `bench.c`）で 4 つの形を測った。
+
+| 形 | `-O3`（ms、200 回） | `sum_all` に対する比 | `-O0`（ms、200 回） | `sum_all` に対する比 |
+| --- | --- | --- | --- | --- |
+| `sum_all`（R1 で証明あり） | 21.601 | 1.000 | 378.243 | 1.000 |
+| `sum_first`（可変の上限 `n - 1`） | 21.831 | 1.011 | 402.614 | 1.064 |
+| `sum_checked`（`if n <= values.length` の後の `0 .. n - 1`） | 22.197 | 1.028 | 401.955 | 1.063 |
+| `sum_while`（`while i < values.length`） | 21.767 | 1.008 | 486.269 | 1.286 |
+
+- 4 つとも `-O3` でベクトル化される（`clang -O3 -S -emit-llvm` の出力に `<N x i64>` が現れる）。LLVM の `IndVarSimplify` が、ループを抜ける検査（行き先がトラップ）を
+  ループの前の一回の比較へ移すためで、証明のない形も 3% 以内に収まる。版分けは同じ結果を、ループの本体を二つにして得るだけである。
+- 決定: ループの版分け、`while` の帰納変数、`assert` による支配を**実装しない**。`-O3`（既定）の速度を上げず、コードサイズだけを増やす。`-O0` では `while` が約 29% 遅いが、
+  それを縮めるには増分が本体の最後の文であることまで確かめる流れ依存の証明が要り、デバッグ用の `-O0` だけの利益に見合わない。
+- `llvm.assume` と `!range` は、D2・D7 のとおり出していない。
+- 測定は Apple M1 Max、`target/release/tsuzuri`（2026-10-02 のビルド）、Apple clang 21、1,048,576 個の `i64`、7 回の最小値。x86_64 Linux は未計測で、推定値は書かない。
+  手順は `docs/benchmarks.md` の「境界検査の Phase 2 の形（F12）」にある。

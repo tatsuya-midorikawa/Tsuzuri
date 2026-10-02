@@ -161,6 +161,7 @@ pub struct Program {
     pub type_aliases: Vec<TypeAliasDecl>,
     pub constants: Vec<ConstDecl>,
     pub externs: Vec<SignatureDecl>,
+    pub extern_types: Vec<ExternTypeDecl>,
     pub records: Vec<RecordDecl>,
     pub unions: Vec<UnionDecl>,
     pub functions: Vec<FunctionDecl>,
@@ -289,6 +290,25 @@ pub struct SignatureDecl {
     pub parameters: Vec<TypeExpr>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
+    pub link: Option<Box<LinkName>>,
+}
+
+/// The strings of `extern "symbol" def` or `extern "module" "symbol" def`.
+#[derive(Clone, Debug)]
+pub struct LinkName {
+    /// The WASM import module and the span of its string.
+    pub module: Option<(String, Span)>,
+    pub symbol: String,
+    /// The span of the string that holds the symbol.
+    pub span: Span,
+}
+
+/// `extern type Name`: an opaque host handle.
+#[derive(Clone, Debug)]
+pub struct ExternTypeDecl {
+    pub doc: Option<Documentation>,
+    pub visibility: Visibility,
+    pub name: Ident,
 }
 
 #[derive(Clone, Debug)]

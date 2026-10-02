@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -13,7 +14,152 @@ use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
 
 #[path = "test_runner.rs"]
 mod test_runner;
-pub use test_runner::{TestOptions, TestReport, TestResult, run_tests};
+pub use test_runner::{TestOptions, TestReport, TestResult, run_tests, run_tests_linked};
+
+/// The most link inputs the command line and the manifest may give together.
+pub const MAX_LINK_INPUTS: usize = 256;
+
+/// Host objects, libraries and search directories linked into a native executable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkInputs {
+    /// Object files and static libraries, linked in this order.
+    pub paths: Vec<PathBuf>,
+    /// System library names for `-l`, without the `lib` prefix or extension.
+    pub libraries: Vec<String>,
+    /// Directories the linker searches for `libraries`.
+    pub search: Vec<PathBuf>,
+}
+
+/// Why `name` cannot follow `-l`, if it cannot.
+pub fn library_name_error(name: &str) -> Option<String> {
+    const EXTENSIONS: [&str; 8] = [".a", ".so", ".dylib", ".lib", ".dll", ".o", ".obj", ".tbd"];
+    let valid = name
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'.' | b'-'))
+        && !(name.starts_with("lib") && name.len() > 3)
+        && !EXTENSIONS.iter().any(|extension| name.ends_with(extension));
+    (!valid).then(|| {
+        format!(
+            "invalid library name '{name}'; pass the name without the 'lib' prefix or extension, for example -l sqlite3"
+        )
+    })
+}
+
+impl LinkInputs {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty() && self.libraries.is_empty() && self.search.is_empty()
+    }
+
+    /// These inputs followed by `later` ones: the manifest's, then the command line's.
+    pub fn followed_by(mut self, later: &LinkInputs) -> Self {
+        self.paths.extend(later.paths.iter().cloned());
+        self.libraries.extend(later.libraries.iter().cloned());
+        self.search.extend(later.search.iter().cloned());
+        self
+    }
+
+    /// The inputs as a whole: their number, repeats and library names. Does not touch the file system.
+    pub fn check_shape(&self) -> Result<(), Diagnostic> {
+        if self.paths.len() + self.libraries.len() + self.search.len() > MAX_LINK_INPUTS {
+            return Err(driver_error(
+                "E2000",
+                format!("too many link inputs; at most {MAX_LINK_INPUTS} are supported"),
+            ));
+        }
+        for name in &self.libraries {
+            if let Some(message) = library_name_error(name) {
+                return Err(driver_error("E2000", message));
+            }
+        }
+        let repeated = |seen: &mut BTreeSet<String>, input: String| {
+            if seen.insert(input.clone()) {
+                Ok(())
+            } else {
+                Err(driver_error(
+                    "E2000",
+                    format!("link input '{input}' specified more than once"),
+                ))
+            }
+        };
+        let mut seen = BTreeSet::new();
+        for path in &self.paths {
+            repeated(&mut seen, path.display().to_string())?;
+        }
+        let mut seen = BTreeSet::new();
+        for path in &self.search {
+            repeated(&mut seen, path.display().to_string())?;
+        }
+        let mut seen = BTreeSet::new();
+        for name in &self.libraries {
+            repeated(&mut seen, name.clone())?;
+        }
+        Ok(())
+    }
+
+    /// That every object or library path is a file and every search path a directory.
+    pub fn check_readable(&self) -> Result<(), Diagnostic> {
+        let check = |path: &Path, directory: bool| match fs::metadata(path) {
+            Ok(metadata) if metadata.is_dir() == directory => Ok(()),
+            Ok(_) => Err(driver_error(
+                "E2001",
+                format!(
+                    "cannot read link input '{}': not a {}",
+                    path.display(),
+                    if directory { "directory" } else { "file" }
+                ),
+            )),
+            Err(error) => Err(io_error("read link input", path, error)),
+        };
+        for path in &self.paths {
+            check(path, false)?;
+        }
+        for path in &self.search {
+            check(path, true)?;
+        }
+        Ok(())
+    }
+
+    /// Adds the inputs to a clang link line: `-L` directories, then paths, then `-l` libraries.
+    fn add_to(&self, clang: &mut Command) {
+        for directory in &self.search {
+            let mut option = OsString::from("-L");
+            option.push(directory);
+            clang.arg(option);
+        }
+        if !self.paths.is_empty() {
+            // An earlier `-x ir` or `-x c` would otherwise apply to the host objects.
+            clang.args(["-x", "none"]).args(&self.paths);
+        }
+        for name in &self.libraries {
+            clang.arg(format!("-l{name}"));
+        }
+    }
+}
+
+/// Refuses an output that would replace a link input.
+fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
+    let Ok(metadata) = fs::symlink_metadata(output) else {
+        return Ok(());
+    };
+    for input in &links.paths {
+        let same = fs::canonicalize(input).ok() == fs::canonicalize(output).ok()
+            || same_file(input, output, &metadata).unwrap_or(false);
+        if same {
+            return Err(driver_error(
+                "E2003",
+                format!(
+                    "output '{}' would overwrite a link input; choose a different -o path",
+                    output.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -67,6 +213,8 @@ pub struct BuildOptions {
     /// `None` selects [`DEFAULT_WASM_STACK_SIZE`].
     pub wasm_stack_size: Option<u64>,
     pub cache: bool,
+    /// `--trap-mode return`: native exports also come as `tsuzuri_try_<name>` (E14 Phase 2).
+    pub trap_return: bool,
 }
 
 impl Default for BuildOptions {
@@ -84,6 +232,7 @@ impl Default for BuildOptions {
             wasm_max_memory: None,
             wasm_stack_size: None,
             cache: true,
+            trap_return: false,
         }
     }
 }
@@ -134,6 +283,15 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--debug-output is not valid for header output",
+            ));
+        }
+        if self.trap_return
+            && (self.target != Target::Native
+                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--trap-mode return is only valid for native object, llvm or header output",
             ));
         }
         if self.optimization > 3 {
@@ -314,6 +472,9 @@ pub struct Project {
     pub root: usize,
     /// The root package's `[wasm]` section.
     pub wasm: crate::package::WasmSettings,
+    /// The `[native]` link inputs of the root package and of the dependencies it marks `native = true`,
+    /// each resolved against its package root.
+    pub native: LinkInputs,
 }
 
 #[derive(Debug)]
@@ -762,6 +923,45 @@ impl Project {
             .iter()
             .find(|package| package.id.root == directory)
             .map_or_else(Default::default, |package| package.manifest.wasm);
+        // A dependency links host code only where the root package names it with `native = true`.
+        let trusted: BTreeSet<PathBuf> = packages
+            .iter()
+            .find(|package| package.id.root == directory)
+            .into_iter()
+            .flat_map(|root| root.manifest.dependencies.values())
+            .filter(|dependency| dependency.native)
+            .filter_map(|dependency| fs::canonicalize(directory.join(&dependency.path)).ok())
+            .collect();
+        let mut native = LinkInputs::default();
+        // The root's inputs come first, then each trusted dependency's in package order.
+        let mut ordered: Vec<_> = packages.iter().collect();
+        ordered.sort_by_key(|package| package.id.root != directory);
+        for package in ordered {
+            let Some((inputs, span)) = &package.manifest.native else {
+                continue;
+            };
+            if package.id.root != directory && !trusted.contains(&package.id.root) {
+                return Err(SourceError::new(
+                    &package.id.root.join("Tsuzuri.toml"),
+                    Diagnostic::new(
+                        "E2000",
+                        "only the root package and dependencies it marks with native = true may declare [native] link settings; move them to the application manifest or mark the dependency",
+                        *span,
+                    ),
+                ));
+            }
+            // The canonical root is verbatim (`\\?\`) on Windows; the linker should see `C:\...`.
+            let base = crate::cache::real_path(&package.id.root)
+                .unwrap_or_else(|_| package.id.root.clone());
+            let resolve = |paths: &[PathBuf]| -> Vec<PathBuf> {
+                paths.iter().map(|path| base.join(path)).collect()
+            };
+            native = native.followed_by(&LinkInputs {
+                paths: resolve(&inputs.paths),
+                libraries: inputs.libraries.clone(),
+                search: resolve(&inputs.search),
+            });
+        }
         let manifests = packages
             .into_iter()
             .map(|package| SourceFile {
@@ -778,6 +978,7 @@ impl Project {
             manifests,
             root,
             wasm,
+            native,
         })
     }
 
@@ -1163,7 +1364,18 @@ pub fn build(
     output: &Path,
     options: BuildOptions,
 ) -> Result<Vec<String>, Diagnostic> {
-    build_complete(module, project, output, options, "build").map(|(messages, _)| messages)
+    build_linked(module, project, output, options, &LinkInputs::default())
+}
+
+/// Like [`build`], linking the host `links` into a native executable.
+pub fn build_linked(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+) -> Result<Vec<String>, Diagnostic> {
+    build_complete(module, project, output, options, links, "build").map(|(messages, _)| messages)
 }
 
 fn build_complete(
@@ -1171,9 +1383,20 @@ fn build_complete(
     project: &Project,
     output: &Path,
     options: BuildOptions,
+    links: &LinkInputs,
     action: &str,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
+    if !links.is_empty() {
+        if options.target != Target::Native || options.emit != Emit::Executable {
+            return Err(driver_error(
+                "E2000",
+                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+            ));
+        }
+        links.check_shape()?;
+        links.check_readable()?;
+    }
     let (max_memory, stack_size) = wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -1200,7 +1423,7 @@ fn build_complete(
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     let mut text = if options.emit == Emit::Header {
-        llvm::header(module)
+        llvm::header_with(module, options.trap_return)
     } else if options.emit == Emit::Wgsl {
         let exports: Vec<_> = module
             .functions
@@ -1226,7 +1449,25 @@ fn build_complete(
             wasm: options.target.is_wasm(),
             debug_output: options.debug_output,
         };
-        if options.target == Target::Native
+        if options.trap_return {
+            let output = project.with_trap_sources(|sources| {
+                llvm::emit_trap_return(
+                    module,
+                    emission,
+                    sources,
+                    options.debug_info.then_some(options.optimization != 0),
+                    options.emit == Emit::Object,
+                )
+            })?;
+            if output.ir.contains("@tz.callback.") {
+                return Err(driver_error(
+                    "E2000",
+                    "--trap-mode return cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+                ));
+            }
+            trap_sites = output.trap_sites;
+            output.ir
+        } else if options.target == Target::Native
             && matches!(options.emit, Emit::Executable | Emit::Object)
         {
             let output = project.with_trap_sources(|sources| {
@@ -1298,9 +1539,29 @@ fn build_complete(
     let cpu_runtime =
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
-    let native_runtime =
-        task_runtime || cpu_runtime || (options.target == Target::Native && io_runtime);
+    // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
+    let trap_runtime = options.trap_return
+        && options.emit == Emit::Object
+        && [
+            "@tsuzuri_trap_raise(",
+            "@tsuzuri_boundary_run(",
+            "@tsuzuri_tracked_",
+        ]
+        .iter()
+        .any(|symbol| text.contains(symbol));
+    let native_runtime = task_runtime
+        || cpu_runtime
+        || trap_runtime
+        || (options.target == Target::Native && io_runtime);
+    // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
+    // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
+    let stack_runtime = options.target == Target::Native
+        && options.emit == Emit::Executable
+        && cfg!(unix)
+        && llvm::has_recursion(&text);
     let debug_import = options.target.is_wasm() && text.contains("@tsuzuri_debug_write(");
+    // A callback's address is a table index the host resolves through the exported table.
+    let callback_table = options.target.is_wasm() && text.contains("@tz.callback.");
     if task_runtime
         && !cfg!(any(unix, windows))
         && !matches!(options.emit, Emit::Llvm | Emit::Header)
@@ -1317,6 +1578,7 @@ fn build_complete(
         ));
     }
     protect_sources(project, output)?;
+    protect_links(links, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
     let dwarf_sidecar = (cfg!(target_os = "macos")
         && options.debug_info
@@ -1328,9 +1590,11 @@ fn build_complete(
         });
     if let Some(sidecar) = &sidecar {
         protect_sources(project, sidecar)?;
+        protect_links(links, sidecar)?;
     }
     if let Some(sidecar) = &dwarf_sidecar {
         protect_sources(project, sidecar)?;
+        protect_links(links, sidecar)?;
     }
     let parent = output
         .parent()
@@ -1363,7 +1627,8 @@ fn build_complete(
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
     }
-    let cache = if options.cache && options.emit != Emit::Header {
+    // The cache key does not cover the contents of link inputs, so a build with them is never cached.
+    let cache = if options.cache && options.emit != Emit::Header && links.is_empty() {
         let prepared = (|| -> io::Result<_> {
             let root = crate::cache::default_root()
                 .ok_or_else(|| io::Error::other("no cache directory is configured"))?;
@@ -1425,7 +1690,12 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}",
+                if trap_runtime {
+                    include_str!("runtime/trap.c")
+                } else {
+                    ""
+                },
                 if task_runtime {
                     task_runtime_source()
                 } else {
@@ -1449,8 +1719,14 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
-            if task_runtime && !cfg!(windows) {
+            if (task_runtime || trap_runtime) && !cfg!(windows) {
                 runtime.arg("-pthread");
+            }
+            if trap_runtime {
+                runtime.arg("-DTZ_TRAP_BOUNDARY");
+            }
+            if stack_runtime {
+                runtime.arg("-DTZ_STACK_GUARD");
             }
             if options.debug_info {
                 runtime.arg("-g");
@@ -1487,6 +1763,29 @@ fn build_complete(
                 );
                 ir = combined;
             }
+        }
+        let stack_source = temporary.path.join("stack.c");
+        let stack_object = temporary.path.join("stack.o");
+        if stack_runtime {
+            fs::write(&stack_source, include_str!("runtime/stack.c"))
+                .map_err(|error| io_error("write stack runtime", &stack_source, error))?;
+        }
+        if stack_runtime && options.debug_info {
+            // Its own object, without debug information: the guard is not source a debugger should show.
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args(["-std=c11", "-c", "-O1"])
+                .args(native_compile_args(cfg!(windows), env::consts::ARCH))
+                .arg(&stack_source)
+                .arg("-o")
+                .arg(&stack_object);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut runtime,
+                    "native runtime requires Clang and the platform C/OS SDK headers",
+                )?,
+            );
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         let threads_object = temporary.path.join("threads.o");
@@ -1571,6 +1870,18 @@ fn build_complete(
                 clang.arg("-pthread");
             }
         }
+        if stack_runtime && dwarf_sidecar.is_none() {
+            if options.debug_info {
+                clang.args(["-x", "none"]).arg(&stack_object);
+            } else {
+                // The same Clang run compiles the guard, which costs far less than a process of its own.
+                clang.args(["-x", "c", "-std=c11"]).arg(&stack_source);
+            }
+            clang.arg("-pthread");
+        }
+        if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
+            links.add_to(&mut clang);
+        }
         collect_message(
             &mut messages,
             run_tool(
@@ -1587,6 +1898,10 @@ fn build_complete(
                     linker.arg("-pthread");
                 }
             }
+            if stack_runtime {
+                linker.arg(&stack_object).arg("-pthread");
+            }
+            links.add_to(&mut linker);
             linker.arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
@@ -1683,6 +1998,9 @@ fn build_complete(
             }
             if debug_import {
                 linker.arg("--export-memory");
+            }
+            if callback_table {
+                linker.arg("--export-table");
             }
             if llvm::uses_host_abi(module) || io_runtime {
                 linker.args([
@@ -1791,18 +2109,56 @@ pub fn trap_sidecar_path(output: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// What a native executable writes to stderr when its stack overflows (`src/runtime/stack.c`).
+pub(crate) const STACK_OVERFLOW_REPORT: &str = "trap: stack overflow";
+
+/// Whether a child died of an invalid memory access, which unbounded recursion causes without a trap report.
+#[cfg(unix)]
+pub(crate) fn probable_stack_exhaustion(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    const SIGSEGV: i32 = 11;
+    #[cfg(target_os = "linux")]
+    const SIGBUS: Option<i32> = Some(7);
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    const SIGBUS: Option<i32> = Some(10);
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    const SIGBUS: Option<i32> = None;
+    status
+        .signal()
+        .is_some_and(|signal| signal == SIGSEGV || Some(signal) == SIGBUS)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn probable_stack_exhaustion(_status: &std::process::ExitStatus) -> bool {
+    false
+}
+
 pub fn run(
     module: &CheckedModule,
     project: &Project,
     options: BuildOptions,
 ) -> Result<Vec<String>, Diagnostic> {
-    run_with_diagnostics(module, project, options, false)
+    run_with_diagnostics(module, project, options, &LinkInputs::default(), false)
 }
 
 pub fn run_with_diagnostics(
     module: &CheckedModule,
     project: &Project,
     options: BuildOptions,
+    links: &LinkInputs,
     json: bool,
 ) -> Result<Vec<String>, Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
@@ -1825,6 +2181,7 @@ pub fn run_with_diagnostics(
             trap_info: true,
             ..options
         },
+        links,
         "run",
     )?;
     let mut child = Command::new(&output)
@@ -1862,25 +2219,33 @@ pub fn run_with_diagnostics(
     temporary.close()?;
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
-        let span = project
-            .with_trap_sources(|sources| {
-                sites
-                    .iter()
-                    .find(|site| {
-                        site.message(sources)
-                            .is_ok_and(|message| stderr.contains(&message))
-                    })
-                    .map(|site| site.span)
-            })
-            .unwrap_or_default();
+        let site = project.with_trap_sources(|sources| {
+            sites
+                .iter()
+                .find(|site| {
+                    site.message(sources)
+                        .is_ok_and(|message| stderr.contains(&message))
+                })
+                .map(|site| site.span)
+        });
         let message = if !json || stderr.trim().is_empty() {
-            format!(
-                "program terminated with {status}; integer division, indexing, assert, or allocation may have trapped"
-            )
+            if site.is_none() && stderr.contains(STACK_OVERFLOW_REPORT) {
+                format!(
+                    "program terminated with {status}; stack overflow: the stack was exhausted by deep recursion; reduce the recursion depth or use a loop"
+                )
+            } else if site.is_none() && probable_stack_exhaustion(&status) {
+                format!(
+                    "program terminated with {status}; the stack was probably exhausted by deep recursion; reduce the recursion depth or use a loop"
+                )
+            } else {
+                format!(
+                    "program terminated with {status}; integer division, indexing, assert, or allocation may have trapped"
+                )
+            }
         } else {
             format!("program terminated with {}:\n{}", status, stderr.trim_end())
         };
-        return Err(Diagnostic::new("E2005", message, span));
+        return Err(Diagnostic::new("E2005", message, site.unwrap_or_default()));
     }
     if json {
         io::stderr()
@@ -2108,6 +2473,29 @@ mod tests {
         }
         let project = Project::load(&directory.path.join(input)).unwrap();
         (directory, project)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probable_stack_exhaustion_matches_segv_and_bus() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        assert!(probable_stack_exhaustion(&ExitStatus::from_raw(11)));
+        #[cfg(target_os = "linux")]
+        assert!(probable_stack_exhaustion(&ExitStatus::from_raw(7)));
+        // 7 is SIGEMT on macOS, and SIGBUS is 10 there.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(probable_stack_exhaustion(&ExitStatus::from_raw(10)));
+            assert!(!probable_stack_exhaustion(&ExitStatus::from_raw(7)));
+        }
+        // SIGILL, SIGTRAP, SIGABRT, a normal exit and exit code 1.
+        for raw in [4, 5, 6, 0, 1 << 8] {
+            assert!(
+                !probable_stack_exhaustion(&ExitStatus::from_raw(raw)),
+                "{raw}"
+            );
+        }
     }
 
     #[test]
@@ -2416,6 +2804,68 @@ mod tests {
                 .code,
             "E2000"
         );
+    }
+
+    #[test]
+    fn validate_limits_trap_mode_return_to_native_object_llvm_and_header_output() {
+        let options = |target, emit| BuildOptions {
+            target,
+            emit,
+            trap_return: true,
+            trap_info: emit != Emit::Header,
+            ..BuildOptions::default()
+        };
+        for emit in [Emit::Object, Emit::Llvm, Emit::Header] {
+            options(Target::Native, emit).validate().unwrap();
+        }
+        let message = "--trap-mode return is only valid for native object, llvm or header output";
+        for (target, emit) in [
+            (Target::Native, Emit::Executable),
+            (Target::Native, Emit::Wgsl),
+            (Target::Wasm32, Emit::Object),
+            (Target::Wasm32, Emit::Llvm),
+            (Target::Wasm32, Emit::Wasm),
+            (Target::Wasm64, Emit::Object),
+        ] {
+            let error = options(target, emit).validate().unwrap_err();
+            assert_eq!(error.code, "E2000", "{target:?} {emit:?}");
+            assert!(
+                error.message == message || emit == Emit::Wgsl,
+                "{target:?} {emit:?}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn link_inputs_reach_the_msvc_linker_as_libpath_and_lib_names() {
+        let links = LinkInputs {
+            paths: vec![PathBuf::from("host.obj")],
+            libraries: vec!["sqlite3".into()],
+            search: vec![PathBuf::from("libs")],
+        };
+        for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+            let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+            clang.args(["-###", &format!("--target={target}"), "-o", "a.exe"]);
+            links.add_to(&mut clang);
+            // A dry run shows the linker line without needing the Windows SDK; without Clang there is nothing to check.
+            let Ok(output) = clang.output() else { return };
+            let log = String::from_utf8_lossy(&output.stderr);
+            if !log.contains("link.exe") && !log.contains("lld-link") {
+                return;
+            }
+            assert!(log.contains("-libpath:libs"), "{target}: {log}");
+            assert!(log.contains("\"sqlite3.lib\""), "{target}: {log}");
+            assert!(log.contains("host.obj"), "{target}: {log}");
+        }
+    }
+
+    #[test]
+    fn stack_runtime_writes_the_report_the_driver_looks_for() {
+        let source = include_str!("runtime/stack.c");
+        assert!(source.contains(&format!("\"{STACK_OVERFLOW_REPORT}\\n\"")));
+        assert!(source.contains("tsuzuri_stack_thread"));
+        assert!(include_str!("runtime/task.c").contains("tsuzuri_stack_thread();"));
     }
 
     #[test]

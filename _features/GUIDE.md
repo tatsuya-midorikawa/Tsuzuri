@@ -277,6 +277,8 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/runtime/numeric.c` → `numeric.ll` | f16/f128/decimal/i128 変換のソフトウェア実装、`tz_soft_op/cmp/cast/format` | `@tz_soft_` が現れる。**`numeric.ll` は手編集禁止。`python3 src/runtime/generate.py` で再生成** |
 | `src/runtime/console.ll` | `@tz.console.write`（putchar） | ネイティブのコンソール入口だけ |
 | `src/runtime/task.c` / `task-wasm.ll` | `tsuzuri_task_parallel`（pthread の bounded fork/join／WASM 逐次） | `@tsuzuri_task_parallel(` が現れる。native は driver が task.c をコンパイル |
+| `src/runtime/trap.c` | `--trap-mode return` の境界（`tsuzuri_boundary_run/item/resume`、thread ごとの setjmp frame）、`tsuzuri_trap_raise`、確保の追跡（`tsuzuri_tracked_malloc/free/realloc`） | `--trap-mode return` の native object。driver が trap.c をコンパイルし、`heap-native.ll` の確保名を `tsuzuri_tracked_*` に置き換える |
+| `src/runtime/stack.c` | スタック溢れの signal handler（`sigaltstack`、`trap: stack overflow` を書いて `abort()`） | native の実行ファイルで、再帰するプログラム（`llvm::has_recursion`）だけ。`-g` でなければ driver が同じ clang 呼び出しに `-x c` で足す |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・シフトの補助（`__multi3` は `noinline optnone` 必須） | WASM で driver が常に追加 |
 
 ### 4.3 P2 以降に追加されたモジュール
@@ -910,7 +912,7 @@ fn rejects(source: &str, code: &str) {
 | 種別 | 仮の名前 | チケット | 要承認 |
 | --- | --- | --- | --- |
 | 構文 | `$"..."`・`u8$"..."`（文字列補間） | D07 | はい |
-| 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | はい |
+| 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | いいえ（承認済み・実装済み） |
 | 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | はい |
 | 構文 | `const def` | D11 | いいえ（Phase 1） |
 | 組み込みクラス・builtin | `AtomicValue`、`Task.scope`、構築関数 `create`（`new` は予約語） | F10 | はい |
@@ -934,8 +936,8 @@ fn rejects(source: &str, code: &str) {
 | CLI | `--emit wgsl-relaxed`・`--wasm-feature webgpu` | F09 | はい |
 | CLI | `--wasm-feature tail-call` | PM09 | はい |
 | CLI | `--wasm-host wasi` | E08 | はい |
-| CLI | `--trap-mode`（Phase 2） | E14 | はい |
-| CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | はい |
+| CLI | `--trap-mode return` | E14 | いいえ（Phase 2 承認済み・実装済み） |
+| CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | いいえ（承認済み・実装済み） |
 | CLI | `--profile-generate`・`--profile-use` | PR07 | いいえ |
 | CLI | `-Os`・`-Oz`・`--strip` | PM08 | いいえ |
 | CLI | `--backend llvm\|fast` | PB05 | はい |
@@ -954,7 +956,7 @@ fn rejects(source: &str, code: &str) {
 | 環境変数 | `TSUZURI_TEST_WASM_TARGET`（テスト用。`tests/features.mjs` の WASM を `wasm64` で実行） | F11 | いいえ |
 | 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` | F13 | いいえ |
 | 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`） | F08・PR05 | いいえ |
-| 公開記号 | `tsuzuri_try_<name>`（Phase 2） | E14 | はい |
+| 公開記号 | `tsuzuri_try_<name>`・`tsuzuri_trap_info`（`tsuzuri_boundary_run`・`tsuzuri_trap_raise`・`tsuzuri_tracked_*` は runtime の内部） | E14 | いいえ（Phase 2 承認済み・実装済み） |
 | 公開記号 | wasm global `tsuzuri_stack_base`・`tsuzuri_stack_top`（threads の worker の stack の範囲） | F11 | いいえ（Phase 2 実装済み） |
 | ランタイム | `format.ll`（D07）、`string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`os.c`（E08）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み） | 各チケット | 各チケットの承認に従う |
 

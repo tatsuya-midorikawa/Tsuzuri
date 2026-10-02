@@ -21,6 +21,8 @@ pub struct Manifest {
     pub namespace: String,
     pub dependencies: BTreeMap<String, Dependency>,
     pub wasm: WasmSettings,
+    /// The `[native]` link inputs, with paths still relative to the package root, and the span of its header.
+    pub native: Option<(crate::driver::LinkInputs, Span)>,
 }
 
 /// `[wasm]` sizes in bytes. Builds read only the root package's section, and
@@ -54,6 +56,8 @@ pub fn parse_size(text: &str) -> Option<u64> {
 pub struct Dependency {
     pub path: PathBuf,
     pub span: Span,
+    /// `native = true`: the root package lets this dependency's `[native]` link inputs into the build.
+    pub native: bool,
 }
 
 pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
@@ -95,6 +99,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut fields = BTreeMap::new();
     let mut dependencies = BTreeMap::new();
     let mut wasm = WasmSettings::default();
+    let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
+    let mut native_keys = BTreeSet::new();
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
         let span = Span::new(offset, offset + line.trim_end().len()).in_source(source_id);
@@ -112,16 +118,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 cursor.take("[package]").then_some("package")
             } else if cursor.take("[dependencies]") {
                 Some("dependencies")
+            } else if cursor.take("[wasm]") {
+                Some("wasm")
             } else {
-                cursor.take("[wasm]").then_some("wasm")
+                cursor.take("[native]").then_some("native")
             };
             match next {
                 Some(next) if sections.insert(next) => section = next,
                 _ => {
                     return Err(cursor.error(
-                        "expected [package] followed by optional [dependencies] and [wasm], each once",
+                        "expected [package] followed by optional [dependencies], [wasm] and [native], each once",
                     ));
                 }
+            }
+            if section == "native" {
+                native = Some((crate::driver::LinkInputs::default(), span));
             }
             cursor.finish()?;
             continue;
@@ -157,6 +168,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 if path.is_empty() || path.contains('\0') || rooted {
                     return Err(cursor.error("dependency path must be a nonempty relative path"));
                 }
+                let mut native = false;
+                if cursor.take(",") {
+                    if cursor.key()? != "native" {
+                        return Err(cursor
+                            .error("only the path and native keys are supported in a dependency"));
+                    }
+                    cursor.expect("=")?;
+                    native = if cursor.take("true") {
+                        true
+                    } else if cursor.take("false") {
+                        false
+                    } else {
+                        return Err(cursor.error("native must be true or false"));
+                    };
+                }
                 cursor.expect("}")?;
                 if dependencies
                     .insert(
@@ -164,6 +190,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                         Dependency {
                             path: path.into(),
                             span,
+                            native,
                         },
                     )
                     .is_some()
@@ -200,6 +227,47 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     return Err(cursor.error("wasm keys must occur at most once"));
                 }
             }
+            "native" => {
+                const FORM: &str = "expected [native] keys link, libraries or search, each an array of strings on one line";
+                if !matches!(key.as_str(), "link" | "libraries" | "search")
+                    || !native_keys.insert(key.clone())
+                {
+                    return Err(cursor.error(FORM));
+                }
+                let values = cursor.string_array(FORM)?;
+                let inputs = &mut native
+                    .as_mut()
+                    .expect("the [native] header precedes its keys")
+                    .0;
+                match key.as_str() {
+                    "libraries" => {
+                        if let Some(message) = values
+                            .iter()
+                            .find_map(|name| crate::driver::library_name_error(name))
+                        {
+                            return Err(cursor.error(&message));
+                        }
+                        inputs.libraries = values;
+                    }
+                    _ => {
+                        let paths = values
+                            .into_iter()
+                            .map(|value| {
+                                relative_path(value).ok_or_else(|| {
+                                    cursor.error(
+                                        "link and search paths must be nonempty relative paths",
+                                    )
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if key == "link" {
+                            inputs.paths = paths;
+                        } else {
+                            inputs.search = paths;
+                        }
+                    }
+                }
+            }
             _ => return Err(cursor.error("expected [package] before fields")),
         }
         cursor.finish()?;
@@ -213,7 +281,19 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         version,
         dependencies,
         wasm,
+        native,
     })
+}
+
+/// A nonempty path that stays under the package root: `[dependencies]` and `[native]` paths.
+fn relative_path(path: String) -> Option<PathBuf> {
+    // Windows treats `/dir` and `C:dir` as non-absolute, but both escape the package root.
+    let rooted = Path::new(&path).has_root()
+        || matches!(
+            Path::new(&path).components().next(),
+            Some(Component::Prefix(_))
+        );
+    (!path.is_empty() && !path.contains('\0') && !rooted).then(|| path.into())
 }
 
 struct Line<'a> {
@@ -293,6 +373,21 @@ impl Line<'_> {
             }
         }
         Err(self.error("unterminated quoted string"))
+    }
+
+    /// A one-line array of strings; `form` is the error for anything else.
+    fn string_array(&mut self, form: &str) -> Result<Vec<String>, Diagnostic> {
+        if !self.take("[") {
+            return Err(self.error(form));
+        }
+        let mut values = Vec::new();
+        while !self.take("]") {
+            values.push(self.string()?);
+            if !self.take(",") && !self.rest.trim_start().starts_with(']') {
+                return Err(self.error(form));
+            }
+        }
+        Ok(values)
     }
 
     fn finish(&mut self) -> Result<(), Diagnostic> {
@@ -401,6 +496,113 @@ mod tests {
         }
         for name in ["", "A", "a_", "-a", "a-", "a--b", "a-1"] {
             assert_eq!(namespace(name, Span::default()).unwrap_err().code, "E1011");
+        }
+    }
+
+    #[test]
+    fn parses_native_link_section() {
+        for source in [
+            format!(
+                "{PACKAGE}[native]\nlink = [\"host.o\", \"vendor/libutil.a\"]\nlibraries = [\"sqlite3\", \"m\"] # system\nsearch = [\"vendor\",]\n"
+            ),
+            format!(
+                "{PACKAGE}[dependencies]\n[wasm]\nmax-memory = \"64MiB\"\n[native]\r\nsearch = [ \"vendor\" ]\r\nlibraries = [\"sqlite3\",\"m\"]\r\nlink = [\"host.o\" , \"vendor/libutil.a\"]\r\n"
+            ),
+        ] {
+            let (inputs, span) = parse_manifest(&source, 4).unwrap().native.unwrap();
+            assert_eq!(
+                inputs.paths,
+                [PathBuf::from("host.o"), PathBuf::from("vendor/libutil.a")]
+            );
+            assert_eq!(inputs.libraries, ["sqlite3", "m"]);
+            assert_eq!(inputs.search, [PathBuf::from("vendor")]);
+            assert_eq!(span.source, Some(4));
+            assert_eq!(&source[span.start..span.end], "[native]");
+        }
+        let (inputs, _) = parse_manifest(&format!("{PACKAGE}[native]\nlink = []\n"), 0)
+            .unwrap()
+            .native
+            .unwrap();
+        assert!(inputs.is_empty());
+        assert_eq!(parse_manifest(PACKAGE, 0).unwrap().native, None);
+    }
+
+    #[test]
+    fn rejects_malformed_native_link_section() {
+        let form = "expected [native] keys link, libraries or search, each an array of strings on one line";
+        for (suffix, message) in [
+            ("[native]\nlink = \"host.o\"", form),
+            ("[native]\nlink = [\"a\"\n", form),
+            ("[native]\nlink = [\"a\" \"b\"]", form),
+            ("[native]\nflags = [\"-O2\"]", form),
+            ("[native]\nlink = [\"a\"]\nlink = [\"b\"]", form),
+            (
+                "[native]\nlibraries = [\"libm\"]",
+                "invalid library name 'libm'; pass the name without the 'lib' prefix or extension, for example -l sqlite3",
+            ),
+            (
+                "[native]\nlink = [\"/abs/host.o\"]",
+                "link and search paths must be nonempty relative paths",
+            ),
+            (
+                "[native]\nsearch = [\"\"]",
+                "link and search paths must be nonempty relative paths",
+            ),
+            (
+                "[native]\n[native]",
+                "expected [package] followed by optional [dependencies], [wasm] and [native], each once",
+            ),
+        ] {
+            let error = parse_manifest(&format!("{PACKAGE}{suffix}"), 5).unwrap_err();
+            assert_eq!(error.code, "E0002", "{suffix}");
+            assert_eq!(error.message, message, "{suffix}");
+            assert_eq!(error.span.source, Some(5));
+        }
+        // [native] needs [package] first, like every other section.
+        assert_eq!(
+            parse_manifest("[native]\nlink = [\"a\"]\n[package]", 0)
+                .unwrap_err()
+                .code,
+            "E0002"
+        );
+    }
+
+    #[test]
+    fn parses_the_native_opt_in_of_a_dependency() {
+        let manifest = parse_manifest(
+            &format!(
+                "{PACKAGE}[dependencies]\nplain = {{ path = \"plain\" }}\nhost-lib = {{ path = \"../host\", native = true }}\nquiet = {{ path = \"quiet\" , native = false }} # no\n"
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(!manifest.dependencies["plain"].native);
+        assert!(manifest.dependencies["host-lib"].native);
+        assert!(!manifest.dependencies["quiet"].native);
+        assert_eq!(
+            manifest.dependencies["host-lib"].path,
+            PathBuf::from("../host")
+        );
+        for (entry, message) in [
+            (
+                "a = { path = \"a\", native = yes }",
+                "native must be true or false",
+            ),
+            ("a = { path = \"a\", native }", "expected '='"),
+            (
+                "a = { path = \"a\", link = true }",
+                "only the path and native keys are supported in a dependency",
+            ),
+            ("a = { path = \"a\", native = true", "expected '}'"),
+            (
+                "a = { path = \"a\", native = true, native = true }",
+                "expected '}'",
+            ),
+        ] {
+            let error =
+                parse_manifest(&format!("{PACKAGE}[dependencies]\n{entry}\n"), 0).unwrap_err();
+            assert_eq!(error.code, "E0002", "{entry}");
+            assert_eq!(error.message, message, "{entry}");
         }
     }
 }

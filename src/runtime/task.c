@@ -42,6 +42,33 @@
 
 enum { TZ_TASK_MAX_THREADS = 32 };
 
+#if !defined(_WIN32)
+#ifndef TSUZURI_TRAP_INFO_DEFINED
+#define TSUZURI_TRAP_INFO_DEFINED
+typedef struct {
+    uint32_t site;
+    uint32_t kind;
+} tsuzuri_trap_info;
+#endif
+#ifndef TSUZURI_TRAP_HOOKS_DEFINED
+#define TSUZURI_TRAP_HOOKS_DEFINED
+struct tz_trap_hooks {
+    void *(*owner)(void);
+    int32_t (*item)(void *, void (*)(void *, uint64_t), uint32_t (*)(void *, uint64_t),
+                    void *, uint64_t, uint32_t *, tsuzuri_trap_info *);
+    void (*resume)(const tsuzuri_trap_info *);
+    void *(*allocate)(size_t);
+    void (*release)(void *);
+};
+__attribute__((weak, visibility("hidden"))) struct tz_trap_hooks tsuzuri_trap_hooks;
+#endif
+#endif
+
+#ifdef TZ_STACK_GUARD
+/* src/runtime/stack.c, linked into native executables only: covers a worker with the overflow report. */
+void tsuzuri_stack_thread(void);
+#endif
+
 static atomic_uint tz_task_limit;
 
 struct tz_task_group {
@@ -53,6 +80,13 @@ struct tz_task_group {
     _Atomic uint64_t remaining;
     uint64_t failure;
     struct tz_task_group *next_group;
+#if !defined(_WIN32)
+    /* The trap boundary of the submitting thread (NULL: a trap ends the process), and the
+       lowest-index trap of an item that ran under it. */
+    void *owner;
+    uint64_t trap_index;
+    tsuzuri_trap_info trap;
+#endif
 };
 
 static struct {
@@ -108,9 +142,27 @@ static void tz_task_wake(pthread_cond_t *condition) {
     tz_task_check("pthread_cond_broadcast", TZ_TASK_COND_BROADCAST(condition));
 }
 
+/* The index from which unstarted items are skipped: the lowest failing or trapping item. */
+static uint64_t tz_task_stop(const struct tz_task_group *group) {
+#if !defined(_WIN32)
+    return group->failure < group->trap_index ? group->failure : group->trap_index;
+#else
+    return group->failure;
+#endif
+}
+
 static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
-    if (!group->run_result) {
-        group->run(group->context, index);
+    uint32_t failed = 0;
+    int trapped = 0;
+#if !defined(_WIN32)
+    tsuzuri_trap_info trap = { 0, 0 };
+    if (group->owner) {
+        trapped = tsuzuri_trap_hooks.item(group->owner, group->run, group->run_result, group->context, index, &failed, &trap);
+    } else
+#endif
+    if (group->run_result) failed = group->run_result(group->context, index);
+    else group->run(group->context, index);
+    if (!group->run_result && !trapped) {
         if (atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_acq_rel) == 1) {
             tz_task_lock();
             tz_task_wake(&tz_task_pool.work_done);
@@ -118,12 +170,19 @@ static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
         }
         return;
     }
-    uint32_t failed = group->run_result(group->context, index);
     tz_task_lock();
-    if (failed && index < group->failure) {
-        group->failure = index;
+    uint64_t before = tz_task_stop(group);
+    if (failed && index < group->failure) group->failure = index;
+#if !defined(_WIN32)
+    if (trapped && index < group->trap_index) {
+        group->trap_index = index;
+        group->trap = trap;
+    }
+#endif
+    uint64_t stop = tz_task_stop(group);
+    if (stop < before) {
         uint64_t skipped = group->next < group->length ? group->length - group->next : 0;
-        group->length = index;
+        group->length = stop;
         atomic_fetch_sub_explicit(&group->remaining, skipped, memory_order_relaxed);
         tz_task_wake(&tz_task_pool.work_available);
     }
@@ -135,6 +194,9 @@ static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
 
 static void *tz_task_worker_main(void *pointer) {
     (void)pointer;
+#ifdef TZ_STACK_GUARD
+    tsuzuri_stack_thread();
+#endif
     tz_task_lock();
     while (!tz_task_pool.stopping) {
         struct tz_task_group *group = tz_task_pool.groups;
@@ -191,7 +253,16 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
         }
         return UINT64_MAX;
     }
-    struct tz_task_group group = { run, run_result, context, length, 0, length, UINT64_MAX, NULL };
+    struct tz_task_group group = {
+        .run = run, .run_result = run_result, .context = context, .length = length,
+        .remaining = length, .failure = UINT64_MAX,
+    };
+#if !defined(_WIN32)
+    group.owner = tsuzuri_trap_hooks.owner ? tsuzuri_trap_hooks.owner() : NULL;
+    group.trap_index = UINT64_MAX;
+    group.trap.site = 0;
+    group.trap.kind = 0;
+#endif
     tz_task_lock();
     if (tz_task_pool.stopping) tz_task_fail("submit after shutdown", EINVAL);
     if (tz_task_pool.tail) tz_task_pool.tail->next_group = &group;
@@ -214,6 +285,12 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
     *link = group.next_group;
     if (tz_task_pool.tail == &group) tz_task_pool.tail = previous;
     tz_task_unlock();
+#if !defined(_WIN32)
+    /* A trapped item leaves its task in no defined state, so the group cannot go on: the trap of
+       the lowest item that ran is reported even if an earlier item returned Err, as a process
+       that ends on a trap would. */
+    if (group.trap_index != UINT64_MAX) tsuzuri_trap_hooks.resume(&group.trap);
+#endif
     return group.failure;
 }
 

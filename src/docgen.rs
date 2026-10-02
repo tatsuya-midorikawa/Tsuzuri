@@ -278,6 +278,16 @@ fn render_declarations(program: &Program) -> String {
             section(&declaration.name.text, &code, declaration.doc.as_ref(), 2),
         ));
     }
+    for declaration in &program.extern_types {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let code = format!("extern type {}", declaration.name.text);
+        declarations.push((
+            declaration.name.span.start,
+            section(&declaration.name.text, &code, declaration.doc.as_ref(), 2),
+        ));
+    }
     for declaration in &program.records {
         if declaration.visibility == Visibility::Private {
             continue;

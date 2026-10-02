@@ -215,6 +215,8 @@ impl SemanticIndex {
 struct Links {
     records: Vec<Option<usize>>,
     unions: Vec<Option<usize>>,
+    /// Extern types by qualified name.
+    handles: BTreeMap<String, usize>,
     /// Functions, externs, and constants by qualified name.
     callables: BTreeMap<String, usize>,
 }
@@ -229,8 +231,9 @@ impl Links {
         types: &TypeContext<'_>,
     ) {
         let (definition, name) = match ty {
-            Type::Record(id, _) => (self.records[*id], &types.records[*id].name),
-            Type::Union(id, _) => (self.unions[*id], &types.unions[*id].name),
+            Type::Record(id, _) => (self.records[*id], types.records[*id].name.as_str()),
+            Type::Union(id, _) => (self.unions[*id], types.unions[*id].name.as_str()),
+            Type::Handle(name) => (self.handles.get(name.as_ref()).copied(), name.as_ref()),
             _ => return,
         };
         let last = text.rsplit('.').next().unwrap_or(text);
@@ -292,6 +295,7 @@ fn define_declarations(
     let mut links = Links {
         records: vec![None; types.records.len()],
         unions: vec![None; types.unions.len()],
+        handles: BTreeMap::new(),
         callables: BTreeMap::new(),
     };
     for module in modules {
@@ -370,6 +374,18 @@ fn define_declarations(
                 format!("type {name}.{}", alias.name.text),
                 alias.visibility,
             ));
+        }
+        for handle in &program.extern_types {
+            let definition = index.define(plain(
+                &handle.name,
+                SymbolKind::Record,
+                name,
+                format!("extern type {name}.{}", handle.name.text),
+                handle.visibility,
+            ));
+            links
+                .handles
+                .insert(format!("{name}.{}", handle.name.text), definition);
         }
         for constant in &program.constants {
             let detail = resolve_type(&constant.ty, name, names)
@@ -543,6 +559,15 @@ pub(super) fn collect(
                     type_entry(&mut index, ty, module.name, names, &types, links, true);
                 }
             }
+        }
+        for handle in &program.extern_types {
+            index.document(&handle.name, handle.doc.as_ref());
+            index.symbol(
+                &handle.name,
+                23,
+                handle.name.span,
+                format!("extern type {}.{}", module.name, handle.name.text),
+            );
         }
         for alias in &program.type_aliases {
             index.document(&alias.name, alias.doc.as_ref());

@@ -89,9 +89,9 @@
 | E09 | 未着手（計画）: TCP / UDP | [IO](library-reference/io.md) | [E09](../_features/E09-network.md) |
 | E10 | 未着手（計画）: git 依存、lockfile、版解決と registry | [パッケージ](language-reference/modules-and-packages.md) | [E10](../_features/E10-package-registry.md) |
 | E11 | 未着手（計画）: C ヘッダーからの extern 生成 | [C ABI](guides/native-interop.md) | [E11](../_features/E11-c-bindgen.md) |
-| E12 | 未着手（計画）: リンク名、ホストのリンク指定、不透明ハンドル | [外部関数](guides/native-interop.md) | [E12](../_features/E12-ffi-extensions.md) |
+| E12 | 対応（Phase 1 と一部の拡張）: `extern "symbol" def` と `extern "module" "symbol" def` のリンク名、`--link`・`-l`・`-L` と manifest の `[native]` でのホストのリンク指定（native の実行ファイル。root が `native = true` で許可した依存 package の `[native]` を含む）、`extern type` の不透明ハンドル、捕捉のないトップレベル関数の静的コールバック（ホストの別スレッドからの呼び出しと複数スレッドからの同時呼び出しを検証済み）。捕捉のある関数値のコールバック、`Option<H>` と NULL の対応、i128・f16・タプルの ABI、`extern type` への `Drop` は未実装 | [外部関数](guides/native-interop.md) | [E12](../_features/_completed/E12-ffi-extensions.md) |
 | E13 | 未着手（計画）: TypeScript などのバインディングと Web glue の生成 | [WASM](guides/webassembly.md) | [E13](../_features/E13-host-bindings.md) |
-| E14 | 未着手（計画）: 埋め込み時のトラップ境界、スタック枯渇の報告 | [トラップ位置](tools/debugging.md) | [E14](../_features/E14-trap-boundary.md) |
+| E14 | 対応（Phase 1・2・3）: WASM の `createBoundary` がトラップとスタック枯渇を値で返し、失敗した instance を捨てて作り直す。native object は `--trap-mode return` で `tsuzuri_try_<name>`（status 0・1・2 と `tsuzuri_trap_info`）を出し、トラップした呼び出しの heap を解放して `Task.parallel` の worker のトラップも返す。再帰するプログラムの native 実行ファイルはスタック枯渇を `trap: stack overflow` で報告して `abort()` する（macOS と Linux で検証。Windows と `tsuzuri test` の実行ファイルは推定のまま） | [トラップ位置](tools/debugging.md) | [E14](../_features/_completed/E14-trap-boundary.md) |
 
 ## F 並列とバックエンド
 
@@ -108,7 +108,7 @@
 | F09 | 未着手（計画）: strict な float / 64-bit GPU カーネルと実行時接続 | [GPU](guides/gpu.md) | [F09](../_features/F09-gpu-float-runtime.md) |
 | F10 | 未着手（計画）: Atomic / Mutex / Channel とスコープ付き並列 | [Task](language-reference/tasks.md) | [F10](../_features/F10-concurrency-primitives.md) |
 | F11 | 対応（Phase 1・2）: WASM の build・test で `--wasm-max-memory`（wasm32 は最大 4 GiB − 64 KiB、wasm64 は 16 GiB）と `--wasm-stack-size`、root manifest の `[wasm]`、`--target wasm64`（memory64。Node.js 24 以降）。wasm32 の 2 GiB 超と threads は stack 溢れを入口で検査。既定は 16 MiB・1 MiB のまま。wasm64 の threads は対象外 | [WASM](guides/webassembly.md) | [F11](../_features/_completed/F11-wasm-memory-limit.md) |
-| F12 | 未着手（計画）: 境界検査の除去状況の計測と意味を保つ除去 | [性能](guides/performance.md) | [F12](../_features/F12-bounds-check-elimination.md) |
+| F12 | 対応（Phase 0・1）: 配列の添字が `0 .. len - 1` のループ、定数長、範囲を確かめた `if` の then 側で必ず範囲内と証明できたときだけ境界検査を省く。`array_index_sum` の計測と形ごとの記録あり。Phase 2（ループの版分け、`while` の帰納変数、`assert` による支配）は、可変の上限・先行する検査・`while` の形も `-O3` で LLVM が検査を落として同じ速さになる実測のため実装しない | [性能](guides/performance.md) | [F12](../_features/_completed/F12-bounds-check-elimination.md) |
 | F13 | 未着手（計画）: ホスト提供の allocator、確保統計、freestanding 出力 | [C ABI](guides/native-interop.md) | [F13](../_features/F13-custom-allocators.md) |
 
 ## G 開発ツール

@@ -306,7 +306,7 @@ pub fn emit_with_trap_info(
             ..Instrumentation::default()
         },
     )?;
-    traps::instrument(ir, module, marks.unwrap(), sources, options.wasm)
+    traps::instrument(ir, module, marks.unwrap(), sources, options.wasm, false)
 }
 
 pub fn emit_with_debug_info(
@@ -337,10 +337,11 @@ pub fn emit_with_debug_info(
             cpu_dispatch: false,
             wasm_threads: false,
             memory64: false,
+            trap_return: false,
         },
     )?;
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, options.wasm)
+        traps::instrument(ir, module, marks, sources, options.wasm, false)
     } else {
         Ok(EmitOutput {
             ir,
@@ -378,16 +379,68 @@ pub fn emit_native_build(
             cpu_dispatch: trusted_array,
             wasm_threads: false,
             memory64: false,
+            trap_return: false,
         },
     )?;
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, false)
+        traps::instrument(ir, module, marks, sources, false, false)
     } else {
         Ok(EmitOutput {
             ir,
             trap_sites: Vec::new(),
         })
     }
+}
+
+/// Emits a native build whose exports also come as `tsuzuri_try_<name>`: a trap inside one returns
+/// to the host with a status instead of ending the process (E14 Phase 2).
+pub fn emit_trap_return(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    cpu_dispatch: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    if options.wasm {
+        return Err(Diagnostic::new(
+            "E2000",
+            "--trap-mode return is native-only",
+            Span::default(),
+        ));
+    }
+    let trusted_array = cpu_dispatch
+        && sources.iter().any(|source| {
+            source.path == "std/Array.tz" && source.text == include_str!("../std/Array.tz")
+        });
+    let (ir, marks) = emit_program(
+        module,
+        options.entry,
+        false,
+        None,
+        options.debug_output,
+        Instrumentation {
+            traps: true,
+            debug: debug.map(|optimized| (sources, optimized)),
+            cpu_dispatch: trusted_array,
+            trap_return: true,
+            ..Instrumentation::default()
+        },
+    )?;
+    let mut output = traps::instrument(ir, module, marks.unwrap(), sources, false, true)?;
+    let wrappers = host_abi::try_wrappers(&output.ir, module);
+    output.ir.push_str(&wrappers);
+    Ok(output)
+}
+
+/// `heap-native.ll` over the tracked allocator of the trap runtime.
+fn heap_native_tracked() -> &'static str {
+    static HEAP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HEAP.get_or_init(|| {
+        include_str!("runtime/heap-native.ll")
+            .replace("@malloc", "@tsuzuri_tracked_malloc")
+            .replace("@realloc", "@tsuzuri_tracked_realloc")
+            .replace("@free", "@tsuzuri_tracked_free")
+    })
 }
 
 /// Emits a WASM build with shared-memory threads, 64-bit memory, or stack checks.
@@ -414,6 +467,7 @@ pub(crate) fn emit_wasm_build(
             cpu_dispatch: false,
             wasm_threads: threads,
             memory64,
+            trap_return: false,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -423,7 +477,7 @@ pub(crate) fn emit_wasm_build(
         ir
     };
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, true)
+        traps::instrument(ir, module, marks, sources, true, false)
     } else {
         Ok(EmitOutput {
             ir,
@@ -492,6 +546,8 @@ struct Instrumentation<'a> {
     cpu_dispatch: bool,
     wasm_threads: bool,
     memory64: bool,
+    /// Native `--trap-mode return`: a tracked heap, so a trap can free everything a call allocated.
+    trap_return: bool,
 }
 
 fn emit_program(
@@ -627,7 +683,10 @@ fn emit_program(
     }
     let mut specializations = Specializations::new(module);
     for (id, function) in module.functions.iter().enumerate() {
-        if !emitted[id] {
+        // A callback extern has no function body: its calls pass the host the callback wrappers directly.
+        if !emitted[id]
+            || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks)
+        {
             continue;
         }
         let start = output.len();
@@ -656,6 +715,7 @@ fn emit_program(
                     module,
                     function,
                     id,
+                    host_abi::WrapperKind::Export,
                     &mut builtins,
                     &mut intrinsics,
                     &mut globals,
@@ -694,6 +754,27 @@ fn emit_program(
             marks.source(&output[start..], &module.functions[key.function]);
         }
         next += 1;
+    }
+    // The functions passed to the host as callbacks get C-ABI wrappers, in id order.
+    for id in std::mem::take(&mut globals.callbacks) {
+        let function = &module.functions[id];
+        let wrapper = host_abi::wrapper(
+            module,
+            function,
+            id,
+            host_abi::WrapperKind::Callback,
+            &mut builtins,
+            &mut intrinsics,
+            &mut globals,
+            &mut specializations,
+        );
+        output.push_str(&debug::wrapper(
+            wrapper,
+            module,
+            function,
+            &format!("@tz.callback.{}", function.qualified_name()),
+            &mut globals,
+        ));
     }
     for (instance, ty) in &builtins {
         output.push_str(&emit_builtin(
@@ -776,7 +857,11 @@ fn emit_program(
         output.push_str(include_str!("runtime/recursive.ll"));
     }
     if uses_host_abi(module) || output.contains("@tsuzuri_io_") {
-        output.push_str(host_abi::allocator());
+        if wasm || cfg!(windows) || instrumentation.trap_return {
+            output.push_str(host_abi::allocator());
+        } else {
+            output.push_str(&host_abi::native_allocator());
+        }
     }
     if output.contains("@tsuzuri_cpu_sum_i64(") {
         output.push_str("declare i64 @tsuzuri_cpu_sum_i64(ptr, i64)\n");
@@ -850,6 +935,8 @@ fn emit_program(
                 include_str!("runtime/heap-wasm64.ll")
             } else if wasm {
                 include_str!("runtime/heap-wasm.ll")
+            } else if instrumentation.trap_return {
+                heap_native_tracked()
             } else {
                 include_str!("runtime/heap-native.ll")
             });
@@ -902,6 +989,16 @@ fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
 }
 
 pub fn header(module: &CheckedModule) -> String {
+    header_with(module, false)
+}
+
+/// Whether a function of the program calls itself again through direct calls, so its stack can overflow.
+pub fn has_recursion(ir: &str) -> bool {
+    host_abi::has_recursion(ir)
+}
+
+/// The C header; with `trap_return` also the `tsuzuri_try_<name>` prototypes of `--trap-mode return`.
+pub fn header_with(module: &CheckedModule, trap_return: bool) -> String {
     let mut output = String::from(
         "/* Generated by Tsuzuri. bool uses int32_t. Narrow integers use normalized 32-bit ABI values. */\n\
          #pragma once\n\
@@ -910,6 +1007,16 @@ pub fn header(module: &CheckedModule) -> String {
          extern \"C\" {\n\
          #endif\n\n",
     );
+    if trap_return {
+        output.push_str(
+            "/* The trap of a tsuzuri_try_<name> call: `site` is an id of <output>.trap.json, `kind` a trap kind. */\n\
+             #ifndef TSUZURI_TRAP_INFO_DEFINED\n\
+             #define TSUZURI_TRAP_INFO_DEFINED\n\
+             typedef struct {\n    uint32_t site;\n    uint32_t kind;\n} tsuzuri_trap_info;\n\
+             #endif\n\n",
+        );
+    }
+    output.push_str(&host_abi::handle_typedefs(module));
     output.push_str(&host_abi::header_types(module));
     if io_entry(module) {
         output.push_str("int32_t tsuzuri_main(void);\n");
@@ -930,6 +1037,9 @@ pub fn header(module: &CheckedModule) -> String {
             },
             function.name
         );
+        if trap_return {
+            let _ = writeln!(output, "{}", host_abi::try_prototype(function, module));
+        }
     }
     output.push_str("\n#ifdef __cplusplus\n}\n#endif\n");
     output
@@ -945,6 +1055,8 @@ struct Globals {
     cpu_dispatch: bool,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
+    /// User functions the program hands to the host as C function pointers.
+    callbacks: BTreeSet<usize>,
 }
 
 impl Default for Globals {
@@ -975,6 +1087,7 @@ impl Default for Globals {
             cpu_dispatch: false,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
+            callbacks: BTreeSet::new(),
         }
     }
 }
@@ -1210,6 +1323,8 @@ fn c_type(ty: &Type) -> String {
         Type::Binary(64) => "double".into(),
         Type::Bool => "int32_t".into(),
         Type::Unit => "void".into(),
+        Type::Handle(name) => host_abi::handle_c_name(name),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)) => c_type(inner),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -1252,7 +1367,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         ),
         Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
         Type::Reference(_, false) if ty.shared_array_element().is_some() => "%tz.array".into(),
-        Type::Reference(..) => "ptr".into(),
+        Type::Reference(..) | Type::Handle(_) => "ptr".into(),
         Type::Error
         | Type::Variable(_)
         | Type::Infer(_)
@@ -1293,6 +1408,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
+        Type::Handle(name) => format!("extern.{name}"),
         Type::Simd(_)
         | Type::Integer(..)
         | Type::Binary(_)
@@ -1356,7 +1472,7 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
         Type::Function(..) | Type::Task(_) => (32, 8),
         Type::Vec(_) => (24, 8),
         Type::Reference(_, false) if ty.shared_array_element().is_some() => (16, 8),
-        Type::Reference(..) => (8, 8),
+        Type::Reference(..) | Type::Handle(_) => (8, 8),
         Type::Tuple(elements) => {
             aggregate(&mut elements.iter().map(|ty| storage_layout(ty, module)))
         }
@@ -1573,6 +1689,8 @@ fn abi_type(ty: &Type) -> String {
         Type::Binary(32) => "float".into(),
         Type::Binary(64) => "double".into(),
         Type::Unit => "void".into(),
+        Type::Handle(_) => "ptr".into(),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)) => "ptr".into(),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -1636,6 +1754,9 @@ struct FunctionEmitter<'a, 'b> {
     known_closures: BTreeMap<usize, ClosureTarget>,
     borrowed_locals: BTreeSet<usize>,
     single_use: BTreeSet<usize>,
+    ranges: crate::ranges::RangeFacts,
+    /// Array reads emitted without a bounds check so far.
+    proven_reads: usize,
     borrowed_worker: bool,
     builtins: &'b mut Builtins,
     intrinsics: &'b mut BTreeSet<String>,
@@ -1688,6 +1809,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             known_closures: BTreeMap::new(),
             borrowed_locals: BTreeSet::new(),
             single_use: BTreeSet::new(),
+            ranges: crate::ranges::RangeFacts::default(),
+            proven_reads: 0,
             borrowed_worker: false,
             builtins,
             intrinsics,
@@ -1746,6 +1869,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .globals
             .debug_subprogram(self.module, self.function, &self.symbol);
         self.single_use = call_specialization::single_use_locals(&self.function.body);
+        self.ranges = crate::ranges::analyze(self.module, self.function);
         self.block = "loop".into();
         for (index, parameter) in self.function.parameters.iter().enumerate() {
             self.bind_local(parameter, &format!("%p{index}"));
@@ -1874,7 +1998,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.instruction(format!("br i1 {condition}, label %{yes}, label %{no}"));
     }
 
-    fn hint_loop(&mut self, body: &TypedExpr) {
+    fn hint_loop(&mut self, body: &TypedExpr, reads: usize) {
         fn uses(expression: &TypedExpr, id: usize) -> bool {
             matches!(expression.kind, TypedExprKind::Local(local) if local == id)
                 || expression
@@ -1928,7 +2052,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .into_iter()
                 .all(|child| small(child, remaining))
         }
-        if !small(body, &mut 64) || assignments(body) != 1 || !reduction(body, self.module) {
+        // Without a bounds check, the hint makes LLVM unroll before it vectorizes; let the vectorizer go first.
+        if self.proven_reads != reads
+            || !small(body, &mut 64)
+            || assignments(body) != 1
+            || !reduction(body, self.module)
+        {
             return;
         }
         let id = self.globals.next_metadata;
@@ -2090,12 +2219,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 then_branch,
                 else_branch,
             } => {
-                let condition = self.expression(condition);
+                let test = self.expression(condition);
                 let yes = self.label();
                 let no = self.label();
-                self.branch(&condition, &yes, &no);
+                self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                let facts = self.ranges.enter_condition(self.module, condition);
                 self.tail(then_branch);
+                self.ranges.leave_condition(facts);
                 self.begin(&no);
                 self.tail(else_branch);
             }
@@ -2106,7 +2237,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.drop_all();
                 self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
-                self.hint_loop(&self.function.body);
+                self.hint_loop(&self.function.body, 0);
             }
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
                 if self.is_self(callee) && self.function.parameters.len() == 1 =>
@@ -2115,7 +2246,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.drop_all();
                 self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
-                self.hint_loop(&self.function.body);
+                self.hint_loop(&self.function.body, 0);
             }
             _ => {
                 let value = self.expression(expression);
@@ -2442,14 +2573,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 then_branch,
                 else_branch,
             } => {
-                let condition = self.expression(condition);
+                let test = self.expression(condition);
                 let temporary_base = self.temporaries.len();
                 let yes = self.label();
                 let no = self.label();
                 let merge = self.label();
-                self.branch(&condition, &yes, &no);
+                self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                let facts = self.ranges.enter_condition(self.module, condition);
                 let then_value = self.expression(then_branch);
+                self.ranges.leave_condition(facts);
                 let then_end = self.block.clone();
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
@@ -2608,13 +2741,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 unit
             }
             TypedExprKind::Index(array, index) => {
+                let proven = self.ranges.index_in_bounds(array, index);
                 let (value, frames) = self.read_operand(array);
                 let index = self.expression(index);
                 let (Type::Array(element) | Type::List(element) | Type::Vec(element)) = &array.ty
                 else {
                     unreachable!()
                 };
-                let pointer = self.checked_element_pointer(&array.ty, &value, &index);
+                let pointer = self.indexed_pointer(proven, &array.ty, &value, &index);
                 let extracted = self.value(format!("load {}, ptr {pointer}", self.ty(element)));
                 let result = self.clone_value(element, &extracted);
                 self.release_operand(array, &value, &frames);
@@ -2740,15 +2874,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 slot
             }
             TypedExprKind::Index(value, index) => {
+                let proven = self.ranges.index_in_bounds(value, index);
                 if let Some(reference) = Self::shared_array_deref(value) {
                     let array = self.expression_mode(reference, false);
                     let index = self.expression(index);
-                    return self.checked_element_pointer(&value.ty, &array, &index);
+                    return self.indexed_pointer(proven, &value.ty, &array, &index);
                 }
                 let slot = self.place(value);
                 let array = self.value(format!("load {}, ptr {slot}", self.ty(&value.ty)));
                 let index = self.expression(index);
-                self.checked_element_pointer(&value.ty, &array, &index)
+                self.indexed_pointer(proven, &value.ty, &array, &index)
             }
             _ => unreachable!("borrow checker requires an addressable place"),
         }
@@ -2858,6 +2993,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             Type::Vec(element) => self.clone_vector(element, value),
             Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
+            Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
             Type::String | Type::Utf8String => {
                 let ty = self.ty(ty);
                 let pointer = self.value(format!("extractvalue {ty} {value}, 0"));
@@ -3160,6 +3296,25 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             _ => unreachable!("indexing requires a collection"),
         }
+    }
+
+    /// The element address of an index that `ranges` proved in bounds, else the checked one.
+    fn indexed_pointer(
+        &mut self,
+        proven: bool,
+        ty: &Type,
+        collection: &str,
+        index: &str,
+    ) -> String {
+        if !proven {
+            return self.checked_element_pointer(ty, collection, index);
+        }
+        let Type::Array(element) = ty else {
+            unreachable!("range facts only prove arrays")
+        };
+        self.proven_reads += 1;
+        let data = self.value(format!("extractvalue {} {collection}, 0", self.ty(ty)));
+        self.element_pointer(element, &data, index)
     }
 
     fn list_node_type(&self, element: &Type) -> String {
@@ -3539,6 +3694,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind {
             let function = &self.module.functions[id];
+            if let TypedExprKind::HostCall(import, _) = &function.body.kind
+                && import.callbacks
+            {
+                return self.host_call(import, arguments, &function.signature.result);
+            }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
                 return self.expression(&arguments[0]);
             }
@@ -5348,6 +5508,35 @@ mod tests {
             .next()
             .unwrap();
         assert!(!body.contains("call i64 @tz.fn.Main.f"));
+    }
+
+    #[test]
+    fn finds_the_programs_whose_stack_can_overflow() {
+        let recursive =
+            |source: &str| has_recursion(&emit(&checked(source), Entry::Console).unwrap());
+        assert!(recursive(
+            "fn rec depth(n: i64) -> i64 { if n == 0 { 0 } else { depth(n - 1) * 3 + n } }
+             export fn main() -> i64 { depth(10) }"
+        ));
+        assert!(recursive(
+            "fn rec even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }
+             fn rec odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }
+             export fn main() -> i64 { if even(10) { 1 } else { 0 } }"
+        ));
+        // A tail call becomes a loop, and a program without calls to itself has nothing to exhaust.
+        assert!(!recursive(
+            "fn rec sum(n: i64, acc: i64) -> i64 { if n == 0 { acc } else { sum(n - 1, acc + n) } }
+             export fn main() -> i64 { sum(100, 0) }"
+        ));
+        assert!(!recursive("export fn main() -> i64 { 6 * 7 }"));
+        // Only the program's own functions count, whatever the text around them looks like.
+        assert!(!has_recursion(
+            "define internal i64 @tz_soft_format(i64 %x) {\nentry:\n  %v = call i64 @tz_soft_format(i64 %x)\n  ret i64 %v\n}\n"
+        ));
+        assert!(has_recursion(
+            "define internal i64 @tz.fn.A(i64 %x) {\nentry:\n  %v = call i64 @tz.apply.B(i64 %x)\n  ret i64 %v\n}\n\
+             define internal i64 @tz.apply.B(i64 %x) {\nentry:\n  %v = tail call i64 @tz.fn.A(i64 %x)\n  ret i64 %v\n}\n"
+        ));
     }
 
     #[test]

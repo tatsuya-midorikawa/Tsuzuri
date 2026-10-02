@@ -204,13 +204,13 @@ def reveal :: i64 -> i64 = \n -> (token n).value
 ### ホスト関数のインポート
 
 `extern def now :: unit -> i64`は本体を持たない同期ホスト関数です。`.tz`／`.tc`に置き、`private extern def`も使えます。
-同名def/fnとの重複はE1001、exportとの併用・不正ABIはE1008、多相型はE1015です。制約・named region・可変参照・callback/Task/list等は受け取りません。
-引数はスカラー、unit、E05の共有buffer/string/utf8string、スカラーrecordの値または共有参照。結果はスカラー/unit・所有ABI buffer/string/utf8string・スカラーrecordです。
+同名def/fnとの重複はE1001、exportとの併用・不正ABIはE1008、多相型はE1015です。制約・named region・可変参照・Task/list等は受け取らず、関数型の引数は後述のコールバックだけです。
+引数はスカラー、unit、extern型のハンドル（値または共有参照）、E05の共有buffer/string/utf8string、スカラーrecordの値または共有参照、コールバック。結果はスカラー/unit・ハンドル・所有ABI buffer/string/utf8string・スカラーrecordです。
 unit引数はホストABIから省略し、unit結果はvoid。boolと狭い整数はE05と同じ32-bit正規化を使います。
 
 native名は`tsuzuri_host_<module>_<name>`で、module内のdotはunderscoreへ変換します。変換後の衝突はE1001です。
 WASMはmodule=`tsuzuri`、name=`<Module>.<name>`。到達可能な呼び出しだけimportを生成し、未使用externやexternのないプログラムはimportを追加しません。
-生成headerにホスト側のprototypeも出します。nativeは`--emit object`をホストC等と連結します。未解決hostを含むexe/runはlink error E2002で、host object指定CLIはありません。
+生成headerにホスト側のprototypeも出します（リンク名を指定したexternを除く）。nativeは`--emit object`をホストC等と連結するか、ホストのobject・libraryを`--link`・`-l`・`-L`（またはmanifestの`[native]`）でexe/runへ直接リンクします。未解決hostを含むexe/runはlink error E2002です。
 
 外部呼び出しは副作用を持ち、引数を左から右へ評価します。関数値・部分適用を使えても、呼び出しを純粋とみなして除去しません。const評価では呼べません。
 ホストは共有入力を変更・保持せず、同期呼び出し中だけ読みます。レコードは正規化した一時structを使います。
@@ -218,6 +218,38 @@ WASMはmodule=`tsuzuri`、name=`<Module>.<name>`。到達可能な呼び出し�
 長さ・サイズ積・alignment・WASM範囲・UTF-8を受領時に検査しますが、nativeポインターの実確保元はホストの責任です。ホストはoutの全fieldを初期化します。
 ホストはABIを守る信頼境界です。例外unwind・非同期保持・回復不能な失敗からの復帰をTsuzuriのフレーム越しに行いません。
 Task.parallelから複数nativeスレッドが呼び得るため、ホスト関数はthread-safeにするか、並列タスクから呼ばないでください。WASMの現行Taskは逐次です。
+
+#### リンク名
+
+`extern "sqrt" def c_sqrt :: f64 -> f64`は、`tsuzuri_host_`で始まる名前を使わずにCのsymbol`sqrt`をそのまま呼びます。`extern "env" "host_now" def host_now :: unit -> i64`は、WASMのimport moduleとsymbolを指定します（nativeはsymbolだけを使います）。文字列が一つのときWASMのmoduleは`tsuzuri`、nameはsymbolです。文字列は三つ以上書けません（E0002）。リンク名を使わないexternは上の名前のままで、IR・header・WASM importを変えません。
+
+symbolは255byte以下のC識別子（`[A-Za-z_][A-Za-z0-9_]*`）で、`tz_`・`tsuzuri`・`__`で始まる名前と生成IRや同梱runtimeが自分で使うC名（`malloc`・`free`・`write`など）はE1008です。WASM moduleは`[A-Za-z0-9_.-]`、1〜255byteで、`tsuzuri_`で始まらない名前（`tsuzuri`そのものは可）です。
+同じsymbolを複数のextern（別moduleを含む）で宣言してよく、関数型とWASM moduleが一致しなければE1008です。一致する宣言は一つのdeclareにまとめます。
+リンク名を指定したexternの宣言はホストを実装する側（system headerを含む）が持つので、生成headerにprototypeを出しません。
+
+#### 不透明ハンドル
+
+`extern type Counter`はホストが所有する資源を指す型です（`private extern type`も可）。型引数・本体・link名を取らず（E0002）、名前や修飾のrecordと同じ規則です（重複はE1001）。
+値を作る式はなく、externの結果またはexportの引数からだけ得ます。Copyでもclone可能でもなく、値渡しはmove（その後の使用はE1012）、`ref`は共有借用です。関数値に捕捉できず（E1005）、`Eq`や`Display`はinstanceを持ちません。
+ハンドルはscopeを抜けても何も呼ばれません（drop glueなし）。解放は利用者がcloseのexternへ値で渡して行います。閉じ忘れはホスト資源のleakです。
+
+ABIで使える位置はextern・`export def`・コールバックの引数（`H`と`ref H`）と、extern・`export def`の結果（`H`）です。ABIのrecordのfield・bufferの要素・`ref mut H`はE1008です。ABI以外では通常のCopyでない値としてrecord・union・配列・`Option`に入れてよいです。
+nativeではポインター1つ幅（LLVM `ptr`）、wasm32ではi32（JavaScriptではnumber）です。`ref H`もハンドルの値そのものを渡します。headerは`typedef struct tz_handle_<長さ付きの修飾名>_s *tz_handle_<…>;`をprototypeの前に一度だけ出します。
+
+#### コールバック
+
+externの引数に関数型を書けます（`extern "apply_twice" def apply_twice :: (i64 -> i64) -> i64 -> i64`）。コールバックの引数はスカラー・ハンドル・`ref`ハンドル（unitは唯一の引数のときだけで、Cでは省略）、結果はスカラーかunitです。buffer・record・入れ子の関数型・`ref mut`はE1008です。
+コールバックを受け取るexternは直接・全引数で呼ぶときだけ使え、関数値としての使用・部分適用はE1008です。コールバックの位置の実引数は、型引数のないトップレベルの利用者関数の名前だけで、ラムダ・部分適用・局所変数・捕捉のある関数・std・組み込み・externはE1008です。
+実引数は評価する値ではなく関数名なので、副作用も確保もありません。ホストは関数名ごとにinternalなC ABI wrapperのアドレスを受け取り、捕捉がないので寿命と文脈の契約はありません。
+wasm32ではwrapperを関数tableの添字（number）として渡し、`__indirect_function_table`をexportします（コールバックを使うプログラムだけ）。
+wrapperは名前のない`export def`と同じ規則で呼べます（再入可）。コールバック中のtrapは通常のtrapと同じ（nativeはプロセスの異常終了、WASMは`WebAssembly.RuntimeError`がホストのフレームを通ってexportの呼び出し元へ伝わります）。trap後にWASM instanceを使い続けてはいけません。
+nativeでは、同じスレッドからの同期呼び出しと再入に加えて、ホストが自分で起こした別スレッドからのコールバックの呼び出し（その間、呼び出し元は待つ）と、複数のホストスレッドからのexportの同時呼び出しも検証しています。exportとコールバックは大域の可変状態を持たないので、スレッドの間でTsuzuri側の同期は要りません。ホストが渡された関数pointerを保持したり、呼び出し元のexternが戻った後に呼んだりしてはいけません。WASM instanceは1スレッドで使い、別スレッドから呼ぶ検証はありません。
+
+#### リンク入力
+
+`build`・`run`・`test`の`--link PATH`（object・static library）、`-l NAME`（system library。`lib`接頭辞と拡張子なし）、`-L DIR`（`-l`の探索先）は分離形だけで、繰り返せます（合計256個）。root packageの`Tsuzuri.toml`の`[native]`（`link`・`libraries`・`search`。各々文字列の1行配列、pathはpackage rootからの相対）も同じ入力を指定し、CLIより前に連結します。依存packageの`[native]`は、rootの`[dependencies]`が`lib1 = { path = "lib1", native = true }`で許可した直接の依存だけが持て、許可のない依存と、依存の依存が自分で書いた許可はE2000です。許可した依存のpathはその依存のrootからの相対で、rootの入力の後に連結します。
+入力はnativeの実行ファイルを作るbuild・run・testでだけ有効で、wasm32・wasm64・`--emit`がexe以外・`check`・`fmt`で指定するとE2000です。manifestの`[native]`はこれらでは無視します。pathが読めなければE2001、出力pathが入力と同じならE2003、同じ入力の重複と不正な`-l`名はE2000です。
+入力は既存のclang引数（runtime・`-pthread`を含む）の後に`-L`・path・`-l`の順で足します。静的libraryは、それを参照するobjectより後に`--link`で指定してください。build cacheは入力の内容を知らないので、入力がある間は使いません。
 
 ### コンパイル時定数
 
@@ -843,6 +875,22 @@ assert、整数のゼロ除算・符号付き除算 overflow、添字、確保�
 位置情報が無効な IR は従来と同一です。native/WASM の公開 ABI は変えません。
 `run --json` の失敗時は子プロセスの stderr を診断 message へ含め、生の trap 行を別に出しません。
 正常終了時の stdout／stderr は従来どおり転送します。例外処理・巻き戻し・stack trace を追加する機能ではありません。
+
+WASM のホストは、同梱の `src/runtime/trap-boundary.mjs` の `createBoundary(module, { imports, sites })` で、export の呼び出し 1 回を境界にできます。
+`call(name, ...args)` は成功を `{ ok: true, value }`、`WebAssembly.RuntimeError` を `{ ok: false, trap: { reason: "trap", site, kind, path, line, column } }` で返します。
+`kind`・`path`・`line`・`column` は、`sites`（`<output>.trap.json` の `sites`）に ID があるときだけ付きます。
+スタック枯渇（V8 の `RangeError`、SpiderMonkey の `InternalError`）は `reason: "stack"`、`site: 0` です。import 関数が投げた例外は同じ object のまま再送出します。
+トラップは巻き戻さないため、例外が出た instance は heap と shadow stack が途中の状態です。境界はその instance を以後使わず、次の `call` で同じ module から作り直します。
+古い instance の pointer・`memory.buffer` の view・未解放の所有結果は無効になるので、所有結果は次の `call` の前に複製して `tsuzuri_free` します。
+threads の module は拒否します。単位は `createThreadPool` の pool で、worker の失敗後は pool を再利用せず閉じます。
+
+native の `tsuzuri run`／`tsuzuri test` は、子プロセスがトラップの報告なしに SIGSEGV／SIGBUS で終わったとき、スタック枯渇の可能性が高いことを `E2005`／テスト失敗の理由で報告します。これは親プロセスの推定です。
+
+再帰する（関数が直接の呼び出しで自分自身に戻る）プログラムの native 実行ファイル（`build --emit exe`、`run`）は、自分でスタック枯渇を報告します。起動時に main thread と `Task.parallel` の worker へ `sigaltstack` と SIGSEGV／SIGBUS の handler を置き、fault のアドレスがスタックの下端の窓にあれば stderr に `trap: stack overflow` を書いて `abort()` します（窓の外の fault は既定の動作です）。`run` はこの行から `E2005`（`stack overflow: the stack was exhausted by deep recursion`）を報告します。末尾再帰（LLVM がループにするもの）と再帰しないプログラム、object・`--emit llvm`、`tsuzuri test` の実行ファイル、Windows は handler を持たず、推定の報告のままです。
+
+native の object を呼ぶホストは `--trap-mode return`（`build` の native `--emit object`・`llvm`・`header` だけ。`--trap-info` を含む）で、各 export `tz_<name>` に `int32_t tsuzuri_try_<name>(tsuzuri_trap_info *trap, <結果の置き場>, <引数>)` を足せます。戻り値は 0（成功）、1（トラップ。`trap->site` が `<output>.trap.json` の id、`trap->kind` が `TrapKind` の値）、2（同じ thread で別の呼び出しの中。何も実行しない）です。トラップしたとき、その呼び出しが確保した heap は解放され（drop は走らせません。Tsuzuri のコードは巻き戻らず、runtime は callback の前に lock を手放します）、ホストが所有する成功時の結果だけが残ります。`Task.parallel` の worker のトラップは、グループを投入した呼び出しの status 1 になり、動いた item のうち最も小さい index のものを返します（トラップした task の状態は未定義なので、先に `Err` を返した item があってもトラップが優先します）。extern のコールバックを使うプログラムとの併用は `E2000`、Windows の埋め込み runtime の object は `E2002` です。公開 ABI（`tz_<name>`）のシグネチャは変わりません。
+
+POSIX native では通常 object と境界付き object を同じホストへリンクでき、どちらを先に置いても公開 allocator とタスク境界が一致します。確保領域は通常の `malloc` と互換で、成功時の結果を `tsuzuri_free` で解放できます。ホストの extern が境界内で `tsuzuri_alloc` により確保した所有結果も、トラップ時の解放対象です。レビュー修正により、拡張 ABI を使う `--trap-mode` なしの POSIX native IR にも共通フック表を追加しています。公開シグネチャと WASM・Windows の既定 allocator は変更していません。
 
 ビルド失敗時は既存成果物と表を保持し、公開時に成果物の rename が失敗したら表を復元します。
 二つのファイルを跨ぐ OS レベルの原子的トランザクションではないため、公開途中のプロセスクラッシュへの一括 rollback は保証しません。

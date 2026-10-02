@@ -1,0 +1,82 @@
+def sum_all :: ref [i64] -> i64
+fn sum_all values =
+    let mut total = 0
+    for i in 0 .. Array.length values - 1 do
+        total = total + values[i]
+    total
+
+export def forward :: i64 -> i64
+fn forward count =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    for i in 0 .. values.length - 1 do
+        total = total + values[i]
+    total
+
+export def backward :: i64 -> i64
+fn backward count =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    for i in values.length - 1 .. -1 .. 0 do
+        total = total + values[i]
+    total
+
+export def builtin_length :: i64 -> i64
+fn builtin_length count =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    sum_all (ref values)
+
+export def pick :: i64 -> i64
+fn pick index =
+    let values = [10, 20, 30]
+    let guarded = if index >= 0 && index < values.length then values[index] else 0
+    values[2] + guarded
+
+export def replaced :: i64 -> i64
+fn replaced count =
+    let mut values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    for i in 0 .. values.length - 1 do
+        values = [0]
+        total = total + values[i]
+    total
+
+export def other :: i64 -> i64
+fn other count =
+    let a = new [i64](count, \i -> i * 3 + 1)
+    let b = new [i64](0, \i -> i)
+    let mut total = 0
+    for i in 0 .. a.length - 1 do
+        total = total + b[i]
+    total
+
+export def past_end :: i64 -> i64
+fn past_end count =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    for i in 0 .. values.length do
+        total = total + values[i]
+    total
+
+export def while_sum :: i64 -> i64
+fn while_sum count =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    let mut i = 0
+    while i < values.length do
+        total = total + values[i]
+        i = i + 1
+    total
+
+export def literal_past :: i64 -> i64
+fn literal_past seed =
+    let values = [10, 20, 30]
+    values[3] + seed
+
+def rec walk :: i64 -> i64 -> i64
+fn rec walk i total =
+    let values = [10, 20, 30]
+    if i >= 0 && i < values.length then walk (i + 1) (total + values[i]) else total
+
+export def tail_walk :: i64 -> i64
+fn tail_walk start = walk start 0

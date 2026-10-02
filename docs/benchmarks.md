@@ -1291,6 +1291,7 @@ Rust の slice 走査は通常の安全なコードで、未初期化領域の�
 | `tail_builtin_mix` | 8,000,000 反復 | 同じ末尾再帰を `Sub.sub` で記述 |
 | `match_dispatch` | 8,000,000 選択 | 16 通りの整数分類と折り返し加算 |
 | `array_sum` | 4,000,000 要素（32 MB） | 確保、seed 依存の初期化、for-in 集計、解放の全体 |
+| `array_index_sum` | 4,000,000 要素（32 MB） | 確保、seed 依存の初期化、添字 `values[i]` による集計、解放の全体（F12 で境界検査が残らない形） |
 
 各種目・各言語を二回ウォームアップし、12 サンプルを採取します。
 `--baseline` 付きでは変更前も五つ目の実装としてリンクし、全実装で順序を均等に巡回できる15サンプルにします。
@@ -1437,6 +1438,137 @@ done
 変更後は `66cf308bce9c93498ca93bf27faf7c59217af607d47acd7db98a42894d31187a`。
 生データ・IR・アセンブリは上記の各 JSON／同名ディレクトリへ保存しています。
 速度の合否閾値は追加せず、他 CPU・LLVM・実行エンジンでの優位性は別途測定する必要があります。
+
+### 境界検査の残り方（F12）
+
+F12 は、コンパイラが型付き IR の上で「添字は必ず範囲内」と証明できた配列の読み出しだけ、境界検査の分岐を生成しません
+（`src/ranges.rs` の閉じた規則 R1–R5／P1–P3）。証明できない位置の検査、`TrapKind::BoundsCheck`、トラップの位置情報は変更前と同じです。
+GEP と load は残し、`llvm.assume`・`!range`・overflow フラグは新しく出しません。
+判断は LLVM より前に行うので、`-O0` の IR と trap 表に現れ、native と WASM で同じになります。
+
+`tests/fixtures/bounds_checks` の関数ごとに、`-O0` の IR（`tsuzuri build --emit llvm` の出力）に残る `call void @llvm.trap()` を数えました。
+数には `new [i64](count, ...)` の確保サイズの検査など、境界検査ではない trap も含みます。
+**数は小さいほど検査が少なく、変更前と同じなら検査が残っています。**
+
+| 関数 | 添字の形 | `-O0` の trap 変更前 | `-O0` の trap 変更後 |
+| --- | --- | ---: | ---: |
+| `forward` | `0 .. values.length - 1` のループ | 2 | 1 |
+| `backward` | `values.length - 1 .. -1 .. 0` のループ | 2 | 1 |
+| `sum_all`（`builtin_length` が呼ぶ） | `0 .. Array.length values - 1` のループ | 1 | 0 |
+| `pick` | リテラル配列の `values[2]` と、範囲の `if` の then 側 | 2 | 0 |
+| `builtin_length` | 確保と `sum_all` の呼び出しだけ | 1 | 1 |
+| `replaced` | ループの中で配列を置き換える | 3 | 3 |
+| `other` | 別の配列の長さで回る | 3 | 3 |
+| `past_end` | `0 .. values.length`（上限が長さそのもの） | 2 | 2 |
+| `while_sum` | `while` と可変の添字 | 2 | 2 |
+| `literal_past` | リテラル配列の `values[3]` | 1 | 1 |
+
+減った 4 関数は、残った 1 件が確保サイズの検査（`sum_all` と `pick` は 0）です。
+`-O3` では LLVM が変更前から単純なループの検査を消すので、エクスポート関数に残る `llvm.trap` の数は 9 関数すべてで変更前後が一致しました
+（`forward` 2、`backward` 2、`builtin_length` 2、`pick` 0、`replaced` 4、`other` 2、`past_end` 1、`while_sum` 2、`literal_past` 1）。
+`-O0` と `-O3` の数は `target/perf/F12/shapes-{before,after}.{txt,O0.txt}` に保存しています。
+`tests/bounds_checks.rs` は、省略する 7 形の trap 表から境界検査が消えることと、残す 6 形の検査の位置の文字列が変更前と同じことを固定します。
+
+### 境界検査の省略の実測（2026-10-02）
+
+Apple M1 Max（10 logical CPUs）、arm64 macOS/Darwin 27.0.0、Apple Clang 21.0.0（clang-2100.3.34.2）、
+Rust 1.98.1／LLVM 22.1.8、Node.js v20.17.0、`-O3 --cpu generic`。
+F12 を適用する前（HEAD `30b2d1d`）のコンパイラを `--baseline` に指定し、C・Rust と同じプロセスの中で 3 回測定しました。
+一回は各実装 2 回のウォームアップと 15 サンプルです。表の時間は 3 回の中央値の中央値、改善倍率は「変更前の時間 / 変更後の時間」の中央値、
+範囲は 3 回の最小と最大です。
+**時間は小さいほど、改善倍率は大きいほど有利です。1 に近ければ差はありません。**
+
+| 種目 | 変更後 (ms) | 変更前 (ms) | 改善倍率 | 3 回の範囲 | C (ms) | Rust (ms) |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| while_mix | 12.684 | 12.656 | 0.998 | 0.996–0.998 | 12.621 | 12.654 |
+| for_mix | 12.688 | 12.639 | 0.998 | 0.996–0.999 | 12.668 | 20.238 |
+| tail_mix | 12.638 | 12.640 | 1.001 | 1.000–1.002 | 12.659 | 12.639 |
+| tail_if_mix | 12.616 | 12.623 | 0.999 | 0.999–1.001 | 12.671 | 12.634 |
+| tail_builtin_mix | 12.631 | 12.604 | 0.999 | 0.997–1.004 | 12.630 | 12.601 |
+| match_dispatch | 2.523 | 2.523 | 0.996 | 0.996–1.000 | 4.109 | 2.545 |
+| array_sum | 1.791 | 1.791 | 1.000 | 1.000–1.007 | 1.788 | 1.786 |
+| **array_index_sum** | 1.786 | 1.788 | 0.998 | 0.995–1.001 | 1.784 | 1.782 |
+| array_copy | 1.508 | 1.509 | 1.007 | 0.999–1.020 | 1.514 | 1.539 |
+| list_sum | 1.769 | 1.770 | 1.001 | 0.999–1.007 | 1.806 | 1.806 |
+| closure_capture | 1.898 | 1.902 | 1.002 | 0.993–1.005 | 1.901 | 1.897 |
+| closure_churn | 6.354 | 6.359 | 1.001 | 0.998–1.004 | 6.306 | 9.032 |
+| record_pipeline | 12.690 | 12.655 | 0.999 | 0.996–1.003 | 12.662 | 12.646 |
+| integer128_mix | 4.994 | 4.988 | 0.998 | 0.996–1.001 | 4.979 | 5.309 |
+| float32_mix | 8.862 | 8.851 | 0.999 | 0.999–1.006 | 8.854 | 8.840 |
+| float64_mix | 8.847 | 8.868 | 1.002 | 0.998–1.005 | 8.849 | 8.857 |
+
+**この環境では、F12 は `-O3` の実行時間を変えません。** 検査が消える `array_index_sum` も、変更前 1.788 ms と変更後 1.786 ms で、
+改善倍率の 3 回の範囲（0.995–1.001）が 1 をまたぎます。LLVM が変更前から `0 .. values.length - 1` の検査を消してベクトル化しており、
+C（1.784 ms）・Rust（1.782 ms）と同等のままです。ほかの 15 種目は IR が変更前と同一で（`diff` の差は `array_index_sum` の本体と、
+そのループのメタデータ 2 行だけ）、全 16 種目の 3 回の改善倍率は 0.993–1.020 に収まります。この幅の差を F12 の効果とは解釈せず、
+**速度の改善は主張しません。** F12 の効果は、`-O0` の IR と trap 表から検査が消えることです（上の表）。
+
+最初の実装は `array_index_sum` が遅くなりました。展開ヒントを抑えない版（SHA-256 `61b15a68…`）の同じ測定では、
+変更後 2.371 ms（2.371／2.358／2.379）に対して変更前 1.802 ms で、改善倍率は 0.761（0.760–0.764）、**約 32% 遅い**結果でした。
+ほかの 15 種目は 0.990–1.009 で変わりません。原因は、`hint_loop` が小さい整数 reduction のループへ付ける `llvm.loop.unroll.enable` です。
+検査が残るループでは、このヒントの有無で `-O3` の生成コードが変わりませんでした。検査が消えたループでは、LLVM が `LoopVectorize` より前に
+8 回の実行時展開を行い、その後のベクトル化は 128 bit の `ldp q` 4 本ではなく 1 要素ずつの `ld1.d`（8 命令）を使う形になりました
+（アセンブリは 715 行から 753 行）。ヒントを外すと変更前と同じアセンブリになることを `clang -O3` で確かめています。
+そこで `hint_loop` は、検査を省いた読み出しを本体に含むループにはヒントを付けません。
+検査が残るループと、配列を読まない reduction（`match_dispatch` など）のヒントは変更前と同じです。
+`tests/bounds_checks.rs` の `unroll_hint_is_dropped_only_where_a_guard_was_removed` がこの境界を固定します。
+**検査の省略のような「分岐を消す」変更は LLVM の段の順序を変えうるので、ループに関わる変更は `--baseline` 付きで測定し、アセンブリも確認してください。**
+
+再測定:
+
+```sh
+cargo build --release --locked
+for trial in 1 2 3; do
+  node benchmarks/run-control.mjs target/release/tsuzuri \
+    --baseline target/perf/F12/tsuzuri-before \
+    --artifacts "target/perf/F12/control-$trial" > "target/perf/F12/control-$trial.json" || exit 1
+done
+```
+
+変更前のコンパイラは、F12 の着手時点（HEAD `30b2d1d`）をビルドして `target/perf/F12/tsuzuri-before` に保存しました。
+SHA-256 は変更前が `722dab3ccfeccc85c256f746301f4a6d766b13c460b01e57d71bb543b4f5d725`、
+上の表を測定した変更後が `61274fa13e39e860da50e66449d2f7e8259cd8b48d54ef07db56529d74a8bf6f`、
+展開ヒントを抑えない最初の実装が `61b15a68764101f60cf64a309dceb6b19d123c0d4595739dc0d902c16dd7997e` です。
+生データ・IR・アセンブリは、変更後が `target/perf/F12/control-{1,2,3}.json` と同名ディレクトリ、
+最初の実装が `target/perf/F12/control-prefix-{1,2,3}.json` と同名ディレクトリにあります。
+測定したのは arm64 macOS だけで、x86_64 Linux は未計測です（推定値は書きません）。
+速度の合否閾値は CI に追加していません。
+
+### 境界検査の Phase 2 の形（F12）
+
+F12 の Phase 2 に挙げた形（可変の上限のループの版分け、先行する検査、`while` の帰納変数）を実装するかどうかを、実測で決めました。
+`benchmarks/bounds_shapes/Main.tz` の 4 関数は、同じ合計を取る 4 つの形です。
+
+| 関数 | 形 | F12 Phase 1 の証明 |
+| --- | --- | --- |
+| `sum_all` | `for i in 0 .. values.length - 1` | あり（R1。検査が消える） |
+| `sum_first` | `for i in 0 .. n - 1`（`n` は引数。長さとの関係はコードに現れない） | なし |
+| `sum_checked` | `if n <= values.length then for i in 0 .. n - 1` | なし（`n` と長さの比較は添字の変数ではない） |
+| `sum_while` | `let mut i = 0` と `while i < values.length do (…; i = i + 1)` | なし（`while` は規則にない） |
+
+```sh
+./target/release/tsuzuri build benchmarks/bounds_shapes --emit header -o m.h
+./target/release/tsuzuri build benchmarks/bounds_shapes --emit object -O3 -o m3.o
+./target/release/tsuzuri build benchmarks/bounds_shapes --emit object -O0 -o m0.o
+clang -O2 -I. benchmarks/bounds_shapes/bench.c m3.o -o bench3 && ./bench3
+clang -O2 -I. benchmarks/bounds_shapes/bench.c m0.o -o bench0 && ./bench0
+```
+
+配列は 1,048,576 個の `i64`（値は `i & 1023`）で、各行は 200 回の呼び出しの合計を 7 回測った最小値です（Apple M1 Max、Apple clang 21、`-O3` は既定、チェックサムは 4 つとも 750885273600）。
+
+| 形 | `-O3`（ms） | `sum_all` に対する比 | `-O0`（ms） | `sum_all` に対する比 |
+| --- | --- | --- | --- | --- |
+| `sum_all`（証明あり） | 21.601 | 1.000 | 378.243 | 1.000 |
+| `sum_first`（可変の上限） | 21.831 | 1.011 | 402.614 | 1.064 |
+| `sum_checked`（先行する検査） | 22.197 | 1.028 | 401.955 | 1.063 |
+| `sum_while`（`while`） | 21.767 | 1.008 | 486.269 | 1.286 |
+
+`-O3` では、検査を省く証明のない 3 つの形も `sum_all` と 3% 以内で、4 つともベクトル化されます（`clang -O3 -S -emit-llvm` の出力で 4 つとも `<N x i64>` を含みます）。
+LLVM の `IndVarSimplify` が、ループを抜ける検査（行き先がトラップ）をループの前の一回の比較へ移すためです。検査を省くための版分けは、同じことを
+コードを倍にして行うだけなので、**実装しません**（F12 チケットの「コードサイズの増加を計測してから決める」への答えです）。`while` の帰納変数と `assert` による
+支配も、`-O3` では同じ結果になる形なので実装しません。`-O0`（`tsuzuri` の既定ではありません）では `while` が約 29% 遅く、これを縮められるのは
+`while` の規則だけです。いまの規則では、増分が本体の最後の文であることまで確かめる流れ依存の証明が要り、`-O0` だけの利益に見合わないと判断しました。
+測定は arm64 macOS の 1 台だけで、x86_64 Linux は未計測です（推定値は書きません）。
 
 ## 現実的な次の指標
 

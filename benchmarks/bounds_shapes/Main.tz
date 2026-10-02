@@ -1,0 +1,30 @@
+export def sum_first :: ref [i64] -> i64 -> i64
+fn sum_first values n =
+    let mut total = 0
+    for i in 0 .. n - 1 do
+        total = total + values[i]
+    total
+
+export def sum_checked :: ref [i64] -> i64 -> i64
+fn sum_checked values n =
+    let mut total = 0
+    if n <= values.length then
+        for i in 0 .. n - 1 do
+            total = total + values[i]
+    total
+
+export def sum_all :: ref [i64] -> i64
+fn sum_all values =
+    let mut total = 0
+    for i in 0 .. values.length - 1 do
+        total = total + values[i]
+    total
+
+export def sum_while :: ref [i64] -> i64
+fn sum_while values =
+    let mut total = 0
+    let mut i = 0
+    while i < values.length do
+        total = total + values[i]
+        i = i + 1
+    total
