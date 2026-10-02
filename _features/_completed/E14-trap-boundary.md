@@ -707,3 +707,12 @@ F12 と同じ作業ツリーで実装した（着手時の HEAD は `30b2d1d`、
 - 非スタック枯渇の signal handler は既定へ戻した後に `raise` で同じ thread へ再送する。`tests/stack_overflow.mjs` の不正アクセスを再帰のあるプログラムに変え、実際に handler を持つことを検査し、ホストの `raise(SIGSEGV)`・`raise(SIGBUS)` も追加した（20 case）。
 - レビュー修正後の POSIX native 拡張 ABI の既定 IR は共通フック表を含むため変わる。上の「出力の不変」の記録はこの修正前の結果で、公開シグネチャ、WASM と Windows の既定 allocator は変更していない。速度の改善は主張しない。
 - 修正後の検証: Rust 全 554 件と GUIDE §3.1 の深さ・特殊化上限テスト、fmt/clippy、境界 E2E（混在リンクを含む）、スタック 20 case、FFI・Task・host imports・primitives の native/WASM `-O0`・`-O3`、cache、文書全 83 page が成功。境界 C 単体は 26,897 check で、ASan/UBSan/TSan を含む。Linux arm64 は glibc/musl それぞれ 30 case（両リンク順、計数付き所有結果、追跡表、シグナル、スタック枯渇、NDEBUG、`-O0`・`-O3`）が成功。Windows x86_64/aarch64 MSVC の全 target クロスチェックは警告なしで成功したが、Windows の実行は未検証。
+
+## Copilot レビューの対応（2026-10-02、PR #5）
+
+- `tsuzuri_boundary_run` の自動変数 `boundary` は、`setjmp` の後に `tsuzuri_tracked_malloc` などが書き換え、`longjmp` で戻った後に解放処理が読む。C11 7.13.2.1 では、`setjmp` の後に変更された `volatile` でない自動変数は `longjmp` の後で不定になる。
+  同じ形の最小の例が `-O2`・`-O3` で状態を失う（期待 5015 に対し 0）ことを確かめた。実ランタイムは 3 種類のコンパイラの全最適化レベルで通っていたが、`&boundary` が他の関数へ渡るという偶然に頼っていた。
+- 境界本体（lock・list・hash 表）を追跡対象外の `malloc`（上書き点 `TZ_TRAP_STATE_MALLOC`・`TZ_TRAP_STATE_FREE`）に置き、`setjmp` の前に一度だけ代入する `volatile` なポインタで持つ。`longjmp` の後に読むのはそのポインタと `volatile` の `site`・`kind` だけである。
+  確保に失敗したら `abort()` する（メモリ不足は従来どおり失敗する）。status は 0・1・2 のままで、公開 ABI は変わらない。利用者データの確保（計数と失敗の注入の対象）とは別の経路にした。
+- 確認: C 単体は 3 種類のコンパイラ（Apple clang 21、Homebrew LLVM 21、zig cc）× `-O0`・`-O1`・`-O2`・`-O3`・`-Os` × 並列度 0・1・2・4・32 の 75 構成で 26,897 check が成功し、ASan・UBSan（0・1・4）と TSan（0・2）も指摘なし。`trap_return`（両リンク順）・`stack_overflow`・`ffi_extensions`・`tasks` も成功した。
+- `docs/language.md` のコールバックの記述は、native の別スレッドからの呼び出しと同時呼び出しを検証したガイドの記述と食い違っていたので揃えた（WASM は 1 スレッドのまま）。E12 チケットの D10 にも、当初の検証範囲と後で足した検証を区別して書いた。

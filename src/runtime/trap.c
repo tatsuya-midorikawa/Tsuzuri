@@ -26,6 +26,12 @@
 #ifndef TZ_TRAP_REALLOC
 #define TZ_TRAP_REALLOC realloc
 #endif
+#ifndef TZ_TRAP_STATE_MALLOC
+#define TZ_TRAP_STATE_MALLOC malloc
+#endif
+#ifndef TZ_TRAP_STATE_FREE
+#define TZ_TRAP_STATE_FREE free
+#endif
 
 #ifndef TSUZURI_TRAP_INFO_DEFINED
 #define TSUZURI_TRAP_INFO_DEFINED
@@ -145,14 +151,17 @@ void tsuzuri_boundary_resume(const tsuzuri_trap_info *trap) {
 TZ_TRAP_API
 int32_t tsuzuri_boundary_run(void (*thunk)(void *), void *argument, tsuzuri_trap_info *trap) {
     if (tz_frame) return 2;
-    struct tz_boundary boundary;
-    pthread_mutex_init(&boundary.lock, NULL);
-    boundary.blocks = NULL;
-    boundary.buckets = NULL;
-    boundary.capacity = 0;
-    boundary.count = 0;
+    /* Off the stack: code that runs after setjmp changes it, and an automatic object changed
+       since setjmp is indeterminate once longjmp returns here. */
+    struct tz_boundary *volatile boundary = TZ_TRAP_STATE_MALLOC(sizeof *boundary);
+    if (!boundary) abort();
+    pthread_mutex_init(&boundary->lock, NULL);
+    boundary->blocks = NULL;
+    boundary->buckets = NULL;
+    boundary->capacity = 0;
+    boundary->count = 0;
     struct tz_frame frame;
-    frame.owner = &boundary;
+    frame.owner = boundary;
     frame.outer = NULL;
     frame.site = 0;
     frame.kind = 0;
@@ -162,8 +171,9 @@ int32_t tsuzuri_boundary_run(void (*thunk)(void *), void *argument, tsuzuri_trap
     else trapped = 1;
     tz_frame = NULL;
     /* A finished call hands what is left (results the host owns) over; a trapped one drops it all. */
-    tz_boundary_release(&boundary, trapped);
-    pthread_mutex_destroy(&boundary.lock);
+    tz_boundary_release(boundary, trapped);
+    pthread_mutex_destroy(&boundary->lock);
+    TZ_TRAP_STATE_FREE(boundary);
     if (trapped && trap) {
         trap->site = frame.site;
         trap->kind = frame.kind;
