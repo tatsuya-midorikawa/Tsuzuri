@@ -56,6 +56,8 @@ pub fn parse_size(text: &str) -> Option<u64> {
 pub struct Dependency {
     pub path: PathBuf,
     pub span: Span,
+    /// `native = true`: the root package lets this dependency's `[native]` link inputs into the build.
+    pub native: bool,
 }
 
 pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
@@ -166,6 +168,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 if path.is_empty() || path.contains('\0') || rooted {
                     return Err(cursor.error("dependency path must be a nonempty relative path"));
                 }
+                let mut native = false;
+                if cursor.take(",") {
+                    if cursor.key()? != "native" {
+                        return Err(cursor
+                            .error("only the path and native keys are supported in a dependency"));
+                    }
+                    cursor.expect("=")?;
+                    native = if cursor.take("true") {
+                        true
+                    } else if cursor.take("false") {
+                        false
+                    } else {
+                        return Err(cursor.error("native must be true or false"));
+                    };
+                }
                 cursor.expect("}")?;
                 if dependencies
                     .insert(
@@ -173,6 +190,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                         Dependency {
                             path: path.into(),
                             span,
+                            native,
                         },
                     )
                     .is_some()
@@ -547,5 +565,44 @@ mod tests {
                 .code,
             "E0002"
         );
+    }
+
+    #[test]
+    fn parses_the_native_opt_in_of_a_dependency() {
+        let manifest = parse_manifest(
+            &format!(
+                "{PACKAGE}[dependencies]\nplain = {{ path = \"plain\" }}\nhost-lib = {{ path = \"../host\", native = true }}\nquiet = {{ path = \"quiet\" , native = false }} # no\n"
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(!manifest.dependencies["plain"].native);
+        assert!(manifest.dependencies["host-lib"].native);
+        assert!(!manifest.dependencies["quiet"].native);
+        assert_eq!(
+            manifest.dependencies["host-lib"].path,
+            PathBuf::from("../host")
+        );
+        for (entry, message) in [
+            (
+                "a = { path = \"a\", native = yes }",
+                "native must be true or false",
+            ),
+            ("a = { path = \"a\", native }", "expected '='"),
+            (
+                "a = { path = \"a\", link = true }",
+                "only the path and native keys are supported in a dependency",
+            ),
+            ("a = { path = \"a\", native = true", "expected '}'"),
+            (
+                "a = { path = \"a\", native = true, native = true }",
+                "expected '}'",
+            ),
+        ] {
+            let error =
+                parse_manifest(&format!("{PACKAGE}[dependencies]\n{entry}\n"), 0).unwrap_err();
+            assert_eq!(error.code, "E0002", "{entry}");
+            assert_eq!(error.message, message, "{entry}");
+        }
     }
 }

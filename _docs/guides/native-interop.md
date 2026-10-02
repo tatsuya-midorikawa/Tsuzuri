@@ -48,7 +48,7 @@ export def の公開名は `tz_name` です。モジュール名は付かない�
 
 ジェネリック関数は直接 export せず、具体型のラッパーを作ります。private と export は併用できません。内部 LLVM 型や内部シンボルは安定 ABI ではありません。
 
-native ではトラップがプロセスを終了させます。例外や巻き戻しはなく、呼び出しだけを隔離する境界もありません。隔離が必要な呼び出しは、`tsuzuri run` と同じように別プロセスで実行してください。スタック枯渇を理由付きで報告するのは、`tsuzuri run` と `tsuzuri test` が子プロセスの終了 signal から推定する場合だけです。WASM では、[トラップを値として受け取る境界](webassembly.md#nodejs-から呼ぶ)を使えます。
+native では既定でトラップがプロセスを終了させます。例外や巻き戻しはありません。呼び出しだけを隔離したいホストは、`--trap-mode return` で build した object の `tsuzuri_try_<name>` を使えます（トラップを戻り値の status と位置で返し、その呼び出しが確保した heap を解放します。[詳しくはこちら](../tools/debugging.md#native-のホストへトラップを返す)）。別プロセスで実行する方法もあります。再帰するプログラムの実行ファイルは、スタックが尽きると `trap: stack overflow` を書いて終了します。WASM では、[トラップを値として受け取る境界](webassembly.md#nodejs-から呼ぶ)を使えます。
 
 ## 対応型
 
@@ -84,6 +84,8 @@ i128、f16 / f128、decimal、char / utf8char、union、タプル、List、Vec�
 負の長さ、サイズ overflow、不正な null、alignment は検査します。ただし native の任意 pointer の実在性は一般には検証できません。null と長さ 0 は許可されます。UTF-8 は妥当性検査、UTF-16 は孤立サロゲートを保持します。
 
 所有結果はホストへ移り、ホストが `tsuzuri_free(out.ptr)` で一度だけ解放します。借用入力を free してはいけません。対応するモジュールは `tsuzuri_alloc(int64_t size)` / `tsuzuri_free(void *ptr)` を公開します。alloc の 0 は最低 1 byte、free の null は何もしません。
+
+POSIX native の通常 object と `--trap-mode return` の object は同じホストへリンクできます。どちらを先に置いても公開 allocator と並列タスクの境界が一致します。ホストの extern が境界内で `tsuzuri_alloc` により確保した所有結果も、トラップ時に解放されます。
 
 ## ホスト関数をインポートする
 
@@ -210,7 +212,7 @@ const imports = {
 };
 ```
 
-この検証は同じスレッドからの同期呼び出しと再入だけで行っています。ホストの別スレッドから呼ぶときは、ホスト側で同期を保ってください。
+この検証では、同じスレッドからの同期呼び出しと再入に加え、ホストが自分で起こした別スレッドからのコールバックの呼び出し（その間、呼び出し元は待つ）と、複数のホストスレッドからの export の同時呼び出しも確かめています。export とコールバックは大域の可変状態を持たないので、スレッドの間で同期は要りません。ホストが渡された関数 pointer を保持したり、呼び出し元の extern が戻った後に呼んだりすることはできません。
 
 ## ホストの object とライブラリをリンクする
 
@@ -243,7 +245,14 @@ libraries = ["m"]
 search = ["vendor"]
 ```
 
-リンク入力は native の実行ファイルを作るときだけ有効です。wasm32・wasm64、exe 以外の `--emit`、`check`・`fmt` で指定すると `E2000` で、manifest の `[native]` はそれらでは無視します。依存 package の `[native]` は `E2000` です。読めない path は `E2001`、出力先が入力と同じ場合は `E2003` で、成果物 cache は入力がある間は使いません。
+リンク入力は native の実行ファイルを作るときだけ有効です。wasm32・wasm64、exe 以外の `--emit`、`check`・`fmt` で指定すると `E2000` で、manifest の `[native]` はそれらでは無視します。読めない path は `E2001`、出力先が入力と同じ場合は `E2003` で、成果物 cache は入力がある間は使いません。
+
+依存 package の `[native]` は、root の `[dependencies]` が `native = true` で許可した直接の依存だけが持てます。許可のない依存や、依存の依存が自分で許可を書いた場合は `E2000` です。許可した依存の path は、その依存の root からの相対で、root の入力の後に連結します。
+
+```toml
+[dependencies]
+host-lib = { path = "host-lib", native = true }
+```
 
 ## ホストが所有結果を返す場合
 

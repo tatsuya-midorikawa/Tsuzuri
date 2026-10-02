@@ -1,0 +1,59 @@
+extern "e14_reenter" def reenter :: i64 -> i64
+extern "e14_host_buffer" def host_buffer :: i64 -> [i64]
+
+export def div :: i64 -> i64 -> i64
+fn div a b = a / b
+
+export def noop :: i64
+fn noop = 7
+
+export def fill_div :: i64 -> i64 -> i64
+fn fill_div count divisor =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let text = "buffer" + to_string count
+    values[count - 1] / divisor + text.length
+
+export def imported_div :: i64 -> i64 -> i64
+fn imported_div count divisor =
+    let numbers = host_buffer count
+    numbers[count - 1] / divisor
+
+export def make :: i64 -> [i64]
+fn make count = new [i64](count, \i -> i * i)
+
+export def label :: i64 -> string
+fn label n = "value " + to_string n
+
+export def label_div :: i64 -> string
+fn label_div n = "value " + to_string (100 / n)
+
+export def call_host :: i64 -> i64
+fn call_host n = reenter n + 1
+
+export def parallel_div :: i64 -> i64 -> i64
+fn parallel_div count divisor = Task.run task {
+    let! results = Task.parallel (new [Task<i64>](count, i -> task {
+        let scratch = new [i64](64, n -> n + i)
+        return (scratch[1] + i) / (if i == 5 then divisor else 1)
+    }))
+    return Array.sum (&results)
+}
+
+export def parallel_mixed :: i64 -> i64 -> i64
+fn parallel_mixed fail_at trap_at =
+    let jobs = new [Task<Result.Result<i64, i64>>](16, index -> task {
+        let scratch = new [i64](32, n -> n)
+        if index == trap_at then Result.Ok (1 / (index - trap_at)) else (if index == fail_at then Result.Error index else Result.Ok scratch[index])
+    })
+    match Task.run (Task.parallel_results jobs) with
+    | Result.Ok values -> Array.sum (&values)
+    | Result.Error error -> 1000 + error
+
+export def nested_div :: i64 -> i64
+fn nested_div trap_at = Task.run task {
+    let! outer = Task.parallel (new [Task<i64>](4, i -> task {
+        let! inner = Task.parallel (new [Task<i64>](4, j -> task { 100 / (i * 4 + j - trap_at) }))
+        return Array.sum (&inner)
+    }))
+    return Array.sum (&outer)
+}

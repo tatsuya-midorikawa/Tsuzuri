@@ -72,6 +72,32 @@ run の異常終了は E2005 です。run --json では子プロセスの stderr
 
 トラップの位置が出ないまま SIGSEGV / SIGBUS で終わった場合、run は「スタック枯渇の可能性が高い」ことを E2005 で報告します。再帰が深すぎるときの典型的な終わり方で、再帰を浅くするかループにします。`tsuzuri test` も同じ signal の失敗理由に、スタック枯渇の可能性を書き添えます。これは子プロセスの終了状態からの推定で、メモリ破壊の確認ではありません。
 
+再帰する（呼び出しが自分自身に戻る）プログラムの native 実行ファイルは、スタックが尽きると stderr に `trap: stack overflow` を書いてから `abort()` で終わります（macOS と Linux。main thread と `Task.parallel` の worker の両方）。run はこの行を見て、推定ではなく「stack overflow: the stack was exhausted by deep recursion」と E2005 で報告します。再帰しないプログラムは尽きないので、報告のための runtime を実行ファイルに足しません（ビルドを遅くしないためです）。末尾再帰は LLVM がループにするので数えません。スタックの外の SIGSEGV（`--link` したホスト関数の NULL 参照など）は、`stack overflow` と書かず従来どおりの動作で終わります。object と `--emit llvm` の出力、`tsuzuri test` の実行ファイルは signal の設定を変えません。
+
+### native のホストへトラップを返す
+
+ホストが native object を呼ぶとき、トラップはプロセスごと終了します。`--trap-mode return` を付けて build すると、各 export `tz_<name>` に対応する `tsuzuri_try_<name>` が増え、トラップは戻り値で返ります。
+
+```sh
+./target/release/tsuzuri build lib --emit header --trap-mode return -o target/lib.h
+./target/release/tsuzuri build lib --emit object --trap-mode return -o target/lib.o
+```
+
+```c
+#include "lib.h"
+
+tsuzuri_trap_info trap;
+int64_t result;
+int32_t status = tsuzuri_try_div(&trap, &result, 7, 0);
+if (status == 1) {
+    /* trap.site は target/lib.o.trap.json の id、trap.kind は種類（1 は整数のゼロ除算） */
+}
+```
+
+`tsuzuri_try_<name>(tsuzuri_trap_info *trap, <結果の置き場>, <tz_<name> と同じ引数>)` は 0（成功）、1（トラップ。`*trap` に記録）、2（同じ thread で別の `tsuzuri_try_*` の実行中。何も実行しない）を返します。結果の置き場は、値を返す export なら `T *result`、buffer や record を返す export なら `tz_<name>` の `out` です。トラップした呼び出しが確保した heap はすべて解放され（結果の buffer はホストの所有物のままです）、同じ thread で続けて呼べます。`Task.parallel` の worker のトラップも、グループを投入した呼び出しの status 1 になります（最も小さい index のトラップを返し、先に `Err` を返した item があっても、トラップした item が動いていればトラップを返します）。
+
+`--trap-mode return` は native の `--emit object`・`--emit llvm`・`--emit header` だけで使え、`--trap-info` を含みます（header を除く）。object は `setjmp` を使う runtime（`src/runtime/trap.c`）を中に持つので Windows の COFF object は E2002 です。`--emit llvm` を使う場合は `trap.c` と `task.c`（`-DTZ_TRAP_BOUNDARY`）をホストが一緒にリンクします。extern のコールバック（E12）を使うプログラムは、トラップがホストのフレームを跨ぐので E2000 です。ホストが保持するリソース（`extern type` のハンドルなど）は追跡しないので、トラップした呼び出しが確保したハンドルはホストが解放してください。
+
 WASM のホストは、同梱の `createBoundary` でトラップを値として受け取れます。`sites` に side table の `sites` を渡すと、トラップの種類と位置まで返します。
 
 ```sh

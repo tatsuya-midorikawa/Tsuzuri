@@ -43,22 +43,22 @@ try {
   writeFileSync(irPath, ir);
   for (const optimization of ["-O0", "-O3"]) {
     const executable = join(root, `ffi${optimization}`);
-    execute(clang, [optimization, "-Wno-override-module", "-DE12_HOST_MAIN", irPath, hostSource, "-I", root, "-lm", "-o", executable]);
+    execute(clang, [optimization, "-Wno-override-module", "-DNDEBUG", "-DE12_HOST_MAIN", irPath, hostSource, "-I", root, "-lm", "-pthread", "-o", executable]);
     execute(executable, []);
     // A trap inside a callback ends the process abnormally.
     assert.notEqual(execute(executable, ["trap"], false).status, 0);
     const object = join(root, `ffi${optimization}.o`);
     execute(compiler, ["build", fixture, "--emit", "object", optimization, "-o", object]);
     const linked = join(root, `linked${optimization}`);
-    execute(clang, [optimization, "-DE12_HOST_MAIN", object, hostSource, "-I", root, "-lm", "-o", linked]);
+    execute(clang, [optimization, "-DNDEBUG", "-DE12_HOST_MAIN", object, hostSource, "-I", root, "-lm", "-pthread", "-o", linked]);
     execute(linked, []);
     console.log(`ffi extensions: native ${optimization} passed`);
   }
 
   const app = application("app");
   const host = join(root, "host.o");
-  execute(clang, ["-c", hostSource, "-o", host]);
-  const run = (args) => { const result = execute(compiler, ["run", ...args]); assert.equal(result.stdout.trim(), "98"); };
+  execute(clang, ["-DNDEBUG", "-c", hostSource, "-o", host]);
+  const run = (args, pthread = true) => { const result = execute(compiler, ["run", ...args, ...(pthread ? ["-l", "pthread"] : [])]); assert.equal(result.stdout.trim(), "98"); };
   run([app, "--link", host]);
   const library = join(root, "lib");
   mkdirSync(library);
@@ -66,21 +66,21 @@ try {
   run([app, "-L", library, "-l", "e12host"]);
   const packaged = application("packaged");
   cpSync(host, join(packaged, "host.o"));
-  writeFileSync(join(packaged, "Tsuzuri.toml"), '[package]\nname = "ffi-app"\nversion = "0.1.0"\n\n[native]\nlink = ["host.o"]\n');
-  run([packaged]);
+  writeFileSync(join(packaged, "Tsuzuri.toml"), '[package]\nname = "ffi-app"\nversion = "0.1.0"\n\n[native]\nlink = ["host.o"]\nlibraries = ["pthread"]\n');
+  run([packaged], false);
   // build writes an executable that runs without the compiler too.
   const built = join(root, "built");
-  execute(compiler, ["build", app, "-O0", "--link", host, "-o", built]);
+  execute(compiler, ["build", app, "-O0", "--link", host, "-l", "pthread", "-o", built]);
   assert.equal(execute(built, []).stdout.trim(), "98");
   // Debug-info executables take the same inputs (macOS links them in a second step).
   const debuggable = join(root, "debuggable");
-  execute(compiler, ["build", app, "-g", "-O0", "--link", host, "-o", debuggable]);
+  execute(compiler, ["build", app, "-g", "-O0", "--link", host, "-l", "pthread", "-o", debuggable]);
   assert.equal(execute(debuggable, []).stdout.trim(), "98");
   // So does tsuzuri test, which builds an executable of its own.
   const tested = join(root, "tested");
   mkdirSync(tested);
   writeFileSync(join(tested, "Main.tz"), `${readFileSync(join(fixture, "Main.tz"), "utf8")}\ntest "counters" =\n    assert (counters 10 == 59)\n\ntest "callbacks" =\n    assert (callbacks 4 == 39)\n`);
-  assert.match(execute(compiler, ["test", tested, "--link", host]).stdout, /2 passed; 0 failed/);
+  assert.match(execute(compiler, ["test", tested, "--link", host, "-l", "pthread"]).stdout, /2 passed; 0 failed/);
   rejected(["run", app], "E2002");
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");
@@ -97,11 +97,31 @@ try {
   writeFileSync(join(dependent, "lib1", "Util.tz"), "export def one :: i64\nfn one = 1\n");
   writeFileSync(join(dependent, "Main.tz"), "1\n");
   rejected(["check", dependent], "E2000");
+  assert.match(execute(compiler, ["check", dependent], false).stderr, /only the root package and dependencies it marks with native = true/);
+  // The root package can let a dependency link host code: its inputs resolve against the dependency's own root.
+  const trusted = join(root, "trusted");
+  mkdirSync(join(trusted, "lib1"), { recursive: true });
+  writeFileSync(join(trusted, "Tsuzuri.toml"), '[package]\nname = "root-app"\nversion = "0.1.0"\n\n[dependencies]\nlib1 = { path = "lib1", native = true }\n\n[native]\nlibraries = ["pthread"]\n');
+  writeFileSync(join(trusted, "lib1", "Tsuzuri.toml"), '[package]\nname = "lib1"\nversion = "0.1.0"\n\n[native]\nlink = ["host.o"]\n');
+  cpSync(host, join(trusted, "lib1", "host.o"));
+  writeFileSync(join(trusted, "lib1", "Util.tz"), 'extern "e12_add_one" def add_one :: i64 -> i64\n\nexport def bump :: i64 -> i64\nfn bump value = add_one value\n');
+  writeFileSync(join(trusted, "Main.tz"), "Lib1.Util.bump 41\n");
+  assert.equal(execute(compiler, ["run", trusted]).stdout.trim(), "42");
+  // Only the root's own opt-in counts: a dependency of a dependency cannot vouch for itself.
+  const chained = join(root, "chained");
+  mkdirSync(join(chained, "lib1", "lib2"), { recursive: true });
+  writeFileSync(join(chained, "Tsuzuri.toml"), '[package]\nname = "root-app"\nversion = "0.1.0"\n\n[dependencies]\nlib1 = { path = "lib1", native = true }\n');
+  writeFileSync(join(chained, "lib1", "Tsuzuri.toml"), '[package]\nname = "lib1"\nversion = "0.1.0"\n\n[dependencies]\nlib2 = { path = "lib2", native = true }\n');
+  writeFileSync(join(chained, "lib1", "lib2", "Tsuzuri.toml"), '[package]\nname = "lib2"\nversion = "0.1.0"\n\n[native]\nlink = ["x.o"]\n');
+  writeFileSync(join(chained, "lib1", "lib2", "Util.tz"), "export def one :: i64\nfn one = 1\n");
+  writeFileSync(join(chained, "Main.tz"), "1\n");
+  rejected(["check", chained], "E2000");
   console.log("ffi extensions: run passed");
 
   const expectedImports = [
     "env.e12_host_now:function",
     "tsuzuri.e12_add_one:function",
+    "tsuzuri.e12_apply_threaded:function",
     "tsuzuri.e12_apply_twice:function",
     "tsuzuri.e12_counter_add:function",
     "tsuzuri.e12_counter_free:function",
@@ -128,6 +148,7 @@ try {
         e12_counter_add: (handle, amount) => { const value = handles.get(handle) + amount; handles.set(handle, value); return value; },
         e12_counter_free: (handle) => { const value = handles.get(handle); assert.ok(handles.delete(handle)); return value; },
         e12_add_one: (value) => value + 1n,
+        e12_apply_threaded: (index, value) => callback(index)(value),
         e12_apply_twice: (index, value) => callback(index)(callback(index)(value)),
         e12_fold: (index, count) => { let total = 0n; for (let item = 1n; item <= count; item++) total = callback(index)(total, item); return total; },
         e12_run: (index) => callback(index)(),
@@ -139,6 +160,7 @@ try {
     assert.equal(instance.exports.tz_counters(10n), 59n);
     assert.equal(instance.exports.tz_callbacks(4n), 39n);
     assert.equal(instance.exports.tz_callback_shapes(10n), 82n);
+    assert.equal(instance.exports.tz_threaded(3n), 9n);
     assert.equal(instance.exports.tz_misc(2.25), 40n);
     assert.equal(instance.exports.tz_misc(2), 0n);
     assert.equal(instance.exports.tz_pass_through(wide ? 7n : 7), wide ? 7n : 7);

@@ -7,9 +7,9 @@
 | 規模 | L |
 | 依存 | G04, E05, (B06) |
 | 後続 | F13 Phase 2 |
-| 状態 | done（Phase 1。Phase 2・3 は要承認で未着手） |
+| 状態 | done（Phase 1・2・3。Phase 2・3 は「実装と検証（Phase 2・3、実装者の判断）」のとおり。Windows は未検証） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | Phase 1 は不要。要承認: D6（Phase 2: native object の setjmp/longjmp 境界と `--trap-mode return`）, D7（Phase 2: 確保 list と worker の境界）, D9（Phase 3: signal handler によるスタック枯渇の報告） |
+| 承認 | Phase 1 は不要。D6（Phase 2: native object の setjmp/longjmp 境界と `--trap-mode return`）、D7（Phase 2: 確保 list と worker の境界）、D9（Phase 3: signal handler によるスタック枯渇の報告）は 2026-10-02 に「未実装・未検証の項目をすべて実装・検証する。判断は実装者に任せる」との包括承認を受けて実装した（決定の変更は「実装と検証（Phase 2・3）」に記録） |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: native ホストに組み込んだ関数のトラップでホストのプロセス全体が終了し、スタック枯渇は理由なしに異常終了する |
 | 手本にする既存実装 | 同梱 JS ホスト: `src/runtime/wasm-threads.mjs` の `createThreadPool`（失敗後は `closed` で呼び出しを拒否する）。トラップごとに新しい instance を作る形: `tests/tasks.mjs` の `isolated`、`tests/features.mjs` の `fresh`。trap 表との照合: `tests/trap_locations.rs` の `trap_aware_ir_executes_on_native_and_wasm_at_both_levels`。子プロセスの終了状態の報告: `src/driver.rs` の `run`、`src/test_runner.rs` の `execute_test` |
 | 主な影響ファイル | Phase 1: `src/runtime/trap-boundary.mjs`（新規）, `src/driver.rs`（`run`）, `src/test_runner.rs`（`execute_test`）, `tests/trap_locations.rs`, `tests/trap_boundary.mjs`（新規）, `tests/fixtures/trap_boundary/Main.tz`（新規）, `tests/fixtures/trap_boundary_host/Main.tz`（新規）, `README.md`, `docs/language.md`, `docs/architecture.md`, `_docs/tools/debugging.md`, `_docs/guides/webassembly.md`, `_docs/guides/native-interop.md`, `_docs/feature-status.md`, `_features/README.md`。Phase 2・3（要承認）: `src/main.rs`, `src/driver.rs`, `src/llvm.rs`（`emit_with_trap_info`）, `src/llvm_traps.rs`（`instrument`）, `src/llvm_abi.rs`, `src/trap.rs`, `src/runtime/trap.c`（新規）, `src/runtime/task.c`, `tests/trap_boundary_runtime.c`（新規） |
@@ -609,5 +609,101 @@ F12 と同じ作業ツリーで実装した（着手時の HEAD は `30b2d1d`、
 
 ### 残作業
 
-- Phase 2（native object の境界、`tsuzuri_try_<name>`、確保 list）と Phase 3（signal handler）。いずれも D6・D7・D9 の承認が前提。
-- native の `tsuzuri run`／`test` の報告は終了 signal からの推定で、実行ファイル自身は理由を出さない。ホストへ組み込んだ native object のトラップはプロセスを終了させるまま。
+- Phase 2・3 は後の節「実装と検証（2026-10-02、Phase 2・3）」で実装した。
+
+## 実装と検証（2026-10-02、Phase 2・3）
+
+「未実装・未検証の項目をすべて実装・検証する。判断が要るときは最良と考える選択をしてよい」との指示を受けて、Phase 2（D6・D7）と Phase 3（D9）を実装した。
+着手時の作業ツリーは HEAD `68cc7b2`（ブランチ `phase6-4`。F12・E14 Phase 1・E12 のコミット）に、この変更だけを足したもの。コミットは作っていない。
+
+### 実装（Phase 2・3）
+
+- Phase 2（native object の境界）:
+  - `src/runtime/trap.c`（新規）: スレッドごとの frame（`setjmp` はここだけ）、`tsuzuri_boundary_run`（status 0・1・2）、`tsuzuri_trap_raise`（frame があれば `longjmp`、なければ戻る）、
+    境界ごとの双方向 list へ載せる確保（`tsuzuri_tracked_malloc`・`realloc`・`free`。header は 32 bytes で 16 byte 整列を保つ）、`Task.parallel` の item 用の
+    `tsuzuri_boundary_item`・`tsuzuri_boundary_owner`・`tsuzuri_boundary_resume`。トラップなら list 全体を `free`、成功なら残りを list から外す（結果はホストの所有物）。
+  - `src/runtime/task.c`: `-DTZ_TRAP_BOUNDARY` のとき、group に投入 thread の境界・最小 index のトラップ・その記録を持たせ、item を `tsuzuri_boundary_item` の中で実行する。
+    `struct tz_task_group` の初期化を指示付き初期化子に変えた（field が増えて `-Wmissing-field-initializers` が出たため。トラップなしの build の生成コードは同じ）。
+  - `src/llvm_traps.rs`（`instrument` の `raise`）、`src/llvm.rs`（`emit_trap_return`、`heap_native_tracked`、`header_with`、`Instrumentation::trap_return`）、`src/llvm_abi.rs`（`try_wrappers`、`try_prototype`）:
+    `tz.trap.report` の先頭で `tsuzuri_trap_raise(site, kind)`（kind は site から求める）、export ごとの `tsuzuri_try_<name>` と thunk、header の typedef と prototype。
+  - `src/driver.rs`（`BuildOptions::trap_return`、`validate`、`trap_runtime` の合成、`-DTZ_TRAP_BOUNDARY`・`-pthread`、extern コールバックとの併用の `E2000`）、
+    `src/main.rs`（`--trap-mode return`、HELP、`--trap-info` の含意）。
+- Phase 3（native 実行ファイルのスタック枯渇）:
+  - `src/runtime/stack.c`（新規）: constructor が main thread へ `sigaltstack` と SIGSEGV／SIGBUS の handler を置く。`task.c` の worker は `-DTZ_STACK_GUARD` のとき `tsuzuri_stack_thread()` で自分の stack を登録する。
+    handler は fault のアドレスが登録した stack の下端の窓（下 128 KiB から上 64 KiB）にあれば、stderr へ `trap: stack overflow` を書いて `abort()` し、窓の外なら既定の動作へ戻す。
+  - `src/llvm_abi.rs`・`src/llvm.rs`（`has_recursion`）、`src/driver.rs`（`stack_runtime`、`STACK_OVERFLOW_REPORT`、`run` の報告）。
+- テスト: `tests/trap_boundary_runtime.c`（新規、C の単体）、`tests/trap_return_host.c`・`tests/trap_return.mjs`・`tests/fixtures/trap_return/Main.tz`（新規）、`tests/stack_overflow.mjs`（新規）、
+  `tests/trap_locations.rs` の `run_reports_stack_overflow`（`run_reports_probable_stack_exhaustion` の置き換え）、`src/main.rs` の `parses_trap_mode_return`、`src/driver.rs` の
+  `validate_limits_trap_mode_return_to_native_object_llvm_and_header_output`・`stack_runtime_writes_the_report_the_driver_looks_for`、`src/llvm.rs` の `finds_the_programs_whose_stack_can_overflow`。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/tools/debugging.md`、`_docs/tools/command-line.md`、`_docs/guides/native-interop.md`、`_docs/feature-status.md`、`README.md`、`_features/README.md`、`_features/GUIDE.md`。
+
+### 決定事項への追記（Phase 2・3 でチケットから外れた判断）
+
+1. **既存テストの期待値を変えた。** `tests/trap_locations.rs` の `run_reports_probable_stack_exhaustion`（再帰のプログラムの `run` が「the stack was probably exhausted」を報告）は、Phase 3 で
+   実行ファイル自身が報告するようになったため、`run_reports_stack_overflow`（`trap: stack overflow` と「stack overflow: the stack was exhausted by deep recursion」、「probably」を含まない）に置き換えた。
+   `--link` したホストの NULL 参照のような、窓の外の SIGSEGV は従来の「probably」の報告のまま（`tests/stack_overflow.mjs` が検査する）。
+2. **D9 の `abort()` を実装し、途中で `SA_RESETHAND` と handler 内の `sigaction` を試して外した。** handler の中で既定の動作へ戻して fault を再実行する形は、複数 thread が同時に溢れると macOS で
+   400 回に 10 回ほど SIGILL で終わった（カーネルが signal frame を作れず `SIGILL` で殺すと推定。handler の中の `sigaction` との競合）。`SA_RESETHAND` は競合を消したが、
+   別の thread の既定動作の再実行が先に process を殺し、報告が失われる実行が出た（Linux glibc で 100 回に 4 回）。`abort()` は各 thread が `write` の後で abort するので報告が失われず、
+   600 回すべてで SIGABRT（134）だった。窓の外の fault だけが `sigaction` で既定へ戻す（同時に起きる確率は低い）。
+3. **スタック枯渇の報告は、再帰するプログラムの実行ファイルにだけ足す（D9 からの逸脱）。** 実行ファイルへの C runtime 1 個の追加は、キャッシュなし（`--no-cache`）のビルドを遅くする。
+   最初の形（別の clang 呼び出しで compile）は約 150 ms、同じ clang 呼び出しの `-x c` にすると約 35〜40 ms の増加だった（hello の IR だけの `clang -x ir` の約 75 ms に対して、
+   17 回の中央値、2 組: `-x c` を足すと 110〜116 ms、別の clang 呼び出しと link だと 221〜231 ms）。
+   そこで再帰しない（`llvm::has_recursion` が `@tz.fn.`・`@tz.specialized.`・`@tz.apply.` の直接呼び出しに閉路を見つけない）プログラムには足さない。スタックを使い切れないからである。
+   最終の release での測定（`tsuzuri build --no-cache`、15 回の中央値、2 組）: 再帰しない hello は変わらず（`-O0` 252 ms と 254 ms → 248 ms と 249 ms、`-O3` 642 ms と 643 ms → 617 ms と 610 ms）、
+   再帰する `deep` は 20〜60 ms 増える（中央値は `-O0` 237 ms → 294 ms、`-O3` 626 ms → 657 ms と 660 ms → 703 ms。最小値では 16〜36 ms の増加。もう一組の `-O0` は変更前の中央値が外れ値で膨らんでいて比較にならない）。
+   末尾再帰は LLVM がループにするので数えない。閉包などを介した間接の再帰は数えず、その場合は従来の推定の報告のまま。
+   `-g` でなければ同じ clang 呼び出しの `-x c` で、`-g` なら DWARF を持たない別 object でコンパイルする（macOS の debug 実行ファイルの `Main.tz` の CU を保つため。確認済み）。
+4. **`tsuzuri test` の実行ファイルは報告を持たない（D9 からの逸脱）。** テストは 1 件ずつ別プロセスで stderr を捨てて実行し、報告は誰にも見えない。終了 signal から推定する従来の理由（「probably exhausted」）のまま。
+5. **`Err` と trap の優先（D7 の細部）。** 先に `Err` を返した item があっても、動いた item のトラップを返す。トラップした task は closure の環境と結果の置き場が未定義で、`Task.parallel_results` の
+   後始末（`started` の旗が偽の item は task の環境を drop する）がそれを読むと二重 free になる。最初の実装は `Err` を優先して、`Err` の index が小さく trap の item が先に動いたとき
+   `mfm_free` で落ちた（macOS で IR をリンクした host を 100 回走らせると 21 回。C の単体テストでは、同じ形で item の確保が残り `live != 0` になる実行が `-O3` で 60 回中 8 回・`-O0` で 60 回中 7 回。修正後は 0 回）。
+   トラップした item の確保を item ごとの list で解放する案は、この二重 free を防げないので採らなかった。
+6. **Linux の main thread の stack の下端は `pthread_getattr_np` を使わず `getrlimit(RLIMIT_STACK)` と `AT_EXECFN` から求める。** musl の `pthread_getattr_np` は main thread で「いま mapping されている幅」だけを返し、
+   実際の限界（rlimit）の手前を指した（Alpine で main thread のスタック枯渇が報告されなかった）。worker は `pthread_getattr_np`。rlimit が無制限なら窓を持たず、従来の動作になる。
+7. `tsuzuri_trap_info` の typedef は header と runtime の C の両方にあるので、`TSUZURI_TRAP_INFO_DEFINED` の include guard で重複を避ける（ホストが `trap.c` と header を同時に include できる）。
+   `TZ_TRAP_API`・`TZ_TRAP_MALLOC`・`TZ_TRAP_FREE` は、C の単体テストが計数付きの確保と強い定義に差し替えるための上書き点。
+8. D7 の「C runtime 内部の確保も list に載せる」は、実測で不要だった: `src/runtime/*.c`（`task.c`・`cpu.c`・`io.c`）は `malloc`・`realloc`・`free` を呼ばず、確保の経路は
+   `@tz.alloc`・`@tz.realloc`・`@tz.free`（`heap-native.ll`）だけである。`tsuzuri_alloc`・`tsuzuri_free`（ホストへ公開する export）も同じ経路を通る。
+9. D6 の「ホストのフレームを跨ぐ `longjmp` はない」を、`extern` のコールバックを使うプログラムを `E2000` にして守った（コールバックがホストの関数から呼ばれる間にトラップすると跨ぐため）。
+   コールバックでない extern（ホスト関数の呼び出し）は許す。ホストが境界の中で `tsuzuri_try_*` を呼ぶと status 2 を返す（`tests/trap_return.mjs` が検査）。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLVM 21、zig 0.16.0、rustc 1.98.1、Node v20.17.0、Docker Desktop の linux/arm64）
+
+- C の単体: `tests/trap_boundary_runtime.c`（25,672 check。単発・成功とトラップの 10,000 回の交互・入れ子の status 2・境界の外の raise・realloc・group の最小 index・
+  `parallel_results` の `Err`／trap・入れ子の group・6 つのホスト thread の同時実行）が、`-O0`・`-O3`、並列度 0・1・2・4・32 で成功。ASan＋UBSan（並列度 0・1・4）と TSan（0・2）でも指摘なし。
+  `-O3` の並列度 0 を 150 回、`-O0` の並列度 2 を 100 回繰り返して失敗 0。
+- E2E（native object）: `node tests/trap_return.mjs target/release/tsuzuri` が成功。header の形、拒否（wasm・exe・不明な値・重複・`run`・コールバック）、
+  `-O0`・`-O3` の IR（決定的、`@malloc` なし）、出荷する object（埋め込み runtime）・計数付きの強い定義に差し替えた object・IR とホストの `trap.c`・`task.c` のリンクの 3 通りで、
+  トラップの site が `.trap.json` の種類・行と一致し、各呼び出しの後に `live == 0`、結果の buffer はホストが `tsuzuri_free`。交互 3,000 回。6 つの形を 60 回ずつ（360 回）繰り返して失敗 0。
+- E2E（スタック枯渇）: `node tests/stack_overflow.mjs target/release/tsuzuri` が 16 case 成功（main thread・worker の SIGABRT と `^trap: stack overflow\n`、再帰が浅いプログラムの正常終了、
+  `run` の E2005、`-g` の実行ファイル、再帰しないプログラムと object に `sigaltstack`・`sigaction` がないこと、`--link` したホストの NULL 参照の SIGSEGV と「probably」）。
+  main thread を 80 回・worker を 80 回、報告が 1 行以上で SIGABRT。
+- Linux（Docker の linux/arm64。zig で cross-compile、IR は Homebrew LLVM 21 で Linux 向けにコンパイル、driver は `TSUZURI_CLANG` の wrapper で通した）: glibc（Ubuntu 22.04）と musl（Alpine）の両方で、
+  スタック枯渇の main thread・worker が 134 と報告（200 回中 0 件の不一致）、C の単体 25,672 check、`trap_return` の host（計数付き、IR のリンク）を 80 回成功。
+  x86_64 の 4 つの Linux target（gnu・musl × x86_64・aarch64）は `-Wall -Wextra -Werror` で compile が通ることだけを確かめた（実行は未検証）。
+- 出力の不変: `--trap-mode` なしの出力は変えていない。`tests/fixtures/*`・`examples/*`・`benchmarks/{control,computations,tasks}` の `--emit llvm`・`--emit header` の 192 組が、変更前のコンパイラの出力と一致した
+  （差分スクリプト `/tmp/tz-e12/differential.sh`）。
+- 全体: `cargo test --locked` は 554 passed・0 failed（Phase 2・3 の前は 548）。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。
+  `scripts/check-runtime-includes.sh`（23 files。`trap.c`・`stack.c` を追加）、`git diff --check` が成功。
+- E2E の gate は 31 項目の script（Phase 1 の 29 に `trap_return`・`stack_overflow` を足した）がすべて成功した（31 PASS・0 FAIL）。
+  `node scripts/check-docs.mjs` が全体で成功した（83 pages・747 links・141 checked examples・246 native runs（O0/O3）・9 test projects）。
+  Windows は `cargo check --all-targets --target x86_64-pc-windows-msvc` と `aarch64-pc-windows-msvc` が警告なしで成功した（型検査だけで、実行は未検証）。
+- 性能: `--trap-mode` なしの object・実行ファイルのコードは変えていない（`task.c` の初期化子の書き換えだけ）。ビルド時間は、再帰しないプログラムで変わらず、再帰するプログラムで 20〜60 ms 増える（決定 3 の測定）。
+  `--trap-mode return` の実行時の費用（境界の出入り、確保の追跡）は計測していないので、速度は主張しない。
+
+### 残作業（Phase 2・3 の後）
+
+- Windows: `--trap-mode return` の COFF object は E2002、スタック枯渇の報告は G10 の後（vectored exception handler）。実行は未検証。
+- x86_64 Linux の実行、macOS x86_64、BSD は未検証（compile だけ確認）。
+- `tsuzuri test` の実行ファイルの報告、閉包を介した間接再帰の報告、`extern` のコールバックと `--trap-mode return` の併用（ホストのフレームを跨ぐため）は未対応。
+- ホストが保持する資源（`extern type` のハンドル）は追跡しない。トラップした呼び出しで確保したハンドルはホストが解放する。
+
+## レビュー指摘の修正（2026-10-02）
+
+- 通常 object と境界付き object が同じ weak な `tsuzuri_alloc/free` を共有するため、確保領域の前の追跡 header を廃止した。返す領域は通常の `malloc` と互換で、境界ごとの list と拡張する hash 表に別の追跡情報を持つ。成功時は情報だけを捨て、トラップ時は領域も解放する。追跡情報の確保失敗と `realloc` の失敗・拡張を C 単体テストへ追加した。
+- POSIX native の allocator とスケジューラは weak な `tsuzuri_trap_hooks` を共有し、`trap.c` の constructor が境界関数を設定する。通常版のスケジューラが先にリンクされても worker の境界が働く。フックがなければ従来の実行経路を使う。未定義の弱い関数を検出する案は macOS の link で拒否されたため採らない。
+- `tests/trap_return.mjs` は `-O0`・`-O3` と両リンク順、計数付き・なしを検証する。通常 object の配列結果の解放、並列処理、ホストが公開 allocator から返す所有 buffer の成功とトラップ後の `live == 0` を含む。
+- 非スタック枯渇の signal handler は既定へ戻した後に `raise` で同じ thread へ再送する。`tests/stack_overflow.mjs` の不正アクセスを再帰のあるプログラムに変え、実際に handler を持つことを検査し、ホストの `raise(SIGSEGV)`・`raise(SIGBUS)` も追加した（20 case）。
+- レビュー修正後の POSIX native 拡張 ABI の既定 IR は共通フック表を含むため変わる。上の「出力の不変」の記録はこの修正前の結果で、公開シグネチャ、WASM と Windows の既定 allocator は変更していない。速度の改善は主張しない。
+- 修正後の検証: Rust 全 554 件と GUIDE §3.1 の深さ・特殊化上限テスト、fmt/clippy、境界 E2E（混在リンクを含む）、スタック 20 case、FFI・Task・host imports・primitives の native/WASM `-O0`・`-O3`、cache、文書全 83 page が成功。境界 C 単体は 26,897 check で、ASan/UBSan/TSan を含む。Linux arm64 は glibc/musl それぞれ 30 case（両リンク順、計数付き所有結果、追跡表、シグナル、スタック枯渇、NDEBUG、`-O0`・`-O3`）が成功。Windows x86_64/aarch64 MSVC の全 target クロスチェックは警告なしで成功したが、Windows の実行は未検証。

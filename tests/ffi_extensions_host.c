@@ -2,7 +2,9 @@
 // Without E12_HOST_MAIN it only implements the fixture's externs, so it can be
 // linked into an executable with --link, -l or the manifest's [native] section.
 // With E12_HOST_MAIN it also checks every export against hand-computed values.
+#undef NDEBUG
 #include <assert.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -53,6 +55,27 @@ int64_t e12_run(int64_t (*callback)(void)) { return callback(); }
 
 int64_t e12_visit(int64_t (*callback)(void *), void *handle) { return callback(handle); }
 
+// The callback runs on a thread the host started and joins before it returns.
+struct threaded_call {
+    int64_t (*callback)(int64_t);
+    int64_t value;
+    int64_t result;
+};
+
+static void *threaded_main(void *argument) {
+    struct threaded_call *call = argument;
+    call->result = call->callback(call->value);
+    return NULL;
+}
+
+int64_t e12_apply_threaded(int64_t (*callback)(int64_t), int64_t value) {
+    struct threaded_call call = { callback, value, 0 };
+    pthread_t thread;
+    assert(pthread_create(&thread, NULL, threaded_main, &call) == 0);
+    assert(pthread_join(thread, NULL) == 0);
+    return call.result;
+}
+
 #ifdef E12_HOST_MAIN
 #include "tz-ffi.h"
 
@@ -90,6 +113,18 @@ static void clean(void) {
     assert(atomic_load(&live_counters) == 0);
 }
 
+// Exports and callbacks keep no state, so several host threads may call them at once, and a
+// callback may run on a thread other than the one that called the extern.
+static void *hammer(void *argument) {
+    int64_t seed = (int64_t)(intptr_t)argument;
+    for (int64_t round = 0; round < 200; round++) {
+        assert(tz_counters(seed + round) == 3 * (seed + round) + 29);
+        assert(tz_callbacks(round) == 9 * round + 3);
+        assert(tz_threaded(seed + round) == 3 * (seed + round));
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     // A trap inside a callback ends the process abnormally.
     if (argc > 1) {
@@ -104,6 +139,12 @@ int main(int argc, char **argv) {
     clean();
     assert(tz_misc(2.25) == 40);
     assert(tz_misc(2.0) == 0);
+    clean();
+    assert(tz_threaded(5) == 15);
+    clean();
+    pthread_t threads[8];
+    for (intptr_t index = 0; index < 8; index++) assert(pthread_create(&threads[index], NULL, hammer, (void *)(index * 1000)) == 0);
+    for (int index = 0; index < 8; index++) assert(pthread_join(threads[index], NULL) == 0);
     clean();
     void *handle = e12_counter_new(7);
     assert(tz_pass_through(handle) == handle);

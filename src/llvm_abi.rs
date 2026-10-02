@@ -270,8 +270,195 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
     }
 }
 
+/// The result type and `(type, name)` parameters of the `define` of `symbol` in `ir`.
+fn defined_signature(ir: &str, symbol: &str) -> Option<(String, Vec<(String, String)>)> {
+    ir.lines().find_map(|line| {
+        if !line.starts_with("define ") {
+            return None;
+        }
+        let call = super::traps::callable(line, true).filter(|call| call.name == symbol)?;
+        let result = line["define ".len()..line.find('@')?].trim().to_owned();
+        let parameters = line[call.open + 1..call.close]
+            .split(',')
+            .map(str::trim)
+            .filter(|parameter| !parameter.is_empty())
+            .map(|parameter| {
+                let mut words = parameter.split_whitespace();
+                let ty = words.next().unwrap_or_default().to_owned();
+                (ty, words.next_back().unwrap_or_default().to_owned())
+            })
+            .collect();
+        Some((result, parameters))
+    })
+}
+
+/// `tsuzuri_try_<name>` for every export (E14 Phase 2): the same arguments as `tz_<name>` behind a
+/// trap boundary, with the result in `*result` (or the export's own `out`) and status 0, 1 or 2.
+pub(super) fn try_wrappers(ir: &str, module: &CheckedModule) -> String {
+    let mut output = String::from("\ndeclare i32 @tsuzuri_boundary_run(ptr, ptr, ptr)\n");
+    for function in module.functions.iter().filter(|function| function.exported) {
+        let name = &function.name;
+        let Some((result, parameters)) = defined_signature(ir, &format!("@tz_{name}")) else {
+            continue;
+        };
+        let slot = result != "void";
+        let mut fields = vec!["ptr"];
+        fields.extend(parameters.iter().map(|(ty, _)| ty.as_str()));
+        let frame = format!("{{ {} }}", fields.join(", "));
+        let mut signature = vec!["ptr %trap".to_owned()];
+        if slot {
+            signature.push("ptr %result".to_owned());
+        }
+        signature.extend(parameters.iter().map(|(ty, value)| format!("{ty} {value}")));
+        let _ = write!(
+            output,
+            "define i32 @tsuzuri_try_{name}({}) nounwind {{\nentry:\n  %frame = alloca {frame}, align 16\n  %slot0 = getelementptr inbounds {frame}, ptr %frame, i32 0, i32 0\n  store ptr {}, ptr %slot0\n",
+            signature.join(", "),
+            if slot { "%result" } else { "null" }
+        );
+        for (index, (ty, value)) in parameters.iter().enumerate() {
+            let slot = index + 1;
+            let _ = writeln!(
+                output,
+                "  %slot{slot} = getelementptr inbounds {frame}, ptr %frame, i32 0, i32 {slot}\n  store {ty} {value}, ptr %slot{slot}"
+            );
+        }
+        let _ = write!(
+            output,
+            "  %status = call i32 @tsuzuri_boundary_run(ptr @tz.try.{name}, ptr %frame, ptr %trap)\n  ret i32 %status\n}}\ndefine internal void @tz.try.{name}(ptr %frame) nounwind {{\nentry:\n  %slot0 = getelementptr inbounds {frame}, ptr %frame, i32 0, i32 0\n  %destination = load ptr, ptr %slot0\n"
+        );
+        let mut arguments = Vec::new();
+        for (index, (ty, _)) in parameters.iter().enumerate() {
+            let slot = index + 1;
+            let _ = writeln!(
+                output,
+                "  %slot{slot} = getelementptr inbounds {frame}, ptr %frame, i32 0, i32 {slot}\n  %value{slot} = load {ty}, ptr %slot{slot}"
+            );
+            arguments.push(format!("{ty} %value{slot}"));
+        }
+        if slot {
+            let _ = writeln!(
+                output,
+                "  %result = call {result} @tz_{name}({})\n  store {result} %result, ptr %destination",
+                arguments.join(", ")
+            );
+        } else {
+            let _ = writeln!(output, "  call void @tz_{name}({})", arguments.join(", "));
+        }
+        output.push_str("  ret void\n}\n");
+    }
+    output
+}
+
+/// The C prototype of `tsuzuri_try_<name>`: the trap record, then the result slot, then the arguments.
+pub(super) fn try_prototype(function: &CheckedFunction, module: &CheckedModule) -> String {
+    let result = &function.signature.result;
+    let parameters = c_parameters(function, module);
+    let mut list = vec!["tsuzuri_trap_info *trap".to_owned()];
+    if !out_result(result) && *result != Type::Unit {
+        list.push(format!("{} *result", c_type(result)));
+    }
+    if parameters != "void" {
+        list.push(parameters);
+    }
+    format!(
+        "int32_t tsuzuri_try_{}({});",
+        function.name,
+        list.join(", ")
+    )
+}
+
+/// Whether a function of the program can call itself again through direct calls. Only such a program
+/// can exhaust its stack, so only its native executable carries the overflow report (E14 Phase 3).
+/// Closures and other indirect calls are not followed, and runtime helpers are not considered.
+pub(super) fn has_recursion(ir: &str) -> bool {
+    use std::collections::HashMap;
+    let tracked = |name: &str| {
+        ["@tz.fn.", "@tz.specialized.", "@tz.apply."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    };
+    let mut ids = HashMap::new();
+    for line in ir.lines().filter(|line| line.starts_with("define ")) {
+        if let Some(call) = super::traps::callable(line, true).filter(|call| tracked(call.name)) {
+            let next = ids.len();
+            ids.entry(call.name).or_insert(next);
+        }
+    }
+    let mut edges = vec![Vec::new(); ids.len()];
+    let mut current = None;
+    for line in ir.lines() {
+        if line.starts_with("define ") {
+            current =
+                super::traps::callable(line, true).and_then(|call| ids.get(call.name).copied());
+        } else if line == "}" {
+            current = None;
+        } else if let Some(from) = current
+            && line.contains("call ")
+            && let Some(to) =
+                super::traps::callable(line, false).and_then(|call| ids.get(call.name))
+        {
+            edges[from].push(*to);
+        }
+    }
+    // 0: unvisited, 1: on the path being walked, 2: finished.
+    let mut state = vec![0u8; edges.len()];
+    for start in 0..edges.len() {
+        if state[start] != 0 {
+            continue;
+        }
+        state[start] = 1;
+        let mut path = vec![(start, 0usize)];
+        while let Some(&(node, next)) = path.last() {
+            let Some(&to) = edges[node].get(next) else {
+                state[node] = 2;
+                path.pop();
+                continue;
+            };
+            path.last_mut().unwrap().1 += 1;
+            match state[to] {
+                1 => return true,
+                0 => {
+                    state[to] = 1;
+                    path.push((to, 0));
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn allocator() -> &'static str {
     "\ndefine weak ptr @tsuzuri_alloc(i64 %size) nounwind {\nentry:\n  %valid = icmp sge i64 %size, 0\n  br i1 %valid, label %allocate, label %bad\nbad:\n  call void @llvm.trap()\n  unreachable\nallocate:\n  %empty = icmp eq i64 %size, 0\n  %bytes = select i1 %empty, i64 1, i64 %size\n  %value = call ptr @tz.alloc(i64 %bytes)\n  ret ptr %value\n}\ndefine weak void @tsuzuri_free(ptr %value) nounwind {\nentry:\n  call void @tz.free(ptr %value)\n  ret void\n}\n"
+}
+
+pub(super) fn native_allocator() -> String {
+    let mut output = allocator()
+        .replace("call ptr @tz.alloc(", "call ptr @tz.abi.alloc(")
+        .replace("call void @tz.free(", "call void @tz.abi.free(");
+    output.push_str(
+                "\n@tsuzuri_trap_hooks = weak hidden global [5 x ptr] zeroinitializer, align 8\n\
+                 define internal ptr @tz.abi.alloc(i64 %size) nounwind {\nentry:\n\
+                     %slot = getelementptr inbounds [5 x ptr], ptr @tsuzuri_trap_hooks, i32 0, i32 3\n\
+                     %allocate = load ptr, ptr %slot\n\
+                     %tracked = icmp ne ptr %allocate, null\n\
+                     br i1 %tracked, label %boundary, label %ordinary\n\
+                 boundary:\n  %tracked_value = call ptr %allocate(i64 %size)\n\
+                     %failed = icmp eq ptr %tracked_value, null\n\
+                     br i1 %failed, label %fail, label %done\n\
+                 fail:\n  call void @llvm.trap()\n  unreachable\n\
+                 done:\n  ret ptr %tracked_value\n\
+                 ordinary:\n  %value = call ptr @tz.alloc(i64 %size)\n  ret ptr %value\n}\n\
+                 define internal void @tz.abi.free(ptr %value) nounwind {\nentry:\n\
+                     %slot = getelementptr inbounds [5 x ptr], ptr @tsuzuri_trap_hooks, i32 0, i32 4\n\
+                     %release = load ptr, ptr %slot\n\
+                     %tracked = icmp ne ptr %release, null\n\
+                     br i1 %tracked, label %boundary, label %ordinary\n\
+                 boundary:\n  call void %release(ptr %value)\n  ret void\n\
+                 ordinary:\n  call void @tz.free(ptr %value)\n  ret void\n}\n",
+        );
+    output
 }
 
 /// What a C-ABI wrapper is for.

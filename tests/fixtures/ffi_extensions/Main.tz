@@ -9,6 +9,7 @@ extern "e12_apply_twice" def apply_twice :: (i64 -> i64) -> i64 -> i64
 extern "e12_fold" def fold_host :: (i64 -> i64 -> i64) -> i64 -> i64
 extern "e12_run" def run_host :: (unit -> i64) -> i64
 extern "e12_visit" def visit :: (ref Counter -> i64) -> ref Counter -> i64
+extern "e12_apply_threaded" def apply_threaded :: (i64 -> i64) -> i64 -> i64
 
 private def triple :: i64 -> i64
 fn triple value = value * 3
@@ -48,6 +49,9 @@ fn callback_shapes start =
 
 export def callback_trap :: i64 -> i64
 fn callback_trap value = apply_twice boom value
+
+export def threaded :: i64 -> i64
+fn threaded value = apply_threaded triple value
 
 export def misc :: f64 -> i64
 fn misc value = if c_sqrt value == 1.5 then host_now () else 0

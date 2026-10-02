@@ -128,8 +128,21 @@ tests/wasm_threads.mjsはO0/O3のstack sentinel、workerのstack溢れのトラ�
 src/runtime/trap-boundary.mjsは単一スレッドのWASM向けの同梱JSホストで、コンパイラは参照せず、生成物も変えません。createBoundary(module, { imports, sites })のcallがexport呼び出し1回を境界にします。
 WebAssembly.RuntimeErrorは{ reason: "trap", site }とside tableの位置、V8のRangeError（SpiderMonkeyはInternalError）によるstack枯渇は{ reason: "stack" }で返します。ホストimportの例外は同じobjectのまま再送出します。
 トラップは巻き戻さないため、例外の出たinstanceは分類のためtsuzuri_trap_siteを一度呼ぶ以外は二度と使わず、次のcallで同じmoduleから作り直します。threadsのmoduleは拒否し、単位は既存のcreateThreadPoolのpoolです。
-nativeではdriver::probable_stack_exhaustionがtsuzuri run／testの子プロセスの終了signal（SIGSEGV、SIGBUS）から推定してE2005／テスト失敗の理由を付けます。実行ファイル自身のsignal handlerとnative objectの境界（setjmpによる隔離）はE14のPhase 2・3で、要承認のため未実装です。
-tests/trap_boundary.mjsがO0/O3の17 caseを、tests/trap_locations.rsのrun_reports_probable_stack_exhaustionがnativeのO0/O3とJSON出力を検証します。
+nativeではdriver::probable_stack_exhaustionがtsuzuri run／testの子プロセスの終了signal（SIGSEGV、SIGBUS）から推定してE2005／テスト失敗の理由を付けます。tests/trap_boundary.mjsがO0/O3の17 caseを検証します。
+
+native objectの境界（E14 Phase 2）は--trap-mode returnで有効にし、native（object、llvm、header）だけで受け付けて--trap-infoを含みます。各export tz_nameにint32_t tsuzuri_try_name(tsuzuri_trap_info *trap, 結果, 引数...)（status 0成功、1トラップ、2入れ子）を足し、header（typedefはTSUZURI_TRAP_INFO_DEFINEDで重複を避けます）とIRのthunkを出します。
+setjmpはsrc/runtime/trap.cの中だけにあり、IRに持ち込みません。llvm_traps::instrumentがtz.trap.reportの先頭へtsuzuri_trap_raise(site, kind)を足し、境界のthread-local frameがあればlongjmpで戻り、なければ従来どおり報告してllvm.trapで終わります。
+heap-native.llのmalloc、realloc、freeはtsuzuri_tracked_*へ置き換えます。返すpointerは通常のmallocと同じで、追跡情報は境界ごとの別の双方向listと拡張するhash表に置き、解放するpointerを表で探します。追跡情報の確保が失敗したらpointerを解放してNULLを返し、reallocの失敗では元の領域を保ちます。トラップなら全blockを一括でfree（drop、lockの解放はしません。Tsuzuriのコードは巻き戻らず、runtimeはcallbackの前にlockを手放します）、成功なら追跡情報だけを捨て、ホストが所有する結果を残します。
+POSIX nativeの通常object・task.c・trap.cはweakなtsuzuri_trap_hooks（owner、item、resume、allocate、releaseの5つの関数pointer）を共有します。trap.cのconstructorが表を設定し、境界runtimeがなければ全slotはNULLです。公開tsuzuri_alloc/freeもこの表を使うので、通常objectと境界付きobjectのどちらを先にリンクしても確保と解放が一致し、ホストのexternが返す所有bufferも境界へ登録できます。未定義の弱い関数への依存はありません（macOSのlinkerはこれを拒否するため）。
+task.cは表のownerがあればgroupを投入したthreadの境界を取得し、worker（と投入したthread）のitemを表のitem（tsuzuri_boundary_item）の中で実行します。itemのトラップはgroupへ最小indexで記録し、以後のitemを始めず、全itemの終了後に投入したthreadが表のresume（tsuzuri_boundary_resume）で境界へ戻ります。トラップしたtaskの状態は未定義なので、先にErrを返したitemがあってもトラップを返します（B06のdropがその状態を読むため）。
+C runtime（task.c、cpu.c、io.c）は動的確保を持たず、確保の経路は@tz.alloc／@tz.realloc／@tz.freeだけです。Windows COFFの埋め込みruntimeはE2002、extern callback（E12）との併用はE2000です。
+tests/trap_boundary_runtime.c（C。ASan・UBSan・TSan、並列度1〜32）、tests/trap_return.mjs（native object・IR、O0/O3、確保のlive == 0）、src/main.rsとsrc/driver.rsの単体テストが検証します。
+
+native実行ファイルのスタック枯渇（E14 Phase 3）はsrc/runtime/stack.cが報告します。constructorがmain threadにsigaltstackとSIGSEGV／SIGBUSのhandlerを置き、task.cのworkerは-DTZ_STACK_GUARDでtsuzuri_stack_thread()を呼んで自分のstackを登録します。
+faultアドレスが登録したstackの下端の窓にあればstderrへtrap: stack overflowを書いてabort()し、窓の外なら既定の動作へ戻して再送します（同時に溢れた別threadがあっても報告は失われません）。macOSはpthread_get_stackaddr_np、Linuxのmain threadはgetrlimit(RLIMIT_STACK)とAT_EXECFNの末尾（muslのpthread_getattr_npはmain threadで現在のmapping幅しか返さないため）、workerはpthread_getattr_npで窓を決めます。
+runtimeはnative実行ファイルでだけ、llvm::has_recursionが関数の直接呼び出しに閉路を見つけたプログラムにだけ足します（再帰しなければ溢れず、ビルドに20〜60msを足さないためです）。-gでなければ同じclang呼び出しの-x cで、-gならDWARFを持たない別objectでコンパイルします。
+driver::runはstderrのtrap: stack overflowを見てE2005にstack overflowと書き、見つからなければprobable_stack_exhaustionの推定へ戻ります。tsuzuri testの実行ファイルはstderrを捨てて子プロセスの終了signalだけを見るので、この報告を持ちません。
+tests/stack_overflow.mjs（macOS、O0/O3。main thread、worker、-g、再帰しないプログラムと目的のobjectにhandlerがないこと、スタック外のfault）、tests/trap_locations.rsのrun_reports_stack_overflow、llvm.rsのfinds_the_programs_whose_stack_can_overflowが検証します。
 
 nativeのCPU dispatchは同梱Arrayソースを確認したemit_native_buildでだけ有効にします。対象は単相化したArray.sumのref [i64] -> i64です。
 通常のLLVM API/--emit llvmは従来の独立IRを維持し、driverのexe/objectはtsuzuri_cpu_sum_i64出現時だけcpu.cをtask runtimeと同じC連結経路へ追加します。
@@ -996,6 +1009,7 @@ buffer 入力は pointer/length から直接 descriptor を構築し、shared ar
 string は i16 のコード単位、utf8string は i8 のバイトです。UTF-8 検証は既存の失敗を値で返す decoder を使い、入力を確保・変換しません。
 record は専用 ABI struct と内部型の間で再帰的に変換し、bool/狭い整数は32-bit。結果は out pointer に書き、buffer の所有権だけをホストへ渡します。
 allocator は拡張 ABI 使用時だけ weak な tsuzuri_alloc/free を公開し、native の malloc/free または既存 WASM heap を使います。
+POSIX native の allocator は共通のフック表から境界 runtime を検出し、確保と解放を追跡経路へ送ります。これは拡張 ABI を使う既定 native IR の変更ですが、公開シグネチャは変わりません。WASM と Windows の既定 allocator は従来のままです。
 128-bit 値、ソフトウェア浮動小数点、任意の所有入力、借用返却、関数環境の ABI は公開しません。
 import は利用者の extern だけから生じ、link 名・ハンドル・コールバックを使わないプログラムの IR・header・WASM import は変わりません。
 リンク入力は native の実行ファイルだけで有効です。wasm-ld の `--export-table` は callback の wrapper があるときだけ渡し、捕捉のある関数値は ABI に渡しません。

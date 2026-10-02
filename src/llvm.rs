@@ -306,7 +306,7 @@ pub fn emit_with_trap_info(
             ..Instrumentation::default()
         },
     )?;
-    traps::instrument(ir, module, marks.unwrap(), sources, options.wasm)
+    traps::instrument(ir, module, marks.unwrap(), sources, options.wasm, false)
 }
 
 pub fn emit_with_debug_info(
@@ -337,10 +337,11 @@ pub fn emit_with_debug_info(
             cpu_dispatch: false,
             wasm_threads: false,
             memory64: false,
+            trap_return: false,
         },
     )?;
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, options.wasm)
+        traps::instrument(ir, module, marks, sources, options.wasm, false)
     } else {
         Ok(EmitOutput {
             ir,
@@ -378,16 +379,68 @@ pub fn emit_native_build(
             cpu_dispatch: trusted_array,
             wasm_threads: false,
             memory64: false,
+            trap_return: false,
         },
     )?;
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, false)
+        traps::instrument(ir, module, marks, sources, false, false)
     } else {
         Ok(EmitOutput {
             ir,
             trap_sites: Vec::new(),
         })
     }
+}
+
+/// Emits a native build whose exports also come as `tsuzuri_try_<name>`: a trap inside one returns
+/// to the host with a status instead of ending the process (E14 Phase 2).
+pub fn emit_trap_return(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    cpu_dispatch: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    if options.wasm {
+        return Err(Diagnostic::new(
+            "E2000",
+            "--trap-mode return is native-only",
+            Span::default(),
+        ));
+    }
+    let trusted_array = cpu_dispatch
+        && sources.iter().any(|source| {
+            source.path == "std/Array.tz" && source.text == include_str!("../std/Array.tz")
+        });
+    let (ir, marks) = emit_program(
+        module,
+        options.entry,
+        false,
+        None,
+        options.debug_output,
+        Instrumentation {
+            traps: true,
+            debug: debug.map(|optimized| (sources, optimized)),
+            cpu_dispatch: trusted_array,
+            trap_return: true,
+            ..Instrumentation::default()
+        },
+    )?;
+    let mut output = traps::instrument(ir, module, marks.unwrap(), sources, false, true)?;
+    let wrappers = host_abi::try_wrappers(&output.ir, module);
+    output.ir.push_str(&wrappers);
+    Ok(output)
+}
+
+/// `heap-native.ll` over the tracked allocator of the trap runtime.
+fn heap_native_tracked() -> &'static str {
+    static HEAP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HEAP.get_or_init(|| {
+        include_str!("runtime/heap-native.ll")
+            .replace("@malloc", "@tsuzuri_tracked_malloc")
+            .replace("@realloc", "@tsuzuri_tracked_realloc")
+            .replace("@free", "@tsuzuri_tracked_free")
+    })
 }
 
 /// Emits a WASM build with shared-memory threads, 64-bit memory, or stack checks.
@@ -414,6 +467,7 @@ pub(crate) fn emit_wasm_build(
             cpu_dispatch: false,
             wasm_threads: threads,
             memory64,
+            trap_return: false,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -423,7 +477,7 @@ pub(crate) fn emit_wasm_build(
         ir
     };
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, true)
+        traps::instrument(ir, module, marks, sources, true, false)
     } else {
         Ok(EmitOutput {
             ir,
@@ -492,6 +546,8 @@ struct Instrumentation<'a> {
     cpu_dispatch: bool,
     wasm_threads: bool,
     memory64: bool,
+    /// Native `--trap-mode return`: a tracked heap, so a trap can free everything a call allocated.
+    trap_return: bool,
 }
 
 fn emit_program(
@@ -801,7 +857,11 @@ fn emit_program(
         output.push_str(include_str!("runtime/recursive.ll"));
     }
     if uses_host_abi(module) || output.contains("@tsuzuri_io_") {
-        output.push_str(host_abi::allocator());
+        if wasm || cfg!(windows) || instrumentation.trap_return {
+            output.push_str(host_abi::allocator());
+        } else {
+            output.push_str(&host_abi::native_allocator());
+        }
     }
     if output.contains("@tsuzuri_cpu_sum_i64(") {
         output.push_str("declare i64 @tsuzuri_cpu_sum_i64(ptr, i64)\n");
@@ -875,6 +935,8 @@ fn emit_program(
                 include_str!("runtime/heap-wasm64.ll")
             } else if wasm {
                 include_str!("runtime/heap-wasm.ll")
+            } else if instrumentation.trap_return {
+                heap_native_tracked()
             } else {
                 include_str!("runtime/heap-native.ll")
             });
@@ -927,6 +989,16 @@ fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
 }
 
 pub fn header(module: &CheckedModule) -> String {
+    header_with(module, false)
+}
+
+/// Whether a function of the program calls itself again through direct calls, so its stack can overflow.
+pub fn has_recursion(ir: &str) -> bool {
+    host_abi::has_recursion(ir)
+}
+
+/// The C header; with `trap_return` also the `tsuzuri_try_<name>` prototypes of `--trap-mode return`.
+pub fn header_with(module: &CheckedModule, trap_return: bool) -> String {
     let mut output = String::from(
         "/* Generated by Tsuzuri. bool uses int32_t. Narrow integers use normalized 32-bit ABI values. */\n\
          #pragma once\n\
@@ -935,6 +1007,15 @@ pub fn header(module: &CheckedModule) -> String {
          extern \"C\" {\n\
          #endif\n\n",
     );
+    if trap_return {
+        output.push_str(
+            "/* The trap of a tsuzuri_try_<name> call: `site` is an id of <output>.trap.json, `kind` a trap kind. */\n\
+             #ifndef TSUZURI_TRAP_INFO_DEFINED\n\
+             #define TSUZURI_TRAP_INFO_DEFINED\n\
+             typedef struct {\n    uint32_t site;\n    uint32_t kind;\n} tsuzuri_trap_info;\n\
+             #endif\n\n",
+        );
+    }
     output.push_str(&host_abi::handle_typedefs(module));
     output.push_str(&host_abi::header_types(module));
     if io_entry(module) {
@@ -956,6 +1037,9 @@ pub fn header(module: &CheckedModule) -> String {
             },
             function.name
         );
+        if trap_return {
+            let _ = writeln!(output, "{}", host_abi::try_prototype(function, module));
+        }
     }
     output.push_str("\n#ifdef __cplusplus\n}\n#endif\n");
     output
@@ -5424,6 +5508,35 @@ mod tests {
             .next()
             .unwrap();
         assert!(!body.contains("call i64 @tz.fn.Main.f"));
+    }
+
+    #[test]
+    fn finds_the_programs_whose_stack_can_overflow() {
+        let recursive =
+            |source: &str| has_recursion(&emit(&checked(source), Entry::Console).unwrap());
+        assert!(recursive(
+            "fn rec depth(n: i64) -> i64 { if n == 0 { 0 } else { depth(n - 1) * 3 + n } }
+             export fn main() -> i64 { depth(10) }"
+        ));
+        assert!(recursive(
+            "fn rec even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }
+             fn rec odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }
+             export fn main() -> i64 { if even(10) { 1 } else { 0 } }"
+        ));
+        // A tail call becomes a loop, and a program without calls to itself has nothing to exhaust.
+        assert!(!recursive(
+            "fn rec sum(n: i64, acc: i64) -> i64 { if n == 0 { acc } else { sum(n - 1, acc + n) } }
+             export fn main() -> i64 { sum(100, 0) }"
+        ));
+        assert!(!recursive("export fn main() -> i64 { 6 * 7 }"));
+        // Only the program's own functions count, whatever the text around them looks like.
+        assert!(!has_recursion(
+            "define internal i64 @tz_soft_format(i64 %x) {\nentry:\n  %v = call i64 @tz_soft_format(i64 %x)\n  ret i64 %v\n}\n"
+        ));
+        assert!(has_recursion(
+            "define internal i64 @tz.fn.A(i64 %x) {\nentry:\n  %v = call i64 @tz.apply.B(i64 %x)\n  ret i64 %v\n}\n\
+             define internal i64 @tz.apply.B(i64 %x) {\nentry:\n  %v = tail call i64 @tz.fn.A(i64 %x)\n  ret i64 %v\n}\n"
+        ));
     }
 
     #[test]

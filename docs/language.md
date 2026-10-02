@@ -246,7 +246,7 @@ wrapperは名前のない`export def`と同じ規則で呼べます（再入可�
 
 #### リンク入力
 
-`build`・`run`・`test`の`--link PATH`（object・static library）、`-l NAME`（system library。`lib`接頭辞と拡張子なし）、`-L DIR`（`-l`の探索先）は分離形だけで、繰り返せます（合計256個）。root packageの`Tsuzuri.toml`の`[native]`（`link`・`libraries`・`search`。各々文字列の1行配列、pathはpackage rootからの相対）も同じ入力を指定し、CLIより前に連結します。依存packageの`[native]`はE2000です。
+`build`・`run`・`test`の`--link PATH`（object・static library）、`-l NAME`（system library。`lib`接頭辞と拡張子なし）、`-L DIR`（`-l`の探索先）は分離形だけで、繰り返せます（合計256個）。root packageの`Tsuzuri.toml`の`[native]`（`link`・`libraries`・`search`。各々文字列の1行配列、pathはpackage rootからの相対）も同じ入力を指定し、CLIより前に連結します。依存packageの`[native]`は、rootの`[dependencies]`が`lib1 = { path = "lib1", native = true }`で許可した直接の依存だけが持て、許可のない依存と、依存の依存が自分で書いた許可はE2000です。許可した依存のpathはその依存のrootからの相対で、rootの入力の後に連結します。
 入力はnativeの実行ファイルを作るbuild・run・testでだけ有効で、wasm32・wasm64・`--emit`がexe以外・`check`・`fmt`で指定するとE2000です。manifestの`[native]`はこれらでは無視します。pathが読めなければE2001、出力pathが入力と同じならE2003、同じ入力の重複と不正な`-l`名はE2000です。
 入力は既存のclang引数（runtime・`-pthread`を含む）の後に`-L`・path・`-l`の順で足します。静的libraryは、それを参照するobjectより後に`--link`で指定してください。build cacheは入力の内容を知らないので、入力がある間は使いません。
 
@@ -883,8 +883,13 @@ WASM のホストは、同梱の `src/runtime/trap-boundary.mjs` の `createBoun
 古い instance の pointer・`memory.buffer` の view・未解放の所有結果は無効になるので、所有結果は次の `call` の前に複製して `tsuzuri_free` します。
 threads の module は拒否します。単位は `createThreadPool` の pool で、worker の失敗後は pool を再利用せず閉じます。
 
-native の `tsuzuri run`／`tsuzuri test` は、子プロセスがトラップの報告なしに SIGSEGV／SIGBUS で終わったとき、スタック枯渇の可能性が高いことを `E2005`／テスト失敗の理由で報告します。
-これは親プロセスの推定で、実行ファイル自身の signal handler ではありません。native の object やライブラリのトラップは従来どおりプロセスを終了します。公開 ABI は変わりません。
+native の `tsuzuri run`／`tsuzuri test` は、子プロセスがトラップの報告なしに SIGSEGV／SIGBUS で終わったとき、スタック枯渇の可能性が高いことを `E2005`／テスト失敗の理由で報告します。これは親プロセスの推定です。
+
+再帰する（関数が直接の呼び出しで自分自身に戻る）プログラムの native 実行ファイル（`build --emit exe`、`run`）は、自分でスタック枯渇を報告します。起動時に main thread と `Task.parallel` の worker へ `sigaltstack` と SIGSEGV／SIGBUS の handler を置き、fault のアドレスがスタックの下端の窓にあれば stderr に `trap: stack overflow` を書いて `abort()` します（窓の外の fault は既定の動作です）。`run` はこの行から `E2005`（`stack overflow: the stack was exhausted by deep recursion`）を報告します。末尾再帰（LLVM がループにするもの）と再帰しないプログラム、object・`--emit llvm`、`tsuzuri test` の実行ファイル、Windows は handler を持たず、推定の報告のままです。
+
+native の object を呼ぶホストは `--trap-mode return`（`build` の native `--emit object`・`llvm`・`header` だけ。`--trap-info` を含む）で、各 export `tz_<name>` に `int32_t tsuzuri_try_<name>(tsuzuri_trap_info *trap, <結果の置き場>, <引数>)` を足せます。戻り値は 0（成功）、1（トラップ。`trap->site` が `<output>.trap.json` の id、`trap->kind` が `TrapKind` の値）、2（同じ thread で別の呼び出しの中。何も実行しない）です。トラップしたとき、その呼び出しが確保した heap は解放され（drop は走らせません。Tsuzuri のコードは巻き戻らず、runtime は callback の前に lock を手放します）、ホストが所有する成功時の結果だけが残ります。`Task.parallel` の worker のトラップは、グループを投入した呼び出しの status 1 になり、動いた item のうち最も小さい index のものを返します（トラップした task の状態は未定義なので、先に `Err` を返した item があってもトラップが優先します）。extern のコールバックを使うプログラムとの併用は `E2000`、Windows の埋め込み runtime の object は `E2002` です。公開 ABI（`tz_<name>`）のシグネチャは変わりません。
+
+POSIX native では通常 object と境界付き object を同じホストへリンクでき、どちらを先に置いても公開 allocator とタスク境界が一致します。確保領域は通常の `malloc` と互換で、成功時の結果を `tsuzuri_free` で解放できます。ホストの extern が境界内で `tsuzuri_alloc` により確保した所有結果も、トラップ時の解放対象です。レビュー修正により、拡張 ABI を使う `--trap-mode` なしの POSIX native IR にも共通フック表を追加しています。公開シグネチャと WASM・Windows の既定 allocator は変更していません。
 
 ビルド失敗時は既存成果物と表を保持し、公開時に成果物の rename が失敗したら表を復元します。
 二つのファイルを跨ぐ OS レベルの原子的トランザクションではないため、公開途中のプロセスクラッシュへの一括 rollback は保証しません。

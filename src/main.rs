@@ -55,6 +55,9 @@ Build options:
     --debug-output         Enable WASM Debug output imports (native always writes)
     --trap-info            Report trap locations and emit an output.trap.json table
                                                  Enabled by default for run; disabled by default for build
+    --trap-mode return     Native object, llvm or header output: each export also comes as
+                         tsuzuri_try_<name>, which returns a status and a trap record instead
+                         of ending the process (implies --trap-info for object and llvm)
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -158,6 +161,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_indices = Vec::new();
     let mut debug_output = false;
     let mut trap_info = false;
+    let mut trap_return = false;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -243,6 +247,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("trap-info specified more than once".into());
                     }
                     trap_info = true;
+                    continue;
+                }
+                Some("--trap-mode") => {
+                    if trap_return {
+                        return Err("trap mode specified more than once".into());
+                    }
+                    match next_value(arguments, &mut position, "--trap-mode")?.to_str() {
+                        Some("return") => trap_return = true,
+                        _ => return Err("trap mode must be 'return'".into()),
+                    }
                     continue;
                 }
                 Some("-g" | "--debug-info") => {
@@ -415,6 +429,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if trap_info && !matches!(action, Action::Build | Action::Run) {
         return Err("--trap-info is only valid with build or run".into());
     }
+    if trap_return && action != Action::Build {
+        return Err("--trap-mode is only valid with build".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -460,13 +477,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         optimization: optimization.unwrap_or(if action == Action::Test { 0 } else { 3 }),
         cpu: cpu.unwrap_or(Cpu::Generic),
         debug_output,
-        trap_info: trap_info || action == Action::Run,
+        trap_info: trap_info
+            || action == Action::Run
+            || (trap_return && emit != Some(Emit::Header)),
         debug_info,
         wasm_simd,
         wasm_threads,
         wasm_max_memory,
         wasm_stack_size,
         cache: !no_cache,
+        trap_return,
     };
     options.validate().map_err(|error| error.message)?;
     links.check_shape().map_err(|error| error.message)?;
@@ -1705,5 +1725,66 @@ mod tests {
         // Without link inputs every one of these stays valid.
         assert!(parse(&["build", "Main.tz", "--target", "wasm32"]).is_ok());
         assert!(parse(&["build", "Main.tz", "--emit", "object"]).is_ok());
+    }
+
+    #[test]
+    fn parses_trap_mode_return() {
+        let object = parse(&[
+            "build",
+            "Main.tz",
+            "--emit",
+            "object",
+            "--trap-mode",
+            "return",
+        ])
+        .unwrap();
+        assert!(object.options.trap_return && object.options.trap_info);
+        let header = parse(&[
+            "build",
+            "Main.tz",
+            "--emit",
+            "header",
+            "--trap-mode",
+            "return",
+        ])
+        .unwrap();
+        assert!(header.options.trap_return && !header.options.trap_info);
+        let plain = parse(&["build", "Main.tz", "--emit", "object"]).unwrap();
+        assert!(!plain.options.trap_return && !plain.options.trap_info);
+        for (values, message) in [
+            (
+                vec!["build", "Main.tz", "--trap-mode"],
+                "--trap-mode needs a value",
+            ),
+            (
+                vec!["build", "Main.tz", "--trap-mode", "abort"],
+                "trap mode must be 'return'",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--trap-mode",
+                    "return",
+                    "--trap-mode",
+                    "return",
+                ],
+                "trap mode specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--trap-mode", "return"],
+                "--trap-mode is only valid with build",
+            ),
+            (
+                vec!["check", "Main.tz", "--trap-mode", "return"],
+                "--trap-mode is only valid with build",
+            ),
+            (
+                vec!["test", "Main.tz", "--trap-mode", "return"],
+                "--trap-mode is only valid with build",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
     }
 }

@@ -1534,6 +1534,42 @@ SHA-256 は変更前が `722dab3ccfeccc85c256f746301f4a6d766b13c460b01e57d71bb54
 測定したのは arm64 macOS だけで、x86_64 Linux は未計測です（推定値は書きません）。
 速度の合否閾値は CI に追加していません。
 
+### 境界検査の Phase 2 の形（F12）
+
+F12 の Phase 2 に挙げた形（可変の上限のループの版分け、先行する検査、`while` の帰納変数）を実装するかどうかを、実測で決めました。
+`benchmarks/bounds_shapes/Main.tz` の 4 関数は、同じ合計を取る 4 つの形です。
+
+| 関数 | 形 | F12 Phase 1 の証明 |
+| --- | --- | --- |
+| `sum_all` | `for i in 0 .. values.length - 1` | あり（R1。検査が消える） |
+| `sum_first` | `for i in 0 .. n - 1`（`n` は引数。長さとの関係はコードに現れない） | なし |
+| `sum_checked` | `if n <= values.length then for i in 0 .. n - 1` | なし（`n` と長さの比較は添字の変数ではない） |
+| `sum_while` | `let mut i = 0` と `while i < values.length do (…; i = i + 1)` | なし（`while` は規則にない） |
+
+```sh
+./target/release/tsuzuri build benchmarks/bounds_shapes --emit header -o m.h
+./target/release/tsuzuri build benchmarks/bounds_shapes --emit object -O3 -o m3.o
+./target/release/tsuzuri build benchmarks/bounds_shapes --emit object -O0 -o m0.o
+clang -O2 -I. benchmarks/bounds_shapes/bench.c m3.o -o bench3 && ./bench3
+clang -O2 -I. benchmarks/bounds_shapes/bench.c m0.o -o bench0 && ./bench0
+```
+
+配列は 1,048,576 個の `i64`（値は `i & 1023`）で、各行は 200 回の呼び出しの合計を 7 回測った最小値です（Apple M1 Max、Apple clang 21、`-O3` は既定、チェックサムは 4 つとも 750885273600）。
+
+| 形 | `-O3`（ms） | `sum_all` に対する比 | `-O0`（ms） | `sum_all` に対する比 |
+| --- | --- | --- | --- | --- |
+| `sum_all`（証明あり） | 21.601 | 1.000 | 378.243 | 1.000 |
+| `sum_first`（可変の上限） | 21.831 | 1.011 | 402.614 | 1.064 |
+| `sum_checked`（先行する検査） | 22.197 | 1.028 | 401.955 | 1.063 |
+| `sum_while`（`while`） | 21.767 | 1.008 | 486.269 | 1.286 |
+
+`-O3` では、検査を省く証明のない 3 つの形も `sum_all` と 3% 以内で、4 つともベクトル化されます（`clang -O3 -S -emit-llvm` の出力で 4 つとも `<N x i64>` を含みます）。
+LLVM の `IndVarSimplify` が、ループを抜ける検査（行き先がトラップ）をループの前の一回の比較へ移すためです。検査を省くための版分けは、同じことを
+コードを倍にして行うだけなので、**実装しません**（F12 チケットの「コードサイズの増加を計測してから決める」への答えです）。`while` の帰納変数と `assert` による
+支配も、`-O3` では同じ結果になる形なので実装しません。`-O0`（`tsuzuri` の既定ではありません）では `while` が約 29% 遅く、これを縮められるのは
+`while` の規則だけです。いまの規則では、増分が本体の最後の文であることまで確かめる流れ依存の証明が要り、`-O0` だけの利益に見合わないと判断しました。
+測定は arm64 macOS の 1 台だけで、x86_64 Linux は未計測です（推定値は書きません）。
+
 ## 現実的な次の指標
 
 目標の達成には、代表的なアプリケーション・カーネル、コンパイル時間、成果物サイズ、

@@ -48,7 +48,7 @@ fn emitted_guards_record_source_sites_without_success_path_reports() {
 
 #[cfg(unix)]
 #[test]
-fn run_reports_probable_stack_exhaustion() {
+fn run_reports_stack_overflow() {
     use std::{
         fs,
         process::Command,
@@ -80,10 +80,16 @@ fn run_reports_probable_stack_exhaustion() {
             assert_eq!(result.status.code(), Some(1));
             let stderr = String::from_utf8(result.stderr).unwrap();
             assert!(stderr.contains("E2005"), "{stderr}");
-            assert!(
-                stderr.contains("the stack was probably exhausted by deep recursion"),
-                "{stderr}"
-            );
+            // The executable reports the overflow itself (E14 Phase 3), where the driver used to infer it
+            // from the signal alone; --json carries that report in the diagnostic.
+            assert!(stderr.contains("trap: stack overflow"), "{stderr}");
+            if !json {
+                assert!(
+                    stderr.contains("stack overflow: the stack was exhausted by deep recursion"),
+                    "{stderr}"
+                );
+            }
+            assert!(!stderr.contains("probably"), "{stderr}");
             assert!(!stderr.contains("may have trapped"), "{stderr}");
         }
     }

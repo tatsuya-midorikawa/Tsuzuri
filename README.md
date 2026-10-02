@@ -760,6 +760,8 @@ node tests/tasks.mjs target/release/tsuzuri
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/trap_boundary.mjs target/release/tsuzuri
+node tests/trap_return.mjs target/release/tsuzuri # native --trap-mode return, the C trap runtime (asan/ubsan/tsan builds); Linux and macOS
+node tests/stack_overflow.mjs target/release/tsuzuri # native stack overflow report; Linux and macOS
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri # memory64 requires Node.js 24 or newer
 node tests/gpu.mjs target/release/tsuzuri # CPU/reference validation; TSUZURI_WEBGPU=1 enables actual WebGPU tests
 node tests/cache.mjs target/release/tsuzuri

@@ -213,6 +213,8 @@ pub struct BuildOptions {
     /// `None` selects [`DEFAULT_WASM_STACK_SIZE`].
     pub wasm_stack_size: Option<u64>,
     pub cache: bool,
+    /// `--trap-mode return`: native exports also come as `tsuzuri_try_<name>` (E14 Phase 2).
+    pub trap_return: bool,
 }
 
 impl Default for BuildOptions {
@@ -230,6 +232,7 @@ impl Default for BuildOptions {
             wasm_max_memory: None,
             wasm_stack_size: None,
             cache: true,
+            trap_return: false,
         }
     }
 }
@@ -280,6 +283,15 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--debug-output is not valid for header output",
+            ));
+        }
+        if self.trap_return
+            && (self.target != Target::Native
+                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--trap-mode return is only valid for native object, llvm or header output",
             ));
         }
         if self.optimization > 3 {
@@ -460,7 +472,8 @@ pub struct Project {
     pub root: usize,
     /// The root package's `[wasm]` section.
     pub wasm: crate::package::WasmSettings,
-    /// The root package's `[native]` link inputs, resolved against its root.
+    /// The `[native]` link inputs of the root package and of the dependencies it marks `native = true`,
+    /// each resolved against its package root.
     pub native: LinkInputs,
 }
 
@@ -910,31 +923,44 @@ impl Project {
             .iter()
             .find(|package| package.id.root == directory)
             .map_or_else(Default::default, |package| package.manifest.wasm);
+        // A dependency links host code only where the root package names it with `native = true`.
+        let trusted: BTreeSet<PathBuf> = packages
+            .iter()
+            .find(|package| package.id.root == directory)
+            .into_iter()
+            .flat_map(|root| root.manifest.dependencies.values())
+            .filter(|dependency| dependency.native)
+            .filter_map(|dependency| fs::canonicalize(directory.join(&dependency.path)).ok())
+            .collect();
         let mut native = LinkInputs::default();
-        for package in &packages {
+        // The root's inputs come first, then each trusted dependency's in package order.
+        let mut ordered: Vec<_> = packages.iter().collect();
+        ordered.sort_by_key(|package| package.id.root != directory);
+        for package in ordered {
             let Some((inputs, span)) = &package.manifest.native else {
                 continue;
             };
-            if package.id.root != directory {
+            if package.id.root != directory && !trusted.contains(&package.id.root) {
                 return Err(SourceError::new(
                     &package.id.root.join("Tsuzuri.toml"),
                     Diagnostic::new(
                         "E2000",
-                        "only the root package may declare [native] link settings; move them to the application manifest",
+                        "only the root package and dependencies it marks with native = true may declare [native] link settings; move them to the application manifest or mark the dependency",
                         *span,
                     ),
                 ));
             }
             // The canonical root is verbatim (`\\?\`) on Windows; the linker should see `C:\...`.
-            let base = crate::cache::real_path(directory).unwrap_or_else(|_| directory.to_owned());
+            let base = crate::cache::real_path(&package.id.root)
+                .unwrap_or_else(|_| package.id.root.clone());
             let resolve = |paths: &[PathBuf]| -> Vec<PathBuf> {
                 paths.iter().map(|path| base.join(path)).collect()
             };
-            native = LinkInputs {
+            native = native.followed_by(&LinkInputs {
                 paths: resolve(&inputs.paths),
                 libraries: inputs.libraries.clone(),
                 search: resolve(&inputs.search),
-            };
+            });
         }
         let manifests = packages
             .into_iter()
@@ -1397,7 +1423,7 @@ fn build_complete(
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     let mut text = if options.emit == Emit::Header {
-        llvm::header(module)
+        llvm::header_with(module, options.trap_return)
     } else if options.emit == Emit::Wgsl {
         let exports: Vec<_> = module
             .functions
@@ -1423,7 +1449,25 @@ fn build_complete(
             wasm: options.target.is_wasm(),
             debug_output: options.debug_output,
         };
-        if options.target == Target::Native
+        if options.trap_return {
+            let output = project.with_trap_sources(|sources| {
+                llvm::emit_trap_return(
+                    module,
+                    emission,
+                    sources,
+                    options.debug_info.then_some(options.optimization != 0),
+                    options.emit == Emit::Object,
+                )
+            })?;
+            if output.ir.contains("@tz.callback.") {
+                return Err(driver_error(
+                    "E2000",
+                    "--trap-mode return cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+                ));
+            }
+            trap_sites = output.trap_sites;
+            output.ir
+        } else if options.target == Target::Native
             && matches!(options.emit, Emit::Executable | Emit::Object)
         {
             let output = project.with_trap_sources(|sources| {
@@ -1495,8 +1539,26 @@ fn build_complete(
     let cpu_runtime =
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
-    let native_runtime =
-        task_runtime || cpu_runtime || (options.target == Target::Native && io_runtime);
+    // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
+    let trap_runtime = options.trap_return
+        && options.emit == Emit::Object
+        && [
+            "@tsuzuri_trap_raise(",
+            "@tsuzuri_boundary_run(",
+            "@tsuzuri_tracked_",
+        ]
+        .iter()
+        .any(|symbol| text.contains(symbol));
+    let native_runtime = task_runtime
+        || cpu_runtime
+        || trap_runtime
+        || (options.target == Target::Native && io_runtime);
+    // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
+    // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
+    let stack_runtime = options.target == Target::Native
+        && options.emit == Emit::Executable
+        && cfg!(unix)
+        && llvm::has_recursion(&text);
     let debug_import = options.target.is_wasm() && text.contains("@tsuzuri_debug_write(");
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && text.contains("@tz.callback.");
@@ -1628,7 +1690,12 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}",
+                if trap_runtime {
+                    include_str!("runtime/trap.c")
+                } else {
+                    ""
+                },
                 if task_runtime {
                     task_runtime_source()
                 } else {
@@ -1652,8 +1719,14 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
-            if task_runtime && !cfg!(windows) {
+            if (task_runtime || trap_runtime) && !cfg!(windows) {
                 runtime.arg("-pthread");
+            }
+            if trap_runtime {
+                runtime.arg("-DTZ_TRAP_BOUNDARY");
+            }
+            if stack_runtime {
+                runtime.arg("-DTZ_STACK_GUARD");
             }
             if options.debug_info {
                 runtime.arg("-g");
@@ -1690,6 +1763,29 @@ fn build_complete(
                 );
                 ir = combined;
             }
+        }
+        let stack_source = temporary.path.join("stack.c");
+        let stack_object = temporary.path.join("stack.o");
+        if stack_runtime {
+            fs::write(&stack_source, include_str!("runtime/stack.c"))
+                .map_err(|error| io_error("write stack runtime", &stack_source, error))?;
+        }
+        if stack_runtime && options.debug_info {
+            // Its own object, without debug information: the guard is not source a debugger should show.
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args(["-std=c11", "-c", "-O1"])
+                .args(native_compile_args(cfg!(windows), env::consts::ARCH))
+                .arg(&stack_source)
+                .arg("-o")
+                .arg(&stack_object);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut runtime,
+                    "native runtime requires Clang and the platform C/OS SDK headers",
+                )?,
+            );
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         let threads_object = temporary.path.join("threads.o");
@@ -1774,6 +1870,15 @@ fn build_complete(
                 clang.arg("-pthread");
             }
         }
+        if stack_runtime && dwarf_sidecar.is_none() {
+            if options.debug_info {
+                clang.args(["-x", "none"]).arg(&stack_object);
+            } else {
+                // The same Clang run compiles the guard, which costs far less than a process of its own.
+                clang.args(["-x", "c", "-std=c11"]).arg(&stack_source);
+            }
+            clang.arg("-pthread");
+        }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang);
         }
@@ -1792,6 +1897,9 @@ fn build_complete(
                 if task_runtime {
                     linker.arg("-pthread");
                 }
+            }
+            if stack_runtime {
+                linker.arg(&stack_object).arg("-pthread");
             }
             links.add_to(&mut linker);
             linker.arg("-o").arg(&artifact);
@@ -2001,6 +2109,9 @@ pub fn trap_sidecar_path(output: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// What a native executable writes to stderr when its stack overflows (`src/runtime/stack.c`).
+pub(crate) const STACK_OVERFLOW_REPORT: &str = "trap: stack overflow";
+
 /// Whether a child died of an invalid memory access, which unbounded recursion causes without a trap report.
 #[cfg(unix)]
 pub(crate) fn probable_stack_exhaustion(status: &std::process::ExitStatus) -> bool {
@@ -2118,7 +2229,11 @@ pub fn run_with_diagnostics(
                 .map(|site| site.span)
         });
         let message = if !json || stderr.trim().is_empty() {
-            if site.is_none() && probable_stack_exhaustion(&status) {
+            if site.is_none() && stderr.contains(STACK_OVERFLOW_REPORT) {
+                format!(
+                    "program terminated with {status}; stack overflow: the stack was exhausted by deep recursion; reduce the recursion depth or use a loop"
+                )
+            } else if site.is_none() && probable_stack_exhaustion(&status) {
                 format!(
                     "program terminated with {status}; the stack was probably exhausted by deep recursion; reduce the recursion depth or use a loop"
                 )
@@ -2689,6 +2804,68 @@ mod tests {
                 .code,
             "E2000"
         );
+    }
+
+    #[test]
+    fn validate_limits_trap_mode_return_to_native_object_llvm_and_header_output() {
+        let options = |target, emit| BuildOptions {
+            target,
+            emit,
+            trap_return: true,
+            trap_info: emit != Emit::Header,
+            ..BuildOptions::default()
+        };
+        for emit in [Emit::Object, Emit::Llvm, Emit::Header] {
+            options(Target::Native, emit).validate().unwrap();
+        }
+        let message = "--trap-mode return is only valid for native object, llvm or header output";
+        for (target, emit) in [
+            (Target::Native, Emit::Executable),
+            (Target::Native, Emit::Wgsl),
+            (Target::Wasm32, Emit::Object),
+            (Target::Wasm32, Emit::Llvm),
+            (Target::Wasm32, Emit::Wasm),
+            (Target::Wasm64, Emit::Object),
+        ] {
+            let error = options(target, emit).validate().unwrap_err();
+            assert_eq!(error.code, "E2000", "{target:?} {emit:?}");
+            assert!(
+                error.message == message || emit == Emit::Wgsl,
+                "{target:?} {emit:?}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn link_inputs_reach_the_msvc_linker_as_libpath_and_lib_names() {
+        let links = LinkInputs {
+            paths: vec![PathBuf::from("host.obj")],
+            libraries: vec!["sqlite3".into()],
+            search: vec![PathBuf::from("libs")],
+        };
+        for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+            let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+            clang.args(["-###", &format!("--target={target}"), "-o", "a.exe"]);
+            links.add_to(&mut clang);
+            // A dry run shows the linker line without needing the Windows SDK; without Clang there is nothing to check.
+            let Ok(output) = clang.output() else { return };
+            let log = String::from_utf8_lossy(&output.stderr);
+            if !log.contains("link.exe") && !log.contains("lld-link") {
+                return;
+            }
+            assert!(log.contains("-libpath:libs"), "{target}: {log}");
+            assert!(log.contains("\"sqlite3.lib\""), "{target}: {log}");
+            assert!(log.contains("host.obj"), "{target}: {log}");
+        }
+    }
+
+    #[test]
+    fn stack_runtime_writes_the_report_the_driver_looks_for() {
+        let source = include_str!("runtime/stack.c");
+        assert!(source.contains(&format!("\"{STACK_OVERFLOW_REPORT}\\n\"")));
+        assert!(source.contains("tsuzuri_stack_thread"));
+        assert!(include_str!("runtime/task.c").contains("tsuzuri_stack_thread();"));
     }
 
     #[test]

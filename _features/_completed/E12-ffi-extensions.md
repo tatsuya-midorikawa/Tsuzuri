@@ -555,8 +555,8 @@ fn pass_through counter = counter
 ## 対象外
 
 - `unsafe`・生ポインター型、C++ ABI、可変長引数関数、externref、共有 library の出力（E13）、bitcode・LTO（PR08）。
-- 捕捉のある関数値のコールバック、i128・f16・タプル・固定長配列（A16）の ABI、`Option<H>` と NULL の対応、依存 package の `[native]`、
-  `extern type` への `Drop` instance（B07 の拡張）。
+- 捕捉のある関数値のコールバック、i128・f16・タプル・固定長配列（A16）の ABI、`Option<H>` と NULL の対応、
+  `extern type` への `Drop` instance（B07 の拡張）。依存 package の `[native]` は root の `native = true` による opt-in として後から実装した（「追加した拡張と確認」）。
 - Phase 2（設計方針）: 捕捉のある関数値は `{ 関数 pointer, void *context }` として呼び出し中だけ貸す（非 escaping。保存しないことはホストとの契約）。
   ABI 型の追加は E05 の buffer・out 引数の型の上に足す。Windows でのリンク入力の検証は G10 と行う。
 
@@ -732,6 +732,28 @@ i128・f16・タプル・固定長配列の ABI、生ポインター）は実装
 
 ### 残作業
 
-- 捕捉のある関数値のコールバック（Phase 2 の設計方針）、依存 package の `[native]`、`Option<H>` と NULL の対応、`extern type` への `Drop`（B07 の拡張）は未実装。
-- Windows でのリンク入力（`-l` の名前、`.lib` の探索）と、ホストの別スレッドからのコールバックは検証していない（D10 のとおり同じスレッドの同期呼び出しと再入だけ）。
+- 捕捉のある関数値のコールバック（Phase 2 の設計方針）、`Option<H>` と NULL の対応、`extern type` への `Drop`（B07 の拡張）、i128・f16・タプル・固定長配列の ABI は未実装。
+  依存 package の `[native]` は、次の「追加した拡張と確認」で root の `native = true` による opt-in として実装した。
+- Windows でのリンク入力は、`-L`・`-l` が MSVC の linker へ `-libpath:` と `<name>.lib` として渡ることを `clang -###` の dry run で確かめた（単体テスト）。Windows での実際のリンクと実行は未検証。
 - この環境の WASM の build は `build cache disabled: tool version query failed` を表示する。変更前のコンパイラでも同じで、E12 とは無関係。
+
+## 追加した拡張と確認（2026-10-02、包括承認の後）
+
+「未実装・未検証の項目をすべて実装・検証する。判断は実装者に任せる」との指示を受けて、残作業のうち次を実装・検証した。
+
+- 依存 package の `[native]`（D6 の拡張）: root の `[dependencies]` に `lib1 = { path = "lib1", native = true }` と書いた**直接の**依存だけが `[native]` を持てる。許可のない依存と、
+  依存の依存が自分で書いた `native = true`（root が許可していない）は `E2000`（`only the root package and dependencies it marks with native = true may declare [native] link settings; …`）。
+  許可した依存の path は、その依存の root からの相対で解決し、root の入力の後に連結する。`src/package.rs`（`Dependency::native`、`parses_the_native_opt_in_of_a_dependency`）、
+  `src/driver.rs`（`Project::load_from_root` の `trusted`）、`tests/ffi_extensions.mjs`（許可なし・許可あり（stdout `42`）・連鎖の 3 case）。供給網の観点で、許可は root が一つずつ書く形にした。
+- ホストの別スレッドからのコールバック: fixture に `threaded`（ホストの `e12_apply_threaded` が自分で pthread を起こしてコールバックを呼び、join してから戻る）を足し、native の host main が
+  8 スレッドから 200 回ずつ `tz_counters`・`tz_callbacks`・`tz_threaded` を同時に呼んで期待値と `live == 0` を検査する。`-O0`・`-O3`、object と IR のリンクの両方で成功した。
+  WASM の import 表に `e12_apply_threaded` が増え（11 個）、`tz_threaded` も検査する。host の object が pthread を使うので、E2E のリンクに `-pthread`・`-l pthread` を足した。
+- Windows の link 入力: `driver::tests::link_inputs_reach_the_msvc_linker_as_libpath_and_lib_names`（`clang -###` で x86_64・aarch64 の `windows-msvc` に `-L libs -l sqlite3 host.obj` を渡し、
+  linker 行に `-libpath:libs`・`"sqlite3.lib"`・`host.obj` が出ることを確かめる。Clang がない環境では何も検査しない）。
+- 実装しなかったもの（理由）: 捕捉のある関数値のコールバック（`{ 関数 pointer, void *context }` の契約、closure の呼び出し ABI の trampoline、型検査の変更が要り、E14 の境界・B07 と一緒に設計するほうが安全）、
+  `Option<H>` と NULL の対応（`abi_scalar` が型の文脈を持たないため、ABI 判定の関数すべてに文脈を通す変更になる）、i128・f16・タプル（D11 のとおり C ABI と JS の変換が target ごとに異なる）、
+  `extern type` への `Drop`（B07 が未実装）。いずれも既存の診断（E1008）のままで、挙動は変えていない。
+
+## スレッド検証のレビュー修正（2026-10-02）
+
+`tests/ffi_extensions_host.c` は `assert` にスレッド生成・待機を含むので、`assert.h` の前で `NDEBUG` を解除し、検証を常に有効にした。`tests/ffi_extensions.mjs` は native の `-O0`・`-O3` の host と、リンク入力に使う host object に明示的に `-DNDEBUG` を渡す。別スレッドのコールバックと 8 スレッドの同時呼び出しが、その設定でも実行・検証されることを確かめる。
