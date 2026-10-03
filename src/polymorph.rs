@@ -1065,7 +1065,8 @@ impl Classes {
             | TypeExprKind::List(ty)
             | TypeExprKind::Task(ty)
             | TypeExprKind::Reference(ty, _)
-            | TypeExprKind::Regions(ty, _) => {
+            | TypeExprKind::Regions(ty, _)
+            | TypeExprKind::Quantified(_, ty) => {
                 constraints.extend(self.expanded_inline_constraints(ty, module, names)?)
             }
             TypeExprKind::Function(parameters, result) => {
@@ -3744,6 +3745,7 @@ impl Specializer<'_> {
         self.templates.push(CheckedFunction {
             module: "$intrinsic".into(),
             region_sources: None,
+            callback_contracts: Vec::new(),
             origin: self.current,
             name: format!("{}.{}.{id}", declaration.name, method.name),
             visibility: Visibility::Public,
@@ -3803,6 +3805,7 @@ impl Specializer<'_> {
         self.templates.push(CheckedFunction {
             module: "$builtin".into(),
             region_sources: None,
+            callback_contracts: Vec::new(),
             origin: self.current,
             name: format!("to_string.{id}"),
             visibility: Visibility::Private,

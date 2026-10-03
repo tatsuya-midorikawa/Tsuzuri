@@ -7,10 +7,10 @@
 | 規模 | XL |
 | 依存 | A09 |
 | 後続 | A13, C08 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D10（関数あたりの region 上限を現行の 128 から 64 へ下げる）, D13（Phase 2: region 付き関数値型）。Phase 1 の他の決定は承認不要 |
-| 改善する劣位 | Rust 比: 借用で表せるデータ構造の制限（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 承認 | D10・D13 は、2026-10-03 に利用者から「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った。D10 は見直し提案（64 へ下げず、parser の 128 を正式な上限にする）を選び、D13 は前置量化を名前付き関数の引数の型に限って実装した（GUIDE D-33、実装と検証） |
+| 改善する劣位 | Rust 比: 借用で表せるデータ構造の制限（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | region の宣言検査: `src/regions.rs` の `labels`・`validate_modules`・`contract`（`TypeExpr` を worklist で走査し再帰しない形）。返却元の検査: `src/ownership.rs` の `check_body`（外部 loan と `allowed_roots`）。直接完全適用の入力選択: `eval_composed` の `E::Call` 腕（`region_sources`）。場所の印: `Place.fields` の `ELEMENT`・`PAYLOAD`。合流: `Checker::merge` と `src/ownership_control.rs` の `eval_match` |
 | 主な影響ファイル | `src/check.rs`, `src/regions.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `tests/borrowed_records.rs`, `tests/fixtures/borrowed_records/Main.tz`, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/lifetimes.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md`。変更なしを確認するだけ: `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/closures.rs`, `src/polymorph.rs`, `src/llvm.rs`, `tests/types_ownership.rs` |
 
@@ -909,7 +909,7 @@ pair.left
 - 決定: 旧版は 64 としたが、parser は `def` の region を 128 個まで受理している（`Parser::region_list` の `MAX_NESTING`）。64 へ下げると受理済みの
   プログラムを拒否するため、Phase 1 では変えず 128 のままにする。64 へ下げるのは承認後に別の変更として行う。
 - 理由: 所有権検査の費用は record の slot 数（上限 16）で抑えられ、関数の region 数は名前の照合にしか使わない。
-- 状態: 要承認（承認前は関数の上限を変更しない。Phase 1 の他の手順には影響しない）
+- 状態: 承認済み（2026-10-03。見直し提案を採用し、128 を正式な上限として `docs/language.md` に書いた）
 - 見直し提案: 64 への変更を取りやめ、parser の 128 を正式な上限として文書化する。
 
 ### D11: region を型・単相化・IR に入れない
@@ -929,7 +929,7 @@ pair.left
 
 - 決定: 「Phase 2（設計方針）」のとおり、関数型の前置量化 `{r} ref {r} T -> ref {r} T`（rank-1）を既定案とする。型変数 `'a` と混同しない表記を優先する。
 - 理由: 関数型の同一性・単一化・関数値の表現に region が入り、D11 と GUIDE D-28 の「関数値は全入力を保持」を変える。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-03。表記はこの案のとおり。実現は `Type::Function` を変えず、名前付き関数の引数の契約とした。実装と検証の追記 1）
 
 ### D14: 診断コードとメッセージ
 
@@ -943,3 +943,62 @@ pair.left
 - 決定: outlives 制約（Rust の `'a: 'b`）、region の部分型の宣言、`'static` 相当は導入しない。関係は同じ名前（交差寿命）と loan の包含だけで表す。
 - 理由: loan に基づく検査で Phase 1 の用途（寿命の異なる借用の束ね）を表せる。制約の解決器は新しい基盤になる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-03）
+
+「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」という依頼を D10・D13 の承認として扱い、
+Phase 1 と Phase 2 を実装した。着手時の HEAD は `c995217`（ブランチ `Phase7-1`）で、A15 と同じ変更に含めた。性能は主張しない（region は生成 IR を変えない）。
+
+### 実装
+
+- Phase 1（手順 2〜9）: `src/check.rs` に `RegionMask`（`u16`）・`MAX_RECORD_REGIONS`（16）・`RegionSources`、`CheckedRecord.region_count`・`field_regions`、
+  `CheckedFunction.region_sources: Option<RegionSources>`。`src/regions.rs` は record の region 数と field ごとの mask（17 個目で `E1017`）、使用位置の個数、
+  名前のない借用 field、field・引数・結果の中の混在を検査し、結果の slot ごとの入力元（引数、slot）を作る。
+- `src/ownership.rs`: `Value.regions`（`Option<Box<[BTreeSet<usize>]>>`。多 region record の値だけ slot ごとの loan を持つ）。record リテラル・更新（`record_value`）、
+  field の読み出し（`field_value`・`project`）、不変の local・引数（`stored_value`）、`if`／`match` の腕（`join`）、直接の完全適用（`call_contract`・`argument_regions`）で
+  slot を保ち、ほかの経路は `None`（全 loan）にする。外部 loan は slot ごとに `region_field(slot)` の印を持ち（D7）、`check_result` が結果の slot ごとに入力元を検査する。
+- Phase 2: 構文 `TypeExprKind::Quantified`（parser の `quantified_type`。`type_primary` は変えない）と、formatter・docgen・semantic・warnings・polymorph の走査。
+  `regions::contract` が名前付き関数の引数の量化型を `CallbackContract`（引数の位置・arity・結果 slot の入力元）にし、`regions::validate_contract_calls` が
+  その関数を直接の完全適用だけに限る。所有権検査は、本体でその引数を完全適用した結果に契約の入力の loan だけを入れ、呼び出し側では渡した関数が契約を満たすことを検査する（`Checker::unsatisfied`）。
+- テスト: `tests/borrowed_records.rs`（9 件を追加して計 14 件）、`tests/fixtures/borrowed_records/Main.tz` と `tests/features.mjs` の suite `borrowed_records`（6 export を追加して 20 ケース）。
+- 文書: `docs/language.md`（名前付き Region）、`docs/architecture.md`、`_docs/language-reference/lifetimes.md`（2 つの節と `run=7` の例）、`README.md`、
+  `_docs/feature-status.md`、`_docs/learn/why-tsuzuri.md`、`_features/README.md`、`_features/GUIDE.md`（D-33）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D13 の実現方法。** 方針は量化を `Type::Function` に持たせ、関数型の同一性・単一化・`canonical_type` を変えるものだった。実装では型を変えず（D11 を保つ）、
+   量化型は名前付き関数の引数の型全体にだけ書けるようにし、契約は `CheckedFunction.callback_contracts` に置いた。契約が関数値へ漏れないよう、その関数は
+   直接の完全適用だけにし（関数値・部分適用は `E1013`）、呼び出しごとに渡す関数が契約を守ることを検査する。戻り値・ローカル・field・入れ子の量化型と、
+   量化型の引数の `mut` は `E1013`。型を変えないので、単相化・生成 IR・GUIDE D-28（量化のない関数値は全入力を保持）は変わらない。
+   量化型の値を持ち回る（戻り値・field に置く）には型に契約を入れる必要があり、後続の段階とする。
+2. **渡せる関数。** 名前付き関数は、引数の個数が一致し、`region_sources` の各結果 slot の入力元が契約の入力元に含まれるときに受ける。先頭の引数を部分適用した
+   名前付き関数は、束縛した引数を入力元に含まないときだけ受ける。ラムダは本体を契約で検査する（捕捉は入力に数えない）。引数として受けた量化型の関数は、
+   同じ arity で契約を含意すれば渡せる。局所の関数値などそれ以外は `E1013`
+   （`pass a named function with matching named regions, a lambda, or a parameter with the same region-quantified type here`）。診断はその引数の式（括弧を含む）を指す。
+3. **D10 は見直し提案を採用。** 関数あたりの region は parser の 128 のまま（`docs/language.md` に記載）。
+4. **stack。** 所有権検査の `eval_composed` を `eval_block`・`eval_call`・`eval_lambda`（`#[inline(never)]`）に分け、新しい処理は helper に置いた。
+   型検査の `call_expression` の引数の走査は iterator adapter の連鎖をやめて素の `for` にした（式の入れ子ごとの frame が小さくなる）。上限と stack の大きさは変えていない。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.17.0）
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked`（635 passed、0 failed）が成功。
+  `tests/borrowed_records.rs` は 14 passed。GUIDE §3.1 の 7 つの深さと上限の回帰テストは既定の 2 MiB の stack で成功し、
+  `bounds_nested_builder_expansion_not_just_source_syntax` が要する stack は 2098 KiB（`c995217`。単独の実行で溢れていた）から 1858 KiB になった。
+- `node tests/features.mjs target/release/tsuzuri borrowed_records`（20 ケース）が native・WASM × `-O0`／`-O3` で成功（解放追跡と WASM の import なしを含む）。
+  features 全体（5252 ケース）を含め、`tests/` の E2E の script 30 個（`math.mjs` と Windows 用の `windows.mjs` を除く）のうち 29 個が成功。`tests/debug_info.mjs` だけは
+  失敗するが、`c995217` のコンパイラでも同じ `llvm-dwarfdump --verify`（`.debug_names`）の失敗で、この変更とは無関係。
+- 生成 IR: A09 の例と A15 の再現 6 件の IR は `-O0`／`-O3` とも `c995217` と byte 一致。fixtures と examples の 156 の IR は 94 が一致し、62 は
+  A15 の `Array.copy`・`List.copy` の追加による生成 id の一様なずれだけが異なる（id を写す比較で差なし）。region を使う新しい fixture は変更前のコンパイラが受理しないので比較の外。
+- Phase 2 の受理と拒否を、テストの外の 24 個のプログラム（量化型を書ける位置と書けない位置、名前付き関数・部分適用・ラムダ・引数の受け渡し、
+  捕捉した借用を返すラムダ、総称関数、関数の region と同じ名前の量化、`mut` の引数など）でも release のコンパイラで確かめた。
+- `node scripts/check-docs.mjs`（97 ページ、851 リンク、184 例、native 302 回）、Windows の `cargo check --all-targets`（x86_64／aarch64-pc-windows-msvc）が成功。
+
+## レビュー対応（2026-10-04、PR #8）
+
+Copilot のレビュー 1 件（多 region の record の更新 `{ pair with left = ... }` に、slot の扱いを直接確かめるテストがない）は妥当と判断し、テストを足した。実装は変えていない。
+
+- `tests/borrowed_records.rs` の `multiple_regions_follow_record_updates`: 置き換えた field の loan はその field の slot にだけ入る（`updated.right` は受理、
+  `updated.left` は `E1013`）、更新しない field は元の slot を保つ（`updated.left` は受理、`updated.right` は `E1013`）、置き換えた slot も元の値の loan を
+  保つ保守的な扱い（仕様の「評価順序・所有権・借用」の「更新は元の値の slot を保って追加する」）、更新した値を直接の完全適用へ渡したときの slot の選択。計 15 件。
+  更新の元の値の slot を捨てる変更を入れると、このテストが失敗することを確かめた。
+- E2E: `borrowed_records` に export `region_update`（更新の後に各 field を返す）を足し、21 ケースが native・WASM × `-O0`／`-O3` で成功。

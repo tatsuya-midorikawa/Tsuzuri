@@ -36,6 +36,21 @@ use polymorph::{Classes, Constraint, Inference, Scheme};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 
+/// A12: one bit per declared region of a record; bit i is the i-th declared region.
+pub(crate) type RegionMask = u16;
+pub(crate) const MAX_RECORD_REGIONS: usize = 16;
+/// A12: per region slot of a function result, the (parameter index, parameter slot) pairs it may borrow from.
+pub(crate) type RegionSources = Vec<BTreeSet<(usize, usize)>>;
+
+/// A12 Phase 2: a parameter with a region-quantified function type `{r} A -> B`. Calls of the
+/// parameter with `arity` arguments borrow only from the inputs that `sources` names.
+#[derive(Clone, Debug)]
+pub(crate) struct CallbackContract {
+    pub parameter: usize,
+    pub arity: usize,
+    pub sources: RegionSources,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Error,
@@ -2055,6 +2070,11 @@ pub struct CheckedRecord {
     pub span: Span,
     /// Every instance of the record has a user `Drop` instance (B07).
     pub user_drop: bool,
+    /// Declared region count. 0 and 1 both mean one shared region (A09).
+    pub(crate) region_count: usize,
+    /// Only when `region_count >= 2`: per field in declaration order, the record-region mask of
+    /// each region slot of the field type. A single entry applies to every slot of the field type.
+    pub(crate) field_regions: Vec<Vec<RegionMask>>,
     /// Value layout size of a non-generic record; generic instances are
     /// measured per concrete type.
     size: Option<usize>,
@@ -2094,7 +2114,9 @@ impl CheckedUnion {
 #[derive(Clone, Debug)]
 pub struct CheckedFunction {
     pub module: String,
-    pub(crate) region_sources: Option<BTreeSet<usize>>,
+    pub(crate) region_sources: Option<RegionSources>,
+    /// The parameters with region-quantified function types; such a function is only called directly.
+    pub(crate) callback_contracts: Vec<CallbackContract>,
     pub origin: FunctionOrigin,
     pub name: String,
     pub visibility: Visibility,
@@ -3442,6 +3464,7 @@ fn validate_public_type(
         }
         TypeExprKind::Variable(_) => Ok(()),
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::List(inner)
@@ -3930,6 +3953,7 @@ fn check_modules_collect(
         let checked = (|| {
             let qualified = format!("{module}.{}", record.name.text);
             let parameters = declared_parameters("record", &record.name.text, &record.parameters)?;
+            let (region_count, field_regions) = regions::field_regions(record)?;
             let mut used = BTreeSet::new();
             let mut field_names = BTreeSet::new();
             let mut fields = Vec::new();
@@ -3990,6 +4014,8 @@ fn check_modules_collect(
                 fields,
                 span: record.name.span,
                 user_drop: false,
+                region_count,
+                field_regions,
                 size: None,
                 recursive: Default::default(),
             })
@@ -4476,7 +4502,7 @@ fn check_modules_collect(
             checker.use_active_result(&signature.result, active);
         }
         let checked = (|| {
-            let region_sources = regions::contract(function, module, &names, types)?;
+            let contracts = regions::contract(function, module, &names, types)?;
             checker.type_parameters = scheme.variables.clone();
             checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
             checker.members = scheme.members.clone();
@@ -4512,7 +4538,8 @@ fn check_modules_collect(
             };
             Ok(CheckedFunction {
                 module: module.clone(),
-                region_sources,
+                region_sources: contracts.result,
+                callback_contracts: contracts.callbacks,
                 origin: FunctionOrigin {
                     provenance: function.name.provenance,
                     test: test_functions.get(&id).copied(),
@@ -4596,6 +4623,7 @@ fn check_modules_collect(
             Ok(CheckedFunction {
                 module: module.to_owned(),
                 region_sources: None,
+                callback_contracts: Vec::new(),
                 origin: FunctionOrigin {
                     provenance: Provenance::Generated,
                     ..FunctionOrigin::source(ModuleOrigin::User)
@@ -4714,6 +4742,7 @@ fn check_modules_collect(
         user_drops: BTreeMap::new(),
     };
     validate_callbacks(&module)?;
+    regions::validate_contract_calls(&module)?;
     let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
         let first = errors[0].clone();
         diagnostics.extend(errors);
@@ -4819,6 +4848,7 @@ fn recovery_module(
         .map(|(module, declaration)| CheckedFunction {
             module: module.clone(),
             region_sources: None,
+            callback_contracts: Vec::new(),
             origin: FunctionOrigin::source(ModuleOrigin::User),
             name: declaration.name.text.clone(),
             visibility: declaration.visibility,
@@ -5149,7 +5179,7 @@ fn resolve_type_with_kinds(
 ) -> Result<Type, Diagnostic> {
     let resolve = |ty: &TypeExpr| resolve_type_with_kinds(ty, module, names, kinds);
     Ok(match &expression.kind {
-        TypeExprKind::Regions(inner, _) => resolve(inner)?,
+        TypeExprKind::Regions(inner, _) | TypeExprKind::Quantified(_, inner) => resolve(inner)?,
         TypeExprKind::Apply(head, args) if head.text.starts_with('\'') => {
             let variable = &head.text[1..];
             if kinds.get(variable) != Some(&args.len()) || args.is_empty() {
@@ -5382,6 +5412,10 @@ impl TypeAliasExpansion<'_> {
                 Box::new(self.expand(inner, module, depth + 1)?),
                 regions.clone(),
             ),
+            TypeExprKind::Quantified(regions, inner) => TypeExprKind::Quantified(
+                regions.clone(),
+                Box::new(self.expand(inner, module, depth + 1)?),
+            ),
             TypeExprKind::Array(inner) => {
                 TypeExprKind::Array(Box::new(self.expand(inner, module, depth + 1)?))
             }
@@ -5482,6 +5516,7 @@ impl TypeAliasExpansion<'_> {
         let children: Vec<&mut TypeExpr> = match &mut expression.kind {
             TypeExprKind::Apply(_, args) => args.iter_mut().collect(),
             TypeExprKind::Regions(inner, _)
+            | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
             | TypeExprKind::List(inner)
@@ -5540,6 +5575,7 @@ fn reject_expanded_field_constraints(
             args.iter().collect()
         }
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::List(inner)
@@ -6378,17 +6414,17 @@ impl<'a> Checker<'a> {
         {
             self.parallel_arguments(arguments, &parameters)?
         } else {
-            arguments
-                .iter()
-                .zip(&parameters)
-                .enumerate()
-                .map(|(index, (argument, parameter))| match &argument.kind {
+            // A plain loop keeps iterator adapter frames off the recursion through nested calls.
+            let mut checked = Vec::with_capacity(arguments.len());
+            for (index, (argument, parameter)) in arguments.iter().zip(&parameters).enumerate() {
+                checked.push(match &argument.kind {
                     ExprKind::Lambda(names, body) if owned && index == 0 => {
-                        self.owned_lambda(names, body, argument.span, parameter)
+                        self.owned_lambda(names, body, argument.span, parameter)?
                     }
-                    _ => self.argument(argument, parameter),
-                })
-                .collect::<Result<_, _>>()?
+                    _ => self.argument(argument, parameter)?,
+                });
+            }
+            checked
         };
         self.solve_families(false)?;
         self.constant_borrows(&callee, &mut arguments, &result, expression.span)?;

@@ -7,10 +7,10 @@
 | 規模 | M |
 | 依存 | G03, (G12) |
 | 後続 | C10 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2。Phase 2 の共有バッファによる O(1) の複製は C10 の範囲のまま） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D3（公開 CLI オプション `--warn implicit-copy` の追加と `W1006` の確定。`W1006` は GUIDE D-30 の仮割り当て） |
-| 改善する劣位 | Rust 比: Copy のコストモデルの違い（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 承認 | D3 は、2026-10-03 に利用者から「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（`--warn implicit-copy` と `W1006` を確定。GUIDE D-16・D-33） |
+| 改善する劣位 | Rust 比: Copy のコストモデルの違い（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | 全関数を同じ走査で 2 用途に使う形: `src/ownership.rs` の `check_functions`（`infer` フラグ）と `check_body`。警告の作り方と利用者コードだけの報告: `src/warnings.rs` の `unused_locals`（`Diagnostic::warning`）と `src/check.rs` の `check_modules_collect` での `ModuleOrigin::User` の判定。CLI の真偽フラグ: `src/main.rs` の `--deny-warnings`（`Arguments::deny_warnings`、重複の拒否、`fmt` との併用拒否、単体テスト）。CLI の統合テスト: `tests/warnings.rs` の `cli_caps_warnings_and_denies_before_touching_artifacts`。複製が生成される条件: `src/llvm.rs` の `FunctionEmitter::read_place`・`clones_on_take` |
 | 主な影響ファイル | `src/copies.rs`（新規）, `src/lib.rs`, `src/ownership.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `src/main.rs`, `std/Array.tz`, `std/List.tz`, `tests/copy_cost.rs`（新規）, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/ownership.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/tools/diagnostics.md`, `_docs/tools/command-line.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -539,7 +539,7 @@ W1006 は既定無効で、既定の `check`／`build` の処理は増えない�
   （GUIDE D-30 の仮割り当て）。W1006 は `src/main.rs` で `copies::warnings` の結果を `module.warnings` に連結して表示する。
 - 理由: 既存の既定無効の仕組み（`WarningOptions { shadowing }`）は内部用で公開の手段がなく、しかも具体化前に動く（D1）。
   `--warn <name>` は将来ほかの既定無効の警告を足せる形で、名前は一つに限る。
-- 状態: 要承認（承認前は手順 7 以降に着手しない）
+- 状態: 承認済み（2026-10-03。実装と検証を参照）
 
 ### D4: 記録の規則
 
@@ -569,7 +569,7 @@ W1006 は既定無効で、既定の `check`／`build` の処理は増えない�
 
 - 決定: Phase 1 では LSP（`src/lsp.rs`）に W1006 を出さず、VS Code 拡張の設定も足さない。`--json` の出力には他の警告と同じ形で入る。
 - 理由: LSP には設定を受ける仕組み（`initializationOptions`）がなく、既定無効の警告を出し分けられない。表示方法（inlay hint・hover）は G12 の範囲。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 既定案（Phase 1 はこの案のとおり。Phase 2 で inlay hint を足した。実装と検証の追記 2）
 
 ### D8: 明示の複製を必須にするモード
 
@@ -595,3 +595,57 @@ W1006 は既定無効で、既定の `check`／`build` の処理は増えない�
   1 件にする。メッセージに型名を入れない。一覧（`sites`）は具体化ごとに別の site として残す。
 - 理由: Copy かどうかは具体化まで決まらない。利用者には位置が一つ分かれば足り、PM07 には具体化ごとの件数が要る。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-03）
+
+「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」という依頼を D3 の承認として扱い、Phase 1 と Phase 2 を実装した。
+着手時の HEAD は `c995217`（ブランチ `Phase7-1`）で、A12 と同じ変更に含めた。Phase 2 の二つ目（共有の不変バッファによる O(1) の複製）は C10 の範囲のまま。
+性能は主張しない（既定の検査と生成の経路は変えず、`--warn implicit-copy` の有無で IR は同一）。
+
+### 実装
+
+- Phase 1: `src/copies.rs`（新規。`CopySite`・`CopyKind`・`CopyCost`・`sites`・`costly_sites`・`warnings`）。`src/ownership.rs` の `Checker` に収集用の `copies` を足し、
+  `read_places`（`Use::Consume` で Copy かつ drop の要る値）、place でない値の `Index` と一時値の field（`Temporary`）、`src/ownership_control.rs` の
+  `match` の束縛（`Payload`・`Tail`・`Element`）で記録する。`ownership::copy_reads` は具体化・クロージャ降格後の module の全関数を収集モードで再検査する。
+  単一使用の除外は `call_specialization::single_use_locals`（`pub(crate)` にした）。
+- D5 の照合: debug build の `FunctionEmitter::note_copy`（`read_place` の複製、`shared_array_deref`、place でない `Index` の要素、一時値の field・payload の複製）と
+  `check_copy_inventory`（生成の最後に「生成した暗黙の複製 ⊆ `copies::sites`」を `assert!`）。特殊化の worker（`@tz.specialized.`）は記録しない。
+  記録を一つ外す変更で assert が落ちることを確かめ、照合が空振りしないことを確認した。
+- CLI: `--warn implicit-copy`（check・build・run・test。`fmt` との併用、名前なし、未知の名前、重複は `E2000`）。`W1006` は `copies::warnings` を
+  `module.warnings` に連結して表示し、`--deny-warnings` と `--json` に従う。
+- std: `Array.copy :: Copy<'a> => ref ['a] -> ['a]`、`List.copy :: Copy<'a> => ref [|'a|] -> [|'a|]`（本体は `*values`）。API 文書を再生成した。
+- Phase 2: `src/lsp.rs` が `inlayHintProvider: true` を公開し、`textDocument/inlayHint` で `copies::costly_sites`（W1006 と同じ位置）を返す。
+  label は `copy (local)` のような複製の種類、tooltip は W1006 の文、位置は複製する式の終わり。解析に失敗している間は、semantic tokens と同じく
+  直前の成功した解析を共通の接頭辞・接尾辞で写して使う（編集で長さが変わった式の hint は出さない）。
+- テスト: `tests/copy_cost.rs`（新規 15 件）、`tests/fixtures/explicit_copy/Main.tz` と `tests/features.mjs` の suite `explicit_copy`（10 ケース）、
+  `tests/lsp.rs`（`inlay_hints_show_implicit_copies` と capability の一覧）、`vsc/src/test/extension.test.ts`（VS Code が inlay hint を受け取る）。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/language-reference/ownership.md`（「暗黙の複製を見つける」と `run=6` の例）、
+  `_docs/library-reference/arrays-and-lists.md`・`api/Array.md`・`api/List.md`（再生成）、`_docs/tools/diagnostics.md`・`command-line.md`・`editor-tools.md`、
+  `_docs/guides/performance.md`、`_docs/feature-status.md`、`_docs/learn/why-tsuzuri.md`、`vsc/README.md`、`_features/README.md`、`_perfs/README.md`、`_features/GUIDE.md`（D-16・D-30・D-33）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D3 を承認として扱った。** `W1006` を GUIDE D-16 へ移し、`W1006` と `--warn implicit-copy` を D-30 の仮割り当ての表から削除した（D-33）。
+2. **D7 の Phase 2 は inlay hint。** LSP は設定を受けないので、既定無効の W1006 を診断にはせず、同じ位置を inlay hint で常に返す。inlay hint は Problems に入らず、
+   エディターの設定で隠せる。`textDocument/hover` の内容は変えず（名前の型と文書を示す既存の契約）、複製の説明は hint の tooltip に入れた。
+   関数値の環境の複製は hint にしない（D2 と同じ範囲）。W1006 と inlay hint は `costly_sites`（利用者の関数の `CopyCost::Length` を位置ごとに一件、ソース順）を共有する。
+3. **D4 の記録の範囲を一時値の field・payload へ広げた。** B07 の Drop 型の一時値から Copy の field・payload を読むときも生成は複製するので、
+   `Temporary` として記録した（D5 の照合もこの経路を記録する）。
+4. **`match` の束縛。** 照合対象の射影の複製は、束縛の名前の span で `Payload`・`Tail`・`Element` として記録する。射影を評価する間は記録を止め、二重に数えない。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.17.0）
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked`（635 passed、0 failed。
+  debug build の全テストで D5 の照合が通る）が成功。`tests/copy_cost.rs` は 15 passed、`tests/lsp.rs` は 23 passed。GUIDE §3.1 の 7 つのテストも既定の stack で成功。
+- 停止条件の実行時間: `c995217` と共通の 63 個のテストバイナリの所要時間の和は 644.8 秒から 672.7 秒（+4.3%）で、2 割を下回る。
+  差の大半は lib の単体テストの一回だけの遅れ（4.9 秒 → 19.4 秒）で、単独で測り直すと変更前後とも 5.0 秒だった。
+- 手順 8: 再現 6 件の IR は `-O0`／`-O3` とも `c995217` と byte 一致し、`--warn implicit-copy` を付けた build も一致。
+  `check --warn implicit-copy` の W1006 は「再現」の表のとおり（reused 1、field 2、deref-array 1、deref-list 1、moved 0、scalar 0）。
+- fixtures と examples の 156 の IR は 94 が `c995217` と一致し、62 は `Array.copy`・`List.copy` の追加による生成 id の一様なずれだけが異なる（id を写す比較で差なし）。
+- E2E: `explicit_copy`（10 ケース。native・WASM × `-O0`／`-O3`、`live == 0`）を含む features 5252 ケースと、`tests/` の E2E の script 30 個
+  （`math.mjs` と `windows.mjs` を除く）のうち 29 個が成功。`tests/debug_info.mjs` だけは `c995217` のコンパイラでも同じ `llvm-dwarfdump --verify` の失敗。
+- LSP: `tests/lsp_sessions.mjs` が成功。VS Code の結合テストは、ローカルで inlay hint の段（`copy (local)` を受け取る）とその後の整形まで通ることを確かめた。
+  この環境ではその後の `executeCompletionItemProvider` で止まるが、`c995217` のサーバーでも同じ所で止まる既知の環境の問題で、全体は CI で確認する。
+  inlay hint のための `costly_sites` の追加の解析は、`examples/control` の `check`（約 52 ms）で計測の揺れの範囲だった。
+- `node scripts/check-docs.mjs`（97 ページ、851 リンク、184 例、native 302 回）、`npm run test:unit`（vsc。5 件）、
+  Windows の `cargo check --all-targets`（x86_64／aarch64-pc-windows-msvc）が成功。

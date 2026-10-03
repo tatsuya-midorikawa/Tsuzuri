@@ -31,6 +31,10 @@ fn sub values start count =
 def reverse :: Copy<'a> => ref ['a] -> ['a]
 fn reverse values = new ['a](values.length, index -> values[values.length - 1 - index])
 
+/// Returns a new array with a copy of every element, the explicit form of an implicit array copy.
+def copy :: Copy<'a> => ref ['a] -> ['a]
+fn copy values = *values
+
 def append :: Copy<'a> => ref ['a] -> ref ['a] -> ['a]
 fn append left right =
     assert (left.length <= 9223372036854775807 - right.length)

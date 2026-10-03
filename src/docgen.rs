@@ -66,6 +66,20 @@ fn type_text(ty: &TypeExpr) -> String {
             }
         }
         TypeExprKind::Array(element) => format!("[{}]", type_text(element)),
+        TypeExprKind::Quantified(names, inner) => {
+            let regions = names
+                .iter()
+                .map(|name| name.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let inner = type_text(inner);
+            // A function type's text is already parenthesized.
+            let inner = inner
+                .strip_prefix('(')
+                .and_then(|text| text.strip_suffix(')'))
+                .unwrap_or(&inner);
+            format!("({{{regions}}} {inner})")
+        }
         TypeExprKind::List(element) => format!("[|{}|]", type_text(element)),
         TypeExprKind::Tuple(elements) => format!(
             "({})",

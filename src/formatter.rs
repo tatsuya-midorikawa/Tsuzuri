@@ -724,6 +724,12 @@ impl Canonical {
                     self.ident(region);
                 }
             }
+            TypeExprKind::Quantified(regions, inner) => {
+                for region in regions {
+                    self.ident(region);
+                }
+                self.ty(inner);
+            }
             TypeExprKind::Apply(name, arguments) => {
                 self.ident(name);
                 for argument in arguments {

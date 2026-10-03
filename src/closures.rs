@@ -205,6 +205,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             bridges.push(CheckedFunction {
                 module: "$export".into(),
                 region_sources: None,
+                callback_contracts: Vec::new(),
                 origin: function.origin.generated(id),
                 name: function.name.clone(),
                 visibility: Visibility::Public,
@@ -283,6 +284,7 @@ fn lower_expression(
             all_parameters.extend(parameters.iter().cloned());
             functions.push(CheckedFunction {
                 region_sources: None,
+                callback_contracts: Vec::new(),
                 module: if matches!(expression.ty, Type::Task(_)) {
                     "$task"
                 } else {
@@ -392,6 +394,7 @@ fn lower_expression(
                 functions.push(CheckedFunction {
                     module: "$builtin".into(),
                     region_sources: None,
+                    callback_contracts: Vec::new(),
                     origin,
                     // Instances of a polymorphic builtin get distinct symbols.
                     name: if scheme.variables.is_empty() {
@@ -449,6 +452,7 @@ fn lower_expression(
                 functions.push(CheckedFunction {
                     module: "$case".into(),
                     region_sources: None,
+                    callback_contracts: Vec::new(),
                     origin,
                     name: format!("{}.{}{instance}", union.name, union.cases[case_id].0),
                     visibility: Visibility::Public,

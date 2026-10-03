@@ -1,0 +1,28 @@
+export def explicit_copy :: i64
+fn explicit_copy =
+    let a = [1, 2, 3]
+    let b = Array.copy (ref a)
+    let xs = [|4, 5|]
+    let ys = List.copy (ref xs)
+    Array.length (ref a) + Array.length (ref b) + List.length (ref xs) + List.length (ref ys) + b[0] + b[2]
+
+export def copy_sum :: i64 -> i64
+fn copy_sum count =
+    let values = Array.init count (\index -> index)
+    let copied = Array.copy (ref values)
+    Array.sum (ref values) + Array.sum (ref copied)
+
+export def nested_copy :: i64 -> i64
+fn nested_copy count =
+    let rows = Array.init count (\row -> Array.init row (\column -> column))
+    let copied = Array.copy (ref rows)
+    let mut total = 0
+    for row in copied do total = total + Array.length (ref row)
+    total + Array.length (ref rows)
+
+export def list_copy :: i64 -> i64
+fn list_copy count =
+    let values = new [|i64|](count, \index -> index * 2)
+    let copied = List.copy (ref values)
+    let sum = \state value -> state + value
+    List.fold (ref values) 0 sum + List.fold (ref copied) 0 sum + List.length (ref copied)

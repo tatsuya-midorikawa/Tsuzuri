@@ -1010,6 +1010,7 @@ fn type_entry(
     match &expression.kind {
         TypeExprKind::Apply(_, arguments) => arguments.iter().for_each(&mut recurse),
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::List(inner)

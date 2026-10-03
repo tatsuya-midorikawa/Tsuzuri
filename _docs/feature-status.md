@@ -23,10 +23,10 @@
 | A09 | 共有借用フィールドと単一 region の名前付き契約 | [lifetime](language-reference/lifetimes.md) | [A09](../_features/_completed/A09-named-lifetimes.md) |
 | A10 | 明示 kind、rank-1 HKT、末尾固定の部分適用 | [高階型](language-reference/higher-kinds.md) | [A10](../_features/_completed/A10-higher-kinded-types.md) |
 | A11 | 比較の非消費化、借用 Eq / Ord、構造比較 | [比較クラス](language-reference/generics-and-typeclasses.md) | [A11](../_features/_completed/A11-borrowed-comparisons.md) |
-| A12 | 未着手（計画）: レコード内の独立した複数 region、region 付き関数値型 | [lifetime](language-reference/lifetimes.md) | [A12](../_features/A12-multiple-regions.md) |
+| A12 | 対応（Phase 1・2）: レコードごとに 16 個までの独立した region（`record Pair {r s}`）。所有権検査は不変の束縛・field の読み出し・直接の完全適用で region ごとに借用を分け、可変の束縛・ループ・関数値・コレクションでは全 region を保持する。Phase 2 で名前付き関数の引数に region で量化した関数型（`({s} ref {s} T -> ref {s} T)`）。渡す関数の契約を検査し、その関数は直接の完全適用だけ。region は生成 IR を変えない。戻り値・ローカル・field の量化型と region 間の outlives 制約は未実装 | [lifetime](language-reference/lifetimes.md) | [A12](../_features/_completed/A12-multiple-regions.md) |
 | A13 | 未着手（計画）: 排他借用フィールド | [lifetime](language-reference/lifetimes.md) | [A13](../_features/A13-exclusive-borrow-fields.md) |
 | A14 | 未着手（計画）: 型クラスによる動的ディスパッチ | [型クラス](language-reference/generics-and-typeclasses.md) | [A14](../_features/A14-dynamic-dispatch.md) |
-| A15 | 未着手（計画）: 暗黙の深い複製の警告と明示複製 API | [所有権](language-reference/ownership.md) | [A15](../_features/A15-copy-cost-visibility.md) |
+| A15 | 対応（Phase 1・2）: `--warn implicit-copy` で配列・リストの暗黙の複製を `W1006` として報告（既定は無効、生成コードは不変）。明示の `Array.copy` / `List.copy`。複製の一覧 `copies::sites` は debug build で生成した複製と照合する。LSP は同じ位置に複製の種類の inlay hint を返す。複製の省略（PM07）と共有バッファによる O(1) 化（C10）は未実装 | [所有権](language-reference/ownership.md) | [A15](../_features/_completed/A15-copy-cost-visibility.md) |
 | A16 | 未着手（計画）: 固定長配列と const ジェネリクス | [型](language-reference/types.md) | [A16](../_features/A16-fixed-arrays.md) |
 
 ## B エラー処理と制御
@@ -126,7 +126,7 @@
 | G09 | 宣言の doc comment、公開 API Markdown、hover | [文書生成](tools/documentation.md) | [G09](../_features/_completed/G09-doc-comments.md) |
 | G10 | Windows MSVC 実装あり。Windows 実行ゲート未確認で blocked | [Windows](tools/build-and-cache.md) | [G10](../_features/G10-windows.md) |
 | G11 | フロントエンド処理後の whole-build artifact cache | [cache](tools/build-and-cache.md) | [G11](../_features/_completed/G11-incremental-build.md) |
-| G12 | 対応（Phase 1）: LSP の参照・rename・workspace symbol・補完・signature help・semantic tokens・quick fix・整形。inlay hints は計画 | [LSP](tools/editor-tools.md) | [G12](../_features/_completed/G12-lsp-extensions.md) |
+| G12 | 対応（Phase 1）: LSP の参照・rename・workspace symbol・補完・signature help・semantic tokens・quick fix・整形。暗黙の複製の inlay hint は A15 Phase 2。推論型・借用の inlay hints は計画 | [LSP](tools/editor-tools.md) | [G12](../_features/_completed/G12-lsp-extensions.md) |
 | G13 | 未着手（計画）: REPL と単一ファイルのスクリプト実行 | [CLI](tools/command-line.md) | [G13](../_features/G13-repl.md) |
 | G14 | 対応（Phase 1）: コンパイラ・Clang・LLD・SDK/libc をまとめた CLI 配布物、`toolchain info`。署名・公証・Release 公開は計画、Windows は未検証 | [ビルド](tools/build-and-cache.md) | [G14](../_features/_completed/G14-toolchain-distribution.md) |
 | G15 | 未着手（計画）: クロスコンパイルと対応ターゲットの階層 | [ビルド](tools/build-and-cache.md) | [G15](../_features/G15-platform-targets.md) |
@@ -138,7 +138,7 @@
 
 ## 特に注意する未対応範囲
 
-- 独立した複数 record region、region を保持する関数値型、排他借用フィールド。
+- 戻り値・ローカルに置く region 付き関数値型、region 間の outlives 制約、排他借用フィールド。
 - HKT 型別名、高階 kind 引数、標準 Functor / Monad の自動導入。
 - try / catch / finally、外部キャンセルトークン、開始済み Task の強制停止。
 - locale 書式、書記素幅、一般的な Unicode 正規化、可変スライス。

@@ -309,10 +309,11 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/llvm_traps.rs`、`src/trap.rs` | trap の種類・位置・計装（G04） |
 | `src/lsp.rs`、`src/semantic.rs` | LSP サーバーと `SemanticIndex`（G07） |
 | `src/package.rs` | manifest と package graph（E04） |
-| `src/regions.rs` | 名前付き region の検査（A09） |
+| `src/regions.rs` | 名前付き region の検査（A09。複数 region の record と region で量化した引数は A12） |
 | `src/stdlib.rs` | std ソースの埋め込み（`SOURCES`）、予約モジュール、opaque record |
 | `src/test_runner.rs` | `tsuzuri test`（G06） |
 | `src/warnings.rs` | 警告 W1001–W1004（G03） |
+| `src/copies.rs` | 暗黙の複製の一覧と W1006（A15） |
 
 実行時ランタイムも増えています（`character.ll`、`display.ll`、`debug.ll`、`recursive.ll`、`utf8string.ll`、`math.ll`、
 `heap-wasm-threads.ll`、`task-wasm-threads.c`、`task-windows.h`、`cpu.c`、`io.c`、`test-runner.c`）。連結条件は `src/llvm.rs` と
@@ -740,6 +741,7 @@ fn rejects(source: &str, code: &str) {
 | `W1002` | 未使用の非公開関数・型 | G03 |
 | `W1003` | 到達しない `match` 節 | A03／G03 |
 | `W1004` | 同じスコープ内での紛らわしいシャドーイング（既定は無効） | G03 |
+| `W1006` | 長さに比例する配列・リストの暗黙の複製（既定は無効。`--warn implicit-copy` で有効。D-33） | A15 |
 
 既存のコード（`E1001`–`E1020`、`E2000`–`E2005`、`W2001`）は意味を変えずに使う。
 
@@ -896,7 +898,6 @@ fn rejects(source: &str, code: &str) {
 | 診断 | `E1028` dyn 互換でない型クラス | A14 |
 | 診断 | `E2007` 依存の取得・検証の失敗（lockfile の不一致、キャッシュの欠落） | E10 |
 | 警告 | `W1005` 非推奨の宣言の使用 | G19 |
-| 警告 | `W1006` 長さに比例する暗黙の複製（既定無効） | A15 |
 | 警告 | `W2002` bindgen で変換できない C 宣言の省略 | E11 |
 | 組み込みクラス | `Encode`／`Decode` | D08 |
 | 組み込みクラス | `Sync`（仮称） | F10 |
@@ -929,7 +930,6 @@ fn rejects(source: &str, code: &str) {
 | サブコマンド | `tsuzuri repl`（Phase 2 の `tsuzuri script` は要承認） | G13 | Phase 2 だけ |
 | サブコマンド | `tsuzuri bench` | G18 | はい |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
-| CLI | `--warn implicit-copy` | A15 | はい |
 | CLI | `--allocator system\|host`（F13）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
 | CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--target wasm64` | F11 | いいえ（Phase 2 承認済み・実装済み） |
@@ -1013,6 +1013,21 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - std の union の case 名は利用者のモジュールから無修飾で見え、利用者の active pattern の名前と `E1004` で衝突しうる。新しい std の union には `Left`・`Right`・`Plain` のような一般的な case 名を避け、型名の接頭辞を付ける（`Format.AlignLeft` など。D07）。
 - 既存の不具合の修正: `Classes::matching_instance` が、型に未解決の変数が残る呼び出しで panic していた（未定義の名前と instance が同じプログラムにあると再現）。未解決の変数があるときは instance なしとして扱う。
   名前だけの穴（union の case・ゼロ引数の関数）が `E1013` になる不具合も直した（D07）。
+
+### D-33 暗黙の複製の可視化（A15）と複数 region（A12）の確定
+
+- 2026-10-03、利用者の「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」を、A15 D3 と A12 D10・D13 の承認として扱い、
+  両チケットの Phase 1 と Phase 2 を実装した。詳細は各チケットの「実装と検証」にある。
+- 警告 `W1006`（D-16 へ移した）と CLI `--warn implicit-copy`（check・build・run・test）。`--warn` が受ける名前は `implicit-copy` だけで、
+  既定では無効。有効でも生成コードは変わらない。複製の一覧 `copies::sites` は具体化後の module で所有権検査器を収集モードで再実行して作り、
+  debug build は生成した暗黙の複製がすべて一覧にあることを検査する（PM07 はこの一覧を使う）。
+- std: `Array.copy`・`List.copy`（新しい std モジュールはない）。LSP は `textDocument/inlayHint` で W1006 と同じ位置に複製の種類を返す。
+  LSP は設定を受けないので、既定無効の警告は診断にしない。
+- A12 D10: 関数あたりの region の上限は、parser の入れ子の上限と同じ 128 を正式な上限にした（64 へ下げない）。record あたりは 16（`u16` の mask）。
+- A12 D13: region で量化した関数型 `({s} ref {s} T -> ref {s} T)` は名前付き関数の引数の型全体にだけ書ける。
+  `Type::Function` には量化を入れず（region は型・単相化・IR に入らない。A12 D11）、契約は `CheckedFunction.callback_contracts` に置く。
+  その関数は直接の完全適用でだけ使え、呼び出し側で渡す関数が契約を守ることを検査する。量化のない関数値は D-28 のとおり全入力の寿命を保持する。
+- 新しい診断コード・予約語・ランタイムはない。寿命と region の誤りは `E1013`、上限は `E1017`。
 
 ## 10. 完了の定義（全チケット共通）
 

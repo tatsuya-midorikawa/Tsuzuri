@@ -67,6 +67,7 @@ Array の更新は引数をすべて左から右に評価した後、要素へ�
 | `init count initializer` | 添字から新しい所有配列を生成 |
 | `sub values start count` | Copy 要素を複製。不正範囲はトラップ |
 | `reverse values` | Copy 要素を逆順に複製 |
+| `copy values` | Copy 要素をすべて複製した新しい配列。暗黙の複製の明示形で、`W1006` の対象外 |
 | `append left right`, `concat arrays` | Copy 要素を連結した新しい配列 |
 | `zip left right` | 各要素を複製したタプル配列。長さ不一致はトラップ |
 | `to_list values` | Copy 要素を新しいリストへ |
@@ -117,7 +118,7 @@ let values = List.cons 20 [|22|]
 List.fold (ref values) 0 (\total value -> total + value)
 ```
 
-List は `length`, `is_empty`, `map`, `map_ref`, `fold`, `fold_ref`, `reverse`, `to_array`, `iter` を提供します。map と fold の引数順は Array と同様にリストが先です。値を取り出す callback と所有する複製結果には Copy、借用版には不要です。要素は O(n) の直接走査で処理します。
+List は `length`, `is_empty`, `copy`, `map`, `map_ref`, `fold`, `fold_ref`, `reverse`, `to_array`, `iter` を提供します。map と fold の引数順は Array と同様にリストが先です。値を取り出す callback と所有する複製結果には Copy、借用版には不要です。要素は O(n) の直接走査で処理します。`List.copy (ref values)` は `Array.copy` と同じく、暗黙の複製を明示する形です。
 
 ## API と関連項目
 

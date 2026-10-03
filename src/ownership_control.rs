@@ -393,7 +393,12 @@ impl Checker<'_> {
                         self.view(local, projection, during)?;
                         continue;
                     }
-                    let value = self.eval(projection, Use::Consume, during)?;
+                    // The generated code copies through the binding's own name (A15).
+                    self.note_copy(projection, local.span, read_kind(projection), false);
+                    let copies = self.copies.take();
+                    let value = self.eval(projection, Use::Consume, during);
+                    self.copies = copies;
+                    let value = value?;
                     self.state.locals.insert(local.id, (local.clone(), value));
                     self.state.moved.retain(|place| place.root != local.id);
                     self.state
@@ -404,7 +409,7 @@ impl Checker<'_> {
                 ids.extend(temporaries);
                 self.finish_control_scope(&ids, &value, span)?;
                 if self.reachable {
-                    result.loans.extend(value.loans);
+                    join(&mut result, value);
                     if let Some(other) = &exits {
                         self.merge(other);
                     }

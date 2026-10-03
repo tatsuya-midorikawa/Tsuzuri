@@ -1215,6 +1215,8 @@ Copy のコレクションを値として複製する場合（`let b = a` の後
 レコード・タプル・配列・リストは、全フィールド／全要素が Copy なら自動的に Copy になります。
 配列・リストの Copy は独立したバッファ／ノードと要素の複製を伴います。長さに比例するコストがあるため、
 読み取りだけの関数では `ref [T]`／`ref [|T|]` を使うとコレクション全体のコピーを避けられます。
+暗黙の複製の位置は `--warn implicit-copy` の `W1006` と、エディターの inlay hint（`copy (field)` など）で確認できます。
+複製を明示するには `Array.copy (ref values)`／`List.copy (ref values)` と書きます（警告の対象外です）。
 Rust の明示的な `derive(Copy)` と異なり、宣言による opt-in は不要です。
 `ref mut T` は Copy ではありません。
 `Task<T>` も結果型によらず非 Copy です。未実行のタスクはスコープ終了時に捕捉値だけを解放します。
@@ -1391,9 +1393,36 @@ region名は小文字ASCII識別子で、`def`名の後の `{r s}`（カンマ�
 `ref {r} T`／`&{r} T`、`ref mut {r} T`／`&mut {r} T`で参照を指定し、`View<T> {r}`で借用aggregate全体を指定します。
 戻り値のregionと同名の入力を借用元とし、本体の実loanがその入力以外を指せば `E1013` です。入力が複数ならその交差寿命を保持します。
 直接の完全適用では無関係な入力のloanを戻り値から除きます。関数値・部分適用ではこの契約を型へ持ち上げず、従来どおり全入力の寿命を保持します。
-一つのparameter/resultと一つのrecordは一つの共有regionだけを持てます。region省略は既存の推論を使い、static lifetimeはありません。
-未宣言・未使用region、scalarへの指定、独立複数regionの混在、高階関数型内部・alias・union・const・ローカル型注釈へのregion指定は `E1013` です。
-レコード内の複数regionの独立追跡、regionを保持する関数値型、排他借用field、参照経由のborrowed aggregate置換は後続段階です。
+region省略は既存の推論を使い、static lifetimeはありません。
+未宣言・未使用region、scalarへの指定、一つのparameter/result/field内の独立regionの混在（下の多region recordの直接適用を除く）、
+高階関数型内部（下のregion量化を除く）・alias・union・const・ローカル型注釈へのregion指定は `E1013` です。
+regionは型の同一性・単一化・単相化・生成IRに入りません。排他借用field、参照経由のborrowed aggregate置換は後続段階です。
+
+```text
+record Pair {r s} { left: ref {r} string, right: ref {s} string }
+record Swapped {a b} { pair: Pair {b a} }
+def left_of {r s} :: Pair {r s} -> ref {r} string = \pair -> pair.left
+```
+
+recordは16個までのregionを宣言できます（17個目は `E1017`）。`def` のregionは型の入れ子と同じ128個までです（超過は `E1017`）。二つ以上のregionを持つrecordは、使用位置で宣言順に同じ数の名前を書きます（`Pair {r s}`。数の違いは `E1013`）。
+そのrecordで借用を直接格納するfieldは、型にregionを一つ書きます（書かないと `E1013`）。関数型・型変数のfieldは全regionに属します。
+一つのfield・parameter・resultが異なるregionを持てるのは、型全体が多region recordの直接適用（`pair: Pair {b a}`、`Pair {r s}`）のときだけです。
+所有権検査はregionごとにloanを分けます。recordリテラル・更新、fieldの読み出し、不変のlocal・引数、`if`／`match` の合流、名前付き関数の直接完全適用で
+regionを区別し、`let mut`・ループで合流するlocal、関数値・部分適用、捕捉、配列・リスト・タプル・union payloadへの格納、参照外しした場所からの読み出しは全regionの和として保守的に扱います。
+上の例で `{ let short = "xy"; left_of (Pair { left: ref long, right: ref short }) }` は `long` の寿命だけを持つのでブロックの外へ返せ、`.right` を返すと `E1013` です。
+
+```text
+def apply {r} :: ({s} ref {s} string -> ref {s} string) -> ref {r} string -> ref {r} string = \f text -> f text
+def trim {s} :: ref {s} string -> ref {s} string = \text -> text
+```
+
+名前付き関数の引数の型全体に限り、関数型の前にregionの並びを書いてregionで量化した関数型にできます（`({s} ref {s} T -> ref {s} T)`）。
+本体でその引数を全引数で呼んだ結果は、型が名前で示す入力のloanだけを持ちます。量化regionは関数自身のregionと別の名前にし、内側に関数のregionを書けません。
+借用を持つ結果は一つのregionで注釈し、その引数は `mut` にできません。戻り値・入れ子の型・record field・ラムダの引数・ローカルの型注釈には書けません（`E1013`）。
+この引数を持つ関数は全引数を渡す直接呼び出しだけができ、関数値・部分適用は `E1013` です。
+渡せる関数は、named regionの契約が量化型を満たす名前付き関数（先頭の引数を部分適用したものを含む）、本体が契約を満たすラムダ（捕捉は入力に数えません）、
+同じ量化型を持つ引数です。それ以外の関数値と、捕捉や名前のない入力から借用を返す関数は `E1013` です。
+`{ let short = "xy"; apply trim (ref long) }` は `long` の寿命だけを持ち、`apply (\t -> r) (ref long)`（`r` は `short` の借用）は拒否します。
 
 ### char と utf8char
 
@@ -2591,10 +2620,11 @@ def main :: IO<unit> =
 Array の逐次集計と [データ並列 API](#データ並列-api) は別の演算順序です。自動で Parallel へ切り替えません。
 
 読み取りは `ref [T]`／`ref [|T|]` を受け、コレクション全体を複製しません。
-Array は `length`・`is_empty`・`get`・`at`・`sub`・`init`・`reverse`・`append`・`concat`・`zip`・`to_list`、
+Array は `length`・`is_empty`・`get`・`at`・`sub`・`init`・`reverse`・`copy`・`append`・`concat`・`zip`・`to_list`、
 `map`・`mapi`・`fold`・`fold_back`・`reduce`、各 `_ref` 版、`sum`・`product`・`min`・`max`、
 `any`・`all`・`count`・`find`・`index_of`・`contains`・`equal`・`sort`・`sort_by`・`binary_search`・`filter` を提供します。
-List は `length`・`is_empty`・`map`・`map_ref`・`fold`・`fold_ref`・`reverse`・`to_array` を提供します。
+List は `length`・`is_empty`・`copy`・`map`・`map_ref`・`fold`・`fold_ref`・`reverse`・`to_array` を提供します。
+`Array.copy`／`List.copy` は借用したコレクションの全要素を複製した新しい値を返す、暗黙の複製の明示形です（要素に Copy を要求）。
 
 値を読み出す callback・新しい所有コレクションへのコピーは要素に Copy を要求します。
 `_ref` 版、比較・検索は要素を借用し、非 Copy 要素も扱えます。`find`／`min`／`max` は `Option<ref T>`、
@@ -2988,6 +3018,8 @@ LLD により到達しないコードを削除します。
 警告は既定ではコンパイルを止めず、終了コードも変えません。検査が成功した場合だけ、`check`・`build`・`run` の処理の前に
 ファイルごとに位置順で stderr へ出力します（`Main.tz:5:7: warning[W1003]: ...`）。
 `--deny-warnings` を指定すると警告だけでも終了コード 1 とし、コード生成・実行の前に止め、既存の出力を変更しません。
+`--warn implicit-copy`（`check`・`build`・`run`・`test`）は既定で無効の `W1006` を有効にし、利用者のモジュールで配列・リストを暗黙に複製する位置を一件ずつ報告します。
+生成するコードは変えません。同じ位置を複数の特殊化が複製しても一件です。
 JSON の severity は warning のままです。ソースエラーがある場合は警告を出しません。
 未使用ローカルは `_`／`_name` のように名前を `_` で始めると抑制できます。move・借用・ガード・捕捉も使用として数えます。
 標準ライブラリとコンパイラ生成の束縛は抑制します。非公開宣言は公開 API・entry・instance・active pattern などからの到達性で判定します。
@@ -3038,6 +3070,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `W1002` | 公開 API から到達しない private 関数・レコード・union・型別名（警告） |
 | `W1003` | 前の節で覆われる到達不能な match の節（警告） |
 | `W1004` | 同じ字句スコープでのシャドーイング。内部オプションのみ、既定無効 |
+| `W1006` | 長さに比例する配列・リストの暗黙の複製。`--warn implicit-copy` のときだけ報告（警告） |
 | `E2000` | CLI／オプション／拡張子、既定の wasm32 出力で OS API（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`）に到達するビルド |
 | `E2001` / `E2002` | I/O／LLVM ツール、Windows の native ビルドで OS API に到達する場合の `E2002` |
 | `E2003` / `E2004` / `E2005` | 出力保護／入口条件／実行時の異常終了（`IO<i32>` 入口が 0 以外の終了コードで終わった場合の `E2005` を含む） |
