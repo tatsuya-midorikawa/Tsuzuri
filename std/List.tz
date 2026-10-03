@@ -4,6 +4,10 @@ fn length values = values.length
 def is_empty :: ref [|'a|] -> bool
 fn is_empty values = values.length == 0
 
+/// Returns a new list with a copy of every element, the explicit form of an implicit list copy.
+def copy :: Copy<'a> => ref [|'a|] -> [|'a|]
+fn copy values = *values
+
 def fold :: Copy<'a> => ref [|'a|] -> 'state -> ('state -> 'a -> 'state) -> 'state
 fn fold values initial folder =
     let mut state = initial

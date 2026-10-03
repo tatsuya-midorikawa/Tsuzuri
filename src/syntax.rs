@@ -444,6 +444,9 @@ pub enum TypeExprKind {
     /// stays as small as before, which bounds the parser's recursion stack.
     Apply(Box<Ident>, Box<[TypeExpr]>),
     Regions(Box<TypeExpr>, Box<[Ident]>),
+    /// `{r s} A -> B`: a function type with regions of its own, which only a named function's
+    /// parameter can have (A12 Phase 2).
+    Quantified(Box<[Ident]>, Box<TypeExpr>),
     Array(Box<TypeExpr>),
     List(Box<TypeExpr>),
     Tuple(Vec<TypeExpr>),

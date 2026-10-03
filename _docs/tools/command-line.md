@@ -68,6 +68,7 @@ library / WASM 出力はトップレベルコードを自動実行しません�
 | `--trap-mode return` | native の `--emit object`・`llvm`・`header` で、各 export に `tsuzuri_try_<name>`（トラップを戻り値で返す）を追加。`--trap-info` を含む（build のみ） |
 | `--debug-output` | WASM の Debug 出力をホスト import へ接続 |
 | `--deny-warnings` | check / build / run を警告だけでも失敗させる |
+| `--warn implicit-copy` | check / build / run / test で、配列・リストの暗黙の複製を `W1006` で報告する（既定は無効。生成コードは変わらない） |
 
 native CPU 指定を WASM / LLVM IR / header に使うことはできません。WASM feature は check / run / native / header には指定できず、threads は LLVM テキスト出力にも指定できません。未知・重複 feature はエラーです。
 

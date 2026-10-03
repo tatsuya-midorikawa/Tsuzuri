@@ -71,3 +71,77 @@ fn named_reference =
     let value = first (ref values)
     deref value
 
+
+record RegionPair {r s} { left: ref {r} string, right: ref {s} string }
+record RegionSwapped {a b} { pair: RegionPair {b a} }
+
+private def make_region_pair {r s} :: ref {r} string -> ref {s} string -> RegionPair {r s}
+fn make_region_pair left right = RegionPair { left: left, right: right }
+
+private def region_left {r s} :: RegionPair {r s} -> ref {r} string
+fn region_left pair = pair.left
+
+export def region_call :: i64
+fn region_call =
+    let long = "abcdefg"
+    let kept = { let short = "xy"; region_left (make_region_pair (ref long) (ref short)) }
+    kept.length
+
+export def region_field :: i64
+fn region_field =
+    let long = "abcdefg"
+    let kept = { let short = "xy"; let pair = RegionPair { left: ref long, right: ref short }; pair.left }
+    kept.length
+
+export def region_nested :: i64
+fn region_nested =
+    let long = "abcdefg"
+    let kept = { let short = "xy"; let swapped = RegionSwapped { pair: RegionPair { left: ref long, right: ref short } }; swapped.pair.left }
+    kept.length
+
+export def region_loop :: i64 -> i64
+fn region_loop count =
+    let long = "abcdefg"
+    let short = "xy"
+    let pair = make_region_pair (ref long) (ref short)
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        total = total + (region_left pair).length + pair.right.length
+        index = index + 1
+    total
+
+private def region_apply {r} :: ({s} ref {s} string -> ref {s} string) -> ref {r} string -> ref {r} string
+fn region_apply f text = f text
+
+private def region_trim {s} :: ref {s} string -> ref {s} string
+fn region_trim text = text
+
+private def region_skip {s} :: i64 -> ref {s} string -> ref {s} string
+fn region_skip count text = text
+
+private def region_first {s t} :: ref {s} string -> ref {t} string -> ref {s} string
+fn region_first first second = first
+
+private def region_keep {r} :: ({s t} ref {s} string -> ref {t} string -> ref {s} string) -> ref {r} string -> ref string -> ref {r} string
+fn region_keep f kept other = f kept other
+
+export def region_callback :: i64
+fn region_callback =
+    let long = "abcdefg"
+    let kept = { let short = "xy"; region_keep region_first (ref long) (ref short) }
+    let trimmed = { let short = "xy"; region_apply region_trim (ref long) }
+    let lambda = { let short = "xy"; region_apply (\text -> text) (ref long) }
+    let skipped = { let short = "xy"; region_apply (region_skip 3) (ref long) }
+    kept.length + trimmed.length + lambda.length + skipped.length
+
+export def region_callback_loop :: i64 -> i64
+fn region_callback_loop count =
+    let long = "abcdefg"
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        let short = "xy"
+        total = total + (region_keep region_first (ref long) (ref short)).length + (region_apply (\text -> text) (ref short)).length
+        index = index + 1
+    total

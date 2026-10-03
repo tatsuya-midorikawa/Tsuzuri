@@ -365,6 +365,10 @@ const suites = {
       ["text_view", [], 16n], ["partial_view", [], 13n],
       ["view_iteration", [10000n], 60000n], ["pair_view", [], 3n],
       ["named_view", [], 10n], ["named_reference", [], 42n],
+      ["region_call", [], 7n], ["region_field", [], 7n], ["region_nested", [], 7n],
+      ...[0n, 1n, 1000n].map((count) => ["region_loop", [count], count * 9n]),
+      ["region_callback", [], 28n],
+      ...[0n, 1n, 1000n].map((count) => ["region_callback_loop", [count], count * 9n]),
     ],
   },
   iteration_protocol: {
@@ -645,6 +649,16 @@ const suites = {
       ["swap_same", [], 13n],
     ],
     traps: [["trap_update_index", []], ["trap_swap_index", []], ["trap_empty_tail", []]],
+  },
+  explicit_copy: {
+    cases: [
+      ["explicit_copy", [], 14n],
+      ...[0n, 1n, 10000n].flatMap((count) => [
+        ["copy_sum", [count], count * (count - 1n)],
+        ["list_copy", [count], 2n * count * (count - 1n) + count],
+      ]),
+      ...[0n, 1n, 100n].map((count) => ["nested_copy", [count], count * (count - 1n) / 2n + count]),
+    ],
   },
   slices: {
     cases: [

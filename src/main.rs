@@ -55,6 +55,7 @@ Build options:
     --no-cache             Disable build/run artifact cache reads and writes
     -g, --debug-info        Emit source-level DWARF debug information
     --deny-warnings        Fail check/build/run before code generation on warnings
+    --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
     --debug-output         Enable WASM Debug output imports (native always writes)
     --trap-info            Report trap locations and emit an output.trap.json table
                                                  Enabled by default for run; disabled by default for build
@@ -98,6 +99,7 @@ struct Arguments {
     links: driver::LinkInputs,
     json: bool,
     deny_warnings: bool,
+    warn_implicit_copy: bool,
     format_check: bool,
     test_filter: Option<String>,
     test_list: bool,
@@ -117,6 +119,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             links: driver::LinkInputs::default(),
             json: false,
             deny_warnings: false,
+            warn_implicit_copy: false,
             format_check: false,
             test_filter: None,
             test_list: false,
@@ -159,6 +162,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut cpu = None;
     let mut json = false;
     let mut deny_warnings = false;
+    let mut warn_implicit_copy = false;
     let mut format_check = false;
     let mut test_filter = None;
     let mut test_list = false;
@@ -200,6 +204,25 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("deny-warnings specified more than once".into());
                     }
                     deny_warnings = true;
+                    continue;
+                }
+                Some("--warn") => {
+                    let Some(name) = arguments.get(position) else {
+                        return Err(
+                            "--warn requires a warning name; supported: implicit-copy".into()
+                        );
+                    };
+                    position += 1;
+                    if name != "implicit-copy" {
+                        return Err(format!(
+                            "unknown warning '{}' for --warn; supported: implicit-copy",
+                            name.to_string_lossy()
+                        ));
+                    }
+                    if warn_implicit_copy {
+                        return Err("warn implicit-copy specified more than once".into());
+                    }
+                    warn_implicit_copy = true;
                     continue;
                 }
                 Some("--check") => {
@@ -460,7 +483,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
-    if action == Action::Fmt && (optimization.is_some() || cpu.is_some() || deny_warnings) {
+    if action == Action::Fmt
+        && (optimization.is_some() || cpu.is_some() || deny_warnings || warn_implicit_copy)
+    {
         return Err(
             "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
         );
@@ -527,6 +552,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         links,
         json,
         deny_warnings,
+        warn_implicit_copy,
         format_check,
         test_filter,
         test_list,
@@ -1002,8 +1028,15 @@ fn main() -> ExitCode {
     } else {
         driver::LinkInputs::default()
     };
-    let warnings =
-        tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(module.warnings.iter().cloned(), 0);
+    let copies = if arguments.warn_implicit_copy {
+        tsuzuri::copies::warnings(&module)
+    } else {
+        Vec::new()
+    };
+    let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(
+        module.warnings.iter().cloned().chain(copies),
+        0,
+    );
     print_diagnostics(&warnings, &project, arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
         return ExitCode::FAILURE;
@@ -1309,6 +1342,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_warn_implicit_copy() {
+        for action in ["check", "build", "run", "test"] {
+            let arguments = parse(&[action, "Main.tz", "--warn", "implicit-copy"]).unwrap();
+            assert!(arguments.warn_implicit_copy, "{action}");
+            assert!(!parse(&[action, "Main.tz"]).unwrap().warn_implicit_copy);
+        }
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--warn"],
+                "--warn requires a warning name; supported: implicit-copy",
+            ),
+            (
+                vec!["check", "Main.tz", "--warn", "shadowing"],
+                "unknown warning 'shadowing' for --warn; supported: implicit-copy",
+            ),
+            (
+                vec![
+                    "check",
+                    "Main.tz",
+                    "--warn",
+                    "implicit-copy",
+                    "--warn",
+                    "implicit-copy",
+                ],
+                "warn implicit-copy specified more than once",
+            ),
+            (
+                vec!["fmt", "Main.tz", "--warn", "implicit-copy"],
+                "fmt does not use optimization, CPU tuning, or compiler warning options",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
     fn rejects_ambiguous_or_unused_arguments() {
         for values in [
             vec!["build", "Main.tz", "--wasm-feature", "simd128"],
@@ -1363,6 +1432,17 @@ mod tests {
             vec!["check", "Main.tz", "--check"],
             vec!["fmt", "Main.tz", "--check", "--check"],
             vec!["fmt", "Main.tz", "--deny-warnings"],
+            vec!["fmt", "Main.tz", "--warn", "implicit-copy"],
+            vec!["check", "Main.tz", "--warn"],
+            vec!["check", "Main.tz", "--warn", "shadowing"],
+            vec![
+                "check",
+                "Main.tz",
+                "--warn",
+                "implicit-copy",
+                "--warn",
+                "implicit-copy",
+            ],
             vec!["fmt", "Main.tz", "-O0"],
             vec!["fmt", "Main.tz", "--cpu", "native"],
             vec!["fmt", "Main.tz", "-o", "Other.tz"],

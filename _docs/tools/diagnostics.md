@@ -71,11 +71,14 @@ start / end は UTF-8 の byte offset で、end は排他的です。line / colu
 | W1002 | 公開 API などから到達しない private 宣言 |
 | W1003 | 先行節に覆われる到達不能な match 節 |
 | W1004 | 同じ字句スコープの shadowing。内部オプションのみ、既定無効 |
+| W1006 | 長さに比例する配列・リストの暗黙の複製。`--warn implicit-copy` のときだけ |
 | W2001 | cache I/O などツール側の警告 |
 
 意図的な未使用ローカルは `_` または `_name` で明示します。move、借用、ガード、捕捉も使用として数えます。コンパイラ生成の束縛や std の未使用警告は利用者へ出しません。
 
 既定で警告は終了コードを変えません。check / build / run の `--deny-warnings` は警告だけでも終了コード 1 にして、コード生成や実行の前に停止します。JSON の severity は warning のままです。
+
+W1006 は `let b = a` の後も `a` を使う場合、field の取り出し、`*values`／`deref values` など、配列・リストを暗黙に複製する位置を一件ずつ示します。最後の使用の move、`Array.copy`／`List.copy` による明示の複製、std の内部の複製は報告しません。`--deny-warnings` と組み合わせると暗黙の複製を拒否できます。対処は[暗黙の複製を見つける](../language-reference/ownership.md#暗黙の複製を見つける)を参照してください。
 
 ソースエラーがある場合には警告を出しません。警告が表示されないことだけで、すべての unused 検査が済んだと判断しないでください。
 

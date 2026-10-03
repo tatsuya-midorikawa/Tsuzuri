@@ -21,6 +21,20 @@ Tsuzuri は GC、参照カウント、言語内の手動解放を使いません
 
 Copy 配列やリストの複製は独立したバッファやノードを作ります。Copy は「後から元値を使える」という意味であり、O(1) や共有記憶域を意味しません。
 
+### 暗黙の複製を見つける
+
+`let b = a` の後でも `a` を使う場合、record の field を取り出す場合、`*values`／`deref values` で参照先を取る場合は、配列やリストが暗黙に複製されます。最後の使用は move なので複製しません。
+
+`tsuzuri check --warn implicit-copy` は、利用者のコードで配列・リストを暗黙に複製する位置を `W1006` で報告します（`build`・`run`・`test` でも使え、既定では無効です）。エディターでは同じ位置に `copy (local)`・`copy (field)` のような inlay hint が複製の種類を示します。複製が不要なら `ref` で借用し、意図した複製なら明示します。
+
+```tsuzuri run=6
+let a = [1, 2, 3]
+let b = Array.copy (ref a)
+Array.length (ref a) + Array.length (ref b)
+```
+
+`Array.copy`／`List.copy` は借用したコレクションの全要素を複製した新しい値を返し、`W1006` の対象になりません。
+
 レコードのフィールドは個別に move できます。残ったフィールドは使用・解放できますが、部分 move 後のレコード全体は使えません。非 Copy 要素を配列やリストの添字から move することはできません。
 
 ## 共有借用
