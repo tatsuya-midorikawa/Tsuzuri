@@ -328,6 +328,77 @@ fn multiple_record_regions_split_local_loans() {
 }
 
 #[test]
+fn multiple_regions_follow_record_updates() {
+    let declarations = format!("{PAIR}{FUNCTIONS}");
+    let block = |pair: &str, update: &str, result: &str| {
+        program(
+            &declarations,
+            &format!(
+                "let kept = {{ let short = \"xy\"; let pair = Pair {{ {pair} }}; let updated = {{ pair with {update} }}; {result} }}\nkept.length"
+            ),
+        )
+    };
+    // The replacement's loans go only to the replaced field's slot.
+    accepts(&block(
+        "left: ref long, right: ref long",
+        "left = ref short",
+        "updated.right",
+    ));
+    rejects(
+        &block(
+            "left: ref long, right: ref long",
+            "left = ref short",
+            "updated.left",
+        ),
+        "E1013",
+    );
+    // The fields that the update keeps keep their slots.
+    accepts(&block(
+        "left: ref long, right: ref short",
+        "left = ref long",
+        "updated.left",
+    ));
+    rejects(
+        &block(
+            "left: ref long, right: ref short",
+            "left = ref long",
+            "updated.right",
+        ),
+        "E1013",
+    );
+    // An update keeps the base's loans in the replaced slot too, which stays conservative.
+    rejects(
+        &block(
+            "left: ref short, right: ref long",
+            "left = ref long",
+            "updated.left",
+        ),
+        "E1013",
+    );
+    // A direct call selects the slots of an updated argument.
+    accepts(&block(
+        "left: ref long, right: ref long",
+        "right = ref short",
+        "left_of updated",
+    ));
+    for (update, code) in [
+        ("right = ref short", None),
+        ("left = ref short", Some("E1013")),
+    ] {
+        let source = program(
+            &declarations,
+            &format!(
+                "let kept = {{ let short = \"xy\"; let pair = Pair {{ left: ref long, right: ref long }}; left_of ({{ pair with {update} }}) }}\nkept.length"
+            ),
+        );
+        match code {
+            None => accepts(&source),
+            Some(code) => rejects(&source, code),
+        }
+    }
+}
+
+#[test]
 fn multiple_region_contracts_select_input_slots() {
     let declarations = format!("{PAIR}{FUNCTIONS}");
     let generic = "record Pair2<'a, 'b> {r s} { left: ref {r} 'a, right: ref {s} 'b }\n\

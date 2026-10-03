@@ -93,6 +93,14 @@ fn region_field =
     let kept = { let short = "xy"; let pair = RegionPair { left: ref long, right: ref short }; pair.left }
     kept.length
 
+export def region_update :: i64
+fn region_update =
+    let long = "abcdefg"
+    let other = "abc"
+    let kept = { let short = "xy"; let pair = RegionPair { left: ref long, right: ref other }; let updated = { pair with left = ref short }; updated.right }
+    let left = { let short = "xy"; let pair = RegionPair { left: ref other, right: ref short }; let updated = { pair with left = ref long }; updated.left }
+    kept.length + left.length
+
 export def region_nested :: i64
 fn region_nested =
     let long = "abcdefg"

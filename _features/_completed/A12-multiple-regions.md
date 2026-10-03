@@ -992,3 +992,13 @@ Phase 1 と Phase 2 を実装した。着手時の HEAD は `c995217`（ブラ�
 - Phase 2 の受理と拒否を、テストの外の 24 個のプログラム（量化型を書ける位置と書けない位置、名前付き関数・部分適用・ラムダ・引数の受け渡し、
   捕捉した借用を返すラムダ、総称関数、関数の region と同じ名前の量化、`mut` の引数など）でも release のコンパイラで確かめた。
 - `node scripts/check-docs.mjs`（97 ページ、851 リンク、184 例、native 302 回）、Windows の `cargo check --all-targets`（x86_64／aarch64-pc-windows-msvc）が成功。
+
+## レビュー対応（2026-10-04、PR #8）
+
+Copilot のレビュー 1 件（多 region の record の更新 `{ pair with left = ... }` に、slot の扱いを直接確かめるテストがない）は妥当と判断し、テストを足した。実装は変えていない。
+
+- `tests/borrowed_records.rs` の `multiple_regions_follow_record_updates`: 置き換えた field の loan はその field の slot にだけ入る（`updated.right` は受理、
+  `updated.left` は `E1013`）、更新しない field は元の slot を保つ（`updated.left` は受理、`updated.right` は `E1013`）、置き換えた slot も元の値の loan を
+  保つ保守的な扱い（仕様の「評価順序・所有権・借用」の「更新は元の値の slot を保って追加する」）、更新した値を直接の完全適用へ渡したときの slot の選択。計 15 件。
+  更新の元の値の slot を捨てる変更を入れると、このテストが失敗することを確かめた。
+- E2E: `borrowed_records` に export `region_update`（更新の後に各 field を返す）を足し、21 ケースが native・WASM × `-O0`／`-O3` で成功。
