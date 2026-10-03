@@ -1,0 +1,257 @@
+def digest :: &string -> i64
+fn digest text =
+    let mut hash = 0
+    let mut index = 0
+    while index < text.length do
+        hash = (hash * 131 + (text[index] as i64)) % 1000000007
+        index = index + 1
+    hash
+
+record Person { name: string, age: i64 }
+
+record Label { text: string }
+
+instance Display<Label> {
+    fn display value = $"{value.text}"
+}
+
+record Boom { value: i64 }
+
+instance Display<Boom> {
+    fn display _value = unreachable ()
+}
+
+def stamp :: &mut i64 -> i64 -> i64
+fn stamp log digit =
+    deref log = deref log * 10 + digit
+    digit
+
+export def basic_holes :: i64
+fn basic_holes =
+    let name = "Tsuzuri"
+    let count = 3
+    let text = $"hello {name}, {count + 1} times {{ok}}"
+    assert (text == "hello Tsuzuri, 4 times {ok}")
+    name.length + text.length
+
+export def borrowed_holes :: i64
+fn borrowed_holes =
+    let s = "abc"
+    let p = Person { name: "xy", age: 7 }
+    let text = $"{s}-{p.name}-{s}"
+    assert (text == "abc-xy-abc")
+    text.length + s.length + p.name.length
+
+export def evaluation_order :: i64
+fn evaluation_order =
+    let mut log = 0
+    let text = $"{stamp (&mut log) 1}{stamp (&mut log) 2}{stamp (&mut log) 3}"
+    assert (text == "123")
+    log * 1000 + text.length
+
+export def temporaries :: i64 -> i64
+fn temporaries n =
+    let text = $"{n + 1}|{"abc"}|{42}"
+    digest (&text)
+
+export def utf8_holes :: i64
+fn utf8_holes =
+    let s8 = u8"ü"
+    let s16 = "ß"
+    let c = 'x'
+    let text = u8$"é{s8}😀{s16}{c}"
+    text.length
+
+export def nested_literals :: bool
+fn nested_literals =
+    let x = 42
+    $"<{$"[{x}]"}>" == "<[42]>"
+
+export def display_instance :: i64
+fn display_instance =
+    let label = Label { text: "label" }
+    let text = $"<{label}>"
+    assert (text == "<label>")
+    text.length
+
+export def owned_loop :: i64 -> i64
+fn owned_loop count =
+    let name = "ab"
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        let text = $"{index}:{name}"
+        total = total + text.length
+        index = index + 1
+    total
+
+export def trap_utf8_surrogate :: i64
+fn trap_utf8_surrogate =
+    let s = "\uD800"
+    let text = u8$"{s}"
+    text.length
+
+export def trap_display :: i64
+fn trap_display =
+    let boom = Boom { value: 1 }
+    let text = $"{boom}"
+    text.length
+
+export def spec_integer :: i64 -> i64
+fn spec_integer v =
+    let text = $"{v:x}|{v:X}|{v:o}|{v:b}|{v:+}|{v:>25}|{v:*^25}|{v:0>25}"
+    digest (&text)
+
+export def spec_unsigned :: i64 -> i64
+fn spec_unsigned v =
+    let u = v as i64u
+    let text = $"{u:x}|{u:+}|{u:b}|{u:^22}"
+    digest (&text)
+
+export def spec_narrow :: i64 -> i64
+fn spec_narrow v =
+    let a = v as i8
+    let b = v as i16u
+    let text = $"{a:x}|{a:b}|{b:X}|{b:o}"
+    digest (&text)
+
+export def spec_i128_min :: i64
+fn spec_i128_min =
+    let m: i128 = -170141183460469231731687303715884105728i128
+    let text = $"{m:x}|{m:+}|{m:b}"
+    digest (&text)
+
+export def spec_f64 :: f64 -> i64
+fn spec_f64 x =
+    let text = $"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"
+    digest (&text)
+
+export def spec_f32 :: f32 -> i64
+fn spec_f32 x =
+    let text = $"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"
+    digest (&text)
+
+export def spec_wide :: i64 -> i64
+fn spec_wide k =
+    let text =
+        match k with
+        | 0 -> $"{0.1f16:.3}|{0.1f16:.20}|{0.1f16:.2e}"
+        | 1 -> $"{0.1f128:.3}|{0.1f128:.20}|{0.1f128:.2e}"
+        | 2 -> $"{0.125d32:.3}|{0.125d32:.20}|{0.125d32:.2e}"
+        | 3 -> $"{2.5d64:.3}|{2.5d64:.20}|{2.5d64:.2e}"
+        | _ -> $"{1e-30d128:.3}|{1e-30d128:.20}|{1e-30d128:.2e}"
+    digest (&text)
+
+export def spec_padding :: i64
+fn spec_padding =
+    let label = Label { text: "lab" }
+    let text = $"{"é😀":*>5}|{"\uD800":3}|{"ab":^6}|{label:>8}|{true:<6}|{'x':^3}"
+    digest (&text)
+
+export def spec_utf8_padding :: i64
+fn spec_utf8_padding =
+    let text = u8$"{"é":*>3}|{7:0>4}|{1.5:+.1}|{"😀":😀^4}"
+    text.length
+
+record Point { x: i64, y: i64 }
+
+instance Format<Point> {
+    fn format point spec =
+        match Format.parse spec with
+        | Option.Some parsed ->
+            let sign = if parsed.plus then "+" else ""
+            let precision = if parsed.precision >= 0 then $".{parsed.precision}" else ""
+            Format.pad (ref parsed) ($"{sign}{point.x},{point.y}{precision}")
+        | Option.None -> "invalid"
+}
+
+union Shade = Light | Dark
+
+instance Format<Shade> {
+    fn format shade spec =
+        match shade with
+        | Light -> $"L[{spec}]"
+        | Dark -> $"D[{spec}]"
+}
+
+record Box<'a> { value: 'a }
+
+instance Format<'a> => Format<Box<'a>> {
+    fn format boxed spec = $"box({Format.format (ref boxed.value) spec})"
+}
+
+union Tone = Quiet | Loud deriving (Display)
+
+export def format_instances :: i64
+fn format_instances =
+    let p = Point { x: 3, y: -4 }
+    let boxed = Box { value: p }
+    let text = $"{p:>10}|{p:<10}|{p:^10}|{p:+}|{p:.2}|{p:*>+12.1f}|{Light:x}|{Dark:>3}|{boxed:^9.1e}|{Point { x: 0, y: 1 }:+}"
+    digest (&text)
+
+export def format_instances_utf8 :: i64
+fn format_instances_utf8 =
+    let p = Point { x: 3, y: -4 }
+    let text = u8$"{p:>6}|{p:+}|{Dark:x}"
+    text.length
+
+export def format_keeps_owners :: i64
+fn format_keeps_owners =
+    let p = Point { x: 1, y: 2 }
+    let first = $"{p:+}"
+    let second = $"{p:+}"
+    p.x + p.y + first.length + second.length
+
+export def display_case_holes :: i64
+fn display_case_holes =
+    let text = $"{Quiet}{Loud}"
+    digest (&text)
+
+private def describe :: Option.Option<Format.Spec> -> string
+fn describe parsed =
+    match parsed with
+    | Option.None -> "none"
+    | Option.Some spec ->
+        let align =
+            match spec.align with
+            | Format.AlignAuto -> "auto"
+            | Format.AlignLeft -> "left"
+            | Format.AlignCenter -> "center"
+            | Format.AlignRight -> "right"
+        let kind =
+            match spec.kind with
+            | Format.KindPlain -> "plain"
+            | Format.KindLowerHex -> "x"
+            | Format.KindUpperHex -> "X"
+            | Format.KindOctal -> "o"
+            | Format.KindBinary -> "b"
+            | Format.KindExponent -> "e"
+            | Format.KindFixed -> "f"
+        $"fill={spec.fill} align={align} plus={spec.plus} width={spec.width} precision={spec.precision} kind={kind}"
+
+export def format_parse :: i64
+fn format_parse =
+    let specs = ["", ">", "<5", "^7", "*>+8.2f", "😀^4", "é<3", ">>5", "<<<", "+", "+5", "08", "0", "5", ".3e", ".", ".x", "x", "X", "o", "b", "e", "f", "4096", "4097", "99999999999", "+.2f", "-^6.1e", "q", "5x7", " >2", "5>", "\uD800<2", "😀>+10.4X", "<+", ".5.5", "++", "x ", "^^^^"]
+    let mut out = ""
+    let mut index = 0
+    while index < specs.length do
+        out = out + describe (Format.parse (ref specs[index])) + "|"
+        index = index + 1
+    digest (&out)
+
+export def format_pad :: i64
+fn format_pad =
+    let specs = ["", "5", "<5", ">5", "^5", "*^7", "-^6", "😀>4", "<3", "^2", "8", ">1", "^8", "*<9"]
+    let texts = ["", "ab", "é😀", "\uD800", "abcdef", "😀😀", "x"]
+    let mut out = ""
+    let mut spec_index = 0
+    while spec_index < specs.length do
+        let mut text_index = 0
+        while text_index < texts.length do
+            let text = $"{texts[text_index]}"
+            match Format.parse (ref specs[spec_index]) with
+            | Option.Some spec -> out = out + Format.pad (ref spec) text + "|"
+            | Option.None -> out = out + "invalid|"
+            text_index = text_index + 1
+        spec_index = spec_index + 1
+    digest (&out)

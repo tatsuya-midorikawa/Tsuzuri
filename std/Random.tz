@@ -1,0 +1,57 @@
+/// A PCG-XSH-RR 64/32 generator. Make one with `pcg`; the stream is odd by construction.
+record Pcg { state: i64u, increment: i64u }
+
+private def gather :: i64 -> Result.Result<[ubyte], Os.Error>
+fn gather count =
+	match Os.__random count with
+	| (0, bytes) -> Result.Ok bytes
+	| (status, _) -> Result.Error (Os.error_of_status status)
+
+private def little_endian :: [ubyte] -> i64u
+fn little_endian bytes =
+	let mut value = 0i64u
+	let mut index = 7
+	while index >= 0 do
+		value = (value << 8) | (bytes[index] as i64u)
+		index = index - 1
+	value
+
+private def word :: Result.Result<[ubyte], Os.Error> -> Result.Result<i64u, Os.Error>
+fn word bytes =
+	match bytes with
+	| Result.Ok data -> Result.Ok (little_endian data)
+	| Result.Error error -> Result.Error error
+
+/// Random bytes from the operating system. A negative count or one above 2^30 is `InvalidInput`.
+def bytes :: i64 -> IO<Result.Result<[ubyte], Os.Error>>
+fn bytes count = IO.map (\() -> gather count) (IO.pure ())
+
+/// Eight operating-system random bytes as a little-endian number.
+def next_u64 :: unit -> IO<Result.Result<i64u, Os.Error>>
+fn next_u64 _unit = IO.map (\() -> word (gather 8)) (IO.pure ())
+
+private def advance :: i64u -> i64u -> i64u
+fn advance state increment = state * 6364136223846793005i64u + increment
+
+/// A generator from a seed and a stream number (pcg32_srandom_r of pcg-c-basic).
+def pcg :: i64u -> i64u -> Pcg
+fn pcg seed sequence =
+	let increment = (sequence << 1) | 1i64u
+	let started = advance 0i64u increment
+	Pcg { state: advance (started + seed) increment, increment: increment }
+
+/// The next 32 bits and the following generator (pcg32_random_r).
+def pcg_next_u32 :: Pcg -> (i32u * Pcg)
+fn pcg_next_u32 generator =
+	let old = generator.state
+	let shifted = (((old >> 18) ^ old) >> 27) as i32u
+	let rotation = (old >> 59) as i64
+	(Int.rotate_right shifted rotation, Pcg { state: advance old generator.increment, increment: generator.increment })
+
+/// 64 bits from two outputs, the first as the high half, and the following generator.
+def pcg_next_u64 :: Pcg -> (i64u * Pcg)
+fn pcg_next_u64 generator =
+	match pcg_next_u32 generator with
+	| (high, middle) ->
+		match pcg_next_u32 middle with
+		| (low, next) -> (((high as i64u) << 32) | (low as i64u), next)

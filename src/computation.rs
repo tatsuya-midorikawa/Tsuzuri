@@ -122,6 +122,16 @@ pub(super) fn collect_all(
     builders
 }
 
+/// The hole expressions of an interpolated string, kept out of `expand`'s frame.
+#[inline(never)]
+fn hole_values(interpolation: &mut Interpolation) -> Vec<&mut Expr> {
+    interpolation
+        .holes
+        .iter_mut()
+        .map(|hole| &mut hole.value)
+        .collect()
+}
+
 pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnostic> {
     let span = expression.span;
     let mut pattern_depth = 0;
@@ -226,6 +236,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
         ExprKind::Array(values) | ExprKind::List(values) | ExprKind::Tuple(values) => {
             values.iter_mut().collect()
         }
+        ExprKind::Interpolated(interpolation) => hole_values(interpolation),
         ExprKind::Integer(..)
         | ExprKind::Float(..)
         | ExprKind::String(_)

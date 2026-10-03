@@ -41,6 +41,92 @@ UTF-8 型の Unicode エスケープは波括弧付きの妥当なスカラー�
 
 char に補助平面の文字一つを格納することはできません。utf8char なら格納できます。空・複数文字の文字リテラルは `E0001` です。閉じる引用符のない `'value` は型変数として扱います。
 
+## 補間
+
+`$"..."` は、穴 `{式}` に値を埋め込んだ string を作るリテラルです。`u8$"..."` は同じ形で utf8string を作ります。`$` と引用符、`u8` と `$` の間に空白は置けません。通常の `"..."` では `{` と `}` はただの文字で、補間が始まるのは `$` を付けたときだけです。
+
+```tsuzuri run=hello%20Tsuzuri%2C%204%20times%20%7Bok%7D
+let name = "Tsuzuri"
+let count = 3
+let text = $"hello {name}, {count + 1} times {{ok}}"
+assert (name.length == 7)
+text
+```
+
+リテラルの中の `{{` は `{`、`}}` は `}` を表します。穴には、`Display` を持つ型の値になる式を書けます。string、数値、bool、char、unit、配列、タプル、`Display` を実装した利用者型が使えます。穴のない `$"..."` は、同じ内容の通常のリテラルと同じ値で、生成されるコードも同じです。
+
+```tsuzuri run=%5B1%2C%202%2C%203%5D%202%20(1%2C%20%22a%22)%20true%20c%201.5%20()
+let values = [1, 2, 3]
+let pair = (1, "a")
+$"{values} {values[1]} {pair} {true} {'c'} {1.5} {()}"
+```
+
+書式のない穴の文字列は `Display.display` の結果と同じで、数値は[最短往復表示](../library-reference/formatting-and-parsing.md#数値の表示形式)です。穴の式の最上位にある `:` から `}` までは[書式指定](../library-reference/formatting-and-parsing.md#書式指定)です。丸括弧、角括弧、波括弧の内側の `:` は書式指定ではありません。
+
+`u8$"..."` の文字とエスケープは、`u8"..."` と同じ UTF-8 の規則に従います。utf8string の穴は直接コピーし、それ以外の穴は表示した UTF-16 を UTF-8 へ変換して入れます。`$"..."` の穴に utf8string を書くと UTF-16 へ変換されます。
+
+```tsuzuri run=5
+let word = u8"ü"
+let text = u8$"é{word}{1 + 2}"
+assert (text == u8"éü3")
+text.length
+```
+
+### 借用と評価順序
+
+穴の値は消費しません。
+
+- ローカル、フィールド、参照外しは共有借用します。string のような非 Copy の値も、穴の後でそのまま使えます（最初の例の `name`）。
+- `ref` の値はそのまま使い、`ref mut` の値は共有として借り直します。
+- `count + 1` やリテラルのような一時値は、隠れた領域に置いて借用し、結果へ書き込んだ後に drop します。
+- 利用者の `Display` インスタンスは、穴ごとに一回だけ呼ばれます。
+
+穴は左から右へ、それぞれちょうど一回評価します。結果の確保は一回だけで、リテラルと同じ型の string を持つ穴は、確保せずに直接コピーします。
+
+```tsuzuri run=123
+def stamp :: ref mut i64 -> i64 -> i64
+fn stamp log digit =
+    deref log = deref log * 10 + digit
+    digit
+
+let mut log = 0
+let text = $"{stamp (ref mut log) 1}{stamp (ref mut log) 2}{stamp (ref mut log) 3}"
+assert (log == 123)
+text
+```
+
+借用は補間式の全体の間続きます。ある穴が借りている値を別の穴で排他借用する、たとえば `$"{x}{bump (ref mut x)}"` は `E1014` です。
+
+### 入れ子と上限
+
+穴の式には、文字列リテラルや別の補間リテラルも書けます。
+
+```tsuzuri run=%3C%5B42%5D%3E%20(43)%20literal
+let x = 42
+let inner = $"[{x}]"
+$"<{inner}> {$"({x + 1})"} {"literal"}"
+```
+
+- 穴は 1 行に収めます。穴の中の改行とコメントは `E0001` で、値は先に `let` で束縛します。
+- 補間リテラルの入れ子は 128 までです。
+- 1 リテラルの穴は 1024 個までです。
+- 結果の長さが `2^53 - 1` コード単位を超えるとトラップします。`u8$` の穴に孤立サロゲートを含む string を入れてもトラップします。
+
+### 診断
+
+| コード | 条件 |
+| --- | --- |
+| `E0001` | 穴の外の単独の `}`（`a single '}' in an interpolated string must be written '}}'`） |
+| `E0001` | 閉じない穴。穴の中の改行（`an interpolation hole must stay on one line; bind the value with 'let' first`）とコメント |
+| `E0001` | 通常のリテラルと同じ不正なエスケープや生の改行。`u8$` では UTF-8 のエスケープ規則に反するもの |
+| `E0001` | 書式指定の誤り（[書式指定](../library-reference/formatting-and-parsing.md#書式指定)を参照） |
+| `E0002` | 空の穴。空白だけも含む（`an interpolation hole needs an expression; write '{{' for a literal brace`） |
+| `E0002` | 1 リテラルに 1025 個以上の穴（`an interpolated string has at most 1024 holes; split it into several strings`） |
+| `E0002` | 補間の入れ子が 128 を超える（`syntax nesting exceeds 128`） |
+| `E1005` | 穴の型に `Display` がない（`no instance for Display<...>`） |
+| `E1012` | 穴の値がすでに move されている |
+| `E1014` | ある穴が借りている値を、別の穴で排他借用している |
+
 ## 文字の変換
 
 ```tsuzuri run=65
@@ -97,4 +183,5 @@ string の理論上限は `2^53 - 1` コード単位ですが、実際にはア�
 
 - [基本型](types.md)
 - [所有権](ownership.md)
+- [書式指定と Format クラス](../library-reference/formatting-and-parsing.md#書式指定)
 - [文字列 API の正式な一覧](../../docs/language.md#string-と-utf8string)

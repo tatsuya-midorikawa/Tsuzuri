@@ -152,7 +152,7 @@ pub(crate) fn build_key(
     let mut tools = Vec::new();
     if !matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Wgsl) {
         tools.push(("TSUZURI_CLANG", "clang"));
-        if options.emit == Emit::Wasm || options.wasm_threads {
+        if options.emit == Emit::Wasm || options.wasm_threads || options.wasm_host.is_some() {
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));
         }
         if cfg!(target_os = "macos") && options.debug_info && options.target == Target::Native {

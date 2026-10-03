@@ -282,6 +282,15 @@ fn build_runner(
             "native parallel tasks require POSIX or Windows threads",
         ));
     }
+    // A test may build IO actions without running them; their primitives still need the runtime.
+    let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    let io_runtime = !wasm && text.contains("declare i32 @tsuzuri_io_");
+    if os_runtime && wasm {
+        return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
+    }
+    if os_runtime && cfg!(windows) {
+        return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+    }
     let ir = directory.join("tests.ll");
     let object = directory.join("tests.o");
     let artifact = directory.join(if wasm {
@@ -327,6 +336,17 @@ fn build_runner(
             clang.arg(&runtime);
             if !cfg!(windows) {
                 clang.arg("-pthread");
+            }
+        }
+        for (needed, name, source) in [
+            (os_runtime, "os.c", include_str!("runtime/os.c")),
+            (io_runtime, "io.c", include_str!("runtime/io.c")),
+        ] {
+            if needed {
+                let runtime = directory.join(name);
+                fs::write(&runtime, source)
+                    .map_err(|error| io_error("write runtime", &runtime, error))?;
+                clang.arg(&runtime);
             }
         }
         links.add_to(&mut clang);

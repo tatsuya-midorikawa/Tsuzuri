@@ -1,0 +1,54 @@
+/// How a finished process ended: its exit `code`, or -1 and the `signal` that ended it, and the bytes
+/// it wrote to its standard output and its standard error.
+record Output { code: i32, signal: i32, stdout: [ubyte], stderr: [ubyte] }
+
+/// The arguments as the runtime takes them: each followed by a NUL byte. A lone surrogate is
+/// `InvalidEncoding` and a NUL inside an argument is `InvalidInput`, since it would split the argument.
+private def join_arguments :: ref [string] -> Result.Result<[ubyte], Os.Error>
+fn join_arguments args =
+	let mut joined: Vec<ubyte> = Vec.with_capacity 0
+	let mut problem = 0
+	let mut index = 0
+	while index < args.length && problem == 0 do
+		match Os.encode (ref args[index]) with
+		| Result.Error _ -> problem = 1
+		| Result.Ok text ->
+			let bytes = Utf8String.to_bytes text
+			let mut at = 0
+			while at < bytes.length do
+				if bytes[at] == 0ubyte then problem = 2
+				joined = Vec.push joined bytes[at]
+				at = at + 1
+			joined = Vec.push joined 0ubyte
+		index = index + 1
+	match problem with
+	| 1 -> Result.Error (Os.Error { kind: Os.InvalidEncoding, code: 0i32 })
+	| 2 -> Result.Error (Os.Error { kind: Os.InvalidInput, code: 0i32 })
+	| _ -> Result.Ok (Vec.to_array joined)
+
+private def output_of :: ref [ubyte] -> Output
+fn output_of bytes =
+	let word = Os.decode_i64 bytes 0
+	let out_length = Os.decode_i64 bytes 8
+	let error_length = Os.decode_i64 bytes 16
+	Output { code: word as i32, signal: (word >> 32) as i32, stdout: Array.sub bytes 24 out_length, stderr: Array.sub bytes (24 + out_length) error_length }
+
+private def run_with :: ref string -> ref [string] -> ref [ubyte] -> Result.Result<Output, Os.Error>
+fn run_with program args input =
+	match Os.encode program with
+	| Result.Error error -> Result.Error error
+	| Result.Ok name ->
+		match join_arguments args with
+		| Result.Error error -> Result.Error error
+		| Result.Ok joined ->
+			match Os.__spawn (ref name) (ref joined) input with
+			| (0, bytes) -> Result.Ok (output_of (ref bytes))
+			| (status, _) -> Result.Error (Os.error_of_status status)
+
+/// Runs a program and waits for it, with no shell in between: `args` are its arguments after its own name,
+/// each passed as one argument whatever it contains, and `input` is written to its standard input, which is
+/// then closed. A program name without "/" is looked up on PATH, and the child inherits the environment and
+/// the working directory. Both output streams are collected, up to 2^30 bytes together, after which the child
+/// is killed and the call is `Other`. Not available under `--wasm-host wasi`, where it is `Other`.
+def run :: string -> [string] -> [ubyte] -> IO<Result.Result<Output, Os.Error>>
+fn run program args input = IO.map (\() -> run_with (ref program) (ref args) (ref input)) (IO.pure ())

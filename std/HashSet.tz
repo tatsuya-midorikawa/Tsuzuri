@@ -1,0 +1,58 @@
+record HashSet<'key> { map: HashMap.HashMap<'key, unit> }
+
+def empty :: HashSet<'key>
+fn empty = HashSet { map: HashMap.empty() }
+
+def with_capacity :: i64 -> HashSet<'key>
+fn with_capacity count = HashSet { map: HashMap.with_capacity count }
+
+def length :: ref HashSet<'key> -> i64
+fn length set = HashMap.length (ref set.map)
+
+def is_empty :: ref HashSet<'key> -> bool
+fn is_empty set = HashMap.is_empty (ref set.map)
+
+/// An empty set whose hashes are keyed by `seed`; see `HashMap.with_seed`.
+def with_seed :: i64u -> HashSet<'key>
+fn with_seed seed = HashSet { map: HashMap.with_seed seed }
+
+def with_capacity_and_seed :: i64 -> i64u -> HashSet<'key>
+fn with_capacity_and_seed count seed = HashSet { map: HashMap.with_capacity_and_seed count seed }
+
+/// An empty set keyed by a seed from the operating system; see `HashMap.try_randomized`.
+def try_randomized :: unit -> IO<Result.Result<HashSet<'key>, Os.Error>>
+fn try_randomized _unit = IO.map (\made ->
+	match made with
+	| Result.Ok map -> Result.Ok (HashSet { map: map })
+	| Result.Error error -> Result.Error error) (HashMap.try_randomized ())
+
+def randomized :: unit -> IO<HashSet<'key>>
+fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
+
+def insert :: (Hash<'key>, Eq<'key>) => HashSet<'key> -> 'key -> HashSet<'key>
+fn insert set key = HashSet { map: HashMap.insert set.map key () }
+
+def remove_ref :: (Hash<'key>, Eq<'key>) => HashSet<'key> -> ref 'key -> HashSet<'key>
+fn remove_ref set key = HashSet { map: HashMap.remove_ref set.map key }
+
+def remove :: (Hash<'key>, Eq<'key>) => HashSet<'key> -> 'key -> HashSet<'key>
+fn remove set key = HashSet { map: HashMap.remove set.map key }
+
+def contains_ref :: (Hash<'key>, Eq<'key>) => ref HashSet<'key> -> ref 'key -> bool
+fn contains_ref set key = HashMap.contains_key_ref (ref set.map) key
+
+def contains :: (Hash<'key>, Eq<'key>) => ref HashSet<'key> -> 'key -> bool
+fn contains set key = HashMap.contains_key (ref set.map) key
+
+/// The longest probe of the underlying table; see `HashMap.longest_probe`.
+def longest_probe :: ref HashSet<'key> -> i64
+fn longest_probe set = HashMap.longest_probe (ref set.map)
+
+def to_array :: Copy<'key> => ref HashSet<'key> -> ['key]
+fn to_array set = HashMap.keys (ref set.map)
+
+def fold :: ref HashSet<'key> -> 'state -> ('state -> ref 'key -> 'state) -> 'state
+fn fold set initial folder = HashMap.fold (ref set.map) initial (\state key _unit -> folder state key)
+
+def iter :: ref HashSet<'key> -> Seq.Seq<ref 'key>
+fn iter set = Seq.map (HashMap.iter (ref set.map)) (\pair -> match pair with | (key, _unit) -> key)

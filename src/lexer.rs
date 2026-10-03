@@ -1,5 +1,8 @@
 use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
-use crate::syntax::{MAX_SOURCE_BYTES, StringLiteral, Token, TokenKind};
+use crate::syntax::{
+    FormatAlign, FormatKind, FormatSpec, InterpolationPiece, MAX_FORMAT_FIELD, MAX_SOURCE_BYTES,
+    StringLiteral, Token, TokenKind,
+};
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let (tokens, diagnostics) = tokenize(source, false);
@@ -36,6 +39,7 @@ pub fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic>
     let mut scanner = Lexer {
         source,
         position: if source.starts_with('\u{feff}') { 3 } else { 0 },
+        holes: Vec::new(),
     };
     let mut result = Vec::with_capacity(tokens.len());
     for token in tokens {
@@ -96,6 +100,7 @@ fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     Lexer {
         source,
         position: if source.starts_with('\u{feff}') { 3 } else { 0 },
+        holes: Vec::new(),
     }
     .tokens(recovering)
 }
@@ -103,6 +108,23 @@ fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
 struct Lexer<'a> {
     source: &'a str,
     position: usize,
+    /// Interpolation holes that are open, innermost last.
+    holes: Vec<OpenHole>,
+}
+
+/// An open `{` of an interpolated string whose `}` has not been read.
+struct OpenHole {
+    utf8: bool,
+    /// Open brackets inside the hole; the hole closes at a `}` or `:` with none.
+    depth: u32,
+    /// Where the hole's `{` is.
+    start: usize,
+}
+
+/// What ended a text segment of an interpolated string.
+enum TextEnd {
+    Quote,
+    Hole,
 }
 
 impl Lexer<'_> {
@@ -111,18 +133,27 @@ impl Lexer<'_> {
         let mut diagnostics = Vec::new();
         while self.position < self.source.len() {
             let start = self.position;
+            let in_hole = !self.holes.is_empty();
             match self.token() {
                 Ok(Some(token)) => tokens.push(token),
                 Ok(None) => {}
                 Err(error) => {
+                    self.holes.clear();
                     diagnostics.push(error);
                     if !recovering || diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
                         self.position = self.source.len();
                         break;
                     }
-                    self.recover(start);
+                    self.recover(start, in_hole);
                 }
             }
+        }
+        if let Some(hole) = self.holes.last() {
+            diagnostics.push(Diagnostic::new(
+                "E0001",
+                "unterminated interpolation hole; close it with '}'",
+                Span::new(hole.start, self.position),
+            ));
         }
         tokens.push(Token {
             kind: TokenKind::End,
@@ -131,10 +162,15 @@ impl Lexer<'_> {
         (tokens, diagnostics)
     }
 
-    fn recover(&mut self, start: usize) {
+    fn recover(&mut self, start: usize, in_hole: bool) {
         let first = self.source[start..].chars().next().unwrap();
         self.position = self.position.max(start + first.len_utf8());
-        if first == '"' || self.source[start..].starts_with("u8\"") {
+        if first == '"'
+            || in_hole
+            || ["u8\"", "$\"", "u8$\""]
+                .iter()
+                .any(|prefix| self.source[start..].starts_with(prefix))
+        {
             if !matches!(
                 self.source.as_bytes().get(self.position - 1),
                 Some(b'\n' | b'\r')
@@ -159,8 +195,26 @@ impl Lexer<'_> {
         let start = self.position;
         let byte = self.source.as_bytes()[start];
         if byte.is_ascii_whitespace() {
+            if let Some(hole) = self.holes.last()
+                && matches!(byte, b'\n' | b'\r')
+            {
+                return Err(Diagnostic::new(
+                    "E0001",
+                    "an interpolation hole must stay on one line; bind the value with 'let' first",
+                    Span::new(hole.start, start + 1),
+                ));
+            }
             self.position += 1;
             return Ok(None);
+        }
+        if !self.holes.is_empty()
+            && (self.rest().starts_with("//") || self.rest().starts_with("/*"))
+        {
+            return Err(Diagnostic::new(
+                "E0001",
+                "comments are not allowed inside an interpolation hole",
+                Span::new(start, start + 2),
+            ));
         }
         if self.rest().starts_with("///") {
             self.position += 3;
@@ -190,6 +244,17 @@ impl Lexer<'_> {
             self.comment()?;
             return Ok(None);
         }
+        if let Some(hole) = self.holes.last()
+            && hole.depth == 0
+            && (byte == b'}'
+                || (byte == b':' && self.source.as_bytes().get(start + 1) != Some(&b':')))
+        {
+            let kind = self.hole_end(start)?;
+            return Ok(Some(Token {
+                kind,
+                span: Span::new(start, self.position),
+            }));
+        }
         let kind = if byte == b'\'' {
             self.char_or_type_variable()?
         } else if self.rest().starts_with("u8'") {
@@ -198,6 +263,12 @@ impl Lexer<'_> {
         } else if self.rest().starts_with("u8\"") {
             self.position += 2;
             self.string(true)?
+        } else if self.rest().starts_with("u8$\"") {
+            self.position += 3;
+            self.interpolated(true, start)?
+        } else if self.rest().starts_with("$\"") {
+            self.position += 1;
+            self.interpolated(false, start)?
         } else if byte.is_ascii_alphabetic() || byte == b'_' {
             self.identifier()
         } else if byte.is_ascii_digit() {
@@ -207,6 +278,19 @@ impl Lexer<'_> {
         } else {
             self.symbol()?
         };
+        if let Some(hole) = self.holes.last_mut() {
+            match kind {
+                TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftBrace
+                | TokenKind::LeftList => hole.depth += 1,
+                TokenKind::RightParen
+                | TokenKind::RightBracket
+                | TokenKind::RightBrace
+                | TokenKind::RightList => hole.depth = hole.depth.saturating_sub(1),
+                _ => {}
+            }
+        }
         Ok(Some(Token {
             kind,
             span: Span::new(start, self.position),
@@ -495,68 +579,198 @@ impl Lexer<'_> {
     fn string(&mut self, utf8: bool) -> Result<TokenKind, Diagnostic> {
         let start = self.position;
         self.position += 1;
-        let mut text = if utf8 {
-            StringLiteral::Utf8(String::new())
-        } else {
-            StringLiteral::Utf16(Vec::new())
-        };
+        let mut text = Self::empty_literal(utf8);
         while self.position < self.source.len() {
             let ch = self.rest().chars().next().unwrap();
             self.position += ch.len_utf8();
-            let codepoint = match ch {
-                '"' => return Ok(TokenKind::String(text)),
-                '\\' => {
-                    let Some(escape) = self.rest().chars().next() else {
-                        break;
-                    };
-                    self.position += escape.len_utf8();
-                    match escape {
-                        '"' => u32::from('"'),
-                        '\\' => u32::from('\\'),
-                        'n' => u32::from('\n'),
-                        'r' => u32::from('\r'),
-                        't' => u32::from('\t'),
-                        '0' => 0,
-                        'u' if !utf8 || self.rest().starts_with('{') => {
-                            self.unicode_escape(utf8)?
-                        }
-                        _ => {
-                            return Err(Diagnostic::new(
-                                "E0001",
-                                "invalid string escape",
-                                Span::new(self.position - escape.len_utf8() - 1, self.position),
-                            ));
-                        }
-                    }
-                }
-                '\n' | '\r' => {
-                    return Err(Diagnostic::new(
-                        "E0001",
-                        "use '\\n' for a newline inside a string",
-                        Span::new(start, self.position),
-                    ));
-                }
-                _ => u32::from(ch),
-            };
-            match &mut text {
-                StringLiteral::Utf16(units) if codepoint <= 0xffff => {
-                    units.push(codepoint as u16);
-                }
-                StringLiteral::Utf16(units) => {
-                    let value = codepoint - 0x10000;
-                    units.push(0xd800 | (value >> 10) as u16);
-                    units.push(0xdc00 | (value & 0x3ff) as u16);
-                }
-                StringLiteral::Utf8(text) => {
-                    text.push(char::from_u32(codepoint).expect("validated Unicode scalar"));
-                }
+            if ch == '"' {
+                return Ok(TokenKind::String(text));
             }
+            let Some(codepoint) = self.string_char(ch, utf8, start)? else {
+                break;
+            };
+            Self::push_codepoint(&mut text, codepoint);
         }
         Err(Diagnostic::new(
             "E0001",
             "unterminated string literal",
             Span::new(start, self.position),
         ))
+    }
+
+    fn empty_literal(utf8: bool) -> StringLiteral {
+        if utf8 {
+            StringLiteral::Utf8(String::new())
+        } else {
+            StringLiteral::Utf16(Vec::new())
+        }
+    }
+
+    fn push_codepoint(text: &mut StringLiteral, codepoint: u32) {
+        match text {
+            StringLiteral::Utf16(units) if codepoint <= 0xffff => {
+                units.push(codepoint as u16);
+            }
+            StringLiteral::Utf16(units) => {
+                let value = codepoint - 0x10000;
+                units.push(0xd800 | (value >> 10) as u16);
+                units.push(0xdc00 | (value & 0x3ff) as u16);
+            }
+            StringLiteral::Utf8(text) => {
+                text.push(char::from_u32(codepoint).expect("validated Unicode scalar"));
+            }
+        }
+    }
+
+    /// Reads the character `ch` (already consumed) or the escape that starts
+    /// with it; `None` when a backslash ends the source.
+    fn string_char(
+        &mut self,
+        ch: char,
+        utf8: bool,
+        start: usize,
+    ) -> Result<Option<u32>, Diagnostic> {
+        match ch {
+            '\\' => {
+                let Some(escape) = self.rest().chars().next() else {
+                    return Ok(None);
+                };
+                self.position += escape.len_utf8();
+                Ok(Some(match escape {
+                    '"' => u32::from('"'),
+                    '\\' => u32::from('\\'),
+                    'n' => u32::from('\n'),
+                    'r' => u32::from('\r'),
+                    't' => u32::from('\t'),
+                    '0' => 0,
+                    'u' if !utf8 || self.rest().starts_with('{') => self.unicode_escape(utf8)?,
+                    _ => {
+                        return Err(Diagnostic::new(
+                            "E0001",
+                            "invalid string escape",
+                            Span::new(self.position - escape.len_utf8() - 1, self.position),
+                        ));
+                    }
+                }))
+            }
+            '\n' | '\r' => Err(Diagnostic::new(
+                "E0001",
+                "use '\\n' for a newline inside a string",
+                Span::new(start, self.position),
+            )),
+            _ => Ok(Some(u32::from(ch))),
+        }
+    }
+
+    /// Reads the rest of `$"..."` after the opening quote's `$` (the position is
+    /// at the quote). A literal without holes is an ordinary string token.
+    fn interpolated(&mut self, utf8: bool, start: usize) -> Result<TokenKind, Diagnostic> {
+        self.position += 1;
+        let (text, end) = self.interpolated_text(utf8, start)?;
+        Ok(match end {
+            TextEnd::Quote => TokenKind::String(text),
+            TextEnd::Hole => {
+                self.holes.push(OpenHole {
+                    utf8,
+                    depth: 0,
+                    start: self.position - 1,
+                });
+                TokenKind::InterpolationStart(Box::new(InterpolationPiece { text, spec: None }))
+            }
+        })
+    }
+
+    /// Reads literal text up to the closing quote or the `{` that opens a hole.
+    /// `{{` and `}}` are single braces.
+    fn interpolated_text(
+        &mut self,
+        utf8: bool,
+        start: usize,
+    ) -> Result<(StringLiteral, TextEnd), Diagnostic> {
+        let mut text = Self::empty_literal(utf8);
+        while self.position < self.source.len() {
+            let ch = self.rest().chars().next().unwrap();
+            self.position += ch.len_utf8();
+            let codepoint = match ch {
+                '"' => return Ok((text, TextEnd::Quote)),
+                '{' if self.rest().starts_with('{') => {
+                    self.position += 1;
+                    u32::from('{')
+                }
+                '{' => return Ok((text, TextEnd::Hole)),
+                '}' if self.rest().starts_with('}') => {
+                    self.position += 1;
+                    u32::from('}')
+                }
+                '}' => {
+                    return Err(Diagnostic::new(
+                        "E0001",
+                        "a single '}' in an interpolated string must be written '}}'",
+                        Span::new(self.position - 1, self.position),
+                    ));
+                }
+                _ => match self.string_char(ch, utf8, start)? {
+                    Some(codepoint) => codepoint,
+                    None => break,
+                },
+            };
+            Self::push_codepoint(&mut text, codepoint);
+        }
+        Err(Diagnostic::new(
+            "E0001",
+            "unterminated string literal",
+            Span::new(start, self.position),
+        ))
+    }
+
+    /// Reads the `}` or `:spec}` that closes the innermost hole (the position is
+    /// at it) and the literal text after it.
+    fn hole_end(&mut self, start: usize) -> Result<TokenKind, Diagnostic> {
+        let hole = self.holes.last().expect("a hole is open");
+        let (utf8, opened) = (hole.utf8, hole.start);
+        let spec = if self.rest().starts_with(':') {
+            self.format_spec(opened)?
+        } else {
+            self.position += 1;
+            None
+        };
+        let (text, end) = self.interpolated_text(utf8, start)?;
+        let piece = Box::new(InterpolationPiece { text, spec });
+        Ok(match end {
+            TextEnd::Quote => {
+                self.holes.pop();
+                TokenKind::InterpolationEnd(piece)
+            }
+            TextEnd::Hole => {
+                *self.holes.last_mut().expect("a hole is open") = OpenHole {
+                    utf8,
+                    depth: 0,
+                    start: self.position - 1,
+                };
+                TokenKind::InterpolationMiddle(piece)
+            }
+        })
+    }
+
+    /// Reads `:spec}` (the position is at the colon) and leaves the position
+    /// after the `}`.
+    fn format_spec(&mut self, opened: usize) -> Result<Option<FormatSpec>, Diagnostic> {
+        let text_start = self.position + 1;
+        let tail = &self.source[text_start..];
+        let Some(length) = tail
+            .find(['}', '\n', '\r', '"'])
+            .filter(|index| tail.as_bytes()[*index] == b'}')
+        else {
+            return Err(Diagnostic::new(
+                "E0001",
+                "unterminated interpolation hole; close it with '}'",
+                Span::new(opened, self.position + 1),
+            ));
+        };
+        let span = Span::new(text_start, text_start + length);
+        let spec = parse_format_spec(&tail[..length], span)?;
+        self.position = text_start + length + 1;
+        Ok(spec)
     }
 
     fn unicode_escape(&mut self, utf8: bool) -> Result<u32, Diagnostic> {
@@ -669,6 +883,115 @@ impl Lexer<'_> {
         self.position += character.len_utf8();
         Ok(kind)
     }
+}
+
+/// Parses the text after the `:` of a hole; an empty spec means no spec.
+fn parse_format_spec(text: &str, span: Span) -> Result<Option<FormatSpec>, Diagnostic> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let invalid = |message: String| Diagnostic::new("E0001", message, span);
+    let malformed = || {
+        invalid(format!(
+            "invalid format spec '{text}'; expected [[fill]align][+][width][.precision][type]"
+        ))
+    };
+    let out_of_range = || {
+        invalid(format!(
+            "format width and precision are at most {MAX_FORMAT_FIELD} and have no leading zeros; write '0>' to pad with zeros"
+        ))
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let align_of = |ch: char| match ch {
+        '<' => Some(FormatAlign::Left),
+        '>' => Some(FormatAlign::Right),
+        '^' => Some(FormatAlign::Center),
+        _ => None,
+    };
+    let (mut fill, mut align, mut index) = (' ', None, 0);
+    if let Some(found) = chars.get(1).copied().and_then(align_of) {
+        if matches!(chars[0], '{' | '}' | '"' | '\\' | '\r' | '\n') {
+            return Err(malformed());
+        }
+        (fill, align, index) = (chars[0], Some(found), 2);
+    } else if let Some(found) = align_of(chars[0]) {
+        (align, index) = (Some(found), 1);
+    }
+    let plus = chars.get(index) == Some(&'+');
+    index += usize::from(plus);
+    let number = |index: &mut usize, zero_allowed: bool| -> Result<Option<u16>, Diagnostic> {
+        let begin = *index;
+        while chars.get(*index).is_some_and(char::is_ascii_digit) {
+            *index += 1;
+        }
+        if begin == *index {
+            return Ok(None);
+        }
+        let digits: String = chars[begin..*index].iter().collect();
+        let leading_zero = digits.starts_with('0') && (!zero_allowed || digits.len() > 1);
+        if leading_zero || digits.len() > 4 {
+            return Err(out_of_range());
+        }
+        let value: u16 = digits.parse().map_err(|_| out_of_range())?;
+        if value > MAX_FORMAT_FIELD {
+            return Err(out_of_range());
+        }
+        Ok(Some(value))
+    };
+    let width = number(&mut index, false)?.unwrap_or(0);
+    let mut precision = None;
+    if chars.get(index) == Some(&'.') {
+        index += 1;
+        precision = Some(number(&mut index, true)?.ok_or_else(malformed)?);
+    }
+    let mut kind = None;
+    let mut type_char = ' ';
+    if let Some(&ch) = chars.get(index) {
+        kind = Some(match ch {
+            'x' => FormatKind::LowerHex,
+            'X' => FormatKind::UpperHex,
+            'o' => FormatKind::Octal,
+            'b' => FormatKind::Binary,
+            'e' => FormatKind::Exponent,
+            'f' => FormatKind::Fixed,
+            _ => return Err(malformed()),
+        });
+        type_char = ch;
+        index += 1;
+    }
+    if index != chars.len() {
+        return Err(malformed());
+    }
+    match (kind, precision) {
+        (
+            Some(
+                FormatKind::LowerHex
+                | FormatKind::UpperHex
+                | FormatKind::Octal
+                | FormatKind::Binary,
+            ),
+            Some(precision),
+        ) => {
+            return Err(invalid(format!(
+                "precision does not apply to integer format '{type_char}'; remove '.{precision}'"
+            )));
+        }
+        (Some(FormatKind::Exponent | FormatKind::Fixed), None) => {
+            return Err(invalid(format!(
+                "format type '{type_char}' needs a precision such as '.2{type_char}'"
+            )));
+        }
+        _ => {}
+    }
+    Ok(Some(FormatSpec {
+        fill,
+        align,
+        plus,
+        width,
+        precision,
+        kind,
+        span,
+    }))
 }
 
 #[cfg(test)]

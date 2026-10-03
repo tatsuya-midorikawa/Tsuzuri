@@ -35,6 +35,11 @@ WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/l
 ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Option／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
 `IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
 
+ファイル・ディレクトリ・環境変数・コマンドライン引数・時刻・乱数・子プロセスは、std の `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Process`／`Os` で扱います（macOS／Linux）。
+`File.read_text "note.txt"` は `IO<Result<string, Os.Error>>` で、OS に触れる操作はすべて同じ形の遅延アクションです（`Path` と `Random.Pcg` は純粋）。
+入口が `IO<i32>` ならその値がプロセスの終了コードになり、`tsuzuri run` は 0 以外を `E2005` で報告します。
+既定の wasm32 は OS API を `E2000` で拒否し、`--wasm-host wasi` を付けた wasm32 は標準入出力と OS API を WASI preview1 へ接続します（`Process.run` は未対応、preview2 は未実装）。Windows は `E2002` で未対応です。
+
 `run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
 WASM では import なしの `tsuzuri_trap_site()` と、隣接する `.trap.json` の表を使います。
 
@@ -63,11 +68,14 @@ GPUは実験的なstrict整数WGSL生成・WebGPUホスト試作と明示CPU参�
 伸縮可能な所有バッファ `Vec<T>` と配列・リストの標準 API を利用できます。
 順序付きの不透明型 `Map<K, V>`／`Set<K>` も使えます。`Map.insert (Map.empty()) 1 "value"` は所有値を消費して更新し、`Map.at (&map) 1` で値を借用します。
 検索はO(log n)、挿入・削除はO(n)です。`Set.union`／`intersect`／`difference`と借用foldに対応し、キー順に列挙します。
+ハッシュ表の `HashMap<K, V>`／`HashSet<K>` は、検索・挿入・削除が平均 O(1) です。`HashMap.insert (HashMap.empty()) 1 "value"` は所有値を消費して更新し、`HashMap.at (&map) 1` で値を借用します。
+列挙は挿入順で、`remove` は最後の要素を空きへ移すため、順序は挿入と削除の列だけで決まります。
+既定の表は HashDoS への耐性を持ちません。`HashMap.with_seed`／`HashMap.randomized ()` でキー付きの hash にしても部分的な緩和なので、信頼できないキーには `Map` を使ってください。詳細は[HashMap / HashSet](_docs/library-reference/hash-map.md)を参照してください。
 一回消費の `Seq<T>` を `for value in Seq.once 42 do ...` のように反復できます。`Seq.unfold`・`map`・借用述語の`filter`・`to_array`を提供します。
 128-bitの `f32x4`・`f64x2`・整数vectorとlane maskを使えます。`let values: i32x4 = Simd.splat 1i32`、`Simd.load`・`extract`・`select`・順序付き`sum_lanes`を提供します。
 nativeはLLVMの対応命令、WASMは既定でscalar fallback、`--wasm-feature simd128`でv128へ下げます。高速化の保証ではありません。
 ユーザー型は `Module.iter` を明示してSeqを返します。Array/List/Vec/Map/Setの`iter`は要素を借用し、通常の直接for反復は従来経路のままです。
-ローカルpathパッケージに対応します。git・registry・版解決とGUI/OSの標準ライブラリは未実装です。
+ローカルpathパッケージに対応します。git・registry・版解決とGUI・ネットワークの標準ライブラリは未実装です。
 メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
 レコードに共有借用を格納でき、`def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string`で返却元の入力を指定できます。
 名前付き契約は直接の完全適用に反映し、関数値経由は保守的に全入力の寿命を保持します。排他借用フィールドと、レコード内の独立した複数regionは未対応です。
@@ -92,7 +100,7 @@ def main :: i64 = answer()
 
 | 項目 | 初版の実装 |
 |---|---|
-| 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。標準入出力は IO、外部機能は extern。共有可変状態はなし |
+| 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。標準入出力と OS API は IO、外部機能は extern。共有可変状態はなし |
 | 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
 | 書きやすさ | `def ... = ラムダ式`、カリー化・部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
@@ -102,7 +110,7 @@ def main :: i64 = answer()
 | メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放し、record・union の `instance Drop` でメモリ以外の資源も一度だけ解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
-| ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。extern のリンク名・不透明ハンドル・静的コールバック、native のホストリンク指定。標準入出力は IO、UI・ファイル・ネットワークはホストの責務 |
+| ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。extern のリンク名・不透明ハンドル・静的コールバック、native のホストリンク指定。標準入出力と OS API（ファイル・環境・時刻・乱数・子プロセス）は IO、UI・ネットワークはホストの責務 |
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
 
 配列型は `[i32]` のように要素型だけを指定します。
@@ -143,6 +151,11 @@ UTF-8 にできない孤立サロゲートはトラップします。置換す�
 `String`／`Utf8String` は検索・分割・連結・置換・切り出し・ASCII 変換を提供します。
 `String.split "" "😀"` と `String.chars "😀"` は2要素、UTF-8 版は1要素です。
 `Char`／`Utf8Char` の明示的な整数変換を使い、既存の文字列索引・列挙の要素型は変えません。
+
+文字列補間は `$"x = {x}, y = {y:.2}"`（UTF-8 は `u8$"..."`）と書き、波括弧は `{{`／`}}` で表します。
+穴の値は借用して `Display` で表示し、結果は一回の確保で組み立てます。
+書式は `[[fill]align][+][width][.precision][type]`（type は `x X o b e f`）で、幅は Unicode スカラー数で数えます。数値は runtime が一度だけ最近接・偶数丸めで書式化するため、native と WASM で同じ結果になります。
+record・union の穴は `instance Format<T>` が書式文字列を受け取り、幅の調整まで自分で行います（補助関数 `Format.parse`／`Format.pad`）。
 
 Web 向けの小さな計算モジュールという方向性は
 [fsw のネイティブコンパイラ](https://github.com/tatsuya-midorikawa/fsw/tree/feat/fsw-native-compiler)
@@ -458,13 +471,16 @@ std の関数も `Math.zero()` のように修飾して呼び、使わない std
 | 予約モジュール | 用途 |
 |---|---|
 | `Option`、`Result` | 省略可能な値と失敗 |
-| `Array`、`List`、`Vec`、`Map`、`Set` | コレクション |
+| `Array`、`List`、`Vec`、`Map`、`Set`、`HashMap`、`HashSet` | コレクション |
 | `String`、`Utf8String`、`Char` | UTF-16／UTF-8 文字列と文字 |
 | `Math`、`Int` | 数学関数と整数演算 |
 | `Debug`、`Test` | デバッグ出力とテスト |
 | `Parallel`、`Simd`、`Gpu` | データ並列・SIMD・GPU |
+| `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process` | OS API（`Path` と `Random.Pcg` を除き `IO` の遅延アクション） |
+| `Format` | 書式指定（`Format` クラスの instance 用の `parse`／`pad`） |
 
-stdは`Option`・`Result`、コレクション・文字列・文字・整数・並列処理・数学APIを持ちます。
+OS API・ハッシュコンテナ・書式指定の追加で、これらの名前のファイルは `E1011` で拒否されます。使っていた既存のプロジェクトは改名が必要です。
+stdは`Option`・`Result`、コレクション・文字列・文字・整数・並列処理・数学・OS・書式指定のAPIを持ちます。
 `Math.sqrt 4.0f32`のように全float型の基本演算を使え、超越関数はf32／f64に対応します。`Math.pi()`などの定数も型を保持します。
 `Math.fma 2.0 3.0 4.0`は積和を一度だけ丸めます。`Array.sum_pairwise`は固定ペア木、`Array.sum_kahan`はNeumaier補償和、`Array.dot_fma`は順次FMA内積です。通常の`a * b + c`、`Array.sum`、`Array.dot`は融合・再結合しません。
 無修飾の型・case・クラス名は利用者の宣言を std より優先します。
@@ -502,7 +518,7 @@ LLVM を導入せずに使う場合は、コンパイラ・Clang・LLD・SDK/lib
 - Rust 1.85 以降。浮動小数点リテラルの正確な丸めに `rustc_apfloat` を使います。
 - LLVM/Clang 17 以降。WASM のリンクには `wasm-ld`（LLD）も必要です。
 - 検証には Node.js 20 以降と Python 3.9 以降。
-- macOS/Linuxに加えx86_64 Windows MSVC ABIの実装とCIを追加しています。Windowsは実SDKでO0/O3クロスリンク済みですが、Windows runnerでの実行結果は未確認です。
+- macOS/Linuxに加えx86_64 Windows MSVC ABIの実装とCIを追加しています。Windowsは実SDKでO0/O3クロスリンク済みですが、Windows runnerでの実行結果は未確認です。OS API（File など）はWindowsでは未対応で、native の exe／object は `E2002` です。
 - POSIXの `Task.parallel` は pthread ヘッダーとライブラリが必要です。WindowsではWin32常駐threadを使います。
   `build`／`run` はランタイムを同梱します。オブジェクトを C/C++ ホストへリンクするときは `-pthread` を付けます。
 
@@ -673,6 +689,7 @@ tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 | `--cpu generic\|native` | 既定は `generic`（Clang のターゲット既定）。`native` はビルド機の命令セットとスケジューリングに最適化 |
 | `--wasm-max-memory SIZE` | WASM の build（object・llvm・wasm）と test の線形メモリ上限。既定 16MiB、64KiB の倍数で wasm32 は最大 4GiB-64KiB、wasm64 は最大 16GiB |
 | `--wasm-stack-size SIZE` | WASM 出力と test の main stack。既定 1MiB、16 の倍数で 64KiB 以上 |
+| `--wasm-host wasi` | wasm32 の object・LLVM IR・WASM で標準入出力と OS API を WASI preview1 の import へ下げる（build だけ。threads とは併用不可）。指定がなく OS API に到達すると `E2000` |
 | `--json` | 標準エラーへ 1 行 1 JSON オブジェクトで診断を出力 |
 | `--` | 以降をパスとして解釈 |
 | `--help`, `--version` | ヘルプ／バージョン |
@@ -785,6 +802,7 @@ node tests/host_imports.mjs target/release/tsuzuri
 node tests/user_drop.mjs target/release/tsuzuri
 node tests/ffi_extensions.mjs target/release/tsuzuri # wasm64 runs under Node.js 24 or newer; older engines only link it
 node tests/io.mjs target/release/tsuzuri
+node tests/os.mjs target/release/tsuzuri # macOS and Linux; the WASI cases run under node:wasi
 node tests/debug_info.mjs target/release/tsuzuri # llvm-dwarfdump required; TSUZURI_DWARFDUMP overrides it
 python3 -m venv target/math-reference-env
 target/math-reference-env/bin/python -m pip install mpmath==1.3.0

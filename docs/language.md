@@ -1,7 +1,7 @@
 # Tsuzuri 0.1 言語仕様
 
 初版は **ファイル単位のモジュール、ランク1の多相性、厳格評価、所有権と借用を持つ式指向言語** です。
-値の計算と所有するローカル状態、IO モナドによる標準入出力を対象とし、OS／GUI／DOM／ネットワーク／ファイル I/O はホスト側に置きます。
+値の計算と所有するローカル状態、IO モナドによる標準入出力と標準の OS API（ファイル・ディレクトリ・パス・環境・時刻・乱数・プロセス。[OS API](#os-api)）を対象とし、GUI／DOM／ネットワークと、標準の OS API にないホスト機能はホスト側に置きます。
 可変状態へのアクセスには排他的な借用を要求し、共有可変状態は導入しません。
 非停止、スタック枯渇、検査違反によるトラップはあり、全関数の停止は保証しません。
 コンパイル時に扱えない構文・型を、別の意味へ暗黙に置き換えることはありません。
@@ -121,16 +121,20 @@ manifestと依存sourceも出力保護の対象です。ネットワーク、git
 コンパイラは標準ライブラリ（std）のモジュールを埋め込み、すべてのプロジェクトで利用者のモジュールの後に読み込みます。
 インポートや追加のファイルは不要で、std の関数も他モジュールと同じく `Math.zero()` のように修飾して呼びます。
 std のソースは未使用でも常に型検査しますが、到達しない std の関数・レコード・union・組み込み関数のラッパーは IR に出力しません。
-std は `export` を持ちません。IO の入口・ランタイム境界には専用シンボルを追加します。WASM の import は到達する IO／extern 呼び出しと明示的な Debug 出力にだけ追加します。
+std は `export` を持ちません。IO の入口・ランタイム境界には専用シンボルを追加します。WASM の import は到達する IO／extern 呼び出しと明示的な Debug 出力、`--wasm-host wasi` を指定したときの WASI preview1 にだけ追加します。
 std の `private` 関数は std の中だけで使え、利用者のコードから参照すると `E1022` です。
 
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`
+
+`HashMap`・`HashSet`・`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`・`Format` は後から予約に加わった名前です。
+これらの名前のファイル（例えば `Path.tz`）を持つ既存のプロジェクトは `E1011` になるため、ファイル名を変えてください。互換性を壊す変更です。
 
 現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
-型汎用の数学関数を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
+型汎用の数学関数に加えて、順序付きとハッシュのコンテナ（`Map`・`Set`・`HashMap`・`HashSet`）、`IO` と標準の OS API（`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`）、
+書式指定の `Format` を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
 
 `Point.tz`:
 
@@ -800,7 +804,7 @@ Hashは64-bit FNV-1a（offset `14695981039346656037`、prime `1099511628211`）�
 
 浮動小数点Hashは±0を同一にし、NaNを型ごとの正のquiet NaNへ正規化します。
 decimalは非ゼロの係数末尾の0を除き、指数を表現上限まで上げたBIDへ正規化し、等しいcohortで同じHashにします。
-Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ちません。
+Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ちません。seedで衝突攻撃を緩和する`HashMap`／`HashSet`は[HashMap / HashSet](#hashmap--hashset)を参照してください。
 
 ### アプリケーションのエントリーポイント
 
@@ -828,16 +832,19 @@ Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき
 置換して表示する場合は、明示的に `String.to_well_formed ref text` を使います。
 両文字型も UTF-8 と改行で出力し、`char` の孤立サロゲートはトラップします。
 
+入口が `IO<i32>`（トップレベルの結果式、または引数なしの `main :: IO<i32>`）のときは、アクションが返す `i32` を捨てずにプロセスの終了コードにします。POSIX で観測できる値は下位 8 bit です。
+`IO<unit>` や `i32` 以外の `IO<T>` は従来どおり終了コード 0 で、`tsuzuri run` は 0 以外を `E2005` で報告します（[終了コード](#終了コード)）。
+
 トップレベルの実行コードと `fn main` の併用、他モジュールでのトップレベル実行はエラーです。
 `check` とライブラリ出力は `.tz`・`.tt`・`.tc` のどれも入力にでき、`Main.tz` は不要です。
 ライブラリ／WASM 出力はホストの `export def` で公開した関数の呼び出しで実行し、トップレベルのエントリーコードを自動実行しません。
-`IO<T>` の入口がある場合は `tsuzuri_main() -> i32` を追加し、ホストからの明示呼び出しで実行します。WASM はこの入口だけでもビルドできます。
+`IO<T>` の入口がある場合は `tsuzuri_main() -> i32` を追加し、ホストからの明示呼び出しで実行します。戻り値は、`IO<i32>` の入口ならアクションの値、それ以外は 0 です。WASM はこの入口だけでもビルドできます。
 
 ## IO と標準入出力
 
 `IO<T>` は不透明な遅延アクションです。`IO.pure`、`IO.bind`、`IO.map` と通常の `.tc` ビルダーを提供し、合成・生成・破棄では入出力しません。
 内部は所有する通常の `unit -> T` 関数値です。内部表現・低水準 builtin は std の IO モジュールだけが参照でき、利用者には `IO.run` や Task への変換を公開しません。
-既存の Debug／extern の副作用は互換性のため維持します。IO 型は標準入出力の境界であり、言語全体の純粋性を保証する effect system ではありません。
+既存の Debug／extern の副作用は互換性のため維持します。IO 型は標準入出力と標準の OS API（[OS API](#os-api)）の境界であり、言語全体の純粋性を保証する effect system ではありません。
 
 ```text
 IO {
@@ -861,8 +868,147 @@ WASM は到達する操作だけを `tsuzuri_io.read_line(ptr) -> i32`／`tsuzur
 read_line は改行を除いた所有 UTF-8 bytes の descriptor（offset0 pointer、offset8 i64 length、size16）を全経路で設定し、0=行／1=EOF／2=失敗を返します。
 所有バッファは `tsuzuri_alloc` で確保し、空行・EOF・失敗は NULL／0 にできます。状態・長さ・NULL・範囲を受領時に検査し、UTF-8 検査は通常の from_bytes で行います。
 write は fd1／fd2 と借用 UTF-8 bytes を受け、0=全量書き込み・flush 成功、非0=失敗です。ホストは変更・解放・非同期保持をせず、line 版の LF を重複追加しません。
-IO を使わないプログラムの import 要件は変えません。WASI や非同期イベントループは追加しません。
+IO を使わないプログラムの import 要件は変えません。既定の WASM 出力に WASI は要りません。`--wasm-host wasi` を指定したときだけ、標準入出力と OS API を WASI preview1 の import に下げます（[WASM と Windows](#wasm-と-windows)）。非同期イベントループは追加しません。
 API と詳しい利用例は [IO リファレンス](../_docs/library-reference/io.md)にあります。
+
+### OS API
+
+標準の OS API は std の `File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process` です。インポートや設定は不要で、他の std と同じく `File.read_text` のように修飾して呼びます。
+OS に触れる操作はすべて遅延した `IO<Result<T, Os.Error>>` アクションです。アクションを作る・合成する・捨てるだけでは何も起きず、実行した回数だけ OS を呼びます。
+`Path` の関数と `Random.Pcg` は純粋で、IO を返しません。時刻と OS の乱数も IO の中でだけ読めるので、大域の seed や暗黙の既定の乱数源はありません。
+OS 呼び出しは入口のスレッドで行い、`Task` の中では実行できません（`IO.run` や Task への変換はありません）。OS API に到達しないプログラムの生成 IR・ランタイム・リンクは変わりません。
+
+| モジュール | 内容 |
+|---|---|
+| `File` | `read_bytes`／`read_text`／`write_bytes`／`write_text`／`append_text`／`remove`、`metadata`／`link_metadata`、ハンドルの `open`／`read`／`write`／`flush`／`close`／`with_open` |
+| `Dir` | `list`／`create`／`remove`／`walk` |
+| `Path` | `join`／`parent`／`file_name`／`extension`。区切りが `/` だけの純粋な文字列操作 |
+| `Env` | `args ()`／`var name`／`current_dir ()` |
+| `Time` | `monotonic_ns ()`／`unix_ns ()`／`sleep_ms count` |
+| `Random` | OS の乱数の `bytes count`／`next_u64 ()`、決定的で純粋な `pcg`／`pcg_next_u32`／`pcg_next_u64` |
+| `Process` | `run program args input` |
+| `Os` | `Error`／`ErrorKind`、`message`、UTF-8 との変換の `encode`／`decode` |
+
+```text
+def main :: IO<i32> =
+    let! written = File.write_text "note.txt" "hello\n"
+    let! text = File.read_text "note.txt"
+    let! missing = File.read_text "missing.txt"
+    do! IO.write (Result.get text)
+    do! IO.write_line (match missing with
+        | Result.Ok _ -> "found"
+        | Result.Error error -> Os.message (ref error))
+    return (match written with
+        | Result.Ok _ -> 0i32
+        | Result.Error _ -> 1i32)
+```
+
+このプログラムは `hello` と `not found (os error 2)` を出力し、終了コード 0 で終わります。
+
+資源の上限は次のとおりです。パスと名前の長さは OS に任せます（`ENAMETOOLONG` は `InvalidInput`）。ファイル全体の読み込みと `Dir.list` に件数・大きさの上限はなく、確保失敗はトラップします。`Random.bytes` と `File.read` は 2^30 byte まで、`Process.run` が集める出力は合計 2^30 byte までです。
+
+#### Os.Error と文字コード
+
+失敗はトラップや例外ではなく、`Result.Error` の `Os.Error { kind: Os.ErrorKind, code: i32 }` で返します。`kind` は `NotFound`・`PermissionDenied`・`AlreadyExists`・`InvalidInput`・`InvalidEncoding`・`Interrupted`・`Other` です。
+`code` は OS の `errno`（`--wasm-host wasi` では WASI の errno）で、Tsuzuri 自身が見つけた失敗は 0 です。`Os.message (ref error)` は `not found (os error 2)` の形の文字列を返し、`code` が 0 なら kind だけです。
+`errno` と `kind` の対応は次のとおりです。
+
+| `errno` | `kind` |
+|---|---|
+| `ENOENT`、`ENOTDIR` | `NotFound` |
+| `EACCES`、`EPERM`、`EROFS` | `PermissionDenied` |
+| `EEXIST` | `AlreadyExists` |
+| `EINVAL`、`ENAMETOOLONG`、`EISDIR` | `InvalidInput` |
+| `EILSEQ` | `InvalidEncoding` |
+| 上記以外（`ENOTEMPTY`、`ELOOP`、`ENOSPC`、`EIO` など） | `Other` |
+
+`EINTR` は実行時が再試行するので、現在の API は `Interrupted` を返しません。`ErrorKind` に case を足すと網羅的な `match` が壊れるため、追加は互換性を壊す変更として扱います。
+
+パス・名前・環境変数・ファイルの文章はすべて `string` です。OS との境界で UTF-8 の byte 列にして渡し、OS が返した byte 列は UTF-8 として厳密に復号します。`Os.encode (ref text)` と `Os.decode bytes` はこの境界の変換を純粋な関数にしたものです。
+
+- 孤立サロゲートを含む `string` は、OS を呼ぶ前に `InvalidEncoding`（code 0）で失敗し、ファイルも作りません。パス・名前・環境変数名・`Process.run` の引数に NUL を含むと `InvalidInput`（code 0）です。
+- OS が返した名前・値・内容が UTF-8 でないときは、呼び出し全体が `InvalidEncoding` です。置換文字に変えたり、読めた部分だけを返したりしません。`File.read_bytes` は復号しません。
+- Unicode 正規化はしません。ファイルシステムが名前を正規化する場合は、その結果をそのまま返します。バイト列のパスは扱いません。
+- `File.read_text` は先頭の BOM を残します。
+
+#### ファイルとディレクトリ
+
+`File.read_bytes`／`read_text` はファイル全体を読みます。`write_bytes`／`write_text` は作成または切り詰めて全体を書き、`append_text` は作成または末尾へ追記します。`write_*` は切り詰めてから書くので原子的ではなく、途中の失敗でファイルの中身が欠けます。
+`File.remove` はファイルまたは symbolic link を消します。`File.metadata path` は `File.Metadata { kind, size, modified_ns }` を返します。`kind` は `Regular`・`Directory`・`Symlink`・`Other`、`modified_ns` は 1970-01-01 UTC からのナノ秒で、`i64` に収まらない時刻は上限に丸めます。`Symlink` は `link_metadata` からだけ返ります。
+`Dir.list` は名前を UTF-8 の byte 順に整列して返し、`.` と `..` を含みません。UTF-8 の byte 順は Unicode スカラー値の順で、`string` の比較（UTF-16 のコード単位順）とは補助平面で異なります。locale や大文字小文字は考慮しないので、`Z.txt` は `a` より前です。OS が返す順のままにはしないので、結果は OS・ファイルシステムによらず決定的です。
+`Dir.create` は一つのディレクトリを作り（親は作りません）、`Dir.remove` は空のディレクトリだけを消します。
+`Dir.walk` はディレクトリの下のすべてを、そのディレクトリからの相対パス（`/` 区切り）で返します。各エントリの直後にその中身が続き、同じディレクトリの中は `Dir.list` の順です（`["Z.txt", "a", "a/x.txt", "b.txt"]`）。途中のどこかで失敗すると、そのエラーを返します。
+
+`Path` は文字列だけを扱い、OS を呼びません。
+
+| 関数 | 結果 |
+|---|---|
+| `Path.join (ref a) (ref b)` | `"a"`・`"b"` は `"a/b"`、`"a/"`・`"b"` は `"a/b"`、`""`・`"b"` は `"b"`、`"a"`・`"/etc"` は `"a//etc"`（絶対パスでも置き換えず、連結するだけです） |
+| `Path.parent (ref path)` | `"a/b/c"` は `Some "a/b"`、`"/a"` は `Some "/"`、`"a/b/"` は `Some "a"`、`"a"`・`"/"`・`""` は `None` |
+| `Path.file_name (ref path)` | `"a/b.txt"` は `Some "b.txt"`、`""`・`"/"`・`"."`・`".."`・`"a/.."` は `None` |
+| `Path.extension (ref path)` | `"a.tar.gz"` は `Some "gz"`、`".bashrc"` は `None`、`"a."` は `Some ""` |
+
+Tsuzuri はパスを正規化も解決もしません。`..` や相対パスの起点の扱いは OS に任せ、`Path.join` は連結するだけなので sandbox にはなりません。アクセス制御の手段として使わないでください。
+読み書きと `File.metadata` は symbolic link をたどります。`File.remove` は link 自体を消して link 先を残し、`File.link_metadata` は link をたどらずに link そのものを記述し、`Dir.list` は link を名前として返します。`Dir.walk` は link を列挙しますが中へは入らないので、循環で終わらなくなることはありません。
+存在確認の API は意図的に提供しません。確認と使用の間に状態が変わりうるので、操作そのものを実行して `Result` で判断してください。
+
+#### File.Handle
+
+ファイルを分けて読み書きするには `File.open path mode` で `File.Handle` を得ます。`mode` は `File.Read`（既存のファイルを読む）・`File.Write`（作成または切り詰め）・`File.Append`（作成または追記）・`File.CreateNew`（存在してはならない新規作成）です。
+`File.read handle count` は最大 `count` byte（0 以上 2^30 以下）を読み、空配列が EOF です。`count` より短い結果は EOF を意味しません。`File.write handle bytes` は全量を書き、`File.flush handle` はハンドルの検査だけです（Tsuzuri はバッファしないので、`write` の結果は OS に渡した後です）。`Read` で開いたハンドルへの書き込みや、そうでないハンドルからの読み込みは `InvalidInput` です。
+
+```text
+def main :: IO<unit> =
+    let! outcome = File.with_open "data.txt" File.Write (\handle -> File.write handle [104ubyte, 105ubyte])
+    let! text = File.read_text "data.txt"
+    do! IO.write_line (match (outcome, text) with
+        | (Result.Ok (Result.Ok _), Result.Ok content) -> content
+        | _ -> "failed")
+```
+
+`File.with_open path mode body` は open して `body handle` を実行し、`body` がエラー値を返しても close してから `Result<'a, Os.Error>` を返します。値は `body` の結果で、close の失敗だけが `Error` になります。上の例の `outcome` は `Result<Result<unit, Os.Error>, Os.Error>` です。
+`File.close` は成功・失敗にかかわらずハンドルを無効にします。閉じたハンドルの使用や二重の close は `InvalidInput` で、未定義動作や別のファイルへの誤アクセスにはなりません。close し忘れたハンドルはプロセスの終了時に OS が閉じます。
+`File.Handle` は内部が `i64` の不透明な Copy 値で（構築・field 参照は `E1022`）、実行時の世代付きの表の項目を指します。同じファイルを複数回 open でき、ハンドルはそれぞれ独立です。
+`File.Handle` は `Drop` 型ではありません。std の型は `Drop` の instance を持てず（`E1016`）、`Drop` 型の値は `let!` より後の継続（関数値）へ捕捉できない（`E1005`）ので、IO の連鎖の中では自動の close を保証できないためです。閉じるのは明示的な `close` か `with_open` です。
+
+#### 環境・時刻・乱数・プロセス
+
+- `Env.args ()` は `argv[0]` を除くコマンドライン引数です。ライブラリ・`tsuzuri test` の実行ファイル・`tsuzuri run`（引数を渡しません）では空配列です。`build` した実行ファイルで使います。
+- `Env.var name` は環境変数で、未設定は `Ok None` です。名前が空・`=` を含む・NUL を含むときは `InvalidInput`、値が UTF-8 でないときは `InvalidEncoding` です。`Env.current_dir ()` は OS が報告する作業ディレクトリです。
+- `Time.monotonic_ns ()` は後戻りしない時計で、起点は未規定なので差だけが意味を持ちます。`Time.unix_ns ()` は 1970-01-01 UTC からのナノ秒で、`i64` に収まらない時刻は `Other` です。`Time.sleep_ms count` は少なくとも `count` ミリ秒待ち、負数は `InvalidInput`、0 は OS を呼ばずに `Ok ()` です。
+- `Random.bytes count`（0 以上 2^30 以下。範囲外は `InvalidInput`）と `Random.next_u64 ()`（8 byte を little-endian で読んだ `i64u`）は OS の乱数です。
+- `Random.pcg seed sequence` は PCG-XSH-RR 64/32（pcg-c-basic の `pcg32_srandom_r`／`pcg32_random_r` と同じ）の生成器 `Random.Pcg` を作ります。生成器は値で、`Random.pcg_next_u32` は `(i32u * Random.Pcg)`、`Random.pcg_next_u64` は二つの出力（先が上位 32 bit）から作る `(i64u * Random.Pcg)` を返します。
+  同じ seed と stream からは native でも WASM でも同じ列が得られ、import は要りません。`Random.Pcg` は不透明で、`pcg` が stream から奇数の increment を作るので、利用者が偶数の increment を作ることはできません（構築・field 参照は `E1022`）。
+- `Process.run program args input` は、シェルを介さずにプログラムを起動して終了を待ちます。`args` は `program` 自身の名前の後の引数で、各要素は中身にかかわらず一つの argv 要素として渡され（`;`・`$HOME`・空白は解釈されません）、`input` は標準入力へ書いて閉じます。
+  `/` を含まない名前は `PATH` から探し、子は環境変数と作業ディレクトリを引き継ぎます。標準出力と標準エラーは合計 2^30 byte まで集め、超えると子を終了させて `Other` を返します。結果は `Process.Output { code: i32, signal: i32, stdout: [ubyte], stderr: [ubyte] }` で、`code` は終了コード、シグナルで終了したときは `-1` と `signal` です。見つからないプログラムは `NotFound` です。`--wasm-host wasi` では `Other` です。
+
+```text
+let generator = Random.pcg 42i64u 54i64u
+match Random.pcg_next_u32 generator with
+| (first, next) ->
+    match Random.pcg_next_u32 next with
+    | (second, _) -> to_string first + " " + to_string second    // 2707161783 2068313097
+```
+
+#### 終了コード
+
+入口が `IO<i32>` のとき、アクションが返す `i32` がプロセスの終了コードになります。POSIX で観測できる値は下位 8 bit で、`256i32` は 0 です。`IO<unit>` や `i32` 以外の `IO<T>` は従来どおり値を解放して終了コード 0 で終わります。ライブラリ・WASM 出力の `tsuzuri_main() -> i32` の戻り値も同じです。
+以前は `IO<i32>` の値が捨てられて終了コードが 0 でした。この値を使っていたプログラムは終了状態が変わります。途中でプロセスを終わらせる `Os.exit` はありません（残りの `drop` を飛ばして終了する操作を作らないためです）。
+`tsuzuri run` は 0 以外の終了コードを `E2005`（`program exited with code 3`）として報告し、終了コード 1 で終わります。
+
+#### WASM と Windows
+
+既定の wasm32 出力は `tsuzuri_io`（標準入出力）以外のホスト import を持たないので、`File`・`Dir`・`Env`・`Time`・`Random`（`Random.bytes`／`next_u64`。これを使う `HashMap.randomized` なども）・`Process` の操作に到達するビルドは `E2000` で失敗します。`--emit` が wasm・LLVM IR・object のどれでも拒否し、成果物は書きません。`check` は IR を作らないので報告しません。
+`Path`・`Os` の純粋な関数・`Random.Pcg` は import なしで wasm32 にも出力でき、native と同じ結果を返します。
+
+`build --target wasm32 --wasm-host wasi` は、標準入出力と OS API を WASI preview1（`wasi_snapshot_preview1`）の import に下げます。
+
+- 対象は wasm32 の object・LLVM IR・wasm 出力です。値は `wasi` だけで、`--wasm-feature threads`・wasm64・`--emit header`・`run` とは併用できません。
+- 到達した操作の import だけを出し、`IO` の入口があるときだけ `_start` を持ちます。`IO<i32>` の入口は `proc_exit` で終了コードを返します。
+- `Os.Error.code` は WASI の errno です。パスは、前方が（`/` の境界で）一致する最も長い preopen 名のディレクトリを起点に解決し、一致しないパスは最初の preopen の相対パスとして扱います。`Env.current_dir ()` は最初の preopen の名前（例えば `/work`）を返し、`Process.run` は `Other` です。
+- `node:wasi` で検証していて、システムのエラーコードを除いて native の結果と一致します。WASI preview2 とコンポーネントモデルは未対応です。
+
+Windows の native ビルドで OS API に到達すると `E2002` です。Windows で実行を検証できていないため、対応済みとは扱いません。OS API を使わないプログラムには影響しません。
 
 ## トラップ位置
 
@@ -1185,7 +1331,7 @@ let len4 = text |> String.length
 #### 利用者定義の解放
 
 ファイル記述子・ソケット・ホストのハンドルのようなメモリ以外の資源は、record・union に組み込みクラス `Drop` の instance を書くと、
-値が終わる時点で一度だけ解放できます。新しい構文・予約語はありません。
+値が終わる時点で一度だけ解放できます。新しい構文・予約語はありません。std の `File.Handle` は `Drop` ではなく、明示的な `File.close`（または `File.with_open`）で閉じます（[File.Handle](#filehandle)）。
 
 ```text
 extern def drop_log :: i64 -> unit
@@ -1287,6 +1433,7 @@ char のサロゲートは Display/Parse で保持できますが、UTF-8 のコ
 string はさらに4桁の `\uXXXX` に対応し、`\uD800`／`\u{d800}` のような孤立サロゲートをそのまま保持します。
 補助平面の文字はサロゲートペアになり、`"😀"` と `"\uD83D\uDE00"` は等しい値です。
 utf8string の Unicode エスケープは従来どおり1～6桁の妥当なスカラーだけで、サロゲートを拒否します。
+値を埋め込む補間リテラル `$"..."`／`u8$"..."` は[文字列補間](#文字列補間)にあります。
 
 | 操作 | string | utf8string |
 |---|---|---|
@@ -1380,6 +1527,114 @@ def identity :: 'a -> 'a = \x -> x
 ```
 
 関数値は引数、戻り値、レコード、配列に格納できます。匿名関数・部分適用・名前付き関数は同じ関数型を使います。
+
+#### 文字列補間
+
+`$"..."` は string、`u8$"..."` は utf8string を作る補間リテラルです。`$` と `"`、`u8` と `$` の間に空白は置けません。
+文字列の本文は通常の文字列リテラル（`u8$` は `u8"..."`）と同じ文字とエスケープを使い、`{` と `}` だけが特別です。リテラルの波括弧は `{{` と `}}` で書き、穴の外の単独の `}` は `E0001` です。
+穴 `{expr}` と `{expr:spec}` は、式の値を表示した文字列をその位置へ挿入します。穴を持たない `$"..."` は同じ内容の通常の文字列リテラルと同一です（`$"a{{b}}"` は `"a{b}"`）。
+
+```text
+let name = "Tsuzuri"
+let count = 3
+let text = $"hello {name}, {count + 1} times {{ok}}"
+assert (text == "hello Tsuzuri, 4 times {ok}")
+name.length + text.length    // 34
+```
+
+- 穴は 1 行に収め、改行とコメントは書けません（`E0001`）。長い式は `let` で束縛してから埋め込みます。穴の式には文字列リテラルや別の補間リテラルも書けます（`$"{$"{1}{2}":>5}"` は `   12`）。
+- 穴の式の最上位の `:` が書式指定を始めます。括弧・角括弧・波括弧の内側の `:` と `::` は始めません。
+- 空の穴（`$"{}"`）、1025 個目の穴、深さ 128 を超える入れ子は `E0002`、閉じていない穴は `E0001` です。1 リテラルの穴は 1024 個まで、width と precision は 4096 までです。
+- 各穴の値は消費せず借用して表示します。ローカル変数・フィールド・索引・参照外しは共有借用、`ref T` の値はそのまま、`ref mut T` の値は共有の再借用、それ以外の一時値は隠れた領域へ置き、表示後に drop します。`to_string` と違い、非 Copy のローカルも補間の後で使えます。
+- 穴は左から右へ、ちょうど一回ずつ評価します。表示は `Display.display` で行い、型に `Display` がなければ `E1005` です。型変数の値を埋め込む関数は、宣言に `Display<'a> =>` を書きます。借用は補間式の全体の間続くので、`$"{x}{bump (&mut x)}"` は `E1014` です。
+- 全穴の表示文字列を作ってから、結果を一度だけ確保して書き込みます。穴の表示文字列と一時値は、結果へコピーした後に解放します。結果の長さが string の上限（2^53 − 1 コード単位）を超えるとトラップします。
+- `u8$"..."` の穴も `Display` で表示し、結果を UTF-8 に変換して連結します。穴の表示文字列が孤立サロゲートを含むとトラップします。
+- `tsuzuri fmt` は穴の式も通常の式と同じ規則で整形し、書式指定と `{{`／`}}` は保ちます（`{ x   +  1 :>5}` は `{x + 1:>5}`）。
+
+`spec` の文法は `[[fill]align][+][width][.precision][type]` です。
+
+| 要素 | 書式 | 意味 |
+|---|---|---|
+| `fill` | `{`・`}`・`"`・`\`・改行以外の Unicode スカラー 1 個。`align` の直前にだけ置けます | 余白を埋める文字（既定は空白） |
+| `align` | `<` 左、`>` 右、`^` 中央 | 既定は数値が右、それ以外が左です。`^` は不足分の半分（切り捨て）を左に、残りを右に置きます |
+| `+` | 数値だけ | 非負の値にも `+` を付けます（`+0`・`+inf` を含む） |
+| `width` | 1 以上 4096 以下の十進数。先頭の `0` は不可 | 最小幅です。幅以上の文字列はそのままです |
+| `.precision` | 0 以上 4096 以下の十進数 | 小数部の桁数（浮動小数点と decimal） |
+| `type` | `x`・`X`・`o`・`b`、`e`・`f` | 整数の基数、浮動小数点と decimal の指数表記・固定小数点 |
+
+指定を受ける型は、表示する型（`ref U` は `U`）で決まります。それ以外の型への指定は `E1003` です。
+
+| 指定 | 受ける型 |
+|---|---|
+| fill・align・width | すべての型 |
+| `+` | 整数・binary 浮動小数点・decimal |
+| precision・`e`・`f` | binary 浮動小数点・decimal |
+| `x`・`X`・`o`・`b` | 整数 |
+
+- `e` と `f` は precision が必須（`{x:e}` は `E0001`）で、`.2` だけの指定は `.2f` と同じです。`x`・`X`・`o`・`b` は precision を取れません（`E0001`）。
+- `+`・precision・type は、穴の型が具体的な数値型であることを要求します。型変数のままだと `E1003` です。
+- 基数の表示は、負数を `-` と絶対値で書き（`i128` の最小値も正しく書けます）、`0x` などの接頭辞は付けません。`X` は大文字の `A`～`F` です。
+- `.Pf` は正確な値を小数点以下 P 桁へ一回だけ最近接・偶数丸めします。P = 0 は小数点を出しません（`2.5` は `2`、`3.5` は `4`）。`.Pe` は正確な値を有効数字 P + 1 桁へ丸め、`d.ddd`・`e`・指数（負なら `-`、先頭の `0` なし）の順に書きます。丸めで桁が上がると指数が 1 増えます（`9.96` の `.1e` は `1.0e1`）。0 は `0.00e0` です。
+- `-0.0` は `-0`（precision 付きは `-0.00`）です。`inf`・`-inf`・`nan` は precision に関係なくこの表記で、`+` を付けると `+inf`、NaN は常に `nan` です。decimal は係数と指数が表す正確な十進値を同じ規則で丸めます。
+- 数値の書式は実行時が正確な値から計算します（任意精度で、丸めは一回だけです）。ホストの printf・locale・浮動小数点の表示は使わず、native と WASM で同じ結果になります。書式指定のない穴は `Display.display` の結果と同じです。
+- 幅は表示文字列の Unicode スカラー数で数えます（サロゲートペアは 1、孤立サロゲートも 1）。書記素クラスターや文字の表示幅は考慮しません。
+
+| 式 | 結果 | 式 | 結果 |
+|---|---|---|---|
+| `$"{42:x}"` | `2a` | `$"{0.125:.2}"` | `0.12` |
+| `$"{-255:X}"` | `-FF` | `$"{0.375:.2}"` | `0.38` |
+| `$"{5:b}"`・`$"{8:o}"` | `101`・`10` | `$"{2.5:.0}"` | `2` |
+| `$"{7:>4}"`・`$"{7:0>4}"` | `   7`・`0007` | `$"{1234.5:.2e}"` | `1.23e3` |
+| `$"{"ab":*^5}"` | `*ab**` | `$"{0.1:.20}"` | `0.10000000000000000555` |
+| `$"{1:+}"` | `+1` | `$"{-0.0:.2}"` | `-0.00` |
+
+未対応は、locale 書式・桁区切り・通貨、printf 互換の `%d` 形式、`#`（`0x` などの接頭辞）、符号を考慮する `0` フラグ（ゼロ埋めは `{x:0>8}` と書きます）、大文字の `E`、`-`・空白の符号指定、書記素クラスター単位の幅、実行時に組み立てた書式文字列（`{x:>{width}}` は `E0001`）です。
+
+#### Format 型クラス
+
+record と union の穴に書式指定を付けると、その型の `Format` instance に書式を任せられます。`Format<'a>` はメソッドを一つ持つ組み込みの型クラスで、`Format.format :: ref 'a -> ref string -> string` が値と書式指定のテキストを共有借用で受け取り、整形した string を返します。
+
+```text
+record Point { x: i64, y: i64 }
+
+instance Format<Point> {
+    fn format point spec =
+        match Format.parse spec with
+        | Option.Some parsed ->
+            let sign = if parsed.plus then "+" else ""
+            let precision = if parsed.precision >= 0 then $"/{parsed.precision}" else ""
+            Format.pad (ref parsed) $"{sign}{point.x},{point.y}{precision}"
+        | Option.None -> ""
+}
+
+let p = Point { x: 1, y: 2 }
+$"[{p:>10}][{p:+}][{p:.2}][{p:*^6}]"    // [       1,2][+1,2][1,2/2][*1,2**]
+```
+
+穴 `{value:spec}` は、値の型が record または union で、次のどちらかのときに `Format.format` を呼びます。
+
+1. その型に `Format` instance がある。
+2. spec に `+`・precision・type のどれかがある。この場合に instance がなければ `E1005`（`no instance for Format<T>`）です。
+
+規則は次のとおりです。
+
+- instance には、コンパイラが文法を検査した spec が正規形のテキストで渡ります。既定の fill（空白）と存在しない要素は省かれます（`{p:*>+8.2f}` は `*>+8.2f`、`{p: >10}` は `>10`、`{p:+}` は `+`）。
+- instance がすべての余白埋めを行います。コンパイラは結果を埋めも加工もしません。
+- instance がなく spec が width と align だけなら、従来どおりコンパイラが `Display` の結果を埋めます。`Format` instance だけを持つ型を spec なしの穴に書くと、`Display` がないので `E1005` です。
+- 数値・string・bool・char の穴は常に組み込みの書式で処理し、`Format` instance があっても使いません。
+- `instance Format<'a> => Format<Box<'a>>` のような条件付き instance も使えます。`u8$"..."` の穴でも同じです。
+- 穴の型が型変数のまま数値の spec を付けると `E1003`（`annotate the value's type`）です。ジェネリックな関数では `Format<'a> =>` を宣言し、`Format.format value (ref spec)` を直接呼びます。直接呼べば実行時に作った文字列も渡せますが、spec の検査は instance の中の `Format.parse` が担当します。
+- `Format` は予約されたクラス名で、利用者の `record Format`・`union Format` は `E1001` です。`Format` はモジュール名としても予約済みです（`E1011`）。`deriving (Format)` はありません。
+
+std の `Format` モジュールは、instance の中で spec を扱う部品を持ちます。
+
+| 名前 | 内容 |
+|---|---|
+| `Format.Align` | `AlignAuto \| AlignLeft \| AlignCenter \| AlignRight`。`AlignAuto` は spec が揃えを指定しなかったことを表し、埋めるときは左です |
+| `Format.Kind` | `KindPlain \| KindLowerHex \| KindUpperHex \| KindOctal \| KindBinary \| KindExponent \| KindFixed`。type がなければ `KindPlain` です |
+| `Format.Spec` | `{ fill: string, align: Align, plus: bool, width: i64, precision: i64, kind: Kind }`。fill の既定は空白、width は指定なしで 0、precision は指定なしで -1 です |
+| `Format.parse` | `ref string -> Option<Format.Spec>`。spec の文法で分解し、文法に合わない文字列・先頭が `0` の width・4096 を超える値は `None` です。空文字列は既定の `Spec` です |
+| `Format.pad` | `ref Format.Spec -> string -> string`。`width` Unicode スカラーまで `fill` で埋めます。`AlignAuto` は左揃え、`AlignCenter` は不足分の半分（切り捨て）を前に置きます。すでに幅以上なら変えません |
 
 ### Option と Result
 
@@ -2241,7 +2496,95 @@ foldのcallbackは `state -> ref K -> state` で、非Copyキーにも使えま�
 検索O(log n)、挿入・削除O(n)、snapshot/fold O(n)、集合演算O(n+m)です。挿入・削除は既存Vecの領域を再利用し、容量不足だけ再確保します。
 unionは一つの出力領域へ移動し、intersect/differenceは借用入力からコピーします。全snapshot/foldはキー昇順です。
 共有参照の格納では元の所有者の寿命を引き継ぎ、排他参照は格納できません。Map.atの借用中はmapを移動・置換できません。
-捕捉環境の複製は独立したstorageを持ちます。HashMap・木構造・可変iterator・公開ABIは対象外です。
+捕捉環境の複製は独立したstorageを持ちます。木構造・可変iterator・公開ABIは対象外です。ハッシュ表による実装は次の[HashMap / HashSet](#hashmap--hashset)です。
+
+### HashMap / HashSet
+
+`HashMap<'key, 'value>`と`HashSet<'key>`は、`Map`／`Set`と同じく常に非Copyの所有するコンテナです。キーには`Hash`と`Eq`のinstanceを要求し（`deriving (Eq, Hash)`が使えます）、`Ord`は要りません。
+内部表現は不透明で、record構築・field参照・pattern分解・record更新によるアクセスは `E1022`、公開ABIには出せません（`E1008`）です。利用者のファイル名`HashMap.tz`・`HashSet.tz`は `E1011` です。
+
+```text
+let mut ages: HashMap<i64, i64> = HashMap.empty()
+ages = HashMap.insert ages 10 1
+ages = HashMap.insert ages 20 2
+ages = HashMap.insert ages 30 3
+ages = HashMap.insert ages 40 4
+ages = HashMap.insert ages 10 5          // 既存のキーは値だけを置換し、位置は変わらない
+ages = HashMap.remove ages 20            // 末尾の 40 が、削除した 20 の位置へ移る
+to_string (HashMap.keys (ref ages))      // [10, 40, 30]
+```
+
+| API | 型／契約 |
+|---|---|
+| `empty()`／`with_capacity count` | 空のmap／`count` 件まで再確保なしで挿入できる容量を確保したmap。`count` は 0 以上 2^60 以下で、範囲外はトラップします。0 は `empty()` と同じです |
+| `length (&map)`／`is_empty (&map)` | 件数／空かどうか |
+| `insert map key value` | mapを消費して返します。新しいキーは末尾に付きます。`Eq` で等しいキーがあれば、最初に格納したキーを保ち、新しいキーと旧値を解放して値だけを置換します（位置は変わりません） |
+| `remove map key` | mapを消費して返します。存在しなければそのまま返し、あれば entry を解放します（順序への影響は次の節） |
+| `contains_key (&map) key`／`get (&map) key`／`at (&map) key` | 検索キーは値渡しで、比較して呼び出しの終わりに解放します。`get` は `Option<V>`（`Copy<V>` が必要）、`at` は存在しなければトラップする `ref V` です |
+| `contains_key_ref`／`get_ref`／`at_ref`／`remove_ref` | 上と同じ操作を、キーを `ref 'key` で受け取る形にしたものです。キーを手放さずに何度でも検索でき、`at_ref` の結果は map だけを借用します |
+| `to_array (&map)`／`keys (&map)`／`values (&map)` | 走査順の `[(K * V)]`／`[K]`／`[V]`。コピーする側の型に `Copy` を要求します |
+| `fold (&map) initial folder`／`iter (&map)` | `folder` は `'state -> ref K -> ref V -> 'state`、`iter` は `Seq<(ref K * ref V)>` です。キーの排他借用は提供しません（キーを変えると表が壊れるため） |
+| `with_seed seed`／`with_capacity_and_seed count seed` | `seed: i64u` でハッシュを鍵付けしたmap（[seed と HashDoS](#seed-と-hashdos)） |
+| `randomized ()`／`try_randomized ()` | OS の乱数で鍵付けしたmapを返す `IO` アクション（[seed と HashDoS](#seed-と-hashdos)） |
+| `longest_probe (&map)` | 理想の位置から最も遠い entry までの距離です。空なら 0 で、診断用です |
+| `sip13 key0 key1 word` | `i64u` 一語の SipHash-1-3 を返す純粋な関数です（seed 付きmapが使う関数と同じ） |
+
+`HashSet` は `empty()`・`with_capacity`・`length`・`is_empty`・`insert set key`・`remove`・`contains (&set) key`・`remove_ref`・`contains_ref`・`to_array`・`fold`・`iter`・`with_seed`・`with_capacity_and_seed`・`randomized`・`try_randomized`・`longest_probe` を持ち、契約はHashMapと同じです。`fold` の callback は `'state -> ref K -> 'state`、`iter` は `Seq<ref K>`、`to_array` は `[K]` です。
+所有権はMapと同じです。`insert`・`remove` が消費したmapの再利用は `E1012`、`at` の借用中のmapの更新・moveは `E1014`、`at` の結果を関数の外へ返すと `E1013` です。キーに `Hash` か `Eq` のinstanceがない場合と、`get`・`keys`・`values`・`to_array` で `Copy` がない場合は `E1005` です。
+
+#### 反復順序
+
+`fold`・`iter`・`keys`・`values`・`to_array` は、内部の entry 配列の添字順に走査します。順序は挿入と削除の列だけで決まり、ハッシュ値・表の大きさ・seed・target（native／WASM）・最適化段階に依存しません。
+新しいキーは末尾に付き、既存キーへの `insert` は位置を変えません。`remove` は swap-remove で、削除した位置へ末尾の entry を移します。したがって削除があると挿入順ではなくなります。例えば `a b c d` の順に挿入して `b` を削除すると `a d c` の順です（先の例も `[10, 20, 30, 40]` から `20` を削除して `[10, 40, 30]` になります）。
+
+```text
+let mut set: HashSet<char> = HashSet.empty()
+set = HashSet.insert set 'a'
+set = HashSet.insert set 'b'
+set = HashSet.insert set 'c'
+set = HashSet.insert set 'd'
+set = HashSet.remove set 'b'
+to_string (HashSet.to_array (ref set))    // ['a', 'd', 'c']
+```
+
+`HashSet` の順序は内部の `HashMap<'key, unit>` と同じです。
+
+#### キー・容量・計算量
+
+キーを取る操作は、利用者の instance を次の順に呼びます。1. `Eq.eq key key`（反射性の検査。false ならトラップ）、2. `Hash.hash key`、3. 探査中、格納済みの混合ハッシュが等しい entry ごとの `Eq.eq 格納キー 問い合わせキー`。表の再構築は格納済みのハッシュを使い、`Hash.hash` を呼び直しません。`Eq` で等しいキーは同じ `Hash.hash` を返す必要があります（`deriving` した instance は満たします）。
+浮動小数点のキーでは、`-0.0` と `0.0` が同じキーになり（最初に挿入した方が代表になります）、NaN は `Eq.eq key key` が false なので、キーを取る操作がすべてトラップします（空のmapへの問い合わせを含みます）。
+そのほかのトラップは、`at` の存在しないキー、`with_capacity` の負数と 2^60 を超える引数、確保失敗です。結果（値・順序・トラップの有無）は native と WASM で同じです。
+
+内部は、entry の密な配列と、開番地法（線形探査・後方シフト削除・墓標なし）の添字表です。既定ではキーごとに `Hash.hash` の結果へ fmix64（MurmurHash3 の最終混合）を適用し、混合後の値の下位ビットで表の位置を決めます。
+添字表の大きさは 8 以上の 2 の冪で、最大負荷率は 1/2（件数 × 2 ≤ 表の大きさ）です。空のmapは表を持たず確保しません。新しいキーの挿入で負荷率を超えるときだけ表を倍にし、既存キーの置換では増やしません。縮小はしません。`with_capacity n` は `n` 件分の entry の領域と、負荷率を超えない最小の表を先に確保するので、`n` 件までは再確保が起きません。
+
+| 操作 | 期待 | 最悪（全キーが衝突） |
+|---|---|---|
+| `insert`（新しいキー） | 償却 O(1) | O(n) |
+| `insert`（既存キー）・`contains_key`・`get`・`at`・`remove` | O(1) | O(n) |
+| `length`・`is_empty`・`empty` | O(1) | O(1) |
+| `fold`・`iter` の全走査・`keys`・`values`・`to_array` | O(n) | O(n) |
+| `with_capacity n` | O(n) | O(n) |
+
+ハッシュが一様に散る場合の期待値です。`Hash.hash` と `Eq.eq` の費用（例えば文字列では長さに比例）は含みません。
+
+#### seed と HashDoS
+
+既定の `HashMap`／`HashSet` は HashDoS への耐性を持ちません。混合関数と `Hash.hash`（FNV-1a）は固定で公開されているため、キーを選べる入力は同じ位置へ集められます。混合後の位置が同じになるキー 600 個を挿入すると、既定のmapの `longest_probe` は 599 になり、探査はほぼ線形探索になります。
+`with_seed seed` のmapは、`Hash.hash` の結果を、seed から作った 128 bit の鍵（SplitMix64 の出力二つ）の SipHash-1-3 で混合します。同じ 600 個のキーでの `longest_probe` は、200 個の seed（0〜199）で 2 から 13 でした（実測値で、上限の保証ではありません）。
+これは部分的な防御にすぎません。`Hash.hash` の 64 bit 全体が衝突するキーは seed があっても衝突し（FNV-1a は鍵付きではありません）、seed を攻撃者が予測できないことも前提です。信頼できない入力をキーにするなら、順序付きの `Map`／`Set` を使うか、`randomized` の seed を使ったうえでこの限界を考慮してください。
+seed は反復順序に影響せず、seed 付きのmapの順序は同じ操作列の seed なしと同じです。
+
+`randomized ()`／`try_randomized ()` は OS の乱数（`Random.next_u64`）から seed を作る `IO` アクションで、OS API です。native と `--wasm-host wasi` で使え、既定の wasm32 では `E2000` です。`randomized` は seed を得られないとトラップし、`try_randomized` は `Result<..., Os.Error>` で返します。どちらも、seed を得られなかったときに固定の seed へ黙って切り替えることはしません。既定の wasm32 では、ホストが選んだ seed を `with_seed` に渡してください。
+
+```text
+def main :: IO<unit> =
+    let! made = HashMap.randomized ()
+    let filled: HashMap<string, i64> = HashMap.insert made "a" 1
+    do! IO.write_line (to_string (HashMap.length (ref filled)))
+```
+
+縮小（`shrink_to_fit`）・集合演算（`union`・`intersect`・`difference`）・`singleton`・`pop`・`retain`、並行 HashMap、値の排他借用を返す iterator、SIMD によるグループ探査は未実装です。`Hash.hash` の出力は変わりません。
 
 ### 配列・リスト API
 
@@ -2504,7 +2847,7 @@ subnormal と符号付きゼロへの underflow は成功です。`inf` の入�
 独自の具体型には `instance Display<Type>`／`instance Parse<Type>` を通常のメソッドとして定義できます。
 `to_string` も独自 Display を選択し、実行時の辞書や型分岐は追加しません。
 組み込みインスタンスの上書きは `E1016`、インスタンスがない適用は `E1005` です。
-`Parse<unit>`／`Parse<string>`、自動 deriving、char、文字列補間、任意の書式指定は未対応です。
+`Parse<unit>`／`Parse<string>`、自動 deriving、char は未対応です。文字列補間と書式指定は[文字列補間](#文字列補間)にあります。
 
 ## 再帰とスタック
 
@@ -2621,7 +2964,7 @@ tsuzuri build Kernel.tz --emit header -o kernel.h
 tsuzuri build Kernel.tz --target wasm32 -o kernel.wasm
 ```
 
-WASM は WASI、.NET、JavaScript の関数インポートを必要としません。
+既定の WASM 出力は WASI、.NET、JavaScript の関数インポートを必要としません。`--wasm-host wasi` で OS API を WASI preview1 に下げた出力だけが WASI の import を持ちます（[WASM と Windows](#wasm-と-windows)）。
 LLD により到達しないコードを削除します。
 128-bit 整数の乗除算・剰余・可変シフトには同梱の補助関数を使い、
 ホスト依存の compiler-rt を要求しません。
@@ -2685,7 +3028,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |
 | `E1020` | 不正なパターン、OR 束縛の不一致、未対応の認識器形式、union case の payload の不一致 |
 | `E1021` | 明示の `match`・関数ガードの網羅性の不足（不足する値の例を示す） |
-| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定 |
+| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
 | `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue` |
 | `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
 | `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |
@@ -2695,7 +3038,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `W1002` | 公開 API から到達しない private 関数・レコード・union・型別名（警告） |
 | `W1003` | 前の節で覆われる到達不能な match の節（警告） |
 | `W1004` | 同じ字句スコープでのシャドーイング。内部オプションのみ、既定無効 |
-| `E2000` | CLI／オプション／拡張子 |
-| `E2001` / `E2002` | I/O／LLVM ツール |
-| `E2003` / `E2004` / `E2005` | 出力保護／入口条件／実行時の異常終了 |
+| `E2000` | CLI／オプション／拡張子、既定の wasm32 出力で OS API（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`）に到達するビルド |
+| `E2001` / `E2002` | I/O／LLVM ツール、Windows の native ビルドで OS API に到達する場合の `E2002` |
+| `E2003` / `E2004` / `E2005` | 出力保護／入口条件／実行時の異常終了（`IO<i32>` 入口が 0 以外の終了コードで終わった場合の `E2005` を含む） |
 | `E2006` | 言語内テストの失敗 |

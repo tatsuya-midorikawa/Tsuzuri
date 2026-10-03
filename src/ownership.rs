@@ -1323,6 +1323,15 @@ impl Checker<'_> {
                 }
                 self.held.truncate(start);
             }
+            E::Interpolated(interpolation) => {
+                // Every hole stays borrowed until the pieces are joined, as call arguments do.
+                let start = self.held.len();
+                for hole in &interpolation.holes {
+                    let value = self.eval(&hole.operand, Use::Consume, &during)?;
+                    self.held.push(value);
+                }
+                self.held.truncate(start);
+            }
             E::NewArray(length, initializer) | E::NewList(length, initializer) => {
                 self.eval(length, Use::Consume, &during)?;
                 let value = self.eval(initializer, Use::Consume, &during)?;

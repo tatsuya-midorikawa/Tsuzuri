@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target};
+use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target, WasmHost};
 
 const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
@@ -34,6 +34,9 @@ Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
   --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
     --wasm-feature <name>   Opt in to simd128 (WASM build) or threads (wasm32 build)
+    --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
+                            Process APIs to WASI preview1 (wasm32 object, LLVM IR, or WASM
+                            output; the default wasm32 output rejects those APIs)
     --wasm-max-memory SIZE  WASM linear memory limit (WASM build/test; default 16MiB,
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
@@ -72,7 +75,8 @@ Toolchain:
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code or fn main.
 unit results do not print anything.
-All UI and I/O belong to the host, not the language.";
+Standard input and output and the File, Dir, Env, Time, Random, and Process APIs are
+built in on native; a GUI belongs to the host, not the language.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
@@ -165,6 +169,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
+    let mut wasm_host = None;
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
     let mut no_cache = false;
@@ -305,6 +310,23 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     *feature = true;
                     continue;
                 }
+                Some("--wasm-host") => {
+                    if wasm_host.is_some() {
+                        return Err("--wasm-host specified more than once".into());
+                    }
+                    wasm_host = Some(
+                        match next_value(arguments, &mut position, "--wasm-host")?.to_str() {
+                            Some("wasi") => WasmHost::Wasi,
+                            other => {
+                                return Err(format!(
+                                    "unknown wasm host '{}'; the supported host is wasi",
+                                    other.unwrap_or("?")
+                                ));
+                            }
+                        },
+                    );
+                    continue;
+                }
                 Some(option @ ("--wasm-max-memory" | "--wasm-stack-size")) => {
                     let (slot, name) = if option == "--wasm-max-memory" {
                         (&mut wasm_max_memory, "maximum memory")
@@ -408,6 +430,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if (wasm_simd || wasm_threads) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
+    if wasm_host.is_some() && action != Action::Build {
+        return Err("--wasm-host is only valid with build".into());
+    }
     if wasm_max_memory.is_some() || wasm_stack_size.is_some() {
         if !matches!(action, Action::Build | Action::Test) {
             return Err(
@@ -483,6 +508,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         debug_info,
         wasm_simd,
         wasm_threads,
+        wasm_host,
         wasm_max_memory,
         wasm_stack_size,
         cache: !no_cache,
@@ -1030,6 +1056,76 @@ mod tests {
             vec!["test", "Specs.tz", "--index", ""],
         ] {
             assert!(parse(&values).is_err(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn wasm_host_selects_wasi_for_wasm32_output_only() {
+        let host = |extra: &[&str]| {
+            let mut values = vec!["build", "Main.tz"];
+            values.extend_from_slice(extra);
+            parse(&values)
+        };
+        for emit in ["wasm", "llvm", "object"] {
+            let hosted =
+                host(&["--target", "wasm32", "--emit", emit, "--wasm-host", "wasi"]).unwrap();
+            assert_eq!(hosted.options.wasm_host, Some(WasmHost::Wasi), "{emit}");
+        }
+        assert_eq!(
+            host(&["--target", "wasm32"]).unwrap().options.wasm_host,
+            None
+        );
+        let requires = "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output";
+        for values in [
+            vec!["--wasm-host", "wasi"],
+            vec!["--target", "wasm64", "--wasm-host", "wasi"],
+            vec![
+                "--target",
+                "wasm32",
+                "--emit",
+                "header",
+                "--wasm-host",
+                "wasi",
+            ],
+        ] {
+            assert_eq!(host(&values).unwrap_err(), requires, "{values:?}");
+        }
+        assert_eq!(
+            host(&["--target", "wasm32", "--wasm-host", "nope"]).unwrap_err(),
+            "unknown wasm host 'nope'; the supported host is wasi"
+        );
+        assert_eq!(
+            host(&[
+                "--target",
+                "wasm32",
+                "--wasm-host",
+                "wasi",
+                "--wasm-host",
+                "wasi"
+            ])
+            .unwrap_err(),
+            "--wasm-host specified more than once"
+        );
+        assert_eq!(
+            host(&[
+                "--target",
+                "wasm32",
+                "--emit",
+                "object",
+                "--wasm-feature",
+                "threads",
+                "--wasm-host",
+                "wasi"
+            ])
+            .unwrap_err(),
+            "--wasm-host wasi cannot be combined with --wasm-feature threads"
+        );
+        for action in ["check", "run", "test"] {
+            assert_eq!(
+                parse(&[action, "Main.tz", "--wasm-host", "wasi"]).unwrap_err(),
+                "--wasm-host is only valid with build",
+                "{action}"
+            );
         }
     }
 

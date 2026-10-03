@@ -1,0 +1,310 @@
+private def run_map_ops :: HashMap<i64, i64> -> i64 -> i64 -> i64
+fn run_map_ops start count seed =
+    let mut map = start
+    let mut state = seed
+    let mut acc = 0
+    let mut step = 0
+    while step < count do
+        state = state * 6364136223846793005 + 1442695040888963407
+        let r = state >>> 33
+        let key = (r >>> 3) % 4099 * 8 - 16000
+        let op = r % 8
+        if op < 4 then
+            map = HashMap.insert map key step
+        elif op < 6 then
+            map = HashMap.remove map key
+        else
+            let found = HashMap.contains_key (ref map) key
+            acc = acc * 31 + (if found then deref (HashMap.at (ref map) key) else 7)
+        step = step + 1
+    HashMap.fold (ref map) (acc * 1000003 + HashMap.length (ref map)) (\total key value -> total * 31 + deref key * 7 + deref value)
+
+private def run_set_ops :: HashSet<i64> -> i64 -> i64 -> i64
+fn run_set_ops start count seed =
+    let mut set = start
+    let mut state = seed
+    let mut acc = 0
+    let mut step = 0
+    while step < count do
+        state = state * 6364136223846793005 + 1442695040888963407
+        let r = state >>> 33
+        let key = (r >>> 3) % 4099 * 8 - 16000
+        let op = r % 8
+        if op < 4 then
+            set = HashSet.insert set key
+        elif op < 6 then
+            set = HashSet.remove set key
+        else
+            acc = acc * 31 + (if HashSet.contains (ref set) key then 1 else 7)
+        step = step + 1
+    HashSet.fold (ref set) (acc * 1000003 + HashSet.length (ref set)) (\total key -> total * 31 + deref key * 7)
+
+export def hash_ops :: i64 -> i64 -> i64
+fn hash_ops count seed = run_map_ops HashMap.empty() count seed
+
+export def hash_set_ops :: i64 -> i64 -> i64
+fn hash_set_ops count seed = run_set_ops HashSet.empty() count seed
+
+export def hash_seeded_ops :: i64 -> i64 -> i64 -> i64
+fn hash_seeded_ops count seed table_seed = run_map_ops (HashMap.with_seed (table_seed as i64u)) count seed
+
+export def hash_seeded_capacity_ops :: i64 -> i64 -> i64 -> i64
+fn hash_seeded_capacity_ops count seed table_seed = run_map_ops (HashMap.with_capacity_and_seed (count / 2) (table_seed as i64u)) count seed
+
+export def hash_set_seeded_ops :: i64 -> i64 -> i64 -> i64
+fn hash_set_seeded_ops count seed table_seed = run_set_ops (HashSet.with_seed (table_seed as i64u)) count seed
+
+export def hash_set_seeded_capacity_ops :: i64 -> i64 -> i64 -> i64
+fn hash_set_seeded_capacity_ops count seed table_seed = run_set_ops (HashSet.with_capacity_and_seed (count / 2) (table_seed as i64u)) count seed
+
+export def hash_sip13 :: i64 -> i64 -> i64 -> i64
+fn hash_sip13 key0 key1 message = (HashMap.sip13 (key0 as i64u) (key1 as i64u) (message as i64u)) as i64
+
+export def hash_borrowed_keys :: i64 -> i64
+fn hash_borrowed_keys count =
+    let mut map: HashMap<string, i64> = HashMap.empty()
+    let mut index = 0
+    while index < count do
+        map = HashMap.insert map (to_string index) (index * 3)
+        index = index + 1
+    let mut found = 0
+    let mut sum = 0
+    index = 0
+    while index < 2 * count do
+        let key = to_string index
+        let present = HashMap.contains_key_ref (ref map) (ref key)
+        if present then found = found + 1
+        let value =
+            match HashMap.get_ref (ref map) (ref key) with
+            | Option.Some stored -> stored
+            | Option.None -> -1
+        sum = sum * 31 + value
+        if present then sum = sum + deref (HashMap.at_ref (ref map) (ref key))
+        index = index + 1
+    index = 0
+    while index < 2 * count do
+        if index % 2 == 0 then
+            let key = to_string index
+            map = HashMap.remove_ref map (ref key)
+        index = index + 1
+    let mut still = 0
+    index = 0
+    while index < 2 * count do
+        let key = to_string index
+        if index % 2 == 0 && HashMap.contains_key_ref (ref map) (ref key) then still = still + 1
+        index = index + 1
+    sum * 1000003 + found * 1009 + HashMap.length (ref map) * 7 + still
+
+export def hash_set_borrowed_keys :: i64 -> i64
+fn hash_set_borrowed_keys count =
+    let mut set: HashSet<string> = HashSet.empty()
+    let mut index = 0
+    while index < count do
+        set = HashSet.insert set (to_string index)
+        index = index + 1
+    let mut found = 0
+    index = 0
+    while index < 2 * count do
+        let key = to_string index
+        if HashSet.contains_ref (ref set) (ref key) then found = found + 1
+        index = index + 1
+    index = 0
+    while index < 2 * count do
+        if index % 2 == 0 then
+            let key = to_string index
+            set = HashSet.remove_ref set (ref key)
+        index = index + 1
+    let mut left = 0
+    index = 0
+    while index < 2 * count do
+        let key = to_string index
+        if HashSet.contains_ref (ref set) (ref key) then left = left + 1
+        index = index + 1
+    found * 1000003 + left * 1009 + HashSet.length (ref set)
+
+private def flood_mix :: i64u -> i64
+fn flood_mix hash =
+    let first = (hash ^ (hash >>> 33)) * 0xff51afd7ed558ccd
+    let second = (first ^ (first >>> 33)) * 0xc4ceb9fe1a85ec53
+    (second ^ (second >>> 33)) as i64
+
+private def colliding_keys :: i64 -> Vec<i64>
+fn colliding_keys count =
+    let mut keys = Vec.with_capacity count
+    let mut candidate = 0
+    while Vec.length (ref keys) < count do
+        if ((flood_mix (Hash.hash (ref candidate))) & 2047) == 0 then keys = Vec.push keys candidate
+        candidate = candidate + 1
+    keys
+
+private def flood_map :: HashMap<i64, i64> -> ref Vec<i64> -> i64
+fn flood_map start keys =
+    let mut map = start
+    let mut index = 0
+    while index < Vec.length keys do
+        map = HashMap.insert map keys[index] index
+        index = index + 1
+    assert (HashMap.length (ref map) == Vec.length keys)
+    HashMap.longest_probe (ref map)
+
+private def flood_set :: HashSet<i64> -> ref Vec<i64> -> i64
+fn flood_set start keys =
+    let mut set = start
+    let mut index = 0
+    while index < Vec.length keys do
+        set = HashSet.insert set keys[index]
+        index = index + 1
+    assert (HashSet.length (ref set) == Vec.length keys)
+    HashSet.longest_probe (ref set)
+
+export def hash_flood :: i64 -> i64
+fn hash_flood table_seed =
+    let keys = colliding_keys 600
+    let seed = table_seed as i64u
+    let unkeyed = flood_map HashMap.empty() (ref keys)
+    let keyed = flood_map (HashMap.with_seed seed) (ref keys)
+    let sized = flood_map (HashMap.with_capacity_and_seed 600 seed) (ref keys)
+    let unkeyed_set = flood_set HashSet.empty() (ref keys)
+    let keyed_set = flood_set (HashSet.with_seed seed) (ref keys)
+    if unkeyed >= 500 && unkeyed_set >= 500 && keyed <= 64 && sized <= 64 && keyed_set <= 64 then 1 else 0
+
+export def hash_empty_probe :: i64
+fn hash_empty_probe =
+    let map: HashMap<i64, i64> = HashMap.empty()
+    let seeded: HashMap<i64, i64> = HashMap.with_seed 5i64u
+    HashMap.longest_probe (ref map) + HashMap.longest_probe (ref seeded)
+
+export def hash_strings :: i64 -> i64
+fn hash_strings count =
+    let mut map: HashMap<string, string> = HashMap.empty()
+    let mut index = 0
+    while index < count do
+        map = HashMap.insert map (to_string (index % 9)) (to_string index)
+        index = index + 1
+    map = HashMap.remove map "3"
+    HashMap.length (ref map) * 100000 + HashMap.fold (ref map) 0 (\total _key value -> total * 7 + value.length)
+
+record Bucketed { value: i64 } deriving (Eq)
+
+instance Hash<Bucketed> {
+    fn hash key = (key.value % 3) as i64u
+}
+
+export def hash_collisions :: i64 -> i64
+fn hash_collisions count =
+    let mut map: HashMap<Bucketed, i64> = HashMap.empty()
+    let mut index = 0
+    while index < count do
+        map = HashMap.insert map (Bucketed { value: index }) index
+        index = index + 1
+    index = 0
+    while index < count do
+        map = HashMap.remove map (Bucketed { value: index })
+        index = index + 3
+    let mut total = 0
+    index = 0
+    while index < count do
+        if index % 3 != 0 then
+            assert (HashMap.contains_key (ref map) (Bucketed { value: index }))
+            total = total + deref (HashMap.at (ref map) (Bucketed { value: index }))
+        else
+            assert (!(HashMap.contains_key (ref map) (Bucketed { value: index })))
+        index = index + 1
+    total * 1000 + HashMap.length (ref map)
+
+export def hash_iter_order :: i64
+fn hash_iter_order =
+    let mut map: HashMap<i64, i64> = HashMap.empty()
+    map = HashMap.insert map 5 0
+    map = HashMap.insert map 6 0
+    map = HashMap.insert map 7 0
+    map = HashMap.insert map 8 0
+    map = HashMap.remove map 6
+    let mut digits = 0
+    for pair in HashMap.iter (ref map) do
+        match pair with
+        | (key, _value) -> digits = digits * 10 + deref key
+    let mut set: HashSet<i64> = HashSet.empty()
+    set = HashSet.insert set 1
+    set = HashSet.insert set 2
+    set = HashSet.insert set 3
+    set = HashSet.remove set 1
+    let mut members = 0
+    for key in HashSet.iter (ref set) do
+        members = members * 10 + deref key
+    digits * 100 + members
+
+export def first_representative :: bool
+fn first_representative =
+    let map = HashMap.insert (HashMap.insert HashMap.empty() (-0.0) 1) 0.0 2
+    let keys = HashMap.keys (ref map)
+    let set = HashSet.insert (HashSet.insert HashSet.empty() (-0.0)) 0.0
+    let set_keys = HashSet.to_array (ref set)
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Option.get (HashMap.get (ref map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+
+record Key { name: string } deriving (Eq, Hash)
+
+export def owned_record_keys :: i64
+fn owned_record_keys =
+    let map = HashMap.insert HashMap.empty() (Key { name: "answer" }) 42
+    Option.get (HashMap.get (ref map) (Key { name: "answer" }))
+
+export def hash_capture :: i64
+fn hash_capture =
+    let map = HashMap.insert HashMap.empty() "answer" 42
+    let read = \() -> Option.get (HashMap.get (ref map) "answer")
+    read () + read ()
+
+export def hash_borrowed_values :: i64
+fn hash_borrowed_values =
+    let text = "borrowed"
+    let map = HashMap.insert HashMap.empty() 1 (ref text)
+    let value = HashMap.at (ref map) 1
+    value.length
+
+export def hash_task_drop :: i64
+fn hash_task_drop =
+    let text = "owned capture"
+    let map = HashMap.insert HashMap.empty() 1 (task { return text.length })
+    let empty = HashMap.remove map 1
+    HashMap.length (ref empty)
+
+export def hash_capacity :: i64 -> i64
+fn hash_capacity count =
+    let mut map: HashMap<i64, i64> = HashMap.with_capacity count
+    let mut index = 0
+    while index < count do
+        map = HashMap.insert map index index
+        index = index + 1
+    HashMap.length (ref map)
+
+export def hash_at_missing :: i64
+fn hash_at_missing =
+    let map: HashMap<i64, string> = HashMap.empty()
+    let value = HashMap.at (ref map) 1
+    value.length
+
+export def hash_nan_insert :: i64
+fn hash_nan_insert =
+    let map = HashMap.insert HashMap.empty() (0.0 / 0.0) 1
+    HashMap.length (ref map)
+
+export def hash_nan_query_empty :: bool
+fn hash_nan_query_empty =
+    let map: HashMap<f64, i64> = HashMap.empty()
+    HashMap.contains_key (ref map) (0.0 / 0.0)
+
+export def hash_set_nan :: i64
+fn hash_set_nan =
+    let set = HashSet.insert HashSet.empty() (0.0 / 0.0)
+    HashSet.length (ref set)
+
+export def hash_capacity_negative :: i64
+fn hash_capacity_negative =
+    let map: HashMap<i64, i64> = HashMap.with_capacity (-1)
+    HashMap.length (ref map)
+
+export def hash_capacity_huge :: i64
+fn hash_capacity_huge =
+    let map: HashMap<i64, i64> = HashMap.with_capacity 1152921504606846977
+    HashMap.length (ref map)

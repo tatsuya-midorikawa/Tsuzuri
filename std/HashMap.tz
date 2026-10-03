@@ -1,0 +1,261 @@
+private record Entry<'key, 'value> { hash: i64, key: 'key, value: 'value }
+record HashMap<'key, 'value> { entries: Vec<Entry<'key, 'value>>, slots: Vec<i64>, key0: i64u, key1: i64u, keyed: bool }
+
+def empty :: HashMap<'key, 'value>
+fn empty = HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: 0i64u, key1: 0i64u, keyed: false }
+
+def length :: ref HashMap<'key, 'value> -> i64
+fn length map = Vec.length (ref map.entries)
+
+def is_empty :: ref HashMap<'key, 'value> -> bool
+fn is_empty map = length map == 0
+
+private def mix :: i64u -> i64
+fn mix hash =
+	let first = (hash ^ (hash >>> 33)) * 0xff51afd7ed558ccd
+	let second = (first ^ (first >>> 33)) * 0xc4ceb9fe1a85ec53
+	(second ^ (second >>> 33)) as i64
+
+private def sip_round :: (i64u * i64u * i64u * i64u) -> (i64u * i64u * i64u * i64u)
+fn sip_round state =
+	match state with
+	| (v0, v1, v2, v3) ->
+		let a0 = v0 + v1
+		let a1 = (Int.rotate_left v1 13) ^ a0
+		let a2 = v2 + v3
+		let a3 = (Int.rotate_left v3 16) ^ a2
+		let b0 = (Int.rotate_left a0 32) + a3
+		let b3 = (Int.rotate_left a3 21) ^ b0
+		let b2 = a2 + a1
+		let b1 = (Int.rotate_left a1 17) ^ b2
+		(b0, b1, Int.rotate_left b2 32, b3)
+
+/// SipHash-1-3 of one 64-bit word (its eight little-endian bytes) under the 128-bit key `key0`, `key1`.
+/// A map made with `with_seed` finalizes `Hash.hash` with it, so a table position cannot be chosen
+/// without knowing the seed.
+def sip13 :: i64u -> i64u -> i64u -> i64u
+fn sip13 key0 key1 message =
+	let start = (key0 ^ 0x736f6d6570736575i64u, key1 ^ 0x646f72616e646f6di64u, key0 ^ 0x6c7967656e657261i64u, key1 ^ 0x7465646279746573i64u)
+	let first =
+		match start with
+		| (v0, v1, v2, v3) -> sip_round (v0, v1, v2, v3 ^ message)
+	let second =
+		match first with
+		| (v0, v1, v2, v3) -> sip_round (v0 ^ message, v1, v2, v3 ^ 0x0800000000000000i64u)
+	let mut state =
+		match second with
+		| (v0, v1, v2, v3) -> (v0 ^ 0x0800000000000000i64u, v1, v2 ^ 0xffi64u, v3)
+	let mut round = 0
+	while round < 3 do
+		state = sip_round state
+		round = round + 1
+	match state with
+	| (v0, v1, v2, v3) -> v0 ^ v1 ^ v2 ^ v3
+
+private def split_mix :: i64u -> i64u
+fn split_mix seed =
+	let state = seed + 0x9e3779b97f4a7c15i64u
+	let first = (state ^ (state >>> 30)) * 0xbf58476d1ce4e5b9i64u
+	let second = (first ^ (first >>> 27)) * 0x94d049bb133111ebi64u
+	second ^ (second >>> 31)
+
+private def hash_of :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> ref 'key -> i64
+fn hash_of map key =
+	assert (Eq.eq key key)
+	if map.keyed then (sip13 map.key0 map.key1 (Hash.hash key)) as i64 else mix (Hash.hash key)
+
+private def table_size :: i64 -> i64
+fn table_size count =
+	assert (count >= 0 && count <= 1152921504606846976)
+	let mut size = 8
+	while size < 2 * count do size = size * 2
+	size
+
+private def empty_slots :: i64 -> Vec<i64>
+fn empty_slots size =
+	let mut slots = Vec.with_capacity size
+	let mut index = 0
+	while index < size do
+		slots = Vec.push slots (-1)
+		index = index + 1
+	slots
+
+private def locate :: ref Vec<i64> -> i64 -> i64 -> i64
+fn locate slots hash index =
+	let mask = Vec.length slots - 1
+	let mut position = hash & mask
+	while slots[position] != index do position = (position + 1) & mask
+	position
+
+private def rebuild :: ref Vec<Entry<'key, 'value>> -> i64 -> Vec<i64>
+fn rebuild entries size =
+	let mut slots = empty_slots size
+	let mut index = 0
+	while index < Vec.length entries do
+		let position = locate (ref slots) entries[index].hash (-1)
+		slots = Vec.set slots position index
+		index = index + 1
+	slots
+
+private def probe :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> ref 'key -> i64 -> i64
+fn probe map key hash =
+	let mask = Vec.length (ref map.slots) - 1
+	let mut position = hash & mask
+	while map.slots[position] >= 0 && !(map.entries[map.slots[position]].hash == hash && Eq.eq (ref map.entries[map.slots[position]].key) key) do
+		position = (position + 1) & mask
+	position
+
+private def find :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> ref 'key -> i64
+fn find map key =
+	let hash = hash_of map key
+	if Vec.length (ref map.slots) == 0 then -1 else map.slots[probe map key hash]
+
+def with_capacity :: i64 -> HashMap<'key, 'value>
+fn with_capacity count =
+	let size = table_size count
+	if count == 0 then empty() else HashMap { entries: Vec.with_capacity count, slots: empty_slots size, key0: 0i64u, key1: 0i64u, keyed: false }
+
+/// An empty map whose hashes are keyed by `seed`, so keys chosen to share table positions under the
+/// fixed mixing of `empty` spread out. The 128-bit key is two SplitMix64 outputs of the seed, and the
+/// iteration order does not depend on it. Keys that collide in the whole `Hash.hash` digest still collide.
+def with_seed :: i64u -> HashMap<'key, 'value>
+fn with_seed seed = HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: split_mix seed, key1: split_mix (seed + 0x9e3779b97f4a7c15i64u), keyed: true }
+
+/// `with_seed` with room for `count` entries that needs no growth.
+def with_capacity_and_seed :: i64 -> i64u -> HashMap<'key, 'value>
+fn with_capacity_and_seed count seed =
+	let size = table_size count
+	if count == 0 then with_seed seed else HashMap { entries: Vec.with_capacity count, slots: empty_slots size, key0: split_mix seed, key1: split_mix (seed + 0x9e3779b97f4a7c15i64u), keyed: true }
+
+/// An empty map keyed by a seed from the operating system (`Random.next_u64`). A failure to get one is
+/// reported, never replaced by a fixed seed. Not available on the default wasm32 target, which has no
+/// operating-system APIs; give `with_seed` a seed the host chose instead.
+def try_randomized :: unit -> IO<Result.Result<HashMap<'key, 'value>, Os.Error>>
+fn try_randomized _unit = IO.map (\seed ->
+	match seed with
+	| Result.Ok word -> Result.Ok (with_seed word)
+	| Result.Error error -> Result.Error error) (Random.next_u64 ())
+
+/// `try_randomized` that traps when the operating system gives no seed.
+def randomized :: unit -> IO<HashMap<'key, 'value>>
+fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
+
+def contains_key_ref :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> ref 'key -> bool
+fn contains_key_ref map key = find map key >= 0
+
+def contains_key :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> bool
+fn contains_key map key = contains_key_ref map (ref key)
+
+def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Option.Option<'value>
+fn get_ref map key =
+	let index = find map key
+	if index >= 0 then Option.Some map.entries[index].value else Option.None
+
+def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Option.Option<'value>
+fn get map key = get_ref map (ref key)
+
+def at_ref {r s} :: (Hash<'key>, Eq<'key>) => ref {r} HashMap<'key, 'value> -> ref {s} 'key -> ref {r} 'value
+fn at_ref map key =
+	let index = find map key
+	assert (index >= 0)
+	ref map.entries[index].value
+
+def at :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> ref 'value
+fn at map key = at_ref map (ref key)
+
+def insert :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> 'value -> HashMap<'key, 'value>
+fn insert map key value =
+	let hash = hash_of (ref map) (ref key)
+	let count = length (ref map)
+	let size = Vec.length (ref map.slots)
+	let found = if size == 0 then -1 else map.slots[probe (ref map) (ref key) hash]
+	match map with
+	| HashMap { entries = entries, slots = slots, key0 = key0, key1 = key1, keyed = keyed } ->
+		if found >= 0 then
+			match Vec.pop (Vec.swap entries found (count - 1)) with
+			| (remaining, Option.Some old) ->
+				let replacement = Entry { hash: old.hash, key: old.key, value: value }
+				HashMap { entries: Vec.swap (Vec.push remaining replacement) found (count - 1), slots: slots, key0: key0, key1: key1, keyed: keyed }
+			| (_, Option.None) -> unreachable ()
+		else
+			let grown = if 2 * (count + 1) > size then rebuild (ref entries) (if size == 0 then 8 else size * 2) else slots
+			let position = locate (ref grown) hash (-1)
+			HashMap { entries: Vec.push entries (Entry { hash: hash, key: key, value: value }), slots: Vec.set grown position count, key0: key0, key1: key1, keyed: keyed }
+
+private def unlink :: ref Vec<Entry<'key, 'value>> -> Vec<i64> -> i64 -> Vec<i64>
+fn unlink entries slots start =
+	let mask = Vec.length (ref slots) - 1
+	let mut current = slots
+	let mut hole = start
+	let mut position = (start + 1) & mask
+	while current[position] >= 0 do
+		let ideal = entries[current[position]].hash & mask
+		if ((position - ideal) & mask) >= ((position - hole) & mask) then
+			let moved = current[position]
+			current = Vec.set current hole moved
+			hole = position
+		position = (position + 1) & mask
+	Vec.set current hole (-1)
+
+def remove_ref :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> ref 'key -> HashMap<'key, 'value>
+fn remove_ref map key =
+	let hash = hash_of (ref map) key
+	let count = length (ref map)
+	if count == 0 then map else
+		let slot = probe (ref map) key hash
+		let index = map.slots[slot]
+		if index < 0 then map else
+			match map with
+			| HashMap { entries = entries, slots = slots, key0 = key0, key1 = key1, keyed = keyed } ->
+				let last = count - 1
+				let unlinked = unlink (ref entries) slots slot
+				let relinked = if index == last then unlinked else
+					let position = locate (ref unlinked) entries[last].hash last
+					Vec.set unlinked position index
+				match Vec.pop (Vec.swap entries index last) with
+				| (remaining, _removed) -> HashMap { entries: remaining, slots: relinked, key0: key0, key1: key1, keyed: keyed }
+
+def remove :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> HashMap<'key, 'value>
+fn remove map key = remove_ref map (ref key)
+
+/// How far the entry that sits farthest from its ideal table position is from it: 0 for an empty map.
+/// A diagnostic for tuning and tests; a map that is flooded with colliding keys has a large value.
+def longest_probe :: ref HashMap<'key, 'value> -> i64
+fn longest_probe map =
+	let size = Vec.length (ref map.slots)
+	let mask = size - 1
+	let mut longest = 0
+	let mut position = 0
+	while position < size do
+		let index = map.slots[position]
+		if index >= 0 then
+			let distance = (position - (map.entries[index].hash & mask)) & mask
+			if distance > longest then longest = distance
+		position = position + 1
+	longest
+
+def to_array :: (Copy<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> [('key * 'value)]
+fn to_array map = new [('key * 'value)](length map, index -> (map.entries[index].key, map.entries[index].value))
+
+def keys :: Copy<'key> => ref HashMap<'key, 'value> -> ['key]
+fn keys map = new ['key](length map, index -> map.entries[index].key)
+
+def values :: Copy<'value> => ref HashMap<'key, 'value> -> ['value]
+fn values map = new ['value](length map, index -> map.entries[index].value)
+
+def fold :: ref HashMap<'key, 'value> -> 'state -> ('state -> ref 'key -> ref 'value -> 'state) -> 'state
+fn fold map initial folder =
+	let mut state = initial
+	let mut index = 0
+	while index < length map do
+		state = folder state (ref map.entries[index].key) (ref map.entries[index].value)
+		index = index + 1
+	state
+
+private def rec iter_from :: ref HashMap<'key, 'value> -> i64 -> Seq.Seq<(ref 'key * ref 'value)>
+fn rec iter_from map index = Seq.defer (\() ->
+	if index < length map then (iter_from map (index + 1), Option.Some (ref map.entries[index].key, ref map.entries[index].value))
+	else (Seq.empty(), Option.None))
+
+def iter :: ref HashMap<'key, 'value> -> Seq.Seq<(ref 'key * ref 'value)>
+fn iter map = iter_from map 0

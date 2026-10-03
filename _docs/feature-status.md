@@ -54,7 +54,7 @@
 | C06 | 不透明な順序付き Map / Set、非 Copy キーの借用 | [Map / Set](library-reference/map-set.md) | [C06](../_features/_completed/C06-map-set.md) |
 | C07 | 一回消費 Seq、明示 iter、借用要素の反復 | [Seq](library-reference/sequences.md) | [C07](../_features/_completed/C07-iteration-protocol.md) |
 | C08 | 未着手（計画）: 可変スライスと要素のその場更新 | [Array / List](library-reference/arrays-and-lists.md) | [C08](../_features/C08-mutable-slices.md) |
-| C09 | 未着手（計画）: HashMap / HashSet | [Map / Set](library-reference/map-set.md) | [C09](../_features/C09-hash-map.md) |
+| C09 | 対応（Phase 1・2）: 不透明で非 Copy の `HashMap` / `HashSet`。キーは `Hash` と `Eq`、検索・挿入・削除は平均 O(1)。反復順は挿入順で、削除は末尾の entry を移す swap-remove のため、ハッシュ値・target・seed に依らず native と WASM で一致する。`with_seed` と `randomized`（OS の乱数。既定の wasm32 では `E2000`）による SipHash-1-3 の seed 付きハッシュ、借用キーの `contains_key_ref` / `get_ref` / `at_ref` / `remove_ref`、診断の `longest_probe`。既定の map は HashDoS への耐性がなく、seed 付きでも 64-bit の digest が完全に衝突するキーは防げない。SIMD のグループ探索（F08 待ち）、縮小、集合演算、`singleton`、`pop` は未実装 | [HashMap / HashSet](library-reference/hash-map.md) | [C09](../_features/_completed/C09-hash-map.md) |
 | C10 | 未着手（計画）: Arena / Handle による循環構造、参照カウントの検討 | [所有権](language-reference/ownership.md) | [C10](../_features/C10-shared-ownership.md) |
 | C11 | 未着手（計画）: 多次元配列と行列カーネル | [Array / List](library-reference/arrays-and-lists.md) | [C11](../_features/C11-multidimensional-arrays.md) |
 
@@ -68,7 +68,7 @@
 | D04 | checked / saturating、bit、rotate、拡大乗算 | [Int](library-reference/integers.md) | [D04](../_features/_completed/D04-integer-intrinsics.md) |
 | D05 | 明示 FMA、固定木、補償和、順序付き内積 | [数値集計](library-reference/math.md) | [D05](../_features/_completed/D05-fma-ordered-reductions.md) |
 | D06 | 具体型 const、前方参照、限られた式の評価 | [定数](language-reference/values-and-constants.md) | [D06](../_features/_completed/D06-compile-time-constants.md) |
-| D07 | 未着手（計画）: 文字列補間と書式指定 | [表示と解析](library-reference/formatting-and-parsing.md) | [D07](../_features/D07-string-interpolation.md) |
+| D07 | 対応（Phase 1 の段 A・B と Phase 2 の `Format` クラス）: `$"..."` と `u8$"..."` の文字列補間（`{expr}`、`{expr:spec}`、`{{` と `}}`）。穴は借用して左から右へ一度ずつ評価し、結果は一度だけ確保する。書式指定 `[[fill]align][+][width][.precision][type]`（type は `x X o b e f`）の数値は実行時が厳密に整形し、native と WASM で一致する。record・union の穴は `Format` クラスの instance へ検証済みの spec を渡して整形でき、`Format.parse` と `Format.pad` を使える。書記素幅（D09 待ち）、`#` と `0` フラグ、locale と桁区切り、実行時に組み立てる書式文字列、`deriving (Format)` は未実装 | [表示と解析](library-reference/formatting-and-parsing.md) | [D07](../_features/_completed/D07-string-interpolation.md) |
 | D08 | 未着手（計画）: JSON と Encode / Decode の導出 | [deriving](language-reference/deriving.md) | [D08](../_features/D08-json-serialization.md) |
 | D09 | 未着手（計画）: 線形時間の正規表現、Unicode 正規化と書記素 | [文字列 API](library-reference/text.md) | [D09](../_features/D09-regex-unicode.md) |
 | D10 | 未着手（計画）: 意味を保った f16 のハードウェア演算 | [数値](language-reference/numbers.md) | [D10](../_features/D10-f16-hardware.md) |
@@ -85,7 +85,7 @@
 | E05 | 借用入力、所有バッファ結果、スカラーレコード | [C ABI](guides/native-interop.md)、[WASM](guides/webassembly.md) | [E05](../_features/_completed/E05-host-abi-buffers.md) |
 | E06 | 同期 extern、到達する import のみ生成 | [外部関数](guides/native-interop.md) | [E06](../_features/_completed/E06-host-imports.md) |
 | E07 | Debug.print / trace、native stderr と WASM opt-in | [Debug](tools/debugging.md) | [E07](../_features/_completed/E07-debug-output.md) |
-| E08 | 未着手（計画）: ファイル・環境・時刻・乱数・終了コード、WASI の opt-in | [IO](library-reference/io.md) | [E08](../_features/E08-os-api.md) |
+| E08 | 対応（Phase 1 の段 A〜C と Phase 2 の `Process`・metadata・`Dir.walk`。Windows を除く）: `File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process` の std モジュール。OS に触れる操作は `IO<Result<_, Os.Error>>` の遅延アクションで、`Path` と `Random.Pcg` は純粋。`IO<i32>` の入口の値が終了コードになる。既定の wasm32 は OS API を `E2000` で拒否し、`--wasm-host wasi`（WASI preview1）では native と同じ結果を返す（`Process.run` は `Other`）。Windows の native は `E2002`（G10 待ち）。WASI preview2 とコンポーネントモデルは未実装 | [OS API](library-reference/os.md) | [E08](../_features/_completed/E08-os-api.md) |
 | E09 | 未着手（計画）: TCP / UDP | [IO](library-reference/io.md) | [E09](../_features/E09-network.md) |
 | E10 | 未着手（計画）: git 依存、lockfile、版解決と registry | [パッケージ](language-reference/modules-and-packages.md) | [E10](../_features/E10-package-registry.md) |
 | E11 | 未着手（計画）: C ヘッダーからの extern 生成 | [C ABI](guides/native-interop.md) | [E11](../_features/E11-c-bindgen.md) |
@@ -141,15 +141,15 @@
 - 独立した複数 record region、region を保持する関数値型、排他借用フィールド。
 - HKT 型別名、高階 kind 引数、標準 Functor / Monad の自動導入。
 - try / catch / finally、外部キャンセルトークン、開始済み Task の強制停止。
-- 文字列補間、locale 書式、一般的な Unicode 正規化、可変スライス、HashMap。
+- locale 書式、書記素幅、一般的な Unicode 正規化、可変スライス。
 - registry / git 依存、lockfile と版解決、ネットワーク取得、build script。
 - 任意関数の実行時 CPU dispatch、SVE / SVE2、GPU 自動 offload、float / 64-bit WGSL。
 - ブラウザー向け本番 threads glue、LSP completion / rename / formatting。
-- Windows の実機実行検証、PDB、ARM64 Windows、MinGW。
+- Windows の実機実行検証、Windows の native での OS API（`E2002`）、PDB、ARM64 Windows、MinGW。
 
-F# の class / 継承 / 型プロバイダー、.NET runtime、GC、REPL、標準 OS / GUI / ネットワーク API を提供する言語ではありません。外部機能はホストに置きます。
+F# の class / 継承 / 型プロバイダー、.NET runtime、GC、REPL、GUI / ネットワーク API を提供する言語ではありません。標準の OS API はファイル・環境・時刻・乱数・プロセスに限られ、それ以外の外部機能はホストに置きます。
 
-これらの多くは、各表の「未着手（計画）」のチケットで改善を計画しています。REPL、標準 OS / ネットワーク API などの計画も、実装されるまでは上記のとおり未提供です。対応表と方針は[チケット一覧の第2期](../_features/README.md#第2期-他言語比較で見える劣位の改善計画)にあります。
+これらの多くは、各表の「未着手（計画）」のチケットで改善を計画しています。REPL、ネットワーク API などの計画も、実装されるまでは上記のとおり未提供です。対応表と方針は[チケット一覧の第2期](../_features/README.md#第2期-他言語比較で見える劣位の改善計画)にあります。
 
 ## 根拠と読み方
 

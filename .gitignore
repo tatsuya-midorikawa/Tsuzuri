@@ -39,6 +39,7 @@ target
 !src/runtime/debug.ll
 !src/runtime/recursive.ll
 !src/runtime/display.ll
+!src/runtime/format.ll
 !src/runtime/numeric.ll
 !src/runtime/math.ll
 *.dylib

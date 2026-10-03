@@ -616,6 +616,27 @@ pub enum Builtin {
     DebugPrintString,
     IOReadLine,
     IOWrite,
+    /// `Os.__read :: i32 -> ref utf8string -> (i64 * [ubyte])` (E08): reads a file, a directory, the current directory, or an environment variable.
+    OsRead,
+    /// `Os.__args :: unit -> (i64 * [ubyte])`: the NUL-terminated command-line arguments after the program name.
+    OsArgs,
+    /// `Os.__write :: i32 -> ref utf8string -> ref [ubyte] -> i64`: writes a file, or creates or removes a file or directory.
+    OsWrite,
+    /// `Os.__random :: i64 -> (i64 * [ubyte])`: operating-system random bytes.
+    OsRandom,
+    /// `Os.__clock :: i32 -> i64`: a monotonic or Unix clock in nanoseconds.
+    OsClock,
+    /// `Os.__sleep :: i64 -> i64`: sleeps for milliseconds.
+    OsSleep,
+    /// `Os.__open :: i32 -> ref utf8string -> i64`: opens a file; a negative result is the negated error status.
+    OsOpen,
+    /// `Os.__handle :: i32 -> i64 -> i64 -> ref [ubyte] -> (i64 * [ubyte])`: reads, writes, or flushes an open file.
+    OsHandle,
+    /// `Os.__close :: i64 -> i64`: closes an open file.
+    OsClose,
+    /// `Os.__spawn :: ref utf8string -> ref [ubyte] -> ref [ubyte] -> (i64 * [ubyte])`: runs a program without a
+    /// shell, given its NUL-terminated arguments and its input, and returns the encoded outcome.
+    OsSpawn,
     Display,
     Parse,
     Default,
@@ -837,6 +858,16 @@ impl Builtin {
         Self::DebugPrintString,
         Self::IOReadLine,
         Self::IOWrite,
+        Self::OsRead,
+        Self::OsArgs,
+        Self::OsWrite,
+        Self::OsRandom,
+        Self::OsClock,
+        Self::OsSleep,
+        Self::OsOpen,
+        Self::OsHandle,
+        Self::OsClose,
+        Self::OsSpawn,
         Self::Display,
         Self::Parse,
         Self::Default,
@@ -1002,6 +1033,16 @@ impl Builtin {
             Self::DebugPrintString => "Debug.__print_string",
             Self::IOReadLine => "IO.__read_line",
             Self::IOWrite => "IO.__write",
+            Self::OsRead => "Os.__read",
+            Self::OsArgs => "Os.__args",
+            Self::OsWrite => "Os.__write",
+            Self::OsRandom => "Os.__random",
+            Self::OsClock => "Os.__clock",
+            Self::OsSleep => "Os.__sleep",
+            Self::OsOpen => "Os.__open",
+            Self::OsHandle => "Os.__handle",
+            Self::OsClose => "Os.__close",
+            Self::OsSpawn => "Os.__spawn",
             Self::Display => "$builtin.display",
             Self::Parse => "$builtin.parse",
             Self::Default => "$builtin.default",
@@ -1130,6 +1171,85 @@ impl Builtin {
                     Reference(Box::new(Concrete(Type::Utf8String)), false),
                 ],
                 Concrete(Type::Integer(32, true)),
+                Vec::new(),
+            ),
+            Self::OsRead | Self::OsArgs | Self::OsRandom => {
+                let owned = || {
+                    BuiltinType::Tuple(vec![
+                        Concrete(Type::I64),
+                        Array(Box::new(Concrete(Type::Integer(8, false)))),
+                    ])
+                };
+                let parameters = match self {
+                    Self::OsRead => vec![
+                        Concrete(Type::Integer(32, true)),
+                        Reference(Box::new(Concrete(Type::Utf8String)), false),
+                    ],
+                    Self::OsArgs => vec![Concrete(Type::Unit)],
+                    _ => vec![Concrete(Type::I64)],
+                };
+                (parameters, owned(), Vec::new())
+            }
+            Self::OsWrite => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Reference(Box::new(Concrete(Type::Utf8String)), false),
+                    Reference(
+                        Box::new(Array(Box::new(Concrete(Type::Integer(8, false))))),
+                        false,
+                    ),
+                ],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::OsClock => (
+                vec![Concrete(Type::Integer(32, true))],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::OsSleep | Self::OsClose => {
+                (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new())
+            }
+            Self::OsOpen => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Reference(Box::new(Concrete(Type::Utf8String)), false),
+                ],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::OsSpawn => (
+                vec![
+                    Reference(Box::new(Concrete(Type::Utf8String)), false),
+                    Reference(
+                        Box::new(Array(Box::new(Concrete(Type::Integer(8, false))))),
+                        false,
+                    ),
+                    Reference(
+                        Box::new(Array(Box::new(Concrete(Type::Integer(8, false))))),
+                        false,
+                    ),
+                ],
+                BuiltinType::Tuple(vec![
+                    Concrete(Type::I64),
+                    Array(Box::new(Concrete(Type::Integer(8, false)))),
+                ]),
+                Vec::new(),
+            ),
+            Self::OsHandle => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                    Reference(
+                        Box::new(Array(Box::new(Concrete(Type::Integer(8, false))))),
+                        false,
+                    ),
+                ],
+                BuiltinType::Tuple(vec![
+                    Concrete(Type::I64),
+                    Array(Box::new(Concrete(Type::Integer(8, false)))),
+                ]),
                 Vec::new(),
             ),
             Self::SimdSplat
@@ -2015,6 +2135,27 @@ pub struct TypedExpr {
     pub span: Span,
 }
 
+/// `$"a{x}b"` after type checking: the texts and one entry per hole.
+#[derive(Clone, Debug)]
+pub struct TypedInterpolation {
+    pub texts: Vec<StringLiteral>,
+    pub holes: Vec<TypedHole>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypedHole {
+    /// A `ref U` value: a borrowed place, a reference, or a `BorrowOperand` of a temporary.
+    pub operand: TypedExpr,
+    /// `Display.display` for `U`, or `Format.format` when `custom`. `None` for a
+    /// string of the literal's own type and for numbers formatted straight from
+    /// their spec.
+    pub method: Option<TypedExpr>,
+    pub spec: Option<FormatSpec>,
+    /// `U` is a record or union shown by its `Format` instance, which receives
+    /// the spec text and does its own padding.
+    pub custom: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct PatternAlternative {
     pub steps: Vec<PatternStep>,
@@ -2116,6 +2257,7 @@ pub enum TypedExprKind {
     StructuralCompare(BinaryOp, Vec<TypedExpr>),
     StructuralHash(Vec<TypedExpr>),
     StructuralDisplay(Vec<TypedExpr>),
+    Interpolated(Box<TypedInterpolation>),
     If {
         condition: Box<TypedExpr>,
         then_branch: Box<TypedExpr>,
@@ -2372,6 +2514,11 @@ impl TypedExpr {
             | StructuralCompare(_, values)
             | StructuralHash(values)
             | StructuralDisplay(values) => values.iter().collect(),
+            Interpolated(interpolation) => interpolation
+                .holes
+                .iter()
+                .flat_map(|hole| std::iter::once(&hole.operand).chain(hole.method.iter()))
+                .collect(),
             Break | Continue => Vec::new(),
             _ => Vec::new(),
         }
@@ -2464,6 +2611,11 @@ impl TypedExpr {
             | StructuralCompare(_, values)
             | StructuralHash(values)
             | StructuralDisplay(values) => values.iter_mut().collect(),
+            Interpolated(interpolation) => interpolation
+                .holes
+                .iter_mut()
+                .flat_map(|hole| std::iter::once(&mut hole.operand).chain(hole.method.iter_mut()))
+                .collect(),
             Break | Continue => Vec::new(),
             _ => Vec::new(),
         }
@@ -3188,6 +3340,42 @@ impl Names {
             Choice::Missing => Ok(None),
         }
     }
+}
+
+/// A format spec in the canonical spelling the lexer accepts, for diagnostics.
+pub(crate) fn spec_text(spec: &FormatSpec) -> String {
+    let mut text = String::new();
+    if let Some(align) = spec.align {
+        if spec.fill != ' ' {
+            text.push(spec.fill);
+        }
+        text.push(match align {
+            FormatAlign::Left => '<',
+            FormatAlign::Right => '>',
+            FormatAlign::Center => '^',
+        });
+    }
+    if spec.plus {
+        text.push('+');
+    }
+    if spec.width > 0 {
+        text.push_str(&spec.width.to_string());
+    }
+    if let Some(precision) = spec.precision {
+        text.push('.');
+        text.push_str(&precision.to_string());
+    }
+    if let Some(kind) = spec.kind {
+        text.push(match kind {
+            FormatKind::LowerHex => 'x',
+            FormatKind::UpperHex => 'X',
+            FormatKind::Octal => 'o',
+            FormatKind::Binary => 'b',
+            FormatKind::Exponent => 'e',
+            FormatKind::Fixed => 'f',
+        });
+    }
+    text
 }
 
 fn display_function_name(module: &str, name: &str) -> String {
@@ -5725,6 +5913,8 @@ struct Checker<'a> {
     computation_depth: usize,
     /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
     undecided_borrows: Vec<(Type, Span)>,
+    /// Format specs of interpolation holes; `finish` checks them against the final hole types.
+    format_specs: Vec<(Type, FormatSpec)>,
     /// Values of `use` bindings whose `Drop` requirement waits for inference.
     use_bindings: Vec<Span>,
     /// Builtin result types that wait for a concrete integer argument type.
@@ -5768,6 +5958,7 @@ impl<'a> Checker<'a> {
             normal_loop_depth: 0,
             computation_depth: 0,
             undecided_borrows: Vec::new(),
+            format_specs: Vec::new(),
             use_bindings: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
@@ -6359,6 +6550,9 @@ impl<'a> Checker<'a> {
             ),
             ExprKind::Bool(value) => (TypedExprKind::Bool(*value), Type::Bool),
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
+            ExprKind::Interpolated(interpolation) => {
+                return self.interpolation(interpolation, expression.span, expected);
+            }
             ExprKind::Tuple(values) => {
                 let types = match expected {
                     Some(Type::Tuple(types)) if types.len() == values.len() => Some(types),
@@ -6801,6 +6995,192 @@ impl<'a> Checker<'a> {
             };
         }
         value
+    }
+
+    /// Types `$"a{x}b"`: every hole is borrowed, never consumed, and shown
+    /// by `Display.display`; the pieces are joined into one string at run time.
+    #[inline(never)]
+    fn interpolation(
+        &mut self,
+        interpolation: &Interpolation,
+        span: Span,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let utf8 = matches!(interpolation.texts[0], StringLiteral::Utf8(_));
+        let result = if utf8 { Type::Utf8String } else { Type::String };
+        let mut holes = Vec::with_capacity(interpolation.holes.len());
+        for hole in &interpolation.holes {
+            holes.push(self.interpolation_hole(hole, utf8)?);
+        }
+        let kind = TypedExprKind::Interpolated(Box::new(TypedInterpolation {
+            texts: interpolation.texts.clone(),
+            holes,
+        }));
+        self.finish_expression(kind, result, expected, span)
+    }
+
+    #[inline(never)]
+    fn interpolation_hole(
+        &mut self,
+        hole: &InterpolationHole,
+        utf8: bool,
+    ) -> Result<TypedHole, Diagnostic> {
+        let expression = &hole.value;
+        let value = self.expression(expression, None)?;
+        let operand = self.hole_operand(expression, value)?;
+        let Type::Reference(inner, _) = &operand.ty else {
+            // Error recovery left a hole of unknown type; nothing is shown.
+            return Ok(TypedHole {
+                operand,
+                method: None,
+                spec: hole.spec,
+                custom: false,
+            });
+        };
+        let inner = (**inner).clone();
+        let own_text = if utf8 { Type::Utf8String } else { Type::String };
+        let formatted = hole
+            .spec
+            .is_some_and(|spec| spec.plus || spec.precision.is_some() || spec.kind.is_some());
+        // A spec on a record or union belongs to the type's `Format` instance.
+        // Without an instance, a sign, precision, or type is an error and a
+        // width and alignment pad the `Display` text.
+        let resolved = self.inference.resolve(&inner);
+        let custom = hole.spec.is_some()
+            && matches!(resolved, Type::Record(..) | Type::Union(..))
+            && (formatted || self.has_format_instance(&resolved));
+        let direct = !formatted && resolved == own_text;
+        let method = if custom {
+            let (kind, ty) = self.format_method(expression.span)?;
+            let shown = Type::function(
+                vec![
+                    Type::Reference(Box::new(inner.clone()), false),
+                    Type::Reference(Box::new(Type::String), false),
+                ],
+                Type::String,
+            );
+            self.same(&ty, &shown, expression.span)?;
+            Some(TypedExpr {
+                kind,
+                ty: self.inference.resolve(&ty),
+                span: expression.span,
+            })
+        } else if direct || formatted {
+            None
+        } else {
+            let (kind, ty) = self.display_method(expression.span)?;
+            let shown = Type::function(
+                vec![Type::Reference(Box::new(inner.clone()), false)],
+                Type::String,
+            );
+            self.same(&ty, &shown, expression.span)?;
+            Some(TypedExpr {
+                kind,
+                ty: self.inference.resolve(&ty),
+                span: expression.span,
+            })
+        };
+        if let Some(spec) = hole.spec.filter(|_| !custom) {
+            self.format_specs.push((inner, spec));
+        }
+        Ok(TypedHole {
+            operand,
+            method,
+            spec: hole.spec,
+            custom,
+        })
+    }
+
+    /// The borrow a hole shows: a place is borrowed as an argument of a
+    /// `ref` parameter is, a reference is used as it is, and any other value
+    /// is a temporary that the hole drops after copying its text.
+    fn hole_operand(
+        &mut self,
+        expression: &Expr,
+        value: TypedExpr,
+    ) -> Result<TypedExpr, Diagnostic> {
+        // A bare name is a place unless it builds a value: a union case such as
+        // `Light`, or a call of a function without parameters.
+        let place = match &expression.kind {
+            ExprKind::Name(_) => !matches!(
+                value.kind,
+                TypedExprKind::Construct { .. } | TypedExprKind::Call(..)
+            ),
+            ExprKind::Field(..) | ExprKind::Index(..) | ExprKind::Dereference(..) => true,
+            _ => false,
+        };
+        if place {
+            let expected = Type::Reference(Box::new(self.inference.fresh()), false);
+            return self.coerce_argument(value, &expected);
+        }
+        let span = value.span;
+        Ok(match self.inference.resolve(&value.ty) {
+            Type::Reference(inner, false) => TypedExpr {
+                ty: Type::Reference(inner, false),
+                ..value
+            },
+            Type::Reference(inner, true) => TypedExpr {
+                kind: TypedExprKind::Borrow(Box::new(Self::reborrow_operand(value)), false),
+                ty: Type::Reference(inner, false),
+                span,
+            },
+            ty => TypedExpr {
+                kind: TypedExprKind::BorrowOperand(Box::new(value)),
+                ty: Type::Reference(Box::new(ty), false),
+                span,
+            },
+        })
+    }
+
+    /// Checks the format specs of this body's holes against the final types.
+    pub(super) fn check_format_specs(&mut self) -> Result<(), Diagnostic> {
+        for (ty, spec) in std::mem::take(&mut self.format_specs) {
+            let ty = self.inference.resolve(&ty);
+            if ty.contains_error() {
+                continue;
+            }
+            let spelled = spec_text(&spec);
+            let needs_number = spec.plus || spec.precision.is_some() || spec.kind.is_some();
+            if needs_number && matches!(ty, Type::Infer(_) | Type::Variable(_)) {
+                return Err(Diagnostic::new(
+                    "E1003",
+                    format!(
+                        "format spec '{spelled}' needs a concrete numeric type, found {}; annotate the value's type",
+                        ty.display(&self.types)
+                    ),
+                    spec.span,
+                ));
+            }
+            let reason = if spec.plus && !ty.is_numeric() {
+                Some("'+' needs a number")
+            } else if spec.precision.is_some() && !ty.is_float() {
+                Some("precision needs a floating-point or decimal number")
+            } else if matches!(
+                spec.kind,
+                Some(
+                    FormatKind::LowerHex
+                        | FormatKind::UpperHex
+                        | FormatKind::Octal
+                        | FormatKind::Binary
+                )
+            ) && !ty.is_integer()
+            {
+                Some("'x', 'X', 'o' and 'b' need an integer")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(Diagnostic::new(
+                    "E1003",
+                    format!(
+                        "format spec '{spelled}' does not apply to {}; {reason}",
+                        ty.display(&self.types)
+                    ),
+                    spec.span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Record literals are checked outside `value_expression` so their

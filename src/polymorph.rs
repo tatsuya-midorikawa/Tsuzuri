@@ -476,7 +476,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 26] = [
+pub(super) const BUILTIN_CLASSES: [&str; 27] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -503,6 +503,7 @@ pub(super) const BUILTIN_CLASSES: [&str; 26] = [
     "Default",
     "Elementary",
     "Drop",
+    "Format",
 ];
 
 impl Classes {
@@ -671,6 +672,22 @@ impl Classes {
                     result: Type::Integer(64, false),
                 }),
                 operation: Some(Operation::Builtin(Builtin::Hash)),
+                default: None,
+            });
+        // `Format.format value spec` shows a value under the text of a validated
+        // `{value:spec}` hole; only user instances implement it.
+        classes.declarations[classes.names["Format"]]
+            .methods
+            .push(Method {
+                name: "format".into(),
+                signature: Ok(Signature {
+                    parameters: vec![
+                        Type::Reference(Box::new(Type::Variable("a".into())), false),
+                        Type::Reference(Box::new(Type::String), false),
+                    ],
+                    result: Type::String,
+                }),
+                operation: None,
                 default: None,
             });
         classes.declarations[classes.names["Drop"]]
@@ -1382,6 +1399,15 @@ impl Classes {
         ty: &Type,
         types: &TypeContext<'_>,
     ) -> Option<(&InstanceTemplate, BTreeMap<String, Type>)> {
+        // The fresh inference below knows nothing of the caller's variables.
+        let mut open = false;
+        map_type(ty, &mut |ty| {
+            open |= matches!(ty, Type::Infer(_));
+            ty.clone()
+        });
+        if open {
+            return None;
+        }
         self.instances
             .iter()
             .filter(|instance| instance.class == class)
@@ -2041,6 +2067,29 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(
+            builtin,
+            Builtin::OsRead
+                | Builtin::OsArgs
+                | Builtin::OsWrite
+                | Builtin::OsRandom
+                | Builtin::OsClock
+                | Builtin::OsSleep
+                | Builtin::OsOpen
+                | Builtin::OsHandle
+                | Builtin::OsClose
+                | Builtin::OsSpawn
+        ) && !(matches!(
+            self.module,
+            "File" | "Dir" | "Env" | "Time" | "Random" | "Process" | "Os"
+        ) && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "operating-system primitives are private to the standard File, Dir, Env, Time, Random, Process, and Os modules; use those APIs instead",
+                span,
+            ));
+        }
         if builtin == Builtin::DebugPrintString
             && !(self.module == "Debug" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
@@ -2318,6 +2367,33 @@ impl Checker<'_> {
         )
     }
 
+    /// `Display.display` as a method value whose type waits for inference.
+    pub(super) fn display_method(
+        &mut self,
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let class = self.classes.names["Display"];
+        self.method(class, 0, span)
+    }
+
+    /// Whether an instance of `Format` covers `ty`. A type that still has
+    /// unresolved parts cannot be matched yet, so it has none.
+    pub(super) fn has_format_instance(&self, ty: &Type) -> bool {
+        let class = self.classes.names["Format"];
+        self.classes
+            .matching_instance(class, ty, &self.types)
+            .is_some()
+    }
+
+    /// `Format.format` as a method value whose type waits for inference.
+    pub(super) fn format_method(
+        &mut self,
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let class = self.classes.names["Format"];
+        self.method(class, 0, span)
+    }
+
     pub(super) fn method(
         &mut self,
         class: usize,
@@ -2496,6 +2572,7 @@ impl Checker<'_> {
     pub(super) fn finish(&mut self, body: &mut TypedExpr) -> Result<(), Diagnostic> {
         self.inference.apply_defaults();
         self.solve_families(true)?;
+        self.check_format_specs()?;
         for (ty, span) in &self.undecided_borrows {
             if matches!(self.inference.resolve(ty), Type::Reference(..)) {
                 return Err(Diagnostic::new(

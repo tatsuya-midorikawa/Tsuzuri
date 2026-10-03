@@ -174,10 +174,23 @@ impl Target {
     }
 }
 
+/// Why wasm output cannot reach the operating-system primitives of E08.
+pub(crate) const OS_WASM_MESSAGE: &str = "wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs because the default wasm target has no host imports; build for the native target, use --wasm-host wasi, or keep to Path and Random.Pcg, which need no host";
+/// Why a Windows build cannot reach them yet.
+pub(crate) const OS_WINDOWS_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
     Generic,
     Native,
+}
+
+/// The host a wasm32 module expects (E08 stage C). Without one, wasm output has no imports beyond
+/// `tsuzuri_io`, `tsuzuri_debug`, and the program's own `extern` imports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WasmHost {
+    /// WASI preview1: the standard IO and the operating-system APIs use `wasi_snapshot_preview1`.
+    Wasi,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +221,8 @@ pub struct BuildOptions {
     pub debug_info: bool,
     pub wasm_simd: bool,
     pub wasm_threads: bool,
+    /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
+    pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
     pub wasm_max_memory: Option<u64>,
     /// `None` selects [`DEFAULT_WASM_STACK_SIZE`].
@@ -229,6 +244,7 @@ impl Default for BuildOptions {
             debug_info: false,
             wasm_simd: false,
             wasm_threads: false,
+            wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
             cache: true,
@@ -265,6 +281,21 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+            ));
+        }
+        if self.wasm_host.is_some()
+            && (self.target != Target::Wasm32
+                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output",
+            ));
+        }
+        if self.wasm_host.is_some() && self.wasm_threads {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-host wasi cannot be combined with --wasm-feature threads",
             ));
         }
         if self.debug_info && self.emit == Emit::Header {
@@ -1526,6 +1557,9 @@ fn build_complete(
     }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
+        if options.wasm_host == Some(WasmHost::Wasi) {
+            text = llvm::with_wasi_host(&text);
+        }
         if options.wasm_simd {
             text.insert_str(
                 0,
@@ -1539,6 +1573,9 @@ fn build_complete(
     let cpu_runtime =
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
+    let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    // With `--wasm-host wasi` the standard IO and the OS APIs come from src/runtime/os-wasi.c.
+    let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi) && (io_runtime || os_runtime);
     // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
         && options.emit == Emit::Object
@@ -1552,7 +1589,7 @@ fn build_complete(
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
-        || (options.target == Target::Native && io_runtime);
+        || (options.target == Target::Native && (io_runtime || os_runtime));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
@@ -1576,6 +1613,13 @@ fn build_complete(
             "E2002",
             "Windows COFF objects with embedded task, CPU, or IO runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
+    }
+    if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
+        return Err(driver_error("E2000", OS_WASM_MESSAGE));
+    }
+    if os_runtime && cfg!(windows) && options.target == Target::Native && options.emit != Emit::Llvm
+    {
+        return Err(driver_error("E2002", OS_WINDOWS_MESSAGE));
     }
     protect_sources(project, output)?;
     protect_links(links, output)?;
@@ -1690,7 +1734,13 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}",
+                // The feature macros of os.c must precede every include, so it comes first.
+                if os_runtime && options.target == Target::Native {
+                    include_str!("runtime/os.c")
+                } else {
+                    ""
+                },
                 if trap_runtime {
                     include_str!("runtime/trap.c")
                 } else {
@@ -1788,6 +1838,41 @@ fn build_complete(
             );
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+        let wasi_object = temporary.path.join("wasi.o");
+        if wasi_runtime {
+            let source = temporary.path.join("wasi.c");
+            fs::write(&source, include_str!("runtime/os-wasi.c"))
+                .map_err(|error| io_error("write WASI runtime", &source, error))?;
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime.args([
+                "--target=wasm32-unknown-unknown",
+                "-std=c11",
+                "-ffreestanding",
+                "-fno-builtin",
+                "-fno-stack-protector",
+                "-mbulk-memory",
+                "-c",
+            ]);
+            // Only a WASM module of an IO entry is a WASI command; objects leave `_start` to the embedder.
+            if options.emit == Emit::Wasm && llvm::io_entry(module) {
+                runtime.arg("-DTZ_WASI_START");
+                if llvm::exit_code_entry(module) {
+                    runtime.arg("-DTZ_WASI_EXIT_CODE");
+                }
+            }
+            runtime
+                .arg(format!("-O{}", options.optimization))
+                .arg(&source)
+                .arg("-o")
+                .arg(&wasi_object);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut runtime,
+                    "the WASI host needs Clang with WebAssembly support",
+                )?,
+            );
+        }
         let threads_object = temporary.path.join("threads.o");
         if options.wasm_threads {
             let source = temporary.path.join("threads.c");
@@ -1853,7 +1938,7 @@ fn build_complete(
         clang.arg(&ir).arg("-o").arg(
             if options.emit == Emit::Wasm
                 || dwarf_sidecar.is_some()
-                || (options.wasm_threads && options.emit == Emit::Object)
+                || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
                 || (native_runtime && options.emit == Emit::Object && !merge_debug_ir)
             {
                 &object
@@ -1946,19 +2031,21 @@ fn build_complete(
                 )?,
             );
         }
-        if options.wasm_threads && options.emit == Emit::Object {
+        if (options.wasm_threads || wasi_runtime) && options.emit == Emit::Object {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
-            linker
-                .arg("-r")
-                .arg(&object)
-                .arg(&threads_object)
-                .arg("-o")
-                .arg(&artifact);
+            linker.arg("-r").arg(&object);
+            if options.wasm_threads {
+                linker.arg(&threads_object);
+            }
+            if wasi_runtime {
+                linker.arg(&wasi_object);
+            }
+            linker.arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "WASM threads require wasm-ld relocatable linking",
+                    "WASM threads and the WASI host require wasm-ld relocatable linking",
                 )?,
             );
         }
@@ -2002,12 +2089,15 @@ fn build_complete(
             if callback_table {
                 linker.arg("--export-table");
             }
-            if llvm::uses_host_abi(module) || io_runtime {
+            if llvm::uses_host_abi(module) || io_runtime || os_runtime {
                 linker.args([
                     "--export=tsuzuri_alloc",
                     "--export=tsuzuri_free",
                     "--export-memory",
                 ]);
+            }
+            if wasi_runtime {
+                linker.arg(&wasi_object);
             }
             if llvm::io_entry(module) {
                 linker.arg("--export=tsuzuri_main");
@@ -2217,6 +2307,19 @@ pub fn run_with_diagnostics(
         .wait()
         .map_err(|error| io_error("wait for executable", &output, error))?;
     temporary.close()?;
+    // An `IO<i32>` entry returns its value as the exit code, so a non-zero code is not a trap.
+    if let Some(code) = status.code()
+        && code != 0
+        && llvm::exit_code_entry(module)
+    {
+        let stderr = String::from_utf8_lossy(&stderr);
+        let message = if json && !stderr.trim().is_empty() {
+            format!("program exited with code {code}:\n{}", stderr.trim_end())
+        } else {
+            format!("program exited with code {code}")
+        };
+        return Err(driver_error("E2005", message));
+    }
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
         let site = project.with_trap_sources(|sources| {

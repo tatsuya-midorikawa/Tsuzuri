@@ -114,6 +114,19 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     output
 }
 
+/// Lowers the standard IO to the WASI host: its `declare`s lose the `tsuzuri_io` import attributes,
+/// so `src/runtime/os-wasi.c` defines the functions instead of the embedder.
+pub(crate) fn with_wasi_host(ir: &str) -> String {
+    let mut output = ir.to_owned();
+    for name in ["read_line", "write"] {
+        output = output.replace(
+            &format!(" \"wasm-import-module\"=\"tsuzuri_io\" \"wasm-import-name\"=\"{name}\""),
+            "",
+        );
+    }
+    output
+}
+
 /// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
 /// lines match, so string constants containing the same text stay unchanged.
 pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
@@ -815,6 +828,8 @@ fn emit_program(
         &mut globals,
         &mut specializations,
     ));
+    // Only a program that reads `Env.args` receives argc and argv; other entries keep `@main()`.
+    let uses_args = intrinsics.contains("declare void @tsuzuri_os_set_args(i32, ptr)");
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
@@ -829,7 +844,7 @@ fn emit_program(
     }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
-            console_main(module),
+            console_main(module, uses_args),
             module,
             &module.functions[module.entry.unwrap()],
             "@main",
@@ -864,7 +879,7 @@ fn emit_program(
     if output.contains("@tz.rec.") {
         output.push_str(include_str!("runtime/recursive.ll"));
     }
-    if uses_host_abi(module) || output.contains("@tsuzuri_io_") {
+    if uses_host_abi(module) || output.contains("@tsuzuri_io_") || output.contains("@tsuzuri_os_") {
         if wasm || cfg!(windows) || instrumentation.trap_return {
             output.push_str(host_abi::allocator());
         } else {
@@ -888,6 +903,10 @@ fn emit_program(
     }
     if output.contains("@tz.display.") {
         output.push_str(include_str!("runtime/display.ll"));
+    }
+    // Interpolation padding calls string functions, so append it before the string runtime below.
+    if output.contains("@tz.format.") {
+        output.push_str(include_str!("runtime/format.ll"));
     }
     if output.contains("@tz_soft_") {
         output = output.replace("declare void @llvm.trap()\n", "");
@@ -1785,6 +1804,17 @@ pub fn io_entry(module: &CheckedModule) -> bool {
             == [Type::function(vec![Type::Unit], arguments[0].clone())]
 }
 
+/// Whether the entry is an `IO<i32>`, whose value becomes the process exit code (E08 D9).
+pub fn exit_code_entry(module: &CheckedModule) -> bool {
+    io_entry(module)
+        && module
+            .entry
+            .is_some_and(|id| match &module.functions[id].signature.result {
+                Type::Record(_, arguments) => arguments[0] == Type::Integer(32, true),
+                _ => false,
+            })
+}
+
 fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
     let main = module
         .entry
@@ -2647,6 +2677,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::StructuralHash(arguments) => self.structural_hash(arguments),
             TypedExprKind::StructuralDisplay(arguments) => self.structural_display(arguments),
+            TypedExprKind::Interpolated(interpolation) => {
+                self.interpolation(interpolation, &expression.ty)
+            }
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
             TypedExprKind::TaskRun(task) => {
                 let task = self.expression(task);
@@ -3783,23 +3816,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let mut values = Vec::new();
         for argument in arguments {
             let value = if let TypedExprKind::BorrowOperand(operand) = &argument.kind {
-                if argument.ty.shared_array_element().is_some() {
-                    if Self::is_place(operand) {
-                        self.expression_mode(operand, false)
-                    } else {
-                        let (value, frames) = self.frame_value(operand);
-                        let slot = self.spill(&operand.ty, &value);
-                        cleanup.push((operand.ty.clone(), slot, value.clone(), frames));
-                        value
-                    }
-                } else if Self::is_place(operand) {
-                    self.place(operand)
-                } else {
-                    let (value, frames) = self.frame_value(operand);
-                    let slot = self.spill(&operand.ty, &value);
-                    cleanup.push((operand.ty.clone(), slot.clone(), value, frames));
-                    slot
-                }
+                self.operand_borrow(argument, operand, &mut cleanup)
             } else {
                 self.expression(argument)
             };
@@ -3821,6 +3838,38 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             function.unwrap()
         };
+        self.release_operands(cleanup);
+        result
+    }
+
+    /// The borrow of a `BorrowOperand`: a place is borrowed where it is and
+    /// any other value is spilled to a slot that `release_operands` drops.
+    fn operand_borrow(
+        &mut self,
+        argument: &TypedExpr,
+        operand: &TypedExpr,
+        cleanup: &mut Vec<(Type, String, String, Vec<Frame>)>,
+    ) -> String {
+        if argument.ty.shared_array_element().is_some() {
+            if Self::is_place(operand) {
+                self.expression_mode(operand, false)
+            } else {
+                let (value, frames) = self.frame_value(operand);
+                let slot = self.spill(&operand.ty, &value);
+                cleanup.push((operand.ty.clone(), slot, value.clone(), frames));
+                value
+            }
+        } else if Self::is_place(operand) {
+            self.place(operand)
+        } else {
+            let (value, frames) = self.frame_value(operand);
+            let slot = self.spill(&operand.ty, &value);
+            cleanup.push((operand.ty.clone(), slot.clone(), value, frames));
+            slot
+        }
+    }
+
+    fn release_operands(&mut self, cleanup: Vec<(Type, String, String, Vec<Frame>)>) {
         for (ty, slot, value, frames) in cleanup {
             self.drop_framed(&ty, &value, &frames);
             self.instruction(format!(
@@ -3828,7 +3877,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.ty(&ty)
             ));
         }
-        result
     }
 
     fn call(&mut self, callee: &TypedExpr, arguments: &[TypedExpr]) -> String {
@@ -4571,7 +4619,17 @@ fn emit_builtin(
         | Builtin::OwnedFunction
         | Builtin::OwnedCall
         | Builtin::IOReadLine
-        | Builtin::IOWrite => emit_typed_builtin(instance, ty, module, intrinsics, globals),
+        | Builtin::IOWrite
+        | Builtin::OsRead
+        | Builtin::OsArgs
+        | Builtin::OsWrite
+        | Builtin::OsRandom
+        | Builtin::OsClock
+        | Builtin::OsSleep
+        | Builtin::OsOpen
+        | Builtin::OsHandle
+        | Builtin::OsClose
+        | Builtin::OsSpawn => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
@@ -4754,6 +4812,20 @@ fn emit_typed_builtin(
             .0
     } else if matches!(instance.builtin, Builtin::IOReadLine | Builtin::IOWrite) {
         emitter.io_builtin(instance.builtin, ty)
+    } else if matches!(
+        instance.builtin,
+        Builtin::OsRead
+            | Builtin::OsArgs
+            | Builtin::OsWrite
+            | Builtin::OsRandom
+            | Builtin::OsClock
+            | Builtin::OsSleep
+            | Builtin::OsOpen
+            | Builtin::OsHandle
+            | Builtin::OsClose
+            | Builtin::OsSpawn
+    ) {
+        emitter.os_builtin(instance.builtin, ty)
     } else if instance.builtin.name().starts_with("Math.") {
         emitter.math_builtin(instance)
     } else if instance.builtin == Builtin::DisplayQuoted {
@@ -5545,8 +5617,11 @@ fn test_builtin(
     ))
 }
 
-fn console_main(module: &CheckedModule) -> String {
+fn console_main(module: &CheckedModule, uses_args: bool) -> String {
     if io_entry(module) {
+        if uses_args {
+            return "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
+        }
         return "define i32 @main() {\nentry:\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
     }
     let main = &module.functions[module.entry.unwrap()];
