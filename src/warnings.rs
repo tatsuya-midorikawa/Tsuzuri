@@ -344,7 +344,8 @@ impl TypeReferences<'_> {
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
             | TypeExprKind::Reference(inner, _)
-            | TypeExprKind::Regions(inner, _) => self.ty(inner),
+            | TypeExprKind::Regions(inner, _)
+            | TypeExprKind::Quantified(_, inner) => self.ty(inner),
             TypeExprKind::Tuple(elements) => {
                 for element in elements {
                     self.ty(element);

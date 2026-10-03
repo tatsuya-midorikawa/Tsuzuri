@@ -1,6 +1,7 @@
 pub mod abi;
 pub mod cache;
 pub mod check;
+pub mod copies;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;

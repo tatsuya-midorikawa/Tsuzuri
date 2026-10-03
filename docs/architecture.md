@@ -70,7 +70,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/stdlib.rs` / `std/` | 埋め込みの標準ライブラリのソース、予約 std モジュール名、std の仮想パス |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` 選択、LLVM／LLD 起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの 2 段上に `manifest.json`）の `bin/` → `PATH` の順に解決（`resolve_tool`。cache key も同じ解決を使う） |
 | `src/main.rs` | CLI オプションと診断・警告の表示、`toolchain info` |
-| `src/lsp.rs` / `src/semantic.rs` | stdio言語サーバー、Unicode位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカルの有効範囲・record 型の式を索引し、型付き木が落とすフィールド・record・case 名は checker の `name_uses` から集める。rename と quick fix は編集後の再解析で診断と名前の結び付きの不変を確かめる。入力中の補完・signature help・semantic tokens は直前の成功索引を共通の接頭辞・接尾辞で写して使う |
+| `src/copies.rs` | 具体化後の暗黙の複製の一覧（`copies::sites`）、`--warn implicit-copy` の `W1006`、inlay hint の元になる配列・リストの複製（`costly_sites`） |
+| `src/lsp.rs` / `src/semantic.rs` | stdio言語サーバー、Unicode位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカルの有効範囲・record 型の式を索引し、型付き木が落とすフィールド・record・case 名は checker の `name_uses` から集める。rename と quick fix は編集後の再解析で診断と名前の結び付きの不変を確かめる。入力中の補完・signature help・semantic tokens・複製の inlay hint は直前の成功索引を共通の接頭辞・接尾辞で写して使う |
 
 doc commentはlexerのDocComment tokenとして保持し、parserで宣言のDocumentation(text, span)へ添付します。
 def/fn結合では署名側から引き継ぎ、誤配置はE0002です。生成するchecked functionにはdocsを複製せず、型/ownership/LLVMの意味は変えません。
@@ -349,6 +350,10 @@ Span はソース ID とファイル内バイト位置を保ち、字句・構�
 `Ident.provenance` を `Local` へ引き継ぎ、W1001 はローカル ID の使用、W1002 は再帰検査と共有する呼び出しグラフと型参照の到達性で判定します。
 型別名は消去前の注釈も走査します。std と生成束縛を抑制し、生成名の文字列から由来を推測しません。
 W1003 は既存の網羅性解析、W1004 は既定無効の字句スコープ検査です。`--deny-warnings` はコード生成前に失敗させます。
+W1006 は型検査の後段で作ります。`copies::sites` が具体化・クロージャ降格後の module で所有権検査器を収集モードで再実行し、
+消費する読み取りのうち drop が必要な Copy 値の複製（単一使用の local の move を除く）を位置・型・種類と共に返します。
+`main.rs` は `--warn implicit-copy` のときだけその配列・リストの複製を警告にし、LSP は同じ一覧を `textDocument/inlayHint` で返します。
+debug build の LLVM emitter は利用者の式から生じた暗黙の `clone_value` を記録し、すべてが一覧にあることを生成の最後に検査します。
 
 `Program.tests` は通常の名前空間と分離し、検査時に unit の内部 callable と `CheckedModule.tests` のメタデータへ変換します。
 `FunctionOrigin.test` を局所生成関数へ引き継ぎ、共有特殊化は一つだけ生成して root 集合からの到達性で選択します。
@@ -945,9 +950,14 @@ LLVM IR／ヘッダーの出力と Cargo ビルドには、引き続き LLVM・p
 再借用は元の loan を親として追跡し、子の生存中に元の排他参照を使用・移動できません。
 参照を結果・外側の束縛へ移すときは、参照先の所有者が生存していることを検証します。
 共有借用フィールドを許し、格納型の走査はrecord/union/collectionを通して参照・排他参照を検査します。借用省略は入力loanの交差を保持します。
-`TypeExprKind::Regions`と宣言のregionリストを`regions.rs`で検査し、単一regionの返却契約をCheckedFunction.region_sourcesへ保持します。
-所有権検査は返却loanのexternal rootが契約に含まれることを確認し、直接の完全適用だけ指定入力のloanを戻り値へ伝えます。
-通常のType/LLVMからはregionを消去し、関数値・部分適用は全入力の保守的追跡を維持します。複数regionのfield別追跡と高階region型は未対応です。
+`TypeExprKind::Regions`と宣言のregionリストを`regions.rs`で検査し、返却契約をCheckedFunction.region_sourcesへ保持します。
+契約は結果のregion slotごとに、借用元になれる（引数添字、引数のslot）の組を持ちます（`RegionSources`）。多region recordは`CheckedRecord.field_regions`にfieldごとのregionの`RegionMask`（`u16`、最大16）を持ちます。
+所有権検査の`Value`は多region recordの値だけslotごとのloan集合を持ち、recordリテラル・更新・fieldの読み出し・不変の束縛・`if`／`match`の合流・直接の完全適用でslotを保ちます。
+その他の経路はslotを捨てて全loanを保持します。所有権検査は返却loanのexternal rootが契約に含まれることを確認し、直接の完全適用だけ指定入力のloanを戻り値へ伝えます。
+名前付き関数の引数のregion量化関数型（`TypeExprKind::Quantified`）は、関数ごとの`CallbackContract`になります。
+本体でその引数を完全適用した結果は契約の入力のloanだけを持ち、呼び出し側は渡した関数（名前付き関数の契約、ラムダの本体、同じ契約の引数）が契約を守ることを検査します。
+その関数は直接の完全適用でだけ使え（`regions::validate_contract_calls`）、契約が関数値へ漏れません。
+通常のType/LLVMからはregionと量化を消去し、量化のない関数値・部分適用は全入力の保守的追跡を維持します。
 参照型の構文解析は別helperへ分離し、既存の深さ128でパーサーのスタック使用量を維持します。
 レコード／配列／リストの Copy は構造的に決まり、文字列を含む値は所有権を移動します。
 

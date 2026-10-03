@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::check::semantic::{Reference, Role, SemanticIndex, SymbolKind};
-use crate::check::{ModuleOrigin, semantic};
+use crate::check::{CheckedModule, ModuleOrigin, semantic};
+use crate::copies::{CopyKind, CopySite};
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::driver::{Project, SourceFile};
 use crate::syntax::{Token, TokenKind};
@@ -275,6 +276,8 @@ struct ProjectState {
     index: Option<SemanticIndex>,
     mappers: Vec<PositionMapper>,
     diagnostics: Vec<Diagnostic>,
+    /// The implicit array and list copies that inlay hints show (A15).
+    copies: Vec<CopySite>,
 }
 
 struct Session {
@@ -370,7 +373,10 @@ impl Session {
                 return Ok(());
             }
         };
-        let (index, diagnostics) = analyze(&project);
+        let (analyzed, diagnostics) = analyze(&project);
+        let (index, copies) = analyzed.map_or((None, Vec::new()), |(index, module)| {
+            (Some(index), crate::copies::costly_sites(&module))
+        });
         let mappers: Vec<_> = project
             .sources
             .iter()
@@ -399,6 +405,7 @@ impl Session {
                 index,
                 mappers,
                 diagnostics,
+                copies,
             },
         );
         Ok(())
@@ -449,6 +456,7 @@ impl Session {
                     "semanticTokensProvider": {"legend": legend, "full": true, "range": false},
                     "codeActionProvider": {"codeActionKinds": ["quickfix"]},
                     "documentFormattingProvider": true,
+                    "inlayHintProvider": true,
                 },
                 "serverInfo": {"name": "Tsuzuri", "version": env!("CARGO_PKG_VERSION")},
             }));
@@ -679,6 +687,17 @@ impl Session {
                     .unwrap_or_default();
                 Ok(json!({"data": data}))
             }
+            "textDocument/inlayHint" => {
+                let path = document_path(params)?;
+                let (directory, _) = self.document(params, output)?;
+                let text = self
+                    .text(&directory, &path)
+                    .ok_or_else(|| invalid("document is not open"))?;
+                match self.view(&directory, &path, text) {
+                    Some(view) => copy_hints(&view, text, self.encoding, &params["range"]),
+                    None => Ok(json!([])),
+                }
+            }
             "textDocument/codeAction" => {
                 let (directory, source_id) = self.document(params, output)?;
                 let Some(source_id) = source_id else {
@@ -905,7 +924,7 @@ impl Session {
         let (renamed, diagnostics) = analyze(&project);
         let describe =
             |diagnostic: &Diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message);
-        let Some(renamed) = renamed else {
+        let Some((renamed, _)) = renamed else {
             let error = diagnostics
                 .iter()
                 .find(|diagnostic| diagnostic.severity == Severity::Error)
@@ -1105,7 +1124,7 @@ fn is_user(project: &Project, span: Span) -> bool {
 }
 
 /// Analyzes a project; a successful index also records `def` and `fn` heads.
-fn analyze(project: &Project) -> (Option<SemanticIndex>, Vec<Diagnostic>) {
+fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Diagnostic>) {
     let inputs: Vec<_> = project
         .sources
         .iter()
@@ -1121,9 +1140,10 @@ fn analyze(project: &Project) -> (Option<SemanticIndex>, Vec<Diagnostic>) {
         .collect();
     let mut semantic = SemanticIndex::default();
     match crate::analyze_inputs_semantic(&inputs, &mut semantic) {
-        Ok(module) => {
+        Ok(mut module) => {
             add_function_heads(&mut semantic, project);
-            (Some(semantic), module.warnings)
+            let warnings = std::mem::take(&mut module.warnings);
+            (Some((semantic, module)), warnings)
         }
         Err(errors) => (None, errors.diagnostics),
     }
@@ -1969,6 +1989,44 @@ fn semantic_tokens(view: &View<'_>, text: &str, encoding: PositionEncoding) -> V
         (line, column) = (at_line, at_column);
     }
     data
+}
+
+/// An inlay hint after each implicit array or list copy that ends in `range` (A15).
+fn copy_hints(view: &View<'_>, text: &str, encoding: PositionEncoding, range: &Value) -> RpcResult {
+    let mapper = PositionMapper::new(text, encoding);
+    let bound = |name: &str| {
+        mapper
+            .offset(text, &range[name])
+            .ok_or_else(|| invalid(POSITION_ERROR))
+    };
+    let (start, end) = (bound("start")?, bound("end")?);
+    let hints: Vec<_> = view
+        .state
+        .copies
+        .iter()
+        .filter(|site| site.span.source == Some(view.source))
+        .filter_map(|site| {
+            let span = view.map.span(site.span)?;
+            let kind = match site.kind {
+                CopyKind::Local => "local",
+                CopyKind::Field => "field",
+                CopyKind::Element => "element",
+                CopyKind::Tail => "tail",
+                CopyKind::Payload => "payload",
+                CopyKind::Dereference => "dereference",
+                CopyKind::Temporary => "temporary",
+            };
+            (start..=end).contains(&span.end).then(|| {
+                Some(json!({
+                    "position": mapper.position(text, span.end)?,
+                    "label": format!("copy ({kind})"),
+                    "tooltip": crate::copies::message(&site.ty),
+                    "paddingLeft": true,
+                }))
+            })?
+        })
+        .collect();
+    Ok(json!(hints))
 }
 
 fn format_document(path: &Path, text: &str, encoding: PositionEncoding) -> Value {

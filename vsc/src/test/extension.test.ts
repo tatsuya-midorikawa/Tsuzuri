@@ -61,6 +61,12 @@ export async function run(): Promise<void> {
 	await waitFor('diagnostics cleared', () => !vscode.languages.getDiagnostics(uri).length ? true : undefined);
 	console.log('VS Code: unsaved Unicode errors, warnings, clearing, multi-root isolation passed.');
 
+	await replace('def reuse :: [i64] -> i64\nfn reuse a =\n    let b = a\n    Array.length (ref a) + Array.length (ref b)\n');
+	const hints = await waitFor('implicit copy inlay hint', async () => {
+		const values = await vscode.commands.executeCommand<vscode.InlayHint[]>('vscode.executeInlayHintProvider', uri, new vscode.Range(0, 0, 4, 0));
+		return values?.length ? values : undefined;
+	});
+	assert.deepEqual(hints.map(hint => [hint.label, hint.position.line, hint.position.character]), [['copy (local)', 2, 13]]);
 	await replace('def identity::i64->i64=\\value->value+1\n');
 	const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>('vscode.executeFormatDocumentProvider', uri, { tabSize: 4, insertSpaces: true });
 	assert.ok(edits.length);
@@ -79,7 +85,7 @@ export async function run(): Promise<void> {
 	await vscode.commands.executeCommand('leaveSnippet');
 	await replace(original);
 	assert.ok(await document.save());
-	console.log('VS Code: unsaved formatting and standard-library completion passed.');
+	console.log('VS Code: unsaved formatting, standard-library completion, and copy inlay hints passed.');
 
 	const tasks = await vscode.tasks.fetchTasks({ type: 'tsuzuri' });
 	assert.ok(tasks.some(task => task.definition.action === 'build'));

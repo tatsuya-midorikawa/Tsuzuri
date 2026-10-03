@@ -14,7 +14,7 @@ mod traps;
 pub use traps::EmitOutput;
 
 #[path = "call_specialization.rs"]
-mod call_specialization;
+pub(crate) mod call_specialization;
 #[path = "llvm_control.rs"]
 mod control;
 #[path = "llvm_debug.rs"]
@@ -969,7 +969,41 @@ fn emit_program(
             });
         }
     }
+    #[cfg(debug_assertions)]
+    check_copy_inventory(module, &globals.emitted_copies);
     Ok((output, globals.traps))
+}
+
+/// Every implicit copy that the code makes is in `copies::sites`, which W1006 and PM07 rely on.
+#[cfg(debug_assertions)]
+fn check_copy_inventory(
+    module: &CheckedModule,
+    emitted: &BTreeSet<(usize, Option<usize>, usize, usize)>,
+) {
+    if emitted.is_empty() {
+        return;
+    }
+    let listed: BTreeSet<_> = crate::copies::sites(module)
+        .into_iter()
+        .map(|site| {
+            (
+                site.function,
+                site.span.source,
+                site.span.start,
+                site.span.end,
+            )
+        })
+        .collect();
+    let missing: Vec<_> = emitted
+        .difference(&listed)
+        .map(|(function, source, start, end)| {
+            format!(
+                "implicit clone at {source:?}:{start}..{end} in {} is missing from copies::sites",
+                module.functions[*function].qualified_name()
+            )
+        })
+        .collect();
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
 }
 
 fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
@@ -1084,6 +1118,9 @@ struct Globals {
     recursive_types: BTreeSet<Type>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
+    #[cfg(debug_assertions)]
+    emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
 }
 
 impl Default for Globals {
@@ -1115,6 +1152,8 @@ impl Default for Globals {
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
+            #[cfg(debug_assertions)]
+            emitted_copies: BTreeSet::new(),
         }
     }
 }
@@ -1886,6 +1925,9 @@ struct FunctionEmitter<'a, 'b> {
     trap_kind: Option<TrapKind>,
     drop_pending: Option<String>,
     clone_pending: Option<String>,
+    /// Whether implicit copies count for the debug inventory check: only in bodies that `emit` writes.
+    #[cfg(debug_assertions)]
+    note_copies: bool,
 }
 
 struct BorrowedCall {
@@ -1947,6 +1989,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             temporaries: Vec::new(),
             frame_slots: BTreeMap::new(),
             frame_locals: BTreeMap::new(),
+            #[cfg(debug_assertions)]
+            note_copies: false,
         }
     }
 
@@ -1978,6 +2022,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn emit(mut self) -> String {
+        // Workers clone their borrowed parameters, which `copies::sites` does not list.
+        #[cfg(debug_assertions)]
+        {
+            self.note_copies = !self.symbol.starts_with("@tz.specialized.");
+        }
         self.debug_scope = self
             .globals
             .debug_subprogram(self.module, self.function, &self.symbol);
@@ -2380,6 +2429,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let value = self.value(format!("load {}, ptr {slot}", self.ty(&expression.ty)));
         if take && expression.ty.needs_drop(&self.module.types()) {
             if self.clones_on_take(expression) {
+                #[cfg(debug_assertions)]
+                self.note_copy(expression);
                 return self.clone_value(&expression.ty, &value);
             }
             self.instruction(format!(
@@ -2399,6 +2450,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let last_use = matches!(expression.kind, TypedExprKind::Local(id)
             if self.single_use.contains(&id) && !self.borrowed_locals.contains(&id));
         expression.ty.is_copy(&self.module.types()) && !last_use
+    }
+
+    #[cfg(debug_assertions)]
+    fn note_copy(&mut self, expression: &TypedExpr) {
+        if self.note_copies {
+            let span = expression.span;
+            self.globals.emitted_copies.insert((
+                self.function_id,
+                span.source,
+                span.start,
+                span.end,
+            ));
+        }
     }
 
     fn record_update(
@@ -2492,6 +2556,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if let Some(reference) = Self::shared_array_deref(expression) {
             let view = self.expression_mode(reference, false);
             return if take {
+                #[cfg(debug_assertions)]
+                self.note_copy(expression);
                 self.clone_value(&expression.ty, &view)
             } else {
                 view
@@ -2526,6 +2592,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 if value.ty.has_user_drop(&self.module.types()) {
                     // The whole value meets its user drop; ownership allows only Copy payloads here.
                     let payload = if expression.ty.needs_drop(&self.module.types()) {
+                        #[cfg(debug_assertions)]
+                        self.note_copy(expression);
                         self.clone_value(&expression.ty, &payload)
                     } else {
                         payload
@@ -2843,6 +2911,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 if record.ty.has_user_drop(&self.module.types()) {
                     // The whole value meets its user drop; ownership allows only Copy fields here.
                     let field = if expression.ty.needs_drop(&self.module.types()) {
+                        #[cfg(debug_assertions)]
+                        self.note_copy(expression);
                         self.clone_value(&expression.ty, &field)
                     } else {
                         field
@@ -2886,6 +2956,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 };
                 let pointer = self.indexed_pointer(proven, &array.ty, &value, &index);
                 let extracted = self.value(format!("load {}, ptr {pointer}", self.ty(element)));
+                #[cfg(debug_assertions)]
+                if element.is_copy(&self.module.types()) && element.needs_drop(&self.module.types())
+                {
+                    self.note_copy(expression);
+                }
                 let result = self.clone_value(element, &extracted);
                 self.release_operand(array, &value, &frames);
                 result

@@ -193,7 +193,7 @@ pub(super) fn binary_operation<'a>(
     }
 }
 
-pub(super) fn single_use_locals(expression: &TypedExpr) -> BTreeSet<usize> {
+pub(crate) fn single_use_locals(expression: &TypedExpr) -> BTreeSet<usize> {
     fn count(expression: &TypedExpr, uses: &mut BTreeMap<usize, usize>) {
         if let TypedExprKind::Local(id) = expression.kind {
             *uses.entry(id).or_default() += 1;

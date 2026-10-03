@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::check::{CheckedModule, Local, Type, TypedExpr, TypedExprKind as E};
+use crate::check::{
+    CallbackContract, CheckedModule, Local, MAX_RECORD_REGIONS, RegionMask, RegionSources, Type,
+    TypedExpr, TypedExprKind as E,
+};
+use crate::copies::{CopyKind, CopyRead};
 use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
 use crate::syntax::BinaryOp;
 
@@ -20,6 +24,49 @@ struct Place {
 const ELEMENT: usize = usize::MAX;
 /// Every case payload of a union shares the storage after the tag.
 const PAYLOAD: usize = usize::MAX - 1;
+/// A12: the first field of a parameter's external loan for one region slot, `REGION_SLOT - slot`.
+const REGION_SLOT: usize = usize::MAX - 2;
+
+fn region_field(slot: usize) -> usize {
+    REGION_SLOT - slot
+}
+
+/// The region slot of an external loan's place; 0 without a slot marker.
+fn place_slot(place: &Place) -> usize {
+    match place.fields.first() {
+        Some(field) if (REGION_SLOT + 1 - MAX_RECORD_REGIONS..=REGION_SLOT).contains(field) => {
+            REGION_SLOT - field
+        }
+        _ => 0,
+    }
+}
+
+fn mask_slots(mask: RegionMask) -> impl Iterator<Item = usize> {
+    (0..MAX_RECORD_REGIONS).filter(move |slot| mask & (1 << slot) != 0)
+}
+
+/// Empty slots for the result of a direct call whose named result has several regions.
+#[inline(never)]
+fn call_slots(sources: &RegionSources) -> Option<Box<[BTreeSet<usize>]>> {
+    (sources.len() >= 2).then(|| vec![BTreeSet::new(); sources.len()].into_boxed_slice())
+}
+
+/// Joins the result of one match or `if` branch into the result of the others.
+#[inline(never)]
+fn join(result: &mut Value, value: Value) {
+    if result.loans.is_empty() && result.regions.is_none() {
+        result.regions = value.regions;
+    } else if let (Some(slots), Some(other)) = (result.regions.as_mut(), value.regions.as_ref())
+        && slots.len() == other.len()
+    {
+        for (slot, other) in slots.iter_mut().zip(other) {
+            slot.extend(other);
+        }
+    } else if !value.loans.is_empty() {
+        result.regions = None;
+    }
+    result.loans.extend(value.loans);
+}
 
 const MOVE_OUT_OF_DROP: &str = "cannot move a field or payload out of a value whose type implements Drop; borrow it with 'ref' instead";
 
@@ -32,6 +79,9 @@ impl Place {
 #[derive(Clone, Default)]
 struct Value {
     loans: BTreeSet<usize>,
+    /// A12: the loans of each region slot of a record with several regions; `None` lets every
+    /// loan belong to every slot. Read only through `Checker::slots`, which validates it.
+    regions: Option<Box<[BTreeSet<usize>]>>,
     closed_result: [bool; 2],
 }
 
@@ -89,11 +139,35 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
             &closed,
             function.is_task,
             false,
-            function.region_sources.as_ref(),
+            Contract::of(function),
             &mut recovered,
+            None,
         );
     }
     recovered
+}
+
+/// The consuming reads of Copy values that need a drop, per function of a checked module (A15).
+pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
+    let closed = closed_returns(module);
+    let mut reads = Vec::with_capacity(module.functions.len());
+    for (id, function) in module.functions.iter().enumerate() {
+        let mut copies = Vec::new();
+        let _ = check_body(
+            module,
+            &function.parameters,
+            &function.body,
+            false,
+            &closed,
+            function.is_task,
+            module.user_drops.values().any(|drop| *drop == id),
+            Contract::of(function),
+            &mut Vec::new(),
+            Some(&mut copies),
+        );
+        reads.push(copies);
+    }
+    reads
 }
 
 fn check_functions(
@@ -116,8 +190,9 @@ fn check_functions(
             &closed,
             function.is_task,
             module.user_drops.values().any(|drop| *drop == id),
-            function.region_sources.as_ref(),
+            Contract::of(function),
             &mut recovered,
+            None,
         );
         diagnostics.extend(recovered);
         match checked {
@@ -132,6 +207,22 @@ fn check_functions(
     }
 }
 
+/// The region contracts that a checked body proves (its result) and relies on (its callbacks).
+#[derive(Clone, Copy, Default)]
+struct Contract<'a> {
+    result: Option<&'a RegionSources>,
+    callbacks: &'a [CallbackContract],
+}
+
+impl<'a> Contract<'a> {
+    fn of(function: &'a crate::check::CheckedFunction) -> Self {
+        Self {
+            result: function.region_sources.as_ref(),
+            callbacks: &function.callback_contracts,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn check_body(
     module: &CheckedModule,
@@ -141,8 +232,9 @@ fn check_body(
     closed: &[bool],
     task: bool,
     user_drop: bool,
-    region_sources: Option<&BTreeSet<usize>>,
+    contract: Contract<'_>,
     recovered: &mut Vec<Diagnostic>,
+    copies: Option<&mut Vec<CopyRead>>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut checker = Checker {
         module,
@@ -156,25 +248,20 @@ fn check_body(
         copy_variables: BTreeSet::new(),
         closed,
         recovered,
+        copies,
         reported: BTreeSet::new(),
+        callbacks: contract
+            .callbacks
+            .iter()
+            .map(|callback| (parameters[callback.parameter].id, callback))
+            .collect(),
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters[0].id),
     };
     for parameter in parameters {
         let mut value = Value::default();
         if !task && parameter.ty.carries_loans(&module.types()) {
-            let root = usize::MAX - parameter.id;
-            checker.external.insert(root);
-            let mutable = matches!(parameter.ty, Type::Reference(_, true));
-            value.loans.insert(checker.loan(
-                Place {
-                    root,
-                    fields: Vec::new(),
-                    through_drop: false,
-                },
-                mutable,
-                BTreeSet::new(),
-            ));
+            checker.external_loans(parameter, &mut value);
         }
         checker
             .state
@@ -182,38 +269,7 @@ fn check_body(
             .insert(parameter.id, (parameter.clone(), value));
     }
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
-    let allowed_roots: Option<BTreeSet<_>> = region_sources.map(|sources| {
-        sources
-            .iter()
-            .map(|index| usize::MAX - parameters[*index].id)
-            .collect()
-    });
-    for id in result.loans {
-        if checker.reported.contains(&checker.loans[id].place.root) {
-            continue;
-        }
-        if task || !checker.external.contains(&checker.loans[id].place.root) {
-            return Err(error(
-                "E1013",
-                if task {
-                    "task results cannot retain borrowed values"
-                } else {
-                    "cannot return a reference to a local value"
-                },
-                body.span,
-            ));
-        }
-        if allowed_roots
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&checker.loans[id].place.root))
-        {
-            return Err(error(
-                "E1013",
-                "returned borrow does not match the declared result region; return a borrow from an input with that region",
-                body.span,
-            ));
-        }
-    }
+    checker.check_result(parameters, body, task, contract.result, result)?;
     Ok(checker.copy_variables)
 }
 
@@ -344,9 +400,145 @@ struct Checker<'a> {
     copy_variables: BTreeSet<String>,
     closed: &'a [bool],
     recovered: &'a mut Vec<Diagnostic>,
+    /// Collects the copied consuming reads for `copies::sites`; the checks stay the same.
+    copies: Option<&'a mut Vec<CopyRead>>,
     reported: BTreeSet<usize>,
+    /// Parameters with region-quantified function types, by local id (A12 Phase 2).
+    callbacks: BTreeMap<usize, &'a CallbackContract>,
     /// The root of the value that the checked `Drop.drop` body drops.
     drop_root: Option<usize>,
+}
+
+/// Whether each result slot of `actual` borrows only from inputs that `required` allows, once
+/// the caller has bound the first `offset` inputs (A12 Phase 2).
+fn implies(actual: &RegionSources, required: &RegionSources, offset: usize) -> bool {
+    actual.len() == required.len()
+        && actual.iter().zip(required).all(|(actual, required)| {
+            actual
+                .iter()
+                .all(|&(input, slot)| input >= offset && required.contains(&(input - offset, slot)))
+        })
+}
+
+/// Whether a named function, after `offset` bound arguments, keeps the region contract `callback`.
+fn named_satisfies(
+    function: &crate::check::CheckedFunction,
+    callback: &CallbackContract,
+    offset: usize,
+) -> bool {
+    function.parameters.len() == offset + callback.arity
+        && match &function.region_sources {
+            Some(sources) => implies(sources, &callback.sources, offset),
+            None => callback.sources.is_empty(),
+        }
+}
+
+impl<'a> Checker<'a> {
+    /// A call's callee function, the region contract that selects the loans of its result, and
+    /// whether the callee is a region-quantified parameter. Checks first that the call passes only
+    /// functions that keep the contracts of its region-quantified parameters (A12 Phase 2).
+    #[inline(never)]
+    fn call_contract(
+        &mut self,
+        callee: &TypedExpr,
+        arguments: &[TypedExpr],
+    ) -> Result<(Option<usize>, Option<&'a RegionSources>, bool), Diagnostic> {
+        let module = self.module;
+        match callee.kind {
+            E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+                let function = &module.functions[id];
+                if !self.infer {
+                    for callback in &function.callback_contracts {
+                        if let Some(argument) = arguments.get(callback.parameter)
+                            && let Some(message) = self.unsatisfied(argument, callback)
+                        {
+                            return Err(error("E1013", message, argument.span));
+                        }
+                    }
+                }
+                let sources = (arguments.len() == function.parameters.len())
+                    .then_some(function.region_sources.as_ref())
+                    .flatten();
+                Ok((Some(id), sources, false))
+            }
+            E::Local(id) => {
+                let callback = self
+                    .callbacks
+                    .get(&id)
+                    .copied()
+                    .filter(|callback| callback.arity == arguments.len());
+                Ok((
+                    None,
+                    callback.map(|callback| &callback.sources),
+                    callback.is_some(),
+                ))
+            }
+            _ => Ok((None, None, false)),
+        }
+    }
+
+    /// Why `argument` cannot be passed where `callback` is expected, or `None` when it can.
+    fn unsatisfied(
+        &self,
+        argument: &TypedExpr,
+        callback: &CallbackContract,
+    ) -> Option<&'static str> {
+        const UNSUPPORTED: &str = "pass a named function with matching named regions, a lambda, or a parameter with the same region-quantified type here";
+        let module = self.module;
+        let satisfied = match &argument.kind {
+            E::Local(id) => {
+                let Some(own) = self.callbacks.get(id) else {
+                    return Some(UNSUPPORTED);
+                };
+                own.arity == callback.arity && implies(&own.sources, &callback.sources, 0)
+            }
+            E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+                named_satisfies(&module.functions[*id], callback, 0)
+            }
+            E::Call(target, bound) => match target.kind {
+                E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _)
+                    if bound.len() < module.functions[id].parameters.len() =>
+                {
+                    named_satisfies(&module.functions[id], callback, bound.len())
+                }
+                _ => return Some(UNSUPPORTED),
+            },
+            E::Closure(id, captures) => {
+                // A lambda's own body proves the contract; its captures are not inputs.
+                let function = &module.functions[*id];
+                let shifted: RegionSources = callback
+                    .sources
+                    .iter()
+                    .map(|slot| {
+                        slot.iter()
+                            .map(|&(input, slot)| (input + captures.len(), slot))
+                            .collect()
+                    })
+                    .collect();
+                function.parameters.len() == captures.len() + callback.arity
+                    && check_body(
+                        module,
+                        &function.parameters,
+                        &function.body,
+                        false,
+                        self.closed,
+                        function.is_task,
+                        false,
+                        Contract {
+                            result: Some(&shifted),
+                            callbacks: &[],
+                        },
+                        &mut Vec::new(),
+                        None,
+                    )
+                    .is_ok()
+            }
+            _ => return Some(UNSUPPORTED),
+        };
+        (!satisfied).then_some(
+            "this function does not keep the region-quantified parameter type; its result may borrow from an input or a capture that the type does not name",
+        )
+    }
 }
 
 impl Checker<'_> {
@@ -497,6 +689,296 @@ impl Checker<'_> {
             view: None,
         });
         id
+    }
+
+    /// The loans that a parameter's value holds from its caller: one per region slot (A12 D7).
+    #[inline(never)]
+    fn external_loans(&mut self, parameter: &Local, value: &mut Value) {
+        let root = usize::MAX - parameter.id;
+        self.external.insert(root);
+        let mutable = matches!(parameter.ty, Type::Reference(_, true));
+        let count = self.region_count(&parameter.ty);
+        let mut slots = Vec::new();
+        for slot in 0..count {
+            let fields = if count >= 2 {
+                vec![region_field(slot)]
+            } else {
+                Vec::new()
+            };
+            let place = Place {
+                root,
+                fields,
+                through_drop: false,
+            };
+            slots.push(BTreeSet::from([self.loan(place, mutable, BTreeSet::new())]));
+        }
+        value.loans = slots.iter().flatten().copied().collect();
+        if count >= 2 {
+            value.regions = Some(slots.into_boxed_slice());
+        }
+    }
+
+    /// A returned borrow comes from a parameter and, under a named result region, from an
+    /// input slot with that region. Loans are checked in id order.
+    #[inline(never)]
+    fn check_result(
+        &self,
+        parameters: &[Local],
+        body: &TypedExpr,
+        task: bool,
+        region_sources: Option<&RegionSources>,
+        result: Value,
+    ) -> Result<(), Diagnostic> {
+        let slots = self.slots(&result, &body.ty);
+        for id in &result.loans {
+            let place = &self.loans[*id].place;
+            if self.reported.contains(&place.root) {
+                continue;
+            }
+            if task || !self.external.contains(&place.root) {
+                return Err(error(
+                    "E1013",
+                    if task {
+                        "task results cannot retain borrowed values"
+                    } else {
+                        "cannot return a reference to a local value"
+                    },
+                    body.span,
+                ));
+            }
+            let Some(sources) = region_sources else {
+                continue;
+            };
+            let owner = parameters
+                .iter()
+                .position(|parameter| usize::MAX - parameter.id == place.root);
+            let slot = place_slot(place);
+            for (index, allowed) in sources.iter().enumerate() {
+                let held = slots
+                    .is_none_or(|slots| slots.get(index).is_some_and(|loans| loans.contains(id)));
+                if held && !owner.is_some_and(|owner| allowed.contains(&(owner, slot))) {
+                    return Err(error(
+                        "E1013",
+                        "returned borrow does not match the declared result region; return a borrow from an input with that region",
+                        body.span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The region slots of a value of `ty`: the regions of a record with several, otherwise 1.
+    fn region_count(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Record(id, _) if self.module.records[*id].region_count >= 2 => {
+                self.module.records[*id].region_count
+            }
+            _ => 1,
+        }
+    }
+
+    /// The loans of each region slot of `value`, when they partition its loans for `ty`.
+    fn slots<'v>(&self, value: &'v Value, ty: &Type) -> Option<&'v [BTreeSet<usize>]> {
+        let slots = value.regions.as_deref()?;
+        let count = self.region_count(ty);
+        (count >= 2
+            && slots.len() == count
+            && slots.iter().flatten().copied().collect::<BTreeSet<_>>() == value.loans)
+            .then_some(slots)
+    }
+
+    /// The loans of the slots in `mask`, or every loan when `value` has no valid slots.
+    fn slot_loans(&self, value: &Value, ty: &Type, mask: RegionMask) -> BTreeSet<usize> {
+        match self.slots(value, ty) {
+            Some(slots) => mask_slots(mask)
+                .filter_map(|slot| slots.get(slot))
+                .flatten()
+                .copied()
+                .collect(),
+            None => value.loans.clone(),
+        }
+    }
+
+    /// The value of the field path `path` of `value`, a value of type `root`, with type `ty`:
+    /// only the loans of the slots that the path reaches, and their slots when `ty` has several.
+    #[inline(never)]
+    fn project(&self, value: &Value, root: &Type, path: &[usize], ty: &Type) -> Value {
+        let Some(slots) = self.slots(value, root) else {
+            return Value {
+                loans: value.loans.clone(),
+                regions: None,
+                closed_result: value.closed_result,
+            };
+        };
+        let records = &self.module.records;
+        let types = self.module.types();
+        // For each slot of the current type, the root slots it may hold.
+        let mut maps: Vec<RegionMask> = (0..slots.len()).map(|slot| 1 << slot).collect();
+        let mut current = root.clone();
+        for &field in path {
+            let next = match &current {
+                Type::Record(id, arguments)
+                    if records[*id].region_count >= 2 && field < records[*id].fields.len() =>
+                {
+                    let next = types.record_fields(*id, arguments).swap_remove(field);
+                    let masks = &records[*id].field_regions[field];
+                    let via = |mask: RegionMask| {
+                        mask_slots(mask)
+                            .fold(0, |all, slot| all | maps.get(slot).copied().unwrap_or(0))
+                    };
+                    maps = if masks.len() >= 2 && masks.len() == self.region_count(&next) {
+                        masks.iter().map(|mask| via(*mask)).collect()
+                    } else {
+                        vec![masks.iter().fold(0, |all, mask| all | via(*mask))]
+                    };
+                    next
+                }
+                _ => {
+                    maps = vec![maps.iter().fold(0, |all, mask| all | mask)];
+                    break;
+                }
+            };
+            current = next;
+        }
+        let loans = |mask: RegionMask| -> BTreeSet<usize> {
+            mask_slots(mask)
+                .filter_map(|slot| slots.get(slot))
+                .flatten()
+                .copied()
+                .collect()
+        };
+        if maps.len() >= 2 && maps.len() == self.region_count(ty) {
+            let regions: Box<[_]> = maps.iter().map(|mask| loans(*mask)).collect();
+            Value {
+                loans: regions.iter().flatten().copied().collect(),
+                regions: Some(regions),
+                closed_result: value.closed_result,
+            }
+        } else {
+            Value {
+                loans: loans(maps.iter().fold(0, |all, mask| all | mask)),
+                regions: None,
+                closed_result: value.closed_result,
+            }
+        }
+    }
+
+    /// The value that reading `place` yields from its owner's stored value: only the reached
+    /// region slots of an immutable local with several regions (A12 D6).
+    #[inline(never)]
+    fn stored_value(&self, place: &Place, ty: &Type, single: bool) -> Option<Value> {
+        let (local, stored) = self.state.locals.get(&place.root)?;
+        Some(
+            if single && !local.mutable && self.region_count(&local.ty) >= 2 {
+                self.project(stored, &local.ty, &place.fields, ty)
+            } else {
+                Value {
+                    loans: stored.loans.clone(),
+                    ..Value::default()
+                }
+            },
+        )
+    }
+
+    /// The value of a field read from the temporary record `record`.
+    #[inline(never)]
+    fn field_value(&self, expression: &TypedExpr, record: Value) -> Value {
+        match &expression.kind {
+            E::Field(inner, index) if self.region_count(&inner.ty) >= 2 => {
+                self.project(&record, &inner.ty, &[*index], &expression.ty)
+            }
+            _ => Value {
+                regions: None,
+                ..record
+            },
+        }
+    }
+
+    /// A record literal or update: every field's loans, kept per region slot (A12).
+    #[inline(never)]
+    fn record_value(
+        &mut self,
+        expression: &TypedExpr,
+        during: &BTreeSet<usize>,
+    ) -> Result<Value, Diagnostic> {
+        let module = self.module;
+        let (base, fields) = match &expression.kind {
+            E::Record(fields) => (None, fields.as_slice()),
+            E::RecordUpdate { base, fields } => (Some(base.as_ref()), fields.as_slice()),
+            _ => unreachable!("record values are literals or updates"),
+        };
+        let field_regions = match &expression.ty {
+            Type::Record(id, _) if module.records[*id].region_count >= 2 => {
+                Some(&module.records[*id].field_regions)
+            }
+            _ => None,
+        };
+        let mut slots =
+            field_regions.map(|_| vec![BTreeSet::new(); self.region_count(&expression.ty)]);
+        let mut result = Value::default();
+        let start = self.held.len();
+        let parts = base
+            .map(|base| (None, base))
+            .into_iter()
+            .chain(fields.iter().map(|(index, value)| (Some(*index), value)));
+        for (index, field) in parts {
+            let value = self.eval(field, Use::Consume, during)?;
+            if let (Some(slots), Some(field_regions)) = (slots.as_mut(), field_regions) {
+                match index {
+                    None => {
+                        for (slot, loans) in slots.iter_mut().enumerate() {
+                            loans.extend(self.slot_loans(&value, &expression.ty, 1 << slot));
+                        }
+                    }
+                    Some(index) => {
+                        let masks = &field_regions[index];
+                        if masks.len() >= 2 && masks.len() == self.region_count(&field.ty) {
+                            for (inner, mask) in masks.iter().enumerate() {
+                                let loans = self.slot_loans(&value, &field.ty, 1 << inner);
+                                for slot in mask_slots(*mask) {
+                                    slots[slot].extend(&loans);
+                                }
+                            }
+                        } else {
+                            let mask = masks.iter().fold(0, |all, mask| all | mask);
+                            for slot in mask_slots(mask) {
+                                slots[slot].extend(&value.loans);
+                            }
+                        }
+                    }
+                }
+            }
+            result.loans.extend(&value.loans);
+            self.held.push(value);
+        }
+        self.held.truncate(start);
+        result.regions = slots.map(Vec::into_boxed_slice);
+        Ok(result)
+    }
+
+    /// Adds to a direct call's result the loans of `argument` that its named result regions select.
+    #[inline(never)]
+    fn argument_regions(
+        &self,
+        sources: &RegionSources,
+        index: usize,
+        argument: &TypedExpr,
+        value: &Value,
+        current: &mut Value,
+    ) {
+        for (result_slot, allowed) in sources.iter().enumerate() {
+            for &(input, slot) in allowed {
+                if input != index {
+                    continue;
+                }
+                let loans = self.slot_loans(value, &argument.ty, 1 << slot);
+                if let Some(slots) = current.regions.as_mut() {
+                    slots[result_slot].extend(&loans);
+                }
+                current.loans.extend(loans);
+            }
+        }
     }
 
     fn retain_live_loans(&mut self, live: &BTreeSet<usize>) {
@@ -754,12 +1236,39 @@ impl Checker<'_> {
         self.read_places(expression, usage, places)
     }
 
+    /// Notes that the value of `expression` is copied when it is consumed (A15).
+    #[inline(never)]
+    fn note_copy(&mut self, expression: &TypedExpr, span: Span, kind: CopyKind, whole: bool) {
+        if self.copies.is_none()
+            || !self.is_copy(&expression.ty)
+            || !expression.ty.needs_drop(&self.module.types())
+        {
+            return;
+        }
+        let local = match expression.kind {
+            E::Local(id) if whole && !self.state.aliases.contains_key(&id) => Some(id),
+            _ => None,
+        };
+        let ty = expression.ty.clone();
+        if let Some(copies) = self.copies.as_mut() {
+            copies.push(CopyRead {
+                span,
+                ty,
+                kind,
+                local,
+            });
+        }
+    }
+
     fn read_places(
         &mut self,
         expression: &TypedExpr,
         usage: Use,
         places: Vec<(Place, BTreeSet<usize>)>,
     ) -> Result<Value, Diagnostic> {
+        if usage == Use::Consume {
+            self.note_copy(expression, expression.span, read_kind(expression), true);
+        }
         let mut moving = usage == Use::Consume && !self.is_copy(&expression.ty);
         if moving
             && matches!(
@@ -790,6 +1299,7 @@ impl Checker<'_> {
             }),
             ..Value::default()
         };
+        let single = places.len() == 1;
         for (place, via) in places {
             self.revive_generic_moves(&place);
             if moving
@@ -832,8 +1342,9 @@ impl Checker<'_> {
                 expression.span,
             )?;
             if expression.ty.carries_loans(&self.module.types()) {
-                if let Some((_, stored)) = self.state.locals.get(&place.root) {
-                    value.loans.extend(stored.loans.iter().copied());
+                if let Some(stored) = self.stored_value(&place, &expression.ty, single) {
+                    value.loans.extend(stored.loans);
+                    value.regions = stored.regions;
                 } else if self.external.contains(&place.root) {
                     value.loans.extend(&via);
                 } else {
@@ -889,174 +1400,196 @@ impl Checker<'_> {
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
                 self.eval_control(expression, live)
             }
-            E::Block { .. } | E::Call(..) | E::Lambda { .. } => {
-                self.eval_composed(expression, live)
-            }
+            E::Block { .. } => self.eval_block(expression, live),
+            E::Call(..) => self.eval_call(expression, live),
+            E::Lambda { .. } => self.eval_lambda(expression, live),
             _ => self.eval_value(expression, usage, live),
         }
     }
 
-    fn eval_composed(
+    fn eval_block(
         &mut self,
         expression: &TypedExpr,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
+        let E::Block {
+            bindings,
+            result: tail,
+        } = &expression.kind
+        else {
+            unreachable!("eval dispatches blocks here")
+        };
+        let mut future = BTreeMap::new();
+        count_uses(tail, &mut future);
+        for (_, value) in bindings {
+            count_uses(value, &mut future);
+        }
+        let mut ids = BTreeSet::new();
+        for (local, value) in bindings {
+            let mut current = live.clone();
+            current.extend(future.keys().copied());
+            let value_result = self.eval(value, Use::Consume, &current)?;
+            let mut consumed = BTreeMap::new();
+            count_uses(value, &mut consumed);
+            for (id, count) in consumed {
+                let remaining = future.get_mut(&id).unwrap();
+                *remaining -= count;
+                if *remaining == 0 {
+                    future.remove(&id);
+                }
+            }
+            self.state
+                .locals
+                .insert(local.id, (local.clone(), value_result));
+            self.state.moved.retain(|place| place.root != local.id);
+            self.state
+                .generic_moves
+                .retain(|place, _| place.root != local.id);
+            ids.insert(local.id);
+            let mut keep = live.clone();
+            keep.extend(future.keys().copied());
+            self.retain_live_loans(&keep);
+        }
+        let result = self.eval(tail, Use::Consume, live)?;
+        for id in &result.loans {
+            if ids.contains(&self.loans[*id].place.root)
+                && !self.reported.contains(&self.loans[*id].place.root)
+            {
+                return Err(error(
+                    "E1013",
+                    "borrowed value does not live long enough to leave this block",
+                    tail.span,
+                ));
+            }
+        }
+        for (id, (_, value)) in &self.state.locals {
+            if !ids.contains(id)
+                && value.loans.iter().any(|loan| {
+                    ids.contains(&self.loans[*loan].place.root)
+                        && !self.reported.contains(&self.loans[*loan].place.root)
+                })
+            {
+                return Err(error(
+                    "E1013",
+                    "assignment lets a reference outlive its owner",
+                    expression.span,
+                ));
+            }
+        }
+        for id in ids {
+            self.state.locals.remove(&id);
+        }
+        Ok(result)
+    }
+
+    fn eval_call(
+        &mut self,
+        expression: &TypedExpr,
+        live: &BTreeSet<usize>,
+    ) -> Result<Value, Diagnostic> {
+        let E::Call(callee, arguments) = &expression.kind else {
+            unreachable!("eval dispatches calls here")
+        };
         let mut during = live.clone();
         uses(expression, &mut during);
         let mut result = Value::default();
-        match &expression.kind {
-            E::Block {
-                bindings,
-                result: tail,
-            } => {
-                let mut future = BTreeMap::new();
-                count_uses(tail, &mut future);
-                for (_, value) in bindings {
-                    count_uses(value, &mut future);
+        let start = self.held.len();
+        let value = self.eval(callee, Use::Consume, &during)?;
+        let (known, region_sources, callback) = self.call_contract(callee, arguments)?;
+        let boundary = known
+            .map(|id| self.module.functions[id].parameters.len())
+            .filter(|count| *count <= arguments.len());
+        // A region-quantified parameter's result borrows only from the inputs that its type names.
+        let mut current = if callback {
+            Value::default()
+        } else {
+            value.clone()
+        };
+        current.regions = region_sources.and_then(call_slots);
+        self.held.push(value);
+        for (index, argument) in arguments.iter().enumerate() {
+            let value = self.eval(argument, Use::Consume, &during)?;
+            match region_sources {
+                Some(sources) => {
+                    self.argument_regions(sources, index, argument, &value, &mut current)
                 }
-                let mut ids = BTreeSet::new();
-                for (local, value) in bindings {
-                    let mut current = live.clone();
-                    current.extend(future.keys().copied());
-                    let value_result = self.eval(value, Use::Consume, &current)?;
-                    let mut consumed = BTreeMap::new();
-                    count_uses(value, &mut consumed);
-                    for (id, count) in consumed {
-                        let remaining = future.get_mut(&id).unwrap();
-                        *remaining -= count;
-                        if *remaining == 0 {
-                            future.remove(&id);
-                        }
-                    }
-                    self.state
-                        .locals
-                        .insert(local.id, (local.clone(), value_result));
-                    self.state.moved.retain(|place| place.root != local.id);
-                    self.state
-                        .generic_moves
-                        .retain(|place, _| place.root != local.id);
-                    ids.insert(local.id);
-                    let mut keep = live.clone();
-                    keep.extend(future.keys().copied());
-                    self.retain_live_loans(&keep);
-                }
-                result = self.eval(tail, Use::Consume, live)?;
-                for id in &result.loans {
-                    if ids.contains(&self.loans[*id].place.root)
-                        && !self.reported.contains(&self.loans[*id].place.root)
-                    {
-                        return Err(error(
-                            "E1013",
-                            "borrowed value does not live long enough to leave this block",
-                            tail.span,
-                        ));
-                    }
-                }
-                for (id, (_, value)) in &self.state.locals {
-                    if !ids.contains(id)
-                        && value.loans.iter().any(|loan| {
-                            ids.contains(&self.loans[*loan].place.root)
-                                && !self.reported.contains(&self.loans[*loan].place.root)
-                        })
-                    {
-                        return Err(error(
-                            "E1013",
-                            "assignment lets a reference outlive its owner",
-                            expression.span,
-                        ));
-                    }
-                }
-                for id in ids {
-                    self.state.locals.remove(&id);
-                }
+                None => current.loans.extend(&value.loans),
             }
-            E::Call(callee, arguments) => {
-                let start = self.held.len();
-                let value = self.eval(callee, Use::Consume, &during)?;
-                let known = match callee.kind {
-                    E::Function(crate::check::FunctionRef::User(id))
-                    | E::GenericFunction(id, _) => Some(id),
-                    _ => None,
-                };
-                let boundary = known
-                    .map(|id| self.module.functions[id].parameters.len())
-                    .filter(|count| *count <= arguments.len());
-                let region_sources = known.and_then(|id| {
-                    let function = &self.module.functions[id];
-                    (arguments.len() == function.parameters.len())
-                        .then_some(function.region_sources.as_ref())
-                        .flatten()
-                });
-                let mut current = value.clone();
-                self.held.push(value);
-                for (index, argument) in arguments.iter().enumerate() {
-                    let value = self.eval(argument, Use::Consume, &during)?;
-                    if region_sources.is_none_or(|sources| sources.contains(&index)) {
-                        current.loans.extend(&value.loans);
-                    }
-                    self.held.push(value);
-                    if boundary == Some(index + 1) {
-                        let id = known.unwrap();
-                        if self.closed[id]
-                            || !callee
-                                .ty
-                                .after_arguments(index + 1)
-                                .carries_loans(&self.module.types())
-                        {
-                            current = Value::default();
-                        }
-                        self.held.truncate(start);
-                        self.held.push(current.clone());
-                    }
-                }
-                if expression.ty.carries_loans(&self.module.types()) {
-                    result = current;
-                    result.closed_result = std::array::from_fn(|index| {
-                        self.callback_returns_closed(expression, index + 1)
-                    });
+            self.held.push(value);
+            if boundary == Some(index + 1) {
+                let id = known.unwrap();
+                if self.closed[id]
+                    || !callee
+                        .ty
+                        .after_arguments(index + 1)
+                        .carries_loans(&self.module.types())
+                {
+                    current = Value::default();
                 }
                 self.held.truncate(start);
+                self.held.push(current.clone());
             }
-            E::Lambda {
-                parameters,
-                captures,
-                body,
-                ..
-            } => {
-                result.closed_result = std::array::from_fn(|index| {
-                    self.callback_returns_closed(expression, index + 1)
-                });
-                let mut locals = captures.clone();
-                locals.extend(parameters.iter().cloned());
-                self.copy_variables.extend(check_body(
-                    self.module,
-                    &locals,
-                    body,
-                    self.infer,
-                    self.closed,
-                    matches!(expression.ty, Type::Task(_)),
-                    false,
-                    None,
-                    self.recovered,
-                )?);
-                for capture in captures {
-                    let value = TypedExpr {
-                        kind: E::Local(capture.id),
-                        ty: capture.ty.clone(),
-                        span: expression.span,
-                    };
-                    let value = self.eval(&value, Use::Consume, &during)?;
-                    if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
-                        return Err(error(
-                            "E1013",
-                            "task captures cannot retain borrowed values, including borrowed function environments",
-                            expression.span,
-                        ));
-                    }
-                    result.loans.extend(value.loans);
-                }
+        }
+        if expression.ty.carries_loans(&self.module.types()) {
+            result = current;
+            result.closed_result =
+                std::array::from_fn(|index| self.callback_returns_closed(expression, index + 1));
+        }
+        self.held.truncate(start);
+        Ok(result)
+    }
+
+    fn eval_lambda(
+        &mut self,
+        expression: &TypedExpr,
+        live: &BTreeSet<usize>,
+    ) -> Result<Value, Diagnostic> {
+        let E::Lambda {
+            parameters,
+            captures,
+            body,
+            ..
+        } = &expression.kind
+        else {
+            unreachable!("eval dispatches lambdas here")
+        };
+        let mut during = live.clone();
+        uses(expression, &mut during);
+        let mut result = Value {
+            closed_result: std::array::from_fn(|index| {
+                self.callback_returns_closed(expression, index + 1)
+            }),
+            ..Value::default()
+        };
+        let mut locals = captures.clone();
+        locals.extend(parameters.iter().cloned());
+        self.copy_variables.extend(check_body(
+            self.module,
+            &locals,
+            body,
+            self.infer,
+            self.closed,
+            matches!(expression.ty, Type::Task(_)),
+            false,
+            Contract::default(),
+            self.recovered,
+            None,
+        )?);
+        for capture in captures {
+            let value = TypedExpr {
+                kind: E::Local(capture.id),
+                ty: capture.ty.clone(),
+                span: expression.span,
+            };
+            let value = self.eval(&value, Use::Consume, &during)?;
+            if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
+                return Err(error(
+                    "E1013",
+                    "task captures cannot retain borrowed values, including borrowed function environments",
+                    expression.span,
+                ));
             }
-            _ => unreachable!("composed expression kinds are checked by eval"),
+            result.loans.extend(value.loans);
         }
         Ok(result)
     }
@@ -1173,11 +1706,11 @@ impl Checker<'_> {
                     then_value.closed_result[index] && else_value.closed_result[index]
                 });
                 if self.reachable {
-                    result.loans.extend(else_value.loans);
+                    join(&mut result, else_value);
                 }
                 self.merge_reachable(&then_state, then_reachable);
                 if then_reachable {
-                    result.loans.extend(then_value.loans);
+                    join(&mut result, then_value);
                 }
             }
             E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
@@ -1289,6 +1822,7 @@ impl Checker<'_> {
                 {
                     result = value;
                     result.loans.extend(callee.loans);
+                    result.regions = None;
                 }
             }
             E::Record(_) | E::RecordUpdate { .. } => {
@@ -1301,13 +1835,7 @@ impl Checker<'_> {
                         expression.span,
                     ));
                 }
-                let start = self.held.len();
-                for field in expression.children() {
-                    let value = self.eval(field, Use::Consume, &during)?;
-                    result.loans.extend(&value.loans);
-                    self.held.push(value);
-                }
-                self.held.truncate(start);
+                result = self.record_value(expression, &during)?;
             }
             E::Array(elements)
             | E::List(elements)
@@ -1345,6 +1873,8 @@ impl Checker<'_> {
             E::Construct { payload, .. } => {
                 if let Some(payload) = payload {
                     result = self.eval(payload, Use::Consume, &during)?;
+                    // A union payload keeps every region of its value together (A12 D6).
+                    result.regions = None;
                 }
             }
             E::Length(value) | E::StringLength(value) | E::UnionTag(value) => {
@@ -1358,25 +1888,27 @@ impl Checker<'_> {
                         expression.span,
                     ));
                 }
+                self.note_copy(expression, expression.span, CopyKind::Temporary, false);
                 let container = self.eval(value, Use::Read, &during)?;
                 self.held.push(container.clone());
                 self.eval(index, Use::Consume, &during)?;
                 self.held.pop();
                 if expression.ty.carries_loans(&self.module.types()) {
                     result = container;
+                    result.regions = None;
                 }
             }
             E::Field(value, _) | E::UnionPayload { value, .. } => {
                 // The glue drops a temporary Drop value whole, so only Copy parts leave it.
-                if value.ty.has_user_drop(&self.module.types())
-                    && !self.is_copy(&expression.ty)
-                    && !self.require_copy(&expression.ty)
-                {
-                    return Err(error("E1012", MOVE_OUT_OF_DROP, expression.span));
+                if value.ty.has_user_drop(&self.module.types()) {
+                    if !self.is_copy(&expression.ty) && !self.require_copy(&expression.ty) {
+                        return Err(error("E1012", MOVE_OUT_OF_DROP, expression.span));
+                    }
+                    self.note_copy(expression, expression.span, CopyKind::Temporary, false);
                 }
                 let value = self.eval(value, Use::Consume, &during)?;
                 if expression.ty.carries_loans(&self.module.types()) {
-                    result = value;
+                    result = self.field_value(expression, value);
                 }
             }
             E::Unary(_, value) | E::Cast(value) => {
@@ -1410,8 +1942,22 @@ impl Checker<'_> {
         for (id, (_, value)) in &mut self.state.locals {
             if let Some((_, other_value)) = other.locals.get(id) {
                 value.loans.extend(&other_value.loans);
+                if value.regions != other_value.regions {
+                    value.regions = None;
+                }
             }
         }
+    }
+}
+
+fn read_kind(expression: &TypedExpr) -> CopyKind {
+    match expression.kind {
+        E::Local(_) => CopyKind::Local,
+        E::Field(..) => CopyKind::Field,
+        E::Index(..) => CopyKind::Element,
+        E::ListTail(..) => CopyKind::Tail,
+        E::UnionPayload { .. } => CopyKind::Payload,
+        _ => CopyKind::Dereference,
     }
 }
 

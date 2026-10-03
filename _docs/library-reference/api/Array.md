@@ -48,6 +48,14 @@ def sub :: Copy<'a> => ref ['a] -> i64 -> i64 -> ['a]
 def reverse :: Copy<'a> => ref ['a] -> ['a]
 ```
 
+## `copy`
+
+```tsuzuri
+def copy :: Copy<'a> => ref ['a] -> ['a]
+```
+
+Returns a new array with a copy of every element, the explicit form of an implicit array copy.
+
 ## `append`
 
 ```tsuzuri

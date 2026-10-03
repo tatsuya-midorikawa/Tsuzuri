@@ -1248,6 +1248,9 @@ impl Parser<'_> {
     }
 
     fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        if self.region_list_ahead() {
+            return self.quantified_type();
+        }
         let first = self.type_product()?;
         if !self.eat(&TokenKind::Arrow) {
             return Ok(first);
@@ -1267,6 +1270,22 @@ impl Parser<'_> {
         Ok(TypeExpr {
             kind: TypeExprKind::Function(parameters, Box::new(result)),
             span,
+        })
+    }
+
+    /// `{r s} A -> B`, a function type with its own regions. The checker decides where it may appear.
+    fn quantified_type(&mut self) -> Result<TypeExpr, Diagnostic> {
+        self.enter()?;
+        let start = self.current().span;
+        let regions = self.region_list()?;
+        if self.region_list_ahead() {
+            return Err(self.error("write one region list before a function type"));
+        }
+        let inner = self.type_expr()?;
+        self.nesting -= 1;
+        Ok(TypeExpr {
+            span: start.through(inner.span),
+            kind: TypeExprKind::Quantified(regions.into_boxed_slice(), Box::new(inner)),
         })
     }
 

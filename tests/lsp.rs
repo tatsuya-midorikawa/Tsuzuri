@@ -594,6 +594,34 @@ fn formatting_matches_the_library_formatter() {
 }
 
 #[test]
+fn inlay_hints_show_implicit_copies() {
+    use serde_json::json;
+    let text = "record Bag { items: [i64] }\ndef total :: Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
+    let broken = format!("{text}fn (");
+    let responses = scripted(&[("Main.tz", text)], "utf-16", |uri| {
+        let request = |id: u64, range: serde_json::Value| json!({"id": id, "method": "textDocument/inlayHint", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range}});
+        let whole =
+            json!({"start": {"line": 0, "character": 0}, "end": {"line": 13, "character": 0}});
+        vec![
+            request(1, whole.clone()),
+            request(2, range(8, 0, 13)),
+            json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": uri("Main.tz"), "version": 2}, "contentChanges": [{"text": broken}]}}),
+            request(3, whole),
+        ]
+    });
+    let array = "implicit copy of an array allocates and copies every element; borrow it with 'ref', or call 'Array.copy' to make the copy explicit";
+    let hint = |line: usize, character: usize, kind: &str| json!({"position": {"line": line, "character": character}, "label": format!("copy ({kind})"), "tooltip": array, "paddingLeft": true});
+    let all = json!([
+        hint(3, 22, "field"),
+        hint(4, 22, "field"),
+        hint(8, 13, "local")
+    ]);
+    assert_eq!(responses[0]["result"], all);
+    assert_eq!(responses[1]["result"], json!([hint(8, 13, "local")]));
+    assert_eq!(responses[2]["result"], all);
+}
+
+#[test]
 fn capabilities_are_advertised_exactly() {
     use serde_json::json;
     use std::io::Cursor;
@@ -634,6 +662,7 @@ fn capabilities_are_advertised_exactly() {
             },
             "codeActionProvider": {"codeActionKinds": ["quickfix"]},
             "documentFormattingProvider": true,
+            "inlayHintProvider": true,
         })
     );
 }

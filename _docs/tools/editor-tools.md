@@ -78,7 +78,7 @@ client が通知した workspace root のうち、対象ファイルを含む最
 
 client が UTF-8 position を提案すれば UTF-8 を使い、そうでなければ LSP 既定の UTF-16 code unit を使います。位置の行・character は LSP の 0 始まりです。CLI の 1 始まりの Unicode 文字列 column をそのまま送らないでください。
 
-inlay hint、call hierarchy、関数の抽出などの自動リファクタリング、project root をまたぐ rename は提供しません。サーバーが公開する capability に従ってクライアント機能を有効にします。
+配列・リストを暗黙に複製する位置（`--warn implicit-copy` の `W1006` と同じ位置）には、複製の種類を示す inlay hint（`copy (local)`・`copy (field)` など。tooltip に費用と対処）を返します。推論型や暗黙の借用の inlay hint、call hierarchy、関数の抽出などの自動リファクタリング、project root をまたぐ rename は提供しません。サーバーが公開する capability に従ってクライアント機能を有効にします。
 
 ## 関連項目
 
