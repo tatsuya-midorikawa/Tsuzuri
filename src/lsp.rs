@@ -1485,8 +1485,14 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     let empty = json!({"isIncomplete": false, "items": []});
     let tokens = tokens(text);
     if tokens.iter().any(|token| {
-        matches!(token.kind, TokenKind::String(_) | TokenKind::DocComment(_))
-            && token.span.start < offset
+        matches!(
+            token.kind,
+            TokenKind::String(_)
+                | TokenKind::DocComment(_)
+                | TokenKind::InterpolationStart(_)
+                | TokenKind::InterpolationMiddle(_)
+                | TokenKind::InterpolationEnd(_)
+        ) && token.span.start < offset
             && offset < token.span.end
     }) {
         return empty;
@@ -1705,7 +1711,11 @@ fn is_term(kind: &TokenKind) -> bool {
 fn opens(kind: &TokenKind) -> bool {
     matches!(
         kind,
-        TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace | TokenKind::LeftList
+        TokenKind::LeftParen
+            | TokenKind::LeftBracket
+            | TokenKind::LeftBrace
+            | TokenKind::LeftList
+            | TokenKind::InterpolationStart(_)
     )
 }
 
@@ -1716,6 +1726,7 @@ fn closes(kind: &TokenKind) -> bool {
             | TokenKind::RightBracket
             | TokenKind::RightBrace
             | TokenKind::RightList
+            | TokenKind::InterpolationEnd(_)
     )
 }
 

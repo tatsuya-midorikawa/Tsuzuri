@@ -7,9 +7,9 @@
 | 規模 | M |
 | 依存 | D01 |
 | 後続 | D08, G18 |
-| 状態 | todo |
+| 状態 | done（Phase 1 の段 A・B と Phase 2。書記素クラスター単位の幅を除く） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（接頭辞 `$"..."`・`u8$"..."` の新構文）, D9（段 B の `numeric.ll` 増分。数値表示を使う全プログラムの runtime IR が増える） |
+| 承認 | D1・D9 は、2026-10-03 に利用者から「E08 / C09 / D07 の実装を完遂して」「なんらかの判断が必要な場合には、あなたが考えられる最高の選択をすることを常に許可します」と依頼され、承認として扱った（選んだ内容と Phase 2 の D12 は「実装と検証」に記録）。 |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: C#／F# の `$"..."`、Rust の `format!` に相当する補間・書式指定がない |
 | 手本にする既存実装 | 表示の呼び出しと部分文字列の組み立て: `TypedExprKind::StructuralDisplay`（`src/check.rs`、`TypedExpr::children`）と `FunctionEmitter::structural_display`・`display_element`（`src/llvm_display.rs`）、所有権の arm は `src/ownership.rs` の `E::StructuralDisplay(arguments)`。一回確保: `@tz.string.allocate`・`@tz.string.copy`（`src/runtime/string.ll`）と `@tz.display.join`（`src/runtime/display.ll`）。数値の文字化: `tz_soft_format`・`format_float`・`shortest`（`src/runtime/numeric.c`）と `numeric_kind`（`src/llvm.rs`）。入れ子の字句状態: `Lexer::comment` の `depth`。文字列の字句: `Lexer::string`・`Lexer::unicode_escape`・`Lexer::recover` |
 | 主な影響ファイル | `src/syntax.rs`, `src/lexer.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/computation.rs`, `src/formatter.rs`, `src/check.rs`, `src/ownership.rs`, `src/polymorph.rs`, `src/closures.rs`, `src/recursion.rs`, `src/call_specialization.rs`, `src/warnings.rs`, `src/llvm.rs`, `src/llvm_display.rs`, `src/llvm_frame.rs`, `src/runtime/format.ll`（新規）, `.gitignore`, `src/runtime/numeric.c` と再生成する `numeric.ll`・`math.ll`（段 B）, `tests/string_interpolation.rs`（新規）, `tests/fixtures/string_interpolation/Main.tz`（新規）, `tests/features.mjs`, `vsc/syntaxes/tsuzuri.tmLanguage.json`, `vsc/src/test/grammar.test.ts`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/strings-and-characters.md`, `_docs/library-reference/formatting-and-parsing.md`, `_docs/guides/from-fsharp.md`, `_docs/feature-status.md`, `_features/README.md` |
@@ -236,7 +236,7 @@ fn greet =
 | `$"{42:x}"` | `2a` | `$"{0.125:.2}"` | `0.12` |
 | `$"{-255:X}"` | `-FF` | `$"{0.375:.2}"` | `0.38` |
 | `$"{5:b}"`・`$"{8:o}"` | `101`・`10` | `$"{2.5:.0}"` | `2` |
-| `$"{7:>4}"`・`$"{7:0>4}"` | `   7`・`0007` | `$"{1234.5:.2e}"` | `1.23e3` |
+| `$"{7:>4}"`・`$"{7:0>4}"` | `7` の前に空白 3 つ・`0007` | `$"{1234.5:.2e}"` | `1.23e3` |
 | `$"{"ab":*^5}"` | `*ab**` | `$"{0.1:.20}"` | `0.10000000000000000555` |
 | `$"{1:+}"` | `+1` | `$"{-0.0:.2}"` | `-0.00` |
 
@@ -557,7 +557,7 @@ helper（新規）で作る。`Number.prototype.toFixed` は同点を大きい�
   `$"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"` の digest。`spec_f32` [x] は同じ x の `Math.fround` で同じ式。
 - `spec_wide` [k]、k ∈ {0n..4n} → `0.1f16`、`0.1f128`、`0.125d32`、`2.5d64`、`1e-30d128` の `.3`・`.20`・`.2e` の digest。
   二進は 1/10 を 11 bit・113 bit の仮数へ最近接・偶数丸めした値から、decimal は係数と指数から参照を作る。
-- `spec_padding` → `$"{"é😀":*>5}|{"\uD800":3}|{"ab":^6}|{r:>8}"` の digest（`***é😀`、`\uD800` と空白 2 つ、`  ab  `、右揃えの label）。
+- `spec_padding` → `$"{"é😀":*>5}|{"\uD800":3}|{"ab":^6}|{r:>8}"` の digest（`***é😀`、`\uD800` と空白 2 つ、`ab` の前後に空白 2 つ、右揃えの label）。
 - `inspect(ir)`: `@tz_soft_format_spec` と `@tz\.format\.pad` があり、`@printf|@snprintf|@strtod|@strtof` がない。
 
 すべての case を native と WASM の `-O0`／`-O3` で実行し、native は `live == 0`、WASM は import が空であることを harness が確かめる。
@@ -618,7 +618,7 @@ helper（新規）で作る。`Number.prototype.toFixed` は同点を大きい�
 - 決定: `$"..."` が `string`、`u8$"..."` が `utf8string`。穴のない補間リテラルは通常の文字列リテラルと同じ token。
 - 理由: C#／F# と同じ形。`$` は HEAD で E0001 なので既存のプログラムの意味を変えない（現状の再現）。`f"..."` は `f "..."` の関数適用と
   区別できず既存の意味を変える。
-- 状態: 要承認（承認前はどの手順にも着手しない）
+- 状態: 承認済み（2026-10-03。実装で選んだ内容は「実装と検証」）
 
 ### D2: 字句の表現
 
@@ -670,7 +670,7 @@ helper（新規）で作る。`Number.prototype.toFixed` は同点を大きい�
 - 決定: 数値書式は `numeric.c` の `tz_soft_format_spec`（`tzrt_big` と `shortest` の helper を共有）、揃えは新しい `runtime/format.ll`。
 - 理由: 正確な丸めに多倍長が要り、別ファイルにすると helper が重複する。ただし `numeric.ll` は `@tz_soft_` を使う全プログラムへ丸ごと
   連結されるので、補間を使わないプログラムの runtime IR も増える。
-- 状態: 要承認（承認前は段 B（手順 8 以降）に着手しない）
+- 状態: 承認済み（2026-10-03。実装で選んだ内容は「実装と検証」）
 
 ### D10: 幅の単位
 
@@ -683,3 +683,63 @@ helper（新規）で作る。`Number.prototype.toFixed` は同点を大きい�
 - 決定: utf8string の穴は直接コピー、それ以外は UTF-16 の表示を `@tz.utf8string.from_string` で変換する（孤立サロゲートで trap）。
 - 理由: `Display` は `string` を返すので変換が要り、`Utf8String.from_string` と同じ trap の規則になる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-03）
+
+「E08 / C09 / D07 の実装を完遂して。複数フェーズある場合にはすべてのフェーズを完了させること」「なんらかの判断が必要な場合には、あなたが考えられる最高の選択をすることを常に許可します」との依頼で、
+Phase 1 の段 A・B と Phase 2（`Format` 型クラスと検証済みの書式の受け渡し）を実装した。着手時の HEAD は `be3d13a`（ブランチ `Phase6-6`）。D1・D9 を承認として扱った。
+実装しなかったもの: 書記素クラスター単位の幅（D09 が todo）、`deriving (Format)`、locale・桁区切り、`#`・`0` フラグ、実行時に組み立てた書式文字列。性能は主張しない（計測していない）。
+
+### 実装
+
+- 段 A: 字句（`InterpolationStart`／`Middle`／`End` と穴の stack）、構文（`ExprKind::Interpolated`）、formatter、型検査（`Checker::interpolation`・`TypedExprKind::Interpolated`・`TypedHole`）、所有権（穴は借用し、一時値は隠れた領域で drop）、
+  LLVM（一回確保。同じ文字列型の穴は直接コピー。`src/llvm_display.rs`）、`src/lsp.rs`（穴の中の補完の抑制）、VS Code の文法。`src/computation.rs`・`src/closures.rs` などの走査箇所。
+- 段 B: 書式指定 `[[fill]align][+][width][.precision][type]`。`src/runtime/numeric.c` に `tz_soft_format_spec`（多倍長で正確に丸める）を足して `numeric.ll`・`math.ll` を再生成（D9。Apple clang 21 と llvm-link 21）、
+  揃えは新しい `src/runtime/format.ll`（`.gitignore` の例外行と `scripts/check-runtime-includes.sh`）。幅は Unicode スカラー数（孤立サロゲートは 1）。
+- Phase 2: 組み込みクラス `Format<'a>`（`format :: ref 'a -> ref string -> string`。`BUILTIN_CLASSES` の末尾）と std モジュール `Format`（`Align`・`Kind`・`Spec`・`parse`・`pad`）。record／union の穴に書式があり、
+  `Format` の instance があるか、書式が符号・精度・型を含むときは、instance に借用した値と検証済みの書式の正規の綴り（たとえば `*>+8.2f`）を渡し、幅の処理は instance に任せる。
+- テスト: `tests/string_interpolation.rs`（11 件）、`tests/fixtures/string_interpolation/Main.tz`、`tests/features.mjs` の suite `string_interpolation`（82 ケース。書式の文法・揃え・`Format` の instance は独立した JS の参照と比べる）、
+  `tests/lsp.rs`、`vsc/src/test/grammar.test.ts`。
+- 文書: `docs/language.md`、`docs/architecture.md`、`README.md`、`_docs/language-reference/strings-and-characters.md`・`modules-and-packages.md`、`_docs/library-reference/formatting-and-parsing.md`・`api/Format.md`（再生成）、
+  `_docs/guides/from-fsharp.md`、`_docs/feature-status.md`、`_features/README.md`、`_features/GUIDE.md`（D-07・D-30・D-32）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D12（新規）: Phase 2 の `Format`。** 起票時の「検証済みの書式を関数の引数として渡す仕組み」は、穴で検証した書式を instance の引数（正規の綴りの文字列）として渡す形で実現した。
+   `Format.parse` が部品（`Spec`）へ分け、`Format.pad` が幅・fill・揃えを適用する。実行時に組み立てた書式文字列の機構は作っていない（対象外のまま）。
+2. **振り分けの規則。** record／union の穴に書式があるとき、`Format` の instance があれば（または書式が符号・精度・型を含めば）`Format` へ。instance がない型は、幅と揃えだけの書式を従来どおりコンパイラが `Display` の文字列に適用する。
+   符号・精度・型を含む書式で instance がなければ `E1005`。数値・文字列・bool・文字の組み込みの書式は変えない。型変数の穴に数値の書式を書くと `E1003`（従来どおり。`Format.format` を明示して呼ぶ）。
+   instance に渡す文字列は静的な定数で、確保しない。結果の文字列は `Display` の結果と同じく結果へコピーした後に drop する。
+3. **`Spec` は `Option` を持たない。** `Option.Option<i64>` を field に持つ record を `Option` の引数にすると `E1017`（再帰する総称型の引数の増加）になるため、`precision: i64`（-1 が「なし」）と `kind: Kind`（`KindPlain` など）にした。
+   幅の先頭の `0` は書式の文法がもともと拒否するので、`Format.parse` も `None` を返す。
+4. **`Format` は予約名。** クラス名（`record Format` は `E1001`）とモジュール名（`Format.tz` は `E1011`）。予約モジュールは 32 になった。
+5. **穴の既存の不具合を直した。** 名前だけの穴が union の case（`$"{Light}"`）やゼロ引数の関数の呼び出しのとき、`E1013`（場所でない借用）になっていた。値を作る名前は一時値として扱う。
+6. **`abi.rs` の予約。** `numeric.ll` に増えた `decimal_scaled`・`format_exponent`・`format_fixed` を `RESERVED_HOST_SYMBOLS` に足した。
+7. **D9 の影響。** 補間を使わないプログラムの runtime IR は、`numeric.ll` が `@tz_soft_` を使う全プログラムに連結されるため増える。生成関数の番号は C09 の std の追加でずれるので、IR の byte 一致ではなく「一様な番号の付け替えを除いて一致する」ことを `renumber` の確認で見た。
+8. **`Align`・`Kind` の case 名は型名の接頭辞を付ける。** std の union の case 名は利用者のモジュールから無修飾で見えるため、`Left`・`Right`・`Plain` のような名前は利用者の active pattern と `E1004` で衝突する
+   （既存の `tests/fixtures/active_patterns` で発覚した）。そこで `AlignAuto`・`AlignLeft`・`AlignCenter`・`AlignRight`、`KindPlain`・`KindLowerHex`・`KindUpperHex`・`KindOctal`・`KindBinary`・`KindExponent`・`KindFixed` にした。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Homebrew LLVM 21、rustc 1.98.1、Node v20.17.0）
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked`（609 passed、0 failed）が成功。GUIDE §3.1 の 4 つの深さの回帰テストは既定の stack で成功。`sh scripts/check-runtime-includes.sh` は 26 files。
+- `cargo test --locked --test string_interpolation`（11 件）、`tests/lsp.rs`、`npm run test:unit`（vsc の文法。5 件）が成功。
+- `node tests/features.mjs target/release/tsuzuri string_interpolation`（82 ケース）が native・WASM × `-O0`／`-O3` で成功し、`TSUZURI_TEST_WASM_TARGET=wasm64`（Node 24）でも成功。解放追跡（`live == 0`）と WASM の import なしを確認。
+  書式の結果は独立した参照（数値は BigInt の有理数から丸めを一回だけ行う）と、揃え・`Format.parse`／`Format.pad`・`Format` の instance は JavaScript の独立した実装と一致する。
+- 既存の E2E が成功: `features`（5232 ケース）、`e2e`・`primitives`・`tasks`・`computations`・`control`・`numeric_casts`・`examples`・`io`・`strings`・`display_parse`・`user_drop`・`ffi_extensions`・`host_imports`・`cache`・`docgen`・`lsp_sessions`・`trap_boundary`・`trap_return`・`stack_overflow`・`wasm_memory`・`wasm_simd`・`wasm_threads`・`simd`・`cpu_dispatch`・`gpu`、Node 24 の `wasm64`。
+  `debug_info` は `-O3` の object の `llvm-dwarfdump --verify`（Name Index）で失敗するが、変更前の HEAD のコンパイラでも同じ失敗で、この変更とは無関係（この環境の既知の問題）。
+- 既存 IR の不変: fixtures と examples の 153 個の IR（native・wasm32・`-O3`）で、利用者の関数の本体は、生成 id と metadata 番号の付け替えを除いて HEAD と一致した。差は std の追加による id のずれと、D07 D9 の `numeric.ll`／`math.ll` の再生成だけ。
+- `node scripts/check-docs.mjs`（97 ページ、849 リンク、181 例、native 296 回、test 9 projects）が成功。
+
+### 見つけた問題・残作業
+
+- 書記素クラスター単位の幅は D09 の後に再検討する。`deriving (Format)`・`#` などは必要になったとき別に設計する。
+- 既存の不具合を一つ直した: 未定義の名前と instance が同じプログラムにあると `Classes::matching_instance` が panic していた（HEAD でも再現。E08 の報告に同じ記述）。
+
+### レビュー対応（PR #7 の Copilot レビュー）
+
+- `Format` の instance は、このプログラムで宣言した record と union にだけ書ける（GUIDE D-32 の記述どおりに検査する）。`instance Format<i64>`・`instance Format<string>`・std の union への instance は
+  `E1016`（`only records and unions declared in this program can implement Format`）。`polymorph.rs` の `validate_format_instance` が、`validate_drop_instance` と同じ位置で検査する。型引数は自由で、`instance Format<'a> => Format<Box<'a>>` は使える。
+  以前は、穴から呼ばれることのない instance を書けてしまっていた。`tests/string_interpolation.rs` に 3 ケースとメッセージの検査を足した。
+- `Format.parse` が lexer と同じ fill と precision の規則を守る。fill が `{`・`}`・`"`・`\`・CR・LF・サロゲートペアの片割れ（孤立サロゲート）のとき `None`（以前は `Some`）。precision の先頭の `0`（`.05`・`.00`）も `None`。`.0` と `.0f` は有効。
+  JavaScript の参照（`tests/features.mjs` の `parseFormatSpec`）と fixture（`tests/fixtures/string_interpolation/Main.tz` の `format_parse`）の spec の一覧に 18 件を足した。型文字と precision の組み合わせは、これまでどおり `Format.parse` では検査しない。
+- `_docs/library-reference/api/Format.md` を再生成した（case 名の接頭辞が古いままだった）。

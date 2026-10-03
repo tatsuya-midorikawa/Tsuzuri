@@ -650,11 +650,15 @@ fn rejects(source: &str, code: &str) {
   | `Test` | テスト用の比較・報告 | G06 |
   | `Gpu` | GPU 実行 API | F07 |
   | `Owned` | 早期解放（`Owned.drop`）と Drop 型を捕捉できる関数値（`Owned.Function`） | B07 |
+  | `HashMap`／`HashSet` | 不透明なハッシュ表と集合（挿入順の反復、seed 付きハッシュ、借用キーの検索） | C09 |
+  | `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Os`／`Process` | OS API（`IO` の遅延アクション。`Path`・`Os` の純粋な部分と `Random.Pcg` は wasm32 でも使える） | E08 |
+  | `Format` | 書式指定の部品（`Spec`・`parse`・`pad`）。`Format` 型クラスの instance を書くための補助 | D07 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
   `UnsignedInteger`（D04）は符号なし整数だけが満たす組み込みマーカークラスとして予約する。
   `Drop`（B07）は利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-31）。
+  `Format`（D07）も利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-32）。
 
 ### D-08 Option と Result
 - `std/Option.tc`: `union Option<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
@@ -748,6 +752,7 @@ fn rejects(source: &str, code: &str) {
 ### D-18 WASM とオプトイン機能
 - WASM の既定はインポートなし・逐次・SIMD なし。SIMD128（F03）、threads（F06）、ホストのインポート（E06）、
   デバッグ出力（E07）は明示的なオプションで有効にし、未指定時の出力は変えない。
+  OS API（E08）の WASI への lowering `--wasm-host wasi` も同じ扱いで、既定の wasm32 は OS API に到達するビルドを `E2000` で拒否する。
 
 ### D-19 解析の資源上限
 - 新しい解析・展開（網羅性検査、deriving の生成、const 評価、到達可能性など）は、既存の上限（深さ 128、1,024 など）
@@ -895,13 +900,11 @@ fn rejects(source: &str, code: &str) {
 | 警告 | `W2002` bindgen で変換できない C 宣言の省略 | E11 |
 | 組み込みクラス | `Encode`／`Decode` | D08 |
 | 組み込みクラス | `Sync`（仮称） | F10 |
-| std | `HashMap`／`HashSet` | C09 |
 | std | `Arena` | C10 |
 | std | `Matrix` | C11 |
 | std | `FixedArray` | A16 |
 | std | `Json` | D08 |
 | std | `Regex`／`Unicode` | D09 |
-| std | `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Os` | E08 |
 | std | `Net` | E09 |
 | std | `Async` | B08 |
 | std | `Atomic`／`Mutex`／`Channel` | F10 |
@@ -912,7 +915,6 @@ fn rejects(source: &str, code: &str) {
 
 | 種別 | 仮の名前 | チケット | 要承認 |
 | --- | --- | --- | --- |
-| 構文 | `$"..."`・`u8$"..."`（文字列補間） | D07 | はい |
 | 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | いいえ（承認済み・実装済み） |
 | 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | はい |
 | 構文 | `const def` | D11 | いいえ（Phase 1） |
@@ -920,7 +922,6 @@ fn rejects(source: &str, code: &str) {
 | std | `Gpu.map_relaxed`・`Gpu.init_relaxed` | F09 | はい |
 | std | `Bench.now`・`Bench.consume`・`Bench.with`・`Bench.of` | G18 | はい（`bench` と共に） |
 | std | `Json.Numeral`（`Json` の数値の record） | D08 | はい（`Json` と共に） |
-| std | `Os.encode`・`Os.error_of_status`（E09 と共有） | E08 | はい（モジュール名と共に） |
 | 予約モジュール | `Regex`・`Unicode` | D09 | はい |
 | サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
 | サブコマンド | `tsuzuri bindgen` | E11 | はい |
@@ -936,7 +937,6 @@ fn rejects(source: &str, code: &str) {
 | CLI | `--emit bindings-js`（出力 `<name>.mjs`・`<name>.d.mts`） | E13 | いいえ |
 | CLI | `--emit wgsl-relaxed`・`--wasm-feature webgpu` | F09 | はい |
 | CLI | `--wasm-feature tail-call` | PM09 | はい |
-| CLI | `--wasm-host wasi` | E08 | はい |
 | CLI | `--trap-mode return` | E14 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | いいえ（承認済み・実装済み） |
 | CLI | `--profile-generate`・`--profile-use` | PR07 | いいえ |
@@ -959,7 +959,7 @@ fn rejects(source: &str, code: &str) {
 | 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`） | F08・PR05 | いいえ |
 | 公開記号 | `tsuzuri_try_<name>`・`tsuzuri_trap_info`（`tsuzuri_boundary_run`・`tsuzuri_trap_raise`・`tsuzuri_tracked_*` は runtime の内部） | E14 | いいえ（Phase 2 承認済み・実装済み） |
 | 公開記号 | wasm global `tsuzuri_stack_base`・`tsuzuri_stack_top`（threads の worker の stack の範囲） | F11 | いいえ（Phase 2 実装済み） |
-| ランタイム | `format.ll`（D07）、`string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`os.c`（E08）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み） | 各チケット | 各チケットの承認に従う |
+| ランタイム | `string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み）。`format.ll`（D07）・`os.c`・`os-wasi.c`（E08）は D-32 で確定 | 各チケット | 各チケットの承認に従う |
 
 新しい `.ll` を足すときは §2.2 の `.gitignore` の例外行と `scripts/check-runtime-includes.sh` を忘れない。
 Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の `Trap`・`TrapInfo` など）は、承認のときに割り当てる。
@@ -986,6 +986,33 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - 2026-10-03、PR #6 のレビューを受けて、`drop` 本体で引数を `ref mut` で渡すこと（値全体の排他的な再借用と、引数の参照そのものの move）も
   `E1012` にした。呼び出し先が値を置き換えると同じ `drop` が再び走る。所有の関数値の本体で move を禁じる捕捉値は、
   解放の要る値から Copy でない値へ広げた（ハンドルを呼び出しごとに閉じられないようにする）。
+
+### D-32 第2期の先頭 3 チケット（E08・C09・D07）の確定
+
+- 2026-10-03、利用者の「E08 / C09 / D07 の実装を完遂して。複数フェーズある場合にはすべてのフェーズを完了させること」と
+  「なんらかの判断が必要な場合には、あなたが考えられる最高の選択をすることを常に許可します」を、3 チケットの `要承認` の決定事項すべての承認として扱い、
+  Phase 1 と Phase 2（依存先が todo／blocked のものを除く）を実装した。確定した内容は次のとおり。詳細は各チケットの「実装と検証」にある。
+- std モジュール（D-07 の表へ移した）: C09 の `HashMap`／`HashSet`、E08 の `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Os`／`Process`、D07 の `Format`。
+  予約モジュールは 32。利用者の同名のモジュールは `E1011` になる（既存のプログラムへの影響として文書に書いた）。
+- 構文（D07 D1）: 文字列補間 `$"..."`・`u8$"..."` と穴 `{expr}`・`{expr:spec}`、`{{`・`}}`。予約語は増やさない（`$` は変更前は字句エラーだった）。
+  書式指定は `[[fill]align][+][width][.precision][type]`（D07 D6）。
+- 組み込みクラス（D07 D12）: `Format<'a>`（`format :: ref 'a -> ref string -> string`）。`BUILTIN_CLASSES` の末尾に足し、instance は利用者の record・union だけが持つ。
+  record・union の穴に書式があるとき、instance があるか書式が符号・精度・型を含めば `Format` へ渡し（検証済みの正規の綴りを借用した静的な文字列で渡し、幅の処理は instance）、そうでなければ従来どおり `Display` の文字列にコンパイラが幅を適用する。
+- ランタイム（D07 D9、E08 D6）: `format.ll`、`numeric.c` の `tz_soft_format_spec`（`numeric.ll`・`math.ll` を再生成）、`os.c`・`os-wasi.c`。
+  `os.c` は IR が `@tsuzuri_os_` を宣言したときだけ連結し、`os-wasi.c` は `--wasm-host wasi` のときだけ連結する。`.gitignore` の例外行と `scripts/check-runtime-includes.sh` の対象に入っている。
+- 診断コード: 新しいコードは足していない。`E2000`（既定の wasm32 が OS API に到達）・`E2002`（Windows の OS API）・`E2005`（`IO<i32>` 入口の非 0 の終了コード）の使う場面を広げた。
+- CLI（D-18）: `--wasm-host wasi`（E08 D10）。WASI preview1 の到達した import だけを出し、既定の wasm32 の出力と import は変えない。
+- `IO<i32>` の入口は値をプロセスの終了コードにする（E08 D9。`Os.exit` は作らない）。他の `IO<'a>` は従来どおり値を捨てて 0 で終わる。
+- `File.Handle` は `Drop` にしない（E08 D12 の選択肢 (b)）。Copy の opaque な添字で、runtime の世代検査付きの表を指す。明示の `close` と `File.with_open` で閉じる。
+  std の型は `Drop` の instance を持てず（`E1016`）、`Drop` の値は `let!` の継続をまたげない（`E1005`）ため。
+- Windows の OS API は `E2002` のまま（E08 D11）。G10 が blocked で実行を検証できない。WASI preview2／component model は E13。
+- C09 D11: seed 付きの `HashMap`／`HashSet`（SipHash-1-3 の鍵付きの仕上げ。`with_seed`・`randomized`）を足した。OS の seed は E08 の `Random.next_u64` で、取得失敗は報告かトラップで、固定 seed へ置き換えない。
+  耐性は部分的（64 bit の `Hash.hash` の digest が衝突するキーは seed でも衝突する）。F08 の SIMD によるグループ探索は F08 の後。
+- ベースラインの注意: 変更前の HEAD でも、`cargo test --locked` の全体実行では `bounds_nested_builder_expansion_not_just_source_syntax` が既定の 2 MiB の stack で溢れる。
+  全体は `RUST_MIN_STACK=4194304` を付けて実行する。単独の実行（§3.1）は既定のままで通る。上限や stack の大きさのコードは変えていない。
+- std の union の case 名は利用者のモジュールから無修飾で見え、利用者の active pattern の名前と `E1004` で衝突しうる。新しい std の union には `Left`・`Right`・`Plain` のような一般的な case 名を避け、型名の接頭辞を付ける（`Format.AlignLeft` など。D07）。
+- 既存の不具合の修正: `Classes::matching_instance` が、型に未解決の変数が残る呼び出しで panic していた（未定義の名前と instance が同じプログラムにあると再現）。未解決の変数があるときは instance なしとして扱う。
+  名前だけの穴（union の case・ゼロ引数の関数）が `E1013` になる不具合も直した（D07）。
 
 ## 10. 完了の定義（全チケット共通）
 

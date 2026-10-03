@@ -602,6 +602,15 @@ fn spacing(
     if matches!(current.kind, Dot) || matches!(previous.kind, Dot) {
         return separated;
     }
+    // A hole's expression sits directly between the braces of `$"a{x}b"`.
+    if matches!(current.kind, InterpolationMiddle(_) | InterpolationEnd(_))
+        || matches!(
+            previous.kind,
+            InterpolationStart(_) | InterpolationMiddle(_)
+        )
+    {
+        return "";
+    }
     if matches!(
         current.kind,
         Comma | Semicolon | Colon | RightParen | RightBracket | RightList
@@ -621,6 +630,7 @@ fn spacing(
                 | Integer(_)
                 | Float(_)
                 | String(_)
+                | InterpolationEnd(_)
                 | Char(_)
                 | Utf8Char(_)
                 | True
@@ -906,6 +916,14 @@ impl Canonical {
             Array(values) | List(values) | Tuple(values) => {
                 for value in values {
                     self.expression(value);
+                }
+            }
+            Interpolated(interpolation) => {
+                for hole in &mut interpolation.holes {
+                    if let Some(spec) = &mut hole.spec {
+                        spec.span = Span::default();
+                    }
+                    self.expression(&mut hole.value);
                 }
             }
             Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit

@@ -193,6 +193,85 @@ impl Parser<'_> {
         )
     }
 
+    /// `$"a{x}b"`: one expression per hole between the interpolation tokens.
+    /// Each hole's expression counts toward the nesting limit as in a group.
+    pub(super) fn interpolation(&mut self) -> Result<Expr, Diagnostic> {
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let outer_slice = std::mem::replace(&mut self.slice_context, false);
+        let result = self.interpolation_holes();
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        self.slice_context = outer_slice;
+        result
+    }
+
+    fn interpolation_holes(&mut self) -> Result<Expr, Diagnostic> {
+        let first = self.take();
+        let TokenKind::InterpolationStart(piece) = first.kind else {
+            unreachable!("an interpolation starts at its first token")
+        };
+        let mut texts = vec![piece.text];
+        let mut holes: Vec<InterpolationHole> = Vec::new();
+        let mut depth = 0;
+        let last = loop {
+            let mut brace = self.tokens[self.position - 1].span;
+            brace.start = brace.end - 1;
+            if holes.len() == MAX_INTERPOLATION_HOLES {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    format!(
+                        "an interpolated string has at most {MAX_INTERPOLATION_HOLES} holes; split it into several strings"
+                    ),
+                    brace,
+                ));
+            }
+            if matches!(
+                self.current().kind,
+                TokenKind::InterpolationMiddle(_) | TokenKind::InterpolationEnd(_)
+            ) {
+                let mut span = brace;
+                span.end = self.current().span.start + 1;
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "an interpolation hole needs an expression; write '{{' for a literal brace",
+                    span,
+                ));
+            }
+            let value = self.expression(0, true)?;
+            depth = depth.max(value.depth);
+            if !matches!(
+                self.current().kind,
+                TokenKind::InterpolationMiddle(_) | TokenKind::InterpolationEnd(_)
+            ) {
+                return Err(self.error("expected '}' to close the interpolation hole"));
+            }
+            let token = self.take();
+            let (mut piece, last) = match token.kind {
+                TokenKind::InterpolationMiddle(piece) => (piece, false),
+                TokenKind::InterpolationEnd(piece) => (piece, true),
+                _ => unreachable!("the token kind was checked above"),
+            };
+            if let Some(spec) = &mut piece.spec {
+                spec.span.source = token.span.source;
+            }
+            holes.push(InterpolationHole {
+                value,
+                spec: piece.spec,
+            });
+            texts.push(piece.text);
+            if last {
+                break token.span;
+            }
+        };
+        let span = first.span.through(last);
+        self.make(
+            ExprKind::Interpolated(Box::new(Interpolation { texts, holes })),
+            span,
+            depth + 1,
+        )
+    }
+
     pub(super) fn grouped_expression(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
         let outer = self.stop_at_arm;
@@ -683,6 +762,7 @@ impl Parser<'_> {
                             | TokenKind::Integer(_)
                             | TokenKind::Float(_)
                             | TokenKind::String(_)
+                            | TokenKind::InterpolationStart(_)
                             | TokenKind::Char(_)
                             | TokenKind::Utf8Char(_)
                             | TokenKind::True

@@ -244,6 +244,7 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
             | TypedExprKind::StructuralCompare(..)
             | TypedExprKind::StructuralHash(_)
             | TypedExprKind::StructuralDisplay(_)
+            | TypedExprKind::Interpolated(_)
     ) || mutable_reference(&expression.ty, module)
         || !all_children(expression, &mut |child| !may_mutate(child, module))
 }

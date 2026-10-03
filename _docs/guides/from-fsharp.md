@@ -18,6 +18,7 @@
 | 判別共用体 | type に case を列挙 | union に case を列挙 |
 | レコード | type とフィールド | record と明示的な型 |
 | モジュール | module / namespace / open | ファイルとディレクトリ、修飾名 |
+| 文字列補間 | `$"hello {name}, {count + 1}"` | 同じ形の `$"hello {name}, {count + 1}"`。穴の値は借用され、書式は `{x:.2}` のように穴の中へ書く（`%d` 形式ではない） |
 | 関数合成 | `>>` / `<<` | これらは整数シフト。合成は通常の関数で記述 |
 
 上表は代表的な記法の比較で、機械的な全構文変換表ではありません。
@@ -63,7 +64,20 @@ Seq も一回消費です。`seq { ... }` という組み込みビルダーや�
 
 通常の整数演算は折り返し、浮動小数点から整数への変換は飽和と NaN から 0 です。整数同士の cast は bit 保持・切り詰め・拡張です。F# / .NET の変換や checked 文脈と同一視しません。
 
-string は UTF-16 で、添字の返却型は i16u です。utf8string は別型で、索引はバイトです。文字列補間、printf 風の書式、.NET String の全メソッド、文化圏依存比較はありません。
+string は UTF-16 で、添字の返却型は i16u です。utf8string は別型で、索引はバイトです。
+
+F# と同じ形の `$"..."` 補間が使えます。ただし穴の値は消費せずに借用するので、同じ string を何度でも埋め込めます。書式は .NET の書式文字列（`N2` など）や printf 風の `%d` ではなく、穴の中に `{x:.2}`、`{x:>8}` のように書きます（[書式指定](../library-reference/formatting-and-parsing.md#書式指定)）。
+
+```tsuzuri run=Ada%20x2%2C%20Ada%20x3
+def greet :: ref string -> i64 -> string
+fn greet name count = $"{name} x{count}"
+
+let who = "Ada"
+let first = greet (ref who) 2
+$"{first}, {greet (ref who) 3}"
+```
+
+printf 風の書式文字列、.NET String の全メソッド、文化圏依存比較はありません。
 
 ## 提供しない F# / .NET 機能
 

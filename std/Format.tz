@@ -1,0 +1,107 @@
+/// How the text of a hole sits inside its width. `AlignAuto` means that the spec names no alignment.
+union Align = AlignAuto | AlignLeft | AlignCenter | AlignRight deriving (Eq)
+
+/// The `type` letter of a spec: `x`, `X`, `o`, `b`, `e`, `f`, or `KindPlain` when there is none.
+union Kind = KindPlain | KindLowerHex | KindUpperHex | KindOctal | KindBinary | KindExponent | KindFixed deriving (Eq)
+
+/// A format spec `[[fill]align][+][width][.precision][type]` taken apart. `fill` is one Unicode scalar, `width`
+/// is 0 when the spec has none, and `precision` is -1 when it has none.
+record Spec { fill: string, align: Align, plus: bool, width: i64, precision: i64, kind: Kind }
+
+private def is_at :: ref string -> i64 -> char -> bool
+fn is_at text index letter = index < text.length && Char.of_u16 text[index] == letter
+
+private def is_align_at :: ref string -> i64 -> bool
+fn is_align_at text index = is_at text index '<' || is_at text index '>' || is_at text index '^'
+
+private def is_high :: ref string -> i64 -> bool
+fn is_high text index = index < text.length && text[index] >= 55296i16u && text[index] <= 56319i16u
+
+private def is_low :: ref string -> i64 -> bool
+fn is_low text index = index < text.length && text[index] >= 56320i16u && text[index] <= 57343i16u
+
+private def fill_units :: ref string -> i64
+fn fill_units text =
+	if is_high text 0 && is_low text 1 && is_align_at text 2 then 2 else (if is_align_at text 1 then 1 else 0)
+
+/// Whether the single unit at `index` can be a fill. The lexer refuses `{`, `}`, `"`, `\`, CR, and LF there, and a
+/// lone surrogate is not a Unicode scalar at all.
+private def is_fill_unit :: ref string -> i64 -> bool
+fn is_fill_unit text index =
+	!(is_high text index || is_low text index || is_at text index '{' || is_at text index '}' || is_at text index '"' || is_at text index '\\' || is_at text index '\r' || is_at text index '\n')
+
+private def align_of :: ref string -> i64 -> Align
+fn align_of text index = if is_at text index '<' then AlignLeft else (if is_at text index '^' then AlignCenter else AlignRight)
+
+private def digit_at :: ref string -> i64 -> i64
+fn digit_at text index = if index < text.length && Char.is_ascii_digit (Char.of_u16 text[index]) then (text[index] as i64) - 48 else -1
+
+private def kind_at :: ref string -> i64 -> Kind
+fn kind_at text index =
+	if index >= text.length then KindPlain else
+		match Char.of_u16 text[index] with
+		| 'x' -> KindLowerHex
+		| 'X' -> KindUpperHex
+		| 'o' -> KindOctal
+		| 'b' -> KindBinary
+		| 'e' -> KindExponent
+		| 'f' -> KindFixed
+		| _ -> KindPlain
+
+/// Takes a spec apart; `None` when `text` is not written the way `$"{x:spec}"` allows: a fill the lexer refuses
+/// (`{`, `}`, `"`, `\`, CR, LF, or half of a surrogate pair), a width that starts with 0, a precision with a leading
+/// 0 (`.05`), or a number above 4096. It checks the grammar only, so a type letter that does not fit the precision
+/// (`.2x`) is not rejected. The text a `Format` instance receives is always valid.
+def parse :: ref string -> Option.Option<Spec>
+fn parse text =
+	let fill_length = fill_units text
+	let fill_valid = fill_length != 1 || is_fill_unit text 0
+	let has_align = fill_length > 0 || is_align_at text 0
+	let fill = if fill_length > 0 then Option.get (String.slice text 0 fill_length) else " "
+	let align = if has_align then align_of text fill_length else AlignAuto
+	let mut index = if has_align then fill_length + 1 else 0
+	let plus = is_at text index '+'
+	if plus then index = index + 1
+	let leading_zero = digit_at text index == 0
+	let mut width = 0
+	while digit_at text index >= 0 && width <= 4096 do
+		width = width * 10 + digit_at text index
+		index = index + 1
+	let mut precision = -1
+	let mut valid = fill_valid && width <= 4096 && !leading_zero
+	if is_at text index '.' then
+		index = index + 1
+		let mut value = 0
+		let start = index
+		while digit_at text index >= 0 && value <= 4096 do
+			value = value * 10 + digit_at text index
+			index = index + 1
+		let padded_precision = digit_at text start == 0 && index - start > 1
+		valid = valid && index > start && value <= 4096 && !padded_precision
+		precision = value
+	let kind = kind_at text index
+	if kind != KindPlain then index = index + 1
+	if valid && index == text.length then Option.Some (Spec { fill: fill, align: align, plus: plus, width: width, precision: precision, kind: kind }) else Option.None
+
+/// The number of Unicode scalars in `text`; a surrogate pair counts once and a lone surrogate once.
+private def scalars :: ref string -> i64
+fn scalars text =
+	let mut count = 0
+	let mut index = 0
+	while index < text.length do
+		if is_high text index && is_low text (index + 1) then index = index + 1
+		count = count + 1
+		index = index + 1
+	count
+
+/// `text` widened to the width of `spec` with its fill, aligned as it says (`AlignAuto` is left). A text that is
+/// already as wide is returned unchanged.
+def pad :: ref Spec -> string -> string
+fn pad spec text =
+	let missing = spec.width - scalars (ref text)
+	if missing <= 0 then text else
+		let before = match spec.align with
+			| AlignRight -> missing
+			| AlignCenter -> missing / 2
+			| _ -> 0
+		String.repeat (ref spec.fill) before + text + String.repeat (ref spec.fill) (missing - before)

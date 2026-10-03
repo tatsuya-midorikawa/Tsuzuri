@@ -48,6 +48,7 @@ def main :: IO<Option<unit>> =
 EOF なら二つ目の let! で残りの文を中断します。結果の型は `IO<Option<unit>>` です。
 Result や独自ビルダーの失敗値も保持します。入口は None／Error を表示せず終了コード 0 で終えるため、
 失敗を報告する場合は名前付き関数から IO の結果を受け取り、match で処理してください。
+終了コードで報告するなら、入口を `IO<i32>` にします（[終了コード](#終了コード)）。
 
 ## API
 
@@ -80,6 +81,18 @@ IO {
 }
 ```
 
+## 終了コード
+
+入口が `IO<i32>` なら、その `i32` の値がプロセスの終了コードになります。`IO<unit>` など、ほかの型の入口は値を捨てて 0 で終了します。
+
+```tsuzuri
+def main :: IO<i32> =
+    do! IO.write_line "done"
+    return 3i32
+```
+
+`tsuzuri run` は非 0 の終了コードを `E2005 program exited with code 3` として報告し、自身の終了ステータスは 1 です。`tsuzuri build` で作った実行ファイルは、値をそのまま終了コードにします。WASM では、`tsuzuri_main` の戻り値が入口の `i32` の値で、`--wasm-host wasi` の `_start` は `proc_exit` で伝えます。以前は `IO<i32>` の値を捨てて 0 で終了していました。詳しくは [OS API の終了コード](os.md#終了コード)を参照してください。
+
 ## 文字と順序
 
 native の入出力は UTF-8 バイト列です。読み取った行を UTF-16 の string に変換し、不正 UTF-8 は InvalidEncoding にします。出力時の孤立サロゲートも InvalidEncoding で、暗黙の置換は行いません。
@@ -98,7 +111,7 @@ IO アクションは通常の関数値の捕捉・複製・借用規則に従�
 
 `for` は配列を順番に処理します。`and!` は左から右の逐次実行であり、並列実行ではありません。while も使えますが、通常の計算式と同じく、継続を跨いだ外側の可変ローカルの更新はできません。詳細は[計算式](../language-reference/computation-expressions.md)を参照してください。
 
-Debug と extern は従来の副作用付き API として残ります。IO の追加は言語全体の effect system、非同期イベントループ、ファイル・ネットワーク API の導入ではありません。
+Debug と extern は従来の副作用付き API として残ります。IO の追加は言語全体の effect system や非同期イベントループの導入ではありません。ファイル・環境・時刻・乱数・プロセスは、IO の上に作った [OS API](os.md) が提供します。ネットワーク API はありません。
 
 ## WASM と C
 
@@ -108,7 +121,7 @@ IO を返す Main は WASM でも使えます。
 ./target/release/tsuzuri build examples/io --target wasm32 -o target/io.wasm
 ```
 
-ホストは `instance.exports.tsuzuri_main()` を呼びます。インスタンス化だけでは実行せず、export def も不要です。戻り値は正常完了時の 0 です。`--emit object` / `--emit header` でも `int32_t tsuzuri_main(void)` を公開し、C ホストから明示実行できます。
+ホストは `instance.exports.tsuzuri_main()` を呼びます。インスタンス化だけでは実行せず、export def も不要です。戻り値は、入口が `IO<i32>` ならその値、ほかの入口では正常完了時の 0 です。`--emit object` / `--emit header` でも `int32_t tsuzuri_main(void)` を公開し、C ホストから明示実行できます。
 
 Windows のランタイム同梱 COFF オブジェクト出力は未対応で、実行ファイルか LLVM 出力を使います。Windows 実機での IO 動作は未検証です。
 
@@ -122,3 +135,5 @@ WASM は到達する操作だけを tsuzuri_io モジュールから import し�
 read_line の成功バッファは `tsuzuri_alloc` で確保し、改行を除いた UTF-8 を格納して所有権を Tsuzuri に渡します。空行・EOF・失敗は pointer 0 / length 0 にできます。状態値、負の長さ、NULL と正の長さ、不正な WASM メモリ範囲を検査します。確保後は memory.buffer の view を作り直してください。
 
 write のバッファは同期呼び出し中だけの借用です。解放・変更・返却後の保持をしてはいけません。write_line では既に LF を含むので、ホストは改行を追加しません。ホストは ABI を守る信頼境界であり、Promise は返せません。Node.js / ブラウザー等に応じた接続例の基礎は[WASM ガイド](../guides/webassembly.md)、実行可能な参照ホストは[IO テスト](../../tests/io.mjs)にあります。
+
+ファイル・環境・時刻・乱数・プロセスの [OS API](os.md) は tsuzuri_io とは別の機能で、既定の wasm では使うビルドが `E2000` です。`--wasm-host wasi` を付けると、標準入出力も OS API も WASI preview1 の import へ下げ、`tsuzuri_io` の import は出ません（[対象環境](os.md#対象環境)、[WASM ガイド](../guides/webassembly.md#os-api-と-wasi)）。

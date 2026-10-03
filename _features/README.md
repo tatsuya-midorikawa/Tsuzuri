@@ -51,7 +51,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、B07 は `done`（Phase 1・2）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、B07 は `done`（Phase 1・2）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
@@ -164,7 +164,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C06 | [Map／Set](_completed/C06-map-set.md) | P2 | L | A11, A02, A06, A07, C02, B01 | done |
 | C07 | [ユーザー定義の反復プロトコル](_completed/C07-iteration-protocol.md) | P2 | L | B01, A06 | done |
 | C08 | [可変スライスと要素のその場更新](C08-mutable-slices.md) | P2 | L | C03, (A13) | todo |
-| C09 | [HashMap／HashSet](C09-hash-map.md) | P1 | M | A07, C02, C06 | todo |
+| C09 | [HashMap／HashSet](_completed/C09-hash-map.md) | P1 | M | A07, C02, C06 | done |
 | C10 | [共有所有と循環構造（Arena・Handle・Rc／Arc）](C10-shared-ownership.md) | P2 | XL | C02, (B07), (F10) | todo |
 | C11 | [多次元配列と数値カーネル](C11-multidimensional-arrays.md) | P3 | L | A16, F02, F04, (C08), (F08) | todo |
 
@@ -178,7 +178,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | D04 | [整数 intrinsic（min/max/popcount/rotate/checked など）](_completed/D04-integer-intrinsics.md) | P1 | M | E02, B01 | done |
 | D05 | [明示 FMA と順序を定めた集計 API](_completed/D05-fma-ordered-reductions.md) | P2 | S | E02, C04 | done |
 | D06 | [コンパイル時定数（const）](_completed/D06-compile-time-constants.md) | P2 | M | – | done |
-| D07 | [文字列補間と書式指定](D07-string-interpolation.md) | P1 | M | D01 | todo |
+| D07 | [文字列補間と書式指定](_completed/D07-string-interpolation.md) | P1 | M | D01 | done |
 | D08 | [構造化データの直列化（JSON）と Encode／Decode の導出](D08-json-serialization.md) | P2 | L | A07, D02, (C09) | todo |
 | D09 | [正規表現と Unicode テキスト処理](D09-regex-unicode.md) | P2 | L | D02, A08 | todo |
 | D10 | [f16 のハードウェア演算経路](D10-f16-hardware.md) | P3 | M | D03 | todo |
@@ -195,7 +195,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E05 | [ホスト ABI の拡張（バッファ・スカラーレコード）](_completed/E05-host-abi-buffers.md) | P1 | L | C03 | done |
 | E06 | [ホスト関数のインポート](_completed/E06-host-imports.md) | P2 | L | E02 | done |
 | E07 | [デバッグ出力（Debug.print／trace）](_completed/E07-debug-output.md) | P1 | S | D01, E02 | done |
-| E08 | [標準 OS API（ファイル・環境・時刻・乱数・プロセス）](E08-os-api.md) | P1 | XL | B07, E06 | todo |
+| E08 | [標準 OS API（ファイル・環境・時刻・乱数・プロセス）](_completed/E08-os-api.md) | P1 | XL | B07, E06 | done |
 | E09 | [ネットワーク API](E09-network.md) | P3 | XL | E08, B08 | todo |
 | E10 | [git／registry 依存・lockfile・版解決](E10-package-registry.md) | P2 | XL | E04, G11 | todo |
 | E11 | [C ヘッダーからの extern 生成](E11-c-bindgen.md) | P2 | L | E12 | todo |
@@ -419,11 +419,11 @@ graph LR
 | [B08](B08-async.md) | D1（`Async`）、D10（Phase 2） |
 | [C08](C08-mutable-slices.md) | D1（D-13 の変更。チケット全体）、D11（Phase 2） |
 | C09・C10・C11 | Phase 2 以降だけ（C09 D11、C10 D13・D14、C11 D9） |
-| [D07](D07-string-interpolation.md) | D1（`$"..."`・`u8$"..."`）、D9（`numeric.ll` の増分） |
+| [D07](_completed/D07-string-interpolation.md) | D1（`$"..."`・`u8$"..."`）、D9（`numeric.ll` の増分） |
 | [D08](D08-json-serialization.md) | D1（`Json`・`Encode`／`Decode`） |
 | [D09](D09-regex-unicode.md) | D1（`Regex`・`Unicode` の予約）、D11（Phase 2） |
 | [D11](D11-const-evaluation.md) | D10（Phase 2 の static データ） |
-| [E08](E08-os-api.md) | D1（7 つの std 名）、D9（`IO<i32>` の終了コード）、D10（`--wasm-host wasi`）、D12（段 B の `File.Handle` と B07 D5） |
+| [E08](_completed/E08-os-api.md) | D1（7 つの std 名）、D9（`IO<i32>` の終了コード）、D10（`--wasm-host wasi`）、D12（段 B の `File.Handle` と B07 D5） |
 | [E09](E09-network.md) | D1（`Net`）、D11（wasm32 の将来の opt-in） |
 | [E10](E10-package-registry.md) | D1（`tsuzuri fetch` と `git`、`E2007`、D-29 の E04 記録の更新）、D10（Phase 2） |
 | [E11](E11-c-bindgen.md) | D1（`bindgen` と `W2002`） |

@@ -711,6 +711,177 @@ static __attribute__((noinline)) int format_float(char *out, const unsigned char
     return length;
 }
 
+static int radix_digit(u32 digit, int upper) {
+    return digit < 10 ? '0' + (int)digit : (upper ? 'A' : 'a') + (int)digit - 10;
+}
+
+/* The digits of `value` in `base`, most significant first. */
+static int radix_text(char *out, u128 value, int base, int upper) {
+    char reversed[128];
+    int count = 0;
+    do {
+        reversed[count++] = (char)radix_digit((u32)(value % (u32)base), upper);
+        value /= (u32)base;
+    } while (value);
+    for (int i = 0; i < count; ++i) out[i] = reversed[count - 1 - i];
+    return count;
+}
+
+/* The decimal digits of `value`, most significant first; the number is consumed.
+   The text is built in groups of nine digits, so it needs no scratch space. */
+static int big_decimal_text(char *out, tzrt_big *value) {
+    int count = 0;
+    while (1) {
+        u32 group = divide_small(value, 1000000000);
+        int last = !value->n;
+        for (int i = 0; i < 9 && (!last || group); ++i) {
+            out[count++] = (char)('0' + group % 10);
+            group /= 10;
+        }
+        if (last) break;
+    }
+    if (!count) out[count++] = '0';
+    for (int i = 0, j = count - 1; i < j; ++i, --j) {
+        char swap = out[i];
+        out[i] = out[j];
+        out[j] = swap;
+    }
+    return count;
+}
+
+/* The exact value of a finite number as numerator and denominator. */
+static void rational(const tzrt_number *value, int base, tzrt_big *numerator, tzrt_big *denominator) {
+    *numerator = value->coefficient;
+    *denominator = small(1);
+    if (value->exponent >= 0) power(numerator, base, value->exponent);
+    else power(denominator, base, -value->exponent);
+}
+
+/* n * 10^scale / d rounded to nearest, ties to even. This repeats `rounded` so
+   that function keeps its single call site and stays inlined into `pack`. */
+static tzrt_big decimal_scaled(const tzrt_big *n, const tzrt_big *d, int scale) {
+    tzrt_big numerator = *n, denominator = *d;
+    if (scale >= 0) power(&numerator, 10, scale);
+    else power(&denominator, 10, -scale);
+    tzrt_big result = divide(&numerator, &denominator);
+    multiply_small(&numerator, 2);
+    int order = compare(&numerator, &denominator);
+    if (order > 0 || (order == 0 && result.n && (result.w[0] & 1))) {
+        tzrt_big one = small(1);
+        add(&result, &one);
+    }
+    return result;
+}
+
+static int signed_prefix(char *out, int negative, int plus) {
+    if (negative) { out[0] = '-'; return 1; }
+    if (plus) { out[0] = '+'; return 1; }
+    return 0;
+}
+
+static __attribute__((noinline)) int format_fixed(char *out, const tzrt_number *value, tzrt_format f, int plus, int precision) {
+    int length = signed_prefix(out, value->negative, plus);
+    char *digits = out + length;
+    int count;
+    if (!value->coefficient.n) {
+        digits[0] = '0';
+        count = 1;
+        length += 1;
+        if (precision) {
+            digits[1] = '.';
+            for (int i = 0; i < precision; ++i) digits[2 + i] = '0';
+            length += 1 + precision;
+        }
+        return length;
+    }
+    tzrt_big numerator, denominator;
+    rational(value, f.base, &numerator, &denominator);
+    tzrt_big scaled = decimal_scaled(&numerator, &denominator, precision);
+    count = big_decimal_text(digits, &scaled);
+    if (!precision) return length + count;
+    if (count > precision) {
+        for (int i = count - 1; i >= count - precision; --i) digits[i + 1] = digits[i];
+        digits[count - precision] = '.';
+        return length + count + 1;
+    }
+    /* Fewer digits than decimals: "0." and zeros come before them. */
+    int shifted = precision - count + 2;
+    for (int i = count - 1; i >= 0; --i) digits[i + shifted] = digits[i];
+    digits[0] = '0';
+    digits[1] = '.';
+    for (int i = 2; i < shifted; ++i) digits[i] = '0';
+    return length + precision + 2;
+}
+
+static __attribute__((noinline)) int format_exponent(char *out, const tzrt_number *value, tzrt_format f, int plus, int precision) {
+    int length = signed_prefix(out, value->negative, plus);
+    int exponent = 0;
+    if (!value->coefficient.n) {
+        out[length++] = '0';
+        if (precision) {
+            out[length++] = '.';
+            for (int i = 0; i < precision; ++i) out[length++] = '0';
+        }
+    } else {
+        tzrt_big numerator, denominator;
+        rational(value, f.base, &numerator, &denominator);
+        int significant = precision + 1;
+        exponent = magnitude(&numerator, &denominator, 10);
+        tzrt_big scaled = decimal_scaled(&numerator, &denominator, significant - 1 - exponent);
+        tzrt_big limit = small(1);
+        power(&limit, 10, significant);
+        if (compare(&scaled, &limit) >= 0) {
+            divide_small(&scaled, 10);
+            ++exponent;
+        }
+        char *digits = out + length;
+        big_decimal_text(digits, &scaled);
+        if (precision) {
+            for (int i = significant - 1; i >= 1; --i) digits[i + 1] = digits[i];
+            digits[1] = '.';
+            length += 1;
+        }
+        length += significant;
+    }
+    out[length++] = 'e';
+    if (exponent < 0) out[length++] = '-';
+    return length + unsigned_text(out + length, (u32)(exponent < 0 ? -exponent : exponent));
+}
+
+/* Formats a number for an interpolation hole. `flags` bit 0 puts a '+' before a
+   number that is not negative; bits 4-7 pick the form: 0 shortest round-trip
+   text, 1 fixed, 2 exponent, 3 hexadecimal, 4 uppercase hexadecimal, 5 octal,
+   6 binary. Fixed and exponent forms round the exact value to `precision`
+   decimals once, to nearest with ties to even. The caller supplies enough
+   space for the text (see FunctionEmitter::format_capacity). */
+__attribute__((visibility("hidden")))
+int tz_soft_format_spec(char *out, const unsigned char *input, int kind, int flags, int precision) {
+    tzrt_format f = format(kind);
+    int plus = flags & 1, style = (flags >> 4) & 15;
+    if (f.integer) {
+        u128 raw = load(input, f.width);
+        int negative = f.sign && (raw >> (f.width - 1));
+        u128 value = negative ? -raw & mask(f.width) : raw;
+        int length = signed_prefix(out, negative, plus);
+        int base = style == 3 || style == 4 ? 16 : style == 5 ? 8 : style == 6 ? 2 : 10;
+        return length + radix_text(out + length, value, base, style == 4);
+    }
+    tzrt_number value = decode(input, f);
+    if (value.special == 2) {
+        out[0] = 'n'; out[1] = 'a'; out[2] = 'n';
+        return 3;
+    }
+    if (value.special) {
+        int length = signed_prefix(out, value.negative, plus);
+        out[length++] = 'i'; out[length++] = 'n'; out[length++] = 'f';
+        return length;
+    }
+    if (style == 1) return format_fixed(out, &value, f, plus, precision);
+    if (style == 2) return format_exponent(out, &value, f, plus, precision);
+    int length = value.negative ? 0 : signed_prefix(out, 0, plus);
+    return length + tz_soft_format(out + length, input, kind);
+}
+
 static int digit_value(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;

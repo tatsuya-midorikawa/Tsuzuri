@@ -2278,6 +2278,7 @@ impl Parser<'_> {
                 | TokenKind::Integer(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
+                | TokenKind::InterpolationStart(_)
                 | TokenKind::Char(_)
                 | TokenKind::Utf8Char(_)
                 | TokenKind::True
@@ -2551,6 +2552,7 @@ impl Parser<'_> {
                 return self.identifier_expression(allow_record, stop_at_newline);
             }
             TokenKind::LeftParen => return self.grouped_expression(),
+            TokenKind::InterpolationStart(_) => return self.interpolation(),
             TokenKind::LeftBracket | TokenKind::LeftList => return self.collection_literal(),
             TokenKind::LeftBrace => return self.block(),
             TokenKind::If => return self.conditional(),

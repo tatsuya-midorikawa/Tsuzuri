@@ -12,12 +12,14 @@
 | [Array / List](arrays-and-lists.md) | 不変コレクション、所有更新、共有スライス、検索と整列 |
 | [Vec](vec.md) | 伸縮、容量、pop、バッファ移送 |
 | [Map / Set](map-set.md) | キー順の検索・更新・集合演算 |
+| [HashMap / HashSet](hash-map.md) | ハッシュ表、挿入順の反復、seed 付きハッシュ、借用キーの検索 |
 | [Seq](sequences.md) | 一回消費の遅延列、iter、借用反復 |
 | [文字列と文字](text.md) | String / Utf8String / Char / Utf8Char |
 | [Math](math.md) | Float、Elementary、FMA、固定順の集計 |
 | [Int](integers.md) | checked、saturating、bit、rotate、widening |
-| [表示と解析](formatting-and-parsing.md) | Display、Parse、to_string |
+| [表示と解析](formatting-and-parsing.md) | Display、Parse、to_string、Format クラスと書式指定 |
 | [IO と標準入出力](io.md) | IO モナド、stdin / stdout / stderr、EOF と失敗 |
+| [OS API](os.md) | File / Dir / Path / Env / Time / Random / Os / Process、終了コード、WASI |
 | [基本組み込み、Debug、Owned、Test](builtins.md) | 固定型の互換関数、assert、出力とテスト、Owned の早期解放と資源を持つ関数値 |
 | [Parallel](parallel.md) | 配列の同期並列生成・変換・還元 |
 | [Simd](simd.md) | 明示 128-bit vector と mask |
@@ -43,14 +45,25 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 | Vec | [Vec](api/Vec.md) | [Vec](vec.md) |
 | Map | [Map](api/Map.md) | [Map / Set](map-set.md) |
 | Set | [Set](api/Set.md) | [Map / Set](map-set.md) |
+| HashMap | [HashMap](api/HashMap.md) | [HashMap / HashSet](hash-map.md) |
+| HashSet | [HashSet](api/HashSet.md) | [HashMap / HashSet](hash-map.md) |
 | Seq | [Seq](api/Seq.md) | [Seq](sequences.md) |
 | Option | [Option](api/Option.md) | [Option / Result](option-result.md) |
 | Result | [Result](api/Result.md) | [Option / Result](option-result.md) |
 | IO | [IO](api/IO.md) | [IO と標準入出力](io.md) |
+| File | [File](api/File.md) | [OS API](os.md) |
+| Dir | [Dir](api/Dir.md) | [OS API](os.md) |
+| Path | [Path](api/Path.md) | [OS API](os.md) |
+| Env | [Env](api/Env.md) | [OS API](os.md) |
+| Time | [Time](api/Time.md) | [OS API](os.md) |
+| Random | [Random](api/Random.md) | [OS API](os.md) |
+| Os | [Os](api/Os.md) | [OS API](os.md) |
+| Process | [Process](api/Process.md) | [OS API](os.md) |
 | String | [String](api/String.md) | [文字列](text.md) |
 | Utf8String | [Utf8String](api/Utf8String.md) | [文字列](text.md) |
 | Char | [Char](api/Char.md) | [文字型](../language-reference/strings-and-characters.md) |
 | Utf8Char | [Utf8Char](api/Utf8Char.md) | [文字型](../language-reference/strings-and-characters.md) |
+| Format | [Format](api/Format.md) | [表示と解析](formatting-and-parsing.md) |
 | Math | [Math](api/Math.md) | [Math](math.md) |
 | Parallel | [Parallel](api/Parallel.md) | [Parallel](parallel.md) |
 | Debug | [Debug](api/Debug.md) | [Debug](builtins.md) |
@@ -60,13 +73,13 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 
 **生成宣言だけでは全 API の一覧にはなりません。** Int、Simd、Task、Owned の関数と、Vec / Math などの組み込み操作はコンパイラに実装され、上の手書き解説に含めています。また、本文で推論される Copy などの制約をすべてソース署名へ書き戻す生成器ではありません。
 
-不透明な Map / Set / Seq / Gpu / IO / Owned の内部フィールドがソース宣言として見えても、利用者による直接構築・分解を許可するものではありません。解説ページの所有権・可視性契約を優先します。
+不透明な Map / Set / HashMap / HashSet / Seq / Gpu / IO / Owned の内部フィールドがソース宣言として見えても、利用者による直接構築・分解を許可するものではありません。解説ページの所有権・可視性契約を優先します。
 
 ## 失敗と互換性
 
 get / at / sub のような名前だけで失敗動作を推測しないでください。Array.get は None、Array.at / sub はトラップ、String.sub は None です。
 
-std は .NET、WASI、OS / GUI / ファイル / ネットワークの標準ライブラリではありません。モジュール名が予約されていても、他言語の同名 API がすべて使えるわけではありません。
+std は .NET の標準ライブラリではなく、GUI とネットワークの API はありません。[OS API](os.md) はファイル・ディレクトリ・環境・時刻・乱数・プロセスに限られ、Windows を除く native と `--wasm-host wasi` で使えます。既定の WASM（`E2000`）と Windows の native（`E2002`）では使えません。モジュール名が予約されていても、他言語の同名 API がすべて使えるわけではありません。
 
 ## 関連項目
 

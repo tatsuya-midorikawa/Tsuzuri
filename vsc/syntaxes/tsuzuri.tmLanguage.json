@@ -32,8 +32,38 @@
     },
     "strings": {
       "patterns": [
+        { "include": "#interpolatedString" },
         { "name": "string.quoted.double.tsuzuri", "begin": "(?:u8)?\"", "end": "\"", "patterns": [{ "include": "#escape" }] },
         { "name": "string.quoted.single.tsuzuri", "match": "(?:u8)?'(?:\\\\(?:u\\{[0-9a-fA-F]+\\}|u[0-9a-fA-F]{4}|.)|[^'\\\\\\r\\n])'" }
+      ]
+    },
+    "interpolatedString": {
+      "name": "string.interpolated.tsuzuri", "begin": "(?:u8)?\\$\"", "end": "\"|$",
+      "patterns": [
+        { "name": "constant.character.escape.tsuzuri", "match": "\\{\\{|\\}\\}" },
+        { "include": "#escape" },
+        { "include": "#interpolationHole" }
+      ]
+    },
+    "interpolationHole": {
+      "name": "meta.embedded.interpolation.tsuzuri", "begin": "\\{", "end": "\\}|$",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.tsuzuri" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.tsuzuri" } },
+      "patterns": [
+        {
+          "name": "constant.other.format-spec.tsuzuri", "begin": ":(?!:)", "end": "(?=\\}|\"|$)",
+          "beginCaptures": { "0": { "name": "punctuation.separator.format-spec.tsuzuri" } }
+        },
+        { "include": "#interpolationGroup" },
+        { "include": "$self" }
+      ]
+    },
+    "interpolationGroup": {
+      "patterns": [
+        { "begin": "\\(", "end": "\\)|$", "patterns": [{ "include": "#interpolationGroup" }, { "include": "$self" }] },
+        { "begin": "\\[\\|", "end": "\\|\\]|$", "patterns": [{ "include": "#interpolationGroup" }, { "include": "$self" }] },
+        { "begin": "\\[", "end": "\\]|$", "patterns": [{ "include": "#interpolationGroup" }, { "include": "$self" }] },
+        { "begin": "\\{", "end": "\\}|$", "patterns": [{ "include": "#interpolationGroup" }, { "include": "$self" }] }
       ]
     },
     "escape": { "name": "constant.character.escape.tsuzuri", "match": "\\\\(?:u\\{[0-9a-fA-F]+\\}|u[0-9a-fA-F]{4}|.)" }

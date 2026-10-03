@@ -7,9 +7,9 @@
 | 規模 | M |
 | 依存 | A07, C02, C06 |
 | 後続 | D08 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2。F08 の SIMD によるグループ探索を除く） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | Phase 1 は不要（std 名 `HashMap`／`HashSet` は GUIDE D-30 の仮割り当てを使う）。Phase 2 は要承認: D11（seed 付きハッシュと乱数源。E08 `Random` とホストの seed 設定） |
+| 承認 | Phase 1 は不要。Phase 2 の D11 は、2026-10-03 に利用者から「E08 / C09 / D07 の実装を完遂して」「なんらかの判断が必要な場合には、あなたが考えられる最高の選択をすることを常に許可します」と依頼され、承認として扱った（選んだ内容は「実装と検証」に記録）。 |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: 連想コンテナが挿入・削除 O(n) の順序付き Map だけ（C# `Dictionary`、Rust `HashMap`、C++ `unordered_map` 相当がない） |
 | 手本にする既存実装 | 不透明な std record と Vec の上の実装: `std/Map.tz`（`private record Entry`、`record Map`、`lower_bound` の反射性 `assert`、`insert` の `Vec.swap`／`Vec.pop`／`Vec.push` による代表値の保持、`fold`、`iter_from`／`iter`）、`std/Set.tz`。登録: `src/stdlib.rs` の `SOURCES`・`RESERVED_MODULES`・`opaque_record`。検査: `tests/map_set.rs` の `ordered_containers_are_opaque_noncopy_owned_values`。E2E: `tests/fixtures/map_set/Main.tz` と `tests/features.mjs` の `map_set` suite（JavaScript `Map` の参照と `inspect`） |
 | 主な影響ファイル | `std/HashMap.tz`（新規）, `std/HashSet.tz`（新規）, `src/stdlib.rs`（`SOURCES`, `RESERVED_MODULES`, `opaque_record`, テスト `reserves_the_d07_table`）, `tests/hash_map.rs`（新規）, `tests/fixtures/hash_map/Main.tz`（新規）, `tests/features.mjs`（suite `hash_map`（新規））, `docs/language.md`（`### Map / Set` の直後に `### HashMap / HashSet`（新規））, `docs/architecture.md`, `_docs/library-reference/hash-map.md`（新規）, `_docs/library-reference/README.md`, `_docs/library-reference/map-set.md`, `_docs/library-reference/api/`（`tsuzuri doc` で再生成）, `_docs/README.md`, `_docs/feature-status.md`, `_features/README.md`, `_features/GUIDE.md`（D-07 の表と D-30 の行） |
@@ -766,7 +766,7 @@ fn hash_ops count seed =
 - 決定: Phase 2 で SipHash-1-3 などの鍵付きハッシュを、`Hash` の canonical ストリームへ鍵を与えて計算する経路として足す。seed は E08 の `Random`
   （native は OS 乱数。取得失敗はトラップし、固定 seed へ黙って置き換えない）、WASM ではホストの明示的な opt-in で設定する。順序は D2 のままで seed に依存しない。
 - 理由: 新しいホスト機能と `Builtin`（鍵付きハッシュ）を要し、D-18・D-30 に触れる。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-03。実装で選んだ内容は「実装と検証」）
 
 ### D12: HashSet の表現
 
@@ -779,3 +779,51 @@ fn hash_ops count seed =
 - 決定: `HashMap`・`HashSet` を `RESERVED_MODULES` に足し、GUIDE D-30 の仮割り当てを D-07 の表へ移す。
 - 理由: std のモジュール名は予約する規則（GUIDE D-07）。HEAD のテスト・例・文書に同名の利用者モジュールはない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-03）
+
+「E08 / C09 / D07 の実装を完遂して。複数フェーズある場合にはすべてのフェーズを完了させること」「なんらかの判断が必要な場合には、あなたが考えられる最高の選択をすることを常に許可します」との依頼で、
+Phase 1 と Phase 2（seed 付きハッシュ・借用キーでの検索）を実装した。着手時の HEAD は `be3d13a`（ブランチ `Phase6-6`）。D11 を承認として扱った。
+実装しなかったもの: F08 の SIMD によるグループ探索（F08 が todo。Phase 2 の設計方針のうち依存先のないものだけを実装した）。性能は主張しない（計測していない）。
+
+### 実装
+
+- Phase 1: `std/HashMap.tz`・`std/HashSet.tz`（新規）。コンパイラの変更は `src/stdlib.rs` の登録（`SOURCES`、`RESERVED_MODULES`、`opaque_record` の `HashMap.HashMap`・`HashMap.Entry`・`HashSet.HashSet`）だけ。
+  `HashMap<'key, 'value>` は entry の密な `Vec` と `Vec<i64>` の添字表（線形探査、2 の冪、最大負荷率 1/2、後方シフト削除、墓標なし）を持ち、entry は混合後のハッシュを保存する。
+  混合関数は fmix64。反復順序は挿入順で、削除は swap-remove。`HashSet` は `HashMap<'key, unit>` へ委譲する。
+- Phase 2（コンパイラの変更なし。すべて `std/HashMap.tz`・`std/HashSet.tz`）:
+  - seed: `HashMap.with_seed`・`with_capacity_and_seed`（`seed: i64u`）、`HashSet` の同名の関数。seed 付きの map は `Hash.hash` を、seed から SplitMix64 で作った 128 bit の鍵の SipHash-1-3 で仕上げる。
+    map の record は鍵と `keyed` を隠した field に持ち、`insert`／`remove` は引き継ぐ。`HashMap.sip13` は純粋関数として公開した。
+  - OS の seed: `HashMap.randomized ()`・`try_randomized ()`（`HashSet` も）。E08 の `Random.next_u64` を使う IO の action で、取得失敗は報告（`try_`）かトラップ（`randomized`）で、固定 seed へ黙って置き換えない。
+    OS API なので既定の wasm32 は `E2000`、native と `--wasm-host wasi` で動く。
+  - 借用キー: `HashMap.contains_key_ref`・`get_ref`・`at_ref`・`remove_ref`、`HashSet.contains_ref`・`remove_ref`（`ref 'key`）。`at_ref` は region の契約（`{r s}`）で、結果が map だけを借用する。
+  - 診断: `HashMap.longest_probe`・`HashSet.longest_probe`（理想の位置から最も離れた entry の距離。空は 0）。
+- 文書: `docs/language.md`（「HashMap / HashSet」節）、`docs/architecture.md`、`README.md`、`_docs/library-reference/hash-map.md`（新規）・`map-set.md`・`README.md`・`api/HashMap.md`・`api/HashSet.md`（再生成）、`_docs/README.md`、`_docs/feature-status.md`、
+  `_docs/learn/why-tsuzuri.md`、`_features/README.md`、`_features/GUIDE.md`（D-07・D-30・D-32）。
+- テスト: `tests/hash_map.rs`（6 件）、`tests/fixtures/hash_map/Main.tz`、`tests/features.mjs` の suite `hash_map`（192 ケース）、`tests/os_api.rs`（seed 付きは OS runtime が要らず、`randomized` は要る）、`tests/os.mjs` の `randommaps`（native・WASI・既定の wasm32 の `E2000`）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D11 は鍵付きの仕上げ。** 起票時の「`Hash` の canonical ストリームへ鍵を与える」は、`Hash.hash`（FNV-1a の 64 bit digest）の仕上げ段（fmix64 の代わり）に SipHash-1-3 を置く形にした。
+   `Hash.hash` の値と instance の契約を変えず、新しい `Builtin` も要らない。順序は D2 のままで seed に依存しない（seed 付きの結果は seed なしの参照と一致することをテストした）。
+2. **HashDoS への耐性は部分的。** 鍵付きの仕上げで、固定の混合関数に対して「同じ slot に集まるよう選んだキー」の洪水は効かなくなる。測定: そのようなキー 600 個を入れた最長の探査は seed なしで 599、seed 付きで 2〜13（seed 0〜199 の 200 通り）。
+   一方、64 bit の `Hash.hash` の digest そのものが衝突するキー（FNV-1a は鍵付きではない）は seed でも衝突し続ける。seed は推測できないものを使う（`randomized`）。文書に書いた。
+3. **SipHash-1-3 の検証。** 実装は `HashMap.sip13`（8 byte の入力の特化）で、テストの参照は BigInt の独立した SipHash-c-d。この参照が公式の SipHash-2-4 のテストベクタ（空入力・1 byte・15 byte）と一致することを `tests/features.mjs` の読み込み時に確かめる。
+4. **`at_ref` の region。** 呼び出し側の `at map key` が `at_ref map (ref key)` を呼ぶとき、既定の規則では結果がキーも借用すると見なされ `E1013` になるため、`at_ref {r s}` で結果を map の region にだけ結ぶ。
+5. **予約モジュール。** `HashMap`・`HashSet` を足し 21 から 23（E08 の後は 31、D07 の `Format` で 32）。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Homebrew LLVM 21、rustc 1.98.1、Node v20.17.0）
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked`（609 passed、0 failed）が成功。GUIDE §3.1 の 4 つの深さの回帰テストは既定の stack で成功。`sh scripts/check-runtime-includes.sh` は 26 files。
+- `tests/hash_map.rs` 6 件、`tests/os_api.rs`（seed 付きの container は OS runtime を要求せず、`randomized` は要求する）。
+- `node tests/features.mjs target/release/tsuzuri hash_map`（192 ケース）が native・WASM × `-O0`／`-O3` で成功し、`TSUZURI_TEST_WASM_TARGET=wasm64`（Node 24）でも成功。解放追跡（`live == 0`）と WASM の import なしを確認。
+  seed 付きの結果は seed によらず seed なしの参照と一致し、`sip13` は独立した BigInt の参照と 39 通りの入力で一致し、借用キーの操作、フラッド（600 キーで最長の探査は seed なし 599、seed 付き 2〜13）も検査する。
+- `tests/os.mjs` の `randommaps`: `HashMap.randomized` が native と WASI で動き、既定の wasm32 は `E2000`。
+- 既存の E2E が成功: `features`（5232 ケース）、`e2e`・`primitives`・`tasks`・`computations`・`control`・`numeric_casts`・`examples`・`io`・`strings`・`display_parse`・`user_drop`・`ffi_extensions`・`host_imports`・`cache`・`docgen`・`lsp_sessions`・`trap_boundary`・`trap_return`・`stack_overflow`・`wasm_memory`・`wasm_simd`・`wasm_threads`・`simd`・`cpu_dispatch`・`gpu`、Node 24 の `wasm64`。
+  `debug_info` は `-O3` の object の `llvm-dwarfdump --verify`（Name Index）で失敗するが、変更前の HEAD のコンパイラでも同じ失敗で、この変更とは無関係（この環境の既知の問題）。
+- 既存 IR の不変: fixtures と examples の 153 個の IR（native・wasm32・`-O3`）で、利用者の関数の本体は、生成 id と metadata 番号の付け替えを除いて HEAD と一致した。差は std の追加による id のずれと、D07 D9 の `numeric.ll`／`math.ll` の再生成だけ。
+- `node scripts/check-docs.mjs`（97 ページ、849 リンク、181 例、native 296 回、test 9 projects）が成功。
+
+### 見つけた問題・残作業
+
+- F08 の SIMD によるグループ探索は F08 の後。`HashMap` の縮小（`shrink_to_fit`）、集合演算、`singleton`、`pop` は対象外のまま。

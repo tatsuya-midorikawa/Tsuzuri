@@ -1,6 +1,6 @@
 # Tsuzuri ドキュメント
 
-Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み合わせたプログラミング言語です。Rust 製のコンパイラから LLVM IR を生成し、ネイティブ実行ファイルと WebAssembly にコンパイルします。計算を Tsuzuri に、画面・ファイル・ネットワークなどの外部との接続をホストに分けて構成します。
+Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み合わせたプログラミング言語です。Rust 製のコンパイラから LLVM IR を生成し、ネイティブ実行ファイルと WebAssembly にコンパイルします。計算を Tsuzuri に、画面・ネットワークなどの外部との接続をホストに分けて構成します。ファイル・環境・時刻・乱数・プロセスは標準の OS API でも扱えます。
 
 このドキュメントは **Tsuzuri 0.1.0 の現在の実装**を対象とする日本語の利用者向けガイドです。構文だけでなく、評価順序、値の所有権、失敗時の動作、対応ターゲットを説明します。設計目標は実装済み機能と区別します。
 
@@ -29,9 +29,10 @@ Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み
 
 [標準ライブラリと組み込み API](library-reference/README.md)に引数順、型制約、所有権、境界条件をまとめています。
 
-- [Option / Result](library-reference/option-result.md)、[Array / List / スライス](library-reference/arrays-and-lists.md)、[Vec](library-reference/vec.md)、[Map / Set](library-reference/map-set.md)、[Seq](library-reference/sequences.md)
+- [Option / Result](library-reference/option-result.md)、[Array / List / スライス](library-reference/arrays-and-lists.md)、[Vec](library-reference/vec.md)、[Map / Set](library-reference/map-set.md)、[HashMap / HashSet](library-reference/hash-map.md)、[Seq](library-reference/sequences.md)
 - [文字列 API](library-reference/text.md)、[Math と順序付き集計](library-reference/math.md)、[Int](library-reference/integers.md)、[表示と解析](library-reference/formatting-and-parsing.md)
 - [IO と標準入出力](library-reference/io.md): IO アクション、対話入力、EOF と失敗、native / WASM の接続。
+- [OS API](library-reference/os.md): ファイル、ディレクトリ、パス、環境、時刻、乱数、プロセス、終了コード。native と `--wasm-host wasi`。
 - [Parallel](library-reference/parallel.md)、[Simd](library-reference/simd.md)、[基本組み込み・Debug・Test](library-reference/builtins.md)
 - [std のソース宣言一覧](library-reference/api/index.md): 自動生成の補助資料。組み込み API と不透明型の制約は解説を併用します。
 
@@ -41,7 +42,7 @@ Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み
 - [開発ツール](tools/README.md): CLI、診断、テスト、fmt / LSP、デバッグ、文書生成、cache。
 - [全機能の対応状況](feature-status.md): 全93機能チケット（第2期の計画38件を含む）と詳細記事の対応、部分対応と未実装。
 
-GPU は実験的な CPU 参照・WGSL・WebGPU host の段階です。Windows の実装はありますが、Windows 上の実行検証は未完了です。将来の計画を現在の提供機能として扱わないでください。
+GPU は実験的な CPU 参照・WGSL・WebGPU host の段階です。Windows の実装はありますが、Windows 上の実行検証は未完了で、OS API は Windows の native では使えません。将来の計画を現在の提供機能として扱わないでください。
 
 ## この言語の前提
 

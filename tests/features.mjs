@@ -27,7 +27,8 @@ function execute(program, args, success = true) {
   return result;
 }
 const cli = (args) => execute(compiler, args);
-const cValue = (n) => typeof n !== "bigint" ? String(n)
+const cValue = (n) => typeof n !== "bigint"
+  ? (Object.is(n, -0) ? "-0.0" : Number.isNaN(n) ? "NAN" : n === Infinity ? "INFINITY" : n === -Infinity ? "(-INFINITY)" : String(n))
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`
     : n > max ? `UINT64_C(${n})` : `INT64_C(${n})`;
 
@@ -46,6 +47,266 @@ function orderedReferences(count, seed, bits) {
   }
   return [total, level[0] ?? 0, rounded(total + correction), dot];
 }
+
+// Reference for HashMap/HashSet iteration order: new keys append, replacement keeps
+// the position, and removal moves the last entry into the hole (swap-remove).
+function insertionTable() {
+  const keys = [], values = [], index = new Map();
+  return {
+    keys, values, get: (key) => index.get(key),
+    set(key, value) {
+      const at = index.get(key);
+      if (at === undefined) { index.set(key, keys.length); keys.push(key); values.push(value); } else values[at] = value;
+    },
+    remove(key) {
+      const at = index.get(key);
+      if (at === undefined) return;
+      const last = keys.length - 1;
+      keys[at] = keys[last]; values[at] = values[last]; index.set(keys[at], at);
+      keys.pop(); values.pop(); index.delete(key);
+    },
+  };
+}
+
+function hashOps(count, seed, set) {
+  const table = insertionTable(), wrap = (value) => BigInt.asIntN(64, value);
+  let state = seed, acc = 0n;
+  for (let step = 0n; step < count; step++) {
+    state = wrap(state * 6364136223846793005n + 1442695040888963407n);
+    const r = BigInt.asUintN(64, state) >> 33n, key = (r >> 3n) % 4099n * 8n - 16000n, op = r % 8n;
+    if (op < 4n) table.set(key, step);
+    else if (op < 6n) table.remove(key);
+    else { const at = table.get(key); acc = wrap(acc * 31n + (at === undefined ? 7n : set ? 1n : table.values[at])); }
+  }
+  return table.keys.reduce((total, key, position) => wrap(total * 31n + key * 7n + (set ? 0n : table.values[position])),
+    wrap(acc * 1000003n + BigInt(table.keys.length)));
+}
+
+// SipHash-c-d reference over bytes (BigInt arithmetic, written from the published algorithm).
+// Its self-check below uses the official SipHash-2-4 test vectors for the key 00 01 .. 0f.
+function siphash(compression, finalization, key0, key1, bytes) {
+  const mask = (1n << 64n) - 1n, rotate = (x, bits) => ((x << BigInt(bits)) | (x >> BigInt(64 - bits))) & mask;
+  let v0 = key0 ^ 0x736f6d6570736575n, v1 = key1 ^ 0x646f72616e646f6dn, v2 = key0 ^ 0x6c7967656e657261n, v3 = key1 ^ 0x7465646279746573n;
+  const round = () => {
+    v0 = (v0 + v1) & mask; v1 = rotate(v1, 13); v1 ^= v0; v0 = rotate(v0, 32);
+    v2 = (v2 + v3) & mask; v3 = rotate(v3, 16); v3 ^= v2;
+    v0 = (v0 + v3) & mask; v3 = rotate(v3, 21); v3 ^= v0;
+    v2 = (v2 + v1) & mask; v1 = rotate(v1, 17); v1 ^= v2; v2 = rotate(v2, 32);
+  };
+  const end = bytes.length - bytes.length % 8;
+  const absorb = (word) => { v3 ^= word; for (let step = 0; step < compression; step++) round(); v0 ^= word; };
+  for (let index = 0; index < end; index += 8) {
+    let word = 0n;
+    for (let byte = 7; byte >= 0; byte--) word = (word << 8n) | BigInt(bytes[index + byte]);
+    absorb(word);
+  }
+  let last = BigInt(bytes.length & 0xff) << 56n;
+  for (let byte = bytes.length % 8 - 1; byte >= 0; byte--) last |= BigInt(bytes[end + byte]) << BigInt(8 * byte);
+  absorb(last);
+  v2 ^= 0xffn;
+  for (let step = 0; step < finalization; step++) round();
+  return (v0 ^ v1 ^ v2 ^ v3) & mask;
+}
+const sipKey0 = 0x0706050403020100n, sipKey1 = 0x0f0e0d0c0b0a0908n;
+assert.equal(siphash(2, 4, sipKey0, sipKey1, []), 0x726fdb47dd0e0e31n);
+assert.equal(siphash(2, 4, sipKey0, sipKey1, [0]), 0x74f839c593dc67fdn);
+assert.equal(siphash(2, 4, sipKey0, sipKey1, Array.from({ length: 15 }, (_, byte) => byte)), 0xa129ca6149be45e5n);
+
+// SipHash-1-3 of the eight little-endian bytes of a word: the keyed finalizer of HashMap.with_seed.
+function sip13Word(key0, key1, message) {
+  const word = BigInt.asUintN(64, message);
+  const bytes = Array.from({ length: 8 }, (_, byte) => Number((word >> BigInt(8 * byte)) & 0xffn));
+  return BigInt.asIntN(64, siphash(1, 3, BigInt.asUintN(64, key0), BigInt.asUintN(64, key1), bytes));
+}
+
+function sip13Inputs() {
+  const inputs = [[0n, 0n, 0n], [1n, 2n, 3n], [-1n, -1n, -1n], [0n, 0n, -1n], [-1n, 0n, 0n], [0n, -1n, 0n],
+    [BigInt.asIntN(64, sipKey0), BigInt.asIntN(64, sipKey1), BigInt.asIntN(64, sipKey0)]];
+  let state = 88172645463325252n;
+  const next = () => { state = BigInt.asUintN(64, state * 6364136223846793005n + 1442695040888963407n); return BigInt.asIntN(64, state ^ (state >> 29n)); };
+  for (let index = 0; index < 32; index++) inputs.push([next(), next(), next()]);
+  return inputs;
+}
+
+function hashBorrowedKeys(count) {
+  const wrap = (value) => BigInt.asIntN(64, value);
+  let sum = 0n, found = 0n;
+  for (let index = 0n; index < 2n * count; index++) {
+    const present = index < count;
+    if (present) found++;
+    sum = wrap(sum * 31n + (present ? index * 3n : -1n));
+    if (present) sum = wrap(sum + index * 3n);
+  }
+  return wrap(sum * 1000003n + found * 1009n + count / 2n * 7n);
+}
+
+const hashSetBorrowedKeys = (count) => count * 1000003n + count / 2n * 1009n + count / 2n;
+
+function hashStrings(count) {
+  const table = insertionTable(), wrap = (value) => BigInt.asIntN(64, value);
+  for (let index = 0; index < count; index++) table.set(String(index % 9), String(index));
+  table.remove("3");
+  return BigInt(table.keys.length) * 100000n + table.values.reduce((total, value) => wrap(total * 7n + BigInt(value.length)), 0n);
+}
+
+function hashCollisions(count) {
+  let total = 0n, length = 0n;
+  for (let index = 0n; index < count; index++) if (index % 3n !== 0n) { total += index; length++; }
+  return total * 1000n + length;
+}
+
+// References for string interpolation. Numbers are formatted from exact BigInt
+// rationals with a single round-half-even step, never with host float printing.
+const interpolationDigest = (text) => {
+  let hash = 0n;
+  for (let index = 0; index < text.length; index++) hash = (hash * 131n + BigInt(text.charCodeAt(index))) % 1000000007n;
+  return hash;
+};
+const interpolationPad = (text, width, align, fill = " ") => {
+  const missing = Math.max(width - [...text].length, 0);
+  const before = align === "right" ? missing : align === "center" ? Math.floor(missing / 2) : 0;
+  return fill.repeat(before) + text + fill.repeat(missing - before);
+};
+
+// References for the Format module and for Format instances: the spec grammar
+// [[fill]align][+][width][.precision][type] read over Unicode scalars. A fill is any scalar but { } " \ CR LF
+// (the lexer's rule), so half of a surrogate pair is no fill, and a precision has no leading zero except ".0".
+function parseFormatSpec(text) {
+  const scalars = [...text], aligns = { "<": "left", "^": "center", ">": "right" };
+  const isFill = (scalar) => !["{", "}", "\"", "\\", "\r", "\n"].includes(scalar) && !(scalar.length === 1 && scalar >= "\uD800" && scalar <= "\uDFFF");
+  let index = 0, fill = " ", align = "auto";
+  if (scalars.length >= 2 && Object.hasOwn(aligns, scalars[1])) {
+    if (!isFill(scalars[0])) return null;
+    fill = scalars[0]; align = aligns[scalars[1]]; index = 2;
+  }
+  else if (scalars.length >= 1 && Object.hasOwn(aligns, scalars[0])) { align = aligns[scalars[0]]; index = 1; }
+  const plus = scalars[index] === "+";
+  if (plus) index++;
+  const digits = () => {
+    let value = 0n, count = 0;
+    while (index < scalars.length && scalars[index].length === 1 && scalars[index] >= "0" && scalars[index] <= "9") {
+      value = value * 10n + BigInt(scalars[index]); index++; count++;
+    }
+    return [value, count];
+  };
+  const leadingZero = scalars[index] === "0";
+  const [width] = digits();
+  let precision = -1n, valid = width <= 4096n && !leadingZero;
+  if (scalars[index] === ".") {
+    index++;
+    const start = index;
+    const [value, count] = digits();
+    valid = valid && count > 0 && value <= 4096n && !(scalars[start] === "0" && count > 1);
+    precision = value;
+  }
+  let kind = "plain";
+  if (index < scalars.length && ["x", "X", "o", "b", "e", "f"].includes(scalars[index])) kind = scalars[index++];
+  return valid && index === scalars.length ? { fill, align, plus, width, precision, kind } : null;
+}
+const describeFormatSpec = (text) => {
+  const spec = parseFormatSpec(text);
+  return spec ? `fill=${spec.fill} align=${spec.align} plus=${spec.plus} width=${spec.width} precision=${spec.precision} kind=${spec.kind}` : "none";
+};
+const formatParseSpecs = ["", ">", "<5", "^7", "*>+8.2f", "\u{1F600}^4", "\u00e9<3", ">>5", "<<<", "+", "+5", "08", "0", "5", ".3e", ".", ".x",
+  "x", "X", "o", "b", "e", "f", "4096", "4097", "99999999999", "+.2f", "-^6.1e", "q", "5x7", " >2", "5>", "\uD800<2", "\u{1F600}>+10.4X", "<+",
+  ".5.5", "++", "x ", "^^^^", "\"<2", "\\<2", "{<2", "}<2", "\n<2", "\r<2", "\uD83D<2", "\uDE00>3", "\uD83D\uDE00<2", "'<2", "/>3", "0>5", "+<2",
+  "|^6", ".05", ".00", ".0", ".0f"];
+const formatPadSpecs = ["", "5", "<5", ">5", "^5", "*^7", "-^6", "\u{1F600}>4", "<3", "^2", "8", ">1", "^8", "*<9"];
+const formatPadTexts = ["", "ab", "\u00e9\u{1F600}", "\uD800", "abcdef", "\u{1F600}\u{1F600}", "x"];
+const formatPadReference = () => formatPadSpecs.flatMap((specText) => formatPadTexts.map((text) => {
+  const spec = parseFormatSpec(specText);
+  return spec ? `${interpolationPad(text, Number(spec.width), spec.align, spec.fill)}|` : "invalid|";
+})).join("");
+// The Point instance of the fixture: sign and precision are shown, the rest is padded by Format.pad.
+const formatPoint = (specText, x = 3n, y = -4n) => {
+  const spec = parseFormatSpec(specText);
+  assert.ok(spec, specText);
+  const body = `${spec.plus ? "+" : ""}${x},${y}${spec.precision >= 0n ? `.${spec.precision}` : ""}`;
+  return interpolationPad(body, Number(spec.width), spec.align, spec.fill);
+};
+const formatInstancesReference = () => [formatPoint(">10"), formatPoint("<10"), formatPoint("^10"), formatPoint("+"), formatPoint(".2"),
+  formatPoint("*>+12.1f"), "L[x]", "D[>3]", `box(${formatPoint("^9.1e")})`, formatPoint("+", 0n, 1n)].join("|");
+const roundHalfEven = (numerator, denominator) => {
+  const quotient = numerator / denominator, twice = 2n * (numerator % denominator);
+  return twice > denominator || (twice === denominator && quotient % 2n === 1n) ? quotient + 1n : quotient;
+};
+const pow10 = (exponent) => 10n ** BigInt(exponent);
+const floorLog = (numerator, denominator, base) => {
+  const atLeast = (power) => power >= 0 ? numerator >= denominator * base ** BigInt(power) : numerator * base ** BigInt(-power) >= denominator;
+  let power = numerator.toString(base === 2n ? 2 : 10).length - denominator.toString(base === 2n ? 2 : 10).length;
+  while (!atLeast(power)) power--;
+  while (atLeast(power + 1)) power++;
+  return power;
+};
+function fixedDigits(numerator, denominator, precision) {
+  const scaled = roundHalfEven(numerator * pow10(precision), denominator);
+  if (precision === 0) return scaled.toString();
+  const digits = scaled.toString().padStart(precision + 1, "0");
+  return `${digits.slice(0, -precision)}.${digits.slice(-precision)}`;
+}
+function exponentDigits(numerator, denominator, precision) {
+  if (numerator === 0n) return `0${precision ? `.${"0".repeat(precision)}` : ""}e0`;
+  let exponent = floorLog(numerator, denominator, 10n);
+  const scale = precision - exponent;
+  let scaled = scale >= 0 ? roundHalfEven(numerator * pow10(scale), denominator) : roundHalfEven(numerator, denominator * pow10(-scale));
+  if (scaled >= pow10(precision + 1)) { scaled /= 10n; exponent++; }
+  const digits = scaled.toString();
+  return `${digits[0]}${precision ? `.${digits.slice(1)}` : ""}e${exponent}`;
+}
+// Nearest binary value with `precision` significant bits and minimum exponent `emin`.
+function nearestBinary(numerator, denominator, precision, emin) {
+  const quantum = Math.max(floorLog(numerator, denominator, 2n) - (precision - 1), emin);
+  const scaled = quantum >= 0 ? roundHalfEven(numerator, denominator << BigInt(quantum)) : roundHalfEven(numerator << BigInt(-quantum), denominator);
+  return quantum >= 0 ? { negative: false, numerator: scaled << BigInt(quantum), denominator: 1n } : { negative: false, numerator: scaled, denominator: 1n << BigInt(-quantum) };
+}
+function doubleValue(value) {
+  if (Number.isNaN(value)) return { special: "nan" };
+  const negative = value < 0 || Object.is(value, -0);
+  if (!Number.isFinite(value)) return { special: "inf", negative };
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, Math.abs(value));
+  const bits = view.getBigUint64(0), biased = Number((bits >> 52n) & 0x7ffn), fraction = bits & ((1n << 52n) - 1n);
+  const coefficient = biased ? fraction | (1n << 52n) : fraction, exponent = (biased || 1) - 1075;
+  return exponent >= 0 ? { negative, numerator: coefficient << BigInt(exponent), denominator: 1n } : { negative, numerator: coefficient, denominator: 1n << BigInt(-exponent) };
+}
+function floatSpec(value, { plus = false, precision, style = "fixed" }) {
+  if (value.special === "nan") return "nan";
+  const sign = value.negative ? "-" : plus ? "+" : "";
+  if (value.special === "inf") return `${sign}inf`;
+  return sign + (style === "fixed" ? fixedDigits(value.numerator, value.denominator, precision) : exponentDigits(value.numerator, value.denominator, precision));
+}
+function floatInterpolation(value) {
+  return [
+    floatSpec(value, { precision: 0 }), floatSpec(value, { precision: 2 }), floatSpec(value, { precision: 17 }),
+    floatSpec(value, { plus: true, precision: 3 }), floatSpec(value, { precision: 0, style: "exponent" }),
+    floatSpec(value, { precision: 3, style: "exponent" }), floatSpec(value, { precision: 16, style: "exponent" }),
+    interpolationPad(floatSpec(value, { precision: 1 }), 12, "right"),
+  ].join("|");
+}
+function integerInterpolation(value) {
+  const sign = value < 0n ? "-" : "", magnitude = value < 0n ? -value : value;
+  const hex = magnitude.toString(16);
+  return [
+    sign + hex, sign + hex.toUpperCase(), sign + magnitude.toString(8), sign + magnitude.toString(2), value < 0n ? value.toString() : `+${value}`,
+    interpolationPad(value.toString(), 25, "right"), interpolationPad(value.toString(), 25, "center", "*"), interpolationPad(value.toString(), 25, "right", "0"),
+  ].join("|");
+}
+function wideInterpolation(kind) {
+  const exact = {
+    0: nearestBinary(1n, 10n, 11, -24), 1: nearestBinary(1n, 10n, 113, -16494),
+    2: { negative: false, numerator: 125n, denominator: 1000n }, 3: { negative: false, numerator: 25n, denominator: 10n },
+    4: { negative: false, numerator: 1n, denominator: pow10(30) },
+  }[kind];
+  return [floatSpec(exact, { precision: 3 }), floatSpec(exact, { precision: 20 }), floatSpec(exact, { precision: 2, style: "exponent" })].join("|");
+}
+const interpolationOwnedLoop = (count) => {
+  let total = 0n;
+  for (let index = 0n; index < count; index++) total += BigInt(`${index}:ab`.length);
+  return total;
+};
+const interpolationDoubles = [0, -0, 0.1, 0.125, 0.375, 2.5, 3.5, 1e21, 1e-7, 5e-324, 1.7976931348623157e308, Infinity, -Infinity, NaN];
+const interpolationSingles = [0, -0, 0.1, 0.125, 0.375, 2.5, 3.5, 1e21, 1e-7, 1.401298464324817e-45, 3.4028234663852886e38, Infinity, -Infinity, NaN];
+const interpolationIntegers = [min, -255n, -1n, 0n, 1n, 42n, max];
 
 // Each suite is a fixture directory whose exports are called with the listed
 // arguments. Native hosts track every allocation, so each call must leave no
@@ -163,6 +424,76 @@ const suites = {
       const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Map\.(?:lower_bound|found|get|at|contains_key)[^\n]*\{([\s\S]*?)^\}/gm)];
       assert.ok(lookups.length > 0);
       for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+    },
+  },
+  hash_map: {
+    cases: [
+      ...[0n, 1n, 2n, 7n, 8n, 9n, 100n, 1000n, 100000n].flatMap((count) => [1n, 2n, -3n].flatMap((seed) => [
+        ["hash_ops", [count, seed], hashOps(count, seed, false)],
+        ["hash_set_ops", [count, seed], hashOps(count, seed, true)],
+      ])),
+      // A seed changes only the table layout: results and iteration order match the unseeded map.
+      ...[0n, 1n, 9n, 100n, 1000n].flatMap((count) => [0n, 5n, -2n].flatMap((tableSeed) => [
+        ["hash_seeded_ops", [count, 1n, tableSeed], hashOps(count, 1n, false)],
+        ["hash_seeded_capacity_ops", [count, 2n, tableSeed], hashOps(count, 2n, false)],
+        ["hash_set_seeded_ops", [count, 1n, tableSeed], hashOps(count, 1n, true)],
+        ["hash_set_seeded_capacity_ops", [count, -3n, tableSeed], hashOps(count, -3n, true)],
+      ])),
+      ...sip13Inputs().map(([key0, key1, message]) => ["hash_sip13", [key0, key1, message], sip13Word(key0, key1, message)]),
+      ...[0n, 1n, 7n, 100n, 1000n].flatMap((count) => [
+        ["hash_borrowed_keys", [count], hashBorrowedKeys(count)],
+        ["hash_set_borrowed_keys", [count], hashSetBorrowedKeys(count)],
+      ]),
+      ...[0n, 1n, -1n, 123456789n].map((tableSeed) => ["hash_flood", [tableSeed], 1n]),
+      ["hash_empty_probe", [], 0n],
+      ...[0n, 1n, 9n, 12n, 20n, 257n].map((count) => ["hash_strings", [count], hashStrings(count)]),
+      ...[0n, 1n, 3n, 40n, 100n, 1000n].map((count) => ["hash_collisions", [count], hashCollisions(count)]),
+      ...[0n, 1n, 7n, 8n, 9n, 1000n].map((count) => ["hash_capacity", [count], count]),
+      ["hash_iter_order", [], 58732n], ["first_representative", [], 1], ["owned_record_keys", [], 42n],
+      ["hash_capture", [], 84n], ["hash_borrowed_values", [], 8n], ["hash_task_drop", [], 0n],
+    ],
+    traps: [["hash_at_missing", []], ["hash_nan_insert", []], ["hash_nan_query_empty", []], ["hash_set_nan", []],
+      ["hash_capacity_negative", []], ["hash_capacity_huge", []]],
+    inspect(ir) {
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.HashMap\.(?:mix|sip13|sip_round|hash_of|probe|find|contains_key|get|at)[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(lookups.length > 0);
+      for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+    },
+  },
+  string_interpolation: {
+    cases: [
+      ["basic_holes", [], 34n], ["borrowed_holes", [], 15n], ["evaluation_order", [], 123003n], ["utf8_holes", [], 11n],
+      ["nested_literals", [], 1], ["display_instance", [], 7n],
+      ...[-5n, 0n, 41n].map((n) => ["temporaries", [n], interpolationDigest(`${n + 1n}|abc|42`)]),
+      ...[0n, 1n, 1000n].map((count) => ["owned_loop", [count], interpolationOwnedLoop(count)]),
+      ...interpolationIntegers.map((v) => ["spec_integer", [v], interpolationDigest(integerInterpolation(v))]),
+      ...interpolationIntegers.map((v) => ["spec_unsigned", [v], interpolationDigest(
+        [BigInt.asUintN(64, v).toString(16), `+${BigInt.asUintN(64, v)}`, BigInt.asUintN(64, v).toString(2),
+          interpolationPad(BigInt.asUintN(64, v).toString(), 22, "center")].join("|"))]),
+      ...[min, -255n, -129n, -128n, -1n, 0n, 1n, 127n, 128n, 255n, 65535n, 65536n, 70000n, max].map((v) => {
+        const narrow = BigInt.asIntN(8, v), wide = BigInt.asUintN(16, v), sign = narrow < 0n ? "-" : "", magnitude = narrow < 0n ? -narrow : narrow;
+        return ["spec_narrow", [v], interpolationDigest(`${sign}${magnitude.toString(16)}|${sign}${magnitude.toString(2)}|${wide.toString(16).toUpperCase()}|${wide.toString(8)}`)];
+      }),
+      ["spec_i128_min", [], interpolationDigest(`-${(1n << 127n).toString(16)}|-${(1n << 127n)}|-${(1n << 127n).toString(2)}`)],
+      ...interpolationDoubles.map((x) => ["spec_f64", [x], interpolationDigest(floatInterpolation(doubleValue(x)))]),
+      ...interpolationSingles.map((x) => ["spec_f32", [x], interpolationDigest(floatInterpolation(doubleValue(Math.fround(x))))]),
+      ...[0n, 1n, 2n, 3n, 4n].map((k) => ["spec_wide", [k], interpolationDigest(wideInterpolation(Number(k)))]),
+      ["spec_padding", [], interpolationDigest([
+        interpolationPad("é😀", 5, "right", "*"), interpolationPad("\uD800", 3, "left"), interpolationPad("ab", 6, "center"),
+        interpolationPad("lab", 8, "right"), interpolationPad("true", 6, "left"), interpolationPad("x", 3, "center"),
+      ].join("|"))],
+      ["spec_utf8_padding", [], 31n],
+      ["format_instances", [], interpolationDigest(formatInstancesReference())],
+      ["format_instances_utf8", [], 17n], ["format_keeps_owners", [], 11n],
+      ["display_case_holes", [], interpolationDigest("QuietLoud")],
+      ["format_parse", [], interpolationDigest(formatParseSpecs.map((spec) => `${describeFormatSpec(spec)}|`).join(""))],
+      ["format_pad", [], interpolationDigest(formatPadReference())],
+    ],
+    traps: [["trap_utf8_surrogate", []], ["trap_display", []]],
+    inspect(ir) {
+      assert.match(ir, /@tz_soft_format_spec/);
+      assert.match(ir, /@tz\.format\./);
+      assert.doesNotMatch(ir, /@printf|@snprintf|@strtod|@strtof/);
     },
   },
   hierarchical: {

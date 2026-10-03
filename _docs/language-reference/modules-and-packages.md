@@ -59,8 +59,11 @@ dot で始まるファイル・ディレクトリは無視します。ソース�
 
 ```text
 Option Result Array List Vec String Utf8String Char Utf8Char Math Int
-Debug Parallel Simd Map Set Seq Test Gpu
+Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned
+File Dir Path Env Time Random Os Process Format
 ```
+
+利用者のソースがこれらの名前（たとえば `Path.tz` や `Format.tz`）をモジュール名にすると `E1011`（`reserved for the standard library`）で拒否します。
 
 ## ローカルパッケージ
 

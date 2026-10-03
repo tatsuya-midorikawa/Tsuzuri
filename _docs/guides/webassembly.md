@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-WASM は計算モジュールとして生成します。入出力を使わないプログラムでは WASI、.NET、JavaScript ランタイムの import は不要です。標準入出力には [IO](../library-reference/io.md) を使い、tsuzuri_io のホスト関数へ接続します。DOM、イベント、ファイル、ネットワークはホスト側で実装します。
+WASM は計算モジュールとして生成します。入出力を使わないプログラムでは WASI、.NET、JavaScript ランタイムの import は不要です。標準入出力には [IO](../library-reference/io.md) を使い、tsuzuri_io のホスト関数へ接続します。DOM、イベント、ネットワークはホスト側で実装します。ファイルや環境変数などの [OS API](../library-reference/os.md) は、既定の wasm32 では使えず、`--wasm-host wasi` で WASI に接続します（[OS API と WASI](#os-api-と-wasi)）。
 
 ## モジュールを作る
 
@@ -141,6 +141,38 @@ const imports = {
 
 table を export するのはコールバックを使うプログラムだけです。コールバックの中のトラップは `WebAssembly.RuntimeError` として export の呼び出し元へ伝わります。トラップした instance は使い続けず、[トラップを値として受け取る境界](#nodejs-から呼ぶ)で作り直します。
 
+## OS API と WASI
+
+[OS API](../library-reference/os.md)（`File`、`Dir`、`Env`、`Time`、OS の乱数、`Process`）は、既定の wasm32 では使えません。到達するビルドは、`wasm`・`llvm`・`object` のどの出力でも `E2000` で止まり、出力ファイルを書きません。wasm64 も同じです。`Path`、`Os` の純粋な補助関数、`Random.pcg` は OS に触れないので、import を増やさず動きます。
+
+ホストが WASI preview1 を提供するときは、`--wasm-host wasi` を付けます。標準入出力と OS API を `wasi_snapshot_preview1` の import へ下げ、到達した操作の import だけを出します（`tsuzuri_io` は import しません）。WASI SDK や wasi-libc は要りません。
+
+```text
+./target/release/tsuzuri build target/os-demo --target wasm32 --wasm-host wasi -o target/os-demo.wasm
+node --no-warnings tests/os-wasi-host.mjs target/os-demo.wasm /work target/os-demo-data
+```
+
+`target/os-demo/Main.tz` は [OS API の読んで書く例](../library-reference/os.md#読んで書く例)で、`target/os-demo-data/input.txt` を読み、`lines.txt` を書きます。`tests/os-wasi-host.mjs` は `node:wasi` を使う参照ホストで、モジュール、preopen の名前、その名前に割り当てるディレクトリ、プログラムの引数を順に取ります。自分のホストへ組み込むときは、`WASI` に `preopens` を渡し、`getImportObject()` と `start()` を使います。
+
+```javascript
+import { readFile } from "node:fs/promises";
+import { WASI } from "node:wasi";
+
+const wasi = new WASI({ version: "preview1", args: ["os-demo"], preopens: { "/work": "target/os-demo-data" } });
+const module = await WebAssembly.compile(await readFile("target/os-demo.wasm"));
+const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
+process.exitCode = wasi.start(instance) ?? 0;
+```
+
+native との違いは次のとおりです。
+
+- プログラムが触れるのは、ホストが渡した preopen の中だけです。path は最長一致する preopen の名前で解決し、どれにも合わない相対 path は最初の preopen からの相対です。preopen の外を指す絶対 path は `PermissionDenied`（code 76）です。
+- `Os.Error` の `code` は WASI の errno で、`not found (os error 44)` のようになります。
+- `Env.current_dir ()` は最初の preopen の名前（上の例では `/work`）を返します。`Env.args ()` は `args` の先頭（プログラム名）を除いた値です。
+- `Process.run` は `Other`（code 52）です。
+- 標準入出力か OS API を使う IO の入口は `_start` を export します。`IO<i32>` の値は `proc_exit` へ渡り、上の `wasi.start(instance)` の戻り値が終了コードになります。
+- `--wasm-host wasi` は wasm32 の `wasm`・`object` 出力だけで使えます。wasm64、`--emit llvm`、`--emit header`、`--wasm-feature threads` との併用は `E2000` です（LLVM IR には WASI 用の runtime を結合できません）。WASI preview2 とコンポーネントモデルは未対応です。
+
 ## SIMD128
 
 ```sh
@@ -193,6 +225,7 @@ memory64 対応のエンジン（Node.js 24 以降など）が必要で、`tsuzu
 
 ## 関連項目
 
+- [OS API](../library-reference/os.md)
 - [WASM threads](wasm-threads.md)
 - [C ABI と信頼境界](native-interop.md)
 - [既存の Web ホスト](../../examples/web/README.md)

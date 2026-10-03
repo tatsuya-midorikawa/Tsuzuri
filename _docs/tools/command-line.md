@@ -57,6 +57,7 @@ library / WASM 出力はトップレベルコードを自動実行しません�
 | `--cpu generic`, `--cpu native` | native exe / object / run の CPU 選択 |
 | `--wasm-feature simd128` | WASM SIMD を明示要求 |
 | `--wasm-feature threads` | WASM / object の Worker 対応を明示要求（wasm32 のみ） |
+| `--wasm-host wasi` | 標準入出力と OS API（File・Dir・Env・Time・Random）を WASI preview1 へ下げる（wasm32 の object・WASM のみ。LLVM IR とは併用できない。既定の wasm32 は OS API を E2000 で拒否する。`threads` とは併用不可） |
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16MiB、64 KiB の倍数で wasm32 は最大 4GiB-64KiB、wasm64 は最大 16GiB |
 | `--wasm-stack-size SIZE` | WASM の main stack。既定 1MiB、16 の倍数で 64 KiB 以上 |
 | `--no-cache` | build / run の成果物 cache の読み書きを無効化 |

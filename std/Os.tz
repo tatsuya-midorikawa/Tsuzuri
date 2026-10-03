@@ -1,0 +1,81 @@
+/// The kind of an operating-system failure. A case is only added with a major edition.
+union ErrorKind = NotFound | PermissionDenied | AlreadyExists | InvalidInput | InvalidEncoding | Interrupted | Other
+
+/// An operating-system failure: its kind and the system's own code (`errno`), 0 when Tsuzuri found the failure itself.
+record Error { kind: ErrorKind, code: i32 }
+
+/// Describes an error as `not found (os error 2)`; the code is left out when it is 0.
+def message :: ref Error -> string
+fn message error =
+	let kind =
+		match error.kind with
+		| NotFound -> "not found"
+		| PermissionDenied -> "permission denied"
+		| AlreadyExists -> "already exists"
+		| InvalidInput -> "invalid input"
+		| InvalidEncoding -> "invalid encoding"
+		| Interrupted -> "interrupted"
+		| Other -> "other"
+	if error.code == 0i32 then kind else kind + " (os error " + to_string error.code + ")"
+
+/// Encodes a path, name, or text for the system; a lone surrogate is `InvalidEncoding`.
+def encode :: ref string -> Result.Result<utf8string, Error>
+fn encode text =
+	if String.is_well_formed text then Result.Ok (Utf8String.from_string text)
+	else Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
+
+/// Decodes a status the runtime returned: `(kind << 32) | code`, with kind 1 to 7 in declaration order.
+def error_of_status :: i64 -> Error
+fn error_of_status status =
+	let kind =
+		match status >> 32 with
+		| 1 -> NotFound
+		| 2 -> PermissionDenied
+		| 3 -> AlreadyExists
+		| 4 -> InvalidInput
+		| 5 -> InvalidEncoding
+		| 6 -> Interrupted
+		| _ -> Other
+	Error { kind: kind, code: status as i32 }
+
+/// Splits names that each end with a NUL byte, as `Dir.list` and `Env.args` receive them.
+/// Any name that is not UTF-8 makes the whole call `InvalidEncoding`.
+def split_names :: ref [ubyte] -> Result.Result<[string], Error>
+fn split_names bytes =
+	let mut count = 0
+	let mut index = 0
+	while index < bytes.length do
+		if bytes[index] == 0ubyte then count = count + 1
+		index = index + 1
+	let mut names: Vec<string> = Vec.with_capacity count
+	let mut start = 0
+	let mut failed = false
+	index = 0
+	while index < bytes.length && !failed do
+		if bytes[index] == 0ubyte then
+			let from = start
+			let name = new [ubyte](index - from, offset -> bytes[from + offset])
+			match Utf8String.from_bytes name with
+			| Option.Some text -> names = Vec.push names (String.from_utf8 (ref text))
+			| Option.None -> failed = true
+			start = index + 1
+		index = index + 1
+	if failed then Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
+	else Result.Ok (Vec.to_array names)
+
+/// Decodes the bytes a system call returned as UTF-8 text. Invalid UTF-8 is `InvalidEncoding`.
+def decode :: [ubyte] -> Result.Result<string, Error>
+fn decode bytes =
+	match Utf8String.from_bytes bytes with
+	| Option.Some text -> Result.Ok (String.from_utf8 (ref text))
+	| Option.None -> Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
+
+/// Reads eight little-endian bytes at `offset` as a number, as the runtime lays out sizes, times, and codes.
+def decode_i64 :: ref [ubyte] -> i64 -> i64
+fn decode_i64 bytes offset =
+	let mut value = 0i64u
+	let mut index = 7
+	while index >= 0 do
+		value = (value << 8) | (bytes[offset + index] as i64u)
+		index = index - 1
+	value as i64

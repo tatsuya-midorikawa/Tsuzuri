@@ -400,6 +400,42 @@ fn signature_help_counts_curried_arguments() {
 }
 
 #[test]
+fn interpolated_holes_are_indexed_and_their_text_offers_no_completions() {
+    use serde_json::json;
+    let main = "def read :: i64 -> i64\nfn read number = number\ndef greet :: i64 -> string\nfn greet n = $\"n={read n:>4} done {{ok}}\"\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", main)]).unwrap();
+    let read = definition(&index, 0, "read", SymbolKind::Function);
+    assert!(starts(&index, read).contains(&(0, at(main, "read n:"))));
+    let n = index
+        .definitions
+        .iter()
+        .position(|item| item.name == "n" && item.kind == SymbolKind::Parameter)
+        .unwrap();
+    assert!(starts(&index, n).contains(&(0, at(main, "n:>4"))));
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
+        let main_uri = uri("Main.tz");
+        let complete = |id, needle: &str| json!({"id": id, "method": "textDocument/completion", "params": {"textDocument": {"uri": main_uri}, "position": position(main, needle, "utf-16")}});
+        vec![
+            json!({"id": 0, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main_uri}}}),
+            complete(1, "={read"),
+            complete(2, "4} done"),
+            complete(3, "{ok}}"),
+            complete(4, "read n:"),
+        ]
+    });
+    for quiet in &responses[1..4] {
+        assert_eq!(quiet["result"]["items"], json!([]), "{quiet}");
+    }
+    let labels: Vec<_> = responses[4]["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", responses[4]))
+        .iter()
+        .map(|item| item["label"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(labels.contains(&"read".to_owned()), "{labels:?}");
+}
+
+#[test]
 fn stale_fallbacks_hide_private_declarations_of_other_modules() {
     use serde_json::json;
     let main = "def run :: i64 -> i64\nfn run n = n\n";

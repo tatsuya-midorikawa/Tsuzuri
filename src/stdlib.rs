@@ -6,21 +6,32 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Array.tz", include_str!("../std/Array.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
+    ("std/Dir.tz", include_str!("../std/Dir.tz")),
+    ("std/Env.tz", include_str!("../std/Env.tz")),
+    ("std/File.tz", include_str!("../std/File.tz")),
+    ("std/Format.tz", include_str!("../std/Format.tz")),
     ("std/Gpu.tz", include_str!("../std/Gpu.tz")),
+    ("std/HashMap.tz", include_str!("../std/HashMap.tz")),
+    ("std/HashSet.tz", include_str!("../std/HashSet.tz")),
     ("std/IO.tc", include_str!("../std/IO.tc")),
     ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Option.tc", include_str!("../std/Option.tc")),
+    ("std/Os.tz", include_str!("../std/Os.tz")),
     ("std/Owned.tz", include_str!("../std/Owned.tz")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
+    ("std/Process.tz", include_str!("../std/Process.tz")),
+    ("std/Path.tz", include_str!("../std/Path.tz")),
+    ("std/Random.tz", include_str!("../std/Random.tz")),
     ("std/Result.tc", include_str!("../std/Result.tc")),
     ("std/Seq.tz", include_str!("../std/Seq.tz")),
     ("std/Set.tz", include_str!("../std/Set.tz")),
     ("std/String.tz", include_str!("../std/String.tz")),
     ("std/Test.tz", include_str!("../std/Test.tz")),
-    ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
+    ("std/Time.tz", include_str!("../std/Time.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
+    ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
 ];
 
@@ -43,11 +54,22 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Simd",
     "Map",
     "Set",
+    "HashMap",
+    "HashSet",
     "Seq",
     "Test",
     "Gpu",
     "IO",
     "Owned",
+    "File",
+    "Dir",
+    "Path",
+    "Env",
+    "Time",
+    "Random",
+    "Os",
+    "Process",
+    "Format",
 ];
 
 pub fn is_reserved_module(name: &str) -> bool {
@@ -60,11 +82,16 @@ pub(crate) fn opaque_record(name: &str) -> bool {
         "Map.Map"
             | "Map.Entry"
             | "Set.Set"
+            | "HashMap.HashMap"
+            | "HashMap.Entry"
+            | "HashSet.HashSet"
             | "Seq.Seq"
             | "Gpu.Device"
             | "Gpu.Buffer"
             | "IO.IO"
             | "Owned.Function"
+            | "Random.Pcg"
+            | "File.Handle"
     )
 }
 
@@ -103,7 +130,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 21);
+        assert_eq!(RESERVED_MODULES.len(), 32);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

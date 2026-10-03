@@ -1,0 +1,75 @@
+private def list_with :: ref string -> Result.Result<[string], Os.Error>
+fn list_with path =
+	match Os.encode path with
+	| Result.Error error -> Result.Error error
+	| Result.Ok name ->
+		match Os.__read 1i32 (ref name) with
+		| (0, bytes) -> Os.split_names (ref bytes)
+		| (status, _) -> Result.Error (Os.error_of_status status)
+
+private def change :: i32 -> ref string -> Result.Result<unit, Os.Error>
+fn change operation path =
+	match Os.encode path with
+	| Result.Error error -> Result.Error error
+	| Result.Ok name ->
+		let nothing: [ubyte] = []
+		let status = Os.__write operation (ref name) (ref nothing)
+		if status == 0 then Result.Ok () else Result.Error (Os.error_of_status status)
+
+/// Lists the names in a directory, without "." and "..", sorted by their UTF-8 bytes.
+/// A name that is not UTF-8 makes the whole call `InvalidEncoding`.
+def list :: string -> IO<Result.Result<[string], Os.Error>>
+fn list path = IO.map (\() -> list_with (ref path)) (IO.pure ())
+
+/// Creates one directory; its parent must exist.
+def create :: string -> IO<Result.Result<unit, Os.Error>>
+fn create path = IO.map (\() -> change 2i32 (ref path)) (IO.pure ())
+
+/// Removes an empty directory.
+def remove :: string -> IO<Result.Result<unit, Os.Error>>
+fn remove path = IO.map (\() -> change 3i32 (ref path)) (IO.pure ())
+
+private def is_directory :: ref string -> Result.Result<bool, Os.Error>
+fn is_directory path =
+	match Os.encode path with
+	| Result.Error error -> Result.Error error
+	| Result.Ok name ->
+		match Os.__read 5i32 (ref name) with
+		| (0, bytes) -> Result.Ok (bytes[0] == 1ubyte)
+		| (status, _) -> Result.Error (Os.error_of_status status)
+
+/// Appends the entries below `root/relative` to `found`: each entry, then everything below it.
+private def rec visit :: ref string -> ref string -> Vec<string> -> Result.Result<Vec<string>, Os.Error>
+fn rec visit root relative found =
+	let directory = if relative.length == 0 then Option.get (String.slice root 0 root.length) else Path.join root relative
+	match list_with (ref directory) with
+	| Result.Error error -> Result.Error error
+	| Result.Ok names ->
+		let mut state: Result.Result<Vec<string>, Os.Error> = Result.Ok found
+		let mut index = 0
+		while index < names.length do
+			state =
+				match state with
+				| Result.Error error -> Result.Error error
+				| Result.Ok pushed ->
+					let entry = Path.join relative (ref names[index])
+					let copy = Option.get (String.slice (ref entry) 0 entry.length)
+					let listed = Vec.push pushed copy
+					let below = Path.join root (ref entry)
+					match is_directory (ref below) with
+					| Result.Error error -> Result.Error error
+					| Result.Ok false -> Result.Ok listed
+					| Result.Ok true -> visit root (ref entry) listed
+			index = index + 1
+		state
+
+/// Lists everything below a directory, as paths relative to it joined with "/": each entry is followed by
+/// what is inside it, and the entries of one directory come in the order of `list`. A symbolic link is
+/// listed but never followed, so a loop cannot make the walk endless. A failure anywhere gives that error.
+def walk :: string -> IO<Result.Result<[string], Os.Error>>
+fn walk path = IO.map (\() ->
+	let empty = ""
+	let start: Vec<string> = Vec.with_capacity 0
+	match visit (ref path) (ref empty) start with
+	| Result.Ok found -> Result.Ok (Vec.to_array found)
+	| Result.Error error -> Result.Error error) (IO.pure ())

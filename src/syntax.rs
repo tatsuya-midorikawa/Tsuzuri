@@ -29,6 +29,12 @@ pub enum TokenKind {
     Integer(String),
     Float(String),
     String(StringLiteral),
+    /// `$"text{` or `u8$"text{`: the text before the first hole.
+    InterpolationStart(Box<InterpolationPiece>),
+    /// `}text{` or `:spec}text{`: closes a hole and opens the next.
+    InterpolationMiddle(Box<InterpolationPiece>),
+    /// `}text"` or `:spec}text"`: closes the last hole and the literal.
+    InterpolationEnd(Box<InterpolationPiece>),
     Char(u16),
     Utf8Char(u32),
     Fn,
@@ -122,6 +128,48 @@ pub enum StringLiteral {
     Utf16(Vec<u16>),
     Utf8(String),
 }
+
+/// The text segment carried by an interpolation token and the format spec of
+/// the hole that the token closes (`None` for the first token).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InterpolationPiece {
+    pub text: StringLiteral,
+    pub spec: Option<FormatSpec>,
+}
+
+/// `[[fill]align][+][width][.precision][type]` after the `:` of a hole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormatSpec {
+    pub fill: char,
+    pub align: Option<FormatAlign>,
+    pub plus: bool,
+    pub width: u16,
+    pub precision: Option<u16>,
+    pub kind: Option<FormatKind>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormatAlign {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormatKind {
+    LowerHex,
+    UpperHex,
+    Octal,
+    Binary,
+    Exponent,
+    Fixed,
+}
+
+/// The most holes one interpolated string may have.
+pub const MAX_INTERPOLATION_HOLES: usize = 1024;
+/// The largest width and precision of a format spec.
+pub const MAX_FORMAT_FIELD: u16 = 4096;
 
 impl StringLiteral {
     pub fn len(&self) -> usize {
@@ -544,6 +592,11 @@ impl Expr {
                 }
             }
             Computation(_, body) => body.visit_expressions(visitor),
+            Interpolated(interpolation) => {
+                for hole in &interpolation.holes {
+                    hole.value.visit(visitor);
+                }
+            }
             Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit
             | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
         }
@@ -628,6 +681,20 @@ pub enum ExprKind {
     Dereference(Box<Expr>, Notation),
     Assign(Box<Expr>, Box<Expr>),
     Cast(Box<Expr>, TypeExpr),
+    /// `$"a{x}b"`: `texts` has one more element than `holes`.
+    Interpolated(Box<Interpolation>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Interpolation {
+    pub texts: Vec<StringLiteral>,
+    pub holes: Vec<InterpolationHole>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InterpolationHole {
+    pub value: Expr,
+    pub spec: Option<FormatSpec>,
 }
 
 /// Spelling of a borrow or dereference. Both spellings produce the same typed tree.

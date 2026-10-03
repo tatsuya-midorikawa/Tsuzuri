@@ -127,7 +127,8 @@ fn collect_locals<'a>(
         | Parallel(..)
         | StructuralCompare(..)
         | StructuralHash(_)
-        | StructuralDisplay(_) => {}
+        | StructuralDisplay(_)
+        | Interpolated(_) => {}
     }
     for child in expression.children() {
         collect_locals(child, locals, used);
@@ -507,6 +508,11 @@ impl TypeReferences<'_> {
             Array(values) | List(values) | Tuple(values) => {
                 for value in values {
                     self.expression(value);
+                }
+            }
+            Interpolated(interpolation) => {
+                for hole in &interpolation.holes {
+                    self.expression(&hole.value);
                 }
             }
             Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit
