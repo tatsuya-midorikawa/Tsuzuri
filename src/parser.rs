@@ -1426,7 +1426,8 @@ impl Parser<'_> {
         } else if matches!(
             self.current().kind,
             TokenKind::Let | TokenKind::Return | TokenKind::Do | TokenKind::RightBrace
-        ) {
+        ) || self.use_binding_ahead()
+        {
             self.block_after_open(start, None)
         } else {
             let first = self.expression(0, true)?;
@@ -1451,7 +1452,12 @@ impl Parser<'_> {
         let mut depth = 0;
         let result = loop {
             if first.is_none() && self.eat(&TokenKind::Let) {
-                let binding = self.binding(self.in_task)?;
+                let binding = self.binding(self.in_task, false)?;
+                depth = depth.max(binding.value.depth);
+                bindings.push(binding);
+            } else if first.is_none() && self.use_binding_ahead() {
+                self.take();
+                let binding = self.binding(self.in_task, true)?;
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
             } else if first.is_none() && self.at(&TokenKind::Return) {
@@ -1480,6 +1486,7 @@ impl Parser<'_> {
                         provenance: Provenance::Generated,
                     },
                     mutable: false,
+                    using: false,
                     annotation: None,
                     value,
                 });
@@ -1572,6 +1579,7 @@ impl Parser<'_> {
                 provenance: Provenance::Generated,
             },
             mutable: false,
+            using: false,
             annotation: Some(TypeExpr {
                 kind: TypeExprKind::Named("unit".into()),
                 span,
@@ -1580,12 +1588,20 @@ impl Parser<'_> {
         })
     }
 
-    fn binding(&mut self, top_level: bool) -> Result<Binding, Diagnostic> {
+    fn binding(&mut self, top_level: bool, using: bool) -> Result<Binding, Diagnostic> {
         let run = self.eat(&TokenKind::Bang);
         if run && !self.in_task {
-            return Err(self.error("'let!' is only allowed inside a task block"));
+            return Err(self.error(if using {
+                "'use!' is only allowed inside a task block or a computation expression"
+            } else {
+                "'let!' is only allowed inside a task block"
+            }));
         }
-        let mut binding = self.binding_value(top_level)?;
+        let mut binding = if using {
+            self.use_binding_value(top_level)?
+        } else {
+            self.binding_value(top_level)?
+        };
         if run {
             let span = binding.value.span;
             let depth = binding.value.depth + 1;
@@ -1608,9 +1624,41 @@ impl Parser<'_> {
         Ok(Binding {
             name,
             mutable,
+            using: false,
             annotation,
             value,
         })
+    }
+
+    /// A `let` binding after `use`, which cannot be mutable.
+    fn use_binding_value(&mut self, stop_at_newline: bool) -> Result<Binding, Diagnostic> {
+        if self.at(&TokenKind::Mut) {
+            return Err(self
+                .error("a use binding cannot be mutable; bind the value with 'let mut' instead"));
+        }
+        let mut binding = self.binding_value(stop_at_newline)?;
+        binding.using = true;
+        Ok(binding)
+    }
+
+    /// `use` starts a binding only before `mut`, or a name and `=`/`:`, optionally after `!`.
+    pub(super) fn use_binding_ahead(&self) -> bool {
+        self.use_binding_at(self.position)
+    }
+
+    fn use_binding_at(&self, index: usize) -> bool {
+        let kind = |index: usize| self.tokens.get(index).map(|token| &token.kind);
+        if !matches!(kind(index), Some(TokenKind::Ident(name)) if name == "use") {
+            return false;
+        }
+        let name = index + 1 + usize::from(kind(index + 1) == Some(&TokenKind::Bang));
+        match kind(name) {
+            Some(TokenKind::Mut) => true,
+            Some(TokenKind::Ident(_)) => {
+                matches!(kind(name + 1), Some(TokenKind::Equal | TokenKind::Colon))
+            }
+            _ => false,
+        }
     }
 
     fn binding_end(&mut self, newline_allowed: bool) -> Result<(), Diagnostic> {
@@ -1724,7 +1772,8 @@ impl Parser<'_> {
                     && (matches!(
                         token.kind,
                         TokenKind::Do | TokenKind::Return | TokenKind::Yield
-                    ) || (matches!(token.kind, TokenKind::Let | TokenKind::Match)
+                    ) || ((matches!(token.kind, TokenKind::Let | TokenKind::Match)
+                        || self.use_binding_at(self.position + offset))
                         && self
                             .tokens
                             .get(self.position + offset + 1)
@@ -1864,25 +1913,21 @@ impl Parser<'_> {
 
     fn computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
         let start = self.current().span;
-        if let TokenKind::Ident(name) = &self.current().kind {
-            let following = &self.tokens[self.position + 1..];
-            if name == "use"
-                && (following
-                    .first()
-                    .is_some_and(|token| token.kind == TokenKind::Bang)
-                    || (following
-                        .first()
-                        .is_some_and(|token| matches!(token.kind, TokenKind::Ident(_)))
-                        && following.get(1).is_some_and(|token| {
-                            matches!(token.kind, TokenKind::Equal | TokenKind::Colon)
-                        })))
-            {
-                return Err(Diagnostic::new(
-                    "E1018",
-                    "use bindings are not supported; bind the owned value with let and rely on lexical drop",
-                    start,
+        if self.use_binding_ahead() {
+            self.take();
+            let bind = self.eat(&TokenKind::Bang);
+            let binding = self.use_binding_value(true)?;
+            if bind && self.at(&TokenKind::And) {
+                return Err(self.error(
+                    "'use!' cannot start an and! group; bind the sources with let! and use them afterwards",
                 ));
             }
+            return Ok(ComputationStatement {
+                kind: ComputationStatementKind::Let(binding, bind),
+                span: start.through(self.tokens[self.position - 1].span),
+            });
+        }
+        if let TokenKind::Ident(name) = &self.current().kind {
             if name == "try" && self.try_clause_ahead() {
                 return Err(Diagnostic::new(
                     "E1018",

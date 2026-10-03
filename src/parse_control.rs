@@ -281,6 +281,7 @@ impl Parser<'_> {
                         provenance: Provenance::Generated,
                     },
                     mutable: false,
+                    using: false,
                     annotation: Some(TypeExpr {
                         kind: TypeExprKind::Named("unit".into()),
                         span: value.span,
@@ -289,7 +290,10 @@ impl Parser<'_> {
                 });
             }
             if self.eat(&TokenKind::Let) {
-                bindings.push(self.binding(true)?);
+                bindings.push(self.binding(true, false)?);
+            } else if self.use_binding_ahead() {
+                self.take();
+                bindings.push(self.binding(true, true)?);
             } else {
                 let value = self.expression_inner(0, true, true)?;
                 if self.eat(&TokenKind::Semicolon) {
@@ -300,6 +304,7 @@ impl Parser<'_> {
                             provenance: Provenance::Generated,
                         },
                         mutable: false,
+                        using: false,
                         annotation: None,
                         value,
                     });

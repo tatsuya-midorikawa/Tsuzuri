@@ -47,7 +47,7 @@ ref は F# の参照セルではなく共有借用です。ref mut は排他借�
 
 Option / Result と match は利用できます。match の網羅性不足はコンパイルエラーです。get の不一致、assert、整数ゼロ除算、境界違反はトラップであり、F# の例外のように try / with で回復しません。
 
-use / try / finally、任意 destructor の呼び出し、.NET の IDisposable は未対応です。所有値の lexical な解放と、回復可能な失敗を表す Result を使います。
+IDisposable に当たるのは、record・union に書く `instance Drop<T>` と lexical な解放です。Drop を持つ値は scope の終わりや置き換えのときに一度だけ `drop` が呼ばれ、`Dispose` のように明示的に呼ぶことはできません（[利用者定義の解放](../language-reference/ownership.md#利用者定義の解放drop)）。F# と同じく `use` / `use!` で束縛でき、値の型が Drop を持つことを検査します。早く解放するには `Owned.drop value` を呼びます。Drop を持つ値を捕捉するクロージャーは `Owned.function` で作り、`Owned.call` で呼びます。計算式の `let!` より後ろは継続の関数なので、その前に `use` した値を後ろで使えません。try / finally、.NET の IDisposable そのものは未対応で、回復可能な失敗には Result を使います。トラップしたときは `drop` も走りません。
 
 ## 計算式とタスク
 

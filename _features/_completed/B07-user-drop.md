@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | A06 |
 | 後続 | E08, E12, B08, C10, F10 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（組み込みクラス `Drop` の追加と対象型の制限。GUIDE D-30 の仮割り当て）, D2（`drop` の引数を `ref mut` にする。起票時の既定案 `ref` からの変更）, D4（`Drop` 型からの move の禁止） |
-| 改善する劣位 | C#/F# 比: `IDisposable`／`use` に相当する資源管理がない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: ホスト資源を所有できない |
+| 承認 | D1（組み込みクラス `Drop` の追加と対象型の制限）、D2（`drop` の引数を `ref mut` にする）、D4（`Drop` 型からの move の禁止）は、2026-10-02 に利用者から「B07 の実装を完遂して」と依頼され、承認として扱った（実装で変えた点は「実装と検証」に記録）。Phase 2 は同日の「Phase 2 以降もすべて実装を完了させて」を依頼として扱った |
+| 改善する劣位 | C#/F# 比: `IDisposable`／`use` に相当する資源管理がない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: ホスト資源を所有できない |
 | 手本にする既存実装 | 利用者 instance を持つ組み込みクラス: `Eq`・`Display`（`src/polymorph.rs` の `BUILTIN_CLASSES`・`Classes`、`tests/fixtures/display_parse/Main.tz` の `instance Display<Label>`）。型性質: `src/check.rs` の `Type::is_copy`・`Type::needs_drop` と組み込み制約の評価（`src/polymorph.rs` の `"Copy" => ty.is_copy(types)`）。drop glue: `src/llvm.rs` の `FunctionEmitter::drop_value` の `Type::Record`・`Type::Union` 分岐と `FunctionEmitter::spill`。反復 drop: `src/llvm_recursive.rs` の `emit_helpers`（`drop_pending`）。ホストの記録: `tests/fixtures/host_imports/Main.tz` と `tests/host_imports.mjs` |
 | 主な影響ファイル | `src/polymorph.rs`, `src/check.rs`, `src/derive.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_recursive.rs`, `tests/user_drop.rs`（新規）, `tests/user_drop.mjs`（新規）, `tests/user_drop_runtime.c`（新規）, `tests/fixtures/user_drop/Main.tz`（新規）, `README.md`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/ownership.md`, `_docs/language-reference/generics-and-typeclasses.md`, `_docs/guides/from-fsharp.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -96,7 +96,7 @@ D5 はこの事実から決めた。
 
 ## 仕様
 
-実装者は Phase 1 だけを実装する。Phase 2 は人間が求めた場合だけ着手する。
+実装者は Phase 1 だけを実装する。Phase 2 は人間が求めた場合だけ着手する（2026-10-02 に求められ、実装した。「実装と検証（Phase 2）」）。
 
 ### 前提とする他チケットのインターフェース
 
@@ -204,6 +204,8 @@ instance Drop<i64> { fn drop value = () }        -- E1016: record・union でな
 - B05 で未対応の計算式 `use`／`use!` の糖衣化（lexical drop と同じ意味）と、`use` 束縛（HEAD は E1018）の再検討。
 - 明示的な早期解放 API（std の関数）。Phase 1 は値を消費する関数に渡すか内側の block で終わらせる。
 - 関数値への捕捉（D5）。複製できない関数値の型が要る。
+
+3 件とも実装した（`use`／`use!`、`Owned.drop`、`Owned.Function` と `Owned.function`／`Owned.call`。「実装と検証（Phase 2）」）。
 
 ## 設計
 
@@ -490,14 +492,15 @@ Drop のないプログラムは IR が同じなので変化しない。Drop 型
 
 ## 受け入れ条件
 
-- [ ] D1・D2・D4 が承認済みで、Phase 1 だけが実装されている。
-- [ ] Drop 型の値が、正常終了のすべての解放経路（E2E の表の全行）で、native と WASM、`-O0` と `-O3` のすべてでちょうど一回 drop される。
-- [ ] 利用者 `drop` が field・payload より先に走り、field は宣言順に drop される。
-- [ ] 100 万段の再帰 union の drop が成功し、利用者 `drop` が 1,000,001 回呼ばれる。
-- [ ] 「診断」の表の全行を Rust テストで確かめている。
-- [ ] Drop のないプログラムの IR が byte 単位で変わらない（手順 10）。WASM の既定 import は増えない。
-- [ ] native の全 E2E で `live == 0`。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] D1・D2・D4 が承認済みで、Phase 1 だけが実装されている（Phase 2 は後に求められて実装した）。
+- [x] Drop 型の値が、正常終了のすべての解放経路（E2E の表の全行）で、native と WASM、`-O0` と `-O3` のすべてでちょうど一回 drop される。
+- [x] 利用者 `drop` が field・payload より先に走り、field は宣言順に drop される。
+- [x] 100 万段の再帰 union の drop が成功し、利用者 `drop` が 1,000,001 回呼ばれる。
+- [x] 「診断」の表の全行を Rust テストで確かめている。
+- [x] Drop のないプログラムの IR が byte 単位で変わらない（手順 10。Phase 2 の後も同じ）。WASM の既定 import は増えない。
+- [x] native の全 E2E で `live == 0`。
+- [x] GUIDE §10 の完了の定義を満たす。
+- [x] Phase 2: `use`／`use!`、`Owned.drop`、`Owned.function`／`Owned.call` の各経路で、同じ E2E が native と WASM、`-O0` と `-O3` でちょうど一回 drop する。
 
 ## 落とし穴
 
@@ -519,8 +522,9 @@ Drop のないプログラムは IR が同じなので変化しない。Drop 型
 ## 対象外
 
 - trap 時の巻き戻しと drop、finalizer、GC との連携、drop 順序の利用者指定。
-- `use` 束縛・計算式の `use`／`use!`、明示的な早期解放 API（Phase 2）。
-- 組み込み型・std の型への `Drop`、関数値への Drop 型の捕捉（D5）。
+- `use` 束縛・計算式の `use`／`use!`、明示的な早期解放 API（Phase 2。実装済み）。
+- 組み込み型・std の型への `Drop`。関数値への Drop 型の捕捉（D5）は Phase 2 の `Owned.function` で実装した。
+- `extern type` への直接の `Drop`（E12 の「B07 の拡張」。「実装と検証（Phase 2）」の判断 6）。
 - 非同期（B08）、共有所有（C10）、並行プリミティブ（F10）での資源の扱い。
 
 ## 決定事項
@@ -560,6 +564,8 @@ Drop のないプログラムは IR が同じなので変化しない。Drop 型
 - 決定: Drop 型を含む型は `Capture` を満たさない（関数値に捕捉すると既存の E1005）。`Send` は変えず、Task へは捕捉して送れる。
 - 理由: 関数値は Copy で、複製は `@tz.env.clone.*` で捕捉値を複製する（「再現」で確認）。Drop 型を複製すると同じ資源を二度解放する。
   Task の環境は複製されない。調整役の方針（`can_capture`・`can_send` の既存の規則に任せる）をこの事実に当てはめた結果である。
+- Phase 2: 複製できない関数値 `Owned.Function<'a, 'b>` を足した。`Owned.function` の引数に直接書いたラムダだけが Drop 型を捕捉でき、
+  本体は捕捉値を借用する。通常の関数値の規則（この決定）は変えていない。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D6: 特殊化と `CheckedModule::user_drops`
@@ -594,6 +600,7 @@ Drop のないプログラムは IR が同じなので変化しない。Drop 型
 - 決定: `Drop.drop` の参照は E1016。`std/` に破棄の関数はないので、早期解放は値を消費する関数に渡すか内側の block で終わらせる。std の API は
   Phase 2 とする。
 - 理由: 直接呼べると同じ値の二重 drop になる。E1016 はクラスの誤用の既存コードで、新しいコードが要らない。
+- Phase 2: 早期解放は組み込み関数 `Owned.drop :: 'a -> unit`（値を消費してその場で drop glue を呼ぶ）。`Drop.drop` の参照は引き続き E1016。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D11: E2E の観測方法
@@ -608,3 +615,119 @@ Drop のないプログラムは IR が同じなので変化しない。Drop 型
 - 決定: A14 の drop slot は `drop_value(T)` と同じ glue を呼ぶ（A14 D10）。B07 は A14 を開始条件にせず、A14 が done なら E2E に 1 件足す。
 - 理由: glue を一つにすれば、どちらの順で入っても整合する。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-02、Phase 1）
+
+「B07 の実装を完遂して」との依頼で Phase 1（手順 1–12）を実装した。着手時の HEAD は `d54f0e5`（ブランチ `phase6-5`）。A14 は todo のため `dyn` の E2E は足していない。
+
+### 実装
+
+- `src/polymorph.rs`: `BUILTIN_CLASSES` の末尾に `Drop`（26 個）。メソッドは `drop :: ref mut 'a -> unit`（operation なし）。`validate_drop_instance`（E1016 の 3 文）、
+  `Classes::method` での `Drop.drop` の拒否、`instances` の最後の `diagnostics.check()`。superclass の検査を `Classes::check_superclasses` に分けた。
+  単相化の後の固定点で、特殊化済みの関数の型から `drop_components`（自身・field・payload・tuple・Array/List/Vec/Task の要素。参照と関数型は辿らない）で
+  Drop 型を集めて `resolved_method(Drop, 0, ty)` を要求し、`CheckedModule::user_drops` に置く。Drop instance がなければ走査しない。
+- `src/check.rs`: `CheckedRecord::user_drop`・`CheckedUnion::user_drop`・`CheckedModule::user_drops`、`Type::has_user_drop` と `is_noncopy_record`・`needs_drop`・
+  `can_capture`（再帰型の `stored_all` を含む）への反映。印は `Classes::instances` の直後に立て、型の文脈を作り直してから `check_superclasses` を呼ぶ。`src/recursive.rs` の `stored_all` は `impl Fn` を受ける。
+- `src/ownership.rs`・`src/ownership_control.rs`: `Place::through_drop`（`place` の Field と UnionPayload で立てる）と E1012 の 3 文。`drop` 本体の置換は
+  `check_body` の引数 `user_drop` と `Checker::drop_root` で見る。
+- `src/llvm.rs`・`src/llvm_frame.rs`・`src/llvm_recursive.rs`・`src/llvm_debug.rs`・`src/abi.rs`: 生存フラグ（`drop_flag`・`mark_live`）、`user_drop`・`call_user_drop`、
+  一時値の field・payload、`frame_aggregate`・`drop_framed`、再帰 union の helper、debug 情報の layout、`scalar_record` の Drop record の拒否、`user_drops` の到達可能性の根。
+- テスト: `tests/user_drop.rs`（19 件）、`tests/user_drop.mjs`、`tests/user_drop_runtime.c`、`tests/fixtures/user_drop/Main.tz`。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/language-reference/ownership.md`、`_docs/language-reference/generics-and-typeclasses.md`、
+  `_docs/language-reference/README.md`、`_docs/guides/from-fsharp.md`、`_docs/guides/native-interop.md`、`_docs/feature-status.md`、`README.md`、`_features/README.md`、`_features/GUIDE.md`（D-07・D-31）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **生存フラグ。** LLVM は move 済みの領域を `zeroinitializer` で埋め、その解放を無処理にする。drop glue が無条件に `drop` を呼ぶと move 済みの値でも呼ぶので、
+   非再帰の Drop 型は値の末尾に `i8` のフラグを持ち、構築（record リテラル・frame の集約・`construct_value`）で 1 にする。glue はフラグが 0 なら `drop` を呼ばない。
+   Drop を持たない型の表現は変えていない。全 case が nullary の Drop union は、フラグを置くために素の `i32` tag ではなく `General(0)` の配置にした。
+2. **再帰する Drop union の先頭の nullary case もノードに置く。** null を move 済みだけの意味にするため（`empty_case` が `None`）。
+3. **Drop 型は ABI の scalar record にしない**（`export`／`extern` の値は E1008）。一時値から Copy の field・payload を読むときは値を壊さず全体を解放する。
+4. **`drop` 本体の置換の診断文を変えた。** record の field は元々どこでも代入できない（既存の E1012 `assignment replaces a mutable binding; ...`）ので、
+   「assign its fields instead」ではなく `cannot replace the whole value inside Drop.drop; read or borrow its fields instead` にした。
+5. **E2E を足した。** 表の行に加えて `moved_field`・`temporary_field`・`unions`（payload のある Drop union と nullary だけの Drop union）。WASM の `long_chain` は既定の 16 MiB で
+   100,000 段、100 万段は `--wasm-max-memory 128MiB` の別 build で確かめる（100 万ノードは既定のメモリに入らない。D-24 の前例と同じ）。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Homebrew LLVM 21、rustc 1.98.1、Node v20.17.0）
+
+- `cargo test --release --locked --test user_drop` が 19 passed、全体が 573 passed・0 failed。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。
+- `node tests/user_drop.mjs target/release/tsuzuri` が `-O0`・`-O3` の native（IR の link と object の link）と WASM で成功。`TSUZURI_ASAN=1`・`TSUZURI_TSAN=1` でも成功。
+- 手順 10: `tests/fixtures/*` と `examples/*` の 103 個の IR（native と wasm32）が、変更前の build の IR と byte 単位で一致した。
+- fixture を `-g`（`TSUZURI_LLVM_LINK` に llvm-link 21）・`--trap-info`・`--trap-mode return`・wasm32 の threads・simd128・`--target wasm64`・`--cpu native` で `-O0`・`-O3` に build でき、
+  `opt -passes=verify` が通る。`drop` 本体のトラップの `--trap-info` は本体の位置を指す。
+
+## 実装と検証（2026-10-02、Phase 2）
+
+「Phase 2 以降もすべて実装を完了させて」との依頼で、Phase 2 の 3 項目を実装した。B07 の範囲で Phase 2 より後の段はないので、残る項目は「対象外」とした（判断 6）。
+
+### 実装（Phase 2）
+
+- `use`／`use!`: `src/syntax.rs` の `Binding::using`。`src/parser.rs`・`src/parse_control.rs` が `{ }` の block・layout の block・計算式の文で `use` を読み
+  （`Parser::use_binding_ahead`。`use!` は暗黙の計算式の開始にも数える）、`use mut` と `use!` の後の `and!` を E0002 にする。task の block の `use!` は `let!` と同じ `TaskRun`。
+  `src/check.rs` の `require_use` が値の型に `Drop` を要求する（E1005。推論を待つ場合は `use_bindings` の span で `finish` が同じ文にする）。
+  `src/computation.rs` の継続は `use!` の値を生成した引数で受けて `use` で束縛し直す。`src/formatter.rs` は `use!` の `!` の前に空白を置かない。
+- `Owned`: `std/Owned.tz`（opaque な `record Function<'a, 'b> { run: 'a -> 'b }`）、`src/stdlib.rs`（`SOURCES`・`RESERVED_MODULES`・`opaque_record`）、
+  組み込み関数 `Builtin::OwnedDrop`・`OwnedFunction`・`OwnedCall`（`src/check.rs` の scheme、`src/polymorph.rs` の標準 record の検査、`src/llvm.rs` の lowering）。
+  `Type::is_owned_function` を `is_noncopy_record`・`can_capture` に反映し、`clone_value` はこの型を受けない。
+- 資源を持つ関数値: `src/check.rs` の `Checker::owned_lambda`（`Owned.function` の第 1 引数のラムダ）、`src/closures.rs` の `LambdaKind`（引数が一つ、捕捉は `Send`）と
+  `TypedExprKind::Lambda::owned`・`CheckedFunction::owned_captures`。`closures::lower` が `TypedExpr::consuming_use`（`call_specialization::read_only` を移した）で捕捉値の move を E1012 にする。
+  `src/polymorph.rs` の単相化後の捕捉の再検査も `Send`。`src/llvm.rs` は捕捉引数を借用ローカルにし、apply は本体を呼んでから消費する呼び出しのときだけ `@tz.env.drop` を呼ぶ。
+  環境の clone は作らず、`call_specialization::can_borrow` は偽。
+- 構文の色付け: `vsc/syntaxes/tsuzuri.tmLanguage.json` が束縛の位置の `use`／`use!` を keyword にする。
+- テスト: `tests/user_drop.rs` に 7 件（26 件）、`tests/formatter.rs` の spacing に 2 例、fixture と 2 つの harness に 10 行（`use_scopes`・`use_computation`・`use_task`・`early_drop`・
+  `owned_function`・`owned_task`・`owned_unused`・`owned_array`・`owned_nested`・`owned_generic`）。
+- 文書: `docs/language.md`（予約モジュール、捕捉、利用者定義の解放、計算式、組み込み関数、診断）、`docs/architecture.md`、`_docs/language-reference/ownership.md`、
+  `_docs/language-reference/computation-expressions.md`、`_docs/guides/from-fsharp.md`、`_docs/guides/native-interop.md`、`_docs/library-reference/builtins.md`・`README.md`・`api/`（再生成）、
+  `_docs/feature-status.md`、`README.md`、`_features/README.md`、`_features/GUIDE.md`（D-07 の表と D-31）。
+
+### 決定事項への追記（Phase 2 の判断）
+
+1. **`use` は予約語にしない。** `use`（または `use!`）の後に名前と `=`／`:`、または `mut` が続くときだけ束縛を始める。`use x` は関数 `use` の呼び出しのまま。
+   意味は `let` と同じ lexical drop で、値の型に `Drop` を要求する（F# の `use` が `IDisposable` を要求するのと同じ）。計算式の `use` はビルダーの `Using` を呼ばない
+   （このコードベースの `Using` は別のビルダーへの接続に使う）。計算式の `let!`・`use!` より後ろは継続の関数値なので、その前に束縛した Drop 型の値は後ろで使えない（E1005）。
+2. **早期解放は新しい std モジュール `Owned` の `Owned.drop`。** `std/Owned.tz` に `def drop` を書くと std の関数が増えて生成関数の番号が一つずれ、Drop を使わないプログラムの IR が
+   変わった（103 個中の多くが番号だけ違った）。組み込み関数にして番号を保ち、IR の一致を保った。名前の `Owned` は利用者の型名によくある `Resource` と衝突しない名前として選んだ。
+3. **D5 は `Owned.Function<'a, 'b>`。** 言語の関数型に「複製できない」印を足すと型の同一性と単一化の全体に及ぶので、opaque な std record と組み込み関数にした。
+   `Owned.function` の引数に直接書いたラムダだけが Drop 型を捕捉できる（変数やパイプを通したラムダは通常の関数値）。引数を一つに限るのは、部分適用が借用中の環境を複製するため（E1006）。
+   捕捉は `Send`（参照を含まない）にした。共有参照の捕捉は寿命の追跡上は安全だが、規則を task と揃えて単純にした。`ref mut` を許すと再入で別名が生じうる。
+4. **本体は捕捉値を借用だけする。** 判定は既存の借用 worker の条件（`read_only`）と同じ関数 `TypedExpr::consuming_use` で、保守的に `match capture with` も move と数える（`match ref capture with` と書く）。
+   `Owned.call` は std の `def` ではなく組み込み関数にした。std の関数で `function.run argument` と書くと、引数の型が `ref mut` を含むとき LLVM が呼び出し先を借用せず閉包を複製し、
+   clone pointer のない環境を複製しようとする。
+5. **既存テストの期待値を変えた。** `tests/computations.rs` の `recognizes_optional_builder_operations_and_rejects_exception_syntax` の `use`／`use!`（i64 の束縛）は E1018 から
+   E1005（`'use' needs a value whose type implements Drop; i64 does not, so bind it with 'let'`）になった。`src/stdlib.rs` の `reserves_the_d07_table` は 20 から 21。
+   `_docs/guides/native-interop.md` の例の `record Owned` は std のモジュール名と紛らわしいので `Guard` にした。
+6. **`extern type` への直接の `Drop` は入れない。** 生存フラグを足すとハンドルの ABI（`ptr`、wasm32 では i32）が変わり、null／0 を move 済みの印にすると 0 を有効な値に使うホスト
+   （wasm32 の番号付きハンドルなど）のハンドルを閉じられない。record で包む方法（E12 D3）を維持する。
+
+### 確認（Phase 2。環境は Phase 1 と同じ）
+
+- `cargo test --release --locked --test user_drop` が 26 passed、`--test formatter` が 13 passed、`--test computations` が 30 passed。
+  全体は 580 passed・0 failed（Phase 1 の 573 に新しい 7 件）。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。
+- `node tests/user_drop.mjs target/release/tsuzuri` が新しい 10 行を含めて `-O0`・`-O3` の native（IR の link と object の link）と WASM で成功（native は各行の後に `live == 0`）。
+  `TSUZURI_ASAN=1`・`TSUZURI_TSAN=1` でも成功。
+- 手順 10 をやり直し、103 個の IR が変更前の build と byte 単位で一致した（`Owned.drop` を std の関数にした途中の版では番号のずれが出たので、判断 2 で直した）。
+- fixture の 18 通りの build（Phase 1 と同じ組み合わせ）が成功。`tsuzuri fmt` は `use  ! x` を `use! x` にし、fixture を含む corpus の整形が冪等。
+- README の E2E のうち、変更が及ぶ 16 個（`user_drop`・`computations`・`control`・`e2e`・`primitives`・`strings`・`tasks`・`io`・`host_imports`・`ffi_extensions`・`examples`・
+  `lsp_sessions`・`docgen`・`features`（4,958 case）・`cache`・`display_parse`）が成功。`node scripts/check-docs.mjs` が成功（84 pages・757 links・146 examples・
+  254 native runs（O0/O3）・9 test projects）。
+
+## レビュー対応（2026-10-03、PR #6）
+
+PR #6 への Copilot のレビュー（2 件、どちらも high）に対応した。どちらも変更前の compiler で再現した。
+
+1. **所有の関数値の本体が Copy でない捕捉値を繰り返し move できた。** `closures::lower` の検査は `needs_drop` が偽の捕捉値を飛ばしていた。
+   `extern type` のハンドルは Copy でなく drop glue もなく `Send` を満たすので、本体が消費する extern へ渡せ、`Owned.call` を二回呼ぶと同じハンドルを二回閉じた
+   （native のホストが同じ pointer の二重 free で止まった）。検査を飛ばすのを Copy の捕捉値（`Type::is_copy`）だけにした。
+2. **`drop` 本体の引数が値を置き換える関数へ逃げられた。** 置換の検査は `drop` 本体の直接の代入だけを見ていた。`ref mut` を受ける関数へ引数を渡すか、
+   generic な関数へ参照そのものを move すると、呼び出し先の `deref value = ...` が古い値を解放して同じ `drop` を呼び、スタックが尽きるまで再帰した。
+   `drop` 本体では、値全体の排他的な再借用（`ref mut` の引数へ渡すときの暗黙の再借用を含む）と `ref mut` の引数そのものの move も
+   E1012（`cannot pass the value on as 'ref mut' inside Drop.drop; read it or borrow it with 'ref' instead`）にした（`Checker::access`）。
+   呼び出しを通して「置き換えうる」性質を伝える方法は、関数値と generic なコードで保守的になるので採らなかった。record の field は元々変更できない（E1014）ので、
+   読み出しと `ref` での借用だけでは値を置き換えられない。
+
+- テスト: `tests/user_drop.rs` の `owned_function_lambdas_only_borrow_their_captures`（ハンドルの move の拒否と `ref` での借用の受理）と
+  `rejects_replacing_the_whole_value_inside_drop`（`reset value`・`reset (ref mut (deref value))`・`apply value reset`・`let other = value` の拒否と、`ref` で受ける関数への受け渡しの受理）。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/language-reference/ownership.md`、`_features/GUIDE.md`（D-31）。
+- 確認: `cargo test --release --locked` が 580 passed・0 failed、`cargo fmt --all -- --check`・`cargo clippy --locked --all-targets -- -D warnings` が成功。
+  `node tests/user_drop.mjs target/release/tsuzuri` が native と WASM の `-O0`・`-O3` で成功。fixture と examples の 105 個の IR（native と wasm32）が
+  変更前の build と byte 単位で一致した（受理するプログラムの生成コードは変わらない）。`node scripts/check-docs.mjs _docs/language-reference/ownership.md` が成功。

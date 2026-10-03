@@ -270,6 +270,7 @@ impl Checker<'_> {
                 bindings: vec![Binding {
                     name: ident("advance"),
                     mutable: false,
+                    using: false,
                     annotation: None,
                     value: advance.clone(),
                 }],

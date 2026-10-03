@@ -273,8 +273,6 @@ fn recognizes_optional_builder_operations_and_rejects_exception_syntax() {
         .unwrap();
     }
     for source in [
-        "Identity { use value = 1; return value }",
-        "Identity { use! value = 1; return value }",
         "Identity { try return 1 with | _ -> return 0 }",
         "Identity { try return 1 finally () }",
     ] {
@@ -284,6 +282,21 @@ fn recognizes_optional_builder_operations_and_rejects_exception_syntax() {
                 .code,
             "E1018",
             "{source}"
+        );
+    }
+    // B07: use and use! bind values whose type implements Drop.
+    for source in [
+        "Identity { use value = 1; return value }",
+        "Identity { use! value = 1; return value }",
+    ] {
+        let error = analyze_modules(&[("Identity.tc", IDENTITY), ("Main.tz", source)]).unwrap_err();
+        assert_eq!(error.code, "E1005", "{source}");
+        assert!(
+            error
+                .message
+                .starts_with("'use' needs a value whose type implements Drop; i64 does not"),
+            "{source}\n{}",
+            error.message
         );
     }
     analyze_modules(&[(

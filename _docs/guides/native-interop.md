@@ -173,6 +173,29 @@ int64_t counter_free(void *counter) {
 
 ハンドルは scope を抜けても何も呼ばれません。解放は `counter_free` のようなホスト関数へ値で渡して行い、move 済みの値は使えません。閉じ忘れはホスト資源の leak です。関数値には捕捉できず、`==` や表示もできません。
 
+### ハンドルを自動で閉じる
+
+scope の終わりに自動で閉じるには、ハンドルを record で包んで `Drop` を書きます。`drop` は `ref mut` で値を受け取るので、ハンドルを `ref` で受ける close を呼びます。
+
+```tsuzuri project=handle-drop
+extern type Counter
+extern "counter_new" def counter_new :: i64 -> Counter
+extern "counter_close" def counter_close :: ref Counter -> unit
+
+record Guard { counter: Counter }
+
+instance Drop<Guard> {
+    fn drop value = counter_close (ref value.counter)
+}
+
+export def opened :: i64 -> i64
+fn opened start =
+    let _guard = Guard { counter: counter_new start }
+    start
+```
+
+`_guard` は `opened` の終わりで一度だけ閉じられます。別の所有者へ move した場合は、その所有者が終わるときに閉じられます。早く閉じるには `Owned.drop` へ渡します。Drop を持つ record は export・extern の値にはなりません。
+
 native ではポインター 1 つ幅、wasm32 では i32（JavaScript では number）で渡ります。生成ヘッダーは `typedef struct tz_handle_… *` をハンドルの型として一度だけ出力し、`export def` の引数・結果にも使えます。ABI で使える位置は extern・export・コールバックの引数と結果で、ABI のレコードのフィールドや配列の要素にはできません。
 
 ## ホストへ関数を渡す

@@ -67,6 +67,11 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "Option { let! value = Some 1; return value }\n",
         ),
         (
+            "Option{use ! value=Some 1;return value}",
+            "Option { use! value = Some 1; return value }\n",
+        ),
+        ("use  held=make 1\nheld", "use held = make 1\nheld\n"),
+        (
             "let f=\\ x->\\ y->\\ z->x+y+z\nf 2 3 4",
             "let f = \\x -> \\y -> \\z -> x + y + z\nf 2 3 4\n",
         ),

@@ -324,6 +324,7 @@ impl Build<'_> {
                 bindings.push(Binding {
                     name: self.ident(&name),
                     mutable: false,
+                    using: false,
                     annotation: None,
                     value,
                 });
@@ -352,6 +353,7 @@ impl Build<'_> {
                 bindings.push(Binding {
                     name: self.ident(&name),
                     mutable: false,
+                    using: false,
                     annotation: None,
                     value,
                 });
@@ -569,6 +571,7 @@ impl Build<'_> {
                             Ok(Binding {
                                 name: self.ident(format!("{name}_tag")),
                                 mutable: false,
+                                using: false,
                                 annotation: None,
                                 value: self.tag(union, name)?,
                             })

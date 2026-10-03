@@ -37,9 +37,9 @@
 | B02 | Option / Result ビルダーで失敗時に継続を短絡 | [計算式](language-reference/computation-expressions.md) | [B02](../_features/_completed/B02-result-propagation.md) |
 | B03 | 通常ループの break / continue と解放 | [ループ](language-reference/control-flow.md) | [B03](../_features/_completed/B03-break-continue.md) |
 | B04 | bool / Option の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
-| B05 | match! / and!、BindReturn / Bind2。use / try は未対応 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
+| B05 | match! / and!、BindReturn / Bind2。use / use! は B07 で対応、try は未対応 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
 | B06 | parallel_results の未開始停止と最小 index の Error | [Task](language-reference/tasks.md) | [B06](../_features/_completed/B06-task-cancellation.md) |
-| B07 | 未着手（計画）: 利用者定義の Drop とリソース型 | [所有権](language-reference/ownership.md) | [B07](../_features/B07-user-drop.md) |
+| B07 | 対応: 利用者が宣言した record・union の `instance Drop<T>`。scope の終わり・置き換え・コレクションの要素・未実行の Task の捕捉値・再帰 union のノードで一度だけ `drop` を呼び、field を宣言順に解放する（native と WASM、100 万段の再帰 union を検証）。Drop 型は非 Copy で、field の move と更新は `E1012`。Phase 2 で `use` / `use!` 束縛、早期解放の `Owned.drop`、Drop 型を捕捉できる非 Copy の関数値 `Owned.function` / `Owned.call`。`extern type` への直接の `Drop` は未実装 | [所有権](language-reference/ownership.md) | [B07](../_features/_completed/B07-user-drop.md) |
 | B08 | 未着手（計画）: 非同期計算とホスト駆動の実行 | [Task](language-reference/tasks.md) | [B08](../_features/B08-async.md) |
 
 ## C コレクションとデータ
@@ -140,7 +140,7 @@
 
 - 独立した複数 record region、region を保持する関数値型、排他借用フィールド。
 - HKT 型別名、高階 kind 引数、標準 Functor / Monad の自動導入。
-- use / try / catch / finally、外部キャンセルトークン、開始済み Task の強制停止。
+- try / catch / finally、外部キャンセルトークン、開始済み Task の強制停止。
 - 文字列補間、locale 書式、一般的な Unicode 正規化、可変スライス、HashMap。
 - registry / git 依存、lockfile と版解決、ネットワーク取得、build script。
 - 任意関数の実行時 CPU dispatch、SVE / SVE2、GPU 自動 offload、float / 64-bit WGSL。

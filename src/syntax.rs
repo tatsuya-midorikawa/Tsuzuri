@@ -722,6 +722,8 @@ pub struct MatchArm {
 pub struct Binding {
     pub name: Ident,
     pub mutable: bool,
+    /// A `use` binding: a `let` whose value type must implement `Drop` (B07).
+    pub using: bool,
     pub annotation: Option<TypeExpr>,
     pub value: Expr,
 }

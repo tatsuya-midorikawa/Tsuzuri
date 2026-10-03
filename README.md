@@ -99,7 +99,7 @@ def main :: i64 = answer()
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。明示ブロックと型で解決する暗黙本体。束縛・短絡・分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
-| メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放。GC・参照カウント・手動解放なし |
+| メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放し、record・union の `instance Drop` でメモリ以外の資源も一度だけ解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。extern のリンク名・不透明ハンドル・静的コールバック、native のホストリンク指定。標準入出力は IO、UI・ファイル・ネットワークはホストの責務 |
@@ -359,7 +359,7 @@ match answer with
 未知・逃げる継続は従来の所有する関数値を使います。
 性能の条件と手書き Tsuzuri／C++ との実測は [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。
 `match!`と`and!`、ビルダーが提供する`MergeSources`／`BindReturn`／`Bind2`に対応します。and!の右辺は左から右に一度ずつ評価し、自動並列化しません。
-F#の全機能互換ではなく、例外処理・use・カスタム演算は未対応です。use/try構文はE1018で拒否し、所有値のlet/dropとOption/Resultを使います。
+F#の全機能互換ではなく、例外処理・カスタム演算は未対応です。try構文はE1018で拒否し、所有値のlet/dropとOption/Resultを使います。`use`／`use!`はDropを持つ値の束縛で、letと同じscopeの終わりに解放します。
 実行例は `tsuzuri run examples/computations`、
 詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) を参照してください。
 
@@ -614,6 +614,10 @@ Rust との互換のため `&x`／`&mut x`／`*r`／`&mut *r`／`&*r` と `&T`�
 `byte` は `i8`、`ubyte` は `i8u` の別名です。旧 `Int`／`Float`／`Bool`／`Unit` は廃止しました。
 型注釈や `1i32`／`0.1d128` のような接尾辞で型を選べます。
 所有者より長生きする参照、借用中の move、共有借用と排他借用の競合をコンパイル時に拒否します。
+record・union に `instance Drop<T> { fn drop value = ... }` を書くと、値が終わる時点（scope の終わり、代入での置き換えなど）で
+`drop` を一度だけ呼びます。ファイルやホストのハンドルを閉じる RAII に使えます。
+`use` 束縛はその値が `Drop` を持つことを検査し、`Owned.drop` はその場で解放します。
+資源を捕捉する関数値は `Owned.function` で作り、`Owned.call` で借用したまま呼びます（複製できない関数値）。
 Rust の全機能を実装するものではなく、名前付きライフタイム、借用を含むレコード、
 一時値からの直接の借用にはまだ対応していません。詳しくは [言語仕様](docs/language.md) を参照してください。
 
@@ -778,6 +782,7 @@ node tests/wasm_simd.mjs target/release/tsuzuri # llvm-objdump required; TSUZURI
 node tests/simd.mjs target/release/tsuzuri # same llvm-objdump requirement
 node tests/cpu_dispatch.mjs target/release/tsuzuri
 node tests/host_imports.mjs target/release/tsuzuri
+node tests/user_drop.mjs target/release/tsuzuri
 node tests/ffi_extensions.mjs target/release/tsuzuri # wasm64 runs under Node.js 24 or newer; older engines only link it
 node tests/io.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri # llvm-dwarfdump required; TSUZURI_DWARFDUMP overrides it

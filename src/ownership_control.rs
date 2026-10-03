@@ -99,6 +99,7 @@ impl Checker<'_> {
         let root = Place {
             root: local.id,
             fields: Vec::new(),
+            through_drop: false,
         };
         self.state
             .aliases

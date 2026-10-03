@@ -127,7 +127,7 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Seq`、`Test`、`Gpu`、`IO`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`
 
 現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
 型汎用の数学関数を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
@@ -232,6 +232,7 @@ symbolは255byte以下のC識別子（`[A-Za-z_][A-Za-z0-9_]*`）で、`tz_`・`
 `extern type Counter`はホストが所有する資源を指す型です（`private extern type`も可）。型引数・本体・link名を取らず（E0002）、名前や修飾のrecordと同じ規則です（重複はE1001）。
 値を作る式はなく、externの結果またはexportの引数からだけ得ます。Copyでもclone可能でもなく、値渡しはmove（その後の使用はE1012）、`ref`は共有借用です。関数値に捕捉できず（E1005）、`Eq`や`Display`はinstanceを持ちません。
 ハンドルはscopeを抜けても何も呼ばれません（drop glueなし）。解放は利用者がcloseのexternへ値で渡して行います。閉じ忘れはホスト資源のleakです。
+scopeの終わりに自動で閉じるには、ハンドルをrecordで包んで`instance Drop`を書き、`drop`から`ref`を受けるcloseを呼びます（[利用者定義の解放](#利用者定義の解放)）。
 
 ABIで使える位置はextern・`export def`・コールバックの引数（`H`と`ref H`）と、extern・`export def`の結果（`H`）です。ABIのrecordのfield・bufferの要素・`ref mut H`はE1008です。ABI以外では通常のCopyでない値としてrecord・union・配列・`Option`に入れてよいです。
 nativeではポインター1つ幅（LLVM `ptr`）、wasm32ではi32（JavaScriptではnumber）です。`ref H`もハンドルの値そのものを渡します。headerは`typedef struct tz_handle_<長さ付きの修飾名>_s *tz_handle_<…>;`をprototypeの前に一度だけ出します。
@@ -373,6 +374,7 @@ def main :: i32 = {
 共有参照を捕捉した関数値は、参照先の所有者より長生きできません。
 コピー・レコード・配列・関数呼び出しを経由してもこの寿命を追跡します。
 `ref mut T` またはそれを含む配列を再利用可能な関数値へ保存することはできず、`Capture` 制約で拒否します。
+`Drop` を持つ型も複製できないので `Capture` を満たしません。その値を持つ関数値は `Owned.function` で作ります（[利用者定義の解放](#利用者定義の解放)）。
 排他借用を取る関数はその場で完全適用します。例えば `(replace ref mut text) "new"` や
 `"new" |> replace ref mut text` は可能ですが、`let later = replace ref mut text;` はできません。
 関数の途中段階が借用を保存しないと証明できれば、その段階の借用は後続引数の評価前に終了します。
@@ -526,6 +528,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Hash` | `hash :: ref 'a -> i64u` | 全数値、bool、unit、文字列・文字。全要素がHashの配列・リスト・タプル |
 | `Default` | `default :: 'a`（`Default.default()`で呼ぶ） | 数値の0、false、unit、空文字列、文字の0、空配列・空リスト、全要素がDefaultのタプル |
 | `Elementary` | 超越関数用のメソッドなし制約 | f32／f64のみ。利用者はinstanceを追加できない |
+| `Drop` | `drop :: ref mut 'a -> unit`。値の終わりにdrop glueが呼び、式からは参照できない | なし。利用者が宣言したrecord・unionに書く（[利用者定義の解放](#利用者定義の解放)） |
 
 `Capture` は一回実行の `Task<T>`、およびそれを含む集約値も拒否します。
 `Send` はタスクの捕捉値と結果から推論され、特殊化時にも再検査します。
@@ -1178,6 +1181,56 @@ let len4 = text |> String.length
 ローカル所有値への参照、ブロックを抜けると無効になる参照、寿命を超える代入を拒否します。
 共有借用フィールドを持つレコードは、コピー・移動・部分move・入れ子・closure捕捉を通してloanを保持します。元所有者を越える返却、Taskへの送信、排他借用fieldを拒否します。
 一般的な入れ子参照の高度な推論、一時値の借用と寿命延長は未対応です。一時値は先に `let` で所有者へ束縛してください。
+
+#### 利用者定義の解放
+
+ファイル記述子・ソケット・ホストのハンドルのようなメモリ以外の資源は、record・union に組み込みクラス `Drop` の instance を書くと、
+値が終わる時点で一度だけ解放できます。新しい構文・予約語はありません。
+
+```text
+extern def drop_log :: i64 -> unit
+record Resource { id: i64, name: string }
+instance Drop<Resource> {
+    fn drop value = drop_log value.id
+}
+```
+
+- head は利用者がソースで宣言した record・union に、すべての型引数を互いに異なる型変数で書いたものです（`Drop<Handle<'a>>`）。
+  組み込み型・std の型・一部だけの具体化（`Drop<Handle<i64>>`）・制約付きの instance は `E1016` です。`deriving (Drop)` は `E1025` です。
+- `drop :: ref mut 'a -> unit` は drop glue が呼びます。`Drop.drop` を式で参照すると `E1016` です。
+- `Drop` を持つ型（Drop 型）は field の型によらず Copy ではなく、関数値・部分適用に捕捉できません（`E1005`）。`task` へは捕捉して送れます。
+  ABI の scalar record にもならず、`export`／`extern` の値にすると `E1008` です。
+- drop glue は利用者の `drop` を一回呼んでから、field・payload を宣言順に解放します。scope の中では束縛の逆順です。
+  scope の終わり、`break`・`continue`・`return`、代入で置き換わる古い値、捨てた一時値、コレクションの要素、未実行の Task の捕捉値、
+  再帰 union のノードで同じ規則に従い、move 済みの値では呼びません。
+- Drop 型から非 Copy の field・payload を move すること（値による pattern 束縛と一時値からの取り出しを含む）と、Drop 型の
+  `{ value with ... }` は `E1012` です。Copy の field の読み出し、`ref` による借用、値全体の move はできます。
+  `drop` の本体で引数全体を `deref value = ...` で置き換えると、古い値の解放が同じ `drop` を呼ぶので `E1012` です。
+  呼び出し先も置き換えられるので、引数を `ref mut` で渡すこと（参照そのものの move を含む）も `E1012` です。読み出しと `ref` での借用はできます。
+- 再帰 union の解放は反復で、ノードごとに `drop` を呼んでから子を待ちリストへ積みます。100 万段でもスタックを消費しません。
+- トラップは巻き戻さず、未実行の `drop` は走りません。`drop` 本体のトラップは通常のトラップで、`--trap-info` は本体の位置を指します。
+- 非再帰の Drop 型の値は末尾に 1 byte の生存フラグ（と alignment の埋め草）を持ちます。move 済みの領域はフラグが 0 なので `drop` を呼びません。
+  Drop 型の再帰 union は先頭の nullary case もノードに置きます。Drop を持たない型の表現と生成 IR は変わりません。
+- `use name = value` は `let` と同じ不変の束縛で、値の型に `Drop` を要求します（なければ `E1005`）。解放の時点は `let` と同じ
+  scope の終わりです。ブロック・関数本体・計算式・`task` に書け、`use mut` は `E0002` です。`use` は予約語ではなく、`use`（または `use!`）の
+  後に名前と `=`／`:`、または `mut` が続くときだけ束縛を始めます（`use x` は関数 `use` の呼び出しのままです）。
+- 計算式と `task` の `use! name = source` は `let!` と同じく値を取り出し、それを `use` で束縛します。`and!` とは組み合わせられません
+  （`E0002`）。計算式の `let!`／`use!` より後ろは継続の関数値なので、その前に束縛した Drop 型の値を後ろで使うと捕捉になり `E1005` です。
+- 早く解放するには `Owned.drop value` を呼びます。値を消費し、Drop 型なら `drop` がその場で走ります。
+- 関数値に Drop 型を捕捉するには、`Owned.function` の引数にラムダを直接書きます。結果の `Owned.Function<'a, 'b>` は Copy ではなく、
+  通常の関数値にも捕捉できず（`E1005`）、表現は opaque です（`E1022`）。`Owned.call (ref f) x` は環境を借用したまま何度でも呼べ、
+  値の終わりに捕捉値を一度だけ解放します。`task` へは送れます。
+  - ラムダの引数は一つです（ほかは `E1006`）。捕捉できるのは `task` と同じく所有値だけです（参照を含む型は `E1013`）。
+  - 本体は捕捉値を読む・`ref` で借用するだけです。Copy でない捕捉値（drop glue のないハンドルを含む）を move すると `E1012` です（`match` も `match ref x with` と書きます）。
+  - 変数やパイプを通したラムダは通常の関数値で、`Capture` の規則に従います。
+
+```text
+let log = File { handle: open_log () }
+let write = Owned.function (\line -> write_line (ref log) line)
+Owned.call (ref write) "start"
+Owned.call (ref write) "stop"   // write の終わりに log を一度だけ閉じる
+```
+
 Rust の所有権モデルを採用したサブセットであり、Rust の全構文・trait・ライフタイム機能との互換ではありません。
 
 #### 名前付き Region
@@ -1584,7 +1637,7 @@ and!は単純な識別子のlet!に続けます。mut・型注釈を許し、同
 単純なlet!と末尾returnだけでは、存在する場合に限ってBindReturnを使います。存在しなければBind+Returnです。型不一致なら通常の型エラーで、別経路へ黙って戻しません。
 これらはビルダーが定義した操作であり、コンパイラはモナド則やoperationの意味同値を仮定しません。Option/Resultは3操作を提供し、Resultは左のErrorを優先します。
 Delayがある場合の全体の遅延・Capture・外部可変変数の禁止は従来どおりです。and!はタスクを自動開始/並列化しません。
-use/tryはグローバル予約語にしませんが、計算式のuse束縛・try/with/finally構文はE1018です。任意destructor/unwindではなくletのlexical dropとOption/Resultを使います。
+use/tryはグローバル予約語にしません。計算式の`use`／`use!`は[利用者定義の解放](#利用者定義の解放)のとおりletのlexical drop（Drop型では利用者の`drop`）で、try/with/finally構文はE1018です。unwindではなく、lexical dropとOption/Resultを使います。
 カスタム演算、暗黙yield、高階型、ビルダーオブジェクトは追加しません。
 組み込み `task` は以下の一回実行・並列処理向けの専用 lowering を維持し、
 通常の再利用可能な継続へタスクをコピーする形には変更しません。
@@ -2293,6 +2346,9 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 | `Utf8String.clone` | `fn(ref utf8string) -> utf8string`。従来の UTF-8 バッファ複製 |
 | `unreachable` | `unit -> 'a`。必ずトラップする。任意の型が必要な、到達しない分岐に置く |
 | `to_string` | `Display<'a> => 'a -> string`。値を消費して表示用の所有文字列を返す |
+| `Owned.drop` | `'a -> unit`。値を消費してその場で解放する（[利用者定義の解放](#利用者定義の解放)） |
+| `Owned.function` | `('a -> 'b) -> Owned.Function<'a, 'b>`。引数に直接書いたラムダは Drop 型の値も捕捉できる |
+| `Owned.call` | `ref Owned.Function<'a, 'b> -> 'a -> 'b`。環境を借用したまま呼ぶ |
 
 `sqrt`／`floor`／`ceil`／`abs`／`to_float`／`to_int` は上記の固定シグネチャを維持しており、オーバーロードではありません。
 組み込み関数も通常の関数と同じくカリー化された関数値で、部分適用・パイプライン・高階関数の引数に使えます。
@@ -2306,7 +2362,7 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 ネイティブでは `llvm.trap` によるプロセス終了です。
 `tsuzuri run` は異常終了を診断しますが、言語内の回復可能な例外機構はありません。
 UI／公開 API の入力はホストでも検査してください。
-メモリ確保失敗もトラップします。トラップ時のスタック巻き戻しや destructor 実行は保証しません。
+メモリ確保失敗もトラップします。トラップ時のスタック巻き戻しは行わず、未実行の `Drop.drop` も走りません。
 
 ### 数学 API
 
@@ -2619,11 +2675,11 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E0001` / `E0002` / `E0003` | 字句／構文・深さ／ソースサイズ |
 | `E1001`–`E1010` | 名前、型、演算、引数、フィールド、ABI、リテラル、レイアウト |
 | `E1011` | 無効なモジュール名・重複モジュール、std の予約モジュール名、不正な std のパス |
-| `E1012` | move 後の使用、不正な move／代入先 |
-| `E1013` | 所有者を超える寿命、対応していない寿命表現、タスク境界を越える借用 |
+| `E1012` | move 後の使用、不正な move／代入先（Drop 型からの field・payload の move と更新、`Owned.function` の本体での捕捉値の move を含む） |
+| `E1013` | 所有者を超える寿命、対応していない寿命表現、タスク境界を越える借用（`Owned.function` のラムダの参照の捕捉を含む） |
 | `E1014` | 借用の競合、不変値への可変アクセス |
 | `E1015` | 曖昧な型変数、無限の推論型、不適切な多相性、検査時に参照かどうか未確定の `ref` の被演算子 |
-| `E1016` | 型クラス・インスタンスの不正な宣言や重複 |
+| `E1016` | 型クラス・インスタンスの不正な宣言や重複（`Drop` の instance と `Drop.drop` の参照を含む） |
 | `E1017` | 多相型・型別名・制約・特殊化・パターン展開・網羅性検査・反復解析の資源制限 |
 | `E1018` | ソースファイルの種別違反、未知のビルダー、必要なビルダー操作の不存在、std の `export` |
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |

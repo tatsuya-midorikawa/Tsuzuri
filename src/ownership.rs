@@ -11,12 +11,17 @@ mod control;
 struct Place {
     root: usize,
     fields: Vec<usize>,
+    /// A field or payload step starts at a value whose type implements Drop. The types along
+    /// `root` and `fields` decide it, so equal places always agree.
+    through_drop: bool,
 }
 
 /// Collection elements are conservatively one place.
 const ELEMENT: usize = usize::MAX;
 /// Every case payload of a union shares the storage after the tag.
 const PAYLOAD: usize = usize::MAX - 1;
+
+const MOVE_OUT_OF_DROP: &str = "cannot move a field or payload out of a value whose type implements Drop; borrow it with 'ref' instead";
 
 impl Place {
     fn overlaps(&self, other: &Self) -> bool {
@@ -83,6 +88,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
             true,
             &closed,
             function.is_task,
+            false,
             function.region_sources.as_ref(),
             &mut recovered,
         );
@@ -97,7 +103,7 @@ fn check_functions(
     let closed = closed_returns(module);
     let mut constraints = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
-    for function in &module.functions {
+    for (id, function) in module.functions.iter().enumerate() {
         if diagnostics.is_full() {
             break;
         }
@@ -109,6 +115,7 @@ fn check_functions(
             infer,
             &closed,
             function.is_task,
+            module.user_drops.values().any(|drop| *drop == id),
             function.region_sources.as_ref(),
             &mut recovered,
         );
@@ -133,6 +140,7 @@ fn check_body(
     infer: bool,
     closed: &[bool],
     task: bool,
+    user_drop: bool,
     region_sources: Option<&BTreeSet<usize>>,
     recovered: &mut Vec<Diagnostic>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
@@ -149,6 +157,8 @@ fn check_body(
         closed,
         recovered,
         reported: BTreeSet::new(),
+        // `Drop.drop` borrows the dropped value through its only parameter.
+        drop_root: user_drop.then(|| usize::MAX - parameters[0].id),
     };
     for parameter in parameters {
         let mut value = Value::default();
@@ -160,6 +170,7 @@ fn check_body(
                 Place {
                     root,
                     fields: Vec::new(),
+                    through_drop: false,
                 },
                 mutable,
                 BTreeSet::new(),
@@ -334,6 +345,8 @@ struct Checker<'a> {
     closed: &'a [bool],
     recovered: &'a mut Vec<Diagnostic>,
     reported: BTreeSet<usize>,
+    /// The root of the value that the checked `Drop.drop` body drops.
+    drop_root: Option<usize>,
 }
 
 impl Checker<'_> {
@@ -346,6 +359,7 @@ impl Checker<'_> {
                 body,
                 parameters,
                 captures,
+                ..
             } => (body.as_ref(), parameters.as_slice(), captures.as_slice()),
             E::Function(crate::check::FunctionRef::User(id))
             | E::GenericFunction(id, _)
@@ -566,6 +580,26 @@ impl Checker<'_> {
                 ),
             );
         }
+        // Replacing the value reruns this drop, and a `ref mut` callee could replace it too.
+        if place.fields.is_empty() {
+            if usage == Use::Write && Some(place.root) == self.drop_root {
+                return Err(error(
+                    "E1012",
+                    "cannot replace the whole value inside Drop.drop; read or borrow its fields instead",
+                    span,
+                ));
+            }
+            // A move of the parameter (`usize::MAX - drop_root`) passes the reference on.
+            if (usage == Use::MutBorrow && Some(place.root) == self.drop_root)
+                || (usage == Use::Consume && Some(usize::MAX - place.root) == self.drop_root)
+            {
+                return Err(error(
+                    "E1012",
+                    "cannot pass the value on as 'ref mut' inside Drop.drop; read it or borrow it with 'ref' instead",
+                    span,
+                ));
+            }
+        }
         if matches!(usage, Use::MutBorrow | Use::Write) {
             let mutable = if via.is_empty() {
                 self.state
@@ -618,20 +652,25 @@ impl Checker<'_> {
                 Place {
                     root: *id,
                     fields: Vec::new(),
+                    through_drop: false,
                 },
                 BTreeSet::new(),
             )]),
             E::Field(value, field) => {
+                let through_drop = value.ty.has_user_drop(&self.module.types());
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(*field);
+                    place.through_drop |= through_drop;
                 }
                 Ok(places)
             }
             E::UnionPayload { value, .. } => {
+                let through_drop = value.ty.has_user_drop(&self.module.types());
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(PAYLOAD);
+                    place.through_drop |= through_drop;
                 }
                 Ok(places)
             }
@@ -756,6 +795,7 @@ impl Checker<'_> {
             if moving
                 && (!via.is_empty()
                     || place.fields.contains(&ELEMENT)
+                    || place.through_drop
                     || self
                         .active()
                         .iter()
@@ -781,6 +821,9 @@ impl Checker<'_> {
                     },
                     expression.span,
                 ));
+            }
+            if moving && place.through_drop {
+                return Err(error("E1012", MOVE_OUT_OF_DROP, expression.span));
             }
             self.access(
                 &place,
@@ -978,6 +1021,7 @@ impl Checker<'_> {
                 parameters,
                 captures,
                 body,
+                ..
             } => {
                 result.closed_result = std::array::from_fn(|index| {
                     self.callback_returns_closed(expression, index + 1)
@@ -991,6 +1035,7 @@ impl Checker<'_> {
                     self.infer,
                     self.closed,
                     matches!(expression.ty, Type::Task(_)),
+                    false,
                     None,
                     self.recovered,
                 )?);
@@ -1247,6 +1292,15 @@ impl Checker<'_> {
                 }
             }
             E::Record(_) | E::RecordUpdate { .. } => {
+                if matches!(expression.kind, E::RecordUpdate { .. })
+                    && expression.ty.has_user_drop(&self.module.types())
+                {
+                    return Err(error(
+                        "E1012",
+                        "cannot update a value whose type implements Drop; construct a new value instead",
+                        expression.span,
+                    ));
+                }
                 let start = self.held.len();
                 for field in expression.children() {
                     let value = self.eval(field, Use::Consume, &during)?;
@@ -1304,6 +1358,13 @@ impl Checker<'_> {
                 }
             }
             E::Field(value, _) | E::UnionPayload { value, .. } => {
+                // The glue drops a temporary Drop value whole, so only Copy parts leave it.
+                if value.ty.has_user_drop(&self.module.types())
+                    && !self.is_copy(&expression.ty)
+                    && !self.require_copy(&expression.ty)
+                {
+                    return Err(error("E1012", MOVE_OUT_OF_DROP, expression.span));
+                }
                 let value = self.eval(value, Use::Consume, &during)?;
                 if expression.ty.carries_loans(&self.module.types()) {
                     result = value;

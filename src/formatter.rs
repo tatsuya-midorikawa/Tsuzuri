@@ -633,7 +633,10 @@ fn spacing(
     {
         return separated;
     }
-    if current.kind == Bang && matches!(previous.kind, Let | Do | Return | Yield) {
+    if current.kind == Bang
+        && (matches!(previous.kind, Let | Do | Return | Yield)
+            || matches!(&previous.kind, Ident(name) if name == "use"))
+    {
         return "";
     }
     if hints.prefixes.contains(&previous.span.start)
