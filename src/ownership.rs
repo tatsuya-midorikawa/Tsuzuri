@@ -580,16 +580,27 @@ impl Checker<'_> {
                 ),
             );
         }
-        if matches!(usage, Use::MutBorrow | Use::Write) {
-            if usage == Use::Write && Some(place.root) == self.drop_root && place.fields.is_empty()
-            {
-                // Replacing the value would drop the old one, which runs this drop again.
+        // Replacing the value reruns this drop, and a `ref mut` callee could replace it too.
+        if place.fields.is_empty() {
+            if usage == Use::Write && Some(place.root) == self.drop_root {
                 return Err(error(
                     "E1012",
                     "cannot replace the whole value inside Drop.drop; read or borrow its fields instead",
                     span,
                 ));
             }
+            // A move of the parameter (`usize::MAX - drop_root`) passes the reference on.
+            if (usage == Use::MutBorrow && Some(place.root) == self.drop_root)
+                || (usage == Use::Consume && Some(usize::MAX - place.root) == self.drop_root)
+            {
+                return Err(error(
+                    "E1012",
+                    "cannot pass the value on as 'ref mut' inside Drop.drop; read it or borrow it with 'ref' instead",
+                    span,
+                ));
+            }
+        }
+        if matches!(usage, Use::MutBorrow | Use::Write) {
             let mutable = if via.is_empty() {
                 self.state
                     .locals

@@ -980,9 +980,12 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   - 新しい std モジュール `Owned`（D-07）。`Owned.drop`・`Owned.function`・`Owned.call` は組み込み関数で、`std/Owned.tz` は opaque な
     non-Copy の `Owned.Function<'a, 'b>` だけを宣言する。std の関数を足すと生成関数の番号がずれ、Drop を使わないプログラムの IR が変わるため。
   - 関数値への Drop 型の捕捉（D5）は `Owned.function` の引数に直接書いた一引数のラムダだけに許す。捕捉は `Send`（参照なし）、
-    本体は解放の要る捕捉値を move できない（`E1012`）。環境は複製しないので `Owned.Function` は Copy でも `Capture` でもない。
+    本体は Copy でない捕捉値（drop glue のないハンドルを含む）を move できない（`E1012`）。環境は複製しないので `Owned.Function` は Copy でも `Capture` でもない。
   - `extern type` への直接の `Drop` は入れない。ハンドルの表現に生存フラグを足すと ABI が変わり、null／0 を move 済みの印にすると
     整数のハンドル 0 を閉じられない。record で包む方法（E12 D3）を維持する。
+- 2026-10-03、PR #6 のレビューを受けて、`drop` 本体で引数を `ref mut` で渡すこと（値全体の排他的な再借用と、引数の参照そのものの move）も
+  `E1012` にした。呼び出し先が値を置き換えると同じ `drop` が再び走る。所有の関数値の本体で move を禁じる捕捉値は、
+  解放の要る値から Copy でない値へ広げた（ハンドルを呼び出しごとに閉じられないようにする）。
 
 ## 10. 完了の定義（全チケット共通）
 

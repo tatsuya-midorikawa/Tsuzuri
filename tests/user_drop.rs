@@ -246,6 +246,23 @@ fn rejects_replacing_the_whole_value_inside_drop() {
     accepts(
         "record Resource { id: i64, name: string }\ndef reset :: ref mut Resource -> unit = \\value -> deref value = Resource { id: 0, name: \"\" }\nexport def outside :: i64\nfn outside =\n    let mut r = Resource { id: 1, name: \"a\" }\n    reset (ref mut r)\n    r.id\n",
     );
+    // A callee given the exclusive reference could replace the value just the same.
+    let reset = "extern def drop_log :: i64 -> unit\nrecord Resource { id: i64, name: string }\ndef reset :: ref mut Resource -> unit = \\value -> deref value = Resource { id: 0, name: \"\" }\ndef apply :: 'a -> ('a -> unit) -> unit = \\x f -> f x\ndef read :: ref Resource -> i64 = \\value -> value.id\n";
+    for body in [
+        "reset value",
+        "reset (ref mut (deref value))",
+        "apply value reset",
+        "{ let other = value; drop_log other.id }",
+    ] {
+        rejects(
+            &format!("{reset}instance Drop<Resource> {{ fn drop value = {body} }}"),
+            "E1012",
+            "cannot pass the value on as 'ref mut' inside Drop.drop; read it or borrow it with 'ref' instead",
+        );
+    }
+    accepts(&format!(
+        "{reset}instance Drop<Resource> {{ fn drop value = drop_log (read value + read (ref (deref value))) }}"
+    ));
 }
 
 /// The body of the LLVM function whose definition line contains `name`.
@@ -444,6 +461,18 @@ fn owned_function_lambdas_only_borrow_their_captures() {
         "E1012",
         "cannot move 'held' out of an owned function; borrow it with 'ref' instead",
     );
+    // A handle has no drop glue but is not Copy, so each call would close it again.
+    let handle = "extern type Counter\nextern def counter_open :: i64 -> Counter\nextern def counter_value :: ref Counter -> i64\nextern def counter_close :: Counter -> unit\nexport def owned :: i64\nfn owned =\n    let counter = counter_open 1\n";
+    rejects(
+        &format!(
+            "{handle}    let close = Owned.function (\\x -> {{ counter_close counter; x }})\n    Owned.call (ref close) 1\n"
+        ),
+        "E1012",
+        "cannot move 'counter' out of an owned function; borrow it with 'ref' instead",
+    );
+    accepts(&format!(
+        "{handle}    let read = Owned.function (\\x -> x + counter_value (ref counter))\n    Owned.call (ref read) 1\n"
+    ));
     rejects(
         &format!("{prefix}    let add = Owned.function (\\x y -> x + y + held.id)\n    0\n"),
         "E1006",

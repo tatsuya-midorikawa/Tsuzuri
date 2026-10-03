@@ -710,3 +710,24 @@ Drop のないプログラムは IR が同じなので変化しない。Drop 型
 - README の E2E のうち、変更が及ぶ 16 個（`user_drop`・`computations`・`control`・`e2e`・`primitives`・`strings`・`tasks`・`io`・`host_imports`・`ffi_extensions`・`examples`・
   `lsp_sessions`・`docgen`・`features`（4,958 case）・`cache`・`display_parse`）が成功。`node scripts/check-docs.mjs` が成功（84 pages・757 links・146 examples・
   254 native runs（O0/O3）・9 test projects）。
+
+## レビュー対応（2026-10-03、PR #6）
+
+PR #6 への Copilot のレビュー（2 件、どちらも high）に対応した。どちらも変更前の compiler で再現した。
+
+1. **所有の関数値の本体が Copy でない捕捉値を繰り返し move できた。** `closures::lower` の検査は `needs_drop` が偽の捕捉値を飛ばしていた。
+   `extern type` のハンドルは Copy でなく drop glue もなく `Send` を満たすので、本体が消費する extern へ渡せ、`Owned.call` を二回呼ぶと同じハンドルを二回閉じた
+   （native のホストが同じ pointer の二重 free で止まった）。検査を飛ばすのを Copy の捕捉値（`Type::is_copy`）だけにした。
+2. **`drop` 本体の引数が値を置き換える関数へ逃げられた。** 置換の検査は `drop` 本体の直接の代入だけを見ていた。`ref mut` を受ける関数へ引数を渡すか、
+   generic な関数へ参照そのものを move すると、呼び出し先の `deref value = ...` が古い値を解放して同じ `drop` を呼び、スタックが尽きるまで再帰した。
+   `drop` 本体では、値全体の排他的な再借用（`ref mut` の引数へ渡すときの暗黙の再借用を含む）と `ref mut` の引数そのものの move も
+   E1012（`cannot pass the value on as 'ref mut' inside Drop.drop; read it or borrow it with 'ref' instead`）にした（`Checker::access`）。
+   呼び出しを通して「置き換えうる」性質を伝える方法は、関数値と generic なコードで保守的になるので採らなかった。record の field は元々変更できない（E1014）ので、
+   読み出しと `ref` での借用だけでは値を置き換えられない。
+
+- テスト: `tests/user_drop.rs` の `owned_function_lambdas_only_borrow_their_captures`（ハンドルの move の拒否と `ref` での借用の受理）と
+  `rejects_replacing_the_whole_value_inside_drop`（`reset value`・`reset (ref mut (deref value))`・`apply value reset`・`let other = value` の拒否と、`ref` で受ける関数への受け渡しの受理）。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/language-reference/ownership.md`、`_features/GUIDE.md`（D-31）。
+- 確認: `cargo test --release --locked` が 580 passed・0 failed、`cargo fmt --all -- --check`・`cargo clippy --locked --all-targets -- -D warnings` が成功。
+  `node tests/user_drop.mjs target/release/tsuzuri` が native と WASM の `-O0`・`-O3` で成功。fixture と examples の 105 個の IR（native と wasm32）が
+  変更前の build と byte 単位で一致した（受理するプログラムの生成コードは変わらない）。`node scripts/check-docs.mjs _docs/language-reference/ownership.md` が成功。

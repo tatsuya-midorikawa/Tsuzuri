@@ -713,6 +713,7 @@ LLVM-only helperは到達した関数の要求分だけ生成し、公開ABIや�
 単相化の後、特殊化済みの関数の型が所有するDrop型（field・payload・要素・Taskの結果。参照と関数型は辿らない）を集めて`drop`を特殊化し、
 固定点の結果を`CheckedModule::user_drops`（`BTreeMap<Type, usize>`）に置きます。Drop instanceがなければ走査せず、IRも変わりません。
 所有権検査は`Place::through_drop`でDrop型を通るfield・payloadの場所を記録し、そこからのmove、Drop型の`RecordUpdate`、`drop`本体の引数全体への代入を拒否します。
+呼び出し先も置き換えうるので、`drop`本体では引数の値全体の排他的な再借用と、`ref mut`の引数そのもののmoveも拒否します（`Checker::drop_root`）。
 LLVMはmove済みの領域をzeroinitializerで埋め、その解放を無処理にする規則を保ちます。そのため非再帰のDrop型はrecordのfieldの後（unionはtagとpayloadの後）に
 `i8`の生存フラグを持ち、構築（recordリテラル・フレームの集約・`construct_value`）で1にします。全caseがnullaryのDrop unionは素のtagではなく`General(0)`です。
 drop glue（`drop_value`と`drop_framed`）はフラグが0でなければ値をentryのslotへ置いて`drop`を直接呼び、読み直した値のfieldを宣言順に解放します。
@@ -723,7 +724,7 @@ zeroの領域はフラグも0なので`drop`を呼ばず、fieldの解放も従�
 `use`束縛は`syntax::Binding::using`を持つ`let`で、型検査が値の型に`Drop`を要求します。計算式の`use!`は生成した継続の引数を`use`で束縛し直し、`task`の`use!`は`let!`と同じ`TaskRun`です。
 `Owned.drop`・`Owned.function`・`Owned.call`は組み込み関数で、`std/Owned.tz`はopaqueなnon-Copyの`Owned.Function<'a, 'b> { run: 'a -> 'b }`だけを宣言します（std関数を足すと生成関数の番号がずれ、既存のIRが変わるため）。
 `Owned.function`の引数に直接書いたラムダは`TypedExprKind::Lambda::owned`になり、捕捉に`Capture`の代わりに`Send`を要求します（単相化後の再検査も同じ）。
-`closures::lower`は持ち上げた関数に`owned_captures`を立て、`TypedExpr::consuming_use`で、解放の要る捕捉値を本体がmoveしないことを確かめます。
+`closures::lower`は持ち上げた関数に`owned_captures`を立て、`TypedExpr::consuming_use`で、Copyでない捕捉値（drop glueのない`extern type`のハンドルを含む）を本体がmoveしないことを確かめます。
 LLVMはその関数の捕捉引数を借用ローカルとして生成し、applyは本体を呼んでから、消費する呼び出しのときだけ`@tz.env.drop`を呼びます。
 環境のcloneは生成せず（記述子のclone pointerはnull）、`can_borrow`は偽にして既知のclosureの直接呼び出しと借用workerの特殊化に乗せません。
 `Owned.call`は環境の借用（`i1 true`）でapplyを呼び、`Owned.Function`は`can_capture`を満たさず、`clone_value`へ渡りません。

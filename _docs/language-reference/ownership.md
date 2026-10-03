@@ -129,6 +129,7 @@ fn take_name value = value.name                // E1012: Drop 型から string �
 fn rename value = { value with name = "c" }    // E1012: Drop 型の更新
 fn close value = Drop.drop (ref mut value)     // E1016: Drop.drop は自動で呼ばれる
 instance Drop<i64> { fn drop _value = () }     // E1016: 利用者が宣言した record・union だけ
+fn drop value = reset value                    // E1012: drop の中で値を ref mut で渡す（置き換えると drop がまた走る）
 ```
 
 Copy の field の読み出し、`ref` による借用、値全体の move はできます。ホストのハンドルを閉じる例は[外部関数](../guides/native-interop.md#ハンドルを自動で閉じる)にあります。

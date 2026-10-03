@@ -263,7 +263,7 @@ fn lower_expression(
             if *owned {
                 // The environment outlives each call, so the body must not move captures.
                 for capture in captures.iter() {
-                    if !capture.ty.needs_drop(types) {
+                    if capture.ty.is_copy(types) {
                         continue;
                     }
                     if let Some(span) = body.consuming_use(capture.id, types) {
