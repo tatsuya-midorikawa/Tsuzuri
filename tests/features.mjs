@@ -169,11 +169,16 @@ const interpolationPad = (text, width, align, fill = " ") => {
 };
 
 // References for the Format module and for Format instances: the spec grammar
-// [[fill]align][+][width][.precision][type] read over Unicode scalars.
+// [[fill]align][+][width][.precision][type] read over Unicode scalars. A fill is any scalar but { } " \ CR LF
+// (the lexer's rule), so half of a surrogate pair is no fill, and a precision has no leading zero except ".0".
 function parseFormatSpec(text) {
   const scalars = [...text], aligns = { "<": "left", "^": "center", ">": "right" };
+  const isFill = (scalar) => !["{", "}", "\"", "\\", "\r", "\n"].includes(scalar) && !(scalar.length === 1 && scalar >= "\uD800" && scalar <= "\uDFFF");
   let index = 0, fill = " ", align = "auto";
-  if (scalars.length >= 2 && Object.hasOwn(aligns, scalars[1])) { fill = scalars[0]; align = aligns[scalars[1]]; index = 2; }
+  if (scalars.length >= 2 && Object.hasOwn(aligns, scalars[1])) {
+    if (!isFill(scalars[0])) return null;
+    fill = scalars[0]; align = aligns[scalars[1]]; index = 2;
+  }
   else if (scalars.length >= 1 && Object.hasOwn(aligns, scalars[0])) { align = aligns[scalars[0]]; index = 1; }
   const plus = scalars[index] === "+";
   if (plus) index++;
@@ -189,8 +194,9 @@ function parseFormatSpec(text) {
   let precision = -1n, valid = width <= 4096n && !leadingZero;
   if (scalars[index] === ".") {
     index++;
+    const start = index;
     const [value, count] = digits();
-    valid = valid && count > 0 && value <= 4096n;
+    valid = valid && count > 0 && value <= 4096n && !(scalars[start] === "0" && count > 1);
     precision = value;
   }
   let kind = "plain";
@@ -203,7 +209,8 @@ const describeFormatSpec = (text) => {
 };
 const formatParseSpecs = ["", ">", "<5", "^7", "*>+8.2f", "\u{1F600}^4", "\u00e9<3", ">>5", "<<<", "+", "+5", "08", "0", "5", ".3e", ".", ".x",
   "x", "X", "o", "b", "e", "f", "4096", "4097", "99999999999", "+.2f", "-^6.1e", "q", "5x7", " >2", "5>", "\uD800<2", "\u{1F600}>+10.4X", "<+",
-  ".5.5", "++", "x ", "^^^^"];
+  ".5.5", "++", "x ", "^^^^", "\"<2", "\\<2", "{<2", "}<2", "\n<2", "\r<2", "\uD83D<2", "\uDE00>3", "\uD83D\uDE00<2", "'<2", "/>3", "0>5", "+<2",
+  "|^6", ".05", ".00", ".0", ".0f"];
 const formatPadSpecs = ["", "5", "<5", ">5", "^5", "*^7", "-^6", "\u{1F600}>4", "<3", "^2", "8", ">1", "^8", "*<9"];
 const formatPadTexts = ["", "ab", "\u00e9\u{1F600}", "\uD800", "abcdef", "\u{1F600}\u{1F600}", "x"];
 const formatPadReference = () => formatPadSpecs.flatMap((specText) => formatPadTexts.map((text) => {

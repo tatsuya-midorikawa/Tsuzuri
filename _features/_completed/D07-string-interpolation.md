@@ -236,7 +236,7 @@ fn greet =
 | `$"{42:x}"` | `2a` | `$"{0.125:.2}"` | `0.12` |
 | `$"{-255:X}"` | `-FF` | `$"{0.375:.2}"` | `0.38` |
 | `$"{5:b}"`・`$"{8:o}"` | `101`・`10` | `$"{2.5:.0}"` | `2` |
-| `$"{7:>4}"`・`$"{7:0>4}"` | `   7`・`0007` | `$"{1234.5:.2e}"` | `1.23e3` |
+| `$"{7:>4}"`・`$"{7:0>4}"` | `7` の前に空白 3 つ・`0007` | `$"{1234.5:.2e}"` | `1.23e3` |
 | `$"{"ab":*^5}"` | `*ab**` | `$"{0.1:.20}"` | `0.10000000000000000555` |
 | `$"{1:+}"` | `+1` | `$"{-0.0:.2}"` | `-0.00` |
 
@@ -557,7 +557,7 @@ helper（新規）で作る。`Number.prototype.toFixed` は同点を大きい�
   `$"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"` の digest。`spec_f32` [x] は同じ x の `Math.fround` で同じ式。
 - `spec_wide` [k]、k ∈ {0n..4n} → `0.1f16`、`0.1f128`、`0.125d32`、`2.5d64`、`1e-30d128` の `.3`・`.20`・`.2e` の digest。
   二進は 1/10 を 11 bit・113 bit の仮数へ最近接・偶数丸めした値から、decimal は係数と指数から参照を作る。
-- `spec_padding` → `$"{"é😀":*>5}|{"\uD800":3}|{"ab":^6}|{r:>8}"` の digest（`***é😀`、`\uD800` と空白 2 つ、`  ab  `、右揃えの label）。
+- `spec_padding` → `$"{"é😀":*>5}|{"\uD800":3}|{"ab":^6}|{r:>8}"` の digest（`***é😀`、`\uD800` と空白 2 つ、`ab` の前後に空白 2 つ、右揃えの label）。
 - `inspect(ir)`: `@tz_soft_format_spec` と `@tz\.format\.pad` があり、`@printf|@snprintf|@strtod|@strtof` がない。
 
 すべての case を native と WASM の `-O0`／`-O3` で実行し、native は `live == 0`、WASM は import が空であることを harness が確かめる。
@@ -734,3 +734,12 @@ Phase 1 の段 A・B と Phase 2（`Format` 型クラスと検証済みの書式
 
 - 書記素クラスター単位の幅は D09 の後に再検討する。`deriving (Format)`・`#` などは必要になったとき別に設計する。
 - 既存の不具合を一つ直した: 未定義の名前と instance が同じプログラムにあると `Classes::matching_instance` が panic していた（HEAD でも再現。E08 の報告に同じ記述）。
+
+### レビュー対応（PR #7 の Copilot レビュー）
+
+- `Format` の instance は、このプログラムで宣言した record と union にだけ書ける（GUIDE D-32 の記述どおりに検査する）。`instance Format<i64>`・`instance Format<string>`・std の union への instance は
+  `E1016`（`only records and unions declared in this program can implement Format`）。`polymorph.rs` の `validate_format_instance` が、`validate_drop_instance` と同じ位置で検査する。型引数は自由で、`instance Format<'a> => Format<Box<'a>>` は使える。
+  以前は、穴から呼ばれることのない instance を書けてしまっていた。`tests/string_interpolation.rs` に 3 ケースとメッセージの検査を足した。
+- `Format.parse` が lexer と同じ fill と precision の規則を守る。fill が `{`・`}`・`"`・`\`・CR・LF・サロゲートペアの片割れ（孤立サロゲート）のとき `None`（以前は `Some`）。precision の先頭の `0`（`.05`・`.00`）も `None`。`.0` と `.0f` は有効。
+  JavaScript の参照（`tests/features.mjs` の `parseFormatSpec`）と fixture（`tests/fixtures/string_interpolation/Main.tz` の `format_parse`）の spec の一覧に 18 件を足した。型文字と precision の組み合わせは、これまでどおり `Format.parse` では検査しない。
+- `_docs/library-reference/api/Format.md` を再生成した（case 名の接頭辞が古いままだった）。

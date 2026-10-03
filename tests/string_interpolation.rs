@@ -453,6 +453,19 @@ fn routes_specs_to_format_instances() {
         ),
         ("record Format { x: i64 }", "E1001"),
         ("union Format = One | Two", "E1001"),
+        // Only a record or union declared in the program can implement Format; a hole never reaches any other.
+        (
+            "instance Format<i64> {\n    fn format _value _spec = \"\"\n}",
+            "E1016",
+        ),
+        (
+            "instance Format<string> {\n    fn format _value _spec = \"\"\n}",
+            "E1016",
+        ),
+        (
+            "instance Format<Option.Option<i64>> {\n    fn format _value _spec = \"\"\n}",
+            "E1016",
+        ),
         // An unknown name next to an instance used to panic in instance matching.
         (
             "record Point { x: i64 }\ninstance Display<Point> {\n    fn display point = to_string point.x\n}\nDisplay.display (&missing)",
@@ -469,6 +482,12 @@ fn routes_specs_to_format_instances() {
         tsuzuri::analyze_modules(&[("Main.tz", "0"), ("Format.tz", "def f :: i64\nfn f = 1")])
             .unwrap_err();
     assert_eq!(error.code, "E1011", "{}", error.message);
+    let error =
+        analyze("instance Format<i64> {\n    fn format _value _spec = \"\"\n}").unwrap_err();
+    assert_eq!(
+        error.message,
+        "only records and unions declared in this program can implement Format"
+    );
 }
 
 #[test]

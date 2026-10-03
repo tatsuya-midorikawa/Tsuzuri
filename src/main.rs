@@ -35,8 +35,8 @@ Build options:
   --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
     --wasm-feature <name>   Opt in to simd128 (WASM build) or threads (wasm32 build)
     --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
-                            Process APIs to WASI preview1 (wasm32 object, LLVM IR, or WASM
-                            output; the default wasm32 output rejects those APIs)
+                            Process APIs to WASI preview1 (wasm32 object or WASM output;
+                            the default wasm32 output rejects those APIs)
     --wasm-max-memory SIZE  WASM linear memory limit (WASM build/test; default 16MiB,
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
@@ -1066,7 +1066,7 @@ mod tests {
             values.extend_from_slice(extra);
             parse(&values)
         };
-        for emit in ["wasm", "llvm", "object"] {
+        for emit in ["wasm", "object"] {
             let hosted =
                 host(&["--target", "wasm32", "--emit", emit, "--wasm-host", "wasi"]).unwrap();
             assert_eq!(hosted.options.wasm_host, Some(WasmHost::Wasi), "{emit}");
@@ -1075,10 +1075,19 @@ mod tests {
             host(&["--target", "wasm32"]).unwrap().options.wasm_host,
             None
         );
-        let requires = "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output";
+        // LLVM IR is refused: the WASI runtime (src/runtime/os-wasi.c) is compiled in only for objects and WASM.
+        let requires = "--wasm-host wasi requires wasm32 object or WASM output";
         for values in [
             vec!["--wasm-host", "wasi"],
             vec!["--target", "wasm64", "--wasm-host", "wasi"],
+            vec![
+                "--target",
+                "wasm32",
+                "--emit",
+                "llvm",
+                "--wasm-host",
+                "wasi",
+            ],
             vec![
                 "--target",
                 "wasm32",

@@ -52,6 +52,7 @@ enum {
     TZ_WASI_ILSEQ = 25,
     TZ_WASI_INTR = 27,
     TZ_WASI_INVAL = 28,
+    TZ_WASI_IO = 29,
     TZ_WASI_ISDIR = 31,
     TZ_WASI_NAMETOOLONG = 37,
     TZ_WASI_NOENT = 44,
@@ -671,7 +672,12 @@ int64_t tsuzuri_os_sleep(int64_t milliseconds) {
     tz_copy(subscription + 24, &timeout, sizeof timeout);
     uint32_t produced = 0;
     uint32_t error = tz_wasi_poll_oneoff(subscription, event, 1, &produced);
-    return error == 0 ? 0 : tz_error(error);
+    if (error != 0) return tz_error(error);
+    // One subscription must yield one event, and the event's own errno (a u16 after the 8-byte userdata)
+    // tells whether the wait itself failed even though the call succeeded.
+    if (produced != 1) return tz_status(TZ_OS_OTHER, TZ_WASI_IO);
+    uint32_t wait_error = (uint32_t)event[8] | ((uint32_t)event[9] << 8);
+    return wait_error == 0 ? 0 : tz_error(wait_error);
 }
 
 // Open files (File.Handle), as in os.c: a handle is (generation << 32) | (slot + 1).

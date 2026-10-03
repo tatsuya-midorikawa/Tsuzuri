@@ -171,7 +171,7 @@ native との違いは次のとおりです。
 - `Env.current_dir ()` は最初の preopen の名前（上の例では `/work`）を返します。`Env.args ()` は `args` の先頭（プログラム名）を除いた値です。
 - `Process.run` は `Other`（code 52）です。
 - 標準入出力か OS API を使う IO の入口は `_start` を export します。`IO<i32>` の値は `proc_exit` へ渡り、上の `wasi.start(instance)` の戻り値が終了コードになります。
-- `--wasm-host wasi` は wasm32 の `wasm`・`llvm`・`object` 出力だけで使えます。wasm64、`--emit header`、`--wasm-feature threads` との併用は `E2000` です。WASI preview2 とコンポーネントモデルは未対応です。
+- `--wasm-host wasi` は wasm32 の `wasm`・`object` 出力だけで使えます。wasm64、`--emit llvm`、`--emit header`、`--wasm-feature threads` との併用は `E2000` です（LLVM IR には WASI 用の runtime を結合できません）。WASI preview2 とコンポーネントモデルは未対応です。
 
 ## SIMD128
 

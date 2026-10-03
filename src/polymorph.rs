@@ -1205,6 +1205,9 @@ impl Classes {
                             instance.class.span,
                         )?;
                     }
+                    if class.builtin && class.name == "Format" {
+                        validate_format_instance(&ty, types, instance.class.span)?;
+                    }
                     for previous in self
                         .instances
                         .iter()
@@ -1886,6 +1889,30 @@ fn validate_drop_instance(
         ));
     }
     Ok(())
+}
+
+/// Interpolation holes hand only records and unions to `Format` (D07 D12), so an instance for any
+/// other type, or for a std record or union, could never be reached from a hole and would only
+/// look as if it worked. Any instantiation of a user type may have its own instance.
+fn validate_format_instance(
+    head: &Type,
+    types: &TypeContext<'_>,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    let origin = match head {
+        Type::Record(id, _) => Some(types.records[*id].origin),
+        Type::Union(id, _) => Some(types.unions[*id].origin),
+        _ => None,
+    };
+    if origin == Some(ModuleOrigin::User) {
+        Ok(())
+    } else {
+        Err(Diagnostic::new(
+            "E1016",
+            "only records and unions declared in this program can implement Format",
+            span,
+        ))
+    }
 }
 
 fn instance_function(

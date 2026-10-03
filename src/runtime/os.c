@@ -585,19 +585,25 @@ struct tz_os_capture {
     size_t capacity;
 };
 
-// Reads what a child's pipe has, until it would block. A false result is a read failure.
-static int tz_os_drain(struct tz_os_capture *capture) {
-    for (;;) {
+// Reads what a child's pipe has, until it would block or `allowed` more bytes are in, so a child that keeps
+// its pipe full cannot make this loop (and the buffer) grow past the budget. A false result is an
+// allocation failure.
+static int tz_os_drain(struct tz_os_capture *capture, size_t allowed) {
+    while (allowed > 0) {
         if (capture->length == capture->capacity) {
             size_t next = capture->capacity == 0 ? 4096 : capture->capacity * 2;
+            if (next - capture->length > allowed) next = capture->length + allowed;
             unsigned char *larger = realloc(capture->data, next);
             if (larger == NULL) return 0;
             capture->data = larger;
             capture->capacity = next;
         }
-        ssize_t count = read(capture->descriptor, capture->data + capture->length, capture->capacity - capture->length);
+        size_t room = capture->capacity - capture->length;
+        if (room > allowed) room = allowed;
+        ssize_t count = read(capture->descriptor, capture->data + capture->length, room);
         if (count > 0) {
             capture->length += (size_t)count;
+            allowed -= (size_t)count;
             continue;
         }
         if (count == 0) {
@@ -611,6 +617,7 @@ static int tz_os_drain(struct tz_os_capture *capture) {
         capture->descriptor = -1;
         return 1;
     }
+    return 1;
 }
 
 static void tz_os_close_pipe(int pipe_ends[2]) {
@@ -666,7 +673,7 @@ TZ_OS_API int64_t tsuzuri_os_spawn(struct tz_os_buffer *output, const unsigned c
             start = (size_t)index + 1;
         }
     }
-    int standard_input[2], standard_output[2], standard_error[2];
+    int standard_input[2] = {-1, -1}, standard_output[2] = {-1, -1}, standard_error[2] = {-1, -1};
     posix_spawn_file_actions_t actions;
     pid_t child = 0;
     int error = 0;
@@ -750,8 +757,10 @@ TZ_OS_API int64_t tsuzuri_os_spawn(struct tz_os_buffer *output, const unsigned c
                     close(writing);
                     writing = -1;
                 }
-            } else if (!tz_os_drain(&streams[kinds[index]])) {
-                failed = ENOMEM;
+            } else {
+                // A read stops one byte past the limit, which the check after this loop treats as too much.
+                size_t allowed = (size_t)TZ_OS_MAX_CAPTURE + 1 - streams[0].length - streams[1].length;
+                if (!tz_os_drain(&streams[kinds[index]], allowed)) failed = ENOMEM;
             }
         }
         if (failed) break;

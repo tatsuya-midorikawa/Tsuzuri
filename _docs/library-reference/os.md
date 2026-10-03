@@ -517,7 +517,7 @@ error[E2000]: wasm output cannot use the File, Dir, Env, Time, Random, or Proces
 - `Env.current_dir ()` は最初の preopen の名前（例: `/work`）を返します。
 - `Process.run` は `Other`（code 52）です。
 - 標準入出力も WASI（`fd_read`、`fd_write`）へ下がり、`tsuzuri_io` の import は出ません。
-- 組み合わせは wasm32 の `wasm`、`llvm`、`object` 出力だけです。wasm64、`--emit header`、`--wasm-feature threads` との併用は `E2000` です。
+- 組み合わせは wasm32 の `wasm`、`object` 出力だけです。wasm64、`--emit llvm`、`--emit header`、`--wasm-feature threads` との併用は `E2000` です。`--emit llvm` は、WASI 用の runtime を結合できず、未解決の関数が残るため拒否します。
 - WASI preview2 とコンポーネントモデルは未対応です。
 
 ビルドと実行の手順は [WASM ガイド](../guides/webassembly.md#os-api-と-wasi)を参照してください。同じプログラムの native と WASI の結果は、システムのエラーコードを除いて一致することを `node:wasi` で検証しています。

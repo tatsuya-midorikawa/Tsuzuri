@@ -1054,6 +1054,8 @@ def main :: IO<unit> =
     do! say (sizes_text large)
     let! both = Process.run "/bin/sh" ["-c", "head -c 300000 /dev/zero; head -c 300000 /dev/zero >&2"] nothing
     do! say (sizes_text both)
+    do! run_say "/bin/sh" ["-c", "head -c 1073741825 /dev/zero"] nothing
+    do! run_say "/bin/sh" ["-c", "yes"] nothing
     let! before = count ()
     let! failures = spawn_many 300 0
     let! after = count ()
@@ -1080,6 +1082,9 @@ def main :: IO<unit> =
       "code=0 out=0 err=0",
       "code=0 out=5000000 err=0",
       "code=0 out=300000 err=300000",
+      // The output of both streams together stops at 2^30 bytes: the child is killed and the call fails, even for a child that never stops writing.
+      message("other", errno.EFBIG),
+      message("other", errno.EFBIG),
       "spawned failures:0 same:true",
     ]);
     assert.ok(!existsSync(join(cwd, "pwned")), "an argument is never run as shell code");
@@ -1250,23 +1255,24 @@ def main :: IO<unit> =
   for (const [extra, expected] of [
     [["--target", "wasm32", "--wasm-host", "nope"], "unknown wasm host 'nope'; the supported host is wasi"],
     [["--target", "wasm32", "--wasm-host", "wasi", "--wasm-host", "wasi"], "--wasm-host specified more than once"],
-    [["--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output"],
-    [["--target", "wasm64", "--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output"],
-    [["--target", "wasm32", "--emit", "header", "--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output"],
+    [["--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object or WASM output"],
+    [["--target", "wasm64", "--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object or WASM output"],
+    [["--target", "wasm32", "--emit", "llvm", "--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object or WASM output"],
+    [["--target", "wasm32", "--emit", "header", "--wasm-host", "wasi"], "--wasm-host wasi requires wasm32 object or WASM output"],
     [["--target", "wasm32", "--wasm-feature", "threads", "--emit", "object", "--wasm-host", "wasi"], "--wasm-host wasi cannot be combined with --wasm-feature threads"],
   ]) {
     const result = build(...extra);
     assert.equal(result.status, 2, `${extra}\n${result.stderr}`);
     assert.ok(result.stderr.includes(expected), `${extra}\n${result.stderr}`);
   }
+  assert.ok(!existsSync(join(root, "wasi-cli-output")), "a rejected option writes nothing");
   assert.ok(execute(compiler, ["run", wasiProject, "--wasm-host", "wasi"], {}, false).stderr.includes("--wasm-host is only valid with build"));
+  // LLVM IR keeps the tsuzuri_io imports of the default output: the WASI runtime is compiled in only for objects and WASM.
   const imports = ir => ir.split("\n").filter(line => line.startsWith("declare") && line.includes("@tsuzuri_io_"));
-  const plain = join(root, "wasi-plain.ll"), hosted = join(root, "wasi-hosted.ll");
+  const plain = join(root, "wasi-plain.ll");
   execute(compiler, ["build", wasiProject, "--target", "wasm32", "--emit", "llvm", "-o", plain]);
-  execute(compiler, ["build", wasiProject, "--target", "wasm32", "--emit", "llvm", "--wasm-host", "wasi", "-o", hosted]);
+  assert.equal(imports(readFileSync(plain, "utf8")).length, 2);
   assert.ok(imports(readFileSync(plain, "utf8")).every(line => line.includes('"wasm-import-module"="tsuzuri_io"')));
-  assert.equal(imports(readFileSync(hosted, "utf8")).length, 2);
-  assert.ok(imports(readFileSync(hosted, "utf8")).every(line => !line.includes("wasm-import-module")));
   const hostedObject = join(root, "wasi-hosted.o");
   execute(compiler, ["build", join(root, "project-files"), "--target", "wasm32", "--emit", "object", "--wasm-host", "wasi", "-o", hostedObject]);
   assert.deepEqual([...readFileSync(hostedObject).subarray(0, 4)], [0, 0x61, 0x73, 0x6d]);

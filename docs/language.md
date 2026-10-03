@@ -1003,7 +1003,7 @@ match Random.pcg_next_u32 generator with
 
 `build --target wasm32 --wasm-host wasi` は、標準入出力と OS API を WASI preview1（`wasi_snapshot_preview1`）の import に下げます。
 
-- 対象は wasm32 の object・LLVM IR・wasm 出力です。値は `wasi` だけで、`--wasm-feature threads`・wasm64・`--emit header`・`run` とは併用できません。
+- 対象は wasm32 の object・wasm 出力です。値は `wasi` だけで、`--wasm-feature threads`・wasm64・`--emit llvm`・`--emit header`・`run` とは併用できません。`--emit llvm` は、WASI の runtime（`src/runtime/os-wasi.c`）を結合できず未解決の import が残るため拒否します。
 - 到達した操作の import だけを出し、`IO` の入口があるときだけ `_start` を持ちます。`IO<i32>` の入口は `proc_exit` で終了コードを返します。
 - `Os.Error.code` は WASI の errno です。パスは、前方が（`/` の境界で）一致する最も長い preopen 名のディレクトリを起点に解決し、一致しないパスは最初の preopen の相対パスとして扱います。`Env.current_dir ()` は最初の preopen の名前（例えば `/work`）を返し、`Process.run` は `Other` です。
 - `node:wasi` で検証していて、システムのエラーコードを除いて native の結果と一致します。WASI preview2 とコンポーネントモデルは未対応です。
@@ -1621,7 +1621,7 @@ $"[{p:>10}][{p:+}][{p:.2}][{p:*^6}]"    // [       1,2][+1,2][1,2/2][*1,2**]
 - instance には、コンパイラが文法を検査した spec が正規形のテキストで渡ります。既定の fill（空白）と存在しない要素は省かれます（`{p:*>+8.2f}` は `*>+8.2f`、`{p: >10}` は `>10`、`{p:+}` は `+`）。
 - instance がすべての余白埋めを行います。コンパイラは結果を埋めも加工もしません。
 - instance がなく spec が width と align だけなら、従来どおりコンパイラが `Display` の結果を埋めます。`Format` instance だけを持つ型を spec なしの穴に書くと、`Display` がないので `E1005` です。
-- 数値・string・bool・char の穴は常に組み込みの書式で処理し、`Format` instance があっても使いません。
+- 数値・string・bool・char の穴は常に組み込みの書式で処理します。`Format` の instance は、このプログラムで宣言した record と union にだけ書けます。`instance Format<i64>` のように組み込みの型や std の型へ書くと `E1016` です。
 - `instance Format<'a> => Format<Box<'a>>` のような条件付き instance も使えます。`u8$"..."` の穴でも同じです。
 - 穴の型が型変数のまま数値の spec を付けると `E1003`（`annotate the value's type`）です。ジェネリックな関数では `Format<'a> =>` を宣言し、`Format.format value (ref spec)` を直接呼びます。直接呼べば実行時に作った文字列も渡せますが、spec の検査は instance の中の `Format.parse` が担当します。
 - `Format` は予約されたクラス名で、利用者の `record Format`・`union Format` は `E1001` です。`Format` はモジュール名としても予約済みです（`E1011`）。`deriving (Format)` はありません。
@@ -1633,7 +1633,7 @@ std の `Format` モジュールは、instance の中で spec を扱う部品を
 | `Format.Align` | `AlignAuto \| AlignLeft \| AlignCenter \| AlignRight`。`AlignAuto` は spec が揃えを指定しなかったことを表し、埋めるときは左です |
 | `Format.Kind` | `KindPlain \| KindLowerHex \| KindUpperHex \| KindOctal \| KindBinary \| KindExponent \| KindFixed`。type がなければ `KindPlain` です |
 | `Format.Spec` | `{ fill: string, align: Align, plus: bool, width: i64, precision: i64, kind: Kind }`。fill の既定は空白、width は指定なしで 0、precision は指定なしで -1 です |
-| `Format.parse` | `ref string -> Option<Format.Spec>`。spec の文法で分解し、文法に合わない文字列・先頭が `0` の width・4096 を超える値は `None` です。空文字列は既定の `Spec` です |
+| `Format.parse` | `ref string -> Option<Format.Spec>`。spec の文法で分解し、文法に合わない文字列・先頭が `0` の width や `.05` のように先頭が `0` の precision・4096 を超える値・lexer が拒否する fill（`{`・`}`・`"`・`\`・CR・LF、サロゲートペアの片割れ）は `None` です。type と precision の組み合わせは検査しません。空文字列は既定の `Spec` です |
 | `Format.pad` | `ref Format.Spec -> string -> string`。`width` Unicode スカラーまで `fill` で埋めます。`AlignAuto` は左揃え、`AlignCenter` は不足分の半分（切り捨て）を前に置きます。すでに幅以上なら変えません |
 
 ### Option と Result

@@ -689,7 +689,7 @@ tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 | `--cpu generic\|native` | 既定は `generic`（Clang のターゲット既定）。`native` はビルド機の命令セットとスケジューリングに最適化 |
 | `--wasm-max-memory SIZE` | WASM の build（object・llvm・wasm）と test の線形メモリ上限。既定 16MiB、64KiB の倍数で wasm32 は最大 4GiB-64KiB、wasm64 は最大 16GiB |
 | `--wasm-stack-size SIZE` | WASM 出力と test の main stack。既定 1MiB、16 の倍数で 64KiB 以上 |
-| `--wasm-host wasi` | wasm32 の object・LLVM IR・WASM で標準入出力と OS API を WASI preview1 の import へ下げる（build だけ。threads とは併用不可）。指定がなく OS API に到達すると `E2000` |
+| `--wasm-host wasi` | wasm32 の object・WASM で標準入出力と OS API を WASI preview1 の import へ下げる（build だけ。LLVM IR と threads とは併用不可）。指定がなく OS API に到達すると `E2000` |
 | `--json` | 標準エラーへ 1 行 1 JSON オブジェクトで診断を出力 |
 | `--` | 以降をパスとして解釈 |
 | `--help`, `--version` | ヘルプ／バージョン |

@@ -24,6 +24,12 @@ private def fill_units :: ref string -> i64
 fn fill_units text =
 	if is_high text 0 && is_low text 1 && is_align_at text 2 then 2 else (if is_align_at text 1 then 1 else 0)
 
+/// Whether the single unit at `index` can be a fill. The lexer refuses `{`, `}`, `"`, `\`, CR, and LF there, and a
+/// lone surrogate is not a Unicode scalar at all.
+private def is_fill_unit :: ref string -> i64 -> bool
+fn is_fill_unit text index =
+	!(is_high text index || is_low text index || is_at text index '{' || is_at text index '}' || is_at text index '"' || is_at text index '\\' || is_at text index '\r' || is_at text index '\n')
+
 private def align_of :: ref string -> i64 -> Align
 fn align_of text index = if is_at text index '<' then AlignLeft else (if is_at text index '^' then AlignCenter else AlignRight)
 
@@ -42,11 +48,14 @@ fn kind_at text index =
 		| 'f' -> KindFixed
 		| _ -> KindPlain
 
-/// Takes a spec apart; `None` when `text` is not a spec of the grammar `$"{x:spec}"` accepts. The text a
-/// `Format` instance receives is always valid.
+/// Takes a spec apart; `None` when `text` is not written the way `$"{x:spec}"` allows: a fill the lexer refuses
+/// (`{`, `}`, `"`, `\`, CR, LF, or half of a surrogate pair), a width that starts with 0, a precision with a leading
+/// 0 (`.05`), or a number above 4096. It checks the grammar only, so a type letter that does not fit the precision
+/// (`.2x`) is not rejected. The text a `Format` instance receives is always valid.
 def parse :: ref string -> Option.Option<Spec>
 fn parse text =
 	let fill_length = fill_units text
+	let fill_valid = fill_length != 1 || is_fill_unit text 0
 	let has_align = fill_length > 0 || is_align_at text 0
 	let fill = if fill_length > 0 then Option.get (String.slice text 0 fill_length) else " "
 	let align = if has_align then align_of text fill_length else AlignAuto
@@ -59,7 +68,7 @@ fn parse text =
 		width = width * 10 + digit_at text index
 		index = index + 1
 	let mut precision = -1
-	let mut valid = width <= 4096 && !leading_zero
+	let mut valid = fill_valid && width <= 4096 && !leading_zero
 	if is_at text index '.' then
 		index = index + 1
 		let mut value = 0
@@ -67,7 +76,8 @@ fn parse text =
 		while digit_at text index >= 0 && value <= 4096 do
 			value = value * 10 + digit_at text index
 			index = index + 1
-		valid = valid && index > start && value <= 4096
+		let padded_precision = digit_at text start == 0 && index - start > 1
+		valid = valid && index > start && value <= 4096 && !padded_precision
 		precision = value
 	let kind = kind_at text index
 	if kind != KindPlain then index = index + 1

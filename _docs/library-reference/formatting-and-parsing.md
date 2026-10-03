@@ -164,7 +164,7 @@ record または union の値に指定を付けた穴は、次のどちらかの
 - その型に `Format` インスタンスがある。
 - 指定に符号、精度、型文字のどれかがある。インスタンスがなければ `E1005`（`no instance for Format<Main.Point>; define an instance or use a supported type`）です。
 
-どちらでもない場合、つまり `Display` だけを持つ型に幅と揃えだけの指定を付けた穴は、コンパイラが `Display` の文字列を幅へ埋めます。指定のない穴は常に `Display` を使い、`Format` を呼びません。string、数値、bool、char の穴は組み込みの処理のままで、これらの型に書いた `Format` インスタンスは穴からは使われません。`u8$"..."` の穴でも規則は同じで、結果は UTF-8 へ変換されます。`instance Format<'a> => Format<Box<'a>>` のような条件付きインスタンスも使えます。
+どちらでもない場合、つまり `Display` だけを持つ型に幅と揃えだけの指定を付けた穴は、コンパイラが `Display` の文字列を幅へ埋めます。指定のない穴は常に `Display` を使い、`Format` を呼びません。string、数値、bool、char の穴は組み込みの処理のままです。`Format` インスタンスは、このプログラムで宣言した record と union にだけ書けます。`instance Format<i64>` のように組み込みの型や std の型へ書くと `E1016` です（`only records and unions declared in this program can implement Format`）。`u8$"..."` の穴でも規則は同じで、結果は UTF-8 へ変換されます。`instance Format<'a> => Format<Box<'a>>` のような条件付きインスタンスも使えます。
 
 ### インスタンスが受け取るもの
 
@@ -192,7 +192,7 @@ $"{Light:x} {Dark:>3} {Light:*^+8.2f} {Dark: <4} {Light:.2}"
 | `Format.Align` | `Format.AlignAuto \| Format.AlignLeft \| Format.AlignCenter \| Format.AlignRight`。指定に揃えがなければ `AlignAuto` |
 | `Format.Kind` | `Format.KindPlain \| Format.KindLowerHex \| Format.KindUpperHex \| Format.KindOctal \| Format.KindBinary \| Format.KindExponent \| Format.KindFixed`。型文字がなければ `KindPlain` |
 | `Format.Spec` | `{ fill: string, align: Format.Align, plus: bool, width: i64, precision: i64, kind: Format.Kind }`。`fill` は Unicode スカラー 1 個で既定は空白、`width` は幅がなければ 0、`precision` はなければ -1 |
-| `Format.parse text` | `ref string -> Option.Option<Format.Spec>`。指定を分解する。文法に合わない文字列、先頭が 0 の幅、4096 を超える値は `None` |
+| `Format.parse text` | `ref string -> Option.Option<Format.Spec>`。指定を分解する。文法に合わない文字列、先頭が 0 の幅、`.05` のように先頭が 0 の精度、4096 を超える値、コンパイラが拒否する埋め文字（`{`、`}`、`"`、`\`、CR、LF、サロゲートペアの片割れ）は `None` |
 | `Format.pad spec text` | `ref Format.Spec -> string -> string`。`text` を `spec.width` 個の Unicode スカラーまで `spec.fill` で埋める。`AlignAuto` は左揃えで、中央揃えは不足分の半分（切り捨て）を前に置く。すでに幅以上なら `text` をそのまま返す |
 
 `Format.parse` は文法だけを調べ、型文字と精度の組み合わせは検査しません。穴の指定はコンパイラが検査済みですが、`Format.format` に自分で渡した文字列は検査されません。

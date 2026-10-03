@@ -4,28 +4,28 @@
 
 ```tsuzuri
 union Align =
-  | Auto
-  | Left
-  | Center
-  | Right deriving (Eq)
+  | AlignAuto
+  | AlignLeft
+  | AlignCenter
+  | AlignRight deriving (Eq)
 ```
 
-How the text of a hole sits inside its width. `Auto` means that the spec names no alignment.
+How the text of a hole sits inside its width. `AlignAuto` means that the spec names no alignment.
 
 ## `Kind`
 
 ```tsuzuri
 union Kind =
-  | Plain
-  | LowerHex
-  | UpperHex
-  | Octal
-  | Binary
-  | Exponent
-  | Fixed deriving (Eq)
+  | KindPlain
+  | KindLowerHex
+  | KindUpperHex
+  | KindOctal
+  | KindBinary
+  | KindExponent
+  | KindFixed deriving (Eq)
 ```
 
-The `type` letter of a spec: `x`, `X`, `o`, `b`, `e`, `f`, or `Plain` when there is none.
+The `type` letter of a spec: `x`, `X`, `o`, `b`, `e`, `f`, or `KindPlain` when there is none.
 
 ## `Spec`
 
@@ -49,8 +49,10 @@ is 0 when the spec has none, and `precision` is -1 when it has none.
 def parse :: ref string -> Option.Option<Spec>
 ```
 
-Takes a spec apart; `None` when `text` is not a spec of the grammar `$"{x:spec}"` accepts. The text a
-`Format` instance receives is always valid.
+Takes a spec apart; `None` when `text` is not written the way `$"{x:spec}"` allows: a fill the lexer refuses
+(`{`, `}`, `"`, `\`, CR, LF, or half of a surrogate pair), a width that starts with 0, a precision with a leading
+0 (`.05`), or a number above 4096. It checks the grammar only, so a type letter that does not fit the precision
+(`.2x`) is not rejected. The text a `Format` instance receives is always valid.
 
 ## `pad`
 
@@ -58,6 +60,6 @@ Takes a spec apart; `None` when `text` is not a spec of the grammar `$"{x:spec}"
 def pad :: ref Spec -> string -> string
 ```
 
-`text` widened to the width of `spec` with its fill, aligned as it says (`Auto` is left). A text that is
+`text` widened to the width of `spec` with its fill, aligned as it says (`AlignAuto` is left). A text that is
 already as wide is returned unchanged.
 

@@ -284,12 +284,11 @@ impl BuildOptions {
             ));
         }
         if self.wasm_host.is_some()
-            && (self.target != Target::Wasm32
-                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm))
+            && (self.target != Target::Wasm32 || !matches!(self.emit, Emit::Object | Emit::Wasm))
         {
             return Err(driver_error(
                 "E2000",
-                "--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output",
+                "--wasm-host wasi requires wasm32 object or WASM output",
             ));
         }
         if self.wasm_host.is_some() && self.wasm_threads {
@@ -1608,18 +1607,20 @@ fn build_complete(
             "native parallel tasks require a POSIX or Windows toolchain; wasm32 provides the portable sequential backend",
         ));
     }
-    if cfg!(windows) && native_runtime && options.emit == Emit::Object {
-        return Err(driver_error(
-            "E2002",
-            "Windows COFF objects with embedded task, CPU, or IO runtime are not supported; emit LLVM and link the runtime once, or build an executable",
-        ));
-    }
+    // The OS-API errors come first: `os_runtime` is part of `native_runtime`, and the generic message below
+    // would send a Windows user to link a POSIX runtime that cannot be linked there.
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
     }
     if os_runtime && cfg!(windows) && options.target == Target::Native && options.emit != Emit::Llvm
     {
         return Err(driver_error("E2002", OS_WINDOWS_MESSAGE));
+    }
+    if cfg!(windows) && native_runtime && options.emit == Emit::Object {
+        return Err(driver_error(
+            "E2002",
+            "Windows COFF objects with embedded task, CPU, or IO runtime are not supported; emit LLVM and link the runtime once, or build an executable",
+        ));
     }
     protect_sources(project, output)?;
     protect_links(links, output)?;

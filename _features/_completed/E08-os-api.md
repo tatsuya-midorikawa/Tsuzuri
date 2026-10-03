@@ -203,7 +203,7 @@ def pcg_next_u64 :: Pcg -> (i64u * Pcg)                             // 上位 32
 | E2000 | 既定の wasm32 で `Os.__*` に到達 | `wasm32 output cannot use the File, Dir, Env, Time, or Random operating-system APIs because the default wasm32 target has no host imports; build for the native target, or keep to Path and Random.Pcg, which need no host` | なし |
 | E2002 | Windows の native で `Os.__*` に到達 | `the File, Dir, Env, Time, and Random operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux` | なし |
 | E2005 | `run` で `IO<i32>` 入口が非 0 で終了 | `program exited with code 3`（数値は実際の値） | なし |
-| E2000 | 段 C: `--wasm-host` の値が不正、重複、wasm32 以外 | `unknown wasm host 'x'; the supported host is wasi`、`--wasm-host specified more than once`、`--wasm-host wasi requires wasm32 object, LLVM IR, or WASM output` | なし |
+| E2000 | 段 C: `--wasm-host` の値が不正、重複、wasm32 以外 | `unknown wasm host 'x'; the supported host is wasi`、`--wasm-host specified more than once`、`--wasm-host wasi requires wasm32 object or WASM output` | なし |
 
 ### 資源上限
 
@@ -565,7 +565,7 @@ cargo test --locked honors_the_exact_specialization_limit
 
 - 決定: `Os.Error { kind: ErrorKind, code: i32 }`。code は errno（Phase 2 の Windows は `GetLastError`）、Tsuzuri が検出した失敗は 0。runtime は
   `(kind << 32) | (code & 0xffffffff)` の i64 を返し、`Os.error_of_status` が復号する。`Os.message` は kind を `not found`・`permission denied`・
-  `already exists`・`invalid input`・`invalid encoding`・`interrupted`・`other` とし、code が 0 以外なら ` (os error <code>)` を付ける。
+  `already exists`・`invalid input`・`invalid encoding`・`interrupted`・`other` とし、code が 0 以外なら、空白に続けて `(os error <code>)` を付ける。
 - 理由: `IO.Error` への case 追加は既存の網羅的な match を壊す。一つの scalar なら tuple の型 scheme を増やさず、隠れた errno 状態も持たない。
   `Os.encode`／`error_of_status` を公開するのは、他の std モジュールと E09 が共有するため（純粋なので安全）。
 - 状態: 既定案（実装者はこの案に従う）
@@ -690,7 +690,7 @@ byte 列の path API、`tsuzuri run` からの引数の受け渡し（`run` は�
 4. **チケット本文の訂正。** 「通常の `*`／`+` は overflow でトラップする」は誤りで、Tsuzuri の整数 `*`／`+` は折り返す（`i64u` も同じ）。PCG の計算は通常の演算で書ける。
 5. **D9 の影響。** HEAD の `tests/`・`examples/`・文書に `IO<i32>` の入口はなく、既存のプログラムの意味は変わらない（`grep -rn "IO<i32>"` で確認）。それ以外の `IO<'a>` は従来どおり値を捨てて 0 で終わる。
 6. **予約モジュール。** 23（C09 の後）から 31 になった（`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`）。`reserves_the_d07_table` の件数は正当な変更。利用者の `Path.tz` などは `E1011` になる（互換性に注意）。
-7. **`--wasm-host wasi` の組み合わせ。** wasm32 の object・LLVM IR・WASM 出力だけ。`--wasm-feature threads` と wasm64 は `E2000`。
+7. **`--wasm-host wasi` の組み合わせ。** wasm32 の object・WASM 出力だけ。LLVM IR は `os-wasi.c` を結合できず `tsuzuri_os_*`／`tsuzuri_io_*` が未解決のまま残るため `E2000`（レビュー対応で変更。最初の実装は LLVM IR も受理していた）。`--wasm-feature threads` と wasm64 も `E2000`。
 8. **`tsuzuri --help` の古い一文を直した。** 「All UI and I/O belong to the host」を、標準入出力と OS API は native に組み込みである旨に変えた。
 
 ### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Homebrew LLVM 21、rustc 1.98.1、Node v20.17.0）
@@ -709,3 +709,14 @@ byte 列の path API、`tsuzuri run` からの引数の受け渡し（`run` は�
 
 - Windows の OS API（`E2002`）は G10 と一緒に行う。Windows のコードは `cargo check --all-targets --target x86_64-pc-windows-msvc`（と `aarch64-pc-windows-msvc`）で型検査だけをした。実行の検証は Windows の CI でしかできない。
 - 既存の不具合を一つ直した: 未定義の名前（`Display.display (&missing)`）と instance が同じプログラムにあると、`Classes::matching_instance` が panic していた（HEAD でも再現）。型に未解決の変数が残るときは instance なしとして扱う。
+
+### レビュー対応（PR #7 の Copilot レビュー）
+
+- `--emit llvm` と `--wasm-host wasi` の併用を `E2000`（`--wasm-host wasi requires wasm32 object or WASM output`）にした。LLVM IR には `os-wasi.c` を結合しないので、`tsuzuri_os_*`／`tsuzuri_io_*` が未解決のまま残っていた。
+  `tests/os.mjs` と `src/main.rs` の test で、拒否されることと出力ファイルが書かれないことを確認し、README・`docs/language.md`・`docs/architecture.md`・`_docs` の説明を直した。
+- WASI の `Time.sleep_ms` が `poll_oneoff` の戻り値だけを見ていたので、event の数が 1 であることと、event 自身の errno（`event` の 8 byte 目からの u16）が 0 であることも検査する。
+- `Process.run` の出力の上限（標準出力と標準エラーの合計 2^30 byte）を、読み取りの途中でも守る。`tz_os_drain` は残りの予算（上限 + 1 byte から読んだ量を引いた値）を超えて読まず、buffer も予算で打ち切る。
+  以前は EAGAIN まで読み続けるので、書き続ける子がいると上限を越えて確保し続けられた。`tests/os.mjs` に `head -c 1073741825`（上限 + 1 byte）と `yes`（止まらない子）のケースを足し、どちらも子を終了させて `Other`（`EFBIG`）を返す。
+- `tsuzuri_os_spawn` の pipe の配列を `{-1, -1}` で初期化した。最初の `pipe` が失敗すると、未初期化の配列を `close` していた。
+- Windows の native で OS API に到達する object は、汎用の COFF の `E2002` ではなく OS API 用の `E2002`（`OS_WINDOWS_MESSAGE`）を返すように、判定の順序を入れ替えた。この経路は macOS では実行できず、`cargo check --all-targets` を
+  `x86_64-pc-windows-msvc` と `aarch64-pc-windows-msvc` で確認しただけで、実行は Windows の CI でしか検証できない。
