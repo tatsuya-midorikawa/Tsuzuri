@@ -217,8 +217,13 @@ impl FunctionEmitter<'_, '_> {
         if let (Some((label, slot, flag)), Some(finally)) = (&escape, &handled.finally) {
             self.begin(label);
             self.instruction(format!("store i1 1, ptr {flag}"));
+            // No value reached `result` on this path; a zeroed value drops as a no-op.
+            self.instruction(format!("store {llvm} zeroinitializer, ptr {result}"));
             self.jump(&finish);
             self.begin(&finish);
+            // A raise in `finally` leaves this `try`, so it drops the pending result.
+            let pending = self.value(format!("load {llvm}, ptr {result}"));
+            self.remember_temporary(ty, &pending, &[]);
             self.expression(finally);
             self.temporaries.truncate(temporary_base);
             let escaping = self.value(format!("load i1, ptr {flag}"));

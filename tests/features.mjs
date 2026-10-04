@@ -550,6 +550,8 @@ const suites = {
         ["float_power", [2, 10], 1024], ["float_power", [2, 0.5], Math.SQRT2], ["float_power", [9, 0.5], 3],
         ["float_power", [0, 0], 1], ["float_power_f32", [2, 0.5], Math.fround(Math.SQRT2)], ["float_power_f32", [3, 2], 9],
         ["nested_finally", [3n], 911n], ["nested_finally", [4000000000n], -89n], ["nested_finally", [-4000000000n], -189n],
+        ["finally_raises", [1n], 7n], ["finally_raises", [2n], -2n], ["finally_raises", [-2n], 7n],
+        ["finally_raises", [-3n], -2n], ["finally_raises", [4000000000n], -2n], ["finally_raises", [-4000000000n], -2n],
         ["loop_strings", [5n], 17000n], ["loop_strings", [12n], 28004n],
         ["uncaught", [1n], 2n],
         ["checked_message", [5n], 6n], ["checked_message", [2147483647n], BigInt(overflow)],

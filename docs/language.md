@@ -2950,6 +2950,7 @@ let power = 2I ** 100           // 1267650600228229401496703205376
 - `+`・`-`・`*`・`/`・`%`・`**` と単項 `-`、比較、`Display`・`Parse`・`Hash`・`Default` を持ちます。
 - `/` はゼロ方向への切り捨て、`%` は被除数と同符号の剰余です。ゼロ除算はトラップ（assertion）します。
 - `BigInt.of_i64 : i64 -> bigint`、`BigInt.to_i64 : ref bigint -> Option<i64>`（i64 に収まらなければ None）、`BigInt.of_string : ref string -> Option<bigint>`、`BigInt.compare : ref bigint -> ref bigint -> i64` を提供します。
+- 内部表現は不透明で、`BigInt` モジュールの外からの record 構築・field 参照・pattern 分解・record 更新は `E1022` です。
 
 ### 表示と解析
 
@@ -3183,7 +3184,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |
 | `E1020` | 不正なパターン、OR 束縛の不一致、未対応の認識器形式、union case の payload の不一致 |
 | `E1021` | 明示の `match`・関数ガードの網羅性の不足（不足する値の例を示す） |
-| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
+| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle`・`BigInt.BigInt` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
 | `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue`、`finally` を持つ `try` から出る `break`／`continue` |
 | `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
 | `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |

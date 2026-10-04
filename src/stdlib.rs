@@ -96,6 +96,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Owned.Function"
             | "Random.Pcg"
             | "File.Handle"
+            | "BigInt.BigInt"
     )
 }
 

@@ -8,7 +8,7 @@
 | `i8u` / `byte` | unsigned 8-bit natural number | `uy` | `86uy`, `0b00000101uy` |
 | `byte` | ASCII character | `B` | `'a'B` |
 | `byte[]` | ASCII string | `B` | `"test"B` |
-| `utf8char[]` | ASCII string | `B` | `u8"😊test"B` |
+| `utf8char[]` | Unicode scalar string | `B` | `u8"😊test"B` |
 | `i16` | signed 16-bit integer | `s` | `86s` |
 | `i16u` | unsigned 16-bit natural number | `us` | `86us` |
 | `i32` | signed 32-bit integer | none | `86` |

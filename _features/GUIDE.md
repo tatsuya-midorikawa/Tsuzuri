@@ -1163,7 +1163,7 @@ describe (Value 10) + first (5, 6) + classify (-3) + sum_to 4 + text.length + sh
 | `(5: i64)` | `E0002` expected the closing delimiter | `let x: i64 = 5` |
 | `Display.to_string 5` | `E1002` type class 'Display' has no method 'to_string' | `to_string 5` か `Display.display 5` |
 | `let new = 1`（`Atomic.new` なども） | `E0002`（`new` は予約語） | 別の名前（例: `create`） |
-| `abs (-2)`（整数） | `E1003` expected f64, found i64 | `Int.abs (-2)` |
+| `abs n`（`n` は整数。`let n = -2` など） | `E1003` expected an integer, found f64（2026-10-04 に確認。リテラルの `abs (-2)` は D-34 から f64 として受理される） | `Int.abs n` |
 | task の中の `if c then return v` | `E0002` | `if c { return v } else { return w }` |
 | 対の `def` で `fn name () = ...` | 古い署名として解釈される | `fn name _unit = ...` |
 | union を record の波括弧で書く | 構文エラー | `union Reading = Missing \| Value of i64` |

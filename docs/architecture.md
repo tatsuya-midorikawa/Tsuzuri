@@ -42,7 +42,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/constants.rs` | 定数の依存順評価、型別演算と資源上限、既存リテラルへの展開、定数・一時値の借用引数（`temporary_borrows`） |
 | `src/exceptions.rs` / `src/llvm_exception.rs` / `std/Exception.tz` | `try ... with ... finally`・`@checked`・単項 `+` の型検査（check の子モジュール）と lowering、`**` の lowering、std の `Exception`／`ExceptionKind` と `Err` の instance |
-| `std/BigInt.tz` | `bigint`。符号と、下位から並べた 10^9 進の桁（`[i64]`）による std ソースだけの多倍長整数。コンパイラは型名 `bigint` を `BigInt.BigInt` に、`I` 接尾辞のリテラルを桁の配列を渡す `BigInt.make` の呼び出しに写すだけ |
+| `std/BigInt.tz` | `bigint`。符号と、下位から並べた 10^9 進の桁（`[i64]`）による std ソースだけの多倍長整数（不透明 record）。コンパイラは型名 `bigint` を `BigInt.BigInt` に、`I` 接尾辞のリテラルを桁の配列を渡す `BigInt.make` の呼び出しに写すだけ |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |

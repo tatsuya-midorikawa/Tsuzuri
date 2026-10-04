@@ -132,8 +132,8 @@ fn row matrix index =
 | `row` | `ref Matrix<'a> -> i64 -> ref ['a]` | 行の部分参照（長さ `cols`、複製なし） | 行番号が範囲外 |
 | `as_array` | `ref Matrix<'a> -> ref ['a]` | 全要素の行優先の借用（長さ `rows * cols`） | なし |
 | `to_array` | `Matrix<'a> -> ['a]` | 行列を消費し、バッファを複製せずに返す | なし |
-| `map` | `Copy<'a> => ref Matrix<'a> -> ('a -> 'b) -> Matrix<'b>` | 同じ形の新しい行列。`transform` を行優先の順に一度ずつ呼ぶ | なし |
-| `fold` | `Copy<'a> => ref Matrix<'a> -> 'state -> ('state -> 'a -> 'state) -> 'state` | 行優先で左から右に集計する | なし |
+| `map` | `Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>` | 同じ形の新しい行列。`transform` を行優先の順に一度ずつ呼ぶ（std の高階関数と同じく関数が先。D-34） | なし |
+| `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref Matrix<'a> -> 'state` | 行優先で左から右に集計する | なし |
 | `transpose` | `Copy<'a> => ref Matrix<'a> -> Matrix<'a>` | `cols` 行 `rows` 列の新しい行列。出力 `(j, i)` = 入力 `(i, j)` | なし |
 | `add` | `Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>` | 要素ごとの `left + right` | `rows` か `cols` が異なる |
 | `mul` | `Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>` | 行列積（順序は下記） | `left.cols != right.rows`、`left.rows * right.cols` の溢れ |
@@ -219,7 +219,7 @@ Array.sum r + deref (Matrix.at (ref p) 0 1) + flat[3] + Option.get (Matrix.get (
 | `m.rows` | E1022 |
 | `let n = m` の後に `Matrix.rows (ref m)` | E1012 |
 | `let r = Matrix.row (ref m) 0` の後に `let n = m` と `r[0]` | E1014 |
-| `let w = Matrix.init 1 1 (\i j -> "x")` の後に `Matrix.map (ref w) (\s -> 1)` | E1005 |
+| `let w = Matrix.init 1 1 (\i j -> "x")` の後に `Matrix.map (\s -> 1) (ref w)` | E1005 |
 | `Matrix.of_array 2 2 [1, 2, 3]` | trap（`Assert`） |
 | `Matrix.mul (ref m) (ref m)` | trap（`Assert`。3 != 2） |
 | `deref (Matrix.at (ref m) 0 3)` | trap（`Assert`。平らな添字 3 は範囲内だが列が範囲外） |
@@ -328,11 +328,11 @@ fn as_array matrix = ref matrix.data
 def to_array :: Matrix<'a> -> ['a]
 fn to_array matrix = matrix.data
 
-def map :: Copy<'a> => ref Matrix<'a> -> ('a -> 'b) -> Matrix<'b>
-fn map matrix transform = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map (ref matrix.data) transform }
+def map :: Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
+fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map transform (ref matrix.data) }
 
-def fold :: Copy<'a> => ref Matrix<'a> -> 'state -> ('state -> 'a -> 'state) -> 'state
-fn fold matrix initial folder = Array.fold (ref matrix.data) initial folder
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref Matrix<'a> -> 'state
+fn fold folder initial matrix = Array.fold folder initial (ref matrix.data)
 
 def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>
 fn transpose matrix =

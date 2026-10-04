@@ -78,6 +78,29 @@ fn nested_finally value =
     | Ok result -> result * 100 + ran
     | Error _ -> -100 + ran
 
+/// A `finally` that raises leaves its `try`: the result it was holding is
+/// dropped, and an exception that was leaving is replaced.
+export def finally_raises :: i64 -> i64
+fn finally_raises value =
+    let outer =
+        try
+            let inner =
+                try
+                    let square = @checked value * value
+                    "owned " + to_string square
+                with
+                | e when value < 0 -> e
+                finally
+                    ignore (@checked value * 4611686018427387904)
+            match inner with
+            | Ok text -> text.length
+            | Error _ -> -1
+        with
+        | e is OverflowException -> e
+    match outer with
+    | Ok length -> length
+    | Error _ -> -2
+
 /// Owned values that a raise leaves are dropped exactly once.
 export def loop_strings :: i64 -> i64
 fn loop_strings count =
