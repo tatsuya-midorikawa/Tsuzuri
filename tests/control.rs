@@ -68,8 +68,8 @@ fn break_continue_ir_shapes() {
         "while true do break",
         "for index = 0 to 3 do continue",
         "for index = 3 downto 0 do if index == 1 then break else continue",
-        "for index in 9223372036854775806 .. 9223372036854775807 do continue",
-        "for index in -9223372036854775807 .. -1 .. -9223372036854775808 do continue",
+        "for index in 9223372036854775806l .. 9223372036854775807l do continue",
+        "for index in -9223372036854775807l .. -1 .. -9223372036854775808l do continue",
         "for index in 0 .. 3 .. 10 do continue",
         "for index in [1, 2, 3] do if index == 1 then continue else break",
         "for text in [|\"first\", \"second\"|] do if text.length == 5 then continue else break",
@@ -743,7 +743,7 @@ fn loops_and_guards_preserve_moves_loans_and_lifetimes() {
         "E1014",
     );
     rejects(
-        "let mut n = 0\nlet mut r = &n\nfor i = 1 to 3 do r = &i\n*r",
+        "let mut n = 0l\nlet mut r = &n\nfor i = 1i32 to 3 do r = &i\n*r",
         "E1003",
     );
     rejects(
@@ -786,7 +786,7 @@ fn control_lowering_is_direct_and_tail_calls_stay_loops() {
         assert!(ir.contains("llvm.loop.unroll.enable"), "{add}");
     }
     let ir = accepts(
-        "def f :: i64 -> i64\nfn f n = { let mut i = 0; let mut state = 1; while i < n do { state = (state ^ (state >>> 13)) * 17; i = i + 1; }; state }",
+        "def f :: i64 -> i64\nfn f n = { let mut i = 0; let mut state = 1; while i < n do { state = (state ^ (Bits.ushr state 13)) * 17; i = i + 1; }; state }",
     );
     assert!(!ir.contains("llvm.loop.unroll.enable"));
 }
@@ -840,6 +840,6 @@ fn recursion_checks_include_class_methods_and_operators() {
         "E1019",
     );
     accepts(
-        "class C<'a> { def f :: 'a -> i64 }\ninstance C<i64> { fn rec f n = if n == 0 then 0 else C.f (n - 1) }\nC.f 4",
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<i64> { fn rec f n = if n == 0 then 0 else C.f (n - 1) }\nC.f 4l",
     );
 }

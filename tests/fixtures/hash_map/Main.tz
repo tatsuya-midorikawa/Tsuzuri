@@ -6,8 +6,8 @@ fn run_map_ops start count seed =
     let mut step = 0
     while step < count do
         state = state * 6364136223846793005 + 1442695040888963407
-        let r = state >>> 33
-        let key = (r >>> 3) % 4099 * 8 - 16000
+        let r = Bits.ushr state 33
+        let key = (Bits.ushr r 3) % 4099 * 8 - 16000
         let op = r % 8
         if op < 4 then
             map = HashMap.insert map key step
@@ -17,7 +17,7 @@ fn run_map_ops start count seed =
             let found = HashMap.contains_key (ref map) key
             acc = acc * 31 + (if found then deref (HashMap.at (ref map) key) else 7)
         step = step + 1
-    HashMap.fold (ref map) (acc * 1000003 + HashMap.length (ref map)) (\total key value -> total * 31 + deref key * 7 + deref value)
+    HashMap.fold (\total key value -> total * 31 + deref key * 7 + deref value) (acc * 1000003 + HashMap.length (ref map)) (ref map)
 
 private def run_set_ops :: HashSet<i64> -> i64 -> i64 -> i64
 fn run_set_ops start count seed =
@@ -27,8 +27,8 @@ fn run_set_ops start count seed =
     let mut step = 0
     while step < count do
         state = state * 6364136223846793005 + 1442695040888963407
-        let r = state >>> 33
-        let key = (r >>> 3) % 4099 * 8 - 16000
+        let r = Bits.ushr state 33
+        let key = (Bits.ushr r 3) % 4099 * 8 - 16000
         let op = r % 8
         if op < 4 then
             set = HashSet.insert set key
@@ -37,7 +37,7 @@ fn run_set_ops start count seed =
         else
             acc = acc * 31 + (if HashSet.contains (ref set) key then 1 else 7)
         step = step + 1
-    HashSet.fold (ref set) (acc * 1000003 + HashSet.length (ref set)) (\total key -> total * 31 + deref key * 7)
+    HashSet.fold (\total key -> total * 31 + deref key * 7) (acc * 1000003 + HashSet.length (ref set)) (ref set)
 
 export def hash_ops :: i64 -> i64 -> i64
 fn hash_ops count seed = run_map_ops HashMap.empty() count seed
@@ -124,9 +124,9 @@ fn hash_set_borrowed_keys count =
 
 private def flood_mix :: i64u -> i64
 fn flood_mix hash =
-    let first = (hash ^ (hash >>> 33)) * 0xff51afd7ed558ccd
-    let second = (first ^ (first >>> 33)) * 0xc4ceb9fe1a85ec53
-    (second ^ (second >>> 33)) as i64
+    let first = (hash ^ (Bits.ushr hash 33)) * 0xff51afd7ed558ccd
+    let second = (first ^ (Bits.ushr first 33)) * 0xc4ceb9fe1a85ec53
+    (second ^ (Bits.ushr second 33)) as i64
 
 private def colliding_keys :: i64 -> Vec<i64>
 fn colliding_keys count =
@@ -182,7 +182,7 @@ fn hash_strings count =
         map = HashMap.insert map (to_string (index % 9)) (to_string index)
         index = index + 1
     map = HashMap.remove map "3"
-    HashMap.length (ref map) * 100000 + HashMap.fold (ref map) 0 (\total _key value -> total * 7 + value.length)
+    HashMap.length (ref map) * 100000 + HashMap.fold (\total _key value -> total * 7 + value.length) 0 (ref map)
 
 record Bucketed { value: i64 } deriving (Eq)
 

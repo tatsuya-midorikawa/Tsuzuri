@@ -15,6 +15,8 @@ mod constants;
 mod control;
 #[path = "derive.rs"]
 mod deriving;
+#[path = "exceptions.rs"]
+mod exceptions;
 #[path = "exhaustiveness.rs"]
 mod exhaustiveness;
 #[path = "higher_kinds.rs"]
@@ -86,6 +88,7 @@ pub enum Type {
 }
 
 impl Type {
+    pub const I32: Self = Self::Integer(32, true);
     pub const I64: Self = Self::Integer(64, true);
     pub const F64: Self = Self::Binary(64);
 
@@ -751,6 +754,10 @@ pub enum Builtin {
     OwnedFunction,
     /// `Owned.call :: ref Owned.Function<'a, 'b> -> 'a -> 'b` (B07).
     OwnedCall,
+    /// `not :: bool -> bool`; a full application is the `!` operator.
+    Not,
+    /// `ignore :: 'a -> unit` drops its argument, as in `do! action |> ignore`.
+    Ignore,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -979,6 +986,8 @@ impl Builtin {
         Self::OwnedDrop,
         Self::OwnedFunction,
         Self::OwnedCall,
+        Self::Not,
+        Self::Ignore,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1154,6 +1163,8 @@ impl Builtin {
             Self::OwnedDrop => "Owned.drop",
             Self::OwnedFunction => "Owned.function",
             Self::OwnedCall => "Owned.call",
+            Self::Not => "not",
+            Self::Ignore => "ignore",
             #[cfg(test)]
             Self::TestAdd => "Int.test_add",
             #[cfg(test)]
@@ -1512,11 +1523,11 @@ impl Builtin {
                     Self::ArrayToList => (vec![read_array()], list(), copy),
                     Self::ArraySortBy => (
                         vec![
-                            read_array(),
                             BuiltinType::Function(
                                 vec![borrowed(), borrowed()],
                                 Box::new(Concrete(Type::I64)),
                             ),
+                            read_array(),
                         ],
                         array(),
                         copy,
@@ -1529,8 +1540,8 @@ impl Builtin {
                         };
                         (
                             vec![
-                                read_list(),
                                 BuiltinType::Function(vec![input], Box::new(Var("b"))),
+                                read_list(),
                             ],
                             BuiltinType::List(Box::new(Var("b"))),
                             if self == Self::ListMap {
@@ -1544,12 +1555,12 @@ impl Builtin {
                     Self::ListToArray => (vec![read_list()], array(), copy),
                     Self::ListFoldRef => (
                         vec![
-                            read_list(),
-                            Var("state"),
                             BuiltinType::Function(
                                 vec![Var("state"), borrowed()],
                                 Box::new(Var("state")),
                             ),
+                            Var("state"),
+                            read_list(),
                         ],
                         Var("state"),
                         Vec::new(),
@@ -1880,7 +1891,8 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
-            Self::OwnedDrop => (vec![a()], Concrete(Type::Unit), Vec::new()),
+            Self::OwnedDrop | Self::Ignore => (vec![a()], Concrete(Type::Unit), Vec::new()),
+            Self::Not => (vec![Concrete(Type::Bool)], Concrete(Type::Bool), Vec::new()),
             Self::OwnedFunction | Self::OwnedCall => {
                 let run = BuiltinType::Function(vec![a()], Box::new(Var("b")));
                 let owned = BuiltinType::Std {
@@ -2358,6 +2370,24 @@ pub enum TypedExprKind {
         value: Box<TypedExpr>,
         case_id: usize,
     },
+    /// `@checked` integer arithmetic: an overflowing `+ - * **` or negation raises
+    /// OverflowException instead of wrapping. The child is the arithmetic node.
+    Checked(Box<TypedExpr>),
+    /// `try ... with`: a `Result` that is `Ok body` or `Error handler`.
+    Try(Box<TypedTry>),
+    /// The `i32` code of the exception that the enclosing `try` caught; only in its handler.
+    RaisedException,
+    /// Raises the exception that the enclosing handler did not match to the next `try`.
+    Reraise,
+}
+
+/// A checked `try ... with ... [finally ...]`. `handler` binds the caught exception
+/// from `RaisedException`, matches the arms, and ends in `Reraise` when no arm matches.
+#[derive(Clone, Debug)]
+pub struct TypedTry {
+    pub body: TypedExpr,
+    pub handler: TypedExpr,
+    pub finally: Option<TypedExpr>,
 }
 
 #[derive(Clone, Copy)]
@@ -2470,12 +2500,17 @@ impl TypedExpr {
             | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
+            | Checked(value)
             | UnionPayload { value, .. }
             | Construct {
                 payload: Some(value),
                 ..
             }
             | ListTail(value, _) => vec![value],
+            Try(handled) => std::iter::once(&handled.body)
+                .chain(std::iter::once(&handled.handler))
+                .chain(handled.finally.iter())
+                .collect(),
             Binary(_, a, b)
             | Assign(a, b)
             | Index(a, b)
@@ -2562,12 +2597,24 @@ impl TypedExpr {
             | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
+            | Checked(value)
             | UnionPayload { value, .. }
             | Construct {
                 payload: Some(value),
                 ..
             }
             | ListTail(value, _) => vec![value],
+            Try(handled) => {
+                let TypedTry {
+                    body,
+                    handler,
+                    finally,
+                } = handled.as_mut();
+                std::iter::once(body)
+                    .chain(std::iter::once(handler))
+                    .chain(finally.iter_mut())
+                    .collect()
+            }
             Binary(_, a, b)
             | Assign(a, b)
             | Index(a, b)
@@ -4247,6 +4294,16 @@ fn check_modules_collect(
                     function.name.span,
                 ));
             }
+            let errors = try_errors(
+                function,
+                &parameters,
+                &result,
+                module,
+                &names,
+                &classes,
+                &kinds,
+            )?;
+            let result = polymorph::substitute(&result, &errors);
             let signature = Signature { parameters, result };
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
@@ -4309,6 +4366,10 @@ fn check_modules_collect(
             let mut members = Vec::new();
             for constraint in &function.constraints {
                 let ty = classes.constraint_type(constraint, module, &names, &kinds)?;
+                if matches!(&ty, Type::Variable(variable) if errors.contains_key(variable)) {
+                    // `@'E : Err` on the caught exception's type, which implements Err.
+                    continue;
+                }
                 if polymorph::variables(&ty)
                     .iter()
                     .any(|variable| !variables.contains(variable))
@@ -4325,13 +4386,34 @@ fn check_modules_collect(
                         ty,
                         span: name.span,
                     }),
-                    ConstraintName::Function(name) => members.push(polymorph::MemberConstraint {
-                        receiver: ty,
-                        name: name.text.clone(),
-                        module: module.clone(),
-                        signature: None,
-                        span: name.span,
-                    }),
+                    ConstraintName::Function(name, annotation) => {
+                        let signature = annotation
+                            .as_ref()
+                            .map(|annotation| {
+                                let ty =
+                                    resolve_type_with_kinds(annotation, module, &names, &kinds)?;
+                                if polymorph::variables(&ty)
+                                    .iter()
+                                    .any(|variable| !variables.contains(variable))
+                                {
+                                    return Err(Diagnostic::new(
+                                        "E1015",
+                                        "the function constraint's type mentions a type variable absent from the signature",
+                                        annotation.span,
+                                    ));
+                                }
+                                Ok(ty)
+                            })
+                            .transpose()?;
+                        members.push(polymorph::MemberConstraint {
+                            receiver: ty,
+                            name: name.text.clone(),
+                            module: module.clone(),
+                            signature,
+                            declared: true,
+                            span: name.span,
+                        })
+                    }
                 }
             }
             for ty in function
@@ -4618,6 +4700,7 @@ fn check_modules_collect(
         let checked = (|| {
             let mut expression = expression.clone();
             computation::expand(&mut expression, &names)?;
+            computation::direct_entry(&mut expression);
             checker.recovering = true;
             let body = checker.expression(&expression, None)?;
             Ok(CheckedFunction {
@@ -4673,6 +4756,7 @@ fn check_modules_collect(
                 warnings.append(&mut checker.shadowing_warnings);
             }
             if function.name == "$entry" {
+                entry_result(&mut function.body, &names, &classes, &types);
                 function.signature.result = function.body.ty.clone();
             }
             function.constraints.extend(checker.constraints);
@@ -4834,6 +4918,99 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
         }
     }
     Ok(())
+}
+
+/// Top-level code prints a number, bool, character, or string and runs an
+/// `IO` action. Any other value prints through its `Display` instance, or is
+/// dropped when it has none, as `safe_add 2147483647 1` drops its `Result`.
+fn entry_result(
+    body: &mut TypedExpr,
+    names: &Names,
+    classes: &polymorph::Classes,
+    types: &TypeContext<'_>,
+) {
+    let ty = body.ty.clone();
+    let io = names.records.get("IO.IO").map(|info| info.id);
+    if ty.is_scalar()
+        || matches!(
+            ty,
+            Type::Unit | Type::String | Type::Utf8String | Type::Error
+        )
+        || matches!(ty, Type::Record(id, _) if Some(id) == io)
+    {
+        return;
+    }
+    let (builtin, result) = if classes.holds("Display", &ty, types) {
+        (Builtin::ToString, Type::String)
+    } else {
+        (Builtin::Ignore, Type::Unit)
+    };
+    let span = body.span;
+    let callee = TypedExpr {
+        kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
+            builtin,
+            types: vec![ty.clone()],
+        })),
+        ty: Type::function(vec![ty], result.clone()),
+        span,
+    };
+    let value = std::mem::replace(body, TypedExpr::error(span));
+    *body = TypedExpr {
+        kind: TypedExprKind::Call(Box::new(callee), vec![value]),
+        ty: result,
+        span,
+    };
+}
+
+/// The error type that a `try ... with` function leaves open. In a result
+/// `Result<'T, 'E>` whose `'E` no parameter mentions, `'E` is the caught
+/// `Exception` when it is constrained by `Err` or the body is a `try`.
+fn try_errors(
+    function: &FunctionDecl,
+    parameters: &[Type],
+    result: &Type,
+    module: &str,
+    names: &Names,
+    classes: &polymorph::Classes,
+    kinds: &BTreeMap<String, usize>,
+) -> Result<BTreeMap<String, Type>, Diagnostic> {
+    let result_union = names.unions.get("Result.Result").map(|info| info.id);
+    let Type::Union(id, arguments) = result else {
+        return Ok(BTreeMap::new());
+    };
+    let (Some(true), [_, Type::Variable(variable)]) =
+        (result_union.map(|union| union == *id), arguments.as_ref())
+    else {
+        return Ok(BTreeMap::new());
+    };
+    if parameters
+        .iter()
+        .any(|ty| polymorph::variables(ty).contains(variable))
+    {
+        return Ok(BTreeMap::new());
+    }
+    fn ends_in_try(expression: &Expr) -> bool {
+        match &expression.kind {
+            ExprKind::Try(_) => true,
+            ExprKind::Block { result, .. } => ends_in_try(result),
+            _ => false,
+        }
+    }
+    let mut constrained = false;
+    for constraint in &function.constraints {
+        if let ConstraintName::Class(name) = &constraint.name
+            && name.text == "Err"
+            && matches!(classes.constraint_type(constraint, module, names, kinds)?,
+                Type::Variable(other) if other == *variable)
+        {
+            constrained = true;
+        }
+    }
+    if !constrained && !ends_in_try(&function.body) {
+        return Ok(BTreeMap::new());
+    }
+    let exception = names.std_type("Exception", "Exception", Box::new([]), function.name.span)?;
+    Ok(BTreeMap::from([(variable.clone(), exception)]))
 }
 
 // The ownership checker indexes functions by declaration ID.
@@ -5206,6 +5383,10 @@ fn resolve_type_with_kinds(
         }
         TypeExprKind::Named(name) => match crate::numeric::primitive(name) {
             Some(ty) => ty,
+            // `bigint` names the standard arbitrary-precision integer.
+            None if name == "bigint" => {
+                names.std_type("BigInt", "BigInt", Box::default(), expression.span)?
+            }
             None => {
                 let named = names.named_type(module, name, expression.span)?;
                 record_arity(names, named, name, 0, expression.span).map_err(|mut error| {
@@ -5953,6 +6134,10 @@ struct Checker<'a> {
     format_specs: Vec<(Type, FormatSpec)>,
     /// Values of `use` bindings whose `Drop` requirement waits for inference.
     use_bindings: Vec<Span>,
+    /// The type of the value that `xs |> f a` passes to the call `f a`.
+    piped: Option<Type>,
+    /// Spans of unsuffixed integer literals whose type waits for inference.
+    integer_literals: Vec<Span>,
     /// Builtin result types that wait for a concrete integer argument type.
     families: Vec<polymorph::Family>,
     /// Explicit matches and function guards, in the order the checker reaches
@@ -5967,6 +6152,8 @@ struct Checker<'a> {
     recovered: Vec<Diagnostic>,
     indexing: bool,
     name_uses: Vec<(Span, NameTarget)>,
+    /// Inside `@checked`: integer `+ - * **` and negation raise OverflowException.
+    checked_arithmetic: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -5996,6 +6183,8 @@ impl<'a> Checker<'a> {
             undecided_borrows: Vec::new(),
             format_specs: Vec::new(),
             use_bindings: Vec::new(),
+            piped: None,
+            integer_literals: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
@@ -6005,6 +6194,7 @@ impl<'a> Checker<'a> {
             recovered: Vec::new(),
             indexing: false,
             name_uses: Vec::new(),
+            checked_arithmetic: false,
         }
     }
 
@@ -6370,6 +6560,9 @@ impl<'a> Checker<'a> {
                 return self.call_expression(&combined, expected, argument);
             }
         }
+        // `xs |> f a` passes `xs` last; its type fixes `f`'s next parameter before
+        // the arguments, such as a lambda, are checked.
+        let piped = self.piped.take();
         let callee = self.expression(callee, None)?;
         let arguments = if let [
             Expr {
@@ -6409,25 +6602,38 @@ impl<'a> Checker<'a> {
         if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
             self.unknown_parameters(&mut parameters);
         }
+        if piped.is_some() {
+            self.apply_piped(piped, &result, expression.span)?;
+        }
         let owned = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::OwnedFunction);
         let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
         {
             self.parallel_arguments(arguments, &parameters)?
         } else {
             // A plain loop keeps iterator adapter frames off the recursion through nested calls.
+            // Lambdas are checked after the other arguments, whose types often fix the
+            // lambdas' parameters, as in `Array.map (\text -> text.length) (ref texts)`.
             let mut checked = Vec::with_capacity(arguments.len());
+            let mut deferred = false;
             for (index, (argument, parameter)) in arguments.iter().zip(&parameters).enumerate() {
                 checked.push(match &argument.kind {
+                    _ if Self::deferred_lambda(arguments, index) => {
+                        deferred = true;
+                        TypedExpr::error(argument.span)
+                    }
                     ExprKind::Lambda(names, body) if owned && index == 0 => {
                         self.owned_lambda(names, body, argument.span, parameter)?
                     }
                     _ => self.argument(argument, parameter)?,
                 });
             }
+            if deferred {
+                self.lambda_arguments(arguments, &parameters, &mut checked)?;
+            }
             checked
         };
         self.solve_families(false)?;
-        self.constant_borrows(&callee, &mut arguments, &result, expression.span)?;
+        self.temporary_borrows(&callee, &mut arguments, &result, expression.span)?;
         let value = self.finish_expression(
             Self::call_kind(callee, arguments),
             result,
@@ -6452,13 +6658,21 @@ impl<'a> Checker<'a> {
         let expected = expected.map(|ty| self.inference.resolve(ty));
         let expected = expected.as_ref();
         let (left, right) = if *operator == BinaryOp::Pipe {
-            let right = self.expression(right, None)?;
+            // The piped value is checked first, as it runs first.
+            let open = self.inference.fresh();
+            let left = self.argument(left, &open)?;
+            if matches!(right.kind, ExprKind::Call(..)) {
+                self.piped = Some(left.ty.clone());
+            }
+            let right = self.expression(right, None);
+            self.piped = None;
+            let right = right?;
             let signature = self.call_signature(&right.ty, 1, right.span);
             let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
             if let Some(expected) = expected {
                 self.same(&result, expected, expression.span)?;
             }
-            (self.argument(left, &parameters[0])?, right)
+            (self.coerce_argument(left, &parameters[0])?, right)
         } else {
             let hint = expected.filter(|_| {
                 !matches!(
@@ -6493,12 +6707,42 @@ impl<'a> Checker<'a> {
         } else {
             self.binary_type(*operator, &left, &right, expression.span)?
         };
-        self.finish_expression(
-            TypedExprKind::Binary(*operator, Box::new(left), Box::new(right)),
-            result,
-            expected,
-            expression.span,
-        )
+        self.finish_binary(*operator, left, right, result, expected, expression.span)
+    }
+
+    /// The typed node of a checked binary expression: a pipe may borrow its
+    /// temporary or become `!` for `x |> not`, and `@checked` marks arithmetic.
+    #[inline(never)]
+    fn finish_binary(
+        &mut self,
+        operator: BinaryOp,
+        mut left: TypedExpr,
+        right: TypedExpr,
+        result: Type,
+        expected: Option<&Type>,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        if operator == BinaryOp::Pipe {
+            self.temporary_borrows(&right, std::slice::from_mut(&mut left), &result, span)?;
+        }
+        let kind = match &right.kind {
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if operator == BinaryOp::Pipe && instance.builtin == Builtin::Not =>
+            {
+                TypedExprKind::Unary(UnaryOp::Not, Box::new(left))
+            }
+            _ => TypedExprKind::Binary(operator, Box::new(left), Box::new(right)),
+        };
+        let (kind, result) = if self.checked_arithmetic
+            && matches!(
+                operator,
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Power
+            ) {
+            Self::checked_kind(kind, &result, span)
+        } else {
+            (kind, result)
+        };
+        self.finish_expression(kind, result, expected, span)
     }
 
     fn value_expression(
@@ -6625,6 +6869,17 @@ impl<'a> Checker<'a> {
                 (TypedExprKind::TaskRun(Box::new(value)), result)
             }
             ExprKind::Computation(..) => unreachable!("computations expand before type checking"),
+            ExprKind::BigInt(_)
+            | ExprKind::Checked(_)
+            | ExprKind::Try(_)
+            | ExprKind::Unary(UnaryOp::Plus, _) => {
+                return self.spec_expression(expression, expected);
+            }
+            ExprKind::Unary(UnaryOp::Negate, operand)
+                if matches!(operand.kind, ExprKind::BigInt(_)) =>
+            {
+                return self.spec_expression(expression, expected);
+            }
             ExprKind::Unary(UnaryOp::Negate, operand)
                 if matches!(operand.kind, ExprKind::Integer(..)) =>
             {
@@ -6649,7 +6904,12 @@ impl<'a> Checker<'a> {
                     )?;
                 }
                 let ty = operand.ty.clone();
-                (TypedExprKind::Unary(*operator, Box::new(operand)), ty)
+                let kind = TypedExprKind::Unary(*operator, Box::new(operand));
+                if *operator == UnaryOp::Negate && self.checked_arithmetic {
+                    Self::checked_kind(kind, &ty, expression.span)
+                } else {
+                    (kind, ty)
+                }
             }
             ExprKind::If {
                 condition,
@@ -6939,6 +7199,17 @@ impl<'a> Checker<'a> {
             {
                 self.place_argument(expression, expected)
             }
+            // A temporary is borrowed like a call's result:
+            // `xs |> Array.map f |> Array.sum` and `String.length "text"`.
+            ExprKind::Binary(..)
+            | ExprKind::String(_)
+            | ExprKind::Interpolated(_)
+            | ExprKind::Array(_)
+            | ExprKind::Tuple(_)
+                if self.shared_reference(expected) =>
+            {
+                self.temporary_argument(expression, expected)
+            }
             _ => self.expression(expression, Some(expected)),
         };
         self.finish_recovery(result, mark, expression.span)
@@ -6951,6 +7222,70 @@ impl<'a> Checker<'a> {
     ) -> Result<TypedExpr, Diagnostic> {
         let value = self.expression(expression, None)?;
         self.coerce_argument(value, expected)
+    }
+
+    /// Whether the lambda argument at `index` waits for a later non-lambda
+    /// argument, whose type often fixes its parameters, as in
+    /// `Array.map (\text -> text.length) (ref texts)`.
+    fn deferred_lambda(arguments: &[Expr], index: usize) -> bool {
+        matches!(arguments[index].kind, ExprKind::Lambda(..))
+            && arguments[index + 1..]
+                .iter()
+                .any(|later| !matches!(later.kind, ExprKind::Lambda(..)))
+    }
+
+    /// The deferred lambda arguments of a call; `checked` holds placeholders at
+    /// their positions. An owned lambda comes first only in `Owned.function`,
+    /// which takes one argument, so it is never deferred.
+    #[inline(never)]
+    fn lambda_arguments(
+        &mut self,
+        arguments: &[Expr],
+        parameters: &[Type],
+        checked: &mut [TypedExpr],
+    ) -> Result<(), Diagnostic> {
+        for (index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
+            if Self::deferred_lambda(arguments, index) {
+                checked[index] = self.argument(argument, parameter)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `xs |> f a` fixes the next parameter of `f a` to the type of `xs`.
+    #[inline(never)]
+    fn apply_piped(
+        &mut self,
+        piped: Option<Type>,
+        result: &Type,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        if let Some(piped) = piped
+            && let Type::Function(remaining, _) = self.inference.resolve(result)
+        {
+            let hint = self.argument_hint(&piped, &remaining[0]);
+            self.same(&piped, &hint, span)?;
+        }
+        Ok(())
+    }
+
+    /// A temporary argument for a shared reference parameter, checked against
+    /// the referenced type and then borrowed.
+    #[inline(never)]
+    fn temporary_argument(
+        &mut self,
+        expression: &Expr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let Type::Reference(inner, false) = self.inference.resolve(expected) else {
+            unreachable!("shared reference checked")
+        };
+        let value = self.expression(expression, Some(&inner))?;
+        self.coerce_argument(value, expected)
+    }
+
+    fn shared_reference(&self, expected: &Type) -> bool {
+        matches!(self.inference.resolve(expected), Type::Reference(_, false))
     }
 
     fn argument_hint(&self, actual: &Type, expected: &Type) -> Type {
@@ -6980,14 +7315,15 @@ impl<'a> Checker<'a> {
         expected: &Type,
     ) -> Result<TypedExpr, Diagnostic> {
         let expected = self.inference.resolve(expected);
-        if matches!(value.ty, Type::Infer(_)) {
+        let literal = self.inference.is_numeric_literal(&value.ty);
+        if matches!(value.ty, Type::Infer(_)) && !literal {
             self.same(&value.ty, &expected, value.span)?;
             value.ty = self.inference.resolve(&value.ty);
         }
-        if !matches!(value.ty, Type::Infer(_) | Type::Error) {
+        if literal || !matches!(value.ty, Type::Infer(_) | Type::Error) {
             match &expected {
                 Type::Reference(inner, mutable) => {
-                    if value.ty != **inner {
+                    if value.ty != **inner && !self.literal_match(&value.ty, inner) {
                         value = Self::reborrow_operand(value);
                     }
                     if *mutable {
@@ -7005,6 +7341,43 @@ impl<'a> Checker<'a> {
             }
         }
         self.finish_expression(value.kind, value.ty, Some(&expected), value.span)
+    }
+
+    /// Whether `actual`, open only in number literal types (as `ref {integer}`
+    /// is), can still become `expected`; such a value is not a reference.
+    fn literal_match(&self, actual: &Type, expected: &Type) -> bool {
+        fn closed(checker: &Checker<'_>, ty: &Type, open: &mut bool) -> bool {
+            match ty {
+                Type::Infer(_) => {
+                    *open = true;
+                    checker.inference.is_numeric_literal(ty)
+                }
+                Type::Partial(_) | Type::Application(..) => false,
+                Type::Array(ty)
+                | Type::List(ty)
+                | Type::Vec(ty)
+                | Type::Task(ty)
+                | Type::Reference(ty, _) => closed(checker, ty, open),
+                Type::Function(parameters, result) => {
+                    parameters.iter().all(|ty| closed(checker, ty, open))
+                        && closed(checker, result, open)
+                }
+                Type::Tuple(types) => types.iter().all(|ty| closed(checker, ty, open)),
+                Type::Record(_, types) | Type::Union(_, types) => {
+                    types.iter().all(|ty| closed(checker, ty, open))
+                }
+                _ => true,
+            }
+        }
+        let actual = self.inference.resolve(actual);
+        let mut open = false;
+        if !closed(self, &actual, &mut open) || !open {
+            return false;
+        }
+        let mut trial = self.inference.clone();
+        trial
+            .unify(&actual, expected, &self.types, Span::default())
+            .is_ok()
     }
 
     fn require_mutable_reference(place: &TypedExpr) -> Result<(), Diagnostic> {
@@ -7492,14 +7865,41 @@ impl<'a> Checker<'a> {
         negative: bool,
         span: Span,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
-        if suffix.is_none() && expected.is_some_and(polymorph::is_unknown) {
-            let ty = expected.unwrap().clone();
+        if suffix.is_none()
+            && let Some(ty) = expected.filter(|ty| ty.is_float())
+        {
+            // A float context reads an unsuffixed integer as that float: `let r: f64 = 2`.
+            let float = TypedExpr {
+                kind: TypedExprKind::Float(crate::numeric::float_literal(
+                    &value.to_string(),
+                    ty,
+                    span,
+                )?),
+                ty: ty.clone(),
+                span,
+            };
+            let kind = if negative {
+                TypedExprKind::Unary(UnaryOp::Negate, Box::new(float))
+            } else {
+                float.kind
+            };
+            return Ok((kind, ty.clone()));
+        }
+        if suffix.is_none() && expected.is_some_and(|ty| self.is_bigint(ty)) {
+            let value = self.bigint_literal(&value.to_string(), negative, expected, span)?;
+            return Ok((value.kind, value.ty));
+        }
+        if suffix.is_none() && expected.is_none_or(polymorph::is_unknown) {
+            // Like Rust, an unsuffixed integer takes the type that its uses
+            // require, and `i32` when nothing does.
+            let ty = expected.cloned().unwrap_or_else(|| self.inference.fresh());
             self.require(
                 if negative { "SignedInteger" } else { "Integer" },
                 ty.clone(),
                 span,
             )?;
-            self.inference.default_numeric(&ty, Type::I64);
+            self.inference.default_numeric(&ty, Type::I32);
+            self.integer_literals.push(span);
             return Ok((TypedExprKind::GenericInteger(value, negative), ty));
         }
         Self::integer_literal(value, suffix, expected, negative, span, &self.types)
@@ -7516,7 +7916,7 @@ impl<'a> Checker<'a> {
         let ty = suffix
             .and_then(crate::numeric::primitive)
             .or_else(|| expected.filter(|ty| ty.is_integer()).cloned())
-            .unwrap_or(Type::I64);
+            .unwrap_or(Type::I32);
         let Type::Integer(bits, signed) = ty else {
             return Err(Diagnostic::new(
                 "E1009",
@@ -7581,6 +7981,13 @@ impl<'a> Checker<'a> {
     }
 
     fn qualified_function(&mut self, name: &Ident) -> Result<(TypedExprKind, Type), Diagnostic> {
+        // Compiler-generated calls (such as `IO.run` for a directly run `let!`) may name
+        // private std functions that user source cannot.
+        if name.provenance == Provenance::Generated
+            && let Some(info) = self.names.functions.get(&name.text)
+        {
+            return Ok(self.function(info.id));
+        }
         if let Some(id) = self.names.function(self.module, &name.text, name.span)? {
             return Ok(self.function(id));
         }
@@ -7751,6 +8158,11 @@ impl<'a> Checker<'a> {
                     && arguments.len() == instance.builtin.scheme().parameters.len() =>
             {
                 TypedExprKind::Parallel(instance.builtin, arguments)
+            }
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::Not && arguments.len() == 1 =>
+            {
+                TypedExprKind::Unary(UnaryOp::Not, Box::new(arguments.remove(0)))
             }
             TypedExprKind::CaseConstructor {
                 union_id, case_id, ..

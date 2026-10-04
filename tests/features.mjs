@@ -515,6 +515,61 @@ const suites = {
       ["wide_values", [], 1], ["float_reference", [1.0009765625, 0.00048828125], 1],
     ],
   },
+  exceptions: {
+    cases: (() => {
+      const wrap = (value, bits = 64) => BigInt.asIntN(bits, value);
+      const overflow = "Arithmetic operation resulted in an overflow.".length;
+      const bits = (value, shift) => {
+        const amount = shift & 63n;
+        return wrap((((value & 0xffn) | (value ^ shift)) + ~value + wrap(value << amount) + (value >> amount) +
+          wrap(BigInt.asUintN(64, value) >> amount)));
+      };
+      const pipeline = (count) => {
+        const values = Array.from({ length: Number(count) }, (_, index) => BigInt(index));
+        const total = values.reduce((sum, value) => sum + value * 2n, 0n);
+        const folded = values.reduce((state, value) => state * 3n + value, 0n);
+        const backward = values.reduceRight((state, value) => state * 3n + value, 0n);
+        return total * 1000000n + total + folded % 1000n + backward % 7n;
+      };
+      const big = (high, low) => (high * 10n ** 20n + low) % 1000000007n;
+      const divide = (left, right) => (left / right) * 1000n + left % right;
+      return [
+        ["checked_add", [1n, 2n], 3n], ["checked_add", [max, 1n], -1n], ["checked_add", [min, -1n], -1n],
+        ["checked_add", [max, 0n], max], ["checked_add", [-5n, 3n], -2n],
+        ["checked_mul_i32", [46340n, 46340n], 2147395600n], ["checked_mul_i32", [46341n, 46341n], -1n],
+        ["checked_mul_i32", [-2147483648n, -1n], -1n], ["checked_mul_i32", [65536n, -32768n], -2147483648n],
+        ["checked_neg", [5n], -5n], ["checked_neg", [min], -1n], ["checked_neg", [max], -max],
+        ["checked_power", [3n, 39n], 3n ** 39n], ["checked_power", [3n, 40n], -1n], ["checked_power", [-2n, 63n], min],
+        ["checked_power", [2n, 63n], -1n], ["checked_power", [2n, 0n], 1n], ["checked_power", [0n, 0n], 1n],
+        ["checked_power", [-1n, 1000000n], 1n],
+        ["checked_power_u8", [2n, 7n], 128n], ["checked_power_u8", [2n, 8n], -1n], ["checked_power_u8", [3n, 5n], 243n],
+        ["checked_power_u8", [16n, 2n], -1n], ["checked_power_u8", [15n, 2n], 225n],
+        ["power_wrap", [3n, 40n], wrap(3n ** 40n)], ["power_wrap", [2n, 64n], 0n], ["power_wrap", [-3n, 3n], -27n],
+        ["power_wrap", [7n, 0n], 1n],
+        ["power_i16", [2n, 15n], -32768n], ["power_i16", [3n, 11n], wrap(3n ** 11n, 16)], ["power_i16", [-2n, 3n], -8n],
+        ["float_power", [2, 10], 1024], ["float_power", [2, 0.5], Math.SQRT2], ["float_power", [9, 0.5], 3],
+        ["float_power", [0, 0], 1], ["float_power_f32", [2, 0.5], Math.fround(Math.SQRT2)], ["float_power_f32", [3, 2], 9],
+        ["nested_finally", [3n], 911n], ["nested_finally", [4000000000n], -89n], ["nested_finally", [-4000000000n], -189n],
+        ["finally_raises", [1n], 7n], ["finally_raises", [2n], -2n], ["finally_raises", [-2n], 7n],
+        ["finally_raises", [-3n], -2n], ["finally_raises", [4000000000n], -2n], ["finally_raises", [-4000000000n], -2n],
+        ["loop_strings", [5n], 17000n], ["loop_strings", [12n], 28004n],
+        ["uncaught", [1n], 2n],
+        ["checked_message", [5n], 6n], ["checked_message", [2147483647n], BigInt(overflow)],
+        ["bigint_digits", [0n], 1n], ["bigint_digits", [100n], BigInt(String(2n ** 100n).length)],
+        ["bigint_digits", [1000n], BigInt(String(2n ** 1000n).length)],
+        ["bigint_mod", [123456789n, 987654321n], big(123456789n, 987654321n)], ["bigint_mod", [-5n, 3n], big(-5n, 3n)],
+        ["bigint_division", [17n, 5n], divide(17n, 5n)], ["bigint_division", [-17n, 5n], divide(-17n, 5n)],
+        ["bigint_division", [17n, -5n], divide(17n, -5n)], ["bigint_division", [-17n, -5n], divide(-17n, -5n)],
+        ["bigint_compare", [1n, 2n], -1n], ["bigint_compare", [2n, 2n], 0n], ["bigint_compare", [3n, 2n], 1n],
+        ["compose", [100n], 202201n], ["compose", [-3n], -4005n],
+        ["logic", [1n, 1n], 0n], ["logic", [1n, 0n], 110n], ["logic", [0n, 1n], 101n], ["logic", [0n, 0n], 111n],
+        ["bits", [-1000n, 3n], bits(-1000n, 3n)], ["bits", [123456789n, 70n], bits(123456789n, 70n)],
+        ["suffixes", [], 6000000931n], ["bytes", [], 265104105n], ["default_literals", [], -2147483644n],
+        ["pipeline", [10n], pipeline(10n)], ["pipeline", [1n], pipeline(1n)],
+      ];
+    })(),
+    traps: [["uncaught", [max]], ["power_wrap", [2n, -1n]], ["power_i16", [2n, -1n]], ["checked_power", [2n, -1n]]],
+  },
   deriving: {
     cases: [
       ["record_flags", [0n, 1n], 14n], ["record_flags", [1n, 0n], 50n], ["record_flags", [1n, 1n], 50n],

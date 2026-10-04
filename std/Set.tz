@@ -58,8 +58,8 @@ fn remove set key =
 def to_array :: Copy<'key> => ref Set<'key> -> ['key]
 fn to_array set = new ['key](length set, index -> set.entries[index])
 
-def fold :: ref Set<'key> -> 'state -> ('state -> ref 'key -> 'state) -> 'state
-fn fold set initial folder =
+def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref Set<'key> -> 'state
+fn fold folder initial set =
 	let mut state = initial
 	let mut index = 0
 	while index < length set do

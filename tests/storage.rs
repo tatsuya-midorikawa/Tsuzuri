@@ -77,7 +77,7 @@ fn bound_literals_use_stack_storage() {
     let source = "def f :: i64
          fn f = {
              let a = [1, 2, 3];
-             let l = [|4, 5|];
+             let l = [|4l, 5l|];
              let s = \"text\";
              let nested = [[1], [2, 3]];
              let mixed = [new [6], [7]];
@@ -164,7 +164,7 @@ fn mutable_borrows_move_stack_values_to_the_heap_first() {
 fn oversized_literals_keep_the_heap() {
     let literal = |count: usize| {
         let values = (0..count)
-            .map(|value| value.to_string())
+            .map(|value| format!("{value}l"))
             .collect::<Vec<_>>()
             .join(", ");
         format!("def f :: i64\nfn f = {{ let a = [{values}]; a.length }}")

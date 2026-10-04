@@ -75,7 +75,7 @@ fn active_conservative =
     match 42 with | Left (ref mut state) -> 100 | Right (ref mut state) -> 200 | _ -> state
 
 def (|Head|_|) :: ref [string] -> Option<ref string>
-fn (|Head|_|) values = Array.find values (text -> text.length > 3)
+fn (|Head|_|) values = Array.find (text -> text.length > 3) values
 
 export def active_borrowed :: i64
 fn active_borrowed =

@@ -24,11 +24,11 @@ fn encode text =
 	if String.is_well_formed text then Result.Ok (Utf8String.from_string text)
 	else Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
 
-/// Decodes a status the runtime returned: `(kind << 32) | code`, with kind 1 to 7 in declaration order.
+/// Decodes a status the runtime returned: `(kind <<< 32) | code`, with kind 1 to 7 in declaration order.
 def error_of_status :: i64 -> Error
 fn error_of_status status =
 	let kind =
-		match status >> 32 with
+		match status >>> 32 with
 		| 1 -> NotFound
 		| 2 -> PermissionDenied
 		| 3 -> AlreadyExists
@@ -76,6 +76,6 @@ fn decode_i64 bytes offset =
 	let mut value = 0i64u
 	let mut index = 7
 	while index >= 0 do
-		value = (value << 8) | (bytes[offset + index] as i64u)
+		value = (value <<< 8) | (bytes[offset + index] as i64u)
 		index = index - 1
 	value as i64

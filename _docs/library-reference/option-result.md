@@ -64,7 +64,7 @@ assert (Option.is_some ref value)
 Option.get measured
 ```
 
-関数が先の API で匿名関数の型がまだ決まらない場合は、型が明確な関数を渡すか、ラムダ式の引数へ型注釈を付けます。後続引数だけで任意のフィールドアクセスが推論されるとは限りません。
+ラムダ式の引数は他の引数の後で型検査するので、関数が先の API でも `Option.map_ref (\text -> text.length) (ref value)` のように後続の引数から型が決まります。
 
 ## 型間の変換
 
@@ -89,12 +89,32 @@ union の値そのものはホスト ABI に渡せません。ホスト境界で
 
 Zero は成功した unit です。Combine と Bind は失敗時に続きを呼ばず、Result はエラー型を式全体で統一します。MergeSources は左右を評価した後で結合し、Result の両方が Error なら左を選びます。詳細は[コンピュテーション式](../language-reference/computation-expressions.md)を参照してください。
 
+## 例外と Result
+
+`try ... with` は式で、型は `Result<'T, 'E>` です。本体が完了すればその値の Ok、例外を捕捉すれば処理したアームの値の Error になります。現在の例外は、`@checked` の整数 overflow が送出する `OverflowException` だけです。
+
+```tsuzuri run=Arithmetic%20operation%20resulted%20in%20an%20overflow.
+def mul :: i32 -> i32 -> Result<i32, 'e> = \x y ->
+    try
+        @checked x * y
+    with
+    | e is OverflowException -> e
+
+match mul 65536 65536 with
+| Result.Ok value -> $"{value}"
+| Result.Error error -> Err.msg (ref error)
+```
+
+アームの値は組み込みクラス `Err`（`msg :: ref 'a -> string`）を実装する型にします。std の Exception モジュールが `record Exception { kind: ExceptionKind, msg: string }`、`union ExceptionKind = OverflowException`、`instance Err<Exception>` を定義します。上の `'e` のように結果の Result だけに現れる型変数は、本体が `try` なら捕捉した Exception になります。finally、捕捉の範囲、未捕捉の例外は[エラー処理](../language-reference/error-handling.md)を参照してください。
+
 ## トラップとの違い
 
-assert の失敗、整数ゼロ除算、範囲外アクセス、確保失敗などは言語内で回復できる失敗値ではありません。Result の中に書いても自動捕捉しません。トラップ時の巻き戻しや解放は保証されません。
+assert の失敗、整数ゼロ除算、範囲外アクセス、確保失敗などは言語内で回復できる失敗値ではなく、`try` でも捕捉できません。`try` が捕捉するのは `@checked` が送出した例外だけです。Result の中に書いても自動捕捉しません。トラップ時の巻き戻しや解放は保証されません。
 
 ## API と関連項目
 
 - [Option のソース宣言](api/Option.md)
 - [Result のソース宣言](api/Result.md)
+- [Exception のソース宣言](api/Exception.md)
+- [エラー処理](../language-reference/error-handling.md)
 - [Task の結果付き並列実行](../language-reference/tasks.md)

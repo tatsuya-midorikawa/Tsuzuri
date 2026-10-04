@@ -265,7 +265,7 @@ fn trap_context_preserves_collections_closures_and_parallel_task_abis() {
     ));
     fs::create_dir(&root).unwrap();
     let input = root.join("Main.tz");
-    let source = "export def stress :: i64\nfn stress =\n    let source = new [3, 1, 2]\n    let sorted = Array.sort (ref source)\n    let linked = Array.to_list (ref sorted)\n    let mapped = List.map (ref linked) (value -> value + 1)\n    let values = Vec.push (Vec.of_array sorted) 4\n    let tasks = new [Task<i64>](4, index -> task { return index + 1 })\n    let results = Task.run (Task.parallel tasks)\n    assert (source[0] == 3)\n    List.fold (ref mapped) 0 (total -> value -> total + value) + Vec.length (ref values) + Array.sum (ref results)\n\
+    let source = "export def stress :: i64\nfn stress =\n    let source = new [3, 1, 2]\n    let sorted = Array.sort (ref source)\n    let linked = Array.to_list (ref sorted)\n    let mapped = List.map (value -> value + 1) (ref linked)\n    let values = Vec.push (Vec.of_array sorted) 4\n    let tasks = new [Task<i64>](4, index -> task { return index + 1 })\n    let results = Task.run (Task.parallel tasks)\n    assert (source[0] == 3)\n    List.fold (total -> value -> total + value) 0 (ref mapped) + Vec.length (ref values) + Array.sum (ref results)\n\
         export def pattern_failure :: unit\nfn pattern_failure = for [only] in [[1, 2]] do assert (only == 0)\n\
         export def step_failure :: i64 -> unit\nfn step_failure step = for _value in 0 .. step .. 10 do ()\n\
         export def vec_failure :: i64 -> i64\nfn vec_failure index = { let values = Vec.push Vec.empty() 1; deref (Vec.at (ref values) index) }\n\

@@ -23,7 +23,7 @@ Parallel.sum ref values
 | `reduce identity reducer values` | `(Copy<T>, Send<T>) => T -> (T -> T -> T) -> ref [T] -> T` |
 | `sum values` | 数値型の正のゼロと加算による reduce |
 
-Array.map と異なり Parallel.map は関数が先です。map は各入力要素を複製して渡すため、Copy でも大きい配列や関数環境の複製費用があります。非 Copy 要素には map_ref を使います。
+Parallel.map も Array.map と同じく関数が先です。map は各入力要素を複製して渡すため、Copy でも大きい配列や関数環境の複製費用があります。非 Copy 要素には map_ref を使います。
 
 ```tsuzuri run=8
 let texts = ["red", "green"]

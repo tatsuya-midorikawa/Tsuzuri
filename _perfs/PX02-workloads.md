@@ -288,7 +288,7 @@ for (const k of ["tz_ce_std_option_length", "tz_direct_std_option_length", "tz_c
 ### 手順 7: `apps` の Tsuzuri 実装
 
 - 変更: `benchmarks/apps/Main.tz`（新規）。
-- 内容: 10 種目。検証済みの書き方は「落とし穴」の Tsuzuri の項にまとめる（再帰 union と `ref` の `match`、`Map.empty()`・`Map.get (ref m) key`・`Map.insert m key value`、`Set.insert`・`Set.length (ref s)`、`String.join (ref sep) (ref parts)`・`String.split (ref sep) (ref text)`、`Vec.with_capacity`・`Vec.push`・`Vec.set v i x`・`v[i]`・`Vec.get (ref v) i`、`Array.sort_by (ref items) (left -> right -> …)`、`Array.map`・`Array.fold`、関数値の配列 `new [i64u -> i64u](4, k -> (x -> …))`、`to_string`・`let parsed: Option<i64u> = Parse.parse ref field`・`Option.get`、`Math.sqrt`）。
+- 内容: 10 種目。検証済みの書き方は「落とし穴」の Tsuzuri の項にまとめる（再帰 union と `ref` の `match`、`Map.empty()`・`Map.get (ref m) key`・`Map.insert m key value`、`Set.insert`・`Set.length (ref s)`、`String.join (ref sep) (ref parts)`・`String.split (ref sep) (ref text)`、`Vec.with_capacity`・`Vec.push`・`Vec.set v i x`・`v[i]`・`Vec.get (ref v) i`、`Array.sort_by (left -> right -> …) (ref items)`、`Array.map`・`Array.fold`、関数値の配列 `new [i64u -> i64u](4, k -> (x -> …))`、`to_string`・`let parsed: Option<i64u> = Parse.parse ref field`・`Option.get`、`Math.sqrt`）。
 - 確認: `target/release/tsuzuri check benchmarks/apps/Main.tz` が診断なし。`target/release/tsuzuri build benchmarks/apps/Main.tz --target wasm32 -O3 -o /tmp/tz-px02/apps.wasm` の後、`node -e 'console.log(WebAssembly.Module.imports(new WebAssembly.Module(require("fs").readFileSync("/tmp/tz-px02/apps.wasm"))).length)'` が `0`。
 
 ### 手順 8: C・C++・Rust の参照実装と host

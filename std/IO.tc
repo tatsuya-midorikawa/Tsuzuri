@@ -14,6 +14,10 @@ fn bind action next = IO { work: \() -> {
 def map :: ('a -> 'b) -> IO<'a> -> IO<'b>
 fn map transform action = IO { work: \() -> transform (action.work ()) }
 
+/// Runs an action where a body that has no builder writes `let!` or `do!`.
+private def run :: IO<'a> -> 'a
+fn run action = action.work ()
+
 def Return :: Capture<'a> => 'a -> IO<'a>
 fn Return value = pure value
 
@@ -91,6 +95,10 @@ fn write value = map Result.get (try_write value)
 
 def write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 fn write_line value = map Result.get (try_write_line value)
+
+/// The same action as `write_line`.
+def writeln :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
+fn writeln value = write_line value
 
 def write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 fn write_error value = map Result.get (try_write_error value)

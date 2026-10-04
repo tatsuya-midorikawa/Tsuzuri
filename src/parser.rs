@@ -88,6 +88,12 @@ struct Parser<'a> {
     slice_context: bool,
     stop_at_slice_dotdot: bool,
     region_suffix: bool,
+    /// Inside the arms of a `try ... with`: `is` follows a pattern and `finally` ends an arm.
+    in_handler: bool,
+    /// Set by `try` for the next `match_arms`, whose patterns may end in `is Kind`.
+    exception_arms: bool,
+    /// The pipeline statement that `do! source |> f` leaves after its `let!`.
+    pending_statement: Option<ComputationStatement>,
 }
 
 impl<'a> Parser<'a> {
@@ -107,6 +113,9 @@ impl<'a> Parser<'a> {
             slice_context: false,
             stop_at_slice_dotdot: false,
             region_suffix: true,
+            in_handler: false,
+            exception_arms: false,
+            pending_statement: None,
         }
     }
 }
@@ -213,6 +222,7 @@ impl Parser<'_> {
             | TokenKind::Const
             | TokenKind::Class
             | TokenKind::And => true,
+            TokenKind::At => self.literal_attribute_ahead(),
             TokenKind::Export => self
                 .tokens
                 .get(self.position + 1)
@@ -257,6 +267,12 @@ impl Parser<'_> {
                             documentation.span,
                         ));
                     }
+                }
+                if self.literal_attribute_ahead() {
+                    let mut declaration = self.literal_declaration(visibility)?;
+                    declaration.doc = doc;
+                    program.constants.push(declaration);
+                    return Ok(());
                 }
                 if self.eat(&TokenKind::Extern) {
                 match self.extern_declaration(doc, visibility, column, &|name| {
@@ -315,7 +331,7 @@ impl Parser<'_> {
                     let column = self.column(self.current().span);
                     if self.eat(&TokenKind::Def) {
                         let method = self.ident()?;
-                        self.expect(&TokenKind::DoubleColon, "'::' before the method type")?;
+                        self.type_colon("'::' before the method type")?;
                         let mut signature = self.signature(method.clone(), false, column)?;
                         signature.doc = method_doc;
                         if self.eat(&TokenKind::Equal) {
@@ -385,7 +401,7 @@ impl Parser<'_> {
                 }
                 let recursive = !continuation && self.eat(&TokenKind::Rec);
                 let name = self.function_name()?;
-                let typed_continuation = !declaration && continuation && (self.at(&TokenKind::DoubleColon) || self.region_list_ahead());
+                let typed_continuation = !declaration && continuation && (self.at(&TokenKind::DoubleColon) || self.at(&TokenKind::Colon) || self.region_list_ahead());
                 let declaration = declaration || typed_continuation;
                 if doc.is_some() && !declaration {
                     return Err(self.error("doc comments attach to typed declarations, not to implementations"));
@@ -405,7 +421,7 @@ impl Parser<'_> {
                 *group = recursion.clone();
                 if declaration {
                     let regions = if self.at(&TokenKind::LeftBrace) { self.region_list()? } else { Vec::new() };
-                    self.expect(&TokenKind::DoubleColon, "'::' after the declaration name")?;
+                    self.type_colon("'::' after the declaration name")?;
                     let mut signature = self.signature(name.clone(), exported, column)?;
                     signature.doc = doc;
                     signature.regions = regions;
@@ -629,6 +645,7 @@ impl Parser<'_> {
             | TokenKind::Extern => {
                 return Ok(Visibility::Private);
             }
+            TokenKind::At if self.literal_attribute_ahead() => return Ok(Visibility::Private),
             TokenKind::Export => return Err(Self::private_export(private.through(next.span))),
             TokenKind::Fn | TokenKind::And | TokenKind::Let => {
                 "put 'private' on the 'def' signature; its 'fn', 'and', or 'let' implementation inherits that visibility"
@@ -647,6 +664,49 @@ impl Parser<'_> {
         self.expect(&TokenKind::Colon, "':' and an explicit constant type")?;
         let ty = self.type_expr()?;
         self.expect(&TokenKind::Equal, "'=' before the constant value")?;
+        let value = self.body_expression()?;
+        self.eat(&TokenKind::Semicolon);
+        Ok(ConstDecl {
+            doc: None,
+            visibility,
+            name,
+            ty,
+            value,
+        })
+    }
+
+    /// `:` or `::` between a declaration's name and its type.
+    fn type_colon(&mut self, description: &str) -> Result<(), Diagnostic> {
+        if !self.eat(&TokenKind::Colon) {
+            self.expect(&TokenKind::DoubleColon, description)?;
+        }
+        Ok(())
+    }
+
+    fn literal_attribute_ahead(&self) -> bool {
+        self.at(&TokenKind::At)
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "literal"
+            )
+    }
+
+    /// `@literal [private] def Name : Type = value` declares a compile-time
+    /// constant, the same as `const Name: Type = value`.
+    #[inline(never)]
+    fn literal_declaration(&mut self, visibility: Visibility) -> Result<ConstDecl, Diagnostic> {
+        self.take();
+        self.take();
+        let visibility = if self.eat(&TokenKind::Private) {
+            Visibility::Private
+        } else {
+            visibility
+        };
+        self.expect(&TokenKind::Def, "'def' after '@literal'")?;
+        let name = self.ident()?;
+        self.type_colon("':' and the literal's type")?;
+        let ty = self.type_expr()?;
+        self.expect(&TokenKind::Equal, "'=' before the literal value")?;
         let value = self.body_expression()?;
         self.eat(&TokenKind::Semicolon);
         Ok(ConstDecl {
@@ -972,8 +1032,8 @@ impl Parser<'_> {
             self.current().kind,
             TokenKind::Greater
                 | TokenKind::GreaterEqual
-                | TokenKind::ShiftRight
-                | TokenKind::ShiftRightUnsigned
+                | TokenKind::DoubleGreater
+                | TokenKind::TripleGreater
         )
     }
 
@@ -984,8 +1044,8 @@ impl Parser<'_> {
                 return Ok(());
             }
             TokenKind::GreaterEqual => TokenKind::Equal,
-            TokenKind::ShiftRight => TokenKind::Greater,
-            TokenKind::ShiftRightUnsigned => TokenKind::ShiftRight,
+            TokenKind::DoubleGreater => TokenKind::Greater,
+            TokenKind::TripleGreater => TokenKind::DoubleGreater,
             _ => return Err(self.error("expected '>' after type parameters or arguments")),
         };
         // Consume one '>' without inserting tokens or changing expression operators.
@@ -1093,13 +1153,27 @@ impl Parser<'_> {
                         self.error("expected a type class or '#function' on the constraint line")
                     );
                 }
-                let name = if self.eat(&TokenKind::Hash) {
+                let name = if self.at(&TokenKind::LeftParen)
+                    && self
+                        .tokens
+                        .get(self.position + 1)
+                        .is_some_and(|token| token.kind == TokenKind::Hash)
+                {
+                    // `(#name: Type)` declares the constrained function's type.
+                    self.take();
+                    self.take();
+                    let function = self.ident()?;
+                    self.expect(&TokenKind::Colon, "':' and the function's type")?;
+                    let ty = self.type_expr()?;
+                    self.expect(&TokenKind::RightParen, "')' after the function constraint")?;
+                    ConstraintName::Function(function, Some(Box::new(ty)))
+                } else if self.eat(&TokenKind::Hash) {
                     if self.newline_before_current() {
                         return Err(
                             self.error("expected a function name after '#' on the same line")
                         );
                     }
-                    ConstraintName::Function(self.ident()?)
+                    ConstraintName::Function(self.ident()?, None)
                 } else {
                     ConstraintName::Class(self.qualified_ident()?)
                 };
@@ -1444,7 +1518,11 @@ impl Parser<'_> {
             Ok(body)
         } else if matches!(
             self.current().kind,
-            TokenKind::Let | TokenKind::Return | TokenKind::Do | TokenKind::RightBrace
+            TokenKind::Let
+                | TokenKind::Return
+                | TokenKind::Do
+                | TokenKind::RightBrace
+                | TokenKind::At
         ) || self.use_binding_ahead()
         {
             self.block_after_open(start, None)
@@ -1470,15 +1548,26 @@ impl Parser<'_> {
         let mut bindings = Vec::new();
         let mut depth = 0;
         let result = loop {
+            let checked = first.is_none() && self.checked_attribute();
             if first.is_none() && self.eat(&TokenKind::Let) {
-                let binding = self.binding(self.in_task, false)?;
+                let mut binding = self.binding(self.in_task, false)?;
+                if checked {
+                    binding.value = self.checked(binding.value)?;
+                }
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
             } else if first.is_none() && self.use_binding_ahead() {
                 self.take();
-                let binding = self.binding(self.in_task, true)?;
+                let mut binding = self.binding(self.in_task, true)?;
+                if checked {
+                    binding.value = self.checked(binding.value)?;
+                }
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
+            } else if checked && matches!(self.current().kind, TokenKind::Return | TokenKind::Do) {
+                return Err(
+                    self.error("@checked applies to a let or expression statement in a block")
+                );
             } else if first.is_none() && self.at(&TokenKind::Return) {
                 break self.task_return()?;
             } else if first.is_none() && self.at(&TokenKind::Do) {
@@ -1490,6 +1579,10 @@ impl Parser<'_> {
             } else {
                 let value = match first.take() {
                     Some(value) => value,
+                    None if checked => {
+                        let value = self.expression(0, true)?;
+                        self.checked(value)?
+                    }
                     None => self.expression(0, true)?,
                 };
                 if !self.eat(&TokenKind::Semicolon)
@@ -1873,6 +1966,9 @@ impl Parser<'_> {
     fn computation_end(&self, indent: Option<usize>) -> bool {
         self.at(&TokenKind::RightBrace)
             || self.at(&TokenKind::End)
+            || self.at(&TokenKind::With)
+            || (self.in_handler
+                && matches!(&self.current().kind, TokenKind::Ident(name) if name == "finally"))
             || indent.is_some_and(|indent| {
                 self.column(self.current().span) < indent
                     || matches!(
@@ -1903,6 +1999,7 @@ impl Parser<'_> {
         let mut depth = 0;
         while !self.computation_end(indent) {
             let statement = self.computation_statement()?;
+            let pending = self.pending_statement.take();
             if !single && !self.computation_end(indent) {
                 self.binding_end(true)?;
             }
@@ -1916,6 +2013,10 @@ impl Parser<'_> {
             }
             depth = depth.max(statement.depth());
             statements.push(statement);
+            if let Some(pending) = pending {
+                depth = depth.max(pending.depth());
+                statements.push(pending);
+            }
             if single {
                 break;
             }
@@ -1930,7 +2031,118 @@ impl Parser<'_> {
         })
     }
 
+    /// `@checked` before a statement checks the arithmetic it evaluates; kept out of
+    /// the recursive `computation_statement` frame.
+    #[inline(never)]
+    fn checked_computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
+        let mut statement = self.computation_statement()?;
+        self.checked_statement(&mut statement)?;
+        if let Some(mut pending) = self.pending_statement.take() {
+            self.checked_statement(&mut pending)?;
+            self.pending_statement = Some(pending);
+        }
+        Ok(statement)
+    }
+
+    /// Consumes the `@checked` attribute before a statement or expression.
+    fn checked_attribute(&mut self) -> bool {
+        let checked = self.at(&TokenKind::At)
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "checked"
+            );
+        if checked {
+            self.take();
+            self.take();
+        }
+        checked
+    }
+
+    fn checked(&self, value: Expr) -> Result<Expr, Diagnostic> {
+        let span = value.span;
+        let depth = value.depth + 1;
+        self.make(ExprKind::Checked(Box::new(value)), span, depth)
+    }
+
+    /// Applies `@checked` to the expressions that a computation statement evaluates.
+    #[inline(never)]
+    fn checked_statement(&self, statement: &mut ComputationStatement) -> Result<(), Diagnostic> {
+        let mut values: Vec<&mut Expr> = match &mut statement.kind {
+            ComputationStatementKind::Let(binding, _) => vec![&mut binding.value],
+            ComputationStatementKind::LetAnd(bindings) => bindings
+                .iter_mut()
+                .map(|binding| &mut binding.value)
+                .collect(),
+            ComputationStatementKind::Do(value)
+            | ComputationStatementKind::Operation(_, value)
+            | ComputationStatementKind::Expression(value) => vec![value],
+            _ => {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "@checked applies to a let, let!, do!, return, or expression statement; put it on the statements inside the block",
+                    statement.span,
+                ));
+            }
+        };
+        for value in &mut values {
+            let inner = std::mem::replace(
+                &mut **value,
+                Expr {
+                    kind: ExprKind::Unit,
+                    span: statement.span,
+                    depth: 1,
+                },
+            );
+            **value = self.checked(inner)?;
+        }
+        Ok(())
+    }
+
+    /// `do! source`, or `do! source |> f |> ...`, which binds the result of
+    /// `source` and pipes it: `let! $do = source` followed by `$do |> f |> ...`.
+    #[inline(never)]
+    fn do_statement(&mut self) -> Result<ComputationStatementKind, Diagnostic> {
+        let value = self.expression_inner(2, true, true)?;
+        if !self.at(&TokenKind::PipeForward) {
+            return Ok(ComputationStatementKind::Do(value));
+        }
+        let name = Ident {
+            text: "$do.result".into(),
+            span: value.span,
+            provenance: Provenance::Generated,
+        };
+        let mut piped = self.make(ExprKind::Name(name.clone()), value.span, 1)?;
+        while self.at(&TokenKind::PipeForward) {
+            self.take();
+            let right = self.expression_inner(2, true, true)?;
+            let span = piped.span.through(right.span);
+            let depth = piped.depth.max(right.depth) + 1;
+            piped = self.make(
+                ExprKind::Binary(BinaryOp::Pipe, Box::new(piped), Box::new(right)),
+                span,
+                depth,
+            )?;
+        }
+        self.pending_statement = Some(ComputationStatement {
+            span: piped.span,
+            kind: ComputationStatementKind::Expression(piped),
+        });
+        Ok(ComputationStatementKind::Let(
+            Binding {
+                name,
+                mutable: false,
+                using: false,
+                annotation: None,
+                value,
+            },
+            true,
+        ))
+    }
+
     fn computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
+        if self.checked_attribute() {
+            return self.checked_computation_statement();
+        }
         let start = self.current().span;
         if self.use_binding_ahead() {
             self.take();
@@ -1946,15 +2158,6 @@ impl Parser<'_> {
                 span: start.through(self.tokens[self.position - 1].span),
             });
         }
-        if let TokenKind::Ident(name) = &self.current().kind {
-            if name == "try" && self.try_clause_ahead() {
-                return Err(Diagnostic::new(
-                    "E1018",
-                    "try expressions are not supported; represent recoverable failure with Option or Result",
-                    start,
-                ));
-            }
-        }
         if self.at(&TokenKind::If) {
             return self.computation_if();
         }
@@ -1969,12 +2172,10 @@ impl Parser<'_> {
         let kind = if self.eat(&TokenKind::Let) {
             self.computation_binding()?
         } else if self.eat(&TokenKind::Do) {
-            let bind = self.eat(&TokenKind::Bang);
-            let value = self.expression_inner(0, true, true)?;
-            if bind {
-                ComputationStatementKind::Do(value)
+            if self.eat(&TokenKind::Bang) {
+                self.do_statement()?
             } else {
-                ComputationStatementKind::Expression(value)
+                ComputationStatementKind::Expression(self.expression_inner(0, true, true)?)
             }
         } else if self.at(&TokenKind::Return) || self.at(&TokenKind::Yield) {
             let returns = self.take().kind == TokenKind::Return;
@@ -2043,8 +2244,31 @@ impl Parser<'_> {
         Ok(ComputationStatementKind::LetAnd(bindings))
     }
 
+    /// Whether the `try` at the position starts a `try ... with` expression: a
+    /// `with` (or `finally`) follows at the same bracket depth that no `match`
+    /// or nested `try` claims, and the token after `try` can start a body.
     fn try_clause_ahead(&self) -> bool {
+        let Some(next) = self.tokens.get(self.position + 1) else {
+            return false;
+        };
+        let newline = self.source[self.current().span.end..next.span.start].contains(['\n', '\r']);
+        if !newline
+            && (binary(&next.kind).is_some()
+                || matches!(
+                    next.kind,
+                    TokenKind::Equal
+                        | TokenKind::Dot
+                        | TokenKind::Comma
+                        | TokenKind::RightParen
+                        | TokenKind::Semicolon
+                        | TokenKind::With
+                        | TokenKind::End
+                ))
+        {
+            return false;
+        }
         let mut depth = 0usize;
+        let mut claimed = 0usize;
         for token in &self.tokens[self.position + 1..] {
             match &token.kind {
                 TokenKind::LeftParen
@@ -2061,8 +2285,17 @@ impl Parser<'_> {
                     depth -= 1;
                 }
                 TokenKind::Semicolon | TokenKind::End if depth == 0 => break,
-                TokenKind::With if depth == 0 => return true,
-                TokenKind::Ident(name) if depth == 0 && name == "finally" => return true,
+                TokenKind::Match if depth == 0 => claimed += 1,
+                TokenKind::Ident(name) if depth == 0 && name == "try" => claimed += 1,
+                TokenKind::With if depth == 0 => {
+                    if claimed == 0 {
+                        return true;
+                    }
+                    claimed -= 1;
+                }
+                TokenKind::Ident(name) if depth == 0 && claimed == 0 && name == "finally" => {
+                    return true;
+                }
                 _ => {}
             }
         }
@@ -2168,7 +2401,7 @@ impl Parser<'_> {
         self.enter()?;
         let mut left = self.primary(allow_record, stop_at_newline)?;
         loop {
-            if stop_at_newline && self.newline_before_current() {
+            if stop_at_newline && self.newline_before_current() && !self.leading_operator() {
                 break;
             }
             if self.stop_at_arm && self.at(&TokenKind::Pipe) {
@@ -2178,7 +2411,7 @@ impl Parser<'_> {
                 left = self.range_expression(left, allow_record, stop_at_newline)?;
                 continue;
             }
-            if minimum <= 14 && self.space_argument() {
+            if minimum <= APPLICATION && self.space_argument() {
                 left = self.application(left, allow_record, stop_at_newline)?;
                 continue;
             }
@@ -2191,7 +2424,7 @@ impl Parser<'_> {
                 left = self.postfix(left)?;
                 continue;
             }
-            if minimum <= 12 && self.eat(&TokenKind::As) {
+            if minimum <= CAST && self.eat(&TokenKind::As) {
                 let ty = self.type_primary()?;
                 let span = left.span.through(ty.span);
                 let depth = left.depth + 1;
@@ -2216,17 +2449,105 @@ impl Parser<'_> {
                 break;
             }
             self.take();
-            let right = self.expression_inner(precedence + 1, allow_record, stop_at_newline)?;
-            let span = left.span.through(right.span);
-            let depth = left.depth.max(right.depth) + 1;
-            left = self.make(
-                ExprKind::Binary(operator, Box::new(left), Box::new(right)),
-                span,
-                depth,
-            )?;
+            // `**` is right-associative: `a ** b ** c` is `a ** (b ** c)`.
+            let right_minimum = if operator == Operator::Binary(BinaryOp::Power) {
+                precedence
+            } else {
+                precedence + 1
+            };
+            let right = self.expression_inner(right_minimum, allow_record, stop_at_newline)?;
+            left = self.combine(operator, left, right)?;
         }
         self.nesting -= 1;
         Ok(left)
+    }
+
+    /// Joins the operands of a binary operator; kept out of `expression_inner`'s frame.
+    #[inline(never)]
+    fn combine(&mut self, operator: Operator, left: Expr, right: Expr) -> Result<Expr, Diagnostic> {
+        match operator {
+            Operator::Binary(operator) => {
+                let span = left.span.through(right.span);
+                let depth = left.depth.max(right.depth) + 1;
+                self.make(
+                    ExprKind::Binary(operator, Box::new(left), Box::new(right)),
+                    span,
+                    depth,
+                )
+            }
+            Operator::Compose(forward) => self.composition(left, right, forward),
+        }
+    }
+
+    /// Whether the token that starts a new line continues the expression before it:
+    /// `|>`, `>>`, `<<`, `||`, and `&&` cannot start a statement.
+    fn leading_operator(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::PipeForward
+                | TokenKind::DoubleGreater
+                | TokenKind::DoubleLess
+                | TokenKind::OrOr
+                | TokenKind::AndAnd
+        )
+    }
+
+    /// `f >> g` is `{ let first = f; let second = g; \value -> second (first value) }`
+    /// and `f << g` applies `g` first. Both operands are evaluated once, left to right.
+    #[inline(never)]
+    fn composition(&mut self, left: Expr, right: Expr, forward: bool) -> Result<Expr, Diagnostic> {
+        let span = left.span.through(right.span);
+        let generated = |text: &str| Ident {
+            text: text.into(),
+            span,
+            provenance: Provenance::Generated,
+        };
+        let (left_name, right_name, value) = (
+            generated("$compose.left"),
+            generated("$compose.right"),
+            generated("$compose.value"),
+        );
+        let depth = left.depth.max(right.depth) + 4;
+        let name = |ident: &Ident| Expr {
+            kind: ExprKind::Name(ident.clone()),
+            span,
+            depth: 1,
+        };
+        let (first, second) = if forward {
+            (&left_name, &right_name)
+        } else {
+            (&right_name, &left_name)
+        };
+        let inner = Expr {
+            kind: ExprKind::Call(Box::new(name(first)), vec![name(&value)]),
+            span,
+            depth: 2,
+        };
+        let outer = Expr {
+            kind: ExprKind::Call(Box::new(name(second)), vec![inner]),
+            span,
+            depth: 3,
+        };
+        let lambda = Expr {
+            kind: ExprKind::Lambda(vec![(value, false)], Box::new(outer)),
+            span,
+            depth: 4,
+        };
+        let binding = |name: Ident, value: Expr| Binding {
+            name,
+            mutable: false,
+            using: false,
+            annotation: None,
+            value,
+        };
+        self.make(
+            ExprKind::Block {
+                bindings: vec![binding(left_name, left), binding(right_name, right)],
+                result: Box::new(lambda),
+            },
+            span,
+            depth,
+        )
     }
 
     fn application(
@@ -2291,12 +2612,16 @@ impl Parser<'_> {
     fn space_argument(&self) -> bool {
         !self.newline_before_current()
             && self.tokens[self.position - 1].span.end < self.current().span.start
-            && match self.current().kind {
-                TokenKind::Ident(_)
-                | TokenKind::TypeVariable(_)
+            && match &self.current().kind {
+                // `finally` ends the last arm of a `try ... with`.
+                TokenKind::Ident(name) => !(self.in_handler && name == "finally"),
+                TokenKind::TypeVariable(_)
                 | TokenKind::Integer(_)
+                | TokenKind::BigInteger(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
+                | TokenKind::ByteString(_)
+                | TokenKind::ScalarString(_)
                 | TokenKind::InterpolationStart(_)
                 | TokenKind::Char(_)
                 | TokenKind::Utf8Char(_)
@@ -2536,17 +2861,23 @@ impl Parser<'_> {
             TokenKind::For => return self.for_expression(),
             TokenKind::Match => return self.match_expression(),
             TokenKind::Integer(_)
+            | TokenKind::BigInteger(_)
             | TokenKind::Float(_)
             | TokenKind::String(_)
+            | TokenKind::ByteString(_)
+            | TokenKind::ScalarString(_)
             | TokenKind::Char(_)
             | TokenKind::Utf8Char(_) => {
                 return self.literal();
             }
             TokenKind::Ampersand
             | TokenKind::Star
+            | TokenKind::DoubleStar
             | TokenKind::Minus
+            | TokenKind::Plus
             | TokenKind::Bang
-            | TokenKind::Tilde => return self.prefix(allow_record, stop_at_newline, false),
+            | TokenKind::Tilde
+            | TokenKind::TripleTilde => return self.prefix(allow_record, stop_at_newline, false),
             TokenKind::Ref | TokenKind::Deref => {
                 return self.keyword_prefix(allow_record, stop_at_newline);
             }
@@ -2567,9 +2898,13 @@ impl Parser<'_> {
                 ExprKind::Continue
             }
             TokenKind::TypeVariable(_) => return self.type_function_expression(),
+            TokenKind::Ident(name) if name == "try" && self.try_clause_ahead() => {
+                return self.try_expression();
+            }
             TokenKind::Ident(_) => {
                 return self.identifier_expression(allow_record, stop_at_newline);
             }
+            TokenKind::At => return self.checked_expression(allow_record, stop_at_newline),
             TokenKind::LeftParen => return self.grouped_expression(),
             TokenKind::InterpolationStart(_) => return self.interpolation(),
             TokenKind::LeftBracket | TokenKind::LeftList => return self.collection_literal(),
@@ -2631,7 +2966,7 @@ impl Parser<'_> {
                 name.span,
             ));
         }
-        self.expect(&TokenKind::DoubleColon, "'::' after the extern name")?;
+        self.type_colon("'::' after the extern name")?;
         let mut signature = self.signature(name, false, column)?;
         signature.doc = doc;
         signature.visibility = visibility;
@@ -2819,16 +3154,81 @@ impl Parser<'_> {
                 let suffix = crate::numeric::literal_parts(text).1.map(str::to_owned);
                 ExprKind::Integer(integer(&token)?, suffix)
             }
+            TokenKind::BigInteger(text) => ExprKind::BigInt(text.as_str().into()),
             TokenKind::Float(text) => {
                 let (value, suffix) = crate::numeric::literal_parts(text);
                 ExprKind::Float(value.to_owned(), suffix.map(str::to_owned))
             }
             TokenKind::String(text) => ExprKind::String(text.clone()),
+            TokenKind::ByteString(bytes) => {
+                let values = bytes
+                    .iter()
+                    .map(|byte| ExprKind::Integer(u128::from(*byte), Some("i8u".into())))
+                    .collect();
+                return self.literal_array(values, "byte", token.span);
+            }
+            TokenKind::ScalarString(scalars) => {
+                let values = scalars
+                    .iter()
+                    .map(|scalar| ExprKind::Utf8Char(*scalar))
+                    .collect();
+                return self.literal_array(values, "utf8char", token.span);
+            }
             TokenKind::Char(value) => ExprKind::Char(*value),
             TokenKind::Utf8Char(value) => ExprKind::Utf8Char(*value),
             _ => unreachable!("literal token checked"),
         };
         self.make(kind, token.span, 1)
+    }
+
+    /// The array of a `"text"B` or `u8"text"B` literal. An empty one is
+    /// `{ let bytes: [byte] = []; bytes }` so that it keeps its element type.
+    #[inline(never)]
+    fn literal_array(
+        &self,
+        values: Vec<ExprKind>,
+        element: &str,
+        span: Span,
+    ) -> Result<Expr, Diagnostic> {
+        let values: Vec<Expr> = values
+            .into_iter()
+            .map(|kind| Expr {
+                kind,
+                span,
+                depth: 1,
+            })
+            .collect();
+        if !values.is_empty() {
+            return self.make(ExprKind::Array(values), span, 2);
+        }
+        let name = Ident {
+            text: "$literal.bytes".into(),
+            span,
+            provenance: Provenance::Generated,
+        };
+        let annotation = TypeExpr {
+            kind: TypeExprKind::Array(Box::new(TypeExpr {
+                kind: TypeExprKind::Named(element.into()),
+                span,
+            })),
+            span,
+        };
+        let binding = Binding {
+            name: name.clone(),
+            mutable: false,
+            using: false,
+            annotation: Some(annotation),
+            value: self.make(ExprKind::Array(Vec::new()), span, 1)?,
+        };
+        let result = self.make(ExprKind::Name(name), span, 1)?;
+        self.make(
+            ExprKind::Block {
+                bindings: vec![binding],
+                result: Box::new(result),
+            },
+            span,
+            3,
+        )
     }
 
     /// Symbol prefixes. At the head of an expression the operand may be an application
@@ -2846,7 +3246,7 @@ impl Parser<'_> {
         let value = if term {
             self.term(allow_record, stop_at_newline)?
         } else {
-            self.expression_inner(13, allow_record, stop_at_newline)?
+            self.expression_inner(PREFIX, allow_record, stop_at_newline)?
         };
         self.slice_context = outer_slice;
         if shared && matches!(value.kind, ExprKind::Slice { .. }) {
@@ -2856,17 +3256,40 @@ impl Parser<'_> {
             });
         }
         let span = token.span.through(value.span);
+        self.prefix_node(&token.kind, value, mutable, span)
+    }
+
+    /// The node of a prefix operator; kept out of the recursive `prefix` frame.
+    #[inline(never)]
+    fn prefix_node(
+        &mut self,
+        token: &TokenKind,
+        value: Expr,
+        mutable: bool,
+        span: Span,
+    ) -> Result<Expr, Diagnostic> {
         let depth = value.depth + 1;
         let value = Box::new(value);
-        let kind = match token.kind {
+        let kind = match token {
             TokenKind::Ampersand => ExprKind::Borrow(value, mutable, Notation::Symbol),
             TokenKind::Star => ExprKind::Dereference(value, Notation::Symbol),
+            // `**r` dereferences twice, as `* *r` does.
+            TokenKind::DoubleStar => {
+                let inner =
+                    self.make(ExprKind::Dereference(value, Notation::Symbol), span, depth)?;
+                ExprKind::Dereference(Box::new(inner), Notation::Symbol)
+            }
             TokenKind::Minus => ExprKind::Unary(UnaryOp::Negate, value),
+            TokenKind::Plus => ExprKind::Unary(UnaryOp::Plus, value),
             TokenKind::Bang => ExprKind::Unary(UnaryOp::Not, value),
-            TokenKind::Tilde => ExprKind::Unary(UnaryOp::BitNot, value),
+            TokenKind::Tilde | TokenKind::TripleTilde => ExprKind::Unary(UnaryOp::BitNot, value),
             _ => unreachable!("prefix token checked"),
         };
-        self.make(kind, span, depth)
+        self.make(
+            kind,
+            span,
+            depth + usize::from(*token == TokenKind::DoubleStar),
+        )
     }
 
     /// `ref x`, `ref mut x`, and `deref r` take one `term`, in head and argument positions alike.
@@ -2920,13 +3343,16 @@ impl Parser<'_> {
                 self.current().kind,
                 TokenKind::Ampersand
                     | TokenKind::Star
+                    | TokenKind::DoubleStar
                     | TokenKind::Minus
+                    | TokenKind::Plus
                     | TokenKind::Bang
                     | TokenKind::Tilde
+                    | TokenKind::TripleTilde
             )
         {
             // Ordinary arguments keep their previous parse and nesting accounting.
-            return self.expression_inner(15, allow_record, stop_at_newline);
+            return self.expression_inner(TERM, allow_record, stop_at_newline);
         }
         self.enter()?;
         let value = if keyword {
@@ -3012,32 +3438,50 @@ fn integer(token: &Token) -> Result<u128, Diagnostic> {
     result.map_err(|_| Diagnostic::new("E0002", "integer literal is too large", token.span))
 }
 
-fn binary(token: &TokenKind) -> Option<(BinaryOp, u8)> {
+/// What a binary operator token builds: an ordinary binary expression, or a
+/// composition (`>>` is forward and `<<` backward) that the parser expands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operator {
+    Binary(BinaryOp),
+    Compose(bool),
+}
+
+/// The precedence of the `as` cast, of prefix operators' operands, of
+/// application by juxtaposition, and of a prefix argument's operand (a term).
+const CAST: u8 = 14;
+const PREFIX: u8 = 15;
+const APPLICATION: u8 = 16;
+const TERM: u8 = 17;
+
+fn binary(token: &TokenKind) -> Option<(Operator, u8)> {
     use BinaryOp as B;
     use TokenKind as T;
-    Some(match token {
+    let (operator, precedence) = match token {
         T::PipeForward => (B::Pipe, 1),
-        T::OrOr => (B::Or, 2),
-        T::AndAnd => (B::And, 3),
-        T::Pipe => (B::BitOr, 4),
-        T::Caret => (B::BitXor, 5),
-        T::Ampersand => (B::BitAnd, 6),
-        T::EqualEqual => (B::Equal, 7),
-        T::BangEqual => (B::NotEqual, 7),
-        T::Less => (B::Less, 8),
-        T::LessEqual => (B::LessEqual, 8),
-        T::Greater => (B::Greater, 8),
-        T::GreaterEqual => (B::GreaterEqual, 8),
-        T::ShiftLeft => (B::ShiftLeft, 9),
-        T::ShiftRight => (B::ShiftRight, 9),
-        T::ShiftRightUnsigned => (B::ShiftRightUnsigned, 9),
-        T::Plus => (B::Add, 10),
-        T::Minus => (B::Subtract, 10),
-        T::Star => (B::Multiply, 11),
-        T::Slash => (B::Divide, 11),
-        T::Percent => (B::Remainder, 11),
+        T::DoubleGreater => return Some((Operator::Compose(true), 2)),
+        T::DoubleLess => return Some((Operator::Compose(false), 2)),
+        T::OrOr => (B::Or, 3),
+        T::AndAnd => (B::And, 4),
+        T::Pipe | T::TriplePipe => (B::BitOr, 5),
+        T::Caret | T::TripleCaret => (B::BitXor, 6),
+        T::Ampersand | T::TripleAmpersand => (B::BitAnd, 7),
+        T::EqualEqual => (B::Equal, 8),
+        T::BangEqual => (B::NotEqual, 8),
+        T::Less => (B::Less, 9),
+        T::LessEqual => (B::LessEqual, 9),
+        T::Greater => (B::Greater, 9),
+        T::GreaterEqual => (B::GreaterEqual, 9),
+        T::TripleLess => (B::ShiftLeft, 10),
+        T::TripleGreater => (B::ShiftRight, 10),
+        T::Plus => (B::Add, 11),
+        T::Minus => (B::Subtract, 11),
+        T::Star => (B::Multiply, 12),
+        T::Slash => (B::Divide, 12),
+        T::Percent => (B::Remainder, 12),
+        T::DoubleStar => (B::Power, 13),
         _ => return None,
-    })
+    };
+    Some((Operator::Binary(operator), precedence))
 }
 
 #[cfg(test)]

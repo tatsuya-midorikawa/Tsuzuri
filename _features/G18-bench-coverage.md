@@ -136,7 +136,7 @@ BenchDecl := "bench" StringLiteral "=" BodyExpression [";"]
 ### 型規則
 
 - 本体の型は `i64 -> i64`。反復回数 `n`（1 以上）を受け、準備を除いた `n` 回分の経過 ns を返す関数値である。違えば E1003（`test` 本体が `unit` でないときと同じ。
-  HEAD で `test "x" = 1` は `error[E1003]: expected unit, found i64` を本体の位置に出す）。
+  HEAD で `test "x" = 1` は `error[E1003]: expected unit, found i32`（D-34 の前は `found i64`）を本体の位置に出す）。
 - 通常は std の関数で作る。新 API（実装後に有効。未検証）:
 
 ```tsuzuri

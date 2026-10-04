@@ -360,7 +360,7 @@ impl Checker<'_> {
     /// Checks the arms of a match. With `checked`, the arms' coverage is
     /// recorded so that `check_coverage` can reject a non-exhaustive match and
     /// warn about unreachable arms; destructuring keeps its runtime trap.
-    fn match_value(
+    pub(super) fn match_value(
         &mut self,
         matched: TypedExpr,
         arms: &[MatchArm],

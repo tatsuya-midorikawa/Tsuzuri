@@ -68,7 +68,7 @@ fn hash_module_names_are_reserved() {
 #[test]
 fn hash_lookup_and_updates_use_only_required_constraints() {
     for source in [
-        "let map = HashMap.insert (HashMap.insert (HashMap.empty()) \"b\" 2) \"a\" 1\nlet value = HashMap.at (&map) \"b\"\nassert (deref value == 2)\nHashMap.fold (&map) 0 (\\total key value -> total + key.length + deref value)",
+        "let map = HashMap.insert (HashMap.insert (HashMap.empty()) \"b\" 2) \"a\" 1\nlet value = HashMap.at (&map) \"b\"\nassert (deref value == 2)\nHashMap.fold (\\total key value -> total + key.length + deref value) 0 (&map)",
         "let map = HashMap.insert (HashMap.insert (HashMap.empty()) 2 \"old\") 2 \"new\"\nlet value = HashMap.at (&map) 2\nvalue.length",
         "let map = HashMap.insert (HashMap.insert (HashMap.empty()) 2 20) 1 10\nlet keys = HashMap.keys (&map)\nlet values = HashMap.values (&map)\nlet pairs = HashMap.to_array (&map)\nlet map = HashMap.remove map 2\nassert (Option.get (HashMap.get (&map) 1) == 10)\nkeys[0] + values[0] + pairs.length",
         "record Key { name: string } deriving (Eq, Hash)\nlet map = HashMap.insert (HashMap.empty()) (Key { name: \"x\" }) 42\nHashMap.get (&map) (Key { name: \"x\" })",
@@ -78,11 +78,11 @@ fn hash_lookup_and_updates_use_only_required_constraints() {
         accepts(source);
     }
     for source in [
-        "let set = HashSet.remove (HashSet.insert (HashSet.insert (HashSet.empty()) \"a\") \"b\") \"a\"\nHashSet.fold (&set) 0 (\\total key -> total + key.length)",
+        "let set = HashSet.remove (HashSet.insert (HashSet.insert (HashSet.empty()) \"a\") \"b\") \"a\"\nHashSet.fold (\\total key -> total + key.length) 0 (&set)",
         "let set = HashSet.insert (HashSet.empty()) 7\nlet values = HashSet.to_array (&set)\nlet mut total = 0\nfor key in HashSet.iter (&set) do total = total + deref key\ntotal + values[0] + (if HashSet.contains (&set) 7 then 1 else 0) + (if HashSet.is_empty (&set) then 1 else 0)",
         "let text = \"borrowed\"\nlet map = HashMap.insert (HashMap.empty()) 1 (ref text)\nlet value = HashMap.at (&map) 1\nvalue.length",
         "let map = HashMap.insert (HashMap.empty()) 1 (task { return 42 })\nlet map = HashMap.remove map 1\nHashMap.length (&map)",
-        "let map = HashMap.insert (HashMap.empty()) 1 2\nlet total = HashMap.fold (&map) 0 (\\sum key value -> sum + deref key + deref value)\nlet mut count = 0\nfor pair in HashMap.iter (&map) do count = count + 1\ntotal + count",
+        "let map = HashMap.insert (HashMap.empty()) 1 2\nlet total = HashMap.fold (\\sum key value -> sum + deref key + deref value) 0 (&map)\nlet mut count = 0\nfor pair in HashMap.iter (&map) do count = count + 1\ntotal + count",
     ] {
         accepts(source);
     }
@@ -161,7 +161,7 @@ fn seeded_hash_containers_and_borrowed_keys_type_check() {
 
 #[test]
 fn unused_hash_containers_emit_no_code() {
-    let baseline = "let mut map: Map<i64, i64> = Map.empty()\nmap = Map.insert map 2 20\nmap = Map.insert map 1 10\nMap.fold (&map) 0 (\\total key value -> total * 100 + deref key + deref value)";
+    let baseline = "let mut map: Map<i64, i64> = Map.empty()\nmap = Map.insert map 2 20\nmap = Map.insert map 1 10\nMap.fold (\\total key value -> total * 100 + deref key + deref value) 0 (&map)";
     let module = analyze(baseline).unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();

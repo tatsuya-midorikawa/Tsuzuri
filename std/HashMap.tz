@@ -243,8 +243,8 @@ fn keys map = new ['key](length map, index -> map.entries[index].key)
 def values :: Copy<'value> => ref HashMap<'key, 'value> -> ['value]
 fn values map = new ['value](length map, index -> map.entries[index].value)
 
-def fold :: ref HashMap<'key, 'value> -> 'state -> ('state -> ref 'key -> ref 'value -> 'state) -> 'state
-fn fold map initial folder =
+def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref HashMap<'key, 'value> -> 'state
+fn fold folder initial map =
 	let mut state = initial
 	let mut index = 0
 	while index < length map do

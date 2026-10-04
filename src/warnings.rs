@@ -124,6 +124,10 @@ fn collect_locals<'a>(
         | Construct { .. }
         | UnionTag(_)
         | UnionPayload { .. }
+        | Checked(_)
+        | Try(_)
+        | RaisedException
+        | Reraise
         | Parallel(..)
         | StructuralCompare(..)
         | StructuralHash(_)
@@ -441,6 +445,19 @@ impl TypeReferences<'_> {
                     self.expression(&arm.body);
                 }
             }
+            Try(handled) => {
+                self.expression(&handled.body);
+                for arm in &handled.arms {
+                    self.pattern(&arm.pattern);
+                    if let Some(guard) = &arm.guard {
+                        self.expression(guard);
+                    }
+                    self.expression(&arm.body);
+                }
+                if let Some(finally) = &handled.finally {
+                    self.expression(finally);
+                }
+            }
             Record { name, fields } => {
                 self.named(&name.text, name.span);
                 for (_, value) in fields {
@@ -459,6 +476,7 @@ impl TypeReferences<'_> {
             | Task(value)
             | TaskRun(value)
             | ComputationBoundary(value)
+            | Checked(value)
             | NewLiteral(value)
             | Field(value, _)
             | Borrow(value, ..)
@@ -516,8 +534,8 @@ impl TypeReferences<'_> {
                     self.expression(&hole.value);
                 }
             }
-            Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit
-            | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
+            Integer(..) | BigInt(_) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_)
+            | Unit | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
         }
     }
 

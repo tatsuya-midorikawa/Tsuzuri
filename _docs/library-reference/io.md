@@ -50,6 +50,28 @@ Result や独自ビルダーの失敗値も保持します。入口は None／Er
 失敗を報告する場合は名前付き関数から IO の結果を受け取り、match で処理してください。
 終了コードで報告するなら、入口を `IO<i32>` にします（[終了コード](#終了コード)）。
 
+## 直接形式
+
+結果の型が分かっていて、その型にビルダーがない本体では、IO の `let!` と `do!` をその場で実行します。例えば `def main :: i32` や、i64 を返す関数の本体です。トップレベルのコードも、IO の束縛の後を通常の式で終えると直接実行し、その式の値を結果にします。
+
+```tsuzuri run=value%20%3D%2021%0A42
+def report :: i64 -> i64 = \value ->
+    do! IO.writeln $"value = {value}"
+    value * 2
+
+report 21
+```
+
+report は IO ではなく i64 を返し、呼ぶたびに出力します。`do! action |> f` は action を実行し、その結果を f へ渡します。結果を使わないなら `|> ignore` で捨てます。
+
+```tsuzuri run=hello%0Aignored%20result%0A42
+do! IO.writeln "hello"
+do! IO.try_write_line "ignored result" |> ignore
+42
+```
+
+try_write_line の `Result<unit, IO.Error>` を捨てるので、書き込みの失敗も無視します。
+
 ## API
 
 | API | 結果 | 動作 |
@@ -57,6 +79,7 @@ Result や独自ビルダーの失敗値も保持します。入口は None／Er
 | `IO.read_line ()` | `IO<Option<string>>` | stdin から一行読む。EOF は None |
 | `IO.write value` | `IO<unit>` | stdout へ改行なしで表示 |
 | `IO.write_line value` | `IO<unit>` | stdout へ表示して LF を追加 |
+| `IO.writeln value` | `IO<unit>` | `IO.write_line` の別名 |
 | `IO.write_error value` | `IO<unit>` | stderr へ改行なしで表示 |
 | `IO.write_error_line value` | `IO<unit>` | stderr へ表示して LF を追加 |
 | `IO.try_read_line ()` | `IO<Result<Option<string>, IO.Error>>` | 読み取り失敗を値として返す |
@@ -105,7 +128,7 @@ IO 内ではソース順に同期実行します。native は C 標準入出力�
 
 ## 合成と制約
 
-IO は不透明型です。内部フィールドへのアクセス・構築・更新、低水準の `IO.__read_line` / `IO.__write` は拒否されます。言語内に `IO.run` や `IO<T> -> T` の取り出し関数はなく、Task.run で IO を実行することもできません。IO の生成・map・bind・破棄では入出力しません。
+IO は不透明型です。内部フィールドへのアクセス・構築・更新、低水準の `IO.__read_line` / `IO.__write` は拒否されます。言語内に `IO.run` や `IO<T> -> T` の取り出し関数はなく、Task.run で IO を実行することもできません。値の計算の途中で IO を実行するのは[直接形式](#直接形式)の `let!` / `do!` だけです。IO の生成・map・bind・破棄では入出力しません。
 
 IO アクションは通常の関数値の捕捉・複製・借用規則に従います。共有借用は所有者の寿命を越えられず、排他参照や一回実行 Task の捕捉は Capture 制約で拒否します。
 

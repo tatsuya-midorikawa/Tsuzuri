@@ -394,7 +394,7 @@ fn found map count =
 def map_text :: HashMap<i64, i64> -> string
 fn map_text start =
     let map = fill start 2000
-    let sum = HashMap.fold (ref map) 0 (\\total _key value -> total + deref value)
+    let sum = HashMap.fold (\\total _key value -> total + deref value) 0 (ref map)
     $"len:{HashMap.length (ref map)} found:{found (ref map) 2000} sum:{sum}"
 
 def tried_text :: Result.Result<HashMap<i64, i64>, Os.Error> -> string
@@ -595,9 +595,9 @@ fn report _unit =
         out = out + "name " + copy path + " -> " + show (Path.file_name path) + "\\n"
     for path in ["a.tar.gz", ".bashrc", "a.", "a/b.d/c"] do
         out = out + "ext " + copy path + " -> " + show (Path.extension path) + "\\n"
-    let permission = Os.error_of_status ((2i64 << 32) | 13i64)
+    let permission = Os.error_of_status ((2i64 <<< 32) | 13i64)
     out = out + Os.message (ref permission) + "\\n"
-    let plain = Os.error_of_status (7i64 << 32)
+    let plain = Os.error_of_status (7i64 <<< 32)
     out + Os.message (ref plain) + "\\n"
 
 def digest :: string -> i64

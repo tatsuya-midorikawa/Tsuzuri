@@ -264,7 +264,7 @@ fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
 }
 
 #[test]
-fn recognizes_optional_builder_operations_and_rejects_exception_syntax() {
+fn recognizes_optional_builder_operations_and_try_expressions() {
     for operation in ["MergeSources", "BindReturn", "Bind2"] {
         analyze_modules(&[(
             "Only.tc",
@@ -272,22 +272,24 @@ fn recognizes_optional_builder_operations_and_rejects_exception_syntax() {
         )])
         .unwrap();
     }
-    for source in [
-        "Identity { try return 1 with | _ -> return 0 }",
-        "Identity { try return 1 finally () }",
+    // `try` is an expression of type `Result`, not a builder operation, and
+    // it always has `with` arms.
+    for (source, code) in [
+        ("Identity { try return 1 with | _ -> return 0 }", "E1003"),
+        ("Identity { try return 1 finally () }", "E0002"),
     ] {
         assert_eq!(
             analyze_modules(&[("Identity.tc", IDENTITY), ("Main.tz", source)])
                 .unwrap_err()
                 .code,
-            "E1018",
+            code,
             "{source}"
         );
     }
     // B07: use and use! bind values whose type implements Drop.
     for source in [
-        "Identity { use value = 1; return value }",
-        "Identity { use! value = 1; return value }",
+        "Identity { use value = 1l; return value }",
+        "Identity { use! value = 1l; return value }",
     ] {
         let error = analyze_modules(&[("Identity.tc", IDENTITY), ("Main.tz", source)]).unwrap_err();
         assert_eq!(error.code, "E1005", "{source}");
@@ -716,8 +718,8 @@ fn reports_missing_operations_and_wrong_signatures_at_the_use_site() {
     }
     rejects("Missing { return 42 }", "E1018");
     rejects("Choice { let! n = 42; return n }", "E1003");
-    rejects("Identity { let! n: bool = 42; return n }", "E1005");
-    rejects("Identity { do! 42; return () }", "E1005");
+    rejects("Identity { let! n: bool = 42; return n }", "E1003");
+    rejects("Identity { do! 42; return () }", "E1003");
     rejects("Flow { while 42 { yield 1 } }", "E1003");
     rejects("Identity { 42 }", "E1003");
     rejects("Identity { if 1 { return 1 } else { return 2 } }", "E1003");

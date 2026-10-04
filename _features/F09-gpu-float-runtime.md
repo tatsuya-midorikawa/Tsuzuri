@@ -56,7 +56,7 @@ Phase は次のとおり。実装者は Phase 1 だけを実装する。Phase 2�
 
 - `std/Gpu.tz`: `union Backend = CpuReference | WebGpu | Vulkan | Cuda | Metal | Auto`、`union Error = Unavailable`、
   `record Device { backend: Backend }`、`record Buffer<'a> { values: ['a] }`。`request` は `CpuReference` だけ `Result.Ok`、ほかは
-  `Result.Error Unavailable`。`init` は count を `assert` してから `Array.init`、`map` は `Array.map (ref values) transform`、
+  `Result.Error Unavailable`。`init` は count を `assert` してから `Array.init`、`map` は `Array.map transform (ref values)`（D-34 で関数を先に受け取る順に変更）、
   `from_array`・`to_array`・`backend` がある。GPU へは何も送らない。
 - `src/gpu.rs` の `scalar` は `Type::Bool`・`Type::Integer(32 | 64, _)`・`Type::Binary(32 | 64)` を受ける。
 - `src/gpu.rs` の `validate_calls`（`src/check.rs` から呼ばれる）は std の `Gpu` の関数のうち名前が `init`・`map`・`from_array` のものを集め、

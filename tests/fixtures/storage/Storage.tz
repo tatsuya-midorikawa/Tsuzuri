@@ -315,10 +315,10 @@ fn temporary_stack =
 export def wide_stack :: bool
 fn wide_stack =
     let nothing = [Nothing {}, Nothing {}, Nothing {}]
-    let wides = [1i128 << 100, 2i128]
+    let wides = [1i128 <<< 100, 2i128]
     let decimals = [0.1d128, 0.2d128]
     let flags = [true, false]
-    nothing.length == 3 && wides[0] == (1i128 << 100) && decimals[1] == 0.2d128 && flags[0] && !flags[1]
+    nothing.length == 3 && wides[0] == (1i128 <<< 100) && decimals[1] == 0.2d128 && flags[0] && !flags[1]
 
 export def function_stack :: i64
 fn function_stack =

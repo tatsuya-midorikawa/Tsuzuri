@@ -9,7 +9,113 @@ pub(super) struct LoopFlow {
     continues: Vec<State>,
 }
 
+/// The states at which control may leave a `try` body (or, with `finally`, its
+/// handler) for the handler that catches the exception.
+pub(super) struct TryFlow {
+    locals: BTreeSet<usize>,
+    raises: Vec<State>,
+}
+
 impl Checker<'_> {
+    /// Records a possible raise to the innermost `try` of this body: a checked
+    /// operation or a re-raise. Without one, an uncaught exception traps.
+    pub(super) fn raise_edge(&mut self, span: Span) -> Result<(), Diagnostic> {
+        if !self.reachable {
+            return Ok(());
+        }
+        let Some(flow) = self.try_flows.last() else {
+            return Ok(());
+        };
+        if flow.raises.len() >= 4096 {
+            return Err(error(
+                "E1017",
+                "too many raise points in one try; split the try body",
+                span,
+            ));
+        }
+        let locals = self
+            .state
+            .locals
+            .keys()
+            .copied()
+            .filter(|id| !flow.locals.contains(id))
+            .collect();
+        let state = self.state.clone();
+        self.finish_control_scope(&locals, &Value::default(), span)?;
+        let edge = std::mem::replace(&mut self.state, state);
+        self.try_flows.last_mut().unwrap().raises.push(edge);
+        Ok(())
+    }
+
+    /// The handler starts from the merged raise states of the body; exceptions that
+    /// leave the handler run `finally` before they reach the next `try`.
+    #[inline(never)]
+    pub(super) fn eval_try(
+        &mut self,
+        handled: &crate::check::TypedTry,
+        during: &BTreeSet<usize>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let locals: BTreeSet<usize> = self.state.locals.keys().copied().collect();
+        let entry = self.state.clone();
+        self.try_flows.push(TryFlow {
+            locals: locals.clone(),
+            raises: Vec::new(),
+        });
+        let body = self.eval(&handled.body, Use::Consume, during);
+        let raised = self.try_flows.pop().unwrap().raises;
+        let body = body?;
+        let after_body = self.state.clone();
+        let body_reachable = self.reachable;
+        self.state = entry;
+        self.reachable = !raised.is_empty();
+        if let Some((first, rest)) = raised.split_first() {
+            self.state = first.clone();
+            for edge in rest {
+                self.merge(edge);
+            }
+        }
+        let finally = handled.finally.as_ref();
+        if finally.is_some() {
+            self.try_flows.push(TryFlow {
+                locals,
+                raises: Vec::new(),
+            });
+        }
+        let handler = self.eval(&handled.handler, Use::Consume, during);
+        let escapes = if finally.is_some() {
+            self.try_flows.pop().unwrap().raises
+        } else {
+            Vec::new()
+        };
+        let handler = handler?;
+        let mut result = Value::default();
+        if self.reachable {
+            join(&mut result, handler);
+        }
+        self.merge_reachable(&after_body, body_reachable);
+        if body_reachable {
+            join(&mut result, body);
+        }
+        if let Some(finally) = finally {
+            self.held.push(result.clone());
+            if let Some((first, rest)) = escapes.split_first() {
+                let normal = std::mem::replace(&mut self.state, first.clone());
+                let normal_reachable = std::mem::replace(&mut self.reachable, true);
+                for edge in rest {
+                    self.merge(edge);
+                }
+                self.eval(finally, Use::Consume, during)?;
+                self.raise_edge(span)?;
+                self.state = normal;
+                self.reachable = normal_reachable;
+            }
+            self.eval(finally, Use::Consume, during)?;
+            self.held.pop();
+        }
+        Ok(result)
+    }
+
     pub(super) fn merge_reachable(&mut self, other: &State, reachable: bool) {
         if reachable {
             if self.reachable {

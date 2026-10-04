@@ -99,7 +99,7 @@ fn checks_every_integer_width_signedness_and_boundary() {
             }
         }
     }
-    accepts("fn f(x: byte) -> i8 { x } fn g(x: ubyte) -> i8u { x }");
+    accepts("fn f(x: sbyte) -> i8 { x } fn g(x: byte) -> i8u { x } fn h(x: ubyte) -> i8u { x }");
     accepts("fn f(x: &i8) -> i128u { let y = *x as i128u; y + (-128i8 as i128u) }");
     rejects("fn f(x: i8) -> i16 { x }", "E1003");
     rejects("fn f(x: i8) -> i8u { x }", "E1003");

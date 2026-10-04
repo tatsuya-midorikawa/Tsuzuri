@@ -349,6 +349,7 @@ impl Wgsl {
                     UnaryOp::Negate => format!("(0u - {value})"),
                     UnaryOp::Not => format!("(!{value})"),
                     UnaryOp::BitNot => format!("(~{value})"),
+                    UnaryOp::Plus => unreachable!("unary plus is checked to its operand"),
                 }
             }
             TypedExprKind::Binary(operator, left, right) => {
@@ -392,6 +393,12 @@ impl Wgsl {
                         BinaryOp::BitXor => "^",
                         BinaryOp::ShiftLeft => "<<",
                         BinaryOp::ShiftRight | BinaryOp::ShiftRightUnsigned => ">>",
+                        BinaryOp::Power => {
+                            return Err(unsupported(
+                                "WGSL kernels do not support '**'; multiply explicitly",
+                                span,
+                            ));
+                        }
                         _ => {
                             return Err(unsupported(
                                 "WGSL kernel division/remainder may trap on the CPU and are not supported",

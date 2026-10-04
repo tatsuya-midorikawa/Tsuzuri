@@ -74,38 +74,52 @@ Array の更新は引数をすべて左から右に評価した後、要素へ�
 
 ## Array の変換と fold
 
+高階関数は F# と同じく callback を先、配列を最後に受け取ります。最後の引数を `|>` で渡せるので、変換を左から順に繋げられます。
+
 ```tsuzuri run=8
 let texts = ["red", "green"]
-let lengths = Array.map_ref (ref texts) (text -> text.length)
-Array.sum ref lengths
+let total = texts |> Array.map_ref (\text -> text.length) |> Array.sum
+assert (texts.length == 2)
+total
 ```
+
+`ref [T]` を受け取る引数へ `|>` で渡した配列は共有借用になり、呼び出し後も使えます。map_ref が返した一時配列も、そのまま Array.sum の借用引数へ渡せます。ラムダ式の引数は他の引数の後で型検査するので、`text` の型は配列から決まります。
 
 | API の引数順 | callback と動作 |
 | --- | --- |
-| `map values transform`, `mapi values transform` | `T -> U`、`i64 -> T -> U`。T は Copy |
-| `map_ref values transform`, `mapi_ref values transform` | `ref T -> U`、`i64 -> ref T -> U` |
-| `fold values initial folder` | `State -> T -> State`。T は Copy |
-| `fold_ref values initial folder` | `State -> ref T -> State` |
-| `fold_back values initial folder` | `T -> State -> State`。末尾から。T は Copy |
-| `fold_back_ref values initial folder` | `ref T -> State -> State`。末尾から |
-| `reduce values folder` | `T -> T -> T`。先頭を初期値にし、空なら None |
-| `filter values predicate` | `ref T -> bool` を一要素一回実行し、採用した Copy 要素を複製 |
+| `map transform values`, `mapi transform values` | `T -> U`、`i64 -> T -> U`。T は Copy |
+| `map_ref transform values`, `mapi_ref transform values` | `ref T -> U`、`i64 -> ref T -> U` |
+| `fold folder initial values` | `State -> T -> State`。T は Copy |
+| `fold_ref folder initial values` | `State -> ref T -> State` |
+| `fold_back folder values initial` | `T -> State -> State`。末尾から。T は Copy |
+| `fold_back_ref folder values initial` | `ref T -> State -> State`。末尾から |
+| `reduce folder values` | `T -> T -> T`。先頭を初期値にし、空なら None |
+| `filter predicate values` | `ref T -> bool` を一要素一回実行し、採用した Copy 要素を複製 |
 
-通常は先頭から順に処理します。fold_back の callback の引数順は fold と異なります。`reduce_ref` という API はありません。
+通常は先頭から順に処理します。fold_back は F# の foldBack と同じく配列を初期値より先に受け取り、callback の引数順も fold と逆です。`reduce_ref` という API はありません。
+
+```tsuzuri run=123321
+let digits = [1, 2, 3]
+let forward = Array.fold (\total digit -> total * 10 + digit) 0 (ref digits)
+let backward = Array.fold_back (\digit total -> total * 10 + digit) (ref digits) 0
+forward * 1000 + backward
+```
 
 ## Array の検索・比較・整列
 
 | API | 結果・規則 |
 | --- | --- |
-| `any values predicate`, `all values predicate` | 借用述語で短絡。空なら false / true |
-| `count values predicate` | 借用述語に一致した個数 |
-| `find values predicate` | 最初の一致の `Option<ref T>` |
+| `any predicate values`, `all predicate values` | 借用述語で短絡。空なら false / true |
+| `count predicate values` | 借用述語に一致した個数 |
+| `find predicate values` | 最初の一致の `Option<ref T>` |
 | `index_of values target`, `contains values target` | target も共有借用。Eq による短絡検索 |
 | `equal left right` | 長さと要素を比較。Eq が必要 |
 | `min values`, `max values` | `Option<ref T>`。空なら None |
 | `sort values` | Ord と要素複製が必要な安定整列 |
-| `sort_by values compare` | compare は `ref T -> ref T -> i64`。負・ゼロ・正 |
+| `sort_by compare values` | compare は `ref T -> ref T -> i64`。負・ゼロ・正 |
 | `binary_search values target` | 同じ順序で整列済みの配列から重複の先頭 index を返す |
+
+述語と compare も先に受け取ります。index_of、contains、binary_search の target は callback ではないので、配列が先です。
 
 sort は bottom-up の安定 merge sort です。f32 / f64 では NaN を数値の後へ配置し、NaN 同士や既定比較の符号付きゼロの入力順を保ちます。min / max は改善時だけ置換し、同値や先頭 NaN の順序を維持します。
 
@@ -115,10 +129,10 @@ Array.sum / product は数値を左から右に集計し、空なら 0 / 1 で�
 
 ```tsuzuri run=42
 let values = List.cons 20 [|22|]
-List.fold (ref values) 0 (\total value -> total + value)
+List.fold (\total value -> total + value) 0 (ref values)
 ```
 
-List は `length`, `is_empty`, `copy`, `map`, `map_ref`, `fold`, `fold_ref`, `reverse`, `to_array`, `iter` を提供します。map と fold の引数順は Array と同様にリストが先です。値を取り出す callback と所有する複製結果には Copy、借用版には不要です。要素は O(n) の直接走査で処理します。`List.copy (ref values)` は `Array.copy` と同じく、暗黙の複製を明示する形です。
+List は `length`, `is_empty`, `copy`, `map`, `map_ref`, `fold`, `fold_ref`, `reverse`, `to_array`, `iter` を提供します。map と fold の引数順は Array と同様に callback が先、リストが最後です。値を取り出す callback と所有する複製結果には Copy、借用版には不要です。要素は O(n) の直接走査で処理します。`List.copy (ref values)` は `Array.copy` と同じく、暗黙の複製を明示する形です。
 
 ## API と関連項目
 

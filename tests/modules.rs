@@ -646,13 +646,21 @@ fn uses_only_main_as_the_application_entry_point() {
     for source in [
         "fn main(x: i64) -> i64 { x }",
         "record R {} fn main() -> R { R {} }",
-        "[1, 2]",
     ] {
         let module = analyze_modules(&[("Main", source)]).unwrap();
         assert_eq!(
             llvm::emit(&module, llvm::Entry::Console).unwrap_err().code,
             "E2004"
         );
+    }
+    // Top-level code shows any other value through `Display`, or drops it.
+    for (source, shown) in [("[1, 2]", Type::String), ("record R {}\nR {}", Type::Unit)] {
+        let module = analyze_modules(&[("Main", source)]).unwrap();
+        assert_eq!(
+            module.functions[module.entry.unwrap()].signature.result,
+            shown
+        );
+        llvm::emit(&module, llvm::Entry::Console).unwrap();
     }
 }
 
@@ -673,7 +681,11 @@ fn supports_entry_bindings_with_newlines_or_semicolons_and_a_final_result() {
     ] {
         let module = analyze_modules(&[("Main", source)]).unwrap();
         let entry = &module.functions[module.entry.unwrap()];
-        assert_eq!(entry.signature.result, Type::I64);
+        // An unannotated literal is an `i32`; an `i64` annotation or function fixes `i64`.
+        assert!(
+            matches!(entry.signature.result, Type::Integer(32 | 64, true)),
+            "{source}"
+        );
         assert!(matches!(entry.body.kind, TypedExprKind::Block { .. }));
     }
     for source in [

@@ -31,7 +31,7 @@ fn output_of bytes =
 	let word = Os.decode_i64 bytes 0
 	let out_length = Os.decode_i64 bytes 8
 	let error_length = Os.decode_i64 bytes 16
-	Output { code: word as i32, signal: (word >> 32) as i32, stdout: Array.sub bytes 24 out_length, stderr: Array.sub bytes (24 + out_length) error_length }
+	Output { code: word as i32, signal: (word >>> 32) as i32, stdout: Array.sub bytes 24 out_length, stderr: Array.sub bytes (24 + out_length) error_length }
 
 private def run_with :: ref string -> ref [string] -> ref [ubyte] -> Result.Result<Output, Os.Error>
 fn run_with program args input =

@@ -16,7 +16,7 @@ map = HashMap.insert map 30 3
 map = HashMap.insert map 40 4
 map = HashMap.insert map 10 5
 map = HashMap.remove map 20
-HashMap.fold (ref map) 0 (\total key value -> total * 100 + deref key + deref value)
+HashMap.fold (\total key value -> total * 100 + deref key + deref value) 0 (ref map)
 ```
 
 キーは `10 20 30 40` の順に入ります。`10` への二度目の insert は値だけを置き換え、位置を変えません。`20` を remove すると末尾の `40` がその位置へ移り、走査順は `10`（値 5）、`40`（値 4）、`30`（値 3）になります。fold は `total * 100 + key + value` をこの順に積むので、結果は `((0 * 100 + 15) * 100 + 44) * 100 + 33 = 154433` です。
@@ -52,12 +52,12 @@ HashSet.length (ref seen) * 100 + needle.length * 10 + (if found then 1 else 0)
 | `at map key`, `at_ref map key` | `ref V`。不在ならトラップ |
 | `to_array map` | 走査順の `(K * V)` 配列。両方の Copy が必要 |
 | `keys map`, `values map` | 対象側だけ Copy を要求して走査順の配列へ |
-| `fold map initial folder` | `State -> ref K -> ref V -> State` |
+| `fold folder initial map` | `State -> ref K -> ref V -> State` |
 | `iter map` | `(ref K * ref V)` を返す Seq |
 | `longest_probe map` | 診断。理想の位置から最も遠い entry の距離。空の map は 0 |
 | `sip13 key0 key1 word` | 純粋関数。64-bit の語 1 個の SipHash-1-3 |
 
-キーを取る操作は `Hash<K>` と `Eq<K>` を要求します。`get` と `get_ref` は値の `Copy`、`to_array` はキーと値の `Copy`、`keys` と `values` は対象側だけの `Copy` を要求します。`Copy` がない値は `at`、fold、iter で借用して読みます。
+キーを取る操作は `Hash<K>` と `Eq<K>` を要求します。`get` と `get_ref` は値の `Copy`、`to_array` はキーと値の `Copy`、`keys` と `values` は対象側だけの `Copy` を要求します。`Copy` がない値は `at`、fold、iter で借用して読みます。fold は Map と同じく callback と初期値を先、map を最後に受け取ります。
 
 ### 借用したキーで探す
 
@@ -87,7 +87,7 @@ match HashMap.get_ref (ref ages) (ref name) with
 | `remove set key`, `remove_ref set key` | 所有更新。不在なら変更なし。末尾の entry が削除位置へ移る |
 | `contains set key`, `contains_ref set key` | set を借用し、キーが入っているかを bool で返す |
 | `to_array set` | 走査順に Copy キーを複製した配列 |
-| `fold set initial folder` | `State -> ref K -> State` |
+| `fold folder initial set` | `State -> ref K -> State` |
 | `iter set` | キーへの共有参照の Seq |
 | `longest_probe set` | 診断。HashMap と同じ |
 
@@ -120,7 +120,7 @@ map = HashMap.insert map "b" 2
 map = HashMap.insert map "c" 3
 map = HashMap.insert map "d" 4
 map = HashMap.remove map "b"
-HashMap.fold (ref map) 0 (\total _key value -> total * 10 + deref value)
+HashMap.fold (\total _key value -> total * 10 + deref value) 0 (ref map)
 ```
 
 `b` を remove した後の走査順は `a d c` なので、値を `1`、`4`、`3` の順に積んで `143` になります。キーの順に列挙したいときは Map を使います。

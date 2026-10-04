@@ -28,7 +28,7 @@ tsuzuri: 2
 | String.slice | 一単語の所有 string を作る |
 | Map<string, i64> | 単語と回数を保持する |
 | clone_string | 検索で消費するキーと挿入するキーを分ける |
-| Map.fold | キー順に借用してレポートを作る |
+| Map.fold | 関数・初期値・Map の順に受け取り、キー順に借用してレポートを作る |
 
 ## 完成コード
 
@@ -58,9 +58,9 @@ def count_words :: ref string -> Map<string, i64> = \text ->
 
 def format_counts :: ref Map<string, i64> -> string = \counts ->
     if Map.is_empty counts then "(no words)"
-    else Map.fold counts "" (\report word count ->
+    else Map.fold (\report word count ->
         let separator = if report.length == 0 then "" else "\n"
-        report + separator + clone_string word + ": " + to_string (deref count))
+        report + separator + clone_string word + ": " + to_string (deref count)) "" counts
 
 test "merges ASCII letter case" =
     let text = "Rust RUST rust"

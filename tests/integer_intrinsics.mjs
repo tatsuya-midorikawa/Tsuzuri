@@ -106,9 +106,9 @@ for (const bits of [8, 16, 32, 64, 128]) for (const signed of [true, false]) {
     const compare = operation === "is_power_of_two" ? "(if actual then 1i128 else 0i128) == expected as i128" : `(actual as ${outputWide}) == expected`;
     definitions.push(`export def ${name} :: i64u -> ${high} -> i64u -> ${high} -> i64 -> i64u -> ${outputHigh} -> bool -> bool
 fn ${name} left_low left_high right_low right_high amount expected_low expected_high present =
-    let left = (((left_high as ${wide}) << 64) | (left_low as ${wide})) as ${type}
-    let right = (((right_high as ${wide}) << 64) | (right_low as ${wide})) as ${type}
-    let expected = ((expected_high as ${outputWide}) << 64) | (expected_low as ${outputWide})
+    let left = (((left_high as ${wide}) <<< 64) | (left_low as ${wide})) as ${type}
+    let right = (((right_high as ${wide}) <<< 64) | (right_low as ${wide})) as ${type}
+    let expected = ((expected_high as ${outputWide}) <<< 64) | (expected_low as ${outputWide})
     ${checked ? `match Int.${operation} ${arguments_} with | Some actual -> present && ${compare} | None -> !present` : `let actual = Int.${operation} ${arguments_}\n    ${compare}`}
 `);
     functions.push({ name, signed, outputSigned });

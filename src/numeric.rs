@@ -4,13 +4,46 @@ use rustc_apfloat::{Float, Round, Status};
 use crate::check::Type;
 use crate::diagnostic::{Diagnostic, Span};
 
-pub const NUMERIC_NAMES: [&str; 19] = [
+pub const NUMERIC_NAMES: [&str; 20] = [
     "i8", "i16", "i32", "i64", "i128", "i8u", "i16u", "i32u", "i64u", "i128u", "f16", "f32", "f64",
-    "f128", "d32", "d64", "d128", "ubyte", "byte",
+    "f128", "d32", "d64", "d128", "ubyte", "sbyte", "byte",
+];
+
+/// The short literal suffixes and the type each one names (`86uy` is `86i8u`).
+const SHORT_SUFFIXES: [(&str, &str); 15] = [
+    ("y", "i8"),
+    ("uy", "i8u"),
+    ("s", "i16"),
+    ("us", "i16u"),
+    ("u", "i32u"),
+    ("l", "i64"),
+    ("ul", "i64u"),
+    ("L", "i128"),
+    ("UL", "i128u"),
+    ("hf", "f16"),
+    ("f", "f32"),
+    ("F", "f128"),
+    ("hm", "d32"),
+    ("m", "d64"),
+    ("M", "d128"),
 ];
 
 pub fn is_numeric_name(name: &str) -> bool {
     NUMERIC_NAMES.contains(&name)
+}
+
+/// The type name of a literal suffix: a numeric type name or a short suffix such as `uy`.
+pub fn suffix_type(suffix: &str) -> Option<&'static str> {
+    NUMERIC_NAMES
+        .iter()
+        .copied()
+        .find(|name| *name == suffix)
+        .or_else(|| {
+            SHORT_SUFFIXES
+                .iter()
+                .find(|(short, _)| *short == suffix)
+                .map(|(_, name)| *name)
+        })
 }
 
 pub fn primitive(name: &str) -> Option<Type> {
@@ -21,8 +54,8 @@ pub fn primitive(name: &str) -> Option<Type> {
         "utf8string" => Type::Utf8String,
         "char" => Type::Char,
         "utf8char" => Type::Utf8Char,
-        "byte" => Type::Integer(8, true),
-        "ubyte" => Type::Integer(8, false),
+        "sbyte" => Type::Integer(8, true),
+        "byte" | "ubyte" => Type::Integer(8, false),
         _ if name.starts_with('i') && is_numeric_name(name) => Type::Integer(
             name[1..].trim_end_matches('u').parse().unwrap(),
             !name.ends_with('u'),

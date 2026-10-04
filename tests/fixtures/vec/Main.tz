@@ -37,7 +37,7 @@ fn vec_set_swap =
     let values = Vec.set values 1 3
     let values = Vec.set values 2 1
     let array = Vec.to_array values
-    Array.fold (ref array) 0 (state -> value -> state * 10 + value)
+    Array.fold (state -> value -> state * 10 + value) 0 (ref array)
 
 export def vec_strings :: i64 -> i64
 fn vec_strings count =

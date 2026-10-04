@@ -41,6 +41,27 @@ UTF-8 型の Unicode エスケープは波括弧付きの妥当なスカラー�
 
 char に補助平面の文字一つを格納することはできません。utf8char なら格納できます。空・複数文字の文字リテラルは `E0001` です。閉じる引用符のない `'value` は型変数として扱います。
 
+## バイト列リテラル
+
+```tsuzuri run=42
+let letter: byte = 'a'B
+let word = "hi"B
+let scalars = u8"\u{1F600}hi"B
+assert (letter == 97uy)
+assert (word.length == 2)
+assert (word[0] == 104uy)
+assert (scalars.length == 3)
+42
+```
+
+| リテラル | 型 |
+| --- | --- |
+| `'a'B` | `byte`（`i8u`） |
+| `"text"B` | `[byte]` |
+| `u8"text"B` | `[utf8char]` |
+
+`'a'B` と `"text"B` には ASCII の文字だけを書けます。`u8"..."B` は Unicode スカラーを要素とする配列です。補間リテラルには `B` を付けられません。
+
 ## 補間
 
 `$"..."` は、穴 `{式}` に値を埋め込んだ string を作るリテラルです。`u8$"..."` は同じ形で utf8string を作ります。`$` と引用符、`u8` と `$` の間に空白は置けません。通常の `"..."` では `{` と `}` はただの文字で、補間が始まるのは `$` を付けたときだけです。

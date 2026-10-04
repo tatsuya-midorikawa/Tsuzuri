@@ -172,7 +172,7 @@ fn specializes_drop_once_per_concrete_type() {
         .map(|ty| ty.display(&types))
         .collect();
     names.sort();
-    assert_eq!(names, ["Main.Handle<i64>", "Main.Handle<string>"]);
+    assert_eq!(names, ["Main.Handle<i32>", "Main.Handle<string>"]);
     for function in module.user_drops.values() {
         assert!(module.functions[*function].name.contains(".drop"));
     }
@@ -358,7 +358,7 @@ fn use_bindings_require_drop_values() {
         "'use' needs a value whose type implements Drop; i64 does not, so bind it with 'let'",
     );
     rejects(
-        "def keep :: 'a -> unit\nfn keep value =\n    use _held = value\n    ()\nexport def call :: unit\nfn call = keep 1\n",
+        "def keep :: 'a -> unit\nfn keep value =\n    use _held = value\n    ()\nexport def call :: unit\nfn call = keep 1l\n",
         "E1005",
         "no instance for Drop<i64>",
     );

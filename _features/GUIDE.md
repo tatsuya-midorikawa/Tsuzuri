@@ -677,6 +677,7 @@ fn rejects(source: &str, code: &str) {
   生成コードの不一致時トラップ（`match_expression` の失敗ブロック）は多重防御として残す。
   `for`・ラムダ式・コンピュテーション式の分解パターンの不一致は従来どおり実行時トラップ（A03 参照）。
 - 予期できる失敗（解析、検索、変換）は `Option`／`Result` を返す。例外・巻き戻しは導入しない。
+  **D-34 で改訂:** `@checked` の整数 overflow だけが例外を送出し、`try ... with ... finally` が同じ関数本体の中で捕まえる（巻き戻しは導入しない）。
 - 早期脱出の `?` 演算子は導入しない。伝播は `Option { }`／`Result { }` ビルダーで書く（B02）。
 
 ### D-11 表示と解析
@@ -720,6 +721,8 @@ fn rejects(source: &str, code: &str) {
 `const`（D06）、`test`（G06）、`extern`（E06）。`of` は union 宣言の中だけの文脈キーワード（A02。予約語にしない）。
 文字リテラル `'x'`／`u8'x'`（A08）。範囲の部分参照 `xs[a..b]`（C03）。
 レコード更新 `{ base with field = value }`（C05）。キーワード追加時は 6.1 を実施する。
+D-34 の演算子 `**`・単項 `+`・`&&&`・`|||`・`^^^`・`~~~`・`<<<`・`>>>`、関数合成 `>>`／`<<`（従来のシフトから意味を変更）、
+文脈キーワード `try`／`finally`／`is`（予約語にしない）、属性 `@checked`／`@literal`。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
   取り込まれた後に着手するチケットは、借用・参照外しを扱う箇所（C03 の `&xs[a..b]` に対する `ref xs[a..b]`、A11 の比較用の
@@ -1029,6 +1032,20 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   その関数は直接の完全適用でだけ使え、呼び出し側で渡す関数が契約を守ることを検査する。量化のない関数値は D-28 のとおり全入力の寿命を保持する。
 - 新しい診断コード・予約語・ランタイムはない。寿命と region の誤りは `E1013`、上限は `E1017`。
 
+### D-34 `_specs` の言語仕様への追従
+
+- 2026-10-04、利用者の「`_specs` フォルダーに記載の仕様となるように、仕様変更や仕様追加を行なって」を、`_specs/` の
+  literals・operators・functions・error-handling の承認として扱い、D-10 と D-15 をこの項のとおり改めた。
+- 例外: `try ... with ... finally` は `Result<'T, 'E>` の式で、`'E` は組み込みクラス `Err` の instance（std の `Exception`）。
+  送出するのは `@checked` の整数 overflow（`OverflowException`）だけで、同じ関数本体の最も内側の `try` への字句的な脱出として実装した。
+  関数・ラムダの境界は越えず、捕まらなければトラップする。`finally` を持つ `try` から `break`／`continue` で出るのは `E1023`。
+- 演算子: `>>`／`<<` を関数合成に変え、シフトは `<<<`／`>>>`（`>>>` は符号付きで算術、符号なしで論理）。
+  ビット演算の旧表記 `&`・`|`・`^`・`~` は別名として残した。`not`・`ignore` は修飾なしの組み込み関数。
+- リテラルと型: 接尾辞のない整数リテラルの既定を `i64` から `i32` に、`byte` を `i8` から `i8u` に変え、`sbyte` と `bigint`（std の `BigInt`）を足した。
+- std の高階関数は F# と同じく関数を先に受け取る（`Array.map f xs`、`Array.fold f state xs`）。
+- トップレベルの値で `Display` を持たないものは `E2004` にせず捨てる。
+- 新しい診断コード・予約語はない（整数リテラルの型の誤りは `E1003`）。トラップの種類 `Overflow` を末尾に足した。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
@@ -1146,7 +1163,7 @@ describe (Value 10) + first (5, 6) + classify (-3) + sum_to 4 + text.length + sh
 | `(5: i64)` | `E0002` expected the closing delimiter | `let x: i64 = 5` |
 | `Display.to_string 5` | `E1002` type class 'Display' has no method 'to_string' | `to_string 5` か `Display.display 5` |
 | `let new = 1`（`Atomic.new` なども） | `E0002`（`new` は予約語） | 別の名前（例: `create`） |
-| `abs (-2)`（整数） | `E1003` expected f64, found i64 | `Int.abs (-2)` |
+| `abs n`（`n` は整数。`let n = -2` など） | `E1003` expected an integer, found f64（2026-10-04 に確認。リテラルの `abs (-2)` は D-34 から f64 として受理される） | `Int.abs n` |
 | task の中の `if c then return v` | `E0002` | `if c { return v } else { return w }` |
 | 対の `def` で `fn name () = ...` | 古い署名として解釈される | `fn name _unit = ...` |
 | union を record の波括弧で書く | 構文エラー | `union Reading = Missing \| Value of i64` |

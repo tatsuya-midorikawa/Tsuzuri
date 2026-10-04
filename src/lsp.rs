@@ -1702,10 +1702,13 @@ fn is_prefix(tokens: &[Token], index: usize) -> bool {
     match tokens[index].kind {
         TokenKind::Ref | TokenKind::Mut | TokenKind::Deref => true,
         TokenKind::Minus
+        | TokenKind::Plus
         | TokenKind::Star
+        | TokenKind::DoubleStar
         | TokenKind::Ampersand
         | TokenKind::Bang
-        | TokenKind::Tilde => tokens
+        | TokenKind::Tilde
+        | TokenKind::TripleTilde => tokens
             .get(index + 1)
             .is_some_and(|next| adjacent(&tokens[index], next)),
         _ => false,
@@ -1718,8 +1721,11 @@ fn is_term(kind: &TokenKind) -> bool {
         TokenKind::Ident(_)
             | TokenKind::TypeVariable(_)
             | TokenKind::Integer(_)
+            | TokenKind::BigInteger(_)
             | TokenKind::Float(_)
             | TokenKind::String(_)
+            | TokenKind::ByteString(_)
+            | TokenKind::ScalarString(_)
             | TokenKind::Char(_)
             | TokenKind::Utf8Char(_)
             | TokenKind::True

@@ -10,7 +10,7 @@ Map はキーと値、Set は重複しないキーを保持する順序付きコ
 let dictionary = Map.insert (Map.singleton 2 "two") 1 "one"
 let first = Map.at (ref dictionary) 1
 assert (first.length == 3)
-Map.fold (ref dictionary) 0 (\total _key value -> total + value.length)
+Map.fold (\total _key value -> total + value.length) 0 (ref dictionary)
 ```
 
 読み取りは Map を共有借用し、更新は所有する Map を消費します。上の値は非 Copy の string ですが、at と fold は借用するので複製を要求しません。
@@ -28,10 +28,10 @@ Map.fold (ref dictionary) 0 (\total _key value -> total + value.length)
 | `at map key` | `ref V`。不在ならトラップ |
 | `to_array map` | キー昇順の `(K * V)` 配列。両方の Copy が必要 |
 | `keys map`, `values map` | 対象側だけ Copy を要求して配列へ |
-| `fold map initial folder` | `State -> ref K -> ref V -> State` |
+| `fold folder initial map` | `State -> ref K -> ref V -> State` |
 | `iter map` | `(ref K * ref V)` を返す Seq |
 
-関数名には Map を付けます。検索キーは値引数で、呼び出し後に不要なら解放します。同じキーへ insert すると最初のキー代表値を保持し、新しいキーと旧値を解放して値だけを置換します。
+関数名には Map を付けます。fold は F# と同じく callback と初期値を先、Map を最後に受け取ります。検索キーは値引数で、呼び出し後に不要なら解放します。同じキーへ insert すると最初のキー代表値を保持し、新しいキーと旧値を解放して値だけを置換します。
 
 ## Set の例
 
@@ -39,7 +39,7 @@ Map.fold (ref dictionary) 0 (\total _key value -> total + value.length)
 let left = Set.insert (Set.singleton 20) 22
 let right = Set.singleton 22
 let combined = Set.union left right
-Set.fold (ref combined) 0 (\total key -> total + deref key)
+Set.fold (\total key -> total + deref key) 0 (ref combined)
 ```
 
 union は両方の所有値を消費します。重複したキーは一つになり、左の代表値を保持します。
@@ -53,7 +53,7 @@ union は両方の所有値を消費します。重複したキーは一つに�
 | `insert set key`, `remove set key` | 所有更新 |
 | `contains set key` | set を借用し、検索キーを消費 |
 | `to_array set` | Copy キーを昇順に複製 |
-| `fold set initial folder` | `State -> ref K -> State` |
+| `fold folder initial set` | `State -> ref K -> State` |
 | `iter set` | キーへの共有参照の Seq |
 | `union left right` | 所有する両入力を消費して和集合 |
 | `intersect left right` | 両入力を借用し、Copy キーで積集合を作る |

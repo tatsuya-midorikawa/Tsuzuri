@@ -149,6 +149,14 @@ def write :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 def write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 ```
 
+## `writeln`
+
+```tsuzuri
+def writeln :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
+```
+
+The same action as `write_line`.
+
 ## `write_error`
 
 ```tsuzuri

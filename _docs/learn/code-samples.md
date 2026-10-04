@@ -53,7 +53,7 @@ def multiply :: i64 -> i64 -> i64 = \factor value -> factor * value
 
 let double = multiply 2
 let values = [3, 5, 8]
-let doubled = Array.map (ref values) double
+let doubled = Array.map double (ref values)
 Array.sum ref doubled
 ```
 
@@ -65,7 +65,7 @@ Array.sum ref doubled
 
 `multiply 2` は `i64 -> i64` の関数値です。`Array.map` は入力を借用し、変換結果の新しい配列 `[6, 10, 16]` を作ります。最後に `Array.sum` で合計します。
 
-Array の API は配列が先、変換関数が後です。`ref values` は読み取りのための借用を示し、元の配列の所有権を渡しません。変換結果の配列には別の記憶域が必要です。
+Array の高階関数は F# と同じく変換関数が先、配列が後です。`values` の要素型は `double` へ渡すことから i64 に決まります。`ref values` は読み取りのための借用を示し、元の配列の所有権を渡しません。変換結果の配列には別の記憶域が必要です。`values |> Array.map double |> Array.sum` のようにパイプでつなぐこともでき、途中の配列は呼び出しの間だけ借用されます。
 
 詳しくは[関数と部分適用](../language-reference/functions.md)、[Array の API](../library-reference/arrays-and-lists.md)を参照してください。
 
@@ -154,7 +154,7 @@ match total with
 
 `Result` の `let!` は、`Ok` から値を取り出し、`Error` なら残りの計算を行わず同じ失敗を返します。最後の `match` で成功を stdout、失敗の理由を stderr に出力します。
 
-例えば最初の入力が `"twenty"` なら、出力するエラーは `not an integer` です。テストはこの経路と負数の拒否を確認します。合計の `+` 自体は通常の i64 加算で、上限を超えると折り返します。集計のオーバーフローも拒否したい場合は、`Int.checked_add` の結果を処理します。
+例えば最初の入力が `"twenty"` なら、出力するエラーは `not an integer` です。テストはこの経路と負数の拒否を確認します。合計の `+` 自体は通常の i64 加算で、上限を超えると折り返します。集計のオーバーフローも拒否したい場合は、`Int.checked_add` の結果を処理するか、`@checked` の式を `try` で `Result` に変えます（[例外処理](../language-reference/error-handling.md)）。
 
 詳しくは [Option / Result](../library-reference/option-result.md)、[表示と解析](../library-reference/formatting-and-parsing.md)、[整数 API](../library-reference/integers.md)を参照してください。
 

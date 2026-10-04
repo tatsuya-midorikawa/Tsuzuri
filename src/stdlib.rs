@@ -4,10 +4,12 @@
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
     ("std/Array.tz", include_str!("../std/Array.tz")),
+    ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
     ("std/Env.tz", include_str!("../std/Env.tz")),
+    ("std/Exception.tz", include_str!("../std/Exception.tz")),
     ("std/File.tz", include_str!("../std/File.tz")),
     ("std/Format.tz", include_str!("../std/Format.tz")),
     ("std/Gpu.tz", include_str!("../std/Gpu.tz")),
@@ -70,6 +72,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Os",
     "Process",
     "Format",
+    "Exception",
+    "BigInt",
 ];
 
 pub fn is_reserved_module(name: &str) -> bool {
@@ -92,6 +96,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Owned.Function"
             | "Random.Pcg"
             | "File.Handle"
+            | "BigInt.BigInt"
     )
 }
 
@@ -130,7 +135,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 32);
+        assert_eq!(RESERVED_MODULES.len(), 34);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

@@ -127,9 +127,9 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`
+`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`
 
-`HashMap`・`HashSet`・`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`・`Format` は後から予約に加わった名前です。
+`HashMap`・`HashSet`・`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`・`Format`・`Exception`・`BigInt` は後から予約に加わった名前です。
 これらの名前のファイル（例えば `Path.tz`）を持つ既存のプロジェクトは `E1011` になるため、ファイル名を変えてください。互換性を壊す変更です。
 
 現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
@@ -261,6 +261,7 @@ nativeでは、同じスレッドからの同期呼び出しと再入に加え�
 `const Name: Type = expression` は明示的な具体型を持つ不変値です。`.tz`／`.tc` で宣言でき、`.tt` では `E1018` です。
 `private const` は宣言モジュール内だけで参照でき、通常の定数も他モジュールからは `Module.Name` と修飾します。
 関数と同じ値の名前空間を使い、重複は `E1001` です。前方参照を許し、未使用の定数も型検査・評価します。
+`@literal def Name : Type = expression` も同じコンパイル時定数の宣言です（`@literal def PI : f64 = 3.14`）。
 
 ```text
 const Answer: i64 = Later + 2
@@ -296,6 +297,7 @@ export def answer :: i32 = add 20 22
 
 `def name :: 引数型 -> ... -> 返却型 = \引数 -> 本体` で宣言と実装を一緒に書きます。
 `= \left -> \right -> body` と `= \left right -> body` は同じカリー化を表します。型の後の `=` で改行しても書けます。
+`::` は単一の `:` でも書け（`def twice : i32 -> i32 = \x -> x * 2`）、`::` を書けるすべての `def` で同じです。
 従来の `def name :: 型` と `fn name 引数名 ... = 式`、または `let name = ラムダ式` を
 同じファイルに分離して書く形式も受理します。隣接・前後関係は必須ではありません。
 その `let` は通常のエントリーコードの束縛ではなく、モジュール関数の定義です。`export` は `def` 側に付けます。
@@ -321,7 +323,7 @@ Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと
 `f x.field` は `f (x.field)`、`(f x).field` は結果へのアクセスです。
 隣接した `xs[index]` は索引、`f [x, y]` は配列を渡す適用です。
 空白による適用は改行をまたぎません。演算子直後の改行や括弧・配列・レコード・ブロックの
-内部で式を続けられます。複数のローカル `let` を持つ本体は `= { ... }` またはインデント本体を使います。
+内部で式を続けられ、行頭の `|>`・`>>`・`<<`・`||`・`&&` も前の行の式を続けます。複数のローカル `let` を持つ本体は `= { ... }` またはインデント本体を使います。
 
 関数型も `i32 -> i32`、`i32 -> i32 -> i32` と書きます。
 `('a -> 'b) -> 'a -> 'b` は関数を一引数として取る型です。
@@ -352,12 +354,14 @@ def main :: i32 = {
 
 匿名関数は Haskell と同じ `\引数 -> 本体` の形式です。`\x y -> 式` のほか、`\x -> \y -> 式` のようにネストできます。
 例えば `let f = \x -> \y -> \z -> x + y + z` に対して `f 2 3 4` の結果は `9` です。
-引数型は型注釈・呼び出し・本体から推論します。
+引数型は型注釈・呼び出し・本体から推論します。呼び出しの引数に書いた匿名関数は他の引数より後に型検査し、`xs |> f` は `xs` を先に検査するので、
+`texts |> Array.map_ref (\t -> t.length)` の `t` も推論できます。評価順序は変わりません。
 `let f: i32 -> i32 = \x -> x + 1;` のように注釈を付けられます。
 `\(x: i32) y -> x + y`、`\(f: i64 -> i64) x -> f x`、
 `\(x, y) -> x + y`、`\() -> 42` のように注釈・分解・unit パターンも指定できます。
 旧 `fx x -> 式` は廃止し、`fx` は通常の識別子です。従来の `x -> y -> 式` は互換構文として引き続き受理します。
-引数のパターンは網羅性を検査せず、適用時の不一致はトラップします。`f ()` は unit 一引数で、引数なしの `f()` とは異なります。
+引数のパターンは網羅性を検査せず、適用時の不一致はトラップします。`\x when x > 0 -> x * 2` のように引数の後へ `when` 条件を書くと、
+条件が false の適用も同じく不一致としてトラップします。`f ()` は unit 一引数で、引数なしの `f()` とは異なります。
 `f (x, y)` はタプル引数を渡せます。互換のカリー化関数が複数の非タプル引数を要求する場合は、
 従来のカンマ区切り適用としても受理します。曖昧さを避けるにはタプルを先に束縛するか `f x y` を使います。
 匿名関数の本体は作成時ではなく適用時に評価します。
@@ -484,7 +488,7 @@ std で一意なクラスの順に解決します。同じ段階に候補が複�
 `Name.method` がモジュールの関数名でもある場合は関数を優先し、ローカル値がある場合は
 そのフィールドを優先します。独自クラスは `Module.Class.method` で曖昧さなく指定できます。
 同じクラスと型の組み合わせをプロジェクト全体で一つだけ許し、ファイル順による選択は行いません。
-具体型の型別名（`byte` と `i8` など）も同じインスタンスとして扱います。
+具体型の型別名（`byte` と `i8u` など）も同じインスタンスとして扱います。
 
 条件付きインスタンス、スーパークラス、デフォルトメソッドを使えます。
 
@@ -519,6 +523,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Sub` / `Mul` / `Div` | `sub` / `mul` / `div`、`- * /` | 全数値 |
 | `Rem` | `rem` / `%` | 全整数 |
 | `Neg` | `neg` / 単項 `-` | 符号付き整数、全浮動小数点 |
+| `Pow` | `pow` / `**` | 全整数、f32、f64 |
 | `Eq` | `eq` / `ne :: ref 'a -> ref 'a -> bool`、`== !=` | 全数値、bool、unit、string、utf8string、char、utf8char。全要素がEqの配列・リスト・タプル |
 | `Ord`（`Eq`を要求） | `lt` / `le` / `gt` / `ge :: ref 'a -> ref 'a -> bool`、`< <= > >=` | 全数値、string、utf8string、char、utf8char。全要素がOrdの配列・リスト・タプル |
 | `Bits` | `bit_and` / `bit_or` / `bit_xor` / `shl` / `shr` / `ushr` / `bit_not` | 全整数 |
@@ -532,6 +537,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Hash` | `hash :: ref 'a -> i64u` | 全数値、bool、unit、文字列・文字。全要素がHashの配列・リスト・タプル |
 | `Default` | `default :: 'a`（`Default.default()`で呼ぶ） | 数値の0、false、unit、空文字列、文字の0、空配列・空リスト、全要素がDefaultのタプル |
 | `Elementary` | 超越関数用のメソッドなし制約 | f32／f64のみ。利用者はinstanceを追加できない |
+| `Err` | `msg :: ref 'a -> string`。`try` のハンドラーの結果に要求する | なし。std の `Exception` が instance を持つ（[検査付き算術と例外](#検査付き算術と例外)） |
 | `Drop` | `drop :: ref mut 'a -> unit`。値の終わりにdrop glueが呼び、式からは参照できない | なし。利用者が宣言したrecord・unionに書く（[利用者定義の解放](#利用者定義の解放)） |
 
 `Capture` は一回実行の `Task<T>`、およびそれを含む集約値も拒否します。
@@ -555,8 +561,8 @@ NaNは等しくなく、最初の不一致で順序比較がfalseなら後続へ
 クラスの辞書や実行時の型検査はなく、ネイティブ／WASM で同じ具体的な IR を使います。
 所有権・借用・レイアウト・数値リテラルの範囲は具体化した後にも検査します。
 ジェネリック関数は直接 `export` できず、具体型のラッパーを公開します。
-整数リテラルは `Integer`、負の整数は `SignedInteger`、小数は `Float` の制約を課し、
-整数から浮動小数点への暗黙変換は行いません。
+整数リテラルは `Integer`、負の整数は `SignedInteger`、小数は `Float` の制約を課します。
+整数の値を浮動小数点へ暗黙に変換することはありません。浮動小数点・decimal の型が期待される位置の接尾辞のない整数リテラルだけは、その型のリテラルです（[数値仕様](#数値仕様)）。
 
 高ランク多相、複数のクラス型パラメーター、通常kindのメソッド固有型変数、メソッド固有の制約は未対応です。
 
@@ -613,6 +619,7 @@ distance
     借用を取る関数には、`ref 'T` の基底の `'T` に制約を付けます。
 - 関数の引数・返却型・借用は実際の使用と一致する必要があり、不一致は `E1003` です。
     関数型は本体の引数・返却型・型注釈から推論します。抽象的な本体で必要な型が決まらなければ、型注釈を追加します（`E1015`）。
+    `@'T : (#distance: 'T -> 'U)` のように括弧の中で関数の型を宣言することもでき、本体の `'T.distance value` はその型で検査します。
     関数がその型を第一引数に取る必要はなく、引数なしの関数も `'T.name()` と呼べます。
 - `'T.distance` は関数値として渡したり、部分適用したりできます。評価順序・捕捉・move・借用は通常の関数と同じです。
 - `#distance` を宣言しただけで本体から参照しなくても、具体化時には関数の存在を検証します。関数がなければ `E1005` です。
@@ -642,7 +649,7 @@ total (Box { value: Pair { first: 20, second: 22 } })
 型引数は型の適用・関数型・タプル型・参照型を含められ、`Pair<Box<i64>, i64 -> i64>` のように
 入れ子の適用や関数型を追加の丸括弧なしで書けます。
 借用も `ref Pair<i64, i64>`／`&Pair<i64, i64>`、タスクも `Task<Pair<i64, i64>>` と書けます。
-隣接する `>>`・`>>>` は型引数の閉じ括弧として扱い、式内のシフト演算子とは区別します。
+隣接する `>>`・`>>>` は型引数の閉じ括弧として扱い、式内の合成・シフト演算子とは区別します。
 非ジェネリックなレコードや組み込み型への適用、個数違い、未知の型名は `E1004` です。
 
 `Add<'a>` と `Pair<i64, string>` は同じ型適用の構文で、名前がクラスなら型変数への制約、
@@ -819,18 +826,21 @@ Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき
 この形は他の関数から呼ぶ宣言にはなりません。通常の関数や呼び出す main は従来どおり `def` を付けます。
 
 トップレベルの `let` の区切りは `;`、改行、またはファイル末尾です。
-右辺を次の行へ続ける場合は演算子の直後で改行するか、括弧・配列・レコード・ブロックの内側に書きます。
+右辺を次の行へ続ける場合は演算子の直後で改行するか、括弧・配列・レコード・ブロックの内側に書きます。行頭が `|>`・`>>`・`<<`・`||`・`&&` の行も前の行の続きです。
 例えば `let x = 40` の次の行に `(x + 2)` や `-x` を書くと、別の結果式になります。
 通常の関数・ブロック内の `let` では従来どおり `;` が必須です。`task` 内の改行区切りは後述します。
 トップレベルの束縛はエントリーコード内のローカル値で、宣言済み関数からの参照や
 他モジュールへの公開はできません。右辺をソース順に評価し、結果式がなければ `unit` を返します。
 上の `Main.tz` は何も表示しません。末尾に `d` を追加すれば距離を表示します。
 結果式が `IO<T>` ならアクションだけを一度実行し、返された所有値を解放します。結果の自動表示はしません。
-それ以外は数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` に限り、
+トップレベルの IO の `let!`／`do!` の後を通常の結果式で終える場合は、束縛をその場で順に実行し（直接形式）、その式の値を結果にします。
+それ以外は数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` なら、
 ネイティブのホスト・ラッパーが値を表示します。string は UTF-8 に変換し、utf8string はそのまま、
 埋め込み NUL も含めて出力します。string に孤立サロゲートがあればトラップし、暗黙に置換しません。
 置換して表示する場合は、明示的に `String.to_well_formed ref text` を使います。
 両文字型も UTF-8 と改行で出力し、`char` の孤立サロゲートはトラップします。
+その他の型の結果は、`Display` の instance があればその文字列を同じく表示し、なければ表示せずに解放します（`E2004` にはしません）。
+`fn main` の結果型は従来どおり上の表示できる型か `IO<T>` に限ります。
 
 入口が `IO<i32>`（トップレベルの結果式、または引数なしの `main :: IO<i32>`）のときは、アクションが返す `i32` を捨てずにプロセスの終了コードにします。POSIX で観測できる値は下位 8 bit です。
 `IO<unit>` や `i32` 以外の `IO<T>` は従来どおり終了コード 0 で、`tsuzuri run` は 0 以外を `E2005` で報告します（[終了コード](#終了コード)）。
@@ -854,7 +864,7 @@ IO {
 }
 ```
 
-`IO.read_line : unit -> IO<Option<string>>` は stdin、`write`／`write_line` は stdout、`write_error`／`write_error_line` は stderr を扱います。
+`IO.read_line : unit -> IO<Option<string>>` は stdin、`write`／`write_line` は stdout、`write_error`／`write_error_line` は stderr を扱います。`IO.writeln` は `IO.write_line` の別名です。
 出力は `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` で、表示自体も実行時に行います。`try_` 接頭辞の各 API は結果を `Result<..., IO.Error>` で包みます。
 Error は ReadFailed／WriteFailed／InvalidEncoding。通常 API は Error でトラップします。EOF は None、空行は Some ""、改行なしの最終行も Some です。
 LF／CRLF を除去し、UTF-8 から string へ厳密変換します。出力は UTF-8、line 版だけ LF を付加します。孤立サロゲートは失敗で、NUL を含む内容は保持します。
@@ -863,6 +873,18 @@ native は C stdio のバッファと逐次処理、出力ごとの flush を使
 `let!`／`do!`／`return`／`return!`／`match!`、条件分岐、配列の for、while、and! を既存規則で展開します。and! は左から右に逐次実行します。
 IO 値も通常の Capture／Copy／借用規則に従い、継続を跨ぐ外側の可変状態や一回実行 Task の捕捉は導入しません。
 `run` は stdin／stdout を引き継ぎ、通常モードの stderr も逐次転送します。JSON モードは stderr だけを終了まで保持します。
+
+結果型が分かっていてその型に計算式のビルダーがない本体（`def main :: i32` など）では、IO の `let!`／`do!` をその場で順に実行します（直接形式）。
+`try` の本体・ハンドラー・`finally` の中と、IO の束縛の後を通常の結果式で終えるトップレベルも同じです。直接実行するのは IO の束縛だけです。
+`do! a |> f` は `a` を束縛してから結果を `f` へ渡す文です（`do! IO.writeln "x" |> ignore`）。
+
+```text
+def main :: i32 =
+    do! IO.writeln "hello"
+    42
+```
+
+このプログラムは `hello` と `42` を出力します。
 
 WASM は到達する操作だけを `tsuzuri_io.read_line(ptr) -> i32`／`tsuzuri_io.write(i32, ptr, i64) -> i32` として import し、未提供時に無視しません。
 read_line は改行を除いた所有 UTF-8 bytes の descriptor（offset0 pointer、offset8 i64 length、size16）を全経路で設定し、0=行／1=EOF／2=失敗を返します。
@@ -1111,7 +1133,8 @@ JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr 
 | `i8u` / `i16u` / `i32u` / `i64u` / `i128u` | 指定幅の符号なし整数 |
 | `f16` / `f32` / `f64` / `f128` | IEEE 754 binary16 / binary32 / binary64 / binary128 |
 | `d32` / `d64` / `d128` | IEEE 754 decimal32 / decimal64 / decimal128（BID エンコーディング） |
-| `byte` / `ubyte` | それぞれ `i8` / `i8u` の別名 |
+| `byte` / `ubyte` / `sbyte` | `byte`・`ubyte` は `i8u`、`sbyte` は `i8` の別名 |
+| `bigint` | 任意精度の整数。std のレコード `BigInt.BigInt`（[bigint](#bigint)） |
 | `string` | ECMA-262 の String 値モデルに従う、所有する不変の UTF-16 コード単位列。孤立サロゲートも保持 |
 | `utf8string` | 従来の実装を保持する、所有する不変の妥当な UTF-8 文字列 |
 | `char` | 全 UTF-16 コード単位。`'A'`、`'\uD800'` などの Copy 値 |
@@ -1288,7 +1311,8 @@ let len4 = text |> String.length
 ジェネリック関数でも `ref 'a`／`ref mut 'a` と宣言した引数は補完対象です。
 型注釈や先行する引数から参照型と分かった高階関数・匿名関数にも適用します。
 この補完は呼び出し引数だけで、`let r: ref T = value` や関数の戻り値へは適用しません。
-一時的な所有値からの借用と寿命延長も行わないため、一時値は先に `let` で束縛してください。
+共有参照 `ref T` の引数には一時的な所有値も渡せます（`Array.sum (Array.map f (ref xs))`、`xs |> Array.map double |> Array.sum`、`String.length "text"`）。
+一時値は呼び出しが戻るまで借用し、その後に解放します。結果が借用を保持する呼び出しには渡せないので、その場合は先に `let` で束縛してください。
 
 `ref`／`ref mut`／`deref` の被演算子は一つの項です。項は名前・リテラル・括弧式などと、それに続く
 `.field`・`[index]`・隣接した `(...)` の呼び出し、または入れ子の前置演算（`ref deref r` など）です。
@@ -1297,7 +1321,7 @@ let len4 = text |> String.length
 最後の引数（`replace ref mut text`）や、後ろに二項演算子・`as`・`=` が続く場合（`deref r + 1`、`deref r = value`）は
 括弧が不要です。
 
-記号形式は、式の先頭では従来どおり単項演算子（順位 13）で、`*get r` は `*(get r)` です。
+記号形式は、式の先頭では従来どおり単項演算子（順位 15）で、`*get r` は `*(get r)` です。
 関数の引数の位置では、直前に空白があり直後に空白を置かずに被演算子が続く `&`／`&mut`／`*` を前置の引数とし、
 その被演算子はキーワード形式と同じ一つの項です（`f &x y`、`f &mut x 1`、`f *r 1`、`f &mut *r`）。
 両側に空白を置く `a * b`／`a & b` と、空白のない `a*b`／`a&b` は二項演算です。
@@ -1328,7 +1352,7 @@ let len4 = text |> String.length
 匿名関数では捕捉した借用も入力に数えます。借用を保持しうる関数値の引数も保守的に入力に数えます。
 ローカル所有値への参照、ブロックを抜けると無効になる参照、寿命を超える代入を拒否します。
 共有借用フィールドを持つレコードは、コピー・移動・部分move・入れ子・closure捕捉を通してloanを保持します。元所有者を越える返却、Taskへの送信、排他借用fieldを拒否します。
-一般的な入れ子参照の高度な推論、一時値の借用と寿命延長は未対応です。一時値は先に `let` で所有者へ束縛してください。
+一般的な入れ子参照の高度な推論、呼び出し引数以外での一時値の借用と寿命延長は未対応です。その場合は一時値を先に `let` で所有者へ束縛してください。
 
 #### 利用者定義の解放
 
@@ -1431,6 +1455,7 @@ def trim {s} :: ref {s} string -> ref {s} string = \text -> text
 char は `\uXXXX`／`\u{...}` でサロゲートも指定できますが、補助平面の一文字は入りません。
 utf8char は braced Unicode escape だけを許し、補助平面は受理、サロゲートは拒否します。
 閉じる引用符のない `'a` は従来どおり型変数です。空・複数文字のリテラルは `E0001` です。
+`'a'B` は ASCII の一文字を `byte`（`i8u`）にするリテラルで、ASCII 以外には使えません。
 
 両型は Copy/Eq/Ord ですが Numeric ではありません。順序は符号なしコード単位順／スカラー値順です。
 算術、整数との `as`、両文字型間の暗黙変換、公開 ABI への直接 export はできません。
@@ -1463,6 +1488,7 @@ string はさらに4桁の `\uXXXX` に対応し、`\uD800`／`\u{d800}` のよ�
 補助平面の文字はサロゲートペアになり、`"😀"` と `"\uD83D\uDE00"` は等しい値です。
 utf8string の Unicode エスケープは従来どおり1～6桁の妥当なスカラーだけで、サロゲートを拒否します。
 値を埋め込む補間リテラル `$"..."`／`u8$"..."` は[文字列補間](#文字列補間)にあります。
+末尾に `B` を付けた `"text"B` は ASCII だけの `[byte]`、`u8"😊text"B` は Unicode スカラーの `[utf8char]` です。補間リテラルには `B` を付けられません。
 
 | 操作 | string | utf8string |
 |---|---|---|
@@ -1746,7 +1772,7 @@ match answer with
 `None`／`Error` は後続の `let!`・`do!`・反復・`Combine` を短絡します。`Result` の error 型は全体で同じです。
 空本体と省略した else は unit の成功（`Option.Zero() = Some ()`、`Result.Zero() = Ok ()`）です。
 値を返す `return` は末尾に置きます。`For` は `Copy<'a> => ['a]` の配列だけを受け取り、
-通常の `for…in` の非 Copy 要素の借用反復とは異なります。`?`、例外、暗黙の error 変換はありません。
+通常の `for…in` の非 Copy 要素の借用反復とは異なります。`?` と暗黙の error 変換はありません。
 `return` は関数からの早期脱出ではなく、成功値の生成です。早期伝播は `Bind`／`Combine` が
 失敗値を受けたときに継続を呼ばないことで起こり、`Result` は最初の error をそのまま返します。
 失敗より前に書いた通常の `let` や unit 式は省略せず、そのトラップを失敗値へ変換しません。
@@ -1921,7 +1947,7 @@ and!は単純な識別子のlet!に続けます。mut・型注釈を許し、同
 単純なlet!と末尾returnだけでは、存在する場合に限ってBindReturnを使います。存在しなければBind+Returnです。型不一致なら通常の型エラーで、別経路へ黙って戻しません。
 これらはビルダーが定義した操作であり、コンパイラはモナド則やoperationの意味同値を仮定しません。Option/Resultは3操作を提供し、Resultは左のErrorを優先します。
 Delayがある場合の全体の遅延・Capture・外部可変変数の禁止は従来どおりです。and!はタスクを自動開始/並列化しません。
-use/tryはグローバル予約語にしません。計算式の`use`／`use!`は[利用者定義の解放](#利用者定義の解放)のとおりletのlexical drop（Drop型では利用者の`drop`）で、try/with/finally構文はE1018です。unwindではなく、lexical dropとOption/Resultを使います。
+use/tryはグローバル予約語にしません。計算式の`use`／`use!`は[利用者定義の解放](#利用者定義の解放)のとおりletのlexical drop（Drop型では利用者の`drop`）です。`try`／`with`／`finally`はビルダーの操作へ展開せず、`Result`を作る通常の式です（[検査付き算術と例外](#検査付き算術と例外)）。unwindは行いません。
 カスタム演算、暗黙yield、高階型、ビルダーオブジェクトは追加しません。
 組み込み `task` は以下の一回実行・並列処理向けの専用 lowering を維持し、
 通常の再利用可能な継続へタスクをコピーする形には変更しません。
@@ -2106,7 +2132,7 @@ step が 0 ならトラップします。次の値が整数型の範囲を越え
 範囲の `continue` は終端とオーバーフローの検査を省略しません。ジャンプ後の同じ経路の式は実行しませんが、
 型・所有権は検査します。評価済みの所有ローカル・パターン一時値・引数やコレクションの生成途中の値は、ジャンプ前に解放します。
 両方とも unit 型なので `if condition then break else 1` は `E1003` です。値付き・ラベル付きのジャンプはありません。
-ループ外、lambda・task・コンピュテーション式の境界を越えるジャンプ、ビルダー自身の `For`／`While` へのジャンプは `E1023` です。
+ループ外、lambda・task・コンピュテーション式の境界を越えるジャンプ、ビルダー自身の `For`／`While` へのジャンプ、`finally` を持つ `try` の外へのジャンプは `E1023` です。
 ビルダーの通常式の中で作る通常ループ（`Option { let value = { while true do break; 42 }; return value }`）は使えます。
 for の分解パターンは網羅性を検査せず、一致しない要素ではトラップし、黙って要素をスキップしません。
 
@@ -2147,7 +2173,7 @@ OR の一部の側だけが到達不能な場合は警告しません。
 網羅性を検査した後も、生成コードは全節が不成立の場合のトラップを防御として残します。
 `for`・ラムダ式の引数・コンピュテーション式の `for` の分解パターンは網羅性を検査せず、
 一致しない値は実行時にトラップします。暗黙の 0 や空文字列は返しません。
-F# の MatchFailureException のような回復可能な例外機構は現状ありません。
+この不一致は `try` で捕捉できる例外ではありません（`try` が捕捉するのは[検査付き算術と例外](#検査付き算術と例外)の `OverflowException` です）。
 
 | パターン | 例・意味 |
 |---|---|
@@ -2268,6 +2294,34 @@ match "42" with | Parsed value -> value | _ -> 0
 ```
 
 null・.NET の実行時型テストはありません。
+
+### 検査付き算術と例外
+
+```text
+def safe_add :: i32 -> i32 -> Result<i32, 'E> = \x y ->
+    try
+        @checked x + y
+    with
+    | e is OverflowException -> e
+
+def show :: i32 -> i32 -> string = \x y ->
+    match safe_add x y with
+    | Ok value -> to_string value
+    | Error e -> e.msg
+
+show 40 2 + " / " + show 2147483647 1
+```
+
+この例は `42 / Arithmetic operation resulted in an overflow.` を表示します。
+
+- `@checked` を式または文の前に置くと、その中の整数の `+`・`-`・`*`・`**` と単項 `-` を検査します。オーバーフローすると折り返さずに `OverflowException`（メッセージは `Arithmetic operation resulted in an overflow.`）を送出します。`@checked` の外は従来どおり折り返します。
+- `try 本体 with | パターン -> ハンドラー ... [finally 後処理]` は `Result<'T, 'E>` 型の式です。本体の値は `Ok`、捕捉した例外に対するハンドラーの結果は `Error` になります。ハンドラーの結果の型は組み込みクラス `Err`（`msg :: ref 'a -> string`）を実装する必要があります。
+- std の `Exception` モジュールは `record Exception { kind: ExceptionKind, msg: string }`、`union ExceptionKind = OverflowException`、`instance Err<Exception>` を定義します。`| e is OverflowException -> ...` は例外の kind で照合し、`e` に例外の値を束縛します。
+- ハンドラーの節は網羅しなくてかまいません。どの節にも一致しない例外は `finally` を実行してから外側の `try` へ伝播します。`finally` の本体は unit で、正常終了・捕捉・伝播のすべての経路で実行します。
+- 例外は字句的です。送出は同じ関数本体で最も内側の `try` へ移り、関数呼び出しやラムダを越えません。巻き戻し（unwind）はありません。どの `try` も捕捉しない例外はトラップし、`trap: unhandled OverflowException: arithmetic operation resulted in an overflow at ファイル:行:列` を報告します。
+- `finally` を持つ `try` の外へ出る `break`／`continue` は `E1023` です。
+- 結果が `Result<'T, 'E>` で `'E` がそこにしか現れない関数では、`@'E : Err` の制約があるか本体が `try` なら、`'E` は捕捉した `Exception` です。本体が `try` なら制約を省略できます（上の `safe_add`）。
+- `try` の本体・ハンドラー・`finally` の中の IO の `let!`／`do!` はその場で実行します（[IO と標準入出力](#io-と標準入出力)）。
 
 ## 式と評価順序
 
@@ -2479,17 +2533,17 @@ break/continueは通常のループと同じで、残った列・未消費要素
 配列・リスト・文字列・整数範囲の直接forは既存の走査を維持します。独自型のiter関数は暗黙探索せず、`for item in Module.iter (&source) do ...`と書きます。
 
 ```text
-let sequence = Seq.unfold 0 (\value ->
-    if value < 10 then Option.Some (value, value + 1) else Option.None)
-let doubled = Seq.map sequence (\value -> value * 2)
-let selected = Seq.filter doubled (\value -> deref value % 3 == 0)
+let sequence = Seq.unfold (\value ->
+    if value < 10 then Option.Some (value, value + 1) else Option.None) 0
+let doubled = Seq.map (\value -> value * 2) sequence
+let selected = Seq.filter (\value -> deref value % 3 == 0) doubled
 let result = Seq.to_array selected
 ```
 
 - `Seq.empty()`は空、`Seq.once value`は一要素です。onceはTaskや所有文字列も保持し、未実行でも正しくdropします。
 - `Seq.defer step`は `unit -> (Seq<'a> * Option<'a>)` の次stepを遅延します。next前には呼び出しません。
-- `Seq.unfold state generator`は `state -> Option<('a * state)>` を繰り返します。stateには通常closureのCapture制約があります。
-- `Seq.map sequence transform`は `'a -> 'b`、`Seq.filter sequence predicate`は `ref 'a -> bool` を遅延適用します。保存する入力要素にはCaptureを要求します。
+- `Seq.unfold generator state`は `state -> Option<('a * state)>` を繰り返します。stateには通常closureのCapture制約があります。
+- `Seq.map transform sequence`は `'a -> 'b`、`Seq.filter predicate sequence`は `ref 'a -> bool` を遅延適用します。保存する入力要素にはCaptureを要求します。
 - `Seq.to_array`は列を消費し、Vecで集めて所有配列へ移します。無限列には停止を保証しません。
 - `Array.iter`／`Vec.iter`／`List.iter`／`Set.iter`は要素への共有参照、`Map.iter`は `(ref K * ref V)` のSeqを返します。元コンテナの寿命・借用競合を維持します。
 - List.iterはリンクを一回走査して要素参照のVecを準備します。準備O(n)時間/領域、全反復O(n)で、要素自体はコピーしません。直接list forは準備領域を必要としません。
@@ -2512,13 +2566,13 @@ let map = Map.remove map 2
 ```
 
 Map APIは `empty()`、`singleton key value`、`length (&map)`、`is_empty (&map)`、`insert map key value`、`remove map key`、
-`contains_key (&map) key`、`get (&map) key`、`at (&map) key`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold (&map) initial folder`です。
+`contains_key (&map) key`、`get (&map) key`、`at (&map) key`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold folder initial (&map)`です。
 getはCopy値の `Option<V>`、atは存在しなければトラップする `ref V` を返します。検索キーは値渡しして呼び出し後に解放します。
 同じキーへのinsertは最初のキー代表値を保持し、新しいキーと旧値を解放して値だけを置換します。removeで存在しないキーは変更しません。
 to_arrayはキー・値、keysはキー、valuesは値にだけCopyを要求します。foldのcallbackは `state -> ref K -> ref V -> state` です。
 
 Set APIは `empty()`、`singleton key`、`length`、`is_empty`、`insert set key`、`remove set key`、`contains (&set) key`、
-`to_array (&set)`、`fold (&set) initial folder`、`union left right`、`intersect (&left) (&right)`、`difference (&left) (&right)`です。
+`to_array (&set)`、`fold folder initial (&set)`、`union left right`、`intersect (&left) (&right)`、`difference (&left) (&right)`です。
 unionは両所有値を消費し、重複時は左の代表値を保持します。intersect/difference/to_arrayは返却用のキーにCopyを要求します。
 foldのcallbackは `state -> ref K -> state` で、非Copyキーにも使えます。
 
@@ -2552,7 +2606,7 @@ to_string (HashMap.keys (ref ages))      // [10, 40, 30]
 | `contains_key (&map) key`／`get (&map) key`／`at (&map) key` | 検索キーは値渡しで、比較して呼び出しの終わりに解放します。`get` は `Option<V>`（`Copy<V>` が必要）、`at` は存在しなければトラップする `ref V` です |
 | `contains_key_ref`／`get_ref`／`at_ref`／`remove_ref` | 上と同じ操作を、キーを `ref 'key` で受け取る形にしたものです。キーを手放さずに何度でも検索でき、`at_ref` の結果は map だけを借用します |
 | `to_array (&map)`／`keys (&map)`／`values (&map)` | 走査順の `[(K * V)]`／`[K]`／`[V]`。コピーする側の型に `Copy` を要求します |
-| `fold (&map) initial folder`／`iter (&map)` | `folder` は `'state -> ref K -> ref V -> 'state`、`iter` は `Seq<(ref K * ref V)>` です。キーの排他借用は提供しません（キーを変えると表が壊れるため） |
+| `fold folder initial (&map)`／`iter (&map)` | `folder` は `'state -> ref K -> ref V -> 'state`、`iter` は `Seq<(ref K * ref V)>` です。キーの排他借用は提供しません（キーを変えると表が壊れるため） |
 | `with_seed seed`／`with_capacity_and_seed count seed` | `seed: i64u` でハッシュを鍵付けしたmap（[seed と HashDoS](#seed-と-hashdos)） |
 | `randomized ()`／`try_randomized ()` | OS の乱数で鍵付けしたmapを返す `IO` アクション（[seed と HashDoS](#seed-と-hashdos)） |
 | `longest_probe (&map)` | 理想の位置から最も遠い entry までの距離です。空なら 0 で、診断用です |
@@ -2641,27 +2695,61 @@ List は `length`・`is_empty`・`copy`・`map`・`map_ref`・`fold`・`fold_ref
 f32/f64 では comparator 呼び出し後に NaN を数値の後ろへ配置し、NaN 同士・既定比較の符号付きゼロの入力順を保ちます。
 `binary_search` は同じ順序で整列した入力を要求し、重複の先頭インデックスを返します。
 
+高階関数は F# と同じく関数を最初の引数に取ります。Array は `map f xs`・`mapi f xs`・`map_ref f xs`・`mapi_ref f xs`・`fold f state xs`・`fold_ref f state xs`・`fold_back f xs state`・`fold_back_ref f xs state`・`reduce f xs`・
+`any p xs`・`all p xs`・`count p xs`・`find p xs`・`filter p xs`・`sort_by compare xs`、List は `map f xs`・`map_ref f xs`・`fold f state xs`・`fold_ref f state xs` です。
+`Seq.unfold generator state`・`Seq.map f sequence`・`Seq.filter p sequence`、`Map`・`Set`・`HashMap`・`HashSet` の `fold f state collection`、`Parallel` の関数も同じ順序です。`init count f`・`sum` などの引数順は変わりません。
+
+```text
+let xs = [1, 2, 3, 4]
+let total = Array.fold (\acc x -> acc + x) 0 xs              // 10
+let digits = Array.fold_back (\x acc -> acc * 10 + x) xs 0   // 4321
+let texts = ["a", "bcd"]
+let lengths = texts |> Array.map_ref (\t -> t.length)        // [1, 3]
+```
+
 ### 演算子
 
-優先順位は低いものから次の通りです。二項演算はすべて左結合です。
+優先順位は低いものから次の通りです。`**` は右結合、そのほかの二項演算は左結合です。
 
 | 順位 | 演算子 |
-|---|---|
+| --- | --- |
 | 1 | `\|>` |
-| 2 | `\|\|` |
-| 3 | `&&` |
-| 4–6 | `\|`、`^`、`&` |
-| 7 | `==`、`!=` |
-| 8 | `<`、`<=`、`>`、`>=` |
-| 9 | `<<`、`>>`、`>>>` |
-| 10 | `+`、`-` |
-| 11 | `*`、`/`、`%` |
-| 12 | 数値変換 `as Type` |
-| 13 | 単項 `-`、`!`、`~`、`ref`、`ref mut`、`deref`、`&`、`&mut`、`*` |
-| 14 | 関数呼び出し、`.field`、`[index]` |
+| 2 | `>>`、`<<`（関数合成） |
+| 3 | `\|\|` |
+| 4 | `&&` |
+| 5 | `\|`、`\|\|\|` |
+| 6 | `^`、`^^^` |
+| 7 | `&`、`&&&` |
+| 8 | `==`、`!=` |
+| 9 | `<`、`<=`、`>`、`>=` |
+| 10 | `<<<`、`>>>` |
+| 11 | `+`、`-` |
+| 12 | `*`、`/`、`%` |
+| 13 | `**` |
+| 14 | 数値変換 `as Type` |
+| 15 | 単項 `-`、`+`、`!`、`~`、`~~~`、`ref`、`ref mut`、`deref`、`&`、`&mut`、`*` |
+| 16 | 関数呼び出し、`.field`、`[index]` |
 
-`ref`／`ref mut`／`deref` と引数位置の `&`／`&mut`／`*` の被演算子は一つの項（順位 14 の後置を含む）です。
+`ref`／`ref mut`／`deref` と引数位置の `&`／`&mut`／`*` の被演算子は一つの項（順位 16 の後置を含む）です。
 引数位置の `&`／`*` を二項演算子として書く場合は両側に空白を置くか、空白を置かずに詰めます（`a * b`、`a*b`）。
+
+- 単項 `+x` は数値をそのまま返します。単項演算子は `**` より強く結合し、`-2 ** 2` は `(-2) ** 2` で 4 です。
+- `**` はべき乗で、`2 ** 3 ** 2` は `2 ** 9`（512）です。整数（指数も同じ型）・f32・f64・`bigint` に使え、組み込みクラス `Pow` に対応します。
+- ビット演算は F# と同じ `&&&`・`|||`・`^^^`・`~~~` です。従来の `&`・`|`・`^`・`~` も同じ演算の別名として受理します。
+- `<<<` は左シフト、`>>>` は右シフトです。`>>>` は符号付き整数では算術、符号なし整数では論理シフトで、符号付きの値の論理右シフトは `Bits.ushr x n` です。
+- `f >> g` は `\x -> g (f x)`、`f << g` は `\x -> f (g x)` の関数合成です。`>>`／`<<` はシフト演算子ではありません。
+- `not` は無修飾の組み込み関数 `bool -> bool`（`not true`、`x |> not`）で、`!` も引き続き使えます。`ignore` は引数を捨てる組み込み関数 `'a -> unit` です。
+- 行頭の `|>`・`>>`・`<<`・`||`・`&&` は前の行の式を続けます。
+
+```text
+let n = [1, 2, 3]
+    |> Array.sum                          // 6
+let f = (\x -> x + 1) >> (\x -> x * 10)   // f 1 == 20
+let g = (\x -> x + 1) << (\x -> x * 10)   // g 1 == 11
+let bits = 6 &&& 3 ||| 8                  // 10
+let shifted = -8 >>> 1                    // -4
+let logical = Bits.ushr (-8) 28           // 15
+```
 
 組み込みの `==`／`!=` は同じスカラー型、unit、string、大小比較は同じ数値型、
 論理演算は bool、ビット演算と `%` は同じ整数型に対して使えます。
@@ -2672,21 +2760,38 @@ f32/f64 では comparator 呼び出し後に NaN を数値の後ろへ配置し�
 整数リテラルは十進、`0x` 十六進、`0b` 二進に対応し、桁の間に `_` を使えます。
 浮動小数点リテラルは `1.5`、`1e3`、`1.2e-3` など。
 型注釈、関数の引数・結果、演算の相手から型を決めます。接尾辞による `127i8`、
-`340282366920938463463374607431768211455i128u`、`1f16`、`0.1d128` も使えます。
-型を決める文脈も接尾辞もなければ、従来の幅を維持して整数は i64、小数点／指数付きは f64 です。
-通常の無注釈の数値束縛は右辺で型が決まり、後の使用から幅を変更しません。
+`340282366920938463463374607431768211455i128u`、`1f16`、`0.1d128` と、次の短い接尾辞も使えます。
+
+| 接尾辞 | 型 |
+| --- | --- |
+| `y`／`uy` | `i8`／`i8u` |
+| `s`／`us` | `i16`／`i16u` |
+| `u` | `i32u` |
+| `l`／`ul` | `i64`／`i64u` |
+| `L`／`UL` | `i128`／`i128u` |
+| `I` | `bigint`（`9999999999999999999999999999I`、`0xFFI`） |
+| `hf`／`f`／`F` | `f16`／`f32`／`f128` |
+| `hm`／`m`／`M` | `d32`／`d64`／`d128` |
+
+十六進・二進のリテラルに浮動小数点の接尾辞は付けられません（`0x10hf` はエラー）。
+接尾辞のない整数リテラルの型は、Rust と同じく後の使用からも推論します。
+`let values = [3, 5, 8]` は、後で `[i64]` を受け取る関数へ渡せば `[i64]` です。
+何も型を決めなければ `i32` です（以前の既定は i64）。`i32` に収まらず型も決まらないリテラルはエラーなので、`3000000000l` のように接尾辞を付けます。
+浮動小数点・decimal の型が期待される位置の接尾辞のない整数リテラルは、その型の値です（`let r: f64 = 2`）。`bigint` が期待される位置では `bigint` です。
+小数点／指数付きのリテラルは、型を決める文脈がなければ f64 です。
 匿名関数や部分適用に残った未確定の型変数は同じスコープの使用から解決できますが、束縛そのものを多相化はしません。
 整数と浮動小数点の間、および異なる型の変数の間に暗黙変換はありません。
 範囲外の整数リテラルと、無限大に丸められる浮動小数点リテラルはコンパイルエラーです。
 各符号付き整数型の最小値も負のリテラルで記述できます。
 binary リテラルは目的の幅へ直接丸め、f64 を経由して f128 の精度を失うことはありません。
 
-- 整数の `+ - *`、符号反転、ビット演算は指定されたビット幅で折り返します。
+- 整数の `+ - * **`、符号反転、ビット演算は指定されたビット幅で折り返します。`@checked` の中の `+ - * **` と符号反転は、オーバーフローすると `OverflowException` を送出します（[検査付き算術と例外](#検査付き算術と例外)）。
 - 符号反転は符号付き整数と浮動小数点に使えます。符号なし整数への単項 `-` はエラーです。
 - `/` はゼロ方向への切り捨て、`%` は被除数と同符号の剰余です。
 - 整数のゼロ除算、および最小値の `-1` による除算・剰余はトラップします。
-- シフト数は `count & (bit_width - 1)`。符号付きの `>>` は算術右シフト、
-  符号なしの `>>` とすべての `>>>` は論理右シフトです。
+- シフト数は `count & (bit_width - 1)`。`<<<` は左シフト、`>>>` は符号付きなら算術右シフト、
+  符号なしなら論理右シフトです。符号付きの値の論理右シフトは `Bits.ushr value count` です。
+- 整数の `**` の指数は底と同じ型で、負の指数はトラップします。f32／f64 の `**` は同梱の数学ランタイムの pow（[数学 API](#数学-api)）で計算します。
 - 全浮動小数点型は NaN、無限大、符号付きゼロ、非正規化数を保持し、最近接・偶数丸めを使います。
   NaN のペイロード、浮動小数点例外フラグ、丸めモードの変更は公開しません。
 - NaN に対する `==`／大小比較は false、`!=` は true。浮動小数点のゼロ除算は IEEE 754 通りです。
@@ -2722,10 +2827,12 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 | `Owned.drop` | `'a -> unit`。値を消費してその場で解放する（[利用者定義の解放](#利用者定義の解放)） |
 | `Owned.function` | `('a -> 'b) -> Owned.Function<'a, 'b>`。引数に直接書いたラムダは Drop 型の値も捕捉できる |
 | `Owned.call` | `ref Owned.Function<'a, 'b> -> 'a -> 'b`。環境を借用したまま呼ぶ |
+| `not` | `bool -> bool`。`!` と同じ論理否定 |
+| `ignore` | `'a -> unit`。引数を捨てる |
 
 `sqrt`／`floor`／`ceil`／`abs`／`to_float`／`to_int` は上記の固定シグネチャを維持しており、オーバーロードではありません。
 組み込み関数も通常の関数と同じくカリー化された関数値で、部分適用・パイプライン・高階関数の引数に使えます。
-`to_string` は基本の文字列化として無修飾で提供します。それ以外の新しい組み込み関数は、
+`to_string` は基本の文字列化として、`not`／`ignore` は基本の関数として無修飾で提供します。それ以外の新しい組み込み関数は、
 `Task.run` のように std のモジュール名で修飾した名前で追加します。
 `Module.name` は、そのモジュールのソース定義の関数、同じ修飾名の組み込み関数の順に解決し、
 型クラスのメソッドより先に判定します。std のソースは組み込み関数と同じ修飾名の関数を定義できません（`E1001`）。
@@ -2733,7 +2840,7 @@ CPU 命令・SIMD の利用は内部実装の選択であり、上記の数値�
 
 トラップは WASM では `WebAssembly.RuntimeError`。
 ネイティブでは `llvm.trap` によるプロセス終了です。
-`tsuzuri run` は異常終了を診断しますが、言語内の回復可能な例外機構はありません。
+`tsuzuri run` は異常終了を診断します。言語内で回復できるのは、`@checked` の `OverflowException` を `try` で捕捉する場合だけです（[検査付き算術と例外](#検査付き算術と例外)）。
 UI／公開 API の入力はホストでも検査してください。
 メモリ確保失敗もトラップします。トラップ時のスタック巻き戻しは行わず、未実行の `Drop.drop` も走りません。
 
@@ -2827,6 +2934,23 @@ sum = next
 `unsigned_abs`／`abs_diff`／`widening_mul` の型族は呼び出し時に具体的な整数幅が必要です。
 型変数のまま残す汎用ラッパーは `E1015` で拒否します。通常の `+`／`-`／`*` の折り返し、
 `/`／`%` のトラップ、整数同士の `as` の下位ビット保持は変更しません。
+
+### bigint
+
+`bigint` は任意精度の整数で、std のレコード `BigInt.BigInt` です。リテラルは `123I`・`0xFFI`、または `bigint` が期待される位置の接尾辞のない整数（`let b: bigint = 2`）です。
+
+```text
+let a = 9999999999999999999999999999I
+let doubled = a * 2I + 1I       // 19999999999999999999999999999
+let quotient = -7I / 2I         // -3
+let remainder = -7I % 2I        // -1
+let power = 2I ** 100           // 1267650600228229401496703205376
+```
+
+- `+`・`-`・`*`・`/`・`%`・`**` と単項 `-`、比較、`Display`・`Parse`・`Hash`・`Default` を持ちます。
+- `/` はゼロ方向への切り捨て、`%` は被除数と同符号の剰余です。ゼロ除算はトラップ（assertion）します。
+- `BigInt.of_i64 : i64 -> bigint`、`BigInt.to_i64 : ref bigint -> Option<i64>`（i64 に収まらなければ None）、`BigInt.of_string : ref string -> Option<bigint>`、`BigInt.compare : ref bigint -> ref bigint -> i64` を提供します。
+- 内部表現は不透明で、`BigInt` モジュールの外からの record 構築・field 参照・pattern 分解・record 更新は `E1022` です。
 
 ### 表示と解析
 
@@ -3060,8 +3184,8 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |
 | `E1020` | 不正なパターン、OR 束縛の不一致、未対応の認識器形式、union case の payload の不一致 |
 | `E1021` | 明示の `match`・関数ガードの網羅性の不足（不足する値の例を示す） |
-| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
-| `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue` |
+| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle`・`BigInt.BigInt` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
+| `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue`、`finally` を持つ `try` から出る `break`／`continue` |
 | `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
 | `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |
 | `E1025` | 導出できないクラス・要素型、終了しない再帰Default |

@@ -29,8 +29,8 @@ fn continue_endpoints =
     for index = 2147483646 to 2147483647 do { count = count + 1; continue }
     for index = -2147483647 downto -2147483648 do { count = count + 1; continue }
     for index in 254i8u .. 255i8u do { count = count + 1; continue }
-    for index in 9223372036854775806 .. 9223372036854775807 do { count = count + 1; continue }
-    for index in -9223372036854775807 .. -1 .. -9223372036854775808 do { count = count + 1; continue }
+    for index in 9223372036854775806l .. 9223372036854775807l do { count = count + 1; continue }
+    for index in -9223372036854775807l .. -1 .. -9223372036854775808l do { count = count + 1; continue }
     for index in 170141183460469231731687303715884105726i128 .. 170141183460469231731687303715884105727i128 do { count = count + 1; continue }
     for index in -170141183460469231731687303715884105727i128 .. -1i128 .. -170141183460469231731687303715884105728i128 do { count = count + 1; continue }
     for index in 18446744073709551614i64u .. 18446744073709551615i64u do { count = count + 1; continue }

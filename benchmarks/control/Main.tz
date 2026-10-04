@@ -1,5 +1,5 @@
 def step :: i64u -> i64u -> i64u
-fn step state salt = (state ^ (state >> 13)) * 6364136223846793005 + salt + 1442695040888963407
+fn step state salt = (state ^ (state >>> 13)) * 6364136223846793005 + salt + 1442695040888963407
 
 export def while_mix :: i64 -> i64u -> i64u
 fn while_mix count seed =
@@ -151,10 +151,10 @@ fn closure_churn count seed =
 export def integer128_mix :: i64 -> i64u -> i64u
 fn integer128_mix count seed =
     assert (count >= 0 && count <= 100000000)
-    let mut state = (seed as i128u << 64) | 1442695040888963407i128u
+    let mut state = (seed as i128u <<< 64) | 1442695040888963407i128u
     for remaining = count as i32 downto 1 do
-        state = (state ^ (state >> 43)) * 6364136223846793005i128u + remaining as i128u
-    (state ^ (state >> 64)) as i64u
+        state = (state ^ (state >>> 43)) * 6364136223846793005i128u + remaining as i128u
+    (state ^ (state >>> 64)) as i64u
 
 export def float32_mix :: i64 -> i64u -> i64u
 fn float32_mix count seed =

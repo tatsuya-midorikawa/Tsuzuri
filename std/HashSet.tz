@@ -51,8 +51,8 @@ fn longest_probe set = HashMap.longest_probe (ref set.map)
 def to_array :: Copy<'key> => ref HashSet<'key> -> ['key]
 fn to_array set = HashMap.keys (ref set.map)
 
-def fold :: ref HashSet<'key> -> 'state -> ('state -> ref 'key -> 'state) -> 'state
-fn fold set initial folder = HashMap.fold (ref set.map) initial (\state key _unit -> folder state key)
+def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref HashSet<'key> -> 'state
+fn fold folder initial set = HashMap.fold (\state key _unit -> folder state key) initial (ref set.map)
 
 def iter :: ref HashSet<'key> -> Seq.Seq<ref 'key>
-fn iter set = Seq.map (HashMap.iter (ref set.map)) (\pair -> match pair with | (key, _unit) -> key)
+fn iter set = Seq.map (\pair -> match pair with | (key, _unit) -> key) (HashMap.iter (ref set.map))

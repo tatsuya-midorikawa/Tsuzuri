@@ -250,31 +250,42 @@ impl Lexer<'_> {
                 || (byte == b':' && self.source.as_bytes().get(start + 1) != Some(&b':')))
         {
             let kind = self.hole_end(start)?;
+            let kind = if matches!(kind, TokenKind::InterpolationEnd(_)) {
+                self.no_byte_suffix(kind, start)?
+            } else {
+                kind
+            };
             return Ok(Some(Token {
                 kind,
                 span: Span::new(start, self.position),
             }));
         }
         let kind = if byte == b'\'' {
-            self.char_or_type_variable()?
+            let kind = self.char_or_type_variable()?;
+            self.byte_suffix(kind, start)?
         } else if self.rest().starts_with("u8'") {
             self.position += 2;
-            self.character(true)?
+            let kind = self.character(true)?;
+            self.byte_suffix(kind, start)?
         } else if self.rest().starts_with("u8\"") {
             self.position += 2;
-            self.string(true)?
+            let kind = self.string(true)?;
+            self.byte_suffix(kind, start)?
         } else if self.rest().starts_with("u8$\"") {
             self.position += 3;
-            self.interpolated(true, start)?
+            let kind = self.interpolated(true, start)?;
+            self.no_byte_suffix(kind, start)?
         } else if self.rest().starts_with("$\"") {
             self.position += 1;
-            self.interpolated(false, start)?
+            let kind = self.interpolated(false, start)?;
+            self.no_byte_suffix(kind, start)?
         } else if byte.is_ascii_alphabetic() || byte == b'_' {
             self.identifier()
         } else if byte.is_ascii_digit() {
             self.number()?
         } else if byte == b'"' {
-            self.string(false)?
+            let kind = self.string(false)?;
+            self.byte_suffix(kind, start)?
         } else {
             self.symbol()?
         };
@@ -299,6 +310,58 @@ impl Lexer<'_> {
 
     fn rest(&self) -> &str {
         &self.source[self.position..]
+    }
+
+    /// Whether a `B` suffix directly follows the literal that ends at the position.
+    fn at_byte_suffix(&self) -> bool {
+        let bytes = self.source.as_bytes();
+        bytes.get(self.position) == Some(&b'B')
+            && !bytes
+                .get(self.position + 1)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    }
+
+    /// Reads the `B` of `'a'B` (a byte), `"ascii"B` (bytes), and `u8"text"B` (scalars).
+    fn byte_suffix(&mut self, kind: TokenKind, start: usize) -> Result<TokenKind, Diagnostic> {
+        if !self.at_byte_suffix() {
+            return Ok(kind);
+        }
+        self.position += 1;
+        let error = |message: &str| {
+            Diagnostic::new("E0001", message.to_owned(), Span::new(start, self.position))
+        };
+        let ascii = "a 'B' literal holds only ASCII characters (U+0000 to U+007F)";
+        match kind {
+            TokenKind::Char(unit) if unit < 0x80 => Ok(TokenKind::Integer(format!("{unit}i8u"))),
+            TokenKind::String(StringLiteral::Utf16(units)) => {
+                if units.iter().all(|unit| *unit < 0x80) {
+                    Ok(TokenKind::ByteString(
+                        units.iter().map(|unit| *unit as u8).collect(),
+                    ))
+                } else {
+                    Err(error(ascii))
+                }
+            }
+            TokenKind::String(StringLiteral::Utf8(text)) => Ok(TokenKind::ScalarString(
+                text.chars().map(u32::from).collect(),
+            )),
+            TokenKind::Char(_) => Err(error(ascii)),
+            _ => Err(error(
+                "only 'c'B, \"text\"B, and u8\"text\"B take the 'B' suffix",
+            )),
+        }
+    }
+
+    fn no_byte_suffix(&mut self, kind: TokenKind, start: usize) -> Result<TokenKind, Diagnostic> {
+        if self.at_byte_suffix() {
+            self.position += 1;
+            return Err(Diagnostic::new(
+                "E0001",
+                "an interpolated string does not take the 'B' suffix",
+                Span::new(start, self.position),
+            ));
+        }
+        Ok(kind)
     }
 
     fn char_or_type_variable(&mut self) -> Result<TokenKind, Diagnostic> {
@@ -560,15 +623,39 @@ impl Lexer<'_> {
             self.position += 1;
         }
         let suffix = &self.source[suffix_start..self.position];
-        if !suffix.is_empty() && !crate::numeric::is_numeric_name(suffix) {
+        let digits = self.source[start..suffix_start].replace('_', "");
+        if suffix == "I" {
+            if float {
+                return Err(Diagnostic::new(
+                    "E0001",
+                    "the 'I' suffix makes a bigint, which has no fraction or exponent",
+                    Span::new(start, self.position),
+                ));
+            }
+            return Ok(TokenKind::BigInteger(digits));
+        }
+        let name = if suffix.is_empty() {
+            ""
+        } else {
+            crate::numeric::suffix_type(suffix).ok_or_else(|| {
+                Diagnostic::new(
+                    "E0001",
+                    "invalid numeric literal or type suffix",
+                    Span::new(start, self.position),
+                )
+            })?
+        };
+        let float_suffix = name.starts_with(['f', 'd']);
+        if radix != 10 && float_suffix {
             return Err(Diagnostic::new(
                 "E0001",
-                "invalid numeric literal or type suffix",
+                "a hexadecimal or binary literal takes an integer suffix, not a floating-point one",
                 Span::new(start, self.position),
             ));
         }
-        float |= suffix.starts_with(['f', 'd']);
-        let text = self.source[start..self.position].replace('_', "");
+        float |= float_suffix;
+        // Short suffixes become the type name, so `86uy` and `86i8u` are the same token.
+        let text = format!("{digits}{name}");
         Ok(if float {
             TokenKind::Float(text)
         } else {
@@ -823,20 +910,26 @@ impl Lexer<'_> {
         }
         for (text, kind) in [
             ("[|", LeftList),
+            ("<<<", TripleLess),
+            (">>>", TripleGreater),
+            ("&&&", TripleAmpersand),
+            ("|||", TriplePipe),
+            ("^^^", TripleCaret),
+            ("~~~", TripleTilde),
             ("|]", RightList),
-            (">>>", ShiftRightUnsigned),
             ("->", Arrow),
             ("=>", FatArrow),
             ("::", DoubleColon),
             ("..", DotDot),
+            ("**", DoubleStar),
             ("==", EqualEqual),
             ("!=", BangEqual),
             ("<=", LessEqual),
             (">=", GreaterEqual),
             ("&&", AndAnd),
             ("||", OrOr),
-            ("<<", ShiftLeft),
-            (">>", ShiftRight),
+            ("<<", DoubleLess),
+            (">>", DoubleGreater),
             ("|>", PipeForward),
         ] {
             if self.rest().starts_with(text) {
@@ -1028,14 +1121,62 @@ mod tests {
 
     #[test]
     fn lexes_comments_numbers_and_longest_operators() {
-        let tokens = lex("\u{feff}/* 外 /* nested */ */ 0xff 0b10 1_024 1.5e-2 >>> >> |>").unwrap();
+        let tokens = lex(
+            "\u{feff}/* 外 /* nested */ */ 0xff 0b10 1_024 1.5e-2 >>> >> |> <<< << ** &&& ||| ^^^ ~~~",
+        )
+        .unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Integer("0xff".into()));
         assert_eq!(tokens[1].kind, TokenKind::Integer("0b10".into()));
         assert_eq!(tokens[2].kind, TokenKind::Integer("1024".into()));
         assert_eq!(tokens[3].kind, TokenKind::Float("1.5e-2".into()));
-        assert_eq!(tokens[4].kind, TokenKind::ShiftRightUnsigned);
-        assert_eq!(tokens[5].kind, TokenKind::ShiftRight);
+        assert_eq!(tokens[4].kind, TokenKind::TripleGreater);
+        assert_eq!(tokens[5].kind, TokenKind::DoubleGreater);
         assert_eq!(tokens[6].kind, TokenKind::PipeForward);
+        assert_eq!(tokens[7].kind, TokenKind::TripleLess);
+        assert_eq!(tokens[8].kind, TokenKind::DoubleLess);
+        assert_eq!(tokens[9].kind, TokenKind::DoubleStar);
+        assert_eq!(tokens[10].kind, TokenKind::TripleAmpersand);
+        assert_eq!(tokens[11].kind, TokenKind::TriplePipe);
+        assert_eq!(tokens[12].kind, TokenKind::TripleCaret);
+        assert_eq!(tokens[13].kind, TokenKind::TripleTilde);
+    }
+
+    #[test]
+    fn lexes_short_suffixes_and_byte_literals() {
+        let tokens = lex("86y 86uy 86s 86us 86u 86l 86ul 86L 86UL 99I 4.14hf 4.14f 4.14F 0.5hm 0.5m 0.5M 'a'B \"ab\"B u8\"é\"B").unwrap();
+        let names: Vec<_> = tokens
+            .iter()
+            .take(9)
+            .map(|token| token.kind.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "86i8", "86i8u", "86i16", "86i16u", "86i32u", "86i64", "86i64u", "86i128",
+                "86i128u",
+            ]
+            .map(|text| TokenKind::Integer(text.into()))
+        );
+        assert_eq!(tokens[9].kind, TokenKind::BigInteger("99".into()));
+        let floats: Vec<_> = tokens[10..16]
+            .iter()
+            .map(|token| token.kind.clone())
+            .collect();
+        assert_eq!(
+            floats,
+            [
+                "4.14f16", "4.14f32", "4.14f128", "0.5d32", "0.5d64", "0.5d128"
+            ]
+            .map(|text| TokenKind::Float(text.into()))
+        );
+        assert_eq!(tokens[16].kind, TokenKind::Integer("97i8u".into()));
+        assert_eq!(tokens[17].kind, TokenKind::ByteString(Box::from(*b"ab")));
+        assert_eq!(tokens[18].kind, TokenKind::ScalarString(Box::from([0xE9])));
+        for source in [
+            "0x10hf", "0b1hm", "1.5I", "'é'B", "\"é\"B", "$\"x\"B", "'ab'B",
+        ] {
+            assert!(lex(source).is_err(), "{source}");
+        }
     }
 
     #[test]

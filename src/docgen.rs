@@ -177,12 +177,12 @@ fn signature<'a>(
         constraints_text(constraints)
     );
     for constraint in constraints {
-        if let ConstraintName::Function(name) = &constraint.name {
-            text.push_str(&format!(
-                "\n    @{}: #{}",
-                type_text(&constraint.ty),
-                name.text
-            ));
+        if let ConstraintName::Function(name, annotation) = &constraint.name {
+            let function = match annotation {
+                Some(ty) => format!("(#{}: {})", name.text, type_text(ty)),
+                None => format!("#{}", name.text),
+            };
+            text.push_str(&format!("\n    @{}: {function}", type_text(&constraint.ty)));
         }
     }
     text

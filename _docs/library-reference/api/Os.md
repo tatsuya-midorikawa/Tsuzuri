@@ -48,7 +48,7 @@ Encodes a path, name, or text for the system; a lone surrogate is `InvalidEncodi
 def error_of_status :: i64 -> Error
 ```
 
-Decodes a status the runtime returned: `(kind << 32) | code`, with kind 1 to 7 in declaration order.
+Decodes a status the runtime returned: `(kind <<< 32) | code`, with kind 1 to 7 in declaration order.
 
 ## `split_names`
 

@@ -83,7 +83,7 @@ def values :: Copy<'value> => ref Map<'key, 'value> -> ['value]
 ## `fold`
 
 ```tsuzuri
-def fold :: ref Map<'key, 'value> -> 'state -> ('state -> ref 'key -> ref 'value -> 'state) -> 'state
+def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref Map<'key, 'value> -> 'state
 ```
 
 ## `iter`

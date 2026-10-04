@@ -27,8 +27,14 @@ pub enum TokenKind {
     DocComment(String),
     TypeVariable(String),
     Integer(String),
+    /// An integer literal with the `I` suffix: the digits, with any radix prefix.
+    BigInteger(String),
     Float(String),
     String(StringLiteral),
+    /// `"ascii"B`: the bytes of an ASCII string.
+    ByteString(Box<[u8]>),
+    /// `u8"text"B`: the Unicode scalars of a UTF-8 string.
+    ScalarString(Box<[u32]>),
     /// `$"text{` or `u8$"text{`: the text before the first hole.
     InterpolationStart(Box<InterpolationPiece>),
     /// `}text{` or `:spec}text{`: closes a hole and opens the next.
@@ -116,9 +122,21 @@ pub enum TokenKind {
     Ampersand,
     Pipe,
     Caret,
-    ShiftLeft,
-    ShiftRight,
-    ShiftRightUnsigned,
+    /// `<<`: backward function composition.
+    DoubleLess,
+    /// `>>`: function composition, or two generic closes in a type.
+    DoubleGreater,
+    /// `<<<`: left shift.
+    TripleLess,
+    /// `>>>`: right shift (arithmetic for signed types), or three generic closes in a type.
+    TripleGreater,
+    /// `**`: power.
+    DoubleStar,
+    /// `&&&`, `|||`, `^^^`, `~~~`: bitwise and, or, xor, and not.
+    TripleAmpersand,
+    TriplePipe,
+    TripleCaret,
+    TripleTilde,
     PipeForward,
     End,
 }
@@ -376,7 +394,8 @@ pub struct ConstraintExpr {
 #[derive(Clone, Debug)]
 pub enum ConstraintName {
     Class(Ident),
-    Function(Ident),
+    /// `#name`, or `(#name: Type)` with the function's type.
+    Function(Ident, Option<Box<TypeExpr>>),
 }
 
 #[derive(Debug)]
@@ -460,6 +479,8 @@ pub enum UnaryOp {
     Negate,
     Not,
     BitNot,
+    /// Unary `+`: a numeric value unchanged.
+    Plus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -483,6 +504,8 @@ pub enum BinaryOp {
     ShiftLeft,
     ShiftRight,
     ShiftRightUnsigned,
+    /// `**`: power.
+    Power,
     Pipe,
 }
 
@@ -503,6 +526,7 @@ impl Expr {
             | Task(value)
             | TaskRun(value)
             | ComputationBoundary(value)
+            | Checked(value)
             | NewLiteral(value)
             | Field(value, _)
             | Borrow(value, ..)
@@ -566,6 +590,19 @@ impl Expr {
                     arm.body.visit(visitor);
                 }
             }
+            Try(handled) => {
+                handled.body.visit(visitor);
+                for arm in &handled.arms {
+                    arm.pattern.visit_expressions(visitor);
+                    if let Some(guard) = &arm.guard {
+                        guard.visit(visitor);
+                    }
+                    arm.body.visit(visitor);
+                }
+                if let Some(finally) = &handled.finally {
+                    finally.visit(visitor);
+                }
+            }
             Block { bindings, result } => {
                 for binding in bindings {
                     binding.value.visit(visitor);
@@ -600,8 +637,8 @@ impl Expr {
                     hole.value.visit(visitor);
                 }
             }
-            Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit
-            | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
+            Integer(..) | BigInt(_) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_)
+            | Unit | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
         }
     }
 }
@@ -609,6 +646,8 @@ impl Expr {
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     Integer(u128, Option<String>),
+    /// `123I`: a bigint literal's digits, with any `0x`/`0b` prefix.
+    BigInt(Box<str>),
     Float(String, Option<String>),
     String(StringLiteral),
     Char(u16),
@@ -654,6 +693,10 @@ pub enum ExprKind {
         arms: Vec<MatchArm>,
         origin: MatchOrigin,
     },
+    /// `try body with | pattern -> handler ... [finally cleanup]`.
+    Try(Box<TryExpr>),
+    /// `@checked expression`: integer `+ - * **` and negation in it raise OverflowException.
+    Checked(Box<Expr>),
     Block {
         bindings: Vec<Binding>,
         result: Box<Expr>,
@@ -692,6 +735,15 @@ pub enum ExprKind {
 pub struct Interpolation {
     pub texts: Vec<StringLiteral>,
     pub holes: Vec<InterpolationHole>,
+}
+
+/// A `try` expression: its value is `Ok body`, or `Error handler` when an
+/// exception raised in `body` matches an arm; `finally` runs on every exit.
+#[derive(Clone, Debug)]
+pub struct TryExpr {
+    pub body: Expr,
+    pub arms: Vec<MatchArm>,
+    pub finally: Option<Expr>,
 }
 
 #[derive(Clone, Debug)]

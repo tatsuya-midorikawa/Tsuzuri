@@ -278,7 +278,7 @@ fn rejects_borrows_hidden_in_function_environments_and_aggregates() {
 
 #[test]
 fn emits_non_clonable_tasks_and_distinct_native_and_wasm_group_backends() {
-    let source = "let jobs = [task { 20 }, task { 22 }]\nlet xs = Task.run (Task.parallel jobs)\nxs[0] + xs[1]";
+    let source = "let jobs = [task { 20l }, task { 22l }]\nlet xs = Task.run (Task.parallel jobs)\nxs[0] + xs[1]";
     let ir = accepts(source);
     assert!(ir.contains("declare void @tsuzuri_task_parallel(ptr, ptr, i64)"));
     assert!(!ir.contains("@tz.env.clone.$task."));
@@ -307,7 +307,7 @@ fn supports_task_instances_and_reserves_the_task_namespace() {
         "instance Add<Task<i64>> {
              fn add left right = task { let! x = left; let! y = right; return x + y }
          }
-         Task.run (task { 20 } + task { 22 })",
+         Task.run (task { 20l } + task { 22l })",
     );
     rejects("record Task { value: i64 }", "E1001");
     rejects("class Task<'a> { def run :: 'a -> 'a }", "E1001");

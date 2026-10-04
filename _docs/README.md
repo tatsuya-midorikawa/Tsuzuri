@@ -21,7 +21,7 @@ Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み
 | 型とデータ | [型推論](language-reference/types.md)、[レコードと別名](language-reference/records.md)、[union と再帰型](language-reference/unions.md) |
 | 多相性 | [型クラス](language-reference/generics-and-typeclasses.md)、[高階型](language-reference/higher-kinds.md)、[自動導出](language-reference/deriving.md) |
 | メモリ | [所有権と new](language-reference/ownership.md)、[lifetime と借用フィールド](language-reference/lifetimes.md) |
-| 制御 | [条件と反復](language-reference/control-flow.md)、[パターンと網羅性](language-reference/patterns.md)、[アクティブパターン](language-reference/active-patterns.md) |
+| 制御 | [条件と反復](language-reference/control-flow.md)、[パターンと網羅性](language-reference/patterns.md)、[アクティブパターン](language-reference/active-patterns.md)、[例外処理](language-reference/error-handling.md) |
 | 計算の合成 | [コンピュテーション式](language-reference/computation-expressions.md)、[タスク](language-reference/tasks.md) |
 | 表現と構成 | [数値](language-reference/numbers.md)、[文字列と文字](language-reference/strings-and-characters.md)、[モジュールとパッケージ](language-reference/modules-and-packages.md) |
 
@@ -30,7 +30,7 @@ Tsuzuri は、関数型の式、静的な型検査、所有権と借用を組み
 [標準ライブラリと組み込み API](library-reference/README.md)に引数順、型制約、所有権、境界条件をまとめています。
 
 - [Option / Result](library-reference/option-result.md)、[Array / List / スライス](library-reference/arrays-and-lists.md)、[Vec](library-reference/vec.md)、[Map / Set](library-reference/map-set.md)、[HashMap / HashSet](library-reference/hash-map.md)、[Seq](library-reference/sequences.md)
-- [文字列 API](library-reference/text.md)、[Math と順序付き集計](library-reference/math.md)、[Int](library-reference/integers.md)、[表示と解析](library-reference/formatting-and-parsing.md)
+- [文字列 API](library-reference/text.md)、[Math と順序付き集計](library-reference/math.md)、[Int](library-reference/integers.md)、[BigInt](library-reference/bigint.md)、[表示と解析](library-reference/formatting-and-parsing.md)
 - [IO と標準入出力](library-reference/io.md): IO アクション、対話入力、EOF と失敗、native / WASM の接続。
 - [OS API](library-reference/os.md): ファイル、ディレクトリ、パス、環境、時刻、乱数、プロセス、終了コード。native と `--wasm-host wasi`。
 - [Parallel](library-reference/parallel.md)、[Simd](library-reference/simd.md)、[基本組み込み・Debug・Test](library-reference/builtins.md)
@@ -52,7 +52,7 @@ GPU は実験的な CPU 参照・WGSL・WebGPU host の段階です。Windows �
 | 関数 | `def name :: 型 = ラムダ式` で型と実装をまとめる |
 | メモリ | GC ではなく所有権の移動、借用、スコープ終了時の解放を使う |
 | 多相性 | 型パラメーターと型クラスをコンパイル時に具体化する |
-| エラー | 回復可能な失敗は `Option` / `Result`、契約違反はトラップとして扱う |
+| エラー | 回復可能な失敗は `Option` / `Result`、契約違反はトラップとして扱う。`@checked` の整数オーバーフローは同じ関数の `try` で `Result` に変える |
 | 外部連携 | `export def` と `extern def` により C / WASM ホストへ明示的に接続する |
 | 性能 | 数値と所有権の意味を保つ。SIMD・並列化・GPU という名称だけで高速性を保証しない |
 

@@ -19,7 +19,7 @@ fn init _device count initializer =
 def map :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
 fn map _device transform buffer =
     let values = buffer.values
-    Buffer { values: Array.map (ref values) transform }
+    Buffer { values: Array.map transform (ref values) }
 
 def from_array :: Copy<'a> => ref Device -> ref ['a] -> Buffer<'a>
 fn from_array _device values = Buffer { values: deref values }

@@ -108,7 +108,7 @@ def crc_entry :: i32u -> i32u
 fn crc_entry index =
     let mut value = index
     for _ in 1 .. 8 do
-        value = if (value & 1) == 1 then (value >> 1) ^ 0xEDB88320 else value >> 1
+        value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
     value
 
 def crc_table :: [i32u]
@@ -120,7 +120,7 @@ fn crc_of table =
     let mut crc = ~(0 as i32u)
     for unit in text do
         let byte = (unit as i32u) & 0xFF
-        crc = table[((crc ^ byte) & 0xFF) as i64] ^ (crc >> 8)
+        crc = table[((crc ^ byte) & 0xFF) as i64] ^ (crc >>> 8)
     ~crc
 
 assert (crc_of (crc_table()) == 0xCBF43926)
@@ -227,7 +227,7 @@ const def crc_entry :: i32u -> i32u
 fn crc_entry index =
     let mut value = index
     for _ in 1 .. 8 do
-        value = if (value & 1) == 1 then (value >> 1) ^ 0xEDB88320 else value >> 1
+        value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
     value
 
 const def crc_table :: [i32u]

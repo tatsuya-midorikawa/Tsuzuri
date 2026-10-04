@@ -150,14 +150,14 @@ fn borrowed = {
 
 export def type_classes :: i64
 fn type_classes = {
-    let value = Identity { return 37 };
+    let value = Identity { return 37l };
     let text = Text { return "owned" };
     Traits.Score.score (&value) + Traits.Size.size (&text)
 }
 
 export def array_bind :: i64
 fn array_bind = Identity {
-    let! values = [1, 2, 3]
+    let! values = [1l, 2, 3]
     return values.length
 }
 

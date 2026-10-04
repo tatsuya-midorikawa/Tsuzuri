@@ -9,13 +9,13 @@ export def sum_float :: ref [f64] -> f64
 fn sum_float values = Array.sum values
 
 export def checksum :: ref [ubyte] -> i64
-fn checksum values = Array.fold values 0 (total -> value -> total + value as i64)
+fn checksum values = Array.fold (total -> value -> total + value as i64) 0 values
 
 export def make_bytes :: i64 -> [ubyte]
 fn make_bytes count = new [ubyte](count, index -> index as ubyte)
 
 export def copy_values :: ref [i64] -> [i64]
-fn copy_values values = Array.map values (value -> value)
+fn copy_values values = Array.map (value -> value) values
 
 export def copy_text :: ref string -> string
 fn copy_text text = clone_string text

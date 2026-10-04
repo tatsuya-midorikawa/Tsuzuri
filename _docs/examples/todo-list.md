@@ -64,10 +64,10 @@ def apply :: Board -> ref Command -> Board * Result<unit, string> = \board comma
 
 def render :: ref Board -> string = \board ->
     if Map.is_empty (ref board.items) then "(empty)"
-    else Map.fold (ref board.items) "" (\report identifier item ->
+    else Map.fold (\report identifier item ->
         let separator = if report.length == 0 then "" else "\n"
         let marker = if item.completed then "[x] " else "[ ] "
-        report + separator + marker + to_string (deref identifier) + ": " + clone_string (ref item.title))
+        report + separator + marker + to_string (deref identifier) + ": " + clone_string (ref item.title)) "" (ref board.items)
 
 test "returns the unchanged board for a blank title" =
     let command = AddItem " \t "
