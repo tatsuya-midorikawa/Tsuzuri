@@ -66,7 +66,9 @@ fn scripted(
     std::fs::create_dir(&root).unwrap();
     let root = root.canonicalize().unwrap();
     for (name, text) in files {
-        std::fs::write(root.join(name), text).unwrap();
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
     }
     let uri = |name: &str| file_uri(&root.join(name)).unwrap();
     let capabilities = if encoding == "utf-8" {
@@ -968,4 +970,53 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
             "{expected:?}: {roots:?}"
         );
     }
+
+    // The current namespace's `Demo.Circle` wins over the imported one, and
+    // `Square`, which both imports hold, is ambiguous.
+    let report = "namespace Demo\n\nusing Demo.Shapes\nusing Demo.Extra\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x\n";
+    let side = "def side :: i64 -> i64 = \\x -> x\n";
+    let files = [
+        ("Circle.tz", N_CIRCLE.replace("Demo.Shapes", "Demo")),
+        ("Shapes/Circle.tz", N_CIRCLE.to_owned()),
+        (
+            "Shapes/Square.tz",
+            format!("namespace Demo.Shapes\n\n{side}"),
+        ),
+        ("Extra/Square.tz", format!("namespace Demo.Extra\n\n{side}")),
+        ("Report.tz", report.to_owned()),
+    ];
+    let files = files.each_ref().map(|(name, text)| (*name, text.as_str()));
+    let roots = report.replace("Circle.radius x", "C");
+    let responses = scripted(&files, "utf-16", |uri| {
+        circle = uri("Circle.tz");
+        let report_uri = uri("Report.tz");
+        let mut at = position(&roots, "\\x -> C", "utf-16");
+        at["character"] = json!(at["character"].as_u64().unwrap() + 7);
+        vec![
+            json!({"id": 1, "method": "textDocument/definition", "params": {"textDocument": {"uri": report_uri}, "position": position(report, "Circle.radius", "utf-16")}}),
+            json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": report_uri, "version": 2}, "contentChanges": [{"text": roots}]}}),
+            json!({"id": 2, "method": "textDocument/completion", "params": {"textDocument": {"uri": report_uri}, "position": at}}),
+        ]
+    });
+    assert_eq!(
+        responses[0]["result"]["uri"],
+        json!(circle),
+        "{}",
+        responses[0]
+    );
+    let roots = labels(&responses[1]);
+    for expected in [
+        ("Circle", "module Demo.Circle"),
+        ("Extra", "namespace Demo.Extra"),
+        ("Shapes", "namespace Demo.Shapes"),
+    ] {
+        assert!(
+            roots.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+            "{expected:?}: {roots:?}"
+        );
+    }
+    assert!(
+        roots.iter().all(|(label, _)| label != "Square"),
+        "{roots:?}"
+    );
 }

@@ -77,10 +77,19 @@ export function defaultNamespace(folder: string): string {
 	return name || 'App';
 }
 
-/** Whether `text` is a dotted identifier path such as `Acme.Tools` that `tsuzuri new` may accept. */
+/** The lexer's reserved words and the reserved standard library module names, as `tsuzuri new` checks them. */
+export const reservedWords = new Set('fn def rec and export extern private record union type const test class instance deriving let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
+export const libraryModules = new Set('Option Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt'.split(' '));
+
+/**
+ * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme.Tools`: at most 16 identifiers
+ * and 255 bytes, none a reserved word, `_`, or `Task`, and the first not a standard library module.
+ */
 export function isNamespace(text: string): boolean {
-	return text.length <= 255 && text.split('.').length <= 16
-		&& /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/.test(text);
+	const segments = text.split('.');
+	return text.length <= 255 && segments.length <= 16 && !libraryModules.has(segments[0])
+		&& segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)
+			&& segment !== '_' && segment !== 'Task' && !reservedWords.has(segment));
 }
 
 export interface ProcessResult {

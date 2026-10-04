@@ -1572,32 +1572,38 @@ impl ModuleNames {
         self.keys().find(|key| *key == path)
     }
 
-    /// The next segments below `path` in `source`: namespaces and modules
-    /// with their full names, as in `Sample` -> `Shape` for `Sample.Shape`,
-    /// and for an empty `path` also the modules that `using` imports.
+    /// The next segments below `path` in `source` with their full names, as
+    /// in `Sample` -> `Shape` for `Sample.Shape`, and for an empty `path` also
+    /// the modules that `using` imports. A segment that names a module shows
+    /// the module that `resolve` picks; any other shows the innermost
+    /// namespace that holds it, so an ambiguous import alone shows nothing.
     fn children(&self, source: usize, path: &str) -> BTreeMap<String, String> {
-        let mut children = BTreeMap::new();
-        let mut add = |prefix: &str, name: &str| {
-            if let Some(rest) = name.strip_prefix(prefix) {
-                let child = rest.split('.').next().unwrap_or(rest);
-                children
-                    .entry(child.to_owned())
-                    .or_insert_with(|| format!("{prefix}{child}"));
-            }
-        };
+        let mut modules = BTreeSet::new();
         if path.is_empty() {
             for namespace in self.usings.get(source).into_iter().flatten() {
                 let prefix = format!("{namespace}.");
-                for full in self.full.keys() {
-                    if full
-                        .strip_prefix(&prefix)
-                        .is_some_and(|rest| !rest.contains('.'))
-                    {
-                        add(&prefix, full);
-                    }
-                }
+                modules.extend(
+                    self.full
+                        .keys()
+                        .filter_map(|full| full.strip_prefix(&prefix))
+                        .filter(|rest| !rest.contains('.'))
+                        .map(str::to_owned),
+                );
             }
         }
+        let mut namespaces = BTreeMap::new();
+        let mut add = |prefix: &str, name: &str| {
+            let Some(rest) = name.strip_prefix(prefix) else {
+                return;
+            };
+            if let Some((child, _)) = rest.split_once('.') {
+                namespaces
+                    .entry(child.to_owned())
+                    .or_insert_with(|| format!("{prefix}{child}"));
+            } else {
+                modules.insert(rest.to_owned());
+            }
+        };
         for scope in self.scopes(source) {
             let prefix = if path.is_empty() {
                 qualify(scope, "")
@@ -1615,6 +1621,21 @@ impl ModuleNames {
         };
         for key in self.keys() {
             add(&prefix, key);
+        }
+        let mut children: BTreeMap<_, _> = modules
+            .into_iter()
+            .filter_map(|child| {
+                let key = self.resolve(source, &qualify(path, &child))?;
+                let full = self
+                    .full
+                    .iter()
+                    .find_map(|(full, module)| (module == key).then_some(full.as_str()))
+                    .unwrap_or(key);
+                Some((child, full.to_owned()))
+            })
+            .collect();
+        for (child, namespace) in namespaces {
+            children.entry(child).or_insert(namespace);
         }
         children
     }

@@ -112,7 +112,7 @@ def main :: i32 = \() ->
   // Shape.area (Rect (3.0, 4.0)) // 同じ namespace に所属しているため、`Sample` を省略しても良い
   // |> ignore
 
-  let p = Sample.Point { x: 10.0, y: 20.5 } // Sample.Point.Point {} や などのように `namespace + module + record` とはならない
+  let p = Sample.Point { x: 10.0, y: 20.5 } // Sample.Point.Point {} などのように `namespace + module + record` とはならない
   Sample.Point.distance p |> ignore
 
   // let p = Point { x: 10.0, y: 20.5 } // 同じ namespace に所属しているため、`Sample` を省略しても良い

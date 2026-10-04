@@ -1,9 +1,9 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { commandArguments, defaultNamespace, isNamespace, jsonLines, projectRoot, runProcess, supportsDebug } from '../core';
+import { commandArguments, defaultNamespace, isNamespace, jsonLines, libraryModules, projectRoot, reservedWords, runProcess, supportsDebug } from '../core';
 
 test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
 	assert.equal(supportsDebug('win32', 'arm64'), false);
@@ -32,12 +32,23 @@ test('new projects suggest a PascalCase namespace and accept dotted identifiers'
 	for (const [folder, namespace] of [['my-app', 'MyApp'], ['MyApp', 'MyApp'], ['hello_world', 'HelloWorld'], ['ex1', 'Ex1'], ['2024 app', 'App'], ['\u65e5\u672c', 'App']]) {
 		assert.equal(defaultNamespace(folder), namespace, folder);
 	}
-	for (const text of ['Sample', 'Acme.Tools', 'lower.case_1']) {
+	for (const text of ['Sample', 'Acme.Tools', 'lower.case_1', 'Acme._internal', 'Acme.Option', 'Tasks']) {
 		assert.ok(isNamespace(text), text);
 	}
-	for (const text of ['', '1st', 'Acme..Tools', 'Acme.', 'my-app', 'A.'.repeat(16) + 'A']) {
+	for (const text of ['', '1st', 'Acme..Tools', 'Acme.', 'my-app', 'A.'.repeat(16) + 'A', 'Task', 'Acme.Task', 'Acme._', 'Acme.match', 'Option', 'IO.Extra']) {
 		assert.ok(!isNamespace(text), text);
 	}
+});
+
+test('namespace rules use the lexer reserved words and reserved standard library modules', async () => {
+	const repository = path.resolve(__dirname, '../../..');
+	const lexer = await readFile(path.join(repository, 'src/lexer.rs'), 'utf8');
+	const identifier = lexer.slice(lexer.indexOf('fn identifier'), lexer.indexOf('name => TokenKind::Ident'));
+	assert.deepEqual([...identifier.matchAll(/"(\w+)" => TokenKind::/g)].map(match => match[1]).sort(), [...reservedWords].sort());
+	const stdlib = await readFile(path.join(repository, 'src/stdlib.rs'), 'utf8');
+	const start = stdlib.indexOf('pub const RESERVED_MODULES');
+	const modules = stdlib.slice(start, stdlib.indexOf('];', start));
+	assert.deepEqual([...modules.matchAll(/"(\w+)"/g)].map(match => match[1]).sort(), [...libraryModules].sort());
 });
 
 test('project root respects nested projects and source subdirectories', async () => {

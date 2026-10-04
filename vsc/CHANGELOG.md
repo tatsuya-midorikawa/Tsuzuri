@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- New Project asks for the project namespace and creates the project with the bundled `tsuzuri new`, so `Tsuzuri.toml` always sets `namespace` and `Main.tz` declares it.
+- New Project asks for the project namespace, checks it with the rules of `tsuzuri new`, and creates the project with the bundled `tsuzuri new`, so `Tsuzuri.toml` always sets `namespace` and `Main.tz` declares it.
 - Highlighting, semantic tokens, and keyword completion for `namespace` and `using` declarations; module completion and go to definition follow namespaces and `using`.
 - Snippets for `namespace`, `using`, `try ... with`, and `try ... with ... finally`; the `main` snippet writes with `IO.writeln`.
 - Grammar tests cover literal suffixes, `@checked` / `@literal`, bit operators, and the error-handling keywords.
