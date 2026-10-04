@@ -8,7 +8,7 @@
 
 | 記事 | 主な対象 |
 | --- | --- |
-| [Option / Result](option-result.md) | 不在、失敗値、map / bind、借用版、ビルダー |
+| [Option / Result](option-result.md) | 不在、失敗値、map / bind、借用版、ビルダー、try と Exception |
 | [Array / List](arrays-and-lists.md) | 不変コレクション、所有更新、共有スライス、検索と整列 |
 | [Vec](vec.md) | 伸縮、容量、pop、バッファ移送 |
 | [Map / Set](map-set.md) | キー順の検索・更新・集合演算 |
@@ -16,7 +16,8 @@
 | [Seq](sequences.md) | 一回消費の遅延列、iter、借用反復 |
 | [文字列と文字](text.md) | String / Utf8String / Char / Utf8Char |
 | [Math](math.md) | Float、Elementary、FMA、固定順の集計 |
-| [Int](integers.md) | checked、saturating、bit、rotate、widening |
+| [Int](integers.md) | シフト、累乗、@checked、checked、saturating、bit、rotate、widening |
+| [BigInt](bigint.md) | 任意精度整数 bigint、`I` リテラル、演算と変換 |
 | [表示と解析](formatting-and-parsing.md) | Display、Parse、to_string、Format クラスと書式指定 |
 | [IO と標準入出力](io.md) | IO モナド、stdin / stdout / stderr、EOF と失敗 |
 | [OS API](os.md) | File / Dir / Path / Env / Time / Random / Os / Process、終了コード、WASI |
@@ -32,7 +33,7 @@ T / U / State は説明用の型記号で、実際のシグネチャでは `'a` 
 
 Copy は複製可能という契約です。コレクションや捕捉環境の深い複製を伴う場合があります。読み取り API がコレクションを借用していても、値 callback に要素を渡す部分では Copy が必要になることがあります。
 
-引数順は API ごとに確認します。例えば Array.map は配列が先、Parallel.map と Option.map は関数が先、Seq.map は列が先です。
+高階関数は F# と同じく関数を先、対象の配列・リスト・列・コレクションを最後に受け取ります。例えば `Array.map f values`、`Seq.filter p sequence`、`Map.fold f initial map`、`Parallel.map f values`、`Option.map f value` です。そのため `values |> Array.map f |> Array.sum` のように `|>` で繋げられます。Option / Result の bind と bind_ref は計算値が先、fold_back は F# と同じく初期値が最後です。
 
 ## ソース宣言の API 一覧
 
@@ -50,6 +51,7 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 | Seq | [Seq](api/Seq.md) | [Seq](sequences.md) |
 | Option | [Option](api/Option.md) | [Option / Result](option-result.md) |
 | Result | [Result](api/Result.md) | [Option / Result](option-result.md) |
+| Exception | [Exception](api/Exception.md) | [例外と Result](option-result.md#例外と-result) |
 | IO | [IO](api/IO.md) | [IO と標準入出力](io.md) |
 | File | [File](api/File.md) | [OS API](os.md) |
 | Dir | [Dir](api/Dir.md) | [OS API](os.md) |
@@ -65,6 +67,7 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 | Utf8Char | [Utf8Char](api/Utf8Char.md) | [文字型](../language-reference/strings-and-characters.md) |
 | Format | [Format](api/Format.md) | [表示と解析](formatting-and-parsing.md) |
 | Math | [Math](api/Math.md) | [Math](math.md) |
+| BigInt | [BigInt](api/BigInt.md) | [BigInt](bigint.md) |
 | Parallel | [Parallel](api/Parallel.md) | [Parallel](parallel.md) |
 | Debug | [Debug](api/Debug.md) | [Debug](builtins.md) |
 | Owned | [Owned](api/Owned.md) | [Owned](builtins.md#owned) |

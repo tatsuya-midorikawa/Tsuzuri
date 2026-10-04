@@ -33,6 +33,7 @@
 | [所有権と記憶域](ownership.md) | move、Copy、ref、ref mut、new、drop、利用者定義の Drop |
 | [名前付き lifetime](lifetimes.md) | 返却元、借用フィールド、region の制限 |
 | [条件とループ](control-flow.md) | if、for、while、範囲、break / continue |
+| [例外処理](error-handling.md) | @checked、try / with / finally、Exception、Err |
 | [パターンマッチ](patterns.md) | 分解、網羅性、OR / AND、ガード |
 | [アクティブパターン](active-patterns.md) | 全域、部分、Option、複数 case |
 | [コンピュテーション式](computation-expressions.md) | .tc、Bind、Delay、match! / and! |
@@ -44,13 +45,14 @@
 | キーワード | 主な説明 |
 | --- | --- |
 | def / fn / `\` / rec / and | [関数](functions.md) |
-| let / mut / const | [値と定数](values-and-constants.md) |
+| let / mut / const / @literal | [値と定数](values-and-constants.md) |
 | record / type / with | [レコード](records.md) |
 | union / of | [union](unions.md) |
 | class / instance | [型クラス](generics-and-typeclasses.md) |
 | deriving | [自動導出](deriving.md) |
 | ref / deref / new | [所有権](ownership.md) |
 | if / then / elif / else / for / in / to / downto / while / do / break / continue | [制御構文](control-flow.md) |
+| try / finally / @checked | [例外処理](error-handling.md) |
 | match / when / as | [パターン](patterns.md)。数値の as は[変換](numbers.md) |
 | return / yield / let! / do! / match! / and! | [計算式](computation-expressions.md) |
 | task | [Task](tasks.md) |

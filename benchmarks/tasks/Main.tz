@@ -30,7 +30,7 @@ fn data_map_batch count rounds =
 export def sequential_map_batch :: i64 -> i64 -> i64
 fn sequential_map_batch count rounds =
     let source = new [i64](count, index -> index)
-    let results = Array.map (ref source) (index -> work rounds index)
+    let results = Array.map (index -> work rounds index) (ref source)
     Array.sum (ref results)
 
 export def data_reduce_batch :: i64 -> i64 -> i64

@@ -348,7 +348,10 @@ impl Parser<'_> {
                     | TokenKind::Test
                     | TokenKind::Class
                     | TokenKind::Instance
+                    | TokenKind::With
             ) || self.column(self.current().span) < indent
+                || (self.in_handler
+                    && matches!(&self.current().kind, TokenKind::Ident(name) if name == "finally"))
             {
                 break;
             }
@@ -368,13 +371,25 @@ impl Parser<'_> {
                     value,
                 });
             }
+            let checked = self.checked_attribute();
             if self.eat(&TokenKind::Let) {
-                bindings.push(self.binding(true, false)?);
+                let mut binding = self.binding(true, false)?;
+                if checked {
+                    binding.value = self.checked(binding.value)?;
+                }
+                bindings.push(binding);
             } else if self.use_binding_ahead() {
                 self.take();
-                bindings.push(self.binding(true, true)?);
+                let mut binding = self.binding(true, true)?;
+                if checked {
+                    binding.value = self.checked(binding.value)?;
+                }
+                bindings.push(binding);
             } else {
-                let value = self.expression_inner(0, true, true)?;
+                let mut value = self.expression_inner(0, true, true)?;
+                if checked {
+                    value = self.checked(value)?;
+                }
                 if self.eat(&TokenKind::Semicolon) {
                     bindings.push(Binding {
                         name: Ident {
@@ -516,7 +531,17 @@ impl Parser<'_> {
         let start = self.take().span;
         let mut parameters = Vec::new();
         let mut patterns = Vec::new();
+        let mut guard = None;
         while !self.eat(&TokenKind::Arrow) {
+            if !parameters.is_empty() && self.eat(&TokenKind::When) {
+                // `\x when condition -> body` traps when the condition is false.
+                let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, true);
+                let condition = self.expression_inner(0, true, true);
+                self.stop_at_arrow = outer_arrow;
+                guard = Some(condition?);
+                self.expect(&TokenKind::Arrow, "'->' after the lambda guard")?;
+                break;
+            }
             let mutable = self.eat(&TokenKind::Mut);
             let pattern = self.pattern(4)?;
             let name = match &pattern.kind {
@@ -548,12 +573,33 @@ impl Parser<'_> {
         }
         let outer = self.in_task;
         self.in_task = false;
-        let mut body = if self.at(&TokenKind::Pipe) {
+        let mut body = if guard.is_none() && self.at(&TokenKind::Pipe) {
             self.guarded_definition(&parameters)?
         } else {
             self.body_expression()?
         };
         self.in_task = outer;
+        if let Some(guard) = guard {
+            // The guard sees the destructured names, so it wraps the body inside the patterns.
+            let span = guard.span.through(body.span);
+            let depth = body.depth.max(guard.depth) + 1;
+            let value = self.make(ExprKind::Unit, guard.span, 1)?;
+            let pattern = self.make_pattern(PatternKind::Wildcard, guard.span, 1)?;
+            body = self.make(
+                ExprKind::Match {
+                    value: Box::new(value),
+                    arms: vec![MatchArm {
+                        pattern,
+                        guard: Some(guard),
+                        body,
+                        span,
+                    }],
+                    origin: MatchOrigin::LambdaDestructuring,
+                },
+                span,
+                depth,
+            )?;
+        }
         for (name, pattern) in patterns.into_iter().rev() {
             let value = self.make(ExprKind::Name(name.clone()), name.span, 1)?;
             let span = pattern.span.through(body.span);
@@ -587,6 +633,153 @@ impl Parser<'_> {
         let arms = self.match_arms(None)?;
         self.nesting -= 1;
         self.make_match(value, arms, start, MatchOrigin::Explicit)
+    }
+
+    /// `@checked expression`: the attribute covers the whole expression after it.
+    #[inline(never)]
+    pub(super) fn checked_expression(
+        &mut self,
+        allow_record: bool,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
+        let start = self.current().span;
+        if !self.checked_attribute() {
+            return Err(self.error(
+                "expected an expression; '@checked' is the only attribute of an expression",
+            ));
+        }
+        if stop_at_newline && self.newline_before_current() {
+            return Err(self.error(
+                "'@checked' on its own line applies to the next statement of a body or block",
+            ));
+        }
+        self.enter()?;
+        let value = self.expression_inner(0, allow_record, stop_at_newline)?;
+        self.nesting -= 1;
+        let span = start.through(value.span);
+        let depth = value.depth + 1;
+        self.make(ExprKind::Checked(Box::new(value)), span, depth)
+    }
+
+    /// `try body with | pattern [is Exception] [when guard] -> handler ... [finally cleanup]`.
+    /// The body, handlers, and cleanup run IO from `let!`/`do!` directly.
+    #[inline(never)]
+    pub(super) fn try_expression(&mut self) -> Result<Expr, Diagnostic> {
+        self.enter()?;
+        let start = self.take().span;
+        let indent = self.line_indent(start);
+        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
+        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let outer_handler = std::mem::replace(&mut self.in_handler, false);
+        let body = self.body_expression();
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        let body = Self::direct(body?);
+        self.expect(
+            &TokenKind::With,
+            "'with' and '| pattern -> handler' arms after the try body",
+        )?;
+        self.in_handler = true;
+        self.exception_arms = true;
+        let arms = self.match_arms(None);
+        self.in_handler = outer_handler;
+        let mut arms = arms?;
+        for arm in &mut arms {
+            let body = std::mem::replace(
+                &mut arm.body,
+                Expr {
+                    kind: ExprKind::Unit,
+                    span: arm.span,
+                    depth: 1,
+                },
+            );
+            arm.body = Self::direct(body);
+        }
+        let finally = if matches!(&self.current().kind, TokenKind::Ident(name) if name == "finally")
+            && (!self.newline_before_current() || self.column(self.current().span) >= indent)
+        {
+            self.take();
+            Some(Self::direct(self.body_expression()?))
+        } else {
+            None
+        };
+        let end = finally
+            .as_ref()
+            .map_or_else(|| arms.last().unwrap().body.span, |cleanup| cleanup.span);
+        let depth = arms
+            .iter()
+            .map(|arm| {
+                arm.pattern
+                    .depth
+                    .max(arm.body.depth)
+                    .max(arm.guard.as_ref().map_or(0, |guard| guard.depth))
+            })
+            .chain(finally.iter().map(|cleanup| cleanup.depth))
+            .max()
+            .unwrap_or(0)
+            .max(body.depth)
+            + 1;
+        self.nesting -= 1;
+        self.make(
+            ExprKind::Try(Box::new(TryExpr {
+                body,
+                arms,
+                finally,
+            })),
+            start.through(end),
+            depth,
+        )
+    }
+
+    /// Marks an implicit computation body to run its IO binds directly.
+    fn direct(mut body: Expr) -> Expr {
+        if let ExprKind::Computation(builder, _) = &mut body.kind
+            && builder.text == "$implicit"
+        {
+            builder.text = "$implicit.root.$direct".into();
+        }
+        body
+    }
+
+    /// The column of the first token on the line that holds `span`.
+    pub(super) fn line_indent(&self, span: Span) -> usize {
+        let line = self.source[..span.start]
+            .rfind(['\n', '\r'])
+            .map_or(0, |index| index + 1);
+        self.source[line..span.start]
+            .chars()
+            .take_while(|character| *character == ' ' || *character == '\t')
+            .count()
+    }
+
+    /// `pattern is Kind` in a handler arm matches an exception of that kind:
+    /// `{ kind = Kind } & pattern`.
+    #[inline(never)]
+    fn exception_pattern(&mut self, pattern: Pattern) -> Result<Pattern, Diagnostic> {
+        let start = self.take().span;
+        let kind = self.qualified_ident()?;
+        let span = pattern.span.through(kind.span);
+        let field = Ident {
+            text: "kind".into(),
+            span: start,
+            provenance: Provenance::Generated,
+        };
+        let case = Pattern {
+            kind: PatternKind::Binding(kind),
+            span,
+            depth: 1,
+        };
+        let test = Pattern {
+            kind: PatternKind::Record(None, vec![(field, case)]),
+            span,
+            depth: 2,
+        };
+        let depth = pattern.depth.max(test.depth) + 1;
+        Ok(Pattern {
+            kind: PatternKind::And(Box::new(test), Box::new(pattern)),
+            span,
+            depth,
+        })
     }
 
     pub(super) fn guarded_definition(
@@ -693,6 +886,8 @@ impl Parser<'_> {
     ) -> Result<Vec<MatchArm>, Diagnostic> {
         let outer_arm = self.stop_at_arm;
         let outer_arrow = self.stop_at_arrow;
+        // Only the arms of this `try` take `is`; matches inside the handlers do not.
+        let exception_arms = std::mem::take(&mut self.exception_arms);
         let column = self.column(self.current().span);
         let mut arms = Vec::new();
         while self.at(&TokenKind::Pipe)
@@ -713,7 +908,14 @@ impl Parser<'_> {
                     Some(condition),
                 )
             } else {
-                (self.pattern(0)?, None)
+                let pattern = self.pattern(0)?;
+                if exception_arms
+                    && matches!(&self.current().kind, TokenKind::Ident(name) if name == "is")
+                {
+                    (self.exception_pattern(pattern)?, None)
+                } else {
+                    (pattern, None)
+                }
             };
             if self.eat(&TokenKind::When) {
                 let condition = self.expression_inner(0, true, true)?;

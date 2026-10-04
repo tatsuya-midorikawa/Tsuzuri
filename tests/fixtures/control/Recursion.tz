@@ -17,7 +17,7 @@ export def recursion_unsigned8 :: i8u -> i64
 fn recursion_unsigned8 n = unsigned8 n 0
 
 def mix :: i64 -> i64 -> i64
-fn mix state n = (state ^ (state >>> 13)) * 6364136223846793005 + n + 1442695040888963407
+fn mix state n = (state ^ (Bits.ushr state 13)) * 6364136223846793005 + n + 1442695040888963407
 
 def rec bounded :: i64 -> i64 -> i64 -> i64
 fn rec bounded n fuel state =

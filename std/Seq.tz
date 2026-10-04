@@ -12,20 +12,20 @@ fn once value = Seq { head: Option.Some value, step: Option.None }
 def defer :: (unit -> (Seq<'a> * Option.Option<'a>)) -> Seq<'a>
 fn defer step = Seq { head: Option.None, step: Option.Some step }
 
-def rec unfold :: Capture<'state> => 'state -> ('state -> Option.Option<('a * 'state)>) -> Seq<'a>
-fn rec unfold state generator = defer (\() ->
+def rec unfold :: Capture<'state> => ('state -> Option.Option<('a * 'state)>) -> 'state -> Seq<'a>
+fn rec unfold generator state = defer (\() ->
     match generator state with
-    | Option.Some (value, remaining) -> (unfold remaining generator, Option.Some value)
+    | Option.Some (value, remaining) -> (unfold generator remaining, Option.Some value)
     | Option.None -> (empty(), Option.None))
 
-def rec map :: Capture<'a> => Seq<'a> -> ('a -> 'b) -> Seq<'b>
-fn rec map sequence transform = defer (\() ->
+def rec map :: Capture<'a> => ('a -> 'b) -> Seq<'a> -> Seq<'b>
+fn rec map transform sequence = defer (\() ->
     match Seq.next sequence with
-    | (remaining, Option.Some value) -> (map remaining transform, Option.Some (transform value))
+    | (remaining, Option.Some value) -> (map transform remaining, Option.Some (transform value))
     | (_, Option.None) -> (empty(), Option.None))
 
-def rec filter :: Capture<'a> => Seq<'a> -> (ref 'a -> bool) -> Seq<'a>
-fn rec filter sequence predicate = defer (\() ->
+def rec filter :: Capture<'a> => (ref 'a -> bool) -> Seq<'a> -> Seq<'a>
+fn rec filter predicate sequence = defer (\() ->
     let mut current = sequence
     let mut selected: Option.Option<'a> = Option.None
     let mut finished = false
@@ -39,7 +39,7 @@ fn rec filter sequence predicate = defer (\() ->
                     selected = Option.Some item
                     finished = true
             | Option.None -> finished = true
-    let remaining = if Option.is_some (ref selected) then filter current predicate else empty()
+    let remaining = if Option.is_some (ref selected) then filter predicate current else empty()
     (remaining, selected))
 
 def to_array :: Seq<'a> -> ['a]

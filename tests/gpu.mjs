@@ -25,7 +25,7 @@ const cli = (args, success) => execute(compiler, args, success);
 const bits = value => Number(BigInt.asUintN(32, BigInt(value)));
 const signed = value => BigInt.asIntN(32, BigInt(value));
 const kernels = [
-  { name: "mix", body: "(value * 1664525 + 1013904223) ^ (value >>> 13)", reference: value => bits((signed(value) * 1664525n + 1013904223n) ^ (BigInt(bits(value)) >> 13n)) },
+  { name: "mix", body: "(value * 1664525 + 1013904223) ^ (Bits.ushr value 13)", reference: value => bits((signed(value) * 1664525n + 1013904223n) ^ (BigInt(bits(value)) >> 13n)) },
   { name: "cast", body: "((value as i32u) + 4294967295i32u) as i32", reference: value => bits(BigInt(value) - 1n) },
   { name: "locals", body: "{ let mut current = value; let before = current; current = current + 1; if before < 0 then -current else current ^ before }", reference: value => bits(value < 0 ? -signed(signed(value) + 1n) : signed(signed(value) + 1n) ^ signed(value)) },
 ];

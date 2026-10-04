@@ -107,7 +107,7 @@ def to_array :: Copy<'key> => ref HashSet<'key> -> ['key]
 ## `fold`
 
 ```tsuzuri
-def fold :: ref HashSet<'key> -> 'state -> ('state -> ref 'key -> 'state) -> 'state
+def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref HashSet<'key> -> 'state
 ```
 
 ## `iter`

@@ -16,10 +16,21 @@
 | `to_string` | `Display<T> => T -> string`。消費する表示 |
 | `assert` | `bool -> unit`。false でトラップ |
 | `unreachable` | `unit -> T`。必ずトラップ |
+| `not` | `bool -> bool`。`!` と同じ論理否定 |
+| `ignore` | `T -> unit`。引数を受け取って解放し、何も返さない |
 
 sqrt / floor / ceil / abs は f64 固定の互換名です。型汎用版は Math、整数の絶対値は Int を使います。基本組み込み名をトップレベルの関数名として再定義することはできません。
 
 assert は最適化レベルにかかわらず契約違反を検査する操作で、`-O3` なら無効になるという規則ではありません。unreachable は任意の型を満たせますが、実行すると終了する部分関数です。
+
+not と ignore は `|>` の右辺にも書けます。`do! action |> ignore` は IO の結果を捨てます（[IO の直接形式](io.md#直接形式)）。
+
+```tsuzuri run=true
+let finished = false
+ignore (Array.sum [1, 2])
+assert (not finished)
+finished |> not
+```
 
 ## Debug
 

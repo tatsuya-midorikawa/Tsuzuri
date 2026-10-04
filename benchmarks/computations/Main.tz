@@ -1,9 +1,9 @@
 def mix :: i64 -> i64 -> i64
-fn mix value salt = (value ^ (value >>> 13)) * 6364136223846793005 + salt
+fn mix value salt = (value ^ (Bits.ushr value 13)) * 6364136223846793005 + salt
 
 def bind_step :: i64 -> i64 -> i64
 fn bind_step value salt = Identity {
-    let! shifted = value ^ (value >>> 13)
+    let! shifted = value ^ (Bits.ushr value 13)
     let! scaled = shifted * 6364136223846793005
     return scaled + salt
 }
@@ -90,7 +90,7 @@ fn rec sum values scale index total =
     if index == values.length { total }
     else {
         let value = values[index];
-        sum values scale (index + 1) (total + (value ^ (value >>> 17)) * scale)
+        sum values scale (index + 1) (total + (value ^ (Bits.ushr value 17)) * scale)
     }
 
 export def ce_array_for :: i64 -> i64 -> i64
@@ -100,7 +100,7 @@ fn ce_array_for count seed = {
     let scale = seed | 1;
     Fold {
         for value in (&values) {
-            yield (value ^ (value >>> 17)) * scale
+            yield (value ^ (Bits.ushr value 17)) * scale
         }
     }
 }

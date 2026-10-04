@@ -166,7 +166,7 @@ def values :: Copy<'value> => ref HashMap<'key, 'value> -> ['value]
 ## `fold`
 
 ```tsuzuri
-def fold :: ref HashMap<'key, 'value> -> 'state -> ('state -> ref 'key -> ref 'value -> 'state) -> 'state
+def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref HashMap<'key, 'value> -> 'state
 ```
 
 ## `iter`

@@ -59,7 +59,7 @@ def to_array :: Copy<'key> => ref Set<'key> -> ['key]
 ## `fold`
 
 ```tsuzuri
-def fold :: ref Set<'key> -> 'state -> ('state -> ref 'key -> 'state) -> 'state
+def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref Set<'key> -> 'state
 ```
 
 ## `union`

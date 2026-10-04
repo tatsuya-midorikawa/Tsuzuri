@@ -410,7 +410,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "mutable references",
         ),
         (
-            "union Shape = Circle of f64\nlet s = Circle 1\n0",
+            "union Shape = Circle of f64\nlet s = Circle \"1\"\n0",
             "E1003",
             "",
         ),

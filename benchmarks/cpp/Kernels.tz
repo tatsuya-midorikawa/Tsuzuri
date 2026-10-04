@@ -97,7 +97,7 @@ fn format_parse count seed =
     assert (count >= 0 && count <= 100000000)
     let mut state = seed as i64u
     for index in 0 .. count - 1 do
-        state = (state ^ (state >> 13)) * 6364136223846793005 + index as i64u + 1442695040888963407
+        state = (state ^ (state >>> 13)) * 6364136223846793005 + index as i64u + 1442695040888963407
         let text = to_string state
         let parsed: Option<i64u> = Parse.parse ref text
         state = Option.get parsed ^ text.length as i64u
@@ -116,7 +116,7 @@ def task_mix :: i64 -> i64u -> i64u
 fn task_mix count seed =
     let mut state = seed
     for index in 0 .. count - 1 do
-        state = (state ^ (state >> 13)) * 6364136223846793005 + 1442695040888963407
+        state = (state ^ (state >>> 13)) * 6364136223846793005 + 1442695040888963407
     state
 
 export def task_sequence :: i64 -> i64 -> i64
@@ -126,7 +126,7 @@ fn task_sequence count seed =
     for index in 0 .. count - 1 do
         state = Task.run task {
             let! value = task { state }
-            return (value ^ (value >> 13)) * 6364136223846793005 + 1442695040888963407
+            return (value ^ (value >>> 13)) * 6364136223846793005 + 1442695040888963407
         }
     state as i64
 

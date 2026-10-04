@@ -117,7 +117,7 @@ fn all_unit_transfer =
     let units = new [i16u](65536, index -> index as i16u)
     let text = String.from_code_units units
     let moved = String.to_code_units text
-    Array.fold (ref moved) 0 (total -> value -> total + value as i64)
+    Array.fold (total -> value -> total + value as i64) 0 (ref moved)
 
 export def validate_bytes :: i32 -> i64
 fn validate_bytes which =

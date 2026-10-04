@@ -242,6 +242,7 @@ fn check_body(
         loans: Vec::new(),
         held: Vec::new(),
         loop_flows: Vec::new(),
+        try_flows: Vec::new(),
         reachable: true,
         external: BTreeSet::new(),
         infer,
@@ -394,6 +395,7 @@ struct Checker<'a> {
     loans: Vec<Loan>,
     held: Vec<Value>,
     loop_flows: Vec<control::LoopFlow>,
+    try_flows: Vec<control::TryFlow>,
     reachable: bool,
     external: BTreeSet<usize>,
     infer: bool,
@@ -1627,6 +1629,18 @@ impl Checker<'_> {
             E::Break | E::Continue => {
                 self.eval_loop_jump(matches!(expression.kind, E::Break), expression.span)?;
             }
+            E::Checked(value) => {
+                result = self.eval(value, Use::Consume, &during)?;
+                self.raise_edge(expression.span)?;
+            }
+            E::Try(handled) => {
+                result = self.eval_try(handled, &during, expression.span)?;
+            }
+            E::Reraise => {
+                self.raise_edge(expression.span)?;
+                self.reachable = false;
+            }
+            E::RaisedException => {}
             E::BorrowOperand(value) => {
                 result = self.eval(value, Use::Read, &during)?;
             }

@@ -1,0 +1,14 @@
+/// The kind of an exception that `try ... with` catches. `e is OverflowException`
+/// in a handler arm tests it.
+union ExceptionKind = OverflowException
+
+/// An exception that a `try ... with` handler receives: its kind and message.
+record Exception { kind: ExceptionKind, msg: string }
+
+instance Err<Exception> {
+    fn msg error = clone_string (ref error.msg)
+}
+
+/// The exception that a checked operation raised with the runtime code `code`.
+private def of_code :: i32 -> Exception = \_code ->
+    Exception { kind: OverflowException, msg: "Arithmetic operation resulted in an overflow." }

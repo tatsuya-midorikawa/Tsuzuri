@@ -52,7 +52,7 @@ fn borrowed_comparison_method_signatures() {
 #[test]
 fn superclasses_are_resolved_and_required() {
     accepts(
-        "class Eq<'a> => Total<'a> { def same :: ref 'a -> ref 'a -> bool }\ninstance Total<i64> { fn same left right = Eq.eq left right }\nlet number = 42\nTotal.same (ref number) (ref number)",
+        "class Eq<'a> => Total<'a> { def same :: ref 'a -> ref 'a -> bool }\ninstance Total<i64> { fn same left right = Eq.eq left right }\nlet number = 42l\nTotal.same (ref number) (ref number)",
     );
     accepts(
         "class Later<'a> => Earlier<'a> { def first :: 'a -> i64 }\nclass Later<'a> { def last :: 'a -> i64 }\ninstance Earlier<bool> { fn first _value = 1 }\ninstance Later<bool> { fn last _value = 2 }\nEarlier.first true",
@@ -124,7 +124,7 @@ fn default_methods_are_checked_once_even_without_instances() {
         "class C<'a> { def value :: 'a -> i64; fn value _value = 42 }\ninstance C<bool> {}\nC.value true",
     );
     accepts(
-        "class Eq<'a> => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\ninstance Total<i64> {}\nlet number = 42\nTotal.same (ref number) (ref number)",
+        "class Eq<'a> => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\ninstance Total<i64> {}\nlet number = 42l\nTotal.same (ref number) (ref number)",
     );
     accepts(
         "record Box<'a> { value: 'a }\nclass Size<'a> { def size :: ref 'a -> i64; def empty :: ref 'a -> bool; fn empty value = Size.size value == 0 }\ninstance Size<'a> => Size<Box<'a>> { fn size value = Size.size (ref value.value) }\ninstance Size<string> { fn size value = value.length }\nlet value = Box { value: \"abc\" }\nSize.empty (ref value)",
@@ -851,7 +851,11 @@ fn checks_declarations_and_specialized_layouts_even_when_unused() {
     accepts("class C<'a> { def f :: 'a -> [[i64]] }");
     accepts("class C<'a> { def f :: 'a -> i64 }\ninstance C<'a> { fn f _value = 1 }");
     rejects(
-        "class C<'a> { def f :: 'a -> i64 }\ninstance C<byte> { fn f x = 1 }\ninstance C<i8> { fn f x = 2 }",
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<sbyte> { fn f x = 1 }\ninstance C<i8> { fn f x = 2 }",
+        "E1016",
+    );
+    rejects(
+        "class C<'a> { def f :: 'a -> i64 }\ninstance C<byte> { fn f x = 1 }\ninstance C<i8u> { fn f x = 2 }",
         "E1016",
     );
     accepts(
@@ -928,7 +932,7 @@ fn specializes_operators_for_every_numeric_representation() {
         ));
     }
     accepts(
-        "def bits :: 'a -> 'a -> 'a\nfn bits x y = (~x & y | x ^ y) << y >> y >>> y % x\ndef main :: i32\nfn main = bits 42 2",
+        "def bits :: 'a -> 'a -> 'a\nfn bits x y = Bits.ushr ((~~~x &&& y ||| x ^^^ y) <<< y >>> y) (y % x)\ndef main :: i32\nfn main = bits 42 2",
     );
     accepts("instance Add<[i32]> { fn add x y = x }\ndef main :: [i32]\nfn main = [] + []");
 }

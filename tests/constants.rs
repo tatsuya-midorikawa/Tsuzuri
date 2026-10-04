@@ -58,10 +58,10 @@ fn evaluates_integer_constants_and_inlines_forward_references() {
     for (source, expected) in [
         ("const Answer: i64 = Later + 2\nconst Later: i64 = 40", 42),
         ("const Answer: i8 = 127 + 1", 128),
-        ("const Answer: i8 = -1 >> 9", 255),
+        ("const Answer: i8 = -1 >>> 9", 255),
         ("const Answer: i8u = 255 + 1", 0),
         (
-            "const Answer: i128 = (1i8 << 7) as i128",
+            "const Answer: i128 = (1i8 <<< 7) as i128",
             (-128i128) as u128,
         ),
         ("const Answer: i64 = if true then 42 else 1 / 0", 42),

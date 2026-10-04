@@ -1,0 +1,276 @@
+/// An integer of any size, written with the `I` suffix (`12345678901234567890I`)
+/// or as an integer literal where a `bigint` is expected. It keeps a sign and
+/// base-10^9 digits, least significant first; zero has no digits and no sign.
+record BigInt { negative: bool, limbs: [i64] }
+
+/// The bigint with `negative` and the magnitude `limbs`, without high zero digits.
+private def make :: bool -> [i64] -> BigInt
+fn make negative limbs =
+    let digits = trim limbs
+    BigInt { negative: negative && digits.length > 0, limbs: digits }
+
+/// Drops the high zero digits of a magnitude.
+private def trim :: [i64] -> [i64]
+fn trim digits =
+    let mut length = digits.length
+    while length > 0 && digits[length - 1] == 0 do length = length - 1
+    if length == digits.length then digits else Array.sub (ref digits) 0 length
+
+/// The bigint of `value`.
+def of_i64 :: i64 -> BigInt
+fn of_i64 value =
+    let mut digits = Vec.empty()
+    let mut rest = value
+    while rest != 0 do
+        let digit = rest % 1000000000
+        digits = Vec.push digits (if digit < 0 then 0 - digit else digit)
+        rest = rest / 1000000000
+    make (value < 0) (Vec.to_array digits)
+
+/// The `i64` that `value` holds, or `None` when it is out of range.
+def to_i64 :: ref BigInt -> Option.Option<i64>
+fn to_i64 value =
+    if value.limbs.length > 3 then Option.None else
+        let mut total = 0i128
+        let mut index = value.limbs.length
+        while index > 0 do
+            index = index - 1
+            total = total * 1000000000 + (value.limbs[index] as i128)
+        let signed = if value.negative then 0 - total else total
+        let fits = signed >= -9223372036854775808i128 && signed <= 9223372036854775807i128
+        if fits then Option.Some (signed as i64) else Option.None
+
+/// The bigint that `text` spells: an optional `-` and decimal digits.
+def of_string :: ref string -> Option.Option<BigInt>
+fn of_string text =
+    let characters = String.chars text
+    let negative = characters.length > 0 && characters[0] == '-'
+    let start = if negative then 1 else 0
+    if characters.length == start then Option.None else
+        let mut digits = Vec.empty()
+        let mut valid = true
+        let mut finish = characters.length
+        while valid && finish > start do
+            let first = if finish - 9 > start then finish - 9 else start
+            let mut limb = 0
+            let mut index = first
+            while index < finish do
+                let code = Char.to_u16 characters[index] as i64
+                if code < 48 || code > 57 then valid = false
+                limb = limb * 10 + (code - 48)
+                index = index + 1
+            digits = Vec.push digits limb
+            finish = first
+        if valid then Option.Some (make negative (Vec.to_array digits)) else Option.None
+
+/// -1, 0, or 1 as the magnitude `left` is below, equal to, or above `right`.
+private def compare_limbs :: ref [i64] -> ref [i64] -> i64
+fn compare_limbs left right =
+    if left.length != right.length then (if left.length < right.length then -1 else 1) else
+        let mut index = left.length
+        let mut order = 0
+        while order == 0 && index > 0 do
+            index = index - 1
+            if left[index] != right[index] then order = if left[index] < right[index] then -1 else 1
+        order
+
+private def add_limbs :: ref [i64] -> ref [i64] -> [i64]
+fn add_limbs left right =
+    let length = if left.length > right.length then left.length else right.length
+    let mut out = new [i64](length + 1, \_index -> 0)
+    let mut carry = 0
+    let mut index = 0
+    while index < length do
+        let a = if index < left.length then left[index] else 0
+        let b = if index < right.length then right[index] else 0
+        let sum = a + b + carry
+        carry = if sum >= 1000000000 then 1 else 0
+        out = Array.set out index (sum - carry * 1000000000)
+        index = index + 1
+    Array.set out length carry
+
+/// `left - right` for magnitudes with `left >= right`.
+private def sub_limbs :: ref [i64] -> ref [i64] -> [i64]
+fn sub_limbs left right =
+    let mut out = new [i64](left.length, \_index -> 0)
+    let mut borrow = 0
+    let mut index = 0
+    while index < left.length do
+        let b = if index < right.length then right[index] else 0
+        let difference = left[index] - b - borrow
+        borrow = if difference < 0 then 1 else 0
+        out = Array.set out index (difference + borrow * 1000000000)
+        index = index + 1
+    out
+
+private def mul_limbs :: ref [i64] -> ref [i64] -> [i64]
+fn mul_limbs left right =
+    let mut out = new [i64](left.length + right.length, \_index -> 0)
+    let mut i = 0
+    while i < left.length do
+        let mut carry = 0
+        let mut j = 0
+        while j < right.length do
+            let current = out[i + j] + left[i] * right[j] + carry
+            carry = current / 1000000000
+            out = Array.set out (i + j) (current % 1000000000)
+            j = j + 1
+        out = Array.set out (i + right.length) carry
+        i = i + 1
+    out
+
+/// The magnitude `digits * factor` for `0 <= factor < 10^9`.
+private def scale_limbs :: ref [i64] -> i64 -> [i64]
+fn scale_limbs digits factor =
+    let mut out = new [i64](digits.length + 1, \_index -> 0)
+    let mut carry = 0
+    let mut index = 0
+    while index < digits.length do
+        let current = digits[index] * factor + carry
+        carry = current / 1000000000
+        out = Array.set out index (current % 1000000000)
+        index = index + 1
+    trim (Array.set out digits.length carry)
+
+/// The quotient and remainder of magnitudes, by long division with a nonzero divisor.
+private def divide_limbs :: ref [i64] -> ref [i64] -> ([i64] * [i64])
+fn divide_limbs left right =
+    let mut quotient = new [i64](left.length, \_index -> 0)
+    let mut remainder: [i64] = []
+    let mut index = left.length
+    while index > 0 do
+        index = index - 1
+        let mut shifted = new [i64](remainder.length + 1, \_position -> 0)
+        shifted = Array.set shifted 0 left[index]
+        let mut position = 0
+        while position < remainder.length do
+            shifted = Array.set shifted (position + 1) remainder[position]
+            position = position + 1
+        remainder = trim shifted
+        let mut low = 0
+        let mut high = 999999999
+        while low < high do
+            let middle = (low + high + 1) / 2
+            let product = scale_limbs right middle
+            if compare_limbs (ref product) (ref remainder) <= 0 then low = middle else high = middle - 1
+        if low > 0 then
+            let product = scale_limbs right low
+            remainder = trim (sub_limbs (ref remainder) (ref product))
+        quotient = Array.set quotient index low
+    (trim quotient, remainder)
+
+private def add_values :: ref BigInt -> ref BigInt -> BigInt
+fn add_values left right =
+    if left.negative == right.negative then make left.negative (add_limbs (ref left.limbs) (ref right.limbs)) else
+        if compare_limbs (ref left.limbs) (ref right.limbs) >= 0 then make left.negative (sub_limbs (ref left.limbs) (ref right.limbs))
+        else make right.negative (sub_limbs (ref right.limbs) (ref left.limbs))
+
+private def negate :: BigInt -> BigInt
+fn negate value = BigInt { negative: !value.negative && value.limbs.length > 0, limbs: value.limbs }
+
+/// The truncated quotient and the remainder, whose sign is the dividend's.
+private def divide :: ref BigInt -> ref BigInt -> (BigInt * BigInt)
+fn divide left right =
+    assert (right.limbs.length > 0)
+    match divide_limbs (ref left.limbs) (ref right.limbs) with
+    | (quotient, remainder) -> (make (left.negative != right.negative) quotient, make left.negative remainder)
+
+/// -1, 0, or 1 as `left` is below, equal to, or above `right`.
+def compare :: ref BigInt -> ref BigInt -> i64
+fn compare left right =
+    if left.negative != right.negative then (if left.negative then -1 else 1) else
+        let order = compare_limbs (ref left.limbs) (ref right.limbs)
+        if left.negative then 0 - order else order
+
+/// `base ** exponent` for an exponent below 10^18; a negative exponent traps.
+private def power :: BigInt -> BigInt -> BigInt
+fn power base exponent =
+    assert (!exponent.negative && exponent.limbs.length <= 2)
+    let mut count = 0
+    let mut index = exponent.limbs.length
+    while index > 0 do
+        index = index - 1
+        count = count * 1000000000 + exponent.limbs[index]
+    let mut result = of_i64 1
+    let mut factor = base
+    while count > 0 do
+        if count % 2 == 1 then
+            result = make (result.negative != factor.negative) (mul_limbs (ref result.limbs) (ref factor.limbs))
+        count = count / 2
+        if count > 0 then factor = make false (mul_limbs (ref factor.limbs) (ref factor.limbs))
+    result
+
+instance Add<BigInt> {
+    fn add left right = add_values (ref left) (ref right)
+}
+
+instance Sub<BigInt> {
+    fn sub left right =
+        let negated = negate right
+        add_values (ref left) (ref negated)
+}
+
+instance Mul<BigInt> {
+    fn mul left right = make (left.negative != right.negative) (mul_limbs (ref left.limbs) (ref right.limbs))
+}
+
+instance Div<BigInt> {
+    fn div left right =
+        match divide (ref left) (ref right) with
+        | (quotient, _remainder) -> quotient
+}
+
+instance Rem<BigInt> {
+    fn rem left right =
+        match divide (ref left) (ref right) with
+        | (_quotient, remainder) -> remainder
+}
+
+instance Pow<BigInt> {
+    fn pow base exponent = power base exponent
+}
+
+instance Neg<BigInt> {
+    fn neg value = negate value
+}
+
+instance Eq<BigInt> {
+    fn eq left right = left.negative == right.negative && compare_limbs (ref left.limbs) (ref right.limbs) == 0
+    fn ne left right = !(Eq.eq left right)
+}
+
+instance Ord<BigInt> {
+    fn lt left right = compare left right < 0
+    fn le left right = compare left right <= 0
+    fn gt left right = compare left right > 0
+    fn ge left right = compare left right >= 0
+}
+
+instance Display<BigInt> {
+    fn display value =
+        if value.limbs.length == 0 then "0" else
+            let last = value.limbs.length - 1
+            let mut text = (if value.negative then "-" else "") + to_string value.limbs[last]
+            let mut index = last
+            while index > 0 do
+                index = index - 1
+                let mut digits = to_string value.limbs[index]
+                while String.length (ref digits) < 9 do digits = "0" + digits
+                text = text + digits
+            text
+}
+
+instance Parse<BigInt> {
+    fn parse text = of_string text
+}
+
+instance Hash<BigInt> {
+    fn hash value =
+        let mut digits = 0xcbf29ce484222325i64u
+        for limb in value.limbs do digits = (digits ^^^ (limb as i64u)) * 0x100000001b3i64u
+        if value.negative then ~~~digits else digits
+}
+
+instance Default<BigInt> {
+    fn default = BigInt { negative: false, limbs: [] }
+}

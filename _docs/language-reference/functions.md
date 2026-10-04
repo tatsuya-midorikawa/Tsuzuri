@@ -63,6 +63,69 @@ f 2 3 4
 
 ローカルな `let` は単相かつ非再帰です。同じ関数値を i64 用と string 用の両方へ一般化することはできません。汎用 API には型変数を含む名前付きの `def` を使います。
 
+```tsuzuri run=42
+def twice : i32 -> i32 = \x -> x * 2
+
+let positive_half = \x when x > 0 -> x / 2
+positive_half (twice 42)
+```
+
+引数の後に `when` 条件を書くと、条件が false の適用もパターンの不一致と同じくトラップします。`twice` のように、`def` の `::` は単一の `:` でも書けます。
+
+### 標準の高階関数
+
+```tsuzuri run=4321
+let numbers = [1, 2, 3, 4]
+let total = Array.fold (\acc x -> acc + x) 0 numbers
+let texts = ["a", "bcd"]
+let lengths = texts |> Array.map_ref (\text -> text.length)
+assert (total == 10)
+assert (lengths[1] == 3)
+Array.fold_back (\x digits -> digits * 10 + x) numbers 0
+```
+
+標準ライブラリの高階関数は、F# と同じく関数を最初の引数に取ります（`Array.map f xs`、`Array.fold f state xs`、`Array.fold_back f xs state`、`Seq.unfold generator state` など）。対象のコレクションが最後なので、`xs |> Array.map f` とパイプで渡せます。一覧は[配列・リスト API](../../docs/language.md#配列リスト-api)にあります。
+
+呼び出しの引数に書いた匿名関数は、ほかの引数より後に型検査します。`xs |> f` は `xs` を先に検査するので、上の `text` の型は注釈なしで決まります。評価順序は変わりません。
+
+## パイプラインと関数合成
+
+```tsuzuri run=32
+def multiply :: i64 -> i64 -> i64 = \factor value -> factor * value
+
+let double = multiply 2
+let values = [3, 5, 8]
+let piped = values |> Array.map double |> Array.sum
+let composed = values |> (Array.map double >> Array.sum)
+assert (piped == composed)
+piped
+```
+
+`f >> g` は `f` の後に `g` を適用する関数（`\x -> g (f x)`）、`f << g` は `g` の後に `f` を適用する関数（`\x -> f (g x)`）です。`double` は i64 を受け取るので、`values` は `[i64]` と推論します。
+
+`Array.map double` の結果のような一時値も、共有借用の `ref` 引数へ渡せます。借用は呼び出しが戻るまでで、`Array.sum (Array.map double (ref values))` や `String.length "text"` も同じです。結果が借用を保持する呼び出しには渡せません。値を捨てて unit にするには `value |> ignore` と書きます。
+
+## 型の関数を要求する制約
+
+`Foo.tz`:
+
+```tsuzuri project=function-signature-constraint file=Foo.tz
+record Foo { num: i32 }
+def value :: Foo -> i32 = \x -> x.num
+```
+
+`Main.tz`:
+
+```tsuzuri project=function-signature-constraint file=Main.tz run=30
+def add :: 'T -> 'T -> 'U
+    @'T : (#value: 'T -> 'U) = \x -> \y ->
+        ('T.value x) + ('T.value y)
+
+add (Foo { num: 10 }) (Foo { num: 20 })
+```
+
+`@'T : (#value: 'T -> 'U)` は、`'T` の定義元モジュールに `'T -> 'U` 型の関数 `value` を要求します。本体の `'T.value x` はこの型で検査し、`Foo` に対しては `Foo.value` を静的に呼びます。型を省いた `#value` の形は[型クラスの記事](generics-and-typeclasses.md#定義元モジュールの関数を要求する)を参照してください。
+
 ## 捕捉とメモリ
 
 匿名関数は作成時に外側の値を捕捉し、本体は呼び出し時に評価します。Copy 値はコピー、`string` などの非 Copy 値は関数値へ move します。

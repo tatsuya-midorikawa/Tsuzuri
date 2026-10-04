@@ -36,6 +36,27 @@ IO は任意のビルダーの Bind／Return／Delay／Run を `IO.Using` で合
 独自の遅延ビルダーも公開 Using を実装できます。契約と推論規則は[言語仕様](../../docs/language.md#ビルダー名を省略した本体)を参照してください。
 任意の異種モナドを追加の契約なしで同じ型へ平坦化する機能ではありません。
 
+## IO の直接形式
+
+結果型が分かっていて、その型にビルダーがない本体（`def main :: i32` など）では、IO の `let!` / `do!` をその場で順に実行します。
+
+```tsuzuri run=hello%0A42
+def main :: i32 =
+    do! IO.writeln "hello"
+    42
+```
+
+`IO.writeln` は `IO.write_line` の別名です。`do! a |> f` は `a` を束縛してから結果を `f` へ渡す文で、`do! IO.writeln "x" |> ignore` のように使います。
+
+Main.tz のトップレベルも、IO の束縛の後を通常の結果式で終えると、束縛をその場で順に実行し、その式の値を結果にします。
+
+```tsuzuri run=start%0A42
+do! IO.writeln "start" |> ignore
+40 + 2
+```
+
+`try` の本体・ハンドラー・`finally` の中も同じです（[例外処理](error-handling.md)）。直接実行するのは IO の束縛だけです。
+
 ## 標準 Result ビルダー
 
 ```tsuzuri run=42
@@ -141,7 +162,18 @@ Option / Result の For は Copy 要素の所有配列を受け取ります。�
 
 `use name = value` は `let` と同じ束縛で、値の型が `Drop` を持つことを要求します。`use! name = source` は `let!` と同じく値を取り出し、その値を `use` で束縛します（`and!` とは組み合わせられません）。解放は通常の束縛と同じ scope の終わりで、`Using` 操作は呼びません。`let!`・`use!` より前に束縛した Drop 型の値は、継続の関数値に捕捉できないので後ろでは使えません（[所有権](ownership.md#use-束縛と早期解放)）。
 
-`try ... with`、`try ... finally` は未対応です。自動解放と Option / Result を使います。カスタム演算、暗黙 yield、ビルダーオブジェクトもありません。task は別の一回実行用 lowering を使います。
+`try ... with ... finally` はビルダーの中でも `Result` を返す通常の式で、ビルダーの操作には展開しません（[例外処理](error-handling.md)）。カスタム演算、暗黙 yield、ビルダーオブジェクトはありません。task は別の一回実行用 lowering を使います。
+
+```tsuzuri run=42
+let answer = Option {
+    let! base = Some 40
+    let total = try @checked base + 2 with | e -> e
+    return total
+}
+match answer with
+| Some (Ok value) -> value
+| _ -> 0
+```
 
 既知で外へ逃げない継続は直接呼び出しなどへ特殊化できますが、任意のビルダーが無料になる保証ではありません。必要な結果領域、捕捉の複製、ビルダー自身のアルゴリズムを含めて評価します。
 

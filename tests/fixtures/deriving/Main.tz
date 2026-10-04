@@ -55,12 +55,12 @@ fn hash_integer kind seed =
     | 1 -> { let value = seed as i16; Hash.hash (ref value) as i64 }
     | 2 -> { let value = seed as i32; Hash.hash (ref value) as i64 }
     | 3 -> Hash.hash (ref seed) as i64
-    | 4 -> { let value = (seed as i128) << 72; Hash.hash (ref value) as i64 }
+    | 4 -> { let value = (seed as i128) <<< 72; Hash.hash (ref value) as i64 }
     | 5 -> { let value = seed as i8u; Hash.hash (ref value) as i64 }
     | 6 -> { let value = seed as i16u; Hash.hash (ref value) as i64 }
     | 7 -> { let value = seed as i32u; Hash.hash (ref value) as i64 }
     | 8 -> { let value = seed as i64u; Hash.hash (ref value) as i64 }
-    | _ -> { let value = (seed as i128u) << 72; Hash.hash (ref value) as i64 }
+    | _ -> { let value = (seed as i128u) <<< 72; Hash.hash (ref value) as i64 }
 
 export def hash_real :: i64 -> i64 -> i64
 fn hash_real kind which =
@@ -116,9 +116,9 @@ fn hash_structure which =
     | 2 -> { let value = Number 42; Hash.hash (ref value) as i64 }
     | 3 -> { let value = Pair (1.5, -2.5); Hash.hash (ref value) as i64 }
     | 4 -> { let value = Node (Leaf, 42, Leaf); Hash.hash (ref value) as i64 }
-    | 5 -> { let value = [1, 2, 3]; Hash.hash (ref value) as i64 }
-    | 6 -> { let value = [|1, 2, 3|]; Hash.hash (ref value) as i64 }
-    | 7 -> { let value = (42, "abc"); Hash.hash (ref value) as i64 }
+    | 5 -> { let value = [1l, 2, 3]; Hash.hash (ref value) as i64 }
+    | 6 -> { let value = [|1l, 2, 3|]; Hash.hash (ref value) as i64 }
+    | 7 -> { let value = (42l, "abc"); Hash.hash (ref value) as i64 }
     | _ -> { let value = Empty {}; Hash.hash (ref value) as i64 }
 
 export def hash_default_decimal :: i64

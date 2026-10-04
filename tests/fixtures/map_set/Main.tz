@@ -14,7 +14,7 @@ fn map_insert_lookup count =
         assert (Map.contains_key (&map) keys[index])
         assert (Option.get (Map.get (&map) keys[index]) == values[index])
         index = index + 1
-    Map.fold (&map) 0 (\total key value -> total * 31 + deref key * 7 + deref value)
+    Map.fold (\total key value -> total * 31 + deref key * 7 + deref value) 0 (&map)
 
 export def map_replace_drop :: i64 -> i64
 fn map_replace_drop count =
@@ -23,7 +23,7 @@ fn map_replace_drop count =
     while index < count do
         map = Map.insert map (to_string (index % 9)) (to_string index)
         index = index + 1
-    Map.fold (&map) 0 (\total key value -> total + key.length + value.length)
+    Map.fold (\total key value -> total + key.length + value.length) 0 (&map)
 
 export def map_remove :: i64 -> i64
 fn map_remove count =
@@ -37,7 +37,7 @@ fn map_remove count =
         map = Map.remove map index
         index = index + 2
     map = Map.remove map (-1)
-    Map.fold (&map) 0 (\total key value -> total + deref key + deref value)
+    Map.fold (\total key value -> total + deref key + deref value) 0 (&map)
 
 export def set_algebra :: i64 -> i64
 fn set_algebra count =
@@ -60,7 +60,7 @@ export def set_owned_union :: i64
 fn set_owned_union =
     let combined = Set.union (Set.singleton "a") (Set.insert (Set.singleton "a") "b")
     assert (Set.contains (&combined) "a" && Set.contains (&combined) "b")
-    Set.fold (&combined) 0 (\total key -> total + key.length)
+    Set.fold (\total key -> total + key.length) 0 (&combined)
 
 export def map_capture :: i64
 fn map_capture =

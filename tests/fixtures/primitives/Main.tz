@@ -76,20 +76,20 @@ export fn integer128() -> bool {
     let x = 123456789012345678901234567890i128;
     max + 1 == 0 && minimum - 1 == 170141183460469231731687303715884105727i128
         && (x * 7) / 7 == x && (x * 7) % 7 == 0
-        && (max >> 127) == 1 && (minimum >>> 127) == 1
+        && (max >>> 127) == 1 && (Bits.ushr minimum 127) == 1
         && (255i16 as i8) == -1 && (-1i8 as i128) == -1
 }
 
 export fn wide_shift(low: i64, high: i64, count: i64, mode: i32, upper: bool) -> i64 {
-    let value = (low as i64u as i128u) | ((high as i128u) << 64);
+    let value = (low as i64u as i128u) | ((high as i128u) <<< 64);
     let shifted = if mode == 0 {
-        value << (count as i128u)
+        value <<< (count as i128u)
     } else if mode == 1 {
-        value >> (count as i128u)
+        value >>> (count as i128u)
     } else {
-        ((value as i128) >> (count as i128)) as i128u
+        ((value as i128) >>> (count as i128)) as i128u
     };
-    (if upper { shifted >> 64 } else { shifted }) as i64
+    (if upper { shifted >>> 64 } else { shifted }) as i64
 }
 
 export fn binary_precision() -> bool {

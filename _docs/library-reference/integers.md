@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-Int は整数幅と符号を保持する組み込み API です。通常の折り返し演算に加え、checked、飽和、ビット操作を明示的に選べます。Int はモジュール名であり、具体的な整数型名ではありません。
+Int は整数幅と符号を保持する組み込み API です。通常の折り返し演算に加え、checked、飽和、ビット操作を明示的に選べます。Int はモジュール名であり、具体的な整数型名ではありません。桁数に上限のない整数は [BigInt](bigint.md) の `bigint` です。
 
 ## 境界値の扱い
 
@@ -15,7 +15,7 @@ assert (Int.rotate_left 1i8u 1 == 2i8u)
 42
 ```
 
-通常の `127i8 + 1i8` は -128 に折り返します。checked_add は None、saturating_add は最大値 127 です。必要な契約を呼び出し名で選びます。
+通常の `127i8 + 1i8` は -128 に折り返します。checked_add は None、saturating_add は最大値 127 です。必要な契約を呼び出し名で選びます。式に `@checked` を付けると、overflow で [OverflowException](#checked-と-overflowexception) を送出します。
 
 ## 選択と絶対値
 
@@ -40,7 +40,30 @@ assert (Int.rotate_left 1i8u 1 == 2i8u)
 | `reverse_bits value` | 全 bit の順序を反転 |
 | `is_power_of_two value` | 符号なし整数専用。ゼロは false |
 
-rotate の量は `amount & (bits - 1)` です。通常のシフト演算子と異なり、量の型は常に i64 です。
+rotate の量は `amount &&& (bits - 1)` です。通常のシフト演算子と異なり、量の型は常に i64 です。
+
+## シフトとビット演算子
+
+```tsuzuri run=-1
+let value = -16
+assert (value >>> 2 == -4)
+assert (Bits.ushr value 28 == 15)
+assert (240uy >>> 4 == 15uy)
+assert (((0b1100 &&& 0b1010) ||| (1 <<< 4)) == 24)
+~~~0
+```
+
+| 演算子・API | 動作 |
+| --- | --- |
+| `a &&& b`, `a \|\|\| b`, `a ^^^ b` | ビットごとの論理積、論理和、排他的論理和 |
+| `~~~a` | 全 bit の反転 |
+| `a <<< n` | 左シフト |
+| `a >>> n` | 右シフト。符号付き整数は符号を複製する算術シフト、符号なし整数はゼロを入れる論理シフト |
+| `Bits.ushr a n` | 符号付き整数でもゼロを入れる論理右シフト |
+
+旧表記の `&` `|` `^` `~` も同じ意味で使えます。シフト量 n は a と同じ型で、bit 幅でマスクします。例えば i32 の `1 <<< 33` は `1 <<< 1` と同じ 2 です。`>>` と `<<` はシフトではなく関数合成です。
+
+`Bits` はこれらの演算子をまとめた組み込みクラスで、ushr はそのメソッドです。シフトは `+` `-` より弱く比較より強く結合しますが、`&&&` `|||` `^^^` は `==` より弱いので、上の例のようにビット演算の結果を比較するときは括弧で囲みます。演算子の一覧は[式と演算子](../language-reference/expressions-and-operators.md)を参照してください。
 
 ## checked と saturating
 
@@ -55,11 +78,42 @@ checked は失敗を値にする API です。同じ入力でも通常の `/` �
 
 ## 累乗と拡大乗算
 
+```tsuzuri run=87
+let two = 2
+assert (2 ** 3 ** 2 == 512)
+assert (-two ** 2 == 4)
+assert (Int.wrapping_pow 2 10 == 1024)
+assert (2.0 ** 0.5 > 1.414)
+let base = 7y
+base ** 3
+```
+
+`**` は `Pow` クラスの演算子です。右結合で `*` より強く結合し、単項 `-` はさらに強いので `-two ** 2` は 4 です。整数では指数も底と同じ型で、負の指数はトラップ、overflow は折り返します。上の `7y ** 3` は 343 を i8 へ折り返した 87 です。f32 / f64 は libm の pow を使い、[bigint](bigint.md) も `**` を持ちます。
+
 `wrapping_pow base exponent` と `checked_pow base exponent` は i64 の指数で二乗法を使います。指数 0 は 1、負指数は前者がトラップ、後者が None です。overflow はそれぞれ折り返し / None になります。
 
 `widening_mul left right` は同じ符号の倍幅整数を返します。例えば i32 なら i64、i64u なら i128u です。128-bit 入力のさらに倍幅はなく、`E1005` です。
 
 unsigned_abs / abs_diff / widening_mul は返却型が入力幅から決まる型族を使います。呼び出し位置で具体幅を確定させる必要があり、型変数のまま残る汎用ラッパーは `E1015` です。
+
+## @checked と OverflowException
+
+```tsuzuri run=-2147483648%3A%20Arithmetic%20operation%20resulted%20in%20an%20overflow.
+def add :: i32 -> i32 -> Result<i32, Exception> = \x y ->
+    try
+        @checked x + y
+    with
+    | e is OverflowException -> e
+
+let wrapped = 2147483647 + 1
+match add 2147483647 1 with
+| Result.Ok value -> $"{value}"
+| Result.Error e -> $"{wrapped}: {e.msg}"
+```
+
+式や文の前に `@checked` を付けると、その中の整数の `+` `-` `*` `**` と単項 `-` が overflow したとき、折り返す代わりに `OverflowException` を送出します。結果の型は変わらず、`/` と `%` は対象外です。`try ... with` はこれを捕捉し、`Result<'T, Exception>` の Error にします。
+
+検査と捕捉は字句的です。`@checked` は書いた式の中の演算だけを検査し、`@checked f x` でも f の本体の演算は検査しません。送出した例外は同じ関数本体で最も内側の `try` へ移り、呼び出しや lambda の境界は越えません。捕捉する `try` がなければ `trap: unhandled OverflowException: arithmetic operation resulted in an overflow` と位置を報告してトラップします。詳しくは[エラー処理](../language-reference/error-handling.md)を参照してください。
 
 ## 性能と移植性
 
@@ -68,5 +122,8 @@ unsigned_abs / abs_diff / widening_mul は返却型が入力幅から決まる�
 ## 関連項目
 
 - [整数のリテラルと as](../language-reference/numbers.md)
+- [式と演算子](../language-reference/expressions-and-operators.md)
+- [エラー処理](../language-reference/error-handling.md)
+- [BigInt](bigint.md)
 - [Option と失敗の扱い](option-result.md)
 - [Math](math.md)

@@ -573,8 +573,8 @@ fn generic_tokens(tokens: &[crate::lexer::TokenWithTrivia], hints: &mut Hints) -
             } else if depth > 0 {
                 let closing = match token.kind {
                     TokenKind::Greater | TokenKind::GreaterEqual => 1,
-                    TokenKind::ShiftRight => 2,
-                    TokenKind::ShiftRightUnsigned => 3,
+                    TokenKind::DoubleGreater => 2,
+                    TokenKind::TripleGreater => 3,
                     _ => 0,
                 };
                 depth = depth.saturating_sub(closing);
@@ -650,9 +650,12 @@ fn spacing(
         return "";
     }
     if hints.prefixes.contains(&previous.span.start)
-        && matches!(previous.kind, Minus | Ampersand | Star | Bang | Tilde)
+        && matches!(
+            previous.kind,
+            Minus | Plus | Ampersand | Star | DoubleStar | Bang | Tilde | TripleTilde
+        )
     {
-        return if previous.kind == Minus {
+        return if matches!(previous.kind, Minus | Plus) {
             separated
         } else if current.kind == Mut {
             " "
@@ -702,9 +705,13 @@ impl Canonical {
     fn constraints(&mut self, constraints: &mut [ConstraintExpr]) {
         for constraint in constraints {
             match &mut constraint.name {
-                ConstraintName::Class(name) | ConstraintName::Function(name) => {
+                ConstraintName::Class(name) | ConstraintName::Function(name, None) => {
                     self.hints.type_headers.insert(name.span.end);
                     self.ident(name);
+                }
+                ConstraintName::Function(name, Some(ty)) => {
+                    self.ident(name);
+                    self.ty(ty);
                 }
             }
             self.ty(&mut constraint.ty);
@@ -841,6 +848,20 @@ impl Canonical {
                     self.expression(&mut arm.body);
                 }
             }
+            Try(handled) => {
+                self.expression(&mut handled.body);
+                for arm in &mut handled.arms {
+                    arm.span = Span::default();
+                    self.pattern(&mut arm.pattern);
+                    if let Some(guard) = &mut arm.guard {
+                        self.expression(guard);
+                    }
+                    self.expression(&mut arm.body);
+                }
+                if let Some(finally) = &mut handled.finally {
+                    self.expression(finally);
+                }
+            }
             Record { name, fields } => {
                 self.ident(name);
                 for (name, value) in fields {
@@ -873,6 +894,7 @@ impl Canonical {
             | Task(value)
             | TaskRun(value)
             | ComputationBoundary(value)
+            | Checked(value)
             | NewLiteral(value)
             | Borrow(value, ..)
             | Dereference(value, _) => self.expression(value),
@@ -932,8 +954,8 @@ impl Canonical {
                     self.expression(&mut hole.value);
                 }
             }
-            Integer(..) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_) | Unit
-            | Break | Continue => {}
+            Integer(..) | BigInt(_) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_)
+            | Unit | Break | Continue => {}
         }
     }
 

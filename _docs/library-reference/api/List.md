@@ -23,7 +23,7 @@ Returns a new list with a copy of every element, the explicit form of an implici
 ## `fold`
 
 ```tsuzuri
-def fold :: Copy<'a> => ref [|'a|] -> 'state -> ('state -> 'a -> 'state) -> 'state
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref [|'a|] -> 'state
 ```
 
 ## `iter`

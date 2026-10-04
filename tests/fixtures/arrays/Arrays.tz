@@ -83,12 +83,12 @@ fn array_temporaries = {
 
 export def array_wide :: bool
 fn array_wide = {
-    let values = new [Wide](3, i -> Wide { flag: i != 0, value: (i as i128) << 100 });
+    let values = new [Wide](3, i -> Wide { flag: i != 0, value: (i as i128) <<< 100 });
     let copy = values;
     let decimals = new [d128](3, i -> (i as d128) / 10.0);
     let flags = new [bool](3, i -> i == 2);
     let units = new [unit](3, i -> ());
-    copy[2].value == (2i128 << 100) && values[1].flag
+    copy[2].value == (2i128 <<< 100) && values[1].flag
         && decimals[2] == 0.2 && flags[2] && !flags[0] && units[2] == ()
 }
 

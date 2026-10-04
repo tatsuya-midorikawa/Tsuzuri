@@ -2,11 +2,22 @@
 
 [ドキュメントのトップ](README.md)
 
-対象は Tsuzuri 0.1.0、2026-09-29 時点のリポジトリです。機能チケット全93件（第1期の55件と、2026-09-29 に起票した第2期の計画38件）について、現在の提供範囲と利用者向けの説明を対応付けています。チケットの done は、そのチケットで合意した段階の完了であり、当初の設計案の全項目や他言語との互換性を意味しません。「未着手（計画）」の行は改善計画であり、現在の提供機能ではありません。
+対象は Tsuzuri 0.1.0、2026-10-04 時点のリポジトリです。機能チケット全93件（第1期の55件と、2026-09-29 に起票した第2期の計画38件）について、現在の提供範囲と利用者向けの説明を対応付けています。チケットの done は、そのチケットで合意した段階の完了であり、当初の設計案の全項目や他言語との互換性を意味しません。「未着手（計画）」の行は改善計画であり、現在の提供機能ではありません。
 
 ## 基礎言語
 
 チケット化以前の機能も言語リファレンスに含めます。[字句とインデント](language-reference/lexical-and-layout.md)、[値と定数](language-reference/values-and-constants.md)、[関数と再帰](language-reference/functions.md)、[型と推論](language-reference/types.md)、[数値](language-reference/numbers.md)、[評価順序](language-reference/expressions-and-operators.md)、[所有権](language-reference/ownership.md)、[制御構文](language-reference/control-flow.md)が入口です。
+
+2026-10-04 の仕様整合で追加・変更した次の機能はチケットを持たないため、ID なしで載せます。
+
+| ID | 現在の提供範囲 | 解説 | 実装記録 |
+| --- | --- | --- | --- |
+| — | 数値リテラル: 短い接尾辞 `y` / `uy`（i8 / i8u）、`s` / `us`（i16 / i16u）、`u`（i32u）、`l` / `ul`（i64 / i64u）、`L` / `UL`（i128 / i128u）、`hf` / `f` / `F`（f16 / f32 / f128）、`hm` / `m` / `M`（d32 / d64 / d128）。`86i64` のような従来の接尾辞も使える。接尾辞のない整数リテラルは使われ方から型を決め、決まらなければ `i32`（以前は `i64`）。i32 の範囲外で型が決まらないリテラルはエラー。float / decimal を期待する位置の整数リテラルはその型。`'a'B` は `byte`、`"text"B` は `[byte]`（ASCII のみ）、`u8"…"B` は `[utf8char]`。`byte` は `i8u`（以前は `i8`）、`sbyte` は `i8`。`@literal def` はコンパイル時定数 | [数値](language-reference/numbers.md) | [言語仕様](../docs/language.md) |
+| — | 任意精度の `bigint`: `123I`・`0xFFI` と bigint を期待する位置の整数リテラル。`+` `-` `*` `/` `%` `**` と単項 `-`、比較、`Display` / `Parse` / `Hash` / `Default`。`/` は 0 方向への切り捨て、`%` は被除数の符号、ゼロ除算はトラップ。`BigInt.of_i64` / `to_i64` / `of_string` / `compare` | [BigInt](library-reference/bigint.md) | [言語仕様](../docs/language.md) |
+| — | 演算子: 単項 `+`、右結合で `*` より強く結合する累乗 `**`（整数・f32 / f64・bigint、クラス `Pow`。整数の負の指数はトラップ）、F# と同じビット演算 `&&&` `\|\|\|` `^^^` `~~~` と `<<<` `>>>`（`>>>` は符号付きなら算術、符号なしなら論理シフト）、関数合成 `>>` / `<<`（以前はシフト）、修飾なしの `not` と `ignore`。旧 `&` `\|` `^` `~` `!` も使える。`\|>` `>>` `<<` `\|\|` `&&` で始まる行は前の式の続き | [演算子](language-reference/expressions-and-operators.md) | [言語仕様](../docs/language.md) |
+| — | 例外: `@checked` の中の整数 `+` `-` `*` `**` と単項 `-` はオーバーフローで `OverflowException` を送出する。`try ... with ... finally` は `Result<'T, 'E>` の式で、ハンドラーの結果は `Err` を実装する型、`finally` はすべての経路で実行する。例外は同じ関数本体の最も内側の `try` へ字句的に移り（関数呼び出しとラムダを越えず、巻き戻しなし）、捕捉されなければトラップする。native と WASM で同じ動作。`finally` を持つ `try` から出る `break` / `continue` は `E1023`。例外は `OverflowException` だけで、利用者が送出する構文とトラップ（ゼロ除算・境界違反・assert）の捕捉はない | [例外処理](language-reference/error-handling.md) | [言語仕様](../docs/language.md) |
+| — | IO の直接形式: 結果型がビルダーを持たない本体（`def main :: i32` など）、`try` の中、IO の束縛の後を通常の式で終えるトップレベルでは、IO の `let!` / `do!` をその場で実行する。`do! a \|> f` は `a` の結果を `f` へ渡す。`IO.writeln` は `IO.write_line` の別名。トップレベルの結果は `Display` を持てば表示し、持たなければ表示せずに捨てる（以前は `E2004`） | [IO の直接形式](language-reference/computation-expressions.md#io-の直接形式) | [言語仕様](../docs/language.md) |
+| — | 標準の高階関数: Array / List / Seq / Map / Set / HashMap / HashSet の `map` `filter` `fold` `fold_back` `reduce` `any` `all` `count` `find` `sort_by` `unfold` などは F# と同じく関数を先に受け取る（`Array.map f xs`、`Array.fold f state xs`、`Array.fold_back f xs state`、`Seq.unfold generator state`、`Map.fold f state map`）。以前は多くがコレクションを先に受け取った。一時値は結果が借用を保持しない呼び出しの間だけ共有借用として渡せ、`xs \|> Array.map f \|> Array.sum` とつなげられる。ラムダ式の引数は他の引数の後に型検査する | [Array / List](library-reference/arrays-and-lists.md) | [言語仕様](../docs/language.md) |
 
 ## A 型システム
 
@@ -37,7 +48,7 @@
 | B02 | Option / Result ビルダーで失敗時に継続を短絡 | [計算式](language-reference/computation-expressions.md) | [B02](../_features/_completed/B02-result-propagation.md) |
 | B03 | 通常ループの break / continue と解放 | [ループ](language-reference/control-flow.md) | [B03](../_features/_completed/B03-break-continue.md) |
 | B04 | bool / Option の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
-| B05 | match! / and!、BindReturn / Bind2。use / use! は B07 で対応、try は未対応 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
+| B05 | match! / and!、BindReturn / Bind2。use / use! は B07 で対応。try はビルダーの操作に展開せず、`Result` を返す通常の式 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
 | B06 | parallel_results の未開始停止と最小 index の Error | [Task](language-reference/tasks.md) | [B06](../_features/_completed/B06-task-cancellation.md) |
 | B07 | 対応: 利用者が宣言した record・union の `instance Drop<T>`。scope の終わり・置き換え・コレクションの要素・未実行の Task の捕捉値・再帰 union のノードで一度だけ `drop` を呼び、field を宣言順に解放する（native と WASM、100 万段の再帰 union を検証）。Drop 型は非 Copy で、field の move と更新は `E1012`。Phase 2 で `use` / `use!` 束縛、早期解放の `Owned.drop`、Drop 型を捕捉できる非 Copy の関数値 `Owned.function` / `Owned.call`。`extern type` への直接の `Drop` は未実装 | [所有権](language-reference/ownership.md) | [B07](../_features/_completed/B07-user-drop.md) |
 | B08 | 未着手（計画）: 非同期計算とホスト駆動の実行 | [Task](language-reference/tasks.md) | [B08](../_features/B08-async.md) |
@@ -140,7 +151,7 @@
 
 - 戻り値・ローカルに置く region 付き関数値型、region 間の outlives 制約、排他借用フィールド。
 - HKT 型別名、高階 kind 引数、標準 Functor / Monad の自動導入。
-- try / catch / finally、外部キャンセルトークン、開始済み Task の強制停止。
+- 関数呼び出しやラムダを越える例外の伝播、`OverflowException` 以外の例外とトラップの捕捉、外部キャンセルトークン、開始済み Task の強制停止。
 - locale 書式、書記素幅、一般的な Unicode 正規化、可変スライス。
 - registry / git 依存、lockfile と版解決、ネットワーク取得、build script。
 - 任意関数の実行時 CPU dispatch、SVE / SVE2、GPU 自動 offload、float / 64-bit WGSL。

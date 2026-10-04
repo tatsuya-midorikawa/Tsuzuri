@@ -16,6 +16,9 @@ pub(super) struct MemberConstraint {
     pub name: String,
     pub module: String,
     pub signature: Option<Type>,
+    /// Written as `@'T : #name` (or `(#name: Type)`) in this function's signature,
+    /// which lets the body refer to `'T.name`.
+    pub declared: bool,
     pub span: Span,
 }
 
@@ -35,6 +38,7 @@ impl MemberConstraint {
                 .signature
                 .as_ref()
                 .map(|ty| substitute(ty, substitutions)),
+            declared: false,
             span,
             ..self.clone()
         }
@@ -403,6 +407,17 @@ impl Inference {
         }
     }
 
+    /// Whether `ty` is still the open type of a number literal, which takes a
+    /// numeric default and so is never a reference.
+    pub fn is_numeric_literal(&self, ty: &Type) -> bool {
+        let root = self.resolve(ty);
+        matches!(root, Type::Infer(_))
+            && self
+                .defaults
+                .keys()
+                .any(|id| self.resolve(&Type::Infer(*id)) == root)
+    }
+
     fn apply_defaults(&mut self) {
         for (id, default) in self.defaults.clone() {
             if let Type::Infer(root) = self.resolve(&Type::Infer(id)) {
@@ -471,12 +486,13 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
         Equal | NotEqual => "Eq",
         Less | LessEqual | Greater | GreaterEqual => "Ord",
         BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight | ShiftRightUnsigned => "Bits",
+        Power => "Pow",
         And | Or | Pipe => unreachable!("non-overloadable operators"),
     }
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 27] = [
+pub(super) const BUILTIN_CLASSES: [&str; 29] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -504,6 +520,8 @@ pub(super) const BUILTIN_CLASSES: [&str; 27] = [
     "Elementary",
     "Drop",
     "Format",
+    "Pow",
+    "Err",
 ];
 
 impl Classes {
@@ -557,6 +575,7 @@ impl Classes {
             ("shl", ShiftLeft),
             ("shr", ShiftRight),
             ("ushr", ShiftRightUnsigned),
+            ("pow", Power),
         ] {
             let class = classes.names[binary_class(operator)];
             let value = Type::Variable("a".into());
@@ -697,6 +716,18 @@ impl Classes {
                 signature: Ok(Signature {
                     parameters: vec![Type::Reference(Box::new(Type::Variable("a".into())), true)],
                     result: Type::Unit,
+                }),
+                operation: None,
+                default: None,
+            });
+        // `Err.msg error` describes an error that a `try ... with` handler returns.
+        classes.declarations[classes.names["Err"]]
+            .methods
+            .push(Method {
+                name: "msg".into(),
+                signature: Ok(Signature {
+                    parameters: vec![Type::Reference(Box::new(Type::Variable("a".into())), false)],
+                    result: Type::String,
                 }),
                 operation: None,
                 default: None,
@@ -1453,6 +1484,17 @@ impl Classes {
         error
     }
 
+    /// Whether the concrete type `ty` satisfies the class `name`.
+    pub(super) fn holds(&self, name: &str, ty: &Type, types: &TypeContext<'_>) -> bool {
+        let constraint = Constraint {
+            class: self.names[name],
+            ty: ty.clone(),
+            span: Span::default(),
+        };
+        self.normalize(&constraint, types)
+            .is_ok_and(|residual| residual.is_empty())
+    }
+
     fn resolved_method(
         &self,
         class: usize,
@@ -1746,6 +1788,7 @@ impl Classes {
             "Sub" | "Mul" | "Div" | "Numeric" => ty.is_numeric(),
             "Ord" => ty.is_numeric() || ty.is_string() || matches!(ty, Type::Char | Type::Utf8Char),
             "Rem" | "Bits" | "Integer" => ty.is_integer(),
+            "Pow" => ty.is_integer() || matches!(ty, Type::Binary(32 | 64)),
             "SignedInteger" => matches!(ty, Type::Integer(_, true)),
             "UnsignedInteger" => matches!(ty, Type::Integer(_, false)),
             "Neg" => ty.is_float() || matches!(ty, Type::Integer(_, true)),
@@ -1833,6 +1876,7 @@ impl Classes {
             Operation::Unary(UnaryOp::Negate) => "Neg",
             Operation::Unary(UnaryOp::BitNot) => "Bits",
             Operation::Unary(UnaryOp::Not) => unreachable!(),
+            Operation::Unary(UnaryOp::Plus) => unreachable!("unary plus is checked to its operand"),
             Operation::Builtin(Builtin::Display) => "Display",
             Operation::Builtin(Builtin::Parse) => "Parse",
             Operation::Builtin(Builtin::Default) => "Default",
@@ -2464,9 +2508,9 @@ impl Checker<'_> {
             ));
         }
         let receiver = Type::Variable(variable.text.clone());
-        if !self.members.iter().any(|member| {
-            member.receiver == receiver && member.name == name.text && member.signature.is_none()
-        }) {
+        let Some(declared) = self.members.iter().find(|member| {
+            member.declared && member.receiver == receiver && member.name == name.text
+        }) else {
             return Err(Diagnostic::new(
                 "E1016",
                 format!(
@@ -2475,13 +2519,18 @@ impl Checker<'_> {
                 ),
                 name.span,
             ));
-        }
+        };
+        let annotation = declared.signature.clone();
         let ty = self.inference.fresh();
+        if let Some(annotation) = annotation {
+            self.same(&ty, &annotation, name.span)?;
+        }
         self.members.push(MemberConstraint {
             receiver: receiver.clone(),
             name: name.text.clone(),
             module: self.module.to_owned(),
             signature: Some(ty.clone()),
+            declared: false,
             span: name.span,
         });
         Ok((
@@ -2543,6 +2592,13 @@ impl Checker<'_> {
         count: usize,
         span: Span,
     ) -> Result<(Vec<Type>, Type), Diagnostic> {
+        if self.inference.is_numeric_literal(ty) {
+            return Err(Diagnostic::new(
+                "E1005",
+                "only a function value can be called",
+                span,
+            ));
+        }
         match self.inference.resolve(ty) {
             Type::Error => Ok((vec![Type::Error; count], Type::Error)),
             Type::Function(parameters, result)
@@ -2641,6 +2697,20 @@ impl Checker<'_> {
                     && self.classes.declarations[constraint.class].name == "Drop"
                 {
                     self.use_error(error, &constraint.ty, constraint.span)
+                } else if self.integer_literals.contains(&constraint.span)
+                    && matches!(
+                        self.classes.declarations[constraint.class].name.as_str(),
+                        "Integer" | "SignedInteger"
+                    )
+                {
+                    Diagnostic::new(
+                        "E1003",
+                        format!(
+                            "expected an integer, found {}",
+                            constraint.ty.display(&self.types)
+                        ),
+                        constraint.span,
+                    )
                 } else {
                     error
                 };
@@ -3330,6 +3400,7 @@ impl Specializer<'_> {
                     name: name.clone(),
                     module: module.clone(),
                     signature: Some(expression.ty.clone()),
+                    declared: false,
                     span: expression.span,
                 };
                 let (id, types) = self.member_target(&member)?;

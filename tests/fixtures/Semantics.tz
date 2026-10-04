@@ -21,9 +21,9 @@ export fn divide(a: i64, b: i64) -> i64 { a / b }
 export fn remainder(a: i64, b: i64) -> i64 { a % b }
 export fn negate(a: i64) -> i64 { -a }
 export fn bit_not(a: i64) -> i64 { ~a }
-export fn shift_left(a: i64, n: i64) -> i64 { a << n }
-export fn shift_right(a: i64, n: i64) -> i64 { a >> n }
-export fn shift_unsigned(a: i64, n: i64) -> i64 { a >>> n }
+export fn shift_left(a: i64, n: i64) -> i64 { a <<< n }
+export fn shift_right(a: i64, n: i64) -> i64 { a >>> n }
+export fn shift_unsigned(a: i64, n: i64) -> i64 { Bits.ushr a n }
 export fn bit_mix(a: i64, b: i64) -> i64 { (a & b) ^ (a | b) }
 export fn less(a: i64, b: i64) -> bool { a < b }
 export fn equal(a: i64, b: i64) -> bool { a == b }

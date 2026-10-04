@@ -7,15 +7,14 @@
 ## 遅延変換
 
 ```tsuzuri run=36
-let sequence = Seq.unfold 0 (\value ->
-    if value < 10 then Option.Some (value, value + 1) else Option.None)
-let doubled = Seq.map sequence (\value -> value * 2)
-let selected = Seq.filter doubled (\value -> deref value % 3 == 0)
-let result = Seq.to_array selected
-Array.sum ref result
+Seq.unfold (\value -> if value < 10 then Option.Some (value, value + 1) else Option.None) 0
+|> Seq.map (\value -> value * 2)
+|> Seq.filter (\value -> deref value % 3 == 0)
+|> Seq.to_array
+|> Array.sum
 ```
 
-map は要素を消費して変換し、filter は要素を共有借用して判定します。配列化まで必ず全要素を生成するわけではなく、next や for が列を進めます。
+unfold、map、filter は callback を先、初期状態や列を最後に受け取るので、`|>` で繋げられます。`|>` で始まる行は前の行の式を続けます。map は要素を消費して変換し、filter は要素を共有借用して判定します。配列化まで必ず全要素を生成するわけではなく、next や for が列を進めます。
 
 ## API
 
@@ -24,13 +23,13 @@ map は要素を消費して変換し、filter は要素を共有借用して判
 | `empty()` | 空の Seq |
 | `once value` | 一つの所有値だけを返す Seq |
 | `defer step` | `unit -> (Seq<T> * Option<T>)` を次の要求まで遅延 |
-| `unfold state generator` | `State -> Option<(T * State)>` で反復 |
+| `unfold generator state` | `State -> Option<(T * State)>` で反復 |
 | `next sequence` | sequence を消費し、次の Seq と `Option<T>` を返す |
-| `map sequence transform` | `T -> U` を遅延適用 |
-| `filter sequence predicate` | `ref T -> bool` に一致する要素を遅延選択 |
+| `map transform sequence` | `T -> U` を遅延適用 |
+| `filter predicate sequence` | `ref T -> bool` に一致する要素を遅延選択 |
 | `to_array sequence` | 列を消費して所有配列を作る |
 
-Seq の関数名を使います。map / filter は sequence が先です。unfold の State には Capture、map / filter が保持する入力要素にも Capture が必要です。
+Seq の関数名を使います。unfold / map / filter は callback が先で、初期状態や sequence が最後です。unfold の State には Capture、map / filter が保持する入力要素にも Capture が必要です。
 
 once は所有文字列や Task も保持できますが、それが一般の再利用可能な callback で捕捉可能になるわけではありません。未消費の要素は列の破棄時に解放します。
 

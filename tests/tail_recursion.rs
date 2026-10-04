@@ -18,7 +18,7 @@ fn function_ir(source: &str, name: &str) -> String {
 fn emits_integer_argument_arithmetic_after_operand_evaluation() {
     for update in ["n - 1", "Sub.sub n 1", "{ n - 1 }", "subtract n 1"] {
         let source = format!(
-            "def step :: i64 -> i64\nfn step x = x ^ (x >>> 13)
+            "def step :: i64 -> i64\nfn step x = x ^ (Bits.ushr x 13)
              def subtract :: i64 -> i64 -> i64\nfn subtract x y = {{ x - y }}
              def rec f :: i64 -> i64 -> i64
              fn rec f n state = match n with | 0 -> state | n -> f ({update}) (step state)"
@@ -70,7 +70,7 @@ fn preserves_trapping_operations_and_nontrivial_helpers() {
     ] {
         let source = format!(
             "{helper}
-             def step :: i64 -> i64\nfn step x = x ^ (x >>> 13)
+             def step :: i64 -> i64\nfn step x = x ^ (Bits.ushr x 13)
              def rec f :: i64 -> i64 -> i64
              fn rec f n state = if n == 0 then state else f ({operator}) (step state)"
         );
@@ -132,7 +132,7 @@ fn keeps_owned_temporaries_in_entry_and_drops_on_back_edges() {
 #[test]
 fn wasm_keeps_stack_machine_argument_scheduling() {
     let module = analyze(
-        "def step :: i64 -> i64\nfn step x = x ^ (x >>> 13)
+        "def step :: i64 -> i64\nfn step x = x ^ (Bits.ushr x 13)
              def rec f :: i64 -> i64 -> i64
              fn rec f n state = if n == 0 then state else f (n - 1) (step state)",
     )

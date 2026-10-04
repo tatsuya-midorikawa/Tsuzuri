@@ -370,7 +370,7 @@ fn enforces_layout_limits_per_concrete_instance() {
 #[test]
 fn classifies_applied_names_as_constraints_or_records() {
     let module = analyze_modules(&[
-        ("Main.tz", "def f :: Traits.Score<'a> => 'a -> i64\nfn f x = Traits.Score.score x\ndef main :: i64\nfn main = f (Shapes.Pair { first: 1, second: 2 })"),
+        ("Main.tz", "def f :: Traits.Score<'a> => 'a -> i64\nfn f x = Traits.Score.score x\ndef main :: i64\nfn main = f (Shapes.Pair { first: 1l, second: 2l })"),
         ("Traits.tt", "class Score<'a> { def score :: 'a -> i64 }"),
         (
             "Shapes.tz",
@@ -600,7 +600,7 @@ fn keeps_comparisons_and_shifts_as_expression_operators() {
     let output = ir("def f :: i64 -> bool
 fn f x =
     x<2 && x<=2 && x> -2 && x>= -2 &&
-    (x>>1)>=0 && (x>>>1)>=0 && (x<<1)>=0 && x as i64 < 3
+    (x>>>1)>=0 && (Bits.ushr x 1)>=0 && (x<<<1)>=0 && x as i64 < 3
 def main :: bool
 fn main = f 1");
     for instruction in ["ashr i64", "lshr i64", "shl i64", "icmp slt i64"] {

@@ -85,7 +85,12 @@ fn constant_id(expression: &TypedExpr) -> Option<usize> {
 }
 
 impl Checker<'_> {
-    pub(super) fn constant_borrows(
+    /// A shared borrow of a temporary argument, such as a constant or the
+    /// array in `Array.sum (Array.map double xs)`, borrows a value that lives
+    /// until the call returns. The call must apply all of its parameters at
+    /// once and return a value that holds no loan; otherwise the ownership
+    /// check asks for a `let`.
+    pub(super) fn temporary_borrows(
         &self,
         callee: &TypedExpr,
         arguments: &mut [TypedExpr],
@@ -97,7 +102,7 @@ impl Checker<'_> {
             .enumerate()
             .filter_map(|(index, argument)| {
                 if let TypedExprKind::Borrow(value, false) = &argument.kind
-                    && constant_id(value).is_some_and(|id| self.names.constants.contains(&id))
+                    && !is_place(value)
                 {
                     Some(index)
                 } else {
@@ -109,7 +114,8 @@ impl Checker<'_> {
             return Ok(());
         }
         let single_stage = match &callee.kind {
-            TypedExprKind::Function(FunctionRef::User(id)) => {
+            TypedExprKind::Function(FunctionRef::User(id))
+            | TypedExprKind::GenericFunction(id, _) => {
                 self.signatures[*id].signature.parameters.len() == arguments.len()
             }
             TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
@@ -117,7 +123,14 @@ impl Checker<'_> {
             }
             _ => arguments.len() == 1,
         };
-        if !single_stage || self.inference.resolve(result).carries_loans(&self.types) {
+        if !single_stage || !self.loan_free(result) {
+            let constant = borrowed.iter().any(|index| {
+                matches!(&arguments[*index].kind, TypedExprKind::Borrow(value, _)
+                    if constant_id(value).is_some_and(|id| self.names.constants.contains(&id)))
+            });
+            if !constant {
+                return Ok(());
+            }
             return Err(Diagnostic::new(
                 "E1013",
                 "a temporary const borrow cannot escape or cross application stages; bind the constant with let first",
@@ -132,6 +145,47 @@ impl Checker<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether a value of type `ty` surely holds no loan. A part that is still
+    /// open, other than a number literal's type, could become a reference.
+    fn loan_free(&self, ty: &Type) -> bool {
+        fn open(checker: &Checker<'_>, ty: &Type) -> bool {
+            match ty {
+                Type::Infer(_) => !checker.inference.is_numeric_literal(ty),
+                Type::Partial(_) | Type::Application(..) => true,
+                Type::Array(ty)
+                | Type::List(ty)
+                | Type::Vec(ty)
+                | Type::Task(ty)
+                | Type::Reference(ty, _) => open(checker, ty),
+                Type::Function(parameters, result) => {
+                    parameters.iter().any(|ty| open(checker, ty)) || open(checker, result)
+                }
+                Type::Tuple(types) => types.iter().any(|ty| open(checker, ty)),
+                Type::Record(_, types) | Type::Union(_, types) => {
+                    types.iter().any(|ty| open(checker, ty))
+                }
+                _ => false,
+            }
+        }
+        let ty = self.inference.resolve(ty);
+        !open(self, &ty) && !ty.carries_loans(&self.types)
+    }
+}
+
+/// Whether a borrow of `expression` names storage that outlives the call: a
+/// local, a dereference, or a part of one.
+fn is_place(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
+        TypedExprKind::Field(value, _)
+        | TypedExprKind::ListTail(value, _)
+        | TypedExprKind::UnionPayload { value, .. } => is_place(value),
+        TypedExprKind::Index(value, _) => {
+            matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) && is_place(value)
+        }
+        _ => false,
     }
 }
 
@@ -402,11 +456,29 @@ fn binary(
                     "const division trapped on zero or signed overflow; use a nonzero divisor without overflow",
                 ));
             }
+            if operator == Power && *is_signed && signed(*right, *bits) < 0 {
+                return Err(failure(
+                    span,
+                    "const power trapped on a negative exponent; use a nonnegative exponent",
+                ));
+            }
             let shift = (*right & u128::from(bits - 1)) as u32;
             let result = match operator {
                 Add => left.wrapping_add(*right),
                 Subtract => left.wrapping_sub(*right),
                 Multiply => left.wrapping_mul(*right),
+                Power => {
+                    // Products modulo 2^128 keep their low `bits` bits exact.
+                    let (mut base, mut exponent, mut product) = (*left, *right, 1u128);
+                    while exponent != 0 {
+                        if exponent & 1 == 1 {
+                            product = product.wrapping_mul(base);
+                        }
+                        exponent >>= 1;
+                        base = base.wrapping_mul(base);
+                    }
+                    product
+                }
                 Divide if *is_signed => (signed(*left, *bits) / signed(*right, *bits)) as u128,
                 Divide => left / right,
                 Remainder if *is_signed => (signed(*left, *bits) % signed(*right, *bits)) as u128,

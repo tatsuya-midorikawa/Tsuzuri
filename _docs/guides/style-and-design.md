@@ -36,7 +36,7 @@ current ref updated
 
 複数の状態には union、名前のある複数項目には record、一時的な複数結果には tuple を使います。型別名は別型ではないため、区別したい ID や単位には単一 case の union を選びます。
 
-値がない場合は Option、理由付きの失敗は Result を使います。ユーザー入力を get や assert で無条件に受け入れるのではなく、失敗値を処理します。トラップ後の回復や destructor を前提に設計しません。
+値がない場合は Option、理由付きの失敗は Result を使います。ユーザー入力を get や assert で無条件に受け入れるのではなく、失敗値を処理します。整数オーバーフローを失敗として扱う計算は `@checked` を付け、同じ関数の `try` で `Result` に変えます。トラップ後の回復や destructor を前提に設計しません。
 
 ## コレクションを選ぶ
 
@@ -49,7 +49,7 @@ current ref updated
 | 一回消費する遅延生成 | Seq |
 | コピーなしの部分読み取り | ref [T] のスライス |
 
-非 Copy 要素の処理は map_ref / fold_ref や iter を使います。API によって callback の引数順が違うため、F# の慣習だけで順序を推測しないでください。
+非 Copy 要素の処理は map_ref / fold_ref や iter を使います。標準の高階関数は F# と同じく callback が先、コレクションが後なので、`values |> Array.map f |> Array.sum` のようにパイプでつなげます。Option / Result の bind は F# と異なり計算値が先です。
 
 ## 抽象化とモジュール
 

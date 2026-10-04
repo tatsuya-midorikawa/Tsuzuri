@@ -469,13 +469,19 @@ impl FunctionEmitter<'_, '_> {
                 });
                 self.finish_list(&head, &length)
             }
-            Builtin::ArraySortBy => self.stable_array_sort(element, &parameters[1]),
+            Builtin::ArraySortBy => self.stable_array_sort(element, &parameters[0]),
             Builtin::ListMap
             | Builtin::ListMapRef
             | Builtin::ListReverse
             | Builtin::ListToArray
             | Builtin::ListFoldRef => {
-                let list = self.value("load %tz.list, ptr %arg0");
+                // Callbacks come first, as in `List.map f xs` and `List.fold_ref f state xs`.
+                let source = match instance.builtin {
+                    Builtin::ListMap | Builtin::ListMapRef => "%arg1",
+                    Builtin::ListFoldRef => "%arg2",
+                    _ => "%arg0",
+                };
+                let list = self.value(format!("load %tz.list, ptr {source}"));
                 let head = self.value(format!("extractvalue %tz.list {list}, 0"));
                 let length = self.value(format!("extractvalue %tz.list {list}, 1"));
                 if instance.builtin == Builtin::ListToArray {
@@ -506,8 +512,8 @@ impl FunctionEmitter<'_, '_> {
                         let previous =
                             emitter.value(format!("load {}, ptr {state}", emitter.ty(state_type)));
                         let (partial, rest) = emitter.apply_value(
-                            "%arg2",
-                            &parameters[2],
+                            "%arg0",
+                            &parameters[0],
                             Some((state_type, &previous)),
                             true,
                         );
@@ -520,7 +526,7 @@ impl FunctionEmitter<'_, '_> {
                             emitter.ty(state_type)
                         ));
                     });
-                    self.drop_value(&parameters[2], "%arg2");
+                    self.drop_value(&parameters[0], "%arg0");
                     return self.value(format!("load {}, ptr {state}", self.ty(state_type)));
                 }
                 let output_element =
@@ -535,12 +541,12 @@ impl FunctionEmitter<'_, '_> {
                     let value = if instance.builtin == Builtin::ListMapRef {
                         let borrowed = emitter.borrowed_element(element, &pointer);
                         let borrowed_type = Type::Reference(Box::new(element.clone()), false);
-                        emitter.apply_value("%arg1", &parameters[1], Some((&borrowed_type, &borrowed)), true).0
+                        emitter.apply_value("%arg0", &parameters[0], Some((&borrowed_type, &borrowed)), true).0
                     } else {
                         let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
                         let value = emitter.clone_value(element, &value);
                         if instance.builtin == Builtin::ListMap {
-                            emitter.apply_value("%arg1", &parameters[1], Some((element, &value)), true).0
+                            emitter.apply_value("%arg0", &parameters[0], Some((element, &value)), true).0
                         } else { value }
                     };
                     if instance.builtin == Builtin::ListReverse {
@@ -554,7 +560,7 @@ impl FunctionEmitter<'_, '_> {
                     } else { emitter.append_list(output_element, &tail, &value); }
                 });
                 if matches!(instance.builtin, Builtin::ListMap | Builtin::ListMapRef) {
-                    self.drop_value(&parameters[1], "%arg1");
+                    self.drop_value(&parameters[0], "%arg0");
                 }
                 self.finish_list(&output_head, &length)
             }
@@ -564,9 +570,9 @@ impl FunctionEmitter<'_, '_> {
 
     fn stable_array_sort(&mut self, element: &Type, comparator: &Type) -> String {
         let array_type = Type::Array(Box::new(element.clone()));
-        let copied = self.clone_value(&array_type, "%arg0");
+        let copied = self.clone_value(&array_type, "%arg1");
         let data = self.value(format!("extractvalue %tz.array {copied}, 0"));
-        let length = self.value("extractvalue %tz.array %arg0, 1");
+        let length = self.value("extractvalue %tz.array %arg1, 1");
         let (_, scratch) = self.allocate_array(element, &length);
         let pointer_type = Type::Reference(Box::new(Type::Unit), false);
         let source_slot = self.spill(&pointer_type, &data);
@@ -620,7 +626,7 @@ impl FunctionEmitter<'_, '_> {
         let right_borrow = self.borrowed_element(element, &right_pointer);
         let borrowed_type = Type::Reference(Box::new(element.clone()), false);
         let (partial, rest) = self.apply_value(
-            "%arg1",
+            "%arg0",
             comparator,
             Some((&borrowed_type, &left_borrow)),
             true,
@@ -702,7 +708,7 @@ impl FunctionEmitter<'_, '_> {
         let final_data = self.value(format!("load ptr, ptr {source_slot}"));
         let empty_data = self.value(format!("load ptr, ptr {target_slot}"));
         self.instruction(format!("call void @tz.free(ptr {empty_data})"));
-        self.drop_value(comparator, "%arg1");
+        self.drop_value(comparator, "%arg0");
         self.value(format!(
             "insertvalue %tz.array {copied}, ptr {final_data}, 0"
         ))

@@ -25,4 +25,4 @@ fn list_copy count =
     let values = new [|i64|](count, \index -> index * 2)
     let copied = List.copy (ref values)
     let sum = \state value -> state + value
-    List.fold (ref values) 0 sum + List.fold (ref copied) 0 sum + List.length (ref copied)
+    List.fold sum 0 (ref values) + List.fold sum 0 (ref copied) + List.length (ref copied)

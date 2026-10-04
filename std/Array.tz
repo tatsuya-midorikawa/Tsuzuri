@@ -45,26 +45,26 @@ fn zip left right =
     assert (left.length == right.length)
     new [('a * 'b)](left.length, index -> (left[index], right[index]))
 
-def map :: Copy<'a> => ref ['a] -> ('a -> 'b) -> ['b]
-fn map values transform = new ['b](values.length, index -> transform values[index])
+def map :: Copy<'a> => ('a -> 'b) -> ref ['a] -> ['b]
+fn map transform values = new ['b](values.length, index -> transform values[index])
 
-def mapi :: Copy<'a> => ref ['a] -> (i64 -> 'a -> 'b) -> ['b]
-fn mapi values transform = new ['b](values.length, index -> transform index values[index])
+def mapi :: Copy<'a> => (i64 -> 'a -> 'b) -> ref ['a] -> ['b]
+fn mapi transform values = new ['b](values.length, index -> transform index values[index])
 
-def map_ref :: ref ['a] -> (ref 'a -> 'b) -> ['b]
-fn map_ref values transform = new ['b](values.length, index -> transform (ref values[index]))
+def map_ref :: (ref 'a -> 'b) -> ref ['a] -> ['b]
+fn map_ref transform values = new ['b](values.length, index -> transform (ref values[index]))
 
-def mapi_ref :: ref ['a] -> (i64 -> ref 'a -> 'b) -> ['b]
-fn mapi_ref values transform = new ['b](values.length, index -> transform index (ref values[index]))
+def mapi_ref :: (i64 -> ref 'a -> 'b) -> ref ['a] -> ['b]
+fn mapi_ref transform values = new ['b](values.length, index -> transform index (ref values[index]))
 
-def fold :: Copy<'a> => ref ['a] -> 'state -> ('state -> 'a -> 'state) -> 'state
-fn fold values initial folder =
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref ['a] -> 'state
+fn fold folder initial values =
     let mut state = initial
     for value in values do state = folder state value
     state
 
-def fold_ref :: ref ['a] -> 'state -> ('state -> ref 'a -> 'state) -> 'state
-fn fold_ref values initial folder =
+def fold_ref :: ('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state
+fn fold_ref folder initial values =
     let mut state = initial
     let mut index = 0
     while index < values.length do
@@ -72,8 +72,8 @@ fn fold_ref values initial folder =
         index = index + 1
     state
 
-def fold_back :: Copy<'a> => ref ['a] -> 'state -> ('a -> 'state -> 'state) -> 'state
-fn fold_back values initial folder =
+def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state
+fn fold_back folder values initial =
     let mut state = initial
     let mut index = values.length
     while index > 0 do
@@ -81,8 +81,8 @@ fn fold_back values initial folder =
         state = folder values[index] state
     state
 
-def fold_back_ref :: ref ['a] -> 'state -> (ref 'a -> 'state -> 'state) -> 'state
-fn fold_back_ref values initial folder =
+def fold_back_ref :: (ref 'a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state
+fn fold_back_ref folder values initial =
     let mut state = initial
     let mut index = values.length
     while index > 0 do
@@ -90,8 +90,8 @@ fn fold_back_ref values initial folder =
         state = folder (ref values[index]) state
     state
 
-def reduce :: Copy<'a> => ref ['a] -> ('a -> 'a -> 'a) -> Option.Option<'a>
-fn reduce values folder =
+def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Option.Option<'a>
+fn reduce folder values =
     if values.length == 0 then Option.None else
         let mut state = values[0]
         let mut index = 1
@@ -186,20 +186,20 @@ fn max values =
             index = index + 1
         Option.Some (ref values[best])
 
-def any :: ref ['a] -> (ref 'a -> bool) -> bool
-fn any values predicate =
+def any :: (ref 'a -> bool) -> ref ['a] -> bool
+fn any predicate values =
     let mut index = 0
     while index < values.length && !(predicate (ref values[index])) do index = index + 1
     index < values.length
 
-def all :: ref ['a] -> (ref 'a -> bool) -> bool
-fn all values predicate =
+def all :: (ref 'a -> bool) -> ref ['a] -> bool
+fn all predicate values =
     let mut index = 0
     while index < values.length && predicate (ref values[index]) do index = index + 1
     index == values.length
 
-def count :: ref ['a] -> (ref 'a -> bool) -> i64
-fn count values predicate =
+def count :: (ref 'a -> bool) -> ref ['a] -> i64
+fn count predicate values =
     let mut found = 0
     let mut index = 0
     while index < values.length do
@@ -207,8 +207,8 @@ fn count values predicate =
         index = index + 1
     found
 
-def find :: ref ['a] -> (ref 'a -> bool) -> Option.Option<ref 'a>
-fn find values predicate =
+def find :: (ref 'a -> bool) -> ref ['a] -> Option.Option<ref 'a>
+fn find predicate values =
     let mut index = 0
     while index < values.length && !(predicate (ref values[index])) do index = index + 1
     if index < values.length then Option.Some (ref values[index]) else Option.None
@@ -241,10 +241,10 @@ fn binary_search values target =
     if lower < values.length && !(Ord.lt target (ref values[lower])) then Option.Some lower else Option.None
 
 def sort :: Ord<'a> => ref ['a] -> ['a]
-fn sort values = Array.sort_by values (left -> right -> if Ord.lt right left then 1i64 else 0i64)
+fn sort values = Array.sort_by (left -> right -> if Ord.lt right left then 1i64 else 0i64) values
 
-def filter :: Copy<'a> => ref ['a] -> (ref 'a -> bool) -> ['a]
-fn filter values predicate =
+def filter :: Copy<'a> => (ref 'a -> bool) -> ref ['a] -> ['a]
+fn filter predicate values =
     let mut selected = Vec.empty()
     let mut index = 0
     while index < values.length do

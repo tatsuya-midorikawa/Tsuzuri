@@ -48,7 +48,7 @@ fn rejects_kernel_effects_allocations_captures_and_recursion() {
 
 #[test]
 fn generates_deterministic_strict_integer_wgsl() {
-    let module = analyze("def square :: i32 -> i32\nfn square value = value * value\nexport def kernel :: i32 -> i32\nfn kernel value = { let mut current = value; current = current + 1; if value < 0 then square current else ((current >>> 3) as i32u) as i32 }").unwrap();
+    let module = analyze("def square :: i32 -> i32\nfn square value = value * value\nexport def kernel :: i32 -> i32\nfn kernel value = { let mut current = value; current = current + 1; if value < 0 then square current else ((Bits.ushr current 3) as i32u) as i32 }").unwrap();
     let kernel = gpu::extract_kernel(&module, kernel_id(&module)).unwrap();
     let wgsl = kernel.wgsl().unwrap();
     assert_eq!(wgsl, kernel.wgsl().unwrap());

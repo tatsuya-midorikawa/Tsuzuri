@@ -8,19 +8,19 @@ fn is_empty values = values.length == 0
 def copy :: Copy<'a> => ref [|'a|] -> [|'a|]
 fn copy values = *values
 
-def fold :: Copy<'a> => ref [|'a|] -> 'state -> ('state -> 'a -> 'state) -> 'state
-fn fold values initial folder =
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref [|'a|] -> 'state
+fn fold folder initial values =
     let mut state = initial
     for value in values do state = folder state value
     state
 
 def iter :: ref [|'a|] -> Seq.Seq<ref 'a>
 fn iter values =
-    let references = List.fold_ref values (Vec.empty()) (\state value -> Vec.push state value)
-    Seq.unfold (references, 0) (\state ->
+    let references = List.fold_ref (\state value -> Vec.push state value) (Vec.empty()) values
+    Seq.unfold (\state ->
         match state with
         | (references, index) ->
             if index < Vec.length (ref references) then
                 let value = references[index]
                 Option.Some (value, (references, index + 1))
-            else Option.None)
+            else Option.None) (references, 0)

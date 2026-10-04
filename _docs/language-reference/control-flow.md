@@ -72,8 +72,13 @@ total
 
 通常終了やジャンプで不要になる所有値は解放します。実行されない後続コードも型・所有権検査からは除外されません。外側の非 Copy 値を毎反復 move する場合は、次の反復までに再初期化できる必要があります。
 
+## 例外の捕捉
+
+`try 本体 with | パターン -> ハンドラー` は、`@checked` の算術などが送出した例外を捕捉して `Result` を返す式です。省略可能な `finally` は正常終了・捕捉・伝播のすべての経路で実行します。`finally` を持つ `try` の外へ出る `break` / `continue` は `E1023` です。詳しくは[例外処理](error-handling.md)を参照してください。
+
 ## 関連項目
 
 - [パターンマッチとガード](patterns.md)
+- [例外処理](error-handling.md)
 - [コンピュテーション式](computation-expressions.md)
 - [所有権と借用](ownership.md)

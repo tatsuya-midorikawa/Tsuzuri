@@ -55,7 +55,7 @@ fn simd_operations_use_vectors_masks_and_guarded_access() {
     analyze("let data = [1i64, 2]\nlet value: i64x2 = Simd.load (&data) 0\nSimd.extract value 1")
         .unwrap();
     analyze(
-        "let value: i32x4 = Simd.of_lanes4 1i32 2i32 3i32 4i32\nSimd.sum_lanes ((~value) << value)",
+        "let value: i32x4 = Simd.of_lanes4 1i32 2i32 3i32 4i32\nSimd.sum_lanes ((~value) <<< value)",
     )
     .unwrap();
     for source in [

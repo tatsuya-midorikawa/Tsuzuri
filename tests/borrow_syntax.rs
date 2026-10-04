@@ -292,7 +292,7 @@ fn keyword_ref_reborrows_statically_known_references() {
     );
     // A reborrow keeps one level: `ref rr` on `ref ref i64` is `&*rr`, still `ref ref i64`.
     rejects(
-        "let v = 5\nlet r = ref v\nlet rr = &r\nlet back: ref i64 = ref rr\n0",
+        "let v = 5l\nlet r = ref v\nlet rr = &r\nlet back: ref i64 = ref rr\n0",
         "E1003",
         "expected i64, found ref i64",
     );
@@ -312,9 +312,13 @@ fn keyword_ref_reborrows_statically_known_references() {
         "def size :: ref 'a -> i64\nfn size r = 8\ndef f :: 'a -> i64\nfn f x = size ref x\ndef g :: i64\nfn g = f 1",
     );
     rejects(
-        "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\nlet v = 1\nlet r = ref v\napply (p -> deref (ref p)) r",
+        "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\nlet v = 1\nlet r = ref v\nlet g = p -> deref (ref p)\napply g r",
         "E1015",
         "'ref' must know",
+    );
+    // A lambda argument is checked after the others, so `p` is known to be a reference here.
+    accepts(
+        "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\nlet v = 1\nlet r = ref v\napply (p -> deref (ref p)) r",
     );
     accepts(
         "def apply :: ('a -> 'b) -> 'a -> 'b\nfn apply f x = f x\nlet v = 1\napply (p -> deref (ref p)) v",

@@ -1,10 +1,12 @@
 # Modules
 
 - [Array](Array.md)
+- [BigInt](BigInt.md)
 - [Char](Char.md)
 - [Debug](Debug.md)
 - [Dir](Dir.md)
 - [Env](Env.md)
+- [Exception](Exception.md)
 - [File](File.md)
 - [Format](Format.md)
 - [Gpu](Gpu.md)

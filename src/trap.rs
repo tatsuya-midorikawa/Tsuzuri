@@ -18,10 +18,12 @@ pub enum TrapKind {
     Encoding,
     DebugOutput,
     StackOverflow,
+    /// A checked operation overflowed outside every `try` that could catch it.
+    Overflow,
 }
 
 impl TrapKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Assert,
         Self::IntegerDivisionByZero,
         Self::IntegerDivisionOverflow,
@@ -37,6 +39,7 @@ impl TrapKind {
         Self::Encoding,
         Self::DebugOutput,
         Self::StackOverflow,
+        Self::Overflow,
     ];
 
     pub fn description(self) -> &'static str {
@@ -56,6 +59,9 @@ impl TrapKind {
             Self::Encoding => "invalid Unicode encoding",
             Self::DebugOutput => "debug output failed",
             Self::StackOverflow => "stack overflow",
+            Self::Overflow => {
+                "unhandled OverflowException: arithmetic operation resulted in an overflow"
+            }
         }
     }
 }

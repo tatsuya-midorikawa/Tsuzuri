@@ -40,7 +40,9 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、モジュール関数制約の解決、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉、lambda lifting、公開ABIの完全適用ラッパー |
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
-| `src/constants.rs` | 定数の依存順評価、型別演算と資源上限、既存リテラルへの展開、一時借用引数 |
+| `src/constants.rs` | 定数の依存順評価、型別演算と資源上限、既存リテラルへの展開、定数・一時値の借用引数（`temporary_borrows`） |
+| `src/exceptions.rs` / `src/llvm_exception.rs` / `std/Exception.tz` | `try ... with ... finally`・`@checked`・単項 `+` の型検査（check の子モジュール）と lowering、`**` の lowering、std の `Exception`／`ExceptionKind` と `Err` の instance |
+| `std/BigInt.tz` | `bigint`。符号と、下位から並べた 10^9 進の桁（`[i64]`）による std ソースだけの多倍長整数。コンパイラは型名 `bigint` を `BigInt.BigInt` に、`I` 接尾辞のリテラルを桁の配列を渡す `BigInt.make` の呼び出しに写すだけ |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
@@ -277,6 +279,9 @@ LLVM の定義は具体化ごとに一度だけ `@tz.builtin.name` に型引数�
 関数 ID を保持します。両者の併用は拒否し、他モジュールや `Main.tc` の `main` は入口に選びません。
 トップレベルの `let` は通常のローカル束縛へ下げ、モジュールの共有状態は導入しません。
 ライブラリ出力にはコンソール・ラッパーやトップレベルコードの自動実行を追加しません。
+トップレベルコードの値は、数値・`bool`・文字・文字列ならそのまま、ほかの型は `Display` の instance があれば `to_string` で表示し、なければ捨てます（`entry_result`）。
+IO の `let!`／`do!` の後を通常の式で終えたトップレベルコード（`$implicit.root.$entry`）と、ビルダーを持たない既知の結果型（`def main :: i32` など）の本体は、
+IO の bind を std の非公開 `IO.run` で順に直接実行します（direct style。直接実行できるビルダーは IO だけです）。
 
 **標準入出力:** std/IO.tcはopaqueな`IO.IO<'a>`に通常の`unit -> 'a` closureを保持します。pure/bind/map/Delay/Combine/For/While/MergeSourcesは通常ソースであり、別のタスク・GC・effect interpreterは導入しません。
 IO.__read_line/__writeはstd由来のIOモジュールだけが参照できるbuiltinです。低水準readは`(i32 * [ubyte])`、writeはstatusを返し、Option/ResultとUTF変換はstdが処理します。
@@ -309,7 +314,7 @@ native の `src/runtime/os.c` は、IR が `declare i64 @tsuzuri_os_` を含む�
 特殊化・所有権検査の前に依存を明示スタックで辿り、評価結果をキャッシュして参照を型付きリテラルへ展開します。
 通常の型検査は両分岐を検査し、評価器だけが短絡します。APFloatでbinaryの幅ごとに計算し、decimal演算は拒否します。
 内部宣言は非公開にして出力のrootから外します。独立した定数ランタイムや共有所有領域は作らず、既存のstring global・aggregate生成・frame/relocate/dropを共有します。
-定数の一時借用引数は `BorrowOperand` で生成・呼び出し後解放し、型検査で単一段階の完全適用とloanを運ばない結果を要求します。
+定数と一時値（呼び出し・パイプの結果）を共有借用の引数へ渡すときは、`constants::temporary_borrows` が `BorrowOperand` にして生成・呼び出し後解放し、型検査で単一段階の完全適用とloanを運ばない結果を要求します。
 検証は `cargo test --locked --test constants` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri constants` です。
 
 **デバッグ情報:** `llvm::emit_with_debug_info` は既存の `TrapSource` source mapを明示的に受け、通常APIはデバッグ情報を生成しません。
@@ -836,8 +841,10 @@ move はこの経路から除外します。Copy 捕捉値を値として取り�
 スタック環境を free してはいけません。関数記述子の4ポインター表現と公開 ABI は変更しません。
 通常の型エラー・move エラーを最適化で消して受理することはなく、数値・範囲・確保サイズの検査も維持します。
 
-**数値:** 各整数幅・符号、各浮動小数点形式は別の型です。byte／ubyte だけは i8／i8u の別名です。
+**数値:** 各整数幅・符号、各浮動小数点形式は別の型です。`byte`／`ubyte` は `i8u`、`sbyte` は `i8` の別名です。
 リテラルは型の文脈または接尾辞で決定し、変数を暗黙変換しません。
+接尾辞のない整数リテラルは `GenericInteger` の推論変数で、関数末尾まで決まらなければ `i32`、浮動小数点リテラルは `f64` です。
+浮動小数点・decimal・`bigint` を期待する位置の整数リテラルはその型のリテラルとして読みます。
 binary リテラルを f64 に落としてから f128 に拡大するような二重丸めは禁止です。
 decimal は BID の有限値／非正規化数／符号付きゼロ／無限大／NaN を保持します。
 ソフトウェア演算は基数 2 または 10 の整数係数と指数を復号し、多倍長整数で計算して、
@@ -1016,6 +1023,11 @@ clone／drop／索引は反復で処理します。drop ではノードを解放
 
 **LLVM:** 整数の算術に `nsw`／`nuw` を付けません。除算／剰余はゼロと符号付き MIN/-1 を検査し、
 シフト数を幅ごとにマスクし、浮動小数点→整数には飽和変換を使います。
+`@checked` の中の整数の `+`・`-`・`*`・`**`・単項 `-` だけは `Int.checked_*` と同じ `checked_integer_arithmetic` で検査し、
+overflow で `OverflowException` を送出します。整数の `**` は `Int.wrapping_pow` と同じ二乗と乗算の反復（符号付きの負の指数は `NumericRuntime` のトラップ）、
+`f32`／`f64` の `**` は `Math.pow` と同じ `tz_math_pow_f*` です。
+例外は `i32` の code で、同じ関数本体の最も内側の `try` の handler へ、途中のスコープと一時値を解放して分岐します（`try_targets`）。
+関数・ラムダの境界は越えず、囲む `try` がなければ `TrapKind::Overflow` でトラップします。`finally` は handler から出る例外も含む全経路で一度実行します。
 i8〜i64／i8u〜i64u から f32／f64 へは `sitofp`／`uitofp` を使い、
 逆方向は `llvm.fptosi.sat`／`llvm.fptoui.sat` にして poison や範囲外の未定義動作を避けます。
 f32／f64 間は `fpext`／`fptrunc`。i128、f16／f128、decimal を含む変換は正確な
@@ -1268,6 +1280,7 @@ overflow、評価順序を両ターゲットで確認します。
 ## 初版の次に必要な設計
 
 共有可変キャプチャ、外部パッケージ、効果の型付けは未実装です。
+例外は関数本体の中の字句的な脱出だけで、関数・ラムダの境界を越える伝播と巻き戻しは未対応です。
 借用record・単一regionの名前付き契約・再帰的なヒープ型・利用者定義のDropは実装済みですが、独立した複数regionのfield別追跡、
 トラップ時の巻き戻しと解放、一般的なホストをまたぐ所有権は未対応です。
 これらを追加するときも、寿命・ホスト境界・失敗モデルを型検査と一緒に設計する必要があります。

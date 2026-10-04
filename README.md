@@ -31,8 +31,9 @@ renameとquick fixは編集後のプロジェクトを再解析し、意味が�
 `Debug.print value` は借用して表示し、`Debug.trace value` は表示して同じ所有値を返します。native は stderr、WASM は既定で no-op です。
 WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
 
-標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。
+標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。`IO.writeln` は `IO.write_line` の別名です。
 ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Option／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
+結果型がビルダーを持たない本体（`def main :: i32` など）と `try` の中では、IO の `let!`／`do!` をその場で実行します。`do! a |> f` は `a` の結果を `f` へ渡します。
 `IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
 
 ファイル・ディレクトリ・環境変数・コマンドライン引数・時刻・乱数・子プロセスは、std の `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Process`／`Os` で扱います（macOS／Linux）。
@@ -65,7 +66,10 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 `Task.parallel` による明示的な CPU 並列処理も使えます。
 GPUは実験的なstrict整数WGSL生成・WebGPUホスト試作と明示CPU参照に対応します。通常runtimeへの実GPU接続と自動offloadは未実装です。
 整数の checked／saturating 演算、popcount、rotate などは `Int` モジュールで利用できます。
+`@checked x + y` はオーバーフローで `OverflowException` を送出し、`try ... with ... finally` がそれを `Result` の値として受け取ります。例外は同じ関数本体の最も内側の `try` へ字句的に移り、関数呼び出しやラムダを越えず、捕捉されなければトラップします（[例外処理](_docs/language-reference/error-handling.md)）。
+任意精度の整数 `bigint` は `123I` のリテラルと `+`・`-`・`*`・`/`・`%`・`**`・比較・Display／Parse に対応します（[BigInt](_docs/library-reference/bigint.md)）。
 伸縮可能な所有バッファ `Vec<T>` と配列・リストの標準 API を利用できます。
+高階関数は F# と同じく関数を先に受け取り（`Array.map f xs`、`Array.fold f state xs`、`Map.fold f state map`、`Seq.unfold generator state`）、`values |> Array.map double |> Array.sum` のように途中の一時値を借用してつなげられます。
 順序付きの不透明型 `Map<K, V>`／`Set<K>` も使えます。`Map.insert (Map.empty()) 1 "value"` は所有値を消費して更新し、`Map.at (&map) 1` で値を借用します。
 検索はO(log n)、挿入・削除はO(n)です。`Set.union`／`intersect`／`difference`と借用foldに対応し、キー順に列挙します。
 ハッシュ表の `HashMap<K, V>`／`HashSet<K>` は、検索・挿入・削除が平均 O(1) です。`HashMap.insert (HashMap.empty()) 1 "value"` は所有値を消費して更新し、`HashMap.at (&map) 1` で値を借用します。
@@ -102,15 +106,15 @@ def main :: i64 = answer()
 | 項目 | 初版の実装 |
 |---|---|
 | 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。標準入出力と OS API は IO、外部機能は extern。共有可変状態はなし |
-| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
-| 書きやすさ | `def ... = ラムダ式`、カリー化・部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`|>`、高階関数、明示的な `rec`／`and` |
+| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`（`i8u`）／`sbyte`（`i8`）、任意精度の `bigint`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
+| 書きやすさ | `def ... = ラムダ式`、カリー化・部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`\|>`、関数合成 `>>`／`<<`、`not`／`ignore`、累乗 `**`、F# と同じビット演算 `&&&`／`\|\|\|`／`^^^`／`~~~`／`<<<`／`>>>` と数値リテラルの短い接尾辞、関数を先に受け取る高階関数、明示的な `rec`／`and` |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。明示ブロックと型で解決する暗黙本体。束縛・短絡・分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
 | モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
 | メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放し、record・union の `instance Drop` でメモリ以外の資源も一度だけ解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
-| 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様 |
+| 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様。`@checked` の整数オーバーフローは `try` で `Result` に変換 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。extern のリンク名・不透明ハンドル・静的コールバック、native のホストリンク指定。標準入出力と OS API（ファイル・環境・時刻・乱数・子プロセス）は IO、UI・ネットワークはホストの責務 |
 | AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
 
@@ -197,6 +201,10 @@ def distance_of :: 'T -> 'U
 例えば `'T` が `Point.Point` なら `'T.distance` は `Point.distance` を選び、返却型も照合・推論します。
 通常の関数値・部分適用に対応し、`private` を迂回しません。
 詳しくは [モジュール関数の制約](docs/language.md#モジュール関数の制約) を参照してください。
+
+`f >> g` は `\x -> g (f x)`、`f << g` は `\x -> f (g x)` の関数合成です。以前のシフト `<<`／`>>` は `<<<`／`>>>` になり、`>>>` は符号付きなら算術、符号なしなら論理シフトです。
+ビット演算は F# と同じ `&&&`／`|||`／`^^^`／`~~~`（旧 `&`／`|`／`^`／`~` も可）、累乗は右結合で `*` より強く結合する `**` です。`not` と `ignore` は修飾なしの組み込み関数です。
+`|>`・`>>`・`<<`・`||`・`&&` で始まる行は前の式の続きです。詳しくは [演算子](_docs/language-reference/expressions-and-operators.md) を参照してください。
 
 すべての関数はカリー化され、`add 20 22` と `(add 20) 22` は同じ適用です。
 型クラスによるメソッド選択はコンパイル時に完了し、辞書や型クラスの
@@ -373,7 +381,7 @@ match answer with
 未知・逃げる継続は従来の所有する関数値を使います。
 性能の条件と手書き Tsuzuri／C++ との実測は [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。
 `match!`と`and!`、ビルダーが提供する`MergeSources`／`BindReturn`／`Bind2`に対応します。and!の右辺は左から右に一度ずつ評価し、自動並列化しません。
-F#の全機能互換ではなく、例外処理・カスタム演算は未対応です。try構文はE1018で拒否し、所有値のlet/dropとOption/Resultを使います。`use`／`use!`はDropを持つ値の束縛で、letと同じscopeの終わりに解放します。
+F#の全機能互換ではなく、カスタム演算は未対応です。`try ... with ... finally` はビルダーの中でもビルダーの操作に展開せず、`Result` を返す通常の式です（[例外処理](_docs/language-reference/error-handling.md)）。`use`／`use!`はDropを持つ値の束縛で、letと同じscopeの終わりに解放します。
 実行例は `tsuzuri run examples/computations`、
 詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) を参照してください。
 
@@ -566,9 +574,10 @@ UTF-8 bytesを出力しコードページを変更しません。対話コンソ
 ./target/hello
 ```
 
-`Main.tz` のトップレベルの結果、または引数なしの `main` の返却型は
-数値型／`bool`／`unit`／`string`／`utf8string` です。ネイティブ用ホスト・ラッパーが
+`Main.tz` のトップレベルの結果、または引数なしの `main` の返却型が
+数値型／`bool`／`unit`／`string`／`utf8string` なら、ネイティブ用ホスト・ラッパーが
 結果を表示し、成功時は終了コード 0 を返します。`unit` は何も表示しません。
+トップレベルの結果はそれ以外の型でも `Display` を持てばその表示を出力し、持たなければ表示せずに捨てます（以前は `E2004`）。`main` は従来どおり表示できる型か IO を返します。
 言語内に出力の副作用を持ち込む仕組みではありません。
 数値は `to_string`／`Display.display` と同じ形式です。二進浮動小数点は最短の往復可能な十進表現
 （`0.1` は `0.1`）、負のゼロは `-0` と表示し、native／WASM で共通の実装を使います。
@@ -628,15 +637,16 @@ Rust との互換のため `&x`／`&mut x`／`*r`／`&mut *r`／`&*r` と `&T`�
 
 数値・bool・unit・関数値・共有参照は Copy です。関数値のコピーは捕捉環境の複製を伴う場合があります。
 レコードと配列も全要素が Copy なら Copy、それ以外は move します。
-`byte` は `i8`、`ubyte` は `i8u` の別名です。旧 `Int`／`Float`／`Bool`／`Unit` は廃止しました。
-型注釈や `1i32`／`0.1d128` のような接尾辞で型を選べます。
+`byte`／`ubyte` は `i8u`、`sbyte` は `i8` の別名です（`byte` は以前 `i8`）。旧 `Int`／`Float`／`Bool`／`Unit` は廃止しました。
+型注釈、`1i32`／`0.1d128` のような接尾辞、F# と同じ形の短い接尾辞（`1y`／`1uy`／`1s`／`1us`／`1u`／`1l`／`1ul`／`1L`／`1UL`、`1.5hf`／`1.5f`／`1.5F`、`0.1hm`／`0.1m`／`0.1M`、bigint の `1I`）で型を選べます。`l` は i64、`L` は i128 です。
+`'a'B` は `byte`、`"text"B` は `[byte]` です。接尾辞のない整数リテラルは使われ方から型を決め、決まらなければ `i32`（以前は `i64`）、小数は `f64` です。
 所有者より長生きする参照、借用中の move、共有借用と排他借用の競合をコンパイル時に拒否します。
 record・union に `instance Drop<T> { fn drop value = ... }` を書くと、値が終わる時点（scope の終わり、代入での置き換えなど）で
 `drop` を一度だけ呼びます。ファイルやホストのハンドルを閉じる RAII に使えます。
 `use` 束縛はその値が `Drop` を持つことを検査し、`Owned.drop` はその場で解放します。
 資源を捕捉する関数値は `Owned.function` で作り、`Owned.call` で借用したまま呼びます（複製できない関数値）。
-Rust の全機能を実装するものではなく、名前付きライフタイム、借用を含むレコード、
-一時値からの直接の借用にはまだ対応していません。詳しくは [言語仕様](docs/language.md) を参照してください。
+Rust の全機能を実装するものではなく、排他借用フィールドや region 間の outlives 制約にはまだ対応していません。
+一時値は、結果が借用を保持しない呼び出しの間だけ共有借用として渡せます（`Array.sum (Array.map f (ref xs))`）。詳しくは [言語仕様](docs/language.md) を参照してください。
 
 ## ネイティブ・ホスト／デスクトップ
 

@@ -30,19 +30,19 @@ def defer :: (unit -> (Seq<'a> * Option.Option<'a>)) -> Seq<'a>
 ## `unfold`
 
 ```tsuzuri
-def rec unfold :: Capture<'state> => 'state -> ('state -> Option.Option<('a * 'state)>) -> Seq<'a>
+def rec unfold :: Capture<'state> => ('state -> Option.Option<('a * 'state)>) -> 'state -> Seq<'a>
 ```
 
 ## `map`
 
 ```tsuzuri
-def rec map :: Capture<'a> => Seq<'a> -> ('a -> 'b) -> Seq<'b>
+def rec map :: Capture<'a> => ('a -> 'b) -> Seq<'a> -> Seq<'b>
 ```
 
 ## `filter`
 
 ```tsuzuri
-def rec filter :: Capture<'a> => Seq<'a> -> (ref 'a -> bool) -> Seq<'a>
+def rec filter :: Capture<'a> => (ref 'a -> bool) -> Seq<'a> -> Seq<'a>
 ```
 
 ## `to_array`

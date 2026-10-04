@@ -251,6 +251,8 @@ mod bulk;
 mod compare;
 #[path = "llvm_display.rs"]
 mod display;
+#[path = "llvm_exception.rs"]
+mod exception;
 #[path = "llvm_hash.rs"]
 mod hash;
 #[path = "llvm_abi.rs"]
@@ -1889,6 +1891,15 @@ struct LoopTargets {
     temporary_base: usize,
 }
 
+/// Where a raised exception goes: the slot that receives its code, the block
+/// that handles it, and the scopes and temporaries it leaves.
+struct TryTarget {
+    handler: String,
+    slot: String,
+    scope_base: usize,
+    temporary_base: usize,
+}
+
 struct FunctionEmitter<'a, 'b> {
     module: &'a CheckedModule,
     function: &'a CheckedFunction,
@@ -1916,6 +1927,9 @@ struct FunctionEmitter<'a, 'b> {
     back_edges: Vec<(String, Vec<String>)>,
     scopes: Vec<Vec<(String, Type)>>,
     loop_targets: Vec<LoopTargets>,
+    try_targets: Vec<TryTarget>,
+    /// The code slots of the exceptions that enclosing handlers are handling.
+    caught: Vec<String>,
     temporaries: Vec<(Type, String, Vec<Frame>)>,
     /// Stack parts that each slot and local (including match aliases) may hold.
     frame_slots: BTreeMap<String, Vec<Frame>>,
@@ -1986,6 +2000,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             back_edges: Vec::new(),
             scopes: vec![Vec::new()],
             loop_targets: Vec::new(),
+            try_targets: Vec::new(),
+            caught: Vec::new(),
             temporaries: Vec::new(),
             frame_slots: BTreeMap::new(),
             frame_locals: BTreeMap::new(),
@@ -2519,7 +2535,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn remember_temporary(&mut self, ty: &Type, value: &str, frames: &[Frame]) {
-        if !self.loop_targets.is_empty() && ty.needs_drop(&self.module.types()) {
+        if (!self.loop_targets.is_empty() || !self.try_targets.is_empty())
+            && ty.needs_drop(&self.module.types())
+        {
             self.temporaries
                 .push((ty.clone(), value.to_owned(), frames.to_vec()));
         }
@@ -2711,7 +2729,22 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     UnaryOp::Negate => format!("sub {ty} 0, {value}"),
                     UnaryOp::Not => format!("xor i1 {value}, 1"),
                     UnaryOp::BitNot => format!("xor {ty} {value}, -1"),
+                    UnaryOp::Plus => unreachable!("unary plus is checked to its operand"),
                 })
+            }
+            TypedExprKind::Checked(value) => self.checked(value),
+            TypedExprKind::Try(handled) => self.try_expression(handled, &expression.ty),
+            TypedExprKind::RaisedException => {
+                let slot = self.caught.last().expect("handlers read their exception");
+                let slot = slot.clone();
+                self.value(format!("load i32, ptr {slot}"))
+            }
+            TypedExprKind::Reraise => {
+                let slot = self.caught.last().expect("re-raises are in handlers");
+                let slot = slot.clone();
+                let code = self.value(format!("load i32, ptr {slot}"));
+                self.raise(&code);
+                "poison".into()
             }
             TypedExprKind::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
                 let TypedExprKind::Binary(operator, _, _) = expression.kind else {
@@ -2722,6 +2755,23 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) => {
                 if matches!(callee.kind, TypedExprKind::Function(_)) {
                     return self.call(callee, std::slice::from_ref(argument.as_ref()));
+                }
+                if let TypedExprKind::BorrowOperand(operand) = &argument.kind {
+                    // `temp |> f` borrows the temporary until `f` returns.
+                    let mut cleanup = Vec::new();
+                    let value = self.operand_borrow(argument, operand, &mut cleanup);
+                    let borrowed = Self::is_place(callee);
+                    let function = self.expression_mode(callee, !borrowed);
+                    let result = self
+                        .apply_value(
+                            &function,
+                            &callee.ty,
+                            Some((&argument.ty, &value)),
+                            borrowed,
+                        )
+                        .0;
+                    self.release_operands(cleanup);
+                    return result;
                 }
                 let value = self.expression(argument);
                 if let Some(call) = self.prepare_known_call(callee, 1) {
@@ -4398,6 +4448,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if let Type::Simd(vector) = left.ty {
             return self.simd_binary(operator, vector, &lhs, &rhs);
         }
+        if operator == Power {
+            return self.power(&left.ty, &lhs, &rhs, false);
+        }
         let ty = self.ty(&left.ty);
         if matches!(left.ty, Type::Decimal(_) | Type::Binary(16 | 128)) {
             let a = self.spill(&left.ty, &lhs);
@@ -4691,6 +4744,8 @@ fn emit_builtin(
         | Builtin::DisplayQuoted
         | Builtin::SeqNext
         | Builtin::OwnedDrop
+        | Builtin::Ignore
+        | Builtin::Not
         | Builtin::OwnedFunction
         | Builtin::OwnedCall
         | Builtin::IOReadLine
@@ -4860,9 +4915,11 @@ fn emit_typed_builtin(
         emitter.simd_builtin(instance)
     } else if instance.builtin == Builtin::SeqNext {
         emitter.sequence_next(ty)
-    } else if instance.builtin == Builtin::OwnedDrop {
+    } else if matches!(instance.builtin, Builtin::OwnedDrop | Builtin::Ignore) {
         emitter.drop_value(element, "%arg0");
         "0".to_owned()
+    } else if instance.builtin == Builtin::Not {
+        emitter.value("xor i1 %arg0, 1")
     } else if instance.builtin == Builtin::OwnedFunction {
         let owned = emitter.ty(&ty.after_arguments(1));
         emitter.value(format!(
@@ -5865,11 +5922,11 @@ mod tests {
 
     #[test]
     fn emits_portable_bool_abi_and_c_header() {
-        let module = analyze("export fn not(x: bool) -> bool { !x }").unwrap();
+        let module = analyze("export fn invert(x: bool) -> bool { !x }").unwrap();
         let ir = emit(&module, Entry::Library).unwrap();
-        assert!(ir.contains("define i32 @tz_not(i32 %arg0)"));
+        assert!(ir.contains("define i32 @tz_invert(i32 %arg0)"));
         assert!(ir.contains("icmp ne i32 %arg0, 0"));
-        assert!(header(&module).contains("int32_t tz_not(int32_t arg0);"));
+        assert!(header(&module).contains("int32_t tz_invert(int32_t arg0);"));
         assert!(emit(&module, Entry::Console).is_err());
     }
 
@@ -5984,7 +6041,7 @@ mod tests {
             "export def unsigned :: i32 -> i32u\nfn unsigned x = Int.test_unsigned x\n\
              export def widen :: i32 -> i64\nfn widen x = Int.test_widen x\n\
              def widen_unsigned :: i64u -> i128u\nfn widen_unsigned x = x |> Int.test_widen\n\
-             let defaulted: i128 = Int.test_widen 1\n0",
+             let defaulted: i64 = Int.test_widen 1\nlet long: i128 = Int.test_widen 1l\n0",
         );
         for definition in [
             "define internal i32 @tz.builtin.Int.test_unsigned.i32(i32 %x) nounwind",
@@ -6002,7 +6059,7 @@ mod tests {
                 "E1003",
                 "",
             ),
-            ("let x: i64 = Int.test_widen 1\n0", "E1003", ""),
+            ("let x: i128 = Int.test_widen 1\n0", "E1003", ""),
             (
                 "def f :: i128 -> i128\nfn f x = Int.test_widen x",
                 "E1005",

@@ -71,55 +71,55 @@ def zip :: ref ['a] -> ref ['b] -> [('a * 'b)]
 ## `map`
 
 ```tsuzuri
-def map :: Copy<'a> => ref ['a] -> ('a -> 'b) -> ['b]
+def map :: Copy<'a> => ('a -> 'b) -> ref ['a] -> ['b]
 ```
 
 ## `mapi`
 
 ```tsuzuri
-def mapi :: Copy<'a> => ref ['a] -> (i64 -> 'a -> 'b) -> ['b]
+def mapi :: Copy<'a> => (i64 -> 'a -> 'b) -> ref ['a] -> ['b]
 ```
 
 ## `map_ref`
 
 ```tsuzuri
-def map_ref :: ref ['a] -> (ref 'a -> 'b) -> ['b]
+def map_ref :: (ref 'a -> 'b) -> ref ['a] -> ['b]
 ```
 
 ## `mapi_ref`
 
 ```tsuzuri
-def mapi_ref :: ref ['a] -> (i64 -> ref 'a -> 'b) -> ['b]
+def mapi_ref :: (i64 -> ref 'a -> 'b) -> ref ['a] -> ['b]
 ```
 
 ## `fold`
 
 ```tsuzuri
-def fold :: Copy<'a> => ref ['a] -> 'state -> ('state -> 'a -> 'state) -> 'state
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref ['a] -> 'state
 ```
 
 ## `fold_ref`
 
 ```tsuzuri
-def fold_ref :: ref ['a] -> 'state -> ('state -> ref 'a -> 'state) -> 'state
+def fold_ref :: ('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state
 ```
 
 ## `fold_back`
 
 ```tsuzuri
-def fold_back :: Copy<'a> => ref ['a] -> 'state -> ('a -> 'state -> 'state) -> 'state
+def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state
 ```
 
 ## `fold_back_ref`
 
 ```tsuzuri
-def fold_back_ref :: ref ['a] -> 'state -> (ref 'a -> 'state -> 'state) -> 'state
+def fold_back_ref :: (ref 'a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state
 ```
 
 ## `reduce`
 
 ```tsuzuri
-def reduce :: Copy<'a> => ref ['a] -> ('a -> 'a -> 'a) -> Option.Option<'a>
+def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Option.Option<'a>
 ```
 
 ## `sum`
@@ -185,25 +185,25 @@ def max :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
 ## `any`
 
 ```tsuzuri
-def any :: ref ['a] -> (ref 'a -> bool) -> bool
+def any :: (ref 'a -> bool) -> ref ['a] -> bool
 ```
 
 ## `all`
 
 ```tsuzuri
-def all :: ref ['a] -> (ref 'a -> bool) -> bool
+def all :: (ref 'a -> bool) -> ref ['a] -> bool
 ```
 
 ## `count`
 
 ```tsuzuri
-def count :: ref ['a] -> (ref 'a -> bool) -> i64
+def count :: (ref 'a -> bool) -> ref ['a] -> i64
 ```
 
 ## `find`
 
 ```tsuzuri
-def find :: ref ['a] -> (ref 'a -> bool) -> Option.Option<ref 'a>
+def find :: (ref 'a -> bool) -> ref ['a] -> Option.Option<ref 'a>
 ```
 
 ## `index_of`
@@ -239,6 +239,6 @@ def sort :: Ord<'a> => ref ['a] -> ['a]
 ## `filter`
 
 ```tsuzuri
-def filter :: Copy<'a> => ref ['a] -> (ref 'a -> bool) -> ['a]
+def filter :: Copy<'a> => (ref 'a -> bool) -> ref ['a] -> ['a]
 ```
 

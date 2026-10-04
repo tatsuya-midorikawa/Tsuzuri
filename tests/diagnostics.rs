@@ -172,7 +172,7 @@ fn recovery_does_not_report_cascades() {
 
 #[test]
 fn recovery_restores_scopes_after_a_failed_construct() {
-    let source = "fn f() -> i64 { let r = match (1, 2) with | (y, true) -> y | _ -> 0; y }";
+    let source = "fn f() -> i64 { let r = match (1l, 2l) with | (y, true) -> y | _ -> 0; y }";
     assert_eq!(codes(source), ["E1003", "E1002"]);
     let set = errors(source);
     assert_eq!(set.diagnostics[1].message, "unknown value 'y'");
