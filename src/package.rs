@@ -85,18 +85,18 @@ pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
         .collect())
 }
 
-/// Whether `text` can be a package's default namespace: dotted identifiers,
-/// at most 16 segments and 255 bytes, whose first segment is not a standard
-/// library module name.
+/// Whether `text` can be a package's default namespace: identifiers joined by
+/// `::`, at most 16 segments and 255 bytes, whose first segment is not a
+/// standard library module name.
 pub fn valid_namespace(text: &str) -> bool {
     use crate::syntax::{Token, TokenKind};
     text.len() <= 255
-        && text.split('.').count() <= 16
+        && text.split("::").count() <= 16
         && text
-            .split('.')
+            .split("::")
             .next()
             .is_some_and(|first| !crate::stdlib::is_reserved_module(first))
-        && text.split('.').all(|segment| {
+        && text.split("::").all(|segment| {
             segment != "_" && segment != "Task" && crate::lexer::lex(segment).is_ok_and(|tokens| {
                 matches!(
                     tokens.as_slice(),
@@ -125,7 +125,7 @@ pub fn create_project(
         Some(namespace) if valid_namespace(namespace) => namespace.to_owned(),
         Some(namespace) => {
             return Err(error(format!(
-                "invalid namespace '{namespace}'; use dotted identifiers such as Acme.Tools, at most 16 segments and 255 bytes, that do not start with a standard library module name"
+                "invalid namespace '{namespace}'; use identifiers joined by '::' such as Acme::Tools, at most 16 segments and 255 bytes, that do not start with a standard library module name"
             )));
         }
         None => self::namespace(&name, Span::default())
@@ -410,11 +410,12 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         Some((namespace, span)) if !valid_namespace(&namespace) => {
             return Err(Diagnostic::new(
                 "E1011",
-                "package namespace must be dotted identifiers such as \"Acme.Tools\", at most 16 segments and 255 bytes, that do not start with a standard library module name",
+                "package namespace must be identifiers joined by '::' such as \"Acme::Tools\", at most 16 segments and 255 bytes, that do not start with a standard library module name",
                 span,
             ));
         }
-        Some((namespace, _)) => namespace,
+        // Namespaces are dotted inside the compiler, as module keys are.
+        Some((namespace, _)) => namespace.replace("::", "."),
         None => derived,
     };
     Ok(Manifest {
@@ -751,15 +752,17 @@ mod tests {
     #[test]
     fn parses_an_explicit_namespace() {
         let manifest =
-            parse_manifest(&format!("{PACKAGE}namespace = \"Acme.Tools\"\n"), 0).unwrap();
+            parse_manifest(&format!("{PACKAGE}namespace = \"Acme::Tools\"\n"), 0).unwrap();
         assert_eq!(manifest.namespace, "Acme.Tools");
         assert_eq!(parse_manifest(PACKAGE, 0).unwrap().namespace, "SampleApp");
-        let long = vec!["A"; 17].join(".");
+        let long = vec!["A"; 17].join("::");
         for value in [
             "acme-tools",
-            "Acme..Tools",
-            "Acme.",
-            "IO.Extra",
+            "Acme.Tools",
+            "Acme::::Tools",
+            "Acme:Tools",
+            "Acme::",
+            "IO::Extra",
             "match",
             "Task",
             "_",
@@ -774,7 +777,7 @@ mod tests {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}\n"), 0).unwrap_err();
             assert_eq!(error.code, "E0002", "{suffix}");
         }
-        assert!(valid_namespace("lower.case_1"));
+        assert!(valid_namespace("lower::case_1"));
     }
 
     #[test]
@@ -807,13 +810,18 @@ mod tests {
         assert!(main.starts_with("namespace HelloWorld\n\n"), "{main}");
         let again = create_project(&root.join("hello-world"), None).unwrap_err();
         assert!(again.message.contains("is not empty"), "{}", again.message);
-        create_project(&root.join("other"), Some("Acme.Tools")).unwrap();
+        create_project(&root.join("other"), Some("Acme::Tools")).unwrap();
         assert!(
             std::fs::read_to_string(root.join("other/Tsuzuri.toml"))
                 .unwrap()
-                .contains("namespace = \"Acme.Tools\"")
+                .contains("namespace = \"Acme::Tools\"")
         );
-        for namespace in ["IO", "acme-tools", "A..B"] {
+        assert!(
+            std::fs::read_to_string(root.join("other/Main.tz"))
+                .unwrap()
+                .starts_with("namespace Acme::Tools\n\n")
+        );
+        for namespace in ["IO", "acme-tools", "A::::B", "Acme.Tools"] {
             assert!(
                 create_project(&root.join("bad"), Some(namespace)).is_err(),
                 "{namespace}"

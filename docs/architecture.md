@@ -222,7 +222,7 @@ LLVMのenum scalar aliasは前方参照できないため、全enum aliasをreco
 検証はcargo test --test gpuとtests/gpu.mjs。TSUZURI_WEBGPU=1では実adapter上のshader・init/map・resident chain・境界も実行します。
 
 **モジュール:** 1 ファイルに 1 モジュールを強制し、名前はファイル名から取得します。
-root配下を再帰探索し、`SourceFile.relative_path`を正規化した順で処理します。`Geometry/Point.tz`の名前は`Geometry.Point`です。
+root配下を再帰探索し、`SourceFile.relative_path`を正規化した順で処理します。`Geometry/Point.tz`の内部名（key）は`Geometry.Point`で、ソースでは`Geometry::Point`と書きます。
 file入力のrootは親、directory入力はそのディレクトリです。hidden項目を無視し、source/directory symlinkは拒否します。
 source4096・directory1024・module16要素/255byteを上限とし、標準ライブラリの予約は先頭の名前空間に適用します。
 `.tz` はコード、`.tt` は複数の型クラス宣言、`.tc` は一つのビルダー実装です。
@@ -240,13 +240,19 @@ source4096・directory1024・module16要素/255byteを上限とし、標準ラ�
 無修飾レコード名の解決先にも曖昧性の候補にもなりません。public 宣言からの private 型の漏れは
 解決済みの `Type` ではなく元の `TypeExpr` を走査して、漏れた型参照の位置で報告します。
 
-**名前空間:** パーサーは先頭の文脈キーワード `namespace A.B` と、その後の `using A.B` を `Program.namespace`／`Program.usings` に読みます。
+**名前空間:** パーサーは先頭の文脈キーワード `namespace A::B` と、その後の `using A::B` を `Program.namespace`／`Program.usings` に読みます。
+ソースの名前空間のパスは `::`、コンパイラ内部の名前空間・key・完全名は `.` で区切ります。変換は `module_identity`・`module_path`・`namespace_path`・`canonical`・manifest の境界だけで行い、診断と LSP の表示は `.` を `::` に戻します。
+lexer の `mark_paths` は空白なしの `Ident::Ident` の連鎖のうち、最後の要素が英大文字で始まるものと行頭の `namespace`／`using` の後のものを `TokenKind::PathSep` にします。`def`／`rec`／`and` の宣言名の直後と `x::xs` は `DoubleColon` のままです。
+パーサーは `PathSep` でつながる要素を `A::B::Mod` の一つの識別子に読み、メンバーは従来どおり `.` の連鎖です。
+コンパイラが key で組み立てる修飾名（alias の展開、derive、単相化）は先頭に `::`（`check::KEY_PATH`）を付け、利用者が `.` で書いた名前空間のパスと区別します。
+`Type::display` は record／union を `Geometry::Point.Point` のように表示し、型から構文を作り直す単相化（`polymorph::key_name`）は key の名前を使います。
 `SourceFile.namespace` は root パッケージの既定名前空間（manifest の `namespace`、package 名の PascalCase、manifest がなければフォルダー名）で、依存と std は空です。
 `lib::module_identity` が相対パス・宣言・既定名前空間からモジュールの key と名前空間を決めます。key は宣言のないファイルでは従来の相対パス名、既定名前空間の内側を宣言したファイルでは既定名前空間を除いた名前、それ以外は完全名です。
 key は型検査・型付き IR・LLVM シンボルの修飾名なので、既定名前空間を宣言しても IR は変わりません。入口は key ではなく `ModuleInput.entry`（root の `Main.tz`）で選びます。
-`check::Names` は完全名から key への表、key ごとの名前空間と `using` の解決結果を持ちます。`module_path` は参照元の名前空間、`using`（モジュール名だけ）、外側の名前空間、グローバルの順に完全名を探し、最後に key として探します。
-`canonical` はソースのパスの最長のモジュール接頭辞を key に置き換え、関数・case・型・クラス・active pattern・ビルダーの検索の前に一度だけ適用します（key で修飾した内部の検索には適用しません）。
-モジュールのパスは同名の record／union も表します。`using` の曖昧さは `check_path`／`check_module` が検索の入口で `E1004` にします。LSP は `ModuleNames` で同じ規則を再現し、補完・シグネチャヘルプ・semantic token に使います。
+`check::Names` は完全名から key への表、key ごとの名前空間と `using` の解決結果を持ちます。`module_path` は `Name` か `A::B::Name` を受け、参照元の名前空間、`using`（モジュール名だけ）、外側の名前空間、グローバルの順に完全名を探し、モジュール名だけのときは最後に key として探します。`.` を含むパスはモジュールを指しません。
+`canonical` は最後の `::` の後の最初の `.` までをモジュールとして key に置き換え、関数・case・型・クラス・active pattern・ビルダーの検索の前に一度だけ適用します（`KEY_PATH` 付きの内部の名前はその印を外すだけです）。
+名前空間とモジュールを `.` でつないだパスは解決せず、`E1002`／`E1004` の診断が `namespace_spelling` で `::` の書き方を示します。
+モジュールのパスは同名の record／union も表します。`using` の曖昧さは `check_path`／`check_module` が検索の入口で `E1004` にします。LSP は `ModuleNames` で同じ規則を再現し、補完（`::` の後は名前空間の子、`.` の後はメンバー）・シグネチャヘルプ・semantic token に使います。
 
 **パッケージ:** 読み込み層は`Tsuzuri.toml`のlocal path依存も扱います。`package.rs`が限定文法を解析し、driverは明示スタックでgraphの循環・名前・上限を検査します。
 `SourceFile.package`にcanonical rootとnameのPackageIdを保存し、依存namespaceをrelative_pathへ付けます。型検査のUser/Std分類やprivateの境界は変更しません。

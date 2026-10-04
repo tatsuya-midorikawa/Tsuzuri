@@ -120,7 +120,7 @@ try {
   writeFileSync(join(dependency, "Tsuzuri.toml"), '[package]\nname = "dependency"\nversion = "1"\n');
   writeFileSync(join(dependency, "Value.tz"), 'def value :: i64\nfn value = 50\n');
   writeFileSync(join(project, "Tsuzuri.toml"), '[package]\nname = "app"\nversion = "1"\n[dependencies]\ndependency = { path = "../dep" }\n');
-  writeFileSync(source, "Dependency.Value.value()\n");
+  writeFileSync(source, "Dependency::Value.value()\n");
   assert.equal(cli(["run", source]).stdout, "50\n");
   const beforeDependency = entries().length;
   writeFileSync(join(dependency, "Value.tz"), 'def value :: i64\nfn value = 51\n');

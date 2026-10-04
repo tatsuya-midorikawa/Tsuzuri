@@ -309,6 +309,10 @@ fn tests_are_checked_and_keep_private_dependencies_reachable() {
         "E1012"
     );
     tsuzuri::analyze_modules(&[("Specs.tz", "test \"ok\" = assert true")]).unwrap();
+    // Test listings name a nested module as source code does.
+    let nested =
+        tsuzuri::analyze_modules(&[("Geometry/Specs.tz", "test \"ok\" = assert true")]).unwrap();
+    assert_eq!(nested.tests[0].module, "Geometry::Specs");
     tsuzuri::analyze_modules(&[(
         "Builder.tc",
         "def Return :: unit -> unit\nfn Return value = value\ntest \"ok\" = assert true",

@@ -610,6 +610,9 @@ fn spacing(
     if matches!(current.kind, Dot) || matches!(previous.kind, Dot) {
         return separated;
     }
+    if matches!(current.kind, PathSep) || matches!(previous.kind, PathSep) {
+        return "";
+    }
     // A hole's expression sits directly between the braces of `$"a{x}b"`.
     if matches!(current.kind, InterpolationMiddle(_) | InterpolationEnd(_))
         || matches!(

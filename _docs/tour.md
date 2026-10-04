@@ -82,7 +82,7 @@ task は作成時には実行しません。Task.run が一回消費して実行
 
 ## ファイルを分ける
 
-関数が増えたらモジュールへ分けます。Geometry/Point.tz は Geometry.Point、呼び出しは Geometry.Point.distance のように修飾します。型クラスは .tt、ビルダーは .tc です。モジュールを開く open 宣言はありません。
+関数が増えたらモジュールへ分けます。Geometry/Point.tz は名前空間 Geometry の Point モジュールで、呼び出しは Geometry::Point.distance のように修飾します（名前空間とモジュールは `::`、メンバーは `.`）。型クラスは .tt、ビルダーは .tc です。モジュールを開く open 宣言はありません。
 
 ホストから使う具体型の関数は export def、ホストを呼ぶ関数は extern def にします。WASM や C の境界には、対応するスカラー・バッファ・レコードだけを渡します。
 

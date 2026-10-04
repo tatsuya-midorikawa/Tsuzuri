@@ -80,7 +80,7 @@ fn declared_type(
     names: &Names,
 ) -> Result<Type, Diagnostic> {
     let head = Ident {
-        text: format!("{module}.{}", name.text),
+        text: key_path(&format!("{module}.{}", name.text)),
         ..name.clone()
     };
     let kind = if parameters.is_empty() {
@@ -377,7 +377,9 @@ impl Build<'_> {
                 })
                 .collect::<Result<_, Diagnostic>>()?;
             let body = self.make(ExprKind::Record {
-                name: Box::new(self.ident(format!("{}.{}", self.module, record.name.text))),
+                name: Box::new(
+                    self.ident(key_path(&format!("{}.{}", self.module, record.name.text))),
+                ),
                 fields,
             })?;
             return Ok(vec![self.definition("default", &[], body)]);
@@ -436,10 +438,10 @@ impl Build<'_> {
             .collect();
         Pattern {
             kind: PatternKind::Apply(
-                self.ident(format!(
+                self.ident(key_path(&format!(
                     "{}.{}.{}",
                     self.module, union.name.text, case.name.text
-                )),
+                ))),
                 arguments,
             ),
             span: self.span,

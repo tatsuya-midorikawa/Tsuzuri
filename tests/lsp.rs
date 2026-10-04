@@ -656,7 +656,7 @@ fn capabilities_are_advertised_exactly() {
             "documentHighlightProvider": true,
             "renameProvider": {"prepareProvider": true},
             "workspaceSymbolProvider": true,
-            "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
+            "completionProvider": {"triggerCharacters": [".", ":"], "resolveProvider": false},
             "signatureHelpProvider": {"triggerCharacters": [" ", "("], "retriggerCharacters": [","]},
             "semanticTokensProvider": {
                 "legend": {
@@ -891,8 +891,8 @@ fn server_lifecycle_and_protocol_errors_are_framed() {
     assert!(read_message(&mut output).unwrap().unwrap().unwrap()["result"].is_null());
 }
 
-const N_CIRCLE: &str = "namespace Demo.Shapes\n\ndef radius :: i64 -> i64 = \\x -> x\n";
-const N_REPORT: &str = "namespace Demo\n\nusing Demo.Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes.Circle.radius x\n";
+const N_CIRCLE: &str = "namespace Demo::Shapes\n\ndef radius :: i64 -> i64 = \\x -> x\n";
+const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes::Circle.radius x\n";
 
 #[test]
 fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
@@ -911,7 +911,7 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
             })
             .collect()
     };
-    let edited = |tail: &str| N_REPORT.replace("Circle.radius x + Shapes.Circle.radius x", tail);
+    let edited = |tail: &str| N_REPORT.replace("Circle.radius x + Shapes::Circle.radius x", tail);
     let mut circle = String::new();
     let responses = scripted(&files, "utf-16", |uri| {
         circle = uri("Circle.tz");
@@ -923,17 +923,22 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
             json!({"id": id, "method": "textDocument/completion", "params": {"textDocument": {"uri": report}, "position": at}})
         };
         let definition = |id: u64, needle: &str| json!({"id": id, "method": "textDocument/definition", "params": {"textDocument": {"uri": report}, "position": position(N_REPORT, needle, "utf-16")}});
-        let (shapes, demo, roots) = (edited("Shapes."), edited("Demo."), edited("C"));
+        let (shapes, demo, roots) = (edited("Shapes::"), edited("Demo::"), edited("C"));
+        let (member, colon) = (edited("Shapes::Circle."), edited("Shapes:"));
         vec![
             definition(1, "Circle.radius x +"),
-            definition(2, "Shapes.Circle.radius"),
+            definition(2, "Shapes::Circle.radius"),
             json!({"id": 3, "method": "textDocument/semanticTokens/full", "params": {"textDocument": {"uri": report}}}),
             change(2, &shapes),
-            complete(4, &shapes, "Shapes."),
+            complete(4, &shapes, "Shapes::"),
             change(3, &demo),
-            complete(5, &demo, "Demo."),
+            complete(5, &demo, "-> Demo::"),
             change(4, &roots),
             complete(6, &roots, "\\x -> C"),
+            change(5, &member),
+            complete(7, &member, "Shapes::Circle."),
+            change(6, &colon),
+            complete(8, &colon, "Shapes:"),
         ]
     });
     for response in &responses[..2] {
@@ -945,16 +950,19 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
         .collect();
     assert_eq!(
         header,
-        [[0, 10, 4, 0, 0], [2, 6, 4, 0, 0], [2, 11, 6, 0, 0]]
+        [[0, 10, 4, 0, 0], [2, 6, 4, 0, 0], [2, 12, 6, 0, 0]]
     );
     assert_eq!(
         labels(&responses[3]),
-        [("Circle".to_owned(), "module Demo.Shapes.Circle".to_owned())]
+        [(
+            "Circle".to_owned(),
+            "module Demo::Shapes::Circle".to_owned()
+        )]
     );
     let demo = labels(&responses[4]);
     for expected in [
-        ("Report", "module Demo.Report"),
-        ("Shapes", "namespace Demo.Shapes"),
+        ("Report", "module Demo::Report"),
+        ("Shapes", "namespace Demo::Shapes"),
     ] {
         assert!(
             demo.contains(&(expected.0.to_owned(), expected.1.to_owned())),
@@ -963,9 +971,9 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     }
     let roots = labels(&responses[5]);
     for expected in [
-        ("Circle", "module Demo.Shapes.Circle"),
+        ("Circle", "module Demo::Shapes::Circle"),
         ("Demo", "namespace Demo"),
-        ("Shapes", "namespace Demo.Shapes"),
+        ("Shapes", "namespace Demo::Shapes"),
         ("namespace", "keyword"),
         ("using", "keyword"),
     ] {
@@ -974,19 +982,32 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
             "{expected:?}: {roots:?}"
         );
     }
+    // A module's members follow `.`; a typed `:` alone offers nothing.
+    assert_eq!(
+        labels(&responses[6]),
+        [(
+            "radius".to_owned(),
+            "def Demo::Shapes::Circle.radius :: i64 -> i64".to_owned()
+        )]
+    );
+    let colon = labels(&responses[7]);
+    assert!(colon.is_empty(), "{colon:?}");
 
-    // The current namespace's `Demo.Circle` wins over the imported one, and
+    // The current namespace's `Demo::Circle` wins over the imported one, and
     // `Square`, which both imports hold, is ambiguous.
-    let report = "namespace Demo\n\nusing Demo.Shapes\nusing Demo.Extra\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x\n";
+    let report = "namespace Demo\n\nusing Demo::Shapes\nusing Demo::Extra\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x\n";
     let side = "def side :: i64 -> i64 = \\x -> x\n";
     let files = [
-        ("Circle.tz", N_CIRCLE.replace("Demo.Shapes", "Demo")),
+        ("Circle.tz", N_CIRCLE.replace("Demo::Shapes", "Demo")),
         ("Shapes/Circle.tz", N_CIRCLE.to_owned()),
         (
             "Shapes/Square.tz",
-            format!("namespace Demo.Shapes\n\n{side}"),
+            format!("namespace Demo::Shapes\n\n{side}"),
         ),
-        ("Extra/Square.tz", format!("namespace Demo.Extra\n\n{side}")),
+        (
+            "Extra/Square.tz",
+            format!("namespace Demo::Extra\n\n{side}"),
+        ),
         ("Report.tz", report.to_owned()),
     ];
     let files = files.each_ref().map(|(name, text)| (*name, text.as_str()));
@@ -1010,9 +1031,9 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     );
     let roots = labels(&responses[1]);
     for expected in [
-        ("Circle", "module Demo.Circle"),
-        ("Extra", "namespace Demo.Extra"),
-        ("Shapes", "namespace Demo.Shapes"),
+        ("Circle", "module Demo::Circle"),
+        ("Extra", "namespace Demo::Extra"),
+        ("Shapes", "namespace Demo::Shapes"),
     ] {
         assert!(
             roots.contains(&(expected.0.to_owned(), expected.1.to_owned())),

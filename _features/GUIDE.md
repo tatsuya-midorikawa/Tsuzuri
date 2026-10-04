@@ -723,7 +723,7 @@ fn rejects(source: &str, code: &str) {
 レコード更新 `{ base with field = value }`（C05）。キーワード追加時は 6.1 を実施する。
 D-34 の演算子 `**`・単項 `+`・`&&&`・`|||`・`^^^`・`~~~`・`<<<`・`>>>`、関数合成 `>>`／`<<`（従来のシフトから意味を変更）、
 文脈キーワード `try`／`finally`／`is`（予約語にしない）、属性 `@checked`／`@literal`。
-D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣言だけ。予約語にしない）。
+D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣言だけ。予約語にしない）。D-37 の名前空間のパス `A::B::Module`（新しい記号はなく、空白なしの `::` を lexer が `PathSep` にする）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
   取り込まれた後に着手するチケットは、借用・参照外しを扱う箇所（C03 の `&xs[a..b]` に対する `ref xs[a..b]`、A11 の比較用の
@@ -1050,6 +1050,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 ### D-35 名前空間（`namespace`／`using`）
 
 - 2026-10-04、`_specs/namespace-and-module.md` の承認として扱った。従来の「`namespace` 宣言なし・`open` なし」を改める。
+  以下の `.` 区切りのパスは D-37 で `::` に改めた。
 - `namespace A.B` はファイルの最初の宣言、`using A.B` はその後で他の宣言の前。どちらも 1 行で、キーワードの後やパスの途中の改行は `E0002`。
   どちらも文脈キーワードで、識別子としても使える（予約語は増やさない）。
 - モジュールの完全名は名前空間 + ファイル名。宣言がなければパッケージの既定名前空間（manifest の新しい任意キー `namespace`、
@@ -1069,6 +1070,18 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - `def`・`export def`・`private def`・`@literal def`・`extern def`・型付きの `and`・クラスのメソッドは、名前と型の間に `::` だけを書く。
   単一の `:` は `E0002`（`use '::' between a 'def' name and its type`）。`_specs` の literals・operators・error-handling の例も `::` に直した。
 - `let`・`const`・フィールド・引数の型注釈と、制約の `@'T : Class` は従来どおり `:`。新しい診断コード・予約語はない。
+
+### D-37 名前空間のパスは `::` でつなぐ
+
+- 2026-10-05、利用者の「完全修飾では namespace と module 名、入れ子の namespace を `::` でつなぐ」と更新された `_specs/namespace-and-module.md` を受け、D-35 の `.` 区切りを改めた。
+- `namespace Sample::Features`、`using Sample::Features`、`Sample::Features::Shape.area`、`Sample::Point { ... }`。モジュールとそのメンバー（関数・型・case・クラス）、値のフィールドは従来どおり `.`。
+  manifest の `namespace = "Acme::Tools"` と `tsuzuri new --namespace Acme::Tools`、ディレクトリのモジュール（`Geometry::Point.distance`）も同じ。
+- 名前空間を `.` でつなぐ従来の書き方は受理しない。宣言は `E0002`、参照は `E1002`／`E1004`、manifest は `E1011`、`new` は `E2000` で、診断は `::` の書き方を示す。
+- `::` は `def` の型注釈とリストの cons にも使うため、lexer が空白なしの `Ident::Ident` の連鎖のうち、最後の要素が英大文字始まりのものと
+  `namespace`／`using` のパスだけを `PathSep` にする。`def`／`rec`／`and` の宣言名の直後と `x::xs` は従来の `::`。
+- 内部の key・完全名・IR シンボルは `.` 区切りのままで IR は変わらない。コンパイラが key で組み立てる修飾名は先頭の `::` で利用者のパスと区別する。
+  診断・LSP・`tsuzuri doc` の見出し・型の表示（`expected Geometry::Point.Point`）・`tsuzuri test` の一覧と結果と filter のモジュール名は、名前空間を `::` で表示する。
+- key としての検索はモジュール名だけになった。新しい診断コード・予約語はない。
 
 ## 10. 完了の定義（全チケット共通）
 

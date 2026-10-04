@@ -690,7 +690,7 @@ async function packageChecks() {
   writeFileSync(join(dependency, "Tsuzuri.toml"), '[package]\nname = "geometry-core"\nversion = "0.1.0"\n');
   writeFileSync(join(dependency, "Point.tz"), "def distance :: f64 -> f64 -> f64\nfn distance x y = Math.sqrt (x * x + y * y)\n");
   writeFileSync(join(dependency, "Main.tz"), "def main :: i64\nfn main = 99\n");
-  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore.Point.distance 3.0 4.0\n");
+  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore::Point.distance 3.0 4.0\n");
   const host = join(directory, "host.c");
   writeFileSync(host, "extern double tz_answer(void);\nint main(void) { return tz_answer() == 5.0 ? 0 : 1; }\n");
   const first = join(directory, "first.ll");

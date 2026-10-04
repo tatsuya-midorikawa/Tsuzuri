@@ -44,7 +44,7 @@ fn loads_and_protects_local_package_graphs() {
         "app",
         "geometry-core = { path = \"../geometry-core\" }\nother = { path = \"../other\" }",
         "Main.tz",
-        "def main :: i64\nfn main = GeometryCore.Point.value() + Other.Library.value()",
+        "def main :: i64\nfn main = GeometryCore::Point.value() + Other::Library.value()",
     );
     write_package(
         "geometry-core",
@@ -61,7 +61,7 @@ fn loads_and_protects_local_package_graphs() {
         "other",
         "geometry-core = { path = \"../geometry-core\" }",
         "Library.tz",
-        "def value :: i64\nfn value = GeometryCore.Main.main() - 99",
+        "def value :: i64\nfn value = GeometryCore::Main.main() - 99",
     );
     let app = root.join("app");
     let project = Project::load(&app).unwrap();
@@ -125,7 +125,7 @@ fn loads_and_protects_local_package_graphs() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("E2003"));
         assert_eq!(fs::read(root.join(file)).unwrap(), before);
     }
-    fs::write(app.join("Main.tz"), "GeometryCore.Point.hidden()").unwrap();
+    fs::write(app.join("Main.tz"), "GeometryCore::Point.hidden()").unwrap();
     assert_eq!(
         Project::load(&app).unwrap().analyze().unwrap_err().code,
         "E1022"
@@ -180,7 +180,7 @@ fn loads_and_protects_local_package_graphs() {
         "app",
         "local = { path = \"Local\" }",
         "Main.tz",
-        "Local.Value.value()",
+        "Local::Value.value()",
     );
     let project = Project::load(&app).unwrap();
     project.analyze().unwrap();
@@ -236,11 +236,11 @@ fn package_namespaces_name_root_and_dependency_modules() {
     };
     write(
         "app/Tsuzuri.toml",
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nnamespace = \"Acme.App\"\n[dependencies]\nacme-tools = { path = \"../tools\" }\n",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nnamespace = \"Acme::App\"\n[dependencies]\nacme-tools = { path = \"../tools\" }\n",
     );
     write(
         "tools/Tsuzuri.toml",
-        "[package]\nname = \"acme-tools\"\nversion = \"0.1.0\"\nnamespace = \"Acme.Tools\"\n",
+        "[package]\nname = \"acme-tools\"\nversion = \"0.1.0\"\nnamespace = \"Acme::Tools\"\n",
     );
     write("tools/Text.tz", "def width :: i64 -> i64 = \\x -> x * 10\n");
     write(
@@ -249,7 +249,7 @@ fn package_namespaces_name_root_and_dependency_modules() {
     );
     write(
         "app/Main.tz",
-        "namespace Acme.App\n\nusing Acme.Tools\n\ndef main :: i64 = \\() -> Text.width 1 + Acme.Tools.Text.width 2 + Shapes.Square.side 3 + Acme.App.Shapes.Square.side 4\n",
+        "namespace Acme::App\n\nusing Acme::Tools\n\ndef main :: i64 = \\() -> Text.width 1 + Acme::Tools::Text.width 2 + Shapes::Square.side 3 + Acme::App::Shapes::Square.side 4\n",
     );
     let project = Project::load(&root.join("app")).unwrap();
     let module = project.analyze().unwrap();
@@ -330,14 +330,14 @@ fn module_paths_map_to_bounded_dotted_names() {
 
 #[test]
 fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
-    let main = "def use_point :: Geometry.Point.Point -> i64\nfn use_point point = Geometry.Traits.Score.score (&point)\n\
-        let point = Geometry.Point.Point { x: 40 }\n\
-        let value = Geometry.Builder { return use_point point }\n\
-        let extra = match Geometry.Point.Payload value with | Geometry.Point.Value.Payload inner -> inner\n\
-        let checked = match extra with | Geometry.Patterns.Even -> extra | _ -> 0\n\
-        Geometry.Point.distance (Geometry.Point.Point { x: checked }) + Geometry.Point.Offset";
+    let main = "def use_point :: Geometry::Point.Point -> i64\nfn use_point point = Geometry::Traits.Score.score (&point)\n\
+        let point = Geometry::Point.Point { x: 40 }\n\
+        let value = Geometry::Builder { return use_point point }\n\
+        let extra = match Geometry::Point.Payload value with | Geometry::Point.Value.Payload inner -> inner\n\
+        let checked = match extra with | Geometry::Patterns.Even -> extra | _ -> 0\n\
+        Geometry::Point.distance (Geometry::Point.Point { x: checked }) + Geometry::Point.Offset";
     let module = analyze_modules(&[
-        ("Geometry/Point.tz", "record Point { x: i64 }\nunion Value = Payload of i64\nconst Offset: i64 = 2\nfn distance(point: Point) -> i64 { point.x }\ninstance Geometry.Traits.Score<Point> { fn score point = point.x }"),
+        ("Geometry/Point.tz", "record Point { x: i64 }\nunion Value = Payload of i64\nconst Offset: i64 = 2\nfn distance(point: Point) -> i64 { point.x }\ninstance Geometry::Traits.Score<Point> { fn score point = point.x }"),
         ("Geometry/Traits.tt", "class Score<'a> { def score :: &'a -> i64 }"),
         ("Geometry/Builder.tc", "def Return :: 'a -> 'a\nfn Return value = value"),
         ("Geometry/Patterns.tz", "def (|Even|_|) :: i64 -> bool\nfn (|Even|_|) value = value % 2 == 0"),
@@ -364,14 +364,16 @@ fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
     for (declaration, expression, code) in [
         (
             "fn value() -> i64 { 1 }",
-            "Geometry.Point.missing()",
+            "Geometry::Point.missing()",
             "E1002",
         ),
         (
             "private def value :: i64\nfn value = 1",
-            "Geometry.Point.value()",
+            "Geometry::Point.value()",
             "E1022",
         ),
+        // A namespace and a module are joined by `::`, not `.`.
+        ("fn value() -> i64 { 1 }", "Geometry.Point.value()", "E1002"),
     ] {
         assert_eq!(
             analyze_modules(&[("Geometry/Point.tz", declaration), ("Main.tz", expression)])
@@ -380,6 +382,17 @@ fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
             code
         );
     }
+    // Diagnostics write a type's namespaces with `::`, as source code does.
+    let error = analyze_modules(&[
+        ("Geometry/Point.tz", "record Point { x: i64 }"),
+        ("Main.tz", "def p :: Geometry::Point.Point = 1"),
+    ])
+    .unwrap_err();
+    assert_eq!(
+        error.message, "expected Geometry::Point.Point, found i32",
+        "{}",
+        error.message
+    );
 }
 
 #[test]
@@ -399,7 +412,7 @@ fn recursively_loads_sources_and_preserves_explicit_project_roots() {
     ));
     fs::create_dir_all(directory.join("Geometry")).unwrap();
     fs::create_dir_all(directory.join(".hidden")).unwrap();
-    fs::write(directory.join("Main.tz"), "Geometry.Point.value()").unwrap();
+    fs::write(directory.join("Main.tz"), "Geometry::Point.value()").unwrap();
     fs::write(
         directory.join("Geometry/Point.tz"),
         "fn value() -> i64 { 42 }",
@@ -694,11 +707,25 @@ fn validates_module_names_and_preserves_unique_export_abi() {
         "namespace Nested\n.Inner",
         "namespace Nested.\nInner",
         "namespace Nested\nusing\nOther",
+        "namespace Nested.Inner",
+        "namespace Nested::\nInner",
+        "namespace Nested :: Inner",
+        "namespace Nested::Inner::",
+        "using Nested.Inner",
+        "namespace Nested\nusing Nested ::Inner",
     ] {
         assert_eq!(
             analyze_modules(&[("Main", source)]).unwrap_err().code,
             "E0002",
             "{source}"
+        );
+    }
+    for source in ["namespace Nested.Inner", "using Nested.Inner"] {
+        let error = analyze_modules(&[("Main", source)]).unwrap_err();
+        assert!(
+            error.message.contains("with '::'"),
+            "{source}: {}",
+            error.message
         );
     }
     let error = analyze_modules(&[
@@ -772,8 +799,8 @@ const NS_POINT: &str = "namespace Sample\n\nrecord Point { x: f64, y: f64 }\n\nd
 
 #[test]
 fn namespaces_qualify_modules_and_module_named_types() {
-    let main = "namespace Sample\n\ndef main :: f64 = \\() ->\n    let p = Sample.Point { x: 1.0, y: 2.0 }\n    let q: Point = Point { x: 3.0, y: 4.0 }\n    let maybe: Sample.Shape.Maybe<i64> = Sample.Shape.Some 1\n    Sample.Shape.area (Sample.Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample.Point.sum p + Point.sum q\n";
-    // The bare `Point` follows the namespace order, so `Other.Point` does not make it ambiguous.
+    let main = "namespace Sample\n\ndef main :: f64 = \\() ->\n    let p = Sample::Point { x: 1.0, y: 2.0 }\n    let q: Point = Point { x: 3.0, y: 4.0 }\n    let maybe: Sample::Shape.Maybe<i64> = Sample::Shape.Some 1\n    Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample::Point.sum p + Point.sum q\n";
+    // The bare `Point` follows the namespace order, so `Other::Point` does not make it ambiguous.
     let other = "namespace Other\n\nrecord Point { x: f64, y: f64 }\n";
     let module = analyze_modules(&[
         ("Shape", NS_SHAPE),
@@ -790,29 +817,44 @@ fn namespaces_qualify_modules_and_module_named_types() {
             .unwrap()
             .contains("@tz.fn.Sample.Main.main()")
     );
-    // A namespace holds only modules, and a module-named type does not nest again.
-    for (source, code) in [
+    // A namespace holds only modules, a module-named type does not nest
+    // again, and `.` does not join a namespace to its modules.
+    for (source, code, hint) in [
         (
-            "def main :: f64 = \\() -> Sample.area (Sample.Shape.Rect (1.0, 1.0))",
+            "def main :: f64 = \\() -> Sample.area (Sample::Shape.Rect (1.0, 1.0))",
             "E1002",
+            "'Sample' is a namespace; write '::'",
         ),
         (
-            "def p :: Sample.Point.Point.Point -> f64 = \\p -> p.x",
+            "def p :: Sample::Point.Point.Point -> f64 = \\p -> p.x",
             "E1004",
+            "",
         ),
         (
-            "def main :: f64 = \\() -> Missing.Shape.area (Sample.Shape.Rect (1.0, 1.0))",
+            "def main :: f64 = \\() -> Missing::Shape.area (Sample::Shape.Rect (1.0, 1.0))",
             "E1002",
+            "",
+        ),
+        (
+            "def main :: f64 = \\() -> Sample.Shape.area (Sample::Shape.Rect (1.0, 1.0))",
+            "E1002",
+            "as in 'Sample::Shape'",
+        ),
+        (
+            "def p :: Sample.Point -> f64 = \\p -> p.x",
+            "E1004",
+            "as in 'Sample::Point'",
         ),
     ] {
         let main = format!("namespace Sample\n\n{source}\n");
         let error = analyze_modules(&[("Shape", NS_SHAPE), ("Point", NS_POINT), ("Main", &main)])
             .unwrap_err();
         assert_eq!(error.code, code, "{source}: {}", error.message);
+        assert!(error.message.contains(hint), "{source}: {}", error.message);
     }
     // Inner namespaces see the enclosing ones; outer namespaces qualify inner modules.
-    let inner = "namespace Sample.Codebase\n\ndef twice :: f64 -> f64 = \\x -> Shape.area (Rect (x, 2.0))\n";
-    let main = "namespace Sample\n\ndef main :: f64 = \\() -> Codebase.Foo.twice 1.0 + Sample.Codebase.Foo.twice 2.0\n";
+    let inner = "namespace Sample::Codebase\n\ndef twice :: f64 -> f64 = \\x -> Shape.area (Rect (x, 2.0))\n";
+    let main = "namespace Sample\n\ndef main :: f64 = \\() -> Codebase::Foo.twice 1.0 + Sample::Codebase::Foo.twice 2.0\n";
     analyze_modules(&[("Shape", NS_SHAPE), ("Foo", inner), ("Main", main)]).unwrap();
     // The same full name from two files.
     let error = analyze_modules(&[
@@ -826,7 +868,7 @@ fn namespaces_qualify_modules_and_module_named_types() {
     .unwrap_err();
     assert_eq!(error.code, "E1011");
     assert!(
-        error.message.contains("'Sample.Shape'"),
+        error.message.contains("'Sample::Shape'"),
         "{}",
         error.message
     );
@@ -835,7 +877,7 @@ fn namespaces_qualify_modules_and_module_named_types() {
 
 #[test]
 fn using_imports_the_modules_of_a_namespace() {
-    let features = "namespace Sample.Features\n\ndef scale :: i64 -> i64 = \\x -> x * 2\n";
+    let features = "namespace Sample::Features\n\ndef scale :: i64 -> i64 = \\x -> x * 2\n";
     let other = "namespace Other\n\ndef scale :: i64 -> i64 = \\x -> x * 3\n";
     let own = "namespace Sample\n\ndef scale :: i64 -> i64 = \\x -> x * 5\n";
     let main = |usings: &str, body: &str| {
@@ -848,7 +890,7 @@ fn using_imports_the_modules_of_a_namespace() {
     };
     let module = analyze_modules(&[
         ("Features/Math", features),
-        ("Main", &main("using Sample.Features\n", "Math.scale 21")),
+        ("Main", &main("using Sample::Features\n", "Math.scale 21")),
     ])
     .unwrap();
     assert!(entry_calls(&module).contains("@tz.fn.Sample.Features.Math.scale("));
@@ -867,7 +909,7 @@ fn using_imports_the_modules_of_a_namespace() {
             ("Other/Math".to_owned(), other.to_owned()),
             (
                 "Main".to_owned(),
-                main("using Sample.Features\nusing Other\n", body),
+                main("using Sample::Features\nusing Other\n", body),
             ),
         ]
     };
@@ -881,11 +923,11 @@ fn using_imports_the_modules_of_a_namespace() {
     assert!(
         error
             .message
-            .contains("'Sample.Features.Math', 'Other.Math'"),
+            .contains("'Sample::Features::Math', 'Other::Math'"),
         "{}",
         error.message
     );
-    let qualified = sources("Other.Math.scale 21 + Features.Math.scale 1");
+    let qualified = sources("Other::Math.scale 21 + Features::Math.scale 1");
     let pairs: Vec<_> = qualified
         .iter()
         .map(|(path, text)| (path.as_str(), text.as_str()))
@@ -894,12 +936,12 @@ fn using_imports_the_modules_of_a_namespace() {
     for (usings, needle) in [
         ("using Nowhere\n", "names no namespace"),
         (
-            "using Sample.Features.Math\n",
+            "using Sample::Features::Math\n",
             "is a module, not a namespace",
         ),
         (
-            "using Features\nusing Sample.Features\n",
-            "duplicate using 'Sample.Features'",
+            "using Features\nusing Sample::Features\n",
+            "duplicate using 'Sample::Features'",
         ),
     ] {
         let error = analyze_modules(&[("Features/Math", features), ("Main", &main(usings, "0"))])
@@ -927,7 +969,7 @@ fn using_imports_the_modules_of_a_namespace() {
             .unwrap_err();
         assert_eq!(error.code, "E1004", "{other}: {}", error.message);
         assert!(
-            error.message.contains("'A.Point', 'B.Point'"),
+            error.message.contains("'A::Point', 'B::Point'"),
             "{}",
             error.message
         );

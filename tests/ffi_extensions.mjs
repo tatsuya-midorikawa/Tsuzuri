@@ -105,7 +105,7 @@ try {
   writeFileSync(join(trusted, "lib1", "Tsuzuri.toml"), '[package]\nname = "lib1"\nversion = "0.1.0"\n\n[native]\nlink = ["host.o"]\n');
   cpSync(host, join(trusted, "lib1", "host.o"));
   writeFileSync(join(trusted, "lib1", "Util.tz"), 'extern "e12_add_one" def add_one :: i64 -> i64\n\nexport def bump :: i64 -> i64\nfn bump value = add_one value\n');
-  writeFileSync(join(trusted, "Main.tz"), "Lib1.Util.bump 41\n");
+  writeFileSync(join(trusted, "Main.tz"), "Lib1::Util.bump 41\n");
   assert.equal(execute(compiler, ["run", trusted]).stdout.trim(), "42");
   // Only the root's own opt-in counts: a dependency of a dependency cannot vouch for itself.
   const chained = join(root, "chained");

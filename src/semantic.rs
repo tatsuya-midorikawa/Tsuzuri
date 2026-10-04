@@ -236,7 +236,7 @@ impl Links {
             Type::Handle(name) => (self.handles.get(name.as_ref()).copied(), name.as_ref()),
             _ => return,
         };
-        let last = text.rsplit('.').next().unwrap_or(text);
+        let last = text.rsplit(['.', ':']).next().unwrap_or(text);
         // An alias spells another name; aliases have no references yet.
         if let Some(definition) = definition
             && name.rsplit('.').next() == Some(last)
@@ -301,6 +301,7 @@ fn define_declarations(
     for module in modules {
         let program = module.program;
         let name = module.name;
+        let shown = names.module_display(name);
         for record in &program.records {
             if record.name.provenance == Provenance::Generated {
                 continue;
@@ -311,7 +312,7 @@ fn define_declarations(
                 &record.name,
                 SymbolKind::Record,
                 name,
-                format!("record {qualified}"),
+                format!("record {shown}.{}", record.name.text),
                 record.visibility,
             ));
             if let Some(id) = id {
@@ -346,7 +347,7 @@ fn define_declarations(
                 &union.name,
                 SymbolKind::Union,
                 name,
-                format!("union {qualified}"),
+                format!("union {shown}.{}", union.name.text),
                 union.visibility,
             ));
             if let Some(id) = id {
@@ -356,9 +357,10 @@ fn define_declarations(
                 let payload = id
                     .and_then(|id| types.unions[id].cases.get(position))
                     .and_then(|(_, payload)| payload.as_ref());
+                let case_name = format!("{shown}.{}.{}", union.name.text, case.name.text);
                 let detail = match payload {
-                    Some(ty) => format!("{qualified}.{} of {}", case.name.text, ty.display(types)),
-                    None => format!("{qualified}.{}", case.name.text),
+                    Some(ty) => format!("{case_name} of {}", ty.display(types)),
+                    None => case_name,
                 };
                 index.define(Definition {
                     container: Some(container),
@@ -371,7 +373,7 @@ fn define_declarations(
                 &alias.name,
                 SymbolKind::Alias,
                 name,
-                format!("type {name}.{}", alias.name.text),
+                format!("type {shown}.{}", alias.name.text),
                 alias.visibility,
             ));
         }
@@ -380,7 +382,7 @@ fn define_declarations(
                 &handle.name,
                 SymbolKind::Record,
                 name,
-                format!("extern type {name}.{}", handle.name.text),
+                format!("extern type {shown}.{}", handle.name.text),
                 handle.visibility,
             ));
             links
@@ -389,7 +391,13 @@ fn define_declarations(
         }
         for constant in &program.constants {
             let detail = resolve_type(&constant.ty, name, names)
-                .map(|ty| format!("const {name}.{}: {}", constant.name.text, ty.display(types)))
+                .map(|ty| {
+                    format!(
+                        "const {shown}.{}: {}",
+                        constant.name.text,
+                        ty.display(types)
+                    )
+                })
                 .unwrap_or_else(|_| constant.name.text.clone());
             let definition = index.define(plain(
                 &constant.name,
@@ -454,10 +462,11 @@ fn define_declarations(
                 })
                 .collect();
             let detail = if kind == SymbolKind::Extern {
-                format!("extern def {qualified}")
+                format!("extern def {shown}.{}", declared.text)
             } else {
                 format!(
-                    "def {qualified} :: {}",
+                    "def {shown}.{} :: {}",
+                    declared.text,
                     function.signature.as_type().display(types)
                 )
             };
@@ -474,7 +483,7 @@ fn define_declarations(
                 &class.name,
                 SymbolKind::Class,
                 name,
-                format!("class {name}.{}", class.name.text),
+                format!("class {shown}.{}", class.name.text),
                 Visibility::Public,
             ));
             for method in &class.methods {
@@ -484,7 +493,7 @@ fn define_declarations(
                         &method.name,
                         SymbolKind::Method,
                         name,
-                        format!("def {name}.{}.{}", class.name.text, method.name.text),
+                        format!("def {shown}.{}.{}", class.name.text, method.name.text),
                         method.visibility,
                     )
                 });
@@ -593,7 +602,7 @@ pub(super) fn collect(
                 .map(|ty| {
                     format!(
                         "const {}.{}: {}",
-                        module.name,
+                        names.module_display(module.name),
                         constant.name.text,
                         ty.display(&types)
                     )
@@ -620,8 +629,9 @@ pub(super) fn collect(
                     12,
                     declaration.body.span,
                     format!(
-                        "def {} :: {}",
-                        function.qualified_name(),
+                        "def {}.{} :: {}",
+                        names.module_display(&function.module),
+                        function.name,
                         function.signature.as_type().display(&types)
                     ),
                 );

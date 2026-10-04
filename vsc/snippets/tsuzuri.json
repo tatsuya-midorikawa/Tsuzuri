@@ -21,7 +21,7 @@
   },
   "Using": {
     "prefix": "using",
-    "body": ["using ${1:Sample.Features}$0"],
+    "body": ["using ${1:Sample::Features}$0"],
     "description": "Using declaration after the namespace declaration"
   },
   "Try": {

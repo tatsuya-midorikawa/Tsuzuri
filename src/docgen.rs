@@ -43,13 +43,16 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
         if let Some(page) = pages.get_mut(&filename) {
             page.push_str(&render_declarations(&program));
         } else {
-            pages.insert(filename.clone(), render_module(&name, &program));
+            pages.insert(
+                filename.clone(),
+                render_module(&name.replace('.', "::"), &program),
+            );
         }
         modules.insert(name, filename);
     }
     let mut index = "# Modules\n\n".to_owned();
     for (name, filename) in modules {
-        index.push_str(&format!("- [{name}]({filename})\n"));
+        index.push_str(&format!("- [{}]({filename})\n", name.replace('.', "::")));
     }
     pages.insert("index.md".into(), index);
     Ok(pages)

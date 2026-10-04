@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { commandArguments, defaultNamespace, isNamespace, jsonLines, libraryModules, projectRoot, reservedWords, runProcess, supportsDebug } from '../core';
+import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, projectRoot, reservedWords, runProcess, supportsDebug } from '../core';
 
 test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
 	assert.equal(supportsDebug('win32', 'arm64'), false);
@@ -28,15 +28,27 @@ test('compiler arguments keep paths literal and debug builds unoptimized', () =>
 	assert.throws(() => commandArguments('build', root, 4));
 });
 
-test('new projects suggest a PascalCase namespace and accept dotted identifiers', () => {
+test('new projects suggest a PascalCase namespace and accept identifiers joined by ::', () => {
 	for (const [folder, namespace] of [['my-app', 'MyApp'], ['MyApp', 'MyApp'], ['hello_world', 'HelloWorld'], ['ex1', 'Ex1'], ['2024 app', 'App'], ['\u65e5\u672c', 'App']]) {
 		assert.equal(defaultNamespace(folder), namespace, folder);
 	}
-	for (const text of ['Sample', 'Acme.Tools', 'lower.case_1', 'Acme._internal', 'Acme.Option', 'Tasks']) {
+	for (const text of ['Sample', 'Acme::Tools', 'lower::case_1', 'Acme::_internal', 'Acme::Option', 'Tasks']) {
 		assert.ok(isNamespace(text), text);
 	}
-	for (const text of ['', '1st', 'Acme..Tools', 'Acme.', 'my-app', 'A.'.repeat(16) + 'A', 'Task', 'Acme.Task', 'Acme._', 'Acme.match', 'Option', 'IO.Extra']) {
+	for (const text of ['', '1st', 'Acme.Tools', 'Acme::::Tools', 'Acme:Tools', 'Acme::', 'my-app', 'A::'.repeat(16) + 'A', 'Task', 'Acme::Task', 'Acme::_', 'Acme::match', 'Option', 'IO::Extra']) {
 		assert.ok(!isNamespace(text), text);
+	}
+});
+
+test('static completions offer library members after a module but leave namespace paths to the language server', () => {
+	for (const [prefix, module] of [['let x = Option.ma', 'Option'], ['IO.', 'IO'], ['Sample::Option.ma', undefined], ['let x = option.', undefined], ['Sample::', undefined]]) {
+		assert.equal(libraryQualifier(prefix!), module, prefix);
+	}
+	for (const prefix of ['Sample::', 'Sample::Fe', 'let ys = x::x']) {
+		assert.ok(endsInPath(prefix), prefix);
+	}
+	for (const prefix of ['def main :: ', 'Sample::Shape.ar', 'let x = Option.']) {
+		assert.ok(!endsInPath(prefix), prefix);
 	}
 });
 

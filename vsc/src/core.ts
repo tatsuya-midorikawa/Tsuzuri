@@ -82,14 +82,27 @@ export const reservedWords = new Set('fn def rec and export extern private recor
 export const libraryModules = new Set('Option Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt'.split(' '));
 
 /**
- * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme.Tools`: at most 16 identifiers
+ * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme::Tools`: at most 16 identifiers joined by `::`
  * and 255 bytes, none a reserved word, `_`, or `Task`, and the first not a standard library module.
  */
 export function isNamespace(text: string): boolean {
-	const segments = text.split('.');
+	const segments = text.split('::');
 	return text.length <= 255 && segments.length <= 16 && !libraryModules.has(segments[0])
 		&& segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)
 			&& segment !== '_' && segment !== 'Task' && !reservedWords.has(segment));
+}
+
+/**
+ * The standard library module that qualifies the name typed at the end of `prefix`, such as `Option` in `Option.ma`.
+ * After a namespace path the module is the user's: `Sample::Option.` names no library module.
+ */
+export function libraryQualifier(prefix: string): string | undefined {
+	return /(?<![\w:])([A-Z][A-Za-z_0-9]*)\.[A-Za-z_0-9]*$/.exec(prefix)?.[1];
+}
+
+/** Whether `prefix` ends in a `::` path such as `Sample::Fe`, which only the language server completes. */
+export function endsInPath(prefix: string): boolean {
+	return /\w::\w*$/.test(prefix);
 }
 
 export interface ProcessResult {

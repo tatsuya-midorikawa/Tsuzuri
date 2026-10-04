@@ -435,7 +435,8 @@ match Task.run (Task.parallel_results jobs) with
 
 **モジュール名は拡張子を除いたファイル名で決まり、1 ファイルに 1 モジュールを強制します。**
 `module` 宣言、入れ子のモジュール、複数ファイルへの同一モジュールの分割はできません。モジュール名は英大文字で始めます。
-ファイルの最初の `namespace Sample.Features` でモジュールが属する名前空間を決め、その後の `using Sample.Features` で名前空間の修飾を省けます。
+ファイルの最初の `namespace Sample::Features` でモジュールが属する名前空間を決め、その後の `using Sample::Features` で名前空間の修飾を省けます。
+名前空間とモジュールは `::`、モジュールとその中の名前は `.` でつなぎます（`Sample::Features::Shape.area`）。
 宣言がなければ、`Tsuzuri.toml` の `namespace`（なければ package 名やフォルダー名）にディレクトリを続けた名前空間です。`tsuzuri new <フォルダー>` で新しいプロジェクトを作れます。
 同じディレクトリの `.tz`・`.tt`・`.tc` ファイルを自動で読み込みます。
 インポート宣言やファイルの列挙は不要です。
@@ -513,12 +514,12 @@ rootに`Tsuzuri.toml`を置くと、ローカル依存を同じ`check`／`build`
 [package]
 name = "app"
 version = "0.1.0"
-namespace = "Acme.App"
+namespace = "Acme::App"
 [dependencies]
 geometry-core = { path = "../geometry-core" }
 ```
 
-依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore.Point`（依存が`namespace`を持てばその名前空間）で参照し、依存内でも完全修飾します。
+依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore::Point`（依存が`namespace`を持てばその名前空間）で参照し、依存内でも完全修飾します。
 限定TOML、相対pathだけに対応し、ネットワークやbuild scriptは実行しません。詳細は[言語仕様](docs/language.md#ローカルパッケージ)を参照してください。
 
 ## ビルド
@@ -757,7 +758,7 @@ markerで管理対象を識別し、既存の非cacheディレクトリを転用
 入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tz` を選びます。
 ディレクトリ入力はそのディレクトリ、ファイル入力は親ディレクトリをルートにし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に読み込み、
 未参照のモジュール・ビルダーも検査します。
-`Geometry/Point.tz` は `Geometry.Point` になり、`Geometry.Point.distance` や `Geometry.Point.Point` と完全修飾して参照します。
+`Geometry/Point.tz` は `Geometry::Point` になり、`Geometry::Point.distance` や `Geometry::Point.Point` と完全修飾して参照します。
 隠し項目を無視し、ソース・ディレクトリのsymlinkを拒否します。各パス要素は大文字小文字を区別する ASCII 識別子で、
 `_` 単独や予約語は使えません。
 モジュールは16要素・255バイト、探索は4096ソース・1024ディレクトリまでです。上位のrootは推測せず、階層全体にはrootディレクトリを指定します。

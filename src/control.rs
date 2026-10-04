@@ -515,7 +515,7 @@ impl Checker<'_> {
                 if self.active_recognizer(name)?.is_some() {
                     return self.active_pattern(name, &[], matched);
                 }
-                if name.text.contains('.') {
+                if name.text.contains(['.', ':']) {
                     return Err(Diagnostic::new(
                         "E1020",
                         "a pattern binding cannot be a qualified name",

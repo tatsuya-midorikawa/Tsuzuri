@@ -637,7 +637,7 @@ fn folder_namespace(directory: &Path) -> String {
     crate::package::namespace(&name, Span::default())
         .ok()
         .filter(|namespace| crate::package::valid_namespace(namespace))
-        .or_else(|| crate::package::valid_namespace(&name).then_some(name))
+        .or_else(|| crate::package::valid_namespace(&name).then(|| name.replace("::", ".")))
         .unwrap_or_default()
 }
 

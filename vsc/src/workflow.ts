@@ -218,10 +218,10 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 				if ((await readdir(directory)).length) { throw new Error('Choose an empty folder. Existing files will not be overwritten.'); }
 				const namespace = await vscode.window.showInputBox({
 					title: 'Tsuzuri Project Namespace',
-					prompt: 'The default namespace that Tsuzuri.toml and Main.tz declare, such as Acme.Tools',
+					prompt: 'The default namespace that Tsuzuri.toml and Main.tz declare, such as Acme::Tools',
 					value: defaultNamespace(path.basename(directory)),
 					validateInput: text => isNamespace(text) ? undefined
-						: 'Use dotted identifiers such as Acme.Tools, without reserved words, _ or Task, that do not start with a standard library module name.',
+						: 'Use identifiers joined by :: such as Acme::Tools, without reserved words, _ or Task, that do not start with a standard library module name.',
 				});
 				if (namespace === undefined) { return; }
 				const result = await runCompiler(context, directory, ['new', directory, '--namespace', namespace]);

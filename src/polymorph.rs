@@ -1146,7 +1146,7 @@ impl Classes {
                     let mut constraints = declaration.superclasses.clone();
                     constraints.push(ConstraintExpr {
                         name: ConstraintName::Class(Ident {
-                            text: class.name.clone(),
+                            text: key_path(&class.name),
                             span: definition.name.span,
                             provenance: Provenance::Generated,
                         }),
@@ -2060,7 +2060,7 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
             };
             TypeExprKind::Apply(
                 Box::new(Ident {
-                    text: name.clone(),
+                    text: key_path(name),
                     span,
                     provenance: Provenance::Generated,
                 }),
@@ -2072,7 +2072,7 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
         }
         Type::Application(head, arguments) => TypeExprKind::Apply(
             Box::new(Ident {
-                text: head.display(types),
+                text: key_path(&key_name(head, types)),
                 span,
                 provenance: Provenance::Generated,
             }),
@@ -2082,7 +2082,7 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                 .collect(),
         ),
         Type::Partial(partial) => {
-            let name = partial.constructor.name(types);
+            let name = key_path(&partial.constructor.name(types));
             if partial.trailing.is_empty() {
                 TypeExprKind::Named(name)
             } else {
@@ -2101,9 +2101,19 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
             }
         }
         Type::Infer(_) => unreachable!("instance types are concrete"),
-        _ => TypeExprKind::Named(ty.display(types)),
+        _ => TypeExprKind::Named(key_path(&key_name(ty, types))),
     };
     TypeExpr { kind, span }
+}
+
+/// The name of `ty` that resolves it again: a record or union by its
+/// key-qualified name, which `Type::display` writes with `::`.
+fn key_name(ty: &Type, types: &TypeContext<'_>) -> String {
+    match ty {
+        Type::Record(id, arguments) if arguments.is_empty() => types.records[*id].name.clone(),
+        Type::Union(id, arguments) if arguments.is_empty() => types.unions[*id].name.clone(),
+        _ => ty.display(types),
+    }
 }
 
 /// A pending `UnsignedOf` or `WidenOf` result of a builtin use: `output` is
