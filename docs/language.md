@@ -20,7 +20,7 @@ native exe/objectの同梱`Array.sum<i64>`は実行時CPU選択の対象です�
     `for` `in` `to` `downto` `while` `break` `continue` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
   `true` `false` です。関数・変数・フィールド・モジュールの名前には使えません（`refs` や `ref_count` は使えます）。
   `of` は `union` の case 宣言の中だけで意味を持つ文脈キーワードで、それ以外では通常の識別子です。
-    `where` も関数ガードの後置束縛を始める位置だけの文脈キーワードです。
+    `where` も関数ガードの後置束縛を始める位置だけの文脈キーワードです。`namespace`／`using` はファイル先頭の宣言だけの文脈キーワードです。
     `Set.union`のため、`union`だけはモジュール関数の宣言名とdot後のメンバー名にも使えます。変数・型・モジュール名には使えません。
 - `//` 行コメントと、入れ子可能な `/* ... */` コメント。
 - `=`, `then`, `do`, `->` に続く複数行の本体は、最初の式のインデントを基準にし、
@@ -69,8 +69,9 @@ classは常にpublicでmethodを含み、instance実装は文書化しません�
 
 各 `.tz`・`.tt`・`.tc` ファイルは、rootからの相対パスで一つのモジュールを定義します。`Geometry/Point.tz` は `Geometry.Point` です。
 モジュール名は大文字小文字を区別する ASCII 識別子で、`_` 単独や字句上の予約語は使えません。
+モジュール名（拡張子を除いたファイル名）は英大文字で始めます。`point.tz` は `E1011` で、`Point.tz` への改名を案内します。ディレクトリ名は小文字でも構いません。
 `Task` は組み込みの型・名前空間であり、モジュール・レコード・型クラス名には使えません。
-`module`／`namespace` 宣言、同じモジュールの複数ファイルへの分割はできません。階層はディレクトリで表し、`open`・alias・相対参照は導入しません。
+`module` 宣言、入れ子のモジュール、同じモジュールの複数ファイルへの分割はできません。モジュールが属する名前空間は `namespace` 宣言とディレクトリで表します（[名前空間](#名前空間namespaceusing)）。
 拡張子ごとの内容は次のとおりです。
 
 | 拡張子 | 許可する内容 |
@@ -96,6 +97,64 @@ classは常にpublicでmethodを含み、instance実装は文書化しません�
 関数・型・レコード・case・クラス・ビルダーは `Geometry.Point.distance` のように完全修飾でき、同名のローカル値があればフィールドアクセスを優先します。
 標準ライブラリは従来の `Option.map` 等のままです。任意の検索パスはありません。
 
+#### 名前空間（namespace／using）
+
+名前空間はモジュールのまとまりに名前を付けます。名前空間に属するのはモジュールだけで、関数・レコード・union などの宣言は常にファイル（モジュール）に属します。
+モジュールの完全名は「名前空間 + `.` + ファイル名」です。ファイルの最初の宣言に `namespace [親.]名前` を書くと、そのファイルの名前空間を指定できます。
+
+```text
+namespace Sample.Features
+
+union Shape =
+    | Circle of f64
+    | Rect of f64 * f64
+
+def area :: Shape -> f64 = \shape ->
+    match shape with
+    | Circle r -> r * r * 3.141592653589793
+    | Rect (w, h) -> w * h
+```
+
+- `namespace` 宣言はファイルの最初の宣言で、単独の行に書きます。ドキュメントコメントも宣言の後に置きます。2 個目以降や途中の `namespace` は `E0002` です。
+  `namespace` と `using` は文脈キーワードで、それ以外の位置では通常の識別子として使えます。
+- 宣言のないファイルの名前空間は、パッケージの既定名前空間に root からのディレクトリを続けたものです（`Geometry/Point.tz` は `既定.Geometry`）。
+- パッケージの既定名前空間は `Tsuzuri.toml` の `[package]` の `namespace`、なければ package 名の PascalCase（`geometry-core` は `GeometryCore`）、`Tsuzuri.toml` がなければ root フォルダー名です。
+  フォルダー名が kebab-case なら同じく PascalCase にし、識別子として使えない名前ならグローバル名前空間とします。
+- 同じ完全名のモジュールを 2 つのファイルが宣言すると `E1011` です。標準ライブラリのモジュールはグローバル名前空間に属します。
+- 名前空間は 16 要素までです。既定名前空間の直下の最初の要素とディレクトリの先頭要素には、標準ライブラリの予約モジュール名を使えません（`E1011`）。
+
+モジュールのパスは、参照するファイルの名前空間から外側へ順に、名前空間を補って解決します（C# と同じ順序です）。
+`namespace Sample` のファイルでは、`Sample.Shape.area` も `Shape.area` も `Sample.Shape` モジュールの `area` です。
+`namespace Sample.Codebase` のファイルの `Shape` は、`Sample.Codebase.Shape`、`Sample.Shape`、`Shape` の順に探します。
+名前空間を宣言しないファイルどうしの従来のパス（`Geometry.Point.distance`）もそのまま使えます。
+
+モジュール名と同じ名前の `record`／`union` は、モジュールのパスでも参照できます。`namespace Sample` の `Point.tz` にある `record Point` は `Sample.Point { x: 1.0, y: 2.0 }` と書け、`Sample.Point.Point` と重ねる必要はありません。
+`Sample.Point.Point` の形も引き続き使えます。
+
+`using 名前空間` は `namespace` 宣言の後、他の宣言の前に書き、その名前空間の直下のモジュールを修飾なしのモジュール名で参照できるようにします。
+
+```text
+namespace Sample
+
+using Sample.Features
+
+def main :: i32 = \() ->
+    Shape.area (Shape.Rect (3.0, 4.0)) |> ignore
+    0
+```
+
+- `using` の名前空間も、ファイルの名前空間から外側へ順に解決します（`namespace Sample` の `using Features` は `Sample.Features`）。
+- `using` はファイルの名前空間の直後に探します。ファイルと同じ名前空間のモジュールが優先し、`using` で見つからなければ外側の名前空間を探します。
+  入れ子の名前空間は取り込みません（`using Sample` で `Features.Shape` とは書けません）。
+- 複数の `using` が同じ名前のモジュールを取り込み、ファイルの名前空間にその名前のモジュールがないとき、その名前を使うと `E1004` です。名前空間で修飾してください。
+- 存在しない名前空間、モジュールを指す `using`、同じ名前空間の重複は `E1011` です。`using` の位置の誤りは `E0002` です。
+
+アプリケーションの入口は、名前空間にかかわらず root パッケージ直下の `Main.tz` です。
+コンパイラ内部と IR のシンボル名は、既定名前空間を除いた名前（`Main.main`、`Geometry.Point.distance`）を使うため、既定名前空間を宣言しても既存のシンボルは変わりません。
+
+`tsuzuri new <directory> [--namespace NAME]` は空のフォルダーに `Tsuzuri.toml`・`Main.tz`・`.gitignore` を作ります。
+`Tsuzuri.toml` には必ず `namespace` を書き、`Main.tz` は同じ名前空間を宣言します。`--namespace` を省くとフォルダー名から package 名と名前空間を決めます。VS Code の新規プロジェクトも同じコマンドを使います。
+
 #### ローカルパッケージ
 
 rootの`Tsuzuri.toml`があると、ローカルpath依存を追加で読み込みます。manifestなしの探索規則は変わりません。
@@ -104,17 +163,19 @@ rootの`Tsuzuri.toml`があると、ローカルpath依存を追加で読み込�
 [package]
 name = "app"
 version = "0.1.0"
+namespace = "Acme.App"
 [dependencies]
 geometry-core = { path = "../geometry-core" }
 ```
 
 各依存にもname/versionを持つmanifestが必要で、依存キーは実際のnameと一致させます。versionは非空文字列で、版解決には使いません。
 nameは小文字ASCII kebab-case（各要素は英字始まり、255byteまで）。`geometry-core`の名前空間は`GeometryCore`です。
-依存の`Point.tz`は`GeometryCore.Point`になり、依存内部からも完全修飾します。rootにはprefixを付けず、依存の`Main.tz`は入口にしません。
+省略できる`namespace`はパッケージの既定名前空間で、`Acme.Tools`のようなドット区切りの識別子（16要素・255byteまで、先頭要素はstdの予約名以外）です。不正な値はE1011です。
+依存の`Point.tz`は`GeometryCore.Point`（`namespace = "Acme.Tools"`なら`Acme.Tools.Point`）になり、依存内部からも完全修飾します。rootにはprefixを付けず、依存の`Main.tz`は入口にしません。
 同一の正規化rootは共有し、循環、同名の別root、rootとの名前空間衝突、予約名前空間、symlinkをE1011で拒否します。
 グラフは1024package・深さ128・全4096sourceまでで、超過はE1017です。ネストした依存rootを親packageとして二重に探索しません。
 文法は上記のsection/keyだけの限定TOMLです。コメント`#`、空行、CRLF、引用符付きUTF-8文字列と`\"`・`\\`・`\n`・`\r`・`\t`を許し、それ以外のキー・escape・構文はE0002です。
-manifestと依存sourceも出力保護の対象です。ネットワーク、git、lockfile、版解決、build script、言語内import宣言は導入しません。
+manifestと依存sourceも出力保護の対象です。ネットワーク、git、lockfile、版解決、build scriptは導入しません。モジュールを取り込む宣言は `using` だけで、import宣言はありません。
 
 #### 標準ライブラリ
 
@@ -816,11 +877,12 @@ Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ち�
 ### アプリケーションのエントリーポイント
 
 `run` とネイティブ実行ファイルのビルドは **`Main.tz` またはそのディレクトリ** を入力にします。
-他ファイルの `fn main` は通常の関数であり、エントリーポイントとして選択されません。
+他ファイルの `fn main` は通常の関数であり、エントリーポイントとして選択されません。`Main.tz` が `namespace` を宣言していても入口は変わりません。
 `Main.tz` では次のどちらか一方を使います。
 
 - 宣言の後にトップレベルの `let` を順に書き、必要なら最後に結果式を書く。
 - 引数なしで `IO<T>` または数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` を返す `fn main` を定義する。
+  `def main :: i32 = \() -> ...` のように、引数なしの型に `\() ->` の本体を書いても引数なしの関数です。
 
 Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき、トップレベル実行と同じ入口として型推論します。
 この形は他の関数から呼ぶ宣言にはなりません。通常の関数や呼び出す main は従来どおり `def` を付けます。

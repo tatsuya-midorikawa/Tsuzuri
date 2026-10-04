@@ -884,3 +884,88 @@ fn server_lifecycle_and_protocol_errors_are_framed() {
     );
     assert!(read_message(&mut output).unwrap().unwrap().unwrap()["result"].is_null());
 }
+
+const N_CIRCLE: &str = "namespace Demo.Shapes\n\ndef radius :: i64 -> i64 = \\x -> x\n";
+const N_REPORT: &str = "namespace Demo\n\nusing Demo.Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes.Circle.radius x\n";
+
+#[test]
+fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
+    use serde_json::json;
+    let files = [("Circle.tz", N_CIRCLE), ("Report.tz", N_REPORT)];
+    let labels = |response: &serde_json::Value| -> Vec<(String, String)> {
+        response["result"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{response}"))
+            .iter()
+            .map(|item| {
+                (
+                    item["label"].as_str().unwrap().to_owned(),
+                    item["detail"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let edited = |tail: &str| N_REPORT.replace("Circle.radius x + Shapes.Circle.radius x", tail);
+    let mut circle = String::new();
+    let responses = scripted(&files, "utf-16", |uri| {
+        circle = uri("Circle.tz");
+        let report = uri("Report.tz");
+        let change = |version: u64, text: &str| json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": report, "version": version}, "contentChanges": [{"text": text}]}});
+        let complete = |id: u64, text: &str, needle: &str| {
+            let mut at = position(text, needle, "utf-16");
+            at["character"] = json!(at["character"].as_u64().unwrap() + needle.len() as u64);
+            json!({"id": id, "method": "textDocument/completion", "params": {"textDocument": {"uri": report}, "position": at}})
+        };
+        let definition = |id: u64, needle: &str| json!({"id": id, "method": "textDocument/definition", "params": {"textDocument": {"uri": report}, "position": position(N_REPORT, needle, "utf-16")}});
+        let (shapes, demo, roots) = (edited("Shapes."), edited("Demo."), edited("C"));
+        vec![
+            definition(1, "Circle.radius x +"),
+            definition(2, "Shapes.Circle.radius"),
+            json!({"id": 3, "method": "textDocument/semanticTokens/full", "params": {"textDocument": {"uri": report}}}),
+            change(2, &shapes),
+            complete(4, &shapes, "Shapes."),
+            change(3, &demo),
+            complete(5, &demo, "Demo."),
+            change(4, &roots),
+            complete(6, &roots, "\\x -> C"),
+        ]
+    });
+    for response in &responses[..2] {
+        assert_eq!(response["result"]["uri"], json!(circle), "{response}");
+    }
+    let header: Vec<_> = decode(&responses[2]["result"]["data"])
+        .into_iter()
+        .filter(|token| token[0] < 3)
+        .collect();
+    assert_eq!(
+        header,
+        [[0, 10, 4, 0, 0], [2, 6, 4, 0, 0], [2, 11, 6, 0, 0]]
+    );
+    assert_eq!(
+        labels(&responses[3]),
+        [("Circle".to_owned(), "module Demo.Shapes.Circle".to_owned())]
+    );
+    let demo = labels(&responses[4]);
+    for expected in [
+        ("Report", "module Demo.Report"),
+        ("Shapes", "namespace Demo.Shapes"),
+    ] {
+        assert!(
+            demo.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+            "{expected:?}: {demo:?}"
+        );
+    }
+    let roots = labels(&responses[5]);
+    for expected in [
+        ("Circle", "module Demo.Shapes.Circle"),
+        ("Demo", "namespace Demo"),
+        ("Shapes", "namespace Demo.Shapes"),
+        ("namespace", "keyword"),
+        ("using", "keyword"),
+    ] {
+        assert!(
+            roots.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+            "{expected:?}: {roots:?}"
+        );
+    }
+}

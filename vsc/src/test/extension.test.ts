@@ -45,7 +45,15 @@ export async function run(): Promise<void> {
 	assert.ok(definitions.length);
 	const target = 'targetUri' in definitions[0] ? definitions[0].targetUri : definitions[0].uri;
 	assert.equal(target.fsPath, path.join(root, 'Geometry', 'Point.tz'));
-	console.log('VS Code: language registration, hover, outline, cross-file definition passed.');
+	const report = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'Report.tz')));
+	for (const needle of ['Circle.radius', 'Shapes.Circle.radius']) {
+		const found = await waitFor(`namespace definition of ${needle}`, async () => {
+			const values = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', report.uri, report.positionAt(report.getText().indexOf(needle)));
+			return values?.length ? values[0] : undefined;
+		});
+		assert.equal(('targetUri' in found ? found.targetUri : found.uri).fsPath, path.join(root, 'Shapes', 'Circle.tz'), needle);
+	}
+	console.log('VS Code: language registration, hover, outline, cross-file and namespace definitions passed.');
 
 	const other = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(process.env.TSUZURI_TEST_OTHER!, 'Main.tz')));
 	await waitFor('independent workspace language servers', () => api.clients.size === 2 ? true : undefined);

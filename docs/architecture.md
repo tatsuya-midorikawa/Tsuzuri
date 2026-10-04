@@ -8,6 +8,7 @@ LLVM の C API／Rust バインディングには結合しません。
 ```text
 UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main.tz)
    -> driver -> sorted source files + filename-based module names and source kinds
+             + the root package's default namespace for its sources
              + embedded std sources (stdlib::SOURCES) appended after user sources
    -> lexer -> tokens + per-file byte spans
    -> parser -> syntax AST per file
@@ -238,6 +239,14 @@ source4096・directory1024・module16要素/255byteを上限とし、標準ラ�
 型付き IR・LLVM の内部シンボル・公開 ABI を変えません。他モジュールの private 候補は
 無修飾レコード名の解決先にも曖昧性の候補にもなりません。public 宣言からの private 型の漏れは
 解決済みの `Type` ではなく元の `TypeExpr` を走査して、漏れた型参照の位置で報告します。
+
+**名前空間:** パーサーは先頭の文脈キーワード `namespace A.B` と、その後の `using A.B` を `Program.namespace`／`Program.usings` に読みます。
+`SourceFile.namespace` は root パッケージの既定名前空間（manifest の `namespace`、package 名の PascalCase、manifest がなければフォルダー名）で、依存と std は空です。
+`lib::module_identity` が相対パス・宣言・既定名前空間からモジュールの key と名前空間を決めます。key は宣言のないファイルでは従来の相対パス名、既定名前空間の内側を宣言したファイルでは既定名前空間を除いた名前、それ以外は完全名です。
+key は型検査・型付き IR・LLVM シンボルの修飾名なので、既定名前空間を宣言しても IR は変わりません。入口は key ではなく `ModuleInput.entry`（root の `Main.tz`）で選びます。
+`check::Names` は完全名から key への表、key ごとの名前空間と `using` の解決結果を持ちます。`module_path` は参照元の名前空間、`using`（モジュール名だけ）、外側の名前空間、グローバルの順に完全名を探し、最後に key として探します。
+`canonical` はソースのパスの最長のモジュール接頭辞を key に置き換え、関数・case・型・クラス・active pattern・ビルダーの検索の前に一度だけ適用します（key で修飾した内部の検索には適用しません）。
+モジュールのパスは同名の record／union も表します。`using` の曖昧さは `check_path`／`check_module` が検索の入口で `E1004` にします。LSP は `ModuleNames` で同じ規則を再現し、補完・シグネチャヘルプ・semantic token に使います。
 
 **パッケージ:** 読み込み層は`Tsuzuri.toml`のlocal path依存も扱います。`package.rs`が限定文法を解析し、driverは明示スタックでgraphの循環・名前・上限を検査します。
 `SourceFile.package`にcanonical rootとnameのPackageIdを保存し、依存namespaceをrelative_pathへ付けます。型検査のUser/Std分類やprivateの境界は変更しません。

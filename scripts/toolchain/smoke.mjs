@@ -102,6 +102,16 @@ try {
     console.log(`Bundled WASM ${optimization}: linked and executed.`);
   }
   run(compiler, ['fmt', path.join(kernel, 'Main.tz')]);
+  const created = path.join(directory, 'new app');
+  run(compiler, ['new', created, '--namespace', 'Acme.Smoke']);
+  assert.match(await readFile(path.join(created, 'Tsuzuri.toml'), 'utf8'), /^namespace = "Acme\.Smoke"$/m);
+  await mkdir(path.join(created, 'Shapes'));
+  await writeFile(path.join(created, 'Shapes', 'Square.tz'), 'namespace Acme.Smoke.Shapes\n\ndef side :: i64 -> i64 = \\x -> x * 2\n');
+  await writeFile(path.join(created, 'Main.tz'), 'namespace Acme.Smoke\n\nusing Acme.Smoke.Shapes\n\ndef main :: i64 = \\() -> Square.side 20 + Shapes.Square.side 1\n');
+  const application = path.join(directory, `namespaces${suffix}`);
+  run(compiler, ['build', created, '--no-cache', '-o', application]);
+  assert.equal(run(application, []).stdout, '42\n');
+  console.log('New project: tsuzuri new, namespace, and using passed.');
   if (discover) {
     const rejected = run(compiler, ['build', kernel, '--target', 'wasm32', '--no-cache', '-o', path.join(directory, 'rejected.wasm')], {
       env: { ...environment, TSUZURI_WASM_LD: path.join(directory, 'not-a-linker') }, expectedCode: 1,

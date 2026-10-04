@@ -215,6 +215,81 @@ fn loads_and_protects_local_package_graphs() {
 }
 
 #[test]
+fn package_namespaces_name_root_and_dependency_modules() {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tsuzuri::driver::Project;
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-namespaces-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write(
+        "app/Tsuzuri.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nnamespace = \"Acme.App\"\n[dependencies]\nacme-tools = { path = \"../tools\" }\n",
+    );
+    write(
+        "tools/Tsuzuri.toml",
+        "[package]\nname = \"acme-tools\"\nversion = \"0.1.0\"\nnamespace = \"Acme.Tools\"\n",
+    );
+    write("tools/Text.tz", "def width :: i64 -> i64 = \\x -> x * 10\n");
+    write(
+        "app/Shapes/Square.tz",
+        "def side :: i64 -> i64 = \\x -> x\n",
+    );
+    write(
+        "app/Main.tz",
+        "namespace Acme.App\n\nusing Acme.Tools\n\ndef main :: i64 = \\() -> Text.width 1 + Acme.Tools.Text.width 2 + Shapes.Square.side 3 + Acme.App.Shapes.Square.side 4\n",
+    );
+    let project = Project::load(&root.join("app")).unwrap();
+    let module = project.analyze().unwrap();
+    // Files of the package namespace keep their path names inside the compiler.
+    assert_eq!(
+        module.functions[module.entry.unwrap()].qualified_name(),
+        "Main.main"
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    for symbol in [
+        "@tz.fn.Main.main()",
+        "@tz.fn.Acme.Tools.Text.width(",
+        "@tz.fn.Shapes.Square.side(",
+    ] {
+        assert!(ir.contains(symbol), "{symbol}");
+    }
+    // A root directory may not reuse a dependency namespace.
+    write("app/Acme/Tools/Extra.tz", "");
+    let error = Project::load(&root.join("app")).unwrap_err();
+    assert_eq!(error.diagnostic.code, "E1011");
+    assert!(error.diagnostic.message.contains("dependency namespace"));
+    fs::remove_dir_all(root.join("app/Acme")).unwrap();
+    // A folder without a manifest uses its name as the package namespace.
+    write(
+        "plain-dir/Main.tz",
+        "namespace PlainDir\n\ndef main :: i64 = \\() -> Util.one ()\n",
+    );
+    write("plain-dir/Util.tz", "def one :: unit -> i64 = \\_ -> 1\n");
+    let module = Project::load(&root.join("plain-dir"))
+        .unwrap()
+        .analyze()
+        .unwrap();
+    assert_eq!(
+        module.functions[module.entry.unwrap()].qualified_name(),
+        "Main.main"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn module_paths_map_to_bounded_dotted_names() {
     let module = analyze_modules(&[("Geometry/Point.tz", "fn value() -> i64 { 42 }")]).unwrap();
     assert!(
@@ -581,20 +656,45 @@ fn rejects_unqualified_foreign_functions_and_missing_members() {
 
 #[test]
 fn validates_module_names_and_preserves_unique_export_abi() {
-    for name in ["", "_", "fn", "Bad-Name", "Nested.Module", "日本語"] {
+    for name in [
+        "",
+        "_",
+        "fn",
+        "Bad-Name",
+        "Nested.Module",
+        "日本語",
+        "module",
+        "main",
+        "lower",
+    ] {
         let error = analyze_modules(&[(name, "fn value() -> i64 { 1 }")]).unwrap_err();
         assert_eq!(error.code, "E1011", "{name}");
     }
+    assert!(
+        analyze_modules(&[("lower", "")])
+            .unwrap_err()
+            .message
+            .contains("for example to 'Lower'")
+    );
     assert_eq!(
         analyze_modules(&[("Same", ""), ("Same", "")])
             .unwrap_err()
             .code,
         "E1011"
     );
-    for source in ["module Nested {}", "namespace Nested", "module Main"] {
+    for source in [
+        "module Nested {}",
+        "namespace Nested {}",
+        "module Main",
+        "def x :: i64 = 1\nnamespace Nested",
+        "def x :: i64 = 1\nusing Nested",
+        "using Nested\nnamespace Nested",
+        "namespace Nested\nusing Nested Other",
+    ] {
         assert_eq!(
             analyze_modules(&[("Main", source)]).unwrap_err().code,
-            "E0002"
+            "E0002",
+            "{source}"
         );
     }
     let error = analyze_modules(&[
@@ -607,8 +707,8 @@ fn validates_module_names_and_preserves_unique_export_abi() {
     assert!(error.message.contains("tz_value"));
     assert!(
         analyze_modules(&[
-            ("module", "fn value() -> i64 { 42 }"),
-            ("Main", "module.value()"),
+            ("Module", "fn value() -> i64 { 42 }"),
+            ("Main", "let module = 1\nlet namespace = 2\nlet using = 3\nmodule + namespace + using + Module.value()"),
         ])
         .is_ok()
     );
@@ -638,7 +738,6 @@ fn uses_only_main_as_the_application_entry_point() {
     );
     for sources in [
         vec![("Other", "let x = 42")],
-        vec![("main", "42")],
         vec![("Main", "fn main() -> i64 { 1 }\nlet value = 42")],
     ] {
         assert_eq!(analyze_modules(&sources).unwrap_err().code, "E2004");
@@ -661,6 +760,158 @@ fn uses_only_main_as_the_application_entry_point() {
             shown
         );
         llvm::emit(&module, llvm::Entry::Console).unwrap();
+    }
+}
+
+const NS_SHAPE: &str = "namespace Sample\n\nunion Shape =\n    | Circle of f64\n    | Rect of f64 * f64\n\nunion Maybe<'a> = None | Some of 'a\n\ndef area :: Shape -> f64 = \\shape ->\n    match shape with\n    | Circle r -> r * r * 3.0\n    | Rect (w, h) -> w * h\n";
+const NS_POINT: &str = "namespace Sample\n\nrecord Point { x: f64, y: f64 }\n\ndef sum :: Point -> f64 = \\point -> point.x + point.y\n";
+
+#[test]
+fn namespaces_qualify_modules_and_module_named_types() {
+    let main = "namespace Sample\n\ndef main :: f64 = \\() ->\n    let p = Sample.Point { x: 1.0, y: 2.0 }\n    let q: Point = Point { x: 3.0, y: 4.0 }\n    let maybe: Sample.Shape.Maybe<i64> = Sample.Shape.Some 1\n    Sample.Shape.area (Sample.Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample.Point.sum p + Point.sum q\n";
+    let module =
+        analyze_modules(&[("Shape", NS_SHAPE), ("Point", NS_POINT), ("Main", main)]).unwrap();
+    let entry = &module.functions[module.entry.unwrap()];
+    assert_eq!(entry.qualified_name(), "Sample.Main.main");
+    assert_eq!(entry.signature.result, Type::F64);
+    assert!(
+        llvm::emit(&module, llvm::Entry::Console)
+            .unwrap()
+            .contains("@tz.fn.Sample.Main.main()")
+    );
+    // A namespace holds only modules, and a module-named type does not nest again.
+    for (source, code) in [
+        (
+            "def main :: f64 = \\() -> Sample.area (Sample.Shape.Rect (1.0, 1.0))",
+            "E1002",
+        ),
+        (
+            "def p :: Sample.Point.Point.Point -> f64 = \\p -> p.x",
+            "E1004",
+        ),
+        (
+            "def main :: f64 = \\() -> Missing.Shape.area (Sample.Shape.Rect (1.0, 1.0))",
+            "E1002",
+        ),
+    ] {
+        let main = format!("namespace Sample\n\n{source}\n");
+        let error = analyze_modules(&[("Shape", NS_SHAPE), ("Point", NS_POINT), ("Main", &main)])
+            .unwrap_err();
+        assert_eq!(error.code, code, "{source}: {}", error.message);
+    }
+    // Inner namespaces see the enclosing ones; outer namespaces qualify inner modules.
+    let inner = "namespace Sample.Codebase\n\ndef twice :: f64 -> f64 = \\x -> Shape.area (Rect (x, 2.0))\n";
+    let main = "namespace Sample\n\ndef main :: f64 = \\() -> Codebase.Foo.twice 1.0 + Sample.Codebase.Foo.twice 2.0\n";
+    analyze_modules(&[("Shape", NS_SHAPE), ("Foo", inner), ("Main", main)]).unwrap();
+    // The same full name from two files.
+    let error = analyze_modules(&[
+        ("Shape", NS_SHAPE),
+        ("Other/Shape", NS_SHAPE),
+        (
+            "Main",
+            "namespace Sample\n\ndef main :: f64 = \\() -> 0.0\n",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1011");
+    assert!(
+        error.message.contains("'Sample.Shape'"),
+        "{}",
+        error.message
+    );
+    assert_eq!(error.span.source, Some(1));
+}
+
+#[test]
+fn using_imports_the_modules_of_a_namespace() {
+    let features = "namespace Sample.Features\n\ndef scale :: i64 -> i64 = \\x -> x * 2\n";
+    let other = "namespace Other\n\ndef scale :: i64 -> i64 = \\x -> x * 3\n";
+    let own = "namespace Sample\n\ndef scale :: i64 -> i64 = \\x -> x * 5\n";
+    let main = |usings: &str, body: &str| {
+        format!("namespace Sample\n{usings}\ndef main :: i64 = \\() -> {body}\n")
+    };
+    let entry_calls = |module: &tsuzuri::check::CheckedModule| -> String {
+        let ir = llvm::emit(module, llvm::Entry::Console).unwrap();
+        let body = ir.split("@tz.fn.Sample.Main.main()").nth(1).unwrap();
+        body[..body.find("\n}").unwrap()].to_owned()
+    };
+    let module = analyze_modules(&[
+        ("Features/Math", features),
+        ("Main", &main("using Sample.Features\n", "Math.scale 21")),
+    ])
+    .unwrap();
+    assert!(entry_calls(&module).contains("@tz.fn.Sample.Features.Math.scale("));
+    // `using` resolves relative to the file's namespace, and closer modules win.
+    let module = analyze_modules(&[
+        ("Features/Math", features),
+        ("Math", own),
+        ("Main", &main("using Features\n", "Math.scale 21")),
+    ])
+    .unwrap();
+    assert!(entry_calls(&module).contains("@tz.fn.Sample.Math.scale("));
+    // Two imported modules with one name are ambiguous until qualified.
+    let sources = |body: &str| {
+        [
+            ("Features/Math".to_owned(), features.to_owned()),
+            ("Other/Math".to_owned(), other.to_owned()),
+            (
+                "Main".to_owned(),
+                main("using Sample.Features\nusing Other\n", body),
+            ),
+        ]
+    };
+    let ambiguous = sources("Math.scale 21");
+    let pairs: Vec<_> = ambiguous
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    let error = analyze_modules(&pairs).unwrap_err();
+    assert_eq!(error.code, "E1004");
+    assert!(
+        error
+            .message
+            .contains("'Sample.Features.Math', 'Other.Math'"),
+        "{}",
+        error.message
+    );
+    let qualified = sources("Other.Math.scale 21 + Features.Math.scale 1");
+    let pairs: Vec<_> = qualified
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    analyze_modules(&pairs).unwrap();
+    for (usings, needle) in [
+        ("using Nowhere\n", "names no namespace"),
+        (
+            "using Sample.Features.Math\n",
+            "is a module, not a namespace",
+        ),
+        (
+            "using Features\nusing Sample.Features\n",
+            "duplicate using 'Sample.Features'",
+        ),
+    ] {
+        let error = analyze_modules(&[("Features/Math", features), ("Main", &main(usings, "0"))])
+            .unwrap_err();
+        assert_eq!(error.code, "E1011", "{usings}");
+        assert!(
+            error.message.contains(needle),
+            "{usings}: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn unit_lambda_definitions_take_no_parameters() {
+    for source in [
+        "def main :: i32 = \\() ->\n    let x = 40\n    x + 2\n",
+        "def main :: i32 = \\() -> 42\n",
+    ] {
+        let module = analyze_modules(&[("Main", source)]).unwrap();
+        let entry = &module.functions[module.entry.unwrap()];
+        assert!(entry.parameters.is_empty(), "{source}");
+        assert_eq!(entry.signature.result, Type::I32, "{source}");
     }
 }
 

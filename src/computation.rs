@@ -138,6 +138,7 @@ fn hole_values(interpolation: &mut Interpolation) -> Vec<&mut Expr> {
 fn try_children<'a>(
     handled: &'a mut TryExpr,
     names: &Names,
+    module: &str,
     pattern_depth: &mut usize,
 ) -> Result<Vec<&'a mut Expr>, Diagnostic> {
     let TryExpr {
@@ -147,7 +148,7 @@ fn try_children<'a>(
     } = handled;
     let mut values = vec![body];
     for arm in arms {
-        expand_pattern(&mut arm.pattern, names)?;
+        expand_pattern(&mut arm.pattern, names, module)?;
         *pattern_depth = (*pattern_depth).max(arm.pattern.depth);
         values.extend(arm.guard.iter_mut());
         values.push(&mut arm.body);
@@ -156,38 +157,42 @@ fn try_children<'a>(
     Ok(values)
 }
 
-pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnostic> {
+/// Lowers the computation expressions in `expression`, whose builder names
+/// resolve from `module`.
+pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Result<(), Diagnostic> {
     let span = expression.span;
     let mut pattern_depth = 0;
     let children: Vec<&mut Expr> = match &mut expression.kind {
         ExprKind::Computation(builder, body) => {
-            expand_block(body, names)?;
+            expand_block(body, names, module)?;
             if builder.text.starts_with("$implicit") {
                 expression.depth = body.depth + 1;
                 return bounded_depth(expression.depth, span);
             }
-            let lowered = lower(builder, body, names)?;
+            names.check_module(module, &builder.text, builder.span)?;
+            let lowered = lower(&resolved_builder(builder, names, module), body, names)?;
             expression.depth = lowered.depth;
             expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
             bounded_depth(expression.depth, span)?;
             return Ok(());
         }
         ExprKind::Record { name, fields }
-            if fields.is_empty() && names.builders.contains_key(&name.text) =>
+            if fields.is_empty() && names.builder(module, &name.text).is_some() =>
         {
             let body = ComputationBlock {
                 statements: Vec::new(),
                 span,
                 depth: 1,
             };
-            let lowered = lower(name, &body, names)?;
+            names.check_module(module, &name.text, name.span)?;
+            let lowered = lower(&resolved_builder(name, names, module), &body, names)?;
             expression.depth = lowered.depth;
             expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
             bounded_depth(expression.depth, span)?;
             return Ok(());
         }
         ExprKind::ComputationBoundary(value) => {
-            expand(value, names)?;
+            expand(value, names, module)?;
             expression.depth = value.depth;
             return Ok(());
         }
@@ -220,7 +225,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
             source,
             body,
         } => {
-            expand_pattern(pattern, names)?;
+            expand_pattern(pattern, names, module)?;
             pattern_depth = pattern.depth;
             vec![source, body]
         }
@@ -238,14 +243,14 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
         ExprKind::Match { value, arms, .. } => {
             let mut values = vec![value.as_mut()];
             for arm in arms {
-                expand_pattern(&mut arm.pattern, names)?;
+                expand_pattern(&mut arm.pattern, names, module)?;
                 pattern_depth = pattern_depth.max(arm.pattern.depth);
                 values.extend(arm.guard.iter_mut());
                 values.push(&mut arm.body);
             }
             values
         }
-        ExprKind::Try(handled) => try_children(handled, names, &mut pattern_depth)?,
+        ExprKind::Try(handled) => try_children(handled, names, module, &mut pattern_depth)?,
         ExprKind::Block { bindings, result } => bindings
             .iter_mut()
             .map(|binding| &mut binding.value)
@@ -279,17 +284,29 @@ pub(super) fn expand(expression: &mut Expr, names: &Names) -> Result<(), Diagnos
     };
     let mut depth = 0;
     for child in children {
-        expand(child, names)?;
+        expand(child, names, module)?;
         depth = depth.max(child.depth);
     }
     expression.depth = depth.max(pattern_depth) + 1;
     bounded_depth(expression.depth, span)
 }
 
-fn expand_pattern(pattern: &mut Pattern, names: &Names) -> Result<(), Diagnostic> {
+/// `builder` spelled with the key of the builder module it names from
+/// `module`, or unchanged when it names none.
+fn resolved_builder(builder: &Ident, names: &Names, module: &str) -> Ident {
+    match names.builder(module, &builder.text) {
+        Some(key) if key != builder.text => Ident {
+            text: key.to_owned(),
+            ..builder.clone()
+        },
+        _ => builder.clone(),
+    }
+}
+
+fn expand_pattern(pattern: &mut Pattern, names: &Names, module: &str) -> Result<(), Diagnostic> {
     let children: Vec<&mut Pattern> = match &mut pattern.kind {
         PatternKind::Literal(value) | PatternKind::Argument(value) => {
-            expand(value, names)?;
+            expand(value, names, module)?;
             pattern.depth = value.depth;
             return bounded_depth(pattern.depth, pattern.span);
         }
@@ -304,32 +321,36 @@ fn expand_pattern(pattern: &mut Pattern, names: &Names) -> Result<(), Diagnostic
     };
     let mut depth = 0;
     for child in children {
-        expand_pattern(child, names)?;
+        expand_pattern(child, names, module)?;
         depth = depth.max(child.depth);
     }
     pattern.depth = depth + 1;
     bounded_depth(pattern.depth, pattern.span)
 }
 
-fn expand_block(body: &mut ComputationBlock, names: &Names) -> Result<(), Diagnostic> {
+fn expand_block(
+    body: &mut ComputationBlock,
+    names: &Names,
+    module: &str,
+) -> Result<(), Diagnostic> {
     let mut depth = 0;
     for statement in &mut body.statements {
         let value = match &mut statement.kind {
             ComputationStatementKind::Let(binding, _) => &mut binding.value,
             ComputationStatementKind::LetAnd(bindings) => {
                 for binding in bindings {
-                    expand(&mut binding.value, names)?;
+                    expand(&mut binding.value, names, module)?;
                 }
                 depth = depth.max(statement.depth());
                 continue;
             }
             ComputationStatementKind::Match(value, arms) => {
                 for arm in arms {
-                    expand_pattern(&mut arm.pattern, names)?;
+                    expand_pattern(&mut arm.pattern, names, module)?;
                     if let Some(guard) = &mut arm.guard {
-                        expand(guard, names)?;
+                        expand(guard, names, module)?;
                     }
-                    expand_block(&mut arm.body, names)?;
+                    expand_block(&mut arm.body, names, module)?;
                 }
                 value
             }
@@ -337,23 +358,23 @@ fn expand_block(body: &mut ComputationBlock, names: &Names) -> Result<(), Diagno
             | ComputationStatementKind::Operation(_, value)
             | ComputationStatementKind::Expression(value) => value,
             ComputationStatementKind::If(condition, yes, no) => {
-                expand_block(yes, names)?;
+                expand_block(yes, names, module)?;
                 if let Some(no) = no {
-                    expand_block(no, names)?;
+                    expand_block(no, names, module)?;
                 }
                 condition
             }
             ComputationStatementKind::For(pattern, source, body) => {
-                expand_pattern(pattern, names)?;
-                expand_block(body, names)?;
+                expand_pattern(pattern, names, module)?;
+                expand_block(body, names, module)?;
                 source
             }
             ComputationStatementKind::While(source, body) => {
-                expand_block(body, names)?;
+                expand_block(body, names, module)?;
                 source
             }
         };
-        expand(value, names)?;
+        expand(value, names, module)?;
         depth = depth.max(statement.depth());
     }
     body.depth = depth + 1;

@@ -67,6 +67,22 @@ export function outputPath(root: string, action: Action): string {
 		`Main${action === 'wasm' ? '.wasm' : process.platform === 'win32' ? '.exe' : ''}`);
 }
 
+/** A PascalCase namespace for a folder name such as `my-app`, or `App` when it has no usable words. */
+export function defaultNamespace(folder: string): string {
+	const words = folder.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+|[A-Z]/g) ?? [];
+	const name = words
+		.filter(word => /^[A-Za-z]/.test(word))
+		.map(word => word[0].toUpperCase() + word.slice(1).toLowerCase())
+		.join('');
+	return name || 'App';
+}
+
+/** Whether `text` is a dotted identifier path such as `Acme.Tools` that `tsuzuri new` may accept. */
+export function isNamespace(text: string): boolean {
+	return text.length <= 255 && text.split('.').length <= 16
+		&& /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/.test(text);
+}
+
 export interface ProcessResult {
 	code: number;
 	stdout: string;

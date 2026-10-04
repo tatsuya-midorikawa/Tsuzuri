@@ -40,6 +40,40 @@ fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
     )
 }
 
+/// The body of `\() -> body`, which then defines a zero-parameter function; any
+/// other expression comes back unchanged.
+fn unit_lambda_body(expression: Expr) -> Expr {
+    let unit = match &expression.kind {
+        ExprKind::Lambda(parameters, body) => match (parameters.as_slice(), &body.kind) {
+            (
+                [(parameter, false)],
+                ExprKind::Match {
+                    value,
+                    arms,
+                    origin: MatchOrigin::LambdaDestructuring,
+                },
+            ) => {
+                matches!(&value.kind, ExprKind::Name(name) if name.text == parameter.text)
+                    && matches!(arms.as_slice(), [arm] if arm.guard.is_none()
+                        && matches!(&arm.pattern.kind, PatternKind::Literal(literal)
+                            if matches!(literal.kind, ExprKind::Unit)))
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    if !unit {
+        return expression;
+    }
+    let ExprKind::Lambda(_, body) = expression.kind else {
+        unreachable!("checked above")
+    };
+    let ExprKind::Match { mut arms, .. } = body.kind else {
+        unreachable!("checked above")
+    };
+    arms.pop().expect("one arm").body
+}
+
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     parse_source(source, None)
 }
@@ -234,6 +268,8 @@ impl Parser<'_> {
     fn program_all(mut self, recovering: bool) -> Result<Program, Vec<Diagnostic>> {
         let mut program = Program {
             source_kind: None,
+            namespace: None,
+            usings: Vec::new(),
             type_aliases: Vec::new(),
             constants: Vec::new(),
             externs: Vec::new(),
@@ -253,6 +289,32 @@ impl Parser<'_> {
         let mut signature_group = None;
         let mut definition_group = None;
         let mut diagnostics = Vec::new();
+        let header = |parser: &mut Self, keyword: &str, diagnostics: &mut Vec<Diagnostic>| {
+            if !parser.header_ahead(keyword) {
+                return None;
+            }
+            match parser.header_declaration(keyword) {
+                Ok(declaration) => Some(Ok(declaration)),
+                Err(error) => {
+                    diagnostics.push(error);
+                    while !parser.at(&TokenKind::End) && !parser.newline_before_current() {
+                        parser.take();
+                    }
+                    Some(Err(()))
+                }
+            }
+        };
+        if let Some(declaration) = header(&mut self, "namespace", &mut diagnostics) {
+            program.namespace = declaration.ok();
+        }
+        while diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS
+            && let Some(declaration) = header(&mut self, "using", &mut diagnostics)
+        {
+            program.usings.extend(declaration.ok());
+        }
+        if !recovering && !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
         while !self.at(&TokenKind::End) && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
             let start = self.position;
             let parsed = (|| -> Result<(), Diagnostic> {
@@ -497,14 +559,24 @@ impl Parser<'_> {
                     body,
                 });
             } else {
-                if matches!(&self.current().kind, TokenKind::Ident(name) if name == "module" || name == "namespace")
+                if self.header_ahead("namespace") {
+                    return Err(self.error(
+                        "a namespace declaration must be the first declaration of the file, on its own line",
+                    ));
+                }
+                if self.header_ahead("using") {
+                    return Err(self.error(
+                        "using declarations belong at the top of the file, after the namespace declaration and before other declarations",
+                    ));
+                }
+                if matches!(&self.current().kind, TokenKind::Ident(name) if name == "module")
                     && matches!(
                         self.tokens.get(self.position + 1).map(|token| &token.kind),
                         Some(TokenKind::Ident(_))
                     )
                 {
                     return Err(self.error(
-                        "module and namespace declarations are not supported; each .tz, .tt, or .tc file is one module named after its filename",
+                        "module declarations are not supported; each .tz, .tt, or .tc file is one module named after its filename, and 'namespace' chooses its namespace",
                     ));
                 }
                 program.entry = Some(self.entry()?);
@@ -906,6 +978,44 @@ impl Parser<'_> {
         self.qualified_path(18)
     }
 
+    /// `keyword` (`namespace` or `using`) followed by a name; both words stay
+    /// usable as identifiers elsewhere.
+    fn header_ahead(&self, keyword: &str) -> bool {
+        matches!(&self.current().kind, TokenKind::Ident(word) if word == keyword)
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(_))
+            )
+    }
+
+    /// `namespace A.B` or `using A.B` on its own line.
+    fn header_declaration(&mut self, keyword: &str) -> Result<NamespaceDecl, Diagnostic> {
+        let start = self.take().span;
+        let mut path = self.ident()?;
+        let mut segments = 1;
+        while self.eat(&TokenKind::Dot) {
+            let segment = self.ident()?;
+            segments += 1;
+            if segments > 16 {
+                return Err(Diagnostic::new(
+                    "E1017",
+                    format!("{keyword} paths are limited to 16 segments"),
+                    segment.span,
+                ));
+            }
+            path.text.push('.');
+            path.text.push_str(&segment.text);
+            path.span = path.span.through(segment.span);
+        }
+        if !self.at(&TokenKind::End) && !self.newline_before_current() {
+            return Err(self.error(format!("expected a line break after the {keyword} path")));
+        }
+        Ok(NamespaceDecl {
+            span: start.through(path.span),
+            path,
+        })
+    }
+
     /// Reads up to `segments` dot-separated identifiers, as in
     /// `Module.Union.Case` patterns.
     pub(super) fn qualified_path(&mut self, segments: usize) -> Result<Ident, Diagnostic> {
@@ -1255,6 +1365,9 @@ impl Parser<'_> {
                 "'def' and its implementation must have matching 'rec'/'and' groups",
                 definition.name.span,
             ));
+        }
+        if signature.parameters.is_empty() && definition.parameters.is_empty() {
+            definition.body = unit_lambda_body(definition.body);
         }
         while let ExprKind::Lambda(parameters, body) = definition.body.kind {
             definition.parameters.extend(parameters);

@@ -224,6 +224,10 @@ pub enum Provenance {
 #[derive(Debug)]
 pub struct Program {
     pub source_kind: Option<SourceKind>,
+    /// `namespace A.B`, the file's first declaration.
+    pub namespace: Option<NamespaceDecl>,
+    /// `using A.B` declarations, after the namespace and before other declarations.
+    pub usings: Vec<NamespaceDecl>,
     pub type_aliases: Vec<TypeAliasDecl>,
     pub constants: Vec<ConstDecl>,
     pub externs: Vec<SignatureDecl>,
@@ -236,6 +240,14 @@ pub struct Program {
     pub active_patterns: Vec<ActivePattern>,
     pub tests: Vec<TestDecl>,
     pub entry: Option<Expr>,
+}
+
+/// A `namespace A.B` or `using A.B` declaration.
+#[derive(Clone, Debug)]
+pub struct NamespaceDecl {
+    /// The dotted namespace path as one identifier.
+    pub path: Ident,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

@@ -94,6 +94,17 @@ IO { do! IO.write_line "Hello" }
 
 入力には `let! line = IO.read_line ()` を使います。[IO のガイド](library-reference/io.md)と[対話サンプル](../examples/io/Main.tz)に、EOF・失敗の処理を含む使い方があります。
 
+## プロジェクトの作成
+
+`tsuzuri new` は、空のフォルダーに `Tsuzuri.toml`・`Main.tz`・`.gitignore` を作ります。
+
+```sh
+./target/release/tsuzuri new target/my-app --namespace Acme.MyApp
+./target/release/tsuzuri run target/my-app
+```
+
+`Tsuzuri.toml` にはパッケージの既定の名前空間（`namespace`）を書き、`Main.tz` は最初の行で同じ名前空間を宣言します。`--namespace` を省くと、フォルダー名から名前空間を決めます。VS Code 拡張機能の **Tsuzuri: New Project** も同じファイルを作ります。名前空間の規則は[モジュールと名前空間](language-reference/modules-and-packages.md#名前空間)を参照してください。
+
 ## 実行ファイルの生成
 
 ```sh

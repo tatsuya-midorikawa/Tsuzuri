@@ -18,6 +18,7 @@ Usage:
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri new directory [--namespace NAME]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -25,7 +26,14 @@ Each source file is one module named after its filename:
   .tt  Type class declarations (multiple classes per file)
   .tc  One computation expression builder (its operations and helpers)
 All .tz, .tt, and .tc files below the project root are loaded recursively.
-Subdirectories form dotted modules (Geometry/Point.tz becomes Geometry.Point).
+Module filenames start with an uppercase ASCII letter. A module's full name is
+its namespace and filename: 'namespace Sample.Shapes' as a file's first
+declaration sets the namespace, and 'using Sample.Features' lines after it
+let the file name that namespace's modules without the namespace. Otherwise
+the namespace is the package namespace (Tsuzuri.toml namespace, else the
+package or folder name) followed by subdirectories (Geometry/Point.tz becomes
+App.Geometry.Point).
+`tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -934,6 +942,53 @@ fn version_line(tool: &Path) -> String {
         .map_or_else(|| "unavailable".into(), |line| (*line).to_owned())
 }
 
+/// `tsuzuri new directory [--namespace NAME]`: creates a package whose
+/// manifest and Main.tz declare its namespace.
+fn new_project(arguments: &[OsString]) -> ExitCode {
+    let mut directory = None;
+    let mut namespace = None;
+    let mut rest = arguments.iter();
+    let mut valid = true;
+    while let Some(argument) = rest.next() {
+        if argument == "--namespace" && namespace.is_none() {
+            namespace = rest
+                .next()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned);
+            valid &= namespace.is_some();
+        } else if directory.is_none() && !argument.to_string_lossy().starts_with('-') {
+            directory = Some(PathBuf::from(argument));
+        } else {
+            valid = false;
+        }
+    }
+    let Some(directory) = directory.filter(|_| valid) else {
+        print_diagnostic(
+            &Diagnostic::new(
+                "E2000",
+                "usage: tsuzuri new directory [--namespace NAME]",
+                Span::default(),
+            ),
+            Path::new("<command line>"),
+            "",
+            false,
+        );
+        return ExitCode::from(2);
+    };
+    match tsuzuri::package::create_project(&directory, namespace.as_deref()) {
+        Ok(files) => {
+            for file in files {
+                println!("Created {}", file.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_diagnostic(&error, &directory, "", false);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -958,6 +1013,9 @@ fn main() -> ExitCode {
     if raw.len() == 2 && raw[0] == "toolchain" && raw[1] == "info" {
         print!("{}", toolchain_info());
         return ExitCode::SUCCESS;
+    }
+    if raw.first().is_some_and(|command| *command == "new") {
+        return new_project(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {

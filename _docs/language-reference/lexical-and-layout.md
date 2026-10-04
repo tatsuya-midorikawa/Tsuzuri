@@ -37,6 +37,8 @@ with when true false
 
 `try`、`finally`、`is` は `try ... with` 式の中でだけ特別な意味を持つ文脈キーワードで、予約語ではありません。`not` と `ignore` も予約語ではなく、無修飾で呼べる組み込み関数です。
 
+`namespace` と `using` はファイル先頭の宣言（[名前空間](modules-and-packages.md#名前空間)）でだけ意味を持つ文脈キーワードで、それ以外の位置では変数名などに使えます。`module` 宣言はありません。
+
 ## 演算子と属性
 
 | 記号 | 意味 |

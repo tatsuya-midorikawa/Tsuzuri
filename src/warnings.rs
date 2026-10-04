@@ -630,6 +630,8 @@ mod tests {
             name: "Main",
             program: &program,
             origin: ModuleOrigin::User,
+            namespace: "",
+            entry: true,
         }];
         for enabled in [false, true] {
             let module = check_modules_collect(

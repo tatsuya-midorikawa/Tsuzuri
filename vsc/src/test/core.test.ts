@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { commandArguments, jsonLines, projectRoot, runProcess, supportsDebug } from '../core';
+import { commandArguments, defaultNamespace, isNamespace, jsonLines, projectRoot, runProcess, supportsDebug } from '../core';
 
 test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
 	assert.equal(supportsDebug('win32', 'arm64'), false);
@@ -26,6 +26,18 @@ test('compiler arguments keep paths literal and debug builds unoptimized', () =>
 	assert.ok(!args.includes('-O3'));
 	assert.deepEqual(commandArguments('check', root, 0, true), ['check', root, '--deny-warnings']);
 	assert.throws(() => commandArguments('build', root, 4));
+});
+
+test('new projects suggest a PascalCase namespace and accept dotted identifiers', () => {
+	for (const [folder, namespace] of [['my-app', 'MyApp'], ['MyApp', 'MyApp'], ['hello_world', 'HelloWorld'], ['ex1', 'Ex1'], ['2024 app', 'App'], ['\u65e5\u672c', 'App']]) {
+		assert.equal(defaultNamespace(folder), namespace, folder);
+	}
+	for (const text of ['Sample', 'Acme.Tools', 'lower.case_1']) {
+		assert.ok(isNamespace(text), text);
+	}
+	for (const text of ['', '1st', 'Acme..Tools', 'Acme.', 'my-app', 'A.'.repeat(16) + 'A']) {
+		assert.ok(!isNamespace(text), text);
+	}
 });
 
 test('project root respects nested projects and source subdirectories', async () => {

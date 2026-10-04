@@ -111,7 +111,7 @@ def main :: i64 = answer()
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
 | コンピュテーション式 | `.tc` のユーザー定義ビルダー。明示ブロックと型で解決する暗黙本体。束縛・短絡・分岐・反復を通常の関数呼び出しへ展開 |
 | タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
-| モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
+| モジュール | 1 ファイル = 1 モジュール。`namespace`／`using` による名前空間、複数ファイルの名前解決と `Main.tz` エントリー、`tsuzuri new` によるプロジェクト作成 |
 | メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放し、record・union の `instance Drop` でメモリ以外の資源も一度だけ解放。GC・参照カウント・手動解放なし |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
 | 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様。`@checked` の整数オーバーフローは `try` で `Result` に変換 |
@@ -434,7 +434,9 @@ match Task.run (Task.parallel_results jobs) with
 ## ファイルとモジュール
 
 **モジュール名は拡張子を除いたファイル名で決まり、1 ファイルに 1 モジュールを強制します。**
-`module` 宣言、入れ子のモジュール、複数ファイルへの同一モジュールの分割はできません。
+`module` 宣言、入れ子のモジュール、複数ファイルへの同一モジュールの分割はできません。モジュール名は英大文字で始めます。
+ファイルの最初の `namespace Sample.Features` でモジュールが属する名前空間を決め、その後の `using Sample.Features` で名前空間の修飾を省けます。
+宣言がなければ、`Tsuzuri.toml` の `namespace`（なければ package 名やフォルダー名）にディレクトリを続けた名前空間です。`tsuzuri new <フォルダー>` で新しいプロジェクトを作れます。
 同じディレクトリの `.tz`・`.tt`・`.tc` ファイルを自動で読み込みます。
 インポート宣言やファイルの列挙は不要です。
 
@@ -511,11 +513,12 @@ rootに`Tsuzuri.toml`を置くと、ローカル依存を同じ`check`／`build`
 [package]
 name = "app"
 version = "0.1.0"
+namespace = "Acme.App"
 [dependencies]
 geometry-core = { path = "../geometry-core" }
 ```
 
-依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore.Point`で参照し、依存内でも完全修飾します。
+依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore.Point`（依存が`namespace`を持てばその名前空間）で参照し、依存内でも完全修飾します。
 限定TOML、相対pathだけに対応し、ネットワークやbuild scriptは実行しません。詳細は[言語仕様](docs/language.md#ローカルパッケージ)を参照してください。
 
 ## ビルド

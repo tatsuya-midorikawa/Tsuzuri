@@ -2036,9 +2036,14 @@ impl FunctionOrigin {
 /// A parsed module and its origin, as `check_modules` receives it.
 #[derive(Clone, Copy)]
 pub struct ModuleInput<'a> {
+    /// The module key that qualifies its declarations inside the compiler.
     pub name: &'a str,
     pub program: &'a Program,
     pub origin: ModuleOrigin,
+    /// The namespace that, with the file stem, forms the module's full name; empty for std.
+    pub namespace: &'a str,
+    /// The root package's `Main.tz`, the only module that may hold the entry point.
+    pub entry: bool,
 }
 
 #[derive(Debug)]
@@ -2693,10 +2698,14 @@ impl TypedExpr {
 
 /// Checks one `Main` module without a standard library.
 pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
+    let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
+    let (name, namespace) = crate::module_identity("Main", declared, "")?;
     check_modules(&[ModuleInput {
-        name: "Main",
+        name: &name,
         program,
         origin: ModuleOrigin::User,
+        namespace: &namespace,
+        entry: true,
     }])
 }
 
@@ -2736,6 +2745,11 @@ impl NameInfo {
 struct Names {
     warning_options: warnings::WarningOptions,
     modules: BTreeMap<String, ModuleOrigin>,
+    /// Module keys by full name (`Namespace.File`), and each module's namespace by key.
+    full_modules: BTreeMap<String, String>,
+    module_namespaces: BTreeMap<String, String>,
+    /// The namespaces that each module's `using` declarations import, by key.
+    module_usings: BTreeMap<String, Vec<String>>,
     builders: BTreeMap<String, BTreeSet<String>>,
     type_aliases: BTreeMap<String, (NameInfo, TypeAliasDecl)>,
     type_alias_names: BTreeMap<String, Vec<String>>,
@@ -2864,6 +2878,177 @@ impl Names {
             .is_some_and(|(module, _)| self.searchable(requester, module))
     }
 
+    /// The key of the module that `path` names from `requester`: the
+    /// requester's namespace, then the namespaces of its `using` declarations
+    /// for a module name, and then each enclosing namespace qualify `path`,
+    /// innermost first; otherwise `path` is a module key. A module name that
+    /// several `using` namespaces hold names nothing (see `check_module`).
+    fn module_path(&self, requester: &str, path: &str) -> Option<&str> {
+        let mut scope = self
+            .module_namespaces
+            .get(requester)
+            .map_or("", String::as_str);
+        let mut usings = self
+            .module_usings
+            .get(requester)
+            .filter(|_| !path.contains('.'));
+        loop {
+            let found = if scope.is_empty() {
+                self.full_modules.get(path)
+            } else {
+                self.full_modules.get(&format!("{scope}.{path}"))
+            };
+            if let Some(key) = found {
+                return Some(key);
+            }
+            if let Some(namespaces) = usings.take() {
+                let mut imported = self.imported(namespaces, path);
+                match (imported.next(), imported.next()) {
+                    (Some(key), None) => return Some(key),
+                    (Some(_), Some(_)) => return None,
+                    _ => {}
+                }
+            }
+            if scope.is_empty() {
+                break;
+            }
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+        self.modules
+            .get_key_value(path)
+            .map(|(key, _)| key.as_str())
+    }
+
+    /// The keys of the modules named `name` in `namespaces`.
+    fn imported<'s>(
+        &'s self,
+        namespaces: &'s [String],
+        name: &str,
+    ) -> impl Iterator<Item = &'s str> {
+        namespaces.iter().filter_map(move |namespace| {
+            self.full_modules
+                .get(&format!("{namespace}.{name}"))
+                .map(String::as_str)
+        })
+    }
+
+    /// Rejects a module name that the `using` declarations of `requester`
+    /// make ambiguous: several of their namespaces hold a module named
+    /// `name`, and the requester's own namespace holds none.
+    fn check_module(&self, requester: &str, name: &str, span: Span) -> Result<(), Diagnostic> {
+        let Some(namespaces) = self
+            .module_usings
+            .get(requester)
+            .filter(|_| !name.contains('.'))
+        else {
+            return Ok(());
+        };
+        let scope = self
+            .module_namespaces
+            .get(requester)
+            .map_or("", String::as_str);
+        let own = if scope.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{scope}.{name}")
+        };
+        if self.full_modules.contains_key(&own) || self.imported(namespaces, name).nth(1).is_none()
+        {
+            return Ok(());
+        }
+        let modules = namespaces
+            .iter()
+            .map(|namespace| format!("{namespace}.{name}"))
+            .filter(|full| self.full_modules.contains_key(full))
+            .map(|full| format!("'{full}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(Diagnostic::new(
+            "E1004",
+            format!(
+                "'{name}' is ambiguous: using declarations make the modules {modules} visible; qualify it with its namespace"
+            ),
+            span,
+        ))
+    }
+
+    /// Rejects `path` when the module name that starts it is ambiguous, unless
+    /// a longer module prefix of `path` resolves first, as in `canonical`.
+    fn check_path(&self, requester: &str, path: &str, span: Span) -> Result<(), Diagnostic> {
+        if !self.module_usings.contains_key(requester) {
+            return Ok(());
+        }
+        let Some((first, _)) = path.split_once('.') else {
+            return Ok(());
+        };
+        let mut end = path.len();
+        while let Some(dot) = path[..end].rfind('.').filter(|&dot| dot > first.len()) {
+            if self.module_path(requester, &path[..dot]).is_some() {
+                return Ok(());
+            }
+            end = dot;
+        }
+        self.check_module(requester, first, span)
+    }
+
+    /// The namespace that `path` names from `requester`, as `using path`
+    /// imports it: `path` in the requester's namespace or an enclosing one,
+    /// innermost first, when it holds a module that `requester` may search.
+    fn namespace_path(&self, requester: &str, path: &str) -> Option<String> {
+        let mut scope = self
+            .module_namespaces
+            .get(requester)
+            .map_or("", String::as_str);
+        loop {
+            let namespace = if scope.is_empty() {
+                path.to_owned()
+            } else {
+                format!("{scope}.{path}")
+            };
+            let prefix = format!("{namespace}.");
+            if self
+                .full_modules
+                .range(prefix.clone()..)
+                .take_while(|(full, _)| full.starts_with(&prefix))
+                .any(|(_, key)| self.searchable(requester, key))
+            {
+                return Some(namespace);
+            }
+            if scope.is_empty() {
+                return None;
+            }
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+    }
+
+    /// `path` with its longest module prefix replaced by that module's key, so
+    /// that `Sample.Shape.area` and `Shape.area` in namespace `Sample` agree.
+    fn canonical<'p>(&self, requester: &str, path: &'p str) -> std::borrow::Cow<'p, str> {
+        let mut end = path.len();
+        while let Some(dot) = path[..end].rfind('.') {
+            if let Some(key) = self.module_path(requester, &path[..dot]) {
+                return if key == &path[..dot] {
+                    std::borrow::Cow::Borrowed(path)
+                } else {
+                    std::borrow::Cow::Owned(format!("{key}{}", &path[dot..]))
+                };
+            }
+            end = dot;
+        }
+        std::borrow::Cow::Borrowed(path)
+    }
+
+    /// The key of the computation builder that `name` names from `requester`.
+    fn builder(&self, requester: &str, name: &str) -> Option<&str> {
+        self.module_path(requester, name)
+            .filter(|key| self.builders.contains_key(*key))
+            .or_else(|| {
+                self.builders
+                    .get_key_value(name)
+                    .map(|(key, _)| key.as_str())
+            })
+    }
+
     /// Chooses among same-named declarations of other modules, one tier of
     /// module origins at a time. Private declarations neither resolve nor
     /// make a name ambiguous.
@@ -2899,6 +3084,7 @@ impl Names {
     /// class and a record or union type of equal rank are ambiguous rather
     /// than silently preferring either meaning.
     fn type_head(&self, module: &str, head: &Ident) -> Result<TypeHead<'_>, Diagnostic> {
+        self.check_path(module, &head.text, head.span)?;
         let class = self.class_choice(module, &head.text);
         let named = self.type_choice(module, &head.text);
         let (class_rank, type_rank) = (class.rank(), named.rank());
@@ -2980,6 +3166,7 @@ impl Names {
         name: &str,
         span: Span,
     ) -> Result<NamedType<'_>, Diagnostic> {
+        self.check_path(module, name, span)?;
         self.type_result(self.type_choice(module, name), name, span)
     }
 
@@ -2997,25 +3184,39 @@ impl Names {
         if let Some(info) = self.handles.get(&own) {
             return Choice::Found(NamedType::Handle(info), 0);
         }
-        if self.searchable_path(module, name) {
-            let exact = self
-                .records
-                .get(name)
+        let exact = |qualified: &str| {
+            self.records
+                .get(qualified)
                 .map(NamedType::Record)
-                .or_else(|| self.unions.get(name).map(NamedType::Union))
-                .or_else(|| self.handles.get(name).map(NamedType::Handle))
+                .or_else(|| self.unions.get(qualified).map(NamedType::Union))
+                .or_else(|| self.handles.get(qualified).map(NamedType::Handle))
                 .or_else(|| {
                     self.type_aliases
-                        .get(name)
+                        .get(qualified)
                         .map(|(info, _)| NamedType::Alias(info))
-                });
-            if let Some(named) = exact {
-                return if named.info().visible_from(module) {
-                    Choice::Found(named, 0)
-                } else {
-                    Choice::Hidden(named)
-                };
-            }
+                })
+                .map(|named| {
+                    if named.info().visible_from(module) {
+                        Choice::Found(named, 0)
+                    } else {
+                        Choice::Hidden(named)
+                    }
+                })
+        };
+        let canonical = self.canonical(module, name);
+        if self.searchable_path(module, &canonical)
+            && let Some(choice) = exact(&canonical)
+        {
+            return choice;
+        }
+        // A path to a module also names the type that shares the module's name:
+        // `Sample.Point` is the record `Point` of the module `Sample.Point`.
+        if name.contains('.')
+            && let Some(key) = self.module_path(module, name)
+            && self.searchable(module, key)
+            && let Some(choice) = exact(&format!("{key}.{}", key.rsplit('.').next().unwrap_or(key)))
+        {
+            return choice;
         }
         let candidates: Vec<NamedType<'_>> = self
             .record_aliases
@@ -3104,9 +3305,10 @@ impl Names {
         let builtin = !name.contains('.');
         let exact = builtin.then(|| self.classes.get(name)).flatten();
         let exact = exact.or_else(|| self.classes.get(&format!("{module}.{name}")));
+        let canonical = self.canonical(module, name);
         let exact = exact.or_else(|| {
-            self.searchable_path(module, name)
-                .then(|| self.classes.get(name))
+            self.searchable_path(module, &canonical)
+                .then(|| self.classes.get(canonical.as_ref()))
                 .flatten()
         });
         if let Some(class) = exact {
@@ -3150,6 +3352,7 @@ impl Names {
     /// Resolves a class name to its key in `Classes::names`, or `None` when
     /// no class has the name.
     fn class(&self, module: &str, name: &str, span: Span) -> Result<Option<&str>, Diagnostic> {
+        self.check_path(module, name, span)?;
         self.class_result(self.class_choice(module, name), name, span)
     }
 
@@ -3267,6 +3470,9 @@ impl Names {
         path: &str,
         span: Span,
     ) -> Result<Option<&CaseInfo>, Diagnostic> {
+        self.check_path(requester, path, span)?;
+        let canonical = self.canonical(requester, path);
+        let path = canonical.as_ref();
         let Some((prefix, name)) = path.rsplit_once('.') else {
             return self.case(requester, path, span);
         };
@@ -3371,8 +3577,10 @@ impl Names {
             return Ok(Some((info.id, *case)));
         }
         if name.contains('.') {
-            if self.searchable_path(requester, name) {
-                if let Some((info, case)) = self.active_patterns.get(name) {
+            self.check_path(requester, name, span)?;
+            let qualified = self.canonical(requester, name);
+            if self.searchable_path(requester, &qualified) {
+                if let Some((info, case)) = self.active_patterns.get(qualified.as_ref()) {
                     info.require_visible("active pattern", requester, span)?;
                     return Ok(Some((info.id, *case)));
                 }
@@ -3573,13 +3781,20 @@ fn check_modules_collect(
         }
         let name = module.name;
         let reserved = |at: usize| {
-            Diagnostic::new(
-                "E1011",
-                format!(
+            let message = match &module.program.namespace {
+                Some(declared) if module.origin == ModuleOrigin::User && name.contains('.') => {
+                    format!(
+                        "namespace '{}' puts module '{}' under '{}', a name reserved for the standard library; choose another namespace",
+                        declared.path.text,
+                        name.rsplit('.').next().unwrap_or(name),
+                        name.split('.').next().unwrap_or(name)
+                    )
+                }
+                _ => format!(
                     "module name '{name}' is reserved for the standard library; rename the file"
                 ),
-                Span::default().in_source(at),
-            )
+            };
+            Diagnostic::new("E1011", message, Span::default().in_source(at))
         };
         if name.len() > 255 || name.split('.').count() > 16 {
             diagnostics.push(Diagnostic::new(
@@ -3604,6 +3819,52 @@ fn check_modules_collect(
                 )
             })
         });
+        let stem = name.rsplit('.').next().unwrap_or(name);
+        if valid
+            && module.origin == ModuleOrigin::User
+            && !stem.starts_with(|first: char| first.is_ascii_uppercase())
+        {
+            let suggestion = stem
+                .chars()
+                .next()
+                .filter(char::is_ascii_lowercase)
+                .map(|first| {
+                    format!(
+                        ", for example to '{}{}'",
+                        first.to_ascii_uppercase(),
+                        &stem[1..]
+                    )
+                })
+                .unwrap_or_default();
+            diagnostics.push(Diagnostic::new(
+                "E1011",
+                format!(
+                    "module name '{stem}' must start with an uppercase ASCII letter; rename the file{suggestion}"
+                ),
+                Span::default().in_source(source),
+            ));
+            continue;
+        }
+        let full = if module.namespace.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{}.{stem}", module.namespace)
+        };
+        if valid && names.full_modules.contains_key(&full) {
+            let span = module
+                .program
+                .namespace
+                .as_ref()
+                .map_or(Span::default(), |declared| declared.path.span);
+            diagnostics.push(Diagnostic::new(
+                "E1011",
+                format!(
+                    "module '{full}' is declared by more than one file; rename a file or change its namespace"
+                ),
+                span.in_source(source),
+            ));
+            continue;
+        }
         let previous = sources.insert(name, (source, module.origin));
         if let Some((previous, origin)) = previous
             && (origin == ModuleOrigin::Std || module.origin == ModuleOrigin::Std)
@@ -3628,6 +3889,38 @@ fn check_modules_collect(
             continue;
         }
         names.modules.insert(name.to_owned(), module.origin);
+        names.full_modules.insert(full, name.to_owned());
+        names
+            .module_namespaces
+            .insert(name.to_owned(), module.namespace.to_owned());
+    }
+    diagnostics.check()?;
+    for (source, module) in modules.iter().enumerate() {
+        let mut imported: Vec<String> = Vec::new();
+        for using in &module.program.usings {
+            let path = &using.path.text;
+            let message = match names.namespace_path(module.name, path) {
+                Some(namespace) if !imported.contains(&namespace) => {
+                    imported.push(namespace);
+                    continue;
+                }
+                Some(namespace) => format!("duplicate using '{namespace}'; remove one of them"),
+                None if names.module_path(module.name, path).is_some() => format!(
+                    "'{path}' is a module, not a namespace; using takes the namespace that holds modules, and a module's members are reached as '{path}.name'"
+                ),
+                None => format!(
+                    "using '{path}' names no namespace with modules; check the spelling or the namespace declarations"
+                ),
+            };
+            diagnostics.push(Diagnostic::new(
+                "E1011",
+                message,
+                using.path.span.in_source(source),
+            ));
+        }
+        if !imported.is_empty() {
+            names.module_usings.insert(module.name.to_owned(), imported);
+        }
     }
     diagnostics.check()?;
     names.builders = computation::collect_all(modules, diagnostics);
@@ -4592,7 +4885,7 @@ fn check_modules_collect(
             for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
                 parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
             }
-            computation::expand(&mut function.body, &names)?;
+            computation::expand(&mut function.body, &names, module)?;
             checker.recovering = true;
             let body = if let Some(import) = external_functions.get(&id) {
                 let mut import = import.clone();
@@ -4659,18 +4952,20 @@ fn check_modules_collect(
     }
     let mut entry = modules
         .iter()
-        .any(|module| {
+        .find(|module| {
             module.origin == ModuleOrigin::User
-                && module.name == "Main"
+                && module.entry
                 && matches!(module.program.source_kind, None | Some(SourceKind::Code))
         })
-        .then(|| names.functions.get("Main.main").map(|info| info.id))
-        .flatten()
+        .and_then(|module| names.functions.get(&format!("{}.main", module.name)))
+        .map(|info| info.id)
         .filter(|id| !names.constants.contains(id));
     for &ModuleInput {
         name: module,
         program,
         origin,
+        entry: is_entry,
+        ..
     } in modules
     {
         if diagnostics.is_full() {
@@ -4679,7 +4974,7 @@ fn check_modules_collect(
         let Some(expression) = &program.entry else {
             continue;
         };
-        if origin != ModuleOrigin::User || module != "Main" {
+        if origin != ModuleOrigin::User || !is_entry {
             diagnostics.push(Diagnostic::new(
                 "E2004",
                 "top-level execution is only allowed in Main.tz; other modules contain record and function declarations",
@@ -4699,7 +4994,7 @@ fn check_modules_collect(
         checker.indexing = indexing;
         let checked = (|| {
             let mut expression = expression.clone();
-            computation::expand(&mut expression, &names)?;
+            computation::expand(&mut expression, &names, module)?;
             computation::direct_entry(&mut expression);
             checker.recovering = true;
             let body = checker.expression(&expression, None)?;
@@ -5103,7 +5398,7 @@ fn infer_active_result(
     );
     checker.use_active_result(&result, active);
     let mut source = function.body.clone();
-    computation::expand(&mut source, names)?;
+    computation::expand(&mut source, names, module)?;
     let mut body = checker.expression(&source, Some(&result))?;
     checker.finish(&mut body)?;
     let result = checker.inference.resolve(&result);
@@ -7962,7 +8257,10 @@ impl<'a> Checker<'a> {
     /// `name`: a visible module, a std module, or a builtin prefix such as `Task`.
     fn is_namespace(&self, name: &str) -> bool {
         let prefix = format!("{name}.");
-        self.names.searchable(self.module, name)
+        self.names
+            .module_path(self.module, name)
+            .is_some_and(|key| self.names.searchable(self.module, key))
+            || self.names.namespace_path(self.module, name).is_some()
             || self
                 .names
                 .modules
@@ -7988,7 +8286,9 @@ impl<'a> Checker<'a> {
         {
             return Ok(self.function(info.id));
         }
-        if let Some(id) = self.names.function(self.module, &name.text, name.span)? {
+        self.names.check_path(self.module, &name.text, name.span)?;
+        let path = self.names.canonical(self.module, &name.text);
+        if let Some(id) = self.names.function(self.module, &path, name.span)? {
             return Ok(self.function(id));
         }
         if let Some(builtin) = Builtin::ALL
@@ -8085,7 +8385,9 @@ impl<'a> Checker<'a> {
             ExprKind::Field(_, field) => field.span,
             _ => expression.span,
         };
-        if let Some(id) = self.names.function(self.module, &path, span)? {
+        self.names.check_path(self.module, &path, span)?;
+        let canonical = self.names.canonical(self.module, &path);
+        if let Some(id) = self.names.function(self.module, &canonical, span)? {
             return Ok(Some(self.function(id)));
         }
         Builtin::ALL
@@ -8104,11 +8406,13 @@ impl<'a> Checker<'a> {
         };
         let span = expression.span;
         if let Some((prefix, name)) = path.rsplit_once('.') {
-            let function = self.names.searchable(self.module, prefix)
+            self.names.check_path(self.module, &path, span)?;
+            let canonical = self.names.canonical(self.module, &path);
+            let function = self.names.searchable_path(self.module, &canonical)
                 && self
                     .names
                     .functions
-                    .get(&path)
+                    .get(canonical.as_ref())
                     .is_some_and(|info| info.visible_from(self.module));
             if function {
                 let local = self

@@ -8,7 +8,7 @@ use crate::check::semantic::{Reference, Role, SemanticIndex, SymbolKind};
 use crate::check::{CheckedModule, ModuleOrigin, semantic};
 use crate::copies::{CopyKind, CopySite};
 use crate::diagnostic::{Diagnostic, Severity, Span};
-use crate::driver::{Project, SourceFile};
+use crate::driver::Project;
 use crate::syntax::{Token, TokenKind};
 use serde_json::{Value, json};
 
@@ -24,6 +24,9 @@ const KEYWORDS: [&str; 41] = [
     "to", "downto", "while", "break", "continue", "mut", "ref", "deref", "new", "as", "if", "then",
     "elif", "else", "match", "with", "when", "true", "false",
 ];
+/// Words that are keywords only in their syntax and identifiers elsewhere.
+const CONTEXTUAL_KEYWORDS: [&str; 7] =
+    ["finally", "is", "namespace", "of", "try", "using", "where"];
 const TOKEN_TYPES: [&str; 11] = [
     "namespace",
     "struct",
@@ -278,6 +281,7 @@ struct ProjectState {
     diagnostics: Vec<Diagnostic>,
     /// The implicit array and list copies that inlay hints show (A15).
     copies: Vec<CopySite>,
+    modules: ModuleNames,
 }
 
 struct Session {
@@ -398,6 +402,7 @@ impl Session {
         if index.is_some() {
             self.good.remove(&directory);
         }
+        let modules = ModuleNames::new(&project);
         self.projects.insert(
             directory,
             ProjectState {
@@ -406,6 +411,7 @@ impl Session {
                 mappers,
                 diagnostics,
                 copies,
+                modules,
             },
         );
         Ok(())
@@ -1136,6 +1142,7 @@ fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Di
             },
             text: &source.text,
             origin: source.origin,
+            namespace: &source.namespace,
         })
         .collect();
     let mut semantic = SemanticIndex::default();
@@ -1407,7 +1414,12 @@ struct View<'s> {
 
 impl View<'_> {
     fn module(&self) -> Option<String> {
-        module_name(&self.state.project.sources[self.source])
+        self.state.modules.key(self.source).map(str::to_owned)
+    }
+
+    /// The key of the module that `path` names in the current source.
+    fn module_path(&self, path: &str) -> Option<&str> {
+        self.state.modules.resolve(self.source, path)
     }
 
     /// The definition spelled by an identifier token of the current text.
@@ -1424,14 +1436,201 @@ impl View<'_> {
     }
 }
 
-fn module_name(source: &SourceFile) -> Option<String> {
-    match source.origin {
-        ModuleOrigin::User => crate::module_name_from_relative(&source.relative_path).ok(),
-        ModuleOrigin::Std => source
-            .path
-            .to_str()
-            .and_then(crate::stdlib::module_name)
-            .map(str::to_owned),
+/// Module keys, which qualify declarations in the semantic index, by source
+/// and by full name (`Namespace.File`), as the checker resolves them.
+#[derive(Default)]
+struct ModuleNames {
+    /// Each source's key and namespace.
+    sources: Vec<Option<(String, String)>>,
+    full: BTreeMap<String, String>,
+    /// The namespaces that each source's `using` declarations import.
+    usings: Vec<Vec<String>>,
+}
+
+impl ModuleNames {
+    fn new(project: &Project) -> Self {
+        let headers: Vec<_> = project
+            .sources
+            .iter()
+            .map(|source| match source.origin {
+                ModuleOrigin::User => crate::declared_header(&source.text),
+                ModuleOrigin::Std => (None, Vec::new()),
+            })
+            .collect();
+        let sources: Vec<_> = project
+            .sources
+            .iter()
+            .zip(&headers)
+            .map(|(source, (declared, _))| match source.origin {
+                ModuleOrigin::User => crate::module_identity(
+                    source.relative_path.to_str()?,
+                    declared.as_ref(),
+                    &source.namespace,
+                )
+                .ok(),
+                ModuleOrigin::Std => source
+                    .path
+                    .to_str()
+                    .and_then(crate::stdlib::module_name)
+                    .map(|name| (name.to_owned(), String::new())),
+            })
+            .collect();
+        let full = sources
+            .iter()
+            .flatten()
+            .map(|(key, namespace)| {
+                let full = if namespace.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{namespace}.{}", key.rsplit('.').next().unwrap_or(key))
+                };
+                (full, key.clone())
+            })
+            .collect();
+        let mut names = Self {
+            sources,
+            full,
+            usings: Vec::new(),
+        };
+        names.usings = headers
+            .iter()
+            .enumerate()
+            .map(|(source, (_, usings))| {
+                usings
+                    .iter()
+                    .filter_map(|using| names.namespace_path(source, &using.text))
+                    .collect()
+            })
+            .collect();
+        names
+    }
+
+    /// The namespace that `path` names from `source`, innermost scope first.
+    fn namespace_path(&self, source: usize, path: &str) -> Option<String> {
+        self.scopes(source).into_iter().find_map(|scope| {
+            let namespace = qualify(scope, path);
+            let prefix = format!("{namespace}.");
+            self.full
+                .range(prefix.clone()..)
+                .next()
+                .is_some_and(|(full, _)| full.starts_with(&prefix))
+                .then_some(namespace)
+        })
+    }
+
+    fn key(&self, source: usize) -> Option<&str> {
+        self.sources
+            .get(source)?
+            .as_ref()
+            .map(|(key, _)| key.as_str())
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        self.sources.iter().flatten().map(|(key, _)| key.as_str())
+    }
+
+    /// The namespaces that qualify names in `source`, innermost first and
+    /// ending with the global namespace `""`.
+    fn scopes(&self, source: usize) -> Vec<&str> {
+        let mut scope = self
+            .sources
+            .get(source)
+            .and_then(Option::as_ref)
+            .map_or("", |(_, namespace)| namespace.as_str());
+        let mut scopes = vec![scope];
+        while !scope.is_empty() {
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+            scopes.push(scope);
+        }
+        scopes
+    }
+
+    /// The key of the module that `path` names from `source`: each scope
+    /// qualifies `path`, innermost first, with the `using` namespaces after
+    /// the innermost for a module name; otherwise `path` is a key.
+    fn resolve(&self, source: usize, path: &str) -> Option<&str> {
+        let usings = self
+            .usings
+            .get(source)
+            .filter(|_| !path.contains('.'))
+            .map_or(&[][..], Vec::as_slice);
+        for (at, scope) in self.scopes(source).into_iter().enumerate() {
+            if let Some(key) = self.full.get(&qualify(scope, path)) {
+                return Some(key.as_str());
+            }
+            if at == 0 {
+                let mut imported = usings
+                    .iter()
+                    .filter_map(|namespace| self.full.get(&format!("{namespace}.{path}")));
+                match (imported.next(), imported.next()) {
+                    (Some(key), None) => return Some(key.as_str()),
+                    (Some(_), Some(_)) => return None,
+                    _ => {}
+                }
+            }
+        }
+        self.keys().find(|key| *key == path)
+    }
+
+    /// The next segments below `path` in `source`: namespaces and modules
+    /// with their full names, as in `Sample` -> `Shape` for `Sample.Shape`,
+    /// and for an empty `path` also the modules that `using` imports.
+    fn children(&self, source: usize, path: &str) -> BTreeMap<String, String> {
+        let mut children = BTreeMap::new();
+        let mut add = |prefix: &str, name: &str| {
+            if let Some(rest) = name.strip_prefix(prefix) {
+                let child = rest.split('.').next().unwrap_or(rest);
+                children
+                    .entry(child.to_owned())
+                    .or_insert_with(|| format!("{prefix}{child}"));
+            }
+        };
+        if path.is_empty() {
+            for namespace in self.usings.get(source).into_iter().flatten() {
+                let prefix = format!("{namespace}.");
+                for full in self.full.keys() {
+                    if full
+                        .strip_prefix(&prefix)
+                        .is_some_and(|rest| !rest.contains('.'))
+                    {
+                        add(&prefix, full);
+                    }
+                }
+            }
+        }
+        for scope in self.scopes(source) {
+            let prefix = if path.is_empty() {
+                qualify(scope, "")
+            } else {
+                format!("{}.", qualify(scope, path))
+            };
+            for full in self.full.keys() {
+                add(&prefix, full);
+            }
+        }
+        let prefix = if path.is_empty() {
+            String::new()
+        } else {
+            format!("{path}.")
+        };
+        for key in self.keys() {
+            add(&prefix, key);
+        }
+        children
+    }
+
+    fn is_module(&self, full: &str) -> bool {
+        self.full.contains_key(full) || self.keys().any(|key| key == full)
+    }
+}
+
+/// `path` in the namespace `scope`; with an empty `path`, the prefix of
+/// names in `scope`.
+fn qualify(scope: &str, path: &str) -> String {
+    match (scope.is_empty(), path.is_empty()) {
+        (true, _) => path.to_owned(),
+        (false, true) => format!("{scope}."),
+        (false, false) => format!("{scope}.{path}"),
     }
 }
 
@@ -1521,9 +1720,8 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
         return empty;
     };
     let index = view.index;
-    let project = &view.state.project;
     let module = view.module().unwrap_or_default();
-    let modules: BTreeSet<String> = project.sources.iter().filter_map(module_name).collect();
+    let modules = &view.state.modules;
     let mut items = Completions {
         index,
         items: Vec::new(),
@@ -1563,23 +1761,24 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             .map(|&at| ident(&tokens[at]))
             .collect::<Vec<_>>()
             .join(".");
-        if modules.contains(&joined) {
-            for (definition, item) in index.definitions.iter().enumerate() {
-                if item.module == joined
-                    && top_level(item.kind)
-                    && (item.public || joined == module)
-                {
-                    items.definition(2, definition);
+        let resolved = view.module_path(&joined);
+        let children = modules.children(view.source, &joined);
+        if resolved.is_some() || !children.is_empty() {
+            if let Some(key) = resolved {
+                for (definition, item) in index.definitions.iter().enumerate() {
+                    if item.module == key && top_level(item.kind) && (item.public || key == module)
+                    {
+                        items.definition(2, definition);
+                    }
                 }
             }
-            let prefix = format!("{joined}.");
-            let children: BTreeSet<_> = modules
-                .iter()
-                .filter_map(|name| name.strip_prefix(&prefix))
-                .map(|rest| rest.split('.').next().unwrap_or(rest))
-                .collect();
-            for child in children {
-                items.add(2, child, 9, &format!("module {prefix}{child}"), None);
+            for (child, full) in children {
+                let kind = if modules.is_module(&full) {
+                    "module"
+                } else {
+                    "namespace"
+                };
+                items.add(2, &child, 9, &format!("{kind} {full}"), None);
             }
         } else {
             let last = &tokens[*chain.last().expect("a chain has a name")];
@@ -1591,7 +1790,7 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             let owner = if qualifier.is_empty() {
                 module.as_str()
             } else {
-                qualifier.as_str()
+                view.module_path(&qualifier).unwrap_or(&qualifier)
             };
             let union = view
                 .definition_at(last.span)
@@ -1645,14 +1844,15 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
                 items.definition(1, definition);
             }
         }
-        let roots: BTreeSet<_> = modules
-            .iter()
-            .map(|name| name.split('.').next().unwrap_or(name))
-            .collect();
-        for root in roots {
-            items.add(2, root, 9, &format!("module {root}"), None);
+        for (root, full) in modules.children(view.source, "") {
+            let kind = if modules.is_module(&full) {
+                "module"
+            } else {
+                "namespace"
+            };
+            items.add(2, &root, 9, &format!("{kind} {full}"), None);
         }
-        for keyword in KEYWORDS {
+        for keyword in KEYWORDS.iter().chain(&CONTEXTUAL_KEYWORDS) {
             items.add(3, keyword, 14, "keyword", None);
         }
     }
@@ -1884,11 +2084,13 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     let chain = dotted_chain(&tokens, head);
     let module = view.module().unwrap_or_default();
     let owner = if chain.len() > 1 {
-        chain[..chain.len() - 1]
+        let qualifier = chain[..chain.len() - 1]
             .iter()
             .map(|&at| ident(&tokens[at]))
             .collect::<Vec<_>>()
-            .join(".")
+            .join(".");
+        view.module_path(&qualifier)
+            .map_or(qualifier.clone(), str::to_owned)
     } else {
         module.clone()
     };
@@ -1975,6 +2177,27 @@ fn semantic_tokens(view: &View<'_>, text: &str, encoding: PositionEncoding) -> V
     }
     for span in namespaces {
         found.insert(span.start, (span.end, 0, 0, false));
+    }
+    // The paths of the leading `namespace` and `using` declarations name namespaces.
+    let mut at = 0;
+    while lexed
+        .get(at)
+        .is_some_and(|token| matches!(ident(token), "namespace" | "using"))
+    {
+        at += 1;
+        while let Some(segment) = lexed
+            .get(at)
+            .filter(|token| matches!(token.kind, TokenKind::Ident(_)))
+        {
+            found
+                .entry(segment.span.start)
+                .or_insert((segment.span.end, 0, 0, false));
+            at += 1;
+            if lexed.get(at).is_none_or(|dot| dot.kind != TokenKind::Dot) {
+                break;
+            }
+            at += 1;
+        }
     }
     let mapper = PositionMapper::new(text, encoding);
     let (mut data, mut line, mut column) = (Vec::new(), 0, 0);

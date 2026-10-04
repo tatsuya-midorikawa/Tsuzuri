@@ -51,9 +51,9 @@ VS Code の通常設定だけで任意の言語サーバーが自動起動する
 | references / documentHighlight | 名前の定義と参照。`def` と `fn` の両方の宣言名を含む |
 | prepareRename / rename | ローカル、関数、const、record、union、union case、フィールドの名前変更 |
 | workspace/symbol | 解析済みプロジェクトの宣言を名前の部分一致で検索 |
-| completion | `.` の後のフィールド・モジュールのメンバー・union case、見えているローカル、同じモジュールの宣言、モジュール名、予約語 |
+| completion | `.` の後のフィールド・モジュールのメンバー・union case・名前空間配下の名前空間とモジュール、見えているローカル、同じモジュールの宣言、モジュール名と名前空間（`namespace` と `using` の解決を反映）、予約語と文脈キーワード（`namespace`・`using`・`try`・`finally`・`is`・`of`・`where`） |
 | signatureHelp | 呼び出し中の関数の引数と、入力中の引数の位置（カリー化した適用は空白区切りで数える） |
-| semanticTokens/full | 名前の出現だけを色分けする。予約語・リテラル・コメントは TextMate 文法に任せる |
+| semanticTokens/full | 名前の出現と `namespace`／`using` 宣言の名前空間を色分けする。予約語・リテラル・コメントは TextMate 文法に任せる |
 | codeAction | `W1001`（未使用のローカル）に `_` を前置する quick fix |
 | formatting | CLI の `tsuzuri fmt` と同じ結果で文書全体を置き換える。構文エラーのときは何も返さない |
 | cancelRequest、shutdown / exit | リクエスト中止と終了 |

@@ -4,6 +4,7 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
+    { "match": "^(namespace|using)\\s+([A-Za-z_][A-Za-z_0-9]*(?:\\.[A-Za-z_][A-Za-z_0-9]*)*)", "captures": { "1": { "name": "keyword.other.namespace.tsuzuri" }, "2": { "name": "entity.name.namespace.tsuzuri" } } },
     { "name": "entity.name.function.tsuzuri", "match": "(?<=\\bdef\\s)(?:rec\\s+)?[A-Za-z_][A-Za-z_0-9]*" },
     { "name": "entity.name.type.tsuzuri", "match": "(?<=\\brecord\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bunion\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bclass\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\btype\\s)[A-Za-z_][A-Za-z_0-9]*" },
     { "name": "storage.type.generic.tsuzuri", "match": "'[A-Za-z_][A-Za-z_0-9]*\\b" },
