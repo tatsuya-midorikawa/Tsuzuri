@@ -45,11 +45,11 @@ def main :: i64 = Answer
 
 既定では公開され、他モジュールからは `Module.Answer` と参照します。`private const` は宣言モジュール内だけで利用できます。関数と同じ値の名前空間を使うため、同名の関数は定義できません。
 
-`@literal def Name : Type = expression` も同じコンパイル時定数の宣言です。
+`@literal def Name :: Type = expression` も同じコンパイル時定数の宣言です。ほかの `def` と同じく、名前と型の間は `::` です。
 
 ```tsuzuri run=12.56
 @literal
-def PI : f64 = 3.14
+def PI :: f64 = 3.14
 
 let r: f64 = 2
 PI * r ** 2

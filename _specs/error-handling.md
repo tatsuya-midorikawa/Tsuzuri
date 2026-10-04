@@ -28,7 +28,7 @@ finally
 ### 例
 
 ```tz
-def safe_add: i32 -> i32 -> Result<i32, 'TErr> 
+def safe_add :: i32 -> i32 -> Result<i32, 'TErr> 
   @'TErr : Err = \x y -> 
     try
       @checked
@@ -52,7 +52,7 @@ safe_add 2147483647 1
 また、`try...with(...finally)` の場合は、`Result<i32, 'TErr>` の `'TErr` に `Err` 型クラスが実装されているのは仕様上明確であるため、以下のように省略してもよい。
 
 ```tz
-def safe_add: i32 -> i32 -> Result<i32, 'TErr> = \x y -> 
+def safe_add :: i32 -> i32 -> Result<i32, 'TErr> = \x y -> 
   try
     @checked
     let result = x + y

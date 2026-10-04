@@ -1061,6 +1061,13 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `using` の曖昧さは `E1004`、位置の誤りは `E0002`。新しい診断コードはない。
 - `def f :: T = \() -> body` は引数なしの定義。`tsuzuri new <dir> [--namespace NAME]` を足し、VS Code の New Project も使う。
 
+### D-36 `def` の型注釈は `::` だけ
+
+- 2026-10-05、利用者の「`def` の型指定は必ず `def name :: type`」を受け、D-34 で `_specs` の例に合わせて受理していた単一の `:`（`def name : T`）をやめた。
+- `def`・`export def`・`private def`・`@literal def`・`extern def`・型付きの `and`・クラスのメソッドは、名前と型の間に `::` だけを書く。
+  単一の `:` は `E0002`（`use '::' between a 'def' name and its type`）。`_specs` の literals・operators・error-handling の例も `::` に直した。
+- `let`・`const`・フィールド・引数の型注釈と、制約の `@'T : Class` は従来どおり `:`。新しい診断コード・予約語はない。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。

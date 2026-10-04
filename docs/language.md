@@ -322,7 +322,7 @@ nativeでは、同じスレッドからの同期呼び出しと再入に加え�
 `const Name: Type = expression` は明示的な具体型を持つ不変値です。`.tz`／`.tc` で宣言でき、`.tt` では `E1018` です。
 `private const` は宣言モジュール内だけで参照でき、通常の定数も他モジュールからは `Module.Name` と修飾します。
 関数と同じ値の名前空間を使い、重複は `E1001` です。前方参照を許し、未使用の定数も型検査・評価します。
-`@literal def Name : Type = expression` も同じコンパイル時定数の宣言です（`@literal def PI : f64 = 3.14`）。
+`@literal def Name :: Type = expression` も同じコンパイル時定数の宣言です（`@literal def PI :: f64 = 3.14`）。
 
 ```text
 const Answer: i64 = Later + 2
@@ -358,7 +358,7 @@ export def answer :: i32 = add 20 22
 
 `def name :: 引数型 -> ... -> 返却型 = \引数 -> 本体` で宣言と実装を一緒に書きます。
 `= \left -> \right -> body` と `= \left right -> body` は同じカリー化を表します。型の後の `=` で改行しても書けます。
-`::` は単一の `:` でも書け（`def twice : i32 -> i32 = \x -> x * 2`）、`::` を書けるすべての `def` で同じです。
+名前と型の間は必ず `::` です。`def twice : i32 -> i32 = \x -> x * 2` のような単一の `:` は、`@literal def`・`extern def`・`and`・クラスのメソッドを含むすべての `def` で `E0002` です（`:` は `let`・`const`・フィールドの型注釈）。
 従来の `def name :: 型` と `fn name 引数名 ... = 式`、または `let name = ラムダ式` を
 同じファイルに分離して書く形式も受理します。隣接・前後関係は必須ではありません。
 その `let` は通常のエントリーコードの束縛ではなく、モジュール関数の定義です。`export` は `def` 側に付けます。

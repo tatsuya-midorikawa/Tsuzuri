@@ -101,7 +101,7 @@ match safe 2147483647 with
 次の例は `Overflow occurred: Arithmetic operation resulted in an overflow.` を表示します。トップレベルの結果の `Result` は `Display` を持たないため表示しません。
 
 ```tsuzuri run=Overflow%20occurred%3A%20Arithmetic%20operation%20resulted%20in%20an%20overflow.
-def safe_add : i32 -> i32 -> Result<i32, 'TErr>
+def safe_add :: i32 -> i32 -> Result<i32, 'TErr>
     @'TErr : Err = \x y ->
         try
             @checked
@@ -122,7 +122,7 @@ safe_add 2147483647 1
 本体が `try` なので、`@'TErr : Err` を省略しても同じです。
 
 ```tsuzuri run=Overflow%20occurred%3A%20Arithmetic%20operation%20resulted%20in%20an%20overflow.
-def safe_add : i32 -> i32 -> Result<i32, 'TErr> = \x y ->
+def safe_add :: i32 -> i32 -> Result<i32, 'TErr> = \x y ->
     try
         @checked
         let result = x + y

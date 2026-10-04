@@ -211,12 +211,22 @@ fn entry_values_print_through_display_or_are_dropped() {
 #[test]
 fn functions_accept_spec_signatures_guards_and_constraints() {
     for source in [
-        "def add : i32 -> i32 -> i32 = \\x y -> x + y\nadd 1 2",
-        "@literal\ndef PI : f64 = 3.14\nlet r: f64 = 2\nPI * (r ** 2)",
+        "def add :: i32 -> i32 -> i32 = \\x y -> x + y\nadd 1 2",
+        "@literal\ndef PI :: f64 = 3.14\nlet r: f64 = 2\nPI * (r ** 2)",
         "let positive = \\x when x > 0 -> x * 2\npositive 3",
         "def run :: i32 =\n    do! IO.writeln \"Hello\"\n    |> ignore\n    0\nrun",
     ] {
         accepts(source);
+    }
+    // Every 'def' form writes '::' before its type.
+    for source in [
+        "def add : i32 -> i32 -> i32 = \\x y -> x + y\nadd 1 2",
+        "@literal\ndef PI : f64 = 3.14\nPI",
+        "def rec even :: i64 -> bool = \\n -> n == 0 || odd (n - 1)\nand odd : i64 -> bool = \\n -> n != 0 && even (n - 1)\neven 4",
+        "class Size<'a> { def size : 'a -> i64 }\n0",
+        "extern def host_add : i64 -> i64 -> i64\n0",
+    ] {
+        assert!(rejects(source, "E0002").starts_with("use '::'"), "{source}");
     }
     let module = analyze(
         "record Foo { num: i32 }\ndef value :: Foo -> i32 = \\x -> x.num\ndef add :: 'T -> 'T -> 'U\n    @'T : (#value: 'T -> 'U) = \\x -> \\y ->\n        ('T.value x) + ('T.value y)\nadd (Foo { num: 10 }) (Foo { num: 20 })",

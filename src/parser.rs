@@ -747,11 +747,14 @@ impl Parser<'_> {
         })
     }
 
-    /// `:` or `::` between a declaration's name and its type.
+    /// `::` between a `def` name and its type.
     fn type_colon(&mut self, description: &str) -> Result<(), Diagnostic> {
-        if !self.eat(&TokenKind::Colon) {
-            self.expect(&TokenKind::DoubleColon, description)?;
+        if self.at(&TokenKind::Colon) {
+            return Err(
+                self.error("use '::' between a 'def' name and its type, as in 'def name :: Type'")
+            );
         }
+        self.expect(&TokenKind::DoubleColon, description)?;
         Ok(())
     }
 
@@ -763,7 +766,7 @@ impl Parser<'_> {
             )
     }
 
-    /// `@literal [private] def Name : Type = value` declares a compile-time
+    /// `@literal [private] def Name :: Type = value` declares a compile-time
     /// constant, the same as `const Name: Type = value`.
     #[inline(never)]
     fn literal_declaration(&mut self, visibility: Visibility) -> Result<ConstDecl, Diagnostic> {
@@ -776,7 +779,7 @@ impl Parser<'_> {
         };
         self.expect(&TokenKind::Def, "'def' after '@literal'")?;
         let name = self.ident()?;
-        self.type_colon("':' and the literal's type")?;
+        self.type_colon("'::' and the literal's type")?;
         let ty = self.type_expr()?;
         self.expect(&TokenKind::Equal, "'=' before the literal value")?;
         let value = self.body_expression()?;
