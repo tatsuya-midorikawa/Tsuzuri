@@ -3084,7 +3084,7 @@ impl Names {
     /// class and a record or union type of equal rank are ambiguous rather
     /// than silently preferring either meaning.
     fn type_head(&self, module: &str, head: &Ident) -> Result<TypeHead<'_>, Diagnostic> {
-        self.check_path(module, &head.text, head.span)?;
+        self.check_type_path(module, &head.text, head.span)?;
         let class = self.class_choice(module, &head.text);
         let named = self.type_choice(module, &head.text);
         let (class_rank, type_rank) = (class.rank(), named.rank());
@@ -3158,16 +3158,37 @@ impl Names {
     }
 
     /// Resolves a record or union type name: the requester's own declaration,
-    /// then an exact qualified name, then the unique visible declaration of
-    /// user modules and then of std modules.
+    /// then an exact qualified name or the type of the module that the name
+    /// names, then the unique visible declaration of user modules and then of
+    /// std modules.
     fn named_type(
         &self,
         module: &str,
         name: &str,
         span: Span,
     ) -> Result<NamedType<'_>, Diagnostic> {
-        self.check_path(module, name, span)?;
+        self.check_type_path(module, name, span)?;
         self.type_result(self.type_choice(module, name), name, span)
+    }
+
+    /// `check_path` for a type name. A bare name is also a module name, so
+    /// `using` declarations can make it ambiguous unless the requester
+    /// declares that type or class, or it is a built-in class.
+    fn check_type_path(&self, module: &str, name: &str, span: Span) -> Result<(), Diagnostic> {
+        if name.contains('.') {
+            return self.check_path(module, name, span);
+        }
+        let own = format!("{module}.{name}");
+        if self.records.contains_key(&own)
+            || self.unions.contains_key(&own)
+            || self.type_aliases.contains_key(&own)
+            || self.handles.contains_key(&own)
+            || self.classes.contains(&own)
+            || self.classes.contains(name)
+        {
+            return Ok(());
+        }
+        self.check_module(module, name, span)
     }
 
     fn type_choice(&self, module: &str, name: &str) -> Choice<NamedType<'_>> {
@@ -3210,13 +3231,21 @@ impl Names {
             return choice;
         }
         // A path to a module also names the type that shares the module's name:
-        // `Sample.Point` is the record `Point` of the module `Sample.Point`.
-        if name.contains('.')
-            && let Some(key) = self.module_path(module, name)
+        // `Sample.Point` is the record `Point` of the module `Sample.Point`. A
+        // bare `Point` finds a user module's type by namespace, ranked with
+        // other user types; std and private types keep the search below.
+        if let Some(key) = self.module_path(module, name)
             && self.searchable(module, key)
             && let Some(choice) = exact(&format!("{key}.{}", key.rsplit('.').next().unwrap_or(key)))
         {
-            return choice;
+            if name.contains('.') {
+                return choice;
+            }
+            if let Choice::Found(named, _) = choice
+                && self.origin(key) == ModuleOrigin::User
+            {
+                return Choice::Found(named, 1);
+            }
         }
         let candidates: Vec<NamedType<'_>> = self
             .record_aliases

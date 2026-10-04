@@ -54,10 +54,14 @@ fn scripted(
 ) -> Vec<serde_json::Value> {
     use serde_json::json;
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tsuzuri::lsp::{file_uri, read_message, serve, write_message};
+    // Parallel tests can read the same clock value.
+    static SESSIONS: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "tsuzuri-lsp-scripted-{}-{}",
+        "tsuzuri-lsp-scripted-{}-{}-{}",
         std::process::id(),
+        SESSIONS.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

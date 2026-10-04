@@ -290,6 +290,7 @@ pub(crate) fn module_identity(
 pub(crate) fn declared_header(text: &str) -> (Option<syntax::Ident>, Vec<syntax::Ident>) {
     use syntax::TokenKind;
     let (tokens, _) = lexer::lex_all(text);
+    let broken = |from: usize, to: usize| text[from..to].contains(['\n', '\r']);
     let mut rest = tokens.as_slice();
     let mut header = |keyword: &str| {
         let [first, second, tail @ ..] = rest else {
@@ -298,7 +299,7 @@ pub(crate) fn declared_header(text: &str) -> (Option<syntax::Ident>, Vec<syntax:
         let (TokenKind::Ident(word), TokenKind::Ident(name)) = (&first.kind, &second.kind) else {
             return None;
         };
-        if word != keyword {
+        if word != keyword || broken(first.span.end, second.span.start) {
             return None;
         }
         let mut path = syntax::Ident {
@@ -310,6 +311,7 @@ pub(crate) fn declared_header(text: &str) -> (Option<syntax::Ident>, Vec<syntax:
         while let [dot, segment, tail @ ..] = rest
             && dot.kind == TokenKind::Dot
             && let TokenKind::Ident(segment_text) = &segment.kind
+            && !broken(path.span.end, segment.span.start)
         {
             path.text.push('.');
             path.text.push_str(segment_text);

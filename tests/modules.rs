@@ -690,6 +690,10 @@ fn validates_module_names_and_preserves_unique_export_abi() {
         "def x :: i64 = 1\nusing Nested",
         "using Nested\nnamespace Nested",
         "namespace Nested\nusing Nested Other",
+        "namespace\nNested",
+        "namespace Nested\n.Inner",
+        "namespace Nested.\nInner",
+        "namespace Nested\nusing\nOther",
     ] {
         assert_eq!(
             analyze_modules(&[("Main", source)]).unwrap_err().code,
@@ -769,8 +773,15 @@ const NS_POINT: &str = "namespace Sample\n\nrecord Point { x: f64, y: f64 }\n\nd
 #[test]
 fn namespaces_qualify_modules_and_module_named_types() {
     let main = "namespace Sample\n\ndef main :: f64 = \\() ->\n    let p = Sample.Point { x: 1.0, y: 2.0 }\n    let q: Point = Point { x: 3.0, y: 4.0 }\n    let maybe: Sample.Shape.Maybe<i64> = Sample.Shape.Some 1\n    Sample.Shape.area (Sample.Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample.Point.sum p + Point.sum q\n";
-    let module =
-        analyze_modules(&[("Shape", NS_SHAPE), ("Point", NS_POINT), ("Main", main)]).unwrap();
+    // The bare `Point` follows the namespace order, so `Other.Point` does not make it ambiguous.
+    let other = "namespace Other\n\nrecord Point { x: f64, y: f64 }\n";
+    let module = analyze_modules(&[
+        ("Shape", NS_SHAPE),
+        ("Point", NS_POINT),
+        ("Other/Point", other),
+        ("Main", main),
+    ])
+    .unwrap();
     let entry = &module.functions[module.entry.unwrap()];
     assert_eq!(entry.qualified_name(), "Sample.Main.main");
     assert_eq!(entry.signature.result, Type::F64);
@@ -899,6 +910,29 @@ fn using_imports_the_modules_of_a_namespace() {
             "{usings}: {}",
             error.message
         );
+    }
+    // A bare type name is also a module name, which two imports make
+    // ambiguous unless the file declares the type itself.
+    let point = "namespace A\n\nrecord Point { x: i64 }\n";
+    let main = |own: &str| {
+        format!(
+            "namespace Sample\nusing A\nusing B\n\n{own}def main :: i64 = \\() ->\n    let p: Point = Point {{ x: 1 }}\n    p.x\n"
+        )
+    };
+    for other in [
+        "namespace B\n\nrecord Point { x: i64 }\n",
+        "namespace B\n\ndef origin :: i64 = 0\n",
+    ] {
+        let error = analyze_modules(&[("A/Point", point), ("B/Point", other), ("Main", &main(""))])
+            .unwrap_err();
+        assert_eq!(error.code, "E1004", "{other}: {}", error.message);
+        assert!(
+            error.message.contains("'A.Point', 'B.Point'"),
+            "{}",
+            error.message
+        );
+        let own = main("record Point { x: i64 }\n\n");
+        analyze_modules(&[("A/Point", point), ("B/Point", other), ("Main", &own)]).unwrap();
     }
 }
 

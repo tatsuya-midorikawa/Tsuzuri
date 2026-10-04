@@ -994,9 +994,22 @@ impl Parser<'_> {
     /// `namespace A.B` or `using A.B` on its own line.
     fn header_declaration(&mut self, keyword: &str) -> Result<NamespaceDecl, Diagnostic> {
         let start = self.take().span;
+        let same_line = |parser: &Self| {
+            if parser.newline_before_current() {
+                Err(parser.error(format!(
+                    "write the {keyword} path on the same line as '{keyword}'"
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        same_line(self)?;
         let mut path = self.ident()?;
         let mut segments = 1;
-        while self.eat(&TokenKind::Dot) {
+        while self.at(&TokenKind::Dot) {
+            same_line(self)?;
+            self.take();
+            same_line(self)?;
             let segment = self.ident()?;
             segments += 1;
             if segments > 16 {
