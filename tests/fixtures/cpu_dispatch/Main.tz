@@ -6,5 +6,4 @@ fn task_sum =
     let result = Task.run (Task.parallel [task { return 20 }, task { return 22 }])
     Array.sum (&result)
 
-def main :: i64
-fn main = task_sum()
+task_sum()

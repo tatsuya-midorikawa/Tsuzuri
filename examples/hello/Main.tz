@@ -7,4 +7,6 @@ def rec sum :: i64 -> i64 -> i64 = \n total ->
 
 export def answer :: i64 = sum 100 0
 
-def main :: i64 = answer()
+def main :: unit -> i32 = \() ->
+    do! IO.write_line (answer())
+    0

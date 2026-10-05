@@ -34,8 +34,8 @@ fn text_operation operation first second =
     let needle = sample second
     let replacement = "-"
     match operation with
-    | 0 -> Option.default_value (-1) (String.find (ref needle) (ref text))
-    | 1 -> Option.default_value (-1) (String.rfind (ref needle) (ref text))
+    | 0 -> Maybe.default_value (-1) (String.find (ref needle) (ref text))
+    | 1 -> Maybe.default_value (-1) (String.rfind (ref needle) (ref text))
     | 2 -> if String.contains (ref needle) (ref text) then 1 else 0
     | 3 -> if String.starts_with (ref needle) (ref text) then 1 else 0
     | 4 -> if String.ends_with (ref needle) (ref text) then 1 else 0
@@ -64,8 +64,8 @@ fn utf8_operation operation first second =
     let needle = utf8_sample second
     let replacement = u8"-"
     match operation with
-    | 0 -> Option.default_value (-1) (Utf8String.find (ref needle) (ref text))
-    | 1 -> Option.default_value (-1) (Utf8String.rfind (ref needle) (ref text))
+    | 0 -> Maybe.default_value (-1) (Utf8String.find (ref needle) (ref text))
+    | 1 -> Maybe.default_value (-1) (Utf8String.rfind (ref needle) (ref text))
     | 2 -> if Utf8String.contains (ref needle) (ref text) then 1 else 0
     | 3 -> if Utf8String.starts_with (ref needle) (ref text) then 1 else 0
     | 4 -> if Utf8String.ends_with (ref needle) (ref text) then 1 else 0

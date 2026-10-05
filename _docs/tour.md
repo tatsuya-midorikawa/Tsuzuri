@@ -37,7 +37,7 @@ let selected = ref values[1..3]
 Array.sum selected
 ```
 
-配列は `[T]`、リストは `[|T|]` です。スライスの終端は含みません。ref は値を複製せず貸し出します。参照が生きている間は所有者を移動・置換できません。
+配列は `[T]`（`Array<T>` とも書けます）、リストは `[|T|]` です。スライスの終端は含みません。ref は値を複製せず貸し出します。参照が生きている間は所有者を移動・置換できません。
 
 string や Vec は非 Copy の所有値です。値で渡すと move し、読み取りだけなら借用します。GC や手動の free を利用者コードに書く必要はありません。
 
@@ -45,10 +45,10 @@ string や Vec は非 Copy の所有値です。値で渡すと move し、読�
 
 ```tsuzuri run=42
 let text = "42"
-let parsed: Option<i64> = Parse.parse ref text
+let parsed: Maybe<i64> = Parse.parse ref text
 match parsed with
-| Option.Some value -> value
-| Option.None -> 0
+| Maybe.Some value -> value
+| Maybe.None -> 0
 ```
 
 Parse の失敗は None です。match はすべての入力を扱えるか検査します。理由付きの失敗には Result を使います。ゼロ除算や範囲外アクセスのトラップとは別の仕組みです。`@checked` を付けた整数演算のオーバーフローは、同じ関数の `try ... with` で Result として受け取れます（[例外処理](language-reference/error-handling.md)）。
@@ -58,15 +58,15 @@ Parse の失敗は None です。match はすべての入力を扱えるか検�
 ## 計算を合成する
 
 ```tsuzuri run=42
-let result = Option {
-    let! left = Option.Some 20
-    let! right = Option.Some 22
+let result = Maybe {
+    let! left = Maybe.Some 20
+    let! right = Maybe.Some 22
     return left + right
 }
-Option.default_value 0 result
+Maybe.default_value 0 result
 ```
 
-Option の let! は成功値を取り出し、None なら続きへ進みません。独自のビルダーは .tc に通常の関数として定義できます。return は任意位置の早期 return ではなく、ビルダーの値を作る末尾の操作です。
+Maybe の let! は成功値を取り出し、None なら続きへ進みません。独自のビルダーは .tc に通常の関数として定義できます。return は任意位置の早期 return ではなく、ビルダーの値を作る末尾の操作です。
 
 ## 明示的な並列処理
 
@@ -82,7 +82,7 @@ task は作成時には実行しません。Task.run が一回消費して実行
 
 ## ファイルを分ける
 
-関数が増えたらモジュールへ分けます。Geometry/Point.tz は Geometry.Point、呼び出しは Geometry.Point.distance のように修飾します。型クラスは .tt、ビルダーは .tc です。モジュールを開く open 宣言はありません。
+関数が増えたらモジュールへ分けます。Geometry/Point.tz は名前空間 Geometry の Point モジュールで、呼び出しは Geometry::Point.distance のように修飾します（名前空間とモジュールは `::`、メンバーは `.`）。型クラスは .tt、ビルダーは .tc です。モジュールを開く open 宣言はありません。
 
 ホストから使う具体型の関数は export def、ホストを呼ぶ関数は extern def にします。WASM や C の境界には、対応するスカラー・バッファ・レコードだけを渡します。
 

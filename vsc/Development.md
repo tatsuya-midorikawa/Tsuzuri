@@ -12,7 +12,7 @@ OS／CPU 別 VSIX にコンパイラとビルド用ツールチェーンを同�
 2. 拡張ホストの OS／CPU に合った `tsuzuri-0.1.0-<target>.vsix` を、拡張機能ビューの **Install from VSIX...** からインストールします。
 3. Tsuzuri のプロジェクトフォルダーを開いて信頼し、`.tz`・`.tt`・`.tc` を開きます。
 
-新規プロジェクトは **Tsuzuri: New Project** で空フォルダーを選びます。Main.tz、Tsuzuri.toml、.gitignore を作成します。既存ファイルは上書きしません。
+新規プロジェクトは **Tsuzuri: New Project** で空フォルダーを選び、名前空間を入力します。コンパイラの `tsuzuri new <folder> --namespace <name>` が、`namespace` を書いた Tsuzuri.toml、同じ名前空間を宣言する Main.tz、.gitignore を作成します。既存ファイルは上書きしません。
 通常のプロジェクトに tasks.json／launch.json の作成は不要です。実行ファイルは `.tsuzuri/` 以下へ生成します。
 デバッグ対応環境では、初回 F5 時に同梱の公式 CodeLLDB VSIX を自動インストールします。Marketplace への接続は不要です。
 既に CodeLLDB が入っている場合はそれを使い、勝手にダウングレードしません。

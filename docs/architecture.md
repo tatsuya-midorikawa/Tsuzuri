@@ -8,6 +8,7 @@ LLVM の C API／Rust バインディングには結合しません。
 ```text
 UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main.tz)
    -> driver -> sorted source files + filename-based module names and source kinds
+             + the root package's default namespace for its sources
              + embedded std sources (stdlib::SOURCES) appended after user sources
    -> lexer -> tokens + per-file byte spans
    -> parser -> syntax AST per file
@@ -42,13 +43,14 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/numeric.rs` | プリミティブ名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/constants.rs` | 定数の依存順評価、型別演算と資源上限、既存リテラルへの展開、定数・一時値の借用引数（`temporary_borrows`） |
 | `src/exceptions.rs` / `src/llvm_exception.rs` / `std/Exception.tz` | `try ... with ... finally`・`@checked`・単項 `+` の型検査（check の子モジュール）と lowering、`**` の lowering、std の `Exception`／`ExceptionKind` と `Err` の instance |
-| `std/BigInt.tz` | `bigint`。符号と、下位から並べた 10^9 進の桁（`[i64]`）による std ソースだけの多倍長整数（不透明 record）。コンパイラは型名 `bigint` を `BigInt.BigInt` に、`I` 接尾辞のリテラルを桁の配列を渡す `BigInt.make` の呼び出しに写すだけ |
+| `std/BigInt.tz` | `bigint`。符号と、下位から並べた 10^9 進の桁（`[i64]`）による std ソースだけの多倍長整数（不透明 record）。コンパイラは型名 `bigint` を `BigInt` に、`I` 接尾辞のリテラルを桁の配列を渡す `BigInt.make` の呼び出しに写すだけ |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用、分岐の合流、参照の寿命 |
 | `src/ownership_control.rs` | 反復の固定点、ガードの読み取り専用別名、分岐・認識器の一時値の寿命 |
 | `src/llvm.rs` | SSA、phi、末尾ループ、所有値の解放、借用先、ホスト・ラッパー、C ヘッダー |
 | `src/llvm_debug.rs` | 共通採番によるDWARFメタデータ、型・変数・関数と式のソース位置 |
 | `src/llvm_imports.rs` | externのABI wrapper、リンク名とWASM import属性、コールバック引数、所有結果の受領検査 |
 | `std/IO.tc` / `src/llvm_io.rs` / `src/runtime/io.c` | 不透明なIOモナド、入口での実行、標準ストリーム、WASMホスト境界 |
+| `src/runtime/arguments.c` | `def main :: Array<string> -> i32` のコマンドライン引数。POSIX・WASI の UTF-8 の復号（不正な列は U+FFFD）と Windows のコマンドラインの分割 |
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` builtin（`src/llvm_io.rs` の `os_builtin`）、POSIX の runtime、`--wasm-host wasi` の WASI preview1 runtime |
 | `std/HashMap.tz` / `std/HashSet.tz` | ハッシュコンテナ。コンパイラに型・builtin・runtime を足さない std ソースだけの実装 |
 | `std/Format.tz` / `src/runtime/format.ll` | 文字列補間の書式指定。`Format.parse`／`Format.pad` と、padding の runtime 補助（結合は `src/llvm_display.rs`） |
@@ -142,7 +144,7 @@ heap-native.llのmalloc、realloc、freeはtsuzuri_tracked_*へ置き換えま�
 境界本体（lock、list、hash表）はtsuzuri_boundary_runの自動変数にせず、追跡対象外のmallocで確保してvolatileなpointerで持ちます。setjmpの後に変更された非volatileの自動変数は、longjmpで戻った後は不定で、最適化（-O2以上で実測）で解放処理が古い値を読むためです。確保に失敗したらabortします（メモリ不足は従来どおり失敗します）。
 POSIX nativeの通常object・task.c・trap.cはweakなtsuzuri_trap_hooks（owner、item、resume、allocate、releaseの5つの関数pointer）を共有します。trap.cのconstructorが表を設定し、境界runtimeがなければ全slotはNULLです。公開tsuzuri_alloc/freeもこの表を使うので、通常objectと境界付きobjectのどちらを先にリンクしても確保と解放が一致し、ホストのexternが返す所有bufferも境界へ登録できます。未定義の弱い関数への依存はありません（macOSのlinkerはこれを拒否するため）。
 task.cは表のownerがあればgroupを投入したthreadの境界を取得し、worker（と投入したthread）のitemを表のitem（tsuzuri_boundary_item）の中で実行します。itemのトラップはgroupへ最小indexで記録し、以後のitemを始めず、全itemの終了後に投入したthreadが表のresume（tsuzuri_boundary_resume）で境界へ戻ります。トラップしたtaskの状態は未定義なので、先にErrを返したitemがあってもトラップを返します（B06のdropがその状態を読むため）。
-C runtime（task.c、cpu.c、io.c）は動的確保を持たず、確保の経路は@tz.alloc／@tz.realloc／@tz.freeだけです。os.cも結果の所有バッファだけを`tsuzuri_alloc`で渡しますが、パス名・列挙・出力の取得のための一時領域とファイル表にはlibcのmalloc／realloc／freeを直接使い（ファイル表は開いているファイルがある間だけ存在し、ほかは呼び出しの中で解放します）、境界runtimeの追跡経路を通りません。Windows COFFの埋め込みruntimeはE2002、extern callback（E12）との併用はE2000です。
+C runtime（task.c、cpu.c、io.c）は動的確保を持たず、確保の経路は@tz.alloc／@tz.realloc／@tz.freeだけです。os.cも結果の所有バッファだけを`tsuzuri_alloc`で渡しますが、パス名・列挙・出力の取得のための一時領域とファイル表にはlibcのmalloc／realloc／freeを直接使い（ファイル表は開いているファイルがある間だけ存在し、ほかは呼び出しの中で解放します）、境界runtimeの追跡経路を通りません。arguments.c は `main` に渡す配列と各文字列だけを `tsuzuri_alloc` で確保します（WASI では `args_get` の一時領域も `tsuzuri_alloc` で確保して解放します）。Windows COFFの埋め込みruntimeはE2002、extern callback（E12）との併用はE2000です。
 tests/trap_boundary_runtime.c（C。ASan・UBSan・TSan、並列度1〜32）、tests/trap_return.mjs（native object・IR、O0/O3、確保のlive == 0）、src/main.rsとsrc/driver.rsの単体テストが検証します。
 
 native実行ファイルのスタック枯渇（E14 Phase 3）はsrc/runtime/stack.cが報告します。constructorがmain threadにsigaltstackとSIGSEGV／SIGBUSのhandlerを置き、task.cのworkerは-DTZ_STACK_GUARDでtsuzuri_stack_thread()を呼んで自分のstackを登録します。
@@ -209,7 +211,7 @@ Type::Partialはconstructor宣言と末尾固定引数、Applicationはheadと�
 HKT methodはclass receiverと固有の値型変数をfreshにし、具体instanceの完全signatureからmethod特殊化引数を決定します。default methodも既存の内部関数と共有Specializerを使います。
 instance headとmethodで同名の変数を使う場合は、生成関数のmethod変数をalpha分離して名前捕捉を防ぎます。
 値の型にPartial/Applicationが残った場合はLLVM入口の検査でE1015です。名前付きgeneric宣言の通常Type::Variableは従来どおり残せます。
-tests/higher_kinds.rsとfeatures.mjs higher_kindsがOption/Result・default・generic関数・ローカル注釈・全constructor形状・owned heapを検査します。stdへFunctorを自動導入しません。
+tests/higher_kinds.rsとfeatures.mjs higher_kindsがMaybe/Result・default・generic関数・ローカル注釈・全constructor形状・owned heapを検査します。stdへFunctorを自動導入しません。
 
 **GPU Phase 1:** gpu.rsは通常の型付き・単相化済みIRを検査し、既知呼び出しの有界graphを抽出します。独立した型推論・数値評価器は作りません。
 GpuKernel.cpu_referenceは既存LLVM emitterを再利用します。Gpu.init/mapのcallback制限はclosure lowering後に検査し、first-class APIによる回避を拒否します。
@@ -221,7 +223,7 @@ LLVMのenum scalar aliasは前方参照できないため、全enum aliasをreco
 検証はcargo test --test gpuとtests/gpu.mjs。TSUZURI_WEBGPU=1では実adapter上のshader・init/map・resident chain・境界も実行します。
 
 **モジュール:** 1 ファイルに 1 モジュールを強制し、名前はファイル名から取得します。
-root配下を再帰探索し、`SourceFile.relative_path`を正規化した順で処理します。`Geometry/Point.tz`の名前は`Geometry.Point`です。
+root配下を再帰探索し、`SourceFile.relative_path`を正規化した順で処理します。`Geometry/Point.tz`の内部名（key）は`Geometry.Point`で、ソースでは`Geometry::Point`と書きます。
 file入力のrootは親、directory入力はそのディレクトリです。hidden項目を無視し、source/directory symlinkは拒否します。
 source4096・directory1024・module16要素/255byteを上限とし、標準ライブラリの予約は先頭の名前空間に適用します。
 `.tz` はコード、`.tt` は複数の型クラス宣言、`.tc` は一つのビルダー実装です。
@@ -239,6 +241,25 @@ source4096・directory1024・module16要素/255byteを上限とし、標準ラ�
 無修飾レコード名の解決先にも曖昧性の候補にもなりません。public 宣言からの private 型の漏れは
 解決済みの `Type` ではなく元の `TypeExpr` を走査して、漏れた型参照の位置で報告します。
 
+**名前空間:** パーサーは先頭の文脈キーワード `namespace A::B` と、その後の `using A::B` を `Program.namespace`／`Program.usings` に読みます。
+ソースの名前空間のパスは `::`、コンパイラ内部の名前空間・key・完全名は `.` で区切ります。変換は `module_identity`・`module_path`・`namespace_path`・`canonical`・manifest の境界だけで行い、診断と LSP の表示は `.` を `::` に戻します。
+lexer の `mark_paths` は空白なしの `Ident::Ident` の連鎖のうち、最後の要素が英大文字で始まるものと行頭の `namespace`／`using` の後のものを `TokenKind::PathSep` にします。`def`／`rec`／`and` の宣言名の直後と `x::xs` は `DoubleColon` のままです。
+パーサーは `PathSep` でつながる要素を `A::B::Mod` の一つの識別子に読み、メンバーは従来どおり `.` の連鎖です。
+コンパイラが key で組み立てる修飾名（alias の展開、derive、単相化）は先頭に `::`（`check::KEY_PATH`）を付け、利用者が `.` で書いた名前空間のパスと区別します。
+`Type::display` は record／union／extern type を key から作った名前で表示し（`check::type_display`）、モジュール名と同じ名前の型はモジュールの名前だけにします（`Geometry.Point.Point` は `Geometry::Point`、`Maybe.Maybe<i64>` は `Maybe<i64>`）。内部の名前・IR・LLVM の型名は `Geometry.Point.Point` のままで、型から構文を作り直す単相化（`polymorph::key_name`）も key の名前を使います。
+`SourceFile.namespace` は root パッケージの既定名前空間（manifest の `namespace`、package 名の PascalCase、manifest がなければフォルダー名）で、依存と std は空です。
+std のモジュールは `lib::analyze_inputs_indexed_all` と LSP の `ModuleNames` が名前空間 `stdlib::NAMESPACE`（`std`）に置き、key は従来どおりファイル名（`Maybe`）です。
+`lib::module_identity` が相対パス・宣言・既定名前空間からモジュールの key と名前空間を決めます。key は宣言のないファイルでは従来の相対パス名、既定名前空間の内側を宣言したファイルでは既定名前空間を除いた名前、それ以外は完全名です。
+key は型検査・型付き IR・LLVM シンボルの修飾名なので、既定名前空間を宣言しても IR は変わりません。入口は key ではなく `ModuleInput.entry`（root の `Main.tz`）で選びます。
+`check::Names` は完全名から key への表、key ごとの名前空間と `using` の解決結果を持ちます。`module_path` は `Name` か `A::B::Name` を受け、参照元の名前空間、`using`（モジュール名だけ）、外側の名前空間、グローバルの順に完全名を探し、モジュール名だけのときは最後に key として探します。`.` を含むパスはモジュールを指しません。
+std のモジュールの完全名は `std.Maybe` なので、`std::Maybe` はグローバルの検索で、名前空間を省いた `Maybe` は最後の key の検索で見つかります。
+利用者のモジュールの完全名が `std` で始まると `check_modules_collect` が `E1011` にし、`package::valid_namespace` と manifest の検査も既定名前空間 `std` を拒否します。
+`qualified_builtin` は `std::Task.run` の `std::` を外して組み込み関数を探し、パーサーは型の `std::Task`・`std::Vec` を `Task`・`Vec` と読みます。
+`case_path` は、名前空間を書かない `Maybe.Some` の `Maybe` が std のモジュールで参照元に `union Maybe` があるとき、参照元の union の case を返します。docgen は std のページに `Namespace: std` を出します。
+`canonical` は最後の `::` の後の最初の `.` までをモジュールとして key に置き換え、関数・case・型・クラス・active pattern・ビルダーの検索の前に一度だけ適用します（`KEY_PATH` 付きの内部の名前はその印を外すだけです）。
+名前空間とモジュールを `.` でつないだパスは解決せず、`E1002`／`E1004` の診断が `namespace_spelling` で `::` の書き方を示します。
+モジュールのパスは同名の record／union／型別名／extern type も表し、その型の完全名はモジュールの完全名です。`check_module_type` は `Sample::Point.Point` のようにモジュール名を重ねた型のパスを、`case_path` は `Sample::Shape.Shape.Rect` を `E1004` にします（`KEY_PATH` 付きの内部の名前は対象外）。診断と hover は `type_spelling`・`semantic::type_name` で同じ名前を示し、LSP のメンバー補完はその型を出しません。`using` の曖昧さは `check_path`／`check_module` が検索の入口で `E1004` にします。LSP は `ModuleNames` で同じ規則を再現し、補完（`::` の後は名前空間の子、`.` の後はメンバー）・シグネチャヘルプ・semantic token に使います。
+
 **パッケージ:** 読み込み層は`Tsuzuri.toml`のlocal path依存も扱います。`package.rs`が限定文法を解析し、driverは明示スタックでgraphの循環・名前・上限を検査します。
 `SourceFile.package`にcanonical rootとnameのPackageIdを保存し、依存namespaceをrelative_pathへ付けます。型検査のUser/Std分類やprivateの境界は変更しません。
 manifestは`Project.manifests`に保持し、source_forでは通常sourceの後のIDを使用します。ビルド・文書出力保護は両集合を対象にします。
@@ -250,7 +271,7 @@ parse 順は入力順なので、利用者のソース ID と `Project.root` は
 `analyze_modules_with_std` は Rust テスト向けに std を差し替えます（空スライスは std なし）。
 各モジュールは `ModuleOrigin`（`User`／`Std`）を持ち、`stdlib::RESERVED_MODULES` の名前は利用者のモジュールに使えません。
 std のパスは `std/Name.ext` の平坦な仮想パスで、出力保護の対象外です。userのrelative_pathと混同しません。
-無修飾の型・case・レコード・クラスの解決は、自モジュール、完全修飾名の後、参照元が利用者なら
+無修飾の型・case・レコード・クラスの解決は、自モジュール、完全修飾名（型ではモジュールのパスが表す同名の型も）の後、参照元が利用者なら
 利用者のモジュール、std のモジュールの順に段階ごとに一意な候補を探し、参照元が std なら std だけを探します。
 std の `export def` は拒否し、std の関数は利用者の関数と同じく修飾必須です。
 std のソースは常に型検査し、`closures::lower` の後で到達可能性により間引きます。
@@ -260,10 +281,10 @@ LLVM は利用者由来の関数をすべて出力し、std 由来の関数は�
 参照で到達するものだけを出力します（`reachable_functions`）。名前付きレコード・union の型定義は、
 利用者由来の型、出力する関数のシグネチャと本体から集めます。
 
-`std/Option.tc`・`std/Result.tc` は通常のジェネリック union と関数だけで型・基本操作・ビルダーを定義します。
+`std/Maybe.tc`・`std/Result.tc` は通常のジェネリック union と関数だけで型・基本操作・ビルダーを定義します。
 固有の型付き命令やランタイムはなく、union の tag 分岐・payload の move／clone／drop と既知継続の特殊化を共有します。
 `get` は網羅的な match の失敗 case で `unreachable : unit -> 'a` を呼びます。
-空の本体も成功として反復を続けるため、`Zero` は unit の成功です（Option は `Some ()`、Result は `Ok ()`）。
+空の本体も成功として反復を続けるため、`Zero` は unit の成功です（Maybe は `Some ()`、Result は `Ok ()`）。
 スカラー builder の到達可能な呼び出し経路に確保・間接呼び出しがないことを IR で検査します。
 汎用 adapter の定義には確保が残り得るため、IR 全文の `@tz.alloc` の有無と実行経路の確保を混同しません。
 
@@ -277,14 +298,15 @@ LLVM の定義は具体化ごとに一度だけ `@tz.builtin.name` に型引数�
 
 **エントリー:** `Main.tz` のトップレベルコードを合成した非公開関数、または `Main.main` の
 関数 ID を保持します。両者の併用は拒否し、他モジュールや `Main.tc` の `main` は入口に選びません。
+`Main.main` のシグネチャは `unit -> i32` か `[string] -> i32`（`Array<string>`）だけで、checker がシグネチャの収集時に `check::entry_signature` で検査し、それ以外を E2004 で拒否します。
 トップレベルの `let` は通常のローカル束縛へ下げ、モジュールの共有状態は導入しません。
 ライブラリ出力にはコンソール・ラッパーやトップレベルコードの自動実行を追加しません。
 トップレベルコードの値は、数値・`bool`・文字・文字列ならそのまま、ほかの型は `Display` の instance があれば `to_string` で表示し、なければ捨てます（`entry_result`）。
-IO の `let!`／`do!` の後を通常の式で終えたトップレベルコード（`$implicit.root.$entry`）と、ビルダーを持たない既知の結果型（`def main :: i32` など）の本体は、
+IO の `let!`／`do!` の後を通常の式で終えたトップレベルコード（`$implicit.root.$entry`）と、ビルダーを持たない既知の結果型（`def main :: unit -> i32` の本体の `i32` など）の本体は、
 IO の bind を std の非公開 `IO.run` で順に直接実行します（direct style。直接実行できるビルダーは IO だけです）。
 
-**標準入出力:** std/IO.tcはopaqueな`IO.IO<'a>`に通常の`unit -> 'a` closureを保持します。pure/bind/map/Delay/Combine/For/While/MergeSourcesは通常ソースであり、別のタスク・GC・effect interpreterは導入しません。
-IO.__read_line/__writeはstd由来のIOモジュールだけが参照できるbuiltinです。低水準readは`(i32 * [ubyte])`、writeはstatusを返し、Option/ResultとUTF変換はstdが処理します。
+**標準入出力:** std/IO.tcはopaqueな`IO<'a>`に通常の`unit -> 'a` closureを保持します。pure/bind/map/Delay/Combine/For/While/MergeSourcesは通常ソースであり、別のタスク・GC・effect interpreterは導入しません。
+IO.__read_line/__writeはstd由来のIOモジュールだけが参照できるbuiltinです。低水準readは`(i32 * [ubyte])`、writeはstatusを返し、Maybe/ResultとUTF変換はstdが処理します。
 LLVMは既存のhost_result_slot/read_host_resultを再利用してdescriptorを初期化・検査します。IO専用の外部呼び出しに純粋性属性は付けず、所有バッファは同じallocator/dropを使います。
 `IO<T>`の入口が`tsuzuri_main`を生成し、通常closure ABIの`unit, env, borrow=false`で一度消費実行します。結果TはFunctionEmitterの既存drop_valueで解放し、再帰型の解放登録も共有します（`IO<i32>`だけは解放せず終了コードとして返します。後述）。native executableはmainから呼び、object/WASMは明示ホスト呼び出しで、結果表示は付けません。
 nativeのio.cは既存task/CPU runtimeと同じC結合経路へ必要時だけ追加します。fgetcのstdio bufferで行を読み、幾何増加bufferを通常allocatorで管理します。EINTRを再試行し、LF/CRLFを除きます。fwriteは部分書き込みを進め、flush失敗もstatusへ返します。
@@ -299,11 +321,18 @@ tests/io.mjsはnative/WASM O0/O3、cold/順序/EOF/符号化/失敗/ABI境界、
 バイト列を返す primitive（`__read`／`__args`／`__random`／`__handle`／`__spawn`）は、IO と同じ `host_result_slot`／`read_host_result` の descriptor を先頭の out pointer として受け、成功でも失敗でも書き込みます（失敗は NULL と長さ 0）。LLVM はその descriptor と状態値から `(i64 * [ubyte])` の組を作り、所有バッファは通常の allocator で drop します。`ref utf8string` は stack descriptor の pointer と長さへ、共有 `ref [ubyte]` は descriptor 値（pointer と長さ）へ展開して渡します。
 
 **OS API のリンクと入口:** 到達した primitive だけを `declare i64 @tsuzuri_os_<name>(...)` として intrinsics の集合（`BTreeSet`）へ入れるため、宣言は重複せず出力は決定的で、OS API を使わないプログラムの IR と runtime は変わりません。`Os.__args`（`Env.args`）に到達したときだけ `declare void @tsuzuri_os_set_args(i32, ptr)` も宣言し、その宣言があるときに限って入口の wrapper を `@main(i32 %argc, ptr %argv)` にして、`tsuzuri_main` の前に argc／argv を保存します（`Env.args` は argv[0] を含みません）。ほかの入口は従来の `@main()` です。`@tsuzuri_os_` を含む IR にも、allocator は `tsuzuri_alloc`／`tsuzuri_free` を公開します。
-native の `src/runtime/os.c` は、IR が `declare i64 @tsuzuri_os_` を含むときだけ driver が C runtime の単一 translation unit へ加えます。連結順は os.c、`trap.c`、task、`cpu.c`、`io.c` で、os.c が先頭なのは `_DARWIN_C_SOURCE`／`_GNU_SOURCE` を最初の `#include` より前に定義する必要があるためです。公開関数は weak／hidden です。
-`IO<i32>` の入口は、結果を drop せず `tsuzuri_main` の戻り値、つまりプロセスの終了コードとして返します。`llvm::exit_code_entry` が std の `IO.IO<i32>` かを判定し、ほかの `IO<T>` は従来どおり結果を drop して 0 を返します（以前は `IO<i32>` の値も捨てて 0 でした）。`Os.exit` はありません。`tsuzuri run` は、`exit_code_entry` の native プログラムが 0 以外で終了したとき、トラップとは別に E2005 `program exited with code N` を報告します（JSON 診断では stderr を添えます）。
+native の `src/runtime/os.c` は、IR が `declare i64 @tsuzuri_os_` を含むときだけ driver が C runtime の単一 translation unit へ加えます。連結順は os.c、`trap.c`、task、`cpu.c`、`io.c`、`arguments.c` で、os.c が先頭なのは `_DARWIN_C_SOURCE`／`_GNU_SOURCE` を最初の `#include` より前に定義する必要があるためです。公開関数は weak／hidden です。
+`IO<i32>` のトップレベル入口は、結果を drop せず `tsuzuri_main` の戻り値、つまりプロセスの終了コードとして返します。`llvm::exit_code_entry` が `def main` と std の `IO<i32>` を判定し、ほかの `IO<T>` は結果を drop して 0 を返します。`Os.exit` はありません。`tsuzuri run` は、`exit_code_entry` の native プログラムが 0 以外で終了したとき、トラップとは別に E2005 `program exited with code N` を報告します（JSON 診断では stderr を添えます）。
+
+**`def main` の入口:** `llvm::main_entry` の入口では、console の `@main` が `Main.main` を `i8 0`（`unit`）か `%tz.array` で呼び、戻り値の `i32` をそのまま返します（値は表示しません）。
+`Array<string>` の `main` は wrapper を `@main(i32 %argc, ptr %argv)` にし、`declare void @tsuzuri_arguments(i32, ptr, ptr)` が書いた `%tz.array` を所有権ごと渡します（callee が drop します）。`Env.args` にも到達していれば、先に `tsuzuri_os_set_args` を呼びます。
+driver は IR が `@tsuzuri_arguments(` を含むときだけ `src/runtime/arguments.c` を C runtime の translation unit の末尾へ加え、IR は public allocator（`tsuzuri_alloc`／`tsuzuri_free`）を公開します。各引数は `tsuzuri_alloc` で確保した UTF-16 の `%tz.string` です。
+POSIX は argv[1..] の UTF-8 を変換し（各最大の不正な部分列を U+FFFD に置き換えます）、Windows は `GetCommandLineW` の文字列を空白・タブで分割します。`"` で囲んだ範囲（`"b c"`）は空白を区切らずに一つの引数とし、`"` は取り除き、`\` は特別扱いしません。先頭のプログラム名は捨てます。
+ライブラリ出力は `tsuzuri_main()` を定義し、native は空の配列を渡します。WASM は IR の weak な `tsuzuri_arguments`（空の配列）を呼び、`--wasm-host wasi` では os-wasi.c の後に arguments.c を連結した strong な定義が `args_sizes_get`／`args_get` で引数を読みます。
+`exit_code_entry` は `def main` を含むので、`tsuzuri run` の E2005 と WASI の `proc_exit` は `IO<i32>` の入口と同じです。`tests/arguments.rs` と `tests/arguments_runtime.c` が分割・復号と実行ファイルへの受け渡しを、`tests/os.mjs` が native と WASI の引数を検証します。
 
 **OS API と wasm・Windows:** wasm の既定出力は `tsuzuri_io` 以外のホスト import を持たないため、OS primitive に到達した wasm の object・LLVM IR・wasm 出力は、出力を書く前に E2000（`OS_WASM_MESSAGE`）で拒否します。`Path`・`Os` の純粋な補助関数・`Random.Pcg` は primitive に到達せず、import なしでビルドできます。Windows 上のコンパイラが native の exe／object を作るときは、OS primitive に到達していれば E2002（`OS_WINDOWS_MESSAGE`。`--emit llvm` は除く）です。G10 の Windows 実行は未検証のため、対応は主張しません。
-`--wasm-host wasi`（`BuildOptions.wasm_host`。build だけの指定）は wasm32 の object・wasm にだけ許され、`--wasm-feature threads` とは併用できません（E2000）。LLVM IR とも併用できません（E2000）。os-wasi.c は object にコンパイルして結合するので、IR だけを出す経路では `tsuzuri_os_*`／`tsuzuri_io_*` が未解決のまま残るためです。`llvm::with_wasi_host` が標準 IO の `declare` から `tsuzuri_io` の import 属性を外し、`src/runtime/os-wasi.c`（freestanding C11）を別の object にコンパイルして結合します。os-wasi.c は os.c と io.c の関数と同じ `tsuzuri_os_*`／`tsuzuri_io_*` を `wasi_snapshot_preview1` の上に実装し、import は到達した関数の分だけ増えます。パスは preopen したディレクトリのうち `/` 境界で一致する最長の名前に解決し、どれにも一致しなければ最初の preopen からの相対です。`Os.Error.code` は WASI の errno、`Env.current_dir` は最初の preopen の名前、`Process.run` は `Other`（未対応）です。`_start` は `--emit wasm` で入口が IO のときだけ定義し（`-DTZ_WASI_START`）、`IO<i32>` の非 0 値は `proc_exit` へ渡します（`-DTZ_WASI_EXIT_CODE`）。object の `_start` は埋め込み側に任せます。WASI preview2 とコンポーネントモデルは未実装です。
+`--wasm-host wasi`（`BuildOptions.wasm_host`。build だけの指定）は wasm32 の object・wasm にだけ許され、`--wasm-feature threads` とは併用できません（E2000）。LLVM IR とも併用できません（E2000）。os-wasi.c は object にコンパイルして結合するので、IR だけを出す経路では `tsuzuri_os_*`／`tsuzuri_io_*` が未解決のまま残るためです。`llvm::with_wasi_host` が標準 IO の `declare` から `tsuzuri_io` の import 属性を外し、`src/runtime/os-wasi.c`（freestanding C11）を別の object にコンパイルして結合します。os-wasi.c は os.c と io.c の関数と同じ `tsuzuri_os_*`／`tsuzuri_io_*` を `wasi_snapshot_preview1` の上に実装し、import は到達した関数の分だけ増えます。パスは preopen したディレクトリのうち `/` 境界で一致する最長の名前に解決し、どれにも一致しなければ最初の preopen からの相対です。`Os.Error.code` は WASI の errno、`Env.current_dir` は最初の preopen の名前、`Process.run` は `Other`（未対応）です。`_start` は `--emit wasm` で入口が `def main` か IO のときだけ定義し（`-DTZ_WASI_START`）、`def main` と `IO<i32>` の非 0 値は `proc_exit` へ渡します（`-DTZ_WASI_EXIT_CODE`）。object の `_start` は埋め込み側に任せます。WASI preview2 とコンポーネントモデルは未実装です。
 
 **ファイルハンドルと子プロセス:** `File.Handle { id: i64 }` は runtime のファイル表を指す不透明な Copy 値で、`Drop` ではありません（std の型は `Drop` を実装できず（E1016）、`Drop` の値は `let!` の継続を越えられない（E1005）ためです）。handle は `(generation << 32) | (slot + 1)` で、open のたびに二度と使わない generation を割り当てます（`INT32_MAX` 回で `EOVERFLOW` の `Other`）。閉じた handle や古い handle は、同じ記述子番号を持つ別のファイルへ届かず `InvalidInput`（EBADF）になります。表は倍々に拡張し、開いているファイルがなくなると解放します。`File.with_open` は全経路で閉じます。ファイルは `O_CLOEXEC` で開き、ディレクトリは `InvalidInput`（EISDIR）で拒否します。
 `Process.run` は `posix_spawnp` で shell を介さずに起動します。引数は NUL で区切って渡し、argv の1要素ずつになります。入力は子の標準入力へ書いて閉じ、標準出力と標準エラーは `poll` と非ブロッキング読み取りで同時に集めて、合計が 2^30 byte を超えると子を `SIGKILL` して `Other` にします。書き込み中の `SIGPIPE` は呼び出しの間だけ無視します。
@@ -381,7 +410,7 @@ soft numeric の生成済み IR もこの有効時だけの変換対象であり
 変換で副作用が変わる helper/call の attribute group は引き継ぎません。source marker は最終 IR から除去します。
 driver は side table を一時領域へ作り、ソース保護を再検査し、成果物公開の失敗時には表を rollback します。二ファイルの crash-atomic 更新ではありません。
 
-Option 部分認識器と複数ケース全域認識器は、通常の呼び出しを `PatternStep::Bind` で保持し、既存の union case の tag test と payload 投影へ下げます。
+Maybe 部分認識器と複数ケース全域認識器は、通常の呼び出しを `PatternStep::Bind` で保持し、既存の union case の tag test と payload 投影へ下げます。
 複数ケースの `def ... -> 'T = ラムダ式` は parser が認識器専用の UnionDecl を生成します。Checker は本体内の case 名を通常のコンストラクタへ解決し、nullary case も参照のたびに値を作ります。内部名には利用者が書けない文字を含め、型・case の名前空間を混同しません。
 payload の有無は本体内の case の直接適用から取り、型は既存 Checker による本体検査で確定して関数の scheme へ反映します。別の型推論器や union runtime は追加しません。
 生成 union は API 文書と document symbol から除外し、API 署名には元の `'T` を表示します。
@@ -548,7 +577,7 @@ match!はBind+通常match、and!はsourceを先に順序付きの生成letへ保
 Usingへ渡すsourceは異種builderのBind/Return/Delay/Runを共有loweringで組み立て、IOはそのcallbackのIOを実行時に消費します。
 closureの捕捉・Capture/Send・サイズ検査はchecked_lambdaを共有します。専用TypedExprやruntime interpreterは追加しません。
 大きなAST構築helperを再帰型検査から分離し、暗黙展開にも既存の深さ128制限を適用します。
-引数なし・非再帰・署名なしmainはparserで既存entryへ変換し、他モジュールやトップレベルとの併用は既存の入口検査で拒否します。
+署名のない `fn main` は他の関数と同じく E0002 で、診断は二つの入口シグネチャを示します。
 tests/computations.rsとcomputations.mjs、io.mjsで型・曖昧性・短絡・cold・所有値解放・native/WASM O0/O3を検証します。
 
 **多相性:** 明示シグネチャの型変数は rigid、各関数参照で導入する推論変数だけを単一化します。
@@ -593,7 +622,7 @@ LLVM（`llvm_display.rs`）は、全ての穴を左から評価して `Piece`（
 数値の書式指定は `tz_soft_format_spec`（`src/runtime/numeric.c`）が、ホストの printf を使わず多倍長の係数から一度だけ最近接・偶数丸めして ASCII を書きます。`numeric.ll` は `python3 src/runtime/generate.py`、`math.ll` は `python3 src/runtime/generate_math.py` で再生成し、手編集しません。`flags` は `+` を bit 0、style（0 既定・1 `f`・2 `e`・3 `x`・4 `X`・5 `o`・6 `b`）を bit 4 以降に持ちます。バッファは `format_capacity` が型と精度から決める大きさの entry alloca（512 byte 以下）か、`@tz.alloc` の領域です。padding の補助関数は `runtime/format.ll` にあり（スカラー数を数える `@tz.format.scalars.utf16`／`utf8`、fill を書く `@tz.format.fill.u16`／`u8`、ASCII を UTF-16 へ拡げる `@tz.format.widen`）、前後の fill 数は LLVM が穴ごとに計算します。幅は Unicode スカラー数で数えます（サロゲートペアは 1、孤立サロゲートも 1、数値の ASCII は長さそのもの）。不足分は、既定で数値は右・それ以外は左に置き、`^` は不足の半分（切り捨て）を前に置きます。fill のスカラーは結果の符号化に詰め直した値で書きます。
 
 **Format クラス（D07 Phase 2）:** `Format<'a>` は `BUILTIN_CLASSES` の最後（27 番目）に足した組み込みクラスで、メソッド `format :: ref 'a -> ref string -> string` は組み込みの実装（`Operation`）を持たず、利用者の instance だけが実装します。instance の頭は `validate_format_instance` が、このプログラムで宣言した record か union（型引数は自由）に限り、それ以外は E1016 です（穴が到達しない instance を作らせないためで、`validate_drop_instance` と同じ位置で検査します）。クラス名 `Format`（利用者の `record Format` は E1001）とモジュール名 `Format`（E1011）は予約です。`TypedHole.custom` は、spec があり、穴の型が record か union で、spec が符号・精度・type を持つか `has_format_instance` が真のときに立ちます。そのとき `method` は `Format.format` で、instance がなければ E1005（`no instance for Format<T>`）です。条件付きの instance（`instance Format<'a> => Format<Box<'a>>`）も使えます。`custom` でない穴の spec は `check_format_specs` が推論後の型に対して検査し（`+` は数値、精度は float と decimal、`x X o b` は整数）、符号・精度・type を持つ spec の穴が型変数のままなら E1003 です。Display しかない record・union に幅と配置だけを付けた穴は、従来どおり Display の結果を pad します。
-`format_piece` は、借用した値と、検証済みの spec を `spec_text` の正規の綴り（既定の fill と省略された部分は書かない。例 `*>+8.2f`）にした文字列定数を、スタックの `%tz.string` descriptor 経由の借用として instance に渡し、返った文字列を穴の結果としてそのまま使います。コンパイラは padding も後処理もせず、幅・配置・fill は instance の責務です。`std/Format.tz` の `Format.parse :: ref string -> Option.Option<Format.Spec>`（lexer と同じ文法で、不正な文字列・先頭が `0` の幅と精度（`.0` は可）・4096 超・lexer が拒否する fill（`{`・`}`・`"`・`\`・CR・LF、サロゲートペアの片割れ）は `None`。type と precision の組み合わせは検査しません）と `Format.pad :: ref Format.Spec -> string -> string`（幅をスカラー数で数える）はそのための通常の std ソースで、コンパイラは参照しません。実行時に組み立てた書式文字列、`deriving (Format)`、`#` と `0` の flag、locale、grapheme cluster 幅（D09）は未実装です。
+`format_piece` は、借用した値と、検証済みの spec を `spec_text` の正規の綴り（既定の fill と省略された部分は書かない。例 `*>+8.2f`）にした文字列定数を、スタックの `%tz.string` descriptor 経由の借用として instance に渡し、返った文字列を穴の結果としてそのまま使います。コンパイラは padding も後処理もせず、幅・配置・fill は instance の責務です。`std/Format.tz` の `Format.parse :: ref string -> Maybe<Format.Spec>`（lexer と同じ文法で、不正な文字列・先頭が `0` の幅と精度（`.0` は可）・4096 超・lexer が拒否する fill（`{`・`}`・`"`・`\`・CR・LF、サロゲートペアの片割れ）は `None`。type と precision の組み合わせは検査しません）と `Format.pad :: ref Format.Spec -> string -> string`（幅をスカラー数で数える）はそのための通常の std ソースで、コンパイラは参照しません。実行時に組み立てた書式文字列、`deriving (Format)`、`#` と `0` の flag、locale、grapheme cluster 幅（D09）は未実装です。
 
 **文字列補間の編集支援と検証:** VS Code の TextMate 文法は `string.interpolated.tsuzuri`・`meta.embedded.interpolation.tsuzuri`・`constant.other.format-spec.tsuzuri` の scope を付けます（`vsc/syntaxes/tsuzuri.tmLanguage.json`）。LSP は穴の式を型・定義の索引に含め、補間 token の文字列片と書式指定の位置では補完を返しません。formatter は穴の式の前後に空白を入れません。
 検証は `cargo test --locked --test string_interpolation` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri string_interpolation` です。後者は spec の文法・padding・`Format` instance を、独立した JavaScript の参照と native／WASM の `-O0`／`-O3` で照合します。`tests/lsp.rs` と `vsc/src/test/grammar.test.ts` が編集支援を検査します。性能の主張はありません。
@@ -614,7 +643,7 @@ LLVM（`llvm_display.rs`）は、全ての穴を左から評価して `Piece`（
 型変数による関数参照を LLVM へ渡さず、専用のランタイムや動的探索は追加しません。
 
 **整数 intrinsic:** `Int.*` は通常の多相 builtin として、各整数幅の LLVM intrinsic・命令へ下げます。
-count のゼロ未定義指定は false、rotate 量は明示的にマスクし、checked 系は既存の Option union 構築を共有します。
+count のゼロ未定義指定は false、rotate 量は明示的にマスクし、checked 系は既存の Maybe union 構築を共有します。
 i128 の checked／saturating 乗算は 64-bit limb の部分積と carry によって上位 128-bit の存在を調べ、
 符号付きでは絶対値の限界も検査します。通常の i128 乗算補助だけを使い、未同梱の `__muloti4` を要求しません。
 べき乗は二乗法で、最後の指数ビットの処理後に不要な二乗を行いません。速度の優位性は主張しません。
@@ -625,7 +654,7 @@ i128 の checked／saturating 乗算は 64-bit limb の部分積と carry によ
 `update` の旧要素と関数環境は通常の所有するクロージャ適用へ渡すため、適用後に二重解放しません。
 `tail` は次リンクを読む前に空を検査し、先頭だけを解放します。確保回数は storage E2E で単一使用・旧値再利用・スタック移送を区別します。
 
-**遅延反復:** Seq.Seqはopaque標準recordで常にnon-Copyです。headはOption要素、stepはOption closureを持ち、空・onceは環境確保を必要としません。
+**遅延反復:** Seqはopaque標準recordで常にnon-Copyです。headはMaybe要素、stepはMaybe closureを持ち、空・onceは環境確保を必要としません。
 Seq.nextだけは型付きbuiltinで表現を検証し、headを移送するか、step closureを所有モードで一度呼び出します。反復ごとの環境の全体cloneは行いません。
 defer/unfold/map/filter/to_arrayは通常のstdソースで、Captureとloan伝播を共有します。filterは要素を失わないよう借用述語にします。
 Seq forは型検査時に既存Block/While/Match/Assign/Breakへ展開し、毎回next stateを復元してからユーザーpattern/bodyを検査します。
@@ -633,7 +662,7 @@ Seq forは型検査時に既存Block/While/Match/Assign/Breakへ展開し、毎�
 Array/Vec/Map/Setは共有参照とindexでstepを構築し、Listはfold_refで参照Vecを一回作って所有状態として移送します。
 検証は `cargo test --locked --test iteration_protocol` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri iteration_protocol` です。
 
-**順序付きコンテナ:** Map.Map/Map.Entry/Set.Setをopaque標準recordとして登録し、構築・field・pattern・updateを定義モジュールに限定します。
+**順序付きコンテナ:** Map/Map.Entry/Setをopaque標準recordとして登録し、構築・field・pattern・updateを定義モジュールに限定します。
 型名は通常のgeneric recordで、Mapは`Vec<Entry<K,V>>`、Setは`Vec<K>`を保持します。Vecの非Copy・確保・clone/dropを共有し、新しいランタイム表現を増やしません。
 lower_boundで借用比較し、更新はVec.push/pop/swapによる所有値の移動です。重複Map挿入は旧keyを保持してvalueだけ置換します。
 Set.unionは末尾から比較・popして一つの逆順出力を作って反転し、intersect/differenceは前方の二本のindexで選択します。
@@ -641,7 +670,7 @@ opaque recordには共有参照を格納できますが、排他参照を拒否�
 NLLのloan情報解放では、生きたloanの参照先と親を辿り、読み出しに必要な元所有者の情報を保持します。callbackの参照判定も実際の格納型を使います。
 検証は `cargo test --locked --test map_set` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri map_set` です。
 
-**ハッシュコンテナ:** `HashMap.HashMap`／`HashMap.Entry`／`HashSet.HashSet` を `Map` と同じ opaque 標準 record として登録するだけで、新しい `Type` variant・builtin・runtime 関数はありません（登録は `stdlib.rs` の予約名と opaque record の一覧）。実装は `std/HashMap.tz`／`std/HashSet.tz` の通常の Tsuzuri ソースで、`HashSet<'key>` は `HashMap<'key, unit>` を一つ持ちます。
+**ハッシュコンテナ:** `HashMap`／`HashMap.Entry`／`HashSet` を `Map` と同じ opaque 標準 record として登録するだけで、新しい `Type` variant・builtin・runtime 関数はありません（登録は `stdlib.rs` の予約名と opaque record の一覧）。実装は `std/HashMap.tz`／`std/HashSet.tz` の通常の Tsuzuri ソースで、`HashSet<'key>` は `HashMap<'key, unit>` を一つ持ちます。
 `HashMap<'key, 'value>` は、挿入順に詰めた密な `entries: Vec<Entry>`（hash・key・value）、entry の添字か -1 を持つ open-addressing の索引表 `slots: Vec<i64>`、非公開の `key0`／`key1`／`keyed` からなります。索引は線形探査・2 の冪の大きさ（最小 8）・最大負荷率 1/2 で、`2 * (count + 1)` が大きさを超えるときに倍へ再構築します。`remove` は tombstone を作らず、理想位置との距離で後続の cluster を詰める後方シフト削除で索引を直し、entry 配列からは swap-remove（末尾の entry が空いた位置へ移る）します。したがって列挙順は insert と remove の列だけで決まり、hash 値・表の大きさ・target・seed のどれにも依存しません。
 既定の hash は `Hash.hash`（64-bit FNV-1a）を `fmix64` で混ぜた値です。FNV-1a の下位 bit は入力の下位 bit だけで決まり、そのまま 2 の冪の表の添字にすると衝突が集中するためです。`with_seed`／`with_capacity_and_seed` の map は `keyed` を立て、seed から SplitMix64 で作った 128-bit の `key0`／`key1` を鍵にする SipHash-1-3（公開の `HashMap.sip13`。64-bit word 一つの純粋な関数）で、同じ digest を最終化します。`randomized`／`try_randomized` は `Random.next_u64` で seed を得る `IO` action なので OS API であり、既定の wasm32 は E2000、native と `--wasm-host wasi` で使えます。seed を得られなくても固定の seed へは戻りません。seed 付きの map は固定の混合に対して slot を狙った衝突を防ぎますが、`Hash.hash` の 64-bit digest 全体が衝突する key は衝突したままで、seed が推測できれば効果がありません。既定の map は HashDoS への耐性を持ちません。
 キーを手放さない操作 `contains_key_ref`／`get_ref`／`at_ref`／`remove_ref`（HashSet は `contains_ref`／`remove_ref`）は `ref 'key` を取り、`at_ref {r s}` の region 契約により結果は map だけを借用します。key の `Eq` が非反射的（NaN）なら `hash_of` の assert でトラップします。`longest_probe` は理想の slot から最も遠い entry の距離を返す診断です。SIMD の群探査（F08）・縮小・集合演算は未実装です。
@@ -851,7 +880,7 @@ decimal は BID の有限値／非正規化数／符号付きゼロ／無限大�
 目的の精度へ一度だけ最近接・偶数丸めします。binary64 による近似代用は行いません。
 
 `Display`／`Parse` は `Operation::Builtin` を持つ組み込みクラスで、通常の単相化したメソッドを
-`BuiltinInstance` の Display／Parse 呼び出しへ下げます。標準 Option がないカスタム std 入力では、
+`BuiltinInstance` の Display／Parse 呼び出しへ下げます。標準 Maybe がないカスタム std 入力では、
 Parse のシグネチャの解決失敗を使用時に報告し、無関係な解析を阻害しません。
 `to_string` の独自 Display 呼び出しは、引数を借用して表示し通常どおり drop する型付き関数を生成します。
 再帰検査もこの Display の依存辺を含めます。string の消費的な文字列化は所有権をそのまま返します。
@@ -883,8 +912,8 @@ Parse の入口は UTF-16 の string を受け、4096 コード単位以下の A
 失敗した8桁検査では入力を進めず、符号・先頭ゼロ・桁区切り・非十進数の規則を維持します。SIMD命令や追加の CPU 要件はありません。
 float は十進係数・指数を正確な有理数として既存 `pack` に渡し、目的の形式へ一度だけ丸めます。
 係数 4096 桁と形式ごとの指数範囲が `LIMBS` 内に収まるよう、極端な指数は拡大前に overflow／underflow と分類します。
-失敗は 0（Option.None）で、成功時だけ出力スロットを初期化します。LLVM は成功分岐だけでスロットを読み、
-標準 Option の Some／None の tag と共通 payload 領域を組み立てます。
+失敗は 0（Maybe.None）で、成功時だけ出力スロットを初期化します。LLVM は成功分岐だけでスロットを読み、
+標準 Maybe の Some／None の tag と共通 payload 領域を組み立てます。
 表示用の一時バッファは entry alloca の 128 バイトで、ASCII の結果を `tz.string.from_ascii` で UTF-16 の所有値にします。
 
 **文字型:** `Type::Char` は全ビットパターンが有効な LLVM `i16`、`Type::Utf8Char` は検査済み Unicode スカラーの `i32` です。

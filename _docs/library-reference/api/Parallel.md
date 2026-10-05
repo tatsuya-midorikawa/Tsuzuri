@@ -1,5 +1,7 @@
 # Parallel
 
+Namespace: `std`
+
 ## `sum`
 
 ```tsuzuri

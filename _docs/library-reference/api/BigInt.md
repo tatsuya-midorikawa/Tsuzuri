@@ -1,5 +1,7 @@
 # BigInt
 
+Namespace: `std`
+
 ## `BigInt`
 
 ```tsuzuri
@@ -24,7 +26,7 @@ The bigint of `value`.
 ## `to_i64`
 
 ```tsuzuri
-def to_i64 :: ref BigInt -> Option.Option<i64>
+def to_i64 :: ref BigInt -> Maybe<i64>
 ```
 
 The `i64` that `value` holds, or `None` when it is out of range.
@@ -32,7 +34,7 @@ The `i64` that `value` holds, or `None` when it is out of range.
 ## `of_string`
 
 ```tsuzuri
-def of_string :: ref string -> Option.Option<BigInt>
+def of_string :: ref string -> Maybe<BigInt>
 ```
 
 The bigint that `text` spells: an optional `-` and decimal digits.

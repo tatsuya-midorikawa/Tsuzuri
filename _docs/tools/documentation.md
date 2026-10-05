@@ -32,7 +32,7 @@ fn / let の実装、instance、フィールド、ローカル束縛、計算式
 ./target/release/tsuzuri doc target/doc-demo -o target/doc-demo-api
 ```
 
-Main は不要です。全ソースを検査してから公開宣言だけを Markdown へ出力します。LLVM / Clang は不要です。出力にはモジュールごとのページと index.md があり、階層モジュールは Geometry.Point.md のような名前になります。
+Main は不要です。全ソースを検査してから公開宣言だけを Markdown へ出力します。LLVM / Clang は不要です。出力にはモジュールごとのページと index.md があり、階層モジュールは Geometry.Point.md のような名前になり、見出しと index.md では Geometry::Point と表示します。
 
 ページ順は決定的に並べ、ページ内の署名はソース順です。型変数、制約、region、アクティブパターンの宣言名を保持します。const は型だけを表示し、初期化式は表示しません。instance の実装は文書化せず、class は method を含みます。
 

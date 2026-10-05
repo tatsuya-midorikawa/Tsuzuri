@@ -20,7 +20,7 @@
 外へ逃げない一時的な値のヒープ確保を、コンパイル時に除去するかスタックへ移す。
 所有権により値の寿命が正確に分かる Tsuzuri では、C++ や Rust より積極的に確保を減らせる。確保の削減はメモリ量と時間の両方に効く。
 
-対象は次の 3 種類に限る（D2）。`new` で作った値、再帰 union のノード、Option／Result の payload（HEAD でも箱に入れていない）は対象外。
+対象は次の 3 種類に限る（D2）。`new` で作った値、再帰 union のノード、Maybe／Result の payload（HEAD でも箱に入れていない）は対象外。
 
 1. 文字列リテラル同士の連結と、長さだけを使う連結（Phase 1）。
 2. 外へ逃げない文字列の連結の結果を、関数の入口に置く固定長の小さな領域へ置く（Phase 2）。
@@ -77,7 +77,7 @@
 - 関数値の環境は `make_closure` が `@tz.alloc` で確保し、`@tz.env.drop.<name>.<count>`（`closure_wrappers`）が捕捉を解放してから `@tz.free` する。
   例外は immediate capture（`immediate_capture`）と、呼び先が既知で外へ逃げない引数の `stack_closure`（`src/call_specialization.rs` の worker）。
   `let` で束縛して局所で呼ぶだけのラムダ式はヒープの環境を持つ。
-- Option／Result の payload は union の値の中に直接置く（`UnionLayout`）。箱に入れる確保はない。再帰 union のノードだけが `src/llvm_recursive.rs` でヒープに置かれる。
+- Maybe／Result の payload は union の値の中に直接置く（`UnionLayout`）。箱に入れる確保はない。再帰 union のノードだけが `src/llvm_recursive.rs` でヒープに置かれる。
 - エスケープ解析に相当する解析はない。`src/llvm.rs` の `clones_on_take` は Copy の複製の省略だけを扱う。
 
 ### 確保失敗とスタックの大きさ
@@ -94,7 +94,7 @@
 ### 計測済みの事実（2026-09-30 の probe、M1 Max、macOS 27.0）
 
 - `benchmarks/computations` の `--emit llvm -O3` の IR で、`@tz.fn.Main.direct_option_owned_step` に `concat` の呼び出しが 2 つ、`@tz.free` が 7 つある。
-  Option ビルダー版の `option_owned_step` は worker に特殊化され、その関数自身には呼び出しがない。IR 全体の `tz.string.concat(` は 6 箇所。
+  Maybe ビルダー版の `option_owned_step` は worker に特殊化され、その関数自身には呼び出しがない。IR 全体の `tz.string.concat(` は 6 箇所。
 - 同じ IR を `opt -O3`（LLVM 21）に通しても、`@tz_ce_std_option_owned` と `@tz_direct_std_option_owned` のそれぞれに確保（`@malloc`・`@tz.alloc`・`@tz.string.allocate`）の
   呼び出し箇所が 1 つ、解放が 1 つ残る。LLVM は連結の確保を消せない。
 - 起票時の記録: この種目の時間比は C++ の約 11 倍。参照実装が確保せず定数 12 を使うためで、PX02 が比較条件を直す。
@@ -272,7 +272,7 @@ heap:
 
 - 変更: なし。
 - 内容: GUIDE §2.3 を実行し、HEAD の `target/release/tsuzuri` を `/tmp/tz-pm06/before-tsuzuri` に写す。「再現」と「計測手順」の before を取る。
-  `/tmp/tz-pm06/cases/Main.tz` にテスト計画の E2E の関数と `def main :: i64 = ...`（全関数の和）を置き、`--emit llvm`（`-O0`・`-O3`、native・`--target wasm32`）を保存する。
+  `/tmp/tz-pm06/cases/Main.tz` にテスト計画の E2E の関数とトップレベルの結果式（全関数の和）を置き、`--emit llvm`（`-O0`・`-O3`、native・`--target wasm32`）を保存する。
 - 確認: 「再現」の出力が一致する。stack-depth の 3 テストと `honors_the_exact_specialization_limit` がそれぞれ `1 passed`。
   `node24 tests/primitives.mjs target/release/tsuzuri` が成功する（手順 2 の `deep_recursion(10000)` が WASM で通らなければ 5000 に下げて記録する）。
 
@@ -394,7 +394,7 @@ fn run step count =
     for i in new [i64](count, i -> i) do total = total + step (i & 1)
     total
 
-def main :: i64 = run length_only_concat 1000000 + run buffer_concat 1000000 + run local_closure 1000000 + run buffer_escape 1000000
+run length_only_concat 1000000 + run buffer_concat 1000000 + run local_closure 1000000 + run buffer_escape 1000000
 ```
 
 `run` の `step` は関数値の間接呼び出しで、各種目の関数は `run` へ特殊化されない（PR03 の変更の影響を受けにくい）。`buffer_escape` は対照で、確保数は変わらない。
@@ -502,7 +502,7 @@ UTF-8 の行は既存の `utf8_join_allocation` と同じ書き方で UTF-8 文�
 
 ## 対象外
 
-- `new` の値（明示のヒープ）、再帰 union のノード、Option／Result の payload（HEAD でも箱に入れない）、レコード・タプル（値としてスタック）。
+- `new` の値（明示のヒープ）、再帰 union のノード、Maybe／Result の payload（HEAD でも箱に入れない）、レコード・タプル（値としてスタック）。
 - Phase 3 の案（人間が依頼した場合だけ）: union の payload に frame を通して `Some (a + b)` の確保を消す、配列の連結（`Builtin::ArrayConcat`）、文字列の組み込み関数（join・replace・repeat）、
   同じ寿命の確保の統合、実行時の長さの `alloca`。
 - 確保のプール化（PM05）、GC、寿命の印（PM09）、連結の再利用と `append`（PM07）、展開と特殊化（PR03）、関数値の表現（PM02）。
@@ -522,7 +522,7 @@ UTF-8 の行は既存の `utf8_join_allocation` と同じ書き方で UTF-8 文�
 
 ### D2: 対象の範囲
 
-- 決定: 対象は「設計」の対象と規則の表の 4 形だけ。Option／Result の payload は HEAD でも union の値に直接置くので箱の除去はない。一時的な集成体は HEAD でもスタック。
+- 決定: 対象は「設計」の対象と規則の表の 4 形だけ。Maybe／Result の payload は HEAD でも union の値に直接置くので箱の除去はない。一時的な集成体は HEAD でもスタック。
 - 理由: 起票時の「配列・レコード」は HEAD の frame で既に扱われ、`new` は利用者が明示したヒープである。
 - 状態: 既定案（実装者はこの案に従う）
 

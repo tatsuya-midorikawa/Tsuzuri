@@ -9,11 +9,11 @@ const TEXT: &str = include_str!("fixtures/computations/Text.tc");
 #[test]
 fn parses_implicit_computation_bodies() {
     for source in [
-        "def answer :: Option<i64>\nfn answer =\n    let! value = Some 42\n    return value",
-        "def answer :: Option<i64>\nfn answer = { do assert true; let! value = Some 42; return value }",
+        "def answer :: Maybe<i64>\nfn answer =\n    let! value = Some 42\n    return value",
+        "def answer :: Maybe<i64>\nfn answer = { do assert true; let! value = Some 42; return value }",
         "let! value = Some 42\nreturn value",
         "task { let! value = task { return 42 }; return value }",
-        "Option { let! value = Some 42; return value }",
+        "Maybe { let! value = Some 42; return value }",
     ] {
         tsuzuri::parser::parse(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
     }
@@ -22,14 +22,14 @@ fn parses_implicit_computation_bodies() {
 #[test]
 fn implicit_computation_binds_follow_source_types() {
     for source in [
-        "def answer :: Option<i64>\nfn answer =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nOption.get (answer())",
+        "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nMaybe.get (answer())",
         "def answer :: bool -> Result<i64, string>\nfn answer valid =\n    let source: Result<i64, string> = if valid then Ok 20 else Error \"failure\"\n    let! first = source\n    return first + 22\nResult.get (answer true)",
-        "def answer :: Option<i64>\nfn answer =\n    let increment: fn(i64) -> i64 = value -> value + 1\n    let! value = Some 41\n    return increment value\nOption.get (answer())",
-        "def main :: IO<Option<unit>>\nfn main =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value",
-        "fn main =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value",
-        "fn main =\n    let! value = IO.pure (Some \"owned\")\n    let! text = value\n    return text",
-        "def main :: IO<Option<i64>>\nfn main =\n    do! IO.pure ()\n    return! Some 42",
-        "fn main =\n    do! IO.pure ()\n    return! task { return 42 }",
+        "def answer :: Maybe<i64>\nfn answer =\n    let increment: fn(i64) -> i64 = value -> value + 1\n    let! value = Some 41\n    return increment value\nMaybe.get (answer())",
+        "def run :: IO<Maybe<unit>>\nfn run =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value\nrun()",
+        "let! line = IO.read_line ()\nlet! value = line\ndo! IO.write_line value",
+        "let! value = IO.pure (Some \"owned\")\nlet! text = value\nreturn text",
+        "def run :: IO<Maybe<i64>>\nfn run =\n    do! IO.pure ()\n    return! Some 42\nrun()",
+        "do! IO.pure ()\nreturn! task { return 42 }",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -42,37 +42,37 @@ fn implicit_computation_binds_follow_source_types() {
 
 #[test]
 fn implicit_computations_work_in_all_function_bodies() {
-    let helpers = "private def choose :: bool -> i64 -> Option<i64>
+    let helpers = "private def choose :: bool -> i64 -> Maybe<i64>
 fn choose enabled input =
     let! value = if enabled then Some input else None
     do assert enabled
     return value + 1
 
 def answer :: i64
-fn answer = Option.get (choose true 41)
+fn answer = Maybe.get (choose true 41)
 
-def identity :: Capture<'a> => Option<'a> -> Option<'a>
+def identity :: Capture<'a> => Maybe<'a> -> Maybe<'a>
 fn identity source =
     let! value = source
     return value
 
-def curried :: i64 -> Option<i64> -> Option<i64>
+def curried :: i64 -> Maybe<i64> -> Maybe<i64>
 fn curried offset = source ->
     let! value = source
     return value + offset
 
-def implemented_with_let :: i64 -> Option<i64>
+def implemented_with_let :: i64 -> Maybe<i64>
 let implemented_with_let = input ->
     let! value = Some input
     return value + 1
 
-def rec repeated :: i64 -> Option<i64>
+def rec repeated :: i64 -> Maybe<i64>
 fn rec repeated count =
     let! value = Some count
     if value == 0 then return 42
     else return! repeated (value - 1)
 
-def echo :: Capture<'a> => IO<Option<'a>> -> IO<Option<'a>>
+def echo :: Capture<'a> => IO<Maybe<'a>> -> IO<Maybe<'a>>
 fn echo source =
     let! option = source
     let! value = option
@@ -85,16 +85,16 @@ instance Computed<i64> {
 }
 ";
     let traits = "class Computed<'a> {
-    def selected :: 'a -> Option<i64>
-    def defaulted :: 'a -> Option<i64>
+    def selected :: 'a -> Maybe<i64>
+    def defaulted :: 'a -> Maybe<i64>
     fn defaulted _input =
         let! value = Some 41
         return value + 1
 }";
     let builder = format!(
-        "{IDENTITY}\ndef forwarded :: Option<i64> -> Option<i64>\nfn forwarded source =\n    let! value = source\n    return value + 1"
+        "{IDENTITY}\ndef forwarded :: Maybe<i64> -> Maybe<i64>\nfn forwarded source =\n    let! value = source\n    return value + 1"
     );
-    let main = "let transform: i64 -> Option<i64> = \\input ->
+    let main = "let transform: i64 -> Maybe<i64> = \\input ->
     let! value = Some input
     return value + 1
 let _first = Helpers.answer()
@@ -109,7 +109,7 @@ let _eighth = Builder.forwarded (Some 41)
 let _ninth = transform 41
 IO {
     let! value = Helpers.echo (IO.pure (Some \"owned\"))
-    do! IO.write_line (Option.get value)
+    do! IO.write_line (Maybe.get value)
 }";
     let sources = [
         ("Helpers.tz", helpers),
@@ -141,8 +141,8 @@ IO {
 fn implicit_tasks_preserve_cold_values_and_foreign_short_circuiting() {
     for source in [
         "def work :: Task<i64>\nfn work =\n    let! first = task { return 20 }\n    let! second = task { return 22 }\n    return first + second\nTask.run (work())",
-        "def work :: Task<Option<i64>>\nfn work =\n    let! option = task { return Some 20 }\n    let! first = option\n    let! second = task { return 22 }\n    return first + second\nOption.get (Task.run (work()))",
-        "fn main =\n    let! first = IO.pure 20\n    let! second = task { return 22 }\n    do! IO.write_line (first + second)",
+        "def work :: Task<Maybe<i64>>\nfn work =\n    let! option = task { return Some 20 }\n    let! first = option\n    let! second = task { return 22 }\n    return first + second\nMaybe.get (Task.run (work()))",
+        "let! first = IO.pure 20\nlet! second = task { return 22 }\ndo! IO.write_line (first + second)",
         "def work :: Task<i64>\nfn work =\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = task { return number }\n        sum = sum + value\n    while false do do! task {}\n    return sum\nTask.run (work())",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
@@ -156,11 +156,11 @@ fn implicit_tasks_preserve_cold_values_and_foreign_short_circuiting() {
 #[test]
 fn implicit_match_and_applicative_bindings_select_source_builders() {
     for source in [
-        "def answer :: Option<i64>\nfn answer =\n    let! mut first: i64 = Some 20\n    and! second = Some 21\n    first = first + 1\n    return first + second\nOption.get (answer())",
-        "def answer :: Option<i64>\nfn answer =\n    let! first = Some 20\n    and! second = Some 22\n    return first + second\nOption.get (answer())",
-        "def main :: IO<Option<i64>>\nfn main =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.write_line (first + second)\n    return first + second",
-        "fn main =\n    let! source = IO.pure (Some (20, 22))\n    match! source with\n    | (first, second) ->\n        do! IO.write_line (first + second)",
-        "def answer :: Option<i64>\nfn answer =\n    match! Some true with\n    | true -> return 42\n    | false -> return 0\nOption.get (answer())",
+        "def answer :: Maybe<i64>\nfn answer =\n    let! mut first: i64 = Some 20\n    and! second = Some 21\n    first = first + 1\n    return first + second\nMaybe.get (answer())",
+        "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 20\n    and! second = Some 22\n    return first + second\nMaybe.get (answer())",
+        "def run :: IO<Maybe<i64>>\nfn run =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.write_line (first + second)\n    return first + second\nrun()",
+        "let! source = IO.pure (Some (20, 22))\nmatch! source with\n| (first, second) ->\n    do! IO.write_line (first + second)",
+        "def answer :: Maybe<i64>\nfn answer =\n    match! Some true with\n    | true -> return 42\n    | false -> return 0\nMaybe.get (answer())",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -190,11 +190,11 @@ fn implicit_builders_use_signatures_and_generic_composition_operations() {
     for (builder, source) in [
         (
             deferred,
-            "def answer :: Deferred.Action<Option<i64>>\nfn answer =\n    let! first = Deferred.Return 20\n    let! second = Some 22\n    return first + second\nOption.get ((answer()).work ())",
+            "def answer :: Deferred.Action<Maybe<i64>>\nfn answer =\n    let! first = Deferred.Return 20\n    let! second = Some 22\n    return first + second\nMaybe.get ((answer()).work ())",
         ),
         (
             deferred,
-            "def answer :: Option<Result<i64, string>>\nfn answer =\n    let! first = Some 20\n    let second: Result<i64, string> = Ok 22\n    let! value = second\n    return first + value\nResult.get (Option.get (answer()))",
+            "def answer :: Maybe<Result<i64, string>>\nfn answer =\n    let! first = Some 20\n    let second: Result<i64, string> = Ok 22\n    let! value = second\n    return first + value\nResult.get (Maybe.get (answer()))",
         ),
     ] {
         let module = analyze_modules(&[("Deferred.tc", builder), ("Main.tz", source)])
@@ -211,7 +211,7 @@ fn implicit_builders_use_signatures_and_generic_composition_operations() {
 
 #[test]
 fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
-    let builder = "def Return :: 'a -> Option<'a>\nfn Return value = Some value\ndef Bind :: Option<'a> -> ('a -> Option<'b>) -> Option<'b>\nfn Bind value next = Option.bind value next";
+    let builder = "def Return :: 'a -> Maybe<'a>\nfn Return value = Some value\ndef Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>\nfn Bind value next = Maybe.bind value next";
     let error = analyze_modules(&[
         ("First.tc", builder),
         ("Second.tc", builder),
@@ -223,17 +223,17 @@ fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
     analyze_modules(&[
         ("First.tc", builder),
         ("Second.tc", builder),
-        ("Main.tz", "Option { let! value = Some 42; return value }"),
+        ("Main.tz", "Maybe { let! value = Some 42; return value }"),
     ])
     .unwrap();
     for (source, code) in [
         ("let! value = 42\nreturn value", "E1018"),
         (
-            "def answer :: Option<i64>\nfn answer =\n    let mut counter = 0\n    let! value = Some 42\n    counter = value\n    return counter",
+            "def answer :: Maybe<i64>\nfn answer =\n    let mut counter = 0\n    let! value = Some 42\n    counter = value\n    return counter",
             "E1014",
         ),
         (
-            "def answer :: Option<i64>\nfn answer =\n    let work = task { return 22 }\n    let! first = Some 20\n    let! second = work\n    return first + second",
+            "def answer :: Maybe<i64>\nfn answer =\n    let work = task { return 22 }\n    let! first = Some 20\n    let! second = work\n    return first + second",
             "E1005",
         ),
         (
@@ -241,17 +241,14 @@ fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
             "E1012",
         ),
         (
-            "def answer :: Option<i64>\nfn answer =\n    let! first = Some 1\n    and! second = Some first\n    return second",
+            "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 1\n    and! second = Some first\n    return second",
             "E1002",
         ),
     ] {
         let error = analyze_modules(&[("Main.tz", source)]).unwrap_err();
         assert_eq!(error.code, code, "{source}\n{error:?}");
     }
-    for (result, binding) in [
-        ("Option<i64>", "Some 1"),
-        ("Task<i64>", "task { return 1 }"),
-    ] {
+    for (result, binding) in [("Maybe<i64>", "Some 1"), ("Task<i64>", "task { return 1 }")] {
         let source = format!(
             "def answer :: {result}\nfn answer =\n{}    return 42",
             format!("    let! _value = {binding}\n").repeat(128)
@@ -311,10 +308,10 @@ fn recognizes_optional_builder_operations_and_try_expressions() {
 #[test]
 fn match_bang_uses_bind_and_normal_pattern_semantics() {
     for source in [
-        "Option.get (Option { match! Some 1 with | 1 -> return 42 | _ -> return 0 })",
+        "Maybe.get (Maybe { match! Some 1 with | 1 -> return 42 | _ -> return 0 })",
         "let result: Result<i64, string> = Result { match! Ok (20, 22) with | (left, right) -> return left + right }\nResult.get result",
-        "let missing: Option<i64> = None\nlet result: Option<i64> = Option { match! missing with | _ -> return 1 / 0 }\nOption.is_none (&result)",
-        "Option {\n    match! Some \"owned\" with\n    | value when value.length == 5 ->\n        let! other = Some \"text\"\n        return value + other\n    | value -> return value\n}",
+        "let missing: Maybe<i64> = None\nlet result: Maybe<i64> = Maybe { match! missing with | _ -> return 1 / 0 }\nMaybe.is_none (&result)",
+        "Maybe {\n    match! Some \"owned\" with\n    | value when value.length == 5 ->\n        let! other = Some \"text\"\n        return value + other\n    | value -> return value\n}",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -326,7 +323,7 @@ fn match_bang_uses_bind_and_normal_pattern_semantics() {
                 .unwrap();
         analyze_modules(&[("Main.tz", &formatted.formatted)]).unwrap();
     }
-    let source = "Option { match! Some true with | true -> return 42 }";
+    let source = "Maybe { match! Some true with | true -> return 42 }";
     assert_eq!(
         analyze_modules(&[("Main.tz", source)]).unwrap_err().code,
         "E1021"
@@ -388,7 +385,7 @@ fn applicative_bindings_use_optional_fused_operations() {
     }
     analyze_modules(&[(
         "Main.tz",
-        "Option.get (Option { let! left = Some 20 and! right = Some 22; return left + right })",
+        "Maybe.get (Maybe { let! left = Some 20 and! right = Some 22; return left + right })",
     )])
     .unwrap();
     analyze_modules(&[("Main.tz", "let result: Result<i64, string> = Result { let! left = Ok 20 and! right = Ok 22; return left + right }\nResult.get result")]).unwrap();
@@ -435,13 +432,13 @@ fn applicative_bindings_use_optional_fused_operations() {
 fn result_propagation_operations_exist() {
     let module = analyze_modules(&[(
         "Main.tz",
-        "let option = Option.Run (Option.Delay (_ ->
-             Option.Combine (Option.Zero()) (_ ->
-                 Option.Bind (Option.Return 20) (value -> Option.ReturnFrom (Some value)))))
-         let result: Result.Result<i64, string> = Result.Run (Result.Delay (_ ->
+        "let option = Maybe.Run (Maybe.Delay (_ ->
+             Maybe.Combine (Maybe.Zero()) (_ ->
+                 Maybe.Bind (Maybe.Return 20) (value -> Maybe.ReturnFrom (Some value)))))
+         let result: Result<i64, string> = Result.Run (Result.Delay (_ ->
              Result.Combine (Result.Zero()) (_ ->
                  Result.Bind (Result.Return 22) (value -> Result.ReturnFrom (Ok value)))))
-         Option.get option + Result.get result",
+         Maybe.get option + Result.get result",
     )])
     .unwrap();
     for wasm in [false, true] {
@@ -457,16 +454,16 @@ fn result_propagation_operations_exist() {
 fn standard_builders_compose_without_local_builder_files() {
     let module = analyze_modules(&[(
         "Main.tz",
-        "let option = Option {
+        "let option = Maybe {
                for _n in [1, 2] do do! Some ()
-             return! Option { let! n = Some 20; return n }
+             return! Maybe { let! n = Some 20; return n }
          }
          let result: Result<i64, string> = Result {
              while false do do! Ok ()
              let! n = Ok 22
              return n
          }
-         Option.get option + Result.get result",
+         Maybe.get option + Result.get result",
     )])
     .unwrap();
     assert!(module.warnings.is_empty());
@@ -474,16 +471,16 @@ fn standard_builders_compose_without_local_builder_files() {
 }
 
 #[test]
-fn option_result_builder_expansion() {
+fn maybe_result_builder_expansion() {
     for source in [
-        "Option.get (Option { let! left = Some 20; let! right = Some 22; return left + right })",
-        "Option { let! _: unit = None; return 1i64 / 0 }",
+        "Maybe.get (Maybe { let! left = Some 20; let! right = Some 22; return left + right })",
+        "Maybe { let! _: unit = None; return 1i64 / 0 }",
         "Result { let! _: unit = Error 42i64; return 1i64 / 0 }",
-        "Option.get (Option { let! mut value = Some 20; value = value + 2; do! Some (); return! Some (value + 20) })",
-        "let value: Result.Result<i64, string> = Result { let first = 20; assert true; do! Ok (); let! second = Ok 22; return first + second }\nResult.get value",
-        "Result.get (Result { let! value = Option.to_result 42i64 (Some 20); return value + 22 })",
-        "let result: Result.Result<i64, string> = Ok 42i64\nOption.get (Option { let! value = Result.to_option result; return value })",
-        "Option { if true { do! Some () } else { do! None }; for value in [1, 2] do do! Some (); while false do do! Some (); return 42 }",
+        "Maybe.get (Maybe { let! mut value = Some 20; value = value + 2; do! Some (); return! Some (value + 20) })",
+        "let value: Result<i64, string> = Result { let first = 20; assert true; do! Ok (); let! second = Ok 22; return first + second }\nResult.get value",
+        "Result.get (Result { let! value = Maybe.to_result 42i64 (Some 20); return value + 22 })",
+        "let result: Result<i64, string> = Ok 42i64\nMaybe.get (Maybe { let! value = Result.to_maybe result; return value })",
+        "Maybe { if true { do! Some () } else { do! None }; for value in [1, 2] do do! Some (); while false do do! Some (); return 42 }",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
@@ -505,17 +502,17 @@ fn result_builder_rejects_mismatched_error_types() {
             "E1003",
         ),
         (
-            "Option { let! value = Error \"bad\"; return value }",
+            "Maybe { let! value = Error \"bad\"; return value }",
             "E1003",
         ),
         ("Result { let! value = None; return value }", "E1003"),
-        ("let value = Option { return None }\n()", "E1015"),
+        ("let value = Maybe { return None }\n()", "E1015"),
         ("Result { if true { return 1i64 } }", "E1003"),
-        ("Option { if true { return 1i64 } }", "E1003"),
-        ("Option { do! Some 1i64; return 42 }", "E1003"),
+        ("Maybe { if true { return 1i64 } }", "E1003"),
+        ("Maybe { do! Some 1i64; return 42 }", "E1003"),
         ("Result { do! Ok 1i64; return 42 }", "E1003"),
         (
-            "Option { for text in [\"owned\"] do do! Some (); return 1 }",
+            "Maybe { for text in [\"owned\"] do do! Some (); return 1 }",
             "E1005",
         ),
     ] {
@@ -789,16 +786,14 @@ fn requires_exact_operation_names_arities_and_thunk_types_without_defaults() {
 
 #[test]
 fn supports_partial_worker_definitions_and_custom_iteration_source_types() {
-    let module = analyze_modules(&[
-        (
-            "Builder.tc",
-            "def Return :: i64 -> i64
+    let builder = "def Return :: i64 -> i64
              let Return = value -> value
              def Bind :: i64 -> (i64 -> i64) -> i64
              fn Bind value = { let adjusted = value + 1; next -> next adjusted }
              def For :: [|i64|] -> (i64 -> i64) -> i64
-             fn For values body = body values[0]",
-        ),
+             fn For values body = body values[0]";
+    let module = analyze_modules(&[
+        ("Builder.tc", builder),
         (
             "Main.tz",
             "Builder { for value in [|40|] { let! next = value; return next + 1 } }",
@@ -806,6 +801,16 @@ fn supports_partial_worker_definitions_and_custom_iteration_source_types() {
     ])
     .unwrap();
     llvm::emit(&module, llvm::Entry::Console).unwrap();
+    // A qualified name binds nothing in a builder's `for` either.
+    let error = analyze_modules(&[
+        ("Builder.tc", builder),
+        (
+            "Main.tz",
+            "Builder { for foo::Bar in [|40|] { let! next = 1; return next + 1 } }",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1020", "{}", error.message);
 }
 
 #[test]

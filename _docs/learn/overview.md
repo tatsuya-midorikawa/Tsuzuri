@@ -64,26 +64,26 @@ Array.sum middle
 
 ## 失敗を値として合成する
 
-値がない場合は `Option<T>`、失敗の理由も返す場合は `Result<T, E>` を使います。通常のデータ型なので、`match` で処理できます。
+値がない場合は `Maybe<T>`、失敗の理由も返す場合は `Result<T, E>` を使います。通常のデータ型なので、`match` で処理できます。
 
 複数の処理をつなぐ場合は、コンピュテーション式の `let!` で成功値を取り出せます。
 
 ```tsuzuri run=42
 let first = "20"
 let second = "22"
-let total: Option<i64> = Option {
+let total: Maybe<i64> = Maybe {
     let! left = Parse.parse ref first
     let! right = Parse.parse ref second
     return left + right
 }
-Option.default_value 0 total
+Maybe.default_value 0 total
 ```
 
 どちらかの解析が `None` なら、以降の計算を行わず `None` になります。最後の行では、その場合の値を `0` に決めています。`return` は任意位置から抜ける文ではなく、ビルダーの結果を作る末尾の操作です。
 
-ゼロ除算や範囲外アクセスによるトラップは、回復可能な失敗値とは別です。`Option` や `Result` で囲んでも、自動的に失敗値へ変換されません。例外として送出されるのは `@checked` を付けた整数演算のオーバーフローだけで、同じ関数本体の `try ... with` で `Result` として受け取れます（[例外処理](../language-reference/error-handling.md)）。
+ゼロ除算や範囲外アクセスによるトラップは、回復可能な失敗値とは別です。`Maybe` や `Result` で囲んでも、自動的に失敗値へ変換されません。例外として送出されるのは `@checked` を付けた整数演算のオーバーフローだけで、同じ関数本体の `try ... with` で `Result` として受け取れます（[例外処理](../language-reference/error-handling.md)）。
 
-詳しくは [Option / Result](../library-reference/option-result.md) と[コンピュテーション式](../language-reference/computation-expressions.md)を参照してください。
+詳しくは [Maybe / Result](../library-reference/maybe-result.md) と[コンピュテーション式](../language-reference/computation-expressions.md)を参照してください。
 
 ## 意味を保ったまま機械語へ近づける
 
@@ -99,7 +99,7 @@ CPU 並列処理には `Task.parallel` や `Parallel` を使います。`Task<T>
 
 同じ言語から native と WASM を生成し、`export def` でホストへ関数を公開できます。ホストを呼ぶときは `extern def` で同期関数を宣言します。境界で渡せる型は、対応するスカラー・バッファ・スカラーレコードなどに限定されます。
 
-標準入出力は `IO<T>` で扱います。IO アクションを入口の結果にすると実行され、native では標準ストリーム、WASM では明示的な IO ホストへ接続します。UI、DOM、ネットワークなどはホスト側に置きます。ファイル・環境・時刻・プロセスは標準の [OS API](../library-reference/os.md) でも扱えます。
+標準入出力は `IO<T>` で扱います。IO アクションは `main` の本体の `do!`／`let!` で実行され（Main.tz のトップレベルの結果にしても実行されます）、native では標準ストリーム、WASM では明示的な IO ホストへ接続します。UI、DOM、ネットワークなどはホスト側に置きます。ファイル・環境・時刻・プロセスは標準の [OS API](../library-reference/os.md) でも扱えます。
 
 入出力や外部関数を使わない既定の計算用 WASM は、JavaScript ランタイムの import を必要としません。ただし、WASM の生成だけでブラウザーの画面やイベント処理までできるわけではありません。
 

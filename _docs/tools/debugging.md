@@ -9,13 +9,14 @@
 独立した `target/debug-demo/Main.tz` の例です。
 
 ```tsuzuri run=42
-def main :: i64 =
+def main :: unit -> i32 = \() ->
     let answer = 40 + 2
     Debug.print ref answer
-    answer
+    do! IO.write_line answer
+    0
 ```
 
-native では Debug の行を stderr、入口の結果を stdout に出します。どちらにも 42 が見えますが、同じ出力経路ではありません。
+native では Debug の行を stderr、`IO.write_line` の行を stdout に出します。どちらにも 42 が見えますが、同じ出力経路ではありません。
 
 Debug.print は借用、Debug.trace は消費して表示後に同じ所有値を返します。表示には Display を使い、孤立サロゲートの UTF-8 出力や書き込み失敗はトラップです。並列 Task の行順・一行全体の不可分性は保証しません。
 

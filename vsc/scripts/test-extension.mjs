@@ -15,11 +15,14 @@ const userData = path.join(directory, 'user-data');
 const executable = process.env.VSCODE_EXECUTABLE_PATH ?? await downloadAndUnzipVSCode('1.103.2');
 try {
   await mkdir(path.join(project, 'Geometry'), { recursive: true });
+  await mkdir(path.join(project, 'Shapes'), { recursive: true });
   await mkdir(other);
   await writeFile(path.join(project, 'Main.tz'),
-    'def calculate :: i64 -> i64 = \\value ->\n    let result = value + Geometry.Point.offset()\n    result\n\ndef main :: i64 = calculate 2\n\ntest "same" = assert true\ntest "same" = assert false\n');
+    'def calculate :: i64 -> i64 = \\value ->\n    let result = value + Geometry::Point.offset()\n    result\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (calculate 2)\n    0\n\ntest "same" = assert true\ntest "same" = assert false\n');
   await writeFile(path.join(project, 'Geometry', 'Point.tz'), 'def offset :: i64 = 40\n');
-  await writeFile(path.join(other, 'Main.tz'), 'def main :: i64 = 7\n');
+  await writeFile(path.join(project, 'Shapes', 'Circle.tz'), 'namespace Demo::Shapes\n\ndef radius :: i64 = 0\n');
+  await writeFile(path.join(project, 'Report.tz'), 'namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 = Circle.radius() + Shapes::Circle.radius()\n');
+  await writeFile(path.join(other, 'Main.tz'), 'def main :: unit -> i32 = \\() -> 7\n');
   const workspace = path.join(directory, 'integration.code-workspace');
   await writeFile(workspace, JSON.stringify({ folders: [{ path: project }, { path: other }], settings: { 'telemetry.telemetryLevel': 'off', 'chat.disableAIFeatures': true, 'update.mode': 'none', 'extensions.autoUpdate': false, 'security.workspace.trust.enabled': false } }));
   let developmentPath = extension;

@@ -547,7 +547,7 @@ impl Parser<'_> {
             let name = match &pattern.kind {
                 PatternKind::Binding(name)
                     if !name.text.as_bytes()[0].is_ascii_uppercase()
-                        && !name.text.contains('.') =>
+                        && !name.text.contains(['.', ':']) =>
                 {
                     name.clone()
                 }
@@ -1118,7 +1118,7 @@ impl Parser<'_> {
         if self.at(&TokenKind::LeftBrace) {
             return self.record_pattern(Some(name));
         }
-        if name.text.rsplit('.').next().unwrap().as_bytes()[0].is_ascii_uppercase() {
+        if name.text.rsplit(['.', ':']).next().unwrap().as_bytes()[0].is_ascii_uppercase() {
             let mut arguments = Vec::new();
             while !self.newline_before_current()
                 && matches!(

@@ -1,5 +1,7 @@
 # Set
 
+Namespace: `std`
+
 ## `Set`
 
 ```tsuzuri
@@ -83,6 +85,6 @@ def difference :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> S
 ## `iter`
 
 ```tsuzuri
-def iter :: ref Set<'key> -> Seq.Seq<ref 'key>
+def iter :: ref Set<'key> -> Seq<ref 'key>
 ```
 

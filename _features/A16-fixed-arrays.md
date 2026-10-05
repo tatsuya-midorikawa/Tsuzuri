@@ -99,7 +99,7 @@ fn f = [1, 2, 3, 4]
 
 ### 前提とする他チケットのインターフェース
 
-- A01（done）: `Type::Record(usize, Box<[Type]>)` と型引数の置換。`Option<[f64; 3]>` やジェネリックなレコードのフィールドに固定長配列を入れられるのはこの仕組みによる。
+- A01（done）: `Type::Record(usize, Box<[Type]>)` と型引数の置換。`Maybe<[f64; 3]>` やジェネリックなレコードのフィールドに固定長配列を入れられるのはこの仕組みによる。
 - D06（done）: `const` は型検査の後に `constants::fold` で展開する。したがって型の中の長さには使えない（D3）。
 - F04（任意）: `Simd.load` は `ref [lane]` と `i64` を取る（`src/check.rs` の `Builtin::SimdLoad`）。固定長配列はスライス化（D7）でこの引数に渡る。F04 が未完了でも他の部分に影響しない。
 - E05（done）: 公開 ABI は `src/abi.rs` の `parameter`・`result`・`Buffer::of` が判定する。Phase 1 はこれを変えない。
@@ -117,7 +117,7 @@ length        = decimal integer literal without a suffix (checked later: 0 ..= 1
 ### 型規則
 
 - `[T; N]` と `[T; M]` は N = M のときだけ同じ型。`[T; N]` と `[T]` は別の型で、暗黙の相互変換はない（例外は D7 のスライス化だけ）。
-- 型変数に代入できる（`Option<[f64; 3]>`、`'a -> 'a` の `'a`）。長さを変数にする方法は Phase 2（D10）。
+- 型変数に代入できる（`Maybe<[f64; 3]>`、`'a -> 'a` の `'a`）。長さを変数にする方法は Phase 2（D10）。
 - 要素型の制約は `[T]` と同じ。`ref mut` を含む要素は `[T]` と同じコード・メッセージで拒否する（`tests/arrays.rs` の
   `arrays_cannot_store_mutable_references` が固定する検査を `Type::FixedArray` にも適用する）。
 - リテラル: 期待型を `Inference::resolve` した結果が `[T; N]` なら、`[e1, ..., ek]` は k ≠ N で E1003、各 ei は期待型 T で検査する。
@@ -495,7 +495,7 @@ done; done
 | `fixed_array_literals_need_the_expected_length` | 要素数の一致を受理、不一致は E1003（文言も比較）。`let xs = [1, 2]` は `[i64]` の仮引数へ渡せる。`new [1, 2]` を `[i64; 2]` に置くと E1005。`[u8; 0]` への `[]` を受理 |
 | `fixed_array_indexing_and_length` | `v[i]`・`v.length`・`p.pos[i]`・`m[i][j]`・`ref [i64; 3]` 経由の添字を受理。IR に `getelementptr inbounds [3 x i64], ptr` があり、定数添字だけの関数に `icmp ult i64 %` がない。`v[0] = 1` は E1012 |
 | `fixed_arrays_copy_or_move_by_element` | `[i64; 2]` を 2 回使えて IR に `@tz.alloc` がない。`[string; 2]` を move した後の使用は E1012。捕捉と `Task.run` への送出は要素の規則どおり |
-| `fixed_arrays_in_generic_and_record_types` | `'a -> 'a` に `[f64; 3]` と `[f64; 4]` を渡すと特殊化が 2 個。`Option<[f64; 3]>`、ジェネリックなレコードのフィールド、`const` の値（`docs/language.md` の「コンパイル時定数」の構文）を受理 |
+| `fixed_arrays_in_generic_and_record_types` | `'a -> 'a` に `[f64; 3]` と `[f64; 4]` を渡すと特殊化が 2 個。`Maybe<[f64; 3]>`、ジェネリックなレコードのフィールド、`const` の値（`docs/language.md` の「コンパイル時定数」の構文）を受理 |
 | `fixed_array_init_takes_the_length_from_the_expected_type` | 注釈・仮引数・レコードのフィールドから N が決まる場合を受理。注釈なしは E1015、`[i64]` を期待すると E1005（文言も比較） |
 | `fixed_arrays_slice_into_shared_borrows` | `&[i64]` の仮引数への暗黙のスライス化、`&v[1..3]`、`ref [T; N]` からの変換、`Simd.load` への受け渡しを受理。関数呼び出しの結果のスライス化は E1005、`[i64]`（所有）の仮引数は E1003、`ref mut [i64]` の仮引数は E1003 |
 | `fixed_arrays_reject_patterns_iteration_and_exports` | 配列パターンは E1020、`for x in v` は E1005（文言も比較）、export のシグネチャは E1008、`==` はインスタンスがない既存の診断 |

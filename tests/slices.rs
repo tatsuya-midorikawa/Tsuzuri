@@ -11,7 +11,7 @@ fn slice_types_and_borrowed_boundaries() {
         "let values = [1, 2, 3]\nlet slices = [ref values[..1], ref values[1..]]\nslices[0].length + slices[1].length",
         "def copy :: ref [i64] -> [i64]\nfn copy values = deref values",
         "let values = [1, 2, 3]\nlet mut total = 0\nfor value in ref values[1..] do total = total + value\ntotal",
-        "let values = [1, 2, 3]\nOption.get (Option { let slice = ref values[1..]; return slice.length })",
+        "let values = [1, 2, 3]\nMaybe.get (Maybe { let slice = ref values[1..]; return slice.length })",
     ] {
         let module = analyze(source)
             .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));

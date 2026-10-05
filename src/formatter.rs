@@ -130,6 +130,14 @@ pub fn ast_fingerprint(program: Program) -> String {
 
 fn canonicalize(mut program: Program) -> (String, Hints) {
     let mut canonical = Canonical::default();
+    if let Some(namespace) = &mut program.namespace {
+        canonical.ident(&mut namespace.path);
+        namespace.span = Span::default();
+    }
+    for using in &mut program.usings {
+        canonical.ident(&mut using.path);
+        using.span = Span::default();
+    }
     for external in &mut program.externs {
         Canonical::doc(&mut external.doc);
         canonical.ident(&mut external.name);
@@ -601,6 +609,9 @@ fn spacing(
     };
     if matches!(current.kind, Dot) || matches!(previous.kind, Dot) {
         return separated;
+    }
+    if matches!(current.kind, PathSep) || matches!(previous.kind, PathSep) {
+        return "";
     }
     // A hole's expression sits directly between the braces of `$"a{x}b"`.
     if matches!(current.kind, InterpolationMiddle(_) | InterpolationEnd(_))

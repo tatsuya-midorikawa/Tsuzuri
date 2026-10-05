@@ -38,18 +38,20 @@ const Answer: i64 = Base + 2
 const Base: i64 = 40
 const Table: [i64] = [20, 22]
 
-def main :: i64 = Answer
+def main :: unit -> i32 = \() ->
+    do! IO.write_line Answer
+    0
 ```
 
 定数は明示的な具体型を持ちます。前方参照が可能で、使用されない定数も検査・評価されます。`.tz` と `.tc` に宣言でき、`.tt` には置けません。
 
 既定では公開され、他モジュールからは `Module.Answer` と参照します。`private const` は宣言モジュール内だけで利用できます。関数と同じ値の名前空間を使うため、同名の関数は定義できません。
 
-`@literal def Name : Type = expression` も同じコンパイル時定数の宣言です。
+`@literal def Name :: Type = expression` も同じコンパイル時定数の宣言です。ほかの `def` と同じく、名前と型の間は `::` です。
 
 ```tsuzuri run=12.56
 @literal
-def PI : f64 = 3.14
+def PI :: f64 = 3.14
 
 let r: f64 = 2
 PI * r ** 2

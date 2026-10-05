@@ -8,7 +8,7 @@ export def active_repeated_case :: i32 -> i64 = \flag ->
     | Present text -> text.length
     | _ -> -1
 
-def (|Parsed|_|) :: ref string -> Option<i64>
+def (|Parsed|_|) :: ref string -> Maybe<i64>
 fn (|Parsed|_|) text = Parse.parse text
 
 export def active_option :: i32 -> i64
@@ -16,7 +16,7 @@ fn active_option which =
     let text = if which == 0 then "42" else "bad"
     match text with | Parsed number -> number + 1 | _ -> -1
 
-def (|Owned|_|) :: i64 -> Option<string>
+def (|Owned|_|) :: i64 -> Maybe<string>
 fn (|Owned|_|) number = if number < 0 then None else Some ("he" + "llo")
 
 export def active_owned :: i64 -> i64
@@ -55,7 +55,7 @@ fn active_multi_owned count =
 def tick :: ref mut i64 -> i64
 fn tick state = { deref state = deref state + 1; deref state }
 
-def (|Combined|_|) :: i64 -> i64 -> i64 -> Option<i64>
+def (|Combined|_|) :: i64 -> i64 -> i64 -> Maybe<i64>
 fn (|Combined|_|) left right value = Some (left * 100 + right * 10 + value)
 
 export def active_order :: i64
@@ -74,7 +74,7 @@ fn active_conservative =
     let mut state = 0
     match 42 with | Left (ref mut state) -> 100 | Right (ref mut state) -> 200 | _ -> state
 
-def (|Head|_|) :: ref [string] -> Option<ref string>
+def (|Head|_|) :: ref [string] -> Maybe<ref string>
 fn (|Head|_|) values = Array.find (text -> text.length > 3) values
 
 export def active_borrowed :: i64
@@ -83,7 +83,7 @@ fn active_borrowed =
     let length = match ref texts with | Head text -> text.length | _ -> 0
     length + texts[1].length
 
-def (|Checked|_|) :: i64 -> Option<unit>
+def (|Checked|_|) :: i64 -> Maybe<unit>
 fn (|Checked|_|) number = { assert (number != 0); Some () }
 
 export def active_trap :: i64

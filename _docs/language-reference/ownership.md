@@ -128,10 +128,11 @@ instance Drop<Resource> {
         Debug.print id
 }
 
-def main :: i64 =
+def main :: unit -> i32 = \() ->
     let first = Resource { id: 1, name: "a" }
     let second = Resource { id: 2, name: "b" }
-    first.id + second.id
+    do! IO.write_line (first.id + second.id)
+    0
 ```
 
 `drop` は `ref mut` で値を受け取り、その後で field が宣言順に解放されます。scope の中の値は束縛の逆順です。scope の終わり、`break`・`continue`、代入で置き換わる古い値、捨てた一時値、コレクションの要素、未実行の Task の捕捉値でも同じで、move 済みの値では呼ばれません。トラップは巻き戻さないので、トラップ後の `drop` は走りません。
@@ -161,12 +162,13 @@ instance Drop<Resource> {
         Debug.print id
 }
 
-def main :: i64 =
+def main :: unit -> i32 = \() ->
     use first = Resource { id: 1 }
     use second = Resource { id: 2 }
     let third = Resource { id: 3 }
     Owned.drop third
-    first.id + second.id + 3
+    do! IO.write_line (first.id + second.id + 3)
+    0
 ```
 
 計算式と `task` では `use! name = source` が `let!` と同じく値を取り出し、`use` で束縛します。計算式の `let!`・`use!` より後ろは継続の関数値になるので、その前に束縛した Drop 型の値を後ろで使うと捕捉になり `E1005` です。
@@ -184,10 +186,11 @@ instance Drop<Resource> {
         Debug.print id
 }
 
-def main :: i64 =
+def main :: unit -> i32 = \() ->
     let held = Resource { id: 3 }
     let add = Owned.function (\amount -> amount + held.id)
-    Owned.call (ref add) 10 + Owned.call (ref add) 20
+    do! IO.write_line (Owned.call (ref add) 10 + Owned.call (ref add) 20)
+    0
 ```
 
 `Owned.Function<'a, 'b>` は Copy ではなく、通常の関数値にも捕捉できません。ラムダの引数は一つで、捕捉できるのは `task` と同じく所有値だけです。本体は捕捉した値を読むか `ref` で借用するだけで、move すると `E1012` です。変数やパイプを通したラムダは通常の関数値の規則に従います。

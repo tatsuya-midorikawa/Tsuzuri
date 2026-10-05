@@ -174,7 +174,9 @@ try {
   writeFileSync(join(temporary, "Arrays.tz"), readFileSync(join(root, "tests/fixtures/arrays/Arrays.tz"), "utf8"));
   writeFileSync(join(temporary, "Lists.tz"), readFileSync(join(root, "tests/fixtures/lists/Lists.tz"), "utf8"));
   writeFileSync(join(temporary, "Storage.tz"), readFileSync(join(root, "tests/fixtures/storage/Storage.tz"), "utf8") + storageLiterals);
-  writeFileSync(input, readFileSync(join(root, "tests/fixtures/primitives/Main.tz"), "utf8") + "\n" + generated + "\n" + generatedBinary);
+  // The console entry is top-level code, which must follow every declaration, so it comes last.
+  writeFileSync(input, readFileSync(join(root, "tests/fixtures/primitives/Main.tz"), "utf8") + "\n" + generated + "\n" + generatedBinary
+    + '\nu8"UTF-8: \u65e5\u672c\u8a9e \\u{1f600}"\n');
   cli(["check", input]);
   const header = join(temporary, "primitives.h");
   cli(["build", input, "--emit", "header", "-o", header]);

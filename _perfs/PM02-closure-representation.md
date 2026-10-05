@@ -133,11 +133,11 @@ grep -nE '%tz\.closure|@tz\.closure\.' /tmp/tz-work-PM02/closures.ll
 | 指標 | 単位・統計 | 対象 | 期待（計算値。計測で確かめる） |
 | --- | --- | --- | --- |
 | M1 関数値の大きさ | bytes（固定値） | IR の `%tz.closure`、DWARF の大きさ | native 32 → 16、wasm32 16 → 8 |
-| M2 関数値を含む値の大きさ | bytes（固定値、native） | `Option<i64 -> i64>`、`Result<i64 -> i64, string>`、関数値の配列の要素 | 40 → 24、48 → 32、32 → 16 |
+| M2 関数値を含む値の大きさ | bytes（固定値、native） | `Maybe<i64 -> i64>`、`Result<i64 -> i64, string>`、関数値の配列の要素 | 40 → 24、48 → 32、32 → 16 |
 | M3 確保 | 回・bytes（1 回の実行の合計） | M4 の 4 種目（PX01 の計数） | 関数値・Task を配列に格納する種目は、その配列の確保量が要素あたり 16 bytes 減る。それ以外は変化なし |
 | M4 時間 | ms（9 回の中央値、最小、最大） | `control/closure_capture`・`control/closure_churn`（既定の規模 1,000,000）、`cpp/task_sequential`・`cpp/task_parallel`（既定の規模 500,000） | 変化なし（差が広がりの範囲内） |
 
-M2 の計算: `Option<i64 -> i64>` は payload の LLVM 型が 1 種類なので `{ i32, %tz.closure }`（4 + 詰め物 4 + 関数値）。`Result<i64 -> i64, string>` は payload の LLVM 型が異なるので `{ i32, [K x i128] }`（16 + 16K）で、K は `storage_layout` の大きさの最大値を 16 で割って切り上げた値（32 なら 2、16 なら 1）。
+M2 の計算: `Maybe<i64 -> i64>` は payload の LLVM 型が 1 種類なので `{ i32, %tz.closure }`（4 + 詰め物 4 + 関数値）。`Result<i64 -> i64, string>` は payload の LLVM 型が異なるので `{ i32, [K x i128] }`（16 + 16K）で、K は `storage_layout` の大きさの最大値を 16 で割って切り上げた値（32 なら 2、16 なら 1）。
 
 ## 変えてはいけない意味
 
@@ -462,7 +462,7 @@ done
 
 - M3: PX01 の計数で、4 種目の確保回数・確保量を before と after で 1 回ずつ記録する（確保は決定的）。
 - M1: 手順 5 の DWARF と「生成コードの確認」の IR の型定義から記録する。
-- M2: `Option` と `Result` に関数値を入れて返す関数を `/tmp/tz-work-PM02/sizes/` に作り、`--emit llvm` の union の型定義（after で `{ i32, %tz.closure }` と `{ i32, [1 x i128] }` になる）から計算する。
+- M2: `Maybe` と `Result` に関数値を入れて返す関数を `/tmp/tz-work-PM02/sizes/` に作り、`--emit llvm` の union の型定義（after で `{ i32, %tz.closure }` と `{ i32, [1 x i128] }` になる）から計算する。
 
 ### 記録
 

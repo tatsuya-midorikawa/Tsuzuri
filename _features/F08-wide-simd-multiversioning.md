@@ -79,7 +79,7 @@ AVX2 などの幅の広いベクトル命令を、配布用の `--cpu generic` �
   `runtime/io.c` と一つの C ソース（一時ディレクトリの `task.c`）へ連結し、`TSUZURI_CLANG`（既定 `clang`）で
   `-std=c11 -c -O{n}` と `native_compile_args` を付けて compile する。`--cpu native` なら `native_cpu_flag`（`-march=native`／
   `-mcpu=native`）も付く。
-- std: `std/Array.tz` の `sum`（`Numeric<'a>`、左から右の `total + value`）、`min`・`max`（`Ord<'a> => ref ['a] -> Option.Option<ref 'a>`、
+- std: `std/Array.tz` の `sum`（`Numeric<'a>`、左から右の `total + value`）、`min`・`max`（`Ord<'a> => ref ['a] -> Maybe<ref 'a>`、
   厳密な `<`／`>` なので同値なら最初の位置）。整数の `+` は幅ごとに折り返す（docs/language.md）。整数型は `i8`〜`i64`、
   `i8u`〜`i64u`、`i128`、`i128u`（`byte`／`ubyte` は `i8`／`i8u` の別名）。
 - テスト: `tests/cpu_dispatch.rs::only_native_i64_standard_sum_requests_cpu_dispatch`（native IR に呼び出しと宣言が 1 回ずつ、
@@ -203,15 +203,13 @@ fn data length = Array.init length (index -> (next (index + 1)) as i32)
 def total :: Numeric<'a> => ref ['a] -> 'a
 fn total values = Array.sum values
 
-def main :: i64
-fn main =
-    let values = data 1000
-    let f = Array.sum
-    let a = Array.sum (ref values)
-    let b = total (ref values)
-    let c = f (ref values)
-    let d = Array.sum (ref values[3..997])
-    (a as i64) + (b as i64) + (c as i64) + (d as i64)
+let values = data 1000
+let f = Array.sum
+let a = Array.sum (ref values)
+let b = total (ref values)
+let c = f (ref values)
+let d = Array.sum (ref values[3..997])
+(a as i64) + (b as i64) + (c as i64) + (d as i64)
 ```
 
 ### Phase 2（設計方針。要承認 D7）
@@ -393,9 +391,9 @@ fn min_index values =
         index = index + 1
     best
 
-def min :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+def min :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 fn min values =
-    if values.length == 0 then Option.None else Option.Some (ref values[min_index values])
+    if values.length == 0 then Maybe.None else Maybe.Some (ref values[min_index values])
 ```
 
 - 確認: `cargo build --release --locked && cargo test --locked` が成功する（`tests/array_bulk.rs` の `Array.min` を含む）。
@@ -609,8 +607,8 @@ grep -cE "ifunc|__cpu_model" /tmp/tz-work-F08/cpu-x86.s   # 0
 
 ### D5: `min`・`max` は非公開 helper の本体を置き換える
 
-- 決定: `std/Array.tz` に `private def min_index`・`max_index` を足し、`min`・`max` は `Option.Some (ref values[min_index values])` の形にする。
-- 理由: kernel は `ref [T] -> i64` の形だけを扱えばよく、`Option<ref T>` の IR を手で組み立てずに済む。索引の境界検査も残る。
+- 決定: `std/Array.tz` に `private def min_index`・`max_index` を足し、`min`・`max` は `Maybe.Some (ref values[min_index values])` の形にする。
+- 理由: kernel は `ref [T] -> i64` の形だけを扱えばよく、`Maybe<ref T>` の IR を手で組み立てずに済む。索引の境界検査も残る。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D6: 記号名と ABI

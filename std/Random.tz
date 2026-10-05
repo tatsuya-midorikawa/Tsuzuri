@@ -1,7 +1,7 @@
 /// A PCG-XSH-RR 64/32 generator. Make one with `pcg`; the stream is odd by construction.
 record Pcg { state: i64u, increment: i64u }
 
-private def gather :: i64 -> Result.Result<[ubyte], Os.Error>
+private def gather :: i64 -> Result<[ubyte], Os.Error>
 fn gather count =
 	match Os.__random count with
 	| (0, bytes) -> Result.Ok bytes
@@ -16,18 +16,18 @@ fn little_endian bytes =
 		index = index - 1
 	value
 
-private def word :: Result.Result<[ubyte], Os.Error> -> Result.Result<i64u, Os.Error>
+private def word :: Result<[ubyte], Os.Error> -> Result<i64u, Os.Error>
 fn word bytes =
 	match bytes with
 	| Result.Ok data -> Result.Ok (little_endian data)
 	| Result.Error error -> Result.Error error
 
 /// Random bytes from the operating system. A negative count or one above 2^30 is `InvalidInput`.
-def bytes :: i64 -> IO<Result.Result<[ubyte], Os.Error>>
+def bytes :: i64 -> IO<Result<[ubyte], Os.Error>>
 fn bytes count = IO.map (\() -> gather count) (IO.pure ())
 
 /// Eight operating-system random bytes as a little-endian number.
-def next_u64 :: unit -> IO<Result.Result<i64u, Os.Error>>
+def next_u64 :: unit -> IO<Result<i64u, Os.Error>>
 fn next_u64 _unit = IO.map (\() -> word (gather 8)) (IO.pure ())
 
 private def advance :: i64u -> i64u -> i64u

@@ -25,7 +25,7 @@ fn parses_explicit_kinds_and_variable_application_heads() {
             .kind,
         Kind::Type
     );
-    for constructor in ["Option", "Result<string>", "Array", "List", "Vec", "Task"] {
+    for constructor in ["Maybe", "Result<string>", "Array", "List", "Vec", "Task"] {
         parser::parse(&format!(
             "instance Functor<{constructor}> {{ fn map transform value = value }}"
         ))
@@ -36,8 +36,8 @@ fn parses_explicit_kinds_and_variable_application_heads() {
 #[test]
 fn resolves_functor_instances_without_runtime_dictionaries() {
     let traits = "class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>\ndef mapped :: ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn mapped transform value = Functor.map transform value }";
-    let implementation = "instance Functor<Option> { fn map transform value = match value with | Option.None -> Option.None | Option.Some inner -> Option.Some (transform inner) }\ninstance Functor<Result<'e>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }";
-    let main = "def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn fmap transform value = Functor.mapped transform value\nexport def result :: i64\nfn result = { let option = fmap (\\value -> value + 1) (Option.Some 41); let result: Result<i64, string> = Functor.map (\\value -> value + 2) (Result.Ok 40); Option.get option + Result.get result }";
+    let implementation = "instance Functor<Maybe> { fn map transform value = match value with | Maybe.None -> Maybe.None | Maybe.Some inner -> Maybe.Some (transform inner) }\ninstance Functor<Result<'e>> { fn map transform value = match value with | Result.Ok inner -> Result.Ok (transform inner) | Result.Error error -> Result.Error error }";
+    let main = "def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn fmap transform value = Functor.mapped transform value\nexport def result :: i64\nfn result = { let option = fmap (\\value -> value + 1) (Maybe.Some 41); let result: Result<i64, string> = Functor.map (\\value -> value + 2) (Result.Ok 40); Maybe.get option + Result.get result }";
     let module = tsuzuri::analyze_modules(&[
         ("Traits.tt", traits),
         ("Instances.tz", implementation),
@@ -57,7 +57,7 @@ fn resolves_functor_instances_without_runtime_dictionaries() {
 #[test]
 fn rejects_kind_mismatches_unsaturated_values_and_overlap() {
     for source in [
-        "def bad :: Option -> i64\nfn bad value = 0",
+        "def bad :: Maybe -> i64\nfn bad value = 0",
         "def bad :: 'f<'a> -> 'f<'a>\nfn bad value = value",
         "class Bad<'f: * -> *> { def bad :: 'f -> i64 }",
         "class Bad<'f: * -> *> { def bad :: 'f<'a, 'b> -> i64 }",

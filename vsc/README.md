@@ -24,13 +24,16 @@ OS と CPU に合ったパッケージが自動で選ばれます。対応して
 ### 2. プロジェクトを作る
 
 1. コマンドパレット（Windows / Linux は `Ctrl+Shift+P`、macOS は `Cmd+Shift+P`）で **Tsuzuri: New Project** を実行します。
-2. 空のフォルダーを選びます。次のファイルが作られ、そのフォルダーが新しいウィンドウで開きます。
+2. 空のフォルダーを選びます。
+3. プロジェクトの名前空間（例: `Acme::MyApp`）を入力します。入れ子の名前空間は `::` でつなぎます。既定値はフォルダー名を PascalCase にしたものです。次のファイルが作られ、そのフォルダーが新しいウィンドウで開きます。
 
 | ファイル | 内容 |
 | --- | --- |
-| Main.tz | プログラムの入口とテストの例 |
-| Tsuzuri.toml | パッケージ名とバージョン |
+| Main.tz | 名前空間の宣言、プログラムの入口、テストの例 |
+| Tsuzuri.toml | パッケージ名、バージョン、既定の名前空間（`namespace`） |
 | .gitignore | ビルド結果を置く `.tsuzuri/` を Git の管理から除外 |
+
+ファイルは同梱のコンパイラの `tsuzuri new` が作ります。
 
 フォルダーを信頼するかどうか確認されたら、信頼を選びます。信頼していないフォルダーでは、コンパイラやプログラムを起動しません。
 既存のフォルダーでも、Main.tz か Tsuzuri.toml があれば Tsuzuri のプロジェクトとして扱います。
@@ -40,14 +43,19 @@ OS と CPU に合ったパッケージが自動で選ばれます。対応して
 Main.tz を開き、次の内容にします。
 
 ```tsuzuri
-def main :: IO<unit> =
-    do! IO.write_line "Hello, World!"
+namespace MyApp
+
+def main :: unit -> i32 = \() ->
+    do! IO.writeln "Hello, World!"
+    0
 
 test "adds numbers" = assert (1 + 2 == 3)
 ```
 
-- `def main :: IO<unit>` はプログラムの入口です。`IO<unit>` は、入出力を行い、値を返さない処理を表します。
-- `do! IO.write_line "..."` は、文字列と改行を標準出力へ書き込みます。字下げした行が `main` の本体です。
+- `namespace MyApp` は、このファイル（モジュール）が属する名前空間です。ファイルの最初に書きます。作成した Main.tz には、入力した名前空間が入っています。
+- `def main :: unit -> i32` はプログラムの入口です。`\() ->` の後に字下げした行が `main` の本体で、最後の `0` がプロセスの終了コード（0 は成功）です。
+  コマンドライン引数を受け取るには `def main :: Array<string> -> i32 = \args ->` と書きます（スニペット `mainargs`）。
+- `do! IO.writeln "..."` は、文字列と改行を標準出力へ書き込みます。
 - `test "名前" = assert (条件)` はテストです。通常のビルドには含まれません。
 
 エディター右上の ▷（**Run Project**）を押します。ファイルを保存してビルドし、ターミナルに `Hello, World!` を表示します。
@@ -62,10 +70,10 @@ test "adds numbers" = assert (1 + 2 == 3)
 - 入力中の構文・型・所有権のエラーと警告。保存していない変更も検査します。
 - 型とドキュメントコメント（`///`）のホバー表示、定義への移動、アウトライン、パンくずリスト。
 - Format Document（Windows / Linux は `Shift+Alt+F`、macOS は `Shift+Option+F`）による公式フォーマッターでの整形。
-- キーワード、型、標準ライブラリの関数の補完。言語サーバーによるローカル変数・レコードのフィールド・モジュールのメンバーの補完。
+- キーワード、型、標準ライブラリの関数の補完。言語サーバーによるローカル変数・レコードのフィールド・モジュールのメンバー（`.` の後）・名前空間のモジュール（`Sample::` の後）の補完。`namespace` と `using` も考慮します。
 - 参照の検索と強調表示、名前の変更（`F2`。意味が変わる変更は拒否）、ワークスペースのシンボル検索、シグネチャヘルプ、意味に基づく色分け。
 - 未使用のローカル変数に `_` を付けるクイックフィックス。
-- `def`、`main`、`test`、`record`、`union`、`match`、`class`、`doc` などのスニペット。
+- `def`、`main`、`mainargs`、`namespace`、`using`、`test`、`record`、`union`、`match`、`try`、`class`、`doc` などのスニペット。
 
 ![関数にカーソルを合わせ、型とドキュメントコメントを表示した画面](images/hover.png)
 
@@ -96,7 +104,7 @@ WebAssembly を動かすブラウザーや Node.js などのホストは、別�
 
 ### テスト
 
-テストは `test "名前" = assert (条件)` と書きます。次の例では、`main` の返した値 `360` が実行時に表示されます。
+テストは `test "名前" = assert (条件)` と書きます。次の例では、`main` が小計 `360` を表示します。
 
 ```tsuzuri
 record Order { price: i64, quantity: i64 }
@@ -106,9 +114,10 @@ def subtotal :: Order -> i64 = \order ->
     let amount = order.price * order.quantity
     amount
 
-def main :: i64 =
+def main :: unit -> i32 = \() ->
     let order = Order { price: 120, quantity: 3 }
-    subtotal order
+    do! IO.writeln (subtotal order)
+    0
 
 test "subtotal multiplies price by quantity" =
     assert (subtotal (Order { price: 120, quantity: 3 }) == 360)

@@ -6,15 +6,8 @@ import { Registry, parseRawGrammar, INITIAL } from 'vscode-textmate';
 import { loadWASM, OnigScanner, OnigString } from 'vscode-oniguruma';
 
 test('TextMate grammar tokenizes nested comments, type variables, literals, and lambdas', async () => {
-	const root = path.resolve(__dirname, '../..');
-	await loadWASM(await readFile(require.resolve('vscode-oniguruma/release/onig.wasm')));
-	const registry = new Registry({
-		onigLib: Promise.resolve({ createOnigScanner: patterns => new OnigScanner(patterns), createOnigString: text => new OnigString(text) }),
-		loadGrammar: async () => parseRawGrammar(await readFile(path.join(root, 'syntaxes/tsuzuri.tmLanguage.json'), 'utf8'), 'tsuzuri.json'),
-	});
+	const { grammar, registry } = await loadGrammar();
 	try {
-		const grammar = await registry.loadGrammar('source.tsuzuri');
-		assert.ok(grammar);
 		const first = grammar.tokenizeLine('/* outer /* nested */', INITIAL);
 		const second = grammar.tokenizeLine('still outer */ def identity :: \'a -> \'a = \\value -> value', first.ruleStack);
 		assert.ok(second.tokens[0].scopes.includes('comment.block.tsuzuri'));
@@ -44,3 +37,63 @@ test('TextMate grammar tokenizes nested comments, type variables, literals, and 
 		assert.ok(at('7').includes('constant.numeric.tsuzuri'));
 	} finally { registry.dispose(); }
 });
+
+test('TextMate grammar tokenizes namespaces, using, error handling, attributes, and literal suffixes', async () => {
+	const { grammar, registry } = await loadGrammar();
+	try {
+		const scopes = (line: string, text: string) => {
+			const start = line.indexOf(text);
+			const token = grammar.tokenizeLine(line, INITIAL).tokens.find(candidate => candidate.startIndex <= start && start < candidate.endIndex);
+			assert.ok(token, text);
+			return token.scopes;
+		};
+		for (const line of ['namespace Sample::Features', 'using Sample::Features // shared shapes']) {
+			assert.ok(scopes(line, line.split(' ')[0]).includes('keyword.other.namespace.tsuzuri'), line);
+			for (const segment of ['Sample', 'Features']) {
+				assert.ok(scopes(line, segment).includes('entity.name.namespace.tsuzuri'), `${line}: ${segment}`);
+			}
+			assert.ok(scopes(line, '::').includes('keyword.operator.tsuzuri'), line);
+		}
+		const qualified = 'let area = Sample::Features::Shape.area (lower::Shape.Rect (3.0, 4.0))';
+		for (const segment of ['Sample', 'Features', 'Shape.area', 'lower']) {
+			assert.ok(scopes(qualified, segment).includes('entity.name.namespace.tsuzuri'), segment);
+		}
+		assert.ok(scopes(qualified, '::').includes('keyword.operator.tsuzuri'));
+		assert.ok(!scopes('let ys = x::xs', 'x::').includes('entity.name.namespace.tsuzuri'));
+		assert.ok(scopes('def area::Sample::Shape -> f64', 'area').includes('entity.name.function.tsuzuri'));
+		assert.ok(scopes('using Sample // shared', 'shared').includes('comment.line.double-slash.tsuzuri'));
+		assert.ok(!scopes('let using = namespace + 1', 'using').includes('keyword.other.namespace.tsuzuri'));
+		assert.ok(!scopes('    using resource', 'using').includes('keyword.other.namespace.tsuzuri'));
+		for (const word of ['try', 'with', 'is', 'finally']) {
+			assert.ok(scopes('try x with | e is OverflowException -> e finally done', word).includes('keyword.control.tsuzuri'), word);
+		}
+		for (const attribute of ['@checked', '@literal']) {
+			assert.ok(scopes(`${attribute} def x :: i32 = 1`, attribute).includes('storage.modifier.attribute.tsuzuri'), attribute);
+		}
+		const literals = 'let a = [86y; 86uy; 86s; 86us; 86u; 86l; 86ul; 86L; 86UL; 99I; 4.14hf; 4.14f; 4.14F; 0.5hm; 0.5m; 0.5M]';
+		for (const literal of literals.slice(9, -1).split('; ')) {
+			const token = grammar.tokenizeLine(literals, INITIAL).tokens.find(candidate => literals.slice(candidate.startIndex, candidate.endIndex) === literal);
+			assert.ok(token?.scopes.includes('constant.numeric.tsuzuri'), literal);
+		}
+		assert.ok(scopes('let b = \'a\'B', '\'a\'B').includes('string.quoted.single.tsuzuri'));
+		assert.ok(scopes('let s = "test"B', '"test"B').includes('string.quoted.double.tsuzuri'));
+		for (const operator of ['&&&', '|||', '^^^', '~~~', '<<<', '>>>', '**']) {
+			assert.ok(scopes(`let v = a ${operator} b`, operator).includes('keyword.operator.tsuzuri'), operator);
+		}
+	} finally { registry.dispose(); }
+});
+
+let oniguruma: Promise<void> | undefined;
+
+async function loadGrammar() {
+	const root = path.resolve(__dirname, '../..');
+	oniguruma ??= readFile(require.resolve('vscode-oniguruma/release/onig.wasm')).then(data => loadWASM(data));
+	await oniguruma;
+	const registry = new Registry({
+		onigLib: Promise.resolve({ createOnigScanner: patterns => new OnigScanner(patterns), createOnigString: text => new OnigString(text) }),
+		loadGrammar: async () => parseRawGrammar(await readFile(path.join(root, 'syntaxes/tsuzuri.tmLanguage.json'), 'utf8'), 'tsuzuri.json'),
+	});
+	const grammar = await registry.loadGrammar('source.tsuzuri');
+	assert.ok(grammar);
+	return { grammar, registry };
+}

@@ -8,15 +8,15 @@ Display は値から UTF-16 string を作り、Parse は string から値を解�
 
 ```tsuzuri run=42
 let text = to_string 42
-let parsed: Option<i64> = Parse.parse ref text
-Option.get parsed
+let parsed: Maybe<i64> = Parse.parse ref text
+Maybe.get parsed
 ```
 
 | API | 所有権 |
 | --- | --- |
 | `Display.display value` | `Display<T> => ref T -> string`。入力を借用 |
 | `to_string value` | `Display<T> => T -> string`。入力を消費 |
-| `Parse.parse text` | `Parse<T> => ref string -> Option<T>`。入力を借用 |
+| `Parse.parse text` | `Parse<T> => ref string -> Maybe<T>`。入力を借用 |
 
 string の to_string は元のバッファをそのまま返せます。借用版 Display は独立した複製を返します。utf8string の表示は UTF-16 への変換を行います。単体の文字列の NUL、改行、引用符はそのままで、JSON などのエスケープを追加しません。
 
@@ -192,7 +192,7 @@ $"{Light:x} {Dark:>3} {Light:*^+8.2f} {Dark: <4} {Light:.2}"
 | `Format.Align` | `Format.AlignAuto \| Format.AlignLeft \| Format.AlignCenter \| Format.AlignRight`。指定に揃えがなければ `AlignAuto` |
 | `Format.Kind` | `Format.KindPlain \| Format.KindLowerHex \| Format.KindUpperHex \| Format.KindOctal \| Format.KindBinary \| Format.KindExponent \| Format.KindFixed`。型文字がなければ `KindPlain` |
 | `Format.Spec` | `{ fill: string, align: Format.Align, plus: bool, width: i64, precision: i64, kind: Format.Kind }`。`fill` は Unicode スカラー 1 個で既定は空白、`width` は幅がなければ 0、`precision` はなければ -1 |
-| `Format.parse text` | `ref string -> Option.Option<Format.Spec>`。指定を分解する。文法に合わない文字列、先頭が 0 の幅、`.05` のように先頭が 0 の精度、4096 を超える値、コンパイラが拒否する埋め文字（`{`、`}`、`"`、`\`、CR、LF、サロゲートペアの片割れ）は `None` |
+| `Format.parse text` | `ref string -> Maybe<Format.Spec>`。指定を分解する。文法に合わない文字列、先頭が 0 の幅、`.05` のように先頭が 0 の精度、4096 を超える値、コンパイラが拒否する埋め文字（`{`、`}`、`"`、`\`、CR、LF、サロゲートペアの片割れ）は `None` |
 | `Format.pad spec text` | `ref Format.Spec -> string -> string`。`text` を `spec.width` 個の Unicode スカラーまで `spec.fill` で埋める。`AlignAuto` は左揃えで、中央揃えは不足分の半分（切り捨て）を前に置く。すでに幅以上なら `text` をそのまま返す |
 
 `Format.parse` は文法だけを調べ、型文字と精度の組み合わせは検査しません。穴の指定はコンパイラが検査済みですが、`Format.format` に自分で渡した文字列は検査されません。
@@ -200,8 +200,8 @@ $"{Light:x} {Dark:>3} {Light:*^+8.2f} {Dark: <4} {Light:.2}"
 ```tsuzuri run=fill%3D*%20plus%3Dtrue%20width%3D8%20precision%3D2%20%5B*******x%5D
 let text = "*>+8.2f"
 match Format.parse (ref text) with
-| Option.Some spec -> $"fill={spec.fill} plus={spec.plus} width={spec.width} precision={spec.precision} [{Format.pad (ref spec) "x"}]"
-| Option.None -> "invalid"
+| Maybe.Some spec -> $"fill={spec.fill} plus={spec.plus} width={spec.width} precision={spec.precision} [{Format.pad (ref spec) "x"}]"
+| Maybe.None -> "invalid"
 ```
 
 ### Point の例
@@ -214,10 +214,10 @@ record Point { x: i64, y: i64 }
 instance Format<Point> {
     fn format point spec =
         match Format.parse spec with
-        | Option.Some parsed ->
+        | Maybe.Some parsed ->
             let text = if parsed.plus then $"({point.x:+}, {point.y:+})" else $"({point.x}, {point.y})"
             Format.pad (ref parsed) text
-        | Option.None -> "invalid"
+        | Maybe.None -> "invalid"
 }
 
 let p = Point { x: 3, y: -4 }
@@ -292,15 +292,15 @@ instance Display<Count> {
 
 instance Parse<Count> {
     fn parse text =
-        let number: Option<i64> = Parse.parse text
+        let number: Maybe<i64> = Parse.parse text
         match number with
-        | Option.Some value -> Option.Some (Count { value: value })
-        | Option.None -> Option.None
+        | Maybe.Some value -> Maybe.Some (Count { value: value })
+        | Maybe.None -> Maybe.None
 }
 
 let text = "42"
-let parsed: Option<Count> = Parse.parse ref text
-to_string (Option.get parsed)
+let parsed: Maybe<Count> = Parse.parse ref text
+to_string (Maybe.get parsed)
 ```
 
 インスタンスの選択はコンパイル時です。組み込みのインスタンスは上書きできません。Display の自動導出は使えますが、任意の型の Parse 自動導出はありません。

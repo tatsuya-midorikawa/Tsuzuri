@@ -80,7 +80,7 @@ Phase 2 は公開 API の差分検査 `tsuzuri api-diff`（D9）。実装者は 
 ### 再現（検証済み）
 
 各 case は `/tmp/tz-work-G19/<case>/` に置く。`a` は `Tsuzuri.toml`（`name = "a"`, `version = "0.1.0"`, `edition = "2026"`）と
-`Main.tz`（`def main :: i64` と `fn main = 42`）。
+`Main.tz`（トップレベルの `42`）。
 
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri

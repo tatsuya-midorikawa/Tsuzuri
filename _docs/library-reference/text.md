@@ -37,8 +37,8 @@ concat / join / replace / repeat は結果長を検査し、非空結果のバ�
 | API | 結果 |
 | --- | --- |
 | `length text` | O(1) の格納単位数 |
-| `find needle text` | 最初の一致の `Option<i64>` |
-| `rfind needle text` | 最後の一致の `Option<i64>` |
+| `find needle text` | 最初の一致の `Maybe<i64>` |
+| `rfind needle text` | 最後の一致の `Maybe<i64>` |
 | `contains needle text` | 一致が存在するか |
 | `starts_with prefix text`, `ends_with suffix text` | 接頭・接尾の一致 |
 | `compare left right` | 辞書順の -1 / 0 / 1 |
@@ -50,16 +50,16 @@ concat / join / replace / repeat は結果長を検査し、非空結果のバ�
 ```tsuzuri run=42
 let text = "\u{1F600}"
 let bytes = u8"\u{1F600}"
-let half = Option.get (String.slice (ref text) 0 1)
+let half = Maybe.get (String.slice (ref text) 0 1)
 assert (!(String.is_well_formed ref half))
 let invalid_boundary = Utf8String.slice (ref bytes) 1 1
-assert (Option.is_none ref invalid_boundary)
+assert (Maybe.is_none ref invalid_boundary)
 42
 ```
 
 | API | 契約 |
 | --- | --- |
-| `slice text first last` | 終端を含まない区間の所有文字列を Option で返す |
+| `slice text first last` | 終端を含まない区間の所有文字列を Maybe で返す |
 | `sub text first count` | 長さ指定。負数、overflow、範囲外なら None |
 | `decode_at text offset` | `(文字, 次の offset)`。範囲・境界違反はトラップ |
 | `chars text` | String は `[char]`、Utf8String は `[utf8char]` |

@@ -2,13 +2,13 @@
 
 [ドキュメントのトップ](../README.md)
 
-`bigint` は桁数に上限のない符号付き整数です。std の record `BigInt.BigInt` の型名で、`I` 接尾辞のリテラル（`123I`、`0xFFI`）か、`bigint` を期待する位置に書いた接尾辞なしの整数リテラルで作ります。固定幅の整数の API は [Int](integers.md) です。
+`bigint` は桁数に上限のない符号付き整数です。std の record `BigInt` の型名で、`I` 接尾辞のリテラル（`123I`、`0xFFI`）か、`bigint` を期待する位置に書いた接尾辞なしの整数リテラルで作ります。固定幅の整数の API は [Int](integers.md) です。
 
 ## 例
 
 ```tsuzuri run=1267650600228229401496703205376
 let large = 2I ** 100
-assert (Option.is_none (BigInt.to_i64 (ref large)))
+assert (Maybe.is_none (BigInt.to_i64 (ref large)))
 assert (large > 9999999999999999999999999999I)
 large
 ```
@@ -28,7 +28,7 @@ large
 ```tsuzuri run=-3%20-2%20123456789012345678901234567891
 let quotient = -17I / 5I
 let remainder = -17I % 5I
-let parsed = Option.get (BigInt.of_string "123456789012345678901234567890")
+let parsed = Maybe.get (BigInt.of_string "123456789012345678901234567890")
 $"{quotient} {remainder} {parsed + 1I}"
 ```
 
@@ -37,8 +37,8 @@ $"{quotient} {remainder} {parsed + 1I}"
 | API | 型・動作 |
 | --- | --- |
 | `BigInt.of_i64 value` | `i64 -> bigint` |
-| `BigInt.to_i64 value` | `ref bigint -> Option<i64>`。範囲外は None |
-| `BigInt.of_string text` | `ref string -> Option<bigint>`。先頭の省略可能な `-` と十進数字だけを受け付け、空文字列、`+`、空白、その他の文字は None |
+| `BigInt.to_i64 value` | `ref bigint -> Maybe<i64>`。範囲外は None |
+| `BigInt.of_string text` | `ref string -> Maybe<bigint>`。先頭の省略可能な `-` と十進数字だけを受け付け、空文字列、`+`、空白、その他の文字は None |
 | `BigInt.compare left right` | `ref bigint -> ref bigint -> i64`。小さい・等しい・大きいを -1・0・1 で返す |
 
 instance は Add、Sub、Mul、Div、Rem、Pow、Neg、Eq、Ord、Display、Parse、Hash、Default です。Parse は of_string と同じ規則で、`Parse.parse` からも使えます。Default は 0 です。Hash と Eq を持つので HashMap のキーにもなります。

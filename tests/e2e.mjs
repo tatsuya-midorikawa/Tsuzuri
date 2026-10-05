@@ -243,7 +243,7 @@ function multipleDiagnosticChecks() {
   const main = join(directory, "Main.tz");
   const output = join(directory, "output");
   writeFileSync(before, "def first :: i64\nfn first = true\n");
-  writeFileSync(main, "def bad :: Missing -> i64\nfn bad x = x\ndef main :: i64\nfn main = bad 1\n");
+  writeFileSync(main, "def bad :: Missing -> i64\nfn bad x = x\nbad 1\n");
   writeFileSync(output, "preserved");
   let expected;
   for (const args of [
@@ -567,10 +567,10 @@ fn main() -> i64 { 999 }
 `,
     "Even.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { true } else { Odd.accepts(n - 1) } }",
     "Main.tz": `
-record Callback { distance: fn(Point.Point) -> f64 }
+record Callback { distance: fn(Point) -> f64 }
 fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
 export fn module_result() -> f64 {
-  let p: Point.Point = Point.Point { x: 3.0, y: 4.0 };
+  let p: Point = Point { x: 3.0, y: 4.0 };
   let functions = [Point.distance];
   let Point = Callback { distance: functions[0] };
   let left: Left.Value = Left.Value { x: 20 };
@@ -580,7 +580,7 @@ export fn module_result() -> f64 {
 export fn module_tail() -> i64 { Loop.sum(1_000_000, [0, 1]) }
 export fn module_pipe() -> i64 { Loop.down(1_000_000) }
 export fn module_even(n: i64) -> bool { Even.accepts(n) }
-fn main() -> f64 { module_result() }
+module_result()
 `,
   };
   for (const [name, source] of Object.entries(sources)) {
@@ -690,7 +690,7 @@ async function packageChecks() {
   writeFileSync(join(dependency, "Tsuzuri.toml"), '[package]\nname = "geometry-core"\nversion = "0.1.0"\n');
   writeFileSync(join(dependency, "Point.tz"), "def distance :: f64 -> f64 -> f64\nfn distance x y = Math.sqrt (x * x + y * y)\n");
   writeFileSync(join(dependency, "Main.tz"), "def main :: i64\nfn main = 99\n");
-  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore.Point.distance 3.0 4.0\n");
+  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore::Point.distance 3.0 4.0\n");
   const host = join(directory, "host.c");
   writeFileSync(host, "extern double tz_answer(void);\nint main(void) { return tz_answer() == 5.0 ? 0 : 1; }\n");
   const first = join(directory, "first.ll");
@@ -779,14 +779,14 @@ try {
     const directory = join(temporary, `scalar-${type}`);
     mkdirSync(directory);
     const input = join(directory, "Main.tz");
-    writeFileSync(input, `fn main() -> ${type} { ${value} }`);
+    writeFileSync(input, `fn answer() -> ${type} { ${value} }\nanswer()`);
     assert.equal(cli(["run", input]).stdout, expected);
   }
   assert.equal(cli([], { success: false }).status, 2);
   assert.match(cli(["--version"]).stdout, /^tsuzuri 0\.1\.0/);
   assert.match(cli(["--help"]).stdout, /TSUZURI_WASM_LD/);
   assert.equal(cli(["run", fixture, "--target", "wasm32"], { success: false }).status, 2);
-  assert.equal(diagnostic("// 日本語\r\nfn main() -> i64 { true }\r\n", "E1003").span.line, 2);
+  assert.equal(diagnostic("// 日本語\r\nfn answer() -> i64 { true }\r\n", "E1003").span.line, 2);
   diagnostic("fn f() -> i64 { let x = 1; x = 2; x }", "E1014");
   diagnostic("fn f() -> i64 { 1e400 }", "E1009");
   diagnostic("fn f() -> i64 { 1__2 }", "E0001");
@@ -803,10 +803,10 @@ try {
   const spaced = join(temporary, "space 日本語");
   mkdirSync(spaced);
   const input = join(spaced, "Main.tz");
-  writeFileSync(input, "\uFEFFexport fn main() -> i64 {\r\n  42\r\n}\r\n");
+  writeFileSync(input, "\uFEFFexport fn answer() -> i64 {\r\n  42\r\n}\r\nanswer()\r\n");
   const output = join(spaced, "output.wasm");
   cli(["build", "--target", "wasm32", "-o", output, "--", input]);
-  assert.equal((await WebAssembly.instantiate(readFileSync(output))).instance.exports.tz_main(), 42n);
+  assert.equal((await WebAssembly.instantiate(readFileSync(output))).instance.exports.tz_answer(), 42n);
   const dashOutput = join("-output", process.platform === "win32" ? "program.exe" : "program");
   cli(["build", input, "-o", dashOutput], { cwd: temporary });
   assert.equal(execute(join(temporary, dashOutput), []).stdout, "42\n");

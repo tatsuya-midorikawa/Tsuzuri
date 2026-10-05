@@ -158,11 +158,11 @@ record Point { x: i64, y: i64 }
 instance Format<Point> {
     fn format point spec =
         match Format.parse spec with
-        | Option.Some parsed ->
+        | Maybe.Some parsed ->
             let sign = if parsed.plus then "+" else ""
             let precision = if parsed.precision >= 0 then $".{parsed.precision}" else ""
             Format.pad (ref parsed) ($"{sign}{point.x},{point.y}{precision}")
-        | Option.None -> "invalid"
+        | Maybe.None -> "invalid"
 }
 
 union Shade = Light | Dark
@@ -207,11 +207,11 @@ fn display_case_holes =
     let text = $"{Quiet}{Loud}"
     digest (&text)
 
-private def describe :: Option.Option<Format.Spec> -> string
+private def describe :: Maybe<Format.Spec> -> string
 fn describe parsed =
     match parsed with
-    | Option.None -> "none"
-    | Option.Some spec ->
+    | Maybe.None -> "none"
+    | Maybe.Some spec ->
         let align =
             match spec.align with
             | Format.AlignAuto -> "auto"
@@ -250,8 +250,8 @@ fn format_pad =
         while text_index < texts.length do
             let text = $"{texts[text_index]}"
             match Format.parse (ref specs[spec_index]) with
-            | Option.Some spec -> out = out + Format.pad (ref spec) text + "|"
-            | Option.None -> out = out + "invalid|"
+            | Maybe.Some spec -> out = out + Format.pad (ref spec) text + "|"
+            | Maybe.None -> out = out + "invalid|"
             text_index = text_index + 1
         spec_index = spec_index + 1
     digest (&out)

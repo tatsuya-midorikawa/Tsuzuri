@@ -114,7 +114,7 @@ fn conditional_instances_normalize_and_specialize_method_arguments() {
         "E1017",
     );
     accepts(
-        "instance Eq<'a> => Eq<Option<'a>> { fn eq left right = match left with | None -> (match right with | None -> true | Some _ -> false) | Some value -> (match right with | Some other -> Eq.eq value other | None -> false); fn ne left right = !(Eq.eq left right) }\nlet left = Some \"abc\"\nlet right = Some \"abc\"\nleft == right",
+        "instance Eq<'a> => Eq<Maybe<'a>> { fn eq left right = match left with | None -> (match right with | None -> true | Some _ -> false) | Some value -> (match right with | Some other -> Eq.eq value other | None -> false); fn ne left right = !(Eq.eq left right) }\nlet left = Some \"abc\"\nlet right = Some \"abc\"\nleft == right",
     );
 }
 
@@ -281,8 +281,8 @@ fn accepts_the_requested_signatures_and_space_separated_arguments() {
          fn floating x y = add x y
          def text :: string
          fn text = add \"hello\" \" world\"
-         def main :: i32
-         fn main = add 20 (22)",
+         def answer :: i32
+         fn answer = add 20 (22)",
     );
     let specializations: Vec<_> = module
         .functions
@@ -321,8 +321,8 @@ fn supports_parametric_values_aggregates_borrows_and_higher_order_functions() {
          fn borrow x = x
          def choose :: bool -> ('a -> 'a)
          fn choose flag = if flag { id } else { id }
-         def main :: i32
-         fn main = {
+         def answer :: i32
+         fn answer = {
            let f: i32 -> i32 = id;
            let g = choose true;
            let boxed = id (Box { value: 40i32 });
@@ -332,10 +332,10 @@ fn supports_parametric_values_aggregates_borrows_and_higher_order_functions() {
          }",
     );
     accepts(
-        "def id :: 'a -> 'a\nfn id x = x\ndef main :: i64\nfn main = { let text = \"x\"; (id (&text)).length }",
+        "def id :: 'a -> 'a\nfn id x = x\ndef answer :: i64\nfn answer = { let text = \"x\"; (id (&text)).length }",
     );
     accepts(
-        "def replace :: &mut 'a -> 'a -> unit\nfn replace p x = { *p = x; }\ndef main :: string\nfn main = { let mut x = \"old\"; replace (&mut x) \"new\"; x }",
+        "def replace :: &mut 'a -> 'a -> unit\nfn replace p x = { *p = x; }\ndef answer :: string\nfn answer = { let mut x = \"old\"; replace (&mut x) \"new\"; x }",
     );
 }
 
@@ -348,8 +348,8 @@ fn infers_constraints_through_forward_calls_and_recursion() {
          fn plus x y = x + y
          def rec total :: i64 -> 'a -> 'a -> 'a
          fn rec total n x acc = if n == 0 { acc } else { total (n - 1) x (plus acc x) }
-         def main :: i32
-         fn main = total 10 (twice 2i32) 2",
+         def answer :: i32
+         fn answer = total 10 (twice 2i32) 2",
     );
     rejects(
         "def twice :: 'a -> 'a\nfn twice x = plus x x\ndef plus :: 'a -> 'a -> 'a\nfn plus x y = x + y\ntwice true",
@@ -376,11 +376,11 @@ fn supports_explicit_constraints_and_literal_specialization() {
          fn wide = increment 170141183460469231731687303715884105726
          def decimal :: d128
          fn decimal = fraction 0.2d128
-         def main :: i32
-         fn main = negate (increment (-43i32))",
+         def answer :: i32
+         fn answer = negate (increment (-43i32))",
     );
     rejects(
-        "def huge :: 'a -> 'a\nfn huge x = x + 128\ndef main :: i8\nfn main = huge 0",
+        "def huge :: 'a -> 'a\nfn huge x = x + 128\ndef answer :: i8\nfn answer = huge 0",
         "E1009",
     );
     rejects(
@@ -581,7 +581,7 @@ fn function_constraints_preserve_module_visibility_ownership_and_recursion() {
     let module = analyze_modules(&[
         (
             "Main.tz",
-            "let value = Point.Point { value: 42 }\nPoint.reveal value",
+            "let value = Point { value: 42 }\nPoint.reveal value",
         ),
         (
             "Point.tz",
@@ -700,8 +700,8 @@ fn supports_user_classes_instances_and_operator_instances() {
          fn sum x y = x + y
          def measure :: Measure<'a> => &'a -> i32
          fn measure x = Measure.measure x
-         def main :: i32
-         fn main = {
+         def answer :: i32
+         fn answer = {
            let p = sum (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 });
            let f: &Point -> i32 = Measure.measure;
            f (&p)
@@ -746,7 +746,10 @@ fn resolves_polymorphism_across_modules_and_preserves_diagnostics() {
     assert_eq!(error.span.source, Some(1));
     let module = analyze_modules(&[
         ("Add", "def add :: i32 -> i32 -> i32\nfn add x y = x - y"),
-        ("Main", "def main :: i32\nfn main = Add.add 20 22"),
+        (
+            "Main",
+            "def answer :: i32\nfn answer = Add.add 20 22\nanswer()",
+        ),
     ])
     .unwrap();
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
@@ -764,7 +767,10 @@ fn rejects_ambiguous_mismatched_and_unsafe_instantiations() {
     rejects("fn add x y = x + y", "E0002");
     rejects("def add :: i32 -> i32 -> i32", "E0002");
     rejects("export def id :: 'a -> 'a\nfn id x = x", "E1008");
-    rejects("def rec main :: 'a\nfn rec main = main()", "E1015");
+    rejects(
+        "def rec answer :: 'a\nfn rec answer = answer()\nanswer()",
+        "E1015",
+    );
     rejects(
         "def duplicate :: 'a -> ['a]\nfn duplicate x = [x, x]\nduplicate \"owned\"",
         "E1005",
@@ -774,7 +780,7 @@ fn rejects_ambiguous_mismatched_and_unsafe_instantiations() {
         "E1005",
     );
     rejects(
-        "def id :: 'a -> 'a\nfn id x = x\ndef main :: &string\nfn main = { let x = \"x\"; id (&x) }",
+        "def id :: 'a -> 'a\nfn id x = x\ndef answer :: &string\nfn answer = { let x = \"x\"; id (&x) }",
         "E1013",
     );
 }
@@ -877,8 +883,8 @@ fn distinguishes_multi_argument_application_from_returned_function_application()
          fn add x y = x + y
          def choose :: bool -> (i32 -> i32)
          fn choose flag = id
-         def main :: i32
-         fn main = add ((choose true) (R { x: 20 }).x) 22",
+         def answer :: i32
+         fn answer = add ((choose true) (R { x: 20 }).x) 22",
     );
     accepts(
         "def id :: i32 -> i32\nfn id x = x\ndef choose :: bool -> (i32 -> i32)\nfn choose flag = id\n(choose true) 42",
@@ -896,12 +902,12 @@ fn infers_copy_only_when_required_by_ownership() {
         "def rec loop :: i64 -> 'a -> 'a\nfn rec loop n x = if n == 0 { x } else { loop (n - 1) x }\nloop 10 \"owned\"",
         "def replace :: 'a -> 'a -> 'a\nfn replace mut x y = { let old = x; x = y; x }\nreplace \"old\" \"new\"",
         "def dup :: 'a -> ['a]\nfn dup x = [x, x]\ndup 2i32",
-        "def read :: &'a -> 'a\nfn read x = *x\ndef main :: i64\nfn main = { let x = 42; read (&x) }",
+        "def read :: &'a -> 'a\nfn read x = *x\ndef answer :: i64\nfn answer = { let x = 42; read (&x) }",
     ] {
         accepts(source);
     }
     rejects(
-        "def read :: &'a -> 'a\nfn read x = *x\ndef main :: string\nfn main = { let x = \"x\"; read (&x) }",
+        "def read :: &'a -> 'a\nfn read x = *x\ndef answer :: string\nfn answer = { let x = \"x\"; read (&x) }",
         "E1005",
     );
     rejects(
@@ -932,7 +938,7 @@ fn specializes_operators_for_every_numeric_representation() {
         ));
     }
     accepts(
-        "def bits :: 'a -> 'a -> 'a\nfn bits x y = Bits.ushr ((~~~x &&& y ||| x ^^^ y) <<< y >>> y) (y % x)\ndef main :: i32\nfn main = bits 42 2",
+        "def bits :: 'a -> 'a -> 'a\nfn bits x y = Bits.ushr ((~~~x &&& y ||| x ^^^ y) <<< y >>> y) (y % x)\ndef answer :: i32\nfn answer = bits 42 2",
     );
-    accepts("instance Add<[i32]> { fn add x y = x }\ndef main :: [i32]\nfn main = [] + []");
+    accepts("instance Add<[i32]> { fn add x y = x }\ndef answer :: [i32]\nfn answer = [] + []");
 }

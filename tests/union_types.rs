@@ -19,7 +19,7 @@ fn accepts(source: &str) -> CheckedModule {
             llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
         );
     }
-    if module.entry.is_some() || module.functions.iter().any(|f| f.name == "main") {
+    if module.entry.is_some() {
         llvm::emit(&module, llvm::Entry::Console).unwrap();
     }
     module
@@ -118,8 +118,8 @@ fn unwrap_or fallback value =
     match value with
     | Some x -> x
     | None -> fallback
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let text = unwrap_or \"\" (Some \"abc\")
     unwrap_or 0 (Some 1) + text.length
 "
@@ -136,13 +136,13 @@ fn main =
     let main = module
         .functions
         .iter()
-        .find(|function| function.name == "main")
+        .find(|function| function.name == "answer")
         .unwrap();
     assert_eq!(main.signature.result, Type::I64);
     let error = rejects(
         &format!(
-            "{MAYBE}def main :: i64
-fn main =
+            "{MAYBE}def answer :: i64
+fn answer =
     let value: Maybe<string> = Some 1
     0
 "
@@ -199,18 +199,25 @@ fn size shape =
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
 
     for (main, other, code, message) in [
-        // `Choice.Some` names both a module case and a local union case.
+        // `Choice.Some` names the case of the module `Choice`, not of the local union.
         (
-            "union Choice = Some\nlet x = Choice.Some\n0",
+            "union Choice = Some\nlet x: i64 = Choice.Some 1\n0",
             "union Choice<'a> = None | Some of 'a",
-            "E1004",
-            "Module.Union.Case",
+            "E1003",
+            "found Choice<",
         ),
         (
-            "let x = Choice.Choice.Missing\n0",
-            "union Choice<'a> = None | Some of 'a",
+            "let x = Choice.Pick.Missing\n0",
+            "union Pick<'a> = None | Some of 'a",
             "E1002",
-            "has no case 'Missing'",
+            "union 'Choice.Pick' has no case 'Missing'",
+        ),
+        // A union named after its module has the module's name.
+        (
+            "let x = Choice.Choice.Some 1\n0",
+            "union Choice<'a> = None | Some of 'a",
+            "E1004",
+            "so write 'Choice.Some'",
         ),
         (
             "let x = Choice.Some 1\n0",
@@ -219,7 +226,7 @@ fn size shape =
             "",
         ),
         (
-            "def f :: Choice.Choice<i64> -> i64\nfn f x = 0",
+            "def f :: Choice<i64> -> i64\nfn f x = 0",
             "private union Choice<'a> = None | Some of 'a",
             "E1022",
             "",
@@ -241,6 +248,15 @@ fn size shape =
         assert_eq!(error.code, code, "{main}\n{}", error.message);
         assert!(error.message.contains(message), "{main}\n{}", error.message);
     }
+    // The local union's case stays `Some`, or the module path of the file.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "union Choice = Some\nlet x: Choice = Some\nlet y: Choice = Main.Choice.Some\n0",
+        ),
+        ("Choice.tz", "union Choice<'a> = None | Some of 'a"),
+    ])
+    .unwrap();
     // Cases with one name in two other modules need qualification.
     let error = analyze_modules(&[
         ("Main.tz", "match Some 1 with\n| Some n -> n\n| None -> 0"),
@@ -262,11 +278,11 @@ fn size shape =
 fn allows_unions_in_builders_but_not_type_class_files() {
     let module = analyze_modules(&[
         (
-            "Maybe.tc",
-            "union Maybe<'a> = Nothing | Just of 'a
-def Return :: 'a -> Maybe<'a>
+            "Perhaps.tc",
+            "union Perhaps<'a> = Nothing | Just of 'a
+def Return :: 'a -> Perhaps<'a>
 fn Return value = Just value
-def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
+def Bind :: Perhaps<'a> -> ('a -> Perhaps<'b>) -> Perhaps<'b>
 fn Bind value next =
     match value with
     | Just x -> next x
@@ -274,13 +290,13 @@ fn Bind value next =
         ),
         (
             "Main.tz",
-            "let result = Maybe {
-    let! a = Maybe.Just 20
+            "let result = Perhaps {
+    let! a = Perhaps.Just 20
     let! b = Just 22
     return a + b
 }
 match result with
-| Maybe.Just n -> n
+| Perhaps.Just n -> n
 | Nothing -> 0",
         ),
     ])
@@ -301,14 +317,14 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "lowercase names in patterns bind",
         ),
         (
-            "union Option<'a> = None",
+            "union Maybe<'a> = None",
             "E1024",
             "not used by any case payload",
         ),
         (
-            "union Option = Some of 'a",
+            "union Maybe = Some of 'a",
             "E1024",
-            "is not declared by union 'Option'",
+            "is not declared by union 'Maybe'",
         ),
         (
             "union U<'a, 'a> = A of 'a",
@@ -436,7 +452,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "unknown union case or active pattern 'Missing'",
         ),
         (
-            "union Maybe<'a> = None | Some of 'a\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Some x)\ndef main :: i64\nfn main = grow 1",
+            "union Maybe<'a> = None | Some of 'a\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Some x)\ndef answer :: i64\nfn answer = grow 1",
             "E1017",
             "",
         ),
@@ -472,8 +488,8 @@ fn f value =
     );
     rejects(
         &format!(
-            "{MAYBE}def main :: i64
-fn main =
+            "{MAYBE}def answer :: i64
+fn answer =
     let value = Some \"a\"
     let moved = value
     match value with
@@ -486,8 +502,8 @@ fn main =
     for source in [
         // Copy payloads leave the union usable, and Copy unions are copied.
         format!(
-            "{MAYBE}def main :: i64
-fn main =
+            "{MAYBE}def answer :: i64
+fn answer =
     let value = Some [1, 2, 3]
     let copied = value
     let first = match value with
@@ -522,8 +538,8 @@ f (Some (1, \"ab\"))
         ),
         // Tasks may capture and return owned unions.
         format!(
-            "{MAYBE}def main :: i64
-fn main =
+            "{MAYBE}def answer :: i64
+fn answer =
     let value = Some \"sent\"
     let job = task {{
         match value with
@@ -594,8 +610,8 @@ fn unwrap_or fallback value =
     match value with
     | Some x -> x
     | None -> fallback
-export def main :: i64
-fn main =
+export def answer :: i64
+fn answer =
     let text = unwrap_or \"\" (Some \"abc\")
     unwrap_or 0 (Some 1) + text.length
 "
@@ -625,8 +641,8 @@ fn f value =
     | A text -> text.length
     | B n -> n
     | C -> 0
-export def main :: i64
-fn main = f (A \"abc\") + f (B 4) + f C
+export def answer :: i64
+fn answer = f (A \"abc\") + f (B 4) + f C
 ");
     assert!(ir.contains("%\"tz.union.Main.U\" = type { i32, [1 x i128] }"));
     let f = body(&ir, "tz.fn.Main.f");
@@ -652,8 +668,8 @@ fn f value =
     | Some n when n > 3 -> n
     | Some n -> n + 100
     | None -> 0
-export def main :: i64
-fn main = f (Some 4) + f (Some 1) + f None
+export def answer :: i64
+fn answer = f (Some 4) + f (Some 1) + f None
 "
     ));
     assert!(!body(&guarded, "tz.fn.Main.f").contains("switch i32"));
@@ -669,8 +685,8 @@ fn value m fallback =
     match m with
     | Some x -> x
     | None -> fallback
-export def main :: i64
-fn main =
+export def answer :: i64
+fn answer =
     let wrap = Some
     let text = value (apply Some \"abc\") \"\"
     value (apply Some 1) 0 + value (wrap 2) 0 + value (apply wrap 3) 0 + text.length
@@ -721,7 +737,7 @@ fn enforces_union_layout_limits() {
     };
     // 16 tag bytes plus 4095 16-byte fields are exactly 64 KiB.
     let near = format!(
-        "{}union NearLimit = Big of Wide | Small\ndef f :: NearLimit -> i64\nfn f value =\n    match value with\n    | Big w -> w.f0\n    | Small -> 0\nexport def main :: i64\nfn main = f Small",
+        "{}union NearLimit = Big of Wide | Small\ndef f :: NearLimit -> i64\nfn f value =\n    match value with\n    | Big w -> w.f0\n    | Small -> 0\nexport def answer :: i64\nfn answer = f Small",
         wide(4095)
     );
     for wasm in [false, true] {
@@ -743,7 +759,7 @@ fn enforces_union_layout_limits() {
     );
     assert!(error.message.contains("65536"), "{}", error.message);
     accepts(&format!(
-        "{}{MAYBE}def f :: Maybe<Wide> -> i64\nfn f value = 0\nexport def main :: i64\nfn main = 0",
+        "{}{MAYBE}def f :: Maybe<Wide> -> i64\nfn f value = 0\nexport def answer :: i64\nfn answer = 0",
         wide(4095)
     ));
 }

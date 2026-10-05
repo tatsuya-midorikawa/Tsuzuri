@@ -8,8 +8,14 @@ const PAIR: &str = "record Pair<'a, 'b> { first: 'a, second: 'b }\n";
 fn accepts(source: &str) -> CheckedModule {
     let module = analyze(source)
         .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
-    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Console).unwrap());
+    // A source without entry-point code is a library.
+    let entry = if module.entry.is_some() {
+        llvm::Entry::Console
+    } else {
+        llvm::Entry::Library
+    };
+    let ir = llvm::emit(&module, entry).unwrap();
+    assert_eq!(ir, llvm::emit(&module, entry).unwrap());
     module
 }
 
@@ -38,8 +44,8 @@ fn infers_substitutes_and_displays_type_arguments() {
 fn first pair = pair.first
 def swap :: Pair<'a, 'b> -> Pair<'b, 'a>
 fn swap pair = Pair {{ first: pair.second, second: pair.first }}
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let p = Pair {{ first: 20, second: \"xx\" }}
     let n = p.second.length
     first (swap (swap p)) + n
@@ -69,8 +75,8 @@ fn main =
     assert_eq!(first.signature.result, Type::I64);
     let error = rejects(
         &format!(
-            "{PAIR}def main :: i64
-fn main =
+            "{PAIR}def answer :: i64
+fn answer =
     let p: Pair<i64, string> = Pair {{ first: 1, second: \"x\" }}
     let q: Pair<string, i64> = p
     0
@@ -89,8 +95,8 @@ fn main =
     // intermediate binding such as `Main.Pair<string, string>`.
     let error = rejects(
         &format!(
-            "{PAIR}def main :: i64
-fn main =
+            "{PAIR}def answer :: i64
+fn answer =
     let p = Pair {{ first: 1, second: \"x\" }}
     let q: Pair<string, i64> = p
     0
@@ -101,8 +107,8 @@ fn main =
     assert!(!error.message.contains("Main.Pair"), "{}", error.message);
     let error = rejects(
         &format!(
-            "{PAIR}def main :: i64
-fn main =
+            "{PAIR}def answer :: i64
+fn answer =
     let p: Pair<i64, string> = Pair {{ first: 1, second: 2 }}
     0
 "
@@ -120,8 +126,8 @@ fn accepts_nested_instances_patterns_and_structural_ownership() {
 record Nested<'a> {{ item: Box<Pair<'a, i64>> }}
 def get :: Nested<string> -> string
 fn get n = n.item.value.first
-def main :: i64
-fn main = (get (Nested {{ item: Box {{ value: Pair {{ first: \"ok\", second: 1 }} }} }})).length
+def answer :: i64
+fn answer = (get (Nested {{ item: Box {{ value: Pair {{ first: \"ok\", second: 1 }} }} }})).length
 "
         ),
         format!(
@@ -129,8 +135,8 @@ fn main = (get (Nested {{ item: Box {{ value: Pair {{ first: \"ok\", second: 1 }
     fn add left right =
         Pair {{ first: left.first + right.first, second: left.second + right.second }}
 }}
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let p = Pair {{ first: 20, second: 1 }} + Pair {{ first: 22, second: 2 }}
     p.first * 10 + p.second
 "
@@ -138,13 +144,13 @@ fn main =
         "record Holder<'a> { value: 'a }
 def id_holder :: Holder<'a> -> Holder<'a>
 fn id_holder h = h
-def main :: i64
-fn main = (id_holder (Holder { value: [1, 2, 3] })).value.length
+def answer :: i64
+fn answer = (id_holder (Holder { value: [1, 2, 3] })).value.length
 "
         .to_owned(),
         format!(
-            "{PAIR}def main :: i64
-fn main =
+            "{PAIR}def answer :: i64
+fn answer =
     match Pair {{ first: \"a\", second: 42 }} with
     | Pair {{ first = text }} -> text.length
 "
@@ -154,16 +160,16 @@ fn main =
 fn use_unqualified pair =
     match pair with
     | {{ first = x; second = y }} -> x + y
-def main :: i64
-fn main = use_unqualified (Pair {{ first: 20, second: 22 }})
+def answer :: i64
+fn answer = use_unqualified (Pair {{ first: 20, second: 22 }})
 "
         ),
         // Copy records stay Copy; the generic accessor infers `Copy<'a>`.
         format!(
             "{PAIR}def first_twice :: Pair<'a, 'b> -> ('a * 'a)
 fn first_twice p = (p.first, p.first)
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let p = Pair {{ first: 20, second: true }}
     let q = p
     match first_twice p with
@@ -175,8 +181,8 @@ fn main =
             "{PAIR}record Box<'a> {{ value: 'a }}
 def call :: Box<i64 -> i64> -> i64
 fn call boxed = boxed.value 1
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let k = 40
     let items = Box {{ value: [|Pair {{ first: (1, \"a\"), second: 2 }}|] }}
     call (Box {{ value: x -> x + k }}) + items.value.length
@@ -191,8 +197,8 @@ fn main =
 fn ownership_and_copy_constraints_follow_substituted_fields() {
     rejects(
         &format!(
-            "{PAIR}def main :: i64
-fn main =
+            "{PAIR}def answer :: i64
+fn answer =
     let p = Pair {{ first: \"a\", second: 1 }}
     let q = p
     p.second
@@ -204,8 +210,8 @@ fn main =
         &format!(
             "{PAIR}def first_twice :: Pair<'a, 'b> -> ('a * 'a)
 fn first_twice p = (p.first, p.first)
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     match first_twice (Pair {{ first: \"x\", second: 1 }}) with
     | (a, b) -> a.length
 "
@@ -214,8 +220,8 @@ fn main =
     );
     // Moving one field leaves the others usable, as for non-generic records.
     accepts(&format!(
-        "{PAIR}def main :: i64
-fn main =
+        "{PAIR}def answer :: i64
+fn answer =
     let p = Pair {{ first: \"abc\", second: \"de\" }}
     let text = p.first
     text.length + p.second.length
@@ -309,7 +315,7 @@ fn rejects_invalid_declarations_and_applications() {
             "would store a mutable reference",
         ),
         (
-            "record Box<'a> { value: 'a }\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Box { value: x })\ndef main :: i64\nfn main = grow 1",
+            "record Box<'a> { value: 'a }\ndef rec grow :: 'a -> i64\nfn rec grow x = grow (Box { value: x })\ndef answer :: i64\nfn answer = grow 1",
             "E1017",
             "",
         ),
@@ -352,7 +358,7 @@ fn enforces_layout_limits_per_concrete_instance() {
     let wide = format!("{PAIR}record Wide<'a> {{ {fields} }}\n");
     // Each array field takes 16 bytes, so four levels of eight fields are exactly 64 KiB.
     accepts(&format!(
-        "{wide}def f :: Wide<Wide<Wide<Wide<[i64]>>>> -> i64\nfn f w = 0\ndef main :: i64\nfn main = 0"
+        "{wide}def f :: Wide<Wide<Wide<Wide<[i64]>>>> -> i64\nfn f w = 0\ndef answer :: i64\nfn answer = 0"
     ));
     for ty in [
         "Pair<Wide<Wide<Wide<Wide<[i64]>>>>, i64>",
@@ -363,14 +369,14 @@ fn enforces_layout_limits_per_concrete_instance() {
     }
     // Generic records that are never instantiated too large are accepted.
     accepts(&format!(
-        "{wide}def id :: 'a -> 'a\nfn id x = x\ndef main :: i64\nfn main = (id (Pair {{ first: 1, second: 2 }})).first"
+        "{wide}def id :: 'a -> 'a\nfn id x = x\ndef answer :: i64\nfn answer = (id (Pair {{ first: 1, second: 2 }})).first"
     ));
 }
 
 #[test]
 fn classifies_applied_names_as_constraints_or_records() {
     let module = analyze_modules(&[
-        ("Main.tz", "def f :: Traits.Score<'a> => 'a -> i64\nfn f x = Traits.Score.score x\ndef main :: i64\nfn main = f (Shapes.Pair { first: 1l, second: 2l })"),
+        ("Main.tz", "def f :: Traits.Score<'a> => 'a -> i64\nfn f x = Traits.Score.score x\ndef answer :: i64\nfn answer = f (Shapes.Pair { first: 1l, second: 2l })\nanswer()"),
         ("Traits.tt", "class Score<'a> { def score :: 'a -> i64 }"),
         (
             "Shapes.tz",
@@ -467,8 +473,8 @@ def deferred :: 'a -> Task<Wrapped<'a>>
 fn deferred value = task { return Wrap value }
 def constrained :: (Copy<Pair<i64, i64>>, Add<i64>) => i64 -> i64
 fn constrained x = x + 1
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let wrapped: Wrapped<Pair<i64, string>>=Task.run (deferred (Pair { first: 39, second: \"abc\" }))
     match wrapped with
     | Wrap pair -> constrained (measure ref pair)",
@@ -479,14 +485,14 @@ fn main =
 fn displays_nested_named_types_tasks_and_borrows_with_angle_brackets() {
     let module = analyze(
         "record Box<'a> { value: 'a }
-def inspect :: ref Box<Option<i64>> -> Task<Box<i64 -> i64>> -> unit
+def inspect :: ref Box<Maybe<i64>> -> Task<Box<i64 -> i64>> -> unit
 fn inspect value pending = ()",
     )
     .unwrap();
     let signature = &function(&module, "inspect").signature;
     assert_eq!(
         signature.parameters[0].display(&module.types()),
-        "ref Main.Box<Option.Option<i64>>"
+        "ref Main.Box<Maybe<i64>>"
     );
     assert_eq!(
         signature.parameters[1].display(&module.types()),
@@ -521,10 +527,10 @@ fn rejects_legacy_and_malformed_generic_syntax() {
         "record R<'a { value: 'a }",
         "record R<'a>> { value: 'a }",
         "record R <'a> { value: 'a }",
-        "let x: Option<> = None\n0",
+        "let x: Maybe<> = None\n0",
         "let x: Result<i64 string> = Ok 1\n0",
         "let x: Result<i64,, string> = Ok 1\n0",
-        "let x: Option<i64 = Some 1\n0",
+        "let x: Maybe<i64 = Some 1\n0",
         "def f :: Task<i64, string> -> i64\nfn f t = 0",
         "def f :: Copy<> => i64\nfn f = 0",
         "def f :: Copy<i64, string> => i64\nfn f = 0",
@@ -601,8 +607,8 @@ fn keeps_comparisons_and_shifts_as_expression_operators() {
 fn f x =
     x<2 && x<=2 && x> -2 && x>= -2 &&
     (x>>>1)>=0 && (Bits.ushr x 1)>=0 && (x<<<1)>=0 && x as i64 < 3
-def main :: bool
-fn main = f 1");
+def answer :: bool
+fn answer = f 1");
     for instruction in ["ashr i64", "lshr i64", "shl i64", "icmp slt i64"] {
         assert!(output.contains(instruction), "{instruction}\n{output}");
     }
@@ -617,11 +623,12 @@ def f :: Wrap<Pair<i64, string>> -> i64
 fn f w = w.value.first + w.value.second.length
 def g :: Pair<i64, i64> -> Wrap<Pair<i64 -> i64, [|Point|]>> -> Wrap<i64 * string> -> i64
 fn g p w t = p.first + p.second + w.value.second.length
-def main :: i64
-fn main =
+def answer :: i64
+fn answer =
     let w = Wrap {{ value: Pair {{ first: 1, second: \"abc\" }} }}
     let k = 1
     f w + g (Pair {{ first: 1, second: 2 }}) (Wrap {{ value: Pair {{ first: x -> x + k, second: [|Point {{ x: 1 }}|] }} }}) (Wrap {{ value: (1, \"s\") }})
+answer()
 "
     );
     let ir = ir(&source);
@@ -674,8 +681,8 @@ fn nongeneric_records_keep_their_llvm_names() {
     let ir = ir("record Point { x: f64, y: f64 }
 def norm :: Point -> f64
 fn norm p = p.x * p.x + p.y * p.y
-def main :: i64
-fn main = (norm (Point { x: 3.0, y: 4.0 })) as i64
+def answer :: i64
+fn answer = (norm (Point { x: 3.0, y: 4.0 })) as i64
 ");
     assert!(ir.contains("%tz.record.Main.Point = type { double, double }"));
     assert!(!ir.contains("%\"tz.record."));

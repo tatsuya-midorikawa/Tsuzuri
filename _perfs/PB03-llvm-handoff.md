@@ -489,7 +489,7 @@ def unused :: i64 -> i64 = \x -> x * 3
 
 export def exported :: i64 -> i64 = \x -> x - 1
 
-def main :: i64 = used 41
+used 41
 ```
 
 - `native_executables_emit_only_entry_and_export_reachable_functions`: `emit_native_build`（`Entry::Console`）の IR が `@tz.fn.Main.used`・

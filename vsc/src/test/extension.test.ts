@@ -41,11 +41,19 @@ export async function run(): Promise<void> {
 	assert.match(hover.flatMap(item => item.contents.map(content => typeof content === 'string' ? content : content.value)).join('\n'), /i64/);
 	const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
 	assert.ok(symbols.some(symbol => symbol.name === 'calculate'));
-	const definitions = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', uri, document.positionAt(original.indexOf('Geometry.Point.offset')));
+	const definitions = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', uri, document.positionAt(original.indexOf('Geometry::Point.offset')));
 	assert.ok(definitions.length);
 	const target = 'targetUri' in definitions[0] ? definitions[0].targetUri : definitions[0].uri;
 	assert.equal(target.fsPath, path.join(root, 'Geometry', 'Point.tz'));
-	console.log('VS Code: language registration, hover, outline, cross-file definition passed.');
+	const report = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'Report.tz')));
+	for (const needle of ['Circle.radius', 'Shapes::Circle.radius']) {
+		const found = await waitFor(`namespace definition of ${needle}`, async () => {
+			const values = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', report.uri, report.positionAt(report.getText().indexOf(needle)));
+			return values?.length ? values[0] : undefined;
+		});
+		assert.equal(('targetUri' in found ? found.targetUri : found.uri).fsPath, path.join(root, 'Shapes', 'Circle.tz'), needle);
+	}
+	console.log('VS Code: language registration, hover, outline, cross-file and namespace definitions passed.');
 
 	const other = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(process.env.TSUZURI_TEST_OTHER!, 'Main.tz')));
 	await waitFor('independent workspace language servers', () => api.clients.size === 2 ? true : undefined);
@@ -75,7 +83,7 @@ export async function run(): Promise<void> {
 	assert.ok(await vscode.workspace.applyEdit(formatting));
 	assert.match(document.getText(), /def identity :: i64 -> i64/);
 	assert.equal(await readFile(uri.fsPath, 'utf8'), original);
-	await replace('def main :: IO<unit> =\n    do! IO.\n');
+	await replace('def main :: unit -> i32 = \\() ->\n    do! IO.\n');
 	const completions = await vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', uri, new vscode.Position(1, 11), '.');
 	assert.ok(completions.items.some(item => item.label === 'write_line'));
 	await replace('');

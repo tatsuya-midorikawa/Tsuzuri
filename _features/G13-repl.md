@@ -66,7 +66,7 @@ Phase 1 は JIT を使わず、入力ごとに既存のパイプライン（解�
   宣言を実行コードの後に書くと `E0002`。結果式の自動表示は数値型・`bool`・`unit`・`string`・`utf8string`・`char`・`utf8char` だけで、
   `IO<T>` の結果式はアクションを一度実行して値を表示しない。トップレベルの `let` は IO を実行しない（`let!`／`do!` が実行する）。
 - 出力先: 結果式の表示と `IO.write_line` は stdout、`Debug.print`／`Debug.trace` は native では stderr。
-- WASM: 実行コードだけの `Main.tz` は wasm32 へビルドできない（`E2004`）。`IO<T>` の main か `export def` が要る。
+- WASM: 実行コードだけの `Main.tz` は wasm32 へビルドできない（`E2004`）。`IO<T>` のトップレベル入口か `def main` か `export def` が要る。
 - JIT はない。docs/architecture.md は LLVM の C API・Rust バインディングに結合しない方針を書いている。
 - ビルド時間（PB01 の計測、M1 Max、`--no-cache`）: `examples/hello` の実行ファイルは `-O0` 0.33 s、`-O3` 0.53 s。このうち、埋め込みの
   数値ランタイム（`numeric.ll`）を含む IR の Clang `-O3` のコンパイルが 0.43 s（`-O0` では 0.06 s）。PB01 の完了まで、`-O3` では入力ごとにこの時間がかかる。
@@ -97,14 +97,14 @@ Display.display (ref it)
 `p7`: `let action = IO.write_line "once"` と結果式 `action` は `once\n` を一度だけ出す。
 `p8`: `let it = (`、`match 3 with`、`| 3 -> "three"`、`| _ -> "other"`、`)`、`Display.display (ref it)` の 6 行は `three\n`（括弧の中の複数行の式）。
 `p10`: `let x = 10 / (5 - 5)` は stderr に `trap: integer division by zero at p10/Main.tz:1:9` と `p10/Main.tz:1:9: error[E2005]: ...` を出す。
-`p12`: `let it = (IO.write_line "x")` に wrapper を付けると `E1005`（`no instance for Display<IO.IO<unit>>; ...`）。IO の型の表示は `IO.IO<unit>`。
+`p12`: `let it = (IO.write_line "x")` に wrapper を付けると `E1005`（`no instance for Display<IO<unit>>; ...`）。IO の型の表示は `IO<unit>`。
 
 ```sh
 cd /tmp/tz-work-G13
 /Users/tmidorikawa/Documents/git/Tsuzuri/target/release/tsuzuri repl
 # repl:1:1: error[E2001]: cannot inspect source 'repl': No such file or directory (os error 2)
 /Users/tmidorikawa/Documents/git/Tsuzuri/target/release/tsuzuri build p1 --target wasm32 -o /tmp/tz-work-G13/p1.wasm
-# p1/Main.tz:1:1: error[E2004]: a WebAssembly module needs an IO<T> main or at least one 'export def' entry point
+# p1/Main.tz:1:1: error[E2004]: a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point
 ```
 
 ## 仕様
@@ -180,7 +180,7 @@ stdin を 1 行ずつ UTF-8 で読み、行末の `\n` と直前の `\r` を除�
 
 - T が `unit`: 検査用の `Main.tz` を実行する。表示なし。
 - 表示用 `let it = (` 改行 E 改行 `)` 改行 `Display.display (ref it)` の解析が成功: 実行し、`it: T = <stdout から末尾の改行を 1 個除いた文字列>` を出す。
-- 表示用の解析の診断がすべて wrapper の行の `E1005` のとき: 検査用を実行し、`it: T` だけを出す。`IO.IO<unit>` などの IO の値もここに入り、実行されない。
+- 表示用の解析の診断がすべて wrapper の行の `E1005` のとき: 検査用を実行し、`it: T` だけを出す。`IO<unit>` などの IO の値もここに入り、実行されない。
 
 T は `analyze_inputs_indexed_all` に渡した `SemanticIndex` の `entries` のうち、`span.start` が生成した `it` の位置で、`detail` が `it: ` で始まるものから取る。
 束縛の `name: T` も同じく束縛名の位置の `detail` をそのまま出す。成功したら候補をセッションにする。失敗したらセッションを変えない（入力は原子的）。
@@ -502,12 +502,12 @@ node tests/lsp_sessions.mjs target/release/tsuzuri
 4. `keeps_bindings_without_expression`: `let a = 1; let b = a` は束縛 2、`Body::None`。
 5. `classifies_bang_statements_as_actions`: `do! IO.write_line "hello"` は `Body::Action`。
 6. `keys_instances_by_class_and_type`: docs/language.md の instance の例を入力にし、`Key::Instance` がクラス名と空白を除いた型の文字列になる。
-7. `rejects_extern_test_and_main`: docs/language.md の `extern` と `test` の例、`def main :: i64 = 1` がそれぞれ表の `E2000` のメッセージになる。
+7. `rejects_extern_test_and_main`: docs/language.md の `extern` と `test` の例、`def main :: unit -> i32 = \() -> 1` がそれぞれ表の `E2000` のメッセージになる。
 8. `replaces_in_place_and_keeps_input_shadowing`: 置き換えは元の位置、同じ入力の `let c = 1; let c = c + 1` は二つとも残る。
 9. `generates_declarations_before_bindings`: 束縛の後に入力した宣言が、生成した `Main.tz` では束縛より前に来る（再現 `p4` の `E0002` を避ける）。
 10. `maps_spans_to_input_and_session`: 入力の中のエラーは `input:1:<列>`、セッションの項目のエラーは `session:<行>:<列>`、wrapper は式の先頭。
 11. `overlay_project_selects_main`: `project.input()` が overlay の `Main.tz` で、作業ディレクトリの `.tz` を読まない。
-12. `reads_it_type_from_semantic_index`: `square base` → `i64`、`square` → `i64 -> i64`、`"hi"` → `string`、`IO.write_line "y"` → `IO.IO<unit>`。
+12. `reads_it_type_from_semantic_index`: `square base` → `i64`、`square` → `i64 -> i64`、`"hi"` → `string`、`IO.write_line "y"` → `IO<unit>`。
 
 `src/main.rs` の tests（`cargo test --locked --bin tsuzuri repl`）: `parses_repl_options`（`repl` と `repl -O3 --cpu native --no-cache --timeout 0`）、
 `rejects_repl_paths_and_build_options`（`repl Main.tz`、`repl --target wasm32`、`repl --json`、`repl --timeout 3601`、`repl --timeout x`）。
@@ -525,10 +525,10 @@ stderr はコードと位置の部分一致、終了コードは完全一致。�
 | R3 | `def square :: i64 -> i64 = \x -> x * x`、`def quad :: i64 -> i64 = \x -> square (square x)`、`quad 2`、`def square :: bool -> bool = \x -> x`、`quad 2` | `it: i64 = 16` を 2 行 | `session:2:` と `error[E1` を含む。0 |
 | R4 | `let a = 2`、`let b = a * 10`、`b`、`let a = 5`、`b` | `a: i64`、`b: i64`、`it: i64 = 20`、`a: i64`、`it: i64 = 50` | 空。0 |
 | R5 | `let c = 1; let c = c + 1`、`c` | `c: i64`、`c: i64`、`it: i64 = 2` | 空。0 |
-| R6 | `let z = 0`、`:type 10 / z`、`IO.write_line "y"`、`do! IO.write_line "x"`、`do! IO.write_line "x"`、`1 + 1` | `z: i64`、`i64`、`it: IO.IO<unit>`、`x`、`x`、`it: i64 = 2` | 空。0（`:type` は実行しない、IO の値は実行しない、アクションは再実行しない） |
+| R6 | `let z = 0`、`:type 10 / z`、`IO.write_line "y"`、`do! IO.write_line "x"`、`do! IO.write_line "x"`、`1 + 1` | `z: i64`、`i64`、`it: IO<unit>`、`x`、`x`、`it: i64 = 2` | 空。0（`:type` は実行しない、IO の値は実行しない、アクションは再実行しない） |
 | R7 | `:load Echo.tz`、`1 + 1`、`:list` | `it: i64 = 2` | 空。0（`Echo.tz` は docs/language.md の `let!`／`let!`／`do!` の 3 行。子が stdin を読まず、アクションは `:list` に出ない） |
 | R8 | `:foo`、`:type`、`:load missing.tz`、`:load notes.txt`、`:list extra`、`1` | `it: i64 = 1` | 表の `E2000` 4 件と `E2001` 1 件。0 |
-| R9 | `extern` の例、`test` の例、`def main :: i64 = 1`、`1` | `it: i64 = 1` | 表の `E2000` 3 件。0 |
+| R9 | `extern` の例、`test` の例、`def main :: unit -> i32 = \() -> 1`、`1` | `it: i64 = 1` | 表の `E2000` 3 件。0 |
 | R10 | 引数 `--timeout 1`。終わらない `while` のアクション、`1 + 1` | `it: i64 = 2` | `evaluation exceeded the 1-second limit` を含む。0 |
 | R11 | 17 MiB を書くアクション、`1 + 1` | `it: i64 = 2` | `program output exceeded 16 MiB` を含む。0 |
 | R12 | 1,100,000 bytes の文字列リテラルの 1 行、`1 + 1` | `it: i64 = 2` | `error[E0003]` を含む。0 |
@@ -573,7 +573,7 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 時間切れや超過で `kill()` した後は必ず `wait()` する（zombie と一時ディレクトリの削除失敗を防ぐ）。
 - `run_with_diagnostics` の共通化で `--json` の stderr の扱い（中継しないで `E2005` に含める）を落としやすい。`tests/io.mjs` の `--json` の case で確かめる。
 - `SemanticIndex` には同じ span に複数の entry がある。`detail` が `it: ` で始まるものを選び、優先度だけで選ばない。
-- 型の表示の文字列で分岐しない。IO は `IO.IO<unit>` と表示されるが、表示の有無は wrapper の `E1005` で決める（D3）。
+- 型の表示の文字列で分岐しない。IO は `IO<unit>` と表示されるが、表示の有無は wrapper の `E1005` で決める（D3）。
 - 生成した `Main.tz` を project の root にしないと、`Project::source_for` の既定の `self.root` が別のファイルを指し、位置の写像が壊れる（手順 7 のテスト 11）。
 - 末尾での parse 失敗の判定は `trim_end()` した長さと比べる。改行の有無で継続の判定が変わらないようにする。CR は行ごとに除く。
 - 行頭で区切るので、宣言の前の `///` の文書コメントは直前の項目の文字列に入る。置き換えで失われうるが、Phase 1 では直さない。

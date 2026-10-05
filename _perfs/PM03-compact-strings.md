@@ -123,7 +123,7 @@ fn probe n =
     let wide = "h\u00e9llo\u3042"
     text.length + wide.length + n
 
-def main :: i64 = probe 1
+probe 1
 ```
 
 次のコマンドで、`@tz.literal.0 = private unnamed_addr constant [5 x i16] [i16 104, ...]`、`[6 x i16]` の `@tz.literal.1`、
@@ -332,7 +332,7 @@ node tests/strings.mjs target/release/tsuzuri
 ### 手順 2: 計測 workload と before
 
 - 変更: `benchmarks/strings/ascii_words/Main.tz`・`benchmarks/strings/latin1_csv/Main.tz`・`benchmarks/strings/cjk_lines/Main.tz`（新規、D10）。
-- 内容: 各 project は `def main :: i64` で合計を返す（probe と同じ形）。本体は実装時に書き、`tsuzuri check` と `run` で確かめる。
+- 内容: 各 project はトップレベルの結果式で合計を表示する（probe と同じ形）。本体は実装時に書き、`tsuzuri check` と `run` で確かめる。
   - `ascii_words`: i = 0…199,999 の `"word-" + to_string i` を `Vec<string>` に持ち続け、最後に全要素の `.length` の和を返す。期待 `2088890`。
   - `latin1_csv`: 同じ i の行 `"caf\u00e9," + to_string i + ",na\u00efve"` を `String.join` で `"\n"` 区切りの 1 つの文字列にし、
     `String.split` で行と `","` の欄に分け、全欄を持ち続けて `.length` の和を返す。期待 `2888890`。

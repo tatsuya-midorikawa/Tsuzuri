@@ -39,7 +39,7 @@
 
 ```tz
 @literal
-def PI : f64 = 3.14
+def PI :: f64 = 3.14
 
 let r: f64 = 2
 let area = PI * (r**2)

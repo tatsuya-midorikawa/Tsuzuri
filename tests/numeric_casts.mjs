@@ -113,7 +113,7 @@ try {
   for (const value of integerInputs(integers[6])) {
     cases.push({ name: "builtin_float", from: integers[6], to: floats[1], input: value, expected: expected(value, floats[1]) });
   }
-  definitions.push("def main :: i64\nfn main = (to_float 42) as i64");
+  definitions.push("(to_float 42) as i64");
   writeFileSync(source, definitions.join("\n"));
   cli(["build", source, "--emit", "header", "-o", join(temporary, "casts.h")]);
   const statements = cases.flatMap((test) => {

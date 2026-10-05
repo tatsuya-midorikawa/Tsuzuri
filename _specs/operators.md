@@ -32,7 +32,7 @@
 
 
 ```tz
-def safe_add: i32 -> i32 -> Result<i32, 'E> 
+def safe_add :: i32 -> i32 -> Result<i32, 'E> 
   @'E : Err = \x y -> 
     try
       @checked

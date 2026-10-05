@@ -322,7 +322,7 @@ impl Checker<'_> {
         let name = &union.cases[case_id].0;
         match self.names.case_path(self.module, name, span) {
             Ok(Some(case)) if case.info.id == union_id && case.case == case_id => name.clone(),
-            _ => format!("{}.{name}", union.module()),
+            _ => self.names.spelling(&format!("{}.{name}", union.module())),
         }
     }
 

@@ -535,7 +535,7 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
   `["run", "Main.tz", "--strip"]`・`["build", "Main.tz", "--strip", "-g"]`・`["build", "Main.tz", "--strip", "--emit", "object"]`・
   `["build", "Main.tz", "--strip", "--target", "wasm32"]` を足す。メッセージは診断の表と完全一致で確かめる（新しい 5 文）。
 - `src/llvm.rs` の `mod tests`: `integer_display_avoids_numeric_runtime`（新規）。`emits_explicit_tail_loop_and_checked_arithmetic` と同じ
-  `analyze`・`emit(&module, Entry::Console)` で、`export fn main() -> i64 { 5050 }` の IR が `define internal i32 @tz.integer.format(` を 1 回含み
+  `analyze`・`emit(&module, Entry::Console)` で、`export fn run() -> i64 { 5050 }` とトップレベルの `run()` の IR が `define internal i32 @tz.integer.format(` を 1 回含み
   `@tz_soft_` を含まない。`-> f64 { 1.5 }` の IR は `@tz_soft_format` を含み `@tz.integer.format` を含まない。2 回の emit が一致する。
 
 ### E2E（`tests/size.mjs`（新規））
@@ -546,9 +546,9 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
    1 型 1 module に `def v<k> :: <T> = <値>` と `export def c<k> :: bool = to_string (v<k>()) == "<BigInt の文字列>"` を並べ、
    `-O0`・`-O3`・`-Oz` で全 export が `1`、import が空。この形は `i8` で確認済み（native の `run` が `-128`、WASM の `tz_check` が `1`、import 0）。
 2. 同じ module を `--emit llvm` にし、`display_parse.mjs` の host と同じ形の C host（`extern int tz_c<k>(void);` を全部 `assert`）と `-O0`・`-O3`・`-Oz` でリンクして実行する。
-3. console: `i8`・`i64`・`i128`・`i8u`・`i64u`・`i128u` の最小と最大を `def main :: <T> = <値>` で `run -O0`・`run -Oz` し、stdout が `<BigInt>\n`
-   （`def main :: i8 = -128`、`i128` の最小値、`i128u` の最大値は確認済み）。
-4. 数値ランタイムの有無: hello の `-O0`・`-O3` の実行ファイルの `nm` に `tz_soft` がない。`def main :: f64 = 1.5`（`1.5` を表示することを確認済み）の実行ファイルには `tz_soft_format` がある。
+3. console: `i8`・`i64`・`i128`・`i8u`・`i64u`・`i128u` の最小と最大をトップレベルの `let value: <T> = <値>` と結果式 `value` で `run -O0`・`run -Oz` し、stdout が `<BigInt>\n`
+   （`let value: i8 = -128`、`i128` の最小値、`i128u` の最大値は確認済み）。
+4. 数値ランタイムの有無: hello の `-O0`・`-O3` の実行ファイルの `nm` に `tz_soft` がない。トップレベルの `1.5`（`1.5` を表示することを確認済み）の実行ファイルには `tz_soft_format` がある。
 5. `-Os`・`-Oz`: hello・point・tasks の `run` の出力が `-O3` と同じ。`--emit llvm` の IR が `-O3` と `-Oz` で一致。
 6. `--strip`: hello が `5050`、`nm` に ` t ` の行がない、macOS では `codesign -v` が成功。`--trap-info` の `.trap.json` が `--strip` の有無でバイト一致。
 7. 決定性と cache: `-Oz --no-cache` の 2 回がバイト一致。一時の `TSUZURI_CACHE_DIR` で `-O3` と `-Oz` を順にビルドすると成果物が異なる。

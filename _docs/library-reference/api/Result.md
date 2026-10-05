@@ -1,5 +1,7 @@
 # Result
 
+Namespace: `std`
+
 ## `Result`
 
 ```tsuzuri
@@ -98,16 +100,16 @@ def bind_ref :: Copy<'e> => ref Result<'a, 'e> -> (ref 'a -> Result<'b, 'e>) -> 
 def or_else :: Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 ```
 
-## `to_option`
+## `to_maybe`
 
 ```tsuzuri
-def to_option :: Result<'a, 'e> -> Option.Option<'a>
+def to_maybe :: Result<'a, 'e> -> Maybe<'a>
 ```
 
-## `of_option`
+## `of_maybe`
 
 ```tsuzuri
-def of_option :: 'e -> Option.Option<'a> -> Result<'a, 'e>
+def of_maybe :: 'e -> Maybe<'a> -> Result<'a, 'e>
 ```
 
 ## `Return`

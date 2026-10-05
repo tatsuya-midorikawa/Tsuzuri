@@ -30,15 +30,15 @@ fn hash_containers_are_opaque_noncopy_owned_values() {
         "let map: HashMap<i64, string> = HashMap.empty()\nlet set = HashSet.insert (HashSet.empty()) \"key\"\nHashMap.length (&map) + HashSet.length (&set)",
     );
     for source in [
-        "let map: HashMap<i64, i64> = HashMap.HashMap { entries: Vec.empty(), slots: Vec.empty() }\n0",
+        "let map: HashMap<i64, i64> = HashMap { entries: Vec.empty(), slots: Vec.empty() }\n0",
         "let map = HashMap.insert (HashMap.empty()) 1 2\nmap.entries.length",
         "let map = HashMap.insert (HashMap.empty()) 1 2\nlet other = { map with slots = Vec.empty() }\nHashMap.length (&other)",
-        "let map = HashMap.insert (HashMap.empty()) 1 2\nmatch map with | HashMap.HashMap { entries = storage } -> Vec.length (&storage)",
+        "let map = HashMap.insert (HashMap.empty()) 1 2\nmatch map with | HashMap { entries = storage } -> Vec.length (&storage)",
         "let set = HashSet.insert (HashSet.empty()) 1\nmatch set with | { map = inner } -> HashMap.length (&inner)",
         "let entry = HashMap.Entry { hash: 0, key: 1, value: 2 }\n0",
         "let map: HashMap<i64, i64> = HashMap.with_seed 7i64u\nmap.key0",
         "let map: HashMap<i64, i64> = HashMap.with_seed 7i64u\nmap.keyed",
-        "let map: HashMap<i64, i64> = HashMap.HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: 0i64u, key1: 0i64u, keyed: false }\n0",
+        "let map: HashMap<i64, i64> = HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: 0i64u, key1: 0i64u, keyed: false }\n0",
     ] {
         rejects(source, "E1022");
     }
@@ -70,7 +70,7 @@ fn hash_lookup_and_updates_use_only_required_constraints() {
     for source in [
         "let map = HashMap.insert (HashMap.insert (HashMap.empty()) \"b\" 2) \"a\" 1\nlet value = HashMap.at (&map) \"b\"\nassert (deref value == 2)\nHashMap.fold (\\total key value -> total + key.length + deref value) 0 (&map)",
         "let map = HashMap.insert (HashMap.insert (HashMap.empty()) 2 \"old\") 2 \"new\"\nlet value = HashMap.at (&map) 2\nvalue.length",
-        "let map = HashMap.insert (HashMap.insert (HashMap.empty()) 2 20) 1 10\nlet keys = HashMap.keys (&map)\nlet values = HashMap.values (&map)\nlet pairs = HashMap.to_array (&map)\nlet map = HashMap.remove map 2\nassert (Option.get (HashMap.get (&map) 1) == 10)\nkeys[0] + values[0] + pairs.length",
+        "let map = HashMap.insert (HashMap.insert (HashMap.empty()) 2 20) 1 10\nlet keys = HashMap.keys (&map)\nlet values = HashMap.values (&map)\nlet pairs = HashMap.to_array (&map)\nlet map = HashMap.remove map 2\nassert (Maybe.get (HashMap.get (&map) 1) == 10)\nkeys[0] + values[0] + pairs.length",
         "record Key { name: string } deriving (Eq, Hash)\nlet map = HashMap.insert (HashMap.empty()) (Key { name: \"x\" }) 42\nHashMap.get (&map) (Key { name: \"x\" })",
         "let map = HashMap.remove (HashMap.insert (HashMap.empty()) 1 2) 1\nHashMap.contains_key (&map) 1",
         "let empty: HashMap<i64, string> = HashMap.with_capacity 0\nlet sized: HashMap<i64, string> = HashMap.with_capacity 10\nHashMap.length (&empty) + HashMap.length (&sized)",
@@ -133,7 +133,7 @@ fn seeded_hash_containers_and_borrowed_keys_type_check() {
     for source in [
         "let map: HashMap<i64, i64> = HashMap.with_seed 7i64u\nlet map = HashMap.insert map 1 2\nHashMap.length (&map) + HashMap.longest_probe (&map)",
         "let map: HashMap<i64, i64> = HashMap.with_capacity_and_seed 10 3i64u\nlet map = HashMap.insert map 1 2\nHashMap.length (&map)",
-        "let map: HashMap<string, i64> = HashMap.with_seed 1i64u\nlet map = HashMap.insert map \"k\" 1\nlet key = \"k\"\nlet found = HashMap.contains_key_ref (&map) (&key)\nlet value = HashMap.get_ref (&map) (&key)\nlet stored = deref (HashMap.at_ref (&map) (&key))\nlet map = HashMap.remove_ref map (&key)\nHashMap.length (&map) + stored + Option.get value + (if found then 1 else 0) + key.length",
+        "let map: HashMap<string, i64> = HashMap.with_seed 1i64u\nlet map = HashMap.insert map \"k\" 1\nlet key = \"k\"\nlet found = HashMap.contains_key_ref (&map) (&key)\nlet value = HashMap.get_ref (&map) (&key)\nlet stored = deref (HashMap.at_ref (&map) (&key))\nlet map = HashMap.remove_ref map (&key)\nHashMap.length (&map) + stored + Maybe.get value + (if found then 1 else 0) + key.length",
         "let set: HashSet<string> = HashSet.with_seed 1i64u\nlet set = HashSet.insert set \"a\"\nlet key = \"a\"\nlet present = HashSet.contains_ref (&set) (&key)\nlet set = HashSet.remove_ref set (&key)\nHashSet.longest_probe (&set) + HashSet.length (&set) + (if present then 1 else 0)",
         "let set: HashSet<i64> = HashSet.with_capacity_and_seed 4 2i64u\nHashSet.length (&set)",
         "let word: i64u = HashMap.sip13 1i64u 2i64u 3i64u\nword",

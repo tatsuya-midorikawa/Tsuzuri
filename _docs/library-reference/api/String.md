@@ -1,5 +1,7 @@
 # String
 
+Namespace: `std`
+
 ## `length`
 
 ```tsuzuri
@@ -9,13 +11,13 @@ def length :: ref string -> i64
 ## `find`
 
 ```tsuzuri
-def find :: ref string -> ref string -> Option.Option<i64>
+def find :: ref string -> ref string -> Maybe<i64>
 ```
 
 ## `rfind`
 
 ```tsuzuri
-def rfind :: ref string -> ref string -> Option.Option<i64>
+def rfind :: ref string -> ref string -> Maybe<i64>
 ```
 
 ## `contains`
@@ -39,13 +41,13 @@ def ends_with :: ref string -> ref string -> bool
 ## `slice`
 
 ```tsuzuri
-def slice :: ref string -> i64 -> i64 -> Option.Option<string>
+def slice :: ref string -> i64 -> i64 -> Maybe<string>
 ```
 
 ## `sub`
 
 ```tsuzuri
-def sub :: ref string -> i64 -> i64 -> Option.Option<string>
+def sub :: ref string -> i64 -> i64 -> Maybe<string>
 ```
 
 ## `decode_at`

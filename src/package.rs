@@ -85,6 +85,133 @@ pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
         .collect())
 }
 
+/// Whether `text` can be a package's default namespace: identifiers joined by
+/// `::`, at most 16 segments and 255 bytes, whose first segment is neither
+/// the std namespace nor a standard library module name.
+pub fn valid_namespace(text: &str) -> bool {
+    use crate::syntax::{Token, TokenKind};
+    text.len() <= 255
+        && text.split("::").count() <= 16
+        && text.split("::").next().is_some_and(|first| {
+            first != crate::stdlib::NAMESPACE && !crate::stdlib::is_reserved_module(first)
+        })
+        && text.split("::").all(|segment| {
+            segment != "_" && segment != "Task" && crate::lexer::lex(segment).is_ok_and(|tokens| {
+                matches!(
+                    tokens.as_slice(),
+                    [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::End, .. }]
+                        if name == segment
+                )
+            })
+        })
+}
+
+/// Creates a package in `directory`, which must be missing or empty: a
+/// `Tsuzuri.toml` that names its default namespace, a `Main.tz` that declares
+/// it, and a `.gitignore`. Returns the created files.
+pub fn create_project(
+    directory: &Path,
+    namespace: Option<&str>,
+) -> Result<Vec<PathBuf>, Diagnostic> {
+    let error = |message: String| Diagnostic::new("E2000", message, Span::default());
+    let resolved = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_owned());
+    let folder = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let name = package_name(folder);
+    let namespace = match namespace {
+        Some(namespace) if valid_namespace(namespace) => namespace.to_owned(),
+        Some(namespace) => {
+            return Err(error(format!(
+                "invalid namespace '{namespace}'; use identifiers joined by '::' such as Acme::Tools, at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name"
+            )));
+        }
+        None => self::namespace(&name, Span::default())
+            .ok()
+            .filter(|namespace| valid_namespace(namespace))
+            .ok_or_else(|| {
+                error(format!(
+                    "cannot derive a namespace from the folder name '{folder}'; pass --namespace"
+                ))
+            })?,
+    };
+    let io = |action: &str, path: &Path, cause: std::io::Error| {
+        error(format!("cannot {action} '{}': {cause}", path.display()))
+    };
+    match std::fs::read_dir(directory) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                return Err(error(format!(
+                    "'{}' is not empty; choose a new or empty folder so that no file is overwritten",
+                    directory.display()
+                )));
+            }
+        }
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(directory).map_err(|cause| io("create", directory, cause))?;
+        }
+        Err(cause) => return Err(io("read", directory, cause)),
+    }
+    let files = [
+        (
+            "Tsuzuri.toml",
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nnamespace = \"{namespace}\"\n"
+            ),
+        ),
+        (
+            "Main.tz",
+            format!(
+                "namespace {namespace}\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln \"Hello, Tsuzuri!\"\n    0\n\ntest \"adds numbers\" = assert (1 + 2 == 3)\n"
+            ),
+        ),
+        (".gitignore", ".tsuzuri/\n".to_owned()),
+    ];
+    let mut created = Vec::new();
+    for (file, text) in files {
+        let path = directory.join(file);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut handle| std::io::Write::write_all(&mut handle, text.as_bytes()))
+            .map_err(|cause| io("create", &path, cause))?;
+        created.push(path);
+    }
+    Ok(created)
+}
+
+/// A kebab-case package name for a folder name such as `MyApp` or
+/// `hello_world`, or `app` when the folder name has no usable letters.
+fn package_name(folder: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    let mut previous = ' ';
+    for character in folder.chars() {
+        if !character.is_ascii_alphanumeric() {
+            previous = ' ';
+            continue;
+        }
+        if previous == ' ' || character.is_ascii_uppercase() && previous.is_ascii_lowercase() {
+            words.push(String::new());
+        }
+        if let Some(word) = words.last_mut() {
+            word.push(character.to_ascii_lowercase());
+        }
+        previous = character;
+    }
+    let name = words
+        .into_iter()
+        .filter(|word| word.starts_with(|first: char| first.is_ascii_lowercase()))
+        .collect::<Vec<_>>()
+        .join("-");
+    if namespace(&name, Span::default()).is_ok() {
+        name
+    } else {
+        "app".to_owned()
+    }
+}
+
 pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagnostic> {
     let whole = Span::new(0, source.len()).in_source(source_id);
     if source.len() > MAX_SOURCE_BYTES {
@@ -141,8 +268,10 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         cursor.expect("=")?;
         match section {
             "package" => {
-                if !matches!(key.as_str(), "name" | "version") {
-                    return Err(cursor.error("unknown package key; expected name or version"));
+                if !matches!(key.as_str(), "name" | "version" | "namespace") {
+                    return Err(
+                        cursor.error("unknown package key; expected name, version, or namespace")
+                    );
                 }
                 let value = cursor.string()?;
                 if value.is_empty() || fields.insert(key, (value, span)).is_some() {
@@ -275,8 +404,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let missing = || Diagnostic::new("E0002", "[package] requires name and version", whole);
     let (name, span) = fields.remove("name").ok_or_else(missing)?;
     let (version, _) = fields.remove("version").ok_or_else(missing)?;
+    let derived = namespace(&name, span)?;
+    let namespace = match fields.remove("namespace") {
+        Some((namespace, span)) if !valid_namespace(&namespace) => {
+            return Err(Diagnostic::new(
+                "E1011",
+                "package namespace must be identifiers joined by '::' such as \"Acme::Tools\", at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name",
+                span,
+            ));
+        }
+        // Namespaces are dotted inside the compiler, as module keys are.
+        Some((namespace, _)) => namespace.replace("::", "."),
+        None => derived,
+    };
     Ok(Manifest {
-        namespace: namespace(&name, span)?,
+        namespace,
         name,
         version,
         dependencies,
@@ -604,5 +746,97 @@ mod tests {
             assert_eq!(error.code, "E0002", "{entry}");
             assert_eq!(error.message, message, "{entry}");
         }
+    }
+
+    #[test]
+    fn parses_an_explicit_namespace() {
+        let manifest =
+            parse_manifest(&format!("{PACKAGE}namespace = \"Acme::Tools\"\n"), 0).unwrap();
+        assert_eq!(manifest.namespace, "Acme.Tools");
+        assert_eq!(parse_manifest(PACKAGE, 0).unwrap().namespace, "SampleApp");
+        let long = vec!["A"; 17].join("::");
+        for value in [
+            "acme-tools",
+            "Acme.Tools",
+            "Acme::::Tools",
+            "Acme:Tools",
+            "Acme::",
+            "IO::Extra",
+            "Maybe",
+            "std",
+            "std::Tools",
+            "match",
+            "Task",
+            "_",
+            "1st",
+            long.as_str(),
+        ] {
+            let source = format!("{PACKAGE}namespace = \"{value}\"\n");
+            let error = parse_manifest(&source, 0).unwrap_err();
+            assert_eq!(error.code, "E1011", "{value}: {}", error.message);
+        }
+        for suffix in ["namespace = \"\"", "namespace = \"A\"\nnamespace = \"B\""] {
+            let error = parse_manifest(&format!("{PACKAGE}{suffix}\n"), 0).unwrap_err();
+            assert_eq!(error.code, "E0002", "{suffix}");
+        }
+        assert!(valid_namespace("lower::case_1"));
+        assert!(valid_namespace("Std") && valid_namespace("Acme::std"));
+    }
+
+    #[test]
+    fn creates_projects_that_declare_their_namespace() {
+        for (folder, name) in [
+            ("MyApp", "my-app"),
+            ("hello_world", "hello-world"),
+            ("ex1", "ex1"),
+            ("2024 app", "app"),
+            ("\u{65e5}\u{672c}", "app"),
+        ] {
+            assert_eq!(package_name(folder), name, "{folder}");
+        }
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-new-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let created = create_project(&root.join("hello-world"), None).unwrap();
+        assert_eq!(created.len(), 3);
+        let manifest = parse_manifest(&std::fs::read_to_string(&created[0]).unwrap(), 0).unwrap();
+        assert_eq!(
+            (manifest.name.as_str(), manifest.namespace.as_str()),
+            ("hello-world", "HelloWorld")
+        );
+        let main = std::fs::read_to_string(&created[1]).unwrap();
+        assert!(main.starts_with("namespace HelloWorld\n\n"), "{main}");
+        // The template's `main` is an entry point that the checker accepts.
+        let module = crate::driver::Project::load(&root.join("hello-world"))
+            .unwrap()
+            .analyze()
+            .unwrap();
+        assert!(crate::llvm::main_entry(&module), "{main}");
+        let again = create_project(&root.join("hello-world"), None).unwrap_err();
+        assert!(again.message.contains("is not empty"), "{}", again.message);
+        create_project(&root.join("other"), Some("Acme::Tools")).unwrap();
+        assert!(
+            std::fs::read_to_string(root.join("other/Tsuzuri.toml"))
+                .unwrap()
+                .contains("namespace = \"Acme::Tools\"")
+        );
+        assert!(
+            std::fs::read_to_string(root.join("other/Main.tz"))
+                .unwrap()
+                .starts_with("namespace Acme::Tools\n\n")
+        );
+        for namespace in ["IO", "acme-tools", "A::::B", "Acme.Tools"] {
+            assert!(
+                create_project(&root.join("bad"), Some(namespace)).is_err(),
+                "{namespace}"
+            );
+        }
+        assert!(!root.join("bad").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

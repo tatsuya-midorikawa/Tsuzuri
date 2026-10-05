@@ -1,7 +1,7 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, commandArguments, exists, jsonLines, outputPath, projectRoot, supportsDebug } from './core';
+import { Action, commandArguments, defaultNamespace, exists, isNamespace, jsonLines, outputPath, projectRoot, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
 export async function projectFor(resource?: vscode.Uri): Promise<string> {
@@ -216,9 +216,16 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			try {
 				const directory = selected[0].fsPath;
 				if ((await readdir(directory)).length) { throw new Error('Choose an empty folder. Existing files will not be overwritten.'); }
-				await writeFile(path.join(directory, 'Main.tz'), 'def main :: IO<unit> =\n    do! IO.write_line "Hello, Tsuzuri!"\n\ntest "adds numbers" = assert (1 + 2 == 3)\n', { flag: 'wx' });
-				await writeFile(path.join(directory, 'Tsuzuri.toml'), '[package]\nname = "app"\nversion = "0.1.0"\n', { flag: 'wx' });
-				await writeFile(path.join(directory, '.gitignore'), '.tsuzuri/\n', { flag: 'wx' });
+				const namespace = await vscode.window.showInputBox({
+					title: 'Tsuzuri Project Namespace',
+					prompt: 'The default namespace that Tsuzuri.toml and Main.tz declare, such as Acme::Tools',
+					value: defaultNamespace(path.basename(directory)),
+					validateInput: text => isNamespace(text) ? undefined
+						: 'Use identifiers joined by :: such as Acme::Tools, without reserved words, _ or Task, that do not start with std or a standard library module name.',
+				});
+				if (namespace === undefined) { return; }
+				const result = await runCompiler(context, directory, ['new', directory, '--namespace', namespace]);
+				if (result.code !== 0) { throw new Error((result.stderr || result.stdout).trim() || 'tsuzuri new failed.'); }
 				await vscode.commands.executeCommand('vscode.openFolder', selected[0], true);
 			} catch (error) { reportError(error, output); }
 		}),
