@@ -1620,9 +1620,13 @@ fn build_complete(
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
     let arguments_runtime = text.contains("@tsuzuri_arguments(");
-    // With `--wasm-host wasi` the standard IO and the OS APIs come from src/runtime/os-wasi.c.
+    // Only a WASM module of a `def main` or an IO entry is a WASI command; objects leave `_start` to the embedder.
+    let wasi_command =
+        options.emit == Emit::Wasm && (llvm::io_entry(module) || llvm::main_entry(module));
+    // With `--wasm-host wasi` the standard IO, the OS APIs, and a command's `_start` come from
+    // src/runtime/os-wasi.c.
     let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi)
-        && (io_runtime || os_runtime || arguments_runtime);
+        && (io_runtime || os_runtime || arguments_runtime || wasi_command);
     // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
         && options.emit == Emit::Object
@@ -1916,9 +1920,7 @@ fn build_complete(
                 "-mbulk-memory",
                 "-c",
             ]);
-            // Only a WASM module of a `def main` or an IO entry is a WASI command; objects leave
-            // `_start` to the embedder.
-            if options.emit == Emit::Wasm && (llvm::io_entry(module) || llvm::main_entry(module)) {
+            if wasi_command {
                 runtime.arg("-DTZ_WASI_START");
                 if llvm::exit_code_entry(module) {
                     runtime.arg("-DTZ_WASI_EXIT_CODE");

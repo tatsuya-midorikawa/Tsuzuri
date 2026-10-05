@@ -5856,7 +5856,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if matches!(name.text.as_str(), "Task" | "Vec")
+                if matches!(name.text.as_str(), "Array" | "Task" | "Vec")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.handles.contains_key(&qualified)

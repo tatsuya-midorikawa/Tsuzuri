@@ -170,7 +170,7 @@ native との違いは次のとおりです。
 - `Os.Error` の `code` は WASI の errno で、`not found (os error 44)` のようになります。
 - `Env.current_dir ()` は最初の preopen の名前（上の例では `/work`）を返します。`Env.args ()` は `args` の先頭（プログラム名）を除いた値です。
 - `Process.run` は `Other`（code 52）です。
-- `def main` と、標準入出力か OS API を使う IO の入口は `_start` を export します。`main` の値（IO の入口なら `IO<i32>` の値）は `proc_exit` へ渡り、上の `wasi.start(instance)` の戻り値が終了コードになります。`def main :: Array<string> -> i32` は `args` の先頭を除いた値を受け取ります。
+- `def main` と `IO` の入口は、標準入出力や OS API を使わなくても `_start` を export します。`main` の値（IO の入口なら `IO<i32>` の値）は `proc_exit` へ渡り、上の `wasi.start(instance)` の戻り値が終了コードになります。`def main :: Array<string> -> i32` は `args` の先頭を除いた値を受け取ります。
 - `--wasm-host wasi` は wasm32 の `wasm`・`object` 出力だけで使えます。wasm64、`--emit llvm`、`--emit header`、`--wasm-feature threads` との併用は `E2000` です（LLVM IR には WASI 用の runtime を結合できません）。WASI preview2 とコンポーネントモデルは未対応です。
 
 ## SIMD128

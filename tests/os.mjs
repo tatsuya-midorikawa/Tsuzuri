@@ -549,6 +549,11 @@ def main :: unit -> i32 = \\() ->
       assert.equal(run(code(optimization), scratch(name, optimization), { status }).stdout, "done\n");
     }
   }
+  // A `main` without effects uses no IO runtime and still sets the exit code.
+  const pure = program("exit-pure", "def main :: unit -> i32 = \\() -> 5\n");
+  for (const optimization of optimizations) {
+    assert.equal(run(pure(optimization), scratch("exit-pure", optimization), { status: 5 }).stdout, "");
+  }
   {
     const directory = join(root, "project-exit-3i32");
     const failed = execute(compiler, ["run", directory], {}, false);
@@ -1256,6 +1261,9 @@ def main :: unit -> i32 = \\() ->
       assert.equal(runWasi(name, optimization, scratch("wasi-exit", optimization)).stdout, "done\n");
     }
     assert.deepEqual(wasiImports("exit-3i32", optimization), ["wasi_snapshot_preview1.fd_write", "wasi_snapshot_preview1.proc_exit"]);
+    // A WASI command without IO still gets `_start`, which reports the exit code.
+    assert.equal(runWasi("exit-pure", optimization, scratch("wasi-exit", optimization), { status: 5 }).stdout, "");
+    assert.deepEqual(wasiImports("exit-pure", optimization), ["wasi_snapshot_preview1.proc_exit"]);
     const passed = runWasi("arguments", optimization, scratch("wasi-arguments", optimization), { args: ["\u03b1", "", "b c"], status: 3 });
     assert.deepEqual(lines(passed), ["[\u03b1][][b c]", "ok:3:\u03b1||b c"]);
     assert.deepEqual(lines(runWasi("arguments", optimization, scratch("wasi-arguments", optimization))), ["[]", "ok:0:"]);

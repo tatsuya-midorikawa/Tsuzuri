@@ -885,6 +885,7 @@ fn array_types_are_also_spelled_array_of_t() {
     for source in [
         "record Array { x: i64 }",
         "union Array = A | B",
+        "union Shape = Array | Other",
         "type Array = i64",
     ] {
         let error = analyze_modules(&[("Main", &format!("{source}\n0"))]).unwrap_err();
