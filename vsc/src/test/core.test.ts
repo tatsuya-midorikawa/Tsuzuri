@@ -41,13 +41,13 @@ test('new projects suggest a PascalCase namespace and accept identifiers joined 
 });
 
 test('static completions offer library members after a module but leave namespace paths to the language server', () => {
-	for (const [prefix, module] of [['let x = Option.ma', 'Option'], ['IO.', 'IO'], ['Sample::Option.ma', undefined], ['let x = option.', undefined], ['Sample::', undefined]]) {
+	for (const [prefix, module] of [['let x = Option.ma', 'Option'], ['IO.', 'IO'], ['Sample::Option.ma', undefined], ['Sample::Shape.Option.', undefined], ['Shape.Option.ma', undefined], ['let x = option.', undefined], ['Sample::', undefined]]) {
 		assert.equal(libraryQualifier(prefix!), module, prefix);
 	}
-	for (const prefix of ['Sample::', 'Sample::Fe', 'let ys = x::x']) {
+	for (const prefix of ['Sample::', 'Sample::Fe', 'let ys = x::x', 'def f::Demo::', 'def f::Demo::Sh', 'rec go::Demo::Shapes::']) {
 		assert.ok(endsInPath(prefix), prefix);
 	}
-	for (const prefix of ['def main :: ', 'Sample::Shape.ar', 'let x = Option.']) {
+	for (const prefix of ['def main :: ', 'Sample::Shape.ar', 'let x = Option.', 'def f::', 'def f::i', 'export def f::i6', 'rec go::', 'and step::De']) {
 		assert.ok(!endsInPath(prefix), prefix);
 	}
 });

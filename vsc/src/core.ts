@@ -94,15 +94,18 @@ export function isNamespace(text: string): boolean {
 
 /**
  * The standard library module that qualifies the name typed at the end of `prefix`, such as `Option` in `Option.ma`.
- * After a namespace path the module is the user's: `Sample::Option.` names no library module.
+ * After a namespace or module path the name is the user's: `Sample::Option.` and `Shape.Option.` name no library module.
  */
 export function libraryQualifier(prefix: string): string | undefined {
-	return /(?<![\w:])([A-Z][A-Za-z_0-9]*)\.[A-Za-z_0-9]*$/.exec(prefix)?.[1];
+	return /(?<![\w:.])([A-Z][A-Za-z_0-9]*)\.[A-Za-z_0-9]*$/.exec(prefix)?.[1];
 }
 
-/** Whether `prefix` ends in a `::` path such as `Sample::Fe`, which only the language server completes. */
+/**
+ * Whether `prefix` ends in a `::` path such as `Sample::Fe`, which only the language server completes.
+ * The `::` that annotates a declaration's type, as in `def f::i`, starts no path.
+ */
 export function endsInPath(prefix: string): boolean {
-	return /\w::\w*$/.test(prefix);
+	return /\w::\w*$/.test(prefix) && !/(?<!\w)(?:def|rec|and)\s+\w+::\w*$/.test(prefix);
 }
 
 export interface ProcessResult {
