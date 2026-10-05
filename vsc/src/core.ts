@@ -97,7 +97,7 @@ export function isNamespace(text: string): boolean {
  * After a namespace or module path the name is the user's: `Sample::Option.` and `Shape.Option.` name no library module.
  */
 export function libraryQualifier(prefix: string): string | undefined {
-	return /(?<![\w:.])([A-Z][A-Za-z_0-9]*)\.[A-Za-z_0-9]*$/.exec(prefix)?.[1];
+	return /(?<![\w.])(?<!::)([A-Z][A-Za-z_0-9]*)\.[A-Za-z_0-9]*$/.exec(prefix)?.[1];
 }
 
 /**

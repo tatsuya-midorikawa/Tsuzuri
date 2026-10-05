@@ -3682,8 +3682,10 @@ impl Names {
 
     /// Resolves a case path: `Case`, `Module.Case`, the requester's own
     /// `Union.Case`, or `Module.Union.Case`, where `Module` may be a namespace
-    /// path. `None` means the path names no case, so a caller can try
-    /// functions, fields, or recognizers.
+    /// path. A module's case comes before a case of the requester's own union
+    /// that shares the module's name, which stays `Case` or `Module.Union.Case`
+    /// with the requester's module. `None` means the path names no case, so a
+    /// caller can try functions, fields, or recognizers.
     fn case_path(
         &self,
         requester: &str,
@@ -3718,7 +3720,10 @@ impl Names {
         } else {
             None
         };
-        let local = if let Some((module, union)) = prefix.rsplit_once('.') {
+        if qualified.is_some() {
+            return Ok(qualified);
+        }
+        if let Some((module, union)) = prefix.rsplit_once('.') {
             match source
                 .rsplit_once('.')
                 .and_then(|(head, _)| head.rsplit_once('.'))
@@ -3742,24 +3747,7 @@ impl Names {
             self.union_case(requester, requester, prefix, name, span)
         } else {
             Ok(None)
-        };
-        match (qualified, local) {
-            (Some(case), Ok(Some(local))) if case.info.name != local.info.name => {
-                Err(Self::ambiguous_path(source, span))
-            }
-            (Some(case), _) => Ok(Some(case)),
-            (None, local) => local,
         }
-    }
-
-    fn ambiguous_path(path: &str, span: Span) -> Diagnostic {
-        Diagnostic::new(
-            "E1004",
-            format!(
-                "ambiguous path '{path}'; use Module.Union.Case when a module and a local union share the prefix"
-            ),
-            span,
-        )
     }
 
     fn function(
@@ -8675,13 +8663,14 @@ impl<'a> Checker<'a> {
 
     /// Resolves `Module.Case`, the current module's `Union.Case`, and
     /// `Module.Union.Case`. `None` leaves a path to module functions, class
-    /// methods, and field access; a module function precedes a module case.
+    /// methods, and field access; a module function precedes a module case
+    /// and a case of the current module's union that shares the module's name.
     fn case_reference(&self, expression: &Expr) -> Result<Option<(usize, usize)>, Diagnostic> {
         let Some(path) = self.value_path(expression) else {
             return Ok(None);
         };
         let span = expression.span;
-        if let Some((prefix, name)) = path.rsplit_once('.') {
+        if path.contains('.') {
             self.names.check_path(self.module, &path, span)?;
             let function = self
                 .names
@@ -8695,19 +8684,6 @@ impl<'a> Checker<'a> {
                             .is_some_and(|info| info.visible_from(self.module))
                 });
             if function {
-                let local = self
-                    .names
-                    .unions
-                    .contains_key(&format!("{}.{prefix}", self.module))
-                    && prefix != self.module
-                    && matches!(
-                        self.names
-                            .union_case(self.module, self.module, prefix, name, span),
-                        Ok(Some(_))
-                    );
-                if local {
-                    return Err(Names::ambiguous_path(&path, span));
-                }
                 return Ok(None);
             }
         }

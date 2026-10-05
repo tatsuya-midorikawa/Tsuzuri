@@ -796,9 +796,8 @@ payload のない case は名前だけを書きます。payload の有無と数�
 パターン中の名前はまず union case として解決し、次に active pattern、最後に変数束縛になります。
 
 無修飾の case 名は自モジュール、プロジェクト内で一意な public case の順に解決し、
-候補が複数あれば `E1004` です。修飾名は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case` を使えます。
-`Option.Some` がモジュール `Option` の case と自モジュールの `union Option` の case の両方を指す場合は `E1004` になり、
-`Module.Union.Case` で区別します。
+候補が複数あれば `E1004` です。修飾名は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case` を使えます（モジュール名と同じ名前の union の case は `Shape.Rect` のように `Module.Case` で書き、`Shape.Shape.Rect` は `E1004` です）。
+`Option.Some` のようにモジュールのパスで始まる名前はそのモジュールの case です。自モジュールの `union Option` の case は、`Some` か自モジュールのパスを付けた `Main.Option.Some` と書きます。
 同じモジュールの型名（レコード・union・型クラス・組み込みクラス）、case 名、関数名、active pattern と
 衝突する union・case は `E1001` です。case と所属する union の同名（`union Pair = Pair of ...`）も同じ名前空間のため `E1001` です。
 

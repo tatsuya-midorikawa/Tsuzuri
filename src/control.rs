@@ -289,7 +289,7 @@ impl Checker<'_> {
                         binding_pattern(next_name.clone()),
                         Pattern {
                             kind: PatternKind::Apply(
-                                named("::Option.Some"),
+                                named("::Option.Option.Some"),
                                 vec![binding_pattern(item_name)],
                             ),
                             span,
@@ -307,7 +307,7 @@ impl Checker<'_> {
                 pattern: Pattern {
                     kind: PatternKind::Tuple(vec![
                         binding_pattern(next_name),
-                        binding_pattern(named("::Option.None")),
+                        binding_pattern(named("::Option.Option.None")),
                     ]),
                     span,
                     depth: 3,

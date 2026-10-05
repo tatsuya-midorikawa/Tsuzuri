@@ -44,7 +44,7 @@ value_or 0 (Present 42)
 
 ## 名前の解決
 
-case は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case` で修飾できます。無修飾では自モジュールを優先し、他モジュールの候補が曖昧なら修飾が必要です。
+case は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case` で修飾できます。モジュール名と同じ名前の union の case は `Shape.Rect` のように `Module.Case` で書き、`Shape.Shape.Rect` は `E1004` です。無修飾では自モジュールを優先し、他モジュールの候補が曖昧なら修飾が必要です。
 
 パターンの名前は case、アクティブパターン、変数束縛の順に解決します。payload の個数が合わない場合は `E1020`、`match` で必要な case が不足する場合は `E1021` です。
 

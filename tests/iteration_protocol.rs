@@ -42,6 +42,9 @@ fn sequence_loops_consume_state_and_preserve_existing_control_rules() {
         "let text = \"borrowed\"\nlet mut total = 0\nfor value in Seq.once (ref text) do { total = total + value.length; continue }\ntotal",
         "for value in Seq.once \"owned\" do { assert (value.length == 5); break }",
         "let sequence = Seq.once 42\nlet Seq = 0\nlet mut total = Seq\nfor value in sequence do total = total + value\ntotal",
+        // A local union named `Option` leaves the loop's generated `Option` patterns alone.
+        "union Option = Some of i64\nlet mut total = 0\nfor value in Seq.once 42 do total = total + value\ntotal",
+        "union Option = None\nlet mut total = 0\nfor value in Seq.once 42 do total = total + value\ntotal",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
         for wasm in [false, true] {

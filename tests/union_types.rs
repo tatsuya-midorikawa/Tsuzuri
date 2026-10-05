@@ -199,12 +199,12 @@ fn size shape =
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
 
     for (main, other, code, message) in [
-        // `Choice.Some` names both a module case and a local union case.
+        // `Choice.Some` names the case of the module `Choice`, not of the local union.
         (
-            "union Choice = Some\nlet x = Choice.Some\n0",
+            "union Choice = Some\nlet x: i64 = Choice.Some 1\n0",
             "union Choice<'a> = None | Some of 'a",
-            "E1004",
-            "Module.Union.Case",
+            "E1003",
+            "found Choice<",
         ),
         (
             "let x = Choice.Pick.Missing\n0",
@@ -248,6 +248,15 @@ fn size shape =
         assert_eq!(error.code, code, "{main}\n{}", error.message);
         assert!(error.message.contains(message), "{main}\n{}", error.message);
     }
+    // The local union's case stays `Some`, or the module path of the file.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "union Choice = Some\nlet x: Choice = Some\nlet y: Choice = Main.Choice.Some\n0",
+        ),
+        ("Choice.tz", "union Choice<'a> = None | Some of 'a"),
+    ])
+    .unwrap();
     // Cases with one name in two other modules need qualification.
     let error = analyze_modules(&[
         ("Main.tz", "match Some 1 with\n| Some n -> n\n| None -> 0"),
