@@ -79,7 +79,11 @@ int main(void) {
     SPLIT(u"app a b", 0, u"a", u"b");
     SPLIT(u"app \t a\t\tb ", 0, u"a", u"b");
     SPLIT(u"\"C:\\Program Files\\app.exe\" a", 0, u"a");
-    SPLIT(u"app \"b c\" \"\" d", 0, u"b c", u"", u"d");
+    SPLIT(u"app \"arg1 arg2 arg3\"", 0, u"arg1 arg2 arg3");
+    SPLIT(u"app a \"b c d\" e", 0, u"a", u"b c d", u"e");
+    // `""` is an empty pair of quotes, not a delimiter of its own.
+    SPLIT(u"app \"\"arg1 arg2 arg3\"\"", 0, u"arg1", u"arg2", u"arg3");
+    SPLIT(u"app a \"\" b", 0, u"a", u"", u"b");
     SPLIT(u"app a\"b c\"d", 0, u"ab cd");
     SPLIT(u"app \"a\\\" b", 0, u"a\\", u"b");
     SPLIT(u"app C:\\dir\\ \"x\\\\\"", 0, u"C:\\dir\\", u"x\\\\");

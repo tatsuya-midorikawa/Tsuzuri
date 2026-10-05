@@ -327,7 +327,7 @@ native の `src/runtime/os.c` は、IR が `declare i64 @tsuzuri_os_` を含む�
 **`def main` の入口:** `llvm::main_entry` の入口では、console の `@main` が `Main.main` を `i8 0`（`unit`）か `%tz.array` で呼び、戻り値の `i32` をそのまま返します（値は表示しません）。
 `Array<string>` の `main` は wrapper を `@main(i32 %argc, ptr %argv)` にし、`declare void @tsuzuri_arguments(i32, ptr, ptr)` が書いた `%tz.array` を所有権ごと渡します（callee が drop します）。`Env.args` にも到達していれば、先に `tsuzuri_os_set_args` を呼びます。
 driver は IR が `@tsuzuri_arguments(` を含むときだけ `src/runtime/arguments.c` を C runtime の translation unit の末尾へ加え、IR は public allocator（`tsuzuri_alloc`／`tsuzuri_free`）を公開します。各引数は `tsuzuri_alloc` で確保した UTF-16 の `%tz.string` です。
-POSIX は argv[1..] の UTF-8 を変換し（各最大の不正な部分列を U+FFFD に置き換えます）、Windows は `GetCommandLineW` の文字列を空白・タブで分割します。`"` の範囲の空白は区切らず、`"` は取り除き、`\` は特別扱いしません。先頭のプログラム名は捨てます。
+POSIX は argv[1..] の UTF-8 を変換し（各最大の不正な部分列を U+FFFD に置き換えます）、Windows は `GetCommandLineW` の文字列を空白・タブで分割します。`"` で囲んだ範囲（`"b c"`）は空白を区切らずに一つの引数とし、`"` は取り除き、`\` は特別扱いしません。先頭のプログラム名は捨てます。
 ライブラリ出力は `tsuzuri_main()` を定義し、native は空の配列を渡します。WASM は IR の weak な `tsuzuri_arguments`（空の配列）を呼び、`--wasm-host wasi` では os-wasi.c の後に arguments.c を連結した strong な定義が `args_sizes_get`／`args_get` で引数を読みます。
 `exit_code_entry` は `def main` を含むので、`tsuzuri run` の E2005 と WASI の `proc_exit` は `IO<i32>` の入口と同じです。`tests/arguments.rs` と `tests/arguments_runtime.c` が分割・復号と実行ファイルへの受け渡しを、`tests/os.mjs` が native と WASI の引数を検証します。
 

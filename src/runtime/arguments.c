@@ -2,8 +2,8 @@
 // program name, each as a UTF-16 string. UTF-8 is decoded, and each maximal invalid subsequence
 // becomes one U+FFFD. POSIX systems and WASI hosts pass arguments that the shell or the host has
 // already split. On Windows a process receives one command line, which this file splits: spaces
-// and tabs separate arguments except inside double quotes, the quotes are removed, and "" is an
-// empty argument. Backslashes have no special meaning.
+// and tabs separate arguments, except between a pair of double quotes, so `"a b c"` is the one
+// argument `a b c`. The quotes are removed, and backslashes have no special meaning.
 // On WASI this file is compiled after os-wasi.c and uses its imports.
 #include <stdint.h>
 #if defined(_WIN32)
