@@ -38,7 +38,9 @@ const Answer: i64 = Base + 2
 const Base: i64 = 40
 const Table: [i64] = [20, 22]
 
-def main :: i64 = Answer
+def main :: unit -> i32 = \() ->
+    do! IO.write_line Answer
+    0
 ```
 
 定数は明示的な具体型を持ちます。前方参照が可能で、使用されない定数も検査・評価されます。`.tz` と `.tc` に宣言でき、`.tt` には置けません。

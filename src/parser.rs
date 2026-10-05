@@ -603,28 +603,17 @@ impl Parser<'_> {
             if diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
                 break;
             }
-            if definition.name.text == "main"
-                && definition.parameters.is_empty()
-                && definition.recursion.is_none()
-                && !signatures.contains_key("main")
-            {
-                if program.entry.is_some() {
-                    diagnostics.push(Diagnostic::new(
-                        "E2004",
-                        "use either top-level entry-point code or 'fn main', not both",
-                        definition.name.span,
-                    ));
-                } else {
-                    program.entry = Some(definition.body);
-                }
-                continue;
-            }
             let defined = signatures
                 .remove(&definition.name.text)
                 .ok_or_else(|| {
+                    let hint = if definition.name.text == "main" {
+                        "; an application's entry point is 'def main :: unit -> i32' or 'def main :: Array<string> -> i32'"
+                    } else {
+                        ""
+                    };
                     Diagnostic::new(
                         "E0002",
-                        "function definition needs a 'def name :: ...' signature",
+                        format!("function definition needs a 'def name :: ...' signature{hint}"),
                         definition.name.span,
                     )
                 })
@@ -1576,8 +1565,8 @@ impl Parser<'_> {
             }
         } else {
             let mut name = self.qualified_ident()?;
-            // The builtin types `Task` and `Vec` belong to the std namespace too.
-            if let Some(builtin @ ("Task" | "Vec")) = name
+            // The builtin types `Array`, `Task`, and `Vec` belong to the std namespace too.
+            if let Some(builtin @ ("Array" | "Task" | "Vec")) = name
                 .text
                 .strip_prefix(crate::stdlib::NAMESPACE)
                 .and_then(|rest| rest.strip_prefix("::"))
@@ -1586,6 +1575,8 @@ impl Parser<'_> {
             }
             if name.text == "Task" && self.at(&TokenKind::Less) {
                 TypeExprKind::Task(Box::new(self.single_type_argument()?))
+            } else if name.text == "Array" && self.at(&TokenKind::Less) {
+                TypeExprKind::Array(Box::new(self.single_type_argument()?))
             } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
                 TypeExprKind::Apply(
                     Box::new(name),

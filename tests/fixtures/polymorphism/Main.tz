@@ -194,5 +194,4 @@ fn implicit_borrows = {
     42
 }
 
-def main :: i32
-fn main = classes()
+classes()

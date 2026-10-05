@@ -66,7 +66,7 @@ Phase 1 は JIT を使わず、入力ごとに既存のパイプライン（解�
   宣言を実行コードの後に書くと `E0002`。結果式の自動表示は数値型・`bool`・`unit`・`string`・`utf8string`・`char`・`utf8char` だけで、
   `IO<T>` の結果式はアクションを一度実行して値を表示しない。トップレベルの `let` は IO を実行しない（`let!`／`do!` が実行する）。
 - 出力先: 結果式の表示と `IO.write_line` は stdout、`Debug.print`／`Debug.trace` は native では stderr。
-- WASM: 実行コードだけの `Main.tz` は wasm32 へビルドできない（`E2004`）。`IO<T>` の main か `export def` が要る。
+- WASM: 実行コードだけの `Main.tz` は wasm32 へビルドできない（`E2004`）。`IO<T>` のトップレベル入口か `def main` か `export def` が要る。
 - JIT はない。docs/architecture.md は LLVM の C API・Rust バインディングに結合しない方針を書いている。
 - ビルド時間（PB01 の計測、M1 Max、`--no-cache`）: `examples/hello` の実行ファイルは `-O0` 0.33 s、`-O3` 0.53 s。このうち、埋め込みの
   数値ランタイム（`numeric.ll`）を含む IR の Clang `-O3` のコンパイルが 0.43 s（`-O0` では 0.06 s）。PB01 の完了まで、`-O3` では入力ごとにこの時間がかかる。
@@ -104,7 +104,7 @@ cd /tmp/tz-work-G13
 /Users/tmidorikawa/Documents/git/Tsuzuri/target/release/tsuzuri repl
 # repl:1:1: error[E2001]: cannot inspect source 'repl': No such file or directory (os error 2)
 /Users/tmidorikawa/Documents/git/Tsuzuri/target/release/tsuzuri build p1 --target wasm32 -o /tmp/tz-work-G13/p1.wasm
-# p1/Main.tz:1:1: error[E2004]: a WebAssembly module needs an IO<T> main or at least one 'export def' entry point
+# p1/Main.tz:1:1: error[E2004]: a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point
 ```
 
 ## 仕様
@@ -502,7 +502,7 @@ node tests/lsp_sessions.mjs target/release/tsuzuri
 4. `keeps_bindings_without_expression`: `let a = 1; let b = a` は束縛 2、`Body::None`。
 5. `classifies_bang_statements_as_actions`: `do! IO.write_line "hello"` は `Body::Action`。
 6. `keys_instances_by_class_and_type`: docs/language.md の instance の例を入力にし、`Key::Instance` がクラス名と空白を除いた型の文字列になる。
-7. `rejects_extern_test_and_main`: docs/language.md の `extern` と `test` の例、`def main :: i64 = 1` がそれぞれ表の `E2000` のメッセージになる。
+7. `rejects_extern_test_and_main`: docs/language.md の `extern` と `test` の例、`def main :: unit -> i32 = \() -> 1` がそれぞれ表の `E2000` のメッセージになる。
 8. `replaces_in_place_and_keeps_input_shadowing`: 置き換えは元の位置、同じ入力の `let c = 1; let c = c + 1` は二つとも残る。
 9. `generates_declarations_before_bindings`: 束縛の後に入力した宣言が、生成した `Main.tz` では束縛より前に来る（再現 `p4` の `E0002` を避ける）。
 10. `maps_spans_to_input_and_session`: 入力の中のエラーは `input:1:<列>`、セッションの項目のエラーは `session:<行>:<列>`、wrapper は式の先頭。
@@ -528,7 +528,7 @@ stderr はコードと位置の部分一致、終了コードは完全一致。�
 | R6 | `let z = 0`、`:type 10 / z`、`IO.write_line "y"`、`do! IO.write_line "x"`、`do! IO.write_line "x"`、`1 + 1` | `z: i64`、`i64`、`it: IO<unit>`、`x`、`x`、`it: i64 = 2` | 空。0（`:type` は実行しない、IO の値は実行しない、アクションは再実行しない） |
 | R7 | `:load Echo.tz`、`1 + 1`、`:list` | `it: i64 = 2` | 空。0（`Echo.tz` は docs/language.md の `let!`／`let!`／`do!` の 3 行。子が stdin を読まず、アクションは `:list` に出ない） |
 | R8 | `:foo`、`:type`、`:load missing.tz`、`:load notes.txt`、`:list extra`、`1` | `it: i64 = 1` | 表の `E2000` 4 件と `E2001` 1 件。0 |
-| R9 | `extern` の例、`test` の例、`def main :: i64 = 1`、`1` | `it: i64 = 1` | 表の `E2000` 3 件。0 |
+| R9 | `extern` の例、`test` の例、`def main :: unit -> i32 = \() -> 1`、`1` | `it: i64 = 1` | 表の `E2000` 3 件。0 |
 | R10 | 引数 `--timeout 1`。終わらない `while` のアクション、`1 + 1` | `it: i64 = 2` | `evaluation exceeded the 1-second limit` を含む。0 |
 | R11 | 17 MiB を書くアクション、`1 + 1` | `it: i64 = 2` | `program output exceeded 16 MiB` を含む。0 |
 | R12 | 1,100,000 bytes の文字列リテラルの 1 行、`1 + 1` | `it: i64 = 2` | `error[E0003]` を含む。0 |

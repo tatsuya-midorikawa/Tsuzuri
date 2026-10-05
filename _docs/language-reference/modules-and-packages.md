@@ -57,10 +57,11 @@ def sum :: Point -> f64 = \point -> point.x + point.y
 ```tsuzuri project=namespaces file=Main.tz run=24
 namespace Sample
 
-def main :: f64 = \() ->
+def main :: unit -> i32 = \() ->
     let p = Sample::Point { x: 1.0, y: 2.0 }
     let q = Point { x: 3.0, y: 4.0 }
-    Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample::Point.sum p + Point.sum q
+    do! IO.write_line (Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample::Point.sum p + Point.sum q)
+    0
 ```
 
 - `Sample::Shape.area` が完全名です。`Sample::Shape.Shape.area` のように名前空間・モジュール・union を重ねることはできません（`E1004`）。
@@ -90,7 +91,9 @@ namespace Sample
 
 using Sample::Features
 
-def main :: f64 = \() -> Shape.area (Shape.Rect (3.0, 4.0))
+def main :: unit -> i32 = \() ->
+    do! IO.write_line (Shape.area (Shape.Rect (3.0, 4.0)))
+    0
 ```
 
 - 自分の名前空間に同名のモジュールがあればそちらを優先し、`using` で見つからなければ外側の名前空間を探します。入れ子の名前空間は取り込みません。
@@ -143,7 +146,7 @@ checked (std::Result.Ok 40) + local.value
 
 - このファイルの `Result` は自分の record です。標準の union は `std::Result<i64, string>`、その case は `std::Result.Ok` と書きます。
 - 自分の `union Maybe` を宣言したファイルでは、`Maybe.Some` も自分の union の case です。標準の case は `std::Maybe.Some` と書きます。
-- 組み込みのモジュール関数と型も `std::Task.run`、`std::Int.checked_add`、`std::Vec<i64>` のように書けます。名前空間に属するのはモジュールだけなので、`ignore` のような修飾しない関数には `std::` を付けません。
+- 組み込みのモジュール関数と型も `std::Task.run`、`std::Int.checked_add`、`std::Vec<i64>`、`std::Array<i64>` のように書けます。名前空間に属するのはモジュールだけなので、`ignore` のような修飾しない関数には `std::` を付けません。
 - 利用者のファイルは名前空間 `std` とその内側を宣言できません（`E1011`）。`Tsuzuri.toml` の `namespace` も `std` で始められません。
 
 以下は標準ライブラリのモジュール名として予約されており、利用者のモジュールのパスの先頭要素（既定名前空間の直下の最初の要素）には使えません。名前が予約されていることと、同名のソースファイルや API がすべて存在することは同義ではありません。

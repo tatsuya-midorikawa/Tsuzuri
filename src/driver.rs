@@ -1486,11 +1486,12 @@ fn build_complete(
     }
     if options.emit == Emit::Wasm
         && !llvm::io_entry(module)
+        && !llvm::main_entry(module)
         && !module.functions.iter().any(|function| function.exported)
     {
         return Err(driver_error(
             "E2004",
-            "a WebAssembly module needs an IO<T> main or at least one 'export def' entry point",
+            "a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point",
         ));
     }
     let mut trap_sites = Vec::new();
@@ -1617,8 +1618,11 @@ fn build_complete(
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
+    let arguments_runtime = text.contains("@tsuzuri_arguments(");
     // With `--wasm-host wasi` the standard IO and the OS APIs come from src/runtime/os-wasi.c.
-    let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi) && (io_runtime || os_runtime);
+    let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi)
+        && (io_runtime || os_runtime || arguments_runtime);
     // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
         && options.emit == Emit::Object
@@ -1632,7 +1636,7 @@ fn build_complete(
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
-        || (options.target == Target::Native && (io_runtime || os_runtime));
+        || (options.target == Target::Native && (io_runtime || os_runtime || arguments_runtime));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
@@ -1779,7 +1783,7 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c must precede every include, so it comes first.
                 if os_runtime && options.target == Target::Native {
                     include_str!("runtime/os.c")
@@ -1803,6 +1807,11 @@ fn build_complete(
                 },
                 if io_runtime {
                     include_str!("runtime/io.c")
+                } else {
+                    ""
+                },
+                if arguments_runtime {
+                    include_str!("runtime/arguments.c")
                 } else {
                     ""
                 }
@@ -1886,7 +1895,16 @@ fn build_complete(
         let wasi_object = temporary.path.join("wasi.o");
         if wasi_runtime {
             let source = temporary.path.join("wasi.c");
-            fs::write(&source, include_str!("runtime/os-wasi.c"))
+            let text = if arguments_runtime {
+                format!(
+                    "{}\n{}",
+                    include_str!("runtime/os-wasi.c"),
+                    include_str!("runtime/arguments.c")
+                )
+            } else {
+                include_str!("runtime/os-wasi.c").to_owned()
+            };
+            fs::write(&source, text)
                 .map_err(|error| io_error("write WASI runtime", &source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime.args([
@@ -1898,8 +1916,9 @@ fn build_complete(
                 "-mbulk-memory",
                 "-c",
             ]);
-            // Only a WASM module of an IO entry is a WASI command; objects leave `_start` to the embedder.
-            if options.emit == Emit::Wasm && llvm::io_entry(module) {
+            // Only a WASM module of a `def main` or an IO entry is a WASI command; objects leave
+            // `_start` to the embedder.
+            if options.emit == Emit::Wasm && (llvm::io_entry(module) || llvm::main_entry(module)) {
                 runtime.arg("-DTZ_WASI_START");
                 if llvm::exit_code_entry(module) {
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
@@ -2144,7 +2163,7 @@ fn build_complete(
             if wasi_runtime {
                 linker.arg(&wasi_object);
             }
-            if llvm::io_entry(module) {
+            if llvm::io_entry(module) || llvm::main_entry(module) {
                 linker.arg("--export=tsuzuri_main");
             }
             if options.trap_info {
@@ -3235,7 +3254,7 @@ mod tests {
     fn reports_the_source_file_for_module_errors() {
         let (directory, project) = project(
             &[
-                ("Main.tz", "fn main() -> i64 { Other.value() }"),
+                ("Main.tz", "Other.value()"),
                 ("Other.tz", "// other module\nfn value() -> i64 { false }"),
             ],
             "Main.tz",

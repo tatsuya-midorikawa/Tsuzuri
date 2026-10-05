@@ -9,13 +9,12 @@
 関数本体やトップレベルへ直接 `let!`／`do!` を書けます。右辺の型からビルダーを解決するため、IO と Maybe も同じ本体で扱えます。
 
 ```tsuzuri
-def main :: IO<Maybe<unit>> =
-    let! line = IO.read_line ()
-    let! value = line
-    do! IO.write_line value
+let! line = IO.read_line ()
+let! value = line
+do! IO.write_line value
 ```
 
-EOF の None では後続の出力を実行しません。この例の入口の型は `IO<Maybe<unit>>` であり、失敗情報を消さずに結果へ保持します。入口はその IO を一度実行して結果を解放し、追加の出力を行いません。
+EOF の None では後続の出力を実行しません。この例のトップレベルの入口の型は `IO<Maybe<unit>>` であり、失敗情報を消さずに結果へ保持します。入口はその IO を一度実行して結果を解放し、追加の出力を行いません。
 
 ```tsuzuri run=42
 def answer :: Maybe<i64> =
@@ -26,7 +25,7 @@ Maybe.get (answer())
 ```
 
 明示的な `Maybe { ... }`／`Result { ... }`／独自の `Builder { ... }` も引き続き使えます。`do expression` は unit の通常式、`do!` は計算値の束縛です。
-引数なし・非再帰の main だけは def を省略して入口の型を推論できます。通常の関数には def を付けます。
+名前付きの関数には `main` も含めて def を付けます。
 CE は main 専用ではありません。引数付き・private・別モジュール・ジェネリック・再帰関数、匿名関数、
 クラスメソッド、`.tc` の補助関数でも同じ構文を使えます。`\value ->` のラムダ式も改行した暗黙本体に対応します。
 
@@ -38,12 +37,13 @@ IO は任意のビルダーの Bind／Return／Delay／Run を `IO.Using` で合
 
 ## IO の直接形式
 
-結果型が分かっていて、その型にビルダーがない本体（`def main :: i32` など）では、IO の `let!` / `do!` をその場で順に実行します。
+結果型が分かっていて、その型にビルダーがない本体（`def main :: unit -> i32` の本体など）では、IO の `let!` / `do!` をその場で順に実行します。
 
 ```tsuzuri run=hello%0A42
-def main :: i32 =
+def main :: unit -> i32 = \() ->
     do! IO.writeln "hello"
-    42
+    do! IO.writeln 42
+    0
 ```
 
 `IO.writeln` は `IO.write_line` の別名です。`do! a |> f` は `a` を束縛してから結果を `f` へ渡す文で、`do! IO.writeln "x" |> ignore` のように使います。

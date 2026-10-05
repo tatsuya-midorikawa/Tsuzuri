@@ -31,14 +31,14 @@ renameとquick fixは編集後のプロジェクトを再解析し、意味が�
 `Debug.print value` は借用して表示し、`Debug.trace value` は表示して同じ所有値を返します。native は stderr、WASM は既定で no-op です。
 WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
 
-標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。`IO.writeln` は `IO.write_line` の別名です。
+標準入出力は `IO<T>` の遅延アクションで扱います。Main.tz の `def main :: unit -> i32` の本体に `do! IO.write_line "Hello"` と書くとその場で実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。`IO.writeln` は `IO.write_line` の別名です。
 ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Maybe／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
-結果型がビルダーを持たない本体（`def main :: i32` など）と `try` の中では、IO の `let!`／`do!` をその場で実行します。`do! a |> f` は `a` の結果を `f` へ渡します。
+結果型がビルダーを持たない本体（`def main :: unit -> i32` の本体など）と `try` の中では、IO の `let!`／`do!` をその場で実行します。`do! a |> f` は `a` の結果を `f` へ渡します。
 `IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
 
 ファイル・ディレクトリ・環境変数・コマンドライン引数・時刻・乱数・子プロセスは、std の `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Process`／`Os` で扱います（macOS／Linux）。
 `File.read_text "note.txt"` は `IO<Result<string, Os.Error>>` で、OS に触れる操作はすべて同じ形の遅延アクションです（`Path` と `Random.Pcg` は純粋）。
-入口が `IO<i32>` ならその値がプロセスの終了コードになり、`tsuzuri run` は 0 以外を `E2005` で報告します。
+`def main` が返す `i32`（トップレベルの結果式が `IO<i32>` ならその値）がプロセスの終了コードになり、`tsuzuri run` は 0 以外を `E2005` で報告します。`def main :: Array<string> -> i32` はコマンドライン引数を受け取ります。
 既定の wasm32 は OS API を `E2000` で拒否し、`--wasm-host wasi` を付けた wasm32 は標準入出力と OS API を WASI preview1 へ接続します（`Process.run` は未対応、preview2 は未実装）。Windows は `E2002` で未対応です。
 
 `run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
@@ -98,7 +98,9 @@ def rec sum :: i64 -> i64 -> i64 = \n total ->
 
 export def answer :: i64 = sum 100 0
 
-def main :: i64 = answer()
+def main :: unit -> i32 = \() ->
+    do! IO.write_line (answer())
+    0
 ```
 
 ## 設計と実装済みの範囲
@@ -506,7 +508,8 @@ def length :: Point -> f64 = \point -> sqrt (square point.x + square point.y)
 ```
 
 アプリケーションは **`Main.tz`** から開始します。
-トップレベルの `let` と最後の結果式、または従来の `fn main` のどちらかを使います。
+トップレベルの `let` と最後の結果式、または `def main :: unit -> i32`／`def main :: Array<string> -> i32` の `main` のどちらかを使います。
+`main` は値を表示せず、返す `i32` が終了コードになります。それ以外の `main` は `E2004` です。
 上の例では最後の `d` を表示します。結果式を省略すると `unit` になり、何も表示しません。
 実行例は `./target/release/tsuzuri run examples/point` です。
 
@@ -626,7 +629,7 @@ WASM は bulk-memory 対応の現在のブラウザー／Node.js を対象にし
 def length :: ref string -> i64 = \text -> text.length
 def replace :: ref mut string -> unit = \text -> { deref text = "updated"; }
 
-def main :: string = {
+def updated :: string = {
     let mut text = "こんにちは";
     let size = length ref text; // 借用後も所有者を使える
     replace ref mut text;       // この呼び出し中は排他的に借用
@@ -777,7 +780,7 @@ markerで管理対象を識別し、既存の非cacheディレクトリを転用
 ネイティブの並列タスクを含む生の IR を直接リンクする場合は、
 `clang kernel.ll src/runtime/task.c -pthread -lm ...` のようにタスクランタイムも渡します。
 `--emit object` にはランタイム本体が含まれ、別途 C ソースを渡す必要はありません。
-WASM は `IO<T>` の入口または少なくとも一つの `export def` が必要です。
+WASM は `def main`、`IO<T>` の入口、または少なくとも一つの `export def` が必要です。
 ホスト向けの公開名 `tz_name` は維持するため、エクスポート名はプロジェクト全体で一意にします。
 `--emit object --target wasm32` はリンク前の WASM オブジェクトも生成できます。
 コンパイル／リンク失敗では既存出力を変更せず、成功した成果物だけを同じファイルシステム上で置換します。

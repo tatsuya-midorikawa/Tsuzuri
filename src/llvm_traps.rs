@@ -300,6 +300,7 @@ pub(super) fn instrument(
         [
             "@main",
             "@tsuzuri_main",
+            "@tsuzuri_arguments",
             "@tsuzuri_test_count",
             "@tsuzuri_test_run",
             "@tsuzuri_task_parallel",

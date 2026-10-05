@@ -346,11 +346,10 @@ fn functions =
     Maybe.get (Gate.forwarded (Some 41))
 `);
   const implicitCases = [
-    ["read", `fn main =
-    let! line = IO.read_line ()
-    let! value = line
-    do! IO.write_line value
-    do! IO.write_line "done"
+    ["read", `let! line = IO.read_line ()
+let! value = line
+do! IO.write_line value
+do! IO.write_line "done"
 `, "hello\ndone\n", ""],
     ["result", `def gather :: IO<Result<Maybe<string>, IO.Error>>
 fn gather =
@@ -358,12 +357,11 @@ fn gather =
     let! option = result
     let! text = option
     return text
-fn main =
-    let! result = gather()
-    do! IO.write_line (match result with
-        | Ok (Some text) -> text
-        | Ok None -> "eof"
-        | Error _ -> "failed")
+let! result = gather()
+do! IO.write_line (match result with
+    | Ok (Some text) -> text
+    | Ok None -> "eof"
+    | Error _ -> "failed")
 `, "hello\n", "eof\n"],
     ["custom", `def gather :: IO<Gate.Value<Maybe<unit>>>
 fn gather =
@@ -373,21 +371,18 @@ fn gather =
     let! text = option
     do! IO.write_line text
     return ()
-fn main =
-    let! result = gather()
-    do! IO.write_line (match result with | Gate.Stop message -> message | Gate.Next _ -> "done")
+let! result = gather()
+do! IO.write_line (match result with | Gate.Stop message -> message | Gate.Next _ -> "done")
 `, "hello\ndone\n", "stopped\n"],
-    ["drop", `fn main =
-    let! line = IO.read_line ()
-    let! text = line
-    return new [text]
+    ["drop", `let! line = IO.read_line ()
+let! text = line
+return new [text]
 `, "", ""],
-    ["functions", `fn main =
-    let! line = IO.read_line ()
-    let! option = Helpers.echo (IO.pure line)
-    let! text = option
-    do! IO.write_line text
-    do! IO.write_line (Helpers.functions())
+    ["functions", `let! line = IO.read_line ()
+let! option = Helpers.echo (IO.pure line)
+let! text = option
+do! IO.write_line text
+do! IO.write_line (Helpers.functions())
   `, "hello\n378\n", ""],
   ];
   for (const [name, text, successOutput, eofOutput] of implicitCases) {

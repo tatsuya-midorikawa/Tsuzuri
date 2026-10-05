@@ -311,5 +311,4 @@ fn implicit_cold =
     let _unused = implicit_cold_work()
     42
 
-def main :: i64
-fn main = generic 40
+generic 40

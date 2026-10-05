@@ -66,7 +66,7 @@ fn run_reports_stack_overflow() {
     // The multiplication keeps the recursion non-tail, so LLVM cannot turn it into a loop.
     fs::write(
         root.join("Main.tz"),
-        "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\nexport def deep :: i64 -> i64\nfn deep n = depth n\n\ndef main :: i64 = deep 100000000\n",
+        "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\nexport def deep :: i64 -> i64\nfn deep n = depth n\n\ndeep 100000000\n",
     )
     .unwrap();
     for optimization in ["-O0", "-O3"] {

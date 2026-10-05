@@ -45,15 +45,17 @@ Main.tz を開き、次の内容にします。
 ```tsuzuri
 namespace MyApp
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     do! IO.writeln "Hello, World!"
+    0
 
 test "adds numbers" = assert (1 + 2 == 3)
 ```
 
 - `namespace MyApp` は、このファイル（モジュール）が属する名前空間です。ファイルの最初に書きます。作成した Main.tz には、入力した名前空間が入っています。
-- `def main :: IO<unit>` はプログラムの入口です。`IO<unit>` は、入出力を行い、値を返さない処理を表します。
-- `do! IO.writeln "..."` は、文字列と改行を標準出力へ書き込みます。字下げした行が `main` の本体です。
+- `def main :: unit -> i32` はプログラムの入口です。`\() ->` の後に字下げした行が `main` の本体で、最後の `0` がプロセスの終了コード（0 は成功）です。
+  コマンドライン引数を受け取るには `def main :: Array<string> -> i32 = \args ->` と書きます（スニペット `mainargs`）。
+- `do! IO.writeln "..."` は、文字列と改行を標準出力へ書き込みます。
 - `test "名前" = assert (条件)` はテストです。通常のビルドには含まれません。
 
 エディター右上の ▷（**Run Project**）を押します。ファイルを保存してビルドし、ターミナルに `Hello, World!` を表示します。
@@ -71,7 +73,7 @@ test "adds numbers" = assert (1 + 2 == 3)
 - キーワード、型、標準ライブラリの関数の補完。言語サーバーによるローカル変数・レコードのフィールド・モジュールのメンバー（`.` の後）・名前空間のモジュール（`Sample::` の後）の補完。`namespace` と `using` も考慮します。
 - 参照の検索と強調表示、名前の変更（`F2`。意味が変わる変更は拒否）、ワークスペースのシンボル検索、シグネチャヘルプ、意味に基づく色分け。
 - 未使用のローカル変数に `_` を付けるクイックフィックス。
-- `def`、`main`、`namespace`、`using`、`test`、`record`、`union`、`match`、`try`、`class`、`doc` などのスニペット。
+- `def`、`main`、`mainargs`、`namespace`、`using`、`test`、`record`、`union`、`match`、`try`、`class`、`doc` などのスニペット。
 
 ![関数にカーソルを合わせ、型とドキュメントコメントを表示した画面](images/hover.png)
 
@@ -102,7 +104,7 @@ WebAssembly を動かすブラウザーや Node.js などのホストは、別�
 
 ### テスト
 
-テストは `test "名前" = assert (条件)` と書きます。次の例では、`main` の返した値 `360` が実行時に表示されます。
+テストは `test "名前" = assert (条件)` と書きます。次の例では、`main` が小計 `360` を表示します。
 
 ```tsuzuri
 record Order { price: i64, quantity: i64 }
@@ -112,9 +114,10 @@ def subtotal :: Order -> i64 = \order ->
     let amount = order.price * order.quantity
     amount
 
-def main :: i64 =
+def main :: unit -> i32 = \() ->
     let order = Order { price: 120, quantity: 3 }
-    subtotal order
+    do! IO.writeln (subtotal order)
+    0
 
 test "subtotal multiplies price by quantity" =
     assert (subtotal (Order { price: 120, quantity: 3 }) == 360)

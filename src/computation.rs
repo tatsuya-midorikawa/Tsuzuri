@@ -1144,8 +1144,8 @@ pub(super) fn check_implicit(
 }
 
 impl Checker<'_> {
-    /// A body whose known result type no computation builder produces (such as
-    /// `def main :: i32`) runs its IO binds directly instead of building one.
+    /// A body whose known result type no computation builder produces (such as the
+    /// `i32` of `def main :: unit -> i32`) runs its IO binds directly instead of building one.
     fn direct_context(&self, expected: Option<&Type>) -> bool {
         let Some(expected) = expected.map(|ty| self.inference.resolve(ty)) else {
             return false;

@@ -19,4 +19,6 @@ export def transform :: i64 -> i64 -> i64 -> i64 -> i64 = \a b c d -> {
     sum 0 |> triple
 }
 
-def main :: i64 = transform 1 2 3 4
+def main :: unit -> i32 = \() ->
+    do! IO.write_line (transform 1 2 3 4)
+    0

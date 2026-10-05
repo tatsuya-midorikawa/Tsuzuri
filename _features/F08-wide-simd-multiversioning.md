@@ -203,15 +203,13 @@ fn data length = Array.init length (index -> (next (index + 1)) as i32)
 def total :: Numeric<'a> => ref ['a] -> 'a
 fn total values = Array.sum values
 
-def main :: i64
-fn main =
-    let values = data 1000
-    let f = Array.sum
-    let a = Array.sum (ref values)
-    let b = total (ref values)
-    let c = f (ref values)
-    let d = Array.sum (ref values[3..997])
-    (a as i64) + (b as i64) + (c as i64) + (d as i64)
+let values = data 1000
+let f = Array.sum
+let a = Array.sum (ref values)
+let b = total (ref values)
+let c = f (ref values)
+let d = Array.sum (ref values[3..997])
+(a as i64) + (b as i64) + (c as i64) + (d as i64)
 ```
 
 ### Phase 2（設計方針。要承認 D7）

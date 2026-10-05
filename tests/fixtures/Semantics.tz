@@ -205,4 +205,4 @@ export fn unused_array(divisor: i64) -> i64 {
     [1 / divisor].length
 }
 
-fn main() -> i64 { functional_sum(1) }
+fn sample_sum() -> i64 { functional_sum(1) }

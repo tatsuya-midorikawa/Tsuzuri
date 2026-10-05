@@ -91,10 +91,11 @@ test "treats non-ASCII text as separators" =
     assert (Map.contains_key (ref counts) "one")
     assert (Map.contains_key (ref counts) "two")
 
-def main :: string =
+def main :: unit -> i32 = \() ->
     let text = "Rust rust; Tsuzuri, TSUZURI! LLVM 21."
     let counts = count_words ref text
-    format_counts ref counts
+    do! IO.write_line (format_counts ref counts)
+    0
 ```
 
 ## 実行する
