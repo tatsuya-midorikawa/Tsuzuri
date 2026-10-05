@@ -225,8 +225,8 @@ fn prefers_user_declarations_and_hides_them_from_std() {
 #[test]
 fn rejects_reserved_modules_and_invalid_std_sources() {
     for (path, source) in [
-        ("Option", ""),
-        ("Option.tz", ""),
+        ("Maybe", ""),
+        ("Maybe.tz", ""),
         ("Int.tz", "def f :: i64\nfn f = 1"),
         ("Debug.tc", ""),
         ("Result.tz", ""),

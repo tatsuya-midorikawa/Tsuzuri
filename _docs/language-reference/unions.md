@@ -40,7 +40,7 @@ def value_or :: 'value -> Choice<'value> -> 'value = \fallback choice ->
 value_or 0 (Present 42)
 ```
 
-各型パラメーターはいずれかの payload で使います。標準の `Option<T>` / `Result<T, E>` も union です。一般的な「値なし」や失敗を表す場合は、独自型より標準型を優先すると API を組み合わせやすくなります。
+各型パラメーターはいずれかの payload で使います。標準の `Maybe<T>` / `Result<T, E>` も union です。一般的な「値なし」や失敗を表す場合は、独自型より標準型を優先すると API を組み合わせやすくなります。
 
 ## 名前の解決
 
@@ -54,7 +54,7 @@ case は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case
 
 共有参照やコレクションの要素を照合する場合、非 Copy payload は読み取り専用のビューになることがあります。そのビューを借用することはできますが、所有値として持ち去ることはできません。ガードの束縛も読み取り専用なので、ガードが失敗した後の節で同じ入力を照合できます。
 
-`Option<ref T>` のような具体化は所有者の借用寿命を保持します。ただし直接の `Hold of ref T` のような借用 payload 宣言や排他参照の格納は、対応範囲に入りません。
+`Maybe<ref T>` のような具体化は所有者の借用寿命を保持します。ただし直接の `Hold of ref T` のような借用 payload 宣言や排他参照の格納は、対応範囲に入りません。
 
 ## 再帰する型
 
@@ -69,7 +69,7 @@ def rec sum :: Tree -> i64 = \tree ->
 sum (Node (Node (Empty, 20, Empty), 22, Empty))
 ```
 
-union の payload を通る循環を許可します。`record Link { next: Option<Link> }` も有限の終端を作れます。空の配列・リスト・Vec を使って有限値を作れる形もあります。
+union の payload を通る循環を許可します。`record Link { next: Maybe<Link> }` も有限の終端を作れます。空の配列・リスト・Vec を使って有限値を作れる形もあります。
 
 union を通らない直接のレコード循環や、有限値を作れない `union Bad = Loop of Bad` は `E1010` です。型引数が増大・入れ替わり続ける再帰は `E1017` になります。
 

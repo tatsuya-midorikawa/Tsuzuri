@@ -1,5 +1,7 @@
 # Time
 
+Namespace: `std`
+
 ## `monotonic_ns`
 
 ```tsuzuri

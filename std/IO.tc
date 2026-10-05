@@ -54,18 +54,18 @@ fn MergeSources first second = IO { work: \() -> (first.work (), second.work ())
 def BindReturn :: IO<'a> -> ('a -> 'b) -> IO<'b>
 fn BindReturn action transform = map transform action
 
-def try_read_line :: unit -> IO<Result<Option<string>, Error>>
+def try_read_line :: unit -> IO<Result<Maybe<string>, Error>>
 fn try_read_line _unit = IO { work: \() ->
     match IO.__read_line () with
     | (0, bytes) ->
         match Utf8String.from_bytes bytes with
-        | Option.Some text -> Result.Ok (Option.Some (String.from_utf8 (ref text)))
-        | Option.None -> Result.Error InvalidEncoding
-    | (1, _) -> Result.Ok Option.None
+        | Maybe.Some text -> Result.Ok (Maybe.Some (String.from_utf8 (ref text)))
+        | Maybe.None -> Result.Error InvalidEncoding
+    | (1, _) -> Result.Ok Maybe.None
     | _ -> Result.Error ReadFailed
 }
 
-def read_line :: unit -> IO<Option<string>>
+def read_line :: unit -> IO<Maybe<string>>
 fn read_line _unit = map Result.get (try_read_line ())
 
 private def try_output :: (Display<'a>, Capture<'a>) => i32 -> bool -> 'a -> IO<Result<unit, Error>>

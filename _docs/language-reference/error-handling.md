@@ -23,7 +23,7 @@ show 40 2 + " / " + show 2147483647 1
 
 `@checked` を式または文の前に置くと、その中の整数の `+`、`-`、`*`、`**` と単項 `-` を検査します。オーバーフローすると `OverflowException` を送出し、メッセージは `Arithmetic operation resulted in an overflow.` です。`@checked` の外は従来どおり型幅で折り返します。
 
-検査するのは `@checked` の中に書いた演算子だけで、そこから呼び出した関数の中の演算は検査しません。オーバーフローを `Option` で受け取る場合は、Int の `checked_add` などを使います。
+検査するのは `@checked` の中に書いた演算子だけで、そこから呼び出した関数の中の演算は検査しません。オーバーフローを `Maybe` で受け取る場合は、Int の `checked_add` などを使います。
 
 ## try ... with ... finally
 

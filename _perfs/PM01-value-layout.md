@@ -17,13 +17,13 @@
 
 ## 目的
 
-union・`Option`・`Result`・レコードの値を小さくし、配列やコレクションに多数を格納するときのメモリ量・キャッシュミス・コピー量を減らす。
+union・`Maybe`・`Result`・レコードの値を小さくし、配列やコレクションに多数を格納するときのメモリ量・キャッシュミス・コピー量を減らす。
 目安は Rust の同等の型の大きさ以下（`## 目標と指標` の表）。変えるのは内部表現だけで、言語の意味・診断・公開 ABI は変えない。
 
 作業は三段に分け、各段を単独で出荷できるようにする。
 
 - Phase 1: union のタグの幅をケース数に合わせ、ペイロードの LLVM 型が異なる union（`UnionLayout::General`）の 16 bytes 単位の領域をやめる。タグの幅だけ（手順 3 まで）でも出荷できる。
-- Phase 2: ケースが二つで一方だけがペイロードを持つ union（`Option` の形）に niche を使う。
+- Phase 2: ケースが二つで一方だけがペイロードを持つ union（`Maybe` の形）に niche を使う。
 - Phase 3a: レコードのフィールドをアラインメントの降順に並べ替えて余白を減らす。Phase 3b（タプルと union のペイロードのタプル）は Phase 3a の計測を見て判断する。
 
 実装者は Phase 1 だけを行う。Phase 2 以降は、人間が指示し、その段の決定事項が承認された場合だけ着手する。
@@ -72,7 +72,7 @@ union・`Option`・`Result`・レコードの値を小さくし、配列やコ�
 ### レコードとタプルの表現
 
 - レコードは宣言順の LLVM 構造体（例: `%tz.record.Main.Mixed = type { i1, i64, i1, i64 }`）、タプルは無名の構造体 `{ T1, T2 }`。並べ替えはない。
-- 公開 ABI: エクスポートの引数・結果に union は使えない（E1008。`export def pick :: Color -> i64` と `export def first :: Option<i64> -> i64` で確認）。スカラーだけのレコードは使え、ホスト側の C の構造体は `src/llvm_abi.rs` の `record_layout`・`header_types` が宣言順で別に作り、`read_host_record`・`write_host_record` が内部のレコードとの間を変換する。
+- 公開 ABI: エクスポートの引数・結果に union は使えない（E1008。`export def pick :: Color -> i64` と `export def first :: Maybe<i64> -> i64` で確認）。スカラーだけのレコードは使え、ホスト側の C の構造体は `src/llvm_abi.rs` の `record_layout`・`header_types` が宣言順で別に作り、`read_host_record`・`write_host_record` が内部のレコードとの間を変換する。
 - GPU: `src/gpu.rs` は buffer の要素に `bool` 以外のスカラーだけを許す（"GPU operations require a concrete buffer result" の検査の直後）。ユーザーのレコードは WGSL に渡らない。
 
 ### 大きさの計算は 4 か所にある
@@ -93,11 +93,11 @@ union・`Option`・`Result`・レコードの値を小さくし、配列やコ�
 | 型 | LLVM 型（HEAD） | native | wasm32 |
 | --- | --- | ---: | ---: |
 | `Color`（ペイロードなし 3 ケース） | `i32` | 4 / 4 | 4 / 4 |
-| `Option<bool>` | `{ i32, i1 }` | 8 / 4 | 8 / 4 |
+| `Maybe<bool>` | `{ i32, i1 }` | 8 / 4 | 8 / 4 |
 | `Small`（`bool`・`i8`・なし） | `{ i32, [1 x i128] }` | 32 / 16 | 32 / 16 |
-| `Option<i64>` | `{ i32, i64 }` | 16 / 8 | 16 / 8 |
-| `Option<ref Point>` | `{ i32, ptr }` | 16 / 8 | 8 / 4 |
-| `Option<string>` | `{ i32, %tz.string }` | 24 / 8 | 24 / 8 |
+| `Maybe<i64>` | `{ i32, i64 }` | 16 / 8 | 16 / 8 |
+| `Maybe<ref Point>` | `{ i32, ptr }` | 16 / 8 | 8 / 4 |
+| `Maybe<string>` | `{ i32, %tz.string }` | 24 / 8 | 24 / 8 |
 | `Result<i64, string>` | `{ i32, [1 x i128] }` | 32 / 16 | 32 / 16 |
 | `Shape`（`f64`・`f64 * f64`・なし） | `{ i32, [1 x i128] }` | 32 / 16 | 32 / 16 |
 | `Mixed { a: bool, b: i64, c: bool, d: i64 }` | `{ i1, i64, i1, i64 }` | 32 / 8 | 32 / 8 |
@@ -105,31 +105,31 @@ union・`Option`・`Result`・レコードの値を小さくし、配列やコ�
 | `%tz.closure`（参考） | `{ ptr, ptr, ptr, ptr }` | 32 / 8 | 16 / 4 |
 
 - 最大 RSS（`-O3`、`/usr/bin/time -l`、9 回）: 最小・中央値・最大とも 165,904,384 bytes。出力は `16166714`。
-- 配列の要素の合計は 188,000,000 bytes（`## 目標と指標`）で、RSS はそれより約 22 MB 小さい。全要素が `None` の `Option<string>` の配列（24,000,000 bytes）が書き込まれず、ページが常駐しなかった可能性がある（未確認。`## 落とし穴` 5）。
+- 配列の要素の合計は 188,000,000 bytes（`## 目標と指標`）で、RSS はそれより約 22 MB 小さい。全要素が `None` の `Maybe<string>` の配列（24,000,000 bytes）が書き込まれず、ページが常駐しなかった可能性がある（未確認。`## 落とし穴` 5）。
 - 時間: `_perfs/README.md` の現状（2026-09-26）では `std_option` 0.873、`std_result` 0.95〜0.99、`std_option_owned` 約 0.09（確保の条件がそろっていない）。この詳細化では再計測していない。
 - JSON のような多ケースの union は、非再帰の `General` の代表として `Shape`・`Small` で測る。自分自身を含む JSON の値は再帰 union（ノード）で、ノードの配置はこの ticket の対象外（D1）。
 
 ## 目標と指標
 
 目標は計画値で、共有 CI の合否条件にしない。表は D1・D2・D5・D8 の規則から算出した native の大きさ（bytes）。
-wasm32 では `Option<ref Point>` が 8・8・4・4 になり、他の行は native と同じ。Rust の列は既知の値で、`## 計測手順` の手順 5 で確かめる。
+wasm32 では `Maybe<ref Point>` が 8・8・4・4 になり、他の行は native と同じ。Rust の列は既知の値で、`## 計測手順` の手順 5 で確かめる。
 Tsuzuri の `string` は UTF-16 の `{ ptr, i64 }`（16 bytes）で、Rust の `String`（24 bytes）とは表現が違う。
 
 | 型 | HEAD | Phase 1 | Phase 2 | Phase 3a | Rust（参考） |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `Color` | 4 | 1 | 1 | 1 | 1 |
-| `Option<bool>` | 8 | 2 | 2 | 2 | 1 |
+| `Maybe<bool>` | 8 | 2 | 2 | 2 | 1 |
 | `Small` | 32 | 2 | 2 | 2 | 2 |
-| `Option<i64>` | 16 | 16 | 16 | 16 | 16 |
-| `Option<ref Point>` | 16 | 16 | 8 | 8 | 8 |
-| `Option<string>` | 24 | 24 | 16 | 16 | 24 |
+| `Maybe<i64>` | 16 | 16 | 16 | 16 | 16 |
+| `Maybe<ref Point>` | 16 | 16 | 8 | 8 | 8 |
+| `Maybe<string>` | 24 | 24 | 16 | 16 | 24 |
 | `Result<i64, string>` | 32 | 24 | 24 | 24 | 24 |
 | `Shape` | 32 | 24 | 24 | 24 | 24 |
 | `Mixed` | 32 | 32 | 32 | 24 | 24 |
 | `Tagged` | 24 | 24 | 24 | 16 | 16 |
 | `benchmarks/layout` の配列の合計 | 188,000,000 | 133,000,000 | 125,000,000 | 109,000,000 | – |
 
-配列の合計は、要素数 1,000,000 の 8 個の配列（`Color`・`Result<i64, string>`・`Option<string>`・`Mixed`・`Shape`・`Small`・`Option<bool>`・`Tagged`）の要素の大きさの和。
+配列の合計は、要素数 1,000,000 の 8 個の配列（`Color`・`Result<i64, string>`・`Maybe<string>`・`Mixed`・`Shape`・`Small`・`Maybe<bool>`・`Tagged`）の要素の大きさの和。
 
 指標:
 
@@ -243,10 +243,10 @@ Phase 1 の `benchmarks/layout` の型定義（HEAD の形は `## 現状と計�
 %"tz.union.Main.Color" = type i8
 %"tz.union.Main.Small" = type { i8, [1 x i8] }
 %"tz.union.Main.Shape" = type { i8, [2 x i64] }
-%"tz.union.Option.Option[i64]" = type { i8, i64 }
-%"tz.union.Option.Option[bool]" = type { i8, i1 }
-%"tz.union.Option.Option[string]" = type { i8, %tz.string }
-%"tz.union.Option.Option[ref[Main.Point]]" = type { i8, ptr }
+%"tz.union.Maybe.Maybe[i64]" = type { i8, i64 }
+%"tz.union.Maybe.Maybe[bool]" = type { i8, i1 }
+%"tz.union.Maybe.Maybe[string]" = type { i8, %tz.string }
+%"tz.union.Maybe.Maybe[ref[Main.Point]]" = type { i8, ptr }
 %"tz.union.Result.Result[i64,string]" = type { i8, [2 x i64] }
 ```
 
@@ -259,7 +259,7 @@ switch i32 %tag, label %done [ i32 0, label %circle
                                i32 1, label %rect ]
 ```
 
-Phase 2 では `Option[string]`・`Option[ref[Main.Point]]` の型定義がなくなり、値はペイロードの型になる。`{none}`・`{some}` は `Niche` のケース番号:
+Phase 2 では `Maybe[string]`・`Maybe[ref[Main.Point]]` の型定義がなくなり、値はペイロードの型になる。`{none}`・`{some}` は `Niche` のケース番号:
 
 ```llvm
 store %tz.string { ptr null, i64 -1 }, ptr %slot
@@ -284,7 +284,7 @@ Phase 3a の型定義。`Mixed` の `field_slot` は a→2、b→0、c→3、d�
 tag_bytes(n) = 1 if n <= 256, 2 if n <= 65_536, 4 otherwise
 
 union_layout(U, arguments):                          # recursive unions never reach here
-    cases = union_payloads(U, arguments)             # one Option<Type> per case
+    cases = union_payloads(U, arguments)             # one Maybe<Type> per case
     if Phase 2 and niche(cases) = (payload, niche, none, some): return Niche
     payloads = flatten(cases)
     if payloads is empty: return Enum
@@ -359,7 +359,7 @@ done
 8. niche（Phase 2。D5 の承認後）
    - 変更: `## 設計` の段 2 の行。
    - 内容: D5・D6。
-   - 確認: `cargo test --locked --test value_layout` が `running 5 tests` で通り、`cargo test --locked --test union_types` が通る（`Option` の IR の期待値は D6 で書き直す）。`cargo build --release --locked && node tests/features.mjs target/release/tsuzuri value_layout && node tests/debug_info.mjs target/release/tsuzuri` が通る。
+   - 確認: `cargo test --locked --test value_layout` が `running 5 tests` で通り、`cargo test --locked --test union_types` が通る（`Maybe` の IR の期待値は D6 で書き直す）。`cargo build --release --locked && node tests/features.mjs target/release/tsuzuri value_layout && node tests/debug_info.mjs target/release/tsuzuri` が通る。
 9. Phase 2 の全体の確認・計測・文書
    - 変更: `docs/architecture.md`、`docs/benchmarks.md`、`_perfs/README.md`。
    - 内容: 手順 7 と同じ（`P=phase2-after`、Phase 2 の列）。`## テスト計画` の E2E (g) の Hash の出力を Phase 1 の後のコンパイラと比べる。
@@ -422,7 +422,7 @@ def small :: Small -> i64 = \s ->
     | Code c -> if c == 3 then 3 else 0
     | Nothing -> 0
 
-def first_x :: Option<ref Point> -> i64 = \o ->
+def first_x :: Maybe<ref Point> -> i64 = \o ->
     match o with
     | Some q -> q.x
     | None -> 0
@@ -430,15 +430,15 @@ def first_x :: Option<ref Point> -> i64 = \o ->
 let n = 1000000
 let colors = new [Color](n, \i -> if i % 3 == 0 then Red else Green)
 let results = new [Result<i64, string>](n, \i -> if i % 2 == 0 then Ok 1 else Ok 2)
-let options = new [Option<string>](n, \i -> if i < 0 then Some "x" else None)
+let options = new [Maybe<string>](n, \i -> if i < 0 then Some "x" else None)
 let mixed = new [Mixed](n, \i -> Mixed { a: i % 2 == 0, b: 1, c: false, d: 2 })
 let shapes = new [Shape](n, \i -> if i % 2 == 0 then Circle 1.0 else Rect (1.0, 2.0))
 let smalls = new [Small](n, \i -> if i % 2 == 0 then Flag true else Code 3)
-let flags = new [Option<bool>](n, \i -> if i % 2 == 0 then Some true else None)
+let flags = new [Maybe<bool>](n, \i -> if i % 2 == 0 then Some true else None)
 let tagged = new [Tagged](n, \i -> Tagged { tag: 1, value: 5, ok: i % 2 == 0 })
 let p = Point { x: 7, y: 8 }
-let fallback: Option<i64> = Some 41
-let mut total = first_x (Some (ref p)) + Option.default_value 0 fallback
+let fallback: Maybe<i64> = Some 41
+let mut total = first_x (Some (ref p)) + Maybe.default_value 0 fallback
 for c in colors do
     total = total + code c
 for r in results do
@@ -586,7 +586,7 @@ grep -c 'ldrb' $D/layout.s
 `$D/layout` は `## 計測手順` の手順 3 で作った実行ファイル。段ごとに見るもの:
 
 - Phase 1: 型定義が `### 生成 IR` の Phase 1 の形で、`[1 x i128]` がない。`zext i8` が 1 以上。`-O3` の IR の `load i8, ptr` とアセンブリの `ldrb` が `phase1-before` より多い（`colors` の要素を 1 byte で読む）。多くならない場合は、畳み込みで読み出しが消えたのかを IR で確かめて記録する。
-- Phase 2: `-O0` の IR に `Option[string]`・`Option[ref[Main.Point]]` の型定義がない。`first_x` に `icmp eq ptr`、options のループに `icmp slt i64` がある。
+- Phase 2: `-O0` の IR に `Maybe[string]`・`Maybe[ref[Main.Point]]` の型定義がない。`first_x` に `icmp eq ptr`、options のループに `icmp slt i64` がある。
 - Phase 3a: 型定義が `### 生成 IR` の Phase 3a の形。`-O0` の IR で `m.b` の読み出しが添字 0、`m.d` が添字 1、`t.value` が添字 0（`extractvalue` または `getelementptr … i32 0, i32 N`）。
 
 ### 恒等の並べ替えの確認（手順 10）
@@ -612,11 +612,11 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 
 - `src/llvm.rs` の `tag_bytes_follow_case_count`（新規、Phase 1）: ケース数 1→1、256→1、257→2、65,536→2、65,537→4。
 - `tests/value_layout.rs`（新規）。IR は `tests/union_types.rs` の `lowers_layouts_constructors_and_tag_switches` と同じ補助関数で得る。期待する型定義の行は `### 生成 IR` の規則から手で書く。
-  - `union_tags_use_the_smallest_width`（新規、Phase 1）: `Color` が `= type i8`、`Option<i64>` が `{ i8, i64 }`。Rust で生成した 300 ケースの union（299 個のペイロードなしと `of i64` 一つ）が `{ i16, i64 }`。
+  - `union_tags_use_the_smallest_width`（新規、Phase 1）: `Color` が `= type i8`、`Maybe<i64>` が `{ i8, i64 }`。Rust で生成した 300 ケースの union（299 個のペイロードなしと `of i64` 一つ）が `{ i16, i64 }`。
   - `general_unions_size_the_area_by_payload_alignment`（新規、Phase 1）: `Shape` が `{ i8, [2 x i64] }`、`Small` が `{ i8, [1 x i8] }`、`Result<i64, string>` が `{ i8, [2 x i64] }`、`i128` と `bool` のペイロードを持つ union が `{ i8, [1 x i128] }`。
   - `recursive_union_nodes_keep_i32_tags`（新規、Phase 1）: `tests/recursive_types.rs` が検査している再帰ノードの型の行が変わらない（同じソースと期待値を写す）。
-  - `option_like_unions_use_niches`（新規、Phase 2）: `Option<string>`・`Option<utf8string>`・`Option<[i64]>`・`Option<ref Point>` の型定義がなく、関数の引数の型がペイロードの型（`%tz.string`・`%tz.utf8string`・`%tz.array`・`ptr`）。`Option<i64>` は `{ i8, i64 }` のまま。ペイロードなし二つと `of string` の 3 ケースの union は niche にならず `{ i8, %tz.string }`。
-  - `nested_options_use_one_niche`（新規、Phase 2）: `Option<Option<string>>` の外側が `{ i8, %tz.string }`。
+  - `option_like_unions_use_niches`（新規、Phase 2）: `Maybe<string>`・`Maybe<utf8string>`・`Maybe<[i64]>`・`Maybe<ref Point>` の型定義がなく、関数の引数の型がペイロードの型（`%tz.string`・`%tz.utf8string`・`%tz.array`・`ptr`）。`Option<i64>` は `{ i8, i64 }` のまま。ペイロードなし二つと `of string` の 3 ケースの union は niche にならず `{ i8, %tz.string }`。
+  - `nested_options_use_one_niche`（新規、Phase 2）: `Maybe<Maybe<string>>` の外側が `{ i8, %tz.string }`。
   - `records_are_sorted_by_alignment`（新規、Phase 3a）: `Mixed` が `{ i64, i64, i1, i1 }`、`Tagged` が `{ i64, i8, i1 }`、`Point` が `{ i64, i64 }`、小さくならない `{ a: i64, b: bool }` が宣言順の `{ i64, i1 }`。型引数を 3 つ持つジェネリックのレコードで、`<bool, i64, bool>` の具体化が `{ i64, i1, i1 }`、`<i64, bool, bool>` が宣言順。
   - `record_order_is_deterministic`（新規、Phase 3a）: 同じソースを 2 回 IR にして一致する。
 - 既存の `tests/union_types.rs` の `enforces_union_layout_limits` は期待値を変えずに通る（E1010 の拒否の例を含む）。新しい診断はない。
@@ -629,8 +629,8 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 - (a) Phase 1: `benchmarks/layout/Main.tz` の計算を `n = 1000` にしたもの。期待値 `16214`（`first_x` 7、`fallback` 41、colors 334×1＋666×2＝1,666、results 500×1＋500×2＝1,500、options 0、mixed 3,000、shapes 500×3＋500×2＝2,500、smalls 500×1＋500×3＝2,000、flags 500、tagged 5,000 の和）。
 - (b) Phase 1: 256 ケースの union（`V0`〜`V254` はペイロードなし、`V255 of i64`）で `V0`・`V127`・`V128`・`V255 42` を作り、ペイロードなしはケース番号、`V255` はペイロードを返す関数で合計して `297`。300 ケースの union（`W0`〜`W298` はペイロードなし、`W299 of i64`）で `W128`・`W255`・`W256`・`W298`・`W299 7` から同様に `944`。128 番以上が正しい枝に行くこと（`zext`）を確かめる。
 - (c) Phase 1: `bool`・`i8`・`char`・`i16`・`i32`・`i64`・`f64`・`i128`・`string`・`[i64]`・関数値・`i64 * bool` のタプルをペイロードに持つ一つの union の値を配列に入れ、各値から整数を取り出して合計する（期待値は入れた値から手で計算する）。文字列・配列・関数値の解放を `live == 0` で確かめる。
-- (d) Phase 2: `Option<string>` の `Some ""`・`Some "abc"`・`None` の長さの和 `3`。`Option<utf8string>` も同じ値で（リテラルの書き方は GUIDE §12）。`Option<[i64]>` の `Some []`・`Some [1, 2]`・`None` で `2`。`Option<ref Point>` の `Some`（`x = 7`）と `None` で `7`。`Option<Option<string>>` の `Some (Some "ab")`・`Some None`・`None` をそれぞれ 10・20・30 に写した和 `60`。
-- (e) Phase 2: `Option<string>` を持つレコード・配列の複製と解放（`live == 0`）。`match` でペイロードを借りて長さを読む。
+- (d) Phase 2: `Maybe<string>` の `Some ""`・`Some "abc"`・`None` の長さの和 `3`。`Maybe<utf8string>` も同じ値で（リテラルの書き方は GUIDE §12）。`Maybe<[i64]>` の `Some []`・`Some [1, 2]`・`None` で `2`。`Maybe<ref Point>` の `Some`（`x = 7`）と `None` で `7`。`Maybe<Maybe<string>>` の `Some (Some "ab")`・`Some None`・`None` をそれぞれ 10・20・30 に写した和 `60`。
+- (e) Phase 2: `Maybe<string>` を持つレコード・配列の複製と解放（`live == 0`）。`match` でペイロードを借りて長さを読む。
 - (f) Phase 3a: `Mixed { a: true, b: 11, c: false, d: 22 }` の各フィールドの読み出し（1・11・0・22）、`{ m with d = 33 }` の後の `d`、可変のフィールドへの代入、借りたフィールドを関数に渡す、`new [Mixed]` の配列の合計。`Tagged { tag: 3, value: 44, ok: true }` も同じ。
 - (g) Phase 2・3a: `deriving` した Eq・Ord・Hash・Display を持つ union とレコード（`Mixed` と同じ形）で、比較の結果と Display の文字列を `docs/language.md` の表示形式から手で書く。Hash の値は期待値に入れず、同じ fixture を段の変更前のコンパイラでも実行して、出力の `diff` が空であることを確かめる。
 - (h) Phase 3a: 公開 ABI。スカラーだけのレコード `{ a: i8, b: i64, c: i8 }`（並べ替え後 `{ i64, i8, i8 }`）を受け取って返す `export def` を、E05 のテスト（`_features/_completed/E05-host-abi-buffers.md` のテスト計画）と同じ方法でホストから呼び、各フィールドが保たれる。
@@ -638,7 +638,7 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 ### 既存テストへの影響
 
 - Phase 1: `tests/union_types.rs` の `lowers_layouts_constructors_and_tag_switches`（型定義・`insertvalue … i32 N, 0`・タグの読み出しの文字列）と、該当すれば `switch_plans_read_payload_projections`。`grep -n "type { i32\|= type i32\|i128\]" tests/*.rs tests/*.mjs` に一致する `tests/features.mjs`・`tests/gpu.rs`・`tests/types_ownership.rs` の行のうち、非再帰の union の型を検査しているものだけ。期待値は D1・D2 の規則から手で書き直す。
-- Phase 2: 上に加え、`Option` の形（`Option<string>`・参照など）の IR を検査する行。
+- Phase 2: 上に加え、`Maybe` の形（`Maybe<string>`・参照など）の IR を検査する行。
 - Phase 3a: 並べ替えで小さくなるレコードの型定義を検査する行。
 - 変わらないもの: `enforces_union_layout_limits`、`tests/recursive_types.rs`、`tests/debug_info.mjs`、全 E2E の出力。変わったら停止条件 2・3。
 
@@ -674,9 +674,9 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 2. タグは `zext` で広げる。`sext` では 128〜255 番のケースが負になり、`switch` が別の枝へ行く。E2E の (b) で 128 番以上を必ず通す。`i8 200` のような定数の表記は LLVM で有効。
 3. enum の別名（`= type i8`）は構造体の型定義より前に出す（既存の規則。別名は前方参照できない）。
 4. `storage_layout` はポインターを 8 bytes と見積もるので、wasm32 の `General` の領域は必要より大きいことがある。正しさには影響しない。target ごとに変えると型定義の文字列が target で変わるので、この ticket では変えない。
-5. 最大 RSS は書き込まれないページを数えない。HEAD の `benchmarks/layout` は配列の合計 188,000,000 bytes に対して RSS 165,904,384 bytes だった。Phase 2 の `None`（長さ `-1`）はゼロでないので、`Option<string>` の配列が常駐するようになり、値が小さくなっても RSS が増えて見えることがある。RSS は配列の合計と並べて記録し、増えた場合はこの理由かを IR の `store` の値で確かめる。
+5. 最大 RSS は書き込まれないページを数えない。HEAD の `benchmarks/layout` は配列の合計 188,000,000 bytes に対して RSS 165,904,384 bytes だった。Phase 2 の `None`（長さ `-1`）はゼロでないので、`Maybe<string>` の配列が常駐するようになり、値が小さくなっても RSS が増えて見えることがある。RSS は配列の合計と並べて記録し、増えた場合はこの理由かを IR の `store` の値で確かめる。
 6. Phase 2 では `zeroinitializer` は `None` ではない（`%tz.string` のゼロは `Some ""`）。`None` は必ず D6 の定数で作り、ゼロ埋めしたメモリを union の値として使わない。参照の niche ではゼロ（null）が `None` になる。
-7. `Option<Option<string>>` で niche を二重に使わない。内側だけが niche で、外側は `{ i8, %tz.string }`。
+7. `Maybe<Maybe<string>>` で niche を二重に使わない。内側だけが niche で、外側は `{ i8, %tz.string }`。
 8. `General` のペイロードはメモリ経由（スピル）で読み書きする。領域の型を変えるときは、スピルの `alloca` の型と GEP の型を同じ新しい型にする。
 9. ジェネリックのレコードは型引数でアラインメントが変わる。順序は具体化ごとに計算し、型の名前（`canonical_type`）は変えない。
 10. 同じ型のフィールドの添字を取り違えても型の検証には通る（`Mixed` の `b` と `d`）。E2E の値はフィールドごとに違う値にする（`b = 11`、`d = 22`）。
@@ -727,12 +727,12 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 
 ### D5: niche の対象（Phase 2）
 
-- 決定: 再帰でなく、ケースがちょうど二つで、一方がペイロードなし、他方のペイロード P が次のどれかの union だけを niche にする。std の `Option` に限らず、この形のユーザーの union にも使う。
+- 決定: 再帰でなく、ケースがちょうど二つで、一方がペイロードなし、他方のペイロード P が次のどれかの union だけを niche にする。std の `Maybe` に限らず、この形のユーザーの union にも使う。
   - P が一つのポインターで表される `Type::Reference`（16 bytes の配列の共有参照の形は除く）: null をペイロードなしのケースにする（`Niche::NullPointer`）。
   - P が `Type::String`・`Type::Utf8String`・`Type::Array(_)`: 長さ（添字 1）が負の値をペイロードなしのケースにする（`Niche::NegativeLength`）。書く値は `-1`、判定は `icmp slt i64 %len, 0`。
-  - P 自体が niche の union（`Option<Option<string>>` の内側など）なら、外側は Phase 1 の表現にする。
-- 理由: 空の文字列・配列のデータのポインターが null にならないことは確かめていない（ランタイムを含む全経路の監査が要る）ので、ポインターの null は使わない。長さは常に 0 以上で、負の値は作られない。参照は生きている場所を指すので null にならない。効果の大きい `Option<string>`（24 → 16）と `Option<ref T>`（16 → 8）を最小の変更で得る。
-- 状態: 要承認（承認前は Phase 2 に着手しない）。デバッガーでの `Option` の見え方も変わる（D6）。
+  - P 自体が niche の union（`Maybe<Maybe<string>>` の内側など）なら、外側は Phase 1 の表現にする。
+- 理由: 空の文字列・配列のデータのポインターが null にならないことは確かめていない（ランタイムを含む全経路の監査が要る）ので、ポインターの null は使わない。長さは常に 0 以上で、負の値は作られない。参照は生きている場所を指すので null にならない。効果の大きい `Maybe<string>`（24 → 16）と `Maybe<ref T>`（16 → 8）を最小の変更で得る。
+- 状態: 要承認（承認前は Phase 2 に着手しない）。デバッガーでの `Maybe` の見え方も変わる（D6）。
 - 見直し提案: 元の案の候補のうち、`bool`・`utf8char`・列挙型の未使用のタグ・関数値のコードポインターは Phase 2 から外した。前の三つは縮む量が 1〜3 bytes でペイロードの LLVM 型を変える必要があり、関数値は PM02 が表現を変えるため。Phase 2 の計測の後、必要なら別の段として承認を求める。
 
 ### D6: niche の union の LLVM 型と値

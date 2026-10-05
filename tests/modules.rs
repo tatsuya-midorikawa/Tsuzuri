@@ -50,7 +50,7 @@ fn loads_and_protects_local_package_graphs() {
         "geometry-core",
         "",
         "Point.tz",
-        "def value :: i64\nfn value = Option.get (Option.Some 42)\nprivate def hidden :: i64\nfn hidden = 0",
+        "def value :: i64\nfn value = Maybe.get (Maybe.Some 42)\nprivate def hidden :: i64\nfn hidden = 0",
     );
     fs::write(
         root.join("geometry-core/Main.tz"),
@@ -305,7 +305,7 @@ fn module_paths_map_to_bounded_dotted_names() {
         "Bad-Name/Point.tz",
         "Geometry/fn/Point.tz",
         "Geometry/_/Point.tz",
-        "Option/Point.tz",
+        "Maybe/Point.tz",
         "Geometry/Task/Point.tz",
     ] {
         assert_eq!(
@@ -873,9 +873,9 @@ fn namespaces_qualify_modules_and_module_named_types() {
             "so write 'Sample::Shape.Rect'",
         ),
         (
-            "def p :: Option.Option<i64> -> i64 = \\p -> 0",
+            "def p :: Maybe.Maybe<i64> -> i64 = \\p -> 0",
             "E1004",
-            "so write 'Option'",
+            "so write 'Maybe'",
         ),
         (
             "def p :: i64 = Sample::Point { x: 1.0, y: 2.0 }",
@@ -983,6 +983,96 @@ fn a_bare_module_name_names_its_type_before_other_modules_types() {
         error
             .message
             .contains("type 'Result' takes no type arguments"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn the_standard_library_is_the_implicit_std_namespace() {
+    // A file's own declarations come before the implicit `std`, which `std::`
+    // names explicitly, including builtin module functions and types.
+    let module = analyze_modules(&[(
+        "Main.tz",
+        "record Result { value: i64 }
+def checked :: std::Result<i64, string> -> i64 = \\result ->
+    match result with
+    | std::Result.Ok value -> value
+    | std::Result.Error _ -> 0
+let local = Result { value: 2 }
+let work: std::Task<i64> = task { 3 }
+let values: std::Vec<i64> = std::Vec.empty()
+let sum = std::Int.checked_add 1 2 |> std::Maybe.default_value 0
+let next = std::Maybe.get (std::Maybe.map (\\n -> n + 1) (Maybe.Some 0))
+checked (std::Result.Ok 40) + local.value + std::Task.run work + values.length + sum + next",
+    )])
+    .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    llvm::emit(&module, llvm::Entry::Console).unwrap();
+    analyze_modules(&[("Main.tz", "using std\nMaybe.default_value 0 (Some 5)")]).unwrap();
+    // The requester's union hides the std module of the same name in a case
+    // path; other modules still see the std case.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "union Maybe = None | Some of i64\nlet own: Maybe = Maybe.Some 4\nlet standard: std::Maybe<i64> = std::Maybe.Some 5\nlet other: std::Maybe<i64> = Other.value()\n0",
+        ),
+        ("Other.tz", "def value :: Maybe<i64> = Maybe.Some 1\n"),
+    ])
+    .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    for (source, code, message) in [
+        (
+            "union Maybe = None | Some of i64\nlet x: std::Maybe<i64> = Maybe.Some 4\n0",
+            "E1003",
+            "",
+        ),
+        (
+            "union Maybe = Nothing | Just of i64\nlet x = Maybe.Some 4\n0",
+            "E1002",
+            "union 'Main.Maybe' has no case 'Some'; write 'std::Maybe.Some' for the standard library's case",
+        ),
+        (
+            "namespace std\n0",
+            "E1011",
+            "module 'std::Main' is in the namespace 'std', which is reserved for the standard library",
+        ),
+        (
+            "namespace std::Tools\n0",
+            "E1011",
+            "module 'std::Tools::Main' is in the namespace 'std'",
+        ),
+        (
+            "std.Maybe.Some 1",
+            "E1002",
+            "write '::' between a namespace",
+        ),
+        (
+            "std::Maybe.Maybe.Some 1",
+            "E1004",
+            "so write 'std::Maybe.Some'",
+        ),
+        (
+            "let x: std::Maybe.Maybe<i64> = None\n0",
+            "E1004",
+            "so write 'std::Maybe'",
+        ),
+        ("std::Missing.f 1", "E1002", ""),
+    ] {
+        let error = analyze_modules(&[("Main.tz", source)]).expect_err(source);
+        assert_eq!(error.code, code, "{source}\n{}", error.message);
+        assert!(
+            error.message.contains(message),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // A directory named `std` would put its modules in the std namespace.
+    let error =
+        analyze_modules(&[("Main.tz", "0"), ("std/Helper.tz", "def f :: i64 = 1\n")]).unwrap_err();
+    assert_eq!(error.code, "E1011", "{}", error.message);
+    assert!(
+        error
+            .message
+            .contains("module 'std::Helper' is in the namespace 'std'"),
         "{}",
         error.message
     );

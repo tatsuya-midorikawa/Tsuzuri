@@ -85,11 +85,11 @@ fn os_api_signatures_type_check() {
     let create: string -> IO<Result<unit, Os.Error>> = Dir.create
     let remove_dir: string -> IO<Result<unit, Os.Error>> = Dir.remove
     let join: ref string -> ref string -> string = Path.join
-    let parent: ref string -> Option<string> = Path.parent
-    let file_name: ref string -> Option<string> = Path.file_name
-    let extension: ref string -> Option<string> = Path.extension
+    let parent: ref string -> Maybe<string> = Path.parent
+    let file_name: ref string -> Maybe<string> = Path.file_name
+    let extension: ref string -> Maybe<string> = Path.extension
     let args: unit -> IO<Result<[string], Os.Error>> = Env.args
-    let variable: string -> IO<Result<Option<string>, Os.Error>> = Env.var
+    let variable: string -> IO<Result<Maybe<string>, Os.Error>> = Env.var
     let current: unit -> IO<Result<string, Os.Error>> = Env.current_dir
     let monotonic: unit -> IO<Result<i64, Os.Error>> = Time.monotonic_ns
     let unix: unit -> IO<Result<i64, Os.Error>> = Time.unix_ns
@@ -146,7 +146,7 @@ fn os_builtins_declare_runtime_only_when_reached() {
     }
     // The pure parts of Path, Os, and Random.Pcg need no runtime at all.
     let pure = module(
-        "export def parent_length :: i64\nfn parent_length =\n    let path = \"a/b\"\n    match Path.parent (&path) with\n    | Option.Some text -> text.length\n    | Option.None -> 0\n",
+        "export def parent_length :: i64\nfn parent_length =\n    let path = \"a/b\"\n    match Path.parent (&path) with\n    | Maybe.Some text -> text.length\n    | Maybe.None -> 0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&pure, llvm::Entry::Library, wasm);

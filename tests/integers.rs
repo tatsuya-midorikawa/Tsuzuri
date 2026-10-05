@@ -73,7 +73,7 @@ fn integer_bit_and_selection_intrinsics_are_typed_and_deterministic() {
 }
 
 #[test]
-fn checked_saturating_and_power_lowering_preserves_option_layout() {
+fn checked_saturating_and_power_lowering_preserves_maybe_layout() {
     for bits in [8, 16, 32, 64, 128] {
         for suffix in ["", "u"] {
             let ty = format!("i{bits}{suffix}");

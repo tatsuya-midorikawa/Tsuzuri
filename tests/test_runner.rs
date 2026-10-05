@@ -283,7 +283,7 @@ fn cli_discovers_without_tools_and_selects_duplicate_names_by_index() {
 fn tests_are_checked_and_keep_private_dependencies_reachable() {
     let module = tsuzuri::analyze("private def helper :: i64 -> i64\nfn helper value = value + 1\n\
         test \"uses private and lambda\" = { let calculate = value -> helper value; assert (calculate 1 == 2) }\n\
-        test \"builder\" = { let value = Option { let! number = Some 2; return number }; assert (Option.get value == 2) }").unwrap();
+        test \"builder\" = { let value = Maybe { let! number = Some 2; return number }; assert (Maybe.get value == 2) }").unwrap();
     assert_eq!(module.tests.len(), 2);
     assert!(module.warnings.is_empty(), "{:?}", module.warnings);
     for test in &module.tests {

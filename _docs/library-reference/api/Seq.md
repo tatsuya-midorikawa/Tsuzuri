@@ -1,11 +1,13 @@
 # Seq
 
+Namespace: `std`
+
 ## `Seq`
 
 ```tsuzuri
 record Seq<'a> {
-  head: Option<'a>
-  step: Option<(unit -> (Seq<'a> * Option<'a>))>
+  head: Maybe<'a>
+  step: Maybe<(unit -> (Seq<'a> * Maybe<'a>))>
 }
 ```
 
@@ -24,13 +26,13 @@ def once :: 'a -> Seq<'a>
 ## `defer`
 
 ```tsuzuri
-def defer :: (unit -> (Seq<'a> * Option<'a>)) -> Seq<'a>
+def defer :: (unit -> (Seq<'a> * Maybe<'a>)) -> Seq<'a>
 ```
 
 ## `unfold`
 
 ```tsuzuri
-def rec unfold :: Capture<'state> => ('state -> Option<('a * 'state)>) -> 'state -> Seq<'a>
+def rec unfold :: Capture<'state> => ('state -> Maybe<('a * 'state)>) -> 'state -> Seq<'a>
 ```
 
 ## `map`

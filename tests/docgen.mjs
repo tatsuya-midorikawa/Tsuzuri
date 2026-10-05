@@ -65,9 +65,10 @@ try {
   cli(["doc", resolve("std"), "-o", stdOutput, "--json"]);
   assert.ok(existsSync(join(stdOutput, "Array.md")));
   assert.match(readFileSync(join(stdOutput, "Array.md"), "utf8"), /sum_pairwise/);
-  const option = readFileSync(join(stdOutput, "Option.md"), "utf8");
-  assert.match(option, /union Option/);
-  assert.match(option, /## `Return`/);
+  const maybe = readFileSync(join(stdOutput, "Maybe.md"), "utf8");
+  assert.match(maybe, /^# Maybe\n\nNamespace: `std`\n/);
+  assert.match(maybe, /union Maybe/);
+  assert.match(maybe, /## `Return`/);
   console.log("docgen: deterministic public Markdown, hierarchy, builders/classes, protected publication, compiler-free std generation passed");
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -1,5 +1,7 @@
 # HashMap
 
+Namespace: `std`
+
 ## `HashMap`
 
 ```tsuzuri
@@ -97,13 +99,13 @@ def contains_key :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key 
 ## `get_ref`
 
 ```tsuzuri
-def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Option<'value>
+def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Maybe<'value>
 ```
 
 ## `get`
 
 ```tsuzuri
-def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Option<'value>
+def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Maybe<'value>
 ```
 
 ## `at_ref`

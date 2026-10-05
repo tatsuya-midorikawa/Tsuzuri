@@ -128,8 +128,8 @@ two ** 100
 | API | 型と結果 |
 | --- | --- |
 | `BigInt.of_i64` | `i64 -> bigint` |
-| `BigInt.to_i64` | `ref bigint -> Option<i64>`。i64 に収まらなければ None |
-| `BigInt.of_string` | `ref string -> Option<bigint>` |
+| `BigInt.to_i64` | `ref bigint -> Maybe<i64>`。i64 に収まらなければ None |
+| `BigInt.of_string` | `ref string -> Maybe<bigint>` |
 | `BigInt.compare` | `ref bigint -> ref bigint -> i64` |
 
 ## 浮動小数点

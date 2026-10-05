@@ -1,5 +1,7 @@
 # Vec
 
+Namespace: `std`
+
 ## `iter`
 
 ```tsuzuri

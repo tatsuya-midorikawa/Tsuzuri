@@ -777,7 +777,7 @@ pub enum BuiltinType {
     Var(&'static str),
     /// A primitive type; never a project id.
     Concrete(Type),
-    /// A std-origin record or union by module and name, such as `Option<'a>`.
+    /// A std-origin record or union by module and name, such as `Maybe<'a>`.
     Std {
         module: &'static str,
         name: &'static str,
@@ -1365,8 +1365,8 @@ impl Builtin {
             Self::Utf8StringFromBytes => (
                 vec![Array(Box::new(Concrete(Type::Integer(8, false))))],
                 BuiltinType::Std {
-                    module: "Option",
-                    name: "Option",
+                    module: "Maybe",
+                    name: "Maybe",
                     args: vec![Concrete(Type::Utf8String)],
                 },
                 Vec::new(),
@@ -1417,8 +1417,8 @@ impl Builtin {
             Self::Utf8CharOfU32 => (
                 vec![Concrete(Type::Integer(32, false))],
                 BuiltinType::Std {
-                    module: "Option",
-                    name: "Option",
+                    module: "Maybe",
+                    name: "Maybe",
                     args: vec![Concrete(Type::Utf8Char)],
                 },
                 Vec::new(),
@@ -1430,8 +1430,8 @@ impl Builtin {
                     args: vec![a()],
                 };
                 let option = BuiltinType::Std {
-                    module: "Option",
-                    name: "Option",
+                    module: "Maybe",
+                    name: "Maybe",
                     args: vec![a()],
                 };
                 (
@@ -1460,8 +1460,8 @@ impl Builtin {
                 let vector = || BuiltinType::Vec(Box::new(a()));
                 let borrowed = || Reference(Box::new(vector()), false);
                 let option = || BuiltinType::Std {
-                    module: "Option",
-                    name: "Option",
+                    module: "Maybe",
+                    name: "Maybe",
                     args: vec![a()],
                 };
                 let parameters = match self {
@@ -1649,8 +1649,8 @@ impl Builtin {
                     | Self::IntCheckedRem
                     | Self::IntCheckedNeg
                     | Self::IntCheckedPow => BuiltinType::Std {
-                        module: "Option",
-                        name: "Option",
+                        module: "Maybe",
+                        name: "Maybe",
                         args: vec![a()],
                     },
                     _ => a(),
@@ -1885,8 +1885,8 @@ impl Builtin {
             Self::Parse => (
                 vec![Reference(Box::new(Concrete(Type::String)), false)],
                 BuiltinType::Std {
-                    module: "Option",
-                    name: "Option",
+                    module: "Maybe",
+                    name: "Maybe",
                     args: vec![a()],
                 },
                 Vec::new(),
@@ -2356,7 +2356,7 @@ pub enum TypedExprKind {
     Dereference(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
-    /// A case used as a function value, `Some : 'a -> Option<'a>`. After
+    /// A case used as a function value, `Some : 'a -> Maybe<'a>`. After
     /// specialization `closures::lower` replaces it with a generated function.
     CaseConstructor {
         union_id: usize,
@@ -2787,7 +2787,7 @@ struct Names {
 enum ActiveCase {
     TotalSingle,
     BoolPartial,
-    OptionPartial,
+    MaybePartial,
     TotalCase { index: usize, count: usize },
 }
 
@@ -2895,6 +2895,20 @@ fn type_display(qualified: &str) -> String {
 /// The file stem that ends the module key or full name `module`.
 fn module_stem(module: &str) -> &str {
     module.rsplit('.').next().unwrap_or(module)
+}
+
+/// The builtin module function that `path` names, as `Task.run` or, with the
+/// std namespace, `std::Task.run`.
+fn qualified_builtin(path: &str) -> Option<Builtin> {
+    let path = path
+        .strip_prefix(crate::stdlib::NAMESPACE)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .filter(|member| member.contains('.'))
+        .unwrap_or(path);
+    Builtin::ALL
+        .iter()
+        .copied()
+        .find(|builtin| builtin.name() == path)
 }
 
 impl Names {
@@ -3417,8 +3431,8 @@ impl Names {
         }
         // A path to a module names the type that shares the module's name, whose
         // full name it is: `Sample::Point` is the record `Point` of the module
-        // `Sample::Point`, and a bare `Option` is the std union even when another
-        // module declares an `Option`. It ranks with its module's origin ahead of
+        // `Sample::Point`, and a bare `Maybe` is the std union even when another
+        // module declares a `Maybe`. It ranks with its module's origin ahead of
         // the search below; private types keep that search.
         if !name.contains('.')
             && let Some(key) = self.module_path(module, name)
@@ -3684,8 +3698,10 @@ impl Names {
     /// `Union.Case`, or `Module.Union.Case`, where `Module` may be a namespace
     /// path. A module's case comes before a case of the requester's own union
     /// that shares the module's name, which stays `Case` or `Module.Union.Case`
-    /// with the requester's module. `None` means the path names no case, so a
-    /// caller can try functions, fields, or recognizers.
+    /// with the requester's module. A std module comes after the requester's
+    /// own declarations instead: its own `union Maybe` makes `Maybe.Some` its
+    /// own case, and `std::Maybe.Some` names the std case. `None` means the
+    /// path names no case, so a caller can try functions, fields, or recognizers.
     fn case_path(
         &self,
         requester: &str,
@@ -3711,6 +3727,25 @@ impl Names {
         let Some((prefix, name)) = path.rsplit_once('.') else {
             return self.case(requester, path, span);
         };
+        if self.origin(requester) == ModuleOrigin::User
+            && self.origin(prefix) == ModuleOrigin::Std
+            && source
+                .split_once('.')
+                .is_some_and(|(written, member)| written == prefix && !member.contains('.'))
+            && self.unions.contains_key(&format!("{requester}.{prefix}"))
+        {
+            return self
+                .union_case(requester, requester, prefix, name, span)
+                .map_err(|mut error| {
+                    if self.cases.contains_key(path) {
+                        error.message.push_str(&format!(
+                            "; write '{}::{path}' for the standard library's case",
+                            crate::stdlib::NAMESPACE
+                        ));
+                    }
+                    error
+                });
+        }
         let qualified = if self.searchable(requester, prefix) {
             let case = self.cases.get(path);
             if let Some(case) = case {
@@ -4090,12 +4125,25 @@ fn check_modules_collect(
         } else {
             format!("{}.{stem}", module.namespace)
         };
+        let span = module
+            .program
+            .namespace
+            .as_ref()
+            .map_or(Span::default(), |declared| declared.path.span);
+        if module.origin == ModuleOrigin::User
+            && full.split('.').next() == Some(crate::stdlib::NAMESPACE)
+        {
+            diagnostics.push(Diagnostic::new(
+                "E1011",
+                format!(
+                    "module '{}' is in the namespace 'std', which is reserved for the standard library; choose another namespace",
+                    namespace_display(&full)
+                ),
+                span.in_source(source),
+            ));
+            continue;
+        }
         if valid && names.full_modules.contains_key(&full) {
-            let span = module
-                .program
-                .namespace
-                .as_ref()
-                .map_or(Span::default(), |declared| declared.path.span);
             diagnostics.push(Diagnostic::new(
                 "E1011",
                 format!(
@@ -4998,15 +5046,15 @@ fn check_modules_collect(
                 ));
                 signatures[id] = Scheme::poisoned();
             }
-            let option_result = matches!(&signatures[id].signature.result, Type::Union(union_id, _) if names.unions.get("Option.Option").is_some_and(|info| info.id == *union_id));
+            let maybe_result = matches!(&signatures[id].signature.result, Type::Union(union_id, _) if names.unions.get("Maybe.Maybe").is_some_and(|info| info.id == *union_id));
             if !signatures[id].is_poisoned()
                 && active.partial
                 && signatures[id].signature.result != Type::Bool
-                && !option_result
+                && !maybe_result
             {
                 diagnostics.push(Diagnostic::new(
                     "E1003",
-                    "a partial active recognizer must return bool or Option payload",
+                    "a partial active recognizer must return bool or Maybe payload",
                     active.cases[0].span,
                 ));
                 signatures[id] = Scheme::poisoned();
@@ -5044,8 +5092,8 @@ fn check_modules_collect(
                     }
                 } else if !active.partial {
                     ActiveCase::TotalSingle
-                } else if option_result {
-                    ActiveCase::OptionPartial
+                } else if maybe_result {
+                    ActiveCase::MaybePartial
                 } else {
                     ActiveCase::BoolPartial
                 };
@@ -8548,11 +8596,8 @@ impl<'a> Checker<'a> {
         {
             return Ok(self.function(id));
         }
-        if let Some(builtin) = Builtin::ALL
-            .iter()
-            .find(|builtin| builtin.name() == name.text)
-        {
-            return self.builtin(*builtin, name.span);
+        if let Some(builtin) = qualified_builtin(&name.text) {
+            return self.builtin(builtin, name.span);
         }
         let hint = self
             .names
@@ -8654,10 +8699,8 @@ impl<'a> Checker<'a> {
         {
             return Ok(Some(self.function(id)));
         }
-        Builtin::ALL
-            .iter()
-            .find(|builtin| builtin.name() == path)
-            .map(|builtin| self.builtin(*builtin, expression.span))
+        qualified_builtin(&path)
+            .map(|builtin| self.builtin(builtin, expression.span))
             .transpose()
     }
 

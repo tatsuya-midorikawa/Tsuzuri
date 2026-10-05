@@ -100,7 +100,7 @@ fn generic_aliases_substitute_types_without_capturing_names() {
         llvm::emit(&direct, llvm::Entry::Library).unwrap(),
     );
     analyze_modules(&[
-        ("Aliases.tz", "type Identity<'a> = 'a\ntype Nested<'a> = Identity<Option<'a>>"),
+        ("Aliases.tz", "type Identity<'a> = 'a\ntype Nested<'a> = Identity<Maybe<'a>>"),
         ("Main.tz", "private record Local { value: i64 }\nprivate def own :: Aliases.Identity<Local> -> i64\nfn own value = value.value"),
     ])
     .unwrap();

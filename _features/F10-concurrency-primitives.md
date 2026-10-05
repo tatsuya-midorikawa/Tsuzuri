@@ -222,7 +222,7 @@ callback が外側の借用を捕捉すると E1013、`Atomic.create 1.5` は E1
 ### Phase 2（設計方針。D10 の承認後）
 
 - `std/Channel.tz`（新規）: 不透明な `Sender<'a>`・`Receiver<'a>`。`Channel.bounded : Send<'a> => i64 -> (Channel.Sender<'a>, Channel.Receiver<'a>)`（容量 1 以上、未満は trap）、
-  `Channel.send : ref Channel.Sender<'a> -> 'a -> unit`（満杯なら待つ）、`Channel.recv : ref Channel.Receiver<'a> -> Option<'a>`（空で開いていれば待ち、全 Sender の drop 後は `None`）、
+  `Channel.send : ref Channel.Sender<'a> -> 'a -> unit`（満杯なら待つ）、`Channel.recv : ref Channel.Receiver<'a> -> Maybe<'a>`（空で開いていれば待ち、全 Sender の drop 後は `None`）、
   `Channel.clone_sender : ref Channel.Sender<'a> -> Channel.Sender<'a>`。両端とも `Sync`（runtime の lock で守る MPMC）。未受信の要素は close 後の最後の drop で解放する。
 - 待ちの規則: 待つ thread はまず pool の未配布の仕事を手伝い、それでも進めなければ park する。全 thread が channel・join で park し、未配布の仕事がないとき
   `deadlock: every task is waiting on a channel` で trap する。既定の WASM は子を index 順に走らせ、すぐに満たせない待ちは同じ trap。`Mutex.with` の中の待ちは D7 の trap。

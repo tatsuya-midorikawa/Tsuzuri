@@ -35,7 +35,7 @@
 | [条件とループ](control-flow.md) | if、for、while、範囲、break / continue |
 | [例外処理](error-handling.md) | @checked、try / with / finally、Exception、Err |
 | [パターンマッチ](patterns.md) | 分解、網羅性、OR / AND、ガード |
-| [アクティブパターン](active-patterns.md) | 全域、部分、Option、複数 case |
+| [アクティブパターン](active-patterns.md) | 全域、部分、Maybe、複数 case |
 | [コンピュテーション式](computation-expressions.md) | .tc、Bind、Delay、match! / and! |
 | [タスク](tasks.md) | cold な一回実行、並列、Result、寿命 |
 | [モジュールとパッケージ](modules-and-packages.md) | root、修飾名、private、std、path 依存 |

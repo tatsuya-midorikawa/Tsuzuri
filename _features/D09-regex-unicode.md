@@ -96,7 +96,7 @@ Phase 1 は正規表現と、正規表現が使う Unicode の表だけを実装
 - D02（done）: `String`・`Utf8String` の添字規則（string は UTF-16 コード単位、utf8string は byte）、`String.from_code_units`、
   `Utf8String.decode_at :: ref utf8string -> i64 -> (utf8char * i64)`、`Utf8String.from_bytes`。
 - A08（done）: `char` は UTF-16 コード単位、`utf8char` は Unicode スカラー（D-12）、`Utf8Char.to_u32`。
-- B01（done）: `Result`（`Ok`・`Error`）と `Option`。
+- B01（done）: `Result`（`Ok`・`Error`）と `Maybe`。
 - D07 Phase 2 へ提供する書記素 API は Phase 2 の範囲で、Phase 1 は何も提供しない。
 
 ### 構文
@@ -150,10 +150,10 @@ def compile :: ref string -> Result<Regex, Error>
 def escape :: ref string -> string
 def group_count :: ref Regex -> i64
 def is_match :: ref Regex -> ref string -> bool
-def find :: ref Regex -> ref string -> Option<(i64 * i64)>
-def find_at :: ref Regex -> ref string -> i64 -> Option<(i64 * i64)>
+def find :: ref Regex -> ref string -> Maybe<(i64 * i64)>
+def find_at :: ref Regex -> ref string -> i64 -> Maybe<(i64 * i64)>
 def find_all :: ref Regex -> ref string -> [(i64 * i64)]
-def captures :: ref Regex -> ref string -> Option<[(i64 * i64)]>
+def captures :: ref Regex -> ref string -> Maybe<[(i64 * i64)]>
 def replace_all :: ref Regex -> ref string -> ref string -> string
 def split :: ref Regex -> ref string -> [string]
 def search_steps :: ref Regex -> ref string -> i64
@@ -170,7 +170,7 @@ def search_steps :: ref Regex -> ref string -> i64
   それ以外の `$` は字義どおり。`escape` は `syntax` の 14 文字の前に `\` を付ける。
 - `search_steps` は `find` と同じ探索で実行した VM の手数（「アルゴリズム」の steps）を返す。試験用だが公開する（D12）。
 - `Unicode` モジュールの新 API（実装後に有効。未検証）: `def version :: unit -> string`（`"17.0.0"`）、
-  `def property_ranges :: ref string -> Option<[(i64 * i64)]>`（`\p{...}` と同じ名前の、昇順で連結済みの閉区間。未知の名前は `None`）、
+  `def property_ranges :: ref string -> Maybe<[(i64 * i64)]>`（`\p{...}` と同じ名前の、昇順で連結済みの閉区間。未知の名前は `None`）、
   `def simple_case_folding :: unit -> [(i64 * i64)]`（`CaseFolding.txt` の状態 C と S の `(c, scf(c))`、`c != scf(c)`、`c` の昇順）。
   どれも呼び出しごとに表全体を復号して確保する。1 文字ごとの分類 API は Phase 2（D11）。
 
@@ -243,8 +243,8 @@ fn digit_count text =
     | Result.Error _ -> -1
     | Result.Ok re ->
         match Regex.find (ref re) text with
-        | Option.Some (start, stop) -> stop - start
-        | Option.None -> 0
+        | Maybe.Some (start, stop) -> stop - start
+        | Maybe.None -> 0
 ```
 
 | パターン | 入力・操作 | 期待（参照は JS の `u` フラグ） |

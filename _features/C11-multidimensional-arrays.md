@@ -128,7 +128,7 @@ fn row matrix index =
 | `rows` | `ref Matrix<'a> -> i64` | 行数 | なし |
 | `cols` | `ref Matrix<'a> -> i64` | 列数 | なし |
 | `at` | `ref Matrix<'a> -> i64 -> i64 -> ref 'a` | 要素の共有借用（`Array.at` に対応） | `row` か `col` が範囲外 |
-| `get` | `Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Option<'a>` | 範囲外は `Option.None`（`Array.get` に対応） | なし |
+| `get` | `Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Maybe<'a>` | 範囲外は `Maybe.None`（`Array.get` に対応） | なし |
 | `row` | `ref Matrix<'a> -> i64 -> ref ['a]` | 行の部分参照（長さ `cols`、複製なし） | 行番号が範囲外 |
 | `as_array` | `ref Matrix<'a> -> ref ['a]` | 全要素の行優先の借用（長さ `rows * cols`） | なし |
 | `to_array` | `Matrix<'a> -> ['a]` | 行列を消費し、バッファを複製せずに返す | なし |
@@ -209,7 +209,7 @@ let p = Matrix.mul (ref a) (ref t)
 let r = Matrix.row (ref p) 1
 let s = Matrix.add (ref p) (ref p)
 let flat = Matrix.to_array s
-Array.sum r + deref (Matrix.at (ref p) 0 1) + flat[3] + Option.get (Matrix.get (ref p) 1 0)
+Array.sum r + deref (Matrix.at (ref p) 0 1) + flat[3] + Maybe.get (Matrix.get (ref p) 1 0)
 ```
 
 拒否・trap（新 API（実装後に有効。未検証））。前置き `let m = Matrix.init 2 3 (\i j -> i + j)` の後に続ける。
@@ -311,10 +311,10 @@ fn at matrix row col =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     ref matrix.data[row * matrix.cols + col]
 
-def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Option<'a>
+def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Maybe<'a>
 fn get matrix row col =
-    if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Option.None
-    else Option.Some matrix.data[row * matrix.cols + col]
+    if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Maybe.None
+    else Maybe.Some matrix.data[row * matrix.cols + col]
 
 def row :: ref Matrix<'a> -> i64 -> ref ['a]
 fn row matrix index =
@@ -366,7 +366,7 @@ fn mul left right =
 
 - `transpose`: 出力の添字 `index` の行は `index / out_cols`、列は `index % out_cols`。入力の `(列, 行)` を読む。要素数 0 なら除算は実行されない。
 - `init`・`mul` の `index / cols` も、`cols == 0` なら要素数 0 で実行されない。
-- `checked_count` は乗算の前に除算で溢れを判定する（`String.tz` の `Int.checked_mul` は `Option` を経由するので使わない）。
+- `checked_count` は乗算の前に除算で溢れを判定する（`String.tz` の `Int.checked_mul` は `Maybe` を経由するので使わない）。
 
 ## 実装手順
 
@@ -574,7 +574,7 @@ trap（`traps`。native は非 0 終了、WASM は `RuntimeError`）: `of_array_
 - `cValue` は `NaN`・`Infinity` を C のリテラルにできず、C の `==` と `assert.equal` は `-0` と `+0` を区別しない。値で比べるケースの期待値は
   有限にし、NaN は `nan_count`、符号付きゼロは `zero_signs` で見る。
 - 各ケースの WASM メモリは 16 MiB 以下という検査がある。値で比べるケースは `n ≤ 16` にする。
-- std のソースでは他の std モジュールを常に修飾して書く（`Array.map`、`Option`。GUIDE D-07）。字下げは 4 空白で、タブを混ぜない。
+- std のソースでは他の std モジュールを常に修飾して書く（`Array.map`、`Maybe`。GUIDE D-07）。字下げは 4 空白で、タブを混ぜない。
 - `vsc/dist/` は生成物なので編集しない。`completions.json` に生成手順があるかは
   `grep -rln "completions.json" scripts vsc --include=*.mjs --include=*.ts` で確かめ、あればそれで更新する。
 

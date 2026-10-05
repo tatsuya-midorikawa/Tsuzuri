@@ -97,16 +97,16 @@ fn Bind source next = Async { start: \() -> bind_step (source.start ()) (value -
 
 def run :: Async<'a> -> 'a
 fn run computation =
-    let mut current = Option.Some (computation.start ())
-    let mut output = Option.None
+    let mut current = Maybe.Some (computation.start ())
+    let mut output = Maybe.None
     let mut clock = 0
-    while Option.is_some (ref current) do
-        match Option.get current with
-        | Done value -> { output = Option.Some value; current = Option.None }
-        | Yield resume -> current = Option.Some (resume ())
-        | Sleep (wake, resume) -> { clock = if wake > clock then wake else clock; current = Option.Some (resume ()) }
-        | Now resume -> current = Option.Some (resume clock)
-    Option.get output
+    while Maybe.is_some (ref current) do
+        match Maybe.get current with
+        | Done value -> { output = Maybe.Some value; current = Maybe.None }
+        | Yield resume -> current = Maybe.Some (resume ())
+        | Sleep (wake, resume) -> { clock = if wake > clock then wake else clock; current = Maybe.Some (resume ()) }
+        | Now resume -> current = Maybe.Some (resume clock)
+    Maybe.get output
 ```
 
 試作の残りは `Return`（`Capture<'a> =>`）、`ReturnFrom`、`Delay`、`Zero`、`Combine`（`bind_step (first.start ()) (\() -> rest.start ())`）、

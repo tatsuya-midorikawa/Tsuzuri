@@ -1,5 +1,7 @@
 # Random
 
+Namespace: `std`
+
 ## `Pcg`
 
 ```tsuzuri

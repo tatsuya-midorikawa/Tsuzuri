@@ -32,22 +32,22 @@ test('new projects suggest a PascalCase namespace and accept identifiers joined 
 	for (const [folder, namespace] of [['my-app', 'MyApp'], ['MyApp', 'MyApp'], ['hello_world', 'HelloWorld'], ['ex1', 'Ex1'], ['2024 app', 'App'], ['\u65e5\u672c', 'App']]) {
 		assert.equal(defaultNamespace(folder), namespace, folder);
 	}
-	for (const text of ['Sample', 'Acme::Tools', 'lower::case_1', 'Acme::_internal', 'Acme::Option', 'Tasks']) {
+	for (const text of ['Sample', 'Acme::Tools', 'lower::case_1', 'Acme::_internal', 'Acme::Maybe', 'Acme::std', 'Std', 'Tasks']) {
 		assert.ok(isNamespace(text), text);
 	}
-	for (const text of ['', '1st', 'Acme.Tools', 'Acme::::Tools', 'Acme:Tools', 'Acme::', 'my-app', 'A::'.repeat(16) + 'A', 'Task', 'Acme::Task', 'Acme::_', 'Acme::match', 'Option', 'IO::Extra']) {
+	for (const text of ['', '1st', 'Acme.Tools', 'Acme::::Tools', 'Acme:Tools', 'Acme::', 'my-app', 'A::'.repeat(16) + 'A', 'Task', 'Acme::Task', 'Acme::_', 'Acme::match', 'Maybe', 'IO::Extra', 'std', 'std::Extra']) {
 		assert.ok(!isNamespace(text), text);
 	}
 });
 
 test('static completions offer library members after a module but leave namespace paths to the language server', () => {
-	for (const [prefix, module] of [['let x = Option.ma', 'Option'], ['IO.', 'IO'], ['Holder { value:Option.ma', 'Option'], ['Sample::Option.ma', undefined], ['Sample::Shape.Option.', undefined], ['Shape.Option.ma', undefined], ['let x = option.', undefined], ['Sample::', undefined]]) {
+	for (const [prefix, module] of [['let x = Maybe.ma', 'Maybe'], ['IO.', 'IO'], ['Holder { value:Maybe.ma', 'Maybe'], ['let x = std::Maybe.ma', 'Maybe'], ['(std::IO.', 'IO'], ['Sample::Maybe.ma', undefined], ['Sample::std::Maybe.ma', undefined], ['Sample::Shape.Maybe.', undefined], ['Shape.Maybe.ma', undefined], ['let x = maybe.', undefined], ['Sample::', undefined]]) {
 		assert.equal(libraryQualifier(prefix!), module, prefix);
 	}
 	for (const prefix of ['Sample::', 'Sample::Fe', 'let ys = x::x', 'def f::Demo::', 'def f::Demo::Sh', 'rec go::Demo::Shapes::']) {
 		assert.ok(endsInPath(prefix), prefix);
 	}
-	for (const prefix of ['def main :: ', 'Sample::Shape.ar', 'let x = Option.', 'def f::', 'def f::i', 'export def f::i6', 'rec go::', 'and step::De']) {
+	for (const prefix of ['def main :: ', 'Sample::Shape.ar', 'let x = Maybe.', 'def f::', 'def f::i', 'export def f::i6', 'rec go::', 'and step::De']) {
 		assert.ok(!endsInPath(prefix), prefix);
 	}
 });

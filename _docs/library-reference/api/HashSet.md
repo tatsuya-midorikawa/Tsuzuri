@@ -1,5 +1,7 @@
 # HashSet
 
+Namespace: `std`
+
 ## `HashSet`
 
 ```tsuzuri

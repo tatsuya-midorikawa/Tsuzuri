@@ -1,4 +1,4 @@
-# PR03: 抽象化コストの除去（計算式・Option／Result・関数値）
+# PR03: 抽象化コストの除去（計算式・Maybe／Result・関数値）
 
 | 項目 | 内容 |
 | --- | --- |
@@ -11,18 +11,18 @@
 | 状態 | todo |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D3（Phase 3 の型付き IR での標準ビルダーの展開。PR03 の実装者は行わない）。Phase 1・2 は承認不要 |
-| 手本にする既存実装 | 既知の継続の worker: `src/call_specialization.rs` の `Specializations`（`new`・`can_borrow`・`request`）と `target`・`transparent`、`src/llvm.rs` の `FunctionEmitter::specialized`・`prepare_known_call`・`prepare_borrowed_call`・`borrowed_call` と `known_closures`。IR の到達可能な呼び出しの走査: `tests/call_specialization.rs` の `body` と `standard_option_result_continuations_use_allocation_free_workers`。match の生成: `src/llvm_control.rs` の `match_expression`、`src/llvm.rs` の `union_tag`・`union_layout`。計測: `benchmarks/run-computations.mjs`（tracked 実行ファイルの確保数、`--baseline`・`--artifacts`）と PX01 の `--metrics` |
-| 主な影響ファイル | `src/llvm.rs`（`FunctionEmitter` の呼び出し・match の emission）、`src/llvm_control.rs`（`match_expression`）、`src/call_specialization.rs`（展開の可否の判定、新規関数を置く）、`src/computation.rs`（読むだけ。展開の形を変えない）、`std/Option.tc`・`std/Result.tc`（読むだけ。本体を変えない）、`tests/call_specialization.rs`、`tests/computations.rs`、`tests/fixtures/computations/Optimization.tz`、`tests/computations.mjs`、`benchmarks/computations/`（変更なし。計測だけ）、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`_perfs/README.md` |
+| 手本にする既存実装 | 既知の継続の worker: `src/call_specialization.rs` の `Specializations`（`new`・`can_borrow`・`request`）と `target`・`transparent`、`src/llvm.rs` の `FunctionEmitter::specialized`・`prepare_known_call`・`prepare_borrowed_call`・`borrowed_call` と `known_closures`。IR の到達可能な呼び出しの走査: `tests/call_specialization.rs` の `body` と `standard_maybe_result_continuations_use_allocation_free_workers`。match の生成: `src/llvm_control.rs` の `match_expression`、`src/llvm.rs` の `union_tag`・`union_layout`。計測: `benchmarks/run-computations.mjs`（tracked 実行ファイルの確保数、`--baseline`・`--artifacts`）と PX01 の `--metrics` |
+| 主な影響ファイル | `src/llvm.rs`（`FunctionEmitter` の呼び出し・match の emission）、`src/llvm_control.rs`（`match_expression`）、`src/call_specialization.rs`（展開の可否の判定、新規関数を置く）、`src/computation.rs`（読むだけ。展開の形を変えない）、`std/Maybe.tc`・`std/Result.tc`（読むだけ。本体を変えない）、`tests/call_specialization.rs`、`tests/computations.rs`、`tests/fixtures/computations/Optimization.tz`、`tests/computations.mjs`、`benchmarks/computations/`（変更なし。計測だけ）、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`_perfs/README.md` |
 | 計測対象 | suite `computations` の対の種目 `bind`・`checked`・`delayed`・`array_for`・`array_bind`・`owned_capture`・`std_option`・`std_result`（`benchmarks/computations/native.cpp` の `workloads`）。`std_option_owned` は PX02 Phase 1a が条件をそろえるまで比較から外す。metric は PX01 の `wall_time`・`alloc_calls`・`alloc_bytes` と、-O3 IR・機械語の命令数（文書の表だけ） |
 
 ## 目的
 
-関数型の書き方（コンピュテーション式、Option／Result、関数値、部分適用、パイプ）を使っても、手書きの分岐とループと同じ機械語になる
+関数型の書き方（コンピュテーション式、Maybe／Result、関数値、部分適用、パイプ）を使っても、手書きの分岐とループと同じ機械語になる
 「ゼロコストの抽象化」に近づける。高水準の書き方を選んでも速度を失わないことは、Tsuzuri が C/C++・Rust を上回るための前提である。
 
 対象の費用は次の 3 種類に限る。
 
-- A1: 標準ビルダー（`Option`・`Result`）の `let!` 連鎖が作る union 値の構築と直後の分解。HEAD では確保も間接呼び出しもないが、
+- A1: 標準ビルダー（`Maybe`・`Result`）の `let!` 連鎖が作る union 値の構築と直後の分解。HEAD では確保も間接呼び出しもないが、
   -O3 後も union 値の `phi` とタグの `switch` が残る（`std_option`）。
 - A2: 呼び先が静的に分かる関数値の間接呼び出し（`FunctionEmitter::apply_value` の code pointer 経由）。
 - A3: LLVM が inline できない、または inline しない wrapper・worker の呼び出し。HEAD の生成関数は `define internal ... nounwind` で
@@ -72,9 +72,9 @@
 ### 抽象化の経路（コードで確認）
 
 - 展開: `src/computation.rs` の `expand` → `lower` → `Lowering::block`。`let!` の続きは `Lowering::continuation` が `ExprKind::Lambda` にし、
-  `Lowering::call` が `Option.Bind` などの `ExprKind::QualifiedFunction` 呼び出しを作る。`Delay` を持つビルダーでは `Lowering::delay` が本体を
+  `Lowering::call` が `Maybe.Bind` などの `ExprKind::QualifiedFunction` 呼び出しを作る。`Delay` を持つビルダーでは `Lowering::delay` が本体を
   `Lowering::thunk`（`unit` を受ける lambda）で包み、全体を `Run` に渡す。操作名は `OPERATIONS`。
-- 標準ビルダー: `std/Option.tc` は `Bind option next = bind option next`、`Return value = Some value`、`Delay body = body`、
+- 標準ビルダー: `std/Maybe.tc` は `Bind option next = bind option next`、`Return value = Some value`、`Delay body = body`、
   `Run body = body ()`、`BindReturn value next = map next value`、`default_value`・`bind`・`map` を持つ。`std/Result.tc` も同じ形。
 - 特殊化: `Specializations::new` が関数型引数の非 escaping を固定点で求め（`eligible`）、呼び出しの emission が既知の継続
   （`call_specialization::target` が返す `ClosureTarget`）を `Specialization { function, callbacks, borrowed }` として `request` する。
@@ -85,7 +85,7 @@
   `call <ty> {code}(<arg>, ptr {env}, i1 {borrowed})` で呼ぶ。
 - 属性: 生成関数は `FunctionEmitter::emit` と `auxiliary` が `define internal ... nounwind` で出し、export だけが `define`。
   `alwaysinline`・`inlinehint`・`noinline` は `src/` にない。
-- union: `Option<i64>` は `%"tz.union.Option.Option[i64]"`（`union_layout` の `UnionLayout::Common`）。`Some v` は
+- union: `Maybe<i64>` は `%"tz.union.Maybe.Maybe[i64]"`（`union_layout` の `UnionLayout::Common`）。`Some v` は
   `insertvalue ... { i32 1, i64 0 }, i64 v, 1`、`None` は `zeroinitializer`。match は `src/llvm_control.rs` の `match_expression` が
   タグの `switch` にし、到達しない既定の枝は `llvm.trap` を呼ぶ。
 
@@ -106,14 +106,14 @@
 
 - 上の表の `call` は `llvm.trap`（`assert` の失敗と match の既定の枝）だけで、worker の呼び出しは残らない。`tz_ce_std_option` では、
   inline された `@tz.specialized.14`（`Run` 以下の連鎖）の二つの `ret` が union 値の `phi`（`insertvalue` と `zeroinitializer`）になり、
-  `Option.default_value` の match がその `extractvalue` を `switch` し、既定の枝に `llvm.trap` が残る。`direct_std_option` は同じ条件を
+  `Maybe.default_value` の match がその `extractvalue` を `switch` し、既定の枝に `llvm.trap` が残る。`direct_std_option` は同じ条件を
   `select` 1 個にしている。これが A1 の具体形（K1）である。`std_result` は -O3 IR の大きさが既に同じ。
 - 同じ probe の機械語の命令数（export 関数全体、ループを含む）: `ce_std_option` 263／`direct_std_option` 229、`ce_std_result` 205／176、
   `ce_checked` 893／864、`ce_bind` 943／918、`ce_delayed` 837／802。分岐・呼び出し命令（`bl`・`b` から `_` 名への）は各対で同数。
   `std_result` は IR が同じ大きさなのに機械語が 29 命令違う。Phase 1 で原因（ブロック配置など）を分類する。
 - `let!` 2 段の連鎖の -O0 IR（下の再現）: `@tz.fn.Main.run` は `@tz.specialized.0` を呼び、worker の連鎖は
   `0 → 4 → 3 → 6 → 8 → 2 → 5 → 7` の 8 段で、`@tz.alloc` も間接呼び出しもない。ほかに `@tz.specialized.1`
-  （`Option.map` の形、本体に間接呼び出し `call i64 %v8(i64 %v7, ptr %v9, i1 true)`）が定義されるが、`run` からは到達しない。
+  （`Maybe.map` の形、本体に間接呼び出し `call i64 %v8(i64 %v7, ptr %v9, i1 true)`）が定義されるが、`run` からは到達しない。
   到達しない worker も 1,024 件の予算を消費する。
 
 ### 再現（2026-09-29 に確認）
@@ -122,7 +122,7 @@
 
 ```tsuzuri
 def run :: i64 -> i64
-fn run offset = Option.get (Option { let! x = Some 20; let! y = Some (x + offset); return x + y })
+fn run offset = Maybe.get (Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y })
 run 22
 ```
 
@@ -153,7 +153,7 @@ done
   `switch` が 0 個、条件は `select` 1 個）。
 - G2: 8 種目のどれでも確保の回数と量を増やさない。
 - G3: 8 種目の ce と direct の時間の比を悪化させない。`std_option` は差を縮める。
-- G4: Rust の同等の書き方（`Option` と `?`）と同等以上を長期目標とする。PR03 の受け入れ条件にはしない。
+- G4: Rust の同等の書き方（`Maybe` と `?`）と同等以上を長期目標とする。PR03 の受け入れ条件にはしない。
 
 | 指標 | 単位・統計 | 対象 | 期待（計算値。計測で確かめる） |
 | --- | --- | --- | --- |
@@ -225,7 +225,7 @@ impl FunctionEmitter<'_> {
 
 | 段 | ファイル | 関数・型 | 変更内容 |
 | --- | --- | --- | --- |
-| 分類（Phase 1） | `tests/call_specialization.rs` | `standard_option_result_continuations_use_allocation_free_workers` の隣 | 新規テスト 3 件（テスト計画）。HEAD の性質を固定する |
+| 分類（Phase 1） | `tests/call_specialization.rs` | `standard_maybe_result_continuations_use_allocation_free_workers` の隣 | 新規テスト 3 件（テスト計画）。HEAD の性質を固定する |
 | 分類（Phase 1） | `docs/benchmarks.md` | `## コンピュテーション式の比較` | 分類の表（K1〜K4）と M1・M2・M5・M6 の before の値 |
 | F1 | `src/llvm.rs` | `FunctionEmitter`（欄）、`uses_return_slot`・`return_value`（新規） | 上のデータ構造 |
 | F1 | `src/llvm.rs` | `FunctionEmitter::emit` | `tail` の前に `uses_return_slot()` なら `self.allocas` へ `%tz.return.slot = alloca <ty>, align <n>` を足す（align は既存の alloca と同じ求め方）。`tail` の後、slot が一度でも使われたら `tz.return:` block（load と `ret`）を末尾に足す |
@@ -235,7 +235,7 @@ impl FunctionEmitter<'_> {
 | F1 | `src/llvm.rs` | `emit` の cpu dispatch の `ret i64 {result}`、`auxiliary`、`closure_wrappers`、`src/llvm_abi.rs`・`src/llvm_task.rs`・`src/llvm_recursive.rs` の `ret` | 変更なし（結果が union でない、または対象外の関数） |
 | F3 | `src/llvm.rs` | `FunctionEmitter::emit` の `define internal {} {}({parameters}) nounwind{debug}` | `self.symbol` が `@tz.specialized.` で始まるときだけ `nounwind inlinehint` にする（Phase 2b、K2 のときだけ） |
 | 予算 | `src/call_specialization.rs` | `MAX_SPECIALIZATIONS`、`Specializations::request` | 変更なし（D5） |
-| 展開 | `src/computation.rs`、`std/Option.tc`、`std/Result.tc` | `Lowering`、各操作 | 変更なし |
+| 展開 | `src/computation.rs`、`std/Maybe.tc`、`std/Result.tc` | `Lowering`、各操作 | 変更なし |
 
 ### 生成 IR とランタイム
 
@@ -243,8 +243,8 @@ impl FunctionEmitter<'_> {
 
 ```llvm
 define internal i64 @tz.fn.Main.run(i64 %arg0) nounwind {
-  %v7 = call %"tz.union.Option.Option[i64]" @tz.specialized.0(%tz.closure %v6)
-  %v8 = call i64 @tz.fn.Option.get.$mono.2(%"tz.union.Option.Option[i64]" %v7)
+  %v7 = call %"tz.union.Maybe.Maybe[i64]" @tz.specialized.0(%tz.closure %v6)
+  %v8 = call i64 @tz.fn.Maybe.get.$mono.2(%"tz.union.Maybe.Maybe[i64]" %v7)
   ret i64 %v8
 }
 ; 連鎖: @tz.specialized.0 → .4 → .3 → .6 → .8 → .2 → .5 → .7（Run → thunk → Bind → bind → 継続 → BindReturn → map → 継続）
@@ -254,8 +254,8 @@ HEAD の -O3（`tz_ce_std_option` の抜粋、検証済み）:
 
 ```llvm
 tz.specialized.14.exit.i.i.i:
-  %common.ret.op.i.i.i.i.i.i.i = phi %"tz.union.Option.Option[i64]" [ %v12.i.i.i.i.i.i.i, %b2.i.i.i.i.i.i.i ], [ zeroinitializer, %b1.i.i ]
-  %arg1.fca.0.extract.i.i.i.i = extractvalue %"tz.union.Option.Option[i64]" %common.ret.op.i.i.i.i.i.i.i, 0
+  %common.ret.op.i.i.i.i.i.i.i = phi %"tz.union.Maybe.Maybe[i64]" [ %v12.i.i.i.i.i.i.i, %b2.i.i.i.i.i.i.i ], [ zeroinitializer, %b1.i.i ]
+  %arg1.fca.0.extract.i.i.i.i = extractvalue %"tz.union.Maybe.Maybe[i64]" %common.ret.op.i.i.i.i.i.i.i, 0
   switch i32 %arg1.fca.0.extract.i.i.i.i, label %b1.i.i.i.i [
     i32 0, label %tz.fn.Main.option_step.exit.i.i
     i32 1, label %b2.i.i.i.i
@@ -265,17 +265,17 @@ tz.specialized.14.exit.i.i.i:
 F1 の後の worker の形（計画。未検証）:
 
 ```llvm
-define internal %"tz.union.Option.Option[i64]" @tz.specialized.2(%"tz.union.Option.Option[i64]" %arg0, %tz.closure %arg1) nounwind {
+define internal %"tz.union.Maybe.Maybe[i64]" @tz.specialized.2(%"tz.union.Maybe.Maybe[i64]" %arg0, %tz.closure %arg1) nounwind {
 entry:
-  %tz.return.slot = alloca %"tz.union.Option.Option[i64]", align 8
+  %tz.return.slot = alloca %"tz.union.Maybe.Maybe[i64]", align 8
   br label %loop
 loop:
   ; 既存の本体。各 ret の位置は次の 2 行になる
-  store %"tz.union.Option.Option[i64]" %v4, ptr %tz.return.slot
+  store %"tz.union.Maybe.Maybe[i64]" %v4, ptr %tz.return.slot
   br label %tz.return
 tz.return:
-  %tz.return.value = load %"tz.union.Option.Option[i64]", ptr %tz.return.slot
-  ret %"tz.union.Option.Option[i64]" %tz.return.value
+  %tz.return.value = load %"tz.union.Maybe.Maybe[i64]", ptr %tz.return.slot
+  ret %"tz.union.Maybe.Maybe[i64]" %tz.return.value
 }
 ```
 
@@ -336,7 +336,7 @@ cargo test --locked --test call_specialization specialization_budget_falls_back_
 
 - 変更: `tests/call_specialization.rs`。
 - 内容: テスト計画の `standard_let_chain_workers_are_direct_and_allocation_free`・`known_local_function_values_call_directly`（どちらも新規）を足す。
-  到達可能な呼び出しの走査は `standard_option_result_continuations_use_allocation_free_workers` の while ループを写す。
+  到達可能な呼び出しの走査は `standard_maybe_result_continuations_use_allocation_free_workers` の while ループを写す。
   `known_local_function_values_call_directly` が HEAD で失敗したら、テストを消して K3（let 束縛の局所）として手順 3 の表に記録する（D4）。
 - 確認: `cargo test --locked --test call_specialization` が `8 passed`（失敗して消した場合は `7 passed`）。
 
@@ -480,7 +480,7 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
 | `standard_let_chain_workers_are_direct_and_allocation_free` | 1 | 「再現」の `run`（`let!` 2 段） | native と wasm32 で `tz.fn.Main.run` が `@tz.specialized.` を呼ぶ。そこから到達する呼び出しに `tz.alloc`・`tz.closure.clone`・間接呼び出しがない。IR が 2 回とも一致 |
 | `known_local_function_values_call_directly` | 1 | `let` で束縛した捕捉付き lambda を同じ関数で 2 回呼ぶ `i64 -> i64` の関数 | 関数の本体に `@tz.specialized.` か `@tz.fn.` への直接呼び出しがあり、`call i64 %` がない |
 | `union_results_return_through_one_slot` | 2a | `if` で `Some`／`None` を返す関数、末尾 `match` で `Ok`／`Error` を返す関数、`i64` を返す関数 | union を返す 2 関数の本体に `%tz.return.slot = alloca` がちょうど 1 個、`ret %"tz.union.` がちょうど 1 個。`i64` の関数に `tz.return` がない。native と wasm32、IR の一致 |
-| `specialized_workers_carry_only_inlinehint` | 2b | `standard_option_result_continuations_use_allocation_free_workers` と同じ入力 | `define internal` の行で `@tz.specialized.` を持つものはすべて `inlinehint` を含む。IR 全体に `alwaysinline` がない |
+| `specialized_workers_carry_only_inlinehint` | 2b | `standard_maybe_result_continuations_use_allocation_free_workers` と同じ入力 | `define internal` の行で `@tz.specialized.` を持つものはすべて `inlinehint` を含む。IR 全体に `alwaysinline` がない |
 
 既存の `tests/call_specialization.rs` の 6 件、`tests/computations.rs` の `runtime_fixture_lowers_deterministically_for_both_targets`・
 `bounds_nested_builder_expansion_not_just_source_syntax`・`deterministic_computation_mutations_do_not_panic` は変えずに通す。
@@ -492,10 +492,10 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
 
 | case | 関数の内容 | 入力 → 期待 |
 | --- | --- | --- |
-| `slot_if` | `if flag then Some value else None` を返し、呼び出し側が `Option.default_value 0` で開く | `(true, 5)` → 5、`(false, 5)` → 0 |
+| `slot_if` | `if flag then Some value else None` を返し、呼び出し側が `Maybe.default_value 0` で開く | `(true, 5)` → 5、`(false, 5)` → 0 |
 | `slot_match_string` | `n` が 0 なら `Error "zero"`、それ以外は `Ok (n * 2)` を末尾 `match` で返し、呼び出し側が Error の文字列の長さか Ok の値を返す | 0 → 4、21 → 42（所有文字列の move と解放） |
 | `slot_tail_loop` | `n * n > limit` になる最初の `n` を自己末尾再帰で探し `Some n` を返す | `(1, 50)` → 8 |
-| `slot_nested` | 非末尾の再帰で `Option.map` を 1,000 段重ねる（深さ 0 は `Some 0`） | 1,000 → 1000（WASM `-O0` の stack） |
+| `slot_nested` | 非末尾の再帰で `Maybe.map` を 1,000 段重ねる（深さ 0 は `Some 0`） | 1,000 → 1000（WASM `-O0` の stack） |
 
 ### 既存テストへの影響
 
@@ -572,7 +572,7 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
 
 ### D3: 型付き IR での標準ビルダーの展開（Phase 3）
 
-- 決定: 承認されるまで行わない。方針: 対象は `ModuleOrigin::Std` の `Option`・`Result` の `Bind`・`bind`・`BindReturn`・`map`・`Return`・
+- 決定: 承認されるまで行わない。方針: 対象は `ModuleOrigin::Std` の `Maybe`・`Result` の `Bind`・`bind`・`BindReturn`・`map`・`Return`・
   `ReturnFrom`・`Delay`・`Run`・`Zero`・`default_value` に限る。関数型の引数がすべて `call_specialization::target` で既知かつ `can_borrow` の
   場合だけ、引数を左から順に一度ずつ評価して callee の本体を呼び出し元へ展開する。構築子が既知の `match` は選ばれた枝へ直接つなぐ。
   worker を作らないので予算を使わない。

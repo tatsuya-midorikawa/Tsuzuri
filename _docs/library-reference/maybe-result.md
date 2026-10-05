@@ -1,20 +1,20 @@
-# Option、Result、回復可能な失敗
+# Maybe、Result、回復可能な失敗
 
 [ドキュメントのトップ](../README.md)
 
-値がないことは `Option<T>`、理由を持つ失敗は `Result<T, E>` で表します。どちらも標準ライブラリにある通常の union です。null、例外、暗黙のエラー変換を必要としません。
+値がないことは `Maybe<T>`、理由を持つ失敗は `Result<T, E>` で表します。どちらも標準ライブラリにある通常の union です。null、例外、暗黙のエラー変換を必要としません。
 
 ## 型と case
 
 ```text
-Option<T> = None | Some of T
+Maybe<T> = None | Some of T
 Result<T, E> = Ok of T | Error of E
 ```
 
-case は `Option.Some` / `Result.Error` と修飾できます。無修飾名は利用者の同名 case に隠れる可能性があるので、公開例や複数モジュールでは修飾名が明確です。
+case は `Maybe.Some` / `Result.Error` と修飾できます。無修飾名は利用者の同名 case に隠れる可能性があるので、公開例や複数モジュールでは修飾名が明確です。
 
 ```tsuzuri run=42
-def parse_count :: ref string -> Result<i64, string> = \text -> Option.to_result "invalid count" (Parse.parse text)
+def parse_count :: ref string -> Result<i64, string> = \text -> Maybe.to_result "invalid count" (Parse.parse text)
 
 let first = "20"
 let second = "22"
@@ -28,15 +28,15 @@ match answer with
 | Result.Error _ -> 0
 ```
 
-不正入力の解析は None になり、`Option.to_result` でエラー情報を与えています。Result の let! は最初の Error で継続を止めます。
+不正入力の解析は None になり、`Maybe.to_result` でエラー情報を与えています。Result の let! は最初の Error で継続を止めます。
 
 ## 調査と取り出し
 
 | API | 入出力・失敗時 |
 | --- | --- |
-| `Option.is_some value`, `Option.is_none value` | 共有借用して bool |
+| `Maybe.is_some value`, `Maybe.is_none value` | 共有借用して bool |
 | `Result.is_ok value`, `Result.is_error value` | 共有借用して bool |
-| `Option.get value`, `Result.get value` | 所有値を消費して成功 payload。不一致ならトラップ |
+| `Maybe.get value`, `Result.get value` | 所有値を消費して成功 payload。不一致ならトラップ |
 | `Result.get_error value` | 所有値を消費して Error payload。Ok ならトラップ |
 | `default_value fallback value` | 両モジュールに存在。成功値、なければ評価済みの fallback |
 | `default_with fallback value` | fallback は `unit -> T`。不在・失敗のときだけ呼ぶ |
@@ -52,30 +52,30 @@ get は安全なエラー分岐の代わりにはなりません。不一致は 
 | `map_ref transform value` | union と成功 payload を共有借用し、所有する結果を作る |
 | `bind_ref value next` | 借用した成功 payload から次の union を作る |
 | `or_else value fallback` | 不在・失敗のときだけ `fallback ()` を実行 |
-| `Option.filter predicate value` | payload を借用して判定し、成立なら元の Some を返す |
+| `Maybe.filter predicate value` | payload を借用して判定し、成立なら元の Some を返す |
 | `Result.map_error transform value` | Error payload だけを消費して変換 |
 
 map は関数が先、bind は計算値が先です。不在・失敗の場合、成功用の callback は呼びません。Result の借用版は Error を結果へ複製するため `Copy<E>` が必要ですが、成功値 T の Copy は不要です。
 
 ```tsuzuri run=5
-let value = Option.Some "hello"
-let measured = Option.map_ref String.length (ref value)
-assert (Option.is_some ref value)
-Option.get measured
+let value = Maybe.Some "hello"
+let measured = Maybe.map_ref String.length (ref value)
+assert (Maybe.is_some ref value)
+Maybe.get measured
 ```
 
-ラムダ式の引数は他の引数の後で型検査するので、関数が先の API でも `Option.map_ref (\text -> text.length) (ref value)` のように後続の引数から型が決まります。
+ラムダ式の引数は他の引数の後で型検査するので、関数が先の API でも `Maybe.map_ref (\text -> text.length) (ref value)` のように後続の引数から型が決まります。
 
 ## 型間の変換
 
 | API | 結果 |
 | --- | --- |
-| `Option.to_result error value` | Some を Ok、None を指定した Error へ |
-| `Result.of_option error value` | 同じ変換 |
-| `Option.of_result value` | Ok を Some、Error を破棄して None へ |
-| `Result.to_option value` | 同じ変換 |
+| `Maybe.to_result error value` | Some を Ok、None を指定した Error へ |
+| `Result.of_maybe error value` | 同じ変換 |
+| `Maybe.of_result value` | Ok を Some、Error を破棄して None へ |
+| `Result.to_maybe value` | 同じ変換 |
 
-error 引数も通常の厳格評価です。成功時に不要であっても引数式自体は評価されます。Option と Result の間で `?` などによる暗黙変換はありません。
+error 引数も通常の厳格評価です。成功時に不要であっても引数式自体は評価されます。Maybe と Result の間で `?` などによる暗黙変換はありません。
 
 ## 所有権
 
@@ -113,7 +113,7 @@ assert の失敗、整数ゼロ除算、範囲外アクセス、確保失敗な�
 
 ## API と関連項目
 
-- [Option のソース宣言](api/Option.md)
+- [Maybe のソース宣言](api/Maybe.md)
 - [Result のソース宣言](api/Result.md)
 - [Exception のソース宣言](api/Exception.md)
 - [エラー処理](../language-reference/error-handling.md)

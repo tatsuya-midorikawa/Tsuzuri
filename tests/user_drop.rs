@@ -41,7 +41,7 @@ fn accepts_generic_drop_instance_covering_the_type() {
 
 #[test]
 fn rejects_drop_for_builtin_and_std_types() {
-    for head in ["i64", "[i64]", "(i64 * i64)", "Option<'a>"] {
+    for head in ["i64", "[i64]", "(i64 * i64)", "Maybe<'a>"] {
         rejects(
             &format!("instance Drop<{head}> {{ fn drop _value = () }}"),
             "E1016",
@@ -336,7 +336,7 @@ fn fingerprint(source: &str) -> String {
 #[test]
 fn use_bindings_bind_drop_values_in_blocks_and_computations() {
     let module = accepts(&format!(
-        "{RESOURCE}{MAKE}export def scoped :: i64\nfn scoped =\n    use first = make 1\n    use second: Resource = make 2\n    first.id + second.id\nexport def braced :: i64\nfn braced = {{ use first = make 3; use _guard = make 4; first.id }}\nexport def computed :: i64\nfn computed =\n    let result = Option {{\n        use _held = make 5\n        let! value = Option.Some 10\n        return value + 1\n    }}\n    Option.default_value 0 result\nexport def bound :: i64\nfn bound =\n    let result = Option {{\n        use! resource = Option.Some (make 6)\n        return resource.id\n    }}\n    Option.default_value 0 result\nexport def spawned :: i64\nfn spawned =\n    let work = task {{\n        use! inner = task {{ return make 7 }}\n        return inner.id\n    }}\n    Task.run work\n"
+        "{RESOURCE}{MAKE}export def scoped :: i64\nfn scoped =\n    use first = make 1\n    use second: Resource = make 2\n    first.id + second.id\nexport def braced :: i64\nfn braced = {{ use first = make 3; use _guard = make 4; first.id }}\nexport def computed :: i64\nfn computed =\n    let result = Maybe {{\n        use _held = make 5\n        let! value = Maybe.Some 10\n        return value + 1\n    }}\n    Maybe.default_value 0 result\nexport def bound :: i64\nfn bound =\n    let result = Maybe {{\n        use! resource = Maybe.Some (make 6)\n        return resource.id\n    }}\n    Maybe.default_value 0 result\nexport def spawned :: i64\nfn spawned =\n    let work = task {{\n        use! inner = task {{ return make 7 }}\n        return inner.id\n    }}\n    Task.run work\n"
     ));
     assert_eq!(module.user_drops.len(), 1);
     assert!(fingerprint("use x = 1\nx").contains("using: true"));
@@ -369,7 +369,7 @@ fn use_bindings_require_drop_values() {
     );
     rejects(
         &format!(
-            "{RESOURCE}{MAKE}def f :: Option<i64>\nfn f = Option {{\n    use! a = Option.Some (make 1)\n    and! b = Option.Some 2\n    return b\n}}\n"
+            "{RESOURCE}{MAKE}def f :: Maybe<i64>\nfn f = Maybe {{\n    use! a = Maybe.Some (make 1)\n    and! b = Maybe.Some 2\n    return b\n}}\n"
         ),
         "E0002",
         "'use!' cannot start an and! group",
@@ -377,7 +377,7 @@ fn use_bindings_require_drop_values() {
     // The continuation after let! is a function value, so it cannot capture a Drop value.
     rejects(
         &format!(
-            "{RESOURCE}{MAKE}def f :: Option<i64>\nfn f = Option {{\n    use held = make 1\n    let! value = Option.Some 2\n    return value + held.id\n}}\n"
+            "{RESOURCE}{MAKE}def f :: Maybe<i64>\nfn f = Maybe {{\n    use held = make 1\n    let! value = Maybe.Some 2\n    return value + held.id\n}}\n"
         ),
         "E1005",
         "cannot capture Main.Resource in a reusable function",
@@ -492,6 +492,6 @@ fn owned_function_lambdas_only_borrow_their_captures() {
         "cannot capture Main.Resource in a reusable function",
     );
     accepts(&format!(
-        "{prefix}    let shape = Option.Some 3\n    let base = 10\n    let scale = \\x -> x * base\n    let inner = Owned.function (\\x -> scale x + held.id + String.length (ref held.name))\n    let outer = Owned.function (\\x -> match ref shape with | Option.Some size -> Owned.call (ref inner) x + size | Option.None -> 0)\n    Owned.call (ref outer) 1\n"
+        "{prefix}    let shape = Maybe.Some 3\n    let base = 10\n    let scale = \\x -> x * base\n    let inner = Owned.function (\\x -> scale x + held.id + String.length (ref held.name))\n    let outer = Owned.function (\\x -> match ref shape with | Maybe.Some size -> Owned.call (ref inner) x + size | Maybe.None -> 0)\n    Owned.call (ref outer) 1\n"
     ));
 }

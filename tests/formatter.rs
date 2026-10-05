@@ -63,12 +63,12 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "def get :: &i64 -> i64\nfn get value = *value\n",
         ),
         (
-            "Option{let! value=Some 1;return value}",
-            "Option { let! value = Some 1; return value }\n",
+            "Maybe{let! value=Some 1;return value}",
+            "Maybe { let! value = Some 1; return value }\n",
         ),
         (
-            "Option{use ! value=Some 1;return value}",
-            "Option { use! value = Some 1; return value }\n",
+            "Maybe{use ! value=Some 1;return value}",
+            "Maybe { use! value = Some 1; return value }\n",
         ),
         ("use  held=make 1\nheld", "use held = make 1\nheld\n"),
         (

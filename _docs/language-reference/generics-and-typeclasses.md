@@ -96,7 +96,7 @@ assert (left == right)
 | `Capture` | 再利用可能な関数環境へ保存できること |
 | `Send` | タスクへ所有値を渡せること |
 | `Display` | `display :: ref T -> string` |
-| `Parse` | `parse :: ref string -> Option<T>` |
+| `Parse` | `parse :: ref string -> Maybe<T>` |
 | `Hash` | `hash :: ref T -> i64u` |
 | `Default` | `default :: T`。`Default.default()` で呼ぶ |
 | `Drop` | `drop :: ref mut T -> unit`。値の終わりに一度だけ自動で呼ばれる（[利用者定義の解放](ownership.md#利用者定義の解放drop)） |

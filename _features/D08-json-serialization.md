@@ -11,12 +11,12 @@
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール `Json` と組み込みクラス `Encode`／`Decode` の確定。GUIDE D-30 の仮割り当てを D-07 へ移す） |
 | 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: `System.Text.Json`・serde に相当する直列化がない |
-| 手本にする既存実装 | 導出の平らな束縛の連鎖: `src/derive.rs` の `Build::record`（`DeriveClass::Display` の `$text{index}` 束縛）と `Build::union`（`Build::pattern`・`Build::matched`・`Build::arm`）。std 型を使う組み込みクラスのシグネチャ: `src/polymorph.rs` の `Classes::collect` の `Parse`（`names.std_type("Option", "Option", ...)` と、std に無いときの `E1004`）。組み込みクラスの source instance: `tests/fixtures/display_parse/Main.tz` の `instance Display<Label>`。UTF-8 のバイト走査: `std/Utf8String.tz` の `find`・`matches_at`。std の登録: `src/stdlib.rs` の `SOURCES`・`RESERVED_MODULES` と C06 の `std/Map.tz`。数値の変換: `Parse.parse`／`to_string`（`src/runtime/numeric.c` の `tz_soft_parse`・`tz_soft_format`） |
+| 手本にする既存実装 | 導出の平らな束縛の連鎖: `src/derive.rs` の `Build::record`（`DeriveClass::Display` の `$text{index}` 束縛）と `Build::union`（`Build::pattern`・`Build::matched`・`Build::arm`）。std 型を使う組み込みクラスのシグネチャ: `src/polymorph.rs` の `Classes::collect` の `Parse`（`names.std_type("Maybe", "Maybe", ...)` と、std に無いときの `E1004`）。組み込みクラスの source instance: `tests/fixtures/display_parse/Main.tz` の `instance Display<Label>`。UTF-8 のバイト走査: `std/Utf8String.tz` の `find`・`matches_at`。std の登録: `src/stdlib.rs` の `SOURCES`・`RESERVED_MODULES` と C06 の `std/Map.tz`。数値の変換: `Parse.parse`／`to_string`（`src/runtime/numeric.c` の `tz_soft_parse`・`tz_soft_format`） |
 | 主な影響ファイル | `std/Json.tz`（新規）, `src/stdlib.rs`, `src/syntax.rs`, `src/parser.rs`, `src/derive.rs`, `src/polymorph.rs`, `tests/json.rs`（新規）, `tests/deriving.rs`, `tests/fixtures/json/Main.tz`（新規）, `tests/features.mjs`（suite `json`）, `tests/json.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `_docs/library-reference/json.md`（新規）, `_docs/library-reference/README.md`, `_docs/language-reference/deriving.md`, `_docs/feature-status.md`, `_features/README.md`, `_features/GUIDE.md`（D1 の承認後に D-07 の表と D-30 の行） |
 
 ## 目的
 
-レコード・union・配列・`Vec`・`Option` を JSON と相互変換できるようにする。
+レコード・union・配列・`Vec`・`Maybe` を JSON と相互変換できるようにする。
 ホスト ABI（E05）はスカラーとバッファ中心なので、Web ホストや設定ファイルとの間で複雑な値を受け渡す標準の経路として使う。
 解析は RFC 8259 に厳密で、上限を超える入力を `Result` の Error で拒否し、スタック枯渇もトラップも起こさない。
 出力は決定的で、native と WASM、`-O0` と `-O3` で同じバイト列になる。
@@ -62,7 +62,7 @@
   `E1017`（`deriving exceeds the expression depth or node limit`）。`instances` は導出が 1024 個を超えると `E1017`。
   `DeriveClass::Display` は `$text{index}` の束縛の連鎖で、フィールド数によらず深さを一定に保つ。
 - 組み込みクラスは `src/polymorph.rs` の `BUILTIN_CLASSES` と `Classes::collect` で登録する。`Parse` のシグネチャは
-  `names.std_type("Option", "Option", ...)` で std の型を引き、std に無ければ `E1004` のシグネチャ Error にする。
+  `names.std_type("Maybe", "Maybe", ...)` で std の型を引き、std に無ければ `E1004` のシグネチャ Error にする。
   `Classes::intrinsic` の `_ => false` により、一覧に無いクラスは組み込み instance を持たない。source instance は
   `class.builtin` かつ（marker・型変数・intrinsic・structural）のときだけ `E1016`（`built-in instances and marker classes cannot be overridden`）。
 - 型クラスの宣言は `.tt` だけに書ける（`.tz` では `E1018`）。条件付き instance の頭部に tuple `('a * 'b)` と配列 `['a]` を書ける（下の再現）。
@@ -149,7 +149,7 @@ record Error { kind: ErrorKind, offset: i64 } deriving (Eq)
 
 def parse :: ref utf8string -> Result<Value, Error>
 def to_utf8string :: ref Value -> utf8string
-def numeral :: ref utf8string -> Option<Numeral>
+def numeral :: ref utf8string -> Maybe<Numeral>
 def to_i64 :: ref Numeral -> Result<i64, Error>
 def to_f64 :: ref Numeral -> Result<f64, Error>
 def encode :: Encode<'a> => ref 'a -> Result<Value, Error>
@@ -180,14 +180,14 @@ Decode<'a> { decode :: ref Json.Value -> Result<'a, Json.Error> }
 | `f32`、`f64` | `to_string` の最短表現。NaN・無限大は `NonFinite` | 任意の number |
 | `string` | JSON 文字列 | JSON 文字列 |
 | `utf8string` | JSON 文字列 | JSON 文字列。孤立サロゲートを含めば `LoneSurrogate` |
-| `Option<'a>` | `None` は `null`、`Some x` は x | `null` は `None`、それ以外は `Some` |
+| `Maybe<'a>` | `None` は `null`、`Some x` は x | `null` は `None`、それ以外は `Some` |
 | `['a]`、リスト、`Vec<'a>` | array | array |
 | 2–4 要素の tuple | 同じ長さの array | 同じ長さの array（違えば `ExpectedType "array of N"`） |
 | `Json.Value` | 複製 | 複製 |
 | 導出した record | object。キーはフィールド名で宣言順 | object。余分なキーは無視。キーが無ければ `null` として decode し、失敗なら `MissingField` |
 | 導出した union | payload なしは `"Case"`、payload ありは `{"Case": payload}`（複数 payload は tuple なので array） | 同じ形だけ。未知の名前は `UnknownCase`、形が違えば `ExpectedType` |
 
-`Option<Option<'a>>` の `Some None` は `null` になり、decode では `None` に戻る（serde と同じ。往復しない）。
+`Maybe<Maybe<'a>>` の `Some None` は `null` になり、decode では `None` に戻る（serde と同じ。往復しない）。
 f16・f128・decimal・char・utf8char・unit・関数・Task・参照・SIMD・`Map`・`Set` には instance を置かない（Phase 2）。
 
 ### 解析の規則
@@ -272,7 +272,7 @@ U+000A→`\n`、U+000D→`\r`、U+0009→`\t`、その他の U+0000–U+001F は
 ```tsuzuri
 record Point { x: i64, y: f64 } deriving (Encode, Decode)
 union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Encode, Decode)
-record Scene { name: string, points: [Point], shapes: Vec<Shape>, note: Option<string> } deriving (Encode, Decode)
+record Scene { name: string, points: [Point], shapes: Vec<Shape>, note: Maybe<string> } deriving (Encode, Decode)
 ```
 
 `Scene { name: "a", points: [Point { x: 1, y: 0.5 }], shapes: (Circle 2.0, Rect (1.0, 2.5), Empty の Vec), note: None }` の
@@ -319,7 +319,7 @@ std に `Json` が無ければ `Parse` と同じくシグネチャを `Err(E1004
 （`_ => false` なので組み込み instance はなく、std の source instance だけが使われる）。
 
 `std/Json.tz`（新規）の構成: 公開の型 4 つ、公開の関数 9 つ、instance（`Encode`・`Decode` を bool、整数 10 型、f32、f64、string、
-utf8string、`Option<'a>`、`['a]`、リスト `[|'a|]`、`Vec<'a>`、2–4 要素の tuple、`Value` に。`Display<Error>`）、導出コード用の公開補助関数（新規）:
+utf8string、`Maybe<'a>`、`['a]`、リスト `[|'a|]`、`Vec<'a>`、2–4 要素の tuple、`Value` に。`Display<Error>`）、導出コード用の公開補助関数（新規）:
 
 | 補助関数（新規） | 型 | 役割 |
 | --- | --- | --- |
@@ -330,7 +330,7 @@ utf8string、`Option<'a>`、`['a]`、リスト `[|'a|]`、`Vec<'a>`、2–4 要�
 | `encode_tag` | `string -> Result<Value, Error>` | `"Case"` |
 | `expect_object` | `ref Value -> Result<unit, Error>` | object でなければ `ExpectedType "object"` |
 | `decode_field` | `Decode<'a> => ref Value -> string -> Result<'a, Error>` | 線形探索。無ければ `Null` を decode し、失敗なら `MissingField` |
-| `keep_error` | `Option<Error> -> Result<'a, Error> -> Option<Error>` | 最初の Error を残し、残りを解放 |
+| `keep_error` | `Maybe<Error> -> Result<'a, Error> -> Maybe<Error>` | 最初の Error を残し、残りを解放 |
 | `case_index` | `ref Value -> [string] -> [bool] -> Result<i64, Error>` | case 名と payload の有無から index。形の検査 |
 | `payload` | `ref Value -> ref Value` | 1 キーの object の値。`case_index` の成功後だけ呼ぶ（それ以外はトラップ） |
 
@@ -376,10 +376,10 @@ fn decode $json =                               -- record
     let $failed1 = $failed0 || Result.is_error (&$field0)
     let $failed2 = $failed1 || Result.is_error (&$field1)
     if $failed2 then
-        let $error0 = Json.keep_error Option.None $shape
+        let $error0 = Json.keep_error Maybe.None $shape
         let $error1 = Json.keep_error $error0 $field0
         let $error2 = Json.keep_error $error1 $field1
-        Result.Error (Option.get $error2)
+        Result.Error (Maybe.get $error2)
     else Result.Ok (Main.Point { x: Result.get $field0, y: Result.get $field1 })
 
 fn encode $value = match $value with             -- union
@@ -402,7 +402,7 @@ fn decode $json =                               -- union
 解析は `private` の再帰下降関数（`value`・`array`・`object`・`string`・`number`）で、位置と深さを引数に持つ。`array`・`object` は
 深さ + 1 が 128 を超えたら再帰せずに `TooDeep` を返す。要素は `Vec` に積んで `Vec.to_array` で移す。string は UTF-8 を
 UTF-16 へ組み立てる（`\u` の組は 1 コードポイントへ）。number は文法を検査した範囲を `Numeral` に複製する。
-出力は `Vec<ubyte>` へ書き、最後に `Utf8String.from_bytes` で utf8string にする（出力は常に正しい UTF-8 なので `Option.get` で取り出す）。
+出力は `Vec<ubyte>` へ書き、最後に `Utf8String.from_bytes` で utf8string にする（出力は常に正しい UTF-8 なので `Maybe.get` で取り出す）。
 
 ## 実装手順
 
@@ -456,7 +456,7 @@ cargo test --locked honors_the_exact_specialization_limit
 
 ### 手順 6: コンテナの instance と公開関数
 
-- 変更: `std/Json.tz` の `Option`・配列・リスト・`Vec`・tuple（2–4）・`Value` の instance、`encode`・`decode`・`serialize`・`deserialize`、補助関数。
+- 変更: `std/Json.tz` の `Maybe`・配列・リスト・`Vec`・tuple（2–4）・`Value` の instance、`encode`・`decode`・`serialize`・`deserialize`、補助関数。
 - 確認: `cargo test --locked --test json` が `8 passed`（`container_instances_type_check`・`unsupported_types_report_e1005`）。
 
 ### 手順 7: deriving の名前
@@ -514,10 +514,10 @@ cargo test --locked honors_the_exact_specialization_limit
 | `builtin_classes_have_json_signatures` | `Encode.encode`・`Decode.decode` の型が「API」どおり。std に `Json` が無い custom std では `E1004`（`tests/deriving.rs::derives_preserve_scopes_limits_and_standard_independence` の custom std の作り方を写す） |
 | `scalar_instances_type_check` | bool・10 整数型・f32・f64・string・utf8string を `Json.encode`／`Json.decode` |
 | `user_instances_cannot_overlap_std` | `instance Encode<i64>` は `E1016`。利用者の record への手書き instance は受理 |
-| `container_instances_type_check` | `Option`・配列・リスト・`Vec`・2–4 tuple・`Json.Value`、入れ子 |
+| `container_instances_type_check` | `Maybe`・配列・リスト・`Vec`・2–4 tuple・`Json.Value`、入れ子 |
 | `unsupported_types_report_e1005` | char・f16・decimal64・関数・5 要素 tuple の `Json.encode` は `E1005` |
 | `derives_records_with_constant_depth` | 128 フィールドの record と空の record を導出して受理 |
-| `derives_generic_and_recursive_records` | `record Box<'a>`、`Option` で自己参照する record |
+| `derives_generic_and_recursive_records` | `record Box<'a>`、`Maybe` で自己参照する record |
 | `derives_unions_with_constant_depth` | 128 case の union、payload なし・1 つ・複数、1 case だけの union |
 | `derive_components_without_instances_report_e1025` | `record R { f: i64 -> i64 } deriving (Encode)` と `char` のフィールドは `E1025`、`deriving (Copy)` は D6 のメッセージ |
 
@@ -587,7 +587,7 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 - `std/Json.tz` の case `Array` がモジュール `Array` と衝突して `Array.sort` を呼べないかもしれない。手順 2 で最初に確かめ、衝突したら停止して報告する。
 - `Build::make` の match は `_ => unreachable!()`。導出で `ExprKind::Array` などを新しく使うなら arm を足さないと panic する。
 - 文字列リテラルの借用は `E1013`。導出コードではキーを値で渡す（補助関数の引数は `string`）。
-- 生成コードは std の名前を必ず修飾する（`Option.None`、`Result.Ok`、`Result.Error`、`Json.encode_field`）。無修飾だと利用者の同名の型・case に解決される（GUIDE D-07）。
+- 生成コードは std の名前を必ず修飾する（`Maybe.None`、`Result.Ok`、`Result.Error`、`Json.encode_field`）。無修飾だと利用者の同名の型・case に解決される（GUIDE D-07）。
   `std/Json.tz` の中では `Error` が record `Json.Error`、case は `Result.Error` と書き分ける。
 - `Parse.parse` は JSON より広い文法を受ける。字句の検査を先にし、`Parse.parse` には検査済みの字句だけを渡す。入力は UTF-16 の string。
 - `Utf8String.from_string` は孤立サロゲートでトラップする。`Decode<utf8string>` は変換の前に検査して `LoneSurrogate` を返す。
@@ -649,14 +649,14 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 
 ### D8: 符号化の形
 
-- 決定: record は宣言順の object、union は外部タグ（`"Case"`／`{"Case": payload}`、複数 payload は array）、`Option` は `null`、tuple は array。
-- 理由: serde の既定と同じで Web ホストで扱いやすい。`Option<Option<'a>>` の曖昧さは serde と同じく受け入れる。
+- 決定: record は宣言順の object、union は外部タグ（`"Case"`／`{"Case": payload}`、複数 payload は array）、`Maybe` は `null`、tuple は array。
+- 理由: serde の既定と同じで Web ホストで扱いやすい。`Maybe<Maybe<'a>>` の曖昧さは serde と同じく受け入れる。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D9: 欠けたフィールドと余分なフィールド
 
 - 決定: 余分なキーは無視。欠けたキーは `null` として decode し、失敗したら `MissingField`。
-- 理由: serde・System.Text.Json の既定と同じ。`Option` の欠落を特別扱いせずに一つの規則で表せる。
+- 理由: serde・System.Text.Json の既定と同じ。`Maybe` の欠落を特別扱いせずに一つの規則で表せる。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D10: 非有限値と数値の出力

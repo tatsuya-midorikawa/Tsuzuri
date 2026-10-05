@@ -252,9 +252,9 @@ def main :: IO<unit> =
 | API | 結果 | 契約 |
 | --- | --- | --- |
 | `Path.join left right` | `string` | `/` で連結する。`left` が空なら `right`、`left` が `/` で終わるなら重ねない。`right` が絶対パスでも置き換えず、そのまま続ける |
-| `Path.parent path` | `Option<string>` | 最後の名前と末尾の `/` を除く。`/` だけは残す。名前が一つだけの path、`/`、空文字列は `None` |
-| `Path.file_name path` | `Option<string>` | 最後の名前。空文字列、`/`、`.`、`..` は `None` |
-| `Path.extension path` | `Option<string>` | 最後の名前の、最後の `.` より後。名前が先頭の `.` だけを持つなら `None` |
+| `Path.parent path` | `Maybe<string>` | 最後の名前と末尾の `/` を除く。`/` だけは残す。名前が一つだけの path、`/`、空文字列は `None` |
+| `Path.file_name path` | `Maybe<string>` | 最後の名前。空文字列、`/`、`.`、`..` は `None` |
+| `Path.extension path` | `Maybe<string>` | 最後の名前の、最後の `.` より後。名前が先頭の `.` だけを持つなら `None` |
 
 | 入力 | 結果 |
 | --- | --- |
@@ -270,11 +270,11 @@ def main :: IO<unit> =
 | `Path.extension ".bashrc"`、`"a/b.d/c"` | `None` |
 
 ```tsuzuri run=reports/2026/summary.tar.gz%0Areports/2026%0Asummary.tar.gz%0Agz
-def show :: Option<string> -> string
+def show :: Maybe<string> -> string
 fn show value =
     match value with
-    | Option.Some text -> text
-    | Option.None -> "(none)"
+    | Maybe.Some text -> text
+    | Maybe.None -> "(none)"
 
 let directory = "reports/2026"
 let name = "summary.tar.gz"
@@ -294,7 +294,7 @@ String.join (ref newline) (ref lines)
 | API | 結果 | 契約 |
 | --- | --- | --- |
 | `Env.args ()` | `IO<Result<[string], Os.Error>>` | プログラム名（argv[0]）を除く引数。引数がない場合と、ホストが渡さない場合（ライブラリ、テストの実行ファイル）は空 |
-| `Env.var name` | `IO<Result<Option<string>, Os.Error>>` | 環境変数の値。未設定は `Ok None`、空の値は `Some ""`。名前が空、`=` か NUL を含むと `InvalidInput`、値が UTF-8 でなければ `InvalidEncoding` |
+| `Env.var name` | `IO<Result<Maybe<string>, Os.Error>>` | 環境変数の値。未設定は `Ok None`、空の値は `Some ""`。名前が空、`=` か NUL を含むと `InvalidInput`、値が UTF-8 でなければ `InvalidEncoding` |
 | `Env.current_dir ()` | `IO<Result<string, Os.Error>>` | 作業ディレクトリ。システムが報告する形で返す（macOS の `/tmp` は `/private/tmp`） |
 
 `tsuzuri run` はプログラムへ引数を渡しません。引数が必要なときは `tsuzuri build` で作った実行ファイルを起動します。次の例は引数の数、`HOME`、20 ミリ秒の sleep の実測を表示します。
@@ -306,11 +306,11 @@ fn count_text args =
     | Result.Ok names -> to_string names.length + " arguments"
     | Result.Error error -> Os.message (ref error)
 
-def var_text :: Result<Option<string>, Os.Error> -> string
+def var_text :: Result<Maybe<string>, Os.Error> -> string
 fn var_text value =
     match value with
-    | Result.Ok (Option.Some text) -> "HOME=" + text
-    | Result.Ok Option.None -> "HOME is not set"
+    | Result.Ok (Maybe.Some text) -> "HOME=" + text
+    | Result.Ok Maybe.None -> "HOME is not set"
     | Result.Error error -> Os.message (ref error)
 
 def elapsed_text :: Result<i64, Os.Error> -> Result<i64, Os.Error> -> string

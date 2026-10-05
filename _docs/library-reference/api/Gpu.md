@@ -1,5 +1,7 @@
 # Gpu
 
+Namespace: `std`
+
 ## `Backend`
 
 ```tsuzuri

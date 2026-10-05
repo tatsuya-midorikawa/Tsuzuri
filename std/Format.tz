@@ -52,12 +52,12 @@ fn kind_at text index =
 /// (`{`, `}`, `"`, `\`, CR, LF, or half of a surrogate pair), a width that starts with 0, a precision with a leading
 /// 0 (`.05`), or a number above 4096. It checks the grammar only, so a type letter that does not fit the precision
 /// (`.2x`) is not rejected. The text a `Format` instance receives is always valid.
-def parse :: ref string -> Option<Spec>
+def parse :: ref string -> Maybe<Spec>
 fn parse text =
 	let fill_length = fill_units text
 	let fill_valid = fill_length != 1 || is_fill_unit text 0
 	let has_align = fill_length > 0 || is_align_at text 0
-	let fill = if fill_length > 0 then Option.get (String.slice text 0 fill_length) else " "
+	let fill = if fill_length > 0 then Maybe.get (String.slice text 0 fill_length) else " "
 	let align = if has_align then align_of text fill_length else AlignAuto
 	let mut index = if has_align then fill_length + 1 else 0
 	let plus = is_at text index '+'
@@ -81,7 +81,7 @@ fn parse text =
 		precision = value
 	let kind = kind_at text index
 	if kind != KindPlain then index = index + 1
-	if valid && index == text.length then Option.Some (Spec { fill: fill, align: align, plus: plus, width: width, precision: precision, kind: kind }) else Option.None
+	if valid && index == text.length then Maybe.Some (Spec { fill: fill, align: align, plus: plus, width: width, precision: precision, kind: kind }) else Maybe.None
 
 /// The number of Unicode scalars in `text`; a surrogate pair counts once and a lone surrogate once.
 private def scalars :: ref string -> i64

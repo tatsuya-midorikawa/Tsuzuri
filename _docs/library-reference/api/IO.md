@@ -1,5 +1,7 @@
 # IO
 
+Namespace: `std`
+
 ## `IO`
 
 ```tsuzuri
@@ -104,13 +106,13 @@ def BindReturn :: IO<'a> -> ('a -> 'b) -> IO<'b>
 ## `try_read_line`
 
 ```tsuzuri
-def try_read_line :: unit -> IO<Result<Option<string>, Error>>
+def try_read_line :: unit -> IO<Result<Maybe<string>, Error>>
 ```
 
 ## `read_line`
 
 ```tsuzuri
-def read_line :: unit -> IO<Option<string>>
+def read_line :: unit -> IO<Maybe<string>>
 ```
 
 ## `try_write`

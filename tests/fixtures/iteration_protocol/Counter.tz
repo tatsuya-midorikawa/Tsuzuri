@@ -2,4 +2,4 @@ record Counter { start: i64, finish: i64 }
 
 def iter :: ref Counter -> Seq<i64>
 fn iter counter = Seq.unfold (\value ->
-    if value < counter.finish then Option.Some (value, value + 1) else Option.None) counter.start
+    if value < counter.finish then Maybe.Some (value, value + 1) else Maybe.None) counter.start

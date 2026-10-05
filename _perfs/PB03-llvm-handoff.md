@@ -118,7 +118,7 @@ TSUZURI_TIME_PASSES=1 target/release/tsuzuri build examples/hello -O0 --no-cache
   stdin のとき `<stdin>:2:7: error: ...` で、終了コードはどちらも 1。
 - 29 MB の書き出し（`dd if=/dev/zero bs=1048576 count=29`）は 0.01〜0.03 s。6.2 s の 0.5% 未満。
 - C ランタイムのコンパイル（`clang -std=c11 -c -O0 -g -pthread src/runtime/task.c`）は 0.05〜0.12 s。
-- `ld64.lld` は `-r` を実装していない（`clang -fuse-ld=lld -r -nostdlib f.o -o r.o` が `Option '-r' is not yet implemented` を出して失敗）。
+- `ld64.lld` は `-r` を実装していない（`clang -fuse-ld=lld -r -nostdlib f.o -o r.o` が `Maybe '-r' is not yet implemented` を出して失敗）。
 - hello の IR の `clang -O0 -c` は 0.02 s。`-ftime-report` は `Clang time report`・`Pass execution timing report` などの表を出す。
 - W3（`examples/tasks -O0 -g`）は 0.25〜0.47 s。2 回のビルドの実行ファイルは byte 列が異なる（HEAD のまま。一時ディレクトリの path が
   debug map に入るためと推定。未確認）。W4（`tests/fixtures/tasks --target wasm32 --wasm-feature threads -O0`）は 0.26〜0.46 s、W5

@@ -1,5 +1,7 @@
 # Process
 
+Namespace: `std`
+
 ## `Output`
 
 ```tsuzuri

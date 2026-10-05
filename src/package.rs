@@ -86,16 +86,15 @@ pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
 }
 
 /// Whether `text` can be a package's default namespace: identifiers joined by
-/// `::`, at most 16 segments and 255 bytes, whose first segment is not a
-/// standard library module name.
+/// `::`, at most 16 segments and 255 bytes, whose first segment is neither
+/// the std namespace nor a standard library module name.
 pub fn valid_namespace(text: &str) -> bool {
     use crate::syntax::{Token, TokenKind};
     text.len() <= 255
         && text.split("::").count() <= 16
-        && text
-            .split("::")
-            .next()
-            .is_some_and(|first| !crate::stdlib::is_reserved_module(first))
+        && text.split("::").next().is_some_and(|first| {
+            first != crate::stdlib::NAMESPACE && !crate::stdlib::is_reserved_module(first)
+        })
         && text.split("::").all(|segment| {
             segment != "_" && segment != "Task" && crate::lexer::lex(segment).is_ok_and(|tokens| {
                 matches!(
@@ -125,7 +124,7 @@ pub fn create_project(
         Some(namespace) if valid_namespace(namespace) => namespace.to_owned(),
         Some(namespace) => {
             return Err(error(format!(
-                "invalid namespace '{namespace}'; use identifiers joined by '::' such as Acme::Tools, at most 16 segments and 255 bytes, that do not start with a standard library module name"
+                "invalid namespace '{namespace}'; use identifiers joined by '::' such as Acme::Tools, at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name"
             )));
         }
         None => self::namespace(&name, Span::default())
@@ -410,7 +409,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         Some((namespace, span)) if !valid_namespace(&namespace) => {
             return Err(Diagnostic::new(
                 "E1011",
-                "package namespace must be identifiers joined by '::' such as \"Acme::Tools\", at most 16 segments and 255 bytes, that do not start with a standard library module name",
+                "package namespace must be identifiers joined by '::' such as \"Acme::Tools\", at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name",
                 span,
             ));
         }
@@ -763,6 +762,9 @@ mod tests {
             "Acme:Tools",
             "Acme::",
             "IO::Extra",
+            "Maybe",
+            "std",
+            "std::Tools",
             "match",
             "Task",
             "_",
@@ -778,6 +780,7 @@ mod tests {
             assert_eq!(error.code, "E0002", "{suffix}");
         }
         assert!(valid_namespace("lower::case_1"));
+        assert!(valid_namespace("Std") && valid_namespace("Acme::std"));
     }
 
     #[test]

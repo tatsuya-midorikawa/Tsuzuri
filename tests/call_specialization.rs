@@ -27,10 +27,10 @@ fn known_continuations_use_direct_workers_and_entry_block_storage() {
 }
 
 #[test]
-fn standard_option_result_continuations_use_allocation_free_workers() {
+fn standard_maybe_result_continuations_use_allocation_free_workers() {
     let module = analyze(
         "def option :: i64 -> i64
-         fn option offset = Option.get (Option { let! x = Some 20; return x + offset })
+         fn option offset = Maybe.get (Maybe { let! x = Some 20; return x + offset })
          def result :: i64 -> i64
          fn result offset =
              let value: Result<i64, i64> = Result { let! x = Ok 20; return x + offset }

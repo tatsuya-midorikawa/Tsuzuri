@@ -39,7 +39,7 @@ fn break_continue_type_contexts() {
             format!("while false do {jump}"),
             format!("for index = 0 to 1 do {jump}"),
             format!("for index in [1, 2] do {jump}"),
-            format!("Option {{ let value = {{ while false do {jump}; 42 }}; return value }}"),
+            format!("Maybe {{ let value = {{ while false do {jump}; 42 }}; return value }}"),
             format!("let work = task {{ while false do {jump}; return 42 }}\nTask.run work"),
             format!("let run = value -> {{ while false do {jump}; value }}\nrun 42"),
         ] {
@@ -50,8 +50,8 @@ fn break_continue_type_contexts() {
             jump.to_owned(),
             format!("while true do {{ let run = value -> {jump}; run 0 }}"),
             format!("while true do {{ let work = task {{ {jump} }}; () }}"),
-            format!("while true do {{ let value = Option {{ return {jump} }}; () }}"),
-            format!("Option {{ while true do {jump} }}"),
+            format!("while true do {{ let value = Maybe {{ return {jump} }}; () }}"),
+            format!("Maybe {{ while true do {jump} }}"),
         ] {
             rejects(&source, "E1023");
         }
@@ -329,7 +329,7 @@ match 42 with | Even -> 42 | Odd -> 0 | _ -> -1"#,
     where
         remainder = value % 2
 match 42 with | Even number -> number | Odd _ -> 0 | _ -> -1"#,
-        r#"def (|Positive|_|) :: i64 -> Option<i64> = \value ->
+        r#"def (|Positive|_|) :: i64 -> Maybe<i64> = \value ->
     | value > 0 -> Some value
     | otherwise -> None
 match 42 with | Positive number -> number | _ -> 0"#,
@@ -417,21 +417,21 @@ fn match_origin_destructuring() {
 }
 
 #[test]
-fn active_option_payloads_use_fresh_types_and_existing_ownership() {
+fn active_maybe_payloads_use_fresh_types_and_existing_ownership() {
     for source in [
-        "def (|Parsed|_|) :: ref string -> Option<i64>\nfn (|Parsed|_|) text = Parse.parse text\nmatch \"42\" with | Parsed number -> number | _ -> 0",
-        "def (|Parts|_|) :: i64 -> Option<i64 * i64>\nfn (|Parts|_|) number = if number > 0 then Some (number, number + 1) else None\nmatch 20 with | Parts (left, right) -> left + right | _ -> 0",
-        "def (|Divisible|_|) :: i64 -> i64 -> Option<unit>\nfn (|Divisible|_|) divisor number = if number % divisor == 0 then Some () else None\nmatch 42 with | Divisible (1 + 2) -> 1 | _ -> 0",
-        "def (|Present|_|) :: 'a -> Option<'a>\nfn (|Present|_|) value = Some value\nlet first = match 1 with | Present number -> number | _ -> 0\nlet second = match true with | Present flag -> flag | _ -> false\nif second then first else 0",
+        "def (|Parsed|_|) :: ref string -> Maybe<i64>\nfn (|Parsed|_|) text = Parse.parse text\nmatch \"42\" with | Parsed number -> number | _ -> 0",
+        "def (|Parts|_|) :: i64 -> Maybe<i64 * i64>\nfn (|Parts|_|) number = if number > 0 then Some (number, number + 1) else None\nmatch 20 with | Parts (left, right) -> left + right | _ -> 0",
+        "def (|Divisible|_|) :: i64 -> i64 -> Maybe<unit>\nfn (|Divisible|_|) divisor number = if number % divisor == 0 then Some () else None\nmatch 42 with | Divisible (1 + 2) -> 1 | _ -> 0",
+        "def (|Present|_|) :: 'a -> Maybe<'a>\nfn (|Present|_|) value = Some value\nlet first = match 1 with | Present number -> number | _ -> 0\nlet second = match true with | Present flag -> flag | _ -> false\nif second then first else 0",
     ] {
         accepts(source);
     }
     rejects(
-        "def (|Parsed|_|) :: i64 -> Option<i64>\nfn (|Parsed|_|) value = Some value\nmatch 1 with | Parsed -> 1 | _ -> 0",
+        "def (|Parsed|_|) :: i64 -> Maybe<i64>\nfn (|Parsed|_|) value = Some value\nmatch 1 with | Parsed -> 1 | _ -> 0",
         "E1006",
     );
     rejects(
-        "def (|Owned|_|) :: string -> Option<string>\nfn (|Owned|_|) value = Some value\nmatch \"text\" with | Owned value -> value.length | _ -> 0",
+        "def (|Owned|_|) :: string -> Maybe<string>\nfn (|Owned|_|) value = Some value\nmatch \"text\" with | Owned value -> value.length | _ -> 0",
         "E1014",
     );
 }
@@ -523,13 +523,13 @@ fn active_aliases_follow_module_origin_and_report_ambiguity() {
     .unwrap();
     tsuzuri::analyze_modules_with_std(
         &[("Main.tz", source), ("First.tz", recognizer)],
-        &[("std/Option.tz", recognizer)],
+        &[("std/Maybe.tz", recognizer)],
     )
     .unwrap();
     let error = tsuzuri::analyze_modules_with_std(
         &[("Main.tz", "0"), ("First.tz", recognizer)],
         &[(
-            "std/Option.tz",
+            "std/Maybe.tz",
             "def invoke :: i64\nfn invoke = match 42 with | Identity value -> value",
         )],
     )
@@ -670,10 +670,10 @@ fn inline_definitions_share_types_currying_and_recursion() {
         "private def identity :: 'a -> 'a = \\value -> value\nexport def answer :: i64 = identity 42",
         "def rec even :: i64 -> bool = \\value -> if value == 0 then true else odd (value - 1)\nand odd :: i64 -> bool = \\value -> if value == 0 then false else even (value - 1)\nif even 42 then 42 else 0",
         "def (|Even|_|) :: i64 -> bool =\n  \\value -> value % 2 == 0\nmatch 42 with | Even -> 42 | _ -> 0",
-        "def (|Parsed|_|) :: ref string -> Option<i64> = \\text -> Parse.parse text\nmatch \"42\" with | Parsed value -> value | _ -> 0",
+        "def (|Parsed|_|) :: ref string -> Maybe<i64> = \\text -> Parse.parse text\nmatch \"42\" with | Parsed value -> value | _ -> 0",
         "def (|Length|) :: ref string -> i64 = \\text -> text.length\nmatch \"answer\" with | Length value -> value",
         "def (|Divisible|_|) :: i64 -> i64 -> bool = \\divisor -> \\value -> value % divisor == 0\nmatch 42 with | Divisible 3 -> 42 | _ -> 0",
-        "def answer :: Option<i64> =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nOption.get (answer())",
+        "def answer :: Maybe<i64> =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nMaybe.get (answer())",
         "def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string = \\left _right -> left\nlet left = \"kept\"\nlet right = \"other\"\n(first (ref left) (ref right)).length",
     ] {
         accepts(source);

@@ -19,24 +19,24 @@ fn matches_at needle text offset =
 		while index < needle.length && needle[index] == text[offset + index] do index = index + 1
 		index == needle.length
 
-def find :: ref string -> ref string -> Option<i64>
+def find :: ref string -> ref string -> Maybe<i64>
 fn find needle text =
 	let mut offset = 0
-	let mut result = Option.None
+	let mut result = Maybe.None
 	while offset <= text.length do
 		if matches_at needle text offset then
-			result = Option.Some offset
+			result = Maybe.Some offset
 			break
 		offset = offset + 1
 	result
 
-def rfind :: ref string -> ref string -> Option<i64>
+def rfind :: ref string -> ref string -> Maybe<i64>
 fn rfind needle text =
 	let mut offset = text.length
-	let mut result = Option.None
+	let mut result = Maybe.None
 	while offset >= 0 do
 		if matches_at needle text offset then
-			result = Option.Some offset
+			result = Maybe.Some offset
 			break
 		offset = offset - 1
 	result
@@ -44,7 +44,7 @@ fn rfind needle text =
 def contains :: ref string -> ref string -> bool
 fn contains needle text =
 	let result = find needle text
-	Option.is_some (ref result)
+	Maybe.is_some (ref result)
 
 def starts_with :: ref string -> ref string -> bool
 fn starts_with prefix text = matches_at prefix text 0
@@ -52,15 +52,15 @@ fn starts_with prefix text = matches_at prefix text 0
 def ends_with :: ref string -> ref string -> bool
 fn ends_with suffix text = suffix.length <= text.length && matches_at suffix text (text.length - suffix.length)
 
-def slice :: ref string -> i64 -> i64 -> Option<string>
+def slice :: ref string -> i64 -> i64 -> Maybe<string>
 fn slice text first last =
-	if first < 0 || last < first || last > text.length then Option.None else
+	if first < 0 || last < first || last > text.length then Maybe.None else
 		let output = append_range (Vec.with_capacity (last - first)) text first last
-		Option.Some (String.from_code_units (Vec.to_array output))
+		Maybe.Some (String.from_code_units (Vec.to_array output))
 
-def sub :: ref string -> i64 -> i64 -> Option<string>
+def sub :: ref string -> i64 -> i64 -> Maybe<string>
 fn sub text first count =
-	if first < 0 || count < 0 || first > 9223372036854775807 - count then Option.None else slice text first (first + count)
+	if first < 0 || count < 0 || first > 9223372036854775807 - count then Maybe.None else slice text first (first + count)
 
 def decode_at :: ref string -> i64 -> (char * i64)
 fn decode_at text offset = (Char.of_u16 text[offset], offset + 1)
@@ -91,7 +91,7 @@ fn concat parts =
 def split :: ref string -> ref string -> [string]
 fn split separator text =
 	if separator.length == 0 then
-		new [string](text.length, index -> Option.get (slice text index (index + 1)))
+		new [string](text.length, index -> Maybe.get (slice text index (index + 1)))
 	else
 		let mut count = 1
 		let mut index = 0
@@ -105,11 +105,11 @@ fn split separator text =
 		let mut offset = 0
 		while offset <= text.length - separator.length do
 			if matches_at separator text offset then
-				output = Vec.push output (Option.get (slice text start offset))
+				output = Vec.push output (Maybe.get (slice text start offset))
 				offset = offset + separator.length
 				start = offset
 			else offset = offset + 1
-		output = Vec.push output (Option.get (slice text start text.length))
+		output = Vec.push output (Maybe.get (slice text start text.length))
 		Vec.to_array output
 
 private def whitespace :: i16u -> bool
@@ -119,13 +119,13 @@ def trim_start :: ref string -> string
 fn trim_start text =
 	let mut first = 0
 	while first < text.length && whitespace text[first] do first = first + 1
-	Option.get (slice text first text.length)
+	Maybe.get (slice text first text.length)
 
 def trim_end :: ref string -> string
 fn trim_end text =
 	let mut last = text.length
 	while last > 0 && whitespace text[last - 1] do last = last - 1
-	Option.get (slice text 0 last)
+	Maybe.get (slice text 0 last)
 
 def trim :: ref string -> string
 fn trim text =
@@ -133,7 +133,7 @@ fn trim text =
 	let mut last = text.length
 	while first < last && whitespace text[first] do first = first + 1
 	while last > first && whitespace text[last - 1] do last = last - 1
-	Option.get (slice text first last)
+	Maybe.get (slice text first last)
 
 def to_ascii_lower :: ref string -> string
 fn to_ascii_lower text = String.from_code_units (new [i16u](text.length, index -> Char.to_u16 (Char.to_ascii_lower (Char.of_u16 text[index]))))
@@ -145,7 +145,7 @@ def repeat :: ref string -> i64 -> string
 fn repeat text count =
 	assert (count >= 0)
 	if count == 0 || text.length == 0 then "" else
-		let size = Option.get (Int.checked_mul text.length count)
+		let size = Maybe.get (Int.checked_mul text.length count)
 		assert (size <= 9007199254740991)
 		String.from_code_units (new [i16u](size, index -> text[index % text.length]))
 
@@ -158,8 +158,8 @@ fn replace needle replacement text =
 			occurrences = occurrences + 1
 			offset = offset + (if needle.length == 0 then 1 else needle.length)
 		else offset = offset + 1
-	let removed = Option.get (Int.checked_mul occurrences needle.length)
-	let inserted = Option.get (Int.checked_mul occurrences replacement.length)
+	let removed = Maybe.get (Int.checked_mul occurrences needle.length)
+	let inserted = Maybe.get (Int.checked_mul occurrences replacement.length)
 	let size = add_length (text.length - removed) inserted
 	let mut output: Vec<i16u> = Vec.with_capacity size
 	let mut index = 0

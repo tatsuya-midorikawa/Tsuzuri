@@ -22,7 +22,7 @@ IO {
 def main :: IO<unit> = IO {
     do! IO.write "Name: "
     let! line = IO.read_line ()
-    let name = Option.default_value "world" line
+    let name = Maybe.default_value "world" line
     do! IO.write_line ("Hello, " + name + "!")
 }
 ```
@@ -36,16 +36,16 @@ printf 'Tsuzuri\n' | ./target/release/tsuzuri run examples/io
 
 `let!` はアクションの結果を束縛し、`do!` は `IO<unit>` を実行して次へ進みます。通常の let、式、関数呼び出しには `!` を付けません。`return value` は値を IO に包み、`return! action` は別の IO を続けます。文は改行で区切れます。
 
-IO ブロックを省略し、Option の短絡も同じ本体で使えます。
+IO ブロックを省略し、Maybe の短絡も同じ本体で使えます。
 
 ```tsuzuri
-def main :: IO<Option<unit>> =
+def main :: IO<Maybe<unit>> =
     let! line = IO.read_line ()
     let! value = line
     do! IO.write_line value
 ```
 
-EOF なら二つ目の let! で残りの文を中断します。結果の型は `IO<Option<unit>>` です。
+EOF なら二つ目の let! で残りの文を中断します。結果の型は `IO<Maybe<unit>>` です。
 Result や独自ビルダーの失敗値も保持します。入口は None／Error を表示せず終了コード 0 で終えるため、
 失敗を報告する場合は名前付き関数から IO の結果を受け取り、match で処理してください。
 終了コードで報告するなら、入口を `IO<i32>` にします（[終了コード](#終了コード)）。
@@ -76,13 +76,13 @@ try_write_line の `Result<unit, IO.Error>` を捨てるので、書き込みの
 
 | API | 結果 | 動作 |
 | --- | --- | --- |
-| `IO.read_line ()` | `IO<Option<string>>` | stdin から一行読む。EOF は None |
+| `IO.read_line ()` | `IO<Maybe<string>>` | stdin から一行読む。EOF は None |
 | `IO.write value` | `IO<unit>` | stdout へ改行なしで表示 |
 | `IO.write_line value` | `IO<unit>` | stdout へ表示して LF を追加 |
 | `IO.writeln value` | `IO<unit>` | `IO.write_line` の別名 |
 | `IO.write_error value` | `IO<unit>` | stderr へ改行なしで表示 |
 | `IO.write_error_line value` | `IO<unit>` | stderr へ表示して LF を追加 |
-| `IO.try_read_line ()` | `IO<Result<Option<string>, IO.Error>>` | 読み取り失敗を値として返す |
+| `IO.try_read_line ()` | `IO<Result<Maybe<string>, IO.Error>>` | 読み取り失敗を値として返す |
 | `IO.try_write value` / `IO.try_write_line value` | `IO<Result<unit, IO.Error>>` | stdout の失敗を値として返す |
 | `IO.try_write_error value` / `IO.try_write_error_line value` | `IO<Result<unit, IO.Error>>` | stderr の失敗を値として返す |
 | `IO.pure value` | `IO<T>` | 入出力せず値を返す |

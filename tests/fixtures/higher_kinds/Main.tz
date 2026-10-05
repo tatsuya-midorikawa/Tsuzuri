@@ -4,7 +4,7 @@ fn fmap transform value =
     result
 
 export def option_map :: i64 -> i64
-fn option_map seed = Option.get (fmap (\value -> value + 1) (Option.Some seed))
+fn option_map seed = Maybe.get (fmap (\value -> value + 1) (Maybe.Some seed))
 
 export def result_map :: i64 -> i64
 fn result_map seed =
@@ -27,9 +27,9 @@ export def owned_option :: i64 -> i64
 fn owned_option count =
     let mut total = 0
     for _index in 0i64 .. (count - 1) do
-        let value = Option.Some ("hello" + "!")
+        let value = Maybe.Some ("hello" + "!")
         let result = fmap text_length value
-        total = total + Option.get result
+        total = total + Maybe.get result
     total
 
 export def all_constructors :: i64
@@ -39,7 +39,7 @@ fn all_constructors =
     let vector = Keep.keep (Vec.push (Vec.empty()) 42)
     let boxed = Keep.keep (Instances.Box { value: 42 })
     let work = Keep.keep task { 42 }
-    array[0] + list[0] + Option.get (Vec.get (& vector) 0) + boxed.value + Task.run work
+    array[0] + list[0] + Maybe.get (Vec.get (& vector) 0) + boxed.value + Task.run work
 
 export def binary_constructor :: i64
 fn binary_constructor =
@@ -48,5 +48,5 @@ fn binary_constructor =
 
 export def first_class :: i64
 fn first_class =
-    let mapper: (i64 -> i64) -> Option<i64> -> Option<i64> = Functor.map
-    Option.get (mapper (\value -> value + 2) (Option.Some 40))
+    let mapper: (i64 -> i64) -> Maybe<i64> -> Maybe<i64> = Functor.map
+    Maybe.get (mapper (\value -> value + 2) (Maybe.Some 40))

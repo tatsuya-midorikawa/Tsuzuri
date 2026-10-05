@@ -41,7 +41,7 @@ fn is_directory path =
 /// Appends the entries below `root/relative` to `found`: each entry, then everything below it.
 private def rec visit :: ref string -> ref string -> Vec<string> -> Result<Vec<string>, Os.Error>
 fn rec visit root relative found =
-	let directory = if relative.length == 0 then Option.get (String.slice root 0 root.length) else Path.join root relative
+	let directory = if relative.length == 0 then Maybe.get (String.slice root 0 root.length) else Path.join root relative
 	match list_with (ref directory) with
 	| Result.Error error -> Result.Error error
 	| Result.Ok names ->
@@ -53,7 +53,7 @@ fn rec visit root relative found =
 				| Result.Error error -> Result.Error error
 				| Result.Ok pushed ->
 					let entry = Path.join relative (ref names[index])
-					let copy = Option.get (String.slice (ref entry) 0 entry.length)
+					let copy = Maybe.get (String.slice (ref entry) 0 entry.length)
 					let listed = Vec.push pushed copy
 					let below = Path.join root (ref entry)
 					match is_directory (ref below) with

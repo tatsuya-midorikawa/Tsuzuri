@@ -289,7 +289,7 @@ impl Checker<'_> {
                         binding_pattern(next_name.clone()),
                         Pattern {
                             kind: PatternKind::Apply(
-                                named("::Option.Option.Some"),
+                                named("::Maybe.Maybe.Some"),
                                 vec![binding_pattern(item_name)],
                             ),
                             span,
@@ -307,7 +307,7 @@ impl Checker<'_> {
                 pattern: Pattern {
                     kind: PatternKind::Tuple(vec![
                         binding_pattern(next_name),
-                        binding_pattern(named("::Option.Option.None")),
+                        binding_pattern(named("::Maybe.Maybe.None")),
                     ]),
                     span,
                     depth: 3,
@@ -943,9 +943,9 @@ impl Checker<'_> {
         };
         let extras = parameters.len() - 1;
         let union_case = match active_case {
-            ActiveCase::OptionPartial => {
+            ActiveCase::MaybePartial => {
                 let Type::Union(union_id, _) = result.as_ref() else {
-                    unreachable!("Option result checked")
+                    unreachable!("Maybe result checked")
                 };
                 Some((
                     *union_id,
@@ -967,7 +967,7 @@ impl Checker<'_> {
         let payload_type = match active_case {
             ActiveCase::BoolPartial => None,
             ActiveCase::TotalSingle => Some(result.as_ref().clone()),
-            ActiveCase::OptionPartial | ActiveCase::TotalCase { .. } => {
+            ActiveCase::MaybePartial | ActiveCase::TotalCase { .. } => {
                 let Type::Union(union_id, args) = result.as_ref() else {
                     unreachable!()
                 };

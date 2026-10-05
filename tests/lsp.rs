@@ -1062,6 +1062,7 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
         // A compact `def name::Type` annotation does not start the path.
         let compact = format!("{N_REPORT}def probe::Demo::Shapes::");
         let compact_member = format!("{N_REPORT}def probe::Demo::Shapes::Circle.");
+        let (std_path, std_member) = (edited("std::"), edited("std::Maybe."));
         vec![
             definition(1, "Circle.radius x +"),
             definition(2, "Shapes::Circle.radius"),
@@ -1080,6 +1081,10 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
             complete(9, &compact, "probe::Demo::Shapes::"),
             change(8, &compact_member),
             complete(10, &compact_member, "probe::Demo::Shapes::Circle."),
+            change(9, &std_path),
+            complete(11, &std_path, "-> std::"),
+            change(10, &std_member),
+            complete(12, &std_member, "std::Maybe."),
         ]
     });
     for response in &responses[..2] {
@@ -1115,6 +1120,8 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
         ("Circle", "module Demo::Shapes::Circle"),
         ("Demo", "namespace Demo"),
         ("Shapes", "namespace Demo::Shapes"),
+        ("std", "namespace std"),
+        ("Maybe", "module std::Maybe"),
         ("namespace", "keyword"),
         ("using", "keyword"),
     ] {
@@ -1135,6 +1142,24 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     assert!(colon.is_empty(), "{colon:?}");
     assert_eq!(labels(&responses[8]), labels(&responses[3]));
     assert_eq!(labels(&responses[9]), labels(&responses[6]));
+    // The standard library is the namespace `std`.
+    let std_modules = labels(&responses[10]);
+    for expected in [
+        ("Maybe", "module std::Maybe"),
+        ("Result", "module std::Result"),
+    ] {
+        assert!(
+            std_modules.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+            "{expected:?}: {std_modules:?}"
+        );
+    }
+    let std_members = labels(&responses[11]);
+    assert!(
+        std_members
+            .iter()
+            .any(|(label, detail)| label == "map" && detail.starts_with("def std::Maybe.map ::")),
+        "{std_members:?}"
+    );
 
     // The current namespace's `Demo::Circle` wins over the imported one, and
     // `Square`, which both imports hold, is ambiguous.

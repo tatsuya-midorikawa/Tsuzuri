@@ -22,5 +22,5 @@ fn iter values =
         | (references, index) ->
             if index < Vec.length (ref references) then
                 let value = references[index]
-                Option.Some (value, (references, index + 1))
-            else Option.None) (references, 0)
+                Maybe.Some (value, (references, index + 1))
+            else Maybe.None) (references, 0)

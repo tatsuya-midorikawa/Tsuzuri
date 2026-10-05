@@ -19,7 +19,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
-    ("std/Option.tc", include_str!("../std/Option.tc")),
+    ("std/Maybe.tc", include_str!("../std/Maybe.tc")),
     ("std/Os.tz", include_str!("../std/Os.tz")),
     ("std/Owned.tz", include_str!("../std/Owned.tz")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
@@ -40,7 +40,7 @@ pub const SOURCES: &[(&str, &str)] = &[
 /// Module names reserved for the standard library, whether or not a source
 /// ships yet; user files cannot use them as module stems.
 pub const RESERVED_MODULES: &[&str] = &[
-    "Option",
+    "Maybe",
     "Result",
     "Array",
     "List",
@@ -76,6 +76,10 @@ pub const RESERVED_MODULES: &[&str] = &[
     "BigInt",
 ];
 
+/// The namespace of every std module, as `std::Maybe`. User code cannot
+/// declare modules in it.
+pub const NAMESPACE: &str = "std";
+
 pub fn is_reserved_module(name: &str) -> bool {
     RESERVED_MODULES.contains(&name)
 }
@@ -100,7 +104,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
     )
 }
 
-/// The module name of a flat std source path such as `std/Option.tc`, or
+/// The module name of a flat std source path such as `std/Maybe.tc`, or
 /// `None` for paths outside `std/`, nested paths, and unknown extensions.
 pub fn module_name(path: &str) -> Option<&str> {
     let (stem, extension) = path.strip_prefix("std/")?.rsplit_once('.')?;
@@ -118,7 +122,7 @@ mod tests {
     #[test]
     fn names_flat_std_paths_only() {
         assert_eq!(module_name("std/Math.tz"), Some("Math"));
-        assert_eq!(module_name("std/Option.tc"), Some("Option"));
+        assert_eq!(module_name("std/Maybe.tc"), Some("Maybe"));
         assert_eq!(module_name("std/Classes.tt"), Some("Classes"));
         for path in [
             "std/Nested/Bad.tz",
@@ -171,7 +175,7 @@ mod tests {
             );
         }
         for source in [
-            "IO { let! line = IO.read_line (); do! IO.write_line (Option.default_value \"\" line) }",
+            "IO { let! line = IO.read_line (); do! IO.write_line (Maybe.default_value \"\" line) }",
             "IO { for number in [1, 2] do do! IO.write_line number }",
             "IO { while false do do! IO.write_line 1 }",
             "IO {\n    let! left = IO.pure 20\n    and! right = IO.pure 22\n    return left + right\n}",

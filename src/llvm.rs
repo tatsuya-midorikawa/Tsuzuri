@@ -5321,13 +5321,13 @@ impl FunctionEmitter<'_, '_> {
 
     fn integer_none_on(&mut self, result: &Type, invalid: &str) {
         let Type::Union(id, _) = result else {
-            unreachable!("checked result is Option")
+            unreachable!("checked result is Maybe")
         };
         let none = self.module.unions[*id]
             .cases
             .iter()
             .position(|(name, _)| name == "None")
-            .expect("Option.None exists");
+            .expect("Maybe.None exists");
         let failure = self.label();
         let success = self.label();
         self.branch(invalid, &failure, &success);
@@ -5339,13 +5339,13 @@ impl FunctionEmitter<'_, '_> {
 
     fn integer_some(&mut self, result: &Type, element: &Type, value: &str) -> String {
         let Type::Union(id, _) = result else {
-            unreachable!("checked result is Option")
+            unreachable!("checked result is Maybe")
         };
         let some = self.module.unions[*id]
             .cases
             .iter()
             .position(|(name, _)| name == "Some")
-            .expect("Option.Some exists");
+            .expect("Maybe.Some exists");
         self.construct_value(result, some, Some((value.to_owned(), self.ty(element))))
     }
 
@@ -5654,7 +5654,7 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     let result = ty.after_arguments(1);
     let result_type = llvm_type(&result, module);
     let Type::Union(id, _) = result else {
-        unreachable!("Parse returns the checked standard Option union")
+        unreachable!("Parse returns the checked standard Maybe union")
     };
     let cases = &module.unions[id].cases;
     let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
@@ -5979,9 +5979,9 @@ mod tests {
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
              let number = to_string 42\n\
-             let parsed: Option<i64> = Parse.parse ref number\n\
+             let parsed: Maybe<i64> = Parse.parse ref number\n\
              let truth = to_string true\n\
-             let parsed_bool: Option<bool> = Parse.parse ref truth\n0",
+             let parsed_bool: Maybe<bool> = Parse.parse ref truth\n0",
         );
         for (name, consumed) in [("display", false), ("to_string", true)] {
             let start = format!("define internal %tz.string @tz.builtin.{name}.utf8string(");

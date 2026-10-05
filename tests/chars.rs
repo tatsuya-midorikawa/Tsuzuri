@@ -67,7 +67,7 @@ fn character_modules_use_explicit_typed_conversions() {
         "Char.to_u16 (Char.to_ascii_upper 'a')",
         "Char.of_u16 55296i16u == '\\uD800'",
         "Utf8Char.to_u32 (Utf8Char.to_ascii_lower u8'A')",
-        "Option.get (Utf8Char.of_u32 128512i32u) == u8'\\u{1F600}'",
+        "Maybe.get (Utf8Char.of_u32 128512i32u) == u8'\\u{1F600}'",
         "Utf8Char.of_u32_unchecked 65i32u == u8'A'",
         "Char.is_ascii_digit '5' && Utf8Char.is_ascii_alphabetic u8'z'",
     ] {
@@ -81,8 +81,8 @@ fn character_modules_use_explicit_typed_conversions() {
 #[test]
 fn character_display_parse_and_console_lowering() {
     for source in [
-        "let value = '\\uD800'\nlet text = to_string value\nlet parsed: Option<char> = Parse.parse (ref text)\nOption.get parsed == value",
-        "let value = u8'\\u{1F600}'\nlet text = to_string value\nlet parsed: Option<utf8char> = Parse.parse (ref text)\nOption.get parsed == value",
+        "let value = '\\uD800'\nlet text = to_string value\nlet parsed: Maybe<char> = Parse.parse (ref text)\nMaybe.get parsed == value",
+        "let value = u8'\\u{1F600}'\nlet text = to_string value\nlet parsed: Maybe<utf8char> = Parse.parse (ref text)\nMaybe.get parsed == value",
     ] {
         let module = analyze(source).unwrap();
         for wasm in [false, true] {

@@ -23,7 +23,7 @@ Total: 5400 JPY
 | 機能 | この例での用途 |
 | --- | --- |
 | record | 小計・送料・合計を一つの Quote にまとめる |
-| Parse と Option | 入力文字列を i64 として解析する |
+| Parse と Maybe | 入力文字列を i64 として解析する |
 | Result の計算式 | 解析・検証の失敗をそのまま返す |
 | Int.checked_mul | 単価と数量の積の overflow を失敗値にする |
 | 共有借用 | 入力や見積もりを消費せず読み取る |
@@ -36,13 +36,13 @@ Total: 5400 JPY
 ```tsuzuri run=Subtotal%3A%205400%20JPY%0AShipping%3A%200%20JPY%0ATotal%3A%205400%20JPY
 record Quote { subtotal: i64, shipping: i64, total: i64 }
 
-def parse_integer :: ref string -> Result<i64, string> = \text -> Option.to_result "Enter a valid integer." (Parse.parse text)
+def parse_integer :: ref string -> Result<i64, string> = \text -> Maybe.to_result "Enter a valid integer." (Parse.parse text)
 
 def quote :: i64 -> i64 -> Result<Quote, string> = \unit_price quantity ->
     if unit_price < 0 then Result.Error "Price must not be negative."
     elif quantity <= 0 then Result.Error "Quantity must be positive."
     else Result {
-        let! subtotal = Option.to_result "Order total is too large." (Int.checked_mul unit_price quantity)
+        let! subtotal = Maybe.to_result "Order total is too large." (Int.checked_mul unit_price quantity)
         let shipping = if subtotal >= 5000 then 0 else 500
         return Quote { subtotal: subtotal, shipping: shipping, total: subtotal + shipping }
     }
@@ -132,7 +132,7 @@ price_text と quantity_text は共有借用で、解析のために複製しま
 
 ## 関連項目
 
-- [Option と Result](../library-reference/option-result.md)
+- [Maybe と Result](../library-reference/maybe-result.md)
 - [整数の checked 演算](../library-reference/integers.md)
 - [コンピュテーション式](../language-reference/computation-expressions.md)
 - [言語内テスト](../tools/testing.md)

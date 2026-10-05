@@ -119,7 +119,7 @@ total + unit_at (ref text) 0 as i64 + byte_at (ref bytes) 0 as i64
         r#""a" + u8"b""#,
         r#""a" == u8"a""#,
         r#"let bytes = u8"42"
-           let parsed: Option<i64> = Parse.parse ref bytes
+           let parsed: Maybe<i64> = Parse.parse ref bytes
            0"#,
     ] {
         rejects(source, "E1003");
@@ -269,7 +269,7 @@ text == text && bytes == bytes && output.length == 3
 fn string_library_buffer_primitives_preserve_encodings() {
     for source in [
         "let text = String.from_code_units [55296i16u, 0i16u]\nlet values = String.to_code_units text\nvalues[0] == 55296i16u",
-        "let bytes = Utf8String.to_bytes u8\"hello\"\nlet text = Utf8String.from_bytes bytes\n(Option.get text).length",
+        "let bytes = Utf8String.to_bytes u8\"hello\"\nlet text = Utf8String.from_bytes bytes\n(Maybe.get text).length",
         "let text = u8\"\\u{1f600}\"\nmatch Utf8String.decode_at (ref text) 0 with | (value, next) -> Utf8Char.to_u32 value == 128512i32u && next == 4",
         "let left = u8\"a\"\nlet right = u8\"b\"\nUtf8String.compare (ref left) (ref right)",
     ] {

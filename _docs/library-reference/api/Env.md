@@ -1,5 +1,7 @@
 # Env
 
+Namespace: `std`
+
 ## `args`
 
 ```tsuzuri
@@ -12,7 +14,7 @@ did not pass them (a library or a test executable), it is empty.
 ## `var`
 
 ```tsuzuri
-def var :: string -> IO<Result<Option<string>, Os.Error>>
+def var :: string -> IO<Result<Maybe<string>, Os.Error>>
 ```
 
 An environment variable; an unset one is `Ok None`. A name that is empty or contains `=` or

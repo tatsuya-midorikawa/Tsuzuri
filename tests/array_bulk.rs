@@ -12,10 +12,10 @@ fn array_bulk_source_apis_and_borrowed_results() {
         "let values = [1.0, 2.0, 3.0]\nArray.sum (ref values) + Array.product (ref values)",
         "let values = [\"a\", \"bb\"]\nlet mapped = Array.map_ref (text -> text.length) (ref values)\nArray.sum (ref mapped)",
         "let values = [\"a\", \"bb\"]\n(Array.at (ref values) 1).length",
-        "let values = [\"a\", \"bb\"]\n(Option.get (Array.find (text -> text.length == 2) (ref values))).length",
-        "let values = [3, 1, 2]\n*(Option.get (Array.min (ref values)))",
+        "let values = [\"a\", \"bb\"]\n(Maybe.get (Array.find (text -> text.length == 2) (ref values))).length",
+        "let values = [3, 1, 2]\n*(Maybe.get (Array.min (ref values)))",
         "let values = [1, 2, 3]\nArray.fold_back_ref (value -> state -> deref value + state) (ref values) 0",
-        "let values = [1, 2, 2, 3]\nlet target = 2\nOption.get (Array.binary_search (ref values) (ref target))",
+        "let values = [1, 2, 2, 3]\nlet target = 2\nMaybe.get (Array.binary_search (ref values) (ref target))",
         "let left = [\"first\", \"second\"]\nlet right = [\"first\", \"second\"]\nArray.equal (ref left) (ref right)",
     ] {
         let module = analyze(source)

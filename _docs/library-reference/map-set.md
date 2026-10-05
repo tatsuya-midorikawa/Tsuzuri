@@ -24,7 +24,7 @@ Map.fold (\total _key value -> total + value.length) 0 (ref dictionary)
 | `insert map key value` | 所有更新。同じキーなら値を置換 |
 | `remove map key` | 所有更新。不在なら変更なし |
 | `contains_key map key` | 借用 Map と所有検索キーから bool |
-| `get map key` | 借用 Map から Copy 値の `Option<V>` |
+| `get map key` | 借用 Map から Copy 値の `Maybe<V>` |
 | `at map key` | `ref V`。不在ならトラップ |
 | `to_array map` | キー昇順の `(K * V)` 配列。両方の Copy が必要 |
 | `keys map`, `values map` | 対象側だけ Copy を要求して配列へ |

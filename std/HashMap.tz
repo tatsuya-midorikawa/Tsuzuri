@@ -146,12 +146,12 @@ fn contains_key_ref map key = find map key >= 0
 def contains_key :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> bool
 fn contains_key map key = contains_key_ref map (ref key)
 
-def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Option<'value>
+def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Maybe<'value>
 fn get_ref map key =
 	let index = find map key
-	if index >= 0 then Option.Some map.entries[index].value else Option.None
+	if index >= 0 then Maybe.Some map.entries[index].value else Maybe.None
 
-def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Option<'value>
+def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Maybe<'value>
 fn get map key = get_ref map (ref key)
 
 def at_ref {r s} :: (Hash<'key>, Eq<'key>) => ref {r} HashMap<'key, 'value> -> ref {s} 'key -> ref {r} 'value
@@ -173,10 +173,10 @@ fn insert map key value =
 	| HashMap { entries = entries, slots = slots, key0 = key0, key1 = key1, keyed = keyed } ->
 		if found >= 0 then
 			match Vec.pop (Vec.swap entries found (count - 1)) with
-			| (remaining, Option.Some old) ->
+			| (remaining, Maybe.Some old) ->
 				let replacement = Entry { hash: old.hash, key: old.key, value: value }
 				HashMap { entries: Vec.swap (Vec.push remaining replacement) found (count - 1), slots: slots, key0: key0, key1: key1, keyed: keyed }
-			| (_, Option.None) -> unreachable ()
+			| (_, Maybe.None) -> unreachable ()
 		else
 			let grown = if 2 * (count + 1) > size then rebuild (ref entries) (if size == 0 then 8 else size * 2) else slots
 			let position = locate (ref grown) hash (-1)
@@ -254,8 +254,8 @@ fn fold folder initial map =
 
 private def rec iter_from :: ref HashMap<'key, 'value> -> i64 -> Seq<(ref 'key * ref 'value)>
 fn rec iter_from map index = Seq.defer (\() ->
-	if index < length map then (iter_from map (index + 1), Option.Some (ref map.entries[index].key, ref map.entries[index].value))
-	else (Seq.empty(), Option.None))
+	if index < length map then (iter_from map (index + 1), Maybe.Some (ref map.entries[index].key, ref map.entries[index].value))
+	else (Seq.empty(), Maybe.None))
 
 def iter :: ref HashMap<'key, 'value> -> Seq<(ref 'key * ref 'value)>
 fn iter map = iter_from map 0

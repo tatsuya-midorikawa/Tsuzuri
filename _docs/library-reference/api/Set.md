@@ -1,5 +1,7 @@
 # Set
 
+Namespace: `std`
+
 ## `Set`
 
 ```tsuzuri

@@ -1,5 +1,7 @@
 # Map
 
+Namespace: `std`
+
 ## `Map`
 
 ```tsuzuri
@@ -41,7 +43,7 @@ def contains_key :: Ord<'key> => ref Map<'key, 'value> -> 'key -> bool
 ## `get`
 
 ```tsuzuri
-def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Option<'value>
+def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Maybe<'value>
 ```
 
 ## `at`

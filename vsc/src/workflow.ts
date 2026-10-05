@@ -221,7 +221,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 					prompt: 'The default namespace that Tsuzuri.toml and Main.tz declare, such as Acme::Tools',
 					value: defaultNamespace(path.basename(directory)),
 					validateInput: text => isNamespace(text) ? undefined
-						: 'Use identifiers joined by :: such as Acme::Tools, without reserved words, _ or Task, that do not start with a standard library module name.',
+						: 'Use identifiers joined by :: such as Acme::Tools, without reserved words, _ or Task, that do not start with std or a standard library module name.',
 				});
 				if (namespace === undefined) { return; }
 				const result = await runCompiler(context, directory, ['new', directory, '--namespace', namespace]);

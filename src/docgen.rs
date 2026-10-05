@@ -43,9 +43,16 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
         if let Some(page) = pages.get_mut(&filename) {
             page.push_str(&render_declarations(&program));
         } else {
+            let namespace = match source.origin {
+                ModuleOrigin::Std => Some(crate::stdlib::NAMESPACE),
+                ModuleOrigin::User => program
+                    .namespace
+                    .as_ref()
+                    .map(|declared| declared.path.text.as_str()),
+            };
             pages.insert(
                 filename.clone(),
-                render_module(&name.replace('.', "::"), &program),
+                module_page(&name.replace('.', "::"), namespace, &program),
             );
         }
         modules.insert(name, filename);
@@ -239,7 +246,13 @@ pub fn render_module(name: &str, program: &Program) -> String {
     let namespace = program
         .namespace
         .as_ref()
-        .map(|declared| format!("Namespace: `{}`\n\n", declared.path.text))
+        .map(|declared| declared.path.text.as_str());
+    module_page(name, namespace, program)
+}
+
+fn module_page(name: &str, namespace: Option<&str>, program: &Program) -> String {
+    let namespace = namespace
+        .map(|namespace| format!("Namespace: `{namespace}`\n\n"))
         .unwrap_or_default();
     format!("# {name}\n\n{namespace}{}", render_declarations(program))
 }

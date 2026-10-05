@@ -1472,7 +1472,7 @@ impl ModuleNames {
                     .path
                     .to_str()
                     .and_then(crate::stdlib::module_name)
-                    .map(|name| (name.to_owned(), String::new())),
+                    .map(|name| (name.to_owned(), crate::stdlib::NAMESPACE.to_owned())),
             })
             .collect();
         let full = sources

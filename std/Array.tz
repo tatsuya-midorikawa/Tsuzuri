@@ -6,15 +6,15 @@ fn is_empty values = values.length == 0
 
 private def rec iter_from :: ref ['a] -> i64 -> Seq<ref 'a>
 fn rec iter_from values index = Seq.defer (\() ->
-    if index < values.length then (iter_from values (index + 1), Option.Some (ref values[index]))
-    else (Seq.empty(), Option.None))
+    if index < values.length then (iter_from values (index + 1), Maybe.Some (ref values[index]))
+    else (Seq.empty(), Maybe.None))
 
 def iter :: ref ['a] -> Seq<ref 'a>
 fn iter values = iter_from values 0
 
-def get :: Copy<'a> => ref ['a] -> i64 -> Option<'a>
+def get :: Copy<'a> => ref ['a] -> i64 -> Maybe<'a>
 fn get values index =
-    if index < 0 || index >= values.length then Option.None else Option.Some values[index]
+    if index < 0 || index >= values.length then Maybe.None else Maybe.Some values[index]
 
 def at :: ref ['a] -> i64 -> ref 'a
 fn at values index = ref values[index]
@@ -90,15 +90,15 @@ fn fold_back_ref folder values initial =
         state = folder (ref values[index]) state
     state
 
-def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Option<'a>
+def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Maybe<'a>
 fn reduce folder values =
-    if values.length == 0 then Option.None else
+    if values.length == 0 then Maybe.None else
         let mut state = values[0]
         let mut index = 1
         while index < values.length do
             state = folder state values[index]
             index = index + 1
-        Option.Some state
+        Maybe.Some state
 
 def sum :: Numeric<'a> => ref ['a] -> 'a
 fn sum values =
@@ -166,25 +166,25 @@ fn product values =
     for value in values do total = total * value
     total
 
-def min :: Ord<'a> => ref ['a] -> Option<ref 'a>
+def min :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 fn min values =
-    if values.length == 0 then Option.None else
+    if values.length == 0 then Maybe.None else
         let mut best = 0
         let mut index = 1
         while index < values.length do
             if values[index] < values[best] then best = index
             index = index + 1
-        Option.Some (ref values[best])
+        Maybe.Some (ref values[best])
 
-def max :: Ord<'a> => ref ['a] -> Option<ref 'a>
+def max :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 fn max values =
-    if values.length == 0 then Option.None else
+    if values.length == 0 then Maybe.None else
         let mut best = 0
         let mut index = 1
         while index < values.length do
             if values[index] > values[best] then best = index
             index = index + 1
-        Option.Some (ref values[best])
+        Maybe.Some (ref values[best])
 
 def any :: (ref 'a -> bool) -> ref ['a] -> bool
 fn any predicate values =
@@ -207,22 +207,22 @@ fn count predicate values =
         index = index + 1
     found
 
-def find :: (ref 'a -> bool) -> ref ['a] -> Option<ref 'a>
+def find :: (ref 'a -> bool) -> ref ['a] -> Maybe<ref 'a>
 fn find predicate values =
     let mut index = 0
     while index < values.length && !(predicate (ref values[index])) do index = index + 1
-    if index < values.length then Option.Some (ref values[index]) else Option.None
+    if index < values.length then Maybe.Some (ref values[index]) else Maybe.None
 
-def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Option<i64>
+def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Maybe<i64>
 fn index_of values target =
     let mut index = 0
     while index < values.length && !(Eq.eq (ref values[index]) target) do index = index + 1
-    if index < values.length then Option.Some index else Option.None
+    if index < values.length then Maybe.Some index else Maybe.None
 
 def contains :: Eq<'a> => ref ['a] -> ref 'a -> bool
 fn contains values target =
     let result = index_of values target
-    Option.is_some (ref result)
+    Maybe.is_some (ref result)
 
 def equal :: Eq<'a> => ref ['a] -> ref ['a] -> bool
 fn equal left right =
@@ -231,14 +231,14 @@ fn equal left right =
         while index < left.length && left[index] == right[index] do index = index + 1
         index == left.length
 
-def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Option<i64>
+def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Maybe<i64>
 fn binary_search values target =
     let mut lower = 0
     let mut upper = values.length
     while lower < upper do
         let middle = lower + (upper - lower) / 2
         if Ord.lt (ref values[middle]) target then lower = middle + 1 else upper = middle
-    if lower < values.length && !(Ord.lt target (ref values[lower])) then Option.Some lower else Option.None
+    if lower < values.length && !(Ord.lt target (ref values[lower])) then Maybe.Some lower else Maybe.None
 
 def sort :: Ord<'a> => ref ['a] -> ['a]
 fn sort values = Array.sort_by (left -> right -> if Ord.lt right left then 1i64 else 0i64) values

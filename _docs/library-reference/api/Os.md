@@ -1,5 +1,7 @@
 # Os
 
+Namespace: `std`
+
 ## `ErrorKind`
 
 ```tsuzuri

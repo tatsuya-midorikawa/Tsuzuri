@@ -87,7 +87,7 @@ try {
   assert.match(text, /int32_t tsuzuri_try_noop\(tsuzuri_trap_info \*trap, int64_t \*result\);/);
   assert.match(text, /int64_t tz_div\(int64_t arg0, int64_t arg1\);/);
 
-  // Option errors.
+  // Maybe errors.
   const refused = (flags, pattern, action = "build") => {
     const output = action === "build" ? ["-o", join(root, "refused.out")] : [];
     const result = execute(compiler, [action, fixture, ...flags, ...output], false);

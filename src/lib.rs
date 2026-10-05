@@ -145,7 +145,7 @@ pub(crate) fn analyze_inputs_indexed_all(
             parser::parse_with_source_all(input.text, id).and_then(|mut program| {
                 program.source_kind = extension.and_then(syntax::SourceKind::from_extension);
                 let identity = match name {
-                    Some(name) => (name, String::new(), false),
+                    Some(name) => (name, stdlib::NAMESPACE.to_owned(), false),
                     None => {
                         let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
                         let (key, namespace) =

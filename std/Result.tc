@@ -86,17 +86,17 @@ fn or_else result fallback =
     | Ok value -> Ok value
     | Error _ -> fallback ()
 
-def to_option :: Result<'a, 'e> -> Option<'a>
-fn to_option result =
+def to_maybe :: Result<'a, 'e> -> Maybe<'a>
+fn to_maybe result =
     match result with
-    | Ok value -> Option.Some value
-    | Error _ -> Option.None
+    | Ok value -> Maybe.Some value
+    | Error _ -> Maybe.None
 
-def of_option :: 'e -> Option<'a> -> Result<'a, 'e>
-fn of_option error option =
-    match option with
-    | Option.Some value -> Ok value
-    | Option.None -> Error error
+def of_maybe :: 'e -> Maybe<'a> -> Result<'a, 'e>
+fn of_maybe error maybe =
+    match maybe with
+    | Maybe.Some value -> Ok value
+    | Maybe.None -> Error error
 
 def Return :: 'a -> Result<'a, 'e>
 fn Return value = Ok value

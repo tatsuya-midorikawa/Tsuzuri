@@ -1,5 +1,7 @@
 # List
 
+Namespace: `std`
+
 ## `length`
 
 ```tsuzuri

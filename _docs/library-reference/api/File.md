@@ -1,5 +1,7 @@
 # File
 
+Namespace: `std`
+
 ## `read_bytes`
 
 ```tsuzuri

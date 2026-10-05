@@ -61,11 +61,11 @@ fn names_text result =
         "ok:" + to_string names.length + ":" + String.join (ref separator) (ref names)
     | Result.Error error -> Os.message (ref error)
 
-def option_text :: Result<Option<string>, Os.Error> -> string
+def option_text :: Result<Maybe<string>, Os.Error> -> string
 fn option_text result =
     match result with
-    | Result.Ok (Option.Some value) -> "some:" + value
-    | Result.Ok Option.None -> "none"
+    | Result.Ok (Maybe.Some value) -> "some:" + value
+    | Result.Ok Maybe.None -> "none"
     | Result.Error error -> Os.message (ref error)
 
 def length_text :: Result<[ubyte], Os.Error> -> string
@@ -573,14 +573,14 @@ def main :: IO<unit> =
 
   // 13. Path and Os are pure: they build for wasm32 without imports and agree with native.
   const pathText = `
-def show :: Option<string> -> string
+def show :: Maybe<string> -> string
 fn show value =
     match value with
-    | Option.Some text -> "Some " + text
-    | Option.None -> "None"
+    | Maybe.Some text -> "Some " + text
+    | Maybe.None -> "None"
 
 def copy :: ref string -> string
-fn copy text = Option.get (String.slice text 0 text.length)
+fn copy text = Maybe.get (String.slice text 0 text.length)
 
 def joined :: string -> string -> string
 fn joined left right = Path.join (ref left) (ref right)
@@ -762,7 +762,7 @@ def count :: unit -> IO<i64>
 fn count _unit = IO {
     let! where = Env.var "TZ_FD_DIR"
     return! match where with
-        | Result.Ok (Option.Some path) -> IO.map length_of (Dir.list path)
+        | Result.Ok (Maybe.Some path) -> IO.map length_of (Dir.list path)
         | _ -> IO.pure (-1)
 }
 
@@ -1012,7 +1012,7 @@ def count :: unit -> IO<i64>
 fn count _unit = IO {
     let! where = Env.var "TZ_FD_DIR"
     return! match where with
-        | Result.Ok (Option.Some path) -> IO.map length_of (Dir.list path)
+        | Result.Ok (Maybe.Some path) -> IO.map length_of (Dir.list path)
         | _ -> IO.pure (-1)
 }
 
@@ -1229,7 +1229,7 @@ def main :: IO<unit> =
 def main :: IO<unit> =
     let! _prompt = IO.write "Name: "
     let! line = IO.read_line ()
-    do! IO.write_line (Option.default_value "<eof>" line)
+    do! IO.write_line (Maybe.default_value "<eof>" line)
     do! IO.write_error_line "note"
 `);
   for (const optimization of optimizations) {

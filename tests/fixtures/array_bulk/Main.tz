@@ -31,8 +31,8 @@ fn borrowed_search =
     let smallest = Array.min (ref values)
     let largest = Array.max (ref values)
     assert (Array.contains (ref values) (ref needle))
-    assert (Option.get (Array.index_of (ref values) (ref needle)) == 1)
-    (Option.get found).length + (Option.get smallest).length + (Option.get largest).length
+    assert (Maybe.get (Array.index_of (ref values) (ref needle)) == 1)
+    (Maybe.get found).length + (Maybe.get smallest).length + (Maybe.get largest).length
 
 export def bulk_callbacks :: i64
 fn bulk_callbacks =
@@ -55,8 +55,8 @@ fn bulk_empty =
     assert (!(Array.any (value -> unreachable ()) (ref values)))
     let reduced = Array.reduce (left -> right -> left + right) (ref values)
     let smallest = Array.min (ref values)
-    assert (Option.is_none (ref reduced))
-    assert (Option.is_none (ref smallest))
+    assert (Maybe.is_none (ref reduced))
+    assert (Maybe.is_none (ref smallest))
     Array.sum (ref values) + Array.product (ref values)
 
 export def bulk_short_circuit :: bool
@@ -64,7 +64,7 @@ fn bulk_short_circuit =
     let values = [1, 0]
     let predicate: ref i64 -> bool = value -> { assert (deref value != 0); true }
     let rejecting: ref i64 -> bool = value -> { assert (deref value != 0); false }
-    Array.any predicate (ref values) && !(Array.all rejecting (ref values)) && *(Option.get (Array.find predicate (ref values))) == 1
+    Array.any predicate (ref values) && !(Array.all rejecting (ref values)) && *(Maybe.get (Array.find predicate (ref values))) == 1
 
 export def bulk_list :: i64
 fn bulk_list =
@@ -104,14 +104,14 @@ export def reductions :: bool
 fn reductions =
     let ordered = [10000000000000000.0, -10000000000000000.0, 1.0]
     let values = [0.0 / 0.0, 1.0]
-    let best = deref (Option.get (Array.min (ref values)))
+    let best = deref (Maybe.get (Array.min (ref values)))
     Array.sum (ref ordered) == 1.0 && best != best
 
 export def first_duplicate :: i64
 fn first_duplicate =
     let values = [1, 2, 2, 2, 3]
     let needle = 2
-    Option.get (Array.binary_search (ref values) (ref needle))
+    Maybe.get (Array.binary_search (ref values) (ref needle))
 
 export def filtered :: i64
 fn filtered =

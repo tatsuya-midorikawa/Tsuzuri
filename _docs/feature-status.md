@@ -46,10 +46,10 @@
 
 | ID | 現在の提供範囲 | 解説 | 実装記録 |
 | --- | --- | --- | --- |
-| B01 | Option / Result の型と所有・借用 API | [Option / Result](library-reference/option-result.md) | [B01](../_features/_completed/B01-option-result.md) |
-| B02 | Option / Result ビルダーで失敗時に継続を短絡 | [計算式](language-reference/computation-expressions.md) | [B02](../_features/_completed/B02-result-propagation.md) |
+| B01 | Maybe / Result の型と所有・借用 API | [Maybe / Result](library-reference/maybe-result.md) | [B01](../_features/_completed/B01-option-result.md) |
+| B02 | Maybe / Result ビルダーで失敗時に継続を短絡 | [計算式](language-reference/computation-expressions.md) | [B02](../_features/_completed/B02-result-propagation.md) |
 | B03 | 通常ループの break / continue と解放 | [ループ](language-reference/control-flow.md) | [B03](../_features/_completed/B03-break-continue.md) |
-| B04 | bool / Option の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
+| B04 | bool / Maybe の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
 | B05 | match! / and!、BindReturn / Bind2。use / use! は B07 で対応。try はビルダーの操作に展開せず、`Result` を返す通常の式 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
 | B06 | parallel_results の未開始停止と最小 index の Error | [Task](language-reference/tasks.md) | [B06](../_features/_completed/B06-task-cancellation.md) |
 | B07 | 対応: 利用者が宣言した record・union の `instance Drop<T>`。scope の終わり・置き換え・コレクションの要素・未実行の Task の捕捉値・再帰 union のノードで一度だけ `drop` を呼び、field を宣言順に解放する（native と WASM、100 万段の再帰 union を検証）。Drop 型は非 Copy で、field の move と更新は `E1012`。Phase 2 で `use` / `use!` 束縛、早期解放の `Owned.drop`、Drop 型を捕捉できる非 Copy の関数値 `Owned.function` / `Owned.call`。`extern type` への直接の `Drop` は未実装 | [所有権](language-reference/ownership.md) | [B07](../_features/_completed/B07-user-drop.md) |
@@ -102,7 +102,7 @@
 | E09 | 未着手（計画）: TCP / UDP | [IO](library-reference/io.md) | [E09](../_features/E09-network.md) |
 | E10 | 未着手（計画）: git 依存、lockfile、版解決と registry | [パッケージ](language-reference/modules-and-packages.md) | [E10](../_features/E10-package-registry.md) |
 | E11 | 未着手（計画）: C ヘッダーからの extern 生成 | [C ABI](guides/native-interop.md) | [E11](../_features/E11-c-bindgen.md) |
-| E12 | 対応（Phase 1 と一部の拡張）: `extern "symbol" def` と `extern "module" "symbol" def` のリンク名、`--link`・`-l`・`-L` と manifest の `[native]` でのホストのリンク指定（native の実行ファイル。root が `native = true` で許可した依存 package の `[native]` を含む）、`extern type` の不透明ハンドル、捕捉のないトップレベル関数の静的コールバック（ホストの別スレッドからの呼び出しと複数スレッドからの同時呼び出しを検証済み）。捕捉のある関数値のコールバック、`Option<H>` と NULL の対応、i128・f16・タプルの ABI、`extern type` への `Drop` は未実装 | [外部関数](guides/native-interop.md) | [E12](../_features/_completed/E12-ffi-extensions.md) |
+| E12 | 対応（Phase 1 と一部の拡張）: `extern "symbol" def` と `extern "module" "symbol" def` のリンク名、`--link`・`-l`・`-L` と manifest の `[native]` でのホストのリンク指定（native の実行ファイル。root が `native = true` で許可した依存 package の `[native]` を含む）、`extern type` の不透明ハンドル、捕捉のないトップレベル関数の静的コールバック（ホストの別スレッドからの呼び出しと複数スレッドからの同時呼び出しを検証済み）。捕捉のある関数値のコールバック、`Maybe<H>` と NULL の対応、i128・f16・タプルの ABI、`extern type` への `Drop` は未実装 | [外部関数](guides/native-interop.md) | [E12](../_features/_completed/E12-ffi-extensions.md) |
 | E13 | 未着手（計画）: TypeScript などのバインディングと Web glue の生成 | [WASM](guides/webassembly.md) | [E13](../_features/E13-host-bindings.md) |
 | E14 | 対応（Phase 1・2・3）: WASM の `createBoundary` がトラップとスタック枯渇を値で返し、失敗した instance を捨てて作り直す。native object は `--trap-mode return` で `tsuzuri_try_<name>`（status 0・1・2 と `tsuzuri_trap_info`）を出し、トラップした呼び出しの heap を解放して `Task.parallel` の worker のトラップも返す。再帰するプログラムの native 実行ファイルはスタック枯渇を `trap: stack overflow` で報告して `abort()` する（macOS と Linux で検証。Windows と `tsuzuri test` の実行ファイルは推定のまま） | [トラップ位置](tools/debugging.md) | [E14](../_features/_completed/E14-trap-boundary.md) |
 

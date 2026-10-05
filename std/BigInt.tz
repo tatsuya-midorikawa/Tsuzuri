@@ -28,9 +28,9 @@ fn of_i64 value =
     make (value < 0) (Vec.to_array digits)
 
 /// The `i64` that `value` holds, or `None` when it is out of range.
-def to_i64 :: ref BigInt -> Option<i64>
+def to_i64 :: ref BigInt -> Maybe<i64>
 fn to_i64 value =
-    if value.limbs.length > 3 then Option.None else
+    if value.limbs.length > 3 then Maybe.None else
         let mut total = 0i128
         let mut index = value.limbs.length
         while index > 0 do
@@ -38,15 +38,15 @@ fn to_i64 value =
             total = total * 1000000000 + (value.limbs[index] as i128)
         let signed = if value.negative then 0 - total else total
         let fits = signed >= -9223372036854775808i128 && signed <= 9223372036854775807i128
-        if fits then Option.Some (signed as i64) else Option.None
+        if fits then Maybe.Some (signed as i64) else Maybe.None
 
 /// The bigint that `text` spells: an optional `-` and decimal digits.
-def of_string :: ref string -> Option<BigInt>
+def of_string :: ref string -> Maybe<BigInt>
 fn of_string text =
     let characters = String.chars text
     let negative = characters.length > 0 && characters[0] == '-'
     let start = if negative then 1 else 0
-    if characters.length == start then Option.None else
+    if characters.length == start then Maybe.None else
         let mut digits = Vec.empty()
         let mut valid = true
         let mut finish = characters.length
@@ -61,7 +61,7 @@ fn of_string text =
                 index = index + 1
             digits = Vec.push digits limb
             finish = first
-        if valid then Option.Some (make negative (Vec.to_array digits)) else Option.None
+        if valid then Maybe.Some (make negative (Vec.to_array digits)) else Maybe.None
 
 /// -1, 0, or 1 as the magnitude `left` is below, equal to, or above `right`.
 private def compare_limbs :: ref [i64] -> ref [i64] -> i64

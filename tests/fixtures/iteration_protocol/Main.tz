@@ -13,7 +13,7 @@ fn seq_empty =
 
 export def seq_cold :: i64
 fn seq_cold =
-    let _sequence: Seq<i64> = Seq.defer (\() -> { assert false; (Seq.empty(), Option.Some 0) })
+    let _sequence: Seq<i64> = Seq.defer (\() -> { assert false; (Seq.empty(), Maybe.Some 0) })
     42
 
 export def seq_range_sum :: i64 -> i64
@@ -62,7 +62,7 @@ fn seq_borrowed =
 
 export def seq_early_exit :: i64
 fn seq_early_exit =
-    let sequence = Seq.unfold (\value -> { assert (value <= 20); Option.Some (value, value + 1) }) 0
+    let sequence = Seq.unfold (\value -> { assert (value <= 20); Maybe.Some (value, value + 1) }) 0
     let mut total = 0
     for value in sequence do
         if value == 20 then break

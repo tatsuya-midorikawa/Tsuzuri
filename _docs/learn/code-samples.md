@@ -115,10 +115,10 @@ tsuzuri test ./named
 
 ```tsuzuri run=42
 def parse_count :: ref string -> Result<i64, string> = \text ->
-    let parsed: Option<i64> = Parse.parse text
+    let parsed: Maybe<i64> = Parse.parse text
     match parsed with
-    | Option.None -> Result.Error "not an integer"
-    | Option.Some count ->
+    | Maybe.None -> Result.Error "not an integer"
+    | Maybe.Some count ->
         if count < 0 then Result.Error "must be non-negative"
         else Result.Ok count
 
@@ -156,7 +156,7 @@ match total with
 
 例えば最初の入力が `"twenty"` なら、出力するエラーは `not an integer` です。テストはこの経路と負数の拒否を確認します。合計の `+` 自体は通常の i64 加算で、上限を超えると折り返します。集計のオーバーフローも拒否したい場合は、`Int.checked_add` の結果を処理するか、`@checked` の式を `try` で `Result` に変えます（[例外処理](../language-reference/error-handling.md)）。
 
-詳しくは [Option / Result](../library-reference/option-result.md)、[表示と解析](../library-reference/formatting-and-parsing.md)、[整数 API](../library-reference/integers.md)を参照してください。
+詳しくは [Maybe / Result](../library-reference/maybe-result.md)、[表示と解析](../library-reference/formatting-and-parsing.md)、[整数 API](../library-reference/integers.md)を参照してください。
 
 ## 配列を借用して更新する
 

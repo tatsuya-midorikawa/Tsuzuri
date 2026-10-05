@@ -1,5 +1,7 @@
 # Dir
 
+Namespace: `std`
+
 ## `list`
 
 ```tsuzuri

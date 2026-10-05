@@ -127,10 +127,29 @@ dot で始まるファイル・ディレクトリは無視します。ソース�
 
 利用者の宣言は同名の標準宣言より優先しますが、標準ライブラリ内部から利用者の宣言を探索することはありません。std の private 関数にはアクセスできません。
 
+標準ライブラリのモジュールは名前空間 `std` に属し、完全名は `std::Maybe`、`std::Result` などです。`std` はすべてのファイルに暗黙に取り込まれるため、普段は `Maybe.map` のように名前空間を省いて書きます。ファイル自身が同じ名前を宣言しているときは、`std::` を付けて標準ライブラリを指定します。
+
+```tsuzuri project=std-namespace file=Main.tz run=42
+record Result { value: i64 }
+
+def checked :: std::Result<i64, string> -> i64 = \result ->
+    match result with
+    | std::Result.Ok value -> value
+    | std::Result.Error _ -> 0
+
+let local = Result { value: 2 }
+checked (std::Result.Ok 40) + local.value
+```
+
+- このファイルの `Result` は自分の record です。標準の union は `std::Result<i64, string>`、その case は `std::Result.Ok` と書きます。
+- 自分の `union Maybe` を宣言したファイルでは、`Maybe.Some` も自分の union の case です。標準の case は `std::Maybe.Some` と書きます。
+- 組み込みのモジュール関数と型も `std::Task.run`、`std::Int.checked_add`、`std::Vec<i64>` のように書けます。名前空間に属するのはモジュールだけなので、`ignore` のような修飾しない関数には `std::` を付けません。
+- 利用者のファイルは名前空間 `std` とその内側を宣言できません（`E1011`）。`Tsuzuri.toml` の `namespace` も `std` で始められません。
+
 以下は標準ライブラリのモジュール名として予約されており、利用者のモジュールのパスの先頭要素（既定名前空間の直下の最初の要素）には使えません。名前が予約されていることと、同名のソースファイルや API がすべて存在することは同義ではありません。
 
 ```text
-Option Result Array List Vec String Utf8String Char Utf8Char Math Int
+Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int
 Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned
 File Dir Path Env Time Random Os Process Format
 ```

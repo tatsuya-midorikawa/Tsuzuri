@@ -1575,7 +1575,15 @@ impl Parser<'_> {
                 TypeExprKind::Array(Box::new(element))
             }
         } else {
-            let name = self.qualified_ident()?;
+            let mut name = self.qualified_ident()?;
+            // The builtin types `Task` and `Vec` belong to the std namespace too.
+            if let Some(builtin @ ("Task" | "Vec")) = name
+                .text
+                .strip_prefix(crate::stdlib::NAMESPACE)
+                .and_then(|rest| rest.strip_prefix("::"))
+            {
+                name.text = builtin.into();
+            }
             if name.text == "Task" && self.at(&TokenKind::Less) {
                 TypeExprKind::Task(Box::new(self.single_type_argument()?))
             } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {

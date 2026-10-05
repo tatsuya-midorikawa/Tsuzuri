@@ -179,15 +179,15 @@ fn utf8_iterated =
 export def parses :: bool
 fn parses =
     let good = "42"
-    let parsed: Option<i64> = Parse.parse ref good
-    assert (Option.get parsed == 42)
+    let parsed: Maybe<i64> = Parse.parse ref good
+    assert (Maybe.get parsed == 42)
     let mut rejected = true
     for text in ["４２", "é", "😀", "1\0", "\uD800", "\uDC00", "\u0131", "\u0130", "tru\u0165"] do
-        let integer: Option<i64> = Parse.parse ref text
-        let real: Option<f64> = Parse.parse ref text
-        let boolean: Option<bool> = Parse.parse ref text
-        rejected = rejected && Option.is_none ref integer &&
-            Option.is_none ref real && Option.is_none ref boolean
+        let integer: Maybe<i64> = Parse.parse ref text
+        let real: Maybe<f64> = Parse.parse ref text
+        let boolean: Maybe<bool> = Parse.parse ref text
+        rejected = rejected && Maybe.is_none ref integer &&
+            Maybe.is_none ref real && Maybe.is_none ref boolean
     rejected
 
 record Pair<'a, 'b> { first: 'a, second: 'b }

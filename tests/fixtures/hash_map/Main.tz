@@ -76,8 +76,8 @@ fn hash_borrowed_keys count =
         if present then found = found + 1
         let value =
             match HashMap.get_ref (ref map) (ref key) with
-            | Option.Some stored -> stored
-            | Option.None -> -1
+            | Maybe.Some stored -> stored
+            | Maybe.None -> -1
         sum = sum * 31 + value
         if present then sum = sum + deref (HashMap.at_ref (ref map) (ref key))
         index = index + 1
@@ -240,19 +240,19 @@ fn first_representative =
     let keys = HashMap.keys (ref map)
     let set = HashSet.insert (HashSet.insert HashSet.empty() (-0.0)) 0.0
     let set_keys = HashSet.to_array (ref set)
-    keys.length == 1 && 1.0 / keys[0] < 0.0 && Option.get (HashMap.get (ref map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (HashMap.get (ref map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
 
 record Key { name: string } deriving (Eq, Hash)
 
 export def owned_record_keys :: i64
 fn owned_record_keys =
     let map = HashMap.insert HashMap.empty() (Key { name: "answer" }) 42
-    Option.get (HashMap.get (ref map) (Key { name: "answer" }))
+    Maybe.get (HashMap.get (ref map) (Key { name: "answer" }))
 
 export def hash_capture :: i64
 fn hash_capture =
     let map = HashMap.insert HashMap.empty() "answer" 42
-    let read = \() -> Option.get (HashMap.get (ref map) "answer")
+    let read = \() -> Maybe.get (HashMap.get (ref map) "answer")
     read () + read ()
 
 export def hash_borrowed_values :: i64

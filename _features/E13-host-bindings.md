@@ -175,7 +175,7 @@ export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly
 | ハンドル（E12） | `"handle:<handle_c_name>"` | `number & { readonly __tsuzuri: "<handle_c_name>" }` | 整数かつ `0 <= v < 2^32` | `v >>> 0` |
 | コールバック（E12、import の引数だけ） | `["callback", [引数], 結果]` | 関数型 | — | table の index から、上の変換を通す JS 関数（import の呼び出し中だけ有効） |
 
-- Result／Option・union・タプル・関数値は E05 の ABI にない（`E1008`）ので対象外。ABI の許容範囲は `crate::abi::parameter`／`crate::abi::result` から変えない。
+- Result／Maybe・union・タプル・関数値は E05 の ABI にない（`E1008`）ので対象外。ABI の許容範囲は `crate::abi::parameter`／`crate::abi::result` から変えない。
 - pointer（out、確保、descriptor の ptr）は常に `>>> 0` してから `DataView`／typed array の offset に使う。
 
 ### 評価順序・所有権・借用
@@ -585,7 +585,7 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
 
 - Phase 2（D11）: ブラウザーの threads glue、C#・Python・C++ の生成、native の共有ライブラリ出力、ブラウザー main thread での非同期の作り直し。
 - WebAssembly component model（WIT）、bundler の plugin、npm package の公開、CommonJS 出力、GUI フレームワークとの統合。
-- Result／Option・union・タプル・関数値の ABI（E05 の範囲外）、非同期の import（B08 Phase 2）。
+- Result／Maybe・union・タプル・関数値の ABI（E05 の範囲外）、非同期の import（B08 Phase 2）。
 
 ## 決定事項
 

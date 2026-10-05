@@ -1,45 +1,45 @@
 record Seq<'a> {
-    head: Option<'a>,
-    step: Option<unit -> (Seq<'a> * Option<'a>)>
+    head: Maybe<'a>,
+    step: Maybe<unit -> (Seq<'a> * Maybe<'a>)>
 }
 
 def empty :: Seq<'a>
-fn empty = Seq { head: Option.None, step: Option.None }
+fn empty = Seq { head: Maybe.None, step: Maybe.None }
 
 def once :: 'a -> Seq<'a>
-fn once value = Seq { head: Option.Some value, step: Option.None }
+fn once value = Seq { head: Maybe.Some value, step: Maybe.None }
 
-def defer :: (unit -> (Seq<'a> * Option<'a>)) -> Seq<'a>
-fn defer step = Seq { head: Option.None, step: Option.Some step }
+def defer :: (unit -> (Seq<'a> * Maybe<'a>)) -> Seq<'a>
+fn defer step = Seq { head: Maybe.None, step: Maybe.Some step }
 
-def rec unfold :: Capture<'state> => ('state -> Option<('a * 'state)>) -> 'state -> Seq<'a>
+def rec unfold :: Capture<'state> => ('state -> Maybe<('a * 'state)>) -> 'state -> Seq<'a>
 fn rec unfold generator state = defer (\() ->
     match generator state with
-    | Option.Some (value, remaining) -> (unfold generator remaining, Option.Some value)
-    | Option.None -> (empty(), Option.None))
+    | Maybe.Some (value, remaining) -> (unfold generator remaining, Maybe.Some value)
+    | Maybe.None -> (empty(), Maybe.None))
 
 def rec map :: Capture<'a> => ('a -> 'b) -> Seq<'a> -> Seq<'b>
 fn rec map transform sequence = defer (\() ->
     match Seq.next sequence with
-    | (remaining, Option.Some value) -> (map transform remaining, Option.Some (transform value))
-    | (_, Option.None) -> (empty(), Option.None))
+    | (remaining, Maybe.Some value) -> (map transform remaining, Maybe.Some (transform value))
+    | (_, Maybe.None) -> (empty(), Maybe.None))
 
 def rec filter :: Capture<'a> => (ref 'a -> bool) -> Seq<'a> -> Seq<'a>
 fn rec filter predicate sequence = defer (\() ->
     let mut current = sequence
-    let mut selected: Option<'a> = Option.None
+    let mut selected: Maybe<'a> = Maybe.None
     let mut finished = false
     while !finished do
         match Seq.next current with
         | (remaining, value) ->
             current = remaining
             match value with
-            | Option.Some item ->
+            | Maybe.Some item ->
                 if predicate (ref item) then
-                    selected = Option.Some item
+                    selected = Maybe.Some item
                     finished = true
-            | Option.None -> finished = true
-    let remaining = if Option.is_some (ref selected) then filter predicate current else empty()
+            | Maybe.None -> finished = true
+    let remaining = if Maybe.is_some (ref selected) then filter predicate current else empty()
     (remaining, selected))
 
 def to_array :: Seq<'a> -> ['a]

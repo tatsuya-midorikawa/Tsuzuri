@@ -252,7 +252,7 @@ fn std_higher_order_functions_take_the_callback_first() {
         "let texts = [\"a\", \"bb\"]\nArray.fold_ref (\\total t -> total + t.length) 0 (ref texts)",
         "let xs = [1, 2, 3]\nArray.fold_back (\\x state -> state * 10 + x) (ref xs) 0",
         "let xs = [|1, 2, 3|]\nList.fold (\\s x -> s + x) 0 (ref xs)",
-        "Seq.unfold (\\n -> if n < 3 then Option.Some (n, n + 1) else Option.None) 0 |> Seq.map (\\n -> n * 2) |> Seq.to_array",
+        "Seq.unfold (\\n -> if n < 3 then Maybe.Some (n, n + 1) else Maybe.None) 0 |> Seq.map (\\n -> n * 2) |> Seq.to_array",
         "let set = Set.singleton \"x\"\nSet.fold (\\total key -> total + key.length) 0 (ref set)",
     ] {
         accepts(source);
