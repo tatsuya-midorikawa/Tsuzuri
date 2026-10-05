@@ -101,13 +101,13 @@ def or_else :: Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 ## `to_option`
 
 ```tsuzuri
-def to_option :: Result<'a, 'e> -> Option.Option<'a>
+def to_option :: Result<'a, 'e> -> Option<'a>
 ```
 
 ## `of_option`
 
 ```tsuzuri
-def of_option :: 'e -> Option.Option<'a> -> Result<'a, 'e>
+def of_option :: 'e -> Option<'a> -> Result<'a, 'e>
 ```
 
 ## `Return`

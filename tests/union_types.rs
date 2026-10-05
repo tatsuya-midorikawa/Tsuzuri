@@ -207,10 +207,17 @@ fn size shape =
             "Module.Union.Case",
         ),
         (
-            "let x = Choice.Choice.Missing\n0",
-            "union Choice<'a> = None | Some of 'a",
+            "let x = Choice.Pick.Missing\n0",
+            "union Pick<'a> = None | Some of 'a",
             "E1002",
-            "has no case 'Missing'",
+            "union 'Choice.Pick' has no case 'Missing'",
+        ),
+        // A union named after its module has the module's name.
+        (
+            "let x = Choice.Choice.Some 1\n0",
+            "union Choice<'a> = None | Some of 'a",
+            "E1004",
+            "so write 'Choice.Some'",
         ),
         (
             "let x = Choice.Some 1\n0",
@@ -219,7 +226,7 @@ fn size shape =
             "",
         ),
         (
-            "def f :: Choice.Choice<i64> -> i64\nfn f x = 0",
+            "def f :: Choice<i64> -> i64\nfn f x = 0",
             "private union Choice<'a> = None | Some of 'a",
             "E1022",
             "",

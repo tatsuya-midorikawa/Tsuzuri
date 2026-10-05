@@ -4,7 +4,7 @@
 
 ```tsuzuri
 record HashSet<'key> {
-  map: HashMap.HashMap<'key, unit>
+  map: HashMap<'key, unit>
 }
 ```
 
@@ -49,7 +49,7 @@ def with_capacity_and_seed :: i64 -> i64u -> HashSet<'key>
 ## `try_randomized`
 
 ```tsuzuri
-def try_randomized :: unit -> IO<Result.Result<HashSet<'key>, Os.Error>>
+def try_randomized :: unit -> IO<Result<HashSet<'key>, Os.Error>>
 ```
 
 An empty set keyed by a seed from the operating system; see `HashMap.try_randomized`.
@@ -113,6 +113,6 @@ def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref HashSet<'key> -> 'st
 ## `iter`
 
 ```tsuzuri
-def iter :: ref HashSet<'key> -> Seq.Seq<ref 'key>
+def iter :: ref HashSet<'key> -> Seq<ref 'key>
 ```
 

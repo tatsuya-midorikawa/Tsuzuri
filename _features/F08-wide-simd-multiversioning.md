@@ -79,7 +79,7 @@ AVX2 などの幅の広いベクトル命令を、配布用の `--cpu generic` �
   `runtime/io.c` と一つの C ソース（一時ディレクトリの `task.c`）へ連結し、`TSUZURI_CLANG`（既定 `clang`）で
   `-std=c11 -c -O{n}` と `native_compile_args` を付けて compile する。`--cpu native` なら `native_cpu_flag`（`-march=native`／
   `-mcpu=native`）も付く。
-- std: `std/Array.tz` の `sum`（`Numeric<'a>`、左から右の `total + value`）、`min`・`max`（`Ord<'a> => ref ['a] -> Option.Option<ref 'a>`、
+- std: `std/Array.tz` の `sum`（`Numeric<'a>`、左から右の `total + value`）、`min`・`max`（`Ord<'a> => ref ['a] -> Option<ref 'a>`、
   厳密な `<`／`>` なので同値なら最初の位置）。整数の `+` は幅ごとに折り返す（docs/language.md）。整数型は `i8`〜`i64`、
   `i8u`〜`i64u`、`i128`、`i128u`（`byte`／`ubyte` は `i8`／`i8u` の別名）。
 - テスト: `tests/cpu_dispatch.rs::only_native_i64_standard_sum_requests_cpu_dispatch`（native IR に呼び出しと宣言が 1 回ずつ、
@@ -393,7 +393,7 @@ fn min_index values =
         index = index + 1
     best
 
-def min :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+def min :: Ord<'a> => ref ['a] -> Option<ref 'a>
 fn min values =
     if values.length == 0 then Option.None else Option.Some (ref values[min_index values])
 ```

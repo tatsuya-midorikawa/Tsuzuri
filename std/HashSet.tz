@@ -1,4 +1,4 @@
-record HashSet<'key> { map: HashMap.HashMap<'key, unit> }
+record HashSet<'key> { map: HashMap<'key, unit> }
 
 def empty :: HashSet<'key>
 fn empty = HashSet { map: HashMap.empty() }
@@ -20,7 +20,7 @@ def with_capacity_and_seed :: i64 -> i64u -> HashSet<'key>
 fn with_capacity_and_seed count seed = HashSet { map: HashMap.with_capacity_and_seed count seed }
 
 /// An empty set keyed by a seed from the operating system; see `HashMap.try_randomized`.
-def try_randomized :: unit -> IO<Result.Result<HashSet<'key>, Os.Error>>
+def try_randomized :: unit -> IO<Result<HashSet<'key>, Os.Error>>
 fn try_randomized _unit = IO.map (\made ->
 	match made with
 	| Result.Ok map -> Result.Ok (HashSet { map: map })
@@ -54,5 +54,5 @@ fn to_array set = HashMap.keys (ref set.map)
 def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref HashSet<'key> -> 'state
 fn fold folder initial set = HashMap.fold (\state key _unit -> folder state key) initial (ref set.map)
 
-def iter :: ref HashSet<'key> -> Seq.Seq<ref 'key>
+def iter :: ref HashSet<'key> -> Seq<ref 'key>
 fn iter set = Seq.map (\pair -> match pair with | (key, _unit) -> key) (HashMap.iter (ref set.map))

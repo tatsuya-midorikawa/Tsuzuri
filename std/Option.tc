@@ -80,13 +80,13 @@ fn or_else option fallback =
     | Some value -> Some value
     | None -> fallback ()
 
-def to_result :: 'e -> Option<'a> -> Result.Result<'a, 'e>
+def to_result :: 'e -> Option<'a> -> Result<'a, 'e>
 fn to_result error option =
     match option with
     | Some value -> Result.Ok value
     | None -> Result.Error error
 
-def of_result :: Result.Result<'a, 'e> -> Option<'a>
+def of_result :: Result<'a, 'e> -> Option<'a>
 fn of_result result =
     match result with
     | Result.Ok value -> Some value

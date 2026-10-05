@@ -438,7 +438,7 @@ fn result_propagation_operations_exist() {
         "let option = Option.Run (Option.Delay (_ ->
              Option.Combine (Option.Zero()) (_ ->
                  Option.Bind (Option.Return 20) (value -> Option.ReturnFrom (Some value)))))
-         let result: Result.Result<i64, string> = Result.Run (Result.Delay (_ ->
+         let result: Result<i64, string> = Result.Run (Result.Delay (_ ->
              Result.Combine (Result.Zero()) (_ ->
                  Result.Bind (Result.Return 22) (value -> Result.ReturnFrom (Ok value)))))
          Option.get option + Result.get result",
@@ -480,9 +480,9 @@ fn option_result_builder_expansion() {
         "Option { let! _: unit = None; return 1i64 / 0 }",
         "Result { let! _: unit = Error 42i64; return 1i64 / 0 }",
         "Option.get (Option { let! mut value = Some 20; value = value + 2; do! Some (); return! Some (value + 20) })",
-        "let value: Result.Result<i64, string> = Result { let first = 20; assert true; do! Ok (); let! second = Ok 22; return first + second }\nResult.get value",
+        "let value: Result<i64, string> = Result { let first = 20; assert true; do! Ok (); let! second = Ok 22; return first + second }\nResult.get value",
         "Result.get (Result { let! value = Option.to_result 42i64 (Some 20); return value + 22 })",
-        "let result: Result.Result<i64, string> = Ok 42i64\nOption.get (Option { let! value = Result.to_option result; return value })",
+        "let result: Result<i64, string> = Ok 42i64\nOption.get (Option { let! value = Result.to_option result; return value })",
         "Option { if true { do! Some () } else { do! None }; for value in [1, 2] do do! Some (); while false do do! Some (); return 42 }",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])

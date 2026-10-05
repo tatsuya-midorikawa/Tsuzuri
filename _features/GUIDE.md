@@ -618,7 +618,7 @@ fn rejects(source: &str, code: &str) {
   自モジュール → 利用者のモジュールで一意 → 標準ライブラリ。
   **参照元が標準ライブラリの場合は利用者の宣言を一切探さない**（自モジュール → 標準ライブラリ）。
   利用者が `Result` や `Ok` という名前を宣言しても std の型検査結果が変わらないようにするためである。
-  さらに std のソースでは、他の std モジュールの名前を常に修飾して書く（`Option.tc` の中では `Result.Result`、`Result.Ok`）。
+  さらに std のソースでは、他の std モジュールの名前を常に修飾して書く（`Option.tc` の中では `Result`、`Result.Ok`）。
   関数は従来どおり他モジュールからは修飾必須（`Option.map`）。
 - LLVM を必要としない言語機能（ビット演算 intrinsic など）は、`Task.run` と同じ **修飾名付きの組み込み関数**
   （`Builtin` に `"Int.popcount"` のような名前で登録）として std のモジュール名前空間に置く。
@@ -856,7 +856,7 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 - C06はcompiler登録のopaque標準recordとVecで表し、構築・field・pattern・updateを定義モジュールに限定する。型と所有権の走査を重複させず、既存の確保・移動・clone/dropを共有する。
 - C06のSet.unionと予約語の衝突を解決するため、unionだけはmodule関数の宣言名とdot後のmember名でも許可する。変数・型・moduleの名前としては引き続き予約する。
 - C06のsingletonは無制約で任意の1要素を保持。検索・更新・集合演算の比較時はEqの反射性を確認してNaNをトラップし、Ordの一貫性は利用者のinstance契約とする。Set.unionは線形の出力領域を一つ確保し、左の代表値を保持する。
-- C07はopaqueなSeq.Seqを常にnon-Copyにし、Optionの単一要素と通常closureの遅延stepで表す。明示的なSeq.defer/unfoldをユーザー反復の構築口とする。
+- C07はopaqueなSeqを常にnon-Copyにし、Optionの単一要素と通常closureの遅延stepで表す。明示的なSeq.defer/unfoldをユーザー反復の構築口とする。
 - C07のnextは所有closureを直接呼ぶbuiltin。forは次状態を先に復元する既存while/matchへ展開し、filterは借用述語へ修正する。List.iterは参照Vecの準備O(n)、所有状態の移送による反復O(n)を採用する。
 - A09の共有record fieldはC04の交差寿命とValue.loansを継承する。古い「借用入力は必ず1個」という制限へ戻さず、複数入力の場合は全入力の寿命を保持する。排他参照fieldは禁止する。
 - A09の名前付きregionは値全体に一つとし、defの返却元を本体loanで検証する。直接完全適用のみ指定入力へ寿命を縮小し、関数値は保守的に全入力を保持する。独立複数region・高階region型は後続段階として拒否する。
@@ -1080,7 +1080,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - `::` は `def` の型注釈とリストの cons にも使うため、lexer が空白なしの `Ident::Ident` の連鎖のうち、最後の要素が英大文字始まりのものと
   `namespace`／`using` のパスだけを `PathSep` にする。`def`／`rec`／`and` の宣言名の直後と `x::xs` は従来の `::`。
 - 内部の key・完全名・IR シンボルは `.` 区切りのままで IR は変わらない。コンパイラが key で組み立てる修飾名は先頭の `::` で利用者のパスと区別する。
-  診断・LSP・`tsuzuri doc` の見出し・型の表示（`expected Geometry::Point.Point`）・`tsuzuri test` の一覧と結果と filter のモジュール名は、名前空間を `::` で表示する。
+  診断・LSP・`tsuzuri doc` の見出し・型の表示（`expected Geometry::Point`）・`tsuzuri test` の一覧と結果と filter のモジュール名は、名前空間を `::` で表示する。
 - key としての検索はモジュール名だけになった。新しい診断コード・予約語はない。
 
 ## 10. 完了の定義（全チケット共通）

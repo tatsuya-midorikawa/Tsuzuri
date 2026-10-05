@@ -37,7 +37,7 @@ Describes an error as `not found (os error 2)`; the code is left out when it is 
 ## `encode`
 
 ```tsuzuri
-def encode :: ref string -> Result.Result<utf8string, Error>
+def encode :: ref string -> Result<utf8string, Error>
 ```
 
 Encodes a path, name, or text for the system; a lone surrogate is `InvalidEncoding`.
@@ -53,7 +53,7 @@ Decodes a status the runtime returned: `(kind <<< 32) | code`, with kind 1 to 7 
 ## `split_names`
 
 ```tsuzuri
-def split_names :: ref [ubyte] -> Result.Result<[string], Error>
+def split_names :: ref [ubyte] -> Result<[string], Error>
 ```
 
 Splits names that each end with a NUL byte, as `Dir.list` and `Env.args` receive them.
@@ -62,7 +62,7 @@ Any name that is not UTF-8 makes the whole call `InvalidEncoding`.
 ## `decode`
 
 ```tsuzuri
-def decode :: [ubyte] -> Result.Result<string, Error>
+def decode :: [ubyte] -> Result<string, Error>
 ```
 
 Decodes the bytes a system call returned as UTF-8 text. Invalid UTF-8 is `InvalidEncoding`.

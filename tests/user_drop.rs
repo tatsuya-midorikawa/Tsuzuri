@@ -369,7 +369,7 @@ fn use_bindings_require_drop_values() {
     );
     rejects(
         &format!(
-            "{RESOURCE}{MAKE}def f :: Option.Option<i64>\nfn f = Option {{\n    use! a = Option.Some (make 1)\n    and! b = Option.Some 2\n    return b\n}}\n"
+            "{RESOURCE}{MAKE}def f :: Option<i64>\nfn f = Option {{\n    use! a = Option.Some (make 1)\n    and! b = Option.Some 2\n    return b\n}}\n"
         ),
         "E0002",
         "'use!' cannot start an and! group",
@@ -377,7 +377,7 @@ fn use_bindings_require_drop_values() {
     // The continuation after let! is a function value, so it cannot capture a Drop value.
     rejects(
         &format!(
-            "{RESOURCE}{MAKE}def f :: Option.Option<i64>\nfn f = Option {{\n    use held = make 1\n    let! value = Option.Some 2\n    return value + held.id\n}}\n"
+            "{RESOURCE}{MAKE}def f :: Option<i64>\nfn f = Option {{\n    use held = make 1\n    let! value = Option.Some 2\n    return value + held.id\n}}\n"
         ),
         "E1005",
         "cannot capture Main.Resource in a reusable function",

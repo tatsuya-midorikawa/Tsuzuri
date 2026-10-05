@@ -67,7 +67,7 @@ def with_capacity_and_seed :: i64 -> i64u -> HashMap<'key, 'value>
 ## `try_randomized`
 
 ```tsuzuri
-def try_randomized :: unit -> IO<Result.Result<HashMap<'key, 'value>, Os.Error>>
+def try_randomized :: unit -> IO<Result<HashMap<'key, 'value>, Os.Error>>
 ```
 
 An empty map keyed by a seed from the operating system (`Random.next_u64`). A failure to get one is
@@ -97,13 +97,13 @@ def contains_key :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key 
 ## `get_ref`
 
 ```tsuzuri
-def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Option.Option<'value>
+def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Option<'value>
 ```
 
 ## `get`
 
 ```tsuzuri
-def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Option.Option<'value>
+def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Option<'value>
 ```
 
 ## `at_ref`
@@ -172,6 +172,6 @@ def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref HashMa
 ## `iter`
 
 ```tsuzuri
-def iter :: ref HashMap<'key, 'value> -> Seq.Seq<(ref 'key * ref 'value)>
+def iter :: ref HashMap<'key, 'value> -> Seq<(ref 'key * ref 'value)>
 ```
 

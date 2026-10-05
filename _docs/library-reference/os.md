@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-標準モジュールの `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Process`、`Os` は、ファイル、ディレクトリ、環境変数、時計、乱数、子プロセスを扱います。OS に触れる操作はすべて [IO](io.md) のアクションで、ファイルがない、権限がないといった通常の失敗は例外ではなく、`Result.Result<T, Os.Error>` の `Error` として返します。メモリの確保失敗のような回復できない失敗は Result にせず、トラップします。
+標準モジュールの `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Process`、`Os` は、ファイル、ディレクトリ、環境変数、時計、乱数、子プロセスを扱います。OS に触れる操作はすべて [IO](io.md) のアクションで、ファイルがない、権限がないといった通常の失敗は例外ではなく、`Result<T, Os.Error>` の `Error` として返します。メモリの確保失敗のような回復できない失敗は Result にせず、トラップします。
 
 | モジュール | 内容 |
 | --- | --- |
@@ -45,13 +45,13 @@ fn count_lines text =
         index = index + 1
     lines
 
-def written :: Result.Result<unit, Os.Error> -> IO<unit>
+def written :: Result<unit, Os.Error> -> IO<unit>
 fn written result =
     match result with
     | Result.Ok _ -> IO.write_line "wrote lines.txt"
     | Result.Error error -> IO.write_error_line ("write failed: " + Os.message (ref error))
 
-def save :: Result.Result<string, Os.Error> -> IO<unit>
+def save :: Result<string, Os.Error> -> IO<unit>
 fn save loaded =
     match loaded with
     | Result.Ok text ->
@@ -94,7 +94,7 @@ cat lines.txt
 種類で分岐するには、`kind` を `match` します。次の例は、設定ファイルがないときだけ既定値に進みます。
 
 ```tsuzuri
-def settings :: Result.Result<string, Os.Error> -> string
+def settings :: Result<string, Os.Error> -> string
 fn settings result =
     match result with
     | Result.Ok text -> text
@@ -145,26 +145,26 @@ path と内容は `string` で、OS との境界では UTF-8 です。相対 pat
 次の例は、書き込みが失敗しても `File.close` を呼び、最初の失敗を返します。
 
 ```tsuzuri
-def first_error :: Result.Result<unit, Os.Error> -> Result.Result<unit, Os.Error> -> Result.Result<unit, Os.Error>
+def first_error :: Result<unit, Os.Error> -> Result<unit, Os.Error> -> Result<unit, Os.Error>
 fn first_error written closed =
     match written with
     | Result.Ok _ -> closed
     | Result.Error error -> Result.Error error
 
-def write_and_close :: File.Handle -> IO<Result.Result<unit, Os.Error>>
+def write_and_close :: File.Handle -> IO<Result<unit, Os.Error>>
 fn write_and_close handle = IO {
     let! written = File.write handle [104ubyte, 105ubyte, 10ubyte]
     let! closed = File.close handle
     return first_error written closed
 }
 
-def start :: Result.Result<File.Handle, Os.Error> -> IO<Result.Result<unit, Os.Error>>
+def start :: Result<File.Handle, Os.Error> -> IO<Result<unit, Os.Error>>
 fn start opened =
     match opened with
     | Result.Ok handle -> write_and_close handle
     | Result.Error error -> IO.pure (Result.Error error)
 
-def exit_code :: Result.Result<unit, Os.Error> -> IO<i32>
+def exit_code :: Result<unit, Os.Error> -> IO<i32>
 fn exit_code result =
     match result with
     | Result.Ok _ -> IO.pure 0i32
@@ -179,7 +179,7 @@ def main :: IO<i32> =
 `File.with_open` は同じ後始末を引き受けます。結果は二重の Result で、外側は open と close の失敗、内側は `body` 自身の結果です。
 
 ```tsuzuri
-def header_text :: Result.Result<Result.Result<[ubyte], Os.Error>, Os.Error> -> string
+def header_text :: Result<Result<[ubyte], Os.Error>, Os.Error> -> string
 fn header_text result =
     match result with
     | Result.Ok (Result.Ok bytes) -> "read " + to_string bytes.length + " bytes"
@@ -214,7 +214,7 @@ def main :: IO<unit> =
 整列はロケールや UTF-16 の順ではありません。たとえば U+FF61 は U+1F600 より前に並びます。`Dir.walk` は一部の結果だけを返すことはなく、読めないディレクトリが一つあれば全体が `PermissionDenied` などの失敗です。
 
 ```tsuzuri
-def listing :: Result.Result<[string], Os.Error> -> string
+def listing :: Result<[string], Os.Error> -> string
 fn listing result =
     match result with
     | Result.Ok names ->
@@ -230,7 +230,7 @@ fn kind_text kind =
     | File.Symlink -> "symbolic link"
     | File.Other -> "other"
 
-def meta_text :: Result.Result<File.Metadata, Os.Error> -> string
+def meta_text :: Result<File.Metadata, Os.Error> -> string
 fn meta_text result =
     match result with
     | Result.Ok meta -> kind_text meta.kind + ", " + to_string meta.size + " bytes"
@@ -270,7 +270,7 @@ def main :: IO<unit> =
 | `Path.extension ".bashrc"`、`"a/b.d/c"` | `None` |
 
 ```tsuzuri run=reports/2026/summary.tar.gz%0Areports/2026%0Asummary.tar.gz%0Agz
-def show :: Option.Option<string> -> string
+def show :: Option<string> -> string
 fn show value =
     match value with
     | Option.Some text -> text
@@ -300,20 +300,20 @@ String.join (ref newline) (ref lines)
 `tsuzuri run` はプログラムへ引数を渡しません。引数が必要なときは `tsuzuri build` で作った実行ファイルを起動します。次の例は引数の数、`HOME`、20 ミリ秒の sleep の実測を表示します。
 
 ```tsuzuri
-def count_text :: Result.Result<[string], Os.Error> -> string
+def count_text :: Result<[string], Os.Error> -> string
 fn count_text args =
     match args with
     | Result.Ok names -> to_string names.length + " arguments"
     | Result.Error error -> Os.message (ref error)
 
-def var_text :: Result.Result<Option.Option<string>, Os.Error> -> string
+def var_text :: Result<Option<string>, Os.Error> -> string
 fn var_text value =
     match value with
     | Result.Ok (Option.Some text) -> "HOME=" + text
     | Result.Ok Option.None -> "HOME is not set"
     | Result.Error error -> Os.message (ref error)
 
-def elapsed_text :: Result.Result<i64, Os.Error> -> Result.Result<i64, Os.Error> -> string
+def elapsed_text :: Result<i64, Os.Error> -> Result<i64, Os.Error> -> string
 fn elapsed_text before after =
     match (before, after) with
     | (Result.Ok first, Result.Ok second) -> "slept " + to_string ((second - first) / 1000000) + " ms"
@@ -393,7 +393,7 @@ fn first_word seed =
     match Random.pcg_next_u64 (Random.pcg seed 1i64u) with
     | (word, _) -> to_string word
 
-def seeded :: Result.Result<i64u, Os.Error> -> string
+def seeded :: Result<i64u, Os.Error> -> string
 fn seeded result =
     match result with
     | Result.Ok seed -> first_word seed
@@ -432,7 +432,7 @@ fn stdout_text bytes =
     | Result.Ok text -> text
     | Result.Error _ -> "<binary>"
 
-def describe :: Result.Result<Process.Output, Os.Error> -> string
+def describe :: Result<Process.Output, Os.Error> -> string
 fn describe result =
     match result with
     | Result.Ok output ->
@@ -474,7 +474,7 @@ def main :: IO<unit> =
 入口が `IO<i32>` なら、その `i32` の値がプロセスの終了コードになります。OS が見る終了ステータスは下位 8 ビットなので、`256` は 0 です。`IO<unit>` や `IO<i64>` など、ほかの型の入口は値を捨てて 0 で終了します。`Os.exit` のような途中終了の API はありません。
 
 ```tsuzuri
-def code_of :: Result.Result<string, Os.Error> -> i32
+def code_of :: Result<string, Os.Error> -> i32
 fn code_of result =
     match result with
     | Result.Ok _ -> 0i32

@@ -54,7 +54,7 @@ fn MergeSources first second = IO { work: \() -> (first.work (), second.work ())
 def BindReturn :: IO<'a> -> ('a -> 'b) -> IO<'b>
 fn BindReturn action transform = map transform action
 
-def try_read_line :: unit -> IO<Result.Result<Option.Option<string>, Error>>
+def try_read_line :: unit -> IO<Result<Option<string>, Error>>
 fn try_read_line _unit = IO { work: \() ->
     match IO.__read_line () with
     | (0, bytes) ->
@@ -65,10 +65,10 @@ fn try_read_line _unit = IO { work: \() ->
     | _ -> Result.Error ReadFailed
 }
 
-def read_line :: unit -> IO<Option.Option<string>>
+def read_line :: unit -> IO<Option<string>>
 fn read_line _unit = map Result.get (try_read_line ())
 
-private def try_output :: (Display<'a>, Capture<'a>) => i32 -> bool -> 'a -> IO<Result.Result<unit, Error>>
+private def try_output :: (Display<'a>, Capture<'a>) => i32 -> bool -> 'a -> IO<Result<unit, Error>>
 fn try_output destination newline value = IO { work: \() ->
     let text = Display.display (ref value)
     if String.is_well_formed (ref text) then
@@ -78,16 +78,16 @@ fn try_output destination newline value = IO { work: \() ->
     else Result.Error InvalidEncoding
 }
 
-def try_write :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 fn try_write value = try_output 1i32 false value
 
-def try_write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 fn try_write_line value = try_output 1i32 true value
 
-def try_write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 fn try_write_error value = try_output 2i32 false value
 
-def try_write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 fn try_write_error_line value = try_output 2i32 true value
 
 def write :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>

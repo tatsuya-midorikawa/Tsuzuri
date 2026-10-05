@@ -330,12 +330,12 @@ fn module_paths_map_to_bounded_dotted_names() {
 
 #[test]
 fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
-    let main = "def use_point :: Geometry::Point.Point -> i64\nfn use_point point = Geometry::Traits.Score.score (&point)\n\
-        let point = Geometry::Point.Point { x: 40 }\n\
+    let main = "def use_point :: Geometry::Point -> i64\nfn use_point point = Geometry::Traits.Score.score (&point)\n\
+        let point = Geometry::Point { x: 40 }\n\
         let value = Geometry::Builder { return use_point point }\n\
         let extra = match Geometry::Point.Payload value with | Geometry::Point.Value.Payload inner -> inner\n\
         let checked = match extra with | Geometry::Patterns.Even -> extra | _ -> 0\n\
-        Geometry::Point.distance (Geometry::Point.Point { x: checked }) + Geometry::Point.Offset";
+        Geometry::Point.distance (Geometry::Point { x: checked }) + Geometry::Point.Offset";
     let module = analyze_modules(&[
         ("Geometry/Point.tz", "record Point { x: i64 }\nunion Value = Payload of i64\nconst Offset: i64 = 2\nfn distance(point: Point) -> i64 { point.x }\ninstance Geometry::Traits.Score<Point> { fn score point = point.x }"),
         ("Geometry/Traits.tt", "class Score<'a> { def score :: &'a -> i64 }"),
@@ -385,11 +385,11 @@ fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
     // Diagnostics write a type's namespaces with `::`, as source code does.
     let error = analyze_modules(&[
         ("Geometry/Point.tz", "record Point { x: i64 }"),
-        ("Main.tz", "def p :: Geometry::Point.Point = 1"),
+        ("Main.tz", "def p :: Geometry::Point = 1"),
     ])
     .unwrap_err();
     assert_eq!(
-        error.message, "expected Geometry::Point.Point, found i32",
+        error.message, "expected Geometry::Point, found i32",
         "{}",
         error.message
     );
@@ -549,10 +549,10 @@ fn resolves_qualified_function_values_pipelines_and_lexical_shadowing() {
     let module = analyze_modules(&[
         (
             "Main",
-            "record Callback { distance: fn(Point.Point) -> f64 }
+            "record Callback { distance: fn(Point) -> f64 }
              fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
              fn main() -> f64 {
-                 let p: Point.Point = Point.Point { x: 3.0, y: 4.0 };
+                 let p: Point = Point { x: 3.0, y: 4.0 };
                  let f = Point.distance;
                  let Point = Callback { distance: f };
                  apply(Point.distance, p)
@@ -811,7 +811,7 @@ const NS_POINT: &str = "namespace Sample\n\nrecord Point { x: f64, y: f64 }\n\nd
 
 #[test]
 fn namespaces_qualify_modules_and_module_named_types() {
-    let main = "namespace Sample\n\ndef main :: f64 = \\() ->\n    let p = Sample::Point { x: 1.0, y: 2.0 }\n    let q: Point = Point { x: 3.0, y: 4.0 }\n    let maybe: Sample::Shape.Maybe<i64> = Sample::Shape.Some 1\n    Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample::Point.sum p + Point.sum q\n";
+    let main = "namespace Sample\n\ndef main :: f64 = \\() ->\n    let p = Sample::Point { x: 1.0, y: 2.0 }\n    let q: Point = Point { x: 3.0, y: 4.0 }\n    let maybe: Sample::Shape.Maybe<i64> = Sample::Shape.Some 1\n    let other: Sample::Shape.Maybe<i64> = Sample::Shape.Maybe.Some 2\n    Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample::Point.sum p + Point.sum q\n";
     // The bare `Point` follows the namespace order, so `Other::Point` does not make it ambiguous.
     let other = "namespace Other\n\nrecord Point { x: f64, y: f64 }\n";
     let module = analyze_modules(&[
@@ -829,8 +829,8 @@ fn namespaces_qualify_modules_and_module_named_types() {
             .unwrap()
             .contains("@tz.fn.Sample.Main.main()")
     );
-    // A namespace holds only modules, a module-named type does not nest
-    // again, and `.` does not join a namespace to its modules.
+    // A namespace holds only modules, a module-named type has the module's
+    // name and does not repeat it, and `.` does not join a namespace to its modules.
     for (source, code, hint) in [
         (
             "def main :: f64 = \\() -> Sample.area (Sample::Shape.Rect (1.0, 1.0))",
@@ -841,6 +841,62 @@ fn namespaces_qualify_modules_and_module_named_types() {
             "def p :: Sample::Point.Point.Point -> f64 = \\p -> p.x",
             "E1004",
             "",
+        ),
+        (
+            "def p :: Sample::Point.Point -> f64 = \\p -> p.x",
+            "E1004",
+            "'Sample::Point.Point' repeats the module name; the record 'Point' shares its module's name, so write 'Sample::Point'",
+        ),
+        (
+            "def main :: f64 = \\() -> (Point.Point { x: 1.0, y: 2.0 }).x",
+            "E1004",
+            "so write 'Point'",
+        ),
+        (
+            "def main :: f64 = \\() ->\n    match Point { x: 1.0, y: 2.0 } with\n    | Sample::Point.Point { x = x, y = _ } -> x",
+            "E1004",
+            "so write 'Sample::Point'",
+        ),
+        (
+            "def main :: f64 = \\() -> Sample::Shape.Shape.area (Sample::Shape.Rect (1.0, 1.0))",
+            "E1004",
+            "the union 'Shape' shares its module's name, so write 'Sample::Shape.area'",
+        ),
+        (
+            "def main :: f64 = \\() -> Shape.area (Shape.Shape.Rect (1.0, 1.0))",
+            "E1004",
+            "so write 'Shape.Rect'",
+        ),
+        (
+            "def main :: f64 = \\() ->\n    match Shape.Rect (1.0, 1.0) with\n    | Sample::Shape.Shape.Rect (w, _) -> w\n    | _ -> 0.0",
+            "E1004",
+            "so write 'Sample::Shape.Rect'",
+        ),
+        (
+            "def p :: Option.Option<i64> -> i64 = \\p -> 0",
+            "E1004",
+            "so write 'Option'",
+        ),
+        (
+            "def p :: i64 = Sample::Point { x: 1.0, y: 2.0 }",
+            "E1003",
+            "expected i64, found Sample::Point",
+        ),
+        (
+            "def p :: i64 = Sample::Shape.Rect (1.0, 1.0)",
+            "E1003",
+            "expected i64, found Sample::Shape",
+        ),
+        (
+            "def p :: i64 = Sample::Shape.Maybe.Some 1",
+            "E1003",
+            "found Sample::Shape.Maybe<",
+        ),
+        // A missing case that the file cannot name plainly is spelled from its namespace.
+        (
+            "union Local = Rect\n\ndef main :: f64 = \\() ->\n    match Sample::Shape.Circle 1.0 with\n    | Sample::Shape.Circle r -> r",
+            "E1021",
+            "missing: Sample::Shape.Rect",
         ),
         (
             "def main :: f64 = \\() -> Missing::Shape.area (Sample::Shape.Rect (1.0, 1.0))",
@@ -905,6 +961,31 @@ fn namespaces_qualify_modules_and_module_named_types() {
         error.message
     );
     assert_eq!(error.span.source, Some(1));
+}
+
+#[test]
+fn a_bare_module_name_names_its_type_before_other_modules_types() {
+    // `Result` is the full name of the std union; another module's `Result` is qualified.
+    let main = "def ok :: Result<i64, string> = Result.Ok 1\ndef check :: Checks.Result = Checks.Result { valid: true }\n";
+    analyze_modules(&[
+        ("Checks.tz", "record Result { valid: bool }\n"),
+        ("Main.tz", main),
+    ])
+    .unwrap();
+    // A module's own declaration still comes first.
+    let error = analyze_modules(&[(
+        "Main.tz",
+        "record Result { valid: bool }\ndef ok :: Result<i64, string> = Result.Ok 1\n",
+    )])
+    .unwrap_err();
+    assert_eq!(error.code, "E1004", "{}", error.message);
+    assert!(
+        error
+            .message
+            .contains("type 'Result' takes no type arguments"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]

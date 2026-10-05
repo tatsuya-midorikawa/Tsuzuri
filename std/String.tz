@@ -19,7 +19,7 @@ fn matches_at needle text offset =
 		while index < needle.length && needle[index] == text[offset + index] do index = index + 1
 		index == needle.length
 
-def find :: ref string -> ref string -> Option.Option<i64>
+def find :: ref string -> ref string -> Option<i64>
 fn find needle text =
 	let mut offset = 0
 	let mut result = Option.None
@@ -30,7 +30,7 @@ fn find needle text =
 		offset = offset + 1
 	result
 
-def rfind :: ref string -> ref string -> Option.Option<i64>
+def rfind :: ref string -> ref string -> Option<i64>
 fn rfind needle text =
 	let mut offset = text.length
 	let mut result = Option.None
@@ -52,13 +52,13 @@ fn starts_with prefix text = matches_at prefix text 0
 def ends_with :: ref string -> ref string -> bool
 fn ends_with suffix text = suffix.length <= text.length && matches_at suffix text (text.length - suffix.length)
 
-def slice :: ref string -> i64 -> i64 -> Option.Option<string>
+def slice :: ref string -> i64 -> i64 -> Option<string>
 fn slice text first last =
 	if first < 0 || last < first || last > text.length then Option.None else
 		let output = append_range (Vec.with_capacity (last - first)) text first last
 		Option.Some (String.from_code_units (Vec.to_array output))
 
-def sub :: ref string -> i64 -> i64 -> Option.Option<string>
+def sub :: ref string -> i64 -> i64 -> Option<string>
 fn sub text first count =
 	if first < 0 || count < 0 || first > 9223372036854775807 - count then Option.None else slice text first (first + count)
 

@@ -4,8 +4,8 @@
 
 ```tsuzuri
 record Seq<'a> {
-  head: Option.Option<'a>
-  step: Option.Option<(unit -> (Seq<'a> * Option.Option<'a>))>
+  head: Option<'a>
+  step: Option<(unit -> (Seq<'a> * Option<'a>))>
 }
 ```
 
@@ -24,13 +24,13 @@ def once :: 'a -> Seq<'a>
 ## `defer`
 
 ```tsuzuri
-def defer :: (unit -> (Seq<'a> * Option.Option<'a>)) -> Seq<'a>
+def defer :: (unit -> (Seq<'a> * Option<'a>)) -> Seq<'a>
 ```
 
 ## `unfold`
 
 ```tsuzuri
-def rec unfold :: Capture<'state> => ('state -> Option.Option<('a * 'state)>) -> 'state -> Seq<'a>
+def rec unfold :: Capture<'state> => ('state -> Option<('a * 'state)>) -> 'state -> Seq<'a>
 ```
 
 ## `map`

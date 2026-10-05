@@ -41,7 +41,7 @@ fn parallel_div count divisor = Task.run task {
 
 export def parallel_mixed :: i64 -> i64 -> i64
 fn parallel_mixed fail_at trap_at =
-    let jobs = new [Task<Result.Result<i64, i64>>](16, index -> task {
+    let jobs = new [Task<Result<i64, i64>>](16, index -> task {
         let scratch = new [i64](32, n -> n)
         if index == trap_at then Result.Ok (1 / (index - trap_at)) else (if index == fail_at then Result.Error index else Result.Ok scratch[index])
     })

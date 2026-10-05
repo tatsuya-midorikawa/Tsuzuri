@@ -28,7 +28,7 @@ fn of_i64 value =
     make (value < 0) (Vec.to_array digits)
 
 /// The `i64` that `value` holds, or `None` when it is out of range.
-def to_i64 :: ref BigInt -> Option.Option<i64>
+def to_i64 :: ref BigInt -> Option<i64>
 fn to_i64 value =
     if value.limbs.length > 3 then Option.None else
         let mut total = 0i128
@@ -41,7 +41,7 @@ fn to_i64 value =
         if fits then Option.Some (signed as i64) else Option.None
 
 /// The bigint that `text` spells: an optional `-` and decimal digits.
-def of_string :: ref string -> Option.Option<BigInt>
+def of_string :: ref string -> Option<BigInt>
 fn of_string text =
     let characters = String.chars text
     let negative = characters.length > 0 && characters[0] == '-'

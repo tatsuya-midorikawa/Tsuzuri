@@ -22,7 +22,7 @@ fn matches_at needle text offset =
 private def boundary :: ref utf8string -> i64 -> bool
 fn boundary text offset = offset == 0 || offset == text.length || (text[offset] & 192ubyte) != 128ubyte
 
-def find :: ref utf8string -> ref utf8string -> Option.Option<i64>
+def find :: ref utf8string -> ref utf8string -> Option<i64>
 fn find needle text =
 	let mut offset = 0
 	let mut result = Option.None
@@ -33,7 +33,7 @@ fn find needle text =
 		offset = offset + 1
 	result
 
-def rfind :: ref utf8string -> ref utf8string -> Option.Option<i64>
+def rfind :: ref utf8string -> ref utf8string -> Option<i64>
 fn rfind needle text =
 	let mut offset = text.length
 	let mut result = Option.None
@@ -55,7 +55,7 @@ fn starts_with prefix text = matches_at prefix text 0
 def ends_with :: ref utf8string -> ref utf8string -> bool
 fn ends_with suffix text = suffix.length <= text.length && matches_at suffix text (text.length - suffix.length)
 
-def slice :: ref utf8string -> i64 -> i64 -> Option.Option<utf8string>
+def slice :: ref utf8string -> i64 -> i64 -> Option<utf8string>
 fn slice text first last =
 	if first < 0 || last < first || last > text.length then Option.None
 	elif !(boundary text first) || !(boundary text last) then Option.None
@@ -63,7 +63,7 @@ fn slice text first last =
 		let output = append_range (Vec.with_capacity (last - first)) text first last
 		Utf8String.from_bytes (Vec.to_array output)
 
-def sub :: ref utf8string -> i64 -> i64 -> Option.Option<utf8string>
+def sub :: ref utf8string -> i64 -> i64 -> Option<utf8string>
 fn sub text first count =
 	if first < 0 || count < 0 || first > 9223372036854775807 - count then Option.None else slice text first (first + count)
 

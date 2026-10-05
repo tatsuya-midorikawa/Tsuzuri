@@ -38,7 +38,7 @@ record Buffer<'a> {
 ## `request`
 
 ```tsuzuri
-def request :: Backend -> Result.Result<Device, Error>
+def request :: Backend -> Result<Device, Error>
 ```
 
 ## `backend`

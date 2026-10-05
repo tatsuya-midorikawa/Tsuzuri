@@ -75,51 +75,51 @@ fn os_primitives_are_private_to_std() {
 fn os_api_signatures_type_check() {
     module(
         "def main :: IO<unit> =
-    let read_bytes: string -> IO<Result.Result<[ubyte], Os.Error>> = File.read_bytes
-    let read_text: string -> IO<Result.Result<string, Os.Error>> = File.read_text
-    let write_bytes: string -> [ubyte] -> IO<Result.Result<unit, Os.Error>> = File.write_bytes
-    let write_text: string -> string -> IO<Result.Result<unit, Os.Error>> = File.write_text
-    let append_text: string -> string -> IO<Result.Result<unit, Os.Error>> = File.append_text
-    let remove_file: string -> IO<Result.Result<unit, Os.Error>> = File.remove
-    let list: string -> IO<Result.Result<[string], Os.Error>> = Dir.list
-    let create: string -> IO<Result.Result<unit, Os.Error>> = Dir.create
-    let remove_dir: string -> IO<Result.Result<unit, Os.Error>> = Dir.remove
+    let read_bytes: string -> IO<Result<[ubyte], Os.Error>> = File.read_bytes
+    let read_text: string -> IO<Result<string, Os.Error>> = File.read_text
+    let write_bytes: string -> [ubyte] -> IO<Result<unit, Os.Error>> = File.write_bytes
+    let write_text: string -> string -> IO<Result<unit, Os.Error>> = File.write_text
+    let append_text: string -> string -> IO<Result<unit, Os.Error>> = File.append_text
+    let remove_file: string -> IO<Result<unit, Os.Error>> = File.remove
+    let list: string -> IO<Result<[string], Os.Error>> = Dir.list
+    let create: string -> IO<Result<unit, Os.Error>> = Dir.create
+    let remove_dir: string -> IO<Result<unit, Os.Error>> = Dir.remove
     let join: ref string -> ref string -> string = Path.join
-    let parent: ref string -> Option.Option<string> = Path.parent
-    let file_name: ref string -> Option.Option<string> = Path.file_name
-    let extension: ref string -> Option.Option<string> = Path.extension
-    let args: unit -> IO<Result.Result<[string], Os.Error>> = Env.args
-    let variable: string -> IO<Result.Result<Option.Option<string>, Os.Error>> = Env.var
-    let current: unit -> IO<Result.Result<string, Os.Error>> = Env.current_dir
-    let monotonic: unit -> IO<Result.Result<i64, Os.Error>> = Time.monotonic_ns
-    let unix: unit -> IO<Result.Result<i64, Os.Error>> = Time.unix_ns
-    let sleep: i64 -> IO<Result.Result<unit, Os.Error>> = Time.sleep_ms
-    let bytes: i64 -> IO<Result.Result<[ubyte], Os.Error>> = Random.bytes
-    let next: unit -> IO<Result.Result<i64u, Os.Error>> = Random.next_u64
+    let parent: ref string -> Option<string> = Path.parent
+    let file_name: ref string -> Option<string> = Path.file_name
+    let extension: ref string -> Option<string> = Path.extension
+    let args: unit -> IO<Result<[string], Os.Error>> = Env.args
+    let variable: string -> IO<Result<Option<string>, Os.Error>> = Env.var
+    let current: unit -> IO<Result<string, Os.Error>> = Env.current_dir
+    let monotonic: unit -> IO<Result<i64, Os.Error>> = Time.monotonic_ns
+    let unix: unit -> IO<Result<i64, Os.Error>> = Time.unix_ns
+    let sleep: i64 -> IO<Result<unit, Os.Error>> = Time.sleep_ms
+    let bytes: i64 -> IO<Result<[ubyte], Os.Error>> = Random.bytes
+    let next: unit -> IO<Result<i64u, Os.Error>> = Random.next_u64
     let pcg: i64u -> i64u -> Random.Pcg = Random.pcg
     let next_u32: Random.Pcg -> (i32u * Random.Pcg) = Random.pcg_next_u32
     let next_pcg_u64: Random.Pcg -> (i64u * Random.Pcg) = Random.pcg_next_u64
-    let open: string -> File.Mode -> IO<Result.Result<File.Handle, Os.Error>> = File.open
-    let read: File.Handle -> i64 -> IO<Result.Result<[ubyte], Os.Error>> = File.read
-    let write: File.Handle -> [ubyte] -> IO<Result.Result<unit, Os.Error>> = File.write
-    let flush: File.Handle -> IO<Result.Result<unit, Os.Error>> = File.flush
-    let close: File.Handle -> IO<Result.Result<unit, Os.Error>> = File.close
+    let open: string -> File.Mode -> IO<Result<File.Handle, Os.Error>> = File.open
+    let read: File.Handle -> i64 -> IO<Result<[ubyte], Os.Error>> = File.read
+    let write: File.Handle -> [ubyte] -> IO<Result<unit, Os.Error>> = File.write
+    let flush: File.Handle -> IO<Result<unit, Os.Error>> = File.flush
+    let close: File.Handle -> IO<Result<unit, Os.Error>> = File.close
     let modes = [File.Read, File.Write, File.Append, File.CreateNew]
-    let describe: string -> IO<Result.Result<File.Metadata, Os.Error>> = File.metadata
-    let describe_link: string -> IO<Result.Result<File.Metadata, Os.Error>> = File.link_metadata
-    let walk: string -> IO<Result.Result<[string], Os.Error>> = Dir.walk
-    let run: string -> [string] -> [ubyte] -> IO<Result.Result<Process.Output, Os.Error>> = Process.run
+    let describe: string -> IO<Result<File.Metadata, Os.Error>> = File.metadata
+    let describe_link: string -> IO<Result<File.Metadata, Os.Error>> = File.link_metadata
+    let walk: string -> IO<Result<[string], Os.Error>> = Dir.walk
+    let run: string -> [string] -> [ubyte] -> IO<Result<Process.Output, Os.Error>> = Process.run
     let kinds = [File.Regular, File.Directory, File.Symlink, File.Other]
-    let decode: [ubyte] -> Result.Result<string, Os.Error> = Os.decode
-    let names: ref [ubyte] -> Result.Result<[string], Os.Error> = Os.split_names
+    let decode: [ubyte] -> Result<string, Os.Error> = Os.decode
+    let names: ref [ubyte] -> Result<[string], Os.Error> = Os.split_names
     let number: ref [ubyte] -> i64 -> i64 = Os.decode_i64
     let message: ref Os.Error -> string = Os.message
-    let encode: ref string -> Result.Result<utf8string, Os.Error> = Os.encode
+    let encode: ref string -> Result<utf8string, Os.Error> = Os.encode
     let status: i64 -> Os.Error = Os.error_of_status
     let seeded: unit -> IO<HashMap<i64, string>> = HashMap.randomized
-    let try_seeded: unit -> IO<Result.Result<HashMap<i64, string>, Os.Error>> = HashMap.try_randomized
+    let try_seeded: unit -> IO<Result<HashMap<i64, string>, Os.Error>> = HashMap.try_randomized
     let seeded_set: unit -> IO<HashSet<string>> = HashSet.randomized
-    let try_seeded_set: unit -> IO<Result.Result<HashSet<string>, Os.Error>> = HashSet.try_randomized
+    let try_seeded_set: unit -> IO<Result<HashSet<string>, Os.Error>> = HashSet.try_randomized
     do! IO.write_line \"typed\"
 ",
     );
@@ -208,7 +208,7 @@ fn args_entry_receives_argv() {
 
 #[test]
 fn pcg_is_opaque() {
-    let io = analyze("IO.IO { work: \\() -> 42 }").unwrap_err();
+    let io = analyze("IO { work: \\() -> 42 }").unwrap_err();
     let pcg = analyze("Random.Pcg { state: 1i64u, increment: 2i64u }").unwrap_err();
     assert_eq!(io.code, "E1022");
     assert_eq!(pcg.code, io.code, "{}", pcg.message);

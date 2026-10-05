@@ -126,7 +126,7 @@ def total :: Point -> i64 = \point -> point.horizontal + point.vertical
 def total_of :: 'value -> 'result
     @'value : #total = \value -> 'value.total value
 
-total_of (Point.Point { horizontal: 20, vertical: 22 })
+total_of (Point { horizontal: 20, vertical: 22 })
 ```
 
 `#total` はレコード・union の定義元モジュールに `total` という関数があることを要求します。クラスのインスタンス登録は不要で、関数の型、可視性、追加制約は通常どおり検査します。

@@ -60,7 +60,7 @@ test('TextMate grammar tokenizes namespaces, using, error handling, attributes, 
 		}
 		assert.ok(scopes(qualified, '::').includes('keyword.operator.tsuzuri'));
 		assert.ok(!scopes('let ys = x::xs', 'x::').includes('entity.name.namespace.tsuzuri'));
-		assert.ok(scopes('def area::Sample::Shape.Shape -> f64', 'area').includes('entity.name.function.tsuzuri'));
+		assert.ok(scopes('def area::Sample::Shape -> f64', 'area').includes('entity.name.function.tsuzuri'));
 		assert.ok(scopes('using Sample // shared', 'shared').includes('comment.line.double-slash.tsuzuri'));
 		assert.ok(!scopes('let using = namespace + 1', 'using').includes('keyword.other.namespace.tsuzuri'));
 		assert.ok(!scopes('    using resource', 'using').includes('keyword.other.namespace.tsuzuri'));

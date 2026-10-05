@@ -1863,8 +1863,17 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     } else if let Some(dot) = separator.filter(|separator| separator.kind == TokenKind::Dot) {
         let chain = path_chain(&tokens, before - 2);
         if let Some(key) = view.module_path(&path_text(&tokens, &chain)) {
+            // A type named after its module is the module path itself, not a member.
+            let stem = key.rsplit('.').next().unwrap_or(key);
             for (definition, item) in index.definitions.iter().enumerate() {
-                if item.module == key && top_level(item.kind) && (item.public || key == module) {
+                if item.module == key
+                    && top_level(item.kind)
+                    && (item.public || key == module)
+                    && !(matches!(
+                        item.kind,
+                        SymbolKind::Record | SymbolKind::Union | SymbolKind::Alias
+                    ) && item.name == stem)
+                {
                     items.definition(2, definition);
                 }
             }

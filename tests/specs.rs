@@ -90,10 +90,10 @@ fn bigint_literals_and_operators_are_typed() {
     rejects("let a = 1I + 1\nlet b: i64 = a\nb", "E1003");
     // The representation is opaque, so every value keeps canonical digits.
     for source in [
-        "let value = BigInt.BigInt { negative: true, limbs: [] }\n0",
+        "let value = BigInt { negative: true, limbs: [] }\n0",
         "let value = 5I\nvalue.limbs.length",
         "let value = 5I\nlet other = { value with negative = true }\n0",
-        "match 5I with\n| BigInt.BigInt { negative = sign } -> 0",
+        "match 5I with\n| BigInt { negative = sign } -> 0",
     ] {
         rejects(source, "E1022");
     }

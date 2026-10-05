@@ -132,8 +132,9 @@ def area :: Shape -> f64 = \shape ->
 `namespace Sample::Codebase` のファイルの `Shape` は、`Sample::Codebase::Shape`、`Sample::Shape`、`Shape` の順に探します。
 `Sample.Shape.area` や `Geometry.Point.distance` のように名前空間とモジュールを `.` でつなぐと、`.` の左を値またはモジュールとして読むため `E1002`・`E1004` です。診断は `::` を使う書き方を示します。
 
-モジュール名と同じ名前の `record`／`union` は、モジュールのパスでも参照できます。`namespace Sample` の `Point.tz` にある `record Point` は `Sample::Point { x: 1.0, y: 2.0 }` と書け、`Sample::Point.Point` と重ねる必要はありません。
-`Sample::Point.Point` の形も引き続き使えます。修飾しない型名 `Point` もモジュールのパスと同じ順序でこの型を探すため、別の名前空間に `Other::Point` があっても曖昧になりません。
+モジュール名と同じ名前の型（`record`・`union`・`type`・`extern type`）の完全名は、モジュールの完全名そのものです。`namespace Sample` の `Point.tz` にある `record Point` は `Sample::Point` で、`Sample::Point { x: 1.0, y: 2.0 }` と書きます。`Shape.tz` の `union Shape` の case も、関数と同じくモジュールのメンバーの `Sample::Shape.Rect` です。
+`Sample::Point.Point`・`Sample::Shape.Shape.Rect` のようにモジュール名を重ねると `E1004` で、診断は `Sample::Point` などの書き方を示します。診断の型の表示も `Sample::Point` です（パッケージの既定名前空間の中のモジュールは、既定名前空間を省いて `Point` のように表示します）。std の `Option<'a>`・`Result<'a, 'e>`・`Seq<'a>` なども同じで、`Option.Option` とは書きません。
+修飾しない型名 `Point` もモジュールのパスと同じ順序でこの型を探すため、別の名前空間に `Other::Point` があっても曖昧になりません。std のモジュールも同じで、別のモジュールに `record Result` があっても `Result<i64, string>` は std の union です（その record は `Checks.Result` と修飾します）。ファイル自身の宣言はこれより優先するので、`record Result` を宣言したファイルの `Result` はその record です。
 この順序で見つからない型名は、従来どおり利用者のモジュール、std の順に一意な宣言を探します。
 
 `using 名前空間` は `namespace` 宣言の後、他の宣言の前に書き、その名前空間の直下のモジュールを修飾なしのモジュール名で参照できるようにします。
@@ -226,11 +227,11 @@ let d = Point.distance p
 他モジュールの関数を無修飾では参照できません。
 ローカル変数がモジュールと同名の場合、`name.field` はローカル値のフィールドアクセスを優先します。
 
-レコード型・リテラルは `Point.Point` のような修飾名を常に使えます。
-無修飾の `Point` はまず自モジュールで解決し、なければ利用者のモジュール内で一意なレコード名、
+モジュール名と同じ名前のレコード型・リテラルはモジュールのパスで `Point` と書き、`Point.Point` は `E1004` です。ほかの名前のレコードは `Shapes.Point` のように修飾できます。
+無修飾の `Point` はまず自モジュールで解決し、次にモジュールのパスとして同名の型（`Point.tz` の `record Point`、std の `Option` など）、なければ利用者のモジュール内で一意なレコード名、
 それもなければ std のモジュール内で一意なレコード名を解決します。
 他モジュールに同名レコードが複数ある場合は修飾が必要で、曖昧な名前はエラーです。
-利用者の宣言は同名の std の宣言より優先され、std のコードは利用者の宣言を参照しません。
+一意な名前の検索では利用者の宣言が同名の std の宣言より優先され、std のコードは利用者の宣言を参照しません。
 同じフィールドを持つ同名レコードでも、所属モジュールが違えば別の型です。
 union 型も同じ規則で解決します（`Shapes.Shape` など）。
 
@@ -675,7 +676,7 @@ let distance = func (Point { x: 3.0, y: 4.0 })
 distance
 ```
 
-この呼び出しでは `'T` が `Point.Point`、`'U` が `f64` になり、`Point.distance` を静的に呼び出します。
+この呼び出しでは `'T` が `Point`、`'U` が `f64` になり、`Point.distance` を静的に呼び出します。
 関数制約は通常の関数参照を通じても伝播するため、上の `func` を呼ぶ別のジェネリック関数でも返却型を推論できます。
 
 - `@'T : Copy, #distance, #scale` のように型クラスと複数の関数制約を混在できます。
@@ -1202,7 +1203,7 @@ JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr 
 | `f16` / `f32` / `f64` / `f128` | IEEE 754 binary16 / binary32 / binary64 / binary128 |
 | `d32` / `d64` / `d128` | IEEE 754 decimal32 / decimal64 / decimal128（BID エンコーディング） |
 | `byte` / `ubyte` / `sbyte` | `byte`・`ubyte` は `i8u`、`sbyte` は `i8` の別名 |
-| `bigint` | 任意精度の整数。std のレコード `BigInt.BigInt`（[bigint](#bigint)） |
+| `bigint` | 任意精度の整数。std のレコード `BigInt`（[bigint](#bigint)） |
 | `string` | ECMA-262 の String 値モデルに従う、所有する不変の UTF-16 コード単位列。孤立サロゲートも保持 |
 | `utf8string` | 従来の実装を保持する、所有する不変の妥当な UTF-8 文字列 |
 | `char` | 全 UTF-16 コード単位。`'A'`、`'\uD800'` などの Copy 値 |
@@ -1954,7 +1955,7 @@ Task の and!／yield／match! は追加せず、明示 task の規則も変更�
 そこへ外側のビルダー文脈は持ち越しません。新しい `Builder { ... }` または独立に型解決する暗黙本体を使います。
 
 `Name { field: value }` はレコードリテラルです。空の `Name {}` は、その名前の `.tc` があれば
-空のコンピュテーション式、なければ空レコードです。同名の空レコードは `Module.Name {}` と修飾できます。
+空のコンピュテーション式、なければ空レコードです。別のモジュールにある同名の空レコードは `Module.Name {}` と修飾できます。
 `Builder` と `{` は同じ行に置きます。
 
 展開先は通常の静的な関数呼び出しと匿名関数です。callee、各引数の左から右の評価、
@@ -3005,7 +3006,7 @@ sum = next
 
 ### bigint
 
-`bigint` は任意精度の整数で、std のレコード `BigInt.BigInt` です。リテラルは `123I`・`0xFFI`、または `bigint` が期待される位置の接尾辞のない整数（`let b: bigint = 2`）です。
+`bigint` は任意精度の整数で、std のレコード `BigInt` です。リテラルは `123I`・`0xFFI`、または `bigint` が期待される位置の接尾辞のない整数（`let b: bigint = 2`）です。
 
 ```text
 let a = 9999999999999999999999999999I
@@ -3252,7 +3253,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |
 | `E1020` | 不正なパターン、OR 束縛の不一致、未対応の認識器形式、union case の payload の不一致 |
 | `E1021` | 明示の `match`・関数ガードの網羅性の不足（不足する値の例を示す） |
-| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle`・`BigInt.BigInt` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
+| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap`・`Random.Pcg`・`File.Handle`・`BigInt` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
 | `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue`、`finally` を持つ `try` から出る `break`／`continue` |
 | `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
 | `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |

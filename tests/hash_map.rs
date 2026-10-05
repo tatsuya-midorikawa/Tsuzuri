@@ -30,15 +30,15 @@ fn hash_containers_are_opaque_noncopy_owned_values() {
         "let map: HashMap<i64, string> = HashMap.empty()\nlet set = HashSet.insert (HashSet.empty()) \"key\"\nHashMap.length (&map) + HashSet.length (&set)",
     );
     for source in [
-        "let map: HashMap<i64, i64> = HashMap.HashMap { entries: Vec.empty(), slots: Vec.empty() }\n0",
+        "let map: HashMap<i64, i64> = HashMap { entries: Vec.empty(), slots: Vec.empty() }\n0",
         "let map = HashMap.insert (HashMap.empty()) 1 2\nmap.entries.length",
         "let map = HashMap.insert (HashMap.empty()) 1 2\nlet other = { map with slots = Vec.empty() }\nHashMap.length (&other)",
-        "let map = HashMap.insert (HashMap.empty()) 1 2\nmatch map with | HashMap.HashMap { entries = storage } -> Vec.length (&storage)",
+        "let map = HashMap.insert (HashMap.empty()) 1 2\nmatch map with | HashMap { entries = storage } -> Vec.length (&storage)",
         "let set = HashSet.insert (HashSet.empty()) 1\nmatch set with | { map = inner } -> HashMap.length (&inner)",
         "let entry = HashMap.Entry { hash: 0, key: 1, value: 2 }\n0",
         "let map: HashMap<i64, i64> = HashMap.with_seed 7i64u\nmap.key0",
         "let map: HashMap<i64, i64> = HashMap.with_seed 7i64u\nmap.keyed",
-        "let map: HashMap<i64, i64> = HashMap.HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: 0i64u, key1: 0i64u, keyed: false }\n0",
+        "let map: HashMap<i64, i64> = HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: 0i64u, key1: 0i64u, keyed: false }\n0",
     ] {
         rejects(source, "E1022");
     }

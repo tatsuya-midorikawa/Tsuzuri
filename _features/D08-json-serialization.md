@@ -147,15 +147,15 @@ union Value = Null | Bool of bool | Number of Numeral | Text of string | Array o
 union ErrorKind = Syntax | UnexpectedEnd | InvalidEscape | ControlCharacter | DuplicateKey of string | TooDeep | TooLarge | NonFinite | NumberRange | ExpectedType of string | MissingField of string | UnknownCase of string | LoneSurrogate deriving (Eq)
 record Error { kind: ErrorKind, offset: i64 } deriving (Eq)
 
-def parse :: ref utf8string -> Result.Result<Value, Error>
+def parse :: ref utf8string -> Result<Value, Error>
 def to_utf8string :: ref Value -> utf8string
-def numeral :: ref utf8string -> Option.Option<Numeral>
-def to_i64 :: ref Numeral -> Result.Result<i64, Error>
-def to_f64 :: ref Numeral -> Result.Result<f64, Error>
-def encode :: Encode<'a> => ref 'a -> Result.Result<Value, Error>
-def decode :: Decode<'a> => ref Value -> Result.Result<'a, Error>
-def serialize :: Encode<'a> => ref 'a -> Result.Result<utf8string, Error>
-def deserialize :: Decode<'a> => ref utf8string -> Result.Result<'a, Error>
+def numeral :: ref utf8string -> Option<Numeral>
+def to_i64 :: ref Numeral -> Result<i64, Error>
+def to_f64 :: ref Numeral -> Result<f64, Error>
+def encode :: Encode<'a> => ref 'a -> Result<Value, Error>
+def decode :: Decode<'a> => ref Value -> Result<'a, Error>
+def serialize :: Encode<'a> => ref 'a -> Result<utf8string, Error>
+def deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 ```
 
 組み込みクラス（コンパイラが登録する。source の宣言ではない）:
@@ -319,19 +319,19 @@ std に `Json` が無ければ `Parse` と同じくシグネチャを `Err(E1004
 （`_ => false` なので組み込み instance はなく、std の source instance だけが使われる）。
 
 `std/Json.tz`（新規）の構成: 公開の型 4 つ、公開の関数 9 つ、instance（`Encode`・`Decode` を bool、整数 10 型、f32、f64、string、
-utf8string、`Option.Option<'a>`、`['a]`、リスト `[|'a|]`、`Vec<'a>`、2–4 要素の tuple、`Value` に。`Display<Error>`）、導出コード用の公開補助関数（新規）:
+utf8string、`Option<'a>`、`['a]`、リスト `[|'a|]`、`Vec<'a>`、2–4 要素の tuple、`Value` に。`Display<Error>`）、導出コード用の公開補助関数（新規）:
 
 | 補助関数（新規） | 型 | 役割 |
 | --- | --- | --- |
-| `begin_object` | `i64 -> Result.Result<Vec<(string * Value)>, Error>` | 容量付きの空の member 列 |
-| `encode_field` | `Encode<'a> => Result.Result<Vec<(string * Value)>, Error> -> string -> ref 'a -> Result.Result<Vec<(string * Value)>, Error>` | Error なら何もせず返す。Ok なら値を encode して push |
-| `end_object` | `Result.Result<Vec<(string * Value)>, Error> -> Result.Result<Value, Error>` | `Vec.to_array` して `Object` |
-| `encode_case` | `Encode<'a> => string -> ref 'a -> Result.Result<Value, Error>` | `{"Case": payload}` |
-| `encode_tag` | `string -> Result.Result<Value, Error>` | `"Case"` |
-| `expect_object` | `ref Value -> Result.Result<unit, Error>` | object でなければ `ExpectedType "object"` |
-| `decode_field` | `Decode<'a> => ref Value -> string -> Result.Result<'a, Error>` | 線形探索。無ければ `Null` を decode し、失敗なら `MissingField` |
-| `keep_error` | `Option.Option<Error> -> Result.Result<'a, Error> -> Option.Option<Error>` | 最初の Error を残し、残りを解放 |
-| `case_index` | `ref Value -> [string] -> [bool] -> Result.Result<i64, Error>` | case 名と payload の有無から index。形の検査 |
+| `begin_object` | `i64 -> Result<Vec<(string * Value)>, Error>` | 容量付きの空の member 列 |
+| `encode_field` | `Encode<'a> => Result<Vec<(string * Value)>, Error> -> string -> ref 'a -> Result<Vec<(string * Value)>, Error>` | Error なら何もせず返す。Ok なら値を encode して push |
+| `end_object` | `Result<Vec<(string * Value)>, Error> -> Result<Value, Error>` | `Vec.to_array` して `Object` |
+| `encode_case` | `Encode<'a> => string -> ref 'a -> Result<Value, Error>` | `{"Case": payload}` |
+| `encode_tag` | `string -> Result<Value, Error>` | `"Case"` |
+| `expect_object` | `ref Value -> Result<unit, Error>` | object でなければ `ExpectedType "object"` |
+| `decode_field` | `Decode<'a> => ref Value -> string -> Result<'a, Error>` | 線形探索。無ければ `Null` を decode し、失敗なら `MissingField` |
+| `keep_error` | `Option<Error> -> Result<'a, Error> -> Option<Error>` | 最初の Error を残し、残りを解放 |
+| `case_index` | `ref Value -> [string] -> [bool] -> Result<i64, Error>` | case 名と payload の有無から index。形の検査 |
 | `payload` | `ref Value -> ref Value` | 1 キーの object の値。`case_index` の成功後だけ呼ぶ（それ以外はトラップ） |
 
 ### 段ごとの変更

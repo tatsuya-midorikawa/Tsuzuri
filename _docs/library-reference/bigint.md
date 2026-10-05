@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-`bigint` は桁数に上限のない符号付き整数です。std の record `BigInt.BigInt` の型名で、`I` 接尾辞のリテラル（`123I`、`0xFFI`）か、`bigint` を期待する位置に書いた接尾辞なしの整数リテラルで作ります。固定幅の整数の API は [Int](integers.md) です。
+`bigint` は桁数に上限のない符号付き整数です。std の record `BigInt` の型名で、`I` 接尾辞のリテラル（`123I`、`0xFFI`）か、`bigint` を期待する位置に書いた接尾辞なしの整数リテラルで作ります。固定幅の整数の API は [Int](integers.md) です。
 
 ## 例
 

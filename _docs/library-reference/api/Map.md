@@ -41,7 +41,7 @@ def contains_key :: Ord<'key> => ref Map<'key, 'value> -> 'key -> bool
 ## `get`
 
 ```tsuzuri
-def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Option.Option<'value>
+def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Option<'value>
 ```
 
 ## `at`
@@ -89,6 +89,6 @@ def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref Map<'k
 ## `iter`
 
 ```tsuzuri
-def iter :: ref Map<'key, 'value> -> Seq.Seq<(ref 'key * ref 'value)>
+def iter :: ref Map<'key, 'value> -> Seq<(ref 'key * ref 'value)>
 ```
 

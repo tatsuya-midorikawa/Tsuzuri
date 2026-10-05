@@ -463,7 +463,7 @@ fn routes_specs_to_format_instances() {
             "E1016",
         ),
         (
-            "instance Format<Option.Option<i64>> {\n    fn format _value _spec = \"\"\n}",
+            "instance Format<Option<i64>> {\n    fn format _value _spec = \"\"\n}",
             "E1016",
         ),
         // An unknown name next to an instance used to panic in instance matching.

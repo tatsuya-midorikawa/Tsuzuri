@@ -14,7 +14,7 @@ Tsuzuri は静的型付きの言語です。関数の境界とレコードのフ
 | `i8u`, `i16u`, `i32u`, `i64u`, `i128u` | 符号なし整数 |
 | `byte`, `ubyte` | `i8u` の別名 |
 | `sbyte` | `i8` の別名 |
-| `bigint` | 任意精度の整数（std の `BigInt.BigInt`） |
+| `bigint` | 任意精度の整数（std の `BigInt`） |
 | `f16`, `f32`, `f64`, `f128` | IEEE 754 の binary 浮動小数点 |
 | `d32`, `d64`, `d128` | IEEE 754 の decimal 浮動小数点、BID 表現 |
 | `char`, `utf8char` | UTF-16 コード単位、Unicode スカラー |

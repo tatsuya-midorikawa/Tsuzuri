@@ -268,6 +268,16 @@ fn plain(
     }
 }
 
+/// A type declared in the module `key` whose full name is `shown`, as source
+/// code writes it: a type named after its module has the module's name.
+fn type_name(shown: &str, key: &str, declared: &str) -> String {
+    if module_stem(key) == declared {
+        shown.to_owned()
+    } else {
+        format!("{shown}.{declared}")
+    }
+}
+
 /// Defines every source declaration; fields and cases follow their container.
 fn define_declarations(
     index: &mut SemanticIndex,
@@ -302,6 +312,7 @@ fn define_declarations(
         let program = module.program;
         let name = module.name;
         let shown = names.module_display(name);
+        let typed = |declared: &str| type_name(&shown, name, declared);
         for record in &program.records {
             if record.name.provenance == Provenance::Generated {
                 continue;
@@ -312,7 +323,7 @@ fn define_declarations(
                 &record.name,
                 SymbolKind::Record,
                 name,
-                format!("record {shown}.{}", record.name.text),
+                format!("record {}", typed(&record.name.text)),
                 record.visibility,
             ));
             if let Some(id) = id {
@@ -347,7 +358,7 @@ fn define_declarations(
                 &union.name,
                 SymbolKind::Union,
                 name,
-                format!("union {shown}.{}", union.name.text),
+                format!("union {}", typed(&union.name.text)),
                 union.visibility,
             ));
             if let Some(id) = id {
@@ -357,7 +368,7 @@ fn define_declarations(
                 let payload = id
                     .and_then(|id| types.unions[id].cases.get(position))
                     .and_then(|(_, payload)| payload.as_ref());
-                let case_name = format!("{shown}.{}.{}", union.name.text, case.name.text);
+                let case_name = format!("{}.{}", typed(&union.name.text), case.name.text);
                 let detail = match payload {
                     Some(ty) => format!("{case_name} of {}", ty.display(types)),
                     None => case_name,
@@ -373,7 +384,7 @@ fn define_declarations(
                 &alias.name,
                 SymbolKind::Alias,
                 name,
-                format!("type {shown}.{}", alias.name.text),
+                format!("type {}", typed(&alias.name.text)),
                 alias.visibility,
             ));
         }
@@ -382,7 +393,7 @@ fn define_declarations(
                 &handle.name,
                 SymbolKind::Record,
                 name,
-                format!("extern type {shown}.{}", handle.name.text),
+                format!("extern type {}", typed(&handle.name.text)),
                 handle.visibility,
             ));
             links
@@ -516,6 +527,7 @@ pub(super) fn collect(
     for module in modules {
         let program = module.program;
         let shown = names.module_display(module.name);
+        let typed = |declared: &str| type_name(&shown, module.name, declared);
         for external in &program.externs {
             index.document(&external.name, external.doc.as_ref());
             index.symbol(
@@ -537,7 +549,7 @@ pub(super) fn collect(
                     .fields
                     .last()
                     .map_or(record.name.span, |field| field.ty.span),
-                format!("record {shown}.{}", record.name.text),
+                format!("record {}", typed(&record.name.text)),
             );
             for field in &record.fields {
                 type_entry(
@@ -562,7 +574,7 @@ pub(super) fn collect(
                 union.cases.last().map_or(union.name.span, |case| {
                     case.payload.as_ref().map_or(case.name.span, |ty| ty.span)
                 }),
-                format!("union {shown}.{}", union.name.text),
+                format!("union {}", typed(&union.name.text)),
             );
             for case in &union.cases {
                 if let Some(ty) = &case.payload {
@@ -576,7 +588,7 @@ pub(super) fn collect(
                 &handle.name,
                 23,
                 handle.name.span,
-                format!("extern type {shown}.{}", handle.name.text),
+                format!("extern type {}", typed(&handle.name.text)),
             );
         }
         for alias in &program.type_aliases {
@@ -585,7 +597,7 @@ pub(super) fn collect(
                 &alias.name,
                 26,
                 alias.target.span,
-                format!("type {shown}.{}", alias.name.text),
+                format!("type {}", typed(&alias.name.text)),
             );
             type_entry(
                 &mut index,

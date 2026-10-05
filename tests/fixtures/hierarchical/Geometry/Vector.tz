@@ -1,4 +1,4 @@
 record Vector { x: f64, y: f64 }
 
 def distance :: Vector -> f64
-fn distance vector = Geometry::Point.distance (Geometry::Point.Point { x: vector.x, y: vector.y })
+fn distance vector = Geometry::Point.distance (Geometry::Point { x: vector.x, y: vector.y })

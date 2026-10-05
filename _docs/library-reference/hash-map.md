@@ -238,7 +238,7 @@ def main :: IO<unit> =
 ```
 
 ```tsuzuri
-def report :: Result.Result<HashMap<i64, i64>, Os.Error> -> IO<unit> = \made ->
+def report :: Result<HashMap<i64, i64>, Os.Error> -> IO<unit> = \made ->
     match made with
     | Result.Ok fresh ->
         let map = HashMap.insert (HashMap.insert fresh 10 1) 20 2

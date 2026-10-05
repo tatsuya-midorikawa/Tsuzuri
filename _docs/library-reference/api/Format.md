@@ -46,7 +46,7 @@ is 0 when the spec has none, and `precision` is -1 when it has none.
 ## `parse`
 
 ```tsuzuri
-def parse :: ref string -> Option.Option<Spec>
+def parse :: ref string -> Option<Spec>
 ```
 
 Takes a spec apart; `None` when `text` is not written the way `$"{x:spec}"` allows: a fill the lexer refuses

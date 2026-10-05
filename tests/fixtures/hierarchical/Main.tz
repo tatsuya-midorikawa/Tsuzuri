@@ -1,5 +1,5 @@
 export def distance_sum :: i64 -> i64 -> i64 -> i64 -> i64
 fn distance_sum first_x first_y second_x second_y =
-    let point = Geometry::Point.Point { x: first_x as f64, y: first_y as f64 }
-    let vector = Geometry::Vector.Vector { x: second_x as f64, y: second_y as f64 }
+    let point = Geometry::Point { x: first_x as f64, y: first_y as f64 }
+    let vector = Geometry::Vector { x: second_x as f64, y: second_y as f64 }
     (Geometry::Point.distance point + Geometry::Vector.distance vector) as i64

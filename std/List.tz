@@ -14,7 +14,7 @@ fn fold folder initial values =
     for value in values do state = folder state value
     state
 
-def iter :: ref [|'a|] -> Seq.Seq<ref 'a>
+def iter :: ref [|'a|] -> Seq<ref 'a>
 fn iter values =
     let references = List.fold_ref (\state value -> Vec.push state value) (Vec.empty()) values
     Seq.unfold (\state ->

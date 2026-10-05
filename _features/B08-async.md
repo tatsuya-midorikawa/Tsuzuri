@@ -119,7 +119,7 @@ fn run computation =
 | 外側の配列を `let view = ref values` で借用し、`do!` の後で使う | E1013 `cannot return a reference to a local value`（`Async {` の位置） |
 | `ref [i64]` を受け取り、それを `do!` の後で使う `Async` を返す関数 | 受理（loan が引数に結び付き、呼び出し側の寿命内で実行される） |
 | ブロック内の所有値を `do!` の後で `ref` で使う、外側の所有値を `let owned = values` で move する | 受理 |
-| `Step` を `private union` にする | E1022 `private type 'Async.Step' leaks from public record 'Async.Async'; make the record private or expose a public type` |
+| `Step` を `private union` にする | E1022 `private type 'Async.Step' leaks from public record 'Async'; make the record private or expose a public type` |
 | 関数だけを持つ `Async` レコードを 2 回使う | 受理（Copy。D5 で非 Copy にする） |
 
 ## 仕様
@@ -159,7 +159,7 @@ def yield_now :: unit -> Async<unit>
 def sleep :: i64 -> Async<unit>
 def now :: unit -> Async<i64>
 def all :: (Copy<'a>, Capture<'a>) => [Async<'a>] -> Async<['a]>
-def all_results :: (Copy<'a>, Copy<'e>, Capture<'a>, Capture<'e>) => [Async<Result.Result<'a, 'e>>] -> Async<Result.Result<['a], 'e>>
+def all_results :: (Copy<'a>, Copy<'e>, Capture<'a>, Capture<'e>) => [Async<Result<'a, 'e>>] -> Async<Result<['a], 'e>>
 def run :: Async<'a> -> 'a
 ```
 
@@ -189,12 +189,12 @@ statement    = "let!" pattern "=" expr | "do!" expr | "return" expr | "return!" 
 unsupported  = "and!" | "yield" | "yield!" | "while" | "use"      (* E1018 または B05 の既存の拒否 *)
 ```
 
-結果型が `Async.Async<T>` と宣言された関数は、既存の暗黙本体（`check_implicit`）で `Async { }` を省略できる。
+結果型が `Async<T>` と宣言された関数は、既存の暗黙本体（`check_implicit`）で `Async { }` を省略できる。
 
 ### 型規則
 
 - `Async.Async<'a>` は不透明（`stdlib::opaque_record`）で Copy ではない（`Type::is_noncopy_record`）。std の外で `start` を読む、
-  `Async.Async { start: ... }` を書くと E1022。同じ値を 2 回使うと E1012。
+  `Async { start: ... }` を書くと E1022。同じ値を 2 回使うと E1012。
 - `Async.Step<'a>` は `'a` が Copy なら Copy（関数値は Copy）。`all`・`all_results` はこの性質を使うので結果型に `Copy` を要求する（D7）。
 - `Async` の値は loan を持たない（D6）。したがって既存の `Capture`・`Task` の捕捉規則は、関数だけを持つ普通のレコードとして判定する。
   `Task` の中で `Async.run` を呼べる。`Async` 専用の `Send` 規則や実行スレッドは作らない（D9）。
@@ -202,7 +202,7 @@ unsupported  = "and!" | "yield" | "yield!" | "while" | "use"      (* E1018 ま�
 ### 評価順序・所有権・借用
 
 - step は次の中断点（`yield_now`、`sleep`）か完了まで同期的に進む。`let!` の右辺は step がその文に達したときに評価する。
-- D6: 型が `Async.Async<T>` の式の値が loan を持てば E1013。どの関数（利用者・std・生成コード）でも同じ。次をすべて拒否する。
+- D6: 型が `Async<T>` の式の値が loan を持てば E1013。どの関数（利用者・std・生成コード）でも同じ。次をすべて拒否する。
   - `let r = ref x` の後に `let!`／`do!` があり、その後で `r` を使う（継続が `r` を捕捉する）。
   - `Async { }` の中で外側の値を借用する（cold な開始も中断点とみなす）。
   - 借用引数を使う `Async` を返す関数（HEAD では受理される。「再現」の表）。
@@ -223,9 +223,9 @@ unsupported  = "and!" | "yield" | "yield!" | "while" | "use"      (* E1018 ま�
 
 | コード | 条件 | メッセージ | 位置 |
 | --- | --- | --- | --- |
-| E1013（新メッセージ） | 型が `Async.Async<T>` の式の値が loan を持つ | `async computations cannot keep borrowed values across 'let!', 'do!', or the start of the computation; move or clone the value into the async block instead` | その式の span。内側から評価するので、多くは `let!`／`do!` の文、`Async { ... }` 全体、または借用を受け取る std 関数の呼び出し |
+| E1013（新メッセージ） | 型が `Async<T>` の式の値が loan を持つ | `async computations cannot keep borrowed values across 'let!', 'do!', or the start of the computation; move or clone the value into the async block instead` | その式の span。内側から評価するので、多くは `let!`／`do!` の文、`Async { ... }` 全体、または借用を受け取る std 関数の呼び出し |
 | E1012（既存） | `Async` の値を move 後に使う | `use of moved or partially moved value '{name}'` | 2 回目の使用 |
-| E1022（既存） | std の外で `Async` のフィールド・構築を使う | `the representation of 'Async.Async' is opaque; use its module API` | フィールド・レコード式 |
+| E1022（既存） | std の外で `Async` のフィールド・構築を使う | `the representation of 'Async' is opaque; use its module API` | フィールド・レコード式 |
 | E1018（既存） | `and!`・`yield`・`while` など未定義の操作 | `computation builder 'Async' does not define '<operation>'` | 文 |
 | E1011（既存） | 利用者のモジュール名が `Async` | `module name 'Async' is reserved for the standard library; rename the file` | ファイル先頭 |
 
@@ -239,7 +239,7 @@ unsupported  = "and!" | "yield" | "yield!" | "while" | "use"      (* E1018 ま�
 新 API（実装後に有効。未検証）。二つの worker を `all` で並べる。独立に計算した期待値は `123024`。
 
 ```tsuzuri
-def rec worker :: i64 -> i64 -> i64 -> Async.Async<i64>
+def rec worker :: i64 -> i64 -> i64 -> Async<i64>
 fn rec worker delay count trace = Async {
     do! Async.sleep delay
     let! tick = Async.now ()
@@ -494,13 +494,13 @@ TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri async
 | --- | --- |
 | `reserves_the_async_module_name` | 利用者の `Async.tz` が E1011 `module name 'Async' is reserved for the standard library; rename the file`。`Async.run (Async { return 1 })` は受理 |
 | `lowers_async_blocks_deterministically_for_both_targets` | `let!`・`do!`・`return`・`return!`・`match!`・`if`（else なしを含む）・`for`・`all`・`all_results` を使う源を `accepts`（手順 6・7 で源を増やす） |
-| `async_values_are_opaque_and_not_copy` | `let a = Async.yield_now (); let b = a; Async.run a` が E1012。`(Async.now ()).start ()` と `Async.Async { start: ... }` が E1022 の opaque メッセージ |
+| `async_values_are_opaque_and_not_copy` | `let a = Async.yield_now (); let b = a; Async.run a` が E1012。`(Async.now ()).start ()` と `Async { start: ... }` が E1022 の opaque メッセージ |
 | `rejects_borrows_across_suspension_points` | 次の 4 つが E1013 と `ASYNC_BORROW`: 「例」の `borrowed`、外側の値をブロック内で `ref` するだけの `Async { return Array.length (ref values) }`、`ref [i64]` 引数を `do!` の後で使う `Async` を返す関数、`Async.Return (ref values)` |
 | `accepts_borrows_that_end_before_suspension_and_moved_values` | 「再現」の受理 3 例（`moved`・`within`・`outer_moved`） |
 | `for_loops_accept_arrays_of_copy_values` | `for i in values do do! Async.yield_now ()` を受理。`string` の配列は E1005 `no instance for Copy<string>; define an instance or use a supported type` |
 | `all_requires_copy_results` | `Async.all [Async.Return "a"]` が E1005 の同じ形のメッセージ |
 | `unsupported_operations_report_missing_builder_operations` | `and!`・`while`・`yield` が E1018。メッセージは `computation builder 'Async' does not define '` で始まる |
-| `implicit_async_bodies_select_the_async_builder` | `def worker :: i64 -> Async.Async<i64>` と、`Async { }` を書かない本体（`do! Async.yield_now ()` と `return n`）を受理 |
+| `implicit_async_bodies_select_the_async_builder` | `def worker :: i64 -> Async<i64>` と、`Async { }` を書かない本体（`do! Async.yield_now ()` と `return n`）を受理 |
 
 ### E2E
 
@@ -540,7 +540,7 @@ TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri async
 
 - `docs/language.md`: `## タスク` の後に `## 非同期計算（Async）` を足す（API、仮想時刻、順序、取り消し、借用規則、Task との違い、Phase 2 が未実装であること）。
   `### 操作と展開規則` に標準ビルダー `Async` を追記。`## 診断` の E1013 に新メッセージの条件を追記。
-- `docs/architecture.md`: `## 不変条件` に「`Async.Async` 型の値は loan を持たない（`Checker::eval`）」。手順 10 の記録を `## 性能設計の原則` に計測条件と一緒に書く。
+- `docs/architecture.md`: `## 不変条件` に「`Async` 型の値は loan を持たない（`Checker::eval`）」。手順 10 の記録を `## 性能設計の原則` に計測条件と一緒に書く。
 - `_docs/language-reference/computation-expressions.md`: `## 標準 Result ビルダー` の後に `## 標準 Async ビルダー`、`## 所有権と制限` に D6。
 - `_docs/language-reference/tasks.md`: `## 作成と実行` に Task（並列・同期）と Async（協調・中断）の違い、`## 関連項目` にリンク。
 - `_docs/library-reference/async.md`（新規）、`_docs/library-reference/api/Async.md`（生成）、`_docs/library-reference/README.md` の二つの表に行を足す。
@@ -569,13 +569,13 @@ TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri async
 - `Yield` で時刻を進めると `starvation` が 11 などになる。時刻を進めるのは実行器が `Sleep` を受けたときだけ。
 - `round` が `Yield` の後に `Now` を要求しないと、外側で進んだ時刻を見落として `nested_all` が変わる。再開のたびに `Now` で時刻を取り直す。
 - `all_results` が `Error` の後も round を続けると、取り消した子の副作用が起き、`results_first_error` の順序が崩れる。
-- D6 の検査を `E::Closure` に置くと普通の関数値まで拒否する。`Checker::eval` で式の型が `Async.Async` のときだけ見る。
+- D6 の検査を `E::Closure` に置くと普通の関数値まで拒否する。`Checker::eval` で式の型が `Async` のときだけ見る。
   借用引数（`self.external` に入る root）の loan が `Value::loans` に出ない場合は、`rejects_borrows_across_suspension_points` の 3 例目が落ちる。
   そのときは検査を広げずに停止する。
 - D6 は std のコードにも適用される。`std/Async.tc` の closure が引数を借用したまま `Async` を作らないよう、値は move かフィールド呼び出し（`body.start ()`）で扱う。
 - closure の捕捉はスナップショットなので、継続の中で捕捉値を値として渡すと呼び出しごとに複製される。`For` で大きい配列の各要素で中断すると
   配列の複製が要素数の 2 乗になる。fixture の規模を表どおりに保ち（WASM の 16 MiB の検査がある）、複製を減らそうとしてコンパイラを変えない。
-- 配列リテラルは `[a, b]`。空配列は型を注釈する（`let empty: [Async.Async<i64>] = []`）。
+- 配列リテラルは `[a, b]`。空配列は型を注釈する（`let empty: [Async<i64>] = []`）。
 - `cargo test --locked async` のような部分一致は他のテスト名にも当たる。`--test async` を使う。
 - Node 20 で V8 の `RepresentationChangerError` が出たら `npx --yes --package=node@24 node tests/features.mjs target/release/tsuzuri async` で実行する。
 
@@ -590,7 +590,7 @@ TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri async
 
 ### D1: 名前と API 面
 
-- 決定: std モジュール `Async`（`std/Async.tc`、予約モジュール名に追加）、ビルダー `Async { }`、型 `Async.Async<'a>`。公開 API は「API」のとおり
+- 決定: std モジュール `Async`（`std/Async.tc`、予約モジュール名に追加）、ビルダー `Async { }`、型 `Async<'a>`。公開 API は「API」のとおり
   （`yield_now`・`sleep`・`now`・`all`・`all_results`・`run` とビルダー操作）。
 - 理由: GUIDE D-30 の仮割り当てどおり。`yield` は予約語なので `yield_now`。名前は F# の `Async` と Rust の `yield_now` に合わせる。
 - 状態: 要承認（承認前は Phase 1 のどの手順にも着手しない）
@@ -619,13 +619,13 @@ TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri async
 ### D5: 不透明・非 Copy
 
 - 決定: `Async.Async` を `stdlib::opaque_record` と `Type::is_noncopy_record` に加える。
-- 理由: 元の設計の「不透明・非 Copy・一回消費」をコンパイラの型を増やさずに実現する。前例は `Seq.Seq`・`IO.IO`。
+- 理由: 元の設計の「不透明・非 Copy・一回消費」をコンパイラの型を増やさずに実現する。前例は `Seq`・`IO`。
   関数だけのレコードは HEAD では Copy で、暗黙の複製が継続の環境全体を複製する。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D6: 中断を跨ぐ借用
 
-- 決定: 型が `Async.Async<T>` の式の値が loan を持ったら E1013（診断表のメッセージ）。`Checker::eval` の一か所で検査する。
+- 決定: 型が `Async<T>` の式の値が loan を持ったら E1013（診断表のメッセージ）。`Checker::eval` の一か所で検査する。
   cold な開始も中断点とみなすので、外側の値の借用も拒否する。
 - 理由: Phase 2 では継続が字句的な寿命を超えて runtime の表に残る。Phase 1 から同じ規則にしておけば後方互換を壊さない。
   `Task` の捕捉規則（E1013）と同じ考え方で、所有値の move と一 step 内の借用は許すので実用上の制約は小さい（「再現」の受理 3 例）。

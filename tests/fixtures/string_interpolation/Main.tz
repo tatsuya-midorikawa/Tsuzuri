@@ -207,7 +207,7 @@ fn display_case_holes =
     let text = $"{Quiet}{Loud}"
     digest (&text)
 
-private def describe :: Option.Option<Format.Spec> -> string
+private def describe :: Option<Format.Spec> -> string
 fn describe parsed =
     match parsed with
     | Option.None -> "none"

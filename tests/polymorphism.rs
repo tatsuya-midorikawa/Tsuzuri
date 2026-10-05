@@ -581,7 +581,7 @@ fn function_constraints_preserve_module_visibility_ownership_and_recursion() {
     let module = analyze_modules(&[
         (
             "Main.tz",
-            "let value = Point.Point { value: 42 }\nPoint.reveal value",
+            "let value = Point { value: 42 }\nPoint.reveal value",
         ),
         (
             "Point.tz",

@@ -1148,7 +1148,7 @@ mod tests {
             ("x\nusing a::b", vec![PathSep]),
             ("x\rusing a::b", vec![PathSep]),
             ("f using a::b", vec![DoubleColon]),
-            ("def area::Sample::Shape.Shape", vec![DoubleColon, PathSep]),
+            ("def area::Sample::Shape", vec![DoubleColon, PathSep]),
             ("rec go::i64", vec![DoubleColon]),
             ("x::xs", vec![DoubleColon]),
             ("Sample :: Shape", vec![DoubleColon]),

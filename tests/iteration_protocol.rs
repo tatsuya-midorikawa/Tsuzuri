@@ -112,7 +112,7 @@ fn sequence_next_validates_custom_standard_library_layout() {
         &[("Main.tz", "fn use_sequence(sequence: Seq<i64>) -> i64 { let _step = Seq.next sequence; 0 }")],
         &[
             ("std/Option.tc", "union Option<'a> = None | Some of ['a]\ndef Return :: 'a -> 'a\nfn Return value = value"),
-            ("std/Seq.tz", "record Seq<'a> { head: Option.Option<'a>, step: Option.Option<unit -> (Seq<'a> * Option.Option<'a>)> }"),
+            ("std/Seq.tz", "record Seq<'a> { head: Option<'a>, step: Option<unit -> (Seq<'a> * Option<'a>)> }"),
         ],
     ).unwrap_err();
     assert_eq!(error.code, "E1005");

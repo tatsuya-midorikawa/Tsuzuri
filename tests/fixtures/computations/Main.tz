@@ -221,7 +221,7 @@ fn trap_bind = Identity { let! divisor = 0; return 1 / divisor }
 export def trap_loop :: i64
 fn trap_loop = Flow { for divisor in [0] { yield 1 / divisor } }
 
-def implicit_option_work :: bool -> Option.Option<i64>
+def implicit_option_work :: bool -> Option<i64>
 fn implicit_option_work valid =
     let! first = if valid then Option.Some 20 else Option.None
     do assert valid
@@ -231,9 +231,9 @@ fn implicit_option_work valid =
 export def implicit_option :: bool -> i64
 fn implicit_option valid = Option.default_value (-1) (implicit_option_work valid)
 
-def implicit_result_work :: bool -> Result.Result<i64, string>
+def implicit_result_work :: bool -> Result<i64, string>
 fn implicit_result_work valid =
-    let source: Result.Result<i64, string> = if valid then Result.Ok 20 else Result.Error "failure"
+    let source: Result<i64, string> = if valid then Result.Ok 20 else Result.Error "failure"
     let! first = source
     do assert valid
     return first + 22
@@ -244,11 +244,11 @@ fn implicit_result valid =
     | Result.Ok value -> value
     | Result.Error message -> message.length
 
-def implicit_mixed_work :: bool -> bool -> Option.Option<Result.Result<i64, string>>
+def implicit_mixed_work :: bool -> bool -> Option<Result<i64, string>>
 fn implicit_mixed_work present valid =
     let! first = if present then Option.Some 20 else Option.None
     do assert present
-    let source: Result.Result<i64, string> = if valid then Result.Ok 22 else Result.Error "failure"
+    let source: Result<i64, string> = if valid then Result.Ok 22 else Result.Error "failure"
     let! second = source
     do assert valid
     return first + second
@@ -269,7 +269,7 @@ fn implicit_choice_work valid =
 export def implicit_choice :: bool -> i64
 fn implicit_choice valid = (implicit_choice_work valid).value
 
-def implicit_and_work :: bool -> Option.Option<i64>
+def implicit_and_work :: bool -> Option<i64>
 fn implicit_and_work valid =
     let! mut first = if valid then Option.Some 20 else Option.None
     and! second = Option.Some 21
@@ -280,7 +280,7 @@ fn implicit_and_work valid =
 export def implicit_and :: bool -> i64
 fn implicit_and valid = Option.default_value (-1) (implicit_and_work valid)
 
-def implicit_match_work :: bool -> Option.Option<i64>
+def implicit_match_work :: bool -> Option<i64>
 fn implicit_match_work valid =
     match! (if valid then Option.Some (20, 22) else Option.None) with
     | (first, second) ->
@@ -290,7 +290,7 @@ fn implicit_match_work valid =
 export def implicit_match :: bool -> i64
 fn implicit_match valid = Option.default_value (-1) (implicit_match_work valid)
 
-def implicit_task_work :: bool -> Task<Option.Option<i64>>
+def implicit_task_work :: bool -> Task<Option<i64>>
 fn implicit_task_work valid =
     let! source = task { return if valid then Option.Some 20 else Option.None }
     let! first = source

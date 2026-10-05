@@ -25,13 +25,13 @@ function execute(program, args, options = {}, success = true) {
 // Helpers every program shares. Matching on results lives here, in pure functions, because an
 // IO block's own loops and matches are computations.
 const prelude = `
-def unit_text :: Result.Result<unit, Os.Error> -> string
+def unit_text :: Result<unit, Os.Error> -> string
 fn unit_text result =
     match result with
     | Result.Ok _ -> "ok"
     | Result.Error error -> Os.message (ref error)
 
-def text_text :: Result.Result<string, Os.Error> -> string
+def text_text :: Result<string, Os.Error> -> string
 fn text_text result =
     match result with
     | Result.Ok text -> "ok:" + text
@@ -47,13 +47,13 @@ fn digits bytes =
         index = index + 1
     out
 
-def bytes_text :: Result.Result<[ubyte], Os.Error> -> string
+def bytes_text :: Result<[ubyte], Os.Error> -> string
 fn bytes_text result =
     match result with
     | Result.Ok bytes -> "ok:" + digits (ref bytes)
     | Result.Error error -> Os.message (ref error)
 
-def names_text :: Result.Result<[string], Os.Error> -> string
+def names_text :: Result<[string], Os.Error> -> string
 fn names_text result =
     match result with
     | Result.Ok names ->
@@ -61,14 +61,14 @@ fn names_text result =
         "ok:" + to_string names.length + ":" + String.join (ref separator) (ref names)
     | Result.Error error -> Os.message (ref error)
 
-def option_text :: Result.Result<Option.Option<string>, Os.Error> -> string
+def option_text :: Result<Option<string>, Os.Error> -> string
 fn option_text result =
     match result with
     | Result.Ok (Option.Some value) -> "some:" + value
     | Result.Ok Option.None -> "none"
     | Result.Error error -> Os.message (ref error)
 
-def length_text :: Result.Result<[ubyte], Os.Error> -> string
+def length_text :: Result<[ubyte], Os.Error> -> string
 fn length_text result =
     match result with
     | Result.Ok bytes -> "length:" + to_string bytes.length
@@ -315,13 +315,13 @@ def main :: IO<unit> =
 
   // 10-11. Clocks and operating-system randomness.
   const timing = program("timing", `
-def clocks_text :: Result.Result<i64, Os.Error> -> Result.Result<i64, Os.Error> -> string
+def clocks_text :: Result<i64, Os.Error> -> Result<i64, Os.Error> -> string
 fn clocks_text before after =
     match (before, after) with
     | (Result.Ok first, Result.Ok second) -> "elapsed:" + to_string (second - first)
     | _ -> "failed"
 
-def unix_text :: Result.Result<i64, Os.Error> -> string
+def unix_text :: Result<i64, Os.Error> -> string
 fn unix_text result =
     match result with
     | Result.Ok value -> "unix:" + to_string value
@@ -341,14 +341,14 @@ def main :: IO<unit> =
     do! say (unit_text zero)
 `);
   const random = program("random", `
-def pair_text :: Result.Result<[ubyte], Os.Error> -> Result.Result<[ubyte], Os.Error> -> string
+def pair_text :: Result<[ubyte], Os.Error> -> Result<[ubyte], Os.Error> -> string
 fn pair_text first second =
     match (first, second) with
     | (Result.Ok left, Result.Ok right) ->
         "lengths:" + to_string left.length + "," + to_string right.length + " same:" + to_string (digits (ref left) == digits (ref right))
     | _ -> "failed"
 
-def word_text :: Result.Result<i64u, Os.Error> -> string
+def word_text :: Result<i64u, Os.Error> -> string
 fn word_text result =
     match result with
     | Result.Ok _ -> "word"
@@ -397,7 +397,7 @@ fn map_text start =
     let sum = HashMap.fold (\\total _key value -> total + deref value) 0 (ref map)
     $"len:{HashMap.length (ref map)} found:{found (ref map) 2000} sum:{sum}"
 
-def tried_text :: Result.Result<HashMap<i64, i64>, Os.Error> -> string
+def tried_text :: Result<HashMap<i64, i64>, Os.Error> -> string
 fn tried_text made =
     match made with
     | Result.Ok map -> map_text map
@@ -573,7 +573,7 @@ def main :: IO<unit> =
 
   // 13. Path and Os are pure: they build for wasm32 without imports and agree with native.
   const pathText = `
-def show :: Option.Option<string> -> string
+def show :: Option<string> -> string
 fn show value =
     match value with
     | Option.Some text -> "Some " + text
@@ -633,13 +633,13 @@ fn digest text =
 
   // 17. File.Handle: streaming reads and writes, misuse errors, stale handles, and no leaked descriptors.
   const handles = program("handles", `
-def opened_text :: Result.Result<File.Handle, Os.Error> -> string
+def opened_text :: Result<File.Handle, Os.Error> -> string
 fn opened_text result =
     match result with
     | Result.Ok _ -> "opened"
     | Result.Error error -> Os.message (ref error)
 
-def with_handle :: Result.Result<File.Handle, Os.Error> -> (File.Handle -> IO<string>) -> IO<string>
+def with_handle :: Result<File.Handle, Os.Error> -> (File.Handle -> IO<string>) -> IO<string>
 fn with_handle opened next =
     match opened with
     | Result.Ok handle -> next handle
@@ -766,13 +766,13 @@ fn count _unit = IO {
         | _ -> IO.pure (-1)
 }
 
-def length_of :: Result.Result<[string], Os.Error> -> i64
+def length_of :: Result<[string], Os.Error> -> i64
 fn length_of result =
     match result with
     | Result.Ok names -> names.length
     | Result.Error _ -> -1
 
-def failed :: Result.Result<unit, Os.Error> -> i64
+def failed :: Result<unit, Os.Error> -> i64
 fn failed result =
     match result with
     | Result.Ok _ -> 0
@@ -795,20 +795,20 @@ fn both a b c = IO {
     return during + failed x + failed y + failed z
 }
 
-def hold :: Result.Result<File.Handle, Os.Error> -> Result.Result<File.Handle, Os.Error> -> Result.Result<File.Handle, Os.Error> -> IO<i64>
+def hold :: Result<File.Handle, Os.Error> -> Result<File.Handle, Os.Error> -> Result<File.Handle, Os.Error> -> IO<i64>
 fn hold a b c =
     match (a, b, c) with
     | (Result.Ok x, Result.Ok y, Result.Ok z) -> both x y z
     | _ -> IO.pure (-1)
 
-def scoped_text :: Result.Result<Result.Result<unit, Os.Error>, Os.Error> -> string
+def scoped_text :: Result<Result<unit, Os.Error>, Os.Error> -> string
 fn scoped_text result =
     match result with
     | Result.Ok (Result.Ok _) -> "ok"
     | Result.Ok (Result.Error error) -> "inner:" + Os.message (ref error)
     | Result.Error error -> "outer:" + Os.message (ref error)
 
-def scoped_bytes :: Result.Result<Result.Result<[ubyte], Os.Error>, Os.Error> -> string
+def scoped_bytes :: Result<Result<[ubyte], Os.Error>, Os.Error> -> string
 fn scoped_bytes result =
     match result with
     | Result.Ok (Result.Ok bytes) -> "bytes:" + to_string bytes.length
@@ -861,7 +861,7 @@ fn kind_text kind =
     | File.Symlink -> "link"
     | File.Other -> "other"
 
-def meta_text :: Result.Result<File.Metadata, Os.Error> -> string
+def meta_text :: Result<File.Metadata, Os.Error> -> string
 fn meta_text result =
     match result with
     | Result.Ok meta -> kind_text meta.kind + " " + to_string meta.size + " " + to_string meta.modified_ns
@@ -984,19 +984,19 @@ fn text_of bytes =
     | Result.Ok text -> text
     | Result.Error _ -> "<binary>"
 
-def output_text :: Result.Result<Process.Output, Os.Error> -> string
+def output_text :: Result<Process.Output, Os.Error> -> string
 fn output_text result =
     match result with
     | Result.Ok output -> "code=" + to_string output.code + " signal=" + to_string output.signal + " out=[" + text_of (ref output.stdout) + "] err=[" + text_of (ref output.stderr) + "]"
     | Result.Error error -> Os.message (ref error)
 
-def sizes_text :: Result.Result<Process.Output, Os.Error> -> string
+def sizes_text :: Result<Process.Output, Os.Error> -> string
 fn sizes_text result =
     match result with
     | Result.Ok output -> "code=" + to_string output.code + " out=" + to_string output.stdout.length + " err=" + to_string output.stderr.length
     | Result.Error error -> Os.message (ref error)
 
-def same_text :: Result.Result<Process.Output, Os.Error> -> [ubyte] -> string
+def same_text :: Result<Process.Output, Os.Error> -> [ubyte] -> string
 fn same_text result input =
     match result with
     | Result.Ok output -> "code=" + to_string output.code + " same=" + to_string (Array.equal (ref input) (ref output.stdout)) + " length=" + to_string output.stdout.length
@@ -1016,7 +1016,7 @@ fn count _unit = IO {
         | _ -> IO.pure (-1)
 }
 
-def length_of :: Result.Result<[string], Os.Error> -> i64
+def length_of :: Result<[string], Os.Error> -> i64
 fn length_of result =
     match result with
     | Result.Ok names -> names.length
@@ -1284,7 +1284,7 @@ def main :: IO<unit> =
 
   // A file of unknown size (a FIFO) exercises the growing read loop.
   const fifoReader = program("fifo", `
-def sum_text :: Result.Result<[ubyte], Os.Error> -> string
+def sum_text :: Result<[ubyte], Os.Error> -> string
 fn sum_text result =
     match result with
     | Result.Ok data ->
@@ -1319,25 +1319,25 @@ def main :: IO<unit> =
 
   // 16. Allocation tracking plus ASan and UBSan: the runtime's own temporaries and every owned result are freed.
   const tracked = program("tracked", `
-def size_text :: Result.Result<File.Metadata, Os.Error> -> string
+def size_text :: Result<File.Metadata, Os.Error> -> string
 fn size_text result =
     match result with
     | Result.Ok meta -> "size:" + to_string meta.size
     | Result.Error error -> Os.message (ref error)
 
-def count_text :: Result.Result<[string], Os.Error> -> string
+def count_text :: Result<[string], Os.Error> -> string
 fn count_text result =
     match result with
     | Result.Ok names -> "walked:" + to_string names.length
     | Result.Error error -> Os.message (ref error)
 
-def output_length_text :: Result.Result<Process.Output, Os.Error> -> string
+def output_length_text :: Result<Process.Output, Os.Error> -> string
 fn output_length_text result =
     match result with
     | Result.Ok output -> "ran:" + to_string output.stdout.length
     | Result.Error error -> Os.message (ref error)
 
-def handle_text :: Result.Result<File.Handle, Os.Error> -> IO<string>
+def handle_text :: Result<File.Handle, Os.Error> -> IO<string>
 fn handle_text opened =
     match opened with
     | Result.Error error -> IO.pure (Os.message (ref error))

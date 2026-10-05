@@ -4,15 +4,15 @@ fn length values = values.length
 def is_empty :: ref ['a] -> bool
 fn is_empty values = values.length == 0
 
-private def rec iter_from :: ref ['a] -> i64 -> Seq.Seq<ref 'a>
+private def rec iter_from :: ref ['a] -> i64 -> Seq<ref 'a>
 fn rec iter_from values index = Seq.defer (\() ->
     if index < values.length then (iter_from values (index + 1), Option.Some (ref values[index]))
     else (Seq.empty(), Option.None))
 
-def iter :: ref ['a] -> Seq.Seq<ref 'a>
+def iter :: ref ['a] -> Seq<ref 'a>
 fn iter values = iter_from values 0
 
-def get :: Copy<'a> => ref ['a] -> i64 -> Option.Option<'a>
+def get :: Copy<'a> => ref ['a] -> i64 -> Option<'a>
 fn get values index =
     if index < 0 || index >= values.length then Option.None else Option.Some values[index]
 
@@ -90,7 +90,7 @@ fn fold_back_ref folder values initial =
         state = folder (ref values[index]) state
     state
 
-def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Option.Option<'a>
+def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Option<'a>
 fn reduce folder values =
     if values.length == 0 then Option.None else
         let mut state = values[0]
@@ -166,7 +166,7 @@ fn product values =
     for value in values do total = total * value
     total
 
-def min :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+def min :: Ord<'a> => ref ['a] -> Option<ref 'a>
 fn min values =
     if values.length == 0 then Option.None else
         let mut best = 0
@@ -176,7 +176,7 @@ fn min values =
             index = index + 1
         Option.Some (ref values[best])
 
-def max :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+def max :: Ord<'a> => ref ['a] -> Option<ref 'a>
 fn max values =
     if values.length == 0 then Option.None else
         let mut best = 0
@@ -207,13 +207,13 @@ fn count predicate values =
         index = index + 1
     found
 
-def find :: (ref 'a -> bool) -> ref ['a] -> Option.Option<ref 'a>
+def find :: (ref 'a -> bool) -> ref ['a] -> Option<ref 'a>
 fn find predicate values =
     let mut index = 0
     while index < values.length && !(predicate (ref values[index])) do index = index + 1
     if index < values.length then Option.Some (ref values[index]) else Option.None
 
-def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Option.Option<i64>
+def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Option<i64>
 fn index_of values target =
     let mut index = 0
     while index < values.length && !(Eq.eq (ref values[index]) target) do index = index + 1
@@ -231,7 +231,7 @@ fn equal left right =
         while index < left.length && left[index] == right[index] do index = index + 1
         index == left.length
 
-def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Option.Option<i64>
+def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Option<i64>
 fn binary_search values target =
     let mut lower = 0
     let mut upper = values.length

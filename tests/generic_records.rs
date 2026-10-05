@@ -486,7 +486,7 @@ fn inspect value pending = ()",
     let signature = &function(&module, "inspect").signature;
     assert_eq!(
         signature.parameters[0].display(&module.types()),
-        "ref Main.Box<Option.Option<i64>>"
+        "ref Main.Box<Option<i64>>"
     );
     assert_eq!(
         signature.parameters[1].display(&module.types()),

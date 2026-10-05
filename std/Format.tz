@@ -52,7 +52,7 @@ fn kind_at text index =
 /// (`{`, `}`, `"`, `\`, CR, LF, or half of a surrogate pair), a width that starts with 0, a precision with a leading
 /// 0 (`.05`), or a number above 4096. It checks the grammar only, so a type letter that does not fit the precision
 /// (`.2x`) is not rejected. The text a `Format` instance receives is always valid.
-def parse :: ref string -> Option.Option<Spec>
+def parse :: ref string -> Option<Spec>
 fn parse text =
 	let fill_length = fill_units text
 	let fill_valid = fill_length != 1 || is_fill_unit text 0

@@ -57,7 +57,7 @@ cargo build --release --locked && node tests/features.mjs target/release/tsuzuri
 - コンパイラが生成する IR に `atomicrmw` はまだない（`src/` を grep して 0 件）。
 - Vec の API（docs/language.md「Vec」）: `set`（旧要素を解放して置換）、`swap`、`pop`（`(残りの Vec, Option)`）、`push`、`get`（Copy 要素の `Option`）、`at`、`with_capacity`。容量は 4 から倍増する。
 - union の payload を指す参照は返せない。`match ref slots[i] with | Occupied value -> Option.Some (ref value)` は `E1013`（`a borrowed value cannot outlive its pattern or iteration binding`）になる。slot を union で持つ設計では `get`／`at` を書けない。
-- 試作で検証済み: 利用者モジュール `Arena.tz` で本チケットのアルゴリズムを書いた（Handle は非 generic、arena ID は引数で渡す版）。`target/release/tsuzuri run` の結果は手計算の期待値 `22220607751` と一致した。同じ試作で既存の診断も確認した。借用中の `insert` は `E1014`、`ref Arena` の task 捕捉は `E1013`（`tasks require owned values; ref Arena.Arena<string> contains a reference`）、消費後の使用は `E1012`（`use of moved or partially moved value 'arena'`）。
+- 試作で検証済み: 利用者モジュール `Arena.tz` で本チケットのアルゴリズムを書いた（Handle は非 generic、arena ID は引数で渡す版）。`target/release/tsuzuri run` の結果は手計算の期待値 `22220607751` と一致した。同じ試作で既存の診断も確認した。借用中の `insert` は `E1014`、`ref Arena` の task 捕捉は `E1013`（`tasks require owned values; ref Arena<string> contains a reference`）、消費後の使用は `E1012`（`use of moved or partially moved value 'arena'`）。
 - `const values: Vec<i64> = Vec.empty()` は `E1026`（`this expression is not allowed in a phase-1 const; precompute it or use a runtime let`）。
 - モジュールと同名の型は短縮名で書ける。利用者モジュール `Arena` の `record Arena<'a>` を `Arena<i64>` と書けた（`Map<'k, 'v>` と同じ規則）。
 - 引数なし関数は `f()` で呼ぶ。`f ()` は unit を渡すため `E1006`（`cannot apply 1 arguments to a function accepting 0 arguments`）。
@@ -99,7 +99,7 @@ target/release/tsuzuri check /tmp/tz-work-C10/recvec    # error[E1010]: recursiv
 
 ### 型
 
-- `Arena<'a>`（`Arena.Arena` の短縮名）: opaque・非 Copy の所有値。`needs_drop` は真。`Send`・`Capture`・借用の保持は要素型 `'a` に従う（`Arena<ref string>` は `ref string` の寿命を超えられない。C06 の `Map` と同じ）。
+- `Arena<'a>`（`Arena` の短縮名）: opaque・非 Copy の所有値。`needs_drop` は真。`Send`・`Capture`・借用の保持は要素型 `'a` に従う（`Arena<ref string>` は `ref string` の寿命を超えられない。C06 の `Map` と同じ）。
 - `Arena.Handle<'a>`: opaque・Copy・`Send`・`Capture`。field は整数だけなので、`'a` が参照型や非 Copy 型でも借用を保持しない。要素型は静的に照合し、異なる要素型の arena に渡すと `E1003`。
 - `Arena.Slot`（新規、private）: arena 内部の Copy record。
 - std は `Arena.Handle<'a>` に `Eq`・`Ord`・`Hash` の instance を与える（D5）。`Display`／`Debug` の instance は与えない。
@@ -159,13 +159,13 @@ target/release/tsuzuri check /tmp/tz-work-C10/recvec    # error[E1010]: recursiv
 
 | コード | 条件 | メッセージ | 位置 |
 | --- | --- | --- | --- |
-| `E1022` | std の `Arena` 外での `Arena.Arena`／`Arena.Handle`／`Arena.Slot` の構築・field 参照・pattern・update | `the representation of 'Arena.Handle' is opaque; use its module API`（引用部は該当 record 名。既存） | 構築・field・pattern・update の式 |
+| `E1022` | std の `Arena` 外での `Arena`／`Arena.Handle`／`Arena.Slot` の構築・field 参照・pattern・update | `the representation of 'Arena.Handle' is opaque; use its module API`（引用部は該当 record 名。既存） | 構築・field・pattern・update の式 |
 | `E1022` | std の `Arena` 外からの `Arena.__next_id` | `the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity`（新規） | 名前 |
 | `E1024` | 利用者 record の未使用の型引数（変更なし） | `type parameter 'a is not used by any field; remove it or add a field that mentions it` | 型引数 |
 | `E1003` | 要素型の異なる arena とハンドル | 既存の型不一致 | 引数 |
 | `E1012` | 消費した arena の使用 | `use of moved or partially moved value 'arena'` | 使用箇所 |
 | `E1014` | `get`／`at`／`iter` の借用中に arena を消費 | `access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively` | 消費する引数 |
-| `E1013` | `ref Arena` を task が捕捉 | `tasks require owned values; ref Arena.Arena<string> contains a reference` | task 式 |
+| `E1013` | `ref Arena` を task が捕捉 | `tasks require owned values; ref Arena<string> contains a reference` | task 式 |
 | `E1026` | const の初期化に Arena | `this expression is not allowed in a phase-1 const; precompute it or use a runtime let` | 初期化式 |
 | `E1008` | `Arena<'a>` を含む export | 既存（`Map` と同じ） | 宣言 |
 
@@ -386,7 +386,7 @@ fn position arena handle =
 def contains :: ref Arena<'a> -> Handle<'a> -> bool
 fn contains arena handle = position arena handle >= 0
 
-def get :: ref Arena<'a> -> Handle<'a> -> Option.Option<ref 'a>
+def get :: ref Arena<'a> -> Handle<'a> -> Option<ref 'a>
 fn get arena handle =
     let index = position arena handle
     if index >= 0 then Option.Some (ref arena.values[index]) else Option.None
@@ -411,7 +411,7 @@ fn insert arena value =
             let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners free, slots: Vec.set slots free (Slot { position: next_position, generation: slot.generation }), free: slot.position }
             (result, Handle { arena: id, index: free, generation: slot.generation })
 
-def remove :: Arena<'a> -> Handle<'a> -> (Arena<'a> * Option.Option<'a>)
+def remove :: Arena<'a> -> Handle<'a> -> (Arena<'a> * Option<'a>)
 fn remove arena handle =
     let target = position (ref arena) handle
     if target < 0 then (arena, Option.None)
@@ -446,12 +446,12 @@ fn handle_at arena dense =
     let index = arena.owners[dense]
     Handle { arena: arena.id, index: index, generation: arena.slots[index].generation }
 
-private def rec iter_from :: ref Arena<'a> -> i64 -> Seq.Seq<(Handle<'a> * ref 'a)>
+private def rec iter_from :: ref Arena<'a> -> i64 -> Seq<(Handle<'a> * ref 'a)>
 fn rec iter_from arena index = Seq.defer (\() ->
     if index < length arena then (iter_from arena (index + 1), Option.Some (handle_at arena index, ref arena.values[index]))
     else (Seq.empty(), Option.None))
 
-def iter :: ref Arena<'a> -> Seq.Seq<(Handle<'a> * ref 'a)>
+def iter :: ref Arena<'a> -> Seq<(Handle<'a> * ref 'a)>
 fn iter arena = iter_from arena 0
 ```
 
@@ -533,7 +533,7 @@ cmp /tmp/tz-work-C10/first.ll /tmp/tz-work-C10/second.ll
 | --- | --- |
 | `arena_id_primitive_is_private` | `Arena.__next_id()` を利用者コードの式と `def f :: i64` の本体で呼ぶと `E1022` で、メッセージに `private to the standard Arena module` を含む |
 | `phantom_parameters_are_std_opaque_only` | `record Tag<'a> { id: i64 }` は `E1024`（`is not used by any field`）。`record Node { value: i64, edges: Vec<Arena.Handle<Node>> }` と `Arena<Node>` を使うプログラムは成功。`record Bad { value: i64, edges: Vec<Bad> }` は `E1010` |
-| `arena_types_are_opaque_noncopy_owned_values` | `Arena.Arena { ... }` の構築、`arena.values`、`{ arena with free = 0 }`、全 field の `Arena.Arena { ... }` pattern、`Arena.Handle { arena: 0, index: 0, generation: 0 }`、`handle.index` がすべて `E1022`。消費後の使用は `E1012`、`export def bad :: Arena<i64>` は `E1008`、`const bad: Arena<i64> = Arena.empty()` は `E1026`。2 つの arena を使うプログラムの IR が native と WASM でそれぞれ 2 回の出力で一致する |
+| `arena_types_are_opaque_noncopy_owned_values` | `Arena { ... }` の構築、`arena.values`、`{ arena with free = 0 }`、全 field の `Arena { ... }` pattern、`Arena.Handle { arena: 0, index: 0, generation: 0 }`、`handle.index` がすべて `E1022`。消費後の使用は `E1012`、`export def bad :: Arena<i64>` は `E1008`、`const bad: Arena<i64> = Arena.empty()` は `E1026`。2 つの arena を使うプログラムの IR が native と WASM でそれぞれ 2 回の出力で一致する |
 | `handles_are_typed_copy_and_send` | ハンドルを別の束縛へコピーした後も両方で `contains` が真、task がハンドルを捕捉して比較できる。`Arena<string>` のハンドルを `Arena<i64>` に渡すと `E1003` |
 | `arena_borrows_follow_ownership_rules` | 「例」の表の `E1014`・`E1013`・`E1012` の 3 ケース（コードとメッセージの先頭） |
 | `arena_ir_has_one_atomic_counter` | 2 つの arena を作るプログラムの IR（native と WASM）で、`@tz.arena.next_id = internal global i64 0` と `define internal i64 @tz.builtin.Arena.__next_id()` がそれぞれ 1 回、`atomicrmw add ptr @tz.arena.next_id, i64 1 monotonic` を含み、`declare void @llvm.trap` が 2 回以上現れない。Arena を使わないプログラムの IR は `tz.arena` を含まない |
@@ -650,7 +650,7 @@ fn arena_ring count =
 ## ドキュメント
 
 - `docs/language.md`: `### Map / Set` の直後に `### Arena`（新規）を置く（API 表、無効なハンドル、世代と退役、決定性、drop、Task、トラップ）。「型とメモリ」の「GC、参照カウント、手動の解放操作は使わず」の段落と、「ノード共有・循環した実行時グラフ・GC・参照カウントは導入しません」の文に、循環するグラフは std の Arena とハンドルで表すことを添える。`## 診断` の `E1022` の説明に std 専用 primitive の直接呼び出しがなければ追記する。
-- `docs/architecture.md`: opaque 標準 record を説明する段落（`grep -n "opaque" docs/architecture.md` で探す）に `Arena.Arena`・`Arena.Handle`・`Arena.Slot` を追加し、builtin の大域状態として `@tz.arena.next_id`（atomic、import なし）を記す。
+- `docs/architecture.md`: opaque 標準 record を説明する段落（`grep -n "opaque" docs/architecture.md` で探す）に `Arena`・`Arena.Handle`・`Arena.Slot` を追加し、builtin の大域状態として `@tz.arena.next_id`（atomic、import なし）を記す。
 - `_docs/library-reference/arena.md`（新規）: `map-set.md` と同じ構成。基本例は `tsuzuri run=143` として「例」の `cycle` を載せる。`_docs/library-reference/README.md` の一覧にリンクを足す。
 - `_docs/library-reference/api/Arena.md`: `_docs/library-reference/api/Map.md` と同じ手順（README の `tsuzuri doc` の節）で生成する。
 - `_docs/guides/style-and-design.md`: グラフの設計指針（所有する木は union、共有・循環は Arena とハンドル、参照カウントは未導入）。`_docs/guides/from-fsharp.md`: 参照の共有・循環する F# のデータ構造の置き換え方。

@@ -1,5 +1,5 @@
 record Pending { first: Task<string>, second: Task<string> }
-record Result { text: string, numbers: [i64] }
+record Report { text: string, numbers: [i64] }
 record Callback { call: i64 -> i64 }
 
 instance Add<Task<i64>> {
@@ -67,8 +67,8 @@ fn owned_results = {
 
 export def record_results :: i64
 fn record_results = Task.run task {
-    let! results = Task.parallel (new [Task<Result>](3, i -> task {
-        return Result { text: "hello", numbers: new [i64](i + 1, n -> n + 10) }
+    let! results = Task.parallel (new [Task<Report>](3, i -> task {
+        return Report { text: "hello", numbers: new [i64](i + 1, n -> n + 10) }
     }))
     return results[0].text.length + results[2].numbers[2]
 }
@@ -239,32 +239,32 @@ fn trap_allocation = {
     values.length
 }
 
-union ResultCycle = Cycle of Result.Result<ResultCycle, string> | End
+union ResultCycle = Cycle of Result<ResultCycle, string> | End
 
 export def parallel_results_recursive :: bool -> i64
 fn parallel_results_recursive fail =
-    let jobs: [Task<Result.Result<ResultCycle, string>>] = [task { Result.Ok (Cycle (Result.Ok End)) }, task { if fail then Result.Error "error" else Result.Ok End }]
+    let jobs: [Task<Result<ResultCycle, string>>] = [task { Result.Ok (Cycle (Result.Ok End)) }, task { if fail then Result.Error "error" else Result.Ok End }]
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> values.length
     | Result.Error error -> error.length
 
 export def parallel_results_ok :: i64 -> i64
 fn parallel_results_ok count =
-    let jobs = new [Task<Result.Result<i64, i64>>](count, index -> task { Result.Ok (index * index) })
+    let jobs = new [Task<Result<i64, i64>>](count, index -> task { Result.Ok (index * index) })
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> Array.sum (&values)
     | Result.Error error -> error
 
 export def parallel_results_lowest :: i64
 fn parallel_results_lowest =
-    let jobs = new [Task<Result.Result<i64, i64>>](64, index -> task {
+    let jobs = new [Task<Result<i64, i64>>](64, index -> task {
         if index == 2 || index == 7 then Result.Error index else Result.Ok index
     })
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok _ -> -1
     | Result.Error error -> error
 
-def captured_result :: i64 -> Task<Result.Result<string, string>>
+def captured_result :: i64 -> Task<Result<string, string>>
 fn captured_result index =
     let values = new [i64](128, offset -> index + offset)
     let text = "captured" + "!"
@@ -275,29 +275,29 @@ fn captured_result index =
 
 export def parallel_results_owned :: i64 -> i64
 fn parallel_results_owned count =
-    let jobs = new [Task<Result.Result<string, string>>](count, captured_result)
+    let jobs = new [Task<Result<string, string>>](count, captured_result)
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> values.length
     | Result.Error error -> error.length
 
 export def parallel_results_values :: i64
 fn parallel_results_values =
-    let jobs: [Task<Result.Result<[string], string>>] = [task { Result.Ok ["hello", "!"] }, task { Result.Ok ["world", "!"] }]
+    let jobs: [Task<Result<[string], string>>] = [task { Result.Ok ["hello", "!"] }, task { Result.Ok ["world", "!"] }]
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> values[0][0].length + values[1][0].length
     | Result.Error error -> error.length
 
 export def parallel_results_functions :: i64
 fn parallel_results_functions =
-    let jobs: [Task<Result.Result<i64 -> i64, string>>] = [task { let text = "hello"; Result.Ok (\value -> value + text.length) }]
+    let jobs: [Task<Result<i64 -> i64, string>>] = [task { let text = "hello"; Result.Ok (\value -> value + text.length) }]
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> values[0] 37
     | Result.Error _ -> 0
 
 export def parallel_results_nested :: i64
 fn parallel_results_nested =
-    let jobs = new [Task<Result.Result<i64, i64>>](8, index -> task {
-        let nested = new [Task<Result.Result<i64, i64>>](8, inner -> task { Result.Ok (index * 8 + inner) })
+    let jobs = new [Task<Result<i64, i64>>](8, index -> task {
+        let nested = new [Task<Result<i64, i64>>](8, inner -> task { Result.Ok (index * 8 + inner) })
         match Task.run (Task.parallel_results nested) with
         | Result.Ok values -> Result.Ok (Array.sum (&values))
         | Result.Error error -> Result.Error error
@@ -308,7 +308,7 @@ fn parallel_results_nested =
 
 export def parallel_results_first_class :: i64
 fn parallel_results_first_class =
-    let combine: [Task<Result.Result<i64, string>>] -> Task<Result.Result<[i64], string>> = Task.parallel_results
+    let combine: [Task<Result<i64, string>>] -> Task<Result<[i64], string>> = Task.parallel_results
     let result = Task.run (combine [task { Result.Ok 42 }])
     let values = Result.get result
     Array.sum (&values)
@@ -316,12 +316,12 @@ fn parallel_results_first_class =
 export def parallel_results_cold :: i64
 fn parallel_results_cold =
     let work = Task.parallel_results [task { assert false; Result.Ok 42 }]
-    let _ignored: Task<Result.Result<[i64], string>> = work
+    let _ignored: Task<Result<[i64], string>> = work
     42
 
 export def trap_parallel_results :: i64
 fn trap_parallel_results =
-    let jobs: [Task<Result.Result<i64, string>>] = [task { Result.Ok 1 }, task { assert false; Result.Ok 2 }]
+    let jobs: [Task<Result<i64, string>>] = [task { Result.Ok 1 }, task { assert false; Result.Ok 2 }]
     match Task.run (Task.parallel_results jobs) with
     | Result.Ok values -> values.length
     | Result.Error _ -> 0

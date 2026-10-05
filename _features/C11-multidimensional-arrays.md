@@ -85,7 +85,7 @@ std の `Matrix` モジュールとして提供する。C++ の Eigen／BLAS、R
   std ソースだけで Phase 1 を書けること、借用 record の配列 field から `ref ['a]` の部分参照を返せることを確認した。
 - 同じ project で、i-j-k 順の `mul` と、`Array.set` で出力を更新する i-k-j 順の変種が `f64` の 7×7 で `Array.equal` になった。
 - `build --emit llvm -O3` の出力に `contract`・`fast`・`fmuladd` は現れない（暗黙の縮約なし）。
-- 利用者コードから `Map` の field を読むと E1022、non-Copy の `Seq.Seq` を二度 move すると E1012 になる。
+- 利用者コードから `Map` の field を読むと E1022、non-Copy の `Seq` を二度 move すると E1012 になる。
 
 std の部分参照と要素参照の書き方（検証済み。上の project の抜粋で、利用者 record `Mat` 上で動いた）:
 
@@ -116,7 +116,7 @@ fn row matrix index =
 
 ### 構文
 
-新しい構文はない。型は `Matrix<'a>` と書く（正規名 `Matrix.Matrix`。`tests/map_set.rs` の `Map<i64, string>` と同じ書き方）。
+新しい構文はない。型は `Matrix<'a>` と書く（正規名 `Matrix`。`tests/map_set.rs` の `Map<i64, string>` と同じ書き方）。
 関数は `Matrix.<name>` で呼ぶ。
 
 ### API
@@ -128,7 +128,7 @@ fn row matrix index =
 | `rows` | `ref Matrix<'a> -> i64` | 行数 | なし |
 | `cols` | `ref Matrix<'a> -> i64` | 列数 | なし |
 | `at` | `ref Matrix<'a> -> i64 -> i64 -> ref 'a` | 要素の共有借用（`Array.at` に対応） | `row` か `col` が範囲外 |
-| `get` | `Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Option.Option<'a>` | 範囲外は `Option.None`（`Array.get` に対応） | なし |
+| `get` | `Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Option<'a>` | 範囲外は `Option.None`（`Array.get` に対応） | なし |
 | `row` | `ref Matrix<'a> -> i64 -> ref ['a]` | 行の部分参照（長さ `cols`、複製なし） | 行番号が範囲外 |
 | `as_array` | `ref Matrix<'a> -> ref ['a]` | 全要素の行優先の借用（長さ `rows * cols`） | なし |
 | `to_array` | `Matrix<'a> -> ['a]` | 行列を消費し、バッファを複製せずに返す | なし |
@@ -183,7 +183,7 @@ fn row matrix index =
 
 | コード | 条件 | メッセージ | 位置 |
 | --- | --- | --- | --- |
-| E1022 | 利用者コードでの `Matrix` の構築・field 参照（`m.data`）・pattern・`{ m with ... }` | `the representation of 'Matrix.Matrix' is opaque; use its module API` | field 名、構築式 |
+| E1022 | 利用者コードでの `Matrix` の構築・field 参照（`m.data`）・pattern・`{ m with ... }` | `the representation of 'Matrix' is opaque; use its module API` | field 名、構築式 |
 | E1012 | move 済みの行列を使う（`to_array` や別の束縛への move の後） | `use of moved or partially moved value '<name>'` | 使用箇所 |
 | E1014 | `at`・`row`・`as_array` の借用が生きている間に行列を move・置換する | `access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively` | move する式 |
 | E1005 | `Copy<'a>`・`Numeric<'a>` を満たさない要素型 | `no instance for Copy<string>; define an instance or use a supported type`（クラスと型は実際のもの） | 呼び出す関数名 |
@@ -311,7 +311,7 @@ fn at matrix row col =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     ref matrix.data[row * matrix.cols + col]
 
-def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Option.Option<'a>
+def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Option<'a>
 fn get matrix row col =
     if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Option.None
     else Option.Some matrix.data[row * matrix.cols + col]
@@ -479,7 +479,7 @@ node benchmarks/run-matrix.mjs target/release/tsuzuri --quick
 
 | テスト | 検査すること |
 | --- | --- |
-| `matrix_is_an_opaque_noncopy_std_record` | 「例」の受理例が `analyze` を通り、native と WASM の IR を 2 回出して一致する。`m.rows`、`Matrix.Matrix { rows: 1, cols: 1, data: [1] }`、`{ m with rows = 2 }`、`match m with \| Matrix.Matrix { data = d } -> d.length` が E1022。`i64` と `f64` の行列の二重 move が E1012。`export def bad :: Matrix<i64>` と `fn bad = Matrix.init 1 1 (\i j -> 0)` が E1008 |
+| `matrix_is_an_opaque_noncopy_std_record` | 「例」の受理例が `analyze` を通り、native と WASM の IR を 2 回出して一致する。`m.rows`、`Matrix { rows: 1, cols: 1, data: [1] }`、`{ m with rows = 2 }`、`match m with \| Matrix { data = d } -> d.length` が E1022。`i64` と `f64` の行列の二重 move が E1012。`export def bad :: Matrix<i64>` と `fn bad = Matrix.init 1 1 (\i j -> 0)` が E1008 |
 | `matrix_borrows_follow_array_rules` | `row` の借用を使いながら `add (ref p) (ref p)` を呼べる。`to_array` の結果を `of_array` に渡せる。`row` の借用中の `let n = m` が E1014。`to_array m` の後の `Matrix.rows (ref m)` が E1012 |
 | `matrix_constraints_match_array_apis` | `Matrix<string>` の `init`・`at`・`row`・`to_array` は受理。同じ行列の `map`・`fold`・`transpose`・`get` と、`add`・`mul` が E1005。`Matrix<bool>` の `mul` が E1005 |
 | `matrix_ir_keeps_multiply_and_add_separate` | f32 と f64 の `mul` を使う source の IR（native と WASM）で、`@tz.fn.Matrix.element` の本体に `fmul` と `fadd` があり、`fmuladd`・`llvm.fma`・`fast`・`contract`・`reassoc` がない。使っていない `@tz.fn.Matrix.transpose` の定義がない |
@@ -574,7 +574,7 @@ trap（`traps`。native は非 0 終了、WASM は `RuntimeError`）: `of_array_
 - `cValue` は `NaN`・`Infinity` を C のリテラルにできず、C の `==` と `assert.equal` は `-0` と `+0` を区別しない。値で比べるケースの期待値は
   有限にし、NaN は `nan_count`、符号付きゼロは `zero_signs` で見る。
 - 各ケースの WASM メモリは 16 MiB 以下という検査がある。値で比べるケースは `n ≤ 16` にする。
-- std のソースでは他の std モジュールを常に修飾して書く（`Array.map`、`Option.Option`。GUIDE D-07）。字下げは 4 空白で、タブを混ぜない。
+- std のソースでは他の std モジュールを常に修飾して書く（`Array.map`、`Option`。GUIDE D-07）。字下げは 4 空白で、タブを混ぜない。
 - `vsc/dist/` は生成物なので編集しない。`completions.json` に生成手順があるかは
   `grep -rln "completions.json" scripts vsc --include=*.mjs --include=*.ts` で確かめ、あればそれで更新する。
 
@@ -589,7 +589,7 @@ trap（`traps`。native は非 0 終了、WASM は `RuntimeError`）: `of_array_
 
 ### D1: 配置と名前
 
-- 決定: std のモジュール `Matrix`（`std/Matrix.tz`）と型 `Matrix<'a>`（正規名 `Matrix.Matrix`）。GUIDE D-30 の仮割り当てを使い、完了時に
+- 決定: std のモジュール `Matrix`（`std/Matrix.tz`）と型 `Matrix<'a>`（正規名 `Matrix`）。GUIDE D-30 の仮割り当てを使い、完了時に
   D-07 の表へ移して D-30 の行を消す。外部パッケージ（E10）にはしない。
 - 理由: C06 の `Map`・`Set` と同じ配置で、言語の意味を変えずに std ソースだけで書ける。E10 は未実装で、依存にすると Phase 1 を出せない。
 - 状態: 既定案（実装者はこの案に従う）

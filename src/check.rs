@@ -164,7 +164,7 @@ impl Type {
                 format!("ref {}{inner}", if *mutable { "mut " } else { "" })
             }
             Self::Record(id, args) | Self::Union(id, args) => {
-                let mut text = declaration_display(match self {
+                let mut text = type_display(match self {
                     Self::Record(..) => &types.records[*id].name,
                     _ => &types.unions[*id].name,
                 });
@@ -202,7 +202,7 @@ impl Type {
                     .join(" * ")
             ),
             Self::Task(result) => format!("Task<{}>", result.display(types)),
-            Self::Handle(name) => declaration_display(name),
+            Self::Handle(name) => type_display(name),
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -777,7 +777,7 @@ pub enum BuiltinType {
     Var(&'static str),
     /// A primitive type; never a project id.
     Concrete(Type),
-    /// A std-origin record or union, such as `Option.Option<'a>`.
+    /// A std-origin record or union by module and name, such as `Option<'a>`.
     Std {
         module: &'static str,
         name: &'static str,
@@ -2731,11 +2731,16 @@ impl NameInfo {
     }
 
     fn private_error(&self, kind: &str, span: Span) -> Diagnostic {
+        let name = if kind == "type" {
+            type_display(&self.name)
+        } else {
+            declaration_display(&self.name)
+        };
         Diagnostic::new(
             "E1022",
             format!(
-                "private {kind} '{}' is only visible inside module '{}'; expose a public wrapper or move the use into the same module",
-                self.name, self.module
+                "private {kind} '{name}' is only visible inside module '{}'; expose a public wrapper or move the use into the same module",
+                namespace_display(&self.module)
             ),
             span,
         )
@@ -2869,12 +2874,27 @@ fn namespace_display(dotted: &str) -> String {
 }
 
 /// A key-qualified declaration as source code writes it from the root
-/// namespace, as `Geometry::Point.Point` for `Geometry.Point.Point`.
+/// namespace, as `Geometry::Point.distance` for `Geometry.Point.distance`.
 fn declaration_display(qualified: &str) -> String {
     match qualified.rsplit_once('.') {
         Some((key, name)) => format!("{}.{name}", namespace_display(key)),
         None => qualified.to_owned(),
     }
+}
+
+/// A key-qualified type as source code writes it from the root namespace. A
+/// type named after its module has the module's full name, as
+/// `Geometry::Point` for `Geometry.Point.Point`.
+fn type_display(qualified: &str) -> String {
+    match qualified.rsplit_once('.') {
+        Some((key, name)) if module_stem(key) == name => namespace_display(key),
+        _ => declaration_display(qualified),
+    }
+}
+
+/// The file stem that ends the module key or full name `module`.
+fn module_stem(module: &str) -> &str {
+    module.rsplit('.').next().unwrap_or(module)
 }
 
 impl Names {
@@ -3081,7 +3101,8 @@ impl Names {
     }
 
     /// `path` written with `::` after the namespaces that its leading dotted
-    /// segments name, as `Sample::Shape.area` for `Sample.Shape.area`.
+    /// segments name, as `Sample::Shape.area` for `Sample.Shape.area`, and
+    /// `Sample::Point` for the record `Sample.Point.Point`.
     fn namespace_spelling(&self, requester: &str, path: &str) -> Option<String> {
         if path.contains(':') {
             return None;
@@ -3089,26 +3110,94 @@ impl Names {
         let segments: Vec<&str> = path.split('.').collect();
         (1..segments.len()).find_map(|end| {
             let module = segments[..=end].join("::");
-            (self
+            let key = self
                 .namespace_path(requester, &segments[..end].join("::"))
-                .is_some()
-                && self.module_path(requester, &module).is_some())
-            .then(|| {
+                .and_then(|_| self.module_path(requester, &module))?;
+            let mut members = &segments[end + 1..];
+            if members.len() == 1
+                && members[0] == segments[end]
+                && self.type_kind(&format!("{key}.{}", members[0])).is_some()
+            {
+                members = &[];
+            }
+            Some(
                 std::iter::once(module.as_str())
-                    .chain(segments[end + 1..].iter().copied())
+                    .chain(members.iter().copied())
                     .collect::<Vec<_>>()
-                    .join(".")
-            })
+                    .join("."),
+            )
         })
     }
 
     /// How source code names the key-qualified declaration `qualified`: its
-    /// module's full name, then `.` and the declaration, as `Sample::Point.Point`.
+    /// module's full name, then `.` and the declaration, as `Sample::Point.distance`.
     fn spelling(&self, qualified: &str) -> String {
         match qualified.rsplit_once('.') {
             Some((key, member)) => format!("{}.{member}", self.module_display(key)),
             None => qualified.to_owned(),
         }
+    }
+
+    /// `spelling` for a type: a type named after its module has the module's
+    /// full name, as `Sample::Point`.
+    fn type_spelling(&self, qualified: &str) -> String {
+        match qualified.rsplit_once('.') {
+            Some((key, name)) if module_stem(key) == name => self.module_display(key),
+            _ => self.spelling(qualified),
+        }
+    }
+
+    /// What kind of type the key-qualified `qualified` names, if any.
+    fn type_kind(&self, qualified: &str) -> Option<&'static str> {
+        if self.records.contains_key(qualified) {
+            Some("record")
+        } else if self.unions.contains_key(qualified) {
+            Some("union")
+        } else if self.handles.contains_key(qualified) {
+            Some("extern type")
+        } else if self.type_aliases.contains_key(qualified) {
+            Some("type alias")
+        } else {
+            None
+        }
+    }
+
+    /// Rejects a type path that repeats its module's name, as
+    /// `Sample::Point.Point`: a type named after its module has the module's
+    /// full name, `Sample::Point`.
+    fn check_module_type(&self, requester: &str, path: &str, span: Span) -> Result<(), Diagnostic> {
+        let Some((written, name)) = path.rsplit_once('.') else {
+            return Ok(());
+        };
+        if path.starts_with(KEY_PATH)
+            || written.contains('.')
+            || written.rsplit("::").next() != Some(name)
+        {
+            return Ok(());
+        }
+        match self
+            .module_path(requester, written)
+            .and_then(|key| self.type_kind(&format!("{key}.{name}")))
+        {
+            Some(kind) => Err(Self::repeated_module(path, kind, name, written, span)),
+            None => Ok(()),
+        }
+    }
+
+    fn repeated_module(
+        path: &str,
+        kind: &str,
+        name: &str,
+        written: &str,
+        span: Span,
+    ) -> Diagnostic {
+        Diagnostic::new(
+            "E1004",
+            format!(
+                "'{path}' repeats the module name; the {kind} '{name}' shares its module's name, so write '{written}'"
+            ),
+            span,
+        )
     }
 
     /// The full name of the module `key` as source code writes it.
@@ -3182,7 +3271,7 @@ impl Names {
                     "'{}' names both a type class and the {} type '{}'; qualify the {} type or rename one of them",
                     head.text,
                     named.kind(),
-                    named.info().name,
+                    self.type_spelling(&named.info().name),
                     named.kind()
                 ),
                 head.span,
@@ -3217,7 +3306,7 @@ impl Names {
                 "E1004",
                 format!(
                     "'{name}' names the union type '{}', not a record type; construct or match it with its cases",
-                    info.name
+                    self.type_spelling(&info.name)
                 ),
                 span,
             )),
@@ -3225,7 +3314,7 @@ impl Names {
                 "E1004",
                 format!(
                     "'{}' is a type alias; use the original record name to construct or match a value",
-                    info.name
+                    self.type_spelling(&info.name)
                 ),
                 span,
             )),
@@ -3233,7 +3322,7 @@ impl Names {
                 "E1004",
                 format!(
                     "'{name}' names the extern type '{}', not a record type; host handles have no fields and cannot be constructed",
-                    info.name
+                    self.type_spelling(&info.name)
                 ),
                 span,
             )),
@@ -3271,7 +3360,8 @@ impl Names {
     /// declares that type or class, or it is a built-in class.
     fn check_type_path(&self, module: &str, name: &str, span: Span) -> Result<(), Diagnostic> {
         if name.contains(['.', ':']) {
-            return self.check_path(module, name, span);
+            self.check_path(module, name, span)?;
+            return self.check_module_type(module, name, span);
         }
         let own = format!("{module}.{name}");
         if self.records.contains_key(&own)
@@ -3325,22 +3415,23 @@ impl Names {
         {
             return choice;
         }
-        // A path to a module also names the type that shares the module's name:
-        // `Sample::Point` is the record `Point` of the module `Sample::Point`. A
-        // bare `Point` finds a user module's type by namespace, ranked with
-        // other user types; std and private types keep the search below.
+        // A path to a module names the type that shares the module's name, whose
+        // full name it is: `Sample::Point` is the record `Point` of the module
+        // `Sample::Point`, and a bare `Option` is the std union even when another
+        // module declares an `Option`. It ranks with its module's origin ahead of
+        // the search below; private types keep that search.
         if !name.contains('.')
             && let Some(key) = self.module_path(module, name)
             && self.searchable(module, key)
-            && let Some(choice) = exact(&format!("{key}.{}", key.rsplit('.').next().unwrap_or(key)))
+            && let Some(choice) = exact(&format!("{key}.{}", module_stem(key)))
         {
             if name.contains("::") {
                 return choice;
             }
-            if let Choice::Found(named, _) = choice
-                && self.origin(key) == ModuleOrigin::User
-            {
-                return Choice::Found(named, 1);
+            if let Choice::Found(named, _) = choice {
+                let origin = self.origin(key);
+                let tier = self.tiers(module).iter().position(|tier| *tier == origin);
+                return Choice::Found(named, 1 + tier.unwrap_or(0) as u8);
             }
         }
         let candidates: Vec<NamedType<'_>> = self
@@ -3413,7 +3504,7 @@ impl Names {
                         "ambiguous {kind} '{name}'; qualify it as {}",
                         visible
                             .iter()
-                            .map(|named| self.spelling(&named.info().name))
+                            .map(|named| self.type_spelling(&named.info().name))
                             .collect::<Vec<_>>()
                             .join(" or ")
                     ),
@@ -3550,7 +3641,7 @@ impl Names {
                     "ambiguous union case '{name}'; qualify it as {}",
                     visible
                         .iter()
-                        .map(|case| case.info.name.as_str())
+                        .map(|case| self.spelling(&case.info.name))
                         .collect::<Vec<_>>()
                         .join(" or ")
                 ),
@@ -3581,7 +3672,7 @@ impl Names {
             .ok_or_else(|| {
                 Diagnostic::new(
                     "E1002",
-                    format!("union '{}' has no case '{name}'", info.name),
+                    format!("union '{}' has no case '{name}'", type_display(&info.name)),
                     span,
                 )
             })?;
@@ -3628,7 +3719,25 @@ impl Names {
             None
         };
         let local = if let Some((module, union)) = prefix.rsplit_once('.') {
-            self.union_case(requester, module, union, name, span)
+            match source
+                .rsplit_once('.')
+                .and_then(|(head, _)| head.rsplit_once('.'))
+            {
+                Some((written, _))
+                    if module_stem(module) == union
+                        && !source.starts_with(KEY_PATH)
+                        && self.unions.contains_key(prefix) =>
+                {
+                    Err(Self::repeated_module(
+                        source,
+                        "union",
+                        union,
+                        &format!("{written}.{name}"),
+                        span,
+                    ))
+                }
+                _ => self.union_case(requester, module, union, name, span),
+            }
         } else if self.unions.contains_key(&format!("{requester}.{prefix}")) {
             self.union_case(requester, requester, prefix, name, span)
         } else {
@@ -3750,7 +3859,7 @@ impl Names {
                     "ambiguous active pattern '{name}'; qualify one of {}",
                     candidates
                         .iter()
-                        .map(|(info, _)| info.name.as_str())
+                        .map(|(info, _)| self.spelling(&info.name))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -3827,7 +3936,7 @@ fn validate_public_type(
                         "E1022",
                         format!(
                             "private type '{}' leaks from public {kind} '{owner}'; make the {kind} private or expose a public type",
-                            info.name
+                            names.type_spelling(&info.name)
                         ),
                         expression.span,
                     ));
@@ -3851,7 +3960,7 @@ fn validate_public_type(
                         "E1022",
                         format!(
                             "private type '{}' leaks from public {kind} '{owner}'; make the {kind} private or expose a public type",
-                            info.name
+                            names.type_spelling(&info.name)
                         ),
                         head.span,
                     ));
@@ -4421,7 +4530,7 @@ fn check_modules_collect(
                 validate_public_type(
                     &alias.target,
                     &info.module,
-                    ("type alias", &info.name),
+                    ("type alias", &names.type_spelling(&info.name)),
                     &names,
                 )?;
             }
@@ -6093,7 +6202,7 @@ impl TypeAliasExpansion<'_> {
                 "E1024",
                 format!(
                     "cyclic type alias '{}'; remove the recursive alias reference",
-                    info.name
+                    self.names.type_spelling(&info.name)
                 ),
                 span,
             ));
@@ -8255,7 +8364,7 @@ impl<'a> Checker<'a> {
                 "E1022",
                 format!(
                     "the representation of '{}' is opaque; use its module API",
-                    record.name
+                    type_display(&record.name)
                 ),
                 span,
             ));

@@ -59,7 +59,7 @@ HEAD の Apple LLDB は `lldb-2103.0.34.103`。
 
 - `src/llvm_debug.rs` の `DebugContext::new` は `DW_LANG_C`・DWARF version 4 の compile unit を出す。型は `DebugContext::ty` が
   `types: BTreeMap<Type, usize>` で一度だけ作り、名前は `Type::display`（`i64`、`string`、`[i64]`、`[|i64|]`、`Vec<i64>`、
-  `(i64 * bool)`、`Main.Point`、`Option.Option<i64>`）。採番は `Globals::next_metadata` だけで、IR は決定的。
+  `(i64 * bool)`、`Main.Point`、`Option<i64>`）。採番は `Globals::next_metadata` だけで、IR は決定的。
 - スカラーは `DIBasicType(name: "i64", ...)` だが、LLDB は encoding と大きさから C の組み込み型を選ぶので `(long) input = 40` と表示する。
 - `fields` は string・utf8string・配列・共有配列参照を `data`・`length`、list を `head`・`length`、Vec を `data`・`length`・`capacity`、
   関数値と Task を `code`・`environment`・`clone`・`drop` として出す。`head` と関数値の 4 field は `Type::Reference(Type::Unit)` で、
@@ -121,7 +121,7 @@ frame #0: 0x... app`tz.fn.Main.show(input=40) at Main.tz:13:5
 }
 (Main.Shape) shape = {}
 (void *) tree = 0x0000000100689650
-(Option.Option<i64>) maybe = {}
+(Option<i64>) maybe = {}
 ([i64]) values = {
   data = 0x000000016fdfe480
   length = 3
@@ -152,7 +152,7 @@ frame #0: 0x... app`tz.fn.Main.show(input=40) at Main.tz:13:5
 | 全 case が nullary の union | `DW_TAG_enumeration_type`（enumerator は case 名と tag） | `(Main.Color) color = Green`（formatter 不要） |
 | payload を持つ union（`Option`・`Result` を含む） | struct に `$tag`（enumeration）と `$payload`（case 名を member 名とする `DW_TAG_union_type`） | `Rect(1.5, 2)`、`Some(40)`、`None`、`Error("bad")`。子は有効な case の payload だけ |
 | 再帰 union | node struct（`next`・`drop`・`clone`・`$tag`・`$payload`）への pointer | null は空 case 名（`Leaf`）、それ以外は `Node(Leaf, 40, Leaf)` |
-| `Map.Map<K, V>`・`Set.Set<K>` | 変更なし（record と `entries` の Vec） | summary `size=1`、子は `entries` の要素 |
+| `Map<K, V>`・`Set<K>` | 変更なし（record と `entries` の Vec） | summary `size=1`、子は `entries` の要素 |
 | 関数値・Task | `code` を関数型への pointer、他の 3 field を型なし pointer にする | `<fn 名前>`（`code` の指す関数名。なければ symbol 名）、Task は `<task>` |
 
 formatter を読み込まない LLDB・GDB でも、DWARF だけで scalar の型名、nullary union の case 名、`$tag` の case 名、関数値の関数名が読める。
@@ -212,8 +212,8 @@ fn show input =
     let shape = Rect (1.5, 2.0)
     let tree = Node (Leaf, input, Leaf)
     let maybe = Option.Some input
-    let nothing: Option.Option<i64> = Option.None
-    let outcome: Result.Result<i64, string> = Result.Error "bad"
+    let nothing: Option<i64> = Option.None
+    let outcome: Result<i64, string> = Result.Error "bad"
     let values = [1, 2, 3]
     let chain = [|4, 5|]
     let growing = Vec.push (Vec.empty()) 7
@@ -236,9 +236,9 @@ fn main = show 40
 (Main.Color) color = Green
 (Main.Shape) shape = Rect(1.5, 2)
 (Main.Tree) tree = Node(Leaf, 40, Leaf)
-(Option.Option<i64>) maybe = Some(40)
-(Option.Option<i64>) nothing = None
-(Result.Result<i64, string>) outcome = Error("bad")
+(Option<i64>) maybe = Some(40)
+(Option<i64>) nothing = None
+(Result<i64, string>) outcome = Error("bad")
 ([i64]) values = length=3 {
   [0] = 1
   [1] = 2
@@ -504,7 +504,7 @@ git diff --check
 - `debug_unions_expose_cases_and_payloads`: `DW_TAG_enumeration_type, name: "Main.Color"`、`DIEnumerator(name: "Green", value: 1)`、
   `name: "$tag"`、`DW_TAG_union_type, name: "Main.Shape.$payload"`、member `name: "Rect"`、`name: "Main.Tree.node"`、`name: "[|i64|].node"`。
 - `debug_union_offsets_match_storage`: `$payload` の member 行の `offset:`（bit）を確かめる。期待値は layout 規則から手で計算した値:
-  `Main.Shape`（General、K = 1）は native・wasm32 とも 128。`Option.Option<i64>`（Common）は 64。`Main.Tree.node` は native で `$tag` 192・`$payload` 256、
+  `Main.Shape`（General、K = 1）は native・wasm32 とも 128。`Option<i64>`（Common）は 64。`Main.Tree.node` は native で `$tag` 192・`$payload` 256、
   wasm32 で `$tag` 96・`$payload` 128（payload は `{ ptr, i64, ptr }` で align 8）。
 - 既存の `debug_metadata_is_deterministic_and_keeps_source_types` は変更しない。
 

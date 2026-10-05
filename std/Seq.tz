@@ -1,6 +1,6 @@
 record Seq<'a> {
-    head: Option.Option<'a>,
-    step: Option.Option<unit -> (Seq<'a> * Option.Option<'a>)>
+    head: Option<'a>,
+    step: Option<unit -> (Seq<'a> * Option<'a>)>
 }
 
 def empty :: Seq<'a>
@@ -9,10 +9,10 @@ fn empty = Seq { head: Option.None, step: Option.None }
 def once :: 'a -> Seq<'a>
 fn once value = Seq { head: Option.Some value, step: Option.None }
 
-def defer :: (unit -> (Seq<'a> * Option.Option<'a>)) -> Seq<'a>
+def defer :: (unit -> (Seq<'a> * Option<'a>)) -> Seq<'a>
 fn defer step = Seq { head: Option.None, step: Option.Some step }
 
-def rec unfold :: Capture<'state> => ('state -> Option.Option<('a * 'state)>) -> 'state -> Seq<'a>
+def rec unfold :: Capture<'state> => ('state -> Option<('a * 'state)>) -> 'state -> Seq<'a>
 fn rec unfold generator state = defer (\() ->
     match generator state with
     | Option.Some (value, remaining) -> (unfold generator remaining, Option.Some value)
@@ -27,7 +27,7 @@ fn rec map transform sequence = defer (\() ->
 def rec filter :: Capture<'a> => (ref 'a -> bool) -> Seq<'a> -> Seq<'a>
 fn rec filter predicate sequence = defer (\() ->
     let mut current = sequence
-    let mut selected: Option.Option<'a> = Option.None
+    let mut selected: Option<'a> = Option.None
     let mut finished = false
     while !finished do
         match Seq.next current with

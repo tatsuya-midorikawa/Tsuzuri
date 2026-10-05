@@ -173,7 +173,7 @@ fn direct_option_step state salt =
 
 def result_step :: i64 -> i64 -> i64
 fn result_step state salt =
-    let result: Result.Result<i64, i64> = Result {
+    let result: Result<i64, i64> = Result {
         let! first = if (state & 7) == 0 then Error (state ^ salt) else Ok (state ^ salt)
         let! second = if (first & 3) == 0 then Error (mix first salt) else Ok (mix first salt)
         return second ^ salt

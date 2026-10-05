@@ -162,7 +162,7 @@ mod tests {
         for source in [
             "IO.__read_line ()",
             "let call = IO.__write\n()",
-            "IO.IO { work: \\() -> 42 }",
+            "IO { work: \\() -> 42 }",
         ] {
             assert_eq!(
                 crate::analyze(source).unwrap_err().code,

@@ -19,11 +19,11 @@ def distance :: ref Point -> f64 = \point -> sqrt (squared_length point)
 root 直下の `Main.tz`:
 
 ```tsuzuri project=modules file=Main.tz run=5
-let point = Geometry::Point.Point { horizontal: 3.0, vertical: 4.0 }
+let point = Geometry::Point { horizontal: 3.0, vertical: 4.0 }
 Geometry::Point.distance ref point
 ```
 
-このモジュールは名前空間 `Geometry` の `Point` で、`Geometry::Point` と書きます。名前空間とモジュールは `::`、モジュールとその中の名前は `.` でつなぎます。型も関数も完全修飾できます。別モジュールの関数は修飾必須ですが、レコード、union、case、クラスには自モジュール優先と一意な公開候補による無修飾の解決があります。
+このモジュールは名前空間 `Geometry` の `Point` で、`Geometry::Point` と書きます。名前空間とモジュールは `::`、モジュールとその中の名前は `.` でつなぎます。モジュールと同じ名前の `record Point` の完全名も `Geometry::Point` です。型も関数も完全修飾できます。別モジュールの関数は修飾必須ですが、レコード、union、case、クラスには自モジュール優先と一意な公開候補による無修飾の解決があります。
 
 ローカル値がモジュールと同名なら `name.field` はローカル値のフィールドアクセスを優先します。名前が曖昧なら修飾を増やして解決します。
 
@@ -63,9 +63,9 @@ def main :: f64 = \() ->
     Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) + Shape.area (Rect (1.0, 2.0)) + Sample::Point.sum p + Point.sum q
 ```
 
-- `Sample::Shape.area` が完全名です。`Sample::Shape.Shape.area` のように名前空間・モジュール・union を重ねる必要はありません。
+- `Sample::Shape.area` が完全名です。`Sample::Shape.Shape.area` のように名前空間・モジュール・union を重ねることはできません（`E1004`）。
 - 同じ名前空間のファイルからは `Sample` を省略できます。参照は、自分の名前空間、その外側の名前空間、グローバルの順に探します。
-- モジュール名と同じ名前の record／union は、`Sample::Point { ... }` のようにモジュールのパスで書けます。`Sample::Point.Point` も使えます。修飾しない `Point` も同じ順序で探すので、別の名前空間に `Other::Point` があっても曖昧になりません。
+- モジュール名と同じ名前の record／union の完全名はモジュールの完全名で、`Sample::Point { ... }`・`Sample::Shape.Rect` と書きます。`Sample::Point.Point` のようにモジュール名を重ねると `E1004` で、診断の型の表示も `Sample::Point` です。修飾しない `Point` も同じ順序で探すので、別の名前空間に `Other::Point` があっても曖昧になりません。
 - `Sample.Shape.area` のように名前空間を `.` でつなぐことはできません（`E1002`／`E1004`）。診断は `::` を使う書き方を示します。
 - `namespace` 宣言のないファイルは、パッケージの既定名前空間に root からのディレクトリを続けた名前空間に属します。既定名前空間は `Tsuzuri.toml` の `namespace`、なければ package 名の PascalCase、manifest がなければ root フォルダー名です。
 - `namespace` は単独の行に書く最初の宣言です。キーワードの後やパスの途中では改行できず、パスの要素は空白を挟まない `::` でつなぎます（`using` も同じ）。途中の `namespace` や `.` でつないだパスは `E0002`、同じ完全名のモジュールが 2 つあると `E1011` です。入口は名前空間にかかわらず root 直下の `Main.tz` です。

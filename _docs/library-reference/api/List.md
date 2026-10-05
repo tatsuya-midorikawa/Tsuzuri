@@ -29,6 +29,6 @@ def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref [|'a|] -> 'sta
 ## `iter`
 
 ```tsuzuri
-def iter :: ref [|'a|] -> Seq.Seq<ref 'a>
+def iter :: ref [|'a|] -> Seq<ref 'a>
 ```
 

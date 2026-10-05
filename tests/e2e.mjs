@@ -567,10 +567,10 @@ fn main() -> i64 { 999 }
 `,
     "Even.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { true } else { Odd.accepts(n - 1) } }",
     "Main.tz": `
-record Callback { distance: fn(Point.Point) -> f64 }
+record Callback { distance: fn(Point) -> f64 }
 fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
 export fn module_result() -> f64 {
-  let p: Point.Point = Point.Point { x: 3.0, y: 4.0 };
+  let p: Point = Point { x: 3.0, y: 4.0 };
   let functions = [Point.distance];
   let Point = Callback { distance: functions[0] };
   let left: Left.Value = Left.Value { x: 20 };

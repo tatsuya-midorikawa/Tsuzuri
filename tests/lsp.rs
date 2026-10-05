@@ -901,17 +901,20 @@ fn declaration_hovers_name_modules_with_double_colons() {
     let measures =
         "namespace Demo::Shapes\n\nclass Measure<'a> {\n    def size :: ref 'a -> i64\n}\n";
     let probe = "namespace Demo::Shapes\n\ndef probe :: i64 = Circle.tick 1\n";
+    let tone =
+        "namespace Demo::Shapes\n\nunion Tone = Light | Dark\n\ndef paint :: Tone = Tone.Dark\n";
     let files = [
         ("Circle.tz", shapes),
         ("Measures.tt", measures),
         ("Probe.tz", probe),
+        ("Tone.tz", tone),
     ];
     let declarations = [
         (
             "Circle.tz",
             shapes,
             "Circle {",
-            "record Demo::Shapes::Circle.Circle",
+            "record Demo::Shapes::Circle",
         ),
         (
             "Circle.tz",
@@ -919,6 +922,7 @@ fn declaration_hovers_name_modules_with_double_colons() {
             "Kind =",
             "union Demo::Shapes::Circle.Kind",
         ),
+        ("Tone.tz", tone, "Tone =", "union Demo::Shapes::Tone"),
         (
             "Circle.tz",
             shapes,
@@ -941,7 +945,7 @@ fn declaration_hovers_name_modules_with_double_colons() {
             "Circle.tz",
             shapes,
             "radius ::",
-            "def Demo::Shapes::Circle.radius :: Demo::Shapes::Circle.Circle -> i64",
+            "def Demo::Shapes::Circle.radius :: Demo::Shapes::Circle -> i64",
         ),
         (
             "Circle.tz",
@@ -974,6 +978,9 @@ fn declaration_hovers_name_modules_with_double_colons() {
         let mut at = position(probe, "Circle.", "utf-16");
         at["character"] = json!(at["character"].as_u64().unwrap() + 7);
         steps.push(json!({"id": 100, "method": "textDocument/completion", "params": {"textDocument": {"uri": uri("Probe.tz")}, "position": at}}));
+        let mut at = position(tone, "Tone.", "utf-16");
+        at["character"] = json!(at["character"].as_u64().unwrap() + 5);
+        steps.push(json!({"id": 101, "method": "textDocument/completion", "params": {"textDocument": {"uri": uri("Tone.tz")}, "position": at}}));
         steps
     });
     for (response, (_, _, needle, detail)) in responses.iter().zip(&declarations) {
@@ -986,13 +993,39 @@ fn declaration_hovers_name_modules_with_double_colons() {
         );
     }
     let completed = &responses[declarations.len()]["result"]["items"];
-    let tick = completed
+    let items = completed
         .as_array()
-        .unwrap_or_else(|| panic!("{completed}"))
+        .unwrap_or_else(|| panic!("{completed}"));
+    let tick = items
         .iter()
         .find(|item| item["label"] == "tick")
         .unwrap_or_else(|| panic!("{completed}"));
     assert_eq!(tick["detail"], "extern def Demo::Shapes::Circle.tick");
+    // The type named after the module is the module path, not one of its
+    // members, and its cases follow the module path directly.
+    let detail = |items: &[serde_json::Value], label: &str| {
+        items
+            .iter()
+            .find(|item| item["label"] == label)
+            .map(|item| item["detail"].clone())
+    };
+    assert!(
+        items.iter().all(|item| item["label"] != "Circle"),
+        "{completed}"
+    );
+    assert_eq!(
+        detail(items, "Round"),
+        Some(json!("Demo::Shapes::Circle.Kind.Round")),
+        "{completed}"
+    );
+    let toned = &responses[declarations.len() + 1]["result"]["items"];
+    let tones = toned.as_array().unwrap_or_else(|| panic!("{toned}"));
+    assert!(tones.iter().all(|item| item["label"] != "Tone"), "{toned}");
+    assert_eq!(
+        detail(tones, "Dark"),
+        Some(json!("Demo::Shapes::Tone.Dark")),
+        "{toned}"
+    );
 }
 
 #[test]

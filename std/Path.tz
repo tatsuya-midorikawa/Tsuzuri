@@ -24,7 +24,7 @@ fn name_start path end =
 
 /// The path without its last name, without trailing "/" except for a lone "/".
 /// "a" and "/" and "" have none.
-def parent :: ref string -> Option.Option<string>
+def parent :: ref string -> Option<string>
 fn parent path =
 	let end = name_end path
 	if end == 1 && path[0] == 47i16u then Option.None
@@ -37,7 +37,7 @@ fn parent path =
 			Option.get (String.slice path 0 (if stop == 0 then 1 else stop)) |> Option.Some
 
 /// The last name of a path, or `None` for "", "/", ".", and "..".
-def file_name :: ref string -> Option.Option<string>
+def file_name :: ref string -> Option<string>
 fn file_name path =
 	let end = name_end path
 	let start = name_start path end + 1
@@ -47,7 +47,7 @@ fn file_name path =
 		if name == "." || name == ".." then Option.None else Option.Some name
 
 /// What follows the last "." of the last name; a name that starts with its only "." has none.
-def extension :: ref string -> Option.Option<string>
+def extension :: ref string -> Option<string>
 fn extension path =
 	match file_name path with
 	| Option.None -> Option.None
