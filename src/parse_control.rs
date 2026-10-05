@@ -547,7 +547,7 @@ impl Parser<'_> {
             let name = match &pattern.kind {
                 PatternKind::Binding(name)
                     if !name.text.as_bytes()[0].is_ascii_uppercase()
-                        && !name.text.contains('.') =>
+                        && !name.text.contains(['.', ':']) =>
                 {
                     name.clone()
                 }

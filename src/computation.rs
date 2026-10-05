@@ -551,7 +551,7 @@ impl Lowering<'_> {
                 }
                 ComputationStatementKind::For(pattern, source, body) => {
                     let mut body = self.nested_block(body)?;
-                    let simple = matches!(&pattern.kind, PatternKind::Binding(name) if !name.text.as_bytes()[0].is_ascii_uppercase() && !name.text.contains('.'));
+                    let simple = matches!(&pattern.kind, PatternKind::Binding(name) if !name.text.as_bytes()[0].is_ascii_uppercase() && !name.text.contains(['.', ':']));
                     let name = if simple {
                         let PatternKind::Binding(name) = &pattern.kind else {
                             unreachable!()

@@ -789,16 +789,14 @@ fn requires_exact_operation_names_arities_and_thunk_types_without_defaults() {
 
 #[test]
 fn supports_partial_worker_definitions_and_custom_iteration_source_types() {
-    let module = analyze_modules(&[
-        (
-            "Builder.tc",
-            "def Return :: i64 -> i64
+    let builder = "def Return :: i64 -> i64
              let Return = value -> value
              def Bind :: i64 -> (i64 -> i64) -> i64
              fn Bind value = { let adjusted = value + 1; next -> next adjusted }
              def For :: [|i64|] -> (i64 -> i64) -> i64
-             fn For values body = body values[0]",
-        ),
+             fn For values body = body values[0]";
+    let module = analyze_modules(&[
+        ("Builder.tc", builder),
         (
             "Main.tz",
             "Builder { for value in [|40|] { let! next = value; return next + 1 } }",
@@ -806,6 +804,16 @@ fn supports_partial_worker_definitions_and_custom_iteration_source_types() {
     ])
     .unwrap();
     llvm::emit(&module, llvm::Entry::Console).unwrap();
+    // A qualified name binds nothing in a builder's `for` either.
+    let error = analyze_modules(&[
+        ("Builder.tc", builder),
+        (
+            "Main.tz",
+            "Builder { for foo::Bar in [|40|] { let! next = 1; return next + 1 } }",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1020", "{}", error.message);
 }
 
 #[test]

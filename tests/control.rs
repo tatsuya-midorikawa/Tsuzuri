@@ -138,6 +138,15 @@ fn conditional_keywords_and_optional_else() {
     rejects("if true then\nelse ()", "E0002");
     rejects("def f :: unit\nfn f =\n", "E0002");
     rejects("match 1 with | null -> 0", "E1020");
+    // A qualified name binds nothing, also where lambdas and loops bind a plain name directly.
+    for source in [
+        "def f :: i64 -> i64 = \\foo::Bar -> 1",
+        "for foo::Bar in [1, 2] do ()",
+        "for foo.Bar in [1, 2] do ()",
+        "def work :: Task<i64>\nfn work =\n    let mut sum = 0\n    for foo::Bar in [20, 22] do\n        let! value = task { return 1 }\n        sum = sum + value\n    return sum\nTask.run (work())",
+    ] {
+        rejects(source, "E1020");
+    }
 }
 
 #[test]

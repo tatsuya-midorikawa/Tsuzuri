@@ -1723,15 +1723,29 @@ fn adjacent(left: &Token, right: &Token) -> bool {
     left.span.end == right.span.start
 }
 
+/// Whether `tokens[at]` joins two segments of a path: `.`, a namespace `::`,
+/// or a `::` whose path is still being written, but not the `::` that
+/// annotates a declaration's type, as in `def f::T`.
+fn path_separator(tokens: &[Token], at: usize) -> bool {
+    match tokens[at].kind {
+        TokenKind::Dot | TokenKind::PathSep => true,
+        TokenKind::DoubleColon => {
+            !(at >= 2
+                && matches!(
+                    tokens[at - 2].kind,
+                    TokenKind::Def | TokenKind::Rec | TokenKind::And
+                ))
+        }
+        _ => false,
+    }
+}
+
 /// `Ident ((. | ::) Ident)*` written without spaces and ending at `tokens[last]`.
 fn path_chain(tokens: &[Token], last: usize) -> Vec<usize> {
     let mut chain = vec![last];
     let mut at = last;
     while at >= 2
-        && matches!(
-            tokens[at - 1].kind,
-            TokenKind::Dot | TokenKind::PathSep | TokenKind::DoubleColon
-        )
+        && path_separator(tokens, at - 1)
         && matches!(tokens[at - 2].kind, TokenKind::Ident(_))
         && adjacent(&tokens[at - 2], &tokens[at - 1])
         && adjacent(&tokens[at - 1], &tokens[at])
@@ -1801,10 +1815,8 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     let separator = (before >= 2)
         .then(|| &tokens[before - 1])
         .filter(|separator| {
-            matches!(
-                separator.kind,
-                TokenKind::Dot | TokenKind::PathSep | TokenKind::DoubleColon
-            ) && matches!(tokens[before - 2].kind, TokenKind::Ident(_))
+            path_separator(&tokens, before - 1)
+                && matches!(tokens[before - 2].kind, TokenKind::Ident(_))
                 && adjacent(&tokens[before - 2], separator)
                 && tokens
                     .get(before)

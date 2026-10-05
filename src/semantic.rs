@@ -515,13 +515,14 @@ pub(super) fn collect(
     let links = &links;
     for module in modules {
         let program = module.program;
+        let shown = names.module_display(module.name);
         for external in &program.externs {
             index.document(&external.name, external.doc.as_ref());
             index.symbol(
                 &external.name,
                 12,
                 external.result.span,
-                format!("extern def {}.{}", module.name, external.name.text),
+                format!("extern def {shown}.{}", external.name.text),
             );
             for ty in external.parameters.iter().chain([&external.result]) {
                 type_entry(&mut index, ty, module.name, names, &types, links, true);
@@ -536,7 +537,7 @@ pub(super) fn collect(
                     .fields
                     .last()
                     .map_or(record.name.span, |field| field.ty.span),
-                format!("record {}.{}", module.name, record.name.text),
+                format!("record {shown}.{}", record.name.text),
             );
             for field in &record.fields {
                 type_entry(
@@ -561,7 +562,7 @@ pub(super) fn collect(
                 union.cases.last().map_or(union.name.span, |case| {
                     case.payload.as_ref().map_or(case.name.span, |ty| ty.span)
                 }),
-                format!("union {}.{}", module.name, union.name.text),
+                format!("union {shown}.{}", union.name.text),
             );
             for case in &union.cases {
                 if let Some(ty) = &case.payload {
@@ -575,7 +576,7 @@ pub(super) fn collect(
                 &handle.name,
                 23,
                 handle.name.span,
-                format!("extern type {}.{}", module.name, handle.name.text),
+                format!("extern type {shown}.{}", handle.name.text),
             );
         }
         for alias in &program.type_aliases {
@@ -584,7 +585,7 @@ pub(super) fn collect(
                 &alias.name,
                 26,
                 alias.target.span,
-                format!("type {}.{}", module.name, alias.name.text),
+                format!("type {shown}.{}", alias.name.text),
             );
             type_entry(
                 &mut index,
@@ -601,8 +602,7 @@ pub(super) fn collect(
             let detail = resolve_type(&constant.ty, module.name, names)
                 .map(|ty| {
                     format!(
-                        "const {}.{}: {}",
-                        names.module_display(module.name),
+                        "const {shown}.{}: {}",
                         constant.name.text,
                         ty.display(&types)
                     )
@@ -629,8 +629,7 @@ pub(super) fn collect(
                     12,
                     declaration.body.span,
                     format!(
-                        "def {}.{} :: {}",
-                        names.module_display(&function.module),
+                        "def {shown}.{} :: {}",
                         function.name,
                         function.signature.as_type().display(&types)
                     ),
@@ -666,7 +665,7 @@ pub(super) fn collect(
                     .methods
                     .last()
                     .map_or(class.name.span, |method| method.result.span),
-                format!("class {}.{}", module.name, class.name.text),
+                format!("class {shown}.{}", class.name.text),
             );
             for method in &class.methods {
                 index.document(&method.name, method.doc.as_ref());
@@ -677,10 +676,7 @@ pub(super) fn collect(
                     &method.name,
                     6,
                     method.result.span,
-                    format!(
-                        "def {}.{}.{}",
-                        module.name, class.name.text, method.name.text
-                    ),
+                    format!("def {shown}.{}.{}", class.name.text, method.name.text),
                 );
             }
         }

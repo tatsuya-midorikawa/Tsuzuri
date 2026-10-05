@@ -3719,7 +3719,7 @@ impl Names {
         if let Some((info, case)) = self.active_patterns.get(&format!("{requester}.{name}")) {
             return Ok(Some((info.id, *case)));
         }
-        if name.contains('.') {
+        if name.contains(['.', ':']) {
             self.check_path(requester, name, span)?;
             if let Some(qualified) = self.canonical(requester, name)
                 && self.searchable_path(requester, &qualified)

@@ -135,7 +135,8 @@ impl Checker<'_> {
                 };
                 self.scopes.push(BTreeMap::new());
                 let simple_binding = matches!(&pattern.kind, PatternKind::Binding(name)
-                    if self.active_recognizer(name)?.is_none()
+                    if !name.text.contains(['.', ':'])
+                        && self.active_recognizer(name)?.is_none()
                         && matches!(self.names.case_path(self.module, &name.text, name.span), Ok(None)));
                 let name = match &pattern.kind {
                     PatternKind::Binding(name) if simple_binding => name.clone(),
@@ -747,7 +748,7 @@ impl Checker<'_> {
         let Some(case) = self.names.case_path(self.module, &name.text, name.span)? else {
             return Ok(None);
         };
-        if !name.text.contains('.')
+        if !name.text.contains(['.', ':'])
             && case.info.module != self.module
             && self
                 .names

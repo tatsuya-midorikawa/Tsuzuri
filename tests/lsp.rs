@@ -895,6 +895,101 @@ const N_CIRCLE: &str = "namespace Demo::Shapes\n\ndef radius :: i64 -> i64 = \\x
 const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes::Circle.radius x\n";
 
 #[test]
+fn declaration_hovers_name_modules_with_double_colons() {
+    use serde_json::json;
+    let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\n";
+    let measures =
+        "namespace Demo::Shapes\n\nclass Measure<'a> {\n    def size :: ref 'a -> i64\n}\n";
+    let probe = "namespace Demo::Shapes\n\ndef probe :: i64 = Circle.tick 1\n";
+    let files = [
+        ("Circle.tz", shapes),
+        ("Measures.tt", measures),
+        ("Probe.tz", probe),
+    ];
+    let declarations = [
+        (
+            "Circle.tz",
+            shapes,
+            "Circle {",
+            "record Demo::Shapes::Circle.Circle",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "Kind =",
+            "union Demo::Shapes::Circle.Kind",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "Radius =",
+            "type Demo::Shapes::Circle.Radius",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "Unit:",
+            "const Demo::Shapes::Circle.Unit: i64",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "Handle",
+            "extern type Demo::Shapes::Circle.Handle",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "radius ::",
+            "def Demo::Shapes::Circle.radius :: Demo::Shapes::Circle.Circle -> i64",
+        ),
+        (
+            "Measures.tt",
+            measures,
+            "Measure<",
+            "class Demo::Shapes::Measures.Measure",
+        ),
+        (
+            "Measures.tt",
+            measures,
+            "size",
+            "def Demo::Shapes::Measures.Measure.size",
+        ),
+    ];
+    let responses = scripted(&files, "utf-16", |uri| {
+        let mut steps: Vec<_> = declarations
+            .iter()
+            .enumerate()
+            .map(|(id, (file, text, needle, _))| {
+                json!({"id": id + 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri(file)}, "position": position(text, needle, "utf-16")}})
+            })
+            .collect();
+        // An extern's name hovers its host call, so its detail shows in completion.
+        let mut at = position(probe, "Circle.", "utf-16");
+        at["character"] = json!(at["character"].as_u64().unwrap() + 7);
+        steps.push(json!({"id": 100, "method": "textDocument/completion", "params": {"textDocument": {"uri": uri("Probe.tz")}, "position": at}}));
+        steps
+    });
+    for (response, (_, _, needle, detail)) in responses.iter().zip(&declarations) {
+        let hover = response["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{needle}: {response}"));
+        assert!(
+            hover.starts_with(&format!("```tsuzuri\n{detail}\n```")),
+            "{needle}: {hover}"
+        );
+    }
+    let completed = &responses[declarations.len()]["result"]["items"];
+    let tick = completed
+        .as_array()
+        .unwrap_or_else(|| panic!("{completed}"))
+        .iter()
+        .find(|item| item["label"] == "tick")
+        .unwrap_or_else(|| panic!("{completed}"));
+    assert_eq!(tick["detail"], "extern def Demo::Shapes::Circle.tick");
+}
+
+#[test]
 fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     use serde_json::json;
     let files = [("Circle.tz", N_CIRCLE), ("Report.tz", N_REPORT)];
@@ -925,6 +1020,9 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
         let definition = |id: u64, needle: &str| json!({"id": id, "method": "textDocument/definition", "params": {"textDocument": {"uri": report}, "position": position(N_REPORT, needle, "utf-16")}});
         let (shapes, demo, roots) = (edited("Shapes::"), edited("Demo::"), edited("C"));
         let (member, colon) = (edited("Shapes::Circle."), edited("Shapes:"));
+        // A compact `def name::Type` annotation does not start the path.
+        let compact = format!("{N_REPORT}def probe::Demo::Shapes::");
+        let compact_member = format!("{N_REPORT}def probe::Demo::Shapes::Circle.");
         vec![
             definition(1, "Circle.radius x +"),
             definition(2, "Shapes::Circle.radius"),
@@ -939,6 +1037,10 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
             complete(7, &member, "Shapes::Circle."),
             change(6, &colon),
             complete(8, &colon, "Shapes:"),
+            change(7, &compact),
+            complete(9, &compact, "probe::Demo::Shapes::"),
+            change(8, &compact_member),
+            complete(10, &compact_member, "probe::Demo::Shapes::Circle."),
         ]
     });
     for response in &responses[..2] {
@@ -992,6 +1094,8 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     );
     let colon = labels(&responses[7]);
     assert!(colon.is_empty(), "{colon:?}");
+    assert_eq!(labels(&responses[8]), labels(&responses[3]));
+    assert_eq!(labels(&responses[9]), labels(&responses[6]));
 
     // The current namespace's `Demo::Circle` wins over the imported one, and
     // `Square`, which both imports hold, is ambiguous.

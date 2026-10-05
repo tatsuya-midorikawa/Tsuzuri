@@ -121,5 +121,6 @@ try {
   }
   console.log('Relocated toolchain passed without system compiler, SDK, or PATH tools.');
 } finally {
-  await rm(directory, { recursive: true, force: true });
+  // Windows can keep a just-run executable locked for a moment (EBUSY).
+  await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
