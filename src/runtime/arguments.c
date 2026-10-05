@@ -13,6 +13,8 @@
 #include <windows.h>
 #endif
 
+// tsuzuri_alloc allocates at least one byte for a size of 0 (the host ABI contract), so an empty
+// array or argument needs no special case.
 extern void *tsuzuri_alloc(int64_t size);
 extern void tsuzuri_free(void *pointer);
 
