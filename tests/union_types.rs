@@ -199,18 +199,25 @@ fn size shape =
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
 
     for (main, other, code, message) in [
-        // `Choice.Some` names both a module case and a local union case.
+        // `Choice.Some` names the case of the module `Choice`, not of the local union.
         (
-            "union Choice = Some\nlet x = Choice.Some\n0",
+            "union Choice = Some\nlet x: i64 = Choice.Some 1\n0",
             "union Choice<'a> = None | Some of 'a",
-            "E1004",
-            "Module.Union.Case",
+            "E1003",
+            "found Choice<",
         ),
         (
-            "let x = Choice.Choice.Missing\n0",
-            "union Choice<'a> = None | Some of 'a",
+            "let x = Choice.Pick.Missing\n0",
+            "union Pick<'a> = None | Some of 'a",
             "E1002",
-            "has no case 'Missing'",
+            "union 'Choice.Pick' has no case 'Missing'",
+        ),
+        // A union named after its module has the module's name.
+        (
+            "let x = Choice.Choice.Some 1\n0",
+            "union Choice<'a> = None | Some of 'a",
+            "E1004",
+            "so write 'Choice.Some'",
         ),
         (
             "let x = Choice.Some 1\n0",
@@ -219,7 +226,7 @@ fn size shape =
             "",
         ),
         (
-            "def f :: Choice.Choice<i64> -> i64\nfn f x = 0",
+            "def f :: Choice<i64> -> i64\nfn f x = 0",
             "private union Choice<'a> = None | Some of 'a",
             "E1022",
             "",
@@ -241,6 +248,15 @@ fn size shape =
         assert_eq!(error.code, code, "{main}\n{}", error.message);
         assert!(error.message.contains(message), "{main}\n{}", error.message);
     }
+    // The local union's case stays `Some`, or the module path of the file.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "union Choice = Some\nlet x: Choice = Some\nlet y: Choice = Main.Choice.Some\n0",
+        ),
+        ("Choice.tz", "union Choice<'a> = None | Some of 'a"),
+    ])
+    .unwrap();
     // Cases with one name in two other modules need qualification.
     let error = analyze_modules(&[
         ("Main.tz", "match Some 1 with\n| Some n -> n\n| None -> 0"),
@@ -262,11 +278,11 @@ fn size shape =
 fn allows_unions_in_builders_but_not_type_class_files() {
     let module = analyze_modules(&[
         (
-            "Maybe.tc",
-            "union Maybe<'a> = Nothing | Just of 'a
-def Return :: 'a -> Maybe<'a>
+            "Perhaps.tc",
+            "union Perhaps<'a> = Nothing | Just of 'a
+def Return :: 'a -> Perhaps<'a>
 fn Return value = Just value
-def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
+def Bind :: Perhaps<'a> -> ('a -> Perhaps<'b>) -> Perhaps<'b>
 fn Bind value next =
     match value with
     | Just x -> next x
@@ -274,13 +290,13 @@ fn Bind value next =
         ),
         (
             "Main.tz",
-            "let result = Maybe {
-    let! a = Maybe.Just 20
+            "let result = Perhaps {
+    let! a = Perhaps.Just 20
     let! b = Just 22
     return a + b
 }
 match result with
-| Maybe.Just n -> n
+| Perhaps.Just n -> n
 | Nothing -> 0",
         ),
     ])
@@ -301,14 +317,14 @@ fn rejects_invalid_declarations_patterns_and_uses() {
             "lowercase names in patterns bind",
         ),
         (
-            "union Option<'a> = None",
+            "union Maybe<'a> = None",
             "E1024",
             "not used by any case payload",
         ),
         (
-            "union Option = Some of 'a",
+            "union Maybe = Some of 'a",
             "E1024",
-            "is not declared by union 'Option'",
+            "is not declared by union 'Maybe'",
         ),
         (
             "union U<'a, 'a> = A of 'a",

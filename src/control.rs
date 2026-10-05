@@ -135,7 +135,8 @@ impl Checker<'_> {
                 };
                 self.scopes.push(BTreeMap::new());
                 let simple_binding = matches!(&pattern.kind, PatternKind::Binding(name)
-                    if self.active_recognizer(name)?.is_none()
+                    if !name.text.contains(['.', ':'])
+                        && self.active_recognizer(name)?.is_none()
                         && matches!(self.names.case_path(self.module, &name.text, name.span), Ok(None)));
                 let name = match &pattern.kind {
                     PatternKind::Binding(name) if simple_binding => name.clone(),
@@ -288,7 +289,7 @@ impl Checker<'_> {
                         binding_pattern(next_name.clone()),
                         Pattern {
                             kind: PatternKind::Apply(
-                                named("Option.Option.Some"),
+                                named("::Maybe.Maybe.Some"),
                                 vec![binding_pattern(item_name)],
                             ),
                             span,
@@ -306,7 +307,7 @@ impl Checker<'_> {
                 pattern: Pattern {
                     kind: PatternKind::Tuple(vec![
                         binding_pattern(next_name),
-                        binding_pattern(named("Option.Option.None")),
+                        binding_pattern(named("::Maybe.Maybe.None")),
                     ]),
                     span,
                     depth: 3,
@@ -515,7 +516,7 @@ impl Checker<'_> {
                 if self.active_recognizer(name)?.is_some() {
                     return self.active_pattern(name, &[], matched);
                 }
-                if name.text.contains('.') {
+                if name.text.contains(['.', ':']) {
                     return Err(Diagnostic::new(
                         "E1020",
                         "a pattern binding cannot be a qualified name",
@@ -747,7 +748,7 @@ impl Checker<'_> {
         let Some(case) = self.names.case_path(self.module, &name.text, name.span)? else {
             return Ok(None);
         };
-        if !name.text.contains('.')
+        if !name.text.contains(['.', ':'])
             && case.info.module != self.module
             && self
                 .names
@@ -942,9 +943,9 @@ impl Checker<'_> {
         };
         let extras = parameters.len() - 1;
         let union_case = match active_case {
-            ActiveCase::OptionPartial => {
+            ActiveCase::MaybePartial => {
                 let Type::Union(union_id, _) = result.as_ref() else {
-                    unreachable!("Option result checked")
+                    unreachable!("Maybe result checked")
                 };
                 Some((
                     *union_id,
@@ -966,7 +967,7 @@ impl Checker<'_> {
         let payload_type = match active_case {
             ActiveCase::BoolPartial => None,
             ActiveCase::TotalSingle => Some(result.as_ref().clone()),
-            ActiveCase::OptionPartial | ActiveCase::TotalCase { .. } => {
+            ActiveCase::MaybePartial | ActiveCase::TotalCase { .. } => {
                 let Type::Union(union_id, args) = result.as_ref() else {
                     unreachable!()
                 };

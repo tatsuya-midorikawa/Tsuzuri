@@ -4,7 +4,7 @@ record Output { code: i32, signal: i32, stdout: [ubyte], stderr: [ubyte] }
 
 /// The arguments as the runtime takes them: each followed by a NUL byte. A lone surrogate is
 /// `InvalidEncoding` and a NUL inside an argument is `InvalidInput`, since it would split the argument.
-private def join_arguments :: ref [string] -> Result.Result<[ubyte], Os.Error>
+private def join_arguments :: ref [string] -> Result<[ubyte], Os.Error>
 fn join_arguments args =
 	let mut joined: Vec<ubyte> = Vec.with_capacity 0
 	let mut problem = 0
@@ -33,7 +33,7 @@ fn output_of bytes =
 	let error_length = Os.decode_i64 bytes 16
 	Output { code: word as i32, signal: (word >>> 32) as i32, stdout: Array.sub bytes 24 out_length, stderr: Array.sub bytes (24 + out_length) error_length }
 
-private def run_with :: ref string -> ref [string] -> ref [ubyte] -> Result.Result<Output, Os.Error>
+private def run_with :: ref string -> ref [string] -> ref [ubyte] -> Result<Output, Os.Error>
 fn run_with program args input =
 	match Os.encode program with
 	| Result.Error error -> Result.Error error
@@ -50,5 +50,5 @@ fn run_with program args input =
 /// then closed. A program name without "/" is looked up on PATH, and the child inherits the environment and
 /// the working directory. Both output streams are collected, up to 2^30 bytes together, after which the child
 /// is killed and the call is `Other`. Not available under `--wasm-host wasi`, where it is `Other`.
-def run :: string -> [string] -> [ubyte] -> IO<Result.Result<Output, Os.Error>>
+def run :: string -> [string] -> [ubyte] -> IO<Result<Output, Os.Error>>
 fn run program args input = IO.map (\() -> run_with (ref program) (ref args) (ref input)) (IO.pure ())

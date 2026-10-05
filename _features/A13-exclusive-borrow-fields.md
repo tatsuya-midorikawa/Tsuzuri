@@ -596,7 +596,7 @@ T2 `exclusive_borrow_field_declarations_are_validated`（新規）は前置き�
     ("record Bad {r} { value: ref mut {r} i64, name: ref {r} string }", "E1013", "give field 'name' its own region"),
     ("record View { text: ref string }\nrecord Bad {r} { value: ref mut {r} View }", "E1013", "exclusive borrow field 'value' must point to data without borrows"),
     ("record Bad {r} { values: [ref mut {r} i64] }", "E1013", "can hold an exclusive reference only"),
-    ("record Bad {r} { value: Option<ref mut {r} i64> }", "E1013", "can hold an exclusive reference only"),
+    ("record Bad {r} { value: Maybe<ref mut {r} i64> }", "E1013", "can hold an exclusive reference only"),
     ("record Counter {r} { value: ref mut {r} i64 }\nrecord Bad { counter: Counter }", "E1013", "field 'counter' stores an exclusive borrow inside record 'Counter'"),
     ("record Counter {r} { value: ref mut {r} i64 }\nrecord Bad {r} { counter: Counter {r}, name: ref {r} string }", "E1013", "give field 'name' its own region"),
     ("record Counter {r} { value: ref mut {r} i64 }\nrecord Bad {r} { view: ref {r} Counter }", "E1013", ""),

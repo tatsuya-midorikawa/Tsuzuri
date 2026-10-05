@@ -21,6 +21,8 @@ native exe/objectの同梱`Array.sum<i64>`は実行時CPU選択の対象です�
   `true` `false` です。関数・変数・フィールド・モジュールの名前には使えません（`refs` や `ref_count` は使えます）。
   `of` は `union` の case 宣言の中だけで意味を持つ文脈キーワードで、それ以外では通常の識別子です。
     `where` も関数ガードの後置束縛を始める位置だけの文脈キーワードです。`namespace`／`using` はファイル先頭の宣言だけの文脈キーワードです。
+    `::` は `def` の名前と型の区切り、リストの `head :: tail`、名前空間のパス（`Sample::Features::Shape.area`）に使います。
+    空白を挟まずに識別子をつなぎ、最後の要素が英大文字で始まる（モジュールを指す）か `namespace`／`using` 宣言の中にある `::` がパスです。`x::xs` はリストのままです。
     `Set.union`のため、`union`だけはモジュール関数の宣言名とdot後のメンバー名にも使えます。変数・型・モジュール名には使えません。
 - `//` 行コメントと、入れ子可能な `/* ... */` コメント。
 - `=`, `then`, `do`, `->` に続く複数行の本体は、最初の式のインデントを基準にし、
@@ -44,7 +46,7 @@ fn/let実装、instance、field、local binding、計算式の文、test、entry
 型検査や通常IRには影響せず、formatterは本文を保ち、LSP hoverは定義を参照して説明を表示します。
 
 `tsuzuri doc <file|directory> -o <outdir> [--json]`は全ソースの検査後に公開宣言だけをMarkdownへ出します。
-ライブラリ用にdirectoryでもMainを要求しません。階層moduleは`Geometry.Point.md`、一覧は`index.md`です。
+ライブラリ用にdirectoryでもMainを要求しません。階層moduleのページは`Geometry.Point.md`（見出しと一覧の表示は`Geometry::Point`）、一覧は`index.md`です。
 ページ名は決定的にソートし、ページ内は署名のソース順です。型変数、制約、region、アクティブパターンの宣言名を保持します。
 classは常にpublicでmethodを含み、instance実装は文書化しません。constは型を表示し、初期化式は表示しません。
 生成対象は入力のソース宣言で、コンパイラ内のbuiltin一覧はこの文書を参照します。完全なstdファイル構成を持つ`std`ディレクトリも入力でき、同一moduleの.tz/.tcを一ページにまとめます。
@@ -67,7 +69,7 @@ classは常にpublicでmethodを含み、instance実装は文書化しません�
 `--check` はファイルを変更せず、差分があれば終了コード 1。通常は変更するファイルだけを atomic replace します。
 権限を保持し、symlink と特殊ファイルは拒否します。hard link は rename によって切り離し、他のリンク先を変更しません。
 
-各 `.tz`・`.tt`・`.tc` ファイルは、rootからの相対パスで一つのモジュールを定義します。`Geometry/Point.tz` は `Geometry.Point` です。
+各 `.tz`・`.tt`・`.tc` ファイルは、rootからの相対パスで一つのモジュールを定義します。`Geometry/Point.tz` は名前空間 `Geometry` の `Point` モジュールで、`Geometry::Point` と書きます。
 モジュール名は大文字小文字を区別する ASCII 識別子で、`_` 単独や字句上の予約語は使えません。
 モジュール名（拡張子を除いたファイル名）は英大文字で始めます。`point.tz` は `E1011` で、`Point.tz` への改名を案内します。ディレクトリ名は小文字でも構いません。
 `Task` は組み込みの型・名前空間であり、モジュール・レコード・型クラス名には使えません。
@@ -88,22 +90,23 @@ classは常にpublicでmethodを含み、instance実装は文書化しません�
 
 コンパイラはroot配下の **全 `.tz`・`.tt`・`.tc` ファイル** を再帰的に探索し、正規化した相対パスのバイト順で検査・コンパイルします。
 未参照のモジュール・ビルダーも検査対象です。
-ディレクトリ入力はそのディレクトリをrootにして、直下の `Main.tz` を選びます。`App/Main.tz` はこのrootでは `App.Main` であり、入口ではありません。
+ディレクトリ入力はそのディレクトリをrootにして、直下の `Main.tz` を選びます。`App/Main.tz` はこのrootでは `App::Main` であり、入口ではありません。
 ファイル入力は親をrootにし、上位rootを推測しません。例えば `Geometry/Point.tz` を直接入力すると、そのプロジェクトでは `Point` モジュールです。
 インポート宣言や CLI での複数ソースの列挙は不要です。
 各パス要素はASCII識別子で、`_`・`Task`・予約語を拒否します。標準ライブラリの予約モジュールは先頭要素に使えません。
 ドット始まりのファイル・ディレクトリは無視し、ソースsymlink・ディレクトリsymlinkを `E1011` で拒否します。
 深さ16要素・名前255バイト・4096ソース・1024ディレクトリの上限を超えると `E1017` です。
-関数・型・レコード・case・クラス・ビルダーは `Geometry.Point.distance` のように完全修飾でき、同名のローカル値があればフィールドアクセスを優先します。
-標準ライブラリは従来の `Option.map` 等のままです。任意の検索パスはありません。
+関数・型・レコード・case・クラス・ビルダーは `Geometry::Point.distance` のように完全修飾でき、同名のローカル値があればフィールドアクセスを優先します。
+名前空間どうし、および名前空間とモジュールは `::` で、モジュールとその中の名前は `.` でつなぎます。
+標準ライブラリは名前空間 `std` に属し、`Maybe.map` のように名前空間を省いても `std::Maybe.map` とも書けます（「標準ライブラリ」参照）。任意の検索パスはありません。
 
 #### 名前空間（namespace／using）
 
 名前空間はモジュールのまとまりに名前を付けます。名前空間に属するのはモジュールだけで、関数・レコード・union などの宣言は常にファイル（モジュール）に属します。
-モジュールの完全名は「名前空間 + `.` + ファイル名」です。ファイルの最初の宣言に `namespace [親.]名前` を書くと、そのファイルの名前空間を指定できます。
+モジュールの完全名は名前空間とファイル名を `::` でつないだものです。ファイルの最初の宣言に `namespace [親::]名前` を書くと、そのファイルの名前空間を指定できます。入れ子の名前空間も `::` でつなぎます。
 
 ```text
-namespace Sample.Features
+namespace Sample::Features
 
 union Shape =
     | Circle of f64
@@ -116,20 +119,23 @@ def area :: Shape -> f64 = \shape ->
 ```
 
 - `namespace` 宣言はファイルの最初の宣言で、単独の行に書きます。キーワードの後やパスの途中で改行すると `E0002` です（`using` も同じ）。ドキュメントコメントも宣言の後に置きます。2 個目以降や途中の `namespace` は `E0002` です。
+  パスの要素は空白を挟まない `::` でつなぎます。`namespace Sample.Features` のように `.` でつなぐと `E0002` で、`::` を使う書き方を示します。
   `namespace` と `using` は文脈キーワードで、それ以外の位置では通常の識別子として使えます。
-- 宣言のないファイルの名前空間は、パッケージの既定名前空間に root からのディレクトリを続けたものです（`Geometry/Point.tz` は `既定.Geometry`）。
+- 宣言のないファイルの名前空間は、パッケージの既定名前空間に root からのディレクトリを続けたものです（`Geometry/Point.tz` は `既定::Geometry`）。
 - パッケージの既定名前空間は `Tsuzuri.toml` の `[package]` の `namespace`、なければ package 名の PascalCase（`geometry-core` は `GeometryCore`）、`Tsuzuri.toml` がなければ root フォルダー名です。
   フォルダー名が kebab-case なら同じく PascalCase にし、識別子として使えない名前ならグローバル名前空間とします。
-- 同じ完全名のモジュールを 2 つのファイルが宣言すると `E1011` です。標準ライブラリのモジュールはグローバル名前空間に属します。
+- 同じ完全名のモジュールを 2 つのファイルが宣言すると `E1011` です。標準ライブラリのモジュールは名前空間 `std` に属します。
 - 名前空間は 16 要素までです。既定名前空間の直下の最初の要素とディレクトリの先頭要素には、標準ライブラリの予約モジュール名を使えません（`E1011`）。
+  `std` で始まる名前空間（`namespace std`・`namespace std::Tools`、既定名前空間 `std`）も標準ライブラリ用で、利用者のモジュールには使えません（`E1011`）。
 
 モジュールのパスは、参照するファイルの名前空間から外側へ順に、名前空間を補って解決します（C# と同じ順序です）。
-`namespace Sample` のファイルでは、`Sample.Shape.area` も `Shape.area` も `Sample.Shape` モジュールの `area` です。
-`namespace Sample.Codebase` のファイルの `Shape` は、`Sample.Codebase.Shape`、`Sample.Shape`、`Shape` の順に探します。
-名前空間を宣言しないファイルどうしの従来のパス（`Geometry.Point.distance`）もそのまま使えます。
+`namespace Sample` のファイルでは、`Sample::Shape.area` も `Shape.area` も `Sample::Shape` モジュールの `area` です。
+`namespace Sample::Codebase` のファイルの `Shape` は、`Sample::Codebase::Shape`、`Sample::Shape`、`Shape` の順に探します。
+`Sample.Shape.area` や `Geometry.Point.distance` のように名前空間とモジュールを `.` でつなぐと、`.` の左を値またはモジュールとして読むため `E1002`・`E1004` です。診断は `::` を使う書き方を示します。
 
-モジュール名と同じ名前の `record`／`union` は、モジュールのパスでも参照できます。`namespace Sample` の `Point.tz` にある `record Point` は `Sample.Point { x: 1.0, y: 2.0 }` と書け、`Sample.Point.Point` と重ねる必要はありません。
-`Sample.Point.Point` の形も引き続き使えます。修飾しない型名 `Point` もモジュールのパスと同じ順序でこの型を探すため、別の名前空間に `Other.Point` があっても曖昧になりません。
+モジュール名と同じ名前の型（`record`・`union`・`type`・`extern type`）の完全名は、モジュールの完全名そのものです。`namespace Sample` の `Point.tz` にある `record Point` は `Sample::Point` で、`Sample::Point { x: 1.0, y: 2.0 }` と書きます。`Shape.tz` の `union Shape` の case も、関数と同じくモジュールのメンバーの `Sample::Shape.Rect` です。
+`Sample::Point.Point`・`Sample::Shape.Shape.Rect` のようにモジュール名を重ねると `E1004` で、診断は `Sample::Point` などの書き方を示します。診断の型の表示も `Sample::Point` です（パッケージの既定名前空間の中のモジュールは、既定名前空間を省いて `Point` のように表示します）。std の `Maybe<'a>`・`Result<'a, 'e>`・`Seq<'a>` なども同じで、完全名は `std::Maybe` などです。`Maybe.Maybe` とは書きません。
+修飾しない型名 `Point` もモジュールのパスと同じ順序でこの型を探すため、別の名前空間に `Other::Point` があっても曖昧になりません。std のモジュールも同じで、別のモジュールに `record Result` があっても `Result<i64, string>` は std の union です（その record は `Checks.Result` と修飾します）。ファイル自身の宣言はこれより優先するので、`record Result` を宣言したファイルの `Result` はその record で、そのファイルでは std の union を `std::Result<i64, string>` と書きます。
 この順序で見つからない型名は、従来どおり利用者のモジュール、std の順に一意な宣言を探します。
 
 `using 名前空間` は `namespace` 宣言の後、他の宣言の前に書き、その名前空間の直下のモジュールを修飾なしのモジュール名で参照できるようにします。
@@ -137,22 +143,22 @@ def area :: Shape -> f64 = \shape ->
 ```text
 namespace Sample
 
-using Sample.Features
+using Sample::Features
 
 def main :: i32 = \() ->
     Shape.area (Shape.Rect (3.0, 4.0)) |> ignore
     0
 ```
 
-- `using` の名前空間も、ファイルの名前空間から外側へ順に解決します（`namespace Sample` の `using Features` は `Sample.Features`）。
+- `using` の名前空間も、ファイルの名前空間から外側へ順に解決します（`namespace Sample` の `using Features` は `Sample::Features`）。
 - `using` はファイルの名前空間の直後に探します。ファイルと同じ名前空間のモジュールが優先し、`using` で見つからなければ外側の名前空間を探します。
-  入れ子の名前空間は取り込みません（`using Sample` で `Features.Shape` とは書けません）。
+  入れ子の名前空間は取り込みません（`using Sample` で `Features::Shape` とは書けません）。
 - 複数の `using` が同じ名前のモジュールを取り込み、ファイルの名前空間にその名前のモジュールがないとき、その名前を使うと `E1004` です。名前空間で修飾してください。
   修飾しない型名として使う場合も同じです（ファイル自身がその名前の型・クラスを宣言している場合を除く）。
 - 存在しない名前空間、モジュールを指す `using`、同じ名前空間の重複は `E1011` です。`using` の位置の誤りは `E0002` です。
 
 アプリケーションの入口は、名前空間にかかわらず root パッケージ直下の `Main.tz` です。
-コンパイラ内部と IR のシンボル名は、既定名前空間を除いた名前（`Main.main`、`Geometry.Point.distance`）を使うため、既定名前空間を宣言しても既存のシンボルは変わりません。
+コンパイラ内部と IR のシンボル名は、既定名前空間を除いて `.` で区切った名前（`Main.main`、`Geometry.Point.distance`）を使うため、既定名前空間を宣言しても既存のシンボルは変わりません。
 
 `tsuzuri new <directory> [--namespace NAME]` は空のフォルダーに `Tsuzuri.toml`・`Main.tz`・`.gitignore` を作ります。
 `Tsuzuri.toml` には必ず `namespace` を書き、`Main.tz` は同じ名前空間を宣言します。`--namespace` を省くとフォルダー名から package 名と名前空間を決めます。VS Code の新規プロジェクトも同じコマンドを使います。
@@ -165,15 +171,15 @@ rootの`Tsuzuri.toml`があると、ローカルpath依存を追加で読み込�
 [package]
 name = "app"
 version = "0.1.0"
-namespace = "Acme.App"
+namespace = "Acme::App"
 [dependencies]
 geometry-core = { path = "../geometry-core" }
 ```
 
 各依存にもname/versionを持つmanifestが必要で、依存キーは実際のnameと一致させます。versionは非空文字列で、版解決には使いません。
 nameは小文字ASCII kebab-case（各要素は英字始まり、255byteまで）。`geometry-core`の名前空間は`GeometryCore`です。
-省略できる`namespace`はパッケージの既定名前空間で、`Acme.Tools`のようなドット区切りの識別子（16要素・255byteまで、先頭要素はstdの予約名以外）です。不正な値はE1011です。
-依存の`Point.tz`は`GeometryCore.Point`（`namespace = "Acme.Tools"`なら`Acme.Tools.Point`）になり、依存内部からも完全修飾します。rootにはprefixを付けず、依存の`Main.tz`は入口にしません。
+省略できる`namespace`はパッケージの既定名前空間で、`Acme::Tools`のように識別子を`::`でつないだもの（16要素・255byteまで、先頭要素は`std`とstdの予約名以外）です。`Acme.Tools`のような`.`区切りを含む不正な値はE1011です。
+依存の`Point.tz`は`GeometryCore::Point`（`namespace = "Acme::Tools"`なら`Acme::Tools::Point`）になり、依存内部からも完全修飾します。rootにはprefixを付けず、依存の`Main.tz`は入口にしません。
 同一の正規化rootは共有し、循環、同名の別root、rootとの名前空間衝突、予約名前空間、symlinkをE1011で拒否します。
 グラフは1024package・深さ128・全4096sourceまでで、超過はE1017です。ネストした依存rootを親packageとして二重に探索しません。
 文法は上記のsection/keyだけの限定TOMLです。コメント`#`、空行、CRLF、引用符付きUTF-8文字列と`\"`・`\\`・`\n`・`\r`・`\t`を許し、それ以外のキー・escape・構文はE0002です。
@@ -183,6 +189,15 @@ manifestと依存sourceも出力保護の対象です。ネットワーク、git
 
 コンパイラは標準ライブラリ（std）のモジュールを埋め込み、すべてのプロジェクトで利用者のモジュールの後に読み込みます。
 インポートや追加のファイルは不要で、std の関数も他モジュールと同じく `Math.zero()` のように修飾して呼びます。
+
+std のモジュールは名前空間 `std` に属し、完全名は `std::Maybe`・`std::Result`・`std::Array` などです。
+`std` はすべてのファイルに暗黙に取り込まれるため、`Maybe.map`・`Result<i64, string>`・`Some 1` のように名前空間を省いて書けます。
+省いた名前はファイル自身の宣言を先に探すため、同じ名前を宣言したファイルでは `std::Result<i64, string>`・`std::Maybe.Some 1`・`std::Maybe.map` のように `std::` で std を指定します。
+名前空間を省いた std のモジュール名は、ファイルの名前空間・`using`・外側の名前空間に同じ名前のモジュールがないときに std のモジュールを指します。
+コンパイラ組み込みのモジュール関数と型も同じ名前空間に属し、`std::Task.run`・`std::Int.checked_add`・`std::Task<i64>`・`std::Vec<i64>` と書けます。
+名前空間に属するのはモジュールだけなので、`ignore`・`sqrt` のように修飾しない組み込み関数には `std::` を付けません。
+`using std` は不要ですが、書くと他の `using` と同じく std のモジュールをモジュール名で取り込みます。
+利用者のファイルは名前空間 `std` とその内側を宣言できません（`E1011`）。
 std のソースは未使用でも常に型検査しますが、到達しない std の関数・レコード・union・組み込み関数のラッパーは IR に出力しません。
 std は `export` を持ちません。IO の入口・ランタイム境界には専用シンボルを追加します。WASM の import は到達する IO／extern 呼び出しと明示的な Debug 出力、`--wasm-host wasi` を指定したときの WASI preview1 にだけ追加します。
 std の `private` 関数は std の中だけで使え、利用者のコードから参照すると `E1022` です。
@@ -190,12 +205,14 @@ std の `private` 関数は std の中だけで使え、利用者のコードか
 次のモジュール名は std 用に予約しており、利用者のファイル名（拡張子を除いた部分）には使えません（`E1011`）。
 まだ std に含まれていないモジュール名も予約済みです。関数・レコード・union の名前としては使えます。
 
-`Option`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`
 
 `HashMap`・`HashSet`・`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`・`Format`・`Exception`・`BigInt` は後から予約に加わった名前です。
 これらの名前のファイル（例えば `Path.tz`）を持つ既存のプロジェクトは `E1011` になるため、ファイル名を変えてください。互換性を壊す変更です。
+`Maybe` は以前の `Option` です。`Option` は廃止して予約から外し、`Option.map`・`Option<i64>` は `Maybe.map`・`Maybe<i64>`、`Result.to_option`・`Result.of_option` は `Result.to_maybe`・`Result.of_maybe` です。
+case 名の `None`・`Some` は変わりません。`Maybe.tz` などのファイルを持つ既存のプロジェクトもファイル名を変えてください。互換性を壊す変更です。
 
-現在の std は `Option`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
+現在の std は `Maybe`・`Result` の型／関数／ビルダー、配列・リスト・Vec、文字列・文字型・整数の API、
 型汎用の数学関数に加えて、順序付きとハッシュのコンテナ（`Map`・`Set`・`HashMap`・`HashSet`）、`IO` と標準の OS API（`File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process`）、
 書式指定の `Format` を持ちます。互換用の`Math.zero : f64`も維持します。以下の各節に公開 API と所有権の契約を記載します。
 
@@ -222,11 +239,11 @@ let d = Point.distance p
 他モジュールの関数を無修飾では参照できません。
 ローカル変数がモジュールと同名の場合、`name.field` はローカル値のフィールドアクセスを優先します。
 
-レコード型・リテラルは `Point.Point` のような修飾名を常に使えます。
-無修飾の `Point` はまず自モジュールで解決し、なければ利用者のモジュール内で一意なレコード名、
+モジュール名と同じ名前のレコード型・リテラルはモジュールのパスで `Point` と書き、`Point.Point` は `E1004` です。ほかの名前のレコードは `Shapes.Point` のように修飾できます。
+無修飾の `Point` はまず自モジュールで解決し、次にモジュールのパスとして同名の型（`Point.tz` の `record Point`、std の `Maybe` など）、なければ利用者のモジュール内で一意なレコード名、
 それもなければ std のモジュール内で一意なレコード名を解決します。
 他モジュールに同名レコードが複数ある場合は修飾が必要で、曖昧な名前はエラーです。
-利用者の宣言は同名の std の宣言より優先され、std のコードは利用者の宣言を参照しません。
+一意な名前の検索では利用者の宣言が同名の std の宣言より優先され、std のコードは利用者の宣言を参照しません。
 同じフィールドを持つ同名レコードでも、所属モジュールが違えば別の型です。
 union 型も同じ規則で解決します（`Shapes.Shape` など）。
 
@@ -301,7 +318,7 @@ symbolは255byte以下のC識別子（`[A-Za-z_][A-Za-z0-9_]*`）で、`tz_`・`
 ハンドルはscopeを抜けても何も呼ばれません（drop glueなし）。解放は利用者がcloseのexternへ値で渡して行います。閉じ忘れはホスト資源のleakです。
 scopeの終わりに自動で閉じるには、ハンドルをrecordで包んで`instance Drop`を書き、`drop`から`ref`を受けるcloseを呼びます（[利用者定義の解放](#利用者定義の解放)）。
 
-ABIで使える位置はextern・`export def`・コールバックの引数（`H`と`ref H`）と、extern・`export def`の結果（`H`）です。ABIのrecordのfield・bufferの要素・`ref mut H`はE1008です。ABI以外では通常のCopyでない値としてrecord・union・配列・`Option`に入れてよいです。
+ABIで使える位置はextern・`export def`・コールバックの引数（`H`と`ref H`）と、extern・`export def`の結果（`H`）です。ABIのrecordのfield・bufferの要素・`ref mut H`はE1008です。ABI以外では通常のCopyでない値としてrecord・union・配列・`Maybe`に入れてよいです。
 nativeではポインター1つ幅（LLVM `ptr`）、wasm32ではi32（JavaScriptではnumber）です。`ref H`もハンドルの値そのものを渡します。headerは`typedef struct tz_handle_<長さ付きの修飾名>_s *tz_handle_<…>;`をprototypeの前に一度だけ出します。
 
 #### コールバック
@@ -596,7 +613,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Capture` | 再利用可能な捕捉環境の制約、メソッドなし | 排他参照を含まない型。string・関数値・共有参照も対象 |
 | `Send` | タスクの所有する値の制約、メソッドなし | 格納された参照を含まない型。関数の捕捉環境は別途所有権検査する |
 | `Display` | `display :: ref 'a -> string` | 全数値、bool、unit、string、utf8string |
-| `Parse` | `parse :: ref string -> Option<'a>` | 全数値、bool |
+| `Parse` | `parse :: ref string -> Maybe<'a>` | 全数値、bool |
 | `Hash` | `hash :: ref 'a -> i64u` | 全数値、bool、unit、文字列・文字。全要素がHashの配列・リスト・タプル |
 | `Default` | `default :: 'a`（`Default.default()`で呼ぶ） | 数値の0、false、unit、空文字列、文字の0、空配列・空リスト、全要素がDefaultのタプル |
 | `Elementary` | 超越関数用のメソッドなし制約 | f32／f64のみ。利用者はinstanceを追加できない |
@@ -635,10 +652,10 @@ NaNは等しくなく、最初の不一致で順序比較がfalseなら後続へ
 class Functor<'f: * -> *> {
     def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b>
 }
-instance Functor<Option> {
+instance Functor<Maybe> {
     fn map transform value = match value with
-        | Option.None -> Option.None
-        | Option.Some inner -> Option.Some (transform inner)
+        | Maybe.None -> Maybe.None
+        | Maybe.Some inner -> Maybe.Some (transform inner)
 }
 def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b> = \transform value -> Functor.map transform value
 ```
@@ -653,7 +670,7 @@ kindが値型でないclassでは、method固有の`'a`・`'b`等の値型変数
 完全な`Result<'a, 'e>`の引数順は変更しません。`instance Functor<Result<'e>>`はエラー型を固定し、`instance BinaryKeep<Result>`は二引数のkindを要求します。
 kind不一致、未適用constructorを値型へ使うこと、過適用はE1015です。同じkindのgeneric/specific instanceのoverlapはE1016です。
 型の深さ・関数の特殊化上限は既存と共通です。constructor適用は単相化時に通常の型へ消去し、辞書・boxing・ランタイム型情報を追加しません。
-HKT型別名、kind省略推論、標準Functor/Applicative/Monadの導入は対象外です。通常のOption.map/Result.mapや計算式は引き続き使えます。
+HKT型別名、kind省略推論、標準Functor/Applicative/Monadの導入は対象外です。通常のMaybe.map/Result.mapや計算式は引き続き使えます。
 型が増大し続ける多相再帰は資源制限エラーになります。追加の特殊化は最大 1,024、
 型の深さは 128、型の構成要素は 4,096 です。関数に伝播する型クラス制約とモジュール関数制約は、それぞれ最大 128 要件です。
 
@@ -671,7 +688,7 @@ let distance = func (Point { x: 3.0, y: 4.0 })
 distance
 ```
 
-この呼び出しでは `'T` が `Point.Point`、`'U` が `f64` になり、`Point.distance` を静的に呼び出します。
+この呼び出しでは `'T` が `Point`、`'U` が `f64` になり、`Point.distance` を静的に呼び出します。
 関数制約は通常の関数参照を通じても伝播するため、上の `func` を呼ぶ別のジェネリック関数でも返却型を推論できます。
 
 - `@'T : Copy, #distance, #scale` のように型クラスと複数の関数制約を混在できます。
@@ -757,7 +774,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Maybe<'a> = None | Some of 'a
+union Reply<'a> = Pending | Ready of 'a
 union Color = Red | Green | Blue
 
 def area :: Shape -> f64 = \shape ->
@@ -766,12 +783,12 @@ def area :: Shape -> f64 = \shape ->
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe<'a> -> 'a = \fallback value ->
+def ready_or :: 'a -> Reply<'a> -> 'a = \fallback value ->
     match value with
-    | Some x -> x
-    | None -> fallback
+    | Ready x -> x
+    | Pending -> fallback
 
-area (Rect (3.0, 4.0)) + to_float (default_value 10 (Some 42))
+area (Rect (3.0, 4.0)) + to_float (ready_or 10 (Ready 42))
 ```
 
 `union Name<'a, ...> = Case | Case of Type | ...` は、いずれか一つの case の値を持つ型を宣言します。
@@ -782,7 +799,7 @@ payload にはレコード・タプル・配列・リスト・関数値・他の
 各パラメーターはいずれかの payload で使います。
 union 名と case 名は ASCII 大文字で始めます（小文字の名前はパターンで変数を束縛するためです）。
 
-payload のない case（`Empty`、`None`）はそれ自体が値です。
+payload のない case（`Empty`、`Pending`）はそれ自体が値です。
 payload のある case は一引数の関数値で、`Circle 2.0`・`2.0 |> Circle` のように適用するほか、
 `let wrap = Some` や `apply Some 42` のように関数値として渡せます。
 直接の適用は呼び出しを介さずに値を組み立て、関数値として使った case だけが具体的な型ごとに一つの内部関数になります。
@@ -791,9 +808,9 @@ payload のない case は名前だけを書きます。payload の有無と数�
 パターン中の名前はまず union case として解決し、次に active pattern、最後に変数束縛になります。
 
 無修飾の case 名は自モジュール、プロジェクト内で一意な public case の順に解決し、
-候補が複数あれば `E1004` です。修飾名は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case` を使えます。
-`Option.Some` がモジュール `Option` の case と自モジュールの `union Option` の case の両方を指す場合は `E1004` になり、
-`Module.Union.Case` で区別します。
+候補が複数あれば `E1004` です。修飾名は `Module.Case`、自モジュールの `Union.Case`、`Module.Union.Case` を使えます（モジュール名と同じ名前の union の case は `Shape.Rect` のように `Module.Case` で書き、`Shape.Shape.Rect` は `E1004` です）。
+`Choice.Some` のようにモジュールのパスで始まる名前はそのモジュールの case です。自モジュールにも `union Choice` があるとき、その case は `Some` か自モジュールのパスを付けた `Main.Choice.Some` と書きます。
+std のモジュールは自モジュールの宣言より後に探すため、自モジュールの `union Maybe` があると `Maybe.Some` はその union の case です。std の case は `std::Maybe.Some` と書き、その union にない case を `Maybe.Ok` のように書くと `E1002` です。
 同じモジュールの型名（レコード・union・型クラス・組み込みクラス）、case 名、関数名、active pattern と
 衝突する union・case は `E1001` です。case と所属する union の同名（`union Pair = Pair of ...`）も同じ名前空間のため `E1001` です。
 
@@ -803,7 +820,7 @@ Copy・move・drop・借用・タスクへの送信の可否は、具体化し�
 ガード中の束縛は読み取り専用なので、ガードが不成立なら後続の節で同じ union を照合できます。
 配列・リスト要素や参照先の非 Copy payload は、借用を含まなければ読み取り専用のビューとして束縛できます。
 ビューは節の中で借用できますが、move はできません。生存中は元の記憶域の置換・move・排他借用を拒否します。
-ジェネリック union は `Option<ref T>` のような共有参照ペイロードを持てます。元所有者の loan を保持し、
+ジェネリック union は `Maybe<ref T>` のような共有参照ペイロードを持てます。元所有者の loan を保持し、
 コピー・パターン・関数返却を通じてもその寿命を越えられません。排他参照の格納、`Hold of &i64` のような
 直接の借用 payload 宣言は引き続き `E1013` です。レコードの共有借用フィールドは所有者の寿命内で利用できます。
 
@@ -821,13 +838,13 @@ match の網羅性はコンパイル時に検査し、case の不足は `E1021` 
 union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>
 record BranchData { left: Tree<i64>, right: Tree<i64> }
 union Rose = Branch of [Rose]
-record Link { next: Option<Link> }
+record Link { next: Maybe<Link> }
 ```
 
 union の payload を通る循環を許可します。配列・リスト・Vec の空値も有限値の基点になります。
 union を通らないレコードの循環、有限値を持たない `union Bad = Loop of Bad` は `E1010`、
 型引数を成長・入れ替えする再帰は `E1017` です。型展開の深さ128・名前付き具体型4096の上限も維持します。
-`Option<Link>` と `Option<i64>` の表現は別々に決まり、非再帰の具体型は従来の値表現を保ちます。
+`Maybe<Link>` と `Maybe<i64>` の表現は別々に決まり、非再帰の具体型は従来の値表現を保ちます。
 
 再帰型は非 Copy です。部分 move、共有借用の match、ガードの規則は非再帰型と同じです。
 構築子は payload 全体を一度だけ左から右に評価してからノードを確保します。
@@ -924,11 +941,11 @@ Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき
 IO {
     do! IO.write "Name: "
     let! line = IO.read_line ()
-    do! IO.write_line (Option.default_value "world" line)
+    do! IO.write_line (Maybe.default_value "world" line)
 }
 ```
 
-`IO.read_line : unit -> IO<Option<string>>` は stdin、`write`／`write_line` は stdout、`write_error`／`write_error_line` は stderr を扱います。`IO.writeln` は `IO.write_line` の別名です。
+`IO.read_line : unit -> IO<Maybe<string>>` は stdin、`write`／`write_line` は stdout、`write_error`／`write_error_line` は stderr を扱います。`IO.writeln` は `IO.write_line` の別名です。
 出力は `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` で、表示自体も実行時に行います。`try_` 接頭辞の各 API は結果を `Result<..., IO.Error>` で包みます。
 Error は ReadFailed／WriteFailed／InvalidEncoding。通常 API は Error でトラップします。EOF は None、空行は Some ""、改行なしの最終行も Some です。
 LF／CRLF を除去し、UTF-8 から string へ厳密変換します。出力は UTF-8、line 版だけ LF を付加します。孤立サロゲートは失敗で、NUL を含む内容は保持します。
@@ -1175,7 +1192,7 @@ test "compares strings" =
 比較対象を消費せず、不一致は assert と同じトラップです。詳細な値の表示や custom assertion message はまだありません。
 
 `tsuzuri test <file|directory> [--filter TEXT] [--json] [-O0..-O3] [--target native|wasm32|wasm64]` で実行します。
-ディレクトリは直下のソースを読み、Main.tz は不要です。filter は `Module.名前` の部分一致です。
+ディレクトリは直下のソースを読み、Main.tz は不要です。filter は `Module.名前`（入れ子のモジュールは `Geometry::Point.名前`）の部分一致です。一覧と結果のモジュール名もこの形です。
 既定は native・O0。`--cpu`・`--emit`・`--output` は使えません。WASM は Node.js（wasm64 は memory64 対応の Node.js 24 以降。未対応なら `E2002`）が必要で、生成モジュールの imports は空です。
 各テストを別プロセスで実行し、CPU 数・32・選択件数の最小値まで並列化します。結果は宣言順に報告します。
 トラップ・非ゼロ終了・30秒 timeout は失敗とし、他のテストは続行します。timeout の設定オプションはありません。
@@ -1198,7 +1215,7 @@ JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr 
 | `f16` / `f32` / `f64` / `f128` | IEEE 754 binary16 / binary32 / binary64 / binary128 |
 | `d32` / `d64` / `d128` | IEEE 754 decimal32 / decimal64 / decimal128（BID エンコーディング） |
 | `byte` / `ubyte` / `sbyte` | `byte`・`ubyte` は `i8u`、`sbyte` は `i8` の別名 |
-| `bigint` | 任意精度の整数。std のレコード `BigInt.BigInt`（[bigint](#bigint)） |
+| `bigint` | 任意精度の整数。std のレコード `BigInt`（[bigint](#bigint)） |
 | `string` | ECMA-262 の String 値モデルに従う、所有する不変の UTF-16 コード単位列。孤立サロゲートも保持 |
 | `utf8string` | 従来の実装を保持する、所有する不変の妥当な UTF-8 文字列 |
 | `char` | 全 UTF-16 コード単位。`'A'`、`'\uD800'` などの Copy 値 |
@@ -1206,7 +1223,7 @@ JSON の結果は stdout に test ごと1行と summary 1行、診断は stderr 
 | `Point` など | 名前付きの不変レコード。フィールド数・型は宣言通り |
 | `Pair<i64, string>` など | `record Pair<'a, 'b> { ... }` で宣言したジェネリックレコードの具体化。型引数ごとに別の型 |
 | `Shape`・`Maybe<i64>` など | `union` で宣言した不変の共用体。いずれか一つの case と、その case の payload を持つ |
-| `Option<'a>`／`Result<'a, 'e>` | 標準の union。`None`／`Some value`、`Ok value`／`Error error` |
+| `Maybe<'a>`／`Result<'a, 'e>` | 標準の union。`None`／`Some value`、`Ok value`／`Error error` |
 | `i64 * string` など | `(42, "text")` のような不変タプル。要素ごとに型・Copy・move・drop を持つ |
 | `[i32]` など | 要素型だけが静的に決まり、長さは実行時に決められる不変配列 |
 | `Vec<i32>` など | 常に非 Copy の伸縮可能な所有バッファ。長さと容量を別に保持 |
@@ -1528,7 +1545,7 @@ utf8char は braced Unicode escape だけを許し、補助平面は受理、サ
 |---|---|
 | `Char.to_u16`／`of_u16` | `char -> i16u`／`i16u -> char`。全65536値で往復 |
 | `Utf8Char.to_u32` | `utf8char -> i32u` |
-| `Utf8Char.of_u32` | `i32u -> Option<utf8char>`。不正スカラーは None |
+| `Utf8Char.of_u32` | `i32u -> Maybe<utf8char>`。不正スカラーは None |
 | `Utf8Char.of_u32_unchecked` | `i32u -> utf8char`。不正スカラーはトラップ |
 | 両モジュールの `is_ascii_digit`／`is_ascii_alphabetic`／`is_ascii_lower`／`is_ascii_upper` | 対応する文字型を受け bool を返す |
 | 両モジュールの `to_ascii_lower`／`to_ascii_upper` | 同じ文字型を返し、非 ASCII は変えない |
@@ -1597,9 +1614,9 @@ Tsuzuri の索引は範囲検査付きの数値読み出しで、負数・範囲
 |---|---|
 | `concat parts`／`join separator parts` | 同じ符号化の文字列。空配列は空文字列 |
 | `split separator text` | 同じ符号化の文字列配列。非空区切りの先頭・末尾・連続一致では空要素も保持 |
-| `find needle text`／`rfind needle text` | `Option<i64>`。最初／最後の一致。空 needle は 0／text.length |
+| `find needle text`／`rfind needle text` | `Maybe<i64>`。最初／最後の一致。空 needle は 0／text.length |
 | `contains needle text`／`starts_with prefix text`／`ends_with suffix text` | `bool`。空の検索値は true |
-| `slice text first last`／`sub text first count` | `Option<string>`／`Option<utf8string>`。終了位置は含まない |
+| `slice text first last`／`sub text first count` | `Maybe<string>`／`Maybe<utf8string>`。終了位置は含まない |
 | `decode_at text offset` | `(char * i64)`／`(utf8char * i64)`。文字と次の offset。範囲・復号境界違反はトラップ |
 | `chars text`／`char_count text` | `[char]` とコード単位数／`[utf8char]` とスカラー数 |
 | `trim text`／`trim_start text`／`trim_end text` | ASCII whitespace（9～13、32）だけを除いた所有文字列 |
@@ -1621,7 +1638,7 @@ UTF-8 のバイト順はスカラー値順と一致しますが、UTF-16 のコ�
 |---|---|
 | `String.to_code_units`／`from_code_units` | `string -> [i16u]`／`[i16u] -> string`。surrogate も保持 |
 | `Utf8String.to_bytes` | `utf8string -> [ubyte]` |
-| `Utf8String.from_bytes` | `[ubyte] -> Option<utf8string>`。O(bytes) で検証し、不正なら入力を解放して None |
+| `Utf8String.from_bytes` | `[ubyte] -> Maybe<utf8string>`。O(bytes) で検証し、不正なら入力を解放して None |
 
 移送 API は入力を消費します。既に所有するヒープバッファは追加コピー・確保なしで移します。
 スタック・静的領域の値は通常のヒープ移送が先に必要です。符号化変換とは異なり、要素の表現は変えません。
@@ -1719,11 +1736,11 @@ record Point { x: i64, y: i64 }
 instance Format<Point> {
     fn format point spec =
         match Format.parse spec with
-        | Option.Some parsed ->
+        | Maybe.Some parsed ->
             let sign = if parsed.plus then "+" else ""
             let precision = if parsed.precision >= 0 then $"/{parsed.precision}" else ""
             Format.pad (ref parsed) $"{sign}{point.x},{point.y}{precision}"
-        | Option.None -> ""
+        | Maybe.None -> ""
 }
 
 let p = Point { x: 1, y: 2 }
@@ -1752,31 +1769,31 @@ std の `Format` モジュールは、instance の中で spec を扱う部品を
 | `Format.Align` | `AlignAuto \| AlignLeft \| AlignCenter \| AlignRight`。`AlignAuto` は spec が揃えを指定しなかったことを表し、埋めるときは左です |
 | `Format.Kind` | `KindPlain \| KindLowerHex \| KindUpperHex \| KindOctal \| KindBinary \| KindExponent \| KindFixed`。type がなければ `KindPlain` です |
 | `Format.Spec` | `{ fill: string, align: Align, plus: bool, width: i64, precision: i64, kind: Kind }`。fill の既定は空白、width は指定なしで 0、precision は指定なしで -1 です |
-| `Format.parse` | `ref string -> Option<Format.Spec>`。spec の文法で分解し、文法に合わない文字列・先頭が `0` の width や `.05` のように先頭が `0` の precision・4096 を超える値・lexer が拒否する fill（`{`・`}`・`"`・`\`・CR・LF、サロゲートペアの片割れ）は `None` です。type と precision の組み合わせは検査しません。空文字列は既定の `Spec` です |
+| `Format.parse` | `ref string -> Maybe<Format.Spec>`。spec の文法で分解し、文法に合わない文字列・先頭が `0` の width や `.05` のように先頭が `0` の precision・4096 を超える値・lexer が拒否する fill（`{`・`}`・`"`・`\`・CR・LF、サロゲートペアの片割れ）は `None` です。type と precision の組み合わせは検査しません。空文字列は既定の `Spec` です |
 | `Format.pad` | `ref Format.Spec -> string -> string`。`width` Unicode スカラーまで `fill` で埋めます。`AlignAuto` は左揃え、`AlignCenter` は不足分の半分（切り捨て）を前に置きます。すでに幅以上なら変えません |
 
-### Option と Result
+### Maybe と Result
 
-`Option<'a> = None | Some of 'a` は値の不在を、`Result<'a, 'e> = Ok of 'a | Error of 'e` は予期できる失敗を表します。
+`Maybe<'a> = None | Some of 'a` は値の不在を、`Result<'a, 'e> = Ok of 'a | Error of 'e` は予期できる失敗を表します。
 標準の `.tc` ソースに定義された通常の union で、すべてのプロジェクトから利用できます。
-case は無修飾でも使えますが、利用者の同名 case があればそちらを優先します。`Option.Some`・`Result.Error` と修飾できます。
+case は無修飾でも使えますが、利用者の同名 case があればそちらを優先します。`Maybe.Some`・`Result.Error` と修飾できます。
 
 | 関数 | 契約 |
 |---|---|
-| `Option.is_some`／`is_none`、`Result.is_ok`／`is_error` | union を共有借用し、case を調べる |
-| `Option.get`、`Result.get`／`get_error` | union を消費して payload を返す。違う case ならトラップ |
+| `Maybe.is_some`／`is_none`、`Result.is_ok`／`is_error` | union を共有借用し、case を調べる |
+| `Maybe.get`、`Result.get`／`get_error` | union を消費して payload を返す。違う case ならトラップ |
 | 両方の `default_value fallback value` | 成功 payload、または先に評価済みの fallback を返す |
 | 両方の `default_with fallback value` | 不在／失敗のときだけ `fallback ()` を呼ぶ |
 | 両方の `map transform value`／`bind value next` | 成功 payload を消費して変換／次の union を返す。不在／失敗では継続を呼ばない |
 | 両方の `map_ref transform value`／`bind_ref value next` | union と成功 payload を共有借用し、所有する結果を返す |
-| `Option.filter predicate value` | payload を借用して検査し、成立なら所有する `Some` を、不成立なら `None` を返す |
+| `Maybe.filter predicate value` | payload を借用して検査し、成立なら所有する `Some` を、不成立なら `None` を返す |
 | `Result.map_error transform value` | `Error` の payload だけを消費して変換する |
 | 両方の `or_else value fallback` | 不在／失敗のときだけ `fallback ()` を呼ぶ |
-| `Option.to_result error value`／`Result.of_option error value` | `Some` を `Ok`、`None` を指定した `Error` へ変換 |
-| `Option.of_result value`／`Result.to_option value` | `Ok` を `Some`、`Error` を解放して `None` へ変換 |
+| `Maybe.to_result error value`／`Result.of_maybe error value` | `Some` を `Ok`、`None` を指定した `Error` へ変換 |
+| `Maybe.of_result value`／`Result.to_maybe value` | `Ok` を `Some`、`Error` を解放して `None` へ変換 |
 
 `Result.map_ref`／`bind_ref` は失敗値を複製するため `Copy<'e>` を要求します。成功 payload に `Copy` は不要です。
-ジェネリック union は `Option<&T>` や `Result<&T, E>` の共有借用 payload を保持できます。
+ジェネリック union は `Maybe<&T>` や `Result<&T, E>` の共有借用 payload を保持できます。
 返却する実際の loan を検査し、呼び出し側では借用を持つ全入力の寿命に制限します。排他参照は保持できません。
 パターンで作ったローカルなビューへの借用は節の外へ返せません。Copy の payload は従来どおり束縛時に複製し、
 配列・リストなどの Copy 値には深い複製のコストがあります。
@@ -1817,7 +1834,7 @@ Identity {
 
 `Bind` の第一引数や結果を恒等型にする必要はありません。配列・リスト、具体的なレコード、
 関数型などを使い、`Bind` が継続を呼ぶか、何回呼ぶか、どの値を渡すかを実装で決められます。
-標準の `Option`／`Result` は失敗時に継続を呼びません。`examples/computations/Main.tz` は標準の `Result` を使います。
+標準の `Maybe`／`Result` は失敗時に継続を呼びません。`examples/computations/Main.tz` は標準の `Result` を使います。
 ビルダーの操作も通常の関数として直接呼べ、`def` の型変数・制約・カリー化を利用できます。
 使われない操作や補助関数も宣言時に型検査します。
 
@@ -1834,14 +1851,14 @@ match answer with
 
 両ビルダーは `Bind`・`Return`・`ReturnFrom`・`Zero`・`Combine`・`Delay`・`Run`・`For`・`While` を持ちます。
 `None`／`Error` は後続の `let!`・`do!`・反復・`Combine` を短絡します。`Result` の error 型は全体で同じです。
-空本体と省略した else は unit の成功（`Option.Zero() = Some ()`、`Result.Zero() = Ok ()`）です。
+空本体と省略した else は unit の成功（`Maybe.Zero() = Some ()`、`Result.Zero() = Ok ()`）です。
 値を返す `return` は末尾に置きます。`For` は `Copy<'a> => ['a]` の配列だけを受け取り、
 通常の `for…in` の非 Copy 要素の借用反復とは異なります。`?` と暗黙の error 変換はありません。
 `return` は関数からの早期脱出ではなく、成功値の生成です。早期伝播は `Bind`／`Combine` が
 失敗値を受けたときに継続を呼ばないことで起こり、`Result` は最初の error をそのまま返します。
 失敗より前に書いた通常の `let` や unit 式は省略せず、そのトラップを失敗値へ変換しません。
-`do!` の成功 payload は unit に限ります。`Option` と `Result` の相互変換は
-`Option.to_result error value`／`Result.to_option value` を明示して行います。
+`do!` の成功 payload は unit に限ります。`Maybe` と `Result` の相互変換は
+`Maybe.to_result error value`／`Result.to_maybe value` を明示して行います。
 
 ### ビルダー名を省略した本体
 
@@ -1859,9 +1876,9 @@ fn main =
     do! IO.write_line value
 ```
 
-この入口は `IO<Option<unit>>` です。IO を実行して一行を読み、Some のときだけ書き込みます。
+この入口は `IO<Maybe<unit>>` です。IO を実行して一行を読み、Some のときだけ書き込みます。
 None のときは残りの文を実行せず、IO の結果に None を保持します。結果を使いたい場合は
-`def read_and_echo :: IO<Option<unit>>` のような関数にし、呼び出し側で IO の結果を match します。
+`def read_and_echo :: IO<Maybe<unit>>` のような関数にし、呼び出し側で IO の結果を match します。
 実行入口は IO の結果を表示せず解放し、None／Error も正常な計算結果として終了コード 0 にします。
 エラーを表示・変換する場合は、入口側で明示的に処理します。
 
@@ -1874,7 +1891,7 @@ None のときは残りの文を実行せず、IO の結果に None を保持し
 
 異種ビルダーの結果は暗黙に取り出したり、None と Error を相互変換したりしません。
 合成操作のない通常のビルダーでは、外側の Return に内側の計算を渡し、例えば
-`Option<Result<T, E>>` のようにソース順の入れ子を保ちます。内側が遅延値ならその遅延も残ります。
+`Maybe<Result<T, E>>` のようにソース順の入れ子を保ちます。内側が遅延値ならその遅延も残ります。
 同じビルダーの bind は従来どおりで、短絡や継続を呼ぶ回数はその Bind が決めます。
 
 IO や独自の遅延ビルダーは、任意の公開操作 `Using` で異種計算を合成できます。
@@ -1887,7 +1904,7 @@ def Using :: (('a -> 'b) -> 'c) -> ('a -> IO<'b>) -> IO<'c>
 ```
 
 IO.Using は IO の実行時にだけ source を呼び、source が継続を呼んだ場合にその IO を実行します。
-これにより `IO<Option<T>>`／`IO<Result<T, E>>` を作り、独自の失敗値・列挙・継続の呼び出し回数も保持します。
+これにより `IO<Maybe<T>>`／`IO<Result<T, E>>` を作り、独自の失敗値・列挙・継続の呼び出し回数も保持します。
 特定の union case やビルダー名をハードコードしていません。独自ビルダーの Using も通常の型・所有権検査を受けます。
 Using があるのに型が合わない場合は型エラーであり、別の合成へフォールバックしません。
 任意のモナド同士を同じ型へ自動で平坦化する機能ではありません。
@@ -1950,7 +1967,7 @@ Task の and!／yield／match! は追加せず、明示 task の規則も変更�
 そこへ外側のビルダー文脈は持ち越しません。新しい `Builder { ... }` または独立に型解決する暗黙本体を使います。
 
 `Name { field: value }` はレコードリテラルです。空の `Name {}` は、その名前の `.tc` があれば
-空のコンピュテーション式、なければ空レコードです。同名の空レコードは `Module.Name {}` と修飾できます。
+空のコンピュテーション式、なければ空レコードです。別のモジュールにある同名の空レコードは `Module.Name {}` と修飾できます。
 `Builder` と `{` は同じ行に置きます。
 
 展開先は通常の静的な関数呼び出しと匿名関数です。callee、各引数の左から右の評価、
@@ -1997,19 +2014,19 @@ callee を先に評価して得たスナップショットを保持します。
 pattern/guard/網羅性/所有権は通常matchと同じです。各節でreturn/let!等を使えます。
 
 ```text
-let result = Option {
+let result = Maybe {
     let! left = Some 20
     and! right = Some 22
     return left + right
 }
-Option.get result
+Maybe.get result
 ```
 
 and!は単純な識別子のlet!に続けます。mut・型注釈を許し、同じgroup内の重複名はE1001、他の束縛の右辺からgroupの名前を参照することはできません。
 全右辺を左から右へ一度ずつ評価してからMergeSourcesを左結合し、Bindへ渡します。右辺評価は失敗値によって短絡せず、トラップは巻き戻しません。
 ビルダーにBind2があり、ちょうど2束縛と末尾returnだけなら、`Bind2 left right (\first second -> result)`へ展開します。それ以外ではMergeSourcesが必要で、不在ならE1018です。
 単純なlet!と末尾returnだけでは、存在する場合に限ってBindReturnを使います。存在しなければBind+Returnです。型不一致なら通常の型エラーで、別経路へ黙って戻しません。
-これらはビルダーが定義した操作であり、コンパイラはモナド則やoperationの意味同値を仮定しません。Option/Resultは3操作を提供し、Resultは左のErrorを優先します。
+これらはビルダーが定義した操作であり、コンパイラはモナド則やoperationの意味同値を仮定しません。Maybe/Resultは3操作を提供し、Resultは左のErrorを優先します。
 Delayがある場合の全体の遅延・Capture・外部可変変数の禁止は従来どおりです。and!はタスクを自動開始/並列化しません。
 use/tryはグローバル予約語にしません。計算式の`use`／`use!`は[利用者定義の解放](#利用者定義の解放)のとおりletのlexical drop（Drop型では利用者の`drop`）です。`try`／`with`／`finally`はビルダーの操作へ展開せず、`Result`を作る通常の式です（[検査付き算術と例外](#検査付き算術と例外)）。unwindは行いません。
 カスタム演算、暗黙yield、高階型、ビルダーオブジェクトは追加しません。
@@ -2197,7 +2214,7 @@ step が 0 ならトラップします。次の値が整数型の範囲を越え
 型・所有権は検査します。評価済みの所有ローカル・パターン一時値・引数やコレクションの生成途中の値は、ジャンプ前に解放します。
 両方とも unit 型なので `if condition then break else 1` は `E1003` です。値付き・ラベル付きのジャンプはありません。
 ループ外、lambda・task・コンピュテーション式の境界を越えるジャンプ、ビルダー自身の `For`／`While` へのジャンプ、`finally` を持つ `try` の外へのジャンプは `E1023` です。
-ビルダーの通常式の中で作る通常ループ（`Option { let value = { while true do break; 42 }; return value }`）は使えます。
+ビルダーの通常式の中で作る通常ループ（`Maybe { let value = { while true do break; 42 }; return value }`）は使えます。
 for の分解パターンは網羅性を検査せず、一致しない要素ではトラップし、黙って要素をスキップしません。
 
 反復のためだけにコレクション全体をコピーしません。ループ中は列挙元を読み取り借用し、
@@ -2326,8 +2343,8 @@ match "hello" with
 ```
 
 単一ケースの全域認識器 `(|Name|)` は結果を後続パターンへ渡し、
-部分認識器 `(|Name|_|)` は bool または `Option<T>` を返します。bool 形式に payload はなく、Option は Some の payload を後続パターンへ渡します。
-None は次の節へ進みます。Option<unit> だけは payload パターンを省略できます。
+部分認識器 `(|Name|_|)` は bool または `Maybe<T>` を返します。bool 形式に payload はなく、Maybe は Some の payload を後続パターンへ渡します。
+None は次の節へ進みます。Maybe<unit> だけは payload パターンを省略できます。
 ケース名は大文字始まりです。無修飾名は自モジュール、可視な利用者モジュールで一意な名前、std の順です。
 曖昧なら `E1004` で `Module.Name` を要求します。std の認識器は利用者モジュールを探索しません。
 追加引数は対象の前に評価して渡せます。例えば `(|Divisible|_|) :: i64 -> i64 -> bool` は
@@ -2353,7 +2370,7 @@ case は宣言順の tag を持ち、本体内だけで `First`・`Second` な�
 追加引数に副作用がある場合にも正しく次の節へ進み、結果を勝手にキャッシュしません。
 
 ```text
-def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text
+def (|Parsed|_|) :: ref string -> Maybe<i64> = \text -> Parse.parse text
 match "42" with | Parsed value -> value | _ -> 0
 ```
 
@@ -2505,7 +2522,7 @@ first_list ref values
 `Vec.length`・`Vec.capacity`・`Vec.is_empty`・`Vec.get`・`Vec.at`・`Vec.clone` は共有借用を受け、
 その他の操作は所有 Vec を受け取って更新値を返します。`Vec.get`／`clone` は要素に Copy を要求します。
 `push` は末尾追加、`reserve` は追加個数分の容量確保、`truncate`・`clear` は削除要素を先頭から解放、
-`pop` は `(残りのVec, Option<末尾要素>)` を返します。`set`・`swap` は既存位置の更新です。
+`pop` は `(残りのVec, Maybe<末尾要素>)` を返します。`set`・`swap` は既存位置の更新です。
 `at` は共有要素参照を返し、範囲外ならトラップします。`get` は範囲外で None です。
 添字と `for` にも対応し、非 Copy 要素は借用して扱います。要素の排他借用はできません。
 
@@ -2591,22 +2608,22 @@ Simd.sum_lanes shifted
 
 ### Seq と明示的な反復
 
-`Seq<'a>`は同期的な一回消費の遅延列です。常にnon-Copyで、`Seq.next sequence`は所有状態を消費して `(Seq<'a> * Option<'a>)` を返します。
+`Seq<'a>`は同期的な一回消費の遅延列です。常にnon-Copyで、`Seq.next sequence`は所有状態を消費して `(Seq<'a> * Maybe<'a>)` を返します。
 空ならNone、要素があればSomeと次状態です。`for pattern in sequence do body`もsequenceを一度だけ消費し、各stepで次状態を戻してからbodyを実行します。
 break/continueは通常のループと同じで、残った列・未消費要素を解放します。borrowed要素は元所有者を超えて生存できず、iteration localへの借用も持ち出せません。
 配列・リスト・文字列・整数範囲の直接forは既存の走査を維持します。独自型のiter関数は暗黙探索せず、`for item in Module.iter (&source) do ...`と書きます。
 
 ```text
 let sequence = Seq.unfold (\value ->
-    if value < 10 then Option.Some (value, value + 1) else Option.None) 0
+    if value < 10 then Maybe.Some (value, value + 1) else Maybe.None) 0
 let doubled = Seq.map (\value -> value * 2) sequence
 let selected = Seq.filter (\value -> deref value % 3 == 0) doubled
 let result = Seq.to_array selected
 ```
 
 - `Seq.empty()`は空、`Seq.once value`は一要素です。onceはTaskや所有文字列も保持し、未実行でも正しくdropします。
-- `Seq.defer step`は `unit -> (Seq<'a> * Option<'a>)` の次stepを遅延します。next前には呼び出しません。
-- `Seq.unfold generator state`は `state -> Option<('a * state)>` を繰り返します。stateには通常closureのCapture制約があります。
+- `Seq.defer step`は `unit -> (Seq<'a> * Maybe<'a>)` の次stepを遅延します。next前には呼び出しません。
+- `Seq.unfold generator state`は `state -> Maybe<('a * state)>` を繰り返します。stateには通常closureのCapture制約があります。
 - `Seq.map transform sequence`は `'a -> 'b`、`Seq.filter predicate sequence`は `ref 'a -> bool` を遅延適用します。保存する入力要素にはCaptureを要求します。
 - `Seq.to_array`は列を消費し、Vecで集めて所有配列へ移します。無限列には停止を保証しません。
 - `Array.iter`／`Vec.iter`／`List.iter`／`Set.iter`は要素への共有参照、`Map.iter`は `(ref K * ref V)` のSeqを返します。元コンテナの寿命・借用競合を維持します。
@@ -2631,7 +2648,7 @@ let map = Map.remove map 2
 
 Map APIは `empty()`、`singleton key value`、`length (&map)`、`is_empty (&map)`、`insert map key value`、`remove map key`、
 `contains_key (&map) key`、`get (&map) key`、`at (&map) key`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold folder initial (&map)`です。
-getはCopy値の `Option<V>`、atは存在しなければトラップする `ref V` を返します。検索キーは値渡しして呼び出し後に解放します。
+getはCopy値の `Maybe<V>`、atは存在しなければトラップする `ref V` を返します。検索キーは値渡しして呼び出し後に解放します。
 同じキーへのinsertは最初のキー代表値を保持し、新しいキーと旧値を解放して値だけを置換します。removeで存在しないキーは変更しません。
 to_arrayはキー・値、keysはキー、valuesは値にだけCopyを要求します。foldのcallbackは `state -> ref K -> ref V -> state` です。
 
@@ -2667,7 +2684,7 @@ to_string (HashMap.keys (ref ages))      // [10, 40, 30]
 | `length (&map)`／`is_empty (&map)` | 件数／空かどうか |
 | `insert map key value` | mapを消費して返します。新しいキーは末尾に付きます。`Eq` で等しいキーがあれば、最初に格納したキーを保ち、新しいキーと旧値を解放して値だけを置換します（位置は変わりません） |
 | `remove map key` | mapを消費して返します。存在しなければそのまま返し、あれば entry を解放します（順序への影響は次の節） |
-| `contains_key (&map) key`／`get (&map) key`／`at (&map) key` | 検索キーは値渡しで、比較して呼び出しの終わりに解放します。`get` は `Option<V>`（`Copy<V>` が必要）、`at` は存在しなければトラップする `ref V` です |
+| `contains_key (&map) key`／`get (&map) key`／`at (&map) key` | 検索キーは値渡しで、比較して呼び出しの終わりに解放します。`get` は `Maybe<V>`（`Copy<V>` が必要）、`at` は存在しなければトラップする `ref V` です |
 | `contains_key_ref`／`get_ref`／`at_ref`／`remove_ref` | 上と同じ操作を、キーを `ref 'key` で受け取る形にしたものです。キーを手放さずに何度でも検索でき、`at_ref` の結果は map だけを借用します |
 | `to_array (&map)`／`keys (&map)`／`values (&map)` | 走査順の `[(K * V)]`／`[K]`／`[V]`。コピーする側の型に `Copy` を要求します |
 | `fold folder initial (&map)`／`iter (&map)` | `folder` は `'state -> ref K -> ref V -> 'state`、`iter` は `Seq<(ref K * ref V)>` です。キーの排他借用は提供しません（キーを変えると表が壊れるため） |
@@ -2745,8 +2762,8 @@ List は `length`・`is_empty`・`copy`・`map`・`map_ref`・`fold`・`fold_ref
 `Array.copy`／`List.copy` は借用したコレクションの全要素を複製した新しい値を返す、暗黙の複製の明示形です（要素に Copy を要求）。
 
 値を読み出す callback・新しい所有コレクションへのコピーは要素に Copy を要求します。
-`_ref` 版、比較・検索は要素を借用し、非 Copy 要素も扱えます。`find`／`min`／`max` は `Option<ref T>`、
-`get`／`reduce` は `Option<T>`、`index_of`／`binary_search` は `Option<i64>` を返します。
+`_ref` 版、比較・検索は要素を借用し、非 Copy 要素も扱えます。`find`／`min`／`max` は `Maybe<ref T>`、
+`get`／`reduce` は `Maybe<T>`、`index_of`／`binary_search` は `Maybe<i64>` を返します。
 `at` は範囲外でトラップ、`get` は None、`sub values start count` は不正な範囲でトラップします。
 `zip` は長さが一致しなければトラップします。
 
@@ -3001,7 +3018,7 @@ sum = next
 
 ### bigint
 
-`bigint` は任意精度の整数で、std のレコード `BigInt.BigInt` です。リテラルは `123I`・`0xFFI`、または `bigint` が期待される位置の接尾辞のない整数（`let b: bigint = 2`）です。
+`bigint` は任意精度の整数で、std のレコード `BigInt` です。リテラルは `123I`・`0xFFI`、または `bigint` が期待される位置の接尾辞のない整数（`let b: bigint = 2`）です。
 
 ```text
 let a = 9999999999999999999999999999I
@@ -3013,7 +3030,7 @@ let power = 2I ** 100           // 1267650600228229401496703205376
 
 - `+`・`-`・`*`・`/`・`%`・`**` と単項 `-`、比較、`Display`・`Parse`・`Hash`・`Default` を持ちます。
 - `/` はゼロ方向への切り捨て、`%` は被除数と同符号の剰余です。ゼロ除算はトラップ（assertion）します。
-- `BigInt.of_i64 : i64 -> bigint`、`BigInt.to_i64 : ref bigint -> Option<i64>`（i64 に収まらなければ None）、`BigInt.of_string : ref string -> Option<bigint>`、`BigInt.compare : ref bigint -> ref bigint -> i64` を提供します。
+- `BigInt.of_i64 : i64 -> bigint`、`BigInt.to_i64 : ref bigint -> Maybe<i64>`（i64 に収まらなければ None）、`BigInt.of_string : ref string -> Maybe<bigint>`、`BigInt.compare : ref bigint -> ref bigint -> i64` を提供します。
 - 内部表現は不透明で、`BigInt` モジュールの外からの record 構築・field 参照・pattern 分解・record 更新は `E1022` です。
 
 ### 表示と解析
@@ -3028,8 +3045,8 @@ NUL・改行もそのまま保持し、引用符やエスケープは追加し�
 
 ```text
 let text = to_string 0.1
-let number: Option<f64> = Parse.parse ref text
-Option.get number
+let number: Maybe<f64> = Parse.parse ref text
+Maybe.get number
 ```
 
 整数は符号と十進数字だけです。f16／f32／f64／f128 は同じ型へ解析し直すと元のビットに戻る
@@ -3237,7 +3254,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 |---|---|
 | `E0001` / `E0002` / `E0003` | 字句／構文・深さ／ソースサイズ |
 | `E1001`–`E1010` | 名前、型、演算、引数、フィールド、ABI、リテラル、レイアウト |
-| `E1011` | 無効なモジュール名・重複モジュール、std の予約モジュール名、不正な std のパス |
+| `E1011` | 無効なモジュール名・重複モジュール、std の予約モジュール名・名前空間 `std`、不正な std のパス |
 | `E1012` | move 後の使用、不正な move／代入先（Drop 型からの field・payload の move と更新、`Owned.function` の本体での捕捉値の move を含む） |
 | `E1013` | 所有者を超える寿命、対応していない寿命表現、タスク境界を越える借用（`Owned.function` のラムダの参照の捕捉を含む） |
 | `E1014` | 借用の競合、不変値への可変アクセス |
@@ -3248,7 +3265,7 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `E1019` | 再帰に必要な `rec` の不足、宣言と実装の不一致、単独の `and` |
 | `E1020` | 不正なパターン、OR 束縛の不一致、未対応の認識器形式、union case の payload の不一致 |
 | `E1021` | 明示の `match`・関数ガードの網羅性の不足（不足する値の例を示す） |
-| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap.HashMap`・`Random.Pcg`・`File.Handle`・`BigInt.BigInt` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
+| `E1022` | 他モジュールの private 名の参照、public 宣言からの private 型の漏れ、不正な `private` 指定、不透明な std record（`HashMap`・`Random.Pcg`・`File.Handle`・`BigInt` など）の構築・field 参照、std 内部の `Os.__*` primitive の参照 |
 | `E1023` | ループ外、関数・task・ビルダー境界を越える `break`／`continue`、`finally` を持つ `try` から出る `break`／`continue` |
 | `E1024` | 型宣言の型パラメーターの重複・未使用・未宣言、union・case・型別名の大文字始まり違反、union 内の case 名の重複、型別名の循環・型引数の個数違い |
 | `E1027` | 条件付きインスタンス・スーパークラス・デフォルトメソッドの制約不整合 |

@@ -1,4 +1,4 @@
-private def read_with :: ref string -> Result.Result<[ubyte], Os.Error>
+private def read_with :: ref string -> Result<[ubyte], Os.Error>
 fn read_with path =
 	match Os.encode path with
 	| Result.Error error -> Result.Error error
@@ -7,7 +7,7 @@ fn read_with path =
 		| (0, bytes) -> Result.Ok bytes
 		| (status, _) -> Result.Error (Os.error_of_status status)
 
-private def write_with :: i32 -> ref string -> ref [ubyte] -> Result.Result<unit, Os.Error>
+private def write_with :: i32 -> ref string -> ref [ubyte] -> Result<unit, Os.Error>
 fn write_with mode path data =
 	match Os.encode path with
 	| Result.Error error -> Result.Error error
@@ -15,7 +15,7 @@ fn write_with mode path data =
 		let status = Os.__write mode (ref name) data
 		if status == 0 then Result.Ok () else Result.Error (Os.error_of_status status)
 
-private def write_text_with :: i32 -> ref string -> ref string -> Result.Result<unit, Os.Error>
+private def write_text_with :: i32 -> ref string -> ref string -> Result<unit, Os.Error>
 fn write_text_with mode path text =
 	match Os.encode text with
 	| Result.Error error -> Result.Error error
@@ -24,30 +24,30 @@ fn write_text_with mode path text =
 		write_with mode path (ref bytes)
 
 /// Reads a whole file. The path is the system's, so a relative one starts at the working directory.
-def read_bytes :: string -> IO<Result.Result<[ubyte], Os.Error>>
+def read_bytes :: string -> IO<Result<[ubyte], Os.Error>>
 fn read_bytes path = IO.map (\() -> read_with (ref path)) (IO.pure ())
 
 /// Reads a whole file as UTF-8. A byte order mark is kept; invalid UTF-8 is `InvalidEncoding`.
-def read_text :: string -> IO<Result.Result<string, Os.Error>>
+def read_text :: string -> IO<Result<string, Os.Error>>
 fn read_text path = IO.map (\() ->
 	match read_with (ref path) with
 	| Result.Error error -> Result.Error error
 	| Result.Ok bytes -> Os.decode bytes) (IO.pure ())
 
 /// Creates or truncates a file and writes the bytes. A failure part way leaves a partial file.
-def write_bytes :: string -> [ubyte] -> IO<Result.Result<unit, Os.Error>>
+def write_bytes :: string -> [ubyte] -> IO<Result<unit, Os.Error>>
 fn write_bytes path data = IO.map (\() -> write_with 0i32 (ref path) (ref data)) (IO.pure ())
 
 /// Creates or truncates a file and writes the text as UTF-8.
-def write_text :: string -> string -> IO<Result.Result<unit, Os.Error>>
+def write_text :: string -> string -> IO<Result<unit, Os.Error>>
 fn write_text path text = IO.map (\() -> write_text_with 0i32 (ref path) (ref text)) (IO.pure ())
 
 /// Appends the text as UTF-8, creating the file when it is missing.
-def append_text :: string -> string -> IO<Result.Result<unit, Os.Error>>
+def append_text :: string -> string -> IO<Result<unit, Os.Error>>
 fn append_text path text = IO.map (\() -> write_text_with 1i32 (ref path) (ref text)) (IO.pure ())
 
 /// Removes a file or a symbolic link, not what a link points to.
-def remove :: string -> IO<Result.Result<unit, Os.Error>>
+def remove :: string -> IO<Result<unit, Os.Error>>
 fn remove path = IO.map (\() ->
 	let nothing: [ubyte] = []
 	write_with 4i32 (ref path) (ref nothing)) (IO.pure ())
@@ -69,7 +69,7 @@ fn mode_number mode =
 	| Append -> 2i32
 	| CreateNew -> 3i32
 
-private def open_with :: ref string -> Mode -> Result.Result<Handle, Os.Error>
+private def open_with :: ref string -> Mode -> Result<Handle, Os.Error>
 fn open_with path mode =
 	match Os.encode path with
 	| Result.Error error -> Result.Error error
@@ -77,50 +77,50 @@ fn open_with path mode =
 		let opened = Os.__open (mode_number mode) (ref name)
 		if opened >= 0 then Result.Ok (Handle { id: opened }) else Result.Error (Os.error_of_status (0 - opened))
 
-private def handle_with :: i32 -> Handle -> i64 -> ref [ubyte] -> Result.Result<[ubyte], Os.Error>
+private def handle_with :: i32 -> Handle -> i64 -> ref [ubyte] -> Result<[ubyte], Os.Error>
 fn handle_with operation handle count data =
 	match Os.__handle operation handle.id count data with
 	| (0, bytes) -> Result.Ok bytes
 	| (status, _) -> Result.Error (Os.error_of_status status)
 
-private def no_value :: Result.Result<[ubyte], Os.Error> -> Result.Result<unit, Os.Error>
+private def no_value :: Result<[ubyte], Os.Error> -> Result<unit, Os.Error>
 fn no_value result =
 	match result with
 	| Result.Ok _ -> Result.Ok ()
 	| Result.Error error -> Result.Error error
 
 /// Opens a file. A file that is already open can be opened again; each handle is separate.
-def open :: string -> Mode -> IO<Result.Result<Handle, Os.Error>>
+def open :: string -> Mode -> IO<Result<Handle, Os.Error>>
 fn open path mode = IO.map (\() -> open_with (ref path) mode) (IO.pure ())
 
 /// Reads up to `count` bytes. An empty result means the end of the file; fewer bytes than `count`
 /// does not. A negative count or one above 2^30 is `InvalidInput`, and so is reading a handle that was
 /// not opened with `Read`.
-def read :: Handle -> i64 -> IO<Result.Result<[ubyte], Os.Error>>
+def read :: Handle -> i64 -> IO<Result<[ubyte], Os.Error>>
 fn read handle count = IO.map (\() ->
 	let nothing: [ubyte] = []
 	handle_with 0i32 handle count (ref nothing)) (IO.pure ())
 
 /// Writes all the bytes. A handle opened with `Read` is `InvalidInput`.
-def write :: Handle -> [ubyte] -> IO<Result.Result<unit, Os.Error>>
+def write :: Handle -> [ubyte] -> IO<Result<unit, Os.Error>>
 fn write handle data = IO.map (\() -> no_value (handle_with 1i32 handle 0 (ref data))) (IO.pure ())
 
 /// Checks the handle. Tsuzuri buffers nothing, so every `write` has already reached the system.
-def flush :: Handle -> IO<Result.Result<unit, Os.Error>>
+def flush :: Handle -> IO<Result<unit, Os.Error>>
 fn flush handle = IO.map (\() ->
 	let nothing: [ubyte] = []
 	no_value (handle_with 2i32 handle 0 (ref nothing))) (IO.pure ())
 
 /// Closes a file. The handle is dead afterwards even when the system reports a failure, so closing twice
 /// is `InvalidInput`.
-def close :: Handle -> IO<Result.Result<unit, Os.Error>>
+def close :: Handle -> IO<Result<unit, Os.Error>>
 fn close handle = IO.map (\() ->
 	let status = Os.__close handle.id
 	if status == 0 then Result.Ok () else Result.Error (Os.error_of_status status)) (IO.pure ())
 
 /// Opens a file, runs the action with its handle, and closes it before returning, whether or not the
 /// action's own result is an error. The action's value is returned unless closing fails.
-def with_open :: Capture<'a> => string -> Mode -> (Handle -> IO<'a>) -> IO<Result.Result<'a, Os.Error>>
+def with_open :: Capture<'a> => string -> Mode -> (Handle -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_open path mode body =
 	IO.bind (open path mode) (\opened ->
 		match opened with
@@ -139,7 +139,7 @@ union EntryKind = Regular | Directory | Symlink | Other
 /// nanoseconds since 1970-01-01 UTC (a time an `i64` cannot hold is clamped to its limit).
 record Metadata { kind: EntryKind, size: i64, modified_ns: i64 }
 
-private def metadata_with :: i32 -> ref string -> Result.Result<Metadata, Os.Error>
+private def metadata_with :: i32 -> ref string -> Result<Metadata, Os.Error>
 fn metadata_with operation path =
 	match Os.encode path with
 	| Result.Error error -> Result.Error error
@@ -156,9 +156,9 @@ fn metadata_with operation path =
 		| (status, _) -> Result.Error (Os.error_of_status status)
 
 /// Describes a path, following a symbolic link to what it points at.
-def metadata :: string -> IO<Result.Result<Metadata, Os.Error>>
+def metadata :: string -> IO<Result<Metadata, Os.Error>>
 fn metadata path = IO.map (\() -> metadata_with 4i32 (ref path)) (IO.pure ())
 
 /// Describes a path itself: a symbolic link is described, not followed.
-def link_metadata :: string -> IO<Result.Result<Metadata, Os.Error>>
+def link_metadata :: string -> IO<Result<Metadata, Os.Error>>
 fn link_metadata path = IO.map (\() -> metadata_with 5i32 (ref path)) (IO.pure ())

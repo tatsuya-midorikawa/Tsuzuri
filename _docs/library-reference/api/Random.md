@@ -1,5 +1,7 @@
 # Random
 
+Namespace: `std`
+
 ## `Pcg`
 
 ```tsuzuri
@@ -14,7 +16,7 @@ A PCG-XSH-RR 64/32 generator. Make one with `pcg`; the stream is odd by construc
 ## `bytes`
 
 ```tsuzuri
-def bytes :: i64 -> IO<Result.Result<[ubyte], Os.Error>>
+def bytes :: i64 -> IO<Result<[ubyte], Os.Error>>
 ```
 
 Random bytes from the operating system. A negative count or one above 2^30 is `InvalidInput`.
@@ -22,7 +24,7 @@ Random bytes from the operating system. A negative count or one above 2^30 is `I
 ## `next_u64`
 
 ```tsuzuri
-def next_u64 :: unit -> IO<Result.Result<i64u, Os.Error>>
+def next_u64 :: unit -> IO<Result<i64u, Os.Error>>
 ```
 
 Eight operating-system random bytes as a little-endian number.

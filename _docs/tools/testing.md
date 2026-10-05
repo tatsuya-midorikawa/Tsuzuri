@@ -38,7 +38,7 @@ test は `.tz` / `.tc` の宣言部分に置きます。`.tt` と埋め込み st
 
 WASM のテストは build と同じ線形メモリ上限（既定 16 MiB）と main stack（既定 1 MiB）で動きます。大きなデータを確保するテストは `--target wasm32 --wasm-max-memory 64MiB` のように上限を、必要なら `--wasm-stack-size` で stack を指定します。root package の `Tsuzuri.toml` の `[wasm]` も既定値になります。native のテストには指定できません。
 
-Main は不要で、現在のプロジェクト loader でソースを探索します。filter は `Module.テスト名` の部分一致で、正規表現ではありません。除外したテストも型検査自体から除かれるわけではありません。
+Main は不要で、現在のプロジェクト loader でソースを探索します。filter は `Module.テスト名`（`Geometry/Point.tz` のような入れ子のモジュールは `Geometry::Point.テスト名`）の部分一致で、正規表現ではありません。除外したテストも型検査自体から除かれるわけではありません。
 
 ## アサーション
 

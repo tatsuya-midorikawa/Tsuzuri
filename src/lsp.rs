@@ -457,7 +457,7 @@ impl Session {
                     "documentHighlightProvider": true,
                     "renameProvider": {"prepareProvider": true},
                     "workspaceSymbolProvider": true,
-                    "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
+                    "completionProvider": {"triggerCharacters": [".", ":"], "resolveProvider": false},
                     "signatureHelpProvider": {"triggerCharacters": [" ", "("], "retriggerCharacters": [","]},
                     "semanticTokensProvider": {"legend": legend, "full": true, "range": false},
                     "codeActionProvider": {"codeActionKinds": ["quickfix"]},
@@ -1472,7 +1472,7 @@ impl ModuleNames {
                     .path
                     .to_str()
                     .and_then(crate::stdlib::module_name)
-                    .map(|name| (name.to_owned(), String::new())),
+                    .map(|name| (name.to_owned(), crate::stdlib::NAMESPACE.to_owned())),
             })
             .collect();
         let full = sources
@@ -1505,10 +1505,14 @@ impl ModuleNames {
         names
     }
 
-    /// The namespace that `path` names from `source`, innermost scope first.
+    /// The namespace that `path` (`A::B`) names from `source`, innermost scope first.
     fn namespace_path(&self, source: usize, path: &str) -> Option<String> {
+        if path.contains('.') {
+            return None;
+        }
+        let path = path.replace("::", ".");
         self.scopes(source).into_iter().find_map(|scope| {
-            let namespace = qualify(scope, path);
+            let namespace = qualify(scope, &path);
             let prefix = format!("{namespace}.");
             self.full
                 .range(prefix.clone()..)
@@ -1545,17 +1549,23 @@ impl ModuleNames {
         scopes
     }
 
-    /// The key of the module that `path` names from `source`: each scope
-    /// qualifies `path`, innermost first, with the `using` namespaces after
-    /// the innermost for a module name; otherwise `path` is a key.
+    /// The key of the module that `path` (`Name` or `A::B::Name`) names from
+    /// `source`: each scope qualifies `path`, innermost first, with the
+    /// `using` namespaces after the innermost for a bare module name, which
+    /// may also be a key.
     fn resolve(&self, source: usize, path: &str) -> Option<&str> {
+        if path.contains('.') {
+            return None;
+        }
+        let bare = !path.contains("::");
+        let path = path.replace("::", ".");
         let usings = self
             .usings
             .get(source)
-            .filter(|_| !path.contains('.'))
+            .filter(|_| bare)
             .map_or(&[][..], Vec::as_slice);
         for (at, scope) in self.scopes(source).into_iter().enumerate() {
-            if let Some(key) = self.full.get(&qualify(scope, path)) {
+            if let Some(key) = self.full.get(&qualify(scope, &path)) {
                 return Some(key.as_str());
             }
             if at == 0 {
@@ -1569,15 +1579,20 @@ impl ModuleNames {
                 }
             }
         }
-        self.keys().find(|key| *key == path)
+        self.keys().find(|key| bare && *key == path)
     }
 
-    /// The next segments below `path` in `source` with their full names, as
-    /// in `Sample` -> `Shape` for `Sample.Shape`, and for an empty `path` also
-    /// the modules that `using` imports. A segment that names a module shows
-    /// the module that `resolve` picks; any other shows the innermost
-    /// namespace that holds it, so an ambiguous import alone shows nothing.
+    /// The next segments below the namespace `path` (`A::B`) in `source` with
+    /// their dotted full names, as in `Sample` -> `Shape` for
+    /// `Sample::Shape`, and for an empty `path` also the modules that `using`
+    /// imports. A segment that names a module shows the module that `resolve`
+    /// picks; any other shows the innermost namespace that holds it, so an
+    /// ambiguous import alone shows nothing.
     fn children(&self, source: usize, path: &str) -> BTreeMap<String, String> {
+        if path.contains('.') {
+            return BTreeMap::new();
+        }
+        let dotted = path.replace("::", ".");
         let mut modules = BTreeSet::new();
         if path.is_empty() {
             for namespace in self.usings.get(source).into_iter().flatten() {
@@ -1590,42 +1605,41 @@ impl ModuleNames {
                         .map(str::to_owned),
                 );
             }
+            modules.extend(
+                self.keys()
+                    .filter(|key| !key.contains('.'))
+                    .map(str::to_owned),
+            );
         }
         let mut namespaces = BTreeMap::new();
-        let mut add = |prefix: &str, name: &str| {
-            let Some(rest) = name.strip_prefix(prefix) else {
-                return;
-            };
-            if let Some((child, _)) = rest.split_once('.') {
-                namespaces
-                    .entry(child.to_owned())
-                    .or_insert_with(|| format!("{prefix}{child}"));
-            } else {
-                modules.insert(rest.to_owned());
-            }
-        };
         for scope in self.scopes(source) {
             let prefix = if path.is_empty() {
                 qualify(scope, "")
             } else {
-                format!("{}.", qualify(scope, path))
+                format!("{}.", qualify(scope, &dotted))
             };
             for full in self.full.keys() {
-                add(&prefix, full);
+                let Some(rest) = full.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if let Some((child, _)) = rest.split_once('.') {
+                    namespaces
+                        .entry(child.to_owned())
+                        .or_insert_with(|| format!("{prefix}{child}"));
+                } else {
+                    modules.insert(rest.to_owned());
+                }
             }
-        }
-        let prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{path}.")
-        };
-        for key in self.keys() {
-            add(&prefix, key);
         }
         let mut children: BTreeMap<_, _> = modules
             .into_iter()
             .filter_map(|child| {
-                let key = self.resolve(source, &qualify(path, &child))?;
+                let reference = if path.is_empty() {
+                    child.clone()
+                } else {
+                    format!("{path}::{child}")
+                };
+                let key = self.resolve(source, &reference)?;
                 let full = self
                     .full
                     .iter()
@@ -1643,6 +1657,17 @@ impl ModuleNames {
     fn is_module(&self, full: &str) -> bool {
         self.full.contains_key(full) || self.keys().any(|key| key == full)
     }
+}
+
+/// The completion detail of a module or namespace by its dotted full name,
+/// as in `module Demo::Shapes::Circle`.
+fn module_detail(modules: &ModuleNames, full: &str) -> String {
+    let kind = if modules.is_module(full) {
+        "module"
+    } else {
+        "namespace"
+    };
+    format!("{kind} {}", full.replace('.', "::"))
 }
 
 /// `path` in the namespace `scope`; with an empty `path`, the prefix of
@@ -1698,12 +1723,29 @@ fn adjacent(left: &Token, right: &Token) -> bool {
     left.span.end == right.span.start
 }
 
-/// `Ident (. Ident)*` written without spaces and ending at `tokens[last]`.
-fn dotted_chain(tokens: &[Token], last: usize) -> Vec<usize> {
+/// Whether `tokens[at]` joins two segments of a path: `.`, a namespace `::`,
+/// or a `::` whose path is still being written, but not the `::` that
+/// annotates a declaration's type, as in `def f::T`.
+fn path_separator(tokens: &[Token], at: usize) -> bool {
+    match tokens[at].kind {
+        TokenKind::Dot | TokenKind::PathSep => true,
+        TokenKind::DoubleColon => {
+            !(at >= 2
+                && matches!(
+                    tokens[at - 2].kind,
+                    TokenKind::Def | TokenKind::Rec | TokenKind::And
+                ))
+        }
+        _ => false,
+    }
+}
+
+/// `Ident ((. | ::) Ident)*` written without spaces and ending at `tokens[last]`.
+fn path_chain(tokens: &[Token], last: usize) -> Vec<usize> {
     let mut chain = vec![last];
     let mut at = last;
     while at >= 2
-        && tokens[at - 1].kind == TokenKind::Dot
+        && path_separator(tokens, at - 1)
         && matches!(tokens[at - 2].kind, TokenKind::Ident(_))
         && adjacent(&tokens[at - 2], &tokens[at - 1])
         && adjacent(&tokens[at - 1], &tokens[at])
@@ -1712,6 +1754,22 @@ fn dotted_chain(tokens: &[Token], last: usize) -> Vec<usize> {
         chain.insert(0, at);
     }
     chain
+}
+
+/// The segments of a `path_chain` joined by the separators written between them.
+fn path_text(tokens: &[Token], chain: &[usize]) -> String {
+    let mut text = String::new();
+    for (position, &at) in chain.iter().enumerate() {
+        if position > 0 {
+            text.push_str(if tokens[at - 1].kind == TokenKind::Dot {
+                "."
+            } else {
+                "::"
+            });
+        }
+        text.push_str(ident(&tokens[at]));
+    }
+    text
 }
 
 fn ident(token: &Token) -> &str {
@@ -1754,13 +1812,37 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     {
         before -= 1;
     }
-    let member = before >= 2
-        && tokens[before - 1].kind == TokenKind::Dot
-        && matches!(tokens[before - 2].kind, TokenKind::Ident(_))
-        && adjacent(&tokens[before - 2], &tokens[before - 1])
-        && tokens
-            .get(before)
-            .is_none_or(|token| token.span.start >= offset || adjacent(&tokens[before - 1], token));
+    let separator = (before >= 2)
+        .then(|| &tokens[before - 1])
+        .filter(|separator| {
+            path_separator(&tokens, before - 1)
+                && matches!(tokens[before - 2].kind, TokenKind::Ident(_))
+                && adjacent(&tokens[before - 2], separator)
+                && tokens
+                    .get(before)
+                    .is_none_or(|token| token.span.start >= offset || adjacent(separator, token))
+        });
+    // Namespaces hold modules and namespaces, which follow `::`.
+    let namespace = separator
+        .filter(|separator| separator.kind != TokenKind::Dot)
+        .map(|_| {
+            modules.children(
+                view.source,
+                &path_text(&tokens, &path_chain(&tokens, before - 2)),
+            )
+        })
+        .filter(|children| !children.is_empty());
+    if namespace.is_none()
+        && before > 0
+        && tokens[before - 1].span.end == offset
+        && matches!(
+            tokens[before - 1].kind,
+            TokenKind::Colon | TokenKind::DoubleColon
+        )
+    {
+        // A type annotation, field, or cons that a typed ':' starts.
+        return empty;
+    }
     let top_level = |kind: SymbolKind| {
         matches!(
             kind,
@@ -1774,40 +1856,30 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
                 | SymbolKind::Class
         )
     };
-    if member {
-        let dot = &tokens[before - 1];
-        let chain = dotted_chain(&tokens, before - 2);
-        let joined = chain
-            .iter()
-            .map(|&at| ident(&tokens[at]))
-            .collect::<Vec<_>>()
-            .join(".");
-        let resolved = view.module_path(&joined);
-        let children = modules.children(view.source, &joined);
-        if resolved.is_some() || !children.is_empty() {
-            if let Some(key) = resolved {
-                for (definition, item) in index.definitions.iter().enumerate() {
-                    if item.module == key && top_level(item.kind) && (item.public || key == module)
-                    {
-                        items.definition(2, definition);
-                    }
+    if let Some(children) = namespace {
+        for (child, full) in children {
+            items.add(2, &child, 9, &module_detail(modules, &full), None);
+        }
+    } else if let Some(dot) = separator.filter(|separator| separator.kind == TokenKind::Dot) {
+        let chain = path_chain(&tokens, before - 2);
+        if let Some(key) = view.module_path(&path_text(&tokens, &chain)) {
+            // A type named after its module is the module path itself, not a member.
+            let stem = key.rsplit('.').next().unwrap_or(key);
+            for (definition, item) in index.definitions.iter().enumerate() {
+                if item.module == key
+                    && top_level(item.kind)
+                    && (item.public || key == module)
+                    && !(matches!(
+                        item.kind,
+                        SymbolKind::Record | SymbolKind::Union | SymbolKind::Alias
+                    ) && item.name == stem)
+                {
+                    items.definition(2, definition);
                 }
-            }
-            for (child, full) in children {
-                let kind = if modules.is_module(&full) {
-                    "module"
-                } else {
-                    "namespace"
-                };
-                items.add(2, &child, 9, &format!("{kind} {full}"), None);
             }
         } else {
             let last = &tokens[*chain.last().expect("a chain has a name")];
-            let qualifier = chain[..chain.len() - 1]
-                .iter()
-                .map(|&at| ident(&tokens[at]))
-                .collect::<Vec<_>>()
-                .join(".");
+            let qualifier = path_text(&tokens, &chain[..chain.len() - 1]);
             let owner = if qualifier.is_empty() {
                 module.as_str()
             } else {
@@ -1866,12 +1938,7 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             }
         }
         for (root, full) in modules.children(view.source, "") {
-            let kind = if modules.is_module(&full) {
-                "module"
-            } else {
-                "namespace"
-            };
-            items.add(2, &root, 9, &format!("{kind} {full}"), None);
+            items.add(2, &root, 9, &module_detail(modules, &full), None);
         }
         for keyword in KEYWORDS.iter().chain(&CONTEXTUAL_KEYWORDS) {
             items.add(3, keyword, 14, "keyword", None);
@@ -1952,6 +2019,7 @@ fn is_term(kind: &TokenKind) -> bool {
             | TokenKind::True
             | TokenKind::False
             | TokenKind::Dot
+            | TokenKind::PathSep
     )
 }
 
@@ -1993,7 +2061,9 @@ fn count_terms(tokens: &[Token]) -> (usize, Option<usize>) {
             }
             continue;
         }
-        if token.kind == TokenKind::Dot && end == Some(token.span.start) {
+        if matches!(token.kind, TokenKind::Dot | TokenKind::PathSep)
+            && end == Some(token.span.start)
+        {
             dotted = true;
             continue;
         }
@@ -2071,7 +2141,7 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
         if start < end && matches!(tokens[start].kind, TokenKind::Ident(_)) {
             let mut head = start;
             while head + 2 < end
-                && tokens[head + 1].kind == TokenKind::Dot
+                && matches!(tokens[head + 1].kind, TokenKind::Dot | TokenKind::PathSep)
                 && matches!(tokens[head + 2].kind, TokenKind::Ident(_))
                 && adjacent(&tokens[head], &tokens[head + 1])
                 && adjacent(&tokens[head + 1], &tokens[head + 2])
@@ -2102,14 +2172,10 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
         return Value::Null;
     };
     let index = view.index;
-    let chain = dotted_chain(&tokens, head);
+    let chain = path_chain(&tokens, head);
     let module = view.module().unwrap_or_default();
     let owner = if chain.len() > 1 {
-        let qualifier = chain[..chain.len() - 1]
-            .iter()
-            .map(|&at| ident(&tokens[at]))
-            .collect::<Vec<_>>()
-            .join(".");
+        let qualifier = path_text(&tokens, &chain[..chain.len() - 1]);
         view.module_path(&qualifier)
             .map_or(qualifier.clone(), str::to_owned)
     } else {
@@ -2190,7 +2256,7 @@ fn semantic_tokens(view: &View<'_>, text: &str, encoding: PositionEncoding) -> V
         let Some(&at) = positions.get(&start).filter(|_| qualifiable) else {
             continue;
         };
-        for segment in dotted_chain(&lexed, at).into_iter().rev().skip(1) {
+        for segment in path_chain(&lexed, at).into_iter().rev().skip(1) {
             if !found.contains_key(&lexed[segment].span.start) {
                 namespaces.push(lexed[segment].span);
             }
@@ -2214,7 +2280,10 @@ fn semantic_tokens(view: &View<'_>, text: &str, encoding: PositionEncoding) -> V
                 .entry(segment.span.start)
                 .or_insert((segment.span.end, 0, 0, false));
             at += 1;
-            if lexed.get(at).is_none_or(|dot| dot.kind != TokenKind::Dot) {
+            if lexed
+                .get(at)
+                .is_none_or(|separator| separator.kind != TokenKind::PathSep)
+            {
                 break;
             }
             at += 1;

@@ -21,7 +21,7 @@ Rust の `std::net`、.NET の `TcpClient`／`TcpListener`／`UdpClient` の同�
 
 | 段 | 内容 | 着手の条件 |
 | --- | --- | --- |
-| Phase 1 | native（macOS／Linux）の blocking TCP client・server、UDP、アドレスの解析と表示、名前解決。すべて `IO<'a>` で、失敗は `Result.Result<'a, Os.Error>`（E08 の型） | E08 段 A・段 B が done、D1 の承認 |
+| Phase 1 | native（macOS／Linux）の blocking TCP client・server、UDP、アドレスの解析と表示、名前解決。すべて `IO<'a>` で、失敗は `Result<'a, Os.Error>`（E08 の型） | E08 段 A・段 B が done、D1 の承認 |
 | Phase 2 | B08 Phase 3 の reactor と接続した非同期ソケット、Windows（Winsock、G10） | B08 と G10 が done、人間の指示 |
 | Phase 3 | wasm32 のホスト opt-in（WASI preview2 sockets または E13 の glue） | D11 の承認 |
 
@@ -57,7 +57,7 @@ Rust の `std::net`、.NET の `TcpClient`／`TcpListener`／`UdpClient` の同�
 ## 現状（HEAD `f8dc655` で確認）
 
 - `Net` は存在しない。`src/runtime/` にソケットを扱う C はない（`socket`・`getaddrinfo`・`SIGPIPE` の grep が空）。E08 の `std/Os.tz` などもまだない
-  （`std/` は `Array.tz` … `Vec.tz` と `IO.tc`・`Option.tc`・`Result.tc`）。E08・B07・B08 は todo。
+  （`std/` は `Array.tz` … `Vec.tz` と `IO.tc`・`Maybe.tc`・`Result.tc`）。E08・B07・B08 は todo。
 - `src/stdlib.rs` の `RESERVED_MODULES` は 20 名で `Net` を含まない。`reserves_the_d07_table` が件数 20 を検査する（E08 の段 A で 27 になる予定）。
   `opaque_record` は `"Map.Map"`・`"Seq.Seq"`・`"Gpu.Device"`・`"IO.IO"` などを列挙する。`Type::is_noncopy_record`（`src/check.rs`）は std の
   `"Seq.Seq" | "Gpu.Device" | "Gpu.Buffer"` を非 Copy にする。
@@ -74,7 +74,7 @@ Rust の `std::net`、.NET の `TcpClient`／`TcpListener`／`UdpClient` の同�
   `--export=tsuzuri_alloc` などを linker に渡す。`src/runtime/io.c` の関数は `TZ_IO_API`（非 Windows で `weak, visibility("hidden")`）で、
   `tsuzuri_alloc`・`tsuzuri_free` を extern で使う。
 - byte 列: `ubyte` は `i8u` の別名（docs/language.md の型の表）。`Utf8String.to_bytes :: utf8string -> [ubyte]`、
-  `Utf8String.from_bytes :: [ubyte] -> Option<utf8string>`、`Array.init :: i64 -> (i64 -> 'a) -> ['a]`、`Array.get`、`Array.length` がある。
+  `Utf8String.from_bytes :: [ubyte] -> Maybe<utf8string>`、`Array.init :: i64 -> (i64 -> 'a) -> ['a]`、`Array.get`、`Array.length` がある。
 - extern（E06）で利用者がホストのソケット関数を呼ぶことはできるが、型付きの所有 handle と close の保証はない（E12 で計画）。
 
 ### 再現（検証済み）
@@ -94,10 +94,10 @@ D1 の予約後、2 行目は E1011 `module name 'Net' is reserved for the stand
 
 - E08 段 A（done が着手条件）: `std/Os.tz` の `union ErrorKind = NotFound | PermissionDenied | AlreadyExists | InvalidInput | InvalidEncoding | Interrupted | Other`、
   `record Error { kind: ErrorKind, code: i32 }`、`def error_of_status :: i64 -> Error`（`(kind << 32) | (code & 0xffffffff)` の復号、kind は宣言順に 1..=7）、
-  `def encode :: ref string -> Result.Result<utf8string, Error>`。`src/runtime/os.c` の feature macro と、`src/driver.rs` の `os_runtime` の判定・wasm32 の E2000・
+  `def encode :: ref string -> Result<utf8string, Error>`。`src/runtime/os.c` の feature macro と、`src/driver.rs` の `os_runtime` の判定・wasm32 の E2000・
   Windows native の E2002。`Os.ErrorKind` への case 追加は edition（G19）でだけ行う（E08）ので、E09 は case を足さない（D3）。
-- E08 段 B（done が着手条件）: `File.Handle` は opaque な所有値で、操作は handle を受け取って `IO<(Handle * Result.Result<T, Os.Error>)>` で返し、
-  `close :: Handle -> IO<Result.Result<unit, Os.Error>>` が消費する。`instance Drop<Handle>` は close の失敗を無視する。
+- E08 段 B（done が着手条件）: `File.Handle` は opaque な所有値で、操作は handle を受け取って `IO<(Handle * Result<T, Os.Error>)>` で返し、
+  `close :: Handle -> IO<Result<unit, Os.Error>>` が消費する。`instance Drop<Handle>` は close の失敗を無視する。
   B07 の D5 は Drop 型の関数値への捕捉を E1005 にするので、E08 段 B はこの点を解消した形で done になっているはずである。E09 は E08 が実際に採った
   仕組みを handle 3 型へそのまま写す（D4）。
 - B07（E08 段 B を通じて done）: `class Drop<'a> { def drop :: ref mut 'a -> unit }`。
@@ -114,8 +114,8 @@ D1 の予約後、2 行目は E1011 `module name 'Net' is reserved for the stand
 ```tsuzuri
 // std/Net.tz
 record Address { v6: bool, high: i64u, low: i64u, port: i64 } deriving (Eq, Hash)  // opaque、Copy
-def parse_address :: ref string -> Option.Option<Address>     // "127.0.0.1:80"、"[::1]:80"
-def parse_ip :: ref string -> i64 -> Option.Option<Address>   // "::1" と port 0..=65535
+def parse_address :: ref string -> Maybe<Address>     // "127.0.0.1:80"、"[::1]:80"
+def parse_ip :: ref string -> i64 -> Maybe<Address>   // "::1" と port 0..=65535
 def address_text :: ref Address -> string                     // parse_address の逆
 def ip_text :: ref Address -> string                          // "127.0.0.1"、"::1"
 def port :: ref Address -> i64
@@ -124,34 +124,34 @@ def is_ipv6 :: ref Address -> bool
 union ErrorKind = TimedOut | ConnectionRefused | ConnectionReset | AddressInUse | AddressNotAvailable | Unreachable | Unclassified
 def error_kind :: ref Os.Error -> ErrorKind                   // D3 の分類。code 0 は Unclassified
 
-def resolve :: string -> i64 -> IO<Result.Result<[Address], Os.Error>>   // host、port。OS の順、重複なし、1 件以上
+def resolve :: string -> i64 -> IO<Result<[Address], Os.Error>>   // host、port。OS の順、重複なし、1 件以上
 
 record TcpStream { descriptor: i64, local: Address, peer: Address }      // opaque、非 Copy、Drop
 record TcpListener { descriptor: i64, local: Address }                   // 同上
 record UdpSocket { descriptor: i64, local: Address }                     // 同上
 union Shutdown = Read | Write | Both
 
-def connect :: Address -> Option.Option<i64> -> IO<Result.Result<TcpStream, Os.Error>>
-def read :: TcpStream -> i64 -> Option.Option<i64> -> IO<(TcpStream * Result.Result<[ubyte], Os.Error>)>   // 空の列は EOF
-def write :: TcpStream -> [ubyte] -> Option.Option<i64> -> IO<(TcpStream * Result.Result<unit, Os.Error>)>  // 全部書く
-def shutdown :: TcpStream -> Shutdown -> IO<(TcpStream * Result.Result<unit, Os.Error>)>
-def close :: TcpStream -> IO<Result.Result<unit, Os.Error>>
+def connect :: Address -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
+def read :: TcpStream -> i64 -> Maybe<i64> -> IO<(TcpStream * Result<[ubyte], Os.Error>)>   // 空の列は EOF
+def write :: TcpStream -> [ubyte] -> Maybe<i64> -> IO<(TcpStream * Result<unit, Os.Error>)>  // 全部書く
+def shutdown :: TcpStream -> Shutdown -> IO<(TcpStream * Result<unit, Os.Error>)>
+def close :: TcpStream -> IO<Result<unit, Os.Error>>
 def stream_local_addr :: ref TcpStream -> Address
 def peer_addr :: ref TcpStream -> Address
 
-def bind :: Address -> IO<Result.Result<TcpListener, Os.Error>>         // SO_REUSEADDR、backlog SOMAXCONN
-def accept :: TcpListener -> Option.Option<i64> -> IO<(TcpListener * Result.Result<TcpStream, Os.Error>)>
+def bind :: Address -> IO<Result<TcpListener, Os.Error>>         // SO_REUSEADDR、backlog SOMAXCONN
+def accept :: TcpListener -> Maybe<i64> -> IO<(TcpListener * Result<TcpStream, Os.Error>)>
 def local_addr :: ref TcpListener -> Address                            // port 0 で bind したときの実際の port
-def close_listener :: TcpListener -> IO<Result.Result<unit, Os.Error>>
+def close_listener :: TcpListener -> IO<Result<unit, Os.Error>>
 
-def bind_udp :: Address -> IO<Result.Result<UdpSocket, Os.Error>>
-def send_to :: UdpSocket -> [ubyte] -> Address -> IO<(UdpSocket * Result.Result<unit, Os.Error>)>
-def recv_from :: UdpSocket -> i64 -> Option.Option<i64> -> IO<(UdpSocket * Result.Result<([ubyte] * Address), Os.Error>)>
+def bind_udp :: Address -> IO<Result<UdpSocket, Os.Error>>
+def send_to :: UdpSocket -> [ubyte] -> Address -> IO<(UdpSocket * Result<unit, Os.Error>)>
+def recv_from :: UdpSocket -> i64 -> Maybe<i64> -> IO<(UdpSocket * Result<([ubyte] * Address), Os.Error>)>
 def udp_local_addr :: ref UdpSocket -> Address
-def close_udp :: UdpSocket -> IO<Result.Result<unit, Os.Error>>
+def close_udp :: UdpSocket -> IO<Result<unit, Os.Error>>
 ```
 
-- timeout は `Option.Option<i64>` のミリ秒（D7）。`None` は無期限、`Some ms` は 1..=2,147,483,647 で、呼び出し全体の期限（deadline）になる。範囲外は
+- timeout は `Maybe<i64>` のミリ秒（D7）。`None` は無期限、`Some ms` は 1..=2,147,483,647 で、呼び出し全体の期限（deadline）になる。範囲外は
   OS を呼ばずに `InvalidInput`（code 0）。socket option や大域の既定値は使わない。
 - `read`／`recv_from` の最大長は 1..=16,777,216 byte（範囲外は `InvalidInput`、code 0）。`read` は 1 回の受信で得た分だけ返し、空の列は相手の送信終了（EOF）。
   `recv_from` は datagram が最大長を超えると切り詰めずに失敗する（`InvalidInput`、code `EMSGSIZE`。datagram は消費される）。
@@ -228,14 +228,14 @@ def close_udp :: UdpSocket -> IO<Result.Result<unit, Os.Error>>
 client の形（新 API、未検証。fixture の構文は実装時に `check` で確かめる）:
 
 ```tsuzuri
-def ping :: Net.Address -> IO<Result.Result<[ubyte], Os.Error>>
+def ping :: Net.Address -> IO<Result<[ubyte], Os.Error>>
 fn ping address = IO {
-    let! connected = Net.connect address (Option.Some 5000)
+    let! connected = Net.connect address (Maybe.Some 5000)
     match connected with
     | Result.Error error -> return Result.Error error
     | Result.Ok stream ->
-        let! (stream, written) = Net.write stream (Utf8String.to_bytes (Utf8String.from_string (ref "ping"))) (Option.Some 5000)
-        let! (stream, received) = Net.read stream 4096 (Option.Some 5000)
+        let! (stream, written) = Net.write stream (Utf8String.to_bytes (Utf8String.from_string (ref "ping"))) (Maybe.Some 5000)
+        let! (stream, received) = Net.read stream 4096 (Maybe.Some 5000)
         let! _closed = Net.close stream
         return (match written with | Result.Error error -> Result.Error error | Result.Ok () -> received)
 }
@@ -433,7 +433,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | # | 名前 | 内容 |
 | --- | --- | --- |
 | 1 | `reserves_net_module` | 利用者の `Net.tz` が E1011 `reserved for the standard library` |
-| 2 | `address_is_copy_and_opaque` | `Address` の 2 回使用を受理。利用者の `Net.Address { .. }` の構築は `IO.IO` を構築したときと同じ既存のコード |
+| 2 | `address_is_copy_and_opaque` | `Address` の 2 回使用を受理。利用者の `Net.Address { .. }` の構築は `IO` を構築したときと同じ既存のコード |
 | 3 | `net_primitives_are_private` | 利用者の `Net.__close 0i32 3` が E1022 `network primitives are private to the standard Net module` |
 | 4 | `types_the_phase_one_api` | 仕様の全関数を型どおりに呼ぶプログラムを受理 |
 | 5 | `handles_are_not_copy` | `TcpStream` を 2 回使うと E1012 `use of moved` |
@@ -456,7 +456,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | T2 | プログラムが `bind 127.0.0.1:0` して `port=<n>` を出し、`accept`。Node が `hello\n` を送る。プログラムは `HELLO\n` を返し `shutdown Write`、EOF まで読む | Node が `HELLO\n` と end を受ける。プログラムの `peer_addr` の port が Node の `localPort` と一致 |
 | T3 | Node が `abc` を送って end | `abc` の後に `eof` |
 | T4 | Node が listen して close した port へ `connect` | `ConnectionRefused Other` |
-| T5 | Node は accept だけして送らない。`read .. (Option.Some 50)` の後、同じ handle で `x` を `write` | `TimedOut Other` の後、Node が `x` を受ける |
+| T5 | Node は accept だけして送らない。`read .. (Maybe.Some 50)` の後、同じ handle で `x` を `write` | `TimedOut Other` の後、Node が `x` を受ける |
 | T6 | Node が接続直後に `resetAndDestroy()`。プログラムは 64 KiB の `write` を最大 1000 回 | `ConnectionReset` を出して終了コード 0（SIGPIPE で死なない） |
 | T7 | `bind_udp 127.0.0.1:0`、`recv_from 65536`、受けた byte 列を逆順にして送信元へ `send_to` | Node が逆順を受ける。送信元の表示が Node の socket と一致 |
 | T8 | Node が 100 byte の datagram を送り、プログラムは `recv_from 10` | `InvalidInput` と code が Node の `os.constants.errno.EMSGSIZE` |
@@ -570,7 +570,7 @@ T4・T6・T12 の errno は macOS と Linux で値が違うが、`Net.error_kind
 
 ### D7: timeout
 
-- 決定: 操作ごとの `Option.Option<i64>` のミリ秒で、呼び出し全体の deadline。`None` は無期限。`poll` と `CLOCK_MONOTONIC` で実装し、`SO_RCVTIMEO` などの
+- 決定: 操作ごとの `Maybe<i64>` のミリ秒で、呼び出し全体の deadline。`None` は無期限。`poll` と `CLOCK_MONOTONIC` で実装し、`SO_RCVTIMEO` などの
   socket の状態や大域の既定値は使わない。範囲外は `InvalidInput`（code 0）。
 - 理由: 呼び出しを読めば待ち時間がわかり、隠れた状態がない。`poll` は macOS／Linux で同じ意味を持つ。0 を拒否するのは「待たない」と「無期限」の取り違えを防ぐため。
 - 状態: 既定案（実装者はこの案に従う）

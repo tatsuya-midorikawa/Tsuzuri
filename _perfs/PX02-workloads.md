@@ -144,7 +144,7 @@ D2 のとおり、各言語の標準の所有文字列でソース上の処理�
 
 | 実装 | `std_option_owned`（変更後） | `std_option_length`（新規） |
 | --- | --- | --- |
-| Tsuzuri | 変更なし（`option_owned_step`・`direct_option_owned_step`） | `option_length_step`: `Option { let! length = if (state & 7) == 0 then None else Some 12; return length }` と `mix state salt ^ Option.default_value 0 result`。`direct_option_length_step`: 同じ Option を `match` で開く。export は `ce_std_option_length`・`direct_std_option_length`（すべて新規。`std_option_owned` の 4 定義を写す） |
+| Tsuzuri | 変更なし（`option_owned_step`・`direct_option_owned_step`） | `option_length_step`: `Maybe { let! length = if (state & 7) == 0 then None else Some 12; return length }` と `mix state salt ^ Maybe.default_value 0 result`。`direct_option_length_step`: 同じ Maybe を `match` で開く。export は `ce_std_option_length`・`direct_std_option_length`（すべて新規。`std_option_owned` の 4 定義を写す） |
 | C++ | `cpp_loop<5>`（新規の分岐）: `std::optional<std::u16string> text;` に `std::u16string(hello) + world` を入れ、長さは `(*text + bang).size()`。`hello`・`world`・`bang` は関数の外の `static const char16_t` 配列 `u"hello"`・`u" world"`・`u"!"` | 現在の `cpp_loop<4>` |
 | Rust | `run_loop::<5>`（新規）: `#![no_std]` のまま、`OwnedUtf16`（新規。`malloc` した `*mut u16` と長さを持ち、`Drop` で `free`）と `concat(&[u16], &[u16]) -> OwnedUtf16`（新規。`malloc`、`core::ptr::copy_nonoverlapping` 2 回）で 2 回連結する。`Option<OwnedUtf16>` を使い、長さは 2 回目の結果の長さ | 現在の `run_loop::<4>` |
 | C# | `static readonly string Hello = "hello", World = " world", Bang = "!";`（`const` にしない。C# の定数畳み込みを避ける）。`string text = Hello + World; length = (text + Bang).Length;` | 現在の `12UL` の式 |
@@ -288,7 +288,7 @@ for (const k of ["tz_ce_std_option_length", "tz_direct_std_option_length", "tz_c
 ### 手順 7: `apps` の Tsuzuri 実装
 
 - 変更: `benchmarks/apps/Main.tz`（新規）。
-- 内容: 10 種目。検証済みの書き方は「落とし穴」の Tsuzuri の項にまとめる（再帰 union と `ref` の `match`、`Map.empty()`・`Map.get (ref m) key`・`Map.insert m key value`、`Set.insert`・`Set.length (ref s)`、`String.join (ref sep) (ref parts)`・`String.split (ref sep) (ref text)`、`Vec.with_capacity`・`Vec.push`・`Vec.set v i x`・`v[i]`・`Vec.get (ref v) i`、`Array.sort_by (left -> right -> …) (ref items)`、`Array.map`・`Array.fold`、関数値の配列 `new [i64u -> i64u](4, k -> (x -> …))`、`to_string`・`let parsed: Option<i64u> = Parse.parse ref field`・`Option.get`、`Math.sqrt`）。
+- 内容: 10 種目。検証済みの書き方は「落とし穴」の Tsuzuri の項にまとめる（再帰 union と `ref` の `match`、`Map.empty()`・`Map.get (ref m) key`・`Map.insert m key value`、`Set.insert`・`Set.length (ref s)`、`String.join (ref sep) (ref parts)`・`String.split (ref sep) (ref text)`、`Vec.with_capacity`・`Vec.push`・`Vec.set v i x`・`v[i]`・`Vec.get (ref v) i`、`Array.sort_by (left -> right -> …) (ref items)`、`Array.map`・`Array.fold`、関数値の配列 `new [i64u -> i64u](4, k -> (x -> …))`、`to_string`・`let parsed: Maybe<i64u> = Parse.parse ref field`・`Maybe.get`、`Math.sqrt`）。
 - 確認: `target/release/tsuzuri check benchmarks/apps/Main.tz` が診断なし。`target/release/tsuzuri build benchmarks/apps/Main.tz --target wasm32 -O3 -o /tmp/tz-px02/apps.wasm` の後、`node -e 'console.log(WebAssembly.Module.imports(new WebAssembly.Module(require("fs").readFileSync("/tmp/tz-px02/apps.wasm"))).length)'` が `0`。
 
 ### 手順 8: C・C++・Rust の参照実装と host
@@ -496,8 +496,8 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 
 ### D3: 定数長の版を残す
 
-- 決定: 旧来の参照実装の式を `std_option_length`（新規）として全実装に置き、Tsuzuri も `Option` で定数長を返す。
-- 理由: 元のチケットの決定（確保しない版は別の種目名で残す）を保ち、確保の費用と `Option` の費用を分けて読めるようにする。
+- 決定: 旧来の参照実装の式を `std_option_length`（新規）として全実装に置き、Tsuzuri も `Maybe` で定数長を返す。
+- 理由: 元のチケットの決定（確保しない版は別の種目名で残す）を保ち、確保の費用と `Maybe` の費用を分けて読めるようにする。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D4: `integer128_mix` の再計測

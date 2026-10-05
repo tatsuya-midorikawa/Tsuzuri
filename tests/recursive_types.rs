@@ -56,7 +56,7 @@ fn recursive_patterns_and_loans_keep_existing_safety_rules() {
 
 #[test]
 fn recursive_layout_and_workers_are_instance_sensitive() {
-    let source = "record Link { next: Option<Link> }\ndef make :: Link\nfn make = Link { next: Some (Link { next: None }) }\ndef ordinary :: Option<i64>\nfn ordinary = Some 42\ndef captured :: i64 -> i64\nfn captured number = { let tree = make(); let callback = value -> match ref tree.next with | Some child -> number + value + (if Option.is_none (ref child.next) then 1 else 0) | None -> 0; let second = callback; second 1 + callback 2 }";
+    let source = "record Link { next: Maybe<Link> }\ndef make :: Link\nfn make = Link { next: Some (Link { next: None }) }\ndef ordinary :: Maybe<i64>\nfn ordinary = Some 42\ndef captured :: i64 -> i64\nfn captured number = { let tree = make(); let callback = value -> match ref tree.next with | Some child -> number + value + (if Maybe.is_none (ref child.next) then 1 else 0) | None -> 0; let second = callback; second 1 + callback 2 }";
     let module = analyze(source).unwrap();
     for wasm in [false, true] {
         let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Library, wasm).unwrap();
@@ -64,8 +64,8 @@ fn recursive_layout_and_workers_are_instance_sensitive() {
             ir,
             tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Library, wasm).unwrap()
         );
-        assert!(ir.contains("tz.rec.node.Option.Option[Main.Link]"));
-        assert!(ir.contains("%\"tz.union.Option.Option[i64]\" = type { i32, i64 }"));
+        assert!(ir.contains("tz.rec.node.Maybe.Maybe[Main.Link]"));
+        assert!(ir.contains("%\"tz.union.Maybe.Maybe[i64]\" = type { i32, i64 }"));
         assert!(ir.contains("@tz.rec.drop") && ir.contains("@tz.rec.clone"));
         assert!(!ir.contains("boxed["));
         for body in ir.split("define internal void @\"tz.drop.rec.").skip(1) {
@@ -80,7 +80,7 @@ fn recursive_unions_have_finite_values_without_implicit_copy() {
         "union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>\nlet tree = Node (Leaf, 1, Leaf)\nmatch tree with | Leaf -> 0 | Node (_, value, _) -> value",
         "record Branch<'a> { left: Tree<'a>, value: 'a, right: Tree<'a> }\nunion Tree<'a> = Leaf | Node of Branch<'a>\nlet tree = Node (Branch { left: Leaf, value: 1, right: Leaf })\nmatch tree with | Leaf -> 0 | Node branch -> branch.value",
         "union Rose = Node of [Rose]\nlet tree = Node []\n()",
-        "record Link { next: Option<Link> }\nlet last = Link { next: None }\nlet first = Link { next: Some last }\n()",
+        "record Link { next: Maybe<Link> }\nlet last = Link { next: None }\nlet first = Link { next: Some last }\n()",
     ] {
         analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
     }

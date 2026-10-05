@@ -68,7 +68,7 @@ impl Checker<'_> {
         Ok(value)
     }
 
-    /// Whether `ty` is the standard `bigint` (`BigInt.BigInt`).
+    /// Whether `ty` is the standard `bigint` (the record `BigInt`).
     pub(super) fn is_bigint(&self, ty: &Type) -> bool {
         matches!(self.inference.resolve(ty), Type::Record(id, _)
             if self.names.records.get("BigInt.BigInt").is_some_and(|info| info.id == id))
@@ -182,7 +182,7 @@ impl Checker<'_> {
     }
 
     /// A bigint literal (`123I`, or an unsuffixed integer whose expected type is
-    /// `bigint`) builds the standard `BigInt.BigInt` from its base-10^9 digits.
+    /// `bigint`) builds the standard `BigInt` from its base-10^9 digits.
     pub(super) fn bigint_literal(
         &mut self,
         digits: &str,

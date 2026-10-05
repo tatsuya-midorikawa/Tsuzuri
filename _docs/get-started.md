@@ -99,7 +99,7 @@ IO { do! IO.write_line "Hello" }
 `tsuzuri new` は、空のフォルダーに `Tsuzuri.toml`・`Main.tz`・`.gitignore` を作ります。
 
 ```sh
-./target/release/tsuzuri new target/my-app --namespace Acme.MyApp
+./target/release/tsuzuri new target/my-app --namespace Acme::MyApp
 ./target/release/tsuzuri run target/my-app
 ```
 

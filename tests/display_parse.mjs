@@ -141,7 +141,7 @@ try {
 
   execute(process.execPath, [join(root, "tests/features.mjs"), compiler, "display_parse"]);
   for (const [name, source, expected, symbol] of [
-    ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Option<i64> = Parse.parse (&text); Option.get n }', 42, "parse"],
+    ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (&text); Maybe.get n }', 42, "parse"],
     ["display-only", "export def value :: i64\nfn value = (to_string 42).length", 2, "format"],
   ]) {
     const directory = join(temporary, name);

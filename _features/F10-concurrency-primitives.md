@@ -37,8 +37,8 @@ Phase 2 は容量付きの `Channel` を入れる。
 次の場合は即興で回避せず、作業を止めて状況と候補案を報告する（GUIDE §13）。
 
 - std の汎用関数に組み込みクラスの制約（`AtomicValue<'a> =>`）を書けない、または std の汎用関数が利用者の特殊化予算（1,024）を先に消費する（`honors_the_exact_specialization_limit` が失敗する）。
-- `ref Atomic.Atomic<'a>` から配列の data pointer を得る途中で配列の中身が複製される（`clone_value` を通る、または data pointer が呼び出しごとに変わる）。
-- `Atomic.Atomic`・`Mutex.Mutex` の値を `clone_value` で複製する経路が見つかった（D4 は複製を禁止する）。
+- `ref Atomic<'a>` から配列の data pointer を得る途中で配列の中身が複製される（`clone_value` を通る、または data pointer が呼び出しごとに変わる）。
+- `Atomic`・`Mutex` の値を `clone_value` で複製する経路が見つかった（D4 は複製を禁止する）。
 - `atomicrmw`・`cmpxchg`・`load atomic` を含む IR が既定の wasm32（threads なし）で `-O0` または `-O3` の build に失敗する、または WASM の import が増える。
 - 配列の確保（`@tz.alloc`）の align が要素の自然な align（`i64` は 8）を満たさない target がある。
 - `src/runtime/task.c` の `_Thread_local` が native の対応 target（macOS、Linux、`src/runtime/task-windows.h` の Windows）のどれかで compile できない。
@@ -102,12 +102,12 @@ Task.run (task { return deref borrowed })
 - PR01: F10 は `Type::has_interior_mutability`（新規）を提供する。PR01 は属性の条件に `Type::is_frozen`（PR01 で新規、当初は常に true）を使うので、
   PR01 が先に done なら F10 は `is_frozen` の本体を `!self.has_interior_mutability(types)` に置き換える（PR01 が後なら PR01 がそう実装する）。
   true の型への `ref` に PR01 は `noalias`・`readonly`・`!invariant.load` を付けず、
-  その型から届くメモリが呼び出しをまたいで不変だとも仮定しない（`Atomic.Atomic`・`Mutex.Mutex` の cell は共有借用中に書き換わる）。
+  その型から届くメモリが呼び出しをまたいで不変だとも仮定しない（`Atomic`・`Mutex` の cell は共有借用中に書き換わる）。
 - B07（Phase 2 だけ）: 送信側の drop で `Channel` を close する。
 
 ### API（Phase 1）
 
-新 API（実装後に有効。未検証）。型名は std record の修飾名（`std/Gpu.tz` の `Result.Result<Device, Error>` と同じ書き方）。
+新 API（実装後に有効。未検証）。型名は std record の修飾名（`std/Gpu.tz` の `Result<Device, Error>` と同じ書き方）。
 
 ```tsuzuri
 // std/Atomic.tz（新規）。opaque_record。cell の要素は常に 1 個
@@ -119,16 +119,16 @@ record Mutex<'a> { cell: [(u32, 'a)] }
 | builtin（`Builtin` の variant） | 型 |
 | --- | --- |
 | `Task.scope`（`TaskScope`） | `(Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]` |
-| `Atomic.create`（`AtomicCreate`） | `AtomicValue<'a> => 'a -> Atomic.Atomic<'a>` |
-| `Atomic.load`（`AtomicLoad`） | `AtomicValue<'a> => ref Atomic.Atomic<'a> -> 'a` |
-| `Atomic.store`（`AtomicStore`） | `AtomicValue<'a> => ref Atomic.Atomic<'a> -> 'a -> unit` |
-| `Atomic.swap`（`AtomicSwap`） | `AtomicValue<'a> => ref Atomic.Atomic<'a> -> 'a -> 'a` |
-| `Atomic.compare_exchange`（`AtomicCompareExchange`） | `AtomicValue<'a> => ref Atomic.Atomic<'a> -> 'a -> 'a -> Result.Result<'a, 'a>` |
-| `Atomic.fetch_add`・`fetch_sub`・`fetch_and`・`fetch_or`・`fetch_xor`（`AtomicFetchAdd` 等 5 個） | `(AtomicValue<'a>, Integer<'a>) => ref Atomic.Atomic<'a> -> 'a -> 'a` |
-| `Atomic.into_inner`（`AtomicIntoInner`） | `Atomic.Atomic<'a> -> 'a` |
-| `Mutex.create`（`MutexCreate`） | `Send<'a> => 'a -> Mutex.Mutex<'a>` |
-| `Mutex.with`（`MutexWith`） | `Send<'b> => ref Mutex.Mutex<'a> -> (ref mut 'a -> 'b) -> 'b` |
-| `Mutex.into_inner`（`MutexIntoInner`） | `Mutex.Mutex<'a> -> 'a` |
+| `Atomic.create`（`AtomicCreate`） | `AtomicValue<'a> => 'a -> Atomic<'a>` |
+| `Atomic.load`（`AtomicLoad`） | `AtomicValue<'a> => ref Atomic<'a> -> 'a` |
+| `Atomic.store`（`AtomicStore`） | `AtomicValue<'a> => ref Atomic<'a> -> 'a -> unit` |
+| `Atomic.swap`（`AtomicSwap`） | `AtomicValue<'a> => ref Atomic<'a> -> 'a -> 'a` |
+| `Atomic.compare_exchange`（`AtomicCompareExchange`） | `AtomicValue<'a> => ref Atomic<'a> -> 'a -> 'a -> Result<'a, 'a>` |
+| `Atomic.fetch_add`・`fetch_sub`・`fetch_and`・`fetch_or`・`fetch_xor`（`AtomicFetchAdd` 等 5 個） | `(AtomicValue<'a>, Integer<'a>) => ref Atomic<'a> -> 'a -> 'a` |
+| `Atomic.into_inner`（`AtomicIntoInner`） | `Atomic<'a> -> 'a` |
+| `Mutex.create`（`MutexCreate`） | `Send<'a> => 'a -> Mutex<'a>` |
+| `Mutex.with`（`MutexWith`） | `Send<'b> => ref Mutex<'a> -> (ref mut 'a -> 'b) -> 'b` |
+| `Mutex.into_inner`（`MutexIntoInner`） | `Mutex<'a> -> 'a` |
 
 `compare_exchange cell expected desired` は現在値が `expected` と等しければ `desired` を書いて `Ok previous`、等しくなければ書かずに `Error current` を返す（strong。見かけの失敗はない）。
 `fetch_*` は更新前の値を返す。`Task.scope` は `Parallel` と同じく完全適用だけを許す（`Builtin::is_parallel` に入れる）。ほかの 14 個は既存の builtin と同じく関数値にできる。
@@ -138,7 +138,7 @@ record Mutex<'a> { cell: [(u32, 'a)] }
 - `AtomicValue<T>`（新規の組み込みクラス）: `Type::Integer(8 | 16 | 32 | 64, _)` と `Type::Bool`。`i128`・`u128`・浮動小数・文字は満たさない。
 - `Sync<T>`（新規の組み込みクラス。`Type::can_sync`（新規））: 共有借用を複数の thread へ同時に渡してよい型。
   - false: `Type::Function(..)`（環境の型が見えない）、`Type::Task(_)`、`Type::Reference(_, true)`、`Type::is_noncopy_record` の `Seq.Seq`・`Gpu.Device`・`Gpu.Buffer`。
-  - `Atomic.Atomic<T>` は true。`Mutex.Mutex<T>` は `T.can_send(types)`（中身は一度に一つの thread だけが触る）。
+  - `Atomic<T>` は true。`Mutex<T>` は `T.can_send(types)`（中身は一度に一つの thread だけが触る）。
   - `Type::Reference(inner, false)`・`Array`・`List`・`Vec`・`Tuple`・`Record`・`Union` は構成要素がすべて `Sync` なら true。再帰型は
     `types.stored_all` で `Function`・`Task`・`Reference(_, true)` を含まないこと。スカラーと文字列は true（共有中は不変）。
 - `Send`・`Copy`・`Capture`: 2 つの record は `Type::is_noncopy_record` に足すので `Copy` ではない。`Type::can_capture` は 2 つの record（それらを含む型も）で false にする
@@ -222,7 +222,7 @@ callback が外側の借用を捕捉すると E1013、`Atomic.create 1.5` は E1
 ### Phase 2（設計方針。D10 の承認後）
 
 - `std/Channel.tz`（新規）: 不透明な `Sender<'a>`・`Receiver<'a>`。`Channel.bounded : Send<'a> => i64 -> (Channel.Sender<'a>, Channel.Receiver<'a>)`（容量 1 以上、未満は trap）、
-  `Channel.send : ref Channel.Sender<'a> -> 'a -> unit`（満杯なら待つ）、`Channel.recv : ref Channel.Receiver<'a> -> Option.Option<'a>`（空で開いていれば待ち、全 Sender の drop 後は `None`）、
+  `Channel.send : ref Channel.Sender<'a> -> 'a -> unit`（満杯なら待つ）、`Channel.recv : ref Channel.Receiver<'a> -> Maybe<'a>`（空で開いていれば待ち、全 Sender の drop 後は `None`）、
   `Channel.clone_sender : ref Channel.Sender<'a> -> Channel.Sender<'a>`。両端とも `Sync`（runtime の lock で守る MPMC）。未受信の要素は close 後の最後の drop で解放する。
 - 待ちの規則: 待つ thread はまず pool の未配布の仕事を手伝い、それでも進めなければ park する。全 thread が channel・join で park し、未配布の仕事がないとき
   `deadlock: every task is waiting on a channel` で trap する。既定の WASM は子を index 順に走らせ、すぐに満たせない待ちは同じ trap。`Mutex.with` の中の待ちは D7 の trap。
@@ -442,7 +442,7 @@ node tests/wasm_threads.mjs target/release/tsuzuri
 | テスト関数 | 内容 |
 | --- | --- |
 | `atomic_and_mutex_cells_are_opaque_non_copy_std_records` | `cell` の読み出しは E1022、`let copy = counter` の後の `counter` の使用は E1012、`Atomic` を捕捉する再利用可能な関数は E1005 |
-| `sync_accepts_immutable_data_and_rejects_functions_tasks_and_exclusive_references` | `def share :: Sync<'a> => ref 'a -> i64` を `[i64]`・`string`・record・`Atomic.Atomic<i64>`・`Mutex.Mutex<[i64]>` で受理、`i64 -> i64`・`Task<i64>`・`Gpu.Device` で E1013 |
+| `sync_accepts_immutable_data_and_rejects_functions_tasks_and_exclusive_references` | `def share :: Sync<'a> => ref 'a -> i64` を `[i64]`・`string`・record・`Atomic<i64>`・`Mutex<[i64]>` で受理、`i64 -> i64`・`Task<i64>`・`Gpu.Device` で E1013 |
 | `atomic_value_limits_element_types` | 8 種の整数と `bool` を受理、`i128`・`f64`・`char`・`string` の `Atomic.create` は E1005、`bool` の `fetch_add` は E1005 |
 | `task_scope_types_shares_and_keeps_the_ownership_boundary` | 例の 2 本を受理。関数の共有は E1013、`shared` を返すと E1013、外側の借用の捕捉は E1013、`let scope = Task.scope` は E1013 |
 | `mutex_with_keeps_the_exclusive_borrow_inside_the_callback` | 例を受理。`value -> value` は E1013、callback の借用の捕捉は受理 |
@@ -461,7 +461,7 @@ node tests/wasm_threads.mjs target/release/tsuzuri
 | `atomic_wrapping_i32`（`create (2147483647 as i32)` に `fetch_add 1`、`load` を `i64` へ） | なし | `-2147483648` |
 | `atomic_bool_flag`（`create false`、`swap true` が false、`compare_exchange true false` が Ok、`load` が false なら 1） | なし | `1` |
 | `mutex_total`（子 `index` が lock 下で `index + 1` を足し、`index` を返す。`into_inner` と結果の和） | `0, 1, 4, 64, 257` | `n(n+1)/2 + n(n-1)/2 = n²` |
-| `mutex_owned_vector`（`Mutex.Mutex<Vec<i64>>` に各子が push、`into_inner` の長さ） | `0, 1, 257` | `n` |
+| `mutex_owned_vector`（`Mutex<Vec<i64>>` に各子が push、`into_inner` の長さ） | `0, 1, 257` | `n` |
 | `scope_shared_array`（`[1..n]` を共有し、各子が要素の 2 倍を返す。結果の和） | `0, 1, 4097` | `n(n+1)` |
 | `scope_nested_parallel`（各子が `Parallel.init 4097 (i -> i)` の和を返す。子は 4 個） | なし | `4 * 4096 * 4097 / 2 = 33562624` |
 
@@ -536,7 +536,7 @@ trap: `mutex_nested`、`mutex_parallel_inside`（`Mutex.with` の中で `Task.sc
 
 ### D1: 名前の確定
 
-- 決定: std module `Atomic`・`Mutex`（record `Atomic.Atomic<'a>`・`Mutex.Mutex<'a>`）、組み込みクラス `Sync` と `AtomicValue`、builtin `Task.scope` と API の表の 15 個。構築は `create`。
+- 決定: std module `Atomic`・`Mutex`（record `Atomic<'a>`・`Mutex<'a>`）、組み込みクラス `Sync` と `AtomicValue`、builtin `Task.scope` と API の表の 15 個。構築は `create`。
 - 理由: `Atomic`・`Mutex`・`Sync` は GUIDE D-30 の仮割り当て。`AtomicValue` は要素型の制約を std の汎用関数と builtin の両方で静的に表す最小の手段で、未割り当て。`new` は予約語。
 - 状態: 要承認（承認前は Phase 1 のどの手順にも着手しない）
 

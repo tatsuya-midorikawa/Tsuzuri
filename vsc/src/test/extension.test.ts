@@ -41,12 +41,12 @@ export async function run(): Promise<void> {
 	assert.match(hover.flatMap(item => item.contents.map(content => typeof content === 'string' ? content : content.value)).join('\n'), /i64/);
 	const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
 	assert.ok(symbols.some(symbol => symbol.name === 'calculate'));
-	const definitions = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', uri, document.positionAt(original.indexOf('Geometry.Point.offset')));
+	const definitions = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', uri, document.positionAt(original.indexOf('Geometry::Point.offset')));
 	assert.ok(definitions.length);
 	const target = 'targetUri' in definitions[0] ? definitions[0].targetUri : definitions[0].uri;
 	assert.equal(target.fsPath, path.join(root, 'Geometry', 'Point.tz'));
 	const report = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'Report.tz')));
-	for (const needle of ['Circle.radius', 'Shapes.Circle.radius']) {
+	for (const needle of ['Circle.radius', 'Shapes::Circle.radius']) {
 		const found = await waitFor(`namespace definition of ${needle}`, async () => {
 			const values = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', report.uri, report.positionAt(report.getText().indexOf(needle)));
 			return values?.length ? values[0] : undefined;

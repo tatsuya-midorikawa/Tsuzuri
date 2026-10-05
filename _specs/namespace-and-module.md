@@ -8,7 +8,7 @@
 構文:
 
 ```tz
-namespace [parent-namespaces.]identifier
+namespace [parent-namespaces::]identifier
 ```
 
 例1:
@@ -23,7 +23,7 @@ def main :: i32 = \() ->
 
 例2:
 ```Foo.tz
-namespace Sample.Codebase
+namespace Sample::Codebase
 
 def greet :: string -> unit = \text ->
   do! IO.writeln text |> ignore
@@ -39,7 +39,7 @@ def greet :: string -> unit = \text ->
 `namespace` 宣言を除く、ファイルの先頭に `using {namespace}` を宣言することで、namespace 付きの毎回完全修飾での参照をしなくてもよくなります。
 
 ```Shape.tz
-namespace Sample.Features
+namespace Sample::Features
 
 union Shape =
     | Circle of f64
@@ -59,10 +59,10 @@ def area :: Shape -> f64 = \shape ->
 ```Main.tz
 namespace Sample
 
-using Sample.Features // using は namespace 宣言よりも後に記述する必要がある
+using Sample::Features // using は namespace 宣言よりも後に記述する必要がある
 
 def main :: i32 = \() ->
-  Shape.area (Shape.Rect (3.0, 4.0)) // using で宣言した `Sample.Features` が省略できるため、`Sample.Features.Shape.area` を `Shape.area` などのように記述できる
+  Shape.area (Shape.Rect (3.0, 4.0)) // using で宣言した `Sample::Features` が省略できるため、`Sample::Features::Shape.area` を `Shape.area` などのように記述できる
   |> ignore
 
   0
@@ -106,14 +106,14 @@ def distance :: Point -> f64 = \point ->
 namespace Sample
 
 def main :: i32 = \() ->
-  Sample.Shape.area (Sample.Shape.Rect (3.0, 4.0)) // Sample.Shape.Shape.area などのように `namespace + module + union` とはならない
+  Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) // Sample::Shape.Shape.area などのように `namespace + module + union` とはならない
   |> ignore
 
   // Shape.area (Rect (3.0, 4.0)) // 同じ namespace に所属しているため、`Sample` を省略しても良い
   // |> ignore
 
-  let p = Sample.Point { x: 10.0, y: 20.5 } // Sample.Point.Point {} などのように `namespace + module + record` とはならない
-  Sample.Point.distance p |> ignore
+  let p = Sample::Point { x: 10.0, y: 20.5 } // Sample::Point.Point {} などのように `namespace + module + record` とはならない
+  Sample::Point.distance p |> ignore
 
   // let p = Point { x: 10.0, y: 20.5 } // 同じ namespace に所属しているため、`Sample` を省略しても良い
   // Point.distance p |> ignore

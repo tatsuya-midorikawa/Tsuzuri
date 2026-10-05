@@ -4,7 +4,7 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
-    { "match": "^(namespace|using)\\s+([A-Za-z_][A-Za-z_0-9]*(?:\\.[A-Za-z_][A-Za-z_0-9]*)*)", "captures": { "1": { "name": "keyword.other.namespace.tsuzuri" }, "2": { "name": "entity.name.namespace.tsuzuri" } } },
+    { "match": "^(namespace|using)\\s+([A-Za-z_][A-Za-z_0-9]*(?:::[A-Za-z_][A-Za-z_0-9]*)*)", "captures": { "1": { "name": "keyword.other.namespace.tsuzuri" }, "2": { "name": "entity.name.namespace.tsuzuri", "patterns": [{ "name": "keyword.operator.tsuzuri", "match": "::" }] } } },
     { "name": "entity.name.function.tsuzuri", "match": "(?<=\\bdef\\s)(?:rec\\s+)?[A-Za-z_][A-Za-z_0-9]*" },
     { "name": "entity.name.type.tsuzuri", "match": "(?<=\\brecord\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bunion\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bclass\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\btype\\s)[A-Za-z_][A-Za-z_0-9]*" },
     { "name": "storage.type.generic.tsuzuri", "match": "'[A-Za-z_][A-Za-z_0-9]*\\b" },
@@ -16,7 +16,7 @@
     { "name": "storage.modifier.attribute.tsuzuri", "match": "@(?:checked|literal)\\b" },
     { "name": "support.function.builtin.tsuzuri", "match": "\\b(?:not|ignore)\\b" },
     { "name": "constant.numeric.tsuzuri", "match": "(?<![\\w.])(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*(?:\\.[0-9_]+)?(?:[eE][+-]?[0-9_]+)?)(?:i(?:8|16|32|64|128)u?|f(?:16|32|64|128)|d(?:32|64|128)|uy|us|ul|UL|hf|hm|[ysulLfFmMI])?\\b" },
-    { "name": "entity.name.namespace.tsuzuri", "match": "\\b[A-Z][A-Za-z_0-9]*(?=\\.)" },
+    { "name": "entity.name.namespace.tsuzuri", "match": "\\b[A-Z][A-Za-z_0-9]*(?=\\.)|\\b(?!_\\b)[A-Za-z_][A-Za-z_0-9]*(?=::(?:[A-Za-z_][A-Za-z_0-9]*::)*[A-Z])" },
     { "name": "keyword.operator.tsuzuri", "match": "\\|>|->|=>|::|\\.\\.|[+*/%=!<>&|^~?\\\\-]+" },
     { "name": "punctuation.separator.tsuzuri", "match": "[,;.:]" },
     { "name": "punctuation.section.tsuzuri", "match": "[{}()\\[\\]]" }

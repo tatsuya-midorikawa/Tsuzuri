@@ -94,6 +94,8 @@ pub enum TokenKind {
     RightList,
     Colon,
     DoubleColon,
+    /// The `::` of a namespace path such as `Sample::Shape.area` (see `lexer::mark_paths`).
+    PathSep,
     Semicolon,
     Comma,
     Dot,
@@ -224,9 +226,9 @@ pub enum Provenance {
 #[derive(Debug)]
 pub struct Program {
     pub source_kind: Option<SourceKind>,
-    /// `namespace A.B`, the file's first declaration.
+    /// `namespace A::B`, the file's first declaration.
     pub namespace: Option<NamespaceDecl>,
-    /// `using A.B` declarations, after the namespace and before other declarations.
+    /// `using A::B` declarations, after the namespace and before other declarations.
     pub usings: Vec<NamespaceDecl>,
     pub type_aliases: Vec<TypeAliasDecl>,
     pub constants: Vec<ConstDecl>,
@@ -242,10 +244,10 @@ pub struct Program {
     pub entry: Option<Expr>,
 }
 
-/// A `namespace A.B` or `using A.B` declaration.
+/// A `namespace A::B` or `using A::B` declaration.
 #[derive(Clone, Debug)]
 pub struct NamespaceDecl {
-    /// The dotted namespace path as one identifier.
+    /// The namespace path as one identifier, its segments joined by `::`.
     pub path: Ident,
     pub span: Span,
 }

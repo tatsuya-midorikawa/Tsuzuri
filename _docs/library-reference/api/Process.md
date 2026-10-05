@@ -1,5 +1,7 @@
 # Process
 
+Namespace: `std`
+
 ## `Output`
 
 ```tsuzuri
@@ -17,7 +19,7 @@ it wrote to its standard output and its standard error.
 ## `run`
 
 ```tsuzuri
-def run :: string -> [string] -> [ubyte] -> IO<Result.Result<Output, Os.Error>>
+def run :: string -> [string] -> [ubyte] -> IO<Result<Output, Os.Error>>
 ```
 
 Runs a program and waits for it, with no shell in between: `args` are its arguments after its own name,

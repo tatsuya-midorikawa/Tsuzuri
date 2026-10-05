@@ -22,8 +22,8 @@ renameとquick fixは編集後のプロジェクトを再解析し、意味が�
 `--filter TEXT`、`--json`、`-O0`～`-O3`、`--target native|wasm32` に対応します。WASM 実行には Node.js が必要です。
 テストは常に型検査しますが通常ビルドには含めず、実行時は別プロセスで隔離します。Main.tz は不要です。
 
-アクティブパターンは bool／Option を返す部分形式と、宣言した union に対応する複数ケース形式を使えます。
-`def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text` により、`Parsed value` で解析結果を照合できます。
+アクティブパターンは bool／Maybe を返す部分形式と、宣言した union に対応する複数ケース形式を使えます。
+`def (|Parsed|_|) :: ref string -> Maybe<i64> = \text -> Parse.parse text` により、`Parsed value` で解析結果を照合できます。
 
 `const Answer: i64 = 40 + 2` で型付きのコンパイル時定数を宣言できます。前方参照・`private const`・他モジュールからの修飾参照に対応します。
 整数とbinary浮動小数点の演算、文字列・配列・タプル・レコードを扱い、利用ごとに通常の所有値を生成します。関数呼び出しとdecimal演算は定数式では拒否します。
@@ -32,7 +32,7 @@ renameとquick fixは編集後のプロジェクトを再解析し、意味が�
 WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
 
 標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。`IO.writeln` は `IO.write_line` の別名です。
-ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Option／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
+ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Maybe／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
 結果型がビルダーを持たない本体（`def main :: i32` など）と `try` の中では、IO の `let!`／`do!` をその場で実行します。`do! a |> f` は `a` の結果を `f` へ渡します。
 `IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
 
@@ -198,7 +198,7 @@ def distance_of :: 'T -> 'U
 ```
 
 `#distance` は具体的なレコード・union の定義元モジュールにある関数を要求します。
-例えば `'T` が `Point.Point` なら `'T.distance` は `Point.distance` を選び、返却型も照合・推論します。
+例えば `'T` が `Point` なら `'T.distance` は `Point.distance` を選び、返却型も照合・推論します。
 通常の関数値・部分適用に対応し、`private` を迂回しません。
 詳しくは [モジュール関数の制約](docs/language.md#モジュール関数の制約) を参照してください。
 
@@ -276,7 +276,7 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
-union Maybe<'a> = None | Some of 'a
+union Reply<'a> = Pending | Ready of 'a
 
 def area :: Shape -> f64 = \shape ->
     match shape with
@@ -288,7 +288,7 @@ area (Rect (3.0, 4.0))
 ```
 
 match は tag の `switch` に下げ、payload の move・解放・複製も case ごとに行います。
-標準の `Option<'a>`／`Result<'a, 'e>` と、変換・借用・失敗伝播の関数も同梱しています。
+標準の `Maybe<'a>`／`Result<'a, 'e>` と、変換・借用・失敗伝播の関数も同梱しています。
 case が不足する match は `E1021` のコンパイルエラーです。
 record／union宣言の後に `deriving (Eq, Ord, Display, Hash, Default)` を指定して構造的な実装を生成できます。
 `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のような木・ASTも使えます。
@@ -302,7 +302,7 @@ record／union宣言の後に `deriving (Eq, Ord, Display, Hash, Default)` を�
 旧形式 `fn add(x: i32, y: i32) -> i32 { x + y }` と `add(20, 22)` は互換用に受理します。
 詳細と制約一覧は [言語仕様](docs/language.md#多相関数と型クラス) を参照してください。
 
-kindを明示したrank-1高階型にも対応します。`class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`を定義し、OptionやResult等のconstructorごとにinstanceを実装できます。
+kindを明示したrank-1高階型にも対応します。`class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`を定義し、MaybeやResult等のconstructorごとにinstanceを実装できます。
 `Result<string>`の部分適用は末尾のエラー型を固定します。辞書/boxingを追加せず通常の単相化へ下げます。kind省略推論や標準Functorは未導入です。
 例と制約は[HKT仕様](docs/language.md#高階型hkt)を参照してください。
 
@@ -352,7 +352,7 @@ string は UTF-16 コード単位（`i16u`）、utf8string は UTF-8 バイト�
 
 F# のように、`Bind`・`Return` などを実装して計算の組み合わせ方を定義できます。
 **一つの `.tc` ファイルが一つのビルダー**で、ビルダー名はファイル名です。
-型クラスの実装や新しい構文の登録は不要です。標準の `Option`／`Result` もこの仕組みで実装され、
+型クラスの実装や新しい構文の登録は不要です。標準の `Maybe`／`Result` もこの仕組みで実装され、
 追加ファイルなしで使えます。
 
 ```text
@@ -369,7 +369,7 @@ match answer with
 `let!` は `Result.Bind value continuation`、`return` は `Result.Return value` に相当します。
 `Error`／`None` なら続きを呼ばず、error 型の暗黙変換はしません。
 `return` 自体は関数脱出ではなく成功値の生成です。失敗前の通常の `let`・式は実行し、トラップは失敗値に変換しません。
-`Option.map_ref` などは所有する payload を借用して扱い、`get` は失敗値に対してトラップします。
+`Maybe.map_ref` などは所有する payload を借用して扱い、`get` は失敗値に対してトラップします。
 `ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While` も必要に応じて定義でき、
 `Delay`／`Run` があれば本体を包んで遅延・実行の仕方を制御します。
 使用した構文の操作が未実装ならコンパイルエラーで、暗黙の既定実装はありません。
@@ -435,7 +435,8 @@ match Task.run (Task.parallel_results jobs) with
 
 **モジュール名は拡張子を除いたファイル名で決まり、1 ファイルに 1 モジュールを強制します。**
 `module` 宣言、入れ子のモジュール、複数ファイルへの同一モジュールの分割はできません。モジュール名は英大文字で始めます。
-ファイルの最初の `namespace Sample.Features` でモジュールが属する名前空間を決め、その後の `using Sample.Features` で名前空間の修飾を省けます。
+ファイルの最初の `namespace Sample::Features` でモジュールが属する名前空間を決め、その後の `using Sample::Features` で名前空間の修飾を省けます。
+名前空間とモジュールは `::`、モジュールとその中の名前は `.` でつなぎます（`Sample::Features::Shape.area`）。
 宣言がなければ、`Tsuzuri.toml` の `namespace`（なければ package 名やフォルダー名）にディレクトリを続けた名前空間です。`tsuzuri new <フォルダー>` で新しいプロジェクトを作れます。
 同じディレクトリの `.tz`・`.tt`・`.tc` ファイルを自動で読み込みます。
 インポート宣言やファイルの列挙は不要です。
@@ -469,7 +470,7 @@ d
 
 通常の `fn` も別ファイルから `モジュール名.関数名` で呼べます。
 `export` はモジュール間の可視性ではなく、C／WASM ホストへの公開指定です。
-レコード名は一意なら `Point`、明示する場合は `Point.Point` と書けます。
+レコード名は一意なら `Point` と書けます。モジュール名と同じ名前のレコードの完全名はモジュールの完全名そのもので、`Point.Point` とは書きません（`E1004`）。
 同名のレコードが複数モジュールにある場合、他モジュールからは修飾名で区別します。
 
 宣言は既定で public です。モジュール内だけで使う補助関数・レコード・union には `private` を付けます。
@@ -477,11 +478,12 @@ d
 
 標準ライブラリ（std）はコンパイラに埋め込まれ、すべてのプロジェクトで自動的に読み込まれます。
 std の関数も `Math.zero()` のように修飾して呼び、使わない std のコードは生成物に含まれません。
+std のモジュールは名前空間 `std` に属し、名前空間を省くか、同じ名前を宣言したファイルでは `std::Result<i64, string>`・`std::Maybe.Some 1` のように書きます。
 次のモジュール名は std 用に予約しており、利用者のファイル名には使えません（`E1011`）。
 
 | 予約モジュール | 用途 |
 |---|---|
-| `Option`、`Result` | 省略可能な値と失敗 |
+| `Maybe`、`Result` | 省略可能な値と失敗 |
 | `Array`、`List`、`Vec`、`Map`、`Set`、`HashMap`、`HashSet` | コレクション |
 | `String`、`Utf8String`、`Char` | UTF-16／UTF-8 文字列と文字 |
 | `Math`、`Int` | 数学関数と整数演算 |
@@ -491,7 +493,8 @@ std の関数も `Math.zero()` のように修飾して呼び、使わない std
 | `Format` | 書式指定（`Format` クラスの instance 用の `parse`／`pad`） |
 
 OS API・ハッシュコンテナ・書式指定の追加で、これらの名前のファイルは `E1011` で拒否されます。使っていた既存のプロジェクトは改名が必要です。
-stdは`Option`・`Result`、コレクション・文字列・文字・整数・並列処理・数学・OS・書式指定のAPIを持ちます。
+`Option` は `Maybe` に改名しました（case の `None`・`Some` はそのまま）。`Maybe.tz` を持つ既存のプロジェクトも改名が必要です。
+stdは`Maybe`・`Result`、コレクション・文字列・文字・整数・並列処理・数学・OS・書式指定のAPIを持ちます。
 `Math.sqrt 4.0f32`のように全float型の基本演算を使え、超越関数はf32／f64に対応します。`Math.pi()`などの定数も型を保持します。
 `Math.fma 2.0 3.0 4.0`は積和を一度だけ丸めます。`Array.sum_pairwise`は固定ペア木、`Array.sum_kahan`はNeumaier補償和、`Array.dot_fma`は順次FMA内積です。通常の`a * b + c`、`Array.sum`、`Array.dot`は融合・再結合しません。
 無修飾の型・case・クラス名は利用者の宣言を std より優先します。
@@ -513,12 +516,12 @@ rootに`Tsuzuri.toml`を置くと、ローカル依存を同じ`check`／`build`
 [package]
 name = "app"
 version = "0.1.0"
-namespace = "Acme.App"
+namespace = "Acme::App"
 [dependencies]
 geometry-core = { path = "../geometry-core" }
 ```
 
-依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore.Point`（依存が`namespace`を持てばその名前空間）で参照し、依存内でも完全修飾します。
+依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore::Point`（依存が`namespace`を持てばその名前空間）で参照し、依存内でも完全修飾します。
 限定TOML、相対pathだけに対応し、ネットワークやbuild scriptは実行しません。詳細は[言語仕様](docs/language.md#ローカルパッケージ)を参照してください。
 
 ## ビルド
@@ -585,7 +588,7 @@ UTF-8 bytesを出力しコードページを変更しません。対話コンソ
 数値は `to_string`／`Display.display` と同じ形式です。二進浮動小数点は最短の往復可能な十進表現
 （`0.1` は `0.1`）、負のゼロは `-0` と表示し、native／WASM で共通の実装を使います。
 `to_string value` は値を消費し、`Display.display ref value` は借用します。
-`let value: Option<f64> = Parse.parse ref text` のように解析でき、不正入力・overflow は `None` です。
+`let value: Maybe<f64> = Parse.parse ref text` のように解析でき、不正入力・overflow は `None` です。
 独自型にも Display／Parse インスタンスを定義できます。
 文字列の出力は UTF-8 です。string の孤立サロゲートは暗黙に置換せずトラップし、
 必要なら `String.to_well_formed` で明示的に置換します。
@@ -757,7 +760,7 @@ markerで管理対象を識別し、既存の非cacheディレクトリを転用
 入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tz` を選びます。
 ディレクトリ入力はそのディレクトリ、ファイル入力は親ディレクトリをルートにし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に読み込み、
 未参照のモジュール・ビルダーも検査します。
-`Geometry/Point.tz` は `Geometry.Point` になり、`Geometry.Point.distance` や `Geometry.Point.Point` と完全修飾して参照します。
+`Geometry/Point.tz` は `Geometry::Point` になり、`Geometry::Point.distance` と完全修飾して参照します。このファイルの `record Point` の完全名も `Geometry::Point` です。
 隠し項目を無視し、ソース・ディレクトリのsymlinkを拒否します。各パス要素は大文字小文字を区別する ASCII 識別子で、
 `_` 単独や予約語は使えません。
 モジュールは16要素・255バイト、探索は4096ソース・1024ディレクトリまでです。上位のrootは推測せず、階層全体にはrootディレクトリを指定します。

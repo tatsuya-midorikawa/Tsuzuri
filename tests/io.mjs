@@ -84,7 +84,7 @@ let _unread = IO.read_line ()
 IO {
     do! IO.write "Name: "
     let! line = IO.read_line ()
-    do! IO.write_line (Option.default_value "<eof>" line)
+    do! IO.write_line (Maybe.default_value "<eof>" line)
     do! IO.write_error_line "note"
 }
 `);
@@ -200,7 +200,7 @@ int main(void) {
   writeFileSync(source, `IO {
     for _index in [0, 1, 2, 3, 4] do {
         let! line = IO.read_line ()
-        do! IO.write_line (Option.default_value "<eof>" line)
+        do! IO.write_line (Maybe.default_value "<eof>" line)
     }
 }
 `);
@@ -211,8 +211,8 @@ int main(void) {
   writeFileSync(source, `IO {
     let! input = IO.try_read_line ()
     do! IO.write_error_line (match input with
-        | Result.Ok Option.None -> "eof"
-        | Result.Ok (Option.Some text) -> "line:" + text
+        | Result.Ok Maybe.None -> "eof"
+        | Result.Ok (Maybe.Some text) -> "line:" + text
         | Result.Error IO.InvalidEncoding -> "encoding"
         | Result.Error _ -> "read-failed")
     let! invalid = IO.try_write "\\uD800"
@@ -273,7 +273,7 @@ IO {
     assert.equal(result.instance.exports.tsuzuri_main(), 0);
     assert.equal(result.stdout, "2334411\n");
   }
-  writeFileSync(source, "IO { let! line = IO.read_line (); do! IO.write_line (Option.default_value \"\" line) }\n");
+  writeFileSync(source, "IO { let! line = IO.read_line (); do! IO.write_line (Maybe.default_value \"\" line) }\n");
   const trapped = execute(compiler, ["run", source, "--json"], { input: Buffer.from([0xff, 10]) }, false);
   assert.equal(trapped.status, 1);
   assert.equal(JSON.parse(trapped.stderr.trim()).code, "E2005");
@@ -289,41 +289,41 @@ def Delay :: (unit -> Value<'a>) -> (unit -> Value<'a>)
 fn Delay body = body
 def Run :: (unit -> Value<'a>) -> Value<'a>
 fn Run body = body ()
-def forwarded :: Option<i64> -> Option<i64>
+def forwarded :: Maybe<i64> -> Maybe<i64>
 fn forwarded source =
   let! value = source
   return value + 1
 `);
   writeFileSync(join(root, "Computed.tt"), `class Computed<'a> {
-  def selected :: 'a -> Option<i64>
-  def defaulted :: 'a -> Option<i64>
+  def selected :: 'a -> Maybe<i64>
+  def defaulted :: 'a -> Maybe<i64>
   fn defaulted _input =
     let! value = Some 41
     return value + 1
 }
 `);
-  writeFileSync(join(root, "Helpers.tz"), `private def advance :: i64 -> Option<i64>
+  writeFileSync(join(root, "Helpers.tz"), `private def advance :: i64 -> Maybe<i64>
 fn advance input =
   let! value = Some input
   return value + 1
-def identity :: Capture<'a> => Option<'a> -> Option<'a>
+def identity :: Capture<'a> => Maybe<'a> -> Maybe<'a>
 fn identity source =
   let! value = source
   return value
-def curried :: i64 -> Option<i64> -> Option<i64>
+def curried :: i64 -> Maybe<i64> -> Maybe<i64>
 fn curried offset = source ->
   let! value = source
   return value + offset
-def implemented_with_let :: i64 -> Option<i64>
+def implemented_with_let :: i64 -> Maybe<i64>
 let implemented_with_let = input ->
   let! value = Some input
   return value + 1
-def rec repeated :: i64 -> Option<i64>
+def rec repeated :: i64 -> Maybe<i64>
 fn rec repeated count =
   let! value = Some count
   if value == 0 then return 42
   else return! repeated (value - 1)
-def echo :: Capture<'a> => IO<Option<'a>> -> IO<Option<'a>>
+def echo :: Capture<'a> => IO<Maybe<'a>> -> IO<Maybe<'a>>
 fn echo source =
   let! option = source
   let! value = option
@@ -335,15 +335,15 @@ instance Computed<i64> {
 }
 def functions :: i64
 fn functions =
-  let transform: i64 -> Option<i64> = \\input ->
+  let transform: i64 -> Maybe<i64> = \\input ->
     let! value = Some input
     return value + 1
   let add_one = curried 1
-  Option.get (advance 41) + Option.get (identity (Some 42)) +
-    Option.get (add_one (Some 41)) + Option.get (implemented_with_let 41) +
-    Option.get (repeated 2) + Option.get (transform 41) +
-    Option.get (Computed.selected 41i64) + Option.get (Computed.defaulted 0i64) +
-    Option.get (Gate.forwarded (Some 41))
+  Maybe.get (advance 41) + Maybe.get (identity (Some 42)) +
+    Maybe.get (add_one (Some 41)) + Maybe.get (implemented_with_let 41) +
+    Maybe.get (repeated 2) + Maybe.get (transform 41) +
+    Maybe.get (Computed.selected 41i64) + Maybe.get (Computed.defaulted 0i64) +
+    Maybe.get (Gate.forwarded (Some 41))
 `);
   const implicitCases = [
     ["read", `fn main =
@@ -352,7 +352,7 @@ fn functions =
     do! IO.write_line value
     do! IO.write_line "done"
 `, "hello\ndone\n", ""],
-    ["result", `def gather :: IO<Result<Option<string>, IO.Error>>
+    ["result", `def gather :: IO<Result<Maybe<string>, IO.Error>>
 fn gather =
     let! result = IO.try_read_line ()
     let! option = result
@@ -365,10 +365,10 @@ fn main =
         | Ok None -> "eof"
         | Error _ -> "failed")
 `, "hello\n", "eof\n"],
-    ["custom", `def gather :: IO<Gate.Value<Option<unit>>>
+    ["custom", `def gather :: IO<Gate.Value<Maybe<unit>>>
 fn gather =
     let! line = IO.read_line ()
-    let source = if Option.is_none (ref line) then Gate.Stop "stopped" else Gate.Next line
+    let source = if Maybe.is_none (ref line) then Gate.Stop "stopped" else Gate.Next line
     let! option = source
     let! text = option
     do! IO.write_line text
@@ -423,7 +423,7 @@ fn main =
       }
     }
   }
-  console.log("Implicit computations: IO/Option/Result/custom builders, short circuiting, preserved errors and owned results passed on native/WASM -O0/-O3");
+  console.log("Implicit computations: IO/Maybe/Result/custom builders, short circuiting, preserved errors and owned results passed on native/WASM -O0/-O3");
   console.log("IO: EOF/CRLF/long lines, encoding/errors, ABI guards, composition, interactive prompts, object linking and ASan/UBSan zero-live allocations passed");
 } finally {
   rmSync(root, { recursive: true, force: true });

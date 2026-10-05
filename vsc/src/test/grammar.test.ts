@@ -47,10 +47,20 @@ test('TextMate grammar tokenizes namespaces, using, error handling, attributes, 
 			assert.ok(token, text);
 			return token.scopes;
 		};
-		for (const line of ['namespace Sample.Features', 'using Sample.Features // shared shapes']) {
+		for (const line of ['namespace Sample::Features', 'using Sample::Features // shared shapes']) {
 			assert.ok(scopes(line, line.split(' ')[0]).includes('keyword.other.namespace.tsuzuri'), line);
-			assert.ok(scopes(line, 'Sample.Features').includes('entity.name.namespace.tsuzuri'), line);
+			for (const segment of ['Sample', 'Features']) {
+				assert.ok(scopes(line, segment).includes('entity.name.namespace.tsuzuri'), `${line}: ${segment}`);
+			}
+			assert.ok(scopes(line, '::').includes('keyword.operator.tsuzuri'), line);
 		}
+		const qualified = 'let area = Sample::Features::Shape.area (lower::Shape.Rect (3.0, 4.0))';
+		for (const segment of ['Sample', 'Features', 'Shape.area', 'lower']) {
+			assert.ok(scopes(qualified, segment).includes('entity.name.namespace.tsuzuri'), segment);
+		}
+		assert.ok(scopes(qualified, '::').includes('keyword.operator.tsuzuri'));
+		assert.ok(!scopes('let ys = x::xs', 'x::').includes('entity.name.namespace.tsuzuri'));
+		assert.ok(scopes('def area::Sample::Shape -> f64', 'area').includes('entity.name.function.tsuzuri'));
 		assert.ok(scopes('using Sample // shared', 'shared').includes('comment.line.double-slash.tsuzuri'));
 		assert.ok(!scopes('let using = namespace + 1', 'using').includes('keyword.other.namespace.tsuzuri'));
 		assert.ok(!scopes('    using resource', 'using').includes('keyword.other.namespace.tsuzuri'));

@@ -278,7 +278,7 @@ fn extern_types_are_noncopy_leaf_types() {
     // Outside the C ABI a handle is an ordinary owned value.
     for body in [
         "def store :: i64 -> i64\nfn store start =\n    let handles = [counter_new start, counter_new 2]\n    handles.length\nstore 1",
-        "def keep :: i64 -> i64\nfn keep start =\n    let held: Option<Counter> = Some (counter_new start)\n    match held with\n    | Some counter -> counter_free counter\n    | None -> 0\nkeep 1",
+        "def keep :: i64 -> i64\nfn keep start =\n    let held: Maybe<Counter> = Some (counter_new start)\n    match held with\n    | Some counter -> counter_free counter\n    | None -> 0\nkeep 1",
         "record Holder { counter: Counter }\ndef hold :: i64 -> Holder\nfn hold start = Holder { counter: counter_new start }\n1",
         "def id :: 'a -> 'a\nfn id x = x\ndef through :: i64 -> i64\nfn through start = counter_free (id (counter_new start))\nthrough 1",
     ] {

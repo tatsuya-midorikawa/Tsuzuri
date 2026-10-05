@@ -479,14 +479,14 @@ fn main =
 fn displays_nested_named_types_tasks_and_borrows_with_angle_brackets() {
     let module = analyze(
         "record Box<'a> { value: 'a }
-def inspect :: ref Box<Option<i64>> -> Task<Box<i64 -> i64>> -> unit
+def inspect :: ref Box<Maybe<i64>> -> Task<Box<i64 -> i64>> -> unit
 fn inspect value pending = ()",
     )
     .unwrap();
     let signature = &function(&module, "inspect").signature;
     assert_eq!(
         signature.parameters[0].display(&module.types()),
-        "ref Main.Box<Option.Option<i64>>"
+        "ref Main.Box<Maybe<i64>>"
     );
     assert_eq!(
         signature.parameters[1].display(&module.types()),
@@ -521,10 +521,10 @@ fn rejects_legacy_and_malformed_generic_syntax() {
         "record R<'a { value: 'a }",
         "record R<'a>> { value: 'a }",
         "record R <'a> { value: 'a }",
-        "let x: Option<> = None\n0",
+        "let x: Maybe<> = None\n0",
         "let x: Result<i64 string> = Ok 1\n0",
         "let x: Result<i64,, string> = Ok 1\n0",
-        "let x: Option<i64 = Some 1\n0",
+        "let x: Maybe<i64 = Some 1\n0",
         "def f :: Task<i64, string> -> i64\nfn f t = 0",
         "def f :: Copy<> => i64\nfn f = 0",
         "def f :: Copy<i64, string> => i64\nfn f = 0",

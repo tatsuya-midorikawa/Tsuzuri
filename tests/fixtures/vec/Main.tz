@@ -19,7 +19,7 @@ fn vec_pop_order count =
             total = total * 10 + value
         | (remaining, None) -> values = remaining
     match Vec.pop values with | (remaining, item) ->
-        assert (Vec.is_empty (ref remaining) && Option.is_none (ref item))
+        assert (Vec.is_empty (ref remaining) && Maybe.is_none (ref item))
         total
 
 export def vec_growth :: i64
@@ -58,7 +58,7 @@ fn vec_clone =
 export def vec_get :: i64 -> i64
 fn vec_get index =
     let values = Vec.push (Vec.empty()) 42
-    Option.default_value (-1) (Vec.get (ref values) index)
+    Maybe.default_value (-1) (Vec.get (ref values) index)
 
 export def vec_capture :: i64
 fn vec_capture =

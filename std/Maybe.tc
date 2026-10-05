@@ -1,0 +1,133 @@
+union Maybe<'a> =
+    | None
+    | Some of 'a
+
+def MergeSources :: Maybe<'a> -> Maybe<'b> -> Maybe<('a * 'b)>
+fn MergeSources left right =
+    match left with
+    | None -> None
+    | Some first -> match right with | None -> None | Some second -> Some (first, second)
+
+def BindReturn :: Maybe<'a> -> ('a -> 'b) -> Maybe<'b>
+fn BindReturn value next = map next value
+
+def Bind2 :: Maybe<'a> -> Maybe<'b> -> ('a -> 'b -> 'c) -> Maybe<'c>
+fn Bind2 left right next =
+    match MergeSources left right with
+    | None -> None
+    | Some (first, second) -> Some (next first second)
+
+def is_some :: &(Maybe<'a>) -> bool
+fn is_some maybe =
+    match maybe with
+    | Some _ -> true
+    | None -> false
+
+def is_none :: &(Maybe<'a>) -> bool
+fn is_none maybe = ! (is_some maybe)
+
+def get :: Maybe<'a> -> 'a
+fn get maybe =
+    match maybe with
+    | Some value -> value
+    | None -> unreachable ()
+
+def default_value :: 'a -> Maybe<'a> -> 'a
+fn default_value fallback maybe =
+    match maybe with
+    | Some value -> value
+    | None -> fallback
+
+def default_with :: (unit -> 'a) -> Maybe<'a> -> 'a
+fn default_with fallback maybe =
+    match maybe with
+    | Some value -> value
+    | None -> fallback ()
+
+def map :: ('a -> 'b) -> Maybe<'a> -> Maybe<'b>
+fn map transform maybe =
+    match maybe with
+    | Some value -> Some (transform value)
+    | None -> None
+
+def map_ref :: (&'a -> 'b) -> &(Maybe<'a>) -> Maybe<'b>
+fn map_ref transform maybe =
+    match maybe with
+    | Some value -> Some (transform (&value))
+    | None -> None
+
+def bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
+fn bind maybe next =
+    match maybe with
+    | Some value -> next value
+    | None -> None
+
+def bind_ref :: &(Maybe<'a>) -> (&'a -> Maybe<'b>) -> Maybe<'b>
+fn bind_ref maybe next =
+    match maybe with
+    | Some value -> next (&value)
+    | None -> None
+
+def filter :: (&'a -> bool) -> Maybe<'a> -> Maybe<'a>
+fn filter predicate maybe =
+    match maybe with
+    | Some value -> if predicate (&value) then Some value else None
+    | None -> None
+
+def or_else :: Maybe<'a> -> (unit -> Maybe<'a>) -> Maybe<'a>
+fn or_else maybe fallback =
+    match maybe with
+    | Some value -> Some value
+    | None -> fallback ()
+
+def to_result :: 'e -> Maybe<'a> -> Result<'a, 'e>
+fn to_result error maybe =
+    match maybe with
+    | Some value -> Result.Ok value
+    | None -> Result.Error error
+
+def of_result :: Result<'a, 'e> -> Maybe<'a>
+fn of_result result =
+    match result with
+    | Result.Ok value -> Some value
+    | Result.Error _ -> None
+
+def Return :: 'a -> Maybe<'a>
+fn Return value = Some value
+
+def ReturnFrom :: Maybe<'a> -> Maybe<'a>
+fn ReturnFrom maybe = maybe
+
+def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
+fn Bind maybe next = bind maybe next
+
+def Zero :: Maybe<unit>
+fn Zero = Some ()
+
+def Delay :: (unit -> Maybe<'a>) -> (unit -> Maybe<'a>)
+fn Delay body = body
+
+def Run :: (unit -> Maybe<'a>) -> Maybe<'a>
+fn Run body = body ()
+
+def Combine :: Maybe<unit> -> (unit -> Maybe<'a>) -> Maybe<'a>
+fn Combine first rest =
+    match first with
+    | Some _ -> rest ()
+    | None -> None
+
+def For :: Copy<'a> => ['a] -> ('a -> Maybe<unit>) -> Maybe<unit>
+fn For values body =
+    let mut result = Some ()
+    let mut index = 0
+    while index < values.length && is_some (&result) do
+        result = body values[index]
+        index = index + 1
+    result
+
+def While :: (unit -> bool) -> (unit -> Maybe<unit>) -> Maybe<unit>
+fn While guard body =
+    let mut result = Some ()
+    while (match result with | Some _ -> true | None -> false) && guard () do
+        result = body ()
+    result

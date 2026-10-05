@@ -166,6 +166,22 @@ fn structural_display_quotes_generic_text_and_characters() {
 }
 
 #[test]
+fn derives_in_nested_and_namespaced_modules() {
+    for (path, header) in [
+        ("Geometry/Choice.tz", ""),
+        ("Choice.tz", "namespace Other::Deep\n\n"),
+    ] {
+        let source = format!(
+            "{header}union Choice = Empty | Full of i64 deriving (Eq, Ord, Hash, Display, Default)\n\
+             record Box {{ value: i64 }} deriving (Eq, Ord, Hash, Display, Default)\n"
+        );
+        let module = tsuzuri::analyze_modules(&[(path, source.as_str())])
+            .unwrap_or_else(|error| panic!("{path}: {error:?}"));
+        llvm::emit(&module, llvm::Entry::Library).unwrap();
+    }
+}
+
+#[test]
 fn derives_preserve_scopes_limits_and_standard_independence() {
     let module = tsuzuri::analyze_modules(&[
         ("Main.tz", "record Value { number: i64 } deriving (Eq, Ord, Display, Hash, Default)\nlet value = Value { number: 42 }\nvalue == value"),

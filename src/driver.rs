@@ -637,7 +637,7 @@ fn folder_namespace(directory: &Path) -> String {
     crate::package::namespace(&name, Span::default())
         .ok()
         .filter(|namespace| crate::package::valid_namespace(namespace))
-        .or_else(|| crate::package::valid_namespace(&name).then_some(name))
+        .or_else(|| crate::package::valid_namespace(&name).then(|| name.replace("::", ".")))
         .unwrap_or_default()
 }
 
@@ -698,12 +698,11 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
             let text = read_source_text(&path).map_err(|error| SourceError::new(&path, error))?;
             let manifest = crate::package::parse_manifest(&text, 0)
                 .map_err(|error| SourceError::new(&path, error))?;
-            if manifest
-                .namespace
-                .split('.')
-                .next()
-                .is_some_and(|first| crate::stdlib::is_reserved_module(first) || first == "Task")
-            {
+            if manifest.namespace.split('.').next().is_some_and(|first| {
+                first == crate::stdlib::NAMESPACE
+                    || crate::stdlib::is_reserved_module(first)
+                    || first == "Task"
+            }) {
                 return Err(SourceError::new(
                     &path,
                     driver_error(

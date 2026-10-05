@@ -22,7 +22,7 @@ fn record_updates_preserve_types_and_block_parsing() {
         "record Owned { text: string, count: i64 }\ndef update :: Owned -> Owned\nfn update value = { value with count = 2 }",
         "record Point { x: i64 }\nlet point = Point { x: 1 }\nlet other = { point with x = 2 }\npoint.x + other.x",
         "record Point { x: i64 }\nlet point = Point { x: 1 }\nlet update = value -> { point with x = value }\nupdate 42",
-        "record Point { x: i64 }\nlet point = Point { x: 1 }\n{ point with x = Option.get (Option { return 42 }) }.x",
+        "record Point { x: i64 }\nlet point = Point { x: 1 }\n{ point with x = Maybe.get (Maybe { return 42 }) }.x",
     ] {
         accepts(source);
     }

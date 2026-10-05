@@ -567,10 +567,10 @@ fn main() -> i64 { 999 }
 `,
     "Even.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { true } else { Odd.accepts(n - 1) } }",
     "Main.tz": `
-record Callback { distance: fn(Point.Point) -> f64 }
+record Callback { distance: fn(Point) -> f64 }
 fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
 export fn module_result() -> f64 {
-  let p: Point.Point = Point.Point { x: 3.0, y: 4.0 };
+  let p: Point = Point { x: 3.0, y: 4.0 };
   let functions = [Point.distance];
   let Point = Callback { distance: functions[0] };
   let left: Left.Value = Left.Value { x: 20 };
@@ -690,7 +690,7 @@ async function packageChecks() {
   writeFileSync(join(dependency, "Tsuzuri.toml"), '[package]\nname = "geometry-core"\nversion = "0.1.0"\n');
   writeFileSync(join(dependency, "Point.tz"), "def distance :: f64 -> f64 -> f64\nfn distance x y = Math.sqrt (x * x + y * y)\n");
   writeFileSync(join(dependency, "Main.tz"), "def main :: i64\nfn main = 99\n");
-  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore.Point.distance 3.0 4.0\n");
+  writeFileSync(join(app, "Main.tz"), "export def answer :: f64\nfn answer = GeometryCore::Point.distance 3.0 4.0\n");
   const host = join(directory, "host.c");
   writeFileSync(host, "extern double tz_answer(void);\nint main(void) { return tz_answer() == 5.0 ? 0 : 1; }\n");
   const first = join(directory, "first.ll");

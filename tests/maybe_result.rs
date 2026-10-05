@@ -13,18 +13,18 @@ fn rejects(source: &str, code: &str) {
 #[test]
 fn standard_types_constructors_and_functions_need_no_user_modules() {
     for source in [
-        "let x: Option<i64> = Some 1\nOption.get x",
-        "let x: Option<i64> = None\nOption.default_value 42 x",
+        "let x: Maybe<i64> = Some 1\nMaybe.get x",
+        "let x: Maybe<i64> = None\nMaybe.default_value 42 x",
         "let x: Result<i64, string> = Ok 42\nResult.get x",
         "let x: Result<i64, string> = Error \"bad\"\nResult.default_value 42 x",
-        "Option.get (Option.map (n -> n + 1) (Some 41))",
-        "Option.get (Option.filter (n -> *n > 0) (Some 42))",
+        "Maybe.get (Maybe.map (n -> n + 1) (Some 41))",
+        "Maybe.get (Maybe.filter (n -> *n > 0) (Some 42))",
         "let r: Result<i64, string> = Result.map_error (s -> s + \"!\") (Error \"bad\")\nResult.get_error r",
-        "Result.get (Option.to_result \"missing\" (Some 42))",
-        "let r: Result<i64, string> = Ok 42\nOption.get (Result.to_option r)",
-        "let r: Result<Option<i64>, string> = Ok (Some 42)\nOption.get (Result.get r)",
-        "let xs: [Option<i64>] = [None, Some 42]\nOption.default_value 0 xs[1]",
-        "let constructor: i64 -> Option<i64> = Some\nOption.get (constructor 42)",
+        "Result.get (Maybe.to_result \"missing\" (Some 42))",
+        "let r: Result<i64, string> = Ok 42\nMaybe.get (Result.to_maybe r)",
+        "let r: Result<Maybe<i64>, string> = Ok (Some 42)\nMaybe.get (Result.get r)",
+        "let xs: [Maybe<i64>] = [None, Some 42]\nMaybe.default_value 0 xs[1]",
+        "let constructor: i64 -> Maybe<i64> = Some\nMaybe.get (constructor 42)",
         "let constructor: string -> Result<i64, string> = Error\nResult.get_error (constructor \"bad\")",
     ] {
         accepts(source);
@@ -32,7 +32,7 @@ fn standard_types_constructors_and_functions_need_no_user_modules() {
     let module = accepts("42");
     assert!(module.warnings.is_empty(), "{:?}", module.warnings);
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
-    assert!(!ir.contains("tz.union.Option"));
+    assert!(!ir.contains("tz.union.Maybe"));
     assert!(!ir.contains("tz.union.Result"));
 }
 
@@ -41,8 +41,8 @@ fn user_cases_take_precedence_without_changing_standard_library_types() {
     accepts(
         "union Local = None | Some of bool
          let x: Local = Some true
-         let y: Option<i64> = Option.Some 42
-         Option.get y",
+         let y: Maybe<i64> = Maybe.Some 42
+         Maybe.get y",
     );
     let error = analyze_modules(&[
         ("Main.tz", "let value = Some 42\n0"),
@@ -63,10 +63,10 @@ fn rejects_unresolved_types_invalid_errors_noncopy_iteration_and_abi() {
             "E1003",
         ),
         (
-            "Option.get (Option { for s in [\"a\"] do do! Some (); return 1 })",
+            "Maybe.get (Maybe { for s in [\"a\"] do do! Some (); return 1 })",
             "E1005",
         ),
-        ("export def bad :: Option<i64>\nfn bad = Some 42", "E1008"),
+        ("export def bad :: Maybe<i64>\nfn bad = Some 42", "E1008"),
         (
             "let result: Result<i64, string> = Ok 1\nlet mapped = Result.map_ref (r -> *r) (&result)\n0",
             "E1005",
@@ -81,12 +81,12 @@ fn rejects_unresolved_types_invalid_errors_noncopy_iteration_and_abi() {
 #[test]
 fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
     for source in [
-        "let owner = 42\nlet borrowed: Option<&i64> = Some (ref owner)\n*(Option.get borrowed)",
+        "let owner = 42\nlet borrowed: Maybe<&i64> = Some (ref owner)\n*(Maybe.get borrowed)",
         "let owner = 42\nlet borrowed: Result<&i64, i64> = Ok (ref owner)\n*(Result.get borrowed)",
-        "def first :: ref [string] -> Option<ref string>\nfn first values = if values.length == 0 then None else Some (ref values[0])\nlet values = [\"owned\"]\n(Option.get (first (ref values))).length",
+        "def first :: ref [string] -> Maybe<ref string>\nfn first values = if values.length == 0 then None else Some (ref values[0])\nlet values = [\"owned\"]\n(Maybe.get (first (ref values))).length",
         "let number = 42\nlet value = Some (Some (ref number))\nlet copy = value\nmatch copy with | Some (Some borrowed) -> deref borrowed | _ -> 0",
-        "def choose :: ref i64 -> ref i64 -> Option<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet right = 22\nderef (Option.get (choose (ref left) (ref right)))",
-        "record Stored { value: Option<ref i64> }\nlet owner = 42\nlet stored = Stored { value: Some (ref owner) }\nderef (Option.get stored.value)",
+        "def choose :: ref i64 -> ref i64 -> Maybe<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet right = 22\nderef (Maybe.get (choose (ref left) (ref right)))",
+        "record Stored { value: Maybe<ref i64> }\nlet owner = 42\nlet stored = Stored { value: Some (ref owner) }\nderef (Maybe.get stored.value)",
     ] {
         let module = accepts(source);
         for wasm in [false, true] {
@@ -94,16 +94,16 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
         }
     }
     for source in [
-        "def nested :: ref (Option<ref i64>) -> ref i64\nfn nested value = Option.get (deref value)\nlet mut owner = 42\nlet container = Some (ref owner)\nlet borrowed = nested (ref container)\nowner = 1\nderef borrowed",
-        "def nested :: ref (Option<ref i64>) -> ref i64\nfn nested value = Option.get (deref value)\nlet owner = 42\nlet borrowed = { let container = Some (ref owner); nested (ref container) }\nderef borrowed",
-        "let option = Some 42\nlet borrowed: Option<&i64> = Option.map_ref (value -> value) (&option)\n*(Option.get borrowed)",
+        "def nested :: ref (Maybe<ref i64>) -> ref i64\nfn nested value = Maybe.get (deref value)\nlet mut owner = 42\nlet container = Some (ref owner)\nlet borrowed = nested (ref container)\nowner = 1\nderef borrowed",
+        "def nested :: ref (Maybe<ref i64>) -> ref i64\nfn nested value = Maybe.get (deref value)\nlet owner = 42\nlet borrowed = { let container = Some (ref owner); nested (ref container) }\nderef borrowed",
+        "let option = Some 42\nlet borrowed: Maybe<&i64> = Maybe.map_ref (value -> value) (&option)\n*(Maybe.get borrowed)",
         "let result: Result<i64, i64> = Ok 42\nlet borrowed: Result<&i64, i64> = Result.bind_ref (&result) (value -> Ok value)\n*(Result.get borrowed)",
-        "let borrowed = { let value = 42; Some (ref value) }\n*(Option.get borrowed)",
-        "let mut value = 42\nlet borrowed = Some (ref value)\nvalue = 1\n*(Option.get borrowed)",
+        "let borrowed = { let value = 42; Some (ref value) }\n*(Maybe.get borrowed)",
+        "let mut value = 42\nlet borrowed = Some (ref value)\nvalue = 1\n*(Maybe.get borrowed)",
         "let mut value = 42\nlet borrowed = Some (ref mut value)\n()",
-        "record Stored { value: Option<ref mut i64> }",
+        "record Stored { value: Maybe<ref mut i64> }",
         "let value = 42\nlet borrowed = Some (ref value)\nlet work = task { return borrowed }\n()",
-        "def choose :: ref i64 -> ref i64 -> Option<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet borrowed = { let right = 22; choose (ref left) (ref right) }\n*(Option.get borrowed)",
+        "def choose :: ref i64 -> ref i64 -> Maybe<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet borrowed = { let right = 22; choose (ref left) (ref right) }\n*(Maybe.get borrowed)",
     ] {
         let error = analyze(source).expect_err(source);
         assert!(
@@ -118,12 +118,12 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
 #[test]
 fn maps_borrowed_noncopy_payloads_without_inferred_copy_constraints() {
     for source in [
-        "let option = Some \"hello\"\nOption.get (Option.map_ref size (&option))",
-        "let option = Some \"hello\"\nOption.get (Option.bind_ref (&option) (s -> Some s.length))",
+        "let option = Some \"hello\"\nMaybe.get (Maybe.map_ref size (&option))",
+        "let option = Some \"hello\"\nMaybe.get (Maybe.bind_ref (&option) (s -> Some s.length))",
         "let result: Result<string, i64> = Ok \"hello\"\nResult.get (Result.map_ref size (&result))",
         "let result: Result<string, i64> = Ok \"hello\"\nResult.get (Result.bind_ref (&result) (s -> Ok s.length))",
-        "let option = Some \"hello\"\nOption.get (Option.filter (s -> size s > 0) option)",
-        "def length :: &(Option<'a>) -> (&'a -> i64) -> i64
+        "let option = Some \"hello\"\nMaybe.get (Maybe.filter (s -> size s > 0) option)",
+        "def length :: &(Maybe<'a>) -> (&'a -> i64) -> i64
          fn length option size =
              match option with
              | Some value -> size (&value)
@@ -179,12 +179,12 @@ fn views_cover_nested_patterns_collections_strings_and_iteration() {
 fn views_cannot_move_mutate_escape_or_outlive_the_matched_storage() {
     for (source, code) in [
         (
-            "def bad :: &(Option<string>) -> string
+            "def bad :: &(Maybe<string>) -> string
              fn bad value = match value with | Some text -> text | None -> \"\"",
             "E1012",
         ),
         (
-            "def bad :: &mut (Option<string>) -> i64
+            "def bad :: &mut (Maybe<string>) -> i64
              fn bad value =
                  match *value with
                  | Some text ->
@@ -194,7 +194,7 @@ fn views_cannot_move_mutate_escape_or_outlive_the_matched_storage() {
             "E1014",
         ),
         (
-            "def bad :: &mut (Option<string>) -> i64
+            "def bad :: &mut (Maybe<string>) -> i64
              fn bad value =
                  match *value with
                  | Some text ->
@@ -205,13 +205,13 @@ fn views_cannot_move_mutate_escape_or_outlive_the_matched_storage() {
             "E1014",
         ),
         (
-            "def bad :: &(Option<string>) -> &string
+            "def bad :: &(Maybe<string>) -> &string
              fn bad value =
                  match value with | Some text -> &text | None -> unreachable ()",
             "E1013",
         ),
         (
-            "def bad :: &(Option<string>) -> (unit -> i64)
+            "def bad :: &(Maybe<string>) -> (unit -> i64)
              fn bad value =
                  match value with
                  | Some text ->
@@ -238,7 +238,7 @@ fn views_cannot_move_mutate_escape_or_outlive_the_matched_storage() {
 #[test]
 fn view_last_use_and_copy_snapshot_semantics_are_preserved() {
     accepts(
-        "def size_and_clear :: &mut (Option<string>) -> i64
+        "def size_and_clear :: &mut (Maybe<string>) -> i64
          fn size_and_clear value =
              match *value with
              | Some text ->
@@ -247,7 +247,7 @@ fn view_last_use_and_copy_snapshot_semantics_are_preserved() {
                  size
              | None -> 0",
     );
-    const TAKE: &str = "def take :: &mut (Option<'a>) -> Option<'a>
+    const TAKE: &str = "def take :: &mut (Maybe<'a>) -> Maybe<'a>
         fn take value =
             match *value with
             | Some item ->
@@ -255,13 +255,13 @@ fn view_last_use_and_copy_snapshot_semantics_are_preserved() {
                 Some item
             | None -> None\n";
     accepts(&format!(
-        "{TAKE}let mut value = Some 42\nOption.get (take (&mut value))"
+        "{TAKE}let mut value = Some 42\nMaybe.get (take (&mut value))"
     ));
     accepts(&format!(
-        "{TAKE}let mut value = Some [20, 22]\n(Option.get (take (&mut value))).length"
+        "{TAKE}let mut value = Some [20, 22]\n(Maybe.get (take (&mut value))).length"
     ));
     rejects(
-        &format!("{TAKE}let mut value = Some \"hello\"\nOption.get (take (&mut value))"),
+        &format!("{TAKE}let mut value = Some \"hello\"\nMaybe.get (take (&mut value))"),
         "E1005",
     );
 }
@@ -269,7 +269,7 @@ fn view_last_use_and_copy_snapshot_semantics_are_preserved() {
 #[test]
 fn runtime_fixture_has_deterministic_import_free_lowering() {
     let module =
-        analyze_modules(&[("Main.tz", include_str!("fixtures/option_result/Main.tz"))]).unwrap();
+        analyze_modules(&[("Main.tz", include_str!("fixtures/maybe_result/Main.tz"))]).unwrap();
     assert!(module.warnings.is_empty(), "{:?}", module.warnings);
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
@@ -281,7 +281,7 @@ fn runtime_fixture_has_deterministic_import_free_lowering() {
         assert!(ir.contains("switch i32"));
         for function in ir.split("\n\n").filter(|function| {
             function.starts_with("define internal")
-                && ["@tz.fn.Option.For.", "@tz.fn.Result.For."]
+                && ["@tz.fn.Maybe.For.", "@tz.fn.Result.For."]
                     .iter()
                     .any(|name| function.lines().next().unwrap().contains(name))
         }) {

@@ -1,5 +1,7 @@
 # Exception
 
+Namespace: `std`
+
 ## `ExceptionKind`
 
 ```tsuzuri

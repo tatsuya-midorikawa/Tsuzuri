@@ -48,7 +48,7 @@ HashSet.length (ref seen) * 100 + needle.length * 10 + (if found then 1 else 0)
 | `insert map key value` | 所有更新。等しいキーがあれば、格納済みのキーと位置を保ったまま値だけを置換 |
 | `remove map key`, `remove_ref map key` | 所有更新。不在なら変更なし。末尾の entry が削除位置へ移る |
 | `contains_key map key`, `contains_key_ref map key` | 借用 map とキーから bool |
-| `get map key`, `get_ref map key` | 借用 map から Copy 値の `Option<V>` |
+| `get map key`, `get_ref map key` | 借用 map から Copy 値の `Maybe<V>` |
 | `at map key`, `at_ref map key` | `ref V`。不在ならトラップ |
 | `to_array map` | 走査順の `(K * V)` 配列。両方の Copy が必要 |
 | `keys map`, `values map` | 対象側だけ Copy を要求して走査順の配列へ |
@@ -69,8 +69,8 @@ ages = HashMap.insert ages "ann" 31
 ages = HashMap.insert ages "bob" 27
 let name = "bob"
 match HashMap.get_ref (ref ages) (ref name) with
-| Option.Some age -> age + name.length
-| Option.None -> 0
+| Maybe.Some age -> age + name.length
+| Maybe.None -> 0
 ```
 
 `name` を借用して探したので、呼び出しの後も `name.length` を使えます。結果は `27 + 3 = 30` です。
@@ -238,7 +238,7 @@ def main :: IO<unit> =
 ```
 
 ```tsuzuri
-def report :: Result.Result<HashMap<i64, i64>, Os.Error> -> IO<unit> = \made ->
+def report :: Result<HashMap<i64, i64>, Os.Error> -> IO<unit> = \made ->
     match made with
     | Result.Ok fresh ->
         let map = HashMap.insert (HashMap.insert fresh 10 1) 20 2

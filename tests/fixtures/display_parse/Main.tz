@@ -29,51 +29,51 @@ fn text_copy =
 export def parse_numbers :: i64
 fn parse_numbers =
     let text = "0x2a"
-    let result: Option<i64> = Parse.parse (&text)
+    let result: Maybe<i64> = Parse.parse (&text)
     assert (text.length == 4)
     let real = ".5"
-    let parsed: Option<f64> = Parse.parse (&real)
-    assert (Option.get parsed == 0.5)
-    Option.get result
+    let parsed: Maybe<f64> = Parse.parse (&real)
+    assert (Maybe.get parsed == 0.5)
+    Maybe.get result
 
 export def parse_bool :: bool
 fn parse_bool =
     let yes = "true"
     let no = "false"
     let invalid = "True"
-    let first: Option<bool> = Parse.parse (&yes)
-    let second: Option<bool> = Parse.parse (&no)
-    let third: Option<bool> = Parse.parse (&invalid)
-    Option.get first && ! (Option.get second) && Option.is_none (&third)
+    let first: Maybe<bool> = Parse.parse (&yes)
+    let second: Maybe<bool> = Parse.parse (&no)
+    let third: Maybe<bool> = Parse.parse (&invalid)
+    Maybe.get first && ! (Maybe.get second) && Maybe.is_none (&third)
 
 export def malformed :: bool
 fn malformed =
     let mut valid = true
     for text in ["", " 1", "1 ", "1__0", "1e+", "0X10", "NaN", "1\0"] do
-        let number: Option<i128> = Parse.parse (&text)
-        let real: Option<f128> = Parse.parse (&text)
-        valid = valid && Option.is_none (&number) && Option.is_none (&real)
+        let number: Maybe<i128> = Parse.parse (&text)
+        let real: Maybe<f128> = Parse.parse (&text)
+        valid = valid && Maybe.is_none (&number) && Maybe.is_none (&real)
     valid
 
 export def round_f64 :: f64 -> f64
 fn round_f64 value =
     let text = to_string value
-    let result: Option<f64> = Parse.parse (&text)
-    Option.get result
+    let result: Maybe<f64> = Parse.parse (&text)
+    Maybe.get result
 
 export def round_f32 :: f32 -> f32
 fn round_f32 value =
     let text = to_string value
-    let result: Option<f32> = Parse.parse (&text)
-    Option.get result
+    let result: Maybe<f32> = Parse.parse (&text)
+    Maybe.get result
 
 export def custom :: i64 -> i64
 fn custom count =
     let mut size = 0
     for i in 1 .. count do
         let text = "owned"
-        let parsed: Option<Label> = Parse.parse (&text)
-        let label = Option.get parsed
+        let parsed: Maybe<Label> = Parse.parse (&text)
+        let label = Maybe.get parsed
         let shown = Display.display (&label)
         let moved = to_string label
         assert (shown == moved)

@@ -400,7 +400,7 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
         export def verify :: bool -> unit\nfn verify flag = assert flag\n\
         export def indirect :: bool -> unit\nfn indirect flag = { let check = assert; check flag }\n\
         export def allocate :: i64 -> i64\nfn allocate length = { let values = new [i64](length, index -> index); values.length }\n\
-        export def soft :: i64 -> i64\nfn soft number = { let text = to_string (number as d128); let parsed: Option<d128> = Parse.parse (ref text); Option.get parsed as i64 }\n\
+        export def soft :: i64 -> i64\nfn soft number = { let text = to_string (number as d128); let parsed: Maybe<d128> = Parse.parse (ref text); Maybe.get parsed as i64 }\n\
         export def closure :: i64 -> i64\nfn closure number = { let values = new [number, number + 1]; let read = index -> values[index]; let copied = read; copied 0 + read 1 }";
     let module = tsuzuri::analyze(source).unwrap();
     let sources = [TrapSource {

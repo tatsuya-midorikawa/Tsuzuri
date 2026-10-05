@@ -1,9 +1,9 @@
 record Box<'a> { value: 'a }
 
-instance Functor<Option> {
+instance Functor<Maybe> {
     fn map transform value = match value with
-        | Option.None -> Option.None
-        | Option.Some inner -> Option.Some (transform inner)
+        | Maybe.None -> Maybe.None
+        | Maybe.Some inner -> Maybe.Some (transform inner)
 }
 
 instance Functor<Result<'a>> {

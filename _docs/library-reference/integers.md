@@ -8,7 +8,7 @@ Int は整数幅と符号を保持する組み込み API です。通常の折�
 
 ```tsuzuri run=42
 let checked = Int.checked_add 127i8 1i8
-assert (Option.is_none ref checked)
+assert (Maybe.is_none ref checked)
 assert (Int.saturating_add 127i8 1i8 == 127i8)
 assert (Int.unsigned_abs (-128i8) == 128i8u)
 assert (Int.rotate_left 1i8u 1 == 2i8u)
@@ -125,5 +125,5 @@ match add 2147483647 1 with
 - [式と演算子](../language-reference/expressions-and-operators.md)
 - [エラー処理](../language-reference/error-handling.md)
 - [BigInt](bigint.md)
-- [Option と失敗の扱い](option-result.md)
+- [Maybe と失敗の扱い](maybe-result.md)
 - [Math](math.md)

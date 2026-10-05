@@ -85,7 +85,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | --- | --- | --- | --- | --- | --- |
 | PR01 | [所有権・借用から導く最適化情報の付与](PR01-ownership-facts.md) | P1 | L | PX01 | todo |
 | PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | todo |
-| PR03 | [抽象化コストの除去（計算式・Option／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | todo |
+| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | todo |
 | PR04 | [数値の表示・解析の高速化](PR04-number-formatting.md) | P1 | M | PX01 | todo |
 | PR05 | [UTF 変換・比較・検証の SIMD 化](PR05-utf-simd.md) | P1 | M | PX01, (F08) | todo |
 | PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | todo |

@@ -1,5 +1,7 @@
 # Char
 
+Namespace: `std`
+
 ## `is_ascii_digit`
 
 ```tsuzuri

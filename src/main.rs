@@ -27,12 +27,13 @@ Each source file is one module named after its filename:
   .tc  One computation expression builder (its operations and helpers)
 All .tz, .tt, and .tc files below the project root are loaded recursively.
 Module filenames start with an uppercase ASCII letter. A module's full name is
-its namespace and filename: 'namespace Sample.Shapes' as a file's first
-declaration sets the namespace, and 'using Sample.Features' lines after it
-let the file name that namespace's modules without the namespace. Otherwise
-the namespace is the package namespace (Tsuzuri.toml namespace, else the
-package or folder name) followed by subdirectories (Geometry/Point.tz becomes
-App.Geometry.Point).
+its namespace and filename joined by '::': 'namespace Sample::Shapes' as a
+file's first declaration sets the namespace, and 'using Sample::Features'
+lines after it let the file name that namespace's modules without the
+namespace. Otherwise the namespace is the package namespace (Tsuzuri.toml
+namespace, else the package or folder name) followed by subdirectories
+(Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
+'.', as in Sample::Shapes::Circle.area.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.

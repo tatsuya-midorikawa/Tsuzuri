@@ -1,5 +1,7 @@
 # Test
 
+Namespace: `std`
+
 ## `equal`
 
 ```tsuzuri

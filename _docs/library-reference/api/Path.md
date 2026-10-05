@@ -1,5 +1,7 @@
 # Path
 
+Namespace: `std`
+
 ## `join`
 
 ```tsuzuri
@@ -12,7 +14,7 @@ is only appended: nothing here is a sandbox.
 ## `parent`
 
 ```tsuzuri
-def parent :: ref string -> Option.Option<string>
+def parent :: ref string -> Maybe<string>
 ```
 
 The path without its last name, without trailing "/" except for a lone "/".
@@ -21,7 +23,7 @@ The path without its last name, without trailing "/" except for a lone "/".
 ## `file_name`
 
 ```tsuzuri
-def file_name :: ref string -> Option.Option<string>
+def file_name :: ref string -> Maybe<string>
 ```
 
 The last name of a path, or `None` for "", "/", ".", and "..".
@@ -29,7 +31,7 @@ The last name of a path, or `None` for "", "/", ".", and "..".
 ## `extension`
 
 ```tsuzuri
-def extension :: ref string -> Option.Option<string>
+def extension :: ref string -> Maybe<string>
 ```
 
 What follows the last "." of the last name; a name that starts with its only "." has none.

@@ -550,7 +550,7 @@ C は control の15種目、C++・Rust・C#・JavaScript は36種目に対応し
 | f32/f64・型変換・sqrt/floor/ceil/abs | float32_mix、float64_mix、mandelbrot、math_intrinsics |
 | 配列・リスト・所有権・コピー・借用・ローカル更新 | array_sum、array_copy、list_sum。確保・初期化・走査・解放を含む |
 | 関数値・カリー化・捕捉・高階関数・ジェネリックなレコード | closure_capture、closure_churn、record_pipeline、computations。構文差だけの機能は共通 lowering の処理へ対応づける |
-| union・Option/Result・型クラス・ユーザービルダー | checked、std_option、std_result、9種類の computations |
+| union・Maybe/Result・型クラス・ユーザービルダー | checked、std_option、std_result、9種類の computations |
 | UTF-16/UTF-8・連結・複製・走査・比較・検査・修復・変換 | utf16_scan、utf16_compare、utf16_validate、utf8_roundtrip |
 | Display/Parse | format_parse は u64 の十進表示と解析。全数値型の表示・解析速度は未測定 |
 | cold task・bind・Task.run・Task.parallel | task_sequence、task_sequential、task_parallel |
@@ -791,7 +791,7 @@ UTF 往復 0.164931→0.144685 ms、整数表示/解析 1.085425→0.567830 ms�
 生成コードの ASCII 書き込みに `<16 x i8>` の拡張／縮小と ARM64 の ushll/xtn/uzp1 を確認しています。
 文字列比較の64-bitまとめ読みを SIMD と呼んだり、WASM の専用 SIMD 対応を主張したりはしません。
 
-**初回時点の残る差:** この環境では動的呼び出しと128-bitミキサーに約1割、Option に約14%、
+**初回時点の残る差:** この環境では動的呼び出しと128-bitミキサーに約1割、Maybe に約14%、
 UTF 変換に約1.3〜1.6倍、整数表示/解析に約1.9〜2.1倍の遅れが比較相手によって残ります。
 短い並列仕事は C# の常駐 pool が有利で、文字列比較は JavaScript の共有／rope を含む表現が有利です。
 これらを隠すための無検査演算、浮動小数点の再結合、GC の無視、GPU への一律移送は追加していません。
@@ -1076,11 +1076,11 @@ node benchmarks/run-computations.mjs target/release/tsuzuri \
 | `array_for` | 8,192 要素 | 確保・seed 依存の初期化・捕捉した倍率による変換集計・解放 |
 | `array_bind` | 8,192 要素 | 配列を型注釈付き `let!` に渡し、同じ変換集計を行う |
 | `owned_capture` | 8,192 反復 | 256 要素の所有配列を捕捉し、前の結果に依存する添字で読み出す |
-| `std_option` | 2,000,000 反復 | 標準 Option の成功／失敗と、手書きの同じ union match |
+| `std_option` | 2,000,000 反復 | 標準 Maybe の成功／失敗と、手書きの同じ union match |
 | `std_result` | 2,000,000 反復 | 標準 Result の二段の error 伝播と、手書きの同じ union match |
-| `std_option_owned` | 8,192 反復 | 所有文字列の連結・成功／失敗・解放を Option と手書き match で比較 |
+| `std_option_owned` | 8,192 反復 | 所有文字列の連結・成功／失敗・解放を Maybe と手書き match で比較 |
 
-`std_*` は B01 で追加したため、この三種目を含む現在のソースとの `--baseline` 比較には Option／Result 対応版が必要です。
+`std_*` は B01 で追加したため、この三種目を含む現在のソースとの `--baseline` 比較には Maybe／Result 対応版が必要です。
 `std_option_owned` の C++ は既知の文字列長を直接計算する最適化済みの参照であり、所有文字列のコスト比較は
 Tsuzuri の builder／手書き版の間で行います。これらの追加自体を高速化の実測結果とは扱いません。
 
@@ -1098,7 +1098,7 @@ npx --yes --package=node@24 node benchmarks/run-computations.mjs target/release/
   --quick --artifacts target/benchmarks/p1-computations > target/p1-computations.json
 ```
 
-### 標準 Option／Result の測定（2026-09-25）
+### 標準 Maybe／Result の測定（2026-09-25）
 
 `be5b27a` に P0 の未コミット差分を適用したコンパイラ（SHA-256
 `7e59f9bb41669b89639e1e1ffc83af94f8fd78d409d98ebe24b074816b7c661a`）を使用しました。

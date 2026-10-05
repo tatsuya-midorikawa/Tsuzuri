@@ -114,7 +114,7 @@ fn conditional_instances_normalize_and_specialize_method_arguments() {
         "E1017",
     );
     accepts(
-        "instance Eq<'a> => Eq<Option<'a>> { fn eq left right = match left with | None -> (match right with | None -> true | Some _ -> false) | Some value -> (match right with | Some other -> Eq.eq value other | None -> false); fn ne left right = !(Eq.eq left right) }\nlet left = Some \"abc\"\nlet right = Some \"abc\"\nleft == right",
+        "instance Eq<'a> => Eq<Maybe<'a>> { fn eq left right = match left with | None -> (match right with | None -> true | Some _ -> false) | Some value -> (match right with | Some other -> Eq.eq value other | None -> false); fn ne left right = !(Eq.eq left right) }\nlet left = Some \"abc\"\nlet right = Some \"abc\"\nleft == right",
     );
 }
 
@@ -581,7 +581,7 @@ fn function_constraints_preserve_module_visibility_ownership_and_recursion() {
     let module = analyze_modules(&[
         (
             "Main.tz",
-            "let value = Point.Point { value: 42 }\nPoint.reveal value",
+            "let value = Point { value: 42 }\nPoint.reveal value",
         ),
         (
             "Point.tz",

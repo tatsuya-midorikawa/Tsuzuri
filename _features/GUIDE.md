@@ -550,11 +550,11 @@ fn rejects(source: &str, code: &str) {
 
 ### D-01 命名規約
 - 型・共用体のケース・モジュール・型クラス: `PascalCase`。関数・フィールド・ローカル: `snake_case`（既存の `clone_string`、`to_float`、`bit_and` と同じ）。
-- 標準ライブラリの関数は常に `Module.function` で呼ぶ（F# の `List.map` と同様）。例: `Option.map`、`Array.sum`、`String.split`。
+- 標準ライブラリの関数は常に `Module.function` で呼ぶ（F# の `List.map` と同様）。例: `Maybe.map`、`Array.sum`、`String.split`。
 
 ### D-02 型適用の構文
 - 型パラメーターと型引数は **`<...>` 内のカンマ区切り**:
-  `Option<i64>`、`Result<i64, string>`、`Pair<'a, 'b>`、`[Option<i64>]`、`Option<Pair<i64, i64>>`。
+  `Maybe<i64>`、`Result<i64, string>`、`Pair<'a, 'b>`、`[Maybe<i64>]`、`Maybe<Pair<i64, i64>>`。
   レコード・union・型クラスの宣言、制約・インスタンス、`Task<T>`、将来のジェネリック型も同じ形式にする。
   名前と `<` は隣接させ、空のリストは拒否、末尾のカンマは許す。旧来の空白区切りは受理しない。
 - 構文木は `TypeExprKind::Apply(Box<Ident>, Box<[TypeExpr]>)`。
@@ -571,7 +571,7 @@ fn rejects(source: &str, code: &str) {
 - 単一化は id の一致と型引数の要素ごとの単一化。表示は `Pair<i64, string>`（`Type::display`）。
 - 単相化後の LLVM 型名は決定的にマングリングする。型引数には **LLVM 型の文字列ではなく Tsuzuri の型の正規表記**を使う
   （`llvm_type` の結果には引用符付き識別子が含まれ、入れ子にすると無効な IR になるため）:
-  `%"tz.record.Main.Pair[i64,string]"`、`%"tz.union.Option.Option[Main.Pair[i64,string]]"`。
+  `%"tz.record.Main.Pair[i64,string]"`、`%"tz.union.Maybe.Maybe[Main.Pair[i64,string]]"`。
   正規表記は構造的・単射な規則で生成する（修飾名、型引数は `[` `]` と `,` で区切る。配列 `[T]` は `array[T]`、
   リスト `list[T]`、タプル `tuple[T,U]`、関数 `fn[T,U->R]`、参照 `ref[T]`／`refmut[T]`、タスク `task[T]`）。
   `"` と `\` は生じないが、生じ得る実装にする場合は LLVM の `\xx` エスケープを使う。レコードと共用体で同じ関数を共有する。
@@ -594,14 +594,14 @@ fn rejects(source: &str, code: &str) {
       | Circle of f64
       | Rect of f64 * f64
       | Empty
-  union Option<'a> = None | Some of 'a
+  union Maybe<'a> = None | Some of 'a
   ```
   最初の `|` は省略可。各ケースのペイロードは `of T` で **ちょうど 0 個か 1 個の型**（複数値はタプル型 `f64 * f64` やレコード）。
 - ケース名は大文字始まり。同じモジュール内のケース名・レコード名・共用体名は互いに重複不可（`E1001`）。
-- 構築: ペイロードなしのケースは値（`Empty`）、ペイロードありは一引数の関数値（`Circle 1.0`、`Rect (1.0, 2.0)`、`Option.map Some x`）。
+- 構築: ペイロードなしのケースは値（`Empty`）、ペイロードありは一引数の関数値（`Circle 1.0`、`Rect (1.0, 2.0)`、`Maybe.map Some x`）。
 - 名前解決: 無修飾（自モジュール → プロジェクト内で一意 → 標準ライブラリ）、`Module.Case`、`Module.Union.Case`。
   ローカル変数・関数・アクティブパターンとの優先順位はチケット A02 の表に従う。
-- パターン: `Circle r`、`Rect (w, h)`、`Empty`、`Option.Some x`。ペイロードは既存のパターンで分解する。
+- パターン: `Circle r`、`Rect (w, h)`、`Empty`、`Maybe.Some x`。ペイロードは既存のパターンで分解する。
 - 値の性質: 全ペイロードが Copy なら Copy、いずれかが drop を要すれば `needs_drop`。`==` は組み込みにしない（レコードと同じ。A07 の deriving で提供）。
 - LLVM 表現: タグ `i32` と、全ケースで共有するペイロード領域（ケースごとの別フィールドにしない）。
   詳細なレイアウト規則はチケット A02。再帰的な共用体はチケット A04 まで `E1010` で拒否する。
@@ -618,14 +618,14 @@ fn rejects(source: &str, code: &str) {
   自モジュール → 利用者のモジュールで一意 → 標準ライブラリ。
   **参照元が標準ライブラリの場合は利用者の宣言を一切探さない**（自モジュール → 標準ライブラリ）。
   利用者が `Result` や `Ok` という名前を宣言しても std の型検査結果が変わらないようにするためである。
-  さらに std のソースでは、他の std モジュールの名前を常に修飾して書く（`Option.tc` の中では `Result.Result`、`Result.Ok`）。
-  関数は従来どおり他モジュールからは修飾必須（`Option.map`）。
+  さらに std のソースでは、他の std モジュールの名前を常に修飾して書く（`Maybe.tc` の中では `Result`、`Result.Ok`）。
+  関数は従来どおり他モジュールからは修飾必須（`Maybe.map`）。
 - LLVM を必要としない言語機能（ビット演算 intrinsic など）は、`Task.run` と同じ **修飾名付きの組み込み関数**
   （`Builtin` に `"Int.popcount"` のような名前で登録）として std のモジュール名前空間に置く。
   `Module.name` の解決は「ソース定義の関数 → 同名の組み込み」の順。ただし **組み込み関数として提供する API は
   `Builtin` だけに置き、同じ修飾名の `def` を std のソースに書かない**（書くと組み込みが隠れる）。
   衝突はコンパイラのテストで検出する（E02）。組み込みのシグネチャは文脈で解決するテンプレート
-  `BuiltinType`／`BuiltinScheme`（std の型 `Option` や型族 `UnsignedOf`／`WidenOf` を表せる）で定義し、
+  `BuiltinType`／`BuiltinScheme`（std の型 `Maybe` や型族 `UnsignedOf`／`WidenOf` を表せる）で定義し、
   `FunctionRef::Builtin(BuiltinInstance)` を唯一の参照形式にする（詳細は E02）。
   引数なしの関数は `fn() -> T` の値なので、`Math.pi()` のように呼び出して使う。
 - 未使用の標準ライブラリ関数は IR に出力しない（到達可能性で間引く）。型検査は常に行う。
@@ -634,7 +634,7 @@ fn rejects(source: &str, code: &str) {
 
   | モジュール | 内容 | 担当 |
   |---|---|---|
-  | `Option`（`Option.tc`） | `Option` 型・関数・ビルダー | B01 |
+  | `Maybe`（`Maybe.tc`） | `Maybe` 型・関数・ビルダー | B01 |
   | `Result`（`Result.tc`） | `Result` 型・関数・ビルダー | B01 |
   | `Array` | 配列の一括操作・関数的更新 | C04、C01 |
   | `List` | 連結リストの操作 | C04 |
@@ -661,9 +661,9 @@ fn rejects(source: &str, code: &str) {
   `Drop`（B07）は利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-31）。
   `Format`（D07）も利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-32）。
 
-### D-08 Option と Result
-- `std/Option.tc`: `union Option<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
-  コンピュテーション式の操作（`Bind`、`Return`、`ReturnFrom`、`Zero` など）。`Option { let! x = ...; return x }` が使える。
+### D-08 Maybe と Result
+- `std/Maybe.tc`: `union Maybe<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
+  コンピュテーション式の操作（`Bind`、`Return`、`ReturnFrom`、`Zero` など）。`Maybe { let! x = ...; return x }` が使える。
 - `std/Result.tc`: `union Result<'a, 'e> = Ok of 'a | Error of 'e`、関数（`map`、`map_error`、`bind` など）、同様の操作。
 - `.tc` はビルダー 1 個分の実装であり、共用体・レコード・補助関数・インスタンスを含められる（A02 で union を許可）。
 
@@ -676,14 +676,14 @@ fn rejects(source: &str, code: &str) {
 - **A03 の実装後**、ソースに書いた `match` と関数ガードは静的に網羅的でなければならず、網羅されなければ `E1021`。
   生成コードの不一致時トラップ（`match_expression` の失敗ブロック）は多重防御として残す。
   `for`・ラムダ式・コンピュテーション式の分解パターンの不一致は従来どおり実行時トラップ（A03 参照）。
-- 予期できる失敗（解析、検索、変換）は `Option`／`Result` を返す。例外・巻き戻しは導入しない。
+- 予期できる失敗（解析、検索、変換）は `Maybe`／`Result` を返す。例外・巻き戻しは導入しない。
   **D-34 で改訂:** `@checked` の整数 overflow だけが例外を送出し、`try ... with ... finally` が同じ関数本体の中で捕まえる（巻き戻しは導入しない）。
-- 早期脱出の `?` 演算子は導入しない。伝播は `Option { }`／`Result { }` ビルダーで書く（B02）。
+- 早期脱出の `?` 演算子は導入しない。伝播は `Maybe { }`／`Result { }` ビルダーで書く（B02）。
 
 ### D-11 表示と解析
 - 組み込みクラス `Display<'a> { def display :: &'a -> string }`。数値・bool・unit・string・utf8string・char・utf8char に組み込みインスタンス。
 - 組み込み関数 `to_string :: Display<'a> => 'a -> string`（値を受け取り、内部で借用して `display` し、値を解放する）。
-- 組み込みクラス `Parse<'a> { def parse :: &string -> Option<'a> }`。数値・bool・char・utf8char に組み込みインスタンス。
+- 組み込みクラス `Parse<'a> { def parse :: &string -> Maybe<'a> }`。数値・bool・char・utf8char に組み込みインスタンス。
 - 数値の文字列表現は、`to_string` とコンソール出力（`console_main`、`tz_soft_format`）で **同じ実装・同じ形式** にする。
 - **決定（2026-09-23 承認）:** 二進浮動小数点（f16／f32／f64／f128）は、同じ型へ解析し直すと元の値に戻る
   **最短の十進表現**で表示する（例: `0.1` は `0.1`。現在の `%.17g` 相当の `0.10000000000000001` はやめる）。
@@ -703,7 +703,7 @@ fn rejects(source: &str, code: &str) {
 - 伸縮可能な配列は組み込み型 `Vec<'a>`（C02）。`[T]` の記述子 `{ ptr, i64 }` は変更しない。
 - 部分参照（スライス）は **`&[T]` そのもの**（C03）。`&xs[a..b]` で作る。`&mut [T]` は従来どおり配列全体の置換用。
 - **決定（2026-09-27、推奨仕様での実装を承認）:** ジェネリック union の共有借用ペイロードを許可し、
-  C04 の `Option<&T>` を提供する。コンテナ借用は格納値の loan を親として引き継ぐ。
+  C04 の `Maybe<&T>` を提供する。コンテナ借用は格納値の loan を親として引き継ぐ。
   返却値は本体の実 loan を検査し、呼び出し側では借用を持つ全入力の寿命に制限する。
   `None` のように loan を持たない値は借用入力なしでも返せる。直接の借用 payload 宣言・排他参照・レコードの借用フィールドは引き続き拒否する。
 - 以降の機能についても、利用者が推奨仕様での実装を承認済み（2026-09-27）。判断は各チケットと本台帳へ記録し、未実装を実装済み扱いにしない。
@@ -723,7 +723,7 @@ fn rejects(source: &str, code: &str) {
 レコード更新 `{ base with field = value }`（C05）。キーワード追加時は 6.1 を実施する。
 D-34 の演算子 `**`・単項 `+`・`&&&`・`|||`・`^^^`・`~~~`・`<<<`・`>>>`、関数合成 `>>`／`<<`（従来のシフトから意味を変更）、
 文脈キーワード `try`／`finally`／`is`（予約語にしない）、属性 `@checked`／`@literal`。
-D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣言だけ。予約語にしない）。
+D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣言だけ。予約語にしない）。D-37 の名前空間のパス `A::B::Module`（新しい記号はなく、空白なしの `::` を lexer が `PathSep` にする）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
   取り込まれた後に着手するチケットは、借用・参照外しを扱う箇所（C03 の `&xs[a..b]` に対する `ref xs[a..b]`、A11 の比較用の
@@ -781,7 +781,7 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 
 ### D-21 発散する組み込み関数 `unreachable`
 - `unreachable : unit -> 'a` を組み込み関数として追加する（B01 で実装。E02 の多相 builtin 機構を使う）。
-  呼ぶと必ずトラップする。`Option.get` のような任意型を返す部分関数を、**網羅的な `match`** で書くために使う
+  呼ぶと必ずトラップする。`Maybe.get` のような任意型を返す部分関数を、**網羅的な `match`** で書くために使う
   （A03 の網羅性検査と両立させる。bottom 型・`panic : string -> 'a`・std 限定の非網羅許可は採用しない）。
 - 生成は型ごとの `define internal <T> @tz.builtin.unreachable.<mangled-T>(i8 %unit)`（`unit` は `i8` に下がるため、
   通常の呼び出し規約どおり引数を 1 個受け取り、使わない）。本体は `call void @llvm.trap()` と `unreachable` だけ。
@@ -856,7 +856,7 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 - C06はcompiler登録のopaque標準recordとVecで表し、構築・field・pattern・updateを定義モジュールに限定する。型と所有権の走査を重複させず、既存の確保・移動・clone/dropを共有する。
 - C06のSet.unionと予約語の衝突を解決するため、unionだけはmodule関数の宣言名とdot後のmember名でも許可する。変数・型・moduleの名前としては引き続き予約する。
 - C06のsingletonは無制約で任意の1要素を保持。検索・更新・集合演算の比較時はEqの反射性を確認してNaNをトラップし、Ordの一貫性は利用者のinstance契約とする。Set.unionは線形の出力領域を一つ確保し、左の代表値を保持する。
-- C07はopaqueなSeq.Seqを常にnon-Copyにし、Optionの単一要素と通常closureの遅延stepで表す。明示的なSeq.defer/unfoldをユーザー反復の構築口とする。
+- C07はopaqueなSeqを常にnon-Copyにし、Maybeの単一要素と通常closureの遅延stepで表す。明示的なSeq.defer/unfoldをユーザー反復の構築口とする。
 - C07のnextは所有closureを直接呼ぶbuiltin。forは次状態を先に復元する既存while/matchへ展開し、filterは借用述語へ修正する。List.iterは参照Vecの準備O(n)、所有状態の移送による反復O(n)を採用する。
 - A09の共有record fieldはC04の交差寿命とValue.loansを継承する。古い「借用入力は必ず1個」という制限へ戻さず、複数入力の場合は全入力の寿命を保持する。排他参照fieldは禁止する。
 - A09の名前付きregionは値全体に一つとし、defの返却元を本体loanで検証する。直接完全適用のみ指定入力へ寿命を縮小し、関数値は保守的に全入力を保持する。独立複数region・高階region型は後続段階として拒否する。
@@ -1050,6 +1050,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 ### D-35 名前空間（`namespace`／`using`）
 
 - 2026-10-04、`_specs/namespace-and-module.md` の承認として扱った。従来の「`namespace` 宣言なし・`open` なし」を改める。
+  以下の `.` 区切りのパスは D-37 で `::` に改めた。
 - `namespace A.B` はファイルの最初の宣言、`using A.B` はその後で他の宣言の前。どちらも 1 行で、キーワードの後やパスの途中の改行は `E0002`。
   どちらも文脈キーワードで、識別子としても使える（予約語は増やさない）。
 - モジュールの完全名は名前空間 + ファイル名。宣言がなければパッケージの既定名前空間（manifest の新しい任意キー `namespace`、
@@ -1069,6 +1070,18 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - `def`・`export def`・`private def`・`@literal def`・`extern def`・型付きの `and`・クラスのメソッドは、名前と型の間に `::` だけを書く。
   単一の `:` は `E0002`（`use '::' between a 'def' name and its type`）。`_specs` の literals・operators・error-handling の例も `::` に直した。
 - `let`・`const`・フィールド・引数の型注釈と、制約の `@'T : Class` は従来どおり `:`。新しい診断コード・予約語はない。
+
+### D-37 名前空間のパスは `::` でつなぐ
+
+- 2026-10-05、利用者の「完全修飾では namespace と module 名、入れ子の namespace を `::` でつなぐ」と更新された `_specs/namespace-and-module.md` を受け、D-35 の `.` 区切りを改めた。
+- `namespace Sample::Features`、`using Sample::Features`、`Sample::Features::Shape.area`、`Sample::Point { ... }`。モジュールとそのメンバー（関数・型・case・クラス）、値のフィールドは従来どおり `.`。
+  manifest の `namespace = "Acme::Tools"` と `tsuzuri new --namespace Acme::Tools`、ディレクトリのモジュール（`Geometry::Point.distance`）も同じ。
+- 名前空間を `.` でつなぐ従来の書き方は受理しない。宣言は `E0002`、参照は `E1002`／`E1004`、manifest は `E1011`、`new` は `E2000` で、診断は `::` の書き方を示す。
+- `::` は `def` の型注釈とリストの cons にも使うため、lexer が空白なしの `Ident::Ident` の連鎖のうち、最後の要素が英大文字始まりのものと
+  `namespace`／`using` のパスだけを `PathSep` にする。`def`／`rec`／`and` の宣言名の直後と `x::xs` は従来の `::`。
+- 内部の key・完全名・IR シンボルは `.` 区切りのままで IR は変わらない。コンパイラが key で組み立てる修飾名は先頭の `::` で利用者のパスと区別する。
+  診断・LSP・`tsuzuri doc` の見出し・型の表示（`expected Geometry::Point`）・`tsuzuri test` の一覧と結果と filter のモジュール名は、名前空間を `::` で表示する。
+- key としての検索はモジュール名だけになった。新しい診断コード・予約語はない。
 
 ## 10. 完了の定義（全チケット共通）
 

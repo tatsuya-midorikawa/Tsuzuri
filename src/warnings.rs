@@ -199,7 +199,7 @@ pub(super) fn unused_private(
                         "W1002",
                         format!(
                             "unused private function '{}'; remove it or make it public",
-                            function.qualified_name()
+                            names.spelling(&function.qualified_name())
                         ),
                         function.span,
                     ),
@@ -264,7 +264,10 @@ pub(super) fn unused_private(
                     node,
                     Diagnostic::warning(
                         "W1002",
-                        format!("unused private type '{qualified}'; remove it or make it public"),
+                        format!(
+                            "unused private type '{}'; remove it or make it public",
+                            names.type_spelling(&qualified)
+                        ),
                         name.span,
                     ),
                 );

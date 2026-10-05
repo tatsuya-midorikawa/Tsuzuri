@@ -6,32 +6,32 @@
 
 ## ブロックを省略する
 
-関数本体やトップレベルへ直接 `let!`／`do!` を書けます。右辺の型からビルダーを解決するため、IO と Option も同じ本体で扱えます。
+関数本体やトップレベルへ直接 `let!`／`do!` を書けます。右辺の型からビルダーを解決するため、IO と Maybe も同じ本体で扱えます。
 
 ```tsuzuri
-def main :: IO<Option<unit>> =
+def main :: IO<Maybe<unit>> =
     let! line = IO.read_line ()
     let! value = line
     do! IO.write_line value
 ```
 
-EOF の None では後続の出力を実行しません。この例の入口の型は `IO<Option<unit>>` であり、失敗情報を消さずに結果へ保持します。入口はその IO を一度実行して結果を解放し、追加の出力を行いません。
+EOF の None では後続の出力を実行しません。この例の入口の型は `IO<Maybe<unit>>` であり、失敗情報を消さずに結果へ保持します。入口はその IO を一度実行して結果を解放し、追加の出力を行いません。
 
 ```tsuzuri run=42
-def answer :: Option<i64> =
+def answer :: Maybe<i64> =
     let! first = Some 20
     let! second = Some 22
     return first + second
-Option.get (answer())
+Maybe.get (answer())
 ```
 
-明示的な `Option { ... }`／`Result { ... }`／独自の `Builder { ... }` も引き続き使えます。`do expression` は unit の通常式、`do!` は計算値の束縛です。
+明示的な `Maybe { ... }`／`Result { ... }`／独自の `Builder { ... }` も引き続き使えます。`do expression` は unit の通常式、`do!` は計算値の束縛です。
 引数なし・非再帰の main だけは def を省略して入口の型を推論できます。通常の関数には def を付けます。
 CE は main 専用ではありません。引数付き・private・別モジュール・ジェネリック・再帰関数、匿名関数、
 クラスメソッド、`.tc` の補助関数でも同じ構文を使えます。`\value ->` のラムダ式も改行した暗黙本体に対応します。
 
 独自 `.tc` も Bind の入力型で解決します。同じ型に複数の候補があれば宣言順で選ばず `E1018` にし、型注釈や明示ビルダーを要求します。
-異種ビルダーは `Option<Result<T, E>>` などの入れ子を保持し、失敗を相互変換しません。内側が遅延値なら、その遅延も残ります。
+異種ビルダーは `Maybe<Result<T, E>>` などの入れ子を保持し、失敗を相互変換しません。内側が遅延値なら、その遅延も残ります。
 IO は任意のビルダーの Bind／Return／Delay／Run を `IO.Using` で合成し、継続が呼ばれたときだけ後続の IO を実行します。
 独自の遅延ビルダーも公開 Using を実装できます。契約と推論規則は[言語仕様](../../docs/language.md#ビルダー名を省略した本体)を参照してください。
 任意の異種モナドを追加の契約なしで同じ型へ平坦化する機能ではありません。
@@ -70,7 +70,7 @@ match answer with
 | Result.Error _ -> 0
 ```
 
-`let` は計算値そのものを束縛し、`let!` はビルダーの `Bind` を通じて内部の成功値を取り出します。Result では Error、Option では None になると後続の継続を呼びません。
+`let` は計算値そのものを束縛し、`let!` はビルダーの `Bind` を通じて内部の成功値を取り出します。Result では Error、Maybe では None になると後続の継続を呼びません。
 
 `return` は成功値を生成する操作で、関数からどこでも早期脱出する構文ではありません。各本体・分岐の末尾に置きます。通常の式で起きるトラップも Result の Error に変換しません。
 
@@ -131,12 +131,12 @@ Delay がない Combine では第二引数も厳格評価されます。短絡�
 ## and! と match! による合成
 
 ```tsuzuri run=42
-let answer = Option {
-    let! left = Option.Some 20
-    and! right = Option.Some 22
+let answer = Maybe {
+    let! left = Maybe.Some 20
+    and! right = Maybe.Some 22
     return left + right
 }
-Option.get answer
+Maybe.get answer
 ```
 
 and! は直前の単純な let! と一つのグループを作ります。同じグループの右辺から、そのグループで束縛する名前は参照できません。すべての右辺を左から右へ一度ずつ評価してから結合します。途中が None / Error でも、残りの右辺の評価は省略しません。
@@ -144,12 +144,12 @@ and! は直前の単純な let! と一つのグループを作ります。同じ
 二束縛と末尾 return だけで Bind2 があれば直接使い、それ以外は MergeSources を左結合して Bind へ渡します。and! は計算を自動で並列起動する指示ではありません。
 
 ```tsuzuri run=42
-let answer = Option {
-    match! Option.Some (true, 42) with
+let answer = Maybe {
+    match! Maybe.Some (true, 42) with
     | (true, value) -> return value
     | _ -> return 0
 }
-Option.get answer
+Maybe.get answer
 ```
 
 match! は Bind の継続内で通常の match を行います。網羅性、ガード、所有権の規則も通常どおりです。
@@ -158,14 +158,14 @@ match! は Bind の継続内で通常の match を行います。網羅性、ガ
 
 継続は再利用可能な関数値です。排他借用、Task、`Drop` を持つ値を捕捉することはできず、外側の可変束縛を書き換える共有状態も作れません。`let! mut value` はその継続内のローカル状態だけを可変にします。
 
-Option / Result の For は Copy 要素の所有配列を受け取ります。通常の for が非 Copy 要素を借用して読む経路とは異なります。省略した else と空本体は、それぞれ `Some ()` / `Ok ()` です。
+Maybe / Result の For は Copy 要素の所有配列を受け取ります。通常の for が非 Copy 要素を借用して読む経路とは異なります。省略した else と空本体は、それぞれ `Some ()` / `Ok ()` です。
 
 `use name = value` は `let` と同じ束縛で、値の型が `Drop` を持つことを要求します。`use! name = source` は `let!` と同じく値を取り出し、その値を `use` で束縛します（`and!` とは組み合わせられません）。解放は通常の束縛と同じ scope の終わりで、`Using` 操作は呼びません。`let!`・`use!` より前に束縛した Drop 型の値は、継続の関数値に捕捉できないので後ろでは使えません（[所有権](ownership.md#use-束縛と早期解放)）。
 
 `try ... with ... finally` はビルダーの中でも `Result` を返す通常の式で、ビルダーの操作には展開しません（[例外処理](error-handling.md)）。カスタム演算、暗黙 yield、ビルダーオブジェクトはありません。task は別の一回実行用 lowering を使います。
 
 ```tsuzuri run=42
-let answer = Option {
+let answer = Maybe {
     let! base = Some 40
     let total = try @checked base + 2 with | e -> e
     return total

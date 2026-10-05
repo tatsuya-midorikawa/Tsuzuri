@@ -137,7 +137,7 @@ dyn_of     ::= "Dyn.of" argument        (* 期待型が dyn C の位置での、
 ```
 
 - `dyn` は予約語（GUIDE §6.1）。型の `ref`・`ref mut` と同じ前置位置に書き、クラス名を一つだけ取る。型引数は取らない。
-- `ref dyn C` は `ref (dyn C)`。`[dyn C]`、`Vec<dyn C>`、`Option<dyn C>`、`dyn C -> i64` はそのまま書ける。
+- `ref dyn C` は `ref (dyn C)`。`[dyn C]`、`Vec<dyn C>`、`Maybe<dyn C>`、`dyn C -> i64` はそのまま書ける。
 - `Dyn` は予約語ではない。`Task.run` と同じ組み込みの修飾名 `Dyn.of` として解決する。
 
 ### 型規則
@@ -609,7 +609,7 @@ grep -n 'tz.vtable\|call i64 %' /tmp/tz-a14/dyn-O3.ll
 既存の診断コードに依存する確認は、同種の既存の拒否との相対比較にする。括弧内は追加する手順。
 
 - `dyn_is_reserved_keyword`（2）: `let dyn = 1\n()` の診断コードが `let match = 1\n()` と同じで、`E0002`。
-- `dyn_types_parse_and_display`（3）: `tsuzuri::parser::parse` で `ref dyn Shape`・`[dyn Shape]`・`Option<dyn Shape>` を一つずつ含む
+- `dyn_types_parse_and_display`（3）: `tsuzuri::parser::parse` で `ref dyn Shape`・`[dyn Shape]`・`Maybe<dyn Shape>` を一つずつ含む
   ソースの `program.dyn_classes.len()` が 3。`let x: dyn Shape = 42` は `E1003` でメッセージが `dyn` と `Shape` を含む。
   `dyn Shape<i64>` と `let x: dyn = 1` は `E0002`。
 - `type_stays_four_words`（3）: `std::mem::size_of::<Type>() <= 4 * std::mem::size_of::<usize>()`。
@@ -647,7 +647,7 @@ grep -n 'tz.vtable\|call i64 %' /tmp/tz-a14/dyn-O3.ll
   `deriving (Display)` の record を `dyn Display` に入れるソースは `checks` で受理される。
 - `vtables_are_unique_and_deterministic`（8）: 二つの関数がそれぞれ `Dyn.of (Square ..)` と `Dyn.of (Rect ..)` を作る。IR で
   `@"tz.vtable.` で始まる定義は 2 行、`@"tz.dyn.drop[` の定義は型ごとに 1 つ。`accepts` の 2 回の出力が一致する。
-- `accepts_dyn_values_in_collections`（8）: `[dyn Shape]`、`Option<dyn Shape>`、record field の `dyn Shape`、`Vec.empty` を
+- `accepts_dyn_values_in_collections`（8）: `[dyn Shape]`、`Maybe<dyn Shape>`、record field の `dyn Shape`、`Vec.empty` を
   `Vec<dyn Shape>` として返す関数、`dyn Shape` の field を持つ record をさらに `Dyn.of` で包む入れ子を `accepts`。
 - `display_and_hash_dispatch_user_instances`（8）: `deriving (Display, Hash)` の record を `dyn Display`・`dyn Hash` に入れて
   `to_string`・`Hash.hash` を呼ぶソースを `accepts`。IR に `@"tz.vtable.Display[` がある。
@@ -732,7 +732,7 @@ export はすべて `i64 -> i64`。期待値は式から JS の `BigInt` で計�
 
 - [ ] D1 が承認されている。
 - [ ] `dyn` が予約語になり、`let dyn = 1` が既存の予約語と同じ `E0002` になる。
-- [ ] dyn 互換なクラスの値を `[dyn C]`・`Option<dyn C>`・record field に格納し、自身・スーパークラス・既定メソッドを `ref`・`ref mut`・
+- [ ] dyn 互換なクラスの値を `[dyn C]`・`Maybe<dyn C>`・record field に格納し、自身・スーパークラス・既定メソッドを `ref`・`ref mut`・
   所有の受け手で呼べる（E2E）。
 - [ ] 非互換なクラスを理由付きの `E1028` で拒否し、組み込み実装に解決される slot も `E1028` で拒否する。
 - [ ] 制約付きジェネリック関数が `'a = dyn C` で一度だけ具体化される。

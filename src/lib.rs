@@ -145,7 +145,7 @@ pub(crate) fn analyze_inputs_indexed_all(
             parser::parse_with_source_all(input.text, id).and_then(|mut program| {
                 program.source_kind = extension.and_then(syntax::SourceKind::from_extension);
                 let identity = match name {
-                    Some(name) => (name, String::new(), false),
+                    Some(name) => (name, stdlib::NAMESPACE.to_owned(), false),
                     None => {
                         let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
                         let (key, namespace) =
@@ -255,10 +255,11 @@ pub(crate) fn module_name_from_relative(path: &std::path::Path) -> Result<String
 }
 
 /// The key and namespace of the user module at `path`. A declared namespace
-/// and the file stem form the module's full name; without a declaration, the
-/// namespace is `root_namespace` followed by the directories of `path`. The
-/// compiler names a module by its key: the full name without a leading
-/// `root_namespace`, so files without a declaration keep their path names.
+/// (`A::B`) and the file stem form the module's full name; without a
+/// declaration, the namespace is `root_namespace` followed by the directories
+/// of `path`. Both stay dotted inside the compiler, which names a module by
+/// its key: the full name without a leading `root_namespace`, so files
+/// without a declaration keep their path names.
 pub(crate) fn module_identity(
     path: &str,
     declared: Option<&syntax::Ident>,
@@ -274,15 +275,16 @@ pub(crate) fn module_identity(
         };
         return Ok((relative.clone(), namespace));
     };
+    let declared = declared.text.replace("::", ".");
     let inner = (!root_namespace.is_empty())
-        .then(|| declared.text.strip_prefix(root_namespace))
+        .then(|| declared.strip_prefix(root_namespace))
         .flatten();
     let key = match inner {
         Some("") => stem.to_owned(),
         Some(rest) if rest.starts_with('.') => format!("{}.{stem}", &rest[1..]),
-        _ => format!("{}.{stem}", declared.text),
+        _ => format!("{declared}.{stem}"),
     };
-    Ok((key, declared.text.clone()))
+    Ok((key, declared))
 }
 
 /// The `namespace` and `using` paths at the top of `text`, read from its
@@ -308,12 +310,11 @@ pub(crate) fn declared_header(text: &str) -> (Option<syntax::Ident>, Vec<syntax:
             provenance: syntax::Provenance::User,
         };
         rest = tail;
-        while let [dot, segment, tail @ ..] = rest
-            && dot.kind == TokenKind::Dot
+        while let [separator, segment, tail @ ..] = rest
+            && separator.kind == TokenKind::PathSep
             && let TokenKind::Ident(segment_text) = &segment.kind
-            && !broken(path.span.end, segment.span.start)
         {
-            path.text.push('.');
+            path.text.push_str("::");
             path.text.push_str(segment_text);
             path.span = path.span.through(segment.span);
             rest = tail;

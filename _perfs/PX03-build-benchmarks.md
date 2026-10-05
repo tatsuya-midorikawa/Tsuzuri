@@ -246,7 +246,7 @@ def run :: i64u -> i64u = \seed ->
 | 9 再帰 | `count (x % 16) x` | `n = x % 16` として `x + n(n+1)/2` |
 
 `Main.tz` は、`private def total :: i64u -> i64u`（`let mut sum = 0i64u` と `sum = sum + Module<k>.run seed` を k の昇順に 1 行ずつ、
-最後に `sum`）と、`def main :: IO<unit>`（`IO.read_line ()`、`Option.default_value "" line`、`String.length text as i64u` を種にして
+最後に `sum`）と、`def main :: IO<unit>`（`IO.read_line ()`、`Maybe.default_value "" line`、`String.length text as i64u` を種にして
 `IO.write_line (to_string (total seed))`）。`expectedOutput` は `seed` を `line` の UTF-16 の長さとして同じ計算をする。
 式を深く入れ子にしない（1,000 項の `+` の連鎖は構文の深さの上限に当たりうる。未確認なので避ける）。1 モジュールは約 135 行で、1,000 モジュールは約 135K 行。
 

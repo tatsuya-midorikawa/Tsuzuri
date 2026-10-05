@@ -54,7 +54,7 @@ node scripts/check-docs.mjs
 一部の記事だけを検証する場合:
 
 ```sh
-node scripts/check-docs.mjs _docs/library-reference/arrays-and-lists.md _docs/library-reference/option-result.md
+node scripts/check-docs.mjs _docs/library-reference/arrays-and-lists.md _docs/library-reference/maybe-result.md
 ```
 
 TSUZURI_BIN でコンパイラのパスを変更できます。検証は OS の一時ディレクトリに例ごとの独立 root を作り、終了後に削除します。実例を同じ root に混在させません。

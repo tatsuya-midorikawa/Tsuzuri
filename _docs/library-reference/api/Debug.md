@@ -1,5 +1,7 @@
 # Debug
 
+Namespace: `std`
+
 ## `print`
 
 ```tsuzuri

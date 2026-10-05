@@ -71,13 +71,13 @@ fn record_clone count =
     let copied = read
     copied 1 + read 2
 
-record Link { next: Option<Link> }
+record Link { next: Maybe<Link> }
 export def generic_container :: i64
 fn generic_container =
     let last = Link { next: None }
     let first = Link { next: Some last }
-    let child = Option.get first.next
-    if Option.is_none (ref child.next) then 42 else 0
+    let child = Maybe.get first.next
+    if Maybe.is_none (ref child.next) then 42 else 0
 
 union Stops = FirstStop | OtherStop | Next of Stops
 export def second_empty :: i64

@@ -1,5 +1,7 @@
 # Utf8String
 
+Namespace: `std`
+
 ## `length`
 
 ```tsuzuri
@@ -9,13 +11,13 @@ def length :: ref utf8string -> i64
 ## `find`
 
 ```tsuzuri
-def find :: ref utf8string -> ref utf8string -> Option.Option<i64>
+def find :: ref utf8string -> ref utf8string -> Maybe<i64>
 ```
 
 ## `rfind`
 
 ```tsuzuri
-def rfind :: ref utf8string -> ref utf8string -> Option.Option<i64>
+def rfind :: ref utf8string -> ref utf8string -> Maybe<i64>
 ```
 
 ## `contains`
@@ -39,13 +41,13 @@ def ends_with :: ref utf8string -> ref utf8string -> bool
 ## `slice`
 
 ```tsuzuri
-def slice :: ref utf8string -> i64 -> i64 -> Option.Option<utf8string>
+def slice :: ref utf8string -> i64 -> i64 -> Maybe<utf8string>
 ```
 
 ## `sub`
 
 ```tsuzuri
-def sub :: ref utf8string -> i64 -> i64 -> Option.Option<utf8string>
+def sub :: ref utf8string -> i64 -> i64 -> Maybe<utf8string>
 ```
 
 ## `char_count`

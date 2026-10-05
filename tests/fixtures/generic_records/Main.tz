@@ -59,8 +59,8 @@ fn collections n =
 
 export def nested_syntax :: i64 -> i64
 fn nested_syntax n =
-    let value: Option<Pair<i64, string>>=Some (Pair { first: n, second: "abc" })
-    let work: Task<Option<Pair<i64, string>>>=task { return value }
+    let value: Maybe<Pair<i64, string>>=Some (Pair { first: n, second: "abc" })
+    let work: Task<Maybe<Pair<i64, string>>>=task { return value }
     match Task.run work with
     | Some pair -> pair.first + pair.second.length
     | None -> 0

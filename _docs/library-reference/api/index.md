@@ -16,7 +16,7 @@
 - [List](List.md)
 - [Map](Map.md)
 - [Math](Math.md)
-- [Option](Option.md)
+- [Maybe](Maybe.md)
 - [Os](Os.md)
 - [Owned](Owned.md)
 - [Parallel](Parallel.md)

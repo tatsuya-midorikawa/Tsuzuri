@@ -19,13 +19,13 @@
 | `toolchain info` | 選ばれた外部ツール（環境変数・配布物・`PATH` のどれか）とその版、配布物の識別子を表示。ほかの引数は付けない |
 
 ```sh
-./target/release/tsuzuri new my-app --namespace Acme.MyApp
+./target/release/tsuzuri new my-app --namespace Acme::MyApp
 ./target/release/tsuzuri check examples/hello/Main.tz --json
 ./target/release/tsuzuri run examples/hello
 ./target/release/tsuzuri build examples/hello -o target/hello
 ```
 
-new は `Tsuzuri.toml` に必ず `namespace` を書き、`Main.tz` は同じ名前空間を宣言します。package 名はフォルダー名の kebab-case（`MyApp` は `my-app`、使えない名前は `app`）、`--namespace` を省くと名前空間は package 名の PascalCase です。不正な名前空間や空でないフォルダーは `E2000` で、何も書きません。名前空間は[モジュールと名前空間](../language-reference/modules-and-packages.md#名前空間)を参照してください。
+new は `Tsuzuri.toml` に必ず `namespace` を書き、`Main.tz` は同じ名前空間を宣言します。package 名はフォルダー名の kebab-case（`MyApp` は `my-app`、使えない名前は `app`）、`--namespace` を省くと名前空間は package 名の PascalCase です。入れ子の名前空間は `Acme::MyApp` のように `::` でつなぎます。不正な名前空間（`.` 区切りを含む）や空でないフォルダーは `E2000` で、何も書きません。名前空間は[モジュールと名前空間](../language-reference/modules-and-packages.md#名前空間)を参照してください。
 
 check は LLVM を起動しません。ライブラリのファイルには main が不要です。ただし通常のディレクトリ入力は Main.tz を選ぶため、Main のないライブラリを check する場合は実際のソースファイルを指定します。doc / test は Main のないディレクトリも受理します。
 

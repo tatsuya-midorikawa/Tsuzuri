@@ -991,25 +991,27 @@ impl Parser<'_> {
             )
     }
 
-    /// `namespace A.B` or `using A.B` on its own line.
+    /// `namespace A::B` or `using A::B` on its own line.
     fn header_declaration(&mut self, keyword: &str) -> Result<NamespaceDecl, Diagnostic> {
         let start = self.take().span;
-        let same_line = |parser: &Self| {
-            if parser.newline_before_current() {
-                Err(parser.error(format!(
-                    "write the {keyword} path on the same line as '{keyword}'"
-                )))
-            } else {
-                Ok(())
-            }
-        };
-        same_line(self)?;
+        if self.newline_before_current() {
+            return Err(self.error(format!(
+                "write the {keyword} path on the same line as '{keyword}'"
+            )));
+        }
         let mut path = self.ident()?;
         let mut segments = 1;
-        while self.at(&TokenKind::Dot) {
-            same_line(self)?;
-            self.take();
-            same_line(self)?;
+        loop {
+            if (self.at(&TokenKind::Dot) || self.at(&TokenKind::DoubleColon))
+                && !self.newline_before_current()
+            {
+                return Err(self.error(format!(
+                    "join {keyword} path segments with '::' and no spaces, as in 'Sample::Features'"
+                )));
+            }
+            if !self.eat(&TokenKind::PathSep) {
+                break;
+            }
             let segment = self.ident()?;
             segments += 1;
             if segments > 16 {
@@ -1019,7 +1021,7 @@ impl Parser<'_> {
                     segment.span,
                 ));
             }
-            path.text.push('.');
+            path.text.push_str("::");
             path.text.push_str(&segment.text);
             path.span = path.span.through(segment.span);
         }
@@ -1032,10 +1034,31 @@ impl Parser<'_> {
         })
     }
 
-    /// Reads up to `segments` dot-separated identifiers, as in
-    /// `Module.Union.Case` patterns.
+    /// Appends the `::Segment`s of a namespace path to its first segment `name`.
+    fn path_segments(&mut self, name: &mut Ident) -> Result<(), Diagnostic> {
+        let mut segments = 1;
+        while self.eat(&TokenKind::PathSep) {
+            let segment = self.ident()?;
+            segments += 1;
+            if segments > 17 {
+                return Err(Diagnostic::new(
+                    "E1017",
+                    "namespace paths are limited to 16 segments before the module name",
+                    segment.span,
+                ));
+            }
+            name.text.push_str("::");
+            name.text.push_str(&segment.text);
+            name.span = name.span.through(segment.span);
+        }
+        Ok(())
+    }
+
+    /// Reads a namespace path and then up to `segments` dot-separated
+    /// identifiers, as in `Sample::Shape.Union.Case` patterns.
     pub(super) fn qualified_path(&mut self, segments: usize) -> Result<Ident, Diagnostic> {
         let mut name = self.ident()?;
+        self.path_segments(&mut name)?;
         for _ in 1..segments {
             if !self.eat(&TokenKind::Dot) {
                 break;
@@ -1552,7 +1575,15 @@ impl Parser<'_> {
                 TypeExprKind::Array(Box::new(element))
             }
         } else {
-            let name = self.qualified_ident()?;
+            let mut name = self.qualified_ident()?;
+            // The builtin types `Task` and `Vec` belong to the std namespace too.
+            if let Some(builtin @ ("Task" | "Vec")) = name
+                .text
+                .strip_prefix(crate::stdlib::NAMESPACE)
+                .and_then(|rest| rest.strip_prefix("::"))
+            {
+                name.text = builtin.into();
+            }
             if name.text == "Task" && self.at(&TokenKind::Less) {
                 TypeExprKind::Task(Box::new(self.single_type_argument()?))
             } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
@@ -3180,7 +3211,9 @@ impl Parser<'_> {
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
         let mut name = self.ident()?;
-        if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
+        if self.at(&TokenKind::PathSep) {
+            self.path_segments(&mut name)?;
+        } else if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
             return self.lambda(name, stop_at_newline);
         }
         if allow_record {
