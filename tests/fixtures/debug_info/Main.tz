@@ -22,5 +22,4 @@ fn parallel =
     let results = Task.run (Task.parallel [task { return 20 }, task { return 22 }])
     Array.sum (&results)
 
-def main :: i64
-fn main = answer 40
+answer 40

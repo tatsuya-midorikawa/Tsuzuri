@@ -272,7 +272,7 @@ heap:
 
 - 変更: なし。
 - 内容: GUIDE §2.3 を実行し、HEAD の `target/release/tsuzuri` を `/tmp/tz-pm06/before-tsuzuri` に写す。「再現」と「計測手順」の before を取る。
-  `/tmp/tz-pm06/cases/Main.tz` にテスト計画の E2E の関数と `def main :: i64 = ...`（全関数の和）を置き、`--emit llvm`（`-O0`・`-O3`、native・`--target wasm32`）を保存する。
+  `/tmp/tz-pm06/cases/Main.tz` にテスト計画の E2E の関数とトップレベルの結果式（全関数の和）を置き、`--emit llvm`（`-O0`・`-O3`、native・`--target wasm32`）を保存する。
 - 確認: 「再現」の出力が一致する。stack-depth の 3 テストと `honors_the_exact_specialization_limit` がそれぞれ `1 passed`。
   `node24 tests/primitives.mjs target/release/tsuzuri` が成功する（手順 2 の `deep_recursion(10000)` が WASM で通らなければ 5000 に下げて記録する）。
 
@@ -394,7 +394,7 @@ fn run step count =
     for i in new [i64](count, i -> i) do total = total + step (i & 1)
     total
 
-def main :: i64 = run length_only_concat 1000000 + run buffer_concat 1000000 + run local_closure 1000000 + run buffer_escape 1000000
+run length_only_concat 1000000 + run buffer_concat 1000000 + run local_closure 1000000 + run buffer_escape 1000000
 ```
 
 `run` の `step` は関数値の間接呼び出しで、各種目の関数は `run` へ特殊化されない（PR03 の変更の影響を受けにくい）。`buffer_escape` は対照で、確保数は変わらない。

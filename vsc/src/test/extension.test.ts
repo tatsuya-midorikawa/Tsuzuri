@@ -83,7 +83,7 @@ export async function run(): Promise<void> {
 	assert.ok(await vscode.workspace.applyEdit(formatting));
 	assert.match(document.getText(), /def identity :: i64 -> i64/);
 	assert.equal(await readFile(uri.fsPath, 'utf8'), original);
-	await replace('def main :: IO<unit> =\n    do! IO.\n');
+	await replace('def main :: unit -> i32 = \\() ->\n    do! IO.\n');
 	const completions = await vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', uri, new vscode.Position(1, 11), '.');
 	assert.ok(completions.items.some(item => item.label === 'write_line'));
 	await replace('');

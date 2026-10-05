@@ -99,8 +99,7 @@ fn show input =
     let total = Array.sum (&values)
     total + input
 
-def main :: i64
-fn main = show 40
+show 40
 ```
 
 ```sh
@@ -222,8 +221,7 @@ fn show input =
     let total = Array.sum (&values)
     total + add 0 - input
 
-def main :: i64
-fn main = show 40
+show 40
 ```
 
 24 行目で止めて `frame variable` を実行したときの期待出力（実装後に有効。未検証。値は fixture の式から手で求めた）:

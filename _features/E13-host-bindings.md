@@ -61,7 +61,7 @@ Rust の wasm-bindgen、Emscripten の glue、C# の P/Invoke 生成に相当す
 - `build_complete` は `Emit::Header` のとき `llvm::header(module)` を本文にし、LLVM を通さない。cache は
   `options.cache && options.emit != Emit::Header` のときだけ使う。副出力は `trap_sidecar_path`（`<output>.trap.json`）を
   `protect_sources` で検査し、`publish_outputs` の `sidecars` で本体と一緒に公開する。
-- `llvm::header` は注釈行、`#pragma once`、`host_abi::header_types`、`tsuzuri_main`（`io_entry` のとき）、`imports::header`（extern の
+- `llvm::header` は注釈行、`#pragma once`、`host_abi::header_types`、`tsuzuri_main`（`io_entry` か `main_entry` のとき）、`imports::header`（extern の
   prototype）、`tz_<name>` の prototype を `module.functions` の順に出す。版は記録しない。header は target に依存しない
   （`--target wasm32 --emit header` と native の出力は同一。検証済み）。
 - `src/abi.rs`: `Buffer`（`I64`・`F64`・`UByte`・`String`・`Utf8String`、`of`・`name`・`c_element`・`width`）、`scalar_record`、

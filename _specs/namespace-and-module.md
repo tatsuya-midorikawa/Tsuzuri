@@ -16,7 +16,7 @@ namespace [parent-namespaces::]identifier
 ```Main.tz
 namespace Sample
 
-def main :: i32 = \() ->
+def main :: unit -> i32 = \() ->
   do! IO.writeln "Hello, Tsuzuri!!" |> ignore
   0
 ```
@@ -61,7 +61,7 @@ namespace Sample
 
 using Sample::Features // using は namespace 宣言よりも後に記述する必要がある
 
-def main :: i32 = \() ->
+def main :: unit -> i32 = \() ->
   Shape.area (Shape.Rect (3.0, 4.0)) // using で宣言した `Sample::Features` が省略できるため、`Sample::Features::Shape.area` を `Shape.area` などのように記述できる
   |> ignore
 
@@ -105,7 +105,7 @@ def distance :: Point -> f64 = \point ->
 ```Main.tz
 namespace Sample
 
-def main :: i32 = \() ->
+def main :: unit -> i32 = \() ->
   Sample::Shape.area (Sample::Shape.Rect (3.0, 4.0)) // Sample::Shape.Shape.area などのように `namespace + module + union` とはならない
   |> ignore
 

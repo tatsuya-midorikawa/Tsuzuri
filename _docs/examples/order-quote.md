@@ -86,12 +86,16 @@ test "rejects nonnumeric input" =
     let result = parse_quote (ref price) (ref quantity)
     assert (Result.is_error ref result)
 
-def main :: string =
+def main :: unit -> i32 = \() ->
     let price = "1800"
     let quantity = "3"
     match parse_quote (ref price) (ref quantity) with
-    | Result.Ok value -> format_quote ref value
-    | Result.Error message -> "Error: " + message
+    | Result.Ok value ->
+        do! IO.write_line (format_quote ref value)
+        0
+    | Result.Error message ->
+        do! IO.write_error_line ("Error: " + message)
+        1
 ```
 
 ## 実行する

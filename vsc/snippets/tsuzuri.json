@@ -11,8 +11,13 @@
   },
   "Console entry": {
     "prefix": "main",
-    "body": ["def main :: IO<unit> =", "    do! IO.writeln \"${1:Hello, Tsuzuri!}\"", "    $0"],
-    "description": "Main.tz console entry"
+    "body": ["def main :: unit -> i32 = \\\\() ->", "    do! IO.writeln \"${1:Hello, Tsuzuri!}\"", "    $0", "    0"],
+    "description": "Main.tz entry point; its value is the exit code"
+  },
+  "Console entry with arguments": {
+    "prefix": "mainargs",
+    "body": ["def main :: Array<string> -> i32 = \\\\${1:args} ->", "    $0", "    0"],
+    "description": "Main.tz entry point that receives the command-line arguments"
   },
   "Namespace": {
     "prefix": "namespace",

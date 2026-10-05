@@ -116,7 +116,7 @@ const bytesText = buffer => `ok:${[...buffer].join(",")}`;
 try {
   // 1. Whole-file round trips; an action that is built but never run leaves no file; the IO and OS runtimes link together.
   const files = program("files", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let _lazy = File.write_text "lazy.txt" "never"
     let! first = File.write_text "keep.txt" "h\\u00e9llo\\n"
     do! say (unit_text first)
@@ -142,6 +142,7 @@ def main :: IO<unit> =
     do! say (bytes_text none)
     let! created = File.append_text "appended.txt" "one"
     do! say (unit_text created)
+    0
 `);
   for (const optimization of optimizations) {
     const cwd = scratch("files", optimization);
@@ -158,7 +159,7 @@ def main :: IO<unit> =
 
   // 2-6. Failure kinds and their errno codes.
   const failures = program("failures", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! missing = File.read_text "missing.txt"
     do! say (text_text missing)
     let! locked = File.read_bytes "locked.txt"
@@ -183,6 +184,7 @@ def main :: IO<unit> =
     do! say (unit_text over_folder)
     let! unlink_folder = File.remove "folder"
     do! say (unit_text unlink_folder)
+    0
 `);
   const rootUser = process.getuid?.() === 0;
   for (const optimization of optimizations) {
@@ -212,7 +214,7 @@ def main :: IO<unit> =
 
   // 7-8. Directories, byte-order listing, and symbolic links.
   const directories = program("directories", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! first = Dir.create "made"
     do! say (unit_text first)
     let! second = Dir.create "made"
@@ -243,6 +245,7 @@ def main :: IO<unit> =
     do! say (names_text survivors)
     let! through_link = Dir.remove "dirlink"
     do! say (unit_text through_link)
+    0
 `);
   const utf8Order = names => [...names].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
   for (const optimization of optimizations) {
@@ -277,9 +280,10 @@ def main :: IO<unit> =
   if (process.platform === "linux") {
     // A name that is not UTF-8 makes the whole listing InvalidEncoding (macOS cannot create such a name).
     const invalidNames = program("invalid-names", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! listed = Dir.list "invalid-names"
     do! say (names_text listed)
+    0
 `);
     for (const optimization of optimizations) {
       const cwd = scratch("invalid-names", optimization);
@@ -292,7 +296,7 @@ def main :: IO<unit> =
 
   // 9. Arguments, environment, and the working directory.
   const environment = program("environment", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! args = Env.args ()
     do! say (names_text args)
     let! set = Env.var "TZ_E08"
@@ -305,6 +309,7 @@ def main :: IO<unit> =
     do! say (option_text empty)
     let! directory = Env.current_dir ()
     do! say (text_text directory)
+    0
 `);
   for (const optimization of optimizations) {
     const cwd = scratch("environment", optimization);
@@ -327,7 +332,7 @@ fn unix_text result =
     | Result.Ok value -> "unix:" + to_string value
     | Result.Error error -> Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! before = Time.monotonic_ns ()
     let! slept = Time.sleep_ms 50
     let! after = Time.monotonic_ns ()
@@ -339,6 +344,7 @@ def main :: IO<unit> =
     do! say (unix_text unix)
     do! say (unit_text negative)
     do! say (unit_text zero)
+    0
 `);
   const random = program("random", `
 def pair_text :: Result<[ubyte], Os.Error> -> Result<[ubyte], Os.Error> -> string
@@ -354,7 +360,7 @@ fn word_text result =
     | Result.Ok _ -> "word"
     | Result.Error error -> Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! none = Random.bytes 0
     do! say (bytes_text none)
     let! first = Random.bytes 1000
@@ -368,6 +374,7 @@ def main :: IO<unit> =
     do! say (word_text word)
     let! large = Random.bytes 1048576
     do! say (length_text large)
+    0
 `);
   // C09: maps and sets keyed by a seed from the operating system behave like any other, and a flood of
   // keys that collide under the fixed mixing does not pile up in one cluster.
@@ -443,7 +450,7 @@ fn flood_text start =
         index = index + 1
     if HashMap.length (ref map) == 600 && HashMap.longest_probe (ref map) <= 64 then "flood ok" else "flood bad"
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! made = HashMap.randomized ()
     do! say (map_text made)
     let! tried = HashMap.try_randomized ()
@@ -452,6 +459,7 @@ def main :: IO<unit> =
     do! say (set_text set)
     let! flooded = HashMap.randomized ()
     do! say (flood_text flooded)
+    0
 `);
   const randomMapLines = ["len:2000 found:2000 sum:1999000", "len:2000 found:2000 sum:1999000", "len:500 present:500", "flood ok"];
   for (const optimization of optimizations) {
@@ -518,10 +526,11 @@ fn zero _unit =
     match Random.pcg_next_u32 (Random.pcg 0i64u 0i64u) with
     | (value, _) -> to_string value
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     do! say (words ())
     do! say (longs ())
     do! say (zero ())
+    0
 `);
   for (const optimization of optimizations) {
     const output = lines(run(generator(optimization), scratch("pcg", optimization)));
@@ -532,16 +541,21 @@ def main :: IO<unit> =
     assert.equal(output[2], String(pcg(0n, 0n)()));
   }
 
-  // 14. An IO<i32> entry returns its value as the exit code.
-  for (const [type, value, status] of [["i32", "3i32", 3], ["i32", "0i32", 0], ["i32", "256i32", 0], ["i64", "5", 0], ["unit", "()", 0]]) {
-    const name = `exit-${type}-${value}`;
-    const code = program(name, `def main :: IO<${type}> =\n    do! say "done"\n    return ${value}\n`);
+  // 14. `main`'s value is the exit code.
+  for (const [value, status] of [["3i32", 3], ["0i32", 0], ["256i32", 0]]) {
+    const name = `exit-${value}`;
+    const code = program(name, `def main :: unit -> i32 = \\() ->\n    do! say "done"\n    ${value}\n`);
     for (const optimization of optimizations) {
       assert.equal(run(code(optimization), scratch(name, optimization), { status }).stdout, "done\n");
     }
   }
+  // A `main` without effects uses no IO runtime and still sets the exit code.
+  const pure = program("exit-pure", "def main :: unit -> i32 = \\() -> 5\n");
+  for (const optimization of optimizations) {
+    assert.equal(run(pure(optimization), scratch("exit-pure", optimization), { status: 5 }).stdout, "");
+  }
   {
-    const directory = join(root, "project-exit-i32-3i32");
+    const directory = join(root, "project-exit-3i32");
     const failed = execute(compiler, ["run", directory], {}, false);
     assert.equal(failed.status, 1);
     assert.match(failed.stderr, /E2005.*program exited with code 3/s);
@@ -549,7 +563,27 @@ def main :: IO<unit> =
     const diagnostic = JSON.parse(json.stderr.trim());
     assert.equal(diagnostic.code, "E2005");
     assert.match(diagnostic.message, /program exited with code 3/);
-    assert.equal(execute(compiler, ["run", join(root, "project-exit-i32-0i32")]).stdout, "done\n");
+    assert.equal(execute(compiler, ["run", join(root, "project-exit-0i32")]).stdout, "done\n");
+  }
+
+  // 14b. `def main :: Array<string> -> i32` receives the arguments after the program name, decoded from UTF-8;
+  // an invalid sequence becomes U+FFFD. `Env.args` still reports invalid UTF-8 as InvalidEncoding.
+  const argumentsProgram = program("arguments", `def main :: Array<string> -> i32 = \\args ->
+    let separator = "]["
+    do! say ("[" + String.join (ref separator) (ref args) + "]")
+    let! all = Env.args ()
+    do! say (names_text all)
+    args.length as i32
+`);
+  for (const optimization of optimizations) {
+    const cwd = scratch("arguments", optimization);
+    const plain = run(argumentsProgram(optimization), cwd, { args: ["\u03b1", "", "b c"], status: 3 });
+    assert.deepEqual(lines(plain), ["[\u03b1][][b c]", "ok:3:\u03b1||b c"]);
+    assert.deepEqual(lines(run(argumentsProgram(optimization), cwd)), ["[]", "ok:0:"]);
+    // A shell passes the bytes as they are, where Node would encode a string as UTF-8.
+    const raw = execute("/bin/sh", ["-c", `"$0" "$(printf 'a\\377\\340\\200b')"`, argumentsProgram(optimization)], { cwd }, false);
+    assert.equal(raw.status, 1, raw.stderr);
+    assert.deepEqual(lines(raw), ["[a\ufffd\ufffd\ufffdb]", "invalid encoding"]);
   }
 
   // 15. The default wasm targets reject the operating-system APIs and write no output.
@@ -616,7 +650,7 @@ fn digest text =
     "ext a.tar.gz -> Some gz", "ext .bashrc -> None", "ext a. -> Some ", "ext a/b.d/c -> None",
     "permission denied (os error 13)", "other",
   ].join("\n") + "\n";
-  const paths = program("paths", `${pathText}\ndef main :: IO<unit> = IO.write (report ())\n`);
+  const paths = program("paths", `${pathText}\ndef main :: unit -> i32 = \\() ->\n    do! IO.write (report ())\n    0\n`);
   const exported = join(root, "project-paths-wasm");
   mkdirSync(exported, { recursive: true });
   writeFileSync(join(exported, "Main.tz"), `${pathText}\nexport def path_digest :: i64 -> i64\nfn path_digest n = digest (report ()) + n\n`);
@@ -704,7 +738,7 @@ fn after_close first = IO {
     return unit_text closed + "," + bytes_text stale + "," + live
 }
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! created = File.open "stream.txt" File.Write
     let! a = with_handle created writer
     do! say a
@@ -734,6 +768,7 @@ def main :: IO<unit> =
     let! earlier = File.open "data.txt" File.Read
     let! g = with_handle earlier after_close
     do! say g
+    0
 `);
   for (const optimization of optimizations) {
     const cwd = scratch("handles", optimization);
@@ -815,7 +850,7 @@ fn scoped_bytes result =
     | Result.Ok (Result.Error error) -> "inner:" + Os.message (ref error)
     | Result.Error error -> "outer:" + Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! before = count ()
     let! failures = churn 1500 0
     let! after = count ()
@@ -836,6 +871,7 @@ def main :: IO<unit> =
     do! say (scoped_bytes reread)
     let! last = count ()
     do! say ("scoped same:" + to_string (before == last))
+    0
 `);
   const fdDirectory = process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
   for (const optimization of optimizations) {
@@ -867,7 +903,7 @@ fn meta_text result =
     | Result.Ok meta -> kind_text meta.kind + " " + to_string meta.size + " " + to_string meta.modified_ns
     | Result.Error error -> Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! file = File.metadata "data.txt"
     do! say (meta_text file)
     let! folder = File.metadata "folder"
@@ -890,6 +926,7 @@ def main :: IO<unit> =
     do! say (meta_text pipe)
     let! stamped = File.metadata "stamped.txt"
     do! say (meta_text stamped)
+    0
 `);
   const prepareMetadata = cwd => {
     writeFileSync(join(cwd, "data.txt"), "hello");
@@ -918,7 +955,7 @@ def main :: IO<unit> =
 
   // 20. Dir.walk against a reference walk: pre-order, UTF-8 byte order, symbolic links listed but never followed.
   const walks = program("walks", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! everything = Dir.walk "root"
     do! say (names_text everything)
     let! empty = Dir.walk "root/empty"
@@ -931,6 +968,7 @@ def main :: IO<unit> =
     do! say (names_text locked)
     let! partial = Dir.walk "partial"
     do! say (names_text partial)
+    0
 `);
   const prepareWalk = cwd => {
     const root = join(cwd, "root");
@@ -1030,7 +1068,7 @@ fn rec spawn_many remaining failures =
         | Result.Ok _ -> spawn_many (remaining - 1) failures
         | Result.Error _ -> spawn_many (remaining - 1) (failures + 1))
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let nothing: [ubyte] = []
     do! run_say "/bin/sh" ["-c", "for a; do printf '[%s]' \\"$a\\"; done", "sh", "a b", "; touch pwned", "", "$HOME", "\\u00e9"] nothing
     do! run_say "cat" [] [104ubyte, 105ubyte]
@@ -1060,6 +1098,7 @@ def main :: IO<unit> =
     let! failures = spawn_many 300 0
     let! after = count ()
     do! say ("spawned failures:" + to_string failures + " same:" + to_string (before == after))
+    0
 `);
   for (const optimization of optimizations) {
     const cwd = scratch("processes", optimization);
@@ -1202,35 +1241,42 @@ def main :: IO<unit> =
 
   // A process cannot be started from WASI.
   program("spawn-wasi", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! result = Process.run "true" [] []
     do! say (match result with
         | Result.Ok _ -> "started"
         | Result.Error error -> Os.message (ref error))
+    0
 `);
   for (const optimization of optimizations) {
     assert.equal(runWasi("spawn-wasi", optimization, scratch("wasi-spawn", optimization)).stdout, "other (os error 52)\n");
   }
 
-  // The exit code of an IO<i32> entry reaches the WASI host through proc_exit, and only that program imports it.
+  // The exit code of `main` reaches the WASI host through proc_exit, and the host's arguments reach `main`.
   const wasiImports = (name, optimization) => WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(wasiBuild(name, optimization)))).map(({ module, name: field }) => `${module}.${field}`).sort();
   for (const optimization of optimizations) {
-    const three = runWasi("exit-i32-3i32", optimization, scratch("wasi-exit", optimization), { status: 3 });
+    const three = runWasi("exit-3i32", optimization, scratch("wasi-exit", optimization), { status: 3 });
     assert.equal(three.stdout, "done\n");
-    for (const name of ["exit-i32-0i32", "exit-i32-256i32", "exit-i64-5", "exit-unit-()"]) {
+    for (const name of ["exit-0i32", "exit-256i32"]) {
       assert.equal(runWasi(name, optimization, scratch("wasi-exit", optimization)).stdout, "done\n");
     }
-    assert.deepEqual(wasiImports("exit-i32-3i32", optimization), ["wasi_snapshot_preview1.fd_write", "wasi_snapshot_preview1.proc_exit"]);
-    assert.deepEqual(wasiImports("exit-unit-()", optimization), ["wasi_snapshot_preview1.fd_write"]);
+    assert.deepEqual(wasiImports("exit-3i32", optimization), ["wasi_snapshot_preview1.fd_write", "wasi_snapshot_preview1.proc_exit"]);
+    // A WASI command without IO still gets `_start`, which reports the exit code.
+    assert.equal(runWasi("exit-pure", optimization, scratch("wasi-exit", optimization), { status: 5 }).stdout, "");
+    assert.deepEqual(wasiImports("exit-pure", optimization), ["wasi_snapshot_preview1.proc_exit"]);
+    const passed = runWasi("arguments", optimization, scratch("wasi-arguments", optimization), { args: ["\u03b1", "", "b c"], status: 3 });
+    assert.deepEqual(lines(passed), ["[\u03b1][][b c]", "ok:3:\u03b1||b c"]);
+    assert.deepEqual(lines(runWasi("arguments", optimization, scratch("wasi-arguments", optimization))), ["[]", "ok:0:"]);
   }
 
   // Standard input and output use the same host, with the contract of the native runtime.
   const wasiIo = program("wasi-io", `
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! _prompt = IO.write "Name: "
     let! line = IO.read_line ()
     do! IO.write_line (Maybe.default_value "<eof>" line)
     do! IO.write_error_line "note"
+    0
 `);
   for (const optimization of optimizations) {
     for (const [input, line] of [
@@ -1246,7 +1292,8 @@ def main :: IO<unit> =
       const result = execute(process.execPath, ["--no-warnings", wasiHost, wasiBuild("wasi-io", optimization), "/work", scratch("wasi-io", optimization)], { input: bytes }, false);
       assert.notEqual(result.status, 0, "invalid UTF-8 input traps like the native runtime");
     }
-    assert.deepEqual(wasiImports("wasi-io", optimization), ["wasi_snapshot_preview1.fd_read", "wasi_snapshot_preview1.fd_write"]);
+    // Only the reached operations are imported, and `main` returns its exit code through proc_exit.
+    assert.deepEqual(wasiImports("wasi-io", optimization), ["wasi_snapshot_preview1.fd_read", "wasi_snapshot_preview1.fd_write", "wasi_snapshot_preview1.proc_exit"]);
   }
 
   // The option and its errors; without a host the default output keeps its tsuzuri_io imports.
@@ -1296,9 +1343,10 @@ fn sum_text result =
         "ok:" + to_string data.length + ":" + to_string sum
     | Result.Error error -> Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! bytes = File.read_bytes "pipe"
     do! say (sum_text bytes)
+    0
 `);
   for (const optimization of optimizations) {
     const cwd = scratch("fifo", optimization);
@@ -1399,11 +1447,11 @@ fn third_part _unit = IO {
     do! say (output_length_text ran)
 }
 
-def main :: IO<unit> = IO {
+def main :: unit -> i32 = \\() ->
     do! first_part ()
     do! second_part ()
     do! third_part ()
-}
+    0
 `);
   tracked(optimizations[0]);
   const irPath = join(root, "tracked.ll");

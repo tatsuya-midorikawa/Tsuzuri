@@ -348,7 +348,7 @@ declare i64 @tsuzuri_net_classify(i32)
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
 cargo build --release --locked
 mkdir -p /tmp/tz-e09/base
-printf 'def main :: IO<unit> = IO {\n    do! IO.write_line 42\n}\n' > /tmp/tz-e09/base/Main.tz
+printf 'def main :: unit -> i32 = \\() ->\n    do! IO.write_line 42\n    0\n' > /tmp/tz-e09/base/Main.tz
 for o in -O0 -O3; do
   target/release/tsuzuri build /tmp/tz-e09/base --emit llvm $o -o /tmp/tz-e09/native$o.ll
   target/release/tsuzuri build /tmp/tz-e09/base --target wasm32 --emit llvm $o -o /tmp/tz-e09/wasm$o.ll

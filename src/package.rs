@@ -163,7 +163,7 @@ pub fn create_project(
         (
             "Main.tz",
             format!(
-                "namespace {namespace}\n\ndef main :: IO<unit> =\n    do! IO.writeln \"Hello, Tsuzuri!\"\n\ntest \"adds numbers\" = assert (1 + 2 == 3)\n"
+                "namespace {namespace}\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln \"Hello, Tsuzuri!\"\n    0\n\ntest \"adds numbers\" = assert (1 + 2 == 3)\n"
             ),
         ),
         (".gitignore", ".tsuzuri/\n".to_owned()),
@@ -811,6 +811,12 @@ mod tests {
         );
         let main = std::fs::read_to_string(&created[1]).unwrap();
         assert!(main.starts_with("namespace HelloWorld\n\n"), "{main}");
+        // The template's `main` is an entry point that the checker accepts.
+        let module = crate::driver::Project::load(&root.join("hello-world"))
+            .unwrap()
+            .analyze()
+            .unwrap();
+        assert!(crate::llvm::main_entry(&module), "{main}");
         let again = create_project(&root.join("hello-world"), None).unwrap_err();
         assert!(again.message.contains("is not empty"), "{}", again.message);
         create_project(&root.join("other"), Some("Acme::Tools")).unwrap();

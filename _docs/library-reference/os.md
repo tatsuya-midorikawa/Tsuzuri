@@ -19,17 +19,19 @@
 
 ## 実行されるまで何も起きない
 
-OS に触れる関数は、呼んだだけでは何もしません。アクションを作っても OS には触れず、入口が返す IO の中で `let!` や `do!` が実行した時点で処理します。
+OS に触れる関数は、呼んだだけでは何もしません。アクションを作っても OS には触れず、`let!` や `do!` が実行した時点で処理します。
 
 ```tsuzuri
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let _unused = File.write_text "never.txt" "not written"
     do! IO.write_line "done"
+    0
 ```
 
 この例は `done` だけを表示し、`never.txt` は作りません。path やテキストの引数は所有値としてアクションへ渡すので、後でも必要な `string` は先に複製してください。
+`main` の本体は結果型 `i32` にビルダーがないので、`let!` と `do!` をその場で順に実行します（[直接形式](io.md#直接形式)）。最後の式が終了コードです。
 
-IO ブロックの `match` の腕では `do!` を使えません。結果を調べる `match` や `while` は名前付きの関数へ移し、ブロックには `let!` と `do!` を並べます。次の例の `save` のように、腕が別の IO アクションを返す形にすると、実行を分岐できます。一つの IO ブロックに文を並べ続けると展開の深さの上限（128）に達するので、25 文前後を目安に関数へ分けます。
+`IO<T>` を返す関数の本体（IO ブロック）では、`match` の腕で `do!` を使えません。結果を調べる `match` や `while` は名前付きの関数へ移し、ブロックには `let!` と `do!` を並べます。次の例の `save` のように、腕が別の IO アクションを返す形にすると、実行を分岐できます。一つの IO ブロックに文を並べ続けると展開の深さの上限（128）に達するので、25 文前後を目安に関数へ分けます。
 
 ## 読んで書く例
 
@@ -59,12 +61,13 @@ fn save loaded =
         IO.bind (File.write_text "lines.txt" (to_string count + "\n")) written
     | Result.Error error -> IO.write_error_line ("read failed: " + Os.message (ref error))
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! loaded = File.read_text "input.txt"
     do! save loaded
+    0
 ```
 
-`File.read_text` の `IO<Result<string, Os.Error>>` を `let!` で束縛し、`save` が Result を `match` します。`main` は二文だけで、行を数える `while` も `match` も関数に置いています。
+`File.read_text` の `IO<Result<string, Os.Error>>` を `let!` で束縛し、`save` が Result を `match` します。`main` は二つの文と終了コードだけで、行を数える `while` も `match` も関数に置いています。
 
 独立した `target/os-demo/Main.tz` を、入力のあるディレクトリで実行します。相対 path の起点は作業ディレクトリです。
 
@@ -75,7 +78,7 @@ printf 'one\ntwo\nthree\n' > input.txt
 cat lines.txt
 ```
 
-`wrote lines.txt` を表示し、`lines.txt` には `3` を書きます。`input.txt` がなければ stderr に `read failed: not found (os error 2)` を書きますが、入口は `IO<unit>` なので終了コードは 0 です。失敗を終了コードで知らせる方法は[終了コード](#終了コード)を参照してください。
+`wrote lines.txt` を表示し、`lines.txt` には `3` を書きます。`input.txt` がなければ stderr に `read failed: not found (os error 2)` を書きますが、`main` は常に 0 を返すので終了コードは 0 です。失敗を終了コードで知らせる方法は[終了コード](#終了コード)を参照してください。
 
 ## Os とエラー
 
@@ -103,9 +106,10 @@ fn settings result =
         | Os.NotFound -> "defaults"
         | _ -> "cannot read settings: " + Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! loaded = File.read_text "settings.txt"
     do! IO.write_line (settings loaded)
+    0
 ```
 
 ## File
@@ -170,10 +174,11 @@ fn exit_code result =
     | Result.Ok _ -> IO.pure 0i32
     | Result.Error error -> IO.bind (IO.write_error_line (Os.message (ref error))) (\() -> IO.pure 1i32)
 
-def main :: IO<i32> =
+def main :: unit -> i32 = \() ->
     let! opened = File.open "out.bin" File.Write
     let! result = start opened
-    return! exit_code result
+    let! code = exit_code result
+    code
 ```
 
 `File.with_open` は同じ後始末を引き受けます。結果は二重の Result で、外側は open と close の失敗、内側は `body` 自身の結果です。
@@ -186,9 +191,10 @@ fn header_text result =
     | Result.Ok (Result.Error error) -> "read failed: " + Os.message (ref error)
     | Result.Error error -> "open or close failed: " + Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! result = File.with_open "data.bin" File.Read (\handle -> File.read handle 16)
     do! IO.write_line (header_text result)
+    0
 ```
 
 ### メタデータ
@@ -236,11 +242,12 @@ fn meta_text result =
     | Result.Ok meta -> kind_text meta.kind + ", " + to_string meta.size + " bytes"
     | Result.Error error -> Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! walked = Dir.walk "docs"
     do! IO.write_line (listing walked)
     let! meta = File.metadata "README.md"
     do! IO.write_line (meta_text meta)
+    0
 ```
 
 `docs/a.md` と `docs/sub/b.md` があれば、`a.md`、`sub`、`sub/b.md` の順に表示し、続けて `README.md` の種類と大きさを表示します。
@@ -297,7 +304,9 @@ String.join (ref newline) (ref lines)
 | `Env.var name` | `IO<Result<Maybe<string>, Os.Error>>` | 環境変数の値。未設定は `Ok None`、空の値は `Some ""`。名前が空、`=` か NUL を含むと `InvalidInput`、値が UTF-8 でなければ `InvalidEncoding` |
 | `Env.current_dir ()` | `IO<Result<string, Os.Error>>` | 作業ディレクトリ。システムが報告する形で返す（macOS の `/tmp` は `/private/tmp`） |
 
-`tsuzuri run` はプログラムへ引数を渡しません。引数が必要なときは `tsuzuri build` で作った実行ファイルを起動します。次の例は引数の数、`HOME`、20 ミリ秒の sleep の実測を表示します。
+`tsuzuri run` はプログラムへ引数を渡しません。引数が必要なときは `tsuzuri build` で作った実行ファイルを起動します。
+`main` を `def main :: Array<string> -> i32` で定義すると、同じ引数を `main` の引数としても受け取れます。そちらは UTF-8 として不正なバイト列を U+FFFD に置き換え、`Env.args` は `InvalidEncoding` を返します（[エントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント)）。
+次の例は引数の数、`HOME`、20 ミリ秒の sleep の実測を表示します。
 
 ```tsuzuri
 def count_text :: Result<[string], Os.Error> -> string
@@ -319,7 +328,7 @@ fn elapsed_text before after =
     | (Result.Ok first, Result.Ok second) -> "slept " + to_string ((second - first) / 1000000) + " ms"
     | _ -> "clock failed"
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! args = Env.args ()
     do! IO.write_line (count_text args)
     let! home = Env.var "HOME"
@@ -328,6 +337,7 @@ def main :: IO<unit> =
     let! _slept = Time.sleep_ms 20
     let! after = Time.monotonic_ns ()
     do! IO.write_line (elapsed_text before after)
+    0
 ```
 
 ```sh
@@ -399,9 +409,10 @@ fn seeded result =
     | Result.Ok seed -> first_word seed
     | Result.Error error -> Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! seed = Random.next_u64 ()
     do! IO.write_line (seeded seed)
+    0
 ```
 
 ## Process
@@ -440,9 +451,10 @@ fn describe result =
         else "exit code " + to_string output.code + ", signal " + to_string output.signal
     | Result.Error error -> "cannot run: " + Os.message (ref error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! result = Process.run "printf" ["%s", "one two; echo not-run"] []
     do! IO.write_line (describe result)
+    0
 ```
 
 `one two; echo not-run` を一つの引数として表示します。`; echo not-run` は実行されません。
@@ -471,7 +483,7 @@ def main :: IO<unit> =
 
 ## 終了コード
 
-入口が `IO<i32>` なら、その `i32` の値がプロセスの終了コードになります。OS が見る終了ステータスは下位 8 ビットなので、`256` は 0 です。`IO<unit>` や `IO<i64>` など、ほかの型の入口は値を捨てて 0 で終了します。`Os.exit` のような途中終了の API はありません。
+`main` が返す `i32` の値がプロセスの終了コードになります（トップレベルの結果式が `IO<i32>` ならその値です）。OS が見る終了ステータスは下位 8 ビットなので、`256` は 0 です。`Os.exit` のような途中終了の API はありません。
 
 ```tsuzuri
 def code_of :: Result<string, Os.Error> -> i32
@@ -480,9 +492,9 @@ fn code_of result =
     | Result.Ok _ -> 0i32
     | Result.Error _ -> 2i32
 
-def main :: IO<i32> =
+def main :: unit -> i32 = \() ->
     let! config = File.read_text "config.txt"
-    return code_of config
+    code_of config
 ```
 
 `config.txt` が読めなければ終了コード 2 です。`tsuzuri run` は非 0 の終了コードを `E2005` で報告し、自身の終了ステータスは 1 です。
@@ -491,7 +503,7 @@ def main :: IO<i32> =
 error[E2005]: program exited with code 2
 ```
 
-`run --json` では診断の `code` が `E2005` で、`message` は `program exited with code 2` です。`tsuzuri build` で作った実行ファイルは、値をそのまま終了コードにします。以前は `IO<i32>` の値を捨てて 0 で終了していたので、値を返している既存のプログラムは、その値が終了コードに変わります。
+`run --json` では診断の `code` が `E2005` で、`message` は `program exited with code 2` です。`tsuzuri build` で作った実行ファイルは、値をそのまま終了コードにします。
 
 ## 対象環境
 

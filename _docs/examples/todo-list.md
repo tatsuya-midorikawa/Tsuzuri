@@ -114,7 +114,7 @@ Board が成功値の内側にしかない `Result<Board, string>` だと、Erro
 次が同じディレクトリの `Main.tz` です。
 
 ```tsuzuri project=todo file=Main.tz run=Error%3A%20Item%20not%20found.%0A%5Bx%5D%201%3A%20Write%20docs%0A%5B%20%5D%203%3A%20Review%20code
-def main :: string =
+def main :: unit -> i32 = \() ->
     let commands = [
         Tasks.AddItem "Write docs",
         Tasks.AddItem "Ship release",
@@ -132,7 +132,8 @@ def main :: string =
             match result with
             | Result.Ok _ -> ()
             | Result.Error message -> errors = errors + "Error: " + message + "\n"
-    errors + Tasks.render (ref board)
+    do! IO.write_line (errors + Tasks.render (ref board))
+    0
 ```
 
 commands の要素は string を含む非 Copy 値です。通常の for は要素を借用して読むので、apply も command を共有参照で受け取ります。配列から所有値を取り出そうとはしません。

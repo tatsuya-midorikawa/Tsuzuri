@@ -2911,6 +2911,17 @@ fn qualified_builtin(path: &str) -> Option<Builtin> {
         .find(|builtin| builtin.name() == path)
 }
 
+/// Whether `signature` is one that an application's `main` may have: `unit -> i32`,
+/// or `Array<string> -> i32` to receive the command-line arguments.
+fn entry_signature(signature: &Signature) -> bool {
+    signature.result == Type::I32
+        && match signature.parameters.as_slice() {
+            [Type::Unit] => true,
+            [Type::Array(element)] => **element == Type::String,
+            _ => false,
+        }
+}
+
 impl Names {
     fn origin(&self, module: &str) -> ModuleOrigin {
         self.modules
@@ -4399,7 +4410,7 @@ fn check_modules_collect(
         };
         if crate::numeric::primitive(&record.name.text).is_some()
             || record.name.text == "_"
-            || matches!(record.name.text.as_str(), "Task" | "Vec")
+            || matches!(record.name.text.as_str(), "Array" | "Task" | "Vec")
             || polymorph::BUILTIN_CLASSES.contains(&record.name.text.as_str())
             || names.records.insert(qualified.clone(), info).is_some()
         {
@@ -4426,7 +4437,7 @@ fn check_modules_collect(
                 visibility: handle.visibility,
             };
             if crate::numeric::primitive(&handle.name.text).is_some()
-                || matches!(handle.name.text.as_str(), "_" | "Task" | "Vec")
+                || matches!(handle.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
                 || polymorph::BUILTIN_CLASSES.contains(&handle.name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.handles.insert(qualified.clone(), info).is_some()
@@ -4467,7 +4478,7 @@ fn check_modules_collect(
                 || names.handles.contains_key(&qualified)
                 || names.classes.contains(&qualified)
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
-                || matches!(class.name.text.as_str(), "_" | "Task" | "Vec")
+                || matches!(class.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
             {
                 diagnostics.push(duplicate(&class.name));
                 continue;
@@ -4488,7 +4499,7 @@ fn check_modules_collect(
             }
             let qualified = format!("{}.{}", module.name, alias.name.text);
             if crate::numeric::primitive(&alias.name.text).is_some()
-                || matches!(alias.name.text.as_str(), "_" | "Task" | "Vec")
+                || matches!(alias.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
                 || polymorph::BUILTIN_CLASSES.contains(&alias.name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -4805,6 +4816,14 @@ fn check_modules_collect(
         }
     }
     diagnostics.check()?;
+    let entry_module = modules
+        .iter()
+        .find(|module| {
+            module.origin == ModuleOrigin::User
+                && module.entry
+                && matches!(module.program.source_kind, None | Some(SourceKind::Code))
+        })
+        .map(|module| module.name);
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
             diagnostics.check()?;
@@ -4890,6 +4909,17 @@ fn check_modules_collect(
             )?;
             let result = polymorph::substitute(&result, &errors);
             let signature = Signature { parameters, result };
+            if entry_module == Some(module.as_str())
+                && function.name.text == "main"
+                && !names.constants.contains(&id)
+                && !entry_signature(&signature)
+            {
+                return Err(Diagnostic::new(
+                    "E2004",
+                    "the entry point must be 'def main :: unit -> i32' or 'def main :: Array<string> -> i32'; main returns the process exit code",
+                    function.name.span,
+                ));
+            }
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
             if external_functions.contains_key(&id) {
@@ -5277,7 +5307,7 @@ fn check_modules_collect(
         if entry.is_some() {
             diagnostics.push(Diagnostic::new(
                 "E2004",
-                "Main.tz must use either top-level entry-point code or 'fn main', not both",
+                "Main.tz must use either top-level entry-point code or 'def main', not both",
                 expression.span,
             ));
             continue;
@@ -5765,7 +5795,7 @@ fn collect_unions(
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
-            if matches!(name.text.as_str(), "Task" | "Vec")
+            if matches!(name.text.as_str(), "Array" | "Task" | "Vec")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -5826,7 +5856,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if matches!(name.text.as_str(), "Task" | "Vec")
+                if matches!(name.text.as_str(), "Array" | "Task" | "Vec")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.handles.contains_key(&qualified)

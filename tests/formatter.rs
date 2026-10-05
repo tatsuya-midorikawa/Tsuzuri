@@ -131,13 +131,13 @@ fn lambda_guards_and_where_preserve_layout() {
 
 #[test]
 fn namespace_and_using_headers_keep_their_lines() {
-    let source = "namespace   Sample::Features\nusing  Sample   // shared\nusing Other::Tools\n\ndef main::i32=\\()->Tools::Math.add 40 2\n";
+    let source = "namespace   Sample::Features\nusing  Sample   // shared\nusing Other::Tools\n\ndef main::unit->i32=\\()->Tools::Math.add 40 2\n";
     let formatted = format_source("Main.tz", source, SourceKind::Code)
         .unwrap()
         .formatted;
     assert_eq!(
         formatted,
-        "namespace Sample::Features\nusing Sample   // shared\nusing Other::Tools\n\ndef main :: i32 = \\() -> Tools::Math.add 40 2\n"
+        "namespace Sample::Features\nusing Sample   // shared\nusing Other::Tools\n\ndef main :: unit -> i32 = \\() -> Tools::Math.add 40 2\n"
     );
     let program = parser::parse(&formatted).unwrap();
     assert_eq!(

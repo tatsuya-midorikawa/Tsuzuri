@@ -145,7 +145,7 @@ namespace Sample
 
 using Sample::Features
 
-def main :: i32 = \() ->
+def main :: unit -> i32 = \() ->
     Shape.area (Shape.Rect (3.0, 4.0)) |> ignore
     0
 ```
@@ -194,7 +194,7 @@ std のモジュールは名前空間 `std` に属し、完全名は `std::Maybe
 `std` はすべてのファイルに暗黙に取り込まれるため、`Maybe.map`・`Result<i64, string>`・`Some 1` のように名前空間を省いて書けます。
 省いた名前はファイル自身の宣言を先に探すため、同じ名前を宣言したファイルでは `std::Result<i64, string>`・`std::Maybe.Some 1`・`std::Maybe.map` のように `std::` で std を指定します。
 名前空間を省いた std のモジュール名は、ファイルの名前空間・`using`・外側の名前空間に同じ名前のモジュールがないときに std のモジュールを指します。
-コンパイラ組み込みのモジュール関数と型も同じ名前空間に属し、`std::Task.run`・`std::Int.checked_add`・`std::Task<i64>`・`std::Vec<i64>` と書けます。
+コンパイラ組み込みのモジュール関数と型も同じ名前空間に属し、`std::Task.run`・`std::Int.checked_add`・`std::Task<i64>`・`std::Vec<i64>`・`std::Array<i64>` と書けます。
 名前空間に属するのはモジュールだけなので、`ignore`・`sqrt` のように修飾しない組み込み関数には `std::` を付けません。
 `using std` は不要ですが、書くと他の `using` と同じく std のモジュールをモジュール名で取り込みます。
 利用者のファイルは名前空間 `std` とその内側を宣言できません（`E1011`）。
@@ -424,7 +424,7 @@ Rust 互換の記号形式も、空白の後に被演算子を詰めて書くと
 ```text
 def add :: Add<'a> -> 'a -> 'a = \x -> \y -> x + y
 
-def main :: i32 = {
+def answer :: i32 = {
     let offset: i32 = 20;
     let shift = \x -> x + offset;
     let increment = add 1i32;
@@ -896,15 +896,30 @@ Hashは暗号用途・HashDoS対策用ではなく、ランダムseedを持ち�
 ### アプリケーションのエントリーポイント
 
 `run` とネイティブ実行ファイルのビルドは **`Main.tz` またはそのディレクトリ** を入力にします。
-他ファイルの `fn main` は通常の関数であり、エントリーポイントとして選択されません。`Main.tz` が `namespace` を宣言していても入口は変わりません。
+他ファイルの `main` は通常の関数であり、エントリーポイントとして選択されません。`Main.tz` が `namespace` を宣言していても入口は変わりません。
 `Main.tz` では次のどちらか一方を使います。
 
-- 宣言の後にトップレベルの `let` を順に書き、必要なら最後に結果式を書く。
-- 引数なしで `IO<T>` または数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` を返す `fn main` を定義する。
-  `def main :: i32 = \() -> ...` のように、引数なしの型に `\() ->` の本体を書いても引数なしの関数です。
+- `main` を `def main :: unit -> i32` または `def main :: Array<string> -> i32` で定義する。`main` が返す `i32` がプロセスの終了コードになり、値は表示しません。
+- 宣言の後にトップレベルの `let` を順に書き、必要なら最後に結果式を書く。結果式の値は表示します（後述）。
 
-Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき、トップレベル実行と同じ入口として型推論します。
-この形は他の関数から呼ぶ宣言にはなりません。通常の関数や呼び出す main は従来どおり `def` を付けます。
+```text
+def main :: Array<string> -> i32 = \args ->
+    do! IO.write_line ("arguments: " + to_string args.length)
+    0
+```
+
+`Main.tz` の `main` をこの二つ以外のシグネチャ（`def main :: i32`、`def main :: IO<unit>`、`def main :: unit -> i64`、引数が `unit`・`Array<string>` 以外の関数など）で定義すると `E2004` です。
+`def` のシグネチャがない `fn main` は `E0002` です。`Array<string>` は `[string]` と同じ型なので、`def main :: [string] -> i32` とも書けます。
+本体は `\() ->` または `\args ->` のラムダで書きます。結果型 `i32` には計算式のビルダーがないので、本体の IO の `let!`／`do!` はその場で順に実行します（[IO と標準入出力](#io-と標準入出力)の直接形式）。
+
+`def main :: Array<string> -> i32` は、実行ファイルの起動時に渡されたコマンドライン引数を受け取ります。
+
+- プログラム名（`argv[0]`）は含みません。引数がなければ空の配列です。
+- 引数は空白（スペースとタブ）で区切ります。`"arg1 arg2 ... argN"` のように `"` で囲んだ範囲の空白は区切りにならず、その範囲は空白を含めて一つの引数になります。`"` 自体は取り除きます。例えば `app a "b c d" e` の `main` は `["a", "b c d", "e"]` を受け取ります。`"` の中が空なら空文字列の引数です（`app a "" b` は `["a", "", "b"]`）。
+- POSIX（Linux・macOS）では起動元（シェルなど）が分割した引数を、実行ファイルはそのまま受け取ります。シェルでも `"` で囲んだ空白は区切りになりません。Windows のプロセスは一つのコマンドライン文字列を受け取るので、実行ファイル自身がこの規則で分割します。`\` に特別な意味はなく、`"C:\dir\"` は `C:\dir\` です。
+- 各引数は UTF-8 から `string` へ変換し、UTF-8 として不正なバイト列は U+FFFD に置き換えます。Windows は UTF-16 のコマンドラインをそのまま使います。不正なバイト列を置き換えずに検出するには `Env.args ()` を使います（`InvalidEncoding` を返します）。
+- `tsuzuri run` は引数を渡さないので、`main` は空の配列を受け取ります。引数を渡すには `build` した実行ファイルを起動します。
+- `--wasm-host wasi` の WASM はホストが渡す引数を受け取ります。それ以外の WASM とライブラリでは空の配列です。
 
 トップレベルの `let` の区切りは `;`、改行、またはファイル末尾です。
 右辺を次の行へ続ける場合は演算子の直後で改行するか、括弧・配列・レコード・ブロックの内側に書きます。行頭が `|>`・`>>`・`<<`・`||`・`&&` の行も前の行の続きです。
@@ -912,7 +927,7 @@ Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき
 通常の関数・ブロック内の `let` では従来どおり `;` が必須です。`task` 内の改行区切りは後述します。
 トップレベルの束縛はエントリーコード内のローカル値で、宣言済み関数からの参照や
 他モジュールへの公開はできません。右辺をソース順に評価し、結果式がなければ `unit` を返します。
-上の `Main.tz` は何も表示しません。末尾に `d` を追加すれば距離を表示します。
+前述の `Point.tz` と組み合わせた `Main.tz`（`let d = Point.distance p` で終わる例）は何も表示しません。末尾に `d` を追加すれば距離を表示します。
 結果式が `IO<T>` ならアクションだけを一度実行し、返された所有値を解放します。結果の自動表示はしません。
 トップレベルの IO の `let!`／`do!` の後を通常の結果式で終える場合は、束縛をその場で順に実行し（直接形式）、その式の値を結果にします。
 それ以外は数値型／`bool`／`unit`／`string`／`utf8string`／`char`／`utf8char` なら、
@@ -921,15 +936,15 @@ Main.tz の引数なし・非再帰の `fn main = ...` は `def` を省略でき
 置換して表示する場合は、明示的に `String.to_well_formed ref text` を使います。
 両文字型も UTF-8 と改行で出力し、`char` の孤立サロゲートはトラップします。
 その他の型の結果は、`Display` の instance があればその文字列を同じく表示し、なければ表示せずに解放します（`E2004` にはしません）。
-`fn main` の結果型は従来どおり上の表示できる型か `IO<T>` に限ります。
 
-入口が `IO<i32>`（トップレベルの結果式、または引数なしの `main :: IO<i32>`）のときは、アクションが返す `i32` を捨てずにプロセスの終了コードにします。POSIX で観測できる値は下位 8 bit です。
-`IO<unit>` や `i32` 以外の `IO<T>` は従来どおり終了コード 0 で、`tsuzuri run` は 0 以外を `E2005` で報告します（[終了コード](#終了コード)）。
+トップレベルの結果式が `IO<i32>` のときは、アクションが返す `i32` を捨てずにプロセスの終了コードにします。POSIX で観測できる値は下位 8 bit です。
+`IO<unit>` や `i32` 以外の `IO<T>` は終了コード 0 で、`tsuzuri run` は 0 以外を `E2005` で報告します（[終了コード](#終了コード)）。
 
-トップレベルの実行コードと `fn main` の併用、他モジュールでのトップレベル実行はエラーです。
+トップレベルの実行コードと `def main` の併用、他モジュールでのトップレベル実行はエラーです（`E2004`）。
 `check` とライブラリ出力は `.tz`・`.tt`・`.tc` のどれも入力にでき、`Main.tz` は不要です。
 ライブラリ／WASM 出力はホストの `export def` で公開した関数の呼び出しで実行し、トップレベルのエントリーコードを自動実行しません。
-`IO<T>` の入口がある場合は `tsuzuri_main() -> i32` を追加し、ホストからの明示呼び出しで実行します。戻り値は、`IO<i32>` の入口ならアクションの値、それ以外は 0 です。WASM はこの入口だけでもビルドできます。
+`def main` または `IO<T>` のトップレベル入口がある場合は `tsuzuri_main() -> i32` を追加し、ホストからの明示呼び出しで実行します。
+戻り値は、`def main` なら `main` の値、`IO<i32>` の入口ならアクションの値、それ以外は 0 です。WASM はこの入口だけでもビルドできます。
 
 ## IO と標準入出力
 
@@ -955,17 +970,17 @@ native は C stdio のバッファと逐次処理、出力ごとの flush を使
 IO 値も通常の Capture／Copy／借用規則に従い、継続を跨ぐ外側の可変状態や一回実行 Task の捕捉は導入しません。
 `run` は stdin／stdout を引き継ぎ、通常モードの stderr も逐次転送します。JSON モードは stderr だけを終了まで保持します。
 
-結果型が分かっていてその型に計算式のビルダーがない本体（`def main :: i32` など）では、IO の `let!`／`do!` をその場で順に実行します（直接形式）。
+結果型が分かっていてその型に計算式のビルダーがない本体（`def main :: unit -> i32` の本体の `i32` など）では、IO の `let!`／`do!` をその場で順に実行します（直接形式）。
 `try` の本体・ハンドラー・`finally` の中と、IO の束縛の後を通常の結果式で終えるトップレベルも同じです。直接実行するのは IO の束縛だけです。
 `do! a |> f` は `a` を束縛してから結果を `f` へ渡す文です（`do! IO.writeln "x" |> ignore`）。
 
 ```text
-def main :: i32 =
+def main :: unit -> i32 = \() ->
     do! IO.writeln "hello"
-    42
+    0
 ```
 
-このプログラムは `hello` と `42` を出力します。
+このプログラムは `hello` を出力し、終了コード 0 で終わります。
 
 WASM は到達する操作だけを `tsuzuri_io.read_line(ptr) -> i32`／`tsuzuri_io.write(i32, ptr, i64) -> i32` として import し、未提供時に無視しません。
 read_line は改行を除いた所有 UTF-8 bytes の descriptor（offset0 pointer、offset8 i64 length、size16）を全経路で設定し、0=行／1=EOF／2=失敗を返します。
@@ -993,7 +1008,7 @@ OS 呼び出しは入口のスレッドで行い、`Task` の中では実行で�
 | `Os` | `Error`／`ErrorKind`、`message`、UTF-8 との変換の `encode`／`decode` |
 
 ```text
-def main :: IO<i32> =
+def main :: unit -> i32 = \() ->
     let! written = File.write_text "note.txt" "hello\n"
     let! text = File.read_text "note.txt"
     let! missing = File.read_text "missing.txt"
@@ -1001,9 +1016,9 @@ def main :: IO<i32> =
     do! IO.write_line (match missing with
         | Result.Ok _ -> "found"
         | Result.Error error -> Os.message (ref error))
-    return (match written with
-        | Result.Ok _ -> 0i32
-        | Result.Error _ -> 1i32)
+    match written with
+    | Result.Ok _ -> 0
+    | Result.Error _ -> 1
 ```
 
 このプログラムは `hello` と `not found (os error 2)` を出力し、終了コード 0 で終わります。
@@ -1061,12 +1076,13 @@ Tsuzuri はパスを正規化も解決もしません。`..` や相対パスの�
 `File.read handle count` は最大 `count` byte（0 以上 2^30 以下）を読み、空配列が EOF です。`count` より短い結果は EOF を意味しません。`File.write handle bytes` は全量を書き、`File.flush handle` はハンドルの検査だけです（Tsuzuri はバッファしないので、`write` の結果は OS に渡した後です）。`Read` で開いたハンドルへの書き込みや、そうでないハンドルからの読み込みは `InvalidInput` です。
 
 ```text
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! outcome = File.with_open "data.txt" File.Write (\handle -> File.write handle [104ubyte, 105ubyte])
     let! text = File.read_text "data.txt"
     do! IO.write_line (match (outcome, text) with
         | (Result.Ok (Result.Ok _), Result.Ok content) -> content
         | _ -> "failed")
+    0
 ```
 
 `File.with_open path mode body` は open して `body handle` を実行し、`body` がエラー値を返しても close してから `Result<'a, Os.Error>` を返します。値は `body` の結果で、close の失敗だけが `Error` になります。上の例の `outcome` は `Result<Result<unit, Os.Error>, Os.Error>` です。
@@ -1077,6 +1093,7 @@ def main :: IO<unit> =
 #### 環境・時刻・乱数・プロセス
 
 - `Env.args ()` は `argv[0]` を除くコマンドライン引数です。ライブラリ・`tsuzuri test` の実行ファイル・`tsuzuri run`（引数を渡しません）では空配列です。`build` した実行ファイルで使います。
+  `def main :: Array<string> -> i32` の引数（[エントリーポイント](#アプリケーションのエントリーポイント)）と違い、UTF-8 でない引数を置き換えずに `InvalidEncoding` を返します。
 - `Env.var name` は環境変数で、未設定は `Ok None` です。名前が空・`=` を含む・NUL を含むときは `InvalidInput`、値が UTF-8 でないときは `InvalidEncoding` です。`Env.current_dir ()` は OS が報告する作業ディレクトリです。
 - `Time.monotonic_ns ()` は後戻りしない時計で、起点は未規定なので差だけが意味を持ちます。`Time.unix_ns ()` は 1970-01-01 UTC からのナノ秒で、`i64` に収まらない時刻は `Other` です。`Time.sleep_ms count` は少なくとも `count` ミリ秒待ち、負数は `InvalidInput`、0 は OS を呼ばずに `Ok ()` です。
 - `Random.bytes count`（0 以上 2^30 以下。範囲外は `InvalidInput`）と `Random.next_u64 ()`（8 byte を little-endian で読んだ `i64u`）は OS の乱数です。
@@ -1095,8 +1112,9 @@ match Random.pcg_next_u32 generator with
 
 #### 終了コード
 
-入口が `IO<i32>` のとき、アクションが返す `i32` がプロセスの終了コードになります。POSIX で観測できる値は下位 8 bit で、`256i32` は 0 です。`IO<unit>` や `i32` 以外の `IO<T>` は従来どおり値を解放して終了コード 0 で終わります。ライブラリ・WASM 出力の `tsuzuri_main() -> i32` の戻り値も同じです。
-以前は `IO<i32>` の値が捨てられて終了コードが 0 でした。この値を使っていたプログラムは終了状態が変わります。途中でプロセスを終わらせる `Os.exit` はありません（残りの `drop` を飛ばして終了する操作を作らないためです）。
+`def main` が返す `i32` がプロセスの終了コードになります。トップレベルの結果式が `IO<i32>` のときも、アクションが返す `i32` が終了コードです。
+POSIX で観測できる値は下位 8 bit で、`256` は 0 です。トップレベルの `IO<unit>` や `i32` 以外の `IO<T>` は値を解放して終了コード 0 で終わります。ライブラリ・WASM 出力の `tsuzuri_main() -> i32` の戻り値も同じです。
+途中でプロセスを終わらせる `Os.exit` はありません（残りの `drop` を飛ばして終了する操作を作らないためです）。
 `tsuzuri run` は 0 以外の終了コードを `E2005`（`program exited with code 3`）として報告し、終了コード 1 で終わります。
 
 #### WASM と Windows
@@ -1107,7 +1125,7 @@ match Random.pcg_next_u32 generator with
 `build --target wasm32 --wasm-host wasi` は、標準入出力と OS API を WASI preview1（`wasi_snapshot_preview1`）の import に下げます。
 
 - 対象は wasm32 の object・wasm 出力です。値は `wasi` だけで、`--wasm-feature threads`・wasm64・`--emit llvm`・`--emit header`・`run` とは併用できません。`--emit llvm` は、WASI の runtime（`src/runtime/os-wasi.c`）を結合できず未解決の import が残るため拒否します。
-- 到達した操作の import だけを出し、`IO` の入口があるときだけ `_start` を持ちます。`IO<i32>` の入口は `proc_exit` で終了コードを返します。
+- 到達した操作の import だけを出し、`def main` か `IO` の入口があるときだけ `_start` を持ちます。`def main` と `IO<i32>` の入口は、0 以外の終了コードを `proc_exit` で返します。`def main :: Array<string> -> i32` はホストが渡す引数を受け取ります。
 - `Os.Error.code` は WASI の errno です。パスは、前方が（`/` の境界で）一致する最も長い preopen 名のディレクトリを起点に解決し、一致しないパスは最初の preopen の相対パスとして扱います。`Env.current_dir ()` は最初の preopen の名前（例えば `/work`）を返し、`Process.run` は `Other` です。
 - `node:wasi` で検証していて、システムのエラーコードを除いて native の結果と一致します。WASI preview2 とコンポーネントモデルは未対応です。
 
@@ -1865,18 +1883,17 @@ match answer with
 関数本体、通常のブロック、Main.tz のトップレベルでは、直接 `let!`／`do!`／`match!`／`return`／`yield` を書けます。
 main 専用ではなく、引数付き・private・別モジュール・ジェネリック・再帰関数、`\value ->` の匿名関数、
 `let` による関数実装、クラスの既定メソッドとインスタンス実装、`.tc` の補助関数でも同じ規則を使います。
-通常の名前付き関数では `def` が必要です。main だけの例外は入口の署名省略であり、CE の利用範囲ではありません。
+通常の名前付き関数では `def` が必要です。`main` も同じで、シグネチャを省略できる例外はありません。
 明示的な `Builder { ... }` は従来どおり単一ビルダーの操作へ展開し、その意味は変更しません。
 `do expression` は unit の通常式であり、計算値を実行する `do! expression` とは異なります。
 
 ```text
-fn main =
-    let! line = IO.read_line ()
-    let! value = line
-    do! IO.write_line value
+let! line = IO.read_line ()
+let! value = line
+do! IO.write_line value
 ```
 
-この入口は `IO<Maybe<unit>>` です。IO を実行して一行を読み、Some のときだけ書き込みます。
+このトップレベルの入口は `IO<Maybe<unit>>` です。IO を実行して一行を読み、Some のときだけ書き込みます。
 None のときは残りの文を実行せず、IO の結果に None を保持します。結果を使いたい場合は
 `def read_and_echo :: IO<Maybe<unit>>` のような関数にし、呼び出し側で IO の結果を match します。
 実行入口は IO の結果を表示せず解放し、None／Error も正常な計算結果として終了コード 0 にします。
@@ -2445,9 +2462,9 @@ def length :: i64 -> i64 = \count -> {
 def choose :: bool -> [i32] = \flag -> if flag { [1] } else { [2, 3, 4] }
 ```
 
-配列型は `[T]` で、長さは型の一部ではありません。異なる長さの配列を同じ引数・返却型・
+配列型は `[T]` で、長さは型の一部ではありません。`Array<T>`（`std::Array<T>`）とも書け、`[T]` と同じ型です。異なる長さの配列を同じ引数・返却型・
 フィールドで扱え、`[[i32]]` の内側の配列もそれぞれ異なる長さを持てます。
-旧 `[T; N]` 形式はエラーです。`T[]` ではなく `[T]` に統一します。
+旧 `[T; N]` 形式と `T[]` は受理しません。`Array` は `Task`・`Vec` と同じく標準ライブラリの型名で、record・union・型別名などの名前にはできません（`E1001`）。
 
 `new [T](length, initializer)` は、`length: i64` と `initializer: i64 -> T` を
 左から右にそれぞれ一度評価し、ヒープに領域を確保してから添字 `0` から `length - 1` の順に初期化関数を呼びます。
@@ -2742,10 +2759,11 @@ seed は反復順序に影響せず、seed 付きのmapの順序は同じ操作�
 `randomized ()`／`try_randomized ()` は OS の乱数（`Random.next_u64`）から seed を作る `IO` アクションで、OS API です。native と `--wasm-host wasi` で使え、既定の wasm32 では `E2000` です。`randomized` は seed を得られないとトラップし、`try_randomized` は `Result<..., Os.Error>` で返します。どちらも、seed を得られなかったときに固定の seed へ黙って切り替えることはしません。既定の wasm32 では、ホストが選んだ seed を `with_seed` に渡してください。
 
 ```text
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! made = HashMap.randomized ()
     let filled: HashMap<string, i64> = HashMap.insert made "a" 1
     do! IO.write_line (to_string (HashMap.length (ref filled)))
+    0
 ```
 
 縮小（`shrink_to_fit`）・集合演算（`union`・`intersect`・`difference`）・`singleton`・`pop`・`retain`、並行 HashMap、値の排他借用を返す iterator、SIMD によるグループ探査は未実装です。`Hash.hash` の出力は変わりません。
@@ -3278,5 +3296,5 @@ CLI 引数・入力読み込み・外部ツール・実行時のエラーは従�
 | `W1006` | 長さに比例する配列・リストの暗黙の複製。`--warn implicit-copy` のときだけ報告（警告） |
 | `E2000` | CLI／オプション／拡張子、既定の wasm32 出力で OS API（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`）に到達するビルド |
 | `E2001` / `E2002` | I/O／LLVM ツール、Windows の native ビルドで OS API に到達する場合の `E2002` |
-| `E2003` / `E2004` / `E2005` | 出力保護／入口条件／実行時の異常終了（`IO<i32>` 入口が 0 以外の終了コードで終わった場合の `E2005` を含む） |
+| `E2003` / `E2004` / `E2005` | 出力保護／入口条件（`Main.tz` の `main` のシグネチャを含む）／実行時の異常終了（`def main` や `IO<i32>` の入口が 0 以外の終了コードで終わった場合の `E2005` を含む） |
 | `E2006` | 言語内テストの失敗 |

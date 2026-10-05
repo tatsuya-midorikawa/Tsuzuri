@@ -83,8 +83,10 @@ Toolchain:
   Each tool comes from its variable, then a distribution's bin/, then PATH.
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
-the numeric, bool, or UTF-8 string result of Main.tz's top-level code or fn main.
-unit results do not print anything.
+the numeric, bool, or UTF-8 string result of Main.tz's top-level code; unit
+results do not print anything. 'def main :: unit -> i32' and
+'def main :: Array<string> -> i32' print nothing and return the exit code; the
+Array<string> form receives the command-line arguments.
 Standard input and output and the File, Dir, Env, Time, Random, and Process APIs are
 built in on native; a GUI belongs to the host, not the language.";
 

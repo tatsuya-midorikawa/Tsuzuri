@@ -25,11 +25,11 @@ fn implicit_computation_binds_follow_source_types() {
         "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nMaybe.get (answer())",
         "def answer :: bool -> Result<i64, string>\nfn answer valid =\n    let source: Result<i64, string> = if valid then Ok 20 else Error \"failure\"\n    let! first = source\n    return first + 22\nResult.get (answer true)",
         "def answer :: Maybe<i64>\nfn answer =\n    let increment: fn(i64) -> i64 = value -> value + 1\n    let! value = Some 41\n    return increment value\nMaybe.get (answer())",
-        "def main :: IO<Maybe<unit>>\nfn main =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value",
-        "fn main =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value",
-        "fn main =\n    let! value = IO.pure (Some \"owned\")\n    let! text = value\n    return text",
-        "def main :: IO<Maybe<i64>>\nfn main =\n    do! IO.pure ()\n    return! Some 42",
-        "fn main =\n    do! IO.pure ()\n    return! task { return 42 }",
+        "def run :: IO<Maybe<unit>>\nfn run =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value\nrun()",
+        "let! line = IO.read_line ()\nlet! value = line\ndo! IO.write_line value",
+        "let! value = IO.pure (Some \"owned\")\nlet! text = value\nreturn text",
+        "def run :: IO<Maybe<i64>>\nfn run =\n    do! IO.pure ()\n    return! Some 42\nrun()",
+        "do! IO.pure ()\nreturn! task { return 42 }",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -142,7 +142,7 @@ fn implicit_tasks_preserve_cold_values_and_foreign_short_circuiting() {
     for source in [
         "def work :: Task<i64>\nfn work =\n    let! first = task { return 20 }\n    let! second = task { return 22 }\n    return first + second\nTask.run (work())",
         "def work :: Task<Maybe<i64>>\nfn work =\n    let! option = task { return Some 20 }\n    let! first = option\n    let! second = task { return 22 }\n    return first + second\nMaybe.get (Task.run (work()))",
-        "fn main =\n    let! first = IO.pure 20\n    let! second = task { return 22 }\n    do! IO.write_line (first + second)",
+        "let! first = IO.pure 20\nlet! second = task { return 22 }\ndo! IO.write_line (first + second)",
         "def work :: Task<i64>\nfn work =\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = task { return number }\n        sum = sum + value\n    while false do do! task {}\n    return sum\nTask.run (work())",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
@@ -158,8 +158,8 @@ fn implicit_match_and_applicative_bindings_select_source_builders() {
     for source in [
         "def answer :: Maybe<i64>\nfn answer =\n    let! mut first: i64 = Some 20\n    and! second = Some 21\n    first = first + 1\n    return first + second\nMaybe.get (answer())",
         "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 20\n    and! second = Some 22\n    return first + second\nMaybe.get (answer())",
-        "def main :: IO<Maybe<i64>>\nfn main =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.write_line (first + second)\n    return first + second",
-        "fn main =\n    let! source = IO.pure (Some (20, 22))\n    match! source with\n    | (first, second) ->\n        do! IO.write_line (first + second)",
+        "def run :: IO<Maybe<i64>>\nfn run =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.write_line (first + second)\n    return first + second\nrun()",
+        "let! source = IO.pure (Some (20, 22))\nmatch! source with\n| (first, second) ->\n    do! IO.write_line (first + second)",
         "def answer :: Maybe<i64>\nfn answer =\n    match! Some true with\n    | true -> return 42\n    | false -> return 0\nMaybe.get (answer())",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])

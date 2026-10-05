@@ -63,10 +63,14 @@ tsuzuri toolchain info
 ```tsuzuri run=42
 def add :: i64 -> i64 -> i64 = \left right -> left + right
 
-def main :: i64 = add 20 22
+def main :: unit -> i32 = \() ->
+    do! IO.write_line (add 20 22)
+    0
 ```
 
-`def` の型の後に `= \引数 -> 本体` を書きます。引数なしの関数では本体を直接書きます。`i64` は符号付き 64-bit 整数です。関数呼び出しの引数は空白で区切り、`main` の最後の式がプログラムの結果になります。
+`def` の型の後に `= \引数 -> 本体` を書きます。`i64` は符号付き 64-bit 整数です。関数呼び出しの引数は空白で区切ります。
+`main` はプログラムの入口で、`def main :: unit -> i32` か、コマンドライン引数を受け取る `def main :: Array<string> -> i32` のどちらかで定義します。
+`do! IO.write_line (add 20 22)` が結果を標準出力へ書き、最後の式 `0` がプロセスの終了コード（0 は成功）になります。
 
 ここではそのディレクトリを `target/first-program` とすると、次のように検査・実行できます。
 
@@ -75,7 +79,7 @@ def main :: i64 = add 20 22
 ./target/release/tsuzuri run target/first-program
 ```
 
-`check` は実行せず、構文・型・所有権などを検査します。`run` はネイティブコードを生成して実行し、標準出力へ `42` と改行を出します。これはコンソール用ホストが返却値を表示する動作です。通常の関数が暗黙に出力するわけではありません。
+`check` は実行せず、構文・型・所有権などを検査します。`run` はネイティブコードを生成して実行し、`main` が標準出力へ `42` と改行を書きます。`main` の返す値は終了コードで、表示はしません。0 以外を返すと、`run` は `E2005` として報告します。
 
 次の形も独立した `Main.tz` として実行できます。
 
@@ -84,7 +88,7 @@ let base = 40
 base + 2
 ```
 
-トップレベル実行コードは root 直下の `Main.tz` にだけ置けます。`main` とトップレベル実行コードを同じ入口として併用しないでください。結果の型は `IO<unit>`、数値、`bool`、`unit`、`string`、`utf8string`、`char`、`utf8char` のいずれかです。`unit` の結果は表示されません。`IO<unit>` はアクションを実行し、追加の結果表示はしません。`IO<i32>` はアクションを実行し、その値を表示せずプロセスの終了コードにします（[終了コード](library-reference/io.md#終了コード)）。
+トップレベル実行コードは root 直下の `Main.tz` にだけ置け、`main` とは併用できません。最後の結果式の値はコンソール用ホストが表示します。結果の型は `IO<unit>`、数値、`bool`、`unit`、`string`、`utf8string`、`char`、`utf8char` のいずれかです。`unit` の結果は表示されません。`IO<unit>` はアクションを実行し、追加の結果表示はしません。`IO<i32>` はアクションを実行し、その値を表示せずプロセスの終了コードにします（[終了コード](library-reference/io.md#終了コード)）。
 
 標準入出力は IO 計算式で明示できます。
 
@@ -123,7 +127,9 @@ def add :: i64 -> i64 -> i64 = \left right -> left + right
 
 test "adds two integers" = assert (add 20 22 == 42)
 
-def main :: i64 = add 20 22
+def main :: unit -> i32 = \() ->
+    do! IO.write_line (add 20 22)
+    0
 ```
 
 ```sh

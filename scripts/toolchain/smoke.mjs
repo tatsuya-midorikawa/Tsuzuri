@@ -70,7 +70,8 @@ try {
   const project = path.join(directory, 'project # [one]');
   await mkdir(project);
   await writeFile(path.join(project, 'Main.tz'),
-    'def main :: IO<unit> =\n    let! _line = IO.read_line ()\n    do! IO.write_line "42"\n\n'
+    'def main :: Array<string> -> i32 = \\args ->\n    let! _line = IO.read_line ()\n    do! IO.write_line "42"\n'
+    + '    let separator = "]["\n    do! IO.write_line ("[" + String.join (ref separator) (ref args) + "]")\n    args.length as i32\n\n'
     + 'test "same" = assert false\ntest "same" = assert true\n'
     + 'test "tasks" = { let tasks = new [task { return 1 }, task { return 2 }]; let values = Task.run (Task.parallel tasks); assert (values.length == 2) }\n');
   run(compiler, ['check', project, '--json']);
@@ -84,12 +85,14 @@ try {
   for (const optimization of ['-O0', '-O3']) {
     const artifact = path.join(directory, `application${suffix}`);
     run(compiler, ['build', project, optimization, '-g', '--no-cache', '-o', artifact]);
-    assert.equal(run(artifact, [], { input: 'input\n' }).stdout, '42\n');
+    // Windows splits the command line in the executable itself, with the same quoting as a shell.
+    const started = run(artifact, ['a', 'b c', '', '\u65e5\u672c'], { input: 'input\n', expectedCode: 4 });
+    assert.equal(started.stdout, '42\n[a][b c][][\u65e5\u672c]\n');
     const passed = run(compiler, ['test', project, optimization, '--json', '--index', '1', '--index', '2']);
     assert.match(passed.stdout, /"passed":2,"failed":0,"ignored":1/);
     const failed = run(compiler, ['test', project, optimization, '--json', '--index', '0'], { expectedCode: 1 });
     assert.match(failed.stdout, /"status":"failed"/);
-    console.log(`Bundled native ${optimization}: IO, DWARF, duplicate test selection, parallel tasks, failures passed.`);
+    console.log(`Bundled native ${optimization}: IO, arguments, DWARF, duplicate test selection, parallel tasks, failures passed.`);
   }
   const kernel = path.join(directory, 'kernel');
   await mkdir(kernel);
@@ -105,13 +108,16 @@ try {
   const created = path.join(directory, 'new app');
   run(compiler, ['new', created, '--namespace', 'Acme::Smoke']);
   assert.match(await readFile(path.join(created, 'Tsuzuri.toml'), 'utf8'), /^namespace = "Acme::Smoke"$/m);
+  const greeting = path.join(directory, `greeting${suffix}`);
+  run(compiler, ['build', created, '--no-cache', '-o', greeting]);
+  assert.equal(run(greeting, []).stdout, 'Hello, Tsuzuri!\n');
   await mkdir(path.join(created, 'Shapes'));
   await writeFile(path.join(created, 'Shapes', 'Square.tz'), 'namespace Acme::Smoke::Shapes\n\ndef side :: i64 -> i64 = \\x -> x * 2\n');
-  await writeFile(path.join(created, 'Main.tz'), 'namespace Acme::Smoke\n\nusing Acme::Smoke::Shapes\n\ndef main :: i64 = \\() -> Square.side 20 + Shapes::Square.side 1\n');
+  await writeFile(path.join(created, 'Main.tz'), 'namespace Acme::Smoke\n\nusing Acme::Smoke::Shapes\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (Square.side 20 + Shapes::Square.side 1)\n    0\n');
   const application = path.join(directory, `namespaces${suffix}`);
   run(compiler, ['build', created, '--no-cache', '-o', application]);
   assert.equal(run(application, []).stdout, '42\n');
-  console.log('New project: tsuzuri new, namespace, and using passed.');
+  console.log('New project: tsuzuri new template, namespace, and using passed.');
   if (discover) {
     const rejected = run(compiler, ['build', kernel, '--target', 'wasm32', '--no-cache', '-o', path.join(directory, 'rejected.wasm')], {
       env: { ...environment, TSUZURI_WASM_LD: path.join(directory, 'not-a-linker') }, expectedCode: 1,
