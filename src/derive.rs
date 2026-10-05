@@ -511,10 +511,7 @@ impl Build<'_> {
         }
         if class == DeriveClass::Default {
             let case = &union.cases[0];
-            let owner = self.make(ExprKind::Field(
-                Box::new(self.name(self.module)?),
-                self.ident(&union.name.text),
-            ))?;
+            let owner = self.name(&key_path(&format!("{}.{}", self.module, union.name.text)))?;
             let mut body = self.make(ExprKind::Field(
                 Box::new(owner),
                 self.ident(&case.name.text),

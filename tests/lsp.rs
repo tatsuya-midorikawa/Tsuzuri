@@ -897,7 +897,7 @@ const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64
 #[test]
 fn declaration_hovers_name_modules_with_double_colons() {
     use serde_json::json;
-    let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\n";
+    let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\ndef keep :: Handle -> Handle = \\h -> h\n";
     let measures =
         "namespace Demo::Shapes\n\nclass Measure<'a> {\n    def size :: ref 'a -> i64\n}\n";
     let probe = "namespace Demo::Shapes\n\ndef probe :: i64 = Circle.tick 1\n";
@@ -942,6 +942,12 @@ fn declaration_hovers_name_modules_with_double_colons() {
             shapes,
             "radius ::",
             "def Demo::Shapes::Circle.radius :: Demo::Shapes::Circle.Circle -> i64",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "keep ::",
+            "def Demo::Shapes::Circle.keep :: Demo::Shapes::Circle.Handle -> Demo::Shapes::Circle.Handle",
         ),
         (
             "Measures.tt",

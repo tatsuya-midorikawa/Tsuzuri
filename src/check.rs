@@ -202,7 +202,7 @@ impl Type {
                     .join(" * ")
             ),
             Self::Task(result) => format!("Task<{}>", result.display(types)),
-            Self::Handle(name) => name.to_string(),
+            Self::Handle(name) => declaration_display(name),
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -7480,22 +7480,23 @@ impl<'a> Checker<'a> {
                     .is_some_and(|name| self.is_namespace(&name)) =>
             {
                 let module = self.value_path(value).unwrap();
+                let spelled = namespace_display(&module);
                 let message = if module == "Task" {
                     format!(
                         "Task has no function '{}'; use Task.run, Task.parallel, or Task.parallel_results",
                         field.text
                     )
-                } else if self.names.module_path(self.module, &module).is_none()
-                    && self.names.namespace_path(self.module, &module).is_some()
+                } else if self.names.module_path(self.module, &spelled).is_none()
+                    && self.names.namespace_path(self.module, &spelled).is_some()
                 {
                     format!(
-                        "'{module}' is a namespace; write '::' between a namespace and the names in it, as in '{module}::{}'",
+                        "'{spelled}' is a namespace; write '::' between a namespace and the names in it, as in '{spelled}::{}'",
                         field.text
                     )
                 } else {
                     format!(
-                        "module '{}' has no function or union case '{}'",
-                        module, field.text
+                        "module '{spelled}' has no function or union case '{}'",
+                        field.text
                     )
                 };
                 return Err(Diagnostic::new("E1002", message, field.span));

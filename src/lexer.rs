@@ -139,7 +139,7 @@ fn mark_paths(tokens: &mut [Token], source: &str) {
             && (at == 2
                 || source
                     .get(tokens[at - 3].span.end..tokens[at - 2].span.start)
-                    .is_some_and(|gap| gap.contains('\n')));
+                    .is_some_and(|gap| gap.contains(['\n', '\r'])));
         let module = matches!(&tokens[last + 1].kind, TokenKind::Ident(name) if name.starts_with(|first: char| first.is_ascii_uppercase()));
         if header || module {
             for separator in (at..=last).step_by(2) {
@@ -1146,6 +1146,7 @@ mod tests {
             ("namespace sample::tools", vec![PathSep]),
             ("using Sample::Features", vec![PathSep]),
             ("x\nusing a::b", vec![PathSep]),
+            ("x\rusing a::b", vec![PathSep]),
             ("f using a::b", vec![DoubleColon]),
             ("def area::Sample::Shape.Shape", vec![DoubleColon, PathSep]),
             ("rec go::i64", vec![DoubleColon]),

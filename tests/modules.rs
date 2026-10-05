@@ -393,6 +393,18 @@ fn hierarchical_names_resolve_functions_types_cases_classes_and_builders() {
         "{}",
         error.message
     );
+    // Extern types too; the instance methods generated for them still resolve.
+    let device = "extern type Handle\nextern def open :: unit -> Handle\ninstance Display<Handle> {\n    fn display _value = \"handle\"\n}\n";
+    let error = analyze_modules(&[
+        ("Geometry/Device.tz", device),
+        ("Main.tz", "def bad :: i64 = Geometry::Device.open ()"),
+    ])
+    .unwrap_err();
+    assert_eq!(
+        error.message, "expected i64, found Geometry::Device.Handle",
+        "{}",
+        error.message
+    );
 }
 
 #[test]
@@ -856,6 +868,26 @@ fn namespaces_qualify_modules_and_module_named_types() {
     let inner = "namespace Sample::Codebase\n\ndef twice :: f64 -> f64 = \\x -> Shape.area (Rect (x, 2.0))\n";
     let main = "namespace Sample\n\ndef main :: f64 = \\() -> Codebase::Foo.twice 1.0 + Sample::Codebase::Foo.twice 2.0\n";
     analyze_modules(&[("Shape", NS_SHAPE), ("Foo", inner), ("Main", main)]).unwrap();
+    // A dotted nested namespace gets the same `::` hint.
+    let dotted = "namespace Sample\n\ndef main :: f64 = \\() -> Sample.Codebase.Foo.twice 1.0\n";
+    let error =
+        analyze_modules(&[("Shape", NS_SHAPE), ("Foo", inner), ("Main", dotted)]).unwrap_err();
+    assert_eq!(error.code, "E1002", "{}", error.message);
+    assert!(
+        error.message.contains("'Sample::Codebase' is a namespace")
+            && error.message.contains("as in 'Sample::Codebase::Foo'"),
+        "{}",
+        error.message
+    );
+    // A bare CR also ends a header line.
+    analyze_modules(&[
+        ("Helper", "namespace lower::tools\r\rdef one :: i64 = 1\r"),
+        (
+            "Main",
+            "namespace App\rusing lower::tools\r\rdef main :: i64 = \\() -> Helper.one()\r",
+        ),
+    ])
+    .unwrap();
     // The same full name from two files.
     let error = analyze_modules(&[
         ("Shape", NS_SHAPE),

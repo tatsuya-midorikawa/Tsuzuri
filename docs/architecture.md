@@ -245,7 +245,7 @@ source4096・directory1024・module16要素/255byteを上限とし、標準ラ�
 lexer の `mark_paths` は空白なしの `Ident::Ident` の連鎖のうち、最後の要素が英大文字で始まるものと行頭の `namespace`／`using` の後のものを `TokenKind::PathSep` にします。`def`／`rec`／`and` の宣言名の直後と `x::xs` は `DoubleColon` のままです。
 パーサーは `PathSep` でつながる要素を `A::B::Mod` の一つの識別子に読み、メンバーは従来どおり `.` の連鎖です。
 コンパイラが key で組み立てる修飾名（alias の展開、derive、単相化）は先頭に `::`（`check::KEY_PATH`）を付け、利用者が `.` で書いた名前空間のパスと区別します。
-`Type::display` は record／union を `Geometry::Point.Point` のように表示し、型から構文を作り直す単相化（`polymorph::key_name`）は key の名前を使います。
+`Type::display` は record／union／extern type を `Geometry::Point.Point` のように表示し、型から構文を作り直す単相化（`polymorph::key_name`）は key の名前を使います。
 `SourceFile.namespace` は root パッケージの既定名前空間（manifest の `namespace`、package 名の PascalCase、manifest がなければフォルダー名）で、依存と std は空です。
 `lib::module_identity` が相対パス・宣言・既定名前空間からモジュールの key と名前空間を決めます。key は宣言のないファイルでは従来の相対パス名、既定名前空間の内側を宣言したファイルでは既定名前空間を除いた名前、それ以外は完全名です。
 key は型検査・型付き IR・LLVM シンボルの修飾名なので、既定名前空間を宣言しても IR は変わりません。入口は key ではなく `ModuleInput.entry`（root の `Main.tz`）で選びます。

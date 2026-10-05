@@ -2106,12 +2106,13 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
     TypeExpr { kind, span }
 }
 
-/// The name of `ty` that resolves it again: a record or union by its
-/// key-qualified name, which `Type::display` writes with `::`.
+/// The name of `ty` that resolves it again: a record, union, or extern type by
+/// its key-qualified name, which `Type::display` writes with `::`.
 fn key_name(ty: &Type, types: &TypeContext<'_>) -> String {
     match ty {
         Type::Record(id, arguments) if arguments.is_empty() => types.records[*id].name.clone(),
         Type::Union(id, arguments) if arguments.is_empty() => types.unions[*id].name.clone(),
+        Type::Handle(name) => name.to_string(),
         _ => ty.display(types),
     }
 }
