@@ -134,7 +134,7 @@ PB06・PB07・G12 は次の名前と規則だけを使い、同じ内容を別�
 | 名前 | 形 | 保証 |
 | --- | --- | --- |
 | `frontend_cache::FRONTEND_FORMAT`（新規） | `u32`（初期値 1） | codec・entry・manifest・hash の規則を変えたら必ず上げる |
-| `frontend_cache::compiler_identity()`（新規） | `Maybe<[u8; 32]>` | D2。同じ compiler の実行ファイルなら同じ値。得られなければ `None`（cache を使わない） |
+| `frontend_cache::compiler_identity()`（新規） | `Option<[u8; 32]>` | D2。同じ compiler の実行ファイルなら同じ値。得られなければ `None`（cache を使わない） |
 | `frontend_cache::parse_key(identity, text)`（新規） | `[u8; 32]` | ソースの byte 列だけで決まる。path・拡張子・source index を含まない |
 | `frontend_cache::interface_hash(identity, program, source)`（新規） | `[u8; 32]` | span・文書 comment・関数本体・test・入口式・instance method の本体に依存しない（D6） |
 | `syntax_codec::encode`・`decode`（新規） | `Vec<u8>`・`Program` | `format!("{:?}", decode(encode(p, s, Full), s))` が `format!("{:?}", p)` と同一 |
@@ -292,9 +292,9 @@ impl Project {
 ```
 
 codec の規則: enum の tag は宣言順の番号の `u8`、整数は LEB128 の `u64`（`usize` へ変換できなければ `Invalid`）、`bool` は 0・1 だけ、
-`String` は長さと UTF-8（`String::from_utf8` で検証）、`Vec`・`Box<[T]>` は長さと要素、`Maybe` は 0・1 と値。`Span` は `Mode::Full` で
+`String` は長さと UTF-8（`String::from_utf8` で検証）、`Vec`・`Box<[T]>` は長さと要素、`Option` は 0・1 と値。`Span` は `Mode::Full` で
 `start`・`end`・source の有無（0 は `None`、1 は自分の source）を書き、`get` は 1 を `Some(reader.source)` に戻す。自分以外の source を
-持つ span は `Invalid`。`Mode::Interface` は `Span`、`Maybe<Documentation>`、`FunctionDecl::body`、`Program::tests`、`Program::entry`、
+持つ span は `Invalid`。`Mode::Interface` は `Span`、`Option<Documentation>`、`FunctionDecl::body`、`Program::tests`、`Program::entry`、
 `InstanceDecl::methods` の各 `Definition::body` を書かない。ほかはすべて source の順に書く。
 
 ### 段ごとの変更
@@ -374,7 +374,7 @@ cargo test --locked --lib bounds_recursive_and_flat_expression_depth
 ### 手順 2: codec の土台
 
 - 変更: `src/syntax_codec.rs`（新規）、`src/lib.rs`（`pub(crate) mod syntax_codec;`）。
-- 内容: `Writer`・`Reader`・`Invalid`・`Wire`、LEB128、`bool`・`String`・`Vec`・`Box<[T]>`・`Maybe`、`Span`・`Ident`・`Provenance`・
+- 内容: `Writer`・`Reader`・`Invalid`・`Wire`、LEB128、`bool`・`String`・`Vec`・`Box<[T]>`・`Option`、`Span`・`Ident`・`Provenance`・
   `TypeExpr`・`TypeExprKind`・`Kind`。再帰する型の `get` は入口で `depth` を増やし、出口で必ず減らす（`MAX_DEPTH` 超えは `Invalid`）。
 - 確認: `cargo test --locked --lib syntax_codec` が `running 2 tests` で成功（「Rust テスト」の `round_trips_primitives` と
   `round_trips_spans_into_another_source`）。
@@ -489,7 +489,7 @@ cargo test --locked --test polymorphism honors_the_exact_specialization_limit
 
 `src/syntax_codec.rs` の `#[cfg(test)] mod tests`:
 
-- `round_trips_primitives`: LEB128 の 0・127・128・`u64::MAX`、空と非 ASCII の `String`、`Maybe`・`bool`。`bool` の 2 と長さ超えの `Vec` は `Invalid`。
+- `round_trips_primitives`: LEB128 の 0・127・128・`u64::MAX`、空と非 ASCII の `String`、`Option`・`bool`。`bool` の 2 と長さ超えの `Vec` は `Invalid`。
 - `round_trips_spans_into_another_source`: source 3 で encode し、source 3 と 5 で decode する。`Span::source` がそれぞれ `Some(3)`・`Some(5)`、
   `None` は `None` のまま。
 - `round_trips_every_std_source`: `stdlib::SOURCES` の全ソースで、`parse_with_source_all(text, 7)` の `{:?}` と decode 結果の `{:?}` が一致。

@@ -52,7 +52,7 @@ ref は F# の参照セルではなく共有借用です。ref mut は排他借�
 
 ## Maybe、Result、例外
 
-Maybe / Result と match は利用できます。match の網羅性不足はコンパイルエラーです。
+Maybe / Result と match は利用できます。F# の `Option` に当たる型は `Maybe` で、case は同じ `None` / `Some` です。match の網羅性不足はコンパイルエラーです。
 
 `try ... with ... finally` も書けますが、F# の例外処理とは意味が異なります。
 

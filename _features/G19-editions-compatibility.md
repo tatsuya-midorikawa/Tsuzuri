@@ -66,7 +66,7 @@ Phase 2 は公開 API の差分検査 `tsuzuri api-diff`（D9）。実装者は 
   （`crate::lexer::lex(name)` で各要素が識別子一つになることを確かめる）、`src/formatter.rs` の `print_tokens`（`lex_with_trivia`）。
   `parse_with_source` の呼び出し元は `src/formatter.rs` の `format_source`（2 回）、`src/docgen.rs`、`src/stdlib.rs`。
 - ドキュメントコメント: `///` を `TokenKind::DocComment` にし、`Parser::take_doc` が行を `\n` で結合して `Documentation { text, span }` を作る。
-  宣言の `doc: Maybe<Documentation>`。`semantic::collect` は `SemanticIndex::document` で「宣言名の span → 説明」を記録し、関数の参照
+  宣言の `doc: Option<Documentation>`。`semantic::collect` は `SemanticIndex::document` で「宣言名の span → 説明」を記録し、関数の参照
   （`TypedExprKind::Function(FunctionRef::User(id))`・`GenericFunction`）の `target` を `functions[id].span`、record・union の型と構築の
   `target` を `type_target` で記録する。`tests/lsp.rs` は `index.doc_for(function.target.unwrap())` と record の説明を検査している。
   `semantic::collect` は `check_modules_indexed_all` の `semantic` 引数が `Some` のとき（LSP と `analyze_modules_with_semantics`）だけ走る。

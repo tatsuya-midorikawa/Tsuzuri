@@ -74,7 +74,7 @@
 - 展開: `src/computation.rs` の `expand` → `lower` → `Lowering::block`。`let!` の続きは `Lowering::continuation` が `ExprKind::Lambda` にし、
   `Lowering::call` が `Maybe.Bind` などの `ExprKind::QualifiedFunction` 呼び出しを作る。`Delay` を持つビルダーでは `Lowering::delay` が本体を
   `Lowering::thunk`（`unit` を受ける lambda）で包み、全体を `Run` に渡す。操作名は `OPERATIONS`。
-- 標準ビルダー: `std/Maybe.tc` は `Bind option next = bind option next`、`Return value = Some value`、`Delay body = body`、
+- 標準ビルダー: `std/Maybe.tc` は `Bind maybe next = bind maybe next`、`Return value = Some value`、`Delay body = body`、
   `Run body = body ()`、`BindReturn value next = map next value`、`default_value`・`bind`・`map` を持つ。`std/Result.tc` も同じ形。
 - 特殊化: `Specializations::new` が関数型引数の非 escaping を固定点で求め（`eligible`）、呼び出しの emission が既知の継続
   （`call_specialization::target` が返す `ClosureTarget`）を `Specialization { function, callbacks, borrowed }` として `request` する。
@@ -153,7 +153,7 @@ done
   `switch` が 0 個、条件は `select` 1 個）。
 - G2: 8 種目のどれでも確保の回数と量を増やさない。
 - G3: 8 種目の ce と direct の時間の比を悪化させない。`std_option` は差を縮める。
-- G4: Rust の同等の書き方（`Maybe` と `?`）と同等以上を長期目標とする。PR03 の受け入れ条件にはしない。
+- G4: Rust の同等の書き方（`Option` と `?`）と同等以上を長期目標とする。PR03 の受け入れ条件にはしない。
 
 | 指標 | 単位・統計 | 対象 | 期待（計算値。計測で確かめる） |
 | --- | --- | --- | --- |

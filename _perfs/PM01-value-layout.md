@@ -284,7 +284,7 @@ Phase 3a の型定義。`Mixed` の `field_slot` は a→2、b→0、c→3、d�
 tag_bytes(n) = 1 if n <= 256, 2 if n <= 65_536, 4 otherwise
 
 union_layout(U, arguments):                          # recursive unions never reach here
-    cases = union_payloads(U, arguments)             # one Maybe<Type> per case
+    cases = union_payloads(U, arguments)             # one Option<Type> per case
     if Phase 2 and niche(cases) = (payload, niche, none, some): return Niche
     payloads = flatten(cases)
     if payloads is empty: return Enum
