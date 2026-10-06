@@ -38,7 +38,56 @@ deref borrowed.value
 
 共有借用フィールドは元の値を所有しません。レコードをコピー・移動した場合、部分 move、入れ子のレコード、クロージャー捕捉を経由した場合も、借用の依存関係を保持します。
 
-所有者より長生きする返却、タスクへの送信、排他借用フィールドは拒否します。借用レコードの存在によって共有可変状態を作れるわけではありません。
+所有者より長生きする返却とタスクへの送信は拒否します。借用レコードの存在によって共有可変状態を作れるわけではありません。排他借用のフィールドは次の節のとおり、region を付けて宣言します。
+
+## 排他借用フィールド
+
+```tsuzuri run=22
+record Counter {r} { value: ref mut {r} i64, step: i64 }
+
+def add_to :: ref mut i64 -> i64 -> unit = \target amount -> { deref target = deref target + amount; }
+
+let mut total = 1
+let counter = Counter { value: ref mut total, step: 20 }
+add_to counter.value counter.step
+let again = ref mut counter.value
+deref again = deref again + 1
+total
+```
+
+`ref mut {r} T` のフィールドは、可変の作業領域への排他借用を状態と一緒に持ち運ぶ view です（Rust の `struct Counter<'a> { value: &'a mut i64 }` に当たります）。レコードが生きている間は `total` を直接読めず、最後の使用の後に借用が終わります。
+
+- フィールドには region を名前で書きます（`ref mut i64` だけのフィールドは `E1013`）。排他の region は一つのフィールドの一つの位置だけが使い、共有借用のフィールドには別の region を付けます（`record Mixed {r s} { value: ref mut {r} i64, name: ref {s} string }`）。排他借用を持つレコードを入れ子にするフィールドも region を適用します（`counter: Counter {r}`）。
+- `counter.value` を `ref mut i64` の引数へ渡すと一段の再借用になり（Rust の `&mut *counter.value`）、`counter` は `let mut` でなくてかまいません。再借用が生きている間は、同じ参照先への別の経路と `counter` の move を拒否します。別のフィールドの読み出しはできます。
+- `let taken = counter.value` は再借用ではなく部分 move です。以後 `counter` 全体と `counter.value` は使えません。
+- 共有参照（`ref Counter`）を通して排他フィールドを変更・排他再借用すると `E1014` です。読み出しはできます。
+- 排他借用を持つレコードは Copy でなく、再利用する関数値への捕捉、タスクへの送信、配列・リスト・Vec の要素、union の payload、`export` の境界には使えません。ローカル・引数・戻り値・タプルの成分にはできます。
+- 配列・タプル・union・共有参照の内側に排他参照を置くフィールドや、借用を持つ型を指す排他参照のフィールドは `E1013` です（参照先の借用は次の節のとおり region を分けて書きます）。
+
+## 参照先の region と参照経由の置換
+
+```tsuzuri run=65
+record Note {r} { text: ref {r} string }
+
+def swap_text {r s} :: ref mut {r} Note {s} -> ref {s} string -> ref {s} string = \target text ->
+    let old = (deref target).text
+    deref target = Note { text: text }
+    old
+
+let first = "alpha"
+let second = "beta!!"
+let mut note = Note { text: ref first }
+let old = swap_text (ref mut note) (ref second)
+note.text.length * 10 + old.length
+```
+
+`ref mut {r} Note {s}` の `{r}` は参照自体の region、`{s}` は参照先の `Note` が持つ借用の region です。参照先から読んだ借用は `s` を持つので、`old` は `note` ではなく `first` だけを借用します。参照を経由して借用を持つ値を置換できるのは、置換する値の借用がすべて参照先と同じ region（ここでは `s`）を持つ入力に由来する場合です。呼び出し側では、`s` を持つ入力（`second`）の借用を `note` が保持するものとして扱います。したがって `second` が `note` より先に終わると `E1013` です。
+
+- ローカルの所有者を指す参照を経由した置換は、region を書かなくても、新しい値の借用を所有者が古い借用と合わせて保持します。
+- 共有参照にも書けます（`ref {r} Note {s}`）。参照先から読んだ借用は `s` の入力だけを借用するので、参照や `Note` より長く使えます。
+- レコードのフィールドにも書けます（`record Editor {r s} { note: ref mut {r} Note {s} }`）。引数の `Editor {r s}` を経由した置換も、`s` を持つ入力の借用だけを受け付けます。
+- 参照先へ入力を格納しうる関数（`s` を持つ入力がほかにある関数）は、すべての引数を渡す直接呼び出しだけができます（関数値・部分適用は `E1013`）。
+- 参照先の region は参照の region と別の名前にします（`ref mut {r} Note {r}` は従来どおり一つの region）。参照先は排他借用を持てません。region 付きの関数型の中には書けません。
 
 ## 独立した複数の region を持つレコード
 
@@ -94,11 +143,12 @@ kept.length
 | 一つのレコード | 16 個までの region |
 | レコードの独立した複数 region | 対応。可変の束縛・ループ・関数値・コレクションを経由すると全 region を保持 |
 | 関数値型に region を保持 | 名前付き関数の引数の型全体だけ（region で量化した関数型） |
-| 排他借用フィールド | 未対応 |
+| 排他借用フィールド | 対応（region は必須。参照先の借用は別の region に書く。配列・タプル・union・共有参照の内側には置けない） |
 | static lifetime | なし |
 | alias、union、const、ローカル型注釈への region 指定 | 未対応 |
 | 高階関数型の内部への region 指定 | 引数の型全体の量化だけ |
-| 参照経由の借用 aggregate の置換 | 未対応 |
+| 参照経由の借用 aggregate の置換 | 対応（ローカルの所有者、または参照先の region を名前で書いた引数） |
+| 複数 region のレコードの `let mut` 束縛 | 全 region をまとめて扱う。共有フィールドの読み出しと排他フィールドの再借用を同じ式で行うと `E1014` になることがある（先に `let` で読み出す） |
 
 未宣言・未使用の region や、スカラー型への region 指定も `E1013` です。region を省略した API は従来の寿命推論を使います。Rust の全 lifetime 機能と同等ではありません。
 

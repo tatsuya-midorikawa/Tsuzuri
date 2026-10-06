@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | A12 |
 | 後続 | C08, F10 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2。2026-10-06） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（GUIDE §9 D-28「排他参照fieldは禁止する」の変更。チケット全体の前提）, D5（旧版草案の「`let mut` 所有値か `ref mut` 経由が必要」と「貸し直し中は record 全体へのアクセスを拒否」を外す） |
-| 改善する劣位 | Rust 比: 排他借用フィールドがない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 承認 | 承認済み（2026-10-06、GUIDE D-38）: D1（GUIDE §9 D-28「排他参照fieldは禁止する」の変更。チケット全体の前提）, D5（旧版草案の「`let mut` 所有値か `ref mut` 経由が必要」と「貸し直し中は record 全体へのアクセスを拒否」を外す）, Phase 2 |
+| 改善する劣位 | Rust 比: 排他借用フィールドがない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | 共有借用フィールド（A09）: `src/check.rs` の record フィールド検査ループ（`contains_stored_mutable_reference`）と `Validation::check` の `Type::Record` 分岐、`src/ownership.rs` の `Checker::read_places` と `eval_value` の `E::Record`。排他参照の貸し直し: `src/check.rs` の `reborrow_operand`・`require_mutable_reference`・`coerce_argument`、`src/ownership.rs` の `Checker::place` の `E::Dereference` 分岐と `Checker::access` の `via` 判定。型の走査: `src/recursive.rs` の `stored_all`（明示スタックと `seen`）。パターン view: `src/ownership_control.rs` の `view` |
 | 主な影響ファイル | 変更: `src/check.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `tests/borrowed_records.rs`, `tests/fixtures/borrowed_records/Main.tz`, `tests/features.mjs`, `docs/language.md`, `_docs/language-reference/lifetimes.md`, `_docs/language-reference/ownership.md`, `_docs/feature-status.md`, `_docs/learn/why-tsuzuri.md`, `README.md`, `_features/README.md`。確認のみ（変更しない）: `src/regions.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/derive.rs`, `tests/generic_records.rs` |
 
@@ -777,7 +777,7 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
   GUIDE §9 D-28 の「排他参照fieldは禁止する」を「region 付きの直接フィールドと、その record を入れ子にしたフィールドに限り許可する」へ改める。
 - 理由: Rust の `struct Parser<'a> { out: &'a mut Vec<u8> }` に相当する作業用 view がないことが比較上の劣位である。HEAD の loan 機構
   （`Loan.mutable`・`parents`・`retain_live_loans`）がフィールド経由の貸し直しをそのまま表せることを追跡で確かめ、追加は宣言検査と三つの限定的な検査で済む。
-- 状態: 要承認（承認前はどの手順にも着手しない）
+- 状態: 承認済み（2026-10-06、GUIDE D-38）
 
 ### D2: 構文と region の規則
 
@@ -794,7 +794,7 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
   借用を持つ参照先と参照経由の borrowed aggregate 置換は Phase 2。
 - 理由: HEAD の参照経由代入は借用を含む値を `assigning borrowed values through references requires explicit lifetimes` で拒否する。
   region 間の outlives 関係を表す機構がないまま参照先の借用を許すと、置換で寿命の短い借用を書き込める。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 既定案。Phase 2 を D12〜D14 のとおり実装した（2026-10-06）。M4 の文には Phase 2 の書き方（`or name the target's region as in 'ref mut {r} T {s}'`）を足した
 
 ### D4: 排他参照を保持できる位置
 
@@ -813,7 +813,7 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
 - 見直し提案: 旧版草案の「`cursor` は `let mut` 所有値か `ref mut Cursor` である必要がある」と「貸し直しの生存中は `cursor` 全体とそのフィールドへのアクセスを
   `E1014` で拒否する」を外す（本決定）。旧版を採る場合は、(a) 経路の根 local の `mutable` を `E::Borrow`・`E::Assign` で検査する手順と、
   (b) フィールド経由の貸し直しで record の place にも排他 loan を作る手順を追加する。
-- 状態: 要承認（旧版草案の意味の変更。承認前はどの手順にも着手しない）
+- 状態: 承認済み（2026-10-06、GUIDE D-38）
 
 ### D6: 所有権モデル
 
@@ -822,7 +822,7 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
   パラメーターの外部 loan は `exclusive_parameter` が true なら mutable にし、A12 が region ごとに分けていても全外部 loan に同じ値を与える。タプルのパラメーターは既存どおり共有。
 - 理由: 旧版の「loan に排他・region を保持」は `Loan.mutable` と I3 で満たされる。外部 loan の root はそのパラメーターの射影からしか届かないので、
   mutable にしても他の経路と競合しない。共有参照の内側への変更は D4・D7 と型検査器が静的に拒否する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 既定案。実装では全外部 loan に同じ値を与えず、A12 の slot ごとに、排他 region の slot と `ref mut` の引数だけを mutable にした（D15）
 
 ### D7: 共有参照経由の排他アクセス
 
@@ -838,7 +838,7 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
   ガードのない所有値のパターンによる部分 move は許可する。
 - 理由: view の参照外しは束縛元の記憶域を place とし、参照先の所有者に loan を作らない。フィールド経由の排他貸し直しと併用すると、
   参照先の置換中に view 由来の共有借用が生き残る。所有値の部分 move はフィールドの loan を移すので安全である。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装時に撤回した（D16）。M7 は実装していない
 
 ### D9: Copy・clone・Capture・Send・Task・export
 
@@ -859,3 +859,94 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
 - 決定: union payload・コレクション要素・タプルのフィールド型の排他参照は対象外のまま（旧未決事項の既定案を確定）。Phase 2 は人間が求めた場合だけ別段階で設計する。
 - 理由: union payload は全 case が記憶域を共有し（所有権検査の `PAYLOAD`）、case ごとの排他 loan の追跡が要る。必要性も示されていない。
 - 状態: 既定案（実装者はこの案に従う）
+
+### D12: Phase 2 の構文（参照先の region）
+
+- 決定: 参照の後ろに参照先の region を書く `ref {r} T {s}`・`ref mut {r} T {s}` を、名前付き関数の引数・戻り値と record のフィールドに許可する。
+  `s` は `r` と別名で、`T` は region が一つの型（排他借用を持たない）。`s == r`（`ref mut {r} Note {r}`）は従来どおり一つの region として扱う。
+  region で量化した関数型の内側には書けない。参照先から読んだ借用は参照ではなく `s` の入力の loan を持つ。
+- 理由: 新しい字句・構文・`Type` を足さずに、Rust の `&'r mut View<'s>` に当たる二つの寿命を A12 の slot（参照自身と参照先）で表せる。
+- 状態: 実装時の決定（2026-10-06、Phase 2 の承認による）
+
+### D13: 参照経由の借用集約型の置換
+
+- 決定: `deref target = value` の `value` が借用を持つとき、`target` の根がローカルの所有者なら、所有者の loan に新しい loan を加える（weak update。region の注釈は要らない）。
+  引数の参照先なら、`value` の loan がすべて参照先の region `s` を持つ入力に由来する場合だけ許可する。それ以外は `E1013`
+  （region がない: `assigning borrowed values through references requires explicit lifetimes; name the target's region apart from the reference's, ...`、
+  ローカル値の借用: `cannot store a borrow of a local value through a reference parameter; ...`、別の region: `the stored borrow does not have the region of the reference's target; ...`）。
+- 理由: region 間の outlives 制約を足さずに、格納した借用の寿命を既存の loan と NLL で保てる。強い更新（古い loan の除去）は別名の追跡が要るので行わない。
+- 状態: 実装時の決定（2026-10-06）
+
+### D14: 格納効果を持つ関数の呼び出し
+
+- 決定: 参照先へ入力を格納しうる関数（`s` を持つ入力が参照のほかにある関数。`RegionSlots.writes`）の直接の完全適用では、呼び出し側が格納されうる入力の loan を
+  参照先の所有者へ加える。この関数は関数値・部分適用にできない（`E1013`、`'{name}' may store an input through an exclusive reference, so call it directly with all of its arguments`）。
+- 理由: 関数値の型には region がなく（A12 D11）、格納効果を呼び出し側へ伝えられない。
+- 状態: 実装時の決定（2026-10-06）
+
+### D15: 外部 loan の可変性（D6 の変更）
+
+- 決定: 引数の外部 loan は A12 の slot ごとに作り、排他 region の slot と `ref mut` の引数だけを mutable にする。書き込み・排他貸し直しの可否は、
+  その place に重なる経路の loan だけで判定する（重なるものがなければ従来どおり全経路）。`let mut` の record の経路は、排他の経路があればそれに絞る。
+- 理由: loan の可変性を slot が表す借用（排他・共有）に合わせ、Phase 2 の参照先の slot（共有借用だけを持つ）も同じ規則で扱う。経路の判定を重なる loan に限るのは、
+  `ref mut (deref handle).value` のように共有借用フィールドも持つ record を排他参照経由で貸し直すとき、所有者が持つ共有 loan が経路に混ざって `E1014` の誤拒否になるため。
+  既存テストの期待値と既存プログラムの IR は変わらない。
+- 状態: 実装時の決定（2026-10-06）
+
+### D16: M7 の撤回（D8 の変更）
+
+- 決定: M7 を実装しない。ガード中のパターン束縛は `alias_source` による alias で、束縛元の loan を保ったまま追跡される。
+  `ownership_control::view` は loan を持たない型だけに使われ、排他借用へ届く型には到達しない。
+- 理由: ガード中に参照先を変更する T3 の 14 は、Rust の bind-by-move のガードと同じく健全で（実行して 111 を確認）、拒否する根拠がない。
+- 状態: 実装時の決定（2026-10-06）
+
+## 実装と検証（2026-10-06）
+
+### 実装した範囲
+
+- Phase 1（手順 1〜10）と Phase 2（D12〜D14）を実装した。M7（D8）は撤回した（D16）。対象外（D11）の union payload・コレクション要素・
+  タプルのフィールド型の排他参照と、型変数の排他借用による具体化は実装していない。
+- 宣言（`src/regions.rs`）: `exclusive_field_regions` が M1・M3、`exclusive_positions` が M2 を出す（region が一つの record では、名前のない借用も region 0 として数える）。
+  `field_regions` は `RecordRegions { count, fields, targets }` を返し、参照先の region も集める。`target_form`・`target_labels` が D12 の形を検査する。
+- 型の性質（`src/check.rs`、`src/recursive.rs`）: `TypeContext::reaches`、`Type::reaches_exclusive`・`Type::holds_exclusive_record`。
+  `mark_exclusive_regions` の固定点が `CheckedRecord.exclusive_regions`・`field_targets`・`region_targets` を計算し、フィールドの検査が M4・M5、
+  `Validation::check` の record 分岐（`instance_field_error`）が M6 と既存の `would store a mutable reference in field` を出す。
+- 所有権（`src/ownership.rs`）: slot ごとの外部 loan（`external_loans`、`ExternalSlot`）、書き込み判定の精密化（D15。`unmarked_fields` で A12 の slot の印を除く）、
+  M8（`shared_exclusive`）、`exclusive_places`、参照経由の置換（`store_through`、`target_loans`）、呼び出し側の格納効果（`input_slot_loans`・`store_arguments`）。
+  `CheckedFunction.region_slots`（`RegionSlots`）を `src/regions.rs` の契約から設定し、`validate_contract_calls` が D14 の直接呼び出しを強制する。
+- 文書: `docs/language.md`、`docs/architecture.md`、`README.md`、`_docs/language-reference/lifetimes.md`（実行する例 2 件）、`_docs/language-reference/ownership.md`、
+  `_docs/feature-status.md`、`_docs/learn/why-tsuzuri.md`、`_features/README.md`、GUIDE D-38（D-28 の A09 の行も改めた）。
+
+### 確認コマンドと結果
+
+- `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings`: 成功。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（作業ツリーの複製で実行）: 669 件成功、0 件失敗（変更前は 663 件。追加は `tests/borrowed_records.rs` の 6 件）。
+- `cargo test --locked --test borrowed_records`: 21 件成功。追加は `exclusive_borrow_fields_accept_reborrows_moves_and_regions`（T1 の 16 本体）、
+  `exclusive_borrow_field_declarations_are_validated`（T2）、`exclusive_borrow_fields_preserve_exclusivity`（T3）、
+  `named_target_regions_store_borrowed_aggregates_through_references`、`named_target_regions_keep_stored_borrows_alive`、`named_target_regions_do_not_change_generated_ir`。
+- §3.1 の stack-depth テスト 3 件と上限のテスト 4 件（既定の 2 MiB stack）: 成功。上限・stack の大きさは変えていない。
+- `npx --yes --package=node@24 node tests/features.mjs target/release/tsuzuri borrowed_records`: 57 件（追加 36 件）が native／WASM × `-O0`／`-O3` で期待値どおり、`live == 0`。
+  追加の export は `exclusive_loop`・`exclusive_vec`・`exclusive_1`〜`exclusive_16`・`target_local`・`target_swap`・`target_editor`・`target_kept`・`target_loop`・`target_owned`。期待値は手計算。
+- IR: 変更前のコンパイラ（`0116bf2`）と比べ、fixture・例の 165 個の IR のうち差は fixture を足した `borrowed_records` だけ。変更前の `borrowed_records` の fixture は
+  新しいコンパイラでも `-O0`／`-O3` で byte 単位で一致した。新しい fixture の IR は 2 回の出力で一致した（native・wasm32）。
+- E2E（`cargo build --release --locked` の後）: `scripts/check-runtime-includes.sh`、`tests/` の e2e・primitives・strings・tasks・computations・control・io・numeric_casts・os・
+  host_imports・ffi_extensions・trap_return・stack_overflow・user_drop・features（5365 件）・examples・wasm_memory・wasm64・cache・simd・docgen・lsp_sessions と
+  `scripts/toolchain/smoke.mjs` が成功（primitives・features・wasm64 は Node 24）。debug_info は `llvm-dwarfdump --verify`（LLVM 21）が `-O3` の object で
+  1 件の誤りを報告して失敗したが、変更前のコンパイラでも同じく失敗する（既存の問題で、本チケットとは無関係）。
+- `node scripts/check-docs.mjs`: 変えたページを含む 99 ページ（914 リンク、219 例、native の `-O0`／`-O3` 実行 370 回、test 8 件）が成功し、
+  `_docs/feature-status.md` の ID の順序も `_features/README.md` と一致した。全ページの実行は、`_docs/examples/README.md` の `../../README.md#コンソール` と
+  `_docs/get-started.md` の `../README.md#ビルド` が README にない見出しを指すため失敗する。ベースの `0116bf2` からある既存の問題で、本チケットでは変えていない。
+
+### 判断と残作業
+
+- 決定事項に D12〜D16 を追記した（D6・D8 の変更を含む）。新しい診断コード・予約語・ランタイム・WASM import はない。性能は主張しない（検査だけの変更で、生成コードは変わらない）。
+- 既知の制限: 複数 region の record を `let mut` で束縛すると全 region をまとめて扱うので、共有フィールドの読み出しと排他フィールドの貸し直しを同じ式で行うと
+  `E1014` になりうる（A12 D6。先に `let` で読み出す）。region 間の outlives 制約は表さない（D13）。
+- PR01 の不変条件 I1: 排他借用フィールドを持つ record の引数と、同じ参照先を指す別の引数は、呼び出し時の所有権検査が `E1014` で拒否するので保たれる。
+- 残作業: union payload・コレクション要素の排他参照（D11）、`let mut` とループで合流する値の region ごとの追跡。
+
+### 変更したファイル
+
+- `src/check.rs`、`src/regions.rs`、`src/ownership.rs`、`src/recursive.rs`、`src/closures.rs`・`src/polymorph.rs`（`region_slots` の初期化だけ）。
+- `tests/borrowed_records.rs`、`tests/fixtures/borrowed_records/Main.tz`、`tests/features.mjs`。
+- 文書は「実装した範囲」のとおり。「主な影響ファイル」の予定と異なり、`src/ownership_control.rs` は変えていない（D16）。

@@ -53,6 +53,54 @@ pub(crate) struct CallbackContract {
     pub sources: RegionSources,
 }
 
+/// A13 Phase 2: the declared regions of a named function's parameter slots. A parameter or result
+/// written `ref {r} T {s}` has two slots: the reference, and the borrows inside its target, which
+/// the reference's value does not hold itself.
+#[derive(Clone, Debug)]
+pub(crate) struct RegionSlots {
+    /// Per parameter and slot, the index of the declared region that the slot names.
+    pub parameters: Vec<Vec<Option<usize>>>,
+    /// Per parameter, whether it is a reference with a named target region.
+    pub targets: Vec<bool>,
+    pub result_target: bool,
+    /// A call may store some input in the target of an exclusive reference, so the function only
+    /// runs in direct calls with every argument.
+    pub writes: bool,
+}
+
+impl RegionSlots {
+    /// The slots of parameter `index`, of type `ty`, that hold exclusive references with a named
+    /// target region, each with the declared regions of the target's borrows.
+    pub(crate) fn written_targets(
+        &self,
+        index: usize,
+        ty: &Type,
+        types: TypeContext<'_>,
+    ) -> Vec<(usize, BTreeSet<usize>)> {
+        let regions = &self.parameters[index];
+        let declared = |mask: RegionMask| -> BTreeSet<usize> {
+            (0..regions.len())
+                .filter(|slot| mask & (1 << slot) != 0)
+                .filter_map(|slot| regions[slot])
+                .collect()
+        };
+        match ty {
+            Type::Reference(_, true) if self.targets[index] => vec![(0, declared(2))],
+            Type::Record(id, _) if types.records[*id].region_count == regions.len() => {
+                let record = &types.records[*id];
+                (0..regions.len())
+                    .filter(|slot| record.exclusive_regions & (1 << slot) != 0)
+                    .filter_map(|slot| {
+                        let targets = record.region_targets.get(slot).copied().unwrap_or(0);
+                        (targets != 0).then(|| (slot, declared(targets)))
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Error,
@@ -410,6 +458,19 @@ impl Type {
 
     pub(crate) fn contains_stored_mutable_reference(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| !ty.contains_mutable_reference())
+    }
+
+    /// A13: an exclusive reference is reachable through stored values, records, or references.
+    pub(crate) fn reaches_exclusive(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(self, |ty| matches!(ty, Type::Reference(_, true)))
+    }
+
+    /// A13: a record with exclusive regions is reachable through stored values or references.
+    pub(crate) fn holds_exclusive_record(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(
+            self,
+            |ty| matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0),
+        )
     }
 
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {
@@ -2093,6 +2154,15 @@ pub struct CheckedRecord {
     /// Only when `region_count >= 2`: per field in declaration order, the record-region mask of
     /// each region slot of the field type. A single entry applies to every slot of the field type.
     pub(crate) field_regions: Vec<Vec<RegionMask>>,
+    /// A13: the regions that hold an exclusive borrow, a direct `ref mut {r} T` field or a nested
+    /// record's exclusive region. Bit 0 stands for the only region of a record with one.
+    pub(crate) exclusive_regions: RegionMask,
+    /// A13 Phase 2, only when `region_count >= 2`: per field written `ref {r} T {s}`, the regions of
+    /// the borrows inside its target, and 0 for the other fields.
+    pub(crate) field_targets: Vec<RegionMask>,
+    /// A13 Phase 2, only when `region_count >= 2`: per region, the regions of the borrows inside
+    /// the targets of the references in that region, including those of nested records.
+    pub(crate) region_targets: Vec<RegionMask>,
     /// Value layout size of a non-generic record; generic instances are
     /// measured per concrete type.
     size: Option<usize>,
@@ -2135,6 +2205,8 @@ pub struct CheckedFunction {
     pub(crate) region_sources: Option<RegionSources>,
     /// The parameters with region-quantified function types; such a function is only called directly.
     pub(crate) callback_contracts: Vec<CallbackContract>,
+    /// A13 Phase 2: the declared regions of the parameters' slots of a function with named regions.
+    pub(crate) region_slots: Option<RegionSlots>,
     pub origin: FunctionOrigin,
     pub name: String,
     pub visibility: Visibility,
@@ -4596,7 +4668,11 @@ fn check_modules_collect(
         let checked = (|| {
             let qualified = format!("{module}.{}", record.name.text);
             let parameters = declared_parameters("record", &record.name.text, &record.parameters)?;
-            let (region_count, field_regions) = regions::field_regions(record)?;
+            let regions::RecordRegions {
+                count: region_count,
+                fields: field_regions,
+                targets: field_targets,
+            } = regions::field_regions(record)?;
             let mut used = BTreeSet::new();
             let mut field_names = BTreeSet::new();
             let mut fields = Vec::new();
@@ -4659,6 +4735,9 @@ fn check_modules_collect(
                 user_drop: false,
                 region_count,
                 field_regions,
+                exclusive_regions: 0,
+                region_targets: vec![0; if region_count >= 2 { region_count } else { 0 }],
+                field_targets,
                 size: None,
                 recursive: Default::default(),
             })
@@ -4679,6 +4758,7 @@ fn check_modules_collect(
         }
     }
     diagnostics.check()?;
+    mark_exclusive_regions(&mut records);
     // Generic declarations are measured with their own parameters as opaque
     // leaves, which rejects every recursive layout before any instance exists.
     let mut layouts = Layouts::new(TypeContext {
@@ -4737,14 +4817,11 @@ fn check_modules_collect(
         records: &records,
         unions: &unions,
     };
-    for record in &records {
-        for (_, ty) in &record.fields {
-            if ty.contains_stored_mutable_reference(&types) {
-                diagnostics.push(Diagnostic::new(
-                    "E1013",
-                    "record fields cannot store mutable references; use a shared borrow",
-                    record.span,
-                ));
+    for (record, (_, declaration)) in records.iter().zip(&record_declarations) {
+        for (index, (_, ty)) in record.fields.iter().enumerate() {
+            let span = declaration.fields[index].ty.span;
+            if let Err(error) = validate_exclusive_field(record, index, &types, span) {
+                diagnostics.push(error);
                 continue;
             }
             if let Err(error) = validate_size(ty, &types, record.span) {
@@ -5237,6 +5314,7 @@ fn check_modules_collect(
                 module: module.clone(),
                 region_sources: contracts.result,
                 callback_contracts: contracts.callbacks,
+                region_slots: contracts.slots,
                 origin: FunctionOrigin {
                     provenance: function.name.provenance,
                     test: test_functions.get(&id).copied(),
@@ -5324,6 +5402,7 @@ fn check_modules_collect(
                 module: module.to_owned(),
                 region_sources: None,
                 callback_contracts: Vec::new(),
+                region_slots: None,
                 origin: FunctionOrigin {
                     provenance: Provenance::Generated,
                     ..FunctionOrigin::source(ModuleOrigin::User)
@@ -5643,6 +5722,7 @@ fn recovery_module(
             module: module.clone(),
             region_sources: None,
             callback_contracts: Vec::new(),
+            region_slots: None,
             origin: FunctionOrigin::source(ModuleOrigin::User),
             name: declaration.name.text.clone(),
             visibility: declaration.visibility,
@@ -6577,6 +6657,144 @@ struct Validation<'a> {
     instances: BTreeSet<Type>,
 }
 
+/// A13: the regions of each record that hold an exclusive borrow and the regions of the borrows
+/// behind each region's references, to a fixed point over nested records. A pass only adds bits,
+/// so the loop ends even before layouts reject by-value cycles.
+fn mark_exclusive_regions(records: &mut [CheckedRecord]) {
+    let bits = |mask: RegionMask| (0..MAX_RECORD_REGIONS).filter(move |bit| mask & (1 << bit) != 0);
+    loop {
+        let mut changed = false;
+        for id in 0..records.len() {
+            let record = &records[id];
+            let mut exclusive = record.exclusive_regions;
+            let mut targets = record.region_targets.clone();
+            for (index, (_, ty)) in record.fields.iter().enumerate() {
+                let (slots, inner) = match ty {
+                    Type::Reference(_, true) => (1, None),
+                    Type::Record(inner, _) => (
+                        records[*inner].exclusive_regions,
+                        Some(&records[*inner].region_targets),
+                    ),
+                    _ => (0, None),
+                };
+                exclusive |= field_slot_regions(record, index, slots);
+                if record.region_count < 2 {
+                    continue;
+                }
+                let masks = &record.field_regions[index];
+                for region in bits(masks[0]) {
+                    targets[region] |= record.field_targets[index];
+                }
+                if let Some(inner) = inner
+                    && masks.len() >= 2
+                    && masks.len() == inner.len()
+                {
+                    for (slot, inner_targets) in inner.iter().enumerate() {
+                        let mapped =
+                            bits(*inner_targets).fold(0, |all, target| all | masks[target]);
+                        for region in bits(masks[slot]) {
+                            targets[region] |= mapped;
+                        }
+                    }
+                }
+            }
+            if exclusive != record.exclusive_regions || targets != record.region_targets {
+                changed = true;
+                records[id].exclusive_regions = exclusive;
+                records[id].region_targets = targets;
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+/// The regions of `record` that hold the region slots `slots` of the value of its field `index`.
+fn field_slot_regions(record: &CheckedRecord, index: usize, slots: RegionMask) -> RegionMask {
+    match record.region_count {
+        _ if slots == 0 => 0,
+        0 => 0,
+        1 => 1,
+        _ => {
+            let masks = &record.field_regions[index];
+            masks
+                .iter()
+                .enumerate()
+                .filter(|(slot, _)| masks.len() < 2 || slots & (1 << slot) != 0)
+                .fold(0, |all, (_, mask)| all | mask)
+        }
+    }
+}
+
+/// A13: a record field holds an exclusive borrow only as a direct `ref mut {r} T` to data without
+/// borrows or as a record with exclusive regions; `regions::validate_modules` checks the regions.
+fn validate_exclusive_field(
+    record: &CheckedRecord,
+    index: usize,
+    types: &TypeContext<'_>,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    let (name, ty) = &record.fields[index];
+    let named_target = record
+        .field_targets
+        .get(index)
+        .is_some_and(|mask| *mask != 0);
+    let message = match ty {
+        Type::Reference(target, true) if target.carries_loans(types) && !named_target => format!(
+            "exclusive borrow field '{name}' must point to data without borrows; store borrowed parts in separate fields, or name the target's region as in 'ref mut {{r}} T {{s}}'"
+        ),
+        Type::Reference(_, true) => return Ok(()),
+        Type::Record(id, _) if types.records[*id].exclusive_regions != 0 => return Ok(()),
+        _ if ty.contains_stored_mutable_reference(types) || ty.reaches_exclusive(types) => {
+            "record fields can hold an exclusive reference only as a direct 'ref mut {r} T' field or inside a record field; arrays, lists, Vec, tuples, union payloads, and shared references cannot hold one".to_owned()
+        }
+        _ => return Ok(()),
+    };
+    Err(Diagnostic::new("E1013", message, span))
+}
+
+/// A13: why the field `index` of the record instance `owner` cannot hold its substituted type
+/// `field`, given the declared type `declared`.
+#[inline(never)]
+fn instance_field_error(
+    owner: &Type,
+    record: &CheckedRecord,
+    index: usize,
+    field: &Type,
+    types: &TypeContext<'_>,
+) -> Option<String> {
+    let (name, declared) = &record.fields[index];
+    let named_target = record
+        .field_targets
+        .get(index)
+        .is_some_and(|mask| *mask != 0);
+    match (declared, field) {
+        (Type::Reference(_, true), Type::Reference(target, true))
+            if named_target && target.reaches_exclusive(types) =>
+        {
+            Some(format!(
+                "{} would store exclusive borrows behind the exclusive field '{name}'; the target of a field with a named target region holds shared borrows only",
+                owner.display(types)
+            ))
+        }
+        (Type::Reference(_, true), Type::Reference(target, true)) => {
+            (!named_target && target.carries_loans(types)).then(|| format!(
+                "{} would store borrowed data behind the exclusive field '{name}'; exclusive borrow fields must point to data without borrows",
+                owner.display(types)
+            ))
+        }
+        (Type::Record(id, _), _) if types.records[*id].exclusive_regions != 0 => None,
+        _ if field.contains_stored_mutable_reference(types) || field.reaches_exclusive(types) => {
+            Some(format!(
+                "{} would store a mutable reference in field '{name}'; use a shared borrow",
+                owner.display(types)
+            ))
+        }
+        _ => None,
+    }
+}
+
 impl Validation<'_> {
     fn check(&mut self, ty: &Type, span: Span) -> Result<usize, Diagnostic> {
         let size = match ty {
@@ -6586,19 +6804,12 @@ impl Validation<'_> {
                 if self.instances.insert(ty.clone()) {
                     let types = self.layouts.types;
                     let record = &types.records[*id];
-                    for ((name, _), field) in
-                        record.fields.iter().zip(types.record_fields(*id, args))
-                    {
+                    for (index, field) in types.record_fields(*id, args).into_iter().enumerate() {
                         polymorph::bounded_type(&field, span)?;
-                        if field.contains_stored_mutable_reference(&types) {
-                            return Err(Diagnostic::new(
-                                "E1013",
-                                format!(
-                                    "{} would store a mutable reference in field '{name}'; use a shared borrow",
-                                    ty.display(&types)
-                                ),
-                                span,
-                            ));
+                        if let Some(message) =
+                            instance_field_error(ty, record, index, &field, &types)
+                        {
+                            return Err(Diagnostic::new("E1013", message, span));
                         }
                         self.check(&field, span)?;
                     }

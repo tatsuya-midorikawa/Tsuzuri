@@ -369,6 +369,18 @@ const suites = {
       ...[0n, 1n, 1000n].map((count) => ["region_loop", [count], count * 9n]),
       ["region_callback", [], 28n],
       ...[0n, 1n, 1000n].map((count) => ["region_callback_loop", [count], count * 9n]),
+      ...[0n, 1n, 10n, 10000n].map((count) => ["exclusive_loop", [count], 3n + 3n * count]),
+      ...[0n, 1n, 5n, 1000n].map((count) => ["exclusive_vec", [count], 1001n * count]),
+      ...[7n, 12n, 15n, 7n, 9n, 17n, 1125n, 3n, 32n, 11n, 8n, 13n, 14n, 3n, 7n, 9n].map((value, index) => [`exclusive_${index + 1}`, [], value]),
+      ["target_local", [], 6n], ["target_swap", [], 65n], ["target_editor", [], 62n], ["target_kept", [], 5n],
+      // Even passes store "abcdef" (6), odd passes "ab" (2), and each pass adds the stored length.
+      ...[0n, 1n, 10n, 10000n].map((count) => ["target_loop", [count], 6n * ((count + 1n) / 2n) + 2n * (count / 2n)]),
+      // The last pass stores "beta!!" (6) or "alpha" (5) and the decimal text of its index times 1000.
+      ...[0n, 1n, 10n, 1000n].map((count) => {
+        if (count === 0n) return ["target_owned", [count], 5n * 100000n + 5n];
+        const last = count - 1n;
+        return ["target_owned", [count], (last % 2n === 0n ? 6n : 5n) * 100000n + BigInt(String(last * 1000n).length)];
+      }),
     ],
   },
   iteration_protocol: {

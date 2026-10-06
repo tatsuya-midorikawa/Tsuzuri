@@ -153,3 +153,276 @@ fn region_callback_loop count =
         total = total + (region_keep region_first (ref long) (ref short)).length + (region_apply (\text -> text) (ref short)).length
         index = index + 1
     total
+
+
+record Counter {r} { value: ref mut {r} i64, step: i64 }
+record Meter {r} { counter: Counter {r}, scale: i64 }
+record Split {r s} { left: ref mut {r} i64, right: ref mut {s} i64 }
+record Mixed {r s} { value: ref mut {r} i64, name: ref {s} string }
+record Slot<'a> {r} { value: ref mut {r} 'a }
+record Buffer {r} { items: ref mut {r} Vec<i64> }
+
+private def add_to :: ref mut i64 -> i64 -> unit
+fn add_to target amount = { deref target = deref target + amount; }
+
+private def append :: Buffer -> i64 -> Buffer
+fn append buffer value =
+    deref buffer.items = Vec.push (Vec.clone buffer.items) value
+    buffer
+
+export def exclusive_loop :: i64 -> i64
+fn exclusive_loop count =
+    let mut total = 0
+    let counter = Counter { value: ref mut total, step: 3 }
+    let mut index = 0
+    while index < count do
+        add_to counter.value counter.step
+        index = index + 1
+    let step = counter.step
+    step + total
+
+export def exclusive_vec :: i64 -> i64
+fn exclusive_vec count =
+    let mut items: Vec<i64> = Vec.empty()
+    let mut buffer = Buffer { items: ref mut items }
+    let mut index = 0
+    while index < count do
+        buffer = append buffer index
+        index = index + 1
+    let length = Vec.length buffer.items
+    length * 1000 + Vec.length items
+
+export def exclusive_1 :: i64
+fn exclusive_1 =
+    let mut total = 1
+    let counter = Counter { value: ref mut total, step: 2 }
+    add_to counter.value counter.step
+    add_to (ref mut counter.value) 3
+    let again = ref mut counter.value
+    deref again = deref again + 1
+    total
+
+private def advance :: Counter -> Counter
+fn advance counter =
+    add_to counter.value counter.step
+    counter
+
+export def exclusive_2 :: i64
+fn exclusive_2 =
+    let mut total = 0
+    let counter = advance (advance (Counter { value: ref mut total, step: 4 }))
+    let step = counter.step
+    step + total
+
+private def bump :: ref mut Counter -> unit
+fn bump counter = { deref counter.value = deref counter.value + counter.step; }
+
+export def exclusive_3 :: i64
+fn exclusive_3 =
+    let mut total = 0
+    let mut counter = Counter { value: ref mut total, step: 5 }
+    bump (ref mut counter)
+    bump (ref mut counter)
+    let step = counter.step
+    step + total
+
+private def counter_of {r} :: ref mut {r} i64 -> Counter {r}
+fn counter_of value = Counter { value: value, step: 7 }
+
+export def exclusive_4 :: i64
+fn exclusive_4 =
+    let mut total = 0
+    let counter = counter_of (ref mut total)
+    add_to counter.value counter.step
+    total
+
+private def value_of {r} :: Counter {r} -> ref mut {r} i64
+fn value_of counter = counter.value
+
+export def exclusive_5 :: i64
+fn exclusive_5 =
+    let mut total = 3
+    let value = value_of (Counter { value: ref mut total, step: 1 })
+    deref value = 9
+    total
+
+export def exclusive_6 :: i64
+fn exclusive_6 =
+    let mut total = 2
+    let meter = Meter { counter: Counter { value: ref mut total, step: 5 }, scale: 3 }
+    add_to meter.counter.value (meter.counter.step * meter.scale)
+    total
+
+export def exclusive_7 :: i64
+fn exclusive_7 =
+    let mut left = 10
+    let mut right = 20
+    let split = Split { left: ref mut left, right: ref mut right }
+    let held = ref mut split.left
+    add_to split.right 5
+    deref held = deref held + 1
+    left * 100 + right
+
+export def exclusive_8 :: i64
+fn exclusive_8 =
+    let mut total = 0
+    let name = "abc"
+    let mixed = Mixed { value: ref mut total, name: ref name }
+    let held = ref mut mixed.value
+    add_to held mixed.name.length
+    total
+
+export def exclusive_9 :: i64
+fn exclusive_9 =
+    let mut a = 1
+    let mut b = 2
+    let mut counter = Counter { value: ref mut a, step: 0 }
+    let held = ref mut counter.value
+    counter = Counter { value: ref mut b, step: 0 }
+    deref held = 10
+    add_to counter.value 20
+    a + b
+
+export def exclusive_10 :: i64
+fn exclusive_10 =
+    let mut total = 5
+    let counter = Counter { value: ref mut total, step: 6 }
+    match counter with | Counter { value: target, step: amount } -> add_to target amount
+    total
+
+export def exclusive_11 :: i64
+fn exclusive_11 =
+    let mut total = 1
+    let slot = Slot { value: ref mut total }
+    deref slot.value = 8
+    total
+
+export def exclusive_12 :: i64
+fn exclusive_12 =
+    let mut text = "short"
+    let slot = Slot { value: ref mut text }
+    deref slot.value = "a longer text"
+    text.length
+
+export def exclusive_13 :: i64
+fn exclusive_13 =
+    let mut total = 4
+    let counter = Counter { value: ref mut total, step: 1 }
+    let result = match counter with | Counter { value: target } when deref target > 0 -> 1 | _ -> 0
+    result * 10 + total
+
+export def exclusive_14 :: i64
+fn exclusive_14 =
+    let mut total = 0
+    let name = "abc"
+    let mut mixed = Mixed { value: ref mut total, name: ref name }
+    let length = mixed.name.length
+    add_to mixed.value length
+    let handle = ref mut mixed
+    add_to (deref handle).value 0
+    total
+
+private def bump_mixed {r s} :: Mixed {r s} -> ref {s} string
+fn bump_mixed mixed =
+    add_to mixed.value mixed.name.length
+    mixed.name
+
+export def exclusive_15 :: i64
+fn exclusive_15 =
+    let mut total = 1
+    let name = "abc"
+    let kept = bump_mixed (Mixed { value: ref mut total, name: ref name })
+    kept.length + total
+
+private def peek :: ref Counter -> i64
+fn peek counter = deref counter.value + counter.step
+
+export def exclusive_16 :: i64
+fn exclusive_16 =
+    let mut total = 4
+    let counter = Counter { value: ref mut total, step: 1 }
+    let view = ref counter
+    let seen = view.step + deref view.value + peek (ref counter)
+    seen - 1
+
+
+record Note {r} { text: ref {r} string }
+record Editor {r s} { note: ref mut {r} Note {s}, edits: i64 }
+record Tag {r} { text: ref {r} string, owned: string }
+
+private def replace_note {r s} :: ref mut {r} Note {s} -> ref {s} string -> unit
+fn replace_note target text = { deref target = Note { text: text }; }
+
+private def swap_note {r s} :: ref mut {r} Note {s} -> ref {s} string -> ref {s} string
+fn swap_note target text =
+    let old = (deref target).text
+    deref target = Note { text: text }
+    old
+
+private def note_text {r s} :: ref {r} Note {s} -> ref {s} string
+fn note_text note = note.text
+
+private def retarget {r s} :: Editor {r s} -> ref {s} string -> Editor {r s}
+fn retarget editor text =
+    deref editor.note = Note { text: text }
+    let edits = editor.edits + 1
+    { editor with edits = edits }
+
+private def retag {r s} :: ref mut {r} Tag {s} -> ref {s} string -> i64 -> unit
+fn retag target text number = { deref target = Tag { text: text, owned: to_string number }; }
+
+export def target_local :: i64
+fn target_local =
+    let first = "alpha"
+    let second = "beta!!"
+    let mut note = Note { text: ref first }
+    let target = ref mut note
+    deref target = Note { text: ref second }
+    note.text.length
+
+export def target_swap :: i64
+fn target_swap =
+    let first = "alpha"
+    let second = "beta!!"
+    let mut note = Note { text: ref first }
+    let old = swap_note (ref mut note) (ref second)
+    note.text.length * 10 + old.length
+
+export def target_editor :: i64
+fn target_editor =
+    let first = "alpha"
+    let second = "beta!!"
+    let mut note = Note { text: ref first }
+    let editor = retarget (Editor { note: ref mut note, edits: 1 }) (ref second)
+    let edits = editor.edits
+    note.text.length * 10 + edits
+
+export def target_kept :: i64
+fn target_kept =
+    let first = "alpha"
+    let kept = { let note = Note { text: ref first }; note_text (ref note) }
+    kept.length
+
+export def target_loop :: i64 -> i64
+fn target_loop count =
+    let short = "ab"
+    let long = "abcdef"
+    let mut note = Note { text: ref short }
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        replace_note (ref mut note) (if index % 2 == 0 then ref long else ref short)
+        total = total + note.text.length
+        index = index + 1
+    total
+
+export def target_owned :: i64 -> i64
+fn target_owned count =
+    let first = "alpha"
+    let second = "beta!!"
+    let mut tag = Tag { text: ref first, owned: "start" }
+    let mut index = 0
+    while index < count do
+        retag (ref mut tag) (if index % 2 == 0 then ref second else ref first) (index * 1000)
+        index = index + 1
+    tag.text.length * 100000 + tag.owned.length

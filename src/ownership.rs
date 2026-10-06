@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{
-    CallbackContract, CheckedModule, Local, MAX_RECORD_REGIONS, RegionMask, RegionSources, Type,
-    TypedExpr, TypedExprKind as E,
+    CallbackContract, CheckedModule, Local, MAX_RECORD_REGIONS, RegionMask, RegionSlots,
+    RegionSources, Type, TypedExpr, TypedExprKind as E,
 };
 use crate::copies::{CopyKind, CopyRead};
 use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
@@ -34,10 +34,20 @@ fn region_field(slot: usize) -> usize {
 /// The region slot of an external loan's place; 0 without a slot marker.
 fn place_slot(place: &Place) -> usize {
     match place.fields.first() {
-        Some(field) if (REGION_SLOT + 1 - MAX_RECORD_REGIONS..=REGION_SLOT).contains(field) => {
-            REGION_SLOT - field
-        }
+        Some(field) if is_region_field(*field) => REGION_SLOT - field,
         _ => 0,
+    }
+}
+
+fn is_region_field(field: usize) -> bool {
+    (REGION_SLOT + 1 - MAX_RECORD_REGIONS..=REGION_SLOT).contains(&field)
+}
+
+/// The fields of `place` after the slot marker of an external loan's place (A13).
+fn unmarked_fields(place: &Place) -> &[usize] {
+    match place.fields.split_first() {
+        Some((field, rest)) if is_region_field(*field) => rest,
+        _ => &place.fields,
     }
 }
 
@@ -207,11 +217,13 @@ fn check_functions(
     }
 }
 
-/// The region contracts that a checked body proves (its result) and relies on (its callbacks).
+/// The region contracts that a checked body proves (its result) and relies on (its callbacks and
+/// the regions of its parameters' slots).
 #[derive(Clone, Copy, Default)]
 struct Contract<'a> {
     result: Option<&'a RegionSources>,
     callbacks: &'a [CallbackContract],
+    slots: Option<&'a RegionSlots>,
 }
 
 impl<'a> Contract<'a> {
@@ -219,8 +231,21 @@ impl<'a> Contract<'a> {
         Self {
             result: function.region_sources.as_ref(),
             callbacks: &function.callback_contracts,
+            slots: function.region_slots.as_ref(),
         }
     }
+}
+
+/// A13 Phase 2: what a region slot of a parameter stands for, by its external root and slot.
+#[derive(Default)]
+struct ExternalSlot {
+    /// The declared region that the slot names.
+    region: Option<usize>,
+    /// The loans that stand for the borrows inside the targets of the slot's references, when
+    /// the parameter's type names their region apart from the references' own.
+    target: BTreeSet<usize>,
+    /// The declared regions of those borrows; storing through the slot's references needs them.
+    target_regions: BTreeSet<usize>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -245,6 +270,7 @@ fn check_body(
         try_flows: Vec::new(),
         reachable: true,
         external: BTreeSet::new(),
+        slots: BTreeMap::new(),
         infer,
         copy_variables: BTreeSet::new(),
         closed,
@@ -259,10 +285,10 @@ fn check_body(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters[0].id),
     };
-    for parameter in parameters {
+    for (index, parameter) in parameters.iter().enumerate() {
         let mut value = Value::default();
         if !task && parameter.ty.carries_loans(&module.types()) {
-            checker.external_loans(parameter, &mut value);
+            checker.external_loans(parameter, index, contract.slots, &mut value);
         }
         checker
             .state
@@ -270,7 +296,7 @@ fn check_body(
             .insert(parameter.id, (parameter.clone(), value));
     }
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
-    checker.check_result(parameters, body, task, contract.result, result)?;
+    checker.check_result(parameters, body, task, contract, result)?;
     Ok(checker.copy_variables)
 }
 
@@ -398,6 +424,8 @@ struct Checker<'a> {
     try_flows: Vec<control::TryFlow>,
     reachable: bool,
     external: BTreeSet<usize>,
+    /// A13 Phase 2: the region slots of the parameters, by external root and slot.
+    slots: BTreeMap<(usize, usize), ExternalSlot>,
     infer: bool,
     copy_variables: BTreeSet<String>,
     closed: &'a [bool],
@@ -529,6 +557,7 @@ impl<'a> Checker<'a> {
                         Contract {
                             result: Some(&shifted),
                             callbacks: &[],
+                            slots: None,
                         },
                         &mut Vec::new(),
                         None,
@@ -694,13 +723,34 @@ impl Checker<'_> {
     }
 
     /// The loans that a parameter's value holds from its caller: one per region slot (A12 D7).
+    /// Exclusive references and the exclusive regions of records allow writes (A13). A parameter
+    /// written `ref {r} T {s}` also has a loan for the borrows inside its target, which reads of
+    /// borrowed data through the reference return (A13 Phase 2).
     #[inline(never)]
-    fn external_loans(&mut self, parameter: &Local, value: &mut Value) {
+    fn external_loans(
+        &mut self,
+        parameter: &Local,
+        index: usize,
+        slots: Option<&RegionSlots>,
+        value: &mut Value,
+    ) {
         let root = usize::MAX - parameter.id;
         self.external.insert(root);
-        let mutable = matches!(parameter.ty, Type::Reference(_, true));
-        let count = self.region_count(&parameter.ty);
-        let mut slots = Vec::new();
+        let target = slots.is_some_and(|slots| slots.targets.get(index) == Some(&true));
+        let count = if target {
+            2
+        } else {
+            self.region_count(&parameter.ty)
+        };
+        let (exclusive, targets) = match &parameter.ty {
+            Type::Reference(_, mutable) => (RegionMask::from(*mutable), vec![2]),
+            Type::Record(id, _) => {
+                let record = &self.module.records[*id];
+                (record.exclusive_regions, record.region_targets.clone())
+            }
+            _ => (0, Vec::new()),
+        };
+        let mut loans = Vec::new();
         for slot in 0..count {
             let fields = if count >= 2 {
                 vec![region_field(slot)]
@@ -712,25 +762,51 @@ impl Checker<'_> {
                 fields,
                 through_drop: false,
             };
-            slots.push(BTreeSet::from([self.loan(place, mutable, BTreeSet::new())]));
+            let mutable = exclusive & (1 << slot) != 0;
+            loans.push(self.loan(place, mutable, BTreeSet::new()));
         }
-        value.loans = slots.iter().flatten().copied().collect();
-        if count >= 2 {
-            value.regions = Some(slots.into_boxed_slice());
+        if target {
+            value.loans = BTreeSet::from([loans[0]]);
+        } else {
+            value.loans = loans.iter().copied().collect();
+            if count >= 2 {
+                value.regions = Some(loans.iter().map(|id| BTreeSet::from([*id])).collect());
+            }
+        }
+        let regions = slots
+            .and_then(|slots| slots.parameters.get(index))
+            .filter(|regions| regions.len() == count);
+        for (slot, region) in regions.into_iter().flatten().enumerate() {
+            self.slots.entry((root, slot)).or_default().region = *region;
+        }
+        if count < 2 || (!target && targets.len() != count) {
+            return;
+        }
+        for (slot, mask) in targets.iter().enumerate() {
+            let entry = self.slots.entry((root, slot)).or_default();
+            for target in mask_slots(*mask).filter(|target| *target < count) {
+                entry.target.insert(loans[target]);
+                entry
+                    .target_regions
+                    .extend(regions.and_then(|regions| regions[target]));
+            }
         }
     }
 
     /// A returned borrow comes from a parameter and, under a named result region, from an
-    /// input slot with that region. Loans are checked in id order.
+    /// input slot with that region. Loans are checked in id order. The target slot of a result
+    /// written `ref {r} T {s}` holds no loans of the result's own (A13 Phase 2).
     #[inline(never)]
     fn check_result(
         &self,
         parameters: &[Local],
         body: &TypedExpr,
         task: bool,
-        region_sources: Option<&RegionSources>,
+        contract: Contract<'_>,
         result: Value,
     ) -> Result<(), Diagnostic> {
+        let region_sources = contract.result;
+        let result_target = contract.slots.is_some_and(|slots| slots.result_target);
         let slots = self.slots(&result, &body.ty);
         for id in &result.loans {
             let place = &self.loans[*id].place;
@@ -756,6 +832,9 @@ impl Checker<'_> {
                 .position(|parameter| usize::MAX - parameter.id == place.root);
             let slot = place_slot(place);
             for (index, allowed) in sources.iter().enumerate() {
+                if result_target && index == 1 {
+                    continue;
+                }
                 let held = slots
                     .is_none_or(|slots| slots.get(index).is_some_and(|loans| loans.contains(id)));
                 if held && !owner.is_some_and(|owner| allowed.contains(&(owner, slot))) {
@@ -960,21 +1039,27 @@ impl Checker<'_> {
     }
 
     /// Adds to a direct call's result the loans of `argument` that its named result regions select.
+    /// The target slot of a result written `ref {r} T {s}` gets none (A13 Phase 2).
     #[inline(never)]
     fn argument_regions(
         &self,
         sources: &RegionSources,
+        slots: Option<&RegionSlots>,
         index: usize,
         argument: &TypedExpr,
         value: &Value,
         current: &mut Value,
     ) {
+        let result_target = slots.is_some_and(|slots| slots.result_target);
         for (result_slot, allowed) in sources.iter().enumerate() {
+            if result_target && result_slot == 1 {
+                continue;
+            }
             for &(input, slot) in allowed {
                 if input != index {
                     continue;
                 }
-                let loans = self.slot_loans(value, &argument.ty, 1 << slot);
+                let loans = self.input_slot_loans(slots, index, slot, argument, value);
                 if let Some(slots) = current.regions.as_mut() {
                     slots[result_slot].extend(&loans);
                 }
@@ -1085,15 +1170,23 @@ impl Checker<'_> {
             }
         }
         if matches!(usage, Use::MutBorrow | Use::Write) {
+            // Only the loans that lead to the place are on its path; a reference's loan also
+            // keeps its owner's stored loans as parents, and those point elsewhere.
+            let mut path = via
+                .iter()
+                .filter(|id| self.loans[**id].place.overlaps(place))
+                .peekable();
             let mutable = if via.is_empty() {
                 self.state
                     .locals
                     .get(&place.root)
                     .is_some_and(|(local, _)| local.mutable)
+            } else if path.peek().is_some() {
+                path.all(|id| self.loans[*id].mutable)
             } else {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
-            if !mutable || !place.fields.is_empty() {
+            if !mutable || !unmarked_fields(place).is_empty() {
                 return self.report(place, error(
                     "E1014",
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
@@ -1212,6 +1305,239 @@ impl Checker<'_> {
                 expression.span,
             )),
         }
+    }
+
+    /// A13 M8: a write or an exclusive reborrow cannot pass through a shared reference to data
+    /// that holds a record with exclusive regions. The type checker sees only the outermost
+    /// reference, and a borrowed record's field reads keep the owner's loans, not the shared loan.
+    #[inline(never)]
+    fn shared_exclusive(&self, mut target: &TypedExpr, span: Span) -> Result<(), Diagnostic> {
+        let types = self.module.types();
+        loop {
+            target = match &target.kind {
+                E::Dereference(reference) => {
+                    if let Type::Reference(inner, false) = &reference.ty
+                        && inner.holds_exclusive_record(&types)
+                    {
+                        return Err(error(
+                            "E1014",
+                            "cannot mutate or exclusively reborrow through a shared reference",
+                            span,
+                        ));
+                    }
+                    reference
+                }
+                E::Field(value, _)
+                | E::Index(value, _)
+                | E::ListTail(value, _)
+                | E::UnionPayload { value, .. } => value,
+                _ => return Ok(()),
+            };
+        }
+    }
+
+    /// The places that a write or an exclusive borrow of `target` reaches (A13). A dereferenced
+    /// value that holds exclusive loans refers to their places; its shared loans come from the
+    /// shared fields of a record or from the other arguments of a call that it was merged with.
+    #[inline(never)]
+    fn exclusive_places(
+        &mut self,
+        target: &TypedExpr,
+        live: &BTreeSet<usize>,
+    ) -> Result<Vec<(Place, BTreeSet<usize>)>, Diagnostic> {
+        let places = self.place(target, live)?;
+        if !matches!(target.kind, E::Dereference(_)) {
+            return Ok(places);
+        }
+        let exclusive = |(place, via): &(Place, BTreeSet<usize>)| {
+            let mut path = via
+                .iter()
+                .filter(|id| self.loans[**id].place.overlaps(place))
+                .peekable();
+            path.peek().is_some() && path.all(|id| self.loans[*id].mutable)
+        };
+        if places.iter().any(exclusive) {
+            Ok(places
+                .into_iter()
+                .filter(|place| exclusive(place))
+                .collect())
+        } else {
+            Ok(places)
+        }
+    }
+
+    /// A13 Phase 2: stores a value with `value`'s loans in `place` through a reference. A local
+    /// owner keeps the new loans with its old ones; a parameter's target accepts only borrows of
+    /// the inputs with the region that its type names for the target, which callers keep.
+    #[inline(never)]
+    fn store_through(
+        &mut self,
+        place: &Place,
+        value: &Value,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        const UNNAMED: &str =
+            "assigning borrowed values through references requires explicit lifetimes";
+        if self.external.contains(&place.root) {
+            let Some(target) = self
+                .slots
+                .get(&(place.root, place_slot(place)))
+                .filter(|slot| !slot.target_regions.is_empty())
+            else {
+                return Err(error(
+                    "E1013",
+                    format!(
+                        "{UNNAMED}; name the target's region apart from the reference's, as in 'ref mut {{r}} T {{s}}', and store borrows of inputs with region 's'"
+                    ),
+                    span,
+                ));
+            };
+            for id in &value.loans {
+                let place = &self.loans[*id].place;
+                if !self.external.contains(&place.root) {
+                    return Err(error(
+                        "E1013",
+                        "cannot store a borrow of a local value through a reference parameter; the caller's data would outlive it",
+                        span,
+                    ));
+                }
+                let region = self
+                    .slots
+                    .get(&(place.root, place_slot(place)))
+                    .and_then(|slot| slot.region);
+                if !region.is_some_and(|region| target.target_regions.contains(&region)) {
+                    return Err(error(
+                        "E1013",
+                        "the stored borrow does not have the region of the reference's target; store a borrow of an input with that region",
+                        span,
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        let Some((_, owner)) = self.state.locals.get_mut(&place.root) else {
+            return Err(error("E1013", UNNAMED, span));
+        };
+        owner.loans.extend(&value.loans);
+        owner.regions = None;
+        for (owned, stored) in owner.closed_result.iter_mut().zip(value.closed_result) {
+            *owned &= stored;
+        }
+        Ok(())
+    }
+
+    /// A13 Phase 2: the loans of the borrows inside the targets of the references `references`:
+    /// a local owner's stored loans, or a parameter's target loans.
+    fn target_loans(&self, references: &BTreeSet<usize>) -> BTreeSet<usize> {
+        let mut loans = BTreeSet::new();
+        for id in references {
+            let place = &self.loans[*id].place;
+            if let Some((_, value)) = self.state.locals.get(&place.root) {
+                loans.extend(&value.loans);
+            } else if let Some(slot) = self
+                .slots
+                .get(&(place.root, place_slot(place)))
+                .filter(|slot| !slot.target.is_empty())
+            {
+                loans.extend(&slot.target);
+            } else {
+                loans.insert(*id);
+            }
+        }
+        loans
+    }
+
+    /// The loans that slot `slot` of the input `index` passes to a call of a function with named
+    /// regions: the slot's own loans, and the borrows inside the targets of the references whose
+    /// targets have the slot's region (A13 Phase 2).
+    fn input_slot_loans(
+        &self,
+        slots: Option<&RegionSlots>,
+        index: usize,
+        slot: usize,
+        argument: &TypedExpr,
+        value: &Value,
+    ) -> BTreeSet<usize> {
+        if slots.is_some_and(|slots| slots.targets.get(index) == Some(&true)) {
+            return if slot == 0 {
+                value.loans.clone()
+            } else {
+                self.target_loans(&value.loans)
+            };
+        }
+        let mut loans = self.slot_loans(value, &argument.ty, 1 << slot);
+        if let Type::Record(id, _) = &argument.ty {
+            for (references, targets) in self.module.records[*id].region_targets.iter().enumerate()
+            {
+                if targets & (1 << slot) != 0 {
+                    let references = self.slot_loans(value, &argument.ty, 1 << references);
+                    loans.extend(self.target_loans(&references));
+                }
+            }
+        }
+        loans
+    }
+
+    /// A13 Phase 2: a direct call of `function` may store the inputs with a target's region in the
+    /// targets of its exclusive references, so their owners keep those loans. The callee value
+    /// and the arguments are on `held` from `start`.
+    #[inline(never)]
+    fn store_arguments(
+        &mut self,
+        function: usize,
+        arguments: &[TypedExpr],
+        start: usize,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let module = self.module;
+        let function = &module.functions[function];
+        let Some(slots) = function.region_slots.as_ref().filter(|slots| slots.writes) else {
+            return Ok(());
+        };
+        for (index, parameter) in function.parameters.iter().enumerate() {
+            for (slot, regions) in slots.written_targets(index, &parameter.ty, module.types()) {
+                let value = &self.held[start + 1 + index];
+                let references = if slots.targets[index] {
+                    value.loans.clone()
+                } else {
+                    self.slot_loans(value, &arguments[index].ty, 1 << slot)
+                };
+                let mut stored = Value::default();
+                for (input, input_slots) in slots.parameters.iter().enumerate() {
+                    for (input_slot, region) in input_slots.iter().enumerate() {
+                        if region.is_some_and(|region| regions.contains(&region)) {
+                            stored.loans.extend(self.input_slot_loans(
+                                Some(slots),
+                                input,
+                                input_slot,
+                                &arguments[input],
+                                &self.held[start + 1 + input],
+                            ));
+                        }
+                    }
+                }
+                for reference in references {
+                    let loan = &self.loans[reference];
+                    if !loan.mutable {
+                        continue;
+                    }
+                    let place = loan.place.clone();
+                    if stored
+                        .loans
+                        .iter()
+                        .any(|id| *id != reference && self.loans[*id].place.overlaps(&place))
+                    {
+                        return Err(error(
+                            "E1013",
+                            "cannot store a reference inside its own owner",
+                            span,
+                        ));
+                    }
+                    self.store_through(&place, &stored, span)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn is_place(expression: &TypedExpr) -> bool {
@@ -1348,7 +1674,15 @@ impl Checker<'_> {
                     value.loans.extend(stored.loans);
                     value.regions = stored.regions;
                 } else if self.external.contains(&place.root) {
-                    value.loans.extend(&via);
+                    // Borrowed data behind a reference with a named target region has that region.
+                    match self
+                        .slots
+                        .get(&(place.root, place_slot(&place)))
+                        .filter(|slot| !slot.target.is_empty())
+                    {
+                        Some(slot) => value.loans.extend(&slot.target),
+                        None => value.loans.extend(&via),
+                    }
                 } else {
                     return Err(error(
                         "E1013",
@@ -1498,6 +1832,10 @@ impl Checker<'_> {
         let start = self.held.len();
         let value = self.eval(callee, Use::Consume, &during)?;
         let (known, region_sources, callback) = self.call_contract(callee, arguments)?;
+        let module = self.module;
+        let slots = known
+            .filter(|_| !callback)
+            .and_then(|id| module.functions[id].region_slots.as_ref());
         let boundary = known
             .map(|id| self.module.functions[id].parameters.len())
             .filter(|count| *count <= arguments.len());
@@ -1513,13 +1851,14 @@ impl Checker<'_> {
             let value = self.eval(argument, Use::Consume, &during)?;
             match region_sources {
                 Some(sources) => {
-                    self.argument_regions(sources, index, argument, &value, &mut current)
+                    self.argument_regions(sources, slots, index, argument, &value, &mut current)
                 }
                 None => current.loans.extend(&value.loans),
             }
             self.held.push(value);
             if boundary == Some(index + 1) {
                 let id = known.unwrap();
+                self.store_arguments(id, arguments, start, expression.span)?;
                 if self.closed[id]
                     || !callee
                         .ty
@@ -1656,7 +1995,13 @@ impl Checker<'_> {
                 self.held.pop();
             }
             E::Borrow(value, mutable) => {
-                for (place, via) in self.place(value, &during)? {
+                let places = if *mutable {
+                    self.shared_exclusive(value, expression.span)?;
+                    self.exclusive_places(value, &during)?
+                } else {
+                    self.place(value, &during)?
+                };
+                for (place, via) in places {
                     self.access(
                         &place,
                         &via,
@@ -1671,14 +2016,15 @@ impl Checker<'_> {
                 }
             }
             E::Assign(place, value) => {
+                self.shared_exclusive(place, expression.span)?;
                 let value = self.eval(value, Use::Consume, &during)?;
                 self.held.push(value.clone());
-                for (place, via) in self.place(place, &during)? {
+                for (place, via) in self.exclusive_places(place, &during)? {
                     self.access(&place, &via, Use::Write, expression.span)?;
                     if value
                         .loans
                         .iter()
-                        .any(|id| self.loans[*id].place.root == place.root)
+                        .any(|id| self.loans[*id].place.overlaps(&place))
                     {
                         return Err(error(
                             "E1013",
@@ -1692,12 +2038,8 @@ impl Checker<'_> {
                         .retain(|moved, _| !moved.overlaps(&place));
                     if via.is_empty() {
                         self.state.locals.get_mut(&place.root).unwrap().1 = value.clone();
-                    } else if expression.ty.contains_reference() || !value.loans.is_empty() {
-                        return Err(error(
-                            "E1013",
-                            "assigning borrowed values through references requires explicit lifetimes",
-                            expression.span,
-                        ));
+                    } else if !value.loans.is_empty() {
+                        self.store_through(&place, &value, expression.span)?;
                     }
                 }
                 self.held.pop();
