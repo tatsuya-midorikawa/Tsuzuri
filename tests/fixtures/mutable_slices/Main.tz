@@ -229,6 +229,19 @@ fn parallel_strings count =
     for word in words do sum = sum * 31 + word.length
     sum
 
+def mark :: ref mut [i64..] -> i64 -> i64 -> unit
+fn mark chunk start offset =
+    for index in 0i64 .. (chunk.length - 1) do Array.write chunk index (start + index + offset)
+
+// A callback chosen at run time is no known function, so every job runs its own copy of it.
+export def parallel_dynamic :: i64 -> i64 -> i64
+fn parallel_dynamic count size =
+    let mut values = new [i64](count, _index -> 0)
+    let offset = count * 10
+    let body: i64 -> ref mut [i64..] -> unit = if size % 2 == 0 then (\start chunk -> mark chunk start offset) else (\start chunk -> mark chunk start (offset + 1))
+    Parallel.for_each_chunk size body (ref mut values)
+    total values
+
 export def trap_chunk_size :: i64
 fn trap_chunk_size =
     let mut values: [i64] = [1, 2, 3]

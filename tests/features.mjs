@@ -801,11 +801,17 @@ const suites = {
         for (let start = 0; start < words.length; start += 7) sorted.push(...words.slice(start, start + 7).sort());
         return ["parallel_strings", [count], sorted.reduce((sum, word) => BigInt.asIntN(64, sum * 31n + BigInt(word.length)), 0n)];
       }),
+      // Element i becomes i + 10 * count (+ 1 for an odd size). More than 1,024 chunks share the
+      // 1,024 jobs, unevenly for 2,049 and 5,000 chunks.
+      ...[[0n, 1n], [1n, 1n], [10n, 4n], [2049n, 1n], [4098n, 2n], [5000n, 1n], [5000n, 3n], [100n, 1000n]].map(([count, size]) =>
+        ["parallel_dynamic", [count, size], count * (count - 1n) / 2n + count * (10n * count + size % 2n)]),
     ],
     traps: [["trap_write_index", []], ["trap_split_past", []], ["trap_split_negative", []], ["trap_swap_index", []], ["trap_slice_order", []], ["trap_chunk_size", []]],
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Main\.fill\(%tz\.array/);
       assert.match(ir, /icmp ult i64/);
+      // parallel_dynamic takes the path that copies the callback for each job.
+      assert.match(ir, /getelementptr inbounds %tz\.closure, ptr %[\w.]+, i64 %chunk/);
     },
   },
   fixed_arrays: {

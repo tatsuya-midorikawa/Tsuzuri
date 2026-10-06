@@ -227,8 +227,9 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&done);
     }
 
-    /// One chunk of `Parallel.for_each_chunk`: elements `[chunk * size, min(length, (chunk + 1) * size))`
-    /// lent to the callback as an exclusive slice, with the chunk's first index (C08 Phase 2).
+    /// One job of `Parallel.for_each_chunk`: a contiguous range of chunks, run in order. Chunk `c` holds
+    /// elements `[c * size, min(length, (c + 1) * size))`, lent to the callback as an exclusive slice
+    /// with its first index (C08 Phase 2).
     fn parallel_chunk_body(
         &mut self,
         kernel: &Kernel<'_>,
@@ -236,27 +237,44 @@ impl FunctionEmitter<'_, '_> {
         callback: &str,
         direct: Option<&BorrowedCall>,
     ) {
-        let (length, data, size) = (&loaded[0], &loaded[2], &loaded[4]);
-        let first = self.value(format!("mul i64 %chunk, {size}"));
-        let end = self.value(format!("add i64 {first}, {size}"));
-        let past = self.value(format!("icmp ugt i64 {end}, {length}"));
-        let last = self.value(format!("select i1 {past}, i64 {length}, i64 {end}"));
-        let count = self.value(format!("sub i64 {last}, {first}"));
-        let pointer = self.element_pointer(kernel.element, data, &first);
-        let view = self.value(format!(
-            "insertvalue %tz.array zeroinitializer, ptr {pointer}, 0"
-        ));
-        let view = self.value(format!("insertvalue %tz.array {view}, i64 {count}, 1"));
-        let view_type = Type::Reference(
-            Box::new(Type::ArrayView(Box::new(kernel.element.clone()))),
-            true,
-        );
-        self.parallel_apply(
-            callback,
-            kernel.callback,
-            direct,
-            &[(Type::I64, first), (view_type, view)],
-        );
+        let (length, jobs, data, size) = (&loaded[0], &loaded[1], &loaded[2], &loaded[4]);
+        let chunks = self.chunk_count(length, size);
+        let begin = self.parallel_bound("%chunk", &chunks, jobs);
+        let next = self.value("add i64 %chunk, 1");
+        let end = self.parallel_bound(&next, &chunks, jobs);
+        let count = self.value(format!("sub i64 {end}, {begin}"));
+        self.array_loop(&count, |emitter, offset| {
+            let chunk = emitter.value(format!("add i64 {begin}, {offset}"));
+            let first = emitter.value(format!("mul i64 {chunk}, {size}"));
+            let end = emitter.value(format!("add i64 {first}, {size}"));
+            let past = emitter.value(format!("icmp ugt i64 {end}, {length}"));
+            let last = emitter.value(format!("select i1 {past}, i64 {length}, i64 {end}"));
+            let count = emitter.value(format!("sub i64 {last}, {first}"));
+            let pointer = emitter.element_pointer(kernel.element, data, &first);
+            let view = emitter.value(format!(
+                "insertvalue %tz.array zeroinitializer, ptr {pointer}, 0"
+            ));
+            let view = emitter.value(format!("insertvalue %tz.array {view}, i64 {count}, 1"));
+            let view_type = Type::Reference(
+                Box::new(Type::ArrayView(Box::new(kernel.element.clone()))),
+                true,
+            );
+            emitter.parallel_apply(
+                callback,
+                kernel.callback,
+                direct,
+                &[(Type::I64, first), (view_type, view)],
+            );
+        });
+    }
+
+    /// `ceil(length / size)`: the chunks of `Parallel.for_each_chunk`, for a positive `size`.
+    fn chunk_count(&mut self, length: &str, size: &str) -> String {
+        let whole = self.value(format!("udiv i64 {length}, {size}"));
+        let remainder = self.value(format!("urem i64 {length}, {size}"));
+        let partial = self.value(format!("icmp ne i64 {remainder}, 0"));
+        let partial = self.value(format!("zext i1 {partial} to i64"));
+        self.value(format!("add i64 {whole}, {partial}"))
     }
 
     /// The element loop of one chunk of `Parallel.init`, `map`, `map_ref`, and `reduce`.
@@ -552,11 +570,11 @@ impl FunctionEmitter<'_, '_> {
             .clone();
         let length = self.value(format!("extractvalue %tz.array {view}, 1"));
         let input = self.value(format!("extractvalue %tz.array {view}, 0"));
-        let whole = self.value(format!("udiv i64 {length}, {size}"));
-        let remainder = self.value(format!("urem i64 {length}, {size}"));
-        let partial = self.value(format!("icmp ne i64 {remainder}, 0"));
-        let partial = self.value(format!("zext i1 {partial} to i64"));
-        let chunks = self.value(format!("add i64 {whole}, {partial}"));
+        let chunks = self.chunk_count(&length, &size);
+        // At most 1,024 jobs, as the other parallel operations, each running a range of chunks: a
+        // small `size` must not clone one callback snapshot per element before the work starts.
+        let bounded = self.value(format!("icmp ugt i64 {chunks}, 1024"));
+        let jobs = self.value(format!("select i1 {bounded}, i64 1024, i64 {chunks}"));
         self.parallel_launch(
             Kernel {
                 operation: Builtin::ParallelForEachChunk,
@@ -567,7 +585,7 @@ impl FunctionEmitter<'_, '_> {
             },
             Data {
                 length: &length,
-                chunks: &chunks,
+                chunks: &jobs,
                 input: &input,
                 output: "null",
                 identity: &size,

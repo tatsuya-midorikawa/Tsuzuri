@@ -743,3 +743,13 @@ cargo test --locked honors_the_exact_specialization_limit
 - 既存の fixture と単一ファイルの例の IR（119 個）は、`ff84e4c` と比べて 68 個が byte 一致、51 個は std の関数の追加による生成 id の一様なずれだけが異なる（id を写す比較で差なし）。
   チケットの「byte 単位で変わらない」は、A15 と同じく id のずれを除いて満たす。`fill` と `negate_all` は `-O3` で `@tz.alloc` を呼ばない。
 - 全体のゲート（fmt・clippy・`cargo test`・features の全 suite・`check-docs`）は 5 チケットの実装の後にまとめて実行した（F08 の記録を参照）。
+
+### レビュー対応（PR #14）
+
+- `Parallel.for_each_chunk` はチャンクごとに 1 つの仕事を作っていたため、直接呼べない callback（実行時に選ぶ関数値など）では
+  起動前にチャンクの数だけ callback を複製していた（`size = 1` なら要素数と同じ数）。仕事の数を他の並列操作と同じ最大 1024 にし、
+  各仕事が連続するチャンクを順に処理する（`parallel_chunk_body`。チャンク番号の分割は `parallel_bound`）。各チャンクの開始添字・範囲・
+  呼び出しの回数は変わらない。
+- 確認: fixture の `parallel_dynamic`（callback を実行時に選ぶ）で 1024 を超えるチャンク数を native・WASM の `-O0`・`-O3` で検査し、
+  `TSUZURI_TSAN=1`・`TSUZURI_ASAN=1`・`TSUZURI_TEST_ALLOCATOR=host` も成功。`tests/allocator.mjs` は `--allocator counting` の WASM で
+  100,000 要素・`size = 1` の最大使用量を測り、修正前の 3,200,056 バイトが 824,632 バイト（配列 800,016 バイトと 1024 個の複製）になった。

@@ -157,6 +157,17 @@ int main(void) {
 
   // Phase 2: --allocator counting and --allocator host on WebAssembly.
   for (const optimization of ["-O0", "-O3"]) {
+    // C08: Parallel.for_each_chunk runs at most 1,024 jobs, so one-element chunks of 100,000 values
+    // (800,000 bytes) copy a callback chosen at run time 1,024 times, not once per chunk.
+    const slices = join(work, `slices${optimization}.wasm`);
+    cli(["build", join(root, "tests/fixtures/mutable_slices"), "--target", "wasm32", "--allocator", "counting", optimization, "--no-cache", "-o", slices]);
+    const chunked = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(slices))).exports;
+    const stats = chunked.tsuzuri_alloc(32n);
+    assert.equal(chunked.tz_parallel_dynamic(100000n, 1n), 4999950000n + 100000n * 1000001n);
+    chunked.tsuzuri_alloc_stats(stats);
+    const [, , chunkedLive, chunkedPeak] = new BigUint64Array(chunked.memory.buffer, stats, 4);
+    assert.ok(chunkedLive === 32n && chunkedPeak < 1000000n, `for_each_chunk ${optimization}: live ${chunkedLive} peak ${chunkedPeak}`);
+
     const counted = join(work, `counting${optimization}.wasm`);
     cli(["build", library, "--target", "wasm32", "--allocator", "counting", optimization, "--no-cache", "-o", counted]);
     const countedModule = new WebAssembly.Module(readFileSync(counted));
