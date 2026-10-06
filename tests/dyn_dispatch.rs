@@ -435,6 +435,24 @@ fn accepts_dyn_values_in_collections() {
 }
 
 #[test]
+fn dyn_values_count_two_pointers_in_the_value_limit() {
+    // Data and vtable pointers: 16 bytes in records and signatures alike (64 KiB, E1010).
+    for (accepted, rejected) in [
+        (
+            "record R { m: [[dyn Shape; 1024]; 4] }",
+            "record R { m: [[dyn Shape; 1024]; 5] }",
+        ),
+        (
+            "def f :: [[dyn Shape; 1024]; 4] -> i64\nfn f m = m.length",
+            "def f :: [[dyn Shape; 1024]; 5] -> i64\nfn f m = m.length",
+        ),
+    ] {
+        accepts(&with_shape(accepted));
+        rejects(&with_shape(rejected), "E1010");
+    }
+}
+
+#[test]
 fn display_and_hash_dispatch_user_instances() {
     let ir = accepts(
         "record Point { x: i64, y: i64 } deriving (Display, Hash)\ndef f :: string\nfn f =\n    let shown: dyn Display = Dyn.of (Point { x: 1, y: 2 })\n    let hashed: dyn Hash = Dyn.of (Point { x: 1, y: 2 })\n    to_string shown + to_string (Hash.hash (ref hashed))",

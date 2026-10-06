@@ -767,3 +767,8 @@ Phase 2（256-bit 型と `Simd.store`）・Phase 3（`@cpu` と AVX-512・SVE）
 - `tests/cpu_runtime.c` の `check_kernels` は 8 つの thread で動くのに、検査データを関数内の `static` 配列に置いて各 thread が同時に書いていた
   （同じ値を書いてもデータ競合で未定義動作）。`-fsanitize=thread` で 2 件の data race を再現し、配列を thread ごとの自動変数にして 0 件になった。
   ASan・UBSan と `node tests/cpu_kernels.mjs` も成功。
+- 同じ検査は `unsigned char` の配列を `T *` で読んでいた（C の実効型の規則に反する）。要素の幅ごとの型の配列へ `memcpy` し、
+  各 kernel にはその型（または対応する符号なしの型）で渡す。
+- 値のレイアウトの上限（64 KiB）の見積もりが SIMD 値を一律 16 バイト（`Layouts::size`）または 8 バイト（シグネチャと局所変数を検査する
+  `Validation::check`）と数えていたため、`[[i8x32; 1024]; 3]`（実際は 96 KiB）が通っていた。どちらも `bytes()`（8 バイト以上）で数え、
+  256-bit は 32 バイト、128-bit は 16 バイトになった。`tests/fixed_arrays.rs` にちょうど 64 KiB の受理と超過の `E1010` を追加した。

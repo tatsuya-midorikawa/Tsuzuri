@@ -7299,7 +7299,8 @@ impl<'a> Layouts<'a> {
             return Ok(0);
         }
         Ok(match ty {
-            Type::Simd(_) => 16,
+            // A 256-bit vector fills 32 bytes (F08); a mask's packed bits count as a small value.
+            Type::Simd(vector) => vector.bytes().max(8),
             Type::Vec(element) => {
                 self.size(element, depth, span)?;
                 32
@@ -7605,11 +7606,14 @@ impl Validation<'_> {
                 self.check(value, span)?;
                 if ty.slice_element().is_some() { 16 } else { 8 }
             }
+            // The same sizes as `Layouts::size`, which fixed-length arrays multiply (A16).
+            Type::Simd(vector) => vector.bytes().max(8),
             Type::Integer(128, _)
             | Type::Binary(128)
             | Type::Decimal(128)
             | Type::String
-            | Type::Utf8String => 16,
+            | Type::Utf8String
+            | Type::Dyn(_) => 16,
             _ => 8,
         };
         if size > MAX_VALUE_BYTES {

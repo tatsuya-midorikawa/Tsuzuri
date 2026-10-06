@@ -943,3 +943,9 @@ export はすべて `i64 -> i64`。期待値は式から JS の `BigInt` で計�
   union の `match` 3.77–3.85 ms、単相化 2.19–2.26 ms。各版だけを export した object の逆アセンブルは 10,863・5,406・22,405 bytes。
   dyn は要素ごとに間接呼び出しが残りベクトル化されない。詳細は `docs/benchmarks.md` の「動的ディスパッチの比較（A14）」。
 - 全体のゲート（fmt・clippy・features の全 suite・`check-docs`）は 5 チケットの実装の後にまとめて実行した（F08 の記録を参照）。
+
+### レビュー対応（PR #14）
+
+- シグネチャと局所変数の値の大きさを検査する `Validation::check` に `dyn` の場合がなく 8 バイトと数えていたため、
+  `[[dyn Shape; 1024]; 5]`（実際は 80 KiB）を引数にできた。レコードの検査（`Layouts::size`）と同じ 16 バイトで数え、
+  `tests/dyn_dispatch.rs` にちょうど 64 KiB の受理と超過の `E1010` を追加した。

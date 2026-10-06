@@ -95,6 +95,28 @@ fn fixed_array_layout_limit() {
         "E1010",
         "value layout exceeds 65536 bytes; use smaller value types",
     );
+    // A 256-bit vector counts 32 bytes and a 128-bit one 16, in records and signatures alike.
+    for (accepted, rejected) in [
+        (
+            "record R { m: [[i8x32; 1024]; 2] }",
+            "record R { m: [[i8x32; 1024]; 3] }",
+        ),
+        (
+            "def f :: [[i8x32; 1024]; 2] -> i64\nfn f m = m.length",
+            "def f :: [[i8x32; 1024]; 3] -> i64\nfn f m = m.length",
+        ),
+        (
+            "record R { m: [[i8x16; 1024]; 4] }",
+            "record R { m: [[i8x16; 1024]; 5] }",
+        ),
+        (
+            "def f :: [[i8x16; 1024]; 4] -> i64\nfn f m = m.length",
+            "def f :: [[i8x16; 1024]; 5] -> i64\nfn f m = m.length",
+        ),
+    ] {
+        accepts(accepted);
+        rejects(rejected, "E1010");
+    }
     // A generic value meets the limit where it is built with its concrete type.
     rejects(
         "def pass :: 'a -> 'a\nfn pass x = x\ndef f :: i64\nfn f =\n    let big: [[i64; 1024]; 9] = FixedArray.init (_i -> FixedArray.init (_j -> 0))\n    0",
