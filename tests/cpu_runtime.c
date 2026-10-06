@@ -57,7 +57,8 @@ static void fill(unsigned char *bytes, size_t count, int pattern) {
 
 static void *check_kernels(void *unused) {
     (void)unused;
-    static _Alignas(64) unsigned char storage[3][8 * 300];
+    /* Every worker fills its own data: one shared buffer would be written by all of them at once. */
+    _Alignas(64) unsigned char storage[3][8 * 300];
     for (int pattern = 0; pattern < 3; ++pattern) fill(storage[pattern], sizeof(storage[pattern]), pattern);
     uint64_t features = tsuzuri_cpu_features();
     for (int pattern = 0; pattern < 3; ++pattern) {

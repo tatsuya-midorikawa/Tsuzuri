@@ -761,3 +761,9 @@ Phase 2（256-bit 型と `Simd.store`）・Phase 3（`@cpu` と AVX-512・SVE）
   `git diff --check`、VS Code 拡張の `check-types`・`lint`・`test:unit`。
 - IR: 全 fixture と例の `--emit llvm`（native・wasm32）を A14 の後の出力と比べ、129 ファイル中 70 が一致、51 が番号の付け替えだけ、
   変わったのは `Array.min`・`Array.max` の helper が増えた `array_bulk` と fixture を足した `simd`（各 native・wasm32）だった。
+
+### レビュー対応（PR #14）
+
+- `tests/cpu_runtime.c` の `check_kernels` は 8 つの thread で動くのに、検査データを関数内の `static` 配列に置いて各 thread が同時に書いていた
+  （同じ値を書いてもデータ競合で未定義動作）。`-fsanitize=thread` で 2 件の data race を再現し、配列を thread ごとの自動変数にして 0 件になった。
+  ASan・UBSan と `node tests/cpu_kernels.mjs` も成功。
