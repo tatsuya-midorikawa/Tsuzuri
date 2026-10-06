@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-Parallel は配列の生成・変換・集計を固定チャンクで行う同期 API です。native では Task と同じ常駐プールを使い、既定の WASM では同じチャンク構成の逐次経路を使います。
+Parallel は配列の生成・変換・集計と、排他スライスへの分割書き込みを固定チャンクで行う同期 API です。native では Task と同じ常駐プールを使い、既定の WASM では同じチャンク構成の逐次経路を使います。
 
 ## 配列の生成
 
@@ -22,6 +22,7 @@ Parallel.sum ref values
 | `map_ref transform values` | `(Send<T>, Send<U>) => (ref T -> U) -> ref [T] -> [U]` |
 | `reduce identity reducer values` | `(Copy<T>, Send<T>) => T -> (T -> T -> T) -> ref [T] -> T` |
 | `sum values` | 数値型の正のゼロと加算による reduce |
+| `for_each_chunk size body values` | `Send<T> => i64 -> (i64 -> ref mut [T..] -> unit) -> ref mut [T..] -> unit` |
 
 Parallel.map も Array.map と同じく関数が先です。map は各入力要素を複製して渡すため、Copy でも大きい配列や関数環境の複製費用があります。非 Copy 要素には map_ref を使います。
 
@@ -31,11 +32,27 @@ let lengths = Parallel.map_ref String.length (ref texts)
 Array.sum ref lengths
 ```
 
+## 排他スライスへの分割書き込み
+
+```tsuzuri run=99990000
+def double :: i64 -> ref mut [i64..] -> unit
+fn double start chunk =
+    for index in 0i64 .. (chunk.length - 1) do Array.write chunk index ((start + index) * 2)
+
+let mut values = new [i64](10000, _index -> 0)
+Parallel.for_each_chunk 4096 double (ref mut values)
+Array.sum values
+```
+
+`for_each_chunk size body values` は values を先頭から size 要素ずつの互いに素な排他スライスに分け、各チャンクの開始添字とスライスで body を一回ずつ呼びます。最後のチャンクだけ短くなり、空の入力では body を呼びません。size が 0 以下ならトラップです。チャンク境界は利用者が指定した size だけで決まり、下のチャンク境界の式は使いません。
+
+values は呼び出しの間だけ排他的に借用され、戻るときには全チャンクの書き込みが完了しています。各 body が触れられるのは自分のチャンクだけなので、同期なしで書き込めます。要素は worker 間で移るので `Send<T>` が必要です。
+
 ## callback の制約
 
-callback が借用を捕捉すること、結果が借用を保持することは許可しません。共有入力の借用は fork/join の範囲に閉じています。所有環境を証明できない未知の callback や関数要素は `E1013` です。
+callback が借用を捕捉すること、結果が借用を保持することは許可しません。共有入力と for_each_chunk の排他入力の借用は fork/join の範囲に閉じています。所有環境を証明できない未知の callback や関数要素は `E1013` です。
 
-init / map / map_ref / reduce 自体は直接の完全適用が必要です。これらの API を関数値にして保存する、部分適用してから呼ぶ、といった利用は未対応です。一方、callback として渡す値には、所有環境を証明できる通常の関数値・部分適用・lambda を使えます。
+init / map / map_ref / reduce / for_each_chunk 自体は直接の完全適用が必要です。これらの API を関数値にして保存する、部分適用してから呼ぶ、といった利用は未対応です。一方、callback として渡す値には、所有環境を証明できる通常の関数値・部分適用・lambda を使えます。
 
 引数は記載順に一度だけ評価し、後続引数の処理で先に取得した callback のスナップショットを変更しません。
 
@@ -63,6 +80,6 @@ native のスレッド上限、遅延起動、入れ子の進行は[Task](../lan
 
 ## API と関連項目
 
-- [Parallel.sum のソース宣言](api/Parallel.md): 他の4操作は組み込み
+- [Parallel.sum のソース宣言](api/Parallel.md): 他の5操作は組み込み
 - [逐次 Array とスライス](arrays-and-lists.md)
 - [固定順の浮動小数点集計](math.md)

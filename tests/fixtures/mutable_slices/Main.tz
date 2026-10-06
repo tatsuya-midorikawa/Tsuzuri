@@ -1,0 +1,236 @@
+def rec negate_all :: ref mut [i64..] -> unit
+fn rec negate_all values =
+    let length = Array.length values
+    if length == 1 then
+        let value = values[0]
+        Array.write values 0 (0 - value)
+    elif length > 1 then
+        match Array.split_at_mut values (length / 2) with
+        | (left, right) ->
+            negate_all left
+            negate_all right
+
+def fill :: ref mut [i64..] -> i64 -> unit
+fn fill values value =
+    for index in 0i64 .. (values.length - 1) do Array.write values index value
+
+def total :: ref [i64] -> i64
+fn total values =
+    let mut sum = 0i64
+    for value in values do sum = sum + value
+    sum
+
+export def write_swap :: i64
+fn write_swap =
+    let mut values: [i64] = [1, 2, 3, 4]
+    let tail = ref mut values[1..]
+    Array.write tail 0 20
+    Array.swap_in tail 1 2
+    let scaled = tail[1] * 10
+    Array.write tail 1 scaled
+    let mut sum = 0i64
+    for value in tail do sum = sum + value
+    sum * 10000 + values[0] * 1000 + values[1] + values[2] + values[3]
+
+export def negate :: i64
+fn negate =
+    let mut values: [i64] = [3, -1, 4, 1, 5]
+    negate_all (ref mut values)
+    total values
+
+export def negate_sized :: i64 -> i64
+fn negate_sized count =
+    let mut values = new [i64](count, index -> index + 1)
+    negate_all (ref mut values)
+    total values
+
+export def alternating :: i64
+fn alternating =
+    let mut values: [i64] = [1, 2, 3, 4]
+    match Array.split_at_mut (ref mut values) 2 with
+    | (left, right) ->
+        Array.write left 0 10
+        Array.write right 0 30
+        Array.write left 1 20
+        Array.write right 1 40
+    values[0] + 2 * values[1] + 3 * values[2] + 4 * values[3]
+
+export def copy_snapshot :: i64
+fn copy_snapshot =
+    let mut a: [i64] = [1, 2, 3]
+    let b = a
+    Array.write (ref mut a[0..]) 0 9
+    b[0] * 10 + a[0]
+
+export def strings_drop :: i64
+fn strings_drop =
+    let mut texts: [string] = ["a", "b", "c"]
+    let words = ref mut texts[0..]
+    Array.write words 0 ("x" + "yz")
+    Array.swap_in words 1 2
+    let lengths = words[0].length + words[1].length + words[2].length
+    lengths + (if texts[1] == "c" then 100 else 0)
+
+export def heap_strings :: i64 -> i64
+fn heap_strings count =
+    let mut texts = new [string](count, index -> to_string index)
+    let words = ref mut texts[0..]
+    for index in 0i64 .. (count - 1) do Array.write words index (to_string (index * 10))
+    let mut sum = 0i64
+    for word in texts do sum = sum + word.length
+    sum
+
+export def nested_frames :: i64
+fn nested_frames =
+    let mut grid: [[i64]] = [[1, 2], [3]]
+    let rows = ref mut grid[0..]
+    Array.write rows 0 [7, 8, 9]
+    Array.swap_in rows 0 1
+    grid[0].length * 100 + grid[1].length * 10 + grid[1][2]
+
+export def convert :: i64
+fn convert =
+    let mut values: [i64] = [1, 2, 3, 4, 5]
+    fill (ref mut values) 7
+    total values
+
+export def convert_owner :: i64 -> i64
+fn convert_owner count =
+    let mut values = new [i64](count, index -> index)
+    let whole = ref mut values
+    fill whole 3
+    total values
+
+export def views_of_views :: i64
+fn views_of_views =
+    let mut values: [i64] = [1, 2, 3, 4, 5, 6]
+    let outer = ref mut values[1..5]
+    let inner = ref mut outer[1..3]
+    Array.write inner 0 30
+    Array.write inner 1 40
+    Array.write outer 0 20
+    let shared = ref outer[2..]
+    let read = shared[0] * 1000
+    read + values[1] * 10 + values[3]
+
+def lcg :: i64 -> i64
+fn lcg x = (x * 1103515245 + 12345) % 2147483648
+
+def sorted_same :: i64 -> bool
+fn sorted_same count =
+    let mut seed = 1i64
+    let mut values = new [i64](count, _index -> 0)
+    let part = ref mut values[0..]
+    for index in 0i64 .. (count - 1) do
+        seed = lcg seed
+        Array.write part index (seed % 100)
+    let sorted = Array.sort (ref values)
+    Array.sort_in_place (ref mut values)
+    let mut same = true
+    for index in 0i64 .. (count - 1) do
+        if sorted[index] != values[index] then same = false
+    same
+
+export def sort_sizes :: i64
+fn sort_sizes =
+    let sizes: [i64] = [0, 1, 2, 19, 20, 21, 40, 41, 1000]
+    let mut good = 0i64
+    for size in sizes do
+        if sorted_same size then good = good + 1
+    good
+
+export def sort_signed_zero :: i64
+fn sort_signed_zero =
+    let mut values: [f64] = [0.0, -0.0, 1.0, -0.0, 0.0]
+    Array.sort_in_place (ref mut values)
+    let mut sum = 0i64
+    let mut bit = 1i64
+    for value in values do
+        if 1.0 / value > 0.0 then sum = sum + bit
+        bit = bit * 2
+    sum
+
+export def sort_strings :: i64
+fn sort_strings =
+    let mut words: [string] = ["pear", "fig", "apple", "kiwi", "banana", "fig"]
+    Array.sort_in_place (ref mut words)
+    let mut sum = 0i64
+    for word in words do sum = sum * 10 + word.length
+    sum
+
+record Cursor {r} { part: ref mut {r} [string..], position: i64 }
+
+private def put :: Cursor -> string -> unit
+fn put cursor text = Array.write cursor.part cursor.position text
+
+export def record_cursor :: i64
+fn record_cursor =
+    let mut texts: [string] = ["a", "b", "c"]
+    let cursor = Cursor { part: ref mut texts[1..], position: 1 }
+    put cursor ("long" + "er")
+    texts[0].length * 100 + texts[1].length * 10 + texts[2].length
+
+export def trap_write_index :: i64
+fn trap_write_index =
+    let mut values: [i64] = [1, 2, 3]
+    Array.write (ref mut values) 3 0
+    values[0]
+
+export def trap_split_past :: i64
+fn trap_split_past =
+    let mut values: [i64] = [1, 2, 3]
+    match Array.split_at_mut (ref mut values) 4 with
+    | (left, right) -> left.length + right.length
+
+export def trap_split_negative :: i64
+fn trap_split_negative =
+    let mut values: [i64] = [1, 2, 3]
+    match Array.split_at_mut (ref mut values) (-1) with
+    | (left, right) -> left.length + right.length
+
+export def trap_swap_index :: i64
+fn trap_swap_index =
+    let mut values: [i64] = [1, 2, 3]
+    Array.swap_in (ref mut values) 0 3
+    values[0]
+
+export def trap_slice_order :: i64
+fn trap_slice_order =
+    let mut values: [i64] = [1, 2, 3]
+    let start = values.length - 1
+    let part = ref mut values[start..1]
+    part.length
+
+def double_chunk :: i64 -> ref mut [i64..] -> unit
+fn double_chunk start chunk =
+    for index in 0i64 .. (chunk.length - 1) do
+        let value = chunk[index]
+        Array.write chunk index (value * 2 + (start + index) % 3)
+
+export def parallel_double :: i64 -> i64 -> i64
+fn parallel_double count size =
+    let mut values = new [i64](count, index -> index)
+    Parallel.for_each_chunk size double_chunk (ref mut values)
+    total values
+
+export def parallel_captured :: i64 -> i64 -> i64
+fn parallel_captured count size =
+    let mut values = new [i64](count, _index -> 0)
+    let offset = count * 10
+    Parallel.for_each_chunk size (\start chunk ->
+        for index in 0i64 .. (chunk.length - 1) do Array.write chunk index (start + index + offset)) (ref mut values)
+    total values
+
+export def parallel_strings :: i64 -> i64
+fn parallel_strings count =
+    let mut words = new [string](count, index -> to_string (count - index))
+    Parallel.for_each_chunk 7 (\_start chunk -> Array.sort_in_place chunk) (ref mut words)
+    let mut sum = 0i64
+    for word in words do sum = sum * 31 + word.length
+    sum
+
+export def trap_chunk_size :: i64
+fn trap_chunk_size =
+    let mut values: [i64] = [1, 2, 3]
+    Parallel.for_each_chunk 0 (\_start chunk -> Array.write chunk 0 1) (ref mut values)
+    values[0]

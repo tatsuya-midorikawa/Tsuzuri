@@ -271,6 +271,11 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
     if let Some(entry) = &mut program.entry {
         canonical.expression(entry);
     }
+    // The `dyn` types repeat types already in the tree (A14).
+    program.dyn_types.clear();
+    for attribute in &mut program.cpu_attributes {
+        canonical.ident(&mut attribute.function);
+    }
     (format!("{program:?}"), canonical.hints)
 }
 
@@ -569,7 +574,10 @@ fn generic_tokens(tokens: &[crate::lexer::TokenWithTrivia], hints: &mut Hints) -
             {
                 type_end = type_end.max(types.next().unwrap().end);
             }
-            if token.kind == TokenKind::Less
+            if token.kind == TokenKind::DotDot && token.span.start < type_end {
+                // `[T..]` keeps its range marker next to the element type.
+                true
+            } else if token.kind == TokenKind::Less
                 && (token.span.start < type_end
                     || index > 0
                         && hints
@@ -755,6 +763,7 @@ impl Canonical {
                 }
             }
             TypeExprKind::Array(inner)
+            | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
             | TypeExprKind::Reference(inner, _) => self.ty(inner),
@@ -763,13 +772,22 @@ impl Canonical {
                     self.ty(element);
                 }
             }
+            TypeExprKind::FixedArray(element, length) => {
+                self.ty(element);
+                self.ty(length);
+            }
             TypeExprKind::Function(parameters, result) => {
                 for parameter in parameters {
                     self.ty(parameter);
                 }
                 self.ty(result);
             }
-            TypeExprKind::Named(_) | TypeExprKind::Variable(_) => {}
+            TypeExprKind::Dyn(dyn_type) => {
+                for class in &mut dyn_type.classes {
+                    self.ident(class);
+                }
+            }
+            TypeExprKind::Named(_) | TypeExprKind::Variable(_) | TypeExprKind::Length(_) => {}
         }
     }
 
@@ -946,7 +964,9 @@ impl Canonical {
                 }
                 self.expression(finish);
             }
-            Slice { value, start, end } => {
+            Slice {
+                value, start, end, ..
+            } => {
                 self.expression(value);
                 for bound in start.iter_mut().chain(end.iter_mut()) {
                     self.expression(bound);
@@ -965,8 +985,17 @@ impl Canonical {
                     self.expression(&mut hole.value);
                 }
             }
-            Integer(..) | BigInt(_) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_)
-            | Unit | Break | Continue => {}
+            Integer(..)
+            | BigInt(_)
+            | Float(..)
+            | String(_)
+            | Char(_)
+            | Utf8Char(_)
+            | Bool(_)
+            | Unit
+            | Break
+            | Continue
+            | DynDispatch { .. } => {}
         }
     }
 
@@ -1016,7 +1045,14 @@ impl Canonical {
     fn binding(&mut self, binding: &mut Binding) {
         self.ident(&mut binding.name);
         if let Some(ty) = &mut binding.annotation {
+            // A statement's implicit `unit` annotation spans the statement, which is no type text.
+            let statement = matches!(&ty.kind, TypeExprKind::Named(name) if name == "unit")
+                && ty.span == binding.value.span;
+            let types = self.hints.types.len();
             self.ty(ty);
+            if statement {
+                self.hints.types.truncate(types);
+            }
         }
         self.expression(&mut binding.value);
     }

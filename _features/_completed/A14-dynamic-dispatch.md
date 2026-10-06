@@ -7,9 +7,9 @@
 | 規模 | L |
 | 依存 | A06, (B07) |
 | 後続 | E13, G17 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（予約語 `dyn`・構築 `Dyn.of`・診断 `E1028` の確定。GUIDE D-30 の仮割り当て） |
+| 承認 | D1 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-07・D-15・D-16・D-30・D-39）。Phase 2 も同じ依頼で実装した |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: 実行時多相がなく、異種コレクションとコードサイズの制御ができない |
 | 手本にする既存実装 | 非 Copy・clone 不可の葉の型: `Type::Task`（`src/check.rs` の型性質、`src/llvm.rs` の `clone_value`）。関数ポインターと helper 関数: `src/llvm.rs` の `make_closure`・`apply_value` と環境 drop helper（`call void @tz.free(ptr %env)`）。生成インスタンスと既定メソッド関数: `src/polymorph.rs` の `Classes::instances`、`src/derive.rs` の `instances`。決定的な型名: `src/llvm.rs` の `canonical_type`。型式の追加: `TypeExprKind::Task` の各 match |
 | 主な影響ファイル | `src/lexer.rs`, `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/check.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/llvm_debug.rs`, `tests/dyn_dispatch.rs`（新規）, `tests/fixtures/dyn_dispatch/Shapes.tt`・`Main.tz`（新規）, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/generics-and-typeclasses.md`, `_docs/guides/from-fsharp.md`, `_docs/feature-status.md`, `_features/README.md`, `vsc/` の予約語文法（GUIDE §6.1） |
@@ -875,3 +875,71 @@ export はすべて `i64 -> i64`。期待値は式から JS の `BigInt` で計�
   `Dyn.of` の特殊化時にその呼び出し位置で報告する。
 - 理由: 型式が関数本体の注釈・record field・型別名のどこにあっても一つの経路で漏れなく報告でき、報告順も出現順で決定的になる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-06）
+
+「C08、A14、A16、F13、F08 の実装をすべて完遂して」という依頼を D1 の承認として扱い、Phase 1 と Phase 2（`Send` を満たす dyn、借用を格納する dyn、
+複数クラス、アップキャスト、clone slot、組み込み実装の slot）を実装した。着手時の HEAD は `ff84e4c`（ブランチ `Phase7-3`）で、C08・A16・F13・F08 と
+同じ変更に含めた。速さは主張しない（「確認」の測定は比較の記録）。
+
+### 実装
+
+- 字句・構文: `TokenKind::Dyn`、`TypeExprKind::Dyn(Box<DynTypeExpr>)`（`classes` と `borrowed`）、`ExprKind::DynDispatch { slot, slots }`、
+  `Program::dyn_types`。parser の `dyn_type`（`#[inline(never)]`）は `dyn Name` と `dyn (A, B, ...)` を読むだけで `type_expr` を再帰呼び出ししない。
+  region の後置（`dyn C {r}`）は `finish_type_primary` が `borrowed` にする。formatter・docgen・warnings・computation・LSP のキーワード表・
+  `vsc/`（`core.ts` の予約語と予約モジュール、`editor.ts`、TextMate 文法）に足した。`vsc/src/core.ts` の予約モジュールには A16 の `FixedArray` の漏れも足した。
+- 型: `Type::Dyn(Box<DynType>)`（`classes`、印 `copy`・`send`、`borrowed`）と `DynType::vtable_key`（`send` と `borrowed` を消す）。型の性質は印だけで決まる
+  （Copy と Capture は `copy`、Send は `send` かつ借用なし、`carries_loans` は `borrowed`）。`resolve_dyn` が E1004 の 2 文言を出す。
+  `Builtin::DynOf`（`Dyn.of`）と `dyn_of`（期待型がなければ E1015）。予約モジュール `Dyn`（`src/stdlib.rs`、予約数 36）。
+- クラス: `Classes::vtable_classes`・`dyn_roots`・`dyn_slots`・`upcasts`・`dyn_error`（E1028）。`dyn_instances` が書かれた互換な dyn 型ごとに
+  `X<dyn ...>` を合成し（引数名 `_receiver`・`_argumentN`、本体 `DynDispatch`）、`Classes::instances` が利用者のインスタンスより先に処理する。
+- 特殊化: `Specializer::dyn_of` が `(vtable キー, 格納型)` ごとの slot 関数を要求し（利用者の関数、または組み込み実装の intrinsic ラッパー）、
+  借用・排他借用を E1013 で拒否し、アップキャストを記録する。`dyn_layouts` がアップキャスト先の vtable を不動点まで足す。
+  結果は `CheckedModule::{vtables, dyn_layouts, uses_dyn}`。
+- 所有権: `owned_dyn_of`（region のない dyn 型へ借用を入れる `Dyn.of` は E1013）。`owned` に `Type::Dyn` の腕（借用付きの dyn 値が loan を保つ）。
+  `src/copies.rs` は `Copy` 印の dyn 値の暗黙の複製を W1006 にする。
+- 生成: `%tz.dyn`（`uses_dyn` のときだけ）、vtable、slot adapter、drop・clone 関数、共有の `@tz.dyn.drop`・`@tz.dyn.clone`、dispatch 関数の本体、
+  `Dyn.of`（確保と格納、またはアップキャストの vtable の差し替え）、`reachable_functions` の vtable 関数。`src/llvm_frame.rs`（16 bytes）、
+  `src/llvm_debug.rs`（メンバー `data`・`vtable`）。
+- テスト: `tests/dyn_dispatch.rs`（22 件）、`tests/fixtures/dyn_dispatch/`（`Shapes.tt` に `Tagged` を足した）と suite `dyn_dispatch`（55 ケースと
+  トラップ 1 つ、IR の検査 5 つ）。性能の比較 `benchmarks/dyn/` と `benchmarks/run-dyn.mjs`。
+- 文書: `docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_docs/language-reference/generics-and-typeclasses.md`、
+  `_docs/language-reference/lexical-and-layout.md`、`_docs/guides/from-fsharp.md`、`_docs/tools/diagnostics.md`、`_docs/feature-status.md`、
+  `_features/README.md`、`_features/GUIDE.md`（D-07・D-15・D-16・D-30・D-39）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D2 の表現は `Box<DynType>`。** Phase 2 の複数クラスと印を持つため、`Box<str>` ではなく構造体にした。葉の variant で、`Type` は 4 語のまま
+   （`type_stays_four_words`）。`Program::dyn_classes` も、印と region を含む型式全体の `Program::dyn_types` にした。
+2. **D4 の vtable に clone slot とアップキャストの表を足した。** 形は `{ ptr drop, ptr clone, i64 size, i64 align, [N x ptr] slots, [U x ptr] upcasts }`
+   で、slot は field 4。clone は `Copy` 印のないキーでは null、upcasts はアップキャスト先があるキーだけ。adapter は (X.m, T) ごとではなく
+   slot 関数ごとの `@"tz.dyn.slot.{関数}"` にした（受け手の ABI は関数で決まり、アップキャスト先の vtable と共有できる）。
+3. **D6 の組み込み実装を Phase 2 で受理した。** slot に組み込みの intrinsic ラッパー関数を置くので、`let shown: dyn Display = Dyn.of 42` は E1028 ではなく
+   受理される。テスト `builtin_instances_cannot_fill_vtables` は `builtin_instances_fill_vtables` にした。
+4. **印 `Copy`・`Send`。** `dyn (C, Copy)`・`dyn (C, Send)` のように括弧の中に並べる。スーパークラスの `Copy`・`Send` は印を並べたときだけ満たし、
+   E1028 の理由が並べ方を示す。`dyn Copy` だけは `Copy has no methods to dispatch`。`Copy` 印の dyn 値は clone slot で複製でき、捕捉もできる。
+5. **借用を格納する `dyn C {r}`。** region を書ける位置だけで使える。region のない dyn 型への借用の格納は E1013 で、メッセージを
+   `a dyn value without a region cannot hold borrowed data; pass an owned value to Dyn.of, or name a region, as in 'dyn Shapes.Shape {r}'` にした
+   （チケットの `in phase 1` はなくした）。具体化で借用が分かった場合（アップキャストを含む）も同じ検査をする。排他借用はどちらにも入れられない。
+6. **アップキャスト。** `Dyn.of` を dyn 値に適用し、元の型がディスパッチするクラスが期待型の全クラスを含むときは、領域を確保し直さず vtable を差し替える。
+   含まないときは Phase 1 のとおり利用者のインスタンスで包み直す（fixture の `wrapped_tag`）。
+7. **予約モジュール `Dyn`。** 利用者のモジュール `Dyn.tz` が `Dyn.of` を隠さないように予約した（チケットは「`Dyn` は予約語ではない」とだけ書いていた）。
+8. **E2E の追加。** チケットの表に `send_area`・`copy_area`・`copy_array`・`borrowed_area`・`multi_area`・`upcast_area`・`marker_upcast`・`wrapped_tag`・
+   `builtin_display`・`builtin_hash` を足した。`Square` は i64 だけの record なので Copy になり、move の検査は `Label` で行う。
+9. **`docs/language.md` などの検査。** `scripts/check-docs.mjs` は `_docs/` のページだけを受けるので、手順 12 の確認は `_docs/` の 5 ページで行った。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.19.6）
+
+- `cargo test --locked --test dyn_dispatch` は 22 passed。`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は 718 passed・0 failed
+  （C08・A16 を含む時点）。GUIDE §3.1 の stack-depth テストと `honors_the_exact_specialization_limit` は上限と stack を変えずに成功した。
+  `vsc/` の `check-types`・`lint`・`test:unit`（9 件）も成功した。
+- suite `dyn_dispatch` が native/WASM × `-O0`/`-O3` で成功（`live == 0`、WASM の import なし）。`TSUZURI_ASAN=1` と `TSUZURI_TSAN=1` でも成功した。
+- 手順 11: 既存の fixture と例の IR（123 個）は A16 の時点と byte 一致した（新規の `dyn_dispatch` の 2 個を除く）。「再現」のサンプルの IR は `ff84e4c` と比べて
+  `$instance.N` の番号のずれ（C08・A16 の std の追加による）だけで、番号を消すと `-O0`・`-O3` とも一致した。2 回のビルドも一致した。
+  `/tmp/tz-a14/dyn` のフロントエンドの IR には合成された `Shapes.$instance.N.area` の中に間接呼び出しが 1 つ（`call i64 %v4(ptr %v1)`）あり、
+  vtable は `@"tz.vtable.Shapes.Shape[Main.Square]"`（size 8）と `@"tz.vtable.Shapes.Shape[Main.Rect]"`（size 16）。入口を外部にして
+  LLVM 21 の `opt -O3` にかけると `ret i64 29` に畳まれた（確保と間接呼び出しが消える）。
+- 性能（`node benchmarks/run-dyn.mjs`、3,000 要素 × 2,000 周、9 回の中央値、3 回実行。生データは `target/perf/A14/`）: dyn 15.34–15.59 ms、
+  union の `match` 3.77–3.85 ms、単相化 2.19–2.26 ms。各版だけを export した object の逆アセンブルは 10,863・5,406・22,405 bytes。
+  dyn は要素ごとに間接呼び出しが残りベクトル化されない。詳細は `docs/benchmarks.md` の「動的ディスパッチの比較（A14）」。
+- 全体のゲート（fmt・clippy・features の全 suite・`check-docs`）は 5 チケットの実装の後にまとめて実行した（F08 の記録を参照）。

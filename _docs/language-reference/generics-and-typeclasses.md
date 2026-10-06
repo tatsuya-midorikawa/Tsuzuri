@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-ジェネリック関数は型を変えて同じ処理を使う仕組みです。型クラスは、その型で利用できる演算を指定します。型クラスのインスタンスはコンパイル時に選ばれ、実行時の辞書や仮想ディスパッチは生成しません。
+ジェネリック関数は型を変えて同じ処理を使う仕組みです。型クラスは、その型で利用できる演算を指定します。型クラスのインスタンスはコンパイル時に選ばれ、実行時の辞書や仮想ディスパッチは生成しません。実行時に選ぶ場合は [dyn 型](#動的ディスパッチdyn) を明示します。
 
 ## 型変数と制約
 
@@ -133,11 +133,70 @@ total_of (Point { horizontal: 20, vertical: 22 })
 
 対象は定義元モジュールを持つレコード・union です。プリミティブや配列に任意の同名関数を探索する仕組みではなく、private も迂回しません。`'value.total` の使用には明示的な `#total` が必要です。
 
+## 動的ディスパッチ（dyn）
+
+`dyn C` は、型クラス `C` のインスタンスを持つ何らかの型の値を所有する型です。異なる型の値を一つの配列に入れ、メソッドを実行時に選べます。C++ の仮想関数、Rust の `dyn Trait`、C# / F# のインターフェースに相当します。
+
+`Shapes.tt`:
+
+```tsuzuri project=dyn file=Shapes.tt
+class Shape<'value> {
+    def area :: ref 'value -> i64
+}
+```
+
+同じ root の `Main.tz`:
+
+```tsuzuri project=dyn file=Main.tz run=29
+record Square { side: i64 }
+record Rect { width: i64, height: i64 }
+
+instance Shapes.Shape<Square> {
+    fn area square = square.side * square.side
+}
+
+instance Shapes.Shape<Rect> {
+    fn area rect = rect.width * rect.height
+}
+
+def area_of :: Shapes.Shape<'value> => ref 'value -> i64 = \shape -> Shapes.Shape.area shape
+
+let shapes: [dyn Shapes.Shape] = [Dyn.of (Square { side: 3 }), Dyn.of (Rect { width: 4, height: 5 })]
+area_of (ref shapes[0]) + Shapes.Shape.area (ref shapes[1])
+```
+
+`Dyn.of value` は値をヒープの領域へ move し、その型の vtable と組にします。書けるのは、束縛・引数・フィールド・結果の注釈などで期待される型が `dyn` 型の位置だけで、期待型がなければ `E1015` です。暗黙の変換はありません。メソッド呼び出しは vtable から関数を読んで間接呼び出しします。`Shapes.Shape<'value>` を要求するジェネリック関数は `'value = dyn Shapes.Shape` で一度だけ具体化され、格納された全ての型で共有されます。
+
+`dyn C` が満たすのは `C` とそのスーパークラスだけで、それらのメソッド（既定メソッドを含む）が vtable の slot になります。組み込みの実装も格納できます。
+
+```tsuzuri run=answer=42
+let parts: [dyn Display] = [Dyn.of "answer", Dyn.of 42]
+Display.display (ref parts[0]) + "=" + Display.display (ref parts[1])
+```
+
+複数のクラスは `dyn (Shapes.Shape, Shapes.Named)` のように括弧で並べます。`Copy` と `Send` は性質を表す印として並べられます。
+
+| 型 | 意味 |
+| --- | --- |
+| `dyn C` | 所有値。Copy ではなく、スコープの終わりに格納した値を drop して領域を解放する |
+| `dyn (C, D)` | `C` と `D` の両方のメソッドを呼べる |
+| `dyn (C, Copy)` | Copy な値だけを格納し、dyn 値も複製できる。複製は領域を確保して値を複製する |
+| `dyn (C, Send)` | Send な値だけを格納し、タスクへ渡せる |
+| `dyn C {r}` | region `r` の借用を含む値を格納できる。Send にはならない |
+
+借用を含む値を region のない `dyn C` へ入れると `E1013` です。所有の受け手（`'value` を値で取るメソッド）を呼ぶと dyn 値を消費します。
+
+`Dyn.of` を dyn 値に適用し、その値が期待型の全クラスのメソッドを持つ場合は、領域を確保し直さずに vtable だけを替えます（アップキャスト）。例えば `dyn (Shapes.Shape, Shapes.Named)` の値から `dyn Shapes.Named` を作れます。そうでない場合は dyn 値も通常の値として、利用者のインスタンス（`instance Tagged<dyn Shapes.Shape>` など）で格納します。
+
+`dyn` にできるクラスは、各メソッドの第 1 引数がクラスの型そのもの・`ref`・`ref mut` で、他の引数と結果にクラスの型が現れないものです。メソッドのないクラス、高階型クラス、`Drop`、メソッドのないスーパークラスを持つクラスも使えません。ただしスーパークラスの `Copy` と `Send` は、`dyn (C, Copy)` のように印を並べれば満たせます。違反は理由付きの `E1028` です。例えば `Eq` と `Ord` は第 2 引数にクラスの型があるため `dyn` にできません。
+
+dyn 値は export・extern の引数と結果に使えません（`E1008`）。dyn 値の比較、元の型への downcast、実行時の型情報はありません。
+
 ## 制限
 
 通常の型クラスは一つの型パラメーターを持ちます。高ランク多相、通常 kind のメソッド固有型変数、メソッド固有の制約は未対応です。高階型クラスには別の対応範囲があります。
 
-単相化は具体型ごとにコードを作るため、型の増大が続く再帰には制限があります。追加特殊化 1,024、型深さ 128、型構成要素 4,096、関数へ伝播する各種制約 128 などの上限を持ち、超過は `E1017` になります。
+単相化は具体型ごとにコードを作るため、型の増大が続く再帰には制限があります。追加特殊化 1,024、型深さ 128、型構成要素 4,096、関数へ伝播する各種制約 128 などの上限を持ち、超過は `E1017` になります。再帰ごとに値を `dyn` 型へ包めば、型は増大しません。
 
 ## 関連項目
 

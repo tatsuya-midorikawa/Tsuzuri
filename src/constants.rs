@@ -157,6 +157,7 @@ impl Checker<'_> {
                 Type::Array(ty)
                 | Type::List(ty)
                 | Type::Vec(ty)
+                | Type::FixedArray(ty, _)
                 | Type::Task(ty)
                 | Type::Reference(ty, _) => open(checker, ty),
                 Type::Function(parameters, result) => {
@@ -183,7 +184,10 @@ fn is_place(expression: &TypedExpr) -> bool {
         | TypedExprKind::ListTail(value, _)
         | TypedExprKind::UnionPayload { value, .. } => is_place(value),
         TypedExprKind::Index(value, _) => {
-            matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) && is_place(value)
+            matches!(
+                value.ty,
+                Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+            ) && is_place(value)
         }
         _ => false,
     }

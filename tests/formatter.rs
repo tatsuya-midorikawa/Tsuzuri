@@ -108,6 +108,61 @@ fn inline_definitions_and_implicit_unions_preserve_layout_and_fingerprints() {
 }
 
 #[test]
+fn formats_exclusive_slices() {
+    let source = "def fill::ref mut [i64..]->i64->unit=\\values value->Array.write values 0 value\nlet mut values:[i64]=[1,2,3]\nlet tail=ref mut values[1..]\nfill tail 2\nlet head=&mut values[..2]\nfill head 1\nlet whole:ref mut [i64..]=ref mut values[0..]\nwhole.length\n";
+    let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
+    let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+    assert_eq!(first.formatted, second.formatted);
+    assert!(first.formatted.contains("ref mut [i64..] -> i64 -> unit"));
+    assert!(first.formatted.contains("ref mut values[1 ..]"));
+    assert!(first.formatted.contains("values[.. 2]"));
+    let before = parser::parse(source).unwrap();
+    let after = parser::parse(&first.formatted).unwrap();
+    assert_eq!(ast_fingerprint(before), ast_fingerprint(after));
+    tsuzuri::analyze(&first.formatted).unwrap();
+}
+
+#[test]
+fn formats_fixed_arrays_and_length_parameters() {
+    let source = "record Grid<'a,const N:i64>{cells:['a;N]}\ndef total::[i64;N]->i64=\\v->v.length\ndef first::Grid<f64,3>->f64=\\g->g.cells[0]\nlet v:[i64;3]=[1,2,3]\nlet mut sum=0i64\nfor index in 0i64 .. 2 do sum=sum+v[index]\nsum+total v\n";
+    let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
+    let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+    assert_eq!(first.formatted, second.formatted);
+    assert!(
+        first
+            .formatted
+            .contains("record Grid<'a, const N: i64> { cells: ['a; N] }"),
+        "{}",
+        first.formatted
+    );
+    assert!(
+        first.formatted.contains("def total :: [i64; N] -> i64"),
+        "{}",
+        first.formatted
+    );
+    assert!(
+        first.formatted.contains("Grid<f64, 3> -> f64"),
+        "{}",
+        first.formatted
+    );
+    assert!(
+        first.formatted.contains("let v: [i64; 3] = [1, 2, 3]"),
+        "{}",
+        first.formatted
+    );
+    // A statement's range keeps its spaces (its implicit `unit` annotation is no type text).
+    assert!(
+        first.formatted.contains("for index in 0i64 .. 2 do"),
+        "{}",
+        first.formatted
+    );
+    let before = parser::parse(source).unwrap();
+    let after = parser::parse(&first.formatted).unwrap();
+    assert_eq!(ast_fingerprint(before), ast_fingerprint(after));
+    tsuzuri::analyze(&first.formatted).unwrap();
+}
+
+#[test]
 fn lambda_guards_and_where_preserve_layout() {
     for source in [
         "def choose::i64->i64=\\value->\n  |diff>10->diff\n  |otherwise->0\n  where\n    diff=Int.abs value\n",

@@ -12,6 +12,8 @@ pub enum SimdKind {
 pub struct SimdType {
     pub bits: u16,
     pub kind: SimdKind,
+    /// The vector's width in bits, 128 or 256. A mask has the width of its numeric vector.
+    pub width: u16,
 }
 
 impl SimdType {
@@ -35,12 +37,22 @@ impl SimdType {
         if !matches!(bits, 8 | 16 | 32 | 64) || (kind == SimdKind::Float && bits < 32) {
             return None;
         }
-        let ty = Self { bits, kind };
-        (lanes.parse::<u16>().ok()? == ty.lanes() && ty.name() == name).then_some(ty)
+        let width = lanes.parse::<u16>().ok()?.checked_mul(bits)?;
+        let ty = Self { bits, kind, width };
+        (matches!(width, 128 | 256) && ty.name() == name).then_some(ty)
     }
 
     pub fn lanes(self) -> u16 {
-        128 / self.bits
+        self.width / self.bits
+    }
+
+    /// Bytes in memory: a numeric vector fills its width, a mask packs one bit per lane.
+    pub fn bytes(self) -> usize {
+        if self.kind == SimdKind::Mask {
+            usize::from(self.lanes()).div_ceil(8)
+        } else {
+            usize::from(self.width / 8)
+        }
     }
 
     pub fn element(self) -> Type {

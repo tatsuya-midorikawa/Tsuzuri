@@ -1,0 +1,251 @@
+record Square { side: i64 }
+record Rect { width: i64, height: i64 }
+record Label { text: string, weight: i64 }
+record Bag { items: [dyn Shapes.Shape] }
+record Faulty { divisor: i64 }
+record Wide { low: i64, pad: i128 }
+record Point { x: i64, y: i64 } deriving (Display, Hash)
+record Ruler {r} { side: ref {r} i64 }
+
+instance Shapes.Named<Square> {
+    fn id _square = 1
+}
+
+instance Shapes.Shape<Square> {
+    fn area square = square.side * square.side
+    fn grow square k = { deref square = Square { side: square.side * k }; }
+    fn into_area square = square.side * square.side
+}
+
+instance Shapes.Tagged<Square> {
+    fn tag square = square.side + 100
+}
+
+instance Shapes.Named<Rect> {
+    fn id _rect = 2
+}
+
+instance Shapes.Shape<Rect> {
+    fn area rect = rect.width * rect.height
+    fn grow _rect _k = ()
+    fn into_area rect = rect.width * rect.height
+}
+
+instance Shapes.Named<Label> {
+    fn id _label = 3
+}
+
+instance Shapes.Shape<Label> {
+    fn area label = label.weight
+    fn grow _label _k = ()
+    fn into_area label = label.weight + label.text.length * 0
+}
+
+instance Shapes.Named<Bag> {
+    fn id _bag = 4
+}
+
+instance Shapes.Shape<Bag> {
+    fn area bag =
+        let mut total = 0i64
+        for index in 0i64 .. (bag.items.length - 1) do total = total + Shapes.Shape.area (ref bag.items[index])
+        total
+    fn grow _bag _k = ()
+    fn into_area bag = Shapes.Shape.area (ref bag)
+}
+
+instance Shapes.Named<Faulty> {
+    fn id _faulty = 5
+}
+
+instance Shapes.Shape<Faulty> {
+    fn area faulty =
+        assert (faulty.divisor != 0)
+        100 / faulty.divisor
+    fn grow _faulty _k = ()
+    fn into_area faulty = 100 / faulty.divisor
+}
+
+instance Shapes.Named<Wide> {
+    fn id _wide = 6
+}
+
+instance Shapes.Shape<Wide> {
+    fn area wide = wide.low + (wide.pad as i64)
+    fn grow _wide _k = ()
+    fn into_area wide = wide.low
+}
+
+instance Shapes.Named<[i64]> {
+    fn id _values = 7
+}
+
+instance Shapes.Shape<[i64]> {
+    fn area values = Array.sum values
+    fn grow _values _k = ()
+    fn into_area values = Array.sum (ref values)
+}
+
+instance Shapes.Named<Ruler> {
+    fn id _ruler = 8
+}
+
+instance Shapes.Shape<Ruler> {
+    fn area ruler = deref ruler.side * deref ruler.side
+    fn grow _ruler _k = ()
+    fn into_area ruler = deref ruler.side
+}
+
+// A user instance for a dyn type: storing it in another dyn type boxes it again.
+instance Shapes.Tagged<dyn Shapes.Shape> {
+    fn tag shape = Shapes.Shape.area shape + 7
+}
+
+def shapes :: i64 -> [dyn Shapes.Shape]
+fn shapes x = [Dyn.of (Square { side: x }), Dyn.of (Rect { width: x, height: x + 1 }), Dyn.of (Label { text: "label", weight: 10 * x })]
+
+def area_of :: Shapes.Shape<'a> => ref 'a -> i64
+fn area_of shape = Shapes.Shape.area shape
+
+def measure {r} :: ref {r} i64 -> dyn Shapes.Shape {r}
+fn measure side = Dyn.of (Ruler { side: side })
+
+export def total_area :: i64 -> i64
+fn total_area x =
+    let items = shapes x
+    let mut total = 0i64
+    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Shape.area (ref items[index])
+    total
+
+export def describe_total :: i64 -> i64
+fn describe_total x =
+    let items = shapes x
+    let mut total = 0i64
+    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Shape.describe (ref items[index])
+    total
+
+export def generic_total :: i64 -> i64
+fn generic_total x =
+    let items = shapes x
+    let mut total = 0i64
+    for index in 0i64 .. (items.length - 1) do total = total + area_of (ref items[index])
+    total
+
+export def names :: i64 -> i64
+fn names x =
+    let items = shapes x
+    let mut total = 0i64
+    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Named.id (ref items[index])
+    total
+
+export def bag_area :: i64 -> i64
+fn bag_area x =
+    let bag: dyn Shapes.Shape = Dyn.of (Bag { items: [Dyn.of (Square { side: x }), Dyn.of (Rect { width: 1, height: x })] })
+    Shapes.Shape.area (ref bag)
+
+export def into_area :: i64 -> i64
+fn into_area x =
+    let label: dyn Shapes.Shape = Dyn.of (Label { text: "owned", weight: x })
+    Shapes.Shape.into_area label
+
+export def grown_area :: i64 -> i64
+fn grown_area x =
+    let mut square: dyn Shapes.Shape = Dyn.of (Square { side: x })
+    Shapes.Shape.grow (ref mut square) 2
+    Shapes.Shape.area (ref square)
+
+export def maybe_area :: i64 -> i64
+fn maybe_area x =
+    let boxed: Maybe<dyn Shapes.Shape> = if x > 0 then Some (Dyn.of (Square { side: x })) else None
+    match boxed with
+    | Some shape -> Shapes.Shape.area (ref shape)
+    | None -> -1
+
+export def array_area :: i64 -> i64
+fn array_area x =
+    let values: dyn Shapes.Shape = Dyn.of [x, x + 1, x + 2]
+    Shapes.Shape.area (ref values)
+
+export def wide_area :: i64 -> i64
+fn wide_area x =
+    let wide: dyn Shapes.Shape = Dyn.of (Wide { low: x, pad: 0 })
+    Shapes.Shape.area (ref wide)
+
+export def faulty_area :: i64 -> i64
+fn faulty_area x =
+    let faulty: dyn Shapes.Shape = Dyn.of (Faulty { divisor: x })
+    Shapes.Shape.area (ref faulty)
+
+export def display_agrees :: i64 -> i64
+fn display_agrees x =
+    let point = Point { x: x, y: 2 * x }
+    let shown: dyn Display = Dyn.of (Point { x: x, y: 2 * x })
+    if Display.display (ref shown) == to_string point then 1 else 0
+
+export def hash_agrees :: i64 -> i64
+fn hash_agrees x =
+    let point = Point { x: x, y: 3 }
+    let hashed: dyn Hash = Dyn.of (Point { x: x, y: 3 })
+    if Hash.hash (ref hashed) == Hash.hash (ref point) then 1 else 0
+
+export def send_area :: i64 -> i64
+fn send_area x =
+    let shape: dyn (Shapes.Shape, Send) = Dyn.of (Square { side: x })
+    Task.run (task { Shapes.Shape.area (ref shape) })
+
+export def copy_area :: i64 -> i64
+fn copy_area x =
+    let first: dyn (Shapes.Shape, Copy) = Dyn.of (Square { side: x })
+    let second = first
+    let scale = \k -> Shapes.Shape.area (ref first) * k
+    Shapes.Shape.area (ref second) + scale 2 + scale 3
+
+export def copy_array :: i64 -> i64
+fn copy_array x =
+    let first: dyn (Shapes.Shape, Copy) = Dyn.of [x, 1]
+    let second = first
+    Shapes.Shape.area (ref first) + Shapes.Shape.area (ref second)
+
+export def borrowed_area :: i64 -> i64
+fn borrowed_area x =
+    let side = x * 2
+    let shape = measure (ref side)
+    Shapes.Shape.area (ref shape)
+
+export def multi_area :: i64 -> i64
+fn multi_area x =
+    let both: dyn (Shapes.Shape, Shapes.Tagged) = Dyn.of (Square { side: x })
+    Shapes.Shape.area (ref both) + Shapes.Tagged.tag (ref both)
+
+export def upcast_area :: i64 -> i64
+fn upcast_area x =
+    let both: dyn (Shapes.Shape, Shapes.Tagged) = Dyn.of (Square { side: x })
+    let shape: dyn Shapes.Shape = Dyn.of both
+    let area = Shapes.Shape.area (ref shape)
+    let named: dyn Shapes.Named = Dyn.of shape
+    area * 10 + Shapes.Named.id (ref named)
+
+export def marker_upcast :: i64 -> i64
+fn marker_upcast x =
+    let sent: dyn (Shapes.Shape, Send) = Dyn.of (Square { side: x })
+    let plain: dyn Shapes.Shape = Dyn.of sent
+    Shapes.Shape.area (ref plain)
+
+export def wrapped_tag :: i64 -> i64
+fn wrapped_tag x =
+    let shape: dyn Shapes.Shape = Dyn.of (Square { side: x })
+    let tagged: dyn Shapes.Tagged = Dyn.of shape
+    Shapes.Tagged.tag (ref tagged)
+
+export def builtin_display :: i64 -> i64
+fn builtin_display x =
+    let shown: dyn Display = Dyn.of x
+    let text: dyn Display = Dyn.of "text"
+    let digits = Display.display (ref shown)
+    let word = Display.display (ref text)
+    if digits == to_string x then digits.length * 10 + word.length else -1
+
+export def builtin_hash :: i64 -> i64
+fn builtin_hash x =
+    let hashed: dyn Hash = Dyn.of x
+    if Hash.hash (ref hashed) == Hash.hash (ref x) then 1 else 0

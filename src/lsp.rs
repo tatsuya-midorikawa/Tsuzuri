@@ -18,11 +18,11 @@ const MAX_LOCATIONS: usize = 10_000;
 const MAX_COMPLETIONS: usize = 500;
 const MAX_SYMBOLS: usize = 256;
 
-const KEYWORDS: [&str; 41] = [
+const KEYWORDS: [&str; 42] = [
     "fn", "def", "rec", "and", "export", "extern", "private", "record", "union", "type", "const",
-    "test", "class", "instance", "deriving", "let", "task", "do", "return", "yield", "for", "in",
-    "to", "downto", "while", "break", "continue", "mut", "ref", "deref", "new", "as", "if", "then",
-    "elif", "else", "match", "with", "when", "true", "false",
+    "test", "class", "instance", "deriving", "dyn", "let", "task", "do", "return", "yield", "for",
+    "in", "to", "downto", "while", "break", "continue", "mut", "ref", "deref", "new", "as", "if",
+    "then", "elif", "else", "match", "with", "when", "true", "false",
 ];
 /// Words that are keywords only in their syntax and identifiers elsewhere.
 const CONTEXTUAL_KEYWORDS: [&str; 7] =

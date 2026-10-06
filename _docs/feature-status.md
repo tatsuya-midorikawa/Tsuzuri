@@ -39,9 +39,9 @@
 | A11 | 比較の非消費化、借用 Eq / Ord、構造比較 | [比較クラス](language-reference/generics-and-typeclasses.md) | [A11](../_features/_completed/A11-borrowed-comparisons.md) |
 | A12 | 対応（Phase 1・2）: レコードごとに 16 個までの独立した region（`record Pair {r s}`）。所有権検査は不変の束縛・field の読み出し・直接の完全適用で region ごとに借用を分け、可変の束縛・ループ・関数値・コレクションでは全 region を保持する。Phase 2 で名前付き関数の引数に region で量化した関数型（`({s} ref {s} T -> ref {s} T)`）。渡す関数の契約を検査し、その関数は直接の完全適用だけ。region は生成 IR を変えない。戻り値・ローカル・field の量化型と region 間の outlives 制約は未実装 | [lifetime](language-reference/lifetimes.md) | [A12](../_features/_completed/A12-multiple-regions.md) |
 | A13 | 対応（Phase 1・2）: レコードの排他借用フィールド `ref mut {r} T`（region は必須）。フィールドの一段の再借用、部分 move、ほかのフィールドの読み出し、入れ子のレコード、引数・戻り値・タプルに対応する。排他借用を持つレコードは Copy でなく、関数値への捕捉・タスク・コレクション・union・`export` の境界には置けない。Phase 2 で参照先の region（`ref mut {r} Note {s}`）を書いた参照を経由して、同じ region の入力に由来する借用を持つ値に置換できる。格納しうる関数は直接の完全適用だけ。生成 IR は変わらない。複数 region のレコードの `let mut` 束縛は全 region をまとめて扱う | [lifetime](language-reference/lifetimes.md) | [A13](../_features/_completed/A13-exclusive-borrow-fields.md) |
-| A14 | 未着手（計画）: 型クラスによる動的ディスパッチ | [型クラス](language-reference/generics-and-typeclasses.md) | [A14](../_features/A14-dynamic-dispatch.md) |
+| A14 | 対応（Phase 1・2）: 型クラスによる動的ディスパッチ。予約語 `dyn` の型 `dyn C` と構築 `Dyn.of`（期待型が dyn 型の位置だけ）。値は `{ data, vtable }` で、`(C, T)` ごとの定数 vtable からメソッド（スーパークラス・既定メソッドを含む）を間接呼び出しする。制約付きジェネリック関数は `dyn C` で一度だけ具体化される。dyn にできないクラスは理由付きの `E1028`。Phase 2 で複数クラス `dyn (C, D)`、印 `Copy`（clone slot）と `Send`、region 付きの借用を格納する `dyn C {r}`、vtable を替えるだけのアップキャスト、組み込み実装（`Display<i64>` など）の格納。downcast・実行時型情報・dyn 値の比較・host ABI での受け渡しは対象外 | [動的ディスパッチ](language-reference/generics-and-typeclasses.md#動的ディスパッチdyn) | [A14](../_features/_completed/A14-dynamic-dispatch.md) |
 | A15 | 対応（Phase 1・2）: `--warn implicit-copy` で配列・リストの暗黙の複製を `W1006` として報告（既定は無効、生成コードは不変）。明示の `Array.copy` / `List.copy`。複製の一覧 `copies::sites` は debug build で生成した複製と照合する。LSP は同じ位置に複製の種類の inlay hint を返す。複製の省略（PM07）と共有バッファによる O(1) 化（C10）は未実装 | [所有権](language-reference/ownership.md) | [A15](../_features/_completed/A15-copy-cost-visibility.md) |
-| A16 | 未着手（計画）: 固定長配列と const ジェネリクス | [型](language-reference/types.md) | [A16](../_features/A16-fixed-arrays.md) |
+| A16 | 対応（Phase 1・2）: 長さを型に含む固定長配列 `[T; N]`（N ≤ 1024）。要素を値の中に直接持ち、ヒープを確保しない。リテラル（期待型から決定）、`FixedArray.init`、添字（範囲内の定数添字は境界検査なし）、`.length`、名前付きの値からの共有スライスと `ref [T]` への受け渡し。長さは整数リテラル、`i64` 定数、長さパラメーター。Phase 2 で record・union・型エイリアスの `const N: i64`、関数の暗黙の長さパラメーター、export するレコードのスカラー固定長配列フィールド（C の `T name[N]`）。`for` による列挙、パターンによる分解、排他スライス、長さの式は未実装 | [固定長配列](language-reference/types.md#固定長配列) | [A16](../_features/_completed/A16-fixed-arrays.md) |
 
 ## B エラー処理と制御
 
@@ -67,7 +67,7 @@
 | C05 | 所有レコードのフィールド更新 | [レコード更新](language-reference/records.md) | [C05](../_features/_completed/C05-record-update-syntax.md) |
 | C06 | 不透明な順序付き Map / Set、非 Copy キーの借用 | [Map / Set](library-reference/map-set.md) | [C06](../_features/_completed/C06-map-set.md) |
 | C07 | 一回消費 Seq、明示 iter、借用要素の反復 | [Seq](library-reference/sequences.md) | [C07](../_features/_completed/C07-iteration-protocol.md) |
-| C08 | 未着手（計画）: 可変スライスと要素のその場更新 | [Array / List](library-reference/arrays-and-lists.md) | [C08](../_features/C08-mutable-slices.md) |
+| C08 | 対応（Phase 1・2）: 排他スライス `ref mut [T..]`（`ref mut xs[a..b]` / `&mut xs[a..b]`）。添字・`length`・`for`・再スライスと `ref [T]` への受け渡しは共有スライスと同じ。`Array.write` / `swap_in` / `split_at_mut` / `sort_in_place`（作業領域なしの安定整列）で要素をその場で置き換える。引数では `ref mut [T]` と `let mut` の配列から全体のスライスへ変換する。Phase 2 で `Parallel.for_each_chunk` による互いに素なチャンクへの並列書き込み。代入構文 `xs[i] = v`、要素の排他借用、List と文字列の排他スライスは未実装。`split_at_mut` の半分は一つの借用として扱う | [排他スライス](library-reference/arrays-and-lists.md#排他スライスとその場の更新) | [C08](../_features/_completed/C08-mutable-slices.md) |
 | C09 | 対応（Phase 1・2）: 不透明で非 Copy の `HashMap` / `HashSet`。キーは `Hash` と `Eq`、検索・挿入・削除は平均 O(1)。反復順は挿入順で、削除は末尾の entry を移す swap-remove のため、ハッシュ値・target・seed に依らず native と WASM で一致する。`with_seed` と `randomized`（OS の乱数。既定の wasm32 では `E2000`）による SipHash-1-3 の seed 付きハッシュ、借用キーの `contains_key_ref` / `get_ref` / `at_ref` / `remove_ref`、診断の `longest_probe`。既定の map は HashDoS への耐性がなく、seed 付きでも 64-bit の digest が完全に衝突するキーは防げない。SIMD のグループ探索（F08 待ち）、縮小、集合演算、`singleton`、`pop` は未実装 | [HashMap / HashSet](library-reference/hash-map.md) | [C09](../_features/_completed/C09-hash-map.md) |
 | C10 | 未着手（計画）: Arena / Handle による循環構造、参照カウントの検討 | [所有権](language-reference/ownership.md) | [C10](../_features/C10-shared-ownership.md) |
 | C11 | 未着手（計画）: 多次元配列と行列カーネル | [Array / List](library-reference/arrays-and-lists.md) | [C11](../_features/C11-multidimensional-arrays.md) |
@@ -118,12 +118,12 @@
 | F05 | native の同梱 i64 配列和に限る CPU dispatch | [CPU 選択](guides/performance.md) | [F05](../_features/_completed/F05-runtime-cpu-dispatch.md) |
 | F06 | opt-in の共有メモリと Node Worker ホスト | [WASM threads](guides/wasm-threads.md) | [F06](../_features/_completed/F06-wasm-threads.md) |
 | F07 | 実験的 CPU 参照、strict 整数 WGSL、WebGPU host | [GPU](guides/gpu.md) | [F07](../_features/_completed/F07-gpu-backend.md) |
-| F08 | 未着手（計画）: 256-bit SIMD と関数単位の CPU 多版化 | [Simd](library-reference/simd.md) | [F08](../_features/F08-wide-simd-multiversioning.md) |
+| F08 | 対応（Phase 1〜3）: 整数 8 型の `Array.sum`・`min`・`max` の CPU kernel（SSE4.2・AVX2、指定時のみ AVX-512・SVE）。256-bit の SIMD 型（`i32x8`、`f64x4` など 14 型）、`Simd.of_lanes32`、排他スライスへの `Simd.store`。`@cpu ["avx2", ...]` で利用者関数を命令セットごとに compile し、実行時に選ぶ（x86-64、AArch64 Linux）。x86 と SVE は cross-compile のみ確認、実機の実行と速度は未確認 | [Simd](library-reference/simd.md)、[CPU 選択](guides/performance.md) | [F08](../_features/_completed/F08-wide-simd-multiversioning.md) |
 | F09 | 未着手（計画）: strict な float / 64-bit GPU カーネルと実行時接続 | [GPU](guides/gpu.md) | [F09](../_features/F09-gpu-float-runtime.md) |
 | F10 | 未着手（計画）: Atomic / Mutex / Channel とスコープ付き並列 | [Task](language-reference/tasks.md) | [F10](../_features/F10-concurrency-primitives.md) |
 | F11 | 対応（Phase 1・2）: WASM の build・test で `--wasm-max-memory`（wasm32 は最大 4 GiB − 64 KiB、wasm64 は 16 GiB）と `--wasm-stack-size`、root manifest の `[wasm]`、`--target wasm64`（memory64。Node.js 24 以降）。wasm32 の 2 GiB 超と threads は stack 溢れを入口で検査。既定は 16 MiB・1 MiB のまま。wasm64 の threads は対象外 | [WASM](guides/webassembly.md) | [F11](../_features/_completed/F11-wasm-memory-limit.md) |
 | F12 | 対応（Phase 0・1）: 配列の添字が `0 .. len - 1` のループ、定数長、範囲を確かめた `if` の then 側で必ず範囲内と証明できたときだけ境界検査を省く。`array_index_sum` の計測と形ごとの記録あり。Phase 2（ループの版分け、`while` の帰納変数、`assert` による支配）は、可変の上限・先行する検査・`while` の形も `-O3` で LLVM が検査を落として同じ速さになる実測のため実装しない | [性能](guides/performance.md) | [F12](../_features/_completed/F12-bounds-check-elimination.md) |
-| F13 | 未着手（計画）: ホスト提供の allocator、確保統計、freestanding 出力 | [C ABI](guides/native-interop.md) | [F13](../_features/F13-custom-allocators.md) |
+| F13 | 対応（Phase 1・2・3）: `--allocator host` で Tsuzuri の全てのヒープ確保をホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` へ送る（native の object・LLVM IR・header。align 16、各ブロックに 16 バイトのサイズのヘッダー）。Phase 2 で WASM の host allocator（`tsuzuri_heap` からの import、threads とは併用不可）と、確保・解放の回数と現在・最大のバイト数を返す `--allocator counting` と `tsuzuri_alloc_stats`。Phase 3 で C ライブラリを参照しない `--freestanding`（IO・OS API・タスク・Debug 出力は E2000）。`--emit exe` との組み合わせ、値ごとの allocator、WASM の size-class allocator（PM05）は対象外 | [C ABI](guides/native-interop.md#確保をホストへ委ねる) | [F13](../_features/_completed/F13-custom-allocators.md) |
 
 ## G 開発ツール
 
@@ -155,7 +155,7 @@
 - 戻り値・ローカルに置く region 付き関数値型、region 間の outlives 制約。
 - HKT 型別名、高階 kind 引数、標準 Functor / Monad の自動導入。
 - 関数呼び出しやラムダを越える例外の伝播、`OverflowException` 以外の例外とトラップの捕捉、外部キャンセルトークン、開始済み Task の強制停止。
-- locale 書式、書記素幅、一般的な Unicode 正規化、可変スライス。
+- locale 書式、書記素幅、一般的な Unicode 正規化、配列の代入構文と要素単位の排他借用。
 - registry / git 依存、lockfile と版解決、ネットワーク取得、build script。
 - 任意関数の実行時 CPU dispatch、SVE / SVE2、GPU 自動 offload、float / 64-bit WGSL。
 - ブラウザー向け本番 threads glue、LSP completion / rename / formatting。

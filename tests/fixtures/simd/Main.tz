@@ -114,3 +114,114 @@ fn operator_method value =
     let sum = Add.add left right
     assert (Simd.all (Simd.eq sum (left + right)))
     Simd.extract sum 0
+
+export def wide_i8 :: i64 -> i64 -> i64
+fn wide_i8 seed shift =
+    let base: i8x32 = Simd.splat (seed as i8)
+    let values = Simd.replace base 0 ((seed + 7) as i8)
+    let shifts: i8x32 = Simd.splat (shift as i8)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_i8u :: i64 -> i64 -> i64
+fn wide_i8u seed shift =
+    let base: i8ux32 = Simd.splat (seed as ubyte)
+    let values = Simd.replace base 0 ((seed + 7) as ubyte)
+    let shifts: i8ux32 = Simd.splat (shift as ubyte)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_i16 :: i64 -> i64 -> i64
+fn wide_i16 seed shift =
+    let base: i16x16 = Simd.splat (seed as i16)
+    let values = Simd.replace base 0 ((seed + 7) as i16)
+    let shifts: i16x16 = Simd.splat (shift as i16)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_i16u :: i64 -> i64 -> i64
+fn wide_i16u seed shift =
+    let base: i16ux16 = Simd.splat (seed as i16u)
+    let values = Simd.replace base 0 ((seed + 7) as i16u)
+    let shifts: i16ux16 = Simd.splat (shift as i16u)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_i32 :: i64 -> i64 -> i64
+fn wide_i32 seed shift =
+    let base: i32x8 = Simd.splat (seed as i32)
+    let values = Simd.replace base 0 ((seed + 7) as i32)
+    let shifts: i32x8 = Simd.splat (shift as i32)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_i32u :: i64 -> i64 -> i64
+fn wide_i32u seed shift =
+    let base: i32ux8 = Simd.splat (seed as i32u)
+    let values = Simd.replace base 0 ((seed + 7) as i32u)
+    let shifts: i32ux8 = Simd.splat (shift as i32u)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_i64 :: i64 -> i64 -> i64
+fn wide_i64 seed shift =
+    let base: i64x4 = Simd.splat seed
+    let values = Simd.replace base 0 (seed + 7)
+    let shifts: i64x4 = Simd.splat shift
+    Simd.sum_lanes ((values * values + values) <<< shifts)
+
+export def wide_i64u :: i64 -> i64 -> i64
+fn wide_i64u seed shift =
+    let base: i64ux4 = Simd.splat (seed as i64u)
+    let values = Simd.replace base 0 ((seed + 7) as i64u)
+    let shifts: i64ux4 = Simd.splat (shift as i64u)
+    (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
+
+export def wide_float :: bool
+fn wide_float =
+    let nan = 0.0 / 0.0
+    let values: f64x4 = Simd.of_lanes4 (-0.0) 0.0 nan 2.0
+    let singles: f32x8 = Simd.of_lanes8 1e20f32 1.0f32 (-1e20f32) 1.0f32 0.5f32 0.25f32 0.125f32 0.125f32
+    let equal = Simd.eq values values
+    let greater = Simd.gt values (Simd.splat 1.0)
+    let selected = Simd.select greater values (Simd.splat (-1.0))
+    Simd.extract equal 0 && !(Simd.extract equal 2) && Simd.any (Simd.ne values values) && Simd.extract selected 3 == 2.0 && Simd.extract selected 2 == -1.0 && 1.0 / (Simd.extract values 0) < 0.0 && Simd.sum_lanes singles == 2.0f32 && Simd.any (Simd.lt (singles / Simd.splat 0.0f32) (Simd.splat 0.0f32))
+
+record WideOwned { vector: i32x8, name: string }
+union WideWrapped = WideEmpty | WideFull of WideOwned
+union WideMixed = Narrow of i8x16 | Broad of f32x8 | Flags of mask8x32
+
+export def wide_storage :: i64
+fn wide_storage =
+    let vector: i32x8 = Simd.of_lanes8 1i32 2i32 3i32 4i32 5i32 6i32 7i32 14i32
+    let value = WideFull (WideOwned { vector: vector, name: "wide" })
+    let read = \() -> match value with | WideEmpty -> 0i32 | WideFull owned -> Simd.sum_lanes owned.vector
+    assert (read () == 42i32)
+    let bytes: i8ux32 = Simd.splat 3ubyte
+    let mixed = [Narrow (Simd.splat 1i8), Broad (Simd.splat 0.5f32), Flags (Simd.gt bytes (Simd.splat 2ubyte))]
+    let mut score = 0i64
+    for item in mixed do
+        let part = match item with
+            | Narrow lanes -> (Simd.sum_lanes lanes) as i64
+            | Broad lanes -> (Simd.sum_lanes lanes) as i64
+            | Flags mask -> if Simd.all mask then 100 else 0
+        score = score + part
+    let vectors = [vector, vector]
+    let _list = [|vector|]
+    (Simd.extract vectors[1] 7) as i64 + 28 + score * 1000
+
+export def wide_load :: i64 -> i64
+fn wide_load index =
+    let data = [1, 2, 3, 4, 5, 6, 7, 8]
+    let vector: i64x4 = Simd.load (ref data) index
+    Simd.sum_lanes vector
+
+export def simd_store :: i64 -> i64
+fn simd_store index =
+    let mut data = [0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32]
+    let vector: i32x8 = Simd.of_lanes8 1i32 2i32 3i32 4i32 5i32 6i32 7i32 8i32
+    Simd.store (ref mut data[2..]) index vector
+    let mut total = 0i64
+    for value in data do total = total * 3 + (value as i64)
+    total
+
+export def simd_store_narrow :: i64 -> i64
+fn simd_store_narrow index =
+    let mut data: [f64] = [0.0, 0.0, 0.0, 0.0]
+    let vector: f64x2 = Simd.of_lanes2 1.5 2.5
+    Simd.store (ref mut data) index vector
+    ((data[0] + data[1] * 10.0 + data[2] * 100.0 + data[3] * 1000.0) * 2.0) as i64

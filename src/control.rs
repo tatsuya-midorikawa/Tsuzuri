@@ -26,7 +26,10 @@ fn is_place(expression: &TypedExpr) -> bool {
         | TypedExprKind::ListTail(value, _)
         | TypedExprKind::UnionPayload { value, .. } => is_place(value),
         TypedExprKind::Index(value, _) => {
-            matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) && is_place(value)
+            matches!(
+                value.ty,
+                Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+            ) && is_place(value)
         }
         _ => false,
     }
@@ -123,6 +126,13 @@ impl Checker<'_> {
                         }
                         Type::String => Type::Integer(16, false),
                         Type::Utf8String => Type::Integer(8, false),
+                        Type::FixedArray(..) => {
+                            return Err(Diagnostic::new(
+                                "E1005",
+                                "a fixed-length array is not enumerable; iterate 'for i in 0 .. xs.length - 1' and index it",
+                                source.span,
+                            ));
+                        }
                         _ => {
                             return Err(Diagnostic::new(
                                 "E1005",
@@ -349,7 +359,10 @@ impl Checker<'_> {
             TypedExprKind::Local(id) => self.borrowed.contains(id),
             TypedExprKind::Dereference(_) => true,
             TypedExprKind::Index(value, _) | TypedExprKind::ListTail(value, _) => {
-                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) && is_place(value)
+                matches!(
+                    value.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) && is_place(value)
             }
             TypedExprKind::Field(value, _) | TypedExprKind::UnionPayload { value, .. } => {
                 self.borrowed_place(value)
@@ -670,6 +683,13 @@ impl Checker<'_> {
                 )
             }
             PatternKind::Array(patterns) | PatternKind::List(patterns) => {
+                if matches!(self.inference.resolve(&matched.ty), Type::FixedArray(..)) {
+                    return Err(Diagnostic::new(
+                        "E1020",
+                        "fixed-length arrays cannot be destructured by patterns; index the elements instead",
+                        pattern.span,
+                    ));
+                }
                 let element = self.inference.fresh();
                 let ty = if matches!(pattern.kind, PatternKind::List(_)) {
                     Type::List(Box::new(element.clone()))

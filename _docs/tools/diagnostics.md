@@ -53,6 +53,7 @@ start / end は UTF-8 の byte offset で、end は排他的です。line / colu
 | E1025 | 導出できない型クラス・要素・再帰 Default |
 | E1026 | 定数の循環、トラップ、上限、未対応式 |
 | E1027 | 条件付き instance、superclass、default method の制約不整合 |
+| E1028 | `dyn` にできない型クラス（理由をメッセージに示す） |
 | E2000 | CLI、オプション、拡張子 |
 | E2001 | 入出力 |
 | E2002 | LLVM や linker など外部ツール |

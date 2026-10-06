@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | C03, (A13) |
 | 後続 | F08, F10, C11 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（GUIDE §9 D-13 の変更。チケット全体の前提で、承認前はどの手順にも着手しない）, D11（Phase 2 の並列分割書き込み。Phase 1 では着手しない） |
-| 改善する劣位 | Rust 比: 可変スライスがない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 承認 | D1・D11 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-13・D-39） |
+| 改善する劣位 | Rust 比: 可変スライスがない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | 共有スライス（C03）: `src/parser.rs` の `index_or_slice`・`prefix`・`keyword_prefix`（`slice_context`）、`src/check.rs` の `slice`・`Type::shared_array_element`、`src/ownership.rs` の `eval_value` の `E::Slice` 分岐、`src/llvm.rs` の `array_slice`・`shared_array_deref`・`emit_place`。要素の書き込み: `src/llvm.rs` の `emit_typed_builtin` の `Builtin::ArraySet \| ArrayUpdate \| ArraySwap` 分岐と `checked_element_pointer`。排他参照の貸し直し: `src/check.rs` の `coerce_argument`・`reborrow_operand`・`require_mutable_reference`・`autoderef`。スタック上の値の移送: `src/llvm.rs` の `TypedExprKind::Borrow` 生成（`frame_of_place`・`relocate`） |
 | 主な影響ファイル | 変更: `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/check.rs`, `src/ownership.rs`, `src/polymorph.rs`, `src/higher_kinds.rs`, `src/recursive.rs`, `src/regions.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/llvm_debug.rs`, `std/Array.tz`, `tests/formatter.rs`, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/library-reference/api/Array.md`, `_docs/language-reference/ownership.md`, `_docs/language-reference/lifetimes.md`, `_docs/learn/why-tsuzuri.md`, `_docs/feature-status.md`, `_features/README.md`, `_features/GUIDE.md`（§9 D-13・D-30。承認後）。新規: `tests/mutable_slices.rs`, `tests/fixtures/mutable_slices/Main.tz`。`src/warnings.rs`（`ty` の走査に arm、`Slice` に `..`）。コンパイルエラーに従って `..` を足すだけ: `src/computation.rs`。確認のみ（変更しない）: `src/control.rs`, `src/call_specialization.rs`, `src/abi.rs`, `std/Parallel.tz`, `tests/slices.rs`, `tests/arrays.rs`, `tests/storage.rs`, `tests/host_abi.rs` |
 
@@ -698,3 +698,48 @@ cargo test --locked honors_the_exact_specialization_limit
 - 決定: 元がフレーム上の local なら、排他スライスの作成時に `relocate` する。`Dereference` を元とするスライスでは移送しない。
 - 理由: `Array.write` は旧要素を drop するので、フレーム上の要素を `tz.free` してはならない。既存の排他 `Borrow` と同じ規則で、共有スライスの IR は変わらない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-06）
+
+「C08、A14、A16、F13、F08 の実装をすべて完遂して」という依頼を D1・D11 の承認として扱い、Phase 1 と Phase 2 を実装した。
+着手時の HEAD は `ff84e4c`（ブランチ `Phase7-3`）で、A16・A14・F13・F08 と同じ変更に含めた。性能の改善は主張しない（生成コードの条件だけを確かめた）。
+
+### 実装
+
+- 構文: `TypeExprKind::ArrayView`（`[T..]`。parser はどこでも読み、`resolve_type` が `ref mut` の直後以外を E1005 にする）と
+  `ExprKind::Slice` の `mutable`。parser の `slice_context: Option<bool>` は `index_or_slice` で `take()` する。formatter・docgen・regions・semantic・warnings・polymorph に腕を足した。
+- 型: `Type::ArrayView` と `Type::slice_element`（`shared_array_element` を置き換え、表現の判定を集約）、`is_view`、`dereferenced`（ビューの参照外しは `[T]` として型付け）。
+  排他スライスはすべて `TypedExprKind::Slice`（貸し直しと配列全体への変換は `whole_view`）。`exclusive_borrow` と `coerce_slice_argument` は
+  `#[inline(never)]` で分け、引数の検査の frame を大きくしない。
+- 所有権: `src/ownership.rs` の `exclusive_slice`（範囲の評価中は共有の guard loan、評価後に `MutBorrow`）。`Parallel.for_each_chunk` は
+  `Builtin::parallel_callback` で callback の位置を引き、入力の要素型は `slice_element` で取る。
+- 生成: `%tz.array` を排他スライスにも使い、`canonical_type` は `view[T]`。作成時に `own_heap_storage`（`src/llvm_frame.rs`）がフレーム上の配列を移送する。
+  `Array.write`・`Array.swap_in`・`Array.split_at_mut` は `emit_typed_builtin`。`Parallel.for_each_chunk` は `src/llvm_parallel.rs` の `parallel_chunks`
+  （`size > 0` の検査、`ceil(len / size)` 個のチャンク）で、既存の要素ループは `parallel_items` に切り出した。
+- std: `Array.sort_in_place` と private の helper 3 つ（長さ 20 の挿入整列、`def rec` の SymMerge、回転）。ループは `for` の範囲で書き、
+  `hint_loop` の展開の警告を出さない。
+- テスト: `tests/mutable_slices.rs`（新規 9 件。T1〜T11、R1〜R23、Phase 2 の受理と拒否）、`tests/formatter.rs` の `formats_exclusive_slices`、
+  `tests/fixtures/mutable_slices/Main.tz` と suite `mutable_slices`（38 ケースとトラップ 6 つ）。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/library-reference/arrays-and-lists.md`・`parallel.md`・`api/Array.md`（再生成）、
+  `_docs/language-reference/ownership.md`・`lifetimes.md`、`_docs/learn/why-tsuzuri.md`、`_docs/feature-status.md`、`_features/README.md`、`_features/GUIDE.md`（D-13・D-30・D-39）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D5 を緩めた。** 明示の `ref mut xs` は、排他スライスを期待する位置（`let` の注釈、汎用関数の引数を含む）で配列全体の排他スライスになる。
+   引数だけに限ると `let whole: ref mut [i64..] = ref mut values` が `E1003` になり、同じ式の型が位置によって変わる。暗黙の借用（所有値や `ref mut [T]` の値をそのまま渡す形）は引数だけのまま。
+2. **D11 の Phase 2 は `Parallel.for_each_chunk`。** `split_at_mut` の半分を Task へ送るには排他スライスを Send にし、task の持つ借用の寿命を join まで延ばす規則が要る（F10 の `Task.scope`）。
+   既存の Parallel と同じ fork/join の組み込みなら、借用は呼び出しの中に閉じ、チャンクが互いに素であることをコンパイラが保証できる。
+   callback は `i64 -> ref mut ['a..] -> unit`（チャンクの先頭の添字とスライス）で、他の Parallel と同じく借用の捕捉と関数値化は `E1013`。`size <= 0` はトラップ（`RangeStepZero`）。
+   チャンク境界は利用者の `size` だけで決まり、F02 の固定チャンクの式は使わない（書き込みの粒度を利用者が選べるようにする）。
+3. **診断の文。** R20（局所配列の排他スライスを返す）は既存の `E1013 "borrowed value does not live long enough to leave this block"` になる。
+   チャンクの要素が Send でないときは既存の `E1013 "tasks require owned values; ..."`。どちらもコードはチケットどおり。
+4. **排他借用フィールド。** A13 が done なので `record Cursor {r} { part: ref mut {r} [string..], position: i64 }` はそのまま使える。E2E の `record_cursor` で確かめた。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.19.6）
+
+- `cargo test --locked --test mutable_slices`（9 passed）、`formats_exclusive_slices`、GUIDE §3.1 の stack-depth テストと `honors_the_exact_specialization_limit` が上限や stack を変えずに成功。
+- suite `mutable_slices` が native/WASM × `-O0`/`-O3` で成功（`live == 0`、WASM の import なし）。`TSUZURI_ASAN=1` と `TSUZURI_TSAN=1` でも成功。
+  `parallel`・`slices`・`array_bulk` の suite も成功。
+- 既存の fixture と単一ファイルの例の IR（119 個）は、`ff84e4c` と比べて 68 個が byte 一致、51 個は std の関数の追加による生成 id の一様なずれだけが異なる（id を写す比較で差なし）。
+  チケットの「byte 単位で変わらない」は、A15 と同じく id のずれを除いて満たす。`fill` と `negate_all` は `-O3` で `@tz.alloc` を呼ばない。
+- 全体のゲート（fmt・clippy・`cargo test`・features の全 suite・`check-docs`）は 5 チケットの実装の後にまとめて実行した（F08 の記録を参照）。

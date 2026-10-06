@@ -164,7 +164,10 @@ fn runtime_kind(function: &str) -> TrapKind {
         TrapKind::Assert
     } else if function.contains("builtin.unreachable") {
         TrapKind::MatchFailure
-    } else if function == "@tz.alloc" || function == "@tz.realloc" {
+    } else if matches!(
+        function,
+        "@tz.alloc" | "@tz.realloc" | "@tz.alloc.base" | "@tz.realloc.base"
+    ) {
         TrapKind::AllocationFailure
     } else if function.contains("concat") {
         TrapKind::StringConcatOverflow

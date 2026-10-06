@@ -51,7 +51,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、C08・A16・A14 は `done`（Phase 1・2）、F13・F08 は `done`（Phase 1・2・3）、ほかは `todo` です。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
@@ -75,8 +75,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（G10 の完了が前提）, C11, F08, G16, G19 |
 | C/C++ | GPU が実験段階 | F09 |
 | C/C++ | 安全検査・所有値の複製・ホスト境界の変換のコスト | F12, A15, A16, E13 |
-| Rust | 可変スライスがない。排他借用フィールド（A13）とレコード内の独立した複数 region（A12）は実装済み | C08, A13, A12 |
-| Rust | Copy のコストモデル（配列・捕捉の深い複製） | A15, A16, C10 |
+| Rust | 排他スライス（C08）、排他借用フィールド（A13）、レコード内の独立した複数 region（A12）は実装済み。要素単位の排他借用と region 間の outlives はない | C08, A13, A12 |
+| Rust | Copy のコストモデル（配列・捕捉の深い複製）。複製の可視化（A15）と、ヒープを使わない固定長配列 `[T; N]`（A16）は実装済み | A15, A16, C10 |
 | Rust | Cargo／crates.io・非同期 I/O・低水準 API・開発ツールの成熟度 | E10, B08, E12, F13, G12, G14, G18 |
 | C#/F# | .NET の標準ライブラリ・NuGet・GUI／Web／DB・ファイル／ネットワーク API | E08, E09, E10, E13, D08, D09, C09 |
 | C#/F# | GC に任せられる共有データ・循環構造 | C10, A14 |
@@ -135,9 +135,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](_completed/A11-borrowed-comparisons.md) | P1 | M | – | done |
 | A12 | [レコード内の独立した複数 region と region 付き関数値型](_completed/A12-multiple-regions.md) | P2 | XL | A09 | done |
 | A13 | [排他借用フィールドと参照経由の更新](_completed/A13-exclusive-borrow-fields.md) | P2 | L | A12 | done |
-| A14 | [型クラスによる動的ディスパッチ（dyn 値）](A14-dynamic-dispatch.md) | P2 | L | A06, (B07) | todo |
+| A14 | [型クラスによる動的ディスパッチ（dyn 値）](_completed/A14-dynamic-dispatch.md) | P2 | L | A06, (B07) | done |
 | A15 | [暗黙の深いコピーの可視化](_completed/A15-copy-cost-visibility.md) | P2 | M | G03, (G12) | done |
-| A16 | [固定長配列と const ジェネリクス](A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | todo |
+| A16 | [固定長配列と const ジェネリクス](_completed/A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | done |
 
 ### B. エラー処理・制御
 
@@ -163,7 +163,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C05 | [レコードのコピーと更新 `{ p with x = … }`](_completed/C05-record-update-syntax.md) | P1 | S | (A01) | done |
 | C06 | [Map／Set](_completed/C06-map-set.md) | P2 | L | A11, A02, A06, A07, C02, B01 | done |
 | C07 | [ユーザー定義の反復プロトコル](_completed/C07-iteration-protocol.md) | P2 | L | B01, A06 | done |
-| C08 | [可変スライスと要素のその場更新](C08-mutable-slices.md) | P2 | L | C03, (A13) | todo |
+| C08 | [可変スライスと要素のその場更新](_completed/C08-mutable-slices.md) | P2 | L | C03, (A13) | done |
 | C09 | [HashMap／HashSet](_completed/C09-hash-map.md) | P1 | M | A07, C02, C06 | done |
 | C10 | [共有所有と循環構造（Arena・Handle・Rc／Arc）](C10-shared-ownership.md) | P2 | XL | C02, (B07), (F10) | todo |
 | C11 | [多次元配列と数値カーネル](C11-multidimensional-arrays.md) | P3 | L | A16, F02, F04, (C08), (F08) | todo |
@@ -214,12 +214,12 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | F05 | [実行時の CPU 命令セット判定と関数の複数版](_completed/F05-runtime-cpu-dispatch.md) | P2 | L | C04 | done |
 | F06 | [WASM threads バックエンド](_completed/F06-wasm-threads.md) | P3 | L | F01 | done |
 | F07 | [GPU バックエンド](_completed/F07-gpu-backend.md) | P3 | XL | F02, E05, B01 | done |
-| F08 | [256／512-bit SIMD と関数単位の CPU 多版化](F08-wide-simd-multiversioning.md) | P2 | XL | F04, F05, (C08) | todo |
+| F08 | [256／512-bit SIMD と関数単位の CPU 多版化](_completed/F08-wide-simd-multiversioning.md) | P2 | XL | F04, F05, (C08) | done |
 | F09 | [GPU の浮動小数点・64-bit カーネルと実行時接続](F09-gpu-float-runtime.md) | P3 | XL | F07, (C11) | todo |
 | F10 | [並行処理プリミティブ（Atomic・Mutex・Channel）](F10-concurrency-primitives.md) | P3 | XL | F01, B07, (A13), (C10) | todo |
 | F11 | [WASM メモリ上限の設定と拡張](_completed/F11-wasm-memory-limit.md) | P1 | M | – | done |
 | F12 | [境界検査の除去と検査コストの計測](_completed/F12-bounds-check-elimination.md) | P2 | L | – | done |
-| F13 | [アロケーターの差し替え・確保統計・freestanding 出力](F13-custom-allocators.md) | P2 | L | (F11), (E12), (E14) | todo |
+| F13 | [アロケーターの差し替え・確保統計・freestanding 出力](_completed/F13-custom-allocators.md) | P2 | L | (F11), (E12), (E14) | done |
 
 ### G. ツール・開発体験
 
@@ -412,12 +412,12 @@ graph LR
 | --- | --- |
 | [A12](_completed/A12-multiple-regions.md) | D10（region の上限を 64 へ下げる）、D13（Phase 2）。承認済みで実装済み（2026-10-03。D10 は 128 を正式な上限にする見直し案を採用） |
 | [A13](_completed/A13-exclusive-borrow-fields.md) | D1（D-28「排他参照 field は禁止」の変更。チケット全体）、D5。承認済みで実装済み（2026-10-06。Phase 2 も実装。D-38） |
-| [A14](A14-dynamic-dispatch.md) | D1（`dyn`・`Dyn.of`・`E1028`） |
+| [A14](_completed/A14-dynamic-dispatch.md) | D1（`dyn`・`Dyn.of`・`E1028`）。承認済みで実装済み（2026-10-06。Phase 2 も実装。D-39） |
 | [A15](_completed/A15-copy-cost-visibility.md) | D3（`--warn implicit-copy` と `W1006`）。承認済みで実装済み（2026-10-03） |
-| [A16](A16-fixed-arrays.md) | D1（`[T; N]` の再導入）、D10（Phase 2） |
+| [A16](_completed/A16-fixed-arrays.md) | D1（`[T; N]` の再導入）、D10（Phase 2）。承認済みで実装済み（2026-10-06。D-39） |
 | [B07](_completed/B07-user-drop.md) | D1（`Drop`）、D2（`drop` の引数を `ref mut`）、D4（Drop 型からの move の禁止）、Phase 2（`use`・`use!`、`Owned` の早期解放と関数値）。すべて承認済みで実装済み（2026-10-02） |
 | [B08](B08-async.md) | D1（`Async`）、D10（Phase 2） |
-| [C08](C08-mutable-slices.md) | D1（D-13 の変更。チケット全体）、D11（Phase 2） |
+| [C08](_completed/C08-mutable-slices.md) | D1（D-13 の変更。チケット全体）、D11（Phase 2）。承認済みで実装済み（2026-10-06。D-39） |
 | C09・C10・C11 | Phase 2 以降だけ（C09 D11、C10 D13・D14、C11 D9） |
 | [D07](_completed/D07-string-interpolation.md) | D1（`$"..."`・`u8$"..."`）、D9（`numeric.ll` の増分） |
 | [D08](D08-json-serialization.md) | D1（`Json`・`Encode`／`Decode`） |
@@ -429,7 +429,9 @@ graph LR
 | [E11](E11-c-bindgen.md) | D1（`bindgen` と `W2002`） |
 | [E12](_completed/E12-ffi-extensions.md) | D1（`extern "symbol" def`）、D3（`extern type` の意味）、D6（`--link`・`-l`・`-L`）、D8（コールバックを Phase 1 に含める）。すべて承認済みで実装済み |
 | [E14](_completed/E14-trap-boundary.md) | D6・D7（`--trap-mode return`、確保 listと worker）、D9（signal handler）。すべて実装済み（2026-10-02 の包括承認） |
-| E13・F08・F13・G13・G14 | Phase 2 以降だけ（F11 の Phase 2 は承認済みで実装済み） |
+| E13・G13・G14 | Phase 2 以降だけ（F11 の Phase 2 は承認済みで実装済み） |
+| [F08](_completed/F08-wide-simd-multiversioning.md) | D7（Phase 2 の 256-bit 型）、D8（Phase 3 の `@cpu` 構文）、D9（AVX-512・SVE）。承認済みで実装済み（2026-10-06。D-39） |
+| [F13](_completed/F13-custom-allocators.md) | D9（Phase 2・Phase 3）。承認済みで実装済み（2026-10-06。D-39） |
 | [F09](F09-gpu-float-runtime.md) | D1（relaxed f32 の契約と名前）、D9・D10（Phase 2・3） |
 | [F10](F10-concurrency-primitives.md) | D1（`Atomic`・`Mutex`・`Sync`・`AtomicValue`・`Task.scope`）、D10（Phase 2 の `Channel`） |
 | [G15](G15-platform-targets.md) | D8（CI の `targets.yml`） |

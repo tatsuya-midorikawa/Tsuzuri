@@ -58,6 +58,8 @@ pub enum TokenKind {
     Class,
     Instance,
     Deriving,
+    /// `dyn` before the class names of a dynamically dispatched value type (A14).
+    Dyn,
     Let,
     Task,
     Do,
@@ -242,6 +244,29 @@ pub struct Program {
     pub active_patterns: Vec<ActivePattern>,
     pub tests: Vec<TestDecl>,
     pub entry: Option<Expr>,
+    /// Every `dyn` type written in this module, in source order (A14). The checker reports the
+    /// classes that cannot be dispatched here and generates the dispatching instances.
+    pub dyn_types: Vec<TypeExpr>,
+    /// The `@cpu [...]` attributes of this module's functions (F08 Phase 3).
+    pub cpu_attributes: Vec<CpuAttribute>,
+}
+
+/// The CPU targets that `@cpu` names, with their level in `src/runtime/cpu.c` (F08 Phase 3).
+pub const CPU_TARGETS: [(&str, u8); 5] = [
+    ("sse4.2", 1),
+    ("avx2", 2),
+    ("avx512", 3),
+    ("sve", 4),
+    ("sve2", 5),
+];
+
+/// `@cpu ["avx2", ...]` before a `def` signature: native builds also compile the function for
+/// these CPU targets and pick one at run time (F08 Phase 3).
+#[derive(Clone, Debug)]
+pub struct CpuAttribute {
+    pub function: Ident,
+    /// Bit `L` is set for each named level `L` of `CPU_TARGETS`.
+    pub levels: u8,
 }
 
 /// A `namespace A::B` or `using A::B` declaration.
@@ -481,11 +506,30 @@ pub enum TypeExprKind {
     /// parameter can have (A12 Phase 2).
     Quantified(Box<[Ident]>, Box<TypeExpr>),
     Array(Box<TypeExpr>),
+    /// `[T..]`: the target of an exclusive slice, valid only directly after `ref mut` (C08).
+    ArrayView(Box<TypeExpr>),
+    /// `[T; N]`: a fixed-length array value (A16). The length is a `Length` or the `Named` length
+    /// parameter or integer constant (Phase 2).
+    FixedArray(Box<TypeExpr>, Box<TypeExpr>),
+    /// A literal length: of a fixed-length array, or a length argument such as the `3` of
+    /// `Grid<f64, 3>` (A16). Lengths above `u64::MAX` saturate so the checker reports E1010.
+    Length(u64),
     List(Box<TypeExpr>),
     Tuple(Vec<TypeExpr>),
     Task(Box<TypeExpr>),
     Function(Vec<TypeExpr>, Box<TypeExpr>),
     Reference(Box<TypeExpr>, bool),
+    /// `dyn Shapes.Shape` or `dyn (Shape, Send)`: an owned value of some type with instances of
+    /// the classes, dispatched at run time (A14). Boxed like `Apply` so `TypeExpr` does not grow.
+    Dyn(Box<DynTypeExpr>),
+}
+
+/// The classes of a `dyn` type as written, and whether a region follows it (A14).
+#[derive(Clone, Debug)]
+pub struct DynTypeExpr {
+    pub classes: Vec<Ident>,
+    /// `dyn C {r}`: the stored value may hold shared borrows of the region (Phase 2).
+    pub borrowed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -639,7 +683,9 @@ impl Expr {
                     value.visit(visitor);
                 }
             }
-            Slice { value, start, end } => {
+            Slice {
+                value, start, end, ..
+            } => {
                 value.visit(visitor);
                 for bound in start.iter().chain(end) {
                     bound.visit(visitor);
@@ -651,8 +697,20 @@ impl Expr {
                     hole.value.visit(visitor);
                 }
             }
-            Integer(..) | BigInt(_) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_)
-            | Unit | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
+            Integer(..)
+            | BigInt(_)
+            | Float(..)
+            | String(_)
+            | Char(_)
+            | Utf8Char(_)
+            | Bool(_)
+            | Unit
+            | Break
+            | Continue
+            | Name(_)
+            | QualifiedFunction(_)
+            | TypeFunction(..)
+            | DynDispatch { .. } => {}
         }
     }
 }
@@ -732,10 +790,12 @@ pub enum ExprKind {
     NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
+    /// `ref xs[a..b]`, or with `mutable` the exclusive `ref mut xs[a..b]` (C08).
     Slice {
         value: Box<Expr>,
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
+        mutable: bool,
     },
     Borrow(Box<Expr>, bool, Notation),
     Dereference(Box<Expr>, Notation),
@@ -743,6 +803,12 @@ pub enum ExprKind {
     Cast(Box<Expr>, TypeExpr),
     /// `$"a{x}b"`: `texts` has one more element than `holes`.
     Interpolated(Box<Interpolation>),
+    /// The generated body of a method of an instance for a `dyn` type (A14): calls vtable slot
+    /// `slot` of a vtable with `slots` slots. The parser never produces it.
+    DynDispatch {
+        slot: u32,
+        slots: u32,
+    },
 }
 
 #[derive(Clone, Debug)]

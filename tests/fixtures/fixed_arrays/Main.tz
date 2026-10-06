@@ -1,0 +1,137 @@
+const SIZE: i64 = 3
+
+record Particle { pos: [f64; 3], id: i64 }
+
+record Grid<'a, const N: i64> { cells: ['a; N], id: i64 }
+
+union Shape<const N: i64> = Empty | Poly of [i64; N]
+
+type Row<const N: i64> = [i64; N]
+
+def probe :: ref [i64] -> i64
+fn probe xs = xs[0] * 100 + xs.length
+
+def pick :: bool -> 'a -> 'a -> 'a
+fn pick flag a b = if flag then a else b
+
+def total :: [i64; N] -> i64
+fn total v =
+    let mut sum = 0i64
+    for index in 0i64 .. (v.length - 1) do sum = sum + v[index]
+    sum
+
+def zeros :: [i64; M]
+fn zeros = FixedArray.init (\_index -> 0)
+
+def first :: Grid<'a, N> -> 'a
+fn first grid = grid.cells[0]
+
+def corners :: Shape<N> -> i64
+fn corners shape = match shape with
+    | Empty -> 0
+    | Poly points -> points.length * 100 + points[points.length - 1]
+
+def last :: Row<SIZE> -> i64
+fn last row = row[2]
+
+export def fixed_sum :: i64 -> i64
+fn fixed_sum x =
+    let v: [i64; 4] = [x, x + 1, x + 2, x + 3]
+    v[0] + v[1] + v[2] + v[3]
+
+export def fixed_index :: i64 -> i64
+fn fixed_index i =
+    let v: [i64; 4] = FixedArray.init (\k -> k * k)
+    v[i]
+
+export def fixed_copy :: i64
+fn fixed_copy =
+    let mut a: [i64; 3] = [1, 2, 3]
+    let b = a
+    a = [7, 8, 9]
+    b[0] * 100 + a[0]
+
+export def fixed_strings :: i64
+fn fixed_strings =
+    let texts: [string; 3] = [to_string 1, to_string 22, to_string 333]
+    let moved = texts
+    moved[0].length + moved[1].length + moved[2].length
+
+export def fixed_clone_nested :: i64
+fn fixed_clone_nested =
+    let m: [[string; 2]; 2] = [["a", "bb"], [to_string 123, to_string 4567]]
+    let copy = m
+    let row = ref copy[1]
+    row[0].length * 10 + row[1].length + copy[1][1].length * 100
+
+export def fixed_nested :: i64
+fn fixed_nested =
+    let m: [[i64; 2]; 2] = [[1, 2], [3, 4]]
+    m[0][1] * 10 + m[1][0]
+
+export def fixed_slice :: i64
+fn fixed_slice =
+    let v: [i64; 5] = [1, 2, 3, 4, 5]
+    probe v + probe (ref v[1..4])
+
+export def fixed_record :: i64
+fn fixed_record =
+    let p = Particle { pos: [1.0, 2.0, 3.0], id: 7 }
+    (p.pos[2] as i64) * 10 + p.id
+
+export def fixed_generic :: i64 -> i64
+fn fixed_generic flag =
+    let a: [i64; 2] = [1, 2]
+    let b: [i64; 2] = [3, 4]
+    let c = pick (flag != 0) a b
+    c[0] * 10 + c[1]
+
+export def fixed_init_closure :: i64 -> i64
+fn fixed_init_closure n =
+    let v: [i64; 8] = FixedArray.init (\i -> i * n)
+    v[7]
+
+export def fixed_simd :: i64
+fn fixed_simd =
+    let v: [f32; 4] = [1.0, 2.0, 3.0, 4.0]
+    let lanes: f32x4 = Simd.load v 0
+    Simd.extract lanes 3 as i64
+
+export def fixed_length :: i64
+fn fixed_length =
+    let v: [ubyte; 0] = []
+    let w: [i64; 1024] = FixedArray.init (\i -> i)
+    v.length * 10000 + w.length + w[1023]
+
+export def fixed_strings_init :: i64 -> i64
+fn fixed_strings_init n =
+    let words: [string; 4] = FixedArray.init (\i -> to_string (i * n))
+    let copy = words
+    copy[0].length + copy[1].length + copy[2].length + copy[3].length
+
+export def fixed_generic_length :: i64
+fn fixed_generic_length =
+    let z: [i64; 5] = zeros()
+    total [1, 2, 3] * 100 + total [4, 5] + z.length * 1000
+
+export def fixed_records_generic :: i64
+fn fixed_records_generic =
+    let grid = Grid { cells: [12, 3456], id: 4 }
+    let shape: Shape<4> = Poly [1, 2, 3, 4]
+    let row: Row<SIZE> = [5, 6, 7]
+    first grid * 10000 + corners shape * 10 + last row
+
+export def trap_index :: i64 -> i64
+fn trap_index i =
+    let v: [i64; 4] = [1, 2, 3, 4]
+    v[i]
+
+export def trap_constant :: i64
+fn trap_constant =
+    let v: [i64; 2] = [1, 2]
+    v[2]
+
+export def trap_slice :: i64
+fn trap_slice =
+    let v: [i64; 5] = [1, 2, 3, 4, 5]
+    probe (ref v[3..6])

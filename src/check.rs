@@ -37,6 +37,9 @@ mod warnings;
 use polymorph::{Classes, Constraint, Inference, Scheme};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
+/// The longest fixed-length array `[T; N]` (A16): LLVM's translation time grows with large
+/// first-class aggregates passed by value.
+pub const MAX_FIXED_ARRAY_LENGTH: u64 = 1024;
 
 /// A12: one bit per declared region of a record; bit i is the i-th declared region.
 pub(crate) type RegionMask = u16;
@@ -125,6 +128,15 @@ pub enum Type {
     /// A union declaration and its type arguments, boxed like `Record`.
     Union(usize, Box<[Type]>),
     Array(Box<Type>),
+    /// `[T..]`, the fixed-length target of an exclusive slice `ref mut [T..]` (C08). It appears
+    /// only as `Reference(ArrayView(T), true)`, never as a value, field, or element type.
+    ArrayView(Box<Type>),
+    /// `[T; N]` (A16): N elements stored inline, a value like a tuple. The length is a `Length`,
+    /// or a length parameter `Variable("#N")` or inference variable until it is substituted.
+    FixedArray(Box<Type>, Box<Type>),
+    /// A length at the type level: of a fixed-length array, or a length argument (A16). It is
+    /// never the type of a value.
+    Length(u64),
     List(Box<Type>),
     Vec(Box<Type>),
     Tuple(Vec<Type>),
@@ -133,6 +145,52 @@ pub enum Type {
     Handle(Box<str>),
     Function(Vec<Type>, Box<Type>),
     Reference(Box<Type>, bool),
+    /// `dyn C`: an owned value of some type with instances of the classes, stored as
+    /// `{ data, vtable }` (A14). A leaf whose box keeps `Type` at four words.
+    Dyn(Box<DynType>),
+}
+
+/// The classes and markers of a `dyn` type (A14).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DynType {
+    /// The dispatched classes by their keys in `Classes::names`, sorted and without duplicates.
+    pub classes: Box<[Box<str>]>,
+    /// `Copy` among the classes: the vtable clones the stored value, so the dyn value is Copy.
+    pub copy: bool,
+    /// `Send` among the classes: the stored value is Send, and so is the dyn value.
+    pub send: bool,
+    /// Written with a region, `dyn C {r}`: the stored value may hold shared borrows.
+    pub borrowed: bool,
+}
+
+impl DynType {
+    /// The type whose vtables serve this one: `Send` and the region change no slot.
+    pub(crate) fn vtable_key(&self) -> Self {
+        Self {
+            classes: self.classes.clone(),
+            copy: self.copy,
+            send: false,
+            borrowed: false,
+        }
+    }
+
+    pub fn display(&self) -> String {
+        let mut names: Vec<String> = self.classes.iter().map(|name| type_display(name)).collect();
+        if self.copy {
+            names.push("Copy".into());
+        }
+        if self.send {
+            names.push("Send".into());
+        }
+        let mut text = match names.as_slice() {
+            [name] => format!("dyn {name}"),
+            _ => format!("dyn ({})", names.join(", ")),
+        };
+        if self.borrowed {
+            text.push_str(" {_}");
+        }
+        text
+    }
 }
 
 impl Type {
@@ -140,12 +198,46 @@ impl Type {
     pub const I64: Self = Self::Integer(64, true);
     pub const F64: Self = Self::Binary(64);
 
-    pub(crate) fn shared_array_element(&self) -> Option<&Type> {
+    /// The element type of a slice, which is a `%tz.array` value: a shared `ref [T]` or an
+    /// exclusive `ref mut [T..]` (C08).
+    pub(crate) fn slice_element(&self) -> Option<&Type> {
         match self {
             Self::Reference(inner, false) => match inner.as_ref() {
                 Self::Array(element) => Some(element),
                 _ => None,
             },
+            Self::Reference(inner, true) => match inner.as_ref() {
+                Self::ArrayView(element) => Some(element),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// An exclusive slice `ref mut [T..]` (C08).
+    pub(crate) fn is_view(&self) -> bool {
+        matches!(self, Self::Reference(inner, true) if matches!(**inner, Self::ArrayView(_)))
+    }
+
+    /// The length of a fixed-length array whose length is known (A16).
+    pub(crate) fn fixed_length(&self) -> Option<u64> {
+        match self {
+            Self::FixedArray(_, length) => match **length {
+                Self::Length(length) => Some(length),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The type that dereferencing a reference of this type reads: the target, except that the
+    /// elements of an exclusive slice read as the array `[T]`.
+    pub(crate) fn dereferenced(&self) -> Option<Type> {
+        match self {
+            Self::Reference(inner, _) => Some(match inner.as_ref() {
+                Self::ArrayView(element) => Self::Array(element.clone()),
+                inner => inner.clone(),
+            }),
             _ => None,
         }
     }
@@ -180,7 +272,11 @@ impl Type {
     pub fn display(&self, types: &TypeContext<'_>) -> String {
         match self {
             Self::Error => "an erroneous type".into(),
-            Self::Variable(name) => format!("'{name}"),
+            // A length parameter `#N` (A16) reads as its declared name.
+            Self::Variable(name) => match name.strip_prefix('#') {
+                Some(length) => length.into(),
+                None => format!("'{name}"),
+            },
             Self::Infer(_) => "an undetermined type".into(),
             Self::Partial(partial) => partial.display(types),
             Self::Application(head, arguments) => format!(
@@ -233,6 +329,11 @@ impl Type {
             Self::Array(element) => {
                 format!("[{}]", element.display(types))
             }
+            Self::ArrayView(element) => format!("[{}..]", element.display(types)),
+            Self::FixedArray(element, length) => {
+                format!("[{}; {}]", element.display(types), length.display(types))
+            }
+            Self::Length(length) => length.to_string(),
             Self::List(element) => format!("[|{}|]", element.display(types)),
             Self::Tuple(elements) => format!(
                 "({})",
@@ -251,6 +352,7 @@ impl Type {
             ),
             Self::Task(result) => format!("Task<{}>", result.display(types)),
             Self::Handle(name) => type_display(name),
+            Self::Dyn(dyn_type) => dyn_type.display(),
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -280,6 +382,7 @@ impl Type {
                 head.contains_error() || arguments.iter().any(Self::contains_error)
             }
             Self::Array(ty)
+            | Self::ArrayView(ty)
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Task(ty)
@@ -288,6 +391,9 @@ impl Type {
                 parameters.iter().any(Self::contains_error) || result.contains_error()
             }
             Self::Tuple(elements) => elements.iter().any(Self::contains_error),
+            Self::FixedArray(element, length) => {
+                element.contains_error() || length.contains_error()
+            }
             Self::Record(_, args) | Self::Union(_, args) => args.iter().any(Self::contains_error),
             _ => false,
         }
@@ -297,6 +403,8 @@ impl Type {
         match self {
             Self::Partial(_) | Self::Application(..) => true,
             Self::Array(ty)
+            | Self::ArrayView(ty)
+            | Self::FixedArray(ty, _)
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Task(ty)
@@ -349,7 +457,11 @@ impl Type {
             | Self::Infer(_) => false,
             Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.is_copy(types)),
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.is_copy(types)),
-            Self::Array(element) | Self::List(element) => element.is_copy(types),
+            // A dyn value owns its data; only a vtable with a clone slot copies it (A14).
+            Self::Dyn(dyn_type) => dyn_type.copy,
+            Self::Array(element) | Self::List(element) | Self::FixedArray(element, _) => {
+                element.is_copy(types)
+            }
             Self::Tuple(elements) => elements.iter().all(|ty| ty.is_copy(types)),
             _ => true,
         }
@@ -360,7 +472,9 @@ impl Type {
             return true;
         }
         match self {
-            Self::String | Self::Utf8String | Self::Function(..) | Self::Task(_) => true,
+            Self::String | Self::Utf8String | Self::Function(..) | Self::Task(_) | Self::Dyn(_) => {
+                true
+            }
             Self::Record(id, args) => {
                 !types.record_fields_all(*id, args, |ty| !ty.needs_drop(types))
             }
@@ -368,6 +482,8 @@ impl Type {
                 !types.union_payloads_all(*id, args, |ty| !ty.needs_drop(types))
             }
             Self::Array(_) | Self::List(_) | Self::Vec(_) => true,
+            // A fixed-length array owns nothing but its elements (A16).
+            Self::FixedArray(element, _) => element.needs_drop(types),
             Self::Tuple(elements) => elements.iter().any(|ty| ty.needs_drop(types)),
             _ => false,
         }
@@ -407,9 +523,12 @@ impl Type {
     pub fn contains_reference(&self) -> bool {
         match self {
             Self::Reference(..) => true,
-            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
-                element.contains_reference()
-            }
+            // `dyn C {r}` may hold shared borrows (A14 Phase 2).
+            Self::Dyn(dyn_type) => dyn_type.borrowed,
+            Self::Array(element)
+            | Self::List(element)
+            | Self::Vec(element)
+            | Self::FixedArray(element, _) => element.contains_reference(),
             Self::Tuple(elements) => elements.iter().any(Self::contains_reference),
             Self::Union(_, arguments) => arguments.iter().any(Self::contains_reference),
             _ => false,
@@ -422,7 +541,8 @@ impl Type {
             Self::Reference(value, false)
             | Self::Array(value)
             | Self::List(value)
-            | Self::Vec(value) => value.contains_mutable_reference(),
+            | Self::Vec(value)
+            | Self::FixedArray(value, _) => value.contains_mutable_reference(),
             Self::Tuple(elements) => elements.iter().any(Self::contains_mutable_reference),
             Self::Union(_, arguments) => arguments.iter().any(Self::contains_mutable_reference),
             // Function signatures describe calls, not stored references; captures are checked separately.
@@ -434,13 +554,16 @@ impl Type {
         if types.recursive(self) {
             return !types.stored_all(self, |ty| {
                 !matches!(ty, Type::Reference(..) | Type::Function(..))
+                    && !matches!(ty, Type::Dyn(dyn_type) if dyn_type.borrowed)
             });
         }
         match self {
             Self::Reference(..) | Self::Function(..) => true,
-            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
-                element.carries_loans(types)
-            }
+            Self::Dyn(dyn_type) => dyn_type.borrowed,
+            Self::Array(element)
+            | Self::List(element)
+            | Self::Vec(element)
+            | Self::FixedArray(element, _) => element.carries_loans(types),
             Self::Tuple(elements) => elements.iter().any(|ty| ty.carries_loans(types)),
             Self::Record(id, args) => {
                 !types.record_fields_all(*id, args, |ty| !ty.carries_loans(types))
@@ -453,7 +576,30 @@ impl Type {
     }
 
     pub(crate) fn contains_stored_reference(&self, types: &TypeContext<'_>) -> bool {
-        !types.stored_all(self, |ty| !matches!(ty, Self::Reference(..)))
+        !types.stored_all(self, |ty| {
+            !matches!(ty, Self::Reference(..))
+                && !matches!(ty, Self::Dyn(dyn_type) if dyn_type.borrowed)
+        })
+    }
+
+    /// A SIMD vector wider than 128 bits is part of the value itself rather than behind a
+    /// pointer (F08 Phase 3). A union counts its payloads although they may share storage.
+    pub(crate) fn holds_wide_vector(&self, types: &TypeContext<'_>) -> bool {
+        if types.recursive(self) {
+            return false;
+        }
+        match self {
+            Self::Simd(vector) => vector.width > 128,
+            Self::Tuple(elements) => elements.iter().any(|ty| ty.holds_wide_vector(types)),
+            Self::FixedArray(element, _) => element.holds_wide_vector(types),
+            Self::Record(id, args) => {
+                !types.record_fields_all(*id, args, |ty| !ty.holds_wide_vector(types))
+            }
+            Self::Union(id, args) => {
+                !types.union_payloads_all(*id, args, |ty| !ty.holds_wide_vector(types))
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn contains_stored_mutable_reference(&self, types: &TypeContext<'_>) -> bool {
@@ -483,15 +629,19 @@ impl Type {
                 !matches!(
                     ty,
                     Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
-                ) && !ty.has_user_drop(types)
+                ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                    && !ty.has_user_drop(types)
                     && !ty.is_owned_function(types)
             });
         }
         match self {
             Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
-            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
-                element.can_capture(types)
-            }
+            // Copying a function value clones its captures, which needs the vtable's clone slot.
+            Self::Dyn(dyn_type) => dyn_type.copy,
+            Self::Array(element)
+            | Self::List(element)
+            | Self::Vec(element)
+            | Self::FixedArray(element, _) => element.can_capture(types),
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_capture(types)),
             Self::Record(id, args) => {
                 types.record_fields_all(*id, args, |ty| ty.can_capture(types))
@@ -512,13 +662,18 @@ impl Type {
 
     pub(crate) fn can_send(&self, types: &TypeContext<'_>) -> bool {
         if types.recursive(self) {
-            return types.stored_all(self, |ty| !matches!(ty, Type::Reference(..)));
+            return types.stored_all(self, |ty| {
+                !matches!(ty, Type::Reference(..))
+                    && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
+            });
         }
         match self {
             Self::Reference(..) => false,
-            Self::Array(element) | Self::List(element) | Self::Vec(element) => {
-                element.can_send(types)
-            }
+            Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
+            Self::Array(element)
+            | Self::List(element)
+            | Self::Vec(element)
+            | Self::FixedArray(element, _) => element.can_send(types),
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(types)),
             Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.can_send(types)),
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.can_send(types)),
@@ -689,6 +844,9 @@ pub enum Builtin {
     ParallelMap,
     ParallelMapRef,
     ParallelReduce,
+    /// `Parallel.for_each_chunk :: Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit`
+    /// runs the callback on disjoint chunks of an exclusive slice in parallel (C08 Phase 2).
+    ParallelForEachChunk,
     /// `unreachable : unit -> 'a` traps (GUIDE D-21).
     Unreachable,
     ToString,
@@ -725,6 +883,17 @@ pub enum Builtin {
     ArraySet,
     ArrayUpdate,
     ArraySwap,
+    /// `Array.write :: ref mut ['a..] -> i64 -> 'a -> unit` replaces one element in place (C08).
+    ArrayWrite,
+    /// `Array.swap_in :: ref mut ['a..] -> i64 -> i64 -> unit` exchanges two elements in place.
+    ArraySwapIn,
+    /// `Array.split_at_mut :: ref mut ['a..] -> i64 -> (ref mut ['a..] * ref mut ['a..])`.
+    ArraySplitAtMut,
+    /// `FixedArray.init :: (i64 -> 'a) -> ['a; N]`, whose length comes from the expected type (A16).
+    FixedArrayInit,
+    /// `Dyn.of :: 'a -> 'b`, where the expected type `'b` is a `dyn` type whose classes `'a`
+    /// implements (A14). Only a direct application with one argument type-checks.
+    DynOf,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -742,9 +911,11 @@ pub enum Builtin {
     SimdOfLanes4,
     SimdOfLanes8,
     SimdOfLanes16,
+    SimdOfLanes32,
     SimdExtract,
     SimdReplace,
     SimdLoad,
+    SimdStore,
     SimdSum,
     SimdEq,
     SimdNe,
@@ -845,6 +1016,8 @@ pub enum BuiltinType {
         args: Vec<BuiltinType>,
     },
     Array(Box<BuiltinType>),
+    /// The `[T..]` target of an exclusive slice (C08); only inside `Reference(_, true)`.
+    ArrayView(Box<BuiltinType>),
     List(Box<BuiltinType>),
     Vec(Box<BuiltinType>),
     Tuple(Vec<BuiltinType>),
@@ -858,6 +1031,8 @@ pub enum BuiltinType {
     WidenOf(Box<BuiltinType>),
     SimdLane(Box<BuiltinType>, Option<u16>),
     SimdMask(Box<BuiltinType>),
+    /// A fixed-length array of the element, whose length the expected type decides (A16).
+    FixedArrayOf(Box<BuiltinType>),
 }
 
 #[derive(Clone, Debug)]
@@ -936,6 +1111,7 @@ impl Builtin {
         Self::ParallelMap,
         Self::ParallelMapRef,
         Self::ParallelReduce,
+        Self::ParallelForEachChunk,
         Self::Unreachable,
         Self::ToString,
         Self::DebugPrintString,
@@ -960,6 +1136,11 @@ impl Builtin {
         Self::ArraySet,
         Self::ArrayUpdate,
         Self::ArraySwap,
+        Self::ArrayWrite,
+        Self::ArraySwapIn,
+        Self::ArraySplitAtMut,
+        Self::FixedArrayInit,
+        Self::DynOf,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -977,9 +1158,11 @@ impl Builtin {
         Self::SimdOfLanes4,
         Self::SimdOfLanes8,
         Self::SimdOfLanes16,
+        Self::SimdOfLanes32,
         Self::SimdExtract,
         Self::SimdReplace,
         Self::SimdLoad,
+        Self::SimdStore,
         Self::SimdSum,
         Self::SimdEq,
         Self::SimdNe,
@@ -1113,6 +1296,7 @@ impl Builtin {
             Self::ParallelMap => "Parallel.map",
             Self::ParallelMapRef => "Parallel.map_ref",
             Self::ParallelReduce => "Parallel.reduce",
+            Self::ParallelForEachChunk => "Parallel.for_each_chunk",
             Self::Unreachable => "unreachable",
             Self::ToString => "to_string",
             Self::DebugPrintString => "Debug.__print_string",
@@ -1137,6 +1321,11 @@ impl Builtin {
             Self::ArraySet => "Array.set",
             Self::ArrayUpdate => "Array.update",
             Self::ArraySwap => "Array.swap",
+            Self::ArrayWrite => "Array.write",
+            Self::ArraySwapIn => "Array.swap_in",
+            Self::ArraySplitAtMut => "Array.split_at_mut",
+            Self::FixedArrayInit => "FixedArray.init",
+            Self::DynOf => "Dyn.of",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -1154,9 +1343,11 @@ impl Builtin {
             Self::SimdOfLanes4 => "Simd.of_lanes4",
             Self::SimdOfLanes8 => "Simd.of_lanes8",
             Self::SimdOfLanes16 => "Simd.of_lanes16",
+            Self::SimdOfLanes32 => "Simd.of_lanes32",
             Self::SimdExtract => "Simd.extract",
             Self::SimdReplace => "Simd.replace",
             Self::SimdLoad => "Simd.load",
+            Self::SimdStore => "Simd.store",
             Self::SimdSum => "Simd.sum_lanes",
             Self::SimdEq => "Simd.eq",
             Self::SimdNe => "Simd.ne",
@@ -1344,9 +1535,11 @@ impl Builtin {
             | Self::SimdOfLanes4
             | Self::SimdOfLanes8
             | Self::SimdOfLanes16
+            | Self::SimdOfLanes32
             | Self::SimdExtract
             | Self::SimdReplace
             | Self::SimdLoad
+            | Self::SimdStore
             | Self::SimdSum
             | Self::SimdEq
             | Self::SimdNe
@@ -1362,6 +1555,7 @@ impl Builtin {
                     Self::SimdOfLanes4 => Some(4),
                     Self::SimdOfLanes8 => Some(8),
                     Self::SimdOfLanes16 => Some(16),
+                    Self::SimdOfLanes32 => Some(32),
                     _ => None,
                 };
                 let lane = || BuiltinType::SimdLane(Box::new(a()), count);
@@ -1374,6 +1568,11 @@ impl Builtin {
                         Reference(Box::new(Array(Box::new(lane()))), false),
                         Concrete(Type::I64),
                     ],
+                    Self::SimdStore => vec![
+                        Reference(Box::new(BuiltinType::ArrayView(Box::new(lane()))), true),
+                        Concrete(Type::I64),
+                        a(),
+                    ],
                     Self::SimdSum | Self::SimdAll | Self::SimdAny => vec![a()],
                     Self::SimdSelect => vec![mask(), a(), a()],
                     _ if count.is_some() => vec![lane(); usize::from(count.unwrap())],
@@ -1382,6 +1581,7 @@ impl Builtin {
                 let result = match self {
                     Self::SimdExtract | Self::SimdSum => lane(),
                     Self::SimdAll | Self::SimdAny => Concrete(Type::Bool),
+                    Self::SimdStore => Concrete(Type::Unit),
                     Self::SimdEq
                     | Self::SimdNe
                     | Self::SimdLt
@@ -1393,6 +1593,7 @@ impl Builtin {
                 let class = match self {
                     Self::SimdAll | Self::SimdAny => "SimdMask",
                     Self::SimdLoad
+                    | Self::SimdStore
                     | Self::SimdSum
                     | Self::SimdEq
                     | Self::SimdNe
@@ -1641,6 +1842,36 @@ impl Builtin {
                     Vec::new(),
                 )
             }
+            Self::ArrayWrite | Self::ArraySwapIn | Self::ArraySplitAtMut => {
+                let view = || Reference(Box::new(BuiltinType::ArrayView(Box::new(a()))), true);
+                match self {
+                    Self::ArrayWrite => (
+                        vec![view(), Concrete(Type::I64), a()],
+                        Concrete(Type::Unit),
+                        Vec::new(),
+                    ),
+                    Self::ArraySwapIn => (
+                        vec![view(), Concrete(Type::I64), Concrete(Type::I64)],
+                        Concrete(Type::Unit),
+                        Vec::new(),
+                    ),
+                    _ => (
+                        vec![view(), Concrete(Type::I64)],
+                        BuiltinType::Tuple(vec![view(), view()]),
+                        Vec::new(),
+                    ),
+                }
+            }
+            Self::FixedArrayInit => (
+                vec![BuiltinType::Function(
+                    vec![Concrete(Type::I64)],
+                    Box::new(a()),
+                )],
+                BuiltinType::FixedArrayOf(Box::new(a())),
+                Vec::new(),
+            ),
+            // The classes of the expected `dyn` type become constraints in `Checker::dyn_of`.
+            Self::DynOf => (vec![a()], Var("b"), Vec::new()),
             Self::ListCons => (
                 vec![a(), BuiltinType::List(Box::new(a()))],
                 BuiltinType::List(Box::new(a())),
@@ -1910,6 +2141,24 @@ impl Builtin {
                     },
                 ],
             ),
+            Self::ParallelForEachChunk => {
+                let view = || Reference(Box::new(BuiltinType::ArrayView(Box::new(a()))), true);
+                (
+                    vec![
+                        Concrete(Type::I64),
+                        BuiltinType::Function(
+                            vec![Concrete(Type::I64), view()],
+                            Box::new(Concrete(Type::Unit)),
+                        ),
+                        view(),
+                    ],
+                    Concrete(Type::Unit),
+                    vec![BuiltinConstraint {
+                        class: "Send",
+                        ty: a(),
+                    }],
+                )
+            }
             Self::Unreachable => (vec![Concrete(Type::Unit)], a(), Vec::new()),
             Self::ToString => (
                 vec![a()],
@@ -2013,6 +2262,7 @@ impl BuiltinType {
                 types.iter().for_each(|ty| ty.variables(found))
             }
             Self::Array(ty)
+            | Self::ArrayView(ty)
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Task(ty)
@@ -2020,7 +2270,8 @@ impl BuiltinType {
             | Self::UnsignedOf(ty)
             | Self::WidenOf(ty)
             | Self::SimdLane(ty, _)
-            | Self::SimdMask(ty) => ty.variables(found),
+            | Self::SimdMask(ty)
+            | Self::FixedArrayOf(ty) => ty.variables(found),
             Self::Function(parameters, result) => {
                 parameters.iter().for_each(|ty| ty.variables(found));
                 result.variables(found);
@@ -2033,8 +2284,20 @@ impl Builtin {
     pub(crate) fn is_parallel(self) -> bool {
         matches!(
             self,
-            Self::ParallelInit | Self::ParallelMap | Self::ParallelMapRef | Self::ParallelReduce
+            Self::ParallelInit
+                | Self::ParallelMap
+                | Self::ParallelMapRef
+                | Self::ParallelReduce
+                | Self::ParallelForEachChunk
         )
+    }
+
+    /// The argument of a parallel operation that holds the callback.
+    pub(crate) fn parallel_callback(self) -> usize {
+        usize::from(matches!(
+            self,
+            Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk
+        ))
     }
 }
 
@@ -2051,7 +2314,7 @@ pub struct Signature {
 }
 
 impl Signature {
-    fn as_type(&self) -> Type {
+    pub(crate) fn as_type(&self) -> Type {
         Type::function(self.parameters.clone(), self.result.clone())
     }
 }
@@ -2071,6 +2334,9 @@ pub struct FunctionOrigin {
     pub provenance: Provenance,
     pub parent: Option<usize>,
     pub test: Option<usize>,
+    /// The CPU levels that `@cpu` also compiles the function for, bit `L` for level `L` of
+    /// `syntax::CPU_TARGETS` (F08 Phase 3). Generated helpers have none.
+    pub cpu: u8,
 }
 
 impl FunctionOrigin {
@@ -2081,6 +2347,7 @@ impl FunctionOrigin {
             provenance: Provenance::User,
             parent: None,
             test: None,
+            cpu: 0,
         }
     }
 
@@ -2089,6 +2356,7 @@ impl FunctionOrigin {
         Self {
             provenance: Provenance::Generated,
             parent: Some(parent),
+            cpu: 0,
             ..self
         }
     }
@@ -2118,6 +2386,26 @@ pub struct CheckedModule {
     pub warnings: Vec<Diagnostic>,
     /// Concrete Drop type -> specialized `Drop.drop` function id. Empty without Drop instances.
     pub user_drops: BTreeMap<Type, usize>,
+    /// A14: the slot functions of each vtable in slot order, by vtable key
+    /// (`DynType::vtable_key`) and stored type. Specialization fills it.
+    pub vtables: Vtables,
+    /// A14: the layout of each vtable key that a vtable or an upcast uses.
+    pub dyn_layouts: BTreeMap<DynType, DynLayout>,
+    /// A14: some module writes a `dyn` type, so the IR defines `%tz.dyn`.
+    pub uses_dyn: bool,
+}
+
+/// The slot functions of each vtable in slot order, by vtable key and stored type (A14).
+pub type Vtables = BTreeMap<(DynType, Type), Vec<usize>>;
+
+/// The shape of the vtables of one vtable key (A14).
+#[derive(Clone, Debug, Default)]
+pub struct DynLayout {
+    /// The number of method slots.
+    pub slots: usize,
+    /// The vtable keys that values of this key are upcast to without being stored again, in
+    /// the order of the vtable's upcast table (Phase 2).
+    pub upcasts: Vec<DynType>,
 }
 
 #[derive(Clone, Debug)]
@@ -2457,6 +2745,12 @@ pub enum TypedExprKind {
     RaisedException,
     /// Raises the exception that the enclosing handler did not match to the next `try`.
     Reraise,
+    /// The whole body of a method of a generated instance for a `dyn` type (A14): calls slot
+    /// `slot` of the receiver's vtable, which has `slots` slots, with the other parameters.
+    DynDispatch {
+        slot: u32,
+        slots: u32,
+    },
 }
 
 /// A checked `try ... with ... [finally ...]`. `handler` binds the caught exception
@@ -2492,8 +2786,10 @@ impl TypedExpr {
             | TypedExprKind::ListTail(value, _)
             | TypedExprKind::UnionPayload { value, .. } => value.is_place(),
             TypedExprKind::Index(value, _) => {
-                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_))
-                    && value.is_place()
+                matches!(
+                    value.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) && value.is_place()
             }
             _ => false,
         }
@@ -2529,9 +2825,17 @@ impl TypedExpr {
                 types,
             ),
             BorrowOperand(value) => read(value),
-            Slice { value, start, end } => {
-                read(value).or_else(|| start.iter().chain(end).find_map(|bound| consume(bound)))
-            }
+            Slice { value, start, end } => value
+                .local_use(
+                    local,
+                    if self.ty.is_view() {
+                        LocalAccess::Write
+                    } else {
+                        LocalAccess::Read
+                    },
+                    types,
+                )
+                .or_else(|| start.iter().chain(end).find_map(|bound| consume(bound))),
             Assign(place, value) => place
                 .local_use(local, LocalAccess::Write, types)
                 .or_else(|| consume(value)),
@@ -2838,10 +3142,13 @@ struct Names {
     handle_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
+    /// Whether each type parameter of a record is a length parameter `const N: i64` (A16).
+    record_lengths: Vec<Box<[bool]>>,
     /// Unions share the type namespace with records and classes.
     unions: BTreeMap<String, NameInfo>,
     union_aliases: BTreeMap<String, Vec<String>>,
     union_arities: Vec<usize>,
+    union_lengths: Vec<Box<[bool]>>,
     /// Union cases by qualified `Module.Case`; a module declares each case name once.
     cases: BTreeMap<String, CaseInfo>,
     case_aliases: BTreeMap<String, Vec<String>>,
@@ -2851,6 +3158,8 @@ struct Names {
     class_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, NameInfo>,
     constants: BTreeSet<usize>,
+    /// The values of the `i64` constants with an integer literal value, which can be lengths (A16).
+    length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
     active_aliases: BTreeMap<String, Vec<String>>,
 }
@@ -3884,6 +4193,40 @@ impl Names {
         Ok(Some(info.id))
     }
 
+    /// The constant that a length name `N` or `Module.N` refers to (A16 Phase 2), with its value
+    /// when it is an `i64` constant with an integer literal value.
+    pub(crate) fn length_constant(
+        &self,
+        module: &str,
+        name: &str,
+        span: Span,
+    ) -> Option<(usize, Option<u64>)> {
+        let qualified = if name.contains(['.', ':']) {
+            self.canonical(module, name)?
+        } else {
+            std::borrow::Cow::Owned(format!("{module}.{name}"))
+        };
+        let id = self.function(module, &qualified, span).ok().flatten()?;
+        self.constants
+            .contains(&id)
+            .then(|| (id, self.length_constants.get(&id).copied()))
+    }
+
+    /// Whether each parameter of a record, union, or alias is a length parameter (A16 Phase 2).
+    fn length_parameters(&self, named: NamedType<'_>) -> Vec<bool> {
+        match named {
+            NamedType::Record(info) => self.record_lengths[info.id].to_vec(),
+            NamedType::Union(info) => self.union_lengths[info.id].to_vec(),
+            NamedType::Alias(info) => self.type_aliases[&info.name]
+                .1
+                .parameters
+                .iter()
+                .map(|parameter| parameter.text.starts_with('#'))
+                .collect(),
+            NamedType::Handle(_) => Vec::new(),
+        }
+    }
+
     fn member_function(
         &self,
         requester: &str,
@@ -4055,6 +4398,7 @@ fn validate_public_type(
             Ok(())
         }
         TypeExprKind::Apply(head, args) => {
+            let mut lengths = Vec::new();
             if head.text != "Vec"
                 && !head.text.starts_with('\'')
                 && let TypeHead::Type(named) = names.type_head(module, head)?
@@ -4071,15 +4415,22 @@ fn validate_public_type(
                         head.span,
                     ));
                 }
+                lengths = names.length_parameters(named);
             }
+            // Length arguments (A16) name no types.
             args.iter()
-                .try_for_each(|arg| validate_public_type(arg, module, owner, names))
+                .enumerate()
+                .filter(|(index, _)| !lengths.get(*index).copied().unwrap_or(false))
+                .try_for_each(|(_, arg)| validate_public_type(arg, module, owner, names))
         }
-        TypeExprKind::Variable(_) => Ok(()),
+        // Classes have no visibility, so a dyn type leaks nothing (A14).
+        TypeExprKind::Variable(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => Ok(()),
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
+        | TypeExprKind::FixedArray(inner, _)
         | TypeExprKind::List(inner)
         | TypeExprKind::Task(inner) => validate_public_type(inner, module, owner, names),
         TypeExprKind::Tuple(elements) => elements
@@ -4320,9 +4671,31 @@ fn check_modules_collect(
                 .map(|function| (module.name.to_owned(), function.clone()))
         })
         .collect();
+    // F08 Phase 3: the `@cpu` levels of each function declaration.
+    let mut cpu_levels = BTreeMap::new();
+    for module in modules {
+        for attribute in &module.program.cpu_attributes {
+            if let Some(id) = function_declarations.iter().position(|(owner, function)| {
+                owner == module.name && function.name.text == attribute.function.text
+            }) {
+                cpu_levels.insert(id, attribute.levels);
+            }
+        }
+    }
     for module in modules {
         for constant in &module.program.constants {
             constants::validate(&constant.value)?;
+            // An `i64` constant with an integer literal value can name a length (A16 Phase 2).
+            if let (TypeExprKind::Named(ty), ExprKind::Integer(value, suffix)) =
+                (&constant.ty.kind, &constant.value.kind)
+                && ty == "i64"
+                && suffix.as_deref().is_none_or(|suffix| suffix == "i64")
+            {
+                names.length_constants.insert(
+                    function_declarations.len(),
+                    u64::try_from(*value).unwrap_or(u64::MAX),
+                );
+            }
             names.constants.insert(function_declarations.len());
             let mut name = constant.name.clone();
             name.provenance = Provenance::Generated;
@@ -4495,6 +4868,13 @@ fn check_modules_collect(
             .or_default()
             .push(qualified);
         names.record_arities.push(record.parameters.len());
+        names.record_lengths.push(
+            record
+                .parameters
+                .iter()
+                .map(|parameter| parameter.text.starts_with('#'))
+                .collect(),
+        );
     }
     for module in modules {
         for handle in &module.program.extern_types {
@@ -4622,6 +5002,14 @@ fn check_modules_collect(
             polymorph::bounded_type(&ty, alias.target.span)?;
             let used = polymorph::variables(&ty);
             if let Some(variable) = used.iter().find(|variable| !parameters.contains(variable)) {
+                if let Some(length) = variable.strip_prefix('#') {
+                    return Err(undeclared_length(
+                        "type alias",
+                        &alias.name.text,
+                        length,
+                        alias.target.span,
+                    ));
+                }
                 return Err(Diagnostic::new(
                     "E1024",
                     format!(
@@ -4639,8 +5027,8 @@ fn check_modules_collect(
                 return Err(Diagnostic::new(
                     "E1024",
                     format!(
-                        "type parameter '{} is not used by the alias target; remove it or use it in the target",
-                        parameter.text
+                        "{} is not used by the alias target; remove it or use it in the target",
+                        parameter_name(&parameter.text)
                     ),
                     parameter.span,
                 ));
@@ -4691,6 +5079,14 @@ fn check_modules_collect(
                 polymorph::bounded_type(&ty, field.ty.span)?;
                 for variable in polymorph::variables(&ty) {
                     if !parameters.contains(&variable) {
+                        if let Some(length) = variable.strip_prefix('#') {
+                            return Err(undeclared_length(
+                                "record",
+                                &record.name.text,
+                                length,
+                                field.ty.span,
+                            ));
+                        }
                         return Err(Diagnostic::new(
                             "E1024",
                             format!(
@@ -4719,8 +5115,8 @@ fn check_modules_collect(
                 return Err(Diagnostic::new(
                     "E1024",
                     format!(
-                        "type parameter '{} is not used by any field; remove it or add a field that mentions it",
-                        parameter.text
+                        "{} is not used by any field; remove it or add a field that mentions it",
+                        parameter_name(&parameter.text)
                     ),
                     parameter.span,
                 ));
@@ -4971,7 +5367,7 @@ fn check_modules_collect(
             {
                 return Err(Diagnostic::new(
                     "E1008",
-                    "exports support scalar values, borrowed i64/f64/ubyte arrays and string/utf8string inputs, owned buffer results, and scalar-only records with distinct C field names; mutable borrows, owned buffer inputs, wide numbers, and other aggregates are not supported",
+                    "exports support scalar values, borrowed i64/f64/ubyte arrays and string/utf8string inputs, owned buffer results, and scalar-only records (scalars, scalar fixed-length arrays, and such records as fields) with distinct C field names; mutable borrows, owned buffer inputs, wide numbers, and other aggregates are not supported",
                     function.name.span,
                 ));
             }
@@ -5318,6 +5714,7 @@ fn check_modules_collect(
                 origin: FunctionOrigin {
                     provenance: function.name.provenance,
                     test: test_functions.get(&id).copied(),
+                    cpu: cpu_levels.get(&id).copied().unwrap_or(0),
                     ..FunctionOrigin::source(names.origin(module))
                 },
                 name: function.name.text.clone(),
@@ -5520,6 +5917,11 @@ fn check_modules_collect(
         tests,
         warnings,
         user_drops: BTreeMap::new(),
+        vtables: BTreeMap::new(),
+        dyn_layouts: BTreeMap::new(),
+        uses_dyn: modules
+            .iter()
+            .any(|input| !input.program.dyn_types.is_empty()),
     };
     validate_callbacks(&module)?;
     regions::validate_contract_calls(&module)?;
@@ -5545,8 +5947,57 @@ fn check_modules_collect(
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
     }
+    if let Err(error) = validate_cpu_functions(&module) {
+        diagnostics.push(error);
+    }
     diagnostics.check()?;
     Ok(module)
+}
+
+/// F08 Phase 3: the versions of a `@cpu` function run with different instruction sets, which
+/// pass vectors wider than 128 bits in different registers. No such vector may cross its
+/// signature, and it calls no function value that passes one; named functions that pass one
+/// get versions of their own.
+fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
+    let types = module.types();
+    for function in module
+        .functions
+        .iter()
+        .filter(|function| function.origin.cpu != 0)
+    {
+        let signature = &function.signature;
+        if signature
+            .parameters
+            .iter()
+            .chain([&signature.result])
+            .any(|ty| ty.holds_wide_vector(&types))
+        {
+            return Err(Diagnostic::new(
+                "E1005",
+                "a '@cpu' function cannot take or return a SIMD vector wider than 128 bits, also inside a record, union, tuple, or fixed-length array; pass a slice or return a scalar",
+                function.span,
+            ));
+        }
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            if let TypedExprKind::Call(callee, _) = &expression.kind
+                && !matches!(callee.kind, TypedExprKind::Function(_))
+                && let Type::Function(parameters, result) = &callee.ty
+                && parameters
+                    .iter()
+                    .chain([result.as_ref()])
+                    .any(|ty| ty.holds_wide_vector(&types))
+            {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "a '@cpu' function cannot call a function value that takes or returns a SIMD vector wider than 128 bits; call a named function",
+                    expression.span,
+                ));
+            }
+            pending.extend(expression.children());
+        }
+    }
+    Ok(())
 }
 
 /// Callback externs run only through direct calls with every argument, and each
@@ -5757,6 +6208,9 @@ fn recovery_module(
         tests: Vec::new(),
         warnings: Vec::new(),
         user_drops: BTreeMap::new(),
+        vtables: BTreeMap::new(),
+        dyn_layouts: BTreeMap::new(),
+        uses_dyn: false,
     }
 }
 
@@ -5835,8 +6289,8 @@ fn declared_parameters(
             return Err(Diagnostic::new(
                 "E1024",
                 format!(
-                    "duplicate type parameter '{} in {kind} '{name}'; give each parameter a distinct name",
-                    parameter.text
+                    "duplicate {} in {kind} '{name}'; give each parameter a distinct name",
+                    parameter_name(&parameter.text)
                 ),
                 parameter.span,
             ));
@@ -5844,6 +6298,25 @@ fn declared_parameters(
         declared.push(parameter.text.clone());
     }
     Ok(declared)
+}
+
+/// A declared parameter in diagnostics: `type parameter 'a` or `length parameter N` (A16).
+fn parameter_name(text: &str) -> String {
+    match text.strip_prefix('#') {
+        Some(length) => format!("length parameter {length}"),
+        None => format!("type parameter '{text}"),
+    }
+}
+
+/// A length name in a declaration that is neither a declared length parameter nor a constant.
+fn undeclared_length(kind: &str, name: &str, length: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(
+        "E1024",
+        format!(
+            "length '{length}' is not declared by {kind} '{name}'; add 'const {length}: i64' in angle brackets after the name, or define an 'i64' constant '{length}'"
+        ),
+        span,
+    )
 }
 
 fn starts_uppercase(name: &str) -> bool {
@@ -5898,6 +6371,13 @@ fn collect_unions(
                 .or_default()
                 .push(qualified);
             names.union_arities.push(union.parameters.len());
+            names.union_lengths.push(
+                union
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.text.starts_with('#'))
+                    .collect(),
+            );
             Ok(())
         })();
         if let Err(error) = registered {
@@ -5995,6 +6475,9 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
         polymorph::bounded_type(&ty, expression.span)?;
         for variable in polymorph::variables(&ty) {
             if !parameters.contains(&variable) {
+                if let Some(length) = variable.strip_prefix('#') {
+                    return Err(undeclared_length("union", name, length, expression.span));
+                }
                 return Err(Diagnostic::new(
                     "E1024",
                     format!(
@@ -6022,8 +6505,8 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
         return Err(Diagnostic::new(
             "E1024",
             format!(
-                "type parameter '{} is not used by any case payload; remove it or add a payload that mentions it",
-                parameter.text
+                "{} is not used by any case payload; remove it or add a payload that mentions it",
+                parameter_name(&parameter.text)
             ),
             parameter.span,
         ));
@@ -6054,6 +6537,7 @@ fn resolve_type_with_kinds(
     let resolve = |ty: &TypeExpr| resolve_type_with_kinds(ty, module, names, kinds);
     Ok(match &expression.kind {
         TypeExprKind::Regions(inner, _) | TypeExprKind::Quantified(_, inner) => resolve(inner)?,
+        TypeExprKind::Dyn(dyn_type) => resolve_dyn(dyn_type, module, names)?,
         TypeExprKind::Apply(head, args) if head.text.starts_with('\'') => {
             let variable = &head.text[1..];
             if kinds.get(variable) != Some(&args.len()) || args.is_empty() {
@@ -6139,7 +6623,24 @@ fn resolve_type_with_kinds(
                         polymorph::bounded_type(&ty, expression.span)?;
                         return Ok(ty);
                     }
-                    let args = args.iter().map(resolve).collect::<Result<_, _>>()?;
+                    let lengths: &[bool] = match named {
+                        NamedType::Record(info) => &names.record_lengths[info.id],
+                        NamedType::Union(info) => &names.union_lengths[info.id],
+                        _ => &[],
+                    };
+                    let args = args
+                        .iter()
+                        .enumerate()
+                        .map(|(index, arg)| {
+                            resolve_argument(
+                                arg,
+                                lengths.get(index).copied().unwrap_or(false),
+                                module,
+                                names,
+                                kinds,
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
                     match named {
                         NamedType::Record(info) => Type::Record(info.id, args),
                         NamedType::Union(info) => Type::Union(info.id, args),
@@ -6160,8 +6661,36 @@ fn resolve_type_with_kinds(
             }
             Type::Variable(name.clone())
         }
-        TypeExprKind::Reference(ty, mutable) => Type::Reference(Box::new(resolve(ty)?), *mutable),
+        TypeExprKind::Reference(ty, mutable) => match &ty.kind {
+            TypeExprKind::ArrayView(element) if *mutable => {
+                Type::Reference(Box::new(Type::ArrayView(Box::new(resolve(element)?))), true)
+            }
+            _ => Type::Reference(Box::new(resolve(ty)?), *mutable),
+        },
+        TypeExprKind::ArrayView(_) => {
+            return Err(Diagnostic::new(
+                "E1005",
+                "'[T..]' is only valid directly after 'ref mut'; write 'ref mut [T..]' for an exclusive slice, 'ref [T]' for a shared slice, or '[T]' for an owned array",
+                expression.span,
+            ));
+        }
         TypeExprKind::Array(element) => Type::Array(Box::new(resolve(element)?)),
+        TypeExprKind::FixedArray(element, length) => {
+            let element = resolve(element)?;
+            Type::FixedArray(
+                Box::new(element),
+                Box::new(resolve_length(length, module, names, expression.span)?),
+            )
+        }
+        TypeExprKind::Length(length) => {
+            return Err(Diagnostic::new(
+                "E1004",
+                format!(
+                    "expected a type, found the length {length}; a length belongs in '[T; N]' or a length parameter 'const N: i64'"
+                ),
+                expression.span,
+            ));
+        }
         TypeExprKind::List(element) => Type::List(Box::new(resolve(element)?)),
         TypeExprKind::Tuple(elements) => {
             Type::Tuple(elements.iter().map(resolve).collect::<Result<_, _>>()?)
@@ -6172,6 +6701,123 @@ fn resolve_type_with_kinds(
             resolve(result)?,
         ),
     })
+}
+
+/// The type of `dyn` and its classes (A14): `Copy` and `Send` become markers, and every other
+/// name must be a type class. The classes are sorted, so their order in the source never matters.
+#[inline(never)]
+fn resolve_dyn(expression: &DynTypeExpr, module: &str, names: &Names) -> Result<Type, Diagnostic> {
+    let mut classes = BTreeSet::new();
+    let (mut copy, mut send) = (false, false);
+    for name in &expression.classes {
+        let Some(key) = names.class(module, &name.text, name.span)? else {
+            let kind = if names.named_type(module, &name.text, name.span).is_ok() {
+                format!("'{}' is not a type class", name.text)
+            } else {
+                format!("unknown type class '{}'", name.text)
+            };
+            return Err(Diagnostic::new(
+                "E1004",
+                format!("{kind}; dyn needs a type class such as dyn Shapes.Shape"),
+                name.span,
+            ));
+        };
+        match key {
+            "Copy" => copy = true,
+            "Send" => send = true,
+            key => {
+                classes.insert(Box::<str>::from(key));
+            }
+        }
+    }
+    Ok(Type::Dyn(Box::new(DynType {
+        classes: classes.into_iter().collect(),
+        copy,
+        send,
+        borrowed: expression.borrowed,
+    })))
+}
+
+/// A type argument, or the length argument of a length parameter `const N: i64` (A16 Phase 2).
+fn resolve_argument(
+    argument: &TypeExpr,
+    length: bool,
+    module: &str,
+    names: &Names,
+    kinds: &BTreeMap<String, usize>,
+) -> Result<Type, Diagnostic> {
+    if length {
+        return resolve_length(argument, module, names, argument.span);
+    }
+    resolve_type_with_kinds(argument, module, names, kinds)
+}
+
+/// The length of `[T; N]` or a length argument (A16): a literal, an `i64` constant with an
+/// integer literal value, or a length parameter, which stays `Variable("#N")` until it is
+/// substituted. `span` locates the limit error.
+fn resolve_length(
+    expression: &TypeExpr,
+    module: &str,
+    names: &Names,
+    span: Span,
+) -> Result<Type, Diagnostic> {
+    let length = match &expression.kind {
+        TypeExprKind::Length(length) => *length,
+        TypeExprKind::Variable(name) if name.starts_with('#') => {
+            return Ok(Type::Variable(name.clone()));
+        }
+        TypeExprKind::Named(name) => match names.length_constant(module, name, expression.span) {
+            Some((_, Some(length))) => length,
+            Some((_, None)) => {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "constant '{name}' cannot be a length; a length constant has type 'i64' and an integer literal value"
+                    ),
+                    expression.span,
+                ));
+            }
+            None if crate::numeric::primitive(name).is_some()
+                || name == "bigint"
+                || names.named_type(module, name, expression.span).is_ok() =>
+            {
+                return Err(Diagnostic::new(
+                    "E1004",
+                    format!("expected a length, found the type '{name}'"),
+                    expression.span,
+                ));
+            }
+            None if !name.contains(['.', ':']) => {
+                return Ok(Type::Variable(format!("#{name}")));
+            }
+            None => {
+                return Err(Diagnostic::new(
+                    "E1002",
+                    format!(
+                        "unknown constant '{name}'; a length is an integer literal, an 'i64' constant, or a length parameter"
+                    ),
+                    expression.span,
+                ));
+            }
+        },
+        _ => {
+            return Err(Diagnostic::new(
+                "E1004",
+                "expected a length, such as '3', an 'i64' constant, or a length parameter 'N'",
+                expression.span,
+            ));
+        }
+    };
+    if length > MAX_FIXED_ARRAY_LENGTH {
+        return Err(Diagnostic::new(
+            "E1010",
+            format!(
+                "fixed array length {length} exceeds {MAX_FIXED_ARRAY_LENGTH} elements; use '[T]' for larger arrays"
+            ),
+            span,
+        ));
+    }
+    Ok(Type::Length(length))
 }
 
 fn record_arity(
@@ -6261,16 +6907,21 @@ impl TypeAliasExpansion<'_> {
                 TypeExprKind::Named(key_path(&named.info().name))
             }
             TypeExprKind::Apply(head, args) if crate::numeric::primitive(&head.text).is_none() => {
-                let name = match self.names.type_head(module, head)? {
+                let (name, lengths) = match self.names.type_head(module, head)? {
                     TypeHead::Type(NamedType::Alias(info)) => {
                         return self.alias(info, args, module, expression.span, depth);
                     }
-                    TypeHead::Type(named) => named.info().name.clone(),
-                    TypeHead::Class => self
-                        .names
-                        .class(module, &head.text, head.span)?
-                        .expect("a classified class has a resolved name")
-                        .to_owned(),
+                    TypeHead::Type(named) => (
+                        named.info().name.clone(),
+                        self.names.length_parameters(named),
+                    ),
+                    TypeHead::Class => (
+                        self.names
+                            .class(module, &head.text, head.span)?
+                            .expect("a classified class has a resolved name")
+                            .to_owned(),
+                        Vec::new(),
+                    ),
                 };
                 TypeExprKind::Apply(
                     Box::new(Ident {
@@ -6278,9 +6929,7 @@ impl TypeAliasExpansion<'_> {
                         span: head.span,
                         provenance: head.provenance,
                     }),
-                    args.iter()
-                        .map(|arg| self.expand(arg, module, depth + 1))
-                        .collect::<Result<_, _>>()?,
+                    self.arguments(args, &lengths, module, depth)?.into(),
                 )
             }
             TypeExprKind::Reference(inner, mutable) => {
@@ -6297,6 +6946,14 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Array(inner) => {
                 TypeExprKind::Array(Box::new(self.expand(inner, module, depth + 1)?))
             }
+            TypeExprKind::ArrayView(inner) => {
+                TypeExprKind::ArrayView(Box::new(self.expand(inner, module, depth + 1)?))
+            }
+            // A length names a constant or a length parameter, never an alias.
+            TypeExprKind::FixedArray(element, length) => TypeExprKind::FixedArray(
+                Box::new(self.expand(element, module, depth + 1)?),
+                length.clone(),
+            ),
             TypeExprKind::List(inner) => {
                 TypeExprKind::List(Box::new(self.expand(inner, module, depth + 1)?))
             }
@@ -6339,10 +6996,12 @@ impl TypeAliasExpansion<'_> {
             args.len(),
             span,
         )?;
-        let arguments = args
-            .iter()
-            .map(|arg| self.expand(arg, module, depth + 1))
-            .collect::<Result<Vec<_>, _>>()?;
+        let arguments = self.arguments(
+            args,
+            &self.names.length_parameters(NamedType::Alias(info)),
+            module,
+            depth,
+        )?;
         if self.active.contains(&info.name) {
             return Err(Diagnostic::new(
                 "E1024",
@@ -6368,6 +7027,27 @@ impl TypeAliasExpansion<'_> {
         Ok(result)
     }
 
+    /// Expands type arguments; a length argument (A16) names a constant or a length parameter,
+    /// never an alias, so it stays as written.
+    fn arguments(
+        &mut self,
+        args: &[TypeExpr],
+        lengths: &[bool],
+        module: &str,
+        depth: usize,
+    ) -> Result<Vec<TypeExpr>, Diagnostic> {
+        args.iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                if lengths.get(index).copied().unwrap_or(false) {
+                    Ok(arg.clone())
+                } else {
+                    self.expand(arg, module, depth + 1)
+                }
+            })
+            .collect()
+    }
+
     fn substitute(
         &mut self,
         expression: &mut TypeExpr,
@@ -6388,6 +7068,12 @@ impl TypeAliasExpansion<'_> {
         {
             *expression = argument.clone();
             &empty
+        } else if let TypeExprKind::Named(name) = &expression.kind
+            && let Some(argument) = substitutions.get(&format!("#{name}"))
+        {
+            // The alias's length parameter `const N: i64` is written `N` (A16).
+            *expression = argument.clone();
+            &empty
         } else {
             substitutions
         };
@@ -6397,14 +7083,19 @@ impl TypeAliasExpansion<'_> {
             | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
+            | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner) => vec![inner],
+            TypeExprKind::FixedArray(element, length) => vec![element, length],
             TypeExprKind::Tuple(elements) => elements.iter_mut().collect(),
             TypeExprKind::Function(parameters, result) => parameters
                 .iter_mut()
                 .chain(std::iter::once(result.as_mut()))
                 .collect(),
-            TypeExprKind::Named(_) | TypeExprKind::Variable(_) => Vec::new(),
+            TypeExprKind::Named(_)
+            | TypeExprKind::Variable(_)
+            | TypeExprKind::Length(_)
+            | TypeExprKind::Dyn(_) => Vec::new(),
         };
         for child in children {
             self.substitute(child, substitutions, depth + 1)?;
@@ -6456,6 +7147,8 @@ fn reject_expanded_field_constraints(
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
+        | TypeExprKind::FixedArray(inner, _)
         | TypeExprKind::List(inner)
         | TypeExprKind::Task(inner) => vec![inner],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
@@ -6463,7 +7156,10 @@ fn reject_expanded_field_constraints(
             .iter()
             .chain(std::iter::once(result.as_ref()))
             .collect(),
-        TypeExprKind::Named(_) | TypeExprKind::Variable(_) => Vec::new(),
+        TypeExprKind::Named(_)
+        | TypeExprKind::Variable(_)
+        | TypeExprKind::Length(_)
+        | TypeExprKind::Dyn(_) => Vec::new(),
     };
     children
         .into_iter()
@@ -6608,12 +7304,22 @@ impl<'a> Layouts<'a> {
                 self.size(element, depth, span)?;
                 32
             }
-            Type::Reference(_, false) if ty.shared_array_element().is_some() => 16,
+            Type::Reference(..) if ty.slice_element().is_some() => 16,
             Type::Record(..) => self.record(ty, depth, span)?,
             Type::Union(..) => self.union(ty, depth, span)?,
             Type::Array(element) | Type::List(element) => {
                 self.size(element, depth, span)?;
                 16
+            }
+            // Elements are inline at their own stride, so no per-element rounding (A16); a
+            // length parameter counts as empty until specialization substitutes it.
+            Type::FixedArray(element, _) => {
+                let length = usize::try_from(ty.fixed_length().unwrap_or(0)).unwrap_or(usize::MAX);
+                let size = self.size(element, depth + 1, span)?.saturating_mul(length);
+                if size > MAX_VALUE_BYTES {
+                    return Err(size_error(span));
+                }
+                size
             }
             Type::Tuple(elements) => {
                 let mut size = 0usize;
@@ -6630,7 +7336,8 @@ impl<'a> Layouts<'a> {
             | Type::Binary(128)
             | Type::Decimal(128)
             | Type::String
-            | Type::Utf8String => 16,
+            | Type::Utf8String
+            | Type::Dyn(_) => 16,
             Type::Function(..) | Type::Task(_) => 32,
             // Small values conservatively occupy at least one pointer-sized slot.
             _ => 8,
@@ -6849,16 +7556,32 @@ impl Validation<'_> {
                 }
                 size
             }
-            Type::Array(element) | Type::List(element) | Type::Vec(element) => {
+            Type::Array(element)
+            | Type::ArrayView(element)
+            | Type::FixedArray(element, _)
+            | Type::List(element)
+            | Type::Vec(element) => {
                 if element.contains_stored_mutable_reference(&self.layouts.types) {
                     return Err(Diagnostic::new(
                         "E1005",
-                        "array and list elements cannot contain mutable references; collections are deeply immutable",
+                        "array and list elements cannot contain mutable references; collections cannot hold exclusive borrows, so keep exclusive slices in locals or split them with 'Array.split_at_mut'",
                         span,
                     ));
                 }
-                self.check(element, span)?;
-                if matches!(ty, Type::Vec(_)) { 32 } else { 16 }
+                let element_size = self.check(element, span)?;
+                match ty {
+                    Type::Vec(_) => 32,
+                    Type::FixedArray(..) => {
+                        let length =
+                            usize::try_from(ty.fixed_length().unwrap_or(0)).unwrap_or(usize::MAX);
+                        let size = element_size.saturating_mul(length);
+                        if size > MAX_VALUE_BYTES {
+                            return Err(size_error(span));
+                        }
+                        size
+                    }
+                    _ => 16,
+                }
             }
             Type::Function(parameters, result) => {
                 for parameter in parameters {
@@ -6880,11 +7603,7 @@ impl Validation<'_> {
             }
             Type::Reference(value, _) => {
                 self.check(value, span)?;
-                if ty.shared_array_element().is_some() {
-                    16
-                } else {
-                    8
-                }
+                if ty.slice_element().is_some() { 16 } else { 8 }
             }
             Type::Integer(128, _)
             | Type::Binary(128)
@@ -6982,6 +7701,8 @@ struct Checker<'a> {
     name_uses: Vec<(Span, NameTarget)>,
     /// Inside `@checked`: integer `+ - * **` and negation raise OverflowException.
     checked_arithmetic: bool,
+    /// The callee being checked is `Dyn.of` applied to one argument, the only place it may appear (A14).
+    dyn_callee: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -7023,6 +7744,7 @@ impl<'a> Checker<'a> {
             indexing: false,
             name_uses: Vec::new(),
             checked_arithmetic: false,
+            dyn_callee: false,
         }
     }
 
@@ -7395,7 +8117,10 @@ impl<'a> Checker<'a> {
         // `xs |> f a` passes `xs` last; its type fixes `f`'s next parameter before
         // the arguments, such as a lambda, are checked.
         let piped = self.piped.take();
-        let callee = self.expression(callee, None)?;
+        self.dyn_callee = arguments.len() == 1 && piped.is_none() && self.names_dyn_of(callee);
+        let callee = self.expression(callee, None);
+        self.dyn_callee = false;
+        let callee = callee?;
         let arguments = if let [
             Expr {
                 kind: ExprKind::Tuple(values),
@@ -7438,7 +8163,7 @@ impl<'a> Checker<'a> {
             self.apply_piped(piped, &result, expression.span)?;
         }
         let owned = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::OwnedFunction);
-        let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce) && arguments.len() == instance.builtin.scheme().parameters.len())
+        let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk) && arguments.len() == instance.builtin.scheme().parameters.len())
         {
             self.parallel_arguments(arguments, &parameters)?
         } else {
@@ -7466,6 +8191,10 @@ impl<'a> Checker<'a> {
         };
         self.solve_families(false)?;
         self.temporary_borrows(&callee, &mut arguments, &result, expression.span)?;
+        if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::DynOf)
+        {
+            self.dyn_of(&callee, expression.span)?;
+        }
         let value = self.finish_expression(
             Self::call_kind(callee, arguments),
             result,
@@ -7662,6 +8391,23 @@ impl<'a> Checker<'a> {
             ),
             ExprKind::Bool(value) => (TypedExprKind::Bool(*value), Type::Bool),
             ExprKind::Unit => (TypedExprKind::Unit, Type::Unit),
+            // The body of a generated `dyn` instance method has the method's result type (A14).
+            ExprKind::DynDispatch { slot, slots } => {
+                let ty = expected.cloned().ok_or_else(|| {
+                    Diagnostic::new(
+                        "E1015",
+                        "a dyn dispatch needs the method's result type",
+                        expression.span,
+                    )
+                })?;
+                (
+                    TypedExprKind::DynDispatch {
+                        slot: *slot,
+                        slots: *slots,
+                    },
+                    ty,
+                )
+            }
             ExprKind::Interpolated(interpolation) => {
                 return self.interpolation(interpolation, expression.span, expected);
             }
@@ -7770,9 +8516,18 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Char(value) => (TypedExprKind::Int(u128::from(*value)), Type::Char),
             ExprKind::Utf8Char(value) => (TypedExprKind::Int(u128::from(*value)), Type::Utf8Char),
-            ExprKind::Slice { value, start, end } => {
-                self.slice(value, start.as_deref(), end.as_deref(), expression.span)?
-            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                mutable,
+            } => self.slice(
+                value,
+                start.as_deref(),
+                end.as_deref(),
+                *mutable,
+                expression.span,
+            )?,
             ExprKind::Break | ExprKind::Continue => {
                 let breaking = matches!(expression.kind, ExprKind::Break);
                 if self.normal_loop_depth == 0 {
@@ -7796,6 +8551,15 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Array(values) | ExprKind::List(values) => {
                 let list = matches!(expression.kind, ExprKind::List(_));
+                // A16: a literal is a fixed-length array only where one is expected.
+                if !list
+                    && let Some(Type::FixedArray(element, length)) =
+                        expected.map(|ty| self.inference.resolve(ty))
+                {
+                    let (kind, ty) =
+                        self.fixed_array_literal(values, *element, *length, expression.span)?;
+                    return self.finish_expression(kind, ty, expected, expression.span);
+                }
                 let mut element_type = match (list, expected) {
                     (false, Some(Type::Array(element))) | (true, Some(Type::List(element))) => {
                         Some((**element).clone())
@@ -7853,6 +8617,13 @@ impl<'a> Checker<'a> {
             ExprKind::NewLiteral(literal) => {
                 let literal = self.expression(literal, expected)?;
                 let ty = literal.ty.clone();
+                if matches!(self.inference.resolve(&ty), Type::FixedArray(..)) {
+                    return Err(Diagnostic::new(
+                        "E1005",
+                        "'new' creates a heap array or list; remove 'new' to create a fixed-length array value",
+                        expression.span,
+                    ));
+                }
                 (TypedExprKind::NewLiteral(Box::new(literal)), ty)
             }
             ExprKind::Field(..) if case.is_some() => {
@@ -7894,9 +8665,10 @@ impl<'a> Checker<'a> {
                     return Ok(TypedExpr::error(expression.span));
                 }
                 let ty = match &value.ty {
-                    Type::Array(element) | Type::List(element) | Type::Vec(element) => {
-                        (**element).clone()
-                    }
+                    Type::Array(element)
+                    | Type::List(element)
+                    | Type::Vec(element)
+                    | Type::FixedArray(element, _) => (**element).clone(),
                     Type::String => Type::Integer(16, false),
                     Type::Utf8String => Type::Integer(8, false),
                     _ => {
@@ -7914,15 +8686,15 @@ impl<'a> Checker<'a> {
                 let value = match notation {
                     Notation::Symbol => {
                         let hint = match expected {
-                            Some(Type::Reference(ty, expected_mutable))
+                            Some(reference @ Type::Reference(_, expected_mutable))
                                 if mutable == expected_mutable =>
                             {
-                                Some(ty.as_ref())
+                                reference.dereferenced()
                             }
-                            Some(Type::Error) => expected,
+                            Some(Type::Error) => Some(Type::Error),
                             _ => None,
                         };
-                        self.expression(value, hint)?
+                        self.expression(value, hint.as_ref())?
                     }
                     Notation::Keyword => {
                         let value = self.expression(value, None)?;
@@ -7934,16 +8706,18 @@ impl<'a> Checker<'a> {
                 };
                 if *mutable {
                     Self::require_mutable_reference(&value)?;
+                    Self::exclusive_borrow(value, expected)?
+                } else {
+                    let ty = Type::Reference(Box::new(value.ty.clone()), false);
+                    (TypedExprKind::Borrow(Box::new(value), false), ty)
                 }
-                let ty = Type::Reference(Box::new(value.ty.clone()), *mutable);
-                (TypedExprKind::Borrow(Box::new(value), *mutable), ty)
             }
             ExprKind::Dereference(value, notation) => {
                 let value = self.expression(value, None)?;
                 if value.ty.contains_error() {
                     return Ok(TypedExpr::error(expression.span));
                 }
-                let Type::Reference(ty, _) = &value.ty else {
+                let Some(ty) = value.ty.dereferenced() else {
                     return Err(Diagnostic::new(
                         "E1005",
                         match notation {
@@ -7953,7 +8727,6 @@ impl<'a> Checker<'a> {
                         value.span,
                     ));
                 };
-                let ty = (**ty).clone();
                 (TypedExprKind::Dereference(Box::new(value)), ty)
             }
             ExprKind::Assign(place, value) => {
@@ -7962,6 +8735,14 @@ impl<'a> Checker<'a> {
                     return Ok(TypedExpr::error(expression.span));
                 }
                 Self::require_mutable_reference(&place)?;
+                if matches!(&place.kind, TypedExprKind::Dereference(reference) if reference.ty.is_view())
+                {
+                    return Err(Diagnostic::new(
+                        "E1014",
+                        "cannot replace an exclusive slice as a whole because its length is fixed; write elements with 'Array.write' or replace the array through its owner ('ref mut [T]')",
+                        expression.span,
+                    ));
+                }
                 if !matches!(
                     place.kind,
                     TypedExprKind::Local(_) | TypedExprKind::Dereference(_)
@@ -8133,6 +8914,18 @@ impl<'a> Checker<'a> {
         let expected = self.inference.resolve(expected);
         match (&actual, &expected) {
             (_, Type::Infer(_) | Type::Error) => expected,
+            // A16: a fixed-length array keeps its type; `coerce_argument` slices it.
+            (Type::FixedArray(..), Type::Reference(inner, false))
+                if matches!(**inner, Type::Array(_)) =>
+            {
+                actual
+            }
+            (Type::Reference(target, _), Type::Reference(inner, false))
+                if matches!(**target, Type::FixedArray(..))
+                    && matches!(**inner, Type::Array(_)) =>
+            {
+                actual
+            }
             (Type::Reference(_, mutable), Type::Reference(inner, _)) => {
                 if actual == **inner {
                     actual
@@ -8151,10 +8944,14 @@ impl<'a> Checker<'a> {
 
     fn coerce_argument(
         &mut self,
-        mut value: TypedExpr,
+        value: TypedExpr,
         expected: &Type,
     ) -> Result<TypedExpr, Diagnostic> {
         let expected = self.inference.resolve(expected);
+        let mut value = match self.coerce_slice_argument(value, &expected)? {
+            Ok(converted) => return Ok(converted),
+            Err(value) => value,
+        };
         let literal = self.inference.is_numeric_literal(&value.ty);
         if matches!(value.ty, Type::Infer(_)) && !literal {
             self.same(&value.ty, &expected, value.span)?;
@@ -8194,6 +8991,8 @@ impl<'a> Checker<'a> {
                 }
                 Type::Partial(_) | Type::Application(..) => false,
                 Type::Array(ty)
+                | Type::ArrayView(ty)
+                | Type::FixedArray(ty, _)
                 | Type::List(ty)
                 | Type::Vec(ty)
                 | Type::Task(ty)
@@ -8234,8 +9033,7 @@ impl<'a> Checker<'a> {
     }
 
     fn autoderef(mut value: TypedExpr) -> TypedExpr {
-        while let Type::Reference(ty, _) = &value.ty {
-            let ty = (**ty).clone();
+        while let Some(ty) = value.ty.dereferenced() {
             let span = value.span;
             value = TypedExpr {
                 kind: TypedExprKind::Dereference(Box::new(value)),
@@ -8368,11 +9166,14 @@ impl<'a> Checker<'a> {
                 ty: Type::Reference(inner, false),
                 ..value
             },
-            Type::Reference(inner, true) => TypedExpr {
-                kind: TypedExprKind::Borrow(Box::new(Self::reborrow_operand(value)), false),
-                ty: Type::Reference(inner, false),
-                span,
-            },
+            Type::Reference(_, true) => {
+                let operand = Self::reborrow_operand(value);
+                TypedExpr {
+                    ty: Type::Reference(Box::new(operand.ty.clone()), false),
+                    kind: TypedExprKind::Borrow(Box::new(operand), false),
+                    span,
+                }
+            }
             ty => TypedExpr {
                 kind: TypedExprKind::BorrowOperand(Box::new(value)),
                 ty: Type::Reference(Box::new(ty), false),
@@ -8501,6 +9302,7 @@ impl<'a> Checker<'a> {
         source: &Expr,
         start: Option<&Expr>,
         end: Option<&Expr>,
+        mutable: bool,
         span: Span,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let mut source = self.expression(source, None)?;
@@ -8509,12 +9311,31 @@ impl<'a> Checker<'a> {
         if source.ty == Type::Error {
             return Ok((TypedExprKind::Error, Type::Error));
         }
-        if !matches!(source.ty, Type::Array(_)) {
-            return Err(Diagnostic::new(
-                "E1005",
-                "a slice requires an array; lists and strings do not support array slicing",
-                span,
-            ));
+        let element = match &source.ty {
+            Type::Array(element) => element.clone(),
+            // A16: the shared slice of a fixed-length array borrows its storage in place.
+            Type::FixedArray(element, _) if !mutable => {
+                Self::fixed_slice_source(&source)?;
+                element.clone()
+            }
+            Type::FixedArray(..) => {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "a fixed-length array has no exclusive slices; replace the whole value through 'let mut', or use '[T]'",
+                    span,
+                ));
+            }
+            _ => {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "a slice requires an array; lists and strings do not support array slicing",
+                    span,
+                ));
+            }
+        };
+        if mutable {
+            Self::require_mutable_reference(&source)?;
+            Self::named_slice_source(&source, span)?;
         }
         let start = start
             .map(|value| self.expression(value, Some(&Type::I64)).map(Box::new))
@@ -8522,7 +9343,11 @@ impl<'a> Checker<'a> {
         let end = end
             .map(|value| self.expression(value, Some(&Type::I64)).map(Box::new))
             .transpose()?;
-        let ty = Type::Reference(Box::new(source.ty.clone()), false);
+        let ty = if mutable {
+            Type::Reference(Box::new(Type::ArrayView(element)), true)
+        } else {
+            Type::Reference(Box::new(Type::Array(element)), false)
+        };
         Ok((
             TypedExprKind::Slice {
                 value: Box::new(source),
@@ -8531,6 +9356,209 @@ impl<'a> Checker<'a> {
             },
             ty,
         ))
+    }
+
+    /// An exclusive slice borrows a named array: a local, a field path, or a dereference.
+    fn named_slice_source(source: &TypedExpr, span: Span) -> Result<(), Diagnostic> {
+        if source.is_place() {
+            Ok(())
+        } else {
+            Err(Diagnostic::new(
+                "E1014",
+                "an exclusive slice must borrow a named array; bind the value with 'let mut' first",
+                span,
+            ))
+        }
+    }
+
+    /// A slice of a fixed-length array borrows a named value, so the borrow cannot outlive the
+    /// slot of a temporary (A16 D7).
+    fn fixed_slice_source(source: &TypedExpr) -> Result<(), Diagnostic> {
+        if source.is_place() {
+            Ok(())
+        } else {
+            Err(Diagnostic::new(
+                "E1005",
+                "slicing a fixed-length array requires a named value; bind it with 'let' first",
+                source.span,
+            ))
+        }
+    }
+
+    /// A literal where a fixed-length array is expected (A16): exactly its length of elements, in
+    /// order, as a tuple-like aggregate.
+    #[inline(never)]
+    fn fixed_array_literal(
+        &mut self,
+        values: &[Expr],
+        element: Type,
+        length: Type,
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let found = values.len() as u64;
+        let length = match length {
+            // An open length, as of a generic `[T; N]` parameter, is the literal's.
+            Type::Infer(_) => {
+                self.same(&Type::Length(found), &length, span)?;
+                Type::Length(found)
+            }
+            length => length,
+        };
+        let ty = Type::FixedArray(Box::new(element.clone()), Box::new(length.clone()));
+        if length != Type::Length(found) && !length.contains_error() {
+            return Err(Diagnostic::new(
+                "E1003",
+                format!(
+                    "expected {} elements for '{}', found {found}",
+                    length.display(&self.types),
+                    self.inference.resolve(&ty).display(&self.types)
+                ),
+                span,
+            ));
+        }
+        let mut checked = Vec::with_capacity(values.len());
+        for value in values {
+            let value = self.expression(value, Some(&element))?;
+            self.same(&value.ty, &element, value.span)?;
+            checked.push(value);
+        }
+        validate_size(&self.inference.resolve(&ty), &self.types, span)?;
+        Ok((TypedExprKind::Tuple(checked), ty))
+    }
+
+    /// The exclusive slice of the whole array `source`, a place of type `[T]` (C08).
+    fn whole_view(source: TypedExpr) -> (TypedExprKind, Type) {
+        let element = match &source.ty {
+            Type::Array(element) => element.clone(),
+            _ => unreachable!("a whole view slices an array place"),
+        };
+        (
+            TypedExprKind::Slice {
+                value: Box::new(source),
+                start: None,
+                end: None,
+            },
+            Type::Reference(Box::new(Type::ArrayView(element)), true),
+        )
+    }
+
+    /// `ref mut value` after the operand is checked: a reborrow of an exclusive slice stays an
+    /// exclusive slice, and the whole array becomes one where an exclusive slice is expected.
+    #[inline(never)]
+    fn exclusive_borrow(
+        value: TypedExpr,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let through_view =
+            matches!(&value.kind, TypedExprKind::Dereference(inner) if inner.ty.is_view());
+        if through_view {
+            if let Some(Type::Reference(inner, true)) = expected
+                && !matches!(**inner, Type::ArrayView(_) | Type::Infer(_) | Type::Error)
+            {
+                return Err(Self::whole_array_error(value.span));
+            }
+            return Ok(Self::whole_view(value));
+        }
+        if expected.is_some_and(Type::is_view) && matches!(value.ty, Type::Array(_)) {
+            Self::named_slice_source(&value, value.span)?;
+            return Ok(Self::whole_view(value));
+        }
+        let ty = Type::Reference(Box::new(value.ty.clone()), true);
+        Ok((TypedExprKind::Borrow(Box::new(value), true), ty))
+    }
+
+    fn whole_array_error(span: Span) -> Diagnostic {
+        Diagnostic::new(
+            "E1005",
+            "an exclusive slice cannot be passed as 'ref mut [T]' because that parameter may replace the whole array; declare the parameter as 'ref mut [T..]'",
+            span,
+        )
+    }
+
+    /// The call argument conversions of exclusive slices (C08 type rule 6); `Err` hands the value
+    /// back when no conversion applies.
+    #[inline(never)]
+    fn coerce_slice_argument(
+        &mut self,
+        value: TypedExpr,
+        expected: &Type,
+    ) -> Result<Result<TypedExpr, TypedExpr>, Diagnostic> {
+        if let Type::Reference(target, false) = expected
+            && let Type::Array(element) = &**target
+        {
+            return self.fixed_array_view(value, element, expected);
+        }
+        let Type::Reference(target, true) = expected else {
+            return Ok(Err(value));
+        };
+        let actual = self.inference.resolve(&value.ty);
+        let mut value = value;
+        value.ty = actual.clone();
+        let span = value.span;
+        let converted = if matches!(**target, Type::ArrayView(_)) {
+            match &actual {
+                ty if ty.is_view() => Self::whole_view(Self::reborrow_operand(value)),
+                Type::Reference(inner, true) if matches!(**inner, Type::Array(_)) => {
+                    Self::whole_view(Self::reborrow_operand(value))
+                }
+                Type::Reference(inner, false) if matches!(**inner, Type::Array(_)) => {
+                    return Err(Diagnostic::new(
+                        "E1014",
+                        "cannot mutate or exclusively reborrow through a shared reference",
+                        span,
+                    ));
+                }
+                Type::Array(_) => {
+                    Self::require_mutable_reference(&value)?;
+                    Self::named_slice_source(&value, span)?;
+                    Self::whole_view(value)
+                }
+                _ => return Ok(Err(value)),
+            }
+        } else if actual.is_view() && !matches!(**target, Type::Error) {
+            return Err(Self::whole_array_error(span));
+        } else {
+            return Ok(Err(value));
+        };
+        let (kind, ty) = converted;
+        self.finish_expression(kind, ty, Some(expected), span)
+            .map(Ok)
+    }
+
+    /// A16 D7: a fixed-length array place, or `ref [T; N]`, passes to `ref [T]` as the shared
+    /// slice of all its elements; `Err` hands any other value back.
+    fn fixed_array_view(
+        &mut self,
+        value: TypedExpr,
+        element: &Type,
+        expected: &Type,
+    ) -> Result<Result<TypedExpr, TypedExpr>, Diagnostic> {
+        let actual = self.inference.resolve(&value.ty);
+        let fixed = match &actual {
+            Type::FixedArray(..) => true,
+            Type::Reference(inner, _) => matches!(**inner, Type::FixedArray(..)),
+            _ => false,
+        };
+        if !fixed {
+            return Ok(Err(value));
+        }
+        let mut value = value;
+        value.ty = actual;
+        let source = Self::autoderef(value);
+        Self::fixed_slice_source(&source)?;
+        let Type::FixedArray(actual_element, _) = &source.ty else {
+            unreachable!("autoderef reaches the fixed-length array")
+        };
+        let span = source.span;
+        self.same(&actual_element.clone(), element, span)?;
+        let kind = TypedExprKind::Slice {
+            value: Box::new(source),
+            start: None,
+            end: None,
+        };
+        let ty = Type::Reference(Box::new(Type::Array(Box::new(element.clone()))), false);
+        self.finish_expression(kind, ty, Some(expected), span)
+            .map(Ok)
     }
 
     fn record_update(
@@ -8615,7 +9643,9 @@ impl<'a> Checker<'a> {
                 self.note_name(field, NameTarget::Field(id, index));
                 Ok((TypedExprKind::Field(Box::new(value), index), ty))
             }
-            Type::Array(_) | Type::List(_) | Type::Vec(_) if field.text == "length" => {
+            Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                if field.text == "length" =>
+            {
                 Ok((TypedExprKind::Length(Box::new(value)), Type::I64))
             }
             Type::String | Type::Utf8String if field.text == "length" => {
@@ -8651,10 +9681,9 @@ impl<'a> Checker<'a> {
 
     /// Keyword `ref r` on a reference `r` builds the same tree as the symbol reborrow `&*r`.
     fn reborrow_operand(value: TypedExpr) -> TypedExpr {
-        let Type::Reference(ty, _) = &value.ty else {
+        let Some(ty) = value.ty.dereferenced() else {
             return value;
         };
-        let ty = (**ty).clone();
         let span = value.span;
         TypedExpr {
             kind: TypedExprKind::Dereference(Box::new(value)),
@@ -8923,6 +9952,47 @@ impl<'a> Checker<'a> {
         self.local(&root.text).is_none().then_some(path)
     }
 
+    /// Whether `callee` names `Dyn.of` (A14).
+    fn names_dyn_of(&self, callee: &Expr) -> bool {
+        matches!(callee.kind, ExprKind::Field(..))
+            && self
+                .value_path(callee)
+                .is_some_and(|path| qualified_builtin(&path) == Some(Builtin::DynOf))
+    }
+
+    /// The class constraints of `Dyn.of value` (A14 D9): the expected type is a `dyn` type, and
+    /// the value's type implements its classes and markers. A stored dyn value of a type that
+    /// dispatches the same classes is the value itself, so it satisfies them through the
+    /// generated instances.
+    #[inline(never)]
+    fn dyn_of(&mut self, callee: &TypedExpr, span: Span) -> Result<(), Diagnostic> {
+        let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind else {
+            unreachable!("Dyn.of is a builtin")
+        };
+        let value = instance.types[0].clone();
+        let dyn_type = match self.inference.resolve(&instance.types[1]) {
+            Type::Dyn(dyn_type) => dyn_type,
+            Type::Error => return Ok(()),
+            _ => {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "Dyn.of needs an expected dyn type here; annotate the binding, parameter, or field, for example let shape: dyn Shapes.Shape = Dyn.of value",
+                    span,
+                ));
+            }
+        };
+        for class in &dyn_type.classes {
+            self.require(class, value.clone(), span)?;
+        }
+        if dyn_type.copy {
+            self.require("Copy", value.clone(), span)?;
+        }
+        if dyn_type.send {
+            self.require("Send", value, span)?;
+        }
+        Ok(())
+    }
+
     fn namespace_value(
         &mut self,
         expression: &Expr,
@@ -9169,7 +10239,7 @@ mod tests {
             ("export fn f(x: unit) -> i64 { 1 }", "E1008"),
             ("record A { b: B } record B { a: A }", "E1010"),
             ("record A { a: [A] }", "E1010"),
-            ("fn f(a: [i64; 4]) -> i64 { 0 }", "E0002"),
+            ("fn f(a: [i64; -1]) -> i64 { 0 }", "E0002"),
         ] {
             let error = analyze(source).expect_err(source);
             assert_eq!(error.code, code, "{source}: {}", error.message);
@@ -9181,6 +10251,12 @@ mod tests {
         assert!(analyze("fn f() -> i64 { if true { 1 } else { false } }").is_err());
         assert!(analyze("fn f() -> i64 { let x = { let y = 1; y }; y }").is_err());
         assert!(analyze("fn f() -> i64 { let x = 1; { let x = x + 1; x } }").is_ok());
+    }
+
+    #[test]
+    fn type_stays_four_words() {
+        // Fixed-length arrays (A16) must not grow every type and typed expression.
+        assert!(std::mem::size_of::<super::Type>() <= 32);
     }
 
     #[test]

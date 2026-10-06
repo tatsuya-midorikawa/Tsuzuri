@@ -119,7 +119,9 @@ struct Parser<'a> {
     active_patterns: BTreeMap<String, ActivePattern>,
     pattern_type_arrow: bool,
     type_offside: Option<usize>,
-    slice_context: bool,
+    /// The borrow directly around the term being parsed: `Some(false)` for `ref`/`&`,
+    /// `Some(true)` for `ref mut`/`&mut`, and `None` elsewhere; a range index needs one.
+    slice_context: Option<bool>,
     stop_at_slice_dotdot: bool,
     region_suffix: bool,
     /// Inside the arms of a `try ... with`: `is` follows a pattern and `finally` ends an arm.
@@ -128,6 +130,8 @@ struct Parser<'a> {
     exception_arms: bool,
     /// The pipeline statement that `do! source |> f` leaves after its `let!`.
     pending_statement: Option<ComputationStatement>,
+    /// Every `dyn` type parsed so far, for `Program::dyn_types` (A14).
+    dyn_types: Vec<TypeExpr>,
 }
 
 impl<'a> Parser<'a> {
@@ -144,12 +148,13 @@ impl<'a> Parser<'a> {
             active_patterns: BTreeMap::new(),
             pattern_type_arrow: false,
             type_offside: None,
-            slice_context: false,
+            slice_context: None,
             stop_at_slice_dotdot: false,
             region_suffix: true,
             in_handler: false,
             exception_arms: false,
             pending_statement: None,
+            dyn_types: Vec::new(),
         }
     }
 }
@@ -282,6 +287,8 @@ impl Parser<'_> {
             active_patterns: Vec::new(),
             tests: Vec::new(),
             entry: None,
+            dyn_types: Vec::new(),
+            cpu_attributes: Vec::new(),
         };
         let mut signatures = BTreeMap::new();
         let mut definitions = Vec::new();
@@ -319,6 +326,7 @@ impl Parser<'_> {
             let start = self.position;
             let parsed = (|| -> Result<(), Diagnostic> {
                 let doc = self.take_doc();
+                let cpu = self.cpu_attribute()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
                 if let Some(documentation) = &doc {
@@ -329,6 +337,18 @@ impl Parser<'_> {
                             documentation.span,
                         ));
                     }
+                }
+                if cpu.is_some()
+                    && !self.at(&TokenKind::Def)
+                    && !(self.at(&TokenKind::Export)
+                        && self
+                            .tokens
+                            .get(self.position + 1)
+                            .is_some_and(|token| token.kind == TokenKind::Def))
+                {
+                    return Err(
+                        self.error("'@cpu' applies to the 'def' signature of a top-level function")
+                    );
                 }
                 if self.literal_attribute_ahead() {
                     let mut declaration = self.literal_declaration(visibility)?;
@@ -516,6 +536,9 @@ impl Parser<'_> {
                     } else if typed_continuation {
                         return Err(self.error("a typed 'and' declaration requires '= ...'"));
                     }
+                    if let Some(levels) = cpu {
+                        program.cpu_attributes.push(CpuAttribute { function: name.clone(), levels });
+                    }
                     signatures.insert(name.text.clone(), signature);
                     self.eat(&TokenKind::Semicolon);
                     return Ok(());
@@ -646,6 +669,7 @@ impl Parser<'_> {
             return Err(diagnostics);
         }
         program.active_patterns = self.active_patterns.into_values().collect();
+        program.dyn_types = self.dyn_types;
         Ok(program)
     }
 
@@ -686,7 +710,7 @@ impl Parser<'_> {
         self.stop_at_arrow = false;
         self.pattern_type_arrow = false;
         self.type_offside = None;
-        self.slice_context = false;
+        self.slice_context = None;
         self.stop_at_slice_dotdot = false;
         self.region_suffix = true;
     }
@@ -745,6 +769,57 @@ impl Parser<'_> {
         }
         self.expect(&TokenKind::DoubleColon, description)?;
         Ok(())
+    }
+
+    /// `@cpu ["avx2", ...]` before a function's `def` signature, as a bit set of the levels
+    /// of `CPU_TARGETS` (F08 Phase 3).
+    fn cpu_attribute(&mut self) -> Result<Option<u8>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "cpu"
+            )
+        {
+            return Ok(None);
+        }
+        self.take();
+        self.take();
+        self.expect(
+            &TokenKind::LeftBracket,
+            "'[' and the CPU targets after '@cpu'",
+        )?;
+        let mut levels = 0u8;
+        loop {
+            let span = self.current().span;
+            let name = match &self.current().kind {
+                TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16_lossy(units),
+                TokenKind::String(StringLiteral::Utf8(text)) => text.clone(),
+                _ => return Err(self.error("expected a CPU target such as \"avx2\"")),
+            };
+            let Some(&(_, level)) = CPU_TARGETS.iter().find(|(target, _)| *target == name) else {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    format!(
+                        "unknown CPU target '{name}'; use \"sse4.2\", \"avx2\", \"avx512\", \"sve\", or \"sve2\""
+                    ),
+                    span,
+                ));
+            };
+            if levels & (1 << level) != 0 {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    format!("CPU target '{name}' is listed twice"),
+                    span,
+                ));
+            }
+            levels |= 1 << level;
+            self.take();
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RightBracket, "']' after the CPU targets")?;
+        Ok(Some(levels))
     }
 
     fn literal_attribute_ahead(&self) -> bool {
@@ -1127,12 +1202,36 @@ impl Parser<'_> {
 
     fn type_parameters(&mut self) -> Result<Vec<Ident>, Diagnostic> {
         if self.at(&TokenKind::Less) {
-            self.angle_list(Self::type_variable)
+            self.angle_list(Self::type_parameter)
         } else if self.at(&TokenKind::TypeVariable(String::new())) {
             Err(self.error("enclose type parameters in '<...>', as in Name<'a, 'b>"))
         } else {
             Ok(Vec::new())
         }
+    }
+
+    /// A declared type parameter `'a`, or a length parameter `const N: i64` (A16 Phase 2). A
+    /// length parameter keeps its name with a `#` prefix, so it never collides with a type
+    /// variable; `Type::Variable("#N")` stands for the length until it is substituted.
+    fn type_parameter(&mut self) -> Result<Ident, Diagnostic> {
+        if !self.eat(&TokenKind::Const) {
+            return self.type_variable();
+        }
+        let mut name = self.ident()?;
+        self.expect(
+            &TokenKind::Colon,
+            "':' and 'i64' after the length parameter",
+        )?;
+        let ty = self.ident()?;
+        if ty.text != "i64" {
+            return Err(Diagnostic::new(
+                "E0002",
+                "a length parameter has type 'i64', as in 'const N: i64'",
+                ty.span,
+            ));
+        }
+        name.text.insert(0, '#');
+        Ok(name)
     }
 
     fn angle_list<T>(
@@ -1553,16 +1652,9 @@ impl Parser<'_> {
         } else if self.at(&TokenKind::LeftBracket) || self.at(&TokenKind::LeftList) {
             let list = self.take().kind == TokenKind::LeftList;
             let element = self.type_expr()?;
-            if self.at(&TokenKind::Semicolon) {
-                return Err(self.error("array types use '[T]', without a length; use 'new [T](length, initializer)' to create an array"));
-            }
-            if list {
-                self.expect(&TokenKind::RightList, "'|]'")?;
-                TypeExprKind::List(Box::new(element))
-            } else {
-                self.expect(&TokenKind::RightBracket, "']'")?;
-                TypeExprKind::Array(Box::new(element))
-            }
+            self.close_bracket_type(list, element)?
+        } else if self.eat(&TokenKind::Dyn) {
+            self.dyn_type()?
         } else {
             let mut name = self.qualified_ident()?;
             // The builtin types `Array`, `Task`, and `Vec` belong to the std namespace too.
@@ -1578,16 +1670,134 @@ impl Parser<'_> {
             } else if name.text == "Array" && self.at(&TokenKind::Less) {
                 TypeExprKind::Array(Box::new(self.single_type_argument()?))
             } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
-                TypeExprKind::Apply(
-                    Box::new(name),
-                    self.angle_list(Self::type_expr)?.into_boxed_slice(),
-                )
+                TypeExprKind::Apply(Box::new(name), self.type_arguments()?.into_boxed_slice())
             } else {
                 TypeExprKind::Named(name.text)
             }
         };
         self.nesting -= 1;
         self.finish_type_primary(kind, start)
+    }
+
+    /// The rest of `[T]`, `[|T|]`, `[T..]` (C08), or `[T; N]` (A16) after the element type; kept
+    /// out of `type_primary` so that its recursive frame stays small.
+    #[inline(never)]
+    fn close_bracket_type(
+        &mut self,
+        list: bool,
+        element: TypeExpr,
+    ) -> Result<TypeExprKind, Diagnostic> {
+        let element = Box::new(element);
+        if self.at(&TokenKind::Semicolon) {
+            if list {
+                return Err(self.error(
+                    "list types use '[|T|]', without a length; use '[T; N]' for a fixed-length array",
+                ));
+            }
+            self.take();
+            let length = self.fixed_array_length()?;
+            self.expect(&TokenKind::RightBracket, "']'")?;
+            Ok(TypeExprKind::FixedArray(element, Box::new(length)))
+        } else if list {
+            self.expect(&TokenKind::RightList, "'|]'")?;
+            Ok(TypeExprKind::List(element))
+        } else if self.eat(&TokenKind::DotDot) {
+            self.expect(&TokenKind::RightBracket, "']'")?;
+            Ok(TypeExprKind::ArrayView(element))
+        } else {
+            self.expect(&TokenKind::RightBracket, "']'")?;
+            Ok(TypeExprKind::Array(element))
+        }
+    }
+
+    /// The length of `[T; N]` (A16): a decimal integer literal without a suffix, or the name of a
+    /// length parameter or an integer constant.
+    #[inline(never)]
+    fn fixed_array_length(&mut self) -> Result<TypeExpr, Diagnostic> {
+        if let Some(length) = self.length_literal() {
+            return Ok(length);
+        }
+        if !matches!(self.current().kind, TokenKind::Ident(_)) {
+            return Err(self.error(
+                "a fixed array length must be an integer literal without a suffix, for example '[f64; 3]'",
+            ));
+        }
+        let name = self.qualified_ident()?;
+        Ok(TypeExpr {
+            kind: TypeExprKind::Named(name.text),
+            span: name.span,
+        })
+    }
+
+    /// A decimal integer literal without a suffix, as a length; larger values saturate.
+    #[inline(never)]
+    fn length_literal(&mut self) -> Option<TypeExpr> {
+        let TokenKind::Integer(text) = &self.current().kind else {
+            return None;
+        };
+        if !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let kind = TypeExprKind::Length(text.parse().unwrap_or(u64::MAX));
+        let span = self.take().span;
+        Some(TypeExpr { kind, span })
+    }
+
+    /// Type arguments in `<...>`: types, or lengths such as the `3` of `Grid<f64, 3>` (A16). The
+    /// loop of `angle_list` without another frame between `type_primary` and `type_expr`.
+    fn type_arguments(&mut self) -> Result<Vec<TypeExpr>, Diagnostic> {
+        if self.at(&TokenKind::Less) && self.current().span.start != self.previous_end {
+            return Err(self.error("'<' must immediately follow the name"));
+        }
+        self.expect(&TokenKind::Less, "'<' before type parameters or arguments")?;
+        let mut elements = Vec::new();
+        loop {
+            if elements.len() >= MAX_NESTING {
+                return Err(self.error("too many type parameters or arguments"));
+            }
+            let element = match self.length_literal() {
+                Some(length) => length,
+                None => self.type_expr()?,
+            };
+            elements.push(element);
+            if !self.eat(&TokenKind::Comma) || self.at_type_close() {
+                break;
+            }
+        }
+        self.type_close()?;
+        Ok(elements)
+    }
+
+    /// The class names after `dyn` (A14): one name, or several in parentheses, as in
+    /// `dyn (Shapes.Shape, Send)`. It never parses a nested type.
+    #[inline(never)]
+    fn dyn_type(&mut self) -> Result<TypeExprKind, Diagnostic> {
+        let parenthesized = self.eat(&TokenKind::LeftParen);
+        let mut classes = Vec::new();
+        loop {
+            if !matches!(self.current().kind, TokenKind::Ident(_)) {
+                return Err(self.error("expected a type class name after dyn"));
+            }
+            classes.push(self.qualified_ident()?);
+            if self.at(&TokenKind::Less) {
+                return Err(self.error(
+                    "dyn takes a class name without type arguments; write dyn Shapes.Shape",
+                ));
+            }
+            if !parenthesized || !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RightParen) {
+                break;
+            }
+            if classes.len() >= MAX_NESTING {
+                return Err(self.error("too many classes after dyn"));
+            }
+        }
+        if parenthesized {
+            self.expect(&TokenKind::RightParen, "')' after the classes of dyn")?;
+        }
+        Ok(TypeExprKind::Dyn(Box::new(DynTypeExpr {
+            classes,
+            borrowed: false,
+        })))
     }
 
     fn reference_type(&mut self, start: Span) -> Result<TypeExprKind, Diagnostic> {
@@ -1637,10 +1847,17 @@ impl Parser<'_> {
                 end: self.previous_end,
                 ..ty.span
             };
+            // `dyn C {r}` may hold borrows of the region (A14 Phase 2).
+            if let TypeExprKind::Dyn(dyn_type) = &mut ty.kind {
+                dyn_type.borrowed = true;
+                self.dyn_types.push(ty.clone());
+            }
             ty = TypeExpr {
                 kind: TypeExprKind::Regions(Box::new(ty), regions.into_boxed_slice()),
                 span,
             };
+        } else if let TypeExprKind::Dyn(_) = &ty.kind {
+            self.dyn_types.push(ty.clone());
         }
         Ok(ty)
     }
@@ -2827,7 +3044,7 @@ impl Parser<'_> {
     fn index_or_slice(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
         let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let borrowed = std::mem::replace(&mut self.slice_context, false);
+        let borrowed = self.slice_context.take();
         let outer_range = std::mem::replace(&mut self.stop_at_slice_dotdot, true);
         let first = if self.at(&TokenKind::DotDot) {
             None
@@ -2855,17 +3072,21 @@ impl Parser<'_> {
             .max(left.depth)
             + 1;
         let kind = if slice {
-            if !borrowed {
+            let Some(mutable) = borrowed else {
                 return Err(Diagnostic::new(
                     "E0002",
-                    "array slices must be shared borrows; write 'ref xs[start..end]' or '&xs[start..end]'",
+                    "array slices must be borrows; write 'ref xs[start..end]' for a shared slice or 'ref mut xs[start..end]' for an exclusive slice",
                     span,
                 ));
-            }
+            };
             if first.is_none() && last.is_none() {
                 return Err(Diagnostic::new(
                     "E0002",
-                    "a slice needs at least one bound; borrow the whole array with 'ref xs'",
+                    if mutable {
+                        "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
+                    } else {
+                        "a slice needs at least one bound; borrow the whole array with 'ref xs'"
+                    },
                     span,
                 ));
             }
@@ -2873,6 +3094,7 @@ impl Parser<'_> {
                 value: Box::new(left),
                 start: first.map(Box::new),
                 end: last.map(Box::new),
+                mutable,
             }
         } else {
             ExprKind::Index(
@@ -2886,7 +3108,7 @@ impl Parser<'_> {
     fn expressions(&mut self, end: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
         let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let outer_slice = std::mem::replace(&mut self.slice_context, false);
+        let outer_slice = self.slice_context.take();
         let mut values = Vec::new();
         if !self.at(&end) {
             loop {
@@ -3394,15 +3616,15 @@ impl Parser<'_> {
     ) -> Result<Expr, Diagnostic> {
         let token = self.take();
         let mutable = token.kind == TokenKind::Ampersand && self.eat(&TokenKind::Mut);
-        let shared = token.kind == TokenKind::Ampersand && !mutable;
-        let outer_slice = std::mem::replace(&mut self.slice_context, shared);
+        let borrow = (token.kind == TokenKind::Ampersand).then_some(mutable);
+        let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
         let value = if term {
             self.term(allow_record, stop_at_newline)?
         } else {
             self.expression_inner(PREFIX, allow_record, stop_at_newline)?
         };
         self.slice_context = outer_slice;
-        if shared && matches!(value.kind, ExprKind::Slice { .. }) {
+        if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
             return Ok(Expr {
                 span: token.span.through(value.span),
                 ..value
@@ -3453,8 +3675,8 @@ impl Parser<'_> {
     ) -> Result<Expr, Diagnostic> {
         let token = self.take();
         let mutable = token.kind == TokenKind::Ref && self.eat(&TokenKind::Mut);
-        let shared = token.kind == TokenKind::Ref && !mutable;
-        let outer_slice = std::mem::replace(&mut self.slice_context, shared);
+        let borrow = (token.kind == TokenKind::Ref).then_some(mutable);
+        let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
         let value = self.term(allow_record, stop_at_newline)?;
         self.slice_context = outer_slice;
         if self.space_argument() {
@@ -3474,7 +3696,7 @@ impl Parser<'_> {
             )));
         }
         let span = token.span.through(value.span);
-        if shared && matches!(value.kind, ExprKind::Slice { .. }) {
+        if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
             return Ok(Expr { span, ..value });
         }
         let depth = value.depth + 1;
@@ -3659,12 +3881,14 @@ mod tests {
 
     #[test]
     fn parses_only_borrowed_partial_array_slices() {
-        for prefix in ["&", "ref "] {
+        for prefix in ["&", "ref ", "&mut ", "ref mut "] {
             for range in ["1..3", "1..", "..3", "1 + 2..3 + 4"] {
                 let program = parse(&format!("{prefix}values[{range}]")).unwrap();
                 let debug = format!("{program:?}");
                 assert!(debug.contains("Slice"));
                 assert!(!debug.contains("Borrow("));
+                // C08: the borrow's kind decides the slice's.
+                assert_eq!(debug.contains("mutable: true"), prefix.contains("mut"));
             }
         }
         for source in [
@@ -3672,8 +3896,8 @@ mod tests {
             "values[..1]",
             "values[1..]",
             "&values[..]",
-            "ref mut values[0..1]",
-            "&mut values[0..1]",
+            "ref mut values[..]",
+            "&mut values[..]",
             "ref identity(values[0..1])",
         ] {
             assert_eq!(parse(source).unwrap_err().code, "E0002", "{source}");

@@ -155,6 +155,10 @@ pub fn scalar_record(ty: &Type, types: &TypeContext<'_>) -> bool {
         if ty.exportable() {
             return true;
         }
+        // A16 Phase 2: a C array field `T name[N]` of scalars.
+        if let Type::FixedArray(element, _) = ty {
+            return element.exportable() && ty.fixed_length().is_some();
+        }
         let Type::Record(id, arguments) = ty else {
             return false;
         };

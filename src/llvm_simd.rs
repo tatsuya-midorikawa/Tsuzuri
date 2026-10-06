@@ -1,6 +1,112 @@
 use super::*;
 use crate::simd::{SimdKind, SimdType};
 
+/// The LLVM types of the 256-bit vectors (F08 Phase 2).
+const WIDE_VECTORS: [&str; 6] = [
+    "<32 x i8>",
+    "<16 x i16>",
+    "<8 x i32>",
+    "<4 x i64>",
+    "<8 x float>",
+    "<4 x double>",
+];
+
+/// LLVM aligns a 256-bit vector to 32 bytes, but the heap, array elements, frames, and union
+/// payloads guarantee 16. Every load and store of a type that holds such a vector states
+/// `align 16` or less, so no access assumes more alignment than its storage has.
+pub(super) fn with_vector_alignment(ir: String) -> String {
+    if !WIDE_VECTORS.iter().any(|vector| ir.contains(vector)) {
+        return ir;
+    }
+    let wide = wide_types(&ir);
+    let mut output = String::with_capacity(ir.len());
+    for line in ir.split_inclusive('\n') {
+        match aligned_access(line, &wide) {
+            Some(aligned) => output.push_str(&aligned),
+            None => output.push_str(line),
+        }
+    }
+    output
+}
+
+/// The named types of `ir` that hold a wide vector directly or through other named types.
+pub(super) fn wide_types(ir: &str) -> BTreeSet<&str> {
+    let mut wide = BTreeSet::new();
+    if !WIDE_VECTORS.iter().any(|vector| ir.contains(vector)) {
+        return wide;
+    }
+    let definitions: Vec<(&str, &str)> = ir
+        .lines()
+        .filter_map(|line| {
+            let (name, body) = line.split_once(" = type ")?;
+            name.starts_with('%').then_some((name, body))
+        })
+        .collect();
+    loop {
+        let before = wide.len();
+        for (name, body) in &definitions {
+            if !wide.contains(name) && holds_wide_vector(body, &wide) {
+                wide.insert(*name);
+            }
+        }
+        if wide.len() == before {
+            return wide;
+        }
+    }
+}
+
+/// Whether the IR text names a wide vector type or one of the `wide` named types.
+pub(super) fn holds_wide_vector(ty: &str, wide: &BTreeSet<&str>) -> bool {
+    WIDE_VECTORS.iter().any(|vector| ty.contains(vector))
+        || wide.iter().any(|name| {
+            ty.match_indices(name).any(|(at, _)| {
+                !ty[at + name.len()..]
+                    .starts_with(|c: char| c.is_ascii_alphanumeric() || "._$-\"".contains(c))
+            })
+        })
+}
+
+/// The line with `align 16` when it loads or stores a type that holds a wide vector without
+/// already stating an alignment of at most 16.
+fn aligned_access(line: &str, wide: &BTreeSet<&str>) -> Option<String> {
+    let trimmed = line.trim_start();
+    let accessed = match trimmed.strip_prefix("store ") {
+        Some(rest) => rest,
+        None => trimmed.split_once(" = load ")?.1,
+    };
+    if !holds_wide_vector(leading_type(accessed)?, wide) {
+        return None;
+    }
+    let (body, newline) = match line.strip_suffix('\n') {
+        Some(body) => (body, "\n"),
+        None => (line, ""),
+    };
+    let (code, metadata) = body.split_at(body.find(", !").unwrap_or(body.len()));
+    let code = match code.rsplit_once(", align ") {
+        Some((_, align)) if align.parse::<u64>().is_ok_and(|align| align <= 16) => return None,
+        Some((head, _)) => head,
+        None => code,
+    };
+    Some(format!("{code}, align 16{metadata}{newline}"))
+}
+
+/// The type at the start of a load or store operand list.
+fn leading_type(text: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    for (at, character) in text.char_indices() {
+        match character {
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '<' | '{' | '[' | '(' => depth += 1,
+            '>' | '}' | ']' | ')' => depth = depth.checked_sub(1)?,
+            ' ' | ',' if depth == 0 => return Some(&text[..at]),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl FunctionEmitter<'_, '_> {
     fn vector_constant(&self, vector: SimdType, value: &str) -> String {
         let element = self.ty(&vector.element());
@@ -107,7 +213,7 @@ impl FunctionEmitter<'_, '_> {
                     "shufflevector {ty} {first}, {ty} poison, <{lanes} x i32> zeroinitializer"
                 ))
             }
-            SimdOfLanes2 | SimdOfLanes4 | SimdOfLanes8 | SimdOfLanes16 => {
+            SimdOfLanes2 | SimdOfLanes4 | SimdOfLanes8 | SimdOfLanes16 | SimdOfLanes32 => {
                 let mut result = "poison".to_owned();
                 for index in 0..lanes {
                     result = self.value(format!(
@@ -127,7 +233,8 @@ impl FunctionEmitter<'_, '_> {
                     ))
                 }
             }
-            SimdLoad => {
+            SimdLoad | SimdStore => {
+                // Every lane is checked before the access, so a store never writes part of a vector.
                 let length = self.value("extractvalue %tz.array %arg0, 1");
                 let enough = self.value(format!("icmp uge i64 {length}, {lanes}"));
                 let maximum = self.value(format!("sub i64 {length}, {lanes}"));
@@ -138,7 +245,12 @@ impl FunctionEmitter<'_, '_> {
                 let pointer = self.value(format!(
                     "getelementptr inbounds {scalar}, ptr {data}, i64 %arg1"
                 ));
-                self.value(format!("load {ty}, ptr {pointer}, align 1"))
+                if instance.builtin == SimdLoad {
+                    self.value(format!("load {ty}, ptr {pointer}, align 1"))
+                } else {
+                    self.instruction(format!("store {ty} %arg2, ptr {pointer}, align 1"));
+                    "0".to_owned()
+                }
             }
             SimdSum | SimdAll | SimdAny => {
                 let mut total = self.value(format!("extractelement {ty} %arg0, i32 0"));

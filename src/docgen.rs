@@ -91,6 +91,12 @@ fn type_text(ty: &TypeExpr) -> String {
             }
         }
         TypeExprKind::Array(element) => format!("[{}]", type_text(element)),
+        TypeExprKind::ArrayView(element) => format!("[{}..]", type_text(element)),
+        TypeExprKind::FixedArray(element, length) => {
+            format!("[{}; {}]", type_text(element), type_text(length))
+        }
+        TypeExprKind::Length(length) => length.to_string(),
+        TypeExprKind::Dyn(dyn_type) => dyn_text(dyn_type),
         TypeExprKind::Quantified(names, inner) => {
             let regions = names
                 .iter()
@@ -147,6 +153,19 @@ fn region_text(regions: &[Ident]) -> String {
                 .collect::<Vec<_>>()
                 .join(" ")
         )
+    }
+}
+
+/// `dyn Shape` or `dyn (Shape, Send)` as written (A14).
+pub(crate) fn dyn_text(dyn_type: &DynTypeExpr) -> String {
+    let names: Vec<&str> = dyn_type
+        .classes
+        .iter()
+        .map(|name| name.text.as_str())
+        .collect();
+    match names.as_slice() {
+        [name] => format!("dyn {name}"),
+        _ => format!("dyn ({})", names.join(", ")),
     }
 }
 

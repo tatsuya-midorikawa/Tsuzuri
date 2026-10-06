@@ -132,7 +132,8 @@ fn collect_locals<'a>(
         | StructuralCompare(..)
         | StructuralHash(_)
         | StructuralDisplay(_)
-        | Interpolated(_) => {}
+        | Interpolated(_)
+        | DynDispatch { .. } => {}
     }
     for child in expression.children() {
         collect_locals(child, locals, used);
@@ -348,6 +349,7 @@ impl TypeReferences<'_> {
                 }
             }
             TypeExprKind::Array(inner)
+            | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
             | TypeExprKind::Reference(inner, _)
@@ -358,13 +360,25 @@ impl TypeReferences<'_> {
                     self.ty(element);
                 }
             }
+            TypeExprKind::FixedArray(element, length) => {
+                self.ty(element);
+                // A named length may be an integer constant, which this type then uses.
+                if let TypeExprKind::Named(name) = &length.kind {
+                    if let Some((id, _)) =
+                        self.names.length_constant(self.module, name, length.span)
+                    {
+                        self.references.insert(Dependency::Function(id));
+                    }
+                }
+            }
             TypeExprKind::Function(parameters, result) => {
                 for parameter in parameters {
                     self.ty(parameter);
                 }
                 self.ty(result);
             }
-            TypeExprKind::Variable(_) => {}
+            // A dyn type names classes, which have no visibility (A14).
+            TypeExprKind::Variable(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => {}
         }
     }
 
@@ -385,6 +399,7 @@ impl TypeReferences<'_> {
             | Type::List(inner)
             | Type::Vec(inner)
             | Type::Task(inner)
+            | Type::FixedArray(inner, _)
             | Type::Reference(inner, _) => self.checked_type(inner),
             Type::Tuple(elements) => {
                 for element in elements {
@@ -521,7 +536,9 @@ impl TypeReferences<'_> {
                 }
                 self.expression(finish);
             }
-            Slice { value, start, end } => {
+            Slice {
+                value, start, end, ..
+            } => {
                 self.expression(value);
                 for bound in start.iter().chain(end.iter()) {
                     self.expression(bound);
@@ -537,8 +554,20 @@ impl TypeReferences<'_> {
                     self.expression(&hole.value);
                 }
             }
-            Integer(..) | BigInt(_) | Float(..) | String(_) | Char(_) | Utf8Char(_) | Bool(_)
-            | Unit | Break | Continue | Name(_) | QualifiedFunction(_) | TypeFunction(..) => {}
+            Integer(..)
+            | BigInt(_)
+            | Float(..)
+            | String(_)
+            | Char(_)
+            | Utf8Char(_)
+            | Bool(_)
+            | Unit
+            | Break
+            | Continue
+            | Name(_)
+            | QualifiedFunction(_)
+            | TypeFunction(..)
+            | DynDispatch { .. } => {}
         }
     }
 

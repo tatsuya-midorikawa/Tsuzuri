@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
 use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target, WasmHost};
+use tsuzuri::llvm::Allocator;
 
 const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
@@ -71,6 +72,13 @@ Build options:
     --trap-mode return     Native object, llvm or header output: each export also comes as
                          tsuzuri_try_<name>, which returns a status and a trap record instead
                          of ending the process (implies --trap-info for object and llvm)
+    --allocator system|host|counting
+                         Heap of object, llvm, header, or WASM output (default: system).
+                         host calls tsuzuri_host_alloc/free/realloc, which the host defines
+                         (WASM imports them from tsuzuri_heap); counting adds the counts that
+                         tsuzuri_alloc_stats reports
+    --freestanding         Native object, llvm, or header output that needs no C library;
+                         requires --allocator host and rejects IO, OS APIs, tasks, and Debug
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -181,6 +189,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut debug_output = false;
     let mut trap_info = false;
     let mut trap_return = false;
+    let mut allocator = None;
+    let mut freestanding = false;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -296,6 +306,31 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         Some("return") => trap_return = true,
                         _ => return Err("trap mode must be 'return'".into()),
                     }
+                    continue;
+                }
+                Some("--allocator") => {
+                    if allocator.is_some() {
+                        return Err("allocator specified more than once".into());
+                    }
+                    allocator = Some(
+                        match next_value(arguments, &mut position, "--allocator")?.to_str() {
+                            Some("system") => Allocator::System,
+                            Some("host") => Allocator::Host,
+                            Some("counting") => Allocator::Counting,
+                            _ => {
+                                return Err(
+                                    "allocator must be 'system', 'host', or 'counting'".into()
+                                );
+                            }
+                        },
+                    );
+                    continue;
+                }
+                Some("--freestanding") => {
+                    if freestanding {
+                        return Err("freestanding specified more than once".into());
+                    }
+                    freestanding = true;
                     continue;
                 }
                 Some("-g" | "--debug-info") => {
@@ -491,6 +526,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if trap_return && action != Action::Build {
         return Err("--trap-mode is only valid with build".into());
     }
+    if allocator.is_some() && action != Action::Build {
+        return Err("--allocator is only valid with build".into());
+    }
+    if freestanding && action != Action::Build {
+        return Err("--freestanding is only valid with build".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -549,6 +590,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_stack_size,
         cache: !no_cache,
         trap_return,
+        allocator: allocator.unwrap_or_default(),
+        freestanding,
     };
     options.validate().map_err(|error| error.message)?;
     links.check_shape().map_err(|error| error.message)?;
@@ -2028,6 +2071,181 @@ mod tests {
             (
                 vec!["test", "Main.tz", "--trap-mode", "return"],
                 "--trap-mode is only valid with build",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn parses_allocator_selection() {
+        use tsuzuri::llvm::Allocator;
+        let allocator = |values: &[&str]| parse(values).unwrap().options.allocator;
+        for emit in ["object", "llvm", "header"] {
+            assert_eq!(
+                allocator(&["build", "Main.tz", "--emit", emit, "--allocator", "host"]),
+                Allocator::Host
+            );
+            assert_eq!(
+                allocator(&[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    emit,
+                    "--allocator",
+                    "counting"
+                ]),
+                Allocator::Counting
+            );
+        }
+        assert_eq!(
+            allocator(&["build", "Main.tz", "--emit", "object"]),
+            Allocator::System
+        );
+        for value in ["system", "host", "counting"] {
+            parse(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--allocator",
+                value,
+            ])
+            .unwrap();
+        }
+        let freestanding = parse(&[
+            "build",
+            "Main.tz",
+            "--emit",
+            "object",
+            "--allocator",
+            "host",
+            "--freestanding",
+        ])
+        .unwrap();
+        assert!(freestanding.options.freestanding);
+        let host_output = "--allocator host requires object, LLVM IR, header, or WebAssembly output; link the object into a host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc";
+        for (values, message) in [
+            (vec!["build", "Main.tz", "--allocator", "host"], host_output),
+            (
+                vec!["build", "Main.tz", "--emit", "wgsl", "--allocator", "host"],
+                host_output,
+            ),
+            (
+                vec!["build", "Main.tz", "--allocator", "counting"],
+                "--allocator counting requires object, LLVM IR, header, or WebAssembly output; the host reads the counts with tsuzuri_alloc_stats",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "threads",
+                    "--allocator",
+                    "host",
+                ],
+                "--allocator host cannot be combined with --wasm-feature threads; WASM threads keep their locked internal allocator",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--trap-mode",
+                    "return",
+                    "--allocator",
+                    "counting",
+                ],
+                "--trap-mode return keeps its own tracked allocator; remove --allocator",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "pool",
+                ],
+                "allocator must be 'system', 'host', or 'counting'",
+            ),
+            (
+                vec!["build", "Main.tz", "--emit", "object", "--allocator"],
+                "--allocator needs a value",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "host",
+                    "--allocator",
+                    "host",
+                ],
+                "allocator specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--allocator", "system"],
+                "--allocator is only valid with build",
+            ),
+            (
+                vec!["check", "Main.tz", "--allocator", "system"],
+                "--allocator is only valid with build",
+            ),
+            (
+                vec!["test", "Main.tz", "--allocator", "system"],
+                "--allocator is only valid with build",
+            ),
+            (
+                vec!["build", "Main.tz", "--emit", "object", "--freestanding"],
+                "--freestanding requires --allocator host: without the C library the host provides the heap",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--allocator",
+                    "host",
+                    "--freestanding",
+                ],
+                "--freestanding requires a native target",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "host",
+                    "--freestanding",
+                    "--trap-info",
+                ],
+                "--freestanding cannot be combined with --trap-info or --debug-output: they write through the C library",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "host",
+                    "--freestanding",
+                    "--freestanding",
+                ],
+                "freestanding specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--freestanding"],
+                "--freestanding is only valid with build",
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");

@@ -74,6 +74,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Format",
     "Exception",
     "BigInt",
+    "FixedArray",
+    "Dyn",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -139,7 +141,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 34);
+        assert_eq!(RESERVED_MODULES.len(), 36);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

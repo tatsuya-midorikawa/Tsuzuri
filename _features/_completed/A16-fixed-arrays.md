@@ -7,10 +7,10 @@
 | 規模 | XL |
 | 依存 | A01, D06, (F04) |
 | 後続 | C11, D11, E12 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（`[T; N]` 型構文の再導入。台帳 D-30・D-07・D-15・D-03・D-13 の変更）, D10（Phase 2 の const ジェネリクス） |
-| 改善する劣位 | Rust 比: Copy のコスト（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: ヒープなしの小さな配列・行列を表せない |
+| 承認 | D1・D10 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-03・D-07・D-13・D-15・D-39） |
+| 改善する劣位 | Rust 比: Copy のコスト（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: ヒープなしの小さな配列・行列を表せない |
 | 手本にする既存実装 | 値の集成体: `Type::Tuple`（`src/llvm.rs` の `llvm_type` の `{ ... }`・`storage_layout` の `aggregate`、`src/check.rs` の `Layouts::size`・`Validation::check`、`src/llvm_frame.rs` の `stack_size`）。添字と境界検査: `src/llvm.rs` の `TypedExprKind::Index` の arm・`emit_place`・`checked_element_pointer`・`guard(.., TrapKind::BoundsCheck)`。期待型からのリテラル: `src/check.rs` の `ExprKind::Array` の arm。期待型で決まる builtin: `BuiltinType::SimdLane`（`src/check.rs`）と `FamilyKind::SimdLane`（`src/polymorph.rs`）。引数の暗黙の借用: `Checker::coerce_argument` |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/check.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/call_specialization.rs`, `src/constants.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/llvm_debug.rs`, `src/abi.rs`（変更なし・確認のみ）, `tests/fixed_arrays.rs`（新規）, `tests/arrays.rs`（期待値の変更）, `src/check.rs` の `tests` モジュール（期待値の変更）, `tests/fixtures/fixed_arrays/Main.tz`（新規）, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/types.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -677,3 +677,56 @@ done; done
 - 決定: Phase 1 では export のシグネチャに固定長配列を置けない（`src/abi.rs` を変えず E1008）。SIMD とはスライス化経由（`Simd.load`）だけでつなぐ。
 - 理由: C の配列引数はポインターに退化するので、ABI の形を E12 と決める必要がある。bitcast による変換は要素型と lane 数の規則が別に要る。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-06）
+
+「C08、A14、A16、F13、F08 の実装をすべて完遂して」という依頼を D1・D10 の承認として扱い、Phase 1 と Phase 2（const ジェネリクスと公開 ABI のフィールド）を実装した。
+着手時の HEAD は `ff84e4c`（ブランチ `Phase7-3`）で、C08・A14・F13・F08 と同じ変更に含めた。性能の改善は主張しない（生成コードと翻訳時間だけを確かめた）。
+
+### 実装
+
+- 構文: `TypeExprKind::FixedArray(Box<TypeExpr>, Box<TypeExpr>)` と `TypeExprKind::Length(u64)`。parser は角括弧の閉じ方を `close_bracket_type`、長さを
+  `fixed_array_length`・`length_literal` に分け（いずれも `#[inline(never)]`）、型引数の列を `type_arguments` のループで読む（長さのリテラルを受け付ける）。
+  `const N: i64` は型パラメーター名 `#N` になる。formatter・docgen・regions・semantic・warnings・polymorph に腕を足した。
+- 型: `Type::FixedArray(Box<Type>, Box<Type>)` と `Type::Length(u64)`（長さパラメーターは `Type::Variable("#N")`）。`resolve_length` が長さを解決し、
+  `Names::length_constants`（初期化式が整数リテラルの `i64` 定数）と型宣言の長さパラメーターを引く。リテラルは `fixed_array_literal`（`TypedExprKind::Tuple`）、
+  `FixedArray.init` は `BuiltinType::FixedArrayOf` と `FamilyKind::FixedArrayElement`、暗黙のスライス化は `fixed_array_view`。
+- 所有権・再帰・コピー: `src/ownership.rs`、`src/recursive.rs`、`src/copies.rs`、`src/call_specialization.rs`、`src/constants.rs`、`src/higher_kinds.rs`、
+  `src/control.rs`（`for` と配列パターンの拒否）に腕を足した。
+- 生成: `[N x T]`、`canonical_type` の `fixed[N,T]`、`fixed_element_pointer`（N 未満のリテラル添字は検査なし）、drop と clone の要素ループ、
+  `fill_fixed_array`（`FixedArray.init` のインライン展開。関数値は結果の型ごとの builtin ラッパー）。`src/llvm_frame.rs`、`src/llvm_debug.rs`（メンバー `0`…`N-1`）。
+- 公開 ABI（Phase 2）: `src/abi.rs` の `scalar_record` がスカラー型の固定長配列フィールドを許し、`src/llvm_abi.rs` が `[N x abi]`、ヘッダーの `T name[N];`、
+  ホストとの読み書きのループを出す。
+- テスト: `tests/fixed_arrays.rs`（新規 15 件。チケットの 11 件と、Phase 2 の `length_parameters_generalize_functions`・`length_parameters_on_records_unions_and_aliases`・
+  `integer_constants_name_lengths`・`exported_records_hold_scalar_fixed_arrays`（C のホストと node の WASM ホスト））、`tests/formatter.rs` の
+  `formats_fixed_arrays_and_length_parameters`、`src/check.rs` の `type_stays_four_words`、`tests/fixtures/fixed_arrays/Main.tz` と suite `fixed_arrays`
+  （23 ケースとトラップ 5 つ）。`tests/arrays.rs` の 3 件と `rejects_invalid_programs_with_stable_codes` の 1 件（`[i64; -1]` にした）は「既存テストへの影響」のとおり。
+- 文書: `docs/language.md`、`docs/architecture.md`、`_docs/language-reference/types.md`、`_docs/library-reference/arrays-and-lists.md`、
+  `_docs/guides/native-interop.md`、`_docs/learn/why-tsuzuri.md`、`_docs/feature-status.md`、`_features/README.md`、`_features/GUIDE.md`（D-03・D-07・D-13・D-15・D-30・D-39）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D2 の長さは `Box<Type>`。** Phase 2 の長さパラメーターを型変数と同じく置換・単一化・単相化するため、長さを `u64` ではなく型
+   （`Type::Length(n)` か `Type::Variable("#N")`）で持つ。`Type` は 4 語のまま（`type_stays_four_words`）。
+2. **D3 の `const` 名を Phase 2 で戻した。** 型の解決時に値が要るので、初期化式が整数リテラルの `i64` 定数だけを長さにできる（宣言の構文から読む）。
+   式を初期化式に持つ定数は `E1005`。
+3. **D10 の関数の長さパラメーターは暗黙。** 関数には型パラメーター列がないので、型注釈の中の解決できない名前の長さを `'a` と同じく暗黙のパラメーターにし、
+   呼び出しごとに推論して特殊化する（既存の特殊化の上限で数える）。record・union・型エイリアスは `const N: i64` の宣言が必要で、未宣言・重複・未使用は `E1024`。
+   型引数の位置での長さと型の取り違えは `E1004`。
+4. **D12 の公開 ABI を Phase 2 で実装した。** E12 が done なので、スカラー型の固定長配列をレコードのフィールドに限って許し、C の `T name[N]` にした。
+   引数・結果に直接置くと C では配列がポインターへ退化するので、引き続き `E1008`。
+5. **`for` の文言。** 範囲 `a .. b` は終端を含むので、案内を `for i in 0 .. xs.length - 1` にした（チケットは `0 .. xs.length`）。
+6. **排他スライス。** C08 で排他スライスができたが、固定長配列からは作らず `E1005` にした（値の一部の排他借用には、フレーム上の値の寿命と移動の規則が要る）。
+   要素の置き換えは `let mut` の束縛への代入で行う。
+7. **E2E の `fixed_clone_nested`。** 非 Copy の要素の読み取りは `E1012` なので、行は `ref copy[1]` で借りる。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.19.6）
+
+- `cargo test --locked --test fixed_arrays`（15 passed）、`formats_fixed_arrays_and_length_parameters`、`--lib` の `type_stays_four_words`、
+  GUIDE §3.1 の stack-depth テストが上限や stack を変えずに成功（`bounds_generic_lists_and_nested_types` は parser の分割の後も 2 MiB で成功）。
+- suite `fixed_arrays` が native/WASM × `-O0`/`-O3` で成功（`live == 0`、WASM の import なし）。`TSUZURI_ASAN=1` でも成功。
+- 手順 9（`[f64; 1024]` の値渡し）の翻訳時間: native `-O0` 0.34 s・`-O3` 1.07 s、wasm32 `-O0` 0.25 s・`-O3` 0.51 s。
+- 手順 11: 既存の fixture と単一ファイルの例の IR（119 個）は `ff84e4c` と比べて 68 個が byte 一致、51 個は std の関数の追加による生成 id の一様なずれだけ
+  （id を写す比較で差なし）。`tests/fixtures/fixed_arrays` の `-O3` の IR の `@tz.alloc` は 9 個（宣言 1、部分適用の環境 6、文字列の確保 2）で、
+  `fixed_copy` などの固定長配列の複製には確保がない。
+- 全体のゲート（fmt・clippy・`cargo test`・features の全 suite・`check-docs`）は 5 チケットの実装の後にまとめて実行した（F08 の記録を参照）。

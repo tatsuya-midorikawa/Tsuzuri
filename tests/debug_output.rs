@@ -17,6 +17,7 @@ fn debug_borrows_prints_and_transfers_trace_values() {
             entry: llvm::Entry::Library,
             wasm: true,
             debug_output: true,
+            allocator: llvm::Allocator::System,
         },
     )
     .unwrap();
@@ -55,6 +56,7 @@ fn unused_debug_code_does_not_add_runtime() {
                 entry: llvm::Entry::Library,
                 wasm,
                 debug_output: true,
+                allocator: llvm::Allocator::System,
             },
         )
         .unwrap();

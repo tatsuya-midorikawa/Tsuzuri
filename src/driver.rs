@@ -230,6 +230,10 @@ pub struct BuildOptions {
     pub cache: bool,
     /// `--trap-mode return`: native exports also come as `tsuzuri_try_<name>` (E14 Phase 2).
     pub trap_return: bool,
+    /// `--allocator`: the heap runtime (F13).
+    pub allocator: llvm::Allocator,
+    /// `--freestanding`: a native object that needs no C library (F13 Phase 3).
+    pub freestanding: bool,
 }
 
 impl Default for BuildOptions {
@@ -249,6 +253,8 @@ impl Default for BuildOptions {
             wasm_stack_size: None,
             cache: true,
             trap_return: false,
+            allocator: llvm::Allocator::System,
+            freestanding: false,
         }
     }
 }
@@ -330,6 +336,7 @@ impl BuildOptions {
                 "optimization level must be 0, 1, 2, or 3",
             ));
         }
+        self.validate_allocator()?;
         if (self.emit == Emit::Executable && self.target != Target::Native)
             || (self.emit == Emit::Wasm && !self.target.is_wasm())
         {
@@ -363,6 +370,65 @@ impl BuildOptions {
             ));
         }
         wasm_memory_limits(self.target, self.wasm_max_memory, self.wasm_stack_size)?;
+        Ok(())
+    }
+
+    /// The combinations of `--allocator` and `--freestanding` (F13): the target first, then the output.
+    fn validate_allocator(self) -> Result<(), Diagnostic> {
+        if self.allocator == llvm::Allocator::Host && self.wasm_threads {
+            return Err(driver_error(
+                "E2000",
+                "--allocator host cannot be combined with --wasm-feature threads; WASM threads keep their locked internal allocator",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Host
+            && matches!(self.emit, Emit::Executable | Emit::Wgsl)
+        {
+            return Err(driver_error(
+                "E2000",
+                "--allocator host requires object, LLVM IR, header, or WebAssembly output; link the object into a host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Counting
+            && matches!(self.emit, Emit::Executable | Emit::Wgsl)
+        {
+            return Err(driver_error(
+                "E2000",
+                "--allocator counting requires object, LLVM IR, header, or WebAssembly output; the host reads the counts with tsuzuri_alloc_stats",
+            ));
+        }
+        if self.allocator != llvm::Allocator::System && self.trap_return {
+            return Err(driver_error(
+                "E2000",
+                "--trap-mode return keeps its own tracked allocator; remove --allocator",
+            ));
+        }
+        if self.freestanding {
+            if self.target != Target::Native {
+                return Err(driver_error(
+                    "E2000",
+                    "--freestanding requires a native target",
+                ));
+            }
+            if !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header) {
+                return Err(driver_error(
+                    "E2000",
+                    "--freestanding requires object, LLVM IR, or header output",
+                ));
+            }
+            if self.allocator != llvm::Allocator::Host {
+                return Err(driver_error(
+                    "E2000",
+                    "--freestanding requires --allocator host: without the C library the host provides the heap",
+                ));
+            }
+            if self.trap_info || self.debug_output {
+                return Err(driver_error(
+                    "E2000",
+                    "--freestanding cannot be combined with --trap-info or --debug-output: they write through the C library",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1498,7 +1564,11 @@ fn build_complete(
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     let mut text = if options.emit == Emit::Header {
-        llvm::header_with(module, options.trap_return)
+        if options.trap_return {
+            llvm::header_with(module, true)
+        } else {
+            llvm::header_with_allocator(module, options.allocator)
+        }
     } else if options.emit == Emit::Wgsl {
         let exports: Vec<_> = module
             .functions
@@ -1523,6 +1593,7 @@ fn build_complete(
             },
             wasm: options.target.is_wasm(),
             debug_output: options.debug_output,
+            allocator: options.allocator,
         };
         if options.trap_return {
             let output = project.with_trap_sources(|sources| {
@@ -1544,6 +1615,8 @@ fn build_complete(
             output.ir
         } else if options.target == Target::Native
             && matches!(options.emit, Emit::Executable | Emit::Object)
+            // A freestanding object has no CPU dispatch: its runtime reads the CPU through the C library.
+            && !options.freestanding
         {
             let output = project.with_trap_sources(|sources| {
                 llvm::emit_native_build(
@@ -1614,12 +1687,35 @@ fn build_complete(
     }
     let task_runtime =
         options.target == Target::Native && text.contains("declare void @tsuzuri_task_parallel(");
-    let cpu_runtime =
-        options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
+    // A kernel call or a multiversioned function's stub declares a `tsuzuri_cpu_` function (F08).
+    let cpu_runtime = options.target == Target::Native
+        && text
+            .lines()
+            .any(|line| line.starts_with("declare ") && line.contains(" @tsuzuri_cpu_"));
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
     let arguments_runtime = text.contains("@tsuzuri_arguments(");
+    if options.freestanding {
+        let writes = text.contains("declare i64 @write(") || text.contains("declare i32 @putchar(");
+        if let Some((_, feature)) = [
+            (task_runtime, "parallel tasks"),
+            (io_runtime, "the standard IO"),
+            (os_runtime, "the operating-system APIs"),
+            (arguments_runtime, "program arguments"),
+            (writes, "Debug output"),
+        ]
+        .into_iter()
+        .find(|(used, _)| *used)
+        {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--freestanding cannot use {feature}: its runtime needs the C library; keep it in the host and pass the results to the exports"
+                ),
+            ));
+        }
+    }
     // Only a WASM module of a `def main` or an IO entry is a WASI command; objects leave `_start` to the embedder.
     let wasi_command =
         options.emit == Emit::Wasm && (llvm::io_entry(module) || llvm::main_entry(module));
@@ -2155,12 +2251,24 @@ fn build_complete(
             if callback_table {
                 linker.arg("--export-table");
             }
-            if llvm::uses_host_abi(module) || io_runtime || os_runtime {
+            if llvm::uses_host_abi(module)
+                || io_runtime
+                || os_runtime
+                || options.allocator == llvm::Allocator::Counting
+            {
                 linker.args([
                     "--export=tsuzuri_alloc",
                     "--export=tsuzuri_free",
                     "--export-memory",
                 ]);
+            }
+            // F13: a counting module reports its counts; a host allocator manages the memory
+            // above `__heap_base`.
+            if options.allocator == llvm::Allocator::Counting {
+                linker.arg("--export=tsuzuri_alloc_stats");
+            }
+            if options.allocator == llvm::Allocator::Host {
+                linker.args(["--export=__heap_base", "--export-memory"]);
             }
             if wasi_runtime {
                 linker.arg(&wasi_object);

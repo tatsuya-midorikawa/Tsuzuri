@@ -7,10 +7,10 @@
 | 規模 | XL |
 | 依存 | F04, F05, (C08) |
 | 後続 | C11, C09 Phase 2 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2・3） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | Phase 1 は不要。要承認: D7（Phase 2: 256-bit SIMD 型名の追加）, D8（Phase 3: 利用者関数の多版化構文）, D9（Phase 3: AVX-512・SVE の採用） |
-| 改善する劣位 | C/C++ 比: 最適化の自由度（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）／追加: SIMD が 128-bit だけで、実行時 ISA 選択が同梱の `Array.sum<i64>` に限られる |
+| 承認 | Phase 1 は不要。要承認: D7（Phase 2: 256-bit SIMD 型名の追加）, D8（Phase 3: 利用者関数の多版化構文）, D9（Phase 3: AVX-512・SVE の採用）。D7・D8・D9 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズがある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-39） |
+| 改善する劣位 | C/C++ 比: 最適化の自由度（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）／追加: SIMD が 128-bit だけで、実行時 ISA 選択が同梱の `Array.sum<i64>` に限られる |
 | 手本にする既存実装 | F05 の実行時選択: `src/runtime/cpu.c` の `tz_cpu_decode`・`tsuzuri_cpu_features`・`tz_cpu_resolve`・`tsuzuri_cpu_variant`・`tsuzuri_cpu_sum_i64`。std 本体の置き換え: `src/llvm.rs` の `FunctionEmitter::emit` の `self.globals.cpu_dispatch` 分岐、`emit_native_build` の `trusted_array`。宣言と runtime の同梱: `emit_program` 末尾の `declare i64 @tsuzuri_cpu_sum_i64(ptr, i64)`、`src/driver.rs` の `cpu_runtime` と `include_str!("runtime/cpu.c")`。非公開 std helper: `std/Map.tz` の `private def lower_bound`。テスト: `tests/cpu_dispatch.rs`, `tests/cpu_dispatch.mjs`, `tests/cpu_runtime.c` |
 | 主な影響ファイル | Phase 1: `src/runtime/cpu.c`, `src/llvm.rs`, `src/driver.rs`, `std/Array.tz`, `tests/cpu_dispatch.rs`, `tests/cpu_dispatch.mjs`, `tests/cpu_runtime.c`, `tests/fixtures/cpu_dispatch/Main.tz`, `tests/fixtures/cpu_kernels/Main.tz`（新規）, `tests/cpu_kernels.mjs`（新規）, `benchmarks/run-dispatch.mjs`, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/guides/performance.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md`。Phase 2（承認後）: `src/simd.rs`, `src/llvm_simd.rs`, `src/check.rs`, `tests/simd.rs`, `tests/simd.mjs`, `_docs/library-reference/simd.md` |
 
@@ -656,3 +656,108 @@ grep -cE "ifunc|__cpu_model" /tmp/tz-work-F08/cpu-x86.s   # 0
   1 回走査は計測で必要が示されてから別チケットで行う。
 - 理由: F05 の kernel と同じ幅で、結果に影響しない。1 回走査の index 追跡は複雑で、ビット単位の一致の検証が難しくなる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-06）
+
+「C08、A14、A16、F13、F08 の実装をすべて完遂して」という依頼を D7・D8・D9 の承認として扱い、Phase 1 と、設計方針だけだった
+Phase 2（256-bit 型と `Simd.store`）・Phase 3（`@cpu` と AVX-512・SVE）を設計して実装した。着手時の HEAD は `ff84e4c`
+（ブランチ `Phase7-3`）で、C08・A16・A14・F13 と同じ変更に含めた。x86 と SVE は cross-compile だけを確認し、実機の実行と速度は未確認。
+
+### 実装（Phase 1）
+
+- `src/runtime/cpu.c`: 全面的に書き直した。level（0 baseline、1 SSE4.2、2 AVX2、3 AVX-512、4 SVE、5 SVE2）、feature bit
+  （bit0 SSE4.2、bit1 AVX2、bit2 AVX-512 F・BW・CD・DQ・VL と XCR0 の `0xE6`、bit16／bit17 は Linux AArch64 の `getauxval` による SVE／SVE2）、
+  `tz_cpu_select`・`tz_cpu_level`（一つの `_Atomic int`）・`tz_cpu_within`、kernel の macro `TZ_CPU_SUM`・`TZ_CPU_BEST`（`TZ_CPU_MIN`・`TZ_CPU_MAX`）・
+  `TZ_CPU_LEVEL_KERNELS`・`TZ_CPU_PICK`・`TZ_CPU_ENTRY`、20 の入口 `tsuzuri_cpu_{sum|min|max}_{型名}`、`tsuzuri_cpu_variant`、
+  Phase 3 の `tsuzuri_cpu_pick`。block は baseline・sse4.2 が 16、avx2 が 32、avx512 が 64 bytes。
+- `std/Array.tz`: 非公開 helper `min_index`・`max_index`（D5）。
+- `src/llvm.rs`: `CPU_KERNELS`・`cpu_kernel`、`FunctionEmitter::emit_body` の置き換え、宣言の loop。`src/driver.rs`: `cpu_runtime` は
+  `@tsuzuri_cpu_` の関数の宣言があるとき。
+- テスト: `tests/cpu_dispatch.rs`（5 件）、`tests/cpu_runtime.c`（decode・select・within、全 kernel・全 level の scalar 参照、8 thread、pick）、
+  `tests/fixtures/cpu_kernels/Main.tz`・`tests/cpu_kernels.mjs`（新規）。
+
+### 実装（Phase 2）
+
+- `src/simd.rs`: `SimdType::width`（128・256）と `bytes()`。`named` は lane 数 × 幅が 128 か 256 の名前を受ける。
+- `src/check.rs`: builtin `Simd.of_lanes32` と `Simd.store`（`ref mut [lane..] -> i64 -> 'a -> unit`、`SimdNumeric`）。
+- `src/llvm_simd.rs`: 両 builtin の lowering（store は全 lane の境界を検査してから `align 1` で書く）、`with_vector_alignment`
+  （`emit_program` の最後。256-bit ベクトルを含む型の load／store に `align 16`）。`storage_layout`・`llvm_debug::layout` は 256-bit 型を
+  (32, 32)、`llvm_frame::stack_size` は 32 にした。
+- テスト: `tests/simd.rs`（`f32x8` などを有効な名前へ移し、`wide_vectors_access_storage_at_most_16_byte_aligned` を追加）、
+  `tests/fixtures/simd/Main.tz` と `tests/features.mjs` の `simd` suite（256-bit の 8 型 × 7 seed × 4 shift、float、格納、load、store と trap）。
+- VS Code の文法: `i8x32` などの型名、属性 `@cpu`。
+
+### 実装（Phase 3）
+
+- `src/syntax.rs`: `CPU_TARGETS`、`CpuAttribute`、`Program::cpu_attributes`。`src/parser.rs`: `cpu_attribute`（doc comment の後、
+  `private`・`export` の前）。`src/formatter.rs`: 正規化。
+- `src/check.rs`: `FunctionOrigin::cpu`（生成された helper は 0。`src/polymorph.rs` の具体化は引き継ぐ）、`Type::holds_wide_vector`、
+  `validate_cpu_functions`。
+- `src/llvm.rs`: `Instrumentation`・`Globals` の `multiversion`、define 行の `"tz-cpu"="<levels>:<関数 id>"`、
+  `emit_native_build_for(…, levels)`（`emit_native_build` は `cpu::host_levels()` で呼ぶ）、object を作る `emit_trap_return`。
+- `src/llvm_cpu.rs`（新規）: `multiversion`。trap 計装後の IR で、印の付いた関数を `.cpu.baseline` に改名し（debug 情報を保つ）、
+  level ごとの `.cpu.<名前>` 版（`"target-features"`、debug 情報なし）と、元の名前の stub を作る。stub は `@"<名前>.cpu"` に
+  `tsuzuri_cpu_pick` の結果を monotonic で cache し、switch から tail call する。版の本体が 256-bit ベクトルを含む型で直接呼ぶ関数は
+  推移的に同じ level の版を作り、呼び出しを付け替える。
+- テスト: `tests/multiversion.rs`（4 件。x86-64・AArch64 Linux の level の IR、debug 情報と trap 位置、`clang -target` の asm、
+  構文と型の拒否）、`tests/fixtures/cpu_versions/Main.tz` と `tests/cpu_kernels.mjs` の版の実行（`-O0`・`-O3`、各 `TSUZURI_CPU_FORCE`）。
+- 文書: `README.md`、`docs/language.md`（冒頭の段落、`### SIMD 値型`、`### CPU ごとの関数の版（@cpu）`）、`docs/architecture.md`、
+  `docs/benchmarks.md`、`_docs/library-reference/simd.md`・`arrays-and-lists.md`、`_docs/guides/performance.md`、
+  `_docs/language-reference/lexical-and-layout.md`、`_docs/learn/why-tsuzuri.md`、`_docs/feature-status.md`、`_features/README.md`、
+  `_features/GUIDE.md`（D-15・D-30・D-39）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D12 を改めた。** kernel を一つの accumulator で書くと、arm64 の `run-dispatch.mjs` の dispatch が約 66 ms（F08 前は約 21.5 ms）に
+   なった（ベクトル加算の待ち時間が律速）。和と min／max の両方の走査を 4 つの accumulator で 4 block ずつ処理する形に改め、
+   F08 前と同等に戻した。結果は加算・min・max の結合則で変わらない。
+2. **D9（Phase 3）。** AVX-512 と SVE／SVE2 を検出するようにしたが、実機で測れないので、同梱 kernel の自動選択は AVX2 までにし、
+   AVX-512 と SVE の kernel は `TSUZURI_CPU_FORCE` の指定時だけ使う。`TSUZURI_CPU_FORCE=avx512` などは未知の値ではなくなった。
+   `@cpu` で明示した版は自動選択でも使う（利用者の明示の指定）。
+3. **D7（Phase 2）の格納。** `storage_layout` は LLVM と同じ (32, 32) にし、heap などが 16 bytes までしか揃えない差は load／store の
+   `align 16` で埋めた（GUIDE §6.3）。256-bit ベクトルを含まない IR は変わらない。
+4. **D8（Phase 3）の構文。** 既定案の `def name :: ... for cpu [avx2]` ではなく、既存の `@literal`・`@checked` と同じ属性の形
+   `@cpu ["avx2", "sve"]` を `def` の前に置く形にした。名前は `TSUZURI_CPU_FORCE` と同じ文字列で、未知・重複・空・`def` 以外への指定は `E0002`。
+   build 先で選べない名前は無視し、一つのソースに x86 と AArch64 の名前を並べられる。
+5. **版の境界の ABI。** 版ごとに 256-bit ベクトルの受け渡しレジスタが異なる（x86 の `ymm` と 2 つの `xmm`）。シグネチャ（レコード・union・
+   タプル・固定長配列の中を含む）と関数値の呼び出しに 256-bit ベクトルを通すことを `E1005` にし（ジェネリック関数は具体化した型で検査）、
+   直接呼ぶ関数は同じ level の版を作る。union は payload が共有の格納でも保守的に数える。
+6. **debug 情報。** 二つの関数が同じ subprogram を持てないので、level ごとの版は debug 情報を外し、stub には元の subprogram を複製した
+   subprogram と呼び出し位置を付けた（portable 版が stub に inline されても inline 位置が保たれる）。
+7. **対象の build 先。** 版を作るのは `cpu.c` が検出できる x86-64（Windows を除く）と AArch64 Linux だけ。macOS の AArch64、Windows、
+   WASM、`--emit llvm`、`--freestanding` では属性を外して portable 版だけにする。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.19.6）
+
+- Phase 1: `node tests/cpu_kernels.mjs target/release/tsuzuri` は generic・native の `-O0`・`-O3`（features=0）で JS `BigInt` の参照と一致し、
+  WASM（±simd128）、`tests/cpu_runtime.c`（`-O0`・`-O3`）、x86 の asm（avx2 の kernel に `ymm`、avx512 の kernel に `zmm`、ifunc なし）、
+  AArch64 Linux の compile（`getauxval`）が成功し、最後に `cpu_kernels: x86 variants cross-compiled; execution requires an x86 host` を出す。
+  `node tests/cpu_dispatch.mjs`・`node benchmarks/run-dispatch.mjs --quick` も成功した。
+- 計測（手順 10）: `run-dispatch.mjs` を F08 前（`target/perf/F08/baseline-tsuzuri`）と後で交互に 9 回ずつ実行し、dispatch の中央値は
+  21.542 ms → 21.557 ms（scalar 21.526 → 21.606、C 21.709 → 21.687）。生データは `target/perf/F08/before/`・`after/`、表は docs/benchmarks.md。
+  例の実行ファイルは 67,432 → 102,600 bytes（`cpu.c` の object の text は arm64 で 605 → 16,457 bytes、x86-64 で 1,920 → 75,649 bytes）。
+  参考として、`cpu.c` を取り込んだ C の harness では、i32 の min の baseline kernel が 1,048,577 要素 × 200 回で約 15.5 ms、std の本体と同じ形の
+  C のループが約 410 ms だった（再現用のスクリプトは置いていない。性能の主張には使わない）。
+- Phase 2: `tests/simd.rs`、`node tests/features.mjs target/release/tsuzuri simd`（467 ケース、native・WASM の `-O0`・`-O3`）、
+  `TSUZURI_ASAN=1` の同 suite、`node tests/simd.mjs`（generic・native と simd128 の有無）が成功した。fixture の IR を
+  `clang -target x86_64-apple-macos13 -mavx2 -O3` で compile し、32 bytes 揃えの `vmovaps`／`vmovdqa` が定数プール以外の記憶域を読まないことを確認した。
+- Phase 3: `cargo test --locked --test multiversion` は 4 passed。x86-64 の AVX2 版に `ymm`、AVX-512 版にベクトル命令、export（stub と
+  portable 版を inline）に `ymm` がないこと、AArch64 Linux の SVE 版の生成、debug 情報付きの console のプログラムが LLVM に debug 情報を捨てられずに
+  compile されることを確認した。arm64 の macOS では版を作らないので、`tests/cpu_kernels.mjs` は fixture を `-O0`・`-O3` で build し、
+  各 `TSUZURI_CPU_FORCE` で同じ行を出すことだけを確認する。
+- 既存の不具合の発見（未修正）: export の C 入口 `tz_<name>` は、内部の関数を `!dbg` なしで呼ぶ。`-g` の library build で
+  export がある module は LLVM の検証で「invalid debug info」となり、module の debug 情報が捨てられる（F08 の前から）。
+- 全体のゲートで見つけて直した不具合: `node tests/tasks.mjs` の object の link が `tsuzuri_cpu_sum_i64` の未定義で失敗した。host ABI の
+  allocator の runtime text が改行で終わらず、kernel の宣言が `}declare ...` と同じ行に続いたため、driver の行頭の判定が `cpu.c` を
+  同梱しなかった。宣言（と `@cpu` の版・stub の後に足す行）の前に改行を入れ、`tests/cpu_dispatch.rs` と `tests/multiversion.rs` で
+  宣言が行頭にあることを検査する。
+- 全体のゲート（C08・A16・A14・F13・F08 の実装後）: `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`、
+  `RUST_MIN_STACK=4194304 cargo test --locked`（735 passed）、GUIDE §3.1 の stack-depth と特殊化上限の 7 テスト（既定の 2 MiB）、
+  `tests/*.mjs`（`windows.mjs` と、WASM を引数に取るホストの `os-wasi-host.mjs` を除く。`wasm64.mjs` は Node 24 で実行。
+  `debug_info.mjs` は `-O0` が成功し、`-O3` の `llvm-dwarfdump --verify` は F08 の前の compiler でも同じ箇所で失敗する）、
+  `TSUZURI_TEST_ALLOCATOR=host` の `tests/features.mjs`、`TSUZURI_ASAN=1` の `simd`・`mutable_slices`・`fixed_arrays`・`dyn_dispatch`、
+  `node scripts/check-docs.mjs`（main から壊れているアンカーを持つ `_docs/examples/README.md`・`_docs/get-started.md` を除く 99 ページ、
+  927 リンク、231 例、394 回の native 実行。feature の ID の対応は別に確認）、`sh scripts/check-runtime-includes.sh`（29 ファイル）、
+  `git diff --check`、VS Code 拡張の `check-types`・`lint`・`test:unit`。
+- IR: 全 fixture と例の `--emit llvm`（native・wasm32）を A14 の後の出力と比べ、129 ファイル中 70 が一致、51 が番号の付け替えだけ、
+  変わったのは `Array.min`・`Array.max` の helper が増えた `array_bulk` と fixture を足した `simd`（各 native・wasm32）だった。

@@ -45,11 +45,15 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
         0
     };
     match ty {
-        Type::Reference(_, false) if ty.shared_array_element().is_some() => 16,
+        Type::Reference(..) if ty.slice_element().is_some() => 16,
         Type::Record(id, arguments) => {
             fields(&mut module.types().record_fields(*id, arguments).iter()).saturating_add(flag)
         }
         Type::Tuple(elements) => fields(&mut elements.iter()),
+        // Inline elements at their own stride, as in `Layouts::size` (A16).
+        Type::FixedArray(element, _) => {
+            stack_size(element, module).saturating_mul(fixed_length(ty))
+        }
         Type::Union(id, arguments) => {
             let payload = module
                 .types()
@@ -65,14 +69,15 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
                     .saturating_add(flag),
             }
         }
-        Type::Simd(_)
-        | Type::Integer(128, _)
+        Type::Simd(vector) => vector.bytes().max(16),
+        Type::Integer(128, _)
         | Type::Binary(128)
         | Type::Decimal(128)
         | Type::String
         | Type::Utf8String
         | Type::Array(_)
-        | Type::List(_) => 16,
+        | Type::List(_)
+        | Type::Dyn(_) => 16,
         Type::Function(..) | Type::Task(_) | Type::Vec(_) => 32,
         _ => 8,
     }
@@ -396,6 +401,8 @@ impl FunctionEmitter<'_, '_> {
         match ty {
             Type::Record(id, arguments) => Some(self.module.types().record_fields(*id, arguments)),
             Type::Tuple(elements) => Some(elements.clone()),
+            // A fixed-length array literal places nested literals like a tuple (A16).
+            Type::FixedArray(element, _) => Some(vec![(**element).clone(); fixed_length(ty)]),
             _ => None,
         }
     }
@@ -432,6 +439,20 @@ impl FunctionEmitter<'_, '_> {
         let actual = self.value(format!("extractvalue {llvm} {value}, 1"));
         let whole = self.value(format!("icmp eq i64 {actual}, {length}"));
         self.value(format!("and i1 {same}, {whole}"))
+    }
+
+    /// Moves the stack parts of the array place `value` to the heap before an exclusive slice of
+    /// it lets callees drop and replace its elements, which may own stack storage too (C08).
+    pub(super) fn own_heap_storage(&mut self, value: &TypedExpr) {
+        let frames = self.frame_of_place(value);
+        if frames.is_empty() {
+            return;
+        }
+        let slot = self.place(value);
+        let ty = self.ty(&value.ty);
+        let current = self.value(format!("load {ty}, ptr {slot}"));
+        let moved = self.relocate(&value.ty, &current, &frames);
+        self.instruction(format!("store {ty} {moved}, ptr {slot}"));
     }
 
     /// Copies the stack parts of `value` to the heap so that it can leave this frame.

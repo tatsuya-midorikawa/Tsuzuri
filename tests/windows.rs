@@ -10,6 +10,7 @@ fn emits_windows_exports_without_changing_default_or_wasm() {
         entry: llvm::Entry::Library,
         wasm: false,
         debug_output: false,
+        allocator: llvm::Allocator::System,
     };
     let ir = llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap();
     assert!(ir.contains("define dllexport i64 @tz_answer("));
@@ -75,6 +76,7 @@ fn cross_links_with_microsoft_sdk_when_requested() {
             entry: llvm::Entry::Library,
             wasm: false,
             debug_output: false,
+            allocator: llvm::Allocator::System,
         },
         llvm::ExportStyle::Dllexport,
     )

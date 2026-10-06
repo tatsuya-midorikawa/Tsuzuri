@@ -10,8 +10,10 @@ fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
         | TypeExprKind::List(inner)
         | TypeExprKind::Task(inner) => vec![inner],
+        TypeExprKind::FixedArray(element, _) => vec![element],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
         TypeExprKind::Function(parameters, result) => parameters
             .iter()
