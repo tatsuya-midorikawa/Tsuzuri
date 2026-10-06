@@ -1046,6 +1046,11 @@ fn named_target_regions_store_borrowed_aggregates_through_references() {
             "def forward {r s} :: ref mut {r} View {s} -> ref {s} string -> unit = \\target text -> replace target text\n",
             "let mut view = View { text: ref a }\nforward (ref mut view) (ref b)\nview.text.length",
         ),
+        // Two targets exchange their borrows: 65.
+        (
+            "def exchange {r s} :: ref mut {r} View {s} -> ref mut {r} View {s} -> unit = \\left right -> { let kept = (deref left).text; deref left = View { text: (deref right).text }; deref right = View { text: kept }; }\n",
+            "let mut first = View { text: ref a }\nlet mut second = View { text: ref b }\nexchange (ref mut first) (ref mut second)\nfirst.text.length * 10 + second.text.length",
+        ),
         // The reference and the target may share one region, as in A09: 5.
         (
             "def same {r} :: ref mut {r} View {r} -> i64 = \\target -> (deref target).text.length\n",
@@ -1102,6 +1107,37 @@ fn named_target_regions_keep_stored_borrows_alive() {
             "let mut view = View { text: ref a }\nlet editor = Editor { view: ref mut view, edits: 0 }\n{ let short = \"xy\"; deref editor.view = View { text: ref short }; }\nview.text.length",
             "E1013",
             "",
+        ),
+        // Callers keep what a callee may store, including another reference's target.
+        (
+            "",
+            "let mut view = View { text: ref a }\n{ let short = \"xy\"; let other = View { text: ref short }; copy_text (ref mut view) (ref other); }\nview.text.length",
+            "E1013",
+            "assignment lets a reference outlive its owner",
+        ),
+        (
+            "def exchange {r s} :: ref mut {r} View {s} -> ref mut {r} View {s} -> unit = \\left right -> { let kept = (deref left).text; deref left = View { text: (deref right).text }; deref right = View { text: kept }; }\n",
+            "let mut view = View { text: ref a }\n{ let short = \"xy\"; let mut other = View { text: ref short }; exchange (ref mut view) (ref mut other); }\nview.text.length",
+            "E1013",
+            "assignment lets a reference outlive its owner",
+        ),
+        (
+            "def forward {r s} :: ref mut {r} View {s} -> ref {s} string -> unit = \\target text -> replace target text\n",
+            "let mut view = View { text: ref a }\n{ let short = \"xy\"; forward (ref mut view) (ref short); }\nview.text.length",
+            "E1013",
+            "assignment lets a reference outlive its owner",
+        ),
+        (
+            "",
+            "let mut view = View { text: ref a }\n{ let short = \"xy\"; let _editor = retarget (Editor { view: ref mut view, edits: 0 }) (ref short); }\nview.text.length",
+            "E1013",
+            "assignment lets a reference outlive its owner",
+        ),
+        (
+            "",
+            "let mut view = View { text: ref a }\nlet mut index = 0\nwhile index < 2 do\n    let short = \"xy\"\n    replace (ref mut view) (ref short)\n    index = index + 1\nview.text.length",
+            "E1013",
+            "assignment lets a reference outlive its owner",
         ),
         // The stored borrow keeps its owner borrowed.
         (

@@ -950,3 +950,9 @@ T1 の Rust 文字列の `\\` は Tsuzuri では `\`、`\"` は `"` である。
 - `src/check.rs`、`src/regions.rs`、`src/ownership.rs`、`src/recursive.rs`、`src/closures.rs`・`src/polymorph.rs`（`region_slots` の初期化だけ）。
 - `tests/borrowed_records.rs`、`tests/fixtures/borrowed_records/Main.tz`、`tests/features.mjs`。
 - 文書は「実装した範囲」のとおり。「主な影響ファイル」の予定と異なり、`src/ownership_control.rs` は変えていない（D16）。
+
+### レビュー対応（PR #13）
+
+- Copilot のレビューは指摘なしで、借用検査の健全性と関数をまたぐ loan の伝播は人による確認を勧めた。反例を 25 件試し（二つの参照の交換、
+  転送する関数、record の引数、ループの局所値、部分適用、関数値、共有参照経由の貸し直し、Task の捕捉など）、すべて期待どおりに受理・拒否された。
+- 回帰テストになかった拒否 5 件（別の参照の参照先の格納、交換、転送する関数、`retarget`、ループの局所値）と、交換の受理を `tests/borrowed_records.rs` に足した。
