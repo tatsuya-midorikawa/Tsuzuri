@@ -225,11 +225,17 @@ int main(void) {
     assert.deepEqual(unexpected, [], `freestanding ${optimization} undefined symbols`);
     assert.equal(runHost(object, `free${optimization}`).split(" ")[0], runHost(join(work, `host${optimization}.o`), `again${optimization}`).split(" ")[0]);
   }
+  // The header of a freestanding build is the ordinary host-allocator header.
+  cli(["build", abi, "--emit", "header", "--allocator", "host", "--freestanding", "-o", join(work, "free.h")]);
+  assert.equal(readFileSync(join(work, "free.h"), "utf8"), readFileSync(header, "utf8"));
   const freestanding = (name, source, message) => {
     const project = join(work, name);
     mkdirSync(project);
     writeFileSync(join(project, "Main.tz"), source);
-    rejects(["build", project, "--emit", "object", "--allocator", "host", "--freestanding", "-o", join(work, `${name}.o`)], message, 1);
+    // A header holds no IR, so it is checked against the IR the object would hold.
+    for (const [emit, extension] of [["object", "o"], ["llvm", "ll"], ["header", "h"]]) {
+      rejects(["build", project, "--emit", emit, "--allocator", "host", "--freestanding", "-o", join(work, `${name}.${extension}`)], message, 1);
+    }
   };
   freestanding("io", "IO { do! IO.write_line 42 }\n", "--freestanding cannot use the standard IO");
   freestanding("tasks", "export def total :: i64 -> i64\nfn total count =\n    let tasks = new [Task<i64>](4, index -> task { return index * count })\n    let results = Task.run (Task.parallel tasks)\n    Array.sum (ref results)\n", "--freestanding cannot use parallel tasks");

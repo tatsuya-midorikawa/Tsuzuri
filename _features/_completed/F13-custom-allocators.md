@@ -691,3 +691,10 @@ WASM の host allocator）と Phase 3（`--freestanding`）を設計して実装
   同じ設定で `TSUZURI_TSAN=1` の `parallel`（36 ケース）と `TSUZURI_ASAN=1` の全 suite も成功した。
 - 全体のゲート（fmt・clippy・`cargo test`・既定の features の全 suite・`check-docs`・`sh scripts/check-runtime-includes.sh`）は 5 チケットの実装の後に
   まとめて実行した（F08 の記録を参照）。
+
+### レビュー対応（PR #14）
+
+- `--freestanding` の検査は生成した出力の文字列を調べていたので、`--emit header` では C の header だけを調べて IO・タスク・OS API・引数・Debug 出力を見逃していた。
+  header の build では、同じ build の object が持つ library の IR（`Entry::Library`）を別に生成して検査する。
+  `tests/allocator.mjs` は IO・タスク・Debug の拒否を `--emit object`・`llvm`・`header` の 3 つで確かめ、受理するプログラムの freestanding の header が
+  `--allocator host` の header と byte 一致することも確かめる。

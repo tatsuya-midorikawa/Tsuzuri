@@ -273,6 +273,14 @@ fn fixed_arrays_reject_patterns_iteration_and_exports() {
         "a fixed-length array is not enumerable; iterate 'for i in 0 .. xs.length - 1' and index it",
     );
     rejects("export def f :: [i64; 2] -> i64\nfn f v = v[0]", "E1008");
+    // ISO C has no zero-length arrays, so a header could not declare the field.
+    rejects(
+        "record Empty { values: [i64; 0], tag: i64 }\nexport def f :: ref Empty -> i64\nfn f e = e.tag",
+        "E1008",
+    );
+    accepts(
+        "record One { values: [i64; 1], tag: i64 }\nexport def f :: ref One -> i64\nfn f e = e.tag + e.values[0]",
+    );
     rejects(
         "def f :: [i64; 2] -> [i64; 2] -> bool\nfn f a b = a == b",
         "E1005",

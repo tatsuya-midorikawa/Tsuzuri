@@ -1697,16 +1697,32 @@ fn build_complete(
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
     let arguments_runtime = text.contains("@tsuzuri_arguments(");
     if options.freestanding {
-        let writes = text.contains("declare i64 @write(") || text.contains("declare i32 @putchar(");
+        // A header holds no IR, so it is checked against the IR the object of the same build holds.
+        let library;
+        let ir = if options.emit == Emit::Header {
+            library = llvm::emit_with_options(
+                module,
+                llvm::EmitOptions {
+                    entry: Entry::Library,
+                    wasm: false,
+                    debug_output: options.debug_output,
+                    allocator: options.allocator,
+                },
+            )?;
+            library.as_str()
+        } else {
+            text.as_str()
+        };
         if let Some((_, feature)) = [
-            (task_runtime, "parallel tasks"),
-            (io_runtime, "the standard IO"),
-            (os_runtime, "the operating-system APIs"),
-            (arguments_runtime, "program arguments"),
-            (writes, "Debug output"),
+            ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
+            ("declare i32 @tsuzuri_io_", "the standard IO"),
+            ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
+            ("@tsuzuri_arguments(", "program arguments"),
+            ("declare i64 @write(", "Debug output"),
+            ("declare i32 @putchar(", "Debug output"),
         ]
         .into_iter()
-        .find(|(used, _)| *used)
+        .find(|(marker, _)| ir.contains(marker))
         {
             return Err(driver_error(
                 "E2000",

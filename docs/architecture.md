@@ -641,7 +641,7 @@ NULL ポインタや要素数 0 のケースはヘッダー読み出しよりも
 LLVM では `[N x T]` の値として表現し、タプルと同じくフレーム上へ直接置きます。`llvm_frame::stack_size` と `Layouts::size` は要素サイズの `N` 倍で見積もり、単相化のシンボルでは `fixed[N,T]` と正規化されます。
 添字は `fixed_element_pointer` が GEP で要素のアドレスを求め、`N` 未満の整数リテラルの添字では境界検査の分岐を出力しません。clone と drop は非 Copy 要素のときだけ要素ループ（`array_loop`）を生成し、名前付きの値から `ref [T]` への変換（`fixed_array_view`）は `%tz.array` 記述子を作るだけで要素を複製しません。
 `FixedArray.init` の長さは `src/polymorph.rs` の `FamilyKind::FixedArrayElement` が期待型から決めます。直接の呼び出しは `fill_fixed_array` がフレーム上の値へ初期化関数を昇順に適用するインライン展開になり、関数値として使う場合は結果の配列型ごとの組み込みラッパーが同じ展開を行います。
-公開 ABI では、スカラー型の固定長配列フィールドを C 構造体の配列メンバー `T name[N]`（LLVM では `[N x abi]`）へ正規化します。
+公開 ABI では、スカラー型の固定長配列フィールドを C 構造体の配列メンバー `T name[N]`（LLVM では `[N x abi]`）へ正規化します。ISO C に長さ 0 の配列はないので、`[T; 0]` のフィールドを持つレコードは公開できません（E1008）。
 
 **dyn 値:** `dyn C` は型検査器の中では葉の `Type::Dyn(Box<DynType>)` で、`DynType` はクラスの正規名（`Class::name`）の列と印 `copy`・`send`、region を持つかどうか（`borrowed`）を持ちます。型の性質（`is_copy`、`can_send`、`carries_loans` など）はこの印だけで決まります。
 構文木の `TypeExprKind::Dyn` は parser が `Program::dyn_types` にも記録し、`Classes::collect` の最後に dyn 互換規則（`Classes::dyn_slots`）を出現順に検査して `E1028` を報告します。
@@ -1014,7 +1014,7 @@ threads 有効時はインポートセクションの最大メモリサイズも
 POSIX ネイティブ環境のアロケータは、共通のフックテーブルから境界ランタイムの存在を検知し、メモリの確保と解放を安全な追跡経路へとルーティングします。これは拡張 ABI を使用するデフォルトネイティブ IR における内部変更ですが、公開シグネチャそのものには一切影響しません。WASM および Windows におけるデフォルトアロケータは従来の動作を維持します。
 **allocator の選択（F13）:** heap runtime は `emit_program` の末尾で一つだけ連結し、`@tz.alloc`／`@tz.free`／`@tz.realloc` を `define internal` で定義します（呼び出し側は allocator を知りません）。`llvm::Allocator::System` は従来の `heap-native.ll`・`heap-wasm.ll`・`heap-wasm64.ll`（threads は lock 版）、`Host` は `heap-host.ll`（WASM では `tsuzuri_heap` からの import）、`Counting` は対象の heap を `counted_base` で `@tz.alloc.base` などへ改名し、その上に `heap-counting.ll` を置きます。
 `Host` と `Counting` は各ブロックの先頭 16 バイトに要求サイズを書き、ホストへ渡すサイズと統計を解放の経路によらず一致させます。トラップの理由は関数名で分類する（`traps::runtime_kind`）ので、確保の失敗の `@llvm.trap` は `@tz.alloc`・`@tz.realloc` とその `.base` の本体に置きます。
-`--freestanding` は `--allocator host` に加えて CPU ディスパッチを使わない経路（`emit_native_build` を通らない）で出力し、IR が C ライブラリを要する runtime（IO・OS・タスク・引数・`write`）を宣言したら `E2000` にします。
+`--freestanding` は `--allocator host` に加えて CPU ディスパッチを使わない経路（`emit_native_build` を通らない）で出力し、IR が C ライブラリを要する runtime（IO・OS・タスク・引数・`write`）を宣言したら `E2000` にします。`--emit header` の出力には IR がないので、同じ build の object が持つ library の IR を別に生成して検査します。
 128-bit 値、ソフトウェア浮動小数点型、任意の所有入力、借用参照の戻り値、およびクロージャ環境の直接的な ABI 公開はサポートされていません。
 外部シンボルのインポートはユーザーが記述した `extern` 宣言からのみ発生し、リンク名、ハンドル型、コールバックを使用しないプログラムにおいては、生成される IR、C ヘッダー、および WASM インポートの構造に変化はありません。
 外部ライブラリのリンク入力はネイティブ実行ファイルのビルドでのみ有効です。`wasm-ld` の `--export-table` はコールバックラッパーが存在する場合にのみ渡され、変数を捕捉した関数値が ABI を越えて直接渡されることはありません。

@@ -730,3 +730,9 @@ done; done
   （id を写す比較で差なし）。`tests/fixtures/fixed_arrays` の `-O3` の IR の `@tz.alloc` は 9 個（宣言 1、部分適用の環境 6、文字列の確保 2）で、
   `fixed_copy` などの固定長配列の複製には確保がない。
 - 全体のゲート（fmt・clippy・`cargo test`・features の全 suite・`check-docs`）は 5 チケットの実装の後にまとめて実行した（F08 の記録を参照）。
+
+### レビュー対応（PR #14）
+
+- ISO C には長さ 0 の配列がないので、`[T; 0]` のフィールドを持つレコードの header は `T name[0];` という不正な C になっていた。
+  `scalar_record` は長さ 1 以上の固定長配列だけを許し、`[T; 0]` のフィールドを持つレコードの export は他の公開できない型と同じ `E1008` にした
+  （`tests/fixed_arrays.rs` に拒否と `[i64; 1]` の受理を追加）。
