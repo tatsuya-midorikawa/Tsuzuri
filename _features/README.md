@@ -51,7 +51,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、ほかは `todo` です。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
@@ -75,7 +75,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（G10 の完了が前提）, C11, F08, G16, G19 |
 | C/C++ | GPU が実験段階 | F09 |
 | C/C++ | 安全検査・所有値の複製・ホスト境界の変換のコスト | F12, A15, A16, E13 |
-| Rust | 可変スライス・排他借用フィールド・レコード内の独立した複数 region がない | C08, A13, A12 |
+| Rust | 可変スライスがない。排他借用フィールド（A13）とレコード内の独立した複数 region（A12）は実装済み | C08, A13, A12 |
 | Rust | Copy のコストモデル（配列・捕捉の深い複製） | A15, A16, C10 |
 | Rust | Cargo／crates.io・非同期 I/O・低水準 API・開発ツールの成熟度 | E10, B08, E12, F13, G12, G14, G18 |
 | C#/F# | .NET の標準ライブラリ・NuGet・GUI／Web／DB・ファイル／ネットワーク API | E08, E09, E10, E13, D08, D09, C09 |
@@ -134,7 +134,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A10 | [高階型（HKT）](_completed/A10-higher-kinded-types.md) | P3 | XL | A01, A06 | done |
 | A11 | [比較演算の非消費化（Eq／Ord の借用シグネチャ）](_completed/A11-borrowed-comparisons.md) | P1 | M | – | done |
 | A12 | [レコード内の独立した複数 region と region 付き関数値型](_completed/A12-multiple-regions.md) | P2 | XL | A09 | done |
-| A13 | [排他借用フィールドと参照経由の更新](A13-exclusive-borrow-fields.md) | P2 | L | A12 | todo |
+| A13 | [排他借用フィールドと参照経由の更新](_completed/A13-exclusive-borrow-fields.md) | P2 | L | A12 | done |
 | A14 | [型クラスによる動的ディスパッチ（dyn 値）](A14-dynamic-dispatch.md) | P2 | L | A06, (B07) | todo |
 | A15 | [暗黙の深いコピーの可視化](_completed/A15-copy-cost-visibility.md) | P2 | M | G03, (G12) | done |
 | A16 | [固定長配列と const ジェネリクス](A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | todo |
@@ -411,7 +411,7 @@ graph LR
 | チケット | 要承認の決定 |
 | --- | --- |
 | [A12](_completed/A12-multiple-regions.md) | D10（region の上限を 64 へ下げる）、D13（Phase 2）。承認済みで実装済み（2026-10-03。D10 は 128 を正式な上限にする見直し案を採用） |
-| [A13](A13-exclusive-borrow-fields.md) | D1（D-28「排他参照 field は禁止」の変更。チケット全体）、D5 |
+| [A13](_completed/A13-exclusive-borrow-fields.md) | D1（D-28「排他参照 field は禁止」の変更。チケット全体）、D5。承認済みで実装済み（2026-10-06。Phase 2 も実装。D-38） |
 | [A14](A14-dynamic-dispatch.md) | D1（`dyn`・`Dyn.of`・`E1028`） |
 | [A15](_completed/A15-copy-cost-visibility.md) | D3（`--warn implicit-copy` と `W1006`）。承認済みで実装済み（2026-10-03） |
 | [A16](A16-fixed-arrays.md) | D1（`[T; N]` の再導入）、D10（Phase 2） |

@@ -38,7 +38,7 @@
 | A10 | 明示 kind、rank-1 HKT、末尾固定の部分適用 | [高階型](language-reference/higher-kinds.md) | [A10](../_features/_completed/A10-higher-kinded-types.md) |
 | A11 | 比較の非消費化、借用 Eq / Ord、構造比較 | [比較クラス](language-reference/generics-and-typeclasses.md) | [A11](../_features/_completed/A11-borrowed-comparisons.md) |
 | A12 | 対応（Phase 1・2）: レコードごとに 16 個までの独立した region（`record Pair {r s}`）。所有権検査は不変の束縛・field の読み出し・直接の完全適用で region ごとに借用を分け、可変の束縛・ループ・関数値・コレクションでは全 region を保持する。Phase 2 で名前付き関数の引数に region で量化した関数型（`({s} ref {s} T -> ref {s} T)`）。渡す関数の契約を検査し、その関数は直接の完全適用だけ。region は生成 IR を変えない。戻り値・ローカル・field の量化型と region 間の outlives 制約は未実装 | [lifetime](language-reference/lifetimes.md) | [A12](../_features/_completed/A12-multiple-regions.md) |
-| A13 | 未着手（計画）: 排他借用フィールド | [lifetime](language-reference/lifetimes.md) | [A13](../_features/A13-exclusive-borrow-fields.md) |
+| A13 | 対応（Phase 1・2）: レコードの排他借用フィールド `ref mut {r} T`（region は必須）。フィールドの一段の再借用、部分 move、ほかのフィールドの読み出し、入れ子のレコード、引数・戻り値・タプルに対応する。排他借用を持つレコードは Copy でなく、関数値への捕捉・タスク・コレクション・union・`export` の境界には置けない。Phase 2 で参照先の region（`ref mut {r} Note {s}`）を書いた参照を経由して、同じ region の入力に由来する借用を持つ値に置換できる。格納しうる関数は直接の完全適用だけ。生成 IR は変わらない。複数 region のレコードの `let mut` 束縛は全 region をまとめて扱う | [lifetime](language-reference/lifetimes.md) | [A13](../_features/_completed/A13-exclusive-borrow-fields.md) |
 | A14 | 未着手（計画）: 型クラスによる動的ディスパッチ | [型クラス](language-reference/generics-and-typeclasses.md) | [A14](../_features/A14-dynamic-dispatch.md) |
 | A15 | 対応（Phase 1・2）: `--warn implicit-copy` で配列・リストの暗黙の複製を `W1006` として報告（既定は無効、生成コードは不変）。明示の `Array.copy` / `List.copy`。複製の一覧 `copies::sites` は debug build で生成した複製と照合する。LSP は同じ位置に複製の種類の inlay hint を返す。複製の省略（PM07）と共有バッファによる O(1) 化（C10）は未実装 | [所有権](language-reference/ownership.md) | [A15](../_features/_completed/A15-copy-cost-visibility.md) |
 | A16 | 未着手（計画）: 固定長配列と const ジェネリクス | [型](language-reference/types.md) | [A16](../_features/A16-fixed-arrays.md) |
@@ -152,7 +152,7 @@
 
 ## 特に注意する未対応範囲
 
-- 戻り値・ローカルに置く region 付き関数値型、region 間の outlives 制約、排他借用フィールド。
+- 戻り値・ローカルに置く region 付き関数値型、region 間の outlives 制約。
 - HKT 型別名、高階 kind 引数、標準 Functor / Monad の自動導入。
 - 関数呼び出しやラムダを越える例外の伝播、`OverflowException` 以外の例外とトラップの捕捉、外部キャンセルトークン、開始済み Task の強制停止。
 - locale 書式、書記素幅、一般的な Unicode 正規化、可変スライス。

@@ -293,6 +293,34 @@ impl TypeContext<'_> {
         }
         true
     }
+
+    /// Whether `found` holds for a type reachable from `root` through stored values and the
+    /// targets of references (A13). Function and task types describe calls, not stored values.
+    pub(super) fn reaches(&self, root: &Type, found: impl Fn(&Type) -> bool) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![root.clone()];
+        while let Some(ty) = pending.pop() {
+            if found(&ty) {
+                return true;
+            }
+            if !seen.insert(ty.clone()) {
+                continue;
+            }
+            match ty {
+                Type::Record(id, arguments) => pending.extend(self.record_fields(id, &arguments)),
+                Type::Union(id, arguments) => {
+                    pending.extend(self.union_payloads(id, &arguments).into_iter().flatten())
+                }
+                Type::Reference(inner, _)
+                | Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner) => pending.push(*inner),
+                Type::Tuple(elements) => pending.extend(elements),
+                _ => {}
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]

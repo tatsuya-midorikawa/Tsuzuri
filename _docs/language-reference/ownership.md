@@ -81,8 +81,11 @@ before + text.length
 | 参照先を読む | `deref reference` | `*reference` |
 | 共有として再借用 | `ref reference` | `&*reference` |
 | 排他として再借用 | `ref mut reference` | `&mut *reference` |
+| 排他借用フィールドの再借用 | `ref mut record.field` | `&mut *record.field` |
 
 記号形式の `&reference` は参照自身の借用であり、キーワードの再借用と同じではありません。抽象的な型変数を扱う場合も、参照かどうかを推測して意味を変更しません。必要に応じて型注釈や明示的な記号形式を使います。
+
+レコードの排他借用フィールド（`ref mut {r} T`）の再借用では、レコードの束縛に `mut` は要りません。再借用の間はレコードの move と同じ参照先への別の経路を拒否し、ほかのフィールドは読めます。詳しくは [排他借用フィールド](lifetimes.md#排他借用フィールド) を参照してください。
 
 ## 呼び出し時の補完
 
