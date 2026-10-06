@@ -7,7 +7,7 @@
 ## 遅延変換
 
 ```tsuzuri run=36
-Seq.unfold (\value -> if value < 10 then Option.Some (value, value + 1) else Option.None) 0
+Seq.unfold (\value -> if value < 10 then Maybe.Some (value, value + 1) else Maybe.None) 0
 |> Seq.map (\value -> value * 2)
 |> Seq.filter (\value -> deref value % 3 == 0)
 |> Seq.to_array
@@ -22,9 +22,9 @@ unfold、map、filter は callback を先、初期状態や列を最後に受け
 | --- | --- |
 | `empty()` | 空の Seq |
 | `once value` | 一つの所有値だけを返す Seq |
-| `defer step` | `unit -> (Seq<T> * Option<T>)` を次の要求まで遅延 |
-| `unfold generator state` | `State -> Option<(T * State)>` で反復 |
-| `next sequence` | sequence を消費し、次の Seq と `Option<T>` を返す |
+| `defer step` | `unit -> (Seq<T> * Maybe<T>)` を次の要求まで遅延 |
+| `unfold generator state` | `State -> Maybe<(T * State)>` で反復 |
+| `next sequence` | sequence を消費し、次の Seq と `Maybe<T>` を返す |
 | `map transform sequence` | `T -> U` を遅延適用 |
 | `filter predicate sequence` | `ref T -> bool` に一致する要素を遅延選択 |
 | `to_array sequence` | 列を消費して所有配列を作る |

@@ -74,53 +74,54 @@ fn os_primitives_are_private_to_std() {
 #[test]
 fn os_api_signatures_type_check() {
     module(
-        "def main :: IO<unit> =
-    let read_bytes: string -> IO<Result.Result<[ubyte], Os.Error>> = File.read_bytes
-    let read_text: string -> IO<Result.Result<string, Os.Error>> = File.read_text
-    let write_bytes: string -> [ubyte] -> IO<Result.Result<unit, Os.Error>> = File.write_bytes
-    let write_text: string -> string -> IO<Result.Result<unit, Os.Error>> = File.write_text
-    let append_text: string -> string -> IO<Result.Result<unit, Os.Error>> = File.append_text
-    let remove_file: string -> IO<Result.Result<unit, Os.Error>> = File.remove
-    let list: string -> IO<Result.Result<[string], Os.Error>> = Dir.list
-    let create: string -> IO<Result.Result<unit, Os.Error>> = Dir.create
-    let remove_dir: string -> IO<Result.Result<unit, Os.Error>> = Dir.remove
+        "def main :: unit -> i32 = \\() ->
+    let read_bytes: string -> IO<Result<[ubyte], Os.Error>> = File.read_bytes
+    let read_text: string -> IO<Result<string, Os.Error>> = File.read_text
+    let write_bytes: string -> [ubyte] -> IO<Result<unit, Os.Error>> = File.write_bytes
+    let write_text: string -> string -> IO<Result<unit, Os.Error>> = File.write_text
+    let append_text: string -> string -> IO<Result<unit, Os.Error>> = File.append_text
+    let remove_file: string -> IO<Result<unit, Os.Error>> = File.remove
+    let list: string -> IO<Result<[string], Os.Error>> = Dir.list
+    let create: string -> IO<Result<unit, Os.Error>> = Dir.create
+    let remove_dir: string -> IO<Result<unit, Os.Error>> = Dir.remove
     let join: ref string -> ref string -> string = Path.join
-    let parent: ref string -> Option.Option<string> = Path.parent
-    let file_name: ref string -> Option.Option<string> = Path.file_name
-    let extension: ref string -> Option.Option<string> = Path.extension
-    let args: unit -> IO<Result.Result<[string], Os.Error>> = Env.args
-    let variable: string -> IO<Result.Result<Option.Option<string>, Os.Error>> = Env.var
-    let current: unit -> IO<Result.Result<string, Os.Error>> = Env.current_dir
-    let monotonic: unit -> IO<Result.Result<i64, Os.Error>> = Time.monotonic_ns
-    let unix: unit -> IO<Result.Result<i64, Os.Error>> = Time.unix_ns
-    let sleep: i64 -> IO<Result.Result<unit, Os.Error>> = Time.sleep_ms
-    let bytes: i64 -> IO<Result.Result<[ubyte], Os.Error>> = Random.bytes
-    let next: unit -> IO<Result.Result<i64u, Os.Error>> = Random.next_u64
+    let parent: ref string -> Maybe<string> = Path.parent
+    let file_name: ref string -> Maybe<string> = Path.file_name
+    let extension: ref string -> Maybe<string> = Path.extension
+    let args: unit -> IO<Result<[string], Os.Error>> = Env.args
+    let variable: string -> IO<Result<Maybe<string>, Os.Error>> = Env.var
+    let current: unit -> IO<Result<string, Os.Error>> = Env.current_dir
+    let monotonic: unit -> IO<Result<i64, Os.Error>> = Time.monotonic_ns
+    let unix: unit -> IO<Result<i64, Os.Error>> = Time.unix_ns
+    let sleep: i64 -> IO<Result<unit, Os.Error>> = Time.sleep_ms
+    let bytes: i64 -> IO<Result<[ubyte], Os.Error>> = Random.bytes
+    let next: unit -> IO<Result<i64u, Os.Error>> = Random.next_u64
     let pcg: i64u -> i64u -> Random.Pcg = Random.pcg
     let next_u32: Random.Pcg -> (i32u * Random.Pcg) = Random.pcg_next_u32
     let next_pcg_u64: Random.Pcg -> (i64u * Random.Pcg) = Random.pcg_next_u64
-    let open: string -> File.Mode -> IO<Result.Result<File.Handle, Os.Error>> = File.open
-    let read: File.Handle -> i64 -> IO<Result.Result<[ubyte], Os.Error>> = File.read
-    let write: File.Handle -> [ubyte] -> IO<Result.Result<unit, Os.Error>> = File.write
-    let flush: File.Handle -> IO<Result.Result<unit, Os.Error>> = File.flush
-    let close: File.Handle -> IO<Result.Result<unit, Os.Error>> = File.close
+    let open: string -> File.Mode -> IO<Result<File.Handle, Os.Error>> = File.open
+    let read: File.Handle -> i64 -> IO<Result<[ubyte], Os.Error>> = File.read
+    let write: File.Handle -> [ubyte] -> IO<Result<unit, Os.Error>> = File.write
+    let flush: File.Handle -> IO<Result<unit, Os.Error>> = File.flush
+    let close: File.Handle -> IO<Result<unit, Os.Error>> = File.close
     let modes = [File.Read, File.Write, File.Append, File.CreateNew]
-    let describe: string -> IO<Result.Result<File.Metadata, Os.Error>> = File.metadata
-    let describe_link: string -> IO<Result.Result<File.Metadata, Os.Error>> = File.link_metadata
-    let walk: string -> IO<Result.Result<[string], Os.Error>> = Dir.walk
-    let run: string -> [string] -> [ubyte] -> IO<Result.Result<Process.Output, Os.Error>> = Process.run
+    let describe: string -> IO<Result<File.Metadata, Os.Error>> = File.metadata
+    let describe_link: string -> IO<Result<File.Metadata, Os.Error>> = File.link_metadata
+    let walk: string -> IO<Result<[string], Os.Error>> = Dir.walk
+    let run: string -> [string] -> [ubyte] -> IO<Result<Process.Output, Os.Error>> = Process.run
     let kinds = [File.Regular, File.Directory, File.Symlink, File.Other]
-    let decode: [ubyte] -> Result.Result<string, Os.Error> = Os.decode
-    let names: ref [ubyte] -> Result.Result<[string], Os.Error> = Os.split_names
+    let decode: [ubyte] -> Result<string, Os.Error> = Os.decode
+    let names: ref [ubyte] -> Result<[string], Os.Error> = Os.split_names
     let number: ref [ubyte] -> i64 -> i64 = Os.decode_i64
     let message: ref Os.Error -> string = Os.message
-    let encode: ref string -> Result.Result<utf8string, Os.Error> = Os.encode
+    let encode: ref string -> Result<utf8string, Os.Error> = Os.encode
     let status: i64 -> Os.Error = Os.error_of_status
     let seeded: unit -> IO<HashMap<i64, string>> = HashMap.randomized
-    let try_seeded: unit -> IO<Result.Result<HashMap<i64, string>, Os.Error>> = HashMap.try_randomized
+    let try_seeded: unit -> IO<Result<HashMap<i64, string>, Os.Error>> = HashMap.try_randomized
     let seeded_set: unit -> IO<HashSet<string>> = HashSet.randomized
-    let try_seeded_set: unit -> IO<Result.Result<HashSet<string>, Os.Error>> = HashSet.try_randomized
+    let try_seeded_set: unit -> IO<Result<HashSet<string>, Os.Error>> = HashSet.try_randomized
     do! IO.write_line \"typed\"
+    0
 ",
     );
 }
@@ -128,7 +129,7 @@ fn os_api_signatures_type_check() {
 #[test]
 fn os_builtins_declare_runtime_only_when_reached() {
     let program = module(
-        "def main :: IO<unit> =\n    let! bytes = File.read_bytes \"a\"\n    do! IO.write_line (Result.is_ok (&bytes))\n",
+        "def main :: unit -> i32 = \\() ->\n    let! bytes = File.read_bytes \"a\"\n    do! IO.write_line (Result.is_ok (&bytes))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&program, llvm::Entry::Library, wasm);
@@ -146,7 +147,7 @@ fn os_builtins_declare_runtime_only_when_reached() {
     }
     // The pure parts of Path, Os, and Random.Pcg need no runtime at all.
     let pure = module(
-        "export def parent_length :: i64\nfn parent_length =\n    let path = \"a/b\"\n    match Path.parent (&path) with\n    | Option.Some text -> text.length\n    | Option.None -> 0\n",
+        "export def parent_length :: i64\nfn parent_length =\n    let path = \"a/b\"\n    match Path.parent (&path) with\n    | Maybe.Some text -> text.length\n    | Maybe.None -> 0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&pure, llvm::Entry::Library, wasm);
@@ -166,7 +167,7 @@ fn seeded_hash_containers_need_no_runtime_but_randomized_ones_do() {
         assert!(!ir.contains("wasm-import-module"), "{ir}");
     }
     let randomized = module(
-        "def main :: IO<unit> =\n    let! map = HashMap.randomized ()\n    let map: HashMap<i64, i64> = map\n    do! IO.write_line (HashMap.length (&map))\n",
+        "def main :: unit -> i32 = \\() ->\n    let! map = HashMap.randomized ()\n    let map: HashMap<i64, i64> = map\n    do! IO.write_line (HashMap.length (&map))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&randomized, llvm::Entry::Library, wasm);
@@ -176,17 +177,23 @@ fn seeded_hash_containers_need_no_runtime_but_randomized_ones_do() {
 
 #[test]
 fn io_only_programs_keep_their_main() {
-    let program = module("def main :: IO<unit> =\n    do! IO.write_line \"hi\"\n");
-    let console = ir(&program, llvm::Entry::Console, false);
-    assert!(!console.contains("tsuzuri_os_"), "{console}");
-    assert!(console.contains("define i32 @main() {"), "{console}");
-    assert!(!console.contains("%argc"), "{console}");
+    for source in [
+        "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"hi\"\n    0\n",
+        "do! IO.write_line \"hi\"\n",
+    ] {
+        let program = module(source);
+        let console = ir(&program, llvm::Entry::Console, false);
+        assert!(!console.contains("tsuzuri_os_"), "{console}");
+        assert!(!console.contains("tsuzuri_arguments"), "{console}");
+        assert!(console.contains("define i32 @main() {"), "{console}");
+        assert!(!console.contains("%argc"), "{console}");
+    }
 }
 
 #[test]
 fn args_entry_receives_argv() {
     let program = module(
-        "def main :: IO<unit> =\n    let! args = Env.args ()\n    do! IO.write_line (Result.is_ok (&args))\n",
+        "def main :: unit -> i32 = \\() ->\n    let! args = Env.args ()\n    do! IO.write_line (Result.is_ok (&args))\n    0\n",
     );
     let console = ir(&program, llvm::Entry::Console, false);
     assert!(
@@ -201,14 +208,32 @@ fn args_entry_receives_argv() {
         console.contains("declare void @tsuzuri_os_set_args(i32, ptr)\n"),
         "{console}"
     );
+    assert!(!console.contains("tsuzuri_arguments"), "{console}");
     // A library host calls `tsuzuri_os_set_args` itself.
     let library = ir(&program, llvm::Entry::Library, false);
     assert!(!library.contains("define i32 @main("), "{library}");
+    // `main` can take its arguments and still read `Env.args`.
+    let both = module(
+        "def main :: Array<string> -> i32 = \\args ->\n    let! all = Env.args ()\n    do! IO.write_line (Result.is_ok (&all))\n    args.length as i32\n",
+    );
+    let console = ir(&both, llvm::Entry::Console, false);
+    let entry = function(&console, "define i32 @main(i32 %argc, ptr %argv) {");
+    let set = entry
+        .find("call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)")
+        .unwrap();
+    let arguments = entry
+        .find("call void @tsuzuri_arguments(i32 %argc, ptr %argv, ptr %slot)")
+        .unwrap();
+    assert!(set < arguments, "{entry}");
+    assert!(
+        console.contains("declare void @tsuzuri_arguments(i32, ptr, ptr)\n"),
+        "{console}"
+    );
 }
 
 #[test]
 fn pcg_is_opaque() {
-    let io = analyze("IO.IO { work: \\() -> 42 }").unwrap_err();
+    let io = analyze("IO { work: \\() -> 42 }").unwrap_err();
     let pcg = analyze("Random.Pcg { state: 1i64u, increment: 2i64u }").unwrap_err();
     assert_eq!(io.code, "E1022");
     assert_eq!(pcg.code, io.code, "{}", pcg.message);
@@ -237,13 +262,14 @@ fn file_handles_are_opaque_numbers_that_actions_can_hold() {
         do! IO.write_line (Result.is_ok (&first))
         do! IO.write_line (Result.is_ok (&second))
     }
-def main :: IO<unit> =
+def main :: unit -> i32 = \\() ->
     let! opened = File.open \"a\" File.Read
     do! IO.write_line (Result.is_ok (&opened))
+    0
 ",
     );
     let program = module(
-        "def main :: IO<unit> =\n    let! opened = File.open \"a\" File.Read\n    do! IO.write_line (Result.is_ok (&opened))\n",
+        "def main :: unit -> i32 = \\() ->\n    let! opened = File.open \"a\" File.Read\n    do! IO.write_line (Result.is_ok (&opened))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&program, llvm::Entry::Library, wasm);
@@ -257,16 +283,26 @@ def main :: IO<unit> =
 
 #[test]
 fn exit_code_entry_returns_the_value() {
-    let coded = module("def main :: IO<i32> =\n    do! IO.write_line \"x\"\n    return 3i32\n");
+    // `main`'s value is the exit code.
+    let main = module("def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"x\"\n    3i32\n");
+    assert!(llvm::exit_code_entry(&main));
+    let text = ir(&main, llvm::Entry::Console, false);
+    let entry = function(&text, "define i32 @main() {");
+    assert!(entry.contains("ret i32 %code"), "{entry}");
+    let library = ir(&main, llvm::Entry::Library, false);
+    let entry = function(&library, "define i32 @tsuzuri_main()");
+    assert!(entry.contains("ret i32 %code"), "{entry}");
+    // So is the `i32` of top-level `IO<i32>` code.
+    let coded = module("do! IO.write_line \"x\"\nreturn 3i32\n");
     assert!(llvm::exit_code_entry(&coded));
     let text = ir(&coded, llvm::Entry::Console, false);
     let entry = function(&text, "define i32 @tsuzuri_main()");
     assert!(!entry.contains("ret i32 0"), "{entry}");
     assert!(entry.contains("ret i32 %"), "{entry}");
     for source in [
-        "def main :: IO<i64> =\n    return 3\n",
-        "def main :: IO<unit> =\n    do! IO.write_line \"x\"\n",
-        "def main :: IO<i32u> =\n    return 3i32u\n",
+        "do! IO.write_line \"x\"\nreturn 3i64\n",
+        "do! IO.write_line \"x\"\n",
+        "do! IO.write_line \"x\"\nreturn 3i32u\n",
     ] {
         let plain = module(source);
         assert!(!llvm::exit_code_entry(&plain), "{source}");

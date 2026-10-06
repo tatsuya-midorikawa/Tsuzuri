@@ -16,17 +16,17 @@ match 42 with
 
 `(|Name|_|)` は不一致になり得る認識器です。bool 形式では true なら一致し、payload のパターンを付けません。false なら次の節へ進みます。
 
-## Option を返す部分パターン
+## Maybe を返す部分パターン
 
 ```tsuzuri run=42
-def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text
+def (|Parsed|_|) :: ref string -> Maybe<i64> = \text -> Parse.parse text
 
 match "42" with
 | Parsed value -> value
 | _ -> 0
 ```
 
-`Some payload` なら payload を後続のパターンへ渡し、`None` なら不一致です。`Option<unit>` の場合だけ payload パターンを省略できます。
+`Some payload` なら payload を後続のパターンへ渡し、`None` なら不一致です。`Maybe<unit>` の場合だけ payload パターンを省略できます。
 
 読み取りだけの入力には `ref string` のような借用を使います。非 Copy の入力を消費してから、同じ入力で別の節を試すことはできません。
 

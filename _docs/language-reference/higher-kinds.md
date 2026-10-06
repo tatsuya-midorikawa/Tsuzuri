@@ -2,7 +2,7 @@
 
 [ドキュメントのトップ](../README.md)
 
-高階型 (HKT) は、`Option<i64>` のような完成した型だけでなく、`Option` のような型を作るものをパラメーターにする機能です。現在は明示 kind を使う rank-1 の型コンストラクターに対応します。
+高階型 (HKT) は、`Maybe<i64>` のような完成した型だけでなく、`Maybe` のような型を作るものをパラメーターにする機能です。現在は明示 kind を使う rank-1 の型コンストラクターに対応します。
 
 ## kind
 
@@ -27,8 +27,8 @@ class Functor<'container: * -> *> {
 `Main.tz`:
 
 ```tsuzuri project=functor file=Main.tz run=42
-instance Traits.Functor<Option> {
-    fn map transform value = Option.map transform value
+instance Traits.Functor<Maybe> {
+    fn map transform value = Maybe.map transform value
 }
 
 instance Traits.Functor<Result<string>> {
@@ -56,7 +56,7 @@ match result with
 
 ## 対応する構造
 
-record / union の宣言の型引数数に応じたコンストラクター、および Array / List / Vec / Task に対応します。値型としての配列 `[T]` とリスト `[|T|]` の記法は変わりません。
+record / union の宣言の型引数数に応じたコンストラクター、および Array / List / Vec / Task に対応します。値型としての配列 `[T]`（`Array<T>` とも書けます）とリスト `[|T|]` の記法は変わりません。
 
 デフォルトメソッド、条件付きインスタンス、重複検査は通常の型クラスと同じ仕組みを使います。具体化後のコードではコンストラクター適用を通常の型に解決し、boxing や実行時型情報を追加しません。
 
@@ -66,7 +66,7 @@ kind 不一致、型引数不足のコンストラクターを値型へ使用す
 
 HKT 型別名、高階 kind 引数、kind 注釈の省略推論は未対応です。標準の `Functor` / `Applicative` / `Monad` が自動で導入されるわけでもありません。この例の `Functor` は利用者定義です。
 
-Option / Result の通常の関数やコンピュテーション式を使うだけなら、HKT を定義する必要はありません。複数の型コンストラクターに同じ API を提供する必要がある場合に使います。
+Maybe / Result の通常の関数やコンピュテーション式を使うだけなら、HKT を定義する必要はありません。複数の型コンストラクターに同じ API を提供する必要がある場合に使います。
 
 ## 関連項目
 

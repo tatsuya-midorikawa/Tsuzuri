@@ -91,7 +91,7 @@ async function session(encoding) {
   const valid = "/// Keeps the value.\ndef identity :: 'a -> 'a\nfn identity value = value\n"
     + "def read :: i64 -> i64\nfn read number = { let text = \"\u65e5\u{1f600}\"; let result = identity number; assert (text.length == 3); result }\n"
     + "def point :: Shapes.Point -> i64\nfn point value = value.x\n"
-    + "fn nested_read() -> i64 { Geometry.Point.nested() }\n";
+    + "fn nested_read() -> i64 { Geometry::Point.nested() }\n";
   try {
     const initialized = await request("initialize", { rootUri: pathToFileURL(root).href, capabilities: encoding === "utf-8" ? { general: { positionEncodings: ["utf-8"] } } : {} });
     assert.equal(initialized.result.capabilities.positionEncoding, encoding);
@@ -115,7 +115,7 @@ async function session(encoding) {
     assertFileUri(record.result.uri, join(root, "Shapes.tz"));
     const symbols = await request("textDocument/documentSymbol", { textDocument: { uri } });
     assert.deepEqual(symbols.result.map((symbol) => symbol.name), ["identity", "read", "point", "nested_read"]);
-    const nestedDefinition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Geometry.Point.nested") });
+    const nestedDefinition = await request("textDocument/definition", { textDocument: { uri }, position: position(valid, "Geometry::Point.nested") });
     assertFileUri(nestedDefinition.result.uri, join(root, "Geometry/Point.tz"));
     const shapesUri = pathToFileURL(join(root, "Shapes.tz")).href;
     writeFileSync(join(root, "Shapes.tz"), "record Point { x: bool }");

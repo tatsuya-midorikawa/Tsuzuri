@@ -90,10 +90,10 @@ fn bigint_literals_and_operators_are_typed() {
     rejects("let a = 1I + 1\nlet b: i64 = a\nb", "E1003");
     // The representation is opaque, so every value keeps canonical digits.
     for source in [
-        "let value = BigInt.BigInt { negative: true, limbs: [] }\n0",
+        "let value = BigInt { negative: true, limbs: [] }\n0",
         "let value = 5I\nvalue.limbs.length",
         "let value = 5I\nlet other = { value with negative = true }\n0",
-        "match 5I with\n| BigInt.BigInt { negative = sign } -> 0",
+        "match 5I with\n| BigInt { negative = sign } -> 0",
     ] {
         rejects(source, "E1022");
     }
@@ -211,12 +211,22 @@ fn entry_values_print_through_display_or_are_dropped() {
 #[test]
 fn functions_accept_spec_signatures_guards_and_constraints() {
     for source in [
-        "def add : i32 -> i32 -> i32 = \\x y -> x + y\nadd 1 2",
-        "@literal\ndef PI : f64 = 3.14\nlet r: f64 = 2\nPI * (r ** 2)",
+        "def add :: i32 -> i32 -> i32 = \\x y -> x + y\nadd 1 2",
+        "@literal\ndef PI :: f64 = 3.14\nlet r: f64 = 2\nPI * (r ** 2)",
         "let positive = \\x when x > 0 -> x * 2\npositive 3",
         "def run :: i32 =\n    do! IO.writeln \"Hello\"\n    |> ignore\n    0\nrun",
     ] {
         accepts(source);
+    }
+    // Every 'def' form writes '::' before its type.
+    for source in [
+        "def add : i32 -> i32 -> i32 = \\x y -> x + y\nadd 1 2",
+        "@literal\ndef PI : f64 = 3.14\nPI",
+        "def rec even :: i64 -> bool = \\n -> n == 0 || odd (n - 1)\nand odd : i64 -> bool = \\n -> n != 0 && even (n - 1)\neven 4",
+        "class Size<'a> { def size : 'a -> i64 }\n0",
+        "extern def host_add : i64 -> i64 -> i64\n0",
+    ] {
+        assert!(rejects(source, "E0002").starts_with("use '::'"), "{source}");
     }
     let module = analyze(
         "record Foo { num: i32 }\ndef value :: Foo -> i32 = \\x -> x.num\ndef add :: 'T -> 'T -> 'U\n    @'T : (#value: 'T -> 'U) = \\x -> \\y ->\n        ('T.value x) + ('T.value y)\nadd (Foo { num: 10 }) (Foo { num: 20 })",
@@ -242,7 +252,7 @@ fn std_higher_order_functions_take_the_callback_first() {
         "let texts = [\"a\", \"bb\"]\nArray.fold_ref (\\total t -> total + t.length) 0 (ref texts)",
         "let xs = [1, 2, 3]\nArray.fold_back (\\x state -> state * 10 + x) (ref xs) 0",
         "let xs = [|1, 2, 3|]\nList.fold (\\s x -> s + x) 0 (ref xs)",
-        "Seq.unfold (\\n -> if n < 3 then Option.Some (n, n + 1) else Option.None) 0 |> Seq.map (\\n -> n * 2) |> Seq.to_array",
+        "Seq.unfold (\\n -> if n < 3 then Maybe.Some (n, n + 1) else Maybe.None) 0 |> Seq.map (\\n -> n * 2) |> Seq.to_array",
         "let set = Set.singleton \"x\"\nSet.fold (\\total key -> total + key.length) 0 (ref set)",
     ] {
         accepts(source);

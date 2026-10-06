@@ -62,7 +62,7 @@ fn vec_capacity_and_clone_lowering() {
         "let values = Vec.push (Vec.empty()) 42\nvalues[0]",
         "let values = Vec.push (Vec.empty()) \"owned\"\n(Vec.at (ref values) 0).length",
         "let values = Vec.of_array [1, 2]\nlet values = Vec.reserve values 10\nlet values = Vec.swap values 0 1\nlet values = Vec.set values 0 42\nlet array = Vec.to_array values\narray[0]",
-        "let values = Vec.push (Vec.empty()) 42\nmatch Vec.pop values with | (remaining, item) -> Vec.length (ref remaining) + Option.get item",
+        "let values = Vec.push (Vec.empty()) 42\nmatch Vec.pop values with | (remaining, item) -> Vec.length (ref remaining) + Maybe.get item",
         "let values = Vec.push (Vec.empty()) \"owned\"\nlet values = Vec.truncate values 0\nlet values = Vec.clear values\nVec.length (ref values)",
         "let values: Vec<i64> = Vec.empty()\nVec.length (ref values)",
         "let values: Vec<string> = Vec.with_capacity 4\nVec.capacity (ref values)",

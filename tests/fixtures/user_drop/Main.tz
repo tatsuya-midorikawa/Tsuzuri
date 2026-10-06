@@ -178,16 +178,16 @@ fn use_scopes =
 
 export def use_computation :: i64
 fn use_computation =
-    let first = Option {
+    let first = Maybe {
         use _held = resource 3
-        let! value = Option.Some 10
+        let! value = Maybe.Some 10
         return value + 1
     }
-    let second = Option {
-        use! bound = Option.Some (resource 4)
+    let second = Maybe {
+        use! bound = Maybe.Some (resource 4)
         return bound.id
     }
-    Option.default_value 0 first + Option.default_value 0 second
+    Maybe.default_value 0 first + Maybe.default_value 0 second
 
 export def use_task :: i64
 fn use_task =

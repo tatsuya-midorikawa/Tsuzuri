@@ -101,7 +101,7 @@ cat > /tmp/tz-pm09/mutual/Main.tz <<'EOF'
 def rec even :: i64 -> bool = \n -> if n == 0 then true else odd (n - 1)
 and odd :: i64 -> bool = \n -> if n == 0 then false else even (n - 1)
 
-def main :: i64 = if even 10000000 then 1 else 0
+if even 10000000 then 1 else 0
 EOF
 cat > /tmp/tz-pm09/lib/Main.tz <<'EOF'
 def rec even :: i64 -> bool = \n -> if n == 0 then true else odd (n - 1)
@@ -113,7 +113,7 @@ EOF
 cat > /tmp/tz-pm09/deep/Main.tz <<'EOF'
 def rec depth :: i64 -> i64 = \n -> if n == 0 then 0 else 1 + depth (n - 1)
 
-def main :: i64 = depth 100000000
+depth 100000000
 EOF
 target/release/tsuzuri run /tmp/tz-pm09/mutual -O0
 target/release/tsuzuri run /tmp/tz-pm09/mutual -O3
@@ -325,7 +325,7 @@ group[f] = f を含む強連結成分の、成分が確定した順の番号
 - 変更: なし。
 - 内容: 「再現」の 3 つの project と下の `frames` を `/tmp/tz-pm09/` に作り、結果と IR を `/tmp/tz-pm09/before/` に保存する。
   `cp target/release/tsuzuri /tmp/tz-pm09/tsuzuri-before`。`frames/Main.tz` は「再現」と同じ形で、`total` の本体が
-  `let a = [|n, n + 1, n + 2|]`・`let b = List.length a`・`let c = [|b, b, b, b|]`・`List.length c + b`、`def main :: i64 = total 1`（2026-09-30 に `run` で `7`）。
+  `let a = [|n, n + 1, n + 2|]`・`let b = List.length a`・`let c = [|b, b, b, b|]`・`List.length c + b`、トップレベルの `total 1`（2026-09-30 に `run` で `7`）。
 - 確認: 次が全て成功し、`run` の結果が「再現」の表どおり。`frames` の `-O0` の remark が `352 stack bytes in function 'tz.fn.Main.total'`。
 
 ```sh
@@ -349,7 +349,7 @@ target/release/tsuzuri build /tmp/tz-pm09/frames --emit llvm -o /tmp/tz-pm09/bef
   `if n > 0 then { let a = [|n, n, n, n|]; List.length a + n } else { let b = [|1, 2, 3, n|]; List.length b - n }`。
   `frames_loop n` は `def rec` の補助 `fn rec count n acc = if n == 0 then acc else { let xs = [|n, n, n|]; count (n - 1) (acc + List.length xs) }`
   を `count n 0` で呼ぶ。リテラルは `let` で束縛する（`List.length ref [|n, n|]` のような一時値の借用は `E1013` で拒否される。確認済み）。
-  この 2 関数は 2026-09-30 に scratch で確認済み（`def main :: i64 = frames_disjoint 7 * 1000 + frames_loop 1000` が `-O0`・`-O3` とも `14000`、
+  この 2 関数は 2026-09-30 に scratch で確認済み（トップレベルの `frames_disjoint 7 * 1000 + frames_loop 1000` が `-O0`・`-O3` とも `14000`、
   `frames_disjoint` の entry に `[4 x { ptr, i64 }]` の alloca が 2 個、`count` は `loop:` を持ち自己呼び出しがない）。
   期待値は式から計算する: `frames_disjoint` は n > 0 で `4 + n`、それ以外で `4 - n`（n = -5, -1, 0, 1, 7, 2^62）。`frames_loop` は `3n`（n = 0, 1, 1000, 100000）。
 - 確認: `target/release/tsuzuri check tests/fixtures/control` が成功。`node tests/control.mjs target/release/tsuzuri` が成功（コードの変更前でも通る）。
@@ -418,7 +418,7 @@ node tests/features.mjs target/release/tsuzuri
 ### 手順 11: 深い E2E（native）
 
 - 変更: `tests/fixtures/stack/Main.tz`（新規）、`tests/stack.mjs`（新規。`tests/wasm_simd.mjs` の形を写す）。
-- 内容: fixture は「再現」の `even`・`odd` と 3 関数の循環（各段 `acc + 1`）を持ち、`def main :: i64 = if even 10000000 then a 10000000 0 else -1`。
+- 内容: fixture は「再現」の `even`・`odd` と 3 関数の循環（各段 `acc + 1`）を持ち、トップレベルの結果式は `if even 10000000 then a 10000000 0 else -1`。
 - 確認: `node tests/stack.mjs target/release/tsuzuri` が native `-O0`・`-O3` で期待値を出す。
 
 ### 手順 12: `--wasm-feature tail-call`（Phase 2b、D6 の承認後）

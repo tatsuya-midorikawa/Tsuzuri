@@ -47,7 +47,7 @@ fn assert_span(error: &Diagnostic, source: &str, text: &str, index: usize) {
 fn private_declarations_are_usable_inside_their_module() {
     let module = accepts(&[
         ("Secret", SECRET),
-        ("Main", "fn main() -> i64 { Secret.reveal 40 }"),
+        ("Main", "fn answer() -> i64 { Secret.reveal 40 }\nanswer()"),
     ]);
     let visibility = |name: &str| {
         module
@@ -81,14 +81,14 @@ fn let_implementations_and_recursive_groups_inherit_def_visibility() {
          private def and odd :: i64 -> bool
          fn rec even n = if n == 0 then true else odd (n - 1)
          and odd n = if n == 0 then false else even (n - 1)
-         def main :: i64
-         fn main = if even 10 then add 40 2 else 0",
+         def answer :: i64
+         fn answer = if even 10 then add 40 2 else 0",
     )]);
     for (name, visibility) in [
         ("add", Visibility::Private),
         ("even", Visibility::Public),
         ("odd", Visibility::Private),
-        ("main", Visibility::Public),
+        ("answer", Visibility::Public),
     ] {
         let function = module
             .functions
@@ -191,14 +191,17 @@ fn private_is_a_keyword_and_only_precedes_def_or_record() {
 #[test]
 fn rejects_private_names_from_other_modules() {
     for (main, name) in [
-        ("fn main() -> i64 { Secret.hidden 1 }", "hidden"),
-        ("fn main() -> i64 { let f = Secret.hidden; f 1 }", "hidden"),
+        ("fn answer() -> i64 { Secret.hidden 1 }", "hidden"),
         (
-            "fn main() -> i64 { let token = Secret.Token { value: 1 }; token.value }",
+            "fn answer() -> i64 { let f = Secret.hidden; f 1 }",
+            "hidden",
+        ),
+        (
+            "fn answer() -> i64 { let token = Secret.Token { value: 1 }; token.value }",
             "Secret.Token",
         ),
         (
-            "fn main() -> i64 { let token: Secret.Token = Secret.reveal 1; 0 }",
+            "fn answer() -> i64 { let token: Secret.Token = Secret.reveal 1; 0 }",
             "Secret.Token",
         ),
         (
@@ -234,7 +237,7 @@ fn local_values_still_shadow_modules_with_private_functions() {
         (
             "Main",
             "record Box { value: i64 }
-             fn main() -> i64 { let Secret = Box { value: 42 }; Secret.value }",
+             fn answer() -> i64 { let Secret = Box { value: 42 }; Secret.value }",
         ),
     ]);
 }

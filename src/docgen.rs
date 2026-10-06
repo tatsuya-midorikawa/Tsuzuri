@@ -16,7 +16,23 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
         if has_user && source.origin != ModuleOrigin::User {
             continue;
         }
-        let filename = format!("{}.md", source.name);
+        let program = crate::parser::parse_with_source(&source.text, id)?;
+        let name = match (source.origin, &program.namespace) {
+            (ModuleOrigin::User, Some(declared)) => {
+                crate::module_identity(
+                    &source.relative_path.to_string_lossy(),
+                    Some(&declared.path),
+                    &source.namespace,
+                )
+                .map_err(|error| Diagnostic {
+                    span: error.span.in_source(id),
+                    ..error
+                })?
+                .0
+            }
+            _ => source.name.clone(),
+        };
+        let filename = format!("{name}.md");
         if !pages.contains_key(&filename) && !filenames.insert(filename.to_ascii_lowercase()) {
             return Err(Diagnostic::new(
                 "E2003",
@@ -24,17 +40,26 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
                 Span::default().in_source(id),
             ));
         }
-        let program = crate::parser::parse_with_source(&source.text, id)?;
         if let Some(page) = pages.get_mut(&filename) {
             page.push_str(&render_declarations(&program));
         } else {
-            pages.insert(filename.clone(), render_module(&source.name, &program));
+            let namespace = match source.origin {
+                ModuleOrigin::Std => Some(crate::stdlib::NAMESPACE),
+                ModuleOrigin::User => program
+                    .namespace
+                    .as_ref()
+                    .map(|declared| declared.path.text.as_str()),
+            };
+            pages.insert(
+                filename.clone(),
+                module_page(&name.replace('.', "::"), namespace, &program),
+            );
         }
-        modules.insert(source.name.as_str(), filename);
+        modules.insert(name, filename);
     }
     let mut index = "# Modules\n\n".to_owned();
     for (name, filename) in modules {
-        index.push_str(&format!("- [{name}]({filename})\n"));
+        index.push_str(&format!("- [{}]({filename})\n", name.replace('.', "::")));
     }
     pages.insert("index.md".into(), index);
     Ok(pages)
@@ -218,7 +243,18 @@ fn derives_text(derives: &[(DeriveClass, crate::diagnostic::Span)]) -> String {
 }
 
 pub fn render_module(name: &str, program: &Program) -> String {
-    format!("# {name}\n\n{}", render_declarations(program))
+    let namespace = program
+        .namespace
+        .as_ref()
+        .map(|declared| declared.path.text.as_str());
+    module_page(name, namespace, program)
+}
+
+fn module_page(name: &str, namespace: Option<&str>, program: &Program) -> String {
+    let namespace = namespace
+        .map(|namespace| format!("Namespace: `{namespace}`\n\n"))
+        .unwrap_or_default();
+    format!("# {name}\n\n{namespace}{}", render_declarations(program))
 }
 
 fn render_declarations(program: &Program) -> String {

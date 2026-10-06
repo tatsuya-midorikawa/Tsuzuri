@@ -30,6 +30,10 @@ pub struct SourceInput<'a> {
     pub path: &'a str,
     pub text: &'a str,
     pub origin: ModuleOrigin,
+    /// The namespace that `path` is relative to: the root package's default
+    /// namespace for its files, and empty for dependency and std files, whose
+    /// paths already start with their namespace.
+    pub namespace: &'a str,
 }
 
 pub fn analyze(source: &str) -> Result<check::CheckedModule, Diagnostic> {
@@ -71,11 +75,13 @@ pub fn analyze_modules_with_std_all(
             path,
             text,
             origin: ModuleOrigin::User,
+            namespace: "",
         })
         .chain(std_sources.iter().map(|(path, text)| SourceInput {
             path,
             text,
             origin: ModuleOrigin::Std,
+            namespace: "",
         }))
         .collect();
     analyze_inputs_all(&inputs)
@@ -132,18 +138,29 @@ pub(crate) fn analyze_inputs_indexed_all(
                 }
             };
             let name = if input.origin == ModuleOrigin::User {
-                module_name_from_relative(std::path::Path::new(input.path)).map_err(
-                    |mut error| {
-                        error.span.source = Some(id);
-                        vec![error]
-                    },
-                )?
+                None
             } else {
-                name.to_owned()
+                Some(name.to_owned())
             };
-            parser::parse_with_source_all(input.text, id).map(|mut program| {
+            parser::parse_with_source_all(input.text, id).and_then(|mut program| {
                 program.source_kind = extension.and_then(syntax::SourceKind::from_extension);
-                (name, program)
+                let identity = match name {
+                    Some(name) => (name, stdlib::NAMESPACE.to_owned(), false),
+                    None => {
+                        let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
+                        let (key, namespace) =
+                            module_identity(input.path, declared, input.namespace).map_err(
+                                |mut error| {
+                                    error.span.source = Some(id);
+                                    vec![error]
+                                },
+                            )?;
+                        let entry = module_name_from_relative(std::path::Path::new(input.path))
+                            .is_ok_and(|relative| relative == "Main");
+                        (key, namespace, entry)
+                    }
+                };
+                Ok((identity, program))
             })
         })();
         match parsed {
@@ -157,10 +174,12 @@ pub(crate) fn analyze_inputs_indexed_all(
     let modules: Vec<_> = programs
         .iter()
         .zip(inputs)
-        .map(|((name, program), input)| ModuleInput {
+        .map(|(((name, namespace, entry), program), input)| ModuleInput {
             name,
             program,
             origin: input.origin,
+            namespace,
+            entry: *entry,
         })
         .collect();
     check::check_modules_indexed_all(&modules, semantic)
@@ -186,11 +205,13 @@ pub fn analyze_modules_with_semantics(
             path,
             text,
             origin: ModuleOrigin::User,
+            namespace: "",
         })
         .chain(stdlib::SOURCES.iter().map(|(path, text)| SourceInput {
             path,
             text,
             origin: ModuleOrigin::Std,
+            namespace: "",
         }))
         .collect();
     let mut index = check::semantic::SemanticIndex::default();
@@ -231,4 +252,79 @@ pub(crate) fn module_name_from_relative(path: &std::path::Path) -> Result<String
         return Err(invalid());
     }
     Ok(segments.join("."))
+}
+
+/// The key and namespace of the user module at `path`. A declared namespace
+/// (`A::B`) and the file stem form the module's full name; without a
+/// declaration, the namespace is `root_namespace` followed by the directories
+/// of `path`. Both stay dotted inside the compiler, which names a module by
+/// its key: the full name without a leading `root_namespace`, so files
+/// without a declaration keep their path names.
+pub(crate) fn module_identity(
+    path: &str,
+    declared: Option<&syntax::Ident>,
+    root_namespace: &str,
+) -> Result<(String, String), Diagnostic> {
+    let relative = module_name_from_relative(std::path::Path::new(path))?;
+    let (directories, stem) = relative.rsplit_once('.').unwrap_or(("", &relative));
+    let Some(declared) = declared else {
+        let namespace = match (root_namespace.is_empty(), directories.is_empty()) {
+            (true, _) => directories.to_owned(),
+            (false, true) => root_namespace.to_owned(),
+            (false, false) => format!("{root_namespace}.{directories}"),
+        };
+        return Ok((relative.clone(), namespace));
+    };
+    let declared = declared.text.replace("::", ".");
+    let inner = (!root_namespace.is_empty())
+        .then(|| declared.strip_prefix(root_namespace))
+        .flatten();
+    let key = match inner {
+        Some("") => stem.to_owned(),
+        Some(rest) if rest.starts_with('.') => format!("{}.{stem}", &rest[1..]),
+        _ => format!("{declared}.{stem}"),
+    };
+    Ok((key, declared))
+}
+
+/// The `namespace` and `using` paths at the top of `text`, read from its
+/// tokens so that later syntax errors do not hide them.
+pub(crate) fn declared_header(text: &str) -> (Option<syntax::Ident>, Vec<syntax::Ident>) {
+    use syntax::TokenKind;
+    let (tokens, _) = lexer::lex_all(text);
+    let broken = |from: usize, to: usize| text[from..to].contains(['\n', '\r']);
+    let mut rest = tokens.as_slice();
+    let mut header = |keyword: &str| {
+        let [first, second, tail @ ..] = rest else {
+            return None;
+        };
+        let (TokenKind::Ident(word), TokenKind::Ident(name)) = (&first.kind, &second.kind) else {
+            return None;
+        };
+        if word != keyword || broken(first.span.end, second.span.start) {
+            return None;
+        }
+        let mut path = syntax::Ident {
+            text: name.clone(),
+            span: second.span,
+            provenance: syntax::Provenance::User,
+        };
+        rest = tail;
+        while let [separator, segment, tail @ ..] = rest
+            && separator.kind == TokenKind::PathSep
+            && let TokenKind::Ident(segment_text) = &segment.kind
+        {
+            path.text.push_str("::");
+            path.text.push_str(segment_text);
+            path.span = path.span.through(segment.span);
+            rest = tail;
+        }
+        Some(path)
+    };
+    let namespace = header("namespace");
+    let mut usings = Vec::new();
+    while let Some(using) = header("using") {
+        usings.push(using);
+    }
+    (namespace, usings)
 }

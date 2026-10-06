@@ -1,5 +1,7 @@
 # Owned
 
+Namespace: `std`
+
 ## `Function`
 
 ```tsuzuri

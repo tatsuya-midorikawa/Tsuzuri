@@ -13,7 +13,7 @@ instance Eq<'a> => EqualDefault<Box<'a>> {}
 instance Sized<string> { fn size value = value.length }
 instance Sized<'a> => Sized<Box<'a>> { fn size value = Sized.size (ref value.value) }
 
-instance Eq<'a> => Eq<Option<'a>> {
+instance Eq<'a> => Eq<Maybe<'a>> {
     fn eq left right =
         match left with
         | None -> (match right with | None -> true | Some _ -> false)

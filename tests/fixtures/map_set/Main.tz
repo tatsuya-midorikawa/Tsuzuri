@@ -12,7 +12,7 @@ fn map_insert_lookup count =
     index = 0
     while index < keys.length do
         assert (Map.contains_key (&map) keys[index])
-        assert (Option.get (Map.get (&map) keys[index]) == values[index])
+        assert (Maybe.get (Map.get (&map) keys[index]) == values[index])
         index = index + 1
     Map.fold (\total key value -> total * 31 + deref key * 7 + deref value) 0 (&map)
 
@@ -65,7 +65,7 @@ fn set_owned_union =
 export def map_capture :: i64
 fn map_capture =
     let map = Map.singleton "answer" 42
-    let read = \() -> Option.get (Map.get (&map) "answer")
+    let read = \() -> Maybe.get (Map.get (&map) "answer")
     read () + read ()
 
 export def map_borrowed_values :: i64
@@ -81,7 +81,7 @@ fn first_representative =
     let keys = Map.keys (&map)
     let set = Set.union (Set.singleton (-0.0)) (Set.singleton 0.0)
     let set_keys = Set.to_array (&set)
-    keys.length == 1 && 1.0 / keys[0] < 0.0 && Option.get (Map.get (&map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (Map.get (&map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
 
 export def map_task_drop :: i64
 fn map_task_drop =
@@ -95,7 +95,7 @@ record Key { name: string } deriving (Eq, Ord)
 export def owned_record_keys :: i64
 fn owned_record_keys =
     let map = Map.insert (Map.empty()) (Key { name: "answer" }) 42
-    Option.get (Map.get (&map) (Key { name: "answer" }))
+    Maybe.get (Map.get (&map) (Key { name: "answer" }))
 
 export def map_at_missing :: i64
 fn map_at_missing =

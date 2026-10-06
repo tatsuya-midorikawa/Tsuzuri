@@ -403,7 +403,7 @@ fn checks_specs_against_types() {
     }
 }
 
-const POINT_FORMAT: &str = "record Point { x: i64, y: i64 }\ninstance Format<Point> {\n    fn format point spec =\n        match Format.parse spec with\n        | Option.Some parsed -> Format.pad (&parsed) $\"{point.x},{point.y}\"\n        | Option.None -> \"\"\n}\nlet p = Point { x: 1, y: 2 }\n";
+const POINT_FORMAT: &str = "record Point { x: i64, y: i64 }\ninstance Format<Point> {\n    fn format point spec =\n        match Format.parse spec with\n        | Maybe.Some parsed -> Format.pad (&parsed) $\"{point.x},{point.y}\"\n        | Maybe.None -> \"\"\n}\nlet p = Point { x: 1, y: 2 }\n";
 
 #[test]
 fn routes_specs_to_format_instances() {
@@ -422,7 +422,7 @@ fn routes_specs_to_format_instances() {
         "record Box<'a> { value: 'a }\ninstance Format<'a> => Format<Box<'a>> {\n    fn format boxed spec = $\"box({Format.format (&boxed.value) spec})\"\n}\nrecord Tag { id: i64 }\ninstance Format<Tag> {\n    fn format tag spec = $\"{tag.id}{spec}\"\n}\nlet boxed = Box { value: Tag { id: 7 } }\n$\"{boxed:+}\"",
         "record Tagged { id: i64 } deriving (Display)\nlet t = Tagged { id: 7 }\n$\"{t:>20}{t}\"",
         "union Tone = Quiet | Loud deriving (Display)\n$\"{Quiet}{Loud}\"",
-        "let text = \"*>+8.2f\"\nmatch Format.parse (&text) with\n| Option.Some spec -> Format.pad (&spec) \"x\"\n| Option.None -> \"\"",
+        "let text = \"*>+8.2f\"\nmatch Format.parse (&text) with\n| Maybe.Some spec -> Format.pad (&spec) \"x\"\n| Maybe.None -> \"\"",
     ] {
         accepts(source);
     }
@@ -463,7 +463,7 @@ fn routes_specs_to_format_instances() {
             "E1016",
         ),
         (
-            "instance Format<Option.Option<i64>> {\n    fn format _value _spec = \"\"\n}",
+            "instance Format<Maybe<i64>> {\n    fn format _value _spec = \"\"\n}",
             "E1016",
         ),
         // An unknown name next to an instance used to panic in instance matching.

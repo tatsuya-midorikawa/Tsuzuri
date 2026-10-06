@@ -8,7 +8,7 @@
 
 | 項目 | Array | List |
 | --- | --- | --- |
-| 型 | `[T]` | `[\|T\|]` |
+| 型 | `[T]`（`Array<T>` とも書ける） | `[\|T\|]` |
 | リテラル | `[1, 2]` | `[\|1, 2\|]` |
 | 空 | `[]` | `[\|\|]` |
 | 実行時長の生成 | `new [T](count, initializer)` | `new [\|T\|](count, initializer)` |
@@ -62,7 +62,7 @@ Array の更新は引数をすべて左から右に評価した後、要素へ�
 | API の引数順 | 結果・境界 |
 | --- | --- |
 | `length values`, `is_empty values` | i64、bool |
-| `get values index` | Copy 要素の `Option<T>`。範囲外は None |
+| `get values index` | Copy 要素の `Maybe<T>`。範囲外は None |
 | `at values index` | `ref T`。範囲外はトラップ |
 | `init count initializer` | 添字から新しい所有配列を生成 |
 | `sub values start count` | Copy 要素を複製。不正範囲はトラップ |
@@ -111,10 +111,10 @@ forward * 1000 + backward
 | --- | --- |
 | `any predicate values`, `all predicate values` | 借用述語で短絡。空なら false / true |
 | `count predicate values` | 借用述語に一致した個数 |
-| `find predicate values` | 最初の一致の `Option<ref T>` |
+| `find predicate values` | 最初の一致の `Maybe<ref T>` |
 | `index_of values target`, `contains values target` | target も共有借用。Eq による短絡検索 |
 | `equal left right` | 長さと要素を比較。Eq が必要 |
-| `min values`, `max values` | `Option<ref T>`。空なら None |
+| `min values`, `max values` | `Maybe<ref T>`。空なら None |
 | `sort values` | Ord と要素複製が必要な安定整列 |
 | `sort_by compare values` | compare は `ref T -> ref T -> i64`。負・ゼロ・正 |
 | `binary_search values target` | 同じ順序で整列済みの配列から重複の先頭 index を返す |

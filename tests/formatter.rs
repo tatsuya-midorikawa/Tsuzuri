@@ -63,12 +63,12 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "def get :: &i64 -> i64\nfn get value = *value\n",
         ),
         (
-            "Option{let! value=Some 1;return value}",
-            "Option { let! value = Some 1; return value }\n",
+            "Maybe{let! value=Some 1;return value}",
+            "Maybe { let! value = Some 1; return value }\n",
         ),
         (
-            "Option{use ! value=Some 1;return value}",
-            "Option { use! value = Some 1; return value }\n",
+            "Maybe{use ! value=Some 1;return value}",
+            "Maybe { use! value = Some 1; return value }\n",
         ),
         ("use  held=make 1\nheld", "use held = make 1\nheld\n"),
         (
@@ -127,6 +127,33 @@ fn lambda_guards_and_where_preserve_layout() {
         );
         tsuzuri::analyze(&first.formatted).unwrap();
     }
+}
+
+#[test]
+fn namespace_and_using_headers_keep_their_lines() {
+    let source = "namespace   Sample::Features\nusing  Sample   // shared\nusing Other::Tools\n\ndef main::unit->i32=\\()->Tools::Math.add 40 2\n";
+    let formatted = format_source("Main.tz", source, SourceKind::Code)
+        .unwrap()
+        .formatted;
+    assert_eq!(
+        formatted,
+        "namespace Sample::Features\nusing Sample   // shared\nusing Other::Tools\n\ndef main :: unit -> i32 = \\() -> Tools::Math.add 40 2\n"
+    );
+    let program = parser::parse(&formatted).unwrap();
+    assert_eq!(
+        program.namespace.as_ref().unwrap().path.text,
+        "Sample::Features"
+    );
+    let usings: Vec<_> = program
+        .usings
+        .iter()
+        .map(|using| using.path.text.as_str())
+        .collect();
+    assert_eq!(usings, ["Sample", "Other::Tools"]);
+    assert_eq!(
+        ast_fingerprint(parser::parse(source).unwrap()),
+        ast_fingerprint(program)
+    );
 }
 
 #[test]

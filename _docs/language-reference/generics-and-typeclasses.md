@@ -96,7 +96,7 @@ assert (left == right)
 | `Capture` | 再利用可能な関数環境へ保存できること |
 | `Send` | タスクへ所有値を渡せること |
 | `Display` | `display :: ref T -> string` |
-| `Parse` | `parse :: ref string -> Option<T>` |
+| `Parse` | `parse :: ref string -> Maybe<T>` |
 | `Hash` | `hash :: ref T -> i64u` |
 | `Default` | `default :: T`。`Default.default()` で呼ぶ |
 | `Drop` | `drop :: ref mut T -> unit`。値の終わりに一度だけ自動で呼ばれる（[利用者定義の解放](ownership.md#利用者定義の解放drop)） |
@@ -126,7 +126,7 @@ def total :: Point -> i64 = \point -> point.horizontal + point.vertical
 def total_of :: 'value -> 'result
     @'value : #total = \value -> 'value.total value
 
-total_of (Point.Point { horizontal: 20, vertical: 22 })
+total_of (Point { horizontal: 20, vertical: 22 })
 ```
 
 `#total` はレコード・union の定義元モジュールに `total` という関数があることを要求します。クラスのインスタンス登録は不要で、関数の型、可視性、追加制約は通常どおり検査します。

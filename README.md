@@ -22,9 +22,70 @@
 
 ---
 
-## クイックスタート
+アクティブパターンは bool／Option を返す部分形式と、宣言した union に対応する複数ケース形式を使えます。
+`def (|Parsed|_|) :: ref string -> Option<i64> = \text -> Parse.parse text` により、`Parsed value` で解析結果を照合できます。
 
 ### コード例 (`Main.tz`)
+
+`Debug.print value` は借用して表示し、`Debug.trace value` は表示して同じ所有値を返します。native は stderr、WASM は既定で no-op です。
+WASM の `--debug-output` を使う場合は、[Debug のホスト契約](docs/language.md#デバッグ出力) に従って `tsuzuri_debug.write` を提供します。
+
+標準入出力は `IO<T>` の遅延アクションで扱います。`IO { do! IO.write_line "Hello" }` を Main.tz の入口にすると実行し、`let! line = IO.read_line ()` で EOF を区別して読み取れます。`IO.writeln` は `IO.write_line` の別名です。
+ビルダーブロックを省略して通常の関数・匿名関数・main の本体へ `let!`／`do!` を直接書くこともでき、IO と Option／Result／独自ビルダーを型に基づいて合成します。[暗黙の計算式](docs/language.md#ビルダー名を省略した本体)を参照してください。
+結果型がビルダーを持たない本体（`def main :: i32` など）と `try` の中では、IO の `let!`／`do!` をその場で実行します。`do! a |> f` は `a` の結果を `f` へ渡します。
+`IO.try_*` は入出力・符号化の失敗を Result で返します。[IO の使い方](_docs/library-reference/io.md)と[対話サンプル](examples/io/Main.tz)を参照してください。native は標準ストリーム、WASM は明示的な tsuzuri_io ホストへ接続します。
+
+ファイル・ディレクトリ・環境変数・コマンドライン引数・時刻・乱数・子プロセスは、std の `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Process`／`Os` で扱います（macOS／Linux）。
+`File.read_text "note.txt"` は `IO<Result<string, Os.Error>>` で、OS に触れる操作はすべて同じ形の遅延アクションです（`Path` と `Random.Pcg` は純粋）。
+入口が `IO<i32>` ならその値がプロセスの終了コードになり、`tsuzuri run` は 0 以外を `E2005` で報告します。
+既定の wasm32 は OS API を `E2000` で拒否し、`--wasm-host wasi` を付けた wasm32 は標準入出力と OS API を WASI preview1 へ接続します（`Process.run` は未対応、preview2 は未実装）。Windows は `E2002` で未対応です。
+
+`run` はトラップの理由とソース位置を報告します。配布用の `build` は既定で位置を含めず、`--trap-info` で明示的に追加できます。
+WASM では import なしの `tsuzuri_trap_site()` と、隣接する `.trap.json` の表を使います。
+
+`build`／`run` の `-g`（`--debug-info`）で関数・行・ローカル変数・型のDWARF情報を追加できます。WASMではdebug custom sectionを保持します。
+macOSの実行ファイルは隣接する `.dwarf` を保持し、LLDBの `target symbols add <output>.dwarf` で読み込めます。`-O3`では変数が最適化で消える場合があります。
+macOSのタスクを含むdebug objectにはClangと対応する `llvm-link`（`TSUZURI_LLVM_LINK`）、実行ファイルには `dsymutil`（`TSUZURI_DSYMUTIL`）が必要です。
+
+ホスト ABI は借用配列・UTF-16／UTF-8 入力、所有バッファ結果、スカラーのみのレコードに対応します。
+`extern def now :: unit -> i64`で同期ホスト関数を宣言できます。nativeは`tsuzuri_host_Main_now`、WASMは`tsuzuri`モジュールの`Main.now`へ接続します。
+未使用externはimportを増やしません。nativeは生成object/headerをホストと連結し、WASMは`{ tsuzuri: { "Main.now": () => 42n } }`を渡します。
+C header を生成して pointer／length と out pointer を使い、返却バッファは `tsuzuri_free` で解放します。
+`extern "sqrt" def c_sqrt :: f64 -> f64` のようにリンク名を付けると既存の C 関数を shim なしで呼べ、`extern type Counter` で不透明ハンドルを、関数型の引数で捕捉のないトップレベル関数をホストへ渡せます。
+native の実行ファイルは `--link PATH`・`-l NAME`・`-L DIR` や `Tsuzuri.toml` の `[native]` でホストの object・library を直接リンクできます。
+[C の使用例](examples/native/main.c) と [WASM のバッファ移転例](examples/web/simulation.mjs) に往復処理があります。
+
+現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、
+ネイティブのデスクトップ・ホスト、ブラウザーのゲーム例を含みます。
+C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であり、現時点の達成保証ではありません。
+**性能を最優先の設計要件の一つとし、CPU 命令・SIMD・並列 CPU・GPU のうち、
+意味を保ち実処理が最も速くなる経路を内部で選ぶことを目指します。**
+この方針はコンパイラだけでなく、組み込み関数と今後の標準ライブラリにも適用します。
+現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、
+`Task.parallel` による明示的な CPU 並列処理も使えます。
+GPUは実験的なstrict整数WGSL生成・WebGPUホスト試作と明示CPU参照に対応します。通常runtimeへの実GPU接続と自動offloadは未実装です。
+整数の checked／saturating 演算、popcount、rotate などは `Int` モジュールで利用できます。
+`@checked x + y` はオーバーフローで `OverflowException` を送出し、`try ... with ... finally` がそれを `Result` の値として受け取ります。例外は同じ関数本体の最も内側の `try` へ字句的に移り、関数呼び出しやラムダを越えず、捕捉されなければトラップします（[例外処理](_docs/language-reference/error-handling.md)）。
+任意精度の整数 `bigint` は `123I` のリテラルと `+`・`-`・`*`・`/`・`%`・`**`・比較・Display／Parse に対応します（[BigInt](_docs/library-reference/bigint.md)）。
+伸縮可能な所有バッファ `Vec<T>` と配列・リストの標準 API を利用できます。
+高階関数は F# と同じく関数を先に受け取り（`Array.map f xs`、`Array.fold f state xs`、`Map.fold f state map`、`Seq.unfold generator state`）、`values |> Array.map double |> Array.sum` のように途中の一時値を借用してつなげられます。
+順序付きの不透明型 `Map<K, V>`／`Set<K>` も使えます。`Map.insert (Map.empty()) 1 "value"` は所有値を消費して更新し、`Map.at (&map) 1` で値を借用します。
+検索はO(log n)、挿入・削除はO(n)です。`Set.union`／`intersect`／`difference`と借用foldに対応し、キー順に列挙します。
+ハッシュ表の `HashMap<K, V>`／`HashSet<K>` は、検索・挿入・削除が平均 O(1) です。`HashMap.insert (HashMap.empty()) 1 "value"` は所有値を消費して更新し、`HashMap.at (&map) 1` で値を借用します。
+列挙は挿入順で、`remove` は最後の要素を空きへ移すため、順序は挿入と削除の列だけで決まります。
+既定の表は HashDoS への耐性を持ちません。`HashMap.with_seed`／`HashMap.randomized ()` でキー付きの hash にしても部分的な緩和なので、信頼できないキーには `Map` を使ってください。詳細は[HashMap / HashSet](_docs/library-reference/hash-map.md)を参照してください。
+一回消費の `Seq<T>` を `for value in Seq.once 42 do ...` のように反復できます。`Seq.unfold`・`map`・借用述語の`filter`・`to_array`を提供します。
+128-bitの `f32x4`・`f64x2`・整数vectorとlane maskを使えます。`let values: i32x4 = Simd.splat 1i32`、`Simd.load`・`extract`・`select`・順序付き`sum_lanes`を提供します。
+nativeはLLVMの対応命令、WASMは既定でscalar fallback、`--wasm-feature simd128`でv128へ下げます。高速化の保証ではありません。
+ユーザー型は `Module.iter` を明示してSeqを返します。Array/List/Vec/Map/Setの`iter`は要素を借用し、通常の直接for反復は従来経路のままです。
+ローカルpathパッケージに対応します。git・registry・版解決とGUI・ネットワークの標準ライブラリは未実装です。
+メモリは GC ではなく、Rust と同様に所有権の移動・借用・スコープ終了時の解放で管理します。
+レコードに共有借用を格納でき、`def first {r s} :: ref {r} string -> ref {s} string -> ref {r} string`で返却元の入力を指定できます。
+名前付き契約は直接の完全適用に反映し、関数値経由は保守的に全入力の寿命を保持します。レコードは `record Pair {r s}` のように独立した複数のregionを持て、
+名前付き関数の引数には `({s} ref {s} string -> ref {s} string)` のようにregionで量化した関数型を書けます。排他借用フィールドは未対応です。
+記憶域は C/C++ と同じ方式で、`new` で生成した値はヒープ、`new` を使わずに生成して束縛した値はスタックに置きます。
+
+`Main.tz`:
 
 ```text
 def rec sum :: i64 -> i64 -> i64 = \n total ->
@@ -36,14 +97,25 @@ def rec sum :: i64 -> i64 -> i64 = \n total ->
 
 export def answer :: i64 = sum 100 0
 
-def main :: i64 = answer ()
+def main :: i64 = answer()
 ```
 
 ### ビルドと実行
 
-```sh
-# 型検査を実行
-./target/release/tsuzuri check Main.tz
+| 項目 | 初版の実装 |
+|---|---|
+| 状態 | `let` は不変。`let mut` と排他的な `ref mut T` でローカル値を置換できる。標準入出力と OS API は IO、外部機能は extern。共有可変状態はなし |
+| 型 | `bool`、`unit`、`i8`～`i128`／`i8u`～`i128u`、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、`byte`／`ubyte`（`i8u`）／`sbyte`（`i8`）、任意精度の `bigint`、ECMA-262 の UTF-16 `string`、従来の UTF-8 `utf8string`、タプル、不変レコード・共用体（`union`）・配列・連結リスト、捕捉環境を持つ関数値 |
+| 書きやすさ | `def ... = ラムダ式`、カリー化・部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード、`for…in`／`for…to`／`downto`／`while…do`、`break`／`continue`、レコード更新、インデント本体、`\|>`、関数合成 `>>`／`<<`、`not`／`ignore`、累乗 `**`、F# と同じビット演算 `&&&`／`\|\|\|`／`^^^`／`~~~`／`<<<`／`>>>` と数値リテラルの短い接尾辞、関数を先に受け取る高階関数、明示的な `rec`／`and` |
+| 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型別名（`type`）、型クラス・具体型のインスタンスによるアドホック多相。制約推論と単相化 |
+| コンピュテーション式 | `.tc` のユーザー定義ビルダー。明示ブロックと型で解決する暗黙本体。束縛・短絡・分岐・反復を通常の関数呼び出しへ展開 |
+| タスク | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して並列実行 |
+| モジュール | 1 ファイル = 1 モジュール。複数ファイルの名前解決と `Main.tz` エントリー |
+| メモリ | 所有権、move、`ref T`／`ref mut T`（Rust 互換の `&T`／`&mut T` も可）の借用検査。`new` はヒープ、`new` なしで束縛したリテラルはスタック。文字列・配列・連結リスト・捕捉環境を自動解放し、record・union の `instance Drop` でメモリ以外の資源も一度だけ解放。GC・参照カウント・手動解放なし |
+| 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` で実行機向けに最適化。直接の自己末尾再帰は `-O0` でもループ化 |
+| 安全性 | 整数除算・配列／リストアクセスを検査。LLVM の未定義動作に依存しない数値仕様。`@checked` の整数オーバーフローは `try` で `Result` に変換 |
+| ホスト連携 | スカラー・バッファ・レコードの C ABI と WASM エクスポート／インポート。extern のリンク名・不透明ハンドル・静的コールバック、native のホストリンク指定。標準入出力と OS API（ファイル・環境・時刻・乱数・子プロセス）は IO、UI・ネットワークはホストの責務 |
+| AI 向け | 明示的な関数シグネチャ、暗黙の数値変換なし、位置付き JSON 診断、決定的な IR |
 
 # ネイティブ環境で直接実行
 ./target/release/tsuzuri run Main.tz
@@ -179,7 +251,10 @@ def distance_of :: 'T -> 'U
     @'T : Copy, #distance = \value -> 'T.distance value
 ```
 
-`#distance` は、指定された具体的な型（レコードや共用体）の定義元モジュールに存在する関数を要求する「モジュール関数制約」です。例えば `'T` が `Point.Point` 型であれば `'T.distance` は自動的に `Point.distance` を参照し、戻り値の型も厳密に照合・推論されます。詳細は [モジュール関数の制約](docs/language.md#モジュール関数の制約) を参照してください。
+`#distance` は具体的なレコード・union の定義元モジュールにある関数を要求します。
+例えば `'T` が `Point.Point` なら `'T.distance` は `Point.distance` を選び、返却型も照合・推論します。
+通常の関数値・部分適用に対応し、`private` を迂回しません。
+詳しくは [モジュール関数の制約](docs/language.md#モジュール関数の制約) を参照してください。
 
 #### カリー化・演算子・クロージャ
 
@@ -239,6 +314,8 @@ union Shape =
     | Rect of f64 * f64
     | Empty
 
+union Maybe<'a> = None | Some of 'a
+
 def area :: Shape -> f64 = \shape ->
     match shape with
     | Circle r -> r * r * 3.141592653589793
@@ -248,11 +325,21 @@ def area :: Shape -> f64 = \shape ->
 area (Rect (3.0, 4.0))
 ```
 
-- **自動導出 (`deriving`)**: レコードや共用体の宣言末尾に `deriving (Eq, Ord, Display, Hash, Default)` を指定することで、構造的なインスタンス実装を自動生成できます。
-- **再帰的データ型**: `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のように木構造や構文木を定義できます。再帰ケースは自動的にヒープへ配置され、解放や環境の複製時にスタックオーバーフローを起こさない工夫が施されています。詳細は [共用体 (union)](docs/language.md#共用体union) を参照してください。
-- **高階型 (HKT)**: カインドを明示したランク 1 の高階型をサポートしています（例: `class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`）。詳細は [HKT仕様](docs/language.md#高階型hkt) を参照してください。
+match は tag の `switch` に下げ、payload の move・解放・複製も case ごとに行います。
+標準の `Option<'a>`／`Result<'a, 'e>` と、変換・借用・失敗伝播の関数も同梱しています。
+case が不足する match は `E1021` のコンパイルエラーです。
+record／union宣言の後に `deriving (Eq, Ord, Display, Hash, Default)` を指定して構造的な実装を生成できます。
+`union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のような木・ASTも使えます。
+再帰型は非 Copy の所有ヒープノードで、解放と捕捉環境の複製は深さに比例するスタックを使いません。
+詳細は [言語仕様](docs/language.md#共用体union) を参照してください。
 
 ### 制御構文とパターンマッチ
+
+kindを明示したrank-1高階型にも対応します。`class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`を定義し、OptionやResult等のconstructorごとにinstanceを実装できます。
+`Result<string>`の部分適用は末尾のエラー型を固定します。辞書/boxingを追加せず通常の単相化へ下げます。kind省略推論や標準Functorは未導入です。
+例と制約は[HKT仕様](docs/language.md#高階型hkt)を参照してください。
+
+## 制御構文とパターン
 
 ```text
 let mut total = 0
@@ -284,6 +371,13 @@ match add total 2 with
 F# のように、計算の組み合わせや制御フローの動作をカスタマイズできるコンピュテーション式をサポートしています。
 **1 つの `.tc` ファイルが 1 つのビルダー** に対応し、ファイル名がそのままビルダー名となります。言語への特別な構文登録は不要で、標準ライブラリの `Result` や `Option` もこの仕組みで実装されています。
 
+## ユーザー定義のコンピュテーション式
+
+F# のように、`Bind`・`Return` などを実装して計算の組み合わせ方を定義できます。
+**一つの `.tc` ファイルが一つのビルダー**で、ビルダー名はファイル名です。
+型クラスの実装や新しい構文の登録は不要です。標準の `Option`／`Result` もこの仕組みで実装され、
+追加ファイルなしで使えます。
+
 ```text
 let answer: Result<i64, string> = Result {
     let! first = Ok 20
@@ -295,10 +389,13 @@ match answer with
 | Error _ -> -1
 ```
 
-- **構文要素**: `let!` は `Builder.Bind`、`return` は `Builder.Return` に展開されます。その他、必要に応じて `ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While`、`Delay`／`Run` を実装できます。使用した構文に対応する操作がビルダーに未定義の場合は、明確なコンパイルエラーとなります。
-- **高度な演算**: 複数ソースの並行的な合成を行う `and!` や `match!`、およびビルダーが提供する `MergeSources` / `BindReturn` / `Bind2` に対応しています（`and!` の各項は左から右へ順に一度ずつ評価され、勝手な自動並列化は行われません）。
-- **暗黙のコンピュテーション式**: 通常の関数や `main` の本体において、明示的なビルダーブロックを省略して `let!` や `do!` を直接記述することも可能です。コンパイラが戻り値の型に基づいて適切なビルダーを自動合成します。詳細は [暗黙の計算式](docs/language.md#ビルダー名を省略した本体) を参照してください。
-- **最適化**: スコープを脱出しないローカルな継続はコンパイラによって特殊化・インライン化され、不要なクロージャのメモリ確保や間接関数呼び出しが完全に消去されます。詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) および [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。実行例は `tsuzuri run examples/computations` で確認できます。
+`let!` は `Result.Bind value continuation`、`return` は `Result.Return value` に相当します。
+`Error`／`None` なら続きを呼ばず、error 型の暗黙変換はしません。
+`return` 自体は関数脱出ではなく成功値の生成です。失敗前の通常の `let`・式は実行し、トラップは失敗値に変換しません。
+`Option.map_ref` などは所有する payload を借用して扱い、`get` は失敗値に対してトラップします。
+`ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While` も必要に応じて定義でき、
+`Delay`／`Run` があれば本体を包んで遅延・実行の仕方を制御します。
+使用した構文の操作が未実装ならコンパイルエラーで、暗黙の既定実装はありません。
 
 ### タスクと並列処理
 
@@ -333,7 +430,10 @@ match Task.run (Task.parallel_results jobs) with
 
 ### 入出力・OS 連携・定数
 
-#### 入出力 (`IO<T>`)
+**モジュール名は拡張子を除いたファイル名で決まり、1 ファイルに 1 モジュールを強制します。**
+`module` 宣言、入れ子のモジュール、複数ファイルへの同一モジュールの分割はできません。
+同じディレクトリの `.tz`・`.tt`・`.tc` ファイルを自動で読み込みます。
+インポート宣言やファイルの列挙は不要です。
 
 副作用を伴う入出力処理は、遅延アクションを表す `IO<T>` 型によって純粋なコードから分離されます。
 
@@ -399,41 +499,57 @@ let d = Point.distance p
 d
 ```
 
-#### モジュール参照と可視性
+通常の `fn` も別ファイルから `モジュール名.関数名` で呼べます。
+`export` はモジュール間の可視性ではなく、C／WASM ホストへの公開指定です。
+レコード名は一意なら `Point`、明示する場合は `Point.Point` と書けます。
+同名のレコードが複数モジュールにある場合、他モジュールからは修飾名で区別します。
 
 別ファイルの関数や型は、`モジュール名.識別子名`（例: `Point.distance` や `Geometry.Point.Point`）で参照します。
 宣言は既定で外部モジュールへ公開されます（public）。モジュール内でのみ使用する補助関数やデータ構造には `private` キーワードを付与します。
 なお、ホスト言語（C や WebAssembly）へシンボルを公開する場合は `export` を指定します。
 
-#### 予約モジュール名
+標準ライブラリ（std）はコンパイラに埋め込まれ、すべてのプロジェクトで自動的に読み込まれます。
+std の関数も `Math.zero()` のように修飾して呼び、使わない std のコードは生成物に含まれません。
+次のモジュール名は std 用に予約しており、利用者のファイル名には使えません（`E1011`）。
 
-以下のモジュール名は標準ライブラリ（std）用に予約されており、ユーザーが同一の名前でファイルを作成することはできません（違反時は `E1011` エラーとなります）。
+| 予約モジュール | 用途 |
+|---|---|
+| `Option`、`Result` | 省略可能な値と失敗 |
+| `Array`、`List`、`Vec`、`Map`、`Set`、`HashMap`、`HashSet` | コレクション |
+| `String`、`Utf8String`、`Char` | UTF-16／UTF-8 文字列と文字 |
+| `Math`、`Int` | 数学関数と整数演算 |
+| `Debug`、`Test` | デバッグ出力とテスト |
+| `Parallel`、`Simd`、`Gpu` | データ並列・SIMD・GPU |
+| `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process` | OS API（`Path` と `Random.Pcg` を除き `IO` の遅延アクション） |
+| `Format` | 書式指定（`Format` クラスの instance 用の `parse`／`pad`） |
 
-| 予約名 | 用途 |
-| --- | --- |
-| `Option`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
-| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet` | 各種コレクションおよびデータ構造 |
-| `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
-| `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
-| `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
-| `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit SIMD 演算、GPU カーネル連携 |
-| `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
-| `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
+OS API・ハッシュコンテナ・書式指定の追加で、これらの名前のファイルは `E1011` で拒否されます。使っていた既存のプロジェクトは改名が必要です。
+stdは`Option`・`Result`、コレクション・文字列・文字・整数・並列処理・数学・OS・書式指定のAPIを持ちます。
+`Math.sqrt 4.0f32`のように全float型の基本演算を使え、超越関数はf32／f64に対応します。`Math.pi()`などの定数も型を保持します。
+`Math.fma 2.0 3.0 4.0`は積和を一度だけ丸めます。`Array.sum_pairwise`は固定ペア木、`Array.sum_kahan`はNeumaier補償和、`Array.dot_fma`は順次FMA内積です。通常の`a * b + c`、`Array.sum`、`Array.dot`は融合・再結合しません。
+無修飾の型・case・クラス名は利用者の宣言を std より優先します。
 
 #### パッケージ管理 (`Tsuzuri.toml`)
 
 プロジェクトルートに `Tsuzuri.toml` を配置することで、ローカルの依存パッケージを同一の `check` / `build` / `run` コマンドでシームレスに利用できます。
 
+アプリケーションは **`Main.tz`** から開始します。
+トップレベルの `let` と最後の結果式、または従来の `fn main` のどちらかを使います。
+上の例では最後の `d` を表示します。結果式を省略すると `unit` になり、何も表示しません。
+実行例は `./target/release/tsuzuri run examples/point` です。
+
+rootに`Tsuzuri.toml`を置くと、ローカル依存を同じ`check`／`build`／`run`コマンドで利用できます。
+
 ```toml
 [package]
 name = "app"
 version = "0.1.0"
-
 [dependencies]
 geometry-core = { path = "../geometry-core" }
 ```
 
-依存パッケージのモジュールは `GeometryCore.Point` のように、パッケージ名をパス接頭辞とした完全修飾名で参照します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) を参照してください。
+依存側にもname/versionを持つmanifestを置きます。依存の`Point.tz`は`GeometryCore.Point`で参照し、依存内でも完全修飾します。
+限定TOML、相対pathだけに対応し、ネットワークやbuild scriptは実行しません。詳細は[言語仕様](docs/language.md#ローカルパッケージ)を参照してください。
 
 ---
 
@@ -485,8 +601,18 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 
 ### GPU カーネル連携（実験的）
 
-単一の `export` された `i32 -> i32` または `i32u -> i32u` カーネルを含むプロジェクトから、`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl` により WebGPU 向けの WGSL シェーダーを生成できます。
-厳密な整数演算に基づく Phase 1 実装であり、自動オフロードや速度優位を保証するものではありません。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的-phase-1) を参照してください。
+`Main.tz` のトップレベルの結果、または引数なしの `main` の返却型が
+数値型／`bool`／`unit`／`string`／`utf8string` なら、ネイティブ用ホスト・ラッパーが
+結果を表示し、成功時は終了コード 0 を返します。`unit` は何も表示しません。
+トップレベルの結果はそれ以外の型でも `Display` を持てばその表示を出力し、持たなければ表示せずに捨てます（以前は `E2004`）。`main` は従来どおり表示できる型か IO を返します。
+言語内に出力の副作用を持ち込む仕組みではありません。
+数値は `to_string`／`Display.display` と同じ形式です。二進浮動小数点は最短の往復可能な十進表現
+（`0.1` は `0.1`）、負のゼロは `-0` と表示し、native／WASM で共通の実装を使います。
+`to_string value` は値を消費し、`Display.display ref value` は借用します。
+`let value: Option<f64> = Parse.parse ref text` のように解析でき、不正入力・overflow は `None` です。
+独自型にも Display／Parse インスタンスを定義できます。
+文字列の出力は UTF-8 です。string の孤立サロゲートは暗黙に置換せずトラップし、
+必要なら `String.to_well_formed` で明示的に置換します。
 
 ---
 
@@ -533,9 +659,13 @@ tsuzuri test tests/ --filter "加算" -O3 --target native
 
 ソースコード内の `///` ドキュメントコメントを抽出し、公開 API の Markdown ドキュメントを自動生成します。
 
-```sh
-# 公開 API ドキュメントを生成
-tsuzuri doc src/ -o docs/api
+def main :: string = {
+    let mut text = "こんにちは";
+    let size = length ref text; // 借用後も所有者を使える
+    replace ref mut text;       // この呼び出し中は排他的に借用
+    let result = text;      // 所有権を移動。以降の text の使用はエラー
+    result
+}
 ```
 
 ### デバッグ情報と出力仕様
@@ -636,6 +766,40 @@ tsuzuri lsp
 Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため、網羅的なテストスイートとマルチ言語ベンチマークを備えています。
 
 ### テストスイートの実行
+
+build/runの成果物cacheは既定で有効です。`--no-cache`で読み書きを完全に無効化し、`TSUZURI_CACHE_DIR`で保存先を指定できます。check/headerは対象外です。
+既定の保存先はmacOSの`$HOME/Library/Caches/tsuzuri/build-cache`、Linuxの`$XDG_CACHE_HOME/tsuzuri/build-cache`（未設定なら`$HOME/.cache`）、Windowsの`%LOCALAPPDATA%\Tsuzuri\Cache\build-cache`です。
+コンパイラ・ツール・ソース・設定・runtimeをSHA-256で識別し、hitでも出力保護を通します。破損は再ビルド、cacheのI/O失敗はW2001です。
+markerで管理対象を識別し、既存の非cacheディレクトリを転用しません。2GiB/30日を目安に一回最大128件を回収します。明示的に削除する場合はこの専用cacheディレクトリだけを削除してください。
+解析とIR生成は毎回行うPhase 1のwhole-build cacheです。macOSのdebug executableはDWARFの出力先依存を保つため出力パスもキーへ含めます。
+
+入力はファイルまたはディレクトリを一つ指定します。ディレクトリ指定はその直下の `Main.tz` を選びます。
+ディレクトリ入力はそのディレクトリ、ファイル入力は親ディレクトリをルートにし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に読み込み、
+未参照のモジュール・ビルダーも検査します。
+`Geometry/Point.tz` は `Geometry.Point` になり、`Geometry.Point.distance` や `Geometry.Point.Point` と完全修飾して参照します。
+隠し項目を無視し、ソース・ディレクトリのsymlinkを拒否します。各パス要素は大文字小文字を区別する ASCII 識別子で、
+`_` 単独や予約語は使えません。
+モジュールは16要素・255バイト、探索は4096ソース・1024ディレクトリまでです。上位のrootは推測せず、階層全体にはrootディレクトリを指定します。
+`run`／`--emit exe` の入力は `Main.tz` またはそのディレクトリに限ります。
+`check`／ライブラリ出力では `.tz`・`.tt`・`.tc` を指定でき、`Main.tz` は不要です。
+
+`check`・`build`・`run` は独立したエラーをまとめてファイル・位置順で報告します。
+例えば二つの関数に型の不一致があれば、`tsuzuri check Main.tz --json` は二行の error オブジェクトを返します。
+表示は 50 件までで、残りの件数はコードなしの note です。収集上限 1000 件に達した場合だけ `at least` と表示します。
+壊れたシグネチャに由来する二次エラーは抑制し、エラーがある間は生成・実行せず終了コード 1 を返します。
+
+出力先省略時は選択した入力ファイルの拡張子を変更します。ディレクトリ指定なら `Main.ll` などになります。
+`--emit llvm` はライブラリ用 IR で、コンソールのエントリー・ラッパーは付けません。
+ネイティブの並列タスクを含む生の IR を直接リンクする場合は、
+`clang kernel.ll src/runtime/task.c -pthread -lm ...` のようにタスクランタイムも渡します。
+`--emit object` にはランタイム本体が含まれ、別途 C ソースを渡す必要はありません。
+WASM は `IO<T>` の入口または少なくとも一つの `export def` が必要です。
+ホスト向けの公開名 `tz_name` は維持するため、エクスポート名はプロジェクト全体で一意にします。
+`--emit object --target wasm32` はリンク前の WASM オブジェクトも生成できます。
+コンパイル／リンク失敗では既存出力を変更せず、成功した成果物だけを同じファイルシステム上で置換します。
+読み込んだいずれのソース自身やその別名、シンボリックリンクへの出力も拒否します。
+
+## 検証と性能測定
 
 ```sh
 # 基本的なコードベース検証

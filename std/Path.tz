@@ -2,10 +2,10 @@
 /// is only appended: nothing here is a sandbox.
 def join :: ref string -> ref string -> string
 fn join left right =
-	let tail = Option.get (String.slice right 0 right.length)
+	let tail = Maybe.get (String.slice right 0 right.length)
 	if left.length == 0 then tail
 	else
-		let head = Option.get (String.slice left 0 left.length)
+		let head = Maybe.get (String.slice left 0 left.length)
 		if left[left.length - 1] == 47i16u then head + tail else head + "/" + tail
 
 /// Where the last name of a path ends: trailing "/" are dropped, but a lone "/" stays.
@@ -24,34 +24,34 @@ fn name_start path end =
 
 /// The path without its last name, without trailing "/" except for a lone "/".
 /// "a" and "/" and "" have none.
-def parent :: ref string -> Option.Option<string>
+def parent :: ref string -> Maybe<string>
 fn parent path =
 	let end = name_end path
-	if end == 1 && path[0] == 47i16u then Option.None
+	if end == 1 && path[0] == 47i16u then Maybe.None
 	else
 		let slash = name_start path end
-		if slash < 0 then Option.None
+		if slash < 0 then Maybe.None
 		else
 			let mut stop = slash
 			while stop > 1 && path[stop - 1] == 47i16u do stop = stop - 1
-			Option.get (String.slice path 0 (if stop == 0 then 1 else stop)) |> Option.Some
+			Maybe.get (String.slice path 0 (if stop == 0 then 1 else stop)) |> Maybe.Some
 
 /// The last name of a path, or `None` for "", "/", ".", and "..".
-def file_name :: ref string -> Option.Option<string>
+def file_name :: ref string -> Maybe<string>
 fn file_name path =
 	let end = name_end path
 	let start = name_start path end + 1
-	if end == 0 || (end == 1 && path[0] == 47i16u) then Option.None
+	if end == 0 || (end == 1 && path[0] == 47i16u) then Maybe.None
 	else
-		let name = Option.get (String.slice path start end)
-		if name == "." || name == ".." then Option.None else Option.Some name
+		let name = Maybe.get (String.slice path start end)
+		if name == "." || name == ".." then Maybe.None else Maybe.Some name
 
 /// What follows the last "." of the last name; a name that starts with its only "." has none.
-def extension :: ref string -> Option.Option<string>
+def extension :: ref string -> Maybe<string>
 fn extension path =
 	match file_name path with
-	| Option.None -> Option.None
-	| Option.Some name ->
+	| Maybe.None -> Maybe.None
+	| Maybe.Some name ->
 		let mut dot = name.length - 1
 		while dot > 0 && name[dot] != 46i16u do dot = dot - 1
-		if dot <= 0 then Option.None else String.slice (ref name) (dot + 1) name.length
+		if dot <= 0 then Maybe.None else String.slice (ref name) (dot + 1) name.length

@@ -865,21 +865,21 @@ const suites = {
       }
     },
   },
-  option_result: {
+  maybe_result: {
     cases: [
-      ["option_some", [], 42n],
-      ["option_none_short_circuit", [], 42n],
+      ["maybe_some", [], 42n],
+      ["maybe_none_short_circuit", [], 42n],
       ["result_ok", [], 42n],
       ["result_error_short_circuit", [], 42n],
       ["propagation_first_owned_error", [], 11n],
       ["propagation_explicit_conversion", [], 42n],
       ["propagation_selected_branch", [1], 42n],
       ["propagation_eager_let", [1n], 42n],
-      ["option_loop", [0n], 0n],
-      ["option_loop", [257n], 257n],
+      ["maybe_loop", [0n], 0n],
+      ["maybe_loop", [257n], 257n],
       ["result_loop", [0n], 0n],
       ["result_loop", [257n], 257n],
-      ["option_loop", [40000n], 40000n],
+      ["maybe_loop", [40000n], 40000n],
       ["result_loop", [40000n], 40000n],
       ["stopped_loops", [], 42n],
       ["while_and_zero", [], 42n],
@@ -895,7 +895,7 @@ const suites = {
       ["borrowed_patterns", [], 24n],
     ],
     traps: [
-      ["trap_option_get", []],
+      ["trap_maybe_get", []],
       ["trap_result_get", []],
       ["trap_result_get_error", []],
       ["trap_string", []],
@@ -904,9 +904,9 @@ const suites = {
       ["trap_propagation_statement", []],
     ],
     inspect(ir, header) {
-      assert.doesNotMatch(header, /Option|Result/);
+      assert.doesNotMatch(header, /Maybe|Result/);
       assert.match(ir, /@tz\.specialized\./);
-      assert.match(ir, /tz\.union\.Option\.Option\[string\]/);
+      assert.match(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
       assert.match(ir, /tz\.union\.Result\.Result\[string,i64\]/);
     },
   },

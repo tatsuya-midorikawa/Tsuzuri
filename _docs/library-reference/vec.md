@@ -33,7 +33,7 @@ Array.sum ref result
 | API の引数順 | 結果 |
 | --- | --- |
 | `push values value` | 末尾へ追加した Vec |
-| `pop values` | `(残りの Vec, Option<T>)`。空なら None |
+| `pop values` | `(残りの Vec, Maybe<T>)`。空なら None |
 | `reserve values additional` | 追加個数を収容する容量を持つ Vec |
 | `truncate values length` | 指定長を超える要素を解放した Vec |
 | `clear values` | 全要素を解放した空の Vec |
@@ -45,10 +45,10 @@ Array.sum ref result
 ```tsuzuri run=42
 let values = Vec.push (Vec.empty()) "answer"
 match Vec.pop values with
-| (remaining, Option.Some text) ->
+| (remaining, Maybe.Some text) ->
     assert (Vec.is_empty ref remaining)
     text.length * 7
-| (_, Option.None) -> 0
+| (_, Maybe.None) -> 0
 ```
 
 pop は非 Copy 要素も所有値として取り出せます。添字読み取りで同じことをするのではありません。
@@ -57,7 +57,7 @@ pop は非 Copy 要素も所有値として取り出せます。添字読み取�
 
 | API | 契約 |
 | --- | --- |
-| `get values index` | 借用した Vec から Copy 要素の `Option<T>`。範囲外は None |
+| `get values index` | 借用した Vec から Copy 要素の `Maybe<T>`。範囲外は None |
 | `at values index` | `ref T`。範囲外はトラップ |
 | `clone values` | Copy 要素を持つ独立した Vec を作る |
 | `iter values` | 要素の共有借用を返す Seq |

@@ -366,7 +366,7 @@ fn parser_recovers_only_at_balanced_top_level_declarations() {
         "fn rec first =\nand second x =\nfn third =\n",
         "let first =\nlet second =\n",
         "record Bad<'a 'b> { value: 'a }\nrecord Good<'a> { value: 'a }\nfn second =\n",
-        "def first :: Task<Option<i64>>=>\nfn second =\n",
+        "def first :: Task<Maybe<i64>>=>\nfn second =\n",
     ] {
         let set = parser::parse_with_source_all(source, 7).unwrap_err();
         assert_eq!(set.len(), 2, "{source}\n{set:?}");

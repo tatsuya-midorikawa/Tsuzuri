@@ -621,7 +621,7 @@ impl Classes {
         }
         let a = Type::Variable("a".into());
         let option = names
-            .std_type("Option", "Option", vec![a.clone()].into(), Span::default())
+            .std_type("Maybe", "Maybe", vec![a.clone()].into(), Span::default())
             .and_then(|ty| {
                 if let Type::Union(id, args) = &ty {
                     let union = &types.unions[*id];
@@ -637,11 +637,11 @@ impl Classes {
                 }
                 Err(Diagnostic::new(
                     "E1004",
-                    "Parse needs the standard union Option<'a> = None | Some of 'a",
+                    "Parse needs the standard union Maybe<'a> = None | Some of 'a",
                     Span::default(),
                 ))
             });
-        // Custom std inputs may omit Option. Only using Parse then reports
+        // Custom std inputs may omit Maybe. Only using Parse then reports
         // its unavailable signature; unrelated programs still type-check.
         for (class, name, builtin, signature) in [
             (
@@ -1146,7 +1146,7 @@ impl Classes {
                     let mut constraints = declaration.superclasses.clone();
                     constraints.push(ConstraintExpr {
                         name: ConstraintName::Class(Ident {
-                            text: class.name.clone(),
+                            text: key_path(&class.name),
                             span: definition.name.span,
                             provenance: Provenance::Generated,
                         }),
@@ -2060,7 +2060,7 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
             };
             TypeExprKind::Apply(
                 Box::new(Ident {
-                    text: name.clone(),
+                    text: key_path(name),
                     span,
                     provenance: Provenance::Generated,
                 }),
@@ -2072,7 +2072,7 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
         }
         Type::Application(head, arguments) => TypeExprKind::Apply(
             Box::new(Ident {
-                text: head.display(types),
+                text: key_path(&key_name(head, types)),
                 span,
                 provenance: Provenance::Generated,
             }),
@@ -2082,7 +2082,7 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                 .collect(),
         ),
         Type::Partial(partial) => {
-            let name = partial.constructor.name(types);
+            let name = key_path(&partial.constructor.name(types));
             if partial.trailing.is_empty() {
                 TypeExprKind::Named(name)
             } else {
@@ -2101,9 +2101,20 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
             }
         }
         Type::Infer(_) => unreachable!("instance types are concrete"),
-        _ => TypeExprKind::Named(ty.display(types)),
+        _ => TypeExprKind::Named(key_path(&key_name(ty, types))),
     };
     TypeExpr { kind, span }
+}
+
+/// The name of `ty` that resolves it again: a record, union, or extern type by
+/// its key-qualified name, which `Type::display` writes with `::`.
+fn key_name(ty: &Type, types: &TypeContext<'_>) -> String {
+    match ty {
+        Type::Record(id, arguments) if arguments.is_empty() => types.records[*id].name.clone(),
+        Type::Union(id, arguments) if arguments.is_empty() => types.unions[*id].name.clone(),
+        Type::Handle(name) => name.to_string(),
+        _ => ty.display(types),
+    }
 }
 
 /// A pending `UnsignedOf` or `WidenOf` result of a builtin use: `output` is
@@ -2203,7 +2214,7 @@ impl Checker<'_> {
             let callback = Type::function(vec![Type::Unit], result.clone());
             let step = self
                 .names
-                .std_type("Option", "Option", vec![callback].into(), span)?;
+                .std_type("Maybe", "Maybe", vec![callback].into(), span)?;
             if self.types.record_fields(*id, arguments) != vec![results[1].clone(), step] {
                 return Err(Diagnostic::new(
                     "E1005",
@@ -2214,7 +2225,7 @@ impl Checker<'_> {
             let Type::Union(option, option_arguments) = &results[1] else {
                 return Err(Diagnostic::new(
                     "E1005",
-                    "Seq.next requires the standard Option union",
+                    "Seq.next requires the standard Maybe union",
                     span,
                 ));
             };
@@ -2228,7 +2239,7 @@ impl Checker<'_> {
             {
                 return Err(Diagnostic::new(
                     "E1005",
-                    "Seq.next requires Option.None and Option.Some in standard order",
+                    "Seq.next requires Maybe.None and Maybe.Some in standard order",
                     span,
                 ));
             }

@@ -61,7 +61,7 @@ Rust の wasm-bindgen、Emscripten の glue、C# の P/Invoke 生成に相当す
 - `build_complete` は `Emit::Header` のとき `llvm::header(module)` を本文にし、LLVM を通さない。cache は
   `options.cache && options.emit != Emit::Header` のときだけ使う。副出力は `trap_sidecar_path`（`<output>.trap.json`）を
   `protect_sources` で検査し、`publish_outputs` の `sidecars` で本体と一緒に公開する。
-- `llvm::header` は注釈行、`#pragma once`、`host_abi::header_types`、`tsuzuri_main`（`io_entry` のとき）、`imports::header`（extern の
+- `llvm::header` は注釈行、`#pragma once`、`host_abi::header_types`、`tsuzuri_main`（`io_entry` か `main_entry` のとき）、`imports::header`（extern の
   prototype）、`tz_<name>` の prototype を `module.functions` の順に出す。版は記録しない。header は target に依存しない
   （`--target wasm32 --emit header` と native の出力は同一。検証済み）。
 - `src/abi.rs`: `Buffer`（`I64`・`F64`・`UByte`・`String`・`Utf8String`、`of`・`name`・`c_element`・`width`）、`scalar_record`、
@@ -175,7 +175,7 @@ export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly
 | ハンドル（E12） | `"handle:<handle_c_name>"` | `number & { readonly __tsuzuri: "<handle_c_name>" }` | 整数かつ `0 <= v < 2^32` | `v >>> 0` |
 | コールバック（E12、import の引数だけ） | `["callback", [引数], 結果]` | 関数型 | — | table の index から、上の変換を通す JS 関数（import の呼び出し中だけ有効） |
 
-- Result／Option・union・タプル・関数値は E05 の ABI にない（`E1008`）ので対象外。ABI の許容範囲は `crate::abi::parameter`／`crate::abi::result` から変えない。
+- Result／Maybe・union・タプル・関数値は E05 の ABI にない（`E1008`）ので対象外。ABI の許容範囲は `crate::abi::parameter`／`crate::abi::result` から変えない。
 - pointer（out、確保、descriptor の ptr）は常に `>>> 0` してから `DataView`／typed array の offset に使う。
 
 ### 評価順序・所有権・借用
@@ -585,7 +585,7 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
 
 - Phase 2（D11）: ブラウザーの threads glue、C#・Python・C++ の生成、native の共有ライブラリ出力、ブラウザー main thread での非同期の作り直し。
 - WebAssembly component model（WIT）、bundler の plugin、npm package の公開、CommonJS 出力、GUI フレームワークとの統合。
-- Result／Option・union・タプル・関数値の ABI（E05 の範囲外）、非同期の import（B08 Phase 2）。
+- Result／Maybe・union・タプル・関数値の ABI（E05 の範囲外）、非同期の import（B08 Phase 2）。
 
 ## 決定事項
 

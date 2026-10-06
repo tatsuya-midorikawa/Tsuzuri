@@ -105,6 +105,51 @@ fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     .tokens(recovering)
 }
 
+/// Turns the `::` of namespace paths such as `Sample::Shape.area` into
+/// `PathSep`: a `::` without spaces between two identifiers, in a chain that
+/// ends with a capitalized module name or follows `namespace` or `using` at
+/// the start of a line. The `::` after a declaration's name still annotates
+/// its type, and `head::tail` stays a list pattern.
+fn mark_paths(tokens: &mut [Token], source: &str) {
+    let segment = |token: &Token| matches!(&token.kind, TokenKind::Ident(name) if name != "_");
+    let joins = |tokens: &[Token], at: usize| {
+        tokens[at].kind == TokenKind::DoubleColon
+            && segment(&tokens[at - 1])
+            && tokens.get(at + 1).is_some_and(segment)
+            && tokens[at - 1].span.end == tokens[at].span.start
+            && tokens[at].span.end == tokens[at + 1].span.start
+    };
+    let mut at = 1;
+    while at + 1 < tokens.len() {
+        let declared = at >= 2
+            && matches!(
+                tokens[at - 2].kind,
+                TokenKind::Def | TokenKind::Rec | TokenKind::And
+            );
+        if declared || !joins(tokens, at) {
+            at += 1;
+            continue;
+        }
+        let mut last = at;
+        while last + 2 < tokens.len() && joins(tokens, last + 2) {
+            last += 2;
+        }
+        let header = at >= 2
+            && matches!(&tokens[at - 2].kind, TokenKind::Ident(word) if word == "namespace" || word == "using")
+            && (at == 2
+                || source
+                    .get(tokens[at - 3].span.end..tokens[at - 2].span.start)
+                    .is_some_and(|gap| gap.contains(['\n', '\r'])));
+        let module = matches!(&tokens[last + 1].kind, TokenKind::Ident(name) if name.starts_with(|first: char| first.is_ascii_uppercase()));
+        if header || module {
+            for separator in (at..=last).step_by(2) {
+                tokens[separator].kind = TokenKind::PathSep;
+            }
+        }
+        at = last + 2;
+    }
+}
+
 struct Lexer<'a> {
     source: &'a str,
     position: usize,
@@ -159,6 +204,7 @@ impl Lexer<'_> {
             kind: TokenKind::End,
             span: Span::new(self.position, self.position),
         });
+        mark_paths(&mut tokens, self.source);
         (tokens, diagnostics)
     }
 
@@ -1090,6 +1136,34 @@ fn parse_format_spec(text: &str, span: Span) -> Result<Option<FormatSpec>, Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_namespace_paths_apart_from_annotations_and_cons() {
+        use TokenKind::{DoubleColon, PathSep};
+        for (source, expected) in [
+            ("Sample::Features::Shape.area", vec![PathSep, PathSep]),
+            ("a::b::Shape", vec![PathSep, PathSep]),
+            ("namespace sample::tools", vec![PathSep]),
+            ("using Sample::Features", vec![PathSep]),
+            ("x\nusing a::b", vec![PathSep]),
+            ("x\rusing a::b", vec![PathSep]),
+            ("f using a::b", vec![DoubleColon]),
+            ("def area::Sample::Shape", vec![DoubleColon, PathSep]),
+            ("rec go::i64", vec![DoubleColon]),
+            ("x::xs", vec![DoubleColon]),
+            ("Sample :: Shape", vec![DoubleColon]),
+            ("Sample::\nShape", vec![DoubleColon]),
+            ("_::Shape", vec![DoubleColon]),
+        ] {
+            let separators: Vec<_> = lex(source)
+                .unwrap()
+                .into_iter()
+                .map(|token| token.kind)
+                .filter(|kind| matches!(kind, PathSep | DoubleColon))
+                .collect();
+            assert_eq!(separators, expected, "{source}");
+        }
+    }
 
     #[test]
     fn lexes_backslash_lambdas_without_changing_literal_escapes() {

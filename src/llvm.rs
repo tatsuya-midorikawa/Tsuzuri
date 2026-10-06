@@ -76,7 +76,7 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
         .filter(|function| function.exported)
         .map(|function| format!("tz_{}", function.name))
         .collect();
-    if io_entry(module) {
+    if io_entry(module) || main_entry(module) {
         exports.insert("tsuzuri_main".into());
     }
     let has_write = ir.contains("declare i64 @write(i32, ptr, i64)");
@@ -844,6 +844,15 @@ fn emit_program(
             &mut globals,
         ));
     }
+    if entry == Entry::Library && main_entry(module) {
+        output.push_str(&debug::wrapper(
+            library_def_main(module, wasm),
+            module,
+            &module.functions[module.entry.unwrap()],
+            "@tsuzuri_main",
+            &mut globals,
+        ));
+    }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
             console_main(module, uses_args),
@@ -881,7 +890,11 @@ fn emit_program(
     if output.contains("@tz.rec.") {
         output.push_str(include_str!("runtime/recursive.ll"));
     }
-    if uses_host_abi(module) || output.contains("@tsuzuri_io_") || output.contains("@tsuzuri_os_") {
+    if uses_host_abi(module)
+        || output.contains("@tsuzuri_io_")
+        || output.contains("@tsuzuri_os_")
+        || output.contains("@tsuzuri_arguments(")
+    {
         if wasm || cfg!(windows) || instrumentation.trap_return {
             output.push_str(host_abi::allocator());
         } else {
@@ -1081,7 +1094,7 @@ pub fn header_with(module: &CheckedModule, trap_return: bool) -> String {
     }
     output.push_str(&host_abi::handle_typedefs(module));
     output.push_str(&host_abi::header_types(module));
-    if io_entry(module) {
+    if io_entry(module) || main_entry(module) {
         output.push_str("int32_t tsuzuri_main(void);\n");
     }
     output.push_str(&imports::header(module));
@@ -1845,15 +1858,35 @@ pub fn io_entry(module: &CheckedModule) -> bool {
             == [Type::function(vec![Type::Unit], arguments[0].clone())]
 }
 
-/// Whether the entry is an `IO<i32>`, whose value becomes the process exit code (E08 D9).
+/// Whether the entry is a `def main`, which the checker allows only as `unit -> i32` or
+/// `Array<string> -> i32`; its result is the process exit code.
+pub fn main_entry(module: &CheckedModule) -> bool {
+    module
+        .entry
+        .is_some_and(|id| module.functions[id].name == "main")
+}
+
+/// Whether `main` takes the command-line arguments.
+fn main_arguments(module: &CheckedModule) -> bool {
+    main_entry(module)
+        && module.entry.is_some_and(|id| {
+            matches!(
+                module.functions[id].signature.parameters.as_slice(),
+                [Type::Array(_)]
+            )
+        })
+}
+
+/// Whether the entry returns the process exit code: a `def main`, or an `IO<i32>` entry (E08 D9).
 pub fn exit_code_entry(module: &CheckedModule) -> bool {
-    io_entry(module)
-        && module
-            .entry
-            .is_some_and(|id| match &module.functions[id].signature.result {
-                Type::Record(_, arguments) => arguments[0] == Type::Integer(32, true),
-                _ => false,
-            })
+    main_entry(module)
+        || io_entry(module)
+            && module
+                .entry
+                .is_some_and(|id| match &module.functions[id].signature.result {
+                    Type::Record(_, arguments) => arguments[0] == Type::Integer(32, true),
+                    _ => false,
+                })
 }
 
 fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
@@ -1863,21 +1896,21 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
         .ok_or_else(|| {
             Diagnostic::new(
                 "E2004",
-                "an executable requires top-level entry-point code or 'fn main' in Main.tz; use '--emit object' for a library",
+                "an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library",
                 Span::default(),
             )
         })?;
-    if !main.parameters.is_empty()
-        || (!io_entry(module)
-            && !main.signature.result.is_scalar()
-            && !matches!(
-                main.signature.result,
-                Type::Unit | Type::String | Type::Utf8String
-            ))
+    if !main_entry(module)
+        && !io_entry(module)
+        && !main.signature.result.is_scalar()
+        && !matches!(
+            main.signature.result,
+            Type::Unit | Type::String | Type::Utf8String
+        )
     {
         return Err(Diagnostic::new(
             "E2004",
-            "the Main.tz entry point must take no arguments and return IO<T>, a number, bool, char, utf8char, unit, string, or utf8string",
+            "top-level entry-point code must end with IO<T>, a number, bool, char, utf8char, unit, string, or utf8string",
             main.span,
         ));
     }
@@ -5321,13 +5354,13 @@ impl FunctionEmitter<'_, '_> {
 
     fn integer_none_on(&mut self, result: &Type, invalid: &str) {
         let Type::Union(id, _) = result else {
-            unreachable!("checked result is Option")
+            unreachable!("checked result is Maybe")
         };
         let none = self.module.unions[*id]
             .cases
             .iter()
             .position(|(name, _)| name == "None")
-            .expect("Option.None exists");
+            .expect("Maybe.None exists");
         let failure = self.label();
         let success = self.label();
         self.branch(invalid, &failure, &success);
@@ -5339,13 +5372,13 @@ impl FunctionEmitter<'_, '_> {
 
     fn integer_some(&mut self, result: &Type, element: &Type, value: &str) -> String {
         let Type::Union(id, _) = result else {
-            unreachable!("checked result is Option")
+            unreachable!("checked result is Maybe")
         };
         let some = self.module.unions[*id]
             .cases
             .iter()
             .position(|(name, _)| name == "Some")
-            .expect("Option.Some exists");
+            .expect("Maybe.Some exists");
         self.construct_value(result, some, Some((value.to_owned(), self.ty(element))))
     }
 
@@ -5654,7 +5687,7 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     let result = ty.after_arguments(1);
     let result_type = llvm_type(&result, module);
     let Type::Union(id, _) = result else {
-        unreachable!("Parse returns the checked standard Option union")
+        unreachable!("Parse returns the checked standard Maybe union")
     };
     let cases = &module.unions[id].cases;
     let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
@@ -5749,7 +5782,74 @@ fn test_builtin(
     ))
 }
 
+/// The C `main` of a `def main` entry, which returns `main`'s value as the exit code.
+/// `Array<string> -> i32` receives the arguments that `src/runtime/arguments.c` reads.
+fn console_def_main(module: &CheckedModule, uses_args: bool) -> String {
+    let main = &module.functions[module.entry.unwrap()];
+    let mut body = String::new();
+    if uses_args {
+        body.push_str("  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n");
+    }
+    let mut output = String::new();
+    let argument = if main_arguments(module) {
+        output.push_str("declare void @tsuzuri_arguments(i32, ptr, ptr)\n");
+        body.push_str(
+            "  %slot = alloca %tz.array, align 8\n  call void @tsuzuri_arguments(i32 %argc, ptr %argv, ptr %slot)\n  %arguments = load %tz.array, ptr %slot\n",
+        );
+        "%tz.array %arguments"
+    } else {
+        "i8 0"
+    };
+    let parameters = if body.is_empty() {
+        ""
+    } else {
+        "i32 %argc, ptr %argv"
+    };
+    let _ = write!(
+        output,
+        "define i32 @main({parameters}) {{\nentry:\n{body}  %code = call i32 @tz.fn.{}({argument})\n  ret i32 %code\n}}\n",
+        main.qualified_name()
+    );
+    output
+}
+
+/// The `tsuzuri_main` that a host calls to run a `def main` from a library or a WASM
+/// module. A WASI module reads its arguments in `src/runtime/arguments.c`, which replaces the
+/// weak empty `tsuzuri_arguments` here; other hosts pass none.
+fn library_def_main(module: &CheckedModule, wasm: bool) -> String {
+    let main = &module.functions[module.entry.unwrap()];
+    let mut output = String::new();
+    let mut body = String::new();
+    let argument = if main_arguments(module) {
+        let empty = "  %data = call ptr @tz.alloc(i64 1)\n  %empty = insertvalue %tz.array zeroinitializer, ptr %data, 0\n";
+        if wasm {
+            let _ = write!(
+                output,
+                "define weak void @tsuzuri_arguments(i32 %count, ptr %values, ptr %output) {{\nentry:\n{empty}  store %tz.array %empty, ptr %output\n  ret void\n}}\n"
+            );
+            body.push_str(
+                "  %slot = alloca %tz.array, align 8\n  call void @tsuzuri_arguments(i32 0, ptr null, ptr %slot)\n  %arguments = load %tz.array, ptr %slot\n",
+            );
+            "%tz.array %arguments"
+        } else {
+            body.push_str(empty);
+            "%tz.array %empty"
+        }
+    } else {
+        "i8 0"
+    };
+    let _ = write!(
+        output,
+        "define i32 @tsuzuri_main() {{\nentry:\n{body}  %code = call i32 @tz.fn.{}({argument})\n  ret i32 %code\n}}\n",
+        main.qualified_name()
+    );
+    output
+}
+
 fn console_main(module: &CheckedModule, uses_args: bool) -> String {
+    if main_entry(module) {
+        return console_def_main(module, uses_args);
+    }
     if io_entry(module) {
         if uses_args {
             return "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
@@ -5849,7 +5949,8 @@ mod tests {
             "fn rec sum(n: i64, acc: i64) -> i64 {
                 if n == 0 { acc / 2 } else { sum(n - 1, acc + n) }
              }
-             export fn main() -> i64 { sum(100, 0) }",
+             export fn run() -> i64 { sum(100, 0) }
+             run()",
         )
         .unwrap();
         let ir = emit(&module, Entry::Console).unwrap();
@@ -5863,7 +5964,7 @@ mod tests {
         assert!(!body.contains("call i64 @tz.fn.Main.sum"));
         assert!(ir.contains("phi i64"));
         assert!(ir.contains("call void @llvm.trap()"));
-        assert!(ir.contains("define i64 @tz_main()"));
+        assert!(ir.contains("define i64 @tz_run()"));
         assert!(ir.contains("define i32 @main()"));
         assert!(!body.contains(" nsw "));
         assert!(!body.contains(" nuw "));
@@ -5897,19 +5998,22 @@ mod tests {
             |source: &str| has_recursion(&emit(&checked(source), Entry::Console).unwrap());
         assert!(recursive(
             "fn rec depth(n: i64) -> i64 { if n == 0 { 0 } else { depth(n - 1) * 3 + n } }
-             export fn main() -> i64 { depth(10) }"
+             export fn run() -> i64 { depth(10) }
+             run()"
         ));
         assert!(recursive(
             "fn rec even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }
              fn rec odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }
-             export fn main() -> i64 { if even(10) { 1 } else { 0 } }"
+             export fn run() -> i64 { if even(10) { 1 } else { 0 } }
+             run()"
         ));
         // A tail call becomes a loop, and a program without calls to itself has nothing to exhaust.
         assert!(!recursive(
             "fn rec sum(n: i64, acc: i64) -> i64 { if n == 0 { acc } else { sum(n - 1, acc + n) } }
-             export fn main() -> i64 { sum(100, 0) }"
+             export fn run() -> i64 { sum(100, 0) }
+             run()"
         ));
-        assert!(!recursive("export fn main() -> i64 { 6 * 7 }"));
+        assert!(!recursive("export fn run() -> i64 { 6 * 7 }\nrun()"));
         // Only the program's own functions count, whatever the text around them looks like.
         assert!(!has_recursion(
             "define internal i64 @tz_soft_format(i64 %x) {\nentry:\n  %v = call i64 @tz_soft_format(i64 %x)\n  ret i64 %v\n}\n"
@@ -5979,9 +6083,9 @@ mod tests {
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
              let number = to_string 42\n\
-             let parsed: Option<i64> = Parse.parse ref number\n\
+             let parsed: Maybe<i64> = Parse.parse ref number\n\
              let truth = to_string true\n\
-             let parsed_bool: Option<bool> = Parse.parse ref truth\n0",
+             let parsed_bool: Maybe<bool> = Parse.parse ref truth\n0",
         );
         for (name, consumed) in [("display", false), ("to_string", true)] {
             let start = format!("define internal %tz.string @tz.builtin.{name}.utf8string(");

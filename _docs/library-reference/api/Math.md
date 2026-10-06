@@ -1,5 +1,7 @@
 # Math
 
+Namespace: `std`
+
 ## `zero`
 
 ```tsuzuri

@@ -6,8 +6,8 @@ fn all_code_units =
         assert (Char.to_u16 value == number as i16u)
         let text = to_string value
         assert (text.length == 1 && text[0] == number as i16u)
-        let parsed: Option<char> = Parse.parse (ref text)
-        assert (Option.get parsed == value)
+        let parsed: Maybe<char> = Parse.parse (ref text)
+        assert (Maybe.get parsed == value)
         let upper = Char.to_u16 (Char.to_ascii_upper value)
         let lower = Char.to_u16 (Char.to_ascii_lower value)
         assert (upper == (if number >= 97 && number <= 122 then number - 32 else number) as i16u)
@@ -22,8 +22,8 @@ fn scalar_roundtrip number =
     match Utf8Char.of_u32 number with
     | Some value ->
         let text = to_string value
-        let parsed: Option<utf8char> = Parse.parse (ref text)
-        Utf8Char.to_u32 value == number && Option.get parsed == value
+        let parsed: Maybe<utf8char> = Parse.parse (ref text)
+        Utf8Char.to_u32 value == number && Maybe.get parsed == value
     | None -> number > 1114111i32u || (number >= 55296i32u && number <= 57343i32u)
 
 export def character_patterns :: i64
@@ -41,13 +41,13 @@ fn parse_characters =
     let lone = "\uD800"
     let empty = ""
     let multiple = "ab"
-    let pair_unit: Option<char> = Parse.parse (ref pair)
-    let pair_scalar: Option<utf8char> = Parse.parse (ref pair)
-    let lone_unit: Option<char> = Parse.parse (ref lone)
-    let lone_scalar: Option<utf8char> = Parse.parse (ref lone)
-    let empty_scalar: Option<utf8char> = Parse.parse (ref empty)
-    let multi_scalar: Option<utf8char> = Parse.parse (ref multiple)
-    Option.is_none (ref pair_unit) && Option.get pair_scalar == u8'\u{1F600}' && Option.get lone_unit == '\uD800' && Option.is_none (ref lone_scalar) && Option.is_none (ref empty_scalar) && Option.is_none (ref multi_scalar)
+    let pair_unit: Maybe<char> = Parse.parse (ref pair)
+    let pair_scalar: Maybe<utf8char> = Parse.parse (ref pair)
+    let lone_unit: Maybe<char> = Parse.parse (ref lone)
+    let lone_scalar: Maybe<utf8char> = Parse.parse (ref lone)
+    let empty_scalar: Maybe<utf8char> = Parse.parse (ref empty)
+    let multi_scalar: Maybe<utf8char> = Parse.parse (ref multiple)
+    Maybe.is_none (ref pair_unit) && Maybe.get pair_scalar == u8'\u{1F600}' && Maybe.get lone_unit == '\uD800' && Maybe.is_none (ref lone_scalar) && Maybe.is_none (ref empty_scalar) && Maybe.is_none (ref multi_scalar)
 
 export def utf8_ascii :: bool
 fn utf8_ascii =

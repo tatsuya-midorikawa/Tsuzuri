@@ -48,9 +48,9 @@ def count_words :: ref string -> Map<string, i64> = \text ->
             let start = index
             while index < normalized.length && is_word_unit normalized[index] do
                 index = index + 1
-            let word = Option.get (String.slice (ref normalized) start index)
+            let word = Maybe.get (String.slice (ref normalized) start index)
             let previous = Map.get (ref counts) (clone_string (ref word))
-            let count = Option.default_value 0 previous
+            let count = Maybe.default_value 0 previous
             counts = Map.insert counts word (count + 1)
         else
             index = index + 1
@@ -65,7 +65,7 @@ def format_counts :: ref Map<string, i64> -> string = \counts ->
 test "merges ASCII letter case" =
     let text = "Rust RUST rust"
     let counts = count_words ref text
-    assert (Option.get (Map.get (ref counts) "rust") == 3)
+    assert (Maybe.get (Map.get (ref counts) "rust") == 3)
     assert (Map.length (ref counts) == 1)
 
 test "handles empty input" =
@@ -82,7 +82,7 @@ test "ignores repeated separators" =
 test "finishes a word at the end of input" =
     let text = "llvm21"
     let counts = count_words ref text
-    assert (Option.get (Map.get (ref counts) "llvm21") == 1)
+    assert (Maybe.get (Map.get (ref counts) "llvm21") == 1)
 
 test "treats non-ASCII text as separators" =
     let text = "one\u{65E5}\u{672C}\u{8A9E}two"
@@ -91,10 +91,11 @@ test "treats non-ASCII text as separators" =
     assert (Map.contains_key (ref counts) "one")
     assert (Map.contains_key (ref counts) "two")
 
-def main :: string =
+def main :: unit -> i32 = \() ->
     let text = "Rust rust; Tsuzuri, TSUZURI! LLVM 21."
     let counts = count_words ref text
-    format_counts ref counts
+    do! IO.write_line (format_counts ref counts)
+    0
 ```
 
 ## 実行する
@@ -117,7 +118,7 @@ main の入力を `"One fish, two fish."` にすると、fish が 2、one と tw
 4. 半開区間 start から index を切り出し、回数を更新する。
 5. Map をキー順に走査して表示する。
 
-内側の while は、まず index < length を検査します。&& の短絡によって、文字列末尾の外へアクセスしません。String.slice に渡す両端はこの走査で検証済みなので、Option.get が None を取り出すことはありません。
+内側の while は、まず index < length を検査します。&& の短絡によって、文字列末尾の外へアクセスしません。String.slice に渡す両端はこの走査で検証済みなので、Maybe.get が None を取り出すことはありません。
 
 ## 所有権の流れ
 

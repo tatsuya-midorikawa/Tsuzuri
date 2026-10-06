@@ -15,23 +15,29 @@
 | `fmt INPUT` | 空白・インデントを保守的に整形 |
 | `doc INPUT -o DIRECTORY` | 公開 API の Markdown を生成 |
 | `lsp` | stdin / stdout の言語サーバー。パスやビルドオプションは付けない |
+| `new DIRECTORY [--namespace NAME]` | 新しいプロジェクトを作成。空または存在しないフォルダーに `Tsuzuri.toml`・`Main.tz`・`.gitignore` を書き、既存ファイルは上書きしない |
 | `toolchain info` | 選ばれた外部ツール（環境変数・配布物・`PATH` のどれか）とその版、配布物の識別子を表示。ほかの引数は付けない |
 
 ```sh
+./target/release/tsuzuri new my-app --namespace Acme::MyApp
 ./target/release/tsuzuri check examples/hello/Main.tz --json
 ./target/release/tsuzuri run examples/hello
 ./target/release/tsuzuri build examples/hello -o target/hello
 ```
 
+new は `Tsuzuri.toml` に必ず `namespace` を書き、`Main.tz` は同じ名前空間を宣言します。package 名はフォルダー名の kebab-case（`MyApp` は `my-app`、使えない名前は `app`）、`--namespace` を省くと名前空間は package 名の PascalCase です。入れ子の名前空間は `Acme::MyApp` のように `::` でつなぎます。不正な名前空間（`.` 区切りを含む）や空でないフォルダーは `E2000` で、何も書きません。名前空間は[モジュールと名前空間](../language-reference/modules-and-packages.md#名前空間)を参照してください。
+
 check は LLVM を起動しません。ライブラリのファイルには main が不要です。ただし通常のディレクトリ入力は Main.tz を選ぶため、Main のないライブラリを check する場合は実際のソースファイルを指定します。doc / test は Main のないディレクトリも受理します。
 
 ## 入口
 
-run と exe 出力には root 直下の Main.tz が必要です。宣言後のトップレベル実行コード、または引数なしの main を使い、両方は併用しません。
+run と exe 出力には root 直下の Main.tz が必要です。Main.tz が `namespace` を宣言していても入口です。宣言後のトップレベル実行コード、または `def main :: unit -> i32`／`def main :: Array<string> -> i32` の main を使い、両方は併用しません。ほかのシグネチャの main は `E2004` です。
+
+main の値はプロセスの終了コードで、表示しません。`Array<string>` の main はプログラム名を除くコマンドライン引数を受け取ります。空白で区切り、`"` で囲んだ範囲は空白を含めて一つの引数です（`app a "b c d"` は `["a", "b c d"]`）。run は引数を渡さないので、引数は build した実行ファイルへ渡します。
 
 トップレベルの束縛は入口ローカルで、宣言済みの関数や別モジュールへ公開するグローバル値ではありません。最終結果は数値、bool、unit、両文字列型、両文字型です。ホスト wrapper が結果を表示し、unit は無出力です。
 
-library / WASM 出力はトップレベルコードを自動実行しません。export された関数をホストから呼びます。WASM 出力には少なくとも一つの export def が必要です。
+library / WASM 出力はトップレベルコードを自動実行しません。export された関数、または `def main` と IO の入口の `tsuzuri_main` をホストから呼びます。WASM 出力には `def main`、IO の入口、または少なくとも一つの export def が必要です。
 
 ## 出力形式
 

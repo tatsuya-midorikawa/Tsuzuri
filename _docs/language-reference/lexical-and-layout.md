@@ -37,6 +37,8 @@ with when true false
 
 `try`、`finally`、`is` は `try ... with` 式の中でだけ特別な意味を持つ文脈キーワードで、予約語ではありません。`not` と `ignore` も予約語ではなく、無修飾で呼べる組み込み関数です。
 
+`namespace` と `using` はファイル先頭の宣言（[名前空間](modules-and-packages.md#名前空間)）でだけ意味を持つ文脈キーワードで、それ以外の位置では変数名などに使えます。`module` 宣言はありません。
+
 ## 演算子と属性
 
 | 記号 | 意味 |
@@ -48,10 +50,13 @@ with when true false
 | `<<<`, `>>>` | シフト |
 | `>>`, `<<` | 関数合成 |
 | `\|>` | パイプ |
+| `::` | `def` の名前と型の区切り、リストの `head :: tail`、名前空間のパス（`Sample::Features::Shape.area`） |
 | `@checked` | 検査付き算術（[例外処理](error-handling.md)） |
 | `@literal` | コンパイル時定数の宣言（[値と定数](values-and-constants.md)） |
 
 意味と優先順位は[式と演算子](expressions-and-operators.md#優先順位)を参照してください。型引数の閉じ括弧が隣接した `>>`・`>>>` は、型の中では閉じ括弧として扱います。
+
+空白を挟まずに識別子をつなぐ `::` は、最後の要素が英大文字で始まる（モジュールを指す）か `namespace`／`using` 宣言の中にあれば名前空間のパスです。`def name::i64` の宣言名の直後と `x::xs` は、型の区切りとリストのままです。
 
 ## コメント
 

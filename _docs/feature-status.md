@@ -2,13 +2,13 @@
 
 [ドキュメントのトップ](README.md)
 
-対象は Tsuzuri 0.1.0、2026-10-04 時点のリポジトリです。機能チケット全93件（第1期の55件と、2026-09-29 に起票した第2期の計画38件）について、現在の提供範囲と利用者向けの説明を対応付けています。チケットの done は、そのチケットで合意した段階の完了であり、当初の設計案の全項目や他言語との互換性を意味しません。「未着手（計画）」の行は改善計画であり、現在の提供機能ではありません。
+対象は Tsuzuri 0.1.0、2026-10-05 時点のリポジトリです。機能チケット全93件（第1期の55件と、2026-09-29 に起票した第2期の計画38件）について、現在の提供範囲と利用者向けの説明を対応付けています。チケットの done は、そのチケットで合意した段階の完了であり、当初の設計案の全項目や他言語との互換性を意味しません。「未着手（計画）」の行は改善計画であり、現在の提供機能ではありません。
 
 ## 基礎言語
 
 チケット化以前の機能も言語リファレンスに含めます。[字句とインデント](language-reference/lexical-and-layout.md)、[値と定数](language-reference/values-and-constants.md)、[関数と再帰](language-reference/functions.md)、[型と推論](language-reference/types.md)、[数値](language-reference/numbers.md)、[評価順序](language-reference/expressions-and-operators.md)、[所有権](language-reference/ownership.md)、[制御構文](language-reference/control-flow.md)が入口です。
 
-2026-10-04 の仕様整合で追加・変更した次の機能はチケットを持たないため、ID なしで載せます。
+2026-10-04〜05 の仕様整合で追加・変更した次の機能はチケットを持たないため、ID なしで載せます。
 
 | ID | 現在の提供範囲 | 解説 | 実装記録 |
 | --- | --- | --- | --- |
@@ -16,8 +16,11 @@
 | — | 任意精度の `bigint`: `123I`・`0xFFI` と bigint を期待する位置の整数リテラル。`+` `-` `*` `/` `%` `**` と単項 `-`、比較、`Display` / `Parse` / `Hash` / `Default`。`/` は 0 方向への切り捨て、`%` は被除数の符号、ゼロ除算はトラップ。`BigInt.of_i64` / `to_i64` / `of_string` / `compare` | [BigInt](library-reference/bigint.md) | [言語仕様](../docs/language.md) |
 | — | 演算子: 単項 `+`、右結合で `*` より強く結合する累乗 `**`（整数・f32 / f64・bigint、クラス `Pow`。整数の負の指数はトラップ）、F# と同じビット演算 `&&&` `\|\|\|` `^^^` `~~~` と `<<<` `>>>`（`>>>` は符号付きなら算術、符号なしなら論理シフト）、関数合成 `>>` / `<<`（以前はシフト）、修飾なしの `not` と `ignore`。旧 `&` `\|` `^` `~` `!` も使える。`\|>` `>>` `<<` `\|\|` `&&` で始まる行は前の式の続き | [演算子](language-reference/expressions-and-operators.md) | [言語仕様](../docs/language.md) |
 | — | 例外: `@checked` の中の整数 `+` `-` `*` `**` と単項 `-` はオーバーフローで `OverflowException` を送出する。`try ... with ... finally` は `Result<'T, 'E>` の式で、ハンドラーの結果は `Err` を実装する型、`finally` はすべての経路で実行する。例外は同じ関数本体の最も内側の `try` へ字句的に移り（関数呼び出しとラムダを越えず、巻き戻しなし）、捕捉されなければトラップする。native と WASM で同じ動作。`finally` を持つ `try` から出る `break` / `continue` は `E1023`。例外は `OverflowException` だけで、利用者が送出する構文とトラップ（ゼロ除算・境界違反・assert）の捕捉はない | [例外処理](language-reference/error-handling.md) | [言語仕様](../docs/language.md) |
-| — | IO の直接形式: 結果型がビルダーを持たない本体（`def main :: i32` など）、`try` の中、IO の束縛の後を通常の式で終えるトップレベルでは、IO の `let!` / `do!` をその場で実行する。`do! a \|> f` は `a` の結果を `f` へ渡す。`IO.writeln` は `IO.write_line` の別名。トップレベルの結果は `Display` を持てば表示し、持たなければ表示せずに捨てる（以前は `E2004`） | [IO の直接形式](language-reference/computation-expressions.md#io-の直接形式) | [言語仕様](../docs/language.md) |
+| — | IO の直接形式: 結果型がビルダーを持たない本体（`def main :: unit -> i32` の本体など）、`try` の中、IO の束縛の後を通常の式で終えるトップレベルでは、IO の `let!` / `do!` をその場で実行する。`do! a \|> f` は `a` の結果を `f` へ渡す。`IO.writeln` は `IO.write_line` の別名。トップレベルの結果は `Display` を持てば表示し、持たなければ表示せずに捨てる（以前は `E2004`） | [IO の直接形式](language-reference/computation-expressions.md#io-の直接形式) | [言語仕様](../docs/language.md) |
 | — | 標準の高階関数: Array / List / Seq / Map / Set / HashMap / HashSet の `map` `filter` `fold` `fold_back` `reduce` `any` `all` `count` `find` `sort_by` `unfold` などは F# と同じく関数を先に受け取る（`Array.map f xs`、`Array.fold f state xs`、`Array.fold_back f xs state`、`Seq.unfold generator state`、`Map.fold f state map`）。以前は多くがコレクションを先に受け取った。一時値は結果が借用を保持しない呼び出しの間だけ共有借用として渡せ、`xs \|> Array.map f \|> Array.sum` とつなげられる。ラムダ式の引数は他の引数の後に型検査する | [Array / List](library-reference/arrays-and-lists.md) | [言語仕様](../docs/language.md) |
+| — | 名前空間: ファイル先頭の `namespace A::B` でモジュールの名前空間を決め、続く `using A::B` でその直下のモジュールを修飾なしで参照できる。名前空間とモジュールは `::`、モジュールのメンバーは `.` でつなぐ（`Sample::Shape.area`）。宣言がなければ `Tsuzuri.toml` の `namespace`（なければ package 名かフォルダー名）にディレクトリを続けた名前空間。参照は自分の名前空間・`using`・外側の名前空間の順に探す。モジュール名と同じ名前の record / union の完全名はモジュールの完全名（`Sample::Point { ... }`。`Sample::Point.Point` は `E1004`）。モジュール名は英大文字始まり。`def answer :: i32 = \() -> ...` は引数なしの関数。`tsuzuri new` と VS Code の New Project は `namespace` を設定したプロジェクトを作る | [モジュールと名前空間](language-reference/modules-and-packages.md#名前空間) | [言語仕様](../docs/language.md) |
+| — | `def` の型注釈: 名前と型の間は必ず `::`（`@literal def`・`extern def`・`and`・クラスのメソッドを含む）。単一の `:` は `E0002`（以前は `:` も受理） | [関数](language-reference/functions.md) | [言語仕様](../docs/language.md) |
+| — | エントリーポイント: Main.tz の `main` は `def main :: unit -> i32` か `def main :: Array<string> -> i32` だけで、ほかのシグネチャは `E2004`、シグネチャのない `fn main` は `E0002`（以前は表示できる値・`IO<T>` を返す引数なしの `main` と、署名のない `fn main` も受理）。`main` の値は終了コードで、表示しない。`Array<string>` の `main` はプログラム名を除くコマンドライン引数を受け取る（空白区切りで、`"arg1 arg2"` のように `"` で囲んだ範囲は一つの引数。Windows は実行ファイルが同じ規則で分割し、不正な UTF-8 は U+FFFD）。`tsuzuri run` と既定の WASM・ライブラリでは空の配列。`Array<T>` は `[T]` の別表記で、`Array` は型名に使えない | [入門](get-started.md#最初のプログラム) | [言語仕様](../docs/language.md#アプリケーションのエントリーポイント) |
 
 ## A 型システム
 
@@ -44,10 +47,10 @@
 
 | ID | 現在の提供範囲 | 解説 | 実装記録 |
 | --- | --- | --- | --- |
-| B01 | Option / Result の型と所有・借用 API | [Option / Result](library-reference/option-result.md) | [B01](../_features/_completed/B01-option-result.md) |
-| B02 | Option / Result ビルダーで失敗時に継続を短絡 | [計算式](language-reference/computation-expressions.md) | [B02](../_features/_completed/B02-result-propagation.md) |
+| B01 | Maybe / Result の型と所有・借用 API | [Maybe / Result](library-reference/maybe-result.md) | [B01](../_features/_completed/B01-option-result.md) |
+| B02 | Maybe / Result ビルダーで失敗時に継続を短絡 | [計算式](language-reference/computation-expressions.md) | [B02](../_features/_completed/B02-result-propagation.md) |
 | B03 | 通常ループの break / continue と解放 | [ループ](language-reference/control-flow.md) | [B03](../_features/_completed/B03-break-continue.md) |
-| B04 | bool / Option の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
+| B04 | bool / Maybe の部分認識器、明示 union の複数 case | [アクティブパターン](language-reference/active-patterns.md) | [B04](../_features/_completed/B04-active-pattern-extensions.md) |
 | B05 | match! / and!、BindReturn / Bind2。use / use! は B07 で対応。try はビルダーの操作に展開せず、`Result` を返す通常の式 | [計算式の合成](language-reference/computation-expressions.md) | [B05](../_features/_completed/B05-computation-expression-extensions.md) |
 | B06 | parallel_results の未開始停止と最小 index の Error | [Task](language-reference/tasks.md) | [B06](../_features/_completed/B06-task-cancellation.md) |
 | B07 | 対応: 利用者が宣言した record・union の `instance Drop<T>`。scope の終わり・置き換え・コレクションの要素・未実行の Task の捕捉値・再帰 union のノードで一度だけ `drop` を呼び、field を宣言順に解放する（native と WASM、100 万段の再帰 union を検証）。Drop 型は非 Copy で、field の move と更新は `E1012`。Phase 2 で `use` / `use!` 束縛、早期解放の `Owned.drop`、Drop 型を捕捉できる非 Copy の関数値 `Owned.function` / `Owned.call`。`extern type` への直接の `Drop` は未実装 | [所有権](language-reference/ownership.md) | [B07](../_features/_completed/B07-user-drop.md) |
@@ -96,11 +99,11 @@
 | E05 | 借用入力、所有バッファ結果、スカラーレコード | [C ABI](guides/native-interop.md)、[WASM](guides/webassembly.md) | [E05](../_features/_completed/E05-host-abi-buffers.md) |
 | E06 | 同期 extern、到達する import のみ生成 | [外部関数](guides/native-interop.md) | [E06](../_features/_completed/E06-host-imports.md) |
 | E07 | Debug.print / trace、native stderr と WASM opt-in | [Debug](tools/debugging.md) | [E07](../_features/_completed/E07-debug-output.md) |
-| E08 | 対応（Phase 1 の段 A〜C と Phase 2 の `Process`・metadata・`Dir.walk`。Windows を除く）: `File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process` の std モジュール。OS に触れる操作は `IO<Result<_, Os.Error>>` の遅延アクションで、`Path` と `Random.Pcg` は純粋。`IO<i32>` の入口の値が終了コードになる。既定の wasm32 は OS API を `E2000` で拒否し、`--wasm-host wasi`（WASI preview1）では native と同じ結果を返す（`Process.run` は `Other`）。Windows の native は `E2002`（G10 待ち）。WASI preview2 とコンポーネントモデルは未実装 | [OS API](library-reference/os.md) | [E08](../_features/_completed/E08-os-api.md) |
+| E08 | 対応（Phase 1 の段 A〜C と Phase 2 の `Process`・metadata・`Dir.walk`。Windows を除く）: `File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process` の std モジュール。OS に触れる操作は `IO<Result<_, Os.Error>>` の遅延アクションで、`Path` と `Random.Pcg` は純粋。`def main` の値と、トップレベルの `IO<i32>` の入口の値が終了コードになる。既定の wasm32 は OS API を `E2000` で拒否し、`--wasm-host wasi`（WASI preview1）では native と同じ結果を返す（`Process.run` は `Other`）。Windows の native は `E2002`（G10 待ち）。WASI preview2 とコンポーネントモデルは未実装 | [OS API](library-reference/os.md) | [E08](../_features/_completed/E08-os-api.md) |
 | E09 | 未着手（計画）: TCP / UDP | [IO](library-reference/io.md) | [E09](../_features/E09-network.md) |
 | E10 | 未着手（計画）: git 依存、lockfile、版解決と registry | [パッケージ](language-reference/modules-and-packages.md) | [E10](../_features/E10-package-registry.md) |
 | E11 | 未着手（計画）: C ヘッダーからの extern 生成 | [C ABI](guides/native-interop.md) | [E11](../_features/E11-c-bindgen.md) |
-| E12 | 対応（Phase 1 と一部の拡張）: `extern "symbol" def` と `extern "module" "symbol" def` のリンク名、`--link`・`-l`・`-L` と manifest の `[native]` でのホストのリンク指定（native の実行ファイル。root が `native = true` で許可した依存 package の `[native]` を含む）、`extern type` の不透明ハンドル、捕捉のないトップレベル関数の静的コールバック（ホストの別スレッドからの呼び出しと複数スレッドからの同時呼び出しを検証済み）。捕捉のある関数値のコールバック、`Option<H>` と NULL の対応、i128・f16・タプルの ABI、`extern type` への `Drop` は未実装 | [外部関数](guides/native-interop.md) | [E12](../_features/_completed/E12-ffi-extensions.md) |
+| E12 | 対応（Phase 1 と一部の拡張）: `extern "symbol" def` と `extern "module" "symbol" def` のリンク名、`--link`・`-l`・`-L` と manifest の `[native]` でのホストのリンク指定（native の実行ファイル。root が `native = true` で許可した依存 package の `[native]` を含む）、`extern type` の不透明ハンドル、捕捉のないトップレベル関数の静的コールバック（ホストの別スレッドからの呼び出しと複数スレッドからの同時呼び出しを検証済み）。捕捉のある関数値のコールバック、`Maybe<H>` と NULL の対応、i128・f16・タプルの ABI、`extern type` への `Drop` は未実装 | [外部関数](guides/native-interop.md) | [E12](../_features/_completed/E12-ffi-extensions.md) |
 | E13 | 未着手（計画）: TypeScript などのバインディングと Web glue の生成 | [WASM](guides/webassembly.md) | [E13](../_features/E13-host-bindings.md) |
 | E14 | 対応（Phase 1・2・3）: WASM の `createBoundary` がトラップとスタック枯渇を値で返し、失敗した instance を捨てて作り直す。native object は `--trap-mode return` で `tsuzuri_try_<name>`（status 0・1・2 と `tsuzuri_trap_info`）を出し、トラップした呼び出しの heap を解放して `Task.parallel` の worker のトラップも返す。再帰するプログラムの native 実行ファイルはスタック枯渇を `trap: stack overflow` で報告して `abort()` する（macOS と Linux で検証。Windows と `tsuzuri test` の実行ファイルは推定のまま） | [トラップ位置](tools/debugging.md) | [E14](../_features/_completed/E14-trap-boundary.md) |
 

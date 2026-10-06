@@ -20,9 +20,9 @@
 標準出力へ一行書き込みます。
 
 ```tsuzuri run=Hello%2C%20Tsuzuri!
-IO {
+def main :: unit -> i32 = \() ->
     do! IO.write_line "Hello, Tsuzuri!"
-}
+    0
 ```
 
 この例のディレクトリを hello とした場合のコマンドです。
@@ -38,9 +38,9 @@ tsuzuri run ./hello
 Hello, Tsuzuri!
 ```
 
-`IO` は入出力アクションを組み立てます。入口が返すアクションを実行環境が一度実行し、`do!` が出力を順に進めます。IO の入口には、結果を自動で表示する処理は追加されません。
+`IO` は入出力アクションを組み立てます。`main` の本体の `do!` がアクションをその場で順に実行し、最後の `0` が終了コードです。`main` の値は表示されません。
 
-後の例のように入口が整数などの通常の値を返す場合、native のコンソール用ホストが最後の値を表示します。明示的な出力を行う IO とは区別してください。
+後の例のように Main.tz のトップレベルのコードが整数などの通常の値で終わる場合、native のコンソール用ホストが最後の値を表示します。明示的な出力を行う IO とは区別してください。
 
 詳しくは [IO と標準入出力](../library-reference/io.md)を参照してください。
 
@@ -115,10 +115,10 @@ tsuzuri test ./named
 
 ```tsuzuri run=42
 def parse_count :: ref string -> Result<i64, string> = \text ->
-    let parsed: Option<i64> = Parse.parse text
+    let parsed: Maybe<i64> = Parse.parse text
     match parsed with
-    | Option.None -> Result.Error "not an integer"
-    | Option.Some count ->
+    | Maybe.None -> Result.Error "not an integer"
+    | Maybe.Some count ->
         if count < 0 then Result.Error "must be non-negative"
         else Result.Ok count
 
@@ -156,7 +156,7 @@ match total with
 
 例えば最初の入力が `"twenty"` なら、出力するエラーは `not an integer` です。テストはこの経路と負数の拒否を確認します。合計の `+` 自体は通常の i64 加算で、上限を超えると折り返します。集計のオーバーフローも拒否したい場合は、`Int.checked_add` の結果を処理するか、`@checked` の式を `try` で `Result` に変えます（[例外処理](../language-reference/error-handling.md)）。
 
-詳しくは [Option / Result](../library-reference/option-result.md)、[表示と解析](../library-reference/formatting-and-parsing.md)、[整数 API](../library-reference/integers.md)を参照してください。
+詳しくは [Maybe / Result](../library-reference/maybe-result.md)、[表示と解析](../library-reference/formatting-and-parsing.md)、[整数 API](../library-reference/integers.md)を参照してください。
 
 ## 配列を借用して更新する
 

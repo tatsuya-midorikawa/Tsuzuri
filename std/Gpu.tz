@@ -3,7 +3,7 @@ union Error = Unavailable
 record Device { backend: Backend }
 record Buffer<'a> { values: ['a] }
 
-def request :: Backend -> Result.Result<Device, Error>
+def request :: Backend -> Result<Device, Error>
 fn request backend = match backend with
     | CpuReference -> Result.Ok (Device { backend: backend })
     | _ -> Result.Error Unavailable

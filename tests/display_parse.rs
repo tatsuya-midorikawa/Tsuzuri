@@ -36,7 +36,7 @@ fn provides_display_for_primitives_and_parse_for_numbers_and_bool() {
         accepts(&format!(
             "def show :: {ty} -> string\nfn show value = to_string value
              def display :: &{ty} -> string\nfn display value = Display.display value
-             def parse :: &string -> Option<{ty}>\nfn parse text = Parse.parse text"
+             def parse :: &string -> Maybe<{ty}>\nfn parse text = Parse.parse text"
         ));
     }
     accepts("to_string ()");
@@ -44,7 +44,7 @@ fn provides_display_for_primitives_and_parse_for_numbers_and_bool() {
     let ir = accepts("to_string 42");
     assert!(ir.contains("@tz_soft_format"));
     assert!(
-        accepts("def parse :: &string -> Option<i64>\nfn parse s = Parse.parse s")
+        accepts("def parse :: &string -> Maybe<i64>\nfn parse s = Parse.parse s")
             .contains("@tz_soft_parse")
     );
 }
@@ -59,13 +59,13 @@ fn method_values_and_generic_constraints_use_normal_specialization() {
          show (&value) + render true",
     );
     accepts(
-        "def parse :: Parse<'a> => &string -> Option<'a>
+        "def parse :: Parse<'a> => &string -> Maybe<'a>
          fn parse text = Parse.parse text
-         let parser: &string -> Option<i64> = Parse.parse
+         let parser: &string -> Maybe<i64> = Parse.parse
          let text = \"42\"
          let first = parser (&text)
-         let second: Option<i64> = parse (&text)
-         Option.get first + Option.get second",
+         let second: Maybe<i64> = parse (&text)
+         Maybe.get first + Maybe.get second",
     );
 }
 
@@ -80,8 +80,8 @@ fn user_instances_are_used_by_to_string_and_parse() {
              fn parse text = Some (Label { text: clone_string text })
          }
          let text = \"owned\"
-         let parsed: Option<Label> = Parse.parse (&text)
-         to_string (Option.get parsed)",
+         let parsed: Maybe<Label> = Parse.parse (&text)
+         to_string (Maybe.get parsed)",
     );
     assert!(ir.contains("$instance."));
     accepts(
@@ -109,11 +109,11 @@ fn rejects_missing_or_overridden_instances_and_preserves_ownership() {
             "E1005",
         ),
         (
-            "def f :: &string -> Option<string>\nfn f text = Parse.parse text",
+            "def f :: &string -> Maybe<string>\nfn f text = Parse.parse text",
             "E1005",
         ),
         (
-            "def f :: &string -> Option<unit>\nfn f text = Parse.parse text",
+            "def f :: &string -> Maybe<unit>\nfn f text = Parse.parse text",
             "E1005",
         ),
         ("def to_string :: i64\nfn to_string = 1", "E1001"),
@@ -129,7 +129,7 @@ fn rejects_missing_or_overridden_instances_and_preserves_ownership() {
     accepts(
         "let text = \"owned\"
          let rendered = Display.display (&text)
-         let parsed: Option<i64> = Parse.parse (&text)
+         let parsed: Maybe<i64> = Parse.parse (&text)
          text.length + rendered.length",
     );
     let ir = accepts("def transfer :: string -> string\nfn transfer text = to_string text");
@@ -165,13 +165,13 @@ fn rejects_missing_or_overridden_instances_and_preserves_ownership() {
 }
 
 #[test]
-fn missing_standard_option_is_diagnosed_only_when_parse_is_used() {
+fn missing_standard_maybe_is_diagnosed_only_when_parse_is_used() {
     analyze_modules_with_std(&[("Main", "to_string 42")], &[]).unwrap();
     let error =
         analyze_modules_with_std(&[("Main", "let text = \"42\"\nParse.parse (&text)")], &[])
             .unwrap_err();
     assert_eq!(error.code, "E1004");
-    assert!(error.message.contains("Option"));
+    assert!(error.message.contains("Maybe"));
 }
 
 #[test]

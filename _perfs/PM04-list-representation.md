@@ -118,16 +118,15 @@ fn build n =
     for index in 0i64 .. n do values = List.cons index values
     values
 
-fn main =
-    let values = build 5
-    let values = List.tail values
-    let first =
-        match values with
-        | head :: tail -> head * 100 + tail.length * 10 + tail[0]
-        | [||] -> 0
-    let literal = [|7, 8, 9|]
-    let generated = new [|i64|](4, i -> i * i)
-    first + values[3] + literal[2] * 1000 + generated[3] * 10000
+let values = build 5
+let values = List.tail values
+let first =
+    match values with
+    | head :: tail -> head * 100 + tail.length * 10 + tail[0]
+    | [||] -> 0
+let literal = [|7, 8, 9|]
+let generated = new [|i64|](4, i -> i * i)
+first + values[3] + literal[2] * 1000 + generated[3] * 10000
 ```
 
 ```sh
@@ -301,9 +300,8 @@ K は `max(1, LIST_CHUNK_MAX_BYTES / max(1, storage_layout(T) の大きさ))` �
 def twice :: i64 -> i64
 fn twice x = x * 2
 
-fn main =
-    let values = [1, 2, 3]
-    twice (values[2]) + values.length
+let values = [1, 2, 3]
+twice (values[2]) + values.length
 ```
 
 ```sh

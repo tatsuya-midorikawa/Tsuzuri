@@ -144,5 +144,3 @@ fn rec grow(n: i64, text: string) -> i64 {
 }
 
 export fn allocation_limit() -> i64 { grow(25, "a") }
-
-fn main() -> utf8string { u8"UTF-8: 日本語 \u{1f600}" }

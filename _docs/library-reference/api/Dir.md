@@ -1,9 +1,11 @@
 # Dir
 
+Namespace: `std`
+
 ## `list`
 
 ```tsuzuri
-def list :: string -> IO<Result.Result<[string], Os.Error>>
+def list :: string -> IO<Result<[string], Os.Error>>
 ```
 
 Lists the names in a directory, without "." and "..", sorted by their UTF-8 bytes.
@@ -12,7 +14,7 @@ A name that is not UTF-8 makes the whole call `InvalidEncoding`.
 ## `create`
 
 ```tsuzuri
-def create :: string -> IO<Result.Result<unit, Os.Error>>
+def create :: string -> IO<Result<unit, Os.Error>>
 ```
 
 Creates one directory; its parent must exist.
@@ -20,7 +22,7 @@ Creates one directory; its parent must exist.
 ## `remove`
 
 ```tsuzuri
-def remove :: string -> IO<Result.Result<unit, Os.Error>>
+def remove :: string -> IO<Result<unit, Os.Error>>
 ```
 
 Removes an empty directory.
@@ -28,7 +30,7 @@ Removes an empty directory.
 ## `walk`
 
 ```tsuzuri
-def walk :: string -> IO<Result.Result<[string], Os.Error>>
+def walk :: string -> IO<Result<[string], Os.Error>>
 ```
 
 Lists everything below a directory, as paths relative to it joined with "/": each entry is followed by

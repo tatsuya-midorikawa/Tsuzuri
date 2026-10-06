@@ -99,8 +99,8 @@ fn format_parse count seed =
     for index in 0 .. count - 1 do
         state = (state ^ (state >>> 13)) * 6364136223846793005 + index as i64u + 1442695040888963407
         let text = to_string state
-        let parsed: Option<i64u> = Parse.parse ref text
-        state = Option.get parsed ^ text.length as i64u
+        let parsed: Maybe<i64u> = Parse.parse ref text
+        state = Maybe.get parsed ^ text.length as i64u
     state as i64
 
 export def math_intrinsics :: i64 -> i64 -> i64

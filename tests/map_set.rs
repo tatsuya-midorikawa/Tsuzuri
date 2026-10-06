@@ -12,10 +12,10 @@ fn ordered_containers_are_opaque_noncopy_owned_values() {
         );
     }
     for source in [
-        "let map: Map<i64, i64> = Map.Map { entries: Vec.empty() }\n0",
+        "let map: Map<i64, i64> = Map { entries: Vec.empty() }\n0",
         "let map = Map.singleton 1 2\nmap.entries.length",
         "let map = Map.singleton 1 2\nlet other = { map with entries = Vec.empty() }\nMap.length (&other)",
-        "let map = Map.singleton 1 2\nmatch map with | Map.Map { entries = storage } -> Vec.length (&storage)",
+        "let map = Map.singleton 1 2\nmatch map with | Map { entries = storage } -> Vec.length (&storage)",
         "let set = Set.singleton 1\nmatch set with | { entries = storage } -> Vec.length (&storage)",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1022", "{source}");
@@ -41,7 +41,7 @@ fn ordered_lookup_updates_and_snapshots_use_only_required_constraints() {
     for source in [
         "let map = Map.insert (Map.singleton \"b\" 2) \"a\" 1\nlet value = Map.at (&map) \"b\"\nassert (deref value == 2)\nMap.fold (\\total key value -> total + key.length + deref value) 0 (&map)",
         "let map = Map.insert (Map.singleton 2 \"old\") 2 \"new\"\nlet value = Map.at (&map) 2\nvalue.length",
-        "let map = Map.insert (Map.singleton 2 20) 1 10\nlet keys = Map.keys (&map)\nlet values = Map.values (&map)\nlet pairs = Map.to_array (&map)\nlet map = Map.remove map 2\nassert (Option.get (Map.get (&map) 1) == 10)\nkeys[0] + values[0] + pairs.length",
+        "let map = Map.insert (Map.singleton 2 20) 1 10\nlet keys = Map.keys (&map)\nlet values = Map.values (&map)\nlet pairs = Map.to_array (&map)\nlet map = Map.remove map 2\nassert (Maybe.get (Map.get (&map) 1) == 10)\nkeys[0] + values[0] + pairs.length",
         "let set = Set.remove (Set.insert (Set.singleton \"a\") \"b\") \"a\"\nSet.fold (\\total key -> total + key.length) 0 (&set)",
         "record Key { name: string } deriving (Eq, Ord)\nlet map = Map.insert (Map.empty()) (Key { name: \"x\" }) 42\nMap.get (&map) (Key { name: \"x\" })",
     ] {

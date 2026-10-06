@@ -1,11 +1,11 @@
 export def match_some :: i64
-fn match_some = Option.get (Option { match! Some (20, 22) with | (left, right) -> return left + right })
+fn match_some = Maybe.get (Maybe { match! Some (20, 22) with | (left, right) -> return left + right })
 
 export def match_none :: bool
 fn match_none =
-    let missing: Option<i64> = None
-    let result: Option<i64> = Option { match! missing with | _ -> return 1 / 0 }
-    Option.is_none (&result)
+    let missing: Maybe<i64> = None
+    let result: Maybe<i64> = Maybe { match! missing with | _ -> return 1 / 0 }
+    Maybe.is_none (&result)
 
 export def result_error :: i64
 fn result_error =
@@ -44,7 +44,7 @@ export def strict_none :: i64
 fn strict_none =
     let mut state = 0
     let result = Eager { let! first: i64 = None and! second = Some (stamp (ref mut state) 2); return first + second }
-    assert (Option.is_none (&result))
+    assert (Maybe.is_none (&result))
     state
 
 export def mutable_group :: i64
@@ -55,16 +55,16 @@ fn owned_match count =
     let mut total = 0
     let mut index = 0
     while index < count do
-        let result = Option {
+        let result = Maybe {
             match! Some "owned" with
             | text when text.length == 5 ->
                 let! suffix = Some "value"
                 return text + suffix
             | text -> return text
         }
-        total = total + (Option.get result).length
+        total = total + (Maybe.get result).length
         index = index + 1
     total
 
 export def strict_trap :: i64
-fn strict_trap = Option.get (Option { let! first: i64 = None and! second = { assert false; Some 2 }; return first + second })
+fn strict_trap = Maybe.get (Maybe { let! first: i64 = None and! second = { assert false; Some 2 }; return first + second })

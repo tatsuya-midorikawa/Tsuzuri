@@ -41,7 +41,7 @@ def add :: i32 -> i32 -> i32 = \x y ->
 もし、強制的に戻り値を `unit` にしたい場合、パイプラインで `ignore` に繋げます。
 
 ```tz
-def main :: i32 =
+def main :: unit -> i32 = \() ->
   do! IO.writeln "Hello, Tsuzuri!!"
   |> ignore
   0

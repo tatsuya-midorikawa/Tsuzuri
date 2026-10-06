@@ -1,5 +1,7 @@
 # Array
 
+Namespace: `std`
+
 ## `length`
 
 ```tsuzuri
@@ -15,13 +17,13 @@ def is_empty :: ref ['a] -> bool
 ## `iter`
 
 ```tsuzuri
-def iter :: ref ['a] -> Seq.Seq<ref 'a>
+def iter :: ref ['a] -> Seq<ref 'a>
 ```
 
 ## `get`
 
 ```tsuzuri
-def get :: Copy<'a> => ref ['a] -> i64 -> Option.Option<'a>
+def get :: Copy<'a> => ref ['a] -> i64 -> Maybe<'a>
 ```
 
 ## `at`
@@ -119,7 +121,7 @@ def fold_back_ref :: (ref 'a -> 'state -> 'state) -> ref ['a] -> 'state -> 'stat
 ## `reduce`
 
 ```tsuzuri
-def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Option.Option<'a>
+def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> Maybe<'a>
 ```
 
 ## `sum`
@@ -173,13 +175,13 @@ def product :: Numeric<'a> => ref ['a] -> 'a
 ## `min`
 
 ```tsuzuri
-def min :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+def min :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 ```
 
 ## `max`
 
 ```tsuzuri
-def max :: Ord<'a> => ref ['a] -> Option.Option<ref 'a>
+def max :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 ```
 
 ## `any`
@@ -203,13 +205,13 @@ def count :: (ref 'a -> bool) -> ref ['a] -> i64
 ## `find`
 
 ```tsuzuri
-def find :: (ref 'a -> bool) -> ref ['a] -> Option.Option<ref 'a>
+def find :: (ref 'a -> bool) -> ref ['a] -> Maybe<ref 'a>
 ```
 
 ## `index_of`
 
 ```tsuzuri
-def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Option.Option<i64>
+def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Maybe<i64>
 ```
 
 ## `contains`
@@ -227,7 +229,7 @@ def equal :: Eq<'a> => ref ['a] -> ref ['a] -> bool
 ## `binary_search`
 
 ```tsuzuri
-def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Option.Option<i64>
+def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Maybe<i64>
 ```
 
 ## `sort`

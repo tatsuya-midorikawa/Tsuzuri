@@ -14,17 +14,17 @@ IO {
 
 この例は独立した Main.tz です。入口が返す `IO<T>` を実行環境が一度実行し、結果を解放します。通常の値を返す入口と異なり、追加の結果表示や改行はありません。
 
-引数なしの `def main :: IO<unit> = IO { ... }` でも同じ動作です。IO を作るだけでは実行しません。例えば `let _unused = IO.write_line "unused"` は何も出力しません。
+`main` を使う場合は、`def main :: unit -> i32` の本体に `do! IO.write_line 42` と書き、最後に終了コードの `0` を書きます（[直接形式](#直接形式)）。IO を作るだけでは実行しません。例えば `let _unused = IO.write_line "unused"` は何も出力しません。
 
 ## 読み書きする
 
 ```tsuzuri
-def main :: IO<unit> = IO {
+def main :: unit -> i32 = \() ->
     do! IO.write "Name: "
     let! line = IO.read_line ()
-    let name = Option.default_value "world" line
+    let name = Maybe.default_value "world" line
     do! IO.write_line ("Hello, " + name + "!")
-}
+    0
 ```
 
 [同梱サンプル](../../examples/io/Main.tz)をリポジトリルートから実行できます。
@@ -36,23 +36,21 @@ printf 'Tsuzuri\n' | ./target/release/tsuzuri run examples/io
 
 `let!` はアクションの結果を束縛し、`do!` は `IO<unit>` を実行して次へ進みます。通常の let、式、関数呼び出しには `!` を付けません。`return value` は値を IO に包み、`return! action` は別の IO を続けます。文は改行で区切れます。
 
-IO ブロックを省略し、Option の短絡も同じ本体で使えます。
+IO ブロックを省略し、Maybe の短絡も同じ本体で使えます。次はトップレベルの入口の例です。
 
 ```tsuzuri
-def main :: IO<Option<unit>> =
-    let! line = IO.read_line ()
-    let! value = line
-    do! IO.write_line value
+let! line = IO.read_line ()
+let! value = line
+do! IO.write_line value
 ```
 
-EOF なら二つ目の let! で残りの文を中断します。結果の型は `IO<Option<unit>>` です。
-Result や独自ビルダーの失敗値も保持します。入口は None／Error を表示せず終了コード 0 で終えるため、
-失敗を報告する場合は名前付き関数から IO の結果を受け取り、match で処理してください。
-終了コードで報告するなら、入口を `IO<i32>` にします（[終了コード](#終了コード)）。
+EOF なら二つ目の let! で残りの文を中断します。結果の型は `IO<Maybe<unit>>` です。
+Result や独自ビルダーの失敗値も保持します。トップレベルの入口は None／Error を表示せず終了コード 0 で終えるため、
+失敗を報告する場合は名前付き関数（例えば `def read_and_echo :: IO<Maybe<unit>>`）の IO の結果を `main` で受け取り、match して終了コードを返してください（[終了コード](#終了コード)）。
 
 ## 直接形式
 
-結果の型が分かっていて、その型にビルダーがない本体では、IO の `let!` と `do!` をその場で実行します。例えば `def main :: i32` や、i64 を返す関数の本体です。トップレベルのコードも、IO の束縛の後を通常の式で終えると直接実行し、その式の値を結果にします。
+結果の型が分かっていて、その型にビルダーがない本体では、IO の `let!` と `do!` をその場で実行します。例えば `def main :: unit -> i32` の本体（結果型 `i32`）や、i64 を返す関数の本体です。トップレベルのコードも、IO の束縛の後を通常の式で終えると直接実行し、その式の値を結果にします。
 
 ```tsuzuri run=value%20%3D%2021%0A42
 def report :: i64 -> i64 = \value ->
@@ -76,13 +74,13 @@ try_write_line の `Result<unit, IO.Error>` を捨てるので、書き込みの
 
 | API | 結果 | 動作 |
 | --- | --- | --- |
-| `IO.read_line ()` | `IO<Option<string>>` | stdin から一行読む。EOF は None |
+| `IO.read_line ()` | `IO<Maybe<string>>` | stdin から一行読む。EOF は None |
 | `IO.write value` | `IO<unit>` | stdout へ改行なしで表示 |
 | `IO.write_line value` | `IO<unit>` | stdout へ表示して LF を追加 |
 | `IO.writeln value` | `IO<unit>` | `IO.write_line` の別名 |
 | `IO.write_error value` | `IO<unit>` | stderr へ改行なしで表示 |
 | `IO.write_error_line value` | `IO<unit>` | stderr へ表示して LF を追加 |
-| `IO.try_read_line ()` | `IO<Result<Option<string>, IO.Error>>` | 読み取り失敗を値として返す |
+| `IO.try_read_line ()` | `IO<Result<Maybe<string>, IO.Error>>` | 読み取り失敗を値として返す |
 | `IO.try_write value` / `IO.try_write_line value` | `IO<Result<unit, IO.Error>>` | stdout の失敗を値として返す |
 | `IO.try_write_error value` / `IO.try_write_error_line value` | `IO<Result<unit, IO.Error>>` | stderr の失敗を値として返す |
 | `IO.pure value` | `IO<T>` | 入出力せず値を返す |
@@ -106,15 +104,15 @@ IO {
 
 ## 終了コード
 
-入口が `IO<i32>` なら、その `i32` の値がプロセスの終了コードになります。`IO<unit>` など、ほかの型の入口は値を捨てて 0 で終了します。
+`main` が返す `i32` の値がプロセスの終了コードになります。トップレベルの結果式が `IO<i32>` の場合もその値が終了コードで、`IO<unit>` など、ほかの型のトップレベル入口は値を捨てて 0 で終了します。
 
 ```tsuzuri
-def main :: IO<i32> =
+def main :: unit -> i32 = \() ->
     do! IO.write_line "done"
-    return 3i32
+    3
 ```
 
-`tsuzuri run` は非 0 の終了コードを `E2005 program exited with code 3` として報告し、自身の終了ステータスは 1 です。`tsuzuri build` で作った実行ファイルは、値をそのまま終了コードにします。WASM では、`tsuzuri_main` の戻り値が入口の `i32` の値で、`--wasm-host wasi` の `_start` は `proc_exit` で伝えます。以前は `IO<i32>` の値を捨てて 0 で終了していました。詳しくは [OS API の終了コード](os.md#終了コード)を参照してください。
+`tsuzuri run` は非 0 の終了コードを `E2005 program exited with code 3` として報告し、自身の終了ステータスは 1 です。`tsuzuri build` で作った実行ファイルは、値をそのまま終了コードにします。WASM では、`tsuzuri_main` の戻り値が `main` の値で、`--wasm-host wasi` の `_start` は `proc_exit` で伝えます。詳しくは [OS API の終了コード](os.md#終了コード)を参照してください。
 
 ## 文字と順序
 
@@ -138,13 +136,13 @@ Debug と extern は従来の副作用付き API として残ります。IO の�
 
 ## WASM と C
 
-IO を返す Main は WASM でも使えます。
+`def main` や IO を返す Main は WASM でも使えます。
 
 ```sh
 ./target/release/tsuzuri build examples/io --target wasm32 -o target/io.wasm
 ```
 
-ホストは `instance.exports.tsuzuri_main()` を呼びます。インスタンス化だけでは実行せず、export def も不要です。戻り値は、入口が `IO<i32>` ならその値、ほかの入口では正常完了時の 0 です。`--emit object` / `--emit header` でも `int32_t tsuzuri_main(void)` を公開し、C ホストから明示実行できます。
+ホストは `instance.exports.tsuzuri_main()` を呼びます。インスタンス化だけでは実行せず、export def も不要です。戻り値は `def main` の値、`IO<i32>` の入口ならその値、ほかの入口では正常完了時の 0 です。`def main :: Array<string> -> i32` の引数は空の配列です（`--wasm-host wasi` のモジュールでは WASI の引数です）。`--emit object` / `--emit header` でも `int32_t tsuzuri_main(void)` を公開し、C ホストから明示実行できます。
 
 Windows のランタイム同梱 COFF オブジェクト出力は未対応で、実行ファイルか LLVM 出力を使います。Windows 実機での IO 動作は未検証です。
 

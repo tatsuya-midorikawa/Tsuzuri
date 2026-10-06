@@ -8,7 +8,7 @@
 
 | 記事 | 主な対象 |
 | --- | --- |
-| [Option / Result](option-result.md) | 不在、失敗値、map / bind、借用版、ビルダー、try と Exception |
+| [Maybe / Result](maybe-result.md) | 不在、失敗値、map / bind、借用版、ビルダー、try と Exception |
 | [Array / List](arrays-and-lists.md) | 不変コレクション、所有更新、共有スライス、検索と整列 |
 | [Vec](vec.md) | 伸縮、容量、pop、バッファ移送 |
 | [Map / Set](map-set.md) | キー順の検索・更新・集合演算 |
@@ -33,7 +33,7 @@ T / U / State は説明用の型記号で、実際のシグネチャでは `'a` 
 
 Copy は複製可能という契約です。コレクションや捕捉環境の深い複製を伴う場合があります。読み取り API がコレクションを借用していても、値 callback に要素を渡す部分では Copy が必要になることがあります。
 
-高階関数は F# と同じく関数を先、対象の配列・リスト・列・コレクションを最後に受け取ります。例えば `Array.map f values`、`Seq.filter p sequence`、`Map.fold f initial map`、`Parallel.map f values`、`Option.map f value` です。そのため `values |> Array.map f |> Array.sum` のように `|>` で繋げられます。Option / Result の bind と bind_ref は計算値が先、fold_back は F# と同じく初期値が最後です。
+高階関数は F# と同じく関数を先、対象の配列・リスト・列・コレクションを最後に受け取ります。例えば `Array.map f values`、`Seq.filter p sequence`、`Map.fold f initial map`、`Parallel.map f values`、`Maybe.map f value` です。そのため `values |> Array.map f |> Array.sum` のように `|>` で繋げられます。Maybe / Result の bind と bind_ref は計算値が先、fold_back は F# と同じく初期値が最後です。
 
 ## ソース宣言の API 一覧
 
@@ -49,9 +49,9 @@ Copy は複製可能という契約です。コレクションや捕捉環境の
 | HashMap | [HashMap](api/HashMap.md) | [HashMap / HashSet](hash-map.md) |
 | HashSet | [HashSet](api/HashSet.md) | [HashMap / HashSet](hash-map.md) |
 | Seq | [Seq](api/Seq.md) | [Seq](sequences.md) |
-| Option | [Option](api/Option.md) | [Option / Result](option-result.md) |
-| Result | [Result](api/Result.md) | [Option / Result](option-result.md) |
-| Exception | [Exception](api/Exception.md) | [例外と Result](option-result.md#例外と-result) |
+| Maybe | [Maybe](api/Maybe.md) | [Maybe / Result](maybe-result.md) |
+| Result | [Result](api/Result.md) | [Maybe / Result](maybe-result.md) |
+| Exception | [Exception](api/Exception.md) | [例外と Result](maybe-result.md#例外と-result) |
 | IO | [IO](api/IO.md) | [IO と標準入出力](io.md) |
 | File | [File](api/File.md) | [OS API](os.md) |
 | Dir | [Dir](api/Dir.md) | [OS API](os.md) |

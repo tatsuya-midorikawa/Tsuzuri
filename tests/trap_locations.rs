@@ -66,7 +66,7 @@ fn run_reports_stack_overflow() {
     // The multiplication keeps the recursion non-tail, so LLVM cannot turn it into a loop.
     fs::write(
         root.join("Main.tz"),
-        "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\nexport def deep :: i64 -> i64\nfn deep n = depth n\n\ndef main :: i64 = deep 100000000\n",
+        "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\nexport def deep :: i64 -> i64\nfn deep n = depth n\n\ndeep 100000000\n",
     )
     .unwrap();
     for optimization in ["-O0", "-O3"] {
@@ -400,7 +400,7 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
         export def verify :: bool -> unit\nfn verify flag = assert flag\n\
         export def indirect :: bool -> unit\nfn indirect flag = { let check = assert; check flag }\n\
         export def allocate :: i64 -> i64\nfn allocate length = { let values = new [i64](length, index -> index); values.length }\n\
-        export def soft :: i64 -> i64\nfn soft number = { let text = to_string (number as d128); let parsed: Option<d128> = Parse.parse (ref text); Option.get parsed as i64 }\n\
+        export def soft :: i64 -> i64\nfn soft number = { let text = to_string (number as d128); let parsed: Maybe<d128> = Parse.parse (ref text); Maybe.get parsed as i64 }\n\
         export def closure :: i64 -> i64\nfn closure number = { let values = new [number, number + 1]; let read = index -> values[index]; let copied = read; copied 0 + read 1 }";
     let module = tsuzuri::analyze(source).unwrap();
     let sources = [TrapSource {

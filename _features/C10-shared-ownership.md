@@ -55,9 +55,9 @@ cargo build --release --locked && node tests/features.mjs target/release/tsuzuri
 - 型引数を使わない record は拒否される。同じ検査ループが `E1024`（`type parameter '{}' is not used by any field; remove it or add a field that mentions it`）を返すため、phantom 型引数の `Handle<'a>` は今は宣言できない。
 - std 専用 builtin の前例: `src/polymorph.rs` の `Checker::builtin` は、`IO.__read_line`／`IO.__write` を std の `IO` 以外から、`Debug.__print_string` を std の `Debug` 以外から呼ぶと `E1022` で拒否する（`tests/debug_output.rs` で確認）。builtin の定義は `src/llvm.rs` の `emit_builtin` が `@tz.builtin.<名前>` として出す。`Builtin::Default` は引数なしの定義文字列を直接返し、`Builtin::Unreachable` は `call void @llvm.trap()` を使う。引数なし builtin の呼び出しの前例は `Builtin::VecEmpty`（`Vec.empty()`）。
 - コンパイラが生成する IR に `atomicrmw` はまだない（`src/` を grep して 0 件）。
-- Vec の API（docs/language.md「Vec」）: `set`（旧要素を解放して置換）、`swap`、`pop`（`(残りの Vec, Option)`）、`push`、`get`（Copy 要素の `Option`）、`at`、`with_capacity`。容量は 4 から倍増する。
-- union の payload を指す参照は返せない。`match ref slots[i] with | Occupied value -> Option.Some (ref value)` は `E1013`（`a borrowed value cannot outlive its pattern or iteration binding`）になる。slot を union で持つ設計では `get`／`at` を書けない。
-- 試作で検証済み: 利用者モジュール `Arena.tz` で本チケットのアルゴリズムを書いた（Handle は非 generic、arena ID は引数で渡す版）。`target/release/tsuzuri run` の結果は手計算の期待値 `22220607751` と一致した。同じ試作で既存の診断も確認した。借用中の `insert` は `E1014`、`ref Arena` の task 捕捉は `E1013`（`tasks require owned values; ref Arena.Arena<string> contains a reference`）、消費後の使用は `E1012`（`use of moved or partially moved value 'arena'`）。
+- Vec の API（docs/language.md「Vec」）: `set`（旧要素を解放して置換）、`swap`、`pop`（`(残りの Vec, Maybe)`）、`push`、`get`（Copy 要素の `Maybe`）、`at`、`with_capacity`。容量は 4 から倍増する。
+- union の payload を指す参照は返せない。`match ref slots[i] with | Occupied value -> Maybe.Some (ref value)` は `E1013`（`a borrowed value cannot outlive its pattern or iteration binding`）になる。slot を union で持つ設計では `get`／`at` を書けない。
+- 試作で検証済み: 利用者モジュール `Arena.tz` で本チケットのアルゴリズムを書いた（Handle は非 generic、arena ID は引数で渡す版）。`target/release/tsuzuri run` の結果は手計算の期待値 `22220607751` と一致した。同じ試作で既存の診断も確認した。借用中の `insert` は `E1014`、`ref Arena` の task 捕捉は `E1013`（`tasks require owned values; ref Arena<string> contains a reference`）、消費後の使用は `E1012`（`use of moved or partially moved value 'arena'`）。
 - `const values: Vec<i64> = Vec.empty()` は `E1026`（`this expression is not allowed in a phase-1 const; precompute it or use a runtime let`）。
 - モジュールと同名の型は短縮名で書ける。利用者モジュール `Arena` の `record Arena<'a>` を `Arena<i64>` と書けた（`Map<'k, 'v>` と同じ規則）。
 - 引数なし関数は `f()` で呼ぶ。`f ()` は unit を渡すため `E1006`（`cannot apply 1 arguments to a function accepting 0 arguments`）。
@@ -84,7 +84,7 @@ target/release/tsuzuri check /tmp/tz-work-C10/recvec    # error[E1010]: recursiv
 
 ### 前提とする他チケットのインターフェース
 
-- C02（done）: `Vec` の builtin。`set` は旧要素を解放して置換し、`swap`／`pop`／`push` は所有 Vec を消費して返す。`get` は Copy 要素の `Option` を返す。
+- C02（done）: `Vec` の builtin。`set` は旧要素を解放して置換し、`swap`／`pop`／`push` は所有 Vec を消費して返す。`get` は Copy 要素の `Maybe` を返す。
 - C06（done）: opaque 標準 record の登録（`opaque_record`）と `record_storage` の `E1022`、`Map.at` の `assert` によるトラップ、所有値を消費して新しい値を返す API の形。
 - C07（done）: `Seq.defer`・`Seq.empty()` と、`for (a, b) in seq do` のタプル pattern（試作で確認済み）。
 - B07（未完了でよい）: 利用者の `Drop` は Vec の要素の drop glue から呼ばれる前提。C10 は B07 の API を使わない。
@@ -99,7 +99,7 @@ target/release/tsuzuri check /tmp/tz-work-C10/recvec    # error[E1010]: recursiv
 
 ### 型
 
-- `Arena<'a>`（`Arena.Arena` の短縮名）: opaque・非 Copy の所有値。`needs_drop` は真。`Send`・`Capture`・借用の保持は要素型 `'a` に従う（`Arena<ref string>` は `ref string` の寿命を超えられない。C06 の `Map` と同じ）。
+- `Arena<'a>`（`Arena` の短縮名）: opaque・非 Copy の所有値。`needs_drop` は真。`Send`・`Capture`・借用の保持は要素型 `'a` に従う（`Arena<ref string>` は `ref string` の寿命を超えられない。C06 の `Map` と同じ）。
 - `Arena.Handle<'a>`: opaque・Copy・`Send`・`Capture`。field は整数だけなので、`'a` が参照型や非 Copy 型でも借用を保持しない。要素型は静的に照合し、異なる要素型の arena に渡すと `E1003`。
 - `Arena.Slot`（新規、private）: arena 内部の Copy record。
 - std は `Arena.Handle<'a>` に `Eq`・`Ord`・`Hash` の instance を与える（D5）。`Display`／`Debug` の instance は与えない。
@@ -115,10 +115,10 @@ target/release/tsuzuri check /tmp/tz-work-C10/recvec    # error[E1010]: recursiv
 | `Arena.with_capacity count` | `i64 -> Arena<'a>` | O(1)、3 バッファを確保 | –（負の count はトラップ） |
 | `Arena.length arena` | `ref Arena<'a> -> i64` | O(1) | – |
 | `Arena.contains arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> bool` | O(1) | `false` |
-| `Arena.get arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> Option<ref 'a>` | O(1) | `None` |
+| `Arena.get arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> Maybe<ref 'a>` | O(1) | `None` |
 | `Arena.at arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> ref 'a` | O(1) | トラップ |
 | `Arena.insert arena value` | `Arena<'a> -> 'a -> (Arena<'a> * Arena.Handle<'a>)` | 償却 O(1) | – |
-| `Arena.remove arena handle` | `Arena<'a> -> Arena.Handle<'a> -> (Arena<'a> * Option<'a>)` | O(1) | 変更しない arena と `None` |
+| `Arena.remove arena handle` | `Arena<'a> -> Arena.Handle<'a> -> (Arena<'a> * Maybe<'a>)` | O(1) | 変更しない arena と `None` |
 | `Arena.update arena handle change` | `Arena<'a> -> Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a>` | O(1)＋`change` | トラップ（`change` は呼ばない） |
 | `Arena.iter arena` | `ref Arena<'a> -> Seq<(Arena.Handle<'a> * ref 'a)>` | 全体で O(n) | – |
 
@@ -159,13 +159,13 @@ target/release/tsuzuri check /tmp/tz-work-C10/recvec    # error[E1010]: recursiv
 
 | コード | 条件 | メッセージ | 位置 |
 | --- | --- | --- | --- |
-| `E1022` | std の `Arena` 外での `Arena.Arena`／`Arena.Handle`／`Arena.Slot` の構築・field 参照・pattern・update | `the representation of 'Arena.Handle' is opaque; use its module API`（引用部は該当 record 名。既存） | 構築・field・pattern・update の式 |
+| `E1022` | std の `Arena` 外での `Arena`／`Arena.Handle`／`Arena.Slot` の構築・field 参照・pattern・update | `the representation of 'Arena.Handle' is opaque; use its module API`（引用部は該当 record 名。既存） | 構築・field・pattern・update の式 |
 | `E1022` | std の `Arena` 外からの `Arena.__next_id` | `the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity`（新規） | 名前 |
 | `E1024` | 利用者 record の未使用の型引数（変更なし） | `type parameter 'a is not used by any field; remove it or add a field that mentions it` | 型引数 |
 | `E1003` | 要素型の異なる arena とハンドル | 既存の型不一致 | 引数 |
 | `E1012` | 消費した arena の使用 | `use of moved or partially moved value 'arena'` | 使用箇所 |
 | `E1014` | `get`／`at`／`iter` の借用中に arena を消費 | `access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively` | 消費する引数 |
-| `E1013` | `ref Arena` を task が捕捉 | `tasks require owned values; ref Arena.Arena<string> contains a reference` | task 式 |
+| `E1013` | `ref Arena` を task が捕捉 | `tasks require owned values; ref Arena<string> contains a reference` | task 式 |
 | `E1026` | const の初期化に Arena | `this expression is not allowed in a phase-1 const; precompute it or use a runtime let` | 初期化式 |
 | `E1008` | `Arena<'a>` を含む export | 既存（`Map` と同じ） | 宣言 |
 
@@ -241,7 +241,7 @@ Rc.get          : ref Rc<'a> -> ref 'a
 Rc.strong_count : ref Rc<'a> -> i64
 Rc.try_unwrap   : Rc<'a> -> Result<'a, Rc<'a>>
 Rc.downgrade    : ref Rc<'a> -> Rc.Weak<'a>
-Rc.upgrade      : ref Rc.Weak<'a> -> Option<Rc<'a>>
+Rc.upgrade      : ref Rc.Weak<'a> -> Maybe<Rc<'a>>
 ```
 
 - 循環: 内部可変性のない Tsuzuri では、値ができる前にその値への `Rc` を作れないため、Phase 2 単独では `Rc` の循環を作れず漏れない。F10 の可変セルと組み合わせると循環を作れるため、`Weak` を使わない循環は解放されないことを文書化する。サイクルコレクターは作らない。
@@ -379,17 +379,17 @@ private def position :: ref Arena<'a> -> Handle<'a> -> i64
 fn position arena handle =
     if handle.arena == arena.id then
         match Vec.get (ref arena.slots) handle.index with
-        | Option.Some slot -> if slot.generation == handle.generation then slot.position else -1
-        | Option.None -> -1
+        | Maybe.Some slot -> if slot.generation == handle.generation then slot.position else -1
+        | Maybe.None -> -1
     else -1
 
 def contains :: ref Arena<'a> -> Handle<'a> -> bool
 fn contains arena handle = position arena handle >= 0
 
-def get :: ref Arena<'a> -> Handle<'a> -> Option.Option<ref 'a>
+def get :: ref Arena<'a> -> Handle<'a> -> Maybe<ref 'a>
 fn get arena handle =
     let index = position arena handle
-    if index >= 0 then Option.Some (ref arena.values[index]) else Option.None
+    if index >= 0 then Maybe.Some (ref arena.values[index]) else Maybe.None
 
 def at :: ref Arena<'a> -> Handle<'a> -> ref 'a
 fn at arena handle =
@@ -407,28 +407,28 @@ fn insert arena value =
             let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners index, slots: Vec.push slots (Slot { position: next_position, generation: 0 }), free: free }
             (result, Handle { arena: id, index: index, generation: 0 })
         else
-            let slot = Option.get (Vec.get (ref slots) free)
+            let slot = Maybe.get (Vec.get (ref slots) free)
             let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners free, slots: Vec.set slots free (Slot { position: next_position, generation: slot.generation }), free: slot.position }
             (result, Handle { arena: id, index: free, generation: slot.generation })
 
-def remove :: Arena<'a> -> Handle<'a> -> (Arena<'a> * Option.Option<'a>)
+def remove :: Arena<'a> -> Handle<'a> -> (Arena<'a> * Maybe<'a>)
 fn remove arena handle =
     let target = position (ref arena) handle
-    if target < 0 then (arena, Option.None)
+    if target < 0 then (arena, Maybe.None)
     else
         match arena with
         | Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
             let last = Vec.length (ref values) - 1
             let moved = owners[last]
             let retired = handle.generation == 9223372036854775807
-            let moved_slot = Option.get (Vec.get (ref slots) moved)
+            let moved_slot = Maybe.get (Vec.get (ref slots) moved)
             let relinked = Vec.set slots moved (Slot { position: target, generation: moved_slot.generation })
             let vacated = Vec.set relinked handle.index (Slot { position: (if retired then -1 else free), generation: (if retired then -1 else handle.generation + 1) })
             match Vec.pop (Vec.swap values target last) with
-            | (remaining, Option.Some value) ->
+            | (remaining, Maybe.Some value) ->
                 match Vec.pop (Vec.swap owners target last) with
-                | (remaining_owners, _) -> (Arena { id: id, values: remaining, owners: remaining_owners, slots: vacated, free: (if retired then free else handle.index) }, Option.Some value)
-            | (_, Option.None) -> unreachable ()
+                | (remaining_owners, _) -> (Arena { id: id, values: remaining, owners: remaining_owners, slots: vacated, free: (if retired then free else handle.index) }, Maybe.Some value)
+            | (_, Maybe.None) -> unreachable ()
 
 def update :: Arena<'a> -> Handle<'a> -> ('a -> 'a) -> Arena<'a>
 fn update arena handle change =
@@ -438,20 +438,20 @@ fn update arena handle change =
     | Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
         let last = Vec.length (ref values) - 1
         match Vec.pop (Vec.swap values target last) with
-        | (remaining, Option.Some value) -> Arena { id: id, values: Vec.swap (Vec.push remaining (change value)) target last, owners: owners, slots: slots, free: free }
-        | (_, Option.None) -> unreachable ()
+        | (remaining, Maybe.Some value) -> Arena { id: id, values: Vec.swap (Vec.push remaining (change value)) target last, owners: owners, slots: slots, free: free }
+        | (_, Maybe.None) -> unreachable ()
 
 private def handle_at :: ref Arena<'a> -> i64 -> Handle<'a>
 fn handle_at arena dense =
     let index = arena.owners[dense]
     Handle { arena: arena.id, index: index, generation: arena.slots[index].generation }
 
-private def rec iter_from :: ref Arena<'a> -> i64 -> Seq.Seq<(Handle<'a> * ref 'a)>
+private def rec iter_from :: ref Arena<'a> -> i64 -> Seq<(Handle<'a> * ref 'a)>
 fn rec iter_from arena index = Seq.defer (\() ->
-    if index < length arena then (iter_from arena (index + 1), Option.Some (handle_at arena index, ref arena.values[index]))
-    else (Seq.empty(), Option.None))
+    if index < length arena then (iter_from arena (index + 1), Maybe.Some (handle_at arena index, ref arena.values[index]))
+    else (Seq.empty(), Maybe.None))
 
-def iter :: ref Arena<'a> -> Seq.Seq<(Handle<'a> * ref 'a)>
+def iter :: ref Arena<'a> -> Seq<(Handle<'a> * ref 'a)>
 fn iter arena = iter_from arena 0
 ```
 
@@ -533,7 +533,7 @@ cmp /tmp/tz-work-C10/first.ll /tmp/tz-work-C10/second.ll
 | --- | --- |
 | `arena_id_primitive_is_private` | `Arena.__next_id()` を利用者コードの式と `def f :: i64` の本体で呼ぶと `E1022` で、メッセージに `private to the standard Arena module` を含む |
 | `phantom_parameters_are_std_opaque_only` | `record Tag<'a> { id: i64 }` は `E1024`（`is not used by any field`）。`record Node { value: i64, edges: Vec<Arena.Handle<Node>> }` と `Arena<Node>` を使うプログラムは成功。`record Bad { value: i64, edges: Vec<Bad> }` は `E1010` |
-| `arena_types_are_opaque_noncopy_owned_values` | `Arena.Arena { ... }` の構築、`arena.values`、`{ arena with free = 0 }`、全 field の `Arena.Arena { ... }` pattern、`Arena.Handle { arena: 0, index: 0, generation: 0 }`、`handle.index` がすべて `E1022`。消費後の使用は `E1012`、`export def bad :: Arena<i64>` は `E1008`、`const bad: Arena<i64> = Arena.empty()` は `E1026`。2 つの arena を使うプログラムの IR が native と WASM でそれぞれ 2 回の出力で一致する |
+| `arena_types_are_opaque_noncopy_owned_values` | `Arena { ... }` の構築、`arena.values`、`{ arena with free = 0 }`、全 field の `Arena { ... }` pattern、`Arena.Handle { arena: 0, index: 0, generation: 0 }`、`handle.index` がすべて `E1022`。消費後の使用は `E1012`、`export def bad :: Arena<i64>` は `E1008`、`const bad: Arena<i64> = Arena.empty()` は `E1026`。2 つの arena を使うプログラムの IR が native と WASM でそれぞれ 2 回の出力で一致する |
 | `handles_are_typed_copy_and_send` | ハンドルを別の束縛へコピーした後も両方で `contains` が真、task がハンドルを捕捉して比較できる。`Arena<string>` のハンドルを `Arena<i64>` に渡すと `E1003` |
 | `arena_borrows_follow_ownership_rules` | 「例」の表の `E1014`・`E1013`・`E1012` の 3 ケース（コードとメッセージの先頭） |
 | `arena_ir_has_one_atomic_counter` | 2 つの arena を作るプログラムの IR（native と WASM）で、`@tz.arena.next_id = internal global i64 0` と `define internal i64 @tz.builtin.Arena.__next_id()` がそれぞれ 1 回、`atomicrmw add ptr @tz.arena.next_id, i64 1 monotonic` を含み、`declare void @llvm.trap` が 2 回以上現れない。Arena を使わないプログラムの IR は `tz.arena` を含まない |
@@ -547,7 +547,7 @@ fixture は `tests/fixtures/arena/Main.tz`（新規）、suite は `tests/featur
 
 ```tsuzuri
 record Node { value: i64, edges: Vec<Arena.Handle<Node>> }
-record Link { value: i64, next: Option<Arena.Handle<Link>> }
+record Link { value: i64, next: Maybe<Arena.Handle<Link>> }
 ```
 
 | export | 引数 | 内容 | 期待値（独立計算） |
@@ -650,7 +650,7 @@ fn arena_ring count =
 ## ドキュメント
 
 - `docs/language.md`: `### Map / Set` の直後に `### Arena`（新規）を置く（API 表、無効なハンドル、世代と退役、決定性、drop、Task、トラップ）。「型とメモリ」の「GC、参照カウント、手動の解放操作は使わず」の段落と、「ノード共有・循環した実行時グラフ・GC・参照カウントは導入しません」の文に、循環するグラフは std の Arena とハンドルで表すことを添える。`## 診断` の `E1022` の説明に std 専用 primitive の直接呼び出しがなければ追記する。
-- `docs/architecture.md`: opaque 標準 record を説明する段落（`grep -n "opaque" docs/architecture.md` で探す）に `Arena.Arena`・`Arena.Handle`・`Arena.Slot` を追加し、builtin の大域状態として `@tz.arena.next_id`（atomic、import なし）を記す。
+- `docs/architecture.md`: opaque 標準 record を説明する段落（`grep -n "opaque" docs/architecture.md` で探す）に `Arena`・`Arena.Handle`・`Arena.Slot` を追加し、builtin の大域状態として `@tz.arena.next_id`（atomic、import なし）を記す。
 - `_docs/library-reference/arena.md`（新規）: `map-set.md` と同じ構成。基本例は `tsuzuri run=143` として「例」の `cycle` を載せる。`_docs/library-reference/README.md` の一覧にリンクを足す。
 - `_docs/library-reference/api/Arena.md`: `_docs/library-reference/api/Map.md` と同じ手順（README の `tsuzuri doc` の節）で生成する。
 - `_docs/guides/style-and-design.md`: グラフの設計指針（所有する木は union、共有・循環は Arena とハンドル、参照カウントは未導入）。`_docs/guides/from-fsharp.md`: 参照の共有・循環する F# のデータ構造の置き換え方。
@@ -673,7 +673,7 @@ fn arena_ring count =
 
 ## 落とし穴
 
-- union の payload への参照は返せない（`E1013` `a borrowed value cannot outlive its pattern or iteration binding`）。slot を `Vec<Option<'a>>` や union で持つと `get`／`at` が書けないため、値は dense な `Vec<'a>` に置く。
+- union の payload への参照は返せない（`E1013` `a borrowed value cannot outlive its pattern or iteration binding`）。slot を `Vec<Maybe<'a>>` や union で持つと `get`／`at` が書けないため、値は dense な `Vec<'a>` に置く。
 - `remove` で slot の付け替えと空き化の順序を逆にすると、末尾の要素を削除したときに削除済みの slot が使用中に戻り、古いハンドルが有効と判定される。`arena_churn` の count = 1 と `arena_order` が検出する。
 - `update` に `Vec.set` を使うと旧要素が解放され、`change` に渡す値がなくなる（または二重解放を誘う）。swap・pop・push・swap の順を守る。
 - カウンタを非 atomic に加算すると `Task.parallel` の worker 間でデータ競合になる。`arena_parallel` を TSan で実行して確認する。

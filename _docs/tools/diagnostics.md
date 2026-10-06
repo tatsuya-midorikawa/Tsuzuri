@@ -57,7 +57,7 @@ start / end は UTF-8 の byte offset で、end は排他的です。line / colu
 | E2001 | 入出力 |
 | E2002 | LLVM や linker など外部ツール |
 | E2003 | 出力保護 |
-| E2004 | 入口条件 |
+| E2004 | 入口条件（Main.tz の `main` のシグネチャを含む） |
 | E2005 | 実行時の異常終了 |
 | E2006 | 言語内テストの失敗 |
 

@@ -123,13 +123,13 @@ assert (small == 42l)
 two ** 100
 ```
 
-`bigint` は任意精度の整数で、std のレコード `BigInt.BigInt` です。`I` 接尾辞のリテラルか、`bigint` が期待される位置の接尾辞のない整数で作ります。`+`、`-`、`*`、`/`、`%`、`**`、単項 `-`、比較、`Display`、`Parse`、`Hash`、`Default` を使えます。`/` はゼロ方向への切り捨て、`%` は被除数と同符号の剰余で、ゼロ除算はトラップします。
+`bigint` は任意精度の整数で、std のレコード `BigInt` です。`I` 接尾辞のリテラルか、`bigint` が期待される位置の接尾辞のない整数で作ります。`+`、`-`、`*`、`/`、`%`、`**`、単項 `-`、比較、`Display`、`Parse`、`Hash`、`Default` を使えます。`/` はゼロ方向への切り捨て、`%` は被除数と同符号の剰余で、ゼロ除算はトラップします。
 
 | API | 型と結果 |
 | --- | --- |
 | `BigInt.of_i64` | `i64 -> bigint` |
-| `BigInt.to_i64` | `ref bigint -> Option<i64>`。i64 に収まらなければ None |
-| `BigInt.of_string` | `ref string -> Option<bigint>` |
+| `BigInt.to_i64` | `ref bigint -> Maybe<i64>`。i64 に収まらなければ None |
+| `BigInt.of_string` | `ref string -> Maybe<bigint>` |
 | `BigInt.compare` | `ref bigint -> ref bigint -> i64` |
 
 ## 浮動小数点

@@ -67,6 +67,49 @@ export function outputPath(root: string, action: Action): string {
 		`Main${action === 'wasm' ? '.wasm' : process.platform === 'win32' ? '.exe' : ''}`);
 }
 
+/** A PascalCase namespace for a folder name such as `my-app`, or `App` when it has no usable words. */
+export function defaultNamespace(folder: string): string {
+	const words = folder.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+|[A-Z]/g) ?? [];
+	const name = words
+		.filter(word => /^[A-Za-z]/.test(word))
+		.map(word => word[0].toUpperCase() + word.slice(1).toLowerCase())
+		.join('');
+	return name || 'App';
+}
+
+/** The lexer's reserved words and the reserved standard library module names, as `tsuzuri new` checks them. */
+export const reservedWords = new Set('fn def rec and export extern private record union type const test class instance deriving let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
+export const libraryModules = new Set('Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt'.split(' '));
+
+/**
+ * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme::Tools`: at most 16 identifiers joined by `::`
+ * and 255 bytes, none a reserved word, `_`, or `Task`, and the first neither the `std` namespace nor a standard
+ * library module.
+ */
+export function isNamespace(text: string): boolean {
+	const segments = text.split('::');
+	return text.length <= 255 && segments.length <= 16 && segments[0] !== 'std' && !libraryModules.has(segments[0])
+		&& segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)
+			&& segment !== '_' && segment !== 'Task' && !reservedWords.has(segment));
+}
+
+/**
+ * The standard library module that qualifies the name typed at the end of `prefix`, such as `Maybe` in `Maybe.ma`
+ * or `std::Maybe.ma`. After any other namespace or module path the name is the user's: `Sample::Maybe.` and
+ * `Shape.Maybe.` name no library module.
+ */
+export function libraryQualifier(prefix: string): string | undefined {
+	return /(?<![\w.]|::)(?:std::)?([A-Z][A-Za-z_0-9]*)\.[A-Za-z_0-9]*$/.exec(prefix)?.[1];
+}
+
+/**
+ * Whether `prefix` ends in a `::` path such as `Sample::Fe`, which only the language server completes.
+ * The `::` that annotates a declaration's type, as in `def f::i`, starts no path.
+ */
+export function endsInPath(prefix: string): boolean {
+	return /\w::\w*$/.test(prefix) && !/(?<!\w)(?:def|rec|and)\s+\w+::\w*$/.test(prefix);
+}
+
 export interface ProcessResult {
 	code: number;
 	stdout: string;

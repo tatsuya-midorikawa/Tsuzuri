@@ -23,7 +23,7 @@ show 40 2 + " / " + show 2147483647 1
 
 `@checked` を式または文の前に置くと、その中の整数の `+`、`-`、`*`、`**` と単項 `-` を検査します。オーバーフローすると `OverflowException` を送出し、メッセージは `Arithmetic operation resulted in an overflow.` です。`@checked` の外は従来どおり型幅で折り返します。
 
-検査するのは `@checked` の中に書いた演算子だけで、そこから呼び出した関数の中の演算は検査しません。オーバーフローを `Option` で受け取る場合は、Int の `checked_add` などを使います。
+検査するのは `@checked` の中に書いた演算子だけで、そこから呼び出した関数の中の演算は検査しません。オーバーフローを `Maybe` で受け取る場合は、Int の `checked_add` などを使います。
 
 ## try ... with ... finally
 
@@ -101,7 +101,7 @@ match safe 2147483647 with
 次の例は `Overflow occurred: Arithmetic operation resulted in an overflow.` を表示します。トップレベルの結果の `Result` は `Display` を持たないため表示しません。
 
 ```tsuzuri run=Overflow%20occurred%3A%20Arithmetic%20operation%20resulted%20in%20an%20overflow.
-def safe_add : i32 -> i32 -> Result<i32, 'TErr>
+def safe_add :: i32 -> i32 -> Result<i32, 'TErr>
     @'TErr : Err = \x y ->
         try
             @checked
@@ -122,7 +122,7 @@ safe_add 2147483647 1
 本体が `try` なので、`@'TErr : Err` を省略しても同じです。
 
 ```tsuzuri run=Overflow%20occurred%3A%20Arithmetic%20operation%20resulted%20in%20an%20overflow.
-def safe_add : i32 -> i32 -> Result<i32, 'TErr> = \x y ->
+def safe_add :: i32 -> i32 -> Result<i32, 'TErr> = \x y ->
     try
         @checked
         let result = x + y

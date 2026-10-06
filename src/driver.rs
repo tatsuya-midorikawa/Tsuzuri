@@ -493,6 +493,10 @@ pub struct SourceFile {
     pub text: String,
     pub origin: ModuleOrigin,
     pub package: Option<crate::package::PackageId>,
+    /// The namespace that `relative_path` is relative to: the root package's
+    /// default namespace for its files, and empty for dependency files, whose
+    /// relative paths start with their package namespace, and for std files.
+    pub namespace: String,
 }
 
 #[derive(Debug)]
@@ -538,6 +542,7 @@ impl SourceFile {
             text,
             origin: ModuleOrigin::User,
             package: None,
+            namespace: String::new(),
         })
     }
 }
@@ -621,6 +626,21 @@ struct LoadedPackage {
     text: String,
 }
 
+/// The default namespace of a root folder without a manifest: a kebab-case
+/// folder name in PascalCase as for package names, another valid namespace
+/// as written, and otherwise the global namespace.
+fn folder_namespace(directory: &Path) -> String {
+    let name = fs::canonicalize(directory)
+        .ok()
+        .and_then(|path| path.file_name().and_then(OsStr::to_str).map(str::to_owned))
+        .unwrap_or_default();
+    crate::package::namespace(&name, Span::default())
+        .ok()
+        .filter(|namespace| crate::package::valid_namespace(namespace))
+        .or_else(|| crate::package::valid_namespace(&name).then(|| name.replace("::", ".")))
+        .unwrap_or_default()
+}
+
 fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
     use std::collections::{BTreeMap, BTreeSet};
     let manifest_path = directory.join("Tsuzuri.toml");
@@ -678,9 +698,11 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
             let text = read_source_text(&path).map_err(|error| SourceError::new(&path, error))?;
             let manifest = crate::package::parse_manifest(&text, 0)
                 .map_err(|error| SourceError::new(&path, error))?;
-            if crate::stdlib::is_reserved_module(&manifest.namespace)
-                || manifest.namespace == "Task"
-            {
+            if manifest.namespace.split('.').next().is_some_and(|first| {
+                first == crate::stdlib::NAMESPACE
+                    || crate::stdlib::is_reserved_module(first)
+                    || first == "Task"
+            }) {
                 return Err(SourceError::new(
                     &path,
                     driver_error(
@@ -852,6 +874,13 @@ impl Project {
         if roots.is_empty() {
             roots.push(directory.to_owned());
         }
+        let root_namespace = packages
+            .iter()
+            .find(|package| package.id.root == directory)
+            .map_or_else(
+                || folder_namespace(directory),
+                |package| package.manifest.namespace.clone(),
+            );
         let mut sources = Vec::new();
         for root in &roots {
             let package = packages.iter().find(|package| package.id.root == *root);
@@ -882,14 +911,21 @@ impl Project {
                     continue;
                 }
                 let relative_path = if root != directory {
-                    Path::new(&package.unwrap().manifest.namespace).join(relative)
+                    package
+                        .unwrap()
+                        .manifest
+                        .namespace
+                        .split('.')
+                        .collect::<PathBuf>()
+                        .join(relative)
                 } else {
+                    let module = crate::module_name_from_relative(relative).unwrap_or_default();
                     if packages.iter().any(|package| {
+                        let namespace = &package.manifest.namespace;
                         package.id.root != directory
-                            && relative.components().next().is_some_and(|part| {
-                                Path::new(part.as_os_str()).file_stem()
-                                    == Some(OsStr::new(&package.manifest.namespace))
-                            })
+                            && module
+                                .strip_prefix(namespace.as_str())
+                                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
                     }) {
                         return Err(SourceError::new(
                             &path,
@@ -911,6 +947,7 @@ impl Project {
                         text: text.clone(),
                         origin: ModuleOrigin::User,
                         package: None,
+                        namespace: String::new(),
                     }
                 } else {
                     SourceFile::read(&path)?
@@ -918,6 +955,9 @@ impl Project {
                 source.relative_path = relative_path;
                 source.name = name;
                 source.package = package.map(|package| package.id.clone());
+                if root == directory {
+                    source.namespace = root_namespace.clone();
+                }
                 sources.push(source);
                 if sources.len() > 4096 {
                     return Err(SourceError::new(
@@ -947,6 +987,7 @@ impl Project {
                 text: (*text).to_owned(),
                 origin: ModuleOrigin::Std,
                 package: None,
+                namespace: String::new(),
             }
         }));
         let wasm = packages
@@ -1001,6 +1042,7 @@ impl Project {
                 text: package.text,
                 origin: ModuleOrigin::User,
                 package: Some(package.id),
+                namespace: String::new(),
             })
             .collect();
         Ok(Self {
@@ -1044,6 +1086,7 @@ impl Project {
             for source in &mut project.sources {
                 source.origin = ModuleOrigin::Std;
                 source.relative_path = Path::new("std").join(&source.relative_path);
+                source.namespace.clear();
             }
         }
         Ok(project)
@@ -1141,6 +1184,7 @@ impl Project {
                 },
                 text: &source.text,
                 origin: source.origin,
+                namespace: &source.namespace,
             })
             .collect();
         crate::analyze_inputs_all(&sources)
@@ -1442,11 +1486,12 @@ fn build_complete(
     }
     if options.emit == Emit::Wasm
         && !llvm::io_entry(module)
+        && !llvm::main_entry(module)
         && !module.functions.iter().any(|function| function.exported)
     {
         return Err(driver_error(
             "E2004",
-            "a WebAssembly module needs an IO<T> main or at least one 'export def' entry point",
+            "a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point",
         ));
     }
     let mut trap_sites = Vec::new();
@@ -1573,8 +1618,15 @@ fn build_complete(
         options.target == Target::Native && text.contains("declare i64 @tsuzuri_cpu_sum_i64(");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
-    // With `--wasm-host wasi` the standard IO and the OS APIs come from src/runtime/os-wasi.c.
-    let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi) && (io_runtime || os_runtime);
+    // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
+    let arguments_runtime = text.contains("@tsuzuri_arguments(");
+    // Only a WASM module of a `def main` or an IO entry is a WASI command; objects leave `_start` to the embedder.
+    let wasi_command =
+        options.emit == Emit::Wasm && (llvm::io_entry(module) || llvm::main_entry(module));
+    // With `--wasm-host wasi` the standard IO, the OS APIs, and a command's `_start` come from
+    // src/runtime/os-wasi.c.
+    let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi)
+        && (io_runtime || os_runtime || arguments_runtime || wasi_command);
     // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
         && options.emit == Emit::Object
@@ -1588,7 +1640,7 @@ fn build_complete(
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
-        || (options.target == Target::Native && (io_runtime || os_runtime));
+        || (options.target == Target::Native && (io_runtime || os_runtime || arguments_runtime));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
@@ -1735,7 +1787,7 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c must precede every include, so it comes first.
                 if os_runtime && options.target == Target::Native {
                     include_str!("runtime/os.c")
@@ -1759,6 +1811,11 @@ fn build_complete(
                 },
                 if io_runtime {
                     include_str!("runtime/io.c")
+                } else {
+                    ""
+                },
+                if arguments_runtime {
+                    include_str!("runtime/arguments.c")
                 } else {
                     ""
                 }
@@ -1842,7 +1899,16 @@ fn build_complete(
         let wasi_object = temporary.path.join("wasi.o");
         if wasi_runtime {
             let source = temporary.path.join("wasi.c");
-            fs::write(&source, include_str!("runtime/os-wasi.c"))
+            let text = if arguments_runtime {
+                format!(
+                    "{}\n{}",
+                    include_str!("runtime/os-wasi.c"),
+                    include_str!("runtime/arguments.c")
+                )
+            } else {
+                include_str!("runtime/os-wasi.c").to_owned()
+            };
+            fs::write(&source, text)
                 .map_err(|error| io_error("write WASI runtime", &source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime.args([
@@ -1854,8 +1920,7 @@ fn build_complete(
                 "-mbulk-memory",
                 "-c",
             ]);
-            // Only a WASM module of an IO entry is a WASI command; objects leave `_start` to the embedder.
-            if options.emit == Emit::Wasm && llvm::io_entry(module) {
+            if wasi_command {
                 runtime.arg("-DTZ_WASI_START");
                 if llvm::exit_code_entry(module) {
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
@@ -2100,7 +2165,7 @@ fn build_complete(
             if wasi_runtime {
                 linker.arg(&wasi_object);
             }
-            if llvm::io_entry(module) {
+            if llvm::io_entry(module) || llvm::main_entry(module) {
                 linker.arg("--export=tsuzuri_main");
             }
             if options.trap_info {
@@ -2649,8 +2714,8 @@ mod tests {
     #[test]
     fn docs_loads_libraries_without_main_and_rejects_page_collisions() {
         let (directory, _) = project(
-            &[("index.tz", "def answer :: i64\nfn answer = 42")],
-            "index.tz",
+            &[("Index.tz", "def answer :: i64\nfn answer = 42")],
+            "Index.tz",
         );
         let project = Project::load_for_docs(&directory.path).unwrap();
         project.analyze().unwrap();
@@ -3191,7 +3256,7 @@ mod tests {
     fn reports_the_source_file_for_module_errors() {
         let (directory, project) = project(
             &[
-                ("Main.tz", "fn main() -> i64 { Other.value() }"),
+                ("Main.tz", "Other.value()"),
                 ("Other.tz", "// other module\nfn value() -> i64 { false }"),
             ],
             "Main.tz",
@@ -3230,6 +3295,7 @@ mod tests {
             text: "def broken :: i64\nfn broken = false".to_owned(),
             origin: ModuleOrigin::Std,
             package: None,
+            namespace: String::new(),
         });
         let error = project.analyze().unwrap_err();
         assert_eq!(error.code, "E1003");

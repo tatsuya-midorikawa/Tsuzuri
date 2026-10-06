@@ -48,7 +48,7 @@ HashSet.length (ref seen) * 100 + needle.length * 10 + (if found then 1 else 0)
 | `insert map key value` | 所有更新。等しいキーがあれば、格納済みのキーと位置を保ったまま値だけを置換 |
 | `remove map key`, `remove_ref map key` | 所有更新。不在なら変更なし。末尾の entry が削除位置へ移る |
 | `contains_key map key`, `contains_key_ref map key` | 借用 map とキーから bool |
-| `get map key`, `get_ref map key` | 借用 map から Copy 値の `Option<V>` |
+| `get map key`, `get_ref map key` | 借用 map から Copy 値の `Maybe<V>` |
 | `at map key`, `at_ref map key` | `ref V`。不在ならトラップ |
 | `to_array map` | 走査順の `(K * V)` 配列。両方の Copy が必要 |
 | `keys map`, `values map` | 対象側だけ Copy を要求して走査順の配列へ |
@@ -69,8 +69,8 @@ ages = HashMap.insert ages "ann" 31
 ages = HashMap.insert ages "bob" 27
 let name = "bob"
 match HashMap.get_ref (ref ages) (ref name) with
-| Option.Some age -> age + name.length
-| Option.None -> 0
+| Maybe.Some age -> age + name.length
+| Maybe.None -> 0
 ```
 
 `name` を借用して探したので、呼び出しの後も `name.length` を使えます。結果は `27 + 3 = 30` です。
@@ -229,25 +229,27 @@ HashMap.keys (ref plain) == HashMap.keys (ref seeded)
 `randomized` と `try_randomized` は、[OS API](os.md) の `Random.next_u64` で seed を得る `IO` アクションです。seed を得られないとき、`randomized` はトラップし、`try_randomized` は `Result.Error`（`Os.Error`）で返します。固定の seed へ黙って置き換えることはありません。
 
 ```tsuzuri
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! made = HashMap.randomized ()
     let mut map: HashMap<i64, i64> = made
     map = HashMap.insert map 10 1
     map = HashMap.insert map 20 2
     do! IO.write_line (HashMap.length (ref map))
+    0
 ```
 
 ```tsuzuri
-def report :: Result.Result<HashMap<i64, i64>, Os.Error> -> IO<unit> = \made ->
+def report :: Result<HashMap<i64, i64>, Os.Error> -> IO<unit> = \made ->
     match made with
     | Result.Ok fresh ->
         let map = HashMap.insert (HashMap.insert fresh 10 1) 20 2
         IO.write_line (HashMap.length (ref map))
     | Result.Error error -> IO.write_line (Os.message error)
 
-def main :: IO<unit> =
+def main :: unit -> i32 = \() ->
     let! made = HashMap.try_randomized ()
     do! report made
+    0
 ```
 
 OS の乱数を使えるのは、Windows を除く native と `--wasm-host wasi` のビルドです。既定の wasm32 には OS API がないため、`randomized` と `try_randomized` を含むビルドは `E2000` で拒否され、出力ファイルは作られません。この場合は、ホストが選んだ推測できない seed を引数で受け取り、`with_seed` へ渡します。seed 付きの map を作るだけなら OS API は不要で、既定の wasm32 にも追加の import は出ません。

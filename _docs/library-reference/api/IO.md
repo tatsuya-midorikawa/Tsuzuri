@@ -1,5 +1,7 @@
 # IO
 
+Namespace: `std`
+
 ## `IO`
 
 ```tsuzuri
@@ -104,37 +106,37 @@ def BindReturn :: IO<'a> -> ('a -> 'b) -> IO<'b>
 ## `try_read_line`
 
 ```tsuzuri
-def try_read_line :: unit -> IO<Result.Result<Option.Option<string>, Error>>
+def try_read_line :: unit -> IO<Result<Maybe<string>, Error>>
 ```
 
 ## `read_line`
 
 ```tsuzuri
-def read_line :: unit -> IO<Option.Option<string>>
+def read_line :: unit -> IO<Maybe<string>>
 ```
 
 ## `try_write`
 
 ```tsuzuri
-def try_write :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 ```
 
 ## `try_write_line`
 
 ```tsuzuri
-def try_write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 ```
 
 ## `try_write_error`
 
 ```tsuzuri
-def try_write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 ```
 
 ## `try_write_error_line`
 
 ```tsuzuri
-def try_write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result.Result<unit, Error>>
+def try_write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, Error>>
 ```
 
 ## `write`

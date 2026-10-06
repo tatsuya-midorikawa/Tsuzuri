@@ -531,7 +531,7 @@ unset TSUZURI_CACHE_DIR
 ### Rust テスト
 
 `tests/prebuilt_runtime.rs`（新規）。module と `sources` の作り方は `tests/cpu_dispatch.rs` を写す。ソースは「再現」の display-only に
-`def main :: i64 = value()` を足したもの。
+トップレベルの `value()` を足したもの。
 
 - `external_numeric_declares_every_weak_entry`: `external_numeric: true` の `emit_native_build` の IR が `declare hidden ` の行を 9 個持ち、
   その名前の集合が `include_str!("../src/runtime/numeric.ll")` の `define weak hidden` の名前の集合と同じ。`define weak hidden` と ` %0` を含まない。
@@ -550,7 +550,7 @@ wrapper は起動ごとに 1 行を log に足す。Windows では `skip` を出
 
 1. hello（`examples/hello/Main.tz` の写し）を native `O0`・`O3` でビルド: stdout `5050\n`、終了コード 0。空の cache からの `O3` は Clang 2 回、
    `sum 100 0` を `sum 101 0` に変えた再ビルドは Clang 1 回で stdout `5151\n`（1 から 101 の和）。`runtime/` の entry は 2 個（`O0`・`O3`）。
-2. display-only・parse-only（`tests/display_parse.mjs` のソースに `def main :: i64 = value()` を足す）: native `O0`・`O3` の stdout が `2\n`・`42\n`。
+2. display-only・parse-only（`tests/display_parse.mjs` のソースにトップレベルの `value()` を足す）: native `O0`・`O3` の stdout が `2\n`・`42\n`。
    WASM `O0`・`O3` の `tz_value()` が `2n`・`42n`、`WebAssembly.Module.imports` が空。
 3. `examples/tasks` の写し: `O0`・`O3` の stdout が `--no-cache` のビルドの stdout と同じ。
 4. `--no-cache`: hello を空の cache で `--no-cache` ビルドすると Clang 1 回、cache のディレクトリはできない。

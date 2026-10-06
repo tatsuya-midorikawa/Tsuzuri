@@ -48,8 +48,8 @@ Stats はライブラリなので Main.tz は不要です。Node.js が export �
 export def summarize :: ref [f64] -> [f64] = \values ->
     assert (values.length > 0)
     let total = Array.sum_kahan values
-    let minimum = Option.get (Array.min values)
-    let maximum = Option.get (Array.max values)
+    let minimum = Maybe.get (Array.min values)
+    let maximum = Maybe.get (Array.max values)
     new [total, deref minimum, deref maximum, total / (values.length as f64)]
 
 test "summarizes multiple readings" =
@@ -71,7 +71,7 @@ test "accepts negative readings" =
     Test.equal (ref actual) (ref expected)
 ```
 
-入力は共有借用し、結果の 4 要素だけを所有配列で返します。Array.min / max は要素への参照を返すので、deref で f64 の値を取り出します。空入力は先に拒否しているため、Option.get の失敗は起きません。
+入力は共有借用し、結果の 4 要素だけを所有配列で返します。Array.min / max は要素への参照を返すので、deref で f64 の値を取り出します。空入力は先に拒否しているため、Maybe.get の失敗は起きません。
 
 sum_kahan は Kahan-Babuska-Neumaier の補償和です。単純な左から右の加算より誤差を抑えられる場合がありますが、任意精度や overflow しない演算ではありません。
 

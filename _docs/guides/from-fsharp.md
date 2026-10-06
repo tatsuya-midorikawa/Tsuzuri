@@ -50,9 +50,9 @@ ref は F# の参照セルではなく共有借用です。ref mut は排他借�
 
 クロージャーが捕捉する値はスナップショットです。外側の let mut を関数内から変更する一般的なパターンは使えません。必要な状態は引数と返却値で明示的に受け渡します。
 
-## Option、Result、例外
+## Maybe、Result、例外
 
-Option / Result と match は利用できます。match の網羅性不足はコンパイルエラーです。
+Maybe / Result と match は利用できます。F# の `Option` に当たる型は `Maybe` で、case は同じ `None` / `Some` です。match の網羅性不足はコンパイルエラーです。
 
 `try ... with ... finally` も書けますが、F# の例外処理とは意味が異なります。
 
@@ -91,11 +91,11 @@ let flags = (0b1100 &&& 0b1010) ||| (1 <<< 4)
 $"{total} {flags} {2 ** 10} {not (total > 20)}"
 ```
 
-`values |>` は values を借用して渡し、途中の配列は次の呼び出しの間だけ借用してから解放します。非 Copy の要素は、要素を借用する `map_ref` / `fold_ref` などで扱います。Option / Result の `bind` / `bind_ref` は F# と異なり計算値が先です。
+`values |>` は values を借用して渡し、途中の配列は次の呼び出しの間だけ借用してから解放します。非 Copy の要素は、要素を借用する `map_ref` / `fold_ref` などで扱います。Maybe / Result の `bind` / `bind_ref` は F# と異なり計算値が先です。
 
 ## 計算式とタスク
 
-ビルダーはオブジェクトではなく .tc のモジュールです。Return / Bind などはカリー化された通常の関数で、Zero は引数なしです。Option / Result の For は Copy 要素の配列を受けます。
+ビルダーはオブジェクトではなく .tc のモジュールです。Return / Bind などはカリー化された通常の関数で、Zero は引数なしです。Maybe / Result の For は Copy 要素の配列を受けます。
 
 and! は右辺を順に評価して結合し、自動並列起動しません。task 内の and! は提供しません。並列化には Task.parallel を明示します。
 
