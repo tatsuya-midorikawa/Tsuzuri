@@ -772,3 +772,18 @@ Phase 2（256-bit 型と `Simd.store`）・Phase 3（`@cpu` と AVX-512・SVE）
 - 値のレイアウトの上限（64 KiB）の見積もりが SIMD 値を一律 16 バイト（`Layouts::size`）または 8 バイト（シグネチャと局所変数を検査する
   `Validation::check`）と数えていたため、`[[i8x32; 1024]; 3]`（実際は 96 KiB）が通っていた。どちらも `bytes()`（8 バイト以上）で数え、
   256-bit は 32 バイト、128-bit は 16 バイトになった。`tests/fixed_arrays.rs` にちょうど 64 KiB の受理と超過の `E1010` を追加した。
+
+### x86 版の実行（翻訳実行、PR #14 の後）
+
+Copilot の最後のレビューが x86 の実行が未確認であることを挙げたため、Docker Desktop の amd64 コンテナ（`alpine:3.20`、CPU は
+`VirtualApple`、`/proc/cpuinfo` は `sse4_2`・`avx2`、AVX-512 なし。Rosetta による命令の翻訳）で x86_64 の版を実行した。
+翻訳実行なので正しさだけを確かめ、速度は測っていない。
+
+- `tests/cpu_runtime.c` を zig cc で `x86_64-linux-musl` の静的実行ファイルにし（`-UNDEBUG`。`assert(0)` の確認用プログラムが
+  終了コード 134 になることも確認）、`-O0`・`-O2`・`-O3` で `features=3 variant=2`（SSE4.2 と AVX2 を検出し AVX2 を選択）、
+  終了コード 0。baseline・SSE4.2・AVX2 の全 kernel が 8 thread で scalar の参照と一致した。
+- `tests/fixtures/cpu_versions` を `llvm::emit_native_build_for`（x86_64 の主機と同じ水準 `0b1110`、console の入口）で IR にし、
+  Homebrew LLVM 21 の clang と `cpu.c` を x86_64-linux-musl へ compile して静的にリンクした。`-O0`・`-O3` の既定（AVX2 を選択）と
+  `TSUZURI_CPU_FORCE=baseline`・`sse4.2`・`avx2` がすべて `30 24072 13940` を出力した。`avx512` の指定は、AVX-512 のない CPU で
+  文書どおり「requested variant is unavailable or unknown」で終了する（AVX-512 の版は `-O3` の object に `zmm` が 17 個あるが、実行は未確認）。
+- 未確認のままのもの: x86 の実機での速度、AVX-512 と SVE／SVE2 の実行。
