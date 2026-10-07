@@ -16,6 +16,10 @@ use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
 mod test_runner;
 pub use test_runner::{TestOptions, TestReport, TestResult, run_tests, run_tests_linked};
 
+#[path = "bindgen_driver.rs"]
+mod bindgen_driver;
+pub use bindgen_driver::bindgen;
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 

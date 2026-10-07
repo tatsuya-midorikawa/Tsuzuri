@@ -1,0 +1,29 @@
+// Calls each declaration that bindgen generates into Sample.tz from sample.h.
+
+export def add_case :: i32 -> i32 -> i32
+fn add_case left right = Sample.sample_add left right
+
+export def norm_case :: f64 -> f64 -> i32 -> f64
+fn norm_case x y tag =
+    let point = SamplePoint { x: x, y: y, tag: tag }
+    Sample.sample_norm (&point)
+
+export def low_byte_case :: i64u -> i8u
+fn low_byte_case value = Sample.sample_low_byte value
+
+export def even_case :: i64 -> i8u
+fn even_case value = Sample.sample_is_even value
+
+export def reset_twice :: i32 -> i32
+fn reset_twice base =
+    Sample.sample_reset ()
+    Sample.sample_reset ()
+    base + 2
+
+export def next_case :: i32 -> i32
+fn next_case mode = Sample.sample_next mode
+
+export def constants_case :: i32 -> i32
+fn constants_case base =
+    let count: SampleCount = base
+    count + Sample.SAMPLE_FAST + Sample.SAMPLE_SLOW * 10 + Sample.SAMPLE_BEST * 100

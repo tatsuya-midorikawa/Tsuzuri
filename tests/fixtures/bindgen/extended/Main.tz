@@ -1,0 +1,55 @@
+// Calls each declaration that bindgen generates into Ext.tz from ext.h.
+
+private def triple :: i64 -> i64
+fn triple value = value * 3
+
+private def add_item :: i64 -> i32 -> i64
+fn add_item total item = total + (item as i64)
+
+private def peek_plus_one :: ref ExtCounter -> i64
+fn peek_plus_one counter = Ext.ext_counter_peek counter + 1
+
+private def answer :: unit -> i32
+fn answer _ = 42
+
+private def either :: i8u -> i8u -> bool
+fn either flag small = flag != 0 && small > 10
+
+export def constants_case :: i64
+fn constants_case =
+    let small = (Ext.EXT_VERSION as i64) + (Ext.EXT_MASK as i64) + (Ext.EXT_NEGATIVE as i64)
+    let radix = (Ext.EXT_OCTAL as i64) + (Ext.EXT_BINARY as i64) + (Ext.EXT_PAREN as i64)
+    let wide = Ext.EXT_WIDE + (Ext.EXT_HEX_WIDE as i64) + Ext.EXT_MIN_INT
+    small + radix + wide + (Ext.EXT_ALL_ONES as i64) + Ext.EXT_LONG
+
+export def top_case :: i64u
+fn top_case = Ext.EXT_TOP
+
+export def counters :: i64 -> i64
+fn counters start =
+    let counter = Ext.ext_counter_new start
+    let first = Ext.ext_counter_add (&counter) 5
+    let second = Ext.ext_counter_add (&counter) 7
+    let peeked = Ext.ext_counter_peek (&counter)
+    let seen = Ext.ext_visit peek_plus_one (&counter)
+    first + second + peeked + seen + Ext.ext_counter_free counter
+
+export def callbacks :: i64 -> i64
+fn callbacks value =
+    Ext.ext_apply_twice triple value + Ext.ext_fold add_item 100 + (Ext.ext_run answer as i64)
+
+export def any_case :: i32 -> i8u
+fn any_case count = Ext.ext_any either count
+
+export def buffers :: i64
+fn buffers =
+    let values = [1, 2, 3, 4]
+    let empty: [i64] = []
+    let doubles = [1.0, 2.0, 6.0]
+    let bytes: [ubyte] = [1, 2, 3]
+    let text = Utf8String.to_bytes u8"héllo"
+    let sum = Ext.ext_sum (&values) + Ext.ext_sum (&empty)
+    let mean = Ext.ext_mean (&doubles)
+    let checksum = Ext.ext_checksum (&bytes)
+    let length = Ext.ext_text_length (&text)
+    sum + (mean as i64) * 100 + (checksum as i64) * 10000 + (length as i64) * 1000000

@@ -22,6 +22,8 @@ Usage:
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
+  tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
+                    [--consume F:P]... [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -45,6 +47,12 @@ namespace, else the package or folder name) followed by subdirectories
 build cache) and records them in Tsuzuri.lock. Other commands never run git or
 use the network; they read Tsuzuri.lock and the store. `tsuzuri publish` checks a
 package and prints the registry index entry of its commit; it changes no registry.
+`tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
+records, opaque extern types, and type aliases for the C header's own declarations
+whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
+other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
+pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
+opaque handle into the call instead of borrowing it.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -1157,6 +1165,53 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// `tsuzuri bindgen header.h -o Module.tz`: writes the module and reports each
+/// skipped declaration as a W2002 warning at the header.
+fn bindgen_command(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match tsuzuri::bindgen::parse_arguments(arguments) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    match driver::bindgen(&arguments) {
+        Ok((source, warnings)) => {
+            let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(warnings, 0);
+            for (index, warning) in warnings.diagnostics.iter().enumerate() {
+                if index != 0 && !json {
+                    eprintln!();
+                }
+                print_diagnostic(warning, &arguments.header, &source, json);
+            }
+            if let Some(note) = warnings.omission_note() {
+                if json {
+                    eprintln!(
+                        "{{\"severity\":\"note\",\"message\":{}}}",
+                        json_string(&note)
+                    );
+                } else {
+                    eprintln!("\nwarning: {note}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1190,6 +1245,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "publish") {
         return publish_package(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "bindgen") {
+        return bindgen_command(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {
