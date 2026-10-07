@@ -68,6 +68,9 @@ int main(int argc, char **argv) {
         auto owned_text = api::copy_text(u"ab");
         auto taken = std::move(owned_text);
         assert(taken.view() == u"ab" && owned_text.view().empty());
+        // A default-constructed buffer is an empty range too.
+        const api::buffer<double> none;
+        assert(none.empty() && none.begin() == none.end() && none.span().empty());
     }
     tz_record_4Main_6Sample sample{{-1, 65535, 1}, 1.5};
     const auto updated = api::update(sample);

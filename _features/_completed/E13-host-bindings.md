@@ -891,4 +891,6 @@ tsc、Google Chrome 154.0.8037.98 と Playwright の WebKit 26.0）、`node test
 - threads の glue: worker の失敗の listener を、全 worker の ready の後ではなく worker を作った時点で付ける。coordinator は自分の ready の前に helper を
   走らせるので、helper が ready の直後に失敗するとその通知を失い、helper の失敗を待つ呼び出しが終わらないことがあった。`tests/bindings_threads.mjs` に、
   helper の ready の直後に失敗を届ける worker で pool が止まることを確かめる検査を足した（修正前の glue では失敗）。
+- C++ の空の `buffer<T>`（既定構築・ムーブ元）の `end()`・`span()`・`view()` は、null のポインターに長さを足さずに空の範囲を返す
+  （C++ では `nullptr + 0` は null のポインターで定義済みだが、範囲の構築を null に頼らない）。
 

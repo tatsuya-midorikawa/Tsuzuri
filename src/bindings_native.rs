@@ -1448,8 +1448,10 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
     [[nodiscard]] T *begin() const noexcept { return data_.get(); }
-    [[nodiscard]] T *end() const noexcept { return data_.get() + size_; }
-    [[nodiscard]] std::span<T> span() const noexcept { return {data_.get(), size_}; }
+    // An empty buffer (default-constructed or moved-from) holds no memory, so its range is built
+    // without pointer arithmetic on the null pointer.
+    [[nodiscard]] T *end() const noexcept { return size_ == 0 ? data_.get() : data_.get() + size_; }
+    [[nodiscard]] std::span<T> span() const noexcept { return size_ == 0 ? std::span<T>{} : std::span<T>{data_.get(), size_}; }
     T &operator[](std::size_t index) const noexcept { return data_.get()[index]; }
 
 private:
@@ -1464,14 +1466,14 @@ private:
 class string_buffer : public buffer<char16_t> {
 public:
     using buffer::buffer;
-    [[nodiscard]] std::u16string_view view() const noexcept { return {data(), size()}; }
+    [[nodiscard]] std::u16string_view view() const noexcept { return empty() ? std::u16string_view{} : std::u16string_view{data(), size()}; }
 };
 
 /// An owned utf8string result: valid UTF-8 bytes.
 class utf8string_buffer : public buffer<char> {
 public:
     using buffer::buffer;
-    [[nodiscard]] std::string_view view() const noexcept { return {data(), size()}; }
+    [[nodiscard]] std::string_view view() const noexcept { return empty() ? std::string_view{} : std::string_view{data(), size()}; }
 };
 
 "#;
