@@ -96,7 +96,7 @@ Tsuzuri の全 42 個の予約語を用途別に分けて示します。
 | `mut` | 可変なローカル束縛の宣言 | `let mut counter = 0` | [値](./values.md) |
 | `ref` | 共有借用の作成（前置構文） | `ref text` | [借用と参照](../ownership-and-memory/borrowing.md) |
 | `deref` | 参照外しの実行（前置構文） | `deref pointer` | [借用と参照](../ownership-and-memory/borrowing.md) |
-| `new` | 配列やヒープメモリの初期化 | `new [i64](5, \i -> i * 2)` | [スタックとヒープ](../ownership-and-memory/stack-and-heap.md) |
+| `new` | 配列やヒープメモリの初期化。ドットの後ろではメンバー名（`Rc.new`） | `new [i64](5, \i -> i * 2)` | [スタックとヒープ](../ownership-and-memory/stack-and-heap.md) |
 | `as` | 明示的な数値型のキャスト | `value as f64` | [型キャスト](../types-and-type-inference/cast.md) |
 | `dyn` | 型クラスの動的ディスパッチ | `dyn Show` | [型クラス](../types-and-type-inference/type-classes.md) |
 

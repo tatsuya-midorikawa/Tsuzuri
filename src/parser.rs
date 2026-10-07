@@ -1028,6 +1028,19 @@ impl Parser<'_> {
         Ok(regions)
     }
 
+    /// The name after a dot. The keyword `new` is a member name there, as in `Rc.new` (C10).
+    fn dot_member(&mut self) -> Result<Ident, Diagnostic> {
+        if self.at(&TokenKind::New) {
+            let token = self.take();
+            return Ok(Ident {
+                text: "new".into(),
+                span: token.span,
+                provenance: Provenance::User,
+            });
+        }
+        self.member_ident()
+    }
+
     fn member_ident(&mut self) -> Result<Ident, Diagnostic> {
         if self.at(&TokenKind::Union) {
             let token = self.take();
@@ -3031,7 +3044,7 @@ impl Parser<'_> {
                 self.make(ExprKind::Call(Box::new(left), arguments), span, depth)
             }
             TokenKind::Dot => {
-                let field = self.member_ident()?;
+                let field = self.dot_member()?;
                 let span = left.span.through(field.span);
                 let depth = left.depth + 1;
                 self.make(ExprKind::Field(Box::new(left), field), span, depth)

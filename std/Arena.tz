@@ -1,0 +1,135 @@
+/// A slot of an arena. In use, `position` is the dense index of its value. Free, `position` is the
+/// next free slot (-1 ends the list) and `generation` the generation of the next value. Retired,
+/// `generation` is -1 and the slot is never reused.
+private record Slot { position: i64, generation: i64 }
+
+/// An owned collection whose values are named by generational handles. It keeps the values dense
+/// in one `Vec`, so a graph whose nodes refer to each other by handle, cycles included, is built,
+/// walked, and dropped without reference counting.
+record Arena<'a> { id: i64, values: Vec<'a>, owners: Vec<i64>, slots: Vec<Slot>, free: i64 }
+
+/// A Copy name of a value in an arena. It is valid in the arena that made it, from `insert` until
+/// `remove`; `update` keeps it valid. It never keeps a value alive.
+record Handle<'a> { arena: i64, index: i64, generation: i64 }
+
+instance Eq<Handle<'a>> {
+	fn eq left right = left.index == right.index && left.generation == right.generation
+	fn ne left right = !(Eq.eq left right)
+}
+
+instance Ord<Handle<'a>> {
+	fn lt left right = left.index < right.index || (left.index == right.index && left.generation < right.generation)
+	fn le left right = !(Ord.lt right left)
+	fn gt left right = Ord.lt right left
+	fn ge left right = !(Ord.lt left right)
+}
+
+instance Hash<Handle<'a>> {
+	fn hash handle =
+		let key = (handle.index, handle.generation)
+		Hash.hash (ref key)
+}
+
+/// An empty arena. It allocates nothing until the first insertion.
+def empty :: Arena<'a>
+fn empty = Arena { id: Arena.__next_id(), values: Vec.empty(), owners: Vec.empty(), slots: Vec.empty(), free: -1 }
+
+/// An empty arena with room for `count` values; a negative count traps.
+def with_capacity :: i64 -> Arena<'a>
+fn with_capacity count = Arena { id: Arena.__next_id(), values: Vec.with_capacity count, owners: Vec.with_capacity count, slots: Vec.with_capacity count, free: -1 }
+
+/// The number of values in the arena.
+def length :: ref Arena<'a> -> i64
+fn length arena = Vec.length (ref arena.values)
+
+/// The dense position of the value that `handle` names, or -1 when the handle is not valid here.
+private def position :: ref Arena<'a> -> Handle<'a> -> i64
+fn position arena handle =
+	if handle.arena == arena.id then
+		match Vec.get (ref arena.slots) handle.index with
+		| Maybe.Some slot -> if slot.generation == handle.generation then slot.position else -1
+		| Maybe.None -> -1
+	else -1
+
+/// Whether `handle` names a value of this arena.
+def contains :: ref Arena<'a> -> Handle<'a> -> bool
+fn contains arena handle = position arena handle >= 0
+
+/// The value that `handle` names, or `None` when the handle is removed or from another arena.
+def get :: ref Arena<'a> -> Handle<'a> -> Maybe<ref 'a>
+fn get arena handle =
+	let index = position arena handle
+	if index >= 0 then Maybe.Some (ref arena.values[index]) else Maybe.None
+
+/// The value that `handle` names; traps when the handle is removed or from another arena.
+def at :: ref Arena<'a> -> Handle<'a> -> ref 'a
+fn at arena handle =
+	let index = position arena handle
+	assert (index >= 0)
+	ref arena.values[index]
+
+/// Moves `value` into the arena and returns the arena with a handle that names it.
+def insert :: Arena<'a> -> 'a -> (Arena<'a> * Handle<'a>)
+fn insert arena value =
+	match arena with
+	| Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
+		let next_position = Vec.length (ref values)
+		if free < 0 then
+			let index = Vec.length (ref slots)
+			let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners index, slots: Vec.push slots (Slot { position: next_position, generation: 0 }), free: free }
+			(result, Handle { arena: id, index: index, generation: 0 })
+		else
+			let slot = Maybe.get (Vec.get (ref slots) free)
+			let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners free, slots: Vec.set slots free (Slot { position: next_position, generation: slot.generation }), free: slot.position }
+			(result, Handle { arena: id, index: free, generation: slot.generation })
+
+/// Moves the value that `handle` names out of the arena. The last value takes its position, and
+/// its slot is reused last-in first-out with the next generation. An invalid handle returns the
+/// arena unchanged with `None`.
+def remove :: Arena<'a> -> Handle<'a> -> (Arena<'a> * Maybe<'a>)
+fn remove arena handle =
+	let target = position (ref arena) handle
+	if target < 0 then (arena, Maybe.None)
+	else
+		match arena with
+		| Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
+			let last = Vec.length (ref values) - 1
+			let moved = owners[last]
+			let retired = handle.generation == 9223372036854775807
+			let moved_slot = Maybe.get (Vec.get (ref slots) moved)
+			// Relink the moved value's slot before vacating, which also covers removing the last value.
+			let relinked = Vec.set slots moved (Slot { position: target, generation: moved_slot.generation })
+			let vacated = Vec.set relinked handle.index (Slot { position: (if retired then -1 else free), generation: (if retired then -1 else handle.generation + 1) })
+			match Vec.pop (Vec.swap values target last) with
+			| (remaining, Maybe.Some value) ->
+				match Vec.pop (Vec.swap owners target last) with
+				| (remaining_owners, _) -> (Arena { id: id, values: remaining, owners: remaining_owners, slots: vacated, free: (if retired then free else handle.index) }, Maybe.Some value)
+			| (_, Maybe.None) -> unreachable ()
+
+/// Replaces the value that `handle` names with `change value`, keeping the handle valid; traps
+/// without calling `change` when the handle is removed or from another arena.
+def update :: Arena<'a> -> Handle<'a> -> ('a -> 'a) -> Arena<'a>
+fn update arena handle change =
+	let target = position (ref arena) handle
+	assert (target >= 0)
+	match arena with
+	| Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
+		let last = Vec.length (ref values) - 1
+		match Vec.pop (Vec.swap values target last) with
+		| (remaining, Maybe.Some value) -> Arena { id: id, values: Vec.swap (Vec.push remaining (change value)) target last, owners: owners, slots: slots, free: free }
+		| (_, Maybe.None) -> unreachable ()
+
+private def handle_at :: ref Arena<'a> -> i64 -> Handle<'a>
+fn handle_at arena dense =
+	let index = arena.owners[dense]
+	Handle { arena: arena.id, index: index, generation: arena.slots[index].generation }
+
+private def rec iter_from :: ref Arena<'a> -> i64 -> Seq<(Handle<'a> * ref 'a)>
+fn rec iter_from arena index = Seq.defer (\() ->
+	if index < length arena then (iter_from arena (index + 1), Maybe.Some (handle_at arena index, ref arena.values[index]))
+	else (Seq.empty(), Maybe.None))
+
+/// The handles and values of the arena in dense order: insertion order until a removal moves the
+/// last value into the removed one's position.
+def iter :: ref Arena<'a> -> Seq<(Handle<'a> * ref 'a)>
+fn iter arena = iter_from arena 0

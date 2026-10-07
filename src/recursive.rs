@@ -12,6 +12,8 @@ pub(super) fn analyze(
         span: Span,
         nodes: BTreeMap<Type, Vec<Type>>,
         active: Vec<Type>,
+        /// The length of `active` where each shared pointer on the current path was entered.
+        shared: Vec<usize>,
         recursive: BTreeSet<Type>,
     }
     impl Graph<'_> {
@@ -25,6 +27,14 @@ pub(super) fn analyze(
                 | Type::FixedArray(inner, _) => {
                     return self.visit(inner);
                 }
+                // A shared block holds its value like a collection holds its elements, and
+                // its pointer is a heap indirection like a union node (C10).
+                Type::Shared(inner, _) => {
+                    self.shared.push(self.active.len());
+                    let visited = self.visit(inner);
+                    self.shared.pop();
+                    return visited;
+                }
                 Type::Tuple(elements) => {
                     for element in elements {
                         self.visit(element)?;
@@ -35,7 +45,9 @@ pub(super) fn analyze(
             };
             if let Some(start) = self.active.iter().position(|active| active == ty) {
                 let cycle = &self.active[start..];
-                if !cycle.iter().any(|ty| matches!(ty, Type::Union(..))) {
+                if !cycle.iter().any(|ty| matches!(ty, Type::Union(..)))
+                    && !self.shared.iter().any(|entered| *entered > start)
+                {
                     return Err(Diagnostic::new(
                         "E1010",
                         "recursive value layout must pass through a union with a finite alternative",
@@ -98,8 +110,9 @@ pub(super) fn analyze(
         match ty {
             Type::Record(..) | Type::Union(..) => known.contains(ty),
             Type::Tuple(elements) => elements.iter().all(|element| finite(element, known)),
-            // Elements are inline (A16), unlike the heap elements of `[T]`.
-            Type::FixedArray(element, _) => finite(element, known),
+            // Elements are inline (A16), unlike the heap elements of `[T]`. A shared block always
+            // holds a value (C10).
+            Type::FixedArray(element, _) | Type::Shared(element, _) => finite(element, known),
             _ => true,
         }
     }
@@ -113,6 +126,7 @@ pub(super) fn analyze(
                     | Type::Vec(inner)
                     | Type::Task(inner)
                     | Type::FixedArray(inner, _)
+                    | Type::Shared(inner, _)
                     | Type::Reference(inner, _) => weight(std::slice::from_ref(inner)),
                     Type::Tuple(elements) => weight(elements),
                     Type::Record(_, elements) | Type::Union(_, elements) => weight(elements),
@@ -129,6 +143,7 @@ pub(super) fn analyze(
         span,
         nodes: BTreeMap::new(),
         active: Vec::new(),
+        shared: Vec::new(),
         recursive: BTreeSet::new(),
     };
     graph.visit(root)?;
@@ -153,7 +168,8 @@ pub(super) fn analyze(
                 Type::Array(inner)
                 | Type::List(inner)
                 | Type::Vec(inner)
-                | Type::FixedArray(inner, _) => pending.push(*inner),
+                | Type::FixedArray(inner, _)
+                | Type::Shared(inner, _) => pending.push(*inner),
                 Type::Tuple(elements) => pending.extend(elements),
                 _ => {}
             }
@@ -298,7 +314,8 @@ impl TypeContext<'_> {
                 Type::Array(inner)
                 | Type::List(inner)
                 | Type::Vec(inner)
-                | Type::FixedArray(inner, _) => pending.push(*inner),
+                | Type::FixedArray(inner, _)
+                | Type::Shared(inner, _) => pending.push(*inner),
                 Type::Tuple(elements) => pending.extend(elements),
                 _ => {}
             }
@@ -327,7 +344,8 @@ impl TypeContext<'_> {
                 | Type::Array(inner)
                 | Type::List(inner)
                 | Type::Vec(inner)
-                | Type::FixedArray(inner, _) => pending.push(*inner),
+                | Type::FixedArray(inner, _)
+                | Type::Shared(inner, _) => pending.push(*inner),
                 Type::Tuple(elements) => pending.extend(elements),
                 _ => {}
             }

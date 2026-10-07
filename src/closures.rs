@@ -90,7 +90,10 @@ impl Checker<'_> {
                 };
                 self.require(class, capture.ty.clone(), span)
                     .map_err(|error| {
-                        if kind != LambdaKind::Owned || error.code != "E1013" {
+                        if kind != LambdaKind::Owned
+                            || error.code != "E1013"
+                            || capture.ty.holds_rc(&self.types)
+                        {
                             return error;
                         }
                         Diagnostic::new(

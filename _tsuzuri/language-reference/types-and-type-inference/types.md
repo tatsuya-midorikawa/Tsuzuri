@@ -57,6 +57,7 @@ Copy の列は、値を複製して元の変数も使えるかを示します。
 | 結果型 | `Result<T, E>` | 条件付き | 成功（`Ok`）または失敗（`Error`）を表す標準の共用体 | [Result](../built-in-types-and-modules/result.md) |
 | 可変長バッファ | `Vec<T>` | × | 伸長可能なヒープ確保の所有バッファ（常に非 Copy） | [Vec](../built-in-types-and-modules/vec.md) |
 | 並行タスク | `Task<T>` | × | 一回限りの実行を担う遅延並行タスク（所有権を持つ非 Copy 値） | [Task 式](../async-tasks-and-lazy/task.md) |
+| 共有ポインター | `Rc<T>`・`Arc<T>`・`Rc.Weak<T>`・`Arc.Weak<T>` | × | 参照カウントで値を共有する所有ポインター。所有者は `share` で明示的に増やす | [Rc と Arc](../built-in-types-and-modules/rc.md) |
 | 入出力操作 | `IO<T>` | ○ | 副作用を包んだアクション。中身は `unit -> T` の関数値で、Copy | [IO](../built-in-types-and-modules/io.md) |
 | 動的オブジェクト | `dyn C` | 条件付き | 型クラス `C` を実装する値へのファットポインタ。Copy になるかは `C` による | [型クラス](type-classes.md) |
 

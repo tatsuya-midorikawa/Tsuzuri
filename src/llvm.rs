@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use crate::check::{
     Builtin, BuiltinInstance, CheckedFunction, CheckedModule, FunctionRef, Local, ModuleOrigin,
-    Type, TypedExpr, TypedExprKind,
+    SharedKind, Type, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
@@ -284,6 +284,8 @@ mod math;
 mod parallel;
 #[path = "llvm_recursive.rs"]
 mod recursive;
+#[path = "llvm_shared.rs"]
+mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
 #[path = "llvm_task.rs"]
@@ -1331,6 +1333,9 @@ struct Globals {
     multiversion: bool,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
+    /// The values of the deferred shared blocks that the program drops, with whether they
+    /// count atomically (C10).
+    shared_types: BTreeSet<(Type, bool)>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
@@ -1367,6 +1372,7 @@ impl Default for Globals {
             multiversion: false,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
+            shared_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
@@ -1697,7 +1703,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
-        Type::Reference(..) | Type::Handle(_) => "ptr".into(),
+        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => "ptr".into(),
         Type::FixedArray(element, _) => {
             format!("[{} x {}]", fixed_length(ty), llvm_type(element, module))
         }
@@ -1984,6 +1990,16 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
+        Type::Shared(value, kind) => format!(
+            "{}[{}]",
+            match kind {
+                SharedKind::Rc => "rc",
+                SharedKind::RcWeak => "rc.weak",
+                SharedKind::Arc => "arc",
+                SharedKind::ArcWeak => "arc.weak",
+            },
+            canonical_type(value, module)
+        ),
         Type::Handle(name) => format!("extern.{name}"),
         Type::Dyn(dyn_type) => dyn_name(dyn_type),
         Type::Simd(_)
@@ -2043,7 +2059,7 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
         Type::Vec(_) => (24, 8),
         Type::Dyn(_) => (16, 8),
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) => (8, 8),
+        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (8, 8),
         Type::ArrayView(_) => unreachable!("an exclusive slice target is not a value"),
         Type::Length(_) => unreachable!("a length is not a value"),
         // The stride of `[N x T]` is the element's size, already a multiple of its alignment.
@@ -3750,6 +3766,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             // A14: the vtable's drop slot drops the stored value and frees its data.
             Type::Dyn(_) => self.instruction(format!("call void @tz.dyn.drop(%tz.dyn {value})")),
+            Type::Shared(shared, kind) => self.drop_shared(shared, *kind, value),
             Type::String | Type::Utf8String => {
                 let pointer = self.value(format!("extractvalue {} {value}, 0", self.ty(ty)));
                 self.instruction(format!("call void @tz.free(ptr {pointer})"));
@@ -3895,6 +3912,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
             }
             Type::Vec(element) => self.clone_vector(element, value),
+            Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
             Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
             Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
@@ -5531,6 +5549,17 @@ fn emit_builtin(
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
+        // Arena ids only need to be unique, so a monotonic increment suffices; the counter
+        // publishes no other memory. Default wasm32 lowers the atomic to a plain add.
+        Builtin::ArenaNextId => format!(
+            "@tz.arena.next_id = internal global i64 0, align 8\n\n\
+             define internal i64 {symbol}() nounwind {{\n\
+             entry:\n  %previous = atomicrmw add ptr @tz.arena.next_id, i64 1 monotonic, align 8\n  \
+             %id = add i64 %previous, 1\n  %valid = icmp sgt i64 %id, 0\n  \
+             br i1 %valid, label %done, label %exhausted\n\
+             exhausted:\n  call void @llvm.trap()\n  unreachable\n\
+             done:\n  ret i64 %id\n}}\n\n"
+        ),
         Builtin::DebugPrintString => {
             let mut write = String::new();
             let import = if wasm && debug_output {
@@ -5585,6 +5614,9 @@ fn emit_builtin(
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         builtin if builtin.name().starts_with("Vec.") => {
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
+        builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
@@ -5647,14 +5679,15 @@ fn emit_typed_builtin(
             if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(found)) if found == instance))
     }).expect("a builtin has its checked function wrapper");
     let mut builtins = Builtins::new();
-    let mut globals = Globals {
+    let mut local_globals = Globals {
         wasm: shared_globals.wasm,
         ..Globals::default()
     };
-    let globals = if shared_globals.traps.is_some() {
-        shared_globals
+    let separate = shared_globals.traps.is_none();
+    let globals = if separate {
+        &mut local_globals
     } else {
-        &mut globals
+        &mut *shared_globals
     };
     let mut specializations = Specializations::new(module);
     let mut emitter = FunctionEmitter::new(
@@ -5753,6 +5786,8 @@ fn emit_typed_builtin(
         emitter.integer_builtin(instance, ty)
     } else if instance.builtin.name().starts_with("Vec.") {
         emitter.vector_builtin(instance, ty)
+    } else if instance.builtin.shared_kind().is_some() {
+        emitter.shared_builtin(instance, ty)
     } else if instance.builtin == Builtin::FixedArrayInit {
         // A function value of `FixedArray.init`; its instance types include the array (A16).
         let Type::Function(parameters, _) = ty else {
@@ -5892,10 +5927,20 @@ fn emit_typed_builtin(
         .join(", ");
     let result_type = emitter.ty(&ty.after_arguments(count));
     emitter.instruction(format!("ret {result_type} {result}"));
-    emitter.auxiliary(&format!(
+    let definition = emitter.auxiliary(&format!(
         "{result_type} {}({arguments})",
         builtin_symbol(instance, module)
-    ))
+    ));
+    // A builtin body that drops recursive values or deferred shared blocks needs their helpers.
+    if separate {
+        shared_globals
+            .recursive_types
+            .append(&mut local_globals.recursive_types);
+        shared_globals
+            .shared_types
+            .append(&mut local_globals.shared_types);
+    }
+    definition
 }
 
 impl FunctionEmitter<'_, '_> {

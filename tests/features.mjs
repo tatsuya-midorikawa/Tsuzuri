@@ -461,6 +461,76 @@ const suites = {
       for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
     },
   },
+  arena: {
+    cases: [
+      ["arena_cycle", [], 143n], ["arena_order", [], 42351n], ["arena_foreign", [], 110n],
+      ["arena_capture", [], 84n], ["arena_task", [], 42n], ["arena_borrowed_values", [], 8n],
+      ...[1n, 2n, 3n, 1000n].map((n) => ["arena_ring", [n], (n - 1n) * n * (n + 1n) / 3n]),
+      ...[0n, 1n, 50000n].map((n) => ["arena_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n].map((count) => ["arena_parallel", [count], 2n * count * (4n * count - 1n)]),
+      ...[0n, 1n, 2n, 3n, 100n, 1000n].map((count) => {
+        let kept = 0n, removed = 0n, stale = 0n;
+        for (let i = 0n; i < count; i++) if (i % 3n === 0n) { removed += i * 3n; stale++; } else kept += i * 3n;
+        let reinserted = 0n;
+        for (let k = 0n; k < stale; k++) reinserted += 1000000n + k;
+        return ["arena_churn", [count], (kept + reinserted) * 3n + removed * 5n + stale * 7n + count * 11n];
+      }),
+      ...[0n, 1n, 10n, 10000n].map((count) => {
+        let live = 0n, removed = 0n;
+        for (let i = 0n; i < count; i++) {
+          const length = BigInt(String(i).length);
+          if (i % 4n === 1n) removed += length; else live += length + (i % 4n === 2n ? 1n : 0n);
+        }
+        return ["arena_strings", [count], live * 1000n + removed];
+      }),
+    ],
+    traps: [["arena_at_removed", []], ["arena_at_foreign", []], ["arena_update_stale", []], ["arena_negative_capacity", []]],
+    inspect(ir) {
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Arena\.(?:position|contains|get|at)[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(lookups.length > 0);
+      for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+      assert.equal(ir.match(/^@tz\.arena\.next_id = internal global i64 0/gm)?.length, 1);
+      assert.equal(ir.match(/^define internal i64 @tz\.builtin\.Arena\.__next_id\(\)/gm)?.length, 1);
+      assert.match(ir, /atomicrmw add ptr @tz\.arena\.next_id, i64 1 monotonic/);
+    },
+  },
+  rc: {
+    cases: [
+      ["rc_counts", [], (3n * 10n + 2n) * 10000n + (1n * 10n + 1n) * 100n + 2n],
+      ["rc_try_unwrap", [], 2n * 100n + BigInt("unwrap".length)],
+      ["arc_try_unwrap", [], 2n * 100n + BigInt("unwrap".length)],
+      ["rc_upgrade_after_drop", [], 2n + 10n], ["arc_upgrade_after_drop", [], 2n + 10n],
+      ["rc_shared_tails", [], (100n + 55n) + (200n + 55n) + 3n * 1000n],
+      ["rc_dag", [], (1n + (2n + 4n) + (3n + 4n)) * 10n + 3n],
+      ["rc_ptr_eq", [], 10n], ["rc_borrowed", [], BigInt("borrowed".length)], ["arc_capture", [], 2n * 10n + 2n],
+      ...[0n, 1n, 2n, 100000n].map((n) => ["rc_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 100000n].map((n) => ["rc_long_drop", [n], n]),
+      ...[0n, 1n, 100000n].map((n) => ["arc_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n, 4097n].map((n) => ["arc_parallel", [n], n * (n - 1n) / 2n * 10n + 1n]),
+      ...[0n, 1n, 1000n].map((n) => ["arc_weak_parallel", [n], 4n * (n * (n - 1n) / 2n) * 10n]),
+      // The last task to finish drops the shared value.
+      ...[0n, 1n, 1000n, 100000n].map((n) => ["arc_parallel_last", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n, 50000n].map((n) => ["arc_chain_parallel", [n], 4n * (n * (n - 1n) / 2n)]),
+    ],
+    // A chain of a million shared nodes drops without native recursion; on wasm32 it needs more
+    // than the default 16 MiB heap, so it traps there at the allocation instead.
+    nativeCases: [["rc_chain", [1000000n], 1000000n * 999999n / 2n], ["rc_long_drop", [1000000n], 1000000n],
+      ["arc_chain", [1000000n], 1000000n * 999999n / 2n]],
+    wasmTraps: [["rc_chain", [1000000n]], ["arc_chain", [1000000n]]],
+    traps: [["rc_upgrade_dead", []]],
+    inspect(ir) {
+      const bodies = (prefix) => [...ir.matchAll(new RegExp(`^define internal [^\\n]*@tz\\.builtin\\.${prefix}\\.[^\\n]*\\{([\\s\\S]*?)^\\}`, "gm"))].map((match) => match[1]);
+      const rc = bodies("Rc"), arc = bodies("Arc");
+      assert.ok(rc.length > 0 && arc.length > 0);
+      for (const body of rc) assert.doesNotMatch(body, /atomicrmw|cmpxchg|fence|load atomic/);
+      assert.ok(arc.some((body) => /atomicrmw add ptr [^\n]*, i64 1 monotonic/.test(body)));
+      assert.ok(arc.some((body) => /cmpxchg ptr [^\n]* acquire monotonic/.test(body)));
+      assert.match(ir, /atomicrmw sub ptr [^\n]*, i64 1 release/);
+      assert.match(ir, /fence acquire/);
+      assert.match(ir, /^define internal void @"tz\.shared\.drop\.rc\.Main\.Link"\(ptr %node, ptr %pending\)/m);
+      assert.match(ir, /^define internal void @"tz\.shared\.drop\.arc\.Main\.AList"\(ptr %node, ptr %pending\)/m);
+    },
+  },
   hash_map: {
     cases: [
       ...[0n, 1n, 2n, 7n, 8n, 9n, 100n, 1000n, 100000n].flatMap((count) => [1n, 2n, -3n].flatMap((seed) => [
@@ -1523,10 +1593,37 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
   console.log("WASM realloc: split, absorb, fallback, null, zero and coalescing passed at O0/O3");
 }
 
+// Arc counts with atomic instructions on WASM threads: the tasks share and drop the counts on
+// worker threads, and the heap returns to the worker stacks alone.
+async function rcWasmThreadsChecks() {
+  if (wasmTarget !== "wasm32") return;
+  const { createThreadPool } = await import("../src/runtime/wasm-threads.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "tsuzuri-rc-threads-"));
+  try {
+    for (const optimization of [0, 3]) {
+      const wasm = join(directory, `rc-threads-${optimization}.wasm`);
+      cli(["build", join(root, "tests/fixtures/rc"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", wasm]);
+      const pool = await createThreadPool(readFileSync(wasm), { workers: 3 });
+      try {
+        assert.equal(pool.call("tz_arc_parallel", 4097n), 4097n * 4096n / 2n * 10n + 1n);
+        assert.equal(pool.workerCount, 3);
+        assert.equal(pool.call("tz_arc_parallel_last", 100000n), 100000n * 99999n / 2n);
+        assert.equal(pool.call("tz_arc_chain_parallel", 20000n), 4n * (20000n * 19999n / 2n));
+        assert.equal(pool.call("tz_arc_weak_parallel", 1000n), 4n * (1000n * 999n / 2n) * 10n);
+        assert.equal(pool.call("tsuzuri_thread_heap_live_bytes"), 3n * (262144n + 16n));
+      } finally {
+        await pool.close();
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  console.log("rc: Arc on WASM threads at O0/O3 passed");
+}
+
 let total = 0;
 for (const [name, suite] of Object.entries(suites)) {
   if (only && only !== name) continue;
   total += run(name, suite);
+  if (name === "rc") await rcWasmThreadsChecks();
   if (name === "vec") wasmReallocationChecks();
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();
