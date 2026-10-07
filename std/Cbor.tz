@@ -383,7 +383,7 @@ and members_at bytes start count depth =
 /// model: integers, bignums (tags 2 and 3), finite floats, text strings, arrays, maps with text
 /// keys, booleans, and null, with definite lengths and at most 128 nested arrays and maps. Other
 /// items give `Unsupported`, invalid UTF-8 `InvalidUtf8`, a repeated key `DuplicateKey`, and a
-/// cut input `UnexpectedEnd`; every error carries the byte offset of the item.
+/// cut input `UnexpectedEnd` at the input length; every other error carries the byte offset of the item.
 def decode :: ref [ubyte] -> Result<Json.Value, Json.Error>
 fn decode bytes =
 	if bytes.length > 67108864 then Result.Error (failure Json.TooLarge 0) else

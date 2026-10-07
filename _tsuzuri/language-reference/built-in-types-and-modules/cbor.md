@@ -7,7 +7,7 @@
 - `Cbor.encode` は `Json.Value` を RFC 8949 §4.2.1 の決定的な符号化（core deterministic encoding）で書きます。同じ値は常に同じバイト列です。
 - `Cbor.decode` は JSON のデータモデルに入る CBOR を厳密に読み、それ以外は `Result` の `Error` で返します。トラップしません。
 - `Cbor.serialize` / `Cbor.deserialize` は `Encode` / `Decode` を通して値とバイト列を一度に変換します。
-- エラーは `Json.Error` で、decode の `offset` は問題の項目の先頭のバイト位置です。
+- エラーは `Json.Error` で、decode の `offset` は、入力が途中で終わった `UnexpectedEnd` では入力の長さ（終わった位置）、ほかのエラーでは問題の項目の先頭のバイト位置です。
 
 ## 符号化
 
