@@ -66,9 +66,16 @@ try {
   const basic = golden("basic", "sample.h", "Sample");
   assert.deepEqual(basic.skipped, ["// skipped sample_log: variadic function", "// skipped sample_twice: function has internal linkage (static)"]);
   const included = golden("include", "main.h", "Included", ["--include-dir", join(fixtures, "include", "inc")]);
-  assert.doesNotMatch(included.text, /"b"|DECLARE_F/);
+  assert.doesNotMatch(included.text, /"b"|DECLARE_F|IN_OTHER|DROPPED/);
   golden("names", "names.h", "Names");
   const skipped = golden("skipped", "skipped.h", "Skipped");
+  const annotations = [
+    "--buffer", "ext_sum:values:count", "--buffer", "ext_mean:values:count", "--buffer", "ext_checksum:1:2",
+    "--buffer", "ext_text_length:text:length", "--buffer", "ext_fill:values:count", "--buffer", "ext_split:values:count",
+    "--buffer", "ext_sum32:values:count", "--consume", "ext_counter_free:counter",
+  ];
+  const extended = golden("extended", "ext.h", "Ext", annotations);
+  assert.equal(extended.skipped.length, 9);
 
   // --json: one W2002 object per skipped declaration, in header order.
   const json = execute(compiler, ["bindgen", join(fixtures, "skipped", "skipped.h"), "-o", join(root, "out-skipped", "Skipped.tz"), "--json"]);
@@ -102,6 +109,31 @@ try {
     console.log(`bindgen: native round trip ${optimization} passed`);
   }
 
+  // Phase 2 round trip: macros, an opaque handle (--consume), callbacks, and buffers.
+  // The IR build tracks Tsuzuri's allocations, so every lent buffer must be freed.
+  const extendedProject = join(root, "extended-project");
+  mkdirSync(extendedProject);
+  cpSync(join(fixtures, "extended", "Main.tz"), join(extendedProject, "Main.tz"));
+  cpSync(extended.output, join(extendedProject, "Ext.tz"));
+  execute(compiler, ["build", extendedProject, "--emit", "header", "-o", join(root, "tz-extended.h")]);
+  const irPath = join(root, "extended.ll");
+  execute(compiler, ["build", extendedProject, "--emit", "llvm", "-o", irPath]);
+  const ir = readFileSync(irPath, "utf8");
+  assert.equal(ir, (execute(compiler, ["build", extendedProject, "--emit", "llvm", "-o", irPath]), readFileSync(irPath, "utf8")));
+  writeFileSync(irPath, ir.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc"));
+  const extendedSources = [join(fixtures, "extended", "ext.c"), join(fixtures, "extended", "host.c"), "-I", join(fixtures, "extended"), "-I", root, "-lm"];
+  for (const optimization of ["-O0", "-O3"]) {
+    const tracked = join(root, `extended-ir${optimization}`);
+    execute(clang, [optimization, "-Wno-override-module", irPath, "src/runtime/task.c", ...extendedSources, "-pthread", "-o", tracked]);
+    assert.equal(execute(tracked, []).stdout, "bindgen extended round trip ok\n");
+    const object = join(root, `extended${optimization}.o`);
+    execute(compiler, ["build", extendedProject, "--emit", "object", optimization, "-o", object]);
+    const linked = join(root, `extended${optimization}`);
+    execute(clang, [optimization, object, ...extendedSources, "-o", linked]);
+    assert.equal(execute(linked, []).stdout, "bindgen extended round trip ok\n");
+    console.log(`bindgen: native round trip with macros, handles, callbacks, and buffers ${optimization} passed`);
+  }
+
   // The command line and the tools.
   const header = join(fixtures, "basic", "sample.h");
   const fresh = join(root, "fresh");
@@ -117,6 +149,16 @@ try {
   writeFileSync(broken, "int broken(;\n");
   assert.match(rejected(["bindgen", broken, "-o", join(fresh, "X.tz")], "E2002", 1), /broken\.h:1/);
   assert.match(rejected(["bindgen", join(fixtures, "include", "main.h"), "-o", join(fresh, "X.tz")], "E2002", 1), /--include-dir/);
+  assert.ok(!existsSync(join(fresh, "X.tz")));
+  // Annotations: the shape is checked with the arguments, the names after Clang.
+  const extendedHeader = join(fixtures, "extended", "ext.h");
+  rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--buffer", "ext_sum:values"], "E2000", 2);
+  rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--consume", "ext_counter_free:0"], "E2000", 2);
+  rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--buffer", "a:b:c", "--buffer", "a:b:d"], "E2000", 2);
+  assert.match(rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--buffer", "nothing:1:2"], "E2000", 1), /'nothing', which the header does not declare/);
+  assert.match(rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--buffer", "ext_sum:values:size"], "E2000", 1), /parameter 'size', which 'ext_sum' does not have/);
+  assert.match(rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--consume", "ext_counter_free:3"], "E2000", 1), /parameter 3 of 'ext_counter_free', which has 1 parameter$/m);
+  assert.match(rejected(["bindgen", extendedHeader, "-o", join(fresh, "X.tz"), "--buffer", "ext_sum:1:2", "--consume", "ext_sum:values"], "E2000", 1), /another annotation already names/);
   assert.ok(!existsSync(join(fresh, "X.tz")));
   // Output protection: nothing that bindgen did not write is replaced.
   const handWritten = join(fresh, "Hand.tz");

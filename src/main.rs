@@ -20,7 +20,8 @@ Usage:
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
-  tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--json]
+  tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
+                    [--consume F:P]... [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -37,9 +38,12 @@ namespace, else the package or folder name) followed by subdirectories
 (Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
-`tsuzuri bindgen` writes extern declarations, constants, records, and type aliases for
-the C header's own declarations whose ABI matches exactly (64-bit Linux and macOS, with
-TSUZURI_CLANG); it reports each other declaration as W2002 and a '// skipped' line.
+`tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
+records, opaque extern types, and type aliases for the C header's own declarations
+whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
+other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
+pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
+opaque handle into the call instead of borrowing it.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.

@@ -3,6 +3,7 @@
 // clang: <clang>
 // target: <target>
 
+const SAMPLE_LIMIT: i32 = 42
 type SampleCount = i32
 const SAMPLE_FAST: i32 = 0
 const SAMPLE_SLOW: i32 = 5

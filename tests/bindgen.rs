@@ -4,7 +4,8 @@
 
 use serde_json::{Value, json};
 use tsuzuri::bindgen::{
-    Arguments, Generated, HeaderInfo, MARKER, Skipped, generate, lp64_target, parse_arguments,
+    Arguments, BufferAnnotation, ConsumeAnnotation, Extras, Failure, Generated, HeaderInfo, MARKER,
+    ParameterName, Skipped, generate, generate_with, lp64_target, parse_arguments,
 };
 
 const PATH: &str = "/h/main.h";
@@ -31,9 +32,14 @@ fn run(mut nodes: Vec<Value>) -> Generated {
     generate(&unit(nodes), &header()).expect("valid AST")
 }
 
-/// The declaration lines after the four comment lines and the blank line.
+/// The declaration lines after the header comments and the blank line.
 fn body(generated: &Generated) -> Vec<&str> {
-    generated.text.lines().skip(5).collect()
+    generated
+        .text
+        .lines()
+        .skip_while(|line| !line.is_empty())
+        .skip(1)
+        .collect()
 }
 
 fn lines(nodes: Vec<Value>) -> Vec<String> {
@@ -718,9 +724,98 @@ fn parses_bindgen_arguments() {
             header: "sample.h".into(),
             output: "Sample.tz".into(),
             include_dirs: vec!["a".into(), "b".into()],
+            buffers: Vec::new(),
+            consumes: Vec::new(),
             json: true,
         })
     );
+    let annotated = parse(&[
+        "a.h",
+        "-o",
+        "A.tz",
+        "--buffer",
+        "sum:values:count",
+        "--buffer",
+        "mean:1:2",
+        "--consume",
+        "close:handle",
+        "--consume",
+        "close:2",
+    ])
+    .unwrap();
+    assert_eq!(
+        annotated.buffers,
+        [
+            BufferAnnotation {
+                function: "sum".into(),
+                pointer: ParameterName::Name("values".into()),
+                length: ParameterName::Name("count".into()),
+            },
+            BufferAnnotation {
+                function: "mean".into(),
+                pointer: ParameterName::Position(1),
+                length: ParameterName::Position(2),
+            },
+        ]
+    );
+    assert_eq!(
+        annotated.consumes,
+        [
+            ConsumeAnnotation {
+                function: "close".into(),
+                parameter: ParameterName::Name("handle".into()),
+            },
+            ConsumeAnnotation {
+                function: "close".into(),
+                parameter: ParameterName::Position(2),
+            },
+        ]
+    );
+    let buffer_usage = "--buffer takes FUNCTION:POINTER:LENGTH with C names or 1-based parameter positions, such as --buffer sum:values:count";
+    let consume_usage = "--consume takes FUNCTION:PARAMETER with a C name or a 1-based parameter position, such as --consume close:handle";
+    for (values, message) in [
+        (&["a.h", "-o", "A.tz", "--buffer"][..], buffer_usage),
+        (
+            &["a.h", "-o", "A.tz", "--buffer", "sum:values"][..],
+            buffer_usage,
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--buffer", "sum:values:count:x"][..],
+            buffer_usage,
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--buffer", "s$um:1:2"][..],
+            buffer_usage,
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--buffer", "sum:0:1"][..],
+            buffer_usage,
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--buffer", "sum::1"][..],
+            buffer_usage,
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--consume", "close"][..],
+            consume_usage,
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--consume", "close:-1"][..],
+            consume_usage,
+        ),
+        (
+            &[
+                "a.h", "-o", "A.tz", "--buffer", "f:p:a", "--buffer", "f:p:b",
+            ][..],
+            "--buffer f:p is specified more than once",
+        ),
+        (
+            &["a.h", "-o", "A.tz", "--consume", "f:1", "--consume", "f:1"][..],
+            "--consume f:1 is specified more than once",
+        ),
+    ] {
+        assert_eq!(parse(values), Err(message.to_owned()), "{values:?}");
+    }
     assert_eq!(
         parse(&["--output", "out/Lib.tz", "--", "-odd.h"])
             .unwrap()
@@ -740,11 +835,11 @@ fn parses_bindgen_arguments() {
         ),
         (
             &["a.h", "-o", "A.tz", "--target", "wasm32"][..],
-            "bindgen accepts only -o, --include-dir, and --json",
+            "bindgen accepts only -o, --include-dir, --buffer, --consume, and --json",
         ),
         (
             &["a.h", "-o", "A.tz", "-O3"][..],
-            "bindgen accepts only -o, --include-dir, and --json",
+            "bindgen accepts only -o, --include-dir, --buffer, --consume, and --json",
         ),
         (
             &["a.h", "-o", "A.tz", "-o", "B.tz"][..],
@@ -764,4 +859,729 @@ fn parses_bindgen_arguments() {
             .contains("module file name")
     );
     assert!(parse(&["a.h", "-o", "Two-Words.tz"]).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2
+
+/// The header text and the `clang -E -dD` output for a header made of `lines`: the
+/// predefined macros come first, as in Clang's output.
+fn preprocessed(lines: &[&str]) -> (String, String) {
+    let header: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    let output = format!(
+        "# 1 \"{PATH}\"\n# 1 \"<built-in>\" 1\n# 1 \"<built-in>\" 3\n#define __STDC__ 1\n#define ZERO 0\n# 1 \"<command line>\" 1\n# 1 \"<built-in>\" 2\n# 1 \"{PATH}\" 2\n{header}"
+    );
+    (header, output)
+}
+
+fn with_macros(nodes: Vec<Value>, lines: &[&str]) -> Generated {
+    let (text, output) = preprocessed(lines);
+    let mut nodes = nodes;
+    if let Some(first) = nodes.first_mut() {
+        first["loc"]["file"] = json!(PATH);
+    }
+    generate_with(
+        &unit(nodes),
+        &header(),
+        &Extras {
+            preprocessed: Some(&output),
+            header_text: text.as_bytes(),
+            ..Extras::default()
+        },
+    )
+    .expect("valid input")
+}
+
+fn annotated(
+    nodes: Vec<Value>,
+    buffers: &[BufferAnnotation],
+    consumes: &[ConsumeAnnotation],
+) -> Result<Generated, Failure> {
+    let mut nodes = nodes;
+    if let Some(first) = nodes.first_mut() {
+        first["loc"]["file"] = json!(PATH);
+    }
+    generate_with(
+        &unit(nodes),
+        &header(),
+        &Extras {
+            buffers,
+            consumes,
+            ..Extras::default()
+        },
+    )
+}
+
+fn buffer(function: &str, pointer: &str, length: &str) -> BufferAnnotation {
+    let name = |text: &str| match text.parse() {
+        Ok(position) => ParameterName::Position(position),
+        Err(_) => ParameterName::Name(text.into()),
+    };
+    BufferAnnotation {
+        function: function.into(),
+        pointer: name(pointer),
+        length: name(length),
+    }
+}
+
+fn consume(function: &str, parameter: &str) -> ConsumeAnnotation {
+    ConsumeAnnotation {
+        function: function.into(),
+        parameter: match parameter.parse() {
+            Ok(position) => ParameterName::Position(position),
+            Err(_) => ParameterName::Name(parameter.into()),
+        },
+    }
+}
+
+fn named_function(name: &str, ty: &str, parameters: &[(&str, &str)]) -> Value {
+    let mut node = function(name, ty, &[]);
+    node["inner"] = json!(
+        parameters
+            .iter()
+            .map(|(parameter, ty)| json!({ "kind": "ParmVarDecl", "name": parameter, "type": { "qualType": ty } }))
+            .collect::<Vec<_>>()
+    );
+    node
+}
+
+#[test]
+fn types_integer_macros_like_c_on_lp64() {
+    // Each type follows C17 6.4.4.1 with 32-bit int and 64-bit long, worked out by hand.
+    let cases = [
+        ("D1 42", "const D1: i32 = 42"),
+        ("D2 2147483647", "const D2: i32 = 2147483647"),
+        ("D3 2147483648", "const D3: i64 = 2147483648"),
+        ("D4 0x7FFFFFFF", "const D4: i32 = 2147483647"),
+        ("D5 0x80000000", "const D5: i32u = 2147483648"),
+        ("D6 0xffffffff", "const D6: i32u = 4294967295"),
+        ("D7 0x100000000", "const D7: i64 = 4294967296"),
+        (
+            "D8 0x8000000000000000",
+            "const D8: i64u = 9223372036854775808",
+        ),
+        (
+            "D9 9223372036854775807",
+            "const D9: i64 = 9223372036854775807",
+        ),
+        (
+            "D10 9223372036854775808u",
+            "const D10: i64u = 9223372036854775808",
+        ),
+        (
+            "D11 18446744073709551615U",
+            "const D11: i64u = 18446744073709551615",
+        ),
+        ("D12 017", "const D12: i32 = 15"),
+        ("D13 0b101", "const D13: i32 = 5"),
+        ("D14 0", "const D14: i32 = 0"),
+        ("D15 1U", "const D15: i32u = 1"),
+        ("D16 1L", "const D16: i64 = 1"),
+        ("D17 1UL", "const D17: i64u = 1"),
+        ("D18 1LL", "const D18: i64 = 1"),
+        ("D19 1ull", "const D19: i64u = 1"),
+        ("D20 1lu", "const D20: i64u = 1"),
+        ("D21 1LLU", "const D21: i64u = 1"),
+        ("D22 0x1l", "const D22: i64 = 1"),
+        (
+            "D23 0xFFFFFFFFFFFFFFFFl",
+            "const D23: i64u = 18446744073709551615",
+        ),
+        ("D24 (-1)", "const D24: i32 = -1"),
+        ("D25 -(1)", "const D25: i32 = -1"),
+        ("D26 - -1", "const D26: i32 = 1"),
+        ("D27 (-(-(2)))", "const D27: i32 = 2"),
+        ("D28 (-1u)", "const D28: i32u = 4294967295"),
+        ("D29 -0x80000000", "const D29: i32u = 2147483648"),
+        ("D30 -2147483648", "const D30: i64 = -2147483648"),
+        (
+            "D31 (-9223372036854775807L)",
+            "const D31: i64 = -9223372036854775807",
+        ),
+        ("D32 -1ull", "const D32: i64u = 18446744073709551615"),
+        ("D33 ((7))", "const D33: i32 = 7"),
+        // Reported: integer literals without an exact Tsuzuri value.
+        (
+            "E1 9223372036854775808",
+            "// skipped E1: integer literal '9223372036854775808' does not fit in a signed 64-bit type; C gives it no type without a 'u' suffix",
+        ),
+        (
+            "E2 18446744073709551616",
+            "// skipped E2: integer literal '18446744073709551616' does not fit in 64 bits",
+        ),
+        (
+            "E3 09",
+            "// skipped E3: '09' is not a valid C integer literal",
+        ),
+        (
+            "E4 1lL",
+            "// skipped E4: '1lL' is not a valid C integer literal",
+        ),
+        (
+            "E5 1f",
+            "// skipped E5: integer literal '1f' has a suffix that bindgen does not convert",
+        ),
+        (
+            "E6 0x",
+            "// skipped E6: '0x' is not a valid C integer literal",
+        ),
+        (
+            "E7 1wb",
+            "// skipped E7: integer literal '1wb' has a suffix that bindgen does not convert",
+        ),
+        (
+            "E8 0b2",
+            "// skipped E8: '0b2' is not a valid C integer literal",
+        ),
+    ];
+    let mut lines: Vec<String> = cases
+        .iter()
+        .map(|(body, _)| format!("#define {body}"))
+        .collect();
+    // Ignored: not one integer literal, function-like, or undefined again.
+    lines.extend(
+        [
+            "#define F1 1.5",
+            "#define F2 1e3",
+            "#define F3 0x1p3",
+            "#define F4 (1 << 2)",
+            "#define F5 \"s\"",
+            "#define F6 'c'",
+            "#define F7 --1",
+            "#define F8 +1",
+            "#define F9 D1",
+            "#define F10",
+            "#define F11(x) (x)",
+            "#define F12 ()",
+            "#define F13 (1",
+            "#define U1 1",
+            "#undef U1",
+        ]
+        .map(String::from),
+    );
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let generated = with_macros(Vec::new(), &refs);
+    let expected: Vec<&str> = cases.iter().map(|(_, line)| *line).collect();
+    assert_eq!(body(&generated), expected);
+    assert!(!generated.text.contains("__STDC__") && !generated.text.contains("ZERO"));
+}
+
+#[test]
+fn places_macros_in_header_order_and_ownership() {
+    let header_lines = [
+        "#define FIRST 1",
+        "int f(void);",
+        "#define type 2",
+        "#define sqrt 3",
+        "#define fooBar 4",
+        "int foo_bar(void);",
+        "#undef REDEFINED",
+        "#define REDEFINED 5",
+        "#define DROPPED 6",
+        "#define caf\u{e9} 7",
+    ];
+    let (text, mut output) = preprocessed(&header_lines);
+    // An included file: its macros are not the header's, and it undefines DROPPED.
+    output.push_str(&format!(
+        "# 1 \"/h/other.h\" 1\n#define OTHER 8\n#define REDEFINED 9\n#undef DROPPED\n# 11 \"{PATH}\" 2\n"
+    ));
+    let f = text.find("f(void)").unwrap() as u64;
+    let foo_bar = text.find("foo_bar(void)").unwrap() as u64;
+    let nodes = vec![
+        located(function("f", "int (void)", &[]), f, 1),
+        located(function("foo_bar", "int (void)", &[]), foo_bar, 7),
+    ];
+    let mut nodes = nodes;
+    nodes[0]["loc"]["file"] = json!(PATH);
+    let generated = generate_with(
+        &unit(nodes),
+        &header(),
+        &Extras {
+            preprocessed: Some(&output),
+            header_text: text.as_bytes(),
+            ..Extras::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        body(&generated),
+        [
+            "const FIRST: i32 = 1",
+            "extern \"f\" def f :: unit -> i32",
+            "const type_: i32 = 2",
+            "const sqrt_: i32 = 3",
+            "const fooBar: i32 = 4",
+            "extern \"foo_bar\" def foo_bar :: unit -> i32",
+            "// skipped caf\u{e9}: name is not an ASCII C identifier"
+                .replace('\u{e9}', "?")
+                .as_str(),
+        ]
+    );
+    // REDEFINED was last defined in other.h, so it is not the header's.
+    assert!(!generated.text.contains("REDEFINED") && !generated.text.contains("OTHER"));
+    let skipped = &generated.skipped[0];
+    assert_eq!(skipped.name, "caf\u{e9}");
+    assert_eq!(
+        &text[skipped.offset..skipped.offset + skipped.length],
+        "caf\u{e9}"
+    );
+    // A macro defined after a function named the same in Tsuzuri collides.
+    let generated = with_macros(
+        vec![located(function("fooBar", "int (void)", &[]), 0, 6)],
+        &["int fooBar(void);", "#define foo_bar 1"],
+    );
+    assert_eq!(
+        body(&generated),
+        [
+            "extern \"fooBar\" def foo_bar :: unit -> i32",
+            "// skipped foo_bar: name 'foo_bar' collides with an earlier declaration",
+        ]
+    );
+}
+
+#[test]
+fn maps_opaque_structs_to_handles() {
+    let forward = |tag: &str| json!({ "kind": "RecordDecl", "name": tag, "tagUsed": "struct" });
+    let mut redeclared = forward("handle");
+    redeclared["previousDecl"] = json!("0x1");
+    let mut elsewhere = forward("elsewhere");
+    elsewhere["loc"] = json!({ "offset": 0, "file": "/h/other.h" });
+    let mut back = forward("elsewhere");
+    back["loc"] = json!({ "offset": 0, "file": PATH });
+    back["previousDecl"] = json!("0x2");
+    let mut outer = record("outer", &[("x", "int")]);
+    outer["inner"]
+        .as_array_mut()
+        .unwrap()
+        .push(record("nested", &[("y", "int")]));
+    let generated = annotated(
+        vec![
+            forward("handle"),
+            typedef("handle_t", "struct handle"),
+            typedef("handle_ref", "struct handle *"),
+            redeclared,
+            function("handle_new", "struct handle *(long)", &["long"]),
+            function(
+                "handle_use",
+                "int (handle_t *, const struct handle *, handle_ref, const handle_ref)",
+                &[
+                    "handle_t *",
+                    "const struct handle *",
+                    "handle_ref",
+                    "const handle_ref",
+                ],
+            ),
+            function("handle_shared", "const struct handle *(void)", &[]),
+            function(
+                "handle_open",
+                "int (struct handle **)",
+                &["struct handle **"],
+            ),
+            function(
+                "handle_volatile",
+                "int (volatile struct handle *)",
+                &["volatile struct handle *"],
+            ),
+            named_function(
+                "handle_close",
+                "long (struct handle *)",
+                &[("handle", "struct handle *")],
+            ),
+            forward("later"),
+            function(
+                "later_use",
+                "int (struct later *, const struct later *)",
+                &["struct later *", "const struct later *"],
+            ),
+            record("later", &[("x", "int")]),
+            elsewhere,
+            back,
+            function(
+                "elsewhere_use",
+                "int (struct elsewhere *)",
+                &["struct elsewhere *"],
+            ),
+            outer,
+            forward("nested"),
+            function("nested_use", "int (struct nested *)", &["struct nested *"]),
+            record("point", &[("x", "int")]),
+            forward("Point"),
+            forward("Vec"),
+        ],
+        &[],
+        &[consume("handle_close", "handle")],
+    )
+    .unwrap();
+    assert_eq!(
+        body(&generated),
+        [
+            "extern type Handle",
+            "extern \"handle_new\" def handle_new :: i64 -> Handle",
+            "extern \"handle_use\" def handle_use :: ref Handle -> ref Handle -> ref Handle -> ref Handle -> i32",
+            "// skipped handle_shared: result has unsupported type 'const struct handle *'",
+            "// skipped handle_open: parameter 1 has unsupported type 'struct handle **'",
+            "// skipped handle_volatile: parameter 1 has unsupported type 'volatile struct handle *'",
+            "extern \"handle_close\" def handle_close :: Handle -> i64",
+            "// skipped later_use: parameter 1 has unsupported type 'struct later *'",
+            "record Later { x: i32 }",
+            "// skipped elsewhere_use: parameter 1 has unsupported type 'struct elsewhere *'",
+            "record Outer { x: i32 }",
+            "// skipped nested_use: parameter 1 has unsupported type 'struct nested *'",
+            "record Point { x: i32 }",
+            "// skipped Point: name 'Point' collides with an earlier declaration",
+            "extern type Vec_",
+        ]
+    );
+    // --consume on a parameter that is not an opaque handle skips the function.
+    let generated = annotated(
+        vec![named_function(
+            "close_int",
+            "int (int)",
+            &[("value", "int")],
+        )],
+        &[],
+        &[consume("close_int", "value")],
+    )
+    .unwrap();
+    assert_eq!(
+        body(&generated),
+        [
+            "// skipped close_int: --consume names parameter 1, which is not a pointer to an opaque struct of the header"
+        ]
+    );
+}
+
+#[test]
+fn maps_function_pointer_parameters_to_callbacks() {
+    let forward = json!({ "kind": "RecordDecl", "name": "handle", "tagUsed": "struct" });
+    assert_eq!(
+        lines(vec![
+            forward,
+            typedef("cmp_fn", "int (*)(int, int)"),
+            function(
+                "apply",
+                "int (int (*)(int, int), int)",
+                &["int (*)(int, int)", "int"]
+            ),
+            function("apply_typedef", "int (cmp_fn)", &["cmp_fn"]),
+            function("run", "void (void (*)(void))", &["void (*)(void)"]),
+            function(
+                "test",
+                "_Bool (_Bool (*)(_Bool, short), unsigned char)",
+                &["_Bool (*)(_Bool, short)", "unsigned char"]
+            ),
+            function(
+                "visit",
+                "long (long (*)(const struct handle *), struct handle *)",
+                &["long (*)(const struct handle *)", "struct handle *"]
+            ),
+            function(
+                "nullable",
+                "int (int (* _Nonnull)(int))",
+                &["int (* _Nonnull)(int)"]
+            ),
+            function(
+                "context",
+                "void (void (*)(void *), void *)",
+                &["void (*)(void *)", "void *"]
+            ),
+            function(
+                "variadic",
+                "void (int (*)(int, ...))",
+                &["int (*)(int, ...)"]
+            ),
+            function("unprototyped", "void (int (*)())", &["int (*)()"]),
+            function(
+                "pointer_result",
+                "void (int *(*)(void))",
+                &["int *(*)(void)"]
+            ),
+            function(
+                "nested",
+                "void (int (*)(int (*)(int)))",
+                &["int (*)(int (*)(int))"]
+            ),
+            function("block", "void (int (^)(int))", &["int (^)(int)"]),
+            function("plain_char", "void (char (*)(char))", &["char (*)(char)"]),
+            function(
+                "convention",
+                "void (void (*)(int) __attribute__((ms_abi)))",
+                &["void (*)(int) __attribute__((ms_abi))"]
+            ),
+            function(
+                "pointer_to_pointer",
+                "void (int (**)(int))",
+                &["int (**)(int)"]
+            ),
+        ]),
+        [
+            "extern type Handle",
+            "extern \"apply\" def apply :: (i32 -> i32 -> i32) -> i32 -> i32",
+            "extern \"apply_typedef\" def apply_typedef :: (i32 -> i32 -> i32) -> i32",
+            "extern \"run\" def run :: (unit -> unit) -> unit",
+            "extern \"test\" def test_ :: (i8u -> i16 -> bool) -> i8u -> i8u",
+            "extern \"visit\" def visit :: (ref Handle -> i64) -> ref Handle -> i64",
+            "extern \"nullable\" def nullable :: (i32 -> i32) -> i32",
+            "// skipped context: parameter 1 has unsupported type 'void (*)(void *)'",
+            "// skipped variadic: parameter 1 has unsupported type 'int (*)(int, ...)'",
+            "// skipped unprototyped: parameter 1 has unsupported type 'int (*)()'",
+            "// skipped pointer_result: parameter 1 has unsupported type 'int *(*)(void)'",
+            "// skipped nested: parameter 1 has unsupported type 'int (*)(int (*)(int))'",
+            "// skipped block: parameter 1 has unsupported type 'int (^)(int)'",
+            "// skipped plain_char: parameter 1 has unsupported type 'char (*)(char)'",
+            "// skipped convention: parameter 1 has unsupported type 'void (*)(int) __attribute__((ms_abi))'",
+            "// skipped pointer_to_pointer: parameter 1 has unsupported type 'int (**)(int)'",
+        ]
+    );
+}
+
+#[test]
+fn pairs_annotated_buffers() {
+    let generated = annotated(
+        vec![
+            typedef("int64_t", "long long"),
+            typedef("size_t", "unsigned long"),
+            named_function(
+                "sum",
+                "long (const long *, unsigned long)",
+                &[("values", "const long *"), ("count", "unsigned long")],
+            ),
+            named_function(
+                "mean",
+                "double (const double *, long)",
+                &[("values", "const double *"), ("count", "long")],
+            ),
+            named_function(
+                "bytes",
+                "unsigned long (const unsigned char *, unsigned long)",
+                &[
+                    ("data", "const unsigned char *"),
+                    ("length", "unsigned long"),
+                ],
+            ),
+            named_function(
+                "chars",
+                "int (const char *, unsigned long)",
+                &[("text", "const char *"), ("length", "unsigned long")],
+            ),
+            named_function(
+                "voids",
+                "int (const void *, unsigned long)",
+                &[("data", "const void *"), ("size", "unsigned long")],
+            ),
+            named_function(
+                "typed",
+                "int (const int64_t *, size_t)",
+                &[("values", "const int64_t *"), ("count", "size_t")],
+            ),
+            named_function(
+                "two",
+                "int (int, const double *, long, const double *, long)",
+                &[
+                    ("flags", "int"),
+                    ("a", "const double *"),
+                    ("an", "long"),
+                    ("b", "const double *"),
+                    ("bn", "long"),
+                ],
+            ),
+            named_function(
+                "writable",
+                "int (long *, unsigned long)",
+                &[("values", "long *"), ("count", "unsigned long")],
+            ),
+            named_function(
+                "apart",
+                "int (const long *, int, unsigned long)",
+                &[
+                    ("values", "const long *"),
+                    ("flags", "int"),
+                    ("count", "unsigned long"),
+                ],
+            ),
+            named_function(
+                "narrow",
+                "int (const long *, unsigned int)",
+                &[("values", "const long *"), ("count", "unsigned int")],
+            ),
+            named_function(
+                "ints",
+                "int (const int *, unsigned long)",
+                &[("values", "const int *"), ("count", "unsigned long")],
+            ),
+            named_function(
+                "signed_bytes",
+                "int (const signed char *, unsigned long)",
+                &[
+                    ("values", "const signed char *"),
+                    ("count", "unsigned long"),
+                ],
+            ),
+            named_function(
+                "scalar",
+                "int (long, unsigned long)",
+                &[("value", "long"), ("count", "unsigned long")],
+            ),
+            named_function(
+                "reversed",
+                "int (unsigned long, const long *)",
+                &[("count", "unsigned long"), ("values", "const long *")],
+            ),
+        ],
+        &[
+            buffer("sum", "1", "2"),
+            buffer("mean", "values", "count"),
+            buffer("bytes", "data", "length"),
+            buffer("chars", "text", "length"),
+            buffer("voids", "data", "size"),
+            buffer("typed", "values", "count"),
+            buffer("two", "a", "an"),
+            buffer("two", "b", "bn"),
+            buffer("writable", "values", "count"),
+            buffer("apart", "values", "count"),
+            buffer("narrow", "values", "count"),
+            buffer("ints", "values", "count"),
+            buffer("signed_bytes", "values", "count"),
+            buffer("scalar", "value", "count"),
+            buffer("reversed", "values", "count"),
+        ],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        body(&generated),
+        [
+            "type Int64T = i64",
+            "type SizeT = i64u",
+            "extern \"sum\" def sum :: ref [i64] -> i64",
+            "extern \"mean\" def mean :: ref [f64] -> f64",
+            "extern \"bytes\" def bytes :: ref [ubyte] -> i64u",
+            "extern \"chars\" def chars :: ref [ubyte] -> i32",
+            "extern \"voids\" def voids :: ref [ubyte] -> i32",
+            "extern \"typed\" def typed :: ref [i64] -> i32",
+            "extern \"two\" def two :: i32 -> ref [f64] -> ref [f64] -> i32",
+            "// skipped writable: buffer parameter 1 has type 'long *', not a pointer to const; the host could write into a shared Tsuzuri array",
+            "// skipped apart: --buffer pairs parameter 1 with parameter 3, but the buffer ABI passes the length right after the pointer",
+            "// skipped narrow: buffer length parameter 2 has type 'unsigned int', not a 64-bit integer",
+            "// skipped ints: buffer parameter 1 has type 'const int *'; Tsuzuri buffers hold 64-bit integers, doubles, or bytes",
+            "// skipped signed_bytes: buffer parameter 1 has type 'const signed char *'; Tsuzuri buffers hold 64-bit integers, doubles, or bytes",
+            "// skipped scalar: --buffer names parameter 1, which has type 'long', not a pointer",
+            "// skipped reversed: --buffer pairs parameter 2 with parameter 1, but the buffer ABI passes the length right after the pointer",
+        ]
+    );
+    assert!(
+        generated
+            .text
+            .contains("\n// options: --buffer sum:1:2 --buffer mean:values:count ")
+    );
+}
+
+#[test]
+fn rejects_annotations_the_header_cannot_satisfy() {
+    let nodes = || {
+        vec![named_function(
+            "sum",
+            "long (const long *, unsigned long)",
+            &[("values", "const long *"), ("count", "unsigned long")],
+        )]
+    };
+    let failure = |buffers: &[BufferAnnotation], consumes: &[ConsumeAnnotation]| match annotated(
+        nodes(),
+        buffers,
+        consumes,
+    ) {
+        Err(Failure::Annotation(message)) => message,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        failure(&[buffer("total", "1", "2")], &[]),
+        "--buffer names 'total', which the header does not declare as a function"
+    );
+    assert_eq!(
+        failure(&[], &[consume("close", "1")]),
+        "--consume names 'close', which the header does not declare as a function"
+    );
+    assert_eq!(
+        failure(&[buffer("sum", "values", "size")], &[]),
+        "--buffer names parameter 'size', which 'sum' does not have"
+    );
+    assert_eq!(
+        failure(&[buffer("sum", "1", "3")], &[]),
+        "--buffer names parameter 3 of 'sum', which has 2 parameters"
+    );
+    assert_eq!(
+        failure(&[buffer("sum", "1", "1")], &[]),
+        "--buffer names a parameter of 'sum' that another annotation already names"
+    );
+    assert_eq!(
+        failure(&[buffer("sum", "1", "2")], &[consume("sum", "values")]),
+        "--buffer names a parameter of 'sum' that another annotation already names"
+    );
+    assert_eq!(
+        failure(
+            &[buffer("sum", "1", "2"), buffer("sum", "count", "values")],
+            &[]
+        ),
+        "--buffer names a parameter of 'sum' that another annotation already names"
+    );
+}
+
+#[test]
+fn generated_modules_check_and_consume_moves_the_handle() {
+    let generated = annotated(
+        vec![
+            json!({ "kind": "RecordDecl", "name": "counter", "tagUsed": "struct" }),
+            named_function(
+                "counter_new",
+                "struct counter *(long)",
+                &[("start", "long")],
+            ),
+            named_function(
+                "counter_add",
+                "long (struct counter *, long)",
+                &[("counter", "struct counter *"), ("amount", "long")],
+            ),
+            named_function(
+                "counter_free",
+                "long (struct counter *)",
+                &[("counter", "struct counter *")],
+            ),
+            typedef("map_fn", "long (*)(long)"),
+            named_function(
+                "apply",
+                "long (map_fn, long)",
+                &[("map", "map_fn"), ("value", "long")],
+            ),
+            named_function(
+                "sum",
+                "long (const long *, unsigned long)",
+                &[("values", "const long *"), ("count", "unsigned long")],
+            ),
+            enumeration("mode", vec![constant("MODE_ONE", Some(value("1", "int")))]),
+            record("pair", &[("left", "int"), ("right", "double")]),
+            function(
+                "pair_sum",
+                "double (const struct pair *)",
+                &["const struct pair *"],
+            ),
+        ],
+        &[buffer("sum", "values", "count")],
+        &[consume("counter_free", "counter")],
+    )
+    .unwrap();
+    let main = |tail: &str| {
+        format!(
+            "private def twice :: i64 -> i64\nfn twice value = value * 2\n\nexport def run :: i64\nfn run =\n    let counter = Lib.counter_new 1\n    let added = Lib.counter_add (&counter) 2\n    let values = [1, 2]\n    let pair = Pair {{ left: 1, right: 2.5 }}\n    let total = added + Lib.apply twice 3 + Lib.sum (&values) + (Lib.pair_sum (&pair) as i64) + (Lib.MODE_ONE as i64)\n{tail}"
+        )
+    };
+    let valid = main("    total + Lib.counter_free counter\n");
+    tsuzuri::analyze_modules(&[("Main.tz", &valid), ("Lib.tz", &generated.text)])
+        .unwrap_or_else(|error| panic!("{}: {}\n{}", error.code, error.message, generated.text));
+    // Freeing moves the handle, so using it afterwards is rejected.
+    let after_free = main(
+        "    let freed = Lib.counter_free counter\n    total + freed + Lib.counter_add (&counter) 1\n",
+    );
+    let error = tsuzuri::analyze_modules(&[("Main.tz", &after_free), ("Lib.tz", &generated.text)])
+        .expect_err("use after free");
+    assert_eq!(error.code, "E1012", "{}", error.message);
 }

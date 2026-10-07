@@ -179,6 +179,8 @@ macOS のデバッグ実行ファイルにおける DWARF は出力ファイル�
 
 **bindgen:** `tsuzuri bindgen`（`src/bindgen.rs`）は lexer・parser・check・LLVM を通らず、生成したテキストは利用者のソースとして通常の経路で検査されます。生成するのは C の ABI がホスト ABI と一致すると確かめられる宣言だけで、型は Clang の表記を typedef 展開してから固定の表と完全一致で照合し、表にない表記は推測せず `W2002` で省きます。
 Clang は JSON の位置に `file` を変化時にしか書かず、`serde_json` の `Value` はキー順を保たないので、宣言の所属ファイルは `loc`（spelling → expansion）、`range`（begin → end）、子（`array_filler` → `inner`）の順をコードで固定して全ノードを訪ねて求めます。Clang は `sqrt` などの library builtin を最初の言及で暗黙に宣言するため、`previousDecl` が暗黙の宣言を指す関数は最初の宣言として扱います。enum 定数の値は `ConstantExpr` の値に `ImplicitCastExpr` の整数変換を適用して求めます。
+マクロは AST に現れないので、4 回目の Clang の起動 `-E -dD` の出力を読みます。行マーカー（`# 12 "/path/x.h" 2`。ファイル名の C エスケープを戻す）が次の行のファイルと行番号を与え、それ以降の各行は次のソース行なので、各 `#define` をファイルと行に結び付け、`#undef` と再定義を反映した最終状態のうちヘッダーのものだけを、ヘッダーのバイト列の行頭表からの位置で宣言と同じ順に並べます。整数リテラルの型は C17 6.4.4.1 を LP64 に当てはめて決め、単項マイナスはその型で計算します。
+不透明なハンドルは、ヘッダーが最初に宣言し、翻訳単位のどこでも（入れ子の宣言も含めて）定義されない struct だけです。定義のある struct は呼び出し側が確保しうるので、ハンドルにしません。`--buffer`・`--consume` の注釈は引数の名前か位置で解決し、ヘッダーにない関数・引数や重なりは `E2000`、型が buffer の ABI（要素への const ポインターと直後の 64-bit の要素数）やハンドルに合わない組は `W2002` です。
 出力は AST、ヘッダーのバイト列、Clang の版とターゲットだけの関数で、時刻・絶対パス・環境変数を含まず、匿名の tag の表記（`(unnamed struct at /path:1:2)`）からも絶対パスを取り除きます。コメントへ入る文字列は 0x20–0x7E 以外を `?` に置き換え、生成コードへの行の注入を防ぎます。検証は `tests/bindgen.rs`（Clang を起動しない AST 単位のテスト）と `tests/bindgen.mjs`（golden、決定性、`check`／`fmt --check`、C ライブラリとリンクする native の `-O0`／`-O3` の往復、CLI と出力保護）です。
 
 **Windows MSVC:** `native_compile_args` はコンパイラが対象とする CPU アーキテクチャに応じて `x86_64-pc-windows-msvc` または `aarch64-pc-windows-msvc` を選択し、POSIX 向けフラグと明確に分離します。Win32 タスクアダプタは、既存のスケジューラに対して SRWLOCK、CONDITION_VARIABLE、INIT_ONCE、CreateThread、WaitForSingleObject、CloseHandle による同期・スレッド機能を提供します。

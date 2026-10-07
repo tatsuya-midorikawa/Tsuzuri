@@ -2,7 +2,7 @@
 //! the module that `crate::bindgen::generate` produces.
 
 use super::*;
-use crate::bindgen::{Arguments, HeaderInfo, MARKER, MAX_AST_BYTES};
+use crate::bindgen::{Arguments, Extras, Failure, HeaderInfo, MARKER, MAX_AST_BYTES};
 use crate::cache::Sha256;
 
 const CLANG_HINT: &str = "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable";
@@ -71,6 +71,16 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
     }
     command.arg(&path);
     let ast = capture(&mut command, "clang AST output", HEADER_HINT).map_err(at_header)?;
+    // The preprocessor keeps each `#define` with line markers that place it in its file.
+    let mut command = Command::new(&clang);
+    command.args(["-x", "c", "-std=gnu17", "-E", "-dD"]);
+    for directory in &arguments.include_dirs {
+        command.arg("-I").arg(directory);
+    }
+    command.arg(&path);
+    let preprocessed =
+        capture(&mut command, "clang preprocessor output", HEADER_HINT).map_err(at_header)?;
+    let preprocessed = String::from_utf8_lossy(&preprocessed);
     let unreadable = |error: &dyn std::fmt::Display| {
         at_header(driver_error(
             "E2002",
@@ -85,7 +95,7 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let generated = crate::bindgen::generate(
+    let generated = crate::bindgen::generate_with(
         &ast,
         &HeaderInfo {
             path: path_text,
@@ -94,8 +104,19 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
             clang_version: &clang_version,
             target: &target,
         },
+        &Extras {
+            preprocessed: Some(&preprocessed),
+            header_text: &bytes,
+            buffers: &arguments.buffers,
+            consumes: &arguments.consumes,
+        },
     )
-    .map_err(|error| unreadable(&error))?;
+    .map_err(|failure| match failure {
+        Failure::Ast(error) => unreadable(&error),
+        Failure::Annotation(message) => {
+            SourceError::new(Path::new("<command line>"), driver_error("E2000", message))
+        }
+    })?;
     publish(&path, &arguments.output, &generated.text)
         .map_err(|error| SourceError::new(&arguments.output, error))?;
     let warnings = generated
