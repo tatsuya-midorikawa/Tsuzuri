@@ -143,3 +143,25 @@ fn segments_packed which a b c d e =
         for index in 0 .. pieces.length - 1 do hash = hash_string hash (ref pieces[index])
         for index in 0 .. pieces8.length - 1 do hash = hash_bytes hash (ref pieces8[index])
     hash
+
+/// `first`, `run` copies of U+0301 (Extend), `middle`, `run` copies of U+0301 and `last`, all in the BMP: the hash
+/// of its word boundaries in UTF-16 units and in UTF-8 bytes, and of its titlecase in both encodings.
+export def word_run :: i64 -> i64 -> i64 -> i64 -> i64
+fn word_run first middle last run =
+    let mut units: Vec<i16u> = Vec.empty()
+    units = Vec.push units (first as i16u)
+    for _index in 1 .. run do units = Vec.push units 769i16u
+    units = Vec.push units (middle as i16u)
+    for _index in 1 .. run do units = Vec.push units 769i16u
+    units = Vec.push units (last as i16u)
+    let text = String.from_code_units (Vec.to_array units)
+    let bytes = Utf8String.from_string (ref text)
+    let offsets = Unicode.word_boundaries (ref text)
+    let offsets8 = Unicode.word_boundaries_utf8 (ref bytes)
+    let title = Unicode.to_title (ref text)
+    let title8 = Unicode.to_title_utf8 (ref bytes)
+    let mut hash = mix 0 offsets.length
+    for offset in offsets do hash = mix hash offset
+    hash = mix hash offsets8.length
+    for offset in offsets8 do hash = mix hash offset
+    hash_bytes (hash_string hash (ref title)) (ref title8)

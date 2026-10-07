@@ -154,7 +154,7 @@ export const matchCases = [
 ];
 
 // Rejected and accepted patterns: [pattern, kind or null, offset, message]. `repeat` builds a pattern from
-// [text, count]. `jsAccepts` marks Syntax errors that V8 accepts in `u` mode.
+// [text, count, text, count, ...]. `jsAccepts` marks Syntax errors that V8 accepts in `u` mode.
 const NOTHING = "repetition operator has nothing to repeat; add an expression before it or escape it";
 const COUNTED = "invalid counted repetition; use {n}, {n,} or {n,m} with n <= m";
 const RANGE = "invalid class range; use single characters with start <= end";
@@ -258,6 +258,13 @@ export const compileCases = [
   { repeat: ["(a)", 208], kind: null },
   { repeat: ["[\\w]", 82], kind: "TooLarge", offset: 0, message: "character classes exceed 65536 ranges in total" },
   { repeat: ["[\\w]", 81], kind: null },
+  // A class counts its ranges once, after merging: repeated and overlapping escapes in it add nothing (`\w` has
+  // 802 ranges, so 82 classes of `\w` exceed 65,536 and 81 do not). Review fix: 164 or more `\w` in one class
+  // used to be TooLarge.
+  { repeat: ["[", 1, "\\w", 170, "]", 1], kind: null },
+  { repeat: ["[", 1, "\\w\\p{L}\\p{Alphabetic}\\d\\W", 2000, "]", 1], kind: null },
+  { repeat: ["[", 1, "\\w", 170, "]", 1, "[\\w]", 80], kind: null },
+  { repeat: ["[", 1, "\\w", 170, "]", 1, "[\\w]", 81], kind: "TooLarge", offset: 0, message: "character classes exceed 65536 ranges in total" },
   { repeat: ["\\w", 2000], kind: null },
   { pattern: "a{1000}", kind: null },
   { pattern: "a{0,1000}?", kind: null },
@@ -304,9 +311,7 @@ function table(name, values) {
 }
 
 const builtPattern = (item) => item.repeat
-  ? item.repeat.length === 2
-    ? `String.repeat (ref ${literal(item.repeat[0])}) ${item.repeat[1]}`
-    : `String.repeat (ref ${literal(item.repeat[0])}) ${item.repeat[1]} + String.repeat (ref ${literal(item.repeat[2])}) ${item.repeat[3]}`
+  ? Array.from({ length: item.repeat.length / 2 }, (_, index) => `String.repeat (ref ${literal(item.repeat[2 * index])}) ${item.repeat[2 * index + 1]}`).join(" + ")
   : literal(item.pattern);
 
 export function casesSource() {

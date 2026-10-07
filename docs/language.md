@@ -2836,7 +2836,7 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 - `.` と class はスカラー 1 個に一致し、`string` の孤立サロゲートも 1 スカラーです。`.` は `s` なしで `\n` 以外、`^`・`$` は `m` なしで入力の先頭・末尾だけ（`$` は末尾の `\n` の前に一致しない）、`m` では `\n` の後・前にも一致します。
 - 一致は leftmost-first（RE2・Rust の `regex` と同じ）です。範囲 `(start, end)` は半開区間で、`string` は UTF-16 コード単位、`utf8string`（関数名に `_utf8`）は byte です。`find_at` は `start` より前の文字も `^`・`\b` の判定に使い、範囲外やスカラーの内部の `start` は `None` です。
 - `captures` の要素 0 は全体、要素 k は k 番目の group で、参加しなかった group は `(-1, -1)`、繰り返しの中の group は最後に参加した繰り返しの値です。`find_all` の次の探索は、空でない一致の後はその終わり、空の一致の後は次のスカラーから始めます。`split` は一致の間の部分文字列です。`replace_all` の置換文字列は `${n}` と `$$` だけを展開します。
-- 後方参照、先読み・後読み、名前付き group、atomic group、所有的量指定子、`\G`・`\Z`・`\X`・`\R`・`\K` は `Unsupported` です。資源上限（パターン 65,536 コード単位、繰り返し回数 1,000、group の入れ子 64、命令 10,000、class の区間の合計 65,536、命令数 × 2 ×（group 数 + 1）が 262,144）を超えると `TooLarge` で、どちらもトラップしません。
+- 後方参照、先読み・後読み、名前付き group、atomic group、所有的量指定子、`\G`・`\Z`・`\X`・`\R`・`\K` は `Unsupported` です。資源上限（パターン 65,536 コード単位、繰り返し回数 1,000、group の入れ子 64、命令 10,000、class の区間の合計 65,536（`[...]` は併合・畳み込み・否定の後の区間で数える）、命令数 × 2 ×（group 数 + 1）が 262,144）を超えると `TooLarge` で、どちらもトラップしません。
 - `Regex` は不透明な非 Copy の record で、構築・フィールド・パターン分解・更新は `E1022` です。照合では変化しないので、共有借用で何度でも使え、`task` へ move できます。誤りの一覧と message は [言語リファレンスの Regex](../_tsuzuri/language-reference/built-in-types-and-modules/regex.md) にあります。
 
 ### Unicode

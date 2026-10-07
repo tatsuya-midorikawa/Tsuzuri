@@ -2884,7 +2884,8 @@ impl TypedExpr {
         }
     }
 
-    pub(crate) fn children(&self) -> Vec<&Self> {
+    /// The direct subexpressions of this expression.
+    pub fn children(&self) -> Vec<&Self> {
         use TypedExprKind::*;
         match &self.kind {
             Unary(_, value)

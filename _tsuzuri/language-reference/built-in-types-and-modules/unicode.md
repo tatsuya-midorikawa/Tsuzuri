@@ -188,8 +188,8 @@ STRASSE οδος Hello World strasse
 | `property_ranges` | $O(t)$ | 一般カテゴリーは 4,144 区間、`Alphabetic` は 761 区間を読みます |
 | `simple_case_folding` | $O(t)$ | 209 個の連続した組から 1,512 組を復元します |
 | `normalize`、`is_normalized` | $O(n \log t + k \log k)$ | 各スカラーの分解・結合クラス・合成を二分探索で引きます。$k$ は連続する結合文字の最長の数で、その並べ替えは整列です |
-| `graphemes`、`words` と境界 | $O(n \log t)$ | 単語境界は無視する文字（Extend・Format・ZWJ）の続きの長さにも比例します |
-| `to_lower` などの変換 | $O(n \log t)$ | 語末のシグマの判定は前後の case-ignorable な文字の続きを読みます |
+| `graphemes`、`words` と境界 | $O(n \log t)$ | 単語境界の先読み（Extend・Format・ZWJ の続きの次の文字）は、後ろからの 1 回の走査で前もって求めます |
+| `to_lower` などの変換 | $O(n \log t)$ | 語末のシグマの判定は前後の case-ignorable な文字の続きを読みます。続きを読むのは両隣の `Σ` だけなので、合わせても $O(n)$ です |
 
 $n$ は入力のスカラー数、$t$ は表の項目数です。結果と作業用の配列（スカラーの列）は呼び出しごとに確保します。文字列全体の ASCII の高速経路や SIMD はなく、速度は他言語の実装と比べていません。
 

@@ -732,8 +732,11 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
    `a*?+` は `+` の位置の `nothing to repeat`。`a{2000,1}` は回数の上限を `n <= m` より先に見て `TooLarge`。先頭以外の `(?flags)` は 2 つ目の `(?i)(?m)` も `Unsupported`。
    フラグの重複（`(?ii)`）は EBNF どおり受理し、`-` の後ろが優先する。
 4. **畳み込んだ字義の判定。** チケットの「畳み込み後の区間が 2 個以上なら CLASS」では `ǆ`（U+01C4〜U+01C6 が 1 区間）が CHAR のままになるので、畳み込んだ集合が `{c}` でなければ CLASS にした。
-5. **上限の検査の順。** パターンの長さは解析の前、繰り返し回数と入れ子は読んだ位置、class の区間の合計は class を足すたび（巨大な中間集合を作らないため。`[...]` の途中も 4 × 65,536 区間で打ち切る）、
+5. **上限の検査の順。** パターンの長さは解析の前、繰り返し回数と入れ子は読んだ位置、class の区間の合計は class を足すたび
+   （`[...]` は閉じた後に、中を併合し畳み込みと否定をした区間で数える。中で同じエスケープは 1 回だけ読むので、途中では打ち切らない）、
    命令数と捕捉の作業領域は解析の後に検査する。命令数は MATCH と group 0 の SAVE 2 つを含む。
+   （訂正。当初の実装は `[...]` の途中で、併合する前の区間が 131,072 個（`Vec<i64>` の 4 × 65,536 個の値で、1 区間は 2 個。ここに書いていた「4 × 65,536 区間」ではない）を超えると TooLarge にしていた。
+   併合の分岐は値が 8 × 65,536 個を超えたときだけで、先に打ち切りが来るため働かず、`\w`（802 区間）を 1 つの class に 164 個以上書くと誤って TooLarge になった。下の「レビューによる修正」の 2。）
 6. **JavaScript との意味の差。** 最小回数を超えた繰り返しの本体が空に一致するとき、ECMAScript はその繰り返しを失敗させるが、Pike VM（RE2・Rust と同じ）は優先順位どおりに扱う
    （`a(?:.{0,2}?(?:c{0,2}?|a)){0,2}.` を `"c baa c"` に照合すると Tsuzuri は `(3, 5)`、V8 は `(3, 7)`）。言語リファレンスの比較表に書き、case 表には入れない。
    開発中に、空に一致しない本体だけの無作為なパターン 3,600 個を V8 と照合して group 0 と捕捉（繰り返しの外）がすべて一致した（ファズは commit しない）。
@@ -792,7 +795,7 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
     NFC・NFKC は正準合成（遮られていない starter との対を表 9 とハングルの算術で合成）。`is_normalized` は正規化した結果と比べる。
   - 書記素（UAX #29 GB1〜GB999）: 1 回の走査で、直前の種別、地域指示子の数、絵文字の ZWJ 列の状態（GB11）、Indic conjunct の状態（GB9c）を持つ。
   - 単語（UAX #29 WB1〜WB999）: WB4 で Extend・Format・ZWJ を直前のスカラーに付け、付け先（`anchors`）と地域指示子の数を前計算する。
-    WB6・WB7・WB7b・WB7c・WB11・WB12 の先読みは、次の付け先でないスカラーを見る。
+    WB6・WB7b・WB12 の先読みは次の Extend・Format・ZWJ でないスカラー（後ろからの 1 回の走査で前もって求める。レビューによる修正の 1）を、WB7・WB7c・WB11 は前の付け先を見る。
   - 大文字小文字（Unicode §3.13）: 完全な対応（表 17・18）があればそれ、なければ単純な対応（表 14〜16。`case_fold` は表 4）。小文字にするときの `Σ`（U+03A3）は
     `Final_Sigma`（Case_Ignorable を飛ばした前に Cased があり、後ろに無い）なら `ς`。`to_title` は toTitlecase(X)（UAX #29 の単語ごとに最初の Cased のスカラーをタイトル文字に、
     その後ろを小文字にし、最初の Cased より前は変えない）。
@@ -865,3 +868,40 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
 - `-O0` では使わない表も含め全 19 表を連結する（`-O0` は大域の削除をしないため）。
 - 範囲外（追記 10）: 言語による調整、`Final_Sigma` 以外の条件付きの対応、辞書による単語の分割、UAX #29 の tailoring、行分割（UAX #14）、照合（UCA）。
 - `check` の時間の増加（上の計測）。縮小には、使われない std モジュールの型検査を省くか std の検査結果を cache する別チケットが要る。
+
+### レビューによる修正（2026-10-08）
+
+統合ブランチへのマージの後に受けたコードレビューの 2 件（どちらも MEDIUM）を `wt/d09` で直した。
+
+1. **単語境界の先読みが二乗だった（`std/Unicode.tz` の `word_breaks`）。** WB6・WB7b・WB12 の右側（`right`）を求めるために、スカラーごとに後ろの Extend・Format・ZWJ の続きを
+   毎回走査していたので、長さ k の続きに O(k²) かかった。`"a" + "\u0301" × n` の `word_boundaries`・`words`・`to_title` と `_utf8` 版が該当し、レビューの計測では native `-O3` の
+   n = 160,000 が 10.7 秒だった。後ろからの 1 回の走査で `following[i]`（i 以降で最初の Extend・Format・ZWJ でないスカラーの位置、無ければ長さ）を作り、`right` を O(1) で引くようにした。
+   同じ入力の `word_boundaries` と `to_title` は、n = 40,000・80,000・160,000 のどれも user 時間 0.01 秒以下になった。
+   - 回帰テスト: `tests/unicode.rs` の `segmentation_and_case_conversion_do_not_rescan_the_input` が、型付き IR で `Unicode.word_breaks`・`grapheme_breaks`・`converted` のループ
+     （`while`・`for`・`new [T](n, f)`）の入れ子が 1 段であることを検査する（時間は測らない）。修正前の `word_breaks` では 2 段で失敗することを確かめた。そのために `TypedExpr::children` を `pub` にした。
+   - E2E: suite `unicode` に export `word_run` を足した。`first + "\u0301" × run + middle + "\u0301" × run + last` の 8 通り（`a'b`、`a'1`、`1.2`、`a b`、ヘブライ文字と `"`、`a:b`、
+     ヘブライ文字と `'`、`1,a`）を run 0・1・2,000 で作り、単語境界（UTF-16 と UTF-8）と `to_title` の hash を比べる 24 cases。期待値は UAX #29（WB4 で続きは前のスカラーに付き、
+     WB6/WB7・WB7b/WB7c・WB11/WB12 は続きを越えて前後を見る）から書き、V8 の `Intl.Segmenter` と一致することを assert する。
+   - 語末のシグマの判定（`uncased_neighbor`）も続きを走査するが、続きを読むのは両隣の `Σ` だけなので全体でも O(n)。`unicode.md` の計算量の表の備考をこの 2 点に合わせた。
+2. **class の途中の上限の打ち切りが併合の前だった（`std/Regex.tz` の `bracket`）。** 追記 5 の訂正のとおり、`[...]` の途中で併合する前の区間の数で TooLarge にしていたので、
+   繰り返しや重なりまで上限に数えられ、`"[" + "\\w" × 170 + "]"`（併合後は 802 区間）が TooLarge だった（× 150 は成功）。`[...]` の中で同じエスケープ（`\d`・`\w`・`\s`・`\p{...}` と
+   その否定。class の中はフラグが変わらないので同じ集合）は 2 回目から `Again` として何も足さず表も読まないようにし、途中の打ち切りは無くした。class は閉じた後に、併合・畳み込み・否定した区間を
+   `add_class` が合計の上限と比べる（これまでどおり）。未併合の区間はリテラルとリテラルの範囲ごとに 1 個、エスケープごとに 1 回分（有効な名前の数で抑えられる）なので、パターンの長さの上限で抑えられる。
+   `"[" + "\\w" × 32,000 + "]"`（64,002 コード単位）の `compile` と照合は `-O0` でも user 時間 0.01 秒だった。
+   1 つの `[...]` は、パターンの長さの上限から併合後に 65,536 区間に届かない（互いに離れたスカラーは BMP なら 1 コード単位、BMP の外なら 2 コード単位に 1 個で約 49,000 個まで、
+   エスケープと `i` の畳み込みが足す区間は表の境界の数で数千まで）ので、
+   TooLarge は複数の class の合計で起きる。
+   - 回帰テスト（`tests/regex-cases.mjs` の compile case。`repeat` を `[text, count, …]` の任意の組に広げた）: `[` + `\w` × 170 + `]` と `[` + `\w\p{L}\p{Alphabetic}\d\W` × 2,000 + `]` は成功し、
+     `[` + `\w` × 170 + `]` に `[\w]` × 80 を続けた 81 class は成功、× 81 の 82 class（802 × 82 > 65,536）は `TooLarge`・offset 0・`character classes exceed 65536 ranges in total`。
+   - `regex.md` と `docs/language.md` に、`[...]` は併合・畳み込み・否定の後の区間で数えることを書いた。`docs/architecture.md` に 2 件の実装を書いた。
+
+#### 確認
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 746 passed、0 failed、0 ignored（Phase 2 の 745 と上の構造のテスト 1 件）。
+  `--test unicode`: 4 passed、`--test regex`: 6 passed、`--test stdlib`: 7 passed、`--test docs`: 6 passed、`--lib stdlib`: 5 passed。
+- `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri regex`: 2,273 cases、`unicode`: 4,341 cases。どちらも native/WASM × `-O0`/`-O3` で成功した。
+- `node tests/regex-cases.mjs --write`（`Cases.tz` を再生成。既存の case の式は変わらず番号だけがずれる）、`node tests/unicode-cases.mjs`（V8 の assert を含む）、
+  `target/release/tsuzuri fmt --check tests/fixtures/unicode`・`tests/fixtures/regex`: 成功。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。Windows（rustup の clippy 1.96、`x86_64-pc-windows-msvc`）は
+  `-A clippy::nonminimal_bool` で成功（その lint は Phase 2 の確認に書いた既存の 3 件だけ）。
+- `node scripts/check-docs.mjs`（`regex.md`・`unicode.md`）: 成功。
