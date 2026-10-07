@@ -298,11 +298,32 @@ export async function load(source, options = {}) {
     for (const [, { reject }] of pending) reject(failure);
     pending.clear();
   }
+  // The error of the first helper that failed. A call that the helper's failure stopped reports it,
+  // as a host function's error on the coordinator would be.
+  let reportHelper;
+  const helperError = new Promise((resolveHelper) => {
+    reportHelper = resolveHelper;
+  });
   function spawn(name) {
     const url = new URL(import.meta.url);
     url.searchParams.set(ROLE, name);
     const worker = new Worker(url, { type: "module", name: `tsuzuri-${name}` });
     started.push(worker);
+    // The failure listeners live as long as the worker. The coordinator releases the helpers before
+    // it reports ready, so a helper can fail between its own ready message and the end of `load`.
+    worker.addEventListener("error", (event) => {
+      const error = new Error(`a WASM worker failed: ${event?.message ?? "script error"}`);
+      reportHelper(error);
+      stop(error);
+    });
+    if (name === "helper") {
+      worker.addEventListener("message", (event) => {
+        if (event.data?.kind !== "failed") return;
+        const error = errorOf(event.data.error);
+        reportHelper(error);
+        failure ??= error;
+      });
+    }
     return worker;
   }
   function ready(worker, init) {
@@ -333,27 +354,6 @@ export async function load(source, options = {}) {
     Atomics.notify(new Int32Array(bootstrap), GO);
     for (const worker of started) worker.terminate();
     throw error;
-  }
-  // The error of the first helper that failed. A call that the helper's failure stopped reports it,
-  // as a host function's error on the coordinator would be.
-  let reportHelper;
-  const helperError = new Promise((resolveHelper) => {
-    reportHelper = resolveHelper;
-  });
-  for (const worker of started) {
-    worker.addEventListener("error", (event) => {
-      const error = new Error(`a WASM worker failed: ${event?.message ?? "script error"}`);
-      reportHelper(error);
-      stop(error);
-    });
-    if (worker !== coordinatorWorker) {
-      worker.addEventListener("message", (event) => {
-        if (event.data?.kind !== "failed") return;
-        const error = errorOf(event.data.error);
-        reportHelper(error);
-        failure ??= error;
-      });
-    }
   }
   coordinatorWorker.addEventListener("message", (event) => {
     const message = event.data;

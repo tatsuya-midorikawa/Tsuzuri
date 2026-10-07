@@ -187,6 +187,45 @@ try {
 
   // The checks before any worker starts.
   const bytes = readFileSync(join(root, "threads-O3.wasm"));
+  // A helper that fails right after its ready message (the coordinator releases the helpers before
+  // it reports ready) still stops the pool: the failure listeners exist from the worker's start.
+  class LateFailure {
+    static injected = false;
+    #inner;
+    #messages = new Set();
+    constructor(url, options) {
+      this.#inner = new WebWorker(url, options);
+      const helper = options?.name === "tsuzuri-helper";
+      this.#inner.addEventListener("message", (event) => {
+        for (const listener of [...this.#messages]) listener(event);
+        if (helper && event.data?.kind === "ready" && !LateFailure.injected) {
+          LateFailure.injected = true;
+          const failed = { data: { kind: "failed", error: { type: "Error", message: "late helper failure" } } };
+          for (const listener of [...this.#messages]) listener(failed);
+        }
+      });
+    }
+    addEventListener(type, listener) {
+      if (type === "message") this.#messages.add(listener);
+      else this.#inner.addEventListener(type, listener);
+    }
+    removeEventListener(type, listener) {
+      if (type === "message") this.#messages.delete(listener);
+      else this.#inner.removeEventListener(type, listener);
+    }
+    postMessage(message, transfer) {
+      this.#inner.postMessage(message, transfer);
+    }
+    terminate() {
+      return this.#inner.terminate();
+    }
+  }
+  globalThis.Worker = LateFailure;
+  const late = await load(bytes, { workers: 1, importsModule, importData: { counters: new SharedArrayBuffer(16) } });
+  globalThis.Worker = WebWorker;
+  assert.ok(LateFailure.injected);
+  await assert.rejects(late.exports.divide(1n, 1n), (error) => error.message === "the WASM thread pool stopped after a failure; load the module again" && error.cause?.message === "late helper failure");
+  await late.close();
   await assert.rejects(load(bytes, { workers: 1 }), { name: "TypeError", message: "missing import 'Main.barrier': pass importsModule, the URL of a module whose createImports returns the host functions" });
   await assert.rejects(load(bytes, { workers: 32, importsModule }), RangeError);
   await assert.rejects(load(readFileSync(join(root, "plain.wasm")), { importsModule }), { message: /^threads bindings need a module built with --wasm-feature threads/ });

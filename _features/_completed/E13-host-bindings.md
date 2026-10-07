@@ -888,4 +888,7 @@ tsc、Google Chrome 154.0.8037.98 と Playwright の WebKit 26.0）、`node test
 - C++ の `buffer<T>` に、元を空（長さ 0）にするムーブ構築・ムーブ代入を定義し、複製を削除した（暗黙のムーブでは元の `size_` が残り、null のデータと
   0 でない長さの範囲を作れた）。`tests/host_bindings_test.cpp` でムーブ元の状態を検査する。
 - C# の stress test の GC のスレッドを background にし、検査の失敗でも `finally` で止める（失敗時にプロセスが終わらなかった）。
+- threads の glue: worker の失敗の listener を、全 worker の ready の後ではなく worker を作った時点で付ける。coordinator は自分の ready の前に helper を
+  走らせるので、helper が ready の直後に失敗するとその通知を失い、helper の失敗を待つ呼び出しが終わらないことがあった。`tests/bindings_threads.mjs` に、
+  helper の ready の直後に失敗を届ける worker で pool が止まることを確かめる検査を足した（修正前の glue では失敗）。
 
