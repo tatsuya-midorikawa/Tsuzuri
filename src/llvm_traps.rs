@@ -180,6 +180,8 @@ fn runtime_kind(function: &str) -> TrapKind {
         TrapKind::Encoding
     } else if function.contains(".allocate") || function.contains(".from_ascii") {
         TrapKind::AllocationSize
+    } else if function.starts_with("@tz.unicode.") {
+        TrapKind::BoundsCheck
     } else {
         TrapKind::NumericRuntime
     }

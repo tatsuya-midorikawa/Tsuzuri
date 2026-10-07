@@ -91,6 +91,35 @@ pub(crate) fn default_root() -> Option<PathBuf> {
     }
 }
 
+/// The package store under the cache root, where `tsuzuri fetch` keeps each
+/// downloaded git package as `git/<content sha256>/`. Eviction never touches it.
+pub(crate) fn package_store() -> Option<PathBuf> {
+    default_root().map(|root| root.join("packages"))
+}
+
+/// The parts of the output path that the artifact records. Other artifacts are reused for any path.
+fn hash_output_path(
+    hash: &mut Sha256,
+    options: crate::driver::BuildOptions,
+    output: &Path,
+) -> io::Result<()> {
+    use crate::driver::Emit;
+    // The DWARF of a macOS debug executable or library depends on its path.
+    if cfg!(target_os = "macos")
+        && options.debug_info
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
+    {
+        let absolute = std::path::absolute(output)?;
+        hash.field("debug-output-path", absolute.as_os_str().as_encoded_bytes());
+    }
+    // A shared library records its file name as its install name (macOS) or soname (Linux).
+    if options.emit == Emit::Shared {
+        let name = output.file_name().unwrap_or_default();
+        hash.field("shared-library-name", name.as_encoded_bytes());
+    }
+    Ok(())
+}
+
 pub(crate) fn build_key(
     project: &crate::driver::Project,
     options: crate::driver::BuildOptions,
@@ -107,10 +136,7 @@ pub(crate) fn build_key(
     hash.field("host-arch", std::env::consts::ARCH.as_bytes());
     hash.field("options", format!("{options:?}").as_bytes());
     hash.field("action", action.as_bytes());
-    if cfg!(target_os = "macos") && options.debug_info && options.emit == Emit::Executable {
-        let absolute = std::path::absolute(output)?;
-        hash.field("debug-output-path", absolute.as_os_str().as_encoded_bytes());
-    }
+    hash_output_path(&mut hash, options, output)?;
     hash.field("ir-and-embedded-runtime", ir.as_bytes());
     for source in project.sources.iter().chain(&project.manifests) {
         hash.field("path", source.path.as_os_str().as_encoded_bytes());
@@ -156,7 +182,7 @@ pub(crate) fn build_key(
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));
         }
         if cfg!(target_os = "macos") && options.debug_info && options.target == Target::Native {
-            if options.emit == Emit::Executable {
+            if matches!(options.emit, Emit::Executable | Emit::Shared) {
                 tools.push(("TSUZURI_DSYMUTIL", "dsymutil"));
             }
             if options.emit == Emit::Object && ir.contains("@tsuzuri_task_parallel(") {
@@ -454,7 +480,8 @@ impl BuildCache {
             let Some(key) = name.to_str().filter(|key| {
                 key_name(key)
                     || key.strip_prefix(".lock-").is_some_and(key_name)
-                    || key.starts_with(".tsuzuri-")
+                    // Staging directories, but never the ownership marker.
+                    || key.starts_with(".tsuzuri-") && *key != ".tsuzuri-cache"
             }) else {
                 continue;
             };
@@ -694,6 +721,56 @@ mod tests {
         fs::write(root.join("do-not-delete"), b"user file").unwrap();
         tiny.evict().unwrap();
         assert!(root.join("do-not-delete").exists());
+    }
+
+    #[test]
+    fn eviction_keeps_the_marker_and_the_package_store() {
+        let temporary = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let root = temporary.path.join("cache");
+        let cache = BuildCache::open(&root).unwrap();
+        fs::create_dir_all(root.join("packages/git/package")).unwrap();
+        // The marker is written once, so it is older than the age limit after a month.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join(".tsuzuri-cache"))
+            .unwrap()
+            .set_modified(SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60))
+            .unwrap();
+        cache.evict().unwrap();
+        assert!(root.join(".tsuzuri-cache").is_file());
+        assert!(root.join("packages/git/package").is_dir());
+        BuildCache::open(&root).unwrap();
+    }
+
+    #[test]
+    fn shared_library_keys_follow_the_file_name() {
+        use crate::driver::{BuildOptions, Emit};
+        let key = |emit, output: &str| {
+            let mut hash = Sha256::new();
+            let options = BuildOptions {
+                emit,
+                ..BuildOptions::default()
+            };
+            hash_output_path(&mut hash, options, Path::new(output)).unwrap();
+            hash.hex()
+        };
+        // The install name and the soname are the file name, so another name needs another build.
+        assert_ne!(
+            key(Emit::Shared, "one/libfoo.dylib"),
+            key(Emit::Shared, "one/libbar.dylib")
+        );
+        assert_eq!(
+            key(Emit::Shared, "one/libfoo.dylib"),
+            key(Emit::Shared, "two/libfoo.dylib")
+        );
+        assert_eq!(
+            key(Emit::Object, "one/foo.o"),
+            key(Emit::Object, "two/bar.o")
+        );
+        assert_eq!(
+            key(Emit::Executable, "one/foo"),
+            key(Emit::Executable, "two/bar")
+        );
     }
 
     #[test]

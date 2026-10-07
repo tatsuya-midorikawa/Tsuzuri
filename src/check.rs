@@ -148,6 +148,64 @@ pub enum Type {
     /// `dyn C`: an owned value of some type with instances of the classes, stored as
     /// `{ data, vtable }` (A14). A leaf whose box keeps `Type` at four words.
     Dyn(Box<DynType>),
+    /// `Rc<T>`, `Rc.Weak<T>`, `Arc<T>`, or `Arc.Weak<T>` (C10 Phase 2): a pointer to a
+    /// reference-counted heap block `{ i64 strong, i64 weak, T value }`.
+    Shared(Box<Type>, SharedKind),
+}
+
+/// The pointer kind of `Type::Shared` (C10 Phase 2). Strong pointers own the value together;
+/// weak pointers keep only the block. `Arc` counts with atomic operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SharedKind {
+    Rc,
+    RcWeak,
+    Arc,
+    ArcWeak,
+}
+
+impl SharedKind {
+    pub const ALL: [Self; 4] = [Self::Rc, Self::RcWeak, Self::Arc, Self::ArcWeak];
+
+    pub fn atomic(self) -> bool {
+        matches!(self, Self::Arc | Self::ArcWeak)
+    }
+
+    pub fn weak(self) -> bool {
+        matches!(self, Self::RcWeak | Self::ArcWeak)
+    }
+
+    /// The type name as source code writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rc => "Rc",
+            Self::RcWeak => "Rc.Weak",
+            Self::Arc => "Arc",
+            Self::ArcWeak => "Arc.Weak",
+        }
+    }
+
+    /// The kind that a type name such as `Rc.Weak` or `std::Arc` names.
+    pub fn named(name: &str) -> Option<Self> {
+        let name = name
+            .strip_prefix(crate::stdlib::NAMESPACE)
+            .and_then(|rest| rest.strip_prefix("::"))
+            .unwrap_or(name);
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
+    /// The strong kind of the same module.
+    pub fn strong(self) -> Self {
+        if self.atomic() { Self::Arc } else { Self::Rc }
+    }
+
+    /// The weak kind of the same module.
+    pub fn weakened(self) -> Self {
+        if self.atomic() {
+            Self::ArcWeak
+        } else {
+            Self::RcWeak
+        }
+    }
 }
 
 /// The classes and markers of a `dyn` type (A14).
@@ -353,6 +411,7 @@ impl Type {
             Self::Task(result) => format!("Task<{}>", result.display(types)),
             Self::Handle(name) => type_display(name),
             Self::Dyn(dyn_type) => dyn_type.display(),
+            Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display(types)),
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -386,6 +445,7 @@ impl Type {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Task(ty)
+            | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_error(),
             Self::Function(parameters, result) => {
                 parameters.iter().any(Self::contains_error) || result.contains_error()
@@ -408,6 +468,7 @@ impl Type {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Task(ty)
+            | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_constructor(),
             Self::Function(parameters, result) => {
                 parameters.iter().any(Self::contains_constructor) || result.contains_constructor()
@@ -450,6 +511,8 @@ impl Type {
             | Self::Vec(_)
             | Self::Task(_)
             | Self::Handle(_)
+            // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
+            | Self::Shared(..)
             | Self::Reference(_, true)
             | Self::Partial(_)
             | Self::Application(..)
@@ -472,9 +535,12 @@ impl Type {
             return true;
         }
         match self {
-            Self::String | Self::Utf8String | Self::Function(..) | Self::Task(_) | Self::Dyn(_) => {
-                true
-            }
+            Self::String
+            | Self::Utf8String
+            | Self::Function(..)
+            | Self::Task(_)
+            | Self::Dyn(_)
+            | Self::Shared(..) => true,
             Self::Record(id, args) => {
                 !types.record_fields_all(*id, args, |ty| !ty.needs_drop(types))
             }
@@ -491,7 +557,7 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex"))
     }
 
     /// The std `Owned.Function`, whose environment has no clone (B07).
@@ -528,7 +594,8 @@ impl Type {
             Self::Array(element)
             | Self::List(element)
             | Self::Vec(element)
-            | Self::FixedArray(element, _) => element.contains_reference(),
+            | Self::FixedArray(element, _)
+            | Self::Shared(element, _) => element.contains_reference(),
             Self::Tuple(elements) => elements.iter().any(Self::contains_reference),
             Self::Union(_, arguments) => arguments.iter().any(Self::contains_reference),
             _ => false,
@@ -542,7 +609,8 @@ impl Type {
             | Self::Array(value)
             | Self::List(value)
             | Self::Vec(value)
-            | Self::FixedArray(value, _) => value.contains_mutable_reference(),
+            | Self::FixedArray(value, _)
+            | Self::Shared(value, _) => value.contains_mutable_reference(),
             Self::Tuple(elements) => elements.iter().any(Self::contains_mutable_reference),
             Self::Union(_, arguments) => arguments.iter().any(Self::contains_mutable_reference),
             // Function signatures describe calls, not stored references; captures are checked separately.
@@ -563,7 +631,8 @@ impl Type {
             Self::Array(element)
             | Self::List(element)
             | Self::Vec(element)
-            | Self::FixedArray(element, _) => element.carries_loans(types),
+            | Self::FixedArray(element, _)
+            | Self::Shared(element, _) => element.carries_loans(types),
             Self::Tuple(elements) => elements.iter().any(|ty| ty.carries_loans(types)),
             Self::Record(id, args) => {
                 !types.record_fields_all(*id, args, |ty| !ty.carries_loans(types))
@@ -630,12 +699,16 @@ impl Type {
                     ty,
                     Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
                 ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                    && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                     && !ty.has_user_drop(types)
                     && !ty.is_owned_function(types)
             });
         }
         match self {
             Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
+            // Function values are Send whatever they capture, so they hold only values that may
+            // move to another task: an `Arc` whose value tasks may share, never an `Rc` (C10).
+            Self::Shared(value, kind) => kind.atomic() && value.shareable(types),
             // Copying a function value clones its captures, which needs the vtable's clone slot.
             Self::Dyn(dyn_type) => dyn_type.copy,
             Self::Array(element)
@@ -665,11 +738,18 @@ impl Type {
             return types.stored_all(self, |ty| {
                 !matches!(ty, Type::Reference(..))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
+                    && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.shareable(types))
             });
         }
         match self {
             Self::Reference(..) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
+            // Rc counts are not atomic. Without interior mutability, the tasks that share an
+            // `Arc` only read its value, so it is Send when they may share it (C10; F10 adds
+            // `Sync`).
+            Self::Shared(value, kind) => {
+                kind.atomic() && value.can_send(types) && value.shareable(types)
+            }
             Self::Array(element)
             | Self::List(element)
             | Self::Vec(element)
@@ -680,6 +760,42 @@ impl Type {
             // Function environments are checked by ownership, not by their call signatures.
             _ => true,
         }
+    }
+
+    /// Whether a value of this type stores a value of a recursive type, which may hold a shared
+    /// pointer to a block of this type again (C10).
+    pub(crate) fn reaches_recursive(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !types.recursive(ty))
+    }
+
+    /// Whether a value of this type owns an `Rc` or `Rc.Weak`, whose counts are not atomic (C10).
+    pub(crate) fn holds_rc(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(
+            self,
+            |ty| !matches!(ty, Type::Shared(_, kind) if !kind.atomic()),
+        )
+    }
+
+    /// Whether several tasks may use a value of this type at once through an `Arc` (C10). Every
+    /// owner of the `Arc` borrows the value, so it must not own an `Rc` or `Rc.Weak`, whose
+    /// counts are not atomic, or anything that may call the host: an extern handle, which host
+    /// libraries rarely make thread-safe, a dyn value that is not Copy, which may hide one, or
+    /// an `Owned.Function`, which may capture one. F10 replaces this rule with `Sync`.
+    pub(crate) fn shareable(&self, types: &TypeContext<'_>) -> bool {
+        types.stored_all(self, |ty| {
+            !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
+                && !matches!(ty, Type::Handle(_))
+                && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                && !ty.is_owned_function(types)
+        })
+    }
+
+    /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tasks may not share
+    /// (C10).
+    pub(crate) fn holds_unshareable_arc(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| {
+            !matches!(ty, Type::Shared(value, kind) if kind.atomic() && !value.shareable(types))
+        })
     }
 }
 
@@ -874,6 +990,12 @@ pub enum Builtin {
     /// `Os.__spawn :: ref utf8string -> ref [ubyte] -> ref [ubyte] -> (i64 * [ubyte])`: runs a program without a
     /// shell, given its NUL-terminated arguments and its input, and returns the encoded outcome.
     OsSpawn,
+    /// `Unicode.__table_length :: i64 -> i64`: the number of entries of a generated Unicode table
+    /// (`src/runtime/unicode.ll`). Private to the std Unicode and Regex modules (D09).
+    UnicodeTableLength,
+    /// `Unicode.__table_entry :: i64 -> i64 -> i64`: one entry of a generated Unicode table; traps
+    /// when the table or the index is out of range.
+    UnicodeTableEntry,
     Display,
     Parse,
     Default,
@@ -990,6 +1112,37 @@ pub enum Builtin {
     Not,
     /// `ignore :: 'a -> unit` drops its argument, as in `do! action |> ignore`.
     Ignore,
+    /// `Arena.__next_id :: i64` takes the next arena id from a process-wide atomic counter (C10).
+    /// Only the std `Arena` module may call it.
+    ArenaNextId,
+    /// `Rc.new :: 'a -> Rc<'a>` moves a value into a new reference-counted block (C10 Phase 2).
+    RcNew,
+    /// `Rc.share :: ref Rc<'a> -> Rc<'a>` adds a strong pointer to the same block.
+    RcShare,
+    /// `Rc.get :: ref Rc<'a> -> ref 'a` borrows the shared value.
+    RcGet,
+    /// `Rc.strong_count :: ref Rc<'a> -> i64`.
+    RcStrongCount,
+    /// `Rc.weak_count :: ref Rc<'a> -> i64`, the number of `Rc.Weak` pointers.
+    RcWeakCount,
+    /// `Rc.try_unwrap :: Rc<'a> -> Result<'a, Rc<'a>>` moves the value out of the last strong pointer.
+    RcTryUnwrap,
+    /// `Rc.downgrade :: ref Rc<'a> -> Rc.Weak<'a>`.
+    RcDowngrade,
+    /// `Rc.upgrade :: ref Rc.Weak<'a> -> Maybe<Rc<'a>>`, `None` once the value is dropped.
+    RcUpgrade,
+    /// `Rc.ptr_eq :: ref Rc<'a> -> ref Rc<'a> -> bool`: whether both point to one block.
+    RcPtrEq,
+    /// The `Arc` versions, which count with atomic operations.
+    ArcNew,
+    ArcShare,
+    ArcGet,
+    ArcStrongCount,
+    ArcWeakCount,
+    ArcTryUnwrap,
+    ArcDowngrade,
+    ArcUpgrade,
+    ArcPtrEq,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1022,6 +1175,8 @@ pub enum BuiltinType {
     Vec(Box<BuiltinType>),
     Tuple(Vec<BuiltinType>),
     Task(Box<BuiltinType>),
+    /// `Rc<T>` and the other shared pointers (C10).
+    Shared(Box<BuiltinType>, SharedKind),
     Reference(Box<BuiltinType>, bool),
     Function(Vec<BuiltinType>, Box<BuiltinType>),
     /// The unsigned integer type of the same width.
@@ -1127,6 +1282,8 @@ impl Builtin {
         Self::OsHandle,
         Self::OsClose,
         Self::OsSpawn,
+        Self::UnicodeTableLength,
+        Self::UnicodeTableEntry,
         Self::Display,
         Self::Parse,
         Self::Default,
@@ -1232,6 +1389,25 @@ impl Builtin {
         Self::OwnedCall,
         Self::Not,
         Self::Ignore,
+        Self::ArenaNextId,
+        Self::RcNew,
+        Self::RcShare,
+        Self::RcGet,
+        Self::RcStrongCount,
+        Self::RcWeakCount,
+        Self::RcTryUnwrap,
+        Self::RcDowngrade,
+        Self::RcUpgrade,
+        Self::RcPtrEq,
+        Self::ArcNew,
+        Self::ArcShare,
+        Self::ArcGet,
+        Self::ArcStrongCount,
+        Self::ArcWeakCount,
+        Self::ArcTryUnwrap,
+        Self::ArcDowngrade,
+        Self::ArcUpgrade,
+        Self::ArcPtrEq,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1312,6 +1488,8 @@ impl Builtin {
             Self::OsHandle => "Os.__handle",
             Self::OsClose => "Os.__close",
             Self::OsSpawn => "Os.__spawn",
+            Self::UnicodeTableLength => "Unicode.__table_length",
+            Self::UnicodeTableEntry => "Unicode.__table_entry",
             Self::Display => "$builtin.display",
             Self::Parse => "$builtin.parse",
             Self::Default => "$builtin.default",
@@ -1417,6 +1595,25 @@ impl Builtin {
             Self::OwnedCall => "Owned.call",
             Self::Not => "not",
             Self::Ignore => "ignore",
+            Self::ArenaNextId => "Arena.__next_id",
+            Self::RcNew => "Rc.new",
+            Self::RcShare => "Rc.share",
+            Self::RcGet => "Rc.get",
+            Self::RcStrongCount => "Rc.strong_count",
+            Self::RcWeakCount => "Rc.weak_count",
+            Self::RcTryUnwrap => "Rc.try_unwrap",
+            Self::RcDowngrade => "Rc.downgrade",
+            Self::RcUpgrade => "Rc.upgrade",
+            Self::RcPtrEq => "Rc.ptr_eq",
+            Self::ArcNew => "Arc.new",
+            Self::ArcShare => "Arc.share",
+            Self::ArcGet => "Arc.get",
+            Self::ArcStrongCount => "Arc.strong_count",
+            Self::ArcWeakCount => "Arc.weak_count",
+            Self::ArcTryUnwrap => "Arc.try_unwrap",
+            Self::ArcDowngrade => "Arc.downgrade",
+            Self::ArcUpgrade => "Arc.upgrade",
+            Self::ArcPtrEq => "Arc.ptr_eq",
             #[cfg(test)]
             Self::TestAdd => "Int.test_add",
             #[cfg(test)]
@@ -2030,6 +2227,14 @@ impl Builtin {
             Self::Sqrt | Self::Floor | Self::Ceil | Self::Abs => {
                 (vec![Concrete(Type::F64)], Concrete(Type::F64), Vec::new())
             }
+            Self::UnicodeTableLength => {
+                (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new())
+            }
+            Self::UnicodeTableEntry => (
+                vec![Concrete(Type::I64), Concrete(Type::I64)],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
             Self::ToFloat => (vec![Concrete(Type::I64)], Concrete(Type::F64), Vec::new()),
             Self::ToInt => (vec![Concrete(Type::F64)], Concrete(Type::I64), Vec::new()),
             Self::Assert => (vec![Concrete(Type::Bool)], Concrete(Type::Unit), Vec::new()),
@@ -2202,6 +2407,72 @@ impl Builtin {
                 Vec::new(),
             ),
             Self::OwnedDrop | Self::Ignore => (vec![a()], Concrete(Type::Unit), Vec::new()),
+            Self::ArenaNextId => (Vec::new(), Concrete(Type::I64), Vec::new()),
+            Self::RcNew
+            | Self::RcShare
+            | Self::RcGet
+            | Self::RcStrongCount
+            | Self::RcWeakCount
+            | Self::RcTryUnwrap
+            | Self::RcDowngrade
+            | Self::RcUpgrade
+            | Self::RcPtrEq
+            | Self::ArcNew
+            | Self::ArcShare
+            | Self::ArcGet
+            | Self::ArcStrongCount
+            | Self::ArcWeakCount
+            | Self::ArcTryUnwrap
+            | Self::ArcDowngrade
+            | Self::ArcUpgrade
+            | Self::ArcPtrEq => {
+                let kind = self.shared_kind().expect("a shared pointer builtin");
+                let strong = || BuiltinType::Shared(Box::new(a()), kind);
+                let borrowed = || Reference(Box::new(strong()), false);
+                match self.shared_operation() {
+                    SharedOperation::New => (vec![a()], strong(), Vec::new()),
+                    SharedOperation::Share => (vec![borrowed()], strong(), Vec::new()),
+                    SharedOperation::Get => (
+                        vec![borrowed()],
+                        Reference(Box::new(a()), false),
+                        Vec::new(),
+                    ),
+                    SharedOperation::StrongCount | SharedOperation::WeakCount => {
+                        (vec![borrowed()], Concrete(Type::I64), Vec::new())
+                    }
+                    SharedOperation::TryUnwrap => (
+                        vec![strong()],
+                        BuiltinType::Std {
+                            module: "Result",
+                            name: "Result",
+                            args: vec![a(), strong()],
+                        },
+                        Vec::new(),
+                    ),
+                    SharedOperation::Downgrade => (
+                        vec![borrowed()],
+                        BuiltinType::Shared(Box::new(a()), kind.weakened()),
+                        Vec::new(),
+                    ),
+                    SharedOperation::Upgrade => (
+                        vec![Reference(
+                            Box::new(BuiltinType::Shared(Box::new(a()), kind.weakened())),
+                            false,
+                        )],
+                        BuiltinType::Std {
+                            module: "Maybe",
+                            name: "Maybe",
+                            args: vec![strong()],
+                        },
+                        Vec::new(),
+                    ),
+                    SharedOperation::PtrEq => (
+                        vec![borrowed(), borrowed()],
+                        Concrete(Type::Bool),
+                        Vec::new(),
+                    ),
+                }
+            }
             Self::Not => (vec![Concrete(Type::Bool)], Concrete(Type::Bool), Vec::new()),
             Self::OwnedFunction | Self::OwnedCall => {
                 let run = BuiltinType::Function(vec![a()], Box::new(Var("b")));
@@ -2266,6 +2537,7 @@ impl BuiltinType {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Task(ty)
+            | Self::Shared(ty, _)
             | Self::Reference(ty, _)
             | Self::UnsignedOf(ty)
             | Self::WidenOf(ty)
@@ -2280,7 +2552,47 @@ impl BuiltinType {
     }
 }
 
+/// What a shared pointer builtin does, the same for `Rc` and `Arc` (C10 Phase 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SharedOperation {
+    New,
+    Share,
+    Get,
+    StrongCount,
+    WeakCount,
+    TryUnwrap,
+    Downgrade,
+    Upgrade,
+    PtrEq,
+}
+
 impl Builtin {
+    /// The strong pointer kind of an `Rc` or `Arc` builtin.
+    pub(crate) fn shared_kind(self) -> Option<SharedKind> {
+        if self.name().starts_with("Rc.") {
+            Some(SharedKind::Rc)
+        } else if self.name().starts_with("Arc.") {
+            Some(SharedKind::Arc)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn shared_operation(self) -> SharedOperation {
+        match self {
+            Self::RcNew | Self::ArcNew => SharedOperation::New,
+            Self::RcShare | Self::ArcShare => SharedOperation::Share,
+            Self::RcGet | Self::ArcGet => SharedOperation::Get,
+            Self::RcStrongCount | Self::ArcStrongCount => SharedOperation::StrongCount,
+            Self::RcWeakCount | Self::ArcWeakCount => SharedOperation::WeakCount,
+            Self::RcTryUnwrap | Self::ArcTryUnwrap => SharedOperation::TryUnwrap,
+            Self::RcDowngrade | Self::ArcDowngrade => SharedOperation::Downgrade,
+            Self::RcUpgrade | Self::ArcUpgrade => SharedOperation::Upgrade,
+            Self::RcPtrEq | Self::ArcPtrEq => SharedOperation::PtrEq,
+            _ => unreachable!("not a shared pointer builtin"),
+        }
+    }
+
     pub(crate) fn is_parallel(self) -> bool {
         matches!(
             self,
@@ -2866,7 +3178,8 @@ impl TypedExpr {
         }
     }
 
-    pub(crate) fn children(&self) -> Vec<&Self> {
+    /// The direct subexpressions of this expression.
+    pub fn children(&self) -> Vec<&Self> {
         use TypedExprKind::*;
         match &self.kind {
             Unary(_, value)
@@ -3624,19 +3937,26 @@ impl Names {
     /// Chooses among same-named declarations of other modules, one tier of
     /// module origins at a time. Private declarations neither resolve nor
     /// make a name ambiguous.
-    fn choose<T: Copy>(
+    fn choose<'m, T: Copy>(
         &self,
         requester: &str,
         candidates: &[T],
-        origin: impl Fn(T) -> ModuleOrigin,
+        module: impl Fn(T) -> &'m str,
         visible: impl Fn(T) -> bool,
     ) -> Choice<T> {
         let mut hidden = None;
+        let user = self.origin(requester) == ModuleOrigin::User;
         for (rank, tier) in (1..).zip(self.tiers(requester)) {
             let declared: Vec<T> = candidates
                 .iter()
                 .copied()
-                .filter(|candidate| origin(*candidate) == *tier)
+                .filter(|candidate| {
+                    let module = module(*candidate);
+                    self.origin(module) == *tier
+                        // User code names the declarations of an opt-in std module only
+                        // qualified, so loading it never changes a bare name (D-40).
+                        && !(user && *tier == ModuleOrigin::Std && crate::stdlib::is_opt_in(module))
+                })
                 .collect();
             let shown: Vec<T> = declared
                 .iter()
@@ -3871,7 +4191,7 @@ impl Names {
         self.choose(
             module,
             &candidates,
-            |named| self.origin(&named.info().module),
+            |named| named.info().module.as_str(),
             |named| named.info().visible_from(module),
         )
     }
@@ -3945,7 +4265,7 @@ impl Names {
         self.choose(
             module,
             &candidates,
-            |class| self.origin(class.rsplit_once('.').map_or("", |(module, _)| module)),
+            |class| class.rsplit_once('.').map_or("", |(module, _)| module),
             |_| true,
         )
     }
@@ -4035,7 +4355,7 @@ impl Names {
         match self.choose(
             module,
             &candidates,
-            |case| self.origin(&case.info.module),
+            |case| case.info.module.as_str(),
             |case| case.info.visible_from(module),
         ) {
             Choice::Found(case, _) => Ok(Some(case)),
@@ -4298,7 +4618,7 @@ impl Names {
         match self.choose(
             requester,
             &candidates,
-            |(info, _)| self.origin(&info.module),
+            |(info, _)| info.module.as_str(),
             |(info, _)| info.visible_from(requester),
         ) {
             Choice::Found((info, case), _) => Ok(Some((info.id, *case))),
@@ -4399,7 +4719,7 @@ fn validate_public_type(
         }
         TypeExprKind::Apply(head, args) => {
             let mut lengths = Vec::new();
-            if head.text != "Vec"
+            if !builtin_type_head(&head.text)
                 && !head.text.starts_with('\'')
                 && let TypeHead::Type(named) = names.type_head(module, head)?
             {
@@ -4783,6 +5103,7 @@ fn check_modules_collect(
                             },
                             mutable: false,
                             ty: ty.clone(),
+                            json: None,
                         })
                         .collect(),
                     result: external.result.clone(),
@@ -4853,10 +5174,7 @@ fn check_modules_collect(
             module: (*module).to_owned(),
             visibility: record.visibility,
         };
-        if crate::numeric::primitive(&record.name.text).is_some()
-            || record.name.text == "_"
-            || matches!(record.name.text.as_str(), "Array" | "Task" | "Vec")
-            || polymorph::BUILTIN_CLASSES.contains(&record.name.text.as_str())
+        if reserved_type_name(&record.name.text)
             || names.records.insert(qualified.clone(), info).is_some()
         {
             diagnostics.push(duplicate(&record.name));
@@ -4888,9 +5206,7 @@ fn check_modules_collect(
                 module: module.name.to_owned(),
                 visibility: handle.visibility,
             };
-            if crate::numeric::primitive(&handle.name.text).is_some()
-                || matches!(handle.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
-                || polymorph::BUILTIN_CLASSES.contains(&handle.name.text.as_str())
+            if reserved_type_name(&handle.name.text)
                 || names.records.contains_key(&qualified)
                 || names.handles.insert(qualified.clone(), info).is_some()
             {
@@ -4930,7 +5246,10 @@ fn check_modules_collect(
                 || names.handles.contains_key(&qualified)
                 || names.classes.contains(&qualified)
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
-                || matches!(class.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
+                || matches!(
+                    class.name.text.as_str(),
+                    "_" | "Array" | "Task" | "Vec" | "Rc" | "Arc"
+                )
             {
                 diagnostics.push(duplicate(&class.name));
                 continue;
@@ -4950,9 +5269,7 @@ fn check_modules_collect(
                 break;
             }
             let qualified = format!("{}.{}", module.name, alias.name.text);
-            if crate::numeric::primitive(&alias.name.text).is_some()
-                || matches!(alias.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
-                || polymorph::BUILTIN_CLASSES.contains(&alias.name.text.as_str())
+            if reserved_type_name(&alias.name.text)
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
                 || names.handles.contains_key(&qualified)
@@ -5055,6 +5372,9 @@ fn check_modules_collect(
         }
         let checked = (|| {
             let qualified = format!("{module}.{}", record.name.text);
+            // Opaque std records may carry phantom type parameters, as `Arena.Handle<'a>` does (C10).
+            let opaque = names.origin(module) == ModuleOrigin::Std
+                && crate::stdlib::opaque_record(&qualified);
             let parameters = declared_parameters("record", &record.name.text, &record.parameters)?;
             let regions::RecordRegions {
                 count: region_count,
@@ -5070,10 +5390,7 @@ fn check_modules_collect(
                 }
                 reject_field_constraints(&field.ty, module, &names, "record")?;
                 let ty = resolve_type(&field.ty, module, &names)?;
-                if record.visibility == Visibility::Public
-                    && !(names.origin(module) == ModuleOrigin::Std
-                        && crate::stdlib::opaque_record(&qualified))
-                {
+                if record.visibility == Visibility::Public && !opaque {
                     validate_public_type(&field.ty, module, ("record", &qualified), &names)?;
                 }
                 polymorph::bounded_type(&ty, field.ty.span)?;
@@ -5110,7 +5427,7 @@ fn check_modules_collect(
             if let Some(parameter) = record
                 .parameters
                 .iter()
-                .find(|parameter| !used.contains(&parameter.text))
+                .find(|parameter| !opaque && !used.contains(&parameter.text))
             {
                 return Err(Diagnostic::new(
                     "E1024",
@@ -6270,6 +6587,15 @@ fn duplicate(name: &Ident) -> Diagnostic {
     )
 }
 
+/// Whether no record, extern type, or type alias may be named `name` (`E1001`):
+/// primitive and SIMD type names, `_`, the built-in `Array`, `Task`, and `Vec`,
+/// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
+pub fn reserved_type_name(name: &str) -> bool {
+    crate::numeric::primitive(name).is_some()
+        || matches!(name, "_" | "Array" | "Task" | "Vec" | "Rc" | "Arc")
+        || polymorph::BUILTIN_CLASSES.contains(&name)
+}
+
 /// Checks the type parameters that a record or union declares.
 fn declared_parameters(
     kind: &str,
@@ -6348,7 +6674,7 @@ fn collect_unions(
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
-            if matches!(name.text.as_str(), "Array" | "Task" | "Vec")
+            if matches!(name.text.as_str(), "Array" | "Task" | "Vec" | "Rc" | "Arc")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -6416,7 +6742,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if matches!(name.text.as_str(), "Array" | "Task" | "Vec")
+                if matches!(name.text.as_str(), "Array" | "Task" | "Vec" | "Rc" | "Arc")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.handles.contains_key(&qualified)
@@ -6528,6 +6854,12 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
     resolve_type_with_kinds(expression, module, names, &BTreeMap::new())
 }
 
+/// Whether an applied type name is a builtin type constructor rather than a declaration:
+/// `Vec`, or a shared pointer such as `Rc` or `Arc.Weak` (C10).
+fn builtin_type_head(name: &str) -> bool {
+    name == "Vec" || SharedKind::named(name).is_some()
+}
+
 fn resolve_type_with_kinds(
     expression: &TypeExpr,
     module: &str,
@@ -6561,6 +6893,33 @@ fn resolve_type_with_kinds(
                 ));
             };
             Type::Vec(Box::new(resolve(element)?))
+        }
+        TypeExprKind::Apply(head, args) if SharedKind::named(&head.text).is_some() => {
+            let kind = SharedKind::named(&head.text).expect("checked by the guard");
+            let [value] = &**args else {
+                return Err(Diagnostic::new(
+                    "E1004",
+                    format!(
+                        "{} expects exactly one value type, as in '{}<i64>'",
+                        kind.name(),
+                        kind.name()
+                    ),
+                    expression.span,
+                ));
+            };
+            Type::Shared(Box::new(resolve(value)?), kind)
+        }
+        TypeExprKind::Named(name) if SharedKind::named(name).is_some() => {
+            let kind = SharedKind::named(name).expect("checked by the guard");
+            return Err(Diagnostic::new(
+                "E1004",
+                format!(
+                    "{} expects exactly one value type, as in '{}<i64>'",
+                    kind.name(),
+                    kind.name()
+                ),
+                expression.span,
+            ));
         }
         TypeExprKind::Named(name) => match crate::numeric::primitive(name) {
             Some(ty) => ty,
@@ -6890,7 +7249,7 @@ impl TypeAliasExpansion<'_> {
         }
         let kind = match &expression.kind {
             TypeExprKind::Apply(head, args)
-                if head.text == "Vec" || head.text.starts_with('\'') =>
+                if builtin_type_head(&head.text) || head.text.starts_with('\'') =>
             {
                 TypeExprKind::Apply(
                     head.clone(),
@@ -7127,7 +7486,9 @@ fn reject_expanded_field_constraints(
 ) -> Result<(), Diagnostic> {
     let children: Vec<&TypeExpr> = match &expression.kind {
         TypeExprKind::Apply(head, args) => {
-            if matches!(names.type_head(module, head), Ok(TypeHead::Class)) {
+            if !builtin_type_head(&head.text)
+                && matches!(names.type_head(module, head), Ok(TypeHead::Class))
+            {
                 let parts = if owner == "union" {
                     "union payloads"
                 } else {
@@ -7305,6 +7666,8 @@ impl<'a> Layouts<'a> {
                 self.size(element, depth, span)?;
                 32
             }
+            // The value lives in the shared block, which may hold the type being measured (C10).
+            Type::Shared(..) => 8,
             Type::Reference(..) if ty.slice_element().is_some() => 16,
             Type::Record(..) => self.record(ty, depth, span)?,
             Type::Union(..) => self.union(ty, depth, span)?,
@@ -7590,6 +7953,20 @@ impl Validation<'_> {
                 }
                 self.check(result, span)?;
                 32
+            }
+            Type::Shared(value, kind) => {
+                if value.contains_stored_mutable_reference(&self.layouts.types) {
+                    return Err(Diagnostic::new(
+                        "E1005",
+                        format!(
+                            "{} cannot hold a mutable reference; its owners only read the shared value, so share the data itself or keep the exclusive borrow in a local",
+                            kind.name()
+                        ),
+                        span,
+                    ));
+                }
+                self.check(value, span)?;
+                8
             }
             Type::Task(result) => {
                 if result.contains_stored_reference(&self.layouts.types) {
@@ -9000,6 +9377,7 @@ impl<'a> Checker<'a> {
                 | Type::List(ty)
                 | Type::Vec(ty)
                 | Type::Task(ty)
+                | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => closed(checker, ty, open),
                 Type::Function(parameters, result) => {
                     parameters.iter().all(|ty| closed(checker, ty, open))

@@ -79,7 +79,7 @@ export function defaultNamespace(folder: string): string {
 
 /** The lexer's reserved words and the reserved standard library module names, as `tsuzuri new` checks them. */
 export const reservedWords = new Set('fn def rec and export extern private record union type const test class instance deriving dyn let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
-export const libraryModules = new Set('Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt FixedArray Dyn'.split(' '));
+export const libraryModules = new Set('Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt FixedArray Dyn Arena Rc Arc Regex Unicode Json Cbor'.split(' '));
 
 /**
  * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme::Tools`: at most 16 identifiers joined by `::`

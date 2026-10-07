@@ -16,6 +16,10 @@ use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
 mod test_runner;
 pub use test_runner::{TestOptions, TestReport, TestResult, run_tests, run_tests_linked};
 
+#[path = "bindgen_driver.rs"]
+mod bindgen_driver;
+pub use bindgen_driver::bindgen;
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
@@ -201,6 +205,38 @@ pub enum Emit {
     Header,
     Wasm,
     Wgsl,
+    /// `--emit bindings-js` (E13): a JavaScript module with TypeScript declarations for a wasm32
+    /// module of the same sources.
+    BindingsJs,
+    /// `--emit shared` (E13 Phase 2): a native shared library that exports the public C ABI.
+    Shared,
+    /// `--emit bindings-cs` (E13 Phase 2): C# `LibraryImport` bindings of the shared library.
+    BindingsCs,
+    /// `--emit bindings-py` (E13 Phase 2): a Python `ctypes` module for the shared library.
+    BindingsPy,
+    /// `--emit bindings-cpp` (E13 Phase 2): a header-only C++20 wrapper over the C header.
+    BindingsCpp,
+}
+
+impl Emit {
+    /// The host bindings that come from the sources alone, without LLVM (E13).
+    pub fn is_bindings(self) -> bool {
+        matches!(
+            self,
+            Self::BindingsJs | Self::BindingsCs | Self::BindingsPy | Self::BindingsCpp
+        )
+    }
+
+    /// The `--emit` spelling of the bindings, and the extension of their output.
+    fn bindings(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::BindingsJs => Some(("bindings-js", "mjs")),
+            Self::BindingsCs => Some(("bindings-cs", "cs")),
+            Self::BindingsPy => Some(("bindings-py", "py")),
+            Self::BindingsCpp => Some(("bindings-cpp", "hpp")),
+            _ => None,
+        }
+    }
 }
 
 pub const DEFAULT_WASM_MAX_MEMORY: u64 = 16 * 1024 * 1024;
@@ -275,8 +311,15 @@ impl BuildOptions {
                 "WGSL output does not use target, CPU, debug, or WASM feature options",
             ));
         }
+        if self.emit.is_bindings() {
+            self.validate_bindings()?;
+        }
+        if self.emit == Emit::Shared {
+            self.validate_shared()?;
+        }
         if self.wasm_threads
-            && (self.target != Target::Wasm32 || !matches!(self.emit, Emit::Wasm | Emit::Object))
+            && (self.target != Target::Wasm32
+                || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::BindingsJs))
         {
             return Err(driver_error(
                 "E2000",
@@ -323,7 +366,16 @@ impl BuildOptions {
         }
         if self.trap_return
             && (self.target != Target::Native
-                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header))
+                || !matches!(
+                    self.emit,
+                    Emit::Object
+                        | Emit::Llvm
+                        | Emit::Header
+                        | Emit::Shared
+                        | Emit::BindingsCs
+                        | Emit::BindingsPy
+                        | Emit::BindingsCpp
+                ))
         {
             return Err(driver_error(
                 "E2000",
@@ -346,7 +398,10 @@ impl BuildOptions {
             ));
         }
         if self.cpu == Cpu::Native {
-            if self.target != Target::Native || matches!(self.emit, Emit::Llvm | Emit::Header) {
+            if self.target != Target::Native
+                || matches!(self.emit, Emit::Llvm | Emit::Header)
+                || self.emit.is_bindings()
+            {
                 return Err(driver_error(
                     "E2000",
                     "'--cpu native' requires native executable or object output",
@@ -370,6 +425,84 @@ impl BuildOptions {
             ));
         }
         wasm_memory_limits(self.target, self.wasm_max_memory, self.wasm_stack_size)?;
+        Ok(())
+    }
+
+    /// The options of the bindings (E13). They come from the sources alone, so the options that
+    /// shape the `.wasm` or the shared library belong to the build of that artifact.
+    fn validate_bindings(self) -> Result<(), Diagnostic> {
+        if self.emit != Emit::BindingsJs {
+            if self.target != Target::Native {
+                let (kind, _) = self.emit.bindings().expect("bindings output");
+                return Err(driver_error(
+                    "E2000",
+                    format!("'--emit {kind}' requires '--target native'"),
+                ));
+            }
+            for (set, option) in [
+                (self.trap_info, "--trap-info"),
+                (self.debug_info, "--debug-info"),
+                (self.debug_output, "--debug-output"),
+                (self.allocator != llvm::Allocator::System, "--allocator"),
+                (self.freestanding, "--freestanding"),
+            ] {
+                if set {
+                    return Err(driver_error(
+                        "E2000",
+                        format!(
+                            "{option} is not valid for bindings output; pass it when building the shared library"
+                        ),
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        if self.target != Target::Wasm32 {
+            return Err(driver_error(
+                "E2000",
+                "'--emit bindings-js' requires '--target wasm32'",
+            ));
+        }
+        for (set, option) in [
+            (self.trap_info, "--trap-info"),
+            (self.debug_info, "--debug-info"),
+            (self.debug_output, "--debug-output"),
+            // `threads` selects the glue of a thread pool; SIMD does not change the glue.
+            (self.wasm_simd, "--wasm-feature"),
+            (self.allocator != llvm::Allocator::System, "--allocator"),
+        ] {
+            if set {
+                return Err(driver_error(
+                    "E2000",
+                    format!(
+                        "{option} is not valid for bindings output; pass it when building the .wasm"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The options of `--emit shared` (E13 Phase 2): a native library that hosts load at run time.
+    fn validate_shared(self) -> Result<(), Diagnostic> {
+        if self.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                "'--emit shared' requires '--target native'",
+            ));
+        }
+        if cfg!(windows) {
+            return Err(driver_error(
+                "E2000",
+                "'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Host {
+            return Err(driver_error(
+                "E2000",
+                "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
+            ));
+        }
         Ok(())
     }
 
@@ -454,8 +587,43 @@ impl BuildOptions {
             Emit::Header => "h",
             Emit::Wasm => "wasm",
             Emit::Wgsl => "wgsl",
+            Emit::Shared if cfg!(windows) => "dll",
+            Emit::Shared if cfg!(target_os = "macos") => "dylib",
+            Emit::Shared => "so",
+            Emit::BindingsJs => "mjs",
+            Emit::BindingsCs => "cs",
+            Emit::BindingsPy => "py",
+            Emit::BindingsCpp => "hpp",
         })
     }
+}
+
+/// The error for an output path that bindings cannot use. The JavaScript module must be a `.mjs`
+/// file, because TypeScript reads the declarations of `<name>.mjs` only from `<name>.d.mts`; the
+/// others keep the extension of their language, and their file stem names the library.
+pub fn bindings_output_error(emit: Emit, output: &Path) -> Option<Diagnostic> {
+    let (_, extension) = emit.bindings()?;
+    let stem = output.file_stem().and_then(OsStr::to_str);
+    if output.extension() == Some(OsStr::new(extension))
+        && stem.is_some_and(|stem| !stem.is_empty())
+    {
+        return None;
+    }
+    Some(driver_error(
+        "E2000",
+        if emit == Emit::BindingsJs {
+            "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'".to_owned()
+        } else {
+            format!(
+                "bindings output must end with '.{extension}'; its file name, without the extension, names the shared library"
+            )
+        },
+    ))
+}
+
+/// The TypeScript declarations next to the JavaScript bindings `output`: `<name>.d.mts`.
+pub fn bindings_sidecar_path(output: &Path) -> PathBuf {
+    output.with_extension("d.mts")
 }
 
 /// Stacks wrap below address 0, which is always out of bounds on wasm64 and on
@@ -584,7 +752,7 @@ pub struct SourceError {
 }
 
 impl SourceError {
-    fn new(path: &Path, diagnostic: Diagnostic) -> Self {
+    pub(crate) fn new(path: &Path, diagnostic: Diagnostic) -> Self {
         Self {
             path: path.to_owned(),
             diagnostic,
@@ -613,7 +781,10 @@ impl SourceFile {
     }
 }
 
-fn collect_sources(root: &Path, package_roots: &[PathBuf]) -> Result<Vec<PathBuf>, SourceError> {
+pub(crate) fn collect_sources(
+    root: &Path,
+    package_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, SourceError> {
     let mut pending = vec![(root.to_owned(), 0)];
     let mut directories = 0;
     let mut paths = Vec::new();
@@ -686,11 +857,54 @@ fn collect_sources(root: &Path, package_roots: &[PathBuf]) -> Result<Vec<PathBuf
     Ok(paths)
 }
 
-struct LoadedPackage {
-    id: crate::package::PackageId,
-    manifest: crate::package::Manifest,
-    text: String,
+pub(crate) struct LoadedPackage {
+    pub(crate) id: crate::package::PackageId,
+    pub(crate) manifest: crate::package::Manifest,
+    pub(crate) text: String,
+    /// The content hash that `Tsuzuri.lock` records for a git or registry package.
+    pub(crate) sha256: Option<String>,
+    /// The selected version of a registry package.
+    pub(crate) version: Option<crate::package::Version>,
 }
+
+impl LoadedPackage {
+    /// How diagnostics name a fetched package.
+    fn kind(&self) -> &'static str {
+        if self.version.is_some() {
+            "registry dependency"
+        } else {
+            "git dependency"
+        }
+    }
+}
+
+/// A git or registry dependency of the package graph. `tsuzuri fetch` downloads
+/// it; every other command finds it through `Tsuzuri.lock` in the package store.
+pub(crate) struct PackageRequest<'a> {
+    pub(crate) name: &'a str,
+    /// A `Git` or `Registry` source.
+    pub(crate) source: &'a crate::package::DependencySource,
+    /// The name of the declaring package, and its url when it is a git package.
+    pub(crate) parent: &'a str,
+    pub(crate) parent_url: Option<&'a str>,
+    /// The declaring manifest and the dependency's line in it.
+    pub(crate) manifest: &'a Path,
+    pub(crate) span: Span,
+}
+
+/// Where a git or registry dependency is: its package root, content hash, and
+/// for a registry package the selected version.
+pub(crate) struct Resolution {
+    pub(crate) root: PathBuf,
+    pub(crate) sha256: String,
+    pub(crate) version: Option<crate::package::Version>,
+}
+
+/// Resolves a git or registry dependency. `None` leaves the dependency out of the
+/// walk; `tsuzuri fetch` does that for registry dependencies until it has selected
+/// their versions.
+pub(crate) type PackageResolver<'a> =
+    dyn FnMut(&PackageRequest<'_>) -> Result<Option<Resolution>, SourceError> + 'a;
 
 /// The default namespace of a root folder without a manifest: a kebab-case
 /// folder name in PascalCase as for package names, another valid namespace
@@ -707,7 +921,29 @@ fn folder_namespace(directory: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
+/// How the graph walk reached a package.
+#[derive(Clone)]
+enum Origin {
+    /// The root package or a path dependency.
+    Local,
+    Git {
+        url: String,
+        sha256: String,
+    },
+    Registry {
+        version: crate::package::Version,
+        sha256: String,
+    },
+}
+
+/// Walks the package graph of the manifest in `directory`. `resolve` turns each
+/// git or registry dependency into a package root: `tsuzuri fetch` downloads it,
+/// and the other commands look it up offline, so both share these rules.
+pub(crate) fn load_packages(
+    directory: &Path,
+    resolve: &mut PackageResolver<'_>,
+) -> Result<Vec<LoadedPackage>, SourceError> {
+    use crate::package::DependencySource;
     use std::collections::{BTreeMap, BTreeSet};
     let manifest_path = directory.join("Tsuzuri.toml");
     match fs::symlink_metadata(&manifest_path) {
@@ -726,11 +962,22 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
             io_error("resolve package root", directory, error),
         )
     })?;
-    let mut pending = vec![(root, None::<(String, PathBuf, Span)>, false)];
+    // Each entry: the package root, the dependency that names it, whether the walk
+    // leaves it, and how the walk reached it.
+    let mut pending = vec![(root, None::<(String, PathBuf, Span)>, false, Origin::Local)];
     let mut active = BTreeSet::new();
     let mut loaded = BTreeMap::<PathBuf, LoadedPackage>::new();
     let mut namespaces = BTreeMap::new();
-    while let Some((root, expected, leaving)) = pending.pop() {
+    // A package name has one source: paths (several roots may share a name if their
+    // namespaces differ), one git url and rev, or the registry (one selected version).
+    #[derive(PartialEq)]
+    enum Source {
+        Path,
+        Git(String, String),
+        Registry,
+    }
+    let mut sources = BTreeMap::<String, Source>::new();
+    while let Some((root, expected, leaving, origin)) = pending.pop() {
         if leaving {
             active.remove(&root);
             continue;
@@ -789,51 +1036,116 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
                     ),
                 ));
             }
+            if let Origin::Registry { version, .. } = &origin
+                && manifest.version != version.to_string()
+            {
+                return Err(SourceError::new(
+                    &path,
+                    driver_error(
+                        "E2007",
+                        format!(
+                            "registry package '{}' declares version {} but Tsuzuri.lock records {version}; run tsuzuri fetch",
+                            manifest.name, manifest.version
+                        ),
+                    ),
+                ));
+            }
+            // The root package's name is taken by a path, so no fetched package may reuse it.
+            if loaded.is_empty() {
+                sources.insert(manifest.name.clone(), Source::Path);
+            }
             active.insert(root.clone());
-            pending.push((root.clone(), None, true));
-            for (name, dependency) in manifest.dependencies.iter().rev() {
-                let mut dependency_root = root.clone();
-                for component in dependency.path.components() {
-                    match component {
-                        std::path::Component::CurDir => continue,
-                        std::path::Component::ParentDir => {
-                            dependency_root.pop();
-                        }
-                        std::path::Component::Normal(part) => dependency_root.push(part),
-                        _ => {
-                            return Err(SourceError::new(
-                                &path,
-                                Diagnostic::new(
-                                    "E1011",
-                                    "dependency paths must be relative",
-                                    dependency.span,
-                                ),
-                            ));
-                        }
-                    }
-                    let metadata = fs::symlink_metadata(&dependency_root).map_err(|error| {
-                        SourceError::new(
-                            &path,
-                            io_error("inspect dependency directory", &dependency_root, error),
-                        )
-                    })?;
-                    if !metadata.is_dir() || metadata.is_symlink() {
-                        return Err(SourceError::new(
-                            &path,
-                            Diagnostic::new(
-                                "E1011",
-                                "dependency paths must traverse real directories, not symbolic links",
-                                dependency.span,
-                            ),
+            pending.push((root.clone(), None, true, Origin::Local));
+            let mut dependencies = Vec::new();
+            for (name, dependency) in &manifest.dependencies {
+                let source = match &dependency.source {
+                    DependencySource::Path(_) => Source::Path,
+                    DependencySource::Git { url, rev } => Source::Git(url.clone(), rev.clone()),
+                    DependencySource::Registry(_) => Source::Registry,
+                };
+                let error = |code: &'static str, message: String| {
+                    SourceError::new(&path, Diagnostic::new(code, message, dependency.span))
+                };
+                if sources
+                    .get(name)
+                    .is_some_and(|existing| *existing != source)
+                {
+                    return Err(error(
+                        "E1011",
+                        format!(
+                            "package '{name}' is required from different sources; a package name has one source: paths, one git url and rev, or registry versions"
+                        ),
+                    ));
+                }
+                sources.insert(name.clone(), source);
+                let (dependency_root, dependency_origin) = match (&dependency.source, &origin) {
+                    (
+                        DependencySource::Path(_) | DependencySource::Git { .. },
+                        Origin::Registry { .. },
+                    ) => {
+                        return Err(error(
+                            "E1011",
+                            "registry packages can depend only on registry packages; use a version requirement".to_owned(),
                         ));
                     }
-                }
-                pending.push((
+                    (DependencySource::Path(_), Origin::Git { .. }) => {
+                        return Err(error(
+                            "E1011",
+                            "git packages cannot have path dependencies; use a git dependency"
+                                .to_owned(),
+                        ));
+                    }
+                    (DependencySource::Path(relative), Origin::Local) => (
+                        dependency_directory(&root, relative, &path, dependency.span)?,
+                        Origin::Local,
+                    ),
+                    (DependencySource::Git { .. } | DependencySource::Registry(_), _) => {
+                        let Some(resolution) = resolve(&PackageRequest {
+                            name,
+                            source: &dependency.source,
+                            parent: &manifest.name,
+                            parent_url: match &origin {
+                                Origin::Git { url, .. } => Some(url.as_str()),
+                                _ => None,
+                            },
+                            manifest: &path,
+                            span: dependency.span,
+                        })?
+                        else {
+                            continue;
+                        };
+                        let package_root = fs::canonicalize(&resolution.root).map_err(|error| {
+                            SourceError::new(
+                                &path,
+                                io_error("resolve fetched package root", &resolution.root, error),
+                            )
+                        })?;
+                        let dependency_origin = match (&dependency.source, resolution.version) {
+                            (DependencySource::Git { url, .. }, _) => Origin::Git {
+                                url: url.clone(),
+                                sha256: resolution.sha256,
+                            },
+                            (_, version) => Origin::Registry {
+                                version: version.expect("registry resolutions have a version"),
+                                sha256: resolution.sha256,
+                            },
+                        };
+                        (package_root, dependency_origin)
+                    }
+                };
+                dependencies.push((
                     dependency_root,
                     Some((name.clone(), path.clone(), dependency.span)),
                     false,
+                    dependency_origin,
                 ));
             }
+            pending.extend(dependencies.into_iter().rev());
+            let (sha256, version) = match origin {
+                Origin::Local => (None, None),
+                Origin::Git { sha256, .. } => (Some(sha256), None),
+                Origin::Registry { version, sha256 } => (Some(sha256), Some(version)),
+            };
             loaded.insert(
                 root.clone(),
                 LoadedPackage {
@@ -843,6 +1155,8 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
                     },
                     manifest,
                     text,
+                    sha256,
+                    version,
                 },
             );
         }
@@ -862,6 +1176,181 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
     let mut packages: Vec<_> = loaded.into_values().collect();
     packages.sort_by(|left, right| left.manifest.namespace.cmp(&right.manifest.namespace));
     Ok(packages)
+}
+
+/// The directory that a path dependency names, checked component by component so
+/// that it never passes through a symbolic link.
+fn dependency_directory(
+    root: &Path,
+    relative: &Path,
+    manifest: &Path,
+    span: Span,
+) -> Result<PathBuf, SourceError> {
+    let mut directory = root.to_owned();
+    for component in relative.components() {
+        match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                directory.pop();
+            }
+            std::path::Component::Normal(part) => directory.push(part),
+            _ => {
+                return Err(SourceError::new(
+                    manifest,
+                    Diagnostic::new("E1011", "dependency paths must be relative", span),
+                ));
+            }
+        }
+        let metadata = fs::symlink_metadata(&directory).map_err(|error| {
+            SourceError::new(
+                manifest,
+                io_error("inspect dependency directory", &directory, error),
+            )
+        })?;
+        if !metadata.is_dir() || metadata.is_symlink() {
+            return Err(SourceError::new(
+                manifest,
+                Diagnostic::new(
+                    "E1011",
+                    "dependency paths must traverse real directories, not symbolic links",
+                    span,
+                ),
+            ));
+        }
+    }
+    Ok(directory)
+}
+
+/// The root package's `Tsuzuri.lock`.
+pub(crate) struct Lockfile {
+    pub(crate) path: PathBuf,
+    pub(crate) text: String,
+    pub(crate) entries: std::collections::BTreeMap<String, crate::package::LockEntry>,
+}
+
+/// Reads and validates `Tsuzuri.lock` next to the manifest in `directory`, if both exist.
+pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, SourceError> {
+    if fs::symlink_metadata(directory.join("Tsuzuri.toml")).is_err() {
+        return Ok(None);
+    }
+    let path = directory.join("Tsuzuri.lock");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(SourceError::new(
+                &path,
+                io_error("inspect lockfile", &path, error),
+            ));
+        }
+    };
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Err(SourceError::new(
+            &path,
+            driver_error(
+                "E2007",
+                "Tsuzuri.lock must be a regular file, not a symbolic link or directory",
+            ),
+        ));
+    }
+    if metadata.len() > MAX_SOURCE_BYTES as u64 {
+        return Err(SourceError::new(
+            &path,
+            driver_error("E1017", "Tsuzuri.lock exceeds 1 MiB"),
+        ));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| {
+            file.take(MAX_SOURCE_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| SourceError::new(&path, io_error("read lockfile", &path, error)))?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        SourceError::new(
+            &path,
+            driver_error(
+                "E2007",
+                "Tsuzuri.lock is not a valid lockfile (it is not UTF-8); restore it from version control or delete it and run tsuzuri fetch",
+            ),
+        )
+    })?;
+    let entries =
+        crate::package::parse_lock(&text, 0).map_err(|error| SourceError::new(&path, error))?;
+    Ok(Some(Lockfile {
+        path,
+        text,
+        entries,
+    }))
+}
+
+/// Finds a git or registry dependency in `Tsuzuri.lock` and the package store
+/// without running git or touching the network.
+fn offline_package(
+    lock: Option<&Lockfile>,
+    request: &PackageRequest<'_>,
+) -> Result<Option<Resolution>, SourceError> {
+    use crate::package::DependencySource;
+    let error = |message: String| {
+        SourceError::new(
+            request.manifest,
+            Diagnostic::new("E2007", message, request.span),
+        )
+    };
+    let lock = lock.ok_or_else(|| {
+        error("Tsuzuri.lock is missing; run tsuzuri fetch to download git dependencies and record them".to_owned())
+    })?;
+    let (entry, kind) = match request.source {
+        DependencySource::Git { url, rev } => (
+            lock.entries
+                .get(request.name)
+                .filter(|entry| entry.git == *url && entry.rev == *rev && entry.version.is_none())
+                .ok_or_else(|| {
+                    error(format!(
+                        "Tsuzuri.lock does not record git dependency '{}' at this url and rev; run tsuzuri fetch",
+                        request.name
+                    ))
+                })?,
+            "git dependency",
+        ),
+        DependencySource::Registry(requirement) => (
+            lock.entries
+                .get(request.name)
+                .filter(|entry| {
+                    entry
+                        .version
+                        .is_some_and(|version| version.satisfies(*requirement))
+                })
+                .ok_or_else(|| {
+                    error(format!(
+                        "Tsuzuri.lock does not record a version of '{}' that satisfies {requirement}; run tsuzuri fetch",
+                        request.name
+                    ))
+                })?,
+            "registry dependency",
+        ),
+        DependencySource::Path(_) => unreachable!("the walk resolves path dependencies itself"),
+    };
+    let store = crate::cache::package_store().ok_or_else(|| {
+        error(
+            "no package store is available; set TSUZURI_CACHE_DIR and run tsuzuri fetch".to_owned(),
+        )
+    })?;
+    // Check for a symbolic link before the walk canonicalizes the root.
+    let root = store.join("git").join(&entry.sha256);
+    if !fs::symlink_metadata(&root)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
+    {
+        return Err(error(format!(
+            "{kind} '{}' is not downloaded; run tsuzuri fetch",
+            request.name
+        )));
+    }
+    Ok(Some(Resolution {
+        root,
+        sha256: entry.sha256.clone(),
+        version: entry.version,
+    }))
 }
 
 impl Project {
@@ -912,15 +1401,22 @@ impl Project {
                 normalized.insert(path, text.clone());
             }
         }
-        Self::load_from_root(&directory, None, &normalized)
+        // The editor offers every std module, so it loads the opt-in ones too (D-40).
+        Self::load_from_root(&directory, None, &normalized, true)
     }
 
+    /// Loads the package graph at `directory`. With `all_std` false, it loads only the
+    /// opt-in std modules that the user sources name (`stdlib::sources_for`).
     fn load_from_root(
         directory: &Path,
         selected: Option<&Path>,
         overlays: &std::collections::BTreeMap<PathBuf, String>,
+        all_std: bool,
     ) -> Result<Self, SourceError> {
-        let packages = load_packages(directory)?;
+        let lock = read_lockfile(directory)?;
+        let packages = load_packages(directory, &mut |request| {
+            offline_package(lock.as_ref(), request)
+        })?;
         let canonical;
         let directory = if packages.is_empty() {
             directory
@@ -948,6 +1444,9 @@ impl Project {
                 |package| package.manifest.namespace.clone(),
             );
         let mut sources = Vec::new();
+        // The sources of each git package by `/`-separated path, for its content hash.
+        let mut fetched =
+            std::collections::BTreeMap::<&Path, std::collections::BTreeMap<String, usize>>::new();
         for root in &roots {
             let package = packages.iter().find(|package| package.id.root == *root);
             let mut paths: std::collections::BTreeMap<_, _> = collect_sources(root, &roots)?
@@ -976,6 +1475,16 @@ impl Project {
                 {
                     continue;
                 }
+                let hash_key = package
+                    .filter(|package| package.sha256.is_some())
+                    .map(|package| {
+                        let key = relative
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("/");
+                        (package, key)
+                    });
                 let relative_path = if root != directory {
                     package
                         .unwrap()
@@ -1024,6 +1533,12 @@ impl Project {
                 if root == directory {
                     source.namespace = root_namespace.clone();
                 }
+                if let Some((package, key)) = hash_key {
+                    fetched
+                        .entry(&package.id.root)
+                        .or_default()
+                        .insert(key, sources.len());
+                }
                 sources.push(source);
                 if sources.len() > 4096 {
                     return Err(SourceError::new(
@@ -1031,6 +1546,35 @@ impl Project {
                         driver_error("E1017", "package graph exceeds 4096 source files"),
                     ));
                 }
+            }
+        }
+        // A git package must still have the content that `Tsuzuri.lock` records.
+        for package in &packages {
+            let Some(sha256) = &package.sha256 else {
+                continue;
+            };
+            let mut files: std::collections::BTreeMap<String, &[u8]> = fetched
+                .get(package.id.root.as_path())
+                .into_iter()
+                .flatten()
+                .map(|(path, index)| (path.clone(), sources[*index].text.as_bytes()))
+                .collect();
+            files.insert("Tsuzuri.toml".to_owned(), package.text.as_bytes());
+            if crate::package::content_sha256(&files) != *sha256 {
+                let lock = lock
+                    .as_ref()
+                    .map_or_else(|| directory.join("Tsuzuri.lock"), |lock| lock.path.clone());
+                return Err(SourceError::new(
+                    &lock,
+                    driver_error(
+                        "E2007",
+                        format!(
+                            "{} '{}' does not match its sha256 in Tsuzuri.lock; run tsuzuri fetch to restore it",
+                            package.kind(),
+                            package.manifest.name
+                        ),
+                    ),
+                ));
             }
         }
         sources
@@ -1043,7 +1587,12 @@ impl Project {
                 .position(|source| source.name == "Main")
                 .unwrap_or(0)
         };
-        sources.extend(crate::stdlib::SOURCES.iter().map(|(path, text)| {
+        let std_sources = if all_std {
+            crate::stdlib::SOURCES.to_vec()
+        } else {
+            crate::stdlib::sources_for(sources.iter().map(|source| source.text.as_str()))
+        };
+        sources.extend(std_sources.iter().map(|(path, text)| {
             SourceFile {
                 path: PathBuf::from(path),
                 relative_path: PathBuf::from(path),
@@ -1067,7 +1616,13 @@ impl Project {
             .into_iter()
             .flat_map(|root| root.manifest.dependencies.values())
             .filter(|dependency| dependency.native)
-            .filter_map(|dependency| fs::canonicalize(directory.join(&dependency.path)).ok())
+            .filter_map(|dependency| match &dependency.source {
+                crate::package::DependencySource::Path(path) => {
+                    fs::canonicalize(directory.join(path)).ok()
+                }
+                crate::package::DependencySource::Git { .. }
+                | crate::package::DependencySource::Registry(_) => None,
+            })
             .collect();
         let mut native = LinkInputs::default();
         // The root's inputs come first, then each trusted dependency's in package order.
@@ -1077,6 +1632,16 @@ impl Project {
             let Some((inputs, span)) = &package.manifest.native else {
                 continue;
             };
+            if package.sha256.is_some() {
+                return Err(SourceError::new(
+                    &package.id.root.join("Tsuzuri.toml"),
+                    Diagnostic::new(
+                        "E2000",
+                        "git and registry packages cannot declare [native] link settings; move them to the application manifest",
+                        *span,
+                    ),
+                ));
+            }
             if package.id.root != directory && !trusted.contains(&package.id.root) {
                 return Err(SourceError::new(
                     &package.id.root.join("Tsuzuri.toml"),
@@ -1099,7 +1664,11 @@ impl Project {
                 search: resolve(&inputs.search),
             });
         }
-        let manifests = packages
+        let root_id = packages
+            .iter()
+            .find(|package| package.id.root == directory)
+            .map(|package| package.id.clone());
+        let mut manifests: Vec<_> = packages
             .into_iter()
             .map(|package| SourceFile {
                 path: package.id.root.join("Tsuzuri.toml"),
@@ -1111,6 +1680,18 @@ impl Project {
                 namespace: String::new(),
             })
             .collect();
+        // The lockfile, too, is protected from outputs and keys the build cache.
+        if let Some(lock) = lock {
+            manifests.push(SourceFile {
+                path: directory.join("Tsuzuri.lock"),
+                relative_path: PathBuf::from("Tsuzuri.lock"),
+                name: "Tsuzuri.lock".to_owned(),
+                text: lock.text,
+                origin: ModuleOrigin::User,
+                package: root_id,
+                namespace: String::new(),
+            });
+        }
         Ok(Self {
             sources,
             manifests,
@@ -1164,7 +1745,7 @@ impl Project {
         if !metadata.is_dir() {
             return Self::load(input);
         }
-        let project = Self::load_from_root(input, None, &std::collections::BTreeMap::new())?;
+        let project = Self::load_from_root(input, None, &std::collections::BTreeMap::new(), false)?;
         if !project
             .sources
             .iter()
@@ -1201,6 +1782,7 @@ impl Project {
             parent,
             input.file_name().map(Path::new),
             &std::collections::BTreeMap::new(),
+            false,
         )
     }
 
@@ -1371,7 +1953,7 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
     read_source_text(path)
 }
 
-fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
+pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
@@ -1492,7 +2074,7 @@ fn replace_source_atomically(
     Ok(())
 }
 
-fn source_kind(path: &Path) -> Option<SourceKind> {
+pub(crate) fn source_kind(path: &Path) -> Option<SourceKind> {
     path.extension()
         .and_then(OsStr::to_str)
         .and_then(SourceKind::from_extension)
@@ -1528,7 +2110,9 @@ fn build_complete(
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
     if !links.is_empty() {
-        if options.target != Target::Native || options.emit != Emit::Executable {
+        if options.target != Target::Native
+            || !matches!(options.emit, Emit::Executable | Emit::Shared)
+        {
             return Err(driver_error(
                 "E2000",
                 "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
@@ -1536,6 +2120,9 @@ fn build_complete(
         }
         links.check_shape()?;
         links.check_readable()?;
+    }
+    if options.emit.is_bindings() {
+        return build_bindings(module, project, output, options).map(|()| (Vec::new(), Vec::new()));
     }
     let (max_memory, stack_size) = wasm_memory_limits(
         options.target,
@@ -1558,6 +2145,12 @@ fn build_complete(
         return Err(driver_error(
             "E2004",
             "a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point",
+        ));
+    }
+    if options.emit == Emit::Shared && !module.functions.iter().any(|function| function.exported) {
+        return Err(driver_error(
+            "E2004",
+            "a shared library needs at least one 'export def' entry point",
         ));
     }
     let mut trap_sites = Vec::new();
@@ -1602,7 +2195,7 @@ fn build_complete(
                     emission,
                     sources,
                     options.debug_info.then_some(options.optimization != 0),
-                    options.emit == Emit::Object,
+                    matches!(options.emit, Emit::Object | Emit::Shared),
                 )
             })?;
             if output.ir.contains("@tz.callback.") {
@@ -1614,7 +2207,7 @@ fn build_complete(
             trap_sites = output.trap_sites;
             output.ir
         } else if options.target == Target::Native
-            && matches!(options.emit, Emit::Executable | Emit::Object)
+            && matches!(options.emit, Emit::Executable | Emit::Object | Emit::Shared)
             // A freestanding object has no CPU dispatch: its runtime reads the CPU through the C library.
             && !options.freestanding
         {
@@ -1741,7 +2334,7 @@ fn build_complete(
         && (io_runtime || os_runtime || arguments_runtime || wasi_command);
     // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
-        && options.emit == Emit::Object
+        && matches!(options.emit, Emit::Object | Emit::Shared)
         && [
             "@tsuzuri_trap_raise(",
             "@tsuzuri_boundary_run(",
@@ -1791,12 +2384,12 @@ fn build_complete(
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
     let dwarf_sidecar = (cfg!(target_os = "macos")
         && options.debug_info
-        && options.emit == Emit::Executable)
-        .then(|| {
-            let mut path = output.as_os_str().to_owned();
-            path.push(".dwarf");
-            PathBuf::from(path)
-        });
+        && matches!(options.emit, Emit::Executable | Emit::Shared))
+    .then(|| {
+        let mut path = output.as_os_str().to_owned();
+        path.push(".dwarf");
+        PathBuf::from(path)
+    });
     if let Some(sidecar) = &sidecar {
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
@@ -1889,6 +2482,9 @@ fn build_complete(
     } else if matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Wgsl) {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
+        // The C names that a shared library exports, read from the IR before it is written.
+        let shared_symbols = (options.emit == Emit::Shared)
+            .then(|| shared_exports(&text, module, options.trap_return));
         let mut ir = temporary.path.join("module.ll");
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
@@ -2114,7 +2710,7 @@ fn build_complete(
         }
         let object = temporary.path.join("module.o");
         clang.arg(&ir).arg("-o").arg(
-            if options.emit == Emit::Wasm
+            if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
                 || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
                 || (native_runtime && options.emit == Emit::Object && !merge_debug_ir)
@@ -2152,7 +2748,32 @@ fn build_complete(
                 "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
             )?,
         );
-        if dwarf_sidecar.is_some() {
+        if let Some(symbols) = &shared_symbols {
+            link_shared(
+                symbols,
+                options,
+                links,
+                (&object, native_runtime.then_some(runtime_object.as_path())),
+                (&artifact, output),
+                &temporary.path,
+                &mut messages,
+            )?;
+        }
+        if dwarf_sidecar.is_some() && options.emit == Emit::Shared {
+            let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
+            symbols
+                .arg("--flat")
+                .arg(&artifact)
+                .arg("-o")
+                .arg(&staged_dwarf);
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut symbols,
+                    "macOS debug shared libraries require dsymutil; set TSUZURI_DSYMUTIL",
+                )?,
+            );
+        } else if dwarf_sidecar.is_some() {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker.arg(&object).args(["-g", "-lm"]);
             if native_runtime {
@@ -2329,6 +2950,167 @@ fn build_complete(
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
     temporary.close()?;
     Ok((messages, trap_sites))
+}
+
+/// The C names a shared library exports: the header's entry points that the IR defines.
+pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool) -> Vec<String> {
+    let defined = |symbol: &str| {
+        let call = format!("@{symbol}(");
+        ir.lines().any(|line| {
+            line.starts_with("define ")
+                && line.contains(&call)
+                && !line.contains(" internal ")
+                && !line.contains(" hidden ")
+        })
+    };
+    let mut symbols: Vec<String> = module
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .flat_map(|function| {
+            let mut names = vec![format!("tz_{}", function.name)];
+            if trap_return {
+                names.push(format!("tsuzuri_try_{}", function.name));
+            }
+            names
+        })
+        .collect();
+    for symbol in [
+        "tsuzuri_alloc",
+        "tsuzuri_alloc_stats",
+        "tsuzuri_free",
+        "tsuzuri_main",
+    ] {
+        if defined(symbol) {
+            symbols.push(symbol.to_owned());
+        }
+    }
+    symbols.sort();
+    symbols
+}
+
+/// Links the object of `--emit shared` (E13 Phase 2) into a shared library that exports only the
+/// public C ABI and resolves every symbol at link time, like an executable.
+fn link_shared(
+    symbols: &[String],
+    options: BuildOptions,
+    links: &LinkInputs,
+    (object, runtime): (&Path, Option<&Path>),
+    (artifact, output): (&Path, &Path),
+    temporary: &Path,
+    messages: &mut Vec<String>,
+) -> Result<(), Diagnostic> {
+    let list = temporary.join("exports.txt");
+    let file_name = output
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("library");
+    let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
+    if cfg!(target_os = "macos") {
+        let text: String = symbols
+            .iter()
+            .map(|symbol| format!("_{symbol}\n"))
+            .collect();
+        fs::write(&list, text).map_err(|error| io_error("write export list", &list, error))?;
+        let mut exported = OsString::from("-Wl,-exported_symbols_list,");
+        exported.push(&list);
+        linker
+            .arg("-dynamiclib")
+            .arg(exported)
+            .arg(format!("-Wl,-install_name,@rpath/{file_name}"));
+    } else {
+        let text = format!(
+            "{{\n  global:\n{}  local: *;\n}};\n",
+            symbols
+                .iter()
+                .map(|symbol| format!("    {symbol};\n"))
+                .collect::<String>()
+        );
+        fs::write(&list, text).map_err(|error| io_error("write export list", &list, error))?;
+        let mut script = OsString::from("-Wl,--version-script=");
+        script.push(&list);
+        linker
+            .arg("-shared")
+            .arg(script)
+            .arg(format!("-Wl,-soname,{file_name}"))
+            .arg("-Wl,--no-undefined");
+    }
+    if options.debug_info {
+        linker.arg("-g");
+    }
+    linker.args(["-x", "none"]).arg(object);
+    if let Some(runtime) = runtime {
+        linker.arg(runtime).arg("-pthread");
+    }
+    linker.arg("-lm");
+    links.add_to(&mut linker);
+    linker.arg("-o").arg(artifact);
+    collect_message(
+        messages,
+        run_tool(
+            &mut linker,
+            "shared libraries require the Clang linker; unresolved extern symbols need --link, -l or -L",
+        )?,
+    );
+    Ok(())
+}
+
+/// Writes the bindings of `--emit bindings-js` (E13) and their declarations without LLVM.
+fn build_bindings(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+) -> Result<(), Diagnostic> {
+    if let Some(error) = bindings_output_error(options.emit, output) {
+        return Err(error);
+    }
+    if !module.functions.iter().any(|function| function.exported) {
+        return Err(driver_error(
+            "E2004",
+            "bindings need at least one 'export def' entry point",
+        ));
+    }
+    let declarations = (options.emit == Emit::BindingsJs).then(|| bindings_sidecar_path(output));
+    protect_sources(project, output)?;
+    if let Some(declarations) = &declarations {
+        protect_sources(project, declarations)?;
+    }
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| io_error("create output directory", parent, error))?;
+    let mut temporary = TemporaryDirectory::new(parent)?;
+    let artifact = temporary.path.join("artifact");
+    let staged = temporary.path.join("declarations");
+    let flavor = if options.wasm_threads {
+        crate::bindings::JsFlavor::Threads
+    } else {
+        crate::bindings::JsFlavor::Single
+    };
+    // The file stem names the shared library of the native bindings, and the C++ header includes
+    // the C header of the same stem.
+    let stem = output
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .expect("bindings_output_error checked the file name");
+    let text = match options.emit {
+        Emit::BindingsCs => crate::bindings::csharp(module, stem, options.trap_return),
+        Emit::BindingsPy => crate::bindings::python(module, stem, options.trap_return),
+        Emit::BindingsCpp => crate::bindings::cpp(module, stem, options.trap_return),
+        _ => crate::bindings::javascript_for(module, flavor),
+    };
+    fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
+    let mut sidecars = Vec::new();
+    if let Some(declarations) = &declarations {
+        fs::write(&staged, crate::bindings::declarations_for(module, flavor))
+            .map_err(|error| io_error("write bindings declarations", &staged, error))?;
+        sidecars.push((&staged, declarations));
+    }
+    publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
+    temporary.close()
 }
 
 fn publish_outputs(
@@ -2913,6 +3695,254 @@ mod tests {
             .validate()
             .is_err()
         );
+        let bindings = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::BindingsJs,
+            ..BuildOptions::default()
+        };
+        let error = build(&module, &project, &directory.path.join("f.mjs"), bindings).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (
+                "E2004",
+                "bindings need at least one 'export def' entry point"
+            )
+        );
+        let error = build(&module, &project, &directory.path.join("f.js"), bindings).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (
+                "E2000",
+                "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'"
+            )
+        );
+        for (options, message) in [
+            (
+                BuildOptions {
+                    target: Target::Native,
+                    ..bindings
+                },
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                BuildOptions {
+                    target: Target::Wasm64,
+                    ..bindings
+                },
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                BuildOptions {
+                    trap_info: true,
+                    ..bindings
+                },
+                "--trap-info is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    debug_info: true,
+                    ..bindings
+                },
+                "--debug-info is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    debug_output: true,
+                    ..bindings
+                },
+                "--debug-output is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    wasm_simd: true,
+                    ..bindings
+                },
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    allocator: llvm::Allocator::Counting,
+                    ..bindings
+                },
+                "--allocator is not valid for bindings output; pass it when building the .wasm",
+            ),
+        ] {
+            let error = options.validate().unwrap_err();
+            assert_eq!((error.code, error.message.as_str()), ("E2000", message));
+        }
+        assert!(bindings.validate().is_ok());
+        // `--wasm-feature threads` selects the glue of a thread pool.
+        assert!(
+            BuildOptions {
+                wasm_threads: true,
+                ..bindings
+            }
+            .validate()
+            .is_ok()
+        );
+        assert_eq!(
+            bindings_sidecar_path(Path::new("out/api.v1.mjs")),
+            Path::new("out/api.v1.d.mts")
+        );
+        assert!(bindings_output_error(Emit::BindingsJs, Path::new(".mjs")).is_some());
+        assert!(bindings_output_error(Emit::Wasm, Path::new("f.js")).is_none());
+        directory.close().unwrap();
+    }
+
+    #[test]
+    fn validates_shared_libraries_and_native_bindings() {
+        let shared = BuildOptions {
+            emit: Emit::Shared,
+            ..BuildOptions::default()
+        };
+        if cfg!(windows) {
+            assert_eq!(
+                shared.validate().unwrap_err().message,
+                "'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL"
+            );
+        } else {
+            assert!(shared.validate().is_ok());
+            for options in [
+                BuildOptions {
+                    trap_return: true,
+                    trap_info: true,
+                    ..shared
+                },
+                BuildOptions {
+                    allocator: llvm::Allocator::Counting,
+                    ..shared
+                },
+                BuildOptions {
+                    cpu: Cpu::Native,
+                    ..shared
+                },
+            ] {
+                if options.cpu == Cpu::Native && native_cpu_flag(env::consts::ARCH).is_err() {
+                    continue;
+                }
+                assert!(options.validate().is_ok(), "{options:?}");
+            }
+            assert_eq!(
+                BuildOptions {
+                    allocator: llvm::Allocator::Host,
+                    ..shared
+                }
+                .validate()
+                .unwrap_err()
+                .message,
+                "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc"
+            );
+        }
+        assert_eq!(
+            BuildOptions {
+                target: Target::Wasm32,
+                ..shared
+            }
+            .validate()
+            .unwrap_err()
+            .message,
+            "'--emit shared' requires '--target native'"
+        );
+        for (emit, kind, extension) in [
+            (Emit::BindingsCs, "bindings-cs", "cs"),
+            (Emit::BindingsPy, "bindings-py", "py"),
+            (Emit::BindingsCpp, "bindings-cpp", "hpp"),
+        ] {
+            let bindings = BuildOptions {
+                emit,
+                ..BuildOptions::default()
+            };
+            assert!(bindings.validate().is_ok());
+            assert!(
+                BuildOptions {
+                    trap_return: true,
+                    ..bindings
+                }
+                .validate()
+                .is_ok()
+            );
+            assert_eq!(
+                BuildOptions {
+                    target: Target::Wasm32,
+                    ..bindings
+                }
+                .validate()
+                .unwrap_err()
+                .message,
+                format!("'--emit {kind}' requires '--target native'")
+            );
+            for (options, option) in [
+                (
+                    BuildOptions {
+                        trap_info: true,
+                        ..bindings
+                    },
+                    "--trap-info",
+                ),
+                (
+                    BuildOptions {
+                        debug_info: true,
+                        ..bindings
+                    },
+                    "--debug-info",
+                ),
+                (
+                    BuildOptions {
+                        allocator: llvm::Allocator::Counting,
+                        ..bindings
+                    },
+                    "--allocator",
+                ),
+            ] {
+                assert_eq!(
+                    options.validate().unwrap_err().message,
+                    format!(
+                        "{option} is not valid for bindings output; pass it when building the shared library"
+                    )
+                );
+            }
+            assert_eq!(
+                bindings.output_path(Path::new("dir/Main.tz")),
+                Path::new(&format!("dir/Main.{extension}"))
+            );
+            assert!(bindings_output_error(emit, Path::new(&format!("lib.{extension}"))).is_none());
+            assert_eq!(
+                bindings_output_error(emit, Path::new("lib.txt"))
+                    .unwrap()
+                    .message,
+                format!(
+                    "bindings output must end with '.{extension}'; its file name, without the extension, names the shared library"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn shared_libraries_export_the_public_entry_points_the_ir_defines() {
+        let (directory, project) = project(
+            &[(
+                "Main.tz",
+                "export def add :: i64 -> i64 -> i64\nfn add a b = a + b\nexport def copy :: ref [i64] -> [i64]\nfn copy values = Array.map (value -> value) values\n",
+            )],
+            "Main.tz",
+        );
+        let module = project.analyze().unwrap();
+        let ir = "define i64 @tz_add(i64 %arg0) {\ndefine weak ptr @tsuzuri_alloc(i64 %size) nounwind {\ndefine weak void @tsuzuri_free(ptr %value) nounwind {\ndefine weak hidden void @tz_soft_op(ptr %0) {\ndefine internal ptr @tz.alloc(i64 %size) {\n";
+        assert_eq!(
+            shared_exports(ir, &module, false),
+            ["tsuzuri_alloc", "tsuzuri_free", "tz_add", "tz_copy"]
+        );
+        assert_eq!(
+            shared_exports(ir, &module, true),
+            [
+                "tsuzuri_alloc",
+                "tsuzuri_free",
+                "tsuzuri_try_add",
+                "tsuzuri_try_copy",
+                "tz_add",
+                "tz_copy"
+            ]
+        );
         directory.close().unwrap();
     }
 
@@ -3242,10 +4272,25 @@ mod tests {
             .iter()
             .skip_while(|source| source.origin == ModuleOrigin::User)
             .collect();
-        assert_eq!(std.len(), crate::stdlib::SOURCES.len());
+        // The sources name no opt-in std module, so only the others are loaded (D-40).
+        assert_eq!(
+            std.len(),
+            crate::stdlib::SOURCES.len() - crate::stdlib::OPT_IN.len()
+        );
+        assert_eq!(std.len(), crate::stdlib::sources_for(["42"]).len());
         assert!(
             std.iter()
                 .all(|source| source.origin == ModuleOrigin::Std && source.path.starts_with("std"))
+        );
+        // The editor loads every std module.
+        let edited = Project::load_with_overlays(&directory.path, &Default::default()).unwrap();
+        assert_eq!(
+            edited
+                .sources
+                .iter()
+                .filter(|source| source.origin == ModuleOrigin::Std)
+                .count(),
+            crate::stdlib::SOURCES.len()
         );
         let first = llvm::emit(&project.analyze().unwrap(), Entry::Console).unwrap();
         let reloaded = Project::load(&directory.path.join("Main.tz")).unwrap();

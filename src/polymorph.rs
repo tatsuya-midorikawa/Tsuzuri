@@ -123,6 +123,7 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
         ),
         Type::List(element) => Type::List(Box::new(map_type(element, f))),
         Type::Vec(element) => Type::Vec(Box::new(map_type(element, f))),
+        Type::Shared(value, kind) => Type::Shared(Box::new(map_type(value, f)), *kind),
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
         Type::Task(result) => Type::Task(Box::new(map_type(result, f))),
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
@@ -173,6 +174,7 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::Task(ty)
+            | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, depth + 1, count),
             Type::Function(parameters, result) => {
                 parameters.iter().all(|ty| visit(ty, depth + 1, count))
@@ -257,6 +259,7 @@ impl Inference {
             ),
             Type::List(element) => Type::List(Box::new(self.resolve(element))),
             Type::Vec(element) => Type::Vec(Box::new(self.resolve(element))),
+            Type::Shared(value, kind) => Type::Shared(Box::new(self.resolve(value)), *kind),
             Type::Tuple(elements) => {
                 Type::Tuple(elements.iter().map(|ty| self.resolve(ty)).collect())
             }
@@ -355,6 +358,9 @@ impl Inference {
                 return self.unify(a, b, types, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
+                return self.unify(a, b, types, span);
+            }
+            (Type::Shared(a, n), Type::Shared(b, m)) if n == m => {
                 return self.unify(a, b, types, span);
             }
             // Lengths first, so a mismatch reports both array types (A16).
@@ -523,7 +529,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 29] = [
+pub(super) const BUILTIN_CLASSES: [&str; 31] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -553,6 +559,8 @@ pub(super) const BUILTIN_CLASSES: [&str; 29] = [
     "Format",
     "Pow",
     "Err",
+    "Encode",
+    "Decode",
 ];
 
 impl Classes {
@@ -763,6 +771,55 @@ impl Classes {
                 operation: None,
                 default: None,
             });
+        // `Encode.encode value` and `Decode.decode json` convert through the data model of the
+        // std module `Json` (D08). Only std and user source instances implement them.
+        let json = |class: &str| {
+            let span = Span::default();
+            let value = names.std_type("Json", "Value", Box::default(), span);
+            let error = names.std_type("Json", "Error", Box::default(), span);
+            value.and_then(|value| Ok((value, error?))).map_err(|_| {
+                Diagnostic::new(
+                    "E1004",
+                    format!("{class} needs the standard module Json"),
+                    span,
+                )
+            })
+        };
+        let result = |ok: Type, error: Type| {
+            names
+                .std_type("Result", "Result", vec![ok, error].into(), Span::default())
+                .map_err(|_| {
+                    Diagnostic::new(
+                        "E1004",
+                        "Encode and Decode need the standard union Result<'a, 'e>",
+                        Span::default(),
+                    )
+                })
+        };
+        let a = Type::Variable("a".into());
+        let encode = json("Encode").and_then(|(value, error)| {
+            Ok(Signature {
+                parameters: vec![Type::Reference(Box::new(a.clone()), false)],
+                result: result(value, error)?,
+            })
+        });
+        let decode = json("Decode").and_then(|(value, error)| {
+            Ok(Signature {
+                parameters: vec![Type::Reference(Box::new(value), false)],
+                result: result(a.clone(), error)?,
+            })
+        });
+        for (class, name, signature) in [("Encode", "encode", encode), ("Decode", "decode", decode)]
+        {
+            classes.declarations[classes.names[class]]
+                .methods
+                .push(Method {
+                    name: name.into(),
+                    signature,
+                    operation: None,
+                    default: None,
+                });
+        }
         for &ModuleInput {
             name: module,
             program,
@@ -1279,7 +1336,7 @@ impl Classes {
             TypeExprKind::Apply(head, arguments)
                 if crate::numeric::primitive(&head.text).is_none() =>
             {
-                if head.text != "Vec"
+                if !builtin_type_head(&head.text)
                     && !head.text.starts_with('\'')
                     && let TypeHead::Class = names.type_head(module, head)?
                 {
@@ -1396,6 +1453,16 @@ impl Classes {
             }
         }
         let mut overlap_pairs = 0;
+        // Instances by class and the outermost constructor of their head. Heads with different
+        // constructors never unify, so the overlap check compares, and counts toward its budget
+        // of 1024 pairs, only the instances that could overlap (D08: std holds many instances).
+        let mut heads: BTreeMap<(usize, Option<HeadKey>), Vec<usize>> = BTreeMap::new();
+        for (index, instance) in self.instances.iter().enumerate() {
+            heads
+                .entry((instance.class, head_constructor(&instance.head)))
+                .or_default()
+                .push(index);
+        }
         {
             for (module, instance, is_derived) in sources {
                 if diagnostics.is_full() {
@@ -1454,11 +1521,21 @@ impl Classes {
                     if class.builtin && class.name == "Format" {
                         validate_format_instance(&ty, types, instance.class.span)?;
                     }
-                    for previous in self
-                        .instances
-                        .iter()
-                        .filter(|previous| previous.class == id)
-                    {
+                    let key = head_constructor(&ty);
+                    let candidates: Vec<usize> = if key.is_some() {
+                        [key, None]
+                            .iter()
+                            .filter_map(|key| heads.get(&(id, *key)))
+                            .flatten()
+                            .copied()
+                            .collect()
+                    } else {
+                        heads
+                            .range((id, None)..=(id, Some((u8::MAX, usize::MAX))))
+                            .flat_map(|(_, indices)| indices.iter().copied())
+                            .collect()
+                    };
+                    for previous in candidates.iter().map(|&index| &self.instances[index]) {
                         overlap_pairs += 1;
                         if overlap_pairs > 1024 {
                             return Err(Diagnostic::new(
@@ -1587,6 +1664,10 @@ impl Classes {
                         span: instance.class.span,
                         derived: is_derived,
                     });
+                    heads
+                        .entry((id, key))
+                        .or_default()
+                        .push(self.instances.len() - 1);
                     Ok(())
                 })();
                 if let Err(error) = collected {
@@ -2139,6 +2220,51 @@ impl Classes {
         {
             Ok(())
         } else {
+            let class = self.declarations[constraint.class].name.as_str();
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_rc(types) {
+                return Err(if class == "Capture" {
+                    Diagnostic::new(
+                        "E1005",
+                        format!(
+                            "cannot capture {} in a function value; function values may move to other tasks, and Rc counts its owners without atomic operations; capture an Arc, or pass the Rc as an argument",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::new(
+                        "E1013",
+                        format!(
+                            "tasks require Send values; {} holds an Rc or Rc.Weak, whose counts are not atomic; share values across tasks with Arc",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_unshareable_arc(types) {
+                let ty = constraint.ty.display(types);
+                let reason = format!(
+                    "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
+                );
+                return Err(if class == "Capture" {
+                    Diagnostic::new(
+                        "E1005",
+                        format!(
+                            "cannot capture {ty} in a function value; function values may move to other tasks, and {reason}; pass it as an argument"
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::new(
+                        "E1013",
+                        format!(
+                            "tasks require Send values; {reason}; give the value to one task instead"
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
             if self.declarations[constraint.class].name == "Capture" {
                 return Err(Diagnostic::new(
                     "E1005",
@@ -2191,6 +2317,33 @@ impl Classes {
             || matches!((method.operation, operation), (Some(Operation::Builtin(a)), Operation::Builtin(b)) if a == b)).unwrap();
         (class, method)
     }
+}
+
+/// The kind and identity of the outermost constructor of an instance head.
+type HeadKey = (u8, usize);
+
+/// The outermost constructor of an instance head when the head can only unify with heads of the
+/// same constructor, or `None` for a variable or a higher-kinded head that may unify with any.
+fn head_constructor(ty: &Type) -> Option<HeadKey> {
+    Some(match ty {
+        Type::Integer(bits, signed) => (0, usize::from(*bits) << 1 | usize::from(*signed)),
+        Type::Binary(bits) => (1, usize::from(*bits)),
+        Type::Decimal(bits) => (2, usize::from(*bits)),
+        Type::Bool => (3, 0),
+        Type::Unit => (4, 0),
+        Type::Char => (5, 0),
+        Type::Utf8Char => (6, 0),
+        Type::String => (7, 0),
+        Type::Utf8String => (8, 0),
+        Type::Record(id, _) => (9, *id),
+        Type::Union(id, _) => (10, *id),
+        Type::Array(_) => (11, 0),
+        Type::List(_) => (12, 0),
+        Type::Vec(_) => (13, 0),
+        Type::Tuple(elements) => (14, elements.len()),
+        Type::Task(_) => (15, 0),
+        _ => return None,
+    })
 }
 
 /// A `Drop` instance covers every instantiation of a record or union declared in user code, so
@@ -2295,6 +2448,7 @@ fn instance_function(
             name: name.clone(),
             mutable: *mutable,
             ty: type_expression(&substitute(ty, substitutions), types, name.span),
+            json: None,
         })
         .collect();
     Ok(FunctionDecl {
@@ -2338,6 +2492,14 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
         Type::Vec(ty) => TypeExprKind::Apply(
             Box::new(Ident {
                 text: "Vec".into(),
+                span,
+                provenance: Provenance::Generated,
+            }),
+            vec![type_expression(ty, types, span)].into(),
+        ),
+        Type::Shared(ty, kind) => TypeExprKind::Apply(
+            Box::new(Ident {
+                text: kind.name().into(),
                 span,
                 provenance: Provenance::Generated,
             }),
@@ -2513,6 +2675,27 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if builtin == Builtin::ArenaNextId
+            && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
+            Builtin::UnicodeTableLength | Builtin::UnicodeTableEntry
+        ) && !(matches!(self.module, "Unicode" | "Regex")
+            && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "Unicode tables are private to the standard Unicode and Regex modules; use the Unicode and Regex APIs instead",
+                span,
+            ));
+        }
         // A dyn value is built only where its type is known, so `Dyn.of` is never a value (A14 D9).
         if builtin == Builtin::DynOf && !std::mem::take(&mut self.dyn_callee) {
             return Err(Diagnostic::new(
@@ -2631,6 +2814,7 @@ impl Checker<'_> {
             BuiltinType::List(ty) => Type::List(element(ty)?),
             BuiltinType::Vec(ty) => Type::Vec(element(ty)?),
             BuiltinType::Task(ty) => Type::Task(element(ty)?),
+            BuiltinType::Shared(ty, kind) => Type::Shared(element(ty)?, *kind),
             BuiltinType::Reference(ty, mutable) => Type::Reference(element(ty)?, *mutable),
             BuiltinType::Std { module, name, args } => {
                 let args = args
@@ -3398,7 +3582,12 @@ pub(super) fn specialize(
     copy_constraints: Vec<BTreeSet<String>>,
     recursive_functions: &BTreeSet<usize>,
 ) -> Result<CheckedModule, Diagnostic> {
-    for (function, copy_variables) in module.functions.iter_mut().zip(copy_constraints) {
+    for (id, (function, copy_variables)) in module
+        .functions
+        .iter_mut()
+        .zip(copy_constraints)
+        .enumerate()
+    {
         for name in copy_variables {
             function.constraints.push(Constraint {
                 class: classes.names["Copy"],
@@ -3409,13 +3598,15 @@ pub(super) fn specialize(
         let mut seen = BTreeSet::new();
         let mut constraints = Vec::new();
         for constraint in std::mem::take(&mut function.constraints) {
-            let normalized = classes.normalize(
-                &constraint,
-                &TypeContext {
-                    records: &module.records,
-                    unions: &module.unions,
-                },
-            )?;
+            let normalized = classes
+                .normalize(
+                    &constraint,
+                    &TypeContext {
+                        records: &module.records,
+                        unions: &module.unions,
+                    },
+                )
+                .map_err(|error| classes.derived_error(id, error))?;
             for constraint in normalized {
                 if !seen.insert((constraint.class, constraint.ty.clone())) {
                     continue;
@@ -3472,13 +3663,17 @@ pub(super) fn specialize(
             }
             let function = &mut module.functions[id];
             for constraint in inherited {
-                let normalized = classes.normalize(
-                    &constraint,
-                    &TypeContext {
-                        records: &module.records,
-                        unions: &module.unions,
-                    },
-                )?;
+                // A derived method reaches its components through std helpers such as
+                // `Json.encode_field`; a component without an instance is E1025 (D08).
+                let normalized = classes
+                    .normalize(
+                        &constraint,
+                        &TypeContext {
+                            records: &module.records,
+                            unions: &module.unions,
+                        },
+                    )
+                    .map_err(|error| classes.derived_error(id, error))?;
                 for constraint in normalized {
                     if !function.constraints.iter().any(|existing| {
                         existing.class == constraint.class && existing.ty == constraint.ty
@@ -3750,6 +3945,8 @@ fn drop_components(
             | Type::List(element)
             | Type::Vec(element)
             | Type::Task(element) => pending.push((**element).clone()),
+            // The last strong pointer drops the shared value (C10).
+            Type::Shared(element, kind) if !kind.weak() => pending.push((**element).clone()),
             _ => {}
         }
     }

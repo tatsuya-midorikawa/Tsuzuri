@@ -20,6 +20,10 @@ Usage:
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
+  tsuzuri fetch directory [--json]
+  tsuzuri publish directory --git URL --rev COMMIT [--json]
+  tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
+                    [--consume F:P]... [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -36,6 +40,19 @@ namespace, else the package or folder name) followed by subdirectories
 (Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
+`tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
+({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
+({ version = \"1.2.3\" }, the minimal versions that satisfy every requirement in the
+[registry] index) with git 2.32 or later into the package store (packages/ in the
+build cache) and records them in Tsuzuri.lock. Other commands never run git or
+use the network; they read Tsuzuri.lock and the store. `tsuzuri publish` checks a
+package and prints the registry index entry of its commit; it changes no registry.
+`tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
+records, opaque extern types, and type aliases for the C header's own declarations
+whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
+other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
+pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
+opaque handle into the call instead of borrowing it.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -51,8 +68,14 @@ Build options:
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
-    --emit KIND            exe, object, llvm, header, wasm, or wgsl
+    --emit KIND            exe, object, llvm, header, wasm, wgsl, shared, bindings-js,
+                         bindings-cs, bindings-py, or bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
+                         shared links a native .dylib or .so that exports the C ABI
+                         bindings-js (with --target wasm32) writes a JavaScript module
+                         NAME.mjs and its TypeScript declarations NAME.d.mts
+                         bindings-cs, bindings-py, and bindings-cpp write C#, Python
+                         ctypes, and C++20 bindings of the shared library NAME
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
@@ -423,9 +446,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("header") => Emit::Header,
                             Some("wasm") => Emit::Wasm,
                             Some("wgsl") => Emit::Wgsl,
+                            Some("shared") => Emit::Shared,
+                            Some("bindings-js") => Emit::BindingsJs,
+                            Some("bindings-cs") => Emit::BindingsCs,
+                            Some("bindings-py") => Emit::BindingsPy,
+                            Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, or wgsl"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -581,7 +609,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         debug_output,
         trap_info: trap_info
             || action == Action::Run
-            || (trap_return && emit != Some(Emit::Header)),
+            || (trap_return
+                && !emit.is_some_and(|emit| emit == Emit::Header || emit.is_bindings())),
         debug_info,
         wasm_simd,
         wasm_threads,
@@ -594,6 +623,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         freestanding,
     };
     options.validate().map_err(|error| error.message)?;
+    if let Some(error) = output
+        .as_deref()
+        .and_then(|output| driver::bindings_output_error(options.emit, output))
+    {
+        return Err(error.message);
+    }
     links.check_shape().map_err(|error| error.message)?;
     if !links.is_empty() && !links_apply(action, &options) {
         return Err("link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe".into());
@@ -618,7 +653,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
 fn links_apply(action: Action, options: &BuildOptions) -> bool {
     match action {
         Action::Run => true,
-        Action::Build => options.target == Target::Native && options.emit == Emit::Executable,
+        Action::Build => {
+            options.target == Target::Native
+                && matches!(options.emit, Emit::Executable | Emit::Shared)
+        }
         Action::Test => options.target == Target::Native,
         _ => false,
     }
@@ -1035,6 +1073,166 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// `tsuzuri fetch directory [--json]`: downloads the git dependencies with git
+/// and writes Tsuzuri.lock. It prints nothing on success.
+fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let paths: Vec<_> = arguments
+        .iter()
+        .filter(|argument| *argument != "--json")
+        .collect();
+    let usage = |message: &str| {
+        print_diagnostic(
+            &Diagnostic::new("E2000", message, Span::default()),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        ExitCode::from(2)
+    };
+    if paths.len() != 1
+        || paths[0].to_string_lossy().starts_with('-')
+        || arguments.len() - paths.len() > 1
+    {
+        return usage("fetch takes one project directory and optionally --json");
+    }
+    let directory = Path::new(paths[0]);
+    if !directory.join("Tsuzuri.toml").is_file() {
+        return usage("fetch requires a Tsuzuri.toml in the project directory");
+    }
+    match tsuzuri::fetch::fetch(directory) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `tsuzuri publish directory --git URL --rev COMMIT [--json]`: checks the package
+/// and prints the registry index entry of that commit. It changes no registry.
+fn publish_package(arguments: &[OsString]) -> ExitCode {
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let usage = |message: &str| {
+        print_diagnostic(
+            &Diagnostic::new("E2000", message, Span::default()),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        ExitCode::from(2)
+    };
+    let (mut directory, mut url, mut rev) = (None, None, None);
+    let mut valid = true;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.to_str() {
+            Some("--json") => {}
+            Some("--git") if url.is_none() => {
+                url = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned);
+                valid &= url.is_some();
+            }
+            Some("--rev") if rev.is_none() => {
+                rev = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned);
+                valid &= rev.is_some();
+            }
+            _ if directory.is_none() && !argument.to_string_lossy().starts_with('-') => {
+                directory = Some(PathBuf::from(argument));
+            }
+            _ => valid = false,
+        }
+    }
+    let (Some(directory), Some(url), Some(rev), true) = (directory, url, rev, valid) else {
+        return usage(
+            "publish takes one package directory, --git URL, --rev COMMIT, and optionally --json",
+        );
+    };
+    if !tsuzuri::package::valid_git_url(&url) {
+        return usage(tsuzuri::package::GIT_URL_RULE);
+    }
+    if !tsuzuri::package::valid_rev(&rev) {
+        return usage(tsuzuri::package::GIT_REV_RULE);
+    }
+    if !directory.join("Tsuzuri.toml").is_file() {
+        return usage("publish requires a Tsuzuri.toml in the package directory");
+    }
+    // A published package must check like any library first.
+    let project = match Project::load_for_tests(&directory) {
+        Ok(project) => project,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(errors) = project.analyze_all() {
+        print_diagnostics(&errors, &project, json);
+        return ExitCode::FAILURE;
+    }
+    match tsuzuri::fetch::publish(&directory, &url, &rev) {
+        Ok(entry) => {
+            print!("{entry}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `tsuzuri bindgen header.h -o Module.tz`: writes the module and reports each
+/// skipped declaration as a W2002 warning at the header.
+fn bindgen_command(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match tsuzuri::bindgen::parse_arguments(arguments) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    match driver::bindgen(&arguments) {
+        Ok((source, warnings)) => {
+            let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(warnings, 0);
+            for (index, warning) in warnings.diagnostics.iter().enumerate() {
+                if index != 0 && !json {
+                    eprintln!();
+                }
+                print_diagnostic(warning, &arguments.header, &source, json);
+            }
+            if let Some(note) = warnings.omission_note() {
+                if json {
+                    eprintln!(
+                        "{{\"severity\":\"note\",\"message\":{}}}",
+                        json_string(&note)
+                    );
+                } else {
+                    eprintln!("\nwarning: {note}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1062,6 +1260,15 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "new") {
         return new_project(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "fetch") {
+        return fetch_dependencies(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "publish") {
+        return publish_package(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "bindgen") {
+        return bindgen_command(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {
@@ -1428,6 +1635,119 @@ mod tests {
         let arguments = parse(&["build", "A.tz", "--target", "wasm32", "-O0"]).unwrap();
         assert_eq!(arguments.options.emit, Emit::Wasm);
         assert_eq!(arguments.options.optimization, 0);
+        for (kind, emit) in [
+            ("shared", Emit::Shared),
+            ("bindings-cs", Emit::BindingsCs),
+            ("bindings-py", Emit::BindingsPy),
+            ("bindings-cpp", Emit::BindingsCpp),
+        ] {
+            if cfg!(windows) && emit == Emit::Shared {
+                continue;
+            }
+            let parsed = parse(&["build", "A.tz", "--emit", kind]).unwrap();
+            assert_eq!(parsed.options.emit, emit);
+            // The trap table belongs to the library, not to its bindings.
+            let trapping =
+                parse(&["build", "A.tz", "--emit", kind, "--trap-mode", "return"]).unwrap();
+            assert_eq!(trapping.options.trap_info, emit == Emit::Shared);
+        }
+        if !cfg!(windows) {
+            // A shared library links like an executable, so it takes link inputs.
+            let linked = parse(&["build", "A.tz", "--emit", "shared", "-l", "m"]).unwrap();
+            assert_eq!(linked.links.libraries, ["m"]);
+            assert!(links_apply(Action::Build, &linked.options));
+        }
+        let bindings = parse(&[
+            "build",
+            "A.tz",
+            "--target",
+            "wasm32",
+            "--emit",
+            "bindings-js",
+            "-O3",
+            "-o",
+            "out/api.mjs",
+        ])
+        .unwrap();
+        assert_eq!(bindings.options.emit, Emit::BindingsJs);
+        assert_eq!(
+            bindings.options.output_path(Path::new("dir/A.tz")),
+            Path::new("dir/A.mjs")
+        );
+        for (values, message) in [
+            (
+                vec!["build", "A.tz", "--emit", "bindings-ts"],
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+            ),
+            (
+                vec!["build", "A.tz", "--emit", "bindings-js"],
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm64",
+                    "--emit",
+                    "bindings-js",
+                ],
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--trap-info",
+                ],
+                "--trap-info is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--wasm-feature",
+                    "simd128",
+                ],
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "-o",
+                    "api.js",
+                ],
+                "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--cpu",
+                    "native",
+                ],
+                "'--cpu native' requires native executable or object output",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
         let arguments = parse(&["--", "-project/Main.tz"]).unwrap();
         assert_eq!(arguments.input, Path::new("-project/Main.tz"));
         assert!(parse(&["run", "Main.tz", "--target", "wasm32"]).is_err());

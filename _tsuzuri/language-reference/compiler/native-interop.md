@@ -10,7 +10,8 @@
 - `--emit header` と `--emit object` を対にして、C からリンクします。
 - 名前を書かない `extern` は `tsuzuri_host_<モジュール>_<名前>` になります。
 - 所有して返ったバッファは、ホストが `tsuzuri_free` で 1 回だけ解放します。
-- C ヘッダーからの束縛の自動生成は、0.1.0 にはありません。
+- `tsuzuri bindgen` は、C ヘッダーから ABI の一致する `extern` を生成し、残りを `W2002` で報告します。
+- `--emit shared` で共有ライブラリを出し、`--emit bindings-cs`／`bindings-py`／`bindings-cpp` で C#、Python、C++ のバインディングを生成できます。
 
 ## 公開できる型
 
@@ -36,7 +37,7 @@
 
 ## ヘッダーとオブジェクト
 
-ライブラリは `Main.tz` でなくても出せます。実行ファイルにしたいときだけ、入口が要ります。
+ライブラリは `Main.tz` でなくても出せます。実行ファイルにしたいときだけ、入口が要ります。WebAssembly のホスト向けには型付きのグルーを生成する `--emit bindings-js` があります（[WebAssembly への出力](webassembly.md#型付きのバインディングを生成する)）。native の C ホストは、従来どおりこのヘッダーを使います。
 
 ```sh
 tsuzuri build Main.tz --emit header -o add.h
@@ -230,6 +231,127 @@ ABC
 
 `string` は `uint16_t` の列、`utf8string` は検証済みの `uint8_t` です。不正な UTF-8 はトラップし、暗黙の文字コード変換はしません。
 
+## 共有ライブラリと各言語のバインディング
+
+`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。Windows では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
+
+```sh
+tsuzuri build quote --emit shared -o libquote.dylib
+```
+
+export するのは `tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`--trap-mode return` の `tsuzuri_try_<name>` だけです。ランタイムやリンクしたホストの関数は外から見えません。インストール名（macOS）と soname（Linux）は出力のファイル名で、利用側は `@rpath` などで探します。実行ファイルと同じく、`extern` の import はリンク時に解決します。`--link`、`-l`、`-L` と `[native]` を受け、未解決のシンボルが残ると `E2002` です。`--allocator counting` か `--trap-mode return`（`.trap.json` も書きます）を付けられます。`--allocator host` は `E2000` です。`export def` が無いと `E2004` です。
+
+`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じソースから C#、Python、C++ のバインディングを生成します。WebAssembly の `bindings-js` と同じく LLVM を通さず、`-O` は無視します。出力の拡張子はそれぞれ `.cs`、`.py`、`.hpp` で、拡張子を除いたファイル名がライブラリの名前になります（`quote.py` は `libquote.dylib` を探します）。`--trap-info` などライブラリのビルド用のオプションを付けると `E2000` です。`--trap-mode return` を付けると、`tsuzuri_try_<name>` を呼ぶ版になります。ライブラリも `--trap-mode return` でビルドします。
+
+| | C# | Python | C++ |
+| --- | --- | --- | --- |
+| 呼び出し | `[LibraryImport]` の `static partial` メソッド（.NET 8 以降、`AllowUnsafeBlocks`） | `ctypes` の `Library` のメソッド | `tsuzuri::<name>` 名前空間の `inline` 関数（C++20） |
+| 整数・`bool` | `sbyte`〜`ulong`、`bool` | `int` と `bool` を範囲検査（範囲外は `OverflowError`） | `std::int8_t`〜`std::uint64_t`、`bool` |
+| 借用入力 | `ReadOnlySpan<long>` / `<double>` / `<byte>`、`ReadOnlySpan<char>`（`string`）、UTF-8 の `ReadOnlySpan<byte>` | バッファか数の列、`str`、`str` か `bytes` | `std::span<const T>`、`std::u16string_view`、UTF-8 の `std::string_view` |
+| 所有結果 | `SafeHandle` の `OwnedBuffer<T>`、`OwnedString`、`OwnedUtf8String`（`Dispose` か finalizer で `tsuzuri_free`。`ToArray()`・`ToString()` は複製の間ハンドルを参照して解放を止める。`Span` は結果を `using` などで保持している間だけ有効） | `array.array`、`bytes`、`str` に複製して、すぐ `tsuzuri_free` | `buffer<T>`、`string_buffer`、`utf8string_buffer`（デストラクターで `tsuzuri_free`。複製はできず、ムーブすると元は空（長さ 0）になる） |
+| レコード | C の配置の `struct`。32-bit に正規化したフィールドは型付きのプロパティ、固定長配列は `[InlineArray]` | `dataclass`（固定長配列は `tuple`） | C ヘッダーの `struct` |
+| ハンドル | `record struct`（`nint Value`） | `value` を持つ不変の `dataclass` | C ヘッダーの `typedef` |
+| トラップ | プロセスが終わる。`--trap-mode return` なら `TsuzuriTrapException` | プロセスが終わる。`--trap-mode return` なら `TsuzuriTrap` | プロセスが終わる。`--trap-mode return` なら `tsuzuri::<name>::trap_error` |
+
+不正な UTF-8 はトラップになるので、3 つとも呼ぶ前に検査して、C# は `ArgumentException`、Python は `ValueError`、C++ は `std::invalid_argument` を投げます。トラップの例外は `--trap-mode return` の状態 1 で、`site` は `.trap.json` の ID、`kind` はトラップの種類です。同じスレッドでの入れ子の呼び出し（状態 2）は、C# の `InvalidOperationException`、Python の `RuntimeError`、C++ の `std::logic_error` です。
+
+次のモジュールを例にします。
+
+```tsuzuri
+export def total :: ref [i64] -> i64 = \prices ->
+    Array.sum prices
+
+export def label :: ref string -> string = \name ->
+    clone_string name + "!"
+
+export def per_unit :: i64 -> i64 -> i64 = \price count ->
+    price / count
+```
+
+Python は、`.py` の隣の `libquote.dylib` を読み込みます。
+
+```sh
+tsuzuri build quote --emit bindings-py -o quote.py
+python3 -c "import quote; lib = quote.load(); print(lib.total([1, 2, 39]), lib.label('tea'))"
+```
+
+実行結果:
+
+```text
+42 tea!
+```
+
+C# は、生成した `quote.cs` をプロジェクトに入れます。ライブラリはアプリの隣に置くか、`NativeLibrary.SetDllImportResolver` で場所を教えます。`label` の結果は `using` で解放します。
+
+```csharp
+using System;
+using Tsuzuri.Bindings;
+
+Console.WriteLine(Quote.total([1, 2, 39]));
+using var label = Quote.label("tea");
+Console.WriteLine(label.ToString());
+```
+
+実行結果:
+
+```text
+42
+tea!
+```
+
+C++ は、同じソースの C ヘッダー `quote.h` を隣に置き、`quote.hpp` を include します。
+
+```sh
+tsuzuri build quote --emit header -o quote.h
+tsuzuri build quote --emit bindings-cpp -o quote.hpp
+clang++ -std=c++20 main.cpp -I . libquote.dylib -Wl,-rpath,. -o quote_cpp
+```
+
+```cpp
+#include <iostream>
+#include <vector>
+#include "quote.hpp"
+
+int main() {
+    const std::vector<std::int64_t> prices{1, 2, 39};
+    std::cout << tsuzuri::quote::total(prices) << '\n';
+    const auto label = tsuzuri::quote::label(u"tea");
+    std::cout << label.size() << '\n';
+}
+```
+
+実行結果:
+
+```text
+42
+4
+```
+
+`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。
+
+```sh
+tsuzuri build quote --emit shared --trap-mode return -o libquote_trap.dylib
+tsuzuri build quote --emit bindings-py --trap-mode return -o quote_trap.py
+```
+
+```python
+import quote_trap
+
+lib = quote_trap.load()
+try:
+    lib.per_unit(10, 0)
+except quote_trap.TsuzuriTrap as error:
+    print(error)
+print(lib.per_unit(10, 4))
+```
+
+実行結果:
+
+```text
+trap: integer division by zero (site 82)
+2
+```
+
 ## ホスト提供の allocator
 
 `--allocator host` は、文字列、配列、`Vec`、クロージャの環境、`tsuzuri_alloc` を含むヒープを、ホストの 3 関数へ向けます。`object`、`llvm`、`header`、WASM だけで、実行ファイルや `--trap-mode return` とは排他です。
@@ -254,17 +376,181 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 
 `Task.parallel` は、複数のネイティブスレッドから `extern` を同時に呼ぶことがあります。ホスト関数をスレッド安全にするか、並列タスクの中から呼ばないでください。WASM の現行の Task は、threads を付けない限り逐次です。
 
+`extern type` の値は所有値なので、ある時点でそれを使えるタスクは 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数のタスクから同時に使うことはありません。
+
 export とコールバックは、Tsuzuri 側の大域的な可変状態を持ちません。ホストが複数スレッドから export を呼ぶこと自体は、Tsuzuri のロックを要しません。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
 
 ホストは信頼境界です。例外の unwind、呼び出しが返ったあとのポインタの保持、回復不能な失敗から Tsuzuri のフレーム越しに戻ることはしません。`--trap-mode return` を指定すると、各エクスポート関数に対応する `tsuzuri_try_<name>` がヘッダーに追加され、トラップ発生時にプロセスを終了させる代わりにステータスコード 1 を返せます。その呼び出し中に確保されたヒープ領域は境界処理によって自動解放され、デストラクタは実行されません。オブジェクトを埋め込んだホストは、自分でシグナルハンドラを用意しない限り、スタック枯渇を Tsuzuri のメッセージとしては受け取りません。
 
 GUI は言語の一部ではありません。デスクトップの画面は、ホストがオブジェクトを呼ぶ側に置きます。
 
-## C ヘッダーからの自動生成は未実装
+## C ヘッダーから extern を生成する
 
-C のヘッダーを読んで `extern` 宣言を生成する機能は、Tsuzuri 0.1.0 にはありません。計画は [E11](../../../_features/E11-c-bindgen.md) にあり、この版では使えません。今は、呼ぶ関数だけを `extern def` か `extern "シンボル" def` で手書きします。
+`tsuzuri bindgen` は、C のヘッダーを Clang で解析し、`extern "シンボル" def`、定数、レコード、`extern type` などの宣言を書いたモジュールを生成します。手書きの宣言を減らすためのコマンドですが、推測はしません。C の ABI が Tsuzuri のホスト ABI と一致すると確かめられた形だけを生成し、迷う形は `// skipped` 行と警告 `W2002` で省きます。食い違った宣言は、型検査を通ったまま実行時に値を壊すからです。
 
-生成されるのは、Tsuzuri から C へ出すヘッダーのほうです。方向が逆なので、システムの `sqrt` を使う例のように、C 側の宣言はホストのヘッダーに残します。
+次のヘッダーを例にします。
+
+```c
+#include <stdint.h>
+#define SAMPLE_LIMIT 42
+typedef int32_t sample_count;
+enum sample_mode { SAMPLE_FAST, SAMPLE_SLOW = 5, SAMPLE_BEST };
+struct sample_point { double x; double y; int32_t tag; };
+int32_t sample_add(int32_t a, int32_t b);
+double sample_norm(const struct sample_point *p);
+uint8_t sample_low_byte(uint64_t value);
+_Bool sample_is_even(int64_t value);
+void sample_reset(void);
+enum sample_mode sample_next(enum sample_mode mode);
+int sample_log(const char *format, ...);
+static inline int sample_twice(int v) { return v * 2; }
+```
+
+```sh
+tsuzuri bindgen sample.h -o Sample.tz
+```
+
+省いた宣言ごとに、ヘッダーの位置で `W2002` が出ます。終了コードは 0 です。
+
+```text
+sample.h:12:5: warning[W2002]: skipped C declaration 'sample_log': variadic function; declare it by hand or wrap it in a C function with a supported signature
+  12 | int sample_log(const char *format, ...);
+    |     ^
+```
+
+macOS で生成した `Sample.tz` は次のとおりでした。先頭 4 行は、マーカー、ヘッダーのファイル名と SHA-256、Clang の版、ターゲットです（注釈を指定すると、5 行目の `// options:` に記録されます）。同じ Clang、ヘッダー、`--include-dir`、注釈なら、バイト単位で同じ出力になります。
+
+```tsuzuri project=bindgen file=Sample.tz
+// Generated by tsuzuri bindgen. Do not edit.
+// header: sample.h sha256=d3b25362d8a7bd7f04fa59e151722f750bc5d2ef2efa9e3501155cf0b2154a4e
+// clang: Apple clang version 21.0.0 (clang-2100.3.34.2)
+// target: arm64-apple-darwin27.0.0
+
+const SAMPLE_LIMIT: i32 = 42
+type SampleCount = i32
+const SAMPLE_FAST: i32 = 0
+const SAMPLE_SLOW: i32 = 5
+const SAMPLE_BEST: i32 = 6
+record SamplePoint { x: f64, y: f64, tag: i32 }
+extern "sample_add" def sample_add :: i32 -> i32 -> i32
+extern "sample_norm" def sample_norm :: ref SamplePoint -> f64
+extern "sample_low_byte" def sample_low_byte :: i64u -> i8u
+extern "sample_is_even" def sample_is_even :: i64 -> i8u
+extern "sample_reset" def sample_reset :: unit -> unit
+extern "sample_next" def sample_next :: i32 -> i32
+// skipped sample_log: variadic function
+// skipped sample_twice: function has internal linkage (static)
+```
+
+生成したモジュールは、ほかのモジュールと同じように使います。C のライブラリは、オブジェクトと一緒にリンクするか、実行ファイルなら `--link` で渡します。
+
+```tsuzuri project=bindgen
+export def norm_case :: f64 -> f64 -> f64
+fn norm_case x y =
+    let point = SamplePoint { x: x, y: y, tag: 0 }
+    Sample.sample_norm (&point)
+```
+
+```sh
+tsuzuri build . --emit object -o app.o
+clang app.o sample.c host.c -lm -o host
+```
+
+### 対応する形
+
+対応するのは 64-bit の Linux と macOS（LP64）だけです。`long` の幅がターゲットで変わるので、`clang -dumpmachine` が Windows や 32-bit を示すと `E2002` です。型は、Clang が表記した型名を typedef 展開してから、次の表と完全に一致するものだけを変換します。
+
+| C の型 | 引数 | 結果 | struct のフィールド |
+| --- | --- | --- | --- |
+| `_Bool` | `bool` | `i8u` | × |
+| `signed char` / `unsigned char` | `i8` / `i8u` | `i8` / `i8u` | × |
+| `short` / `unsigned short` | `i16` / `i16u` | `i16` / `i16u` | × |
+| `int` / `unsigned int` | `i32` / `i32u` | `i32` / `i32u` | `i32` / `i32u` |
+| `long`, `long long` / `unsigned long`, `unsigned long long` | `i64` / `i64u` | `i64` / `i64u` | `i64` / `i64u` |
+| `float` / `double` | `f32` / `f64` | `f32` / `f64` | `f32` / `f64` |
+| 全定数が `i32` に収まる enum | `i32` | `i32` | `i32` |
+| `const struct TAG *`（生成した record） | `ref Record` | × | × |
+| 不透明な struct へのポインター | `ref Handle`（`--consume` で `Handle`） | `Handle`（`const` なしだけ） | × |
+| 関数ポインター（下の条件） | `(P1 -> P2 -> R)` | × | × |
+| `const` な要素へのポインターと直後の長さ（`--buffer`） | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | × | × |
+| `void` | 引数なしは `unit` | `unit` | × |
+
+- `_Bool` の結果が `i8u` なのは、C が保証するのは下位 8 bit だけだからです。`bool` で受けると、32 bit 全体を読んでしまいます。コールバックが C から受け取る `_Bool` の引数も同じ理由で `i8u` です。
+- record のフィールドが 32 / 64 bit だけなのは、ABI の一時 struct が `bool` と狭い整数を `int32_t` に広げるからです。この表の型だけなら、C の自然な配置と一致します。bit-field を持つ struct は生成しません。
+- `const` のない struct ポインターは、ホストが一時的なコピーへ書き込みうるので変換しません。値渡し・値返しの struct は、ABI がポインター渡しなので変換しません。
+- 符号がターゲットで変わる素の `char`、`long double`、`__int128`、`_Float16`、複素数、ベクトル、配列、union、ほかのポインターは変換しません。
+- 大域変数、static・inline・可変長引数・プロトタイプなし（`int f();`）・`returns_twice`（`setjmp` の類）の関数も省きます。
+- `packed`、`aligned`、`mode`、`#pragma pack`、`randomize_layout` のように型の大きさや配置を変えうる属性を持つ enum・typedef・struct・フィールドは変換しません。許すのは、availability、`deprecated`、`flag_enum`、`enum_extensibility`、Swift と Objective-C の注釈など、配置を変えないと分かっている属性だけです。
+- `typedef struct { ... } S;` の無名の struct は、引数で `S` と書いても変換しません。Clang はこの型を `struct S` と表記しますが、tag の `struct S` とは別の型だからです。struct に tag を付けてください（`typedef struct S { ... } S;`）。無名の enum の typedef も、同じ名前の enum の tag があれば変換しません。`typeof` で書いた型も変換しません。
+
+### マクロの定数
+
+ヘッダー自身の object-like マクロで、置換列が 1 つの整数リテラルのものは `const` になります。外側の括弧と単項マイナスは許します。型は C の整数定数の規則を LP64 に当てはめて決めます。接尾辞のない 10 進数は `int`、`long` の順、16・8・2 進数は `int`、`unsigned int`、`long`、`unsigned long` の順で、最初に収まる型です。
+
+| マクロ | 生成 |
+| --- | --- |
+| `#define LIMIT 42` | `const LIMIT: i32 = 42` |
+| `#define MASK 0xFFu` | `const MASK: i32u = 255` |
+| `#define WIDE 2147483648` | `const WIDE: i64 = 2147483648` |
+| `#define HIGH 0x80000000` | `const HIGH: i32u = 2147483648` |
+| `#define ALL (-1u)` | `const ALL: i32u = 4294967295` |
+| `#define LEVEL (-2)` | `const LEVEL: i32 = -2` |
+
+浮動小数点、`(1 << 4)` のような式、文字列、関数形式のマクロは何も出しません。64 bit に収まらない値、`u` なしで符号付き 64 bit に収まらない 10 進数、`09` のような不正なリテラルは `W2002` です。`#include` 先で定義されたマクロと、`#undef` されたマクロは出しません。`#pragma push_macro`／`pop_macro` で値が戻されるマクロのように、ヘッダーの終わりの定義（`clang -E -dM`）と一致しないものは `W2002` です。
+
+### 不透明な struct と `--consume`
+
+`struct ctx;` とだけ宣言され、どこでも定義されない struct は、C のコードもポインターでしか持てません。`tsuzuri bindgen` はこれを `extern type` にし、ポインターをハンドルとして扱います。ハンドルはポインター 1 つで、Tsuzuri は参照外ししません。
+
+```c
+struct counter;
+struct counter *counter_new(long start);
+long counter_add(struct counter *counter, long amount);
+long counter_free(struct counter *counter);
+```
+
+```sh
+tsuzuri bindgen counter.h -o Counter.tz --consume counter_free:counter
+```
+
+```text
+extern type Counter
+extern "counter_new" def counter_new :: i64 -> Counter
+extern "counter_add" def counter_add :: ref Counter -> i64 -> i64
+extern "counter_free" def counter_free :: Counter -> i64
+```
+
+引数は、`const` の有無にかかわらず共有借用 `ref Counter` です。呼び出しはハンドルを消費も複製もせず、ポインターの先で C が何を書き換えても Tsuzuri からは見えません。`const` のないポインターの結果は、呼び出し側が所有する新しいハンドルです。解放する関数には `--consume 関数:引数` を付けます。その引数はハンドルの値渡し（ムーブ）になり、解放したハンドルを使うと `E1012` です。`const` へのポインターの結果、`struct counter **` のような出力引数は変換しません。NULL のハンドルは Tsuzuri から区別できないので、失敗の確かめ方は C の API に従います。
+
+### コールバック
+
+関数ポインターの引数は、引数がスカラーか不透明な struct へのポインター（`ref Handle` になる）、結果がスカラーか `void` のとき、[静的コールバック](#静的コールバック) の型になります。`int64_t (*)(int64_t)` は `(i64 -> i64)`、`void (*)(void)` は `(unit -> unit)` です。実引数には、型パラメーターを持たないトップレベルの関数の名前を渡します。`void *` の文脈引数を持つもの、可変長引数、ポインターを返すもの、入れ子の関数ポインター、block は変換しません。
+
+### バッファーの注釈 `--buffer`
+
+C の「ポインターと長さ」の組は、ヘッダーからは要素数かバイト数かが分からないので、注釈で指定したときだけ変換します。`--buffer 関数:ポインター:長さ` の引数は、C の名前か 1 始まりの位置です。
+
+```sh
+tsuzuri bindgen stats.h -o Stats.tz --buffer stats_sum:values:count
+```
+
+```text
+extern "stats_sum" def stats_sum :: ref [i64] -> i64
+```
+
+Tsuzuri の buffer の ABI は、要素へのポインターと `int64_t` の要素数をこの順に渡します。そのため、ポインターは `const` な要素へのポインターで、要素は `long`・`long long`（`ref [i64]`）、`double`（`ref [f64]`）、`unsigned char`・`char`・`void`（`ref [ubyte]`。`void` はバイト数）、長さは直後の 64-bit 整数（`size_t` を含む）でなければなりません。満たさない組は `W2002` で、ホストに書き込まれうる `const` なしのポインターは変換しません。空の配列は NULL と長さ 0 で渡ることがあります。注釈がヘッダーにない関数や引数を指すとき、同じ引数を 2 つの注釈が指すときは `E2000` です。
+
+### 名前
+
+C の名前はリンク名としてそのまま残り、Tsuzuri 側の名前だけを変えます。関数と struct のフィールドは snake_case（`glClearColor` → `gl_clear_color`、`SDL_Init` → `sdl_init`）、struct と typedef は PascalCase（`point_t` → `PointT`、`SDL_Rect` → `SDLRect`）です。enum の定数とマクロは C の名前のままです。
+
+予約語、`_`、修飾なしの組み込み関数（`sqrt`、`abs`、`to_string` など）、予約された型名（`Vec`、`Display` など）は、末尾に `_` を付けます。`math.h` の `sqrt` は `extern "sqrt" def sqrt_ :: f64 -> f64` になります。変換後に先の宣言と同じ名前になった後続の宣言、ASCII の C 識別子でない名前、`tz_`・`tsuzuri`・`__` で始まるシンボルやランタイムが使う名前（`malloc` など）、asm ラベルでシンボルが変わる関数は、`W2002` で省きます。
+
+### 出力の保護
+
+既存の出力は、1 行目が `// Generated by tsuzuri bindgen. Do not edit.` のファイルだけを上書きします。手書きのファイル、シンボリックリンク、ディレクトリ、ヘッダー自身へは書かず、`E2003` で止まります。生成したファイルは編集せず、手書きの宣言は別のモジュールに置いてください。
+
+生成されるのは C から Tsuzuri を呼ぶための宣言で、`--emit header` とは方向が逆です。`--emit header` は Tsuzuri の `export def` を C から呼ぶためのヘッダーで、リンク名付きの `extern` のプロトタイプは含みません。
 
 ## まとめ
 
@@ -272,7 +558,8 @@ C のヘッダーを読んで `extern` 宣言を生成する機能は、Tsuzuri 
 - ヘッダーとオブジェクトを対で出し、C の `main` とリンクします。
 - リンク名を書けば `sqrt` のような既存シンボルを、接頭辞なしで呼べます。
 - 所有バッファは `tsuzuri_free`、ヒープの差し替えは `--allocator host` です。
-- ヘッダーから `extern` を自動生成する機能は、まだありません。
+- `tsuzuri bindgen` は、ABI の一致を確かめられる C の宣言だけを生成し、推測で型を当てはめません。
+- `--emit shared` の共有ライブラリを、生成した C#、Python、C++ のバインディングから呼べます。
 
 ## 関連項目
 

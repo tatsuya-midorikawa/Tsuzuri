@@ -44,6 +44,7 @@ target
 !src/runtime/format.ll
 !src/runtime/numeric.ll
 !src/runtime/math.ll
+!src/runtime/unicode.ll
 *.dylib
 *.so
 *.dll

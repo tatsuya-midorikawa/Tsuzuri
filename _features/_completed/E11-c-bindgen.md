@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | E12 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（Phase 1 と Phase 2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（サブコマンド `bindgen` と警告 `W2002` の確定。GUIDE D-30 の仮割り当て） |
 | 改善する劣位 | C/C++ 比: 既存の C/C++ コードをそのまま取り込めない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
@@ -501,13 +501,13 @@ fixture をコピーして行う。
 
 ## 受け入れ条件
 
-- [ ] `tsuzuri bindgen` が C ヘッダーから E12 のリンク名付き extern・定数・レコード・型別名を生成し、shim なしで C 関数を呼べる（round-trip が native の `-O0`/`-O3` で成功）。
-- [ ] 変換できない宣言を黙って捨てず、`W2002` と `// skipped` 行で理由を示す。対応表にない型を推測で変換しない。
-- [ ] 出力が決定的で、`tsuzuri check` と `fmt --check` を通る。golden 4 件が一致する。
-- [ ] 対象ヘッダー以外（include 先）の宣言を出さない。
-- [ ] 出力保護（`E2003`）と CLI の誤り（`E2000`）・ツールの失敗（`E2002`）が仕様どおり。
-- [ ] 新しい crate・serde_json の feature・`unsafe` を足していない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] `tsuzuri bindgen` が C ヘッダーから E12 のリンク名付き extern・定数・レコード・型別名を生成し、shim なしで C 関数を呼べる（round-trip が native の `-O0`/`-O3` で成功）。
+- [x] 変換できない宣言を黙って捨てず、`W2002` と `// skipped` 行で理由を示す。対応表にない型を推測で変換しない。
+- [x] 出力が決定的で、`tsuzuri check` と `fmt --check` を通る。golden 4 件が一致する（Phase 2 の `extended/` を加えて 5 件）。
+- [x] 対象ヘッダー以外（include 先）の宣言を出さない。
+- [x] 出力保護（`E2003`）と CLI の誤り（`E2000`）・ツールの失敗（`E2002`）が仕様どおり。
+- [x] 新しい crate・serde_json の feature・`unsafe` を足していない。
+- [x] GUIDE §10 の完了の定義を満たす（`_features/README.md` の状態欄・`_completed/` への移動・GUIDE の台帳はコーディネーターが行う）。
 
 ## 落とし穴
 
@@ -604,3 +604,219 @@ fixture をコピーして行う。
 - 決定: 生成するのは `HEADER` 自身の宣言だけ。`--include-dir` は include の解決にだけ使う。
 - 理由: include 先まで生成するとシステムヘッダーの宣言で出力が膨大になり、別の生成物と名前が重複する。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-07）
+
+D1 の承認（サブコマンド `tsuzuri bindgen` と警告 `W2002`）と「全 Phase を実装する」指示を受け、Phase 1（手順 1–12）を実装した。
+着手時の HEAD は `2ee813f`（ブランチ `wt/e11`。チケットの確認時は `f8dc655` で、その後 E12 が完了している）。手順 1 で E12 のリンク名
+（`extern "labs" def c_labs :: i64 -> i64` の `c_labs (-5)` が `5`）と、Clang の JSON の性質（`"file"` が 1 回）を手元の Apple clang 21 で確かめた。
+
+### Phase 1: 実装
+
+- `src/bindgen.rs`（新規）: CLI の解析（`Arguments`・`parse_arguments`）、`MARKER`・`MAX_AST_BYTES`・`HeaderInfo`・`Skipped`・`Generated`・`generate`・
+  `lp64_target`。所属ファイルの追跡（`Tracker`）、Clang の型表記の解析（`tokenize`・`TypeParser`・`function_shape`）、typedef 展開と表（`Tables`）、
+  名前の規則、出力（`Emitter`・`render_function`）。Clang も I/O も使わない。
+- `src/bindgen_driver.rs`（新規。`src/driver.rs` の子モジュールで、`test_runner.rs` と同じ `#[path]` の形）: `driver::bindgen`（ヘッダーの検査・読み込み・
+  `Sha256`、Clang の 3 回の起動、`lp64_target`、`serde_json::from_slice`、`generate`、出力保護、書き込み）、`capture`（stdout は `MAX_AST_BYTES` まで、
+  stderr は別スレッドで読む）、`publish`（同じディレクトリの一時ディレクトリに書いて rename。直前にも保護を検査）、`protect_bindgen_output`。
+- `src/main.rs`: `HELP`（usage 行と説明）、`main` の `bindgen` 分岐と `bindgen_command`（W2002 は `DiagnosticSet` で位置順・50 件まで表示）。
+  `src/lib.rs` に `pub mod bindgen;`、`src/driver.rs` に子モジュールの宣言 3 行。
+- `src/check.rs`: `pub fn reserved_type_name`（record・extern type・型別名の予約名の判定を一つにし、既存の 3 か所の条件をこれに置き換えた。振る舞いは同じ）。
+  `src/abi.rs`: `pub const RESERVED_SYMBOL_PREFIXES`（`link_name_error` の接頭辞の一覧を公開。振る舞いは同じ）。bindgen はどちらも直接使い、規則を複製しない。
+- テスト: `tests/bindgen.rs`（新規 15 件）、`src/bindgen.rs` の単体テスト 3 件、`tests/bindgen.mjs`（新規）、`tests/fixtures/bindgen/{basic,include,skipped,names}/`（新規）。
+- 文書: `docs/language.md`（「C ヘッダーからの生成」、診断表の `W2002`）、`docs/architecture.md`（ファイル表、不変条件の **bindgen**、検証コマンド）、
+  `README.md`（特徴、ホスト連携、`tsuzuri bindgen` の節、CLI 書式、テストスイート）、言語リファレンスの `compiler/usage.md`（`### bindgen`、流れ図）、
+  `compiler/native-interop.md`（「C ヘッダーから extern を生成する」。「未実装」の節を置き換えた）、`compiler/diagnostics.md`（`W2002`）、`compiler/option.md`、
+  `languages/why-tsuzuri.md`・`languages/strategy.md`（計画中の注記と E11 へのリンクを実際の振る舞いに置き換えた）。
+
+### Phase 1: 決定事項への追記（チケットから外れた判断）
+
+1. **CLI は局所に足した。** `Action::Bindgen` と `Arguments::include_dirs` は作らず、`new` と同じく `main` の先頭で `bindgen_command` へ分岐する。解析は
+   `bindgen::parse_arguments`（ライブラリにあり `tests/bindgen.rs` で検査）。E13・E10 が同時に `src/main.rs` の解析を変えるので、マージしやすくするため。
+   driver の I/O も同じ理由で子モジュールに置いた。出力のファイル名が英大文字で始まる ASCII 識別子でなければ `E2000` にした（モジュール名になるため。
+   そのままでは `tsuzuri check` が `E1011`）。出力の親ディレクトリは `build` と同じく作る。
+2. **E12 の実際の規則に合わせた。** E12 は `tz_`・`tsuzuri`（`tsuzuri_` ではない）・`__` で始まるシンボル、`RESERVED_HOST_SYMBOLS`（`malloc`・`write`・`putchar` など）、
+   255 bytes を超えるシンボルを拒否する。理由は `symbol uses the reserved tz_, tsuzuri, or __ prefix`・`symbol is reserved by the Tsuzuri runtime`・
+   `symbol is longer than 255 bytes`。`render_function` の構文（`extern "symbol" def name :: ...`）はチケットの想定どおりだった。
+3. **予約名。** 修飾なしの組み込み関数は今は 12 個（`sqrt`・`floor`・`ceil`・`abs`・`to_float`・`to_int`・`assert`・`clone_string`・`unreachable`・`to_string`・
+   `not`・`ignore`）で、`Builtin::ALL` から引く。予約語は lexer で字句解析して判定する（一覧を複製しない）。型名は `check::reserved_type_name`
+   （`Vec`・`Array`・`Task`・組み込みクラス名など。`record Vec` は `E1001`）に当たれば `_` を付ける。enum の定数も予約語・組み込み名なら `_` を付ける（`match` → `match_`）。
+4. **library builtin の再宣言。** Clang は `sqrt` などを最初の言及で暗黙の `FunctionDecl`（`isImplicit`）として宣言し、ヘッダーの宣言の `previousDecl` は
+   それを指す。「`previousDecl` があれば何も出さない」だけでは `math.h` の関数がほぼ全部消えたので、暗黙の宣言を指す場合は最初の宣言として扱う。
+5. **enum の値。** 初期化式の型が `int` でないとき（`X = 1u`、`Y = -1L`）、Clang は `ConstantExpr` を `ImplicitCastExpr`（`IntegralCast`）で包む。
+   「`inner[0]` が `ConstantExpr` でなければ直前 + 1」では `1u` が 0 になるので、cast を辿り、変換先の型で折り返した値を使う。読めない初期化式の定数と、
+   そこから数える暗黙の値は `enumerator value is not an integer constant in the clang AST` で省く。
+6. **型表記の照合。** 文字列の完全一致の代わりに、Clang の表記を小さな解析器（指定子、`const`・`volatile`・`restrict`・nullability の修飾子、ポインター、
+   関数ポインター）で読み、typedef を展開してから表と完全一致で照合する。`const struct TAG *` の判定（ポインターの先の typedef を含む）と `const T *const` を
+   正しく扱うため。`desugaredQualType` は表記を読めないとき（`typeof` など）だけ使う。`AlignedAttr`・`PackedAttr` を持つ typedef は展開しない
+   （desugar すると属性が消え、配置が変わったフィールドを `i64` と誤るため）。読めない表記はすべて変換不可。
+   （レビュー指摘 3 で `desugaredQualType` は使わなくなり、属性は許可リストで判定するようになった。「レビュー指摘の修正」を参照）
+7. **追加の省略理由**（ABI が一致しない形を推測で生成しないため）: asm ラベルや overloadable で `mangledName` が C の名前（Mach-O は `_` 付き）と異なる関数
+   （macOS の `__DARWIN_ALIAS` のように同じシンボルになる asm ラベルは生成する）、`noreturn` 以外の型属性（`ms_abi`・`preserve_most` などの呼び出し規約。
+   Clang は属性を型の前にも後にも書く）、`pass_object_size` の引数、packed・aligned・`#pragma pack` の struct、alignment 属性付きのフィールド、
+   フィールドのない struct、ASCII でないフィールド名、snake_case にすると衝突するフィールド。理由は `src/bindgen.rs` の文字列のまま、言語リファレンスに一覧がある。
+8. **絶対パスを出さない。** 匿名の tag の表記 `struct (unnamed struct at /abs/path:1:2)` は `struct (unnamed struct)` にしてから理由に入れる。
+   `typedef struct { ... } name;` の匿名 struct は typedef の名前と位置で報告する。`typedef enum { ... } name;` の匿名 enum は Clang の表記どおり `enum name`
+   として表に入れ、引数の `name` を `i32` にする
+   （同じ名前の enum の tag があれば変換しない。無名の struct・union の typedef は展開しない。レビュー指摘 2 の修正）。
+9. **clang の失敗の hint。** ヘッダーのコンパイルの失敗は `fix the header, or pass the directories that it includes with --include-dir`。
+   `install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable` は Clang を起動できないときと `--version`・`-dumpmachine` の失敗だけ。
+10. **golden。** `expected.tz` の 2 行目は `sha256=<sha256>` で、E2E は `node:crypto` で計算したハッシュと比べてから置き換える（3・4 行目と同じ扱い）。
+
+### Phase 2: 実装（コーディネーターが指定した (a)–(d)）
+
+「対象外」の先送り項目のうち、次の 4 つを具体化して実装した。Windows（LLP64）・32-bit・C++ ヘッダー・値渡しの struct・union・bit-field・大域変数は
+対象外のまま（G10 が blocked）。変更は `src/bindgen.rs`（`Extras`・`Failure`・`generate_with`・`BufferAnnotation`・`ConsumeAnnotation`・`ParameterName`、
+マクロの読み取り、ハンドル・コールバック・buffer の対応）、`src/bindgen_driver.rs`（4 回目の Clang の起動）、`src/main.rs`（`HELP`）、テスト、文書。
+
+**(a) `#define` の整数定数。**
+- 入力は 4 回目の Clang の起動 `clang -x c -std=gnu17 -E -dD [-I DIR]... HEADER`（AST と同じ上限と stderr の扱い）。D9 の理由は「`-dM -E` は定義位置を持たない」
+  だったが、`-dD` は定義をソース上の位置に残すので、行マーカーから所属ファイルと行が分かる。
+- 所属と位置: 行マーカー `# N "FILE" FLAGS` が次の出力行のファイルと行番号を与え、以後の各出力行が次のソース行になる（Clang は短い空白を空行で、
+  長い空白を行マーカーで埋め、継続行は 1 行に結合して空行を足す。手で確かめた）。ファイル名の C エスケープ（`\\`・`\"`・`\t`・`\n`・`\ooo`）を戻し、
+  ヘッダーの絶対パスとバイト列で比べる。`#define` と `#undef` を出力順に適用した最終状態のうち、最後の定義がヘッダーにある object-like マクロだけを対象にし、
+  位置はヘッダーのバイト列の行頭表（`\r\n`・`\n`・`\r`）と、行内の `define` の後の名前から求める。宣言とはヘッダー内の byte offset でマージし、
+  値の名前空間の衝突もこの順で後続を省く。
+- 値: 置換列を `(`・`)`・`-`・preprocessing number に字句分割し（そのほかの字句、`--`、65 個以上の字句は対象外）、外側の括弧と単項マイナスを外すと
+  1 つの整数リテラルになるものだけを読む。浮動小数点（`.`、10 進の `e`、16 進の `p`）は対象外。10・16・8・2 進（2 進は gnu17 の拡張）と、
+  接尾辞 `u`・`l`・`ll` の組み合わせ（大文字小文字。`lL` は不正）。型は C17 6.4.4.1 の候補列を LP64 の幅で引く（接尾辞なしの 10 進は `int`・`long`、
+  それ以外の進数は `int`・`unsigned int`・`long`・`unsigned long`、`u` は `unsigned int`・`unsigned long` など）。`int` → `i32`、`unsigned int` → `i32u`、
+  `long`・`long long` → `i64`、`unsigned long`・`unsigned long long` → `i64u`。単項マイナスはその型で計算する（`(-1u)` は `4294967295` の `i32u`、
+  `-2147483648` は `long` の `-2147483648`）。
+- 報告（`W2002`）: 64 bit に収まらない値、`u` なしで符号付き 64 bit に収まらない 10 進数（C17 では型がない。Clang の拡張の `unsigned long long` を推測しない）、
+  不正なリテラル（`09`・`0x`・`0b2`・`1lL`）、変換しない接尾辞（`1f`・`1wb`）、ASCII でない名前、名前の衝突。それ以外のマクロ（式、文字列、文字、
+  別のマクロ名、関数形式、空の置換列）は何も出さない（include guard や設定のマクロを報告しないため）。名前は C の名前のまま（予約語・組み込み名は `_` を付ける）。
+
+**(b) 不透明な struct のハンドル。** 規則と、それが E12 のハンドルの意味（所有・Copy・ABI）で健全である理由:
+- 対象は、名前付きの struct の tag のうち、翻訳単位のどこにも（入れ子の宣言を含めて）定義（`completeDefinition`）がなく、最初の宣言（`previousDecl` なし）が
+  ヘッダーにあるもの。その宣言の位置に `extern type Name`（PascalCase。型の名前空間で衝突を検査）を出す。定義のある struct（`z_stream`、一部の欄を公開する
+  zlib の `gzFile_s` を含む）は呼び出し側が確保・参照しうるのでハンドルにしない。最初の宣言が include 先の tag も出さない（D10）。
+- 引数の `struct X *`・`const struct X *` は共有借用 `ref X`。E12 の `ref H` はハンドルの値そのもの（ポインター）を渡すので ABI は一致する。Tsuzuri は
+  ハンドルを参照外ししないので、C がポインターの先を書き換えても Tsuzuri の別名の規則は破れず、呼び出しはハンドルを消費も複製もしない。
+- 結果の `struct X *` は所有する `X`。ハンドルは drop glue を持たない（E12 D3）ので、借用されたポインターを返す関数でも Tsuzuri が勝手に解放することはない。
+  結果の `const struct X *` は借用の結果で、E12 は借用の結果を ABI に許さないので省く。
+- `--consume FUNCTION:PARAMETER`（新規）を付けた引数は値の `X`（ムーブ）で、その後の使用は `E1012`。E12 の規約（解放は close の extern へ値で渡す）を
+  生成物でも使えるようにするための注釈で、C の宣言には所有の情報がないので推測しない。
+- コールバックの引数の `struct X *` は `ref X`（E12 が許す形。C が渡すポインターをコールバックが所有するとは限らない）。
+- 変換しない: `X **`（出力引数。E12 に `ref mut H` の ABI はない）、struct のフィールド（E12 は ABI record のフィールドにハンドルを許さない）、`volatile`。
+  NULL は区別できない（E12 に `Option<H>` がない）が、Tsuzuri はハンドルを参照外ししないので、NULL の扱いは C の API の契約に従う（文書化した）。
+
+**(c) コールバック。** 関数ポインターの引数（typedef 経由と nullability を含む）`R (*)(P1, ...)` は、`P` がコールバックの引数の表（スカラー、`int` の enum、
+不透明な struct のポインター → `ref X`）、`R` が結果の表（スカラー、`void` → `unit`）にあるとき、E12 の静的コールバックの型 `(P1 -> ... -> R)`
+（引数なしは `(unit -> R)`）になる。C から渡る `_Bool` の引数は `i8u` にした（D5 の逆向き: E12 の wrapper は `bool` の引数を 32 bit 全体の `icmp ne` で読むが、
+C の呼び出し側は下位 8 bit しか保証しない。狭い整数は wrapper が `trunc` するので正しい）。`_Bool` の結果は wrapper が 0/1 を返し C が下位 8 bit を読むので `bool`。
+`void *`（文脈引数）、可変長引数、プロトタイプなし、ポインターの結果、入れ子の関数ポインター、block、呼び出し規約などの属性、関数ポインターへのポインターは変換しない。
+
+**(d) ポインターと長さの組 `--buffer FUNCTION:POINTER:LENGTH`。** E05/E12 の import の buffer の ABI は `ref [T]` を「要素へのポインター、`int64_t` の要素数」
+の 2 引数で渡す（`src/llvm_imports.rs` の `host_call`）。C の `(const T *p, size_t n)` と完全に一致するのは、ポインターが `const`（`volatile` でない）要素への
+ポインターで、要素が Tsuzuri の buffer と同じ表現（`long`・`long long` = `[i64]`、`double` = `[f64]`、`unsigned char`・`char`・`void` = `[ubyte]`）、長さが
+直後の 64-bit 整数（`long`・`long long`・`unsigned long`（`size_t`）・`unsigned long long`。要素数は非負の i64 なので `size_t` でもビット列は同じ）のとき。
+要素数かバイト数か（`void` はバイト数）、本当に読み取りだけかは宣言から分からないので、利用者が注釈で指定したときだけ生成する（引数は C の名前か 1 始まりの位置）。
+`const` のないポインター（ホストが共有借用の配列へ書き込める）、長さが直後にない、長さが 64 bit でない、同じ表現の buffer がない要素（`int`・`float`・
+`signed char`・`uint16_t` など）は `W2002`。注釈の関数・引数がない、同じ引数を 2 つの注釈が指す（ポインターと長さが同じ引数を含む）は `E2000`（終了コード 1。
+注釈の形の誤りは引数の解析で終了コード 2）。`ref string`・`ref utf8string` は C のどの型と組かを宣言から決められないので生成しない（`const char *` は
+`[ubyte]` で、`Utf8String.to_bytes` で渡せる）。空の配列は NULL と長さ 0 で渡ることがある（文書化）。
+
+注釈を指定すると、出力の 5 行目に `// options: --buffer ... --consume ...` を記録する（再生成に要るため。パスを含まない）。
+
+### Phase 2: 決定事項への追記
+
+1. **マクロは既定で生成する**（オプトインにしない）。D9（Phase 1 は生成しない）を Phase 2 で改めたので、golden `basic/expected.tz` に
+   `const SAMPLE_LIMIT: i32 = 42` が加わった（チケットの「`SAMPLE_LIMIT` は出ない」は Phase 1 だけの記述）。
+2. 「整数に見えるマクロ」は「外側の括弧と単項マイナスを外すと 1 つの preprocessing number で、浮動小数点でないもの」と定義した。`(1 << 4)` のような式は黙って無視する。
+3. `--consume` は (b) を E12 の所有の規約と両立させるために足した注釈で、指示にない追加。注釈がなければ引数は借用なので、解放関数を生成しても Tsuzuri が何かを
+   二重に解放することはない（解放後の使用を型で防げないだけ）。
+4. 2 進のリテラル（gnu17 の拡張）も受け付けた。
+5. Clang の起動は 4 回（`--version`、`-dumpmachine`、AST、`-E -dD`）になった（レビュー指摘 4 の修正で `-E -dM` を足して 5 回）。
+
+### 確認（Apple M1 Max、macOS 27、Apple clang 21.0.0（`arm64-apple-darwin27.0.0`）、rustc 1.98.1、Node v20.19.6。6 エージェントで共有した機械）
+
+- `cargo test --locked --test bindgen`: Phase 1 で 15 passed、Phase 2 で 22 passed。`cargo test --locked --lib bindgen`: 3 → 5 passed（型表記の解析、関数型の分割、
+  enum の値の変換、行マーカーと行頭表、マクロの値）。期待値はすべて C の規則から手で書いた（`0755` = 493、`(-1u)` = 4294967295 など）。
+- `RUST_MIN_STACK=4194304 cargo test --locked`: Phase 1 の後 754 passed・0 failed（72 binaries）、Phase 2 の後 763 passed・0 failed（72 binaries）。
+  GUIDE §3.1 の 4 テスト（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・
+  `bounds_nested_builder_expansion_not_just_source_syntax`・`honors_the_exact_specialization_limit`）は既定の stack で各 1 passed。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（Homebrew の clippy 1.98）が成功。Windows の型検査
+  `PATH=~/.cargo/bin:$PATH CARGO_TARGET_DIR=target/wincheck cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（rustup の
+  clippy 1.96.1）は、変更していない `src/lsp.rs:806`・`src/parser.rs:1956-1957` の `nonminimal_bool` 3 件で失敗する（既存。clippy 1.98 では出ない）。
+  `-A clippy::nonminimal_bool` を足すと成功し、bindgen の変更による警告はない。bindgen の変更に OS 依存のコードはない（`same_file` と
+  `TemporaryDirectory` は既存の cfg 付きの実装を使う）ので aarch64-pc-windows-msvc は実行していない。
+- `cargo build --release --locked && node tests/bindgen.mjs target/release/tsuzuri`: 6 行（golden 5 件・決定性・`check`・`fmt --check`・`--json` の W2002 27 件と
+  位置、basic の往復 `-O0`／`-O3`、extended の往復 `-O0`／`-O3`（IR の `malloc`・`free`・`realloc` を追跡関数に置き換えて 1000 回ごとに `live == 0`、
+  object のリンク、`ext_live_counters() == 0`）、CLI と出力保護）。`node tests/host_imports.mjs`（2 行）、`node tests/ffi_extensions.mjs`（5 行）も成功。
+  WASM は対象外（生成物は native のリンク名を前提にする。チケットのテスト計画どおり）。
+- `node scripts/check-docs.mjs` で変更した 6 ページ（`compiler/usage.md`・`native-interop.md`・`diagnostics.md`・`option.md`・`languages/strategy.md`・
+  `why-tsuzuri.md`）が成功（80 links、7 checked examples。生成した `Sample.tz` を例のプロジェクトとして型検査する）。文書の `counter.h`・`stats.h`・マクロの表の
+  出力は実際に生成して確かめた。
+- 実ヘッダー（テストに同梱しない。`$(xcrun --show-sdk-path)/usr/include`、release、負荷の高い共有機での参考値）:
+  - `zlib.h`（zlib 1.2.12）: 0.34 s。生成 42 行（`const` 35、`extern type InternalState` 1、`extern def` 6）、`W2002` 78 件（引数 1 の型 65、引数 2 の型 6、
+    結果の型 3、フィールドの型 3、可変長引数 1）。`z_streamp`・`gzFile`（定義のある struct）・`const char *`・`Bytef *` の関数が大半。
+  - `math.h`: 0.13–0.21 s。生成 132 行（`extern def` 111、`const` 17、`type` 2、`record` 2）、`W2002` 117 件（引数 1 の型 59。主に `long double` と
+    `_Float16`、`tz_`・`tsuzuri`・`__` の接頭辞 29、inline 19、引数 2・3 の型 8、大域変数 1、フィールド 1）。`sqrt`・`ceil`・`floor` は `sqrt_` などになる。
+  - どちらの出力も `tsuzuri check` と `tsuzuri fmt --check` が成功した。`stdio.h`・`stdlib.h`・`string.h` は macOS では `_stdio.h` などの include だけなので
+    0 宣言（D10 どおり）。
+- 性能は主張しない。
+
+### レビュー指摘の修正（2026-10-08）
+
+統合ブランチへのマージ後の独立レビューの指摘 4 件を `wt/e11` で直した。方針は「確かでなければ `W2002` で省く」。各指摘は修正前の実装で
+Clang から再現し（誤った出力になることを確かめ）、修正後は Rust のテストと golden `skipped` で省かれることを確かめた。
+
+1. **配置を変える属性を持つ enum（`src/bindgen.rs` の `HARMLESS_ATTRIBUTES`・`layout_attribute`）。** enum は `PackedAttr` だけを見ていたので、
+   `enum __attribute__((aligned(8))) E`（`AlignedAttr`）や `__attribute__((mode(QI)))`（`ModeAttr`。1 byte の enum）を `i32` にし、record のフィールドの
+   オフセットと引数・結果の幅を黙って誤っていた。拒否リスト `LAYOUT_ATTRIBUTES` を、配置と呼び出し規約を変えないと分かっている属性の許可リスト
+   `HARMLESS_ATTRIBUTES`（`Annotate`・`Availability`・`AvailableOnlyInDefaultEvalMethod`・`Deprecated`・`EnumExtensibility`・`FlagEnum`・`MayAlias`・
+   `ObjCBoxable`・`ObjCBridge`・`ObjCBridgeMutable`・`ObjCBridgeRelated`・`SwiftAttr`・`SwiftBridgedTypedef`・`SwiftName`・`SwiftNewType`・`SwiftPrivate`・
+   `Unavailable`・`Unused`・`Used`・`Visibility`。macOS SDK のヘッダーに現れる属性を調べて決めた）に置き換え、enum・typedef・struct・フィールドが
+   それ以外の属性（`Aligned`・`Packed`・`Mode`・`MaxFieldAlignment`（`#pragma pack`）・`RandomizeLayout`、未知の属性）を 1 つでも持てば、その型を変換しない。
+   enum の定数は値が型によらないので出し、その enum 型の引数・結果・フィールドを省く。理由は属性を示す形にした
+   （`struct has __attribute__((packed)), which may change its layout`、`field 'b' has __attribute__((aligned)), which may change its layout`）。
+2. **無名の struct の typedef と同じ名前の tag（`Tables::new`・`unnamed_tag`）。** Clang は `typedef struct { int small; } S;` の型を `struct S` と表記する
+   ので、`S` を展開すると無関係の tag `struct S`（tag と typedef 名は C の別の名前空間）の record やハンドルに解決し、`ref S` の配置やハンドルを誤っていた。
+   typedef の型ノード（`MAX_TYPE_NESTING` 段まで）に名前のない `ownedTagDecl` の struct・union があれば、その typedef を展開不可にした（`const S *` の引数は
+   `W2002`、`struct S *` は従来どおり tag の型）。無名の enum の typedef は従来どおり `enum S` として表に入れるが、同じ名前の enum の tag が（定義・前方宣言、
+   struct の中の宣言を含めて）あれば、tag とともに変換しない。struct の中の tag は C ではファイルスコープなので、`struct outer { enum E { BIG = 0x7fffffffffff } e; };`
+   と `typedef enum { SMALL } E;` で `enum E` を `i32` にしていた（8 byte の enum。レビュー後の調査で見つけて同時に直した。tag の収集を全ノードの走査
+   `visit_all` に変えた）。無名の union は、名付ける typedef の名前と位置で報告する。
+3. **`typeof` の desugar（`node_type`・`Tables::c_type`）。** 読めない表記（`typeof` など）を `desugaredQualType` で読み直していたので、
+   `__typeof__((wide_aligned)0)`（`aligned(16)` の typedef）のフィールドを `i64` とし、オフセットを誤っていた（desugar は typedef とともに属性を落とす）。
+   `desugaredQualType` を一切使わないようにした（`node_type` は `qualType` だけを返し、`Typedef` から `desugared` を除いた）。読めない表記は、フィールド・
+   引数・結果・typedef の展開のどこでも変換しない。`typedef __typeof__(sizeof(0)) my_size_t;` のような typedef も変換しなくなる（安全側）。
+4. **`#pragma push_macro`／`pop_macro`（`header_macros`・`define_line`、`src/bindgen_driver.rs`）。** `clang -E -dD` は両 pragma を出力しない（空行になる）ので、
+   `pop_macro` で戻された値を誤って出していた（C では 1 の `LEVEL` を `const LEVEL: i32 = 2`）。5 回目の Clang の起動
+   `clang -x c -std=gnu17 -E -dM [-I DIR]... HEADER`（ヘッダーの終わりのマクロ表。`-dD` と同じ printer なので置換列は同じ文字列になる）と照合し、
+   最後の定義が object-like で置換列が一致するマクロだけを生成する。一致しない・消えた・関数形式になったマクロは、`-dD` の置換列か最終の置換列が
+   整数リテラルに見えれば `W2002`（`the macro does not end with this #define (#pragma push_macro and pop_macro can restore another value)`。位置は `-dD` が示す
+   最後の `#define`）、そうでなければ従来どおり何も出さない。pragma に現れる名前を除く案は採らなかった（`-dD` には pragma 自体が現れず、`_Pragma` や
+   include 先の pragma もあるので、最終状態を Clang 自身に問う方が確実）。
+5. **同時に直したもの。** `returns_twice`（`ReturnsTwiceAttr`。`setjmp`・`vfork` の類）の関数を省く（`function returns twice (returns_twice), which a Tsuzuri
+   call cannot follow`。生成する呼び出しには `returns_twice` が付かず、2 度目の戻りでレジスターの値が壊れうる）。関数型の後ろの `__attribute__` 以外の語
+   （AArch64 の SME の `__arm_streaming`・`__arm_inout("za")` など）は以前から省いていたが、理由の属性名が `'?'` だったので語をそのまま示す。
+
+テスト: `tests/bindgen.rs` に 4 件（`converts_only_types_whose_attributes_keep_the_layout`・`does_not_read_unnamed_struct_typedefs_as_tags`・
+`never_reads_desugared_types`・`generates_a_macro_only_where_its_final_definition_agrees`。JSON AST と `-dD`／`-dM` の出力を手で書く）と
+`splits_function_types` の 1 assert を足し、golden `skipped/skipped.h` に指摘ごとのケース（`aligned`・`mode`・`flag_enum` の enum、`randomize_layout`、
+`struct tagged` と無名の `tagged`、struct の中の enum の tag、`typeof`、`returns_twice`、`push_macro`）を足した（`// skipped` 27 → 37 行。
+`tests/bindgen.mjs` の `--json` の件数も 37）。
+
+確認（同じ機械）:
+- `cargo test --locked --test bindgen` 26 passed（22 → 26）、`cargo test --locked --lib bindgen` 5 passed。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` が成功。Windows の型検査（x86_64-pc-windows-msvc、rustup の clippy 1.96.1）は
+  Phase 2 と同じ既存の `nonminimal_bool` 3 件だけで失敗し、`-A clippy::nonminimal_bool` で成功（OS 依存のコードは変えていない）。
+- `cargo build --release --locked && node tests/bindgen.mjs target/release/tsuzuri` の 6 行が成功（`-O0`／`-O3` の往復を含む）。
+  `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/native-interop.md` が成功（10 links、4 checked examples）。
+- 実ヘッダーの結果は Phase 2 と同じ: `zlib.h` 生成 42 行・`W2002` 78 件、`math.h` 生成 132 行・`W2002` 117 件（`float_t`・`double_t` の
+  `AvailableOnlyInDefaultEvalMethodAttr` は許可リストにあるので `type FloatT = f32` などのまま）。どちらも `tsuzuri check` と `fmt --check` が成功。
+- 文書: `docs/language.md`（「C ヘッダーからの生成」の属性・無名の tag・`typeof`・`-E -dM`・`returns_twice`）、`docs/architecture.md`（**bindgen:**）、
+  言語リファレンスの `compiler/native-interop.md`（「対応する形」と「マクロの定数」）。
+
+### 既知の制限と残作業
+
+- Linux での実行は確かめていない（macOS arm64 だけ）。`-dumpmachine` が Linux の LP64 なら受け付け、`mangledName` の `_` 接頭辞は apple・darwin の triple だけで仮定する。
+- Windows（LLP64）・32-bit・C++ ヘッダー・値渡しと値返しの struct・union・bit-field・大域変数・無名 struct の typedef は対象外（G10 の後）。
+- 入れ子の struct や固定長配列のフィールド（A16 Phase 2 で ABI record に許された `[T; N]`）を持つ struct は変換しない（フィールドの表を 32/64-bit のスカラーに限った）。
+- マクロは置換列が 1 つの整数リテラルのものだけで、別のマクロの参照（`#define A B`）や式は評価しない。struct の中で宣言された enum・struct の tag は生成しない。
+- NULL のハンドルは区別できない。`void *` の文脈引数を持つコールバック（C の多くのコールバック API）は E12 の静的コールバックで表せない。
+- `W2002` の表示は既存の警告と同じく 50 件までで、残りは件数だけ（出力の `// skipped` 行にはすべて残る）。
+- コミット: Phase 1 `9d80edc`、Phase 2 `aa1e829`、レビュー指摘の修正は「レビュー指摘の修正」節を含むコミット。`_features/README.md`・`_completed/` への移動・GUIDE（D-30 の `W2002` と `tsuzuri bindgen` の確定、D-16）は
+  コーディネーターが行う。

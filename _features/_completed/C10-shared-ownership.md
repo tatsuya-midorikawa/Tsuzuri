@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | C02, (B07), (F10) |
 | 後続 | A15 Phase 2 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要（std 名 `Arena` は GUIDE D-30 の仮割り当てを使う）。Phase 2 は要承認: D13（参照カウントの導入。GUIDE D-30）, D14（std 名 `Rc`／`Arc` の割り当て） |
 | 改善する劣位 | C#/F# 比: GC に任せられる共有データ・循環構造を所有権に沿って設計し直す必要がある（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
@@ -659,17 +659,17 @@ fn arena_ring count =
 
 ## 受け入れ条件
 
-- [ ] Phase 1 の API がすべて仕様どおりに動き、`cargo test --locked --test arena` の 7 件が成功する。
-- [ ] 循環を含むグラフを Arena とハンドルで構築・探索・解放でき、`node tests/features.mjs target/release/tsuzuri arena` が native／WASM × `-O0`／`-O3`、`live == 0`、WASM の import なしで成功する。
-- [ ] 削除済み・別の arena・範囲外のハンドルを、`get`／`contains`／`remove` は `None`／偽で、`at`／`update` はトラップで検出する。
-- [ ] ハンドルの `Eq`／`Ord`／`Hash` が arena ID を含まない（`arena_foreign` が `110`）。
-- [ ] 利用者 record の未使用型引数は引き続き `E1024`、利用者コードからの `Arena.__next_id` は `E1022`。
-- [ ] IR にカウンタの大域定義が 1 回だけあり、`atomicrmw ... monotonic` を使う。Arena を使わないプログラムの IR は変わらない。
-- [ ] `TSUZURI_TSAN=1` で競合の報告がなく、`--wasm-feature threads` のビルドが成功し、IR が 2 回の出力で一致する。
-- [ ] `honors_the_exact_specialization_limit` が成功する。
-- [ ] Phase 2 は未着手で、D13・D14 が要承認のまま残っている。
-- [ ] ドキュメントを更新し、`node scripts/check-docs.mjs` が成功する。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] Phase 1 の API がすべて仕様どおりに動き、`cargo test --locked --test arena` の 7 件が成功する。
+- [x] 循環を含むグラフを Arena とハンドルで構築・探索・解放でき、`node tests/features.mjs target/release/tsuzuri arena` が native／WASM × `-O0`／`-O3`、`live == 0`、WASM の import なしで成功する。
+- [x] 削除済み・別の arena・範囲外のハンドルを、`get`／`contains`／`remove` は `None`／偽で、`at`／`update` はトラップで検出する。
+- [x] ハンドルの `Eq`／`Ord`／`Hash` が arena ID を含まない（`arena_foreign` が `110`）。
+- [x] 利用者 record の未使用型引数は引き続き `E1024`、利用者コードからの `Arena.__next_id` は `E1022`。
+- [x] IR にカウンタの大域定義が 1 回だけあり、`atomicrmw ... monotonic` を使う。Arena を使わないプログラムの IR は変わらない。
+- [x] `TSUZURI_TSAN=1` で競合の報告がなく、`--wasm-feature threads` のビルドが成功し、IR が 2 回の出力で一致する。
+- [x] `honors_the_exact_specialization_limit` が成功する。
+- [x] ~~Phase 2 は未着手で、D13・D14 が要承認のまま残っている。~~ 2026-10-07 に利用者が D13・D14 を承認し、全 Phase の実装を依頼した（「実装と検証」を参照）。
+- [x] ドキュメントを更新し、`node scripts/check-docs.mjs` が成功する。
+- [x] GUIDE §10 の完了の定義を満たす（`_features/README.md`・GUIDE の台帳・`_completed/` への移動は coordinator が行う）。
 
 ## 落とし穴
 
@@ -772,10 +772,128 @@ fn arena_ring count =
 
 - 決定: 「Phase 2」の設計方針（`Rc.share` による明示的な共有、`Arc` は F10 の後、循環は `Weak` で断つ、反復 drop）を案とし、Phase 1 の利用実績を見てから人間が判断する。
 - 理由: GUIDE D-30 が承認対象とし、docs/language.md の「参照カウントは使わず」という言語の方針と `Type` を変える。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-07。全 Phase の実装の依頼）。実装した設計は「実装と検証」の Phase 2 にある
 
 ### D14: Phase 2 の std 名
 
 - 決定: モジュール `Rc`／`Arc`（型 `Rc<'a>`・`Rc.Weak<'a>`・`Arc<'a>`・`Arc.Weak<'a>`）を提案する。
 - 理由: GUIDE D-30 の仮割り当ては `Arena` だけで、`Rc`／`Arc` は未割り当て。予約モジュール名の追加は D-07 の変更に当たる。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-07）。予約モジュール `Rc`・`Arc` を足し、型名 `Rc`・`Arc` も `Vec` と同じく予約した（「実装と検証」）
+
+## 実装と検証（2026-10-07）
+
+利用者の依頼（全 Phase の実装、判断が要る点は最善の選択で実装）を D13・D14 の承認として扱った。着手時の HEAD は `2ee813f`（チケットの詳細化時の `f8dc655` から、`_docs/` が `_tsuzuri/language-reference/`（以下 LR）へ移り、予約モジュールが 36 件になっている）。
+作業機: Apple M1 Max、macOS、Apple clang 21、rustc 1.98.1、Node v20.19.6。性能の改善は主張しない。
+
+### Phase 1: Arena とハンドル
+
+#### 実装
+
+- 組み込み関数 `Builtin::ArenaNextId`（`Arena.__next_id :: i64`、`Builtin::ALL` の `Ignore` の後）。`Checker::builtin` が std の `Arena` モジュール以外からの使用を `E1022`（`the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity`）で拒否する。
+  `emit_builtin` はチケットの「生成 IR」のとおりの定義と `@tz.arena.next_id = internal global i64 0, align 8` を一つの文字列で返す（単相なので一度だけ出る。`@llvm.trap` は既存の宣言を使う）。
+- `src/stdlib.rs`: `SOURCES` の先頭に `std/Arena.tz`、`RESERVED_MODULES` の末尾に `Arena`（`reserves_the_d07_table` は 36 → 37。Phase 2 で 39）、`opaque_record` に `Arena.Arena`・`Arena.Handle`・`Arena.Slot`。
+- `src/check.rs` の record 宣言ループ: 不透明な標準 record の判定 `opaque` を宣言ごとに一度だけ計算し、公開フィールド型の検査と未使用型引数の `E1024` の両方を免除する。利用者の record は従来どおり `E1024`。
+- `std/Arena.tz`: チケットの「アルゴリズム」のとおり（`Slot`・`Arena`・`Handle`、手書きの `Eq`／`Ord`／`Hash`、`empty`・`with_capacity`・`length`・`contains`・`get`・`at`・`insert`・`remove`・`update`・`iter`）。公開する宣言には文書コメントを付けた（`tsuzuri doc` と LSP の hover に出る）。
+- テスト: `tests/arena.rs`（7 件。チケットの表の内容に加え、ハンドルの pattern 分解の `E1022`、`let next = Arena.__next_id` の `E1022`、予約モジュール `Arena` の `E1011`、`Map`／`HashMap` のキーとしてのハンドル）。
+  `tests/fixtures/arena/Main.tz` と `tests/features.mjs` の suite `arena`（`map_set` の後。26 ケースとトラップ 4 つ、`inspect` は検索関数が確保しないこと・カウンターの定義と `define` が 1 回ずつ・`atomicrmw ... monotonic`）。
+- 文書: LR に `built-in-types-and-modules/arena.md`（新規。`map.md` と同じ構成、基本例は `run=143` の `cycle`）と `index.md` の項目。共有や循環を「できない」「計画中」と書いていた
+  `ownership-and-memory/drop.md`・`ownership.md`、`languages/why-tsuzuri.md`・`how-about-tsuzuri.md`・`strategy.md`、`built-in-types-and-modules/union.md`・`record.md`、`compiler/diagnostics.md`（`E1022`）を直した。
+  `docs/language.md`（`### Arena`、「型とメモリ」と再帰型の節の追記、診断表の `E1022`）、`docs/architecture.md`（Arena の段落）、`README.md`（コレクションの一覧と予約名）。
+
+#### チケットから外れた判断
+
+1. 文書の置き場所は GUIDE §8.1 で読み替えた（`_docs/library-reference/arena.md` → LR の `arena.md`）。生成 API の snapshot（`api/Arena.md`）と `_docs/feature-status.md` は置き換え先がないので作らない。`_features/README.md` と GUIDE は coordinator が更新する。
+2. `docs/language.md` の `### Arena` は `### Map / Set` の直後ではなく、その後に続く `### HashMap / HashSet` の後に置いた（チケットの詳細化の後に HashMap の節ができ、Map／Set と HashMap／HashSet の間を割らないため）。
+3. 「Arena を使わないプログラムの IR は変わらない」は、std の関数の追加による生成 id の一様なずれを除いて満たす。instance の関数の id は全関数の数の後から採番するため（`polymorph.rs` の `function_id = functions.len()`）、std に関数を足すと `$instance.N`・`$intrinsic.<class>.<method>.N`・`$builtin.to_string.N` の番号がずれる（C08・A15 と同じ）。
+   `2ee813f` の release コンパイラと比べ、`tests/fixtures/*` の 57 個（`arena` を除く）のうち 32 個は byte 一致、25 個はこの番号を正規化すると一致した（差分は番号だけ）。`tz.arena` と `atomicrmw` は Arena を使わない IR に現れない（`arena_ir_has_one_atomic_counter`）。
+4. ハンドルの `Display`／`Debug` は作らない（チケットどおり）。
+
+#### 確認
+
+- `cargo test --locked --test arena`（7 passed）、`--lib stdlib`（5 passed）、`--test map_set`（2）、`--test debug_output`（3）、`--test polymorphism honors_the_exact_specialization_limit`（1）。
+- `node tests/features.mjs target/release/tsuzuri arena`: 26 ケースとトラップ 4 つが native／WASM × `-O0`／`-O3` で成功（`live == 0`、WASM の import なし、IR の 2 回の出力が一致、宣言の重複なし）。`TSUZURI_TSAN=1` でも成功（`arena_parallel` の 4 task が並列に `Arena.__next_id` を呼ぶ）。`map_set` も成功。
+- `tsuzuri build tests/fixtures/arena --target wasm32 --wasm-feature threads` が成功し、`llvm-objdump` で `i64.atomic.rmw.add` を確認した。既定の wasm32 では atomic 命令が通常の加算に下がる（import なし）。native と wasm32 の IR はそれぞれ 2 回の出力で一致した。
+- `node scripts/check-docs.mjs`（変更した LR の 10 ページ）が成功。`tsuzuri doc std` は `Arena.md` を出し、`tsuzuri fmt` で整形した fixture も `check` を通る。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked`（72 個のテストバイナリで 743 passed、失敗なし）、GUIDE §3.1 の回帰テスト 4 件（既定の stack で個別に実行）が成功。
+
+### Phase 2: 参照カウント（Rc／Arc／Weak）
+
+#### 具体的な設計
+
+- 型: `Type::Shared(Box<Type>, SharedKind)`。`SharedKind` は `Rc`・`RcWeak`・`Arc`・`ArcWeak`（`atomic()`・`weak()`・`strong()`・`weakened()`）。ソースの型名は `Rc<T>`・`Rc.Weak<T>`・`Arc<T>`・`Arc.Weak<T>`（`std::` 付きも可）で、`resolve_type` が `Vec` と同じく宣言の解決より先に読む（引数が 1 つでなければ `E1004`）。std のソースはなく、予約モジュール `Rc`・`Arc` を足した（`reserves_the_d07_table` は 39）。
+- API（組み込み関数 18 個。`Arc` 版は同名・同型）: `new :: 'a -> Rc<'a>`、`share :: ref Rc<'a> -> Rc<'a>`、`get :: ref Rc<'a> -> ref 'a`、`strong_count`／`weak_count :: ref Rc<'a> -> i64`（`weak_count` は `Weak` の数で、強い所有者全体の 1 を含まない）、`ptr_eq :: ref Rc<'a> -> ref Rc<'a> -> bool`、`try_unwrap :: Rc<'a> -> Result<'a, Rc<'a>>`、`downgrade :: ref Rc<'a> -> Rc.Weak<'a>`、`upgrade :: ref Rc.Weak<'a> -> Maybe<Rc<'a>>`。`weak_count` と `ptr_eq` は追加した。
+- 表現: 値は `ptr`。ブロックは `{ i64 strong, i64 weak, T }` で、強い所有者全体で弱い数を 1 持つ（Rust と同じ）。`T` が再帰型を格納する（`Type::reaches_recursive`）ときだけ、`%tz.rec.header` の `next`・`action` を前に置いた `{ ptr, ptr, i64, i64, T }` にする（遅延ブロック）。
+- drop: ヌル（ムーブ済み）なら何もしない。強い数を減らして 0 なら、値を drop してから弱い数を減らし、0 ならブロックを解放する。遅延ブロックは値を drop せず、action `@"tz.shared.drop.{rc,arc}.<T>"` を書いて `@tz.rec.enqueue`（`drop_pending` があるとき）か `@tz.rec.drop` に積む。action は `drop_pending` 付きで値を drop して弱い数を減らす。再帰型のノードと同じ待ちリストなので、`Rc`／`Arc` を通る鎖も再帰しない（D-24 と同じ方式）。action の型は `Globals::shared_types` に集め、`llvm_recursive::emit_helpers` が再帰型の helper と交互に不動点まで定義する。
+- `Arc` の順序: 増加は `atomicrmw add monotonic`、減少は `atomicrmw sub release`、0 にしたタスクは値とブロックを壊す前に `fence acquire`。`try_unwrap` は `cmpxchg 1 → 0 monotonic monotonic` の後に `fence acquire`、`upgrade` は強い数が 0 でない間 `cmpxchg n → n + 1 acquire monotonic` を繰り返す。読み出しは `load atomic monotonic`。`Rc` は通常のロード・ストアだけ。
+- overflow: 強い数・弱い数の増加が `i64::MAX` を超えるとトラップ（`TrapKind::NumericRuntime`。`Rc` は書き込む前に検査するので計数は壊れない）。
+- 性質: 非 Copy、`needs_drop`。`contains_reference`・`carries_loans`・所有権の `owned` は中の値に従う。`Rc`／`Rc.Weak` は `Send` でなく、`Arc<'a>` は `'a` が `Send` で、かつ `shareable`（下の「レビュー対応」4）なら `Send`。
+- 捕捉（チケットの「関数値の複製は share」から外れた判断）: 関数値の型は捕捉した値を表さず、どの関数値も `Send` として task へ渡せる（借用だけを ownership が追跡する）。`Rc` を関数値に入れると非 atomic な計数が task をまたぐので、`Rc`／`Rc.Weak` とそれを持つ値は `Capture` を満たさない（`E1005`）。`Arc<'a>` は `'a` が `shareable`（`Rc`・`Rc.Weak`、extern ハンドル、Copy でない dyn、`Owned.Function` を格納しない。レビュー対応で `thread_confined` から改めた）なら捕捉でき、関数値の複製（`clone_value`）は `share` と同じく強い数を 1 増やす（弱参照は弱い数）。
+- 中身: 排他参照を含む中身は `E1005`（`Validation::check`）。共有参照を含む中身（`Rc<ref string>`）は参照先の寿命に縛られる。
+- 再帰型（チケットからの拡張）: `record Node { value: i64, children: Vec<Rc<Node>> }` のような DAG のノードを書けるように、`src/recursive.rs` は共有ポインタを格納のグラフに含め（`visit`・辺・`stored_all`・`reaches`）、共有ポインタを通る循環には union を求めない（`Graph::shared`）。値が有限かの判定では `Shared(T)` は `T` と同じなので、`record Loop { next: Rc<Loop> }` は `E1010`。共有ポインタを通る循環の中の union も再帰型のノードになるため、`union List = Nil | Cons of (i64 * Rc<List>)` は要素ごとに 2 回確保する（ノードと `Rc` のブロック）。再帰型の性質の計算は既存の `stored_all` を通るので無限再帰しない。
+- 名前: 型名 `Rc`・`Arc` は `Vec` と同じく利用者のレコード・union・型エイリアス・extern type・型クラス・case に使えない（`E1001`）。`new` は予約語のまま、parser の `dot_member` がドットの後ろでだけメンバー名にする（`Rc.new`。`union` の前例と同じ。GUIDE §12 の表の `Atomic.new` は `E0002` ではなく `E1002 unknown value 'Atomic'` になる）。
+- 診断: 新しいコードはない。task へ渡す `Rc` は `E1013 tasks require Send values; Rc<i64> holds an Rc or Rc.Weak, whose counts are not atomic; share values across tasks with Arc`、捕捉は `E1005 cannot capture Rc<i64> in a function value; function values may move to other tasks, and Rc counts its owners without atomic operations; capture an Arc, or pass the Rc as an argument`、中身の排他参照は `E1005 Rc cannot hold a mutable reference; ...`。`export`／`extern` は `E1008`、const は `E1026`。
+- `Eq`・`Ord`・`Hash`・`Display` の instance は作らない（`Rc.get` で値を比べる）。高カインドの構築子にも使えない。
+- 循環: 値ができる前にその値の `Rc` は作れず、共有した値は変更できないので、Phase 2 だけでは `Rc`／`Arc` の循環を作れない（解放漏れの経路はない）。サイクルコレクターは作らない。**F10 が内部可変性を導入するときは、`Arc<'a>` の `Send` に `Sync`（共有参照を複数の task へ渡せること）を要求し、`Weak` を使わない循環が解放されないことを文書化する。**
+
+#### 実装したファイル
+
+- `src/check.rs`（`Type::Shared`・`SharedKind`・性質・`shareable`（当初は `thread_confined`）・`holds_rc`・`holds_unshareable_arc`・`reaches_recursive`、`resolve_type` と `builtin_type_head`、予約型名、`Builtin` の 18 個と `SharedOperation`、`BuiltinType::Shared`、`Validation`／`Layouts`）、`src/polymorph.rs`（`map_type`・`resolve`・`unify`・`type_expression`・`bounded_type`・`drop_components`・`builtin_type`、拒否のメッセージ）、`src/recursive.rs`、`src/ownership.rs`（`owned`）、`src/closures.rs`、`src/constants.rs`・`src/warnings.rs`・`src/call_specialization.rs`（型の走査）、`src/parser.rs`（`dot_member`）、`src/stdlib.rs`。
+- `src/llvm_shared.rs`（新規）、`src/llvm.rs`（`llvm_type`・`canonical_type`・`storage_layout`・`drop_value`・`clone_value`・組み込みの振り分け、`Globals::shared_types`、`emit_typed_builtin` が本体の登録を共有の `Globals` へ移す。これまで組み込み関数の本体だけが構築・解放する再帰型は helper が出ない可能性があった）、`src/llvm_recursive.rs`（helper の不動点）、`src/llvm_debug.rs`。
+- テスト: `tests/rc.rs`（8 件）、`tests/fixtures/rc/Main.tz` と suite `rc`（35 ケース、native だけの 100 万要素 3 件、トラップ 1 つ、WASM だけのトラップ 2 つ）。suite の後に `--wasm-feature threads` の WASM を `createThreadPool`（3 worker）で `-O0`／`-O3` 実行し、heap が worker の stack だけに戻ることを確かめる（`rcWasmThreadsChecks`）。
+- 文書: LR の `built-in-types-and-modules/rc.md`（新規）と `index.md`、`ownership-and-memory/ownership.md`・`drop.md`・`stack-and-heap.md`、`async-tasks-and-lazy/task.md`、`values-and-functions/lambda-expressions.md`・`keywords.md`、`types-and-type-inference/types.md`、`built-in-types-and-modules/list.md`・`union.md`・`record.md`、`languages/why-tsuzuri.md`・`how-about-tsuzuri.md`・`strategy.md`、`compiler/diagnostics.md`。`docs/language.md`（「型とメモリ」の規則を「GC と手動の解放は使わず、参照カウントは std の `Rc`／`Arc` を明示的に使った値だけ。サイクルコレクターはない」に改め、型の表、`### Rc / Arc`、閉包・task・再帰型・予約名・`new`・診断）、`docs/architecture.md`、`README.md`。
+
+#### 確認
+
+- `cargo test --locked --test rc`（8 passed）、`--test arena`（7 passed）。
+- `node tests/features.mjs target/release/tsuzuri rc`: 35 ケースとトラップが native／WASM × `-O0`／`-O3` で成功（`live == 0`、WASM の import なし、IR の 2 回の出力が一致）。100 万要素の `Rc`／`Arc` の鎖（`rc_chain`・`rc_long_drop`・`arc_chain`）は native の `-O0`／`-O3` で解放でき、WASM の既定の 16 MiB では 100 万要素が確保の失敗でトラップする（`wasmTraps`）。WASM で収まる最大はおよそ `rc_chain` 162,946 要素、`rc_long_drop` 139,532 要素、`arc_chain` 162,946 要素（二分探索で測った）で、両 target のケースは 100,000 要素にした。
+- `TSUZURI_TSAN=1 node tests/features.mjs target/release/tsuzuri rc` が成功（`arc_parallel`・`arc_weak_parallel`、最後の所有者が worker で解放する `arc_parallel_last`・`arc_chain_parallel`）。検出力の確認として、`Arc` の減少を非 atomic にした build では TSan が data race を報告し、`fence acquire` だけを外した build では報告しなかった（このハーネスでは acquire の欠落を検出できない。順序は C++ のメモリモデルで決めた）。
+- `--wasm-feature threads` の build が成功し、`i64.atomic.rmw.add`・`i64.atomic.rmw.sub`・`i64.atomic.rmw.cmpxchg`・`atomic.fence` を確認した。既定の wasm32 は atomic 命令を含まない。threads の WASM を 3 worker で実行した結果も一致した。
+- `-g`（`TSUZURI_LLVM_LINK` を設定）、`--trap-info`、`--trap-mode return`、`--allocator counting` の build が成功。`tsuzuri fmt` の往復と `tsuzuri doc`、LSP の意味索引（hover の型 `Rc<string>`）も確かめた。
+- `2ee813f` の release コンパイラとの IR の比較（`tests/fixtures/*` の 57 個）は Phase 1 と同じく 32 個が byte 一致、25 個が生成 id のずれだけ。Phase 2 は Rc／Arc を使わない IR を変えない。
+- 全体: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（rustc／clippy 1.98.1）、`RUST_MIN_STACK=4194304 cargo test --locked`（73 個のテストバイナリで 751 passed、失敗なし）、GUIDE §3.1 の回帰テスト 4 件（既定の stack で個別に実行）、`cargo build --release --locked`、`sh scripts/check-runtime-includes.sh`（29 files）が成功。
+  Windows の型検査 `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（と `aarch64-pc-windows-msvc`）は、rustup の toolchain が 1.96.1 で、既存の `src/lsp.rs`・`src/parser.rs` の `clippy::nonminimal_bool` 3 件だけを報告した（`2ee813f` でも同じ 3 件）。この lint を除くと両 target とも警告なし。
+- E2E（release）: features の `arena`・`rc`（`TSUZURI_TSAN=1` も）・`recursive_types`・`map_set`・`hash_map`・`vec`・`parallel`・`dyn_dispatch`・`iteration_protocol`・`unions`・`generic_records`・`typeclasses`・`consuming_update`・`borrowed_records`、`tests/tasks.mjs`・`tests/primitives.mjs`・`tests/wasm_threads.mjs`・`tests/user_drop.mjs` が成功。`node scripts/check-docs.mjs`（変更した LR の 17 ページ）が成功。
+
+#### 既知の制限
+
+- `Rc`／`Arc` を通って自分自身を含む union は再帰型のノードで表すので、`Cons` 1 つにつき確保が 2 回になる（Rust は 1 回）。一つにまとめる表現は別の改善として残す。
+- 関数値・dyn・task の環境を何重にも通る鎖の解放は、D-24 と同じく反復化の対象外（`Rc` は関数値に入らないので、`Rc` の鎖では起きない）。
+- `Rc`／`Arc` の `Eq`・`Ord`・`Hash`・`Display`、高カインドの構築子、内部可変性（F10）はない。
+- TSan のハーネスは計数の非 atomic 化を検出するが、`fence acquire` の欠落は検出しない（上の確認）。
+- GUIDE §12 の誤りの表の `Atomic.new`（`E0002`）は、`.new` をメンバー名として読むようになったので `E1002 unknown value 'Atomic'` になる（GUIDE は coordinator が更新する）。
+
+### レビュー対応（2026-10-08）
+
+統合ブランチへの merge 後のコードレビューで見つかった 4 件を `wt/c10` で直した。どれも回帰テストを足し、直す前の build でそのテストが失敗することを確かめた。
+
+1. **共有ポインタの中だけに現れる名前付き型の定義漏れ（HIGH）。** `src/llvm.rs` の `named_types::visit` が `Type::Shared` を辿らず、`Vec<Rc<Maybe<string>>>`、`Maybe<Rc<Pair<i64>>>`（`Pair<'a>` は利用者の generic record）、`Maybe<Arc<(i64 * Maybe<Arc<i64>>)>>` のように共有ブロックの中にしか現れない record／union の具体化に `%"tz.union…"`／`%"tz.record…"` の定義が出ず、clang が `base element of getelementptr must be sized` で拒否していた。`Vec`・`Task`・参照と同じ再帰の腕に `Type::Shared` を足した。§6.9 の他の型の走査も見直し、`literal_match` の `closed`（`src/check.rs`）も `Vec` と同じく共有ポインタの中を辿るようにした（`Rc<{integer}>` の値は参照ではないので、引数の借用の結果は変わらない）。`llvm_abi` の handle の typedef、`polymorph` の捕捉、region のラベルは共有ポインタを含みえない（`E1008`、捕捉は値ごと）ので変えていない。
+   テスト: `tests/rc.rs` の `named_types_reached_only_through_shared_pointers_are_defined`（IR が使う引用符付きの名前付き型がすべて `= type` で定義されることを native／wasm32 で確かめる。直す前は `"tz.union.Maybe.Maybe[string]" has no definition` で失敗）。E2E は suite `rc` の `shared_named_types`（3 つの型を実際に作って読む）。
+2. **arena の複製の間で、ハンドルが空き slot に一致する（MEDIUM）。** 空き slot は「次の世代」と「空き列の次」を持ち、`position` は世代だけを比べていたので、関数値の複製で arena ID ごと複製された 2 つの arena の一方で作ったハンドルが、他方の空き slot に一致した（`contains`／`get` が無関係な値を返し、`remove` が別の値を swap-remove して空き列を自己ループにする）。`std/Arena.tz` で、空き slot の世代を次の世代 `g` から `-1 - g`（-2 以下）として持つように改めた。退役は従来どおり -1、ハンドルの世代は 0 以上なので、世代の比較だけで使用中の slot に限られる。`insert` の再利用は `-1 - slot.generation` で世代を戻し、`remove` は `-2 - handle.generation` を書く（`i64::MAX` の退役は先に判定するのであふれない）。詰めた位置・空き列・API の意味は変わらない。
+   テスト: `tests/arena.rs` の `handles_never_match_free_slots_of_another_copy`（5 値の arena を捕捉した関数値から 2 つの複製を作り、一方で 2 つ削除、他方で削除と挿入をして、他方のハンドルを一方で `contains`／`get`／`remove` し、その後一方へ 3 値を足して詰めた順を読む。CLI の `run` で `-O0`／`-O3` を実行し、`4050300708090111` を確かめる。直す前は `40300708091221`）。E2E は suite `arena` の `arena_snapshot`（同じ手順。期待値は詰めた順 40, 50, 30, 7, 8, 9 から独立に組み立てる）。
+3. **弱い親リンクで多相再帰の `E1017` が誤って出る（MEDIUM）。** `src/recursive.rs` は、解析の経路上にある同じ宣言の具体化より型引数の「重さ」が減らない具体化を `E1017` にしていた。`Rc.Weak` と `Rc` の重さが同じなので、`record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }` で `Rc.upgrade` が返す `Maybe<Rc<TreeNode>>` を解析すると、経路上の `Maybe<Rc<TreeNode>>` から `Maybe<Rc.Weak<TreeNode>>` に出会って拒否した（`record Node { link: Maybe<Rc<Node>> }` と `Maybe.Some (Rc.downgrade …)`、共有ポインタと関係のない `record Node { value: i64, a: Maybe<[Node]> }` と `Maybe<Vec<Node>>` も同じ）。重さで比べるのをやめ、多相再帰を宣言ごとの性質として検査する。ジェネリックな宣言を自身の型パラメーターで解析するとき（`Graph::generic_root`）だけ、同じ宣言の別の具体化に到達したら `E1017`（引数の変化）。具体型を根とする解析では比較しない。ほかの根の解析が先に到達した「自身のパラメーターのままの宣言」の結果はキャッシュしないので、宣言の順序によらず各宣言は自分の解析で検査される（直さないと `record First<'a, 'b> { swap: Maybe<Swap<'a, 'b>> }` の後の `Swap` が素通りした）。増え続ける展開はノード 4096・深さ 128 の上限で止まり、経路に同じ宣言の別の具体化があれば `E1017`（引数の変化）、なければ従来の上限の `E1017`。
+   以前と同じく拒否するもの: `Bad<['a]>`、`Swap<'b, 'a>`、`Pairs<('a * 'a)>`、`record Grow<'a> { next: Vec<Grow<['a]>> }`、相互再帰の `Ping<'a>`／`Pong<['a]>`、`record Pair<'a> { value: 'a, other: Maybe<Rc<Pair<i64>>> }`（他の宣言の後でも）。関数の多相再帰の上限（`bounds_type_growing_polymorphic_recursion`）は変わらない。
+   テスト: `tests/rc.rs` の `weak_back_links_are_not_polymorphic_recursion`（`TreeNode`、`Node` の弱参照、`Arc` の双方向リスト、generic な `Node<'t>`）、`tests/recursive_types.rs` に拒否 5 件と受理 1 件を追加。E2E は suite `rc` の `rc_weak_parent`（親を解放した後の `upgrade` が `None`）。
+4. **`Arc` で extern ハンドルを複数の task が同時に使える（MEDIUM）。** `Arc<H>`（`H` は `extern type`）が `Send` で捕捉もできたので、複数の task が `Arc.get` で同じホストのハンドルに extern 関数を同時に呼べた（C10 以前はハンドルを持てる task は 1 つだった）。F10 が `Sync` を入れるまでは、`Type::shareable`（格納グラフに `Rc`／`Rc.Weak`、`Type::Handle`、Copy でない dyn（ハンドルを隠しうる）、`Owned.Function`（ハンドルを捕捉しうる。`Owned.call` は借用で呼ぶ）を持たない）を満たさない値の `Arc`／`Arc.Weak` は、それを持つレコード・union・`Arc` も含めて `Send` でも捕捉可能でもない。task へ渡すと `E1013 tasks require Send values; Arc<Main.Counter> shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once; give the value to one task instead`、関数値の捕捉は `E1005 cannot capture … in a function value; function values may move to other tasks, and …; pass it as an argument`（`holds_unshareable_arc` で選ぶ。`Owned.function` の捕捉も `E1013` の同じ文面）。同じ task の中の `Arc.share`、ハンドルそのものを 1 つの task へ移すこと、Copy な dyn や関数値の `Arc` は従来どおり。`thread_confined` は `shareable` に置き換えた（Copy でない dyn は `Send` でも共有できない）。**F10 は内部可変性とともに、この `shareable` を `Sync` に置き換える。**
+   テスト: `tests/rc.rs` の `arc_does_not_share_host_handles_between_tasks`（task への `Arc<H>`・`Arc.Weak<H>`・`Arc<Arc<H>>`・`Arc<H>` を持つ record と再帰 union・`Arc<H>` を受け取って task を返す関数・`Owned.function` の捕捉・`Arc<Owned.Function>`・`Arc<dyn (Shape, Send)>` の `E1013`、関数値の捕捉の `E1005` 2 件、受理 4 件）。拒否なので E2E は足していない。
+   文書: LR の `rc.md`（ポイント、Arc とタスク、送信と捕捉の規則の表と箇条、弱い親リンクの木の実行例 `parent=7 after=-1`）、`async-tasks-and-lazy/task.md`・`values-and-functions/lambda-expressions.md`・`compiler/native-interop.md`・`compiler/diagnostics.md`（ハンドルを持つ値の `Arc`）、`arena.md`（複製の間のハンドル）、`union.md`（`E1017` の判定）、`docs/language.md`（Arena の空き slot の符号化、`Rc / Arc` の `Send`／捕捉、再帰型の `E1017`）、`docs/architecture.md`（Arena の slot の符号化、`shareable`、`generic_root`、`named_types`）。
+
+確認（レビュー対応の後）:
+
+- `cargo test --locked --test rc`（11 passed）、`--test arena`（8 passed）、`--test recursive_types`（4 passed）。
+- `RUST_MIN_STACK=4194304 cargo test --locked`: 755 passed（Phase 2 の 751 に今回の 4 件）、失敗なし。GUIDE §3.1 の回帰テスト 4 件（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・`honors_the_exact_specialization_limit`）を既定の stack で個別に実行して成功。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` が成功。Windows の型検査 `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（rustup 1.96.1）は従来の `clippy::nonminimal_bool` 3 件だけで、この lint を除くと警告なし（プラットフォーム固有のコードは変えていない）。
+- E2E（release）: features の `rc`（37 ケース、WASM threads の検査を含む）・`arena`（27 ケース）・`recursive_types`・`parallel`・`dyn_dispatch`・`unions`・`generic_records`・`typeclasses`・`vec`・`map_set` が native／WASM × `-O0`／`-O3` で成功。`TSUZURI_TSAN=1` の `rc`・`arena`、`tests/tasks.mjs` も成功。`node scripts/check-docs.mjs`（変更した LR の 7 ページ）が成功。
+
+### 統合後の変更（opt-in std モジュール。D-40）
+
+- 6 チケットの統合で、`Arena` を opt-in std モジュールにした。利用者のソースが識別子 `Arena` を含むときだけ読み込み、`Arena.Handle` などの宣言は利用者のコードから修飾した名前でだけ見える。
+  そのため「Arena を使わないプログラムの IR は変わらない」は、生成 id のずれも含めて byte 単位で満たす（`2ee813f` の release コンパイラと比べ、既存の fixture と例の
+  native／wasm32 の IR 132 個がすべて byte 一致）。
+  無修飾の `Handle` は従来どおり `File.Handle` を指す。`Rc`／`Arc` は組み込みの型で std のソースを持たないので、この仕組みの対象外。
+
+### PR #17 の Copilot のレビュー（2026-10-08）
+
+- 「ハンドルの `Eq`・`Ord`・`Hash` が arena ID を含まず、別の arena のハンドルが `Map`／`HashMap` のキーとして同一視される」という指摘には、D5 を保った。
+  arena ID の数値は並列の task で実行ごとに変わり得るので、`Ord`・`Hash` に入れるとキー順とハッシュが決定的でなくなり、`Eq` だけに入れると `Ord` と食い違う。
+  Rust の `slotmap` のキーと同じ比較であることと、表のキーには 1 つの arena のハンドルだけを入れること（複数の arena では利用者の区別をキーに含めること）を
+  `arena.md` と docs/language.md に明記した。arena への読み書きは別の arena のハンドルを常に検出する。

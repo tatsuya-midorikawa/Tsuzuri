@@ -26,6 +26,7 @@ WebAssembly における SIMD128 機能は、`build --target wasm32 --wasm-featu
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
   識別子同士を空白を挟まずに連結し、末尾の要素が大文字で始まる（モジュールを指す）場合、または行頭の `namespace`／`using` 宣言内に現れる `::` がパス区切り文字として認識されます。パターンマッチにおける `x::xs` はリストのコンスとして解釈されます。
   なお、標準ライブラリの `Set.union` との整合性を保つため、`union` キーワードのみはモジュール関数の宣言名およびドットに後続するメンバー名としても例外的に使用可能です（変数名、型名、モジュール名としては使用できません）。
+  同様に `new` は、ドットに後続するメンバー名としてだけ使用可能です（`Rc.new`、`Arc.new`。C10）。
 - コメント構文には、行末までをコメントアウトする `//`（行コメント）と、ネスト記述が可能な `/* ... */`（ブロックコメント）が利用できます。
 - `=`, `then`, `do`, `->` などのトークンに続く複数行の式ブロック（インデント本体）は、最初の式のインデントレベルを基準として解釈され、それより浅いインデントが出現した時点でブロックが終了します。明示的な波括弧 `{ ... }` によるブロック構文も使用可能です。空白区切りの関数適用は改行を跨ぐことはできません。
   インデントブロック内の `let` 文や式列は改行によって区切られ、ブロック途中の結果式には `unit` 型が要求されます。
@@ -185,7 +186,22 @@ geometry-core = { path = "../geometry-core" }
 正規化されたルートパスが同一であるパッケージは共有され、循環依存、同一名を持つ別パスのパッケージの重複、ルートパッケージとの名前空間の衝突、予約名前空間の使用、およびシンボリックリンクは `E1011` エラーとして厳格に拒否されます。
 パッケージ依存グラフは最大 1024 パッケージ、依存深度最大 128、プロジェクト全体のソースファイル数最大 4096 件までに制限され、超過時は `E1017` リソース上限エラーとなります。ネストした依存パッケージのルートを親パッケージとして二重に重複走査することはありません。
 マニフェストの文法は、上記に示したセクションおよびキーのみを許容する安全な限定的 TOML です。コメント記号 `#`、空行、CRLF 改行、ダブルクォーテーションで囲まれた UTF-8 文字列、ならびにエスケープシーケンス `\"`、`\\`、`\n`、`\r`、`\t` のみをサポートし、未知のキー、不正なエスケープ、あるいは未対応の TOML 構文は `E0002` エラーとなります。
-マニフェストファイルおよび依存パッケージのソースコードも、すべてファイル出力保護機構の管理対象となります。外部ネットワーク通信、Git リポジトリの直接取得、lockfile の自動生成、複雑なバージョン解決、およびビルドスクリプトの実行機能は意図的に排除されています。外部モジュールを取り込む宣言は `using` のみであり、専用の `import` 宣言は存在しません。
+マニフェストファイル、`Tsuzuri.lock`、および依存パッケージのソースコードも、すべてファイル出力保護機構の管理対象となります。外部モジュールを取り込む宣言は `using` のみであり、専用の `import` 宣言は存在しません。ビルドスクリプトの実行機能はありません。
+
+#### git 依存と Tsuzuri.lock
+
+別リポジトリのパッケージは、commit を固定した git 依存 `name = { git = "https://...", rev = "<40 桁の小文字 16 進>" }` として宣言できます（キーはこの順序で 1 行に書きます）。URL は `https://` または `file:///` で始まる 2,048 バイト以下の印字可能 ASCII で、空白・`@`（資格情報）・`?`・`#`・`\` を含められず、`rev` は完全な commit ID に限られます。ブランチ・タグ・短縮形・`http://`・`ssh://` は `E0002` エラーです。
+git 依存を取得するのは `tsuzuri fetch <directory>` だけです。PATH の `git`（2.32 以降）を起動し、利用者とシステムの git 設定・hooks・資格情報の問い合わせを無効にした一時的な bare リポジトリへ commit を取得し、`ls-tree` と `cat-file --batch` でルートの `Tsuzuri.toml` と `.tz`／`.tt`／`.tc`（`.` で始まる要素を含まないパス）だけを読み出します。作業木は作らず、ファイルは Tsuzuri 自身がビルドキャッシュの保存先の `packages/git/<sha256>/` へ書き込みます。シンボリックリンク、submodule、危険なパス、大文字小文字だけが異なるパス、UTF-8 でないファイル、ルートのマニフェストの欠如は `E2007`、ソースの上限は `E0003`／`E1017` で拒否されます。
+`sha256` はパッケージのルートからの `/` 区切りの相対パスと内容を、パスのバイト順に長さ付きで SHA-256 へ入れた値で、`fetch` はグラフ全体が解決したときだけ、ルートマニフェストの隣に正規形の JSON `Tsuzuri.lock`（`format` 1、パッケージ名順の `name`・`git`・`rev`・`sha256`）を書きます。内容が同じなら書き換えず、既存の項目と同じ名前・URL・rev で内容のハッシュが異なれば `E2007` で停止して lockfile を保持します。
+`check`／`build`／`run`／`test`／`doc`／`lsp` は `git` もネットワークも使わず、`Tsuzuri.lock` とストアだけから git 依存を読み、読み込んだ内容のハッシュを毎回照合します。lockfile の欠落・古い項目・形式違反、ストアにない依存、ハッシュの不一致は `E2007` です。git のパッケージは path 依存（`E1011`）と `[native]`（`E2000`）を持てず、`https://` から取得したパッケージは `file:///` の依存を持てません（`E2007`）。一つのパッケージ名はグラフ全体で一つの取得元（パス、一つの URL と rev、または registry）を指し、異なる取得元の要求は `E1011` です。
+
+#### registry 依存と版の解決
+
+`name = { version = "MAJOR.MINOR.PATCH" }` は registry の版の要求です（10 進・先頭の 0 なし。範囲演算子と pre-release は `E0002`）。要求はその版以上で互換の範囲（1.0.0 以降は同じ `MAJOR`、それより前は同じ `0.MINOR`）の版を受け入れます。
+registry はルートマニフェストの `[registry]`（`index = "<git URL>"`、省略可能な `rev = "<40 桁>"`）が指す git リポジトリで、`index/<name>.json` に各版の `version`・`git`・`rev`・`sha256`・`dependencies`（版の要求）を持ちます。Tsuzuri は公開の registry を運営せず、index は利用者や組織が置きます。依存パッケージの `[registry]` は読みません。
+`tsuzuri fetch` は index を git で取得し、グラフのマニフェストの要求から index の依存をたどる最小版選択（選ばれなかった版の要求も含めてたどり、各パッケージの互換の範囲ごとに要求の最小版のうち最新のものを選ぶ。Go の MVS と同じ）で版を決めます。選ぶ版は要求された版のいずれかで、index にない版は `E2007`、選んだ版の依存をたどって届く要求に互換の範囲が違うものがあれば一つの名前に一つの版の規則により `E1011` です（選ばれなかった版だけが述べる要求は衝突になりません）。選んだ版からたどれるパッケージだけを git 依存と同じ方法で取得し、内容の SHA-256 と取得したマニフェストの名前・版・依存が index の項目と一致することを検査し（不一致は `E2007`）、`Tsuzuri.lock` を `format` 2（registry のパッケージに `version` を追加）で書きます。git 依存だけの lockfile は `format` 1 のままで、両方を読めます。`Tsuzuri.lock` の同じ版の `sha256` と index が食い違えば `E2007` で停止します。
+ビルドは index を読まず、`Tsuzuri.lock` の版が要求を満たすことと内容のハッシュを照合します。registry のパッケージは版の要求だけを依存に持て（`E1011`）、`[native]` を持てません（`E2000`）。
+`tsuzuri publish <directory> --git <URL> --rev <commit>` は、パッケージを検査し、公開の条件（`MAJOR.MINOR.PATCH` の版、版の要求だけの依存、`[native]` なし）を確かめ、その commit の内容とディレクトリの内容のハッシュが一致することを確かめてから、`index/<name>.json` の `versions` に足す項目を出力します。index への反映は index リポジトリへの commit で、公開 API の互換性の検査（G19）はまだありません。
 
 #### 標準ライブラリ
 
@@ -200,21 +216,25 @@ geometry-core = { path = "../geometry-core" }
 なお、名前空間に属するのはモジュール単位であるため、`ignore` や `sqrt` のような修飾を伴わないグローバル組み込み関数に対して `std::` を前置することはできません。
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
-標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても常に型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
+標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+`build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
 
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt` は後から予約語として追加されたモジュール名です。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。
+
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
 
-現在の標準ライブラリは、`Maybe` および `Result` の型・基本操作・コンピュテーション式ビルダー、配列・リスト・Vec コレクション、文字列・文字型・整数演算 API、型クラスに対応した汎用数学関数、順序付きおよびハッシュコンテナ（`Map`、`Set`、`HashMap`、`HashSet`）、`IO` モナドおよび標準 OS API（`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`）、ならびに書式指定クラス `Format` を提供します（互換用の `Math.zero : f64` も維持されています）。後続の各節において、これら公開 API の契約および所有権セマンティクスを詳述します。
+現在の標準ライブラリは、`Maybe` および `Result` の型・基本操作・コンピュテーション式ビルダー、配列・リスト・Vec コレクション、文字列・文字型・整数演算 API、型クラスに対応した汎用数学関数、順序付きおよびハッシュコンテナ（`Map`、`Set`、`HashMap`、`HashSet`）、`IO` モナドおよび標準 OS API（`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`）、書式指定クラス `Format`、ならびに JSON の解析・出力と `Encode`／`Decode` による値の変換（`Json`、同じ値の CBOR は `Cbor`）を提供します（互換用の `Math.zero : f64` も維持されています）。後続の各節において、これら公開 API の契約および所有権セマンティクスを詳述します。
 
 `Point.tz`:
 
@@ -334,6 +354,18 @@ wasm32 環境では、ラッパー関数が関数テーブル（`__indirect_func
 これらのリンク指定はネイティブ実行ファイルを生成する `build`、`run`、`test` コマンドでのみ有効であり、wasm32、wasm64、実行ファイル以外の `--emit` 指定、`check`、`fmt` の各実行時においては `E2000` エラーとなります（なお、マニフェスト内の `[native]` はこれらの非対象ターゲットでは安全に無視されます）。指定されたパスが読み取れない場合は `E2001`、出力ファイルパスが入力パスと同一である場合は `E2003`、同一入力の重複指定や不正な `-l` 名は `E2000` エラーを報告します。
 リンク入力は、Clang の既存引数（ランタイムおよび `-pthread` を含む）の直後に、`-L`、ライブラリパス、`-l` の順序で追加されます。静的ライブラリを指定する場合は、そのライブラリ内のシンボルを参照しているオブジェクトファイルよりも後ろの順序になるよう `--link` を指定してください。なお、ビルドキャッシュは外部ライブラリファイルの内容ハッシュを追跡できないため、リンク入力が指定されている間はビルドキャッシュの使用を安全に迂回します。
 
+#### C ヘッダーからの生成
+
+`tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]` は、C のヘッダーを Clang（`TSUZURI_CLANG`、`-x c -std=gnu17`）の JSON AST と前処理結果（`-E -dD` と `-E -dM`）として読み、ヘッダー自身の宣言から、リンク名付きの `extern "symbol" def`、`const`、スカラーレコード、`extern type`、型別名を持つモジュール `Module` を書き出します。`#include` 先の宣言とマクロは出力しません（`--include-dir` は include の解決にだけ使われます）。C の ABI が上記のホスト ABI と一致すると確かめられる宣言だけを生成し、それ以外は推測で変換せず、その位置に `// skipped <C の名前>: <理由>` の行を残して警告 `W2002` を報告します。生成は決定的で、出力の先頭にはマーカー `// Generated by tsuzuri bindgen. Do not edit.`、ヘッダーのファイル名と SHA-256、Clang の版、ターゲット、指定した注釈（`// options:`）を記録します。
+型は Clang が表記した型名（`qualType`）を typedef 展開（最大 32 段）してから固定の表と完全一致で照合します。desugar した表記は typedef の属性を落とすので使わず、読めない表記（`typeof` など）は変換しません。対応するターゲットは 64-bit の LP64（x86_64／AArch64 の Linux と macOS）だけで、それ以外の `clang -dumpmachine` は `E2002` です。引数では `_Bool` が `bool`、`signed char`／`unsigned char` が `i8`／`i8u`、`short`／`unsigned short` が `i16`／`i16u`、`int`／`unsigned int` が `i32`／`i32u`、`long`／`long long` が `i64`、`unsigned long`／`unsigned long long` が `i64u`、`float`／`double` が `f32`／`f64` になり、全定数が `i32` に収まり固定の基底型を持たない enum は `i32` になります。enum・typedef・struct・フィールドが、配置を変えないと分かっている属性（availability、`deprecated`、`unused`、`visibility`、`flag_enum`、`enum_extensibility`、Swift と Objective-C の注釈など）以外の属性（`packed`、`aligned`、`mode`、`#pragma pack`、`randomize_layout` など）を持つと、その型は変換しません。C から Tsuzuri へ渡る `_Bool`（結果とコールバックの引数）は `i8u` にし（C が保証するのは下位 8 bit だけなので）、`void` の結果は `unit` にします。符号が環境依存の素の `char`、`long double`、`__int128`、`_Float16`、複素数、ベクトル、配列、値渡し・値返しの struct と union、下記以外のポインターは変換しません。
+本ヘッダーで名前付きで完全に定義され、すべてのフィールドが 32-bit／64-bit の整数、`f32`、`f64`、`i32` の enum で、bit-field と上記の属性を持たない struct は `record` になり、`const struct TAG *` の引数だけが `ref Record` になります（`const` のない struct ポインターは、ホストが一時的なコピーへ書き込みうるので変換しません）。enum の定数は `const NAME: i32 = 値` になり、値は Clang の定数式（暗黙の整数変換を含む）か、直前の値 + 1 から求めます。スカラーへ解決される typedef は `type Name = T` になります。Clang は無名の struct・union・enum に名前を付ける typedef（`typedef struct { ... } S;`）の型を `struct S` と表記しますが、tag の `struct S` とは C の別の名前空間にある別の型です。そのため無名の struct・union の typedef は展開せず（tag を付ければ変換できます）、無名の enum の typedef は、同じ名前の enum の tag（struct の中で宣言されたものを含む）があればその tag とともに変換しません。
+ヘッダー自身の object-like マクロのうち、置換列が 1 つの整数リテラル（10・16・8・2 進、接尾辞 `u`・`l`・`ll` とその組み合わせ、外側の括弧と単項マイナスを許す）のものは、C の整数定数の型の規則を LP64 に当てはめて `const` になります（`int` → `i32`、`unsigned int` → `i32u`、`long`・`long long` → `i64`、`unsigned long`・`unsigned long long` → `i64u`。単項マイナスはその型で計算し、`(-1u)` は `4294967295` の `i32u`）。値が 64 bit に収まらないもの、接尾辞 `u` なしで符号付き 64 bit に収まらない 10 進数、C として不正なリテラル（`09` など）は `W2002` です。浮動小数点、式、文字列、関数形式のマクロは何も出しません。マクロの位置は `-E -dD` の行マーカーから求め、`#undef` や後の再定義を反映します。`-E -dD` は `#pragma push_macro`／`pop_macro` を示さないので、ヘッダーの終わりの定義（`-E -dM`）と置換列が一致するものだけを生成し、一致しない整数リテラルのマクロは `W2002` です。
+ヘッダーが最初に宣言し、翻訳単位のどこでも定義されない struct（`struct ctx;` だけの不透明な struct）は `extern type` になります。そのポインターの引数（`const` の有無を問わない）とコールバックの引数は共有借用 `ref H`（呼び出しはハンドルを消費も複製もせず、ポインターの先で C が何をしても Tsuzuri からは見えない）、`const` のないポインターの結果は呼び出し側が所有する `H` です。`const` へのポインターの結果、ポインターへのポインター、フィールドの中のハンドルは変換しません。NULL は区別できず、Tsuzuri はハンドルを参照外ししないので、NULL の扱いは C の API の契約に従います。`--consume FUNCTION:PARAMETER` を指定した引数は値 `H` になり、呼び出しがハンドルを消費するので、その後の使用は `E1012` で拒否されます（解放する関数に指定します）。
+関数ポインターの引数は、引数が上記の表のスカラーか不透明 struct へのポインター、結果がスカラーか `void` のとき、上記のコールバックの型 `(P1 -> ... -> R)` になります（引数なしは `(unit -> R)`）。`void *` を含む関数ポインター、可変長引数、プロトタイプなし、ポインターを返すもの、入れ子の関数ポインター、block、呼び出し規約の属性を持つものは変換しません。
+`--buffer FUNCTION:POINTER:LENGTH`（引数は C の名前か 1 始まりの位置）は、ポインターとその直後の長さの 2 引数を 1 つの `ref [T]` にします。上記の buffer の ABI は要素へのポインターと `int64_t` の要素数をこの順に渡すので、ポインターは `const` な要素（`long`・`long long` は `[i64]`、`double` は `[f64]`、`unsigned char`・`char`・`void` は `[ubyte]`）へのポインター、長さは直後の 64-bit 整数（`size_t` を含む）でなければならず、それ以外は `W2002` です。長さは要素の数（`void` ならバイト数）として渡ります。空の配列は NULL と長さ 0 で渡ることがあります。注釈がヘッダーにない関数・引数を指す、同じ引数を 2 回指す場合は `E2000` です。
+名前は、関数とフィールドを snake_case（`glClearColor` → `gl_clear_color`）、レコード・不透明な struct・型別名を PascalCase（`point_t` → `PointT`）にし、enum の定数とマクロは C の名前のままにします。予約語、`_`、修飾なしの組み込み関数名（`sqrt`、`abs` など）、予約された型名（`Vec`、組み込みクラス名など）には末尾に `_` を付けます。名前の衝突、ASCII の C 識別子でない名前、リンク名の規則（`tz_`・`tsuzuri`・`__` の接頭辞とランタイムの予約名）に反するシンボル、static・inline・可変長引数・プロトタイプなしの関数、asm ラベルや overloadable でシンボルが C の名前と異なる関数、呼び出し規約を変える属性を持つ関数、`returns_twice` の関数、大域変数は `W2002` で省きます。
+既存の出力は、1 行目がマーカーのファイルだけを上書きします。手書きのファイル、シンボリックリンク、ディレクトリ、ヘッダー自身への出力は `E2003` です。
+
 ### コンパイル時定数
 
 `const Name: Type = expression` は、明示的な具象型注釈を持つ不変のコンパイル時定数を宣言するための構文です。`.tz` および `.tc` のファイル内で宣言可能であり、型クラス定義用の `.tt` 内に記述した場合は `E1018` エラーとなります。
@@ -430,11 +462,11 @@ def answer :: i32 = {
 匿名関数の本体コードは、クロージャ作成時ではなく、実際に関数が呼び出された適用時に評価されます。
 再帰関数を定義したい場合は、ラムダ式ではなく `def rec name :: 型 = ラムダ式` の名前付き関数構文を使用してください（ローカルな `let` 束縛は非再帰かつ単相として処理されます）。
 
-外側のスコープに存在する変数は、クロージャの生成時に環境へと捕捉（キャプチャ）されます。Copy 型の値はコピーされ、文字列などの非 Copy 型の値はクロージャ環境へと move されます。
+外側のスコープに存在する変数は、クロージャの生成時に環境へと捕捉（キャプチャ）されます。Copy 型の値はコピーされ、文字列などの非 Copy 型の値はクロージャ環境へと move されます。関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せるため、計数が atomic でない `Rc`／`Rc.Weak` とそれを持つ値は捕捉できません（`E1005`）。`Arc` は値が `Rc` を持たなければ捕捉でき、関数値の複製は `Arc.share` と同じく所有者を増やします（[Rc / Arc](#rc--arc)）。
 捕捉された変数は環境内部で常に不変（immutable）として扱われます。外側スコープで宣言された可変変数 `let mut` を捕捉した場合であっても、匿名関数の内部からその外側の変数を再代入して書き換えることはできません。
 関数値自体は Copy 特性を持ちますが、環境を保持している場合は、文字列、集約値、および内包する関数値を含めて、完全に独立した環境スナップショットをディープコピーして複製します（関数を呼び出すために値を取り出す際も同一の規則が適用されます）。
 これにより、内部で所有値を消費するような匿名関数であっても安全に繰り返し呼び出すことが可能です（通常の文字列束縛自体は非 Copy のまま安全に維持されます）。
-関数値がスコープを脱出した時点で、環境メモリと残存する所有値は即座に解放され、ガベージコレクタ（GC）や参照カウントのオーバーヘッドは一切発生しません。
+関数値がスコープを脱出した時点で、環境メモリと残存する所有値は即座に解放され、ガベージコレクタ（GC）のオーバーヘッドは一切発生しません。
 変数を捕捉しない純粋な関数値であれば環境の動的確保は発生せず、既知の関数の完全適用呼び出しも直接の機械語関数呼び出しへと最適化されます。
 ターゲットのポインタ幅に収まる単一の整数、真偽値、または f32／f64 の捕捉に対しては、関数記述子の環境欄に値をインプレース格納（`immediate_capture`）してヒープ確保を完全に消去します（値の独立したスナップショットという言語意味論は一切変わりません）。所有権を持つ値、複数変数の捕捉、またはポインタ幅に収まらない広幅値に対しては、安全に通常のヒープ環境が選択されます。
 なお、巨大なデータ構造の捕捉や、多重にネストしたクロージャ環境の複製が必ずしも軽量であるとは限らない点には留意が必要です。
@@ -571,7 +603,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 同一の型クラスにおいてインスタンスヘッドが単一化可能である場合、コンテキスト制約の強弱にかかわらず重複定義（overlap）として `E1016` エラーとなります。
 例えば `Eq<Box<'a>>` と `Eq<Box<i64>>` を同一プロジェクト内に共存させることはできません（組み込みの条件付き比較インスタンスをユーザーコードで上書きすることも禁止されています）。
 `Eq<Box<'a>>` の比較処理からは、内部要素に対する `Eq<'a>` などの残余制約が呼び出し元へと自然に伝播します。
-インスタンス解決のネスト深度は最大 64、1 つの制約から導出される個別要件は最大 128 個、重複判定は最大 1024 組を上限とし、これを超過した場合は `E1017` リソース上限エラーとなります。
+インスタンス解決のネスト深度は最大 64、1 つの制約から導出される個別要件は最大 128 個、重複判定の単一化は最大 1024 組を上限とし、これを超過した場合は `E1017` リソース上限エラーとなります。最外の型構築子が異なるインスタンスヘッドの組（例: `Encode<i64>` と `Encode<['a]>`、別々のレコード）は単一化せずに重複なしと判定できるため、この 1024 組には数えません。
 
 | 組み込みクラス | メソッド／演算子 | 提供される組み込みインスタンス |
 |---|---|---|
@@ -594,6 +626,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Default` | `default :: 'a`（`Default.default()` で呼び出し） | 数値の 0、false、unit、空文字列、文字の 0、空配列、空リスト、全要素が Default を満たすタプル |
 | `Elementary` | 初等超越関数用制約（メソッドなし） | f32／f64 のみ（ユーザーによるインスタンス追加は不可） |
 | `Err` | `msg :: ref 'a -> string`（`try` ハンドラの戻り値型に要求） | なし（標準ライブラリの `Exception` がインスタンスを保持。[検査付き算術と例外](#検査付き算術と例外) 参照） |
+| `Encode`／`Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`／`decode :: ref Json.Value -> Result<'a, Json.Error>` | なし（標準ライブラリの `Json` が bool、全整数型、全浮動小数点型、decimal 型、文字列型、`Maybe`、配列、リスト、`Vec`、`Map`、`Set`、`HashMap`、`HashSet`、2〜4 要素のタプル、`Json.Value` のインスタンスを保持。[Json](#json) 参照） |
 | `Drop` | `drop :: ref mut 'a -> unit`（スコープ終了時に drop glue が自動呼び出し。式からは直接参照不可） | なし（ユーザー定義の record や union に対して明示実装。[利用者定義の解放](#利用者定義の解放) 参照） |
 
 `Capture` 制約は、1 回実行専用の `Task<T>` およびそれを含む集約値の捕捉を静的に拒否します。
@@ -836,6 +869,7 @@ record Link { next: Maybe<Link> }
 
 union のペイロードを経由するデータ構造の循環定義が正式に許可されています。配列、リスト、Vec の空コレクションも、有限データの安全な基底ケースとして機能します。
 ただし、union を介さないレコード同士の直接のサイズ循環や、有限の停止基底を持たない `union Bad = Loop of Bad` のような定義は `E1010` エラーとなり、型引数が再帰ごとに無限に増大・置換される多相再帰は `E1017` リソース上限エラーとなります。型展開の最大深度 128、名前付き具象型の上限 4096 件の制限も厳格に維持されます。
+多相再帰の判定は宣言ごとです。ジェネリックな宣言を自身の型パラメーターのまま展開し、同じ宣言の別の型引数（`Bad<['a]>`、引数を入れ替えた `Swap<'b, 'a>` など）に到達すれば `E1017` です。ほかの型の中で同じ宣言が別の型引数で現れること、たとえば `parent: Maybe<Rc.Weak<Node>>` を持つ `Node` について `Rc.upgrade` が返す `Maybe<Rc<Node>>` の中で `Maybe<Rc.Weak<Node>>` に出会うことは多相再帰ではありません。
 `Maybe<Link>` と `Maybe<i64>` の内部メモリ表現は型引数に応じて個別に決定され、非再帰的な具象型が不要なポインタ間接参照へと劣化することはありません。
 
 再帰データ型は構造的に非 Copy（所有型）となります。部分 move、共有借用によるパターンマッチ、およびガード条件の規則は非再帰型と完全に共通です。
@@ -845,13 +879,15 @@ union のペイロードを経由するデータ構造の循環定義が正式�
 
 再帰データ構造のメモリ解放は、追加のメモリ確保を一切伴わない反復ループ（スタックレス走査）によって実行されます。関数値のクロージャ環境を複製する際にも、再帰ノードおよびそれに内包される配列・リスト・Vec が同一の反復アルゴリズムによってディープコピーされるため、データ構造のネスト深度に比例してコールスタックを浪費する心配がありません。
 ただし、このスタックレス保証はデータ構造の内部クローンおよび解放処理に適用されるものであり、関数環境を多重に捕捉する極端な再帰や、ユーザーが明示的に記述した非末尾再帰関数呼び出しまでをスタックレス化するものではない点に留意してください。
-実行時におけるノードの循環参照グラフの形成や参照カウント方式、ガベージコレクション（GC）は言語レベルで完全に排除されています。
+実行時におけるノードの循環参照グラフの形成とガベージコレクション（GC）は言語レベルで排除されています。
+複数の所有者で共有する値は std の [Rc / Arc](#rc--arc) で明示的に共有し、循環するグラフは std の [Arena](#arena) に値を入れ、世代付きのハンドル `Arena.Handle<T>` で指して表します。
+型の循環は union の代わりに `Rc`／`Arc`（弱参照を含む）も経由できます（`record Node { value: i64, children: Vec<Rc<Node>> }`）。ただし空のコレクションや union の case で有限の値を作れなければ `E1010` です（`record Loop { next: Rc<Loop> }`）。共有ポインタを経由する循環の中の union も再帰型のヒープノードで表し、自分自身を含みうる値を持つ共有ブロックの解放は、同じ反復走査の待ちリストで行います。
 
 #### 自動導出（`deriving`）
 
 ```text
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
-union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display)
+union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display, Encode, Decode)
 ```
 
 型宣言の末尾に `deriving (...)` を付与することで、同一モジュール内に標準的な条件付き型クラスインスタンスをコンパイラが自動合成します。
@@ -862,6 +898,7 @@ union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display)
 - `Ord` の導出: 事前に `Eq` の導出または実装が必要です。レコードはフィールドの辞書式順序に従い、union は case の宣言順序に従って大小関係を判定します。NaN との比較などで順序判定が成立しない場合は後続の比較を行いません。
 - `Default` の導出: レコードは全フィールドのデフォルト値を結合し、union は宣言の先頭に位置する第 1 の case のデフォルト値を生成します（空コレクションの要素型に対して Default 制約は要求されません）。先頭の case が再帰構造を持っており有限値で終了しない既定値の生成は拒否されます。
 - `Display` の導出: レコードは `Point { x: 1, y: 2 }`、union は `Empty` や `Rect (1, 2)` のような標準的な文字列表現を出力します（配列は `[a, b]`、リストは `[|a, b|]`、タプルは `(a, b)` 形式）。
+- `Encode`／`Decode` の導出: レコードは宣言順の JSON object（キーはフィールド名、`@json "名前"` を付けたフィールドはその名前）、union はペイロードなしの case を `"Case"`、ペイロードありの case を `{"Case": payload}`（複数のペイロードはタプルなので配列。case 名も `@json` で変えられる）にします。`@json` は `deriving (Encode, Decode)` のある型にだけ書け（無ければ `E1025`）、変えた名前が重なると `E1025` です。decode は余分なキーを無視し、無いキーを `null` として decode して失敗すれば `MissingField` です。encode は最初の Error で止まり、decode は全フィールドを decode して宣言順で最初の Error を返します。生成コードは `$object{i}`／`$field{i}` などの束縛の連鎖と 1 段の `match` で、深さはフィールド数・case 数に比例しません。詳細は [Json](#json) を参照してください。
 - 構造内部に含まれる文字列や文字の表示: リテラル風にエスケープ・引用符付きで出力されます。`string`／`char` は `"..."`／`'...'`、UTF-8 文字列型は `u8` プレフィックスを伴います。ダブルクォーテーション、バックスラッシュ、ならびに LF、CR、TAB、NUL などの制御文字は適切にエスケープされ、その他の非表示制御文字や孤立サロゲートは 4 桁の大文字 Unicode エスケープ `\uXXXX`（UTF-8 型では `\u{XXXX}`）として出力されます（正常なサロゲートペアは文字としてそのまま保持されます）。なお、単独の文字列を直接 `Display.display` で出力した場合は従来どおりエスケープなしの生文字列となります。
 
 再帰データ型に対してもこれらの型クラスを導出可能ですが、比較、表示、および Hash 処理においてユーザー定義メソッドを呼び出す処理は通常の再帰呼び出しとなります。
@@ -1236,11 +1273,14 @@ test "compares strings" =
 | `[\|i32\|]` など | 要素型のみが静的に決定される不変の単方向連結リスト |
 | `i32 -> i32` など | 名前付き関数、型クラスメソッド、または組み込み関数への静的参照・関数ポインタ |
 | `Task<i32>` など | 結果型のみが静的に決定される、所有権を持つ 1 回実行限りの遅延並行タスク型 |
+| `Rc<T>` / `Arc<T>` | 参照カウントで値を共有する非 Copy の所有ポインタ。`Rc.Weak<T>` / `Arc.Weak<T>` は値の寿命を延ばさない弱参照（[Rc / Arc](#rc--arc)） |
 | `ref T` / `ref mut T` | 共有借用および排他借用参照。所有者の生存期間を超えて保持することは不可能（Rust 互換の `&T` / `&mut T` も同一型） |
 | `ref mut [i32..]` など | 配列の一部を排他的に借用する排他スライス。長さは固定で、`Array.write` などで要素をその場で置き換えられる（`[T..]` は `ref mut` の直後にだけ書ける） |
 
 なお、旧仕様に存在した大文字始まりの型名 `Int`、`Float`、`Bool`、`Unit` は組み込み型ではありません。
-Tsuzuri はガベージコレクション（GC）、参照カウント、およびプログラマによる手動の解放操作を一切使用せず、アフィン所有権システムと借用検証によってメモリを安全に自動管理します。
+Tsuzuri はガベージコレクション（GC）とプログラマによる手動の解放操作を使用せず、アフィン所有権システムと借用検証によってメモリを安全に自動管理します。
+参照カウントは、std の [Rc / Arc](#rc--arc) を明示的に使った値だけが行います（所有者は `share` で明示的に増やし、暗黙の複製はありません。サイクルコレクターはありません）。
+循環する構造は、std の [Arena](#arena) が値をまとめて所有し、Copy のハンドルで指すことで表します（ハンドルは値の寿命を延ばしません）。
 レコードはスタックやヒープに直接インライン配置される値型として保持され、配列は所有する要素データ領域へのポインタと長さを格納した記述子（ファットポインタ）として表現されます。
 連結リストは所有する先頭ノードへのポインタと要素数を保持し、各ノードが要素データと次のノードへの所有ポインタを保持します。
 配列の要素領域やリストのノード群をスタックとヒープのどちらに確保するかは、次節で解説するように生成時の構文（`new` の有無）によって決定論的に定まります。
@@ -1640,6 +1680,7 @@ Tsuzuri におけるインデックスアクセスは境界検査を伴う厳格
 例えば `String.chars "😀"` は 2 要素の配列を返しますが、`Utf8String.chars u8"😀"` は 1 要素の配列を返します。
 UTF-8 バイト順序は Unicode スカラー値の昇順と完全に一致しますが、UTF-16 コード単位の昇順とはサロゲートペア等の補助平面文字において順序が異なる場合がある点に留意してください。
 部分文字列の検索処理は、追加のアロケーションを伴わないダイレクト走査で行われ、最悪計算量は $O(\text{text.length} \times \text{needle.length})$ です（現時点で SIMD や並列処理による自動高速化は保証されません）。
+パターンによる検索・置換・分割は [Regex](#regex)、Unicode の文字データ（一般カテゴリーと大文字小文字の畳み込み）は [Unicode](#unicode) です。
 連結、`join`、`replace`、および `repeat` は、結果全体の長さを事前に厳密に検証したうえで、非空の結果バッファを 1 回だけまとめてヒープ確保します（メモリ制限超過時は安全にトラップします）。
 
 | 所有権移送 API | 型シグネチャおよび仕様契約 |
@@ -2097,6 +2138,7 @@ Task インスタンス自身およびキャプチャされた所有変数は、
 キャプチャされる変数およびタスクの戻り値型には、参照型（`ref T` や `ref mut T`）を含めることはできません。配列やリストの内部に潜む参照や、
 クロージャの環境内部に隠蔽された借用参照も厳格に拒否されます。
 所有権を持つ完全な所有値をキャプチャしたうえで、そのタスクの内部スコープでのみ局所的に借用参照を作成して処理を行うことは完全に合法です。
+`Rc`／`Rc.Weak` とそれを持つ値は所有値でも `Send` でないため、タスクへ持ち込めません（`E1013`）。読み取り専用のデータを複数のタスクで共有するときは、タスクごとに `Arc.share` した `Arc` を持ち込みます（[Rc / Arc](#rc--arc)）。
 通常の関数ポインタ値は、そのキャプチャ環境に一切の借用が含まれていないことが静的に証明できる場合に限り、タスク内へキャプチャしたり戻り値として返却したりできます。
 高階関数の引数として渡された未知の関数値は借用参照を保持している可能性があるため、引数の関数値をそのままタスク内へキャプチャすることは保守的に禁止されています（静的な名前付き関数をタスク内から直接呼び出すか、必要な所有データを引数経由で明示的に渡してください）。
 なお、Copy 型の配列や関数ポインタ値をタスク内へキャプチャする際は、既存の所有権規則に従って独立した完全なスナップショットがディープコピーされるため、巨大なデータ構造のキャプチャには相応のコピーコストが伴います。
@@ -2133,7 +2175,7 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 ネイティブ環境におけるスレッドの生成失敗や join 待機エラーは、コンソールに詳細な診断メッセージを出力してプロセスを異常終了させ、暗黙の成功扱いにごまかすことはありません。
 タスク本体の内部で発生した言語トラップ、メモリ不足、および無限ループに関する規則は通常式とまったく同一であり、
 失敗時におけるスタックの巻き戻し、キャプチャされた所有変数のクリーンアップ、および兄弟タスクの強制キャンセルは保証されません。
-すべてのタスクが正常終了した場合、使用されたすべての所有メモリは漏れなく回収され、ガベージコレクションや参照カウントに依存することのないクリーンなメモリ管理が達成されます。
+すべてのタスクが正常終了した場合、使用されたすべての所有メモリは漏れなく回収され、ガベージコレクションに依存することのないクリーンなメモリ管理が達成されます（`Arc` で共有した値は、最後の所有者を解放したタスクがその場で解放します）。
 
 ## 制御構文
 
@@ -2565,6 +2607,38 @@ let total = sum3 point            // point は Copy なのでこの後も使え�
 `Vec.of_array` および `Vec.to_array` は所有権を持つ内部バッファをそのまま引き渡すため、要素データの無駄なディープコピーは発生しません（ただし、Copy 配列の引数渡しやスタック配置配列のヒープ昇格処理は、言語の通常の所有権規則に従って安全に行われます）。空の配列が渡された場合は不要なヒープバッファが即座に解放され、空の Vec インスタンスとして正規化されます。
 なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます。
 
+### Json
+
+std モジュール `Json` は JSON（RFC 8259）の解析と出力、および組み込み型クラス `Encode`／`Decode` による値との変換を提供します。利用者向けの詳細と例は言語リファレンスの [Json](../_tsuzuri/language-reference/built-in-types-and-modules/json.md) にあります。
+
+```text
+record Numeral { text: utf8string }
+union Value = Null | Bool of bool | Number of Numeral | Text of string | Items of [Value] | Object of [(string * Value)]
+record Error { kind: ErrorKind, offset: i64 }
+
+Json.parse :: ref utf8string -> Result<Value, Error>
+Json.to_utf8string :: ref Value -> utf8string
+Json.numeral :: ref utf8string -> Maybe<Numeral>
+Json.to_i64 :: ref Numeral -> Result<i64, Error>
+Json.to_f64 :: ref Numeral -> Result<f64, Error>
+Json.encode :: Encode<'a> => ref 'a -> Result<Value, Error>
+Json.decode :: Decode<'a> => ref Value -> Result<'a, Error>
+Json.serialize :: Encode<'a> => ref 'a -> Result<utf8string, Error>
+Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
+```
+
+- 数値は字句をそのまま保つ `Numeral` です。`parse` は入力の字句を保持し（`1.0E+2` は `1.0E+2`）、`numeral` は字句を検証して複製します。直接書いた不正な `Numeral` は `to_utf8string` でトラップします。配列の case は、組み込みの型名 `Array` を case 名に使えないため `Items` です。
+- 解析は RFC 8259 に厳密です。BOM、コメント、末尾カンマ、`NaN`、先頭ゼロ、`+1`、`.5`、`1.` は `Syntax`、文字列中の生の制御文字は `ControlCharacter`、未定義のエスケープは `InvalidEscape`、同じ object の重複キー（エスケープを解いた後のコード単位で比較）は `DuplicateKey` です。孤立サロゲートのエスケープは `Text` にそのまま入ります。
+- `Error.offset` は入力を不正にした最初のバイトの位置です（`ErrorKind` の `InvalidUtf8`・`Unsupported of string` は CBOR の復号の種類です）。一つの入力に複数の誤りがあれば、いちばん前のものを返します。encode・decode・数値変換の `offset` は -1 です。`Display<Json.Error>` は `json: <種類>` と ` at byte <offset>` を出します。
+- 出力は空白なしで、キーは格納順、数値は字句のまま、文字列は ECMAScript 2019 以降の `JSON.stringify` と同じエスケープです（孤立サロゲートは `\udxxx`）。`Object` の重複キーは検査しません。
+- 入力は 64 MiB（`TooLarge`）、入れ子は 128 段（`TooDeep`、129 段目の `[`／`{` の位置）まで。解析は再帰の前に深さを検査する再帰下降なので、深い入力でもスタックは 128 段で止まります。重複キーの検査は 32 メンバー以下で線形、それを超えると整列して $O(n \log n)$ です。`Map`／`Set` の decode も要素を文書での位置とともにキーで安定整列してから昇順に挿入するので $O(n \log n)$ で、重複は文書順で前の要素とキーが等しい最初の要素を、その字句で報告します。
+- 数値の変換（`to_i64`、`to_f64`、数値の `Decode`）は字句を検査してから `Parse.parse` を一度だけ呼びます。整数型は小数・指数のある字句を `ExpectedType "integer"`、範囲外と 4096 バイト超の字句を `NumberRange` にします。浮動小数点は目的の型へ一度だけ最近接・偶数丸めし、無限大への overflow は `NumberRange` です。
+- `Encode`／`Decode` のインスタンスは std の `Json` と利用者のソースにだけあり、bool、全整数型、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、string、utf8string、`Maybe<'a>`（`None` は `null`）、配列・リスト・`Vec`（JSON の配列）、2〜4 要素のタプル（同じ長さの配列）、`Map`／`HashMap`（すべてのキーが JSON の文字列になれば object、そうでなければ `[キー, 値]` の配列の配列。空のマップは `{}`。decode はどちらも受理し、重複キーは `DuplicateKey`）、`Set`／`HashSet`（配列）、`Json.Value` を扱います。`Map`／`Set` はキーの昇順、`HashMap`／`HashSet` は挿入順に書きます。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは重複規則でできないため、マップの形は encode したキーで決まります。NaN・無限大の encode は `NonFinite`、孤立サロゲートを含む文字列の `utf8string` への decode は `LoneSurrogate` です。数値は `to_string` の最短表現（`-0`、`1e+7`）で、`JSON.stringify` とは書き方が異なることがあります。
+- `to_utf8string_pretty value indent`／`serialize_pretty` は `JSON.stringify(value, null, indent)` と同じ字下げ（1 段 `indent` 個の空白、10 で頭打ち、1 未満は空白なし）で書きます。
+- `Json.reader`／`Json.next` は木を作らないプル型の解析器で、`Event`（`ObjectStart`、`KeyToken of Lexeme` など）と、入力のバイト範囲 `Lexeme { start, finish, escaped }` を返します（`token_text`・`token_matches`・`token_numeral` で中身を取り出す）。検査・上限・エラーの種類と位置は `parse` と同じで、重複キーはその object が閉じるか入力が失敗したときに報告します。`Json.writer` と `open_object`／`write_key`／`write_text`／`finish` などは、`,`・`:` を補いながら入れ子と順序を検査する逐次の出力器で、誤りは出力のバイト数を位置とする `Syntax`／`UnexpectedEnd`／`TooDeep` です。`Reader`・`Writer` は不透明です。
+- std の `Cbor` は同じ `Json.Value` を RFC 8949 の決定的な符号化（最短の引数、長さを前置、値を保つ最短の浮動小数点、符号化したキーの辞書順）で `[ubyte]` に書き（`Cbor.encode`／`serialize`）、JSON のデータモデルに入る CBOR だけを厳密に読みます（`Cbor.decode`／`deserialize`。64 MiB、入れ子 128 段、バイト文字列やタグ 2・3 以外は `Unsupported`、不正な UTF-8 は `InvalidUtf8`）。整数の字句は整数（64 ビットを超えれば bignum）、それ以外の数値は `f64` に一度だけ丸めた値です。
+- `deriving (Encode, Decode)` の形は[自動導出](#自動導出deriving)にあります。`Json` を使わないプログラムの生成コードは、std の追加による生成関数の番号の付け替えを除いて変わりません。
+
 ### データ並列 API
 
 `Parallel.init length initializer` は並列に初期化された新しい配列を生成し、`Parallel.map mapper input` および `Parallel.map_ref mapper input` は共有配列またはスライス参照を受け取って並列要素変換を実行します。
@@ -2817,6 +2891,103 @@ def main :: unit -> i32 = \() ->
 ```
 
 なお、メモリ領域の縮小（`shrink_to_fit`）、集合演算（`union`、`intersect`、`difference`）、`singleton`、`pop`、`retain`、スレッドセーフな並行 HashMap、値の排他借用参照を返すイテレータ、および SIMD 命令を活用したグループ探査機能は現時点で未実装です（`Hash.hash` の出力形式自体は変更されません）。
+
+### Arena
+
+`Arena<'a>` は、値を世代付きのハンドル `Arena.Handle<'a>` で指す所有コンテナです（C10。Rust の `slotmap::DenseSlotMap` に相当）。グラフ・DAG・循環する構造を、言語の意味を変えずに所有権モデルのまま表します。
+`Arena<'a>` は常に非 Copy の不透明な標準レコードで、構築・フィールド参照・パターン分解・更新構文は `E1022`、公開 ABI への export は `E1008`、const の初期化は `E1026` です。`Send`・捕捉・借用の保持は要素型 `'a` に従います（`Map` と同じ）。
+`Arena.Handle<'a>` は arena ID・slot の添字・世代の 3 つの `i64` からなる不透明な Copy 値です。フィールドが整数だけなので、`'a` が参照型や非 Copy 型でも借用を保持せず、常に `Send` で捕捉できます。要素型は型引数で静的に照合し（異なる要素型の arena に渡すと `E1003`）、arena の同一性は実行時の arena ID で照合します。
+
+```text
+record Node { value: i64, edges: Vec<Arena.Handle<Node>> }
+match Arena.insert graph (Node { value: 1, edges: Vec.empty() }) with   // (Arena<Node> * Arena.Handle<Node>)
+| (filled, a) ->
+    let linked = Arena.update filled a (link a)                         // 後から辺を足して循環を作る
+    (Arena.at (ref linked) a).value                                     // 無効なハンドルはトラップ
+```
+
+| API | 型 | 計算量 | 無効なハンドル |
+|---|---|---|---|
+| `Arena.empty()` | `Arena<'a>` | $O(1)$、確保なし | – |
+| `Arena.with_capacity count` | `i64 -> Arena<'a>` | $O(1)$ | –（負の容量はトラップ） |
+| `Arena.length arena` | `ref Arena<'a> -> i64` | $O(1)$ | – |
+| `Arena.contains arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> bool` | $O(1)$ | `false` |
+| `Arena.get arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> Maybe<ref 'a>` | $O(1)$ | `None` |
+| `Arena.at arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> ref 'a` | $O(1)$ | トラップ |
+| `Arena.insert arena value` | `Arena<'a> -> 'a -> (Arena<'a> * Arena.Handle<'a>)` | 償却 $O(1)$ | – |
+| `Arena.remove arena handle` | `Arena<'a> -> Arena.Handle<'a> -> (Arena<'a> * Maybe<'a>)` | $O(1)$ | 変更しない arena と `None` |
+| `Arena.update arena handle change` | `Arena<'a> -> Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a>` | $O(1)$ ＋ `change` | トラップ（`change` は呼ばない） |
+| `Arena.iter arena` | `ref Arena<'a> -> Seq<(Arena.Handle<'a> * ref 'a)>` | 全体で $O(n)$ | – |
+
+ハンドルが有効なのは、同じ arena の中で、`insert` が返してから `remove` されるまでの間だけです。`update` は同じハンドルを有効なまま保ちます。
+無効とは、ハンドルの arena ID が arena と異なる、添字が slot の範囲外、または slot の世代がハンドルの世代と異なる（削除済み・退役済み・別の値に再利用済み）ことです。
+世代は slot ごとの `i64` で 0 から始まり、`remove` のたびに 1 増えます。削除時の世代が `i64` の最大値なら slot を退役させ（以後は再利用しない）、トラップにはしません。
+内部は値を詰めて並べた `Vec<'a>`、各位置の slot を記録する `Vec<i64>`、slot の表、空き slot の列の先頭からなります。`remove` は末尾の値を削除位置へ移し（swap-remove）、空き slot は後入れ先出しで再利用します。`iter` は詰めた位置の順です。
+`insert`・`remove`・`update` は arena を消費して返します。`remove` は値の所有権を呼び出し元へ返し、`update` は値を取り出して `change` を一度だけ呼び、結果を同じ位置へ戻します（`Vec.set` のように旧値を解放しません）。`get`・`at`・`iter` の結果は arena の共有借用を持ち、その間の消費は `E1014` です。
+arena の drop は値を詰めた位置の昇順に既存の drop glue で解放し、続いて整数のバッファを解放します。循環するグラフも再帰なしで解放されます。arena を捕捉した関数値の複製は独立した複製を作りますが、arena ID も複製されるため、同じハンドルが両方で有効です。
+空き slot は次の世代 `g`（1 以上）を `-1 - g` として、退役した slot は `-1` として持ち、ハンドルの世代は負になりません。そのため、複製の後に一方で作ったハンドルは、もう一方では使用中で世代の等しい slot の値だけを指し、空き slot・退役 slot には一致せず、どちらの複製の空き slot の列や詰めた位置も壊しません。
+ハンドルの `Eq`・`Ord`・`Hash` は添字と世代だけを使い、arena ID を含みません（`Ord` は添字、次に世代の辞書順）。arena ID は並列の task では実行順に依存するため、観測できる結果を API の呼び出し列だけで決めるためです（`Eq` だけに含めると `Ord` と食い違います）。別の arena で同じ slot・同じ世代のハンドルは等しく比較されるので（Rust の `slotmap` のキーと同じ）、ハンドルをキーにする `Map`・`HashMap`・`Set` には 1 つの arena のハンドルだけを入れ、複数の arena を扱うときは利用者が決めた arena の区別をキーに含めます。`Display`／`Debug` の instance はありません。
+arena ID は std 専用の組み込み関数 `Arena.__next_id`（std の `Arena` モジュール以外からの呼び出しは `E1022`）が、プロセス全体のカウンターを原子的に増やして 1 から採番します。native と `--wasm-feature threads` では atomic 命令、既定の wasm32 では通常の加算で、WASM の import は増えません。$2^{63} - 1$ 個を超えて作るとトラップします。
+std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで使わない（phantom な）宣言を許すのは、コンパイラが登録した不透明な標準レコードだけです。利用者のレコードの未使用の型引数は従来どおり `E1024` です。
+要素の排他借用、複数要素の同時借用、複数の task による共有読み取り、`clear`・`retain` などは提供しません。
+
+### Rc / Arc
+
+`Rc<'a>` と `Arc<'a>` は、1 つの値を複数の所有者で共有する参照カウントのポインタです（C10 Phase 2）。`Rc.Weak<'a>` と `Arc.Weak<'a>` は値の寿命を延ばさない弱参照です。型は組み込みで、std のソースはなく、関数は組み込み関数です（予約モジュール `Rc`・`Arc`）。
+4 つの型はいずれも非 Copy の所有値です。所有者を増やすのは `Rc.share (ref rc)` だけで、代入・引数渡し・戻り値はムーブです。中の値は共有借用 `Rc.get (ref rc)` で読み、内部可変性はありません。
+`Rc` と `Arc` の関数は同じ名前と型を持ち、`Arc` 版はモジュール名を `Arc` に置き換えたものです。
+
+| API | 型 | 意味 |
+|---|---|---|
+| `Rc.new value` | `'a -> Rc<'a>` | 値をヒープのブロックへ移す |
+| `Rc.share rc` | `ref Rc<'a> -> Rc<'a>` | 強い所有者を 1 増やす |
+| `Rc.get rc` | `ref Rc<'a> -> ref 'a` | 値の共有借用。結果は `rc` の借用を持つ |
+| `Rc.strong_count rc` / `Rc.weak_count rc` | `ref Rc<'a> -> i64` | 強い所有者の数 / `Rc.Weak` の数 |
+| `Rc.ptr_eq left right` | `ref Rc<'a> -> ref Rc<'a> -> bool` | 同じブロックを指すか |
+| `Rc.try_unwrap rc` | `Rc<'a> -> Result<'a, Rc<'a>>` | 唯一の強い所有者なら値を `Ok` で取り出し、そうでなければ `Error rc` |
+| `Rc.downgrade rc` | `ref Rc<'a> -> Rc.Weak<'a>` | 弱参照を作る |
+| `Rc.upgrade weak` | `ref Rc.Weak<'a> -> Maybe<Rc<'a>>` | 値が生きていれば新しい強い所有者を `Some` で返し、解放済みなら `None` |
+
+- 表現: 値は 1 つのポインタで、ヒープのブロック `{ 強い数, 弱い数, 値 }` を指します。強い所有者全体で弱い数を 1 つ持ちます。最後の強い所有者がスコープを抜けると値を drop し、続いてこの 1 つを減らし、弱い数が 0 になったブロックを解放します。ムーブ済みの領域（ヌル）の drop は何もしません。
+- `Arc` の計数: 増加は `atomicrmw add ... monotonic`、減少は `atomicrmw sub ... release` で、0 にしたタスクは `fence acquire` の後で値とブロックを解放します。`Arc.try_unwrap` は強い数を `cmpxchg` で 1 から 0 にしたときだけ値を取り出し、`Arc.upgrade` は 0 でない強い数を `cmpxchg`（成功は `acquire`）で増やすまで繰り返します。`Rc` は通常のロード・ストアだけを使います。既定の wasm32 では atomic 命令が通常の命令に下がり、`--wasm-feature threads` では WASM の atomic 命令になります。WASM の import は増えません。
+- 計数が `i64` の最大値を超える増加はトラップします。
+- `Send`: `Rc`／`Rc.Weak` は `Send` ではなく、`Arc<'a>`／`Arc.Weak<'a>` は `'a` が `Send` で、かつタスク間で共有できるとき `Send` です。`Arc` を持つ各タスクは `Arc.get` で同時に値を借用できるので、共有できる値は、`Rc`／`Rc.Weak`、extern ハンドル（`extern type`。ホストのハンドルはスレッド安全とは限らない）、ハンドルを隠しうる Copy でない `dyn` 値、ハンドルを捕捉しうる `Owned.Function` を、格納グラフのどこにも持たない値に限ります。共有できない値の `Arc` を持つ値をタスクへ渡すと `E1013` です（同じタスクの中での `Arc.share` は自由です）。内部可変性がないので、`Arc` で共有した値は読まれるだけです（F10 が内部可変性を導入するときは、この共有できる条件を `Sync` に置き換えます）。
+- 捕捉: 関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せるので、`Rc`／`Rc.Weak` とそれを持つ値は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません（`E1005`）。`Arc` は値が共有できる（上記）ときだけ捕捉でき（そうでなければ `E1005`）、関数値の複製は所有者を 1 増やします。
+- 中身の制約: 排他参照を含む値は入れられません（`E1005`）。共有参照を含む値（`Rc<ref string>`）は参照先より長く生きられず、`share` や `upgrade` の結果も同じ借用を持ちます。
+- 循環: 値ができる前にその値を指す `Rc` は作れず、共有した値は変更できないので、`Rc`／`Arc` だけでは循環を作れません（参照カウントの循環による解放漏れは起きません）。サイクルコレクターはありません。循環するグラフは [Arena](#arena) で表します。
+- 再帰型: 型の循環は `Rc`／`Arc` を経由できます（[再帰的なデータ型](#再帰的なデータ型) の節）。自分自身を含みうる値（再帰型を格納する値）を持つブロックは先頭に `%tz.rec.header` の 2 語を持ち、最後の強い所有者はその解放を再帰型の解放と同じ待ちリストに積むので、100 万要素の鎖も native のスタックを溢れさせずに解放します。共有ポインタを経由する循環の中の union も再帰型のノードになるので、`union List = Nil | Cons of (i64 * Rc<List>)` は要素ごとに 2 回確保します。
+- 型の比較・表示・ハッシュ（`Eq`・`Ord`・`Hash`・`Display`）の instance はありません。`Rc.get` で取り出した値を比べます。公開 ABI（`export def`・`extern def`）には使えず（`E1008`）、const にもできません（`E1026`）。高カインドの型構築子としては使えません。
+### Regex
+
+`Regex` は線形時間の正規表現です。`Regex.compile :: ref string -> Result<Regex, Regex.Error>` がパターン（常に `string`）を命令列にコンパイルし、Pike VM（捕捉付きの Thompson NFA の同時実行）が入力の Unicode スカラーを 1 個ずつ読みます。
+1 回の探索（`is_match`・`find`・`find_at`・`captures`）の時間は $O(\text{命令数} \times \text{入力のスカラー数})$ で、後戻りをしないので、信頼できないパターンや入力でも指数時間の照合は起きません。
+`find_all`・`replace_all`・`split` は一致ごとに探索を繰り返すので、最悪 $O(\text{命令数} \times n^2)$ です。作業領域は呼び出しの中で確保して解放し（`captures` は $2 \times \text{命令数} \times (\text{group 数} + 1)$ 個の `i64`、最大 4 MiB、それ以外は $O(\text{命令数})$）、照合の内側では確保しません。
+
+```text
+match Regex.compile (ref "(\\w+)@(\\w+)") with
+| Result.Ok re -> Regex.replace_all (ref re) (ref "x@y") (ref "${2} at ${1}")   // "y at x"
+| Result.Error error -> error.message
+```
+
+- 構文は JavaScript の `u` フラグ付き正規表現の部分集合です。字義どおりの文字、`.`、class `[...]`（`-` は先頭か末尾だけ字義どおり、class 内の `[` と `&&` は未対応）、`\d`・`\w`・`\s` と否定、`\p{Name}`・`\P{Name}`（一般カテゴリーの短い名前 30 個、群 `L`・`LC`・`M`・`N`・`P`・`S`・`Z`・`C`、`Alphabetic`・`White_Space`・`Join_Control`）、`^`・`$`・`\A`・`\z`・`\b`・`\B`、`(...)`・`(?:...)`・`(?flags:...)`、パターン先頭の `(?flags)`、`*`・`+`・`?`・`{n}`・`{n,}`・`{n,m}`（`n`・`m` は 1000 以下）と lazy な `?`、制御文字と `\x41`・`\u0041`・`\u{1F600}` のエスケープを持ちます。字義どおりの `{`・`}`・`]` と未知のエスケープは誤りです。
+- フラグは `i`・`m`・`s`・`u`（既定で有効）です。`\d` は `Nd`、`\s` は `White_Space`、`\w` は `Alphabetic`・`M`・`Nd`・`Pc`・`Join_Control` の和（UTS #18 附属書 C）、`\b` は前後のスカラーの `\w` 判定が異なる位置です。`(?-u)` ではこれらと畳み込みが ASCII だけになります。`i` は `CaseFolding.txt` の状態 C と S の単純な畳み込みで比べ、否定の class は畳み込んでから補集合を取ります。表は Unicode 17.0.0 です。
+- `.` と class はスカラー 1 個に一致し、`string` の孤立サロゲートも 1 スカラーです。`.` は `s` なしで `\n` 以外、`^`・`$` は `m` なしで入力の先頭・末尾だけ（`$` は末尾の `\n` の前に一致しない）、`m` では `\n` の後・前にも一致します。
+- 一致は leftmost-first（RE2・Rust の `regex` と同じ）です。範囲 `(start, end)` は半開区間で、`string` は UTF-16 コード単位、`utf8string`（関数名に `_utf8`）は byte です。`find_at` は `start` より前の文字も `^`・`\b` の判定に使い、範囲外やスカラーの内部の `start` は `None` です。
+- `captures` の要素 0 は全体、要素 k は k 番目の group で、参加しなかった group は `(-1, -1)`、繰り返しの中の group は最後に参加した繰り返しの値です。`find_all` の次の探索は、空でない一致の後はその終わり、空の一致の後は次のスカラーから始めます。`split` は一致の間の部分文字列です。`replace_all` の置換文字列は `${n}` と `$$` だけを展開します。
+- 後方参照、先読み・後読み、名前付き group、atomic group、所有的量指定子、`\G`・`\Z`・`\X`・`\R`・`\K` は `Unsupported` です。資源上限（パターン 65,536 コード単位、繰り返し回数 1,000、group の入れ子 64、命令 10,000、class の区間の合計 65,536（`[...]` は併合・畳み込み・否定の後の区間で数える）、命令数 × 2 ×（group 数 + 1）が 262,144）を超えると `TooLarge` で、どちらもトラップしません。
+- `Regex` は不透明な非 Copy の record で、構築・フィールド・パターン分解・更新は `E1022` です。照合では変化しないので、共有借用で何度でも使え、`task` へ move できます。誤りの一覧と message は [言語リファレンスの Regex](../_tsuzuri/language-reference/built-in-types-and-modules/regex.md) にあります。
+
+### Unicode
+
+`Unicode` は Unicode 17.0.0 の UCD から生成した表を引きます。`Unicode.version ()` は `"17.0.0"`、`Unicode.property_ranges (ref name)` は `\p{name}` と同じ名前のスカラーの閉区間（昇順・連結済み。未知の名前は `None`）、`Unicode.simple_case_folding ()` は `CaseFolding.txt` の状態 C と S の組 `(c, scf c)`（`c != scf c`、`c` の昇順）を返します。この 2 つは呼び出しごとに表を読んで新しい配列を確保します。
+
+- `Unicode.category :: utf8char -> Unicode.Category` は一般カテゴリーを返します。`Category` は短い名前（`Lu` … `Cn`）の 30 ケースの union で、`Eq` と `Display` を持ちます。
+- `Unicode.normalize :: Unicode.NormalizationForm -> ref string -> string` と `is_normalized` は UAX #15 の正規化です（`Nfc`・`Nfd`・`Nfkc`・`Nfkd`）。分解は再帰的で、ハングル音節は算術で扱い、結合文字は正準結合クラスで安定に並べ替え、合成は `Full_Composition_Exclusion` を除いた一次合成だけを作ります。
+- `Unicode.graphemes`・`grapheme_boundaries` は UAX #29 の拡張書記素クラスター（GB9c の InCB と GB11 の絵文字 ZWJ 列を含む）、`Unicode.words`・`word_boundaries` は UAX #29 の既定の単語境界です。境界の配列は 0 と長さを含み（空の文字列は `[0]`）、ロケールによる調整や辞書は使いません。
+- `Unicode.to_lower`・`to_upper`・`to_title`・`case_fold` は `SpecialCasing.txt` の条件なしの対応を含む完全な変換で、`to_lower` は Final_Sigma を扱います。`to_title` は単語ごとに最初の cased な文字をタイトルケースにし、残りを小文字にします。`case_fold` は `CaseFolding.txt` の状態 C と F です。ロケールに依存する対応はしません。
+- `utf8string` の関数は名前に `_utf8` が付き、境界の位置は byte です。`string` の孤立サロゲートは 1 スカラーとして扱い、変換されずに残ります（カテゴリーは `Cs`、書記素では Control）。
+- 計算量は入力のスカラー数 $n$ と表の大きさ $t$ について $O(n \log t)$ で、正規化は連続する結合文字の並べ替え（$O(k \log k)$）を足します。結果と作業用のスカラーの配列は呼び出しごとに確保します。
+表は `scripts/generate-unicode.mjs` が生成したランタイム `src/runtime/unicode.ll` の定数で、`Unicode` か `Regex` の関数を使うプログラムにだけ連結されます。版の更新は結果を変えるので、生成器の入力の SHA-256 と `Unicode.version` を同時に変えます。
 
 ### 配列・リスト API
 
@@ -3270,6 +3441,18 @@ tsuzuri build Kernel.tz --target wasm32 -o kernel.wasm
 LLD リンカーによって到達不能な不要コードは完全にストリップ（除去）されます。
 128-bit 整数の乗算・除算・剰余、および可変ビットシフト演算には同梱の最適化された補助関数がリンクされるため、ホスト環境依存の `compiler-rt` ランタイムを別途用意する必要はありません。
 
+### 生成バインディング
+
+`tsuzuri build <path> --target wasm32 --emit bindings-js [-o <name>.mjs]` は、上の ABI を型付きで呼ぶ JavaScript の ES module `<name>.mjs` と、TypeScript 宣言 `<name>.d.mts` を出します（E13）。グルーは `CheckedModule` の公開 ABI だけから作り、LLVM を通さず、`-O` を無視します。`.wasm` は同じソースから別にビルドします。`--target wasm32` 以外、`-o` が `.mjs` で終わらない場合、`.wasm` のためのオプション（`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator`）を付けた場合は `E2000`、`export def` がなければ `E2004` です。生成物は、export と import の名前のバイト順と `record_name` の順に並べた記述子の表と、同梱の固定ランタイム（`src/runtime/bindings-core.mjs` と、1 スレッドの `bindings.mjs` かスレッドプールの `bindings-threads.mjs`）からなり、同じ入力からバイト単位で同じものができます。生成 IR、WASM、`--emit header` の出力は変わりません。
+
+- 型の対応: 8〜32-bit の整数は範囲を検査した `number`（符号なしの結果は `>>> 0`）、`i64`／`i64u` は範囲を検査した `bigint`（`i64u` の結果は `BigInt.asUintN(64, …)`）、`f32`／`f64` は `number`、`bool` は `boolean`、`ref [i64]`／`ref [f64]`／`ref [ubyte]` は `BigInt64Array`／`Float64Array`／`Uint8Array`（通常の配列は `TypeError`）、`ref string` は UTF-16 のままの `string`、`ref utf8string` は `isWellFormed()` を満たす `string`、所有結果は複製した型付き配列か `string`、スカラーレコードは `record_name` の interface（固定長配列のフィールドは長さの一致する配列）、ハンドルは 0 以上 2^32 未満の整数（TypeScript では `tz_handle_…` で印を付けた `number`）、コールバックは import の呼び出し中だけ有効な関数です。
+- 評価順序と所有権: 引数の個数・型・範囲を先に検査し（失敗は `TypeError`／`RangeError` で、インスタンスに触れない）、インスタンスを用意し、入力を左から順に `tsuzuri_alloc` へ複製し、out 領域を確保して `tz_<name>` を呼び、結果を複製して `tsuzuri_free` し、out と入力を逆順に解放します。JavaScript は wasm のポインタを保持しません。`withBorrowed(kind, length, callback)` は callback の間だけ wasm 側の領域を `Borrowed` として貸し、複製を 1 回減らします。
+- import: `load` の `imports` に WASM の import 名をキーとした関数を渡します。グルーはモジュールが宣言した import だけを渡し、import を足しません。借用入力は複製して渡し、所有結果はグルーが確保して記述子を書きます。`--wasm-feature threads`、IO の入口、`--debug-output`、`--wasm-host wasi`、`--allocator host` のモジュールと、wasm64 のモジュールは `load` が拒否します。
+- トラップ: export の呼び出し中に出た例外はインスタンスを捨て、次の呼び出しで同じモジュールと import から同期的に作り直します（[トラップ位置](#トラップ位置) の境界と同じ規則）。ホストの例外は同じ値のまま、`WebAssembly.RuntimeError` は `TsuzuriTrap`（`trap.reason` が `"trap"`、`site` は `tsuzuri_trap_site`、`sites` を渡せば位置と種類）、スタック枯渇は `reason: "stack"` の `TsuzuriTrap` になります。同期の作り直しが失敗したとき（Chrome のメインスレッドは 8 MB を超えるモジュールで拒みます）は、その呼び出しが `Error` で失敗し、`ready()` が非同期に作り直します。
+- スレッド: `--wasm-feature threads` を付けると、同じ表から、ブラウザの Web Worker でスレッドプールを作るグルーを出します。`load` は `crossOriginIsolated` と `SharedArrayBuffer` を確かめ、満たさなければワーカーを起動せずに `Error` を投げます（逐次実行へは切り替えません）。共有メモリと、補助ワーカーの起動、スタックの割り当て、失敗時の poison は `src/runtime/wasm-threads.mjs` と同じ手順です。export は調整役のワーカーで動いて `Promise` を返し、ホスト関数は各ワーカーで `importsModule` の `createImports({ workerId, data })` から作ります。トラップやホストの例外はプール全体を止め、作り直しは `load` からです。
+
+`tsuzuri build <path> --emit shared` は、`tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`tsuzuri_try_<name>` だけを export する共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出します。実行ファイルと同じくリンク入力を受け、未解決のシンボルは `E2002` です。Windows（G10 の DLL 方針が未確定）、`--allocator host`、native 以外のターゲットは `E2000` です。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じ表から C#（`[LibraryImport]`、`SafeHandle` で所有する結果、`ReadOnlySpan<T>` の借用入力、blittable な struct のレコード）、Python（`ctypes`、結果は複製して `tsuzuri_free`）、C++20（C ヘッダーの上の RAII。`std::span`、`std::u16string_view`、`tsuzuri_free` を呼ぶ所有型）のバインディングを出します。どれも引数を C ABI の前に検査し（不正な UTF-8 は呼ぶ前に例外）、`--trap-mode return` を付けると `tsuzuri_try_<name>` を呼んでトラップを各言語の例外にします。付けないと、トラップはプロセスを終わらせます。
+
 ### ホスト提供の allocator
 
 `tsuzuri build` の `--allocator system|host|counting` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。
@@ -3348,7 +3531,7 @@ JSON 出力における省略通知は、エラーコードを持たない `{"se
 コンパイルエラーが検出された場合、`build` や `run` は LLVM のコード生成、リンク、およびバイナリ実行のステップへは進行せず、既存の出力バイナリを汚染することもありません。
 CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカー等のツールエラー、および実行時エラーは、従来どおり単一の診断メッセージとして報告されます。
 ソースコードの警告は `"severity":"warning"` の同一フォーマットの JSON オブジェクト、
-コンパイラツールの警告は `W2001` コードを持つ JSON オブジェクトとして出力されます。
+コンパイラツールの警告は `W2001` コードを持つ JSON オブジェクト、`tsuzuri bindgen` が省いた C 宣言はヘッダー内の位置を持つ `W2002` の警告として出力されます。
 なお、ビルド中に作成された一時ディレクトリを OS が削除できなかった場合などの最終クリーンアップ警告は、通常のプレーンテキストとして出力されます。
 
 | エラー・警告コード | 分類および対象領域 |
@@ -3357,7 +3540,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1001`–`E1010` | 識別子名、型シグネチャ、演算子、引数構成、レコードフィールド、公開 ABI、リテラル、インラインレイアウト |
 | `E1011` | 無効または重複したモジュール名、予約モジュール名・予約名前空間 `std` の不正使用、不正な標準ライブラリパス |
 | `E1012` | 所有権 move 後の不正な再利用、不正な代入先（Drop 型からのフィールド・共用体ペイロードの部分 move および更新、`Owned.function` 本体でのキャプチャ値の不正 move を含む） |
-| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む） |
+| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`） |
 | `E1014` | 借用の競合（共有借用中の排他アクセス）、不変な値に対する不正な可変アクセス |
 | `E1015` | 曖昧な型変数、無限型の検出、不適切な多相性、型検査時点で参照型か未確定な `ref` オペランド |
 | `E1016` | 型クラスまたはインスタンスの不正宣言や重複定義（`Drop` インスタンスおよび `Drop.drop` への直接参照を含む） |
@@ -3366,7 +3549,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1019` | 再帰関数に必要な `rec` 修飾子の欠落、宣言と実装の再帰契約の不一致、先行関数を持たない単独の `and` |
 | `E1020` | 不正なパターン構文、OR パターン間での束縛変数の不一致、未対応のアクティブパターン形式、共用体バリアントのペイロード不整合 |
 | `E1021` | 明示的な `match` 式および関数ガードにおけるパターンの網羅性不足（不足している具体的なケース例を提示） |
-| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*` プリミティブの不正参照 |
+| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Arena.__next_id` プリミティブの不正参照 |
 | `E1023` | ループ外での脱出、関数・Task・ビルダー境界を越える不正な `break`／`continue`、`finally` 節を持つ `try` 式から抜け出す不正なジャンプ |
 | `E1024` | 型宣言における型パラメータ・長さパラメーター（`const N: i64`）の重複・未使用・未宣言、union／case／型エイリアスの大文字始まり規則違反、同一 union 内でのバリアント名重複、型エイリアスの循環参照・型引数の個数不一致 |
 | `E1027` | 条件付きインスタンス、スーパークラス、デフォルトメソッドにおけるトレイト制約の不整合 |
@@ -3378,7 +3561,9 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1003` | 前方のマッチ節によって完全に覆い隠された到達不能なマッチ節（警告） |
 | `W1004` | 同一字句スコープ内での変数シャドーイング（コンパイラ内部オプション時のみ有効、デフォルト無効） |
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
+| `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）に到達するコードのビルド拒否 |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API に到達した場合の `E2002` エラー |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |
+| `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存、内容のハッシュの不一致、`git` の欠落・失敗、取得したリポジトリの危険なエントリ、registry の index にない版や index と食い違うパッケージ、`publish` の commit とディレクトリの不一致） |

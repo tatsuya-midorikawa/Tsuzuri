@@ -246,6 +246,27 @@ fn section(name: &str, code: &str, doc: Option<&Documentation>, level: usize) ->
     text
 }
 
+/// `@json "name" ` before a field or case, with the name escaped as a string literal.
+fn json_text(json: Option<&JsonName>) -> String {
+    let Some(json) = json else {
+        return String::new();
+    };
+    let mut text = String::from("@json \"");
+    for unit in char::decode_utf16(json.units.iter().copied()) {
+        match unit {
+            Ok('"') => text.push_str("\\\""),
+            Ok('\\') => text.push_str("\\\\"),
+            Ok(character) if character.is_control() => {
+                text.push_str(&format!("\\u{{{:x}}}", u32::from(character)))
+            }
+            Ok(character) => text.push(character),
+            Err(error) => text.push_str(&format!("\\u{{{:x}}}", error.unpaired_surrogate())),
+        }
+    }
+    text.push_str("\" ");
+    text
+}
+
 fn derives_text(derives: &[(DeriveClass, crate::diagnostic::Span)]) -> String {
     if derives.is_empty() {
         String::new()
@@ -364,7 +385,14 @@ fn render_declarations(program: &Program) -> String {
         let fields = declaration
             .fields
             .iter()
-            .map(|field| format!("  {}: {}", field.name.text, type_text(&field.ty)))
+            .map(|field| {
+                format!(
+                    "  {}{}: {}",
+                    json_text(field.json.as_ref()),
+                    field.name.text,
+                    type_text(&field.ty)
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let code = format!(
@@ -390,7 +418,8 @@ fn render_declarations(program: &Program) -> String {
             .iter()
             .map(|case| {
                 format!(
-                    "  | {}{}",
+                    "  | {}{}{}",
+                    json_text(case.json.as_ref()),
                     case.name.text,
                     case.payload
                         .as_ref()

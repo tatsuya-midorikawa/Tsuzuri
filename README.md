@@ -11,7 +11,7 @@
 
 ## 主な特徴
 
-- **所有権と借用による安全なメモリ管理**: ガベージコレクション（GC）や参照カウントに頼らず、Rust と同様の所有権移動と借用検査（`ref` / `ref mut`）によってコンパイル時にメモリ安全性を保証します。
+- **所有権と借用による安全なメモリ管理**: ガベージコレクション（GC）に頼らず、Rust と同様の所有権移動と借用検査（`ref` / `ref mut`）によってコンパイル時にメモリ安全性を保証します。参照カウントは標準ライブラリの `Rc` / `Arc` を明示的に使ったときだけです。
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
 - **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
@@ -19,7 +19,7 @@
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
 - **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。
-- **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツールを標準で同梱しています。
+- **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
 
@@ -93,8 +93,8 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型エイリアス（`type`）、型クラスおよび具体型インスタンスによるアドホック多相。制約推論と静的単相化。ランク1高階型（HKT）。`dyn C` と `Dyn.of` による vtable を使った動的ディスパッチ。 |
 | コンピュテーション式 | `.tc` によるユーザー定義ビルダー。明示的ブロックと型推論による暗黙本体。束縛・短絡・分岐・反復を標準の関数呼び出しへ展開。 |
 | タスクと並列処理 | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して安全に並列実行。 |
-| モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ（`Tsuzuri.toml`）。 |
-| メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC や参照カウントは不使用）。 |
+| モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ、commit 固定の git 依存、自前の index による registry 依存と最小版選択（`Tsuzuri.toml`、`tsuzuri fetch`、`tsuzuri publish`、`Tsuzuri.lock`）。 |
+| メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、UI やネットワークはホスト側に委譲。 |
@@ -106,7 +106,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 
 ### 所有権と借用
 
-Tsuzuri はガベージコレクション（GC）や参照カウントに依存せず、Rust と同様の所有権システムと借用検査によって安全にメモリを管理します。
+Tsuzuri はガベージコレクション（GC）に依存せず、Rust と同様の所有権システムと借用検査によって安全にメモリを管理します。複数の所有者で共有する値は `Rc` / `Arc` で明示的に共有します。
 
 ```text
 def length :: ref string -> i64 = \text -> text.length
@@ -149,6 +149,8 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **既定の `string` (UTF-16)**: [ECMA-262 の String 値モデル](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type) に従う UTF-16 コード単位列です。文字型は UTF-16 コード単位を表す `char`（`'A'`）です。
 - **バイト列 `utf8string` (UTF-8)**: 従来の UTF-8 文字列は `utf8string` 型および `u8"..."` リテラルで扱います。文字型は Unicode スカラー値を表す `utf8char`（`u8'😀'`）です。
 - **文字列補間**: `$"x = {x}, y = {y:.2}"`（UTF-8 は `u8$"..."`）と記述し、波括弧自体は `{{`／`}}` でエスケープします。書式指定は `[[fill]align][+][width][.precision][type]` に対応し、ネイティブと WASM で完全に一致する丸め処理を行います。
+- **正規表現 (`Regex`)**: `Regex.compile (ref "\\d+")` でパターンをコンパイルし、`is_match`・`find`・`captures`・`find_all`・`replace_all`・`split`（UTF-8 は `_utf8` 版）で使います。後戻りしない Pike VM なので、1 回の探索は入力の長さに線形です。`\w`・`\p{Lu}`・大文字小文字を区別しない照合は Unicode 17.0.0 の表（`Unicode` モジュール）に従います。詳細は [Regex](_tsuzuri/language-reference/built-in-types-and-modules/regex.md) を参照してください。
+- **Unicode のテキスト処理 (`Unicode`)**: 一般カテゴリー、正規化（`Unicode.normalize Unicode.Nfc (ref text)` など）、書記素クラスターと単語の境界（UAX #29）、完全な大文字小文字の変換（`to_upper`・`to_lower`・`to_title`・`case_fold`）を提供します。詳細は [Unicode](_tsuzuri/language-reference/built-in-types-and-modules/unicode.md) を参照してください。
 - 詳細は [文字列の仕様](docs/language.md#string-と-utf8string) を参照してください。
 
 #### 配列・リスト・コレクション
@@ -158,7 +160,10 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **ベクター (`Vec<T>`)**: 伸縮可能な所有バッファです。
 - **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: 平衡二分探索木による不変コレクションです。キーの順序を保持し、検索は $O(\log n)$、挿入および削除は $O(n)$ で動作します。
 - **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。
+- **JSON (`Json`)**: RFC 8259 に厳密な `Json.parse`、決定的な `Json.to_utf8string`、字句を保つ数値 `Json.Numeral`、組み込み型クラス `Encode` / `Decode` と `Json.serialize` / `Json.deserialize` を提供します。入力 64 MiB・入れ子 128 段の上限を超える入力も `Result` のエラーで返します。`@json "名前"` による名前の変更、字下げした出力、木を作らないプル型の解析器と逐次の出力器、同じ値の CBOR（[Cbor](_tsuzuri/language-reference/built-in-types-and-modules/cbor.md)）も提供します。詳細は [Json](_tsuzuri/language-reference/built-in-types-and-modules/json.md) を参照してください。
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
+- **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で複数のタスクから読めます。詳細は [Rc と Arc](_tsuzuri/language-reference/built-in-types-and-modules/rc.md) を参照してください。
+- **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](_tsuzuri/language-reference/built-in-types-and-modules/arena.md) を参照してください。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -264,7 +269,7 @@ def area :: Shape -> f64 = \shape ->
 area (Rect (3.0, 4.0))
 ```
 
-- **自動導出 (`deriving`)**: レコードや共用体の宣言末尾に `deriving (Eq, Ord, Display, Hash, Default)` を指定することで、構造的なインスタンス実装を自動生成できます。
+- **自動導出 (`deriving`)**: レコードや共用体の宣言末尾に `deriving (Eq, Ord, Display, Hash, Default)` を指定することで、構造的なインスタンス実装を自動生成できます。`deriving (Encode, Decode)` はレコードを JSON の object、共用体を `"Case"` / `{"Case": payload}` と相互変換します。
 - **再帰的データ型**: `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のように木構造や構文木を定義できます。再帰ケースは自動的にヒープへ配置され、解放や環境の複製時にスタックオーバーフローを起こさない工夫が施されています。詳細は [共用体 (union)](docs/language.md#共用体union) を参照してください。
 - **高階型 (HKT)**: カインドを明示したランク 1 の高階型をサポートしています（例: `class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`）。詳細は [HKT仕様](docs/language.md#高階型hkt) を参照してください。
 
@@ -332,7 +337,7 @@ Task.run computation
 ```
 
 - **遅延・一回実行のタスク**: `task { ... }` は `Task<T>` 型の値を生成します。定義時点では実行されず、`Task.run` を呼び出した時点で初めて実行が開始されます。二重実行はコンパイルエラーとして検出されます。また、未実行のままスコープを抜けたタスクは本体を実行せずに捕捉リソースを安全に解放します。
-- **安全なスレッド分離**: タスクが捕捉する値は所有権の移動（move）または Copy に限定され、参照の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。
+- **安全なスレッド分離**: タスクが捕捉する値は所有権の移動（move）または Copy に限定され、参照と `Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。読み取り専用のデータは、atomic な計数を持つ `Arc` でタスク間に共有できます。
 - **並列実行とスレッドプール**: `Task.parallel` はタスクの配列を受け取り、入力順と同一の結果配列を返します。ネイティブ環境では POSIX threads を基盤とした常駐スレッドプール（最大 32 スレッド）をオンデマンドで起動し、効率よくタスクを分散します。
 - **データ並列 API**: タスクオブジェクトの生成オーバーヘッドを抑えたい大量のデータ処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum` を使用します。配列を固定チャンクに分割し、最小限の同期コストで高速に処理します。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tasks` で確認できます。
 - **エラー短絡 (`Task.parallel_results`)**: 複数の `Task<Result<T, E>>` を並列実行し、いずれかが失敗した時点で未開始のタスクを即座にキャンセルして最小インデックスのエラーを返します。
@@ -442,17 +447,21 @@ def main :: unit -> i32 = \() ->
 | 予約名 | 用途 |
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
-| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet` | 各種コレクションおよびデータ構造 |
+| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena` | 各種コレクションおよびデータ構造 |
+| `Rc`, `Arc` | 参照カウントによる共有所有 |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
+| `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
+| `Json` | JSON の解析・出力と `Encode` / `Decode` による値の変換 |
+| `Cbor` | `Json.Value` の CBOR（RFC 8949）の読み書き |
 
 #### パッケージ管理 (`Tsuzuri.toml`)
 
-プロジェクトルートに `Tsuzuri.toml` を配置することで、パッケージ名、既定の名前空間、およびローカルの依存パッケージを定義できます。
+プロジェクトルートに `Tsuzuri.toml` を配置することで、パッケージ名、既定の名前空間、およびローカルや git リポジトリの依存パッケージを定義できます。
 
 ```toml
 [package]
@@ -462,9 +471,14 @@ namespace = "Acme::App"
 
 [dependencies]
 geometry-core = { path = "../geometry-core" }
+shapes = { git = "https://example.org/shapes.git", rev = "0123456789abcdef0123456789abcdef01234567" }
+tiles = { version = "1.2.0" }
+
+[registry]
+index = "https://example.org/tsuzuri-index.git"
 ```
 
-依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) を参照してください。
+依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。git 依存は commit を固定し、registry 依存（`version`）は `[registry]` の git の index から最小版選択で版を決めます。`tsuzuri fetch app` が `git` で取得して内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。index は利用者や組織が置き（Tsuzuri は公開の registry を運営しません）、`tsuzuri publish` が index に足す項目を出力します。ネットワークに触れるのは `fetch` と `publish` だけで、`check`・`build`・`run` などは `Tsuzuri.lock` とキャッシュ内のストアだけを読み、内容の一致を検証します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) と [パッケージ](_tsuzuri/language-reference/organizing-tsuzuri/packages.md) を参照してください。
 
 ---
 
@@ -485,8 +499,10 @@ clang -O3 examples/native/main.c target/examples/physics.o -I target/examples -l
 ```
 
 - **ホスト関数の宣言 (`extern`)**: `extern def now :: unit -> i64` のように宣言することで同期ホスト関数を呼び出せます。ネイティブ環境では `tsuzuri_host_Main_now`、WASM 環境では `tsuzuri` モジュールの `Main.now` に自動接続されます。既存の C 関数と直接接続したい場合は `extern "sqrt" def c_sqrt :: f64 -> f64` のようにリンク名を明示します。
+- **C ヘッダーからの生成 (`tsuzuri bindgen`)**: `tsuzuri bindgen zlib.h -o Zlib.tz` は、C ヘッダー自身の宣言と整数の `#define` のうち ABI が一致すると確かめられるものを、リンク名付きの `extern`・`const`・`record`・`extern type`（不透明な struct）・型エイリアスとして書き出します（64-bit の Linux と macOS）。関数ポインターの引数はコールバックに、`--buffer` で指定したポインターと長さの組は `ref [T]` になります。変換できない宣言は推測せず、理由付きの `// skipped` 行と警告 `W2002` にします。
 - **不透明ハンドルとコールバック**: `extern type Counter` でホスト側のポインタを安全な不透明ハンドルとして扱えます。また、環境キャプチャを持たないトップレベル関数は関数ポインタとしてホストへ渡せます。
 - **ホストライブラリのリンク**: ネイティブ実行ファイルのビルド時には、`--link PATH`、`-l NAME`、`-L DIR` や `Tsuzuri.toml` の `[native]` セクションを通じて、外部の C/C++ ライブラリやオブジェクトを直接リンクできます。
+- **共有ライブラリと各言語のバインディング**: `--emit shared` は公開 C ABI（`tz_*`、`tsuzuri_alloc`、`tsuzuri_free` など）だけを export する共有ライブラリ（macOS は `.dylib`、Linux は `.so`。Windows は G10 待ちで `E2000`）を出します。`--emit bindings-cs`、`--emit bindings-py`、`--emit bindings-cpp` は、それを呼ぶ C#（`[LibraryImport]` と `SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを同じソースから生成します。`--trap-mode return` を付けると、トラップが各言語の例外になります。
 - **デスクトップ GUI 連携の例**: Python/Tkinter などのデスクトップ GUI から Tsuzuri のネイティブ共有ライブラリを呼び出すことも可能です（詳細は `examples/desktop` を参照してください）。
 
 ### WebAssembly (ブラウザ / Node.js)
@@ -510,7 +526,14 @@ const { instance } = await WebAssembly.instantiate(wasmBytes);
 console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 ```
 
-- **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します。
+- **型付きのグルー生成**: `tsuzuri build examples/web/Physics.tz --target wasm32 --emit bindings-js -o physics.mjs` は、`.wasm` を型付きの関数として呼ぶ JavaScript モジュール `physics.mjs` と TypeScript 宣言 `physics.d.mts` を出します。引数の検査、バッファの複製と `tsuzuri_free`、記述子の読み書き、型付きの import、トラップを `TsuzuriTrap` にしてインスタンスを作り直す処理を行います。`--wasm-feature threads` を足すと、COOP / COEP 付きのページで Web Worker のスレッドプールを作るグルーになります（満たさないページでは `Error` で、逐次実行には切り替えません）。
+
+  ```javascript
+  import { load } from "./physics.mjs";
+  const api = await load(await (await fetch("physics.wasm")).arrayBuffer());
+  console.log(api.exports.next_positions(Float64Array.of(9, 1), Float64Array.of(3, -3), 1, 10)); // Float64Array [8, 2]
+  ```
+- **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します（生成したグルーは `boolean` に直します）。
 - **メモリとスタックのカスタマイズ**: `--wasm-max-memory SIZE`（既定 16MiB、最大 4GiB-64KiB / wasm64 は 16GiB）や `--wasm-stack-size SIZE`（既定 1MiB）で線形メモリの上限やメインスタックサイズを調整できます。これらは `Tsuzuri.toml` の `[wasm]` セクションでも設定可能です。
 - **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、Task や Parallel による並列計算を Web Worker や Node.js の Worker Threads に分散できます。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
 
@@ -577,6 +600,14 @@ tsuzuri test tests/ --filter "加算" -O3 --target native
 tsuzuri doc src/ -o docs/api
 ```
 
+### C ヘッダーからの extern 生成 (`tsuzuri bindgen`)
+
+C のヘッダーを Clang で解析し、ヘッダー自身の関数・enum の定数・整数の `#define`・struct・typedef から、リンク名付きの `extern "symbol" def`・`const`・`record`・`extern type`・`type` を持つモジュールを生成します。不透明な struct のポインターはハンドル、関数ポインターの引数は静的コールバックになり、`--buffer 関数:ポインター:長さ` で指定した組は `ref [T]`、`--consume 関数:引数` で指定したハンドルはムーブになります。ABI の一致を確かめられない宣言（可変長引数、注釈のないポインター、値渡しの struct、大域変数など）は、理由付きの `// skipped` 行と警告 `W2002` になります。出力は決定的で、`// Generated by tsuzuri bindgen. Do not edit.` で始まるファイルだけを上書きします。
+
+```sh
+tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sample_sum:values:count
+```
+
 ### デバッグ情報と出力仕様
 
 - **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。
@@ -641,6 +672,9 @@ tsuzuri test source.tz|directory [options]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
+tsuzuri fetch directory [--json]
+tsuzuri publish directory --git URL --rev COMMIT [--json]
+tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]
 tsuzuri lsp
 ```
 
@@ -650,7 +684,7 @@ tsuzuri lsp
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
 | `--target native\|wasm32\|wasm64` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ）。 |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。 |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
@@ -669,7 +703,7 @@ tsuzuri lsp
 
 - **入力の解決**: ファイルまたはディレクトリを 1 つ指定します。ディレクトリを指定した場合は、直下の `Main.tz` が自動的にエントリーポイントとして選ばれます。ファイル指定時はその親ディレクトリをルートとし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に探索して読み込みます。
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
-- **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。
+- **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。
 
 ---
 
@@ -693,16 +727,22 @@ node tests/primitives.mjs target/release/tsuzuri
 node tests/strings.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
+node tests/json.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/lsp_sessions.mjs target/release/tsuzuri
 node tests/io.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/cpu_kernels.mjs target/release/tsuzuri
+node tests/packages.mjs target/release/tsuzuri
+node tests/bindgen.mjs target/release/tsuzuri
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
+node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
+node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
 node tests/gpu.mjs target/release/tsuzuri
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）

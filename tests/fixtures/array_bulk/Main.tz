@@ -129,3 +129,44 @@ fn trap_zip =
     let left = [1]
     let right = [2, 3]
     (Array.zip (ref left) (ref right)).length
+/// `List.fold_ref` whose state has a larger alignment than the elements: the element is read with
+/// the list's own node layout, whatever the state type is.
+export def fold_ref_union_state :: i64
+fn fold_ref_union_state =
+    let numbers = new [|3, 4|]
+    let digits: Result<i64, string> = List.fold_ref (state -> item -> match state with | Ok total -> Ok (total * 10 + deref item) | Error error -> Error error) (Ok 0) (ref numbers)
+    let rows = new [|[1, 2], [3, 4, 5]|]
+    let lengths: Result<i64, string> = List.fold_ref (state -> row -> match state with | Ok total -> Ok (total * 10 + row.length) | Error error -> Error error) (Ok 0) (ref rows)
+    let words = new [|"ab", "cde"|]
+    let joined: Result<string, string> = List.fold_ref (state -> word -> match state with | Ok text -> Ok (text + clone_string word) | Error error -> Error error) (Ok "") (ref words)
+    let rendered: Result<Vec<string>, string> = List.fold_ref (state -> item -> match state with | Ok items -> Ok (Vec.push items (Display.display item)) | Error error -> Error error) (Ok (Vec.empty())) (ref numbers)
+    let first = match digits with
+        | Ok value -> value
+        | Error _ -> -1
+    let second = match lengths with
+        | Ok value -> value
+        | Error _ -> -1
+    let third = match joined with
+        | Ok text -> text.length
+        | Error _ -> -1
+    let fourth = match rendered with
+        | Ok items ->
+            let count = Vec.length (ref items)
+            (String.join (ref ",") (ref (Vec.to_array items))).length * 1000 + count
+        | Error _ -> -1
+    first * 1000000 + second * 10000 + third * 100000000 + fourth
+
+/// `List.iter` collects references with `List.fold_ref`, so elements aligned more strictly than its
+/// `Vec` state (`i128`, a union with a `string`) are read with the list's own node layout.
+export def list_iter_aligned :: i64
+fn list_iter_aligned =
+    let wide = new [|5i128, 7i128|]
+    let mut total = 0i128
+    for value in List.iter (ref wide) do total = total * 10i128 + deref value
+    let results: [|Result<i64, string>|] = new [|Ok 5, Error "x", Ok 7|]
+    let mut mixed = 0
+    for value in List.iter (ref results) do
+        match deref value with
+        | Ok number -> mixed = mixed * 10 + number
+        | Error error -> mixed = mixed * 10 + error.length
+    (total as i64) * 1000 + mixed

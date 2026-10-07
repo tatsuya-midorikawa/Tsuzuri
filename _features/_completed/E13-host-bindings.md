@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | E05, E12, (F06), (F11) |
 | 後続 | B08 Phase 2 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要。要承認: D11（Phase 2 の言語・共有ライブラリ出力・ブラウザー threads glue。承認前は Phase 2 に着手しない） |
 | 改善する劣位 | C#/F# 比: .NET からの利用手段（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: WASM ホストの手書き glue と、ブラウザー向け threads glue がない |
@@ -168,7 +168,7 @@ export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly
 | `unit`（結果だけ） | `"unit"` | `void` | import の戻り値は捨てる | `undefined` |
 | `ref [i64]`／`ref [f64]`／`ref [ubyte]` | `"slice:i64"` など | `BigInt64Array`／`Float64Array`／`Uint8Array` か `Borrowed<…>` | `Object.prototype.toString` で型を検査。長さ 0 は pointer 0、それ以外は `tsuzuri_alloc` へ複製。`Borrowed` は複製しない | `slice()` した複製 |
 | `ref string` | `"slice:string"` | `string` | `charCodeAt` で UTF-16 code unit を `Uint16Array` へ（孤立 surrogate も保つ） | `String.fromCharCode` を 4096 単位で |
-| `ref utf8string` | `"slice:utf8string"` | `string` | `v.isWellFormed()` でなければ `TypeError`。`TextEncoder` | `new TextDecoder("utf-8", { fatal: true })` |
+| `ref utf8string` | `"slice:utf8string"` | `string` | `v.isWellFormed()` でなければ `TypeError`。`TextEncoder` | `new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })`（先頭の U+FEFF を取り除かない） |
 | `[i64]`／`[f64]`／`[ubyte]`（結果） | `"buffer:i64"` など | 上の typed array | import: 型を検査して `tsuzuri_alloc` へ複製し、out へ descriptor を書く | descriptor を読んで `slice()`、`tsuzuri_free(ptr)` |
 | `string`／`utf8string`（結果） | `"buffer:string"` など | `string` | import: 上の 2 行と同じ符号化で確保 | 上の 2 行と同じ復号、`tsuzuri_free(ptr)` |
 | スカラー record とその `ref` | `"record:<record_name>"` | interface `<record_name>` | 各 field を検査し offset へ書く（pointer 渡し） | offset から読んだ新しい object |
@@ -557,13 +557,13 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
 
 ## 受け入れ条件
 
-- [ ] `tsuzuri build --target wasm32 --emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出し、診断表の拒否がすべて期待どおり。
-- [ ] E2E の 26 case が `-O0`・`-O3` で成功し、手書きの descriptor 操作なしに全 ABI 型・import・トラップを扱える。
-- [ ] 生成物が同じ入力で byte 単位で同一で、`--emit header`・IR・WASM の出力が変わらない。
-- [ ] 生成した `.d.mts` が TypeScript 6.0.3 の `--strict` で型検査に通り、誤った呼び出しを拒否する。
-- [ ] glue は module が宣言した import だけを渡し、threads・IO・debug の module を明示的な例外で拒否する。
-- [ ] 文書を更新し、`node scripts/check-docs.mjs` が成功する。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] `tsuzuri build --target wasm32 --emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出し、診断表の拒否がすべて期待どおり。
+- [x] E2E の 26 case が `-O0`・`-O3` で成功し、手書きの descriptor 操作なしに全 ABI 型・import・トラップを扱える。
+- [x] 生成物が同じ入力で byte 単位で同一で、`--emit header`・IR・WASM の出力が変わらない。
+- [x] 生成した `.d.mts` が TypeScript 6.0.3 の `--strict` で型検査に通り、誤った呼び出しを拒否する。
+- [x] glue は module が宣言した import だけを渡し、threads・IO・debug の module を明示的な例外で拒否する。
+- [x] 文書を更新し、`node scripts/check-docs.mjs` が成功する。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -666,3 +666,231 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
 - 決定: 新しいコードを作らない。CLI の構成は E2000、export がないのは E2004、出力保護は E2003。glue の実行時の失敗は JS の例外で表す。
 - 理由: どれも既存のコードの意味に収まる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-07、Phase 1）
+
+着手時の HEAD は `2ee813f`（ブランチ `wt/e13`）。E12（ハンドル・静的コールバック・リンク名）、E14（トラップ境界）、F06、F11（wasm64・メモリ上限）は done で、
+ハンドルとコールバックの行も実装した。作業機は Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD、rustc 1.98.1、Node v20.19.6、TypeScript 6.0.3。
+
+### 実装
+
+- CLI・driver: `src/main.rs`（`--emit bindings-js`、`--emit` の一覧の message と HELP、`-o` の `.mjs` 検査、`--trap-mode return` が `--trap-info` を含意するのを
+  header と bindings では行わない）、`src/driver.rs`（`Emit::BindingsJs`、`BuildOptions::validate_bindings`、`output_path` の `mjs`、
+  `bindings_output_error`、`bindings_sidecar_path`、`build_bindings`。`build_complete` は links の検査の直後に `build_bindings` へ分かれ、LLVM・cache・runtime の
+  分岐に入らない。本体と `.d.mts` は `protect_sources` の後に一時 directory へ書き、`publish_outputs` で一緒に公開する）。
+- ABI の型モデル（可視性だけ）: `src/llvm.rs` の `mod host_abi`・`reachable_functions`・`fixed_length` と、`src/llvm_abi.rs` の `record_name`・`record_layout`・
+  `handle_c_name` を `pub(crate)` にした。本体と呼び出し順は変えていない。
+- 生成: `src/bindings.rs`（新規。`ABI_VERSION`、`table`、`descriptor`、`javascript`、`declarations`、`typescript_type`、`DECLARATIONS`）、
+  `src/runtime/bindings.mjs`（新規。`load`、`TsuzuriTrap`、変換、所有権、型付き import、コールバック、分類と作り直し、`withBorrowed`、wasm64 の検出）。
+- テスト: `tests/bindings.rs`（新規、3 件）、`tests/bindings.mjs`・`tests/bindings_consumer.mts`・`tests/fixtures/bindings/{Main,Geometry}.tz`（新規）、
+  `src/main.rs` の `selects_target_defaults_and_honors_path_separator` と `src/driver.rs` の `refuses_invalid_options_and_empty_wasm_modules` に診断表の各行、
+  `tests/ffi_extensions.rs` の `handles_lower_to_pointers_and_header_typedefs` に 1 assert（下の判断 9）。
+- 文書: `_tsuzuri/language-reference/compiler/webassembly.md`（「型付きのバインディングを生成する」。手書きの手順は「Node.js から直接呼ぶ」「バッファを渡す」に残した）、
+  `option.md`・`usage.md`・`diagnostics.md`・`native-interop.md`、`docs/language.md`（「公開 ABI」の「生成バインディング」）、`docs/architecture.md`、`README.md`、
+  `examples/web/README.md`。`scripts/check-runtime-includes.sh` は `src/bindings.rs` の `include_str!` も数える。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. 表の import は `[name, module, parameters, result]` にした。E12 の `extern "env" "x" def` で WASM の import module が `tsuzuri` 以外になるため。`Imports` の
+   key は WASM の import 名のままで、E12 の規則（同じ symbol は同じ module と型、暗黙の名前は `.` を含む）により一意になる。
+2. 表と `Imports` に載せる import は、export と entry から `reachable_functions` で到達するものだけにした（`unused` の extern を要求しない）。`load` は、モジュールが
+   実際に import するものだけを表の順に検査する（`-O3` で消えた import は要求しない）。
+3. `table` は Rust の結合テストから読むため `pub`。表の key 順は `serde_json` の既定（`abi`、`exports`、`hostAbi`、`imports`、`records`）。
+4. A16 Phase 2 の固定長配列のフィールド（C の `T name[N]`）を足した。記述子は `["array", 要素, N]`、JavaScript では長さ N の配列、TypeScript では `readonly T[]`
+   （record の interface は両方向で同じ型）。stride は `record_layout` と同じ 8（64-bit）か 4。
+5. ハンドルは `0 <= v < 2^32` の整数で、TypeScript では `number & { readonly __tsuzuri: "<handle_c_name>" }`（両方向）。コールバックは import の呼び出し中だけ有効で、
+   その後に呼ぶと `TypeError`。コールバック内のトラップ・例外もインスタンスを捨てる。ホストが握りつぶしても、外側の export は捨てたインスタンスの失敗を投げる
+   （捨てたインスタンスへ戻ってきた import の呼び出しも同じ）。
+6. wasm64 は対象外にした（`--target wasm64 --emit bindings-js` は `'--emit bindings-js' requires '--target wasm32'`）。glue の pointer・ハンドル・table index は 32-bit で、
+   wasm64 は BigInt になるため。`load` もバイト列の memory64 の印を見て `bindings support wasm32 modules only; build the .wasm with --target wasm32` で拒否する
+   （Node 20 は memory64 を compile できないので、compile の前に検査する）。コンパイル済みの `WebAssembly.Module` からは判定できない。
+7. `--allocator` も `.wasm` 側の option として拒否した（診断表の E2000 と同じ形）。`load` は namespace ごとに理由を変える: `tsuzuri_io`・`tsuzuri_debug` は表の message、
+   `tsuzuri_heap` は `--allocator host`、`wasi_snapshot_preview1` は `--wasm-host wasi`。表にない import は `module does not match bindings: unexpected import ...`。
+8. 引数の数の message は 1 個のとき単数形（`expects 1 argument`）。レコードのフィールドの誤りは `argument 0 of 'update' field 'flags.tiny' is out of range for i8`
+   のように位置を足す。import の結果の誤りは `result of import '<name>' must be ...` で、ホストの例外として同じ object を投げる。`load` の source が bytes でも
+   `WebAssembly.Module` でもなければ `TypeError`。
+9. **E12 の不具合を直した。** 拡張でない（スカラーだけの）`export def` の `ref H` 引数を、wrapper が slot のアドレスとして Tsuzuri の関数へ渡していた
+   （ホストはハンドルそのものを渡すので、ハンドル値を pointer として読む。WASM で `peek(2)` が 0 を読み、`peek(4294967295)` が範囲外アクセス）。
+   `export_wrapper`（`src/llvm.rs`）が `ref <extern type>` の引数を `alloca` の slot へ複製して借用を渡すようにした。生成 IR は借用したハンドルを取る export を
+   持つプログラムだけ変わり（既存の fixture・例にはない）、`--emit header` の出力は変わらない（C の引数は従来どおりハンドルそのもの）。
+10. 「スカラーだけの module は memory を export しない」（現状の節と旧 `webassembly.md`）は誤りだった（wasm-ld の既定で `memory` は export される。HEAD の
+    `examples/point` も同じ）。export されないのは `tsuzuri_alloc`・`tsuzuri_free` で、glue は `hostAbi` が false なら要求しない。文書を直した。
+11. E2E は 26 case に、ハンドル・コールバック（保持したコールバック、握りつぶしたトラップ）・文字列と record の import・固定長配列・import の結果の検査の 6 case を
+    足した（番号 27–32）。`live == 0` は `--allocator counting` の build で、glue が作った instance を記録して `tsuzuri_alloc_stats` を各 case の後に読んで確かめる。
+
+### 確認（Phase 1）
+
+- `cargo test --locked --test bindings` 3 passed、`--bin tsuzuri selects_target_defaults_and_honors_path_separator` 1 passed、
+  `--lib refuses_invalid_options_and_empty_wasm_modules` 1 passed、`--test ffi_extensions` 10 passed。
+- `node tests/bindings.mjs target/release/tsuzuri`（`TSUZURI_TSC` に vsc の TypeScript 6.0.3）: `-O0`・`-O3` で各 29 case × 3 build（通常、`--trap-info`、
+  `--allocator counting`）、load の検査、`bindings: tsc passed (Version 6.0.3)`、コマンド行の検査が成功。tsc の `@ts-expect-error` 9 箇所がすべて誤りを検出し、
+  `.d.mts` を消すと同じ consumer が失敗する。
+- 既存の E2E: `host_imports.mjs`、`ffi_extensions.mjs`、`trap_boundary.mjs`（17 case × 2）、`examples.mjs` が成功。
+
+## 実装と検証（2026-10-08、Phase 2）
+
+ユーザーが D11 を承認し、全 Phase の実装を求めた。調整役が具体化した範囲（1）ブラウザーの threads glue、（2）`--emit shared` と C#、（3）Python、
+（4）C++ に、「対象外」に Phase 2 として挙げた「ブラウザー main thread での非同期の作り直し」を足して実装した。Phase 1 のコミットは `33c5703`。
+作業機は Phase 1 と同じ（Python 3.14.7、.NET SDK 10.0.102、Apple clang 21.0.0、Google Chrome 154.0.8037.98、Playwright 1.58.2 の Chromium 145.0.7632.6 と WebKit 26.0）。
+
+### 実装
+
+- 非同期の作り直し（1 スレッドの glue）: 捨てたインスタンスは従来どおり次の呼び出しで `new WebAssembly.Instance` で作り直す。これが例外を投げたら
+  （Chrome の main thread は 8 MB を超える module を拒む）、呼び出しは `Error`（`the WASM instance could not be recreated synchronously after a failure;
+  await ready() to recreate it asynchronously, then call again`、`cause` は元の例外）で止まる。新しい `ready()` は `WebAssembly.instantiate` で非同期に作り、
+  インスタンスがあればすぐ解決する。同時の `ready()` は 1 つの Promise を共有し、その間に同期で作れたほうを残す。`.d.mts` の `Bindings` に `ready(): Promise<void>`。
+- threads glue: `--emit bindings-js --wasm-feature threads` で `JsFlavor::Threads`（`simd128` は従来どおり `.wasm` 側の option として E2000）。ランタイムを
+  `src/runtime/bindings-core.mjs`（表の変換・検査・`bind`）、`bindings.mjs`（1 スレッドの `load`）、`bindings-threads.mjs`（プール）に分け、
+  生成物は表 + core + どちらか一方。プールは `src/runtime/wasm-threads.mjs` の `createThreadPool` と同じ手順を Web Worker で行う: 共有 memory を
+  module の `env.memory` の上限ページ数で作る（bytes の import section を読む。`WebAssembly.Module` なら 256、`memory` で指定も可）。glue 自身を
+  `?tsuzuri-worker=helper|coordinator` の module worker として起動する。補助ワーカーは呼び出し前に instantiate して起動記録（SharedArrayBuffer の
+  GO・REASON・SITE と各ワーカーの [base, top]）で待つ。調整役は `tsuzuri_threads_init(workers)` の後、`spawn_workers` で各補助ワーカーの stack を
+  `tsuzuri_thread_stack_alloc` から取って記録し GO を通知する。補助ワーカーは `__stack_pointer`、`tsuzuri_stack_base`／`top` を設定して
+  `tsuzuri_thread_entry(id)` を呼ぶ。失敗は最初の 1 件の理由とサイトを起動記録に残し、`poison`（失敗 flag、lock の poison bit、全 wait の通知）でプールを止める。
+- threads glue の API: `load(source, { importsModule, importData, workers, memory, sites })` → `{ exports, workerCount, close() }`。export はすべて
+  Promise を返し、引数はページ側で 1 スレッドと同じ検査をしてから調整役へ送る。ホスト関数は各ワーカーで `importsModule` の
+  `createImports({ workerId, data })` から作る（調整役が 0、補助が 1 から。`data` は `importData` の構造化複製）。`load` は最初に `crossOriginIsolated` と
+  `SharedArrayBuffer` を検査し、満たさなければワーカーを起動せずに `Error`（`WASM threads need a cross-origin isolated page: ...`）を投げる。
+  `.d.mts` は `ThreadBindings`、`CreateImports`、`ImportsContext` と `Promise<T>` の export（`Borrowed` なし）。
+- `--emit shared`: `Emit::Shared`、`validate_shared`（native だけ。Windows は G10 を理由に E2000、`--allocator host` は E2000）、出力は `.dylib`／`.so`。
+  実行ファイルと同じ object（task・IO・trap の runtime を含む。すべて `-fPIC`）を `link_shared` がリンクする: macOS は `-dynamiclib`、
+  `-exported_symbols_list`、install name `@rpath/<file>`、Linux は `-shared`、version script（`local: *`）、soname、`--no-undefined`。
+  export は `shared_exports` が IR の定義から決める（`tz_*`、`tsuzuri_try_*` と、定義されていれば `tsuzuri_alloc`・`tsuzuri_free`・`tsuzuri_main`・
+  `tsuzuri_alloc_stats`）。リンク入力（`--link`、`-l`、`-L`、`[native]`）を受ける。`--trap-mode return` は `.trap.json` も書く。macOS の `-g` は
+  実行ファイルと同じく dsymutil の `.dwarf` を残す（`src/cache.rs` の tool key にも dsymutil を足した）。
+- `src/bindings_native.rs`（新規、`bindings.rs` の子モジュール）: 同じ型モデル（`host_abi`、`record_name`、`record_layout`、`handle_c_name`）から生成する。
+  - C#（`--emit bindings-cs`、`.cs`）: `namespace Tsuzuri.Bindings` の `static unsafe partial class <PascalCase(stem)>`、入れ子の `Library` に
+    `[LibraryImport(LibraryName)]` の partial メソッド。借用入力は `ReadOnlySpan<T>`（`string` は `ReadOnlySpan<char>`、`utf8string` は検証する
+    `ReadOnlySpan<byte>`）、所有結果は `SafeHandle` の `OwnedBuffer<T>`・`OwnedString`・`OwnedUtf8String`（`Dispose` で `tsuzuri_free`）、レコードは
+    `StructLayout.Sequential` の blittable な struct（32-bit に正規化した field は private の `__abi` と型付きの property、固定長配列は `[InlineArray]`）、
+    ハンドルは `readonly record struct (nint Value)`。.NET 8 以降と `AllowUnsafeBlocks` が要る。
+  - Python（`--emit bindings-py`、`.py`）: `ctypes`。`load(path=None)` が `.py` の隣の `lib<name>.dylib`／`.so` を探して `Library` を返す。整数は範囲検査
+    （`OverflowError`）、型は `TypeError`、不正な UTF-8 は `ValueError`。借用入力はバッファ（書き込める連続バッファは複製しない）か数の列、所有結果は
+    `array.array`・`bytes`・`str` に複製してすぐ `tsuzuri_free`。レコードは依存順の `dataclass`、ハンドルは frozen の `dataclass`。
+  - C++（`--emit bindings-cpp`、`.hpp`）: C ヘッダー `<stem>.h` の上の header-only C++20。`namespace tsuzuri::<stem>` の `inline` 関数、
+    `std::span<const T>`・`std::u16string_view`・`std::string_view`（UTF-8 を検証して `std::invalid_argument`）、`tsuzuri_free` を呼ぶ
+    `buffer<T>`・`string_buffer`・`utf8string_buffer`。
+  - トラップ: `--trap-mode return` を付けると `tsuzuri_try_*` を呼び、状態 1 を C# `TsuzuriTrapException`、Python `TsuzuriTrap`、C++ `trap_error`
+    （どれも site・kind・kind の名前）に、状態 2 を `InvalidOperationException`・`RuntimeError`・`std::logic_error` にする。付けなければ既存の動作どおり
+    トラップがプロセスを終わらせる（macOS で SIGTRAP、終了状態 133 を確認）。
+- CLI・診断: `src/main.rs`（`--emit` の一覧と HELP、`--trap-mode return` による `--trap-info` の含意を shared では object と同じく行い、bindings では行わない、
+  リンク入力を shared に許す）、
+  `src/driver.rs`（`Emit::is_bindings`・`bindings`、native の bindings の検査、`bindings_output_error` の言語ごとの拡張子）。
+  新しいメッセージ: `'--emit bindings-cs' requires '--target native'`（各 kind と `shared` で同じ形）、`'--emit shared' is not supported on Windows yet (G10); ...`、
+  `--allocator host cannot be combined with --emit shared: ...`、`<option> is not valid for bindings output; pass it when building the shared library`、
+  `bindings output must end with '.cs'; its file name, without the extension, names the shared library`（`.py`、`.hpp`）、
+  E2004 `a shared library needs at least one 'export def' entry point`。
+- テスト: `tests/bindings.rs`（5 件。threads の flavor、native の決定性と C ABI、各言語の名前の escape）、`src/driver.rs` の
+  `validates_shared_libraries_and_native_bindings`・`shared_libraries_export_the_public_entry_points_the_ir_defines`、`src/main.rs` の `--emit` 解析、
+  `tests/bindings.mjs` の case 33（非同期の作り直し）、`tests/bindings_threads.mjs`・`tests/fixtures/bindings_threads`（新規）、`tests/host_bindings.mjs`・
+  `tests/host_bindings_{host.c,test.py,test.cpp,test.cs}`・`tests/fixtures/bindings_native`（新規）。
+- 文書: LR の `webassembly.md`（「スレッドのグルー」、`ready()`）、`native-interop.md`（「共有ライブラリと各言語のバインディング」と言語ごとの表）、
+  `option.md`・`usage.md`・`diagnostics.md`・`task.md`・`parallel.md`・`strategy.md`、`docs/language.md`、`docs/architecture.md`、`README.md`、`examples/web/README.md`。
+
+### 決定事項への追記（Phase 2 の判断）
+
+1. threads glue の export は Promise にした。ブラウザーの main thread は `Atomics.wait` できず、Tsuzuri の task は呼び出し元のスレッドでも待つため、
+   export は調整役のワーカーで動かすしかない。引数と結果は構造化複製で、所有結果の型付き配列は transfer する。`withBorrowed` は意味がないので出さない。
+2. ホスト関数は関数を Worker へ送れないので、URL の `importsModule` と `createImports({ workerId, data })` にした。import を持つ module では必須。
+3. プールは作り直さない。補助ワーカーは poison で止まり、`createThreadPool` と同じく失敗後の再利用をしない。以降の呼び出しは
+   `the WASM thread pool stopped after a failure; load the module again`。補助ワーカーのトラップは、そのワーカーが記録した REASON と SITE を
+   調整役の `TsuzuriTrap` に使う（調整役自身の site が 0 のとき）。
+4. `workers` は 0 から 31（起動記録の slot 数。native の `min(CPU, 32) - 1` と同じ上限）、既定は `navigator.hardwareConcurrency - 1`。0 なら調整役だけで動く。
+5. 補助ワーカーは最初の呼び出しの前に起動して待たせる。調整役が `spawn_workers` の中で Worker を作ると、調整役が待っている間は起動しないため。
+6. wasm64 は両方の glue で対象外のまま（Phase 1 の判断 6）。F11 の wasm64 では pointer が BigInt になり、glue の 32-bit の pointer・ハンドルと合わない。
+7. 非同期の作り直しは、失敗したときに自動で裏で始めない。多くの環境では同期で作れるので、毎回 2 つ目のインスタンス（と memory）を作るのを避けた。
+8. `--trap-mode return is only valid for native object, llvm or header output` と `link inputs require a native executable; ...` は、shared と
+   bindings も受けるようになったが文言を変えなかった。E12・E14 のテストと表がこの文言で照合しており、拒否される側（wasm、exe 以外）への助言は正しいまま。
+9. native の bindings は `--allocator`・`--trap-info`・`--debug-info`・`--debug-output`・`--freestanding` を共有ライブラリのビルドの option として拒否し、
+   `--trap-mode return` は受ける（`tsuzuri_try_*` を呼ぶ版にする。`--trap-info` は含意しない）。C++ の版は同じ `--trap-mode` の C ヘッダーと組にする。
+10. ライブラリの名前は出力の stem（`quote.py` は `libquote.dylib`）。macOS の install name は `@rpath/<出力のファイル名>` なので、ホストはファイル名を変えない。
+    コールバックは native の bindings に出ない（コールバックは import にだけ現れ、native の import はリンク時に解決する）。
+11. Windows の共有ライブラリは D11 の「G10 の Windows DLL 方針と揃える」に従い、G10 が blocked の間は E2000 で object を DLL へリンクするよう案内する。
+12. 主な影響ファイルに挙げた F06 の Node 用ホスト `src/runtime/wasm-threads.mjs` は変えなかった。threads glue は同じ import（`env.memory`、
+    `tsuzuri_threads.spawn_workers`・`worker_ready`）と export だけを使い、IR・WASM は変わらない。
+13. `docs/architecture.md` が WebAssembly component model を E13 の計画としていたのを、E13 の対象外（計画チケットなし）に直した。
+
+### 確認（Phase 2 と最終）
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（Homebrew rustc 1.98.1）が成功。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 743 passed、0 failed（Phase 1 の時点は 739）。GUIDE §3.1 の回帰 4 件がそれぞれ 1 passed。
+- Windows の型検査（rustup 1.96.1、`CARGO_TARGET_DIR=target/wincheck`）: `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings`
+  と `aarch64-pc-windows-msvc` は、触っていない `src/lsp.rs:806`・`src/parser.rs:1956-1957` の `clippy::nonminimal_bool` 3 件だけで失敗する
+  （clippy 1.96 だけが出す既存の指摘。1.98 は出さない）。`-A clippy::nonminimal_bool` を足すと両 target とも成功。
+- `node tests/bindings.mjs`: `-O0`・`-O3` で各 30 case × 3 build、load の検査、tsc 6.0.3、コマンド行の検査が成功。
+- `node tests/bindings_threads.mjs`: Node の Web Worker adapter で `-O0`・`-O3`（3 スレッドの barrier、ヘルパーのトラップ、0 ワーカー、close）、load の検査、
+  tsc が成功。実ブラウザー（COOP/COEP 付きのページで 2 ワーカー、ヘッダーなしのページで `Error`）: `TSUZURI_BROWSER` の Google Chrome 154.0.8037.98 headless、
+  `TSUZURI_PLAYWRIGHT` の Chromium 145.0.7632.6 と WebKit 26.0（`TSUZURI_BROWSER_ENGINE=webkit`、revision 2336 を `TSUZURI_BROWSER` で指定）が成功。
+- `node tests/host_bindings.mjs`: Python と C++（`-Wall -Wextra -Werror`）が `-O0`・`-O3`（`--allocator counting` で `live == 0`、export の一覧、
+  トラップでプロセス終了）、C++ と Python の `--trap-mode return`、C#（.NET SDK 10.0.102、`TreatWarningsAsErrors`、両 build と trap 版）、
+  コマンド行の拒否が成功。
+- 非同期の作り直し: 9.4 MB の module で、Chrome 154 と Chromium 145 の main thread は同期の作り直しを `RangeError` で拒み、glue の `Error` のあと
+  `ready()` で呼べた。WebKit 26.0 は同期で作り直せた（手動確認。module の生成に 1 分半かかるので自動テストは Node の模擬だけ）。
+- 文書の例: `native-interop.md` の Python・C#・C++・`--trap-mode return` の例と、`webassembly.md` のスレッドの例（Chrome、Chromium、WebKit）を実行した。
+  `node scripts/check-docs.mjs` を変更した LR の 8 ページで実行して成功。`sh scripts/check-runtime-includes.sh` は 32 files。
+- 既存の E2E: `host_imports.mjs`、`ffi_extensions.mjs`、`trap_boundary.mjs`（17 case × 2）、`trap_return.mjs`、`wasm_threads.mjs`、`examples.mjs`、`cache.mjs`、
+  `allocator.mjs` が成功。`debug_info.mjs` はこの機械の toolchain（Apple clang に合う `llvm-dwarfdump`・`llvm-link` がない。Homebrew LLVM 23 では
+  `-O3` の `llvm-dwarfdump --verify` が `2ee813f` の compiler でも同じく失敗）で通らず、変更と無関係。
+- 差分: `tests/fixtures/*`、`examples/*`、benchmark 7 件を native IR、wasm32 IR、`--emit header`、wasm32 `-O3` で出し、標準出力・標準エラー・終了状態も含めて
+  `2ee813f` の compiler と比べた。既存の 1,247 files はバイト単位で同一で、増えたのは新しい fixture 3 件の 48 files だけ。
+
+### 制限と未確認
+
+- Linux の共有ライブラリは、clang driver での実リンクを確認していない（Linux の機械がなく、Docker は動いていない）。macOS で IR を
+  `aarch64-unknown-linux-gnu` の ELF object にし、生成するのと同じ version script で `ld.lld -shared -soname --no-undefined-version` すると、
+  export は公開 5 名だけ、soname も期待どおりだった。
+- Firefox は未確認（headless の profile をこの機械の作業場所に作れない）。Safari 本体ではなく、Playwright の WebKit で確認した。
+- threads glue の Node 用の経路はない（Node は `src/runtime/wasm-threads.mjs`）。Node のテストは Web Worker の adapter を通す。
+- C# は `[InlineArray]` のため .NET 8 以降。Windows の共有ライブラリと、その上の C#・Python・C++ は G10 の後。
+
+## レビュー指摘の修正（2026-10-08）
+
+統合後のコードレビューで見つかった 5 件を直し、それぞれに回帰テストを足した。
+
+1. （高）`--emit shared` は出力のファイル名を install name（macOS の `@rpath/<file>`）か soname（Linux）として埋め込むが、ビルドキャッシュの
+   キーに入っていなかった。同じソースを `-o libbar.dylib` へビルドすると、キャッシュした `libfoo.dylib` が復元された（`otool -D` が `@rpath/libfoo.dylib`）。
+   `src/cache.rs` の `hash_output_path` が、`Emit::Shared` では出力のファイル名を、macOS の `-g` では実行ファイルと同じく絶対パスもキーに足す。
+   ほかの emit のキーは変わらない。テスト: `cache::tests::shared_library_keys_follow_the_file_name`、`tests/host_bindings.mjs` のキャッシュの節
+   （リンク入力のないライブラリをキャッシュ有効で `first/libfoo`、`second/libbar`、`third/libfoo` へビルドし、install name／soname がそれぞれのファイル名で、
+   キャッシュの項目が 1、2、2 になる）。
+2. （高）C# の `OwnedBuffer.ToArray()` と `OwnedString`・`OwnedUtf8String` の `ToString()` は、SafeHandle の参照を持たずに native memory を読んでいた。
+   `Native.make_bytes(n).ToArray()` のような一時値では、複製の途中で finalizer が `tsuzuri_free` できた。どれも `Read` を通し、`DangerousAddRef` と
+   `DangerousRelease` の間で読む（並行する `Dispose` も防ぐ）。`Span` は結果を保持している間だけ有効だと文書に書いた。テスト: `tests/host_bindings_test.cs`
+   に、別のスレッドが `GC.Collect` を続ける中で一時値の `ToArray()`・`ToString()` を 1,000 回検査する節を足し、`MallocScribble=1`（glibc は
+   `MALLOC_PERTURB_=85`）で解放後のメモリを上書きして走らせる。修正前の生成コードでは 46 回目と 75 回目で失敗し（別の 3,000 回の再現では 56〜97 回が破損）、
+   修正後は失敗しない。`tests/bindings.rs` も生成文を検査する。
+3. （中）`utf8string` の復号に使う `TextDecoder` が、既定の `ignoreBOM: false` で先頭の U+FEFF を取り除いていた（`copy_utf8("\uFEFFabc")` が `"abc"`）。
+   `{ fatal: true, ignoreBOM: true }` にし、型の表の記述も直した。テスト: `tests/bindings.mjs` の case 35（export の結果と import の引数）。
+4. （中）ある `load` の `Borrowed` を、別の `load` の export が受け付け、自分のメモリの同じアドレスを読んでいた。`bind` ごとの識別子を `Borrowed` に持たせ、
+   引数の検査で `TypeError`（`argument 0 of 'sum_float' must be a Borrowed<Float64Array> from the same load()`）にする。インスタンスには触れず、捨てない。
+   テスト: case 34（両方向）。
+5. （中）threads glue の補助ワーカーは `tsuzuri_thread_entry` を `bind` の境界の外で呼ぶので、ホスト関数の `RangeError`（グルー自身の
+   `result of import ... is out of range` を含む）をスタック枯渇に、ほかのホストの例外を `trap (site 0)` にしていた。`bind` が `isHostError` を公開し、
+   補助ワーカーは `HOST`（とそれ以外の `OTHER`）を起動記録に残す。調整役は自分の site 0 のトラップがそれによるときに `{ type: "helper" }` を返し、
+   ページは補助ワーカーの `failed` が運ぶ値（構造化複製）で呼び出しを失敗させる（2 つの message の順序によらず待つ）。テスト: `tests/bindings_threads.mjs`
+   （補助ワーカーでだけ i32 の範囲外を返すか `Error` を投げる import `narrow_on_helpers` と、3 スレッドを揃える `helper_results`。Node の adapter の
+   `-O0`・`-O3` と実ブラウザー）。補助ワーカーの分類を修正前に戻すと失敗することを確かめた。
+
+あわせて、Phase 1 の判断 9（E12 の不具合の修正）に、`export_wrapper` が `ref <extern type>` の引数を slot へ複製すること、IR が変わるのは借用した
+ハンドルを取る export だけで、`--emit header` は変わらないことを書き足した。
+
+確認: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（744 passed、
+0 failed）。`node tests/bindings.mjs`（`-O0`・`-O3` で各 32 case × 3 build、tsc 6.0.3）、`node tests/bindings_threads.mjs`（Node の adapter の `-O0`・`-O3`、
+tsc、Google Chrome 154.0.8037.98 と Playwright の WebKit 26.0）、`node tests/host_bindings.mjs`（Python・C++ の `-O0`・`-O3`、C++ の trap 版、C# の
+.NET SDK 10.0.102、キャッシュ、コマンド行）、`node tests/cache.mjs` が成功。`node scripts/check-docs.mjs` を変更した 2 ページで、
+`sh scripts/check-runtime-includes.sh` は 32 files。Windows の clippy（rustup 1.96.1、x64・arm64）は以前と同じく既存の `clippy::nonminimal_bool` 3 件だけで、
+それを許すと両方とも成功。
+
+### PR #17 の Copilot のレビュー（2026-10-08）
+
+- import の object とモジュールごとの object を null prototype で作り、WASM の import のモジュール名や import 名が `__proto__` でも `Object.prototype` を
+  書き換えないようにした。ホストの import は呼び出し元の own property だけを受け付ける（`toString` などの継承した関数を使わない）。`tests/bindings.mjs` に回帰テスト。
+- C++ の `buffer<T>` に、元を空（長さ 0）にするムーブ構築・ムーブ代入を定義し、複製を削除した（暗黙のムーブでは元の `size_` が残り、null のデータと
+  0 でない長さの範囲を作れた）。`tests/host_bindings_test.cpp` でムーブ元の状態を検査する。
+- C# の stress test の GC のスレッドを background にし、検査の失敗でも `finally` で止める（失敗時にプロセスが終わらなかった）。
+- threads の glue: worker の失敗の listener を、全 worker の ready の後ではなく worker を作った時点で付ける。coordinator は自分の ready の前に helper を
+  走らせるので、helper が ready の直後に失敗するとその通知を失い、helper の失敗を待つ呼び出しが終わらないことがあった。`tests/bindings_threads.mjs` に、
+  helper の ready の直後に失敗を届ける worker で pool が止まることを確かめる検査を足した（修正前の glue では失敗）。
+- C++ の空の `buffer<T>`（既定構築・ムーブ元）の `end()`・`span()`・`view()` は、null のポインターに長さを足さずに空の範囲を返す
+  （C++ では `nullptr + 0` は null のポインターで定義済みだが、範囲の構築を null に頼らない）。
+

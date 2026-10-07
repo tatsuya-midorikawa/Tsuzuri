@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
+import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
+import * as unicodeData from "./unicode-ucd.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -110,6 +113,52 @@ function siphash(compression, finalization, key0, key1, bytes) {
   for (let step = 0; step < finalization; step++) round();
   return (v0 ^ v1 ^ v2 ^ v3) & mask;
 }
+// JSON references (D08): FNV-1a 64 over UTF-8 bytes, and status codes `kind * 2^40 + offset`.
+function fnv64(bytes) {
+  let hash = 14695981039346656037n;
+  for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 1099511628211n) & ((1n << 64n) - 1n);
+  return BigInt.asIntN(64, hash);
+}
+const utf8Bytes = (text) => [...new TextEncoder().encode(text)];
+const jsonTextHash = (text) => fnv64(utf8Bytes(text));
+const jsonStatus = (kind, offset) => BigInt(kind) * (1n << 40n) + BigInt(offset);
+// The DuplicateKey message of the first entry whose key repeats an earlier key, scanning in
+// document order: the reference for Map and Set decoding, which sorts the entries instead.
+// `key` maps the JSON text of an entry's key to the key.
+function duplicateMessage(texts, key = (text) => text) {
+  const seen = new Set();
+  for (const text of texts) {
+    if (seen.has(key(text))) return `json: duplicate key ${JSON.stringify(text)}`;
+    seen.add(key(text));
+  }
+  throw new Error("no repeated key");
+}
+// `scattered count` of the json and cbor fixtures: a permutation with two planted repeats.
+const scattered = (count) => Array.from({ length: count }, (_, index) =>
+  ((index === count - 1 ? 0 : index === Math.floor(count / 2) ? Math.floor(count / 3) : index) * 7919) % count);
+// The nearest f32 to a positive integer, rounded once (ties to even), computed exactly with BigInt.
+function integerToF32(value) {
+  const bits = value.toString(2).length;
+  if (bits <= 24) return Number(value);
+  const shift = BigInt(bits - 24), kept = value >> shift, rest = value - (kept << shift), half = 1n << (shift - 1n);
+  const rounded = rest > half || (rest === half && (kept & 1n) === 1n) ? kept + 1n : kept;
+  return Number(rounded) * 2 ** Number(shift);
+}
+// CBOR references (D08 Phase 2): RFC 8949 Appendix A vectors as hex, and a small deterministic encoder.
+const hexBytes = (hex) => Array.from({ length: hex.length / 2 }, (_, index) => parseInt(hex.slice(index * 2, index * 2 + 2), 16));
+const cborHead = (major, value) => {
+  const n = BigInt(value);
+  if (n < 24n) return [major << 5 | Number(n)];
+  const size = n < 256n ? 1 : n < 65536n ? 2 : n < 4294967296n ? 4 : 8;
+  return [major << 5 | { 1: 24, 2: 25, 4: 26, 8: 27 }[size], ...Array.from({ length: size }, (_, index) => Number(n >> BigInt(8 * (size - 1 - index)) & 255n))];
+};
+const cborText = (text) => { const bytes = [...new TextEncoder().encode(text)]; return [...cborHead(3, bytes.length), ...bytes]; };
+const cborMap = (entries) => {
+  const encoded = entries.map(([key, value]) => [cborText(key), value]);
+  encoded.sort(([left], [right]) => { for (let index = 0; index < Math.min(left.length, right.length); index++) if (left[index] !== right[index]) return left[index] - right[index]; return left.length - right.length; });
+  return [...cborHead(5, entries.length), ...encoded.flatMap(([key, value]) => [...key, ...value])];
+};
+const cborArray = (items) => [...cborHead(4, items.length), ...items.flat()];
 const sipKey0 = 0x0706050403020100n, sipKey1 = 0x0f0e0d0c0b0a0908n;
 assert.equal(siphash(2, 4, sipKey0, sipKey1, []), 0x726fdb47dd0e0e31n);
 assert.equal(siphash(2, 4, sipKey0, sipKey1, [0]), 0x74f839c593dc67fdn);
@@ -461,6 +510,82 @@ const suites = {
       for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
     },
   },
+  arena: {
+    cases: [
+      ["arena_cycle", [], 143n], ["arena_order", [], 42351n], ["arena_foreign", [], 110n],
+      ["arena_capture", [], 84n], ["arena_task", [], 42n], ["arena_borrowed_values", [], 8n],
+      // Swap-removing 20 and 10 leaves 40, 50, 30 in the first copy, which then takes 7, 8, 9; the
+      // second copy's handle is not found there (flags 100 + 10 + 1).
+      ["arena_snapshot", [], [40n, 50n, 30n, 7n, 8n, 9n].reduce((digits, value) => digits * 100n + value, 0n) * 10000n + 111n],
+      ...[1n, 2n, 3n, 1000n].map((n) => ["arena_ring", [n], (n - 1n) * n * (n + 1n) / 3n]),
+      ...[0n, 1n, 50000n].map((n) => ["arena_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n].map((count) => ["arena_parallel", [count], 2n * count * (4n * count - 1n)]),
+      ...[0n, 1n, 2n, 3n, 100n, 1000n].map((count) => {
+        let kept = 0n, removed = 0n, stale = 0n;
+        for (let i = 0n; i < count; i++) if (i % 3n === 0n) { removed += i * 3n; stale++; } else kept += i * 3n;
+        let reinserted = 0n;
+        for (let k = 0n; k < stale; k++) reinserted += 1000000n + k;
+        return ["arena_churn", [count], (kept + reinserted) * 3n + removed * 5n + stale * 7n + count * 11n];
+      }),
+      ...[0n, 1n, 10n, 10000n].map((count) => {
+        let live = 0n, removed = 0n;
+        for (let i = 0n; i < count; i++) {
+          const length = BigInt(String(i).length);
+          if (i % 4n === 1n) removed += length; else live += length + (i % 4n === 2n ? 1n : 0n);
+        }
+        return ["arena_strings", [count], live * 1000n + removed];
+      }),
+    ],
+    traps: [["arena_at_removed", []], ["arena_at_foreign", []], ["arena_update_stale", []], ["arena_negative_capacity", []]],
+    inspect(ir) {
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Arena\.(?:position|contains|get|at)[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(lookups.length > 0);
+      for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+      assert.equal(ir.match(/^@tz\.arena\.next_id = internal global i64 0/gm)?.length, 1);
+      assert.equal(ir.match(/^define internal i64 @tz\.builtin\.Arena\.__next_id\(\)/gm)?.length, 1);
+      assert.match(ir, /atomicrmw add ptr @tz\.arena\.next_id, i64 1 monotonic/);
+    },
+  },
+  rc: {
+    cases: [
+      ["rc_counts", [], (3n * 10n + 2n) * 10000n + (1n * 10n + 1n) * 100n + 2n],
+      ["rc_try_unwrap", [], 2n * 100n + BigInt("unwrap".length)],
+      ["arc_try_unwrap", [], 2n * 100n + BigInt("unwrap".length)],
+      ["rc_upgrade_after_drop", [], 2n + 10n], ["arc_upgrade_after_drop", [], 2n + 10n],
+      ["rc_shared_tails", [], (100n + 55n) + (200n + 55n) + 3n * 1000n],
+      ["rc_dag", [], (1n + (2n + 4n) + (3n + 4n)) * 10n + 3n],
+      ["rc_ptr_eq", [], 10n], ["rc_borrowed", [], BigInt("borrowed".length)], ["arc_capture", [], 2n * 10n + 2n],
+      ["shared_named_types", [], (2n * 10n + BigInt("four".length)) * 1000000n + (1n * 100n + 3n * 5n) * 1000n + 7n * 11n],
+      // Both children reach the root (7) until it drops; then upgrading gives None (-1 + 1).
+      ["rc_weak_parent", [], (7n + 7n) * 1000n + 2n * 100n + (2n + 3n) * 10n + 0n],
+      ...[0n, 1n, 2n, 100000n].map((n) => ["rc_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 100000n].map((n) => ["rc_long_drop", [n], n]),
+      ...[0n, 1n, 100000n].map((n) => ["arc_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n, 4097n].map((n) => ["arc_parallel", [n], n * (n - 1n) / 2n * 10n + 1n]),
+      ...[0n, 1n, 1000n].map((n) => ["arc_weak_parallel", [n], 4n * (n * (n - 1n) / 2n) * 10n]),
+      // The last task to finish drops the shared value.
+      ...[0n, 1n, 1000n, 100000n].map((n) => ["arc_parallel_last", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n, 50000n].map((n) => ["arc_chain_parallel", [n], 4n * (n * (n - 1n) / 2n)]),
+    ],
+    // A chain of a million shared nodes drops without native recursion; on wasm32 it needs more
+    // than the default 16 MiB heap, so it traps there at the allocation instead.
+    nativeCases: [["rc_chain", [1000000n], 1000000n * 999999n / 2n], ["rc_long_drop", [1000000n], 1000000n],
+      ["arc_chain", [1000000n], 1000000n * 999999n / 2n]],
+    wasmTraps: [["rc_chain", [1000000n]], ["arc_chain", [1000000n]]],
+    traps: [["rc_upgrade_dead", []]],
+    inspect(ir) {
+      const bodies = (prefix) => [...ir.matchAll(new RegExp(`^define internal [^\\n]*@tz\\.builtin\\.${prefix}\\.[^\\n]*\\{([\\s\\S]*?)^\\}`, "gm"))].map((match) => match[1]);
+      const rc = bodies("Rc"), arc = bodies("Arc");
+      assert.ok(rc.length > 0 && arc.length > 0);
+      for (const body of rc) assert.doesNotMatch(body, /atomicrmw|cmpxchg|fence|load atomic/);
+      assert.ok(arc.some((body) => /atomicrmw add ptr [^\n]*, i64 1 monotonic/.test(body)));
+      assert.ok(arc.some((body) => /cmpxchg ptr [^\n]* acquire monotonic/.test(body)));
+      assert.match(ir, /atomicrmw sub ptr [^\n]*, i64 1 release/);
+      assert.match(ir, /fence acquire/);
+      assert.match(ir, /^define internal void @"tz\.shared\.drop\.rc\.Main\.Link"\(ptr %node, ptr %pending\)/m);
+      assert.match(ir, /^define internal void @"tz\.shared\.drop\.arc\.Main\.AList"\(ptr %node, ptr %pending\)/m);
+    },
+  },
   hash_map: {
     cases: [
       ...[0n, 1n, 2n, 7n, 8n, 9n, 100n, 1000n, 100000n].flatMap((count) => [1n, 2n, -3n].flatMap((seed) => [
@@ -682,6 +807,27 @@ const suites = {
     ],
     traps: [["trap_decode_end", []], ["trap_decode_continuation", []], ["trap_repeat_negative", []], ["trap_repeat_overflow", []]],
   },
+  // D09: the cases and their V8 or hand-written expectations come from tests/regex-cases.mjs.
+  regex: {
+    get cases() {
+      assert.equal(readFileSync(regexCasesPath, "utf8"), regexCasesSource(), "run node tests/regex-cases.mjs --write");
+      return (this.computed ??= regexCases());
+    },
+    inspect(ir) {
+      const matching = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Regex\.(?:add_thread|search|copy_slots|in_class|holds|consumes)\([^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.equal(matching.length, 6);
+      for (const [, body] of matching) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+      assert.match(ir, /^@tz\.unicode\.table\.0 = internal unnamed_addr constant/m);
+    },
+  },
+  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs.
+  unicode: {
+    get cases() { return (this.computed ??= unicodeCases(unicodeData)); },
+    inspect(ir) {
+      assert.match(ir, /^@tz\.unicode\.table\.17 = internal unnamed_addr constant/m);
+      assert.equal(ir.match(/^define internal i64 @tz\.unicode\.entry\(/gm).length, 1);
+    },
+  },
   chars: {
     cases: [
       ["all_code_units", [], 65536n], ["character_patterns", [], 42n], ["character_order", [], 1],
@@ -715,6 +861,17 @@ const suites = {
       ["reductions", [], 1],
       ["first_duplicate", [], 1n],
       ["filtered", [], 135n],
+      // List.fold_ref with a state aligned more strictly than the elements reads each element with
+      // the list's node layout.
+      ["fold_ref_union_state", [], (() => {
+        const digits = [3n, 4n].reduce((total, value) => total * 10n + value, 0n);
+        const lengths = [[1, 2], [3, 4, 5]].reduce((total, row) => total * 10n + BigInt(row.length), 0n);
+        const joined = BigInt(["ab", "cde"].join("").length);
+        const rendered = BigInt([3, 4].map(String).join(",").length) * 1000n + 2n;
+        return digits * 1000000n + lengths * 10000n + joined * 100000000n + rendered;
+      })()],
+      ["list_iter_aligned", [], [5n, 7n].reduce((total, value) => total * 10n + value, 0n) * 1000n
+        + [5n, BigInt("x".length), 7n].reduce((total, value) => total * 10n + value, 0n)],
       ...[0, 1, 2, 3, 17, 128, 1024].map((count) => ["sort_numbers", [BigInt(count)],
         Array.from({ length: count }, (_, index) => BigInt((index * 13 + 7) % 19)).sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
           .reduce((total, value, index) => total + BigInt(index + 1) * value, 0n)]),
@@ -1067,6 +1224,134 @@ const suites = {
       assert.match(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
       assert.match(ir, /tz\.union\.Result\.Result\[string,i64\]/);
     },
+  },
+  json: {
+    cases: [
+      ["scene_hash", [], jsonTextHash(JSON.stringify({ name: "a", points: [{ x: 1, y: 0.5 }], shapes: [{ Circle: 2 }, { Rect: [1, 2.5] }, "Empty"], note: null }))],
+      ["scene_round_trip", [], 1],
+      ["nesting", [1n], -1n], ["nesting", [128n], -1n], ["nesting", [129n], jsonStatus(6, 128)],
+      ["nesting", [1000000n], jsonStatus(6, 128)],
+      ["object_nesting", [128n], -1n], ["object_nesting", [129n], jsonStatus(6, 128 * 5)],
+      ...[0.1, -0, 5e-324, 1.7976931348623157e308, -0, Number("1.000000059604644775390625000000001"),
+        Number("123456789012345678901234567890"), undefined, -0, Number("2.2250738585072011e-308")]
+        .flatMap((value, index) => value === undefined ? [] : [
+          ["number_value", [BigInt(index)], value],
+          ["number_sign", [BigInt(index)], Object.is(value, -0) ? -1 : 1],
+        ]),
+      ["number_status", [0n], -1n], ["number_status", [7n], jsonStatus(9, -1)],
+      ["float32_value", [0n], Math.fround(0.1)],
+      // 1 + 2^-24 + 1e-33 is above the tie, so f32 rounds up; rounding through f64 would give 1.
+      ["float32_value", [5n], 1 + 2 ** -23],
+      ["float32_value", [6n], integerToF32(123456789012345678901234567890n)],
+      ...[-1n, jsonStatus(9, -1), jsonStatus(10, -1), -2n, -1n, -1n, jsonStatus(9, -1), jsonStatus(10, -1),
+        BigInt.asIntN(64, ((1n << 128n) - 1n) % 1000000007n), jsonStatus(10, -1), jsonStatus(9, -1), -128n, jsonStatus(1, 3)]
+        .map((expected, index) => ["integer_status", [BigInt(index)], expected]),
+      ...[
+        [jsonStatus(11, -1), 'json: missing field "y"'], [-1n, null], [jsonStatus(10, -1), "json: expected integer"],
+        [jsonStatus(10, -1), "json: expected number"], [jsonStatus(10, -1), "json: expected object"],
+        [jsonStatus(12, -1), 'json: unknown case "Square"'], [jsonStatus(10, -1), "json: expected object"], [-1n, null],
+        [jsonStatus(10, -1), "json: expected string"], [jsonStatus(10, -1), "json: expected object with one member"],
+        [jsonStatus(10, -1), "json: expected string or object"], [jsonStatus(10, -1), "json: expected array of 2"], [-1n, null],
+        [jsonStatus(1, 5), "json: syntax error at byte 5"], [jsonStatus(5, 7), 'json: duplicate key "a" at byte 7'],
+        [jsonStatus(1, 1), "json: syntax error at byte 1"], [jsonStatus(5, 13), 'json: duplicate key "x" at byte 13'],
+      ].flatMap(([expected, text], index) => [
+        ["field_rules", [BigInt(index)], expected],
+        ["field_messages", [BigInt(index)], text === null ? 0n : jsonTextHash(text)],
+      ]),
+      ["text_rules", [0n], jsonTextHash(JSON.stringify("\ud800"))],
+      ["text_rules", [1n], jsonStatus(13, -1)], ["text_rules", [2n], jsonStatus(8, -1)], ["text_rules", [3n], jsonStatus(8, -1)],
+      ["text_rules", [4n], fnv64([0xf0, 0x9f, 0x98, 0x80])],
+      ["text_rules", [5n], jsonTextHash(JSON.stringify("\u2028\u007f/\"\\\ud83d\ude00\udc00"))],
+      ["text_rules", [6n], jsonTextHash(JSON.stringify(String.fromCharCode(...Array.from({ length: 32 }, (_, index) => index))))],
+      // Numbers keep the shortest round-trip text of `to_string`, unlike JSON.stringify ("0", "10000000").
+      ["text_rules", [7n], jsonTextHash("-0")], ["text_rules", [8n], jsonTextHash("1e+7")], ["text_rules", [9n], jsonTextHash("0.1")],
+      ["text_rules", [10n], jsonTextHash("[1,null]")], ["text_rules", [11n], jsonTextHash("[1,null,[2,3]]")],
+      ["text_rules", [12n], jsonTextHash(`[${-(1n << 127n)},${(1n << 128n) - 1n},true,"é"]`)],
+      // Phase 2: maps (objects for string keys, `[key, value]` pairs otherwise), sets, f16, f128, decimals.
+      ...['{"a":1,"b":2}', '[[2,"y"],[10,"x"]]', "{}", '{"z":3,"a":2}', '{"Blue":1.5,"Red":65500}', "[1,2.5]", "[3,1]",
+        "[0.5,0.1,1e+300,[1.1,-0]]", jsonStatus(5, -1), '{"a":1}', jsonStatus(10, -1), jsonStatus(10, -1), '[[1,"a"],[2,"b"]]',
+        jsonStatus(9, -1), "1.234568", jsonStatus(8, -1), '{"Blue":1,"Red":2}', jsonStatus(10, -1)]
+        .map((expected, index) => ["container_hash", [BigInt(index)], typeof expected === "string" ? jsonTextHash(expected) : expected]),
+      // Map and Set decoding sorts the entries by key: inserting descending keys one by one would be
+      // quadratic. WASM has 16 MiB, so the larger inputs run natively (`nativeCases`).
+      ["descending", [0n, 50000n], 50000n], ["descending", [1n, 25000n], 25000n], ["descending", [2n, 5000n], 5000n],
+      // A repeated key is reported where inserting in document order would find it, in its text there.
+      ...[
+        ["9", "1", "9", "5", "1"], ["2.0", "1", "2", "1.0"], ["3", "1", "2", "1", "3"], ["10", "2", "1e1", "2.0"], ["3", "1", "03", "001"],
+      ].map((texts) => [jsonStatus(5, -1), duplicateMessage(texts, Number)])
+        .concat([[jsonStatus(5, -1), duplicateMessage(['"Red"', '"Blue"', '"Green"', '"Blue"', '"Red"'])],
+          [jsonStatus(5, -1), duplicateMessage(["4", "8", "8", "4"], Number)], [jsonStatus(10, -1), "json: expected integer"], [-1n, null], [-1n, null], [-1n, null]])
+        .flatMap(([expected, text], index) => [
+          ["duplicate_status", [BigInt(index)], expected],
+          ["duplicate_message", [BigInt(index)], text === null ? 0n : jsonTextHash(text)],
+        ]),
+      ["scattered_message", [50000n], jsonTextHash(duplicateMessage(scattered(50000).map(String), Number))],
+      // `@json` names of fields and cases.
+      ["renamed", [0n], jsonTextHash('[{"created":{"user_id":7,"display name":"Ann","email":null}},{"deleted":7},"Reset"]')],
+      ["renamed", [1n], jsonTextHash('[{"created":{"user_id":1,"display name":"B","email":null}},"Reset"]')],
+      ["renamed", [2n], jsonStatus(12, -1)], ["renamed", [3n], jsonStatus(11, -1)],
+      ["renamed_message", [], jsonTextHash('json: missing field "user_id"')],
+      // Pretty printing is JSON.stringify(value, null, indent), with the indent clamped to 0..10.
+      ...[-1, 0, 1, 2, 4, 10, 11, 100].map((indent) => ["pretty", [BigInt(indent)],
+        jsonTextHash(JSON.stringify(JSON.parse('{"a":[1,{"b":[]},{}],"c":"d","e":{"f":null}}'), null, indent))]),
+      // The incremental writer and its misuses.
+      ["writer_check", [-1n], jsonTextHash(`{"a":[null,true,1.50,{"x":[]}],${JSON.stringify("b\n")}:${JSON.stringify('x"y\ud800')}}`)],
+      ...[jsonStatus(1, 1), jsonStatus(1, 1), jsonStatus(2, 5), jsonStatus(1, 4), jsonStatus(1, 1), jsonStatus(2, 0), jsonStatus(1, 5), jsonStatus(1, 0)]
+        .map((expected, index) => ["writer_check", [BigInt(index)], expected]),
+      // The pull parser: events, then `|` and the status of the error (the same kind and offset as `parse`).
+      ...[" { Ka=a [ N1@8 SxA! T Z { } ] Kb { Kc N-2.5e3@50 } } $", ` { Ka=a N1@5 Ka=a [ N1@12|${jsonStatus(5, 7)}`,
+        ` [ N1@1 N2@4|${jsonStatus(2, 5)}`, ` { Kk N1@5 Kk N2@12|${jsonStatus(5, 8)}`, ` [ ]|${jsonStatus(1, 3)}`, " Sété! $",
+        ` { Ka=a { Kb N1@10 Kb N2@16|${jsonStatus(5, 12)}`, `${" [".repeat(128)}|${jsonStatus(6, 128)}`]
+        .map((expected, index) => ["stream_events", [BigInt(index)], jsonTextHash(expected)]),
+    ],
+    nativeCases: [
+      ["too_large", [], jsonStatus(7, 0)],
+      ["descending", [0n, 200000n], 200000n], ["descending", [1n, 200000n], 200000n], ["descending", [2n, 100000n], 100000n],
+      ["scattered_message", [200000n], jsonTextHash(duplicateMessage(scattered(200000).map(String), Number))],
+    ],
+    inspect(ir) {
+      assert.match(ir, /define internal [^\n]*@tz\.fn\.Json\.parse\(/);
+      assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf/);
+    },
+  },
+  cbor: {
+    cases: [
+      ...["00", "17", "1818", "1b000000e8d4a51000", "1bffffffffffffffff", "c249010000000000000000", "3bffffffffffffffff",
+        "c349010000000000000000", "3903e7", "f90000", "f98000", "fb3ff199999999999a", "f93e00", "f97bff", "fa47c35000", "fa7f7fffff",
+        "fb7e37e43c8800759c", "f90001", "f90400", "fbc010666666666666", "83f4f5f6", "69c3bce6b0b4f0908591", "8301820203820405",
+        "98190102030405060708090a0b0c0d0e0f101112131415161718181819", "a26161016162820203", "a56161614161626142616361436164614461656145",
+        "a361610361620162616102", "f98000", "f95640", jsonStatus(9, -1), jsonStatus(13, -1), `c25101${"00".repeat(16)}`, "fb0000000000000001"]
+        .map((expected, index) => ["encode_hash", [BigInt(index)], typeof expected === "string" ? fnv64(hexBytes(expected)) : expected]),
+      ...["18446744073709551615", "-18446744073709551616", "18446744073709551616", "-18446744073709551617", "5.960464477539063e-8", "100000",
+        "1.1", "-0", '{"a":1,"b":[2,3]}', '["a",{"b":"c"}]', JSON.stringify("\ud800\udd51"), "0", '{"b":1,"a":1}',
+        jsonStatus(8, 0), jsonStatus(8, 0), jsonStatus(15, 0), jsonStatus(15, 0), jsonStatus(15, 0), jsonStatus(15, 0), jsonStatus(15, 0),
+        jsonStatus(5, 4), jsonStatus(2, 2), jsonStatus(2, 1), jsonStatus(1, 0), jsonStatus(1, 0), jsonStatus(1, 0), jsonStatus(15, 0),
+        jsonStatus(14, 0), jsonStatus(15, 1), jsonStatus(1, 1), jsonStatus(2, 9), jsonStatus(2, 5), "0", "5e-324", "1"]
+        .map((expected, index) => ["decode_hash", [BigInt(index)], typeof expected === "string" ? jsonTextHash(expected) : expected]),
+      ["nesting", [127n], -1n], ["nesting", [128n], jsonStatus(6, 128)], ["nesting", [1000000n], jsonStatus(6, 128)],
+      ["scene_round_trip", [], 1],
+      ["scene_hash", [], fnv64(cborMap([
+        ["name", cborText("a")],
+        ["points", cborArray([cborMap([["x", [0x01]], ["y", hexBytes("f93800")]]), cborMap([["x", [0x21]], ["y", hexBytes("f98000")]])])],
+        ["shapes", cborArray([cborMap([["Circle", [0x02]]]), cborMap([["Rect", cborArray([[0x01], hexBytes("f94100")])]]), cborText("Empty")])],
+        ["note", cborText("é")],
+        ["big", [0xc2, 0x50, ...Array(16).fill(0xff)]],
+      ]))],
+      // Map and Set decoding from CBOR sorts the entries by key (see the json suite).
+      ["descending", [0n, 50000n], 50000n], ["descending", [1n, 25000n], 25000n],
+      ["duplicate_message", [0n], jsonTextHash(duplicateMessage(["9", "1", "9", "5", "1"], Number))],
+      ["duplicate_message", [50000n], jsonTextHash(duplicateMessage(scattered(50000).map(String), Number))],
+      // Every integer of at most 4096 digits round-trips; a bignum decodes only within that limit
+      // (PR #17 review). The digit counts come from BigInt, not from the compiler.
+      ...[[1n, 0n], [21n, 0n], [21n, 1n], [4096n, 0n], [4096n, 1n]].map(([digits, sign]) => ["bignum_round_trip", [digits, sign], 1n]),
+      ["bignum_round_trip", [4097n, 0n], 2n],
+      ...[1700n, 1701n, 1702n].map((length) => ["bignum_bytes", [length],
+        length <= 1701n && ((1n << (8n * length)) - 1n).toString().length <= 4096 ? 1n : jsonStatus(9, 0)]),
+    ],
+    nativeCases: [
+      ["descending", [0n, 200000n], 200000n], ["descending", [1n, 200000n], 200000n],
+      ["duplicate_message", [200000n], jsonTextHash(duplicateMessage(scattered(200000).map(String), Number))],
+    ],
   },
   display_parse: {
     cases: [
@@ -1523,10 +1808,37 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
   console.log("WASM realloc: split, absorb, fallback, null, zero and coalescing passed at O0/O3");
 }
 
+// Arc counts with atomic instructions on WASM threads: the tasks share and drop the counts on
+// worker threads, and the heap returns to the worker stacks alone.
+async function rcWasmThreadsChecks() {
+  if (wasmTarget !== "wasm32") return;
+  const { createThreadPool } = await import("../src/runtime/wasm-threads.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "tsuzuri-rc-threads-"));
+  try {
+    for (const optimization of [0, 3]) {
+      const wasm = join(directory, `rc-threads-${optimization}.wasm`);
+      cli(["build", join(root, "tests/fixtures/rc"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", wasm]);
+      const pool = await createThreadPool(readFileSync(wasm), { workers: 3 });
+      try {
+        assert.equal(pool.call("tz_arc_parallel", 4097n), 4097n * 4096n / 2n * 10n + 1n);
+        assert.equal(pool.workerCount, 3);
+        assert.equal(pool.call("tz_arc_parallel_last", 100000n), 100000n * 99999n / 2n);
+        assert.equal(pool.call("tz_arc_chain_parallel", 20000n), 4n * (20000n * 19999n / 2n));
+        assert.equal(pool.call("tz_arc_weak_parallel", 1000n), 4n * (1000n * 999n / 2n) * 10n);
+        assert.equal(pool.call("tsuzuri_thread_heap_live_bytes"), 3n * (262144n + 16n));
+      } finally {
+        await pool.close();
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  console.log("rc: Arc on WASM threads at O0/O3 passed");
+}
+
 let total = 0;
 for (const [name, suite] of Object.entries(suites)) {
   if (only && only !== name) continue;
   total += run(name, suite);
+  if (name === "rc") await rcWasmThreadsChecks();
   if (name === "vec") wasmReallocationChecks();
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();

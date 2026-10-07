@@ -312,7 +312,8 @@ fn owned(ty: &Type, module: &CheckedModule) -> bool {
         Type::Array(element)
         | Type::List(element)
         | Type::Vec(element)
-        | Type::FixedArray(element, _) => owned(element, module),
+        | Type::FixedArray(element, _)
+        | Type::Shared(element, _) => owned(element, module),
         Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
         Type::Record(id, arguments) => module
             .types()

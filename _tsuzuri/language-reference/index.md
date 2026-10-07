@@ -86,6 +86,8 @@
 - [Utf8String](./built-in-types-and-modules/utf8string.md)
 - [Char](./built-in-types-and-modules/char.md)
 - [Utf8Char](./built-in-types-and-modules/utf8char.md)
+- [Regex](./built-in-types-and-modules/regex.md)
+- [Unicode](./built-in-types-and-modules/unicode.md)
 - [Array](./built-in-types-and-modules/array.md)
 - [List](./built-in-types-and-modules/list.md)
 - [Vec](./built-in-types-and-modules/vec.md)
@@ -93,6 +95,8 @@
 - [Set](./built-in-types-and-modules/set.md)
 - [HashMap](./built-in-types-and-modules/hashmap.md)
 - [HashSet](./built-in-types-and-modules/hashset.md)
+- [Arena](./built-in-types-and-modules/arena.md)
+- [Rc と Arc](./built-in-types-and-modules/rc.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)
 - [Result](./built-in-types-and-modules/result.md)
@@ -116,6 +120,8 @@
 - [Process](./built-in-types-and-modules/process.md)
 - [Format](./built-in-types-and-modules/format.md)
 - [Exception](./built-in-types-and-modules/exception.md)
+- [Json](./built-in-types-and-modules/json.md)
+- [Cbor](./built-in-types-and-modules/cbor.md)
 
 #### 非同期処理
 

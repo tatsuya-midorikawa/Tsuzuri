@@ -10,7 +10,7 @@
 - 構築は `Point { x: 1.0, y: 2.0 }`、読み出しは `point.x` です。
 - 更新は `{ point with x = 3 }` で、新しい値を作ります。非 Copy のレコードでは元の値を消費します。
 - 全フィールドが Copy ならレコード全体も Copy です。`string` などを含む非 Copy なレコードはフィールド単位でムーブします。
-- `deriving (Eq, Ord, Display, Hash, Default)` で比較、表示、ハッシュ、既定値を足せます。
+- `deriving (Eq, Ord, Display, Hash, Default)` で比較、表示、ハッシュ、既定値を、`deriving (Encode, Decode)` で JSON との変換を足せます。
 
 ## 基本の書き方
 
@@ -208,7 +208,7 @@ Copy でないレコードは、フィールドごとにムーブできます。
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
 ```
 
-指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default` です。`Ord` には `Eq` も必要で、無いと `E1025` になります。手書きのインスタンスと重なると `E1016`、同じクラスを 2 回書くと `E1001` です。
+指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` です（`Encode` / `Decode` は [Json](./json.md)。フィールドの前の `@json "名前"` で JSON のキーを変えられます。[属性](../values-and-functions/attributes.md#json-json-での名前) を参照）。`Ord` には `Eq` も必要で、無いと `E1025` になります。手書きのインスタンスと重なると `E1016`、同じクラスを 2 回書くと `E1001` です。
 
 ```tsuzuri run=Point%20%7B%20x%3A%2020%2C%20y%3A%2022%20%7D
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
@@ -317,7 +317,7 @@ let text = "borrowed"
 - 非 Copy なレコードの共有借用を `deref` して更新することはできません（`E1012`）。
 - ジェネリックなレコードへ排他借用を格納する具体化は `E1013` です。
 - 値のインラインレイアウトは 64 KiB が上限です。超えると `E1010` になります。配列のバッファ本体はこの上限の外です。
-- レコード同士が直接循環する定義は `E1010` です。循環させるなら、[Union](union.md) の有限なケースを経由します。
+- レコード同士が直接循環する定義は `E1010` です。循環させるなら、[Union](union.md) の有限なケースか、`Vec<Rc<Node>>` のような [Rc / Arc](rc.md) を経由します（空のコレクションなどで有限の値を作れないと `E1010`）。実行時に循環するグラフは、[Arena](arena.md) のハンドル（`Vec<Arena.Handle<Node>>` など）で指します。
 
 ## まとめ
 

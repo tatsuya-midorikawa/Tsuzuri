@@ -193,6 +193,35 @@ fn rename_rewrites_fields_cases_and_records() {
     assert_eq!(responses[4]["result"]["range"], range(0, 7, 12));
 }
 
+/// A field or case renamed for JSON (`@json "name"`) keeps its attribute; the rename changes only
+/// the Tsuzuri name (D08).
+#[test]
+fn rename_keeps_json_attributes() {
+    const SOURCE: &str = "record Point { @json \"px\" x: i64 } deriving (Encode, Decode)\nunion Shape = @json \"round\" Circle of i64 | Empty deriving (Encode)\ndef get :: Point -> i64\nfn get p = p.x\ndef make :: i64 -> Shape\nfn make n = Circle n\n";
+    let mut main_uri = String::new();
+    let responses = scripted(&[("Main.tz", SOURCE)], "utf-16", |uri| {
+        main_uri = uri("Main.tz");
+        let main = main_uri.as_str();
+        vec![
+            rename_request(1, main, SOURCE, "x: i64", "y"),
+            rename_request(2, main, SOURCE, "Circle of", "Ball"),
+        ]
+    });
+    for (response, (name, count)) in responses.iter().zip([("y", 2), ("Ball", 2)]) {
+        let edits = response["result"]["changes"][main_uri.as_str()]
+            .as_array()
+            .unwrap_or_else(|| panic!("{response}"));
+        assert_eq!(edits.len(), count, "{response}");
+        assert!(edits.iter().all(|edit| edit["newText"] == name));
+        assert!(
+            edits
+                .iter()
+                .all(|edit| edit["range"]["start"]["character"] != 15),
+            "{response}"
+        );
+    }
+}
+
 #[test]
 fn rename_rejects_std_export_conflicts_and_errors() {
     let reject = |files: &[(&str, &str)], needle: &str, name: &str| {

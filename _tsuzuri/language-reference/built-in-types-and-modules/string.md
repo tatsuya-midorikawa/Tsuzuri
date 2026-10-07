@@ -9,7 +9,7 @@
 - 引数が `ref string` の関数は共有借用です。入力は消費せず、戻り値は新しい所有文字列です。
 - `find` と `split` は、探したい側が第 1 引数です。本文が先ではありません。
 - 見つからない、範囲が不正、という失敗は `None` です。範囲外の添字と負の `repeat` はトラップします。
-- 検索は素朴な走査で、最悪計算量は本文の長さとパターンの長さの積です。SIMD は保証しません。
+- 検索は素朴な走査で、最悪計算量は本文の長さとパターンの長さの積です。SIMD は保証しません。パターンで探すときは [Regex](regex.md) です。
 - `clone_string` だけは `String.clone` ではありません。
 
 > [!WARNING]
@@ -134,7 +134,7 @@ dashed=-a-b- once=- rep=hahaha
 
 `trim`、`trim_start`、`trim_end` が取り除くのは ASCII の空白文字だけです。具体的には、コード単位 9〜13（タブ、改行、垂直タブ、フォームフィード、復帰）と 32（空白）が対象です。全角空白は除去しません。新しい所有文字列を返し、失敗することはありません。
 
-`to_ascii_lower` と `to_ascii_upper` は、ASCII の英文字だけを大文字・小文字に変換します。それ以外のコード単位は変更せずそのまま保持します。
+`to_ascii_lower` と `to_ascii_upper` は、ASCII の英文字だけを大文字・小文字に変換します。それ以外のコード単位は変更せずそのまま保持します。すべての文字の大文字小文字の変換は [Unicode](unicode.md) の `to_lower`・`to_upper` です。
 
 ## 所有権を移す変換
 
@@ -176,6 +176,8 @@ dashed=-a-b- once=- rep=hahaha
 
 ## 関連項目
 
+- [Unicode](unicode.md) — 正規化、書記素クラスター、単語境界、完全な大文字小文字の変換
+- [Regex](regex.md) — 正規表現による検索・置換・分割
 - [文字列](../literals-and-strings/strings.md)
 - [Utf8String](utf8string.md)
 - [Char](char.md)

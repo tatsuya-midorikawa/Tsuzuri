@@ -1,0 +1,324 @@
+union List = Nil | Cons of (i64 * Rc<List>)
+union AList = ANil | ACons of (i64 * Arc<AList>)
+record Node { value: i64, children: Vec<Rc<Node>> }
+record Link { value: i64, next: Maybe<Rc<Link>> }
+record Pair<'a> { left: 'a, right: 'a }
+record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }
+
+export def rc_counts :: i64
+fn rc_counts =
+    let first = Rc.new "value"
+    let second = Rc.share (ref first)
+    let third = Rc.share (ref second)
+    let weak = Rc.downgrade (ref first)
+    let other_weak = Rc.downgrade (ref third)
+    let before = Rc.strong_count (ref first) * 10 + Rc.weak_count (ref first)
+    Owned.drop second
+    Owned.drop third
+    Owned.drop other_weak
+    let after = Rc.strong_count (ref first) * 10 + Rc.weak_count (ref first)
+    let alive = match Rc.upgrade (ref weak) with
+        | Maybe.Some strong -> Rc.strong_count (ref strong)
+        | Maybe.None -> 0
+    before * 10000 + after * 100 + alive
+
+export def rc_try_unwrap :: i64
+fn rc_try_unwrap =
+    let shared = Rc.new "unwrap"
+    let other = Rc.share (ref shared)
+    match Rc.try_unwrap shared with
+    | Result.Ok _text -> 0
+    | Result.Error kept ->
+        let count = Rc.strong_count (ref kept)
+        Owned.drop other
+        match Rc.try_unwrap kept with
+        | Result.Ok text -> count * 100 + text.length
+        | Result.Error _again -> 1
+
+export def arc_try_unwrap :: i64
+fn arc_try_unwrap =
+    let shared = Arc.new "unwrap"
+    let other = Arc.share (ref shared)
+    match Arc.try_unwrap shared with
+    | Result.Ok _text -> 0
+    | Result.Error kept ->
+        let count = Arc.strong_count (ref kept)
+        Owned.drop other
+        match Arc.try_unwrap kept with
+        | Result.Ok text -> count * 100 + text.length
+        | Result.Error _again -> 1
+
+export def rc_upgrade_after_drop :: i64
+fn rc_upgrade_after_drop =
+    let shared = Rc.new [1, 2, 3]
+    let weak = Rc.downgrade (ref shared)
+    let before = match Rc.upgrade (ref weak) with
+        | Maybe.Some strong -> Rc.strong_count (ref strong)
+        | Maybe.None -> 0
+    Owned.drop shared
+    let after = match Rc.upgrade (ref weak) with
+        | Maybe.Some _strong -> 100
+        | Maybe.None -> 10
+    before + after
+
+export def arc_upgrade_after_drop :: i64
+fn arc_upgrade_after_drop =
+    let shared = Arc.new [1, 2, 3]
+    let weak = Arc.downgrade (ref shared)
+    let before = match Arc.upgrade (ref weak) with
+        | Maybe.Some strong -> Arc.strong_count (ref strong)
+        | Maybe.None -> 0
+    Owned.drop shared
+    let after = match Arc.upgrade (ref weak) with
+        | Maybe.Some _strong -> 100
+        | Maybe.None -> 10
+    before + after
+
+def build :: i64 -> Rc<List>
+fn build count =
+    let mut list = Rc.new Nil
+    let mut index = 0
+    while index < count do
+        list = Rc.new (Cons (index, list))
+        index = index + 1
+    list
+
+def sum :: ref Rc<List> -> i64
+fn sum list =
+    let mut total = 0
+    let mut cursor = Rc.share list
+    let mut walking = true
+    while walking do
+        let next = match Rc.get (ref cursor) with
+            | Cons (value, rest) ->
+                total = total + value
+                Maybe.Some (Rc.share (ref rest))
+            | Nil -> Maybe.None
+        match next with
+        | Maybe.Some rest -> cursor = rest
+        | Maybe.None -> walking = false
+    total
+
+export def rc_chain :: i64 -> i64
+fn rc_chain count =
+    let list = build count
+    sum (ref list)
+
+export def rc_long_drop :: i64 -> i64
+fn rc_long_drop count =
+    let mut chain: Maybe<Rc<Link>> = Maybe.None
+    let mut index = 0
+    while index < count do
+        chain = Maybe.Some (Rc.new (Link { value: index, next: chain }))
+        index = index + 1
+    match chain with
+    | Maybe.Some head ->
+        let node = Rc.get (ref head)
+        node.value + 1
+    | Maybe.None -> 0
+
+export def arc_chain :: i64 -> i64
+fn arc_chain count =
+    let mut list = Arc.new ANil
+    let mut index = 0
+    while index < count do
+        list = Arc.new (ACons (index, list))
+        index = index + 1
+    let mut total = 0
+    let mut cursor = Arc.share (ref list)
+    let mut walking = true
+    while walking do
+        let next = match Arc.get (ref cursor) with
+            | ACons (value, rest) ->
+                total = total + value
+                Maybe.Some (Arc.share (ref rest))
+            | ANil -> Maybe.None
+        match next with
+        | Maybe.Some rest -> cursor = rest
+        | Maybe.None -> walking = false
+    total
+
+export def rc_shared_tails :: i64
+fn rc_shared_tails =
+    let base = build 11
+    let first = Rc.new (Cons (100, Rc.share (ref base)))
+    let second = Rc.new (Cons (200, Rc.share (ref base)))
+    let count = Rc.strong_count (ref base)
+    sum (ref first) + sum (ref second) + count * 1000
+
+def leaf :: i64 -> Rc<Node>
+fn leaf value = Rc.new (Node { value: value, children: Vec.empty() })
+
+def rec total :: ref Rc<Node> -> i64
+fn rec total node =
+    let current = Rc.get node
+    let mut result = current.value
+    let mut index = 0
+    while index < Vec.length (ref current.children) do
+        result = result + total (ref current.children[index])
+        index = index + 1
+    result
+
+export def rc_dag :: i64
+fn rc_dag =
+    let bottom = leaf 4
+    let left = Rc.new (Node { value: 2, children: Vec.push (Vec.empty()) (Rc.share (ref bottom)) })
+    let right = Rc.new (Node { value: 3, children: Vec.push (Vec.empty()) (Rc.share (ref bottom)) })
+    let top = Rc.new (Node { value: 1, children: Vec.push (Vec.push (Vec.empty()) left) right })
+    total (ref top) * 10 + Rc.strong_count (ref bottom)
+
+export def rc_ptr_eq :: i64
+fn rc_ptr_eq =
+    let first = Rc.new 7
+    let second = Rc.share (ref first)
+    let other = Rc.new 7
+    (if Rc.ptr_eq (ref first) (ref second) then 10 else 0) + (if Rc.ptr_eq (ref first) (ref other) then 1 else 0)
+
+export def rc_borrowed :: i64
+fn rc_borrowed =
+    let text = "borrowed"
+    let shared = Rc.new (ref text)
+    let other = Rc.share (ref shared)
+    let value = Rc.get (ref other)
+    value.length
+
+export def arc_capture :: i64
+fn arc_capture =
+    let shared = Arc.new 21
+    let read = \() -> Arc.strong_count (ref shared)
+    let copy = read
+    read () * 10 + copy ()
+
+def part :: Arc<[i64]> -> i64 -> Task<i64>
+fn part values offset = task {
+    let numbers = Arc.get (ref values);
+    let mut total = 0;
+    let mut index = offset;
+    while index < numbers.length do
+        total = total + numbers[index];
+        index = index + 4
+    return total
+}
+
+def parts :: ref Arc<[i64]> -> [Task<i64>]
+fn parts shared = new [Task<i64>](4, \offset -> part (Arc.share shared) offset)
+
+export def arc_parallel :: i64 -> i64
+fn arc_parallel count =
+    let shared = Arc.new (new [i64](count, \index -> index))
+    let results = Task.run (Task.parallel (parts (ref shared)))
+    Array.sum (ref results) * 10 + Arc.strong_count (ref shared)
+
+def peek :: Arc.Weak<[i64]> -> Task<i64>
+fn peek weak = task {
+    return match Arc.upgrade (ref weak) with
+        | Maybe.Some strong -> Array.sum (Arc.get (ref strong))
+        | Maybe.None -> 0
+}
+
+def peeks :: ref Arc<[i64]> -> [Task<i64>]
+fn peeks shared = new [Task<i64>](4, \_index -> peek (Arc.downgrade shared))
+
+export def arc_weak_parallel :: i64 -> i64
+fn arc_weak_parallel count =
+    let shared = Arc.new (new [i64](count, \index -> index))
+    let results = Task.run (Task.parallel (peeks (ref shared)))
+    Array.sum (ref results) * 10 + Arc.weak_count (ref shared)
+
+export def rc_upgrade_dead :: i64
+fn rc_upgrade_dead =
+    let shared = Rc.new 5
+    let weak = Rc.downgrade (ref shared)
+    Owned.drop shared
+    let strong = Maybe.get (Rc.upgrade (ref weak))
+    deref (Rc.get (ref strong))
+
+def owned_parts :: Arc<[i64]> -> [Task<i64>]
+fn owned_parts shared = parts (ref shared)
+
+export def arc_parallel_last :: i64 -> i64
+fn arc_parallel_last count =
+    let results = Task.run (Task.parallel (owned_parts (Arc.new (new [i64](count, \index -> index)))))
+    Array.sum (ref results)
+
+def walk :: Arc<AList> -> Task<i64>
+fn walk list = task {
+    let mut total = 0;
+    let mut cursor = list;
+    let mut walking = true;
+    while walking do
+        let next = match Arc.get (ref cursor) with
+            | ACons (value, rest) ->
+                total = total + value
+                Maybe.Some (Arc.share (ref rest))
+            | ANil -> Maybe.None;
+        match next with
+        | Maybe.Some rest -> cursor = rest
+        | Maybe.None -> walking = false
+    return total
+}
+
+def walkers :: Arc<AList> -> [Task<i64>]
+fn walkers list = new [Task<i64>](4, \_index -> walk (Arc.share (ref list)))
+
+export def arc_chain_parallel :: i64 -> i64
+fn arc_chain_parallel count =
+    let mut list = Arc.new ANil
+    let mut index = 0
+    while index < count do
+        list = Arc.new (ACons (index, list))
+        index = index + 1
+    let results = Task.run (Task.parallel (walkers list))
+    Array.sum (ref results)
+
+def inner_product :: ref Arc<(i64 * Maybe<Arc<i64>>)> -> i64
+fn inner_product outer =
+    match Arc.get outer with
+    | (first, Maybe.Some second) -> first * deref (Arc.get (ref second))
+    | (first, Maybe.None) -> first
+
+// Named types that appear only inside shared pointers still get definitions.
+export def shared_named_types :: i64
+fn shared_named_types =
+    let items: Vec<Rc<Maybe<string>>> = Vec.push (Vec.push (Vec.empty()) (Rc.new (Maybe.Some "four"))) (Rc.new Maybe.None)
+    let text = match Rc.get (ref items[0]) with
+        | Maybe.Some value -> value.length
+        | Maybe.None -> 0
+    let pair: Maybe<Rc<Pair<i64>>> = Maybe.Some (Rc.new (Pair { left: 3, right: 5 }))
+    let area = match pair with
+        | Maybe.Some shared ->
+            let value = Rc.get (ref shared)
+            Rc.strong_count (ref shared) * 100 + value.left * value.right
+        | Maybe.None -> 0
+    let nested: Maybe<Arc<(i64 * Maybe<Arc<i64>>)>> = Maybe.Some (Arc.new (7, Maybe.Some (Arc.new 11)))
+    let product = match nested with
+        | Maybe.Some outer -> inner_product (ref outer)
+        | Maybe.None -> 0
+    (Vec.length (ref items) * 10 + text) * 1000000 + area * 1000 + product
+
+def parent_value :: ref Rc<TreeNode> -> i64
+fn parent_value node =
+    match (Rc.get node).parent with
+    | Maybe.Some weak ->
+        match Rc.upgrade weak with
+        | Maybe.Some parent -> (Rc.get (ref parent)).value
+        | Maybe.None -> -1
+    | Maybe.None -> 0
+
+// Children name their parent weakly; `Rc.upgrade` gives `Maybe<Rc<TreeNode>>`.
+export def rc_weak_parent :: i64
+fn rc_weak_parent =
+    let root = Rc.new (TreeNode { value: 7, parent: Maybe.None, children: Vec.empty() })
+    let left = Rc.new (TreeNode { value: 2, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
+    let right = Rc.new (TreeNode { value: 3, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
+    let top = TreeNode { value: 1, parent: Maybe.None, children: Vec.push (Vec.push (Vec.empty()) (Rc.share (ref left))) right }
+    let before = parent_value (ref left) + parent_value (ref top.children[1])
+    let weak = Rc.weak_count (ref root)
+    let mut children = 0
+    let mut index = 0
+    while index < Vec.length (ref top.children) do
+        children = children + (Rc.get (ref top.children[index])).value
+        index = index + 1
+    Owned.drop root
+    let after = parent_value (ref left)
+    before * 1000 + weak * 100 + children * 10 + (after + 1)

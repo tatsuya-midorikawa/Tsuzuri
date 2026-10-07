@@ -1,0 +1,410 @@
+/// The error `kind` at the byte `offset` of the input, or -1 outside decoding.
+private def failure :: Json.ErrorKind -> i64 -> Json.Error
+fn failure kind offset = Json.Error { kind: kind, offset: offset }
+
+/// The head of a data item: the major type and its argument in the shortest form (RFC 8949 §4.2.1).
+private def head :: Vec<ubyte> -> i64 -> i64u -> Vec<ubyte>
+fn head output major argument =
+	let initial = (major <<< 5) as i64u
+	if argument < 24i64u then Vec.push output ((initial ||| argument) as ubyte)
+	elif argument < 256i64u then Vec.push (Vec.push output ((initial ||| 24i64u) as ubyte)) (argument as ubyte)
+	elif argument < 65536i64u then push_big (Vec.push output ((initial ||| 25i64u) as ubyte)) argument 2
+	elif argument < 4294967296i64u then push_big (Vec.push output ((initial ||| 26i64u) as ubyte)) argument 4
+	else push_big (Vec.push output ((initial ||| 27i64u) as ubyte)) argument 8
+
+/// The low `count` bytes of `value`, most significant first.
+private def push_big :: Vec<ubyte> -> i64u -> i64 -> Vec<ubyte>
+fn push_big output value count =
+	let mut bytes = output
+	let mut shift = (count - 1) * 8
+	while shift >= 0 do
+		bytes = Vec.push bytes ((value >>> (shift as i64u)) as ubyte)
+		shift = shift - 8
+	bytes
+
+private def is_integer_text :: ref utf8string -> bool
+fn is_integer_text text =
+	let mut index = 0
+	let mut integer = true
+	while integer && index < text.length do
+		let byte = text[index]
+		if byte == 46ubyte || byte == 101ubyte || byte == 69ubyte then integer = false
+		index = index + 1
+	integer
+
+/// The bits of a finite `f64`, computed with exact scaling by powers of two.
+private def f64_bits :: f64 -> i64u
+fn f64_bits value =
+	let sign = if Math.copysign 1.0 value < 0.0 then 9223372036854775808i64u else 0i64u
+	let magnitude = if value < 0.0 then 0.0 - value else value
+	if magnitude == 0.0 then sign
+	elif magnitude < 2.2250738585072014e-308 then
+		let mut scaled = magnitude
+		for _step in 1 .. 16 do scaled = scaled * 18446744073709551616.0
+		for _step in 1 .. 50 do scaled = scaled * 2.0
+		sign ||| (scaled as i64u)
+	else
+		let mut scaled = magnitude
+		let mut exponent = 0
+		while scaled >= 18446744073709551616.0 do
+			scaled = scaled / 18446744073709551616.0
+			exponent = exponent + 64
+		while scaled >= 2.0 do
+			scaled = scaled / 2.0
+			exponent = exponent + 1
+		while scaled < 1.0 / 18446744073709551616.0 do
+			scaled = scaled * 18446744073709551616.0
+			exponent = exponent - 64
+		while scaled < 1.0 do
+			scaled = scaled * 2.0
+			exponent = exponent - 1
+		let fraction = ((scaled - 1.0) * 4503599627370496.0) as i64u
+		sign ||| (((exponent + 1023) as i64u) <<< 52i64u) ||| fraction
+
+/// `value` as the shortest of half, single, and double precision that keeps it exactly (RFC 8949 §4.2.2).
+private def float_head :: Vec<ubyte> -> f64 -> Vec<ubyte>
+fn float_head output value =
+	let bits = f64_bits value
+	let sign = bits >>> 63i64u
+	let biased = ((bits >>> 52i64u) &&& 2047i64u) as i64
+	let fraction = bits &&& 4503599627370495i64u
+	let exponent = biased - 1023
+	let significand = fraction ||| 4503599627370496i64u
+	if biased == 0 && fraction == 0i64u then push_big (Vec.push output 249ubyte) (sign <<< 15i64u) 2
+	elif biased != 0 && exponent >= -14 && exponent <= 15 && (fraction &&& 4398046511103i64u) == 0i64u then
+		push_big (Vec.push output 249ubyte) ((sign <<< 15i64u) ||| (((exponent + 15) as i64u) <<< 10i64u) ||| (fraction >>> 42i64u)) 2
+	elif biased != 0 && exponent >= -24 && exponent < -14 && (significand &&& ((1i64u <<< ((28 - exponent) as i64u)) - 1i64u)) == 0i64u then
+		push_big (Vec.push output 249ubyte) ((sign <<< 15i64u) ||| (significand >>> ((28 - exponent) as i64u))) 2
+	elif biased != 0 && exponent >= -126 && exponent <= 127 && (fraction &&& 536870911i64u) == 0i64u then
+		push_big (Vec.push output 250ubyte) ((sign <<< 31i64u) ||| (((exponent + 127) as i64u) <<< 23i64u) ||| (fraction >>> 29i64u)) 4
+	elif biased != 0 && exponent >= -149 && exponent < -126 && (significand &&& ((1i64u <<< ((-exponent - 97) as i64u)) - 1i64u)) == 0i64u then
+		push_big (Vec.push output 250ubyte) ((sign <<< 31i64u) ||| (significand >>> ((-exponent - 97) as i64u))) 4
+	else push_big (Vec.push output 251ubyte) bits 8
+
+/// A bignum (tags 2 and 3) for an integer whose magnitude is above 2^64.
+private def bignum :: Vec<ubyte> -> bool -> ref string -> Vec<ubyte>
+fn bignum output negative digits =
+	let parsed = Maybe.get (BigInt.of_string digits)
+	let mut rest = if negative then parsed - BigInt.of_i64 1 else parsed
+	let zero = BigInt.of_i64 0
+	let mut little = Vec.empty()
+	while BigInt.compare (ref rest) (ref zero) > 0 do
+		let remainder = rest % BigInt.of_i64 256
+		let low = Maybe.get (BigInt.to_i64 (ref remainder))
+		little = Vec.push little (low as ubyte)
+		rest = rest / BigInt.of_i64 256
+	let tagged = head output 6 (if negative then 3i64u else 2i64u)
+	let mut bytes = head tagged 2 (Vec.length (ref little) as i64u)
+	let mut index = Vec.length (ref little) - 1
+	while index >= 0 do
+		bytes = Vec.push bytes little[index]
+		index = index - 1
+	bytes
+
+/// A JSON number: an integer as major type 0 or 1 (a bignum beyond 64 bits), `-0` as the half
+/// float -0.0, and any other number as the nearest `f64` in its shortest float form. A `Numeral`
+/// whose text is not a JSON number gives `Syntax`.
+private def number :: Vec<ubyte> -> ref Json.Numeral -> Result<Vec<ubyte>, Json.Error>
+fn number output numeral =
+	let text = ref numeral.text
+	let checked = Json.numeral text
+	if Maybe.is_none (ref checked) then Result.Error (failure Json.Syntax (-1))
+	elif !(is_integer_text text) then
+		match Json.to_f64 numeral with
+		| Result.Ok value -> Result.Ok (float_head output value)
+		| Result.Error error -> Result.Error error
+	else
+		let negative = text[0] == 45ubyte
+		let digits = if negative then Maybe.get (Utf8String.slice text 1 text.length) else Utf8String.clone text
+		let wide = String.from_utf8 (ref digits)
+		if wide == "0" && negative then Result.Ok (float_head output (-0.0))
+		elif wide.length > 4096 then Result.Error (failure Json.NumberRange (-1))
+		elif wide.length > 20 then Result.Ok (bignum output negative (ref wide))
+		else
+			let magnitude: i128u = Maybe.get (Parse.parse (ref wide))
+			if !negative && magnitude <= 18446744073709551615i128u then Result.Ok (head output 0 (magnitude as i64u))
+			elif negative && magnitude <= 18446744073709551616i128u then Result.Ok (head output 1 ((magnitude - 1i128u) as i64u))
+			else Result.Ok (bignum output negative (ref wide))
+
+/// The bytes of `text` as a CBOR text string; a lone surrogate gives `LoneSurrogate`.
+private def text_item :: Vec<ubyte> -> ref string -> Result<Vec<ubyte>, Json.Error>
+fn text_item output text =
+	if !(String.is_well_formed text) then Result.Error (failure Json.LoneSurrogate (-1)) else
+		let bytes = Utf8String.to_bytes (Utf8String.from_string text)
+		let mut out = head output 3 (bytes.length as i64u)
+		for byte in bytes do out = Vec.push out byte
+		Result.Ok out
+
+private def rec item :: Vec<ubyte> -> ref Json.Value -> Result<Vec<ubyte>, Json.Error>
+fn rec item output value =
+	match value with
+	| Json.Null -> Result.Ok (Vec.push output 246ubyte)
+	| Json.Bool flag -> Result.Ok (Vec.push output (if flag then 245ubyte else 244ubyte))
+	| Json.Number numeral -> number output numeral
+	| Json.Text text -> text_item output text
+	| Json.Items items ->
+		let mut result = Result.Ok (head output 4 (items.length as i64u))
+		for index in 0 .. (items.length - 1) do
+			result = match result with
+				| Result.Ok bytes -> item bytes (ref items[index])
+				| Result.Error error -> Result.Error error
+		result
+	| Json.Object members ->
+		let mut entries = Vec.with_capacity members.length
+		let mut problem = Maybe.None
+		for index in 0 .. (members.length - 1) do
+			if Maybe.is_none (ref problem) then
+				match members[index] with
+				| (key, element) ->
+					match text_item (Vec.empty()) (ref key) with
+					| Result.Error error -> problem = Maybe.Some error
+					| Result.Ok encoded_key ->
+						match item (Vec.empty()) (ref element) with
+						| Result.Error error -> problem = Maybe.Some error
+						| Result.Ok encoded_value -> entries = Vec.push entries (Vec.to_array encoded_key, index, Vec.to_array encoded_value)
+		match problem with
+		| Maybe.Some error -> Result.Error error
+		| Maybe.None ->
+			let mut sorted = Vec.to_array entries
+			Array.sort_in_place (ref mut sorted)
+			let mut repeated = -1
+			for index in 1 .. (sorted.length - 1) do
+				match sorted[index] with
+				| (key, position, _) ->
+					match sorted[index - 1] with
+					| (other, _, _) -> if key == other && (repeated < 0 || position < repeated) then repeated = position
+			if repeated >= 0 then
+				match members[repeated] with
+				| (key, _) -> Result.Error (failure (Json.DuplicateKey (clone_string (ref key))) (-1))
+			else
+				let mut bytes = head output 5 (members.length as i64u)
+				for index in 0 .. (sorted.length - 1) do
+					match sorted[index] with
+					| (key, _, element) ->
+						for byte in key do bytes = Vec.push bytes byte
+						for byte in element do bytes = Vec.push bytes byte
+				Result.Ok bytes
+
+/// `value` in the core deterministic encoding of RFC 8949 §4.2.1: the shortest heads, definite
+/// lengths, the shortest exact float, and map keys sorted by their encoded bytes. A repeated key
+/// gives `DuplicateKey`, a lone surrogate `LoneSurrogate`, and a number that overflows `f64` `NumberRange`.
+def encode :: ref Json.Value -> Result<[ubyte], Json.Error>
+fn encode value =
+	match item (Vec.empty()) value with
+	| Result.Ok bytes -> Result.Ok (Vec.to_array bytes)
+	| Result.Error error -> Result.Error error
+
+/// The argument of the head at `start` and the offset after it; `Syntax` for the reserved
+/// additional information 28 to 30, `Unsupported` for an indefinite length.
+private def argument :: ref [ubyte] -> i64 -> Result<(i64u * i64), Json.Error>
+fn argument bytes start =
+	let info = (bytes[start] &&& 31ubyte) as i64
+	let size = if info < 24 then 0 elif info == 24 then 1 elif info == 25 then 2 elif info == 26 then 4 elif info == 27 then 8 else -1
+	if info >= 28 && info <= 30 then Result.Error (failure Json.Syntax start)
+	elif info == 31 then Result.Error (failure (Json.Unsupported "indefinite length") start)
+	elif size == 0 then Result.Ok (info as i64u, start + 1)
+	elif start + size >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length)
+	else
+		let mut value = 0i64u
+		for index in 1 .. size do value = (value <<< 8i64u) ||| (bytes[start + index] as i64u)
+		Result.Ok (value, start + 1 + size)
+
+/// `2^power` as an `f64`, for `power` from -1074 to 1023, by exact doubling and halving.
+private def two_to :: i64 -> f64
+fn two_to power =
+	let mut value = 1.0
+	let mut rest = power
+	while rest >= 64 do
+		value = value * 18446744073709551616.0
+		rest = rest - 64
+	while rest > 0 do
+		value = value * 2.0
+		rest = rest - 1
+	while rest <= -64 do
+		value = value / 18446744073709551616.0
+		rest = rest + 64
+	while rest < 0 do
+		value = value / 2.0
+		rest = rest + 1
+	value
+
+/// The value of an IEEE 754 binary float with `exponent_bits` exponent bits and `fraction_bits`
+/// fraction bits; `None` for an infinity or NaN.
+private def float_value :: i64u -> i64 -> i64 -> Maybe<f64>
+fn float_value bits exponent_bits fraction_bits =
+	let fraction = bits &&& ((1i64u <<< (fraction_bits as i64u)) - 1i64u)
+	let biased = ((bits >>> (fraction_bits as i64u)) &&& ((1i64u <<< (exponent_bits as i64u)) - 1i64u)) as i64
+	let negative = (bits >>> ((exponent_bits + fraction_bits) as i64u)) != 0i64u
+	let bias = (1 <<< (exponent_bits - 1)) - 1
+	if biased == (1 <<< exponent_bits) - 1 then Maybe.None else
+		let significand = if biased == 0 then fraction else fraction ||| (1i64u <<< (fraction_bits as i64u))
+		let power = if biased == 0 then 1 - bias - fraction_bits else biased - bias - fraction_bits
+		let magnitude = (significand as f64) * two_to power
+		Maybe.Some (if negative then -magnitude else magnitude)
+
+private def numeral_of :: string -> Json.Value
+fn numeral_of text = Json.Number (Maybe.get (Json.numeral (ref (Utf8String.from_string (ref text)))))
+
+/// The decimal text of an unsigned big-endian magnitude, `-1 - n` for a negative bignum.
+private def bignum_text :: ref [ubyte] -> i64 -> i64 -> bool -> string
+fn bignum_text bytes first last negative =
+	let mut value = BigInt.of_i64 0
+	for index in first .. (last - 1) do value = value * BigInt.of_i64 256 + BigInt.of_i64 (bytes[index] as i64)
+	if negative then to_string (BigInt.of_i64 (-1) - value) else to_string value
+
+/// The repeated key of a map that comes first, as `Json.parse` reports it.
+private def repeated :: ref Vec<(string * Json.Value)> -> i64
+fn repeated members =
+	let count = Vec.length members
+	let mut keys = Vec.with_capacity count
+	for index in 0 .. (count - 1) do
+		match members[index] with
+		| (key, _) -> keys = Vec.push keys (clone_string (ref key), index)
+	let mut sorted = Vec.to_array keys
+	Array.sort_in_place (ref mut sorted)
+	let mut found = -1
+	for index in 1 .. (count - 1) do
+		match sorted[index] with
+		| (key, position) ->
+			match sorted[index - 1] with
+			| (other, _) -> if key == other && (found < 0 || position < found) then found = position
+	found
+
+/// The bignum (tag 2, or tag 3 when `negative`) whose byte string starts at `next`.
+private def bignum_at :: ref [ubyte] -> i64 -> i64 -> bool -> Result<(Json.Value * i64), Json.Error>
+fn bignum_at bytes start next negative =
+	if next >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length)
+	elif (bytes[next] >>> 5ubyte) != 2ubyte then Result.Error (failure (Json.Unsupported "bignum without a byte string") next)
+	else
+		match argument bytes next with
+		| Result.Error error -> Result.Error error
+		| Result.Ok (length, first) ->
+			if length > ((bytes.length - first) as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length)
+			// 1701 bytes hold every 4096-digit integer, the most digits `encode` writes.
+			elif length > 1701i64u then Result.Error (failure Json.NumberRange start)
+			else
+				let last = first + (length as i64)
+				let text = bignum_text bytes first last negative
+				let digits = if negative then text.length - 1 else text.length
+				if digits > 4096 then Result.Error (failure Json.NumberRange start)
+				else Result.Ok (numeral_of text, last)
+/// A simple value or float of major type 7.
+private def simple :: ref [ubyte] -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
+fn simple bytes start info =
+	if info == 20 then Result.Ok (Json.Bool false, start + 1)
+	elif info == 21 then Result.Ok (Json.Bool true, start + 1)
+	elif info == 22 then Result.Ok (Json.Null, start + 1)
+	elif info == 25 || info == 26 || info == 27 then
+		match argument bytes start with
+		| Result.Error error -> Result.Error error
+		| Result.Ok (bits, next) ->
+			let value = if info == 25 then float_value bits 5 10 elif info == 26 then float_value bits 8 23 else float_value bits 11 52
+			match value with
+			| Maybe.Some number -> Result.Ok (numeral_of (to_string number), next)
+			| Maybe.None -> Result.Error (failure Json.NonFinite start)
+	elif info == 31 then Result.Error (failure Json.Syntax start)
+	elif info == 24 && start + 1 < bytes.length && bytes[start + 1] < 32ubyte then Result.Error (failure Json.Syntax start)
+	elif info == 24 && start + 1 >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length)
+	elif info >= 28 then Result.Error (failure Json.Syntax start)
+	else Result.Error (failure (Json.Unsupported (if info == 23 then "undefined" else "simple value")) start)
+
+private def rec value_at :: ref [ubyte] -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
+private def and items_at :: ref [ubyte] -> i64 -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
+private def and members_at :: ref [ubyte] -> i64 -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
+fn rec value_at bytes start depth =
+	if start >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length) else
+		let major = (bytes[start] >>> 5ubyte) as i64
+		let info = (bytes[start] &&& 31ubyte) as i64
+		if major == 7 then simple bytes start info
+		else
+			match argument bytes start with
+			| Result.Error error -> Result.Error error
+			| Result.Ok (count, next) ->
+				let remaining = bytes.length - next
+				if major == 0 then Result.Ok (numeral_of (to_string count), next)
+				elif major == 1 then Result.Ok (numeral_of (to_string (-1i128 - (count as i128))), next)
+				elif major == 2 then Result.Error (failure (Json.Unsupported "byte string") start)
+				elif major == 3 then
+					if count > (remaining as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length) else
+						let length = count as i64
+						let mut copy = Vec.with_capacity length
+						for index in next .. (next + length - 1) do copy = Vec.push copy bytes[index]
+						match Utf8String.from_bytes (Vec.to_array copy) with
+						| Maybe.Some text -> Result.Ok (Json.Text (String.from_utf8 (ref text)), next + length)
+						| Maybe.None -> Result.Error (failure Json.InvalidUtf8 start)
+				elif major == 4 || major == 5 then
+					if depth >= 128 then Result.Error (failure Json.TooDeep start)
+					elif major == 4 && count > (remaining as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length)
+					elif major == 5 && count > ((remaining / 2) as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length)
+					elif major == 4 then items_at bytes next (count as i64) depth
+					else members_at bytes next (count as i64) depth
+				elif count == 2i64u || count == 3i64u then bignum_at bytes start next (count == 3i64u)
+				else Result.Error (failure (Json.Unsupported ("tag " + to_string count)) start)
+and items_at bytes start count depth =
+	let mut items = Vec.empty()
+	let mut position = start
+	let mut problem = Maybe.None
+	let mut index = 0
+	while Maybe.is_none (ref problem) && index < count do
+		match value_at bytes position (depth + 1) with
+		| Result.Ok (element, next) ->
+			items = Vec.push items element
+			position = next
+		| Result.Error error -> problem = Maybe.Some error
+		index = index + 1
+	match problem with
+	| Maybe.Some error -> Result.Error error
+	| Maybe.None -> Result.Ok (Json.Items (Vec.to_array items), position)
+and members_at bytes start count depth =
+	let mut members = Vec.empty()
+	let mut offsets = Vec.empty()
+	let mut position = start
+	let mut problem = Maybe.None
+	let mut index = 0
+	while Maybe.is_none (ref problem) && index < count do
+		if position < bytes.length && (bytes[position] >>> 5ubyte) != 3ubyte then problem = Maybe.Some (failure (Json.Unsupported "map key that is not a text string") position)
+		else
+			match value_at bytes position (depth + 1) with
+			| Result.Error error -> problem = Maybe.Some error
+			| Result.Ok (Json.Text key, after) ->
+				match value_at bytes after (depth + 1) with
+				| Result.Error error -> problem = Maybe.Some error
+				| Result.Ok (element, next) ->
+					members = Vec.push members (key, element)
+					offsets = Vec.push offsets position
+					position = next
+			| Result.Ok (_, _) -> problem = Maybe.Some (failure (Json.Unsupported "map key that is not a text string") position)
+		index = index + 1
+	match problem with
+	| Maybe.Some error -> Result.Error error
+	| Maybe.None ->
+		let duplicate = repeated (ref members)
+		if duplicate >= 0 then
+			match members[duplicate] with
+			| (key, _) -> Result.Error (failure (Json.DuplicateKey (clone_string (ref key))) offsets[duplicate])
+		else Result.Ok (Json.Object (Vec.to_array members), position)
+/// The `Json.Value` of one CBOR data item (RFC 8949) of at most 64 MiB. It reads the JSON data
+/// model: integers, bignums (tags 2 and 3), finite floats, text strings, arrays, maps with text
+/// keys, booleans, and null, with definite lengths and at most 128 nested arrays and maps. Other
+/// items give `Unsupported`, invalid UTF-8 `InvalidUtf8`, a repeated key `DuplicateKey`, and a
+/// cut input `UnexpectedEnd` at the input length; every other error carries the byte offset of the item.
+def decode :: ref [ubyte] -> Result<Json.Value, Json.Error>
+fn decode bytes =
+	if bytes.length > 67108864 then Result.Error (failure Json.TooLarge 0) else
+		match value_at bytes 0 0 with
+		| Result.Ok (value, next) -> if next < bytes.length then Result.Error (failure Json.Syntax next) else Result.Ok value
+		| Result.Error error -> Result.Error error
+
+/// `value` encoded and written as CBOR.
+def rec serialize :: Encode<'a> => ref 'a -> Result<[ubyte], Json.Error>
+fn rec serialize value =
+	match Encode.encode value with
+	| Result.Ok json -> encode (ref json)
+	| Result.Error error -> Result.Error error
+
+/// The value that the CBOR bytes describe: `decode`, then `Decode`.
+def rec deserialize :: Decode<'a> => ref [ubyte] -> Result<'a, Json.Error>
+fn rec deserialize bytes =
+	match decode bytes with
+	| Result.Ok json -> Decode.decode (ref json)
+	| Result.Error error -> Result.Error error

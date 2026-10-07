@@ -207,15 +207,18 @@ fn instance_resolution_limits_and_alpha_renaming_are_enforced() {
         "record Pair<'a, 'b> { first: 'a, second: 'b }\nclass C<'a> { def value :: 'a -> i64 }\ninstance C<Pair<'a, i64>> { fn value _value = 0 }\ninstance C<Pair<bool, 'b>> { fn value _value = 1 }",
         "E1016",
     );
+    // Only heads with the same outermost constructor are unified and counted (D08).
     let declarations = (0..47)
         .map(|index| {
             format!(
-                "record R{index} {{ value: i64 }}\ninstance C<R{index}> {{ fn value _value = 0 }}\n"
+                "record R{index} {{ value: i64 }}\ninstance C<Box<R{index}>> {{ fn value _value = 0 }}\n"
             )
         })
         .collect::<String>();
     rejects(
-        &format!("class C<'a> {{ def value :: 'a -> i64 }}\n{declarations}"),
+        &format!(
+            "record Box<'a> {{ value: 'a }}\nclass C<'a> {{ def value :: 'a -> i64 }}\n{declarations}"
+        ),
         "E1017",
     );
     let error = analyze_modules(&[("Main.tz", "record Box<'a> { value: 'a }\ninstance Eq<'missing> => Eq<Box<i64>> { fn eq _left _right = true; fn ne _left _right = false }")]).unwrap_err();

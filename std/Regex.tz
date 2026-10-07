@@ -1,0 +1,1298 @@
+// Linear-time regular expressions (D09). `compile` turns a pattern (a `string`) into an immutable `Regex`
+// program that a Pike VM runs over the Unicode scalars of a `string` (UTF-16) or a `utf8string`. One search
+// takes O(instructions × scalars) time, whatever the pattern and the input, so untrusted patterns and inputs
+// cannot cause catastrophic backtracking. Matching is leftmost-first, like Rust's `regex` and RE2.
+
+/// Why `compile` rejected a pattern.
+union ErrorKind = Syntax | Unsupported | TooLarge deriving (Eq, Display)
+
+/// A rejected pattern: the kind, the offset in UTF-16 code units of the pattern, and an English message that
+/// says how to fix it.
+record Error { kind: ErrorKind, offset: i64, message: string }
+
+/// A compiled pattern. Matching never changes it, so one value serves any number of searches. Instruction
+/// `i` is `code[3i]` (the operation), `code[3i + 1]` and `code[3i + 2]`; class `k` is `classes[2k + 1]`
+/// closed ranges from `ranges[classes[2k]]`.
+record Regex { code: [i64], classes: [i64], ranges: [i64], groups: i64, anchored: bool }
+
+private const OpMatch: i64 = 0
+private const OpChar: i64 = 1
+private const OpClass: i64 = 2
+private const OpAny: i64 = 3
+private const OpAnyNoNewline: i64 = 4
+private const OpSplit: i64 = 5
+private const OpJump: i64 = 6
+private const OpSave: i64 = 7
+private const OpAssert: i64 = 8
+
+// Syntax tree nodes in one vector: kind, a, b, c, d, instruction count, then the children of a sequence or
+// an alternation (a holds their number).
+private const NodeEmpty: i64 = 0
+private const NodeChar: i64 = 1
+private const NodeClass: i64 = 2
+private const NodeAny: i64 = 3
+private const NodeAssert: i64 = 4
+private const NodeGroup: i64 = 5
+private const NodeConcat: i64 = 6
+private const NodeAlternate: i64 = 7
+private const NodeRepeat: i64 = 8
+
+private const FlagI: i64 = 1
+private const FlagM: i64 = 2
+private const FlagS: i64 = 4
+private const FlagU: i64 = 8
+
+private const MaxInstructions: i64 = 10000
+private const MaxRanges: i64 = 65536
+private const MaxSlots: i64 = 262144
+private const MaxNesting: i64 = 64
+private const MaxRepeat: i64 = 1000
+private const LastScalar: i64 = 1114111
+
+private def failure :: ErrorKind -> i64 -> string -> Error
+fn failure kind offset message = Error { kind: kind, offset: offset, message: message }
+
+/// The code unit at `index`, or -1 outside the text.
+private def unit :: ref string -> i64 -> i64
+fn unit text index = if index >= 0 && index < text.length then text[index] as i64 else -1
+
+private def is_high :: i64 -> bool
+fn is_high code = code >= 55296 && code <= 56319
+
+private def is_low :: i64 -> bool
+fn is_low code = code >= 56320 && code <= 57343
+
+/// The scalar at `index` times 8 plus its width in code units, or -1 at the end. A lone surrogate is one
+/// scalar of width 1.
+private def scalar16 :: ref string -> i64 -> i64
+fn scalar16 text index =
+	let high = unit text index
+	if high < 0 then -1
+	elif is_high high && is_low (unit text (index + 1)) then ((high - 55296) * 1024 + unit text (index + 1) - 56320 + 65536) * 8 + 2
+	else high * 8 + 1
+
+private def scalar8 :: ref utf8string -> i64 -> i64
+fn scalar8 text index =
+	if index < 0 || index >= text.length then -1 else
+		match Utf8String.decode_at text index with
+		| (value, next) -> (Utf8Char.to_u32 value as i64) * 8 + next - index
+
+/// The scalar that ends at `index`, or -1 at the start.
+private def before16 :: ref string -> i64 -> i64
+fn before16 text index =
+	let low = unit text (index - 1)
+	if index <= 0 then -1
+	elif is_low low && is_high (unit text (index - 2)) then (unit text (index - 2) - 55296) * 1024 + low - 56320 + 65536
+	else low
+
+private def before8 :: ref utf8string -> i64 -> i64
+fn before8 text index =
+	if index <= 0 || index > text.length then -1 else
+		let mut start = index - 1
+		while start > 0 && (text[start] &&& 192ubyte) == 128ubyte do start = start - 1
+		scalar8 text start / 8
+
+private def is_digit :: i64 -> bool
+fn is_digit code = code >= 48 && code <= 57
+
+private def hex_value :: i64 -> i64
+fn hex_value code =
+	if code >= 48 && code <= 57 then code - 48
+	elif code >= 65 && code <= 70 then code - 55
+	elif code >= 97 && code <= 102 then code - 87
+	else -1
+
+private def is_syntax :: i64 -> bool
+fn is_syntax code = code == 94 || code == 36 || code == 92 || code == 46 || code == 42 || code == 43 || code == 63 || code == 40 || code == 41 || code == 91 || code == 93 || code == 123 || code == 125 || code == 124
+
+/// The pattern text of the scalar at `index`, for messages.
+private def text_at :: ref string -> i64 -> string
+fn text_at pattern index =
+	let here = scalar16 pattern index
+	if here < 0 then "" else Maybe.get (String.slice pattern index (index + here % 8))
+
+private def nothing_to_repeat :: i64 -> Error
+fn nothing_to_repeat offset = failure Syntax offset "repetition operator has nothing to repeat; add an expression before it or escape it"
+
+private def invalid_range :: i64 -> Error
+fn invalid_range offset = failure Syntax offset "invalid class range; use single characters with start <= end"
+
+private def unknown_property :: i64 -> string -> Error
+fn unknown_property offset name = failure Unsupported offset ("unknown Unicode property '" + name + "'; use a general category such as Lu, or Alphabetic, White_Space, Join_Control")
+
+/// The offset of the first `}` from `start`, or the length of the pattern.
+private def closing :: ref string -> i64 -> i64
+fn closing pattern start =
+	let mut index = start
+	let mut searching = true
+	while searching do
+		if index >= pattern.length || pattern[index] == 125i16u then searching = false else index = index + 1
+	index
+
+/// What an escape stands for. `Perl` holds the class (0 `\d`, 1 `\s`, 2 `\w`) times 2 plus 1 when negated;
+/// `Property` holds the offset and length of the name and whether it is negated; `Assertion` holds the
+/// assertion kind (0 `\A`, 1 `\z`, 4 `\b`, 5 `\B`).
+private union Escape = Literal of i64 | Perl of i64 | Property of (i64 * i64 * bool) | Assertion of i64 | Failed of Error
+
+/// The escape that starts with the `\` at `start`, and the offset after it. Inside a class, `\b`, `\B`,
+/// `\A` and `\z` are unknown escapes.
+private def escape_at :: ref string -> i64 -> bool -> (Escape * i64)
+fn escape_at pattern start in_class =
+	let next = scalar16 pattern (start + 1)
+	let letter = if next < 0 then -1 else next / 8
+	let after = if next < 0 then start + 1 else start + 1 + next % 8
+	let invalid = failure Syntax start "invalid code point escape; use \\u{0} through \\u{10FFFF}"
+	let backreference = failure Unsupported start "backreferences are not supported; the engine guarantees linear time"
+	if letter < 0 then (Failed (failure Syntax start "pattern ends with '\\'; escape a backslash as '\\\\'"), after)
+	elif is_syntax letter || letter == 45 || letter == 47 then (Literal letter, after)
+	elif letter == 110 then (Literal 10, after)
+	elif letter == 114 then (Literal 13, after)
+	elif letter == 116 then (Literal 9, after)
+	elif letter == 102 then (Literal 12, after)
+	elif letter == 118 then (Literal 11, after)
+	elif letter == 48 then (if is_digit (unit pattern after) then (Failed backreference, after) else (Literal 0, after))
+	elif is_digit letter || (letter == 107 && unit pattern after == 60) then (Failed backreference, after)
+	elif letter == 120 then
+		let high = hex_value (unit pattern after)
+		let low = hex_value (unit pattern (after + 1))
+		if high < 0 || low < 0 then (Failed invalid, after) else (Literal (high * 16 + low), after + 2)
+	elif letter == 117 && unit pattern after == 123 then
+		let mut value = 0
+		let mut index = after + 1
+		while hex_value (unit pattern index) >= 0 && value <= LastScalar do
+			value = value * 16 + hex_value (unit pattern index)
+			index = index + 1
+		if index == after + 1 || value > LastScalar || unit pattern index != 125 then (Failed invalid, after) else (Literal value, index + 1)
+	elif letter == 117 then
+		let mut value = 0
+		let mut index = after
+		while index < after + 4 && hex_value (unit pattern index) >= 0 do
+			value = value * 16 + hex_value (unit pattern index)
+			index = index + 1
+		if index < after + 4 then (Failed invalid, after)
+		elif is_high value && unit pattern index == 92 && unit pattern (index + 1) == 117 then
+			let mut low = 0
+			let mut digit = index + 2
+			while digit < index + 6 && hex_value (unit pattern digit) >= 0 do
+				low = low * 16 + hex_value (unit pattern digit)
+				digit = digit + 1
+			if digit == index + 6 && is_low low then (Literal ((value - 55296) * 1024 + low - 56320 + 65536), digit) else (Literal value, index)
+		else (Literal value, index)
+	elif letter == 100 || letter == 68 then (Perl (if letter == 68 then 1 else 0), after)
+	elif letter == 115 || letter == 83 then (Perl (if letter == 83 then 3 else 2), after)
+	elif letter == 119 || letter == 87 then (Perl (if letter == 87 then 5 else 4), after)
+	elif letter == 112 || letter == 80 then
+		if unit pattern after != 123 then (Failed (unknown_property start (text_at pattern after)), after)
+		else
+			let close = closing pattern (after + 1)
+			if close >= pattern.length then (Failed (unknown_property start (Maybe.get (String.slice pattern (after + 1) close))), close)
+			else (Property (after + 1, close - after - 1, letter == 80), close + 1)
+	elif !in_class && (letter == 98 || letter == 66) then (Assertion (if letter == 98 then 4 else 5), after)
+	elif !in_class && (letter == 65 || letter == 122) then (Assertion (if letter == 65 then 0 else 1), after)
+	elif letter == 71 || letter == 90 || letter == 88 || letter == 82 || letter == 75 then (Failed (failure Unsupported start ("unsupported syntax '\\" + text_at pattern (start + 1) + "'")), after)
+	else (Failed (failure Syntax start ("unknown escape '\\" + text_at pattern (start + 1) + "'; escape only syntax characters")), after)
+
+/// Sorts and merges closed ranges `first, last, first, last, ...`.
+private def normalize :: Vec<i64> -> Vec<i64>
+fn normalize ranges =
+	let count = Vec.length (ref ranges) / 2
+	let mut keys: [i64] = new [i64](count, \_index -> 0)
+	for index in 0 .. count - 1 do Array.write (ref mut keys) index (ranges[2 * index] * 2097152 + ranges[2 * index + 1])
+	Array.sort_in_place (ref mut keys)
+	let mut output: Vec<i64> = Vec.with_capacity (2 * count)
+	let mut low = -1
+	let mut high = -1
+	let mut index = 0
+	while index < count do
+		let first = keys[index] / 2097152
+		let last = keys[index] % 2097152
+		if low >= 0 && first <= high + 1 then (if last > high then high = last)
+		else
+			if low >= 0 then output = Vec.push (Vec.push output low) high
+			low = first
+			high = last
+		index = index + 1
+	if low >= 0 then output = Vec.push (Vec.push output low) high
+	output
+
+/// The scalars outside normalized ranges.
+private def complement :: Vec<i64> -> Vec<i64>
+fn complement ranges =
+	let mut output: Vec<i64> = Vec.with_capacity (Vec.length (ref ranges) + 2)
+	let mut next = 0
+	let mut index = 0
+	while index < Vec.length (ref ranges) do
+		if ranges[index] > next then output = Vec.push (Vec.push output next) (ranges[index] - 1)
+		next = ranges[index + 1] + 1
+		index = index + 2
+	if next <= LastScalar then output = Vec.push (Vec.push output next) LastScalar
+	output
+
+private def holds_scalar :: ref Vec<i64> -> i64 -> bool
+fn holds_scalar ranges code =
+	let count = Vec.length ranges / 2
+	let mut low = 0
+	let mut high = count
+	while low < high do
+		let middle = (low + high) / 2
+		if ranges[2 * middle + 1] < code then low = middle + 1 else high = middle
+	low < count && ranges[2 * low] <= code
+
+private def sorted_holds :: ref [i64] -> i64 -> bool
+fn sorted_holds values code =
+	let mut low = 0
+	let mut high = values.length
+	while low < high do
+		let middle = (low + high) / 2
+		if values[middle] < code then low = middle + 1 else high = middle
+	low < values.length && values[low] == code
+
+/// Closes normalized ranges under simple case folding: `pairs` lists `c, scf c` for every `c` that folds,
+/// so two scalars match each other when they fold to the same scalar (D9).
+private def fold :: Vec<i64> -> ref [i64] -> Vec<i64>
+fn fold ranges pairs =
+	let count = pairs.length / 2
+	let mut targets: Vec<i64> = Vec.empty()
+	let mut index = 0
+	while index < count do
+		if holds_scalar (ref ranges) pairs[2 * index] || holds_scalar (ref ranges) pairs[2 * index + 1] then targets = Vec.push targets pairs[2 * index + 1]
+		index = index + 1
+	let mut folded = Vec.to_array targets
+	Array.sort_in_place (ref mut folded)
+	let mut output = ranges
+	index = 0
+	while index < count do
+		if sorted_holds (ref folded) pairs[2 * index + 1] then output = Vec.push (Vec.push output pairs[2 * index]) pairs[2 * index]
+		index = index + 1
+	for code in folded do output = Vec.push (Vec.push output code) code
+	normalize output
+
+private def unicode_pairs :: unit -> [i64]
+fn unicode_pairs _unit =
+	let pairs = Unicode.simple_case_folding ()
+	let mut flat: Vec<i64> = Vec.with_capacity (2 * pairs.length)
+	for pair in pairs do
+		match pair with
+		| (code, folded) -> flat = Vec.push (Vec.push flat code) folded
+	Vec.to_array flat
+
+private def ascii_pairs :: unit -> [i64]
+fn ascii_pairs _unit = new [i64](52, \index -> if index % 2 == 0 then 65 + index / 2 else 97 + index / 2)
+
+private def append_property :: Vec<i64> -> string -> Vec<i64>
+fn append_property output name =
+	let mut result = output
+	match Unicode.property_ranges (ref name) with
+	| Maybe.Some ranges ->
+		for pair in ranges do
+			match pair with
+			| (first, last) -> result = Vec.push (Vec.push result first) last
+	| Maybe.None -> ()
+	result
+
+/// `\d`, `\s` or `\w` (`which` 0, 1, 2): Unicode `Nd`, `White_Space` and `Alphabetic | M | Nd | Pc |
+/// Join_Control` (UTS #18), or their ASCII forms without the `u` flag.
+private def perl_ranges :: i64 -> bool -> Vec<i64>
+fn perl_ranges which unicode =
+	if !unicode then
+		if which == 0 then Vec.of_array [48, 57]
+		elif which == 1 then Vec.of_array [9, 13, 32, 32]
+		else Vec.of_array [48, 57, 65, 90, 95, 95, 97, 122]
+	elif which == 0 then append_property (Vec.empty()) "Nd"
+	elif which == 1 then append_property (Vec.empty()) "White_Space"
+	else
+		let letters = append_property (Vec.empty()) "Alphabetic"
+		let marks = append_property letters "M"
+		let digits = append_property marks "Nd"
+		let connectors = append_property digits "Pc"
+		normalize (append_property connectors "Join_Control")
+
+/// The ranges of `\d`, `\s`, `\w` (`which` 0, 1, 2) or `\p{name}` (`which` 3, the name at `offset`) under
+/// `flags`, folded and then negated as the escape asks; `None` for an unknown property.
+private def special :: ref string -> i64 -> i64 -> i64 -> bool -> i64 -> ref [i64] -> Maybe<Vec<i64>>
+fn special pattern which offset length negated flags pairs =
+	let base =
+		if which < 3 then Maybe.Some (perl_ranges which ((flags &&& FlagU) != 0))
+		else
+			let name = Maybe.get (String.slice pattern offset (offset + length))
+			match Unicode.property_ranges (ref name) with
+			| Maybe.Some ranges ->
+				let mut flat: Vec<i64> = Vec.with_capacity (2 * ranges.length)
+				for pair in ranges do
+					match pair with
+					| (first, last) -> flat = Vec.push (Vec.push flat first) last
+				Maybe.Some flat
+			| Maybe.None -> Maybe.None
+	match base with
+	| Maybe.Some ranges ->
+		let folded = if (flags &&& FlagI) != 0 then fold ranges pairs else ranges
+		Maybe.Some (if negated then complement folded else folded)
+	| Maybe.None -> Maybe.None
+
+/// A class item: one scalar, a set of normalized ranges, an escape class that the class already holds, or an
+/// error.
+private union Atom = Single of i64 | Many of Vec<i64> | Again | Broken of Error
+
+/// Whether the escape of `length` code units at `start` is written in `seen` (offset, length pairs).
+private def repeated :: ref Vec<i64> -> ref string -> i64 -> i64 -> bool
+fn repeated seen pattern start length =
+	let mut found = false
+	let mut index = 0
+	while !found && index < Vec.length seen do
+		if seen[index + 1] == length && same_text pattern seen[index] start length then found = true
+		index = index + 2
+	found
+
+/// The class item at `start`. An escape class written earlier in the same class (`seen`) is `Again`: the
+/// class has the same flags throughout, so the escape adds nothing and its table is not read again.
+private def class_atom :: ref string -> i64 -> i64 -> ref [i64] -> ref Vec<i64> -> (Atom * i64)
+fn class_atom pattern start flags pairs seen =
+	if unit pattern start != 92 then
+		let here = scalar16 pattern start
+		(Single (here / 8), start + here % 8)
+	else
+		match escape_at pattern start true with
+		| (Literal code, after) -> (Single code, after)
+		| (Perl which, after) ->
+			if repeated seen pattern start (after - start) then (Again, after)
+			else (Many (Maybe.get (special pattern (which / 2) 0 0 (which % 2 == 1) flags pairs)), after)
+		| (Property (offset, length, negated), after) ->
+			if repeated seen pattern start (after - start) then (Again, after)
+			else
+				match special pattern 3 offset length negated flags pairs with
+				| Maybe.Some ranges -> (Many ranges, after)
+				| Maybe.None -> (Broken (unknown_property start (Maybe.get (String.slice pattern offset (offset + length)))), after)
+		| (Assertion _, after) -> (Single 0, after)
+		| (Failed error, after) -> (Broken error, after)
+
+/// Whether the item that ends at `after` is followed by a range dash (a `-` before `]` or the end is a literal).
+private def dash_at :: ref string -> i64 -> bool
+fn dash_at pattern after = unit pattern after == 45 && unit pattern (after + 1) != 93 && unit pattern (after + 1) >= 0
+
+/// The class `[...]` that opens at `open`: its ranges folded and negated as `flags` and `^` ask, and the
+/// offset after it; or the first error in it.
+private def bracket :: ref string -> i64 -> i64 -> ref [i64] -> (Result<Vec<i64>, Error> * i64)
+fn bracket pattern open flags pairs =
+	let negated = unit pattern (open + 1) == 94
+	let mut pos = if negated then open + 2 else open + 1
+	// The unmerged ranges: one per literal or literal range, and each escape class once (`seen`), so the
+	// pattern length bounds them. The class counts against the limit only after merging, folding and
+	// negation, when `add_class` stores it.
+	let mut set: Vec<i64> = Vec.empty()
+	let mut seen: Vec<i64> = Vec.empty()
+	let mut problem: Maybe<Error> = Maybe.None
+	let mut first = true
+	let mut closed = false
+	while !closed && Maybe.is_none (ref problem) do
+		let code = unit pattern pos
+		let next = unit pattern (pos + 1)
+		if code < 0 then problem = Maybe.Some (failure Syntax open "unclosed character class; add ']'")
+		elif code == 93 && first then problem = Maybe.Some (failure Syntax open "empty character class; escape ']' as '\\]'")
+		elif code == 93 then
+			closed = true
+			pos = pos + 1
+		elif code == 91 then problem = Maybe.Some (failure Unsupported pos "unsupported syntax '['")
+		elif code == 38 && next == 38 then problem = Maybe.Some (failure Unsupported pos "unsupported syntax '&&'")
+		elif code == 45 && !first && next != 93 && next >= 0 then problem = Maybe.Some (invalid_range pos)
+		else
+			match class_atom pattern pos flags pairs (ref seen) with
+			| (Single low, after) ->
+				if dash_at pattern after then
+					match class_atom pattern (after + 1) flags pairs (ref seen) with
+					| (Single high, finish) ->
+						if high < low then problem = Maybe.Some (invalid_range pos)
+						else
+							set = Vec.push (Vec.push set low) high
+							pos = finish
+					| (Many _, _) -> problem = Maybe.Some (invalid_range pos)
+					| (Again, _) -> problem = Maybe.Some (invalid_range pos)
+					| (Broken error, _) -> problem = Maybe.Some error
+				else
+					set = Vec.push (Vec.push set low) low
+					pos = after
+			| (Many ranges, after) ->
+				if dash_at pattern after then problem = Maybe.Some (invalid_range pos)
+				else
+					for value in Vec.to_array ranges do set = Vec.push set value
+					seen = Vec.push (Vec.push seen pos) (after - pos)
+					pos = after
+			| (Again, after) -> if dash_at pattern after then problem = Maybe.Some (invalid_range pos) else pos = after
+			| (Broken error, _) -> problem = Maybe.Some error
+		first = false
+	match problem with
+	| Maybe.Some error -> (Result.Error error, pos)
+	| Maybe.None ->
+		let normalized = normalize set
+		let folded = if (flags &&& FlagI) != 0 then fold normalized pairs else normalized
+		(Result.Ok (if negated then complement folded else folded), pos)
+
+/// Appends `set` as a new class. Returns the classes, the ranges and the class id, which is -1 when the
+/// ranges of all classes would exceed the limit.
+private def add_class :: Vec<i64> -> Vec<i64> -> Vec<i64> -> (Vec<i64> * Vec<i64> * i64)
+fn add_class classes ranges set =
+	let start = Vec.length (ref ranges)
+	let count = Vec.length (ref set) / 2
+	if start / 2 + count > MaxRanges then (classes, ranges, -1)
+	else
+		let mut output = ranges
+		for value in Vec.to_array set do output = Vec.push output value
+		let id = Vec.length (ref classes) / 2
+		(Vec.push (Vec.push classes start) count, output, id)
+
+private def same_text :: ref string -> i64 -> i64 -> i64 -> bool
+fn same_text pattern first second length =
+	let mut same = true
+	for index in 0 .. length - 1 do
+		if pattern[first + index] != pattern[second + index] then same = false
+	same
+
+/// The class id of an escape class remembered under `key` (and, for a property, the same name), or -1.
+private def recall :: ref Vec<i64> -> ref string -> i64 -> i64 -> i64 -> i64
+fn recall memo pattern key offset length =
+	let mut found = -1
+	let mut index = 0
+	while found < 0 && index < Vec.length memo do
+		if memo[index] == key && memo[index + 2] == length && same_text pattern memo[index + 1] offset length then found = memo[index + 3]
+		index = index + 4
+	found
+
+private def add_node :: Vec<i64> -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> Vec<i64>
+fn add_node tree kind a b c d size = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push (Vec.push tree kind) a) b) c) d) (if size > MaxInstructions then MaxInstructions + 1 else size)
+
+/// Appends the node over `members[start..]`: an empty node for none, the member itself for one, else a
+/// sequence or an alternation (`kind`). Returns the tree and the node.
+private def combine :: Vec<i64> -> ref Vec<i64> -> i64 -> i64 -> (Vec<i64> * i64)
+fn combine tree members start kind =
+	let count = Vec.length members - start
+	if count == 1 then (tree, members[start])
+	else
+		let id = Vec.length (ref tree)
+		let mut size = if kind == NodeAlternate then 2 * (count - 1) else 0
+		let mut index = start
+		while index < Vec.length members do
+			size = size + tree[members[index] + 5]
+			index = index + 1
+		let mut output = add_node tree (if count == 0 then NodeEmpty else kind) count 0 0 0 size
+		index = start
+		while index < Vec.length members do
+			output = Vec.push output members[index]
+			index = index + 1
+		(output, id)
+
+/// The instructions of `x{minimum,maximum}` (maximum -1: unbounded) for a body of `size` instructions.
+private def repeat_size :: i64 -> i64 -> i64 -> i64
+fn repeat_size size minimum maximum =
+	if maximum < 0 && minimum == 0 then size + 2
+	elif maximum < 0 then minimum * size + 1
+	else minimum * size + (maximum - minimum) * (size + 1)
+
+private def read_number :: ref string -> i64 -> (i64 * i64)
+fn read_number pattern start =
+	let mut value = -1
+	let mut index = start
+	while is_digit (unit pattern index) do
+		let digit = unit pattern index - 48
+		value = if value < 0 then digit elif value > MaxRepeat then value else value * 10 + digit
+		index = index + 1
+	(value, index)
+
+/// The quantifier at `start`: status (0 valid, 1 a malformed `{...}`, 2 a count above 1000), the minimum,
+/// the maximum (-1: unbounded) and the offset after it.
+private def quantifier :: ref string -> i64 -> (i64 * i64 * i64 * i64)
+fn quantifier pattern start =
+	let code = unit pattern start
+	if code == 42 then (0, 0, -1, start + 1)
+	elif code == 43 then (0, 1, -1, start + 1)
+	elif code == 63 then (0, 0, 1, start + 1)
+	else
+		match read_number pattern (start + 1) with
+		| (low, after) ->
+			let large = if low > MaxRepeat then 2 else 0
+			if low < 0 then (1, 0, 0, start + 1)
+			elif unit pattern after == 125 then (large, low, low, after + 1)
+			elif unit pattern after != 44 then (1, 0, 0, start + 1)
+			elif unit pattern (after + 1) == 125 then (large, low, -1, after + 2)
+			else
+				match read_number pattern (after + 1) with
+				| (high, finish) ->
+					if high < 0 || unit pattern finish != 125 then (1, 0, 0, start + 1)
+					elif high > MaxRepeat then (2, low, high, finish + 1)
+					elif low > high then (if large == 2 then 2 else 1, low, high, finish + 1)
+					else (large, low, high, finish + 1)
+
+private def flag_bit :: i64 -> i64
+fn flag_bit code = if code == 105 then FlagI elif code == 109 then FlagM elif code == 115 then FlagS elif code == 117 then FlagU else 0
+
+/// Reads flags from `start` up to `)` or `:` (`(?:` has none): the flags, the offset of the terminator, and the
+/// offset of the first character where a flag is needed but missing (-1 when the flags are valid).
+private def read_flags :: ref string -> i64 -> i64 -> (i64 * i64 * i64)
+fn read_flags pattern start flags =
+	let mut result = flags
+	let mut index = start
+	let mut clear = false
+	let mut count = 0
+	let mut bad = -1
+	let mut reading = true
+	while reading do
+		let code = unit pattern index
+		let bit = flag_bit code
+		if bit > 0 then
+			result = if clear then result &&& (~~~bit) else result ||| bit
+			count = count + 1
+			index = index + 1
+		elif code == 45 && !clear then
+			clear = true
+			count = 0
+			index = index + 1
+		elif (code == 41 && count > 0) || (code == 58 && (count > 0 || !clear)) then reading = false
+		else
+			bad = index
+			reading = false
+	(result, index, bad)
+
+/// The syntax tree of a pattern with its classes.
+private record Tree { nodes: [i64], root: i64, groups: i64, classes: [i64], ranges: [i64] }
+
+/// The classes of a pattern being parsed: closed ranges, the classes over them (start, count), and the escape
+/// classes built so far (key, name offset, name length, class id).
+private record Classes { classes: Vec<i64>, ranges: Vec<i64>, memo: Vec<i64> }
+
+/// The atom at `pos` that is not a group or a quantifier: its node (kind, a, b), the offset after it, the
+/// classes with any class it adds, and the error if it has one. Escape classes (`\d`, `\p{...}`, the `\w` of
+/// `\b`) are built once per key and flags and shared, so repeating them does not grow the ranges; a
+/// case-insensitive literal that folds with other scalars becomes a class.
+private def atom :: ref string -> i64 -> i64 -> ref [i64] -> Classes -> (i64 * i64 * i64 * i64 * Classes * Maybe<Error>)
+fn atom pattern pos flags pairs tables =
+	let here = scalar16 pattern pos
+	let code = here / 8
+	let mut set: Maybe<Vec<i64>> = Maybe.None
+	let mut kind = NodeChar
+	let mut key = code
+	let mut advance = pos + here % 8
+	let mut name_offset = 0
+	let mut name_length = 0
+	let mut problem: Maybe<Error> = Maybe.None
+	if code == 94 || code == 36 then
+		kind = NodeAssert
+		key = (if code == 94 then 0 else 1) + (if (flags &&& FlagM) != 0 then 2 else 0)
+	elif code == 46 then
+		kind = NodeAny
+		key = if (flags &&& FlagS) != 0 then 1 else 0
+	elif code == 91 then
+		match bracket pattern pos flags pairs with
+		| (Result.Ok ranges, finish) ->
+			set = Maybe.Some ranges
+			kind = NodeClass
+			advance = finish
+		| (Result.Error error, _) -> problem = Maybe.Some error
+	elif code == 93 || code == 125 then
+		problem = Maybe.Some (failure Syntax pos ("unescaped '" + text_at pattern pos + "'; escape it as '\\" + text_at pattern pos + "'"))
+	elif code == 92 then
+		match escape_at pattern pos false with
+		| (Literal value, finish) ->
+			key = value
+			advance = finish
+		| (Perl which, finish) ->
+			kind = -1
+			key = which
+			advance = finish
+		| (Property (offset, size, negated), finish) ->
+			kind = -1
+			key = if negated then 7 else 6
+			name_offset = offset
+			name_length = size
+			advance = finish
+		| (Assertion assertion, finish) ->
+			kind = NodeAssert
+			key = assertion
+			advance = finish
+		| (Failed error, _) -> problem = Maybe.Some error
+	match tables with
+	| Classes { classes = classes, ranges = ranges, memo = memo } ->
+		let mut classes = classes
+		let mut ranges = ranges
+		let mut memo = memo
+		let special_key = if kind == NodeAssert && key >= 4 then 4 elif kind < 0 then key else -1
+		let special_flags = if kind == NodeAssert then flags &&& FlagU else flags &&& (FlagI ||| FlagU)
+		let memo_key = special_key * 16 + special_flags
+		let mut class_id = if special_key >= 0 && Maybe.is_none (ref problem) then recall (ref memo) pattern memo_key name_offset name_length else -1
+		if special_key >= 0 && class_id < 0 && Maybe.is_none (ref problem) then
+			let which = if special_key >= 6 then 3 else special_key / 2
+			let negated = if special_key >= 6 then special_key == 7 else special_key % 2 == 1
+			match special pattern which name_offset name_length negated special_flags pairs with
+			| Maybe.Some ranges -> set = Maybe.Some ranges
+			| Maybe.None -> problem = Maybe.Some (unknown_property pos (Maybe.get (String.slice pattern name_offset (name_offset + name_length))))
+		if kind == NodeChar && (flags &&& FlagI) != 0 then
+			let folded = fold (Vec.of_array [key, key]) pairs
+			if Vec.length (ref folded) > 2 || folded[0] != key || folded[1] != key then set = Maybe.Some folded
+		match set with
+		| Maybe.Some found ->
+			match add_class classes ranges found with
+			| (updated_classes, updated_ranges, id) ->
+				classes = updated_classes
+				ranges = updated_ranges
+				class_id = id
+				if id < 0 then problem = Maybe.Some (failure TooLarge 0 "character classes exceed 65536 ranges in total")
+				elif special_key >= 0 then memo = Vec.push (Vec.push (Vec.push (Vec.push memo memo_key) name_offset) name_length) id
+		| Maybe.None -> ()
+		let node = if kind == NodeAssert then kind elif class_id >= 0 then NodeClass else kind
+		let a = if node == NodeClass then class_id else key
+		let b = if node == NodeAssert && key >= 4 then class_id else -1
+		(node, a, b, advance, Classes { classes: classes, ranges: ranges, memo: memo }, problem)
+
+private def parse :: ref string -> Result<Tree, Error>
+fn parse pattern =
+	let length = pattern.length
+	let ascii = ascii_pairs ()
+	let mut folds: [i64] = []
+	let mut tables = Classes { classes: Vec.empty(), ranges: Vec.empty(), memo: Vec.empty() }
+	let mut tree: Vec<i64> = Vec.empty()
+	let mut items: Vec<i64> = Vec.empty()
+	let mut alternatives: Vec<i64> = Vec.empty()
+	// Open groups, 5 entries each: items start, alternatives start, capture index or -1, outer flags, offset.
+	let mut frames: Vec<i64> = Vec.empty()
+	let mut groups = 0
+	let mut flags = FlagU
+	let mut pos = 0
+	let mut repeatable = false
+	let mut root = -1
+	let mut problem: Maybe<Error> = Maybe.None
+	while root < 0 && Maybe.is_none (ref problem) do
+		let code = if pos < length then scalar16 pattern pos / 8 else -1
+		let depth = Vec.length (ref frames) / 5
+		if code < 0 || code == 41 || code == 124 then
+			let item_start = if depth > 0 then frames[5 * depth - 5] else 0
+			match combine tree (ref items) item_start NodeConcat with
+			| (updated, node) ->
+				tree = updated
+				items = Vec.truncate items item_start
+				alternatives = Vec.push alternatives node
+			repeatable = false
+			if code == 124 then pos = pos + 1
+			elif code == 41 && depth == 0 then problem = Maybe.Some (failure Syntax pos "unmatched ')'; escape it as '\\)'")
+			elif code < 0 && depth > 0 then problem = Maybe.Some (failure Syntax frames[5 * depth - 1] "unclosed group; add ')'")
+			else
+				let alternative_start = if depth > 0 then frames[5 * depth - 4] else 0
+				match combine tree (ref alternatives) alternative_start NodeAlternate with
+				| (updated, node) ->
+					tree = updated
+					alternatives = Vec.truncate alternatives alternative_start
+					if code < 0 then root = node
+					else
+						let capture = frames[5 * depth - 3]
+						flags = frames[5 * depth - 2]
+						frames = Vec.truncate frames (5 * depth - 5)
+						let id = Vec.length (ref tree)
+						let size = tree[node + 5] + 2
+						if capture >= 0 then tree = add_node tree NodeGroup capture node 0 0 size
+						items = Vec.push items (if capture >= 0 then id else node)
+						repeatable = true
+						pos = pos + 1
+		elif code == 40 then
+			let marker = unit pattern (pos + 1)
+			let kind = unit pattern (pos + 2)
+			repeatable = false
+			if depth >= MaxNesting then problem = Maybe.Some (failure TooLarge pos "groups are nested deeper than 64")
+			elif marker == 63 && (kind == 61 || kind == 33 || kind == 60 || kind == 80 || kind == 62 || kind == 35) then
+				problem = Maybe.Some (failure Unsupported pos "unsupported group syntax; lookaround, named groups and atomic groups are not supported")
+			elif marker == 63 then
+				match read_flags pattern (pos + 2) flags with
+				| (updated, finish, bad) ->
+					if bad >= length then problem = Maybe.Some (failure Syntax pos "unclosed group; add ')'")
+					elif bad >= 0 then problem = Maybe.Some (failure Syntax bad ("unknown flag '" + text_at pattern bad + "'; use i, m, s or u"))
+					elif unit pattern finish == 41 && pos > 0 then problem = Maybe.Some (failure Unsupported pos "inline flags are allowed only at the start; use (?flags:...)")
+					else
+						if unit pattern finish != 41 then frames = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push frames (Vec.length (ref items))) (Vec.length (ref alternatives))) (-1)) flags) pos
+						flags = updated
+						pos = finish + 1
+			else
+				groups = groups + 1
+				frames = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push frames (Vec.length (ref items))) (Vec.length (ref alternatives))) groups) flags) pos
+				pos = pos + 1
+		elif code == 42 || code == 43 || code == 63 || code == 123 then
+			match quantifier pattern pos with
+			| (status, minimum, maximum, finish) ->
+				let lazy = unit pattern finish == 63
+				let end = if lazy then finish + 1 else finish
+				if !repeatable then problem = Maybe.Some (if code == 123 && status == 1 then failure Syntax pos "unescaped '{'; escape it as '\\{'" else nothing_to_repeat pos)
+				elif status == 1 then problem = Maybe.Some (failure Syntax pos "invalid counted repetition; use {n}, {n,} or {n,m} with n <= m")
+				elif status == 2 then problem = Maybe.Some (failure TooLarge pos "repetition count exceeds 1000")
+				elif !lazy && unit pattern end == 43 then problem = Maybe.Some (failure Unsupported pos ("unsupported syntax '" + Maybe.get (String.slice pattern pos (end + 1)) + "'"))
+				else
+					let last = Vec.length (ref items) - 1
+					let child = items[last]
+					let id = Vec.length (ref tree)
+					let size = repeat_size tree[child + 5] minimum maximum
+					tree = add_node tree NodeRepeat child minimum maximum (if lazy then 0 else 1) size
+					items = Vec.push (Vec.truncate items last) id
+					repeatable = false
+					pos = end
+		else
+			if (flags &&& FlagI) != 0 && (flags &&& FlagU) != 0 && folds.length == 0 then folds = unicode_pairs ()
+			let pairs = if (flags &&& FlagU) != 0 then folds else ascii
+			match atom pattern pos flags (ref pairs) tables with
+			| (kind, a, b, finish, updated, failed) ->
+				tables = updated
+				match failed with
+				| Maybe.Some error -> problem = Maybe.Some error
+				| Maybe.None ->
+					let id = Vec.length (ref tree)
+					tree = add_node tree kind a b 0 0 1
+					items = Vec.push items id
+					repeatable = kind != NodeAssert
+					pos = finish
+	match problem with
+	| Maybe.Some error -> Result.Error error
+	| Maybe.None ->
+		match tables with
+		| Classes { classes = classes, ranges = ranges } ->
+			Result.Ok (Tree { nodes: Vec.to_array tree, root: root, groups: groups, classes: Vec.to_array classes, ranges: Vec.to_array ranges })
+
+/// Writes one instruction at `pc` and returns the next pc.
+private def put :: ref mut [i64..] -> i64 -> i64 -> i64 -> i64 -> i64
+fn put code pc op a b =
+	Array.write code (3 * pc) op
+	Array.write code (3 * pc + 1) a
+	Array.write code (3 * pc + 2) b
+	pc + 1
+
+/// Writes the instructions of `node` from `pc` and returns the pc after them. The depth of the recursion
+/// is bounded by the group nesting limit.
+private def rec emit :: ref [i64] -> ref mut [i64..] -> i64 -> i64 -> i64
+fn rec emit tree code node pc =
+	let kind = tree[node]
+	let a = tree[node + 1]
+	let b = tree[node + 2]
+	if kind == NodeEmpty then pc
+	elif kind == NodeChar then put code pc OpChar a 0
+	elif kind == NodeClass then put code pc OpClass a 0
+	elif kind == NodeAny then put code pc (if a == 1 then OpAny else OpAnyNoNewline) 0 0
+	elif kind == NodeAssert then put code pc OpAssert a b
+	elif kind == NodeGroup then
+		let body = put code pc OpSave (2 * a) 0
+		let after = emit tree code b body
+		put code after OpSave (2 * a + 1) 0
+	elif kind == NodeConcat then
+		let mut next = pc
+		let mut index = 0
+		while index < a do
+			next = emit tree code tree[node + 6 + index] next
+			index = index + 1
+		next
+	elif kind == NodeAlternate then
+		let end = pc + tree[node + 5]
+		let mut next = pc
+		let mut index = 0
+		while index < a do
+			let child = tree[node + 6 + index]
+			if index + 1 < a then
+				let body = put code next OpSplit (next + 1) (next + 2 + tree[child + 5])
+				let after = emit tree code child body
+				next = put code after OpJump end 0
+			else next = emit tree code child next
+			index = index + 1
+		next
+	else
+		let maximum = tree[node + 3]
+		let greedy = tree[node + 4] == 1
+		let size = tree[a + 5]
+		if maximum < 0 && b == 0 then
+			let out = pc + size + 2
+			let body = put code pc OpSplit (if greedy then pc + 1 else out) (if greedy then out else pc + 1)
+			let after = emit tree code a body
+			put code after OpJump pc 0
+		elif maximum < 0 then
+			let mut next = pc
+			let mut count = 1
+			while count < b do
+				next = emit tree code a next
+				count = count + 1
+			let after = emit tree code a next
+			put code after OpSplit (if greedy then next else after + 1) (if greedy then after + 1 else next)
+		else
+			let out = pc + tree[node + 5]
+			let mut next = pc
+			let mut count = 0
+			while count < b do
+				next = emit tree code a next
+				count = count + 1
+			while count < maximum do
+				let body = put code next OpSplit (if greedy then next + 1 else out) (if greedy then out else next + 1)
+				next = emit tree code a body
+				count = count + 1
+			next
+
+/// Compiles a pattern, or explains why it is rejected (the error tables are in the language reference).
+def compile :: ref string -> Result<Regex, Error>
+fn compile pattern =
+	if pattern.length > 65536 then Result.Error (failure TooLarge 0 "pattern is longer than 65536 code units") else
+		match parse pattern with
+		| Result.Error error -> Result.Error error
+		| Result.Ok tree ->
+			let count = tree.nodes[tree.root + 5] + 3
+			if count > MaxInstructions then Result.Error (failure TooLarge 0 "compiled program exceeds 10000 instructions; simplify the pattern or reduce counted repetitions")
+			elif count * 2 * (tree.groups + 1) > MaxSlots then Result.Error (failure TooLarge 0 "too many capture groups for the pattern size; use (?:...) for groups that are not read")
+			else
+				let mut code = new [i64](3 * count, \_index -> 0)
+				let body = put (ref mut code) 0 OpSave 0 0
+				let finish = emit (ref tree.nodes) (ref mut code) tree.root body
+				let last = put (ref mut code) finish OpSave 1 0
+				let _end = put (ref mut code) last OpMatch 0 0
+				let lead = if tree.nodes[tree.root] == NodeConcat then tree.nodes[tree.root + 6] else tree.root
+				let anchored = tree.nodes[lead] == NodeAssert && tree.nodes[lead + 1] == 0
+				match tree with
+				| Tree { classes = classes, ranges = ranges, groups = groups } ->
+					Result.Ok (Regex { code: code, classes: classes, ranges: ranges, groups: groups, anchored: anchored })
+
+/// `text` with a `\` before each of the 14 syntax characters `^ $ \ . * + ? ( ) [ ] { } |`, so that the
+/// pattern matches `text` literally.
+def escape :: ref string -> string
+fn escape text =
+	let mut output: Vec<i16u> = Vec.with_capacity text.length
+	let mut index = 0
+	while index < text.length do
+		if is_syntax (text[index] as i64) then output = Vec.push output 92i16u
+		output = Vec.push output text[index]
+		index = index + 1
+	String.from_code_units (Vec.to_array output)
+
+/// The number of capture groups, group 0 (the whole match) excluded.
+def group_count :: ref Regex -> i64
+fn group_count re = re.groups
+
+private def in_class :: ref Regex -> i64 -> i64 -> bool
+fn in_class re id code =
+	let start = re.classes[2 * id]
+	let count = re.classes[2 * id + 1]
+	let mut low = 0
+	let mut high = count
+	while low < high do
+		let middle = (low + high) / 2
+		if re.ranges[start + 2 * middle + 1] < code then low = middle + 1 else high = middle
+	low < count && re.ranges[start + 2 * low] <= code
+
+/// Whether assertion `kind` holds between the scalars `prev` and `next` (-1 at the ends of the text).
+private def holds :: ref Regex -> i64 -> i64 -> i64 -> i64 -> bool
+fn holds re kind word prev next =
+	if kind == 0 then prev < 0
+	elif kind == 1 then next < 0
+	elif kind == 2 then prev < 0 || prev == 10
+	elif kind == 3 then next < 0 || next == 10
+	else
+		let left = prev >= 0 && in_class re word prev
+		let right = next >= 0 && in_class re word next
+		(left != right) == (kind == 4)
+
+private def consumes :: ref Regex -> i64 -> i64 -> i64 -> bool
+fn consumes re op operand code =
+	code >= 0 && (if op == OpChar then code == operand elif op == OpClass then in_class re operand code elif op == OpAny then true else op == OpAnyNoNewline && code != 10)
+
+// The workspace of a search with `slots` capture slots over n instructions: the step counter at 0, the
+// dense and sparse arrays of two thread lists, their slot tables, the working and best slots, and the stack
+// of `add_thread`.
+private def workspace :: ref Regex -> i64 -> [i64]
+fn workspace re slots =
+	let count = re.code.length / 3
+	new [i64](3 + 8 * count + 2 * count * slots + 2 * slots, \_index -> 0)
+
+private def best_slots :: ref Regex -> i64 -> i64
+fn best_slots re slots =
+	let count = re.code.length / 3
+	1 + 4 * count + 2 * count * slots + slots
+
+private def copy_slots :: ref mut [i64..] -> i64 -> i64 -> i64 -> unit
+fn copy_slots ws from into count =
+	for index in 0 .. count - 1 do
+		let value = ws[from + index]
+		Array.write ws (into + index) value
+
+/// Adds the thread at `start` and every thread that it reaches without consuming input to list `list` in
+/// priority order, with the working slots as its slots, and returns the new length of the list. The stack
+/// replaces recursion: an entry `pc, 0` explores `pc`, and `-1 - slot, old` restores a working slot.
+private def add_thread :: ref Regex -> ref mut [i64..] -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn add_thread re ws slots list length start pos prev next =
+	let count = re.code.length / 3
+	let dense = 1 + list * count
+	let sparse = 1 + 2 * count + list * count
+	let table = 1 + 4 * count + list * count * slots
+	let work = 1 + 4 * count + 2 * count * slots
+	let stack = work + 2 * slots
+	let mut size = length
+	let mut steps = 0
+	let mut top = 2
+	Array.write ws stack start
+	Array.write ws (stack + 1) 0
+	while top > 0 do
+		top = top - 2
+		let target = ws[stack + top]
+		if target < 0 then
+			let old = ws[stack + top + 1]
+			Array.write ws (work - 1 - target) old
+		else
+			let seen = ws[sparse + target]
+			if seen >= size || ws[dense + seen] != target then
+				Array.write ws (sparse + target) size
+				Array.write ws (dense + size) target
+				size = size + 1
+				steps = steps + 1
+				let op = re.code[3 * target]
+				if op == OpJump then
+					Array.write ws (stack + top) re.code[3 * target + 1]
+					Array.write ws (stack + top + 1) 0
+					top = top + 2
+				elif op == OpSplit then
+					Array.write ws (stack + top) re.code[3 * target + 2]
+					Array.write ws (stack + top + 1) 0
+					Array.write ws (stack + top + 2) re.code[3 * target + 1]
+					Array.write ws (stack + top + 3) 0
+					top = top + 4
+				elif op == OpSave then
+					let slot = re.code[3 * target + 1]
+					if slot < slots then
+						let old = ws[work + slot]
+						Array.write ws (stack + top) (-1 - slot)
+						Array.write ws (stack + top + 1) old
+						Array.write ws (work + slot) pos
+						top = top + 2
+					Array.write ws (stack + top) (target + 1)
+					Array.write ws (stack + top + 1) 0
+					top = top + 2
+				elif op == OpAssert then
+					if holds re re.code[3 * target + 1] re.code[3 * target + 2] prev next then
+						Array.write ws (stack + top) (target + 1)
+						Array.write ws (stack + top + 1) 0
+						top = top + 2
+				else copy_slots ws work (table + target * slots) slots
+	let total = ws[0] + steps
+	Array.write ws 0 total
+	size
+
+/// Runs the Pike VM from `start` and returns whether a match was found; its slots are the best slots of
+/// the workspace, and the step counter at index 0 grows by the steps taken. `first` stops at any match.
+private def search :: ref Regex -> ref string -> ref utf8string -> bool -> ref mut [i64..] -> i64 -> i64 -> bool -> bool
+fn search re text bytes utf8 ws start slots first =
+	let count = re.code.length / 3
+	let work = 1 + 4 * count + 2 * count * slots
+	let best = work + slots
+	let mut list = 0
+	let mut length = 0
+	let mut matched = false
+	let mut running = true
+	let mut pos = start
+	let mut prev = if utf8 then before8 bytes start else before16 text start
+	let mut here = if utf8 then scalar8 bytes start else scalar16 text start
+	while running do
+		let code = if here < 0 then -1 else here / 8
+		if !matched && (pos == start || !re.anchored) then
+			for slot in 0 .. slots - 1 do Array.write ws (work + slot) (-1)
+			length = add_thread re ws slots list length 0 pos prev code
+		if length == 0 then running = false
+		else
+			let next_pos = if here < 0 then pos else pos + here % 8
+			let after = if here < 0 then -1 elif utf8 then scalar8 bytes next_pos else scalar16 text next_pos
+			let following = if after < 0 then -1 else after / 8
+			let dense = 1 + list * count
+			let table = 1 + 4 * count + list * count * slots
+			let mut next_length = 0
+			let mut index = 0
+			while index < length do
+				let target = ws[dense + index]
+				let steps = ws[0] + 1
+				Array.write ws 0 steps
+				let op = re.code[3 * target]
+				if op == OpMatch then
+					matched = true
+					copy_slots ws (table + target * slots) best slots
+					if first then running = false
+					index = length
+				else
+					if consumes re op re.code[3 * target + 1] code then
+						copy_slots ws (table + target * slots) work slots
+						next_length = add_thread re ws slots (1 - list) next_length (target + 1) next_pos code following
+					index = index + 1
+			if running && code < 0 then running = false
+			elif running then
+				list = 1 - list
+				length = next_length
+				pos = next_pos
+				prev = code
+				here = after
+	matched
+
+private def boundary :: ref string -> ref utf8string -> bool -> i64 -> bool
+fn boundary text bytes utf8 index =
+	if utf8 then index >= 0 && index <= bytes.length && (index == bytes.length || (bytes[index] &&& 192ubyte) != 128ubyte)
+	else index >= 0 && index <= text.length && !(index > 0 && is_low (unit text index) && is_high (unit text (index - 1)))
+
+private def locate :: ref Regex -> ref string -> ref utf8string -> bool -> i64 -> Maybe<(i64 * i64)>
+fn locate re text bytes utf8 start =
+	if !(boundary text bytes utf8 start) then Maybe.None else
+		let mut ws = workspace re 2
+		if search re text bytes utf8 (ref mut ws) start 2 false then
+			let best = best_slots re 2
+			Maybe.Some (ws[best], ws[best + 1])
+		else Maybe.None
+
+private def spans_of :: ref Regex -> ref string -> ref utf8string -> bool -> Maybe<[(i64 * i64)]>
+fn spans_of re text bytes utf8 =
+	let slots = 2 * (re.groups + 1)
+	let mut ws = workspace re slots
+	if search re text bytes utf8 (ref mut ws) 0 slots false then
+		let best = best_slots re slots
+		let mut spans: Vec<(i64 * i64)> = Vec.with_capacity (re.groups + 1)
+		let mut group = 0
+		while group <= re.groups do
+			let first = ws[best + 2 * group]
+			let last = ws[best + 2 * group + 1]
+			spans = Vec.push spans (if first < 0 || last < 0 then (-1, -1) else (first, last))
+			group = group + 1
+		Maybe.Some (Vec.to_array spans)
+	else Maybe.None
+
+/// The `slots` slots of every match: the first match from 0, then each next match from the end of the
+/// previous one, or from the next scalar after an empty match (D5).
+private def all_matches :: ref Regex -> ref string -> ref utf8string -> bool -> i64 -> Vec<i64>
+fn all_matches re text bytes utf8 slots =
+	let length = if utf8 then bytes.length else text.length
+	let best = best_slots re slots
+	let mut ws = workspace re slots
+	let mut output: Vec<i64> = Vec.empty()
+	let mut start = 0
+	let mut more = true
+	while more do
+		if search re text bytes utf8 (ref mut ws) start slots false then
+			let mut slot = 0
+			while slot < slots do
+				output = Vec.push output ws[best + slot]
+				slot = slot + 1
+			let first = ws[best]
+			let last = ws[best + 1]
+			if last > first then start = last
+			elif last >= length then more = false
+			else start = last + (if utf8 then scalar8 bytes last else scalar16 text last) % 8
+		else more = false
+	output
+
+private def spans :: Vec<i64> -> [(i64 * i64)]
+fn spans flat =
+	let count = Vec.length (ref flat) / 2
+	let mut output: Vec<(i64 * i64)> = Vec.with_capacity count
+	let mut index = 0
+	while index < count do
+		output = Vec.push output (flat[2 * index], flat[2 * index + 1])
+		index = index + 1
+	Vec.to_array output
+
+private def code_at :: ref string -> ref utf8string -> bool -> i64 -> i64
+fn code_at text bytes utf8 index =
+	if !utf8 then unit text index
+	elif index >= 0 && index < bytes.length then bytes[index] as i64
+	else -1
+
+/// The parts of a replacement, 3 entries each: `0, start, end` copies the replacement's units from start to
+/// end, and `1, n, 0` the text of group n. `${n}` names group n and `$$` is `$`; any other `$` is literal.
+private def template :: ref string -> ref utf8string -> bool -> i64 -> Vec<i64>
+fn template text bytes utf8 groups =
+	let length = if utf8 then bytes.length else text.length
+	let mut parts: Vec<i64> = Vec.empty()
+	let mut literal = 0
+	let mut index = 0
+	while index < length do
+		let next = code_at text bytes utf8 (index + 1)
+		if code_at text bytes utf8 index == 36 && next == 36 then
+			parts = Vec.push (Vec.push (Vec.push parts 0) literal) (index + 1)
+			index = index + 2
+			literal = index
+		elif code_at text bytes utf8 index == 36 && next == 123 then
+			let mut digits = index + 2
+			let mut group = 0
+			while is_digit (code_at text bytes utf8 digits) do
+				group = if group > groups then group else group * 10 + code_at text bytes utf8 digits - 48
+				digits = digits + 1
+			if digits > index + 2 && code_at text bytes utf8 digits == 125 then
+				parts = Vec.push (Vec.push (Vec.push parts 0) literal) index
+				parts = Vec.push (Vec.push (Vec.push parts 1) group) 0
+				index = digits + 1
+				literal = index
+			else index = index + 1
+		else index = index + 1
+	Vec.push (Vec.push (Vec.push parts 0) literal) length
+
+private def units :: Vec<i16u> -> ref string -> i64 -> i64 -> Vec<i16u>
+fn units output text first last =
+	let mut result = output
+	let mut index = first
+	while index < last do
+		result = Vec.push result text[index]
+		index = index + 1
+	result
+
+private def bytes_of :: Vec<ubyte> -> ref utf8string -> i64 -> i64 -> Vec<ubyte>
+fn bytes_of output text first last =
+	let mut result = output
+	let mut index = first
+	while index < last do
+		result = Vec.push result text[index]
+		index = index + 1
+	result
+
+/// The start (`which` 0) or end of group `group` of the match whose slots begin at `base`, or -1 when the
+/// group took no part.
+private def group_span :: ref Vec<i64> -> i64 -> i64 -> i64 -> i64
+fn group_span flat base group which =
+	let first = flat[base + 2 * group]
+	let last = flat[base + 2 * group + 1]
+	if first < 0 || last < 0 then -1 elif which == 0 then first else last
+
+/// True when `text` matches the pattern somewhere.
+def is_match :: ref Regex -> ref string -> bool
+fn is_match re text =
+	let bytes = u8""
+	let mut ws = workspace re 0
+	search re text (ref bytes) false (ref mut ws) 0 0 true
+
+/// The range `(start, end)` in UTF-16 code units of the leftmost-first match, or `None`.
+def find :: ref Regex -> ref string -> Maybe<(i64 * i64)>
+fn find re text =
+	let bytes = u8""
+	locate re text (ref bytes) false 0
+
+/// `find` from `start`; the scalars before `start` still decide `^`, `\b` and `\B`. `None` when `start` is
+/// outside the text or between the units of a surrogate pair.
+def find_at :: ref Regex -> ref string -> i64 -> Maybe<(i64 * i64)>
+fn find_at re text start =
+	let bytes = u8""
+	locate re text (ref bytes) false start
+
+/// The ranges of all successive matches. After an empty match the next search starts one scalar later.
+def find_all :: ref Regex -> ref string -> [(i64 * i64)]
+fn find_all re text =
+	let bytes = u8""
+	spans (all_matches re text (ref bytes) false 2)
+
+/// The ranges of the whole match (element 0) and of each group of the leftmost-first match; `(-1, -1)` for
+/// a group that took no part.
+def captures :: ref Regex -> ref string -> Maybe<[(i64 * i64)]>
+fn captures re text =
+	let bytes = u8""
+	spans_of re text (ref bytes) false
+
+/// `text` with every match replaced by `replacement`, where `${n}` is the text of group n (empty when the
+/// group took no part or does not exist) and `$$` is `$`.
+def replace_all :: ref Regex -> ref string -> ref string -> string
+fn replace_all re text replacement =
+	let bytes = u8""
+	let slots = 2 * (re.groups + 1)
+	let flat = all_matches re text (ref bytes) false slots
+	let parts = template replacement (ref bytes) false re.groups
+	let mut output: Vec<i16u> = Vec.with_capacity text.length
+	let mut start = 0
+	let mut base = 0
+	while base < Vec.length (ref flat) do
+		output = units output text start flat[base]
+		let mut part = 0
+		while part < Vec.length (ref parts) do
+			if parts[part] == 0 then output = units output replacement parts[part + 1] parts[part + 2]
+			elif parts[part + 1] <= re.groups && group_span (ref flat) base parts[part + 1] 0 >= 0 then
+				output = units output text (group_span (ref flat) base parts[part + 1] 0) (group_span (ref flat) base parts[part + 1] 1)
+			part = part + 3
+		start = flat[base + 1]
+		base = base + slots
+	output = units output text start text.length
+	String.from_code_units (Vec.to_array output)
+
+/// The pieces of `text` between the matches (`find_all`), including the pieces before the first match and
+/// after the last one.
+def split :: ref Regex -> ref string -> [string]
+fn split re text =
+	let bytes = u8""
+	let flat = all_matches re text (ref bytes) false 2
+	let count = Vec.length (ref flat) / 2
+	let mut output: Vec<string> = Vec.with_capacity (count + 1)
+	let mut start = 0
+	let mut index = 0
+	while index < count do
+		output = Vec.push output (Maybe.get (String.slice text start flat[2 * index]))
+		start = flat[2 * index + 1]
+		index = index + 1
+	output = Vec.push output (Maybe.get (String.slice text start text.length))
+	Vec.to_array output
+
+/// The number of VM steps of `find` on `text`: threads explored plus threads stepped. It grows linearly
+/// with the input for a fixed pattern, which the tests check.
+def search_steps :: ref Regex -> ref string -> i64
+fn search_steps re text =
+	let bytes = u8""
+	let mut ws = workspace re 2
+	let _found = search re text (ref bytes) false (ref mut ws) 0 2 false
+	ws[0]
+
+/// `is_match` on a `utf8string`.
+def is_match_utf8 :: ref Regex -> ref utf8string -> bool
+fn is_match_utf8 re text =
+	let units = ""
+	let mut ws = workspace re 0
+	search re (ref units) text true (ref mut ws) 0 0 true
+
+/// `find` on a `utf8string`; the range is in bytes.
+def find_utf8 :: ref Regex -> ref utf8string -> Maybe<(i64 * i64)>
+fn find_utf8 re text =
+	let units = ""
+	locate re (ref units) text true 0
+
+/// `find_at` on a `utf8string`; `None` when `start` is outside the text or a continuation byte.
+def find_at_utf8 :: ref Regex -> ref utf8string -> i64 -> Maybe<(i64 * i64)>
+fn find_at_utf8 re text start =
+	let units = ""
+	locate re (ref units) text true start
+
+/// `find_all` on a `utf8string`; the ranges are in bytes.
+def find_all_utf8 :: ref Regex -> ref utf8string -> [(i64 * i64)]
+fn find_all_utf8 re text =
+	let units = ""
+	spans (all_matches re (ref units) text true 2)
+
+/// `captures` on a `utf8string`; the ranges are in bytes.
+def captures_utf8 :: ref Regex -> ref utf8string -> Maybe<[(i64 * i64)]>
+fn captures_utf8 re text =
+	let units = ""
+	spans_of re (ref units) text true
+
+/// `replace_all` on a `utf8string`.
+def replace_all_utf8 :: ref Regex -> ref utf8string -> ref utf8string -> utf8string
+fn replace_all_utf8 re text replacement =
+	let units = ""
+	let slots = 2 * (re.groups + 1)
+	let flat = all_matches re (ref units) text true slots
+	let parts = template (ref units) replacement true re.groups
+	let mut output: Vec<ubyte> = Vec.with_capacity text.length
+	let mut start = 0
+	let mut base = 0
+	while base < Vec.length (ref flat) do
+		output = bytes_of output text start flat[base]
+		let mut part = 0
+		while part < Vec.length (ref parts) do
+			if parts[part] == 0 then output = bytes_of output replacement parts[part + 1] parts[part + 2]
+			elif parts[part + 1] <= re.groups && group_span (ref flat) base parts[part + 1] 0 >= 0 then
+				output = bytes_of output text (group_span (ref flat) base parts[part + 1] 0) (group_span (ref flat) base parts[part + 1] 1)
+			part = part + 3
+		start = flat[base + 1]
+		base = base + slots
+	output = bytes_of output text start text.length
+	Maybe.get (Utf8String.from_bytes (Vec.to_array output))
+
+/// `split` on a `utf8string`.
+def split_utf8 :: ref Regex -> ref utf8string -> [utf8string]
+fn split_utf8 re text =
+	let units = ""
+	let flat = all_matches re (ref units) text true 2
+	let count = Vec.length (ref flat) / 2
+	let mut output: Vec<utf8string> = Vec.with_capacity (count + 1)
+	let mut start = 0
+	let mut index = 0
+	while index < count do
+		output = Vec.push output (Maybe.get (Utf8String.slice text start flat[2 * index]))
+		start = flat[2 * index + 1]
+		index = index + 1
+	output = Vec.push output (Maybe.get (Utf8String.slice text start text.length))
+	Vec.to_array output

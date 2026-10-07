@@ -9,6 +9,7 @@ OS のスレッドハンドルでも、JavaScript の `Promise` でもありま�
 - `task { ... }` で `Task<T>` を作り、`Task.run` で同期実行して結果を取り出します。
 - タスクは非 Copy です。二重実行は `E1012` になります。
 - 持ち込めるのは所有値のムーブか Copy だけです。参照の持ち込みは `E1013` です。
+- 読み取り専用のデータを複数のタスクで共有するときは、[Arc](../built-in-types-and-modules/rc.md) をタスクごとに `Arc.share` して渡します。`Rc` は持ち込めません（`E1013`）。
 - 実行せずに捨てたタスクは、本体を走らせず、捕捉した所有値だけを解放します。
 - `Task.parallel` の結果配列は、入力の並び順です。
 - `Task.parallel_results` は、未開始のタスクを止め、入力インデックスが最小の `Error` を返します。
@@ -188,6 +189,8 @@ Task.run work
 6
 ```
 
+`Rc` は計数が atomic でないので、所有値でもタスクへ持ち込めません（`E1013`、`tasks require Send values; ... holds an Rc or Rc.Weak`）。同じ値を複数のタスクで読むときは `Arc` を使い、タスクごとに `Arc.share` した所有者を渡します（[Rc と Arc](../built-in-types-and-modules/rc.md#arc-とタスク)）。ただし、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持つ値の `Arc` は、複数のタスクが同じホストのハンドルを同時に使えてしまうので持ち込めません（`E1013`）。ハンドルは `Arc` に入れずに、値そのものを 1 つのタスクへ移します。
+
 外の `let mut` への代入は、タスクの中では可変束縛として見えません（`E1014`）。タスクの中で `let mut` したローカルは、そのタスクの中だけで変えられます。Copy の配列や関数ポインタを捕捉するときは、独立したコピーが作られます。大きな Copy 値は、その分のコピーがかかります。
 
 ## 並列実行
@@ -290,7 +293,7 @@ POSIX では pthreads、Windows では Win32 のスレッドプールを使っ�
 
 Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature threads` で出した WASM かオブジェクトだけです。`run`、`check`、ネイティブ、LLVM テキストへの指定は `E2000` です。simd128 とは併用できます。
 
-同梱のホストは Node.js 20 以降向けの `src/runtime/wasm-threads.mjs` です。共有メモリ（`SharedArrayBuffer`）が要ります。ブラウザ向けの本番グルーは未実装です。COOP（`same-origin`）と COEP（`require-corp`）を自分で満たし、UI スレッドでは atomic wait しないホストを別に書く必要があります。初期化に失敗したプールを、黙って逐次成功にはしません。
+同梱のホストは Node.js 20 以降向けの `src/runtime/wasm-threads.mjs` です。共有メモリ（`SharedArrayBuffer`）が要ります。ブラウザでは、`--emit bindings-js --wasm-feature threads` で生成したグルーが Web Worker のプールを作り、export を Worker で実行して `Promise` を返します（[スレッドのグルー](../compiler/webassembly.md#スレッドのグルー)）。ページは COOP（`same-origin`）と COEP（`require-corp`）付きで配信します。満たさないページでは、グルーが `Error` を投げます。初期化に失敗したプールを、黙って逐次成功にはしません。
 
 `Task.run` はネイティブでも WASM でも同期呼び出しです。UI スレッドをブロックしない API ではありません。
 
@@ -302,7 +305,7 @@ Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature
 
 | 言語 | 構文 / 型 | いつ始まるか | 捕捉 | 実行 |
 | --- | --- | --- | --- | --- |
-| Tsuzuri | `task { ... }` / `Task<T>` | コールド。`Task.run` か `let!` | 1 回実行。参照は不可 | スレッドプールの同期フォーク・ジョイン |
+| Tsuzuri | `task { ... }` / `Task<T>` | コールド。`Task.run` か `let!` | 1 回実行。参照は不可。共有は `Arc` | スレッドプールの同期フォーク・ジョイン |
 | F# | `task { ... }` / `Task<T>` | ホット。生成時に開始 | 複数回参照できる | .NET のスレッドプール |
 | Rust | `std::thread::spawn` | ホット | `'static`、または scoped thread の借用 | OS スレッド。並列は外部クレートが多い |
 | C# | `Task.Run(...)` | ホット | GC が参照を共有 | .NET のスレッドプール |

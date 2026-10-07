@@ -1,0 +1,54 @@
+record Range { start: i64, count: i64 }
+
+extern def barrier :: i64 -> i64
+extern def worker_id :: unit -> i64
+extern def narrow_on_helpers :: i64 -> i32
+
+def rec total :: ref [i64] -> i64 -> i64 -> i64
+fn rec total values index sum =
+    if index == values.length { sum }
+    else { total values (index + 1) (sum + values[index]) }
+
+export def squares :: ref Range -> i64
+fn squares range =
+    let start = range.start
+    let count = range.count
+    Task.run task {
+        let! results = Task.parallel (new [Task<i64>](count, i -> task { (start + i) * (start + i) }))
+        return total (&results) 0 0
+    }
+
+export def concurrent :: i64
+fn concurrent = Task.run task {
+    let! results = Task.parallel (new [Task<i64>](3, index -> task { barrier index }))
+    return results[0] * 100 + results[1] * 10 + results[2]
+}
+
+export def workers_seen :: i64 -> i64
+fn workers_seen count = Task.run task {
+    let! results = Task.parallel (new [Task<i64>](count, _index -> task { worker_id () }))
+    return total (&results) 0 0
+}
+
+export def doubled :: ref [f64] -> [f64]
+fn doubled values =
+    let mapped = Parallel.map (\value -> value * 2.0) values
+    mapped
+
+export def greet :: ref string -> string
+fn greet name = clone_string name + "!"
+
+export def divide :: i64 -> i64 -> i64
+fn divide a b = a / b
+
+export def worker_trap :: i64 -> i64
+fn worker_trap count = Task.run task {
+    let! results = Task.parallel (new [Task<i64>](count, i -> task { assert (i < count - 1); i }))
+    return total (&results) 0 0
+}
+
+export def helper_results :: i64
+fn helper_results = Task.run task {
+    let! results = Task.parallel (new [Task<i64>](3, index -> task { (narrow_on_helpers (barrier index)) as i64 }))
+    return results[0] + results[1] + results[2]
+}

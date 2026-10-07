@@ -1,0 +1,251 @@
+record Point { x: i64, y: f64 } deriving (Encode, Decode)
+union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Encode, Decode)
+record Scene { name: string, points: [Point], shapes: [Shape], note: Maybe<string>, big: i128u } deriving (Encode, Decode)
+
+def fnv :: ref [ubyte] -> i64
+fn fnv bytes =
+    let mut hash = 14695981039346656037i64u
+    for byte in bytes do hash = (hash ^^^ (byte as i64u)) * 1099511628211i64u
+    hash as i64
+
+def text_fnv :: ref utf8string -> i64
+fn text_fnv text = fnv (ref (Utf8String.to_bytes (Utf8String.clone text)))
+
+def kind_number :: ref Json.ErrorKind -> i64
+fn kind_number kind =
+    match kind with
+    | Json.Syntax -> 1
+    | Json.UnexpectedEnd -> 2
+    | Json.DuplicateKey _ -> 5
+    | Json.TooDeep -> 6
+    | Json.TooLarge -> 7
+    | Json.NonFinite -> 8
+    | Json.NumberRange -> 9
+    | Json.LoneSurrogate -> 13
+    | Json.InvalidUtf8 -> 14
+    | Json.Unsupported _ -> 15
+    | _ -> 99
+
+def error_status :: ref Json.Error -> i64
+fn error_status error = kind_number (ref error.kind) * 1099511627776 + error.offset
+
+def unhex :: ref string -> [ubyte]
+fn unhex text =
+    let mut bytes = Vec.empty()
+    let mut index = 0
+    while index + 1 < text.length do
+        let high = text[index] as i64
+        let low = text[index + 1] as i64
+        let value = (if high >= 97 then high - 87 else high - 48) * 16 + (if low >= 97 then low - 87 else low - 48)
+        bytes = Vec.push bytes (value as ubyte)
+        index = index + 2
+    Vec.to_array bytes
+
+def json_input :: i64 -> utf8string
+fn json_input case =
+    match case with
+    | 0 -> u8"0"
+    | 1 -> u8"23"
+    | 2 -> u8"24"
+    | 3 -> u8"1000000000000"
+    | 4 -> u8"18446744073709551615"
+    | 5 -> u8"18446744073709551616"
+    | 6 -> u8"-18446744073709551616"
+    | 7 -> u8"-18446744073709551617"
+    | 8 -> u8"-1000"
+    | 9 -> u8"0.0"
+    | 10 -> u8"-0.0"
+    | 11 -> u8"1.1"
+    | 12 -> u8"1.5"
+    | 13 -> u8"65504.0"
+    | 14 -> u8"100000.0"
+    | 15 -> u8"3.4028234663852886e+38"
+    | 16 -> u8"1.0e+300"
+    | 17 -> u8"5.960464477539063e-8"
+    | 18 -> u8"0.00006103515625"
+    | 19 -> u8"-4.1"
+    | 20 -> u8"[false, true, null]"
+    | 21 -> u8"\"\\u00fc\\u6c34\\ud800\\udd51\""
+    | 22 -> u8"[1, [2, 3], [4, 5]]"
+    | 23 -> u8"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]"
+    | 24 -> u8"{\"a\": 1, \"b\": [2, 3]}"
+    | 25 -> u8"{\"e\": \"E\", \"d\": \"D\", \"c\": \"C\", \"b\": \"B\", \"a\": \"A\"}"
+    | 26 -> u8"{\"b\":1,\"aa\":2,\"a\":3}"
+    | 27 -> u8"-0"
+    | 28 -> u8"1e2"
+    | 29 -> u8"1e400"
+    | 30 -> u8"\"\\ud800\""
+    | 31 -> u8"340282366920938463463374607431768211456"
+    | _ -> u8"5e-324"
+
+/// The FNV-1a hash of `Cbor.encode` of JSON case `case`, or the error status.
+export def encode_hash :: i64 -> i64
+fn encode_hash case =
+    let text = json_input case
+    let value = Result.get (Json.parse (ref text))
+    match Cbor.encode (ref value) with
+    | Ok bytes -> fnv (ref bytes)
+    | Error error -> error_status (ref error)
+
+def cbor_input :: i64 -> string
+fn cbor_input case =
+    match case with
+    | 0 -> "1bffffffffffffffff"
+    | 1 -> "3bffffffffffffffff"
+    | 2 -> "c249010000000000000000"
+    | 3 -> "c349010000000000000000"
+    | 4 -> "f90001"
+    | 5 -> "fa47c35000"
+    | 6 -> "fb3ff199999999999a"
+    | 7 -> "f98000"
+    | 8 -> "a26161016162820203"
+    | 9 -> "826161a161626163"
+    | 10 -> "64f0908591"
+    | 11 -> "1800"
+    | 12 -> "a2616201616101"
+    | 13 -> "f97c00"
+    | 14 -> "f97e00"
+    | 15 -> "f7"
+    | 16 -> "40"
+    | 17 -> "c074323031332d30332d32315432303a30343a30305a"
+    | 18 -> "5f42010243030405ff"
+    | 19 -> "9f018202039f0405ffff"
+    | 20 -> "a2616101616102"
+    | 21 -> "6261"
+    | 22 -> "82"
+    | 23 -> "1c"
+    | 24 -> "ff"
+    | 25 -> "f818"
+    | 26 -> "f8ff"
+    | 27 -> "62c328"
+    | 28 -> "a10102"
+    | 29 -> "0000"
+    | 30 -> "9b00000000ffffffff"
+    | 31 -> "7affffffff"
+    | 32 -> "c24100"
+    | 33 -> "fb0000000000000001"
+    | _ -> "f93c00"
+
+/// The FNV-1a hash of the JSON text of `Cbor.decode` of CBOR case `case`, or the error status.
+export def decode_hash :: i64 -> i64
+fn decode_hash case =
+    let bytes = unhex (ref (cbor_input case))
+    match Cbor.decode (ref bytes) with
+    | Ok value -> text_fnv (ref (Json.to_utf8string (ref value)))
+    | Error error -> error_status (ref error)
+
+/// `[` nested `count` times around an empty array: 0x81 repeated, then 0x80.
+export def nesting :: i64 -> i64
+fn nesting count =
+    let mut bytes = Vec.empty()
+    for _index in 1 .. count do bytes = Vec.push bytes 129ubyte
+    let input = Vec.to_array (Vec.push bytes 128ubyte)
+    match Cbor.decode (ref input) with
+    | Ok _ -> -1
+    | Error error -> error_status (ref error)
+
+def scene :: unit -> Scene
+fn scene _unit =
+    Scene { name: "a", points: [Point { x: 1, y: 0.5 }, Point { x: -2, y: -0.0 }], shapes: [Circle 2.0, Rect (1.0, 2.5), Empty], note: Some "é", big: 340282366920938463463374607431768211455i128u }
+
+/// `Cbor.deserialize (Cbor.serialize scene)` writes the same JSON as the scene itself.
+export def scene_round_trip :: bool
+fn scene_round_trip =
+    let value = scene ()
+    let bytes = Result.get (Cbor.serialize (ref value))
+    let back: Result<Scene, Json.Error> = Cbor.deserialize (ref bytes)
+    match back with
+    | Ok copy ->
+        Result.get (Json.serialize (ref copy)) == Result.get (Json.serialize (ref value)) && Math.copysign 1.0 copy.points[1].y < 0.0
+    | Error _ -> false
+
+/// The FNV-1a hash of the CBOR of the scene.
+export def scene_hash :: i64
+fn scene_hash =
+    let value = scene ()
+    fnv (ref (Result.get (Cbor.serialize (ref value))))
+
+/// The integers from `count - 1` down to 0.
+def descending_keys :: i64 -> Vec<i64>
+fn descending_keys count =
+    let mut keys = Vec.with_capacity count
+    for index in 1 .. count do keys = Vec.push keys (count - index)
+    keys
+
+/// `count` entries whose keys descend, decoded from CBOR: inserting them into the sorted `Map` or
+/// `Set` one by one in document order would shift every entry (quadratic time). The number of
+/// entries when they come out as the keys 0, 1, ... in order (with their values), or the status.
+export def descending :: i64 -> i64 -> i64
+fn descending case count =
+    match case with
+    | 0 ->
+        let keys = descending_keys count
+        let bytes = Result.get (Cbor.serialize (ref keys))
+        let decoded: Result<Set<i64>, Json.Error> = Cbor.deserialize (ref bytes)
+        match decoded with
+        | Ok set -> Set.fold (\position key -> if position >= 0 && deref key == position then position + 1 else -1) 0 (ref set)
+        | Error error -> error_status (ref error)
+    | _ ->
+        let mut pairs = Vec.with_capacity count
+        for index in 1 .. count do pairs = Vec.push pairs (count - index, (count - index) * 3)
+        let bytes = Result.get (Cbor.serialize (ref pairs))
+        let decoded: Result<Map<i64, i64>, Json.Error> = Cbor.deserialize (ref bytes)
+        match decoded with
+        | Ok map -> Map.fold (\position key item -> if position >= 0 && deref key == position && deref item == position * 3 then position + 1 else -1) 0 (ref map)
+        | Error error -> error_status (ref error)
+
+/// `count` keys in a scrambled order, `(index * 7919) % count`, except that the element `count / 2`
+/// repeats the key of the element `count / 3` and the last element repeats the first (0).
+def scattered :: i64 -> Vec<i64>
+fn scattered count =
+    let mut keys = Vec.with_capacity count
+    for index in 0 .. (count - 1) do
+        let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
+        keys = Vec.push keys ((source * 7919) % count)
+    keys
+
+/// The FNV-1a hash of the text of the error of decoding the CBOR of `keys` as a set, or 0.
+def set_message :: Vec<i64> -> i64
+fn set_message keys =
+    let bytes = Result.get (Cbor.serialize (ref keys))
+    let decoded: Result<Set<i64>, Json.Error> = Cbor.deserialize (ref bytes)
+    match decoded with
+    | Ok _ -> 0
+    | Error error -> text_fnv (ref (Utf8String.from_string (ref (Display.display (ref error)))))
+
+/// Keys repeated in a random order, from CBOR: the error names the element at the smallest index
+/// whose key repeats an earlier key. `count` 0 decodes `[9, 1, 9, 5, 1]`, others `scattered count`.
+export def duplicate_message :: i64 -> i64
+fn duplicate_message count = set_message (if count == 0 then Vec.of_array (new [9, 1, 9, 5, 1]) else scattered count)
+
+/// The integer of `digits` nines (negative when `sign` is 1) through `Cbor.encode` and
+/// `Cbor.decode`: 1 when it comes back with the same text, 2 when `encode` refuses it, and the
+/// error status when `decode` refuses it.
+export def bignum_round_trip :: i64 -> i64 -> i64
+fn bignum_round_trip digits sign =
+    let mut text = if sign == 1 then "-" else ""
+    let mut index = 0
+    while index < digits do
+        text = text + "9"
+        index = index + 1
+    let value = Json.Number (Maybe.get (Json.numeral (ref (Utf8String.from_string (ref text)))))
+    match Cbor.encode (ref value) with
+    | Error _ -> 2
+    | Ok bytes ->
+        match Cbor.decode (ref bytes) with
+        | Error error -> error_status (ref error)
+        | Ok back -> if Json.to_utf8string (ref back) == Utf8String.from_string (ref text) then 1 else 0
+
+/// A positive bignum (tag 2) of `length` bytes 0xff, the largest value of that length.
+export def bignum_bytes :: i64 -> i64
+fn bignum_bytes length =
+    let mut bytes = Vec.push (Vec.push (Vec.push (Vec.empty()) 0xc2ubyte) 0x59ubyte) ((length / 256) as ubyte)
+    bytes = Vec.push bytes ((length % 256) as ubyte)
+    let mut index = 0
+    while index < length do
+        bytes = Vec.push bytes 0xffubyte
+        index = index + 1
+    let input = Vec.to_array bytes
+    match Cbor.decode (ref input) with
+    | Error error -> error_status (ref error)
+    | Ok _ -> 1

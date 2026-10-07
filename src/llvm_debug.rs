@@ -285,7 +285,7 @@ impl DebugContext {
             format!(
                 "!DIDerivedType(tag: DW_TAG_pointer_type, name: {name}, baseType: !{base}, size: {pointer})"
             )
-        } else if matches!(ty, Type::Handle(_))
+        } else if matches!(ty, Type::Handle(_) | Type::Shared(..))
             || (matches!(ty, Type::Union(..)) && module.types().recursive(ty))
         {
             format!(
@@ -402,7 +402,7 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Array(_) | Type::List(_) | Type::String | Type::Utf8String => (16, 8),
         Type::Vec(_) => (24, 8),
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) => (pointer, pointer),
+        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (pointer, pointer),
         Type::Function(..) | Type::Task(_) => (4 * pointer, pointer),
         Type::Dyn(_) => (2 * pointer, pointer),
         Type::Record(id, arguments) => aggregate(
