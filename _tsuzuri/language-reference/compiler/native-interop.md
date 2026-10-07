@@ -248,7 +248,7 @@ export するのは `tz_<name>` と、定義されていれば `tsuzuri_alloc`�
 | 呼び出し | `[LibraryImport]` の `static partial` メソッド（.NET 8 以降、`AllowUnsafeBlocks`） | `ctypes` の `Library` のメソッド | `tsuzuri::<name>` 名前空間の `inline` 関数（C++20） |
 | 整数・`bool` | `sbyte`〜`ulong`、`bool` | `int` と `bool` を範囲検査（範囲外は `OverflowError`） | `std::int8_t`〜`std::uint64_t`、`bool` |
 | 借用入力 | `ReadOnlySpan<long>` / `<double>` / `<byte>`、`ReadOnlySpan<char>`（`string`）、UTF-8 の `ReadOnlySpan<byte>` | バッファか数の列、`str`、`str` か `bytes` | `std::span<const T>`、`std::u16string_view`、UTF-8 の `std::string_view` |
-| 所有結果 | `SafeHandle` の `OwnedBuffer<T>`、`OwnedString`、`OwnedUtf8String`（`Dispose` で `tsuzuri_free`） | `array.array`、`bytes`、`str` に複製して、すぐ `tsuzuri_free` | `buffer<T>`、`string_buffer`、`utf8string_buffer`（デストラクターで `tsuzuri_free`） |
+| 所有結果 | `SafeHandle` の `OwnedBuffer<T>`、`OwnedString`、`OwnedUtf8String`（`Dispose` か finalizer で `tsuzuri_free`。`ToArray()`・`ToString()` は複製の間ハンドルを参照して解放を止める。`Span` は結果を `using` などで保持している間だけ有効） | `array.array`、`bytes`、`str` に複製して、すぐ `tsuzuri_free` | `buffer<T>`、`string_buffer`、`utf8string_buffer`（デストラクターで `tsuzuri_free`） |
 | レコード | C の配置の `struct`。32-bit に正規化したフィールドは型付きのプロパティ、固定長配列は `[InlineArray]` | `dataclass`（固定長配列は `tuple`） | C ヘッダーの `struct` |
 | ハンドル | `record struct`（`nint Value`） | `value` を持つ不変の `dataclass` | C ヘッダーの `typedef` |
 | トラップ | プロセスが終わる。`--trap-mode return` なら `TsuzuriTrapException` | プロセスが終わる。`--trap-mode return` なら `TsuzuriTrap` | プロセスが終わる。`--trap-mode return` なら `tsuzuri::<name>::trap_error` |

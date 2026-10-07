@@ -168,7 +168,7 @@ export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly
 | `unit`（結果だけ） | `"unit"` | `void` | import の戻り値は捨てる | `undefined` |
 | `ref [i64]`／`ref [f64]`／`ref [ubyte]` | `"slice:i64"` など | `BigInt64Array`／`Float64Array`／`Uint8Array` か `Borrowed<…>` | `Object.prototype.toString` で型を検査。長さ 0 は pointer 0、それ以外は `tsuzuri_alloc` へ複製。`Borrowed` は複製しない | `slice()` した複製 |
 | `ref string` | `"slice:string"` | `string` | `charCodeAt` で UTF-16 code unit を `Uint16Array` へ（孤立 surrogate も保つ） | `String.fromCharCode` を 4096 単位で |
-| `ref utf8string` | `"slice:utf8string"` | `string` | `v.isWellFormed()` でなければ `TypeError`。`TextEncoder` | `new TextDecoder("utf-8", { fatal: true })` |
+| `ref utf8string` | `"slice:utf8string"` | `string` | `v.isWellFormed()` でなければ `TypeError`。`TextEncoder` | `new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })`（先頭の U+FEFF を取り除かない） |
 | `[i64]`／`[f64]`／`[ubyte]`（結果） | `"buffer:i64"` など | 上の typed array | import: 型を検査して `tsuzuri_alloc` へ複製し、out へ descriptor を書く | descriptor を読んで `slice()`、`tsuzuri_free(ptr)` |
 | `string`／`utf8string`（結果） | `"buffer:string"` など | `string` | import: 上の 2 行と同じ符号化で確保 | 上の 2 行と同じ復号、`tsuzuri_free(ptr)` |
 | スカラー record とその `ref` | `"record:<record_name>"` | interface `<record_name>` | 各 field を検査し offset へ書く（pointer 渡し） | offset から読んだ新しい object |
@@ -711,7 +711,8 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
    `WebAssembly.Module` でもなければ `TypeError`。
 9. **E12 の不具合を直した。** 拡張でない（スカラーだけの）`export def` の `ref H` 引数を、wrapper が slot のアドレスとして Tsuzuri の関数へ渡していた
    （ホストはハンドルそのものを渡すので、ハンドル値を pointer として読む。WASM で `peek(2)` が 0 を読み、`peek(4294967295)` が範囲外アクセス）。
-   `export_wrapper` が `alloca` の slot へハンドルを置いて借用を渡すようにした。生成 IR はこの形の export を持つプログラムだけ変わる（既存の fixture・例にはない）。
+   `export_wrapper`（`src/llvm.rs`）が `ref <extern type>` の引数を `alloca` の slot へ複製して借用を渡すようにした。生成 IR は借用したハンドルを取る export を
+   持つプログラムだけ変わり（既存の fixture・例にはない）、`--emit header` の出力は変わらない（C の引数は従来どおりハンドルそのもの）。
 10. 「スカラーだけの module は memory を export しない」（現状の節と旧 `webassembly.md`）は誤りだった（wasm-ld の既定で `memory` は export される。HEAD の
     `examples/point` も同じ）。export されないのは `tsuzuri_alloc`・`tsuzuri_free` で、glue は `hostAbi` が false なら要求しない。文書を直した。
 11. E2E は 26 case に、ハンドル・コールバック（保持したコールバック、握りつぶしたトラップ）・文字列と record の import・固定長配列・import の結果の検査の 6 case を
@@ -841,3 +842,41 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
 - Firefox は未確認（headless の profile をこの機械の作業場所に作れない）。Safari 本体ではなく、Playwright の WebKit で確認した。
 - threads glue の Node 用の経路はない（Node は `src/runtime/wasm-threads.mjs`）。Node のテストは Web Worker の adapter を通す。
 - C# は `[InlineArray]` のため .NET 8 以降。Windows の共有ライブラリと、その上の C#・Python・C++ は G10 の後。
+
+## レビュー指摘の修正（2026-10-08）
+
+統合後のコードレビューで見つかった 5 件を直し、それぞれに回帰テストを足した。
+
+1. （高）`--emit shared` は出力のファイル名を install name（macOS の `@rpath/<file>`）か soname（Linux）として埋め込むが、ビルドキャッシュの
+   キーに入っていなかった。同じソースを `-o libbar.dylib` へビルドすると、キャッシュした `libfoo.dylib` が復元された（`otool -D` が `@rpath/libfoo.dylib`）。
+   `src/cache.rs` の `hash_output_path` が、`Emit::Shared` では出力のファイル名を、macOS の `-g` では実行ファイルと同じく絶対パスもキーに足す。
+   ほかの emit のキーは変わらない。テスト: `cache::tests::shared_library_keys_follow_the_file_name`、`tests/host_bindings.mjs` のキャッシュの節
+   （リンク入力のないライブラリをキャッシュ有効で `first/libfoo`、`second/libbar`、`third/libfoo` へビルドし、install name／soname がそれぞれのファイル名で、
+   キャッシュの項目が 1、2、2 になる）。
+2. （高）C# の `OwnedBuffer.ToArray()` と `OwnedString`・`OwnedUtf8String` の `ToString()` は、SafeHandle の参照を持たずに native memory を読んでいた。
+   `Native.make_bytes(n).ToArray()` のような一時値では、複製の途中で finalizer が `tsuzuri_free` できた。どれも `Read` を通し、`DangerousAddRef` と
+   `DangerousRelease` の間で読む（並行する `Dispose` も防ぐ）。`Span` は結果を保持している間だけ有効だと文書に書いた。テスト: `tests/host_bindings_test.cs`
+   に、別のスレッドが `GC.Collect` を続ける中で一時値の `ToArray()`・`ToString()` を 1,000 回検査する節を足し、`MallocScribble=1`（glibc は
+   `MALLOC_PERTURB_=85`）で解放後のメモリを上書きして走らせる。修正前の生成コードでは 46 回目と 75 回目で失敗し（別の 3,000 回の再現では 56〜97 回が破損）、
+   修正後は失敗しない。`tests/bindings.rs` も生成文を検査する。
+3. （中）`utf8string` の復号に使う `TextDecoder` が、既定の `ignoreBOM: false` で先頭の U+FEFF を取り除いていた（`copy_utf8("\uFEFFabc")` が `"abc"`）。
+   `{ fatal: true, ignoreBOM: true }` にし、型の表の記述も直した。テスト: `tests/bindings.mjs` の case 35（export の結果と import の引数）。
+4. （中）ある `load` の `Borrowed` を、別の `load` の export が受け付け、自分のメモリの同じアドレスを読んでいた。`bind` ごとの識別子を `Borrowed` に持たせ、
+   引数の検査で `TypeError`（`argument 0 of 'sum_float' must be a Borrowed<Float64Array> from the same load()`）にする。インスタンスには触れず、捨てない。
+   テスト: case 34（両方向）。
+5. （中）threads glue の補助ワーカーは `tsuzuri_thread_entry` を `bind` の境界の外で呼ぶので、ホスト関数の `RangeError`（グルー自身の
+   `result of import ... is out of range` を含む）をスタック枯渇に、ほかのホストの例外を `trap (site 0)` にしていた。`bind` が `isHostError` を公開し、
+   補助ワーカーは `HOST`（とそれ以外の `OTHER`）を起動記録に残す。調整役は自分の site 0 のトラップがそれによるときに `{ type: "helper" }` を返し、
+   ページは補助ワーカーの `failed` が運ぶ値（構造化複製）で呼び出しを失敗させる（2 つの message の順序によらず待つ）。テスト: `tests/bindings_threads.mjs`
+   （補助ワーカーでだけ i32 の範囲外を返すか `Error` を投げる import `narrow_on_helpers` と、3 スレッドを揃える `helper_results`。Node の adapter の
+   `-O0`・`-O3` と実ブラウザー）。補助ワーカーの分類を修正前に戻すと失敗することを確かめた。
+
+あわせて、Phase 1 の判断 9（E12 の不具合の修正）に、`export_wrapper` が `ref <extern type>` の引数を slot へ複製すること、IR が変わるのは借用した
+ハンドルを取る export だけで、`--emit header` は変わらないことを書き足した。
+
+確認: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（744 passed、
+0 failed）。`node tests/bindings.mjs`（`-O0`・`-O3` で各 32 case × 3 build、tsc 6.0.3）、`node tests/bindings_threads.mjs`（Node の adapter の `-O0`・`-O3`、
+tsc、Google Chrome 154.0.8037.98 と Playwright の WebKit 26.0）、`node tests/host_bindings.mjs`（Python・C++ の `-O0`・`-O3`、C++ の trap 版、C# の
+.NET SDK 10.0.102、キャッシュ、コマンド行）、`node tests/cache.mjs` が成功。`node scripts/check-docs.mjs` を変更した 2 ページで、
+`sh scripts/check-runtime-includes.sh` は 32 files。Windows の clippy（rustup 1.96.1、x64・arm64）は以前と同じく既存の `clippy::nonminimal_bool` 3 件だけで、
+それを許すと両方とも成功。

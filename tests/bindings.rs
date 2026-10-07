@@ -358,10 +358,18 @@ fn native_bindings_are_deterministic_and_follow_the_c_abi() {
         "        public Fixed3_Int32 values;",
         "    [InlineArray(3)]",
         "    public readonly record struct tz_handle_4Main_7Counter(nint Value);",
+        // The copies hold a reference to the handle, so neither Dispose nor the finalizer of an
+        // unreachable result frees the memory under them.
+        "                DangerousAddRef(ref added);",
+        "                    DangerousRelease();",
+        "        public T[] ToArray() => Read(static buffer => buffer.Elements.ToArray());",
+        "        public override string ToString() => Read(static buffer => new string(buffer.Elements));",
+        "        public override string ToString() => Read(static buffer => System.Text.Encoding.UTF8.GetString(buffer.Elements));",
     ] {
         assert!(csharp.contains(&format!("{line}\n")), "{line}");
     }
     assert!(!csharp.contains("TsuzuriTrapException"));
+    assert!(!csharp.contains("Span.ToArray()") && !csharp.contains("(Span)"));
     let trapping = bindings::csharp(&module, "native_trap", true);
     assert!(trapping.contains("public static unsafe partial class NativeTrap\n"));
     assert!(trapping.contains(

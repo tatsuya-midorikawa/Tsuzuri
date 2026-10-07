@@ -7,7 +7,7 @@
 // Python 3 (PYTHON or python3), clang++ (TSUZURI_CLANGXX or clang++) and dotnet 8+ run when present.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,15 +132,34 @@ try {
 </Project>
 `);
     const environment = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
+    // Freed memory is overwritten, so a buffer freed during a copy shows (macOS, glibc).
+    const scribbled = { ...environment, MallocScribble: "1", MALLOC_PERTURB_: "85" };
     execute("dotnet", ["build", "-c", "Release", "-nologo", "-v", "q"], { cwd: project, env: environment });
     for (const optimization of ["-O0", "-O3"]) {
-      const output = execute("dotnet", [join(project, "bin", "Release", `net${major}.0`, "bindings.dll"), join(root, optimization, `libnative.${extension}`), trapLibrary], { env: environment });
+      const output = execute("dotnet", [join(project, "bin", "Release", `net${major}.0`, "bindings.dll"), join(root, optimization, `libnative.${extension}`), trapLibrary], { env: scribbled });
       assert.match(output.stdout, /^csharp bindings passed \(trap site \d+\)/);
     }
     console.log(`host bindings: C# passed (.NET SDK ${dotnetVersion})`);
   } else {
     console.log("host bindings: C# skipped (no .NET 8 or later SDK)");
   }
+
+  // The build cache: a library records its file name as its install name (soname), so a build to
+  // another name does not restore the cached library; the same name in another directory does.
+  const cacheable = join(root, "cacheable");
+  mkdirSync(cacheable);
+  writeFileSync(join(cacheable, "Main.tz"), "export def add :: i64 -> i64 -> i64 = \\left right ->\n    left + right\n");
+  const cache = join(root, "cache");
+  const installName = (library) => (process.platform === "darwin"
+    ? execute("otool", ["-D", library]).stdout.trim().split("\n").at(-1)
+    : /\(SONAME\)\s+Library soname: \[(.+)\]/.exec(execute("readelf", ["-d", library]).stdout)?.[1]);
+  for (const [directory, file, entries] of [["first", `libfoo.${extension}`, 1], ["second", `libbar.${extension}`, 2], ["third", `libfoo.${extension}`, 2]]) {
+    const library = join(root, directory, file);
+    execute(compiler, ["build", cacheable, "--emit", "shared", "-o", library], { env: { ...process.env, TSUZURI_CACHE_DIR: cache } });
+    assert.equal(installName(library), process.platform === "darwin" ? `@rpath/${file}` : file, `${directory}/${file}`);
+    assert.equal(readdirSync(cache).filter((name) => /^[0-9a-f]{64}$/.test(name)).length, entries, `cache entries after ${directory}/${file}`);
+  }
+  console.log("host bindings: shared library cache passed");
 
   // The command line.
   const out = join(root, "rejected");

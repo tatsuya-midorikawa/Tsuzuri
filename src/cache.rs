@@ -91,6 +91,29 @@ pub(crate) fn default_root() -> Option<PathBuf> {
     }
 }
 
+/// The parts of the output path that the artifact records. Other artifacts are reused for any path.
+fn hash_output_path(
+    hash: &mut Sha256,
+    options: crate::driver::BuildOptions,
+    output: &Path,
+) -> io::Result<()> {
+    use crate::driver::Emit;
+    // The DWARF of a macOS debug executable or library depends on its path.
+    if cfg!(target_os = "macos")
+        && options.debug_info
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
+    {
+        let absolute = std::path::absolute(output)?;
+        hash.field("debug-output-path", absolute.as_os_str().as_encoded_bytes());
+    }
+    // A shared library records its file name as its install name (macOS) or soname (Linux).
+    if options.emit == Emit::Shared {
+        let name = output.file_name().unwrap_or_default();
+        hash.field("shared-library-name", name.as_encoded_bytes());
+    }
+    Ok(())
+}
+
 pub(crate) fn build_key(
     project: &crate::driver::Project,
     options: crate::driver::BuildOptions,
@@ -107,10 +130,7 @@ pub(crate) fn build_key(
     hash.field("host-arch", std::env::consts::ARCH.as_bytes());
     hash.field("options", format!("{options:?}").as_bytes());
     hash.field("action", action.as_bytes());
-    if cfg!(target_os = "macos") && options.debug_info && options.emit == Emit::Executable {
-        let absolute = std::path::absolute(output)?;
-        hash.field("debug-output-path", absolute.as_os_str().as_encoded_bytes());
-    }
+    hash_output_path(&mut hash, options, output)?;
     hash.field("ir-and-embedded-runtime", ir.as_bytes());
     for source in project.sources.iter().chain(&project.manifests) {
         hash.field("path", source.path.as_os_str().as_encoded_bytes());
@@ -694,6 +714,37 @@ mod tests {
         fs::write(root.join("do-not-delete"), b"user file").unwrap();
         tiny.evict().unwrap();
         assert!(root.join("do-not-delete").exists());
+    }
+
+    #[test]
+    fn shared_library_keys_follow_the_file_name() {
+        use crate::driver::{BuildOptions, Emit};
+        let key = |emit, output: &str| {
+            let mut hash = Sha256::new();
+            let options = BuildOptions {
+                emit,
+                ..BuildOptions::default()
+            };
+            hash_output_path(&mut hash, options, Path::new(output)).unwrap();
+            hash.hex()
+        };
+        // The install name and the soname are the file name, so another name needs another build.
+        assert_ne!(
+            key(Emit::Shared, "one/libfoo.dylib"),
+            key(Emit::Shared, "one/libbar.dylib")
+        );
+        assert_eq!(
+            key(Emit::Shared, "one/libfoo.dylib"),
+            key(Emit::Shared, "two/libfoo.dylib")
+        );
+        assert_eq!(
+            key(Emit::Object, "one/foo.o"),
+            key(Emit::Object, "two/bar.o")
+        );
+        assert_eq!(
+            key(Emit::Executable, "one/foo"),
+            key(Emit::Executable, "two/bar")
+        );
     }
 
     #[test]
