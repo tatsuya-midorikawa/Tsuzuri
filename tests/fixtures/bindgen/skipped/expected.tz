@@ -20,10 +20,10 @@ extern "collide" def collide :: unit -> i32
 // skipped Collide: name 'collide' collides with an earlier declaration
 // skipped either: C union
 // skipped untagged: anonymous struct; give the struct a tag
-// skipped packed: struct has a packing or alignment attribute
+// skipped packed: struct has #pragma pack, which may change its layout
 // skipped empty: struct has no fields
 // skipped bits: bit-field 'flag'
-// skipped aligned_field: field 'b' has an alignment or packing attribute
+// skipped aligned_field: field 'b' has __attribute__((aligned)), which may change its layout
 // skipped holder: field 'c' has unsupported type 'char'
 // skipped quirky: field 'odd$name' is not an ASCII C identifier
 // skipped same_fields: field 'foo_bar' collides with an earlier field as 'foo_bar'
@@ -33,3 +33,20 @@ record Hello { x: i32 }
 const snake_case_name: i32 = 1
 // skipped snakeCaseName: name 'snake_case_name' collides with an earlier declaration
 // skipped counter: global variable
+const ALIGNED_ENUM_ZERO: i32 = 0
+// skipped take_aligned_enum: parameter 1 has unsupported type 'enum aligned_enum'
+const BYTE_ENUM_ZERO: i32 = 0
+// skipped give_byte_enum: result has unsupported type 'enum byte_enum'
+const FLAG_A: i32 = 1
+extern "take_flags" def take_flags :: i32 -> i32
+// skipped shuffled: struct has the RandomizeLayout attribute, which may change its layout
+record Tagged { big: f64 }
+// skipped tagged: anonymous struct; give the struct a tag
+// skipped use_tagged: parameter 1 has unsupported type 'const tagged *'
+extern "use_tag" def use_tag :: ref Tagged -> f64
+// skipped holds_wide: field 'w' has unsupported type 'enum wide_tag'
+const WIDE_TAG_ZERO: i32 = 0
+// skipped take_wide_tag: parameter 1 has unsupported type 'enum wide_tag'
+// skipped with_typeof: field 'b' has unsupported type 'typeof ((wide_aligned)0)'
+// skipped fork_twice: function returns twice (returns_twice), which a Tsuzuri call cannot follow
+// skipped LEVEL: the macro does not end with this #define (#pragma push_macro and pop_macro can restore another value)

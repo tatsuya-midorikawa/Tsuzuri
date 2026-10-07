@@ -32,3 +32,27 @@ enum { WIDE = 0x100000000 };
 enum { snake_case_name = 1 };
 int snakeCaseName(void);
 extern int counter;
+/* Review fixes: attributes that may change a layout, unnamed structs named like a tag,
+   typeof, returns_twice, and a macro that #pragma pop_macro restores. */
+enum __attribute__((aligned(8))) aligned_enum { ALIGNED_ENUM_ZERO };
+int take_aligned_enum(enum aligned_enum value);
+enum __attribute__((mode(QI))) byte_enum { BYTE_ENUM_ZERO };
+enum byte_enum give_byte_enum(void);
+enum __attribute__((flag_enum)) flag_bits { FLAG_A = 1 };
+int take_flags(enum flag_bits flags);
+struct __attribute__((randomize_layout)) shuffled { int a; int b; };
+struct tagged { double big; };
+typedef struct { int small; } tagged;
+double use_tagged(const tagged *value);
+double use_tag(const struct tagged *value);
+struct holds_wide { enum wide_tag { WIDE_TAG_BIG = 0x7fffffffffff } w; long pad; };
+typedef enum { WIDE_TAG_ZERO } wide_tag;
+int take_wide_tag(enum wide_tag value);
+typedef long long wide_aligned __attribute__((aligned(16)));
+struct with_typeof { int a; __typeof__((wide_aligned)0) b; };
+int fork_twice(void) __attribute__((returns_twice));
+#define LEVEL 1
+#pragma push_macro("LEVEL")
+#undef LEVEL
+#define LEVEL 2
+#pragma pop_macro("LEVEL")

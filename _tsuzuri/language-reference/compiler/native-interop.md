@@ -352,10 +352,12 @@ clang app.o sample.c host.c -lm -o host
 | `void` | 引数なしは `unit` | `unit` | × |
 
 - `_Bool` の結果が `i8u` なのは、C が保証するのは下位 8 bit だけだからです。`bool` で受けると、32 bit 全体を読んでしまいます。コールバックが C から受け取る `_Bool` の引数も同じ理由で `i8u` です。
-- record のフィールドが 32 / 64 bit だけなのは、ABI の一時 struct が `bool` と狭い整数を `int32_t` に広げるからです。この表の型だけなら、C の自然な配置と一致します。packed、aligned、`#pragma pack`、bit-field を持つ struct は生成しません。
+- record のフィールドが 32 / 64 bit だけなのは、ABI の一時 struct が `bool` と狭い整数を `int32_t` に広げるからです。この表の型だけなら、C の自然な配置と一致します。bit-field を持つ struct は生成しません。
 - `const` のない struct ポインターは、ホストが一時的なコピーへ書き込みうるので変換しません。値渡し・値返しの struct は、ABI がポインター渡しなので変換しません。
 - 符号がターゲットで変わる素の `char`、`long double`、`__int128`、`_Float16`、複素数、ベクトル、配列、union、ほかのポインターは変換しません。
-- 大域変数、static・inline・可変長引数・プロトタイプなし（`int f();`）の関数も省きます。
+- 大域変数、static・inline・可変長引数・プロトタイプなし（`int f();`）・`returns_twice`（`setjmp` の類）の関数も省きます。
+- `packed`、`aligned`、`mode`、`#pragma pack`、`randomize_layout` のように型の大きさや配置を変えうる属性を持つ enum・typedef・struct・フィールドは変換しません。許すのは、availability、`deprecated`、`flag_enum`、`enum_extensibility`、Swift と Objective-C の注釈など、配置を変えないと分かっている属性だけです。
+- `typedef struct { ... } S;` の無名の struct は、引数で `S` と書いても変換しません。Clang はこの型を `struct S` と表記しますが、tag の `struct S` とは別の型だからです。struct に tag を付けてください（`typedef struct S { ... } S;`）。無名の enum の typedef も、同じ名前の enum の tag があれば変換しません。`typeof` で書いた型も変換しません。
 
 ### マクロの定数
 
@@ -370,7 +372,7 @@ clang app.o sample.c host.c -lm -o host
 | `#define ALL (-1u)` | `const ALL: i32u = 4294967295` |
 | `#define LEVEL (-2)` | `const LEVEL: i32 = -2` |
 
-浮動小数点、`(1 << 4)` のような式、文字列、関数形式のマクロは何も出しません。64 bit に収まらない値、`u` なしで符号付き 64 bit に収まらない 10 進数、`09` のような不正なリテラルは `W2002` です。`#include` 先で定義されたマクロと、`#undef` されたマクロは出しません。
+浮動小数点、`(1 << 4)` のような式、文字列、関数形式のマクロは何も出しません。64 bit に収まらない値、`u` なしで符号付き 64 bit に収まらない 10 進数、`09` のような不正なリテラルは `W2002` です。`#include` 先で定義されたマクロと、`#undef` されたマクロは出しません。`#pragma push_macro`／`pop_macro` で値が戻されるマクロのように、ヘッダーの終わりの定義（`clang -E -dM`）と一致しないものは `W2002` です。
 
 ### 不透明な struct と `--consume`
 
