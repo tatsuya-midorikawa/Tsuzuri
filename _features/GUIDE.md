@@ -32,6 +32,8 @@
    （性能チケットは `_perfs/_completed/` と `_perfs/README.md`）。最後に §13 の書式で完了報告を書く。
 6. チケット中の `/tmp/tz-*` のパスは再現用の一時ディレクトリの例である。記載のソースから作り直して使い、リポジトリには置かない。
    「検証済み」と書かれたサンプルも、着手時の HEAD で `tsuzuri check` し直してから使う。
+7. チケット中の `_docs/...` のパス（更新する文書や `check-docs.mjs` の引数）は旧構成である。§8.1 の表で
+   `_tsuzuri/language-reference/` のページに読み替える。
 
 ### チケットの共通構成
 
@@ -540,6 +542,38 @@ fn rejects(source: &str, code: &str) {
   `docs/language.md` の各節末尾の未対応一覧、README 冒頭の未実装一覧）を実装に合わせて更新する。
 - 実装していない最適化や将来計画を、実装済みのように書かない。
 - 例を追加したら `examples/` に置き、`tests/examples.mjs` で実行されるようにする。
+- 利用者向けの解説は `_tsuzuri/language-reference/`（目次は `index.md`）。変更したページは
+  `node scripts/check-docs.mjs <ページ>` で検証する。
+
+### 8.1 旧 `_docs/` のパスの読み替え
+
+`_docs/` は `_tsuzuri/language-reference/`（以下 `LR/`）へ再構成した。2026-10-07 より前に書いたチケットや性能計画にある
+`_docs/...` のパスと `check-docs.mjs` の引数は、次の表で読み替える。旧ページの内容は
+[c82c13e の `_docs/`](https://github.com/tatsuya-midorikawa/Tsuzuri/tree/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs) で読める。
+
+| 旧パス（`_docs/`） | 読み替え先（`LR/`） |
+| --- | --- |
+| `language-reference/active-patterns.md`・`patterns.md` | `pattern-matching/` の各ページ |
+| `language-reference/computation-expressions.md` | `computation-expressions/computation-expressions.md` |
+| `language-reference/control-flow.md` | `loops-and-conditionals/` の各ページ |
+| `language-reference/error-handling.md` | `exception-handling/` の各ページ |
+| `language-reference/expressions-and-operators.md` | `values-and-functions/op-and-expressions.md` |
+| `language-reference/functions.md` | `values-and-functions/functions.md`・`lambda-expressions.md` |
+| `language-reference/generics-and-typeclasses.md`・`higher-kinds.md`・`deriving.md` | `types-and-type-inference/generics.md`・`type-classes.md`・`constraints.md`、`values-and-functions/generics-functions.md` |
+| `language-reference/lexical-and-layout.md` | `values-and-functions/keywords.md`・`tokens.md`・`statements.md` |
+| `language-reference/modules-and-packages.md` | `organizing-tsuzuri/` の各ページ |
+| `language-reference/numbers.md`・`types.md` | `types-and-type-inference/` の各ページ、`literals-and-strings/literals.md` |
+| `language-reference/ownership.md`・`lifetimes.md` | `ownership-and-memory/` の各ページ |
+| `language-reference/records.md`・`unions.md` | `built-in-types-and-modules/record.md`・`union.md` |
+| `language-reference/strings-and-characters.md` | `literals-and-strings/` の各ページ |
+| `language-reference/tasks.md` | `async-tasks-and-lazy/task.md` |
+| `language-reference/values-and-constants.md` | `values-and-functions/values.md` |
+| `library-reference/*.md`・`library-reference/api/*.md` | `built-in-types-and-modules/` の該当モジュールのページ（生成 API の snapshot は置かない） |
+| `guides/webassembly.md`・`wasm-threads.md`・`native-interop.md` | `compiler/webassembly.md`・`native-interop.md` |
+| `guides/gpu.md`・`performance.md` | `built-in-types-and-modules/gpu.md`・`parallel.md`・`simd.md`、`languages/strategy.md` |
+| `tools/*.md` | `compiler/` の各ページ、`organizing-tsuzuri/documentation-comment.md`、`built-in-types-and-modules/test.md` |
+| `learn/*.md`・`tour.md`・`get-started.md` | `languages/` の各ページ、`compiler/usage.md` |
+| `feature-status.md` | なし（機能の状態は `_features/README.md` の一覧で管理する） |
 
 ---
 
