@@ -282,9 +282,15 @@ done
 
 ## ドキュメント
 
+GUIDE §8 の手順で、同じ PR で更新する。
+
 - `docs/architecture.md` の「intrinsic の外部宣言は組み込み関数と通常の式で共通化され、重複なく決定論的な順序で出力されます」に、
-  連結したランタイム IR（`numeric.ll`・`math.ll` など）の宣言も、シンボル名ごとに最初の 1 つだけを残すことを足す。
+  連結したランタイム IR（`numeric.ll`・`math.ll` など）の宣言も、シンボル名ごとに最初の 1 つだけを残すことを足す。同じ文書の「開発と検証」の
+  「`Math` モジュールを使用する場合にのみ `numeric.ll` の後に `math.ll` が結合され、重複する LLVM intrinsic 宣言が安全に除去されます」も、
+  宣言の重複の除去が `math.ll` の有無によらないことに直す。
 - `_tsuzuri/language-reference/built-in-types-and-modules/int.md` の「既知の不具合（LLVM の intrinsic 宣言の重複）」の注記を削除する。
+  ほかに不具合の注記や D12 へのリンクが残っていないことを `grep -rnE "D12-intrinsic|intrinsic 宣言の重複" _tsuzuri/language-reference` で
+  確かめる（HEAD `7d86f66` で該当は `int.md` だけ）。
 - `_features/README.md` の D12 の状態（GUIDE §10）。
 
 ## 受け入れ条件
