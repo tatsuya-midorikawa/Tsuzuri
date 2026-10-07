@@ -376,6 +376,7 @@ mod tests {
             include_str!("runtime/recursive.ll"),
             include_str!("runtime/string.ll"),
             include_str!("runtime/task-wasm.ll"),
+            include_str!("runtime/unicode.ll"),
             include_str!("runtime/utf8string.ll"),
             include_str!("runtime/wasm.ll"),
         ];

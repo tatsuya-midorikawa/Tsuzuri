@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
+import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
+import * as unicodeData from "./unicode-ucd.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -751,6 +754,27 @@ const suites = {
       ...[0n, 1n, -1n, -1n, -1n, 4n, -1n, 3n, -1n, 3n].map((expected, which) => ["validate_bytes", [which], expected]),
     ],
     traps: [["trap_decode_end", []], ["trap_decode_continuation", []], ["trap_repeat_negative", []], ["trap_repeat_overflow", []]],
+  },
+  // D09: the cases and their V8 or hand-written expectations come from tests/regex-cases.mjs.
+  regex: {
+    get cases() {
+      assert.equal(readFileSync(regexCasesPath, "utf8"), regexCasesSource(), "run node tests/regex-cases.mjs --write");
+      return (this.computed ??= regexCases());
+    },
+    inspect(ir) {
+      const matching = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Regex\.(?:add_thread|search|copy_slots|in_class|holds|consumes)\([^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.equal(matching.length, 6);
+      for (const [, body] of matching) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+      assert.match(ir, /^@tz\.unicode\.table\.0 = internal unnamed_addr constant/m);
+    },
+  },
+  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs.
+  unicode: {
+    get cases() { return (this.computed ??= unicodeCases(unicodeData)); },
+    inspect(ir) {
+      assert.match(ir, /^@tz\.unicode\.table\.17 = internal unnamed_addr constant/m);
+      assert.equal(ir.match(/^define internal i64 @tz\.unicode\.entry\(/gm).length, 1);
+    },
   },
   chars: {
     cases: [

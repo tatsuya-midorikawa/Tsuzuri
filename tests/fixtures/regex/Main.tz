@@ -1,0 +1,238 @@
+// The `regex` suite of tests/features.mjs. The patterns and inputs are in Cases.tz, which
+// tests/regex-cases.mjs generates; the expected values are computed there with V8 or by hand.
+
+private def mix :: i64 -> i64 -> i64
+fn mix hash value = (hash * 31 + value + 1) % 1000000007
+
+private def hash_string :: i64 -> ref string -> i64
+fn hash_string seed text =
+    let mut hash = mix seed text.length
+    for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
+    hash
+
+private def hash_bytes :: i64 -> ref utf8string -> i64
+fn hash_bytes seed text =
+    let mut hash = mix seed text.length
+    for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
+    hash
+
+private def hash_spans :: ref [(i64 * i64)] -> i64
+fn hash_spans spans =
+    let mut hash = mix 0 spans.length
+    for index in 0 .. spans.length - 1 do
+        match spans[index] with
+        | (first, last) -> hash = mix (mix hash first) last
+    hash
+
+private def encode :: Maybe<(i64 * i64)> -> i64
+fn encode found =
+    match found with
+    | Maybe.Some (first, last) -> first * 1000000 + last
+    | Maybe.None -> -1
+
+private def compiled :: i64 -> Regex
+fn compiled which =
+    let pattern = Cases.pattern which
+    match Regex.compile (ref pattern) with
+    | Result.Ok re -> re
+    | Result.Error _ -> unreachable ()
+
+private def bytes :: i64 -> utf8string
+fn bytes which =
+    let text = Cases.input which
+    Utf8String.from_string (ref text)
+
+export def compile_result :: i64 -> i64
+fn compile_result which =
+    let pattern = Cases.error_pattern which
+    match Regex.compile (ref pattern) with
+    | Result.Ok re -> if Regex.group_count (ref re) >= 0 then -1 else -2
+    | Result.Error error ->
+        let kind = match error.kind with
+            | Regex.Syntax -> 0
+            | Regex.Unsupported -> 1
+            | Regex.TooLarge -> 2
+        kind * 1000000 + error.offset
+
+export def message_hash :: i64 -> i64
+fn message_hash which =
+    let pattern = Cases.error_pattern which
+    match Regex.compile (ref pattern) with
+    | Result.Ok _ -> -1
+    | Result.Error error -> hash_string 0 (ref error.message)
+
+export def is_match16 :: i64 -> bool
+fn is_match16 which =
+    let re = compiled which
+    let text = Cases.input which
+    Regex.is_match (ref re) (ref text)
+
+export def find16 :: i64 -> i64
+fn find16 which =
+    let re = compiled which
+    let text = Cases.input which
+    encode (Regex.find (ref re) (ref text))
+
+export def find_at16 :: i64 -> i64 -> i64
+fn find_at16 which start =
+    let re = compiled which
+    let text = Cases.input which
+    encode (Regex.find_at (ref re) (ref text) start)
+
+export def captures16 :: i64 -> i64
+fn captures16 which =
+    let re = compiled which
+    let text = Cases.input which
+    match Regex.captures (ref re) (ref text) with
+    | Maybe.Some spans -> if spans.length == Regex.group_count (ref re) + 1 then hash_spans (ref spans) else -2
+    | Maybe.None -> -1
+
+export def find_all16 :: i64 -> i64
+fn find_all16 which =
+    let re = compiled which
+    let text = Cases.input which
+    let spans = Regex.find_all (ref re) (ref text)
+    hash_spans (ref spans)
+
+export def split16 :: i64 -> i64
+fn split16 which =
+    let re = compiled which
+    let text = Cases.input which
+    let pieces = Regex.split (ref re) (ref text)
+    let mut hash = mix 0 pieces.length
+    for index in 0 .. pieces.length - 1 do hash = hash_string hash (ref pieces[index])
+    hash
+
+export def replace16 :: i64 -> i64
+fn replace16 which =
+    let re = compiled which
+    let text = Cases.input which
+    let replacement = Cases.replacement which
+    let replaced = Regex.replace_all (ref re) (ref text) (ref replacement)
+    hash_string 0 (ref replaced)
+
+export def is_match8 :: i64 -> bool
+fn is_match8 which =
+    let re = compiled which
+    let text = bytes which
+    Regex.is_match_utf8 (ref re) (ref text)
+
+export def find8 :: i64 -> i64
+fn find8 which =
+    let re = compiled which
+    let text = bytes which
+    encode (Regex.find_utf8 (ref re) (ref text))
+
+export def find_at8 :: i64 -> i64 -> i64
+fn find_at8 which start =
+    let re = compiled which
+    let text = bytes which
+    encode (Regex.find_at_utf8 (ref re) (ref text) start)
+
+export def captures8 :: i64 -> i64
+fn captures8 which =
+    let re = compiled which
+    let text = bytes which
+    match Regex.captures_utf8 (ref re) (ref text) with
+    | Maybe.Some spans -> hash_spans (ref spans)
+    | Maybe.None -> -1
+
+export def find_all8 :: i64 -> i64
+fn find_all8 which =
+    let re = compiled which
+    let text = bytes which
+    let spans = Regex.find_all_utf8 (ref re) (ref text)
+    hash_spans (ref spans)
+
+export def split8 :: i64 -> i64
+fn split8 which =
+    let re = compiled which
+    let text = bytes which
+    let pieces = Regex.split_utf8 (ref re) (ref text)
+    let mut hash = mix 0 pieces.length
+    for index in 0 .. pieces.length - 1 do hash = hash_bytes hash (ref pieces[index])
+    hash
+
+export def replace8 :: i64 -> i64
+fn replace8 which =
+    let re = compiled which
+    let text = bytes which
+    let units = Cases.replacement which
+    let replacement = Utf8String.from_string (ref units)
+    let replaced = Regex.replace_all_utf8 (ref re) (ref text) (ref replacement)
+    hash_bytes 0 (ref replaced)
+
+export def escape16 :: i64 -> i64
+fn escape16 which =
+    let input = Cases.escape_input which
+    let escaped = Regex.escape (ref input)
+    match Regex.compile (ref escaped) with
+    | Result.Ok re -> if encode (Regex.find (ref re) (ref input)) == input.length then hash_string 0 (ref escaped) else -2
+    | Result.Error _ -> -1
+
+export def property_hash :: i64 -> i64
+fn property_hash which =
+    let name = Cases.property_name which
+    match Unicode.property_ranges (ref name) with
+    | Maybe.Some ranges -> hash_spans (ref ranges)
+    | Maybe.None -> -1
+
+/// The end of the run of keys from `start` with the same key / 2^21.
+private def group_end :: ref [i64] -> i64 -> i64
+fn group_end keys start =
+    let mut stop = start
+    let mut more = true
+    while more do
+        if stop < keys.length && keys[stop] / 2097152 == keys[start] / 2097152 then stop = stop + 1 else more = false
+    stop
+
+/// The orbits of simple case folding: each folding target with every scalar that folds to it, as sorted
+/// members, in order of the smallest member.
+export def fold_orbit_hash :: i64
+fn fold_orbit_hash =
+    let pairs = Unicode.simple_case_folding ()
+    let mut grouped: [i64] = new [i64](2 * pairs.length, \index ->
+        match pairs[index / 2] with
+        | (code, folded) -> if index % 2 == 0 then folded * 2097152 + code else folded * 2097152 + folded)
+    Array.sort_in_place (ref mut grouped)
+    let mut keyed: Vec<i64> = Vec.empty()
+    let mut start = 0
+    while start < grouped.length do
+        let stop = group_end (ref grouped) start
+        let least = grouped[start] % 2097152
+        let mut previous = -1
+        for index in start .. stop - 1 do
+            let member = grouped[index] % 2097152
+            if member != previous then keyed = Vec.push keyed (least * 2097152 + member)
+            previous = member
+        start = stop
+    let mut members = Vec.to_array keyed
+    Array.sort_in_place (ref mut members)
+    let mut hash = 0
+    let mut orbits = 0
+    start = 0
+    while start < members.length do
+        let stop = group_end (ref members) start
+        hash = mix hash (stop - start)
+        for index in start .. stop - 1 do hash = mix hash (members[index] % 2097152)
+        orbits = orbits + 1
+        start = stop
+    mix hash orbits
+
+private def steps :: ref Regex -> ref string -> ref string -> i64 -> i64
+fn steps re unit suffix count =
+    let text = String.repeat unit count + clone_string suffix
+    Regex.search_steps re (ref text)
+
+export def linear :: i64 -> bool
+fn linear which =
+    let pattern = Cases.linear_pattern which
+    match Regex.compile (ref pattern) with
+    | Result.Error _ -> false
+    | Result.Ok re ->
+        let unit = Cases.linear_unit which
+        let suffix = Cases.linear_suffix which
+        let one = steps (ref re) (ref unit) (ref suffix) 1000
+        let two = steps (ref re) (ref unit) (ref suffix) 2000
+        let four = steps (ref re) (ref unit) (ref suffix) 4000
+        one > 0 && four - two == 2 * (two - one)

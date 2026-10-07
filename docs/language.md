@@ -223,11 +223,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`
 
 `Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`Regex`、`Unicode` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -1675,6 +1675,7 @@ Tsuzuri におけるインデックスアクセスは境界検査を伴う厳格
 例えば `String.chars "😀"` は 2 要素の配列を返しますが、`Utf8String.chars u8"😀"` は 1 要素の配列を返します。
 UTF-8 バイト順序は Unicode スカラー値の昇順と完全に一致しますが、UTF-16 コード単位の昇順とはサロゲートペア等の補助平面文字において順序が異なる場合がある点に留意してください。
 部分文字列の検索処理は、追加のアロケーションを伴わないダイレクト走査で行われ、最悪計算量は $O(\text{text.length} \times \text{needle.length})$ です（現時点で SIMD や並列処理による自動高速化は保証されません）。
+パターンによる検索・置換・分割は [Regex](#regex)、Unicode の文字データ（一般カテゴリーと大文字小文字の畳み込み）は [Unicode](#unicode) です。
 連結、`join`、`replace`、および `repeat` は、結果全体の長さを事前に厳密に検証したうえで、非空の結果バッファを 1 回だけまとめてヒープ確保します（メモリ制限超過時は安全にトラップします）。
 
 | 所有権移送 API | 型シグネチャおよび仕様契約 |
@@ -2918,6 +2919,37 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 循環: 値ができる前にその値を指す `Rc` は作れず、共有した値は変更できないので、`Rc`／`Arc` だけでは循環を作れません（参照カウントの循環による解放漏れは起きません）。サイクルコレクターはありません。循環するグラフは [Arena](#arena) で表します。
 - 再帰型: 型の循環は `Rc`／`Arc` を経由できます（[再帰的なデータ型](#再帰的なデータ型) の節）。自分自身を含みうる値（再帰型を格納する値）を持つブロックは先頭に `%tz.rec.header` の 2 語を持ち、最後の強い所有者はその解放を再帰型の解放と同じ待ちリストに積むので、100 万要素の鎖も native のスタックを溢れさせずに解放します。共有ポインタを経由する循環の中の union も再帰型のノードになるので、`union List = Nil | Cons of (i64 * Rc<List>)` は要素ごとに 2 回確保します。
 - 型の比較・表示・ハッシュ（`Eq`・`Ord`・`Hash`・`Display`）の instance はありません。`Rc.get` で取り出した値を比べます。公開 ABI（`export def`・`extern def`）には使えず（`E1008`）、const にもできません（`E1026`）。高カインドの型構築子としては使えません。
+### Regex
+
+`Regex` は線形時間の正規表現です。`Regex.compile :: ref string -> Result<Regex, Regex.Error>` がパターン（常に `string`）を命令列にコンパイルし、Pike VM（捕捉付きの Thompson NFA の同時実行）が入力の Unicode スカラーを 1 個ずつ読みます。
+1 回の探索（`is_match`・`find`・`find_at`・`captures`）の時間は $O(\text{命令数} \times \text{入力のスカラー数})$ で、後戻りをしないので、信頼できないパターンや入力でも指数時間の照合は起きません。
+`find_all`・`replace_all`・`split` は一致ごとに探索を繰り返すので、最悪 $O(\text{命令数} \times n^2)$ です。作業領域は呼び出しの中で確保して解放し（`captures` は $2 \times \text{命令数} \times (\text{group 数} + 1)$ 個の `i64`、最大 4 MiB、それ以外は $O(\text{命令数})$）、照合の内側では確保しません。
+
+```text
+match Regex.compile (ref "(\\w+)@(\\w+)") with
+| Result.Ok re -> Regex.replace_all (ref re) (ref "x@y") (ref "${2} at ${1}")   // "y at x"
+| Result.Error error -> error.message
+```
+
+- 構文は JavaScript の `u` フラグ付き正規表現の部分集合です。字義どおりの文字、`.`、class `[...]`（`-` は先頭か末尾だけ字義どおり、class 内の `[` と `&&` は未対応）、`\d`・`\w`・`\s` と否定、`\p{Name}`・`\P{Name}`（一般カテゴリーの短い名前 30 個、群 `L`・`LC`・`M`・`N`・`P`・`S`・`Z`・`C`、`Alphabetic`・`White_Space`・`Join_Control`）、`^`・`$`・`\A`・`\z`・`\b`・`\B`、`(...)`・`(?:...)`・`(?flags:...)`、パターン先頭の `(?flags)`、`*`・`+`・`?`・`{n}`・`{n,}`・`{n,m}`（`n`・`m` は 1000 以下）と lazy な `?`、制御文字と `\x41`・`\u0041`・`\u{1F600}` のエスケープを持ちます。字義どおりの `{`・`}`・`]` と未知のエスケープは誤りです。
+- フラグは `i`・`m`・`s`・`u`（既定で有効）です。`\d` は `Nd`、`\s` は `White_Space`、`\w` は `Alphabetic`・`M`・`Nd`・`Pc`・`Join_Control` の和（UTS #18 附属書 C）、`\b` は前後のスカラーの `\w` 判定が異なる位置です。`(?-u)` ではこれらと畳み込みが ASCII だけになります。`i` は `CaseFolding.txt` の状態 C と S の単純な畳み込みで比べ、否定の class は畳み込んでから補集合を取ります。表は Unicode 17.0.0 です。
+- `.` と class はスカラー 1 個に一致し、`string` の孤立サロゲートも 1 スカラーです。`.` は `s` なしで `\n` 以外、`^`・`$` は `m` なしで入力の先頭・末尾だけ（`$` は末尾の `\n` の前に一致しない）、`m` では `\n` の後・前にも一致します。
+- 一致は leftmost-first（RE2・Rust の `regex` と同じ）です。範囲 `(start, end)` は半開区間で、`string` は UTF-16 コード単位、`utf8string`（関数名に `_utf8`）は byte です。`find_at` は `start` より前の文字も `^`・`\b` の判定に使い、範囲外やスカラーの内部の `start` は `None` です。
+- `captures` の要素 0 は全体、要素 k は k 番目の group で、参加しなかった group は `(-1, -1)`、繰り返しの中の group は最後に参加した繰り返しの値です。`find_all` の次の探索は、空でない一致の後はその終わり、空の一致の後は次のスカラーから始めます。`split` は一致の間の部分文字列です。`replace_all` の置換文字列は `${n}` と `$$` だけを展開します。
+- 後方参照、先読み・後読み、名前付き group、atomic group、所有的量指定子、`\G`・`\Z`・`\X`・`\R`・`\K` は `Unsupported` です。資源上限（パターン 65,536 コード単位、繰り返し回数 1,000、group の入れ子 64、命令 10,000、class の区間の合計 65,536、命令数 × 2 ×（group 数 + 1）が 262,144）を超えると `TooLarge` で、どちらもトラップしません。
+- `Regex` は不透明な非 Copy の record で、構築・フィールド・パターン分解・更新は `E1022` です。照合では変化しないので、共有借用で何度でも使え、`task` へ move できます。誤りの一覧と message は [言語リファレンスの Regex](../_tsuzuri/language-reference/built-in-types-and-modules/regex.md) にあります。
+
+### Unicode
+
+`Unicode` は Unicode 17.0.0 の UCD から生成した表を引きます。`Unicode.version ()` は `"17.0.0"`、`Unicode.property_ranges (ref name)` は `\p{name}` と同じ名前のスカラーの閉区間（昇順・連結済み。未知の名前は `None`）、`Unicode.simple_case_folding ()` は `CaseFolding.txt` の状態 C と S の組 `(c, scf c)`（`c != scf c`、`c` の昇順）を返します。この 2 つは呼び出しごとに表を読んで新しい配列を確保します。
+
+- `Unicode.category :: utf8char -> Unicode.Category` は一般カテゴリーを返します。`Category` は短い名前（`Lu` … `Cn`）の 30 ケースの union で、`Eq` と `Display` を持ちます。
+- `Unicode.normalize :: Unicode.NormalizationForm -> ref string -> string` と `is_normalized` は UAX #15 の正規化です（`Nfc`・`Nfd`・`Nfkc`・`Nfkd`）。分解は再帰的で、ハングル音節は算術で扱い、結合文字は正準結合クラスで安定に並べ替え、合成は `Full_Composition_Exclusion` を除いた一次合成だけを作ります。
+- `Unicode.graphemes`・`grapheme_boundaries` は UAX #29 の拡張書記素クラスター（GB9c の InCB と GB11 の絵文字 ZWJ 列を含む）、`Unicode.words`・`word_boundaries` は UAX #29 の既定の単語境界です。境界の配列は 0 と長さを含み（空の文字列は `[0]`）、ロケールによる調整や辞書は使いません。
+- `Unicode.to_lower`・`to_upper`・`to_title`・`case_fold` は `SpecialCasing.txt` の条件なしの対応を含む完全な変換で、`to_lower` は Final_Sigma を扱います。`to_title` は単語ごとに最初の cased な文字をタイトルケースにし、残りを小文字にします。`case_fold` は `CaseFolding.txt` の状態 C と F です。ロケールに依存する対応はしません。
+- `utf8string` の関数は名前に `_utf8` が付き、境界の位置は byte です。`string` の孤立サロゲートは 1 スカラーとして扱い、変換されずに残ります（カテゴリーは `Cs`、書記素では Control）。
+- 計算量は入力のスカラー数 $n$ と表の大きさ $t$ について $O(n \log t)$ で、正規化は連続する結合文字の並べ替え（$O(k \log k)$）を足します。結果と作業用のスカラーの配列は呼び出しごとに確保します。
+表は `scripts/generate-unicode.mjs` が生成したランタイム `src/runtime/unicode.ll` の定数で、`Unicode` か `Regex` の関数を使うプログラムにだけ連結されます。版の更新は結果を変えるので、生成器の入力の SHA-256 と `Unicode.version` を同時に変えます。
 
 ### 配列・リスト API
 

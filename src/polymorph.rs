@@ -2558,6 +2558,18 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(
+            builtin,
+            Builtin::UnicodeTableLength | Builtin::UnicodeTableEntry
+        ) && !(matches!(self.module, "Unicode" | "Regex")
+            && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "Unicode tables are private to the standard Unicode and Regex modules; use the Unicode and Regex APIs instead",
+                span,
+            ));
+        }
         // A dyn value is built only where its type is known, so `Dyn.of` is never a value (A14 D9).
         if builtin == Builtin::DynOf && !std::mem::take(&mut self.dyn_callee) {
             return Err(Diagnostic::new(

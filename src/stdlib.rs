@@ -27,12 +27,14 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Process.tz", include_str!("../std/Process.tz")),
     ("std/Path.tz", include_str!("../std/Path.tz")),
     ("std/Random.tz", include_str!("../std/Random.tz")),
+    ("std/Regex.tz", include_str!("../std/Regex.tz")),
     ("std/Result.tc", include_str!("../std/Result.tc")),
     ("std/Seq.tz", include_str!("../std/Seq.tz")),
     ("std/Set.tz", include_str!("../std/Set.tz")),
     ("std/String.tz", include_str!("../std/String.tz")),
     ("std/Test.tz", include_str!("../std/Test.tz")),
     ("std/Time.tz", include_str!("../std/Time.tz")),
+    ("std/Unicode.tz", include_str!("../std/Unicode.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
@@ -80,6 +82,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Arena",
     "Rc",
     "Arc",
+    "Regex",
+    "Unicode",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -110,6 +114,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Arena.Arena"
             | "Arena.Handle"
             | "Arena.Slot"
+            | "Regex.Regex"
     )
 }
 
@@ -148,7 +153,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 39);
+        assert_eq!(RESERVED_MODULES.len(), 41);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

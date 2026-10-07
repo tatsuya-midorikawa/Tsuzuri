@@ -102,7 +102,7 @@ mid=none parts=[u8"あ"] decoded=12354@3 count=1
 | `to_ascii_lower` | `ref utf8string -> utf8string` | ASCII 英大文字（`A`〜`Z`）を小文字に変換 | O(n) |
 | `to_ascii_upper` | `ref utf8string -> utf8string` | ASCII 英小文字（`a`〜`z`）を大文字に変換 | O(n) |
 
-`trim`、`trim_start`、`trim_end` が取り除くのは、バイト値 9〜13（タブ、改行、垂直タブ、フォームフィード、復帰）と 32（空白）のみです。それ以外の空白文字は除去しません。また、ASCII の英文字のみを大文字・小文字に変換するのが `to_ascii_lower` と `to_ascii_upper` です。いずれも新しい所有値を返し、失敗することはありません。計算量は O(n) です。
+`trim`、`trim_start`、`trim_end` が取り除くのは、バイト値 9〜13（タブ、改行、垂直タブ、フォームフィード、復帰）と 32（空白）のみです。それ以外の空白文字は除去しません。また、ASCII の英文字のみを大文字・小文字に変換するのが `to_ascii_lower` と `to_ascii_upper` です（すべての文字は [Unicode](unicode.md) の `to_lower_utf8`・`to_upper_utf8`）。いずれも新しい所有値を返し、失敗することはありません。計算量は O(n) です。
 
 ## バイト列との変換
 
@@ -153,6 +153,8 @@ UTF-16 から来る文字列は、先に `String.is_well_formed` を見るか、
 
 ## 関連項目
 
+- [Unicode](unicode.md) — 正規化、書記素クラスター、単語境界、完全な大文字小文字の変換
+- [Regex](regex.md) — 正規表現による検索・置換・分割（`_utf8` の関数）
 - [文字列](../literals-and-strings/strings.md)
 - [String](string.md)
 - [Utf8Char](utf8char.md)
