@@ -496,6 +496,7 @@ clang -O3 examples/native/main.c target/examples/physics.o -I target/examples -l
 - **C ヘッダーからの生成 (`tsuzuri bindgen`)**: `tsuzuri bindgen zlib.h -o Zlib.tz` は、C ヘッダー自身の宣言と整数の `#define` のうち ABI が一致すると確かめられるものを、リンク名付きの `extern`・`const`・`record`・`extern type`（不透明な struct）・型エイリアスとして書き出します（64-bit の Linux と macOS）。関数ポインターの引数はコールバックに、`--buffer` で指定したポインターと長さの組は `ref [T]` になります。変換できない宣言は推測せず、理由付きの `// skipped` 行と警告 `W2002` にします。
 - **不透明ハンドルとコールバック**: `extern type Counter` でホスト側のポインタを安全な不透明ハンドルとして扱えます。また、環境キャプチャを持たないトップレベル関数は関数ポインタとしてホストへ渡せます。
 - **ホストライブラリのリンク**: ネイティブ実行ファイルのビルド時には、`--link PATH`、`-l NAME`、`-L DIR` や `Tsuzuri.toml` の `[native]` セクションを通じて、外部の C/C++ ライブラリやオブジェクトを直接リンクできます。
+- **共有ライブラリと各言語のバインディング**: `--emit shared` は公開 C ABI（`tz_*`、`tsuzuri_alloc`、`tsuzuri_free` など）だけを export する共有ライブラリ（macOS は `.dylib`、Linux は `.so`。Windows は G10 待ちで `E2000`）を出します。`--emit bindings-cs`、`--emit bindings-py`、`--emit bindings-cpp` は、それを呼ぶ C#（`[LibraryImport]` と `SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを同じソースから生成します。`--trap-mode return` を付けると、トラップが各言語の例外になります。
 - **デスクトップ GUI 連携の例**: Python/Tkinter などのデスクトップ GUI から Tsuzuri のネイティブ共有ライブラリを呼び出すことも可能です（詳細は `examples/desktop` を参照してください）。
 
 ### WebAssembly (ブラウザ / Node.js)
@@ -519,7 +520,14 @@ const { instance } = await WebAssembly.instantiate(wasmBytes);
 console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 ```
 
-- **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します。
+- **型付きのグルー生成**: `tsuzuri build examples/web/Physics.tz --target wasm32 --emit bindings-js -o physics.mjs` は、`.wasm` を型付きの関数として呼ぶ JavaScript モジュール `physics.mjs` と TypeScript 宣言 `physics.d.mts` を出します。引数の検査、バッファの複製と `tsuzuri_free`、記述子の読み書き、型付きの import、トラップを `TsuzuriTrap` にしてインスタンスを作り直す処理を行います。`--wasm-feature threads` を足すと、COOP / COEP 付きのページで Web Worker のスレッドプールを作るグルーになります（満たさないページでは `Error` で、逐次実行には切り替えません）。
+
+  ```javascript
+  import { load } from "./physics.mjs";
+  const api = await load(await (await fetch("physics.wasm")).arrayBuffer());
+  console.log(api.exports.next_positions(Float64Array.of(9, 1), Float64Array.of(3, -3), 1, 10)); // Float64Array [8, 2]
+  ```
+- **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します（生成したグルーは `boolean` に直します）。
 - **メモリとスタックのカスタマイズ**: `--wasm-max-memory SIZE`（既定 16MiB、最大 4GiB-64KiB / wasm64 は 16GiB）や `--wasm-stack-size SIZE`（既定 1MiB）で線形メモリの上限やメインスタックサイズを調整できます。これらは `Tsuzuri.toml` の `[wasm]` セクションでも設定可能です。
 - **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、Task や Parallel による並列計算を Web Worker や Node.js の Worker Threads に分散できます。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
 
@@ -670,7 +678,7 @@ tsuzuri lsp
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
 | `--target native\|wasm32\|wasm64` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ）。 |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。 |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
@@ -725,6 +733,9 @@ node tests/bindgen.mjs target/release/tsuzuri
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
+node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
+node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
 node tests/gpu.mjs target/release/tsuzuri
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）

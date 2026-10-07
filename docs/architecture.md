@@ -47,6 +47,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm.rs` | SSA 形式への変換、phi ノード、末尾再帰のループ化、所有値の解放、借用追跡、ホスト呼び出しラッパー、C ヘッダー生成 |
 | `src/llvm_debug.rs` | 共通採番による DWARF メタデータ生成、型・変数・関数と式のソース位置情報の付与 |
 | `src/llvm_imports.rs` | extern 関数の ABI ラッパー生成、リンク名と WASM import 属性、コールバック引数、所有結果の受領時検証 |
+| `src/bindings.rs` / `src/runtime/bindings-core.mjs` / `bindings.mjs` / `bindings-threads.mjs` | 公開 ABI の記述子の表（export・到達する import・record の C 配置）と、それを読む型付きホスト バインディングの生成（E13）。`--emit bindings-js` は表と固定ランタイム（共通部 + 1 スレッドの `load` か、`--wasm-feature threads` の Web Worker プール）を連結した ES module と `.d.mts` |
+| `src/bindings_native.rs` | 同じ型モデルから C#（`[LibraryImport]`・`SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを生成する（E13 Phase 2。`bindings.rs` の子モジュール） |
 | `std/IO.tc` / `src/llvm_io.rs` / `src/runtime/io.c` | 不透明な IO モナド、エントリーポイントでの実行、標準入出力ストリーム、WASM ホスト境界 |
 | `src/runtime/arguments.c` | `def main :: Array<string> -> i32` 向けコマンドライン引数。POSIX／WASI における UTF-8 デコード（不正なバイト列は U+FFFD に置換）および Windows のコマンドライン分割 |
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` 組み込み関数（`src/llvm_io.rs` の `os_builtin`）、POSIX ランタイム、`--wasm-host wasi` 向けの WASI preview1 ランタイム |
@@ -121,6 +123,11 @@ Node.js 側のホスト実装である `src/runtime/wasm-threads.mjs` は、明�
 `src/runtime/trap-boundary.mjs` は単一スレッド WASM 向けの同梱 JavaScript ホスト実装であり、コンパイラ本体からは参照されず、生成バイナリの挙動にも影響しません。`createBoundary(module, { imports, sites })` の呼び出しにより、1 回のエクスポート関数呼び出しを安全な境界で囲みます。
 WebAssembly 内部の例外は、`WebAssembly.RuntimeError` の場合は `{ reason: "trap", site }` とサイドテーブルのソース位置を返し、V8 の `RangeError`（SpiderMonkey では `InternalError`）によるスタック枯渇の場合は `{ reason: "stack" }` として返します。ホストのインポート関数から送出された例外は、同一オブジェクトのまま再送出されます。
 Tsuzuri はトラップ時にスタックの巻き戻しを行わないため、例外が発生したインスタンスは原因分類のために `tsuzuri_trap_site` を 1 回呼び出した後は二度と再利用せず、次回の呼び出し時には同一モジュールから新しくインスタンスを再生成します。マルチスレッド（threads）モジュールはこの境界で拒否され、スレッドプールの単位は既存の `createThreadPool` で管理されます。
+`--emit bindings-js` のグルー（`src/bindings.rs` の表 + `src/runtime/bindings.mjs`）は、`load` で表の記述子を変換関数へ一度だけ解決し、呼び出しごとに記述子の文字列で分岐しません。境界の規則は `trap-boundary.mjs` と同じ（例外でインスタンスを捨て、`tsuzuri_trap_site` を 1 回だけ読み、次の呼び出しで同期的に作り直す）ですが、生成物は利用者が配布する単独のファイルなので、そのファイルを import せずに同じ規則を自前で持ちます。インスタンスごとに import の wrapper を作り、ホストの例外の記録、コールバックの有効期間、捨てたインスタンスへの再入の拒否をその単位で扱います。`tests/bindings.mjs` が `-O0`／`-O3`、`--trap-info`、`--allocator counting`（各呼び出し後の `live == 0`）の build と TypeScript 6.0.3 の型検査で検証します。同期の作り直しが失敗したとき（Chrome のメインスレッドは 8 MB を超えるモジュールの同期 instantiate を拒む）は呼び出しを `Error` で止め、`ready()` が `WebAssembly.instantiate` で非同期に作り直します。
+
+`--wasm-feature threads` のグルー（`bindings-threads.mjs`）は、`src/runtime/wasm-threads.mjs` と同じプロトコルを Web Worker で行います。グルー自身を `?tsuzuri-worker=coordinator|helper` 付きの module worker として起動し、補助ワーカーは最初の呼び出しの前に instantiate して起動記録の SharedArrayBuffer で待ちます（待っているスレッドが作ったワーカーは、そのスレッドがイベントループに戻るまで起動しないため）。調整役のインスタンスが export を実行し、`spawn_workers` が各補助ワーカーのスタック範囲を起動記録に書いて起こします。ブラウザのメインスレッドは atomic wait できないので、ページ側の `exports` は引数を検査してから調整役へ送る `Promise` です。補助ワーカーの失敗は理由とサイト ID を起動記録に残し、`poison` でプールの待ちを解いて、調整役のトラップ分類がそのサイトを使います。プールは作り直しません。`crossOriginIsolated` でないページは、ワーカーを起動する前に `Error` です。`tests/bindings_threads.mjs` が Node.js 上の Web Worker の adapter と、任意で実ブラウザ（`TSUZURI_BROWSER`、`TSUZURI_PLAYWRIGHT`）で検証します。
+
+`--emit shared` は、実行ファイルと同じ object（ランタイムとトラップのランタイムを含む）を `-dynamiclib`（macOS、`-exported_symbols_list`、install name は `@rpath/<file>`）か `-shared`（Linux、version script、soname、`--no-undefined`）でリンクし、公開 C ABI の名前だけを export します。export する名前は、生成 IR が定義する `tz_*`、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`tsuzuri_try_*` から決まります（`shared_exports`）。C#・Python・C++ のバインディング（`src/bindings_native.rs`）は LLVM を通さず、C ヘッダーと同じ `record_name`／`record_layout`／`handle_c_name` で型を名付けて配置を揃え、`tests/host_bindings.mjs` が .NET SDK、python3、`clang++ -std=c++20` で `-O0`／`-O3` と `--trap-mode return` を検証します。
 ネイティブ環境では、`driver::probable_stack_exhaustion` が子プロセスの終了シグナル（SIGSEGV、SIGBUS）を検知してスタック枯渇の可能性を推定し、`E2005` またはテスト失敗の理由として報告します。`tests/trap_boundary.mjs` により、`-O0`／`-O3` における 17 のケースが検証されています。
 
 ネイティブオブジェクトにおけるエラー復帰境界（E14 Phase 2）は、`--trap-mode return` によって有効化されます。これはネイティブ出力（object、llvm、header）でのみ受け付けられ、`--trap-info` を内包します。各エクスポート関数 `tz_name` に対して `int32_t tsuzuri_try_name(tsuzuri_trap_info *trap, 結果ポインタ, 引数...)`（ステータス 0: 成功、1: トラップ、2: 入れ子呼び出しエラー）が追加生成され、C ヘッダー（型定義の重複は `TSUZURI_TRAP_INFO_DEFINED` で防止）および IR のサンクが出力されます。
@@ -1042,6 +1049,7 @@ POSIX ネイティブ環境のアロケータは、共通のフックテーブ�
 `--freestanding` は `--allocator host` に加えて CPU ディスパッチを使わない経路（`emit_native_build` を通らない）で出力し、IR が C ライブラリを要する runtime（IO・OS・タスク・引数・`write`）を宣言したら `E2000` にします。`--emit header` の出力には IR がないので、同じ build の object が持つ library の IR を別に生成して検査します。
 128-bit 値、ソフトウェア浮動小数点型、任意の所有入力、借用参照の戻り値、およびクロージャ環境の直接的な ABI 公開はサポートされていません。
 外部シンボルのインポートはユーザーが記述した `extern` 宣言からのみ発生し、リンク名、ハンドル型、コールバックを使用しないプログラムにおいては、生成される IR、C ヘッダー、および WASM インポートの構造に変化はありません。
+生成バインディング（E13）と `--emit shared` は IR・WASM・C ヘッダーを変えず、既存の export（`memory`、`tsuzuri_alloc`、`tsuzuri_free`、`tz_*`、`tsuzuri_trap_site`、`__indirect_function_table`）だけを使います。グルーはモジュールが宣言した import だけを渡して import を足さず、threads・IO・Debug・WASI・host allocator のモジュールは明示的な例外で拒否します。record の offset は `record_layout` と同じ規則で求め、`export def` の `ref H` 引数は、非拡張の wrapper でもハンドルを slot へ置いてから借用として渡します。
 外部ライブラリのリンク入力はネイティブ実行ファイルのビルドでのみ有効です。`wasm-ld` の `--export-table` はコールバックラッパーが存在する場合にのみ渡され、変数を捕捉した関数値が ABI を越えて直接渡されることはありません。
 GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O、およびイベントループは、ホスト環境との境界で適切に取り扱われます。ファイル操作、環境変数、システム時刻、乱数生成、および子プロセス起動は標準ライブラリの OS API が安全に仲介し、ユーザー定義の `extern` や公開 ABI を無秩序に増やすことはありません。
 
@@ -1075,6 +1083,9 @@ node tests/features.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
+node tests/bindings.mjs target/release/tsuzuri
+node tests/bindings_threads.mjs target/release/tsuzuri
+node tests/host_bindings.mjs target/release/tsuzuri
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri
 ```
 
@@ -1177,4 +1188,4 @@ TSUZURI_BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 共有・排他の借用フィールドを含むレコード、複数 region の名前付き契約、再帰的なヒープ型、およびユーザー定義の `Drop` は実装済みですが、region 間の outlives 制約、`let mut` やループで合流する値の region ごとの追跡、トラップ発生時における安全なスタック巻き戻しと確実なリソース解放、ならびに汎用ホスト環境を跨いだ完全な所有権移転モデルは今後の課題です。
 これらの新機能を追加設計する際にも、生存期間モデル、ホスト境界プロトコル、およびエラーハンドリングの失敗モデルを、型システムおよび静的検査と完全に統合して設計する必要があります。
 
-標準 OS API、ハッシュコンテナ、および文字列補間は実装済みですが、Windows ネイティブの完全な OS API 対応（G10。現在は `E2002` エラー）、WASI preview2 および WebAssembly コンポーネントモデルへの対応（E13）、ネットワークソケット API（E09）、ハッシュコンテナにおける SIMD を活用した群探査アルゴリズム（F08）、ならびに書式指定における Unicode 書記素クラスタ（grapheme cluster）幅の考慮（D09）は今後の実装課題として計画されています。
+標準 OS API、ハッシュコンテナ、および文字列補間は実装済みですが、Windows ネイティブの完全な OS API 対応（G10。現在は `E2002` エラー）、WASI preview2 および WebAssembly コンポーネントモデルへの対応（E13 の対象外で、計画チケットはありません）、ネットワークソケット API（E09）、ハッシュコンテナにおける SIMD を活用した群探査アルゴリズム（F08）、ならびに書式指定における Unicode 書記素クラスタ（grapheme cluster）幅の考慮（D09）は今後の実装課題として計画されています。

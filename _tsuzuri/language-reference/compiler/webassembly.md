@@ -1,16 +1,18 @@
 # WebAssembly への出力
 
-`tsuzuri build --target wasm32` または `wasm64` は、ブラウザや Node.js から呼べる WebAssembly を出します。入出力（I/O）を行わない純粋な計算モジュールであれば、WASI や JavaScript のグルーコードは不要です。モジュールを `WebAssembly.instantiate` で直接インスタンス化し、`tz_` 接頭辞の付いたエクスポート関数を呼び出すだけで実行できます。
+`tsuzuri build --target wasm32` または `wasm64` は、ブラウザや Node.js から呼べる WebAssembly を出します。入出力（I/O）を行わない純粋な計算モジュールであれば、WASI は不要です。`--emit bindings-js` で生成する型付きのグルー（JavaScript と TypeScript 宣言）から呼ぶのが基本で、グルーを使わずに `WebAssembly.instantiate` で直接インスタンス化し、`tz_` 接頭辞の付いたエクスポート関数を呼び出すこともできます。
 
 このページの JavaScript の実行例は、Node.js 20 環境で実際に実行して検証しています。なお、`tsuzuri test --target wasm64` のテスト実行には Node.js 24 以降が必要ですが、wasm64 向けにビルドしたモジュールのスカラー export 関数自体は Node.js 20 でも正常に `42n` を返します。
 
 ## この記事のポイント
 
+- `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
+- `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
-- `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。
+- `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
 - 線形メモリの既定上限は 16 MiB、メインスタックは 1 MiB です。
 - ホスト関数は、モジュール名 `tsuzuri`、関数名 `Main.tax_rate` のように import します。
-- トラップしたインスタンスは再利用しません。位置は `<output>.trap.json` と照合します。
+- トラップしたインスタンスは再利用しません。グルーは `TsuzuriTrap` を投げ、次の呼び出しで作り直します。位置は `<output>.trap.json` と照合します。
 
 ## ターゲットを選ぶ
 
@@ -67,11 +69,156 @@ flowchart TD
 
 `i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値、タスクは、この ABI では出せません。`unit` は引数にはできません。
 
-スカラーだけのモジュールは、`memory` も `tsuzuri_alloc` も export しません。配列や文字列を返すと、それらが足されます。
+スカラーだけのモジュールは、`tsuzuri_alloc` と `tsuzuri_free` を export しません（`memory` はリンカーの既定で export されます）。配列、文字列、レコードを受け渡すと、それらが足されます。
 
-## Node.js から呼ぶ
+## 型付きのバインディングを生成する
 
-以下は、Node.js からエクスポート関数を呼び出す具体的な例です（`scale` は `f64`、`is_positive` は `bool` を扱う関数です）。
+`--emit bindings-js` は、`.wasm` を読み込んで型付きの関数として呼ぶ JavaScript モジュール `<name>.mjs` と、その TypeScript 宣言 `<name>.d.mts` を出します。引数の検査、`tsuzuri_alloc` / `tsuzuri_free` による複製と解放、記述子の読み書き、BigInt と Number の変換、メモリが伸びたあとのビューの作り直しは、このグルーが行います。
+
+```sh
+tsuzuri build shop --target wasm32 --emit bindings-js -o shop.mjs
+tsuzuri build shop --target wasm32 -o shop.wasm
+```
+
+グルーはソースだけから作り、LLVM を通しません。`-O` は受け付けて無視します。`.wasm` は同じソースから別にビルドし、`-O3` や `--trap-info` はそちらに付けます。`--target wasm32` が必須で、`-o` は `.mjs` で終わります。TypeScript は `.mjs` の宣言を `.d.ts` から読まず、`.d.mts` からだけ読むためです。`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator` を付けると `E2000`（`... is not valid for bindings output; pass it when building the .wasm`）、`export def` が 1 つもないと `E2004` です。同じソースからは、バイト単位で同じグルーができます。
+
+次のモジュールを例にします。
+
+```tsuzuri
+record Item { price: i64, count: i32 }
+
+extern def tax_rate :: unit -> i64
+
+export def total :: ref Item -> i64 = \item ->
+    let subtotal = item.price * item.count as i64
+    subtotal + subtotal * tax_rate () / 100
+
+export def per_unit :: i64 -> i64 -> i64 = \price count ->
+    price / count
+
+export def shout :: ref string -> string = \text ->
+    clone_string text + "!"
+
+export def scale :: ref [f64] -> f64 -> [f64] = \values factor ->
+    Array.map (\value -> value * factor) values
+```
+
+生成された `shop.d.mts` の主な部分です。export は名前のバイト順、引数名は C ヘッダーと同じ `arg0`、`arg1` です。レコードの interface 名は C ヘッダーの typedef 名と同じで、フィールド名は Tsuzuri の名前のままです。
+
+```typescript
+export interface tz_record_4Main_4Item { price: bigint; count: number }
+export interface Exports {
+  per_unit(arg0: bigint, arg1: bigint): bigint;
+  scale(arg0: Float64Array | Borrowed<Float64Array>, arg1: number): Float64Array;
+  shout(arg0: string): string;
+  total(arg0: tz_record_4Main_4Item): bigint;
+}
+export interface Imports {
+  "Main.tax_rate"(): bigint;
+}
+```
+
+`load` は `.wasm` のバイト列か `WebAssembly.Module` を受け取り、`exports`、`withBorrowed`、`ready` を持つオブジェクトを返します。ホスト関数は、WASM の import 名をキーにして `imports` に渡します。
+
+```javascript
+import { readFile } from "node:fs/promises";
+import { load, TsuzuriTrap } from "./shop.mjs";
+
+const bytes = await readFile(new URL("./shop.wasm", import.meta.url));
+const api = await load(bytes, { imports: { "Main.tax_rate": () => 10n } });
+console.log(api.exports.total({ price: 200n, count: 3 }));
+console.log(api.exports.shout("tea"));
+console.log(api.exports.scale(Float64Array.of(1.5, 2), 2));
+try {
+  api.exports.per_unit(10n, 0n);
+} catch (error) {
+  if (!(error instanceof TsuzuriTrap)) throw error;
+  console.log(error.message, error.trap.reason);
+}
+console.log(api.exports.per_unit(10n, 4n));
+```
+
+実行結果:
+
+```text
+660n
+tea!
+Float64Array(2) [ 3, 4 ]
+trap (site 0) trap
+2n
+```
+
+グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。`--wasm-feature threads` を付けたときのグルーは、[スレッドのグルー](#スレッドのグルー) で説明します。
+
+### 型の対応
+
+| Tsuzuri | TypeScript | JavaScript から渡すときの検査 |
+| --- | --- | --- |
+| `i8` / `i16` / `i32` と符号なし | `number` | 整数で、型の範囲内。範囲外は `RangeError` |
+| `i64` / `i64u` | `bigint` | `bigint` で、型の範囲内。`i64u` の戻り値は符号なしで返る |
+| `f32` / `f64` | `number` | `number`。`f32` はエンジンが最近接へ丸める |
+| `bool` | `boolean` | `boolean` だけ。`0` や `1` は `TypeError` |
+| `unit`（戻り値） | `void` | — |
+| `ref [i64]` / `ref [f64]` / `ref [ubyte]` | `BigInt64Array` / `Float64Array` / `Uint8Array` か `Borrowed<…>` | 型付き配列だけ。通常の配列は `TypeError` |
+| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る |
+| `ref utf8string` | `string` | `isWellFormed()` でない文字列は `TypeError` |
+| `[i64]` などの所有結果 | 型付き配列 | 複製して返し、すぐ `tsuzuri_free` する |
+| `string` / `utf8string` の所有結果 | `string` | 同上 |
+| スカラーレコードとその `ref` | `tz_record_…` の interface | 全フィールドを検査する。固定長配列のフィールドは長さが一致する配列 |
+| `extern type` のハンドル | `number & { readonly __tsuzuri: "tz_handle_…" }` | 0 以上 2^32 未満の整数 |
+| コールバック（import の引数） | 関数型 | import の呼び出し中だけ呼べる |
+
+引数の数、型、範囲、レコードのフィールドは、インスタンスに触れる前に検査します。失敗は `TypeError`（`argument 0 of 'total' field 'price' must be a bigint`）か `RangeError`（`argument 0 of 'widen' is out of range for i8`）で、インスタンスは捨てません。
+
+### 所有権と withBorrowed
+
+グルーは wasm のポインタを JavaScript に渡しません。入力は呼び出しごとに線形メモリへ複製し、所有結果は JavaScript の値へ複製してすぐ解放します。呼び出しが成功すれば、確保の残りは 0 です。ビューは使う直前に `memory.buffer` から作り直します。
+
+大きな入力を複製せずに渡すときは、`withBorrowed(kind, length, callback)` を使います。`kind` は `"i64"`、`"f64"`、`"ubyte"` です。wasm 側に `length` 要素の領域を確保し、`Borrowed` として callback に渡し、callback が返るか例外を投げたあとに解放します。`view()` は呼ぶたびに現在のメモリ上の型付き配列を返します。解放後やインスタンスが捨てられたあとの `Borrowed` を使うと `TypeError` です。callback が Promise などを返すと、解放したうえで `TypeError` を投げます。
+
+```javascript
+const scaled = api.withBorrowed("f64", 3, (buffer) => {
+  buffer.view().set([1, 2, 3]);
+  return api.exports.scale(buffer, 10);
+});
+console.log(scaled);
+```
+
+実行結果:
+
+```text
+Float64Array(3) [ 10, 20, 30 ]
+```
+
+### import とトラップ
+
+import の関数は、借用入力の複製を受け取ります。ホストが保持しても安全です。所有結果を返す import は、型付き配列か文字列を返せば、グルーが `tsuzuri_alloc` で確保して記述子を書きます。ホストの関数が投げた値は、記録したうえで同じ値のまま呼び出し元へ届きます。戻り値の型が違うときは `result of import 'Main.tax_rate' must be a bigint` のような `TypeError` です。
+
+export の呼び出し中に例外が出たら、グルーはそのインスタンスを捨て、次の呼び出しで同じモジュールと import から同期的に作り直します。トラップは `TsuzuriTrap`（`Error` の派生、`name` は `"TsuzuriTrap"`、`cause` は元の例外）で、`trap` に `{ reason, site, kind, path, line, column }` を持ちます。`reason` は `"trap"` か、スタック枯渇の `"stack"` です。`--trap-info` 付きの `.wasm` と、その `.trap.json` の `sites` を `load` に渡すと、位置が付きます。
+
+```javascript
+const { sites } = JSON.parse(await readFile(new URL("./shop-sites.wasm.trap.json", import.meta.url), "utf8"));
+const api = await load(await readFile(new URL("./shop-sites.wasm", import.meta.url)), { imports: { "Main.tax_rate": () => 10n }, sites });
+try {
+  api.exports.per_unit(10n, 0n);
+} catch (error) {
+  console.log(error.message);
+}
+```
+
+実行結果:
+
+```text
+trap at shop/Main.tz:10:5 (integer division by zero)
+```
+
+Chrome のメインスレッドは、8 MB を超えるモジュールの同期の作り直しを拒みます。そのときの呼び出しは `Error`（`the WASM instance could not be recreated synchronously after a failure; await ready() to recreate it asynchronously, then call again`）で失敗するので、`await api.ready()` で非同期に作り直してから呼び直します。`ready()` は、インスタンスがあればすぐに解決します。9.4 MB のモジュールで、Chrome と Playwright の Chromium は同期の作り直しを拒み、`ready()` のあとの呼び出しは成功しました。WebKit は同期のまま作り直せました。
+
+グルーは、モジュールが宣言した import だけを渡し、import を足しません。`--wasm-feature threads`（後述のスレッドのグルーを使います）、IO の入口、`--debug-output`、`--wasm-host wasi`、`--allocator host` で作った `.wasm` は、`load` が `Error` で拒否します。別のソースから作った `.wasm` は、`module does not match bindings: missing export 'tz_add'; regenerate the bindings from the same sources` のように拒否します。グルーのポインタは 32 bit なので、`--target wasm64` の `.wasm` も拒否します（`bindings support wasm32 modules only; build the .wasm with --target wasm32`）。
+
+## Node.js から直接呼ぶ
+
+グルーを使わずに、`WebAssembly.instantiate` で直接呼ぶこともできます。以下は、Node.js からエクスポート関数を呼び出す具体的な例です（`scale` は `f64`、`is_positive` は `bool` を扱う関数です）。
 
 ```javascript
 import { readFileSync } from "node:fs";
@@ -117,6 +264,8 @@ stack-size = "1MiB"
 
 ## バッファを渡す
 
+この節は、グルーを使わずにホストを書くときの ABI です。`--emit bindings-js` のグルーは、同じ手順を自動で行います。
+
 `ref [i64]` は、ポインタと `i64` の長さです。wasm32 ではポインタが `Number`、長さが `BigInt` です。ホストは、要素数ぶんの領域と自然な整列を保証します。長さ 0 と null は空のバッファとして通ります。呼び出しのあいだ、その領域を書き換えたり解放したりしてはいけません。
 
 次は、`10, 20, 12` の和が 42 になった呼び出しです。
@@ -157,14 +306,84 @@ api.tsuzuri_free(out);
 
 `--wasm-feature threads` は wasm32 の object か WASM だけです。スカラーだけのモジュールでも、共有メモリの `env.memory` と `tsuzuri_threads.worker_ready` を import しました。ワーカーを起動するランタイムは `tsuzuri_threads.spawn_workers` も宣言します。その呼び出しに到達しないモジュールでは、リンカーが import から外します。
 
-ホストの実装は、リポジトリの `src/runtime/wasm-threads.mjs` が Node.js 向けの参照です。自分で書くときの条件は [Web ホストの README](../../../examples/web/README.md) にあります。
+ホストの実装は、リポジトリの `src/runtime/wasm-threads.mjs` が Node.js 向けの参照です。ブラウザ向けには、後述の [スレッドのグルー](#スレッドのグルー) を生成できます。自分で書くときの条件は [Web ホストの README](../../../examples/web/README.md) にあります。
 
 - 共有の `WebAssembly.Memory` を、モジュールが要求する最大ページ数で作る。既定は 256 ページ、つまり 16 MiB です。
 - `tsuzuri_threads_init` にワーカー数を渡してから計算を呼ぶ。
 - 各ワーカーの `__stack_pointer`、`tsuzuri_stack_base`、`tsuzuri_stack_top` を、独立した 256 KiB の範囲に設定してから `tsuzuri_thread_entry` を呼ぶ。
 - ブラウザでは、HTTPS か localhost で `Cross-Origin-Opener-Policy: same-origin` と `Cross-Origin-Embedder-Policy: require-corp` を配信する。UI スレッドでは atomic wait できないので、計算の呼び出し元も Worker に置きます。
 
-ブラウザ向けの本番グルーは未実装です。COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
+COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
+
+### スレッドのグルー
+
+`--emit bindings-js` に `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーを出します。`.wasm` も、同じソースから `--wasm-feature threads` でビルドします。
+
+```sh
+tsuzuri build shop --target wasm32 --wasm-feature threads --emit bindings-js -o shop.mjs
+tsuzuri build shop --target wasm32 --wasm-feature threads -O3 -o shop.wasm
+```
+
+`load` は最初に、ページが cross-origin isolated か（`crossOriginIsolated` が true で、`SharedArrayBuffer` があるか）を確かめます。COOP / COEP の無いページでは、ワーカーを起動せずに `Error`（`WASM threads need a cross-origin isolated page: ...`）を投げます。逐次実行には切り替えません。
+
+プールの手順は `src/runtime/wasm-threads.mjs` と同じです。共有の `WebAssembly.Memory` を `.wasm` の要求する最大ページ数で作り、`workers` 個の補助ワーカーと、export を実行する調整役のワーカーを 1 つ起動します。`WebAssembly.Module` を渡したときは上限を読めないので、既定の 256 ページです。`memory` で自分のメモリを渡すこともできます。ブラウザのメインスレッドは atomic wait できないので、export は調整役のワーカーで動き、すべて `Promise` を返します。`workers` は 0 から 31 で、既定は `navigator.hardwareConcurrency - 1` です。0 なら、調整役がすべてのタスクを自分で実行します。グルーは自分のファイル（`import.meta.url`）を module worker として起動するので、`.mjs` はバンドルせずに、そのまま同じオリジンから配信します。
+
+ホスト関数は、ワーカーごとのインスタンスに渡します。関数の代わりに、`createImports({ workerId, data })` を export するモジュールの URL を `importsModule` に渡します。`workerId` は調整役が 0、補助ワーカーが 1 からです。`data` は `importData` の構造化複製で、`SharedArrayBuffer` は共有されます。import を持つモジュールでは、`importsModule` が必須です。
+
+上の `shop` を、次のソースに置き換えた例です。1 万要素の `Parallel.map` は 3 つのチャンクに分かれ、プールのスレッドで並列に動きます。
+
+```tsuzuri
+extern def tax_rate :: unit -> i64
+
+export def with_tax :: ref [i64] -> [i64] = \prices ->
+    Parallel.map (\price -> price + price * tax_rate () / 100) prices
+
+export def per_unit :: i64 -> i64 -> i64 = \price count ->
+    price / count
+```
+
+`host.mjs` は、どのワーカーにも同じ税率を返します。
+
+```javascript
+export function createImports({ workerId }) {
+  return { "Main.tax_rate": () => 10n };
+}
+```
+
+ページが読み込む `app.mjs` です。
+
+```javascript
+import { load, TsuzuriTrap } from "./shop.mjs";
+
+const bytes = await (await fetch("./shop.wasm")).arrayBuffer();
+const api = await load(bytes, { workers: 2, importsModule: new URL("./host.mjs", import.meta.url) });
+const prices = BigInt64Array.from({ length: 10000 }, (_, index) => BigInt(index));
+const taxed = await api.exports.with_tax(prices);
+console.log(taxed[200].toString(), taxed.length);
+try {
+  await api.exports.per_unit(10n, 0n);
+} catch (error) {
+  console.log(error instanceof TsuzuriTrap, error.message);
+}
+try {
+  await api.exports.per_unit(10n, 4n);
+} catch (error) {
+  console.log(error.message);
+}
+await api.close();
+```
+
+COOP / COEP を付けて配信したページの、コンソールの出力です。
+
+```text
+220 10000
+true trap (site 0)
+the WASM thread pool stopped after a failure; load the module again
+```
+
+引数は、1 スレッドのグルーと同じ検査をページ側で行ってから送ります。`TypeError` や `RangeError` では、プールは止まりません。引数と結果は構造化複製で受け渡すので、`withBorrowed` はありません。トラップやホスト関数の例外は、どのワーカーで起きてもプール全体を止めます。その呼び出しは `TsuzuriTrap` で失敗し、補助ワーカーのトラップなら、そのワーカーのサイト ID が付きます。待っていた呼び出しとそれ以降の呼び出しも失敗します。作り直しは自動ではないので、`load` からやり直します。`close()` はワーカーを終了し、それ以降の呼び出しは `the WASM thread pool is closed` で失敗します。
+
+この例とリポジトリの `tests/bindings_threads.mjs` は、Chrome（headless）と、Playwright の Chromium、WebKit で、COOP / COEP 付きのページでは 3 スレッドが同時に動くこと、ヘッダーの無いページでは `Error` になることを確かめました。Firefox は未確認です。Node.js から使うときは、このグルーではなく `src/runtime/wasm-threads.mjs` を使います。
 
 ## WASI
 
@@ -183,7 +402,7 @@ export def with_tax :: i64 -> i64 = \cents ->
     cents + cents * tax_rate () / 100
 ```
 
-この断片は型検査できます。実行にはホストが要るので、`run=` は付けていません。200 セントに 10% を足すホストは、次のとおりです。実行結果は `220` でした。
+この断片は型検査できます。実行にはホストが要るので、`run=` は付けていません。200 セントに 10% を足すホストは、次のとおりです（グルーを使うときは `load` の `imports` に `"Main.tax_rate": () => 10n` を渡します）。実行結果は `220` でした。
 
 ```javascript
 import { readFileSync } from "node:fs";
@@ -228,10 +447,11 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 
 ## まとめ
 
+- `--emit bindings-js` のグルーが、型の検査、複製と解放、import、トラップを受け持ちます。
 - `export def` は `tz_` 名で出ます。`i64` は `BigInt`、浮動小数点と `bool` は `Number` です。
 - 計算だけのモジュールは import なしで instantiate できます。OS API は WASI か native です。
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
-- `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。
+- `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 
 ## 関連項目

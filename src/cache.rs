@@ -162,7 +162,7 @@ pub(crate) fn build_key(
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));
         }
         if cfg!(target_os = "macos") && options.debug_info && options.target == Target::Native {
-            if options.emit == Emit::Executable {
+            if matches!(options.emit, Emit::Executable | Emit::Shared) {
                 tools.push(("TSUZURI_DSYMUTIL", "dsymutil"));
             }
             if options.emit == Emit::Object && ir.contains("@tsuzuri_task_parallel(") {

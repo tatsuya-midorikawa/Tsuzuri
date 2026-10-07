@@ -273,7 +273,7 @@ mod exception;
 #[path = "llvm_hash.rs"]
 mod hash;
 #[path = "llvm_abi.rs"]
-mod host_abi;
+pub(crate) mod host_abi;
 #[path = "llvm_imports.rs"]
 mod imports;
 #[path = "llvm_io.rs"]
@@ -1657,7 +1657,7 @@ fn c_type(ty: &Type) -> String {
 }
 
 /// The length of a concrete fixed-length array type `[T; N]` (A16).
-pub(super) fn fixed_length(ty: &Type) -> usize {
+pub(crate) fn fixed_length(ty: &Type) -> usize {
     let length = ty
         .fixed_length()
         .expect("specialization substitutes every length parameter");
@@ -2146,7 +2146,10 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 /// The functions that the program needs: user functions, exports, and the
 /// entry point, and every function they refer to (GUIDE D-22). Unused std
 /// functions and the helpers generated for them are left out.
-fn reachable_functions(module: &CheckedModule, roots: Option<&[usize]>) -> BTreeSet<usize> {
+pub(crate) fn reachable_functions(
+    module: &CheckedModule,
+    roots: Option<&[usize]>,
+) -> BTreeSet<usize> {
     fn references(expression: &TypedExpr, module: &CheckedModule, pending: &mut Vec<usize>) {
         match &expression.kind {
             TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
@@ -5419,6 +5422,14 @@ fn export_wrapper(function: &CheckedFunction, module: &CheckedModule) -> String 
         } else if let Type::Integer(bits @ (8 | 16), _) = ty {
             let _ = writeln!(output, "  %n{index} = trunc i32 %arg{index} to i{bits}");
             arguments.push(format!("i{bits} %n{index}"));
+        } else if matches!(ty, Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)))
+        {
+            // The host passes the handle itself, and a borrow of it is the address of a slot.
+            let _ = writeln!(
+                output,
+                "  %h{index} = alloca ptr, align 8\n  store ptr %arg{index}, ptr %h{index}"
+            );
+            arguments.push(format!("ptr %h{index}"));
         } else {
             arguments.push(format!("{} %arg{index}", llvm_type(ty, module)));
         }

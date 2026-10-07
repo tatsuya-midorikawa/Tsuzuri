@@ -3,7 +3,7 @@
 set -eu
 
 files=$(
-  grep -hE 'include_str!\("runtime/[^"]+"\)' src/llvm.rs src/driver.rs |
+  grep -hE 'include_str!\("runtime/[^"]+"\)' src/llvm.rs src/driver.rs src/bindings.rs |
     sed -E 's/.*include_str!\("runtime\/([^"]+)"\).*/src\/runtime\/\1/' |
     sort -u
 )

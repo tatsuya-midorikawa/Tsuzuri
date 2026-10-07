@@ -1,0 +1,136 @@
+record Flags { tiny: i8, wide: i16u, flag: bool }
+record Sample { flags: Flags, amount: f64 }
+record Window { values: [i32; 3], scale: f64, mark: i8u }
+
+extern type Counter
+
+extern def now :: unit -> i64
+extern def host_scale :: ref [f64] -> f64 -> [f64]
+extern def host_greeting :: ref utf8string -> utf8string
+extern def host_fail :: i64 -> i64
+extern def host_note :: ref string -> unit
+extern def host_flags :: ref Flags -> Sample
+extern def host_mix :: i32u -> i64u -> bool -> i16 -> i64u
+extern "e13_counter_new" def counter_new :: i64 -> Counter
+extern "e13_counter_add" def counter_add :: ref Counter -> i64 -> i64
+extern "e13_counter_free" def counter_free :: Counter -> i64
+extern "env" "e13_apply" def apply_host :: (i64 -> i64) -> i64 -> i64
+extern "env" "e13_visit" def visit_host :: (ref Counter -> i8 -> bool) -> ref Counter -> i64
+extern def unused :: i64 -> i64
+
+def rec depth :: i64 -> i64
+fn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n
+
+private def triple :: i64 -> i64
+fn triple value = value * 3
+
+private def boom :: i64 -> i64
+fn boom value =
+    assert (value < 0)
+    value
+
+private def above :: ref Counter -> i8 -> bool
+fn above counter limit = counter_add counter 0 > limit as i64
+
+export def add :: i64 -> i64 -> i64
+fn add a b = a + b
+
+export def add_u64 :: i64u -> i64u -> i64u
+fn add_u64 a b = a + b
+
+export def widen :: i8 -> i16u -> i32u -> i64
+fn widen a b c = a as i64 + b as i64 + c as i64
+
+export def negate :: bool -> bool
+fn negate value = !value
+
+export def twice32 :: f32 -> f32
+fn twice32 value = value + value
+
+export def divide :: i64 -> i64 -> i64
+fn divide a b = a / b
+
+export def deep :: i64 -> i64
+fn deep n = depth n
+
+export def sum_float :: ref [f64] -> f64
+fn sum_float values = Array.sum values
+
+export def checksum :: ref [ubyte] -> i64
+fn checksum values = Array.fold (total -> value -> total + value as i64) 0 values
+
+export def make_bytes :: i64 -> [ubyte]
+fn make_bytes count = new [ubyte](count, index -> index as ubyte)
+
+export def copy_values :: ref [i64] -> [i64]
+fn copy_values values = Array.map (value -> value) values
+
+export def copy_text :: ref string -> string
+fn copy_text text = clone_string text
+
+export def copy_utf8 :: ref utf8string -> utf8string
+fn copy_utf8 text = Utf8String.clone text
+
+export def update :: ref Sample -> Sample
+fn update value =
+    Sample { flags: Flags { tiny: value.flags.tiny, wide: value.flags.wide, flag: value.flags.flag }, amount: value.amount + 1.0 }
+
+export def area :: Geometry.Point -> f64
+fn area point = point.x * point.y
+
+export def window_total :: ref Window -> f64
+fn window_total window =
+    (window.values[0] + window.values[1] + window.values[2]) as f64 * window.scale + window.mark as f64
+
+export def make_window :: i32 -> Window
+fn make_window seed = Window { values: [seed, seed * 2, -seed], scale: 0.5, mark: 255 }
+
+export def stamp :: i64 -> i64
+fn stamp offset = now () + offset
+
+export def scaled :: ref [f64] -> f64 -> [f64]
+fn scaled values factor = host_scale values factor
+
+export def greeting :: ref utf8string -> utf8string
+fn greeting name = host_greeting name
+
+export def relay_fail :: i64 -> i64
+fn relay_fail value = host_fail value
+
+export def note :: ref string -> i64
+fn note text =
+    host_note text
+    text.length
+
+export def relay_flags :: i8 -> f64
+fn relay_flags tiny =
+    let flags = Flags { tiny: tiny, wide: 7, flag: true }
+    let sample = host_flags (&flags)
+    sample.amount + sample.flags.wide as f64 + sample.flags.tiny as f64
+
+export def mix :: i32u -> i64u -> i64u
+fn mix small large = host_mix small large true (-2) + 1
+
+export def counters :: i64 -> i64
+fn counters start =
+    let counter = counter_new start
+    let first = counter_add (&counter) 5
+    first + counter_free counter
+
+export def pass_through :: Counter -> Counter
+fn pass_through counter = counter
+
+export def peek :: ref Counter -> i64
+fn peek counter = counter_add counter 0
+
+export def callbacks :: i64 -> i64
+fn callbacks value = apply_host triple value
+
+export def visit :: i64 -> i64
+fn visit start =
+    let counter = counter_new start
+    let seen = visit_host above (&counter)
+    seen + counter_free counter
+
+export def callback_trap :: i64 -> i64
+fn callback_trap value = apply_host boom value

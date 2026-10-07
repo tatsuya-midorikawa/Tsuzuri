@@ -133,15 +133,16 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | ローカル path、commit 固定の git、自前の index による registry のパッケージ（最小版選択、`tsuzuri fetch`・`publish`、`Tsuzuri.lock`）、ビルドキャッシュ、JSON 診断、fmt、test、doc、lsp | 実装済み | E04、E10、G11、G12、G14、G20。公開の registry は運営しない |
 | `HashMap`、文字列補間、OS API、C 連携の `extern` と `--link` | 実装済み | C09、D07、E08、E12。Windows の OS API は除く |
 | C ヘッダーからの `extern` 生成（`tsuzuri bindgen`） | 実装済み | E11。64-bit の Linux と macOS、ABI の一致を確かめられる宣言だけ |
+| WASM の型付きグルー、共有ライブラリ、C#・Python・C++ のバインディング | 実装済み | E13。Windows の共有ライブラリは G10 の後 |
 | 整数 WGSL と WebGPU ホスト試作 | 実験的 | F07。通常ランタイムへは未接続 |
-| WASM threads | 実装済みの opt-in | F06。ブラウザ向けの本番 glue は対象外 |
+| WASM threads | 実装済みの opt-in | F06。ブラウザ向けのグルーは E13 の `--emit bindings-js --wasm-feature threads` |
 | Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002` |
 | 非同期計算、ネットワーク | 計画中 | [B08](../../../_features/B08-async.md)、E09 |
 | JSON 直列化、正規表現、GPU の浮動小数点と自動接続 | 計画中 | D08、D09、[F09](../../../_features/F09-gpu-float-runtime.md) |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。内部可変性はない |
 | Atomic / Mutex / Channel、多次元配列 | 計画中 | F10、C11 |
 | REPL、増分コンパイル、カバレッジ、edition、追加ターゲット | 計画中 | G13、G15、G16、G17、G18、G19 |
-| `f16` のハードウェア演算、const 評価の拡張 | 計画中 | D10、D11、E13 |
+| `f16` のハードウェア演算、const 評価の拡張 | 計画中 | D10、D11 |
 
 ## 採らないもの
 

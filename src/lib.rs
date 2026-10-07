@@ -1,5 +1,6 @@
 pub mod abi;
 pub mod bindgen;
+pub mod bindings;
 pub mod cache;
 pub mod check;
 pub mod copies;
