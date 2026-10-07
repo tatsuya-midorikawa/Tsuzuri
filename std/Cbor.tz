@@ -280,10 +280,14 @@ fn bignum_at bytes start next negative =
 		| Result.Error error -> Result.Error error
 		| Result.Ok (length, first) ->
 			if length > ((bytes.length - first) as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length)
-			elif length > 1700i64u then Result.Error (failure Json.NumberRange start)
+			// 1701 bytes hold every 4096-digit integer, the most digits `encode` writes.
+			elif length > 1701i64u then Result.Error (failure Json.NumberRange start)
 			else
 				let last = first + (length as i64)
-				Result.Ok (numeral_of (bignum_text bytes first last negative), last)
+				let text = bignum_text bytes first last negative
+				let digits = if negative then text.length - 1 else text.length
+				if digits > 4096 then Result.Error (failure Json.NumberRange start)
+				else Result.Ok (numeral_of text, last)
 /// A simple value or float of major type 7.
 private def simple :: ref [ubyte] -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
 fn simple bytes start info =

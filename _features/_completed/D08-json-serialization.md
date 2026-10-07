@@ -823,3 +823,11 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 - 統合した C10 の `src/recursive.rs` の修正で、`record Person { name: string, email: Maybe<string>, manager: Maybe<Person> } deriving (Encode, Decode)` のように
   再帰する型の `Decode` の導出が `E1017` になる問題（独立したレビューの指摘。既存の解析の不具合で、導出した `Decode` が必ず踏んだ）も解消し、
   `tests/json.rs` の `derives_generic_and_recursive_records` に `Person`・`Node`・`Expr` の形を足した。
+
+### PR #17 の Copilot のレビュー（2026-10-08）
+
+- CBOR の decode が bignum を 1,700 バイトまでしか受け付けず、`encode` が書く 4096 桁の整数（1,701 バイト）を `NumberRange` にしていた。
+  1,701 バイトまで読み、10 進の桁数が 4096 を超えるものだけを `NumberRange` にする（`encode` と同じ上限）。`cbor` suite に 4096 桁の往復と
+  1,700〜1,702 バイトの bignum の 9 ケースを足した（期待値は JavaScript の BigInt の桁数）。
+- `cbor.md` の decode の offset の説明を直した（`UnexpectedEnd` は入力の長さ、ほかは問題の項目の先頭）。
+

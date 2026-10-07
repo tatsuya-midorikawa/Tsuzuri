@@ -1330,6 +1330,12 @@ const suites = {
       ["descending", [0n, 50000n], 50000n], ["descending", [1n, 25000n], 25000n],
       ["duplicate_message", [0n], jsonTextHash(duplicateMessage(["9", "1", "9", "5", "1"], Number))],
       ["duplicate_message", [50000n], jsonTextHash(duplicateMessage(scattered(50000).map(String), Number))],
+      // Every integer of at most 4096 digits round-trips; a bignum decodes only within that limit
+      // (PR #17 review). The digit counts come from BigInt, not from the compiler.
+      ...[[1n, 0n], [21n, 0n], [21n, 1n], [4096n, 0n], [4096n, 1n]].map(([digits, sign]) => ["bignum_round_trip", [digits, sign], 1n]),
+      ["bignum_round_trip", [4097n, 0n], 2n],
+      ...[1700n, 1701n, 1702n].map((length) => ["bignum_bytes", [length],
+        length <= 1701n && ((1n << (8n * length)) - 1n).toString().length <= 4096 ? 1n : jsonStatus(9, 0)]),
     ],
     nativeCases: [
       ["descending", [0n, 200000n], 200000n], ["descending", [1n, 200000n], 200000n],

@@ -217,3 +217,35 @@ fn set_message keys =
 /// whose key repeats an earlier key. `count` 0 decodes `[9, 1, 9, 5, 1]`, others `scattered count`.
 export def duplicate_message :: i64 -> i64
 fn duplicate_message count = set_message (if count == 0 then Vec.of_array (new [9, 1, 9, 5, 1]) else scattered count)
+
+/// The integer of `digits` nines (negative when `sign` is 1) through `Cbor.encode` and
+/// `Cbor.decode`: 1 when it comes back with the same text, 2 when `encode` refuses it, and the
+/// error status when `decode` refuses it.
+export def bignum_round_trip :: i64 -> i64 -> i64
+fn bignum_round_trip digits sign =
+    let mut text = if sign == 1 then "-" else ""
+    let mut index = 0
+    while index < digits do
+        text = text + "9"
+        index = index + 1
+    let value = Json.Number (Maybe.get (Json.numeral (ref (Utf8String.from_string (ref text)))))
+    match Cbor.encode (ref value) with
+    | Error _ -> 2
+    | Ok bytes ->
+        match Cbor.decode (ref bytes) with
+        | Error error -> error_status (ref error)
+        | Ok back -> if Json.to_utf8string (ref back) == Utf8String.from_string (ref text) then 1 else 0
+
+/// A positive bignum (tag 2) of `length` bytes 0xff, the largest value of that length.
+export def bignum_bytes :: i64 -> i64
+fn bignum_bytes length =
+    let mut bytes = Vec.push (Vec.push (Vec.push (Vec.empty()) 0xc2ubyte) 0x59ubyte) ((length / 256) as ubyte)
+    bytes = Vec.push bytes ((length % 256) as ubyte)
+    let mut index = 0
+    while index < length do
+        bytes = Vec.push bytes 0xffubyte
+        index = index + 1
+    let input = Vec.to_array bytes
+    match Cbor.decode (ref input) with
+    | Error error -> error_status (ref error)
+    | Ok _ -> 1
