@@ -813,3 +813,13 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 - ストリーミングの重複キーは object の終わりで報告し、それまでのキーと値の事象は返っている。出力器は重複キーを検査しない（`to_utf8string` と同じ）。出力器は字下げしない。
 - CBOR は数値を値で保存するので JSON の字句（`1.0` と `1`）は残らない。浮動小数点の CBOR を JSON にすると `f64` の最短表現になる。長さ不定の項目は受理しない。
 - 性能は計測していない（serde_json・System.Text.Json との比較は未実施）。
+
+### 統合後の変更（opt-in std モジュール。D-40）
+
+- 6 チケットの統合で、`Json` と `Cbor` を opt-in std モジュールにした。利用者のソースが識別子 `Json`・`Encode`・`Decode`・`Cbor` のどれかを含むときだけ読み込み
+  （`Cbor` は `Json` を伴う。`deriving (Encode, Decode)` も `Encode`／`Decode` を含む）、`Json.Value` の case などの宣言は利用者のコードから修飾した名前でだけ見える。
+  そのため「`Json` を使わないプログラムの IR は変わらない」は生成 id のずれも含めて byte 単位で満たし（`2ee813f` と比べ、既存の fixture と例の IR 132 個がすべて一致）、
+  追記の 9 の無修飾の `ErrorKind` の曖昧さはなくなった（従来どおり `Os.ErrorKind`）。
+- 統合した C10 の `src/recursive.rs` の修正で、`record Person { name: string, email: Maybe<string>, manager: Maybe<Person> } deriving (Encode, Decode)` のように
+  再帰する型の `Decode` の導出が `E1017` になる問題（独立したレビューの指摘。既存の解析の不具合で、導出した `Decode` が必ず踏んだ）も解消し、
+  `tests/json.rs` の `derives_generic_and_recursive_records` に `Person`・`Node`・`Expr` の形を足した。
