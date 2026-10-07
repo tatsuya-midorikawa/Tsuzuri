@@ -650,13 +650,15 @@ D1 の承認（サブコマンド `tsuzuri bindgen` と警告 `W2002`）と「�
    関数ポインター）で読み、typedef を展開してから表と完全一致で照合する。`const struct TAG *` の判定（ポインターの先の typedef を含む）と `const T *const` を
    正しく扱うため。`desugaredQualType` は表記を読めないとき（`typeof` など）だけ使う。`AlignedAttr`・`PackedAttr` を持つ typedef は展開しない
    （desugar すると属性が消え、配置が変わったフィールドを `i64` と誤るため）。読めない表記はすべて変換不可。
+   （レビュー指摘 3 で `desugaredQualType` は使わなくなり、属性は許可リストで判定するようになった。「レビュー指摘の修正」を参照）
 7. **追加の省略理由**（ABI が一致しない形を推測で生成しないため）: asm ラベルや overloadable で `mangledName` が C の名前（Mach-O は `_` 付き）と異なる関数
    （macOS の `__DARWIN_ALIAS` のように同じシンボルになる asm ラベルは生成する）、`noreturn` 以外の型属性（`ms_abi`・`preserve_most` などの呼び出し規約。
    Clang は属性を型の前にも後にも書く）、`pass_object_size` の引数、packed・aligned・`#pragma pack` の struct、alignment 属性付きのフィールド、
    フィールドのない struct、ASCII でないフィールド名、snake_case にすると衝突するフィールド。理由は `src/bindgen.rs` の文字列のまま、言語リファレンスに一覧がある。
 8. **絶対パスを出さない。** 匿名の tag の表記 `struct (unnamed struct at /abs/path:1:2)` は `struct (unnamed struct)` にしてから理由に入れる。
    `typedef struct { ... } name;` の匿名 struct は typedef の名前と位置で報告する。`typedef enum { ... } name;` の匿名 enum は Clang の表記どおり `enum name`
-   として表に入れ、引数の `name` を `i32` にする。
+   として表に入れ、引数の `name` を `i32` にする
+   （同じ名前の enum の tag があれば変換しない。無名の struct・union の typedef は展開しない。レビュー指摘 2 の修正）。
 9. **clang の失敗の hint。** ヘッダーのコンパイルの失敗は `fix the header, or pass the directories that it includes with --include-dir`。
    `install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable` は Clang を起動できないときと `--version`・`-dumpmachine` の失敗だけ。
 10. **golden。** `expected.tz` の 2 行目は `sha256=<sha256>` で、E2E は `node:crypto` で計算したハッシュと比べてから置き換える（3・4 行目と同じ扱い）。
@@ -725,7 +727,7 @@ C の呼び出し側は下位 8 bit しか保証しない。狭い整数は wrap
 3. `--consume` は (b) を E12 の所有の規約と両立させるために足した注釈で、指示にない追加。注釈がなければ引数は借用なので、解放関数を生成しても Tsuzuri が何かを
    二重に解放することはない（解放後の使用を型で防げないだけ）。
 4. 2 進のリテラル（gnu17 の拡張）も受け付けた。
-5. Clang の起動は 4 回（`--version`、`-dumpmachine`、AST、`-E -dD`）になった。
+5. Clang の起動は 4 回（`--version`、`-dumpmachine`、AST、`-E -dD`）になった（レビュー指摘 4 の修正で `-E -dM` を足して 5 回）。
 
 ### 確認（Apple M1 Max、macOS 27、Apple clang 21.0.0（`arm64-apple-darwin27.0.0`）、rustc 1.98.1、Node v20.19.6。6 エージェントで共有した機械）
 
@@ -755,6 +757,59 @@ C の呼び出し側は下位 8 bit しか保証しない。狭い整数は wrap
     0 宣言（D10 どおり）。
 - 性能は主張しない。
 
+### レビュー指摘の修正（2026-10-08）
+
+統合ブランチへのマージ後の独立レビューの指摘 4 件を `wt/e11` で直した。方針は「確かでなければ `W2002` で省く」。各指摘は修正前の実装で
+Clang から再現し（誤った出力になることを確かめ）、修正後は Rust のテストと golden `skipped` で省かれることを確かめた。
+
+1. **配置を変える属性を持つ enum（`src/bindgen.rs` の `HARMLESS_ATTRIBUTES`・`layout_attribute`）。** enum は `PackedAttr` だけを見ていたので、
+   `enum __attribute__((aligned(8))) E`（`AlignedAttr`）や `__attribute__((mode(QI)))`（`ModeAttr`。1 byte の enum）を `i32` にし、record のフィールドの
+   オフセットと引数・結果の幅を黙って誤っていた。拒否リスト `LAYOUT_ATTRIBUTES` を、配置と呼び出し規約を変えないと分かっている属性の許可リスト
+   `HARMLESS_ATTRIBUTES`（`Annotate`・`Availability`・`AvailableOnlyInDefaultEvalMethod`・`Deprecated`・`EnumExtensibility`・`FlagEnum`・`MayAlias`・
+   `ObjCBoxable`・`ObjCBridge`・`ObjCBridgeMutable`・`ObjCBridgeRelated`・`SwiftAttr`・`SwiftBridgedTypedef`・`SwiftName`・`SwiftNewType`・`SwiftPrivate`・
+   `Unavailable`・`Unused`・`Used`・`Visibility`。macOS SDK のヘッダーに現れる属性を調べて決めた）に置き換え、enum・typedef・struct・フィールドが
+   それ以外の属性（`Aligned`・`Packed`・`Mode`・`MaxFieldAlignment`（`#pragma pack`）・`RandomizeLayout`、未知の属性）を 1 つでも持てば、その型を変換しない。
+   enum の定数は値が型によらないので出し、その enum 型の引数・結果・フィールドを省く。理由は属性を示す形にした
+   （`struct has __attribute__((packed)), which may change its layout`、`field 'b' has __attribute__((aligned)), which may change its layout`）。
+2. **無名の struct の typedef と同じ名前の tag（`Tables::new`・`unnamed_tag`）。** Clang は `typedef struct { int small; } S;` の型を `struct S` と表記する
+   ので、`S` を展開すると無関係の tag `struct S`（tag と typedef 名は C の別の名前空間）の record やハンドルに解決し、`ref S` の配置やハンドルを誤っていた。
+   typedef の型ノード（`MAX_TYPE_NESTING` 段まで）に名前のない `ownedTagDecl` の struct・union があれば、その typedef を展開不可にした（`const S *` の引数は
+   `W2002`、`struct S *` は従来どおり tag の型）。無名の enum の typedef は従来どおり `enum S` として表に入れるが、同じ名前の enum の tag が（定義・前方宣言、
+   struct の中の宣言を含めて）あれば、tag とともに変換しない。struct の中の tag は C ではファイルスコープなので、`struct outer { enum E { BIG = 0x7fffffffffff } e; };`
+   と `typedef enum { SMALL } E;` で `enum E` を `i32` にしていた（8 byte の enum。レビュー後の調査で見つけて同時に直した。tag の収集を全ノードの走査
+   `visit_all` に変えた）。無名の union は、名付ける typedef の名前と位置で報告する。
+3. **`typeof` の desugar（`node_type`・`Tables::c_type`）。** 読めない表記（`typeof` など）を `desugaredQualType` で読み直していたので、
+   `__typeof__((wide_aligned)0)`（`aligned(16)` の typedef）のフィールドを `i64` とし、オフセットを誤っていた（desugar は typedef とともに属性を落とす）。
+   `desugaredQualType` を一切使わないようにした（`node_type` は `qualType` だけを返し、`Typedef` から `desugared` を除いた）。読めない表記は、フィールド・
+   引数・結果・typedef の展開のどこでも変換しない。`typedef __typeof__(sizeof(0)) my_size_t;` のような typedef も変換しなくなる（安全側）。
+4. **`#pragma push_macro`／`pop_macro`（`header_macros`・`define_line`、`src/bindgen_driver.rs`）。** `clang -E -dD` は両 pragma を出力しない（空行になる）ので、
+   `pop_macro` で戻された値を誤って出していた（C では 1 の `LEVEL` を `const LEVEL: i32 = 2`）。5 回目の Clang の起動
+   `clang -x c -std=gnu17 -E -dM [-I DIR]... HEADER`（ヘッダーの終わりのマクロ表。`-dD` と同じ printer なので置換列は同じ文字列になる）と照合し、
+   最後の定義が object-like で置換列が一致するマクロだけを生成する。一致しない・消えた・関数形式になったマクロは、`-dD` の置換列か最終の置換列が
+   整数リテラルに見えれば `W2002`（`the macro does not end with this #define (#pragma push_macro and pop_macro can restore another value)`。位置は `-dD` が示す
+   最後の `#define`）、そうでなければ従来どおり何も出さない。pragma に現れる名前を除く案は採らなかった（`-dD` には pragma 自体が現れず、`_Pragma` や
+   include 先の pragma もあるので、最終状態を Clang 自身に問う方が確実）。
+5. **同時に直したもの。** `returns_twice`（`ReturnsTwiceAttr`。`setjmp`・`vfork` の類）の関数を省く（`function returns twice (returns_twice), which a Tsuzuri
+   call cannot follow`。生成する呼び出しには `returns_twice` が付かず、2 度目の戻りでレジスターの値が壊れうる）。関数型の後ろの `__attribute__` 以外の語
+   （AArch64 の SME の `__arm_streaming`・`__arm_inout("za")` など）は以前から省いていたが、理由の属性名が `'?'` だったので語をそのまま示す。
+
+テスト: `tests/bindgen.rs` に 4 件（`converts_only_types_whose_attributes_keep_the_layout`・`does_not_read_unnamed_struct_typedefs_as_tags`・
+`never_reads_desugared_types`・`generates_a_macro_only_where_its_final_definition_agrees`。JSON AST と `-dD`／`-dM` の出力を手で書く）と
+`splits_function_types` の 1 assert を足し、golden `skipped/skipped.h` に指摘ごとのケース（`aligned`・`mode`・`flag_enum` の enum、`randomize_layout`、
+`struct tagged` と無名の `tagged`、struct の中の enum の tag、`typeof`、`returns_twice`、`push_macro`）を足した（`// skipped` 27 → 37 行。
+`tests/bindgen.mjs` の `--json` の件数も 37）。
+
+確認（同じ機械）:
+- `cargo test --locked --test bindgen` 26 passed（22 → 26）、`cargo test --locked --lib bindgen` 5 passed。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` が成功。Windows の型検査（x86_64-pc-windows-msvc、rustup の clippy 1.96.1）は
+  Phase 2 と同じ既存の `nonminimal_bool` 3 件だけで失敗し、`-A clippy::nonminimal_bool` で成功（OS 依存のコードは変えていない）。
+- `cargo build --release --locked && node tests/bindgen.mjs target/release/tsuzuri` の 6 行が成功（`-O0`／`-O3` の往復を含む）。
+  `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/native-interop.md` が成功（10 links、4 checked examples）。
+- 実ヘッダーの結果は Phase 2 と同じ: `zlib.h` 生成 42 行・`W2002` 78 件、`math.h` 生成 132 行・`W2002` 117 件（`float_t`・`double_t` の
+  `AvailableOnlyInDefaultEvalMethodAttr` は許可リストにあるので `type FloatT = f32` などのまま）。どちらも `tsuzuri check` と `fmt --check` が成功。
+- 文書: `docs/language.md`（「C ヘッダーからの生成」の属性・無名の tag・`typeof`・`-E -dM`・`returns_twice`）、`docs/architecture.md`（**bindgen:**）、
+  言語リファレンスの `compiler/native-interop.md`（「対応する形」と「マクロの定数」）。
+
 ### 既知の制限と残作業
 
 - Linux での実行は確かめていない（macOS arm64 だけ）。`-dumpmachine` が Linux の LP64 なら受け付け、`mangledName` の `_` 接頭辞は apple・darwin の triple だけで仮定する。
@@ -763,5 +818,5 @@ C の呼び出し側は下位 8 bit しか保証しない。狭い整数は wrap
 - マクロは置換列が 1 つの整数リテラルのものだけで、別のマクロの参照（`#define A B`）や式は評価しない。struct の中で宣言された enum・struct の tag は生成しない。
 - NULL のハンドルは区別できない。`void *` の文脈引数を持つコールバック（C の多くのコールバック API）は E12 の静的コールバックで表せない。
 - `W2002` の表示は既存の警告と同じく 50 件までで、残りは件数だけ（出力の `// skipped` 行にはすべて残る）。
-- コミット: Phase 1 `9d80edc`、Phase 2 は本節を含むコミット。`_features/README.md`・`_completed/` への移動・GUIDE（D-30 の `W2002` と `tsuzuri bindgen` の確定、D-16）は
+- コミット: Phase 1 `9d80edc`、Phase 2 `aa1e829`、レビュー指摘の修正は「レビュー指摘の修正」節を含むコミット。`_features/README.md`・`_completed/` への移動・GUIDE（D-30 の `W2002` と `tsuzuri bindgen` の確定、D-16）は
   コーディネーターが行う。

@@ -263,6 +263,9 @@ pub struct Extras<'a> {
     /// The output of `clang -E -dD` for the header: the header's object-like macros
     /// whose replacement is one integer literal become constants.
     pub preprocessed: Option<&'a str>,
+    /// The output of `clang -E -dM`: the macros as they are after the header. A macro
+    /// is generated only when this confirms its `#define` in `preprocessed`.
+    pub final_macros: Option<&'a str>,
     /// The header's bytes, which place each macro at its line.
     pub header_text: &'a [u8],
     pub buffers: &'a [BufferAnnotation],
@@ -292,7 +295,7 @@ pub fn generate_with(
     let tables = Tables::new(nodes);
     let macros = extras
         .preprocessed
-        .map(|text| header_macros(text, header.path, extras.header_text))
+        .map(|text| header_macros(text, extras.final_macros, header.path, extras.header_text))
         .unwrap_or_default();
     let mut emitter = Emitter::new(&tables, header.target, extras);
     emitter.collect_types(&declarations);
@@ -439,12 +442,14 @@ fn kind(node: &Value) -> &str {
     text(node, "kind").unwrap_or("")
 }
 
-/// The spelled and desugared C type of a node.
-fn node_type(node: &Value) -> (&str, Option<&str>) {
-    let ty = node.get("type");
-    let spelled = ty.and_then(|ty| text(ty, "qualType")).unwrap_or("");
-    let desugared = ty.and_then(|ty| text(ty, "desugaredQualType"));
-    (spelled, desugared)
+/// The C type of a node as Clang wrote it (`qualType`). The desugared spelling is never
+/// used: desugaring drops typedef sugar together with the alignment attributes that
+/// the typedef carries, so a `typeof` that names an over-aligned typedef would read as
+/// a plain integer.
+fn node_type(node: &Value) -> &str {
+    node.get("type")
+        .and_then(|ty| text(ty, "qualType"))
+        .unwrap_or("")
 }
 
 fn children(node: &Value) -> impl Iterator<Item = &Value> {
@@ -458,8 +463,50 @@ fn has_attribute(node: &Value, kinds: &[&str]) -> bool {
     children(node).any(|child| kinds.contains(&kind(child)))
 }
 
-/// Attributes that change a struct's or a field's layout from the natural C layout.
-const LAYOUT_ATTRIBUTES: &[&str] = &["AlignedAttr", "PackedAttr", "MaxFieldAlignmentAttr"];
+/// Attributes known not to change a type's size, alignment, layout, or calling
+/// convention: what system headers add for availability, documentation, and other
+/// languages. An enum, typedef, struct, or field with any other attribute (`aligned`,
+/// `packed`, `mode`, `#pragma pack`, `randomize_layout`, ...) is not converted.
+const HARMLESS_ATTRIBUTES: &[&str] = &[
+    "AnnotateAttr",
+    "AvailabilityAttr",
+    "AvailableOnlyInDefaultEvalMethodAttr",
+    "DeprecatedAttr",
+    "EnumExtensibilityAttr",
+    "FlagEnumAttr",
+    "MayAliasAttr",
+    "ObjCBoxableAttr",
+    "ObjCBridgeAttr",
+    "ObjCBridgeMutableAttr",
+    "ObjCBridgeRelatedAttr",
+    "SwiftAttrAttr",
+    "SwiftBridgedTypedefAttr",
+    "SwiftNameAttr",
+    "SwiftNewTypeAttr",
+    "SwiftPrivateAttr",
+    "UnavailableAttr",
+    "UnusedAttr",
+    "UsedAttr",
+    "VisibilityAttr",
+];
+
+/// The first attribute of a declaration that is not known to be harmless.
+fn layout_attribute(node: &Value) -> Option<&str> {
+    children(node)
+        .map(kind)
+        .find(|kind| kind.ends_with("Attr") && !HARMLESS_ATTRIBUTES.contains(kind))
+}
+
+/// How a reason names an attribute that may change a layout.
+fn attribute_spelling(kind: &str) -> String {
+    match kind {
+        "AlignedAttr" => "__attribute__((aligned))".into(),
+        "PackedAttr" => "__attribute__((packed))".into(),
+        "MaxFieldAlignmentAttr" => "#pragma pack".into(),
+        "ModeAttr" => "__attribute__((mode))".into(),
+        other => format!("the {} attribute", other.trim_end_matches("Attr")),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Macros
@@ -472,13 +519,35 @@ struct Definition<'p> {
     /// The byte range of the macro's name in the header.
     offset: usize,
     length: usize,
+    /// `clang -E -dM` ends with another definition, or none: `#pragma pop_macro`
+    /// restores a value that the `-dD` output does not show. The replacement it ends
+    /// with, if it is object-like.
+    replaced: Option<Option<&'p str>>,
+}
+
+/// `#define NAME BODY`: the name, whether it is object-like, and the replacement list.
+fn define_line(text: &str) -> Option<(&str, bool, &str)> {
+    let rest = text.strip_prefix("#define ")?;
+    let end = rest
+        .find(|character: char| character == '(' || character.is_ascii_whitespace())
+        .unwrap_or(rest.len());
+    let (name, after) = rest.split_at(end);
+    // A function-like macro has `(` right after its name.
+    Some((name, !after.starts_with('('), after.trim()))
 }
 
 /// The header's own object-like macros from `clang -E -dD`, in header order. Line
 /// markers (`# 12 "/path/x.h" 2`) name the file and line of the next output line, and
 /// each following line is the next source line, so every `#define` is placed at its
-/// line. A later `#undef` or redefinition (in any file) decides the final state.
-fn header_macros<'p>(preprocessed: &'p str, path: &str, header_text: &[u8]) -> Vec<Definition<'p>> {
+/// line. A later `#undef` or redefinition (in any file) decides the final state. The
+/// output does not show `#pragma push_macro` and `pop_macro`, so the final definitions
+/// that `clang -E -dM` prints (`finals`) confirm each one.
+fn header_macros<'p>(
+    preprocessed: &'p str,
+    finals: Option<&'p str>,
+    path: &str,
+    header_text: &[u8],
+) -> Vec<Definition<'p>> {
     let mut in_header = false;
     let mut line = 1usize;
     let mut last: BTreeMap<&'p str, Option<(&'p str, usize)>> = BTreeMap::new();
@@ -489,33 +558,37 @@ fn header_macros<'p>(preprocessed: &'p str, path: &str, header_text: &[u8]) -> V
             line = number;
             continue;
         }
-        if let Some(rest) = text.strip_prefix("#define ") {
-            let end = rest
-                .find(|character: char| character == '(' || character.is_ascii_whitespace())
-                .unwrap_or(rest.len());
-            let (name, after) = rest.split_at(end);
-            // A function-like macro has `(` right after its name.
-            let object_like = !after.starts_with('(');
-            last.insert(
-                name,
-                (in_header && object_like).then(|| (after.trim(), line)),
-            );
+        if let Some((name, object_like, body)) = define_line(text) {
+            last.insert(name, (in_header && object_like).then_some((body, line)));
         } else if let Some(rest) = text.strip_prefix("#undef ") {
             last.insert(rest.trim(), None);
         }
         line += 1;
     }
+    let finals: Option<BTreeMap<&str, (bool, &str)>> = finals.map(|finals| {
+        finals
+            .lines()
+            .filter_map(|text| define_line(text.strip_suffix('\r').unwrap_or(text)))
+            .map(|(name, object_like, body)| (name, (object_like, body)))
+            .collect()
+    });
     let starts = line_starts(header_text);
     let mut definitions: Vec<_> = last
         .into_iter()
         .filter_map(|(name, definition)| {
             let (body, line) = definition?;
             let (offset, length) = macro_position(header_text, &starts, line, name);
+            let replaced = finals.as_ref().and_then(|finals| match finals.get(name) {
+                Some((true, ended)) if *ended == body => None,
+                Some((true, ended)) => Some(Some(*ended)),
+                _ => Some(None),
+            });
             Some(Definition {
                 name,
                 body,
                 offset,
                 length,
+                replaced,
             })
         })
         .collect();
@@ -1065,7 +1138,8 @@ struct FunctionShape {
     /// or block result, which is never supported.
     result: Result<String, String>,
     prototype: bool,
-    /// The names in trailing `__attribute__((...))` groups; `?` marks other text.
+    /// The names in trailing `__attribute__((...))` groups, then any other trailing text
+    /// whole.
     attributes: Vec<String>,
 }
 
@@ -1124,7 +1198,8 @@ fn function_shape(text: &str) -> Option<FunctionShape> {
     let mut index = close + 1;
     while index < tokens.len() {
         let Some((name, end)) = attribute_group(&tokens, index) else {
-            attributes.push("?".to_owned());
+            // A keyword such as `__arm_streaming`, or `__arm_inout("za")`.
+            attributes.push(text[tokens[index].0..].trim().to_owned());
             break;
         };
         attributes.push(name);
@@ -1262,9 +1337,11 @@ enum Role {
 
 struct Typedef<'a> {
     spelled: &'a str,
-    desugared: Option<&'a str>,
-    /// An alignment or packing attribute changes the type's layout, which its
-    /// spelling does not show.
+    /// The typedef can never be expanded: it carries an attribute that may change the
+    /// layout, which its spelling does not show (`aligned`, `mode`, ...), or it names an
+    /// unnamed struct or union. Clang spells `typedef struct { ... } S;` as `struct S`,
+    /// which would otherwise be read as the unrelated tag `struct S` (tags and typedef
+    /// names are separate C namespaces).
     poisoned: bool,
 }
 
@@ -1272,7 +1349,7 @@ struct Tables<'a> {
     typedefs: BTreeMap<&'a str, Typedef<'a>>,
     /// `enum TAG` (or `enum NAME` for an anonymous enum named by a typedef) → whether
     /// the enum is an `int`: every constant fits in i32, with no fixed underlying type
-    /// and no packing.
+    /// and no attribute outside `HARMLESS_ATTRIBUTES`.
     enums: BTreeMap<String, bool>,
     /// Anonymous struct, union, and enum declarations by id → the typedef that names
     /// them and where that name is.
@@ -1284,27 +1361,51 @@ struct Tables<'a> {
     incomplete: BTreeSet<&'a str>,
 }
 
-/// The tags of every struct definition, at any depth.
-fn complete_structs<'a>(node: &'a Value, found: &mut BTreeSet<&'a str>, depth: usize) {
-    if kind(node) == "RecordDecl"
-        && flag(node, "completeDefinition")
-        && text(node, "tagUsed") == Some("struct")
-    {
-        found.insert(name(node));
-    }
+/// Calls `visit` on a node and on every node below it.
+fn visit_all<'a>(node: &'a Value, depth: usize, visit: &mut impl FnMut(&'a Value)) {
+    visit(node);
     // serde_json limits nesting to 128.
     if depth < 128 {
         for child in children(node) {
-            complete_structs(child, found, depth + 1);
+            visit_all(child, depth + 1, visit);
         }
     }
 }
 
+/// The unnamed struct, union, or enum that a typedef declares inline
+/// (`typedef struct { ... } S;`), found anywhere in the typedef's type nodes.
+fn unnamed_tag(node: &Value) -> Option<&Value> {
+    let mut pending: Vec<(&Value, usize)> = children(node).map(|child| (child, 0)).collect();
+    while let Some((child, depth)) = pending.pop() {
+        if let Some(tag) = child.get("ownedTagDecl").filter(|tag| name(tag).is_empty()) {
+            return Some(tag);
+        }
+        if depth < MAX_TYPE_NESTING {
+            pending.extend(children(child).map(|grandchild| (grandchild, depth + 1)));
+        }
+    }
+    None
+}
+
 impl<'a> Tables<'a> {
     fn new(nodes: &'a [Value]) -> Self {
+        // The tags of every struct definition, and every enum tag, defined or not. A tag
+        // declared inside a struct has file scope in C, so both look at every depth.
         let mut complete = BTreeSet::new();
+        let mut enum_tags = BTreeSet::new();
         for node in nodes {
-            complete_structs(node, &mut complete, 0);
+            visit_all(node, 0, &mut |node| match kind(node) {
+                "RecordDecl"
+                    if flag(node, "completeDefinition")
+                        && text(node, "tagUsed") == Some("struct") =>
+                {
+                    complete.insert(name(node));
+                }
+                "EnumDecl" if !name(node).is_empty() => {
+                    enum_tags.insert(name(node));
+                }
+                _ => {}
+            });
         }
         let mut tables = Self {
             typedefs: BTreeMap::new(),
@@ -1325,19 +1426,13 @@ impl<'a> Tables<'a> {
                 .collect(),
         };
         for node in nodes.iter().filter(|node| kind(node) == "TypedefDecl") {
-            let (spelled, desugared) = node_type(node);
+            let owned = unnamed_tag(node);
+            let unnamed_record = owned.is_some_and(|tag| kind(tag) == "RecordDecl");
             tables.typedefs.entry(name(node)).or_insert(Typedef {
-                spelled,
-                desugared,
-                poisoned: has_attribute(node, LAYOUT_ATTRIBUTES),
+                spelled: node_type(node),
+                poisoned: layout_attribute(node).is_some() || unnamed_record,
             });
-            let owned = children(node)
-                .next()
-                .and_then(|elaborated| elaborated.get("ownedTagDecl"));
-            if let Some(tag) = owned
-                && name(tag).is_empty()
-                && let Some(id) = text(tag, "id")
-            {
+            if let Some(id) = owned.and_then(|tag| text(tag, "id")) {
                 tables
                     .anonymous
                     .entry(id)
@@ -1350,8 +1445,12 @@ impl<'a> Tables<'a> {
             let Some(key) = tables.enum_key(node).filter(|_| !enumerators.is_empty()) else {
                 continue;
             };
-            let int = node.get("fixedUnderlyingType").is_none()
-                && !has_attribute(node, &["PackedAttr"])
+            // Clang spells an anonymous enum by its typedef's name (`enum E`), like the tag
+            // `enum E`, which is another type: neither converts.
+            let ambiguous = name(node).is_empty() && enum_tags.contains(&key["enum ".len()..]);
+            let int = !ambiguous
+                && node.get("fixedUnderlyingType").is_none()
+                && layout_attribute(node).is_none()
                 && enumerators.iter().all(|enumerator| {
                     enumerator
                         .value
@@ -1406,8 +1505,7 @@ impl<'a> Tables<'a> {
                     && matches!(text(node, "castKind"), Some("IntegralCast" | "NoOp")) =>
             {
                 let value = self.constant_value(children(node).next()?, depth + 1)?;
-                let (spelled, desugared) = node_type(node);
-                let (ty, _) = self.c_type(spelled, desugared);
+                let (ty, _) = self.c_type(node_type(node));
                 let CType::Named(target) = ty else {
                     return None;
                 };
@@ -1417,12 +1515,11 @@ impl<'a> Tables<'a> {
         }
     }
 
-    /// The type of a declaration with typedefs expanded: the spelling Clang printed,
-    /// or its desugared spelling when this parser cannot read the printed one
-    /// (`typeof`, for example).
-    fn c_type(&self, spelled: &str, desugared: Option<&str>) -> (CType, Qualifiers) {
-        let parsed = parse_type(spelled).or_else(|| desugared.and_then(parse_type));
-        match parsed {
+    /// The type that Clang spelled, with typedefs expanded. A spelling this parser cannot
+    /// read (`typeof`, for example) is unsupported: Clang's desugared spelling would
+    /// drop the alignment attributes of the typedefs it removes.
+    fn c_type(&self, spelled: &str) -> (CType, Qualifiers) {
+        match parse_type(spelled) {
             Some((ty, qualifiers)) => self.resolve(ty, qualifiers, 0),
             None => (CType::Unsupported, Qualifiers::default()),
         }
@@ -1437,21 +1534,10 @@ impl<'a> Tables<'a> {
                 Some(typedef) if typedef.poisoned || depth >= MAX_TYPEDEF_DEPTH => {
                     (CType::Unsupported, qualifiers)
                 }
-                Some(typedef) => {
-                    // An anonymous tag's typedef desugars to its own name.
-                    let parsed = parse_type(typedef.spelled).or_else(|| {
-                        typedef
-                            .desugared
-                            .filter(|desugared| *desugared != name)
-                            .and_then(parse_type)
-                    });
-                    match parsed {
-                        Some((inner, more)) => {
-                            self.resolve(inner, qualifiers.union(more), depth + 1)
-                        }
-                        None => (CType::Unsupported, qualifiers),
-                    }
-                }
+                Some(typedef) => match parse_type(typedef.spelled) {
+                    Some((inner, more)) => self.resolve(inner, qualifiers.union(more), depth + 1),
+                    None => (CType::Unsupported, qualifiers),
+                },
             },
             CType::Pointer(pointee, pointee_qualifiers) => {
                 let (pointee, pointee_qualifiers) =
@@ -1727,33 +1813,41 @@ impl<'t, 'a> Emitter<'t, 'a> {
         let skip = |name: &str, reason: &str| {
             Some(TypeDecision::Skip(name.to_owned(), reason.to_owned(), None))
         };
+        // An unnamed struct or union is reported at the typedef that names it, if any.
+        let named = text(node, "id").and_then(|id| self.tables.anonymous.get(id));
+        let unnamed = |anonymous: &str, reason: &str| {
+            Some(TypeDecision::Skip(
+                named.map_or(anonymous, |(name, _)| name).to_owned(),
+                reason.to_owned(),
+                named.map(|(_, at)| *at),
+            ))
+        };
         if text(node, "tagUsed") == Some("union") {
-            let shown = if tag.is_empty() {
-                "(anonymous union)"
-            } else {
-                tag
-            };
-            return skip(shown, "C union");
+            if tag.is_empty() {
+                return unnamed("(anonymous union)", "C union");
+            }
+            return skip(tag, "C union");
         }
         if text(node, "tagUsed") != Some("struct") {
             return None;
         }
         if tag.is_empty() {
-            // Reported at the typedef that names it, if any.
-            let named = text(node, "id").and_then(|id| self.tables.anonymous.get(id));
-            return Some(TypeDecision::Skip(
-                named
-                    .map_or("(anonymous struct)", |(name, _)| name)
-                    .to_owned(),
-                "anonymous struct; give the struct a tag".to_owned(),
-                named.map(|(_, at)| *at),
-            ));
+            return unnamed(
+                "(anonymous struct)",
+                "anonymous struct; give the struct a tag",
+            );
         }
         if !ascii_identifier(tag) {
             return skip(tag, "name is not an ASCII C identifier");
         }
-        if has_attribute(node, LAYOUT_ATTRIBUTES) {
-            return skip(tag, "struct has a packing or alignment attribute");
+        if let Some(attribute) = layout_attribute(node) {
+            return skip(
+                tag,
+                &format!(
+                    "struct has {}, which may change its layout",
+                    attribute_spelling(attribute)
+                ),
+            );
         }
         let fields: Vec<_> = children(node)
             .filter(|child| kind(child) == "FieldDecl")
@@ -1768,22 +1862,23 @@ impl<'t, 'a> Emitter<'t, 'a> {
         if let Some(field) = fields.iter().find(|field| flag(field, "isBitfield")) {
             return skip(tag, &format!("bit-field '{}'", field_label(field)));
         }
-        if let Some(field) = fields
+        if let Some((field, attribute)) = fields
             .iter()
-            .find(|field| has_attribute(field, LAYOUT_ATTRIBUTES))
+            .find_map(|field| layout_attribute(field).map(|attribute| (field, attribute)))
         {
             return skip(
                 tag,
                 &format!(
-                    "field '{}' has an alignment or packing attribute",
-                    field_label(field)
+                    "field '{}' has {}, which may change its layout",
+                    field_label(field),
+                    attribute_spelling(attribute)
                 ),
             );
         }
         let mut converted = Vec::new();
         for field in &fields {
-            let (spelled, desugared) = node_type(field);
-            let (ty, _) = self.tables.c_type(spelled, desugared);
+            let spelled = node_type(field);
+            let (ty, _) = self.tables.c_type(spelled);
             let Some(scalar) = self.tables.scalar(&ty, Role::Field) else {
                 return skip(
                     tag,
@@ -1832,7 +1927,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
     /// nothing, because signatures use the resolved types.
     fn alias(&mut self, node: &'a Value) -> Option<TypeDecision> {
         let typedef = name(node);
-        let (ty, _) = self.tables.c_type(typedef, None);
+        let (ty, _) = self.tables.c_type(typedef);
         let CType::Named(resolved) = ty else {
             return None;
         };
@@ -1877,6 +1972,17 @@ impl<'t, 'a> Emitter<'t, 'a> {
     /// A constant for an object-like macro whose replacement is one integer literal.
     fn definition(&mut self, definition: &Definition) {
         let at = (definition.offset, definition.length);
+        if let Some(ended) = definition.replaced {
+            let integer = |body: &str| macro_value(body) != MacroValue::NotInteger;
+            if integer(definition.body) || ended.is_some_and(integer) {
+                self.skip(
+                    definition.name,
+                    "the macro does not end with this #define (#pragma push_macro and pop_macro can restore another value)".into(),
+                    at,
+                );
+            }
+            return;
+        }
         let (value, scalar) = match macro_value(definition.body) {
             MacroValue::NotInteger => return,
             MacroValue::Invalid(reason) => return self.skip(definition.name, reason, at),
@@ -2057,7 +2163,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
         if flag(node, "variadic") {
             return Err("variadic function".into());
         }
-        let (spelled, _) = node_type(node);
+        let spelled = node_type(node);
         let shape = function_shape(spelled)
             .ok_or_else(|| format!("function type '{}' is not understood", scrub(spelled)))?;
         if !shape.prototype {
@@ -2101,6 +2207,12 @@ impl<'t, 'a> Emitter<'t, 'a> {
                 "function type has the attribute '{attribute}', which may change its calling convention"
             ));
         }
+        // LLVM must mark a call to such a function (`setjmp`, `vfork`) `returns_twice`.
+        if has_attribute(node, &["ReturnsTwiceAttr"]) {
+            return Err(
+                "function returns twice (returns_twice), which a Tsuzuri call cannot follow".into(),
+            );
+        }
         let mut converted = Vec::new();
         for (index, parameter) in parameters.iter().enumerate() {
             let number = index + 1;
@@ -2109,7 +2221,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
                     "parameter {number} has the pass_object_size attribute, which adds a hidden argument"
                 ));
             }
-            let (spelled, desugared) = node_type(parameter);
+            let spelled = node_type(parameter);
             let unsupported = || {
                 format!(
                     "parameter {number} has unsupported type '{}'",
@@ -2118,10 +2230,10 @@ impl<'t, 'a> Emitter<'t, 'a> {
             };
             match plan[index] {
                 Annotated::Plain => converted.push(
-                    self.value_type(&self.tables.c_type(spelled, desugared).0, Role::Parameter)
+                    self.value_type(&self.tables.c_type(spelled).0, Role::Parameter)
                         .ok_or_else(unsupported)?,
                 ),
-                Annotated::Consumed => converted.push(self.consumed(spelled, desugared).ok_or_else(
+                Annotated::Consumed => converted.push(self.consumed(spelled).ok_or_else(
                     || format!("--consume names parameter {number}, which is not a pointer to an opaque struct of the header"),
                 )?),
                 Annotated::Pointer(length) => converted.push(self.buffer(parameters, index, length)?),
@@ -2130,7 +2242,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
             }
         }
         let result = match &shape.result {
-            Ok(spelled) => self.value_type(&self.tables.c_type(spelled, None).0, Role::Result),
+            Ok(spelled) => self.value_type(&self.tables.c_type(spelled).0, Role::Result),
             Err(_) => None,
         }
         .ok_or_else(|| {
@@ -2202,9 +2314,8 @@ impl<'t, 'a> Emitter<'t, 'a> {
     }
 
     /// A parameter that `--consume` names: the handle moves into the call.
-    fn consumed(&self, spelled: &str, desugared: Option<&str>) -> Option<String> {
-        let (CType::Pointer(pointee, qualifiers), _) = self.tables.c_type(spelled, desugared)
-        else {
+    fn consumed(&self, spelled: &str) -> Option<String> {
+        let (CType::Pointer(pointee, qualifiers), _) = self.tables.c_type(spelled) else {
             return None;
         };
         let CType::Named(pointee) = *pointee else {
@@ -2233,8 +2344,8 @@ impl<'t, 'a> Emitter<'t, 'a> {
                 length + 1
             ));
         }
-        let (spelled, desugared) = node_type(parameters[pointer]);
-        let (ty, _) = self.tables.c_type(spelled, desugared);
+        let spelled = node_type(parameters[pointer]);
+        let (ty, _) = self.tables.c_type(spelled);
         let CType::Pointer(pointee, qualifiers) = ty else {
             return Err(format!(
                 "--buffer names parameter {number}, which has type '{}', not a pointer",
@@ -2263,8 +2374,8 @@ impl<'t, 'a> Emitter<'t, 'a> {
                 scrub(spelled)
             ));
         }
-        let (spelled, desugared) = node_type(parameters[length]);
-        let count = self.tables.c_type(spelled, desugared).0;
+        let spelled = node_type(parameters[length]);
+        let count = self.tables.c_type(spelled).0;
         let wide = matches!(&count, CType::Named(name) if matches!(name.as_str(), "long" | "long long" | "unsigned long" | "unsigned long long"));
         if !wide {
             return Err(format!(
@@ -2408,6 +2519,8 @@ mod tests {
         let shape = function_shape("__attribute__((preserve_most)) int (int)").unwrap();
         assert_eq!(shape.result, Ok("int".into()));
         assert_eq!(shape.attributes, ["preserve_most"]);
+        let shape = function_shape("void (int) __attribute__((cold)) __arm_inout(\"za\")").unwrap();
+        assert_eq!(shape.attributes, ["cold", "__arm_inout(\"za\")"]);
         assert!(!function_shape("int ()").unwrap().prototype);
         assert_eq!(
             function_shape("int (*(int))(void)").unwrap().result,

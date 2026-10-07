@@ -437,7 +437,7 @@ fn generates_scalar_records_and_ref_parameters() {
             "// skipped u: C union",
             "// skipped anon_t: anonymous struct; give the struct a tag",
             "// skipped bits: bit-field 'a'",
-            "// skipped packed: struct has a packing or alignment attribute",
+            "// skipped packed: struct has __attribute__((packed)), which may change its layout",
             "// skipped pointer: field 'next' has unsupported type 'struct pointer *'",
             "// skipped array: field 'values' has unsupported type 'int[4]'",
             "// skipped empty: struct has no fields",
@@ -1584,4 +1584,255 @@ fn generated_modules_check_and_consume_moves_the_handle() {
     let error = tsuzuri::analyze_modules(&[("Main.tz", &after_free), ("Lib.tz", &generated.text)])
         .expect_err("use after free");
     assert_eq!(error.code, "E1012", "{}", error.message);
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes
+
+fn attributed(mut node: Value, attributes: &[&str]) -> Value {
+    let inner = node["inner"].as_array().cloned().unwrap_or_default();
+    node["inner"] = json!(
+        attributes
+            .iter()
+            .map(|attribute| json!({ "kind": attribute }))
+            .chain(inner)
+            .collect::<Vec<_>>()
+    );
+    node
+}
+
+#[test]
+fn converts_only_types_whose_attributes_keep_the_layout() {
+    let enumerated = |tag: &str, attributes: &[&str]| {
+        attributed(
+            enumeration(
+                tag,
+                vec![constant(&format!("{}_ZERO", tag.to_uppercase()), None)],
+            ),
+            attributes,
+        )
+    };
+    assert_eq!(
+        lines(vec![
+            // `aligned` and `mode` change an enum's size or alignment: its constants stay,
+            // but parameters, results, and fields of its type are skipped.
+            enumerated("aligned", &["AlignedAttr"]),
+            enumerated("byte", &["ModeAttr"]),
+            enumerated("tight", &["PackedAttr"]),
+            enumerated("unknown", &["SomeFutureAttr"]),
+            enumerated(
+                "open",
+                &["EnumExtensibilityAttr", "FlagEnumAttr", "AvailabilityAttr"]
+            ),
+            function("take_aligned", "int (enum aligned)", &["enum aligned"]),
+            function("give_byte", "enum byte (void)", &[]),
+            function("take_tight", "int (enum tight)", &["enum tight"]),
+            function("take_unknown", "int (enum unknown)", &["enum unknown"]),
+            function("take_open", "enum open (enum open)", &["enum open"]),
+            record("holder", &[("value", "enum aligned")]),
+            // Typedefs, structs, and fields follow the same allow-list.
+            attributed(typedef("u64m", "unsigned long"), &["ModeAttr"]),
+            attributed(
+                typedef("float_t", "float"),
+                &["AvailableOnlyInDefaultEvalMethodAttr"]
+            ),
+            function("take_mode", "void (u64m)", &["u64m"]),
+            attributed(
+                record("shuffled", &[("a", "int")]),
+                &["RandomizeLayoutAttr"]
+            ),
+            attributed(
+                record("bridged", &[("a", "int")]),
+                &["ObjCBridgeAttr", "SwiftPrivateAttr"]
+            ),
+            json!({ "kind": "RecordDecl", "name": "laid", "tagUsed": "struct", "completeDefinition": true,
+                    "inner": [{ "kind": "FieldDecl", "name": "a", "type": { "qualType": "int" }, "inner": [{ "kind": "ModeAttr" }] }] }),
+            attributed(function("jump", "int (void)", &[]), &["ReturnsTwiceAttr"]),
+        ]),
+        [
+            "const ALIGNED_ZERO: i32 = 0",
+            "const BYTE_ZERO: i32 = 0",
+            "const TIGHT_ZERO: i32 = 0",
+            "const UNKNOWN_ZERO: i32 = 0",
+            "const OPEN_ZERO: i32 = 0",
+            "// skipped take_aligned: parameter 1 has unsupported type 'enum aligned'",
+            "// skipped give_byte: result has unsupported type 'enum byte'",
+            "// skipped take_tight: parameter 1 has unsupported type 'enum tight'",
+            "// skipped take_unknown: parameter 1 has unsupported type 'enum unknown'",
+            "extern \"take_open\" def take_open :: i32 -> i32",
+            "// skipped holder: field 'value' has unsupported type 'enum aligned'",
+            "type FloatT = f32",
+            "// skipped take_mode: parameter 1 has unsupported type 'u64m'",
+            "// skipped shuffled: struct has the RandomizeLayout attribute, which may change its layout",
+            "record Bridged { a: i32 }",
+            "// skipped laid: field 'a' has __attribute__((mode)), which may change its layout",
+            "// skipped jump: function returns twice (returns_twice), which a Tsuzuri call cannot follow",
+        ]
+    );
+}
+
+#[test]
+fn does_not_read_unnamed_struct_typedefs_as_tags() {
+    // `typedef struct { int small; } S;` is spelled `struct S`, but the tag `struct S` is
+    // another type: C keeps tags and typedef names in separate namespaces.
+    let unnamed = |id: &str, kind: &str, tag_used: &str| {
+        json!({ "kind": kind, "id": id, "tagUsed": tag_used, "completeDefinition": true,
+                "inner": [{ "kind": "FieldDecl", "name": "small", "type": { "qualType": "int" } }] })
+    };
+    let named_by = |name: &str, spelled: &str, id: &str, kind: &str| {
+        json!({ "kind": "TypedefDecl", "name": name, "type": { "qualType": spelled },
+                "inner": [{ "kind": "ElaboratedType", "ownedTagDecl": { "id": id, "kind": kind, "name": "" } }] })
+    };
+    assert_eq!(
+        lines(vec![
+            record("S", &[("big", "double"), ("other", "double")]),
+            unnamed("0x1", "RecordDecl", "struct"),
+            named_by("S", "struct S", "0x1", "RecordDecl"),
+            function("use_typedef", "double (const S *)", &["const S *"]),
+            function(
+                "use_tag",
+                "double (const struct S *)",
+                &["const struct S *"]
+            ),
+            typedef("S_alias", "S"),
+            function(
+                "use_alias",
+                "double (const S_alias *)",
+                &["const S_alias *"]
+            ),
+            json!({ "kind": "RecordDecl", "name": "H", "tagUsed": "struct" }),
+            unnamed("0x2", "RecordDecl", "struct"),
+            named_by("H", "struct H", "0x2", "RecordDecl"),
+            function("use_handle_typedef", "void (H *)", &["H *"]),
+            function("use_handle", "void (struct H *)", &["struct H *"]),
+            unnamed("0x3", "RecordDecl", "union"),
+            named_by("U", "union U", "0x3", "RecordDecl"),
+            // An anonymous enum named like an enum tag (here only declared) is ambiguous.
+            json!({ "kind": "EnumDecl", "name": "E" }),
+            json!({ "kind": "EnumDecl", "id": "0x4", "inner": [{ "kind": "EnumConstantDecl", "name": "E_ZERO" }] }),
+            named_by("E", "enum E", "0x4", "EnumDecl"),
+            function("use_enum", "int (E)", &["E"]),
+            json!({ "kind": "EnumDecl", "id": "0x5", "inner": [{ "kind": "EnumConstantDecl", "name": "F_ZERO" }] }),
+            named_by("F", "enum F", "0x5", "EnumDecl"),
+            function("use_anonymous_enum", "int (F)", &["F"]),
+            // A tag declared inside a struct has file scope, so it is ambiguous too.
+            json!({ "kind": "RecordDecl", "name": "outer", "tagUsed": "struct", "completeDefinition": true,
+                    "inner": [
+                        { "kind": "EnumDecl", "name": "G", "inner": [{ "kind": "EnumConstantDecl", "name": "G_WIDE",
+                            "inner": [{ "kind": "ConstantExpr", "value": "140737488355327" }] }] },
+                        { "kind": "FieldDecl", "name": "g", "type": { "qualType": "enum G" } },
+                    ] }),
+            json!({ "kind": "EnumDecl", "id": "0x6", "inner": [{ "kind": "EnumConstantDecl", "name": "G_ZERO" }] }),
+            named_by("G", "enum G", "0x6", "EnumDecl"),
+            function("use_nested_tag", "int (enum G)", &["enum G"]),
+            function("use_nested_typedef", "int (G)", &["G"]),
+        ]),
+        [
+            "record S { big: f64, other: f64 }",
+            "// skipped S: anonymous struct; give the struct a tag",
+            "// skipped use_typedef: parameter 1 has unsupported type 'const S *'",
+            "extern \"use_tag\" def use_tag :: ref S -> f64",
+            "// skipped use_alias: parameter 1 has unsupported type 'const S_alias *'",
+            "extern type H",
+            "// skipped H: anonymous struct; give the struct a tag",
+            "// skipped use_handle_typedef: parameter 1 has unsupported type 'H *'",
+            "extern \"use_handle\" def use_handle :: ref H -> unit",
+            "// skipped U: C union",
+            "const E_ZERO: i32 = 0",
+            "// skipped use_enum: parameter 1 has unsupported type 'E'",
+            "const F_ZERO: i32 = 0",
+            "extern \"use_anonymous_enum\" def use_anonymous_enum :: i32 -> i32",
+            "// skipped outer: field 'g' has unsupported type 'enum G'",
+            "const G_ZERO: i32 = 0",
+            "// skipped use_nested_tag: parameter 1 has unsupported type 'enum G'",
+            "// skipped use_nested_typedef: parameter 1 has unsupported type 'G'",
+        ]
+    );
+}
+
+#[test]
+fn never_reads_desugared_types() {
+    // Desugaring `typeof (wide_value)` drops the `aligned(16)` of the typedef behind it,
+    // so the plain `long long` would put the field at the wrong offset.
+    let typed = |mut node: Value, spelled: &str, desugared: &str| {
+        node["type"] = json!({ "qualType": spelled, "desugaredQualType": desugared });
+        node
+    };
+    let mut with_typeof = record("with_typeof", &[("a", "int"), ("b", "")]);
+    with_typeof["inner"][1]["type"] =
+        json!({ "qualType": "typeof (wide_value)", "desugaredQualType": "long long" });
+    assert_eq!(
+        lines(vec![
+            attributed(typedef("wide_aligned", "long long"), &["AlignedAttr"]),
+            with_typeof,
+            typed(
+                typedef("via_typeof", ""),
+                "typeof (wide_value)",
+                "long long"
+            ),
+            record("with_typedef", &[("a", "int"), ("b", "via_typeof")]),
+            json!({ "kind": "FunctionDecl", "name": "take", "type": { "qualType": "int (typeof (x))" },
+                    "inner": [{ "kind": "ParmVarDecl", "type": { "qualType": "typeof (x)", "desugaredQualType": "int" } }] }),
+            typed(
+                typedef("my_size_t", ""),
+                "typeof (sizeof (0))",
+                "unsigned long"
+            ),
+            function("size_of", "my_size_t (my_size_t)", &["my_size_t"]),
+        ]),
+        [
+            "// skipped with_typeof: field 'b' has unsupported type 'typeof (wide_value)'",
+            "// skipped with_typedef: field 'b' has unsupported type 'via_typeof'",
+            "// skipped take: parameter 1 has unsupported type 'typeof (x)'",
+            "// skipped size_of: parameter 1 has unsupported type 'my_size_t'",
+        ]
+    );
+}
+
+#[test]
+fn generates_a_macro_only_where_its_final_definition_agrees() {
+    // `#pragma push_macro`/`pop_macro` leave no trace in `clang -E -dD`: LEVEL reads as 2
+    // there, but C ends with 1, which `clang -E -dM` shows.
+    let header_lines = [
+        "#define LEVEL 1",
+        "#pragma push_macro(\"LEVEL\")",
+        "#undef LEVEL",
+        "#define LEVEL 2",
+        "#pragma pop_macro(\"LEVEL\")",
+        "#define KEPT 3",
+        "#define GONE 4",
+        "#define CALLED 5",
+        "#define TEXT \"a\"",
+        "#define NOW_NUMBER x",
+    ];
+    let (text, output) = preprocessed(&header_lines);
+    let output = output
+        .replace("#pragma push_macro(\"LEVEL\")", "")
+        .replace("#pragma pop_macro(\"LEVEL\")", "");
+    let finals = "#define __STDC__ 1\n#define LEVEL 1\n#define KEPT 3\n#define CALLED(x) (x)\n#define TEXT \"b\"\n#define NOW_NUMBER 6\n";
+    let generated = generate_with(
+        &unit(Vec::new()),
+        &header(),
+        &Extras {
+            preprocessed: Some(&output),
+            final_macros: Some(finals),
+            header_text: text.as_bytes(),
+            ..Extras::default()
+        },
+    )
+    .unwrap();
+    let reason = "the macro does not end with this #define (#pragma push_macro and pop_macro can restore another value)";
+    assert_eq!(
+        body(&generated),
+        [
+            format!("// skipped LEVEL: {reason}").as_str(),
+            "const KEPT: i32 = 3",
+            format!("// skipped GONE: {reason}").as_str(),
+            format!("// skipped CALLED: {reason}").as_str(),
+            format!("// skipped NOW_NUMBER: {reason}").as_str(),
+        ]
+    );
+    // The warning points at the last `#define` of LEVEL that the `-dD` output shows.
+    let level = &generated.skipped[0];
+    assert_eq!(level.offset, text.find("LEVEL 2").unwrap());
 }

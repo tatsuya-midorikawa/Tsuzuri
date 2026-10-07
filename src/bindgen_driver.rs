@@ -71,16 +71,20 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
     }
     command.arg(&path);
     let ast = capture(&mut command, "clang AST output", HEADER_HINT).map_err(at_header)?;
-    // The preprocessor keeps each `#define` with line markers that place it in its file.
-    let mut command = Command::new(&clang);
-    command.args(["-x", "c", "-std=gnu17", "-E", "-dD"]);
-    for directory in &arguments.include_dirs {
-        command.arg("-I").arg(directory);
+    // `-dD` keeps each `#define` with line markers that place it in its file; `-dM`
+    // prints the macros as they end, after `#pragma pop_macro` too.
+    let mut macros = Vec::new();
+    for listing in ["-dD", "-dM"] {
+        let mut command = Command::new(&clang);
+        command.args(["-x", "c", "-std=gnu17", "-E", listing]);
+        for directory in &arguments.include_dirs {
+            command.arg("-I").arg(directory);
+        }
+        command.arg(&path);
+        let output =
+            capture(&mut command, "clang preprocessor output", HEADER_HINT).map_err(at_header)?;
+        macros.push(String::from_utf8_lossy(&output).into_owned());
     }
-    command.arg(&path);
-    let preprocessed =
-        capture(&mut command, "clang preprocessor output", HEADER_HINT).map_err(at_header)?;
-    let preprocessed = String::from_utf8_lossy(&preprocessed);
     let unreadable = |error: &dyn std::fmt::Display| {
         at_header(driver_error(
             "E2002",
@@ -105,7 +109,8 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
             target: &target,
         },
         &Extras {
-            preprocessed: Some(&preprocessed),
+            preprocessed: Some(&macros[0]),
+            final_macros: Some(&macros[1]),
             header_text: &bytes,
             buffers: &arguments.buffers,
             consumes: &arguments.consumes,
