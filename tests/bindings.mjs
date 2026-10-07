@@ -114,6 +114,7 @@ const hostImports = {
 };
 
 let TsuzuriTrap;
+let loadBindings;
 // Each case runs against fresh bindings of one build; `trap` cases discard the instance on purpose.
 const cases = [
   ["1 scalars", (api) => assert.equal(api.exports.add(40n, 2n), 42n)],
@@ -313,6 +314,27 @@ const cases = [
       WebAssembly.Instance = original;
     }
   }, { trap: true }],
+  ["34 a Borrowed buffer belongs to its load", async (api, build) => {
+    const other = await loadBindings(readFileSync(build.path), { imports: hostImports });
+    api.withBorrowed("f64", 2, (borrowed) => {
+      borrowed.view().set([1.5, 2]);
+      // The other instance would read its own memory at this address.
+      assert.throws(() => other.exports.sum_float(borrowed), { name: "TypeError", message: "argument 0 of 'sum_float' must be a Borrowed<Float64Array> from the same load()" });
+      assert.equal(api.exports.sum_float(borrowed), 3.5);
+    });
+    other.withBorrowed("f64", 1, (borrowed) => {
+      borrowed.view()[0] = 4;
+      assert.throws(() => api.exports.sum_float(borrowed), { name: "TypeError", message: "argument 0 of 'sum_float' must be a Borrowed<Float64Array> from the same load()" });
+      assert.equal(other.exports.sum_float(borrowed), 4);
+    });
+    assert.equal(other.exports.sum_float(Float64Array.of(1, 2)), 3);
+  }],
+  ["35 a leading U+FEFF stays", (api) => {
+    // UTF-8 results keep a leading byte order mark, and so do UTF-8 arguments of imports.
+    assert.equal(api.exports.copy_utf8("\uFEFFabc"), "\uFEFFabc");
+    assert.equal(api.exports.copy_utf8("\uFEFF"), "\uFEFF");
+    assert.equal(api.exports.greeting("\uFEFFworld"), "hello \uFEFFworld");
+  }],
 ];
 
 try {
@@ -327,6 +349,7 @@ try {
   assert.equal(check.status, 0, check.stderr);
   const { load, TsuzuriTrap: Trap } = await import(pathToFileURL(join(glue, "bindings.mjs")).href);
   TsuzuriTrap = Trap;
+  loadBindings = load;
 
   for (const optimization of ["-O0", "-O3"]) {
     const builds = [

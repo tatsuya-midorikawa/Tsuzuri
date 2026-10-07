@@ -365,8 +365,8 @@ const CSHARP_SUPPORT: &str = r#"    [StructLayout(LayoutKind.Sequential)]
         public long Length;
     }
 
-    /// <summary>An owned result of the library. <see cref="Span"/> reads its memory until
-    /// <see cref="SafeHandle.Dispose()"/> or the finalizer passes it to <c>tsuzuri_free</c>.</summary>
+    /// <summary>An owned result of the library. <see cref="SafeHandle.Dispose()"/> or the finalizer
+    /// passes its memory to <c>tsuzuri_free</c>.</summary>
     public class OwnedBuffer<T> : SafeHandle where T : unmanaged
     {
         private int length;
@@ -386,18 +386,41 @@ const CSHARP_SUPPORT: &str = r#"    [StructLayout(LayoutKind.Sequential)]
         /// <summary>The number of elements.</summary>
         public int Length => length;
 
-        /// <summary>The elements, valid until the buffer is disposed.</summary>
+        /// <summary>The elements, valid until the buffer is disposed. Keep the buffer alive while
+        /// the span is in use (for example with <c>using</c>): the finalizer of an unreachable
+        /// buffer frees the memory under the span. <see cref="ToArray"/> copies safely.</summary>
         public ReadOnlySpan<T> Span
         {
             get
             {
                 ObjectDisposedException.ThrowIf(IsClosed, this);
-                return length == 0 ? default : new ReadOnlySpan<T>((void*)handle, length);
+                return Elements;
+            }
+        }
+
+        internal ReadOnlySpan<T> Elements => length == 0 ? default : new ReadOnlySpan<T>((void*)handle, length);
+
+        /// <summary>Reads the elements while neither <see cref="SafeHandle.Dispose()"/> nor the
+        /// finalizer can free them.</summary>
+        internal TResult Read<TResult>(Func<OwnedBuffer<T>, TResult> read)
+        {
+            bool added = false;
+            try
+            {
+                DangerousAddRef(ref added);
+                return read(this);
+            }
+            finally
+            {
+                if (added)
+                {
+                    DangerousRelease();
+                }
             }
         }
 
         /// <summary>A managed copy of the elements.</summary>
-        public T[] ToArray() => Span.ToArray();
+        public T[] ToArray() => Read(static buffer => buffer.Elements.ToArray());
 
         protected override bool ReleaseHandle()
         {
@@ -413,7 +436,7 @@ const CSHARP_SUPPORT: &str = r#"    [StructLayout(LayoutKind.Sequential)]
         {
         }
 
-        public override string ToString() => new string(Span);
+        public override string ToString() => Read(static buffer => new string(buffer.Elements));
     }
 
     /// <summary>An owned <c>utf8string</c> result: valid UTF-8 bytes.</summary>
@@ -423,7 +446,7 @@ const CSHARP_SUPPORT: &str = r#"    [StructLayout(LayoutKind.Sequential)]
         {
         }
 
-        public override string ToString() => System.Text.Encoding.UTF8.GetString(Span);
+        public override string ToString() => Read(static buffer => System.Text.Encoding.UTF8.GetString(buffer.Elements));
     }
 
 "#;

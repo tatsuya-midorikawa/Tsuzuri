@@ -5,7 +5,7 @@
 // state; each `load` owns its compiled module and instances.
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const tagOf = (value) => Object.prototype.toString.call(value);
 const NO_ERROR = Symbol("no host error");
 const ARRAYS = {
@@ -251,12 +251,14 @@ function resolver() {
 
 // The memory that `withBorrowed` lends to a callback. Private fields keep the pointer out of reach.
 class Borrowed {
+  #bindings;
   #state;
   #kind;
   #pointer;
   #length;
   #live = true;
-  constructor(state, kind, pointer, length) {
+  constructor(bindings, state, kind, pointer, length) {
+    this.#bindings = bindings;
     this.#state = state;
     this.#kind = kind;
     this.#pointer = pointer;
@@ -272,8 +274,10 @@ class Borrowed {
   static live(borrowed) {
     return borrowed.#live && borrowed.#state.alive && borrowed.#state.current();
   }
-  static use(borrowed, kind) {
+  // The pointer and length for an export of `bindings`, whose memory is not another load's.
+  static use(borrowed, kind, bindings) {
     if (borrowed.#kind !== kind) return undefined;
+    if (borrowed.#bindings !== bindings) throw mismatch(`a Borrowed<${ARRAYS[kind][0].name}> from the same load()`);
     if (!Borrowed.live(borrowed)) throw mismatch(`a live Borrowed<${ARRAYS[kind][0].name}>`);
     return [borrowed.#pointer, borrowed.#length];
   }
@@ -390,9 +394,9 @@ async function compileSource(source) {
   return WebAssembly.compile(source);
 }
 
-// The checks of the arguments of one export, before any instance is touched. `borrow` accepts the
-// Borrowed buffers of `withBorrowed` for slices.
-function argumentChecker(name, parameters, borrow) {
+// The checks of the arguments of one export, before any instance is touched. Slices also accept the
+// Borrowed buffers that `withBorrowed` of the same `bindings` lends; without `bindings`, none.
+function argumentChecker(name, parameters, bindings) {
   const count = parameters.length;
   const at = parameters.map((_, position) => `argument ${position} of '${name}'`);
   return (args) => {
@@ -401,7 +405,7 @@ function argumentChecker(name, parameters, borrow) {
     for (let position = 0; position < count; position++) {
       const converter = parameters[position];
       try {
-        checked[position] = converter.slice !== undefined ? checkSlice(converter.slice, args[position], borrow)
+        checked[position] = converter.slice !== undefined ? checkSlice(converter.slice, args[position], bindings)
           : converter.record !== undefined ? converter.record.check(args[position])
             : converter.check(args[position]);
       } catch (error) {
@@ -425,13 +429,13 @@ function checkBuffer(kind, value) {
   return value;
 }
 
-function checkSlice(kind, value, borrow) {
-  if (borrow && value instanceof Borrowed) {
-    const borrowed = Borrowed.use(value, kind);
+function checkSlice(kind, value, bindings) {
+  if (bindings !== undefined && value instanceof Borrowed) {
+    const borrowed = Borrowed.use(value, kind, bindings);
     if (borrowed) return borrowed;
   }
   if (kind in ARRAYS && tagOf(value) !== ARRAYS[kind][2]) {
-    throw mismatch(borrow ? `${ARRAYS[kind][3]} or a Borrowed<${ARRAYS[kind][0].name}>` : ARRAYS[kind][3]);
+    throw mismatch(bindings !== undefined ? `${ARRAYS[kind][3]} or a Borrowed<${ARRAYS[kind][0].name}>` : ARRAYS[kind][3]);
   }
   return checkBuffer(kind, value);
 }
@@ -443,6 +447,8 @@ function checkSlice(kind, value, borrow) {
 function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf = (own) => own } = {}) {
   const resolve = resolver();
   const siteTable = new Map(sites.map((site) => [site.id, site]));
+  // Identifies these bindings to their Borrowed buffers.
+  const bindings = {};
   let state;
   let hostError = NO_ERROR;
   let depth = 0;
@@ -638,7 +644,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     const result = resolve(resultType);
     const target = `tz_${name}`;
     const count = parameters.length;
-    const check = argumentChecker(name, parameters, true);
+    const check = argumentChecker(name, parameters, bindings);
     return function (...args) {
       const checked = check(args);
       const owner = current();
@@ -703,7 +709,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     if (!TABLE.hostAbi) throw new TypeError("withBorrowed needs a module whose exports take buffers");
     const owner = current();
     const pointer = length === 0 ? 0 : enter(owner, () => owner.exports.tsuzuri_alloc(BigInt(length) * BigInt(ARRAYS[kind][1])) >>> 0);
-    const borrowed = new Borrowed(owner, kind, pointer, length);
+    const borrowed = new Borrowed(bindings, owner, kind, pointer, length);
     let value;
     try {
       value = callback(borrowed);
@@ -730,6 +736,10 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     // Whether an instance is running: an exception discards it, so a failed call leaves none.
     get alive() {
       return state !== undefined;
+    },
+    // Whether `error` is what a host function threw, or the glue's error for its result.
+    isHostError(error) {
+      return error !== NO_ERROR && error === hostError;
     },
   };
 }

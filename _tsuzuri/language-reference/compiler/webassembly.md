@@ -161,7 +161,7 @@ trap (site 0) trap
 | `unit`（戻り値） | `void` | — |
 | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | `BigInt64Array` / `Float64Array` / `Uint8Array` か `Borrowed<…>` | 型付き配列だけ。通常の配列は `TypeError` |
 | `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る |
-| `ref utf8string` | `string` | `isWellFormed()` でない文字列は `TypeError` |
+| `ref utf8string` | `string` | `isWellFormed()` でない文字列は `TypeError`。先頭の U+FEFF も文字として渡り、結果でも保たれる |
 | `[i64]` などの所有結果 | 型付き配列 | 複製して返し、すぐ `tsuzuri_free` する |
 | `string` / `utf8string` の所有結果 | `string` | 同上 |
 | スカラーレコードとその `ref` | `tz_record_…` の interface | 全フィールドを検査する。固定長配列のフィールドは長さが一致する配列 |
@@ -174,7 +174,7 @@ trap (site 0) trap
 
 グルーは wasm のポインタを JavaScript に渡しません。入力は呼び出しごとに線形メモリへ複製し、所有結果は JavaScript の値へ複製してすぐ解放します。呼び出しが成功すれば、確保の残りは 0 です。ビューは使う直前に `memory.buffer` から作り直します。
 
-大きな入力を複製せずに渡すときは、`withBorrowed(kind, length, callback)` を使います。`kind` は `"i64"`、`"f64"`、`"ubyte"` です。wasm 側に `length` 要素の領域を確保し、`Borrowed` として callback に渡し、callback が返るか例外を投げたあとに解放します。`view()` は呼ぶたびに現在のメモリ上の型付き配列を返します。解放後やインスタンスが捨てられたあとの `Borrowed` を使うと `TypeError` です。callback が Promise などを返すと、解放したうえで `TypeError` を投げます。
+大きな入力を複製せずに渡すときは、`withBorrowed(kind, length, callback)` を使います。`kind` は `"i64"`、`"f64"`、`"ubyte"` です。wasm 側に `length` 要素の領域を確保し、`Borrowed` として callback に渡し、callback が返るか例外を投げたあとに解放します。`view()` は呼ぶたびに現在のメモリ上の型付き配列を返します。解放後やインスタンスが捨てられたあとの `Borrowed` と、別の `load` が作った `Borrowed` を使うと `TypeError` です。callback が Promise などを返すと、解放したうえで `TypeError` を投げます。
 
 ```javascript
 const scaled = api.withBorrowed("f64", 3, (buffer) => {
@@ -381,7 +381,7 @@ true trap (site 0)
 the WASM thread pool stopped after a failure; load the module again
 ```
 
-引数は、1 スレッドのグルーと同じ検査をページ側で行ってから送ります。`TypeError` や `RangeError` では、プールは止まりません。引数と結果は構造化複製で受け渡すので、`withBorrowed` はありません。トラップやホスト関数の例外は、どのワーカーで起きてもプール全体を止めます。その呼び出しは `TsuzuriTrap` で失敗し、補助ワーカーのトラップなら、そのワーカーのサイト ID が付きます。待っていた呼び出しとそれ以降の呼び出しも失敗します。作り直しは自動ではないので、`load` からやり直します。`close()` はワーカーを終了し、それ以降の呼び出しは `the WASM thread pool is closed` で失敗します。
+引数は、1 スレッドのグルーと同じ検査をページ側で行ってから送ります。`TypeError` や `RangeError` では、プールは止まりません。引数と結果は構造化複製で受け渡すので、`withBorrowed` はありません。トラップやホスト関数の例外は、どのワーカーで起きてもプール全体を止めます。トラップならその呼び出しは `TsuzuriTrap` で失敗し、補助ワーカーのトラップなら、そのワーカーのサイト ID が付きます。ホスト関数が投げた値と、グルーが import の結果を拒んだ `TypeError`・`RangeError` は、補助ワーカーで起きても、その値の構造化複製で呼び出しが失敗します。待っていた呼び出しとそれ以降の呼び出しも失敗します。作り直しは自動ではないので、`load` からやり直します。`close()` はワーカーを終了し、それ以降の呼び出しは `the WASM thread pool is closed` で失敗します。
 
 この例とリポジトリの `tests/bindings_threads.mjs` は、Chrome（headless）と、Playwright の Chromium、WebKit で、COOP / COEP 付きのページでは 3 スレッドが同時に動くこと、ヘッダーの無いページでは `Error` になることを確かめました。Firefox は未確認です。Node.js から使うときは、このグルーではなく `src/runtime/wasm-threads.mjs` を使います。
 

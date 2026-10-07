@@ -4,6 +4,7 @@
 using System;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Tsuzuri.Bindings;
 
 string library = args[0];
@@ -97,6 +98,37 @@ using (var scaled = Native.scaled([1.0, 2.0], 3.0))
     Check(scaled.Span.SequenceEqual(new[] { 3.0, 6.0 }), "scaled");
 }
 Native.check(5);
+
+// Temporaries: the finalizer of an unreachable result must not free it while ToArray or ToString
+// copies it. Another thread collects all the time; the host fills freed memory (MallocScribble).
+var stop = 0;
+var collector = new Thread(() =>
+{
+    while (Volatile.Read(ref stop) == 0)
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+    }
+});
+collector.Start();
+string large = new string('x', 1 << 16) + "\ud800";
+for (int round = 0; round < 1000; round++)
+{
+    byte[] bytes = Native.make_bytes(1 << 16).ToArray();
+    bool intact = bytes.Length == 1 << 16;
+    for (int index = 0; intact && index < bytes.Length; index++)
+    {
+        intact = bytes[index] == (byte)index;
+    }
+    Check(intact, $"make_bytes(...).ToArray() in round {round}");
+    Check(Native.copy_text(large).ToString() == large, $"copy_text(...).ToString() in round {round}");
+    Check(Native.copy_utf8("\u00e9t\u00e9"u8).ToString() == "\u00e9t\u00e9", $"copy_utf8(...).ToString() in round {round}");
+}
+Volatile.Write(ref stop, 1);
+collector.Join();
+GC.Collect();
+GC.WaitForPendingFinalizers();
+
 unsafe
 {
     ulong* stats = stackalloc ulong[4];

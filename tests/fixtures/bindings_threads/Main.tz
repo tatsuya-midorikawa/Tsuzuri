@@ -2,6 +2,7 @@ record Range { start: i64, count: i64 }
 
 extern def barrier :: i64 -> i64
 extern def worker_id :: unit -> i64
+extern def narrow_on_helpers :: i64 -> i32
 
 def rec total :: ref [i64] -> i64 -> i64 -> i64
 fn rec total values index sum =
@@ -44,4 +45,10 @@ export def worker_trap :: i64 -> i64
 fn worker_trap count = Task.run task {
     let! results = Task.parallel (new [Task<i64>](count, i -> task { assert (i < count - 1); i }))
     return total (&results) 0 0
+}
+
+export def helper_results :: i64
+fn helper_results = Task.run task {
+    let! results = Task.parallel (new [Task<i64>](3, index -> task { (narrow_on_helpers (barrier index)) as i64 }))
+    return results[0] + results[1] + results[2]
 }

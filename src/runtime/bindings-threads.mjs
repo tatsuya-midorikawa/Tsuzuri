@@ -8,9 +8,12 @@
 
 const ISOLATION = "WASM threads need a cross-origin isolated page: serve it from HTTPS or localhost with 'Cross-Origin-Opener-Policy: same-origin' and 'Cross-Origin-Embedder-Policy: require-corp' (crossOriginIsolated is false)";
 const ROLE = "tsuzuri-worker";
-// Int32 words of the start-up record: the go flag (1 start, 2 closed), the first failure's reason
-// (1 trap, 2 stack, 3 other, 4 claimed) and site, then [base, top] of each helper's stack.
+// Int32 words of the start-up record: the go flag (1 start, 2 closed), the reason and site of a
+// helper's first failure, then [base, top] of each helper's stack.
 const GO = 0, REASON = 1, SITE = 2, SLOTS = 3, MAX_WORKERS = 31;
+// The reasons: a trap and stack exhaustion become the coordinator's TsuzuriTrap; a host function's
+// error (or the glue's error for its result) and any other error reach the page as the helper's.
+const TRAP = 1, STACK = 2, HOST = 3, CLAIMED = 4, OTHER = 5;
 
 // Fails the pool as createThreadPool does: the shared flag, the lock poison bits, and every waiter.
 function poison(memory, address) {
@@ -40,7 +43,7 @@ function sharedPages(bytes) {
   const name = () => {
     const length = leb();
     position += length;
-    return new TextDecoder().decode(data.subarray(position - length, position));
+    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(data.subarray(position - length, position));
   };
   while (position < data.length) {
     const id = data[position++], end = leb() + position;
@@ -144,8 +147,8 @@ async function coordinator({ module, memory, bootstrap, workers, importsModule, 
     // A helper's trap stops the coordinator through the pool's failure flag, without a site of its own.
     trapOf(own) {
       const reason = Atomics.load(words, REASON);
-      if (own.reason !== "trap" || own.site !== 0 || (reason !== 1 && reason !== 2)) return own;
-      return { reason: reason === 2 ? "stack" : "trap", site: Atomics.load(words, SITE) >>> 0 };
+      if (own.reason !== "trap" || own.site !== 0 || (reason !== TRAP && reason !== STACK)) return own;
+      return { reason: reason === STACK ? "stack" : "trap", site: Atomics.load(words, SITE) >>> 0 };
     },
   });
   const owner = await bound.start();
@@ -161,7 +164,11 @@ async function coordinator({ module, memory, bootstrap, workers, importsModule, 
         poisoned = true;
         poison(memory, control);
       }
-      postMessage({ kind: "error", id, error: describeError(error), failed: !bound.alive });
+      // The pool's failure flag stopped this call after a host error or another error on a helper:
+      // the page reports that helper's error.
+      const reason = Atomics.load(words, REASON);
+      const helper = error instanceof TsuzuriTrap && error.trap.reason === "trap" && error.trap.site === 0 && (reason === HOST || reason === OTHER);
+      postMessage({ kind: "error", id, error: helper ? { type: "helper" } : describeError(error), failed: !bound.alive });
     }
   };
 }
@@ -184,6 +191,13 @@ async function helper({ module, memory, bootstrap, workerId, importsModule, impo
   });
   const { exports } = await bound.start();
   postMessage({ kind: "ready" });
+  const siteOf = () => {
+    try {
+      return (exports.tsuzuri_trap_site?.() ?? 0) >>> 0;
+    } catch {
+      return 0;
+    }
+  };
   const words = new Int32Array(bootstrap);
   const slots = new Uint32Array(bootstrap);
   while (Atomics.load(words, GO) === 0) Atomics.wait(words, GO, 0);
@@ -199,16 +213,16 @@ async function helper({ module, memory, bootstrap, workerId, importsModule, impo
   try {
     exports.tsuzuri_thread_entry(workerId);
   } catch (error) {
-    // The first failure records its reason and site for the coordinator, then stops the pool.
-    if (Atomics.compareExchange(words, REASON, 0, 4) === 0) {
-      let site = 0;
-      try {
-        site = error instanceof WebAssembly.RuntimeError ? (exports.tsuzuri_trap_site?.() ?? 0) >>> 0 : 0;
-      } catch {
-        site = 0;
-      }
+    // The first failure records its reason and site for the coordinator, then stops the pool. A host
+    // function's RangeError is the host's, not stack exhaustion.
+    if (Atomics.compareExchange(words, REASON, 0, CLAIMED) === 0) {
+      const [reason, site] = bound.isHostError(error) ? [HOST, 0]
+        : error instanceof TsuzuriTrap ? [error.trap.reason === "stack" ? STACK : TRAP, error.trap.site]
+          : error instanceof WebAssembly.RuntimeError ? [TRAP, siteOf()]
+            : error instanceof RangeError || error?.name === "InternalError" ? [STACK, 0]
+              : [OTHER, 0];
       Atomics.store(words, SITE, site);
-      Atomics.store(words, REASON, error instanceof WebAssembly.RuntimeError ? 1 : error instanceof RangeError || error?.name === "InternalError" ? 2 : 3);
+      Atomics.store(words, REASON, reason);
     }
     poison(memory, exports.tsuzuri_threads_control() >>> 0);
     postMessage({ kind: "failed", error: describeError(error) });
@@ -320,11 +334,24 @@ export async function load(source, options = {}) {
     for (const worker of started) worker.terminate();
     throw error;
   }
+  // The error of the first helper that failed. A call that the helper's failure stopped reports it,
+  // as a host function's error on the coordinator would be.
+  let reportHelper;
+  const helperError = new Promise((resolveHelper) => {
+    reportHelper = resolveHelper;
+  });
   for (const worker of started) {
-    worker.addEventListener("error", (event) => stop(new Error(`a WASM worker failed: ${event?.message ?? "script error"}`)));
+    worker.addEventListener("error", (event) => {
+      const error = new Error(`a WASM worker failed: ${event?.message ?? "script error"}`);
+      reportHelper(error);
+      stop(error);
+    });
     if (worker !== coordinatorWorker) {
       worker.addEventListener("message", (event) => {
-        if (event.data?.kind === "failed") failure ??= new Error("a WASM worker failed; load the module again", { cause: errorOf(event.data.error) });
+        if (event.data?.kind !== "failed") return;
+        const error = errorOf(event.data.error);
+        reportHelper(error);
+        failure ??= error;
       });
     }
   }
@@ -337,6 +364,14 @@ export async function load(source, options = {}) {
       call.resolve(message.value);
       return;
     }
+    if (message.error?.type === "helper") {
+      // The helper's message may come after the coordinator's.
+      helperError.then((error) => {
+        failure ??= error;
+        call.reject(error);
+      });
+      return;
+    }
     const error = errorOf(message.error);
     if (message.failed) failure ??= error;
     call.reject(error);
@@ -345,7 +380,7 @@ export async function load(source, options = {}) {
   const resolve = resolver();
   const exports = {};
   for (const [name, parameterTypes] of TABLE.exports) {
-    const check = argumentChecker(name, parameterTypes.map(resolve), false);
+    const check = argumentChecker(name, parameterTypes.map(resolve), undefined);
     const call = (...args) => new Promise((resolveCall, reject) => {
       if (closed) throw new Error("the WASM thread pool is closed");
       if (failure !== undefined) throw new Error("the WASM thread pool stopped after a failure; load the module again", { cause: failure });

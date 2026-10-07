@@ -47,6 +47,12 @@ writeFileSync(join(root, "host.mjs"), `export function createImports({ workerId,
       Atomics.or(counters, 3, 1 << workerId);
       return BigInt(workerId);
     },
+    // Fails only on helpers: an i32 result out of range, or an error of the host's own.
+    "Main.narrow_on_helpers": (value) => {
+      if (workerId === 0) return Number(value);
+      if (data.mode === "throw") throw new Error(\`host failure on worker \${workerId}\`);
+      return 2 ** 40;
+    },
   };
 }
 `);
@@ -165,6 +171,17 @@ try {
     assert.equal(await alone.exports.squares({ start: 1n, count: 10n }), sumOfSquares(1n, 10n));
     await alone.close();
     await assert.rejects(alone.exports.squares({ start: 1n, count: 1n }), { message: "the WASM thread pool is closed" });
+    // A host function's error on a helper reaches the call as that error, not as stack exhaustion
+    // or an anonymous trap: the glue's RangeError for an import result, and the host's own Error.
+    for (const [mode, expected] of [
+      ["range", (error) => error instanceof RangeError && error.message === "result of import 'Main.narrow_on_helpers' is out of range for i32"],
+      ["throw", (error) => error instanceof Error && !(error instanceof TsuzuriTrap) && /^host failure on worker [12]$/.test(error.message)],
+    ]) {
+      const hosted = await load(bytes, { workers: 2, importsModule, importData: { counters: new SharedArrayBuffer(16), mode }, sites });
+      await assert.rejects(hosted.exports.helper_results(), expected, mode);
+      await assert.rejects(hosted.exports.divide(1n, 1n), { message: "the WASM thread pool stopped after a failure; load the module again" });
+      await hosted.close();
+    }
     console.log(`bindings threads: ${optimization} passed on Web Workers over node:worker_threads`);
   }
 
@@ -185,7 +202,7 @@ try {
   if (existsSync(tsc)) {
     writeFileSync(join(root, "consumer.mts"), `import { load, TsuzuriTrap, type CreateImports, type ThreadBindings } from "./threads.mjs";
 declare const bytes: ArrayBuffer;
-export const createImports: CreateImports = ({ workerId }) => ({ "Main.barrier": (value) => value, "Main.worker_id": () => BigInt(workerId) });
+export const createImports: CreateImports = ({ workerId }) => ({ "Main.barrier": (value) => value, "Main.worker_id": () => BigInt(workerId), "Main.narrow_on_helpers": (value) => Number(value) });
 const api: ThreadBindings = await load(bytes, { importsModule: new URL("./host.mjs", import.meta.url), workers: 2 });
 const total: bigint = await api.exports.squares({ start: 1n, count: 3n });
 const doubled: Float64Array = await api.exports.doubled(Float64Array.of(1));
@@ -236,6 +253,9 @@ try {
   try { await api.exports.divide(1n, 0n); } catch (error) { results.trap = { isTrap: error instanceof TsuzuriTrap, trap: error.trap }; }
   try { await api.exports.divide(1n, 1n); } catch (error) { results.after = error.message; }
   await api.close();
+  const hosted = await load(bytes, { workers: 2, importsModule: new URL("./host.mjs", import.meta.url).href, importData: { counters: new SharedArrayBuffer(16) }, sites });
+  try { await hosted.exports.helper_results(); } catch (error) { results.helper = \`\${error.name}: \${error.message}\`; }
+  await hosted.close();
   await report({ ok: true, results });
 } catch (error) {
   await report({ ok: false, error: String(error?.message ?? error) });
@@ -315,6 +335,7 @@ try {
     assert.equal(results.trap.isTrap, true);
     assert.equal(results.trap.trap.kind, "integer division by zero");
     assert.equal(results.after, "the WASM thread pool stopped after a failure; load the module again");
+    assert.equal(results.helper, "RangeError: result of import 'Main.narrow_on_helpers' is out of range for i32");
     const plain = await visit("/plain/");
     assert.deepEqual(plain, { ok: false, error: ISOLATION });
     if (!playwright) version = spawnSync(browser, ["--version"], { encoding: "utf8" }).stdout.trim();
