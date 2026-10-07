@@ -21,6 +21,7 @@ Usage:
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
+  tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -38,9 +39,12 @@ namespace, else the package or folder name) followed by subdirectories
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
-({ git = \"https://...\", rev = \"<40-hex commit>\" }) with git 2.32 or later into the
-package store (packages/ in the build cache) and records them in Tsuzuri.lock.
-Other commands never run git or use the network; they read Tsuzuri.lock and the store.
+({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
+({ version = \"1.2.3\" }, the minimal versions that satisfy every requirement in the
+[registry] index) with git 2.32 or later into the package store (packages/ in the
+build cache) and records them in Tsuzuri.lock. Other commands never run git or
+use the network; they read Tsuzuri.lock and the store. `tsuzuri publish` checks a
+package and prints the registry index entry of its commit; it changes no registry.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -1076,6 +1080,83 @@ fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// `tsuzuri publish directory --git URL --rev COMMIT [--json]`: checks the package
+/// and prints the registry index entry of that commit. It changes no registry.
+fn publish_package(arguments: &[OsString]) -> ExitCode {
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let usage = |message: &str| {
+        print_diagnostic(
+            &Diagnostic::new("E2000", message, Span::default()),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        ExitCode::from(2)
+    };
+    let (mut directory, mut url, mut rev) = (None, None, None);
+    let mut valid = true;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.to_str() {
+            Some("--json") => {}
+            Some("--git") if url.is_none() => {
+                url = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned);
+                valid &= url.is_some();
+            }
+            Some("--rev") if rev.is_none() => {
+                rev = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned);
+                valid &= rev.is_some();
+            }
+            _ if directory.is_none() && !argument.to_string_lossy().starts_with('-') => {
+                directory = Some(PathBuf::from(argument));
+            }
+            _ => valid = false,
+        }
+    }
+    let (Some(directory), Some(url), Some(rev), true) = (directory, url, rev, valid) else {
+        return usage(
+            "publish takes one package directory, --git URL, --rev COMMIT, and optionally --json",
+        );
+    };
+    if !tsuzuri::package::valid_git_url(&url) {
+        return usage(tsuzuri::package::GIT_URL_RULE);
+    }
+    if !tsuzuri::package::valid_rev(&rev) {
+        return usage(tsuzuri::package::GIT_REV_RULE);
+    }
+    if !directory.join("Tsuzuri.toml").is_file() {
+        return usage("publish requires a Tsuzuri.toml in the package directory");
+    }
+    // A published package must check like any library first.
+    let project = match Project::load_for_tests(&directory) {
+        Ok(project) => project,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(errors) = project.analyze_all() {
+        print_diagnostics(&errors, &project, json);
+        return ExitCode::FAILURE;
+    }
+    match tsuzuri::fetch::publish(&directory, &url, &rev) {
+        Ok(entry) => {
+            print!("{entry}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1106,6 +1187,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "fetch") {
         return fetch_dependencies(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "publish") {
+        return publish_package(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {

@@ -1,6 +1,7 @@
-// E2E for git dependencies (E10): `tsuzuri fetch` downloads commits of local
-// bare repositories through file:/// urls (no network), writes Tsuzuri.lock, and
-// every later build reads only the lockfile and the package store.
+// E2E for git and registry dependencies (E10): `tsuzuri fetch` downloads commits
+// of local bare repositories through file:/// urls (no network), writes
+// Tsuzuri.lock, and every later build reads only the lockfile and the package
+// store. `tsuzuri publish` prints the index entries of a local registry index.
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,7 +31,7 @@ function run(program, args, { input, env = {}, success = true } = {}) {
 const cli = (args, success = true) => run(compiler, args, { env: { TSUZURI_CACHE_DIR: cache }, success });
 
 // Fixture git commands ignore the user's configuration and always name their repository.
-function git(repository, args, input) {
+function gitEnvironment() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: "1",
@@ -42,22 +43,42 @@ function git(repository, args, input) {
     GIT_COMMITTER_EMAIL: "test@example.org",
     GIT_COMMITTER_DATE: "2026-01-01T00:00:00Z",
   });
-  const result = spawnSync("git", ["-c", "init.defaultBranch=main", `--git-dir=${repository}`, ...args], { input, env });
+  return env;
+}
+
+function git(repository, args, input) {
+  const result = spawnSync("git", ["-c", "init.defaultBranch=main", `--git-dir=${repository}`, ...args], { input, env: gitEnvironment() });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `git ${args.join(" ")}\n${result.stderr}`);
   return result.stdout.toString().trim();
 }
 
-// Commits flat files to a bare repository without a working tree; returns the commit id.
+// Commits files (one directory level) on top of main of a bare repository without a
+// working tree; returns the commit id.
 function commit(repository, files) {
   mkdirSync(repository, { recursive: true });
   git(repository, ["init", "--bare", "--quiet"]);
-  const entries = Object.entries(files)
-    .map(([path, text]) => `100644 blob ${git(repository, ["hash-object", "-w", "--stdin"], text)}\t${path}\0`)
-    .join("");
-  const rev = git(repository, ["commit-tree", git(repository, ["mktree", "-z"], entries), "-m", "fixture"]);
+  const tree = (entries) => git(repository, ["mktree", "-z"], entries.join(""));
+  const top = [];
+  const directories = {};
+  for (const [path, text] of Object.entries(files)) {
+    const line = (name) => `100644 blob ${git(repository, ["hash-object", "-w", "--stdin"], text)}\t${name}\0`;
+    const [head, ...rest] = path.split("/");
+    if (rest.length === 0) top.push(line(head));
+    else (directories[head] ??= []).push(line(rest.join("/")));
+  }
+  for (const [name, entries] of Object.entries(directories)) top.push(`040000 tree ${tree(entries)}\t${name}\0`);
+  const parent = spawnSync("git", [`--git-dir=${repository}`, "rev-parse", "--verify", "--quiet", "refs/heads/main"], { env: gitEnvironment() });
+  const rev = git(repository, ["commit-tree", tree(top), "-m", "fixture", ...(parent.status === 0 ? ["-p", parent.stdout.toString().trim()] : [])]);
   git(repository, ["update-ref", "refs/heads/main", rev]);
   return rev;
+}
+
+function writeFiles(root, files) {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
 }
 
 const gitDependency = (name, url, rev) => `${name} = { git = "${url}", rev = "${rev}" }\n`;
@@ -117,7 +138,60 @@ try {
   assert.match(missing.stderr, /error\[E2007\]: Tsuzuri\.lock is missing; run tsuzuri fetch/);
   cli(["fetch", app]);
   assert.equal(cli(["run", app]).stdout, `${expected}\n`);
-  console.log("Packages: git dependencies through file:/// repositories, Tsuzuri.lock, offline native/WASM O0/O3 builds, deterministic IR");
+
+  // A registry: publish prints each version's index entry from a working copy that
+  // matches its commit, the index repository lists the entries, and fetch selects
+  // the minimal versions that satisfy every requirement.
+  const index = join(directory, "repos", "index.git");
+  const versions = {};
+  const commitIndex = () => commit(index, Object.fromEntries(Object.entries(versions).map(([name, entries]) =>
+    [`index/${name}.json`, `${JSON.stringify({ name, versions: entries }, null, 2)}\n`])));
+  const registry = `\n[registry]\nindex = "${pathToFileURL(index).href}"\n`;
+  function publish(name, version, files) {
+    const repository = join(directory, "repos", `${name}.git`);
+    const rev = commit(repository, files);
+    const copy = join(directory, "copies", `${name}-${version}`);
+    writeFiles(copy, files);
+    // A package with registry dependencies fetches them before publish checks it.
+    if (files["Tsuzuri.toml"].includes("[registry]")) cli(["fetch", copy]);
+    const printed = cli(["publish", copy, "--git", pathToFileURL(repository).href, "--rev", rev]);
+    const entry = JSON.parse(printed.stdout);
+    assert.deepEqual([entry.version, entry.git, entry.rev], [version, pathToFileURL(repository).href, rev]);
+    (versions[name] ??= []).push(entry);
+  }
+  const shapes = (version, unit) => ({
+    "Tsuzuri.toml": `[package]\nname = "shapes"\nversion = "${version}"\n`,
+    "Area.tz": `def unit :: i64\nfn unit = ${unit}\n`,
+  });
+  publish("shapes", "1.0.0", shapes("1.0.0", 7));
+  publish("shapes", "1.1.0", shapes("1.1.0", 8));
+  publish("shapes", "1.2.0", shapes("1.2.0", 9));
+  commitIndex();
+  publish("tiles", "1.0.0", {
+    "Tsuzuri.toml": `[package]\nname = "tiles"\nversion = "1.0.0"\n[dependencies]\nshapes = { version = "1.1.0" }\n${registry}`,
+    "Grid/Count.tz": "def count :: i64\nfn count = Shapes::Area.unit() * 3\n",
+  });
+  commitIndex();
+  const store = join(directory, "registry-app");
+  writeFiles(store, {
+    "Tsuzuri.toml": `[package]\nname = "store"\nversion = "0.1.0"\n[dependencies]\nshapes = { version = "1.0.0" }\ntiles = { version = "1.0.0" }\n${registry}`,
+    "Main.tz": "export def answer :: i64\nfn answer = Shapes::Area.unit() + Tiles::Grid::Count.count()\n\nanswer()\n",
+  });
+  cli(["fetch", store]);
+  const registryLock = JSON.parse(readFileSync(join(store, "Tsuzuri.lock"), "utf8"));
+  assert.equal(registryLock.format, 2);
+  // shapes 1.0.0 (store) and 1.1.0 (tiles) select 1.1.0, not the newest 1.2.0.
+  assert.deepEqual(registryLock.packages.map(entry => [entry.name, entry.version]), [["shapes", "1.1.0"], ["tiles", "1.0.0"]]);
+  const registryExpected = 8n + 8n * 3n;
+  for (const optimization of ["-O0", "-O3"]) {
+    assert.equal(cli(["run", store, optimization]).stdout, `${registryExpected}\n`);
+    const wasm = join(directory, `store${optimization}.wasm`);
+    cli(["build", store, "--target", "wasm32", optimization, "-o", wasm]);
+    const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
+    assert.deepEqual(WebAssembly.Module.imports(module), []);
+    assert.equal(instance.exports.tz_answer(), registryExpected);
+  }
+  console.log("Packages: git and registry dependencies through file:/// repositories, publish, minimal version selection, Tsuzuri.lock, offline native/WASM O0/O3 builds, deterministic IR");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

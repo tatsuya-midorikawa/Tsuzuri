@@ -390,11 +390,7 @@ fn manifest_rejects_invalid_git_dependencies() {
         ),
         (
             format!("{{ url = \"{url}\" }}"),
-            "expected a path or git dependency",
-        ),
-        (
-            "{ version = \"1.0.0\" }".to_owned(),
-            "expected a path or git dependency",
+            "expected a path, git, or version dependency",
         ),
     ];
     for (value, message) in cases {
@@ -414,6 +410,7 @@ fn lock_renders_canonical_json_and_round_trips() {
         git: git.to_owned(),
         rev: rev.to_string().repeat(40),
         sha256: sha.to_string().repeat(64),
+        version: None,
     };
     let entries = BTreeMap::from([
         (
@@ -470,8 +467,19 @@ fn lock_rejects_invalid_files() {
         ("not json".to_owned(), "expected"),
         ("[]".to_owned(), "expected an object"),
         (
-            format!("{{\"format\": 2, \"packages\": [{valid}]}}"),
-            "format must be 1",
+            format!("{{\"format\": 3, \"packages\": [{valid}]}}"),
+            "format must be 1 or 2",
+        ),
+        (
+            package(&valid.replace("\"rev\":", "\"version\": \"1.0.0\", \"rev\":")),
+            "unknown package key 'version'",
+        ),
+        (
+            format!(
+                "{{\"format\": 2, \"packages\": [{}]}}",
+                valid.replace("\"rev\":", "\"version\": \"1.0\", \"rev\":")
+            ),
+            "invalid version of 'geometry-core'",
         ),
         (
             format!("{{\"format\": \"1\", \"packages\": [{valid}]}}"),
@@ -621,6 +629,7 @@ fn lock_text(entries: &[(&str, &str, &str, &str)]) -> String {
                         git: (*git).to_owned(),
                         rev: (*rev).to_owned(),
                         sha256: (*sha256).to_owned(),
+                        version: None,
                     },
                 )
             })
@@ -817,7 +826,7 @@ fn git_packages_reject_path_dependencies() {
     assert_error(
         &scratch.tsuzuri(&["check", scratch.path("app").to_str().unwrap()]),
         "E2000",
-        "git packages cannot declare [native] link settings; move them to the application manifest",
+        "git and registry packages cannot declare [native] link settings; move them to the application manifest",
     );
 }
 
@@ -1312,4 +1321,1033 @@ fn builds_never_run_git() {
         "git 2.32 or later is required to fetch git dependencies (found: none)",
     );
     assert!(marker.exists());
+}
+
+// Phase 2: registry dependencies, minimal version selection, and `tsuzuri publish`.
+
+use tsuzuri::package::{VERSION_FORM, VERSION_RULE, Version, parse_index, render_index_entry};
+
+fn version(text: &str) -> Version {
+    Version::parse(text).unwrap()
+}
+
+#[test]
+fn versions_parse_and_compare_compatibility_ranges() {
+    assert_eq!(
+        version("1.2.3"),
+        Version {
+            major: 1,
+            minor: 2,
+            patch: 3
+        }
+    );
+    assert_eq!(version("0.0.0").to_string(), "0.0.0");
+    assert_eq!(
+        version("18446744073709551615.0.10").to_string(),
+        "18446744073709551615.0.10"
+    );
+    for text in [
+        "",
+        "1",
+        "1.2",
+        "1.2.3.4",
+        "01.2.3",
+        "1.02.3",
+        "1.2.03",
+        "v1.2.3",
+        "1.2.3-beta",
+        "1.2.3+build",
+        "^1.2.3",
+        ">=1.2.3",
+        "~1.2.3",
+        "1.2.x",
+        "1.2.*",
+        " 1.2.3",
+        "1.2.3 ",
+        "1..3",
+        "-1.2.3",
+        "+1.2.3",
+        "18446744073709551616.0.0",
+        "１.2.3",
+    ] {
+        assert_eq!(Version::parse(text), None, "{text}");
+    }
+    assert!(version("1.0.0") < version("1.0.1") && version("1.9.9") < version("1.10.0"));
+    // Same major from 1.0.0, same 0.minor before it.
+    for (requirement, candidate, satisfied) in [
+        ("1.2.3", "1.2.3", true),
+        ("1.2.3", "1.2.4", true),
+        ("1.2.3", "1.9.0", true),
+        ("1.2.3", "1.2.2", false),
+        ("1.2.3", "2.0.0", false),
+        ("1.2.3", "0.9.0", false),
+        ("0.2.3", "0.2.9", true),
+        ("0.2.3", "0.3.0", false),
+        ("0.2.3", "1.0.0", false),
+        ("0.0.1", "0.0.2", true),
+        ("0.0.1", "0.1.0", false),
+    ] {
+        assert_eq!(
+            version(candidate).satisfies(version(requirement)),
+            satisfied,
+            "{candidate} for {requirement}"
+        );
+        assert_eq!(
+            version(requirement).compatible(version(candidate)),
+            satisfied
+                || version(candidate) < version(requirement)
+                    && version(candidate).major == version(requirement).major
+                    && (version(requirement).major != 0
+                        || version(candidate).minor == version(requirement).minor),
+            "{candidate} and {requirement}"
+        );
+    }
+}
+
+#[test]
+fn manifest_accepts_registry_dependencies_and_index() {
+    let manifest = parse_manifest(
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[registry]\nindex = \"https://example.org/index.git\" # pinned below\nrev = \"{REV}\"\n\n[dependencies]\ngeometry-core = {{ version = \"1.2.3\" }}\ntight = {{version=\"0.1.0\"}}\nlocal = {{ path = \"../local\" }}\n"
+        ),
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.dependencies["geometry-core"].source,
+        DependencySource::Registry(version("1.2.3"))
+    );
+    assert_eq!(
+        manifest.dependencies["tight"].source,
+        DependencySource::Registry(version("0.1.0"))
+    );
+    let registry = manifest.registry.unwrap();
+    assert_eq!(registry.index, "https://example.org/index.git");
+    assert_eq!(registry.rev.as_deref(), Some(REV));
+    let manifest = parse_manifest(
+        &format!("{GEOMETRY}[registry]\nindex = \"file:///srv/index.git\"\n"),
+        0,
+    )
+    .unwrap();
+    assert_eq!(manifest.registry.unwrap().rev, None);
+    assert_eq!(parse_manifest(GEOMETRY, 0).unwrap().registry, None);
+    for (text, message) in [
+        ("[dependencies]\na = { version = \"1.2\" }", VERSION_RULE),
+        ("[dependencies]\na = { version = \"^1.2.3\" }", VERSION_RULE),
+        (
+            "[dependencies]\na = { version = \"1.2.3-beta\" }",
+            VERSION_RULE,
+        ),
+        ("[dependencies]\na = { version = \"01.2.3\" }", VERSION_RULE),
+        ("[dependencies]\na = { version \"1.2.3\" }", VERSION_FORM),
+        (
+            "[dependencies]\na = { version = \"1.2.3\", git = \"https://e.org/a.git\" }",
+            VERSION_FORM,
+        ),
+        (
+            "[dependencies]\na = { version = \"1.2.3\", native = true }",
+            VERSION_FORM,
+        ),
+        ("[dependencies]\na = { tag = \"v1\" }", GIT_FORM),
+        (
+            "[registry]\nrev = \"0123456789abcdef0123456789abcdef01234567\"",
+            "[registry] requires index = \"https://...\"",
+        ),
+        ("[registry]", "[registry] requires index = \"https://...\""),
+        (
+            "[registry]\nindex = \"http://e.org/index.git\"",
+            GIT_URL_RULE,
+        ),
+        (
+            "[registry]\nindex = \"https://e.org/index.git\"\nrev = \"main\"",
+            GIT_REV_RULE,
+        ),
+        (
+            "[registry]\nindex = \"https://e.org/a.git\"\nindex = \"https://e.org/b.git\"",
+            "registry keys must occur at most once",
+        ),
+        (
+            "[registry]\nurl = \"https://e.org/a.git\"",
+            "unknown registry key; expected index or rev",
+        ),
+        (
+            "[registry]\nindex = [\"https://e.org/a.git\"]",
+            "expected '\"'",
+        ),
+        (
+            "[registry]\nindex = \"https://e.org/a.git\"\n[registry]",
+            "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
+        ),
+    ] {
+        let error = parse_manifest(&format!("{GEOMETRY}{text}\n"), 3).unwrap_err();
+        assert_eq!(error.code, "E0002", "{text}: {}", error.message);
+        assert_eq!(error.message, message, "{text}");
+        assert_eq!(error.span.source, Some(3), "{text}");
+    }
+}
+
+#[test]
+fn lock_format_2_records_registry_versions_and_reads_format_1() {
+    let entry = |git: &str, rev: char, sha: char, version: Option<&str>| LockEntry {
+        git: git.to_owned(),
+        rev: rev.to_string().repeat(40),
+        sha256: sha.to_string().repeat(64),
+        version: version.map(self::version),
+    };
+    let entries = BTreeMap::from([
+        (
+            "gamma".to_owned(),
+            entry("https://example.org/gamma.git", 'a', 'c', Some("1.3.0")),
+        ),
+        (
+            "fork".to_owned(),
+            entry("file:///srv/fork.git", 'b', 'd', None),
+        ),
+    ]);
+    let canonical = format!(
+        "{{\n  \"format\": 2,\n  \"packages\": [\n    {{\n      \"name\": \"fork\",\n      \"git\": \"file:///srv/fork.git\",\n      \"rev\": \"{}\",\n      \"sha256\": \"{}\"\n    }},\n    {{\n      \"name\": \"gamma\",\n      \"version\": \"1.3.0\",\n      \"git\": \"https://example.org/gamma.git\",\n      \"rev\": \"{}\",\n      \"sha256\": \"{}\"\n    }}\n  ]\n}}\n",
+        "b".repeat(40),
+        "d".repeat(64),
+        "a".repeat(40),
+        "c".repeat(64)
+    );
+    assert_eq!(render_lock(&entries), canonical);
+    assert_eq!(parse_lock(&canonical, 0).unwrap(), entries);
+    let shuffled = format!(
+        "{{\"packages\": [{{\"sha256\": \"{}\", \"git\": \"https://example.org/gamma.git\", \"version\": \"1.3.0\", \"rev\": \"{}\", \"name\": \"gamma\"}}, {{\"name\": \"fork\", \"rev\": \"{}\", \"git\": \"file:///srv/fork.git\", \"sha256\": \"{}\"}}], \"format\": 2}}",
+        "c".repeat(64),
+        "a".repeat(40),
+        "b".repeat(40),
+        "d".repeat(64)
+    );
+    assert_eq!(render_lock(&parse_lock(&shuffled, 0).unwrap()), canonical);
+    // Without registry packages the lockfile stays format 1, which format 2 readers accept.
+    let git_only = BTreeMap::from([(
+        "fork".to_owned(),
+        entry("file:///srv/fork.git", 'b', 'd', None),
+    )]);
+    assert!(render_lock(&git_only).starts_with("{\n  \"format\": 1,\n"));
+    assert_eq!(parse_lock(&render_lock(&git_only), 0).unwrap(), git_only);
+}
+
+#[test]
+fn index_files_parse_strictly_and_entries_render_canonically() {
+    let sha = "c".repeat(64);
+    let version_entry = |version: &str, dependencies: &str| {
+        format!(
+            "{{\"version\": \"{version}\", \"git\": \"https://example.org/gamma.git\", \"rev\": \"{REV}\", \"sha256\": \"{sha}\", \"dependencies\": {{{dependencies}}}}}"
+        )
+    };
+    let file = |versions: &[String]| {
+        format!(
+            "{{\"name\": \"gamma\", \"versions\": [{}]}}",
+            versions.join(", ")
+        )
+    };
+    let parsed = parse_index(
+        "gamma",
+        &file(&[
+            version_entry("1.1.0", ""),
+            version_entry("1.0.0", "\"delta\": \"0.2.0\", \"alpha\": \"1.0.0\""),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.keys().map(Version::to_string).collect::<Vec<_>>(),
+        ["1.0.0", "1.1.0"]
+    );
+    let first = &parsed[&version("1.0.0")];
+    assert_eq!(first.git, "https://example.org/gamma.git");
+    assert_eq!(
+        first.dependencies,
+        BTreeMap::from([
+            ("alpha".to_owned(), version("1.0.0")),
+            ("delta".to_owned(), version("0.2.0"))
+        ])
+    );
+    assert_eq!(
+        render_index_entry(version("1.0.0"), first),
+        format!(
+            "{{\n  \"version\": \"1.0.0\",\n  \"git\": \"https://example.org/gamma.git\",\n  \"rev\": \"{REV}\",\n  \"sha256\": \"{sha}\",\n  \"dependencies\": {{\n    \"alpha\": \"1.0.0\",\n    \"delta\": \"0.2.0\"\n  }}\n}}\n"
+        )
+    );
+    assert_eq!(
+        render_index_entry(version("1.1.0"), &parsed[&version("1.1.0")]),
+        format!(
+            "{{\n  \"version\": \"1.1.0\",\n  \"git\": \"https://example.org/gamma.git\",\n  \"rev\": \"{REV}\",\n  \"sha256\": \"{sha}\",\n  \"dependencies\": {{}}\n}}\n"
+        )
+    );
+    assert!(
+        parse_index("gamma", "{\"name\": \"gamma\", \"versions\": []}")
+            .unwrap()
+            .is_empty()
+    );
+    for (text, detail) in [
+        ("[]".to_owned(), "expected an object"),
+        (
+            file(&[]).replace("\"gamma\"", "\"delta\""),
+            "name must be \"gamma\"",
+        ),
+        (
+            file(&[]).replace("versions", "releases"),
+            "unknown key 'releases'",
+        ),
+        (
+            file(&[version_entry("1.1.0", ""), version_entry("1.1.0", "")]),
+            "duplicate version 1.1.0",
+        ),
+        (file(&[version_entry("1.1", "")]), "invalid version '1.1'"),
+        (
+            file(&[version_entry("1.1.0", "\"Delta\": \"1.0.0\"")]),
+            "invalid dependency 'Delta' of version 1.1.0",
+        ),
+        (
+            file(&[version_entry("1.1.0", "\"delta\": \">=1.0.0\"")]),
+            "invalid dependency 'delta' of version 1.1.0",
+        ),
+        (
+            file(&[version_entry("1.1.0", "").replace("https://", "http://")]),
+            "invalid git url of version 1.1.0",
+        ),
+        (
+            file(&[version_entry("1.1.0", "").replace(REV, "main")]),
+            "invalid rev of version 1.1.0",
+        ),
+        (
+            file(&[version_entry("1.1.0", "").replace(&sha, "c")]),
+            "invalid sha256 of version 1.1.0",
+        ),
+        (
+            file(&[version_entry("1.1.0", "").replace("\"dependencies\": {}", "\"yanked\": true")]),
+            "unknown version key 'yanked'",
+        ),
+        (
+            file(&[version_entry("1.1.0", "").replace(", \"dependencies\": {}", "")]),
+            "version 1.1.0 needs a dependencies object",
+        ),
+        (
+            file(&[
+                version_entry("1.1.0", "").replace("\"git\"", "\"version\": \"1.2.0\", \"git\"")
+            ]),
+            "duplicate key 'version'",
+        ),
+    ] {
+        let error = parse_index("gamma", &text).unwrap_err();
+        assert!(error.contains(detail), "{detail}: {error}");
+    }
+}
+
+/// A registry: one repository per package with a commit per version, and an index
+/// repository whose `index/<name>.json` lists them. Expected hashes come from the
+/// committed files.
+struct RegistryFixture<'a> {
+    scratch: &'a Scratch,
+    repositories: BTreeMap<String, Repository>,
+    versions: BTreeMap<String, Vec<String>>,
+    index: Repository,
+}
+
+impl<'a> RegistryFixture<'a> {
+    fn new(scratch: &'a Scratch) -> Self {
+        Self {
+            scratch,
+            repositories: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            index: scratch.repository("index"),
+        }
+    }
+
+    fn repository(&mut self, name: &str) -> &Repository {
+        if !self.repositories.contains_key(name) {
+            let repository = self.scratch.repository(name);
+            self.repositories.insert(name.to_owned(), repository);
+        }
+        &self.repositories[name]
+    }
+
+    fn manifest(name: &str, version: &str, dependencies: &[(&str, &str)]) -> String {
+        let mut manifest =
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n[dependencies]\n");
+        for (dependency, requirement) in dependencies {
+            manifest += &format!("{dependency} = {{ version = \"{requirement}\" }}\n");
+        }
+        manifest
+    }
+
+    /// Commits `name` `version` with a `Value.tz` and adds its index entry with
+    /// `entry_dependencies`; returns the commit and its content hash.
+    fn publish_with(
+        &mut self,
+        name: &str,
+        version: &str,
+        dependencies: &[(&str, &str)],
+        entry_dependencies: &[(&str, &str)],
+        source: &str,
+    ) -> (String, String) {
+        let manifest = Self::manifest(name, version, dependencies);
+        let repository = self.repository(name);
+        let rev = repository.commit(&[
+            ("Tsuzuri.toml", manifest.as_bytes()),
+            ("Value.tz", source.as_bytes()),
+        ]);
+        let url = repository.url();
+        let sha256 = sha256_of(&[("Tsuzuri.toml", &manifest), ("Value.tz", source)]);
+        self.add_entry(name, version, &url, &rev, &sha256, entry_dependencies);
+        (rev, sha256)
+    }
+
+    fn publish(
+        &mut self,
+        name: &str,
+        version: &str,
+        dependencies: &[(&str, &str)],
+        source: &str,
+    ) -> (String, String) {
+        self.publish_with(name, version, dependencies, dependencies, source)
+    }
+
+    fn add_entry(
+        &mut self,
+        name: &str,
+        version: &str,
+        url: &str,
+        rev: &str,
+        sha256: &str,
+        dependencies: &[(&str, &str)],
+    ) {
+        let dependencies = dependencies
+            .iter()
+            .map(|(dependency, requirement)| format!("\"{dependency}\": \"{requirement}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.versions.entry(name.to_owned()).or_default().push(format!(
+            "{{\"version\": \"{version}\", \"git\": \"{url}\", \"rev\": \"{rev}\", \"sha256\": \"{sha256}\", \"dependencies\": {{{dependencies}}}}}"
+        ));
+    }
+
+    /// Commits the index files and returns the commit.
+    fn commit_index(&self) -> String {
+        let files: Vec<(String, String)> = self
+            .versions
+            .iter()
+            .map(|(name, versions)| {
+                (
+                    format!("index/{name}.json"),
+                    format!(
+                        "{{\n  \"name\": \"{name}\",\n  \"versions\": [\n    {}\n  ]\n}}\n",
+                        versions.join(",\n    ")
+                    ),
+                )
+            })
+            .collect();
+        let files: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(path, text)| (path.as_str(), text.as_bytes()))
+            .collect();
+        self.index.commit(&files)
+    }
+}
+
+fn value(number: i64) -> String {
+    format!("def value :: i64\nfn value = {number}\n")
+}
+
+fn registry_app(scratch: &Scratch, index: &str, rev: Option<&str>, dependencies: &[(&str, &str)]) {
+    let mut manifest = app_manifest("");
+    for (name, requirement) in dependencies {
+        manifest += &format!("{name} = {{ version = \"{requirement}\" }}\n");
+    }
+    manifest += &format!("\n[registry]\nindex = \"{index}\"\n");
+    if let Some(rev) = rev {
+        manifest += &format!("rev = \"{rev}\"\n");
+    }
+    scratch.write("app/Tsuzuri.toml", &manifest);
+    scratch.write("app/Main.tz", "42\n");
+}
+
+fn registry_lock(entries: &[(&str, &str, &str, &str, &str)]) -> String {
+    render_lock(
+        &entries
+            .iter()
+            .map(|(name, version, git, rev, sha256)| {
+                (
+                    (*name).to_owned(),
+                    LockEntry {
+                        git: (*git).to_owned(),
+                        rev: (*rev).to_owned(),
+                        sha256: (*sha256).to_owned(),
+                        version: Some(self::version(version)),
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn registry_resolution_selects_minimal_versions() {
+    let scratch = Scratch::new("registry");
+    let mut registry = RegistryFixture::new(&scratch);
+    let mut gamma = BTreeMap::new();
+    for (version, number) in [
+        ("1.1.0", 11),
+        ("1.2.0", 12),
+        ("1.3.0", 13),
+        ("1.4.0", 14),
+        ("2.0.0", 20),
+    ] {
+        gamma.insert(
+            version,
+            registry.publish("gamma", version, &[], &value(number)),
+        );
+    }
+    registry.publish("delta", "1.0.0", &[], &value(1));
+    registry.publish(
+        "alpha",
+        "1.0.0",
+        &[("gamma", "1.3.0"), ("delta", "1.0.0")],
+        &value(100),
+    );
+    let alpha_source = "def value :: i64\nfn value = 110 + Gamma::Value.value()\n";
+    let alpha = registry.publish("alpha", "1.1.0", &[("gamma", "1.2.0")], alpha_source);
+    registry.publish("alpha", "1.2.0", &[], &value(120));
+    let beta_source = "def value :: i64\nfn value = Alpha::Value.value() + Gamma::Value.value()\n";
+    let beta = registry.publish(
+        "beta",
+        "1.0.0",
+        &[("alpha", "1.0.0"), ("gamma", "1.1.0")],
+        beta_source,
+    );
+    let index_rev = registry.commit_index();
+    let index = registry.index.url();
+    // app needs alpha 1.1.0 and beta 1.0.0; beta needs alpha 1.0.0 (a diamond) and gamma 1.1.0;
+    // alpha 1.1.0 needs gamma 1.2.0, and the unselected alpha 1.0.0 still raises gamma to 1.3.0.
+    // delta is needed only by alpha 1.0.0, so the build has no delta.
+    registry_app(
+        &scratch,
+        &index,
+        Some(&index_rev),
+        &[("alpha", "1.1.0"), ("beta", "1.0.0")],
+    );
+    scratch.write(
+        "app/Main.tz",
+        "def main :: unit -> i32 = \\() -> (Alpha::Value.value() + Beta::Value.value()) as i32\n",
+    );
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    let output = scratch.tsuzuri(&["fetch", app]);
+    assert_success(&output);
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    let alpha_manifest = RegistryFixture::manifest("alpha", "1.1.0", &[("gamma", "1.2.0")]);
+    let beta_manifest =
+        RegistryFixture::manifest("beta", "1.0.0", &[("alpha", "1.0.0"), ("gamma", "1.1.0")]);
+    let gamma_manifest = RegistryFixture::manifest("gamma", "1.3.0", &[]);
+    let url = |name: &str| registry.repositories[name].url();
+    let expected = registry_lock(&[
+        (
+            "alpha",
+            "1.1.0",
+            &url("alpha"),
+            &alpha.0,
+            &sha256_of(&[
+                ("Tsuzuri.toml", &alpha_manifest),
+                ("Value.tz", alpha_source),
+            ]),
+        ),
+        (
+            "beta",
+            "1.0.0",
+            &url("beta"),
+            &beta.0,
+            &sha256_of(&[("Tsuzuri.toml", &beta_manifest), ("Value.tz", beta_source)]),
+        ),
+        (
+            "gamma",
+            "1.3.0",
+            &url("gamma"),
+            &gamma["1.3.0"].0,
+            &sha256_of(&[("Tsuzuri.toml", &gamma_manifest), ("Value.tz", &value(13))]),
+        ),
+    ]);
+    let lock = scratch.path("app/Tsuzuri.lock");
+    assert_eq!(fs::read_to_string(&lock).unwrap(), expected);
+    assert!(expected.starts_with("{\n  \"format\": 2,\n"));
+    assert_success(&scratch.tsuzuri(&["check", app]));
+    // The selection does not depend on the lockfile, the pinned index commit, or a rerun.
+    let modified = fs::metadata(&lock).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_success(&scratch.tsuzuri(&["fetch", app]));
+    assert_eq!(fs::metadata(&lock).unwrap().modified().unwrap(), modified);
+    fs::remove_file(&lock).unwrap();
+    registry_app(
+        &scratch,
+        &index,
+        None,
+        &[("alpha", "1.1.0"), ("beta", "1.0.0")],
+    );
+    scratch.write(
+        "app/Main.tz",
+        "def main :: unit -> i32 = \\() -> (Alpha::Value.value() + Beta::Value.value()) as i32\n",
+    );
+    assert_success(&scratch.tsuzuri(&["fetch", app]));
+    assert_eq!(fs::read_to_string(&lock).unwrap(), expected);
+    // Builds stay offline: they need neither the index nor its [registry] section.
+    let manifest = fs::read_to_string(scratch.path("app/Tsuzuri.toml")).unwrap();
+    let without_registry = &manifest[..manifest.find("\n[registry]").unwrap() + 1];
+    fs::write(scratch.path("app/Tsuzuri.toml"), without_registry).unwrap();
+    assert_success(&scratch.tsuzuri(&["check", app]));
+    assert_error(
+        &scratch.tsuzuri(&["fetch", app]),
+        "E2007",
+        "registry dependency 'alpha' needs a [registry] index in the root package's Tsuzuri.toml",
+    );
+    assert_eq!(fs::read_to_string(&lock).unwrap(), expected);
+    // A requirement that the locked version satisfies needs no fetch; a newer one does.
+    fs::write(
+        scratch.path("app/Tsuzuri.toml"),
+        without_registry.replace(
+            "alpha = { version = \"1.1.0\" }",
+            "alpha = { version = \"1.0.5\" }",
+        ),
+    )
+    .unwrap();
+    assert_success(&scratch.tsuzuri(&["check", app]));
+    for requirement in ["1.2.0", "2.0.0", "0.1.0"] {
+        fs::write(
+            scratch.path("app/Tsuzuri.toml"),
+            without_registry.replace(
+                "alpha = { version = \"1.1.0\" }",
+                &format!("alpha = {{ version = \"{requirement}\" }}"),
+            ),
+        )
+        .unwrap();
+        assert_error(
+            &scratch.tsuzuri(&["check", app]),
+            "E2007",
+            &format!(
+                "Tsuzuri.lock does not record a version of 'alpha' that satisfies {requirement}; run tsuzuri fetch"
+            ),
+        );
+    }
+    // A lockfile whose version was edited no longer matches the package.
+    fs::write(scratch.path("app/Tsuzuri.toml"), without_registry).unwrap();
+    fs::write(
+        &lock,
+        expected.replace("\"version\": \"1.3.0\"", "\"version\": \"1.3.1\""),
+    )
+    .unwrap();
+    assert_error(
+        &scratch.tsuzuri(&["check", app]),
+        "E2007",
+        "registry package 'gamma' declares version 1.3.0 but Tsuzuri.lock records 1.3.1; run tsuzuri fetch",
+    );
+    fs::write(&lock, &expected).unwrap();
+    let gamma_root = scratch.store(&parse_lock(&expected, 0).unwrap()["gamma"].sha256);
+    fs::write(gamma_root.join("Value.tz"), value(99)).unwrap();
+    assert_error(
+        &scratch.tsuzuri(&["check", app]),
+        "E2007",
+        "registry dependency 'gamma' does not match its sha256 in Tsuzuri.lock; run tsuzuri fetch to restore it",
+    );
+}
+
+#[test]
+fn registry_rejects_incompatible_and_missing_versions() {
+    let scratch = Scratch::new("registry-errors");
+    let mut registry = RegistryFixture::new(&scratch);
+    let (gamma_rev, _) = registry.publish("gamma", "1.1.0", &[], &value(11));
+    registry.publish("gamma", "2.0.0", &[], &value(20));
+    registry.publish("zeta", "0.1.0", &[], &value(1));
+    registry.publish("zeta", "0.2.0", &[], &value(2));
+    registry.publish("beta", "1.0.0", &[("gamma", "2.0.0")], &value(3));
+    registry.publish("eta", "1.0.0", &[("zeta", "0.2.0")], &value(4));
+    let index_rev = registry.commit_index();
+    let index = registry.index.url();
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    let lock = scratch.path("app/Tsuzuri.lock");
+    for (dependencies, code, message) in [
+        (
+            vec![("gamma", "1.1.0"), ("beta", "1.0.0")],
+            "E1011",
+            "package 'gamma' is required at incompatible versions 1.1.0 (by app) and 2.0.0 (by beta 1.0.0); one package name has one version",
+        ),
+        (
+            vec![("zeta", "0.1.0"), ("eta", "1.0.0")],
+            "E1011",
+            "package 'zeta' is required at incompatible versions 0.1.0 (by app) and 0.2.0 (by eta 1.0.0); one package name has one version",
+        ),
+        (
+            vec![("gamma", "1.5.0")],
+            "E2007",
+            "the registry index has no version 1.5.0 of 'gamma' (required by app)",
+        ),
+        (
+            vec![("omega", "1.0.0")],
+            "E2007",
+            "the registry index has no package 'omega'",
+        ),
+    ] {
+        registry_app(&scratch, &index, Some(&index_rev), &dependencies);
+        let output = scratch.tsuzuri(&["fetch", app]);
+        assert_error(&output, code, message);
+        assert!(
+            stderr(&output).contains("app/Tsuzuri.toml"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(!lock.exists(), "{message}");
+    }
+    // A missing index commit is a git failure.
+    registry_app(
+        &scratch,
+        &index,
+        Some(&"7".repeat(40)),
+        &[("gamma", "1.1.0")],
+    );
+    assert_error(
+        &scratch.tsuzuri(&["fetch", app]),
+        "E2007",
+        &format!(
+            "git fetch of the registry index {index} at {} failed: ",
+            "7".repeat(40)
+        ),
+    );
+    // A registry package name cannot also name a git or path package.
+    registry_app(&scratch, &index, Some(&index_rev), &[("gamma", "1.1.0")]);
+    let manifest = fs::read_to_string(scratch.path("app/Tsuzuri.toml")).unwrap();
+    scratch.write(
+        "local/Tsuzuri.toml",
+        &format!(
+            "[package]\nname = \"local\"\nversion = \"0.1.0\"\n[dependencies]\n{}",
+            git_dependency("gamma", &registry.repositories["gamma"].url(), &gamma_rev)
+        ),
+    );
+    scratch.write("local/Value.tz", &value(5));
+    fs::write(
+        scratch.path("app/Tsuzuri.toml"),
+        manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\nlocal = { path = \"../local\" }\n",
+        ),
+    )
+    .unwrap();
+    assert_error(
+        &scratch.tsuzuri(&["fetch", app]),
+        "E1011",
+        "package 'gamma' is required from different sources",
+    );
+    assert!(!lock.exists());
+    // Registry packages depend only on registry packages.
+    let (rev, sha256) = registry.publish("theta", "1.0.0", &[], &value(6));
+    let manifest = format!(
+        "{}local = {{ path = \"../local\" }}\n",
+        RegistryFixture::manifest("theta", "1.0.0", &[])
+    );
+    let root = scratch.store(&sha256_of(&[
+        ("Tsuzuri.toml", &manifest),
+        ("Value.tz", &value(6)),
+    ]));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Tsuzuri.toml"), &manifest).unwrap();
+    fs::write(root.join("Value.tz"), value(6)).unwrap();
+    scratch.write(
+        "app/Tsuzuri.toml",
+        &app_manifest("theta = { version = \"1.0.0\" }\n"),
+    );
+    let sha256_with_path = sha256_of(&[("Tsuzuri.toml", &manifest), ("Value.tz", &value(6))]);
+    assert_ne!(sha256_with_path, sha256);
+    fs::write(
+        &lock,
+        registry_lock(&[(
+            "theta",
+            "1.0.0",
+            &registry.repositories["theta"].url(),
+            &rev,
+            &sha256_with_path,
+        )]),
+    )
+    .unwrap();
+    assert_error(
+        &scratch.tsuzuri(&["check", app]),
+        "E1011",
+        "registry packages can depend only on registry packages; use a version requirement",
+    );
+}
+
+#[test]
+fn registry_detects_tampered_index_entries() {
+    let scratch = Scratch::new("registry-tamper");
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    let lock = scratch.path("app/Tsuzuri.lock");
+    type Setup = Box<dyn Fn(&mut RegistryFixture)>;
+    let cases: Vec<(&str, Setup, String)> = vec![
+        (
+            "a wrong sha256",
+            Box::new(|registry: &mut RegistryFixture| {
+                let manifest = RegistryFixture::manifest("gamma", "1.1.0", &[]);
+                let repository = registry.repository("gamma");
+                let rev = repository.commit(&[("Tsuzuri.toml", manifest.as_bytes()), ("Value.tz", value(11).as_bytes())]);
+                let url = repository.url();
+                registry.add_entry("gamma", "1.1.0", &url, &rev, &"0".repeat(64), &[]);
+            }),
+            format!("but the registry index records {}", "0".repeat(64)),
+        ),
+        (
+            "other dependencies",
+            Box::new(|registry: &mut RegistryFixture| {
+                registry.publish("delta", "1.0.0", &[], &value(1));
+                registry.publish_with("gamma", "1.1.0", &[], &[("delta", "1.0.0")], &value(11));
+            }),
+            "registry package 'gamma' 1.1.0 does not match its registry index entry (its dependencies differ)".to_owned(),
+        ),
+        (
+            "another version",
+            Box::new(|registry: &mut RegistryFixture| {
+                let manifest = RegistryFixture::manifest("gamma", "1.0.0", &[]);
+                let repository = registry.repository("gamma");
+                let rev = repository.commit(&[("Tsuzuri.toml", manifest.as_bytes()), ("Value.tz", value(11).as_bytes())]);
+                let url = repository.url();
+                let sha256 = sha256_of(&[("Tsuzuri.toml", &manifest), ("Value.tz", &value(11))]);
+                registry.add_entry("gamma", "1.1.0", &url, &rev, &sha256, &[]);
+            }),
+            "registry package 'gamma' 1.1.0 does not match its registry index entry (its version is \"1.0.0\")".to_owned(),
+        ),
+        (
+            "another package",
+            Box::new(|registry: &mut RegistryFixture| {
+                let manifest = RegistryFixture::manifest("delta", "1.1.0", &[]);
+                let repository = registry.repository("delta");
+                let rev = repository.commit(&[("Tsuzuri.toml", manifest.as_bytes()), ("Value.tz", value(11).as_bytes())]);
+                let url = repository.url();
+                let sha256 = sha256_of(&[("Tsuzuri.toml", &manifest), ("Value.tz", &value(11))]);
+                registry.add_entry("gamma", "1.1.0", &url, &rev, &sha256, &[]);
+            }),
+            "registry package 'gamma' 1.1.0 does not match its registry index entry (its package name is 'delta')".to_owned(),
+        ),
+        (
+            "a duplicate version",
+            Box::new(|registry: &mut RegistryFixture| {
+                registry.publish("gamma", "1.1.0", &[], &value(11));
+                registry.publish("gamma", "1.1.0", &[], &value(12));
+            }),
+            "the registry index file for 'gamma' is invalid (duplicate version 1.1.0); fix index/gamma.json in the registry index".to_owned(),
+        ),
+    ];
+    for (index, (case, setup, message)) in cases.into_iter().enumerate() {
+        let scratch = Scratch::new(&format!("registry-tamper-{index}"));
+        let mut registry = RegistryFixture::new(&scratch);
+        setup(&mut registry);
+        let index_rev = registry.commit_index();
+        registry_app(
+            &scratch,
+            &registry.index.url(),
+            Some(&index_rev),
+            &[("gamma", "1.1.0")],
+        );
+        let app = scratch.path("app");
+        let output = scratch.tsuzuri(&["fetch", app.to_str().unwrap()]);
+        assert_error(&output, "E2007", &message);
+        assert!(!scratch.path("app/Tsuzuri.lock").exists(), "{case}");
+    }
+    // An index entry that changes after Tsuzuri.lock recorded it stops the fetch.
+    let mut registry = RegistryFixture::new(&scratch);
+    let (_, sha256) = registry.publish("gamma", "1.1.0", &[], &value(11));
+    let index_rev = registry.commit_index();
+    registry_app(
+        &scratch,
+        &registry.index.url(),
+        Some(&index_rev),
+        &[("gamma", "1.1.0")],
+    );
+    assert_success(&scratch.tsuzuri(&["fetch", app]));
+    let recorded = fs::read_to_string(&lock).unwrap();
+    registry.versions.clear();
+    let (_, changed) = registry.publish("gamma", "1.1.0", &[], &value(12));
+    let index_rev = registry.commit_index();
+    registry_app(
+        &scratch,
+        &registry.index.url(),
+        Some(&index_rev),
+        &[("gamma", "1.1.0")],
+    );
+    assert_error(
+        &scratch.tsuzuri(&["fetch", app]),
+        "E2007",
+        &format!(
+            "registry package 'gamma' 1.1.0 has sha256 {changed} in the registry index but Tsuzuri.lock records {sha256}; remove its entry only if you trust the new content"
+        ),
+    );
+    assert_eq!(fs::read_to_string(&lock).unwrap(), recorded);
+}
+
+#[test]
+fn publish_prints_index_entries() {
+    let scratch = Scratch::new("publish");
+    let mut registry = RegistryFixture::new(&scratch);
+    registry.publish("delta", "1.0.0", &[], &value(1));
+    let index_rev = registry.commit_index();
+    let index = registry.index.url();
+    // The package's working copy and the commit it publishes.
+    let manifest = format!(
+        "[package]\nname = \"gamma\"\nversion = \"1.2.0\"\n\n[dependencies]\ndelta = {{ version = \"1.0.0\" }}\n\n[registry]\nindex = \"{index}\"\nrev = \"{index_rev}\"\n"
+    );
+    let source = "def value :: i64\nfn value = Delta::Value.value() + 1\n";
+    let deep = "def deep :: i64\nfn deep = 2\n";
+    scratch.write("gamma/Tsuzuri.toml", &manifest);
+    scratch.write("gamma/Value.tz", source);
+    scratch.write("gamma/Sub/Deep.tz", deep);
+    scratch.write("gamma/README.md", "not part of the package\n");
+    let repository = scratch.repository("gamma");
+    let rev = repository.commit(&[
+        ("Tsuzuri.toml", manifest.as_bytes()),
+        ("Value.tz", source.as_bytes()),
+        ("Sub/Deep.tz", deep.as_bytes()),
+    ]);
+    let url = repository.url();
+    let package = scratch.path("gamma");
+    let package = package.to_str().unwrap();
+    assert_success(&scratch.tsuzuri(&["fetch", package]));
+    let output = scratch.tsuzuri(&["publish", package, "--git", &url, "--rev", &rev]);
+    assert_success(&output);
+    let sha256 = sha256_of(&[
+        ("Tsuzuri.toml", &manifest),
+        ("Value.tz", source),
+        ("Sub/Deep.tz", deep),
+    ]);
+    let entry = format!(
+        "{{\n  \"version\": \"1.2.0\",\n  \"git\": \"{url}\",\n  \"rev\": \"{rev}\",\n  \"sha256\": \"{sha256}\",\n  \"dependencies\": {{\n    \"delta\": \"1.0.0\"\n  }}\n}}\n"
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), entry);
+    assert!(output.stderr.is_empty());
+    // The printed entry is what the index lists, so an app can resolve it.
+    registry
+        .versions
+        .insert("gamma".to_owned(), vec![entry.trim_end().to_owned()]);
+    let index_rev = registry.commit_index();
+    registry_app(&scratch, &index, Some(&index_rev), &[("gamma", "1.2.0")]);
+    scratch.write(
+        "app/Main.tz",
+        "def main :: unit -> i32 = \\() -> (Gamma::Value.value() + Gamma::Sub::Deep.deep()) as i32\n",
+    );
+    let app = scratch.path("app");
+    assert_success(&scratch.tsuzuri(&["fetch", app.to_str().unwrap()]));
+    assert_success(&scratch.tsuzuri(&["check", app.to_str().unwrap()]));
+    // A working copy that differs from the commit is not published.
+    scratch.write(
+        "gamma/Value.tz",
+        "def value :: i64\nfn value = Delta::Value.value() + 2\n",
+    );
+    assert_error(
+        &scratch.tsuzuri(&["publish", package, "--git", &url, "--rev", &rev]),
+        "E2007",
+        &format!("does not match {url} at {rev}"),
+    );
+    scratch.write("gamma/Value.tz", source);
+    // A package that does not check is not published.
+    scratch.write("gamma/Broken.tz", "def broken :: i64\nfn broken = false\n");
+    let output = scratch.tsuzuri(&["publish", package, "--git", &url, "--rev", &rev]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("error[E1003]"),
+        "{}",
+        stderr(&output)
+    );
+    fs::remove_file(scratch.path("gamma/Broken.tz")).unwrap();
+    for (replacement, code, message) in [
+        (
+            manifest.replace("version = \"1.2.0\"", "version = \"1.2\""),
+            "E1011",
+            "a published package needs [package] version in MAJOR.MINOR.PATCH form",
+        ),
+        (
+            manifest.replace(
+                "[dependencies]\n",
+                "[dependencies]\nlocal = { path = \"../local\" }\n",
+            ),
+            "E1011",
+            "a published package can depend only on registry packages; 'local' is a path or git dependency",
+        ),
+        (
+            format!("{manifest}\n[native]\nlibraries = [\"m\"]\n"),
+            "E2000",
+            "a published package cannot declare [native] link settings",
+        ),
+    ] {
+        scratch.write(
+            "local/Tsuzuri.toml",
+            "[package]\nname = \"local\"\nversion = \"0.1.0\"\n",
+        );
+        scratch.write("local/Value.tz", &value(3));
+        scratch.write("gamma/Tsuzuri.toml", &replacement);
+        assert_error(
+            &scratch.tsuzuri(&["publish", package, "--git", &url, "--rev", &rev]),
+            code,
+            message,
+        );
+    }
+    scratch.write("gamma/Tsuzuri.toml", &manifest);
+    let usage =
+        "publish takes one package directory, --git URL, --rev COMMIT, and optionally --json";
+    let plain = scratch.path("plain");
+    fs::create_dir_all(&plain).unwrap();
+    for (arguments, message) in [
+        (vec!["publish", package, "--git", &url], usage),
+        (vec!["publish", package, "--rev", &rev], usage),
+        (vec!["publish", "--git", &url, "--rev", &rev], usage),
+        (
+            vec!["publish", package, package, "--git", &url, "--rev", &rev],
+            usage,
+        ),
+        (
+            vec!["publish", package, "--git", &url, "--rev", &rev, "-O3"],
+            usage,
+        ),
+        (
+            vec![
+                "publish", package, "--git", &url, "--git", &url, "--rev", &rev,
+            ],
+            usage,
+        ),
+        (
+            vec![
+                "publish",
+                package,
+                "--git",
+                "http://example.org/g.git",
+                "--rev",
+                &rev,
+            ],
+            GIT_URL_RULE,
+        ),
+        (
+            vec!["publish", package, "--git", &url, "--rev", "main"],
+            GIT_REV_RULE,
+        ),
+        (
+            vec![
+                "publish",
+                plain.to_str().unwrap(),
+                "--git",
+                &url,
+                "--rev",
+                &rev,
+            ],
+            "publish requires a Tsuzuri.toml in the package directory",
+        ),
+    ] {
+        let output = scratch.tsuzuri(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{arguments:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(&format!("error[E2000]: {message}")),
+            "{arguments:?}: {}",
+            stderr(&output)
+        );
+    }
 }

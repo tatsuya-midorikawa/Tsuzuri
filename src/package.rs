@@ -23,6 +23,66 @@ pub struct Manifest {
     pub wasm: WasmSettings,
     /// The `[native]` link inputs, with paths still relative to the package root, and the span of its header.
     pub native: Option<(crate::driver::LinkInputs, Span)>,
+    /// The `[registry]` index. `tsuzuri fetch` reads only the root package's section.
+    pub registry: Option<Registry>,
+}
+
+/// A registry: a git repository whose `index/<name>.json` files list the
+/// published versions of each package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Registry {
+    pub index: String,
+    /// The index commit to resolve against; the repository's `HEAD` when absent.
+    pub rev: Option<String>,
+    /// The `[registry]` header.
+    pub span: Span,
+}
+
+/// A package version `MAJOR.MINOR.PATCH`. As a requirement it accepts itself and
+/// every later compatible version: the same `MAJOR` from 1.0.0 on, and the same
+/// `0.MINOR` before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+pub const VERSION_RULE: &str = "versions are written as MAJOR.MINOR.PATCH in decimal without leading zeros, such as \"1.2.3\"; ranges, operators, and pre-release tags are not supported";
+pub const VERSION_FORM: &str = "registry dependencies are written as { version = \"1.2.3\" }";
+
+impl Version {
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut parts = text.split('.').map(|part| {
+            (!part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && (part == "0" || !part.starts_with('0')))
+            .then(|| part.parse::<u64>().ok())
+            .flatten()
+        });
+        let version = Self {
+            major: parts.next()??,
+            minor: parts.next()??,
+            patch: parts.next()??,
+        };
+        parts.next().is_none().then_some(version)
+    }
+
+    /// Whether `other` is in this version's compatibility range.
+    pub fn compatible(self, other: Self) -> bool {
+        self.major == other.major && (self.major != 0 || self.minor == other.minor)
+    }
+
+    /// Whether this version satisfies `requirement`: compatible and not older.
+    pub fn satisfies(self, requirement: Self) -> bool {
+        requirement.compatible(self) && self >= requirement
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
 }
 
 /// `[wasm]` sizes in bytes. Builds read only the root package's section, and
@@ -60,6 +120,8 @@ pub enum DependencySource {
     /// One commit of a git repository. `tsuzuri fetch` downloads it into the
     /// package store and records it in `Tsuzuri.lock`.
     Git { url: String, rev: String },
+    /// A version requirement that `tsuzuri fetch` resolves in the registry index.
+    Registry(Version),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,18 +165,21 @@ fn lowercase_hex(text: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// A git package recorded in `Tsuzuri.lock`.
+/// A git or registry package recorded in `Tsuzuri.lock`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LockEntry {
     pub git: String,
     pub rev: String,
     /// The [`content_sha256`] of the package.
     pub sha256: String,
+    /// The version that `tsuzuri fetch` selected for a registry package.
+    pub version: Option<Version>,
 }
 
-/// Reads `Tsuzuri.lock`: a JSON object `{"format": 1, "packages": [...]}` whose
-/// entries have exactly the keys `name`, `git`, `rev`, and `sha256`. Key order
-/// and whitespace are free; unknown or duplicate keys and names are errors.
+/// Reads `Tsuzuri.lock`: a JSON object `{"format": 1 or 2, "packages": [...]}`
+/// whose entries have exactly the keys `name`, `git`, `rev`, and `sha256`, and in
+/// format 2 optionally `version`. Key order and whitespace are free; unknown or
+/// duplicate keys and names are errors.
 pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockEntry>, Diagnostic> {
     use serde_json::Value;
     let span = Span::new(0, 0).in_source(source_id);
@@ -143,8 +208,9 @@ pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockE
     {
         return Err(invalid(format!("unknown key '{key}'")));
     }
-    if object.get("format").and_then(Value::as_u64) != Some(1) {
-        return Err(invalid("format must be 1".into()));
+    let format = object.get("format").and_then(Value::as_u64);
+    if !matches!(format, Some(1 | 2)) {
+        return Err(invalid("format must be 1 or 2".into()));
     }
     let packages = object
         .get("packages")
@@ -155,10 +221,10 @@ pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockE
         let fields = package
             .as_object()
             .ok_or_else(|| invalid("each package must be an object".into()))?;
-        if let Some(key) = fields
-            .keys()
-            .find(|key| !matches!(key.as_str(), "name" | "git" | "rev" | "sha256"))
-        {
+        if let Some(key) = fields.keys().find(|key| {
+            !matches!(key.as_str(), "name" | "git" | "rev" | "sha256")
+                && (format == Some(1) || key.as_str() != "version")
+        }) {
             return Err(invalid(format!("unknown package key '{key}'")));
         }
         let field = |key: &str| {
@@ -171,10 +237,20 @@ pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockE
         if namespace(name, span).is_err() {
             return Err(invalid(format!("invalid package name '{name}'")));
         }
+        let version = match fields.get("version") {
+            None => None,
+            Some(version) => Some(
+                version
+                    .as_str()
+                    .and_then(Version::parse)
+                    .ok_or_else(|| invalid(format!("invalid version of '{name}'")))?,
+            ),
+        };
         let entry = LockEntry {
             git: field("git")?.to_owned(),
             rev: field("rev")?.to_owned(),
             sha256: field("sha256")?.to_owned(),
+            version,
         };
         if !valid_git_url(&entry.git) {
             return Err(invalid(format!("invalid git url of '{name}'")));
@@ -193,15 +269,25 @@ pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockE
 }
 
 /// The canonical `Tsuzuri.lock`: two-space indentation, LF line ends, one final
-/// newline, and packages in name order with the keys `name`, `git`, `rev`, `sha256`.
+/// newline, and packages in name order with the keys `name`, `version` (registry
+/// packages only), `git`, `rev`, `sha256`. It is format 1 without registry
+/// packages, so lockfiles of git dependencies keep their bytes, and 2 with them.
 pub fn render_lock(entries: &BTreeMap<String, LockEntry>) -> String {
     use crate::diagnostic::json_string;
-    let mut text = String::from("{\n  \"format\": 1,\n  \"packages\": [");
+    let format = if entries.values().any(|entry| entry.version.is_some()) {
+        2
+    } else {
+        1
+    };
+    let mut text = format!("{{\n  \"format\": {format},\n  \"packages\": [");
     for (index, (name, entry)) in entries.iter().enumerate() {
         text += if index == 0 { "\n" } else { ",\n" };
+        text += &format!("    {{\n      \"name\": {},\n", json_string(name));
+        if let Some(version) = entry.version {
+            text += &format!("      \"version\": \"{version}\",\n");
+        }
         text += &format!(
-            "    {{\n      \"name\": {},\n      \"git\": {},\n      \"rev\": {},\n      \"sha256\": {}\n    }}",
-            json_string(name),
+            "      \"git\": {},\n      \"rev\": {},\n      \"sha256\": {}\n    }}",
             json_string(&entry.git),
             json_string(&entry.rev),
             json_string(&entry.sha256)
@@ -213,6 +299,123 @@ pub fn render_lock(entries: &BTreeMap<String, LockEntry>) -> String {
         "\n  ]\n}\n"
     };
     text
+}
+
+/// One published version in a registry index file `index/<name>.json`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexEntry {
+    pub git: String,
+    pub rev: String,
+    pub sha256: String,
+    /// The version requirements of the package's `[dependencies]`.
+    pub dependencies: BTreeMap<String, Version>,
+}
+
+/// Reads the registry index file of package `name`:
+/// `{"name": "<name>", "versions": [{"version", "git", "rev", "sha256", "dependencies"}, ...]}`.
+/// Every key is required, unknown and duplicate keys are errors, and each version
+/// occurs once. An error is the detail for the diagnostic.
+pub fn parse_index(name: &str, text: &str) -> Result<BTreeMap<Version, IndexEntry>, String> {
+    use serde_json::Value;
+    let value: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    if let Some(key) = duplicate_json_key(text) {
+        return Err(format!("duplicate key '{key}'"));
+    }
+    let object = value.as_object().ok_or("expected an object")?;
+    if let Some(key) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "name" | "versions"))
+    {
+        return Err(format!("unknown key '{key}'"));
+    }
+    if object.get("name").and_then(Value::as_str) != Some(name) {
+        return Err(format!("name must be \"{name}\""));
+    }
+    let mut versions = BTreeMap::new();
+    for version in object
+        .get("versions")
+        .and_then(Value::as_array)
+        .ok_or("versions must be an array")?
+    {
+        let fields = version
+            .as_object()
+            .ok_or("each version must be an object")?;
+        if let Some(key) = fields.keys().find(|key| {
+            !matches!(
+                key.as_str(),
+                "version" | "git" | "rev" | "sha256" | "dependencies"
+            )
+        }) {
+            return Err(format!("unknown version key '{key}'"));
+        }
+        let field = |key: &str| {
+            fields
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("each version needs a string {key}"))
+        };
+        let number = Version::parse(field("version")?)
+            .ok_or_else(|| format!("invalid version '{}'", field("version").unwrap_or_default()))?;
+        let entry = IndexEntry {
+            git: field("git")?.to_owned(),
+            rev: field("rev")?.to_owned(),
+            sha256: field("sha256")?.to_owned(),
+            dependencies: fields
+                .get("dependencies")
+                .and_then(Value::as_object)
+                .ok_or_else(|| format!("version {number} needs a dependencies object"))?
+                .iter()
+                .map(|(dependency, requirement)| {
+                    let requirement = requirement.as_str().and_then(Version::parse);
+                    match requirement {
+                        Some(requirement) if namespace(dependency, Span::default()).is_ok() => {
+                            Ok((dependency.clone(), requirement))
+                        }
+                        _ => Err(format!(
+                            "invalid dependency '{dependency}' of version {number}"
+                        )),
+                    }
+                })
+                .collect::<Result<_, _>>()?,
+        };
+        if !valid_git_url(&entry.git) {
+            return Err(format!("invalid git url of version {number}"));
+        }
+        if !valid_rev(&entry.rev) {
+            return Err(format!("invalid rev of version {number}"));
+        }
+        if !lowercase_hex(&entry.sha256, 64) {
+            return Err(format!("invalid sha256 of version {number}"));
+        }
+        if entry.dependencies.len() > 1024 {
+            return Err(format!("version {number} has more than 1024 dependencies"));
+        }
+        if versions.insert(number, entry).is_some() {
+            return Err(format!("duplicate version {number}"));
+        }
+    }
+    Ok(versions)
+}
+
+/// One version's entry for `index/<name>.json`, as `tsuzuri publish` prints it.
+pub fn render_index_entry(version: Version, entry: &IndexEntry) -> String {
+    use crate::diagnostic::json_string;
+    let dependencies: Vec<_> = entry
+        .dependencies
+        .iter()
+        .map(|(name, requirement)| format!("    {}: \"{requirement}\"", json_string(name)))
+        .collect();
+    format!(
+        "{{\n  \"version\": \"{version}\",\n  \"git\": {},\n  \"rev\": {},\n  \"sha256\": {},\n  \"dependencies\": {}\n}}\n",
+        json_string(&entry.git),
+        json_string(&entry.rev),
+        json_string(&entry.sha256),
+        if dependencies.is_empty() {
+            "{}".to_owned()
+        } else {
+            format!("{{\n{}\n  }}", dependencies.join(",\n"))
+        }
+    )
 }
 
 /// The SHA-256 of a package's files, keyed by `/`-separated paths relative to the
@@ -444,6 +647,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut wasm = WasmSettings::default();
     let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
     let mut native_keys = BTreeSet::new();
+    let mut registry: Option<(Option<String>, Option<String>, Span)> = None;
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
         let span = Span::new(offset, offset + line.trim_end().len()).in_source(source_id);
@@ -463,6 +667,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some("dependencies")
             } else if cursor.take("[wasm]") {
                 Some("wasm")
+            } else if cursor.take("[registry]") {
+                Some("registry")
             } else {
                 cursor.take("[native]").then_some("native")
             };
@@ -470,12 +676,15 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some(next) if sections.insert(next) => section = next,
                 _ => {
                     return Err(cursor.error(
-                        "expected [package] followed by optional [dependencies], [wasm] and [native], each once",
+                        "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
                     ));
                 }
             }
             if section == "native" {
                 native = Some((crate::driver::LinkInputs::default(), span));
+            }
+            if section == "registry" {
+                registry = Some((None, None, span));
             }
             cursor.finish()?;
             continue;
@@ -502,8 +711,9 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 let (source, native) = match cursor.key()?.as_str() {
                     "path" => cursor.path_dependency()?,
                     "git" => (cursor.git_dependency()?, false),
+                    "version" => (cursor.registry_dependency()?, false),
                     "rev" | "branch" | "tag" => return Err(cursor.error(GIT_FORM)),
-                    _ => return Err(cursor.error("expected a path or git dependency")),
+                    _ => return Err(cursor.error("expected a path, git, or version dependency")),
                 };
                 if dependencies
                     .insert(
@@ -546,6 +756,23 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 })?;
                 if slot.replace(size).is_some() {
                     return Err(cursor.error("wasm keys must occur at most once"));
+                }
+            }
+            "registry" => {
+                let (index, rev, _) = registry
+                    .as_mut()
+                    .expect("the [registry] header precedes its keys");
+                let value = cursor.string()?;
+                let (slot, valid, rule) = match key.as_str() {
+                    "index" => (index, valid_git_url(&value), GIT_URL_RULE),
+                    "rev" => (rev, valid_rev(&value), GIT_REV_RULE),
+                    _ => return Err(cursor.error("unknown registry key; expected index or rev")),
+                };
+                if !valid {
+                    return Err(cursor.error(rule));
+                }
+                if slot.replace(value).is_some() {
+                    return Err(cursor.error("registry keys must occur at most once"));
                 }
             }
             "native" => {
@@ -594,6 +821,17 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         cursor.finish()?;
     }
     let missing = || Diagnostic::new("E0002", "[package] requires name and version", whole);
+    let registry = match registry {
+        None => None,
+        Some((Some(index), rev, span)) => Some(Registry { index, rev, span }),
+        Some((None, _, span)) => {
+            return Err(Diagnostic::new(
+                "E0002",
+                "[registry] requires index = \"https://...\"",
+                span,
+            ));
+        }
+    };
     let (name, span) = fields.remove("name").ok_or_else(missing)?;
     let (version, _) = fields.remove("version").ok_or_else(missing)?;
     let derived = namespace(&name, span)?;
@@ -616,6 +854,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         dependencies,
         wasm,
         native,
+        registry,
     })
 }
 
@@ -764,6 +1003,18 @@ impl Line<'_> {
         }
         self.expect("}")?;
         Ok((DependencySource::Path(path.into()), native))
+    }
+
+    /// The rest of `{ version = "1.2.3" }` after `version`, through `}`.
+    fn registry_dependency(&mut self) -> Result<DependencySource, Diagnostic> {
+        if !self.take("=") {
+            return Err(self.error(VERSION_FORM));
+        }
+        let version = Version::parse(&self.string()?).ok_or_else(|| self.error(VERSION_RULE))?;
+        if !self.take("}") {
+            return Err(self.error(VERSION_FORM));
+        }
+        Ok(DependencySource::Registry(version))
     }
 
     /// The rest of `{ git = "<url>", rev = "<commit>" }` after `git`, through `}`.
@@ -939,7 +1190,7 @@ mod tests {
             ),
             (
                 "[native]\n[native]",
-                "expected [package] followed by optional [dependencies], [wasm] and [native], each once",
+                "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
             ),
         ] {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}"), 5).unwrap_err();

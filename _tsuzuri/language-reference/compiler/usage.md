@@ -10,12 +10,12 @@
 - ディレクトリを渡すと `Main.tz` が入口になります。ファイルを渡すと、その親がプロジェクトルートです。
 - `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。
 - キャッシュは `build` と `run` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
-- git 依存は `fetch` だけが取得します。ほかのサブコマンドは `git` もネットワークも使いません。
+- git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
 
-引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`toolchain info` も、ソースの解析に入る前に終わります。
+引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。
 
 ```mermaid
 flowchart TD
@@ -23,7 +23,8 @@ flowchart TD
   kind -->|引数なし| usage["ヘルプを stderr へ。終了コード 2"]
   kind -->|--help| helpOut["ヘルプを stdout へ。終了コード 0"]
   kind -->|new| scaffold["空のディレクトリに雛形"]
-  kind -->|fetch| deps["git 依存を取得し Tsuzuri.lock を書く"]
+  kind -->|fetch| deps["依存を取得し Tsuzuri.lock を書く"]
+  kind -->|publish| entry["検査して index の項目を出力"]
   kind -->|toolchain info| tools["解決したツールを表示"]
   kind -->|lsp| server["stdio の言語サーバー"]
   kind -->|fmt| format["その場で整形する"]
@@ -193,7 +194,7 @@ Hello, Tsuzuri!
 
 ### fetch
 
-`Tsuzuri.toml` の git 依存（`{ git = "...", rev = "..." }`）を取得し、内容の SHA-256 を `Tsuzuri.lock` に記録します。PATH の `git`（2.32 以降）を起動するのはこのサブコマンドだけで、成功すると何も出さず、終了コード 0 です。
+`Tsuzuri.toml` の git 依存（`{ git = "...", rev = "..." }`）と registry 依存（`{ version = "1.2.3" }`）を取得し、内容の SHA-256 と registry で選んだ版を `Tsuzuri.lock` に記録します。PATH の `git`（2.32 以降）で取得し、成功すると何も出さず、終了コード 0 です。registry 依存があると、ルートの `[registry]` の index を毎回取得して最小版選択で版を選びます。
 
 ```sh
 tsuzuri fetch demo
@@ -201,7 +202,17 @@ tsuzuri fetch demo
 
 引数はプロジェクトのディレクトリ 1 つと、任意の `--json` だけです。ファイル、複数の入力、ビルドオプションを渡したときと、ディレクトリに `Tsuzuri.toml` がないときは `E2000` で、終了コード 2 です。取得や検証の失敗は `E2007` などの診断を出して終了コード 1 で、そのとき `Tsuzuri.lock` は書きません。
 
-取得したパッケージは、キャッシュの保存先の下の `packages/git/<sha256>/` に置きます。`Tsuzuri.lock` とストアの内容が一致している依存は、取得し直しません。ほかのサブコマンドは `Tsuzuri.lock` とこのストアだけを読みます。規則の詳細は [パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock) にあります。
+取得したパッケージは、キャッシュの保存先の下の `packages/git/<sha256>/` に置きます。ストアの内容が一致している依存は、取得し直しません。ほかのサブコマンドは `Tsuzuri.lock` とこのストアだけを読みます。規則の詳細は [パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock) と [registry 依存と版の解決](../organizing-tsuzuri/packages.md#registry-依存と版の解決) にあります。
+
+### publish
+
+registry に公開するパッケージを検査し、index の `index/<name>.json` に足す項目を標準出力へ出します。index リポジトリへの書き込みや push はしません。
+
+```sh
+tsuzuri publish geometry-core --git https://example.org/geometry-core.git --rev 0123456789abcdef0123456789abcdef01234567
+```
+
+`check` と同じ検査、公開できるマニフェスト（`MAJOR.MINOR.PATCH` の版、版の要求だけの依存、`[native]` なし）の確認、`--git` と `--rev` の commit の取得、その内容とディレクトリの内容の一致の確認を行います。引数はディレクトリ 1 つ、`--git URL`、`--rev COMMIT`、任意の `--json` で、形の誤りは `E2000`、終了コード 2 です。詳細は [registry の運用と tsuzuri publish](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish) にあります。
 
 ### check
 
@@ -326,7 +337,7 @@ Price.price()
 | Linux | `$XDG_CACHE_HOME/tsuzuri/build-cache`。無ければ `~/.cache/tsuzuri/build-cache` |
 | Windows | `%LOCALAPPDATA%\Tsuzuri\Cache\build-cache` |
 
-全体の上限は 2 GiB、未使用の期限は 30 日、1 エントリは 256 MiB までです。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git 依存のパッケージが入り、上限と期限による削除の対象外です。`--no-cache` は読み書きの両方を止めます。`build` と `run` 以外では `E2000` です。ツールの `--version` が失敗すると、ビルドは続けつつ `build cache disabled: ...` を標準エラーへ出します。`--json` では、この種のツール警告は `W2001` です。
+全体の上限は 2 GiB、未使用の期限は 30 日、1 エントリは 256 MiB までです。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが入り、上限と期限による削除の対象外です。`--no-cache` は読み書きの両方を止めます。`build` と `run` 以外では `E2000` です。ツールの `--version` が失敗すると、ビルドは続けつつ `build cache disabled: ...` を標準エラーへ出します。`--json` では、この種のツール警告は `W2001` です。
 
 ## 終了コード
 
@@ -344,7 +355,7 @@ Price.price()
 ## まとめ
 
 - 配布物では `tsuzuri` だけを PATH に足し、`toolchain info` で同梱ツールが見えているか確認します。
-- 日常の流れは `new`、`check`、`run`、必要なときだけ `build` です。git 依存があれば、最初と依存を変えたときに `fetch` します。
+- 日常の流れは `new`、`check`、`run`、必要なときだけ `build` です。git や registry の依存があれば、最初と依存を変えたときに `fetch` します。
 - ディレクトリは `Main.tz`、ファイルはその親以下の全ソース、が入力の基本です。
 - キャッシュは既定で有効です。消したいビルドだけ `--no-cache` を付けます。
 - 終了コード 2 は引き方、1 は中身か実行、0 は成功です。

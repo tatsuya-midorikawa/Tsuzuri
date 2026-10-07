@@ -693,16 +693,29 @@ pub(crate) struct LoadedPackage {
     pub(crate) id: crate::package::PackageId,
     pub(crate) manifest: crate::package::Manifest,
     pub(crate) text: String,
-    /// The content hash that `Tsuzuri.lock` records for a git package.
+    /// The content hash that `Tsuzuri.lock` records for a git or registry package.
     pub(crate) sha256: Option<String>,
+    /// The selected version of a registry package.
+    pub(crate) version: Option<crate::package::Version>,
 }
 
-/// A git dependency of the package graph. `tsuzuri fetch` downloads it; every
-/// other command finds it through `Tsuzuri.lock` in the package store.
-pub(crate) struct GitRequest<'a> {
+impl LoadedPackage {
+    /// How diagnostics name a fetched package.
+    fn kind(&self) -> &'static str {
+        if self.version.is_some() {
+            "registry dependency"
+        } else {
+            "git dependency"
+        }
+    }
+}
+
+/// A git or registry dependency of the package graph. `tsuzuri fetch` downloads
+/// it; every other command finds it through `Tsuzuri.lock` in the package store.
+pub(crate) struct PackageRequest<'a> {
     pub(crate) name: &'a str,
-    pub(crate) url: &'a str,
-    pub(crate) rev: &'a str,
+    /// A `Git` or `Registry` source.
+    pub(crate) source: &'a crate::package::DependencySource,
     /// The name of the declaring package, and its url when it is a git package.
     pub(crate) parent: &'a str,
     pub(crate) parent_url: Option<&'a str>,
@@ -711,9 +724,19 @@ pub(crate) struct GitRequest<'a> {
     pub(crate) span: Span,
 }
 
-/// Resolves a git dependency to its package root and content hash.
-pub(crate) type GitResolver<'a> =
-    dyn FnMut(&GitRequest<'_>) -> Result<(PathBuf, String), SourceError> + 'a;
+/// Where a git or registry dependency is: its package root, content hash, and
+/// for a registry package the selected version.
+pub(crate) struct Resolution {
+    pub(crate) root: PathBuf,
+    pub(crate) sha256: String,
+    pub(crate) version: Option<crate::package::Version>,
+}
+
+/// Resolves a git or registry dependency. `None` leaves the dependency out of the
+/// walk; `tsuzuri fetch` does that for registry dependencies until it has selected
+/// their versions.
+pub(crate) type PackageResolver<'a> =
+    dyn FnMut(&PackageRequest<'_>) -> Result<Option<Resolution>, SourceError> + 'a;
 
 /// The default namespace of a root folder without a manifest: a kebab-case
 /// folder name in PascalCase as for package names, another valid namespace
@@ -730,12 +753,27 @@ fn folder_namespace(directory: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Walks the package graph of the manifest in `directory`. `git` turns each git
-/// dependency into a package root: `tsuzuri fetch` downloads it, and the other
-/// commands look it up offline, so both share these rules.
+/// How the graph walk reached a package.
+#[derive(Clone)]
+enum Origin {
+    /// The root package or a path dependency.
+    Local,
+    Git {
+        url: String,
+        sha256: String,
+    },
+    Registry {
+        version: crate::package::Version,
+        sha256: String,
+    },
+}
+
+/// Walks the package graph of the manifest in `directory`. `resolve` turns each
+/// git or registry dependency into a package root: `tsuzuri fetch` downloads it,
+/// and the other commands look it up offline, so both share these rules.
 pub(crate) fn load_packages(
     directory: &Path,
-    git: &mut GitResolver<'_>,
+    resolve: &mut PackageResolver<'_>,
 ) -> Result<Vec<LoadedPackage>, SourceError> {
     use crate::package::DependencySource;
     use std::collections::{BTreeMap, BTreeSet};
@@ -757,20 +795,21 @@ pub(crate) fn load_packages(
         )
     })?;
     // Each entry: the package root, the dependency that names it, whether the walk
-    // leaves it, and for a git package its url and content hash.
-    let mut pending = vec![(
-        root,
-        None::<(String, PathBuf, Span)>,
-        false,
-        None::<(String, String)>,
-    )];
+    // leaves it, and how the walk reached it.
+    let mut pending = vec![(root, None::<(String, PathBuf, Span)>, false, Origin::Local)];
     let mut active = BTreeSet::new();
     let mut loaded = BTreeMap::<PathBuf, LoadedPackage>::new();
     let mut namespaces = BTreeMap::new();
     // A package name has one source: paths (several roots may share a name if their
-    // namespaces differ), or one git url and rev.
-    let mut sources = BTreeMap::<String, Option<(String, String)>>::new();
-    while let Some((root, expected, leaving, git_package)) = pending.pop() {
+    // namespaces differ), one git url and rev, or the registry (one selected version).
+    #[derive(PartialEq)]
+    enum Source {
+        Path,
+        Git(String, String),
+        Registry,
+    }
+    let mut sources = BTreeMap::<String, Source>::new();
+    while let Some((root, expected, leaving, origin)) = pending.pop() {
         if leaving {
             active.remove(&root);
             continue;
@@ -829,76 +868,116 @@ pub(crate) fn load_packages(
                     ),
                 ));
             }
-            // The root package's name is taken by a path, so no git package may reuse it.
+            if let Origin::Registry { version, .. } = &origin
+                && manifest.version != version.to_string()
+            {
+                return Err(SourceError::new(
+                    &path,
+                    driver_error(
+                        "E2007",
+                        format!(
+                            "registry package '{}' declares version {} but Tsuzuri.lock records {version}; run tsuzuri fetch",
+                            manifest.name, manifest.version
+                        ),
+                    ),
+                ));
+            }
+            // The root package's name is taken by a path, so no fetched package may reuse it.
             if loaded.is_empty() {
-                sources.insert(manifest.name.clone(), None);
+                sources.insert(manifest.name.clone(), Source::Path);
             }
             active.insert(root.clone());
-            pending.push((root.clone(), None, true, None));
+            pending.push((root.clone(), None, true, Origin::Local));
             let mut dependencies = Vec::new();
             for (name, dependency) in &manifest.dependencies {
                 let source = match &dependency.source {
-                    DependencySource::Path(_) => None,
-                    DependencySource::Git { url, rev } => Some((url.clone(), rev.clone())),
+                    DependencySource::Path(_) => Source::Path,
+                    DependencySource::Git { url, rev } => Source::Git(url.clone(), rev.clone()),
+                    DependencySource::Registry(_) => Source::Registry,
+                };
+                let error = |code: &'static str, message: String| {
+                    SourceError::new(&path, Diagnostic::new(code, message, dependency.span))
                 };
                 if sources
                     .get(name)
                     .is_some_and(|existing| *existing != source)
                 {
-                    return Err(SourceError::new(
-                        &path,
-                        Diagnostic::new(
-                            "E1011",
-                            format!(
-                                "package '{name}' is required from different sources; a package name has one path or one git url and rev"
-                            ),
-                            dependency.span,
+                    return Err(error(
+                        "E1011",
+                        format!(
+                            "package '{name}' is required from different sources; a package name has one source: paths, one git url and rev, or registry versions"
                         ),
                     ));
                 }
                 sources.insert(name.clone(), source);
-                let (dependency_root, dependency_git) = match &dependency.source {
-                    DependencySource::Path(_) if git_package.is_some() => {
-                        return Err(SourceError::new(
-                            &path,
-                            Diagnostic::new(
-                                "E1011",
-                                "git packages cannot have path dependencies; use a git dependency",
-                                dependency.span,
-                            ),
+                let (dependency_root, dependency_origin) = match (&dependency.source, &origin) {
+                    (
+                        DependencySource::Path(_) | DependencySource::Git { .. },
+                        Origin::Registry { .. },
+                    ) => {
+                        return Err(error(
+                            "E1011",
+                            "registry packages can depend only on registry packages; use a version requirement".to_owned(),
                         ));
                     }
-                    DependencySource::Path(relative) => (
+                    (DependencySource::Path(_), Origin::Git { .. }) => {
+                        return Err(error(
+                            "E1011",
+                            "git packages cannot have path dependencies; use a git dependency"
+                                .to_owned(),
+                        ));
+                    }
+                    (DependencySource::Path(relative), Origin::Local) => (
                         dependency_directory(&root, relative, &path, dependency.span)?,
-                        None,
+                        Origin::Local,
                     ),
-                    DependencySource::Git { url, rev } => {
-                        let (package_root, sha256) = git(&GitRequest {
+                    (DependencySource::Git { .. } | DependencySource::Registry(_), _) => {
+                        let Some(resolution) = resolve(&PackageRequest {
                             name,
-                            url,
-                            rev,
+                            source: &dependency.source,
                             parent: &manifest.name,
-                            parent_url: git_package.as_ref().map(|(url, _)| url.as_str()),
+                            parent_url: match &origin {
+                                Origin::Git { url, .. } => Some(url.as_str()),
+                                _ => None,
+                            },
                             manifest: &path,
                             span: dependency.span,
-                        })?;
-                        let package_root = fs::canonicalize(&package_root).map_err(|error| {
+                        })?
+                        else {
+                            continue;
+                        };
+                        let package_root = fs::canonicalize(&resolution.root).map_err(|error| {
                             SourceError::new(
                                 &path,
-                                io_error("resolve git package root", &package_root, error),
+                                io_error("resolve fetched package root", &resolution.root, error),
                             )
                         })?;
-                        (package_root, Some((url.clone(), sha256)))
+                        let dependency_origin = match (&dependency.source, resolution.version) {
+                            (DependencySource::Git { url, .. }, _) => Origin::Git {
+                                url: url.clone(),
+                                sha256: resolution.sha256,
+                            },
+                            (_, version) => Origin::Registry {
+                                version: version.expect("registry resolutions have a version"),
+                                sha256: resolution.sha256,
+                            },
+                        };
+                        (package_root, dependency_origin)
                     }
                 };
                 dependencies.push((
                     dependency_root,
                     Some((name.clone(), path.clone(), dependency.span)),
                     false,
-                    dependency_git,
+                    dependency_origin,
                 ));
             }
             pending.extend(dependencies.into_iter().rev());
+            let (sha256, version) = match origin {
+                Origin::Local => (None, None),
+                Origin::Git { sha256, .. } => (Some(sha256), None),
+                Origin::Registry { version, sha256 } => (Some(sha256), Some(version)),
+            };
             loaded.insert(
                 root.clone(),
                 LoadedPackage {
@@ -908,7 +987,8 @@ pub(crate) fn load_packages(
                     },
                     manifest,
                     text,
-                    sha256: git_package.map(|(_, sha256)| sha256),
+                    sha256,
+                    version,
                 },
             );
         }
@@ -1036,12 +1116,13 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
     }))
 }
 
-/// Finds a git dependency in `Tsuzuri.lock` and the package store without running
-/// git or touching the network.
-fn offline_git(
+/// Finds a git or registry dependency in `Tsuzuri.lock` and the package store
+/// without running git or touching the network.
+fn offline_package(
     lock: Option<&Lockfile>,
-    request: &GitRequest<'_>,
-) -> Result<(PathBuf, String), SourceError> {
+    request: &PackageRequest<'_>,
+) -> Result<Option<Resolution>, SourceError> {
+    use crate::package::DependencySource;
     let error = |message: String| {
         SourceError::new(
             request.manifest,
@@ -1051,16 +1132,37 @@ fn offline_git(
     let lock = lock.ok_or_else(|| {
         error("Tsuzuri.lock is missing; run tsuzuri fetch to download git dependencies and record them".to_owned())
     })?;
-    let entry = lock
-        .entries
-        .get(request.name)
-        .filter(|entry| entry.git == request.url && entry.rev == request.rev)
-        .ok_or_else(|| {
-            error(format!(
-                "Tsuzuri.lock does not record git dependency '{}' at this url and rev; run tsuzuri fetch",
-                request.name
-            ))
-        })?;
+    let (entry, kind) = match request.source {
+        DependencySource::Git { url, rev } => (
+            lock.entries
+                .get(request.name)
+                .filter(|entry| entry.git == *url && entry.rev == *rev && entry.version.is_none())
+                .ok_or_else(|| {
+                    error(format!(
+                        "Tsuzuri.lock does not record git dependency '{}' at this url and rev; run tsuzuri fetch",
+                        request.name
+                    ))
+                })?,
+            "git dependency",
+        ),
+        DependencySource::Registry(requirement) => (
+            lock.entries
+                .get(request.name)
+                .filter(|entry| {
+                    entry
+                        .version
+                        .is_some_and(|version| version.satisfies(*requirement))
+                })
+                .ok_or_else(|| {
+                    error(format!(
+                        "Tsuzuri.lock does not record a version of '{}' that satisfies {requirement}; run tsuzuri fetch",
+                        request.name
+                    ))
+                })?,
+            "registry dependency",
+        ),
+        DependencySource::Path(_) => unreachable!("the walk resolves path dependencies itself"),
+    };
     let store = crate::cache::package_store().ok_or_else(|| {
         error(
             "no package store is available; set TSUZURI_CACHE_DIR and run tsuzuri fetch".to_owned(),
@@ -1072,11 +1174,15 @@ fn offline_git(
         .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
     {
         return Err(error(format!(
-            "git dependency '{}' is not downloaded; run tsuzuri fetch",
+            "{kind} '{}' is not downloaded; run tsuzuri fetch",
             request.name
         )));
     }
-    Ok((root, entry.sha256.clone()))
+    Ok(Some(Resolution {
+        root,
+        sha256: entry.sha256.clone(),
+        version: entry.version,
+    }))
 }
 
 impl Project {
@@ -1137,7 +1243,7 @@ impl Project {
     ) -> Result<Self, SourceError> {
         let lock = read_lockfile(directory)?;
         let packages = load_packages(directory, &mut |request| {
-            offline_git(lock.as_ref(), request)
+            offline_package(lock.as_ref(), request)
         })?;
         let canonical;
         let directory = if packages.is_empty() {
@@ -1291,7 +1397,8 @@ impl Project {
                     driver_error(
                         "E2007",
                         format!(
-                            "git dependency '{}' does not match its sha256 in Tsuzuri.lock; run tsuzuri fetch to restore it",
+                            "{} '{}' does not match its sha256 in Tsuzuri.lock; run tsuzuri fetch to restore it",
+                            package.kind(),
                             package.manifest.name
                         ),
                     ),
@@ -1336,7 +1443,8 @@ impl Project {
                 crate::package::DependencySource::Path(path) => {
                     fs::canonicalize(directory.join(path)).ok()
                 }
-                crate::package::DependencySource::Git { .. } => None,
+                crate::package::DependencySource::Git { .. }
+                | crate::package::DependencySource::Registry(_) => None,
             })
             .collect();
         let mut native = LinkInputs::default();
@@ -1352,7 +1460,7 @@ impl Project {
                     &package.id.root.join("Tsuzuri.toml"),
                     Diagnostic::new(
                         "E2000",
-                        "git packages cannot declare [native] link settings; move them to the application manifest",
+                        "git and registry packages cannot declare [native] link settings; move them to the application manifest",
                         *span,
                     ),
                 ));

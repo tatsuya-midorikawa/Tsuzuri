@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | E04, G11 |
 | 後続 | G19, E09 Phase 2 |
-| 状態 | Phase 1 done（Phase 2 は実装中） |
+| 状態 | done（Phase 1・Phase 2。記録は末尾の「実装と検証」） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（`tsuzuri fetch` が外部の `git` CLI を起動すること、`E2007` の確定、GUIDE D-29 の E04 記録「git・lockfile を導入しない」の更新）, D10（Phase 2 の registry の運用主体と index の置き場所） |
 | 改善する劣位 | Rust 比: Cargo／crates.io に相当する依存管理がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: NuGet |
@@ -548,13 +548,20 @@ print(h.hexdigest())'
 
 ## 受け入れ条件
 
-- [ ] commit 固定の git 依存を `tsuzuri fetch` で取得し、`Tsuzuri.lock` を正規形で書き、オフラインでビルド・実行できる（native と wasm32、`-O0`／`-O3`）。
-- [ ] `build`／`check`／`run`／`test`／`doc`／`lsp` が `git` を起動しない（`builds_never_run_git`）。
-- [ ] lockfile の欠落・古さ・改ざん・未取得を「診断」の `E2007` で拒否し、`fetch` が store を直す。
-- [ ] 安全でない URL・symlink・submodule・危険なパス・大文字小文字の衝突・上限超過を拒否する。
-- [ ] Rust の crate を追加していない（`Cargo.toml` の `[dependencies]` が不変）。
-- [ ] `tests/packages.rs` の 13 テストと `tests/packages.mjs` が成功し、既存テストの期待値を変えていない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] commit 固定の git 依存を `tsuzuri fetch` で取得し、`Tsuzuri.lock` を正規形で書き、オフラインでビルド・実行できる（native と wasm32、`-O0`／`-O3`）。
+- [x] `build`／`check`／`run`／`test`／`doc`／`lsp` が `git` を起動しない（`builds_never_run_git`）。
+- [x] lockfile の欠落・古さ・改ざん・未取得を「診断」の `E2007` で拒否し、`fetch` が store を直す。
+- [x] 安全でない URL・symlink・submodule・危険なパス・大文字小文字の衝突・上限超過を拒否する。
+- [x] Rust の crate を追加していない（`Cargo.toml` の `[dependencies]` が不変）。
+- [x] `tests/packages.rs` の 13 テスト（Phase 2 の 8 件を足して 21 件）と `tests/packages.mjs` が成功し、既存テストの期待値を変えていない（例外は Phase 2 の `[registry]` で変わった `src/package.rs` の単体テストの section 一覧の文。「実装と検証」の Phase 2 の 5）。
+- [x] GUIDE §10 の完了の定義を満たす（`_features/README.md`・GUIDE の台帳・`_completed/` への移動は coordinator が行う）。
+
+Phase 2（実装時に追加）:
+
+- [x] `{ version = "1.2.3" }` と `[registry]`（`index`・任意の `rev`）を受け、版の文法と互換の範囲の違反を `E0002`／`E1011` で拒否する。
+- [x] git の index（`index/<name>.json`）から最小版選択で版を選び、index の `sha256`・取得したマニフェストと照合し、`format` 2 の lockfile に `version` を記録する。`format` 1 も読める。
+- [x] オフラインのビルドが lockfile の版と要求を照合し、index を読まない。
+- [x] `tsuzuri publish` が検査した内容と同じ commit の index の項目を出力し、どこにも push しない。
 
 ## 落とし穴
 
@@ -718,3 +725,75 @@ print(h.hexdigest())'
 - `cargo test --locked --test packages`: 13 passed。`--test modules`: 21 passed（手順 1 と同じ）。`--lib`: 99 passed。`--bin tsuzuri`: 11 passed。
 - `node tests/packages.mjs target/release/tsuzuri`、`node tests/cache.mjs target/release/tsuzuri`、`node tests/e2e.mjs target/release/tsuzuri`: 成功。
 - `node scripts/check-docs.mjs`（変更した LR の 4 ページ）: 成功。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+
+### Phase 2: registry 依存、最小版選択、registry index、`tsuzuri publish`
+
+#### 具体的な設計（D10 の承認を受けて決めたもの）
+
+- **版**: `Version { major, minor, patch }`（`src/package.rs`）。文法は `MAJOR.MINOR.PATCH`（10 進、先頭の 0 なし、各部は u64）。範囲演算子・ワイルドカード・pre-release・build metadata は
+  `E0002` `VERSION_RULE`。要求 `R` を版 `V` が満たすのは、互換の範囲が同じ（`MAJOR >= 1` なら同じ `MAJOR`、`0.x` なら同じ `0.MINOR`、`0.0.x` も同じ `0.0`）かつ `V >= R`。
+- **manifest**: `name = { version = "1.2.3" }`（`DependencySource::Registry`。形の違反は `E0002` `VERSION_FORM`、`native` は受けない）。`[registry]` は
+  `index = "<git url>"`（必須。git 依存と同じ url の規則）と任意の `rev = "<40 hex>"`（省略時は index の `HEAD`）。読むのは root package の `[registry]` だけ。
+  公開する package の `[package] version` は版の文法（`publish` が `E1011`）。通常のビルドでは従来どおり空でない文字列。
+- **index**: git repository の `index/<name>.json` = `{"name": "<name>", "versions": [{"version", "git", "rev", "sha256", "dependencies": {"<name>": "<要求>"}}]}`。
+  キーはすべて必須で未知・重複のキーと重複した版は不正（`parse_index`、`E2007` `the registry index file for 'NAME' is invalid (...)`）、1 ファイル 1 MiB（`E1017`）。
+  取得は Phase 1 と同じ隔離した一時 bare repository で `fetch --depth=1 <index> <rev|HEAD>`、`ls-tree -z -l --full-tree FETCH_HEAD index/`、必要なファイルだけを
+  BFS の段ごとに `cat-file --batch` で読む。index は store に置かず、registry 依存がある `fetch` のたびに取得する。https の index の項目は `file:///` の `git` を使えない（`E2007`）。
+- **版の選択（D8 の最小版選択）**: `fetch` は 1 回目の走査で git 依存を取得し、版の要求を集めて走査から外す（resolver が `None` を返す。`PackageResolver`）。
+  集めた要求から index の各版の `dependencies` を BFS でたどり（選ばれなかった版の要求もたどる。Go の MVS と同じで、単調で backtracking が要らない）、
+  名前ごとに要求の最小版のうち最大のものを選ぶ。選ぶ版は要求された版のどれかで、index にない版は `E2007`（より新しい版で代えない。新しい版の公開で選択が変わらない）。
+  選んだ版から到達できる package だけを取得・記録する（選ばれなかった版だけが要求する package は取得しない）。到達できる package の要求に互換の範囲の違うものがあれば
+  `E1011` `package 'NAME' is required at incompatible versions A (by P) and B (by Q); one package name has one version`（チケットの「E1011」をそのまま採った。
+  名前空間の規則「一つの名前に一つの版」の違反であり、取得の失敗ではないため）。上限は 1,024 package・16,384 版（`E1017`）。lockfile は選択に使わない。
+- **検証**: 選んだ版ごとに index の `git`・`rev` を Phase 1 の `download` で取得し、`content_sha256` が index の `sha256` と違えば `E2007`（改ざんされた index）。取得した
+  manifest の `name`・`version`・依存（版の要求だけ）が index の項目と違えば `E2007`。既存の `Tsuzuri.lock` に同じ版の項目があり `sha256` が index と違えば `E2007` で止める
+  （公開済みの版の書き換え）。store に同じ内容があれば取得しない（内容で鍵を付けた store なので、index の `sha256` の一致で足りる）。2 回目の走査で E04 の規則を全体に掛ける。
+- **lockfile**: registry の package があれば `format` 2 で、その項目は `name` の次に `version` を持つ（`name`・`version`・`git`・`rev`・`sha256`）。git 依存だけなら `format` 1 のまま
+  （Phase 1 の lockfile のバイト列を変えない）。読み込みは両方を受け、`format` 1 の `version` は未知のキー。
+- **オフライン**: registry の要求は、lockfile の同じ名前の項目の `version` が要求を満たし（`E2007` `Tsuzuri.lock does not record a version of 'NAME' that satisfies R`）、
+  store の内容が `sha256` と一致すること。registry package の manifest の `version` が lockfile と違えば `E2007`。registry package は版の要求だけを依存に持てる
+  （path・git は `E1011`）。`[native]` は `E2000`（git package と同じ文）。ビルドは index も `[registry]` も読まない。
+- **一つの名前に一つの取得元**: Phase 1 の辺ごとの記録に registry を足した（path どうし以外の食い違い、たとえば git と registry は `E1011`）。
+- **走査の共有（D6）**: Phase 1 の `GitRequest`・`GitResolver` を `PackageRequest`（`source` が `Git` か `Registry`）・`PackageResolver`（`Option<Resolution>` を返す）に一般化した。
+  オフラインの `offline_package` と `Fetcher::resolve` が同じ `load_packages` を使い、走査は 2 つに分けていない（fetch は同じ走査を 2 回呼ぶ）。`LoadedPackage::version`。
+- **`tsuzuri publish directory --git URL --rev COMMIT [--json]`**: 引数・url・rev・manifest の有無の誤りは `E2000`（終了コード 2）。package を `Project::load_for_tests` と
+  `analyze_all` で検査し（registry の依存は事前の `fetch` が要る）、版の文法・依存が版の要求だけ（`E1011`）・`[native]` なし（`E2000`）を確かめ、`--git`・`--rev` の commit を
+  Phase 1 の `download` で取得してその `content_sha256` とディレクトリの内容（`collect_sources` と同じ選択）のハッシュを比べる（違えば `E2007`）。一致すれば
+  `render_index_entry` の正規形の JSON を標準出力に出す。index への反映は index repository への commit で、`publish` は何も push しない。
+- **運用**: Tsuzuri は公開の registry を運営しない。index の置き方、公開済みの項目を書き換えない・消さない規則、`publish` の出力を足す手順を
+  `organizing-tsuzuri/packages.md` の「registry の運用と tsuzuri publish」に書いた。
+
+#### 決定事項への追記（Phase 2）
+
+1. **G19 の API 差分検査はまだない。** チケットは「G19 の API 差分検査を通した後」とするが、G19（`tsuzuri api-diff`）は todo。`publish` は検査せず、その欠落を言語リファレンスの NOTE に書いた。
+2. **index の `rev` は任意。** pin しない運用でも、最小版選択と「要求された版だけを選ぶ」規則のため、新しい版の公開で選択は変わらない。pin すれば index の削除・書き換えにも依存しない。
+3. **選ばれなかった版だけが要求する package は取得しない。** Go の build list はそれらも含むが、ビルドの graph に現れない package を lockfile に入れると「グラフに現れない項目は消す」に反する。
+   版の計算（最大値）には含めるので、選択の単調性は保たれる。
+4. **index の取得をキャッシュしない。** registry 依存がある `fetch` は毎回 index を取得する（明示的なネットワークのコマンド）。ビルドは index を使わない。
+5. **既存の単体テストの文を 1 つ変えた。** `src/package.rs` の `rejects_malformed_native_link_section` が section 一覧の文
+   `expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once` を期待するようにした（`[registry]` の追加による）。
+6. **path 依存の `{` の後の文。** Phase 1 の `expected a path or git dependency` を `expected a path, git, or version dependency` にした。
+
+#### 確認（最終。Apple M1 Max、macOS、rustc 1.98.1（Homebrew）、git 2.55.0、Node v20.19.6）
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。
+- Windows の型検査（rustup の 1.96.1）: `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings` と `aarch64-pc-windows-msvc` は、
+  変更していない `src/lsp.rs:806`・`src/parser.rs:1956`・`1957` の `clippy::nonminimal_bool`（1.96 の lint。`2ee813f` を `git archive` で展開した tree でも同じ 3 件）だけで止まり、
+  `-A clippy::nonminimal_bool` を足すと両 target とも全 target（`tests/packages.rs` を含む）が成功。Unix 専用の API（symlink・実行権限・偽の `git`）はテストで `#[cfg(unix)]` の中。
+- `RUST_MIN_STACK=4194304 cargo test --locked`: 72 の test result がすべて ok、758 passed・0 failed。うち `--test packages` 21 passed（Phase 1 の 13 件と Phase 2 の 8 件:
+  `versions_parse_and_compare_compatibility_ranges`、`manifest_accepts_registry_dependencies_and_index`、`lock_format_2_records_registry_versions_and_reads_format_1`、
+  `index_files_parse_strictly_and_entries_render_canonically`、`registry_resolution_selects_minimal_versions`（菱形と選ばれなかった版の要求、未取得の delta、pin なしの index、
+  オフラインの要求と lockfile の照合）、`registry_rejects_incompatible_and_missing_versions`、`registry_detects_tampered_index_entries`、`publish_prints_index_entries`）、
+  `--test modules` 21 passed（変更なし）、`--lib` 99 passed。
+- GUIDE §3.1 の回帰テスト 4 件（`bounds_type_growing_polymorphic_recursion`、`bounds_recursive_and_flat_expression_depth`、
+  `bounds_nested_builder_expansion_not_just_source_syntax`、`honors_the_exact_specialization_limit`）: 各 1 passed。
+- `cargo build --release --locked` の後、`node tests/<suite>.mjs target/release/tsuzuri` を `packages`（git 依存と registry の publish・index・fetch・native／wasm32 × `-O0`／`-O3`、
+  期待値は JS の BigInt で独立に計算、IR の決定性、WASM import なし）、`cache`、`e2e`、`ffi_extensions`、`wasm_memory`、`lsp_sessions`、`docgen` で実行し、すべて成功。
+  コード生成は変えていないので `live == 0` の検査は足していない（チケットのとおり）。
+- `node scripts/check-docs.mjs` を変更した 5 ページ（`organizing-tsuzuri/packages.md`、`compiler/usage.md`、`compiler/diagnostics.md`、`languages/strategy.md`、`languages/why-tsuzuri.md`）で実行し、成功（5 pages、74 links）。
+
+### 既知の制限
+
+- Windows では型検査（`cargo clippy --target x86_64-pc-windows-msvc`／`aarch64-pc-windows-msvc`）だけを確かめた。Windows での `git` の起動・パス・rename は未検証（G10）。
+- https の取得はネットワークを使うテストがないため、`protocol.https.allow=always` の設定と url の規則だけを確かめた。`file:///` の取得は E2E で確かめた。
+- Windows の予約名（`CON` など）、Unicode の正規化だけが違うパス、submodule の中身、`ssh://`・認証、branch／tag の追跡、yank、範囲演算子は対象外。

@@ -73,7 +73,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用） |
 | `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch` |
-| `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML、`Tsuzuri.lock` の正規形と内容ハッシュ、`tsuzuri fetch` による git 依存の取得・検査・ストアへの確定（`git` を起動する唯一の経路） |
+| `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/copies.rs` | 具体化後の暗黙の複製箇所の列挙（`copies::sites`）、`--warn implicit-copy` による `W1006` 警告、インレイヒント（inlay hint）の基となる配列・リストの複製検出（`costly_sites`） |
 | `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
 
@@ -241,11 +241,11 @@ LLVM において列挙型のスカラー別名は前方参照できないため
 名前空間とモジュールを `.` で連結したパスは解決されず、`E1002` または `E1004` の診断メッセージにおいて `namespace_spelling` を通じて `::` を用いた正しい記法を案内します。
 モジュールのパスは同名の record、union、型別名、および extern type も表すことができ、その型の完全名はモジュールの完全名と一致します。`check_module_type` は `Sample::Point.Point` のようにモジュール名を重複して重ねた型の記述を、`case_path` は `Sample::Shape.Shape.Rect` のような記述を `E1004` として拒否します（`KEY_PATH` 付きの内部名は対象外です）。診断メッセージやホバー表示では `type_spelling` および `semantic::type_name` によって正規の名前が提示され、LSP のメンバー補完候補からその型は除外されます。`using` の競合による曖昧性は `check_path` および `check_module` が検索の入口で検知して `E1004` とします。LSP は `ModuleNames` を通じてこれらと同一の規則を再現し、コード補完（`::` の入力後は子名前空間、`.` の入力後はメンバー）、シグネチャヘルプ、およびセマンティックトークンの生成に活用します。
 
-**パッケージ:** パッケージ読み込み層は、`Tsuzuri.toml` で定義されたローカルパス依存と commit 固定の git 依存を取り扱います。`package.rs` が限定的なマニフェスト文法、`Tsuzuri.lock` の読み書き（`parse_lock`／`render_lock`）、内容ハッシュ（`content_sha256`）を受け持ち、ドライバーの `load_packages` は明示的なスタックを用いて依存グラフの循環参照、パッケージ名と取得元の一意性、およびリソース上限を検査します。
+**パッケージ:** パッケージ読み込み層は、`Tsuzuri.toml` で定義されたローカルパス依存、commit 固定の git 依存、registry の版の要求を取り扱います。`package.rs` が限定的なマニフェスト文法、`Tsuzuri.lock` の読み書き（`parse_lock`／`render_lock`）、内容ハッシュ（`content_sha256`）を受け持ち、ドライバーの `load_packages` は明示的なスタックを用いて依存グラフの循環参照、パッケージ名と取得元の一意性、およびリソース上限を検査します。
 `SourceFile.package` には正規化されたルートパスとパッケージ名からなる `PackageId` が格納され、依存パッケージの名前空間が各ファイルの `relative_path` に付与されます。型検査における User／Std の分類や `private` 可視性の境界判定自体は変更されません。
 マニフェスト情報は `Project.manifests` に保持され、`source_for` においては通常のソースファイルの後に続く ID として参照されます。ビルド成果物およびドキュメントの出力保護機構は、ルートパッケージと依存パッケージの両集合を対象として適用されます。
 すべてのソースファイルは論理パス順に整列され、標準ライブラリ（std）は常に末尾に配置されます。依存パッケージのルートは親プロジェクトのファイル探索スコープから除外され、同一ルートのパッケージが重複して読み込まれることはありません。ビルドスクリプトは実行しません。
-git 依存の解決は `load_packages` に渡すリゾルバーだけが異なり、グラフ走査と E04 の規則は取得とビルドで共有されます。`git` を起動しネットワークに触れるのは `tsuzuri fetch`（`fetch.rs`）だけです。fetch は空の hooks と設定で隔離した一時 bare リポジトリへ commit を取得し、`ls-tree -r -z -l` と `cat-file --batch`（要求の書き込みと応答の読み出しを別スレッドで行う）でパッケージのファイルだけを読み、パス・モード・大文字小文字・上限を検査してから、ストア（キャッシュルートの `packages/git/<sha256>/`）へ同じファイルシステム内の rename で確定させます。`BuildCache::open` を先に呼んでキャッシュルートの marker を作るため、ビルドキャッシュと共存し、`evict` はストアに触れません。
+git・registry 依存の解決は `load_packages` に渡すリゾルバーだけが異なり、グラフ走査と E04 の規則は取得とビルドで共有されます。`git` を起動しネットワークに触れるのは `tsuzuri fetch` と `tsuzuri publish`（`fetch.rs`）だけです。fetch は走査を 2 回行います。1 回目は git 依存を取得し、版の要求を集めて走査から外し（リゾルバーが `None` を返す）、index の取得と最小版選択（要求をたどる BFS、名前ごとの最大値、互換範囲の検査、選んだ版からの到達可能性）の後、選んだパッケージを取得・検証してから、2 回目の走査で全体の規則を確かめます。fetch は空の hooks と設定で隔離した一時 bare リポジトリへ commit を取得し、`ls-tree -r -z -l` と `cat-file --batch`（要求の書き込みと応答の読み出しを別スレッドで行う）でパッケージのファイルだけを読み、パス・モード・大文字小文字・上限を検査してから、ストア（キャッシュルートの `packages/git/<sha256>/`）へ同じファイルシステム内の rename で確定させます。`BuildCache::open` を先に呼んでキャッシュルートの marker を作るため、ビルドキャッシュと共存し、`evict` はストアに触れません。
 ほかのコマンドはオフラインのリゾルバーで `Tsuzuri.lock` とストアだけを参照し、`load_from_root` が git パッケージのソースを読んだ後に内容ハッシュを照合します。`Tsuzuri.lock` は `Project.manifests` に加わるため、出力保護とビルドキャッシュのキーにも含まれます。
 
 **標準ライブラリ:** `std/` 配下のソースコードは `stdlib::SOURCES` としてコンパイラバイナリ内に `include_str!` で静的に埋め込まれており、`analyze`、`analyze_modules`、および `Project::load` の各処理において、ユーザーソース群の末尾に追加されます。
