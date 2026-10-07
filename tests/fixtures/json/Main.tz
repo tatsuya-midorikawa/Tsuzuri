@@ -314,6 +314,140 @@ fn container_hash case =
         | Error error -> error_status (ref error)
     | _ -> map_text (Json.deserialize (ref u8"{\"1\":\"a\"}"))
 
+/// The integers from `count - 1` down to 0.
+def descending_keys :: i64 -> Vec<i64>
+fn descending_keys count =
+    let mut keys = Vec.with_capacity count
+    for index in 1 .. count do keys = Vec.push keys (count - index)
+    keys
+
+/// "k" and `number` in five digits.
+def key_name :: i64 -> string
+fn key_name number =
+    let mut digits = to_string number
+    while String.length (ref digits) < 5 do digits = "0" + digits
+    "k" + digits
+
+/// The JSON object of `count` members whose keys descend: `key_name n` and `n` from `count - 1` to 0.
+def descending_object :: i64 -> utf8string
+fn descending_object count =
+    let mut members = Vec.with_capacity count
+    for index in 1 .. count do
+        let number = count - index
+        members = Vec.push members (key_name number, Result.get (Json.encode (ref number)))
+    let object = Json.Object (Vec.to_array members)
+    Json.to_utf8string (ref object)
+
+/// `count` entries whose keys descend: inserting them into the sorted `Map` or `Set` one by one in
+/// document order would shift every entry (quadratic time). The number of entries when they come
+/// out as the keys 0, 1, ... in order (and, for maps, with their values), or the error status.
+export def descending :: i64 -> i64 -> i64
+fn descending case count =
+    match case with
+    | 0 ->
+        let keys = descending_keys count
+        let text = Result.get (Json.serialize (ref keys))
+        let decoded: Result<Set<i64>, Json.Error> = Json.deserialize (ref text)
+        match decoded with
+        | Ok set -> Set.fold (\position key -> if position >= 0 && deref key == position then position + 1 else -1) 0 (ref set)
+        | Error error -> error_status (ref error)
+    | 1 ->
+        let mut pairs = Vec.with_capacity count
+        for index in 1 .. count do pairs = Vec.push pairs (count - index, (count - index) * 3)
+        let text = Result.get (Json.serialize (ref pairs))
+        let decoded: Result<Map<i64, i64>, Json.Error> = Json.deserialize (ref text)
+        match decoded with
+        | Ok map -> Map.fold (\position key item -> if position >= 0 && deref key == position && deref item == position * 3 then position + 1 else -1) 0 (ref map)
+        | Error error -> error_status (ref error)
+    | _ ->
+        let text = descending_object count
+        let decoded: Result<Map<string, i64>, Json.Error> = Json.deserialize (ref text)
+        match decoded with
+        | Ok map -> Map.fold (\position key item -> if position >= 0 && deref key == key_name position && deref item == position then position + 1 else -1) 0 (ref map)
+        | Error error -> error_status (ref error)
+
+/// `count` keys in a scrambled order, `(index * 7919) % count`, except that the element `count / 2`
+/// repeats the key of the element `count / 3` and the last element repeats the first (0).
+def scattered :: i64 -> Vec<i64>
+fn scattered count =
+    let mut keys = Vec.with_capacity count
+    for index in 0 .. (count - 1) do
+        let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
+        keys = Vec.push keys ((source * 7919) % count)
+    keys
+
+def unit_of :: Result<'a, Json.Error> -> Result<unit, Json.Error>
+fn unit_of result =
+    match result with
+    | Ok _ -> Ok ()
+    | Error error -> Error error
+
+/// A key decoded from the digits of a JSON string, so that "3" and "03" are the same key.
+record Digits { value: i64 } deriving (Eq, Ord)
+
+instance Decode<Digits> {
+    fn decode value =
+        let number: Maybe<i64> = match value with
+            | Json.Text text -> Parse.parse text
+            | _ -> None
+        match number with
+        | Some digits -> Ok (Digits { value: digits })
+        | None -> Error (Json.Error { kind: Json.ExpectedType "digits", offset: -1 })
+}
+
+def duplicate_result :: i64 -> Result<unit, Json.Error>
+fn duplicate_result case =
+    match case with
+    | 0 ->
+        let decoded: Result<Set<i64>, Json.Error> = Json.deserialize (ref u8"[9, 1, 9, 5, 1]")
+        unit_of decoded
+    | 1 ->
+        let decoded: Result<Set<f64>, Json.Error> = Json.deserialize (ref u8"[2.0, 1, 2, 1.0]")
+        unit_of decoded
+    | 2 ->
+        let decoded: Result<Map<i64, string>, Json.Error> = Json.deserialize (ref u8"[[3,\"a\"],[1,\"b\"],[2,\"c\"],[1,\"d\"],[3,\"e\"]]")
+        unit_of decoded
+    | 3 ->
+        let decoded: Result<Map<f64, i64>, Json.Error> = Json.deserialize (ref u8"[[10,1],[2,2],[1e1,3],[2.0,4]]")
+        unit_of decoded
+    | 4 ->
+        let decoded: Result<Map<Digits, i64>, Json.Error> = Json.deserialize (ref u8"{\"3\":0,\"1\":1,\"03\":2,\"001\":3}")
+        unit_of decoded
+    | 5 ->
+        let decoded: Result<Set<Color>, Json.Error> = Json.deserialize (ref u8"[\"Red\",\"Blue\",\"Green\",\"Blue\",\"Red\"]")
+        unit_of decoded
+    | 6 ->
+        let decoded: Result<HashMap<i64, i64>, Json.Error> = Json.deserialize (ref u8"[[4,0],[8,1],[8,2],[4,3]]")
+        unit_of decoded
+    | 7 ->
+        let decoded: Result<Map<i64, i64>, Json.Error> = Json.deserialize (ref u8"[[5,0],[5,1],[[1],2]]")
+        unit_of decoded
+    | 8 ->
+        let decoded: Result<Set<i64>, Json.Error> = Json.deserialize (ref u8"[3,2,1,0]")
+        unit_of decoded
+    | 9 ->
+        let decoded: Result<Set<i64>, Json.Error> = Json.deserialize (ref u8"[]")
+        unit_of decoded
+    | _ ->
+        let decoded: Result<Map<i64, i64>, Json.Error> = Json.deserialize (ref u8"{}")
+        unit_of decoded
+
+/// Keys repeated in a random order: the error names the entry at the smallest document index whose
+/// key repeats an earlier key (the error of inserting in document order), with the text it has there.
+export def duplicate_status :: i64 -> i64
+fn duplicate_status case = status (duplicate_result case)
+
+export def duplicate_message :: i64 -> i64
+fn duplicate_message case = message (duplicate_result case)
+
+/// The FNV-1a hash of the error of decoding `scattered count` as a set.
+export def scattered_message :: i64 -> i64
+fn scattered_message count =
+    let keys = scattered count
+    let text = Result.get (Json.serialize (ref keys))
+    let decoded: Result<Set<i64>, Json.Error> = Json.deserialize (ref text)
+    message decoded
+
 record User { @json "user_id" id: i64, @json "display name" name: string, email: Maybe<string> } deriving (Encode, Decode)
 union Change =
     | @json "created" Created of User

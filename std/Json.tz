@@ -848,9 +848,24 @@ fn end_entries entries =
 				| (remaining, Maybe.None) -> rest = remaining
 			Result.Ok (Items (Vec.to_array items))
 
+/// A decoded map entry or set element with its index in the document, compared by key alone.
+private record Keyed<'k, 'v> { key: 'k, index: i64, value: 'v }
+
+instance Eq<'k> => Eq<Keyed<'k, 'v>> {
+	fn eq left right = left.key == right.key
+	fn ne left right = left.key != right.key
+}
+
+instance Ord<'k> => Ord<Keyed<'k, 'v>> {
+	fn lt left right = left.key < right.key
+	fn le left right = left.key <= right.key
+	fn gt left right = left.key > right.key
+	fn ge left right = left.key >= right.key
+}
+
 /// The entries of a map: the members of an object (each key decoded from its JSON string) or
 /// the `[key, value]` arrays of an array, in document order.
-private def rec decode_entries :: (Decode<'k>, Decode<'v>) => ref Value -> Result<Vec<('k * 'v)>, Error>
+private def rec decode_entries :: (Decode<'k>, Decode<'v>) => ref Value -> Result<Vec<Keyed<'k, 'v>>, Error>
 fn rec decode_entries value =
 	let count = match value with
 		| Object members -> members.length
@@ -864,12 +879,50 @@ fn rec decode_entries value =
 	let mut index = 0
 	while Maybe.is_none (ref problem) && index < count do
 		match decode_entry value index with
-		| Result.Ok entry -> entries = Vec.push entries entry
+		| Result.Ok (key, item) -> entries = Vec.push entries (Keyed { key: key, index: index, value: item })
 		| Result.Error error -> problem = Maybe.Some error
 		index = index + 1
 	match problem with
 	| Maybe.Some error -> Result.Error error
 	| Maybe.None -> Result.Ok entries
+
+/// The elements of a set in document order, each with its index.
+private def rec decode_elements :: Decode<'k> => ref Value -> Result<Vec<Keyed<'k, unit>>, Error>
+fn rec decode_elements value =
+	match value with
+	| Items items ->
+		let mut elements = Vec.with_capacity items.length
+		let mut problem = Maybe.None
+		let mut index = 0
+		while Maybe.is_none (ref problem) && index < items.length do
+			match Decode.decode (ref items[index]) with
+			| Result.Ok key -> elements = Vec.push elements (Keyed { key: key, index: index, value: () })
+			| Result.Error error -> problem = Maybe.Some error
+			index = index + 1
+		match problem with
+		| Maybe.Some error -> Result.Error error
+		| Maybe.None -> Result.Ok elements
+	| _ -> Result.Error (expected "array")
+
+/// `entries` sorted stably by key, so that equal keys are adjacent and in document order, with
+/// the document index of the first entry whose key repeats an earlier key, or -1: the error that
+/// inserting the entries in document order would find. The result is in descending key order,
+/// so `Vec.pop` yields ascending keys and every `Map.insert` or `Set.insert` appends; inserting
+/// in document order would shift the entries after each smaller key (quadratic).
+private def by_key :: Ord<'k> => Vec<Keyed<'k, 'v>> -> (Vec<Keyed<'k, 'v>> * i64)
+fn by_key entries =
+	let mut sorted = Vec.to_array entries
+	Array.sort_in_place (ref mut sorted)
+	let mut found = -1
+	for index in 1 .. (sorted.length - 1) do
+		if !(Ord.lt (ref sorted[index - 1].key) (ref sorted[index].key)) && (found < 0 || sorted[index].index < found) then found = sorted[index].index
+	let mut low = 0
+	let mut high = sorted.length - 1
+	while low < high do
+		Array.swap_in (ref mut sorted) low high
+		low = low + 1
+		high = high - 1
+	(Vec.of_array sorted, found)
 
 private def rec decode_entry :: (Decode<'k>, Decode<'v>) => ref Value -> i64 -> Result<('k * 'v), Error>
 fn rec decode_entry value index =
@@ -920,22 +973,17 @@ instance (Decode<'k>, Decode<'v>, Ord<'k>) => Decode<Map<'k, 'v>> {
 		match decode_entries value with
 		| Result.Error error -> Result.Error error
 		| Result.Ok entries ->
-			let mut rest = reversed entries
-			let mut map = Map.empty()
-			let mut problem = Maybe.None
-			let mut index = 0
-			while Maybe.is_none (ref problem) && Vec.length (ref rest) > 0 do
-				match Vec.pop rest with
-				| (remaining, Maybe.Some (key, item)) ->
-					rest = remaining
-					let before = Map.length (ref map)
-					map = Map.insert map key item
-					if Map.length (ref map) == before then problem = Maybe.Some (duplicate_entry value index)
-				| (remaining, Maybe.None) -> rest = remaining
-				index = index + 1
-			match problem with
-			| Maybe.Some error -> Result.Error error
-			| Maybe.None -> Result.Ok map
+			match by_key entries with
+			| (sorted, duplicate) ->
+				let mut rest = sorted
+				let mut map = Map.empty()
+				while duplicate < 0 && Vec.length (ref rest) > 0 do
+					match Vec.pop rest with
+					| (remaining, Maybe.Some entry) ->
+						rest = remaining
+						map = Map.insert map entry.key entry.value
+					| (remaining, Maybe.None) -> rest = remaining
+				if duplicate >= 0 then Result.Error (duplicate_entry value duplicate) else Result.Ok map
 }
 
 instance (Encode<'k>, Encode<'v>) => Encode<HashMap<'k, 'v>> {
@@ -950,16 +998,15 @@ instance (Decode<'k>, Decode<'v>, Hash<'k>, Eq<'k>) => Decode<HashMap<'k, 'v>> {
 			let mut rest = reversed entries
 			let mut map = HashMap.with_capacity (Vec.length (ref rest))
 			let mut problem = Maybe.None
-			let mut index = 0
 			while Maybe.is_none (ref problem) && Vec.length (ref rest) > 0 do
 				match Vec.pop rest with
-				| (remaining, Maybe.Some (key, item)) ->
+				| (remaining, Maybe.Some entry) ->
 					rest = remaining
 					let before = HashMap.length (ref map)
-					map = HashMap.insert map key item
+					let index = entry.index
+					map = HashMap.insert map entry.key entry.value
 					if HashMap.length (ref map) == before then problem = Maybe.Some (duplicate_entry value index)
 				| (remaining, Maybe.None) -> rest = remaining
-				index = index + 1
 			match problem with
 			| Maybe.Some error -> Result.Error error
 			| Maybe.None -> Result.Ok map
@@ -971,25 +1018,20 @@ instance Encode<'k> => Encode<Set<'k>> {
 
 instance (Decode<'k>, Ord<'k>) => Decode<Set<'k>> {
 	fn rec decode value =
-		match decode_items value with
+		match decode_elements value with
 		| Result.Error error -> Result.Error error
-		| Result.Ok keys ->
-			let mut rest = reversed keys
-			let mut set = Set.empty()
-			let mut problem = Maybe.None
-			let mut index = 0
-			while Maybe.is_none (ref problem) && Vec.length (ref rest) > 0 do
-				match Vec.pop rest with
-				| (remaining, Maybe.Some key) ->
-					rest = remaining
-					let before = Set.length (ref set)
-					set = Set.insert set key
-					if Set.length (ref set) == before then problem = Maybe.Some (failure (DuplicateKey (element_name value index)) (-1))
-				| (remaining, Maybe.None) -> rest = remaining
-				index = index + 1
-			match problem with
-			| Maybe.Some error -> Result.Error error
-			| Maybe.None -> Result.Ok set
+		| Result.Ok elements ->
+			match by_key elements with
+			| (sorted, duplicate) ->
+				let mut rest = sorted
+				let mut set = Set.empty()
+				while duplicate < 0 && Vec.length (ref rest) > 0 do
+					match Vec.pop rest with
+					| (remaining, Maybe.Some element) ->
+						rest = remaining
+						set = Set.insert set element.key
+					| (remaining, Maybe.None) -> rest = remaining
+				if duplicate >= 0 then Result.Error (failure (DuplicateKey (element_name value duplicate)) (-1)) else Result.Ok set
 }
 
 instance Encode<'k> => Encode<HashSet<'k>> {
