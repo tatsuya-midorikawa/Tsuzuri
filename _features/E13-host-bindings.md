@@ -666,3 +666,62 @@ glue は引数の検査と複製を足すだけで、生成コードは変えな
 - 決定: 新しいコードを作らない。CLI の構成は E2000、export がないのは E2004、出力保護は E2003。glue の実行時の失敗は JS の例外で表す。
 - 理由: どれも既存のコードの意味に収まる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-07、Phase 1）
+
+着手時の HEAD は `2ee813f`（ブランチ `wt/e13`）。E12（ハンドル・静的コールバック・リンク名）、E14（トラップ境界）、F06、F11（wasm64・メモリ上限）は done で、
+ハンドルとコールバックの行も実装した。作業機は Apple M1 Max、macOS、Apple clang 21.0.0、Homebrew LLD、rustc 1.98.1、Node v20.19.6、TypeScript 6.0.3。
+
+### 実装
+
+- CLI・driver: `src/main.rs`（`--emit bindings-js`、`--emit` の一覧の message と HELP、`-o` の `.mjs` 検査、`--trap-mode return` が `--trap-info` を含意するのを
+  header と bindings では行わない）、`src/driver.rs`（`Emit::BindingsJs`、`BuildOptions::validate_bindings`、`output_path` の `mjs`、
+  `bindings_output_error`、`bindings_sidecar_path`、`build_bindings`。`build_complete` は links の検査の直後に `build_bindings` へ分かれ、LLVM・cache・runtime の
+  分岐に入らない。本体と `.d.mts` は `protect_sources` の後に一時 directory へ書き、`publish_outputs` で一緒に公開する）。
+- ABI の型モデル（可視性だけ）: `src/llvm.rs` の `mod host_abi`・`reachable_functions`・`fixed_length` と、`src/llvm_abi.rs` の `record_name`・`record_layout`・
+  `handle_c_name` を `pub(crate)` にした。本体と呼び出し順は変えていない。
+- 生成: `src/bindings.rs`（新規。`ABI_VERSION`、`table`、`descriptor`、`javascript`、`declarations`、`typescript_type`、`DECLARATIONS`）、
+  `src/runtime/bindings.mjs`（新規。`load`、`TsuzuriTrap`、変換、所有権、型付き import、コールバック、分類と作り直し、`withBorrowed`、wasm64 の検出）。
+- テスト: `tests/bindings.rs`（新規、3 件）、`tests/bindings.mjs`・`tests/bindings_consumer.mts`・`tests/fixtures/bindings/{Main,Geometry}.tz`（新規）、
+  `src/main.rs` の `selects_target_defaults_and_honors_path_separator` と `src/driver.rs` の `refuses_invalid_options_and_empty_wasm_modules` に診断表の各行、
+  `tests/ffi_extensions.rs` の `handles_lower_to_pointers_and_header_typedefs` に 1 assert（下の判断 9）。
+- 文書: `_tsuzuri/language-reference/compiler/webassembly.md`（「型付きのバインディングを生成する」。手書きの手順は「Node.js から直接呼ぶ」「バッファを渡す」に残した）、
+  `option.md`・`usage.md`・`diagnostics.md`・`native-interop.md`、`docs/language.md`（「公開 ABI」の「生成バインディング」）、`docs/architecture.md`、`README.md`、
+  `examples/web/README.md`。`scripts/check-runtime-includes.sh` は `src/bindings.rs` の `include_str!` も数える。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. 表の import は `[name, module, parameters, result]` にした。E12 の `extern "env" "x" def` で WASM の import module が `tsuzuri` 以外になるため。`Imports` の
+   key は WASM の import 名のままで、E12 の規則（同じ symbol は同じ module と型、暗黙の名前は `.` を含む）により一意になる。
+2. 表と `Imports` に載せる import は、export と entry から `reachable_functions` で到達するものだけにした（`unused` の extern を要求しない）。`load` は、モジュールが
+   実際に import するものだけを表の順に検査する（`-O3` で消えた import は要求しない）。
+3. `table` は Rust の結合テストから読むため `pub`。表の key 順は `serde_json` の既定（`abi`、`exports`、`hostAbi`、`imports`、`records`）。
+4. A16 Phase 2 の固定長配列のフィールド（C の `T name[N]`）を足した。記述子は `["array", 要素, N]`、JavaScript では長さ N の配列、TypeScript では `readonly T[]`
+   （record の interface は両方向で同じ型）。stride は `record_layout` と同じ 8（64-bit）か 4。
+5. ハンドルは `0 <= v < 2^32` の整数で、TypeScript では `number & { readonly __tsuzuri: "<handle_c_name>" }`（両方向）。コールバックは import の呼び出し中だけ有効で、
+   その後に呼ぶと `TypeError`。コールバック内のトラップ・例外もインスタンスを捨てる。ホストが握りつぶしても、外側の export は捨てたインスタンスの失敗を投げる
+   （捨てたインスタンスへ戻ってきた import の呼び出しも同じ）。
+6. wasm64 は対象外にした（`--target wasm64 --emit bindings-js` は `'--emit bindings-js' requires '--target wasm32'`）。glue の pointer・ハンドル・table index は 32-bit で、
+   wasm64 は BigInt になるため。`load` もバイト列の memory64 の印を見て `bindings support wasm32 modules only; build the .wasm with --target wasm32` で拒否する
+   （Node 20 は memory64 を compile できないので、compile の前に検査する）。コンパイル済みの `WebAssembly.Module` からは判定できない。
+7. `--allocator` も `.wasm` 側の option として拒否した（診断表の E2000 と同じ形）。`load` は namespace ごとに理由を変える: `tsuzuri_io`・`tsuzuri_debug` は表の message、
+   `tsuzuri_heap` は `--allocator host`、`wasi_snapshot_preview1` は `--wasm-host wasi`。表にない import は `module does not match bindings: unexpected import ...`。
+8. 引数の数の message は 1 個のとき単数形（`expects 1 argument`）。レコードのフィールドの誤りは `argument 0 of 'update' field 'flags.tiny' is out of range for i8`
+   のように位置を足す。import の結果の誤りは `result of import '<name>' must be ...` で、ホストの例外として同じ object を投げる。`load` の source が bytes でも
+   `WebAssembly.Module` でもなければ `TypeError`。
+9. **E12 の不具合を直した。** 拡張でない（スカラーだけの）`export def` の `ref H` 引数を、wrapper が slot のアドレスとして Tsuzuri の関数へ渡していた
+   （ホストはハンドルそのものを渡すので、ハンドル値を pointer として読む。WASM で `peek(2)` が 0 を読み、`peek(4294967295)` が範囲外アクセス）。
+   `export_wrapper` が `alloca` の slot へハンドルを置いて借用を渡すようにした。生成 IR はこの形の export を持つプログラムだけ変わる（既存の fixture・例にはない）。
+10. 「スカラーだけの module は memory を export しない」（現状の節と旧 `webassembly.md`）は誤りだった（wasm-ld の既定で `memory` は export される。HEAD の
+    `examples/point` も同じ）。export されないのは `tsuzuri_alloc`・`tsuzuri_free` で、glue は `hostAbi` が false なら要求しない。文書を直した。
+11. E2E は 26 case に、ハンドル・コールバック（保持したコールバック、握りつぶしたトラップ）・文字列と record の import・固定長配列・import の結果の検査の 6 case を
+    足した（番号 27–32）。`live == 0` は `--allocator counting` の build で、glue が作った instance を記録して `tsuzuri_alloc_stats` を各 case の後に読んで確かめる。
+
+### 確認（Phase 1）
+
+- `cargo test --locked --test bindings` 3 passed、`--bin tsuzuri selects_target_defaults_and_honors_path_separator` 1 passed、
+  `--lib refuses_invalid_options_and_empty_wasm_modules` 1 passed、`--test ffi_extensions` 10 passed。
+- `node tests/bindings.mjs target/release/tsuzuri`（`TSUZURI_TSC` に vsc の TypeScript 6.0.3）: `-O0`・`-O3` で各 29 case × 3 build（通常、`--trap-info`、
+  `--allocator counting`）、load の検査、`bindings: tsc passed (Version 6.0.3)`、コマンド行の検査が成功。tsc の `@ts-expect-error` 9 箇所がすべて誤りを検出し、
+  `.d.mts` を消すと同じ consumer が失敗する。
+- 既存の E2E: `host_imports.mjs`、`ffi_extensions.mjs`、`trap_boundary.mjs`（17 case × 2）、`examples.mjs` が成功。

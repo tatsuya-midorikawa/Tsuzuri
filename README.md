@@ -510,7 +510,14 @@ const { instance } = await WebAssembly.instantiate(wasmBytes);
 console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 ```
 
-- **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します。
+- **型付きのグルー生成**: `tsuzuri build examples/web/Physics.tz --target wasm32 --emit bindings-js -o physics.mjs` は、`.wasm` を型付きの関数として呼ぶ JavaScript モジュール `physics.mjs` と TypeScript 宣言 `physics.d.mts` を出します。引数の検査、バッファの複製と `tsuzuri_free`、記述子の読み書き、型付きの import、トラップを `TsuzuriTrap` にしてインスタンスを作り直す処理を行います。
+
+  ```javascript
+  import { load } from "./physics.mjs";
+  const api = await load(await (await fetch("physics.wasm")).arrayBuffer());
+  console.log(api.exports.next_positions(Float64Array.of(9, 1), Float64Array.of(3, -3), 1, 10)); // Float64Array [8, 2]
+  ```
+- **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します（生成したグルーは `boolean` に直します）。
 - **メモリとスタックのカスタマイズ**: `--wasm-max-memory SIZE`（既定 16MiB、最大 4GiB-64KiB / wasm64 は 16GiB）や `--wasm-stack-size SIZE`（既定 1MiB）で線形メモリの上限やメインスタックサイズを調整できます。これらは `Tsuzuri.toml` の `[wasm]` セクションでも設定可能です。
 - **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、Task や Parallel による並列計算を Web Worker や Node.js の Worker Threads に分散できます。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
 
@@ -650,7 +657,7 @@ tsuzuri lsp
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
 | `--target native\|wasm32\|wasm64` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ）。 |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。 |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|bindings-js` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
@@ -703,6 +710,7 @@ node tests/cpu_kernels.mjs target/release/tsuzuri
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/gpu.mjs target/release/tsuzuri
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）

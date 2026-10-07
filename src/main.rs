@@ -51,8 +51,10 @@ Build options:
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
-    --emit KIND            exe, object, llvm, header, wasm, or wgsl
+    --emit KIND            exe, object, llvm, header, wasm, wgsl, or bindings-js
                          Default: exe for native, wasm for wasm32 and wasm64
+                         bindings-js (with --target wasm32) writes a JavaScript module
+                         NAME.mjs and its TypeScript declarations NAME.d.mts
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
@@ -423,9 +425,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("header") => Emit::Header,
                             Some("wasm") => Emit::Wasm,
                             Some("wgsl") => Emit::Wgsl,
+                            Some("bindings-js") => Emit::BindingsJs,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, or wgsl"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, or bindings-js"
                                         .into(),
                                 );
                             }
@@ -581,7 +584,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         debug_output,
         trap_info: trap_info
             || action == Action::Run
-            || (trap_return && emit != Some(Emit::Header)),
+            || (trap_return && !matches!(emit, Some(Emit::Header | Emit::BindingsJs))),
         debug_info,
         wasm_simd,
         wasm_threads,
@@ -594,6 +597,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         freestanding,
     };
     options.validate().map_err(|error| error.message)?;
+    if let Some(error) = output
+        .as_deref()
+        .and_then(|output| driver::bindings_output_error(options.emit, output))
+    {
+        return Err(error.message);
+    }
     links.check_shape().map_err(|error| error.message)?;
     if !links.is_empty() && !links_apply(action, &options) {
         return Err("link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe".into());
@@ -1428,6 +1437,97 @@ mod tests {
         let arguments = parse(&["build", "A.tz", "--target", "wasm32", "-O0"]).unwrap();
         assert_eq!(arguments.options.emit, Emit::Wasm);
         assert_eq!(arguments.options.optimization, 0);
+        let bindings = parse(&[
+            "build",
+            "A.tz",
+            "--target",
+            "wasm32",
+            "--emit",
+            "bindings-js",
+            "-O3",
+            "-o",
+            "out/api.mjs",
+        ])
+        .unwrap();
+        assert_eq!(bindings.options.emit, Emit::BindingsJs);
+        assert_eq!(
+            bindings.options.output_path(Path::new("dir/A.tz")),
+            Path::new("dir/A.mjs")
+        );
+        for (values, message) in [
+            (
+                vec!["build", "A.tz", "--emit", "bindings-ts"],
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, or bindings-js",
+            ),
+            (
+                vec!["build", "A.tz", "--emit", "bindings-js"],
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm64",
+                    "--emit",
+                    "bindings-js",
+                ],
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--trap-info",
+                ],
+                "--trap-info is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--wasm-feature",
+                    "simd128",
+                ],
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "-o",
+                    "api.js",
+                ],
+                "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'",
+            ),
+            (
+                vec![
+                    "build",
+                    "A.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--cpu",
+                    "native",
+                ],
+                "'--cpu native' requires native executable or object output",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
         let arguments = parse(&["--", "-project/Main.tz"]).unwrap();
         assert_eq!(arguments.input, Path::new("-project/Main.tz"));
         assert!(parse(&["run", "Main.tz", "--target", "wasm32"]).is_err());

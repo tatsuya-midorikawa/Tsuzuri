@@ -36,7 +36,7 @@
 
 ## ヘッダーとオブジェクト
 
-ライブラリは `Main.tz` でなくても出せます。実行ファイルにしたいときだけ、入口が要ります。
+ライブラリは `Main.tz` でなくても出せます。実行ファイルにしたいときだけ、入口が要ります。WebAssembly のホスト向けには型付きのグルーを生成する `--emit bindings-js` があります（[WebAssembly への出力](webassembly.md#型付きのバインディングを生成する)）。native の C ホストは、従来どおりこのヘッダーを使います。
 
 ```sh
 tsuzuri build Main.tz --emit header -o add.h

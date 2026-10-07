@@ -47,6 +47,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm.rs` | SSA 形式への変換、phi ノード、末尾再帰のループ化、所有値の解放、借用追跡、ホスト呼び出しラッパー、C ヘッダー生成 |
 | `src/llvm_debug.rs` | 共通採番による DWARF メタデータ生成、型・変数・関数と式のソース位置情報の付与 |
 | `src/llvm_imports.rs` | extern 関数の ABI ラッパー生成、リンク名と WASM import 属性、コールバック引数、所有結果の受領時検証 |
+| `src/bindings.rs` / `src/runtime/bindings.mjs` | 公開 ABI の記述子の表（export・到達する import・record の C 配置）と、それを読む型付きホスト バインディングの生成（E13）。`--emit bindings-js` は表と固定ランタイムを連結した ES module と `.d.mts` |
 | `std/IO.tc` / `src/llvm_io.rs` / `src/runtime/io.c` | 不透明な IO モナド、エントリーポイントでの実行、標準入出力ストリーム、WASM ホスト境界 |
 | `src/runtime/arguments.c` | `def main :: Array<string> -> i32` 向けコマンドライン引数。POSIX／WASI における UTF-8 デコード（不正なバイト列は U+FFFD に置換）および Windows のコマンドライン分割 |
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` 組み込み関数（`src/llvm_io.rs` の `os_builtin`）、POSIX ランタイム、`--wasm-host wasi` 向けの WASI preview1 ランタイム |
@@ -119,6 +120,7 @@ Node.js 側のホスト実装である `src/runtime/wasm-threads.mjs` は、明�
 `src/runtime/trap-boundary.mjs` は単一スレッド WASM 向けの同梱 JavaScript ホスト実装であり、コンパイラ本体からは参照されず、生成バイナリの挙動にも影響しません。`createBoundary(module, { imports, sites })` の呼び出しにより、1 回のエクスポート関数呼び出しを安全な境界で囲みます。
 WebAssembly 内部の例外は、`WebAssembly.RuntimeError` の場合は `{ reason: "trap", site }` とサイドテーブルのソース位置を返し、V8 の `RangeError`（SpiderMonkey では `InternalError`）によるスタック枯渇の場合は `{ reason: "stack" }` として返します。ホストのインポート関数から送出された例外は、同一オブジェクトのまま再送出されます。
 Tsuzuri はトラップ時にスタックの巻き戻しを行わないため、例外が発生したインスタンスは原因分類のために `tsuzuri_trap_site` を 1 回呼び出した後は二度と再利用せず、次回の呼び出し時には同一モジュールから新しくインスタンスを再生成します。マルチスレッド（threads）モジュールはこの境界で拒否され、スレッドプールの単位は既存の `createThreadPool` で管理されます。
+`--emit bindings-js` のグルー（`src/bindings.rs` の表 + `src/runtime/bindings.mjs`）は、`load` で表の記述子を変換関数へ一度だけ解決し、呼び出しごとに記述子の文字列で分岐しません。境界の規則は `trap-boundary.mjs` と同じ（例外でインスタンスを捨て、`tsuzuri_trap_site` を 1 回だけ読み、次の呼び出しで同期的に作り直す）ですが、生成物は利用者が配布する単独のファイルなので、そのファイルを import せずに同じ規則を自前で持ちます。インスタンスごとに import の wrapper を作り、ホストの例外の記録、コールバックの有効期間、捨てたインスタンスへの再入の拒否をその単位で扱います。`tests/bindings.mjs` が `-O0`／`-O3`、`--trap-info`、`--allocator counting`（各呼び出し後の `live == 0`）の build と TypeScript 6.0.3 の型検査で検証します。
 ネイティブ環境では、`driver::probable_stack_exhaustion` が子プロセスの終了シグナル（SIGSEGV、SIGBUS）を検知してスタック枯渇の可能性を推定し、`E2005` またはテスト失敗の理由として報告します。`tests/trap_boundary.mjs` により、`-O0`／`-O3` における 17 のケースが検証されています。
 
 ネイティブオブジェクトにおけるエラー復帰境界（E14 Phase 2）は、`--trap-mode return` によって有効化されます。これはネイティブ出力（object、llvm、header）でのみ受け付けられ、`--trap-info` を内包します。各エクスポート関数 `tz_name` に対して `int32_t tsuzuri_try_name(tsuzuri_trap_info *trap, 結果ポインタ, 引数...)`（ステータス 0: 成功、1: トラップ、2: 入れ子呼び出しエラー）が追加生成され、C ヘッダー（型定義の重複は `TSUZURI_TRAP_INFO_DEFINED` で防止）および IR のサンクが出力されます。
@@ -1017,6 +1019,7 @@ POSIX ネイティブ環境のアロケータは、共通のフックテーブ�
 `--freestanding` は `--allocator host` に加えて CPU ディスパッチを使わない経路（`emit_native_build` を通らない）で出力し、IR が C ライブラリを要する runtime（IO・OS・タスク・引数・`write`）を宣言したら `E2000` にします。`--emit header` の出力には IR がないので、同じ build の object が持つ library の IR を別に生成して検査します。
 128-bit 値、ソフトウェア浮動小数点型、任意の所有入力、借用参照の戻り値、およびクロージャ環境の直接的な ABI 公開はサポートされていません。
 外部シンボルのインポートはユーザーが記述した `extern` 宣言からのみ発生し、リンク名、ハンドル型、コールバックを使用しないプログラムにおいては、生成される IR、C ヘッダー、および WASM インポートの構造に変化はありません。
+生成バインディング（E13）は IR・WASM・C ヘッダーを変えず、既存の export（`memory`、`tsuzuri_alloc`、`tsuzuri_free`、`tz_*`、`tsuzuri_trap_site`、`__indirect_function_table`）だけを使います。グルーはモジュールが宣言した import だけを渡して import を足さず、threads・IO・Debug・WASI・host allocator のモジュールは明示的な例外で拒否します。record の offset は `record_layout` と同じ規則で求め、`export def` の `ref H` 引数は、非拡張の wrapper でもハンドルを slot へ置いてから借用として渡します。
 外部ライブラリのリンク入力はネイティブ実行ファイルのビルドでのみ有効です。`wasm-ld` の `--export-table` はコールバックラッパーが存在する場合にのみ渡され、変数を捕捉した関数値が ABI を越えて直接渡されることはありません。
 GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O、およびイベントループは、ホスト環境との境界で適切に取り扱われます。ファイル操作、環境変数、システム時刻、乱数生成、および子プロセス起動は標準ライブラリの OS API が安全に仲介し、ユーザー定義の `extern` や公開 ABI を無秩序に増やすことはありません。
 
@@ -1048,6 +1051,7 @@ node tests/os.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/bindings.mjs target/release/tsuzuri
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri
 ```
 

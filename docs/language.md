@@ -3270,6 +3270,15 @@ tsuzuri build Kernel.tz --target wasm32 -o kernel.wasm
 LLD リンカーによって到達不能な不要コードは完全にストリップ（除去）されます。
 128-bit 整数の乗算・除算・剰余、および可変ビットシフト演算には同梱の最適化された補助関数がリンクされるため、ホスト環境依存の `compiler-rt` ランタイムを別途用意する必要はありません。
 
+### 生成バインディング
+
+`tsuzuri build <path> --target wasm32 --emit bindings-js [-o <name>.mjs]` は、上の ABI を型付きで呼ぶ JavaScript の ES module `<name>.mjs` と、TypeScript 宣言 `<name>.d.mts` を出します（E13）。グルーは `CheckedModule` の公開 ABI だけから作り、LLVM を通さず、`-O` を無視します。`.wasm` は同じソースから別にビルドします。`--target wasm32` 以外、`-o` が `.mjs` で終わらない場合、`.wasm` のためのオプション（`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature`、`--allocator`）を付けた場合は `E2000`、`export def` がなければ `E2004` です。生成物は、export と import の名前のバイト順と `record_name` の順に並べた記述子の表と、同梱の固定ランタイム（`src/runtime/bindings.mjs`）からなり、同じ入力からバイト単位で同じものができます。生成 IR、WASM、`--emit header` の出力は変わりません。
+
+- 型の対応: 8〜32-bit の整数は範囲を検査した `number`（符号なしの結果は `>>> 0`）、`i64`／`i64u` は範囲を検査した `bigint`（`i64u` の結果は `BigInt.asUintN(64, …)`）、`f32`／`f64` は `number`、`bool` は `boolean`、`ref [i64]`／`ref [f64]`／`ref [ubyte]` は `BigInt64Array`／`Float64Array`／`Uint8Array`（通常の配列は `TypeError`）、`ref string` は UTF-16 のままの `string`、`ref utf8string` は `isWellFormed()` を満たす `string`、所有結果は複製した型付き配列か `string`、スカラーレコードは `record_name` の interface（固定長配列のフィールドは長さの一致する配列）、ハンドルは 0 以上 2^32 未満の整数（TypeScript では `tz_handle_…` で印を付けた `number`）、コールバックは import の呼び出し中だけ有効な関数です。
+- 評価順序と所有権: 引数の個数・型・範囲を先に検査し（失敗は `TypeError`／`RangeError` で、インスタンスに触れない）、インスタンスを用意し、入力を左から順に `tsuzuri_alloc` へ複製し、out 領域を確保して `tz_<name>` を呼び、結果を複製して `tsuzuri_free` し、out と入力を逆順に解放します。JavaScript は wasm のポインタを保持しません。`withBorrowed(kind, length, callback)` は callback の間だけ wasm 側の領域を `Borrowed` として貸し、複製を 1 回減らします。
+- import: `load` の `imports` に WASM の import 名をキーとした関数を渡します。グルーはモジュールが宣言した import だけを渡し、import を足しません。借用入力は複製して渡し、所有結果はグルーが確保して記述子を書きます。`--wasm-feature threads`、IO の入口、`--debug-output`、`--wasm-host wasi`、`--allocator host` のモジュールと、wasm64 のモジュールは `load` が拒否します。
+- トラップ: export の呼び出し中に出た例外はインスタンスを捨て、次の呼び出しで同じモジュールと import から作り直します（[トラップ位置](#トラップ位置) の境界と同じ規則）。ホストの例外は同じ値のまま、`WebAssembly.RuntimeError` は `TsuzuriTrap`（`trap.reason` が `"trap"`、`site` は `tsuzuri_trap_site`、`sites` を渡せば位置と種類）、スタック枯渇は `reason: "stack"` の `TsuzuriTrap` になります。
+
 ### ホスト提供の allocator
 
 `tsuzuri build` の `--allocator system|host|counting` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。

@@ -201,6 +201,9 @@ pub enum Emit {
     Header,
     Wasm,
     Wgsl,
+    /// `--emit bindings-js` (E13): a JavaScript module with TypeScript declarations for a wasm32
+    /// module of the same sources.
+    BindingsJs,
 }
 
 pub const DEFAULT_WASM_MAX_MEMORY: u64 = 16 * 1024 * 1024;
@@ -274,6 +277,9 @@ impl BuildOptions {
                 "E2000",
                 "WGSL output does not use target, CPU, debug, or WASM feature options",
             ));
+        }
+        if self.emit == Emit::BindingsJs {
+            self.validate_bindings()?;
         }
         if self.wasm_threads
             && (self.target != Target::Wasm32 || !matches!(self.emit, Emit::Wasm | Emit::Object))
@@ -373,6 +379,34 @@ impl BuildOptions {
         Ok(())
     }
 
+    /// The options of `--emit bindings-js` (E13). The glue comes from the sources alone, so the
+    /// options that shape the `.wasm` belong to the build of the `.wasm`.
+    fn validate_bindings(self) -> Result<(), Diagnostic> {
+        if self.target != Target::Wasm32 {
+            return Err(driver_error(
+                "E2000",
+                "'--emit bindings-js' requires '--target wasm32'",
+            ));
+        }
+        for (set, option) in [
+            (self.trap_info, "--trap-info"),
+            (self.debug_info, "--debug-info"),
+            (self.debug_output, "--debug-output"),
+            (self.wasm_simd || self.wasm_threads, "--wasm-feature"),
+            (self.allocator != llvm::Allocator::System, "--allocator"),
+        ] {
+            if set {
+                return Err(driver_error(
+                    "E2000",
+                    format!(
+                        "{option} is not valid for bindings output; pass it when building the .wasm"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The combinations of `--allocator` and `--freestanding` (F13): the target first, then the output.
     fn validate_allocator(self) -> Result<(), Diagnostic> {
         if self.allocator == llvm::Allocator::Host && self.wasm_threads {
@@ -454,8 +488,25 @@ impl BuildOptions {
             Emit::Header => "h",
             Emit::Wasm => "wasm",
             Emit::Wgsl => "wgsl",
+            Emit::BindingsJs => "mjs",
         })
     }
+}
+
+/// The error for an output path that bindings cannot use: the JavaScript module must be a `.mjs`
+/// file, because TypeScript reads the declarations of `<name>.mjs` only from `<name>.d.mts`.
+pub fn bindings_output_error(emit: Emit, output: &Path) -> Option<Diagnostic> {
+    (emit == Emit::BindingsJs && output.extension() != Some(OsStr::new("mjs"))).then(|| {
+        driver_error(
+            "E2000",
+            "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'",
+        )
+    })
+}
+
+/// The TypeScript declarations next to the JavaScript bindings `output`: `<name>.d.mts`.
+pub fn bindings_sidecar_path(output: &Path) -> PathBuf {
+    output.with_extension("d.mts")
 }
 
 /// Stacks wrap below address 0, which is always out of bounds on wasm64 and on
@@ -1537,6 +1588,9 @@ fn build_complete(
         links.check_shape()?;
         links.check_readable()?;
     }
+    if options.emit == Emit::BindingsJs {
+        return build_bindings(module, project, output, options).map(|()| (Vec::new(), Vec::new()));
+    }
     let (max_memory, stack_size) = wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -2331,6 +2385,48 @@ fn build_complete(
     Ok((messages, trap_sites))
 }
 
+/// Writes the bindings of `--emit bindings-js` (E13) and their declarations without LLVM.
+fn build_bindings(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+) -> Result<(), Diagnostic> {
+    if let Some(error) = bindings_output_error(options.emit, output) {
+        return Err(error);
+    }
+    if !module.functions.iter().any(|function| function.exported) {
+        return Err(driver_error(
+            "E2004",
+            "bindings need at least one 'export def' entry point",
+        ));
+    }
+    let declarations = bindings_sidecar_path(output);
+    protect_sources(project, output)?;
+    protect_sources(project, &declarations)?;
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| io_error("create output directory", parent, error))?;
+    let mut temporary = TemporaryDirectory::new(parent)?;
+    let artifact = temporary.path.join("artifact");
+    let staged = temporary.path.join("declarations");
+    fs::write(&artifact, crate::bindings::javascript(module))
+        .map_err(|error| io_error("write output", &artifact, error))?;
+    fs::write(&staged, crate::bindings::declarations(module))
+        .map_err(|error| io_error("write bindings declarations", &staged, error))?;
+    publish_outputs(
+        project,
+        &artifact,
+        output,
+        &[(&staged, &declarations)],
+        &mut temporary,
+    )?;
+    temporary.close()
+}
+
 fn publish_outputs(
     project: &Project,
     artifact: &Path,
@@ -2913,6 +3009,95 @@ mod tests {
             .validate()
             .is_err()
         );
+        let bindings = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::BindingsJs,
+            ..BuildOptions::default()
+        };
+        let error = build(&module, &project, &directory.path.join("f.mjs"), bindings).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (
+                "E2004",
+                "bindings need at least one 'export def' entry point"
+            )
+        );
+        let error = build(&module, &project, &directory.path.join("f.js"), bindings).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (
+                "E2000",
+                "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'"
+            )
+        );
+        for (options, message) in [
+            (
+                BuildOptions {
+                    target: Target::Native,
+                    ..bindings
+                },
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                BuildOptions {
+                    target: Target::Wasm64,
+                    ..bindings
+                },
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                BuildOptions {
+                    trap_info: true,
+                    ..bindings
+                },
+                "--trap-info is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    debug_info: true,
+                    ..bindings
+                },
+                "--debug-info is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    debug_output: true,
+                    ..bindings
+                },
+                "--debug-output is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    wasm_threads: true,
+                    ..bindings
+                },
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    wasm_simd: true,
+                    ..bindings
+                },
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
+                    allocator: llvm::Allocator::Counting,
+                    ..bindings
+                },
+                "--allocator is not valid for bindings output; pass it when building the .wasm",
+            ),
+        ] {
+            let error = options.validate().unwrap_err();
+            assert_eq!((error.code, error.message.as_str()), ("E2000", message));
+        }
+        assert!(bindings.validate().is_ok());
+        assert_eq!(
+            bindings_sidecar_path(Path::new("out/api.v1.mjs")),
+            Path::new("out/api.v1.d.mts")
+        );
+        assert!(bindings_output_error(Emit::BindingsJs, Path::new(".mjs")).is_some());
+        assert!(bindings_output_error(Emit::Wasm, Path::new("f.js")).is_none());
         directory.close().unwrap();
     }
 

@@ -53,9 +53,11 @@
 | --- | --- | --- |
 | `-o` / `--output PATH` | 入力の拡張子を差し替えたパス | 成果物、または `doc` のディレクトリ。親は作られます |
 | `--target native\|wasm32\|wasm64` | `native` | `wasm64` は 64-bit の線形メモリです |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl` | native は `exe`、WASM は `wasm` | 何を残すか |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|bindings-js` | native は `exe`、WASM は `wasm` | 何を残すか |
 
-拡張子は、native の実行ファイルが macOS / Linux で空、Windows で `.exe`、オブジェクトが `.o` または Windows の `.obj`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl` です。
+拡張子は、native の実行ファイルが macOS / Linux で空、Windows で `.exe`、オブジェクトが `.o` または Windows の `.obj`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、JavaScript のバインディングが `.mjs` です。
+
+`--emit bindings-js` は `--target wasm32` だけで使え、`<name>.mjs` の隣に TypeScript 宣言 `<name>.d.mts` も書きます。`-o` は `.mjs` で終わる必要があります。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature`、`--allocator` は `.wasm` のビルドに付けるよう `E2000` で求めます。使い方は [WebAssembly への出力](webassembly.md#型付きのバインディングを生成する) にあります。
 
 `--emit exe` は `--target native`、`--emit wasm` は `wasm32` か `wasm64` が必要です。逆にすると、次の 1 文で止まります。
 
@@ -167,6 +169,9 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | メモリ上限が 64 KiB の倍数でない、または上限超え | `at most 4 GiB - 64 KiB on wasm32` / `at most 16 GiB on wasm64` |
 | スタックがメモリに収まらない | `must be at least the stack size plus 64 KiB` |
 | `--cpu native` が exe / object でない | `'--cpu native' requires native executable or object output` |
+| `--emit bindings-js` が `--target wasm32` でない | `'--emit bindings-js' requires '--target wasm32'` |
+| `--emit bindings-js` に `.wasm` 用のオプション | `--trap-info is not valid for bindings output; pass it when building the .wasm`（各オプション名で同じ形） |
+| `--emit bindings-js` の `-o` が `.mjs` でない | `bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'` |
 | `--freestanding` が exe | `--freestanding requires object, LLVM IR, or header output` |
 | `--freestanding` なのに allocator が host でない | `--freestanding requires --allocator host` |
 | `fmt` に `-O` や `--deny-warnings` | `fmt does not use optimization, CPU tuning, or compiler warning options` |

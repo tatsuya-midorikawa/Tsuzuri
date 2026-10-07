@@ -27,7 +27,7 @@ pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
 
 /// The C typedef name of an `extern type`, spelled like `record_name` so that
 /// module boundaries cannot collide (`A_B.C` and `A.B_C` differ).
-pub(super) fn handle_c_name(name: &str) -> String {
+pub(crate) fn handle_c_name(name: &str) -> String {
     let mut text = String::from("tz_handle");
     for segment in name.split('.') {
         let _ = write!(text, "_{}{segment}", segment.len());
@@ -74,7 +74,7 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
         .collect()
 }
 
-pub(super) fn record_name(ty: &Type, module: &CheckedModule) -> String {
+pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
     let Type::Record(id, arguments) = ty else {
         unreachable!("ABI record checked")
     };
@@ -628,7 +628,7 @@ pub(super) fn wrapper(
     }
 }
 
-fn record_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
+pub(crate) fn record_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
     if let Type::FixedArray(element, _) = ty {
         let (size, alignment) = record_layout(element, module);
         return (size * fixed_length(ty), alignment);
