@@ -163,3 +163,90 @@ fn arena_api_programs_emit_for_both_targets() {
         emits(source);
     }
 }
+
+/// Two copies of one arena, made by copying a function value that captured it, keep its id.
+const SNAPSHOTS: &str = "def without :: Arena<i64> -> Arena.Handle<i64> -> Arena<i64>
+fn without arena handle =
+    match Arena.remove arena handle with
+    | (next, _value) -> next
+
+def snapshots :: i64
+fn snapshots =
+    let mut base: Arena<i64> = Arena.empty()
+    let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
+    let mut index = 0
+    while index < 5 do
+        match Arena.insert base ((index + 1) * 10) with
+        | (next, handle) ->
+            base = next
+            handles = Vec.push handles handle
+        index = index + 1
+    let frozen = base
+    let snapshot = \\() -> frozen
+    let first = without (without (snapshot ()) handles[1]) handles[0]
+    match Arena.insert (without (snapshot ()) handles[0]) 99 with
+    | (second, key) ->
+        let mut flags = 0
+        if Arena.contains (ref first) key then flags = flags + 1000
+        match Arena.get (ref first) key with
+        | Maybe.Some _value -> flags = flags + 200
+        | Maybe.None -> flags = flags + 100
+        match Arena.remove first key with
+        | (kept, removed) ->
+            match removed with
+            | Maybe.Some _value -> flags = flags + 20
+            | Maybe.None -> flags = flags + 10
+            if !(Arena.contains (ref second) handles[0]) && deref (Arena.at (ref second) key) == 99 then flags = flags + 1
+            let mut refilled = kept
+            let mut value = 7
+            while value < 10 do
+                match Arena.insert refilled value with
+                | (next, _handle) -> refilled = next
+                value = value + 1
+            let mut digits = 0
+            for (_handle, item) in Arena.iter (ref refilled) do digits = digits * 100 + deref item
+            digits * 10000 + flags
+
+snapshots()
+";
+
+#[test]
+fn handles_never_match_free_slots_of_another_copy() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    emits(SNAPSHOTS);
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-arena-snapshots-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("Main.tz"), SNAPSHOTS).unwrap();
+    for optimization in ["-O0", "-O3"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .arg("run")
+            .arg(&root)
+            .arg(optimization)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The second copy's handle names slot 0, which is free in the first copy: not found
+        // there (100), not removed (10), and the first copy stays consistent: it keeps 40, 50, 30
+        // and refills with 7, 8, 9. Matching the free slot gave 40300708091221.
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "4050300708090111"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}

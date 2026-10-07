@@ -2,6 +2,8 @@ union List = Nil | Cons of (i64 * Rc<List>)
 union AList = ANil | ACons of (i64 * Arc<AList>)
 record Node { value: i64, children: Vec<Rc<Node>> }
 record Link { value: i64, next: Maybe<Rc<Link>> }
+record Pair<'a> { left: 'a, right: 'a }
+record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }
 
 export def rc_counts :: i64
 fn rc_counts =
@@ -268,3 +270,55 @@ fn arc_chain_parallel count =
         index = index + 1
     let results = Task.run (Task.parallel (walkers list))
     Array.sum (ref results)
+
+def inner_product :: ref Arc<(i64 * Maybe<Arc<i64>>)> -> i64
+fn inner_product outer =
+    match Arc.get outer with
+    | (first, Maybe.Some second) -> first * deref (Arc.get (ref second))
+    | (first, Maybe.None) -> first
+
+// Named types that appear only inside shared pointers still get definitions.
+export def shared_named_types :: i64
+fn shared_named_types =
+    let items: Vec<Rc<Maybe<string>>> = Vec.push (Vec.push (Vec.empty()) (Rc.new (Maybe.Some "four"))) (Rc.new Maybe.None)
+    let text = match Rc.get (ref items[0]) with
+        | Maybe.Some value -> value.length
+        | Maybe.None -> 0
+    let pair: Maybe<Rc<Pair<i64>>> = Maybe.Some (Rc.new (Pair { left: 3, right: 5 }))
+    let area = match pair with
+        | Maybe.Some shared ->
+            let value = Rc.get (ref shared)
+            Rc.strong_count (ref shared) * 100 + value.left * value.right
+        | Maybe.None -> 0
+    let nested: Maybe<Arc<(i64 * Maybe<Arc<i64>>)>> = Maybe.Some (Arc.new (7, Maybe.Some (Arc.new 11)))
+    let product = match nested with
+        | Maybe.Some outer -> inner_product (ref outer)
+        | Maybe.None -> 0
+    (Vec.length (ref items) * 10 + text) * 1000000 + area * 1000 + product
+
+def parent_value :: ref Rc<TreeNode> -> i64
+fn parent_value node =
+    match (Rc.get node).parent with
+    | Maybe.Some weak ->
+        match Rc.upgrade weak with
+        | Maybe.Some parent -> (Rc.get (ref parent)).value
+        | Maybe.None -> -1
+    | Maybe.None -> 0
+
+// Children name their parent weakly; `Rc.upgrade` gives `Maybe<Rc<TreeNode>>`.
+export def rc_weak_parent :: i64
+fn rc_weak_parent =
+    let root = Rc.new (TreeNode { value: 7, parent: Maybe.None, children: Vec.empty() })
+    let left = Rc.new (TreeNode { value: 2, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
+    let right = Rc.new (TreeNode { value: 3, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
+    let top = TreeNode { value: 1, parent: Maybe.None, children: Vec.push (Vec.push (Vec.empty()) (Rc.share (ref left))) right }
+    let before = parent_value (ref left) + parent_value (ref top.children[1])
+    let weak = Rc.weak_count (ref root)
+    let mut children = 0
+    let mut index = 0
+    while index < Vec.length (ref top.children) do
+        children = children + (Rc.get (ref top.children[index])).value
+        index = index + 1
+    Owned.drop root
+    let after = parent_value (ref left)
+    before * 1000 + weak * 100 + children * 10 + (after + 1)

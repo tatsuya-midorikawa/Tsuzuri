@@ -238,7 +238,7 @@ let later = \() -> pending
 
 どちらも `cannot capture ... in a reusable function` です。排他借用は、その場で完全に適用します。タスクは `task` ブロックの中で一度消費します。後で呼ぶ関数値にはしないでください。
 
-`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はどのタスクへも渡せるので、atomic でない計数がタスクをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。
+`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はどのタスクへも渡せるので、atomic でない計数がタスクをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。
 
 `Drop` を実装した型も、複製すると解放が二重になるため `Capture` を満たしません。そのような値を関数として扱う方法は [Drop](../ownership-and-memory/drop.md) と [Owned](../built-in-types-and-modules/owned.md) を参照してください。
 

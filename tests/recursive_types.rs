@@ -81,6 +81,9 @@ fn recursive_unions_have_finite_values_without_implicit_copy() {
         "record Branch<'a> { left: Tree<'a>, value: 'a, right: Tree<'a> }\nunion Tree<'a> = Leaf | Node of Branch<'a>\nlet tree = Node (Branch { left: Leaf, value: 1, right: Leaf })\nmatch tree with | Leaf -> 0 | Node branch -> branch.value",
         "union Rose = Node of [Rose]\nlet tree = Node []\n()",
         "record Link { next: Maybe<Link> }\nlet last = Link { next: None }\nlet first = Link { next: Some last }\n()",
+        // A union instance that only contains a recursive type may meet other instances of its
+        // declaration; that is not polymorphic recursion.
+        "record Node { value: i64, children: Maybe<[Node]> }\nlet nodes: Maybe<Vec<Node>> = Maybe.None\n()",
     ] {
         analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
     }
@@ -97,6 +100,21 @@ fn recursive_unions_have_finite_values_without_implicit_copy() {
         ("union Bad = Loop of Bad", "E1010"),
         ("union Bad<'a> = End | Loop of Bad<['a]>", "E1017"),
         ("union Swap<'a, 'b> = End | Loop of Swap<'b, 'a>", "E1017"),
+        ("union Pairs<'a> = End | Loop of Pairs<('a * 'a)>", "E1017"),
+        ("record Grow<'a> { next: Vec<Grow<['a]>> }", "E1017"),
+        (
+            "union Ping<'a> = PingEnd | ToPong of Pong<'a>\nunion Pong<'a> = PongEnd | ToPing of Ping<['a]>",
+            "E1017",
+        ),
+        // Another declaration that reaches a generic declaration first does not hide it.
+        (
+            "record First<'a, 'b> { swap: Maybe<Swap<'a, 'b>> }\nunion Swap<'a, 'b> = End | Loop of Swap<'b, 'a>",
+            "E1017",
+        ),
+        (
+            "record First<'a> { pair: Maybe<Rc<Pair<'a>>> }\nrecord Pair<'a> { value: 'a, other: Maybe<Rc<Pair<i64>>> }",
+            "E1017",
+        ),
         (
             "union Chain = End | Link of Chain\nlet value = Link End\nlet moved = value\nmatch value with | End -> 0 | Link _ -> 1",
             "E1012",

@@ -2242,6 +2242,29 @@ impl Classes {
                     )
                 });
             }
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_unshareable_arc(types) {
+                let ty = constraint.ty.display(types);
+                let reason = format!(
+                    "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
+                );
+                return Err(if class == "Capture" {
+                    Diagnostic::new(
+                        "E1005",
+                        format!(
+                            "cannot capture {ty} in a function value; function values may move to other tasks, and {reason}; pass it as an argument"
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::new(
+                        "E1013",
+                        format!(
+                            "tasks require Send values; {reason}; give the value to one task instead"
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
             if self.declarations[constraint.class].name == "Capture" {
                 return Err(Diagnostic::new(
                     "E1005",

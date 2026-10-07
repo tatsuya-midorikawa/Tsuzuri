@@ -1,6 +1,8 @@
-/// A slot of an arena. In use, `position` is the dense index of its value. Free, `position` is the
-/// next free slot (-1 ends the list) and `generation` the generation of the next value. Retired,
-/// `generation` is -1 and the slot is never reused.
+/// A slot of an arena. In use, `position` is the dense index of its value and `generation` the
+/// generation of its handle, which is never negative. Free, `position` is the next free slot (-1
+/// ends the list) and `generation` is `-1 - next` for the generation `next` of the slot's next
+/// value. Retired, `generation` is -1 and the slot is never reused. A handle therefore matches
+/// only a slot in use, even a handle made in another copy of the same arena.
 private record Slot { position: i64, generation: i64 }
 
 /// An owned collection whose values are named by generational handles. It keeps the values dense
@@ -80,8 +82,9 @@ fn insert arena value =
 			(result, Handle { arena: id, index: index, generation: 0 })
 		else
 			let slot = Maybe.get (Vec.get (ref slots) free)
-			let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners free, slots: Vec.set slots free (Slot { position: next_position, generation: slot.generation }), free: slot.position }
-			(result, Handle { arena: id, index: free, generation: slot.generation })
+			let generation = -1 - slot.generation
+			let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners free, slots: Vec.set slots free (Slot { position: next_position, generation: generation }), free: slot.position }
+			(result, Handle { arena: id, index: free, generation: generation })
 
 /// Moves the value that `handle` names out of the arena. The last value takes its position, and
 /// its slot is reused last-in first-out with the next generation. An invalid handle returns the
@@ -99,7 +102,7 @@ fn remove arena handle =
 			let moved_slot = Maybe.get (Vec.get (ref slots) moved)
 			// Relink the moved value's slot before vacating, which also covers removing the last value.
 			let relinked = Vec.set slots moved (Slot { position: target, generation: moved_slot.generation })
-			let vacated = Vec.set relinked handle.index (Slot { position: (if retired then -1 else free), generation: (if retired then -1 else handle.generation + 1) })
+			let vacated = Vec.set relinked handle.index (Slot { position: (if retired then -1 else free), generation: (if retired then -1 else -2 - handle.generation) })
 			match Vec.pop (Vec.swap values target last) with
 			| (remaining, Maybe.Some value) ->
 				match Vec.pop (Vec.swap owners target last) with
