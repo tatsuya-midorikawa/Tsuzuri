@@ -372,6 +372,8 @@ impl DeriveClass {
 pub struct UnionCaseDecl {
     pub name: Ident,
     pub payload: Option<TypeExpr>,
+    /// `@json "name"` on the case: its tag in derived `Encode`/`Decode` (D08).
+    pub json: Option<JsonName>,
 }
 
 #[derive(Clone, Debug)]
@@ -488,6 +490,15 @@ pub struct Parameter {
     pub name: Ident,
     pub ty: TypeExpr,
     pub mutable: bool,
+    /// `@json "name"` on a record field: the key of derived `Encode`/`Decode` (D08).
+    pub json: Option<JsonName>,
+}
+
+/// The JSON name that `@json "name"` gives a record field or a union case, as UTF-16 code units.
+#[derive(Clone, Debug)]
+pub struct JsonName {
+    pub units: Vec<u16>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

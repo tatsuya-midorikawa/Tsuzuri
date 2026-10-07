@@ -24,6 +24,8 @@ fn kind_number kind =
     | Json.MissingField _ -> 11
     | Json.UnknownCase _ -> 12
     | Json.LoneSurrogate -> 13
+    | Json.InvalidUtf8 -> 14
+    | Json.Unsupported _ -> 15
 
 /// The error kind times 2^40 plus its offset.
 def error_status :: ref Json.Error -> i64
@@ -250,3 +252,217 @@ fn text_rules case =
         let pair: (Maybe<Maybe<i64>> * Maybe<Maybe<i64>> * [|i64|]) = (Some (Some 1), Some None, [|2, 3|])
         text_hash (Json.serialize (ref pair))
     | _ -> text_hash (Json.serialize (ref (-170141183460469231731687303715884105728i128, 340282366920938463463374607431768211455i128u, true, u8"é")))
+
+union Color = Red | Green | Blue deriving (Encode, Decode, Eq, Ord, Hash)
+
+def map_text :: Result<Map<i64, string>, Json.Error> -> i64
+fn map_text result =
+    match result with
+    | Ok map -> text_hash (Json.serialize (ref map))
+    | Error error -> error_status (ref error)
+
+/// Maps, sets, and the other numeric types (D08 Phase 2).
+export def container_hash :: i64 -> i64
+fn container_hash case =
+    match case with
+    | 0 ->
+        let names = Map.insert (Map.insert Map.empty() "b" 2) "a" 1
+        text_hash (Json.serialize (ref names))
+    | 1 ->
+        let numbers = Map.insert (Map.insert Map.empty() 10 "x") 2 "y"
+        text_hash (Json.serialize (ref numbers))
+    | 2 ->
+        let empty: Map<i64, string> = Map.empty()
+        text_hash (Json.serialize (ref empty))
+    | 3 ->
+        let table = HashMap.insert (HashMap.insert (HashMap.insert HashMap.empty() "z" 1) "a" 2) "z" 3
+        text_hash (Json.serialize (ref table))
+    | 4 ->
+        let colors = HashMap.insert (HashMap.insert HashMap.empty() Blue 1.5f16) Red 65504.0f16
+        text_hash (Json.serialize (ref colors))
+    | 5 ->
+        let set = Set.insert (Set.insert Set.empty() 2.50m) 1.0m
+        text_hash (Json.serialize (ref set))
+    | 6 ->
+        let set = HashSet.insert (HashSet.insert (HashSet.insert HashSet.empty() 3) 1) 3
+        text_hash (Json.serialize (ref set))
+    | 7 -> text_hash (Json.serialize (ref (0.5f16, 0.1f16, 1e300F, (1.10hm, -0.0M))))
+    | 8 ->
+        let decoded: Result<Set<i64>, Json.Error> = Json.deserialize (ref u8"[1, 2, 2]")
+        status decoded
+    | 9 ->
+        let decoded: Result<Map<string, i64>, Json.Error> = Json.deserialize (ref u8"{\"a\":1}")
+        match decoded with
+        | Ok map -> text_hash (Json.serialize (ref map))
+        | Error error -> error_status (ref error)
+    | 10 -> map_text (Json.deserialize (ref u8"[[1,\"a\"],[2]]"))
+    | 11 -> map_text (Json.deserialize (ref u8"5"))
+    | 12 -> map_text (Json.deserialize (ref u8"[[2,\"b\"],[1,\"a\"]]"))
+    | 13 ->
+        let decoded: Result<f16, Json.Error> = Json.deserialize (ref u8"65520")
+        status decoded
+    | 14 ->
+        let decoded: Result<d32, Json.Error> = Json.deserialize (ref u8"1.234567890")
+        match decoded with
+        | Ok value -> text_hash (Json.serialize (ref value))
+        | Error error -> error_status (ref error)
+    | 15 -> status (Json.encode (ref (0.0m / 0.0m)))
+    | 16 ->
+        let decoded: Result<HashMap<Color, i64>, Json.Error> = Json.deserialize (ref u8"{\"Blue\":1,\"Red\":2}")
+        match decoded with
+        | Ok map -> text_hash (Json.serialize (ref map))
+        | Error error -> error_status (ref error)
+    | _ -> map_text (Json.deserialize (ref u8"{\"1\":\"a\"}"))
+
+record User { @json "user_id" id: i64, @json "display name" name: string, email: Maybe<string> } deriving (Encode, Decode)
+union Change =
+    | @json "created" Created of User
+    | @json "deleted" Deleted of i64
+    | Reset
+    deriving (Encode, Decode)
+
+def as_changes :: utf8string -> Result<[Change], Json.Error>
+fn as_changes text = Json.deserialize (ref text)
+
+/// `@json` names of fields and cases (D08 Phase 2).
+export def renamed :: i64 -> i64
+fn renamed case =
+    match case with
+    | 0 ->
+        let changes = [Created (User { id: 7, name: "Ann", email: None }), Deleted 7, Reset]
+        text_hash (Json.serialize (ref changes))
+    | 1 ->
+        match as_changes u8"[{\"created\":{\"user_id\":1,\"display name\":\"B\"}},\"Reset\"]" with
+        | Ok changes -> text_hash (Json.serialize (ref changes))
+        | Error error -> error_status (ref error)
+    | 2 -> status (as_changes u8"[{\"Created\":{\"user_id\":1,\"display name\":\"B\"}}]")
+    | _ -> status (as_changes u8"[{\"created\":{\"id\":1,\"display name\":\"B\"}}]")
+
+export def renamed_message :: i64
+fn renamed_message = message (as_changes u8"[{\"created\":{\"id\":1,\"display name\":\"B\"}}]")
+
+/// Pretty printing like `JSON.stringify(value, null, indent)`.
+export def pretty :: i64 -> i64
+fn pretty indent =
+    let text = u8"{\"a\":[1,{\"b\":[]},{}],\"c\":\"d\",\"e\":{\"f\":null}}"
+    let value = Result.get (Json.parse (ref text))
+    let indented = Json.to_utf8string_pretty (ref value) indent
+    fnv (ref indented)
+
+def write_all :: unit -> Result<utf8string, Json.Error>
+fn write_all _unit = Result {
+    let! w0 = Json.open_object (Json.writer ())
+    let! w1 = Json.write_key w0 (ref "a")
+    let! w2 = Json.open_array w1
+    let! w3 = Json.write_null w2
+    let! w4 = Json.write_bool w3 true
+    let! w5 = Json.write_number w4 (ref (Maybe.get (Json.numeral (ref u8"1.50"))))
+    let! w6 = Json.write_json w5 (ref (Json.Object [("x", Json.Items [])]))
+    let! w7 = Json.close_array w6
+    let! w8 = Json.write_key w7 (ref "b\n")
+    let! w9 = Json.write_text w8 (ref "x\"y\uD800")
+    let! w10 = Json.close_object w9
+    return! Json.finish w10
+}
+
+def write_bad :: i64 -> Result<utf8string, Json.Error>
+fn write_bad case =
+    match case with
+    | 0 -> Result {
+            let! w0 = Json.open_object (Json.writer ())
+            let! w1 = Json.write_null w0
+            return! Json.finish w1
+        }
+    | 1 -> Result {
+            let! w0 = Json.open_array (Json.writer ())
+            let! w1 = Json.write_key w0 (ref "k")
+            return! Json.finish w1
+        }
+    | 2 -> Result {
+            let! w0 = Json.open_array (Json.writer ())
+            let! w1 = Json.write_null w0
+            return! Json.finish w1
+        }
+    | 3 -> Result {
+            let! w0 = Json.write_null (Json.writer ())
+            let! w1 = Json.write_null w0
+            return! Json.finish w1
+        }
+    | 4 -> Result {
+            let! w0 = Json.open_array (Json.writer ())
+            let! w1 = Json.close_object w0
+            return! Json.finish w1
+        }
+    | 5 -> Json.finish (Json.writer ())
+    | 6 -> Result {
+            let! w0 = Json.open_object (Json.writer ())
+            let! w1 = Json.write_key w0 (ref "k")
+            let! w2 = Json.close_object w1
+            return! Json.finish w2
+        }
+    | _ -> Result {
+            let! w0 = Json.write_number (Json.writer ()) (ref (Json.Numeral { text: u8"01" }))
+            return! Json.finish w0
+        }
+
+/// The incremental writer: a valid sequence, and misuses as status codes.
+export def writer_check :: i64 -> i64
+fn writer_check case = if case < 0 then text_hash (write_all ()) else text_hash (write_bad case)
+
+def event_text :: ref utf8string -> ref Json.Event -> string
+fn event_text text event =
+    match event with
+    | Json.ObjectStart -> "{"
+    | Json.ObjectEnd -> "}"
+    | Json.ArrayStart -> "["
+    | Json.ArrayEnd -> "]"
+    | Json.KeyToken token -> "K" + Result.get (Json.token_text text token) + (if token.escaped then "!" else "") + (if Json.token_matches text token (ref "a") then "=a" else "")
+    | Json.TextToken token -> "S" + Result.get (Json.token_text text token) + (if token.escaped then "!" else "")
+    | Json.NumberToken token ->
+        let numeral = Result.get (Json.token_numeral text token)
+        "N" + String.from_utf8 (ref numeral.text) + "@" + to_string token.start
+    | Json.BoolToken flag -> if flag then "T" else "F"
+    | Json.NullToken -> "Z"
+    | Json.EndOfInput -> "$"
+
+/// The events of the pull parser joined with spaces, then `|` and the error status if it fails.
+def events :: utf8string -> string
+fn events text =
+    let mut out = ""
+    let mut state = Json.reader (ref text)
+    let mut going = true
+    while going do
+        match state with
+        | Error error ->
+            out = out + "|" + to_string (error_status (ref error))
+            going = false
+            state = Error error
+        | Ok reader ->
+            match Json.next (ref text) reader with
+            | Ok (event, after) ->
+                out = out + " " + event_text (ref text) (ref event)
+                if event == Json.EndOfInput then going = false
+                state = Ok after
+            | Error error ->
+                out = out + "|" + to_string (error_status (ref error))
+                going = false
+                state = Error error
+    out
+
+def stream_text :: i64 -> utf8string
+fn stream_text case =
+    match case with
+    | 0 -> u8" {\"a\": [1, \"x\\u0041\", true, null, {}], \"b\": {\"c\": -2.5e3}} "
+    | 1 -> u8"{\"a\":1,\"a\":[1,]}"
+    | 2 -> u8"[1, 2"
+    | 3 -> u8"{\"k\":1, \"k\":2}"
+    | 4 -> u8"[] x"
+    | 5 -> u8"\"\\u00e9t\\u00e9\""
+    | 6 -> u8"{\"a\":{\"b\":1,\"b\":2},\"a\":3}"
+    | _ -> u8"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[["
+
+/// The FNV-1a hash of the event text of the pull parser for case `case`.
+export def stream_events :: i64 -> i64
+fn stream_events case =
+    let text = Utf8String.from_string (ref (events (stream_text case)))
+    fnv (ref text)

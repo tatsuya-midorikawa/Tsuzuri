@@ -127,6 +127,21 @@ function integerToF32(value) {
   const rounded = rest > half || (rest === half && (kept & 1n) === 1n) ? kept + 1n : kept;
   return Number(rounded) * 2 ** Number(shift);
 }
+// CBOR references (D08 Phase 2): RFC 8949 Appendix A vectors as hex, and a small deterministic encoder.
+const hexBytes = (hex) => Array.from({ length: hex.length / 2 }, (_, index) => parseInt(hex.slice(index * 2, index * 2 + 2), 16));
+const cborHead = (major, value) => {
+  const n = BigInt(value);
+  if (n < 24n) return [major << 5 | Number(n)];
+  const size = n < 256n ? 1 : n < 65536n ? 2 : n < 4294967296n ? 4 : 8;
+  return [major << 5 | { 1: 24, 2: 25, 4: 26, 8: 27 }[size], ...Array.from({ length: size }, (_, index) => Number(n >> BigInt(8 * (size - 1 - index)) & 255n))];
+};
+const cborText = (text) => { const bytes = [...new TextEncoder().encode(text)]; return [...cborHead(3, bytes.length), ...bytes]; };
+const cborMap = (entries) => {
+  const encoded = entries.map(([key, value]) => [cborText(key), value]);
+  encoded.sort(([left], [right]) => { for (let index = 0; index < Math.min(left.length, right.length); index++) if (left[index] !== right[index]) return left[index] - right[index]; return left.length - right.length; });
+  return [...cborHead(5, entries.length), ...encoded.flatMap(([key, value]) => [...key, ...value])];
+};
+const cborArray = (items) => [...cborHead(4, items.length), ...items.flat()];
 const sipKey0 = 0x0706050403020100n, sipKey1 = 0x0f0e0d0c0b0a0908n;
 assert.equal(siphash(2, 4, sipKey0, sipKey1, []), 0x726fdb47dd0e0e31n);
 assert.equal(siphash(2, 4, sipKey0, sipKey1, [0]), 0x74f839c593dc67fdn);
@@ -1127,12 +1142,59 @@ const suites = {
       ["text_rules", [7n], jsonTextHash("-0")], ["text_rules", [8n], jsonTextHash("1e+7")], ["text_rules", [9n], jsonTextHash("0.1")],
       ["text_rules", [10n], jsonTextHash("[1,null]")], ["text_rules", [11n], jsonTextHash("[1,null,[2,3]]")],
       ["text_rules", [12n], jsonTextHash(`[${-(1n << 127n)},${(1n << 128n) - 1n},true,"é"]`)],
+      // Phase 2: maps (objects for string keys, `[key, value]` pairs otherwise), sets, f16, f128, decimals.
+      ...['{"a":1,"b":2}', '[[2,"y"],[10,"x"]]', "{}", '{"z":3,"a":2}', '{"Blue":1.5,"Red":65500}', "[1,2.5]", "[3,1]",
+        "[0.5,0.1,1e+300,[1.1,-0]]", jsonStatus(5, -1), '{"a":1}', jsonStatus(10, -1), jsonStatus(10, -1), '[[1,"a"],[2,"b"]]',
+        jsonStatus(9, -1), "1.234568", jsonStatus(8, -1), '{"Blue":1,"Red":2}', jsonStatus(10, -1)]
+        .map((expected, index) => ["container_hash", [BigInt(index)], typeof expected === "string" ? jsonTextHash(expected) : expected]),
+      // `@json` names of fields and cases.
+      ["renamed", [0n], jsonTextHash('[{"created":{"user_id":7,"display name":"Ann","email":null}},{"deleted":7},"Reset"]')],
+      ["renamed", [1n], jsonTextHash('[{"created":{"user_id":1,"display name":"B","email":null}},"Reset"]')],
+      ["renamed", [2n], jsonStatus(12, -1)], ["renamed", [3n], jsonStatus(11, -1)],
+      ["renamed_message", [], jsonTextHash('json: missing field "user_id"')],
+      // Pretty printing is JSON.stringify(value, null, indent), with the indent clamped to 0..10.
+      ...[-1, 0, 1, 2, 4, 10, 11, 100].map((indent) => ["pretty", [BigInt(indent)],
+        jsonTextHash(JSON.stringify(JSON.parse('{"a":[1,{"b":[]},{}],"c":"d","e":{"f":null}}'), null, indent))]),
+      // The incremental writer and its misuses.
+      ["writer_check", [-1n], jsonTextHash(`{"a":[null,true,1.50,{"x":[]}],${JSON.stringify("b\n")}:${JSON.stringify('x"y\ud800')}}`)],
+      ...[jsonStatus(1, 1), jsonStatus(1, 1), jsonStatus(2, 5), jsonStatus(1, 4), jsonStatus(1, 1), jsonStatus(2, 0), jsonStatus(1, 5), jsonStatus(1, 0)]
+        .map((expected, index) => ["writer_check", [BigInt(index)], expected]),
+      // The pull parser: events, then `|` and the status of the error (the same kind and offset as `parse`).
+      ...[" { Ka=a [ N1@8 SxA! T Z { } ] Kb { Kc N-2.5e3@50 } } $", ` { Ka=a N1@5 Ka=a [ N1@12|${jsonStatus(5, 7)}`,
+        ` [ N1@1 N2@4|${jsonStatus(2, 5)}`, ` { Kk N1@5 Kk N2@12|${jsonStatus(5, 8)}`, ` [ ]|${jsonStatus(1, 3)}`, " Sété! $",
+        ` { Ka=a { Kb N1@10 Kb N2@16|${jsonStatus(5, 12)}`, `${" [".repeat(128)}|${jsonStatus(6, 128)}`]
+        .map((expected, index) => ["stream_events", [BigInt(index)], jsonTextHash(expected)]),
     ],
     nativeCases: [["too_large", [], jsonStatus(7, 0)]],
     inspect(ir) {
       assert.match(ir, /define internal [^\n]*@tz\.fn\.Json\.parse\(/);
       assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf/);
     },
+  },
+  cbor: {
+    cases: [
+      ...["00", "17", "1818", "1b000000e8d4a51000", "1bffffffffffffffff", "c249010000000000000000", "3bffffffffffffffff",
+        "c349010000000000000000", "3903e7", "f90000", "f98000", "fb3ff199999999999a", "f93e00", "f97bff", "fa47c35000", "fa7f7fffff",
+        "fb7e37e43c8800759c", "f90001", "f90400", "fbc010666666666666", "83f4f5f6", "69c3bce6b0b4f0908591", "8301820203820405",
+        "98190102030405060708090a0b0c0d0e0f101112131415161718181819", "a26161016162820203", "a56161614161626142616361436164614461656145",
+        "a361610361620162616102", "f98000", "f95640", jsonStatus(9, -1), jsonStatus(13, -1), `c25101${"00".repeat(16)}`, "fb0000000000000001"]
+        .map((expected, index) => ["encode_hash", [BigInt(index)], typeof expected === "string" ? fnv64(hexBytes(expected)) : expected]),
+      ...["18446744073709551615", "-18446744073709551616", "18446744073709551616", "-18446744073709551617", "5.960464477539063e-8", "100000",
+        "1.1", "-0", '{"a":1,"b":[2,3]}', '["a",{"b":"c"}]', JSON.stringify("\ud800\udd51"), "0", '{"b":1,"a":1}',
+        jsonStatus(8, 0), jsonStatus(8, 0), jsonStatus(15, 0), jsonStatus(15, 0), jsonStatus(15, 0), jsonStatus(15, 0), jsonStatus(15, 0),
+        jsonStatus(5, 4), jsonStatus(2, 2), jsonStatus(2, 1), jsonStatus(1, 0), jsonStatus(1, 0), jsonStatus(1, 0), jsonStatus(15, 0),
+        jsonStatus(14, 0), jsonStatus(15, 1), jsonStatus(1, 1), jsonStatus(2, 9), jsonStatus(2, 5), "0", "5e-324", "1"]
+        .map((expected, index) => ["decode_hash", [BigInt(index)], typeof expected === "string" ? jsonTextHash(expected) : expected]),
+      ["nesting", [127n], -1n], ["nesting", [128n], jsonStatus(6, 128)], ["nesting", [1000000n], jsonStatus(6, 128)],
+      ["scene_round_trip", [], 1],
+      ["scene_hash", [], fnv64(cborMap([
+        ["name", cborText("a")],
+        ["points", cborArray([cborMap([["x", [0x01]], ["y", hexBytes("f93800")]]), cborMap([["x", [0x21]], ["y", hexBytes("f98000")]])])],
+        ["shapes", cborArray([cborMap([["Circle", [0x02]]]), cborMap([["Rect", cborArray([[0x01], hexBytes("f94100")])]]), cborText("Empty")])],
+        ["note", cborText("é")],
+        ["big", [0xc2, 0x50, ...Array(16).fill(0xff)]],
+      ]))],
+    ],
   },
   display_parse: {
     cases: [

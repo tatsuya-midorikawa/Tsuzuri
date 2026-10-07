@@ -52,6 +52,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` 組み込み関数（`src/llvm_io.rs` の `os_builtin`）、POSIX ランタイム、`--wasm-host wasi` 向けの WASI preview1 ランタイム |
 | `std/HashMap.tz` / `std/HashSet.tz` | ハッシュコンテナ。コンパイラ本体に専用の型・builtin・ランタイムを追加しない、std ソースのみによる実装 |
 | `std/Json.tz` | JSON（RFC 8259）の解析・出力、`Json.Value`、組み込みクラス `Encode`／`Decode` の std インスタンスと導出用の補助関数。コンパイラは 2 クラスの登録（`Classes::collect`、シグネチャは std の `Json.Value`／`Json.Error`／`Result` から引き、std に無ければ使用時に `E1004`）と導出（`src/derive.rs`）だけを持ち、専用の `Type`・builtin・ランタイムはない |
+| `std/Cbor.tz` | `Json.Value` の CBOR（RFC 8949）。決定的な符号化と、JSON のデータモデルに限った厳密な復号。浮動小数点のビット列は 2 のべきの厳密な拡大・縮小で求め、専用の builtin を使わない |
 | `std/Format.tz` / `src/runtime/format.ll` | 文字列補間の書式指定。`Format.parse`／`Format.pad` と、パディング処理のランタイム補助（文字列結合は `src/llvm_display.rs`） |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit・256-bit の vector/mask 型、lane 型族、境界検査、LLVM vector への lowering、256-bit の load／store の `align 16` |
 | `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3） |
@@ -558,7 +559,7 @@ LLVM では、配列の添字アクセス、リスト走査用の 2 本の phi �
 `Hash` のプリミティブ演算では、ビット幅に応じた整数の load、shift、xor、および wrapping multiply を行い、decimal 型では `numeric.c` の decode/encode 処理を共有します。
 合成されたコレクションヘルパー内では `StructuralHash` および `StructuralDisplay` を使用し、子要素の具体的なメソッドを通常の到達可能性解析に含めます。
 値の文字列表現では内部の `DisplayQuoted` 組み込み関数を具象型へと解決し、`runtime/display.ll` が UTF-16 の引用符処理と文字列片の一括結合を担当します。
-`Encode`／`Decode` の導出（D08）は、レコードでは `$object{i}`（encode）と `$field{i}`／`$failed{i}`／`$error{i}`（decode）の束縛の連鎖、union では 1 段の `match` を合成します。std の補助関数（`Json.encode_field`、`Json.decode_field`、`Json.case_index` など）と `Result.is_error` などは `QualifiedFunction` のモジュールキー（`Json.begin_object`）で、`Result.Ok`・`Maybe.None` などの case はキーパス（`::Result.Result`）で参照するので、利用者の名前空間や同名の宣言に解決されません。深さはフィールド数・case 数に比例しないため、128 フィールドや 128 case も深さ 128／4096 節点の上限に収まります。成分の instance の欠落は std の補助関数を経由して単相化の制約伝播で見つかるため、`specialize` の正規化も `derived_error` で `E1025` に読み替えます。
+`Encode`／`Decode` の導出（D08）は、レコードでは `$object{i}`（encode）と `$field{i}`／`$failed{i}`／`$error{i}`（decode）の束縛の連鎖、union では 1 段の `match` を合成します。std の補助関数（`Json.encode_field`、`Json.decode_field`、`Json.case_index` など）と `Result.is_error` などは `QualifiedFunction` のモジュールキー（`Json.begin_object`）で、`Result.Ok`・`Maybe.None` などの case はキーパス（`::Result.Result`）で参照するので、利用者の名前空間や同名の宣言に解決されません。深さはフィールド数・case 数に比例しないため、128 フィールドや 128 case も深さ 128／4096 節点の上限に収まります。フィールドと case の `@json "名前"`（`Parameter::json`・`UnionCaseDecl::json` の `JsonName`）はキーとタグの文字列だけを変え、`derive::json_names` が `Encode`／`Decode` の導出の無い型での使用と名前の重複を `E1025` にします。formatter は属性のトークンをそのまま並べ（span は fingerprint から除く）、docgen は属性ごと表示します。成分の instance の欠落は std の補助関数を経由して単相化の制約伝播で見つかるため、`specialize` の正規化も `derived_error` で `E1025` に読み替えます。
 インスタンスの重複判定（`Classes::instances`）は、ヘッドをクラスと最外の型構築子（スカラーの種類と幅、record／union の id、配列・リスト・`Vec`・`Task`、タプルの長さ。型変数や高階のヘッドは `None`）で索引し、同じ構築子か `None` のヘッドとだけ単一化します。1024 組の上限は単一化した組だけを数えるので、std の `Json` が多数のインスタンスを持っても、別々の record に導出したインスタンスが何百あっても予算を消費しません。
 Hash の canonical stream 仕様および文字型ごとの引用規則の詳細は言語仕様を参照してください。なお、`numeric.ll` は生成スクリプトから自動生成されるため、手動で直接編集してはなりません。
 

@@ -386,7 +386,7 @@ impl Parser<'_> {
                 let parameters = self.type_parameters()?;
                 let regions = if self.region_list_ahead() { self.region_list()? } else { Vec::new() };
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
-                let fields = self.parameters(TokenKind::RightBrace)?;
+                let fields = self.record_fields()?;
                 let derives = self.derives()?;
                 program.records.push(RecordDecl {
                     doc,
@@ -893,6 +893,7 @@ impl Parser<'_> {
         let outer = self.type_offside.replace(column);
         let mut cases = Vec::new();
         loop {
+            let json = self.json_attribute("union case")?;
             if !matches!(self.current().kind, TokenKind::Ident(_)) {
                 return Err(self.error("expected a union case name"));
             }
@@ -905,7 +906,11 @@ impl Parser<'_> {
             } else {
                 None
             };
-            cases.push(UnionCaseDecl { name, payload });
+            cases.push(UnionCaseDecl {
+                name,
+                payload,
+                json,
+            });
             if !self.eat(&TokenKind::Pipe) {
                 break;
             }
@@ -1537,12 +1542,74 @@ impl Parser<'_> {
                 .parameters
                 .into_iter()
                 .zip(types)
-                .map(|((name, mutable), ty)| Parameter { name, mutable, ty })
+                .map(|((name, mutable), ty)| Parameter {
+                    name,
+                    mutable,
+                    ty,
+                    json: None,
+                })
                 .collect(),
             result,
             constraints: signature.constraints,
             body: definition.body,
         })
+    }
+
+    /// The fields of a record declaration. A field may start with `@json "name"`.
+    fn record_fields(&mut self) -> Result<Vec<Parameter>, Diagnostic> {
+        let mut fields = Vec::new();
+        if !self.at(&TokenKind::RightBrace) {
+            loop {
+                let json = self.json_attribute("record field")?;
+                let mutable = self.eat(&TokenKind::Mut);
+                let name = self.ident()?;
+                self.expect(&TokenKind::Colon, "':' and a type")?;
+                let ty = self.type_expr()?;
+                fields.push(Parameter {
+                    name,
+                    ty,
+                    mutable,
+                    json,
+                });
+                if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RightBrace) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RightBrace, "the closing delimiter")?;
+        Ok(fields)
+    }
+
+    /// `@json "name"` before a record field or a union case (D08): the key or tag that derived
+    /// `Encode`/`Decode` use instead of the declared name. Other attributes are not allowed there.
+    #[inline(never)]
+    fn json_attribute(&mut self, place: &str) -> Result<Option<JsonName>, Diagnostic> {
+        if !self.at(&TokenKind::At) {
+            return Ok(None);
+        }
+        let start = self.current().span;
+        if !matches!(
+            self.tokens.get(self.position + 1).map(|token| &token.kind),
+            Some(TokenKind::Ident(name)) if name == "json"
+        ) {
+            return Err(self.error(format!("only '@json \"name\"' can come before a {place}")));
+        }
+        self.take();
+        self.take();
+        let TokenKind::String(StringLiteral::Utf16(units)) = &self.current().kind else {
+            return Err(self.error(
+                "expected the JSON name as a string literal after '@json', as in '@json \"name\"'",
+            ));
+        };
+        let json = JsonName {
+            units: units.clone(),
+            span: start.through(self.current().span),
+        };
+        self.take();
+        if self.at(&TokenKind::At) {
+            return Err(self.error(format!("a {place} takes one '@json' attribute")));
+        }
+        Ok(Some(json))
     }
 
     fn parameters(&mut self, end: TokenKind) -> Result<Vec<Parameter>, Diagnostic> {
@@ -1553,7 +1620,12 @@ impl Parser<'_> {
                 let name = self.ident()?;
                 self.expect(&TokenKind::Colon, "':' and a type")?;
                 let ty = self.type_expr()?;
-                parameters.push(Parameter { name, ty, mutable });
+                parameters.push(Parameter {
+                    name,
+                    ty,
+                    mutable,
+                    json: None,
+                });
                 if !self.eat(&TokenKind::Comma) || self.at(&end) {
                     break;
                 }

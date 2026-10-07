@@ -9,6 +9,14 @@ pub(super) fn instances(
     let mut output = Vec::new();
     for input in modules {
         for record in &input.program.records {
+            json_names(
+                record
+                    .fields
+                    .iter()
+                    .map(|field| (&field.name, field.json.as_ref())),
+                &record.derives,
+                "field",
+            )?;
             let ty = declared_type(input.name, &record.name, &record.parameters, names)?;
             let Type::Record(id, arguments) = &ty else {
                 unreachable!()
@@ -33,6 +41,14 @@ pub(super) fn instances(
             }
         }
         for union in &input.program.unions {
+            json_names(
+                union
+                    .cases
+                    .iter()
+                    .map(|case| (&case.name, case.json.as_ref())),
+                &union.derives,
+                "case",
+            )?;
             let ty = declared_type(input.name, &union.name, &union.parameters, names)?;
             let Type::Union(id, arguments) = &ty else {
                 unreachable!()
@@ -71,6 +87,53 @@ pub(super) fn instances(
         ));
     }
     Ok(output)
+}
+
+/// Checks the `@json` names of record fields or union cases: they serve only derived `Encode` and
+/// `Decode`, and with them every field or case needs a distinct JSON name (D08).
+fn json_names<'a>(
+    names: impl Iterator<Item = (&'a Ident, Option<&'a JsonName>)>,
+    derives: &[(DeriveClass, Span)],
+    place: &str,
+) -> Result<(), Diagnostic> {
+    let json = derives
+        .iter()
+        .any(|(class, _)| matches!(class, DeriveClass::Encode | DeriveClass::Decode));
+    let mut seen = BTreeSet::new();
+    for (name, attribute) in names {
+        if let Some(attribute) = attribute
+            && !json
+        {
+            return Err(Diagnostic::new(
+                "E1025",
+                format!(
+                    "'@json' names a {place} only for deriving (Encode, Decode); derive one of them or remove the attribute"
+                ),
+                attribute.span,
+            ));
+        }
+        let units = json_units(name, attribute);
+        if json && !seen.insert(units.clone()) {
+            return Err(Diagnostic::new(
+                "E1025",
+                format!(
+                    "the JSON name \"{}\" of {place} '{}' repeats another; give each {place} a distinct '@json' name",
+                    String::from_utf16_lossy(&units),
+                    name.text
+                ),
+                attribute.map_or(name.span, |attribute| attribute.span),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The key or tag of a field or case in JSON: its `@json` name, or its declared name.
+fn json_units(name: &Ident, attribute: Option<&JsonName>) -> Vec<u16> {
+    attribute.map_or_else(
+        || name.text.encode_utf16().collect(),
+        |attribute| attribute.units.clone(),
+    )
 }
 
 fn declared_type(
@@ -193,6 +256,11 @@ impl Build<'_> {
         self.make(ExprKind::String(StringLiteral::Utf16(
             value.encode_utf16().collect(),
         )))
+    }
+    fn json_name(&self, name: &Ident, attribute: Option<&JsonName>) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::String(StringLiteral::Utf16(json_units(
+            name, attribute,
+        ))))
     }
     fn quoted(&self, value: Expr) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Call(
@@ -369,7 +437,7 @@ impl Build<'_> {
                     "Json.encode_field",
                     vec![
                         self.name(&format!("$object{index}"))?,
-                        self.text(&field.name.text)?,
+                        self.json_name(&field.name, field.json.as_ref())?,
                         self.field("$value", &field.name.text)?,
                     ],
                 )?;
@@ -397,7 +465,10 @@ impl Build<'_> {
                     format!("$field{index}"),
                     self.apply(
                         "Json.decode_field",
-                        vec![self.name("$json")?, self.text(&field.name.text)?],
+                        vec![
+                            self.name("$json")?,
+                            self.json_name(&field.name, field.json.as_ref())?,
+                        ],
                     )?,
                 ));
             }
@@ -643,10 +714,16 @@ impl Build<'_> {
                 let body = if case.payload.is_some() {
                     self.apply(
                         "Json.encode_case",
-                        vec![self.text(&case.name.text)?, self.name("$payload")?],
+                        vec![
+                            self.json_name(&case.name, case.json.as_ref())?,
+                            self.name("$payload")?,
+                        ],
                     )?
                 } else {
-                    self.apply("Json.encode_tag", vec![self.text(&case.name.text)?])?
+                    self.apply(
+                        "Json.encode_tag",
+                        vec![self.json_name(&case.name, case.json.as_ref())?],
+                    )?
                 };
                 arms.push(self.arm(self.pattern(union, index, Some("$payload")), body));
             }
@@ -660,7 +737,7 @@ impl Build<'_> {
             let names = union
                 .cases
                 .iter()
-                .map(|case| self.text(&case.name.text))
+                .map(|case| self.json_name(&case.name, case.json.as_ref()))
                 .collect::<Result<_, Diagnostic>>()?;
             let payloads = union
                 .cases

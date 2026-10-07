@@ -179,8 +179,7 @@ fn unsupported_types_report_e1005() {
         "char",
         "utf8char",
         "unit",
-        "f16",
-        "d64",
+        "[i64; 2]",
         "i64 -> i64",
         "(i64 * i64 * i64 * i64 * i64)",
         "Task<i64>",
@@ -350,4 +349,136 @@ fn overlap_budget_counts_only_unifiable_heads() {
         .unwrap();
     }
     analyze_modules(&[("Main.tz", &plain), ("Shows.tt", classes)]).unwrap();
+}
+
+#[test]
+fn phase_two_instances_type_check() {
+    for ty in [
+        "f16",
+        "f128",
+        "d32",
+        "d64",
+        "d128",
+        "Map<string, i64>",
+        "Map<i64, [string]>",
+        "Map<(i64 * string), Maybe<f64>>",
+        "Set<string>",
+        "HashMap<string, Vec<i64>>",
+        "HashMap<utf8string, Set<i8>>",
+        "HashSet<i64>",
+        "Maybe<HashSet<string>>",
+    ] {
+        accepts(&round_trip(ty));
+    }
+    accepts(
+        "union Color = Red | Green deriving (Encode, Decode, Eq, Ord, Hash)\nrecord Palette { by_name: Map<Color, f16>, used: HashSet<Color> } deriving (Encode, Decode)\ndef text :: ref Palette -> Result<utf8string, Json.Error>\nfn text palette = Json.serialize_pretty palette 2\n",
+    );
+    // Decoding a map or set needs the key operations of its container.
+    let message = rejects(&round_trip("Map<Json.Value, i64>"), "E1005");
+    assert!(message.contains("Ord<Json.Value>"), "{message}");
+    let message = rejects(&round_trip("HashSet<Json.Value>"), "E1005");
+    assert!(message.contains("Hash<Json.Value>"), "{message}");
+    accepts(
+        "def pretty :: ref Json.Value -> utf8string\nfn pretty value = Json.to_utf8string_pretty value 4\n",
+    );
+}
+
+#[test]
+fn json_attributes_parse_format_and_check() {
+    let source = "record User { @json \"user_id\" id: i64, name: string } deriving (Encode, Decode)\nunion Event = | @json \"created\" Created of User | Reset deriving (Encode, Decode)\n";
+    let program = tsuzuri::parser::parse(source).unwrap();
+    let units = |text: &str| text.encode_utf16().collect::<Vec<_>>();
+    assert_eq!(
+        program.records[0].fields[0].json.as_ref().unwrap().units,
+        units("user_id")
+    );
+    assert!(program.records[0].fields[1].json.is_none());
+    assert_eq!(
+        program.unions[0].cases[0].json.as_ref().unwrap().units,
+        units("created")
+    );
+    accepts(&format!("{source}{}", round_trip("[Event]")));
+    let formatted = tsuzuri::formatter::format_source(
+        "Main.tz",
+        "record User {  @json    \"user_id\"   id: i64,@json\"n\" name: string } deriving (Encode)\n",
+        tsuzuri::syntax::SourceKind::Code,
+    )
+    .unwrap();
+    assert_eq!(
+        formatted.formatted,
+        "record User { @json \"user_id\" id: i64, @json \"n\" name: string } deriving (Encode)\n"
+    );
+    let rendered = tsuzuri::docgen::render_module("Main", &program);
+    assert!(rendered.contains("@json \"user_id\" id: i64"), "{rendered}");
+    assert!(
+        rendered.contains("| @json \"created\" Created of User"),
+        "{rendered}"
+    );
+    for (source, code, message) in [
+        (
+            "record R { @json \"x\" x: i64 }\n()",
+            "E1025",
+            "'@json' names a field only for deriving (Encode, Decode); derive one of them or remove the attribute",
+        ),
+        (
+            "record R { @json \"y\" x: i64, y: i64 } deriving (Encode)\n()",
+            "E1025",
+            "the JSON name \"y\" of field 'y' repeats another; give each field a distinct '@json' name",
+        ),
+        (
+            "union U = @json \"B\" A | B deriving (Decode)\n()",
+            "E1025",
+            "the JSON name \"B\" of case 'B' repeats another; give each case a distinct '@json' name",
+        ),
+        (
+            "record R { @foo \"x\" x: i64 } deriving (Encode)\n()",
+            "E0002",
+            "only '@json \"name\"' can come before a record field",
+        ),
+        (
+            "record R { @json u8\"x\" x: i64 } deriving (Encode)\n()",
+            "E0002",
+            "expected the JSON name as a string literal after '@json', as in '@json \"name\"'",
+        ),
+        (
+            "union U = A | @json \"a\" @json \"b\" B deriving (Encode)\n()",
+            "E0002",
+            "a union case takes one '@json' attribute",
+        ),
+    ] {
+        assert_eq!(rejects(source, code), message, "{source}");
+    }
+}
+
+#[test]
+fn streaming_reader_and_writer_type_check() {
+    accepts(
+        "def count :: utf8string -> i64\nfn count text =\n    let mut total = 0\n    let mut state = Json.reader (ref text)\n    let mut going = true\n    while going do\n        match state with\n        | Ok reader ->\n            match Json.next (ref text) reader with\n            | Ok (event, after) ->\n                match event with\n                | Json.KeyToken token -> if Json.token_matches (ref text) (ref token) (ref \"id\") then total = total + 1\n                | Json.EndOfInput -> going = false\n                | _ -> ()\n                state = Ok after\n            | Error error ->\n                going = false\n                state = Error error\n        | Error error ->\n            going = false\n            state = Error error\n    total\n",
+    );
+    accepts(
+        "def write :: unit -> Result<utf8string, Json.Error>\nfn write _unit = Result {\n    let! w0 = Json.open_array (Json.writer ())\n    let! w1 = Json.write_text w0 (ref \"a\")\n    let! w2 = Json.close_array w1\n    return! Json.finish w2\n}\n",
+    );
+    for source in [
+        "let reader = Json.Reader { position: 0, containers: Vec.empty(), keys: Vec.empty(), marks: Vec.empty(), state: 0 }\n0",
+        "let writer = Json.writer ()\nwriter.state",
+        "let text = u8\"1\"\nlet reader = Result.get (Json.reader (ref text))\nreader.position",
+    ] {
+        rejects(source, "E1022");
+    }
+}
+
+#[test]
+fn cbor_module_is_reserved_and_typed() {
+    let error = analyze_modules(&[
+        ("Cbor.tz", "def answer :: i64\nfn answer = 1"),
+        ("Main.tz", "()"),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1011");
+    accepts(
+        "record Point { x: i64, y: f64 } deriving (Encode, Decode)\ndef bytes :: ref Point -> Result<[ubyte], Json.Error>\nfn bytes point = Cbor.serialize point\ndef back :: ref [ubyte] -> Result<Point, Json.Error>\nfn back bytes = Cbor.deserialize bytes\ndef raw :: ref [ubyte] -> Result<Json.Value, Json.Error>\nfn raw bytes = Cbor.decode bytes\ndef value :: ref Json.Value -> Result<[ubyte], Json.Error>\nfn value json = Cbor.encode json\n",
+    );
+    rejects("let bytes = Cbor.serialize (ref 'a')\n()", "E1005");
+    let unused = ir("def answer :: i64 -> i64\nfn answer x = x + 1\n");
+    assert!(!unused.contains("Cbor."), "{unused}");
 }

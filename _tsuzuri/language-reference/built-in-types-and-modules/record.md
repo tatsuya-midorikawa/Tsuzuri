@@ -208,7 +208,7 @@ Copy でないレコードは、フィールドごとにムーブできます。
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
 ```
 
-指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` です（`Encode` / `Decode` は [Json](./json.md)）。`Ord` には `Eq` も必要で、無いと `E1025` になります。手書きのインスタンスと重なると `E1016`、同じクラスを 2 回書くと `E1001` です。
+指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` です（`Encode` / `Decode` は [Json](./json.md)。フィールドの前の `@json "名前"` で JSON のキーを変えられます。[属性](../values-and-functions/attributes.md#json-json-での名前) を参照）。`Ord` には `Eq` も必要で、無いと `E1025` になります。手書きのインスタンスと重なると `E1016`、同じクラスを 2 回書くと `E1001` です。
 
 ```tsuzuri run=Point%20%7B%20x%3A%2020%2C%20y%3A%2022%20%7D
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)

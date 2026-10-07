@@ -117,6 +117,7 @@
 - [Format](./built-in-types-and-modules/format.md)
 - [Exception](./built-in-types-and-modules/exception.md)
 - [Json](./built-in-types-and-modules/json.md)
+- [Cbor](./built-in-types-and-modules/cbor.md)
 
 #### 非同期処理
 

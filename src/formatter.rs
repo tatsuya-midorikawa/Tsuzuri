@@ -201,6 +201,9 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         }
         for case in &mut union.cases {
             canonical.ident(&mut case.name);
+            if let Some(json) = &mut case.json {
+                json.span = Span::default();
+            }
             if let Some(payload) = &mut case.payload {
                 canonical.ty(payload);
             }
@@ -719,6 +722,9 @@ impl Canonical {
     fn parameter(&mut self, parameter: &mut Parameter) {
         self.ident(&mut parameter.name);
         self.ty(&mut parameter.ty);
+        if let Some(json) = &mut parameter.json {
+            json.span = Span::default();
+        }
     }
 
     fn constraints(&mut self, constraints: &mut [ConstraintExpr]) {

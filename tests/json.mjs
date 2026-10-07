@@ -29,15 +29,88 @@ const hashText = (text) => fnv64(encoder.encode(text));
 const status = (kind, offset) => BigInt(kind) * (1n << 40n) + BigInt(offset);
 const [Syntax, UnexpectedEnd, InvalidEscape, ControlCharacter, DuplicateKey, TooDeep] = [1, 2, 3, 4, 5, 6];
 
+// CBOR (RFC 8949 §4.2.1) of a parsed value whose numbers are JavaScript's canonical text: an integer
+// text is an integer (a bignum beyond 64 bits), any other number the shortest float that is exact.
+const LoneSurrogate = 13;
+function cborHead(major, value) {
+  const n = BigInt(value);
+  if (n < 24n) return [major << 5 | Number(n)];
+  const size = n < 256n ? 1 : n < 65536n ? 2 : n < 4294967296n ? 4 : 8;
+  return [major << 5 | { 1: 24, 2: 25, 4: 26, 8: 27 }[size], ...Array.from({ length: size }, (_, index) => Number(n >> BigInt(8 * (size - 1 - index)) & 255n))];
+}
+function cborHalf(x) {
+  if (x === 0) return Object.is(x, -0) ? 0x8000 : 0;
+  const sign = x < 0 ? 0x8000 : 0, magnitude = Math.abs(x);
+  for (let exponent = -14; exponent <= 15; exponent++) {
+    if (magnitude >= 2 ** exponent && magnitude < 2 ** (exponent + 1)) {
+      const fraction = (magnitude / 2 ** exponent - 1) * 1024;
+      return Number.isInteger(fraction) ? sign | (exponent + 15) << 10 | fraction : null;
+    }
+  }
+  const units = magnitude / 2 ** -24;
+  return Number.isInteger(units) && units < 1024 ? sign | units : null;
+}
+function cborNumber(text) {
+  if (!/[.eE]/.test(text)) {
+    const n = BigInt(text), magnitude = n < 0n ? -1n - n : n;
+    if (magnitude < 1n << 64n) return cborHead(n < 0n ? 1 : 0, magnitude);
+    let hex = magnitude.toString(16);
+    if (hex.length % 2) hex = `0${hex}`;
+    const bytes = Array.from({ length: hex.length / 2 }, (_, index) => parseInt(hex.slice(index * 2, index * 2 + 2), 16));
+    return [...cborHead(6, n < 0n ? 3 : 2), ...cborHead(2, bytes.length), ...bytes];
+  }
+  const x = Number(text), view = new DataView(new ArrayBuffer(8)), half = cborHalf(x);
+  if (half !== null) return [0xf9, half >> 8, half & 255];
+  if (Math.fround(x) === x) { view.setFloat32(0, x); return [0xfa, ...new Uint8Array(view.buffer, 0, 4)]; }
+  view.setFloat64(0, x);
+  return [0xfb, ...new Uint8Array(view.buffer)];
+}
+function cborText(text) {
+  if (!text.isWellFormed()) throw LoneSurrogate;
+  const bytes = [...new TextEncoder().encode(text)];
+  return [...cborHead(3, bytes.length), ...bytes];
+}
+function cborEncode(value) {
+  if (value === null) return [0xf6];
+  if (value === true) return [0xf5];
+  if (value === false) return [0xf4];
+  if (typeof value === "number") return cborNumber(String(value));
+  if (typeof value === "string") return cborText(value);
+  if (Array.isArray(value)) return [...cborHead(4, value.length), ...value.flatMap(cborEncode)];
+  const entries = Object.entries(value).map(([key, item]) => [cborText(key), cborEncode(item)]);
+  entries.sort(([left], [right]) => {
+    for (let index = 0; index < Math.min(left.length, right.length); index++) if (left[index] !== right[index]) return left[index] - right[index];
+    return left.length - right.length;
+  });
+  return [...cborHead(5, entries.length), ...entries.flatMap(([key, item]) => [...key, ...item])];
+}
+function cborReference(value) {
+  try {
+    return fnv64(cborEncode(value));
+  } catch (error) {
+    if (error === LoneSurrogate) return status(LoneSurrogate, -1);
+    throw error;
+  }
+}
+// RFC 8949 Appendix A, as a check of the reference encoder itself.
+const hexOf = (bytes) => bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+for (const [value, hex] of [[0, "00"], [24, "1818"], [1000000000000, "1b000000e8d4a51000"], [-1000, "3903e7"], [1.1, "fb3ff199999999999a"],
+  [1.5, "f93e00"], [3.4028234663852886e+38, "fa7f7fffff"], [5.960464477539063e-8, "f90001"], [-4.1, "fbc010666666666666"],
+  [[1, [2, 3], [4, 5]], "8301820203820405"], [{ a: 1, b: [2, 3] }, "a26161016162820203"], ["\u00fc", "62c3bc"]]) {
+  assert.equal(hexOf(cborEncode(value)), hex);
+}
+assert.equal(hexOf(cborNumber("18446744073709551616")), "c249010000000000000000");
+assert.equal(hexOf(cborNumber("-18446744073709551617")), "c349010000000000000000");
+
 // Inputs are JavaScript strings of Unicode scalars; the program sees their UTF-8 bytes.
 const cases = [];
 // Rejected inputs with the error kind and the byte offset that RFC 8259 and D08 define.
-const rejected = (text, kind, offset) => cases.push({ text, status: status(kind, offset), output: 0n });
+const rejected = (text, kind, offset) => cases.push({ text, status: status(kind, offset), output: 0n, cbor: status(kind, offset) });
 // Accepted inputs whose numbers JavaScript writes back unchanged and whose keys are not array
 // indices (JSON.stringify moves those first): the output equals JSON.stringify(JSON.parse(text)).
 const javascript = (text) => {
   const value = JSON.parse(text);
-  cases.push({ text, status: -1n, output: hashText(JSON.stringify(value)) });
+  cases.push({ text, status: -1n, output: hashText(JSON.stringify(value)), value, cbor: cborReference(value) });
 };
 // Accepted inputs whose expected output is written by hand (numbers keep their text, order is kept).
 const literal = (text, output) => {
@@ -241,6 +314,8 @@ fn kind_number kind =
     | Json.DuplicateKey _ -> 5
     | Json.TooDeep -> 6
     | Json.TooLarge -> 7
+    | Json.NumberRange -> 9
+    | Json.LoneSurrogate -> 13
     | _ -> 99
 
 def fnv :: ref utf8string -> i64
@@ -257,6 +332,91 @@ fn status index =
     | Ok _ -> -1
     | Error error -> kind_number (ref error.kind) * 1099511627776 + error.offset
 
+def fnv_bytes :: ref [ubyte] -> i64
+fn fnv_bytes bytes =
+    let mut hash = 14695981039346656037i64u
+    for byte in bytes do hash = (hash ^^^ (byte as i64u)) * 1099511628211i64u
+    hash as i64
+
+def error_status :: ref Json.Error -> i64
+fn error_status error = kind_number (ref error.kind) * 1099511627776 + error.offset
+
+/// The FNV-1a hash of the JSON text that \`Json.to_utf8string_pretty\` writes, or 0 when parsing fails.
+export def pretty_hash :: i64 -> i64 -> i64
+fn pretty_hash index indent =
+    let text = input index
+    match Json.parse (ref text) with
+    | Ok value -> fnv (ref (Json.to_utf8string_pretty (ref value) indent))
+    | Error _ -> 0
+
+def replay :: ref utf8string -> ref Json.Event -> Json.Writer -> Result<Json.Writer, Json.Error>
+fn replay text event writer =
+    match event with
+    | Json.ObjectStart -> Json.open_object writer
+    | Json.ObjectEnd -> Json.close_object writer
+    | Json.ArrayStart -> Json.open_array writer
+    | Json.ArrayEnd -> Json.close_array writer
+    | Json.KeyToken token -> Json.write_key writer (ref (Result.get (Json.token_text text token)))
+    | Json.TextToken token -> Json.write_text writer (ref (Result.get (Json.token_text text token)))
+    | Json.NumberToken token -> Json.write_number writer (ref (Result.get (Json.token_numeral text token)))
+    | Json.BoolToken flag -> Json.write_bool writer flag
+    | Json.NullToken -> Json.write_null writer
+    | Json.EndOfInput -> Ok writer
+
+/// The pull parser's events written again with the incremental writer: the FNV-1a hash of the
+/// output, or the status of the reader's error (7777 if the writer refuses an event).
+export def stream_hash :: i64 -> i64
+fn stream_hash index =
+    let text = input index
+    let mut reader = Json.reader (ref text)
+    let mut writer = Ok (Json.writer ())
+    let mut result = 0
+    let mut going = true
+    while going do
+        match reader with
+        | Error error ->
+            result = error_status (ref error)
+            going = false
+            reader = Error error
+        | Ok current ->
+            match Json.next (ref text) current with
+            | Error error ->
+                result = error_status (ref error)
+                going = false
+                reader = Error error
+            | Ok (event, after) ->
+                writer = match writer with
+                    | Ok open -> replay (ref text) (ref event) open
+                    | Error error -> Error error
+                if event == Json.EndOfInput then
+                    result = match writer with
+                        | Ok done -> match Json.finish done with
+                            | Ok output -> fnv (ref output)
+                            | Error _ -> 7777
+                        | Error _ -> 7777
+                    writer = Ok (Json.writer ())
+                    going = false
+                reader = Ok after
+    result
+
+/// CBOR of the parsed value (FNV-1a hash), checked to decode and encode again to the same bytes;
+/// the status of the first error otherwise.
+export def cbor_hash :: i64 -> i64
+fn cbor_hash index =
+    let text = input index
+    match Json.parse (ref text) with
+    | Error error -> error_status (ref error)
+    | Ok value ->
+        match Cbor.encode (ref value) with
+        | Error error -> error_status (ref error)
+        | Ok bytes ->
+            match Cbor.decode (ref bytes) with
+            | Error _ -> 1
+            | Ok back ->
+                match Cbor.encode (ref back) with
+                | Ok again -> if again == bytes then fnv_bytes (ref bytes) else 2
+                | Error _ -> 3
+
 /// The FNV-1a hash of the JSON text that \`Json.to_utf8string\` writes, or 0 when parsing fails.
 export def output_hash :: i64 -> i64
 fn output_hash index =
@@ -266,6 +426,8 @@ fn output_hash index =
     | Error _ -> 0
 `;
 
+// Pretty printing is compared with JSON.stringify(value, null, indent) at these indents.
+const indents = [0, 1, 2, 4, 10, 12];
 const cValue = (n) => n === -(1n << 63n) ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))` : `INT64_C(${n})`;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-json-"));
 try {
@@ -313,8 +475,13 @@ void *tracked_realloc(void *value, uint64_t size) {
     return next + 2;
 }
 int main(void) {
-${cases.map(({ status, output }, index) => `    assert(tz_status(INT64_C(${index})) == ${cValue(status)}); assert(live == 0);
-    assert(tz_output_hash(INT64_C(${index})) == ${cValue(output)}); assert(live == 0);`).join("\n")}
+${cases.map(({ status, output, value, cbor }, index) => [
+    `    assert(tz_status(INT64_C(${index})) == ${cValue(status)}); assert(live == 0);`,
+    `    assert(tz_output_hash(INT64_C(${index})) == ${cValue(output)}); assert(live == 0);`,
+    `    assert(tz_stream_hash(INT64_C(${index})) == ${cValue(status === -1n ? output : status)}); assert(live == 0);`,
+    ...cbor === undefined ? [] : [`    assert(tz_cbor_hash(INT64_C(${index})) == ${cValue(cbor)}); assert(live == 0);`],
+    ...value === undefined ? [] : indents.map((indent) => `    assert(tz_pretty_hash(INT64_C(${index}), INT64_C(${indent})) == ${cValue(hashText(JSON.stringify(value, null, indent)))}); assert(live == 0);`),
+  ].join("\n")).join("\n")}
     return 0;
 }
 `);
@@ -327,14 +494,23 @@ ${cases.map(({ status, output }, index) => `    assert(tz_status(INT64_C(${index
     const module = new WebAssembly.Module(readFileSync(wasm));
     assert.deepEqual(WebAssembly.Module.imports(module), [], "WASM has no imports");
     const exports = new WebAssembly.Instance(module).exports;
-    for (const [index, { text, status, output }] of cases.entries()) {
-      assert.equal(exports.tz_status(BigInt(index)), status, `WASM O${optimization} status of ${JSON.stringify(text).slice(0, 80)}`);
-      assert.equal(exports.tz_output_hash(BigInt(index)), output, `WASM O${optimization} output of ${JSON.stringify(text).slice(0, 80)}`);
+    for (const [index, { text, status, output, value, cbor }] of cases.entries()) {
+      const label = JSON.stringify(text).slice(0, 80);
+      assert.equal(exports.tz_status(BigInt(index)), status, `WASM O${optimization} status of ${label}`);
+      assert.equal(exports.tz_output_hash(BigInt(index)), output, `WASM O${optimization} output of ${label}`);
+      assert.equal(exports.tz_stream_hash(BigInt(index)), status === -1n ? output : status, `WASM O${optimization} stream of ${label}`);
+      if (cbor !== undefined) assert.equal(exports.tz_cbor_hash(BigInt(index)), cbor, `WASM O${optimization} CBOR of ${label}`);
+      if (value !== undefined) {
+        for (const indent of indents) {
+          assert.equal(exports.tz_pretty_hash(BigInt(index), BigInt(indent)), hashText(JSON.stringify(value, null, indent)), `WASM O${optimization} pretty ${indent} of ${label}`);
+        }
+      }
     }
     assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024, "WASM stays within 16 MiB");
   }
   const accepted = cases.filter((entry) => entry.status === -1n).length;
-  console.log(`json conformance: ${cases.length} inputs (${accepted} accepted, ${cases.length - accepted} rejected), native and WASM at -O0 and -O3`);
+  const checks = cases.reduce((total, { value, cbor }) => total + 3 + (cbor === undefined ? 0 : 1) + (value === undefined ? 0 : indents.length), 0);
+  console.log(`json conformance: ${cases.length} inputs (${accepted} accepted, ${cases.length - accepted} rejected), ${checks} checks of parse, output, pull parser and writer, pretty printing, and CBOR; native and WASM at -O0 and -O3`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

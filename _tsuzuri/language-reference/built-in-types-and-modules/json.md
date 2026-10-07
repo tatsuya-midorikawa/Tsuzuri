@@ -11,6 +11,9 @@ Web ホストや設定ファイルとのあいだで、スカラーより複雑�
 - 組み込み型クラス `Encode` / `Decode` が値と `Json.Value` を変換します。`Json.serialize` / `Json.deserialize` はテキストとのあいだを一度に変換します。
 - `deriving (Encode, Decode)` はレコードを object、共用体を `"Case"` / `{"Case": payload}` にします。
 - 入力は 64 MiB、入れ子は 128 段まで。エラーは種類とバイト位置を持つ `Json.Error` です。
+- `@json "name"` でフィールドや case の JSON での名前を変えられます。`Json.to_utf8string_pretty` は `JSON.stringify(value, null, indent)` と同じ字下げで書きます。
+- `Json.reader` / `Json.next` は木を作らずにトークンを返すプル型の解析器、`Json.writer` はトークンを順に書く出力器です。
+- 同じ `Json.Value` を [CBOR](./cbor.md) でも読み書きできます。
 
 ## 値の型
 
@@ -19,6 +22,7 @@ record Numeral { text: utf8string }
 union Value = Null | Bool of bool | Number of Numeral | Text of string | Items of [Value] | Object of [(string * Value)]
 union ErrorKind = Syntax | UnexpectedEnd | InvalidEscape | ControlCharacter | DuplicateKey of string | TooDeep | TooLarge
                 | NonFinite | NumberRange | ExpectedType of string | MissingField of string | UnknownCase of string | LoneSurrogate
+                | InvalidUtf8 | Unsupported of string
 record Error { kind: ErrorKind, offset: i64 }
 ```
 
@@ -92,7 +96,9 @@ json: duplicate key "a" at byte 7 | json: syntax error at byte 5
 | `ExpectedType t` | JSON の種類が違う | `expected t` |
 | `MissingField f` | 必須のフィールドがない | `missing field "f"` |
 | `UnknownCase c` | 共用体にない case 名 | `unknown case "c"` |
-| `LoneSurrogate` | `utf8string` へ decode する文字列に孤立サロゲートがある | `lone surrogate in string` |
+| `LoneSurrogate` | `utf8string` へ decode する文字列（CBOR では書き出す文字列）に孤立サロゲートがある | `lone surrogate in string` |
+| `InvalidUtf8` | CBOR のテキスト文字列が正しい UTF-8 でない | `invalid UTF-8` |
+| `Unsupported w` | JSON のデータモデルにない CBOR の項目（バイト列、タグ、`undefined` など） | `unsupported w` |
 
 ## 数値
 
@@ -134,17 +140,21 @@ Decode<'a> { decode :: ref Json.Value -> Result<'a, Json.Error> }
 | --- | --- | --- |
 | `bool` | `true` / `false` | JSON の真偽値 |
 | `i8`–`i128`、`i8u`–`i128u` | 10 進の整数 | 整数の字句で範囲内 |
-| `f32`、`f64` | `to_string` の最短表現。NaN・無限大は `NonFinite` | 任意の数値 |
+| `f16`、`f32`、`f64`、`f128`、`d32`、`d64`、`d128` | `to_string` の最短表現（decimal は正確な 10 進）。NaN・無限大は `NonFinite` | 任意の数値を一度だけ丸める。無限大になる overflow は `NumberRange` |
 | `string` | 文字列 | 文字列 |
 | `utf8string` | 文字列 | 文字列。孤立サロゲートを含めば `LoneSurrogate` |
 | `Maybe<'a>` | `None` は `null`、`Some x` は x | `null` は `None`、それ以外は `Some` |
 | `['a]`、`[\|'a\|]`、`Vec<'a>` | 配列 | 配列 |
+| `Map<'k, 'v>`、`HashMap<'k, 'v>` | すべてのキーが JSON の文字列になれば object（空のマップは `{}`）、そうでなければ `[キー, 値]` の配列の配列。`Map` はキーの昇順、`HashMap` は挿入順 | object（キーを文字列から decode）か `[キー, 値]` の配列の配列。キーが重なれば `DuplicateKey` |
+| `Set<'k>`、`HashSet<'k>` | 配列（`Set` は昇順、`HashSet` は挿入順） | 配列。要素が重なれば `DuplicateKey` |
 | 2–4 要素のタプル | 同じ長さの配列 | 同じ長さの配列（違えば `ExpectedType "array of N"`） |
 | `Json.Value` | 複製 | 複製 |
 | 導出したレコード | object。キーはフィールド名で宣言順 | object。余分なキーは無視。キーが無ければ `null` として decode し、失敗すれば `MissingField` |
 | 導出した共用体 | ペイロードなしは `"Case"`、ありは `{"Case": payload}`（複数のペイロードはタプルなので配列） | 同じ形だけ。未知の名前は `UnknownCase`、形が違えば `ExpectedType` |
 
-`Maybe<Maybe<'a>>` の `Some None` は `null` になり、decode では `None` に戻ります（serde と同じく往復しません）。数値は `to_string` の最短表現なので、`-0.0` は `-0`、`10000000.0` は `1e+7` です（`JSON.stringify` は `0` と `10000000`）。インスタンスのない型（`char`、`utf8char`、`unit`、関数、`Task`、5 要素以上のタプルなど）を直接使うと `E1005` です。
+`Map<string, 'v>` は常に object です。`Map<i64, 'v>` のようにキーが文字列にならないマップは `[[1, "a"], [2, "b"]]` の形になり、キーが 1 つも無いときだけ `{}` になります（decode はどちらの形も受理します）。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは、型クラスの重複規則（同じヘッドに単一化できるインスタンスは 1 つ）ではできないので、形は encode したキーで決まります。ペイロードのない case だけの共用体をキーにすると、そのマップは object になります。`Map` の decode には `Ord<'k>`、`HashMap` には `Hash<'k>` と `Eq<'k>` が要ります。
+
+`Maybe<Maybe<'a>>` の `Some None` は `null` になり、decode では `None` に戻ります（serde と同じく往復しません）。数値は `to_string` の最短表現なので、`-0.0` は `-0`、`10000000.0` は `1e+7` です（`JSON.stringify` は `0` と `10000000`）。インスタンスのない型（`char`、`utf8char`、`unit`、関数、`Task`、固定長配列、5 要素以上のタプルなど）を直接使うと `E1005` です。
 
 ```tsuzuri run=%7B%22name%22%3A%22a%22%2C%22points%22%3A%5B%7B%22x%22%3A1%2C%22y%22%3A0.5%7D%5D%2C%22shapes%22%3A%5B%7B%22Circle%22%3A2%7D%2C%7B%22Rect%22%3A%5B1%2C2.5%5D%7D%2C%22Empty%22%5D%2C%22note%22%3Anull%7D%20round%3Dtrue
 record Point { x: i64, y: f64 } deriving (Encode, Decode)
@@ -230,6 +240,172 @@ $"{String.from_utf8 (ref text)} | meters={meters.value}"
 
 成分は `Encode.encode` / `Decode.decode` で具体的な型のまま呼びます。`Json.encode`・`Json.decode`・`Json.serialize` のような多相の関数は、どのインスタンスにも届きうる呼び出しとして再帰の検査に数えられるので、それを呼ぶメソッドには `fn rec` が必要です（無いと `E1019`）。導出コードが使う補助関数（`begin_object`、`encode_field`、`end_object`、`encode_case`、`encode_tag`、`expect_object`、`decode_field`、`keep_error`、`case_index`、`decode_payload`）も公開しているので、`fn rec` を付けた手書きのインスタンスから使えます。
 
+### JSON での名前（`@json`）
+
+レコードのフィールドと共用体の case の前に `@json "名前"` を書くと、導出した `Encode` / `Decode` がその名前をキーやタグに使います。Tsuzuri の側の名前は変わりません。
+
+```tsuzuri run=%5B%7B%22created%22%3A%7B%22user_id%22%3A7%2C%22display%20name%22%3A%22Ann%22%2C%22email%22%3Anull%7D%7D%2C%22Reset%22%5D%20missing%3Djson%3A%20missing%20field%20%22user_id%22
+record User { @json "user_id" id: i64, @json "display name" name: string, email: Maybe<string> } deriving (Encode, Decode)
+union Change =
+    | @json "created" Created of User
+    | Reset
+    deriving (Encode, Decode)
+
+let changes = [Created (User { id: 7, name: "Ann", email: None }), Reset]
+let text = Result.get (Json.serialize (ref changes))
+let old: Result<User, Json.Error> = Json.deserialize (ref u8"{\"id\":7,\"display name\":\"Ann\"}")
+let missing = match old with
+    | Ok _ -> "ok"
+    | Error error -> Display.display (ref error)
+$"{String.from_utf8 (ref text)} missing={missing}"
+```
+
+実行結果:
+
+```text
+[{"created":{"user_id":7,"display name":"Ann","email":null}},"Reset"] missing=json: missing field "user_id"
+```
+
+- 名前は普通の文字列リテラル（`"..."`）です。`u8"..."` や補間文字列、`@json` 以外の属性、1 つのフィールドへの 2 つの `@json` は `E0002` です。
+- `@json` は `deriving (Encode, Decode)` のどちらかがある型にだけ書けます。無ければ `E1025` です。
+- 名前を変えた結果、2 つのフィールドや case が同じ JSON の名前になると `E1025` です。
+- `MissingField` と `UnknownCase` には JSON での名前が入ります。`tsuzuri fmt` は `@json "名前"` の空白を整え、`tsuzuri doc` は属性ごと表示します。
+
+## 字下げした出力
+
+```text
+Json.to_utf8string_pretty :: ref Value -> i64 -> utf8string
+Json.serialize_pretty :: Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>
+```
+
+`indent` は 1 段あたりの空白の数で、`JSON.stringify(value, null, indent)` と同じく 10 で頭打ちになり、1 より小さいと空白なしの `to_utf8string` と同じです。空の配列と object は `[]` / `{}`、それ以外は要素ごとに改行し、キーの `:` の後に空白を 1 つ置きます。数値の字句と文字列のエスケープは `to_utf8string` と同じなので、`JSON.stringify` の正準形の数値だけを含む値なら、バイト列が `JSON.stringify(JSON.parse(text), null, indent)` と一致します。
+
+```tsuzuri run=%7B%0A%20%20%22a%22%3A%20%5B%0A%20%20%20%201%2C%0A%20%20%20%20%5B%5D%0A%20%20%5D%2C%0A%20%20%22b%22%3A%20%7B%7D%0A%7D
+let value = Result.get (Json.parse (ref u8"{\"a\":[1,[]],\"b\":{}}"))
+Json.to_utf8string_pretty (ref value) 2
+```
+
+実行結果:
+
+```text
+{
+  "a": [
+    1,
+    []
+  ],
+  "b": {}
+}
+```
+
+## プル型の解析と逐次の出力
+
+`Json.reader` と `Json.next` は、`Value` の木を作らずに入力のトークンを 1 つずつ返します。文字列と数値は入力の中のバイト範囲 `Lexeme` として返るので（複製しない）、必要なものだけを `Json.token_text`・`Json.token_numeral` で取り出します。
+
+```text
+record Lexeme { start: i64, finish: i64, escaped: bool }
+union Event = ObjectStart | ObjectEnd | ArrayStart | ArrayEnd | KeyToken of Lexeme | TextToken of Lexeme
+            | NumberToken of Lexeme | BoolToken of bool | NullToken | EndOfInput
+
+Json.reader :: ref utf8string -> Result<Reader, Error>
+Json.next :: ref utf8string -> Reader -> Result<(Event * Reader), Error>
+Json.token_text :: ref utf8string -> ref Lexeme -> Result<string, Error>
+Json.token_matches :: ref utf8string -> ref Lexeme -> ref string -> bool
+Json.token_numeral :: ref utf8string -> ref Lexeme -> Result<Numeral, Error>
+```
+
+```tsuzuri run=sum%3D6%20ids%3D2
+let text = u8"{\"items\": [{\"id\": 1}, {\"id\": 2, \"note\": \"x\"}], \"total\": 3}"
+let mut sum = 0
+let mut ids = 0
+let mut state = Json.reader (ref text)
+let mut going = true
+while going do
+    match state with
+    | Ok reader ->
+        match Json.next (ref text) reader with
+        | Ok (event, after) ->
+            match event with
+            | Json.KeyToken token -> if Json.token_matches (ref text) (ref token) (ref "id") then ids = ids + 1
+            | Json.NumberToken token ->
+                let numeral = Result.get (Json.token_numeral (ref text) (ref token))
+                sum = sum + Result.get (Json.to_i64 (ref numeral))
+            | Json.EndOfInput -> going = false
+            | _ -> ()
+            state = Ok after
+        | Error error ->
+            going = false
+            state = Error error
+    | Error error ->
+        going = false
+        state = Error error
+$"sum={sum} ids={ids}"
+```
+
+実行結果:
+
+```text
+sum=6 ids=2
+```
+
+- `Reader` は不透明で、入力への参照を持ちません。毎回同じ入力を `next` に渡します。`next` は reader を消費して、次の reader と一緒に事象を返します。
+- 文字列のトークンは引用符の内側の範囲で、`escaped` はエスケープを含むかどうかです。`token_matches` はエスケープのないトークンを文字列を作らずに比べます。数値のトークンは字句の範囲です。入力のトークンでない範囲を渡すと `Syntax` です。
+- 検査は `parse` と同じで、失敗の種類とバイト位置も `parse` と同じです。ただし重複キーは、その object が閉じるか入力が失敗したときに報告します（それまでにキーと値の事象は返っています）。入れ子 128 段と 64 MiB の上限も同じです。
+- 最上位の値の後は `EndOfInput` を返し続けます。値の後に空白以外があれば `Syntax` です。
+
+`Json.writer` は、トークンを順に書いて 1 つの JSON テキストを組み立てる出力器です。`,` と `:` は自動で入り、入れ子と順序を検査します。
+
+```text
+Json.writer :: unit -> Writer
+Json.open_object / close_object / open_array / close_array :: Writer -> Result<Writer, Error>
+Json.write_key :: Writer -> ref string -> Result<Writer, Error>
+Json.write_null :: Writer -> Result<Writer, Error>
+Json.write_bool :: Writer -> bool -> Result<Writer, Error>
+Json.write_number :: Writer -> ref Numeral -> Result<Writer, Error>
+Json.write_text :: Writer -> ref string -> Result<Writer, Error>
+Json.write_json :: Writer -> ref Value -> Result<Writer, Error>
+Json.finish :: Writer -> Result<utf8string, Error>
+```
+
+```tsuzuri run=%7B%22name%22%3A%22a%22%2C%22tags%22%3A%5Btrue%2Cnull%5D%7D%20%7C%20json%3A%20syntax%20error%20at%20byte%201
+def build :: unit -> Result<utf8string, Json.Error>
+fn build _unit = Result {
+    let! w0 = Json.open_object (Json.writer ())
+    let! w1 = Json.write_key w0 (ref "name")
+    let! w2 = Json.write_text w1 (ref "a")
+    let! w3 = Json.write_key w2 (ref "tags")
+    let! w4 = Json.open_array w3
+    let! w5 = Json.write_bool w4 true
+    let! w6 = Json.write_null w5
+    let! w7 = Json.close_array w6
+    let! w8 = Json.close_object w7
+    return! Json.finish w8
+}
+
+def misuse :: unit -> Result<utf8string, Json.Error>
+fn misuse _unit = Result {
+    let! w0 = Json.open_object (Json.writer ())
+    let! w1 = Json.write_null w0
+    return! Json.finish w1
+}
+
+let good = match build () with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display (ref error)
+let bad = match misuse () with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display (ref error)
+$"{good} | {bad}"
+```
+
+実行結果:
+
+```text
+{"name":"a","tags":[true,null]} | json: syntax error at byte 1
+```
+
+- 書き込みの誤り（object の中でキーの無い値、object の外のキー、対応しない閉じ、2 つ目の最上位の値、不正な字句の `Numeral`）は `Syntax`、`finish` の時点で値が完結していなければ `UnexpectedEnd`、129 段目を開くと `TooDeep` です。`offset` はその時点までの出力のバイト数です。
+- 文字列のエスケープと数値の字句は `to_utf8string` と同じで、重複キーは検査しません。`Writer` は不透明です。
+
 ## 資源上限と計算量
 
 - 入力は 64 MiB（67,108,864 バイト）まで。超えると字句を読む前に `TooLarge` です。
@@ -259,6 +435,11 @@ $"{String.from_utf8 (ref text)} | meters={meters.value}"
 | `decode` | `Decode<'a> => ref Value -> Result<'a, Error>` | `Value` を値に |
 | `serialize` | `Encode<'a> => ref 'a -> Result<utf8string, Error>` | 値を JSON テキストに |
 | `deserialize` | `Decode<'a> => ref utf8string -> Result<'a, Error>` | JSON テキストを値に |
+| `to_utf8string_pretty` | `ref Value -> i64 -> utf8string` | 字下げした JSON テキストを書きます |
+| `serialize_pretty` | `Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>` | 値を字下げした JSON テキストに |
+| `reader` / `next` | `ref utf8string -> Result<Reader, Error>` / `ref utf8string -> Reader -> Result<(Event * Reader), Error>` | プル型の解析 |
+| `token_text` / `token_matches` / `token_numeral` | 上の「プル型の解析と逐次の出力」 | トークンの中身 |
+| `writer` / `open_*` / `close_*` / `write_*` / `finish` | 上の「プル型の解析と逐次の出力」 | 逐次の出力 |
 
 導出コード用の補助関数:
 
@@ -291,6 +472,7 @@ $"{String.from_utf8 (ref text)} | meters={meters.value}"
 - 数値は字句を保つ `Numeral`、object はメンバーの順を保つ配列です。
 - `Encode` / `Decode` と `deriving (Encode, Decode)` で、レコード・共用体・コレクションを JSON と変換します。
 - 失敗はすべて `Json.Error`（種類とバイト位置）で返り、上限（64 MiB、128 段）を超える入力もトラップしません。
+- `@json` で名前を変え、`to_utf8string_pretty` で字下げし、`reader` / `writer` で木を作らずに読み書きできます。
 
 ## 関連項目
 
@@ -298,4 +480,6 @@ $"{String.from_utf8 (ref text)} | meters={meters.value}"
 - [Utf8String](./utf8string.md) — 入力と出力の型
 - [Format](./format.md) — `Display` と `Parse`
 - [Result](./result.md) — 失敗の扱い
+- [Cbor](./cbor.md) — 同じ値の CBOR
+- [属性](../values-and-functions/attributes.md) — `@json`
 - [言語リファレンスの目次](../index.md)

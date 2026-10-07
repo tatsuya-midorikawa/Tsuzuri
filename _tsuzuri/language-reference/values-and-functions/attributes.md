@@ -1,15 +1,16 @@
 # 属性
 
-`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
+`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、JSON での名前をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
 
-このページでは、3 つの属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。
+このページでは、4 つの属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。
 
 ## この記事のポイント
 
-- 属性は `@literal`、`@checked`、`@cpu` の 3 つです。ユーザー定義の属性はありません。
+- 属性は `@literal`、`@checked`、`@cpu`、`@json` の 4 つです。ユーザー定義の属性はありません。
 - `@literal` は `def` の前に付け、`const` と同じコンパイル時定数にします。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` はトップレベル関数の `def` の前に付け、命令セットごとの版を作ります。ビルド先で選べない名前は無視されます。
+- `@json "名前"` はレコードのフィールドや共用体の case の前に付け、導出した `Encode` / `Decode` が使う JSON の名前を変えます。
 - `@'a : 制約` は制約行です。属性の一覧には入りません。
 
 ## 属性の一覧と適用対象
@@ -20,6 +21,7 @@ flowchart TD
     at --> literal["@literal<br/>コンパイル時定数"]
     at --> checked["@checked<br/>検査付き算術"]
     at --> cpu["@cpu<br/>関数の版"]
+    at --> json["@json<br/>JSON での名前"]
     at --> row["型変数が続く行<br/>制約行。属性ではない"]
 ```
 
@@ -28,6 +30,7 @@ flowchart TD
 | `@literal` | `def` の直前。`private` はその前後 | `const` と同じコンパイル時定数 | [値](./values.md) |
 | `@checked` | 式、または対応する文の直前 | `+` `-` `*` `**` と単項 `-` の桁あふれ検査 | [演算子と式](./op-and-expressions.md) |
 | `@cpu` | `private` や `export` より前、トップレベル `def` の直前 | 命令セットごとの関数の版 | [関数 / 高階関数 / 再帰関数](./functions.md) |
+| `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 
 ## @literal (コンパイル時定数)
 
@@ -139,6 +142,34 @@ compute 21
 - **付けられる対象**: トップレベル関数の `def` だけです。レコード、共用体、型クラス、ローカル関数に付けると `E0002` です。`cpu` 自体は予約語ではありません。
 - **256 bit ベクトル**: 引数と戻り値に 256 bit ベクトル（`i32x8` や `f64x4` など）を置けません。レコード、共用体、タプル、固定長配列の中に含めても `E1005` です。本体から、256 bit ベクトルを渡す関数値を呼ぶこともできません。128 bit のベクトル、スライス参照、スカラーを使います。
 
+## @json (JSON での名前)
+
+`@json "名前"` は、レコードのフィールドか共用体の case の前に付けます。`deriving (Encode, Decode)` で生成するコードが、宣言した名前の代わりにこの名前を JSON のキーやタグに使います。Tsuzuri のコードから見た名前は変わりません。
+
+```tsuzuri run=%7B%22user_id%22%3A7%2C%22name%22%3A%22Ann%22%7D%20%22done%22
+record User { @json "user_id" id: i64, name: string } deriving (Encode, Decode)
+union State = Pending | @json "done" Finished deriving (Encode, Decode)
+
+let user = User { id: 7, name: "Ann" }
+let text = Result.get (Json.serialize (ref user))
+let state = Result.get (Json.serialize (ref Finished))
+$"{String.from_utf8 (ref text)} {String.from_utf8 (ref state)}"
+```
+
+実行結果:
+
+```text
+{"user_id":7,"name":"Ann"} "done"
+```
+
+### 書ける位置とエラー
+
+- 名前は普通の文字列リテラル `"..."` です。`u8"..."`、補間文字列、数値などは `E0002` です。1 つのフィールドや case に `@json` は 1 つだけで、2 つ目も `E0002` です。
+- フィールドと case の前に置けるのは `@json` だけです。`@literal` などは `E0002` です。
+- その型が `deriving (Encode)` も `deriving (Decode)` も持たないと `E1025` です。
+- 名前を変えた結果、2 つのフィールドや 2 つの case が同じ JSON の名前になると `E1025` です。
+- `tsuzuri fmt` は `@json "名前"` の空白を整え、`tsuzuri doc` は属性を付けたまま表示します。言語サーバーでフィールドや case の名前を変えても、属性の名前は変わりません。
+
 ## 制約行は属性ではない
 
 `def` の次の行に、より深くインデントして `@'a : Eq` と書くのは制約行です。コンパイラはこれを `@literal` などの属性とは別に読みます。インデントが足りないと `E0002` です。
@@ -147,16 +178,17 @@ compute 21
 
 ## ユーザー定義の属性はない
 
-Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu` 以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
+Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@json` 以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
 
 ## まとめ
 
-- 属性は `@literal`、`@checked`、`@cpu` の 3 つです。
+- 属性は `@literal`、`@checked`、`@cpu`、`@json` の 4 つです。
 - `@'a : 制約` は制約行であり、属性ではありません。
 - ユーザー定義の属性はありません。
 - `@literal` は `const` と同じコンパイル時定数です。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` は命令セットごとの関数の版を作ります。選べない名前は無視され、未知の名前は `E0002` です。
+- `@json` は導出した `Encode` / `Decode` が使うフィールドや case の名前を変えます。
 
 ## 関連項目
 
@@ -166,6 +198,7 @@ Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@lite
 - [制約 と 属性](../types-and-type-inference/constraints.md)
 - [ジェネリック関数と型パラメータ制約](./generics-functions.md)
 - [例外処理](../exception-handling/exception-handling.md)
+- [Json](../built-in-types-and-modules/json.md)
 - [言語仕様: 検査付き算術と例外](../../../docs/language.md#検査付き算術と例外)
 - [言語仕様: CPU ごとの関数の版](../../../docs/language.md#cpu-ごとの関数の版cpu)
 - [言語リファレンスの目次](../index.md)

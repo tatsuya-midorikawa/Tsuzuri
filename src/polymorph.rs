@@ -2397,6 +2397,7 @@ fn instance_function(
             name: name.clone(),
             mutable: *mutable,
             ty: type_expression(&substitute(ty, substitutions), types, name.span),
+            json: None,
         })
         .collect();
     Ok(FunctionDecl {
