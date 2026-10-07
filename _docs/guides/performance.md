@@ -17,20 +17,53 @@ LLVM のループ・SLP 自動ベクトル化に加え、明示的な SIMD 値�
 
 ## 実行時 CPU dispatch
 
-native の exe / object に同梱する `Array.sum` の `ref [i64] -> i64` 具体化だけが、現在の実行時 CPU 選択の対象です。
+native の exe / object では、同梱 std の一括演算 kernel と、`@cpu` を付けた利用者関数が実行時に命令セットを選びます。選択は最初の呼び出しで一度だけ行い、結果を atomic に共有します。
 
-| 環境 | 経路 |
+| 環境 | 選べる版 |
 | --- | --- |
-| x86 の対応 CPU / OS | SSE4.2 または AVX2 の候補を選ぶ |
-| AArch64、未知の環境 | baseline |
-| Windows の現行実装 | portable baseline |
-| WASM、通常の LLVM IR 出力 | この native runtime dispatch の対象外 |
+| x86-64（Windows を除く） | SSE4.2、AVX2、AVX-512（F・BW・CD・DQ・VL）と baseline |
+| AArch64 Linux | SVE、SVE2 と baseline |
+| macOS の AArch64、Windows、その他 | baseline だけ |
+| WASM、`--emit llvm`、`--freestanding` | 対象外。build 時の命令セットで固定 |
 
-AVX2 は CPUID の bit だけでなく OSXSAVE / AVX と XCR0 の状態保存能力も確認します。選択結果は atomic に共有します。任意の利用者関数、float、SVE / SVE2 の多重化は未実装です。
+AVX2 と AVX-512 は CPUID の bit だけでなく OSXSAVE と XCR0 の状態保存能力も確認します。SVE / SVE2 は Linux の auxiliary vector から読みます。テスト用 `TSUZURI_CPU_FORCE`（`baseline`、`sse4.2`、`avx2`、`avx512`、`sve`、`sve2`）で利用できない版や未知の名前を指定すると停止し、黙って別の版で成功しません。
 
-この経路は整数の折り返し和を維持します。テスト用 `TSUZURI_CPU_FORCE` で利用できない版を強制した場合は停止し、黙って別版で成功しません。
+### 同梱 kernel
 
-実装記録では ARM baseline の実行、x86 経路のクロスコンパイルを確認しています。x86 実機の速度や優位を確認済みと読み替えないでください。
+整数 8 型（`i8`〜`i64`、`i8u`〜`i64u`）の `Array.sum`、`Array.min`、`Array.max` は kernel を呼びます。どの版も同じ結果（lane ごとの折り返し和、最初に現れる最小・最大の位置）を返します。自動選択は AVX2 までで、AVX-512 と SVE の版は `TSUZURI_CPU_FORCE` で指定したときだけ使います。周波数低下を含む効果をまだ実機で測定していないためです。浮動小数点の和は左から右の順序が契約なので kernel にしません。
+
+### 利用者関数の多版化（`@cpu`）
+
+```tsuzuri run=285
+@cpu ["avx2", "avx512", "sve"]
+def dot :: ref [f64] -> ref [f64] -> f64
+fn dot left right =
+    let mut total: f64x4 = Simd.splat 0.0
+    let mut index = 0
+    while index + 4 <= left.length do
+        let first: f64x4 = Simd.load left index
+        let second: f64x4 = Simd.load right index
+        total = total + first * second
+        index = index + 4
+    let mut sum = Simd.sum_lanes total
+    while index < left.length do
+        sum = sum + left[index] * right[index]
+        index = index + 1
+    sum
+
+let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+(dot (ref values) (ref values)) as i64
+```
+
+`def` の前の `@cpu [...]` は、関数を名前の命令セットごとにもう一度 compile し、元の名前の関数を版を選ぶ stub に置き換えます。名前は `"sse4.2"`、`"avx2"`、`"avx512"`、`"sve"`、`"sve2"` です。build 先で選べない名前は無視するので、一つのソースに x86 と AArch64 の名前を並べられます。
+
+- 版の選択: 指定した版のうち CPU が対応する最新のもの。`TSUZURI_CPU_FORCE` があれば、その水準以下の同じ系統の版だけを使います。明示した `"avx512"` は自動で選びます。
+- 意味: どの版も同じ型付き IR から作るので、整数の折り返し、浮動小数点の順序、NaN、トラップは変わりません。fast-math や再結合は有効にしません。
+- 呼び出し先: 256-bit ベクトルを渡して直接呼ぶ関数（`Simd.*` を含む）は同じ命令セットで compile します。それ以外の呼び出し先は portable 版のままなので、重い helper にも `@cpu` を付けます。
+- 制約: 引数と結果は 256-bit ベクトルを持てず（レコード、union、タプル、固定長配列の中も含む）、256-bit ベクトルを渡す関数値も呼べません（`E1005`）。版ごとに 256-bit ベクトルを渡すレジスタが異なるためです。
+- debug 情報: portable 版と stub が持ち、命令セットごとの版は持ちません。
+
+実装記録では、ARM baseline の実行、x86-64 と AArch64 Linux への cross-compile（AVX2 版の `ymm` 命令、SVE 版の生成）を確認しています。x86-64 の SSE4.2・AVX2 の版は、Apple silicon 上の amd64 コンテナ（命令の翻訳実行）で結果が一致することだけを確認しています。実機での速度の優位、AVX-512 と SVE の実行は未確認です。
 
 ## データと所有権
 

@@ -224,9 +224,11 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
     fn mutable_reference(ty: &Type, module: &CheckedModule) -> bool {
         match ty {
             Type::Reference(_, true) => true,
-            Type::Array(ty) | Type::List(ty) | Type::Vec(ty) | Type::Reference(ty, false) => {
-                mutable_reference(ty, module)
-            }
+            Type::Array(ty)
+            | Type::List(ty)
+            | Type::Vec(ty)
+            | Type::FixedArray(ty, _)
+            | Type::Reference(ty, false) => mutable_reference(ty, module),
             Type::Record(id, arguments) => module
                 .types()
                 .record_fields(*id, arguments)

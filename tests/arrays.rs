@@ -37,9 +37,6 @@ fn array_types_do_not_depend_on_length() {
 #[test]
 fn array_constructors_require_a_length_and_typed_initializer() {
     for (source, code) in [
-        ("def f :: [i64; 4]\nfn f = [1, 2, 3, 4]", "E0002"),
-        ("record R { xs: [i64; 0] }", "E0002"),
-        ("let xs: [i64; 1] = [1]", "E0002"),
         ("new i64(3, i -> i)", "E0002"),
         ("new [i64](3)", "E0002"),
         ("new [i64](3, i -> i, 4)", "E0002"),

@@ -16,6 +16,7 @@ fn emitted_guards_record_source_sites_without_success_path_reports() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm,
             debug_output: false,
+            allocator: tsuzuri::llvm::Allocator::System,
         };
         let ordinary = tsuzuri::llvm::emit_with_options(&module, options).unwrap();
         assert_eq!(
@@ -139,6 +140,7 @@ fn typed_builtins_keep_guard_kinds_and_user_call_sites() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm: true,
             debug_output: false,
+            allocator: tsuzuri::llvm::Allocator::System,
         },
         &sources,
     )
@@ -437,6 +439,7 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
                 entry: tsuzuri::llvm::Entry::Library,
                 wasm: false,
                 debug_output: false,
+                allocator: tsuzuri::llvm::Allocator::System,
             },
             &sources,
         )
@@ -451,6 +454,7 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm: true,
             debug_output: false,
+            allocator: tsuzuri::llvm::Allocator::System,
         },
         &sources,
     )

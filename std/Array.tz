@@ -166,25 +166,33 @@ fn product values =
     for value in values do total = total * value
     total
 
+/// The first position of the smallest element under `<`, or 0 when `values` is empty.
+private def min_index :: Ord<'a> => ref ['a] -> i64
+fn min_index values =
+    let mut best = 0
+    let mut index = 1
+    while index < values.length do
+        if values[index] < values[best] then best = index
+        index = index + 1
+    best
+
+/// The first position of the largest element under `>`, or 0 when `values` is empty.
+private def max_index :: Ord<'a> => ref ['a] -> i64
+fn max_index values =
+    let mut best = 0
+    let mut index = 1
+    while index < values.length do
+        if values[index] > values[best] then best = index
+        index = index + 1
+    best
+
 def min :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 fn min values =
-    if values.length == 0 then Maybe.None else
-        let mut best = 0
-        let mut index = 1
-        while index < values.length do
-            if values[index] < values[best] then best = index
-            index = index + 1
-        Maybe.Some (ref values[best])
+    if values.length == 0 then Maybe.None else Maybe.Some (ref values[min_index values])
 
 def max :: Ord<'a> => ref ['a] -> Maybe<ref 'a>
 fn max values =
-    if values.length == 0 then Maybe.None else
-        let mut best = 0
-        let mut index = 1
-        while index < values.length do
-            if values[index] > values[best] then best = index
-            index = index + 1
-        Maybe.Some (ref values[best])
+    if values.length == 0 then Maybe.None else Maybe.Some (ref values[max_index values])
 
 def any :: (ref 'a -> bool) -> ref ['a] -> bool
 fn any predicate values =
@@ -242,6 +250,80 @@ fn binary_search values target =
 
 def sort :: Ord<'a> => ref ['a] -> ['a]
 fn sort values = Array.sort_by (left -> right -> if Ord.lt right left then 1i64 else 0i64) values
+
+/// Sorts an exclusive slice in place, stably and without allocating: the order of `Array.sort`.
+/// Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge, as Go's `sort.Stable`).
+def sort_in_place :: Ord<'a> => ref mut ['a..] -> unit
+fn sort_in_place values =
+    let length = values.length
+    let blocks = length / 20
+    for block in 0i64 .. (blocks - 1) do
+        sort_in_place_insertion values (block * 20) (block * 20 + 20)
+    sort_in_place_insertion values (blocks * 20) length
+    let mut width = 20i64
+    let mut double = 40i64
+    while width < length do
+        let pairs = length / double
+        for pair in 0i64 .. (pairs - 1) do
+            sort_in_place_merge values (pair * double) (pair * double + width) (pair * double + double)
+        let rest = pairs * double
+        if rest + width < length then sort_in_place_merge values rest (rest + width) length
+        width = double
+        double = double * 2
+
+private def sort_in_place_insertion :: Ord<'a> => ref mut ['a..] -> i64 -> i64 -> unit
+fn sort_in_place_insertion values first last =
+    for index in (first + 1) .. (last - 1) do
+        let mut current = index
+        while current > first && Ord.lt (ref values[current]) (ref values[current - 1]) do
+            Array.swap_in values current (current - 1)
+            current = current - 1
+
+private def rec sort_in_place_merge :: Ord<'a> => ref mut ['a..] -> i64 -> i64 -> i64 -> unit
+fn rec sort_in_place_merge values first middle last =
+    if middle - first == 1 then
+        let mut low = middle
+        let mut high = last
+        while low < high do
+            let half = low + (high - low) / 2
+            if Ord.lt (ref values[half]) (ref values[first]) then low = half + 1 else high = half
+        for index in first .. (low - 2) do
+            Array.swap_in values index (index + 1)
+    elif last - middle == 1 then
+        let mut low = first
+        let mut high = middle
+        while low < high do
+            let half = low + (high - low) / 2
+            if !(Ord.lt (ref values[middle]) (ref values[half])) then low = half + 1 else high = half
+        for index in middle .. -1 .. (low + 1) do
+            Array.swap_in values index (index - 1)
+    else
+        let center = first + (last - first) / 2
+        let total = center + middle
+        let mut start = if middle > center then total - last else first
+        let mut bound = if middle > center then center else middle
+        let probe = total - 1
+        while start < bound do
+            let half = start + (bound - start) / 2
+            if !(Ord.lt (ref values[probe - half]) (ref values[half])) then start = half + 1 else bound = half
+        let finish = total - start
+        if start < middle && middle < finish then sort_in_place_rotate values start middle finish
+        if first < start && start < center then sort_in_place_merge values first start center
+        if center < finish && finish < last then sort_in_place_merge values center finish last
+
+private def sort_in_place_rotate :: ref mut ['a..] -> i64 -> i64 -> i64 -> unit
+fn sort_in_place_rotate values first middle last =
+    let mut left = middle - first
+    let mut right = last - middle
+    while left != right do
+        let count = if left > right then right else left
+        let source = middle - left
+        let target = if left > right then middle else middle + right - left
+        for step in 0i64 .. (count - 1) do
+            Array.swap_in values (source + step) (target + step)
+        if left > right then left = left - right else right = right - left
+    for step in 0i64 .. (left - 1) do
+        Array.swap_in values (middle - left + step) (middle + step)
 
 def filter :: Copy<'a> => (ref 'a -> bool) -> ref ['a] -> ['a]
 fn filter predicate values =

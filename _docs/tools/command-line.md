@@ -72,6 +72,8 @@ library / WASM 出力はトップレベルコードを自動実行しません�
 | `-g`, `--debug-info` | DWARF 情報を追加 |
 | `--trap-info` | トラップ理由・位置と side table を追加。run は既定で有効 |
 | `--trap-mode return` | native の `--emit object`・`llvm`・`header` で、各 export に `tsuzuri_try_<name>`（トラップを戻り値で返す）を追加。`--trap-info` を含む（build のみ） |
+| `--allocator system`, `--allocator host`, `--allocator counting` | heap の行き先（build のみ。既定は system）。host はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び（WASM は `tsuzuri_heap` から import）、counting は `tsuzuri_alloc_stats` で数を読める。host と counting は object・llvm・header・WASM 出力だけ |
+| `--freestanding` | C ライブラリに依存しない native の object・llvm・header（build のみ。`--allocator host` が必須。IO・OS API・並列タスク・Debug 出力を使うプログラムは E2000） |
 | `--debug-output` | WASM の Debug 出力をホスト import へ接続 |
 | `--deny-warnings` | check / build / run を警告だけでも失敗させる |
 | `--warn implicit-copy` | check / build / run / test で、配列・リストの暗黙の複製を `W1006` で報告する（既定は無効。生成コードは変わらない） |

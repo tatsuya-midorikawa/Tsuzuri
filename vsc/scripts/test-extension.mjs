@@ -45,5 +45,6 @@ try {
     launchArgs: [workspace, '--extensions-dir', extensions, '--user-data-dir', userData, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--disable-gpu', '--no-sandbox'],
   });
 } finally {
-  await rm(directory, { recursive: true, force: true });
+  // Windows can hold the project directory briefly after VS Code exits (EBUSY), as in smoke.mjs.
+  await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }

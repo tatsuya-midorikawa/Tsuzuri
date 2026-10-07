@@ -40,6 +40,21 @@ pub struct EmitOptions {
     pub entry: Entry,
     pub wasm: bool,
     pub debug_output: bool,
+    /// Where the program's heap blocks come from (F13).
+    pub allocator: Allocator,
+}
+
+/// The heap runtime behind `@tz.alloc`, `@tz.free`, and `@tz.realloc` (F13).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Allocator {
+    /// The target's allocator: the C library's on native targets, the module's free list on WASM.
+    #[default]
+    System,
+    /// The host defines `tsuzuri_host_alloc`, `tsuzuri_host_free`, and `tsuzuri_host_realloc`;
+    /// WASM modules import them from `tsuzuri_heap`.
+    Host,
+    /// The system allocator with counts that `tsuzuri_alloc_stats` reports (Phase 2).
+    Counting,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,6 +264,8 @@ pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
 mod bulk;
 #[path = "llvm_compare.rs"]
 mod compare;
+#[path = "llvm_cpu.rs"]
+mod cpu;
 #[path = "llvm_display.rs"]
 mod display;
 #[path = "llvm_exception.rs"]
@@ -284,6 +301,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
             entry,
             wasm,
             debug_output: false,
+            allocator: Allocator::System,
         },
     )
 }
@@ -294,13 +312,18 @@ pub fn emit_with_options(
 ) -> Result<String, Diagnostic> {
     let tests =
         (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
-    emit_selected(
+    emit_program(
         module,
         options.entry,
         options.wasm,
         tests.as_deref(),
         options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            ..Instrumentation::default()
+        },
     )
+    .map(|(ir, _)| ir)
 }
 
 pub fn emit_with_trap_info(
@@ -318,6 +341,7 @@ pub fn emit_with_trap_info(
         options.debug_output,
         Instrumentation {
             traps: true,
+            allocator: options.allocator,
             ..Instrumentation::default()
         },
     )?;
@@ -349,10 +373,8 @@ pub fn emit_with_debug_info(
         Instrumentation {
             traps: trap_info,
             debug: Some((sources, optimized)),
-            cpu_dispatch: false,
-            wasm_threads: false,
-            memory64: false,
-            trap_return: false,
+            allocator: options.allocator,
+            ..Instrumentation::default()
         },
     )?;
     if let Some(marks) = marks {
@@ -371,6 +393,26 @@ pub fn emit_native_build(
     sources: &[TrapSource<'_>],
     debug: Option<bool>,
     trap_info: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    emit_native_build_for(
+        module,
+        options,
+        sources,
+        debug,
+        trap_info,
+        cpu::host_levels(),
+    )
+}
+
+/// `emit_native_build` for a CPU whose runtime detects `levels`, bit `L` for level `L` of
+/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3).
+pub fn emit_native_build_for(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+    levels: u8,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
         return Err(Diagnostic::new(
@@ -392,19 +434,21 @@ pub fn emit_native_build(
             traps: trap_info,
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
-            wasm_threads: false,
-            memory64: false,
-            trap_return: false,
+            allocator: options.allocator,
+            multiversion: true,
+            ..Instrumentation::default()
         },
     )?;
-    if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, false, false)
+    let mut output = if let Some(marks) = marks {
+        traps::instrument(ir, module, marks, sources, false, false)?
     } else {
-        Ok(EmitOutput {
+        EmitOutput {
             ir,
             trap_sites: Vec::new(),
-        })
-    }
+        }
+    };
+    output.ir = cpu::multiversion(output.ir, module, levels)?;
+    Ok(output)
 }
 
 /// Emits a native build whose exports also come as `tsuzuri_try_<name>`: a trap inside one returns
@@ -438,13 +482,78 @@ pub fn emit_trap_return(
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
             trap_return: true,
+            allocator: options.allocator,
+            multiversion: cpu_dispatch,
             ..Instrumentation::default()
         },
     )?;
     let mut output = traps::instrument(ir, module, marks.unwrap(), sources, false, true)?;
+    output.ir = cpu::multiversion(output.ir, module, cpu::host_levels())?;
     let wrappers = host_abi::try_wrappers(&output.ir, module);
     output.ir.push_str(&wrappers);
     Ok(output)
+}
+
+/// The CPU kernels of `src/runtime/cpu.c` that std functions call in native builds (F08), as
+/// (symbol, LLVM result type), in the order of their declarations.
+pub const CPU_KERNELS: [(&str, &str); 20] = [
+    ("tsuzuri_cpu_sum_i8", "i8"),
+    ("tsuzuri_cpu_sum_i16", "i16"),
+    ("tsuzuri_cpu_sum_i32", "i32"),
+    ("tsuzuri_cpu_sum_i64", "i64"),
+    ("tsuzuri_cpu_min_i8", "i64"),
+    ("tsuzuri_cpu_min_i16", "i64"),
+    ("tsuzuri_cpu_min_i32", "i64"),
+    ("tsuzuri_cpu_min_i64", "i64"),
+    ("tsuzuri_cpu_min_i8u", "i64"),
+    ("tsuzuri_cpu_min_i16u", "i64"),
+    ("tsuzuri_cpu_min_i32u", "i64"),
+    ("tsuzuri_cpu_min_i64u", "i64"),
+    ("tsuzuri_cpu_max_i8", "i64"),
+    ("tsuzuri_cpu_max_i16", "i64"),
+    ("tsuzuri_cpu_max_i32", "i64"),
+    ("tsuzuri_cpu_max_i64", "i64"),
+    ("tsuzuri_cpu_max_i8u", "i64"),
+    ("tsuzuri_cpu_max_i16u", "i64"),
+    ("tsuzuri_cpu_max_i32u", "i64"),
+    ("tsuzuri_cpu_max_i64u", "i64"),
+];
+
+/// The kernel that replaces the body of a specialized std function (F08): `Array.sum` and the
+/// `min_index`/`max_index` helpers of `Array.min`/`Array.max` over 8- to 64-bit integers. A sum
+/// is the same bits for both signs, so it shares the signed kernel.
+fn cpu_kernel(function: &CheckedFunction) -> Option<&'static str> {
+    if function.origin.module != ModuleOrigin::Std || function.module != "Array" {
+        return None;
+    }
+    let [Type::Reference(array, false)] = function.signature.parameters.as_slice() else {
+        return None;
+    };
+    let Type::Array(element) = array.as_ref() else {
+        return None;
+    };
+    let Type::Integer(bits @ (8 | 16 | 32 | 64), signed) = **element else {
+        return None;
+    };
+    let (operation, result) = match function.name.split(".$mono.").next()? {
+        "sum" => ("sum", Type::Integer(bits, signed)),
+        "min_index" => ("min", Type::I64),
+        "max_index" => ("max", Type::I64),
+        _ => return None,
+    };
+    if function.signature.result != result {
+        return None;
+    }
+    let unsigned = if operation != "sum" && !signed {
+        "u"
+    } else {
+        ""
+    };
+    let symbol = format!("tsuzuri_cpu_{operation}_i{bits}{unsigned}");
+    CPU_KERNELS
+        .iter()
+        .find(|(name, _)| *name == symbol)
+        .map(|(name, _)| *name)
 }
 
 /// `heap-native.ll` over the tracked allocator of the trap runtime.
@@ -456,6 +565,35 @@ fn heap_native_tracked() -> &'static str {
             .replace("@realloc", "@tsuzuri_tracked_realloc")
             .replace("@free", "@tsuzuri_tracked_free")
     })
+}
+
+/// A heap runtime renamed to the base under `heap-counting.ll` (F13 Phase 2). The trap
+/// sites of the renamed functions stay allocation failures (`traps::runtime_kind`).
+fn counted_base(heap: &str) -> String {
+    heap.replace("@tz.alloc(", "@tz.alloc.base(")
+        .replace("@tz.free(", "@tz.free.base(")
+        .replace("@tz.realloc(", "@tz.realloc.base(")
+}
+
+/// `heap-host.ll` for a WASM module, which imports the three functions from `tsuzuri_heap`.
+fn heap_host_wasm() -> String {
+    let mut heap = include_str!("runtime/heap-host.ll").to_owned();
+    for (declaration, name) in [
+        ("declare ptr @tsuzuri_host_alloc(i64, i64)", "alloc"),
+        ("declare void @tsuzuri_host_free(ptr, i64, i64)", "free"),
+        (
+            "declare ptr @tsuzuri_host_realloc(ptr, i64, i64, i64)",
+            "realloc",
+        ),
+    ] {
+        heap = heap.replace(
+            declaration,
+            &format!(
+                "{declaration} \"wasm-import-module\"=\"tsuzuri_heap\" \"wasm-import-name\"=\"{name}\""
+            ),
+        );
+    }
+    heap
 }
 
 /// Emits a WASM build with shared-memory threads, 64-bit memory, or stack checks.
@@ -483,6 +621,8 @@ pub(crate) fn emit_wasm_build(
             wasm_threads: threads,
             memory64,
             trap_return: false,
+            allocator: options.allocator,
+            multiversion: false,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -536,24 +676,6 @@ pub(crate) fn emit_test_runner_for(
     .map(|(ir, _)| ir)
 }
 
-fn emit_selected(
-    module: &CheckedModule,
-    entry: Entry,
-    wasm: bool,
-    tests: Option<&[usize]>,
-    debug_output: bool,
-) -> Result<String, Diagnostic> {
-    emit_program(
-        module,
-        entry,
-        wasm,
-        tests,
-        debug_output,
-        Instrumentation::default(),
-    )
-    .map(|(ir, _)| ir)
-}
-
 #[derive(Default)]
 struct Instrumentation<'a> {
     traps: bool,
@@ -563,6 +685,9 @@ struct Instrumentation<'a> {
     memory64: bool,
     /// Native `--trap-mode return`: a tracked heap, so a trap can free everything a call allocated.
     trap_return: bool,
+    allocator: Allocator,
+    /// A native build that compiles `@cpu` functions for further CPU levels (F08 Phase 3).
+    multiversion: bool,
 }
 
 fn emit_program(
@@ -577,10 +702,29 @@ fn emit_program(
     if entry == Entry::Console {
         validate_main(module)?;
     }
+    let allocator = instrumentation.allocator;
+    if allocator == Allocator::Host && instrumentation.wasm_threads {
+        return Err(Diagnostic::new(
+            "E2000",
+            "the host allocator cannot be combined with WASM threads",
+            Span::default(),
+        ));
+    }
+    if allocator != Allocator::System && instrumentation.trap_return {
+        return Err(Diagnostic::new(
+            "E2000",
+            "--trap-mode return keeps its own tracked allocator",
+            Span::default(),
+        ));
+    }
     let mut output = String::from(
         "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
     let types = module.types();
+    // A14: only a program that writes `dyn` defines the dyn value type.
+    if module.uses_dyn {
+        output.push_str("%tz.dyn = type { ptr, ptr }\n");
+    }
     output.push_str(&host_abi::type_definitions(module));
     let roots = tests.map(|selected| {
         selected
@@ -693,6 +837,7 @@ fn emit_program(
         memory64: instrumentation.memory64,
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
+        multiversion: instrumentation.multiversion && !wasm,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -759,6 +904,14 @@ fn emit_program(
             marks.source(&output[start..], function);
         }
     }
+    output.push_str(&emit_dyn_tables(
+        module,
+        &emitted,
+        &mut builtins,
+        &mut intrinsics,
+        &mut globals,
+        &mut specializations,
+    ));
     let mut next = 0;
     while let Some(key) = specializations.requests.get(next).cloned() {
         let start = output.len();
@@ -890,10 +1043,12 @@ fn emit_program(
     if output.contains("@tz.rec.") {
         output.push_str(include_str!("runtime/recursive.ll"));
     }
+    // A counting build also lets a WASM host allocate the buffer that `tsuzuri_alloc_stats` fills.
     if uses_host_abi(module)
         || output.contains("@tsuzuri_io_")
         || output.contains("@tsuzuri_os_")
         || output.contains("@tsuzuri_arguments(")
+        || instrumentation.allocator == Allocator::Counting
     {
         if wasm || cfg!(windows) || instrumentation.trap_return {
             output.push_str(host_abi::allocator());
@@ -901,8 +1056,15 @@ fn emit_program(
             output.push_str(&host_abi::native_allocator());
         }
     }
-    if output.contains("@tsuzuri_cpu_sum_i64(") {
-        output.push_str("declare i64 @tsuzuri_cpu_sum_i64(ptr, i64)\n");
+    // The driver links `cpu.c` when a line declares a `tsuzuri_cpu_` function (F08), and the
+    // runtime text above may end without a newline.
+    for (symbol, result) in CPU_KERNELS {
+        if output.contains(&format!("@{symbol}(")) {
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            let _ = writeln!(output, "declare {result} @{symbol}(ptr, i64)");
+        }
     }
     if output.contains("@tsuzuri_task_parallel(")
         || output.contains("@tsuzuri_task_parallel_results(")
@@ -951,11 +1113,22 @@ fn emit_program(
     if output.contains("@tz.closure.") {
         output.push_str(include_str!("runtime/closure.ll"));
     }
+    if output.contains("@tz.dyn.drop(") {
+        output.push_str(DYN_DROP);
+    }
+    if output.contains("@tz.dyn.clone(") {
+        output.push_str(DYN_CLONE);
+    }
     if output.contains("@tz.character.") {
         output.push_str(include_str!("runtime/character.ll"));
     }
     if instrumentation.wasm_threads {
-        output.push_str(include_str!("runtime/heap-wasm-threads.ll"));
+        let threads = include_str!("runtime/heap-wasm-threads.ll");
+        if allocator == Allocator::Counting {
+            output.push_str(&counted_base(threads));
+        } else {
+            output.push_str(threads);
+        }
     }
     if output.contains("@tz.string.")
         || output.contains("@tz.utf8string.")
@@ -965,28 +1138,39 @@ fn emit_program(
     {
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
-        if instrumentation.wasm_threads {
-            output.push_str(
-                &include_str!("runtime/heap-wasm.ll")
-                    .replace("@tz.alloc(", "@tz.heap.alloc.unlocked(")
-                    .replace("@tz.free(", "@tz.heap.free.unlocked(")
-                    .replace("@tz.realloc(", "@tz.heap.realloc.unlocked("),
-            );
+        let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
+            include_str!("runtime/heap-wasm.ll")
+                .replace("@tz.alloc(", "@tz.heap.alloc.unlocked(")
+                .replace("@tz.free(", "@tz.heap.free.unlocked(")
+                .replace("@tz.realloc(", "@tz.heap.realloc.unlocked(")
+                .into()
+        } else if instrumentation.memory64 {
+            include_str!("runtime/heap-wasm64.ll").into()
+        } else if wasm {
+            include_str!("runtime/heap-wasm.ll").into()
+        } else if instrumentation.trap_return {
+            heap_native_tracked().into()
         } else {
-            output.push_str(if instrumentation.memory64 {
-                include_str!("runtime/heap-wasm64.ll")
-            } else if wasm {
-                include_str!("runtime/heap-wasm.ll")
-            } else if instrumentation.trap_return {
-                heap_native_tracked()
-            } else {
-                include_str!("runtime/heap-native.ll")
-            });
+            include_str!("runtime/heap-native.ll").into()
+        };
+        match allocator {
+            Allocator::System => output.push_str(&heap),
+            Allocator::Host if wasm => output.push_str(&heap_host_wasm()),
+            Allocator::Host => output.push_str(include_str!("runtime/heap-host.ll")),
+            Allocator::Counting => {
+                // The threads wrappers above already call the unlocked heap; they are the base.
+                if !instrumentation.wasm_threads {
+                    output.push_str(&counted_base(&heap));
+                } else {
+                    output.push_str(&heap);
+                }
+                output.push_str(include_str!("runtime/heap-counting.ll"));
+            }
         }
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
-    Ok((output, globals.traps))
+    Ok((simd::with_vector_alignment(output), globals.traps))
 }
 
 /// Every implicit copy that the code makes is in `copies::sites`, which W1006 and PM07 rely on.
@@ -1065,7 +1249,7 @@ fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
 }
 
 pub fn header(module: &CheckedModule) -> String {
-    header_with(module, false)
+    header_full(module, false, Allocator::System)
 }
 
 /// Whether a function of the program calls itself again through direct calls, so its stack can overflow.
@@ -1075,6 +1259,16 @@ pub fn has_recursion(ir: &str) -> bool {
 
 /// The C header; with `trap_return` also the `tsuzuri_try_<name>` prototypes of `--trap-mode return`.
 pub fn header_with(module: &CheckedModule, trap_return: bool) -> String {
+    header_full(module, trap_return, Allocator::System)
+}
+
+/// The C header of a build with `allocator`: `--allocator host` adds the prototypes of the
+/// functions the host defines, and `--allocator counting` the statistics function (F13).
+pub fn header_with_allocator(module: &CheckedModule, allocator: Allocator) -> String {
+    header_full(module, false, allocator)
+}
+
+fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) -> String {
     let mut output = String::from(
         "/* Generated by Tsuzuri. bool uses int32_t. Narrow integers use normalized 32-bit ABI values. */\n\
          #pragma once\n\
@@ -1117,6 +1311,11 @@ pub fn header_with(module: &CheckedModule, trap_return: bool) -> String {
             let _ = writeln!(output, "{}", host_abi::try_prototype(function, module));
         }
     }
+    match allocator {
+        Allocator::System => {}
+        Allocator::Host => output.push_str(host_abi::HOST_ALLOCATOR_PROTOTYPES),
+        Allocator::Counting => output.push_str(host_abi::ALLOCATION_STATS_PROTOTYPE),
+    }
     output.push_str("\n#ifdef __cplusplus\n}\n#endif\n");
     output
 }
@@ -1129,6 +1328,7 @@ struct Globals {
     traps: Option<traps::Marks>,
     debug: Option<debug::DebugContext>,
     cpu_dispatch: bool,
+    multiversion: bool,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
     /// User functions the program hands to the host as C function pointers.
@@ -1164,6 +1364,7 @@ impl Default for Globals {
             traps: None,
             debug: None,
             cpu_dispatch: false,
+            multiversion: false,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
@@ -1449,6 +1650,14 @@ fn c_type(ty: &Type) -> String {
     }
 }
 
+/// The length of a concrete fixed-length array type `[T; N]` (A16).
+pub(super) fn fixed_length(ty: &Type) -> usize {
+    let length = ty
+        .fixed_length()
+        .expect("specialization substitutes every length parameter");
+    usize::try_from(length).expect("lengths are at most 1024")
+}
+
 fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
     match ty {
         Type::Simd(vector) => format!(
@@ -1486,8 +1695,14 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
                 .join(", ")
         ),
         Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
-        Type::Reference(_, false) if ty.shared_array_element().is_some() => "%tz.array".into(),
+        Type::Dyn(_) => "%tz.dyn".into(),
+        Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
         Type::Reference(..) | Type::Handle(_) => "ptr".into(),
+        Type::FixedArray(element, _) => {
+            format!("[{} x {}]", fixed_length(ty), llvm_type(element, module))
+        }
+        Type::ArrayView(_) => unreachable!("an exclusive slice target is not a value"),
+        Type::Length(_) => unreachable!("a length is not a value"),
         Type::Error
         | Type::Variable(_)
         | Type::Infer(_)
@@ -1496,6 +1711,239 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
     }
+}
+
+/// The spelling of a `dyn` type in LLVM names (A14): `dyn[Shapes.Shape]`, with `+copy`, `+send`,
+/// and `+ref` for its markers and region, which no class name contains.
+fn dyn_name(dyn_type: &crate::check::DynType) -> String {
+    let mut name = format!("dyn[{}", dyn_type.classes.join(","));
+    for (written, marker) in [
+        (dyn_type.copy, "+copy"),
+        (dyn_type.send, "+send"),
+        (dyn_type.borrowed, "+ref"),
+    ] {
+        if written {
+            name.push_str(marker);
+        }
+    }
+    name.push(']');
+    name
+}
+
+/// The field of a vtable's method slots (A14 D4). A vtable holds the drop slot, the clone slot
+/// (null without `Copy`), the stored value's size and alignment, the method slots, and, when the
+/// program upcasts values of its key, the vtables of the upcast targets (Phase 2).
+const DYN_SLOTS: usize = 4;
+
+/// The fields of a vtable up to its method slots, which address any slot.
+fn dyn_vtable_prefix(slots: usize) -> String {
+    format!("{{ ptr, ptr, i64, i64, [{slots} x ptr] }}")
+}
+
+/// The whole type of the vtables of a vtable key.
+fn dyn_vtable_type(layout: &crate::check::DynLayout) -> String {
+    if layout.upcasts.is_empty() {
+        dyn_vtable_prefix(layout.slots)
+    } else {
+        format!(
+            "{{ ptr, ptr, i64, i64, [{} x ptr], [{} x ptr] }}",
+            layout.slots,
+            layout.upcasts.len()
+        )
+    }
+}
+
+/// The vtable of a vtable key for a stored type, as `@"tz.vtable.Shapes.Shape[Main.Square]"`.
+fn dyn_vtable_symbol(key: &crate::check::DynType, ty: &Type, module: &CheckedModule) -> String {
+    let marker = if key.copy { "+copy" } else { "" };
+    format!(
+        "@\"tz.vtable.{}{marker}[{}]\"",
+        key.classes.join(","),
+        canonical_type(ty, module)
+    )
+}
+
+/// Drops a dyn value through its vtable; moved-out storage is zero and drops nothing.
+const DYN_DROP: &str = "define internal void @tz.dyn.drop(%tz.dyn %value) nounwind {\nentry:\n  %vtable = extractvalue %tz.dyn %value, 1\n  %empty = icmp eq ptr %vtable, null\n  br i1 %empty, label %exit, label %drop\ndrop:\n  %data = extractvalue %tz.dyn %value, 0\n  %destroy = load ptr, ptr %vtable\n  call void %destroy(ptr %data)\n  br label %exit\nexit:\n  ret void\n}\n\n";
+
+/// Clones a `Copy` dyn value through its vtable's clone slot into new data.
+const DYN_CLONE: &str = "define internal %tz.dyn @tz.dyn.clone(%tz.dyn %value) nounwind {\nentry:\n  %vtable = extractvalue %tz.dyn %value, 1\n  %empty = icmp eq ptr %vtable, null\n  br i1 %empty, label %exit, label %copy\ncopy:\n  %data = extractvalue %tz.dyn %value, 0\n  %slot = getelementptr inbounds { ptr, ptr }, ptr %vtable, i32 0, i32 1\n  %clone = load ptr, ptr %slot\n  %new = call ptr %clone(ptr %data)\n  %result = insertvalue %tz.dyn %value, ptr %new, 0\n  ret %tz.dyn %result\nexit:\n  ret %tz.dyn %value\n}\n\n";
+
+/// The vtables whose slot functions the program emits, after their slot adapters and the drop
+/// and clone functions of their stored types (A14 D4), in `CheckedModule::vtables` order.
+fn emit_dyn_tables(
+    module: &CheckedModule,
+    emitted: &[bool],
+    builtins: &mut Builtins,
+    intrinsics: &mut BTreeSet<String>,
+    globals: &mut Globals,
+    specializations: &mut Specializations,
+) -> String {
+    let mut output = String::new();
+    let mut adapters = BTreeSet::new();
+    let mut drops = BTreeSet::new();
+    let mut clones = BTreeSet::new();
+    for ((key, ty), functions) in &module.vtables {
+        if !functions.iter().all(|id| emitted[*id]) {
+            continue;
+        }
+        let name = canonical_type(ty, module);
+        // Any function of the module gives the helpers' emitters their context.
+        let context = functions[0];
+        macro_rules! emitter {
+            () => {
+                FunctionEmitter::new(
+                    module,
+                    &module.functions[context],
+                    context,
+                    builtins,
+                    intrinsics,
+                    globals,
+                    specializations,
+                )
+            };
+        }
+        let (size, align) = storage_layout(ty, module);
+        let size = size.max(1);
+        if drops.insert(ty.clone()) {
+            let mut drop = emitter!();
+            if ty.needs_drop(&module.types()) {
+                let value = drop.value(format!("load {}, ptr %data", drop.ty(ty)));
+                drop.drop_value(ty, &value);
+            }
+            drop.instruction("call void @tz.free(ptr %data)");
+            drop.instruction("ret void");
+            output.push_str(&drop.auxiliary(&format!("void @\"tz.dyn.drop[{name}]\"(ptr %data)")));
+        }
+        if key.copy && clones.insert(ty.clone()) {
+            let mut clone = emitter!();
+            let copy = clone.value(format!("call ptr @tz.alloc(i64 {size})"));
+            let value = clone.value(format!("load {}, ptr %data", clone.ty(ty)));
+            let value = if ty.needs_drop(&module.types()) {
+                clone.clone_value(ty, &value)
+            } else {
+                value
+            };
+            clone.instruction(format!("store {} {value}, ptr {copy}", clone.ty(ty)));
+            clone.instruction(format!("ret ptr {copy}"));
+            output.push_str(&clone.auxiliary(&format!("ptr @\"tz.dyn.clone[{name}]\"(ptr %data)")));
+        }
+        for &id in functions {
+            if adapters.insert(id) {
+                output.push_str(&dyn_adapter(
+                    module,
+                    id,
+                    builtins,
+                    intrinsics,
+                    globals,
+                    specializations,
+                ));
+            }
+        }
+        let layout = &module.dyn_layouts[key];
+        let slots = functions
+            .iter()
+            .map(|id| {
+                format!(
+                    "ptr @\"tz.dyn.slot.{}\"",
+                    module.functions[*id].qualified_name()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let clone = if key.copy {
+            format!("ptr @\"tz.dyn.clone[{name}]\"")
+        } else {
+            "ptr null".into()
+        };
+        let mut fields = format!(
+            "ptr @\"tz.dyn.drop[{name}]\", {clone}, i64 {size}, i64 {align}, [{} x ptr] [{slots}]",
+            functions.len()
+        );
+        if !layout.upcasts.is_empty() {
+            let targets = layout
+                .upcasts
+                .iter()
+                .map(|target| format!("ptr {}", dyn_vtable_symbol(target, ty, module)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(fields, ", [{} x ptr] [{targets}]", layout.upcasts.len());
+        }
+        let _ = writeln!(
+            output,
+            "{} = internal unnamed_addr constant {} {{ {fields} }}",
+            dyn_vtable_symbol(key, ty, module),
+            dyn_vtable_type(layout)
+        );
+    }
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
+}
+
+/// The slot adapter of a method function (A14 D4): `R (ptr data, A1, ..., An)` turns the data of
+/// a dyn value into the method's receiver, the reference itself, the slice it holds, or the
+/// value moved out of its freed allocation, and calls the method directly. A method defined
+/// with fewer parameters returns a function that takes the rest.
+fn dyn_adapter(
+    module: &CheckedModule,
+    id: usize,
+    builtins: &mut Builtins,
+    intrinsics: &mut BTreeSet<String>,
+    globals: &mut Globals,
+    specializations: &mut Specializations,
+) -> String {
+    let function = &module.functions[id];
+    let mut adapter = FunctionEmitter::new(
+        module,
+        function,
+        id,
+        builtins,
+        intrinsics,
+        globals,
+        specializations,
+    );
+    let receiver_type = &function.signature.parameters[0];
+    let receiver = match receiver_type {
+        Type::Reference(..) if receiver_type.slice_element().is_some() => {
+            adapter.value("load %tz.array, ptr %data")
+        }
+        Type::Reference(..) => "%data".to_owned(),
+        ty => {
+            let value = adapter.value(format!("load {}, ptr %data", adapter.ty(ty)));
+            adapter.instruction("call void @tz.free(ptr %data)");
+            value
+        }
+    };
+    let mut parameters = vec!["ptr %data".to_owned()];
+    let mut values = vec![(receiver_type.clone(), receiver)];
+    for (index, ty) in function.signature.parameters.iter().enumerate().skip(1) {
+        parameters.push(format!("{} %a{index}", adapter.ty(ty)));
+        values.push((ty.clone(), format!("%a{index}")));
+    }
+    let count = function.parameters.len();
+    let direct = values[..count]
+        .iter()
+        .map(|(ty, value)| format!("{} {value}", adapter.ty(ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut ty = function.signature.as_type().after_arguments(count);
+    let mut value = adapter.value(format!(
+        "call {} @tz.fn.{}({direct})",
+        adapter.ty(&ty),
+        function.qualified_name()
+    ));
+    for (argument_type, argument) in &values[count..] {
+        (value, ty) = adapter.apply_value(&value, &ty, Some((argument_type, argument)), false);
+    }
+    let result = adapter.ty(&ty);
+    adapter.instruction(format!("ret {result} {value}"));
+    adapter.auxiliary(&format!(
+        "{result} @\"tz.dyn.slot.{}\"({})",
+        function.qualified_name(),
+        parameters.join(", ")
+    ))
 }
 
 /// The injective Tsuzuri spelling of a concrete type used in LLVM type names.
@@ -1517,6 +1965,14 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
             format!("{}[{}]", module.unions[*id].name, list(arguments))
         }
         Type::Array(element) => format!("array[{}]", canonical_type(element, module)),
+        Type::ArrayView(element) => format!("view[{}]", canonical_type(element, module)),
+        Type::FixedArray(element, length) => format!(
+            "fixed[{},{}]",
+            canonical_type(length, module),
+            canonical_type(element, module)
+        ),
+        // Digits never start a type's spelling, so a length argument stays injective.
+        Type::Length(length) => length.to_string(),
         Type::List(element) => format!("list[{}]", canonical_type(element, module)),
         Type::Vec(element) => format!("vec[{}]", canonical_type(element, module)),
         Type::Tuple(elements) => format!("tuple[{}]", list(elements)),
@@ -1529,6 +1985,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
         Type::Handle(name) => format!("extern.{name}"),
+        Type::Dyn(dyn_type) => dyn_name(dyn_type),
         Type::Simd(_)
         | Type::Integer(..)
         | Type::Binary(_)
@@ -1573,14 +2030,7 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
         (size.next_multiple_of(align), align)
     };
     match ty {
-        Type::Simd(vector) => {
-            if vector.kind == crate::simd::SimdKind::Mask {
-                let bytes = usize::from(vector.lanes()).div_ceil(8);
-                (bytes, bytes)
-            } else {
-                (16, 16)
-            }
-        }
+        Type::Simd(vector) => (vector.bytes(), vector.bytes()),
         Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
             let bytes = usize::from(*bits).div_ceil(8);
             (bytes, bytes)
@@ -1591,8 +2041,16 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
         Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
         Type::Function(..) | Type::Task(_) => (32, 8),
         Type::Vec(_) => (24, 8),
-        Type::Reference(_, false) if ty.shared_array_element().is_some() => (16, 8),
+        Type::Dyn(_) => (16, 8),
+        Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
         Type::Reference(..) | Type::Handle(_) => (8, 8),
+        Type::ArrayView(_) => unreachable!("an exclusive slice target is not a value"),
+        Type::Length(_) => unreachable!("a length is not a value"),
+        // The stride of `[N x T]` is the element's size, already a multiple of its alignment.
+        Type::FixedArray(element, _) => {
+            let (size, align) = storage_layout(element, module);
+            (size * fixed_length(ty), align)
+        }
         Type::Tuple(elements) => {
             aggregate(&mut elements.iter().map(|ty| storage_layout(ty, module)))
         }
@@ -1673,14 +2131,25 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 /// entry point, and every function they refer to (GUIDE D-22). Unused std
 /// functions and the helpers generated for them are left out.
 fn reachable_functions(module: &CheckedModule, roots: Option<&[usize]>) -> BTreeSet<usize> {
-    fn references(expression: &TypedExpr, pending: &mut Vec<usize>) {
-        if let TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) =
-            &expression.kind
-        {
-            pending.push(*id);
+    fn references(expression: &TypedExpr, module: &CheckedModule, pending: &mut Vec<usize>) {
+        match &expression.kind {
+            TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
+                pending.push(*id);
+            }
+            // A14: a stored value's vtable calls its slot functions; an upcast reuses those.
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::DynOf =>
+            {
+                if let [ty, Type::Dyn(target)] = instance.types.as_slice()
+                    && let Some(functions) = module.vtables.get(&(target.vtable_key(), ty.clone()))
+                {
+                    pending.extend(functions);
+                }
+            }
+            _ => {}
         }
         for child in expression.children() {
-            references(child, pending);
+            references(child, module, pending);
         }
     }
     let mut pending: Vec<usize> = roots.map_or_else(
@@ -1708,7 +2177,7 @@ fn reachable_functions(module: &CheckedModule, roots: Option<&[usize]>) -> BTree
     let mut reachable = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
-            references(&module.functions[id].body, &mut pending);
+            references(&module.functions[id].body, module, &mut pending);
         }
     }
     reachable
@@ -1725,6 +2194,7 @@ fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::Task(ty)
+            | Type::FixedArray(ty, _)
             | Type::Reference(ty, _) => visit(ty, pending),
             Type::Tuple(types) => types.iter().for_each(|ty| visit(ty, pending)),
             Type::Function(parameters, result) => {
@@ -2082,28 +2552,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.single_use = call_specialization::single_use_locals(&self.function.body);
         self.ranges = crate::ranges::analyze(self.module, self.function);
         self.block = "loop".into();
-        for (index, parameter) in self.function.parameters.iter().enumerate() {
-            self.bind_local(parameter, &format!("%p{index}"));
-        }
-        if self.globals.cpu_dispatch
-            && self.function.origin.module == ModuleOrigin::Std
-            && self.function.module == "Array"
-            && self.function.name.split(".$mono.").next() == Some("sum")
-            && self.function.signature.parameters
-                == [Type::Reference(
-                    Box::new(Type::Array(Box::new(Type::I64))),
-                    false,
-                )]
-            && self.function.signature.result == Type::I64
-        {
-            let data = self.value("extractvalue %tz.array %p0, 0");
-            let length = self.value("extractvalue %tz.array %p0, 1");
-            let result = self.value(format!(
-                "call i64 @tsuzuri_cpu_sum_i64(ptr {data}, i64 {length})"
-            ));
-            self.instruction(format!("ret i64 {result}"));
+        if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {
+            // A14: the parameters pass on to the slot, which owns them; nothing drops here.
+            self.dyn_dispatch(slot, slots);
         } else {
-            self.tail(&self.function.body);
+            for (index, parameter) in self.function.parameters.iter().enumerate() {
+                self.bind_local(parameter, &format!("%p{index}"));
+            }
+            self.emit_body();
         }
         let parameters = self
             .function
@@ -2116,8 +2572,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let debug = self
             .debug_scope
             .map_or_else(String::new, |scope| format!(" !dbg !{scope}"));
+        // `cpu::multiversion` replaces the marked function with versions and a stub (F08 Phase 3).
+        let cpu = if self.globals.multiversion && self.function.origin.cpu != 0 {
+            format!(
+                " {}\"{}:{}\"",
+                cpu::MARK,
+                self.function.origin.cpu,
+                self.function_id
+            )
+        } else {
+            String::new()
+        };
         let mut output = format!(
-            "define internal {} {}({parameters}) nounwind{debug} {{\nentry:\n",
+            "define internal {} {}({parameters}) nounwind{cpu}{debug} {{\nentry:\n",
             self.ty(&self.function.signature.result),
             self.symbol
         );
@@ -2145,6 +2612,57 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         output.push_str("}\n\n");
         output
+    }
+
+    /// The body of an ordinary function, whose parameters are bound. A native build with CPU
+    /// dispatch replaces the body of a std kernel function with a call to its kernel (F08).
+    fn emit_body(&mut self) {
+        if let Some(symbol) = self
+            .globals
+            .cpu_dispatch
+            .then(|| cpu_kernel(self.function))
+            .flatten()
+        {
+            let result = self.ty(&self.function.signature.result);
+            let data = self.value("extractvalue %tz.array %p0, 0");
+            let length = self.value("extractvalue %tz.array %p0, 1");
+            let value = self.value(format!("call {result} @{symbol}(ptr {data}, i64 {length})"));
+            self.instruction(format!("ret {result} {value}"));
+        } else {
+            self.tail(&self.function.body);
+        }
+    }
+
+    /// The body of a method of a generated `dyn` instance (A14 D4): reads slot `slot` of the
+    /// receiver's vtable and calls it with the receiver's data and the other parameters. The
+    /// slot's adapter converts the data to the method's receiver, so the call has the same
+    /// type for every stored type, as WASM's indirect calls require.
+    fn dyn_dispatch(&mut self, slot: u32, slots: u32) {
+        let pair = match &self.function.signature.parameters[0] {
+            Type::Reference(..) => self.value("load %tz.dyn, ptr %p0"),
+            _ => "%p0".to_owned(),
+        };
+        let data = self.value(format!("extractvalue %tz.dyn {pair}, 0"));
+        let vtable = self.value(format!("extractvalue %tz.dyn {pair}, 1"));
+        let pointer = self.value(format!(
+            "getelementptr inbounds {}, ptr {vtable}, i32 0, i32 {DYN_SLOTS}, i64 {slot}",
+            dyn_vtable_prefix(slots as usize)
+        ));
+        let method = self.value(format!("load ptr, ptr {pointer}"));
+        let mut arguments = vec![format!("ptr {data}")];
+        for (index, ty) in self
+            .function
+            .signature
+            .parameters
+            .iter()
+            .enumerate()
+            .skip(1)
+        {
+            arguments.push(format!("{} %p{index}", self.ty(ty)));
+        }
+        let result = self.ty(&self.function.signature.result);
+        let value = self.value(format!("call {result} {method}({})", arguments.join(", ")));
+        self.instruction(format!("ret {result} {value}"));
     }
 
     fn ty(&self, ty: &Type) -> String {
@@ -2594,9 +3112,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     fn shared_array_deref(expression: &TypedExpr) -> Option<&TypedExpr> {
         match &expression.kind {
-            TypedExprKind::Dereference(reference)
-                if reference.ty.shared_array_element().is_some() =>
-            {
+            TypedExprKind::Dereference(reference) if reference.ty.slice_element().is_some() => {
                 Some(reference)
             }
             _ => None,
@@ -2632,6 +3148,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             | TypedExprKind::Lambda { .. }
             | TypedExprKind::CaseConstructor { .. } => {
                 unreachable!("polymorphism is resolved before LLVM")
+            }
+            // `emit` writes a dispatch body itself; it is never a subexpression (A14).
+            TypedExprKind::DynDispatch { .. } => {
+                unreachable!("a dyn dispatch is a whole function body")
             }
             TypedExprKind::Construct {
                 case_id, payload, ..
@@ -2886,6 +3406,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.record_update(expression, base, fields)
             }
             TypedExprKind::Slice { value, start, end } => {
+                if expression.ty.is_view() {
+                    self.own_heap_storage(value);
+                }
                 self.array_slice(value, start.as_deref(), end.as_deref())
             }
             TypedExprKind::Record(fields) => {
@@ -3029,6 +3552,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.release_operand(string, &value, &frames);
                 unit
             }
+            TypedExprKind::Index(array, index) if matches!(array.ty, Type::FixedArray(..)) => {
+                // A16: the element is read in place, without loading the whole array.
+                let (base, operand) = self.fixed_base(array);
+                let position = self.expression(index);
+                let Type::FixedArray(element, _) = &array.ty else {
+                    unreachable!()
+                };
+                let pointer = self.fixed_element_pointer(&array.ty, &base, index, &position);
+                let extracted = self.value(format!("load {}, ptr {pointer}", self.ty(element)));
+                #[cfg(debug_assertions)]
+                if element.is_copy(&self.module.types()) && element.needs_drop(&self.module.types())
+                {
+                    self.note_copy(expression);
+                }
+                let result = self.clone_value(element, &extracted);
+                if let Some((value, frames)) = operand {
+                    self.release_operand(array, &value, &frames);
+                }
+                result
+            }
             TypedExprKind::Index(array, index) => {
                 let proven = self.ranges.index_in_bounds(array, index);
                 let (value, frames) = self.read_operand(array);
@@ -3047,6 +3590,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let result = self.clone_value(element, &extracted);
                 self.release_operand(array, &value, &frames);
                 result
+            }
+            TypedExprKind::Length(array) if matches!(array.ty, Type::FixedArray(..)) => {
+                // The length is the type's; the operand still runs for its effects and traps.
+                let (_, operand) = self.fixed_base(array);
+                if let Some((value, frames)) = operand {
+                    self.release_operand(array, &value, &frames);
+                }
+                fixed_length(&array.ty).to_string()
             }
             TypedExprKind::Length(array) => {
                 let (value, frames) = self.read_operand(array);
@@ -3122,7 +3673,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn emit_place(&mut self, expression: &TypedExpr) -> String {
         match &expression.kind {
             TypedExprKind::Local(id) => self.locals[id].clone(),
-            TypedExprKind::Dereference(value) if value.ty.shared_array_element().is_some() => {
+            TypedExprKind::Dereference(value) if value.ty.slice_element().is_some() => {
                 let view = self.expression_mode(value, false);
                 self.spill(&expression.ty, &view)
             }
@@ -3156,6 +3707,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let slot = self.slot(&value.ty);
                 self.instruction(format!("store %tz.list {descriptor}, ptr {slot}"));
                 slot
+            }
+            TypedExprKind::Index(value, index) if matches!(value.ty, Type::FixedArray(..)) => {
+                let base = self.place(value);
+                let position = self.expression(index);
+                self.fixed_element_pointer(&value.ty, &base, index, &position)
             }
             TypedExprKind::Index(value, index) => {
                 let proven = self.ranges.index_in_bounds(value, index);
@@ -3192,6 +3748,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Function(..) | Type::Task(_) => {
                 self.instruction(format!("call void @tz.closure.drop(%tz.closure {value})"))
             }
+            // A14: the vtable's drop slot drops the stored value and frees its data.
+            Type::Dyn(_) => self.instruction(format!("call void @tz.dyn.drop(%tz.dyn {value})")),
             Type::String | Type::Utf8String => {
                 let pointer = self.value(format!("extractvalue {} {value}, 0", self.ty(ty)));
                 self.instruction(format!("call void @tz.free(ptr {pointer})"));
@@ -3249,6 +3807,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     });
                 }
                 self.instruction(format!("call void @tz.free(ptr {data})"));
+            }
+            // A16: the elements are inline, so only their own resources drop, in a loop.
+            Type::FixedArray(element, _) if element.needs_drop(&self.module.types()) => {
+                let slot = self.spill(ty, value);
+                self.array_loop(&fixed_length(ty).to_string(), |emitter, index| {
+                    let pointer = emitter.fixed_pointer(ty, &slot, index);
+                    let extracted =
+                        emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                    emitter.drop_value(element, &extracted);
+                });
             }
             Type::List(element) => {
                 let head = self.value(format!("extractvalue %tz.list {value}, 0"));
@@ -3329,6 +3897,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Vec(element) => self.clone_vector(element, value),
             Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
             Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
+            // A14 Phase 2: only a `Copy` dyn value has a clone slot.
+            Type::Dyn(dyn_type) => {
+                assert!(dyn_type.copy, "dyn values without Copy cannot be cloned");
+                self.value(format!("call %tz.dyn @tz.dyn.clone(%tz.dyn {value})"))
+            }
             Type::String | Type::Utf8String => {
                 let ty = self.ty(ty);
                 let pointer = self.value(format!("extractvalue {ty} {value}, 0"));
@@ -3410,6 +3983,20 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     ));
                 });
                 result
+            }
+            // A16: a Copy fixed-length array is an SSA value copy; owned elements clone in a loop.
+            Type::FixedArray(element, _) if element.needs_drop(&self.module.types()) => {
+                let source = self.spill(ty, value);
+                let target = self.slot(ty);
+                self.array_loop(&fixed_length(ty).to_string(), |emitter, index| {
+                    let from = emitter.fixed_pointer(ty, &source, index);
+                    let llvm = emitter.ty(element);
+                    let original = emitter.value(format!("load {llvm}, ptr {from}"));
+                    let copy = emitter.clone_value(element, &original);
+                    let to = emitter.fixed_pointer(ty, &target, index);
+                    emitter.instruction(format!("store {llvm} {copy}, ptr {to}"));
+                });
+                self.value(format!("load {}, ptr {target}", self.ty(ty)))
             }
             Type::List(element) => {
                 let source = self.value(format!("extractvalue %tz.list {value}, 0"));
@@ -3597,7 +4184,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         start: Option<&TypedExpr>,
         end: Option<&TypedExpr>,
     ) -> String {
-        let view = self.expression_mode(source, false);
+        let view = if matches!(source.ty, Type::FixedArray(..)) {
+            // A16: a fixed-length array place is viewed in place as `{ ptr, N }`.
+            let base = self.place(source);
+            let view = self.value(format!(
+                "insertvalue %tz.array zeroinitializer, ptr {base}, 0"
+            ));
+            self.value(format!(
+                "insertvalue %tz.array {view}, i64 {}, 1",
+                fixed_length(&source.ty)
+            ))
+        } else {
+            self.expression_mode(source, false)
+        };
         let length = self.value(format!("extractvalue %tz.array {view}, 1"));
         let start = start.map_or_else(|| "0".into(), |start| self.expression(start));
         let end = end.map_or_else(|| length.clone(), |end| self.expression(end));
@@ -3606,7 +4205,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let valid = self.value(format!("and i1 {ordered}, {bounded}"));
         self.guard(&valid, TrapKind::BoundsCheck);
         let data = self.value(format!("extractvalue %tz.array {view}, 0"));
-        let Type::Array(element) = &source.ty else {
+        let (Type::Array(element) | Type::FixedArray(element, _)) = &source.ty else {
             unreachable!("slice source type checked")
         };
         let pointer = self.element_pointer(element, &data, &start);
@@ -3615,6 +4214,108 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             "insertvalue %tz.array zeroinitializer, ptr {pointer}, 0"
         ));
         self.value(format!("insertvalue %tz.array {view}, i64 {length}, 1"))
+    }
+
+    /// `Dyn.of value` (A14 D3): moves the value into a new allocation and pairs it with the
+    /// vtable of its type. A dyn value whose type specialization chose to upcast keeps its data
+    /// and takes the target's vtable from its own vtable's upcast table (Phase 2).
+    fn dyn_of(&mut self, instance: &BuiltinInstance, argument: &TypedExpr) -> String {
+        let [ty, Type::Dyn(target)] = instance.types.as_slice() else {
+            unreachable!("Dyn.of stores a value in a dyn type")
+        };
+        let key = target.vtable_key();
+        let value = self.expression(argument);
+        if self.module.vtables.contains_key(&(key.clone(), ty.clone())) {
+            let size = storage_layout(ty, self.module).0.max(1);
+            let cell = self.value(format!("call ptr @tz.alloc(i64 {size})"));
+            self.instruction(format!("store {} {value}, ptr {cell}", self.ty(ty)));
+            let pair = self.value(format!(
+                "insertvalue %tz.dyn zeroinitializer, ptr {cell}, 0"
+            ));
+            let vtable = dyn_vtable_symbol(&key, ty, self.module);
+            return self.value(format!("insertvalue %tz.dyn {pair}, ptr {vtable}, 1"));
+        }
+        let Type::Dyn(source) = ty else {
+            unreachable!("only a dyn value is stored without a vtable of its type")
+        };
+        let source = source.vtable_key();
+        if source == key {
+            return value;
+        }
+        let layout = &self.module.dyn_layouts[&source];
+        let index = layout
+            .upcasts
+            .iter()
+            .position(|candidate| *candidate == key)
+            .expect("an upcast is in its source's table");
+        let table = dyn_vtable_type(layout);
+        let vtable = self.value(format!("extractvalue %tz.dyn {value}, 1"));
+        let pointer = self.value(format!(
+            "getelementptr inbounds {table}, ptr {vtable}, i32 0, i32 {}, i64 {index}",
+            DYN_SLOTS + 1
+        ));
+        let upcast = self.value(format!("load ptr, ptr {pointer}"));
+        self.value(format!("insertvalue %tz.dyn {value}, ptr {upcast}, 1"))
+    }
+
+    /// `FixedArray.init` (A16): stores `element(index)` for index 0, 1, ..., N - 1 into a slot of
+    /// the array type `ty` and reads the filled array back.
+    fn fill_fixed_array(
+        &mut self,
+        ty: &Type,
+        mut element: impl FnMut(&mut Self, &str) -> String,
+    ) -> String {
+        let Type::FixedArray(element_type, _) = ty else {
+            unreachable!("FixedArray.init creates a fixed-length array")
+        };
+        let slot = self.slot(ty);
+        self.array_loop(&fixed_length(ty).to_string(), |emitter, index| {
+            let value = element(emitter, index);
+            let pointer = emitter.fixed_pointer(ty, &slot, index);
+            emitter.instruction(format!(
+                "store {} {value}, ptr {pointer}",
+                emitter.ty(element_type)
+            ));
+        });
+        self.value(format!("load {}, ptr {slot}", self.ty(ty)))
+    }
+
+    /// The address of a fixed-length array operand (A16): a place stays where it is, and any other
+    /// value is spilled, returned with its operand to release after use.
+    fn fixed_base(&mut self, array: &TypedExpr) -> (String, Option<(String, Vec<Frame>)>) {
+        if Self::is_place(array) {
+            return (self.place(array), None);
+        }
+        let (value, frames) = self.read_operand(array);
+        let slot = self.spill(&array.ty, &value);
+        (slot, Some((value, frames)))
+    }
+
+    /// The address of element `index` of the `[N x T]` at `base`, without a bounds check.
+    fn fixed_pointer(&mut self, ty: &Type, base: &str, index: &str) -> String {
+        self.value(format!(
+            "getelementptr inbounds {}, ptr {base}, i64 0, i64 {index}",
+            self.ty(ty)
+        ))
+    }
+
+    /// The checked address of element `position` (the value of `index`) of the `[N x T]` at
+    /// `base`. An integer literal index below N needs no check (A16 D6); any other index, even a
+    /// literal past the end, traps at run time.
+    fn fixed_element_pointer(
+        &mut self,
+        ty: &Type,
+        base: &str,
+        index: &TypedExpr,
+        position: &str,
+    ) -> String {
+        let length = fixed_length(ty);
+        let constant = matches!(index.kind, TypedExprKind::Int(value) if value < length as u128);
+        if !constant {
+            let valid = self.value(format!("icmp ult i64 {position}, {length}"));
+            self.guard(&valid, TrapKind::BoundsCheck);
+        }
+        self.fixed_pointer(ty, base, position)
     }
 
     fn checked_element_pointer(&mut self, ty: &Type, collection: &str, index: &str) -> String {
@@ -4008,7 +4709,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         operand: &TypedExpr,
         cleanup: &mut Vec<(Type, String, String, Vec<Frame>)>,
     ) -> String {
-        if argument.ty.shared_array_element().is_some() {
+        if argument.ty.slice_element().is_some() {
             if Self::is_place(operand) {
                 self.expression_mode(operand, false)
             } else {
@@ -4043,6 +4744,40 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .any(|argument| matches!(argument.kind, TypedExprKind::BorrowOperand(_)))
         {
             return self.comparison_call(callee, arguments);
+        }
+        // A14: `Dyn.of value` stores the value with its vtable, or upcasts a dyn value.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && instance.builtin == Builtin::DynOf
+            && let [value] = arguments
+        {
+            return self.dyn_of(instance, value);
+        }
+        // A16: a direct `FixedArray.init f` fills the array in place, calling a known `f` directly.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && instance.builtin == Builtin::FixedArrayInit
+            && let [initializer] = arguments
+        {
+            let ty = callee.ty.after_arguments(1);
+            let direct = self.prepare_known_call(initializer, 1);
+            let function = direct.is_none().then(|| self.expression(initializer));
+            let array = self.fill_fixed_array(&ty, |emitter, index| match &direct {
+                Some(call) => emitter.emit_borrowed_call(call, &[index.to_owned()]),
+                None => {
+                    emitter
+                        .apply_value(
+                            function.as_ref().unwrap(),
+                            &initializer.ty,
+                            Some((&Type::I64, index)),
+                            true,
+                        )
+                        .0
+                }
+            });
+            match &direct {
+                Some(call) => self.finish_borrowed_call(call),
+                None => self.drop_value(&initializer.ty, function.as_ref().unwrap()),
+            }
+            return array;
         }
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind {
             let function = &self.module.functions[id];
@@ -4832,6 +5567,10 @@ fn emit_builtin(
         Builtin::ArraySet
         | Builtin::ArrayUpdate
         | Builtin::ArraySwap
+        | Builtin::ArrayWrite
+        | Builtin::ArraySwapIn
+        | Builtin::ArraySplitAtMut
+        | Builtin::FixedArrayInit
         | Builtin::ListCons
         | Builtin::ListTail => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::ArrayConcat
@@ -5014,6 +5753,19 @@ fn emit_typed_builtin(
         emitter.integer_builtin(instance, ty)
     } else if instance.builtin.name().starts_with("Vec.") {
         emitter.vector_builtin(instance, ty)
+    } else if instance.builtin == Builtin::FixedArrayInit {
+        // A function value of `FixedArray.init`; its instance types include the array (A16).
+        let Type::Function(parameters, _) = ty else {
+            unreachable!("builtin has function type")
+        };
+        let initializer = parameters[0].clone();
+        let array = emitter.fill_fixed_array(&ty.after_arguments(1), |emitter, index| {
+            emitter
+                .apply_value("%arg0", &initializer, Some((&Type::I64, index)), true)
+                .0
+        });
+        emitter.drop_value(&initializer, "%arg0");
+        array
     } else {
         match instance.builtin {
             Builtin::ArraySet | Builtin::ArrayUpdate | Builtin::ArraySwap => {
@@ -5046,6 +5798,52 @@ fn emit_typed_builtin(
                     emitter.instruction(format!("store {element_type} {replacement}, ptr {first}"));
                 }
                 "%arg0".to_owned()
+            }
+            Builtin::ArrayWrite | Builtin::ArraySwapIn => {
+                let collection = Type::Array(Box::new(element.clone()));
+                let first = emitter.checked_element_pointer(&collection, "%arg0", "%arg1");
+                if instance.builtin == Builtin::ArraySwapIn {
+                    let second = emitter.checked_element_pointer(&collection, "%arg0", "%arg2");
+                    let same = emitter.value("icmp eq i64 %arg1, %arg2");
+                    let done = emitter.label();
+                    let exchange = emitter.label();
+                    emitter.branch(&same, &done, &exchange);
+                    emitter.begin(&exchange);
+                    let left = emitter.value(format!("load {element_type}, ptr {first}"));
+                    let right = emitter.value(format!("load {element_type}, ptr {second}"));
+                    emitter.instruction(format!("store {element_type} {right}, ptr {first}"));
+                    emitter.instruction(format!("store {element_type} {left}, ptr {second}"));
+                    emitter.jump(&done);
+                    emitter.begin(&done);
+                } else {
+                    let previous = emitter.value(format!("load {element_type}, ptr {first}"));
+                    emitter.drop_value(element, &previous);
+                    emitter.instruction(format!("store {element_type} %arg2, ptr {first}"));
+                }
+                "0".to_owned()
+            }
+            Builtin::ArraySplitAtMut => {
+                let length = emitter.value("extractvalue %tz.array %arg0, 1");
+                let valid = emitter.value(format!("icmp ule i64 %arg1, {length}"));
+                emitter.guard(&valid, TrapKind::BoundsCheck);
+                let data = emitter.value("extractvalue %tz.array %arg0, 0");
+                let left = emitter.value(format!(
+                    "insertvalue %tz.array zeroinitializer, ptr {data}, 0"
+                ));
+                let left = emitter.value(format!("insertvalue %tz.array {left}, i64 %arg1, 1"));
+                let rest = emitter.element_pointer(element, &data, "%arg1");
+                let remaining = emitter.value(format!("sub i64 {length}, %arg1"));
+                let right = emitter.value(format!(
+                    "insertvalue %tz.array zeroinitializer, ptr {rest}, 0"
+                ));
+                let right =
+                    emitter.value(format!("insertvalue %tz.array {right}, i64 {remaining}, 1"));
+                let pair = emitter.value(format!(
+                    "insertvalue {{ %tz.array, %tz.array }} zeroinitializer, %tz.array {left}, 0"
+                ));
+                emitter.value(format!(
+                    "insertvalue {{ %tz.array, %tz.array }} {pair}, %tz.array {right}, 1"
+                ))
             }
             Builtin::ListCons => {
                 let length = emitter.value("extractvalue %tz.list %arg1, 1");

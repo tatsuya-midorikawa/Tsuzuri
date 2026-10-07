@@ -307,7 +307,12 @@ fn owned(ty: &Type, module: &CheckedModule) -> bool {
     }
     match ty {
         Type::Variable(_) | Type::Infer(_) | Type::Reference(..) | Type::Function(..) => false,
-        Type::Array(element) | Type::List(element) | Type::Vec(element) => owned(element, module),
+        // `dyn C {r}` holds the borrows that it was built from (A14 Phase 2).
+        Type::Dyn(dyn_type) => !dyn_type.borrowed,
+        Type::Array(element)
+        | Type::List(element)
+        | Type::Vec(element)
+        | Type::FixedArray(element, _) => owned(element, module),
         Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
         Type::Record(id, arguments) => module
             .types()
@@ -413,6 +418,13 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
 
 fn error(code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
     Diagnostic::new(code, message, span)
+}
+
+/// Whether `callee` is `Dyn.of` building a dyn value without a region, which owns all it holds (A14).
+fn owned_dyn_of(callee: &TypedExpr) -> bool {
+    matches!(&callee.kind, E::Function(crate::check::FunctionRef::Builtin(instance))
+        if instance.builtin == crate::check::Builtin::DynOf
+            && matches!(instance.types.get(1), Some(Type::Dyn(dyn_type)) if !dyn_type.borrowed))
 }
 
 struct Checker<'a> {
@@ -626,7 +638,9 @@ impl Checker<'_> {
         }
         match ty {
             Type::Variable(name) => self.copy_variables.contains(name),
-            Type::Array(element) | Type::List(element) => self.is_copy(element),
+            Type::Array(element) | Type::List(element) | Type::FixedArray(element, _) => {
+                self.is_copy(element)
+            }
             Type::Tuple(elements) => elements.iter().all(|ty| self.is_copy(ty)),
             Type::Record(id, arguments) if !arguments.is_empty() => self
                 .module
@@ -660,7 +674,9 @@ impl Checker<'_> {
                 self.copy_variables.insert(name.clone());
                 true
             }
-            Type::Array(element) | Type::List(element) => self.require_copy(element),
+            Type::Array(element) | Type::List(element) | Type::FixedArray(element, _) => {
+                self.require_copy(element)
+            }
             Type::Tuple(elements) => {
                 let mut changed = false;
                 for ty in elements {
@@ -1259,7 +1275,10 @@ impl Checker<'_> {
                 Ok(places)
             }
             E::Index(value, index)
-                if matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_)) =>
+                if matches!(
+                    value.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) =>
             {
                 let mut places = self.place(value, live)?;
                 let mut guard = Value::default();
@@ -1334,6 +1353,40 @@ impl Checker<'_> {
                 _ => return Ok(()),
             };
         }
+    }
+
+    /// An exclusive slice `ref mut source[start..end]` (C08). The source descriptor is read first,
+    /// so a shared guard covers the bounds, which may read but not change it; the exclusive loan
+    /// starts after them.
+    #[inline(never)]
+    fn exclusive_slice(
+        &mut self,
+        source: &TypedExpr,
+        start: &Option<Box<TypedExpr>>,
+        end: &Option<Box<TypedExpr>>,
+        during: &BTreeSet<usize>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        self.shared_exclusive(source, span)?;
+        let places = self.exclusive_places(source, during)?;
+        let mut guard = Value::default();
+        for (place, via) in &places {
+            self.access(place, via, Use::Borrow, span)?;
+            guard
+                .loans
+                .insert(self.loan(place.clone(), false, via.clone()));
+        }
+        self.held.push(guard);
+        for bound in start.iter().chain(end) {
+            self.eval(bound, Use::Consume, during)?;
+        }
+        self.held.pop();
+        let mut result = Value::default();
+        for (place, via) in places {
+            self.access(&place, &via, Use::MutBorrow, span)?;
+            result.loans.insert(self.loan(place, true, via));
+        }
+        Ok(result)
     }
 
     /// The places that a write or an exclusive borrow of `target` reaches (A13). A dereferenced
@@ -1547,8 +1600,10 @@ impl Checker<'_> {
                 Self::is_place(value)
             }
             E::Index(value, _) => {
-                matches!(value.ty, Type::Array(_) | Type::List(_) | Type::Vec(_))
-                    && Self::is_place(value)
+                matches!(
+                    value.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) && Self::is_place(value)
             }
             _ => false,
         }
@@ -1849,6 +1904,13 @@ impl Checker<'_> {
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
             let value = self.eval(argument, Use::Consume, &during)?;
+            if !value.loans.is_empty() && owned_dyn_of(callee) {
+                return Err(error(
+                    "E1013",
+                    "a dyn value without a region cannot hold borrowed data; pass an owned value to Dyn.of, or name a region, as in 'dyn Shapes.Shape {r}'",
+                    argument.span,
+                ));
+            }
             match region_sources {
                 Some(sources) => {
                     self.argument_regions(sources, slots, index, argument, &value, &mut current)
@@ -1983,6 +2045,9 @@ impl Checker<'_> {
             E::BorrowOperand(value) => {
                 result = self.eval(value, Use::Read, &during)?;
             }
+            E::Slice { value, start, end } if expression.ty.is_view() => {
+                result = self.exclusive_slice(value, start, end, &during, expression.span)?;
+            }
             E::Slice { value, start, end } => {
                 for (place, via) in self.place(value, &during)? {
                     self.access(&place, &via, Use::Borrow, expression.span)?;
@@ -2103,10 +2168,7 @@ impl Checker<'_> {
                 }
             }
             E::Parallel(operation, arguments) => {
-                let callback = usize::from(matches!(
-                    operation,
-                    crate::check::Builtin::ParallelInit | crate::check::Builtin::ParallelReduce
-                ));
+                let callback = operation.parallel_callback();
                 let input = if *operation == crate::check::Builtin::ParallelInit {
                     None
                 } else {
@@ -2116,12 +2178,10 @@ impl Checker<'_> {
                 for (index, argument) in arguments.iter().enumerate() {
                     let value = self.eval(argument, Use::Consume, &during)?;
                     if Some(index) == input {
-                        let Type::Reference(array, _) = &argument.ty else {
-                            unreachable!("parallel input is borrowed")
-                        };
-                        let Type::Array(element) = array.as_ref() else {
-                            unreachable!("parallel input is an array")
-                        };
+                        let element = argument
+                            .ty
+                            .slice_element()
+                            .expect("parallel input is a slice");
                         if element.carries_loans(&self.module.types())
                             && value.loans.iter().any(|id| {
                                 !self.loans[*id].parents.is_empty()
@@ -2278,7 +2338,9 @@ impl Checker<'_> {
             | E::Error
             | E::CaseConstructor { .. }
             | E::GenericInteger(..)
-            | E::GenericFloat(_) => {}
+            | E::GenericFloat(_)
+            // A dispatch passes its parameters on; `closed` keeps its result tied to them (A14).
+            | E::DynDispatch { .. } => {}
             E::Local(_) | E::Dereference(_) | E::ListTail(..) => {
                 unreachable!("places handled above")
             }

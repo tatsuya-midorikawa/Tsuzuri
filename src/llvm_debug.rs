@@ -279,7 +279,7 @@ impl DebugContext {
                 size * 8
             )
         } else if let Type::Reference(inner, _) = ty
-            && ty.shared_array_element().is_none()
+            && ty.slice_element().is_none()
         {
             let base = self.ty(inner, module, next, definitions);
             format!(
@@ -345,11 +345,15 @@ fn fields(ty: &Type, module: &CheckedModule) -> Vec<(String, Type)> {
             .enumerate()
             .map(|(index, ty)| (index.to_string(), ty.clone()))
             .collect(),
+        // A16 D11: a structure with members `0` to `N-1`, as a tuple.
+        Type::FixedArray(element, _) => (0..fixed_length(ty))
+            .map(|index| (index.to_string(), (**element).clone()))
+            .collect(),
         Type::String => sequence(Type::Integer(16, false)),
         Type::Utf8String => sequence(Type::Integer(8, false)),
         Type::Array(element) => sequence((**element).clone()),
-        Type::Reference(_, false) if ty.shared_array_element().is_some() => {
-            sequence(ty.shared_array_element().unwrap().clone())
+        Type::Reference(..) if ty.slice_element().is_some() => {
+            sequence(ty.slice_element().unwrap().clone())
         }
         Type::List(_) => vec![("head".into(), pointer()), ("length".into(), Type::I64)],
         Type::Vec(element) => {
@@ -358,6 +362,11 @@ fn fields(ty: &Type, module: &CheckedModule) -> Vec<(String, Type)> {
             result
         }
         Type::Function(..) | Type::Task(_) => ["code", "environment", "clone", "drop"]
+            .into_iter()
+            .map(|name| (name.into(), pointer()))
+            .collect(),
+        // A14: the owned data and the vtable of a dyn value.
+        Type::Dyn(_) => ["data", "vtable"]
             .into_iter()
             .map(|name| (name.into(), pointer()))
             .collect(),
@@ -383,14 +392,7 @@ fn aggregate(
 fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
     let pointer = if wasm { 4 } else { 8 };
     match ty {
-        Type::Simd(vector) => {
-            if vector.kind == crate::simd::SimdKind::Mask {
-                let bytes = usize::from(vector.lanes()).div_ceil(8);
-                (bytes, bytes)
-            } else {
-                (16, 16)
-            }
-        }
+        Type::Simd(vector) => (vector.bytes(), vector.bytes()),
         Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
             (usize::from(*bits) / 8, usize::from(*bits) / 8)
         }
@@ -399,9 +401,10 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Utf8Char => (4, 4),
         Type::Array(_) | Type::List(_) | Type::String | Type::Utf8String => (16, 8),
         Type::Vec(_) => (24, 8),
-        Type::Reference(_, false) if ty.shared_array_element().is_some() => (16, 8),
+        Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
         Type::Reference(..) | Type::Handle(_) => (pointer, pointer),
         Type::Function(..) | Type::Task(_) => (4 * pointer, pointer),
+        Type::Dyn(_) => (2 * pointer, pointer),
         Type::Record(id, arguments) => aggregate(
             module
                 .types()
@@ -412,6 +415,13 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
             wasm,
         ),
         Type::Tuple(elements) => aggregate(elements.iter().cloned(), module, wasm),
+        Type::FixedArray(element, _) => {
+            let (size, alignment) = layout(element, module, wasm);
+            (
+                size.next_multiple_of(alignment) * fixed_length(ty),
+                alignment,
+            )
+        }
         Type::Union(..) if module.types().recursive(ty) => (pointer, pointer),
         Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
             UnionLayout::Enum => (4, 4),

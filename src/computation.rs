@@ -257,7 +257,9 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             .chain(std::iter::once(result.as_mut()))
             .collect(),
         ExprKind::Record { fields, .. } => fields.iter_mut().map(|(_, value)| value).collect(),
-        ExprKind::Slice { value, start, end } => std::iter::once(value.as_mut())
+        ExprKind::Slice {
+            value, start, end, ..
+        } => std::iter::once(value.as_mut())
             .chain(start.iter_mut().map(Box::as_mut))
             .chain(end.iter_mut().map(Box::as_mut))
             .collect(),
@@ -280,7 +282,8 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
         | ExprKind::Continue
         | ExprKind::Name(_)
         | ExprKind::TypeFunction(..)
-        | ExprKind::QualifiedFunction(_) => Vec::new(),
+        | ExprKind::QualifiedFunction(_)
+        | ExprKind::DynDispatch { .. } => Vec::new(),
     };
     let mut depth = 0;
     for child in children {

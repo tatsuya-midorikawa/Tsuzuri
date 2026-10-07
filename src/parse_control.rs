@@ -198,7 +198,7 @@ impl Parser<'_> {
     pub(super) fn interpolation(&mut self) -> Result<Expr, Diagnostic> {
         let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let outer_slice = std::mem::replace(&mut self.slice_context, false);
+        let outer_slice = self.slice_context.take();
         let result = self.interpolation_holes();
         self.stop_at_arm = outer_arm;
         self.stop_at_arrow = outer_arrow;

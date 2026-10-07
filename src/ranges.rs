@@ -253,7 +253,7 @@ fn root(array: &TypedExpr) -> Option<usize> {
             | TypedExprKind::Dereference(inner) => place = inner.as_ref(),
             TypedExprKind::Local(id) => {
                 let array =
-                    matches!(place.ty, Type::Array(_)) || place.ty.shared_array_element().is_some();
+                    matches!(place.ty, Type::Array(_)) || place.ty.slice_element().is_some();
                 return array.then_some(*id);
             }
             _ => return None,

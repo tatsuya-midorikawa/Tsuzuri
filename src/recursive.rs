@@ -19,7 +19,10 @@ pub(super) fn analyze(
             let (is_union, id, arguments) = match ty {
                 Type::Record(id, arguments) => (false, *id, arguments),
                 Type::Union(id, arguments) => (true, *id, arguments),
-                Type::Array(inner) | Type::List(inner) | Type::Vec(inner) => {
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _) => {
                     return self.visit(inner);
                 }
                 Type::Tuple(elements) => {
@@ -95,6 +98,8 @@ pub(super) fn analyze(
         match ty {
             Type::Record(..) | Type::Union(..) => known.contains(ty),
             Type::Tuple(elements) => elements.iter().all(|element| finite(element, known)),
+            // Elements are inline (A16), unlike the heap elements of `[T]`.
+            Type::FixedArray(element, _) => finite(element, known),
             _ => true,
         }
     }
@@ -107,6 +112,7 @@ pub(super) fn analyze(
                     | Type::List(inner)
                     | Type::Vec(inner)
                     | Type::Task(inner)
+                    | Type::FixedArray(inner, _)
                     | Type::Reference(inner, _) => weight(std::slice::from_ref(inner)),
                     Type::Tuple(elements) => weight(elements),
                     Type::Record(_, elements) | Type::Union(_, elements) => weight(elements),
@@ -144,7 +150,10 @@ pub(super) fn analyze(
                     edges[index].push(target);
                     reverse[target].push(index);
                 }
-                Type::Array(inner) | Type::List(inner) | Type::Vec(inner) => pending.push(*inner),
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _) => pending.push(*inner),
                 Type::Tuple(elements) => pending.extend(elements),
                 _ => {}
             }
@@ -286,7 +295,10 @@ impl TypeContext<'_> {
                 Type::Union(id, arguments) => {
                     pending.extend(self.union_payloads(id, &arguments).into_iter().flatten())
                 }
-                Type::Array(inner) | Type::List(inner) | Type::Vec(inner) => pending.push(*inner),
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _) => pending.push(*inner),
                 Type::Tuple(elements) => pending.extend(elements),
                 _ => {}
             }
@@ -314,7 +326,8 @@ impl TypeContext<'_> {
                 Type::Reference(inner, _)
                 | Type::Array(inner)
                 | Type::List(inner)
-                | Type::Vec(inner) => pending.push(*inner),
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _) => pending.push(*inner),
                 Type::Tuple(elements) => pending.extend(elements),
                 _ => {}
             }

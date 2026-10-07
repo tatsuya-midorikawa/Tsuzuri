@@ -35,6 +35,7 @@ fn debug_metadata_is_deterministic_and_keeps_source_types() {
             entry: llvm::Entry::Library,
             wasm,
             debug_output: false,
+            allocator: llvm::Allocator::System,
         };
         let plain = llvm::emit_with_options(&module, options).unwrap();
         assert!(!plain.contains("!DICompileUnit"));

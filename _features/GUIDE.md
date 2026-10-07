@@ -573,7 +573,7 @@ fn rejects(source: &str, code: &str) {
   （`llvm_type` の結果には引用符付き識別子が含まれ、入れ子にすると無効な IR になるため）:
   `%"tz.record.Main.Pair[i64,string]"`、`%"tz.union.Maybe.Maybe[Main.Pair[i64,string]]"`。
   正規表記は構造的・単射な規則で生成する（修飾名、型引数は `[` `]` と `,` で区切る。配列 `[T]` は `array[T]`、
-  リスト `list[T]`、タプル `tuple[T,U]`、関数 `fn[T,U->R]`、参照 `ref[T]`／`refmut[T]`、タスク `task[T]`）。
+  リスト `list[T]`、タプル `tuple[T,U]`、関数 `fn[T,U->R]`、参照 `ref[T]`／`refmut[T]`、タスク `task[T]`、固定長配列 `[T; N]` は `fixed[N,T]`（A16。型引数の位置の長さは十進の数字））。
   `"` と `\` は生じないが、生じ得る実装にする場合は LLVM の `\xx` エスケープを使う。レコードと共用体で同じ関数を共有する。
   全具体インスタンスは **実際に出力する関数・ラッパーの型から** BTreeSet で集めて IR 冒頭に定義する（未使用の std の型を出さない）。
   入れ子（レコード in レコード、共用体 in レコード、タプル・関数・参照を引数に持つもの）を Clang で native／wasm32 とも
@@ -654,6 +654,8 @@ fn rejects(source: &str, code: &str) {
   | `HashMap`／`HashSet` | 不透明なハッシュ表と集合（挿入順の反復、seed 付きハッシュ、借用キーの検索） | C09 |
   | `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Os`／`Process` | OS API（`IO` の遅延アクション。`Path`・`Os` の純粋な部分と `Random.Pcg` は wasm32 でも使える） | E08 |
   | `Format` | 書式指定の部品（`Spec`・`parse`・`pad`）。`Format` 型クラスの instance を書くための補助 | D07 |
+  | `FixedArray` | 固定長配列の構築（組み込み `FixedArray.init`。std のソースはなく、名前を予約する） | A16 |
+  | `Dyn` | dyn 値の構築とアップキャスト（組み込み `Dyn.of`。std のソースはなく、名前を予約する） | A14 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
@@ -701,7 +703,11 @@ fn rejects(source: &str, code: &str) {
 - **消費する関数的更新**: `Array.set : ['a] -> i64 -> 'a -> ['a]` のように所有値を受け取り新しい値を返す。
   所有権により唯一の所有者であることが保証されるため、実装はバッファをその場で書き換えてよい（観測できない最適化）。
 - 伸縮可能な配列は組み込み型 `Vec<'a>`（C02）。`[T]` の記述子 `{ ptr, i64 }` は変更しない。
-- 部分参照（スライス）は **`&[T]` そのもの**（C03）。`&xs[a..b]` で作る。`&mut [T]` は従来どおり配列全体の置換用。
+- 部分参照（スライス）は共有が `&[T]`（C03）、排他が `&mut [T..]`（C08）。`&xs[a..b]`／`&mut xs[a..b]` で作る。
+  `&mut [T]` は配列全体の置換用のままで、呼び出しの引数では `&mut [T..]` へ変換できる。
+  コレクションは共有されている間は不変で、排他スライスを通してだけ `Array.write`／`Array.swap_in`／`Array.sort_in_place` で要素をその場で置換できる。
+  要素単位の排他借用（`&mut xs[i]`）と代入構文（`xs[i] = v`）は導入しない。
+  固定長配列 `[T; N]`（A16）は名前付きの値から `&xs[a..b]` で共有スライスを作れ、引数では `&[T]` へ変換できる。固定長配列の排他スライスは作らない。
 - **決定（2026-09-27、推奨仕様での実装を承認）:** ジェネリック union の共有借用ペイロードを許可し、
   C04 の `Maybe<&T>` を提供する。コンテナ借用は格納値の loan を親として引き継ぐ。
   返却値は本体の実 loan を検査し、呼び出し側では借用を持つ全入力の寿命に制限する。
@@ -718,12 +724,14 @@ fn rejects(source: &str, code: &str) {
 
 ### D-15 キーワード・演算子の追加一覧
 新しい予約語: `union`（A02）、`type`（A05）、`private`（E01）、`break`／`continue`（B03）、`deriving`（A07）、
-`const`（D06）、`test`（G06）、`extern`（E06）。`of` は union 宣言の中だけの文脈キーワード（A02。予約語にしない）。
+`const`（D06）、`test`（G06）、`extern`（E06）、`dyn`（A14。D-39）。`of` は union 宣言の中だけの文脈キーワード（A02。予約語にしない）。
 文字リテラル `'x'`／`u8'x'`（A08）。範囲の部分参照 `xs[a..b]`（C03）。
 レコード更新 `{ base with field = value }`（C05）。キーワード追加時は 6.1 を実施する。
 D-34 の演算子 `**`・単項 `+`・`&&&`・`|||`・`^^^`・`~~~`・`<<<`・`>>>`、関数合成 `>>`／`<<`（従来のシフトから意味を変更）、
 文脈キーワード `try`／`finally`／`is`（予約語にしない）、属性 `@checked`／`@literal`。
 D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣言だけ。予約語にしない）。D-37 の名前空間のパス `A::B::Module`（新しい記号はなく、空白なしの `::` を lexer が `PathSep` にする）。
+D-39 の固定長配列の型 `[T; N]` と長さパラメーター `const N: i64`（A16。既存の予約語 `const` の組み合わせで、新しい予約語はない）、排他スライスの型 `ref mut [T..]`（C08）、
+dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属性 `@cpu ["avx2", ...]`（F08。`def` シグネチャの前だけ。`cpu` は予約語にしない）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
   取り込まれた後に着手するチケットは、借用・参照外しを扱う箇所（C03 の `&xs[a..b]` に対する `ref xs[a..b]`、A11 の比較用の
@@ -740,6 +748,7 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 | `E1025` | `deriving` できない型・クラス | A07 |
 | `E1026` | コンパイル時定数の評価失敗（トラップ、上限超過） | D06 |
 | `E1027` | 条件付きインスタンス・スーパークラスの不整合 | A06 |
+| `E1028` | dyn 互換でない型クラス（理由をメッセージに示す。D-39） | A14 |
 | `E2006` | テストの失敗（`tsuzuri test`） | G06 |
 | `W1001` | 未使用のローカル束縛 | G03 |
 | `W1002` | 未使用の非公開関数・型 | G03 |
@@ -892,14 +901,12 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
   調査時点はコミット `9012e92`。一覧と対応表は [README の第2期](README.md#第2期-他言語比較で見える劣位の改善計画) にある。
 - 以下は計画上の仮割り当てで、人間の承認と各チケットの着手前レビューを経て確定する。確定したら該当行を D-07（std）・D-15（予約語）・D-16（診断コード）へ移し、この表から削除する。
 - 既存の予約語の組み合わせで表せる構文（`extern type`、`extern "symbol" def`、`const def`、`const N: i64`）を優先し、新しい予約語を増やさない。G19 の edition を導入した後は、新しい予約語を新しい edition でだけ予約する。
-- 言語の意味や既存の決定を変える提案は承認まで着手しない: C08（D-13 の `&mut [T]` の意味の変更）、A16（旧 `[T; N]` 構文の再導入）、C10 Phase 2（参照カウントの導入）、D11 Phase 2（static データ。D-28 の変更）。
+- 言語の意味や既存の決定を変える提案は承認まで着手しない: C10 Phase 2（参照カウントの導入）、D11 Phase 2（static データ。D-28 の変更）。C08（D-13 の変更）と A16（`[T; N]` の再導入）は D-39 で承認済み。
 - 新しいホスト機能（WASI、乱数 seed の設定、非同期の再開、GPU runtime）は D-18 に従い明示的な opt-in とし、既定の WASM に import を追加しない。
 
 | 種別 | 仮割り当て | チケット |
 |---|---|---|
-| 予約語 | `dyn` | A14 |
 | 予約語 | `bench` | G18 |
-| 診断 | `E1028` dyn 互換でない型クラス | A14 |
 | 診断 | `E2007` 依存の取得・検証の失敗（lockfile の不一致、キャッシュの欠落） | E10 |
 | 警告 | `W1005` 非推奨の宣言の使用 | G19 |
 | 警告 | `W2002` bindgen で変換できない C 宣言の省略 | E11 |
@@ -907,7 +914,6 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 | 組み込みクラス | `Sync`（仮称） | F10 |
 | std | `Arena` | C10 |
 | std | `Matrix` | C11 |
-| std | `FixedArray` | A16 |
 | std | `Json` | D08 |
 | std | `Regex`／`Unicode` | D09 |
 | std | `Net` | E09 |
@@ -934,7 +940,7 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 | サブコマンド | `tsuzuri repl`（Phase 2 の `tsuzuri script` は要承認） | G13 | Phase 2 だけ |
 | サブコマンド | `tsuzuri bench` | G18 | はい |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
-| CLI | `--allocator system\|host`（F13）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
+| CLI | `--allocator system\|host\|counting`・`--freestanding`（F13、実装済み）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
 | CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--target wasm64` | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--emit bitcode` | PR08 | いいえ |
@@ -959,11 +965,11 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 | 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ |
 | 環境変数 | `TSUZURI_BASELINE`（テスト用） | PM03 | はい（PM03 全体） |
 | 環境変数 | `TSUZURI_TEST_WASM_TARGET`（テスト用。`tests/features.mjs` の WASM を `wasm64` で実行） | F11 | いいえ |
-| 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` | F13 | いいえ |
-| 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`） | F08・PR05 | いいえ |
+| 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc`（WASM は `tsuzuri_heap` の `alloc`・`free`・`realloc`）、`tsuzuri_alloc_stats` と `tsuzuri_allocation_stats` | F13 | いいえ（実装済み） |
+| 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`）、`@cpu` 関数の stub が呼ぶ `tsuzuri_cpu_pick` | F08・PR05 | いいえ（F08 は実装済み） |
 | 公開記号 | `tsuzuri_try_<name>`・`tsuzuri_trap_info`（`tsuzuri_boundary_run`・`tsuzuri_trap_raise`・`tsuzuri_tracked_*` は runtime の内部） | E14 | いいえ（Phase 2 承認済み・実装済み） |
 | 公開記号 | wasm global `tsuzuri_stack_base`・`tsuzuri_stack_top`（threads の worker の stack の範囲） | F11 | いいえ（Phase 2 実装済み） |
-| ランタイム | `string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`（F13）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み）。`format.ll`（D07）・`os.c`・`os-wasi.c`（E08）は D-32 で確定 | 各チケット | 各チケットの承認に従う |
+| ランタイム | `string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`・`heap-counting.ll`（F13、実装済み）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み）。`format.ll`（D07）・`os.c`・`os-wasi.c`（E08）は D-32 で確定 | 各チケット | 各チケットの承認に従う |
 
 新しい `.ll` を足すときは §2.2 の `.gitignore` の例外行と `scripts/check-runtime-includes.sh` を忘れない。
 Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の `Trap`・`TrapInfo` など）は、承認のときに割り当てる。
@@ -1099,6 +1105,44 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   参照先へ入力を格納しうる関数は直接の完全適用だけで、呼び出し側が格納される入力の loan を参照先の所有者へ加える。
   region 間の outlives 制約は表さず、包含関係は既存の loan と NLL で保つ。参照先は排他借用を持てない。
 - region は型・単相化・生成 IR に入らない（既存の fixture の IR は変わらない）。新しい診断コード・予約語・ランタイムはない（`E1013`・`E1014`）。
+
+### D-39 第2期の 5 チケット（C08・A16・A14・F13・F08）の確定
+
+- 2026-10-06、利用者の「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること。
+  …判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、5 チケットの `要承認` の決定事項すべての承認として扱った。
+  詳細は各チケットの「実装と検証」にある。
+- C08 D1: D-13 を改めた。排他スライス `ref mut [T..]` は型検査器の中で `Reference(ArrayView(T), true)` で、`ArrayView` は排他参照の参照先にだけ現れる。
+  表現は共有スライスと同じ `%tz.array`。新しい診断コード・予約語・ランタイム関数・`TrapKind` はない。
+  チケットの D5（変換は引数だけ）は緩め、明示の `ref mut xs` は排他スライスを期待する位置（`let` の注釈を含む）で配列全体のスライスになる。
+- C08 D11（Phase 2）: `Parallel.for_each_chunk :: Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit`。
+  排他スライス自体は Send にしない（task への捕捉は従来どおり `E1013`）。互いに素なチャンクを fork/join の中でだけ貸す組み込みで、F10 の同期規則には触れない。
+- A16 D1: 固定長配列 `[T; N]`（N は 0–1024）を導入した（D-03 の `fixed[N,T]`、D-07 の std `FixedArray`、D-13 のスライス化、D-15 の型構文）。
+  型は `Type::FixedArray(Box<Type>, Box<Type>)` で、長さは `Type::Length(n)` か長さパラメーター `Type::Variable("#N")`。LLVM では `[N x T]` の値で、ヒープを使わない。
+  新しい予約語・診断コード・ランタイム関数・`TrapKind` はない（添字は既存の `BoundsCheck`）。配列パターン・`for` による列挙・構造的インスタンス・排他スライスは持たない。
+- A16 D10（Phase 2）: record・union・型エイリアスの長さパラメーターは `const N: i64` で宣言し、関数の型注釈の未宣言の長さは `'a` と同じく暗黙のパラメーターにする。
+  D-02 の「型引数は完全な型」の例外として、型引数の位置に長さ（十進の整数リテラル・`i64` 定数・長さパラメーター）を書ける。長さにできる定数は初期化式が整数リテラルの `i64` 定数だけ。
+  長さの算術はない。E12 の公開 ABI では、スカラー型の固定長配列をレコードのフィールド（C の `T name[N]`）に限って許す。
+- A14 D1: 予約語 `dyn`（D-15）、型 `dyn C`、構築 `Dyn.of`（D-07 の予約モジュール `Dyn`）、診断 `E1028`（D-16）を確定し、D-30 の仮割り当てから外した。
+  型は葉の `Type::Dyn(Box<DynType>)`（クラス名の列と印 `copy`・`send`・`borrowed`）で、値は `%tz.dyn = { data, vtable }`。vtable は `(クラスの列, 格納型)` ごとの定数で、
+  D-03 の正規名を使う `@"tz.vtable.{クラス}[{型}]"`。dyn 型を書かないプログラムの IR は変わらない。新しいランタイム・`TrapKind`・WASM import はない。
+- A14 Phase 2: 複数クラス `dyn (C, D)`、印 `Copy`（clone slot）と `Send`、region 付きの `dyn C {r}`（借用を格納し、Send にならない）、
+  `Dyn.of` による vtable の差し替えだけのアップキャスト、組み込み実装の slot（組み込みラッパー関数）。`Copy`・`Send` は型クラスではなく値の性質の印として並べる。
+  downcast・実行時の型情報・dyn 値の比較・host ABI での受け渡しは持たない。
+- F13 D9: Phase 2・Phase 3 を承認として扱った。`--allocator system|host|counting` は build 専用で、host と counting は object・LLVM IR・header・WASM 出力だけ。
+  heap runtime は一つの `.ll` を `emit_program` が選ぶ（`heap-host.ll`、`heap-counting.ll` は対象の heap を `@tz.alloc.base` などへ改名して包む）。
+  host と counting は各ブロックに 16 バイトのサイズのヘッダーを置き、align は 16。WASM の host allocator は D-18 の明示の opt-in として import モジュール `tsuzuri_heap` を使い、
+  threads と `--trap-mode return` とは併用しない。`--freestanding` は `--allocator host` を必須にし、C ライブラリを要する runtime を使うプログラムを `E2000` にする。
+  WASM の size-class allocator は PM05 へ移した（F13 D9 の見直し提案）。新しい診断コード・予約語・`TrapKind` はない。
+- F08 D7（Phase 2）: `SimdType` に `width`（128・256）を足し、256-bit の 14 型（`i8x32`〜`i64ux4`、`f32x8`、`f64x4`、`mask8x32`〜`mask64x4`）を同じ型族の lane 数違いにした。
+  `Simd.of_lanes32` と `Simd.store :: ref mut [lane..] -> i64 -> v -> unit`（全 lane の境界を書き込み前に検査）を足した。256-bit 型の格納先は 16 バイト境界なので、
+  256-bit ベクトルを含む型の load／store は `align 16` を明示する。512-bit 型は足さない。
+- F08 D8（Phase 3）: 利用者関数の多版化の構文は、既存の `@literal`・`@checked` と同じ属性の形 `@cpu ["avx2", "sve"]` を `def` シグネチャの前に置く形にした
+  （起票時の既定案 `for cpu [avx2]` は型の後ろに新しい修飾を足すため採らない）。名前は `TSUZURI_CPU_FORCE` と同じ `"sse4.2"`・`"avx2"`・`"avx512"`・`"sve"`・`"sve2"` の文字列で、
+  build 先で選べない名前は無視する。版は trap 計装後の IR を複製して `"target-features"` を付け、stub が `tsuzuri_cpu_pick` で選ぶ。版ごとに 256-bit ベクトルの
+  受け渡しレジスタが異なるため、シグネチャと関数値の呼び出しに 256-bit ベクトルを通すことを `E1005` で拒否し、直接呼ぶ関数は同じ level の版を作る。
+  新しい予約語・診断コード・`TrapKind` はない。
+- F08 D9: AVX-512（F・BW・CD・DQ・VL と XCR0 の opmask・ZMM 状態）を feature bit2、SVE／SVE2 を Linux の `getauxval` で bit16／bit17 にした。
+  実機で測れないため、同梱 kernel の自動選択は AVX2 までで、AVX-512 と SVE の kernel は `TSUZURI_CPU_FORCE` の指定時だけ使う。`@cpu` で明示した版は自動でも選ぶ。
 
 ## 10. 完了の定義（全チケット共通）
 

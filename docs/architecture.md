@@ -52,7 +52,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` 組み込み関数（`src/llvm_io.rs` の `os_builtin`）、POSIX ランタイム、`--wasm-host wasi` 向けの WASI preview1 ランタイム |
 | `std/HashMap.tz` / `std/HashSet.tz` | ハッシュコンテナ。コンパイラ本体に専用の型・builtin・ランタイムを追加しない、std ソースのみによる実装 |
 | `std/Format.tz` / `src/runtime/format.ll` | 文字列補間の書式指定。`Format.parse`／`Format.pad` と、パディング処理のランタイム補助（文字列結合は `src/llvm_display.rs`） |
-| `src/simd.rs` / `src/llvm_simd.rs` | 128-bit vector/mask 型、lane 型族、境界検査および LLVM vector への lowering |
+| `src/simd.rs` / `src/llvm_simd.rs` | 128-bit・256-bit の vector/mask 型、lane 型族、境界検査、LLVM vector への lowering、256-bit の load／store の `align 16` |
+| `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3） |
 | `src/llvm_control.rs` | 直接反復・switch・定数テーブル生成、パターンマッチ手順の分岐展開と全経路での解放処理 |
 | `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定なマージソート（merge sort）の型付き builtin lowering |
 | `src/llvm_compare.rs` | 配列・リスト・タプルの借用構造比較、短絡評価と段階的な比較メソッド適用 |
@@ -65,7 +66,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、最短往復文字列表現・解析、書式指定付き数値表示（`tz_soft_format_spec`） |
 | `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な文字符号化変換、ネイティブメモリ確保、WASM の再利用・結合可能なヒープ管理 |
 | `src/runtime/closure.ll` | 関数値の環境の複製および解放。環境ごとの固有処理は LLVM emitter が生成 |
-| `src/runtime/cpu.c` | ネイティブ標準の i64 配列和、CPUID/OSXSAVE/XCR0 による機能検出、アトミックな variant キャッシュ |
+| `src/runtime/cpu.c` | 整数 8 型の配列の和・最小・最大の level ごとの kernel、CPUID/OSXSAVE/XCR0 と `getauxval` による機能検出、アトミックな level キャッシュ、`@cpu` 関数の版を選ぶ `tsuzuri_cpu_pick` |
 | `src/runtime/heap-*.ll` の `tz.realloc` | ネイティブの realloc、および WASM における隣接空き領域の再利用と確保・コピーへのフォールバック |
 | `src/runtime/task.c` / `task-wasm.ll` / `task-wasm-threads.c` | ネイティブ常駐スレッドプール、WASM デフォルトの逐次実行、opt-in の共有メモリ Worker プール |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・ビットシフトの freestanding 補助関数群 |
@@ -135,11 +136,14 @@ C ランタイム（`task.c`、`cpu.c`、`io.c`）は動的メモリ確保を行
 `driver::run` は子プロセスの標準エラー出力を監視し、`trap: stack overflow` を検知した場合は `E2005`（stack overflow）として明示的に報告します。この文字列が見つからない場合は従来の `probable_stack_exhaustion` によるシグナル推定へフォールバックします。なお、`tsuzuri test` のランナーは標準エラーを破棄して終了シグナルのみを検査するため、この詳細報告は行われません。
 動作は `tests/stack_overflow.mjs`（macOS、`-O0`／`-O3`、メインスレッド、ワーカー、`-g`、非再帰プログラムでのハンドラ非含有、スタック外フォールトの区別）、`tests/trap_locations.rs` の `run_reports_stack_overflow`、および `llvm.rs` の再帰検出テスト群によって検証されています。
 
-ネイティブ環境における CPU ディスパッチ（CPU dispatch）は、同梱の Array ソースが確認された `emit_native_build` の経路でのみ有効化されます。現在の対象は単相化された `Array.sum` の `ref [i64] -> i64` です。
-通常の LLVM API 呼び出しや `--emit llvm` では従来の独立した IR 構造を維持し、ドライバーが実行ファイルやオブジェクトを生成する際、IR 内に `tsuzuri_cpu_sum_i64` が出現した場合にのみ `cpu.c` をタスクランタイムと同一の C 結合経路へ追加します。
-C11 のアトミック関数ポインタを用い、acquire load および acq-rel cmpxchg によって初回呼び出し時に実装関数を一度だけ選択・キャッシュします。機能フラグは bit 0 が SSE4.2、bit 1 が AVX2 に対応し、AVX2 の選択には OSXSAVE、AVX、および XCR0 による XMM/YMM レジスタ状態の保存サポートを必須条件とします。
-ベースライン、SSE4.2、AVX2 の各経路はすべて符号なし 64-bit の折り返し加算（uint64 wrapping sum）として同一の演算結果を保証します。ISA 属性は C の target 属性から Clang が生成するため、GNU ifunc や compiler-rt の CPU モデルには依存しません。
-AArch64 および未知のアーキテクチャではベースライン実装が選択されます。SVE/SVE2、浮動小数点のディスパッチ、および任意のユーザー関数に対するマルチバージョニングは現時点で未実装です。公開ランタイムのエントリーシンボルは weak かつ hidden 属性となっています。
+ネイティブ環境における CPU ディスパッチ（CPU dispatch）は、`emit_native_build` の経路（native の exe／object と、object を作る `--trap-mode return`）でのみ有効化されます。同梱 kernel は、同梱の Array ソースが確認された場合に限り、単相化された整数 8 型の `Array.sum`・`Array.min`・`Array.max` の本体を `llvm::CPU_KERNELS` の `tsuzuri_cpu_{sum|min|max}_{型名}` 呼び出しに置き換えます（`min`・`max` は非公開 helper `min_index`・`max_index` の本体を置き換えます）。
+通常の LLVM API 呼び出しや `--emit llvm` では従来の独立した IR 構造を維持し、ドライバーが実行ファイルやオブジェクトを生成する際、IR が `@tsuzuri_cpu_` で始まる関数を宣言した場合にのみ `cpu.c` をタスクランタイムと同一の C 結合経路へ追加します。
+`cpu.c` は level（0 baseline、1 SSE4.2、2 AVX2、3 AVX-512、4 SVE、5 SVE2）を一つの `_Atomic int` に初回だけ決め（`tz_cpu_level`、acq-rel cmpxchg）、kernel の入口は `TZ_CPU_PICK` の switch で level の clone を呼びます。機能フラグは bit 0 が SSE4.2、bit 1 が AVX2、bit 2 が AVX-512（F・BW・CD・DQ・VL と XCR0 の opmask・ZMM 状態）、bit 16／17 が Linux AArch64 の `getauxval` による SVE／SVE2 です。AVX2 の選択には OSXSAVE、AVX、および XCR0 による XMM/YMM レジスタ状態の保存サポートを必須条件とします。kernel の自動選択は AVX2 までで、AVX-512 と SVE は `TSUZURI_CPU_FORCE` の指定時だけ使います（F08 D9）。
+kernel の本体は Clang のベクトル拡張と `__builtin_reduce_*`・`__builtin_elementwise_*` で書いた macro を level ごとの target 属性で展開した clone です。和は符号なしの折り返し加算、最小・最大は値を求めてから 2 回目の走査で最初の位置を求めるので、どの clone も同一の結果を返します。GNU ifunc や compiler-rt の CPU モデルには依存しません。
+`@cpu` を付けた利用者関数（F08 Phase 3）は、`FunctionEmitter::emit` が define 行に `"tz-cpu"="<levels>:<関数 id>"` を付け、`src/llvm_cpu.rs` の `multiversion` が trap 計装後の IR を書き換えます。元の関数は `.cpu.baseline` に改名して debug 情報を保ち、level ごとの `.cpu.<名前>` 版は `"target-features"` を付けて debug 情報を外します。元の名前には、関数ごとの `@"<名前>.cpu"` に `tsuzuri_cpu_pick(levels)` の結果を monotonic で cache し、switch から各版を tail call する stub を置きます。stub は元の subprogram を複製した自分の subprogram と呼び出し位置を持つので、portable 版が stub へ inline されても inline 位置が保たれます。版ごとに 256-bit ベクトルを渡すレジスタが異なるため、版の本体から 256-bit ベクトルを含む型で直接呼ぶ関数は推移的に同じ level の版を作り、関数値や extern へ渡す呼び出しは `E1005` にします（型検査も `validate_cpu_functions` で同じ規則を先に検査します）。選べる level は `cpu::host_levels`（x86-64 の Windows 以外、AArch64 Linux）で、それ以外の build 先では属性を外すだけです。
+公開ランタイムのエントリーシンボルは weak かつ hidden 属性となっています。
+
+256-bit の SIMD 型（F08 Phase 2）は LLVM では 32 バイト境界ですが、heap・配列要素・frame・union の payload は 16 バイト境界までしか揃えないため、`llvm_simd::with_vector_alignment` が `emit_program` の最後に 256-bit ベクトルを含む型（名前付き型は推移的に判定）の load／store へ `align 16` を明示します。256-bit ベクトルを含まない IR は変わりません。
 
 外部関数インターフェイス（`extern`）は `Program.externs` にシグネチャを持ち、通常関数呼び出しと同様に型付きの `HostCall` ラッパーへ lowering されます。外部 ABI は型検査時に具体的な型として確定され、通常の関数値、部分適用、所有権モデル、および呼び出し特殊化の最適化機構をそのまま共有します。
 `HostCall` は副作用を持つ式として登録され、extern ラッパー関数自体はデッドコード削除のルート（到達性ルート）から除外されます。
@@ -528,7 +532,7 @@ occurs check（出現検査）および型のネスト深度・構成要素数�
 ジェネリック関数の本体も宣言時に抽象型のまま型検査を受け、単相化（特殊化）の段階で具体的な型引数に基づく型、所有権、生存期間、メモリレイアウト、およびリテラル範囲の条件が再検証されます。C++ テンプレートのように呼び出し時に初めて構文検査を行う方式とは根本的に異なります。
 特殊化は `(宣言 ID, 型引数列)` をキーとするキャッシュと作業キューによって管理され、再帰関数に対しても同一の ID が割り当てられます。
 型変数、未解決のメソッド参照、および未エンコードのリテラルが LLVM コード生成へ渡されることはありません。
-仮想関数テーブルや動的ディスパッチ辞書、あるいは汎用値の boxing は不要であり、ゼロコスト抽象化を実現しています。
+仮想関数テーブルや動的ディスパッチ辞書、あるいは汎用値の boxing は不要であり、ゼロコスト抽象化を実現しています（vtable を使うのは利用者が明示した `dyn` 型だけです。後述の「dyn 値」）。
 なお、古い宣言構文は互換性テストのために残されていますが、新しいサンプルコードでは分離シグネチャと空白区切りの引数適用を使用します。
 
 `ClassDecl` は、既存のシグネチャ列にスーパークラス（superclass）とデフォルトメソッド定義列を保持し、名前によって関連付けられます。
@@ -623,6 +627,30 @@ NULL ポインタや要素数 0 のケースはヘッダー読み出しよりも
 配列スライス `Slice` は、元配列への借用を確立した後に範囲式の検査を行い、LLVM コード生成ではすべての境界検査が完了した後にのみ GEP（ポインタ計算）と長さの差分計算を実行します。
 共有配列参照に対する非消費的な参照外しは配列ビューを読み出し、所有値としての参照外しは従来の配列ディープコピーを実行します。
 要素への借用はビューから要素のアドレスを直接算出します。パターンマッチにおいて構造体全体の射影が必要な場合に限りエントリーブロックの一時記述子へ保存されますが、ユーザーコードに対してこの記述子への可変アクセスが公開されることはありません。スライスオブジェクト自体は clone や drop 時にバッファ操作を行いません。
+
+**排他配列ビュー:** 排他スライス `ref mut [T..]` は型検査器の中では `Type::Reference(ArrayView(T), true)` であり、`ArrayView` は排他参照の参照先にだけ現れます。
+表現の判定は `Type::slice_element` に集約されており、共有スライスと同じ `%tz.array` 記述子（16 バイト）を値として受け渡します。長さは固定なので、`ref mut [T]` のような記述子の置き場所へのポインタは不要です。単相化のシンボルでは `view[T]` と正規化されます。
+排他スライスはすべて `TypedExprKind::Slice` として型付けされます。`ref mut values` や `ref mut [T]` から配列全体のビューへの変換（`src/check.rs` の `whole_view`）、ビューの貸し直しも同じ形になるため、所有権検査とコード生成の経路は一つです。
+所有権検査は二相です。`src/ownership.rs` は範囲式を評価している間だけ元の place に共有の guard loan を置き（範囲の中の読み取りは許し、書き込みは拒否します）、評価後に排他 loan を作ります。`Array.split_at_mut` の二つの結果は実引数の貸し直しの loan を一つ共有し、範囲を区別しません。
+スタックフレーム上の局所配列から排他スライスを作るときは、記述子を読む前に `own_heap_storage` が要素領域をヒープへ移します（`Array.write` が旧要素を解放するため、フレーム上の要素を `tz.free` に渡さないようにします）。参照外しを元とするスライスは移送しません。
+`Array.write`、`Array.swap_in`、`Array.split_at_mut` は組み込みで、`checked_element_pointer` の境界検査（`TrapKind::BoundsCheck`）の後に旧要素を解放して格納します。`Array.sort_in_place` は `std/Array.tz` の関数で、挿入整列と SymMerge による作業領域なしの安定整列です。
+`Parallel.for_each_chunk` は `src/llvm_parallel.rs` の `parallel_chunks` が `ceil(length / size)` 個のチャンクへ分け、各 worker へ互いに素な記述子を渡します。
+
+**固定長配列:** `[T; N]` は型検査器の中では `Type::FixedArray(element, length)` で、長さは `Type::Length(n)` または長さパラメーター `Type::Variable("#N")` です。長さを型として持つので、型置換・単一化・単相化・別名展開は型変数と同じ経路を通ります（`Type` の大きさは 4 ワードのままです）。構文木では `TypeExprKind::FixedArray` と `TypeExprKind::Length` で、`const N: i64` は型パラメーター名 `#N` として登録されます。
+長さの解決は `src/check.rs` の `resolve_length` に集約されています。名前の長さは、整数リテラルを初期化式に持つ `i64` 定数（`Names::length_constants`）、型宣言の長さパラメーター、関数の暗黙の長さパラメーターの順に解決し、1024（`MAX_FIXED_ARRAY_LENGTH`）を超える長さは `E1010` です。
+LLVM では `[N x T]` の値として表現し、タプルと同じくフレーム上へ直接置きます。`llvm_frame::stack_size` と `Layouts::size` は要素サイズの `N` 倍で見積もり、単相化のシンボルでは `fixed[N,T]` と正規化されます。
+添字は `fixed_element_pointer` が GEP で要素のアドレスを求め、`N` 未満の整数リテラルの添字では境界検査の分岐を出力しません。clone と drop は非 Copy 要素のときだけ要素ループ（`array_loop`）を生成し、名前付きの値から `ref [T]` への変換（`fixed_array_view`）は `%tz.array` 記述子を作るだけで要素を複製しません。
+`FixedArray.init` の長さは `src/polymorph.rs` の `FamilyKind::FixedArrayElement` が期待型から決めます。直接の呼び出しは `fill_fixed_array` がフレーム上の値へ初期化関数を昇順に適用するインライン展開になり、関数値として使う場合は結果の配列型ごとの組み込みラッパーが同じ展開を行います。
+公開 ABI では、スカラー型の固定長配列フィールドを C 構造体の配列メンバー `T name[N]`（LLVM では `[N x abi]`）へ正規化します。ISO C に長さ 0 の配列はないので、`[T; 0]` のフィールドを持つレコードは公開できません（E1008）。
+
+**dyn 値:** `dyn C` は型検査器の中では葉の `Type::Dyn(Box<DynType>)` で、`DynType` はクラスの正規名（`Class::name`）の列と印 `copy`・`send`、region を持つかどうか（`borrowed`）を持ちます。型の性質（`is_copy`、`can_send`、`carries_loans` など）はこの印だけで決まります。
+構文木の `TypeExprKind::Dyn` は parser が `Program::dyn_types` にも記録し、`Classes::collect` の最後に dyn 互換規則（`Classes::dyn_slots`）を出現順に検査して `E1028` を報告します。
+`Classes::dyn_instances` は、書かれた互換な dyn 型ごとにディスパッチする各クラス `X` の `X<dyn ...>` インスタンスを合成し、本体を `ExprKind::DynDispatch { slot, slots }` にして通常のインスタンスの経路へ流します。このため制約付きジェネリック関数は `'a = dyn C` で一度だけ具体化されます。
+`Dyn.of` は特殊化で `(vtable キー, 格納型)` ごとに slot 関数を解決して `CheckedModule::vtables` に記録します。vtable キーは `DynType::vtable_key`（`send` と `borrowed` を消したもの）で、組み込みの実装は組み込みラッパー関数を slot にします。アップキャストは `dyn_layouts` が元の vtable の slot 関数を使い回した受け先の vtable を不動点まで足し、`CheckedModule::dyn_layouts` に各キーの slot 数とアップキャスト先を持ちます。
+LLVM では値を `%tz.dyn = type { ptr, ptr }`（data、vtable）とし、この型は dyn 型を書いたプログラム（`CheckedModule::uses_dyn`）だけがヘッダーへ出します。data は `@tz.alloc` で `storage_layout`（64-bit の上界）の大きさを確保します。
+vtable は `internal unnamed_addr constant` の `{ ptr drop, ptr clone, i64 size, i64 align, [N x ptr] slots, [U x ptr] upcasts }`（clone は `Copy` 印のないキーで null、upcasts はアップキャスト先があるときだけ）で、記号は `@"tz.vtable.{クラス}[{格納型}]"` です。
+slot は関数ごとの adapter `@"tz.dyn.slot.{関数}"` を指します。adapter は `(ptr data, 残りの引数) -> 結果` の型で、受け手を共有配列なら `%tz.array` の読み出し、参照なら `ptr` のまま、値なら読み出して領域を解放してから実装を直接呼びます。そのためディスパッチ側の間接呼び出しの型はメソッドだけで決まり、WASM の `call_indirect` の型検査と一致します。
+drop slot `@"tz.dyn.drop[T]"` は `drop_value(T)` と同じ drop glue（利用者の `Drop` を含む）の後に領域を解放し、clone slot `@"tz.dyn.clone[T]"` は新しい領域へ `clone_value(T)` します。値の drop と clone は共有の `@tz.dyn.drop` / `@tz.dyn.clone` が vtable を読んで呼びます。vtable・adapter・drop 関数は全関数の後に `BTreeMap` の順で出力します。
 
 **境界検査の省略:** `ranges.rs` は関数ごとに 1 回、型付き IR をワークリストアルゴリズムで走査して配列添字に関する不変事実 `RangeFacts` を構築します（走査ノード数が 65,536 個を超える巨大な関数については解析を打ち切り、すべての境界検査を安全に残します）。
 `Type::Array` に対する添字アクセスにおいて、閉じた静的規則のみによって「添字が必ず配列の有効範囲内に収まる」と証明できた場合に限り、境界検査の条件分岐コードの生成を省略します。証明規則として対象となるのは、`0 .. len - 1` および `len - 1 .. -1 .. 0` のループ（`len` は `.length` または std の `Array.length`）、定数境界によるループ、リテラルや `new` による静的定数長の配列、ならびに `if i >= 0 && i < len` の then 分岐の内部です。
@@ -984,6 +1012,9 @@ threads 有効時はインポートセクションの最大メモリサイズも
 レコード型は専用の ABI 構造体と内部表現の間で再帰的に相互変換され、`bool` や狭幅整数は 32-bit に正規化されます。関数の戻り値は出力先ポインタ（out pointer）に書き込まれ、バッファの所有権のみがホスト側へと安全に引き渡されます。
 メモリアロケータは、拡張 ABI の使用時に限り弱いシンボル（weak）として `tsuzuri_alloc` および `tsuzuri_free` を公開し、ネイティブではシステムの `malloc`／`free`、WASM では既存の WASM ヒープを使用します。
 POSIX ネイティブ環境のアロケータは、共通のフックテーブルから境界ランタイムの存在を検知し、メモリの確保と解放を安全な追跡経路へとルーティングします。これは拡張 ABI を使用するデフォルトネイティブ IR における内部変更ですが、公開シグネチャそのものには一切影響しません。WASM および Windows におけるデフォルトアロケータは従来の動作を維持します。
+**allocator の選択（F13）:** heap runtime は `emit_program` の末尾で一つだけ連結し、`@tz.alloc`／`@tz.free`／`@tz.realloc` を `define internal` で定義します（呼び出し側は allocator を知りません）。`llvm::Allocator::System` は従来の `heap-native.ll`・`heap-wasm.ll`・`heap-wasm64.ll`（threads は lock 版）、`Host` は `heap-host.ll`（WASM では `tsuzuri_heap` からの import）、`Counting` は対象の heap を `counted_base` で `@tz.alloc.base` などへ改名し、その上に `heap-counting.ll` を置きます。
+`Host` と `Counting` は各ブロックの先頭 16 バイトに要求サイズを書き、ホストへ渡すサイズと統計を解放の経路によらず一致させます。トラップの理由は関数名で分類する（`traps::runtime_kind`）ので、確保の失敗の `@llvm.trap` は `@tz.alloc`・`@tz.realloc` とその `.base` の本体に置きます。
+`--freestanding` は `--allocator host` に加えて CPU ディスパッチを使わない経路（`emit_native_build` を通らない）で出力し、IR が C ライブラリを要する runtime（IO・OS・タスク・引数・`write`）を宣言したら `E2000` にします。`--emit header` の出力には IR がないので、同じ build の object が持つ library の IR を別に生成して検査します。
 128-bit 値、ソフトウェア浮動小数点型、任意の所有入力、借用参照の戻り値、およびクロージャ環境の直接的な ABI 公開はサポートされていません。
 外部シンボルのインポートはユーザーが記述した `extern` 宣言からのみ発生し、リンク名、ハンドル型、コールバックを使用しないプログラムにおいては、生成される IR、C ヘッダー、および WASM インポートの構造に変化はありません。
 外部ライブラリのリンク入力はネイティブ実行ファイルのビルドでのみ有効です。`wasm-ld` の `--export-table` はコールバックラッパーが存在する場合にのみ渡され、変数を捕捉した関数値が ABI を越えて直接渡されることはありません。

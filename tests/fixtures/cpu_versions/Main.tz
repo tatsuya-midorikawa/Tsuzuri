@@ -1,0 +1,58 @@
+// F08 Phase 3: functions that native builds also compile for further CPU levels. Every
+// version prints the same line; tests/cpu_kernels.mjs runs each level that the CPU has.
+
+/// The dot product of two slices: eight lanes at a time, then the rest in order.
+@cpu ["sse4.2", "avx2", "avx512", "sve", "sve2"]
+def dot :: ref [i32] -> ref [i32] -> i32
+fn dot left right =
+    let mut total: i32x8 = Simd.splat 0i32
+    let mut index = 0
+    while index + 8 <= left.length do
+        let first: i32x8 = Simd.load left index
+        let second: i32x8 = Simd.load right index
+        total = total + first * second
+        index = index + 8
+    let mut sum = Simd.sum_lanes total
+    while index < left.length do
+        sum = sum + left[index] * right[index]
+        index = index + 1
+    sum
+
+/// Scales the elements in place: eight lanes at a time, then the rest.
+@cpu ["avx2", "sve"]
+def scale :: ref mut [f32..] -> f32 -> unit
+fn scale values factor =
+    let mut index = 0
+    while index + 8 <= values.length do
+        let lanes: f32x8 = Simd.load values index
+        Simd.store values index (lanes * Simd.splat factor)
+        index = index + 8
+    while index < values.length do
+        let value = values[index]
+        Array.write values index (value * factor)
+        index = index + 1
+
+/// Four running sums, added from lane 0, then the rest in order.
+@cpu ["avx2", "avx512", "sve"]
+def total :: ref [f64] -> f64
+fn total values =
+    let mut lanes: f64x4 = Simd.splat 0.0
+    let mut index = 0
+    while index + 4 <= values.length do
+        let next: f64x4 = Simd.load values index
+        lanes = lanes + next
+        index = index + 4
+    let mut sum = Simd.sum_lanes lanes
+    while index < values.length do
+        sum = sum + values[index]
+        index = index + 1
+    sum
+
+let left = Array.init 1003 (\index -> (index * 7 % 13 - 6) as i32)
+let right = Array.init 1003 (\index -> (index * 5 % 11 - 5) as i32)
+let mut floats: [f32] = Array.init 1003 (\index -> ((index % 17) as f32) * 0.25f32)
+scale (ref mut floats) 1.5f32
+let doubles = Array.init 1003 (\index -> ((index % 29) as f64) * 0.125)
+let mut scaled = 0.0
+for value in floats do scaled = scaled + (value as f64)
+$"{dot (ref left) (ref right)} {(scaled * 8.0) as i64} {(total (ref doubles) * 8.0) as i64}"

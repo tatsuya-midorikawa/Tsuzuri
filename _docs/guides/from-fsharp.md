@@ -35,6 +35,8 @@ Tsuzuri の名前付き関数はシグネチャを明示します。ローカル
 
 型クラスで演算を抽象化し、コンパイル時の単相化で具体化します。class というキーワードは .NET オブジェクトの class 宣言ではありません。継承、仮想メソッド、リフレクションを意味しません。
 
+F# のインターフェース型の値のように実装の異なる値を一つのコレクションへ入れるには、型クラス `C` について `dyn C` 型を使います（[動的ディスパッチ](../language-reference/generics-and-typeclasses.md#動的ディスパッチdyn)）。`Dyn.of value` で包み、メソッドは vtable から実行時に選ばれます。インターフェースの継承は型クラスのスーパークラス、複数インターフェースの実装は `dyn (C, D)` に対応します。downcast（`:?>`）と型テスト（`:?`）はありません。
+
 ## 所有権を API に表す
 
 F# の GC で管理する値の共有を、Tsuzuri の値渡しへそのまま移すことはできません。string は非 Copy で move し、Copy 配列を複製すれば独立したバッファになります。
@@ -137,7 +139,7 @@ printf 風の書式文字列、.NET String の全メソッド、文化圏依存�
 
 ## 提供しない F# / .NET 機能
 
-オブジェクト指向の class / interface / 継承、型プロバイダー、単位付き型、コードクォート、`[<...>]` の属性（`@checked` と `@literal` は専用の構文）、`exception` 宣言と `raise`、reflection、LINQ query、null、F# Interactive を前提とするコードは直接移植できません。
+オブジェクト指向の class / 実装の継承、型プロバイダー、単位付き型、コードクォート、`[<...>]` の属性（`@checked` と `@literal` は専用の構文）、`exception` 宣言と `raise`、reflection、LINQ query、null、F# Interactive を前提とするコードは直接移植できません。
 
 Tsuzuri が担当するのは型付きの計算と所有する状態です。外部機能は C / WASM ホストへ置き、export / extern の ABI を通して接続します。
 

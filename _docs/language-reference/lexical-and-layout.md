@@ -28,7 +28,7 @@ Tsuzuri のソースは UTF-8 のテキストです。空白で関数を適用�
 fn def rec and export extern private record union type const test
 class instance deriving let task do return yield for in to downto
 while break continue mut ref deref new as if then elif else match
-with when true false
+with when true false dyn
 ```
 
 `of` は union の case 宣言内でだけ特別な意味を持つ文脈キーワードです。`union` は例外としてモジュール関数名とドットの後の名前にも使えます。これは `Set.union` を呼ぶための規則で、変数名や型名への一般的な使用許可ではありません。
@@ -52,6 +52,7 @@ with when true false
 | `\|>` | パイプ |
 | `::` | `def` の名前と型の区切り、リストの `head :: tail`、名前空間のパス（`Sample::Features::Shape.area`） |
 | `@checked` | 検査付き算術（[例外処理](error-handling.md)） |
+| `@cpu` | CPU の命令セットごとの関数の版（[性能と CPU 選択](../guides/performance.md#利用者関数の多版化cpu)） |
 | `@literal` | コンパイル時定数の宣言（[値と定数](values-and-constants.md)） |
 
 意味と優先順位は[式と演算子](expressions-and-operators.md#優先順位)を参照してください。型引数の閉じ括弧が隣接した `>>`・`>>>` は、型の中では閉じ括弧として扱います。

@@ -116,6 +116,11 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
             arguments.iter().map(|ty| map_type(ty, f)).collect(),
         ),
         Type::Array(element) => Type::Array(Box::new(map_type(element, f))),
+        Type::ArrayView(element) => Type::ArrayView(Box::new(map_type(element, f))),
+        Type::FixedArray(element, length) => Type::FixedArray(
+            Box::new(map_type(element, f)),
+            Box::new(map_type(length, f)),
+        ),
         Type::List(element) => Type::List(Box::new(map_type(element, f))),
         Type::Vec(element) => Type::Vec(Box::new(map_type(element, f))),
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
@@ -164,6 +169,7 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
                     && arguments.iter().all(|ty| visit(ty, depth + 1, count))
             }
             Type::Array(ty)
+            | Type::ArrayView(ty)
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::Task(ty)
@@ -173,6 +179,9 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
                     && visit(result, depth + 1, count)
             }
             Type::Tuple(elements) => elements.iter().all(|ty| visit(ty, depth + 1, count)),
+            Type::FixedArray(element, length) => {
+                visit(element, depth + 1, count) && visit(length, depth + 1, count)
+            }
             Type::Record(_, arguments) | Type::Union(_, arguments) => {
                 arguments.iter().all(|ty| visit(ty, depth + 1, count))
             }
@@ -241,6 +250,11 @@ impl Inference {
                 arguments.iter().map(|ty| self.resolve(ty)).collect(),
             ),
             Type::Array(element) => Type::Array(Box::new(self.resolve(element))),
+            Type::ArrayView(element) => Type::ArrayView(Box::new(self.resolve(element))),
+            Type::FixedArray(element, length) => Type::FixedArray(
+                Box::new(self.resolve(element)),
+                Box::new(self.resolve(length)),
+            ),
             Type::List(element) => Type::List(Box::new(self.resolve(element))),
             Type::Vec(element) => Type::Vec(Box::new(self.resolve(element))),
             Type::Tuple(elements) => {
@@ -318,6 +332,8 @@ impl Inference {
                     span,
                 ));
             }
+            // The target of an exclusive slice is never a type on its own (C08).
+            (Type::Infer(_), Type::ArrayView(_)) | (Type::ArrayView(_), Type::Infer(_)) => {}
             (Type::Infer(id), ty) | (ty, Type::Infer(id)) => {
                 let mut occurs = false;
                 map_type(ty, &mut |ty| {
@@ -332,12 +348,27 @@ impl Inference {
                 return Ok(());
             }
             (Type::Array(a), Type::Array(b))
+            | (Type::ArrayView(a), Type::ArrayView(b))
             | (Type::List(a), Type::List(b))
             | (Type::Vec(a), Type::Vec(b))
             | (Type::Task(a), Type::Task(b)) => {
                 return self.unify(a, b, types, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
+                return self.unify(a, b, types, span);
+            }
+            // Lengths first, so a mismatch reports both array types (A16).
+            (Type::FixedArray(a, n), Type::FixedArray(b, m)) => {
+                self.unify(n, m, types, span).map_err(|mut error| {
+                    if error.code == "E1003" {
+                        error.message = format!(
+                            "expected {}, found {}",
+                            self.resolve(&expected).display(types),
+                            self.resolve(&actual).display(types)
+                        );
+                    }
+                    error
+                })?;
                 return self.unify(a, b, types, span);
             }
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
@@ -859,6 +890,17 @@ impl Classes {
             }
         }
         classes.validate_superclasses()?;
+        // A14 D11: a `dyn` type that cannot be dispatched is reported wherever it is written.
+        for input in modules {
+            for expression in &input.program.dyn_types {
+                if let Ok(Type::Dyn(dyn_type)) = resolve_type(expression, input.name, names)
+                    && let Err(reason) = classes.dyn_slots(&dyn_type)
+                {
+                    diagnostics.push(classes.dyn_error(&dyn_type, &reason, expression.span));
+                }
+            }
+        }
+        diagnostics.check()?;
         Ok(classes)
     }
 
@@ -1025,6 +1067,169 @@ impl Classes {
         Ok(result)
     }
 
+    /// The classes whose methods a `dyn` type of `roots` dispatches, in vtable order (A14 D5):
+    /// each class after its superclasses, which follow their declaration order depth first; a
+    /// class reached again keeps its first place. `validate_superclasses` rejected cycles.
+    pub(super) fn vtable_classes(&self, roots: &[usize]) -> Vec<usize> {
+        let mut order = Vec::new();
+        let mut seen = BTreeSet::new();
+        for &root in roots {
+            let mut pending = vec![(root, false)];
+            while let Some((class, finished)) = pending.pop() {
+                if finished {
+                    order.push(class);
+                    continue;
+                }
+                if !seen.insert(class) {
+                    continue;
+                }
+                pending.push((class, true));
+                for superclass in self.declarations[class].superclasses.iter().rev() {
+                    pending.push((superclass.class, false));
+                }
+            }
+        }
+        order
+    }
+
+    /// The class ids of the classes of a `dyn` type.
+    pub(super) fn dyn_roots(&self, dyn_type: &DynType) -> Vec<usize> {
+        dyn_type
+            .classes
+            .iter()
+            .map(|name| self.names[name.as_ref()])
+            .collect()
+    }
+
+    /// Whether a dyn value of `source` becomes one of `target` by switching its vtable (A14
+    /// Phase 2): `source` dispatches every class of `target`, so the slots of `target` are
+    /// slots of `source` too. `Dyn.of` checks the markers as constraints.
+    pub(super) fn upcasts(&self, source: &DynType, target: &DynType) -> bool {
+        let dispatched: BTreeSet<usize> = self
+            .vtable_classes(&self.dyn_roots(source))
+            .into_iter()
+            .collect();
+        self.dyn_roots(target)
+            .iter()
+            .all(|class| dispatched.contains(class))
+    }
+
+    /// The vtable slots of a `dyn` type as (declaring class, method index) in slot order, or why
+    /// the type cannot be dispatched (A14 D6). The `Copy` and `Send` markers satisfy superclasses
+    /// of those names; every other class needs methods whose first parameter alone is the class
+    /// type, by value or by reference.
+    pub(super) fn dyn_slots(&self, dyn_type: &DynType) -> Result<Vec<(usize, usize)>, String> {
+        let roots = self.dyn_roots(dyn_type);
+        if roots.is_empty() {
+            let marker = if dyn_type.copy { "Copy" } else { "Send" };
+            return Err(format!("{marker} has no methods to dispatch"));
+        }
+        if dyn_type.send && dyn_type.borrowed {
+            return Err("a dyn value with a region holds borrows, so it cannot be Send".into());
+        }
+        for &root in &roots {
+            let class = &self.declarations[root];
+            if class.arity != 0 {
+                return Err(format!("{} is higher-kinded", type_display(&class.name)));
+            }
+            if class.methods.is_empty() {
+                return Err(format!(
+                    "{} has no methods to dispatch",
+                    type_display(&class.name)
+                ));
+            }
+        }
+        let mut slots = Vec::new();
+        for id in self.vtable_classes(&roots) {
+            let class = &self.declarations[id];
+            let name = type_display(&class.name);
+            if !roots.contains(&id) {
+                if class.arity != 0 {
+                    return Err(format!("superclass {name} is higher-kinded"));
+                }
+                if class.methods.is_empty() {
+                    match class.name.as_str() {
+                        "Copy" if dyn_type.copy => continue,
+                        "Send" if dyn_type.send => continue,
+                        "Copy" | "Send" => {
+                            return Err(format!(
+                                "superclass {name} needs the {name} marker; list {name} among the classes, as in dyn (Shapes.Shape, {name})"
+                            ));
+                        }
+                        _ => {
+                            return Err(format!(
+                                "superclass {name} has no methods, so a dyn value cannot satisfy it"
+                            ));
+                        }
+                    }
+                }
+            }
+            if class.builtin && class.name == "Drop" {
+                return Err("Drop runs by itself when a value is dropped".into());
+            }
+            let variable = Type::Variable(class.variable.clone());
+            if let Some(superclass) = class
+                .superclasses
+                .iter()
+                .find(|superclass| superclass.ty != variable)
+            {
+                return Err(format!(
+                    "superclass {} of {name} constrains a type other than the class type",
+                    type_display(&self.declarations[superclass.class].name)
+                ));
+            }
+            for (index, method) in class.methods.iter().enumerate() {
+                let Ok(signature) = &method.signature else {
+                    return Err(format!(
+                        "method {name}.{} has an invalid signature",
+                        method.name
+                    ));
+                };
+                let receiver = signature.parameters.first().is_some_and(|ty| {
+                    *ty == variable
+                        || matches!(ty, Type::Reference(target, _) if **target == variable)
+                });
+                if !receiver {
+                    return Err(format!(
+                        "method {name}.{} does not take the class type by value, ref, or ref mut as its first parameter",
+                        method.name
+                    ));
+                }
+                let mentions = |ty: &Type| variables(ty).contains(&class.variable);
+                if signature.parameters[1..].iter().any(mentions) || mentions(&signature.result) {
+                    return Err(format!(
+                        "method {name}.{} uses the class type outside its first parameter",
+                        method.name
+                    ));
+                }
+                slots.push((id, index));
+            }
+        }
+        Ok(slots)
+    }
+
+    /// The E1028 diagnostic for a `dyn` type that cannot be dispatched.
+    pub(super) fn dyn_error(&self, dyn_type: &DynType, reason: &str, span: Span) -> Diagnostic {
+        let classes: Vec<String> = dyn_type
+            .classes
+            .iter()
+            .map(|name| type_display(name))
+            .collect();
+        let constraint = match classes.as_slice() {
+            [] => "a class constraint".to_owned(),
+            [class] => format!("a {class} constraint"),
+            _ => format!("{} constraints", classes.join(" and ")),
+        };
+        Diagnostic::new(
+            "E1028",
+            format!(
+                "{} is not allowed: {reason}; use a generic function with {constraint} instead",
+                dyn_type.display()
+            ),
+            span,
+        )
+    }
+
     /// Finds a class through the tiered name lookup of GUIDE D-07. A class
     /// that `collect` has not registered yet is unknown.
     fn find(
@@ -1093,6 +1298,8 @@ impl Classes {
                 }
             }
             TypeExprKind::Array(ty)
+            | TypeExprKind::ArrayView(ty)
+            | TypeExprKind::FixedArray(ty, _)
             | TypeExprKind::List(ty)
             | TypeExprKind::Task(ty)
             | TypeExprKind::Reference(ty, _)
@@ -1171,19 +1378,26 @@ impl Classes {
                 }
             }
         }
-        let mut overlap_pairs = 0;
-        for &ModuleInput {
-            name: module,
-            program,
-            ..
-        } in modules
-        {
-            for instance in program.instances.iter().chain(
+        // The instances of `dyn` types come first, so a user instance that repeats one overlaps it.
+        let generated = self.dyn_instances(modules, names, types);
+        let mut sources: Vec<(&str, &InstanceDecl, bool)> = generated
+            .iter()
+            .map(|(module, instance)| (module.as_str(), instance, false))
+            .collect();
+        for input in modules {
+            for instance in input.program.instances.iter().chain(
                 derived
                     .iter()
-                    .filter(|(owner, _)| owner == module)
+                    .filter(|(owner, _)| owner == input.name)
                     .map(|(_, instance)| instance),
             ) {
+                let is_derived = instance.class.provenance == Provenance::Generated;
+                sources.push((input.name, instance, is_derived));
+            }
+        }
+        let mut overlap_pairs = 0;
+        {
+            for (module, instance, is_derived) in sources {
                 if diagnostics.is_full() {
                     break;
                 }
@@ -1371,7 +1585,7 @@ impl Classes {
                         constraints: context,
                         methods: implementations,
                         span: instance.class.span,
-                        derived: instance.class.provenance == Provenance::Generated,
+                        derived: is_derived,
                     });
                     Ok(())
                 })();
@@ -1379,11 +1593,98 @@ impl Classes {
                     diagnostics.push(error);
                 }
             }
-            if diagnostics.is_full() {
-                break;
-            }
         }
         diagnostics.check()
+    }
+
+    /// The instances `X<dyn ...>` that dispatch through vtables (A14 D7): for each distinct `dyn`
+    /// type that the program writes and can be dispatched, one per class `X` with methods that
+    /// it dispatches, with the module that holds the instance. A method's body calls its slot.
+    fn dyn_instances(
+        &self,
+        modules: &[ModuleInput<'_>],
+        names: &Names,
+        types: &TypeContext<'_>,
+    ) -> Vec<(String, InstanceDecl)> {
+        let mut written: BTreeMap<DynType, (String, Span)> = BTreeMap::new();
+        for input in modules {
+            for expression in &input.program.dyn_types {
+                if let Ok(Type::Dyn(dyn_type)) = resolve_type(expression, input.name, names) {
+                    written
+                        .entry(*dyn_type)
+                        .or_insert_with(|| (input.name.to_owned(), expression.span));
+                }
+            }
+        }
+        let mut instances = Vec::new();
+        for (dyn_type, (first, span)) in written {
+            let Ok(slots) = self.dyn_slots(&dyn_type) else {
+                continue;
+            };
+            let count = slots.len() as u32;
+            let head = type_expression(&Type::Dyn(Box::new(dyn_type.clone())), types, span);
+            let generated = |text: String| Ident {
+                text,
+                span,
+                provenance: Provenance::Generated,
+            };
+            for id in self.vtable_classes(&self.dyn_roots(&dyn_type)) {
+                let class = &self.declarations[id];
+                if class.methods.is_empty() {
+                    continue;
+                }
+                // A user class's instance lives with the class; a builtin class's with the first use.
+                let module = match class.name.rsplit_once('.') {
+                    Some((module, _)) if !class.builtin => module.to_owned(),
+                    _ => first.clone(),
+                };
+                let methods = class
+                    .methods
+                    .iter()
+                    .enumerate()
+                    .map(|(index, method)| {
+                        let slot = slots
+                            .iter()
+                            .position(|&slot| slot == (id, index))
+                            .expect("every dispatched method has a slot")
+                            as u32;
+                        let arity = method
+                            .signature
+                            .as_ref()
+                            .map_or(1, |signature| signature.parameters.len());
+                        Definition {
+                            name: generated(method.name.clone()),
+                            recursion: None,
+                            parameters: (0..arity)
+                                .map(|index| {
+                                    let name = if index == 0 {
+                                        "_receiver".to_owned()
+                                    } else {
+                                        format!("_argument{index}")
+                                    };
+                                    (generated(name), false)
+                                })
+                                .collect(),
+                            body: Expr {
+                                kind: ExprKind::DynDispatch { slot, slots: count },
+                                span,
+                                depth: 1,
+                            },
+                        }
+                    })
+                    .collect();
+                instances.push((
+                    module,
+                    InstanceDecl {
+                        class: generated(key_path(&class.name)),
+                        ty: head.clone(),
+                        constraints: Vec::new(),
+                        methods,
+                    },
+                ));
+            }
+        }
+        instances
     }
 
     /// Heads of the `Drop` instances: the records and unions with a user drop (B07).
@@ -2027,6 +2328,12 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
     let kind = match ty {
         Type::Variable(name) => TypeExprKind::Variable(name.clone()),
         Type::Array(ty) => TypeExprKind::Array(Box::new(type_expression(ty, types, span))),
+        Type::ArrayView(ty) => TypeExprKind::ArrayView(Box::new(type_expression(ty, types, span))),
+        Type::FixedArray(ty, length) => TypeExprKind::FixedArray(
+            Box::new(type_expression(ty, types, span)),
+            Box::new(type_expression(length, types, span)),
+        ),
+        Type::Length(length) => TypeExprKind::Length(*length),
         Type::List(ty) => TypeExprKind::List(Box::new(type_expression(ty, types, span))),
         Type::Vec(ty) => TypeExprKind::Apply(
             Box::new(Ident {
@@ -2100,6 +2407,28 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                 )
             }
         }
+        Type::Dyn(dyn_type) => {
+            let name = |text: String| Ident {
+                text,
+                span,
+                provenance: Provenance::Generated,
+            };
+            let mut classes: Vec<Ident> = dyn_type
+                .classes
+                .iter()
+                .map(|class| name(key_path(class)))
+                .collect();
+            if dyn_type.copy {
+                classes.push(name("Copy".into()));
+            }
+            if dyn_type.send {
+                classes.push(name("Send".into()));
+            }
+            TypeExprKind::Dyn(Box::new(DynTypeExpr {
+                classes,
+                borrowed: dyn_type.borrowed,
+            }))
+        }
         Type::Infer(_) => unreachable!("instance types are concrete"),
         _ => TypeExprKind::Named(key_path(&key_name(ty, types))),
     };
@@ -2131,6 +2460,8 @@ enum FamilyKind {
     Widen,
     SimdLane(Option<u16>),
     SimdMask,
+    /// `input` is the result of `FixedArray.init`, a fixed-length array of `output` (A16).
+    FixedArrayElement,
 }
 
 impl Checker<'_> {
@@ -2179,6 +2510,14 @@ impl Checker<'_> {
             return Err(Diagnostic::new(
                 "E1022",
                 "Debug.__print_string is private to the standard Debug module; use Debug.print or Debug.trace",
+                span,
+            ));
+        }
+        // A dyn value is built only where its type is known, so `Dyn.of` is never a value (A14 D9).
+        if builtin == Builtin::DynOf && !std::mem::take(&mut self.dyn_callee) {
+            return Err(Diagnostic::new(
+                "E1015",
+                "Dyn.of must be applied to exactly one argument where a dyn type is expected",
                 span,
             ));
         }
@@ -2266,6 +2605,11 @@ impl Checker<'_> {
             let ty = self.builtin_type(&constraint.ty, &bindings, span)?;
             self.require(constraint.class, ty, span)?;
         }
+        // The array type, and so its length, also tells `FixedArray.init` instances apart (A16).
+        let mut types = types;
+        if builtin == Builtin::FixedArrayInit {
+            types.push(result.clone());
+        }
         Ok((
             TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance { builtin, types })),
             Type::function(parameters, result),
@@ -2283,6 +2627,7 @@ impl Checker<'_> {
             BuiltinType::Var(name) => bindings[name].clone(),
             BuiltinType::Concrete(ty) => ty.clone(),
             BuiltinType::Array(ty) => Type::Array(element(ty)?),
+            BuiltinType::ArrayView(ty) => Type::ArrayView(element(ty)?),
             BuiltinType::List(ty) => Type::List(element(ty)?),
             BuiltinType::Vec(ty) => Type::Vec(element(ty)?),
             BuiltinType::Task(ty) => Type::Task(element(ty)?),
@@ -2326,6 +2671,18 @@ impl Checker<'_> {
                 });
                 output
             }
+            BuiltinType::FixedArrayOf(element) => {
+                // The expected type decides the array and so its length.
+                let element = self.builtin_type(element, bindings, span)?;
+                let array = self.inference.fresh();
+                self.families.push(Family {
+                    kind: FamilyKind::FixedArrayElement,
+                    input: array.clone(),
+                    output: element,
+                    span,
+                });
+                array
+            }
         })
     }
 
@@ -2334,6 +2691,31 @@ impl Checker<'_> {
     /// phase 1 resolves them only at concrete call sites.
     pub(super) fn solve_families(&mut self, last: bool) -> Result<(), Diagnostic> {
         for family in std::mem::take(&mut self.families) {
+            if matches!(family.kind, FamilyKind::FixedArrayElement) {
+                let input = self.inference.resolve(&family.input);
+                match input {
+                    Type::FixedArray(element, _) => {
+                        self.same(&family.output, &element, family.span)?;
+                    }
+                    ty if ty.contains_error() => {}
+                    Type::Infer(_) if !last => self.families.push(family),
+                    Type::Infer(_) => {
+                        return Err(Diagnostic::new(
+                            "E1015",
+                            "cannot determine the length of 'FixedArray.init'; annotate the result type, for example '[i64; 4]'",
+                            family.span,
+                        ));
+                    }
+                    _ => {
+                        return Err(Diagnostic::new(
+                            "E1005",
+                            "'FixedArray.init' creates a fixed-length array; annotate a type such as '[i64; 4]'",
+                            family.span,
+                        ));
+                    }
+                }
+                continue;
+            }
             if matches!(family.kind, FamilyKind::SimdLane(_) | FamilyKind::SimdMask) {
                 let input = self.inference.resolve(&family.input);
                 let Type::Simd(vector) = input else {
@@ -3195,6 +3577,8 @@ pub(super) fn specialize(
         functions: Vec::new(),
         intrinsics: BTreeMap::new(),
         to_strings: BTreeMap::new(),
+        vtables: BTreeMap::new(),
+        upcasts: BTreeSet::new(),
         current: FunctionOrigin::source(ModuleOrigin::User),
         base_count: module
             .functions
@@ -3269,6 +3653,7 @@ pub(super) fn specialize(
         })
         .collect();
     recursion::check_specialized(&specializer.functions, &requires_rec)?;
+    let (vtables, dyn_layouts) = dyn_layouts(classes, specializer.vtables, &specializer.upcasts);
     let functions = specializer.functions;
     Ok(CheckedModule {
         records: module.records,
@@ -3278,7 +3663,65 @@ pub(super) fn specialize(
         tests,
         warnings: module.warnings,
         user_drops,
+        vtables,
+        dyn_layouts,
+        uses_dyn: module.uses_dyn,
     })
+}
+
+/// The layout of each vtable key, and the vtables that upcasts reach (A14 Phase 2). A vtable of
+/// an upcast's target reuses the slot functions that the source's vtable of the same stored type
+/// has for the target's slots, so it needs no new specialization; it is added for every stored
+/// type of the source, transitively.
+fn dyn_layouts(
+    classes: &Classes,
+    mut vtables: Vtables,
+    upcasts: &BTreeSet<(DynType, DynType)>,
+) -> (Vtables, BTreeMap<DynType, DynLayout>) {
+    let mut layouts: BTreeMap<DynType, DynLayout> = BTreeMap::new();
+    for (key, _) in vtables.keys() {
+        layouts.entry(key.clone()).or_default();
+    }
+    for (source, target) in upcasts {
+        layouts
+            .entry(source.clone())
+            .or_default()
+            .upcasts
+            .push(target.clone());
+        layouts.entry(target.clone()).or_default();
+    }
+    let mut slots = BTreeMap::new();
+    for (key, layout) in &mut layouts {
+        let list = classes.dyn_slots(key).unwrap_or_default();
+        layout.slots = list.len();
+        slots.insert(key.clone(), list);
+    }
+    loop {
+        let mut added = Vec::new();
+        for ((key, ty), functions) in &vtables {
+            for target in &layouts[key].upcasts {
+                if vtables.contains_key(&(target.clone(), ty.clone())) {
+                    continue;
+                }
+                let source = &slots[key];
+                let reused = slots[target]
+                    .iter()
+                    .map(|slot| {
+                        let index = source
+                            .iter()
+                            .position(|candidate| candidate == slot)
+                            .expect("an upcast target's slots are the source's");
+                        functions[index]
+                    })
+                    .collect();
+                added.push(((target.clone(), ty.clone()), reused));
+            }
+        }
+        if added.is_empty() {
+            return (vtables, layouts);
+        }
+        vtables.extend(added);
+    }
 }
 
 /// Adds the Drop types that a value of `ty` owns, itself included; borrows and function
@@ -3322,6 +3765,10 @@ struct Specializer<'a> {
     functions: Vec<CheckedFunction>,
     intrinsics: BTreeMap<(usize, usize, Type), usize>,
     to_strings: BTreeMap<Type, usize>,
+    /// A14: the slot functions of each vtable, by vtable key and stored type.
+    vtables: Vtables,
+    /// A14 Phase 2: the upcasts between distinct vtable keys, as (source, target).
+    upcasts: BTreeSet<(DynType, DynType)>,
     /// The origin that helpers generated for the function being instantiated inherit.
     current: FunctionOrigin,
     base_count: usize,
@@ -3366,7 +3813,10 @@ impl Specializer<'_> {
             .collect();
         if !types.is_empty() {
             function.name = format!("{}.$mono.{instance}", function.name);
+            // The instances of a generic `@cpu` function keep its CPU levels (F08 Phase 3).
+            let cpu = function.origin.cpu;
             function.origin = function.origin.generated(instance);
+            function.origin.cpu = cpu;
         }
         for constraint in &function.constraints {
             self.classes.validate(
@@ -3558,6 +4008,11 @@ impl Specializer<'_> {
                         self.string_function(&instance.types[0], expression.span)?,
                     )))
                 }
+                Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::DynOf => {
+                    let instance = instance.clone();
+                    self.dyn_of(&instance, expression.span)?;
+                    None
+                }
                 GenericInteger(value, negative) => Some(
                     Checker::integer_literal(
                         *value,
@@ -3609,6 +4064,84 @@ impl Specializer<'_> {
         if let Some(kind) = replacement {
             expression.kind = kind;
         }
+        Ok(())
+    }
+
+    /// Requests what a `Dyn.of` needs (A14): the vtable of the stored type, or nothing but an
+    /// upcast when the value is a dyn value that already dispatches every class of the target
+    /// (Phase 2), which keeps its data and switches the vtable.
+    #[inline(never)]
+    fn dyn_of(&mut self, instance: &BuiltinInstance, span: Span) -> Result<(), Diagnostic> {
+        let [value, Type::Dyn(target)] = instance.types.as_slice() else {
+            unreachable!("Dyn.of stores a value in a dyn type")
+        };
+        let key = target.vtable_key();
+        // Generic code can store a type that only now turns out to hold borrows.
+        if !target.borrowed && value.carries_loans(&self.types) {
+            return Err(Diagnostic::new(
+                "E1013",
+                format!(
+                    "a dyn value without a region cannot hold borrowed data, and {} holds borrows; store an owned value, or name a region, as in 'dyn Shapes.Shape {{r}}'",
+                    value.display(&self.types)
+                ),
+                span,
+            ));
+        }
+        if let Type::Dyn(source) = value
+            && self.classes.upcasts(source, target)
+        {
+            let source = source.vtable_key();
+            if source != key {
+                self.upcasts.insert((source, key));
+            }
+            return Ok(());
+        }
+        if value.reaches_exclusive(&self.types) {
+            return Err(Diagnostic::new(
+                "E1013",
+                format!(
+                    "a dyn value cannot hold exclusive borrows, and {} holds one; store an owned value",
+                    value.display(&self.types)
+                ),
+                span,
+            ));
+        }
+        if self.vtables.contains_key(&(key.clone(), value.clone())) {
+            return Ok(());
+        }
+        let slots = self
+            .classes
+            .dyn_slots(&key)
+            .map_err(|reason| self.classes.dyn_error(&key, &reason, span))?;
+        let mut functions = Vec::with_capacity(slots.len());
+        for (class, method) in slots {
+            let id = match self
+                .classes
+                .resolved_method(class, method, value, &self.types)
+            {
+                Some((function, arguments)) => self.request(function, arguments, span)?,
+                // Builtin implementations get ordinary wrappers, as method values do (Phase 2).
+                None if self.classes.declarations[class].methods[method]
+                    .operation
+                    .is_some() =>
+                {
+                    self.intrinsic_function(class, method, value, span)?
+                }
+                None => {
+                    return Err(Diagnostic::new(
+                        "E1005",
+                        format!(
+                            "no instance for {}<{}>; define an instance or use a supported type",
+                            type_display(&self.classes.declarations[class].name),
+                            value.display(&self.types)
+                        ),
+                        span,
+                    ));
+                }
+            };
+            functions.push(id);
+        }
+        self.vtables.insert((key, value.clone()), functions);
         Ok(())
     }
 

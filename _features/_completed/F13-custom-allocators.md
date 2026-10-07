@@ -7,10 +7,10 @@
 | 規模 | L |
 | 依存 | (F11), (E12), (E14) |
 | 後続 | G15 Phase 3 |
-| 状態 | todo |
+| 状態 | done（Phase 1・2・3） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D9（Phase 2・Phase 3 の着手）。Phase 1 は承認不要 |
-| 改善する劣位 | C/C++ 比: allocator を細かく制御できない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）／追加: libc のない環境へ出力できない |
+| 承認 | D9 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-30・D-39）。Phase 2・3 も同じ依頼で設計して実装した |
+| 改善する劣位 | C/C++ 比: allocator を細かく制御できない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）／追加: libc のない環境へ出力できない |
 | 手本にする既存実装 | CLI と組み合わせ検査: `src/main.rs` の `--wasm-feature` 分岐と `src/driver.rs` の `BuildOptions::validate` の `wasm_threads` 検査。heap runtime の切り替え: `src/llvm.rs` の `emit_program` 末尾で `instrumentation.wasm_threads` により `heap-wasm.ll`／`heap-wasm-threads.ll` を選ぶ箇所。C ホストの確保追跡: `tests/host_abi.rs` の `host_buffers_and_records_roundtrip_on_native_and_wasm` と `tests/features.mjs` の `run`（`tracked_alloc`） |
 | 主な影響ファイル | `src/runtime/heap-host.ll`（新規）, `.gitignore`, `src/llvm.rs`, `src/llvm_abi.rs`, `src/driver.rs`, `src/main.rs`, `tests/allocator.rs`（新規）, `tests/allocator.mjs`（新規）, `tests/allocator_host.c`（新規）, `tests/features.mjs`, `EmitOptions` を構築する既存テスト（`tests/cpu_dispatch.rs`, `tests/debug_info.rs`, `tests/debug_output.rs`, `tests/trap_locations.rs`, `tests/windows.rs`）, `README.md`, `docs/language.md`, `docs/architecture.md`, `_docs/tools/command-line.md`, `_docs/guides/native-interop.md`, `_docs/feature-status.md`, `_features/README.md` |
 
@@ -634,3 +634,67 @@ runtime の文字列は `include_str!("../src/runtime/heap-native.ll")` と `inc
   `TSUZURI_TEST_ALLOCATOR=host` の `tests/features.mjs` で行う。
 - 理由: 既定の追跡は 12 の harness にまたがり、置き換えは Phase 2 の `counting` の範囲。host 版を env で切り替える方式は `TSUZURI_TSAN` などの既存の慣習に合う。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-06）
+
+「C08、A14、A16、F13、F08 の実装をすべて完遂して」という依頼を D9 の承認として扱い、Phase 1 と、設計方針だけだった Phase 2（`--allocator counting`、
+WASM の host allocator）と Phase 3（`--freestanding`）を設計して実装した。着手時の HEAD は `ff84e4c`（ブランチ `Phase7-3`）で、C08・A16・A14・F08 と同じ変更に含めた。
+手順 1 のベースラインは、先に実装した C08・A16・A14 を含む時点の compiler で取った。性能の主張はしない。
+
+### 実装
+
+- `src/llvm.rs`: `Allocator { System, Host, Counting }`（`Default` は `System`）、`EmitOptions::allocator`、`Instrumentation::allocator`。
+  `emit_with_options` は `emit_program` を直接呼ぶ（`emit_selected` はなくした）。`emit_program` は threads と host、`--trap-mode return` と system 以外の組み合わせを
+  `E2000` にし、末尾で heap runtime を一つ選ぶ。`counted_base` は heap を `@tz.alloc.base`・`@tz.free.base`・`@tz.realloc.base` へ改名し、`heap_host_wasm` は
+  3 つの `declare` に `"wasm-import-module"="tsuzuri_heap"` と `alloc`・`free`・`realloc` を付ける。counting の出力は常に `tsuzuri_alloc`・`tsuzuri_free` を定義する。
+  header は `header_with_allocator(module, allocator)`（新規）。`header`・`header_with` は従来どおり。
+- `src/runtime/heap-host.ll`（新規）: 仕様どおり。`src/runtime/heap-counting.ll`（新規）: 16 バイトのヘッダーで基底の heap を包み、`@tz.heap.counts`
+  （確保・解放・現在・最大）を `atomicrmw`（monotonic）で更新し、`tsuzuri_alloc_stats` が原子的に読んで書き出す。`.gitignore` の例外に 2 ファイルを足した。
+- `src/llvm_abi.rs`: `HOST_ALLOCATOR_PROTOTYPES`、`ALLOCATION_STATS_PROTOTYPE`（`tsuzuri_allocation_stats` と `TSUZURI_ALLOCATION_STATS_DEFINED`）。
+- `src/llvm_traps.rs`: `runtime_kind` が `@tz.alloc.base`・`@tz.realloc.base` のトラップも `AllocationFailure` にする（既存の名前の分類は変えない）。
+- `src/driver.rs`: `BuildOptions::{allocator, freestanding}` と `validate_allocator`。header の分岐、`EmitOptions::allocator`、`--freestanding` は
+  `emit_native_build`（CPU ディスパッチ）を通らない。生成後に、freestanding で C ライブラリを要する runtime（タスク、標準 IO、OS API、引数、`write`／`putchar`）を
+  `E2000` にする。WASM のリンクは counting で `tsuzuri_alloc_stats`・`tsuzuri_alloc`・`tsuzuri_free`・memory を、host で `__heap_base`・memory を export する。
+- `src/main.rs`: `--allocator system|host|counting`・`--freestanding`（build だけ、一度だけ）、HELP、`parses_allocator_selection`。
+- テスト: `tests/allocator.rs`（7 件）、`tests/allocator.mjs`・`tests/allocator_host.c`（新規）、`tests/features.mjs` の `TSUZURI_TEST_ALLOCATOR=host`、
+  `EmitOptions` を作る既存テスト 6 ファイル（チケットの 5 つと `tests/bounds_checks.rs`）。
+- 文書: `README.md`、`docs/language.md`（`### ホスト提供の allocator`）、`docs/architecture.md`、`_docs/tools/command-line.md`、`_docs/guides/native-interop.md`
+  （`## 確保をホストへ委ねる`）、`_docs/learn/why-tsuzuri.md`、`_docs/feature-status.md`、`_features/README.md`、`_perfs/README.md`、`_features/GUIDE.md`（D-30・D-39）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **D6 を Phase 2 で改めた。** WASM（wasm32・wasm64）でも `--allocator host` を受け、3 関数を import する（D-18 の明示の opt-in）。import は既存の
+   `tsuzuri_io`・`tsuzuri_debug` に合わせてモジュール `tsuzuri_heap`、名前 `alloc`・`free`・`realloc` にした。ホストが管理する範囲を示すため
+   `__heap_base` と memory を export する。`--wasm-feature threads` との併用は `E2000`（worker ごとの JS の import が同じ共有メモリを管理する必要がある）。
+   チケットの診断「`--allocator host requires a native target`」はなく、`emit_program` の検査は threads との組み合わせになった。
+2. **D7 の出力形式。** host と counting は object・LLVM IR・header に WASM を加えた。`--emit exe`・`wgsl` は `E2000` で、文言に WebAssembly を含めた。
+3. **Phase 2 の counting。** `--allocator counting` は system の allocator を host と同じ 16 バイトのヘッダーで包む（基底の名前は `.base`）。確保 1 回・解放 1 回を数え、
+   resize は現在量だけを動かす。最大値は `atomicrmw umax`。ホストの読み出しは `void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats)` の一つで、
+   WASM ではホストが `tsuzuri_alloc(32)` の領域を渡す（この確保も数に入る）。exe は数を読む相手がいないので `E2000`。
+4. **`--trap-mode return` との併用。** 追跡 heap（`heap_native_tracked`）を使うので、system 以外の allocator との併用は `E2000` にした。
+5. **Phase 3 の `--freestanding`。** native の object・LLVM IR・header だけで、`--allocator host` が必須。`--trap-info`・`--debug-output` は `validate` で、
+   C ライブラリを要する runtime を到達させたプログラムは生成後に `E2000`（終了コード 1、`--freestanding cannot use ...`）にする。
+   CPU ディスパッチ（`cpu.c`）は使わない。参照してよい外部記号は `tsuzuri_host_*`、extern のホスト関数、`memcpy` などの freestanding な C の関数、
+   compiler-rt／libgcc の組み込み（128-bit 除算の `__divti3` など）とした。
+6. **既存の追跡ハーネスの一覧。** 既定の IR が変わらないので、`@malloc` を置換する harness は変更していない。
+
+### 確認（Apple M1 Max、macOS 27.0.1、Apple clang 21、Homebrew LLVM 21、rustc 1.98.1、Node v20.19.6）
+
+- 手順 2 の不変性: `tests/fixtures/host_abi` の `--emit llvm`・`--emit header`、object の `nm`（`-O0`・`-O3`）、wasm32（`-O0`・`-O3`）が、
+  F13 の前の compiler の出力と byte 一致した。`--allocator system` の有無でも一致した。全 fixture と例の IR の比較は F08 の記録を参照。
+- `cargo test --locked --test allocator` は 7 passed、`cargo test --locked --bin tsuzuri` は 11 passed（`parses_allocator_selection` を含む）。
+- `node tests/allocator.mjs target/release/tsuzuri` は `allocator: ok`。拒否 8 件、不変性、host の IR・header（C と C++ の構文検査）、
+  host の object と `tests/allocator_host.c`（`-O0`・`-O3`。確保 1,027 回と同数の解放、`live=0`、`tsuzuri_alloc(0)` が 17 バイト、null の解放はホストを呼ばない、
+  `oom`・`misaligned` はトラップ）、counting の native（`tsuzuri_alloc_stats`）と WASM、WASM の host allocator（JS の bump allocator。realloc を含む）、
+  freestanding の object の `nm -u` が `tsuzuri_host_alloc`・`tsuzuri_host_free`（`-O0` は `tsuzuri_host_realloc` も）だけであること、IO・タスク・Debug の拒否。
+- `TSUZURI_TEST_ALLOCATOR=host node tests/features.mjs target/release/tsuzuri` は全 suite で成功（5,481 ケース、`live == 0`）。
+  同じ設定で `TSUZURI_TSAN=1` の `parallel`（36 ケース）と `TSUZURI_ASAN=1` の全 suite も成功した。
+- 全体のゲート（fmt・clippy・`cargo test`・既定の features の全 suite・`check-docs`・`sh scripts/check-runtime-includes.sh`）は 5 チケットの実装の後に
+  まとめて実行した（F08 の記録を参照）。
+
+### レビュー対応（PR #14）
+
+- `--freestanding` の検査は生成した出力の文字列を調べていたので、`--emit header` では C の header だけを調べて IO・タスク・OS API・引数・Debug 出力を見逃していた。
+  header の build では、同じ build の object が持つ library の IR（`Entry::Library`）を別に生成して検査する。
+  `tests/allocator.mjs` は IO・タスク・Debug の拒否を `--emit object`・`llvm`・`header` の 3 つで確かめ、受理するプログラムの freestanding の header が
+  `--allocator host` の header と byte 一致することも確かめる。

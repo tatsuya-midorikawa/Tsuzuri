@@ -31,6 +31,8 @@ target
 !src/runtime/string.ll
 !src/runtime/utf8string.ll
 !src/runtime/heap-native.ll
+!src/runtime/heap-host.ll
+!src/runtime/heap-counting.ll
 !src/runtime/heap-wasm.ll
 !src/runtime/heap-wasm64.ll
 !src/runtime/heap-wasm-threads.ll

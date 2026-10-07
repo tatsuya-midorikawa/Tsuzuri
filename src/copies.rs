@@ -120,7 +120,11 @@ fn cost(module: &CheckedModule, ty: &Type) -> CopyCost {
     while let Some(ty) = pending.pop() {
         match ty {
             Type::Array(_) | Type::List(_) => return CopyCost::Length,
+            // A Copy dyn value clones its stored value into a new allocation (A14 Phase 2).
+            Type::Dyn(_) => return CopyCost::Length,
             Type::Tuple(elements) => pending.extend(elements),
+            // A fixed-length array copies inline, like a tuple of its elements (A16).
+            Type::FixedArray(element, _) => pending.push(*element),
             Type::Record(id, arguments) => pending.extend(types.record_fields(id, &arguments)),
             Type::Union(id, arguments) => {
                 pending.extend(types.union_payloads(id, &arguments).into_iter().flatten())
@@ -138,6 +142,9 @@ pub(crate) fn message(ty: &Type) -> &'static str {
         }
         Type::List(_) => {
             "implicit copy of a list allocates a new node for every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit"
+        }
+        Type::Dyn(_) => {
+            "implicit copy of a dyn value allocates and clones the stored value; borrow it with 'ref', or use the value only once so that it moves"
         }
         _ => {
             "implicit copy of a value that contains arrays or lists copies all of them; borrow it with 'ref', or use the value only once so that it moves"

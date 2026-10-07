@@ -1,0 +1,14 @@
+class Named<'a> {
+    def id :: ref 'a -> i64
+}
+
+class Named<'a> => Shape<'a> {
+    def area :: ref 'a -> i64
+    def grow :: ref mut 'a -> i64 -> unit
+    def into_area :: 'a -> i64
+    def describe :: ref 'a -> i64 = \shape -> Shape.area shape * 1000 + Named.id shape
+}
+
+class Tagged<'a> {
+    def tag :: ref 'a -> i64
+}

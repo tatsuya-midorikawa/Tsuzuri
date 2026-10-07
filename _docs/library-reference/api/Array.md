@@ -238,6 +238,15 @@ def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Maybe<i64>
 def sort :: Ord<'a> => ref ['a] -> ['a]
 ```
 
+## `sort_in_place`
+
+```tsuzuri
+def sort_in_place :: Ord<'a> => ref mut ['a..] -> unit
+```
+
+Sorts an exclusive slice in place, stably and without allocating: the order of `Array.sort`.
+Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge, as Go's `sort.Stable`).
+
 ## `filter`
 
 ```tsuzuri

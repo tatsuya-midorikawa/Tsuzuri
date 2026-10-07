@@ -1,8 +1,8 @@
-# Array、List、共有スライス
+# Array、List、スライス
 
 [ドキュメントのトップ](../README.md)
 
-配列は連続領域、List は単方向連結ノードに要素を保持します。どちらも生成後の要素は不変です。Tsuzuri の `[1, 2]` は配列、`[|1, 2|]` はリストであり、F# と記号が逆です。
+配列は連続領域、List は単方向連結ノードに要素を保持します。どちらも共有されている間は要素が不変です。配列の要素は、排他スライスを通してだけその場で置き換えられます。Tsuzuri の `[1, 2]` は配列、`[|1, 2|]` はリストであり、F# と記号が逆です。
 
 ## 作成と読み取り
 
@@ -32,7 +32,70 @@ Array.sum middle
 
 `0 <= start <= end <= length` を要求し、違反はトラップです。同じ開始・終了の空区間も有効です。再スライスは元の借用を引き継ぎます。
 
-裸の `values[start..end]`、可変スライス、`ref values[..]` は未対応です。全体の借用には `ref values` を使います。List や文字列にもこの構文を流用しません。
+裸の `values[start..end]` と `ref values[..]` は未対応です。全体の借用には `ref values` を使います。List や文字列にもこの構文を流用しません。名前付きの[固定長配列](#固定長配列)も同じ構文で `ref [T]` のスライスにできます。
+
+## 排他スライスとその場の更新
+
+```tsuzuri run=63
+let mut values: [i64] = [1, 2, 3, 4]
+let tail = ref mut values[1..]
+Array.write tail 0 20
+Array.swap_in tail 1 2
+let scaled = tail[1] * 10
+Array.write tail 1 scaled
+let mut sum = 0i64
+for value in tail do sum = sum + value
+sum
+```
+
+`ref mut values[start..end]`（`&mut values[start..end]`）は `let mut` の配列の一部を排他的に借ります。型は `ref mut [T..]` で、長さは固定です。範囲の規則とトラップは共有スライスと同じで、少なくとも一方の境界が必要です（全体は `ref mut values[0..]`）。添字、`length`、`for`、再スライス、`ref [T]` を取る関数への受け渡しは共有スライスと同じように使えます。
+
+| API | 動作 |
+| --- | --- |
+| `Array.write slice index value` | 境界を検査してから旧要素を解放し、value を書き込む |
+| `Array.swap_in slice first second` | 二要素をその場で交換。同じ添字なら変更なし |
+| `Array.split_at_mut slice middle` | `0 <= middle <= length` を検査し、`[0..middle)` と `[middle..length)` の二つの排他スライスを返す |
+| `Array.sort_in_place slice` | Ord による安定整列。作業領域を確保しない |
+
+```tsuzuri run=300
+let mut values: [i64] = [1, 2, 3, 4]
+match Array.split_at_mut (ref mut values) 2 with
+| (left, right) ->
+    Array.write left 0 10
+    Array.write right 0 30
+    Array.write left 1 20
+    Array.write right 1 40
+values[0] + 2 * values[1] + 3 * values[2] + 4 * values[3]
+```
+
+`ref mut [T..]` の引数には、`ref mut values`、`let mut` の配列そのもの、`ref mut [T]` の引数も渡せます。いずれも配列全体の排他スライスになります。逆に、排他スライスを `ref mut [T]` の引数へ渡すと配列全体の置換ができてしまうので拒否します。`deref slice = other` も長さが変わるので拒否します。
+
+```tsuzuri run=13499
+def fill :: ref mut [i64..] -> i64 -> unit
+fn fill values value =
+    for index in 0i64 .. (values.length - 1) do Array.write values index value
+
+let mut digits: [i64] = [3, 1, 4, 2, 0]
+fill (ref mut digits[3..]) 9
+Array.sort_in_place (ref mut digits)
+digits[0] * 10000 + digits[1] * 1000 + digits[2] * 100 + digits[3] * 10 + digits[4]
+```
+
+排他スライスが生きている間は、元の配列の読み取り・移動・置換と、重なる別のスライスの作成ができません。`Array.write slice 0 (slice[1] * 10)` のように、同じスライスを書き込みの引数の中で読むことも拒否されるので、先に `let` で読み出します。`split_at_mut` の二つの半分は一つの借用として扱うので、片方を貸し直している間はもう片方も使えません。排他スライスは関数値・task・コレクション・export の境界へ入れられません。
+
+`Array.set` などの所有値を返す更新は配列を消費して新しい値を返します。所有者を保ったまま一部だけを書き換えたいとき、再帰的に分割して処理したいときは排他スライスを使います。互いに素な区間を並列に書き込むには [Parallel.for_each_chunk](parallel.md) を使います。
+
+## 固定長配列
+
+```tsuzuri run=28
+let squares: [i64; 4] = FixedArray.init (\i -> i * i)
+let middle = ref squares[1..3]
+Array.sum squares + Array.sum middle * 2 + squares.length
+```
+
+`[T; N]` は長さを型に含む値の配列です（[型](../language-reference/types.md#固定長配列)）。`FixedArray.init initializer` は、期待される型の長さ N について `initializer` を添字 0 から N - 1 の順に一度ずつ呼び、結果を並べた `[T; N]` を返します。期待される型から長さが決まらなければ `E1015`、固定長配列でない型が期待されれば `E1005` です。リテラル `[a, b, c]` も、固定長配列が期待される位置ではその値になります。
+
+固定長配列の名前付きの値（束縛・フィールド・参照外し）は、`ref values[start..end]` で共有スライスにでき、`ref [T]` の引数へはそのまま渡せます（配列全体の共有スライスになります）。そのため `Array.sum` や `Simd.load` などの `ref [T]` を受け取る API をそのまま使えます。関数の戻り値などの一時値は、先に `let` で束縛します。所有する `[T]` との暗黙の変換はなく、`new [T](N, \i -> values[i])` のように明示的に作ります。排他スライス、要素の代入、パターンによる分解、`for` による列挙はありません。添字は `for index in 0 .. values.length - 1` のように使います。
 
 ## 所有値を返す更新
 
@@ -53,7 +116,7 @@ updated[1]
 
 Array の更新は引数をすべて左から右に評価した後、要素へ触れる前に境界を検査します。唯一使用の所有ヒープバッファは再利用できますが、上のように Copy の元値を再使用するなら独立コピーを更新します。
 
-直接の `values[index] = value` や、要素の排他借用はできません。let mut でも値全体を置換するだけです。
+直接の `values[index] = value` や、要素の排他借用はできません。その場で書き換えるには、上の排他スライスと `Array.write` を使います。
 
 ## Array の取得と構築
 
@@ -126,6 +189,8 @@ sort は bottom-up の安定 merge sort です。f32 / f64 では NaN を数値�
 ## 集計と List API
 
 Array.sum / product は数値を左から右に集計し、空なら 0 / 1 です。浮動小数点用の sum_pairwise、sum_kahan、dot、dot_fma は順序が異なる別 API です。
+
+native の exe / object では、整数 8 型の Array.sum、Array.min、Array.max が CPU の命令セットに合わせた kernel を使います（[実行時 CPU dispatch](../guides/performance.md#実行時-cpu-dispatch)）。整数の和は折り返すので加算順によらず同じ値になり、min / max は最初に現れる位置を返すので、結果は std の本体と変わりません。
 
 ```tsuzuri run=42
 let values = List.cons 20 [|22|]

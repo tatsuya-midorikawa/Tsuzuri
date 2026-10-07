@@ -73,7 +73,15 @@ pub(super) fn apply(head: Type, arguments: Box<[Type]>) -> Type {
 }
 
 pub(super) fn decompose(ty: &Type) -> Option<(Constructor, Box<[Type]>)> {
+    // A type with a length argument (A16) is not a constructor over value types.
+    let length = |arguments: &[Type]| {
+        arguments.iter().any(|argument| {
+            matches!(argument, Type::Length(_))
+                || matches!(argument, Type::Variable(name) if name.starts_with('#'))
+        })
+    };
     match ty {
+        Type::Record(_, arguments) | Type::Union(_, arguments) if length(arguments) => None,
         Type::Record(id, arguments) => {
             Some((Constructor::Record(*id, arguments.len()), arguments.clone()))
         }

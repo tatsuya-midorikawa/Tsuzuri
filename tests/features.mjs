@@ -15,6 +15,9 @@ const nativeOptions = process.env.TSUZURI_TEST_CPU === "native" ? [process.arch 
 const wasmOptions = process.env.TSUZURI_TEST_WASM_SIMD === "1" ? ["--wasm-feature", "simd128"] : [];
 // wasm64 needs Node.js 24 or newer.
 const wasmTarget = process.env.TSUZURI_TEST_WASM_TARGET ?? "wasm32";
+// F13: `host` builds the native IR and header with --allocator host and tracks tsuzuri_host_*.
+const hostAllocator = process.env.TSUZURI_TEST_ALLOCATOR === "host";
+const allocatorOptions = hostAllocator ? ["--allocator", "host"] : [];
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
 
@@ -340,23 +343,39 @@ const suites = {
   },
   simd: {
     cases: [
-      ...[8, 16, 32, 64].flatMap((bits) => [false, true].flatMap((unsigned) => [0n, 1n, -1n, 127n, -129n, 2147483647n, -(1n << 63n)].flatMap((seed) => [0n, 1n, BigInt(bits), BigInt(bits + 1)].map((shift) => {
+      ...[128, 256].flatMap((width) => [8, 16, 32, 64].flatMap((bits) => [false, true].flatMap((unsigned) => [0n, 1n, -1n, 127n, -129n, 2147483647n, -(1n << 63n)].flatMap((seed) => [0n, 1n, BigInt(bits), BigInt(bits + 1)].map((shift) => {
         const cast = (value) => unsigned ? BigInt.asUintN(bits, value) : BigInt.asIntN(bits, value);
         let expected = 0n;
-        for (let lane = 0; lane < 128 / bits; lane++) {
+        for (let lane = 0; lane < width / bits; lane++) {
           const value = cast(seed + (lane === 0 ? 7n : 0n));
           expected = cast(expected + cast((value * value + value) << (shift & BigInt(bits - 1))));
         }
-        return [`vector_i${bits}${unsigned ? "u" : ""}`, [seed, shift], BigInt.asIntN(64, expected)];
-      })))),
+        return [`${width === 128 ? "vector" : "wide"}_i${bits}${unsigned ? "u" : ""}`, [seed, shift], BigInt.asIntN(64, expected)];
+      }))))),
       ["float_semantics", [], 1], ["float_order", [], 1], ["simd_owned", [], 42n], ["mask_storage", [], 1],
       ...[0n, 1n, 4n].map((index) => ["simd_load", [index], 10n + index * 4n]),
       ["operator_method", [41n], 42n],
+      ["wide_float", [], 1], ["wide_storage", [], 120042n],
+      ...[0n, 1n, 4n].map((index) => ["wide_load", [index], 10n + index * 4n]),
+      ...[0n, 1n, 2n].map((index) => {
+        const data = Array(12).fill(0n);
+        for (let lane = 0n; lane < 8n; lane++) data[Number(2n + index + lane)] = lane + 1n;
+        return ["simd_store", [index], data.reduce((total, value) => total * 3n + value, 0n)];
+      }),
+      ...[[0n, 53n], [1n, 530n], [2n, 5300n]].map(([index, expected]) => ["simd_store_narrow", [index], expected]),
     ],
-    traps: [["simd_extract_trap", [-1n]], ["simd_extract_trap", [4n]], ["simd_load", [-1n]], ["simd_load", [5n]], ["simd_load", [9223372036854775807n]]],
+    traps: [
+      ["simd_extract_trap", [-1n]], ["simd_extract_trap", [4n]], ["simd_load", [-1n]], ["simd_load", [5n]], ["simd_load", [9223372036854775807n]],
+      ["wide_load", [-1n]], ["wide_load", [5n]], ["simd_store", [-1n]], ["simd_store", [3n]], ["simd_store", [9223372036854775807n]],
+      ["simd_store_narrow", [3n]], ["simd_store_narrow", [-1n]],
+    ],
     inspect(ir) {
-      for (const type of ["<16 x i8>", "<8 x i16>", "<4 x i32>", "<2 x i64>", "<4 x float>", "<2 x double>", "<4 x i1>"]) assert.ok(ir.includes(type), type);
+      for (const type of ["<16 x i8>", "<8 x i16>", "<4 x i32>", "<2 x i64>", "<4 x float>", "<2 x double>", "<4 x i1>", "<32 x i8>", "<16 x i16>", "<8 x i32>", "<4 x i64>", "<8 x float>", "<4 x double>", "<32 x i1>"]) assert.ok(ir.includes(type), type);
       assert.doesNotMatch(ir, /(?:fadd|fmul) fast|add nsw <|add nuw </);
+      // 256-bit vectors live in storage aligned to 16 bytes, so no access may assume 32.
+      for (const [line] of ir.matchAll(/^\s*(?:store <(?:32 x i8|16 x i16|8 x i32|4 x i64|8 x float|4 x double)> |%\S+ = load <(?:32 x i8|16 x i16|8 x i32|4 x i64|8 x float|4 x double)>, ).*$/gm)) {
+        assert.match(line, /, align (?:1|16)(?:, !|$)/, line);
+      }
     },
   },
   borrowed_records: {
@@ -747,6 +766,133 @@ const suites = {
       assert.match(ir, /icmp ule i64/);
     },
   },
+  mutable_slices: {
+    cases: [
+      // [1, 2, 3, 4]: the tail becomes [20, 40, 3] (sum 63) and values [1, 20, 40, 3].
+      ["write_swap", [], 63n * 10000n + 1000n + 20n + 40n + 3n],
+      ["negate", [], -[3n, -1n, 4n, 1n, 5n].reduce((sum, value) => sum + value, 0n)],
+      ...[0n, 1n, 2n, 7n, 1000n].map((count) => ["negate_sized", [count], -(count * (count + 1n) / 2n)]),
+      ["alternating", [], 10n + 2n * 20n + 3n * 30n + 4n * 40n],
+      ["copy_snapshot", [], 1n * 10n + 9n],
+      // ["xyz", "c", "b"]: lengths 3 + 1 + 1, and the owner sees the swap.
+      ["strings_drop", [], 5n + 100n],
+      ...[0n, 1n, 12n, 1000n].map((count) => ["heap_strings", [count],
+        Array.from({ length: Number(count) }, (_, index) => BigInt(String(index * 10).length)).reduce((sum, length) => sum + length, 0n)]),
+      // [[7, 8, 9], [3]] swapped to [[3], [7, 8, 9]].
+      ["nested_frames", [], 1n * 100n + 3n * 10n + 9n],
+      ["convert", [], 5n * 7n],
+      ...[0n, 5n, 100n].map((count) => ["convert_owner", [count], 3n * count]),
+      // [1, 2, 3, 4, 5, 6] becomes [1, 20, 30, 40, 5, 6]; outer[2..] starts at 40.
+      ["views_of_views", [], 40n * 1000n + 20n * 10n + 40n],
+      ["sort_sizes", [], 9n],
+      // A stable sort keeps +0, -0, -0, +0 in input order: positive at bits 0, 3, and 4.
+      ["sort_signed_zero", [], 1n + 8n + 16n],
+      ["sort_strings", [], ["pear", "fig", "apple", "kiwi", "banana", "fig"].sort()
+        .reduce((sum, word) => sum * 10n + BigInt(word.length), 0n)],
+      // An exclusive borrow field holds texts[1..]; position 1 replaces "c" with "longer".
+      ["record_cursor", [], 1n * 100n + 1n * 10n + 6n],
+      // Each element i becomes 2i + i % 3, whatever chunk it lands in.
+      ...[[0n, 1n], [1n, 1n], [10n, 3n], [10000n, 4096n], [10000n, 1n], [5n, 100n]].map(([count, size]) => ["parallel_double", [count, size],
+        Array.from({ length: Number(count) }, (_, index) => 2n * BigInt(index) + BigInt(index % 3)).reduce((sum, value) => sum + value, 0n)]),
+      ...[[0n, 2n], [9n, 4n], [5000n, 333n]].map(([count, size]) => ["parallel_captured", [count, size], count * (count - 1n) / 2n + 10n * count * count]),
+      ...[0n, 1n, 7n, 20n, 100n].map((count) => {
+        const words = Array.from({ length: Number(count) }, (_, index) => String(count - BigInt(index)));
+        const sorted = [];
+        for (let start = 0; start < words.length; start += 7) sorted.push(...words.slice(start, start + 7).sort());
+        return ["parallel_strings", [count], sorted.reduce((sum, word) => BigInt.asIntN(64, sum * 31n + BigInt(word.length)), 0n)];
+      }),
+      // Element i becomes i + 10 * count (+ 1 for an odd size). More than 1,024 chunks share the
+      // 1,024 jobs, unevenly for 2,049 and 5,000 chunks.
+      ...[[0n, 1n], [1n, 1n], [10n, 4n], [2049n, 1n], [4098n, 2n], [5000n, 1n], [5000n, 3n], [100n, 1000n]].map(([count, size]) =>
+        ["parallel_dynamic", [count, size], count * (count - 1n) / 2n + count * (10n * count + size % 2n)]),
+    ],
+    traps: [["trap_write_index", []], ["trap_split_past", []], ["trap_split_negative", []], ["trap_swap_index", []], ["trap_slice_order", []], ["trap_chunk_size", []]],
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Main\.fill\(%tz\.array/);
+      assert.match(ir, /icmp ult i64/);
+      // parallel_dynamic takes the path that copies the callback for each job.
+      assert.match(ir, /getelementptr inbounds %tz\.closure, ptr %[\w.]+, i64 %chunk/);
+    },
+  },
+  fixed_arrays: {
+    cases: [
+      ...[0n, 5n, min, max].map((x) => ["fixed_sum", [x], BigInt.asIntN(64, 4n * x + 6n)]),
+      ["fixed_index", [0n], 0n],
+      ["fixed_index", [3n], 9n],
+      // `b` keeps [1, 2, 3] when `a` is replaced by [7, 8, 9].
+      ["fixed_copy", [], 1n * 100n + 7n],
+      ["fixed_strings", [], 1n + 2n + 3n],
+      // The copied row is ["123", "4567"].
+      ["fixed_clone_nested", [], 3n * 10n + 4n + 4n * 100n],
+      ["fixed_nested", [], 2n * 10n + 3n],
+      // probe [1, 2, 3, 4, 5] = 1 * 100 + 5, and probe [2, 3, 4] = 2 * 100 + 3.
+      ["fixed_slice", [], 105n + 203n],
+      ["fixed_record", [], 3n * 10n + 7n],
+      ["fixed_generic", [1n], 12n],
+      ["fixed_generic", [0n], 34n],
+      ...[3n, max].map((n) => ["fixed_init_closure", [n], BigInt.asIntN(64, 7n * n)]),
+      ["fixed_simd", [], 4n],
+      ["fixed_length", [], 1024n + 1023n],
+      ...[0n, 7n, 1000n].map((n) => ["fixed_strings_init", [n], [0n, 1n, 2n, 3n].reduce((sum, i) => sum + BigInt(String(i * n).length), 0n)]),
+      // total [1, 2, 3] = 6, total [4, 5] = 9, and the five zeros.
+      ["fixed_generic_length", [], 6n * 100n + 9n + 5n * 1000n],
+      // first [12, 3456] = 12; Poly [1, 2, 3, 4] has 4 points ending in 4; Row [5, 6, 7] ends in 7.
+      ["fixed_records_generic", [], 12n * 10000n + (4n * 100n + 4n) * 10n + 7n],
+    ],
+    traps: [["trap_index", [-1n]], ["trap_index", [4n]], ["trap_index", [max]], ["trap_constant", []], ["trap_slice", []]],
+    inspect(ir) {
+      assert.match(ir, /getelementptr inbounds \[4 x i64\], ptr %[\w.]+, i64 0, i64/);
+      assert.match(ir, /insertvalue \[3 x i64\]/);
+      const copy = ir.slice(ir.indexOf("@tz.fn.Main.fixed_copy("));
+      const body = copy.slice(0, copy.indexOf("\n}"));
+      assert.doesNotMatch(body, /@tz\.alloc/);
+      assert.doesNotMatch(body, /icmp ult i64 \d+, \d+/);
+    },
+  },
+  dyn_dispatch: {
+    cases: [
+      ...[0n, 3n, -2n, 10n].map((x) => ["total_area", [x], 2n * x * x + 11n * x]),
+      ...[0n, 3n, -2n].map((x) => ["describe_total", [x], 2000n * x * x + 11000n * x + 6n]),
+      ...[0n, 3n, -2n].map((x) => ["generic_total", [x], 2n * x * x + 11n * x]),
+      ...[0n, 3n].map((x) => ["names", [x], 1n + 2n + 3n]),
+      ...[0n, 5n, -3n].map((x) => ["bag_area", [x], x * x + x]),
+      ...[7n, 0n, -1n].map((x) => ["into_area", [x], x]),
+      ...[3n, 0n, -5n].map((x) => ["grown_area", [x], 4n * x * x]),
+      ["maybe_area", [4n], 16n],
+      ["maybe_area", [0n], -1n],
+      ["maybe_area", [-2n], -1n],
+      ...[1n, 0n, -1n].map((x) => ["array_area", [x], 3n * x + 3n]),
+      ...[9n, -4n].map((x) => ["wide_area", [x], x]),
+      ["faulty_area", [4n], 25n],
+      ["faulty_area", [5n], 20n],
+      ...[0n, 42n, -7n].map((x) => ["display_agrees", [x], 1n]),
+      ...[0n, 42n].map((x) => ["hash_agrees", [x], 1n]),
+      // Phase 2: Send, Copy, a region, several classes, upcasts, and builtin instances.
+      ...[3n, -4n].map((x) => ["send_area", [x], x * x]),
+      ...[2n, -3n].map((x) => ["copy_area", [x], 6n * x * x]),
+      ...[5n, 0n].map((x) => ["copy_array", [x], 2n * (x + 1n)]),
+      ...[3n, -1n].map((x) => ["borrowed_area", [x], 4n * x * x]),
+      ...[2n, 0n].map((x) => ["multi_area", [x], x * x + x + 100n]),
+      ...[3n, 0n].map((x) => ["upcast_area", [x], 10n * x * x + 1n]),
+      ["marker_upcast", [4n], 16n],
+      ["wrapped_tag", [3n], 16n],
+      // The digits of x, then the four letters of "text".
+      ["builtin_display", [42n], 2n * 10n + 4n],
+      ["builtin_display", [-7n], 2n * 10n + 4n],
+      ["builtin_display", [0n], 1n * 10n + 4n],
+      ...[0n, 42n].map((x) => ["builtin_hash", [x], 1n]),
+    ],
+    traps: [["faulty_area", [0n]]],
+    inspect(ir) {
+      assert.match(ir, /^%tz\.dyn = type \{ ptr, ptr \}$/m);
+      // Named.id, then Shape's area, grow, into_area, and describe; `upcast_area` upcasts to Named.
+      assert.match(ir, /@"tz\.vtable\.Shapes\.Shape\[Main\.Square\]" = internal unnamed_addr constant \{ ptr, ptr, i64, i64, \[5 x ptr\], \[1 x ptr\] \}/);
+      // The copy vtable has a clone slot; the vtable of two classes has an upcast table.
+      assert.match(ir, /@"tz\.vtable\.Shapes\.Shape\+copy\[Main\.Square\]" = internal unnamed_addr constant \{ ptr, ptr, i64, i64, \[5 x ptr\] \} \{ ptr @"tz\.dyn\.drop\[Main\.Square\]", ptr @"tz\.dyn\.clone\[Main\.Square\]"/);
+      assert.match(ir, /@"tz\.vtable\.Shapes\.Shape,Shapes\.Tagged\[Main\.Square\]" = internal unnamed_addr constant \{ ptr, ptr, i64, i64, \[6 x ptr\], \[1 x ptr\] \}/);
+      assert.match(ir, /getelementptr inbounds \{ ptr, ptr, i64, i64, \[5 x ptr\] \}, ptr %v\d+, i32 0, i32 4, i64 4/);
+    },
+  },
   borrowed_comparisons: {
     cases: [
       ["compare_loop", [0n], 0n],
@@ -1117,15 +1263,17 @@ function run(name, suite) {
     const again = join(temporary, "again.ll");
     // A `tz-` prefix keeps fixture headers from shadowing system headers.
     const headerPath = join(temporary, `tz-${name}.h`);
-    cli(["build", fixture, "--emit", "header", "-o", headerPath]);
-    cli(["build", fixture, "--emit", "llvm", "-o", ir]);
-    cli(["build", fixture, "--emit", "llvm", "-o", again]);
+    cli(["build", fixture, "--emit", "header", ...allocatorOptions, "-o", headerPath]);
+    cli(["build", fixture, "--emit", "llvm", ...allocatorOptions, "-o", ir]);
+    cli(["build", fixture, "--emit", "llvm", ...allocatorOptions, "-o", again]);
     const sourceIr = readFileSync(ir, "utf8");
     assert.equal(sourceIr, readFileSync(again, "utf8"), `${name}: IR is deterministic`);
     const declarations = sourceIr.match(/^declare .*$/gm) ?? [];
     assert.equal(new Set(declarations).size, declarations.length, `${name}: declarations are deduplicated`);
     suite.inspect?.(sourceIr, readFileSync(headerPath, "utf8"));
-    let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
+    // The host allocator's IR calls only tsuzuri_host_*, so nothing is renamed.
+    if (hostAllocator) assert.ok(!/@(malloc|free|realloc)\(/.test(sourceIr), `${name}: the host allocator replaces the C library`);
+    let trackedIr = hostAllocator ? sourceIr : sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
     if (sanitizerKind) trackedIr = trackedIr.replaceAll(" nounwind {", ` nounwind sanitize_${sanitizerKind} {`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];
@@ -1168,6 +1316,18 @@ void tracked_free(void *value) {
     if (size >= old_size) live += size - old_size; else live -= old_size - size;
     return next + 2;
   }
+${hostAllocator ? `void *tsuzuri_host_alloc(uint64_t size, uint64_t align) {
+    assert(align == 16 && size >= 16);
+    return tracked_alloc(size);
+}
+void tsuzuri_host_free(void *value, uint64_t size, uint64_t align) {
+    assert(value && align == 16 && ((uint64_t *)value)[-2] == size);
+    tracked_free(value);
+}
+void *tsuzuri_host_realloc(void *value, uint64_t old_size, uint64_t new_size, uint64_t align) {
+    assert(value && align == 16 && new_size >= 16 && ((uint64_t *)value)[-2] == old_size);
+    return tracked_realloc(value, new_size);
+}` : ""}
 int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {

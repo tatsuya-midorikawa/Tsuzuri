@@ -63,7 +63,7 @@ native では既定でトラップがプロセスを終了させます。例外�
 | ref [i64] / ref [f64] / ref [ubyte] | const 要素ポインターと int64_t の長さ |
 | ref string / ref utf8string | const uint16_t / uint8_t ポインターと長さ |
 | 対応配列・文字列の所有結果 | 先頭の out pointer へバッファ記述子を書き、void を返す |
-| ABI スカラーだけのレコード | 正規化した struct の入力 pointer / 先頭 out pointer |
+| ABI スカラーだけのレコード（スカラーの固定長配列フィールドを含む） | 正規化した struct の入力 pointer / 先頭 out pointer |
 | `extern type` のハンドル | 不透明 pointer（`typedef struct tz_handle_… *`）。`ref` の引数もハンドルそのもの |
 | extern の関数型の引数（コールバック） | C の関数 pointer。引数と結果はスカラー・unit・ハンドルだけ |
 
@@ -71,9 +71,11 @@ native では既定でトラップがプロセスを終了させます。例外�
 
 レコードの入れ子と具体化済みジェネリックレコードも、全フィールドが ABI 条件を満たせば使えます。typedef とフィールドの名前は生成ヘッダーを使い、内部のレイアウトを推測しないでください。
 
+`record Vec3 { xyz: [f64; 3] }` のようなスカラー型の固定長配列フィールドは、C の配列メンバー `double xyz[3];` になります。bool と狭い整数の要素は、フィールドと同じく 32-bit へ正規化します。ISO C には長さ 0 の配列がないので、長さは 1 以上に限ります。固定長配列そのものは引数や結果にできないので、レコードで包みます。
+
 ## 非対応の境界型
 
-i128、f16 / f128、decimal、char / utf8char、union、タプル、List、Vec、Map / Set、Seq、関数値、Task、SIMD は直接 export できません。extern の引数に渡せる関数は、後述の静的コールバックだけです。
+i128、f16 / f128、decimal、char / utf8char、union、タプル、固定長配列（レコードのフィールドを除く）、List、Vec、Map / Set、Seq、関数値、Task、SIMD は直接 export できません。extern の引数に渡せる関数は、後述の静的コールバックだけです。
 
 所有配列・文字列の入力、排他参照、借用結果、対応外の配列要素型も拒否します。export の unit 引数は未対応です。extern の unit 引数は後述のように ABI から省略します。
 
@@ -86,6 +88,37 @@ i128、f16 / f128、decimal、char / utf8char、union、タプル、List、Vec�
 所有結果はホストへ移り、ホストが `tsuzuri_free(out.ptr)` で一度だけ解放します。借用入力を free してはいけません。対応するモジュールは `tsuzuri_alloc(int64_t size)` / `tsuzuri_free(void *ptr)` を公開します。alloc の 0 は最低 1 byte、free の null は何もしません。
 
 POSIX native の通常 object と `--trap-mode return` の object は同じホストへリンクできます。どちらを先に置いても公開 allocator と並列タスクの境界が一致します。ホストの extern が境界内で `tsuzuri_alloc` により確保した所有結果も、トラップ時に解放されます。
+
+## 確保をホストへ委ねる
+
+`--allocator host` を付けた object・LLVM IR・header は、Tsuzuri のすべてのヒープ確保（所有結果のバッファを含む）を、ホストがリンク時に定義する 3 関数へ送ります。プールや追跡付きの allocator をホストが選べます。
+
+```sh
+tsuzuri build Lib --emit object --allocator host -O3 -o lib.o
+tsuzuri build Lib --emit header --allocator host -o lib.h
+cc -std=c11 host.c lib.o -lm -o app
+```
+
+`host.c` は header の prototype のとおりに 3 関数を定義します。最小の実装は C ライブラリへ送るだけです。
+
+```c
+#include <stdlib.h>
+#include "lib.h"
+void *tsuzuri_host_alloc(uint64_t size, uint64_t align) {
+    return aligned_alloc((size_t)align, ((size_t)size + align - 1) / align * align);
+}
+void tsuzuri_host_free(void *ptr, uint64_t size, uint64_t align) { (void)size; (void)align; free(ptr); }
+void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint64_t align) {
+    (void)old_size; (void)align;
+    return realloc(ptr, (size_t)new_size); /* glibc と macOS の realloc は 16 byte 境界を返す */
+}
+```
+
+`align` は常に 16 で、戻り値は 16 の倍数にします。各サイズは要求サイズに Tsuzuri のヘッダー 16 バイトを足した値で、解放と resize には確保したときと同じサイズが渡ります。null を返すと Tsuzuri はその場でトラップします。
+3 関数は `Task.parallel` の worker やホストの複数スレッドから同時に呼ばれるので、スレッド安全にします。ホストへ返った所有結果は従来どおり `tsuzuri_free` で解放し、`tsuzuri_host_free` を直接呼びません。
+
+`--allocator counting` は既定の allocator のまま確保の数を数えます。`tsuzuri_allocation_stats` に、確保回数・解放回数・現在と最大の要求バイト数を `tsuzuri_alloc_stats(&stats)` で読み、メモリの漏れや最大使用量を確かめられます。
+`--freestanding --allocator host` の object は C ライブラリを参照しません（`memcpy` などの freestanding な関数とコンパイラの組み込みランタイムを除く）。標準 IO・OS API・並列タスク・Debug 出力はホスト側に置きます。契約の詳細は[言語仕様](../../docs/language.md#ホスト提供の-allocator)にあります。
 
 ## ホスト関数をインポートする
 

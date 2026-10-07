@@ -1031,8 +1031,10 @@ fn type_entry(
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
         | TypeExprKind::List(inner)
         | TypeExprKind::Task(inner) => recurse(inner),
+        TypeExprKind::FixedArray(element, _) => recurse(element),
         TypeExprKind::Tuple(elements) => elements.iter().for_each(&mut recurse),
         TypeExprKind::Function(parameters, result) => {
             parameters.iter().for_each(&mut recurse);

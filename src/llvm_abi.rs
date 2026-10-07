@@ -157,10 +157,10 @@ pub(super) fn type_definitions(module: &CheckedModule) -> String {
 }
 
 fn record_field_type(ty: &Type, module: &CheckedModule) -> String {
-    if matches!(ty, Type::Record(..)) {
-        format!("%{}", record_name(ty, module))
-    } else {
-        abi_type(ty)
+    match ty {
+        Type::Record(..) => format!("%{}", record_name(ty, module)),
+        Type::FixedArray(element, _) => format!("[{} x {}]", fixed_length(ty), abi_type(element)),
+        _ => abi_type(ty),
     }
 }
 
@@ -214,12 +214,17 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
             .iter()
             .zip(module.types().record_fields(*id, arguments))
         {
-            let ctype = if matches!(field, Type::Record(..)) {
-                record_name(&field, module)
-            } else {
-                c_type(&field)
+            let declaration = match &field {
+                Type::Record(..) => format!("{} {}", record_name(&field, module), field_name(name)),
+                Type::FixedArray(element, _) => format!(
+                    "{} {}[{}]",
+                    c_type(element),
+                    field_name(name),
+                    fixed_length(&field)
+                ),
+                _ => format!("{} {}", c_type(&field), field_name(name)),
             };
-            let _ = writeln!(output, "    {ctype} {};", field_name(name));
+            let _ = writeln!(output, "    {declaration};");
         }
         let _ = writeln!(output, "}} {};", record_name(&ty, module));
     }
@@ -433,6 +438,20 @@ pub(super) fn allocator() -> &'static str {
     "\ndefine weak ptr @tsuzuri_alloc(i64 %size) nounwind {\nentry:\n  %valid = icmp sge i64 %size, 0\n  br i1 %valid, label %allocate, label %bad\nbad:\n  call void @llvm.trap()\n  unreachable\nallocate:\n  %empty = icmp eq i64 %size, 0\n  %bytes = select i1 %empty, i64 1, i64 %size\n  %value = call ptr @tz.alloc(i64 %bytes)\n  ret ptr %value\n}\ndefine weak void @tsuzuri_free(ptr %value) nounwind {\nentry:\n  call void @tz.free(ptr %value)\n  ret void\n}\n"
 }
 
+/// The functions a host defines for `--allocator host` (F13).
+pub(super) const HOST_ALLOCATOR_PROTOTYPES: &str = "\n/* --allocator host: the host defines these. align is 16 and every size includes a 16-byte header;\n   free and realloc receive the size of the block's allocation. Return null to trap. */\n\
+void *tsuzuri_host_alloc(uint64_t size, uint64_t align);\n\
+void tsuzuri_host_free(void *ptr, uint64_t size, uint64_t align);\n\
+void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint64_t align);\n";
+
+/// The statistics of `--allocator counting` (F13 Phase 2).
+pub(super) const ALLOCATION_STATS_PROTOTYPE: &str = "\n/* --allocator counting: allocations and frees since the start, and the requested bytes\n   that are live now and were live at most. */\n\
+#ifndef TSUZURI_ALLOCATION_STATS_DEFINED\n\
+#define TSUZURI_ALLOCATION_STATS_DEFINED\n\
+typedef struct {\n    uint64_t allocations;\n    uint64_t frees;\n    uint64_t live_bytes;\n    uint64_t peak_bytes;\n} tsuzuri_allocation_stats;\n\
+#endif\n\
+void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);\n";
+
 pub(super) fn native_allocator() -> String {
     let mut output = allocator()
         .replace("call ptr @tz.alloc(", "call ptr @tz.abi.alloc(")
@@ -610,6 +629,10 @@ pub(super) fn wrapper(
 }
 
 fn record_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
+    if let Type::FixedArray(element, _) = ty {
+        let (size, alignment) = record_layout(element, module);
+        return (size * fixed_length(ty), alignment);
+    }
     let Type::Record(id, arguments) = ty else {
         return match ty {
             Type::Integer(64, _) | Type::Binary(64) => (8, 8),
@@ -724,6 +747,20 @@ impl FunctionEmitter<'_, '_> {
             ));
             let value = if matches!(field, Type::Record(..)) {
                 self.read_host_record(field, &slot)
+            } else if let Type::FixedArray(element, _) = field {
+                // Each C array element converts like a scalar field.
+                let array = self.slot(field);
+                let host = format!("[{} x {}]", fixed_length(field), abi_type(element));
+                self.array_loop(&fixed_length(field).to_string(), |emitter, index| {
+                    let from = emitter.value(format!(
+                        "getelementptr inbounds {host}, ptr {slot}, i64 0, i64 {index}"
+                    ));
+                    let value = emitter.value(format!("load {}, ptr {from}", abi_type(element)));
+                    let value = emitter.decode_host_scalar(element, &value);
+                    let to = emitter.fixed_pointer(field, &array, index);
+                    emitter.instruction(format!("store {} {value}, ptr {to}", emitter.ty(element)));
+                });
+                self.value(format!("load {}, ptr {array}", self.ty(field)))
             } else {
                 let value = self.value(format!("load {}, ptr {slot}", abi_type(field)));
                 self.decode_host_scalar(field, &value)
@@ -753,6 +790,18 @@ impl FunctionEmitter<'_, '_> {
             let extracted = self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
             if matches!(field, Type::Record(..)) {
                 self.write_host_record(field, &extracted, &slot);
+            } else if let Type::FixedArray(element, _) = field {
+                let array = self.spill(field, &extracted);
+                let host = format!("[{} x {}]", fixed_length(field), abi_type(element));
+                self.array_loop(&fixed_length(field).to_string(), |emitter, index| {
+                    let from = emitter.fixed_pointer(field, &array, index);
+                    let value = emitter.value(format!("load {}, ptr {from}", emitter.ty(element)));
+                    let value = emitter.encode_host_scalar(element, &value);
+                    let to = emitter.value(format!(
+                        "getelementptr inbounds {host}, ptr {slot}, i64 0, i64 {index}"
+                    ));
+                    emitter.instruction(format!("store {} {value}, ptr {to}", abi_type(element)));
+                });
             } else {
                 let converted = self.encode_host_scalar(field, &extracted);
                 self.instruction(format!("store {} {converted}, ptr {slot}", abi_type(field)));
