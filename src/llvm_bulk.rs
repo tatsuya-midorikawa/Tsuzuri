@@ -402,9 +402,17 @@ impl FunctionEmitter<'_, '_> {
         instance: &BuiltinInstance,
         signature: &Type,
     ) -> String {
-        let element = &instance.types[0];
         let Type::Function(parameters, _) = signature else {
             unreachable!()
+        };
+        // The instance types follow the order in which the scheme first names its variables, and
+        // `List.fold_ref` names its state before the element, so its element comes from the list.
+        let element = match (instance.builtin, parameters.get(2)) {
+            (Builtin::ListFoldRef, Some(Type::Reference(list, false))) => match list.as_ref() {
+                Type::List(element) => element.as_ref(),
+                _ => unreachable!("List.fold_ref reads a borrowed list"),
+            },
+            _ => &instance.types[0],
         };
         match instance.builtin {
             Builtin::ArrayConcat => {

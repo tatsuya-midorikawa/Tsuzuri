@@ -861,6 +861,17 @@ const suites = {
       ["reductions", [], 1],
       ["first_duplicate", [], 1n],
       ["filtered", [], 135n],
+      // List.fold_ref with a state aligned more strictly than the elements reads each element with
+      // the list's node layout.
+      ["fold_ref_union_state", [], (() => {
+        const digits = [3n, 4n].reduce((total, value) => total * 10n + value, 0n);
+        const lengths = [[1, 2], [3, 4, 5]].reduce((total, row) => total * 10n + BigInt(row.length), 0n);
+        const joined = BigInt(["ab", "cde"].join("").length);
+        const rendered = BigInt([3, 4].map(String).join(",").length) * 1000n + 2n;
+        return digits * 1000000n + lengths * 10000n + joined * 100000000n + rendered;
+      })()],
+      ["list_iter_aligned", [], [5n, 7n].reduce((total, value) => total * 10n + value, 0n) * 1000n
+        + [5n, BigInt("x".length), 7n].reduce((total, value) => total * 10n + value, 0n)],
       ...[0, 1, 2, 3, 17, 128, 1024].map((count) => ["sort_numbers", [BigInt(count)],
         Array.from({ length: count }, (_, index) => BigInt((index * 13 + 7) % 19)).sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
           .reduce((total, value, index) => total + BigInt(index + 1) * value, 0n)]),
