@@ -398,55 +398,65 @@ impl Fetcher {
                 }
             }
         }
-        // Each package gets the newest of its required minimum versions, counting the
-        // requirements of every visited version; the build needs only the packages
-        // that the selected versions reach.
-        let newest: BTreeMap<&String, &Requirement> = required
-            .iter()
-            .map(|(name, requirements)| {
-                let newest = requirements
-                    .iter()
-                    .fold(&requirements[0], |newest, requirement| {
-                        if requirement.version > newest.version {
-                            requirement
-                        } else {
-                            newest
-                        }
-                    });
-                (name, newest)
-            })
-            .collect();
-        let mut reachable = BTreeSet::new();
-        let mut pending: Vec<String> = self
-            .requirements
-            .iter()
-            .map(|requirement| requirement.name.clone())
-            .collect();
-        while let Some(name) = pending.pop() {
-            let version = newest[&name].version;
-            if reachable.insert(name.clone()) {
-                pending.extend(index.entries[&name][&version].dependencies.keys().cloned());
+        // Each package series (a name and a compatibility range) gets the newest of its
+        // required minimum versions, counting the requirements of every visited version
+        // as minimal version selection does. Only the edges of the selected versions
+        // decide which series the build needs, so a requirement that only an unselected
+        // version states never conflicts.
+        let mut newest = BTreeMap::<(&str, (u64, u64)), Version>::new();
+        for (name, requirements) in &required {
+            for requirement in requirements {
+                let slot = newest
+                    .entry((name.as_str(), requirement.version.series()))
+                    .or_insert(requirement.version);
+                if requirement.version > *slot {
+                    *slot = requirement.version;
+                }
             }
         }
-        let mut selected = BTreeMap::new();
-        for name in &reachable {
-            let newest = newest[name];
-            if let Some(conflict) = required[name]
-                .iter()
-                .find(|requirement| !requirement.version.compatible(newest.version))
-            {
-                return Err(conflict.location.error(
-                    "E1011",
-                    format!(
-                        "package '{name}' is required at incompatible versions {} (by {}) and {} (by {}); one package name has one version",
-                        conflict.version, conflict.by, newest.version, newest.by
-                    ),
-                ));
+        let mut reached = BTreeMap::<String, Requirement>::new();
+        let mut pending: Vec<Requirement> = self.requirements.iter().rev().cloned().collect();
+        while let Some(requirement) = pending.pop() {
+            let series = requirement.version.series();
+            let version = newest[&(requirement.name.as_str(), series)];
+            if let Some(first) = reached.get(&requirement.name) {
+                if first.version.series() != series {
+                    let (lower, higher) = if first.version < requirement.version {
+                        (first, &requirement)
+                    } else {
+                        (&requirement, first)
+                    };
+                    return Err(requirement.location.error(
+                        "E1011",
+                        format!(
+                            "package '{}' is required at incompatible versions {} (by {}) and {} (by {}); one package name has one version",
+                            requirement.name, lower.version, lower.by, higher.version, higher.by
+                        ),
+                    ));
+                }
+                continue;
             }
-            let entry = &index.entries[name][&newest.version];
-            let location = &required[name][0].location;
-            self.fetch_registry_package(&store, &index.url, name, newest.version, entry, location)?;
-            selected.insert(name.clone(), newest.version);
+            let entry = &index.entries[&requirement.name][&version];
+            pending.extend(
+                entry
+                    .dependencies
+                    .iter()
+                    .rev()
+                    .map(|(dependency, minimum)| Requirement {
+                        name: dependency.clone(),
+                        version: *minimum,
+                        by: format!("{} {version}", requirement.name),
+                        location: requirement.location.clone(),
+                    }),
+            );
+            reached.insert(requirement.name.clone(), requirement);
+        }
+        let mut selected = BTreeMap::new();
+        for (name, first) in &reached {
+            let version = newest[&(name.as_str(), first.version.series())];
+            let entry = &index.entries[name][&version];
+            self.fetch_registry_package(&store, &index.url, name, version, entry, &first.location)?;
+            selected.insert(name.clone(), version);
         }
         self.selected = Some(selected);
         Ok(())

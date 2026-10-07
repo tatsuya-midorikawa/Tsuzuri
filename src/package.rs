@@ -70,7 +70,13 @@ impl Version {
 
     /// Whether `other` is in this version's compatibility range.
     pub fn compatible(self, other: Self) -> bool {
-        self.major == other.major && (self.major != 0 || self.minor == other.minor)
+        self.series() == other.series()
+    }
+
+    /// The compatibility range of this version: its major version from 1.0.0 on,
+    /// and `0.minor` before that. Compatible versions have the same series.
+    pub fn series(self) -> (u64, u64) {
+        (self.major, if self.major == 0 { self.minor } else { 0 })
     }
 
     /// Whether this version satisfies `requirement`: compatible and not older.

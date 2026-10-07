@@ -2076,6 +2076,53 @@ fn registry_rejects_incompatible_and_missing_versions() {
 }
 
 #[test]
+fn registry_ignores_requirements_of_unselected_versions() {
+    let scratch = Scratch::new("registry-unselected");
+    let mut registry = RegistryFixture::new(&scratch);
+    registry.publish("aaa", "1.0.0", &[], &value(1));
+    registry.publish("aaa", "2.0.0", &[], &value(2));
+    registry.publish("aaa", "3.0.0", &[], &value(3));
+    // beta 1.0.0 is visited (delta requires it) but not selected: app needs beta 1.1.0.
+    registry.publish("beta", "1.0.0", &[("aaa", "1.0.0")], &value(10));
+    registry.publish("beta", "1.1.0", &[("aaa", "2.0.0")], &value(11));
+    registry.publish("delta", "1.0.0", &[("beta", "1.0.0")], &value(20));
+    // The same with an unselected version that needs a newer incompatible series.
+    registry.publish("gamma", "1.0.0", &[("aaa", "3.0.0")], &value(30));
+    registry.publish("gamma", "1.1.0", &[("aaa", "2.0.0")], &value(31));
+    registry.publish("epsilon", "1.0.0", &[("gamma", "1.0.0")], &value(40));
+    let index_rev = registry.commit_index();
+    let index = registry.index.url();
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    let lock = scratch.path("app/Tsuzuri.lock");
+    for (dependencies, selected) in [
+        (
+            vec![("beta", "1.1.0"), ("delta", "1.0.0")],
+            vec![("aaa", "2.0.0"), ("beta", "1.1.0"), ("delta", "1.0.0")],
+        ),
+        (
+            vec![("gamma", "1.1.0"), ("epsilon", "1.0.0")],
+            vec![("aaa", "2.0.0"), ("epsilon", "1.0.0"), ("gamma", "1.1.0")],
+        ),
+    ] {
+        let _ = fs::remove_file(&lock);
+        registry_app(&scratch, &index, Some(&index_rev), &dependencies);
+        assert_success(&scratch.tsuzuri(&["fetch", app]));
+        let entries = parse_lock(&fs::read_to_string(&lock).unwrap(), 0).unwrap();
+        let versions: Vec<(&str, String)> = entries
+            .iter()
+            .map(|(name, entry)| (name.as_str(), entry.version.unwrap().to_string()))
+            .collect();
+        let expected: Vec<(&str, String)> = selected
+            .iter()
+            .map(|(name, version)| (*name, (*version).to_owned()))
+            .collect();
+        assert_eq!(versions, expected);
+        assert_success(&scratch.tsuzuri(&["check", app]));
+    }
+}
+
+#[test]
 fn registry_detects_tampered_index_entries() {
     let scratch = Scratch::new("registry-tamper");
     let app = scratch.path("app");

@@ -553,7 +553,7 @@ print(h.hexdigest())'
 - [x] lockfile の欠落・古さ・改ざん・未取得を「診断」の `E2007` で拒否し、`fetch` が store を直す。
 - [x] 安全でない URL・symlink・submodule・危険なパス・大文字小文字の衝突・上限超過を拒否する。
 - [x] Rust の crate を追加していない（`Cargo.toml` の `[dependencies]` が不変）。
-- [x] `tests/packages.rs` の 13 テスト（Phase 2 の 8 件を足して 21 件）と `tests/packages.mjs` が成功し、既存テストの期待値を変えていない（例外は Phase 2 の `[registry]` で変わった `src/package.rs` の単体テストの section 一覧の文。「実装と検証」の Phase 2 の 5）。
+- [x] `tests/packages.rs` の 13 テスト（Phase 2 の 8 件とレビュー対応の 1 件を足して 22 件）と `tests/packages.mjs` が成功し、既存テストの期待値を変えていない（例外は Phase 2 の `[registry]` で変わった `src/package.rs` の単体テストの section 一覧の文。「実装と検証」の Phase 2 の 5）。
 - [x] GUIDE §10 の完了の定義を満たす（`_features/README.md`・GUIDE の台帳・`_completed/` への移動は coordinator が行う）。
 
 Phase 2（実装時に追加）:
@@ -741,8 +741,10 @@ Phase 2（実装時に追加）:
   BFS の段ごとに `cat-file --batch` で読む。index は store に置かず、registry 依存がある `fetch` のたびに取得する。https の index の項目は `file:///` の `git` を使えない（`E2007`）。
 - **版の選択（D8 の最小版選択）**: `fetch` は 1 回目の走査で git 依存を取得し、版の要求を集めて走査から外す（resolver が `None` を返す。`PackageResolver`）。
   集めた要求から index の各版の `dependencies` を BFS でたどり（選ばれなかった版の要求もたどる。Go の MVS と同じで、単調で backtracking が要らない）、
-  名前ごとに要求の最小版のうち最大のものを選ぶ。選ぶ版は要求された版のどれかで、index にない版は `E2007`（より新しい版で代えない。新しい版の公開で選択が変わらない）。
-  選んだ版から到達できる package だけを取得・記録する（選ばれなかった版だけが要求する package は取得しない）。到達できる package の要求に互換の範囲の違うものがあれば
+  名前と互換の範囲（`Version::series`）の組ごとに要求の最小版のうち最大のものを選ぶ。選ぶ版は要求された版のどれかで、index にない版は `E2007`（より新しい版で代えない。新しい版の公開で選択が変わらない）。
+  ルートの要求から選んだ版の依存だけをたどって届く package を取得・記録する（選ばれなかった版だけが要求する package は取得しない）。そのたどった辺の要求に互換の範囲の違うものがあれば
+  （選ばれなかった版だけが述べる要求は数えない。レビューで、`beta 1.0.0` だけが `aaa 1.0.0` を、選んだ `beta 1.1.0` が `aaa 2.0.0` を要求するグラフが誤って `E1011` になっていたのを直した。
+  `registry_ignores_requirements_of_unselected_versions`）
   `E1011` `package 'NAME' is required at incompatible versions A (by P) and B (by Q); one package name has one version`（チケットの「E1011」をそのまま採った。
   名前空間の規則「一つの名前に一つの版」の違反であり、取得の失敗ではないため）。上限は 1,024 package・16,384 版（`E1017`）。lockfile は選択に使わない。
 - **検証**: 選んだ版ごとに index の `git`・`rev` を Phase 1 の `download` で取得し、`content_sha256` が index の `sha256` と違えば `E2007`（改ざんされた index）。取得した
@@ -784,7 +786,7 @@ Phase 2（実装時に追加）:
   `versions_parse_and_compare_compatibility_ranges`、`manifest_accepts_registry_dependencies_and_index`、`lock_format_2_records_registry_versions_and_reads_format_1`、
   `index_files_parse_strictly_and_entries_render_canonically`、`registry_resolution_selects_minimal_versions`（菱形と選ばれなかった版の要求、未取得の delta、pin なしの index、
   オフラインの要求と lockfile の照合）、`registry_rejects_incompatible_and_missing_versions`、`registry_detects_tampered_index_entries`、`publish_prints_index_entries`）、
-  `--test modules` 21 passed（変更なし）、`--lib` 99 passed。
+  `--test modules` 21 passed（変更なし）、`--lib` 99 passed。レビュー対応で `registry_ignores_requirements_of_unselected_versions` を足し、`--test packages` は 22 passed。
 - GUIDE §3.1 の回帰テスト 4 件（`bounds_type_growing_polymorphic_recursion`、`bounds_recursive_and_flat_expression_depth`、
   `bounds_nested_builder_expansion_not_just_source_syntax`、`honors_the_exact_specialization_limit`）: 各 1 passed。
 - `cargo build --release --locked` の後、`node tests/<suite>.mjs target/release/tsuzuri` を `packages`（git 依存と registry の publish・index・fetch・native／wasm32 × `-O0`／`-O3`、
