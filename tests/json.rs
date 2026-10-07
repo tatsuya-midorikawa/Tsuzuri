@@ -242,6 +242,19 @@ fn derives_generic_and_recursive_records() {
         "union Tree = Leaf of string | Branch of [Tree] | Pair of Tree * Tree deriving (Encode, Decode)\n{}",
         round_trip("Tree")
     ));
+    // Other `Maybe` fields next to the recursive one (review of D08 with C10's src/recursive.rs fix).
+    accepts(&format!(
+        "record Person {{ name: string, email: Maybe<string>, manager: Maybe<Person> }} deriving (Encode, Decode)\n{}",
+        round_trip("Person")
+    ));
+    accepts(&format!(
+        "record Node {{ a: Maybe<i64>, next: Maybe<Node> }} deriving (Decode)\n{}",
+        "def first :: ref Json.Value -> Result<Node, Json.Error>\nfn first value = Json.decode value\n"
+    ));
+    accepts(&format!(
+        "union Expr = Num of i64 | Add of Expr * Expr | Call of string * Maybe<Expr> * Maybe<string> deriving (Encode, Decode)\n{}",
+        round_trip("Expr")
+    ));
 }
 
 #[test]
