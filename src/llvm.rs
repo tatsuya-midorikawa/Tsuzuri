@@ -5531,6 +5531,17 @@ fn emit_builtin(
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
+        // Arena ids only need to be unique, so a monotonic increment suffices; the counter
+        // publishes no other memory. Default wasm32 lowers the atomic to a plain add.
+        Builtin::ArenaNextId => format!(
+            "@tz.arena.next_id = internal global i64 0, align 8\n\n\
+             define internal i64 {symbol}() nounwind {{\n\
+             entry:\n  %previous = atomicrmw add ptr @tz.arena.next_id, i64 1 monotonic, align 8\n  \
+             %id = add i64 %previous, 1\n  %valid = icmp sgt i64 %id, 0\n  \
+             br i1 %valid, label %done, label %exhausted\n\
+             exhausted:\n  call void @llvm.trap()\n  unreachable\n\
+             done:\n  ret i64 %id\n}}\n\n"
+        ),
         Builtin::DebugPrintString => {
             let mut write = String::new();
             let import = if wasm && debug_output {

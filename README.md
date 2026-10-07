@@ -159,6 +159,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: 平衡二分探索木による不変コレクションです。キーの順序を保持し、検索は $O(\log n)$、挿入および削除は $O(n)$ で動作します。
 - **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
+- **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](_tsuzuri/language-reference/built-in-types-and-modules/arena.md) を参照してください。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -442,7 +443,7 @@ def main :: unit -> i32 = \() ->
 | 予約名 | 用途 |
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
-| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet` | 各種コレクションおよびデータ構造 |
+| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena` | 各種コレクションおよびデータ構造 |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |

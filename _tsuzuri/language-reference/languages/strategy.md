@@ -105,7 +105,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 
 メモリのコストまで消えるわけではありません。コレクションの複製、捕捉環境の複製、フレームの外への移動では、確保やコピーが起こります。GC の停止がないことだけを根拠に、ハードリアルタイム性は保証しません。
 
-循環や自由な共有が必要なデータは、今の所有権モデルに合わせて設計します。共有所有の計画は [C10](../../../_features/C10-shared-ownership.md) で、未実装です。GC を後から足す方針は採っていません。
+循環や自由な共有が必要なデータは、今の所有権モデルに合わせて設計します。循環するグラフは std の [Arena](../built-in-types-and-modules/arena.md) に値を入れ、世代付きのハンドルで指して表します。参照カウントの共有所有は [C10](../../../_features/C10-shared-ownership.md) の Phase 2 で、未実装です。GC を後から足す方針は採っていません。
 
 ## 移植できる経路を残す
 
@@ -137,7 +137,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002` |
 | 非同期計算、ネットワーク、git / registry 依存 | 計画中 | [B08](../../../_features/B08-async.md)、E09、[E10](../../../_features/E10-package-registry.md) |
 | JSON 直列化、正規表現、GPU の浮動小数点と自動接続 | 計画中 | D08、D09、[F09](../../../_features/F09-gpu-float-runtime.md) |
-| 共有所有、Atomic / Mutex / Channel、多次元配列 | 計画中 | [C10](../../../_features/C10-shared-ownership.md)、F10、C11 |
+| 共有・循環する構造の `Arena` | 実装済み | C10 Phase 1 |
+| 参照カウントの共有所有、Atomic / Mutex / Channel、多次元配列 | 計画中 | [C10](../../../_features/C10-shared-ownership.md) Phase 2、F10、C11 |
 | REPL、増分コンパイル、カバレッジ、edition、追加ターゲット | 計画中 | G13、G15、G16、G17、G18、G19 |
 | `f16` のハードウェア演算、const 評価の拡張、C ヘッダーからの生成 | 計画中 | D10、D11、E11、E13 |
 

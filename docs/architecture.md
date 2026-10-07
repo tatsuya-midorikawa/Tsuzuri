@@ -618,6 +618,13 @@ NLL（非字句的生存期間）における借用情報の解放処理では�
 キーの所有権を消費しない読み取り操作（`contains_key_ref`、`get_ref`、`at_ref`、`remove_ref` など）は `ref 'key` を受け取り、`at_ref {r s}` における region 契約によって、戻り値の参照はマップ自身の借用期間のみに拘束されます。キー型の `Eq` が反射律を満たさない場合（NaN など）は、`hash_of` 内部のアサートによって安全にトラップします。`longest_probe` は理想スロットから最も離れたエントリーの探査距離を返す診断用メソッドです。なお、SIMD による群探査（F08）、テーブル縮小、および集合演算（union／intersection）は現時点で未実装です。
 検証は `cargo test --locked --test hash_map` および `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri hash_map` で行われています。シード付きコンテナが OS ランタイムを要求せず、`randomized` のみが OS ランタイムを要求することは `tests/os_api.rs`、ネイティブ・WASI・デフォルト wasm32 での挙動は `tests/os.mjs` の `randommaps` で検査されています。
 
+**Arena（C10）:** `Arena.Arena`・`Arena.Handle`・`Arena.Slot` も `stdlib.rs` の不透明な標準 record として登録され、実装は `std/Arena.tz` の Tsuzuri ソースだけです。専用の `Type` バリアント、ランタイムのファイル、リンク条件は増えません。
+`Arena<'a>` は値を詰めた `values: Vec<'a>`、各位置の slot 添字 `owners: Vec<i64>`、slot の表 `slots: Vec<Slot>`（位置と世代）、空き slot の列の先頭 `free` からなる DenseSlotMap 方式で、`Arena.Handle<'a>` は arena ID・添字・世代の 3 つの `i64` です。
+`Handle` の `'a` はどのフィールドにも現れない phantom な型引数です。record 宣言の検査は、不透明な標準 record に限って公開フィールド型の検査と未使用型引数の `E1024` を免除します（判定は宣言ごとに一度だけ行う）。`src/recursive.rs` はフィールドを型引数で置換して辿るので、`record Node { edges: Vec<Arena.Handle<Node>> }` は再帰的な値レイアウトになりません。
+arena ID は std 専用の組み込み関数 `Arena.__next_id`（`Builtin::ArenaNextId`、`Checker::builtin` が std の `Arena` 以外からの使用を `E1022` で拒否）が採番します。`emit_builtin` は単相の定義と大域カウンター `@tz.arena.next_id = internal global i64 0` を一つの文字列で出し、`atomicrmw add ... monotonic` で 1 増やして、結果が正でなければ `@llvm.trap` します。一意性だけが必要で、カウンターを通じて他のメモリを公開しないので `monotonic` で足ります。
+既定の wasm32（atomics 機能なし）では LLVM の WebAssembly backend が atomic 命令を通常の load／add／store へ下げ、`--wasm-feature threads` では `i64.atomic.rmw.add` になります。どちらも WASM の import は増えません。Arena を使わないプログラムの IR は変わりません。
+std の Arena 関数は他の std の generic 関数と同じく利用者コードから到達した要素型ごとに特殊化され、1,024 件の上限に数えます。検証は `cargo test --locked --test arena` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri arena`（`TSUZURI_TSAN=1` での並列採番を含む）で行っています。
+
 **共有配列ビュー:** `ref [T]` は非所有の配列記述子 `%tz.array = { ptr, i64 }`（ポインタと要素数）として表現され、値のサイズは 16 バイトです。
 一方、可変長ベクタ `Vec<T>` は `%tz.vec = { ptr, i64, i64 }`（データポインタ、要素数、確保容量）として表現され、構造体サイズは 32 バイトとなります。
 `Vec` は常に非 Copy ですが、クロージャ環境の複製時などにおける内部的な clone は、確保容量を維持したまま独立したバッファとして安全に複製されます。デストラクタ（drop）は有効要素数（length）の範囲内の要素のみを解放します。

@@ -461,6 +461,39 @@ const suites = {
       for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
     },
   },
+  arena: {
+    cases: [
+      ["arena_cycle", [], 143n], ["arena_order", [], 42351n], ["arena_foreign", [], 110n],
+      ["arena_capture", [], 84n], ["arena_task", [], 42n], ["arena_borrowed_values", [], 8n],
+      ...[1n, 2n, 3n, 1000n].map((n) => ["arena_ring", [n], (n - 1n) * n * (n + 1n) / 3n]),
+      ...[0n, 1n, 50000n].map((n) => ["arena_chain", [n], n * (n - 1n) / 2n]),
+      ...[0n, 1n, 1000n].map((count) => ["arena_parallel", [count], 2n * count * (4n * count - 1n)]),
+      ...[0n, 1n, 2n, 3n, 100n, 1000n].map((count) => {
+        let kept = 0n, removed = 0n, stale = 0n;
+        for (let i = 0n; i < count; i++) if (i % 3n === 0n) { removed += i * 3n; stale++; } else kept += i * 3n;
+        let reinserted = 0n;
+        for (let k = 0n; k < stale; k++) reinserted += 1000000n + k;
+        return ["arena_churn", [count], (kept + reinserted) * 3n + removed * 5n + stale * 7n + count * 11n];
+      }),
+      ...[0n, 1n, 10n, 10000n].map((count) => {
+        let live = 0n, removed = 0n;
+        for (let i = 0n; i < count; i++) {
+          const length = BigInt(String(i).length);
+          if (i % 4n === 1n) removed += length; else live += length + (i % 4n === 2n ? 1n : 0n);
+        }
+        return ["arena_strings", [count], live * 1000n + removed];
+      }),
+    ],
+    traps: [["arena_at_removed", []], ["arena_at_foreign", []], ["arena_update_stale", []], ["arena_negative_capacity", []]],
+    inspect(ir) {
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Arena\.(?:position|contains|get|at)[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(lookups.length > 0);
+      for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+      assert.equal(ir.match(/^@tz\.arena\.next_id = internal global i64 0/gm)?.length, 1);
+      assert.equal(ir.match(/^define internal i64 @tz\.builtin\.Arena\.__next_id\(\)/gm)?.length, 1);
+      assert.match(ir, /atomicrmw add ptr @tz\.arena\.next_id, i64 1 monotonic/);
+    },
+  },
   hash_map: {
     cases: [
       ...[0n, 1n, 2n, 7n, 8n, 9n, 100n, 1000n, 100000n].flatMap((count) => [1n, 2n, -3n].flatMap((seed) => [

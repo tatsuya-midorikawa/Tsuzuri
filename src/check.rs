@@ -990,6 +990,9 @@ pub enum Builtin {
     Not,
     /// `ignore :: 'a -> unit` drops its argument, as in `do! action |> ignore`.
     Ignore,
+    /// `Arena.__next_id :: i64` takes the next arena id from a process-wide atomic counter (C10).
+    /// Only the std `Arena` module may call it.
+    ArenaNextId,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1232,6 +1235,7 @@ impl Builtin {
         Self::OwnedCall,
         Self::Not,
         Self::Ignore,
+        Self::ArenaNextId,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1417,6 +1421,7 @@ impl Builtin {
             Self::OwnedCall => "Owned.call",
             Self::Not => "not",
             Self::Ignore => "ignore",
+            Self::ArenaNextId => "Arena.__next_id",
             #[cfg(test)]
             Self::TestAdd => "Int.test_add",
             #[cfg(test)]
@@ -2202,6 +2207,7 @@ impl Builtin {
                 Vec::new(),
             ),
             Self::OwnedDrop | Self::Ignore => (vec![a()], Concrete(Type::Unit), Vec::new()),
+            Self::ArenaNextId => (Vec::new(), Concrete(Type::I64), Vec::new()),
             Self::Not => (vec![Concrete(Type::Bool)], Concrete(Type::Bool), Vec::new()),
             Self::OwnedFunction | Self::OwnedCall => {
                 let run = BuiltinType::Function(vec![a()], Box::new(Var("b")));
@@ -5055,6 +5061,9 @@ fn check_modules_collect(
         }
         let checked = (|| {
             let qualified = format!("{module}.{}", record.name.text);
+            // Opaque std records may carry phantom type parameters, as `Arena.Handle<'a>` does (C10).
+            let opaque = names.origin(module) == ModuleOrigin::Std
+                && crate::stdlib::opaque_record(&qualified);
             let parameters = declared_parameters("record", &record.name.text, &record.parameters)?;
             let regions::RecordRegions {
                 count: region_count,
@@ -5070,10 +5079,7 @@ fn check_modules_collect(
                 }
                 reject_field_constraints(&field.ty, module, &names, "record")?;
                 let ty = resolve_type(&field.ty, module, &names)?;
-                if record.visibility == Visibility::Public
-                    && !(names.origin(module) == ModuleOrigin::Std
-                        && crate::stdlib::opaque_record(&qualified))
-                {
+                if record.visibility == Visibility::Public && !opaque {
                     validate_public_type(&field.ty, module, ("record", &qualified), &names)?;
                 }
                 polymorph::bounded_type(&ty, field.ty.span)?;
@@ -5110,7 +5116,7 @@ fn check_modules_collect(
             if let Some(parameter) = record
                 .parameters
                 .iter()
-                .find(|parameter| !used.contains(&parameter.text))
+                .find(|parameter| !opaque && !used.contains(&parameter.text))
             {
                 return Err(Diagnostic::new(
                     "E1024",

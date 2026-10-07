@@ -846,6 +846,7 @@ union のペイロードを経由するデータ構造の循環定義が正式�
 再帰データ構造のメモリ解放は、追加のメモリ確保を一切伴わない反復ループ（スタックレス走査）によって実行されます。関数値のクロージャ環境を複製する際にも、再帰ノードおよびそれに内包される配列・リスト・Vec が同一の反復アルゴリズムによってディープコピーされるため、データ構造のネスト深度に比例してコールスタックを浪費する心配がありません。
 ただし、このスタックレス保証はデータ構造の内部クローンおよび解放処理に適用されるものであり、関数環境を多重に捕捉する極端な再帰や、ユーザーが明示的に記述した非末尾再帰関数呼び出しまでをスタックレス化するものではない点に留意してください。
 実行時におけるノードの循環参照グラフの形成や参照カウント方式、ガベージコレクション（GC）は言語レベルで完全に排除されています。
+複数のノードから同じノードを指すグラフや循環するグラフは、std の [Arena](#arena) に値を入れ、世代付きのハンドル `Arena.Handle<T>` で指して表します。
 
 #### 自動導出（`deriving`）
 
@@ -1241,6 +1242,7 @@ test "compares strings" =
 
 なお、旧仕様に存在した大文字始まりの型名 `Int`、`Float`、`Bool`、`Unit` は組み込み型ではありません。
 Tsuzuri はガベージコレクション（GC）、参照カウント、およびプログラマによる手動の解放操作を一切使用せず、アフィン所有権システムと借用検証によってメモリを安全に自動管理します。
+共有・循環する構造は、std の [Arena](#arena) が値をまとめて所有し、Copy のハンドルで指すことで表します（ハンドルは値の寿命を延ばしません）。
 レコードはスタックやヒープに直接インライン配置される値型として保持され、配列は所有する要素データ領域へのポインタと長さを格納した記述子（ファットポインタ）として表現されます。
 連結リストは所有する先頭ノードへのポインタと要素数を保持し、各ノードが要素データと次のノードへの所有ポインタを保持します。
 配列の要素領域やリストのノード群をスタックとヒープのどちらに確保するかは、次節で解説するように生成時の構文（`new` の有無）によって決定論的に定まります。
@@ -2818,6 +2820,44 @@ def main :: unit -> i32 = \() ->
 
 なお、メモリ領域の縮小（`shrink_to_fit`）、集合演算（`union`、`intersect`、`difference`）、`singleton`、`pop`、`retain`、スレッドセーフな並行 HashMap、値の排他借用参照を返すイテレータ、および SIMD 命令を活用したグループ探査機能は現時点で未実装です（`Hash.hash` の出力形式自体は変更されません）。
 
+### Arena
+
+`Arena<'a>` は、値を世代付きのハンドル `Arena.Handle<'a>` で指す所有コンテナです（C10。Rust の `slotmap::DenseSlotMap` に相当）。グラフ・DAG・循環する構造を、言語の意味を変えずに所有権モデルのまま表します。
+`Arena<'a>` は常に非 Copy の不透明な標準レコードで、構築・フィールド参照・パターン分解・更新構文は `E1022`、公開 ABI への export は `E1008`、const の初期化は `E1026` です。`Send`・捕捉・借用の保持は要素型 `'a` に従います（`Map` と同じ）。
+`Arena.Handle<'a>` は arena ID・slot の添字・世代の 3 つの `i64` からなる不透明な Copy 値です。フィールドが整数だけなので、`'a` が参照型や非 Copy 型でも借用を保持せず、常に `Send` で捕捉できます。要素型は型引数で静的に照合し（異なる要素型の arena に渡すと `E1003`）、arena の同一性は実行時の arena ID で照合します。
+
+```text
+record Node { value: i64, edges: Vec<Arena.Handle<Node>> }
+match Arena.insert graph (Node { value: 1, edges: Vec.empty() }) with   // (Arena<Node> * Arena.Handle<Node>)
+| (filled, a) ->
+    let linked = Arena.update filled a (link a)                         // 後から辺を足して循環を作る
+    (Arena.at (ref linked) a).value                                     // 無効なハンドルはトラップ
+```
+
+| API | 型 | 計算量 | 無効なハンドル |
+|---|---|---|---|
+| `Arena.empty()` | `Arena<'a>` | $O(1)$、確保なし | – |
+| `Arena.with_capacity count` | `i64 -> Arena<'a>` | $O(1)$ | –（負の容量はトラップ） |
+| `Arena.length arena` | `ref Arena<'a> -> i64` | $O(1)$ | – |
+| `Arena.contains arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> bool` | $O(1)$ | `false` |
+| `Arena.get arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> Maybe<ref 'a>` | $O(1)$ | `None` |
+| `Arena.at arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> ref 'a` | $O(1)$ | トラップ |
+| `Arena.insert arena value` | `Arena<'a> -> 'a -> (Arena<'a> * Arena.Handle<'a>)` | 償却 $O(1)$ | – |
+| `Arena.remove arena handle` | `Arena<'a> -> Arena.Handle<'a> -> (Arena<'a> * Maybe<'a>)` | $O(1)$ | 変更しない arena と `None` |
+| `Arena.update arena handle change` | `Arena<'a> -> Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a>` | $O(1)$ ＋ `change` | トラップ（`change` は呼ばない） |
+| `Arena.iter arena` | `ref Arena<'a> -> Seq<(Arena.Handle<'a> * ref 'a)>` | 全体で $O(n)$ | – |
+
+ハンドルが有効なのは、同じ arena の中で、`insert` が返してから `remove` されるまでの間だけです。`update` は同じハンドルを有効なまま保ちます。
+無効とは、ハンドルの arena ID が arena と異なる、添字が slot の範囲外、または slot の世代がハンドルの世代と異なる（削除済み・退役済み・別の値に再利用済み）ことです。
+世代は slot ごとの `i64` で 0 から始まり、`remove` のたびに 1 増えます。削除時の世代が `i64` の最大値なら slot を退役させ（以後は再利用しない）、トラップにはしません。
+内部は値を詰めて並べた `Vec<'a>`、各位置の slot を記録する `Vec<i64>`、slot の表、空き slot の列の先頭からなります。`remove` は末尾の値を削除位置へ移し（swap-remove）、空き slot は後入れ先出しで再利用します。`iter` は詰めた位置の順です。
+`insert`・`remove`・`update` は arena を消費して返します。`remove` は値の所有権を呼び出し元へ返し、`update` は値を取り出して `change` を一度だけ呼び、結果を同じ位置へ戻します（`Vec.set` のように旧値を解放しません）。`get`・`at`・`iter` の結果は arena の共有借用を持ち、その間の消費は `E1014` です。
+arena の drop は値を詰めた位置の昇順に既存の drop glue で解放し、続いて整数のバッファを解放します。循環するグラフも再帰なしで解放されます。arena を捕捉した関数値の複製は独立した複製を作りますが、arena ID も複製されるため、同じハンドルが両方で有効です。
+ハンドルの `Eq`・`Ord`・`Hash` は添字と世代だけを使い、arena ID を含みません（`Ord` は添字、次に世代の辞書順）。arena ID は並列の task では実行順に依存するため、観測できる結果を API の呼び出し列だけで決めるためです。`Display`／`Debug` の instance はありません。
+arena ID は std 専用の組み込み関数 `Arena.__next_id`（std の `Arena` モジュール以外からの呼び出しは `E1022`）が、プロセス全体のカウンターを原子的に増やして 1 から採番します。native と `--wasm-feature threads` では atomic 命令、既定の wasm32 では通常の加算で、WASM の import は増えません。$2^{63} - 1$ 個を超えて作るとトラップします。
+std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで使わない（phantom な）宣言を許すのは、コンパイラが登録した不透明な標準レコードだけです。利用者のレコードの未使用の型引数は従来どおり `E1024` です。
+要素の排他借用、複数要素の同時借用、複数の task による共有読み取り、`clear`・`retain` などは提供しません。
+
 ### 配列・リスト API
 
 `Array` モジュールが提供する逐次集計関数群と、前述の [データ並列 API](#データ並列-api) は、演算順序や並列化の有無が異なる独立した API です。コンパイラが逐次集計をデータ並列処理へ自動的に切り替えることはありません。
@@ -3366,7 +3406,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1019` | 再帰関数に必要な `rec` 修飾子の欠落、宣言と実装の再帰契約の不一致、先行関数を持たない単独の `and` |
 | `E1020` | 不正なパターン構文、OR パターン間での束縛変数の不一致、未対応のアクティブパターン形式、共用体バリアントのペイロード不整合 |
 | `E1021` | 明示的な `match` 式および関数ガードにおけるパターンの網羅性不足（不足している具体的なケース例を提示） |
-| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*` プリミティブの不正参照 |
+| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Arena.__next_id` プリミティブの不正参照 |
 | `E1023` | ループ外での脱出、関数・Task・ビルダー境界を越える不正な `break`／`continue`、`finally` 節を持つ `try` 式から抜け出す不正なジャンプ |
 | `E1024` | 型宣言における型パラメータ・長さパラメーター（`const N: i64`）の重複・未使用・未宣言、union／case／型エイリアスの大文字始まり規則違反、同一 union 内でのバリアント名重複、型エイリアスの循環参照・型引数の個数不一致 |
 | `E1027` | 条件付きインスタンス、スーパークラス、デフォルトメソッドにおけるトレイト制約の不整合 |

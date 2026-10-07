@@ -93,6 +93,7 @@
 - [Set](./built-in-types-and-modules/set.md)
 - [HashMap](./built-in-types-and-modules/hashmap.md)
 - [HashSet](./built-in-types-and-modules/hashset.md)
+- [Arena](./built-in-types-and-modules/arena.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)
 - [Result](./built-in-types-and-modules/result.md)

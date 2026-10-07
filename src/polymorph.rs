@@ -2513,6 +2513,15 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if builtin == Builtin::ArenaNextId
+            && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity",
+                span,
+            ));
+        }
         // A dyn value is built only where its type is known, so `Dyn.of` is never a value (A14 D9).
         if builtin == Builtin::DynOf && !std::mem::take(&mut self.dyn_callee) {
             return Err(Diagnostic::new(

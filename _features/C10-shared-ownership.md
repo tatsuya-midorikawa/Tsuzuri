@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | C02, (B07), (F10) |
 | 後続 | A15 Phase 2 |
-| 状態 | todo |
+| 状態 | Phase 1 done（Phase 2 は同じブランチで続けて実装する） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要（std 名 `Arena` は GUIDE D-30 の仮割り当てを使う）。Phase 2 は要承認: D13（参照カウントの導入。GUIDE D-30）, D14（std 名 `Rc`／`Arc` の割り当て） |
 | 改善する劣位 | C#/F# 比: GC に任せられる共有データ・循環構造を所有権に沿って設計し直す必要がある（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
@@ -659,16 +659,16 @@ fn arena_ring count =
 
 ## 受け入れ条件
 
-- [ ] Phase 1 の API がすべて仕様どおりに動き、`cargo test --locked --test arena` の 7 件が成功する。
-- [ ] 循環を含むグラフを Arena とハンドルで構築・探索・解放でき、`node tests/features.mjs target/release/tsuzuri arena` が native／WASM × `-O0`／`-O3`、`live == 0`、WASM の import なしで成功する。
-- [ ] 削除済み・別の arena・範囲外のハンドルを、`get`／`contains`／`remove` は `None`／偽で、`at`／`update` はトラップで検出する。
-- [ ] ハンドルの `Eq`／`Ord`／`Hash` が arena ID を含まない（`arena_foreign` が `110`）。
-- [ ] 利用者 record の未使用型引数は引き続き `E1024`、利用者コードからの `Arena.__next_id` は `E1022`。
-- [ ] IR にカウンタの大域定義が 1 回だけあり、`atomicrmw ... monotonic` を使う。Arena を使わないプログラムの IR は変わらない。
-- [ ] `TSUZURI_TSAN=1` で競合の報告がなく、`--wasm-feature threads` のビルドが成功し、IR が 2 回の出力で一致する。
-- [ ] `honors_the_exact_specialization_limit` が成功する。
-- [ ] Phase 2 は未着手で、D13・D14 が要承認のまま残っている。
-- [ ] ドキュメントを更新し、`node scripts/check-docs.mjs` が成功する。
+- [x] Phase 1 の API がすべて仕様どおりに動き、`cargo test --locked --test arena` の 7 件が成功する。
+- [x] 循環を含むグラフを Arena とハンドルで構築・探索・解放でき、`node tests/features.mjs target/release/tsuzuri arena` が native／WASM × `-O0`／`-O3`、`live == 0`、WASM の import なしで成功する。
+- [x] 削除済み・別の arena・範囲外のハンドルを、`get`／`contains`／`remove` は `None`／偽で、`at`／`update` はトラップで検出する。
+- [x] ハンドルの `Eq`／`Ord`／`Hash` が arena ID を含まない（`arena_foreign` が `110`）。
+- [x] 利用者 record の未使用型引数は引き続き `E1024`、利用者コードからの `Arena.__next_id` は `E1022`。
+- [x] IR にカウンタの大域定義が 1 回だけあり、`atomicrmw ... monotonic` を使う。Arena を使わないプログラムの IR は変わらない。
+- [x] `TSUZURI_TSAN=1` で競合の報告がなく、`--wasm-feature threads` のビルドが成功し、IR が 2 回の出力で一致する。
+- [x] `honors_the_exact_specialization_limit` が成功する。
+- [x] ~~Phase 2 は未着手で、D13・D14 が要承認のまま残っている。~~ 2026-10-07 に利用者が D13・D14 を承認し、全 Phase の実装を依頼した（「実装と検証」を参照）。
+- [x] ドキュメントを更新し、`node scripts/check-docs.mjs` が成功する。
 - [ ] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
@@ -779,3 +779,39 @@ fn arena_ring count =
 - 決定: モジュール `Rc`／`Arc`（型 `Rc<'a>`・`Rc.Weak<'a>`・`Arc<'a>`・`Arc.Weak<'a>`）を提案する。
 - 理由: GUIDE D-30 の仮割り当ては `Arena` だけで、`Rc`／`Arc` は未割り当て。予約モジュール名の追加は D-07 の変更に当たる。
 - 状態: 要承認（承認前は Phase 2 に着手しない）
+
+## 実装と検証（2026-10-07）
+
+利用者の依頼（全 Phase の実装、判断が要る点は最善の選択で実装）を D13・D14 の承認として扱った。着手時の HEAD は `2ee813f`（チケットの詳細化時の `f8dc655` から、`_docs/` が `_tsuzuri/language-reference/`（以下 LR）へ移り、予約モジュールが 36 件になっている）。
+作業機: Apple M1 Max、macOS、Apple clang 21、rustc 1.98.1、Node v20.19.6。性能の改善は主張しない。
+
+### Phase 1: Arena とハンドル
+
+#### 実装
+
+- 組み込み関数 `Builtin::ArenaNextId`（`Arena.__next_id :: i64`、`Builtin::ALL` の `Ignore` の後）。`Checker::builtin` が std の `Arena` モジュール以外からの使用を `E1022`（`the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity`）で拒否する。
+  `emit_builtin` はチケットの「生成 IR」のとおりの定義と `@tz.arena.next_id = internal global i64 0, align 8` を一つの文字列で返す（単相なので一度だけ出る。`@llvm.trap` は既存の宣言を使う）。
+- `src/stdlib.rs`: `SOURCES` の先頭に `std/Arena.tz`、`RESERVED_MODULES` の末尾に `Arena`（`reserves_the_d07_table` は 36 → 37。Phase 2 で 39）、`opaque_record` に `Arena.Arena`・`Arena.Handle`・`Arena.Slot`。
+- `src/check.rs` の record 宣言ループ: 不透明な標準 record の判定 `opaque` を宣言ごとに一度だけ計算し、公開フィールド型の検査と未使用型引数の `E1024` の両方を免除する。利用者の record は従来どおり `E1024`。
+- `std/Arena.tz`: チケットの「アルゴリズム」のとおり（`Slot`・`Arena`・`Handle`、手書きの `Eq`／`Ord`／`Hash`、`empty`・`with_capacity`・`length`・`contains`・`get`・`at`・`insert`・`remove`・`update`・`iter`）。公開する宣言には文書コメントを付けた（`tsuzuri doc` と LSP の hover に出る）。
+- テスト: `tests/arena.rs`（7 件。チケットの表の内容に加え、ハンドルの pattern 分解の `E1022`、`let next = Arena.__next_id` の `E1022`、予約モジュール `Arena` の `E1011`、`Map`／`HashMap` のキーとしてのハンドル）。
+  `tests/fixtures/arena/Main.tz` と `tests/features.mjs` の suite `arena`（`map_set` の後。26 ケースとトラップ 4 つ、`inspect` は検索関数が確保しないこと・カウンターの定義と `define` が 1 回ずつ・`atomicrmw ... monotonic`）。
+- 文書: LR に `built-in-types-and-modules/arena.md`（新規。`map.md` と同じ構成、基本例は `run=143` の `cycle`）と `index.md` の項目。共有や循環を「できない」「計画中」と書いていた
+  `ownership-and-memory/drop.md`・`ownership.md`、`languages/why-tsuzuri.md`・`how-about-tsuzuri.md`・`strategy.md`、`built-in-types-and-modules/union.md`・`record.md`、`compiler/diagnostics.md`（`E1022`）を直した。
+  `docs/language.md`（`### Arena`、「型とメモリ」と再帰型の節の追記、診断表の `E1022`）、`docs/architecture.md`（Arena の段落）、`README.md`（コレクションの一覧と予約名）。
+
+#### チケットから外れた判断
+
+1. 文書の置き場所は GUIDE §8.1 で読み替えた（`_docs/library-reference/arena.md` → LR の `arena.md`）。生成 API の snapshot（`api/Arena.md`）と `_docs/feature-status.md` は置き換え先がないので作らない。`_features/README.md` と GUIDE は coordinator が更新する。
+2. `docs/language.md` の `### Arena` は `### Map / Set` の直後ではなく、その後に続く `### HashMap / HashSet` の後に置いた（チケットの詳細化の後に HashMap の節ができ、Map／Set と HashMap／HashSet の間を割らないため）。
+3. 「Arena を使わないプログラムの IR は変わらない」は、std の関数の追加による生成 id の一様なずれを除いて満たす。instance の関数の id は全関数の数の後から採番するため（`polymorph.rs` の `function_id = functions.len()`）、std に関数を足すと `$instance.N`・`$intrinsic.<class>.<method>.N`・`$builtin.to_string.N` の番号がずれる（C08・A15 と同じ）。
+   `2ee813f` の release コンパイラと比べ、`tests/fixtures/*` の 57 個（`arena` を除く）のうち 32 個は byte 一致、25 個はこの番号を正規化すると一致した（差分は番号だけ）。`tz.arena` と `atomicrmw` は Arena を使わない IR に現れない（`arena_ir_has_one_atomic_counter`）。
+4. ハンドルの `Display`／`Debug` は作らない（チケットどおり）。
+
+#### 確認
+
+- `cargo test --locked --test arena`（7 passed）、`--lib stdlib`（5 passed）、`--test map_set`（2）、`--test debug_output`（3）、`--test polymorphism honors_the_exact_specialization_limit`（1）。
+- `node tests/features.mjs target/release/tsuzuri arena`: 26 ケースとトラップ 4 つが native／WASM × `-O0`／`-O3` で成功（`live == 0`、WASM の import なし、IR の 2 回の出力が一致、宣言の重複なし）。`TSUZURI_TSAN=1` でも成功（`arena_parallel` の 4 task が並列に `Arena.__next_id` を呼ぶ）。`map_set` も成功。
+- `tsuzuri build tests/fixtures/arena --target wasm32 --wasm-feature threads` が成功し、`llvm-objdump` で `i64.atomic.rmw.add` を確認した。既定の wasm32 では atomic 命令が通常の加算に下がる（import なし）。native と wasm32 の IR はそれぞれ 2 回の出力で一致した。
+- `node scripts/check-docs.mjs`（変更した LR の 10 ページ）が成功。`tsuzuri doc std` は `Arena.md` を出し、`tsuzuri fmt` で整形した fixture も `check` を通る。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`RUST_MIN_STACK=4194304 cargo test --locked`（72 個のテストバイナリで 743 passed、失敗なし）、GUIDE §3.1 の回帰テスト 4 件（既定の stack で個別に実行）が成功。
