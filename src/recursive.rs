@@ -2,6 +2,21 @@ use super::*;
 
 pub(super) type Cache = std::cell::RefCell<BTreeMap<Box<[Type]>, Result<bool, Diagnostic>>>;
 
+/// Whether `ty` is a generic record or union at its own parameters, the type that its
+/// declaration is checked as.
+fn generic_declaration(ty: &Type, types: TypeContext<'_>) -> bool {
+    let (parameters, arguments) = match ty {
+        Type::Record(id, arguments) => (&types.records[*id].parameters, arguments),
+        Type::Union(id, arguments) => (&types.unions[*id].parameters, arguments),
+        _ => return false,
+    };
+    !parameters.is_empty()
+        && parameters.len() == arguments.len()
+        && parameters.iter().zip(arguments).all(
+            |(parameter, argument)| matches!(argument, Type::Variable(name) if name == parameter),
+        )
+}
+
 pub(super) fn analyze(
     root: &Type,
     types: TypeContext<'_>,
@@ -14,6 +29,11 @@ pub(super) fn analyze(
         active: Vec<Type>,
         /// The length of `active` where each shared pointer on the current path was entered.
         shared: Vec<usize>,
+        /// A generic declaration at its own parameters, which must not reach itself at other
+        /// arguments. Instances are not checked again: a type that only contains a recursive
+        /// one, such as the `Maybe<Rc<Node>>` that `Rc.upgrade` returns for a `Node` with
+        /// `Maybe<Rc.Weak<Node>>` fields, may meet another instance of its declaration.
+        generic_root: Option<Type>,
         recursive: BTreeSet<Type>,
     }
     impl Graph<'_> {
@@ -57,35 +77,31 @@ pub(super) fn analyze(
                 self.recursive.extend(cycle.iter().cloned());
                 return Ok(());
             }
-            for active in &self.active {
-                let previous = match active {
-                    Type::Record(previous, arguments) if !is_union && *previous == id => {
-                        Some(arguments)
-                    }
-                    Type::Union(previous, arguments) if is_union && *previous == id => {
-                        Some(arguments)
-                    }
-                    _ => None,
-                };
-                if let Some(previous) = previous {
-                    if weight(arguments) >= weight(previous) {
-                        return Err(Diagnostic::new(
-                            "E1017",
-                            "recursive generic type changes its arguments; use a non-growing recursive occurrence",
-                            self.span,
-                        ));
-                    }
-                }
+            if let Some(root) = &self.generic_root
+                && root != ty
+                && same_declaration(root, ty)
+            {
+                return Err(changes_arguments(self.span));
             }
             if self.nodes.contains_key(ty) {
                 return Ok(());
             }
             if self.nodes.len() >= 4096 || self.active.len() >= MAX_NESTING {
-                return Err(Diagnostic::new(
-                    "E1017",
-                    "recursive type expansion exceeds the compiler limit",
-                    self.span,
-                ));
+                // An expansion that keeps instantiating one declaration with new arguments
+                // never ends; the cycles of a finite expansion are checked after the search.
+                let growing = self
+                    .active
+                    .iter()
+                    .any(|active| active != ty && same_declaration(active, ty));
+                return Err(if growing {
+                    changes_arguments(self.span)
+                } else {
+                    Diagnostic::new(
+                        "E1017",
+                        "recursive type expansion exceeds the compiler limit",
+                        self.span,
+                    )
+                });
             }
             let fields = if is_union {
                 self.types
@@ -116,34 +132,29 @@ pub(super) fn analyze(
             _ => true,
         }
     }
-    fn weight(types: &[Type]) -> usize {
-        types
-            .iter()
-            .map(|ty| {
-                1 + match ty {
-                    Type::Array(inner)
-                    | Type::List(inner)
-                    | Type::Vec(inner)
-                    | Type::Task(inner)
-                    | Type::FixedArray(inner, _)
-                    | Type::Shared(inner, _)
-                    | Type::Reference(inner, _) => weight(std::slice::from_ref(inner)),
-                    Type::Tuple(elements) => weight(elements),
-                    Type::Record(_, elements) | Type::Union(_, elements) => weight(elements),
-                    Type::Function(parameters, result) => {
-                        weight(parameters) + weight(std::slice::from_ref(result))
-                    }
-                    _ => 0,
-                }
-            })
-            .sum()
+    /// Whether two record or union types instantiate the same declaration.
+    fn same_declaration(left: &Type, right: &Type) -> bool {
+        match (left, right) {
+            (Type::Record(left, _), Type::Record(right, _))
+            | (Type::Union(left, _), Type::Union(right, _)) => left == right,
+            _ => false,
+        }
     }
+    fn changes_arguments(span: Span) -> Diagnostic {
+        Diagnostic::new(
+            "E1017",
+            "recursive generic type changes its arguments; use a non-growing recursive occurrence",
+            span,
+        )
+    }
+    let generic_root = generic_declaration(root, types).then(|| root.clone());
     let mut graph = Graph {
         types,
         span,
         nodes: BTreeMap::new(),
         active: Vec::new(),
         shared: Vec::new(),
+        generic_root,
         recursive: BTreeSet::new(),
     };
     graph.visit(root)?;
@@ -268,8 +279,13 @@ impl TypeContext<'_> {
         match analyze(ty, *self, span) {
             Ok(nodes) => {
                 let result = nodes[ty];
-                for (ty, recursive) in nodes {
-                    match ty {
+                for (node, recursive) in nodes {
+                    // Another declaration may reach a generic declaration at its own parameters
+                    // first; only the analysis rooted there checks it for changed arguments.
+                    if node != *ty && generic_declaration(&node, *self) {
+                        continue;
+                    }
+                    match node {
                         Type::Record(id, arguments) => {
                             self.records[id]
                                 .recursive

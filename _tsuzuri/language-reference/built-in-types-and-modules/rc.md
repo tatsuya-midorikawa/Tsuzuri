@@ -9,7 +9,7 @@ Tsuzuri に GC はありません。共有はいつも明示的です。`Rc.shar
 - `Rc<T>` と `Arc<T>` は非 Copy の所有値です。所有者を増やすのは `Rc.share (ref rc)` だけで、代入や引数渡しはムーブです（ムーブ後の使用は `E1012`）。
 - 中の値は共有借用 `Rc.get (ref rc)` で読みます。共有した値を書き換える方法はありません（内部可変性はありません）。
 - 弱参照 `Rc.Weak<T>`／`Arc.Weak<T>` は値の寿命を延ばしません。`Rc.upgrade` は、値が生きていれば新しい `Rc` を `Some` で返し、解放済みなら `None` を返します。
-- `Rc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。`Arc<T>` は `T` が `Send` なら両方できます。
+- `Rc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。`Arc<T>` は `T` が `Send` で、extern ハンドルを持ちうる値を含まなければ両方できます。
 - 値が共有後に変わらないので、`Rc`／`Arc` だけで循環は作れず、参照カウントによる解放漏れは起きません。循環するグラフは [Arena](./arena.md) で表します。
 - 長い鎖（連結リストなど）の解放は再帰しません。100 万要素の鎖も native のスタックを溢れさせずに解放します。
 
@@ -113,7 +113,7 @@ before=6 after=-1
 
 ## Arc とタスク
 
-`Arc<T>` の API は `Rc<T>` と同じ名前・同じ型で、モジュール名が `Arc` に変わるだけです。計数を atomic 命令で更新するので、`T` が `Send` なら `Arc<T>` も `Send` です。タスクごとに `Arc.share` で所有者を作って渡すと、配列を複製せずに複数のタスクで読めます。
+`Arc<T>` の API は `Rc<T>` と同じ名前・同じ型で、モジュール名が `Arc` に変わるだけです。計数を atomic 命令で更新するので、`T` が `Send` で、後述のとおりタスク間で共有できる値なら `Arc<T>` も `Send` です。タスクごとに `Arc.share` で所有者を作って渡すと、配列を複製せずに複数のタスクで読めます。
 
 ```tsuzuri run=even%3D2450%20odd%3D2500%20owners%3D1
 def part :: Arc<[i64]> -> i64 -> Task<i64>
@@ -148,11 +148,12 @@ even=2450 odd=2500 owners=1
 | 型 | 所有者を増やす | タスクへ移す（`Send`） | 関数値に捕捉する |
 | --- | --- | --- | --- |
 | `Rc<T>`・`Rc.Weak<T>` | `Rc.share`・`Rc.downgrade` | できない（`E1013`） | できない（`E1005`） |
-| `Arc<T>`・`Arc.Weak<T>` | `Arc.share`・`Arc.downgrade` | `T` が `Send` のとき | `T` が `Rc` を持たないとき |
+| `Arc<T>`・`Arc.Weak<T>` | `Arc.share`・`Arc.downgrade` | `T` が `Send` で共有できるとき | `T` が共有できるとき |
 
 - `Rc` の計数は atomic ではないので、`Rc` はそれを作ったタスクから出ません。`Rc` を持つレコード・共用体・配列、`Arc<Rc<T>>` も同じです。
 - 関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せます。そのため `Rc` は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません。`Rc` は引数として渡します。
 - `Arc` を捕捉した関数値を複製すると、`Arc.share` と同じく所有者が 1 増えます。値は複製しません。
+- `Arc` を持つタスクはどれも、`Arc.get` で同時に値を借用できます。共有できる値は、`Rc`、extern ハンドル（`extern type`）、ハンドルを隠しうる Copy でない `dyn` 値、ハンドルを捕捉しうる `Owned.Function` を、入れ子の中にも持たない値です。ホストのライブラリーのハンドルは複数のスレッドから同時に使えるとは限らないためです。共有できない値の `Arc` は、それを持つレコードや共用体も含めて、タスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。同じタスクの中で `Arc.share` するのは自由です。ハンドルを別のタスクで使うときは、`Arc` に入れずに値そのものを 1 つのタスクへ移します。内部可変性とともに `Sync` が入ると（F10）、この規則は `Sync` に置き換わります。
 - `Rc` と `Arc` には排他参照 `ref mut` を入れられません（`E1005`）。`Rc<ref string>` のように共有参照を入れた値は、参照先より長く生きられません（`E1013`）。
 - `Rc` と `Arc` は公開 ABI（`export def`・`extern def`）に使えず（`E1008`）、const にもできません（`E1026`）。
 
@@ -161,6 +162,33 @@ even=2450 odd=2500 owners=1
 共有した値は変更できないので、値ができる前にその値を指す `Rc` は作れません。`Rc` と `Arc` だけでは循環は作れず、参照カウントの循環による解放漏れは起きません。Tsuzuri にサイクルコレクターはありません。循環するグラフは [Arena](./arena.md) とハンドルで表します。
 
 型の定義は `Rc` を通って自分自身を含められます。`record Node { value: i64, children: Vec<Rc<Node>> }` のように、空のコレクションや共用体の case で有限の値を作れれば受理されます。`record Loop { next: Rc<Loop> }` は有限の値がないので `E1010` です。
+
+親を弱参照で指す木も書けます。値は共有の後に変わらないので、親を先に作り、子が `Rc.downgrade` で親を指します。親を解放した後の `Rc.upgrade` は `None` です。
+
+```tsuzuri run=parent%3D7%20after%3D-1
+record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }
+
+def parent_value :: ref Rc<TreeNode> -> i64
+fn parent_value node =
+    match (Rc.get node).parent with
+    | Maybe.Some weak ->
+        match Rc.upgrade weak with
+        | Maybe.Some parent -> (Rc.get (ref parent)).value
+        | Maybe.None -> -1
+    | Maybe.None -> 0
+
+let root = Rc.new (TreeNode { value: 7, parent: Maybe.None, children: Vec.empty() })
+let child = Rc.new (TreeNode { value: 2, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
+let before = parent_value (ref child)
+Owned.drop root
+$"parent={before} after={parent_value (ref child)}"
+```
+
+実行結果:
+
+```text
+parent=7 after=-1
+```
 
 自分自身を含む型の値を持つブロックの解放は、[Union](./union.md) の再帰型と同じ待ちリストで反復的に行います。100 万要素の連結リストも native のスタックを使い尽くさずに解放でき、`Arc` の鎖も同じです。
 

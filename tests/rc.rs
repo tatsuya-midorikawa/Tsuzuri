@@ -257,3 +257,102 @@ fn tools_keep_shared_types_and_new_members() {
     let entry = index.at(0, copy).unwrap();
     assert!(entry.detail.contains("Rc<string>"), "{}", entry.detail);
 }
+
+/// Every quoted named type that `ir` uses has a definition, which clang needs to size it.
+fn defines_named_types(ir: &str) {
+    for (start, _) in ir.match_indices("%\"tz.") {
+        let quoted = &ir[start + 1..];
+        let name = &quoted[..quoted[1..].find('"').unwrap() + 2];
+        assert!(
+            ir.contains(&format!("{name} = type ")),
+            "{name} has no definition"
+        );
+    }
+}
+
+#[test]
+fn named_types_reached_only_through_shared_pointers_are_defined() {
+    for source in [
+        "let items: Vec<Rc<Maybe<string>>> = Vec.empty()\nVec.length (ref items)",
+        "record Pair<'a> { left: 'a, right: 'a }\nlet pair: Maybe<Rc<Pair<i64>>> = Maybe.Some (Rc.new (Pair { left: 3, right: 5 }))\nmatch pair with\n| Maybe.Some shared -> Rc.strong_count (ref shared)\n| Maybe.None -> 0",
+        "let nested: Maybe<Arc<(i64 * Maybe<Arc<i64>>)>> = Maybe.Some (Arc.new (7, Maybe.Some (Arc.new 11)))\nmatch nested with\n| Maybe.Some outer -> Arc.strong_count (ref outer)\n| Maybe.None -> 0",
+        "let weak: Vec<Arc.Weak<Maybe<string>>> = Vec.empty()\nVec.length (ref weak)",
+    ] {
+        for ir in emits(source) {
+            defines_named_types(&ir);
+        }
+    }
+}
+
+#[test]
+fn weak_back_links_are_not_polymorphic_recursion() {
+    for source in [
+        "record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }\nlet found: Maybe<Rc<TreeNode>> = Maybe.None\nmatch found with\n| Maybe.Some _node -> 1\n| Maybe.None -> 0",
+        "record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }\nlet root = Rc.new (TreeNode { value: 7, parent: Maybe.None, children: Vec.empty() })\nlet child = TreeNode { value: 2, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() }\nmatch child.parent with\n| Maybe.Some weak -> match Rc.upgrade weak with\n    | Maybe.Some parent -> (Rc.get (ref parent)).value\n    | Maybe.None -> 0\n| Maybe.None -> 0",
+        "record Node { link: Maybe<Rc<Node>> }\nlet first = Rc.new (Node { link: Maybe.None })\nlet weak = Maybe.Some (Rc.downgrade (ref first))\nmatch weak with\n| Maybe.Some _weak -> 1\n| Maybe.None -> 0",
+        "record Node { link: Maybe<Arc.Weak<Node>>, next: Maybe<Arc<Node>> }\nlet first = Arc.new (Node { link: Maybe.None, next: Maybe.None })\nlet second = Arc.new (Node { link: Maybe.Some (Arc.downgrade (ref first)), next: Maybe.Some (Arc.share (ref first)) })\nArc.strong_count (ref first) + Arc.strong_count (ref second)",
+        "record Node<'t> { value: 't, link: Maybe<Rc.Weak<Node<'t>>>, next: Maybe<Rc<Node<'t>>> }\nlet first = Rc.new (Node { value: 1, link: Maybe.None, next: Maybe.None })\nlet second = Rc.new (Node { value: 2, link: Maybe.Some (Rc.downgrade (ref first)), next: Maybe.Some (Rc.share (ref first)) })\nRc.strong_count (ref first) + (Rc.get (ref second)).value",
+    ] {
+        emits(source);
+    }
+}
+
+const HANDLE: &str = "extern type Counter\n\
+extern \"c10_counter_new\" def counter_new :: i64 -> Counter\n\
+extern \"c10_counter_peek\" def counter_peek :: ref Counter -> i64 -> i64\n";
+
+const SHAPE: &str = "class Shape<'a> {\n    def area :: ref 'a -> i64\n}\nrecord Square { side: i64 }\ninstance Shape<Square> {\n    fn area s = s.side * s.side\n}\n";
+
+#[test]
+fn arc_does_not_share_host_handles_between_tasks() {
+    let sharing = "shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc";
+    for body in [
+        "let shared = Arc.new (counter_new 1)\nTask.run (task { return counter_peek (Arc.get (ref shared)) 0 })",
+        "let shared = Arc.new (counter_new 1)\nlet weak = Arc.downgrade (ref shared)\nTask.run (task { return match Arc.upgrade (ref weak) with | Maybe.Some strong -> Arc.strong_count (ref strong) | Maybe.None -> 0 })",
+        "let shared = Arc.new (Arc.new (counter_new 1))\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "record Holder { counter: Arc<Counter> }\nlet holder = Holder { counter: Arc.new (counter_new 1) }\nTask.run (task { return Arc.strong_count (ref holder.counter) })",
+        "union Counters = Done | More of (Arc<Counter> * Counters)\nlet counters = More (Arc.new (counter_new 1), Done)\nTask.run (task { return match counters with | More (_, _) -> 1 | Done -> 0 })",
+        "def peek :: Arc<Counter> -> Task<i64>\nfn peek shared = task { return counter_peek (Arc.get (ref shared)) 0 }\nlet shared = Arc.new (counter_new 1)\nTask.run (peek (Arc.share (ref shared))) + counter_peek (Arc.get (ref shared)) 0",
+        "let shared = Arc.new (counter_new 1)\nlet keep = Owned.function (\\() -> counter_peek (Arc.get (ref shared)) 0)\nOwned.call (ref keep) ()",
+        "let counter = counter_new 1\nlet shared = Arc.new (Owned.function (\\() -> counter_peek (ref counter) 0))\nTask.run (task { return Owned.call (Arc.get (ref shared)) () })",
+    ] {
+        let source = format!("{HANDLE}{body}");
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(sharing), "{message}");
+    }
+    let dynamic = format!(
+        "{SHAPE}let shape: dyn (Shape, Send) = Dyn.of (Square {{ side: 3 }})\nlet shared = Arc.new shape\nTask.run (task {{ return Shape.area (Arc.get (ref shared)) }})"
+    );
+    let message = rejects(&dynamic, "E1013");
+    assert!(message.contains(sharing), "{message}");
+    for source in [
+        format!(
+            "{HANDLE}let shared = Arc.new (counter_new 1)\nlet read = \\() -> counter_peek (Arc.get (ref shared)) 0\nread ()"
+        ),
+        format!(
+            "{SHAPE}let shape: dyn (Shape, Send) = Dyn.of (Square {{ side: 3 }})\nlet shared = Arc.new shape\nlet read = \\() -> Shape.area (Arc.get (ref shared))\nread ()"
+        ),
+    ] {
+        let message = rejects(&source, "E1005");
+        assert!(
+            message.contains("function values may move to other tasks")
+                && message.contains(sharing),
+            "{message}"
+        );
+    }
+    // One task may share a handle with itself, and a handle may move to one other task.
+    for source in [
+        format!(
+            "{HANDLE}let shared = Arc.new (counter_new 1)\nlet other = Arc.share (ref shared)\ncounter_peek (Arc.get (ref other)) 0 + Arc.strong_count (ref shared)"
+        ),
+        format!(
+            "{HANDLE}let counter = counter_new 1\nTask.run (task {{ return counter_peek (ref counter) 0 }})"
+        ),
+        format!(
+            "{SHAPE}let shape: dyn (Shape, Copy) = Dyn.of (Square {{ side: 3 }})\nlet shared = Arc.new shape\nlet read = \\() -> Shape.area (Arc.get (ref shared))\nread ()"
+        ),
+        "def apply :: Arc<i64 -> i64> -> i64\nfn apply shared =\n    let function = deref (Arc.get (ref shared))\n    function 41\nlet shared = Arc.new (\\value -> value + 1)\nTask.run (task { return apply (Arc.share (ref shared)) })".to_owned(),
+    ] {
+        emits(&source);
+    }
+}

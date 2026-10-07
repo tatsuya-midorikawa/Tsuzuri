@@ -465,6 +465,9 @@ const suites = {
     cases: [
       ["arena_cycle", [], 143n], ["arena_order", [], 42351n], ["arena_foreign", [], 110n],
       ["arena_capture", [], 84n], ["arena_task", [], 42n], ["arena_borrowed_values", [], 8n],
+      // Swap-removing 20 and 10 leaves 40, 50, 30 in the first copy, which then takes 7, 8, 9; the
+      // second copy's handle is not found there (flags 100 + 10 + 1).
+      ["arena_snapshot", [], [40n, 50n, 30n, 7n, 8n, 9n].reduce((digits, value) => digits * 100n + value, 0n) * 10000n + 111n],
       ...[1n, 2n, 3n, 1000n].map((n) => ["arena_ring", [n], (n - 1n) * n * (n + 1n) / 3n]),
       ...[0n, 1n, 50000n].map((n) => ["arena_chain", [n], n * (n - 1n) / 2n]),
       ...[0n, 1n, 1000n].map((count) => ["arena_parallel", [count], 2n * count * (4n * count - 1n)]),
@@ -503,6 +506,9 @@ const suites = {
       ["rc_shared_tails", [], (100n + 55n) + (200n + 55n) + 3n * 1000n],
       ["rc_dag", [], (1n + (2n + 4n) + (3n + 4n)) * 10n + 3n],
       ["rc_ptr_eq", [], 10n], ["rc_borrowed", [], BigInt("borrowed".length)], ["arc_capture", [], 2n * 10n + 2n],
+      ["shared_named_types", [], (2n * 10n + BigInt("four".length)) * 1000000n + (1n * 100n + 3n * 5n) * 1000n + 7n * 11n],
+      // Both children reach the root (7) until it drops; then upgrading gives None (-1 + 1).
+      ["rc_weak_parent", [], (7n + 7n) * 1000n + 2n * 100n + (2n + 3n) * 10n + 0n],
       ...[0n, 1n, 2n, 100000n].map((n) => ["rc_chain", [n], n * (n - 1n) / 2n]),
       ...[0n, 1n, 100000n].map((n) => ["rc_long_drop", [n], n]),
       ...[0n, 1n, 100000n].map((n) => ["arc_chain", [n], n * (n - 1n) / 2n]),

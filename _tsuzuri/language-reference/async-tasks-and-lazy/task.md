@@ -189,7 +189,7 @@ Task.run work
 6
 ```
 
-`Rc` は計数が atomic でないので、所有値でもタスクへ持ち込めません（`E1013`、`tasks require Send values; ... holds an Rc or Rc.Weak`）。同じ値を複数のタスクで読むときは `Arc` を使い、タスクごとに `Arc.share` した所有者を渡します（[Rc と Arc](../built-in-types-and-modules/rc.md#arc-とタスク)）。
+`Rc` は計数が atomic でないので、所有値でもタスクへ持ち込めません（`E1013`、`tasks require Send values; ... holds an Rc or Rc.Weak`）。同じ値を複数のタスクで読むときは `Arc` を使い、タスクごとに `Arc.share` した所有者を渡します（[Rc と Arc](../built-in-types-and-modules/rc.md#arc-とタスク)）。ただし、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持つ値の `Arc` は、複数のタスクが同じホストのハンドルを同時に使えてしまうので持ち込めません（`E1013`）。ハンドルは `Arc` に入れずに、値そのものを 1 つのタスクへ移します。
 
 外の `let mut` への代入は、タスクの中では可変束縛として見えません（`E1014`）。タスクの中で `let mut` したローカルは、そのタスクの中だけで変えられます。Copy の配列や関数ポインタを捕捉するときは、独立したコピーが作られます。大きな Copy 値は、その分のコピーがかかります。
 

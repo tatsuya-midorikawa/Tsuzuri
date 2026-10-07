@@ -699,7 +699,7 @@ impl Type {
                     ty,
                     Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
                 ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
-                    && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || value.thread_confined(types))
+                    && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                     && !ty.has_user_drop(types)
                     && !ty.is_owned_function(types)
             });
@@ -707,8 +707,8 @@ impl Type {
         match self {
             Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
             // Function values are Send whatever they capture, so they hold only values that may
-            // move to another task: an `Arc` whose value is shared safely, never an `Rc` (C10).
-            Self::Shared(value, kind) => kind.atomic() && !value.thread_confined(types),
+            // move to another task: an `Arc` whose value tasks may share, never an `Rc` (C10).
+            Self::Shared(value, kind) => kind.atomic() && value.shareable(types),
             // Copying a function value clones its captures, which needs the vtable's clone slot.
             Self::Dyn(dyn_type) => dyn_type.copy,
             Self::Array(element)
@@ -738,15 +738,18 @@ impl Type {
             return types.stored_all(self, |ty| {
                 !matches!(ty, Type::Reference(..))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
-                    && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
+                    && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.shareable(types))
             });
         }
         match self {
             Self::Reference(..) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
-            // Rc counts are not atomic. Without interior mutability, an `Arc` of a Send value
-            // is only read by the tasks that share it, so it is Send (C10; F10 adds `Sync`).
-            Self::Shared(value, kind) => kind.atomic() && value.can_send(types),
+            // Rc counts are not atomic. Without interior mutability, the tasks that share an
+            // `Arc` only read its value, so it is Send when they may share it (C10; F10 adds
+            // `Sync`).
+            Self::Shared(value, kind) => {
+                kind.atomic() && value.can_send(types) && value.shareable(types)
+            }
             Self::Array(element)
             | Self::List(element)
             | Self::Vec(element)
@@ -773,13 +776,25 @@ impl Type {
         )
     }
 
-    /// Whether a value of this type may own a value that must stay on its task: an `Rc` or
-    /// `Rc.Weak`, or a dyn value that is neither Send nor Copy (C10). Borrows are not counted;
-    /// their loans keep them on their task.
-    pub(crate) fn thread_confined(&self, types: &TypeContext<'_>) -> bool {
-        !types.stored_all(self, |ty| {
+    /// Whether several tasks may use a value of this type at once through an `Arc` (C10). Every
+    /// owner of the `Arc` borrows the value, so it must not own an `Rc` or `Rc.Weak`, whose
+    /// counts are not atomic, or anything that may call the host: an extern handle, which host
+    /// libraries rarely make thread-safe, a dyn value that is not Copy, which may hide one, or
+    /// an `Owned.Function`, which may capture one. F10 replaces this rule with `Sync`.
+    pub(crate) fn shareable(&self, types: &TypeContext<'_>) -> bool {
+        types.stored_all(self, |ty| {
             !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
-                && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send && !dyn_type.copy)
+                && !matches!(ty, Type::Handle(_))
+                && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                && !ty.is_owned_function(types)
+        })
+    }
+
+    /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tasks may not share
+    /// (C10).
+    pub(crate) fn holds_unshareable_arc(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| {
+            !matches!(ty, Type::Shared(value, kind) if kind.atomic() && !value.shareable(types))
         })
     }
 }
@@ -9342,6 +9357,7 @@ impl<'a> Checker<'a> {
                 | Type::List(ty)
                 | Type::Vec(ty)
                 | Type::Task(ty)
+                | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => closed(checker, ty, open),
                 Type::Function(parameters, result) => {
                     parameters.iter().all(|ty| closed(checker, ty, open))

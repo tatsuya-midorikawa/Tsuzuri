@@ -188,6 +188,50 @@ fn arena_capture =
         let read = \() -> deref (Arena.at (ref arena) handle)
         read () + read ()
 
+def without :: Arena<i64> -> Arena.Handle<i64> -> Arena<i64>
+fn without arena handle =
+    match Arena.remove arena handle with
+    | (next, _value) -> next
+
+// Copying a function value copies the arena it captured, id included. A handle made in one copy
+// never matches a free slot of the other, so the other copy stays consistent.
+export def arena_snapshot :: i64
+fn arena_snapshot =
+    let mut base: Arena<i64> = Arena.empty()
+    let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
+    let mut index = 0
+    while index < 5 do
+        match Arena.insert base ((index + 1) * 10) with
+        | (next, handle) ->
+            base = next
+            handles = Vec.push handles handle
+        index = index + 1
+    let frozen = base
+    let snapshot = \() -> frozen
+    let first = without (without (snapshot ()) handles[1]) handles[0]
+    match Arena.insert (without (snapshot ()) handles[0]) 99 with
+    | (second, key) ->
+        let mut flags = 0
+        if Arena.contains (ref first) key then flags = flags + 1000
+        match Arena.get (ref first) key with
+        | Maybe.Some _value -> flags = flags + 200
+        | Maybe.None -> flags = flags + 100
+        match Arena.remove first key with
+        | (kept, removed) ->
+            match removed with
+            | Maybe.Some _value -> flags = flags + 20
+            | Maybe.None -> flags = flags + 10
+            if !(Arena.contains (ref second) handles[0]) && deref (Arena.at (ref second) key) == 99 then flags = flags + 1
+            let mut refilled = kept
+            let mut value = 7
+            while value < 10 do
+                match Arena.insert refilled value with
+                | (next, _handle) -> refilled = next
+                value = value + 1
+            let mut digits = 0
+            for (_handle, item) in Arena.iter (ref refilled) do digits = digits * 100 + deref item
+            digits * 10000 + flags
+
 export def arena_task :: i64
 fn arena_task =
     let empty: Arena<i64> = Arena.empty()

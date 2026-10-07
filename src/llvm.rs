@@ -2206,11 +2206,13 @@ fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
     fn visit(ty: &Type, pending: &mut Vec<Type>) {
         match ty {
             Type::Record(..) | Type::Union(..) => pending.push(ty.clone()),
+            // A shared block stores its value, whose named types need definitions (C10).
             Type::Array(ty)
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::Task(ty)
             | Type::FixedArray(ty, _)
+            | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, pending),
             Type::Tuple(types) => types.iter().for_each(|ty| visit(ty, pending)),
             Type::Function(parameters, result) => {
