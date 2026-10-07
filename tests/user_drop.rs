@@ -83,7 +83,7 @@ fn keeps_existing_copy_and_deriving_errors() {
     rejects(
         "record Resource { id: i64 } deriving (Drop)",
         "E1025",
-        "only Eq, Ord, Display, Hash and Default can be derived",
+        "only Eq, Ord, Display, Hash, Default, Encode and Decode can be derived",
     );
 }
 

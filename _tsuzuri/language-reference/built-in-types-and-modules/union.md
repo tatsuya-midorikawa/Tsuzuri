@@ -249,7 +249,7 @@ match shape with
 
 ## deriving と private union
 
-レコードと同じ 5 つのクラスを導出できます。共用体の `Eq` はタグを比べてからペイロードを比べます。`Ord` はケースの宣言順です。`Default` は最初のケースの既定値で、そのケースが再帰し続けて有限な値にならない定義は拒否されます。
+レコードと同じ 7 つのクラスを導出できます。`Encode` / `Decode` はペイロードのないケースを `"Case"`、あるケースを `{"Case": payload}` にし（[Json](./json.md)）、ケースの前の `@json "名前"` でその名前を変えられます。共用体の `Eq` はタグを比べてからペイロードを比べます。`Ord` はケースの宣言順です。`Default` は最初のケースの既定値で、そのケースが再帰し続けて有限な値にならない定義は拒否されます。
 
 ```tsuzuri run=Completed%2042
 union Status = Waiting | Completed of i64 deriving (Eq, Display, Default)

@@ -9,7 +9,7 @@
 - クラス宣言は `.tt`、インスタンスは `.tz` または `.tc` に置きます。
 - メソッドの型はクラス側に書き、インスタンス側では書き直しません。
 - 同じクラスと型のインスタンスは、プロジェクトに 1 つだけです。
-- `deriving` は `Eq`、`Ord`、`Display`、`Hash`、`Default` を構造から作ります。
+- `deriving` は `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` を構造から作ります。
 - `dyn C` は、異なる型の値を一つのコレクションへ入れ、vtable でメソッドを呼びます。
 
 ## クラスとインスタンス
@@ -117,7 +117,7 @@ flowchart TD
 
 ## 組み込み型クラス
 
-次の 29 個は言語に組み込まれています。印だけのクラスはメソッドを持たず、利用者のインスタンスで上書きできません（`E1016`）。
+次の 31 個は言語に組み込まれています。印だけのクラスはメソッドを持たず、利用者のインスタンスで上書きできません（`E1016`）。
 
 | クラス | 役割 |
 | --- | --- |
@@ -135,6 +135,7 @@ flowchart TD
 | `Drop` | `drop :: ref mut 'a -> unit`。スコープの終わりに自動で一度だけ呼ばれる |
 | `Format` | `format :: ref 'a -> ref string -> string`。補間の穴向け |
 | `Err` | `msg :: ref 'a -> string`。`try` のハンドラが返すエラーの説明 |
+| `Encode` `Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`、`decode :: ref Json.Value -> Result<'a, Json.Error>`。JSON との変換。インスタンスは [Json](../built-in-types-and-modules/json.md) と利用者のソースだけ |
 | `SimdVector` `SimdNumeric` `SimdMask` | SIMD 値の印。詳細は [Simd](../built-in-types-and-modules/simd.md) |
 
 `==`、`+`、`**` などの演算子は、対応するクラスのメソッドです。配列、リスト、タプルの `Eq`、`Ord`、`Hash`、`Display` は要素の制約から構造的に作られます。`Default` はタプルにも構造的にあります。レコードと共用体は、手書きのインスタンスか `deriving` が必要です。無い比較は `E1005`（no instance）です。
@@ -145,7 +146,7 @@ flowchart TD
 
 ## deriving
 
-型宣言の末尾に `deriving (...)` を付けると、同じモジュールへ条件付きインスタンスが生成されます。指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default` です。
+型宣言の末尾に `deriving (...)` を付けると、同じモジュールへ条件付きインスタンスが生成されます。指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` です。
 
 ```tsuzuri run=42
 record Point { horizontal: i64, vertical: i64 } deriving (Eq, Ord, Display, Hash, Default)
@@ -175,6 +176,8 @@ else
 | `Default` | レコードは全フィールドの既定値。共用体は最初のケース。空コレクションに要素の `Default` は不要 |
 | `Display` | `Point { horizontal: 20, vertical: 22 }`、`Completed 42`、配列は `[a, b]`、リストは `[|a, b|]`、タプルは `(a, b)` |
 | `Hash` | 64-bit FNV-1a。同じ値は同じハッシュ。逆は保証しない |
+| `Encode` | レコードは宣言順の object、共用体は `"Case"` か `{"Case": payload}`。最初の Error で止まる |
+| `Decode` | 同じ形だけを受理する。余分なキーは無視し、無いキーは `null` として decode する。宣言順で最初の Error を返す |
 
 ```tsuzuri run=42
 union Status = Waiting | Completed of i64 deriving (Eq, Display, Default)
@@ -188,6 +191,22 @@ if initial == Waiting && shown == "Completed 42" then 42 else 0
 
 ```text
 42
+```
+
+`Encode` / `Decode` の導出は、フィールド数や case 数によらず深さが一定の平らなコードになるので、128 フィールドのレコードや 128 case の共用体も導出できます。JSON の形と規則は [Json](../built-in-types-and-modules/json.md) にあります。
+
+```tsuzuri run=%7B%22label%22%3A%22a%22%2C%22status%22%3A%7B%22Finished%22%3A42%7D%7D
+record Job { label: string, status: Progress } deriving (Encode, Decode)
+union Progress = Queued | Finished of i64 deriving (Encode, Decode)
+
+let job = Job { label: "a", status: Finished 42 }
+String.from_utf8 (ref (Result.get (Json.serialize (ref job))))
+```
+
+実行結果:
+
+```text
+{"label":"a","status":{"Finished":42}}
 ```
 
 構造体や共用体の内部に含まれる文字列や文字は、引用符付きのリテラル風にエスケープされて出力されます。UTF-8 文字列型には `u8` プレフィックスが付きます。なお、単独の文字列値を直接 `Display.display` で出力した場合は、エスケープされない生の文字列が得られます。また、`Display` の出力形式は構造の可視化を目的としており、`Parse` による構文解析と完全な対称性（逆変換）を持つとは限らない点に留意してください。
@@ -294,7 +313,7 @@ dyn 値は `{ data, vtable }` の 2 ポインタです。`export` と `extern` �
 - デフォルトメソッド、スーパークラス、条件付きインスタンスを使えます。
 - 重なるインスタンスは `E1016` で、具体的な方を優先しません。
 - 組み込みクラスは演算子、比較、表示、所有権の印を含みます。
-- `deriving` は構造的な `Eq`、`Ord`、`Display`、`Hash`、`Default` を作ります。
+- `deriving` は構造的な `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` を作ります。
 - 実行時に型を選ぶときは `dyn C` と `Dyn.of` を明示します。
 
 ## 関連項目

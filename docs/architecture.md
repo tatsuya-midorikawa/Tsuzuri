@@ -54,6 +54,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` 組み込み関数（`src/llvm_io.rs` の `os_builtin`）、POSIX ランタイム、`--wasm-host wasi` 向けの WASI preview1 ランタイム |
 | `std/HashMap.tz` / `std/HashSet.tz` | ハッシュコンテナ。コンパイラ本体に専用の型・builtin・ランタイムを追加しない、std ソースのみによる実装 |
 | `std/Regex.tz` / `std/Unicode.tz` / `src/runtime/unicode.ll` / `scripts/generate-unicode.mjs` | 線形時間の正規表現（std ソースの Pike VM）と Unicode の表。表は UCD 17.0.0 から生成したランタイム定数で、std 専用の組み込み `Unicode.__table_length`／`__table_entry` が読む |
+| `std/Json.tz` | JSON（RFC 8259）の解析・出力、`Json.Value`、組み込みクラス `Encode`／`Decode` の std インスタンスと導出用の補助関数。コンパイラは 2 クラスの登録（`Classes::collect`、シグネチャは std の `Json.Value`／`Json.Error`／`Result` から引き、std に無ければ使用時に `E1004`）と導出（`src/derive.rs`）だけを持ち、専用の `Type`・builtin・ランタイムはない |
+| `std/Cbor.tz` | `Json.Value` の CBOR（RFC 8949）。決定的な符号化と、JSON のデータモデルに限った厳密な復号。浮動小数点のビット列は 2 のべきの厳密な拡大・縮小で求め、専用の builtin を使わない |
 | `std/Format.tz` / `src/runtime/format.ll` | 文字列補間の書式指定。`Format.parse`／`Format.pad` と、パディング処理のランタイム補助（文字列結合は `src/llvm_display.rs`） |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit・256-bit の vector/mask 型、lane 型族、境界検査、LLVM vector への lowering、256-bit の load／store の `align 16` |
 | `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3） |
@@ -575,6 +577,8 @@ LLVM では、配列の添字アクセス、リスト走査用の 2 本の phi �
 `Hash` のプリミティブ演算では、ビット幅に応じた整数の load、shift、xor、および wrapping multiply を行い、decimal 型では `numeric.c` の decode/encode 処理を共有します。
 合成されたコレクションヘルパー内では `StructuralHash` および `StructuralDisplay` を使用し、子要素の具体的なメソッドを通常の到達可能性解析に含めます。
 値の文字列表現では内部の `DisplayQuoted` 組み込み関数を具象型へと解決し、`runtime/display.ll` が UTF-16 の引用符処理と文字列片の一括結合を担当します。
+`Encode`／`Decode` の導出（D08）は、レコードでは `$object{i}`（encode）と `$field{i}`／`$failed{i}`／`$error{i}`（decode）の束縛の連鎖、union では 1 段の `match` を合成します。std の補助関数（`Json.encode_field`、`Json.decode_field`、`Json.case_index` など）と `Result.is_error` などは `QualifiedFunction` のモジュールキー（`Json.begin_object`）で、`Result.Ok`・`Maybe.None` などの case はキーパス（`::Result.Result`）で参照するので、利用者の名前空間や同名の宣言に解決されません。深さはフィールド数・case 数に比例しないため、128 フィールドや 128 case も深さ 128／4096 節点の上限に収まります。フィールドと case の `@json "名前"`（`Parameter::json`・`UnionCaseDecl::json` の `JsonName`）はキーとタグの文字列だけを変え、`derive::json_names` が `Encode`／`Decode` の導出の無い型での使用と名前の重複を `E1025` にします。formatter は属性のトークンをそのまま並べ（span は fingerprint から除く）、docgen は属性ごと表示します。成分の instance の欠落は std の補助関数を経由して単相化の制約伝播で見つかるため、`specialize` の正規化も `derived_error` で `E1025` に読み替えます。
+インスタンスの重複判定（`Classes::instances`）は、ヘッドをクラスと最外の型構築子（スカラーの種類と幅、record／union の id、配列・リスト・`Vec`・`Task`、タプルの長さ。型変数や高階のヘッドは `None`）で索引し、同じ構築子か `None` のヘッドとだけ単一化します。1024 組の上限は単一化した組だけを数えるので、std の `Json` が多数のインスタンスを持っても、別々の record に導出したインスタンスが何百あっても予算を消費しません。
 Hash の canonical stream 仕様および文字型ごとの引用規則の詳細は言語仕様を参照してください。なお、`numeric.ll` は生成スクリプトから自動生成されるため、手動で直接編集してはなりません。
 
 **文字列補間と書式指定:** `$"a{x}b"` および `u8$"..."` 形式のリテラルは、字句解析器によって `InterpolationStart`、`InterpolationMiddle`、`InterpolationEnd` の各トークンに分割され、構文解析器によって `ExprKind::Interpolated`（固定文字列片と `InterpolationHole { value, spec }` の列）へと変換されます。字句解析器は開かれた埋め込み穴を `holes` スタック（`OpenHole { utf8, depth, start }`）で管理し、括弧のネスト深度が 0 の位置にある `}` または `:` によって穴を閉じます。埋め込み穴は同一行内に収める必要があり、穴の内部にコメントを記述することはできません。埋め込み穴を含まない文字列リテラルは通常の文字列トークンとして維持されます。リソース制限として、1 つのリテラルあたり最大 1024 個の穴、幅と精度は最大 4096、ネスト深度はパーサーの標準上限が適用されます。
@@ -1087,6 +1091,7 @@ node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
+node tests/json.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
@@ -1111,6 +1116,7 @@ Node.js による E2E テストスイートは、本物の Clang／LLD ツール
 `tests/primitives.mjs` は、decimal 演算の結果を Python の IEEE 754 準拠 decimal コンテキストと厳密に照合し、ネイティブ環境でのメモリ確保と解放を追跡してメモリリークや二重解放を検出します。
 `tests/numeric_casts.mjs` は、全ビット幅の整数・符号と f32／f64 間の高速型変換を、`BigInt` による直接丸め、飽和演算の参照実装、および f128 を経由する正確なソフトウェア実装と照合します。NaN、無限大、符号付きゼロ、非正規化数、丸めの中点（tie）および二重丸めが発生しやすい境界値、ならびに飽和の限界値を、ネイティブおよび WASM の `-O0`／`-O3`、ならびに native CPU 指定の各環境で検証します。
 `tests/display_parse.mjs` は、すべての f16 ビット列、f32／f64 各 10,000 パターン、f128 の 2,000 パターンに及ぶ決定論的なランダム列と境界値、ならびに decimal や全整数幅の値を、Python の `Fraction` を用いた区間内整数仮数探索および `Decimal` の独立リファレンスと照合します。最短桁表示、非 NaN におけるビット往復の完全性、NaN の分類、decimal の数値および符号付きゼロ、解析失敗時のエラー処理、リソース上限の挙動を、ネイティブおよび WASM の `-O0`／`-O3` で検査します。
+`tests/json.mjs` は、RFC 8259 の例、すべてのエスケープ、孤立サロゲート、生の制御文字、先頭ゼロや末尾カンマなどの拒否例、128／129 段の入れ子、32 メンバーを超える object の重複キー、seed 固定の LCG で JavaScript が作る 200 個の値（詰めた形と字下げした形）からなる約 300 個の入力を `Cases.tz` に生成し、`Json.parse` の受理・拒否（種類とバイト位置）と `Json.to_utf8string` の FNV-1a を、`JSON.parse`／`JSON.stringify` と手で求めた期待値（字句を保つ数値、整数形のキーの順）に照合します。ネイティブ（確保の追跡で `live == 0`）と WASM（import なし）の `-O0`／`-O3` で実行します。
 `tests/strings.rs` および `tests/strings.mjs` は、UTF-16 の型表現、サロゲートペア、文字エンコーディング変換、および従来の UTF-8 動作を検証します。Node.js の標準 `String` をリファレンスとし、コード単位数、添字アクセス、文字列比較をネイティブおよび WASM の各最適化レベルで照合します。
 同一のランナーが `tests/strings_runtime.c` の独立した整数演算リファレンスを用いてすべての Unicode スカラー値を小分けに往復変換し、不正な UTF-8 シーケンスや孤立サロゲートの変換が確実にトラップされることを確認します。
 また、巨大メモリを確保しないシミュレーション用アロケータにより、$2^{53} - 1$ の文字長上限およびコード単位あたり 2 バイトのメモリ消費量を照合します。WASM においては累積確保量がメモリ上限を超えるような反復処理を実行し、解放された空き領域が正しく再利用されることを検証します。

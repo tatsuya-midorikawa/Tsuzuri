@@ -5080,6 +5080,7 @@ fn check_modules_collect(
                             },
                             mutable: false,
                             ty: ty.clone(),
+                            json: None,
                         })
                         .collect(),
                     result: external.result.clone(),

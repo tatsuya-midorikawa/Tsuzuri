@@ -6,6 +6,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
+    ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
@@ -17,6 +18,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/HashMap.tz", include_str!("../std/HashMap.tz")),
     ("std/HashSet.tz", include_str!("../std/HashSet.tz")),
     ("std/IO.tc", include_str!("../std/IO.tc")),
+    ("std/Json.tz", include_str!("../std/Json.tz")),
     ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
@@ -84,6 +86,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Arc",
     "Regex",
     "Unicode",
+    "Json",
+    "Cbor",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -115,6 +119,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Arena.Handle"
             | "Arena.Slot"
             | "Regex.Regex"
+            | "Json.Reader"
+            | "Json.Writer"
     )
 }
 
@@ -153,7 +159,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 41);
+        assert_eq!(RESERVED_MODULES.len(), 43);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

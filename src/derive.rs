@@ -9,6 +9,14 @@ pub(super) fn instances(
     let mut output = Vec::new();
     for input in modules {
         for record in &input.program.records {
+            json_names(
+                record
+                    .fields
+                    .iter()
+                    .map(|field| (&field.name, field.json.as_ref())),
+                &record.derives,
+                "field",
+            )?;
             let ty = declared_type(input.name, &record.name, &record.parameters, names)?;
             let Type::Record(id, arguments) = &ty else {
                 unreachable!()
@@ -33,6 +41,14 @@ pub(super) fn instances(
             }
         }
         for union in &input.program.unions {
+            json_names(
+                union
+                    .cases
+                    .iter()
+                    .map(|case| (&case.name, case.json.as_ref())),
+                &union.derives,
+                "case",
+            )?;
             let ty = declared_type(input.name, &union.name, &union.parameters, names)?;
             let Type::Union(id, arguments) = &ty else {
                 unreachable!()
@@ -71,6 +87,53 @@ pub(super) fn instances(
         ));
     }
     Ok(output)
+}
+
+/// Checks the `@json` names of record fields or union cases: they serve only derived `Encode` and
+/// `Decode`, and with them every field or case needs a distinct JSON name (D08).
+fn json_names<'a>(
+    names: impl Iterator<Item = (&'a Ident, Option<&'a JsonName>)>,
+    derives: &[(DeriveClass, Span)],
+    place: &str,
+) -> Result<(), Diagnostic> {
+    let json = derives
+        .iter()
+        .any(|(class, _)| matches!(class, DeriveClass::Encode | DeriveClass::Decode));
+    let mut seen = BTreeSet::new();
+    for (name, attribute) in names {
+        if let Some(attribute) = attribute
+            && !json
+        {
+            return Err(Diagnostic::new(
+                "E1025",
+                format!(
+                    "'@json' names a {place} only for deriving (Encode, Decode); derive one of them or remove the attribute"
+                ),
+                attribute.span,
+            ));
+        }
+        let units = json_units(name, attribute);
+        if json && !seen.insert(units.clone()) {
+            return Err(Diagnostic::new(
+                "E1025",
+                format!(
+                    "the JSON name \"{}\" of {place} '{}' repeats another; give each {place} a distinct '@json' name",
+                    String::from_utf16_lossy(&units),
+                    name.text
+                ),
+                attribute.map_or(name.span, |attribute| attribute.span),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The key or tag of a field or case in JSON: its `@json` name, or its declared name.
+fn json_units(name: &Ident, attribute: Option<&JsonName>) -> Vec<u16> {
+    attribute.map_or_else(
+        || name.text.encode_utf16().collect(),
+        |attribute| attribute.units.clone(),
+    )
 }
 
 fn declared_type(
@@ -125,7 +188,8 @@ impl Build<'_> {
     fn make(&self, kind: ExprKind) -> Result<Expr, Diagnostic> {
         use ExprKind::*;
         let depth = 1 + match &kind {
-            Name(_) | Integer(..) | Bool(_) | String(_) => 0,
+            Name(_) | QualifiedFunction(_) | Integer(..) | Bool(_) | String(_) => 0,
+            Array(values) => values.iter().map(|value| value.depth).max().unwrap_or(0),
             Field(value, _) | Borrow(value, ..) | Unary(_, value) => value.depth,
             Binary(_, left, right) => left.depth.max(right.depth),
             Call(callee, arguments) => arguments
@@ -193,6 +257,11 @@ impl Build<'_> {
             value.encode_utf16().collect(),
         )))
     }
+    fn json_name(&self, name: &Ident, attribute: Option<&JsonName>) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::String(StringLiteral::Utf16(json_units(
+            name, attribute,
+        ))))
+    }
     fn quoted(&self, value: Expr) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Call(
             Box::new(self.name("$builtin.display_quoted")?),
@@ -239,6 +308,54 @@ impl Build<'_> {
             self.ident(name),
         ))?;
         self.make(ExprKind::Borrow(Box::new(field), false, Notation::Keyword))
+    }
+    /// A call of the std function `function`, named by its module key so that user modules and
+    /// namespaces cannot shadow it (GUIDE D-07).
+    fn apply(&self, function: &str, arguments: Vec<Expr>) -> Result<Expr, Diagnostic> {
+        let callee = self.make(ExprKind::QualifiedFunction(self.ident(function)))?;
+        self.make(ExprKind::Call(Box::new(callee), arguments))
+    }
+    /// The case `case` of the union `owner` (`Module.Union`) as a value or constructor.
+    fn case(&self, owner: &str, case: &str) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::Field(
+            Box::new(self.name(&key_path(owner))?),
+            self.ident(case),
+        ))
+    }
+    fn construct(&self, owner: &str, case: &str, value: Expr) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::Call(
+            Box::new(self.case(owner, case)?),
+            vec![value],
+        ))
+    }
+    fn borrow(&self, name: &str) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::Borrow(
+            Box::new(self.name(name)?),
+            false,
+            Notation::Keyword,
+        ))
+    }
+    fn bind(&self, name: impl Into<String>, value: Expr) -> Binding {
+        Binding {
+            name: self.ident(name),
+            mutable: false,
+            using: false,
+            annotation: None,
+            value,
+        }
+    }
+    fn block(&self, bindings: Vec<Binding>, result: Expr) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::Block {
+            bindings,
+            result: Box::new(result),
+        })
+    }
+    fn integer_pattern(&self, value: usize) -> Result<Pattern, Diagnostic> {
+        Ok(Pattern {
+            kind: PatternKind::Literal(Box::new(self.integer(value)?)),
+            span: self.span,
+            depth: 2,
+        })
     }
     fn definition(&self, name: &str, parameters: &[&str], body: Expr) -> Definition {
         Definition {
@@ -306,6 +423,123 @@ impl Build<'_> {
         record: &RecordDecl,
         class: DeriveClass,
     ) -> Result<Vec<Definition>, Diagnostic> {
+        if class == DeriveClass::Encode {
+            // let $object{i+1} = Json.encode_field $object{i} "name" (ref $value.name)
+            let mut bindings = vec![self.bind(
+                "$object0",
+                self.apply(
+                    "Json.begin_object",
+                    vec![self.integer(record.fields.len())?],
+                )?,
+            )];
+            for (index, field) in record.fields.iter().enumerate() {
+                let value = self.apply(
+                    "Json.encode_field",
+                    vec![
+                        self.name(&format!("$object{index}"))?,
+                        self.json_name(&field.name, field.json.as_ref())?,
+                        self.field("$value", &field.name.text)?,
+                    ],
+                )?;
+                bindings.push(self.bind(format!("$object{}", index + 1), value));
+            }
+            let result = self.apply(
+                "Json.end_object",
+                vec![self.name(&format!("$object{}", record.fields.len()))?],
+            )?;
+            return Ok(vec![self.definition(
+                "encode",
+                &["$value"],
+                self.block(bindings, result)?,
+            )]);
+        }
+        if class == DeriveClass::Decode {
+            // Every field is decoded in declaration order; the first error in that order wins.
+            let count = record.fields.len();
+            let mut bindings = vec![self.bind(
+                "$shape",
+                self.apply("Json.expect_object", vec![self.name("$json")?])?,
+            )];
+            for (index, field) in record.fields.iter().enumerate() {
+                bindings.push(self.bind(
+                    format!("$field{index}"),
+                    self.apply(
+                        "Json.decode_field",
+                        vec![
+                            self.name("$json")?,
+                            self.json_name(&field.name, field.json.as_ref())?,
+                        ],
+                    )?,
+                ));
+            }
+            bindings.push(self.bind(
+                "$failed0",
+                self.apply("Result.is_error", vec![self.borrow("$shape")?])?,
+            ));
+            for index in 0..count {
+                let failed = self.binary(
+                    BinaryOp::Or,
+                    self.name(&format!("$failed{index}"))?,
+                    self.apply(
+                        "Result.is_error",
+                        vec![self.borrow(&format!("$field{index}"))?],
+                    )?,
+                )?;
+                bindings.push(self.bind(format!("$failed{}", index + 1), failed));
+            }
+            let mut errors = vec![self.bind(
+                "$error0",
+                self.apply(
+                    "Json.keep_error",
+                    vec![self.case("Maybe.Maybe", "None")?, self.name("$shape")?],
+                )?,
+            )];
+            for index in 0..count {
+                errors.push(self.bind(
+                    format!("$error{}", index + 1),
+                    self.apply(
+                        "Json.keep_error",
+                        vec![
+                            self.name(&format!("$error{index}"))?,
+                            self.name(&format!("$field{index}"))?,
+                        ],
+                    )?,
+                ));
+            }
+            let failure = self.block(
+                errors,
+                self.construct(
+                    "Result.Result",
+                    "Error",
+                    self.apply("Maybe.get", vec![self.name(&format!("$error{count}"))?])?,
+                )?,
+            )?;
+            let fields = record
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    Ok((
+                        self.ident(&field.name.text),
+                        self.apply("Result.get", vec![self.name(&format!("$field{index}"))?])?,
+                    ))
+                })
+                .collect::<Result<_, Diagnostic>>()?;
+            let value = self.make(ExprKind::Record {
+                name: Box::new(
+                    self.ident(key_path(&format!("{}.{}", self.module, record.name.text))),
+                ),
+                fields,
+            })?;
+            let success = self.construct("Result.Result", "Ok", value)?;
+            let result =
+                self.conditional(self.name(&format!("$failed{count}"))?, failure, success)?;
+            return Ok(vec![self.definition(
+                "decode",
+                &["$json"],
+                self.block(bindings, result)?,
+            )]);
+        }
         if class == DeriveClass::Display {
             let mut text = self.text(&format!("{} {{", record.name.text))?;
             let mut bindings = Vec::new();
@@ -472,6 +706,103 @@ impl Build<'_> {
         )
     }
     fn union(&self, union: &UnionDecl, class: DeriveClass) -> Result<Vec<Definition>, Diagnostic> {
+        let owner = format!("{}.{}", self.module, union.name.text);
+        if class == DeriveClass::Encode {
+            // `"Case"` without a payload, `{"Case": payload}` with one.
+            let mut arms = Vec::new();
+            for (index, case) in union.cases.iter().enumerate() {
+                let body = if case.payload.is_some() {
+                    self.apply(
+                        "Json.encode_case",
+                        vec![
+                            self.json_name(&case.name, case.json.as_ref())?,
+                            self.name("$payload")?,
+                        ],
+                    )?
+                } else {
+                    self.apply(
+                        "Json.encode_tag",
+                        vec![self.json_name(&case.name, case.json.as_ref())?],
+                    )?
+                };
+                arms.push(self.arm(self.pattern(union, index, Some("$payload")), body));
+            }
+            return Ok(vec![self.definition(
+                "encode",
+                &["$value"],
+                self.matched("$value", arms)?,
+            )]);
+        }
+        if class == DeriveClass::Decode {
+            let names = union
+                .cases
+                .iter()
+                .map(|case| self.json_name(&case.name, case.json.as_ref()))
+                .collect::<Result<_, Diagnostic>>()?;
+            let payloads = union
+                .cases
+                .iter()
+                .map(|case| self.boolean(case.payload.is_some()))
+                .collect::<Result<_, Diagnostic>>()?;
+            let bindings = vec![
+                self.bind("$names", self.make(ExprKind::Array(names))?),
+                self.bind("$payloads", self.make(ExprKind::Array(payloads))?),
+                self.bind(
+                    "$index",
+                    self.apply(
+                        "Json.case_index",
+                        vec![
+                            self.name("$json")?,
+                            self.borrow("$names")?,
+                            self.borrow("$payloads")?,
+                        ],
+                    )?,
+                ),
+            ];
+            let mut arms = Vec::new();
+            for (index, case) in union.cases.iter().enumerate() {
+                let body = if case.payload.is_some() {
+                    let payload = self.apply("Json.decode_payload", vec![self.name("$json")?])?;
+                    self.apply(
+                        "Result.map",
+                        vec![self.case(&owner, &case.name.text)?, payload],
+                    )?
+                } else {
+                    self.construct("Result.Result", "Ok", self.case(&owner, &case.name.text)?)?
+                };
+                // The last case takes every other index, so the match is exhaustive.
+                let pattern = if index + 1 == union.cases.len() {
+                    Pattern {
+                        kind: PatternKind::Wildcard,
+                        span: self.span,
+                        depth: 1,
+                    }
+                } else {
+                    self.integer_pattern(index)?
+                };
+                arms.push(self.arm(pattern, body));
+            }
+            let selected = self.make(ExprKind::Match {
+                value: Box::new(self.apply("Result.get", vec![self.name("$index")?])?),
+                arms,
+                origin: MatchOrigin::Explicit,
+            })?;
+            let failure = self.construct(
+                "Result.Result",
+                "Error",
+                self.apply("Result.get_error", vec![self.name("$index")?])?,
+            )?;
+            let result = self.conditional(
+                self.apply("Result.is_error", vec![self.borrow("$index")?])?,
+                failure,
+                selected,
+            )?;
+            return Ok(vec![self.definition(
+                "decode",
+                &["$json"],
+                self.block(bindings, result)?,
+            )]);
+        }
         if class == DeriveClass::Display {
             let mut arms = Vec::new();
             for (index, case) in union.cases.iter().enumerate() {

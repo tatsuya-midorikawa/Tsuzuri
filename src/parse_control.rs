@@ -146,7 +146,11 @@ impl Parser<'_> {
                 span: case.span,
                 provenance: Provenance::Generated,
             };
-            cases.push(UnionCaseDecl { name, payload });
+            cases.push(UnionCaseDecl {
+                name,
+                payload,
+                json: None,
+            });
         }
         unions.push(UnionDecl {
             doc: None,

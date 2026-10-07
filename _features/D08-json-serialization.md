@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | A07, D02, (C09) |
 | 後続 | E13 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール `Json` と組み込みクラス `Encode`／`Decode` の確定。GUIDE D-30 の仮割り当てを D-07 へ移す） |
 | 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: `System.Text.Json`・serde に相当する直列化がない |
@@ -573,14 +573,14 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 
 ## 受け入れ条件
 
-- [ ] D1 が承認されている。
-- [ ] `Json.parse`・`to_utf8string`・`numeral`・`to_i64`・`to_f64`・`encode`・`decode`・`serialize`・`deserialize` が「API」どおりに動く。
-- [ ] 「型と JSON の対応」の全行と `deriving (Encode, Decode)` が動き、導出の深さがフィールド数・case 数によらない。
-- [ ] 上限を超える入力を Error で拒否し、1,000,000 個の `[` でもスタック枯渇・トラップを起こさない。
-- [ ] Error の経路を含む全ケースで `live == 0`、WASM の import なし、native と WASM × `-O0`／`-O3` で同じ結果。
-- [ ] `Json` を使わないプログラムの IR が手順 1 のベースラインと一致する。
-- [ ] `tests/json.rs`・suite `json`・`tests/json.mjs` が成功する。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] D1 が承認されている。
+- [x] `Json.parse`・`to_utf8string`・`numeral`・`to_i64`・`to_f64`・`encode`・`decode`・`serialize`・`deserialize` が「API」どおりに動く。
+- [x] 「型と JSON の対応」の全行と `deriving (Encode, Decode)` が動き、導出の深さがフィールド数・case 数によらない。
+- [x] 上限を超える入力を Error で拒否し、1,000,000 個の `[` でもスタック枯渇・トラップを起こさない。
+- [x] Error の経路を含む全ケースで `live == 0`、WASM の import なし、native と WASM × `-O0`／`-O3` で同じ結果。
+- [x] `Json` を使わないプログラムの IR が手順 1 のベースラインと一致する（std の追加による生成 id の一様な付け替えを除く。「実装と検証」を参照）。
+- [x] `tests/json.rs`・suite `json`・`tests/json.mjs` が成功する。
+- [x] GUIDE §10 の完了の定義を満たす（`_features/README.md`・GUIDE の台帳・`_completed/` への移動はコーディネーターが行う）。
 
 ## 落とし穴
 
@@ -694,3 +694,101 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 - 決定: `Encode.encode` は `Result<Json.Value, Json.Error>` を返す（旧案の `ref 'a -> Json.Value` を変更）。
 - 理由: 旧案の未決事項の既定案どおり、非有限値を Error にするため。別 API（`Json.try_encode`）を作らずに済む。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-07）
+
+利用者の「全 Phase を実装し、判断が必要なものは最良の選択をする」という指示を D1 の承認として扱い、Phase 1 と Phase 2 を実装した。
+着手時の HEAD は `2ee813f`。Phase 1 はコミット `ba43771`、Phase 2 はその次のコミットにある。性能の改善や比較は主張しない（計測していない）。
+
+### Phase 1: 実装
+
+- std: `std/Json.tz`（新規、`SOURCES` の `IO.tc` と `List.tz` の間、`RESERVED_MODULES` は 37 → Phase 2 で 38）。型 4 つ（`Numeral`・`Value`・`ErrorKind`・`Error`、いずれも `deriving (Eq)`）、
+  `parse`（再帰下降。深さの検査は再帰の前、64 MiB・128 段、重複キーは 32 メンバー以下で線形、それを超えると `Array.sort_in_place` で整列）、`to_utf8string`、`numeral`・`to_i64`・`to_f64`、
+  `encode`・`decode`・`serialize`・`deserialize`、`Display<Error>`、bool・整数 10 型・f32・f64・string・utf8string・`Maybe`・配列・リスト・`Vec`・2〜4 要素のタプル・`Value` の
+  `Encode`／`Decode`、導出用の公開補助関数（`begin_object`・`encode_field`・`end_object`・`encode_case`・`encode_tag`・`expect_object`・`decode_field`・`keep_error`・`case_index`・`decode_payload`）。
+- 組み込みクラス: `src/polymorph.rs` の `BUILTIN_CLASSES` の末尾に `Encode`・`Decode`（29 → 31。既存のクラス id は変わらない）。シグネチャは `names.std_type` で `Json.Value`・`Json.Error`・`Result` から引き、
+  無ければ使用時に `E1004`（`Encode needs the standard module Json`）。`operation: None` の source instance だけで実装する（停止条件の最初の 2 項には当たらなかった）。
+- 導出: `src/syntax.rs` の `DeriveClass::Encode`・`Decode`、`src/parser.rs` の E1025 の文（D6）、`src/derive.rs` の `Build::record`・`Build::union` の分岐と
+  `Build::make` の `QualifiedFunction`・`Array` の腕、`apply`・`case`・`construct`・`borrow`・`bind`・`block`・`integer_pattern`。record は `$object{i}`（encode）、
+  `$field{i}`／`$failed{i}`／`$error{i}`（decode）の束縛の連鎖、union は 1 段の `match`。std の関数は `QualifiedFunction` のモジュールキー（`Json.encode_field`）、
+  std の case はキーパス（`::Result.Result` の `Ok`、`::Maybe.Maybe` の `None`）で参照し、利用者の名前空間や同名の宣言に解決されない。
+- `specialize` の制約の正規化（関数自身の制約と、呼び出し先から伝播した制約）の誤りを `derived_error` で読み替え、std の補助関数を経由して見つかる成分の instance の欠落も `E1025` にした。
+- テスト: `tests/json.rs`、`tests/fixtures/json/Main.tz` と suite `json`、`tests/json.mjs`、`tests/user_drop.rs` の E1025 の文、`tests/polymorphism.rs`（下の 4）。
+- 文書: 言語リファレンスの `built-in-types-and-modules/json.md`（新規）・`index.md`・`types-and-type-inference/type-classes.md`・`built-in-types-and-modules/record.md`、
+  `docs/language.md`（予約モジュール、組み込みクラスの表、重複判定の上限、自動導出、`### Json`）、`docs/architecture.md`、`README.md`、`vsc/src/core.ts` の予約モジュール。
+
+### Phase 2: 具体化した設計と実装
+
+- (a) 数値型とコンテナ: `f16`・`f128`・`d32`・`d64`・`d128` の `Encode`／`Decode`（`encode_number` は表示した字句が JSON の number でなければ `NonFinite`、decode は `Parse.parse` で一度だけ丸め、無限大は `NumberRange`）。
+  `Map`／`HashMap` は「すべてのキーが JSON の文字列に encode されれば object（空のマップは `{}`）、そうでなければ `[キー, 値]` の配列の配列」、`Set`／`HashSet` は配列。
+  `Map`・`Set` はキーの昇順、`HashMap`・`HashSet` は挿入順。decode は object（キーは `Text` から decode）と組の配列の両方を受理し、キーや要素が重なれば `DuplicateKey`（JSON での名前か JSON テキスト）。
+  `Map` の decode は `Ord<'k>`、`HashMap` は `Hash<'k>`・`Eq<'k>` を要求する。
+  **判断:** `Encode<Map<string, 'v>>` と `Encode<Map<'k, 'v>>` はヘッドが単一化するので並べられない（E1016）。Tsuzuri に型による分岐も無いため、形を encode したキーで決める一つの規則にした。
+  `string` キーのマップは常に object（空も `{}`）、ペイロードのない case だけの共用体のキーも object になる。空でない数値キーのマップは組の配列で、空のときだけ `{}` になる点を文書に書いた。
+- (b) 字下げ出力: `to_utf8string_pretty :: ref Value -> i64 -> utf8string` と `serialize_pretty`。`JSON.stringify(value, null, indent)` と同じく 10 で頭打ち、1 未満は空白なし、空の配列と object は `[]`／`{}`、`": "`。
+- (c) 名前の変更: レコードのフィールドと union の case の前の `@json "名前"`（既存の `@literal`・`@checked`・`@cpu` と同じ `@` の属性。`Parameter::json`・`UnionCaseDecl::json` の `JsonName`、
+  `Parser::record_fields`・`json_attribute`）。導出はその名前をキーとタグに使い、Tsuzuri の名前は変えない。普通の文字列リテラル以外・他の属性・二重の `@json` は `E0002`、
+  `Encode`／`Decode` を導出しない型の `@json` と、変えた名前の重複は `E1025`（導出できない宣言として扱い、新しい診断コードは作らない）。formatter は属性のトークンを並べ直し（span は fingerprint から除く）、
+  docgen は属性ごと表示、LSP の改名は属性を変えない（`tests/lsp.rs` の `rename_keeps_json_attributes`）。
+- (d) ストリーミング: 不透明な `Json.Reader` と `Json.reader`／`Json.next :: ref utf8string -> Reader -> Result<(Event * Reader), Error>`。事象は `ObjectStart`・`ObjectEnd`・`ArrayStart`・
+  `ArrayEnd`・`KeyToken of Lexeme`・`TextToken of Lexeme`・`NumberToken of Lexeme`・`BoolToken of bool`・`NullToken`・`EndOfInput`、`Lexeme { start, finish, escaped }` は入力のバイト範囲（複製しない）。
+  `token_text`・`token_matches`（エスケープのない字句は文字列を作らずに比べる）・`token_numeral` は範囲を検査し、入力のトークンでなければ `Syntax`。検査・上限・エラーの種類と位置は `parse` と同じで、
+  重複キーは object が閉じるか入力が失敗したときに、開いている object のキーのうちいちばん前のものを報告する（`parse` と同じ種類と位置になることを `tests/json.mjs` で全入力について確かめた）。
+  不透明な `Json.Writer` と `writer`・`open_object`・`close_object`・`open_array`・`close_array`・`write_key`・`write_null`・`write_bool`・`write_number`・`write_text`・`write_json`・`finish`。
+  `,`・`:` を補い、誤りは出力のバイト数を位置とする `Syntax`（順序の誤り、不正な `Numeral`）・`UnexpectedEnd`（未完のまま `finish`）・`TooDeep`。
+- (e) 他の形式: std モジュール `Cbor`（新規、`std/Cbor.tz`。`SOURCES` の `BigInt.tz` と `Char.tz` の間）。`Cbor.encode :: ref Json.Value -> Result<[ubyte], Json.Error>` は RFC 8949 §4.2.1 の決定的な符号化
+  （最短の引数、長さを前置、値を変えない最短の浮動小数点、符号化したキーのバイト列の辞書順、重複キーは `DuplicateKey`）。整数の字句は整数（64 ビットを超えれば bignum のタグ 2・3）、`-0` は半精度の -0.0、
+  それ以外は `f64` へ一度だけ丸めた値（RFC 8949 §6.2 と同じ）。`Cbor.decode` は JSON のデータモデルに入る項目だけを読む厳密な復号で、長さ不定・バイト列・他のタグ・`undefined` などは新しい
+  `ErrorKind.Unsupported of string`、不正な UTF-8 は新しい `ErrorKind.InvalidUtf8`、他は `Json.Error` の既存の種類（offset は項目の先頭）。64 MiB・128 段、宣言された長さは残りのバイト数で先に検査する。
+  `Cbor.serialize`／`deserialize` は `Encode`／`Decode` を通す。浮動小数点のビット列は 2 のべきの厳密な拡大・縮小で求め、新しい builtin は足していない。
+  **判断（Serializer クラスにしなかった理由）:** 形式ごとの Serializer を受け取るクラス（serde の方式）では `Encode` のメソッドが形式の型について多相になり、導出は形式ごとの呼び出しを生成し、
+  新しい形式はクラスの全メソッドを実装しなければならない。共通の `Json.Value` を経由すれば、既存のインスタンスと導出を変えずに形式を足せる。値の木を一度作る費用は、JSON については (d) の経路で避けられる。
+- 文書: 上の Phase 1 のページに加えて `built-in-types-and-modules/cbor.md`（新規）、`values-and-functions/attributes.md`（`@json`）、`built-in-types-and-modules/union.md`、`compiler/diagnostics.md`（E1025）。
+
+### 決定事項への追記（チケットから外れた判断）
+
+1. **配列の case は `Items`。** HEAD では `Array` が union の case 名として予約されている（d6442c6、`Task`・`Vec` と同じく `E1001`）。チケットの `Array of [Value]` は書けないので `Items of [Value]` にした（停止条件の「落とし穴」に当たるが、最も近い健全な代替として進めた）。
+2. **`payload` は `decode_payload`。** パターンで束縛した値への参照は関数の外へ返せない（`E1013`）ため、`payload :: ref Value -> ref Value` は書けない。ペイロードを decode まで済ませる `decode_payload` にした。
+   同じ理由でタプルの decode は `tuple_shape` と `decode_at` に分けた。
+3. **`rec`。** 再帰の検査は単相化の前に保守的に行い、型変数でのクラスメソッドの呼び出しはそのクラスのすべてのインスタンスへの辺になる。利用者の手書きインスタンスが `Json.decode` などを呼ぶと循環になるため、
+   std の多相の関数とインスタンスのメソッドに `rec` を付けた。手書きのインスタンスは `Encode.encode`／`Decode.decode` を具体的な型で呼べば `rec` は要らず、多相の `Json` 関数を呼ぶなら `fn rec` が要る（文書に記載）。
+4. **インスタンスの重複判定の予算。** 従来は 1 つのプログラムのインスタンスの全組（クラスごとの全組の合計）を 1024 組まで数えたため、std の Encode／Decode（各 30 前後）だけで予算をほぼ使い、
+   利用者は Encode と Decode を十数個の型にしか導出できなくなった。ヘッドをクラスと最外の型構築子で索引し、単一化しうる組（同じ構築子か、型変数・高階のヘッド）だけを比べて数えるようにした。
+   1024 組の上限そのものは変えていない。`tests/polymorphism.rs` の `instance_resolution_limits_and_alpha_renaming_are_enforced` は 47 個の別々の record（`C<R{i}>`）で E1017 を確かめていたが、
+   これは単一化の必要のない組なので、同じ構築子の `C<Box<R{i}>>` に書き換えて上限の検査を保った（既存テストの入力の変更。理由は上のとおり）。
+5. **IR の不変。** `Json` と `Cbor` を使わないプログラムでも、std の関数が増えるため生成関数の番号（`$instance.N` など）がずれる。C09・D07・C08 と同じく「一様な番号の付け替えを除いて一致」を基準にし、
+   `2ee813f` から作ったコンパイラと比べた（下の確認）。byte 一致にするには関数の番号付けの変更が必要で、その変更自体が既存の IR を変える。
+6. **ループの展開の警告。** `llvm.rs` の `hint_loop` は `index = index + 1` だけのループに展開の指示を付け、早期脱出のある走査ループで clang が `loop not unrolled` を出す。
+   `Json` の走査ループは代入が 2 つの形にして、警告を出さない（既存の `HashMap.table_size` は同じ警告を出す。既存の挙動なので変えていない）。
+7. **見つけた既存の不具合（直していない）。** `List.fold_ref` に、状態が union で本体に `match` のある lambda を渡すと要素が誤った値になる（`2ee813f` のコンパイラでも再現: `List.fold_ref (\state item -> match state with | Ok items -> Ok (Vec.push items (Display.display item)) | Error e -> Error e) (Ok (Vec.empty())) xs` が `[3, 4]` に対して `0,8587843632` を返す）。
+   リストの `Encode` は `for` で書いて避けた。別チケットで扱うべき問題として報告する。
+8. **数値の細部。** `-0` の字句は符号なし整数へ 0 として decode する（`Parse.parse` は `-0` を符号なしで拒むため、字句を見て扱う）。`ErrorKind` の名前（`ExpectedType` の引数）は JSON Schema の型名
+   （`boolean`・`integer`・`number`・`string`・`array`・`object`）に、union の形の誤りは `object`／`string`／`object with one member`／`string or object`、タプルは `array of N` にした。
+9. **名前の衝突。** std の型と case は利用者のモジュールから無修飾で見え、利用者の private な同名の宣言より優先されうる（`tests/visibility.rs` が `Token` で発見）。ストリーミングの字句の型は `Token` ではなく `Lexeme` にした。
+   `ErrorKind` は `Os.ErrorKind` と同名なので、無修飾の `ErrorKind` は曖昧になる（`Os.ErrorKind` と修飾する。D-07 の `Error` と同じ扱い）。
+
+### 確認（Apple M1 Max、macOS、Apple clang 21、rustc 1.98.1、Node v20.19.6）
+
+- `cargo test --locked --test json`: 17 passed（Phase 1 の 12 件 + `overlap_budget_counts_only_unifiable_heads`・`phase_two_instances_type_check`・`json_attributes_parse_format_and_check`・
+  `streaming_reader_and_writer_type_check`・`cbor_module_is_reserved_and_typed`）。`tests/lsp.rs` 26 passed（`rename_keeps_json_attributes` を追加）、`tests/polymorphism.rs` 31 passed、`tests/visibility.rs` 9 passed。
+- GUIDE §3.1 の 4 つの回帰テスト（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・
+  `honors_the_exact_specialization_limit`）は上限と stack を変えずに成功。
+- suite `json`: 139 ケース、suite `cbor`: 73 ケース。native と WASM × `-O0`／`-O3`、各ケース後の `live == 0`、WASM の import なし、IR の決定性（harness の既定の検査）。
+  1,000,000 個の `[`（JSON）と 1,000,000 個の配列（CBOR）は 128 段で `TooDeep`、65 MiB の入力は native で `TooLarge`。
+- `node tests/json.mjs target/release/tsuzuri`: 297 入力（受理 233、拒否 64）、2,523 件の照合（`parse` の受理と拒否の種類・位置、`to_utf8string` と `JSON.stringify`、
+  プル型の解析器 → 出力器の再構成と `parse` の結果、6 つの字下げの `JSON.stringify(v, null, n)`、独立に書いた JavaScript の CBOR 符号化器）を native と WASM の `-O0`／`-O3` で確認。
+- `deriving`・`typeclasses`・`stdlib`・`exceptions`・`hash_map`・`map_set`・`display_parse` の suite、`tests/docgen.mjs`、`tests/lsp_sessions.mjs`、`tests/examples.mjs` が成功。
+- IR: `tests/fixtures/` の 57 個の fixture（`json`・`cbor` と、`Main.tz` の無い `arrays`・`lists`・`storage` を除く）を native `-O0` と wasm32 `-O3` で `2ee813f` から作ったコンパイラと比べた。
+  114 個のうち 64 個が byte 一致、50 個は生成 id と metadata 番号の一様な付け替えだけが異なる（番号を出現順に写して比べると差なし）。
+- `node scripts/check-docs.mjs` を変更した 8 ページ（json・cbor・attributes・index・record・union・diagnostics・type-classes）に実行して成功（43 例、native の -O0／-O3 で 86 回実行）。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` が成功。`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は 74 個のテストバイナリで 754 passed、0 failed。
+- Windows の型検査: rustup の toolchain（clippy 1.96）で `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings` と `aarch64-pc-windows-msvc` を実行。
+  `2ee813f` でも同じく出る既存の `clippy::nonminimal_bool` 3 件（`src/lsp.rs` の `includeDeclaration`、`src/parser.rs` の `;` の判定。Homebrew の clippy 1.98 では出ない）を除いて警告なし。プラットフォーム固有のコードは変えていない。
+
+### 既知の制限
+
+- 導出した `Encode`／`Decode`、`to_utf8string`、`Cbor.encode` は値の深さだけ再帰する（利用者が組み立てた非常に深い値ではスタックを使う。導出した `Display` と同じ）。
+- 数値キーのマップの空の値は `{}` になる（上の (a)）。JSON の object のキーから数値のキーへの decode はしない（`{"1": ...}` は `Map<i64, _>` では `ExpectedType "integer"`）。
+- ストリーミングの重複キーは object の終わりで報告し、それまでのキーと値の事象は返っている。出力器は重複キーを検査しない（`to_utf8string` と同じ）。出力器は字下げしない。
+- CBOR は数値を値で保存するので JSON の字句（`1.0` と `1`）は残らない。浮動小数点の CBOR を JSON にすると `f64` の最短表現になる。長さ不定の項目は受理しない。
+- 性能は計測していない（serde_json・System.Text.Json との比較は未実施）。
