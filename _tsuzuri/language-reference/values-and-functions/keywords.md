@@ -53,7 +53,7 @@ Tsuzuri の全 42 個の予約語を用途別に分けて示します。
 | `union` | 共用体（直和型）の定義 | `union Shape = \| Circle of f64` | [Union](../built-in-types-and-modules/union.md) |
 | `class` | 型クラス（インターフェース）の宣言 | `class Show<'a> { def show :: ... }` | [型クラス](../types-and-type-inference/type-classes.md) |
 | `instance` | 型クラスのインスタンス実装 | `instance Show<i32> { fn show ... }` | [型クラス](../types-and-type-inference/type-classes.md) |
-| `deriving` | 型定義での型クラスインスタンス自動導出 | `deriving (Eq, Ord)` | [制約 と 属性](../types-and-type-inference/constraints.md) |
+| `deriving` | 型定義での型クラスインスタンス自動導出 | `deriving (Eq, Ord)` | [型クラス](../types-and-type-inference/type-classes.md) |
 | `test` | 言語内テストの定義 | `test "check" = assert (1 + 1 == 2)` | [テスト](../built-in-types-and-modules/test.md) |
 
 ### 可視性と外部連携
