@@ -36,7 +36,7 @@ async function resources() {
   const root = path.join(extension, 'resources');
   await mkdir(root, { recursive: true });
   await copyFile(path.join(repository, 'LICENSE'), path.join(extension, 'LICENSE'));
-  for (const name of ['_docs', 'docs', '_features', 'std']) {
+  for (const name of ['_tsuzuri', 'docs', '_features', 'std']) {
     await cp(path.join(repository, name), path.join(root, 'handbook', name), { recursive: true });
   }
   await cp(path.join(repository, 'examples'), path.join(root, 'handbook', 'examples'), {

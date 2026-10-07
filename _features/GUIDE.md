@@ -28,7 +28,7 @@
    該当する決定がなければ最も保守的な挙動（コンパイルエラーで拒否）を選ぶ。チケットの「停止条件」と §13 に
    当てはまったら、即興で回避せず作業を止めて報告する。
 5. 完了したら「受け入れ条件」の全項目を確認し、`_features/README.md` の状態を `done` に更新する。
-   チケットは `_features/_completed/` へ移動し、README と `_docs/feature-status.md` のリンクも更新する
+   チケットは `_features/_completed/` へ移動し、README のリンクと `_tsuzuri/language-reference/` の該当ページも更新する
    （性能チケットは `_perfs/_completed/` と `_perfs/README.md`）。最後に §13 の書式で完了報告を書く。
 6. チケット中の `/tmp/tz-*` のパスは再現用の一時ディレクトリの例である。記載のソースから作り直して使い、リポジトリには置かない。
    「検証済み」と書かれたサンプルも、着手時の HEAD で `tsuzuri check` し直してから使う。
@@ -209,7 +209,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs` | — |
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
-| `_docs/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
+| `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
 
 表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行する。
 最終確認は §3 の全体（fmt・clippy・`cargo test --locked`・関係する E2E）と `sh scripts/check-runtime-includes.sh`。
@@ -1195,11 +1195,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   （既存の harness は fixture を一時ディレクトリへ写してから使う）。
 - **期待値の源。** テストの期待値は独立した参照（JavaScript の BigInt、Python、C）から作り、コンパイラの現在の出力を写さない。
 - **テストの件数。** `cargo test --locked <pattern>` は 0 件でも成功する（§3.1）。
-- **文書。** `_docs/` を変えたら `node scripts/check-docs.mjs <ページ>`。`_docs/feature-status.md` の行は `_features/README.md` の ID と同じ順序に保つ。
+- **文書。** `_tsuzuri/` を変えたら `node scripts/check-docs.mjs <ページ>`。
 
 ## 12. Tsuzuri 構文の早見表と落とし穴
 
-fixture・例・再現用のソースを書くときの早見表です。仕様は `docs/language.md`、実行可能な例は `_docs/language-reference/*.md`
+fixture・例・再現用のソースを書くときの早見表です。仕様は `docs/language.md`、実行可能な例は `_tsuzuri/language-reference/**/*.md`
 （`scripts/check-docs.mjs` で検証済み）と `tests/fixtures/**` にあります。**書いたソースは必ず `tsuzuri check` か `run` で確かめます。**
 
 次のプログラムは 2026-09-29 に release コンパイラで `target/release/tsuzuri run <dir>` を実行し、`33` を出すことを確かめました。

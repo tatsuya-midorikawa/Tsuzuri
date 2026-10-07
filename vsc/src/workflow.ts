@@ -209,7 +209,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			} catch (error) { reportError(error, output); }
 		}),
 		vscode.commands.registerCommand('tsuzuri.openDocumentation', () =>
-			vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, 'resources', 'handbook', '_docs', 'README.md'))),
+			vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, 'resources', 'handbook', '_tsuzuri', 'language-reference', 'index.md'))),
 		vscode.commands.registerCommand('tsuzuri.newProject', async () => {
 			const selected = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, openLabel: 'Create Tsuzuri Project in Empty Folder' });
 			if (!selected?.[0]) { return; }
