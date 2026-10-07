@@ -20,6 +20,7 @@ Usage:
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
+  tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -36,6 +37,9 @@ namespace, else the package or folder name) followed by subdirectories
 (Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
+`tsuzuri bindgen` writes extern declarations, constants, records, and type aliases for
+the C header's own declarations whose ABI matches exactly (64-bit Linux and macOS, with
+TSUZURI_CLANG); it reports each other declaration as W2002 and a '// skipped' line.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -1035,6 +1039,53 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// `tsuzuri bindgen header.h -o Module.tz`: writes the module and reports each
+/// skipped declaration as a W2002 warning at the header.
+fn bindgen_command(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match tsuzuri::bindgen::parse_arguments(arguments) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    match driver::bindgen(&arguments) {
+        Ok((source, warnings)) => {
+            let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(warnings, 0);
+            for (index, warning) in warnings.diagnostics.iter().enumerate() {
+                if index != 0 && !json {
+                    eprintln!();
+                }
+                print_diagnostic(warning, &arguments.header, &source, json);
+            }
+            if let Some(note) = warnings.omission_note() {
+                if json {
+                    eprintln!(
+                        "{{\"severity\":\"note\",\"message\":{}}}",
+                        json_string(&note)
+                    );
+                } else {
+                    eprintln!("\nwarning: {note}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1062,6 +1113,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "new") {
         return new_project(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "bindgen") {
+        return bindgen_command(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {

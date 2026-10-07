@@ -14,7 +14,7 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`（繰り返し可）、`--json` だけを受け付けます。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
 | オプション | check | build | run | test | doc | fmt |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -197,7 +197,7 @@ flowchart TD
 
 | 変数 | 既定の名前 | 同梱の名前 | 用途 |
 | --- | --- | --- | --- |
-| `TSUZURI_CLANG` | `clang` | `tsuzuri-clang` | コンパイルとリンク。LLVM 17 以降 |
+| `TSUZURI_CLANG` | `clang` | `tsuzuri-clang` | コンパイルとリンク、`bindgen` のヘッダー解析。LLVM 17 以降 |
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
 | `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link` | macOS で、タスクを含むデバッグ用オブジェクト |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |

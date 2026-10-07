@@ -73,6 +73,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用） |
 | `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info` |
+| `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 具体化後の暗黙の複製箇所の列挙（`copies::sites`）、`--warn implicit-copy` による `W1006` 警告、インレイヒント（inlay hint）の基となる配列・リストの複製検出（`costly_sites`） |
 | `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
 
@@ -175,6 +176,10 @@ wasm32 ではラッパー関数のアドレスが関数テーブルのインデ�
 GC（ガベージコレクション）は最大 4096 エントリまで走査し、最終アクセス日時、合計 2 GiB の容量上限、30 日間の有効期限を基準に最大 128 件ずつ回収します。古い不完全エントリ、残存ロック、一時領域も回収対象であり、上限はソフトリミットです。
 macOS のデバッグ実行ファイルにおける DWARF は出力ファイル名に依存した情報を含むため、この場合に限って出力先パスもキャッシュキーに含めます。それ以外の場合における別出力先へのアーティファクト再利用性は維持されます。
 動作は `tests/cache.mjs` により、実際の CLI を用いたキャッシュヒット（ツール起動回数の削減確認）、ミス、破損時の回復、並行書き込み、no-cache 指定、実行権限の保持、トラップ情報／DWARF の整合性、依存関係変更時の無効化が検証されています。
+
+**bindgen:** `tsuzuri bindgen`（`src/bindgen.rs`）は lexer・parser・check・LLVM を通らず、生成したテキストは利用者のソースとして通常の経路で検査されます。生成するのは C の ABI がホスト ABI と一致すると確かめられる宣言だけで、型は Clang の表記を typedef 展開してから固定の表と完全一致で照合し、表にない表記は推測せず `W2002` で省きます。
+Clang は JSON の位置に `file` を変化時にしか書かず、`serde_json` の `Value` はキー順を保たないので、宣言の所属ファイルは `loc`（spelling → expansion）、`range`（begin → end）、子（`array_filler` → `inner`）の順をコードで固定して全ノードを訪ねて求めます。Clang は `sqrt` などの library builtin を最初の言及で暗黙に宣言するため、`previousDecl` が暗黙の宣言を指す関数は最初の宣言として扱います。enum 定数の値は `ConstantExpr` の値に `ImplicitCastExpr` の整数変換を適用して求めます。
+出力は AST、ヘッダーのバイト列、Clang の版とターゲットだけの関数で、時刻・絶対パス・環境変数を含まず、匿名の tag の表記（`(unnamed struct at /path:1:2)`）からも絶対パスを取り除きます。コメントへ入る文字列は 0x20–0x7E 以外を `?` に置き換え、生成コードへの行の注入を防ぎます。検証は `tests/bindgen.rs`（Clang を起動しない AST 単位のテスト）と `tests/bindgen.mjs`（golden、決定性、`check`／`fmt --check`、C ライブラリとリンクする native の `-O0`／`-O3` の往復、CLI と出力保護）です。
 
 **Windows MSVC:** `native_compile_args` はコンパイラが対象とする CPU アーキテクチャに応じて `x86_64-pc-windows-msvc` または `aarch64-pc-windows-msvc` を選択し、POSIX 向けフラグと明確に分離します。Win32 タスクアダプタは、既存のスケジューラに対して SRWLOCK、CONDITION_VARIABLE、INIT_ONCE、CreateThread、WaitForSingleObject、CloseHandle による同期・スレッド機能を提供します。
 `windows_abi` は型検査済みのエクスポート関数一覧にのみ `dllexport` を付与し、標準出力への書き込みは MSVCRT の `_write` による 32-bit カウントおよび戻り値から安全にサイズ拡張して扱います。UTF-8 のバイト列を損なわないよう標準出力のファイル記述子をバイナリモードに設定し、システムのコードページは改変しません。
@@ -1048,6 +1053,7 @@ node tests/os.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/bindgen.mjs target/release/tsuzuri
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri
 ```
 

@@ -44,6 +44,10 @@ pub const RESERVED_HOST_SYMBOLS: &[&str] = &[
     "write",
 ];
 
+/// Prefixes an explicit extern symbol cannot start with: `tz_` names exports, `tsuzuri`
+/// the runtime and the default host imports, and `__` the C implementation.
+pub const RESERVED_SYMBOL_PREFIXES: &[&str] = &["tz_", "tsuzuri", "__"];
+
 /// The error for an extern link name that cannot become a host import, if any.
 pub fn link_name_error(link: &LinkName) -> Option<Diagnostic> {
     let symbol = &link.symbol;
@@ -59,7 +63,7 @@ pub fn link_name_error(link: &LinkName) -> Option<Diagnostic> {
             link.span,
         ));
     }
-    if ["tz_", "tsuzuri", "__"]
+    if RESERVED_SYMBOL_PREFIXES
         .iter()
         .any(|prefix| symbol.starts_with(prefix))
     {

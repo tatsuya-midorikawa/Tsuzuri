@@ -4853,10 +4853,7 @@ fn check_modules_collect(
             module: (*module).to_owned(),
             visibility: record.visibility,
         };
-        if crate::numeric::primitive(&record.name.text).is_some()
-            || record.name.text == "_"
-            || matches!(record.name.text.as_str(), "Array" | "Task" | "Vec")
-            || polymorph::BUILTIN_CLASSES.contains(&record.name.text.as_str())
+        if reserved_type_name(&record.name.text)
             || names.records.insert(qualified.clone(), info).is_some()
         {
             diagnostics.push(duplicate(&record.name));
@@ -4888,9 +4885,7 @@ fn check_modules_collect(
                 module: module.name.to_owned(),
                 visibility: handle.visibility,
             };
-            if crate::numeric::primitive(&handle.name.text).is_some()
-                || matches!(handle.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
-                || polymorph::BUILTIN_CLASSES.contains(&handle.name.text.as_str())
+            if reserved_type_name(&handle.name.text)
                 || names.records.contains_key(&qualified)
                 || names.handles.insert(qualified.clone(), info).is_some()
             {
@@ -4950,9 +4945,7 @@ fn check_modules_collect(
                 break;
             }
             let qualified = format!("{}.{}", module.name, alias.name.text);
-            if crate::numeric::primitive(&alias.name.text).is_some()
-                || matches!(alias.name.text.as_str(), "_" | "Array" | "Task" | "Vec")
-                || polymorph::BUILTIN_CLASSES.contains(&alias.name.text.as_str())
+            if reserved_type_name(&alias.name.text)
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
                 || names.handles.contains_key(&qualified)
@@ -6268,6 +6261,15 @@ fn duplicate(name: &Ident) -> Diagnostic {
         format!("duplicate or reserved name '{}'", name.text),
         name.span,
     )
+}
+
+/// Whether no record, extern type, or type alias may be named `name` (`E1001`):
+/// primitive and SIMD type names, `_`, the built-in `Array`, `Task`, and `Vec`,
+/// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
+pub fn reserved_type_name(name: &str) -> bool {
+    crate::numeric::primitive(name).is_some()
+        || matches!(name, "_" | "Array" | "Task" | "Vec")
+        || polymorph::BUILTIN_CLASSES.contains(&name)
 }
 
 /// Checks the type parameters that a record or union declares.

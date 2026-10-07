@@ -604,3 +604,59 @@ fixture をコピーして行う。
 - 決定: 生成するのは `HEADER` 自身の宣言だけ。`--include-dir` は include の解決にだけ使う。
 - 理由: include 先まで生成するとシステムヘッダーの宣言で出力が膨大になり、別の生成物と名前が重複する。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-07）
+
+D1 の承認（サブコマンド `tsuzuri bindgen` と警告 `W2002`）と「全 Phase を実装する」指示を受け、Phase 1（手順 1–12）を実装した。
+着手時の HEAD は `2ee813f`（ブランチ `wt/e11`。チケットの確認時は `f8dc655` で、その後 E12 が完了している）。手順 1 で E12 のリンク名
+（`extern "labs" def c_labs :: i64 -> i64` の `c_labs (-5)` が `5`）と、Clang の JSON の性質（`"file"` が 1 回）を手元の Apple clang 21 で確かめた。
+
+### Phase 1: 実装
+
+- `src/bindgen.rs`（新規）: CLI の解析（`Arguments`・`parse_arguments`）、`MARKER`・`MAX_AST_BYTES`・`HeaderInfo`・`Skipped`・`Generated`・`generate`・
+  `lp64_target`。所属ファイルの追跡（`Tracker`）、Clang の型表記の解析（`tokenize`・`TypeParser`・`function_shape`）、typedef 展開と表（`Tables`）、
+  名前の規則、出力（`Emitter`・`render_function`）。Clang も I/O も使わない。
+- `src/bindgen_driver.rs`（新規。`src/driver.rs` の子モジュールで、`test_runner.rs` と同じ `#[path]` の形）: `driver::bindgen`（ヘッダーの検査・読み込み・
+  `Sha256`、Clang の 3 回の起動、`lp64_target`、`serde_json::from_slice`、`generate`、出力保護、書き込み）、`capture`（stdout は `MAX_AST_BYTES` まで、
+  stderr は別スレッドで読む）、`publish`（同じディレクトリの一時ディレクトリに書いて rename。直前にも保護を検査）、`protect_bindgen_output`。
+- `src/main.rs`: `HELP`（usage 行と説明）、`main` の `bindgen` 分岐と `bindgen_command`（W2002 は `DiagnosticSet` で位置順・50 件まで表示）。
+  `src/lib.rs` に `pub mod bindgen;`、`src/driver.rs` に子モジュールの宣言 3 行。
+- `src/check.rs`: `pub fn reserved_type_name`（record・extern type・型別名の予約名の判定を一つにし、既存の 3 か所の条件をこれに置き換えた。振る舞いは同じ）。
+  `src/abi.rs`: `pub const RESERVED_SYMBOL_PREFIXES`（`link_name_error` の接頭辞の一覧を公開。振る舞いは同じ）。bindgen はどちらも直接使い、規則を複製しない。
+- テスト: `tests/bindgen.rs`（新規 15 件）、`src/bindgen.rs` の単体テスト 3 件、`tests/bindgen.mjs`（新規）、`tests/fixtures/bindgen/{basic,include,skipped,names}/`（新規）。
+- 文書: `docs/language.md`（「C ヘッダーからの生成」、診断表の `W2002`）、`docs/architecture.md`（ファイル表、不変条件の **bindgen**、検証コマンド）、
+  `README.md`（特徴、ホスト連携、`tsuzuri bindgen` の節、CLI 書式、テストスイート）、言語リファレンスの `compiler/usage.md`（`### bindgen`、流れ図）、
+  `compiler/native-interop.md`（「C ヘッダーから extern を生成する」。「未実装」の節を置き換えた）、`compiler/diagnostics.md`（`W2002`）、`compiler/option.md`、
+  `languages/why-tsuzuri.md`・`languages/strategy.md`（計画中の注記と E11 へのリンクを実際の振る舞いに置き換えた）。
+
+### Phase 1: 決定事項への追記（チケットから外れた判断）
+
+1. **CLI は局所に足した。** `Action::Bindgen` と `Arguments::include_dirs` は作らず、`new` と同じく `main` の先頭で `bindgen_command` へ分岐する。解析は
+   `bindgen::parse_arguments`（ライブラリにあり `tests/bindgen.rs` で検査）。E13・E10 が同時に `src/main.rs` の解析を変えるので、マージしやすくするため。
+   driver の I/O も同じ理由で子モジュールに置いた。出力のファイル名が英大文字で始まる ASCII 識別子でなければ `E2000` にした（モジュール名になるため。
+   そのままでは `tsuzuri check` が `E1011`）。出力の親ディレクトリは `build` と同じく作る。
+2. **E12 の実際の規則に合わせた。** E12 は `tz_`・`tsuzuri`（`tsuzuri_` ではない）・`__` で始まるシンボル、`RESERVED_HOST_SYMBOLS`（`malloc`・`write`・`putchar` など）、
+   255 bytes を超えるシンボルを拒否する。理由は `symbol uses the reserved tz_, tsuzuri, or __ prefix`・`symbol is reserved by the Tsuzuri runtime`・
+   `symbol is longer than 255 bytes`。`render_function` の構文（`extern "symbol" def name :: ...`）はチケットの想定どおりだった。
+3. **予約名。** 修飾なしの組み込み関数は今は 12 個（`sqrt`・`floor`・`ceil`・`abs`・`to_float`・`to_int`・`assert`・`clone_string`・`unreachable`・`to_string`・
+   `not`・`ignore`）で、`Builtin::ALL` から引く。予約語は lexer で字句解析して判定する（一覧を複製しない）。型名は `check::reserved_type_name`
+   （`Vec`・`Array`・`Task`・組み込みクラス名など。`record Vec` は `E1001`）に当たれば `_` を付ける。enum の定数も予約語・組み込み名なら `_` を付ける（`match` → `match_`）。
+4. **library builtin の再宣言。** Clang は `sqrt` などを最初の言及で暗黙の `FunctionDecl`（`isImplicit`）として宣言し、ヘッダーの宣言の `previousDecl` は
+   それを指す。「`previousDecl` があれば何も出さない」だけでは `math.h` の関数がほぼ全部消えたので、暗黙の宣言を指す場合は最初の宣言として扱う。
+5. **enum の値。** 初期化式の型が `int` でないとき（`X = 1u`、`Y = -1L`）、Clang は `ConstantExpr` を `ImplicitCastExpr`（`IntegralCast`）で包む。
+   「`inner[0]` が `ConstantExpr` でなければ直前 + 1」では `1u` が 0 になるので、cast を辿り、変換先の型で折り返した値を使う。読めない初期化式の定数と、
+   そこから数える暗黙の値は `enumerator value is not an integer constant in the clang AST` で省く。
+6. **型表記の照合。** 文字列の完全一致の代わりに、Clang の表記を小さな解析器（指定子、`const`・`volatile`・`restrict`・nullability の修飾子、ポインター、
+   関数ポインター）で読み、typedef を展開してから表と完全一致で照合する。`const struct TAG *` の判定（ポインターの先の typedef を含む）と `const T *const` を
+   正しく扱うため。`desugaredQualType` は表記を読めないとき（`typeof` など）だけ使う。`AlignedAttr`・`PackedAttr` を持つ typedef は展開しない
+   （desugar すると属性が消え、配置が変わったフィールドを `i64` と誤るため）。読めない表記はすべて変換不可。
+7. **追加の省略理由**（ABI が一致しない形を推測で生成しないため）: asm ラベルや overloadable で `mangledName` が C の名前（Mach-O は `_` 付き）と異なる関数
+   （macOS の `__DARWIN_ALIAS` のように同じシンボルになる asm ラベルは生成する）、`noreturn` 以外の型属性（`ms_abi`・`preserve_most` などの呼び出し規約。
+   Clang は属性を型の前にも後にも書く）、`pass_object_size` の引数、packed・aligned・`#pragma pack` の struct、alignment 属性付きのフィールド、
+   フィールドのない struct、ASCII でないフィールド名、snake_case にすると衝突するフィールド。理由は `src/bindgen.rs` の文字列のまま、言語リファレンスに一覧がある。
+8. **絶対パスを出さない。** 匿名の tag の表記 `struct (unnamed struct at /abs/path:1:2)` は `struct (unnamed struct)` にしてから理由に入れる。
+   `typedef struct { ... } name;` の匿名 struct は typedef の名前と位置で報告する。`typedef enum { ... } name;` の匿名 enum は Clang の表記どおり `enum name`
+   として表に入れ、引数の `name` を `i32` にする。
+9. **clang の失敗の hint。** ヘッダーのコンパイルの失敗は `fix the header, or pass the directories that it includes with --include-dir`。
+   `install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable` は Clang を起動できないときと `--version`・`-dumpmachine` の失敗だけ。
+10. **golden。** `expected.tz` の 2 行目は `sha256=<sha256>` で、E2E は `node:crypto` で計算したハッシュと比べてから置き換える（3・4 行目と同じ扱い）。
