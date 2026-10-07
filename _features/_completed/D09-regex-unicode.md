@@ -565,8 +565,8 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
   `find_all` の最悪、Unicode 17.0.0 と `\d`・`\w`・`\s` の定義、`Unicode` の 3 関数。`### string と utf8string` から参照を張る。
 - `_docs/library-reference/regex.md`（新規）: 使い方、構文表、JS・Rust・.NET との差（`\w` の定義、`$` と改行、反復内の捕捉、非対応の構文）、
   上限と `Regex.Error` の表。
-- `_docs/library-reference/README.md`: 「ソース宣言の API 一覧」の表に `| Regex | [Regex](api/Regex.md) | [正規表現](regex.md) |` と
-  `| Unicode | [Unicode](api/Unicode.md) | [正規表現](regex.md) |`。`_docs/library-reference/api/` は `tsuzuri doc std` で再生成する。
+- `_docs/library-reference/README.md`: 「ソース宣言の API 一覧」の表に `| Regex | [Regex](../api/Regex.md) | [正規表現](../regex.md) |` と
+  `| Unicode | [Unicode](../api/Unicode.md) | [正規表現](../regex.md) |`。`_docs/library-reference/api/` は `tsuzuri doc std` で再生成する。
 - `_docs/library-reference/text.md` の `## API と関連項目` に regex.md への link。
 - `_docs/feature-status.md` の D09 行: 「Phase 1 実装済み: 線形時間の正規表現（Pike VM）、Unicode 17.0.0 の一般カテゴリー・単純畳み込み。
   正規化と書記素は未着手（Phase 2）」。未対応の一覧の「一般的な Unicode 正規化」は残す。

@@ -319,9 +319,13 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/test_runner.rs` | `tsuzuri test`（G06） |
 | `src/warnings.rs` | 警告 W1001–W1004（G03） |
 | `src/copies.rs` | 暗黙の複製の一覧と W1006（A15） |
+| `src/bindgen.rs`、`src/bindgen_driver.rs` | `tsuzuri bindgen`。Clang の JSON AST と `-E -dD`／`-dM` から extern を生成（E11） |
+| `src/bindings.rs`、`src/bindings_native.rs`、`src/llvm_shared.rs` | `--emit bindings-js`／`bindings-cs`／`bindings-py`／`bindings-cpp` と `--emit shared`（E13） |
+| `src/fetch.rs` | `tsuzuri fetch`・`tsuzuri publish`。git・registry 依存の取得と最小版選択（E10） |
 
 実行時ランタイムも増えています（`character.ll`、`display.ll`、`debug.ll`、`recursive.ll`、`utf8string.ll`、`math.ll`、
-`heap-wasm-threads.ll`、`task-wasm-threads.c`、`task-windows.h`、`cpu.c`、`io.c`、`test-runner.c`）。連結条件は `src/llvm.rs` と
+`heap-wasm-threads.ll`、`task-wasm-threads.c`、`task-windows.h`、`cpu.c`、`io.c`、`test-runner.c`、`unicode.ll`（D09、`scripts/generate-unicode.mjs` の生成物）、
+`bindings.mjs`・`bindings-core.mjs`・`bindings-threads.mjs`（E13 の glue。コンパイラは連結せず生成物へ埋め込む））。連結条件は `src/llvm.rs` と
 `src/driver.rs` の `include_str!` の周辺を読んで確認します（§2.2）。
 
 ---
@@ -682,7 +686,7 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   `BuiltinType`／`BuiltinScheme`（std の型 `Maybe` や型族 `UnsignedOf`／`WidenOf` を表せる）で定義し、
   `FunctionRef::Builtin(BuiltinInstance)` を唯一の参照形式にする（詳細は E02）。
   引数なしの関数は `fn() -> T` の値なので、`Math.pi()` のように呼び出して使う。
-- 未使用の標準ライブラリ関数は IR に出力しない（到達可能性で間引く）。型検査は常に行う。
+- 未使用の標準ライブラリ関数は IR に出力しない（到達可能性で間引く）。型検査は常に行う（opt-in std モジュールは名前を書いたプログラムだけが読み込む。D-40）。
 - 補助関数は `private`（D-09）にする。
 - 標準ライブラリのモジュール名と担当チケット（新しい std モジュールはこの表に追記してから作る）:
 
@@ -710,12 +714,17 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   | `Format` | 書式指定の部品（`Spec`・`parse`・`pad`）。`Format` 型クラスの instance を書くための補助 | D07 |
   | `FixedArray` | 固定長配列の構築（組み込み `FixedArray.init`。std のソースはなく、名前を予約する） | A16 |
   | `Dyn` | dyn 値の構築とアップキャスト（組み込み `Dyn.of`。std のソースはなく、名前を予約する） | A14 |
+  | `Arena` | 世代付きハンドルで要素を指す arena（循環するグラフ）。opt-in std モジュール（D-40） | C10 |
+  | `Rc`／`Arc` | 参照カウントの共有所有と弱参照（組み込みの型と関数。std のソースはなく、名前と型名を予約する） | C10 |
+  | `Json`／`Cbor` | JSON の値・解析・出力・ストリーミング、`Encode`／`Decode` の std インスタンス、CBOR。opt-in std モジュール（D-40） | D08 |
+  | `Regex`／`Unicode` | 線形時間の正規表現、Unicode 17.0.0 の表による分類・正規化・境界・大小変換。opt-in std モジュール（D-40） | D09 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
   `UnsignedInteger`（D04）は符号なし整数だけが満たす組み込みマーカークラスとして予約する。
   `Drop`（B07）は利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-31）。
   `Format`（D07）も利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-32）。
+  `Encode`／`Decode`（D08）は組み込みクラスで、組み込みの instance を持たず、std の `Json` の instance と利用者の instance・導出を使う（D-40）。
 
 ### D-08 Maybe と Result
 - `std/Maybe.tc`: `union Maybe<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
@@ -804,11 +813,13 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 | `E1027` | 条件付きインスタンス・スーパークラスの不整合 | A06 |
 | `E1028` | dyn 互換でない型クラス（理由をメッセージに示す。D-39） | A14 |
 | `E2006` | テストの失敗（`tsuzuri test`） | G06 |
+| `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・不一致、store の欠落、git の失敗、registry の index の不整合。D-40） | E10 |
 | `W1001` | 未使用のローカル束縛 | G03 |
 | `W1002` | 未使用の非公開関数・型 | G03 |
 | `W1003` | 到達しない `match` 節 | A03／G03 |
 | `W1004` | 同じスコープ内での紛らわしいシャドーイング（既定は無効） | G03 |
 | `W1006` | 長さに比例する配列・リストの暗黙の複製（既定は無効。`--warn implicit-copy` で有効。D-33） | A15 |
+| `W2002` | `tsuzuri bindgen` が ABI の一致を確かめられない C の宣言を省いた（D-40） | E11 |
 
 既存のコード（`E1001`–`E1020`、`E2000`–`E2005`、`W2001`）は意味を変えずに使う。
 
@@ -934,7 +945,7 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 
 - 2026-09-28、利用者がP3全件と必要な設計判断を承認。各チケットの対象段階を実装し、未検証のプラットフォームや後続段階を完了と混同しない。
 - E04は指定どおりlocal pathとstrict manifestのみ。PackageIdはSourceFile.packageに保持し、コンパイラのUser/Std分類は変更しない。依存の名前空間をrelative_pathへ付けて既存の解析・可視性・所有権を再利用する。
-- manifestも読み込み・出力保護対象とする。全graphでpackage1024・深さ128・source4096、名前空間衝突・循環・symlinkを拒否する。git、lockfile、build scriptは導入しない。
+- manifestも読み込み・出力保護対象とする。全graphでpackage1024・深さ128・source4096、名前空間衝突・循環・symlinkを拒否する。build scriptは導入しない（git 依存・lockfile・registry は E10 で導入した。D-40）。
 - F06は手書きLLVM queueではなくfreestanding C11 runtimeをClangで生成する。既存callback ABIとallocatorを共有し、threadsだけshared/import-memory、atomic、heap lock wrapperを有効にする。
 - Nodeホストは明示countを一回初期化し、初回groupのspawn_workersで同数を起動する。各instanceの__stack_pointerを256KiB sliceへ設定する。失敗はpoisonで全waitを解除し、再利用しない。browser本番glueは対象外。
 - F07のPhase 1は型付きkernel抽出・CPU参照・WGSL生成。WGSL仕様には具体的i64/f64がなく、floatのfusion/reassociation/subnormal差を許すため、strict shaderはi32/i32uだけとする。CPU参照では元の64-bit/floatを保持し、明示GPU要求をCPU成功へ変換しない。動的除算・剰余もtrap契約が異なるのでshaderでは拒否する。
@@ -955,21 +966,15 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
   調査時点はコミット `9012e92`。一覧と対応表は [README の第2期](README.md#第2期-他言語比較で見える劣位の改善計画) にある。
 - 以下は計画上の仮割り当てで、人間の承認と各チケットの着手前レビューを経て確定する。確定したら該当行を D-07（std）・D-15（予約語）・D-16（診断コード）へ移し、この表から削除する。
 - 既存の予約語の組み合わせで表せる構文（`extern type`、`extern "symbol" def`、`const def`、`const N: i64`）を優先し、新しい予約語を増やさない。G19 の edition を導入した後は、新しい予約語を新しい edition でだけ予約する。
-- 言語の意味や既存の決定を変える提案は承認まで着手しない: C10 Phase 2（参照カウントの導入）、D11 Phase 2（static データ。D-28 の変更）。C08（D-13 の変更）と A16（`[T; N]` の再導入）は D-39 で承認済み。
+- 言語の意味や既存の決定を変える提案は承認まで着手しない: D11 Phase 2（static データ。D-28 の変更）。C08（D-13 の変更）と A16（`[T; N]` の再導入）は D-39、C10 Phase 2（参照カウントの導入）は D-40 で承認済み。
 - 新しいホスト機能（WASI、乱数 seed の設定、非同期の再開、GPU runtime）は D-18 に従い明示的な opt-in とし、既定の WASM に import を追加しない。
 
 | 種別 | 仮割り当て | チケット |
 |---|---|---|
 | 予約語 | `bench` | G18 |
-| 診断 | `E2007` 依存の取得・検証の失敗（lockfile の不一致、キャッシュの欠落） | E10 |
 | 警告 | `W1005` 非推奨の宣言の使用 | G19 |
-| 警告 | `W2002` bindgen で変換できない C 宣言の省略 | E11 |
-| 組み込みクラス | `Encode`／`Decode` | D08 |
 | 組み込みクラス | `Sync`（仮称） | F10 |
-| std | `Arena` | C10 |
 | std | `Matrix` | C11 |
-| std | `Json` | D08 |
-| std | `Regex`／`Unicode` | D09 |
 | std | `Net` | E09 |
 | std | `Async` | B08 |
 | std | `Atomic`／`Mutex`／`Channel` | F10 |
@@ -986,11 +991,7 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 | 組み込みクラス・builtin | `AtomicValue`、`Task.scope`、構築関数 `create`（`new` は予約語） | F10 | はい |
 | std | `Gpu.map_relaxed`・`Gpu.init_relaxed` | F09 | はい |
 | std | `Bench.now`・`Bench.consume`・`Bench.with`・`Bench.of` | G18 | はい（`bench` と共に） |
-| std | `Json.Numeral`（`Json` の数値の record） | D08 | はい（`Json` と共に） |
-| 予約モジュール | `Regex`・`Unicode` | D09 | はい |
 | サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
-| サブコマンド | `tsuzuri bindgen` | E11 | はい |
-| サブコマンド | `tsuzuri fetch` | E10 | はい |
 | サブコマンド | `tsuzuri repl`（Phase 2 の `tsuzuri script` は要承認） | G13 | Phase 2 だけ |
 | サブコマンド | `tsuzuri bench` | G18 | はい |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
@@ -998,7 +999,6 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 | CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--target wasm64` | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--emit bitcode` | PR08 | いいえ |
-| CLI | `--emit bindings-js`（出力 `<name>.mjs`・`<name>.d.mts`） | E13 | いいえ |
 | CLI | `--emit wgsl-relaxed`・`--wasm-feature webgpu` | F09 | はい |
 | CLI | `--wasm-feature tail-call` | PM09 | はい |
 | CLI | `--trap-mode return` | E14 | いいえ（Phase 2 承認済み・実装済み） |
@@ -1198,6 +1198,42 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - F08 D9: AVX-512（F・BW・CD・DQ・VL と XCR0 の opmask・ZMM 状態）を feature bit2、SVE／SVE2 を Linux の `getauxval` で bit16／bit17 にした。
   実機で測れないため、同梱 kernel の自動選択は AVX2 までで、AVX-512 と SVE の kernel は `TSUZURI_CPU_FORCE` の指定時だけ使う。`@cpu` で明示した版は自動でも選ぶ。
 
+### D-40 第2期の 6 チケット（C10・D08・D09・E11・E13・E10）の確定
+
+- 2026-10-07、利用者の「C10、D08、D09、E11、E13、E10 の実装をすべて完遂して。…すべてのフェーズを完了させること。
+  …判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、6 チケットの `要承認` の決定事項すべての承認として扱った。
+  詳細は各チケットの「実装と検証」にある。
+- opt-in std モジュール（D-07 の改訂）: `Arena`・`Regex`・`Unicode`・`Json`・`Cbor` の宣言は、利用者のコードからは修飾した名前（`Json.Value`、`Arena.Handle`）でだけ見え、
+  無修飾の型・case・型クラスの解決の候補にならない。`build`・`check`・`run`・`test`・`doc` は、利用者のソースがモジュール名（`Json` は `Encode`／`Decode` も）を
+  識別子として含むときだけそれらを読み込む（`stdlib::OPT_IN`・`sources_for`）。言語サーバーは補完のため常に全部を読み込む。名前を書かないプログラムの型検査の時間と
+  IR は追加前と同じで、無修飾の `ErrorKind`・`Handle` は従来どおり `Os.ErrorKind`・`File.Handle` を指す。
+- C10 Phase 1: std `Arena`。`Arena.Handle<'a>` の phantom 型引数は opaque な std record にだけ許す（利用者の record は従来どおり `E1024`）。arena ID は std 専用の
+  組み込み `Arena.__next_id`（`@tz.arena.next_id` の `atomicrmw add monotonic`）。空き slot の世代は `-1 - g` で表し、ハンドルは使用中の slot にだけ一致する。
+- C10 D13・D14（Phase 2）: 参照カウントを導入した。`Rc<'a>`・`Rc.Weak<'a>`・`Arc<'a>`・`Arc.Weak<'a>` は `Type::Shared(Box<Type>, SharedKind)` の組み込みの型で、
+  std のソースはない（`Rc`・`Arc` は予約モジュール名で、`Vec` と同じく予約の型名）。ヒープの `{strong, weak, T}` を指し、強参照全体で弱参照を 1 つ持つ。
+  `Arc` の増加は monotonic、減少は release と `fence acquire`。計数が i64 を超えるとトラップ。再帰する型を含む値は再帰 union の反復 drop で解放する。
+  `Rc` は Send にならず、関数値に捕捉できない（`E1013`・`E1005`。関数値は task へ送れるため）。`Arc<T>` は T が Send で、extern ハンドル・Copy でない dyn 値・
+  `Owned.Function`・`Rc` を含まないときだけ Send と捕捉ができる（F10 の `Sync` まで）。内部可変性がないので参照の循環は作れず、サイクルコレクターはない。
+  型の循環は `Rc`／`Arc` を通れば union を経なくてよい。`.` の後の `new` は名前として読む（`Rc.new`）。
+- D08 D1: std `Json`・`Cbor`、組み込みクラス `Encode`／`Decode`（`BUILTIN_CLASSES` の末尾）、`deriving (Encode, Decode)`、record の field と union の case の
+  属性 `@json "name"`。`Json.Value` の配列の case は `Items`（`Array` は予約の case 名）。instance の重なりの検査の予算（1,024 組）は、外側の型構築子が同じ頭部の組だけを数える。
+  Phase 2 は f16・f128・decimal・`Map`・`Set`・`HashMap`・`HashSet` の instance（マップはキーがすべて JSON 文字列なら object、そうでなければ `[key, value]` の配列）、
+  字下げ出力、プル型の `Json.Reader` と `Json.Writer`、CBOR（RFC 8949。serde 風の Serializer クラスではなく共通の `Json.Value` を使う）。新しい診断コードはない。
+- D09 D1・D11: std `Regex`・`Unicode`。表は `scripts/generate-unicode.mjs` が UCD 17.0.0 から生成するランタイム `src/runtime/unicode.ll` に置き、std 専用の組み込み
+  `Unicode.__table_length`／`__table_entry`（std の `Unicode`・`Regex` 以外からは `E1022`）で読む。チケットの D2・D7（文字列リテラルの表を std に生成する）を改めた。
+  std の全ソースの型検査を遅くせず、Phase 2 の 1 文字ごとの API で呼び出しごとの複製を避けるため。Phase 2 は `Unicode.category`、NFC／NFD／NFKC／NFKD、
+  UAX #29 の書記素と単語の境界、SpecialCasing と Final_Sigma による大小変換（locale による調整と辞書による分割はない）。
+- E11 D1: サブコマンド `tsuzuri bindgen` と警告 `W2002`（D-16）。Phase 2 は整数の `#define`（`clang -E -dD` の行の印で所属を決め、`-dM` の最終値と照合）、
+  定義のない struct の不透明ハンドル（E12 の `extern type`）、E12 のコールバック、注釈付きのバッファー（`--buffer FUNC:PTR:LEN`）、引数の移動（`--consume FUNC:PARAM`）。
+  ABI の一致を確かめられない宣言（未知の属性、無名 struct の typedef、`typeof`、`push_macro` など）は推測せず `W2002` で省く。対象は LP64（Linux・macOS）だけ。
+- E13 D11（Phase 2）: `--emit bindings-js`（wasm32 だけ。wasm64 は `E2000`）、`--wasm-feature threads` の module のブラウザー向け Worker glue（cross-origin isolated で
+  なければ例外。逐次実行へ切り替えない）、`--emit shared`（macOS・Linux。Windows は G10 まで `E2000`）、`--emit bindings-cs`／`bindings-py`／`bindings-cpp`。
+  新しい診断コードはない。E12 の不具合（スカラーだけの export の `ref` ハンドル引数がハンドルの格納先を渡していた）を直した。
+- E10 D1・D10: `tsuzuri fetch`・`tsuzuri publish`、診断 `E2007`（D-16）、`Tsuzuri.lock`（format 1 と、registry 依存があるときの format 2）。D-29 の E04 の記録
+  「git、lockfile を導入しない」を改めた。git 依存は commit 固定で、取得は外部の `git`（2.32 以降）が作業木を作らずに行い、ビルドの経路は git もネットワークも使わない。
+  registry 依存は root の `[registry]` に書いた git の index（`index/<name>.json`）から、名前と互換の範囲ごとの最小版選択で選ぶ（選ばれなかった版だけが述べる要求は
+  衝突にしない）。Tsuzuri は公開の registry を運営しない。`publish` は index の項目を出力するだけで、G19 の公開 API の差分検査はまだない。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
@@ -1317,7 +1353,8 @@ describe (Value 10) + first (5, 6) + classify (-3) + sum_to 4 + text.length + sh
 | `pair.0` | `E0002` expected an identifier | `match pair with \| (first, _) -> first` |
 | `(5: i64)` | `E0002` expected the closing delimiter | `let x: i64 = 5` |
 | `Display.to_string 5` | `E1002` type class 'Display' has no method 'to_string' | `to_string 5` か `Display.display 5` |
-| `let new = 1`（`Atomic.new` なども） | `E0002`（`new` は予約語） | 別の名前（例: `create`） |
+| `let new = 1` | `E0002`（`new` は予約語） | 別の名前（例: `create`） |
+| `Atomic.new`（`.` の後の `new`） | 名前として読む。存在しなければ `E1002`（C10 の `Rc.new`・`Arc.new` のため。D-40） | 定義された関数を呼ぶ |
 | `abs n`（`n` は整数。`let n = -2` など） | `E1003` expected an integer, found f64（2026-10-04 に確認。リテラルの `abs (-2)` は D-34 から f64 として受理される） | `Int.abs n` |
 | task の中の `if c then return v` | `E0002` | `if c { return v } else { return w }` |
 | 対の `def` で `fn name () = ...` | 古い署名として解釈される | `fn name _unit = ...` |
