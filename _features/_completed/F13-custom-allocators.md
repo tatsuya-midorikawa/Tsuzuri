@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2・3） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | D9 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-30・D-39）。Phase 2・3 も同じ依頼で設計して実装した |
-| 改善する劣位 | C/C++ 比: allocator を細かく制御できない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）／追加: libc のない環境へ出力できない |
+| 改善する劣位 | C/C++ 比: allocator を細かく制御できない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）／追加: libc のない環境へ出力できない |
 | 手本にする既存実装 | CLI と組み合わせ検査: `src/main.rs` の `--wasm-feature` 分岐と `src/driver.rs` の `BuildOptions::validate` の `wasm_threads` 検査。heap runtime の切り替え: `src/llvm.rs` の `emit_program` 末尾で `instrumentation.wasm_threads` により `heap-wasm.ll`／`heap-wasm-threads.ll` を選ぶ箇所。C ホストの確保追跡: `tests/host_abi.rs` の `host_buffers_and_records_roundtrip_on_native_and_wasm` と `tests/features.mjs` の `run`（`tracked_alloc`） |
 | 主な影響ファイル | `src/runtime/heap-host.ll`（新規）, `.gitignore`, `src/llvm.rs`, `src/llvm_abi.rs`, `src/driver.rs`, `src/main.rs`, `tests/allocator.rs`（新規）, `tests/allocator.mjs`（新規）, `tests/allocator_host.c`（新規）, `tests/features.mjs`, `EmitOptions` を構築する既存テスト（`tests/cpu_dispatch.rs`, `tests/debug_info.rs`, `tests/debug_output.rs`, `tests/trap_locations.rs`, `tests/windows.rs`）, `README.md`, `docs/language.md`, `docs/architecture.md`, `_docs/tools/command-line.md`, `_docs/guides/native-interop.md`, `_docs/feature-status.md`, `_features/README.md` |
 

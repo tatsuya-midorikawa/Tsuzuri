@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要（Phase 1 の決定はすべて既定案。Phase 2・3 は人間が求めた場合だけ着手する） |
-| 改善する劣位 | C/C++ 比: デバッガーの成熟度（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）、C#/F# 比: 開発体験（[同](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: デバッガーの成熟度（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）、C#/F# 比: 開発体験（[同](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | DWARF の型と cache: `src/llvm_debug.rs` の `DebugContext::ty`・`fields`・`layout`・`metadata`・`quote`。union の格納: `src/llvm.rs` の `union_layout`・`storage_layout`・`FunctionEmitter::payload_pointer`、`src/llvm_recursive.rs` の `node_type`・`recursive_header`・`recursive_payload`・`recursive_tag`・`empty_case`。list の node: `src/llvm.rs` の `FunctionEmitter::list_node_type`。テスト: `tests/debug_info.rs` の `debug_metadata_is_deterministic_and_keeps_source_types`、`tests/debug_info.mjs` の `execute`。VS Code: `vsc/src/workflow.ts` の `debugConfiguration`（`preRunCommands`）、`vsc/scripts/toolchain.mjs` の `resources`、`vsc/scripts/package.mjs` の `required` |
 | 主な影響ファイル | `src/llvm_debug.rs`, `src/llvm.rs`（`FunctionEmitter::emit` の `debug_subprogram` 呼び出し）, `scripts/lldb/tsuzuri_lldb.py`（新規）, `tests/debug_info.rs`, `tests/debug_info.mjs`, `tests/debugger.mjs`（新規）, `tests/fixtures/debug_view/Main.tz`（新規）, `vsc/src/workflow.ts`, `vsc/scripts/toolchain.mjs`, `vsc/scripts/package.mjs`, `vsc/src/test/extension.test.ts`, `docs/architecture.md`, `_docs/tools/debugging.md`, `vsc/README.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md` |
 

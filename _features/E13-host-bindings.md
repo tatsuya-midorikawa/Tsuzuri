@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要。要承認: D11（Phase 2 の言語・共有ライブラリ出力・ブラウザー threads glue。承認前は Phase 2 に着手しない） |
-| 改善する劣位 | C#/F# 比: .NET からの利用手段（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: WASM ホストの手書き glue と、ブラウザー向け threads glue がない |
+| 改善する劣位 | C#/F# 比: .NET からの利用手段（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: WASM ホストの手書き glue と、ブラウザー向け threads glue がない |
 | 手本にする既存実装 | ABI の型モデルと C header: `src/llvm.rs` の `header`、`src/llvm_abi.rs` の `header_types`・`c_parameters`・`record_name`・`record_layout`、`src/abi.rs` の `Buffer`・`parameter`・`result`・`out_result`。`--emit` の追加: `Emit::Header` の各 match（`src/main.rs` の `--emit` 解析、`src/driver.rs` の `BuildOptions::validate`・`BuildOptions::output_path`・`build_complete`）。副出力の公開: `trap_sidecar_path` と `publish_outputs`。同梱 JS の書き方: `src/runtime/wasm-threads.mjs` の `createThreadPool`。手書き glue の手順: `examples/web/simulation.mjs`。テスト: `tests/host_abi.rs` の `host_buffers_and_records_roundtrip_on_native_and_wasm`、`tests/host_imports.mjs` |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/lib.rs`, `src/llvm.rs`, `src/llvm_abi.rs`, `src/bindings.rs`（新規）, `src/runtime/bindings.mjs`（新規）, `tests/bindings.rs`（新規）, `tests/bindings.mjs`（新規）, `tests/bindings_consumer.mts`（新規）, `tests/fixtures/bindings/Main.tz`・`Geometry.tz`（新規）, `examples/web/README.md`, `docs/language.md`, `docs/architecture.md`, `README.md`, `_docs/guides/webassembly.md`, `_docs/guides/native-interop.md`, `_docs/feature-status.md`, `_features/README.md`。Phase 2 だけ: `src/runtime/wasm-threads.mjs`, `_docs/guides/wasm-threads.md` |
 

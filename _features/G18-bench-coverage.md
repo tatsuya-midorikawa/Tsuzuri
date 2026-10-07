@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（予約語 `bench`。GUIDE D-30 の仮割り当ての確定と、識別子 `bench` を壊す変更）。Phase 2（カバレッジ）は承認不要 |
-| 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: 利用者コードの性能測定・カバレッジ・プロパティテストを言語のツールで行えない |
+| 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: 利用者コードの性能測定・カバレッジ・プロパティテストを言語のツールで行えない |
 | 手本にする既存実装 | 宣言と実行器の全体: G06 の `test` 宣言（`src/parser.rs` の `Parser::test_declaration`、`src/check.rs` の `CheckedTest` と `$test.<index>` 関数の合成、`src/llvm.rs` の `Entry::TestRunner`・`emit_test_runner`、`src/test_runner.rs` の `run_tests`・`run_with_timeout`・`build_runner`・`execute_test`、`src/runtime/test-runner.c`、`src/main.rs` の `Action::Test`・`run_test_action`）。任意の型を受ける builtin: `src/check.rs` の `Builtin::Unreachable`。計装の切り替え: `src/llvm.rs` の `Instrumentation`。CLI の E2E: `tests/test_runner.rs` の `cli_reports_json_filters_and_failures_without_main` |
 | 主な影響ファイル | `src/lexer.rs`, `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/formatter.rs`, `src/semantic.rs`, `src/computation.rs`, `src/polymorph.rs`, `src/check.rs`, `src/llvm.rs`, `src/test_runner.rs`, `src/coverage.rs`（新規）, `src/runtime/test-runner.c`, `src/runtime/bench-runner.c`（新規）, `src/main.rs`, `std/Bench.tz`（新規）, `tests/test_runner.rs`, `tests/bench.rs`（新規）, `tests/coverage.rs`（新規）, `tests/fixtures/coverage/Calc.tz`（新規）, `tests/frontend.rs`, `docs/language.md`, `docs/architecture.md`, `_docs/tools/testing.md`, `_docs/tools/command-line.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md`, `vsc/` の予約語文法（GUIDE §6.1） |
 

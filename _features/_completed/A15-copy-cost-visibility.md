@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2。Phase 2 の共有バッファによる O(1) の複製は C10 の範囲のまま） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | D3 は、2026-10-03 に利用者から「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（`--warn implicit-copy` と `W1006` を確定。GUIDE D-16・D-33） |
-| 改善する劣位 | Rust 比: Copy のコストモデルの違い（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 改善する劣位 | Rust 比: Copy のコストモデルの違い（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | 全関数を同じ走査で 2 用途に使う形: `src/ownership.rs` の `check_functions`（`infer` フラグ）と `check_body`。警告の作り方と利用者コードだけの報告: `src/warnings.rs` の `unused_locals`（`Diagnostic::warning`）と `src/check.rs` の `check_modules_collect` での `ModuleOrigin::User` の判定。CLI の真偽フラグ: `src/main.rs` の `--deny-warnings`（`Arguments::deny_warnings`、重複の拒否、`fmt` との併用拒否、単体テスト）。CLI の統合テスト: `tests/warnings.rs` の `cli_caps_warnings_and_denies_before_touching_artifacts`。複製が生成される条件: `src/llvm.rs` の `FunctionEmitter::read_place`・`clones_on_take` |
 | 主な影響ファイル | `src/copies.rs`（新規）, `src/lib.rs`, `src/ownership.rs`, `src/call_specialization.rs`, `src/llvm.rs`, `src/main.rs`, `std/Array.tz`, `std/List.tz`, `tests/copy_cost.rs`（新規）, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/ownership.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/tools/diagnostics.md`, `_docs/tools/command-line.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md` |
 

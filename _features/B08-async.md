@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール名 `Async` と API 面。GUIDE D-30 の仮割り当て）, D10（Phase 2 のホスト再開: opt-in フラグ・runtime シンボル・WASM import） |
-| 改善する劣位 | C#/F# 比: `async`／`await` がない、Rust 比: 非同期 I/O と `Task` の違い（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | C#/F# 比: `async`／`await` がない、Rust 比: 非同期 I/O と `Task` の違い（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | closure で表す std ビルダー: `std/IO.tc` の `record IO<'a>` と `Bind`・`Delay`・`Combine`・`For`・`While`。std 登録: `src/stdlib.rs` の `SOURCES`・`RESERVED_MODULES`・`opaque_record`。非 Copy の std レコード: `src/check.rs` の `Type::is_noncopy_record`（`Seq.Seq`）。借用を持つ環境の拒否: `src/ownership.rs` の `eval_value` 内 `E::Closure` 節（`Type::Task` の closure だけ loan を拒否）。Rust テスト: `tests/computations.rs` の `accepts`・`rejects`。E2E: `tests/features.mjs` の suite `computation_extensions` |
 | 主な影響ファイル | Phase 1: `std/Async.tc`（新規）, `src/stdlib.rs`, `src/check.rs`, `src/ownership.rs`, `tests/async.rs`（新規）, `tests/fixtures/async/Main.tz`（新規）, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/computation-expressions.md`, `_docs/language-reference/tasks.md`, `_docs/library-reference/async.md`（新規）, `_docs/library-reference/README.md`, `_docs/feature-status.md`, `_features/README.md`, `README.md`。Phase 2（承認後）: `src/runtime/`, `src/main.rs`, `src/driver.rs`, `src/llvm.rs` |
 

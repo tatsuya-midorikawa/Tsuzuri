@@ -45,6 +45,7 @@ try {
         const source = readFileSync(page, 'utf8');
         const label = relative(root, page);
         assert.ok(source.endsWith('\n'), `${label}: missing final newline`);
+        assert.ok(!/^[ \t]+```tsuzuri/m.test(source), `${label}: an indented tsuzuri code fence is not checked; start it at column 1`);
         const prose = source.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '');
         for (const match of prose.matchAll(/\[[^\]\n]+\]\(([^\s)]+)\)/g)) {
             const target = match[1];

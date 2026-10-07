@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D12（Phase 2 の `script` コマンドと shebang 行）, D13（Phase 3 の JIT）。Phase 1 は承認不要 |
-| 改善する劣位 | C#/F# 比: 対話環境がない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | C#/F# 比: 対話環境がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | 位置引数を取らないサブコマンド: `src/main.rs` の `parse_arguments` の `lsp` 分岐。ディスクにないソースの解析: `src/lsp.rs` が呼ぶ `Project::load_with_overlays`。ビルドと実行・stderr の中継・`E2005`: `src/driver.rs` の `run_with_diagnostics` と `TemporaryDirectory`。診断の表示: `src/main.rs` の `print_with_severity`（`Diagnostic::render_with_severity`）。実プロセスの E2E: `tests/lsp_sessions.mjs`、`tests/io.mjs` の `execute` |
 | 主な影響ファイル | `src/main.rs`, `src/repl.rs`（新規）, `src/lib.rs`, `src/driver.rs`, `tests/repl.mjs`（新規）, `README.md`, `docs/architecture.md`, `_docs/tools/command-line.md`, `_docs/get-started.md`, `_docs/guides/from-fsharp.md`, `_docs/feature-status.md`, `_features/README.md` |
 

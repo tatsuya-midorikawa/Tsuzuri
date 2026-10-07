@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要（std 名 `Arena` は GUIDE D-30 の仮割り当てを使う）。Phase 2 は要承認: D13（参照カウントの導入。GUIDE D-30）, D14（std 名 `Rc`／`Arc` の割り当て） |
-| 改善する劣位 | C#/F# 比: GC に任せられる共有データ・循環構造を所有権に沿って設計し直す必要がある（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | C#/F# 比: GC に任せられる共有データ・循環構造を所有権に沿って設計し直す必要がある（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | `std/Map.tz`（opaque 標準 record と Vec の消費的更新、`at` の `assert`、`iter_from` と `Seq.defer`）、`src/stdlib.rs` の `opaque_record`、`src/polymorph.rs` の `Checker::builtin`（`IO.__read_line` の std 専用制限）、`src/llvm.rs` の `emit_builtin`（`Builtin::Default`・`Builtin::Unreachable`）、`tests/map_set.rs`、`tests/fixtures/map_set/Main.tz` と `tests/features.mjs` の `map_set` suite |
 | 主な影響ファイル | `std/Arena.tz`（新規）, `src/stdlib.rs`, `src/check.rs`, `src/polymorph.rs`, `src/llvm.rs`, `tests/arena.rs`（新規）, `tests/fixtures/arena/Main.tz`（新規）, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/library-reference/arena.md`（新規）, `_docs/library-reference/README.md`, `_docs/library-reference/api/Arena.md`（生成）, `_docs/guides/style-and-design.md`, `_docs/guides/from-fsharp.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md` |
 

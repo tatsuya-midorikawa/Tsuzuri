@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要（Phase 1 は言語の意味を変えない std 追加。std 名 `Matrix` は GUIDE D-30 の仮割り当てを完了時に D-07 へ移す。D1）。Phase 2 は着手前に要承認（D9） |
-| 改善する劣位 | C/C++ 比: 最適化済みライブラリの不足（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: 最適化済みライブラリの不足（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | opaque 標準 record: `std/Map.tz`・`std/Set.tz`（C06）と `src/stdlib.rs` の `SOURCES`・`RESERVED_MODULES`・`opaque_record`。常に non-Copy にする登録: `src/check.rs` の `Type::is_noncopy_record`（`Seq.Seq`・`Gpu.Device`・`Gpu.Buffer`）。順序を固定した数値 API: `std/Array.tz` の `dot`（`+0` から左へ、積と和を別々に丸める）、前提条件の `assert`: `Array.sub`・`Array.zip`。Rust テスト: `tests/map_set.rs`。E2E: `tests/features.mjs` の `map_set`・`fma_reductions` suite（`orderedReferences`）。計測: `benchmarks/run-simd.mjs` |
 | 主な影響ファイル | `std/Matrix.tz`（新規）, `src/stdlib.rs`, `src/check.rs`（`Type::is_noncopy_record` の 1 行）, `tests/matrix.rs`（新規）, `tests/fixtures/matrix/Main.tz`（新規）, `tests/features.mjs`, `benchmarks/matrix/Main.tz`（新規）, `benchmarks/run-matrix.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/library-reference/matrix.md`（新規）, `_docs/library-reference/README.md`, `_docs/feature-status.md`, `_features/README.md`, `_features/GUIDE.md`（D-07 の表と D-30 の行）, `vsc/resources/completions.json`。Phase 2 のみ: `src/llvm_bulk.rs`, `src/check.rs` の `Builtin` |
 

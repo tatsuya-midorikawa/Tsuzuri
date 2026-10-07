@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2。2026-10-06） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 承認済み（2026-10-06、GUIDE D-38）: D1（GUIDE §9 D-28「排他参照fieldは禁止する」の変更。チケット全体の前提）, D5（旧版草案の「`let mut` 所有値か `ref mut` 経由が必要」と「貸し直し中は record 全体へのアクセスを拒否」を外す）, Phase 2 |
-| 改善する劣位 | Rust 比: 排他借用フィールドがない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 改善する劣位 | Rust 比: 排他借用フィールドがない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | 共有借用フィールド（A09）: `src/check.rs` の record フィールド検査ループ（`contains_stored_mutable_reference`）と `Validation::check` の `Type::Record` 分岐、`src/ownership.rs` の `Checker::read_places` と `eval_value` の `E::Record`。排他参照の貸し直し: `src/check.rs` の `reborrow_operand`・`require_mutable_reference`・`coerce_argument`、`src/ownership.rs` の `Checker::place` の `E::Dereference` 分岐と `Checker::access` の `via` 判定。型の走査: `src/recursive.rs` の `stored_all`（明示スタックと `seen`）。パターン view: `src/ownership_control.rs` の `view` |
 | 主な影響ファイル | 変更: `src/check.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `tests/borrowed_records.rs`, `tests/fixtures/borrowed_records/Main.tz`, `tests/features.mjs`, `docs/language.md`, `_docs/language-reference/lifetimes.md`, `_docs/language-reference/ownership.md`, `_docs/feature-status.md`, `_docs/learn/why-tsuzuri.md`, `README.md`, `_features/README.md`。確認のみ（変更しない）: `src/regions.rs`, `src/polymorph.rs`, `src/llvm.rs`, `src/derive.rs`, `tests/generic_records.rs` |
 

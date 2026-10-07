@@ -37,22 +37,28 @@ flowchart TD
 
 ### 注釈が必須な場所
 
-1. **関数のシグネチャ**: `def` によるトップレベル関数宣言の引数と戻り値。
-   ```tsuzuri run=42
-   def add :: i64 -> i64 -> i64 = \x y -> x + y
-   add 20 22
-   ```
-   実行結果:
-   ```text
-   42
-   ```
-2. **レコードのフィールド**: レコード型宣言の各フィールド型。
-   ```text
-   record Point { x: f64, y: f64 }
-   ```
-3. **型エイリアスの右辺**: `type Name = ...` で別名を付ける対象の型。
-4. **共用体のペイロード**: `Circle of f64` の `f64`。
-5. **`const` の型**: `const Answer: i64 = 42`。コロンと型を省くと `E0002`（`expected ':' and an explicit constant type`）です。
+- **関数のシグネチャ**: `def` によるトップレベル関数宣言の引数と戻り値。
+- **レコードのフィールド**: レコード型宣言の各フィールド型。
+- **型エイリアスの右辺**: `type Name = ...` で別名を付ける対象の型。
+- **共用体のペイロード**: `Circle of f64` の `f64`。
+- **`const` の型**: `const Answer: i64 = 42`。コロンと型を省くと `E0002`（`expected ':' and an explicit constant type`）です。
+
+関数のシグネチャとレコードのフィールドは、どちらも型を省略できません。
+
+```tsuzuri run=42
+record Point { x: i64, y: i64 }
+
+def add :: i64 -> i64 -> i64 = \x y -> x + y
+
+let origin = Point { x: 20, y: 22 }
+add origin.x origin.y
+```
+
+実行結果:
+
+```text
+42
+```
 
 ### 型推論される場所
 

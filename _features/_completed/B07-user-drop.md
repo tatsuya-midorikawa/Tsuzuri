@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | D1（組み込みクラス `Drop` の追加と対象型の制限）、D2（`drop` の引数を `ref mut` にする）、D4（`Drop` 型からの move の禁止）は、2026-10-02 に利用者から「B07 の実装を完遂して」と依頼され、承認として扱った（実装で変えた点は「実装と検証」に記録）。Phase 2 は同日の「Phase 2 以降もすべて実装を完了させて」を依頼として扱った |
-| 改善する劣位 | C#/F# 比: `IDisposable`／`use` に相当する資源管理がない（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: ホスト資源を所有できない |
+| 改善する劣位 | C#/F# 比: `IDisposable`／`use` に相当する資源管理がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: ホスト資源を所有できない |
 | 手本にする既存実装 | 利用者 instance を持つ組み込みクラス: `Eq`・`Display`（`src/polymorph.rs` の `BUILTIN_CLASSES`・`Classes`、`tests/fixtures/display_parse/Main.tz` の `instance Display<Label>`）。型性質: `src/check.rs` の `Type::is_copy`・`Type::needs_drop` と組み込み制約の評価（`src/polymorph.rs` の `"Copy" => ty.is_copy(types)`）。drop glue: `src/llvm.rs` の `FunctionEmitter::drop_value` の `Type::Record`・`Type::Union` 分岐と `FunctionEmitter::spill`。反復 drop: `src/llvm_recursive.rs` の `emit_helpers`（`drop_pending`）。ホストの記録: `tests/fixtures/host_imports/Main.tz` と `tests/host_imports.mjs` |
 | 主な影響ファイル | `src/polymorph.rs`, `src/check.rs`, `src/derive.rs`, `src/ownership.rs`, `src/llvm.rs`, `src/llvm_recursive.rs`, `tests/user_drop.rs`（新規）, `tests/user_drop.mjs`（新規）, `tests/user_drop_runtime.c`（新規）, `tests/fixtures/user_drop/Main.tz`（新規）, `README.md`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/ownership.md`, `_docs/language-reference/generics-and-typeclasses.md`, `_docs/guides/from-fsharp.md`, `_docs/feature-status.md`, `_features/README.md` |
 

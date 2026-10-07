@@ -120,7 +120,7 @@ AArch64 の inline 互換検査（callee の機能ビットが caller の部分�
 
 - `docs/benchmarks.md` の「測定条件」「C++20 とのネイティブ比較」などは、ネイティブの公開関数を外部 ABI で呼び、LTO を使わない。
   LTO の有無による時間はまだ測っていない。
-- [なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md) は、ホスト境界には引数変換・呼び出しなどのコストがあり、細かすぎる呼び出しは不利になり得ると説明している。
+- [なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md) は、ホスト境界には引数変換・呼び出しなどのコストがあり、細かすぎる呼び出しは不利になり得ると説明している。
 
 ## 目標と指標
 
