@@ -88,7 +88,7 @@ C# と F# は、静的な型と .NET のライブラリでアプリケーショ�
 ### 短所
 
 - .NET の標準ライブラリ、NuGet、GUI、Web、データベース、ネットワーク API を、そのままは使えません。標準の OS API は、ファイル、ディレクトリ、環境、時刻、乱数、プロセスに限られます。
-- JSON の直列化の標準ライブラリはありません。計画は [D08](../../../_features/D08-json-serialization.md) です。文字列補間と、線形時間の正規表現 [Regex](../built-in-types-and-modules/regex.md) は使えます。
+- 直列化は JSON（[Json](../built-in-types-and-modules/json.md)）と CBOR（[Cbor](../built-in-types-and-modules/cbor.md)）を `deriving (Encode, Decode)` で扱えますが、.NET の `System.Text.Json` のような多くの形式・属性・変換器の生態系はありません。文字列補間と、線形時間の正規表現 [Regex](../built-in-types-and-modules/regex.md) は使えます。
 - GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換える内部可変性はまだありません（F10）。
 - C# の `async` / `await` や F# の非同期ワークフローに相当する基盤はありません（[B08](../../../_features/B08-async.md)）。REPL もありません（[G13](../../../_features/G13-repl.md)）。
 - 記法が F# に近い部分があっても、所有権の移動と、失敗の扱いが同じとは限りません。`Task` は非同期ではなく、一回実行の計算です。
@@ -131,7 +131,6 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 - GUI、Web、データベース、ネットワークが本体のアプリケーション。
 - npm、NuGet、crates.io のライブラリを、そのまま依存にしたい開発。
 - 汎用の非同期 I/O、対話環境、成熟した GPU カーネル開発。
-- JSON を、標準ライブラリだけで済ませたい処理。
 - GC に任せた共有グラフや、循環するオブジェクトをそのまま写すモデル。循環は [Arena](../built-in-types-and-modules/arena.md) のハンドルで表し直します。
 - Windows の OS API に依存するネイティブアプリ。到達すると `E2002` です。
 

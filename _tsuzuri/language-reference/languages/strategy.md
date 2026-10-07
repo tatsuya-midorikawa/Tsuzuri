@@ -139,7 +139,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002` |
 | 非同期計算、ネットワーク | 計画中 | [B08](../../../_features/B08-async.md)、E09 |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |
-| JSON 直列化、GPU の浮動小数点と自動接続 | 計画中 | D08、[F09](../../../_features/F09-gpu-float-runtime.md) |
+| JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
+| GPU の浮動小数点と自動接続 | 計画中 | [F09](../../../_features/F09-gpu-float-runtime.md) |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。内部可変性はない |
 | Atomic / Mutex / Channel、多次元配列 | 計画中 | F10、C11 |
 | REPL、増分コンパイル、カバレッジ、edition、追加ターゲット | 計画中 | G13、G15、G16、G17、G18、G19 |
