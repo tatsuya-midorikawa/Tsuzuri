@@ -401,6 +401,21 @@ try {
   writeFileSync(join(debug, "Main.tz"), "export def add :: i64 -> i64 -> i64\nfn add a b = Debug.trace (a + b)\n");
   run(["build", debug, "--target", "wasm32", "--debug-output", "-o", join(debug, "debug.wasm")]);
   await assert.rejects(load(readFileSync(join(debug, "debug.wasm"))), { message: "bindings do not support imports from 'tsuzuri_debug'; build a library without IO main or --debug-output" });
+  // Any explicit import module name, `__proto__` included, stays an ordinary property of the
+  // import object, and a host import is only the caller's own property (PR #17 review).
+  const names = join(root, "names");
+  mkdirSync(names);
+  writeFileSync(join(names, "Main.tz"), 'extern "__proto__" "answer" def answer :: unit -> i64\nextern "env" "toString" def text :: unit -> i64\n\nexport def ask :: i64\nfn ask = answer () + text ()\n');
+  run(["build", names, "--target", "wasm32", "--emit", "bindings-js", "-o", join(names, "names.mjs")]);
+  run(["build", names, "--target", "wasm32", "-o", join(names, "names.wasm")]);
+  const namesBindings = await import(pathToFileURL(join(names, "names.mjs")).href);
+  const namesModule = new WebAssembly.Module(readFileSync(join(names, "names.wasm")));
+  await assert.rejects(namesBindings.load(namesModule, { imports: { answer: () => 40n } }), { name: "TypeError", message: "missing import 'toString'" });
+  await assert.rejects(namesBindings.load(namesModule, { imports: Object.create({ answer: () => 40n, toString: () => 2n }) }), { name: "TypeError", message: "missing import 'answer'" });
+  const namesApi = await namesBindings.load(namesModule, { imports: { answer: () => 40n, toString: () => 2n } });
+  assert.equal(namesApi.exports.ask(), 42n);
+  assert.ok(!Object.hasOwn(Object.prototype, "answer"));
+  assert.equal(({}).answer, undefined);
   const wide = join(root, "wide.wasm");
   run(["build", fixture, "--target", "wasm64", "-o", wide]);
   await assert.rejects(load(readFileSync(wide), { imports: hostImports }), { message: "bindings support wasm32 modules only; build the .wasm with --target wasm32" });

@@ -378,9 +378,12 @@ function inspect(module, threads) {
   return used;
 }
 
+// Only the caller's own properties count, so an import named like `toString` never finds an inherited function.
 function checkHostImports(used, hostImports) {
   for (const [name] of used) {
-    if (typeof hostImports?.[name] !== "function") throw new TypeError(`missing import '${name}'`);
+    if (!Object.hasOwn(Object(hostImports ?? {}), name) || typeof hostImports[name] !== "function") {
+      throw new TypeError(`missing import '${name}'`);
+    }
   }
 }
 
@@ -520,7 +523,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
 
   // The import object of one instance: each host function behind its converters.
   function wrapImports(owner) {
-    const object = {};
+    // Null prototypes keep every module and import name, `__proto__` included, an own property.
+    const object = Object.create(null);
     for (const [name, namespace, parameterTypes, resultType] of used) {
       const host = hostImports[name];
       const parameters = parameterTypes.map(resolve);
@@ -577,7 +581,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
           throw thrown;
         }
       };
-      (object[namespace] ??= {})[name] = imported;
+      (object[namespace] ??= Object.create(null))[name] = imported;
     }
     return object;
   }
@@ -589,7 +593,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
 
   function importObject(owner) {
     const object = wrapImports(owner);
-    for (const [namespace, values] of Object.entries(extra?.(owner) ?? {})) object[namespace] = { ...object[namespace], ...values };
+    for (const [namespace, values] of Object.entries(extra?.(owner) ?? {})) object[namespace] = Object.assign(Object.create(null), object[namespace], values);
     return object;
   }
 
