@@ -2926,7 +2926,7 @@ match Arena.insert graph (Node { value: 1, edges: Vec.empty() }) with   // (Aren
 `insert`・`remove`・`update` は arena を消費して返します。`remove` は値の所有権を呼び出し元へ返し、`update` は値を取り出して `change` を一度だけ呼び、結果を同じ位置へ戻します（`Vec.set` のように旧値を解放しません）。`get`・`at`・`iter` の結果は arena の共有借用を持ち、その間の消費は `E1014` です。
 arena の drop は値を詰めた位置の昇順に既存の drop glue で解放し、続いて整数のバッファを解放します。循環するグラフも再帰なしで解放されます。arena を捕捉した関数値の複製は独立した複製を作りますが、arena ID も複製されるため、同じハンドルが両方で有効です。
 空き slot は次の世代 `g`（1 以上）を `-1 - g` として、退役した slot は `-1` として持ち、ハンドルの世代は負になりません。そのため、複製の後に一方で作ったハンドルは、もう一方では使用中で世代の等しい slot の値だけを指し、空き slot・退役 slot には一致せず、どちらの複製の空き slot の列や詰めた位置も壊しません。
-ハンドルの `Eq`・`Ord`・`Hash` は添字と世代だけを使い、arena ID を含みません（`Ord` は添字、次に世代の辞書順）。arena ID は並列の task では実行順に依存するため、観測できる結果を API の呼び出し列だけで決めるためです。`Display`／`Debug` の instance はありません。
+ハンドルの `Eq`・`Ord`・`Hash` は添字と世代だけを使い、arena ID を含みません（`Ord` は添字、次に世代の辞書順）。arena ID は並列の task では実行順に依存するため、観測できる結果を API の呼び出し列だけで決めるためです（`Eq` だけに含めると `Ord` と食い違います）。別の arena で同じ slot・同じ世代のハンドルは等しく比較されるので（Rust の `slotmap` のキーと同じ）、ハンドルをキーにする `Map`・`HashMap`・`Set` には 1 つの arena のハンドルだけを入れ、複数の arena を扱うときは利用者が決めた arena の区別をキーに含めます。`Display`／`Debug` の instance はありません。
 arena ID は std 専用の組み込み関数 `Arena.__next_id`（std の `Arena` モジュール以外からの呼び出しは `E1022`）が、プロセス全体のカウンターを原子的に増やして 1 から採番します。native と `--wasm-feature threads` では atomic 命令、既定の wasm32 では通常の加算で、WASM の import は増えません。$2^{63} - 1$ 個を超えて作るとトラップします。
 std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで使わない（phantom な）宣言を許すのは、コンパイラが登録した不透明な標準レコードだけです。利用者のレコードの未使用の型引数は従来どおり `E1024` です。
 要素の排他借用、複数要素の同時借用、複数の task による共有読み取り、`clear`・`retain` などは提供しません。

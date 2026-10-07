@@ -890,3 +890,10 @@ fn arena_ring count =
   そのため「Arena を使わないプログラムの IR は変わらない」は、生成 id のずれも含めて byte 単位で満たす（`2ee813f` の release コンパイラと比べ、既存の fixture と例の
   native／wasm32 の IR 132 個がすべて byte 一致）。
   無修飾の `Handle` は従来どおり `File.Handle` を指す。`Rc`／`Arc` は組み込みの型で std のソースを持たないので、この仕組みの対象外。
+
+### PR #17 の Copilot のレビュー（2026-10-08）
+
+- 「ハンドルの `Eq`・`Ord`・`Hash` が arena ID を含まず、別の arena のハンドルが `Map`／`HashMap` のキーとして同一視される」という指摘には、D5 を保った。
+  arena ID の数値は並列の task で実行ごとに変わり得るので、`Ord`・`Hash` に入れるとキー順とハッシュが決定的でなくなり、`Eq` だけに入れると `Ord` と食い違う。
+  Rust の `slotmap` のキーと同じ比較であることと、表のキーには 1 つの arena のハンドルだけを入れること（複数の arena では利用者の区別をキーに含めること）を
+  `arena.md` と docs/language.md に明記した。arena への読み書きは別の arena のハンドルを常に検出する。
