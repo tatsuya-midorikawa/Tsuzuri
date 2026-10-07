@@ -10,6 +10,7 @@
 - `--emit header` と `--emit object` を対にして、C からリンクします。
 - 名前を書かない `extern` は `tsuzuri_host_<モジュール>_<名前>` になります。
 - 所有して返ったバッファは、ホストが `tsuzuri_free` で 1 回だけ解放します。
+- `--emit shared` で共有ライブラリを出し、`--emit bindings-cs`／`bindings-py`／`bindings-cpp` で C#、Python、C++ のバインディングを生成できます。
 - C ヘッダーからの束縛の自動生成は、0.1.0 にはありません。
 
 ## 公開できる型
@@ -230,6 +231,127 @@ ABC
 
 `string` は `uint16_t` の列、`utf8string` は検証済みの `uint8_t` です。不正な UTF-8 はトラップし、暗黙の文字コード変換はしません。
 
+## 共有ライブラリと各言語のバインディング
+
+`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。Windows では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
+
+```sh
+tsuzuri build quote --emit shared -o libquote.dylib
+```
+
+export するのは `tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`--trap-mode return` の `tsuzuri_try_<name>` だけです。ランタイムやリンクしたホストの関数は外から見えません。インストール名（macOS）と soname（Linux）は出力のファイル名で、利用側は `@rpath` などで探します。実行ファイルと同じく、`extern` の import はリンク時に解決します。`--link`、`-l`、`-L` と `[native]` を受け、未解決のシンボルが残ると `E2002` です。`--allocator counting` か `--trap-mode return`（`.trap.json` も書きます）を付けられます。`--allocator host` は `E2000` です。`export def` が無いと `E2004` です。
+
+`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じソースから C#、Python、C++ のバインディングを生成します。WebAssembly の `bindings-js` と同じく LLVM を通さず、`-O` は無視します。出力の拡張子はそれぞれ `.cs`、`.py`、`.hpp` で、拡張子を除いたファイル名がライブラリの名前になります（`quote.py` は `libquote.dylib` を探します）。`--trap-info` などライブラリのビルド用のオプションを付けると `E2000` です。`--trap-mode return` を付けると、`tsuzuri_try_<name>` を呼ぶ版になります。ライブラリも `--trap-mode return` でビルドします。
+
+| | C# | Python | C++ |
+| --- | --- | --- | --- |
+| 呼び出し | `[LibraryImport]` の `static partial` メソッド（.NET 8 以降、`AllowUnsafeBlocks`） | `ctypes` の `Library` のメソッド | `tsuzuri::<name>` 名前空間の `inline` 関数（C++20） |
+| 整数・`bool` | `sbyte`〜`ulong`、`bool` | `int` と `bool` を範囲検査（範囲外は `OverflowError`） | `std::int8_t`〜`std::uint64_t`、`bool` |
+| 借用入力 | `ReadOnlySpan<long>` / `<double>` / `<byte>`、`ReadOnlySpan<char>`（`string`）、UTF-8 の `ReadOnlySpan<byte>` | バッファか数の列、`str`、`str` か `bytes` | `std::span<const T>`、`std::u16string_view`、UTF-8 の `std::string_view` |
+| 所有結果 | `SafeHandle` の `OwnedBuffer<T>`、`OwnedString`、`OwnedUtf8String`（`Dispose` で `tsuzuri_free`） | `array.array`、`bytes`、`str` に複製して、すぐ `tsuzuri_free` | `buffer<T>`、`string_buffer`、`utf8string_buffer`（デストラクターで `tsuzuri_free`） |
+| レコード | C の配置の `struct`。32-bit に正規化したフィールドは型付きのプロパティ、固定長配列は `[InlineArray]` | `dataclass`（固定長配列は `tuple`） | C ヘッダーの `struct` |
+| ハンドル | `record struct`（`nint Value`） | `value` を持つ不変の `dataclass` | C ヘッダーの `typedef` |
+| トラップ | プロセスが終わる。`--trap-mode return` なら `TsuzuriTrapException` | プロセスが終わる。`--trap-mode return` なら `TsuzuriTrap` | プロセスが終わる。`--trap-mode return` なら `tsuzuri::<name>::trap_error` |
+
+不正な UTF-8 はトラップになるので、3 つとも呼ぶ前に検査して、C# は `ArgumentException`、Python は `ValueError`、C++ は `std::invalid_argument` を投げます。トラップの例外は `--trap-mode return` の状態 1 で、`site` は `.trap.json` の ID、`kind` はトラップの種類です。同じスレッドでの入れ子の呼び出し（状態 2）は、C# の `InvalidOperationException`、Python の `RuntimeError`、C++ の `std::logic_error` です。
+
+次のモジュールを例にします。
+
+```tsuzuri
+export def total :: ref [i64] -> i64 = \prices ->
+    Array.sum prices
+
+export def label :: ref string -> string = \name ->
+    clone_string name + "!"
+
+export def per_unit :: i64 -> i64 -> i64 = \price count ->
+    price / count
+```
+
+Python は、`.py` の隣の `libquote.dylib` を読み込みます。
+
+```sh
+tsuzuri build quote --emit bindings-py -o quote.py
+python3 -c "import quote; lib = quote.load(); print(lib.total([1, 2, 39]), lib.label('tea'))"
+```
+
+実行結果:
+
+```text
+42 tea!
+```
+
+C# は、生成した `quote.cs` をプロジェクトに入れます。ライブラリはアプリの隣に置くか、`NativeLibrary.SetDllImportResolver` で場所を教えます。`label` の結果は `using` で解放します。
+
+```csharp
+using System;
+using Tsuzuri.Bindings;
+
+Console.WriteLine(Quote.total([1, 2, 39]));
+using var label = Quote.label("tea");
+Console.WriteLine(label.ToString());
+```
+
+実行結果:
+
+```text
+42
+tea!
+```
+
+C++ は、同じソースの C ヘッダー `quote.h` を隣に置き、`quote.hpp` を include します。
+
+```sh
+tsuzuri build quote --emit header -o quote.h
+tsuzuri build quote --emit bindings-cpp -o quote.hpp
+clang++ -std=c++20 main.cpp -I . libquote.dylib -Wl,-rpath,. -o quote_cpp
+```
+
+```cpp
+#include <iostream>
+#include <vector>
+#include "quote.hpp"
+
+int main() {
+    const std::vector<std::int64_t> prices{1, 2, 39};
+    std::cout << tsuzuri::quote::total(prices) << '\n';
+    const auto label = tsuzuri::quote::label(u"tea");
+    std::cout << label.size() << '\n';
+}
+```
+
+実行結果:
+
+```text
+42
+4
+```
+
+`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。
+
+```sh
+tsuzuri build quote --emit shared --trap-mode return -o libquote_trap.dylib
+tsuzuri build quote --emit bindings-py --trap-mode return -o quote_trap.py
+```
+
+```python
+import quote_trap
+
+lib = quote_trap.load()
+try:
+    lib.per_unit(10, 0)
+except quote_trap.TsuzuriTrap as error:
+    print(error)
+print(lib.per_unit(10, 4))
+```
+
+実行結果:
+
+```text
+trap: integer division by zero (site 82)
+2
+```
+
 ## ホスト提供の allocator
 
 `--allocator host` は、文字列、配列、`Vec`、クロージャの環境、`tsuzuri_alloc` を含むヒープを、ホストの 3 関数へ向けます。`object`、`llvm`、`header`、WASM だけで、実行ファイルや `--trap-mode return` とは排他です。
@@ -272,6 +394,7 @@ C のヘッダーを読んで `extern` 宣言を生成する機能は、Tsuzuri 
 - ヘッダーとオブジェクトを対で出し、C の `main` とリンクします。
 - リンク名を書けば `sqrt` のような既存シンボルを、接頭辞なしで呼べます。
 - 所有バッファは `tsuzuri_free`、ヒープの差し替えは `--allocator host` です。
+- `--emit shared` の共有ライブラリを、生成した C#、Python、C++ のバインディングから呼べます。
 - ヘッダーから `extern` を自動生成する機能は、まだありません。
 
 ## 関連項目

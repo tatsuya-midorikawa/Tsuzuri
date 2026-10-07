@@ -153,7 +153,7 @@ flowchart TD
 tsuzuri build --target wasm32 --emit wasm --wasm-feature threads -o app.wasm
 ```
 
-`run` や `check` にこのフラグは付けられません。`E2000` です。実行には Node.js 20 以降の `worker_threads` と、共有メモリに対応したホストが要ります。同梱の `src/runtime/wasm-threads.mjs` がプールを作ります。ワーカーの初期化に失敗したとき、逐次の成功へすり替えることはありません。
+`run` や `check` にこのフラグは付けられません。`E2000` です。実行には、共有メモリに対応したホストが要ります。Node.js 20 以降では同梱の `src/runtime/wasm-threads.mjs` が `worker_threads` でプールを作り、ブラウザでは `--emit bindings-js --wasm-feature threads` で生成したグルーが Web Worker でプールを作ります（[スレッドのグルー](../compiler/webassembly.md#スレッドのグルー)）。ワーカーの初期化に失敗したとき、逐次の成功へすり替えることはありません。
 
 処理途中でトラップが発生した場合、部分結果の即時解放や未完了タスクの強制キャンセルは保証されません。また、計算量が極めて小さい処理では、メモリ確保やスレッド同期のオーバーヘッドが並列化の効果を上回ることがあります。ベンチマークを測定する際は、データ規模、要素のコピー費用、プールの初期化、同期コストをそれぞれ切り分けて評価してください。
 

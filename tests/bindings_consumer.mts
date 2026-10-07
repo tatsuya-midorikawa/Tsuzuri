@@ -46,6 +46,8 @@ try {
     void reason;
   }
 }
+const recreated: Promise<void> = api.ready();
+await recreated;
 void [sum, text, copied, sample, first, total, handle];
 
 // @ts-expect-error i64 arguments are bigint

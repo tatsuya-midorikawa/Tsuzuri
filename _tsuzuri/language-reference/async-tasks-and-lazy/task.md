@@ -290,7 +290,7 @@ POSIX では pthreads、Windows では Win32 のスレッドプールを使っ�
 
 Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature threads` で出した WASM かオブジェクトだけです。`run`、`check`、ネイティブ、LLVM テキストへの指定は `E2000` です。simd128 とは併用できます。
 
-同梱のホストは Node.js 20 以降向けの `src/runtime/wasm-threads.mjs` です。共有メモリ（`SharedArrayBuffer`）が要ります。ブラウザ向けの本番グルーは未実装です。COOP（`same-origin`）と COEP（`require-corp`）を自分で満たし、UI スレッドでは atomic wait しないホストを別に書く必要があります。初期化に失敗したプールを、黙って逐次成功にはしません。
+同梱のホストは Node.js 20 以降向けの `src/runtime/wasm-threads.mjs` です。共有メモリ（`SharedArrayBuffer`）が要ります。ブラウザでは、`--emit bindings-js --wasm-feature threads` で生成したグルーが Web Worker のプールを作り、export を Worker で実行して `Promise` を返します（[スレッドのグルー](../compiler/webassembly.md#スレッドのグルー)）。ページは COOP（`same-origin`）と COEP（`require-corp`）付きで配信します。満たさないページでは、グルーが `Error` を投げます。初期化に失敗したプールを、黙って逐次成功にはしません。
 
 `Task.run` はネイティブでも WASM でも同期呼び出しです。UI スレッドをブロックしない API ではありません。
 

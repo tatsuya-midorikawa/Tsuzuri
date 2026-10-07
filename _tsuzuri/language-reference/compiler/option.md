@@ -8,7 +8,7 @@
 
 - 最適化の既定は `-O3` です。`test` だけ既定が `-O0` です。fast-math は使いません。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
-- リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` だけが受けます。
+- リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
 - フラグの重複や、サブコマンドとの不一致は終了コード 2 の `E2000` です。
 - ツールの場所は、環境変数、配布物の `bin/`、PATH の順です。
 
@@ -53,11 +53,13 @@
 | --- | --- | --- |
 | `-o` / `--output PATH` | 入力の拡張子を差し替えたパス | 成果物、または `doc` のディレクトリ。親は作られます |
 | `--target native\|wasm32\|wasm64` | `native` | `wasm64` は 64-bit の線形メモリです |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|bindings-js` | native は `exe`、WASM は `wasm` | 何を残すか |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | native は `exe`、WASM は `wasm` | 何を残すか |
 
-拡張子は、native の実行ファイルが macOS / Linux で空、Windows で `.exe`、オブジェクトが `.o` または Windows の `.obj`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、JavaScript のバインディングが `.mjs` です。
+拡張子は、native の実行ファイルが macOS / Linux で空、Windows で `.exe`、オブジェクトが `.o` または Windows の `.obj`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、共有ライブラリが macOS で `.dylib`、Linux で `.so`、バインディングが JavaScript の `.mjs`、C# の `.cs`、Python の `.py`、C++ の `.hpp` です。
 
-`--emit bindings-js` は `--target wasm32` だけで使え、`<name>.mjs` の隣に TypeScript 宣言 `<name>.d.mts` も書きます。`-o` は `.mjs` で終わる必要があります。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature`、`--allocator` は `.wasm` のビルドに付けるよう `E2000` で求めます。使い方は [WebAssembly への出力](webassembly.md#型付きのバインディングを生成する) にあります。
+`--emit bindings-js` は `--target wasm32` だけで使え、`<name>.mjs` の隣に TypeScript 宣言 `<name>.d.mts` も書きます。`-o` は `.mjs` で終わる必要があります。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator` は `.wasm` のビルドに付けるよう `E2000` で求めます。`--wasm-feature threads` を付けると、Web Worker のスレッドプールを作るグルーになります。使い方は [WebAssembly への出力](webassembly.md#型付きのバインディングを生成する) にあります。
+
+`--emit shared` は native の共有ライブラリです。Windows ではまだ使えません（`E2000`）。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は `--target native` だけで使え、`-o` の拡張子を除いたファイル名がライブラリの名前です。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--allocator`、`--freestanding` は共有ライブラリのビルドに付けるよう `E2000` で求めます。`--trap-mode return` は、ライブラリとバインディングの両方に付けます。使い方は [ネイティブ連携](native-interop.md#共有ライブラリと各言語のバインディング) にあります。
 
 `--emit exe` は `--target native`、`--emit wasm` は `wasm32` か `wasm64` が必要です。逆にすると、次の 1 文で止まります。
 
@@ -103,9 +105,9 @@ add 20 22
 | `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可 |
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
 | `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
-| `--trap-mode return` | オフ | native の `object` / `llvm` / `header`。各 export に `tsuzuri_try_<name>` を足す |
+| `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
 
-`--trap-mode return` は、`object` と `llvm` では `--trap-info` も有効にします。`header` では位置表を出さないので、`--trap-info` とは組み合わせません。戻り値は 0 が成功、1 がトラップ、2 が同じスレッドでの再入です。詳しくは [言語仕様のトラップ位置](../../../docs/language.md#トラップ位置) を見てください。
+`--trap-mode return` は、`object`、`llvm`、`shared` では `--trap-info` も有効にします。`header` では位置表を出さないので、`--trap-info` とは組み合わせません。戻り値は 0 が成功、1 がトラップ、2 が同じスレッドでの再入です。詳しくは [言語仕様のトラップ位置](../../../docs/language.md#トラップ位置) を見てください。
 
 `--json` のフィールドは [診断メッセージとエラーコード](diagnostics.md) にあります。引数エラーも同じコードで、パスは `<command line>` です。
 
@@ -140,11 +142,11 @@ add 20 22
 | `--link PATH` | なし | ホストのオブジェクトか静的ライブラリ。繰り返せる |
 | `-l NAME` | なし | システムライブラリ名。例は `-l sqlite3`。`lib` や拡張子は付けない |
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
-| `--allocator system\|host\|counting` | `system` | `object`、`llvm`、`header`、WASM のヒープ |
+| `--allocator system\|host\|counting` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` まで |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
 | `--no-cache` | キャッシュ有効 | `build` と `run` のキャッシュを読まない、書かない |
 
-`[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイル以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
+`[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
 ```text
 link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe
@@ -172,6 +174,11 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--emit bindings-js` が `--target wasm32` でない | `'--emit bindings-js' requires '--target wasm32'` |
 | `--emit bindings-js` に `.wasm` 用のオプション | `--trap-info is not valid for bindings output; pass it when building the .wasm`（各オプション名で同じ形） |
 | `--emit bindings-js` の `-o` が `.mjs` でない | `bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'` |
+| `--emit shared` や `bindings-cs` などが `--target native` でない | `'--emit shared' requires '--target native'`（`bindings-cs` などは各名前で同じ形） |
+| Windows で `--emit shared` | `'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL` |
+| `--emit shared` と `--allocator host` | `--allocator host cannot be combined with --emit shared: ...` |
+| `bindings-cs` などに共有ライブラリ用のオプション | `--trap-info is not valid for bindings output; pass it when building the shared library`（各オプション名で同じ形） |
+| `bindings-cs` などの `-o` の拡張子が違う | `bindings output must end with '.cs'; its file name, without the extension, names the shared library`（`.py`、`.hpp` も同じ形） |
 | `--freestanding` が exe | `--freestanding requires object, LLVM IR, or header output` |
 | `--freestanding` なのに allocator が host でない | `--freestanding requires --allocator host` |
 | `fmt` に `-O` や `--deny-warnings` | `fmt does not use optimization, CPU tuning, or compiler warning options` |

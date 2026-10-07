@@ -7,6 +7,7 @@
 ## この記事のポイント
 
 - `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
+- `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
 - 線形メモリの既定上限は 16 MiB、メインスタックは 1 MiB です。
@@ -79,7 +80,7 @@ tsuzuri build shop --target wasm32 --emit bindings-js -o shop.mjs
 tsuzuri build shop --target wasm32 -o shop.wasm
 ```
 
-グルーはソースだけから作り、LLVM を通しません。`-O` は受け付けて無視します。`.wasm` は同じソースから別にビルドし、`-O3` や `--trap-info` はそちらに付けます。`--target wasm32` が必須で、`-o` は `.mjs` で終わります。TypeScript は `.mjs` の宣言を `.d.ts` から読まず、`.d.mts` からだけ読むためです。`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature`、`--allocator` を付けると `E2000`（`... is not valid for bindings output; pass it when building the .wasm`）、`export def` が 1 つもないと `E2004` です。同じソースからは、バイト単位で同じグルーができます。
+グルーはソースだけから作り、LLVM を通しません。`-O` は受け付けて無視します。`.wasm` は同じソースから別にビルドし、`-O3` や `--trap-info` はそちらに付けます。`--target wasm32` が必須で、`-o` は `.mjs` で終わります。TypeScript は `.mjs` の宣言を `.d.ts` から読まず、`.d.mts` からだけ読むためです。`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator` を付けると `E2000`（`... is not valid for bindings output; pass it when building the .wasm`）、`export def` が 1 つもないと `E2004` です。同じソースからは、バイト単位で同じグルーができます。
 
 次のモジュールを例にします。
 
@@ -117,7 +118,7 @@ export interface Imports {
 }
 ```
 
-`load` は `.wasm` のバイト列か `WebAssembly.Module` を受け取り、`exports` と `withBorrowed` を持つオブジェクトを返します。ホスト関数は、WASM の import 名をキーにして `imports` に渡します。
+`load` は `.wasm` のバイト列か `WebAssembly.Module` を受け取り、`exports`、`withBorrowed`、`ready` を持つオブジェクトを返します。ホスト関数は、WASM の import 名をキーにして `imports` に渡します。
 
 ```javascript
 import { readFile } from "node:fs/promises";
@@ -147,7 +148,7 @@ trap (site 0) trap
 2n
 ```
 
-グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。
+グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。`--wasm-feature threads` を付けたときのグルーは、[スレッドのグルー](#スレッドのグルー) で説明します。
 
 ### 型の対応
 
@@ -211,7 +212,9 @@ try {
 trap at shop/Main.tz:10:5 (integer division by zero)
 ```
 
-グルーは、モジュールが宣言した import だけを渡し、import を足しません。`--wasm-feature threads`、IO の入口、`--debug-output`、`--wasm-host wasi`、`--allocator host` で作った `.wasm` は、`load` が `Error` で拒否します。別のソースから作った `.wasm` は、`module does not match bindings: missing export 'tz_add'; regenerate the bindings from the same sources` のように拒否します。グルーのポインタは 32 bit なので、`--target wasm64` の `.wasm` も拒否します（`bindings support wasm32 modules only; build the .wasm with --target wasm32`）。
+Chrome のメインスレッドは、8 MB を超えるモジュールの同期の作り直しを拒みます。そのときの呼び出しは `Error`（`the WASM instance could not be recreated synchronously after a failure; await ready() to recreate it asynchronously, then call again`）で失敗するので、`await api.ready()` で非同期に作り直してから呼び直します。`ready()` は、インスタンスがあればすぐに解決します。9.4 MB のモジュールで、Chrome と Playwright の Chromium は同期の作り直しを拒み、`ready()` のあとの呼び出しは成功しました。WebKit は同期のまま作り直せました。
+
+グルーは、モジュールが宣言した import だけを渡し、import を足しません。`--wasm-feature threads`（後述のスレッドのグルーを使います）、IO の入口、`--debug-output`、`--wasm-host wasi`、`--allocator host` で作った `.wasm` は、`load` が `Error` で拒否します。別のソースから作った `.wasm` は、`module does not match bindings: missing export 'tz_add'; regenerate the bindings from the same sources` のように拒否します。グルーのポインタは 32 bit なので、`--target wasm64` の `.wasm` も拒否します（`bindings support wasm32 modules only; build the .wasm with --target wasm32`）。
 
 ## Node.js から直接呼ぶ
 
@@ -303,14 +306,84 @@ api.tsuzuri_free(out);
 
 `--wasm-feature threads` は wasm32 の object か WASM だけです。スカラーだけのモジュールでも、共有メモリの `env.memory` と `tsuzuri_threads.worker_ready` を import しました。ワーカーを起動するランタイムは `tsuzuri_threads.spawn_workers` も宣言します。その呼び出しに到達しないモジュールでは、リンカーが import から外します。
 
-ホストの実装は、リポジトリの `src/runtime/wasm-threads.mjs` が Node.js 向けの参照です。自分で書くときの条件は [Web ホストの README](../../../examples/web/README.md) にあります。
+ホストの実装は、リポジトリの `src/runtime/wasm-threads.mjs` が Node.js 向けの参照です。ブラウザ向けには、後述の [スレッドのグルー](#スレッドのグルー) を生成できます。自分で書くときの条件は [Web ホストの README](../../../examples/web/README.md) にあります。
 
 - 共有の `WebAssembly.Memory` を、モジュールが要求する最大ページ数で作る。既定は 256 ページ、つまり 16 MiB です。
 - `tsuzuri_threads_init` にワーカー数を渡してから計算を呼ぶ。
 - 各ワーカーの `__stack_pointer`、`tsuzuri_stack_base`、`tsuzuri_stack_top` を、独立した 256 KiB の範囲に設定してから `tsuzuri_thread_entry` を呼ぶ。
 - ブラウザでは、HTTPS か localhost で `Cross-Origin-Opener-Policy: same-origin` と `Cross-Origin-Embedder-Policy: require-corp` を配信する。UI スレッドでは atomic wait できないので、計算の呼び出し元も Worker に置きます。
 
-ブラウザ向けの本番グルーは未実装です。COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
+COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
+
+### スレッドのグルー
+
+`--emit bindings-js` に `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーを出します。`.wasm` も、同じソースから `--wasm-feature threads` でビルドします。
+
+```sh
+tsuzuri build shop --target wasm32 --wasm-feature threads --emit bindings-js -o shop.mjs
+tsuzuri build shop --target wasm32 --wasm-feature threads -O3 -o shop.wasm
+```
+
+`load` は最初に、ページが cross-origin isolated か（`crossOriginIsolated` が true で、`SharedArrayBuffer` があるか）を確かめます。COOP / COEP の無いページでは、ワーカーを起動せずに `Error`（`WASM threads need a cross-origin isolated page: ...`）を投げます。逐次実行には切り替えません。
+
+プールの手順は `src/runtime/wasm-threads.mjs` と同じです。共有の `WebAssembly.Memory` を `.wasm` の要求する最大ページ数で作り、`workers` 個の補助ワーカーと、export を実行する調整役のワーカーを 1 つ起動します。`WebAssembly.Module` を渡したときは上限を読めないので、既定の 256 ページです。`memory` で自分のメモリを渡すこともできます。ブラウザのメインスレッドは atomic wait できないので、export は調整役のワーカーで動き、すべて `Promise` を返します。`workers` は 0 から 31 で、既定は `navigator.hardwareConcurrency - 1` です。0 なら、調整役がすべてのタスクを自分で実行します。グルーは自分のファイル（`import.meta.url`）を module worker として起動するので、`.mjs` はバンドルせずに、そのまま同じオリジンから配信します。
+
+ホスト関数は、ワーカーごとのインスタンスに渡します。関数の代わりに、`createImports({ workerId, data })` を export するモジュールの URL を `importsModule` に渡します。`workerId` は調整役が 0、補助ワーカーが 1 からです。`data` は `importData` の構造化複製で、`SharedArrayBuffer` は共有されます。import を持つモジュールでは、`importsModule` が必須です。
+
+上の `shop` を、次のソースに置き換えた例です。1 万要素の `Parallel.map` は 3 つのチャンクに分かれ、プールのスレッドで並列に動きます。
+
+```tsuzuri
+extern def tax_rate :: unit -> i64
+
+export def with_tax :: ref [i64] -> [i64] = \prices ->
+    Parallel.map (\price -> price + price * tax_rate () / 100) prices
+
+export def per_unit :: i64 -> i64 -> i64 = \price count ->
+    price / count
+```
+
+`host.mjs` は、どのワーカーにも同じ税率を返します。
+
+```javascript
+export function createImports({ workerId }) {
+  return { "Main.tax_rate": () => 10n };
+}
+```
+
+ページが読み込む `app.mjs` です。
+
+```javascript
+import { load, TsuzuriTrap } from "./shop.mjs";
+
+const bytes = await (await fetch("./shop.wasm")).arrayBuffer();
+const api = await load(bytes, { workers: 2, importsModule: new URL("./host.mjs", import.meta.url) });
+const prices = BigInt64Array.from({ length: 10000 }, (_, index) => BigInt(index));
+const taxed = await api.exports.with_tax(prices);
+console.log(taxed[200].toString(), taxed.length);
+try {
+  await api.exports.per_unit(10n, 0n);
+} catch (error) {
+  console.log(error instanceof TsuzuriTrap, error.message);
+}
+try {
+  await api.exports.per_unit(10n, 4n);
+} catch (error) {
+  console.log(error.message);
+}
+await api.close();
+```
+
+COOP / COEP を付けて配信したページの、コンソールの出力です。
+
+```text
+220 10000
+true trap (site 0)
+the WASM thread pool stopped after a failure; load the module again
+```
+
+引数は、1 スレッドのグルーと同じ検査をページ側で行ってから送ります。`TypeError` や `RangeError` では、プールは止まりません。引数と結果は構造化複製で受け渡すので、`withBorrowed` はありません。トラップやホスト関数の例外は、どのワーカーで起きてもプール全体を止めます。その呼び出しは `TsuzuriTrap` で失敗し、補助ワーカーのトラップなら、そのワーカーのサイト ID が付きます。待っていた呼び出しとそれ以降の呼び出しも失敗します。作り直しは自動ではないので、`load` からやり直します。`close()` はワーカーを終了し、それ以降の呼び出しは `the WASM thread pool is closed` で失敗します。
+
+この例とリポジトリの `tests/bindings_threads.mjs` は、Chrome（headless）と、Playwright の Chromium、WebKit で、COOP / COEP 付きのページでは 3 スレッドが同時に動くこと、ヘッダーの無いページでは `Error` になることを確かめました。Firefox は未確認です。Node.js から使うときは、このグルーではなく `src/runtime/wasm-threads.mjs` を使います。
 
 ## WASI
 
@@ -378,7 +451,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - `export def` は `tz_` 名で出ます。`i64` は `BigInt`、浮動小数点と `bool` は `Number` です。
 - 計算だけのモジュールは import なしで instantiate できます。OS API は WASI か native です。
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
-- `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。
+- `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 
 ## 関連項目

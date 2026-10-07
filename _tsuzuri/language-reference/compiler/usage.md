@@ -215,7 +215,7 @@ tsuzuri check demo
 tsuzuri build demo/Main.tz -o demo/hello
 ```
 
-既定のターゲットは `native`、既定の `--emit` は `exe` です。WASM では既定が `wasm` になります。ライブラリであれば `Main.tz` がなくても、`--emit object` や `--emit header` で生成できます。実行ファイルにしたいのに入口がないときは `E2004` です。`--target wasm32 --emit bindings-js` は、`.wasm` を型付きで呼ぶ JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（[WebAssembly への出力](webassembly.md#型付きのバインディングを生成する)）。
+既定のターゲットは `native`、既定の `--emit` は `exe` です。WASM では既定が `wasm` になります。ライブラリであれば `Main.tz` がなくても、`--emit object` や `--emit header` で生成できます。実行ファイルにしたいのに入口がないときは `E2004` です。`--target wasm32 --emit bindings-js` は、`.wasm` を型付きで呼ぶ JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（[WebAssembly への出力](webassembly.md#型付きのバインディングを生成する)）。`--wasm-feature threads` を足すと、ブラウザの Web Worker でスレッドプールを作るグルーになります。`--emit shared` は native の共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出し、`--emit bindings-cs`、`bindings-py`、`bindings-cpp` はそれを呼ぶ C#、Python、C++ のバインディングを出します（[ネイティブ連携](native-interop.md#共有ライブラリと各言語のバインディング)）。共有ライブラリとバインディングも、`export def` が無いと `E2004` です。
 
 ```text
 scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library

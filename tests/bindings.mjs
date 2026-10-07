@@ -293,6 +293,26 @@ const cases = [
     }
     assert.deepEqual([...api.exports.scaled(Float64Array.of(2), 2)], [4]);
   }, { trap: true }],
+  ["33 asynchronous recreation", async (api) => {
+    await api.ready();
+    assert.throws(() => api.exports.divide(1n, 0n), TsuzuriTrap);
+    // A browser's main thread refuses to create instances of modules over 8 MB synchronously.
+    const original = WebAssembly.Instance;
+    let refused = 0;
+    WebAssembly.Instance = function () {
+      refused++;
+      throw new RangeError("WebAssembly.Instance is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.instantiate.");
+    };
+    try {
+      assert.throws(() => api.exports.divide(7n, 2n), (error) => error.message === "the WASM instance could not be recreated synchronously after a failure; await ready() to recreate it asynchronously, then call again" && error.cause instanceof RangeError);
+      await Promise.all([api.ready(), api.ready()]);
+      assert.equal(api.exports.divide(7n, 2n), 3n);
+      assert.equal(api.exports.add(20n, 22n), 42n);
+      assert.equal(refused, 1);
+    } finally {
+      WebAssembly.Instance = original;
+    }
+  }, { trap: true }],
 ];
 
 try {
@@ -325,7 +345,7 @@ try {
         const api = await load(name.startsWith("1") ? module : bytes, options);
         assert.ok(Object.isFrozen(api) && Object.isFrozen(api.exports));
         try {
-          body(api, build);
+          await body(api, build);
         } catch (error) {
           error.message = `${optimization} ${build.path}: case ${name}: ${error.message}`;
           throw error;
@@ -396,7 +416,7 @@ try {
 
   // The command line: invalid configurations exit with 2, build errors with 1, and nothing is written.
   const out = join(root, "rejected.mjs");
-  rejected(["build", fixture, "--emit", "bindings-ts", "-o", out], "E2000", 2, "emit kind must be exe, object, llvm, header, wasm, wgsl, or bindings-js");
+  rejected(["build", fixture, "--emit", "bindings-ts", "-o", out], "E2000", 2, "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp");
   rejected(["build", fixture, "--emit", "bindings-js", "-o", out], "E2000", 2, "'--emit bindings-js' requires '--target wasm32'");
   rejected(["build", fixture, "--target", "wasm64", "--emit", "bindings-js", "-o", out], "E2000", 2, "'--emit bindings-js' requires '--target wasm32'");
   for (const option of ["--trap-info", "--debug-info", "--debug-output"]) {

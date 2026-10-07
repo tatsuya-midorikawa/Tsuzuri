@@ -15,22 +15,43 @@ use crate::check::{CheckedFunction, CheckedModule, HostImport, Type, TypedExprKi
 use crate::llvm::fixed_length;
 use crate::llvm::host_abi::{handle_c_name, record_layout, record_name};
 
+#[path = "bindings_native.rs"]
+mod native;
+pub use native::{cpp, csharp, python};
+
 /// The version of the descriptor table and of the runtime contract of the generated files.
 pub const ABI_VERSION: u32 = 1;
 
-/// The runtime that the JavaScript glue appends after its table.
-const JAVASCRIPT_RUNTIME: &str = include_str!("runtime/bindings.mjs");
+/// The runtime that every JavaScript glue appends after its table.
+const RUNTIME_CORE: &str = include_str!("runtime/bindings-core.mjs");
+/// The `load` of one instance.
+const RUNTIME_SINGLE: &str = include_str!("runtime/bindings.mjs");
+/// The `load` of a thread pool on Web Workers (`--wasm-feature threads`).
+const RUNTIME_THREADS: &str = include_str!("runtime/bindings-threads.mjs");
 
-/// The fixed part of the TypeScript declarations, after the generated interfaces.
-const DECLARATIONS: &str = r#"export interface TrapInfo { reason: "trap" | "stack"; site: number; kind?: string; path?: string; line?: number; column?: number }
+/// Which JavaScript glue `--emit bindings-js` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsFlavor {
+    /// One instance; calls return their results.
+    Single,
+    /// A module of `--wasm-feature threads` on Web Workers; calls return promises.
+    Threads,
+}
+
+/// The traps, the same in every flavor of the TypeScript declarations.
+const TRAP_DECLARATIONS: &str = r#"export interface TrapInfo { reason: "trap" | "stack"; site: number; kind?: string; path?: string; line?: number; column?: number }
 export interface TrapSite { id: number; kind: string; path: string; span: { line: number; column: number } }
 export declare class TsuzuriTrap extends Error { readonly trap: TrapInfo }
-export interface Borrowed<T> { readonly length: number; view(): T }
+"#;
+
+/// The rest of the fixed declarations of one instance, after the generated interfaces.
+const DECLARATIONS: &str = r#"export interface Borrowed<T> { readonly length: number; view(): T }
 export interface Bindings {
   readonly exports: Exports;
   withBorrowed<R>(kind: "i64", length: number, callback: (buffer: Borrowed<BigInt64Array>) => R): R;
   withBorrowed<R>(kind: "f64", length: number, callback: (buffer: Borrowed<Float64Array>) => R): R;
   withBorrowed<R>(kind: "ubyte", length: number, callback: (buffer: Borrowed<Uint8Array>) => R): R;
+  ready(): Promise<void>;
 }
 "#;
 
@@ -256,18 +277,41 @@ pub fn table(module: &CheckedModule) -> Value {
     })
 }
 
+/// The rest of the fixed declarations of a thread pool.
+const THREADS_DECLARATIONS: &str = r#"export interface ImportsContext { readonly workerId: number; readonly data: unknown }
+export type CreateImports = (context: ImportsContext) => Imports | Promise<Imports>;
+export interface ThreadBindings {
+  readonly exports: Exports;
+  readonly workerCount: number;
+  close(): Promise<void>;
+}
+"#;
+
 /// The JavaScript module of `--emit bindings-js`: the banner, the table and the runtime.
 pub fn javascript(module: &CheckedModule) -> String {
+    javascript_for(module, JsFlavor::Single)
+}
+
+/// The JavaScript module of `--emit bindings-js` for one flavor.
+pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
+    let tail = match flavor {
+        JsFlavor::Single => RUNTIME_SINGLE,
+        JsFlavor::Threads => RUNTIME_THREADS,
+    };
     format!(
-        "{}const TABLE = {};\n{JAVASCRIPT_RUNTIME}",
+        "{}const TABLE = {};\n{RUNTIME_CORE}{tail}",
         banner("//"),
         table(module)
     )
 }
 
 /// The TypeScript type of `ty`. `input` is the direction from JavaScript into the module: export
-/// arguments, import results and callback arguments.
+/// arguments, import results and callback arguments; `borrow` admits `Borrowed` buffers for slices.
 fn typescript_type(ty: &Type, module: &CheckedModule, input: bool) -> String {
+    typescript_type_with(ty, module, input, true)
+}
+
+fn typescript_type_with(ty: &Type, module: &CheckedModule, input: bool, borrow: bool) -> String {
     match ty {
         Type::Integer(64, _) => "bigint".into(),
         Type::Integer(..) | Type::Binary(_) => "number".into(),
@@ -288,7 +332,7 @@ fn typescript_type(ty: &Type, module: &CheckedModule, input: bool) -> String {
         ),
         Type::Reference(inner, false) => match Buffer::of(inner) {
             Some(Buffer::String | Buffer::Utf8String) => "string".into(),
-            Some(buffer) if input => {
+            Some(buffer) if input && borrow => {
                 let array = typed_array(buffer);
                 format!("{array} | Borrowed<{array}>")
             }
@@ -328,6 +372,12 @@ fn typescript_property(name: &str) -> String {
 
 /// The TypeScript declarations `<name>.d.mts` of `--emit bindings-js`.
 pub fn declarations(module: &CheckedModule) -> String {
+    declarations_for(module, JsFlavor::Single)
+}
+
+/// The TypeScript declarations of `--emit bindings-js` for one flavor.
+pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
+    let threads = flavor == JsFlavor::Threads;
     let mut output = banner("//");
     for (name, ty) in records(module) {
         let fields: Vec<_> = fields(&ty, module)
@@ -363,14 +413,24 @@ pub fn declarations(module: &CheckedModule) -> String {
             .parameters
             .iter()
             .enumerate()
-            .map(|(index, ty)| format!("arg{index}: {}", typescript_type(ty, module, true)))
+            .map(|(index, ty)| {
+                format!(
+                    "arg{index}: {}",
+                    typescript_type_with(ty, module, true, !threads)
+                )
+            })
             .collect();
+        let result = typescript_type(&function.signature.result, module, false);
         let _ = writeln!(
             output,
             "  {}({}): {};",
             typescript_property(&function.name),
             parameters.join(", "),
-            typescript_type(&function.signature.result, module, false)
+            if threads {
+                format!("Promise<{result}>")
+            } else {
+                result
+            }
         );
     }
     output.push_str("}\n");
@@ -393,15 +453,28 @@ pub fn declarations(module: &CheckedModule) -> String {
         }
         output.push_str("}\n");
     }
-    output.push_str(DECLARATIONS);
-    let options = if imports.is_empty() {
-        "options?: { sites?: readonly TrapSite[] }"
+    output.push_str(TRAP_DECLARATIONS);
+    let (options, bindings) = if threads {
+        output.push_str(THREADS_DECLARATIONS);
+        let pool = "importData?: unknown; workers?: number; memory?: WebAssembly.Memory; sites?: readonly TrapSite[]";
+        let options = if imports.is_empty() {
+            format!("options?: {{ importsModule?: string | URL; {pool} }}")
+        } else {
+            format!("options: {{ importsModule: string | URL; {pool} }}")
+        };
+        (options, "ThreadBindings")
     } else {
-        "options: { imports: Imports; sites?: readonly TrapSite[] }"
+        output.push_str(DECLARATIONS);
+        let options = if imports.is_empty() {
+            "options?: { sites?: readonly TrapSite[] }".to_owned()
+        } else {
+            "options: { imports: Imports; sites?: readonly TrapSite[] }".to_owned()
+        };
+        (options, "Bindings")
     };
     let _ = writeln!(
         output,
-        "export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly.Module, {options}): Promise<Bindings>;"
+        "export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly.Module, {options}): Promise<{bindings}>;"
     );
     output
 }
