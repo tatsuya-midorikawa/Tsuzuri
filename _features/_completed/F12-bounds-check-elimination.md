@@ -10,7 +10,7 @@
 | 状態 | done（Phase 0・1） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要 |
-| 改善する劣位 | C/C++ 比: 安全検査のコスト（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: 安全検査のコスト（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | 関数単位の事前解析: `src/call_specialization.rs` の `single_use_locals`（`FunctionEmitter::emit` の冒頭で一度計算し、field `FunctionEmitter::single_use` に保持）。保守的な変更検出: 同ファイルの `may_mutate`。子の走査: `src/check.rs` の `TypedExpr::children`。検査の省略先: `src/llvm.rs` の `element_pointer`（検査なしの GEP）と `checked_element_pointer`（検査付き）。E2E の suite と trap: `tests/features.mjs` の `simd` suite（`cases`・`traps`） |
 | 主な影響ファイル | `src/ranges.rs`（新規）, `src/lib.rs`, `src/llvm.rs`, `tests/bounds_checks.rs`（新規）, `tests/fixtures/bounds_checks/Main.tz`（新規）, `tests/features.mjs`, `tests/trap_locations.rs`, `benchmarks/control/Main.tz`, `benchmarks/control/host.c`, `benchmarks/control/reference.c`, `benchmarks/control/reference.rs`, `benchmarks/run-control.mjs`, `docs/benchmarks.md`, `docs/architecture.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md` |
 

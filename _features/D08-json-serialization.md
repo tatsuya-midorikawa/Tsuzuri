@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール `Json` と組み込みクラス `Encode`／`Decode` の確定。GUIDE D-30 の仮割り当てを D-07 へ移す） |
-| 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: `System.Text.Json`・serde に相当する直列化がない |
+| 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: `System.Text.Json`・serde に相当する直列化がない |
 | 手本にする既存実装 | 導出の平らな束縛の連鎖: `src/derive.rs` の `Build::record`（`DeriveClass::Display` の `$text{index}` 束縛）と `Build::union`（`Build::pattern`・`Build::matched`・`Build::arm`）。std 型を使う組み込みクラスのシグネチャ: `src/polymorph.rs` の `Classes::collect` の `Parse`（`names.std_type("Maybe", "Maybe", ...)` と、std に無いときの `E1004`）。組み込みクラスの source instance: `tests/fixtures/display_parse/Main.tz` の `instance Display<Label>`。UTF-8 のバイト走査: `std/Utf8String.tz` の `find`・`matches_at`。std の登録: `src/stdlib.rs` の `SOURCES`・`RESERVED_MODULES` と C06 の `std/Map.tz`。数値の変換: `Parse.parse`／`to_string`（`src/runtime/numeric.c` の `tz_soft_parse`・`tz_soft_format`） |
 | 主な影響ファイル | `std/Json.tz`（新規）, `src/stdlib.rs`, `src/syntax.rs`, `src/parser.rs`, `src/derive.rs`, `src/polymorph.rs`, `tests/json.rs`（新規）, `tests/deriving.rs`, `tests/fixtures/json/Main.tz`（新規）, `tests/features.mjs`（suite `json`）, `tests/json.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `_docs/library-reference/json.md`（新規）, `_docs/library-reference/README.md`, `_docs/language-reference/deriving.md`, `_docs/feature-status.md`, `_features/README.md`, `_features/GUIDE.md`（D1 の承認後に D-07 の表と D-30 の行） |
 

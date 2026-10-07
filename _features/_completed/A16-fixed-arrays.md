@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | D1・D10 は、2026-10-06 に利用者から「C08、A14、A16、F13、F08 の実装をすべて完遂して。…複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った（GUIDE D-03・D-07・D-13・D-15・D-39） |
-| 改善する劣位 | Rust 比: Copy のコスト（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: ヒープなしの小さな配列・行列を表せない |
+| 改善する劣位 | Rust 比: Copy のコスト（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: ヒープなしの小さな配列・行列を表せない |
 | 手本にする既存実装 | 値の集成体: `Type::Tuple`（`src/llvm.rs` の `llvm_type` の `{ ... }`・`storage_layout` の `aggregate`、`src/check.rs` の `Layouts::size`・`Validation::check`、`src/llvm_frame.rs` の `stack_size`）。添字と境界検査: `src/llvm.rs` の `TypedExprKind::Index` の arm・`emit_place`・`checked_element_pointer`・`guard(.., TrapKind::BoundsCheck)`。期待型からのリテラル: `src/check.rs` の `ExprKind::Array` の arm。期待型で決まる builtin: `BuiltinType::SimdLane`（`src/check.rs`）と `FamilyKind::SimdLane`（`src/polymorph.rs`）。引数の暗黙の借用: `Checker::coerce_argument` |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/check.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/call_specialization.rs`, `src/constants.rs`, `src/llvm.rs`, `src/llvm_frame.rs`, `src/llvm_debug.rs`, `src/abi.rs`（変更なし・確認のみ）, `tests/fixed_arrays.rs`（新規）, `tests/arrays.rs`（期待値の変更）, `src/check.rs` の `tests` モジュール（期待値の変更）, `tests/fixtures/fixed_arrays/Main.tz`（新規）, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/types.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/feature-status.md`, `_features/README.md` |
 

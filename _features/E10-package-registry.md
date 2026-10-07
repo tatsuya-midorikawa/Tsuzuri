@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（`tsuzuri fetch` が外部の `git` CLI を起動すること、`E2007` の確定、GUIDE D-29 の E04 記録「git・lockfile を導入しない」の更新）, D10（Phase 2 の registry の運用主体と index の置き場所） |
-| 改善する劣位 | Rust 比: Cargo／crates.io に相当する依存管理がない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: NuGet |
+| 改善する劣位 | Rust 比: Cargo／crates.io に相当する依存管理がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: NuGet |
 | 手本にする既存実装 | manifest の厳密な行解析: `src/package.rs` の `parse_manifest` と `Line`（`key`・`expect`・`string`・`finish`・`error`）。グラフの読み込みと E04 の規則: `src/driver.rs` の `load_packages`・`LoadedPackage`・`Project::load_from_root`・`collect_sources`。外部ツールの起動: `src/driver.rs` の `tool`・`run_tool`。キャッシュ root・marker・staging: `src/cache.rs` の `default_root`・`BuildCache::open`・`stage`・`read_regular`。内容ハッシュ: `src/cache.rs` の `Sha256::field`・`Sha256::hex`。JSON 文字列の escape: `src/diagnostic.rs` の `json_string`。一時 project のテスト: `tests/modules.rs` の `loads_and_protects_local_package_graphs`。E2E の環境変数: `tests/cache.mjs`（`TSUZURI_CACHE_DIR` を一時ディレクトリへ向ける） |
 | 主な影響ファイル | `src/package.rs`, `src/fetch.rs`（新規）, `src/lib.rs`, `src/driver.rs`, `src/main.rs`, `src/cache.rs`, `tests/packages.rs`（新規）, `tests/packages.mjs`（新規）, `tests/modules.rs`（変更しないことを確認）, `docs/language.md`, `docs/architecture.md`, `README.md`, `_docs/language-reference/modules-and-packages.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md` |
 

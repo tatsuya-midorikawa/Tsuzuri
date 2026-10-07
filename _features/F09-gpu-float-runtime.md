@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（relaxed f32 の言語契約と名前 `Gpu.map_relaxed`・`Gpu.init_relaxed`・`--emit wgsl-relaxed`）, D9（Phase 2: 言語 runtime からの WebGPU 接続と opt-in の WASM import）, D10（Phase 3: Vulkan の strict float・i64・`Gpu.Auto`） |
-| 改善する劣位 | C/C++ 比: GPU は実験段階で、成熟した GPU 開発基盤の代替にならない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: GPU は実験段階で、成熟した GPU 開発基盤の代替にならない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | WGSL 生成: `src/gpu.rs` の `GpuKernel::wgsl`・`Wgsl::expression`・`wgsl_type`。std 呼び出しの検査: `src/gpu.rs` の `validate_calls`（`src/check.rs` から呼ばれる）。CPU 参照: `std/Gpu.tz` の `map`・`init`。出力種別: `src/driver.rs` の `Emit::Wgsl` と `build`、`src/main.rs` の `--emit` 解析。ホスト: `src/runtime/webgpu.mjs` の `createWebGpu`（adapter の明示要求、所有 buffer、error scope）。検証: `tests/gpu.mjs`（CPU 参照の bit 比較、WGSL の決定性、`TSUZURI_WEBGPU=1` の実 adapter） |
 | 主な影響ファイル | `src/gpu.rs`, `src/driver.rs`, `src/main.rs`, `std/Gpu.tz`, `src/runtime/webgpu.mjs`, `tests/gpu.rs`, `tests/gpu.mjs`, `benchmarks/run-gpu.mjs`（変更なし。JSON の列が増えるだけ）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/guides/gpu.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md` |
 

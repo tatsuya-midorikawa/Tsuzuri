@@ -8,6 +8,7 @@
 - The standard library is the namespace `std`: completion offers its modules after `std::` and the members of `std::Maybe.`, and New Project rejects namespaces that start with `std`. The standard `Option` is now `Maybe`.
 - Snippets for `namespace`, `using`, `try ... with`, and `try ... with ... finally`. The `main` snippet writes `def main :: unit -> i32`, which returns the exit code, and the new `mainargs` snippet writes `def main :: Array<string> -> i32`, which receives the command-line arguments; these are the only entry-point signatures.
 - Grammar tests cover literal suffixes, `@checked` / `@literal`, bit operators, and the error-handling keywords.
+- **Tsuzuri: Open Documentation** opens the new Japanese language reference (`_tsuzuri/language-reference/index.md`), which replaces the previous `_docs` handbook in the offline bundle.
 
 ## 0.1.0
 

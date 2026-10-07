@@ -1,4 +1,4 @@
-import { copyFile, cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundle, digest, download, host, repository, verify } from '../../scripts/toolchain/bundle.mjs';
@@ -36,7 +36,9 @@ async function resources() {
   const root = path.join(extension, 'resources');
   await mkdir(root, { recursive: true });
   await copyFile(path.join(repository, 'LICENSE'), path.join(extension, 'LICENSE'));
-  for (const name of ['_docs', 'docs', '_features', 'std']) {
+  // Rebuild the handbook from scratch so documents removed from the repository do not linger in the VSIX.
+  await rm(path.join(root, 'handbook'), { recursive: true, force: true });
+  for (const name of ['_tsuzuri', 'docs', '_features', 'std']) {
     await cp(path.join(repository, name), path.join(root, 'handbook', name), { recursive: true });
   }
   await cp(path.join(repository, 'examples'), path.join(root, 'handbook', 'examples'), {

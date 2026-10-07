@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | D10・D13 は、2026-10-03 に利用者から「A15 / A12 の実装を完遂して。複数フェーズある場合には、すべてのフェーズを完了させること」と依頼され、承認として扱った。D10 は見直し提案（64 へ下げず、parser の 128 を正式な上限にする）を選び、D13 は前置量化を名前付き関数の引数の型に限って実装した（GUIDE D-33、実装と検証） |
-| 改善する劣位 | Rust 比: 借用で表せるデータ構造の制限（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
+| 改善する劣位 | Rust 比: 借用で表せるデータ構造の制限（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)） |
 | 手本にする既存実装 | region の宣言検査: `src/regions.rs` の `labels`・`validate_modules`・`contract`（`TypeExpr` を worklist で走査し再帰しない形）。返却元の検査: `src/ownership.rs` の `check_body`（外部 loan と `allowed_roots`）。直接完全適用の入力選択: `eval_composed` の `E::Call` 腕（`region_sources`）。場所の印: `Place.fields` の `ELEMENT`・`PAYLOAD`。合流: `Checker::merge` と `src/ownership_control.rs` の `eval_match` |
 | 主な影響ファイル | `src/check.rs`, `src/regions.rs`, `src/ownership.rs`, `src/ownership_control.rs`, `tests/borrowed_records.rs`, `tests/fixtures/borrowed_records/Main.tz`, `tests/features.mjs`, `docs/language.md`, `docs/architecture.md`, `_docs/language-reference/lifetimes.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md`。変更なしを確認するだけ: `src/syntax.rs`, `src/parser.rs`, `src/formatter.rs`, `src/docgen.rs`, `src/closures.rs`, `src/polymorph.rs`, `src/llvm.rs`, `tests/types_ownership.rs` |
 

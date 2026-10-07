@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D8（CI workflow `.github/workflows/targets.yml` の追加と runner 費用） |
-| 改善する劣位 | C/C++ 比: 対応プラットフォームの幅（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: 対応プラットフォームの幅（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | clang 引数の選択と単体テスト: `src/driver.rs` の `native_compile_args`・`native_cpu_flag` と `validates_native_cpu_tuning_and_selects_architecture_flags`。外部 SDK があるときだけ動く cross-link テスト: `tests/windows.rs` の `cross_links_with_microsoft_sdk_when_requested`（`TSUZURI_WINDOWS_SDK`）。target 別の IR 書き換え: `src/llvm.rs` の `windows_abi`。CLI の解析テスト: `src/main.rs` の `selects_target_defaults_and_honors_path_separator`・`rejects_ambiguous_or_unused_arguments`。cache key の環境変数一覧: `src/cache.rs` の `build_key` |
 | 主な影響ファイル | `src/driver.rs`, `src/main.rs`, `src/cache.rs`, `src/test_runner.rs`, G14 の同梱 clang shim（HEAD では `vsc/scripts/clang.rs`）, `tests/targets.rs`（新規）, `tests/targets.mjs`（新規）, `tests/windows.rs`（呼び出しの追従だけ）, `.github/workflows/targets.yml`（新規。D8 の承認後）, `README.md`, `docs/architecture.md`, `_docs/tools/build-and-cache.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md` |
 

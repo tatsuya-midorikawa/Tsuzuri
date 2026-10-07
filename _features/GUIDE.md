@@ -28,10 +28,12 @@
    該当する決定がなければ最も保守的な挙動（コンパイルエラーで拒否）を選ぶ。チケットの「停止条件」と §13 に
    当てはまったら、即興で回避せず作業を止めて報告する。
 5. 完了したら「受け入れ条件」の全項目を確認し、`_features/README.md` の状態を `done` に更新する。
-   チケットは `_features/_completed/` へ移動し、README と `_docs/feature-status.md` のリンクも更新する
+   チケットは `_features/_completed/` へ移動し、README のリンクと `_tsuzuri/language-reference/` の該当ページも更新する
    （性能チケットは `_perfs/_completed/` と `_perfs/README.md`）。最後に §13 の書式で完了報告を書く。
 6. チケット中の `/tmp/tz-*` のパスは再現用の一時ディレクトリの例である。記載のソースから作り直して使い、リポジトリには置かない。
    「検証済み」と書かれたサンプルも、着手時の HEAD で `tsuzuri check` し直してから使う。
+7. チケット中の `_docs/...` のパス（更新する文書や `check-docs.mjs` の引数）は旧構成である。§8.1 の表で
+   `_tsuzuri/language-reference/` のページに読み替える。
 
 ### チケットの共通構成
 
@@ -209,7 +211,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs` | — |
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
-| `_docs/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
+| `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
 
 表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行する。
 最終確認は §3 の全体（fmt・clippy・`cargo test --locked`・関係する E2E）と `sh scripts/check-runtime-includes.sh`。
@@ -540,6 +542,38 @@ fn rejects(source: &str, code: &str) {
   `docs/language.md` の各節末尾の未対応一覧、README 冒頭の未実装一覧）を実装に合わせて更新する。
 - 実装していない最適化や将来計画を、実装済みのように書かない。
 - 例を追加したら `examples/` に置き、`tests/examples.mjs` で実行されるようにする。
+- 利用者向けの解説は `_tsuzuri/language-reference/`（目次は `index.md`）。変更したページは
+  `node scripts/check-docs.mjs <ページ>` で検証する。
+
+### 8.1 旧 `_docs/` のパスの読み替え
+
+`_docs/` は `_tsuzuri/language-reference/`（以下 `LR/`）へ再構成した。2026-10-07 より前に書いたチケットや性能計画にある
+`_docs/...` のパスと `check-docs.mjs` の引数は、次の表で読み替える。旧ページの内容は
+[c82c13e の `_docs/`](https://github.com/tatsuya-midorikawa/Tsuzuri/tree/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs) で読める。
+
+| 旧パス（`_docs/`） | 読み替え先（`LR/`） |
+| --- | --- |
+| `language-reference/active-patterns.md`・`patterns.md` | `pattern-matching/` の各ページ |
+| `language-reference/computation-expressions.md` | `computation-expressions/computation-expressions.md` |
+| `language-reference/control-flow.md` | `loops-and-conditionals/` の各ページ |
+| `language-reference/error-handling.md` | `exception-handling/` の各ページ |
+| `language-reference/expressions-and-operators.md` | `values-and-functions/op-and-expressions.md` |
+| `language-reference/functions.md` | `values-and-functions/functions.md`・`lambda-expressions.md` |
+| `language-reference/generics-and-typeclasses.md`・`higher-kinds.md`・`deriving.md` | `types-and-type-inference/generics.md`・`type-classes.md`・`constraints.md`、`values-and-functions/generics-functions.md` |
+| `language-reference/lexical-and-layout.md` | `values-and-functions/keywords.md`・`tokens.md`・`statements.md` |
+| `language-reference/modules-and-packages.md` | `organizing-tsuzuri/` の各ページ |
+| `language-reference/numbers.md`・`types.md` | `types-and-type-inference/` の各ページ、`literals-and-strings/literals.md` |
+| `language-reference/ownership.md`・`lifetimes.md` | `ownership-and-memory/` の各ページ |
+| `language-reference/records.md`・`unions.md` | `built-in-types-and-modules/record.md`・`union.md` |
+| `language-reference/strings-and-characters.md` | `literals-and-strings/` の各ページ |
+| `language-reference/tasks.md` | `async-tasks-and-lazy/task.md` |
+| `language-reference/values-and-constants.md` | `values-and-functions/values.md` |
+| `library-reference/*.md`・`library-reference/api/*.md` | `built-in-types-and-modules/` の該当モジュールのページ（生成 API の snapshot は置かない） |
+| `guides/webassembly.md`・`wasm-threads.md`・`native-interop.md` | `compiler/webassembly.md`・`native-interop.md` |
+| `guides/gpu.md`・`performance.md` | `built-in-types-and-modules/gpu.md`・`parallel.md`・`simd.md`、`languages/strategy.md` |
+| `tools/*.md` | `compiler/` の各ページ、`organizing-tsuzuri/documentation-comment.md`、`built-in-types-and-modules/test.md` |
+| `learn/*.md`・`tour.md`・`get-started.md` | `languages/` の各ページ、`compiler/usage.md` |
+| `feature-status.md` | なし（機能の状態は `_features/README.md` の一覧で管理する） |
 
 ---
 
@@ -1195,11 +1229,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   （既存の harness は fixture を一時ディレクトリへ写してから使う）。
 - **期待値の源。** テストの期待値は独立した参照（JavaScript の BigInt、Python、C）から作り、コンパイラの現在の出力を写さない。
 - **テストの件数。** `cargo test --locked <pattern>` は 0 件でも成功する（§3.1）。
-- **文書。** `_docs/` を変えたら `node scripts/check-docs.mjs <ページ>`。`_docs/feature-status.md` の行は `_features/README.md` の ID と同じ順序に保つ。
+- **文書。** `_tsuzuri/` を変えたら `node scripts/check-docs.mjs <ページ>`。
 
 ## 12. Tsuzuri 構文の早見表と落とし穴
 
-fixture・例・再現用のソースを書くときの早見表です。仕様は `docs/language.md`、実行可能な例は `_docs/language-reference/*.md`
+fixture・例・再現用のソースを書くときの早見表です。仕様は `docs/language.md`、実行可能な例は `_tsuzuri/language-reference/**/*.md`
 （`scripts/check-docs.mjs` で検証済み）と `tests/fixtures/**` にあります。**書いたソースは必ず `tsuzuri check` か `run` で確かめます。**
 
 次のプログラムは 2026-09-29 に release コンパイラで `target/release/tsuzuri run <dir>` を実行し、`33` を出すことを確かめました。

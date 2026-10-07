@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（サブコマンド `bindgen` と警告 `W2002` の確定。GUIDE D-30 の仮割り当て） |
-| 改善する劣位 | C/C++ 比: 既存の C/C++ コードをそのまま取り込めない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
+| 改善する劣位 | C/C++ 比: 既存の C/C++ コードをそのまま取り込めない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
 | 手本にする既存実装 | サブコマンドと出力保護: `src/main.rs` の `Action::Doc`・`parse_arguments` の `Some("doc")` 分岐、`src/driver.rs` の `document`・`protect_documentation`・`protect_source`。外部ツールの起動: `src/driver.rs` の `tool("TSUZURI_CLANG", "clang")`・`run_tool`・`driver_error`。ハッシュ: `src/cache.rs` の `Sha256`（`new`・`update`・`hex`）。ABI の逆写像の基準: `tsuzuri build <src> --emit header` の出力（`src/llvm_imports.rs`、`src/abi.rs` の `scalar_record`）。C とリンクする E2E: `tests/host_imports.mjs` |
 | 主な影響ファイル | `src/main.rs`, `src/lib.rs`, `src/driver.rs`, `src/bindgen.rs`（新規）, `tests/bindgen.rs`（新規）, `tests/bindgen.mjs`（新規）, `tests/fixtures/bindgen/`（新規: `basic/`・`skipped/`・`include/`・`names/`）, `docs/language.md`, `docs/architecture.md`, `README.md`, `_docs/tools/command-line.md`, `_docs/guides/native-interop.md`, `_docs/feature-status.md`, `_features/README.md` |
 

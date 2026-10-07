@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要 |
-| 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](../../_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: IDE 支援が発展途上（[同](../../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: IDE 支援が発展途上（[同](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | 要求の処理: `src/lsp.rs` の `Session::handle` の hover・definition・documentSymbol を処理する arm（`Session::refresh`、`PositionMapper::offset`・`range`、`SemanticIndex::at`）。索引の収集: `src/semantic.rs` の `collect`・`SemanticIndex::symbol`・`type_entry`・`type_target`。整形の安全検査: `src/formatter.rs` の `format_source`（`ast_fingerprint` の一致）。テスト: `tests/lsp.rs` の `semantic_index_preserves_source_types_and_definitions`、`tests/lsp_sessions.mjs` の `session`・`request`・`position` |
 | 主な影響ファイル | `src/lsp.rs`, `src/semantic.rs`, `src/check.rs`（名前の使用位置の side table だけ）, `src/control.rs`（record pattern・case pattern の使用位置だけ）, `src/lib.rs`（変更なし。`analyze_modules_with_semantics` を使う）, `src/formatter.rs`・`src/lexer.rs`（変更なし。`format_source`・`lex_all` を呼ぶ）, `tests/lsp.rs`, `tests/lsp_sessions.mjs`, `vsc/README.md`（`vsc/package.json`・`vsc/src/extension.ts` は変更なし。D8）, `README.md`, `_docs/tools/editor-tools.md`, `docs/architecture.md`, `_docs/feature-status.md`, `_features/README.md` |
 

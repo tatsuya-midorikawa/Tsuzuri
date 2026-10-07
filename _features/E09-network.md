@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール名 `Net` の確定と予約。GUIDE D-30 の仮割り当て）, D11（wasm32 で Net を使う将来のホスト opt-in。Phase 1 の E2000 による拒否は承認を待たない） |
-| 改善する劣位 | C#/F# 比: ネットワーク API がない（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
+| 改善する劣位 | C#/F# 比: ネットワーク API がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | E08（done 後）の全体: `std/Os.tz`（`Error`・`error_of_status`）、`std/File.tz` の IO の包み方と `File.Handle`（opaque な所有 handle、`instance Drop`、操作が handle を受け取って返す形）、`src/runtime/os.c`、`src/driver.rs` の `os_runtime`、`tests/os_api.rs`・`tests/os.mjs`。HEAD にある部品: `src/check.rs` の `Builtin::IOReadLine`／`Builtin::IOWrite`（`name`、型 scheme）、`src/polymorph.rs` の `Checker::builtin`（std 専用 builtin の E1022）、`src/llvm_io.rs` の `io_builtin`、`src/llvm_imports.rs` の `host_result_slot`・`read_host_result`、`src/runtime/io.c`（`TZ_IO_API`、EINTR の再試行）、`src/driver.rs` の `io_runtime`、`tests/io.mjs` の `execute` と確保を数える harness（`live == 0`） |
 | 主な影響ファイル | `std/Net.tz`（新規）, `src/stdlib.rs`（`SOURCES`・`RESERVED_MODULES`・`opaque_record`・`reserves_the_d07_table`）, `src/check.rs`（`Builtin`・`Type::is_noncopy_record`）, `src/polymorph.rs`（`Checker::builtin`）, `src/llvm.rs`（builtin の振り分け）, `src/llvm_io.rs`（`net_builtin`（新規））, `src/runtime/net.c`（新規）, `src/driver.rs`, `tests/net_api.rs`（新規）, `tests/net.mjs`（新規）, `tests/fixtures/net/`（新規）, `README.md`, `docs/language.md`, `docs/architecture.md`, `_docs/library-reference/net.md`（新規）, `_docs/library-reference/README.md`, `_docs/feature-status.md`, `_features/README.md` |
 

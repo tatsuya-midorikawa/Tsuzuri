@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール名 `Regex`・`Unicode` の予約の確定。GUIDE D-30 の仮割り当て。利用者の `Regex.tz`・`Unicode.tz` が E1011 になる）、D11（Phase 2 の着手と表の置き場所） |
-| 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](../_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: 正規表現・Unicode 正規化・書記素処理がない |
+| 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: 正規表現・Unicode 正規化・書記素処理がない |
 | 手本にする既存実装 | std の不透明レコード: `std/Map.tz` の `Map` と `src/stdlib.rs` の `opaque_record`。文字列の走査と組み立て: `std/String.tz` の `find`・`matches_at`・`append_range`・`split`、`std/Utf8String.tz` の `boundary` と組み込みの `Utf8String.decode_at`。生成物を追跡する方式: `src/runtime/generate.py`（入力から決定的に生成し、先頭に `Do not edit.` を書く）。Rust テスト: `tests/map_set.rs` の `ordered_containers_are_opaque_noncopy_owned_values`。E2E: `tests/features.mjs` の `string_library` suite（参照値を JS で計算して `cases` へ push）と `map_set` suite（`inspect` で IR を検査） |
 | 主な影響ファイル | `std/Regex.tz`（新規）, `std/Unicode.tz`（新規・生成物）, `scripts/generate-unicode.mjs`（新規）, `src/stdlib.rs`（`SOURCES`・`RESERVED_MODULES`・`opaque_record`）, `tests/regex.rs`（新規）, `tests/regex-cases.mjs`（新規）, `tests/fixtures/regex/Main.tz`（新規）, `tests/fixtures/regex/Cases.tz`（新規・生成物）, `tests/features.mjs`, `docs/language.md`, `_docs/library-reference/regex.md`（新規）, `_docs/library-reference/README.md`, `_docs/library-reference/text.md`, `_docs/feature-status.md`, `_features/README.md`, `_features/GUIDE.md`（D-07 の表と D-30 の行の移動） |
 

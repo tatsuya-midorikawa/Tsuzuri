@@ -38,13 +38,14 @@ function headings(source) {
 }
 
 try {
-    collect(join(root, '_docs'));
+    collect(join(root, '_tsuzuri'));
     pages.sort();
     for (const page of pages) {
         if (requested.length && !requested.includes(page)) continue;
         const source = readFileSync(page, 'utf8');
         const label = relative(root, page);
         assert.ok(source.endsWith('\n'), `${label}: missing final newline`);
+        assert.ok(!/^[ \t]+```tsuzuri/m.test(source), `${label}: an indented tsuzuri code fence is not checked; start it at column 1`);
         const prose = source.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '');
         for (const match of prose.matchAll(/\[[^\]\n]+\]\(([^\s)]+)\)/g)) {
             const target = match[1];
@@ -108,10 +109,6 @@ try {
         }
     }
     assert.ok(!requested.length || requested.every(path => pages.includes(path)), 'Requested page not found');
-    if (!requested.length) {
-        const featureIds = path => [...readFileSync(path, 'utf8').matchAll(/^\| ([A-G]\d{2}) \|/gm)].map(match => match[1]);
-        assert.deepEqual(featureIds(join(root, '_docs/feature-status.md')), featureIds(join(root, '_features/README.md')), 'Feature documentation is incomplete or duplicated');
-    }
     console.log(`Docs: ${requested.length || pages.length} pages, ${links} links, ${examples} checked examples, ${executions} native runs (O0/O3), ${tests} test projects.`);
 } finally {
     rmSync(temporary, { recursive: true, force: true });
