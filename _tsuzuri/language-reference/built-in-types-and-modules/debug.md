@@ -79,7 +79,7 @@ WASM では、既定の `Debug.print` と `Debug.trace` は書き込みをしま
 tsuzuri build Kernel.tz --target wasm32 --debug-output -o debug.wasm
 ```
 
-到達する `Debug` の呼び出しがあるとき、このオプションは `tsuzuri_debug.write(pointer, length)` をインポートします。`memory` もエクスポートされます。`length` は wasm64 では 64 bit で、wasm32 の呼び出しでも JavaScript 側では `bigint` になることがあります。
+到達する `Debug` の呼び出しがあるとき、このオプションは `tsuzuri_debug.write(pointer, length)` をインポートします。`memory` もエクスポートされます。インポートの宣言は `(ptr, i64)` なので、`length` は wasm32 でも wasm64 でも JavaScript 側では常に `bigint` です。メモリモデルで変わるのは `pointer` だけで、wasm32 では `number`、wasm64 では `bigint` です。下の例は wasm32 向けで、`length` を `Number(length)` で変換しています。
 
 ホストは、呼び出しが戻る前に、指定範囲の UTF-8 バイトをコピーします。返ってきたあとにポインタを保持してはいけません。ネイティブと違い、渡されるバイト列には改行が含まれません。1 行のログにするなら、ホストが改行を足します。`Debug.trace 42` のペイロードは `"42"` の 2 バイトです。
 
