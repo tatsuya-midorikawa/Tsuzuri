@@ -207,14 +207,14 @@ geometry-core = { path = "../geometry-core" }
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Json`
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Json` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
 
-現在の標準ライブラリは、`Maybe` および `Result` の型・基本操作・コンピュテーション式ビルダー、配列・リスト・Vec コレクション、文字列・文字型・整数演算 API、型クラスに対応した汎用数学関数、順序付きおよびハッシュコンテナ（`Map`、`Set`、`HashMap`、`HashSet`）、`IO` モナドおよび標準 OS API（`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`）、ならびに書式指定クラス `Format` を提供します（互換用の `Math.zero : f64` も維持されています）。後続の各節において、これら公開 API の契約および所有権セマンティクスを詳述します。
+現在の標準ライブラリは、`Maybe` および `Result` の型・基本操作・コンピュテーション式ビルダー、配列・リスト・Vec コレクション、文字列・文字型・整数演算 API、型クラスに対応した汎用数学関数、順序付きおよびハッシュコンテナ（`Map`、`Set`、`HashMap`、`HashSet`）、`IO` モナドおよび標準 OS API（`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`）、書式指定クラス `Format`、ならびに JSON の解析・出力と `Encode`／`Decode` による値の変換（`Json`）を提供します（互換用の `Math.zero : f64` も維持されています）。後続の各節において、これら公開 API の契約および所有権セマンティクスを詳述します。
 
 `Point.tz`:
 
@@ -571,7 +571,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 同一の型クラスにおいてインスタンスヘッドが単一化可能である場合、コンテキスト制約の強弱にかかわらず重複定義（overlap）として `E1016` エラーとなります。
 例えば `Eq<Box<'a>>` と `Eq<Box<i64>>` を同一プロジェクト内に共存させることはできません（組み込みの条件付き比較インスタンスをユーザーコードで上書きすることも禁止されています）。
 `Eq<Box<'a>>` の比較処理からは、内部要素に対する `Eq<'a>` などの残余制約が呼び出し元へと自然に伝播します。
-インスタンス解決のネスト深度は最大 64、1 つの制約から導出される個別要件は最大 128 個、重複判定は最大 1024 組を上限とし、これを超過した場合は `E1017` リソース上限エラーとなります。
+インスタンス解決のネスト深度は最大 64、1 つの制約から導出される個別要件は最大 128 個、重複判定の単一化は最大 1024 組を上限とし、これを超過した場合は `E1017` リソース上限エラーとなります。最外の型構築子が異なるインスタンスヘッドの組（例: `Encode<i64>` と `Encode<['a]>`、別々のレコード）は単一化せずに重複なしと判定できるため、この 1024 組には数えません。
 
 | 組み込みクラス | メソッド／演算子 | 提供される組み込みインスタンス |
 |---|---|---|
@@ -594,6 +594,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Default` | `default :: 'a`（`Default.default()` で呼び出し） | 数値の 0、false、unit、空文字列、文字の 0、空配列、空リスト、全要素が Default を満たすタプル |
 | `Elementary` | 初等超越関数用制約（メソッドなし） | f32／f64 のみ（ユーザーによるインスタンス追加は不可） |
 | `Err` | `msg :: ref 'a -> string`（`try` ハンドラの戻り値型に要求） | なし（標準ライブラリの `Exception` がインスタンスを保持。[検査付き算術と例外](#検査付き算術と例外) 参照） |
+| `Encode`／`Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`／`decode :: ref Json.Value -> Result<'a, Json.Error>` | なし（標準ライブラリの `Json` が bool、全整数型、f32、f64、文字列型、`Maybe`、配列、リスト、`Vec`、2〜4 要素のタプル、`Json.Value` のインスタンスを保持。[Json](#json) 参照） |
 | `Drop` | `drop :: ref mut 'a -> unit`（スコープ終了時に drop glue が自動呼び出し。式からは直接参照不可） | なし（ユーザー定義の record や union に対して明示実装。[利用者定義の解放](#利用者定義の解放) 参照） |
 
 `Capture` 制約は、1 回実行専用の `Task<T>` およびそれを含む集約値の捕捉を静的に拒否します。
@@ -851,7 +852,7 @@ union のペイロードを経由するデータ構造の循環定義が正式�
 
 ```text
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
-union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display)
+union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display, Encode, Decode)
 ```
 
 型宣言の末尾に `deriving (...)` を付与することで、同一モジュール内に標準的な条件付き型クラスインスタンスをコンパイラが自動合成します。
@@ -862,6 +863,7 @@ union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display)
 - `Ord` の導出: 事前に `Eq` の導出または実装が必要です。レコードはフィールドの辞書式順序に従い、union は case の宣言順序に従って大小関係を判定します。NaN との比較などで順序判定が成立しない場合は後続の比較を行いません。
 - `Default` の導出: レコードは全フィールドのデフォルト値を結合し、union は宣言の先頭に位置する第 1 の case のデフォルト値を生成します（空コレクションの要素型に対して Default 制約は要求されません）。先頭の case が再帰構造を持っており有限値で終了しない既定値の生成は拒否されます。
 - `Display` の導出: レコードは `Point { x: 1, y: 2 }`、union は `Empty` や `Rect (1, 2)` のような標準的な文字列表現を出力します（配列は `[a, b]`、リストは `[|a, b|]`、タプルは `(a, b)` 形式）。
+- `Encode`／`Decode` の導出: レコードは宣言順の JSON object（キーはフィールド名）、union はペイロードなしの case を `"Case"`、ペイロードありの case を `{"Case": payload}`（複数のペイロードはタプルなので配列）にします。decode は余分なキーを無視し、無いキーを `null` として decode して失敗すれば `MissingField` です。encode は最初の Error で止まり、decode は全フィールドを decode して宣言順で最初の Error を返します。生成コードは `$object{i}`／`$field{i}` などの束縛の連鎖と 1 段の `match` で、深さはフィールド数・case 数に比例しません。詳細は [Json](#json) を参照してください。
 - 構造内部に含まれる文字列や文字の表示: リテラル風にエスケープ・引用符付きで出力されます。`string`／`char` は `"..."`／`'...'`、UTF-8 文字列型は `u8` プレフィックスを伴います。ダブルクォーテーション、バックスラッシュ、ならびに LF、CR、TAB、NUL などの制御文字は適切にエスケープされ、その他の非表示制御文字や孤立サロゲートは 4 桁の大文字 Unicode エスケープ `\uXXXX`（UTF-8 型では `\u{XXXX}`）として出力されます（正常なサロゲートペアは文字としてそのまま保持されます）。なお、単独の文字列を直接 `Display.display` で出力した場合は従来どおりエスケープなしの生文字列となります。
 
 再帰データ型に対してもこれらの型クラスを導出可能ですが、比較、表示、および Hash 処理においてユーザー定義メソッドを呼び出す処理は通常の再帰呼び出しとなります。
@@ -2564,6 +2566,35 @@ let total = sum3 point            // point は Copy なのでこの後も使え�
 デストラクタによる破棄や `clone` による複製は実際に初期化済みの要素数（length）のみを対象として実行され、未初期化の余剰容量メモリを読み取ることはありません。
 `Vec.of_array` および `Vec.to_array` は所有権を持つ内部バッファをそのまま引き渡すため、要素データの無駄なディープコピーは発生しません（ただし、Copy 配列の引数渡しやスタック配置配列のヒープ昇格処理は、言語の通常の所有権規則に従って安全に行われます）。空の配列が渡された場合は不要なヒープバッファが即座に解放され、空の Vec インスタンスとして正規化されます。
 なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます。
+
+### Json
+
+std モジュール `Json` は JSON（RFC 8259）の解析と出力、および組み込み型クラス `Encode`／`Decode` による値との変換を提供します。利用者向けの詳細と例は言語リファレンスの [Json](../_tsuzuri/language-reference/built-in-types-and-modules/json.md) にあります。
+
+```text
+record Numeral { text: utf8string }
+union Value = Null | Bool of bool | Number of Numeral | Text of string | Items of [Value] | Object of [(string * Value)]
+record Error { kind: ErrorKind, offset: i64 }
+
+Json.parse :: ref utf8string -> Result<Value, Error>
+Json.to_utf8string :: ref Value -> utf8string
+Json.numeral :: ref utf8string -> Maybe<Numeral>
+Json.to_i64 :: ref Numeral -> Result<i64, Error>
+Json.to_f64 :: ref Numeral -> Result<f64, Error>
+Json.encode :: Encode<'a> => ref 'a -> Result<Value, Error>
+Json.decode :: Decode<'a> => ref Value -> Result<'a, Error>
+Json.serialize :: Encode<'a> => ref 'a -> Result<utf8string, Error>
+Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
+```
+
+- 数値は字句をそのまま保つ `Numeral` です。`parse` は入力の字句を保持し（`1.0E+2` は `1.0E+2`）、`numeral` は字句を検証して複製します。直接書いた不正な `Numeral` は `to_utf8string` でトラップします。配列の case は、組み込みの型名 `Array` を case 名に使えないため `Items` です。
+- 解析は RFC 8259 に厳密です。BOM、コメント、末尾カンマ、`NaN`、先頭ゼロ、`+1`、`.5`、`1.` は `Syntax`、文字列中の生の制御文字は `ControlCharacter`、未定義のエスケープは `InvalidEscape`、同じ object の重複キー（エスケープを解いた後のコード単位で比較）は `DuplicateKey` です。孤立サロゲートのエスケープは `Text` にそのまま入ります。
+- `Error.offset` は入力を不正にした最初のバイトの位置です。一つの入力に複数の誤りがあれば、いちばん前のものを返します。encode・decode・数値変換の `offset` は -1 です。`Display<Json.Error>` は `json: <種類>` と ` at byte <offset>` を出します。
+- 出力は空白なしで、キーは格納順、数値は字句のまま、文字列は ECMAScript 2019 以降の `JSON.stringify` と同じエスケープです（孤立サロゲートは `\udxxx`）。`Object` の重複キーは検査しません。
+- 入力は 64 MiB（`TooLarge`）、入れ子は 128 段（`TooDeep`、129 段目の `[`／`{` の位置）まで。解析は再帰の前に深さを検査する再帰下降なので、深い入力でもスタックは 128 段で止まります。重複キーの検査は 32 メンバー以下で線形、それを超えると整列して $O(n \log n)$ です。
+- 数値の変換（`to_i64`、`to_f64`、数値の `Decode`）は字句を検査してから `Parse.parse` を一度だけ呼びます。整数型は小数・指数のある字句を `ExpectedType "integer"`、範囲外と 4096 バイト超の字句を `NumberRange` にします。浮動小数点は目的の型へ一度だけ最近接・偶数丸めし、無限大への overflow は `NumberRange` です。
+- `Encode`／`Decode` のインスタンスは std の `Json` と利用者のソースにだけあり、bool、全整数型、f32、f64、string、utf8string、`Maybe<'a>`（`None` は `null`）、配列・リスト・`Vec`（JSON の配列）、2〜4 要素のタプル（同じ長さの配列）、`Json.Value` を扱います。NaN・無限大の encode は `NonFinite`、孤立サロゲートを含む文字列の `utf8string` への decode は `LoneSurrogate` です。数値は `to_string` の最短表現（`-0`、`1e+7`）で、`JSON.stringify` とは書き方が異なることがあります。
+- `deriving (Encode, Decode)` の形は[自動導出](#自動導出deriving)にあります。`Json` を使わないプログラムの生成コードは、std の追加による生成関数の番号の付け替えを除いて変わりません。
 
 ### データ並列 API
 

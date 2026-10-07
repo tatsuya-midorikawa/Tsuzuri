@@ -116,6 +116,7 @@
 - [Process](./built-in-types-and-modules/process.md)
 - [Format](./built-in-types-and-modules/format.md)
 - [Exception](./built-in-types-and-modules/exception.md)
+- [Json](./built-in-types-and-modules/json.md)
 
 #### 非同期処理
 

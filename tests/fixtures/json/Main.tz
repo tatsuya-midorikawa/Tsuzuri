@@ -1,0 +1,252 @@
+record Point { x: i64, y: f64 } deriving (Encode, Decode)
+union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Encode, Decode)
+record Scene { name: string, points: [Point], shapes: Vec<Shape>, note: Maybe<string> } deriving (Encode, Decode)
+
+def fnv :: ref utf8string -> i64
+fn fnv text =
+    let mut hash = 14695981039346656037i64u
+    for byte in text do hash = (hash ^^^ (byte as i64u)) * 1099511628211i64u
+    hash as i64
+
+def kind_number :: ref Json.ErrorKind -> i64
+fn kind_number kind =
+    match kind with
+    | Json.Syntax -> 1
+    | Json.UnexpectedEnd -> 2
+    | Json.InvalidEscape -> 3
+    | Json.ControlCharacter -> 4
+    | Json.DuplicateKey _ -> 5
+    | Json.TooDeep -> 6
+    | Json.TooLarge -> 7
+    | Json.NonFinite -> 8
+    | Json.NumberRange -> 9
+    | Json.ExpectedType _ -> 10
+    | Json.MissingField _ -> 11
+    | Json.UnknownCase _ -> 12
+    | Json.LoneSurrogate -> 13
+
+/// The error kind times 2^40 plus its offset.
+def error_status :: ref Json.Error -> i64
+fn error_status error = kind_number (ref error.kind) * 1099511627776 + error.offset
+
+/// -1 for success, or `error_status` of the error.
+def status :: Result<'a, Json.Error> -> i64
+fn status result =
+    match result with
+    | Ok _ -> -1
+    | Error error -> error_status (ref error)
+
+/// The FNV-1a hash of the UTF-8 text of the error, or 0 for success.
+def message :: Result<'a, Json.Error> -> i64
+fn message result =
+    match result with
+    | Ok _ -> 0
+    | Error error ->
+        let text = Utf8String.from_string (ref (Display.display (ref error)))
+        fnv (ref text)
+
+def text_hash :: Result<utf8string, Json.Error> -> i64
+fn text_hash result =
+    match result with
+    | Ok text -> fnv (ref text)
+    | Error error -> error_status (ref error)
+
+def scene :: unit -> Scene
+fn scene _unit =
+    let shapes = Vec.push (Vec.push (Vec.push (Vec.empty()) (Circle 2.0)) (Rect (1.0, 2.5))) Empty
+    Scene { name: "a", points: [Point { x: 1, y: 0.5 }], shapes: shapes, note: None }
+
+export def scene_hash :: i64
+fn scene_hash =
+    let value = scene ()
+    text_hash (Json.serialize (ref value))
+
+export def scene_round_trip :: bool
+fn scene_round_trip =
+    let value = scene ()
+    let text = Result.get (Json.serialize (ref value))
+    let back: Result<Scene, Json.Error> = Json.deserialize (ref text)
+    match back with
+    | Ok copy ->
+        let again = Result.get (Json.serialize (ref copy))
+        again == text && copy.name == "a" && copy.points[0].x == 1 && copy.points[0].y == 0.5 && Vec.length (ref copy.shapes) == 3
+    | Error _ -> false
+
+/// `[` n times and `]` n times.
+export def nesting :: i64 -> i64
+fn nesting count =
+    let mut bytes = Vec.with_capacity (count * 2)
+    for _index in 1 .. count do bytes = Vec.push bytes 91ubyte
+    for _index in 1 .. count do bytes = Vec.push bytes 93ubyte
+    let text = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
+    status (Json.parse (ref text))
+
+/// `{"a":` n times, `1`, and `}` n times.
+export def object_nesting :: i64 -> i64
+fn object_nesting count =
+    let mut bytes = Vec.with_capacity (count * 6 + 1)
+    for _index in 1 .. count do
+        bytes = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push bytes 123ubyte) 34ubyte) 97ubyte) 34ubyte) 58ubyte
+    bytes = Vec.push bytes 49ubyte
+    for _index in 1 .. count do bytes = Vec.push bytes 125ubyte
+    let text = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
+    status (Json.parse (ref text))
+
+/// An input of 64 MiB + 1 bytes is refused before it is read.
+export def too_large :: i64
+fn too_large =
+    let mut bytes = Vec.with_capacity 67108865
+    for _index in 1 .. 67108865 do bytes = Vec.push bytes 32ubyte
+    let text = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
+    status (Json.parse (ref text))
+
+def number_text :: i64 -> utf8string
+fn number_text case =
+    match case with
+    | 0 -> u8"0.1"
+    | 1 -> u8"-0"
+    | 2 -> u8"5e-324"
+    | 3 -> u8"1.7976931348623157e308"
+    | 4 -> u8"-1e-400"
+    | 5 -> u8"1.000000059604644775390625000000001"
+    | 6 -> u8"123456789012345678901234567890"
+    | 7 -> u8"1e400"
+    | 8 -> u8"-0.0e-0"
+    | _ -> u8"2.2250738585072011e-308"
+
+/// The f64 that `Json.to_f64` reads from case `case`, or NaN on failure.
+export def number_value :: i64 -> f64
+fn number_value case =
+    let text = number_text case
+    let numeral = Maybe.get (Json.numeral (ref text))
+    match Json.to_f64 (ref numeral) with
+    | Ok value -> value
+    | Error _ -> 0.0 / 0.0
+
+/// 1 or -1 by the sign bit of `number_value case`.
+export def number_sign :: i64 -> f64
+fn number_sign case = Math.copysign 1.0 (number_value case)
+
+export def number_status :: i64 -> i64
+fn number_status case =
+    let text = number_text case
+    let numeral = Maybe.get (Json.numeral (ref text))
+    status (Json.to_f64 (ref numeral))
+
+/// The f32 that `Decode` reads, rounded once from the text.
+export def float32_value :: i64 -> f64
+fn float32_value case =
+    let text = number_text case
+    let decoded: Result<f32, Json.Error> = Json.deserialize (ref text)
+    match decoded with
+    | Ok value -> value as f64
+    | Error _ -> 0.0 / 0.0
+
+def as_i64 :: utf8string -> i64
+fn as_i64 text =
+    let decoded: Result<i64, Json.Error> = Json.deserialize (ref text)
+    status decoded
+
+def as_i64u :: utf8string -> i64
+fn as_i64u text =
+    let decoded: Result<i64u, Json.Error> = Json.deserialize (ref text)
+    match decoded with
+    | Ok value -> if value == 18446744073709551615i64u then -2 else -1
+    | Error error -> error_status (ref error)
+
+def as_i8 :: utf8string -> i64
+fn as_i8 text =
+    let decoded: Result<i8, Json.Error> = Json.deserialize (ref text)
+    match decoded with
+    | Ok value -> value as i64
+    | Error error -> error_status (ref error)
+
+def as_i128u :: utf8string -> i64
+fn as_i128u text =
+    let decoded: Result<i128u, Json.Error> = Json.deserialize (ref text)
+    match decoded with
+    | Ok value -> (value % 1000000007i128u) as i64
+    | Error error -> error_status (ref error)
+
+export def integer_status :: i64 -> i64
+fn integer_status case =
+    match case with
+    | 0 -> as_i64 u8"9223372036854775807"
+    | 1 -> as_i64 u8"9223372036854775808"
+    | 2 -> as_i64 u8"1.0"
+    | 3 -> as_i64u u8"18446744073709551615"
+    | 4 -> as_i64 u8"-9223372036854775808"
+    | 5 -> as_i64u u8"-0"
+    | 6 -> as_i64u u8"-1"
+    | 7 -> as_i64 u8"1e2"
+    | 8 -> as_i128u u8"340282366920938463463374607431768211455"
+    | 9 -> as_i64 u8"\"5\""
+    | 10 -> as_i8 u8"128"
+    | 11 -> as_i8 u8"-128"
+    | _ -> as_i64 u8" -00"
+
+def field_text :: i64 -> utf8string
+fn field_text case =
+    match case with
+    | 0 -> u8"{\"x\":1}"
+    | 1 -> u8"{\"x\":1,\"y\":2,\"z\":3}"
+    | 2 -> u8"{\"x\":1.5,\"y\":2}"
+    | 3 -> u8"{\"x\":1,\"y\":null}"
+    | 4 -> u8"[1,2]"
+    | 5 -> u8"{\"Square\":1}"
+    | 6 -> u8"\"Circle\""
+    | 7 -> u8"\"Empty\""
+    | 8 -> u8"{\"Empty\":1}"
+    | 9 -> u8"{\"Circle\":1,\"Rect\":2}"
+    | 10 -> u8"5"
+    | 11 -> u8"{\"Rect\":[1]}"
+    | 12 -> u8"{\"Rect\":[1,2]}"
+    | 13 -> u8"[1,2,]"
+    | 14 -> u8"{\"a\":1,\"a\":2}"
+    | 15 -> u8"01"
+    | _ -> u8"{\"x\":1,\"y\":2,\"x\":3}"
+
+def as_point :: utf8string -> Result<Point, Json.Error>
+fn as_point text = Json.deserialize (ref text)
+
+def as_shape :: utf8string -> Result<Shape, Json.Error>
+fn as_shape text = Json.deserialize (ref text)
+
+/// Decoding rules of derived records and unions, as status codes.
+export def field_rules :: i64 -> i64
+fn field_rules case =
+    let text = field_text case
+    if case < 5 || case >= 13 then status (as_point text) else status (as_shape text)
+
+/// The FNV-1a hash of the error message of `field_rules case`.
+export def field_messages :: i64 -> i64
+fn field_messages case =
+    let text = field_text case
+    if case < 5 || case >= 13 then message (as_point text) else message (as_shape text)
+
+export def text_rules :: i64 -> i64
+fn text_rules case =
+    match case with
+    | 0 -> text_hash (Json.serialize (ref "\uD800"))
+    | 1 ->
+        let decoded: Result<utf8string, Json.Error> = Json.deserialize (ref u8"\"\\ud800\"")
+        status decoded
+    | 2 -> status (Json.encode (ref (0.0 / 0.0)))
+    | 3 -> status (Json.encode (ref (1.0f32 / 0.0f32)))
+    | 4 ->
+        let decoded: Result<utf8string, Json.Error> = Json.deserialize (ref u8"\"\\ud83d\\ude00\"")
+        match decoded with
+        | Ok text -> fnv (ref text)
+        | Error error -> error_status (ref error)
+    | 5 -> text_hash (Json.serialize (ref "\u2028\u007f/\"\\\uD83D\uDE00\uDC00"))
+    | 6 ->
+        let units = new [i16u](32, \index -> index as i16u)
+        text_hash (Json.serialize (ref (String.from_code_units units)))
+    | 7 -> text_hash (Json.serialize (ref (-0.0)))
+    | 8 -> text_hash (Json.serialize (ref 10000000.0))
+    | 9 -> text_hash (Json.serialize (ref 0.1f32))
+    | 10 -> text_hash (Json.serialize (ref [Some 1i8, None]))
+    | 11 ->
+        let pair: (Maybe<Maybe<i64>> * Maybe<Maybe<i64>> * [|i64|]) = (Some (Some 1), Some None, [|2, 3|])
+        text_hash (Json.serialize (ref pair))
+    | _ -> text_hash (Json.serialize (ref (-170141183460469231731687303715884105728i128, 340282366920938463463374607431768211455i128u, true, u8"é")))

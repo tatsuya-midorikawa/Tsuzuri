@@ -110,6 +110,23 @@ function siphash(compression, finalization, key0, key1, bytes) {
   for (let step = 0; step < finalization; step++) round();
   return (v0 ^ v1 ^ v2 ^ v3) & mask;
 }
+// JSON references (D08): FNV-1a 64 over UTF-8 bytes, and status codes `kind * 2^40 + offset`.
+function fnv64(bytes) {
+  let hash = 14695981039346656037n;
+  for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 1099511628211n) & ((1n << 64n) - 1n);
+  return BigInt.asIntN(64, hash);
+}
+const utf8Bytes = (text) => [...new TextEncoder().encode(text)];
+const jsonTextHash = (text) => fnv64(utf8Bytes(text));
+const jsonStatus = (kind, offset) => BigInt(kind) * (1n << 40n) + BigInt(offset);
+// The nearest f32 to a positive integer, rounded once (ties to even), computed exactly with BigInt.
+function integerToF32(value) {
+  const bits = value.toString(2).length;
+  if (bits <= 24) return Number(value);
+  const shift = BigInt(bits - 24), kept = value >> shift, rest = value - (kept << shift), half = 1n << (shift - 1n);
+  const rounded = rest > half || (rest === half && (kept & 1n) === 1n) ? kept + 1n : kept;
+  return Number(rounded) * 2 ** Number(shift);
+}
 const sipKey0 = 0x0706050403020100n, sipKey1 = 0x0f0e0d0c0b0a0908n;
 assert.equal(siphash(2, 4, sipKey0, sipKey1, []), 0x726fdb47dd0e0e31n);
 assert.equal(siphash(2, 4, sipKey0, sipKey1, [0]), 0x74f839c593dc67fdn);
@@ -1066,6 +1083,55 @@ const suites = {
       assert.match(ir, /@tz\.specialized\./);
       assert.match(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
       assert.match(ir, /tz\.union\.Result\.Result\[string,i64\]/);
+    },
+  },
+  json: {
+    cases: [
+      ["scene_hash", [], jsonTextHash(JSON.stringify({ name: "a", points: [{ x: 1, y: 0.5 }], shapes: [{ Circle: 2 }, { Rect: [1, 2.5] }, "Empty"], note: null }))],
+      ["scene_round_trip", [], 1],
+      ["nesting", [1n], -1n], ["nesting", [128n], -1n], ["nesting", [129n], jsonStatus(6, 128)],
+      ["nesting", [1000000n], jsonStatus(6, 128)],
+      ["object_nesting", [128n], -1n], ["object_nesting", [129n], jsonStatus(6, 128 * 5)],
+      ...[0.1, -0, 5e-324, 1.7976931348623157e308, -0, Number("1.000000059604644775390625000000001"),
+        Number("123456789012345678901234567890"), undefined, -0, Number("2.2250738585072011e-308")]
+        .flatMap((value, index) => value === undefined ? [] : [
+          ["number_value", [BigInt(index)], value],
+          ["number_sign", [BigInt(index)], Object.is(value, -0) ? -1 : 1],
+        ]),
+      ["number_status", [0n], -1n], ["number_status", [7n], jsonStatus(9, -1)],
+      ["float32_value", [0n], Math.fround(0.1)],
+      // 1 + 2^-24 + 1e-33 is above the tie, so f32 rounds up; rounding through f64 would give 1.
+      ["float32_value", [5n], 1 + 2 ** -23],
+      ["float32_value", [6n], integerToF32(123456789012345678901234567890n)],
+      ...[-1n, jsonStatus(9, -1), jsonStatus(10, -1), -2n, -1n, -1n, jsonStatus(9, -1), jsonStatus(10, -1),
+        BigInt.asIntN(64, ((1n << 128n) - 1n) % 1000000007n), jsonStatus(10, -1), jsonStatus(9, -1), -128n, jsonStatus(1, 3)]
+        .map((expected, index) => ["integer_status", [BigInt(index)], expected]),
+      ...[
+        [jsonStatus(11, -1), 'json: missing field "y"'], [-1n, null], [jsonStatus(10, -1), "json: expected integer"],
+        [jsonStatus(10, -1), "json: expected number"], [jsonStatus(10, -1), "json: expected object"],
+        [jsonStatus(12, -1), 'json: unknown case "Square"'], [jsonStatus(10, -1), "json: expected object"], [-1n, null],
+        [jsonStatus(10, -1), "json: expected string"], [jsonStatus(10, -1), "json: expected object with one member"],
+        [jsonStatus(10, -1), "json: expected string or object"], [jsonStatus(10, -1), "json: expected array of 2"], [-1n, null],
+        [jsonStatus(1, 5), "json: syntax error at byte 5"], [jsonStatus(5, 7), 'json: duplicate key "a" at byte 7'],
+        [jsonStatus(1, 1), "json: syntax error at byte 1"], [jsonStatus(5, 13), 'json: duplicate key "x" at byte 13'],
+      ].flatMap(([expected, text], index) => [
+        ["field_rules", [BigInt(index)], expected],
+        ["field_messages", [BigInt(index)], text === null ? 0n : jsonTextHash(text)],
+      ]),
+      ["text_rules", [0n], jsonTextHash(JSON.stringify("\ud800"))],
+      ["text_rules", [1n], jsonStatus(13, -1)], ["text_rules", [2n], jsonStatus(8, -1)], ["text_rules", [3n], jsonStatus(8, -1)],
+      ["text_rules", [4n], fnv64([0xf0, 0x9f, 0x98, 0x80])],
+      ["text_rules", [5n], jsonTextHash(JSON.stringify("\u2028\u007f/\"\\\ud83d\ude00\udc00"))],
+      ["text_rules", [6n], jsonTextHash(JSON.stringify(String.fromCharCode(...Array.from({ length: 32 }, (_, index) => index))))],
+      // Numbers keep the shortest round-trip text of `to_string`, unlike JSON.stringify ("0", "10000000").
+      ["text_rules", [7n], jsonTextHash("-0")], ["text_rules", [8n], jsonTextHash("1e+7")], ["text_rules", [9n], jsonTextHash("0.1")],
+      ["text_rules", [10n], jsonTextHash("[1,null]")], ["text_rules", [11n], jsonTextHash("[1,null,[2,3]]")],
+      ["text_rules", [12n], jsonTextHash(`[${-(1n << 127n)},${(1n << 128n) - 1n},true,"é"]`)],
+    ],
+    nativeCases: [["too_large", [], jsonStatus(7, 0)]],
+    inspect(ir) {
+      assert.match(ir, /define internal [^\n]*@tz\.fn\.Json\.parse\(/);
+      assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf/);
     },
   },
   display_parse: {

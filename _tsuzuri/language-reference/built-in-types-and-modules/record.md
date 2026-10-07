@@ -10,7 +10,7 @@
 - 構築は `Point { x: 1.0, y: 2.0 }`、読み出しは `point.x` です。
 - 更新は `{ point with x = 3 }` で、新しい値を作ります。非 Copy のレコードでは元の値を消費します。
 - 全フィールドが Copy ならレコード全体も Copy です。`string` などを含む非 Copy なレコードはフィールド単位でムーブします。
-- `deriving (Eq, Ord, Display, Hash, Default)` で比較、表示、ハッシュ、既定値を足せます。
+- `deriving (Eq, Ord, Display, Hash, Default)` で比較、表示、ハッシュ、既定値を、`deriving (Encode, Decode)` で JSON との変換を足せます。
 
 ## 基本の書き方
 
@@ -208,7 +208,7 @@ Copy でないレコードは、フィールドごとにムーブできます。
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)
 ```
 
-指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default` です。`Ord` には `Eq` も必要で、無いと `E1025` になります。手書きのインスタンスと重なると `E1016`、同じクラスを 2 回書くと `E1001` です。
+指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` です（`Encode` / `Decode` は [Json](./json.md)）。`Ord` には `Eq` も必要で、無いと `E1025` になります。手書きのインスタンスと重なると `E1016`、同じクラスを 2 回書くと `E1001` です。
 
 ```tsuzuri run=Point%20%7B%20x%3A%2020%2C%20y%3A%2022%20%7D
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display, Hash, Default)

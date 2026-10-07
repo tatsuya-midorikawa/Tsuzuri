@@ -937,10 +937,12 @@ impl Parser<'_> {
                 "Display" => DeriveClass::Display,
                 "Hash" => DeriveClass::Hash,
                 "Default" => DeriveClass::Default,
+                "Encode" => DeriveClass::Encode,
+                "Decode" => DeriveClass::Decode,
                 _ => {
                     return Err(Diagnostic::new(
                         "E1025",
-                        "only Eq, Ord, Display, Hash and Default can be derived",
+                        "only Eq, Ord, Display, Hash, Default, Encode and Decode can be derived",
                         name.span,
                     ));
                 }

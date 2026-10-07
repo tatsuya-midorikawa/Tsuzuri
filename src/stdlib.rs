@@ -16,6 +16,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/HashMap.tz", include_str!("../std/HashMap.tz")),
     ("std/HashSet.tz", include_str!("../std/HashSet.tz")),
     ("std/IO.tc", include_str!("../std/IO.tc")),
+    ("std/Json.tz", include_str!("../std/Json.tz")),
     ("std/List.tz", include_str!("../std/List.tz")),
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
@@ -76,6 +77,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "BigInt",
     "FixedArray",
     "Dyn",
+    "Json",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -141,7 +143,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 36);
+        assert_eq!(RESERVED_MODULES.len(), 37);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

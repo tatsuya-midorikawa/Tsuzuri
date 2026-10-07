@@ -350,6 +350,8 @@ pub enum DeriveClass {
     Display,
     Hash,
     Default,
+    Encode,
+    Decode,
 }
 
 impl DeriveClass {
@@ -360,6 +362,8 @@ impl DeriveClass {
             Self::Display => "Display",
             Self::Hash => "Hash",
             Self::Default => "Default",
+            Self::Encode => "Encode",
+            Self::Decode => "Decode",
         }
     }
 }
