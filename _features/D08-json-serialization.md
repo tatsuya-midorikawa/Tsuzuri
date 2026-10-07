@@ -765,7 +765,7 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 8. **数値の細部。** `-0` の字句は符号なし整数へ 0 として decode する（`Parse.parse` は `-0` を符号なしで拒むため、字句を見て扱う）。`ErrorKind` の名前（`ExpectedType` の引数）は JSON Schema の型名
    （`boolean`・`integer`・`number`・`string`・`array`・`object`）に、union の形の誤りは `object`／`string`／`object with one member`／`string or object`、タプルは `array of N` にした。
 9. **名前の衝突。** std の型と case は利用者のモジュールから無修飾で見え、利用者の private な同名の宣言より優先されうる（`tests/visibility.rs` が `Token` で発見）。ストリーミングの字句の型は `Token` ではなく `Lexeme` にした。
-   `ErrorKind` は `Os.ErrorKind` と同名なので、無修飾の `ErrorKind` は曖昧になる（`Os.ErrorKind` と修飾する。D-07 の `Error` と同じ扱い）。
+   `ErrorKind` は `Os.ErrorKind` と同名なので、無修飾の `ErrorKind` は曖昧になっていた。統合の後、opt-in std モジュール（D-40）の宣言は利用者のコードから修飾した名前でだけ見えるようにしたため、無修飾の `ErrorKind` は従来どおり `Os.ErrorKind` を指す。
 
 ### 確認（Apple M1 Max、macOS、Apple clang 21、rustc 1.98.1、Node v20.19.6）
 

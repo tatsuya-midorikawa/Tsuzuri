@@ -273,10 +273,10 @@ std の仮想パスは `std/Name.ext` という平坦な形式で管理され、
 無修飾の型名、case、レコード、型クラスの解決においては、まず自モジュール内、次いで完全修飾名（モジュールパスが同一名の型を表す場合を含む）を検索します。その後、参照元がユーザーコードであれば「ユーザー定義モジュール群 → std モジュール群」の順序で各段階ごとに一意な候補を探索し、参照元が std であれば std モジュール群のみを探索します。
 std モジュールにおける `export def` の使用は禁止されており、std の関数を外部から呼び出す際はユーザー定義関数と同様にモジュール名による修飾が必須です。
 std のソースコードは型検査の対象となりますが、`closures::lower` の処理後に到達可能性解析（reachability analysis）が行われ、不要な関数は最終成果物から間引かれます。
-例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`。D-40）で、`Project::load` 系（言語サーバーの `load_with_overlays` を除く）と `analyze_modules_all` は `stdlib::sources_for` が選んだものだけを読み込みます。
-`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名、無修飾で解決しうる公開の型・case・型クラス・アクティブパターンの名前、他所の型に instance を与える組み込みクラス）のどれかが現れたモジュールと、その `uses` を閉包として加えます。
-常に読み込む std の候補が既に 2 つ以上ある名前（型の `Error` など）は、読み込みの有無で解決が変わらないため名前に含めません。`stdlib::tests::opt_in_names_cover_every_reachable_declaration` が std のソースを字句解析・構文解析して、名前の一覧・`uses`・常に読み込むモジュールが opt-in モジュールを参照しないことを検査します。
-この選択は型検査の時間（空のプログラムの `check` で約 2 倍）と、使わないプログラムの IR（関数番号のずれ）を opt-in モジュールの追加前と同じに保ちます。
+例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`。D-40）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
+そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
+`stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`uses` が正しいことを検査します。
+この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
 LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
 

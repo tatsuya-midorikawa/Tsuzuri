@@ -137,14 +137,12 @@ pub fn module_name(path: &str) -> Option<&str> {
 /// A std module that only a program naming it can reach (D-40). Commands that
 /// build or check a program load it only when a user source contains one of
 /// `names`, so programs that do not use it neither type-check nor emit it.
+/// User code names its declarations only qualified (`Json.Value`, `Arena.Handle`).
 pub(crate) struct OptIn {
     pub module: &'static str,
-    /// The identifiers that can refer to the module from user code: its name,
-    /// each public record, union, case, alias, and class it declares whose
-    /// unqualified use is not already ambiguous among the always-loaded std
-    /// modules, and the builtin classes it gives instances for types it does
-    /// not declare. `opt_in_names_cover_every_reachable_declaration` keeps the
-    /// list complete.
+    /// The identifiers that can refer to the module from user code: its name and
+    /// the builtin classes it gives instances for types it does not declare.
+    /// `opt_in_modules_are_reached_only_through_their_names` keeps the list complete.
     pub names: &'static [&'static str],
     /// The opt-in modules that its own source refers to.
     pub uses: &'static [&'static str],
@@ -153,102 +151,22 @@ pub(crate) struct OptIn {
 pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Arena",
-        names: &["Arena", "Handle"],
+        names: &["Arena"],
         uses: &[],
     },
     OptIn {
         module: "Regex",
-        names: &["Regex", "ErrorKind", "Syntax", "Unsupported", "TooLarge"],
+        names: &["Regex"],
         uses: &["Unicode"],
     },
     OptIn {
         module: "Unicode",
-        names: &[
-            "Unicode",
-            "Category",
-            "Lu",
-            "Ll",
-            "Lt",
-            "Lm",
-            "Lo",
-            "Mn",
-            "Mc",
-            "Me",
-            "Nd",
-            "Nl",
-            "No",
-            "Pc",
-            "Pd",
-            "Ps",
-            "Pe",
-            "Pi",
-            "Pf",
-            "Po",
-            "Sm",
-            "Sc",
-            "Sk",
-            "So",
-            "Zs",
-            "Zl",
-            "Zp",
-            "Cc",
-            "Cf",
-            "Cs",
-            "Co",
-            "Cn",
-            "NormalizationForm",
-            "Nfc",
-            "Nfd",
-            "Nfkc",
-            "Nfkd",
-        ],
+        names: &["Unicode"],
         uses: &[],
     },
     OptIn {
         module: "Json",
-        names: &[
-            "Json",
-            "Encode",
-            "Decode",
-            "Numeral",
-            "Lexeme",
-            "Reader",
-            "Writer",
-            "Value",
-            "Null",
-            "Bool",
-            "Number",
-            "Text",
-            "Items",
-            "Object",
-            "ErrorKind",
-            "Syntax",
-            "UnexpectedEnd",
-            "InvalidEscape",
-            "ControlCharacter",
-            "DuplicateKey",
-            "TooDeep",
-            "TooLarge",
-            "NonFinite",
-            "NumberRange",
-            "ExpectedType",
-            "MissingField",
-            "UnknownCase",
-            "LoneSurrogate",
-            "InvalidUtf8",
-            "Unsupported",
-            "Event",
-            "ObjectStart",
-            "ObjectEnd",
-            "ArrayStart",
-            "ArrayEnd",
-            "KeyToken",
-            "TextToken",
-            "NumberToken",
-            "BoolToken",
-            "NullToken",
-            "EndOfInput",
-        ],
+        names: &["Json", "Encode", "Decode"],
         uses: &[],
     },
     OptIn {
@@ -257,6 +175,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &["Json"],
     },
 ];
+
+/// Whether `module` is an opt-in std module, whose declarations user code names
+/// only qualified (D-40).
+pub(crate) fn is_opt_in(module: &str) -> bool {
+    OPT_IN.iter().any(|opt_in| opt_in.module == module)
+}
 
 /// The embedded std sources that a program made of `texts` (its user sources)
 /// can reach, in load order: every module that is not opt-in, and the opt-in
@@ -402,15 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn opt_in_names_cover_every_reachable_declaration() {
-        let opt_in = |name: &str| OPT_IN.iter().any(|module| module.module == name);
-        let mut always = std::collections::BTreeMap::<(&str, String), usize>::new();
+    fn opt_in_modules_are_reached_only_through_their_names() {
         for (path, source) in SOURCES {
             let name = module_name(path).unwrap();
-            if !opt_in(name) {
-                for entry in public_names(source) {
-                    *always.entry(entry).or_default() += 1;
-                }
+            if !is_opt_in(name) {
                 // An always-loaded module must not need an opt-in module.
                 for module in OPT_IN {
                     assert!(
@@ -427,21 +346,6 @@ mod tests {
                 .find(|(path, _)| module_name(path) == Some(module.module))
                 .unwrap();
             assert!(module.names.contains(&module.module), "{path}");
-            let declared = public_names(source);
-            let missing: Vec<&str> = declared
-                .iter()
-                .filter(|(namespace, name)| {
-                    !always
-                        .get(&(*namespace, name.clone()))
-                        .is_some_and(|count| *count >= 2)
-                        && !module.names.contains(&name.as_str())
-                })
-                .map(|(_, name)| name.as_str())
-                .collect();
-            assert!(
-                missing.is_empty(),
-                "{path}: add these names to its OptIn names: {missing:?}"
-            );
             // Instances for types declared elsewhere are reached through their class.
             let program = crate::parser::parse(source).unwrap();
             for instance in &program.instances {
@@ -472,11 +376,17 @@ mod tests {
                     instance.class.text
                 );
             }
-            // The modules it refers to are exactly its `uses`.
+            // The modules it refers to, by name or through a bare std name that only
+            // the other module declares, are exactly its `uses`.
+            let declared = public_names(source);
             for other in OPT_IN {
                 if other.module != module.module {
+                    let (_, other_source) = SOURCES
+                        .iter()
+                        .find(|(path, _)| module_name(path) == Some(other.module))
+                        .unwrap();
                     let named = mentions(source, other.module)
-                        || other.names.iter().any(|name| {
+                        || public_names(other_source).iter().any(|(_, name)| {
                             mentions_as(source, name, true)
                                 && !declared.iter().any(|(_, declared)| declared == name)
                         });
@@ -502,6 +412,30 @@ mod tests {
     }
 
     #[test]
+    fn user_code_names_opt_in_declarations_only_qualified() {
+        let check = |source: &str| crate::analyze_modules(&[("Main.tz", source)]);
+        // Qualified names work.
+        check("export def f :: i64\nfn f =\n    match Json.Null with\n    | Json.Null -> 1\n    | _ -> 0\n")
+            .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+        // A bare case or type of an opt-in module does not resolve, even when it is loaded.
+        let error = check("export def f :: i64\nfn f =\n    let value: Json.Value = Null\n    match value with\n    | Json.Null -> 1\n    | _ -> 0\n")
+            .unwrap_err();
+        assert!(
+            matches!(error.code, "E1002" | "E1004"),
+            "{}: {}",
+            error.code,
+            error.message
+        );
+        let error = check("def f :: Category -> i64\nfn f _ = 1\n// Unicode\n0\n").unwrap_err();
+        assert_eq!(error.code, "E1004", "{}", error.message);
+        // So loading them never makes a bare always-loaded name ambiguous.
+        check("def kind :: ErrorKind -> i64\nfn kind _ = 1\nlet uses = \"Json Regex\"\n0\n")
+            .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+        check("def size :: ref Handle -> i64\nfn size _ = 1\n// Arena\n0\n")
+            .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    }
+
+    #[test]
     fn sources_for_loads_named_opt_in_modules_and_their_uses() {
         let loaded = |text: &str| -> Vec<&str> {
             sources_for([text])
@@ -522,7 +456,11 @@ mod tests {
         assert_eq!(loaded("x |> Cbor.encode"), ["Cbor", "Json"]);
         assert_eq!(loaded("record P { x: i64 } deriving (Encode)"), ["Json"]);
         assert_eq!(loaded("let a: Arena<i64> = Arena.empty()"), ["Arena"]);
-        assert_eq!(loaded("match c with | Lu -> 1 | _ -> 0"), ["Unicode"]);
+        // Bare names of opt-in declarations never resolve to them, so they load nothing.
+        assert_eq!(
+            loaded("match c with | Lu -> 1 | Null -> 0 | _ -> 2"),
+            Vec::<&str>::new()
+        );
         assert_eq!(loaded("let x = 1Regex"), ["Regex", "Unicode"]);
         assert_eq!(loaded("42"), Vec::<&str>::new());
         // The load order is the embedded order.

@@ -3936,19 +3936,26 @@ impl Names {
     /// Chooses among same-named declarations of other modules, one tier of
     /// module origins at a time. Private declarations neither resolve nor
     /// make a name ambiguous.
-    fn choose<T: Copy>(
+    fn choose<'m, T: Copy>(
         &self,
         requester: &str,
         candidates: &[T],
-        origin: impl Fn(T) -> ModuleOrigin,
+        module: impl Fn(T) -> &'m str,
         visible: impl Fn(T) -> bool,
     ) -> Choice<T> {
         let mut hidden = None;
+        let user = self.origin(requester) == ModuleOrigin::User;
         for (rank, tier) in (1..).zip(self.tiers(requester)) {
             let declared: Vec<T> = candidates
                 .iter()
                 .copied()
-                .filter(|candidate| origin(*candidate) == *tier)
+                .filter(|candidate| {
+                    let module = module(*candidate);
+                    self.origin(module) == *tier
+                        // User code names the declarations of an opt-in std module only
+                        // qualified, so loading it never changes a bare name (D-40).
+                        && !(user && *tier == ModuleOrigin::Std && crate::stdlib::is_opt_in(module))
+                })
                 .collect();
             let shown: Vec<T> = declared
                 .iter()
@@ -4183,7 +4190,7 @@ impl Names {
         self.choose(
             module,
             &candidates,
-            |named| self.origin(&named.info().module),
+            |named| named.info().module.as_str(),
             |named| named.info().visible_from(module),
         )
     }
@@ -4257,7 +4264,7 @@ impl Names {
         self.choose(
             module,
             &candidates,
-            |class| self.origin(class.rsplit_once('.').map_or("", |(module, _)| module)),
+            |class| class.rsplit_once('.').map_or("", |(module, _)| module),
             |_| true,
         )
     }
@@ -4347,7 +4354,7 @@ impl Names {
         match self.choose(
             module,
             &candidates,
-            |case| self.origin(&case.info.module),
+            |case| case.info.module.as_str(),
             |case| case.info.visible_from(module),
         ) {
             Choice::Found(case, _) => Ok(Some(case)),
@@ -4610,7 +4617,7 @@ impl Names {
         match self.choose(
             requester,
             &candidates,
-            |(info, _)| self.origin(&info.module),
+            |(info, _)| info.module.as_str(),
             |(info, _)| info.visible_from(requester),
         ) {
             Choice::Found((info, case), _) => Ok(Some((info.id, *case))),
