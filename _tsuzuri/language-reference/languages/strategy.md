@@ -130,12 +130,12 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 型クラスの単相化、deriving、限定的な `dyn`、ランク 1 の HKT | 実装済み | A06、A07、A14、A10。標準の Functor 導入は対象外 |
 | `Maybe` / `Result`、コンピュテーション式、`task` | 実装済み | B01、B02、B05、B06。非同期 I/O ではない |
 | 明示 SIMD、`@cpu`、自動ベクトル化、実行時ディスパッチ | 実装済み | F04、F08。x86 実機の速度は未測定 |
-| ローカル path のパッケージ、ビルドキャッシュ、JSON 診断、fmt、test、doc、lsp | 実装済み | E04、G11、G12、G14、G20。registry はない |
+| ローカル path と commit 固定の git のパッケージ（`tsuzuri fetch`、`Tsuzuri.lock`）、ビルドキャッシュ、JSON 診断、fmt、test、doc、lsp | 実装済み | E04、E10、G11、G12、G14、G20。registry はない |
 | `HashMap`、文字列補間、OS API、C 連携の `extern` と `--link` | 実装済み | C09、D07、E08、E12。Windows の OS API は除く |
 | 整数 WGSL と WebGPU ホスト試作 | 実験的 | F07。通常ランタイムへは未接続 |
 | WASM threads | 実装済みの opt-in | F06。ブラウザ向けの本番 glue は対象外 |
 | Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002` |
-| 非同期計算、ネットワーク、git / registry 依存 | 計画中 | [B08](../../../_features/B08-async.md)、E09、[E10](../../../_features/E10-package-registry.md) |
+| 非同期計算、ネットワーク、registry 依存と版の解決 | 計画中 | [B08](../../../_features/B08-async.md)、E09、[E10](../../../_features/E10-package-registry.md) の Phase 2 |
 | JSON 直列化、正規表現、GPU の浮動小数点と自動接続 | 計画中 | D08、D09、[F09](../../../_features/F09-gpu-float-runtime.md) |
 | 共有所有、Atomic / Mutex / Channel、多次元配列 | 計画中 | [C10](../../../_features/C10-shared-ownership.md)、F10、C11 |
 | REPL、増分コンパイル、カバレッジ、edition、追加ターゲット | 計画中 | G13、G15、G16、G17、G18、G19 |

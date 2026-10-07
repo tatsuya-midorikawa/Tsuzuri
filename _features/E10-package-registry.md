@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | E04, G11 |
 | 後続 | G19, E09 Phase 2 |
-| 状態 | todo |
+| 状態 | Phase 1 done（Phase 2 は実装中） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（`tsuzuri fetch` が外部の `git` CLI を起動すること、`E2007` の確定、GUIDE D-29 の E04 記録「git・lockfile を導入しない」の更新）, D10（Phase 2 の registry の運用主体と index の置き場所） |
 | 改善する劣位 | Rust 比: Cargo／crates.io に相当する依存管理がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）、C#/F# 比: NuGet |
@@ -660,3 +660,61 @@ print(h.hexdigest())'
 - 決定: 「内容ハッシュ」の `content_sha256`（`Sha256::field` の枠付け、パスのバイト順、manifest を含む）。
 - 理由: git の SHA-1 と独立に取得物を固定でき、取得時とビルド時で同じ関数を使える。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-07）
+
+利用者が D1・D10 を含む全 `要承認` 項目を承認し、Phase 1 と Phase 2 の実装を求めた（共通指示）。着手時の HEAD は `2ee813f`
+（チケットの詳細化は `f8dc655`）。ブランチは `wt/e10`。性能は主張しない（ビルド時のハッシュの計測はしていない）。
+
+### Phase 1: commit 固定の git 依存、`tsuzuri fetch`、`Tsuzuri.lock`、オフラインのビルド
+
+#### 実装
+
+- manifest（`src/package.rs`）: `DependencySource::{Path, Git { url, rev }}` と `Dependency::source`（E12 の `native` は path 依存だけ）。
+  `{ git = "<url>", rev = "<40 hex>" }` を `Line::git_dependency` で読み、形・url・rev の違反をチケットの 3 つのメッセージ
+  （`GIT_FORM`・`GIT_URL_RULE`・`GIT_REV_RULE`、公開定数）で `E0002`。他のキーは `expected a path or git dependency`。
+  `valid_git_url`・`valid_rev`、`LockEntry`、`parse_lock`（`serde_json` で読み、重複キーは自前の走査 `duplicate_json_key` で検出）、
+  `render_lock`（正規形）、`content_sha256`（`Sha256::field` の枠付け）。
+- store（`src/cache.rs`）: `package_store()`（`default_root()/packages`）。
+- グラフ（`src/driver.rs`）: `load_packages(directory, git)` を `pub(crate)` にし、resolver（`GitResolver`、`GitRequest`）を受ける。
+  依存ごとに source で分岐し、git は resolver の返す root を `canonicalize` して積む。path 依存の検査は `dependency_directory` に分けた。
+  `LoadedPackage::sha256`。git package の path 依存は `E1011`。`Project::load_from_root` は `read_lockfile`（manifest があるときだけ読む。
+  symlink・1 MiB 超・UTF-8 でない・形式違反は `E2007`／`E1017`）と `offline_git`（git も network も使わない）を渡し、git package の
+  source を読んだ後に `content_sha256` を照合する。`Tsuzuri.lock` は `Project::manifests` に入る（出力保護と `build_key` はそのまま効く）。
+  git package の `[native]` は `E2000`（専用のメッセージ）。`collect_sources`・`read_source_text`・`source_kind`・`SourceError::new` を `pub(crate)` にした。
+- 取得（`src/fetch.rs`、新規）: `fetch`、`url_allowed`（公開）、`Fetcher`（lockfile と store が一致すれば git を起動しない、取得時の sha256 の不一致は
+  `E2007` で lockfile を保持）、`Repository`（隔離した一時 bare repository。`init --bare --template=<空>`、`fetch --depth=1 --no-tags
+  --no-recurse-submodules`、`ls-tree -r -z -l --full-tree`（64 MiB で打ち切り）、`cat-file --batch`（書き込みと読み出しを別 thread））、
+  `parse_tree`（選択・mode・パス・大文字小文字・上限・root manifest）、`Download::commit`（`<store>/git/<sha256>` へ rename、壊れた entry は退避して置換、競合は再確認）、
+  `store_sha256`、`write_lock`（同じ内容なら書かない、`.Tsuzuri.lock.<pid>.tmp` から rename）。
+- CLI（`src/main.rs`）: `tsuzuri fetch directory [--json]` を `new` と同じく `parse_arguments` の前で分岐（`fetch_dependencies`）。`HELP` に追記。
+- テスト: `tests/packages.rs`（13 件、チケットの表のとおり）、`tests/packages.mjs`（file:/// の 3 repository、native・wasm32 × `-O0`／`-O3`、`--no-cache`、IR の決定性、
+  WASM import なし、lockfile 削除後の `E2007`）。`src/cache.rs` の単体テスト `eviction_keeps_the_marker_and_the_package_store`（下の 7）。
+- 文書: `_tsuzuri/language-reference/organizing-tsuzuri/packages.md`（`## git 依存と Tsuzuri.lock` ほか）、`compiler/usage.md`（`### fetch`、`packages/`）、
+  `compiler/diagnostics.md`（`E2007`）、`languages/strategy.md`、`docs/language.md`（`#### git 依存と Tsuzuri.lock`、診断表）、`docs/architecture.md`、`README.md`。
+
+#### 決定事項への追記（チケットから外れた判断）
+
+1. **名前空間（D-35／D-37）への追従。** 明示の `namespace` で package 名と名前空間が独立したため、「同じ名前が異なる source」を名前空間の衝突に頼れない。
+   `load_packages` が依存の辺ごとに名前と取得元（path、または url と rev）の対応を記録し、食い違いを宣言した依存の行で
+   `E1011` `package 'NAME' is required from different sources; ...` にする。path 依存どうしは従来どおり（同じ名前でも名前空間が違えば受理）。
+   root package の名前も path として登録するので、root と同じ名前の git 依存も `E1011`。オフラインでは、root が新しい rev を要求すると
+   その前に lockfile の照合が `E2007`（古い lockfile）になり、`fetch` が `E1011` を報告する。
+2. **E12 の `native` への追従。** git 依存の形は `{ git, rev }` だけなので `native = true` は `E0002`。git package の `[native]` は、
+   既存の「mark the dependency」を勧める文ではなく `git packages cannot declare [native] link settings; move them to the application manifest`（`E2000`）。
+3. **lockfile の書式違反の文。** Phase 2 で `format` 2 を足すため `Tsuzuri.lock is not a valid lockfile (DETAIL); ...` とした（チケットは `version 1 lockfile`）。
+   UTF-8 でない lockfile と symlink の lockfile も `E2007`。
+4. **git の失敗の文。** stderr の最後の空でない行では、repository がないときに `and the repository exists.` だけになる。
+   最初の `fatal:`／`error:` の行（なければ最後の空でない行）を入れる。
+5. **git の起動。** すべての呼び出しに `--git-dir=` を明示して repository の探索をさせない（store が利用者の repository の中にあっても安全）。`LC_ALL=C`。
+6. **テストの fixture。** `update-index --cacheinfo` は `a:b.tz` や `\` を含むパスを拒むので、`hash-object -w`・`mktree -z`・`commit-tree`・`update-ref` で作る
+   （作業木を使わない点は同じ）。一時 root は OS の一時ディレクトリではなく `CARGO_TARGET_TMPDIR`（`target/tmp`）に置く。
+7. **関連する既存の不具合を直した。** `BuildCache::evict` は `.tsuzuri-` で始まる名前を staging とみなすため、作成から 30 日を過ぎた
+   ownership marker `.tsuzuri-cache` を消していた。以後 `BuildCache::open` が root を拒み、ビルドは cache なしになり、`fetch` は
+   `cannot use the cache directory` で止まる（D4 は `fetch` が先に `BuildCache::open` を呼ぶ）。marker を対象から外し、単体テストで確かめた（修正前は失敗）。
+
+#### 確認（Phase 1）
+
+- `cargo test --locked --test packages`: 13 passed。`--test modules`: 21 passed（手順 1 と同じ）。`--lib`: 99 passed。`--bin tsuzuri`: 11 passed。
+- `node tests/packages.mjs target/release/tsuzuri`、`node tests/cache.mjs target/release/tsuzuri`、`node tests/e2e.mjs target/release/tsuzuri`: 成功。
+- `node scripts/check-docs.mjs`（変更した LR の 4 ページ）: 成功。`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。

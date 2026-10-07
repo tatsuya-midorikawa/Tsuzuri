@@ -91,6 +91,12 @@ pub(crate) fn default_root() -> Option<PathBuf> {
     }
 }
 
+/// The package store under the cache root, where `tsuzuri fetch` keeps each
+/// downloaded git package as `git/<content sha256>/`. Eviction never touches it.
+pub(crate) fn package_store() -> Option<PathBuf> {
+    default_root().map(|root| root.join("packages"))
+}
+
 pub(crate) fn build_key(
     project: &crate::driver::Project,
     options: crate::driver::BuildOptions,
@@ -454,7 +460,8 @@ impl BuildCache {
             let Some(key) = name.to_str().filter(|key| {
                 key_name(key)
                     || key.strip_prefix(".lock-").is_some_and(key_name)
-                    || key.starts_with(".tsuzuri-")
+                    // Staging directories, but never the ownership marker.
+                    || key.starts_with(".tsuzuri-") && *key != ".tsuzuri-cache"
             }) else {
                 continue;
             };
@@ -694,6 +701,25 @@ mod tests {
         fs::write(root.join("do-not-delete"), b"user file").unwrap();
         tiny.evict().unwrap();
         assert!(root.join("do-not-delete").exists());
+    }
+
+    #[test]
+    fn eviction_keeps_the_marker_and_the_package_store() {
+        let temporary = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let root = temporary.path.join("cache");
+        let cache = BuildCache::open(&root).unwrap();
+        fs::create_dir_all(root.join("packages/git/package")).unwrap();
+        // The marker is written once, so it is older than the age limit after a month.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join(".tsuzuri-cache"))
+            .unwrap()
+            .set_modified(SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60))
+            .unwrap();
+        cache.evict().unwrap();
+        assert!(root.join(".tsuzuri-cache").is_file());
+        assert!(root.join("packages/git/package").is_dir());
+        BuildCache::open(&root).unwrap();
     }
 
     #[test]

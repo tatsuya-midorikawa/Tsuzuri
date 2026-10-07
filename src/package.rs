@@ -52,12 +52,228 @@ pub fn parse_size(text: &str) -> Option<u64> {
     digits.parse::<u64>().ok()?.checked_mul(scale)
 }
 
+/// Where a dependency comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DependencySource {
+    /// A directory relative to the declaring package's root.
+    Path(PathBuf),
+    /// One commit of a git repository. `tsuzuri fetch` downloads it into the
+    /// package store and records it in `Tsuzuri.lock`.
+    Git { url: String, rev: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dependency {
-    pub path: PathBuf,
+    pub source: DependencySource,
     pub span: Span,
     /// `native = true`: the root package lets this dependency's `[native]` link inputs into the build.
     pub native: bool,
+}
+
+pub const GIT_FORM: &str =
+    "git dependencies are written as { git = \"https://...\", rev = \"<40 lowercase hex>\" }";
+pub const GIT_URL_RULE: &str = "git urls must start with https:// or file:/// and must not contain credentials, spaces, '?', or '#'";
+pub const GIT_REV_RULE: &str =
+    "rev must be a full 40-character lowercase hex commit id; branches and tags are not supported";
+
+/// A git url that a manifest or `Tsuzuri.lock` may name: `https://host/...` or
+/// `file:///...`, at most 2048 printable ASCII bytes without `@` (credentials),
+/// `?`, `#`, or `\`.
+pub fn valid_git_url(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("https://")
+        .filter(|rest| !rest.starts_with('/'))
+        .or_else(|| url.strip_prefix("file:///"));
+    rest.is_some_and(|rest| !rest.is_empty())
+        && url.len() <= 2048
+        && url.bytes().all(|byte| {
+            (0x21..=0x7e).contains(&byte) && !matches!(byte, b'@' | b'?' | b'#' | b'\\')
+        })
+}
+
+/// A full SHA-1 commit id in lowercase hex.
+pub fn valid_rev(rev: &str) -> bool {
+    lowercase_hex(rev, 40)
+}
+
+fn lowercase_hex(text: &str, length: usize) -> bool {
+    text.len() == length
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A git package recorded in `Tsuzuri.lock`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockEntry {
+    pub git: String,
+    pub rev: String,
+    /// The [`content_sha256`] of the package.
+    pub sha256: String,
+}
+
+/// Reads `Tsuzuri.lock`: a JSON object `{"format": 1, "packages": [...]}` whose
+/// entries have exactly the keys `name`, `git`, `rev`, and `sha256`. Key order
+/// and whitespace are free; unknown or duplicate keys and names are errors.
+pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockEntry>, Diagnostic> {
+    use serde_json::Value;
+    let span = Span::new(0, 0).in_source(source_id);
+    if text.len() > MAX_SOURCE_BYTES {
+        return Err(Diagnostic::new("E1017", "Tsuzuri.lock exceeds 1 MiB", span));
+    }
+    let invalid = |detail: String| {
+        Diagnostic::new(
+            "E2007",
+            format!(
+                "Tsuzuri.lock is not a valid lockfile ({detail}); restore it from version control or delete it and run tsuzuri fetch"
+            ),
+            span,
+        )
+    };
+    let value: Value = serde_json::from_str(text).map_err(|error| invalid(error.to_string()))?;
+    if let Some(key) = duplicate_json_key(text) {
+        return Err(invalid(format!("duplicate key '{key}'")));
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("expected an object".into()))?;
+    if let Some(key) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "format" | "packages"))
+    {
+        return Err(invalid(format!("unknown key '{key}'")));
+    }
+    if object.get("format").and_then(Value::as_u64) != Some(1) {
+        return Err(invalid("format must be 1".into()));
+    }
+    let packages = object
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("packages must be an array".into()))?;
+    let mut entries = BTreeMap::new();
+    for package in packages {
+        let fields = package
+            .as_object()
+            .ok_or_else(|| invalid("each package must be an object".into()))?;
+        if let Some(key) = fields
+            .keys()
+            .find(|key| !matches!(key.as_str(), "name" | "git" | "rev" | "sha256"))
+        {
+            return Err(invalid(format!("unknown package key '{key}'")));
+        }
+        let field = |key: &str| {
+            fields
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid(format!("each package needs a string {key}")))
+        };
+        let name = field("name")?;
+        if namespace(name, span).is_err() {
+            return Err(invalid(format!("invalid package name '{name}'")));
+        }
+        let entry = LockEntry {
+            git: field("git")?.to_owned(),
+            rev: field("rev")?.to_owned(),
+            sha256: field("sha256")?.to_owned(),
+        };
+        if !valid_git_url(&entry.git) {
+            return Err(invalid(format!("invalid git url of '{name}'")));
+        }
+        if !valid_rev(&entry.rev) {
+            return Err(invalid(format!("invalid rev of '{name}'")));
+        }
+        if !lowercase_hex(&entry.sha256, 64) {
+            return Err(invalid(format!("invalid sha256 of '{name}'")));
+        }
+        if entries.insert(name.to_owned(), entry).is_some() {
+            return Err(invalid(format!("duplicate package '{name}'")));
+        }
+    }
+    Ok(entries)
+}
+
+/// The canonical `Tsuzuri.lock`: two-space indentation, LF line ends, one final
+/// newline, and packages in name order with the keys `name`, `git`, `rev`, `sha256`.
+pub fn render_lock(entries: &BTreeMap<String, LockEntry>) -> String {
+    use crate::diagnostic::json_string;
+    let mut text = String::from("{\n  \"format\": 1,\n  \"packages\": [");
+    for (index, (name, entry)) in entries.iter().enumerate() {
+        text += if index == 0 { "\n" } else { ",\n" };
+        text += &format!(
+            "    {{\n      \"name\": {},\n      \"git\": {},\n      \"rev\": {},\n      \"sha256\": {}\n    }}",
+            json_string(name),
+            json_string(&entry.git),
+            json_string(&entry.rev),
+            json_string(&entry.sha256)
+        );
+    }
+    text += if entries.is_empty() {
+        "]\n}\n"
+    } else {
+        "\n  ]\n}\n"
+    };
+    text
+}
+
+/// The SHA-256 of a package's files, keyed by `/`-separated paths relative to the
+/// package root: its `Tsuzuri.toml` and every `.tz`, `.tt`, and `.tc` source.
+pub fn content_sha256<Bytes: AsRef<[u8]>>(files: &BTreeMap<String, Bytes>) -> String {
+    let mut hash = crate::cache::Sha256::new();
+    hash.field("tsuzuri-package", b"1");
+    for (path, bytes) in files {
+        hash.field("path", path.as_bytes());
+        hash.field("bytes", bytes.as_ref());
+    }
+    hash.hex()
+}
+
+/// The first key that occurs twice in one object of `text`, which must be JSON
+/// that `serde_json` accepted (`serde_json` keeps only the last duplicate).
+fn duplicate_json_key(text: &str) -> Option<String> {
+    let mut objects: Vec<Option<BTreeSet<String>>> = Vec::new();
+    let mut expect_key = false;
+    let mut characters = text.char_indices();
+    while let Some((start, character)) = characters.next() {
+        match character {
+            '{' => {
+                objects.push(Some(BTreeSet::new()));
+                expect_key = true;
+            }
+            '[' => {
+                objects.push(None);
+                expect_key = false;
+            }
+            '}' | ']' => {
+                objects.pop();
+                expect_key = false;
+            }
+            ',' => expect_key = matches!(objects.last(), Some(Some(_))),
+            '"' => {
+                let mut escaped = false;
+                let mut end = start;
+                for (index, character) in characters.by_ref() {
+                    if escaped {
+                        escaped = false;
+                    } else if character == '\\' {
+                        escaped = true;
+                    } else if character == '"' {
+                        end = index;
+                        break;
+                    }
+                }
+                if std::mem::take(&mut expect_key) {
+                    let key: String = serde_json::from_str(&text[start..=end]).ok()?;
+                    if let Some(Some(keys)) = objects.last_mut()
+                        && !keys.insert(key.clone())
+                    {
+                        return Some(key);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
@@ -283,41 +499,17 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             "dependencies" => {
                 namespace(&key, span)?;
                 cursor.expect("{")?;
-                if cursor.key()? != "path" {
-                    return Err(cursor.error("only local path dependencies are supported"));
-                }
-                cursor.expect("=")?;
-                let path = cursor.string()?;
-                // Windows treats `/dir` and `C:dir` as non-absolute, but both escape the package root.
-                let rooted = Path::new(&path).has_root()
-                    || matches!(
-                        Path::new(&path).components().next(),
-                        Some(Component::Prefix(_))
-                    );
-                if path.is_empty() || path.contains('\0') || rooted {
-                    return Err(cursor.error("dependency path must be a nonempty relative path"));
-                }
-                let mut native = false;
-                if cursor.take(",") {
-                    if cursor.key()? != "native" {
-                        return Err(cursor
-                            .error("only the path and native keys are supported in a dependency"));
-                    }
-                    cursor.expect("=")?;
-                    native = if cursor.take("true") {
-                        true
-                    } else if cursor.take("false") {
-                        false
-                    } else {
-                        return Err(cursor.error("native must be true or false"));
-                    };
-                }
-                cursor.expect("}")?;
+                let (source, native) = match cursor.key()?.as_str() {
+                    "path" => cursor.path_dependency()?,
+                    "git" => (cursor.git_dependency()?, false),
+                    "rev" | "branch" | "tag" => return Err(cursor.error(GIT_FORM)),
+                    _ => return Err(cursor.error("expected a path or git dependency")),
+                };
                 if dependencies
                     .insert(
                         key,
                         Dependency {
-                            path: path.into(),
+                            source,
                             span,
                             native,
                         },
@@ -540,6 +732,61 @@ impl Line<'_> {
             Err(self.error("unexpected content after manifest field"))
         }
     }
+
+    /// The rest of `{ path = "...", native = true }` after `path`, through `}`.
+    fn path_dependency(&mut self) -> Result<(DependencySource, bool), Diagnostic> {
+        self.expect("=")?;
+        let path = self.string()?;
+        // Windows treats `/dir` and `C:dir` as non-absolute, but both escape the package root.
+        let rooted = Path::new(&path).has_root()
+            || matches!(
+                Path::new(&path).components().next(),
+                Some(Component::Prefix(_))
+            );
+        if path.is_empty() || path.contains('\0') || rooted {
+            return Err(self.error("dependency path must be a nonempty relative path"));
+        }
+        let mut native = false;
+        if self.take(",") {
+            if self.key()? != "native" {
+                return Err(
+                    self.error("only the path and native keys are supported in a dependency")
+                );
+            }
+            self.expect("=")?;
+            native = if self.take("true") {
+                true
+            } else if self.take("false") {
+                false
+            } else {
+                return Err(self.error("native must be true or false"));
+            };
+        }
+        self.expect("}")?;
+        Ok((DependencySource::Path(path.into()), native))
+    }
+
+    /// The rest of `{ git = "<url>", rev = "<commit>" }` after `git`, through `}`.
+    fn git_dependency(&mut self) -> Result<DependencySource, Diagnostic> {
+        if !self.take("=") {
+            return Err(self.error(GIT_FORM));
+        }
+        let url = self.string()?;
+        if !valid_git_url(&url) {
+            return Err(self.error(GIT_URL_RULE));
+        }
+        if !self.take(",") || self.key().ok().as_deref() != Some("rev") || !self.take("=") {
+            return Err(self.error(GIT_FORM));
+        }
+        let rev = self.string()?;
+        if !valid_rev(&rev) {
+            return Err(self.error(GIT_REV_RULE));
+        }
+        if !self.take("}") {
+            return Err(self.error(GIT_FORM));
+        }
+        Ok(DependencySource::Git { url, rev })
+    }
 }
 
 #[cfg(test)]
@@ -553,8 +800,8 @@ mod tests {
         let manifest = parse_manifest(&format!("# heading\r\n{PACKAGE}[dependencies]\r\ngeometry-core = {{ path = \"../geo#\\\"\\\\\\t\\n\\r\" }} # end\r\n"), 3).unwrap();
         assert_eq!(manifest.namespace, "SampleApp");
         assert_eq!(
-            manifest.dependencies["geometry-core"].path,
-            PathBuf::from("../geo#\"\\\t\n\r")
+            manifest.dependencies["geometry-core"].source,
+            DependencySource::Path(PathBuf::from("../geo#\"\\\t\n\r"))
         );
         assert_eq!(manifest.dependencies["geometry-core"].span.source, Some(3));
     }
@@ -722,8 +969,8 @@ mod tests {
         assert!(manifest.dependencies["host-lib"].native);
         assert!(!manifest.dependencies["quiet"].native);
         assert_eq!(
-            manifest.dependencies["host-lib"].path,
-            PathBuf::from("../host")
+            manifest.dependencies["host-lib"].source,
+            DependencySource::Path(PathBuf::from("../host"))
         );
         for (entry, message) in [
             (

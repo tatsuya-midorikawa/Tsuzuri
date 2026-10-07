@@ -584,7 +584,7 @@ pub struct SourceError {
 }
 
 impl SourceError {
-    fn new(path: &Path, diagnostic: Diagnostic) -> Self {
+    pub(crate) fn new(path: &Path, diagnostic: Diagnostic) -> Self {
         Self {
             path: path.to_owned(),
             diagnostic,
@@ -613,7 +613,10 @@ impl SourceFile {
     }
 }
 
-fn collect_sources(root: &Path, package_roots: &[PathBuf]) -> Result<Vec<PathBuf>, SourceError> {
+pub(crate) fn collect_sources(
+    root: &Path,
+    package_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, SourceError> {
     let mut pending = vec![(root.to_owned(), 0)];
     let mut directories = 0;
     let mut paths = Vec::new();
@@ -686,11 +689,31 @@ fn collect_sources(root: &Path, package_roots: &[PathBuf]) -> Result<Vec<PathBuf
     Ok(paths)
 }
 
-struct LoadedPackage {
-    id: crate::package::PackageId,
-    manifest: crate::package::Manifest,
-    text: String,
+pub(crate) struct LoadedPackage {
+    pub(crate) id: crate::package::PackageId,
+    pub(crate) manifest: crate::package::Manifest,
+    pub(crate) text: String,
+    /// The content hash that `Tsuzuri.lock` records for a git package.
+    pub(crate) sha256: Option<String>,
 }
+
+/// A git dependency of the package graph. `tsuzuri fetch` downloads it; every
+/// other command finds it through `Tsuzuri.lock` in the package store.
+pub(crate) struct GitRequest<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) url: &'a str,
+    pub(crate) rev: &'a str,
+    /// The name of the declaring package, and its url when it is a git package.
+    pub(crate) parent: &'a str,
+    pub(crate) parent_url: Option<&'a str>,
+    /// The declaring manifest and the dependency's line in it.
+    pub(crate) manifest: &'a Path,
+    pub(crate) span: Span,
+}
+
+/// Resolves a git dependency to its package root and content hash.
+pub(crate) type GitResolver<'a> =
+    dyn FnMut(&GitRequest<'_>) -> Result<(PathBuf, String), SourceError> + 'a;
 
 /// The default namespace of a root folder without a manifest: a kebab-case
 /// folder name in PascalCase as for package names, another valid namespace
@@ -707,7 +730,14 @@ fn folder_namespace(directory: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
+/// Walks the package graph of the manifest in `directory`. `git` turns each git
+/// dependency into a package root: `tsuzuri fetch` downloads it, and the other
+/// commands look it up offline, so both share these rules.
+pub(crate) fn load_packages(
+    directory: &Path,
+    git: &mut GitResolver<'_>,
+) -> Result<Vec<LoadedPackage>, SourceError> {
+    use crate::package::DependencySource;
     use std::collections::{BTreeMap, BTreeSet};
     let manifest_path = directory.join("Tsuzuri.toml");
     match fs::symlink_metadata(&manifest_path) {
@@ -726,11 +756,21 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
             io_error("resolve package root", directory, error),
         )
     })?;
-    let mut pending = vec![(root, None::<(String, PathBuf, Span)>, false)];
+    // Each entry: the package root, the dependency that names it, whether the walk
+    // leaves it, and for a git package its url and content hash.
+    let mut pending = vec![(
+        root,
+        None::<(String, PathBuf, Span)>,
+        false,
+        None::<(String, String)>,
+    )];
     let mut active = BTreeSet::new();
     let mut loaded = BTreeMap::<PathBuf, LoadedPackage>::new();
     let mut namespaces = BTreeMap::new();
-    while let Some((root, expected, leaving)) = pending.pop() {
+    // A package name has one source: paths (several roots may share a name if their
+    // namespaces differ), or one git url and rev.
+    let mut sources = BTreeMap::<String, Option<(String, String)>>::new();
+    while let Some((root, expected, leaving, git_package)) = pending.pop() {
         if leaving {
             active.remove(&root);
             continue;
@@ -789,51 +829,76 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
                     ),
                 ));
             }
+            // The root package's name is taken by a path, so no git package may reuse it.
+            if loaded.is_empty() {
+                sources.insert(manifest.name.clone(), None);
+            }
             active.insert(root.clone());
-            pending.push((root.clone(), None, true));
-            for (name, dependency) in manifest.dependencies.iter().rev() {
-                let mut dependency_root = root.clone();
-                for component in dependency.path.components() {
-                    match component {
-                        std::path::Component::CurDir => continue,
-                        std::path::Component::ParentDir => {
-                            dependency_root.pop();
-                        }
-                        std::path::Component::Normal(part) => dependency_root.push(part),
-                        _ => {
-                            return Err(SourceError::new(
-                                &path,
-                                Diagnostic::new(
-                                    "E1011",
-                                    "dependency paths must be relative",
-                                    dependency.span,
-                                ),
-                            ));
-                        }
-                    }
-                    let metadata = fs::symlink_metadata(&dependency_root).map_err(|error| {
-                        SourceError::new(
-                            &path,
-                            io_error("inspect dependency directory", &dependency_root, error),
-                        )
-                    })?;
-                    if !metadata.is_dir() || metadata.is_symlink() {
+            pending.push((root.clone(), None, true, None));
+            let mut dependencies = Vec::new();
+            for (name, dependency) in &manifest.dependencies {
+                let source = match &dependency.source {
+                    DependencySource::Path(_) => None,
+                    DependencySource::Git { url, rev } => Some((url.clone(), rev.clone())),
+                };
+                if sources
+                    .get(name)
+                    .is_some_and(|existing| *existing != source)
+                {
+                    return Err(SourceError::new(
+                        &path,
+                        Diagnostic::new(
+                            "E1011",
+                            format!(
+                                "package '{name}' is required from different sources; a package name has one path or one git url and rev"
+                            ),
+                            dependency.span,
+                        ),
+                    ));
+                }
+                sources.insert(name.clone(), source);
+                let (dependency_root, dependency_git) = match &dependency.source {
+                    DependencySource::Path(_) if git_package.is_some() => {
                         return Err(SourceError::new(
                             &path,
                             Diagnostic::new(
                                 "E1011",
-                                "dependency paths must traverse real directories, not symbolic links",
+                                "git packages cannot have path dependencies; use a git dependency",
                                 dependency.span,
                             ),
                         ));
                     }
-                }
-                pending.push((
+                    DependencySource::Path(relative) => (
+                        dependency_directory(&root, relative, &path, dependency.span)?,
+                        None,
+                    ),
+                    DependencySource::Git { url, rev } => {
+                        let (package_root, sha256) = git(&GitRequest {
+                            name,
+                            url,
+                            rev,
+                            parent: &manifest.name,
+                            parent_url: git_package.as_ref().map(|(url, _)| url.as_str()),
+                            manifest: &path,
+                            span: dependency.span,
+                        })?;
+                        let package_root = fs::canonicalize(&package_root).map_err(|error| {
+                            SourceError::new(
+                                &path,
+                                io_error("resolve git package root", &package_root, error),
+                            )
+                        })?;
+                        (package_root, Some((url.clone(), sha256)))
+                    }
+                };
+                dependencies.push((
                     dependency_root,
                     Some((name.clone(), path.clone(), dependency.span)),
                     false,
+                    dependency_git,
                 ));
             }
+            pending.extend(dependencies.into_iter().rev());
             loaded.insert(
                 root.clone(),
                 LoadedPackage {
@@ -843,6 +908,7 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
                     },
                     manifest,
                     text,
+                    sha256: git_package.map(|(_, sha256)| sha256),
                 },
             );
         }
@@ -862,6 +928,155 @@ fn load_packages(directory: &Path) -> Result<Vec<LoadedPackage>, SourceError> {
     let mut packages: Vec<_> = loaded.into_values().collect();
     packages.sort_by(|left, right| left.manifest.namespace.cmp(&right.manifest.namespace));
     Ok(packages)
+}
+
+/// The directory that a path dependency names, checked component by component so
+/// that it never passes through a symbolic link.
+fn dependency_directory(
+    root: &Path,
+    relative: &Path,
+    manifest: &Path,
+    span: Span,
+) -> Result<PathBuf, SourceError> {
+    let mut directory = root.to_owned();
+    for component in relative.components() {
+        match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                directory.pop();
+            }
+            std::path::Component::Normal(part) => directory.push(part),
+            _ => {
+                return Err(SourceError::new(
+                    manifest,
+                    Diagnostic::new("E1011", "dependency paths must be relative", span),
+                ));
+            }
+        }
+        let metadata = fs::symlink_metadata(&directory).map_err(|error| {
+            SourceError::new(
+                manifest,
+                io_error("inspect dependency directory", &directory, error),
+            )
+        })?;
+        if !metadata.is_dir() || metadata.is_symlink() {
+            return Err(SourceError::new(
+                manifest,
+                Diagnostic::new(
+                    "E1011",
+                    "dependency paths must traverse real directories, not symbolic links",
+                    span,
+                ),
+            ));
+        }
+    }
+    Ok(directory)
+}
+
+/// The root package's `Tsuzuri.lock`.
+pub(crate) struct Lockfile {
+    pub(crate) path: PathBuf,
+    pub(crate) text: String,
+    pub(crate) entries: std::collections::BTreeMap<String, crate::package::LockEntry>,
+}
+
+/// Reads and validates `Tsuzuri.lock` next to the manifest in `directory`, if both exist.
+pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, SourceError> {
+    if fs::symlink_metadata(directory.join("Tsuzuri.toml")).is_err() {
+        return Ok(None);
+    }
+    let path = directory.join("Tsuzuri.lock");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(SourceError::new(
+                &path,
+                io_error("inspect lockfile", &path, error),
+            ));
+        }
+    };
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Err(SourceError::new(
+            &path,
+            driver_error(
+                "E2007",
+                "Tsuzuri.lock must be a regular file, not a symbolic link or directory",
+            ),
+        ));
+    }
+    if metadata.len() > MAX_SOURCE_BYTES as u64 {
+        return Err(SourceError::new(
+            &path,
+            driver_error("E1017", "Tsuzuri.lock exceeds 1 MiB"),
+        ));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| {
+            file.take(MAX_SOURCE_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| SourceError::new(&path, io_error("read lockfile", &path, error)))?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        SourceError::new(
+            &path,
+            driver_error(
+                "E2007",
+                "Tsuzuri.lock is not a valid lockfile (it is not UTF-8); restore it from version control or delete it and run tsuzuri fetch",
+            ),
+        )
+    })?;
+    let entries =
+        crate::package::parse_lock(&text, 0).map_err(|error| SourceError::new(&path, error))?;
+    Ok(Some(Lockfile {
+        path,
+        text,
+        entries,
+    }))
+}
+
+/// Finds a git dependency in `Tsuzuri.lock` and the package store without running
+/// git or touching the network.
+fn offline_git(
+    lock: Option<&Lockfile>,
+    request: &GitRequest<'_>,
+) -> Result<(PathBuf, String), SourceError> {
+    let error = |message: String| {
+        SourceError::new(
+            request.manifest,
+            Diagnostic::new("E2007", message, request.span),
+        )
+    };
+    let lock = lock.ok_or_else(|| {
+        error("Tsuzuri.lock is missing; run tsuzuri fetch to download git dependencies and record them".to_owned())
+    })?;
+    let entry = lock
+        .entries
+        .get(request.name)
+        .filter(|entry| entry.git == request.url && entry.rev == request.rev)
+        .ok_or_else(|| {
+            error(format!(
+                "Tsuzuri.lock does not record git dependency '{}' at this url and rev; run tsuzuri fetch",
+                request.name
+            ))
+        })?;
+    let store = crate::cache::package_store().ok_or_else(|| {
+        error(
+            "no package store is available; set TSUZURI_CACHE_DIR and run tsuzuri fetch".to_owned(),
+        )
+    })?;
+    // Check for a symbolic link before the walk canonicalizes the root.
+    let root = store.join("git").join(&entry.sha256);
+    if !fs::symlink_metadata(&root)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
+    {
+        return Err(error(format!(
+            "git dependency '{}' is not downloaded; run tsuzuri fetch",
+            request.name
+        )));
+    }
+    Ok((root, entry.sha256.clone()))
 }
 
 impl Project {
@@ -920,7 +1135,10 @@ impl Project {
         selected: Option<&Path>,
         overlays: &std::collections::BTreeMap<PathBuf, String>,
     ) -> Result<Self, SourceError> {
-        let packages = load_packages(directory)?;
+        let lock = read_lockfile(directory)?;
+        let packages = load_packages(directory, &mut |request| {
+            offline_git(lock.as_ref(), request)
+        })?;
         let canonical;
         let directory = if packages.is_empty() {
             directory
@@ -948,6 +1166,9 @@ impl Project {
                 |package| package.manifest.namespace.clone(),
             );
         let mut sources = Vec::new();
+        // The sources of each git package by `/`-separated path, for its content hash.
+        let mut fetched =
+            std::collections::BTreeMap::<&Path, std::collections::BTreeMap<String, usize>>::new();
         for root in &roots {
             let package = packages.iter().find(|package| package.id.root == *root);
             let mut paths: std::collections::BTreeMap<_, _> = collect_sources(root, &roots)?
@@ -976,6 +1197,16 @@ impl Project {
                 {
                     continue;
                 }
+                let hash_key = package
+                    .filter(|package| package.sha256.is_some())
+                    .map(|package| {
+                        let key = relative
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("/");
+                        (package, key)
+                    });
                 let relative_path = if root != directory {
                     package
                         .unwrap()
@@ -1024,6 +1255,12 @@ impl Project {
                 if root == directory {
                     source.namespace = root_namespace.clone();
                 }
+                if let Some((package, key)) = hash_key {
+                    fetched
+                        .entry(&package.id.root)
+                        .or_default()
+                        .insert(key, sources.len());
+                }
                 sources.push(source);
                 if sources.len() > 4096 {
                     return Err(SourceError::new(
@@ -1031,6 +1268,34 @@ impl Project {
                         driver_error("E1017", "package graph exceeds 4096 source files"),
                     ));
                 }
+            }
+        }
+        // A git package must still have the content that `Tsuzuri.lock` records.
+        for package in &packages {
+            let Some(sha256) = &package.sha256 else {
+                continue;
+            };
+            let mut files: std::collections::BTreeMap<String, &[u8]> = fetched
+                .get(package.id.root.as_path())
+                .into_iter()
+                .flatten()
+                .map(|(path, index)| (path.clone(), sources[*index].text.as_bytes()))
+                .collect();
+            files.insert("Tsuzuri.toml".to_owned(), package.text.as_bytes());
+            if crate::package::content_sha256(&files) != *sha256 {
+                let lock = lock
+                    .as_ref()
+                    .map_or_else(|| directory.join("Tsuzuri.lock"), |lock| lock.path.clone());
+                return Err(SourceError::new(
+                    &lock,
+                    driver_error(
+                        "E2007",
+                        format!(
+                            "git dependency '{}' does not match its sha256 in Tsuzuri.lock; run tsuzuri fetch to restore it",
+                            package.manifest.name
+                        ),
+                    ),
+                ));
             }
         }
         sources
@@ -1067,7 +1332,12 @@ impl Project {
             .into_iter()
             .flat_map(|root| root.manifest.dependencies.values())
             .filter(|dependency| dependency.native)
-            .filter_map(|dependency| fs::canonicalize(directory.join(&dependency.path)).ok())
+            .filter_map(|dependency| match &dependency.source {
+                crate::package::DependencySource::Path(path) => {
+                    fs::canonicalize(directory.join(path)).ok()
+                }
+                crate::package::DependencySource::Git { .. } => None,
+            })
             .collect();
         let mut native = LinkInputs::default();
         // The root's inputs come first, then each trusted dependency's in package order.
@@ -1077,6 +1347,16 @@ impl Project {
             let Some((inputs, span)) = &package.manifest.native else {
                 continue;
             };
+            if package.sha256.is_some() {
+                return Err(SourceError::new(
+                    &package.id.root.join("Tsuzuri.toml"),
+                    Diagnostic::new(
+                        "E2000",
+                        "git packages cannot declare [native] link settings; move them to the application manifest",
+                        *span,
+                    ),
+                ));
+            }
             if package.id.root != directory && !trusted.contains(&package.id.root) {
                 return Err(SourceError::new(
                     &package.id.root.join("Tsuzuri.toml"),
@@ -1099,7 +1379,11 @@ impl Project {
                 search: resolve(&inputs.search),
             });
         }
-        let manifests = packages
+        let root_id = packages
+            .iter()
+            .find(|package| package.id.root == directory)
+            .map(|package| package.id.clone());
+        let mut manifests: Vec<_> = packages
             .into_iter()
             .map(|package| SourceFile {
                 path: package.id.root.join("Tsuzuri.toml"),
@@ -1111,6 +1395,18 @@ impl Project {
                 namespace: String::new(),
             })
             .collect();
+        // The lockfile, too, is protected from outputs and keys the build cache.
+        if let Some(lock) = lock {
+            manifests.push(SourceFile {
+                path: directory.join("Tsuzuri.lock"),
+                relative_path: PathBuf::from("Tsuzuri.lock"),
+                name: "Tsuzuri.lock".to_owned(),
+                text: lock.text,
+                origin: ModuleOrigin::User,
+                package: root_id,
+                namespace: String::new(),
+            });
+        }
         Ok(Self {
             sources,
             manifests,
@@ -1371,7 +1667,7 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
     read_source_text(path)
 }
 
-fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
+pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
@@ -1492,7 +1788,7 @@ fn replace_source_atomically(
     Ok(())
 }
 
-fn source_kind(path: &Path) -> Option<SourceKind> {
+pub(crate) fn source_kind(path: &Path) -> Option<SourceKind> {
     path.extension()
         .and_then(OsStr::to_str)
         .and_then(SourceKind::from_extension)

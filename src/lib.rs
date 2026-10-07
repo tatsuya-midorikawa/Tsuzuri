@@ -5,6 +5,7 @@ pub mod copies;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;
+pub mod fetch;
 pub mod formatter;
 pub mod gpu;
 pub mod lexer;

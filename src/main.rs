@@ -20,6 +20,7 @@ Usage:
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
+  tsuzuri fetch directory [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -36,6 +37,10 @@ namespace, else the package or folder name) followed by subdirectories
 (Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
+`tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
+({ git = \"https://...\", rev = \"<40-hex commit>\" }) with git 2.32 or later into the
+package store (packages/ in the build cache) and records them in Tsuzuri.lock.
+Other commands never run git or use the network; they read Tsuzuri.lock and the store.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -1035,6 +1040,42 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// `tsuzuri fetch directory [--json]`: downloads the git dependencies with git
+/// and writes Tsuzuri.lock. It prints nothing on success.
+fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let paths: Vec<_> = arguments
+        .iter()
+        .filter(|argument| *argument != "--json")
+        .collect();
+    let usage = |message: &str| {
+        print_diagnostic(
+            &Diagnostic::new("E2000", message, Span::default()),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        ExitCode::from(2)
+    };
+    if paths.len() != 1
+        || paths[0].to_string_lossy().starts_with('-')
+        || arguments.len() - paths.len() > 1
+    {
+        return usage("fetch takes one project directory and optionally --json");
+    }
+    let directory = Path::new(paths[0]);
+    if !directory.join("Tsuzuri.toml").is_file() {
+        return usage("fetch requires a Tsuzuri.toml in the project directory");
+    }
+    match tsuzuri::fetch::fetch(directory) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1062,6 +1103,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "new") {
         return new_project(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "fetch") {
+        return fetch_dependencies(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {
