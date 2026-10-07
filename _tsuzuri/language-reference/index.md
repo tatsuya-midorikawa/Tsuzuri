@@ -17,7 +17,7 @@
 - [パッケージ](./organizing-tsuzuri/packages.md)
 - [using 宣言](./organizing-tsuzuri/using-declarations.md)
 - [アクセス制御](./organizing-tsuzuri/access-control.md)
-- [ドキュメント コメント](./organizing-tsuzuri/documantation-comment.md)
+- [ドキュメント コメント](./organizing-tsuzuri/documentation-comment.md)
 
 #### リテラルと文字列
 
@@ -66,7 +66,16 @@
 - [型推論](./types-and-type-inference/type-inference.md)
 - [型キャスト](./types-and-type-inference/cast.md)
 - [ジェネリック](./types-and-type-inference/generics.md)
+- [型クラス](./types-and-type-inference/type-classes.md)
 - [制約 と 属性](./types-and-type-inference/constraints.md)
+
+#### 所有権とメモリ
+
+- [所有権とムーブ](./ownership-and-memory/ownership.md)
+- [借用と参照](./ownership-and-memory/borrowing.md)
+- [ライフタイムと region](./ownership-and-memory/lifetimes.md)
+- [スタックとヒープ](./ownership-and-memory/stack-and-heap.md)
+- [Drop とリソースの解放](./ownership-and-memory/drop.md)
 
 #### 組み込み型 / 組み込みモジュール
 
@@ -84,7 +93,7 @@
 - [Set](./built-in-types-and-modules/set.md)
 - [HashMap](./built-in-types-and-modules/hashmap.md)
 - [HashSet](./built-in-types-and-modules/hashset.md)
-- [Seq](./built-in-types-and-modules/Seq.md)
+- [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)
 - [Result](./built-in-types-and-modules/result.md)
 - [Math](./built-in-types-and-modules/math.md)
@@ -123,6 +132,6 @@
 - [コンパイラの使い方](./compiler/usage.md)
 - [コンパイラ オプション](./compiler/option.md)
 - [コンパイラ ディレクティブ](./compiler/directives.md)
-- [](./compiler/)
-- [](./compiler/)
-- [](./compiler/)
+- [診断メッセージとエラーコード](./compiler/diagnostics.md)
+- [WebAssembly への出力](./compiler/webassembly.md)
+- [ネイティブ連携 (C ABI)](./compiler/native-interop.md)
