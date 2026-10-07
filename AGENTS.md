@@ -27,6 +27,32 @@ Read `docs/architecture.md` and `docs/language.md` before changing their contrac
 Build and validation commands are in `README.md`. Reproducible performance
 comparisons and their limitations are in `docs/benchmarks.md`.
 
+## Language reference
+
+`_tsuzuri/language-reference/` (contents: `index.md`) is the user manual. Every
+change that adds, changes, fixes, or removes user-visible behavior updates the
+related pages in the same commit or PR. This covers syntax, semantics, types,
+builtins, `std` APIs, diagnostic codes and messages, CLI options, targets, host
+interop, documented performance characteristics, and known limitations or bugs.
+
+- Find every affected page by searching for the feature's names, keywords,
+  diagnostic codes, and CLI flags, for example
+  `grep -rnE "Int\.min|E1005|--emit" _tsuzuri/language-reference`.
+- Update the prose, examples and their `run=` output, tables, diagrams, and
+  `index.md`. Document a new feature where readers will look for it. For a
+  removed feature, delete its text and examples and name the replacement.
+- When a planned feature ships or a known bug is fixed, replace the planned
+  note or known-bug warning, and its `_features/` or `_perfs/` link, with the
+  actual behavior.
+- Describe only what the current compiler does. Check claims against the
+  implementation and keep planned support separate.
+- Run `node scripts/check-docs.mjs <changed pages>`. It checks links and
+  anchors, type-checks every example, runs `run=` examples natively at `-O0`
+  and `-O3`, and runs examples that contain tests.
+- Keep `docs/language.md` and `README.md` consistent in the same change. Pages
+  are Japanese; see `_features/GUIDE.md` §8. If no page needs an update, say so
+  in the PR description.
+
 ## CI and toolchain distribution
 
 Lessons from the PR #3 and #4 VS Code workflow failures:

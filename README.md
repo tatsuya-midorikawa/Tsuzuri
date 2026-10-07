@@ -704,7 +704,12 @@ node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/gpu.mjs target/release/tsuzuri
+
+# 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
+node scripts/check-docs.mjs
 ```
+
+機能を追加・変更・修正・削除したときは、同じ変更で [言語リファレンス](_tsuzuri/language-reference/index.md) の関連ページも最新にします（手順は [_features/GUIDE.md §8](_features/GUIDE.md#8-ドキュメント更新規約)）。
 
 ### ベンチマーク測定
 

@@ -12,7 +12,7 @@
 | 承認 | Phase 1 は不要（構文の追加は 2026-10-07 の依頼による）。要承認: D9（Phase 2 の相互再帰 `let rec ... and ...`、解放処理を持つ値の捕捉、ほかの `let rec` 関数の参照） |
 | 改善する劣位 | F# の局所 `let rec` や Rust の局所 `fn` のように、関数の中に再帰する補助関数を書けない。今は `def rec` でモジュールへ出し、外側のローカル値を引数で渡し直す必要がある |
 | 手本にする既存実装 | 分離形式のトップレベル `let rec`（`src/parser.rs` の `program_all` で `self.at(&TokenKind::Let)` と既存の署名を照合する分岐）。ラムダの型検査と捕捉の収集（`src/closures.rs` の `Checker::lambda`・`checked_lambda`・`free_locals`）。ラムダのリフト（同ファイルの `lower_expression` の `Lambda` 分岐が `$lambda` 関数を作り `Closure(id, 捕捉)` に置き換える）。末尾ループ（`src/llvm.rs` の `emit_tail`・`is_self`）。未使用警告（`src/warnings.rs` の `unused_locals`）。テスト: `tests/tail_recursion.rs`（`function_ir`）、`tests/currying.rs`、`tests/features.mjs` の suite（GUIDE §7.4） |
-| 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/computation.rs`, `src/check.rs`, `src/closures.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/semantic.rs`, `src/warnings.rs`, `src/formatter.rs`, `src/llvm.rs`（`Lambda` の照合だけ）, `tests/local_recursion.rs`（新規）, `tests/fixtures/local_recursion/Main.tz`（新規）, `tests/features.mjs`, `tests/lsp.rs`, `docs/language.md`, `README.md`, `_tsuzuri/language-reference/values-and-functions/functions.md`・`values.md`・`keywords.md`・`lambda-expressions.md`, `_features/README.md` |
+| 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/computation.rs`, `src/check.rs`, `src/closures.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/semantic.rs`, `src/warnings.rs`, `src/formatter.rs`, `src/llvm.rs`（`Lambda` の照合だけ）, `tests/local_recursion.rs`（新規）, `tests/fixtures/local_recursion/Main.tz`（新規）, `tests/features.mjs`, `tests/lsp.rs`, `docs/language.md`, `README.md`, `_tsuzuri/language-reference/values-and-functions/functions.md`・`values.md`・`keywords.md`・`lambda-expressions.md`・`computation-expressions/computation-expressions.md`・`compiler/diagnostics.md`, `_features/README.md` |
 
 ## 目的
 
@@ -375,13 +375,24 @@ native・WASM × `-O0`・`-O3`、`live == 0`、WASM import なしは harness が
 
 ## ドキュメント
 
+GUIDE §8 の手順で、同じ PR で更新する。関連ページは `grep -rnE "let rec|def rec|B09-local|ローカルな" _tsuzuri/language-reference` と、
+診断コード（`E0002`・`E1005`）や `let!` の検索で探す。HEAD `7d86f66` で該当するのは次のとおり（「ローカルな `let` は単相」とする
+`generics-functions.md`・`constraints.md`・`type-inference.md` は D6 のとおりで、変更は要らない）。
+
 - `docs/language.md` の「関数の宣言と適用」と「再帰とスタック」: ローカルな `let rec` の構文・意味・捕捉の規則（D4）・末尾ループの条件・
   Phase 1 で書けない位置。「`let rec name = \value -> ...` や互換構文の `fn rec name(x: T) -> T { ... }` に対しても同一の規則が適用されます」を、
   分離形式とローカルな `let rec` を分けて書き直す。
-- `README.md` の「構文と表現」の「明示的再帰（`rec`／`and`）」に、ローカルな `let rec` を足す。
-- `_tsuzuri/language-reference/values-and-functions/functions.md` の「再帰」: 「ローカル束縛に `let rec` はありません」を、`let rec` の説明と
-  実行例に置き換える。`values.md`（`let` の種類）、`keywords.md`（`rec` の行の例）、`lambda-expressions.md`（捕捉の規則）。
-  `node scripts/check-docs.mjs` で検査する。
+- `README.md` の「設計と実装済みの範囲」の表の「構文と表現」の行（「明示的再帰（`rec`／`and`）」）と、「制御構文とパターンマッチ」の
+  「再帰関数」に、ローカルな `let rec` を足す。
+- `_tsuzuri/language-reference/values-and-functions/functions.md`: 「再帰」の「関数本体やブロックの中のローカル束縛には、Tsuzuri 0.1.0 では
+  `let rec` を書けません」と B09 へのリンクを、`let rec` の説明と実行例に置き換える。「この記事のポイント」「他の言語との比較」の再帰の行・
+  「まとめ」にもローカルな `let rec` を足す。
+- `values-and-functions/lambda-expressions.md`: 「再帰する関数をラムダだけで書くことはできません。`def rec` を使います。ローカルな `let` は
+  非再帰かつ単相です。」を直し、`let rec` の捕捉の規則（D4）を書く。
+- `values-and-functions/values.md`（`let` の種類）、`values-and-functions/keywords.md`（`rec` の行の例）。
+- `computation-expressions/computation-expressions.md`: 展開の表の `let` の行に、`let rec` を書けることと `let! rec` が書けないことを足す。
+- `compiler/diagnostics.md`: `E1005` の説明に、`let rec` の捕捉の制約を含める。
+- `node scripts/check-docs.mjs <変更したページ>` で検査する。
 - `_features/README.md` の B09 の状態（GUIDE §10）。
 
 ## 受け入れ条件
