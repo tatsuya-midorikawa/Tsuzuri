@@ -1435,6 +1435,15 @@ class buffer {
 public:
     buffer() noexcept = default;
     buffer(T *data, std::int64_t size) noexcept : data_(data), size_(static_cast<std::size_t>(size)) {}
+    // A moved-from buffer is empty: no memory and size 0.
+    buffer(buffer &&other) noexcept : data_(std::move(other.data_)), size_(std::exchange(other.size_, 0)) {}
+    buffer &operator=(buffer &&other) noexcept {
+        data_ = std::move(other.data_);
+        size_ = std::exchange(other.size_, 0);
+        return *this;
+    }
+    buffer(const buffer &) = delete;
+    buffer &operator=(const buffer &) = delete;
     [[nodiscard]] T *data() const noexcept { return data_.get(); }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
@@ -1527,7 +1536,7 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     let mut output = banner("//");
     let _ = write!(
         output,
-        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n\nnamespace tsuzuri::{namespace} {{\n\n",
+        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\nnamespace tsuzuri::{namespace} {{\n\n",
         if trap_return {
             " --trap-mode return"
         } else {

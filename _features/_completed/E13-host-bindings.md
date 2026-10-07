@@ -880,3 +880,12 @@ tsc、Google Chrome 154.0.8037.98 と Playwright の WebKit 26.0）、`node test
 .NET SDK 10.0.102、キャッシュ、コマンド行）、`node tests/cache.mjs` が成功。`node scripts/check-docs.mjs` を変更した 2 ページで、
 `sh scripts/check-runtime-includes.sh` は 32 files。Windows の clippy（rustup 1.96.1、x64・arm64）は以前と同じく既存の `clippy::nonminimal_bool` 3 件だけで、
 それを許すと両方とも成功。
+
+### PR #17 の Copilot のレビュー（2026-10-08）
+
+- import の object とモジュールごとの object を null prototype で作り、WASM の import のモジュール名や import 名が `__proto__` でも `Object.prototype` を
+  書き換えないようにした。ホストの import は呼び出し元の own property だけを受け付ける（`toString` などの継承した関数を使わない）。`tests/bindings.mjs` に回帰テスト。
+- C++ の `buffer<T>` に、元を空（長さ 0）にするムーブ構築・ムーブ代入を定義し、複製を削除した（暗黙のムーブでは元の `size_` が残り、null のデータと
+  0 でない長さの範囲を作れた）。`tests/host_bindings_test.cpp` でムーブ元の状態を検査する。
+- C# の stress test の GC のスレッドを background にし、検査の失敗でも `finally` で止める（失敗時にプロセスが終わらなかった）。
+

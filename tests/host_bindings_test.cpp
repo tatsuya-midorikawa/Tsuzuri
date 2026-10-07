@@ -57,9 +57,17 @@ int main(int argc, char **argv) {
         assert(throws_invalid_argument([] { (void)api::copy_utf8("\xC0\x80"); }));
         auto scaled = api::scaled(halves, 4.0);
         assert(scaled.size() == 2 && scaled[0] == 2.0 && scaled[1] == 1.0);
-        // Moving a buffer moves its ownership; the source frees nothing.
+        // Moving a buffer moves its ownership; the source is left empty and frees nothing.
         auto moved = std::move(scaled);
-        assert(moved.size() == 2);
+        assert(moved.size() == 2 && moved[1] == 1.0);
+        assert(scaled.size() == 0 && scaled.empty() && scaled.data() == nullptr && scaled.span().empty());
+        assert(scaled.begin() == scaled.end());
+        auto assigned = api::scaled(halves, 2.0);
+        assigned = std::move(moved);
+        assert(assigned.size() == 2 && assigned[0] == 2.0 && moved.size() == 0 && moved.data() == nullptr);
+        auto owned_text = api::copy_text(u"ab");
+        auto taken = std::move(owned_text);
+        assert(taken.view() == u"ab" && owned_text.view().empty());
     }
     tz_record_4Main_6Sample sample{{-1, 65535, 1}, 1.5};
     const auto updated = api::update(sample);
