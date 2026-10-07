@@ -905,3 +905,10 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
 - `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。Windows（rustup の clippy 1.96、`x86_64-pc-windows-msvc`）は
   `-A clippy::nonminimal_bool` で成功（その lint は Phase 2 の確認に書いた既存の 3 件だけ）。
 - `node scripts/check-docs.mjs`（`regex.md`・`unicode.md`）: 成功。
+
+### 統合後の変更（opt-in std モジュール。D-40）
+
+- 6 チケットの統合で、`Regex` と `Unicode` を opt-in std モジュールにした。利用者のソースが識別子 `Regex` か `Unicode` を含むときだけ読み込み（`Regex` は `Unicode` を伴う）、
+  両モジュールの型と case（`Regex.ErrorKind`、`Unicode.Lu` など）は利用者のコードから修飾した名前でだけ見える。「計測」に記録した空のプログラムの `check` の時間の増加
+  （44.9 → 81.7 ms）は、名前を書かないプログラムではなくなった（統合後の release で 0.04 s。`2ee813f` と同じ）。`Regex` を使わないプログラムの IR は生成 id のずれも含めて
+  byte 単位で一致する。無修飾の `ErrorKind` は従来どおり `Os.ErrorKind` を指す。

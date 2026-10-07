@@ -883,3 +883,10 @@ fn arena_ring count =
 - `RUST_MIN_STACK=4194304 cargo test --locked`: 755 passed（Phase 2 の 751 に今回の 4 件）、失敗なし。GUIDE §3.1 の回帰テスト 4 件（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・`honors_the_exact_specialization_limit`）を既定の stack で個別に実行して成功。
 - `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` が成功。Windows の型検査 `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（rustup 1.96.1）は従来の `clippy::nonminimal_bool` 3 件だけで、この lint を除くと警告なし（プラットフォーム固有のコードは変えていない）。
 - E2E（release）: features の `rc`（37 ケース、WASM threads の検査を含む）・`arena`（27 ケース）・`recursive_types`・`parallel`・`dyn_dispatch`・`unions`・`generic_records`・`typeclasses`・`vec`・`map_set` が native／WASM × `-O0`／`-O3` で成功。`TSUZURI_TSAN=1` の `rc`・`arena`、`tests/tasks.mjs` も成功。`node scripts/check-docs.mjs`（変更した LR の 7 ページ）が成功。
+
+### 統合後の変更（opt-in std モジュール。D-40）
+
+- 6 チケットの統合で、`Arena` を opt-in std モジュールにした。利用者のソースが識別子 `Arena` を含むときだけ読み込み、`Arena.Handle` などの宣言は利用者のコードから修飾した名前でだけ見える。
+  そのため「Arena を使わないプログラムの IR は変わらない」は、生成 id のずれも含めて byte 単位で満たす（`2ee813f` の release コンパイラと比べ、既存の fixture と例の
+  native／wasm32 の IR 132 個がすべて byte 一致）。
+  無修飾の `Handle` は従来どおり `File.Handle` を指す。`Rc`／`Arc` は組み込みの型で std のソースを持たないので、この仕組みの対象外。
