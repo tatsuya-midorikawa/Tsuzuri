@@ -31,12 +31,36 @@ pub(super) fn emit_helpers(
 ) -> String {
     let mut output = String::new();
     let mut completed = BTreeSet::new();
-    while let Some(ty) = globals
-        .recursive_types
-        .iter()
-        .find(|ty| !completed.contains(*ty))
-        .cloned()
-    {
+    let mut shared_completed = BTreeSet::new();
+    loop {
+        // Dropping a shared value can reach recursive nodes and the reverse, so both kinds of
+        // helper are emitted until neither set grows (C10).
+        if let Some(shared) = globals
+            .shared_types
+            .iter()
+            .find(|shared| !shared_completed.contains(*shared))
+            .cloned()
+        {
+            shared_completed.insert(shared.clone());
+            output.push_str(&super::shared::emit_action(
+                &shared.0,
+                shared.1,
+                module,
+                builtins,
+                intrinsics,
+                globals,
+                specializations,
+            ));
+            continue;
+        }
+        let Some(ty) = globals
+            .recursive_types
+            .iter()
+            .find(|ty| !completed.contains(*ty))
+            .cloned()
+        else {
+            break;
+        };
         completed.insert(ty.clone());
         let function = &module.functions[0];
         let Type::Union(id, arguments) = &ty else {

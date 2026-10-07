@@ -123,6 +123,7 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
         ),
         Type::List(element) => Type::List(Box::new(map_type(element, f))),
         Type::Vec(element) => Type::Vec(Box::new(map_type(element, f))),
+        Type::Shared(value, kind) => Type::Shared(Box::new(map_type(value, f)), *kind),
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
         Type::Task(result) => Type::Task(Box::new(map_type(result, f))),
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
@@ -173,6 +174,7 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::Task(ty)
+            | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, depth + 1, count),
             Type::Function(parameters, result) => {
                 parameters.iter().all(|ty| visit(ty, depth + 1, count))
@@ -257,6 +259,7 @@ impl Inference {
             ),
             Type::List(element) => Type::List(Box::new(self.resolve(element))),
             Type::Vec(element) => Type::Vec(Box::new(self.resolve(element))),
+            Type::Shared(value, kind) => Type::Shared(Box::new(self.resolve(value)), *kind),
             Type::Tuple(elements) => {
                 Type::Tuple(elements.iter().map(|ty| self.resolve(ty)).collect())
             }
@@ -355,6 +358,9 @@ impl Inference {
                 return self.unify(a, b, types, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
+                return self.unify(a, b, types, span);
+            }
+            (Type::Shared(a, n), Type::Shared(b, m)) if n == m => {
                 return self.unify(a, b, types, span);
             }
             // Lengths first, so a mismatch reports both array types (A16).
@@ -1279,7 +1285,7 @@ impl Classes {
             TypeExprKind::Apply(head, arguments)
                 if crate::numeric::primitive(&head.text).is_none() =>
             {
-                if head.text != "Vec"
+                if !builtin_type_head(&head.text)
                     && !head.text.starts_with('\'')
                     && let TypeHead::Class = names.type_head(module, head)?
                 {
@@ -2139,6 +2145,28 @@ impl Classes {
         {
             Ok(())
         } else {
+            let class = self.declarations[constraint.class].name.as_str();
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_rc(types) {
+                return Err(if class == "Capture" {
+                    Diagnostic::new(
+                        "E1005",
+                        format!(
+                            "cannot capture {} in a function value; function values may move to other tasks, and Rc counts its owners without atomic operations; capture an Arc, or pass the Rc as an argument",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::new(
+                        "E1013",
+                        format!(
+                            "tasks require Send values; {} holds an Rc or Rc.Weak, whose counts are not atomic; share values across tasks with Arc",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
             if self.declarations[constraint.class].name == "Capture" {
                 return Err(Diagnostic::new(
                     "E1005",
@@ -2338,6 +2366,14 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
         Type::Vec(ty) => TypeExprKind::Apply(
             Box::new(Ident {
                 text: "Vec".into(),
+                span,
+                provenance: Provenance::Generated,
+            }),
+            vec![type_expression(ty, types, span)].into(),
+        ),
+        Type::Shared(ty, kind) => TypeExprKind::Apply(
+            Box::new(Ident {
+                text: kind.name().into(),
                 span,
                 provenance: Provenance::Generated,
             }),
@@ -2640,6 +2676,7 @@ impl Checker<'_> {
             BuiltinType::List(ty) => Type::List(element(ty)?),
             BuiltinType::Vec(ty) => Type::Vec(element(ty)?),
             BuiltinType::Task(ty) => Type::Task(element(ty)?),
+            BuiltinType::Shared(ty, kind) => Type::Shared(element(ty)?, *kind),
             BuiltinType::Reference(ty, mutable) => Type::Reference(element(ty)?, *mutable),
             BuiltinType::Std { module, name, args } => {
                 let args = args
@@ -3759,6 +3796,8 @@ fn drop_components(
             | Type::List(element)
             | Type::Vec(element)
             | Type::Task(element) => pending.push((**element).clone()),
+            // The last strong pointer drops the shared value (C10).
+            Type::Shared(element, kind) if !kind.weak() => pending.push((**element).clone()),
             _ => {}
         }
     }

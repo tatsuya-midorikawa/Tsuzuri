@@ -400,6 +400,7 @@ impl TypeReferences<'_> {
             | Type::Vec(inner)
             | Type::Task(inner)
             | Type::FixedArray(inner, _)
+            | Type::Shared(inner, _)
             | Type::Reference(inner, _) => self.checked_type(inner),
             Type::Tuple(elements) => {
                 for element in elements {

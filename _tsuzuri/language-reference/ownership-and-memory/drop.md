@@ -13,7 +13,7 @@ Tsuzuri は、スコープを抜けた変数のメモリを自動で解放しま
 - 解放順序はスコープ内の束縛の逆順（LIFO）で、フィールドは宣言順に解放されます。
 - `use` キーワードを使うと、`Drop` 実装型であることをコンパイル時に検証して束縛できます。
 - 早期に解放したい場合は `Owned.drop` を呼び出します。
-- 複数の場所から同じ値を指す構造や循環する構造は、std の [Arena](../built-in-types-and-modules/arena.md) に値を入れてハンドルで指します。`Rc` や `Arc` のような参照カウントの共有所有はまだありません（[C10](../../../_features/C10-shared-ownership.md) Phase 2）。
+- 同じ値を複数の所有者で共有するときは参照カウントの [Rc と Arc](../built-in-types-and-modules/rc.md) を、循環する構造は [Arena](../built-in-types-and-modules/arena.md) を使います。
 
 ## メモリとリソースの自動解放
 
@@ -195,9 +195,9 @@ Tsuzuri の標準ライブラリにおけるファイル操作型 `File.Handle` 
 
 同じデータを複数の場所から読みたいときは、所有者を親のスコープに残し、共有借用（`ref T`）を渡します。
 
-グラフやキャッシュのように、複数の値から同じ値を指す構造や、循環する構造は [Arena](../built-in-types-and-modules/arena.md) で表します。値は arena がまとめて所有し、ほかの値は Copy のハンドル `Arena.Handle<T>` で指します。ハンドルは値の寿命を延ばさないので、循環しても解放漏れは起きず、arena の drop で循環を含むすべての値が再帰なしで解放されます。削除済みや別の arena のハンドルは、実行時に世代と arena ID で検出します。
+同じ値を複数の所有者で持ちたいときは、参照カウントの [Rc と Arc](../built-in-types-and-modules/rc.md) を使います。`Rc.share` で所有者を明示的に増やし、最後の所有者がスコープを抜けたときに値の drop が 1 回走ります。`Arc` は計数が atomic で、複数のタスクで共有できます。共有した値は変更できないので、`Rc`／`Arc` だけでは循環は作れません。
 
-Rust の `Rc<T>` や `Arc<T>` に相当する参照カウントの共有所有はまだありません。[C10](../../../_features/C10-shared-ownership.md) の Phase 2 です。
+グラフやキャッシュのように、複数の値から同じ値を指す構造や、循環する構造は [Arena](../built-in-types-and-modules/arena.md) で表します。値は arena がまとめて所有し、ほかの値は Copy のハンドル `Arena.Handle<T>` で指します。ハンドルは値の寿命を延ばさないので、循環しても解放漏れは起きず、arena の drop で循環を含むすべての値が再帰なしで解放されます。削除済みや別の arena のハンドルは、実行時に世代と arena ID で検出します。
 
 ## 他の言語との比較
 
@@ -208,7 +208,8 @@ Rust の `Rc<T>` や `Arc<T>` に相当する参照カウントの共有所有�
 | 解放順序 | LIFO（逆順） | LIFO（逆順） | GC 依存（`using` はスコープ末尾） | LIFO（逆順） |
 | 静的検査構文 | `use` 束縛 | 通常の `let` | `using` 宣言 / ステートメント | なし |
 | 早期解放 | `Owned.drop` | `drop(x)` | `x.Dispose()` | スコープブロック |
-| 共有・循環する構造 | `Arena` とハンドル（参照カウントは [C10](../../../_features/C10-shared-ownership.md) Phase 2） | `Rc` / `Arc`、`slotmap` | 参照型（GC） | `shared_ptr` |
+| 共有所有ポインタ | `Rc` / `Arc`（`share` で明示） | `Rc` / `Arc`（`clone`） | 参照型（GC） | `shared_ptr` |
+| 循環する構造 | `Arena` とハンドル | `slotmap`、`Weak` | 参照型（GC） | `weak_ptr` |
 
 ## まとめ
 
@@ -218,7 +219,7 @@ Rust の `Rc<T>` や `Arc<T>` に相当する参照カウントの共有所有�
 - 早期解放には組み込み関数 `Owned.drop` を使用します。
 - Drop 型は非 Copy であり、通常のクロージャへの捕捉や部分ムーブは禁止されます。
 - トラップ時にはスタック巻き戻しによる解放は行われません。
-- `File.Handle` は自分で閉じます。共有・循環する構造は `Arena` とハンドルで表します。
+- `File.Handle` は自分で閉じます。共有は `Rc` / `Arc`、循環する構造は `Arena` とハンドルで表します。
 
 ## 関連項目
 

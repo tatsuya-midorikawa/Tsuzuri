@@ -228,6 +228,7 @@ pub(super) fn may_mutate(expression: &TypedExpr, module: &CheckedModule) -> bool
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::FixedArray(ty, _)
+            | Type::Shared(ty, _)
             | Type::Reference(ty, false) => mutable_reference(ty, module),
             Type::Record(id, arguments) => module
                 .types()

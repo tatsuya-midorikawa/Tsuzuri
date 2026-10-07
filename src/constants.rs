@@ -159,6 +159,7 @@ impl Checker<'_> {
                 | Type::Vec(ty)
                 | Type::FixedArray(ty, _)
                 | Type::Task(ty)
+                | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => open(checker, ty),
                 Type::Function(parameters, result) => {
                     parameters.iter().any(|ty| open(checker, ty)) || open(checker, result)
