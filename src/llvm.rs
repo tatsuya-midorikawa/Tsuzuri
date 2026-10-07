@@ -2586,8 +2586,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         } else {
             String::new()
         };
+        // Unicode table reads inline into every caller, so that LLVM resolves the table switch where
+        // the table number is constant and keeps only the tables that a program reads (D09).
+        let inline = if self.function.module == "$builtin"
+            && self.function.name.starts_with("Unicode.__table_")
+        {
+            " alwaysinline"
+        } else {
+            ""
+        };
         let mut output = format!(
-            "define internal {} {}({parameters}) nounwind{cpu}{debug} {{\nentry:\n",
+            "define internal {} {}({parameters}) nounwind{inline}{cpu}{debug} {{\nentry:\n",
             self.ty(&self.function.signature.result),
             self.symbol
         );
@@ -5536,10 +5545,10 @@ fn emit_builtin(
         ),
         // The generated tables live in `unicode.ll`, which `emit_target` appends on use (D09).
         Builtin::UnicodeTableLength => format!(
-            "define internal i64 {symbol}(i64 %table) nounwind {{\nentry:\n  %r = call i64 @tz.unicode.length(i64 %table)\n  ret i64 %r\n}}\n\n"
+            "define internal i64 {symbol}(i64 %table) nounwind alwaysinline {{\nentry:\n  %r = call i64 @tz.unicode.length(i64 %table)\n  ret i64 %r\n}}\n\n"
         ),
         Builtin::UnicodeTableEntry => format!(
-            "define internal i64 {symbol}(i64 %table, i64 %index) nounwind {{\nentry:\n  %r = call i64 @tz.unicode.entry(i64 %table, i64 %index)\n  ret i64 %r\n}}\n\n"
+            "define internal i64 {symbol}(i64 %table, i64 %index) nounwind alwaysinline {{\nentry:\n  %r = call i64 @tz.unicode.entry(i64 %table, i64 %index)\n  ret i64 %r\n}}\n\n"
         ),
         Builtin::DebugPrintString => {
             let mut write = String::new();

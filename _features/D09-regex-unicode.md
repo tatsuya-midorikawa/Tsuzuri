@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | D02, A08 |
 | 後続 | D07 Phase 2 |
-| 状態 | Phase 1 done（Phase 2 は実装中） |
+| 状態 | done |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（std モジュール名 `Regex`・`Unicode` の予約の確定。GUIDE D-30 の仮割り当て。利用者の `Regex.tz`・`Unicode.tz` が E1011 になる）、D11（Phase 2 の着手と表の置き場所） |
 | 改善する劣位 | C#/F# 比: 標準ライブラリの不足（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)）／追加: 正規表現・Unicode 正規化・書記素処理がない |
@@ -581,7 +581,7 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
 - [x] `Regex` を使わない program の IR が手順 1 と一致する（std の関数の追加による `$intrinsic` の生成 id の一様なずれを除く。追記 7）。照合の内側の関数に確保がない。
 - [x] `tests/regex.rs` の 6 テストと stack-depth の 3 テスト、`honors_the_exact_specialization_limit` が成功する。
 - [x] 「ドキュメント」の更新が済み、`node scripts/check-docs.mjs` が成功する（`_docs/` は GUIDE §8.1 で読み替えた）。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] GUIDE §10 の完了の定義を満たす（`_features/README.md`・`GUIDE.md` の更新はコーディネーターが行う）。
 
 ## 落とし穴
 
@@ -764,3 +764,104 @@ std のモジュール一覧を固定で比べる既存テストが見つかっ�
   縮小の候補は、使われない std モジュールの型検査を省くか、std の検査結果を cache すること（別チケット）。
 - `src/runtime/unicode.ll`: 77,615 bytes（表の本体は 26,096 bytes）。`Regex.is_match` だけを使う fixture: native `-O3` の object 71,696 bytes（`__TEXT` 62,508）、wasm32 `-O3` 103,227 bytes、`-O0` 150,047 bytes。
   `-O3` では使わない表を LLVM が削除する（`Unicode.property_ranges "Lu"` だけの object には表 0 だけが残る）。
+
+### Phase 2: 実装
+
+- 生成器（`scripts/generate-unicode.mjs`）: 入力に `UnicodeData.txt`・`SpecialCasing.txt`・`DerivedNormalizationProps.txt`・`auxiliary/GraphemeBreakProperty.txt`・
+  `auxiliary/WordBreakProperty.txt`・`emoji/emoji-data.txt` を足した（計 10 ファイル。SHA-256 を `EXPECTED_SHA256` に固定し、生成物の先頭にも書く）。表 5〜18 を足し、
+  `src/runtime/unicode.ll` は 386,455 bytes（19 表、34,371 項目、表の本体 137,484 bytes。512 KiB 以下の検査は Phase 1 のまま）。
+  - 5: 正準結合クラスの連続区間 `start << 8 | ccc`。
+  - 6〜8: 分解。6 は分解を持つスカラーの昇順のキー、7 は値 `payload << 6 | 長さ << 1 | 互換`（長さ 1 なら payload はスカラー、2 以上なら 8 の pool の位置）、8 は pool。
+  - 9: 一次合成の 3 つ組 `(first, second, composite)` の昇順。`Full_Composition_Exclusion` を除く。
+  - 10: 書記素の連続区間 `start << 7 | InCB << 5 | Extended_Pictographic << 4 | Grapheme_Cluster_Break`。
+  - 11: 単語の連続区間 `start << 6 | Extended_Pictographic << 5 | Word_Break`。
+  - 12・13: `Cased`・`Case_Ignorable` の閉区間。
+  - 14〜16: `UnicodeData.txt` の単純な小文字・大文字・タイトル文字の対応（16 はタイトル文字が大文字と異なるものだけ）を、表 4 と同じ `start, count, stride, delta` の組にしたもの。
+  - 17・18: `SpecialCasing.txt` の無条件の対応と `CaseFolding.txt` の状態 F を、`code << 2 | 種類`（0 小文字、1 タイトル、2 大文字、3 畳み込み）の昇順のキー・
+    `pool の位置 << 5 | 長さ` の組と pool にしたもの。条件付きの行（言語の条件と `Final_Sigma`）は入れない。
+  ハングル音節（U+AC00〜U+D7A3）は分解・合成の表に載せず std が算術で扱う。書記素の表は音節を LV として載せ、LVT は `(c - 0xAC00) % 28 != 0` で求める（どちらも生成器が全音節を検査）。
+- `std/Unicode.tz`（手書き）に足した API。`_utf8` 版は `utf8string` を取り、位置をバイトで数える。
+  - `union Category = Lu | Ll | … | Cn deriving (Eq, Display)` と `category :: utf8char -> Category`。
+  - `union NormalizationForm = Nfc | Nfd | Nfkc | Nfkd deriving (Eq, Display)`、`normalize :: NormalizationForm -> ref string -> string`、
+    `is_normalized :: NormalizationForm -> ref string -> bool` と `_utf8` 版。
+  - `grapheme_boundaries :: ref string -> [i64]`・`word_boundaries`（境界の符号単位の位置。0 と長さを含み、空文字列は `[0]`）、
+    `graphemes :: ref string -> [string]`・`words`（境界の間の断片。空文字列は `[]`）と `_utf8` 版。
+  - `to_lower`・`to_upper`・`to_title`・`case_fold`（`ref string -> string`）と `_utf8` 版。
+- アルゴリズム（すべて std の Tsuzuri）: 入力をスカラーの `[i64]` に復号し（`string` の孤立サロゲートは 1 つの値としてそのまま通す）、表は二分探索（`rank`）で引く。
+  - 正規化（UAX #15）: 完全分解（再帰。ハングルは算術）→ 結合クラスが 0 でない連続部分を `(ccc, 位置)` の鍵で安定に並べ替え（`Array.sort_in_place`）→
+    NFC・NFKC は正準合成（遮られていない starter との対を表 9 とハングルの算術で合成）。`is_normalized` は正規化した結果と比べる。
+  - 書記素（UAX #29 GB1〜GB999）: 1 回の走査で、直前の種別、地域指示子の数、絵文字の ZWJ 列の状態（GB11）、Indic conjunct の状態（GB9c）を持つ。
+  - 単語（UAX #29 WB1〜WB999）: WB4 で Extend・Format・ZWJ を直前のスカラーに付け、付け先（`anchors`）と地域指示子の数を前計算する。
+    WB6・WB7・WB7b・WB7c・WB11・WB12 の先読みは、次の付け先でないスカラーを見る。
+  - 大文字小文字（Unicode §3.13）: 完全な対応（表 17・18）があればそれ、なければ単純な対応（表 14〜16。`case_fold` は表 4）。小文字にするときの `Σ`（U+03A3）は
+    `Final_Sigma`（Case_Ignorable を飛ばした前に Cased があり、後ろに無い）なら `ς`。`to_title` は toTitlecase(X)（UAX #29 の単語ごとに最初の Cased のスカラーをタイトル文字に、
+    その後ろを小文字にし、最初の Cased より前は変えない）。
+- 表の参照の変更（Phase 1 の実装を変えた）: 組み込みの 3 つの層（`@tz.fn.$builtin.Unicode.__table_*`、`@tz.builtin.Unicode.__table_*`、`@tz.unicode.length`／`entry`）を
+  `alwaysinline` にし（`src/llvm.rs` と生成器）、`property_ranges` の 3 つの二値 property は、捕捉した表番号で読む `table_ranges` をやめて表番号を直接書いた。
+  `tests/unicode.rs` は 6 つの定義が `alwaysinline` であることを検査する（下の追記 16）。
+- テスト: `tests/unicode.rs`（3 件）、`tests/unicode-cases.mjs`（case 表の唯一の源）、`tests/unicode-ucd.mjs`（生成物、53,351 bytes。`node tests/unicode-cases.mjs --write <UCD>` が
+  元の 4 ファイルの名前と SHA-256 を先頭に書いて再生成する）、`tests/fixtures/unicode/Main.tz`、`tests/features.mjs` の suite `unicode`（4,317 ケース）。
+- 文書: `unicode.md`（分類・正規化・書記素・単語・大文字小文字の節、API 表、計算量）、`string.md`・`utf8string.md`・`literals-and-strings/strings.md`（参照）、
+  `docs/language.md` の `### Unicode`、`docs/architecture.md`（表の一覧と `alwaysinline`）、`README.md`。
+
+### Phase 2: 決定事項への追記
+
+10. **範囲（D11、コーディネーターの判断）。** 分類・4 つの正規化形・書記素と単語の境界・完全な大小変換を `string` と `utf8string` の両方に作った。言語による調整
+    （トルコ語・リトアニア語の i など）と `Final_Sigma` 以外の条件付きの対応、辞書による単語の分割（タイ語、日本語など）、UAX #29 の tailoring は対象外。
+11. **API の形。** `category` は `char`（UTF-16 の符号単位）ではなく `utf8char`（スカラー）を取り、case 名は UCD の短い名前。境界は `String.slice`・`Utf8String.slice` に
+    そのまま渡せる位置の配列で、0 と長さを含む。
+12. **`to_title` の意味。** Unicode §3.13 の toTitlecase(X) どおり単語の最初の Cased のスカラーをタイトル文字にするので、`"1st"` は `"1St"`。`"\u0345a"` は UAX #29 で
+    U+0345 と `a` が別の単語なので `"\u0399A"`。
+13. **期待値の出所。** V8（Unicode 17.0、ICU 78.1）の `normalize`・`toLowerCase`・`toUpperCase`・`\p{...}`・`Intl.Segmenter`（書記素）と UCD の試験ファイル。
+    `--write` は V8 の 4 つの正規化が `NormalizationTest.txt` の全 20,034 行と一致することを assert する。単語の `Intl.Segmenter` は辞書を使うので参照にせず、
+    `WordBreakTest.txt` の全 1,944 行だけを使う。`case_fold` は V8 に無いので `CaseFolding.txt`（C と F）から計算し、`to_title` は手で書いた 16 case。
+14. **E2E の形。** fixture の 1 つの export が codespace の 1/16（0x11000 個のスカラー）を処理して hash を返し、試験の 1 行は 5 つの `i64`（21 bit × 3 のスカラー）に詰めて渡す。
+    1 結果ごとに比べると C の host の `main` が約 2 万個の比較になり、負荷の高い機械で `-O3` の C のコンパイルが 180 秒を超えたため。hash は JS の BigInt で独立に計算する。
+15. **commit する試験データ。** `NormalizationTest.txt` は Part 0・3・5 の全行と Part 2・4 の 8 行に 1 行（計 611 行）。Part 1（単独のスカラー）は全スカラーの chunk（V8）で覆い、
+    V8 と全行の一致は `--write` で確かめる。`GraphemeBreakTest.txt`（766 行）と `WordBreakTest.txt`（1,944 行）は全行。データを約 53 KB に抑えるため。
+16. **表番号を定数に畳む（Phase 1 の実装の変更）。** 表が 19 個になると、表番号が実行時の値になる経路が 1 つでもあれば `switch` が全部の表を参照し、LLVM が削除できない。
+    `alwaysinline` の前は、`Regex.is_match` だけの wasm32 `-O3` が 103,227 → 214,352 bytes（捕捉した表番号を読む `table_ranges` が原因）、`case_fold` と `to_title` を使う
+    native の object が 146,136 bytes（大小変換の種類で表を選ぶ `run_map` が原因）だった。変更後は 102,816 bytes と 35,064 bytes で、下の各 API の `-O3` の出力に残る表は
+    その API が読む表だけになった。std は表番号を捕捉や実行時の値で渡さず、表番号を引数に取る補助関数は呼び出し位置ごとに定数で呼ぶ。
+
+### Phase 2: 確認
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 745 passed、0 failed、0 ignored（Phase 1 の 742 と `tests/unicode.rs` の 3）。
+  `--test unicode`: 3 passed、`--test regex`: 6 passed、`--lib stdlib`: 5 passed、`--test stdlib`: 7 passed。
+- GUIDE §3.1: `bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・
+  `honors_the_exact_specialization_limit` が各 1 passed。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。Windows の型検査（rustup の clippy 1.96、`--target x86_64-pc-windows-msvc` と
+  `aarch64-pc-windows-msvc`、`-D warnings`）は `src/lsp.rs:806` と `src/parser.rs:1956`・`1957` の `nonminimal_bool` の 3 件だけで失敗し、これは D09 が触れていないファイルで
+  `2ee813f` でも同じ 3 件が出る（Homebrew の clippy 1.98 は出さない）。`-A clippy::nonminimal_bool` を足すと両 target で成功する。
+- `tsuzuri test`（trap の文脈を足す経路）で `Unicode` と `Regex` を使う test が `-O0`・`-O3` で成功し、`-g` の native・wasm32 の build も `-O0`・`-O3` で成功した。
+- `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri unicode`: `unicode: native/WASM at O0/O3 passed`、4,317 cases（native は各呼び出しの後 `live == 0`、
+  WASM は import なし、IR は 2 回の出力が一致）。内訳: 全スカラーの `category`（16 chunk、V8 の `\p{...}`）、全スカラーの 4 つの正規化（`string`）と 9 個に 1 個のスカラーの
+  4 つの正規化（`utf8string`）、全スカラーの `to_lower`・`to_upper`（V8）と `case_fold`（`CaseFolding.txt`）、`GraphemeBreakTest.txt` の 766 行と V8 の `Intl.Segmenter` による
+  無作為な 300 列、`WordBreakTest.txt` の 1,944 行、`NormalizationTest.txt` の 611 行と V8 による無作為な 300 列（`is_normalized` を含む）、V8 による無作為な 300 列の
+  `to_lower`・`to_upper`（`string` と `utf8string`）、`to_title` の 16 case。境界は `string` と `utf8string` の位置、断片、断片の数を比べる。
+- 同じ release build で既存の suite: `regex` 2,268・`string_library` 3,230・`chars` 19・`stdlib` 3・`vec` 15・`map_set` 26・`hash_map` 192 cases、すべて native/WASM × `-O0`/`-O3` で成功。
+- `node scripts/generate-unicode.mjs --check target/ucd/17.0.0`、`sh scripts/check-runtime-includes.sh`（30 files）、`node tests/regex-cases.mjs`（2,268）、
+  `target/release/tsuzuri fmt --check tests/fixtures/regex`・`tests/fixtures/unicode`: 成功。
+- `node scripts/check-docs.mjs`（変更した 9 ページを 1 ページずつ）: 成功（`string.md` の例で clang の `loop not unrolled` の警告が 2 つ出るが、`2ee813f` のコンパイラでも同じ 2 つが出る）。
+- IR の同一性（追記 7 と同じ比較）: `tests/fixtures/strings` の `-O0`・`-O3` は生成 id の振り直しの後で一致し、wasm32 `-O3` の出力は byte 単位で一致。
+  `Unicode`・`Regex` も関数テンプレートも使わない 2 つの program は振り直し無しで byte 単位で一致。
+
+### Phase 2: 計測（文書には書かない）
+
+- `check` の CPU 時間（Phase 1 と同じ方法、21 回の中央値。全体のテストと並行して測った）: 空のプログラムは 44.9 ms → 81.7 ms（+82%）、`tests/fixtures/strings` は 49.7 ms → 85.8 ms（+73%）。
+  増分は std に足した Tsuzuri のコード（`Regex.tz` 56,452 bytes、`Unicode.tz` 26,002 bytes）の型検査と所有権解析で、表は `check` の費用に入らない（Phase 1 の計測の考察と同じ）。
+- `src/runtime/unicode.ll`: 386,455 bytes（表の本体 137,484 bytes）。
+- 1 つの API だけを使う export 1 つの program の大きさ（native `-O3` の object ／ wasm32 `-O3`、括弧は `-O3` の出力に残る表）:
+  `Regex.is_match` 71,696 ／ 102,816 bytes（0・1・4。wasm32 `-O0` は全表を含み 271,065 bytes）、`normalize Nfc` 88,296 ／ 92,481（5〜9）、`normalize_utf8 Nfkc` 88,984 ／ 93,890（5〜9）、
+  `grapheme_boundaries` 8,160 ／ 11,968（10）、`word_boundaries` 12,608 ／ 17,630（11）、`to_upper` 10,456 ／ 13,736（15・17・18）、`case_fold` と `to_title` 35,064 ／ 40,282（4・11〜18）、
+  `category` 17,264 ／ 16,804（0）。
+- 速度は主張しない。目安: 全スカラー（サロゲートを除く）の後にそれぞれ空白を置いて並べた文字列の 1 回の変換の user 時間は、native `-O3` で `normalize Nfc` 約 0.17 秒、
+  `to_upper` 約 0.06 秒、`grapheme_boundaries` 約 0.07 秒（負荷の高い機械で 3 回の合計を 3 で割った値。比較の対象は無い）。
+
+### Phase 2: 制約と既知の問題
+
+- `is_normalized` は正規化して比べる（quick check の表は持たない）。ASCII だけの文字列の近道も無く、1 スカラーごとに表を二分探索する（`O(n log T)`、T は表の大きさ）。
+- Stream-Safe Text Format の上限は無い。非 starter の連続部分は `O(k log k)` で並べ替える。
+- `-O0` では使わない表も含め全 19 表を連結する（`-O0` は大域の削除をしないため）。
+- 範囲外（追記 10）: 言語による調整、`Final_Sigma` 以外の条件付きの対応、辞書による単語の分割、UAX #29 の tailoring、行分割（UAX #14）、照合（UCA）。
+- `check` の時間の増加（上の計測）。縮小には、使われない std モジュールの型検査を省くか std の検査結果を cache する別チケットが要る。

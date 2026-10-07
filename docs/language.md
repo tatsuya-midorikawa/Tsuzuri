@@ -2841,7 +2841,14 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 
 ### Unicode
 
-`Unicode` は Unicode 17.0.0 の UCD から生成した表を引きます。`Unicode.version ()` は `"17.0.0"`、`Unicode.property_ranges (ref name)` は `\p{name}` と同じ名前のスカラーの閉区間（昇順・連結済み。未知の名前は `None`）、`Unicode.simple_case_folding ()` は `CaseFolding.txt` の状態 C と S の組 `(c, scf c)`（`c != scf c`、`c` の昇順）を返します。どれも呼び出しごとに表を読んで新しい配列を確保します。
+`Unicode` は Unicode 17.0.0 の UCD から生成した表を引きます。`Unicode.version ()` は `"17.0.0"`、`Unicode.property_ranges (ref name)` は `\p{name}` と同じ名前のスカラーの閉区間（昇順・連結済み。未知の名前は `None`）、`Unicode.simple_case_folding ()` は `CaseFolding.txt` の状態 C と S の組 `(c, scf c)`（`c != scf c`、`c` の昇順）を返します。この 2 つは呼び出しごとに表を読んで新しい配列を確保します。
+
+- `Unicode.category :: utf8char -> Unicode.Category` は一般カテゴリーを返します。`Category` は短い名前（`Lu` … `Cn`）の 30 ケースの union で、`Eq` と `Display` を持ちます。
+- `Unicode.normalize :: Unicode.NormalizationForm -> ref string -> string` と `is_normalized` は UAX #15 の正規化です（`Nfc`・`Nfd`・`Nfkc`・`Nfkd`）。分解は再帰的で、ハングル音節は算術で扱い、結合文字は正準結合クラスで安定に並べ替え、合成は `Full_Composition_Exclusion` を除いた一次合成だけを作ります。
+- `Unicode.graphemes`・`grapheme_boundaries` は UAX #29 の拡張書記素クラスター（GB9c の InCB と GB11 の絵文字 ZWJ 列を含む）、`Unicode.words`・`word_boundaries` は UAX #29 の既定の単語境界です。境界の配列は 0 と長さを含み（空の文字列は `[0]`）、ロケールによる調整や辞書は使いません。
+- `Unicode.to_lower`・`to_upper`・`to_title`・`case_fold` は `SpecialCasing.txt` の条件なしの対応を含む完全な変換で、`to_lower` は Final_Sigma を扱います。`to_title` は単語ごとに最初の cased な文字をタイトルケースにし、残りを小文字にします。`case_fold` は `CaseFolding.txt` の状態 C と F です。ロケールに依存する対応はしません。
+- `utf8string` の関数は名前に `_utf8` が付き、境界の位置は byte です。`string` の孤立サロゲートは 1 スカラーとして扱い、変換されずに残ります（カテゴリーは `Cs`、書記素では Control）。
+- 計算量は入力のスカラー数 $n$ と表の大きさ $t$ について $O(n \log t)$ で、正規化は連続する結合文字の並べ替え（$O(k \log k)$）を足します。結果と作業用のスカラーの配列は呼び出しごとに確保します。
 表は `scripts/generate-unicode.mjs` が生成したランタイム `src/runtime/unicode.ll` の定数で、`Unicode` か `Regex` の関数を使うプログラムにだけ連結されます。版の更新は結果を変えるので、生成器の入力の SHA-256 と `Unicode.version` を同時に変えます。
 
 ### 配列・リスト API

@@ -58,22 +58,20 @@ fn category_ranges mask =
 	if open >= 0 then output = Vec.push output (open, 1114111)
 	Vec.to_array output
 
-/// The ranges of a table of closed ranges.
-private def table_ranges :: i64 -> [(i64 * i64)]
-fn table_ranges table =
-	let count = Unicode.__table_length table / 2
-	new [(i64 * i64)](count, \index -> (Unicode.__table_entry table (2 * index), Unicode.__table_entry table (2 * index + 1)))
-
 /// The closed ranges of the scalars that the regular-expression class `\p{name}` matches, ascending and
 /// merged: a general category such as `Lu`, a group `L`, `LC`, `M`, `N`, `P`, `S`, `Z` or `C`, or one of
 /// `Alphabetic`, `White_Space` and `Join_Control`. `None` for other names. Each call decodes the table.
 def property_ranges :: ref string -> Maybe<[(i64 * i64)]>
 fn property_ranges name =
 	let mask = category_mask name
+	// Every table read names its table directly, so that LLVM keeps only the tables a program reads.
 	if mask != 0 then Maybe.Some (category_ranges mask)
-	elif named name "Alphabetic" then Maybe.Some (table_ranges AlphabeticRanges)
-	elif named name "White_Space" then Maybe.Some (table_ranges WhiteSpaceRanges)
-	elif named name "Join_Control" then Maybe.Some (table_ranges JoinControlRanges)
+	elif named name "Alphabetic" then
+		Maybe.Some (new [(i64 * i64)](Unicode.__table_length AlphabeticRanges / 2, \index -> (Unicode.__table_entry AlphabeticRanges (2 * index), Unicode.__table_entry AlphabeticRanges (2 * index + 1))))
+	elif named name "White_Space" then
+		Maybe.Some (new [(i64 * i64)](Unicode.__table_length WhiteSpaceRanges / 2, \index -> (Unicode.__table_entry WhiteSpaceRanges (2 * index), Unicode.__table_entry WhiteSpaceRanges (2 * index + 1))))
+	elif named name "Join_Control" then
+		Maybe.Some (new [(i64 * i64)](Unicode.__table_length JoinControlRanges / 2, \index -> (Unicode.__table_entry JoinControlRanges (2 * index), Unicode.__table_entry JoinControlRanges (2 * index + 1))))
 	else Maybe.None
 
 /// The simple case folding of `CaseFolding.txt` (statuses C and S) as `(c, scf c)` pairs for every scalar
@@ -95,3 +93,492 @@ fn simple_case_folding _unit =
 			member = member + 1
 		run = run + 1
 	Vec.to_array output
+
+private const CombiningRuns: i64 = 5
+private const DecompositionKeys: i64 = 6
+private const DecompositionValues: i64 = 7
+private const DecompositionPool: i64 = 8
+private const Compositions: i64 = 9
+private const GraphemeRuns: i64 = 10
+private const WordRuns: i64 = 11
+private const CasedRanges: i64 = 12
+private const CaseIgnorableRanges: i64 = 13
+private const LowerRuns: i64 = 14
+private const UpperRuns: i64 = 15
+private const TitleRuns: i64 = 16
+private const FullMappings: i64 = 17
+private const FullPool: i64 = 18
+
+/// The general category of a scalar, by its short name (`Lu` is Uppercase_Letter, `Cn` is Unassigned).
+union Category = Lu | Ll | Lt | Lm | Lo | Mn | Mc | Me | Nd | Nl | No | Pc | Pd | Ps | Pe | Pi | Pf | Po | Sm | Sc | Sk | So | Zs | Zl | Zp | Cc | Cf | Cs | Co | Cn deriving (Eq, Display)
+
+/// A Unicode normalization form (UAX #15).
+union NormalizationForm = Nfc | Nfd | Nfkc | Nfkd deriving (Eq, Display)
+
+/// How many of the ascending entries `table[offset + stride * i]` are at most `key`.
+private def rank :: i64 -> i64 -> i64 -> i64 -> i64
+fn rank table stride offset key =
+	let mut low = 0
+	let mut high = Unicode.__table_length table / stride
+	while low < high do
+		let middle = (low + high) / 2
+		if Unicode.__table_entry table (stride * middle + offset) <= key then low = middle + 1 else high = middle
+	low
+
+/// The value of the run that holds `code` in a table of `start << shift | value` runs from 0.
+private def run_value :: i64 -> i64 -> i64 -> i64
+fn run_value table shift code =
+	let mask = (1 <<< shift) - 1
+	Unicode.__table_entry table (rank table 1 0 (code * (mask + 1) + mask) - 1) &&& mask
+
+private def in_ranges :: i64 -> i64 -> bool
+fn in_ranges table code =
+	let index = rank table 2 0 code - 1
+	index >= 0 && Unicode.__table_entry table (2 * index + 1) >= code
+
+/// `code` mapped by a table of `start, count, stride, delta` runs, or -1 when no run holds it.
+private def run_map :: i64 -> i64 -> i64
+fn run_map table code =
+	let run = 4 * (rank table 4 0 code - 1)
+	let offset = if run < 0 then -1 else code - Unicode.__table_entry table run
+	let stride = if run < 0 then 1 else Unicode.__table_entry table (run + 2)
+	if run >= 0 && offset % stride == 0 && offset / stride < Unicode.__table_entry table (run + 1) then code + Unicode.__table_entry table (run + 3) else -1
+
+/// The general category of `scalar`.
+def category :: utf8char -> Category
+fn category scalar =
+	match run_value CategoryRuns 5 (Utf8Char.to_u32 scalar as i64) with
+	| 0 -> Lu
+	| 1 -> Ll
+	| 2 -> Lt
+	| 3 -> Lm
+	| 4 -> Lo
+	| 5 -> Mn
+	| 6 -> Mc
+	| 7 -> Me
+	| 8 -> Nd
+	| 9 -> Nl
+	| 10 -> No
+	| 11 -> Pc
+	| 12 -> Pd
+	| 13 -> Ps
+	| 14 -> Pe
+	| 15 -> Pi
+	| 16 -> Pf
+	| 17 -> Po
+	| 18 -> Sm
+	| 19 -> Sc
+	| 20 -> Sk
+	| 21 -> So
+	| 22 -> Zs
+	| 23 -> Zl
+	| 24 -> Zp
+	| 25 -> Cc
+	| 26 -> Cf
+	| 27 -> Cs
+	| 28 -> Co
+	| _ -> Cn
+
+/// The scalars of a text and the offset of each one in code units (or bytes), then the length of the text.
+/// A lone surrogate of a `string` is one scalar.
+private def decode :: ref string -> ref utf8string -> bool -> ([i64] * [i64])
+fn decode text bytes utf8 =
+	let length = if utf8 then bytes.length else text.length
+	let mut codes: Vec<i64> = Vec.with_capacity length
+	let mut offsets: Vec<i64> = Vec.with_capacity (length + 1)
+	let mut index = 0
+	while index < length do
+		offsets = Vec.push offsets index
+		if utf8 then
+			match Utf8String.decode_at bytes index with
+			| (value, next) ->
+				codes = Vec.push codes (Utf8Char.to_u32 value as i64)
+				index = next
+		else
+			let unit = text[index] as i64
+			let low = if index + 1 < length then text[index + 1] as i64 else 0
+			if unit >= 55296 && unit <= 56319 && low >= 56320 && low <= 57343 then
+				codes = Vec.push codes ((unit - 55296) * 1024 + low - 56320 + 65536)
+				index = index + 2
+			else
+				codes = Vec.push codes unit
+				index = index + 1
+	(Vec.to_array codes, Vec.to_array (Vec.push offsets length))
+
+private def encode16 :: Vec<i64> -> string
+fn encode16 codes =
+	let mut units: Vec<i16u> = Vec.with_capacity (Vec.length (ref codes))
+	for index in 0 .. Vec.length (ref codes) - 1 do
+		let code = codes[index]
+		if code >= 65536 then units = Vec.push (Vec.push units ((55296 + (code - 65536) / 1024) as i16u)) ((56320 + code % 1024) as i16u)
+		else units = Vec.push units (code as i16u)
+	String.from_code_units (Vec.to_array units)
+
+private def encode8 :: Vec<i64> -> utf8string
+fn encode8 codes =
+	let mut bytes: Vec<ubyte> = Vec.with_capacity (Vec.length (ref codes))
+	for index in 0 .. Vec.length (ref codes) - 1 do
+		let code = codes[index]
+		if code < 128 then bytes = Vec.push bytes (code as ubyte)
+		else
+			let count = if code < 2048 then 1 elif code < 65536 then 2 else 3
+			bytes = Vec.push bytes ((if count == 1 then 192 + code / 64 elif count == 2 then 224 + code / 4096 else 240 + code / 262144) as ubyte)
+			for shift in 1 .. count do bytes = Vec.push bytes ((128 + (code >>> (6 * (count - shift))) % 64) as ubyte)
+	Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
+
+private def combining_class :: i64 -> i64
+fn combining_class code = if code < 768 then 0 else run_value CombiningRuns 8 code
+
+/// Appends the full canonical (or, when `compatible`, compatibility) decomposition of `code`.
+private def rec append_decomposed :: Vec<i64> -> i64 -> bool -> Vec<i64>
+fn rec append_decomposed output code compatible =
+	if code >= 44032 && code <= 55203 then
+		let index = code - 44032
+		let syllable = Vec.push (Vec.push output (4352 + index / 588)) (4449 + index % 588 / 28)
+		if index % 28 == 0 then syllable else Vec.push syllable (4519 + index % 28)
+	else
+		let found = if code < 160 then 0 else rank DecompositionKeys 1 0 code
+		let mapping = if found > 0 && Unicode.__table_entry DecompositionKeys (found - 1) == code then Unicode.__table_entry DecompositionValues (found - 1) else -1
+		let length = mapping / 2 % 32
+		if mapping < 0 || (mapping % 2 == 1 && !compatible) then Vec.push output code
+		elif length == 1 then append_decomposed output (mapping / 64) compatible
+		else
+			let mut result = output
+			for part in 0 .. length - 1 do result = append_decomposed result (Unicode.__table_entry DecompositionPool (mapping / 64 + part)) compatible
+			result
+
+/// Sorts each run of non-starters stably by canonical combining class (canonical ordering).
+private def reorder :: Vec<i64> -> Vec<i64>
+fn reorder codes =
+	let mut output = codes
+	let mut start = 0
+	while start < Vec.length (ref output) do
+		let mut stop = start
+		let mut scanning = true
+		while scanning do
+			if stop < Vec.length (ref output) && combining_class output[stop] > 0 then stop = stop + 1 else scanning = false
+		if stop - start > 1 then
+			let mut keys: [i64] = new [i64](stop - start, \_index -> 0)
+			let mut run: [i64] = new [i64](stop - start, \_index -> 0)
+			for index in 0 .. stop - start - 1 do
+				Array.write (ref mut keys) index (combining_class output[start + index] * 4398046511104 + index)
+				Array.write (ref mut run) index output[start + index]
+			Array.sort_in_place (ref mut keys)
+			for index in 0 .. stop - start - 1 do output = Vec.set output (start + index) run[keys[index] % 4398046511104]
+		start = stop + 1
+	output
+
+private def compose_pair :: i64 -> i64 -> i64
+fn compose_pair first second =
+	if first >= 4352 && first <= 4370 && second >= 4449 && second <= 4469 then 44032 + ((first - 4352) * 21 + second - 4449) * 28
+	elif first >= 44032 && first <= 55203 && (first - 44032) % 28 == 0 && second >= 4520 && second <= 4546 then first + second - 4519
+	else
+		let mut found = -1
+		for index in rank Compositions 3 0 (first - 1) .. rank Compositions 3 0 first - 1 do
+			if Unicode.__table_entry Compositions (3 * index + 1) == second then found = Unicode.__table_entry Compositions (3 * index + 2)
+		found
+
+/// Canonical composition of decomposed, canonically ordered scalars (UAX #15).
+private def compose :: Vec<i64> -> Vec<i64>
+fn compose codes =
+	let length = Vec.length (ref codes)
+	if length == 0 then codes else
+		let mut output = codes
+		let mut starter = 0
+		let mut last_class = if combining_class output[0] == 0 then 0 else 256
+		let mut write = 1
+		for read in 1 .. length - 1 do
+			let code = output[read]
+			let group = combining_class code
+			let composite = if last_class < group || last_class == 0 then compose_pair output[starter] code else -1
+			if composite >= 0 then output = Vec.set output starter composite
+			else
+				if group == 0 then starter = write
+				last_class = group
+				output = Vec.set output write code
+				write = write + 1
+		Vec.truncate output write
+
+private def normalized :: NormalizationForm -> ref [i64] -> Vec<i64>
+fn normalized form codes =
+	let compatible = form == Nfkc || form == Nfkd
+	let mut decomposed: Vec<i64> = Vec.with_capacity codes.length
+	for code in codes do decomposed = append_decomposed decomposed code compatible
+	let ordered = reorder decomposed
+	if form == Nfc || form == Nfkc then compose ordered else ordered
+
+/// `text` in normalization form `form`; a lone surrogate stays as it is.
+def normalize :: NormalizationForm -> ref string -> string
+fn normalize form text =
+	let none = u8""
+	match decode text (ref none) false with
+	| (codes, _) -> encode16 (normalized form (ref codes))
+
+/// `normalize` on a `utf8string`.
+def normalize_utf8 :: NormalizationForm -> ref utf8string -> utf8string
+fn normalize_utf8 form text =
+	let none = ""
+	match decode (ref none) text true with
+	| (codes, _) -> encode8 (normalized form (ref codes))
+
+/// Whether `text` is already in normalization form `form`.
+def is_normalized :: NormalizationForm -> ref string -> bool
+fn is_normalized form text =
+	let result = normalize form text
+	Eq.eq (ref result) text
+
+/// `is_normalized` on a `utf8string`.
+def is_normalized_utf8 :: NormalizationForm -> ref utf8string -> bool
+fn is_normalized_utf8 form text =
+	let result = normalize_utf8 form text
+	Eq.eq (ref result) text
+
+/// Whether an extended grapheme cluster starts at each scalar (UAX #29).
+private def grapheme_breaks :: ref [i64] -> [bool]
+fn grapheme_breaks codes =
+	let mut breaks: Vec<bool> = Vec.with_capacity codes.length
+	let mut previous = 0
+	let mut regional = 0
+	let mut emoji = 0
+	let mut conjunct = 0
+	for index in 0 .. codes.length - 1 do
+		let found = run_value GraphemeRuns 7 codes[index]
+		let group = if found % 16 == 12 && (codes[index] - 44032) % 28 != 0 then 13 else found % 16
+		let pictographic = found / 16 % 2 == 1
+		let indic = found / 32
+		let joined =
+			if index == 0 then false
+			elif previous == 1 && group == 2 then true
+			elif previous == 1 || previous == 2 || previous == 3 || group == 1 || group == 2 || group == 3 then false
+			elif previous == 9 && (group == 9 || group == 10 || group == 12 || group == 13) then true
+			elif (previous == 10 || previous == 12) && (group == 10 || group == 11) then true
+			elif (previous == 11 || previous == 13) && group == 11 then true
+			elif group == 4 || group == 5 || group == 8 || previous == 7 then true
+			elif indic == 2 && conjunct == 2 then true
+			elif previous == 5 && pictographic && emoji == 2 then true
+			else previous == 6 && group == 6 && regional % 2 == 1
+		breaks = Vec.push breaks (!joined)
+		emoji = if pictographic then 1 elif emoji == 1 && group == 4 then 1 elif emoji == 1 && group == 5 then 2 else 0
+		conjunct = if indic == 2 then 1 elif conjunct > 0 && indic == 3 then conjunct elif conjunct > 0 && indic == 1 then 2 else 0
+		regional = if group == 6 then regional + 1 else 0
+		previous = group
+	Vec.to_array breaks
+
+private def is_letter :: i64 -> bool
+fn is_letter group = group == 9 || group == 10
+
+/// Whether a word boundary (UAX #29) comes before each scalar.
+private def word_breaks :: ref [i64] -> [bool]
+fn word_breaks codes =
+	let count = codes.length
+	let classes = new [i64](count, \index -> run_value WordRuns 6 codes[index])
+	// WB4: an Extend, Format or ZWJ belongs to the scalar before it, unless that is a line break or the start.
+	let mut anchors: Vec<i64> = Vec.with_capacity count
+	let mut regional: Vec<i64> = Vec.with_capacity count
+	for index in 0 .. count - 1 do
+		let group = classes[index] % 32
+		let before = if index > 0 then anchors[index - 1] else -1
+		let host = if before >= 0 then classes[before] % 32 else 1
+		let attached = (group == 4 || group == 5 || group == 7) && (host == 0 || host > 3)
+		anchors = Vec.push anchors (if attached then before else index)
+		let previous = if before >= 0 then regional[before] else 0
+		let count = if attached then previous elif group == 6 then previous + 1 else 0
+		regional = Vec.push regional count
+	let mut breaks: Vec<bool> = Vec.with_capacity count
+	for index in 0 .. count - 1 do
+		let previous = if index > 0 then classes[index - 1] % 32 else -1
+		let current = classes[index] % 32
+		let anchor = if index > 0 then anchors[index - 1] else -1
+		let left = if anchor >= 0 then classes[anchor] % 32 else -1
+		let before = if anchor > 0 then classes[anchors[anchor - 1]] % 32 else -1
+		let mut next = index + 1
+		let mut scanning = true
+		while scanning do
+			if next < count && (classes[next] % 32 == 4 || classes[next] % 32 == 5 || classes[next] % 32 == 7) then next = next + 1 else scanning = false
+		let right = if next < count then classes[next] % 32 else -1
+		let mid_letter = current == 14 || current == 13 || current == 11
+		let mid_number = current == 15 || current == 13 || current == 11
+		let after_letter = left == 14 || left == 13 || left == 11
+		let after_number = left == 15 || left == 13 || left == 11
+		let joined =
+			if index == 0 then false
+			elif previous == 1 && current == 2 then true
+			elif previous >= 1 && previous <= 3 || current >= 1 && current <= 3 then false
+			elif previous == 5 && classes[index] >= 32 then true
+			elif previous == 18 && current == 18 then true
+			elif current == 4 || current == 5 || current == 7 then true
+			elif is_letter left && (is_letter current || (mid_letter && is_letter right)) then true
+			elif is_letter before && after_letter && is_letter current then true
+			elif left == 9 && (current == 11 || (current == 12 && right == 9)) then true
+			elif before == 9 && left == 12 && current == 9 then true
+			elif (left == 16 || is_letter left) && current == 16 || left == 16 && is_letter current then true
+			elif before == 16 && after_number && current == 16 || left == 16 && mid_number && right == 16 then true
+			elif left == 8 && current == 8 then true
+			elif (is_letter left || left == 16 || left == 8 || left == 17) && current == 17 then true
+			elif left == 17 && (is_letter current || current == 16 || current == 8) then true
+			else left == 6 && current == 6 && regional[anchor] % 2 == 1
+		breaks = Vec.push breaks (!joined)
+	Vec.to_array breaks
+
+/// The offsets where `breaks` starts a segment, then the end of the text.
+private def boundaries :: ref [i64] -> ref [bool] -> [i64]
+fn boundaries offsets breaks =
+	let mut output: Vec<i64> = Vec.with_capacity offsets.length
+	for index in 0 .. breaks.length - 1 do
+		if breaks[index] then output = Vec.push output offsets[index]
+	Vec.to_array (Vec.push output offsets[offsets.length - 1])
+
+private def segment_offsets :: ref string -> ref utf8string -> bool -> bool -> [i64]
+fn segment_offsets text bytes utf8 words =
+	match decode text bytes utf8 with
+	| (codes, offsets) ->
+		let breaks = if words then word_breaks (ref codes) else grapheme_breaks (ref codes)
+		boundaries (ref offsets) (ref breaks)
+
+/// The offsets of the extended grapheme cluster boundaries of `text` (UAX #29) in code units: 0, every
+/// boundary inside the text, and the length (`[0]` for an empty text).
+def grapheme_boundaries :: ref string -> [i64]
+fn grapheme_boundaries text =
+	let none = u8""
+	segment_offsets text (ref none) false false
+
+/// `grapheme_boundaries` on a `utf8string`, in bytes.
+def grapheme_boundaries_utf8 :: ref utf8string -> [i64]
+fn grapheme_boundaries_utf8 text =
+	let none = ""
+	segment_offsets (ref none) text true false
+
+/// The offsets of the default word boundaries of `text` (UAX #29) in code units, like `grapheme_boundaries`.
+def word_boundaries :: ref string -> [i64]
+fn word_boundaries text =
+	let none = u8""
+	segment_offsets text (ref none) false true
+
+/// `word_boundaries` on a `utf8string`, in bytes.
+def word_boundaries_utf8 :: ref utf8string -> [i64]
+fn word_boundaries_utf8 text =
+	let none = ""
+	segment_offsets (ref none) text true true
+
+private def pieces :: ref string -> ref [i64] -> [string]
+fn pieces text offsets = new [string](offsets.length - 1, \index -> Maybe.get (String.slice text offsets[index] offsets[index + 1]))
+
+private def pieces_utf8 :: ref utf8string -> ref [i64] -> [utf8string]
+fn pieces_utf8 text offsets = new [utf8string](offsets.length - 1, \index -> Maybe.get (Utf8String.slice text offsets[index] offsets[index + 1]))
+
+/// The extended grapheme clusters of `text` (user-perceived characters).
+def graphemes :: ref string -> [string]
+fn graphemes text =
+	let offsets = grapheme_boundaries text
+	pieces text (ref offsets)
+
+/// `graphemes` on a `utf8string`.
+def graphemes_utf8 :: ref utf8string -> [utf8string]
+fn graphemes_utf8 text =
+	let offsets = grapheme_boundaries_utf8 text
+	pieces_utf8 text (ref offsets)
+
+/// The segments of `text` between its word boundaries: words, and the spaces and punctuation between them.
+def words :: ref string -> [string]
+fn words text =
+	let offsets = word_boundaries text
+	pieces text (ref offsets)
+
+/// `words` on a `utf8string`.
+def words_utf8 :: ref utf8string -> [utf8string]
+fn words_utf8 text =
+	let offsets = word_boundaries_utf8 text
+	pieces_utf8 text (ref offsets)
+
+/// The first scalar from `start` in direction `step` that is not Case_Ignorable, or -1.
+private def uncased_neighbor :: ref [i64] -> i64 -> i64 -> i64
+fn uncased_neighbor codes start step =
+	let mut index = start
+	let mut scanning = true
+	while scanning do
+		if index >= 0 && index < codes.length && in_ranges CaseIgnorableRanges codes[index] then index = index + step else scanning = false
+	if index >= 0 && index < codes.length then codes[index] else -1
+
+/// Appends the full mapping of `code`: 0 lowercase, 1 titlecase, 2 uppercase, 3 case folding.
+private def append_mapped :: Vec<i64> -> i64 -> i64 -> Vec<i64>
+fn append_mapped output code kind =
+	let found = rank FullMappings 2 0 (code * 4 + kind)
+	if found > 0 && Unicode.__table_entry FullMappings (2 * found - 2) == code * 4 + kind then
+		let value = Unicode.__table_entry FullMappings (2 * found - 1)
+		let mut result = output
+		for part in 0 .. value % 32 - 1 do result = Vec.push result (Unicode.__table_entry FullPool (value / 32 + part))
+		result
+	else
+		let simple = if kind == 0 then run_map LowerRuns code elif kind == 3 then run_map SimpleFoldingRuns code else run_map UpperRuns code
+		let titled = if kind == 1 then run_map TitleRuns code else -1
+		Vec.push output (if titled >= 0 then titled elif simple >= 0 then simple else code)
+
+/// Appends the lowercase of `codes[index]`; a capital sigma at the end of a word is final sigma (U+03C2).
+private def append_lower :: Vec<i64> -> ref [i64] -> i64 -> Vec<i64>
+fn append_lower output codes index =
+	if codes[index] != 931 then append_mapped output codes[index] 0
+	else
+		let before = uncased_neighbor codes (index - 1) (-1)
+		let after = uncased_neighbor codes (index + 1) 1
+		let final = before >= 0 && in_ranges CasedRanges before && !(after >= 0 && in_ranges CasedRanges after)
+		Vec.push output (if final then 962 else 963)
+
+/// The full case conversion of `codes`: 0 lowercase, 1 titlecase of each word, 2 uppercase, 3 case folding.
+private def converted :: ref [i64] -> i64 -> Vec<i64>
+fn converted codes kind =
+	let breaks = if kind == 1 then word_breaks codes else []
+	let mut output: Vec<i64> = Vec.with_capacity codes.length
+	let mut titled = false
+	for index in 0 .. codes.length - 1 do
+		if kind == 1 && breaks[index] then titled = false
+		if kind == 0 || (kind == 1 && titled) then output = append_lower output codes index
+		elif kind == 1 && !(in_ranges CasedRanges codes[index]) then output = Vec.push output codes[index]
+		else
+			output = append_mapped output codes[index] kind
+			titled = true
+	output
+
+private def convert :: ref string -> i64 -> string
+fn convert text kind =
+	let none = u8""
+	match decode text (ref none) false with
+	| (codes, _) -> encode16 (converted (ref codes) kind)
+
+private def convert_utf8 :: ref utf8string -> i64 -> utf8string
+fn convert_utf8 text kind =
+	let none = ""
+	match decode (ref none) text true with
+	| (codes, _) -> encode8 (converted (ref codes) kind)
+
+/// The full lowercase of `text` (SpecialCasing.txt without locale tailoring, with final sigma).
+def to_lower :: ref string -> string
+fn to_lower text = convert text 0
+
+/// `to_lower` on a `utf8string`.
+def to_lower_utf8 :: ref utf8string -> utf8string
+fn to_lower_utf8 text = convert_utf8 text 0
+
+/// The full uppercase of `text` (`ß` becomes `SS`).
+def to_upper :: ref string -> string
+fn to_upper text = convert text 2
+
+/// `to_upper` on a `utf8string`.
+def to_upper_utf8 :: ref utf8string -> utf8string
+fn to_upper_utf8 text = convert_utf8 text 2
+
+/// `text` with the first cased scalar of each word (UAX #29) in titlecase and the rest of the word in
+/// lowercase.
+def to_title :: ref string -> string
+fn to_title text = convert text 1
+
+/// `to_title` on a `utf8string`.
+def to_title_utf8 :: ref utf8string -> utf8string
+fn to_title_utf8 text = convert_utf8 text 1
+
+/// The full case folding of `text` (CaseFolding.txt statuses C and F), for caseless comparison.
+def case_fold :: ref string -> string
+fn case_fold text = convert text 3
+
+/// `case_fold` on a `utf8string`.
+def case_fold_utf8 :: ref utf8string -> utf8string
+fn case_fold_utf8 text = convert_utf8 text 3

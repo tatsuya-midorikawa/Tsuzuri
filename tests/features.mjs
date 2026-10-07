@@ -5,6 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
+import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
+import * as unicodeData from "./unicode-ucd.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -694,6 +696,14 @@ const suites = {
       assert.equal(matching.length, 6);
       for (const [, body] of matching) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
       assert.match(ir, /^@tz\.unicode\.table\.0 = internal unnamed_addr constant/m);
+    },
+  },
+  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs.
+  unicode: {
+    get cases() { return (this.computed ??= unicodeCases(unicodeData)); },
+    inspect(ir) {
+      assert.match(ir, /^@tz\.unicode\.table\.17 = internal unnamed_addr constant/m);
+      assert.equal(ir.match(/^define internal i64 @tz\.unicode\.entry\(/gm).length, 1);
     },
   },
   chars: {
