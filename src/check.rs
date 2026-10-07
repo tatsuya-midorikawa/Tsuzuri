@@ -491,7 +491,7 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex"))
     }
 
     /// The std `Owned.Function`, whose environment has no clone (B07).
@@ -874,6 +874,12 @@ pub enum Builtin {
     /// `Os.__spawn :: ref utf8string -> ref [ubyte] -> ref [ubyte] -> (i64 * [ubyte])`: runs a program without a
     /// shell, given its NUL-terminated arguments and its input, and returns the encoded outcome.
     OsSpawn,
+    /// `Unicode.__table_length :: i64 -> i64`: the number of entries of a generated Unicode table
+    /// (`src/runtime/unicode.ll`). Private to the std Unicode and Regex modules (D09).
+    UnicodeTableLength,
+    /// `Unicode.__table_entry :: i64 -> i64 -> i64`: one entry of a generated Unicode table; traps
+    /// when the table or the index is out of range.
+    UnicodeTableEntry,
     Display,
     Parse,
     Default,
@@ -1127,6 +1133,8 @@ impl Builtin {
         Self::OsHandle,
         Self::OsClose,
         Self::OsSpawn,
+        Self::UnicodeTableLength,
+        Self::UnicodeTableEntry,
         Self::Display,
         Self::Parse,
         Self::Default,
@@ -1312,6 +1320,8 @@ impl Builtin {
             Self::OsHandle => "Os.__handle",
             Self::OsClose => "Os.__close",
             Self::OsSpawn => "Os.__spawn",
+            Self::UnicodeTableLength => "Unicode.__table_length",
+            Self::UnicodeTableEntry => "Unicode.__table_entry",
             Self::Display => "$builtin.display",
             Self::Parse => "$builtin.parse",
             Self::Default => "$builtin.default",
@@ -2030,6 +2040,14 @@ impl Builtin {
             Self::Sqrt | Self::Floor | Self::Ceil | Self::Abs => {
                 (vec![Concrete(Type::F64)], Concrete(Type::F64), Vec::new())
             }
+            Self::UnicodeTableLength => {
+                (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new())
+            }
+            Self::UnicodeTableEntry => (
+                vec![Concrete(Type::I64), Concrete(Type::I64)],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
             Self::ToFloat => (vec![Concrete(Type::I64)], Concrete(Type::F64), Vec::new()),
             Self::ToInt => (vec![Concrete(Type::F64)], Concrete(Type::I64), Vec::new()),
             Self::Assert => (vec![Concrete(Type::Bool)], Concrete(Type::Unit), Vec::new()),

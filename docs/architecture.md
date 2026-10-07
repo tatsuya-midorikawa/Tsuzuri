@@ -51,6 +51,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/arguments.c` | `def main :: Array<string> -> i32` 向けコマンドライン引数。POSIX／WASI における UTF-8 デコード（不正なバイト列は U+FFFD に置換）および Windows のコマンドライン分割 |
 | `std/Os.tz` / `File.tz` / `Dir.tz` / `Path.tz` / `Env.tz` / `Time.tz` / `Random.tz` / `Process.tz` / `src/runtime/os.c` / `src/runtime/os-wasi.c` | OS API。純粋な std ソース、`Os.__*` 組み込み関数（`src/llvm_io.rs` の `os_builtin`）、POSIX ランタイム、`--wasm-host wasi` 向けの WASI preview1 ランタイム |
 | `std/HashMap.tz` / `std/HashSet.tz` | ハッシュコンテナ。コンパイラ本体に専用の型・builtin・ランタイムを追加しない、std ソースのみによる実装 |
+| `std/Regex.tz` / `std/Unicode.tz` / `src/runtime/unicode.ll` / `scripts/generate-unicode.mjs` | 線形時間の正規表現（std ソースの Pike VM）と Unicode の表。表は UCD 17.0.0 から生成したランタイム定数で、std 専用の組み込み `Unicode.__table_length`／`__table_entry` が読む |
 | `std/Format.tz` / `src/runtime/format.ll` | 文字列補間の書式指定。`Format.parse`／`Format.pad` と、パディング処理のランタイム補助（文字列結合は `src/llvm_display.rs`） |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit・256-bit の vector/mask 型、lane 型族、境界検査、LLVM vector への lowering、256-bit の load／store の `align 16` |
 | `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3） |
@@ -617,6 +618,12 @@ NLL（非字句的生存期間）における借用情報の解放処理では�
 `randomized` および `try_randomized` は、`Random.next_u64` からシード値を取得する `IO` アクションであるため OS API のカテゴリに属し、デフォルトの wasm32 では `E2000` で拒否され、ネイティブおよび `--wasm-host wasi` 環境でのみ使用可能です（安全なシード値を取得できない場合に固定シードへ勝手に縮退することはありません）。なお、シード付きマップは固定テーブルに対する意図的なハッシュ衝突攻撃を防ぐ効果を持ちますが、元の `Hash.hash` の段階で 64-bit ダイジェスト値そのものが衝突するキーに対しては無力であり、またシード値が推測された場合は防御効果が失われます。したがって、デフォルトのマップは暗号学的な HashDoS への完全な耐性を保証するものではありません。
 キーの所有権を消費しない読み取り操作（`contains_key_ref`、`get_ref`、`at_ref`、`remove_ref` など）は `ref 'key` を受け取り、`at_ref {r s}` における region 契約によって、戻り値の参照はマップ自身の借用期間のみに拘束されます。キー型の `Eq` が反射律を満たさない場合（NaN など）は、`hash_of` 内部のアサートによって安全にトラップします。`longest_probe` は理想スロットから最も離れたエントリーの探査距離を返す診断用メソッドです。なお、SIMD による群探査（F08）、テーブル縮小、および集合演算（union／intersection）は現時点で未実装です。
 検証は `cargo test --locked --test hash_map` および `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri hash_map` で行われています。シード付きコンテナが OS ランタイムを要求せず、`randomized` のみが OS ランタイムを要求することは `tests/os_api.rs`、ネイティブ・WASI・デフォルト wasm32 での挙動は `tests/os.mjs` の `randommaps` で検査されています。
+
+**正規表現と Unicode の表（D09）:** `Regex` は `std/Regex.tz` の Tsuzuri ソースだけで書いた Pike VM で、コンパイラに専用の型・構文はありません（`stdlib.rs` の予約名と不透明レコードへの登録、`Type::is_noncopy_record` による非 Copy 化だけ）。
+`compile` は明示的なスタックで構文木（1 本の `Vec<i64>` に 6 語ずつの節点と子の列）を作り、節点ごとの命令数を飽和計算して上限を検査してから、`def rec emit` が 3 語 1 命令の `[i64]` を書きます。照合は `search` と `add_thread` が呼び出しごとに確保する 1 本の `[i64]` の作業領域（手数カウンター、2 本のスレッドリストの dense／sparse 集合と捕捉表、作業用と最良の捕捉、`add_thread` の明示的スタック）を排他スライスで更新し、照合の内側では確保しません（`tests/features.mjs` の `regex` スイートが IR で検査）。
+Unicode の表は `scripts/generate-unicode.mjs` が UCD 17.0.0 の入力（SHA-256 を固定）から生成する `src/runtime/unicode.ll` の `internal` 定数（`[N x i32]`）と、表番号で分岐する `@tz.unicode.length`／`@tz.unicode.entry`（範囲外はトラップ）です。std 専用の組み込み `Unicode.__table_length :: i64 -> i64` と `Unicode.__table_entry :: i64 -> i64 -> i64` がこれを呼び、std の `Unicode` と `Regex` 以外からの参照は `E1022` です。
+`emit_target` は生成 IR に `@tz.unicode.` が現れるときだけ `unicode.ll` を連結するので、使わないプログラムの IR と WASM の import は変わりません（`-O3` では表番号が定数に畳まれ、使わない表は LLVM が削除します）。trap の種類は `BoundsCheck` です。
+検証は `cargo test --locked --test regex` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri regex` です。後者のケースは `tests/regex-cases.mjs`（`--write` で `tests/fixtures/regex/Cases.tz` を再生成）が V8 の `u` フラグの正規表現で期待値を計算し、`\p{...}` の全スカラーの区間と `iu` の畳み込みの軌道を V8 と照合します。
 
 **共有配列ビュー:** `ref [T]` は非所有の配列記述子 `%tz.array = { ptr, i64 }`（ポインタと要素数）として表現され、値のサイズは 16 バイトです。
 一方、可変長ベクタ `Vec<T>` は `%tz.vec = { ptr, i64, i64 }`（データポインタ、要素数、確保容量）として表現され、構造体サイズは 32 バイトとなります。

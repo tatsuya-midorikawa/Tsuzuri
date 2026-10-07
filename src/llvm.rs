@@ -1122,6 +1122,9 @@ fn emit_program(
     if output.contains("@tz.character.") {
         output.push_str(include_str!("runtime/character.ll"));
     }
+    if output.contains("@tz.unicode.") {
+        output.push_str(include_str!("runtime/unicode.ll"));
+    }
     if instrumentation.wasm_threads {
         let threads = include_str!("runtime/heap-wasm-threads.ll");
         if allocator == Allocator::Counting {
@@ -5530,6 +5533,13 @@ fn emit_builtin(
         | Builtin::OsSpawn => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
+        ),
+        // The generated tables live in `unicode.ll`, which `emit_target` appends on use (D09).
+        Builtin::UnicodeTableLength => format!(
+            "define internal i64 {symbol}(i64 %table) nounwind {{\nentry:\n  %r = call i64 @tz.unicode.length(i64 %table)\n  ret i64 %r\n}}\n\n"
+        ),
+        Builtin::UnicodeTableEntry => format!(
+            "define internal i64 {symbol}(i64 %table, i64 %index) nounwind {{\nentry:\n  %r = call i64 @tz.unicode.entry(i64 %table, i64 %index)\n  ret i64 %r\n}}\n\n"
         ),
         Builtin::DebugPrintString => {
             let mut write = String::new();

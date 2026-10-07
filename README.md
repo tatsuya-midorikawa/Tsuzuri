@@ -149,6 +149,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **既定の `string` (UTF-16)**: [ECMA-262 の String 値モデル](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type) に従う UTF-16 コード単位列です。文字型は UTF-16 コード単位を表す `char`（`'A'`）です。
 - **バイト列 `utf8string` (UTF-8)**: 従来の UTF-8 文字列は `utf8string` 型および `u8"..."` リテラルで扱います。文字型は Unicode スカラー値を表す `utf8char`（`u8'😀'`）です。
 - **文字列補間**: `$"x = {x}, y = {y:.2}"`（UTF-8 は `u8$"..."`）と記述し、波括弧自体は `{{`／`}}` でエスケープします。書式指定は `[[fill]align][+][width][.precision][type]` に対応し、ネイティブと WASM で完全に一致する丸め処理を行います。
+- **正規表現 (`Regex`)**: `Regex.compile (ref "\\d+")` でパターンをコンパイルし、`is_match`・`find`・`captures`・`find_all`・`replace_all`・`split`（UTF-8 は `_utf8` 版）で使います。後戻りしない Pike VM なので、1 回の探索は入力の長さに線形です。`\w`・`\p{Lu}`・大文字小文字を区別しない照合は Unicode 17.0.0 の表（`Unicode` モジュール）に従います。詳細は [Regex](_tsuzuri/language-reference/built-in-types-and-modules/regex.md) を参照してください。
 - 詳細は [文字列の仕様](docs/language.md#string-と-utf8string) を参照してください。
 
 #### 配列・リスト・コレクション
@@ -444,6 +445,7 @@ def main :: unit -> i32 = \() ->
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
 | `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet` | 各種コレクションおよびデータ構造 |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
+| `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |

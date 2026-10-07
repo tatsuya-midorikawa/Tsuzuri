@@ -153,6 +153,7 @@ UTF-16 から来る文字列は、先に `String.is_well_formed` を見るか、
 
 ## 関連項目
 
+- [Regex](regex.md) — 正規表現による検索・置換・分割（`_utf8` の関数）
 - [文字列](../literals-and-strings/strings.md)
 - [String](string.md)
 - [Utf8Char](utf8char.md)

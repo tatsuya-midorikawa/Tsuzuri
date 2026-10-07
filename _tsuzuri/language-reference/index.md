@@ -86,6 +86,8 @@
 - [Utf8String](./built-in-types-and-modules/utf8string.md)
 - [Char](./built-in-types-and-modules/char.md)
 - [Utf8Char](./built-in-types-and-modules/utf8char.md)
+- [Regex](./built-in-types-and-modules/regex.md)
+- [Unicode](./built-in-types-and-modules/unicode.md)
 - [Array](./built-in-types-and-modules/array.md)
 - [List](./built-in-types-and-modules/list.md)
 - [Vec](./built-in-types-and-modules/vec.md)

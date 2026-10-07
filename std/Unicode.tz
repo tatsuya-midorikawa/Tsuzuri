@@ -1,0 +1,97 @@
+// Unicode character data from the Unicode 17.0.0 character database (D09). The tables are generated
+// into the runtime (`src/runtime/unicode.ll` by `scripts/generate-unicode.mjs`) and linked only into
+// programs that use this module or `Regex`.
+
+private const CategoryRuns: i64 = 0
+private const AlphabeticRanges: i64 = 1
+private const WhiteSpaceRanges: i64 = 2
+private const JoinControlRanges: i64 = 3
+private const SimpleFoldingRuns: i64 = 4
+
+/// The Unicode version of every table: `"17.0.0"`.
+def version :: unit -> string
+fn version _unit = "17.0.0"
+
+/// The general categories that a `\p{...}` name selects, as a bit set over the category numbers
+/// (`Lu` = 0 … `Cn` = 29), or 0 for other names.
+private def category_mask :: ref string -> i64
+fn category_mask name =
+	if name.length == 1 then
+		let letter = name[0] as i64
+		if letter == 76 then 31
+		elif letter == 77 then 224
+		elif letter == 78 then 1792
+		elif letter == 80 then 260096
+		elif letter == 83 then 3932160
+		elif letter == 90 then 29360128
+		elif letter == 67 then 1040187392
+		else 0
+	elif name.length == 2 then
+		let names = "LuLlLtLmLoMnMcMeNdNlNoPcPdPsPePiPfPoSmScSkSoZsZlZpCcCfCsCoCn"
+		let mut mask = if name[0] as i64 == 76 && name[1] as i64 == 67 then 7 else 0
+		let mut index = 0
+		while index < 30 do
+			if names[2 * index] == name[0] && names[2 * index + 1] == name[1] then mask = 1 <<< index
+			index = index + 1
+		mask
+	else 0
+
+private def named :: ref string -> string -> bool
+fn named name expected = Eq.eq name (ref expected)
+
+/// The ranges of the scalars whose general category is in `mask`, ascending and merged.
+private def category_ranges :: i64 -> [(i64 * i64)]
+fn category_ranges mask =
+	let count = Unicode.__table_length CategoryRuns
+	let mut output: Vec<(i64 * i64)> = Vec.empty()
+	let mut open = -1
+	let mut index = 0
+	while index < count do
+		let entry = Unicode.__table_entry CategoryRuns index
+		let start = entry >>> 5
+		let selected = ((mask >>> (entry &&& 31)) &&& 1) == 1
+		if selected && open < 0 then open = start
+		elif !selected && open >= 0 then
+			output = Vec.push output (open, start - 1)
+			open = -1
+		index = index + 1
+	if open >= 0 then output = Vec.push output (open, 1114111)
+	Vec.to_array output
+
+/// The ranges of a table of closed ranges.
+private def table_ranges :: i64 -> [(i64 * i64)]
+fn table_ranges table =
+	let count = Unicode.__table_length table / 2
+	new [(i64 * i64)](count, \index -> (Unicode.__table_entry table (2 * index), Unicode.__table_entry table (2 * index + 1)))
+
+/// The closed ranges of the scalars that the regular-expression class `\p{name}` matches, ascending and
+/// merged: a general category such as `Lu`, a group `L`, `LC`, `M`, `N`, `P`, `S`, `Z` or `C`, or one of
+/// `Alphabetic`, `White_Space` and `Join_Control`. `None` for other names. Each call decodes the table.
+def property_ranges :: ref string -> Maybe<[(i64 * i64)]>
+fn property_ranges name =
+	let mask = category_mask name
+	if mask != 0 then Maybe.Some (category_ranges mask)
+	elif named name "Alphabetic" then Maybe.Some (table_ranges AlphabeticRanges)
+	elif named name "White_Space" then Maybe.Some (table_ranges WhiteSpaceRanges)
+	elif named name "Join_Control" then Maybe.Some (table_ranges JoinControlRanges)
+	else Maybe.None
+
+/// The simple case folding of `CaseFolding.txt` (statuses C and S) as `(c, scf c)` pairs for every scalar
+/// `c` with `scf c != c`, in ascending order of `c`. Each call decodes the table.
+def simple_case_folding :: unit -> [(i64 * i64)]
+fn simple_case_folding _unit =
+	let runs = Unicode.__table_length SimpleFoldingRuns / 4
+	let mut output: Vec<(i64 * i64)> = Vec.with_capacity 1600
+	let mut run = 0
+	while run < runs do
+		let start = Unicode.__table_entry SimpleFoldingRuns (4 * run)
+		let count = Unicode.__table_entry SimpleFoldingRuns (4 * run + 1)
+		let stride = Unicode.__table_entry SimpleFoldingRuns (4 * run + 2)
+		let delta = Unicode.__table_entry SimpleFoldingRuns (4 * run + 3)
+		let mut member = 0
+		while member < count do
+			let code = start + member * stride
+			output = Vec.push output (code, code + delta)
+			member = member + 1
+		run = run + 1
+	Vec.to_array output

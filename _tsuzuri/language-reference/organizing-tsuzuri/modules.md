@@ -110,7 +110,7 @@ Box.value
 
 ## 予約モジュール名
 
-標準ライブラリ（std）用に、以下の 36 個のモジュール名が予約されています。
+標準ライブラリ（std）用に、以下の 38 個のモジュール名が予約されています。
 
 ```text
 Maybe       Result      Array       List        Vec         String
@@ -119,6 +119,7 @@ Parallel    Simd        Map         Set         HashMap     HashSet
 Seq         Test        Gpu         IO          Owned       File
 Dir         Path        Env         Time        Random      Os
 Process     Format      Exception   BigInt      FixedArray  Dyn
+Regex       Unicode
 ```
 
 `FixedArray` と `Dyn` は、対応するソースがまだ無くても予約です。次の位置に使うと `E1011` です。

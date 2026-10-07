@@ -9,7 +9,7 @@
 - 引数が `ref string` の関数は共有借用です。入力は消費せず、戻り値は新しい所有文字列です。
 - `find` と `split` は、探したい側が第 1 引数です。本文が先ではありません。
 - 見つからない、範囲が不正、という失敗は `None` です。範囲外の添字と負の `repeat` はトラップします。
-- 検索は素朴な走査で、最悪計算量は本文の長さとパターンの長さの積です。SIMD は保証しません。
+- 検索は素朴な走査で、最悪計算量は本文の長さとパターンの長さの積です。SIMD は保証しません。パターンで探すときは [Regex](regex.md) です。
 - `clone_string` だけは `String.clone` ではありません。
 
 > [!WARNING]
@@ -176,6 +176,7 @@ dashed=-a-b- once=- rep=hahaha
 
 ## 関連項目
 
+- [Regex](regex.md) — 正規表現による検索・置換・分割
 - [文字列](../literals-and-strings/strings.md)
 - [Utf8String](utf8string.md)
 - [Char](char.md)
