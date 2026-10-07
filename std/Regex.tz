@@ -329,11 +329,24 @@ fn special pattern which offset length negated flags pairs =
 		Maybe.Some (if negated then complement folded else folded)
 	| Maybe.None -> Maybe.None
 
-/// A class item: one scalar, a set of normalized ranges, or an error.
-private union Atom = Single of i64 | Many of Vec<i64> | Broken of Error
+/// A class item: one scalar, a set of normalized ranges, an escape class that the class already holds, or an
+/// error.
+private union Atom = Single of i64 | Many of Vec<i64> | Again | Broken of Error
 
-private def class_atom :: ref string -> i64 -> i64 -> ref [i64] -> (Atom * i64)
-fn class_atom pattern start flags pairs =
+/// Whether the escape of `length` code units at `start` is written in `seen` (offset, length pairs).
+private def repeated :: ref Vec<i64> -> ref string -> i64 -> i64 -> bool
+fn repeated seen pattern start length =
+	let mut found = false
+	let mut index = 0
+	while !found && index < Vec.length seen do
+		if seen[index + 1] == length && same_text pattern seen[index] start length then found = true
+		index = index + 2
+	found
+
+/// The class item at `start`. An escape class written earlier in the same class (`seen`) is `Again`: the
+/// class has the same flags throughout, so the escape adds nothing and its table is not read again.
+private def class_atom :: ref string -> i64 -> i64 -> ref [i64] -> ref Vec<i64> -> (Atom * i64)
+fn class_atom pattern start flags pairs seen =
 	if unit pattern start != 92 then
 		let here = scalar16 pattern start
 		(Single (here / 8), start + here % 8)
@@ -341,13 +354,20 @@ fn class_atom pattern start flags pairs =
 		match escape_at pattern start true with
 		| (Literal code, after) -> (Single code, after)
 		| (Perl which, after) ->
-			(Many (Maybe.get (special pattern (which / 2) 0 0 (which % 2 == 1) flags pairs)), after)
+			if repeated seen pattern start (after - start) then (Again, after)
+			else (Many (Maybe.get (special pattern (which / 2) 0 0 (which % 2 == 1) flags pairs)), after)
 		| (Property (offset, length, negated), after) ->
-			match special pattern 3 offset length negated flags pairs with
-			| Maybe.Some ranges -> (Many ranges, after)
-			| Maybe.None -> (Broken (unknown_property start (Maybe.get (String.slice pattern offset (offset + length)))), after)
+			if repeated seen pattern start (after - start) then (Again, after)
+			else
+				match special pattern 3 offset length negated flags pairs with
+				| Maybe.Some ranges -> (Many ranges, after)
+				| Maybe.None -> (Broken (unknown_property start (Maybe.get (String.slice pattern offset (offset + length)))), after)
 		| (Assertion _, after) -> (Single 0, after)
 		| (Failed error, after) -> (Broken error, after)
+
+/// Whether the item that ends at `after` is followed by a range dash (a `-` before `]` or the end is a literal).
+private def dash_at :: ref string -> i64 -> bool
+fn dash_at pattern after = unit pattern after == 45 && unit pattern (after + 1) != 93 && unit pattern (after + 1) >= 0
 
 /// The class `[...]` that opens at `open`: its ranges folded and negated as `flags` and `^` ask, and the
 /// offset after it; or the first error in it.
@@ -355,7 +375,11 @@ private def bracket :: ref string -> i64 -> i64 -> ref [i64] -> (Result<Vec<i64>
 fn bracket pattern open flags pairs =
 	let negated = unit pattern (open + 1) == 94
 	let mut pos = if negated then open + 2 else open + 1
+	// The unmerged ranges: one per literal or literal range, and each escape class once (`seen`), so the
+	// pattern length bounds them. The class counts against the limit only after merging, folding and
+	// negation, when `add_class` stores it.
 	let mut set: Vec<i64> = Vec.empty()
+	let mut seen: Vec<i64> = Vec.empty()
 	let mut problem: Maybe<Error> = Maybe.None
 	let mut first = true
 	let mut closed = false
@@ -371,28 +395,28 @@ fn bracket pattern open flags pairs =
 		elif code == 38 && next == 38 then problem = Maybe.Some (failure Unsupported pos "unsupported syntax '&&'")
 		elif code == 45 && !first && next != 93 && next >= 0 then problem = Maybe.Some (invalid_range pos)
 		else
-			match class_atom pattern pos flags pairs with
+			match class_atom pattern pos flags pairs (ref seen) with
 			| (Single low, after) ->
-				let dash = unit pattern after == 45 && unit pattern (after + 1) != 93 && unit pattern (after + 1) >= 0
-				if dash then
-					match class_atom pattern (after + 1) flags pairs with
+				if dash_at pattern after then
+					match class_atom pattern (after + 1) flags pairs (ref seen) with
 					| (Single high, finish) ->
 						if high < low then problem = Maybe.Some (invalid_range pos)
 						else
 							set = Vec.push (Vec.push set low) high
 							pos = finish
 					| (Many _, _) -> problem = Maybe.Some (invalid_range pos)
+					| (Again, _) -> problem = Maybe.Some (invalid_range pos)
 					| (Broken error, _) -> problem = Maybe.Some error
 				else
 					set = Vec.push (Vec.push set low) low
 					pos = after
 			| (Many ranges, after) ->
-				if unit pattern after == 45 && unit pattern (after + 1) != 93 && unit pattern (after + 1) >= 0 then problem = Maybe.Some (invalid_range pos)
+				if dash_at pattern after then problem = Maybe.Some (invalid_range pos)
 				else
 					for value in Vec.to_array ranges do set = Vec.push set value
-					if Vec.length (ref set) > 8 * MaxRanges then set = normalize set
-					if Vec.length (ref set) > 4 * MaxRanges then problem = Maybe.Some (failure TooLarge 0 "character classes exceed 65536 ranges in total")
+					seen = Vec.push (Vec.push seen pos) (after - pos)
 					pos = after
+			| (Again, after) -> if dash_at pattern after then problem = Maybe.Some (invalid_range pos) else pos = after
 			| (Broken error, _) -> problem = Maybe.Some error
 		first = false
 	match problem with

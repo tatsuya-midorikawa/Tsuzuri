@@ -483,17 +483,21 @@ fn error_pattern which =
     | 84 -> String.repeat (ref "(a)") 208
     | 85 -> String.repeat (ref "[\\w]") 82
     | 86 -> String.repeat (ref "[\\w]") 81
-    | 87 -> String.repeat (ref "\\w") 2000
-    | 88 -> "a{1000}"
-    | 89 -> "a{0,1000}?"
-    | 90 -> "a{1000,}"
-    | 91 -> "(?i-msu)a"
-    | 92 -> "(?-u:\\w)(?s:.)"
-    | 93 -> ""
-    | 94 -> "a|"
-    | 95 -> "()"
-    | 96 -> "\\-"
-    | 97 -> "[\\-]"
+    | 87 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w") 170 + String.repeat (ref "]") 1
+    | 88 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w\\p{L}\\p{Alphabetic}\\d\\W") 2000 + String.repeat (ref "]") 1
+    | 89 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w") 170 + String.repeat (ref "]") 1 + String.repeat (ref "[\\w]") 80
+    | 90 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w") 170 + String.repeat (ref "]") 1 + String.repeat (ref "[\\w]") 81
+    | 91 -> String.repeat (ref "\\w") 2000
+    | 92 -> "a{1000}"
+    | 93 -> "a{0,1000}?"
+    | 94 -> "a{1000,}"
+    | 95 -> "(?i-msu)a"
+    | 96 -> "(?-u:\\w)(?s:.)"
+    | 97 -> ""
+    | 98 -> "a|"
+    | 99 -> "()"
+    | 100 -> "\\-"
+    | 101 -> "[\\-]"
     | _ -> ""
 
 def property_name :: i64 -> string

@@ -258,6 +258,29 @@ export function expectedCases(ucd) {
   ]) {
     cases.push(["case_packed", [1n, ...pack([...input].map((char) => char.codePointAt(0)))], caseHash([expected], true)]);
   }
+  // Word boundaries and titlecase across long runs of Extend (U+0301). Expected from UAX #29: WB4 attaches each
+  // run to the scalar before it, and WB6/WB7, WB7b/WB7c and WB11/WB12 look past the runs, so the text is one word
+  // (`joined`) or three. Checked against V8's Intl.Segmenter. A review found the lookahead rescanning each run,
+  // which made these quadratic in `run`.
+  const words = new Intl.Segmenter("und", { granularity: "word" });
+  const titlecase = (word) => {
+    const first = [...word].findIndex((char) => /\p{Cased}/u.test(char));
+    return first < 0 ? word : [...word].map((char, index) => index < first ? char : index === first ? char.toUpperCase() : char.toLowerCase()).join("");
+  };
+  for (const [first, middle, last, joined] of [["a", "'", "b", true], ["a", "'", "1", false], ["1", ".", "2", true],
+    ["a", " ", "b", false], ["\u05d0", "\"", "\u05d1", true], ["a", ":", "b", true], ["\u05d0", "'", "x", true], ["1", ",", "a", false]]) {
+    for (const run of [0, 1, 2000]) {
+      const extend = "\u0301".repeat(run);
+      const text = first + extend + middle + extend + last;
+      const starts = joined ? [0] : [0, 1 + run, 2 + 2 * run];
+      assert.deepEqual([...words.segment(text)].map((segment) => segment.index), starts, `V8 words of ${first}${middle}${last} with ${run}`);
+      const title = starts.map((start, index) => titlecase(text.slice(start, starts[index + 1] ?? text.length))).join("");
+      const offsets = [...starts, text.length];
+      let hash = offsets.reduce(mix, mix(0n, offsets.length));
+      hash = offsets.map((offset) => Buffer.byteLength(text.slice(0, offset), "utf8")).reduce(mix, mix(hash, offsets.length));
+      cases.push(["word_run", [first, middle, last].map((char) => BigInt(char.codePointAt(0))).concat([BigInt(run)]), hashText(hashText(hash, title, utf16), title, utf8)]);
+    }
+  }
   return cases;
 }
 

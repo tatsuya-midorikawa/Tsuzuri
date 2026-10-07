@@ -385,16 +385,21 @@ fn word_breaks codes =
 		let count = if attached then previous elif group == 6 then previous + 1 else 0
 		regional = Vec.push regional count
 	let mut breaks: Vec<bool> = Vec.with_capacity count
+	// WB6, WB7b and WB12 look past the Extend, Format and ZWJ after a scalar: `following[i]` is the
+	// first index from `i` whose scalar is none of them, or `count`. One backward pass keeps the scan linear.
+	let mut following: [i64] = new [i64](count + 1, \_index -> count)
+	for step in 1 .. count do
+		let index = count - step
+		let group = classes[index] % 32
+		let value = if group == 4 || group == 5 || group == 7 then following[index + 1] else index
+		Array.write (ref mut following) index value
 	for index in 0 .. count - 1 do
 		let previous = if index > 0 then classes[index - 1] % 32 else -1
 		let current = classes[index] % 32
 		let anchor = if index > 0 then anchors[index - 1] else -1
 		let left = if anchor >= 0 then classes[anchor] % 32 else -1
 		let before = if anchor > 0 then classes[anchors[anchor - 1]] % 32 else -1
-		let mut next = index + 1
-		let mut scanning = true
-		while scanning do
-			if next < count && (classes[next] % 32 == 4 || classes[next] % 32 == 5 || classes[next] % 32 == 7) then next = next + 1 else scanning = false
+		let next = following[index + 1]
 		let right = if next < count then classes[next] % 32 else -1
 		let mid_letter = current == 14 || current == 13 || current == 11
 		let mid_number = current == 15 || current == 13 || current == 11

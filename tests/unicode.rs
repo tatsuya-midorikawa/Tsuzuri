@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use tsuzuri::check::CheckedModule;
+use tsuzuri::check::{CheckedModule, TypedExpr, TypedExprKind};
 use tsuzuri::{analyze, llvm};
 
 fn accepts(source: &str) -> CheckedModule {
@@ -161,5 +161,41 @@ fn unicode_tables_are_linked_only_on_use() {
                 .unwrap_or_else(|| panic!("{function}\n{ir}"));
             assert!(definition.contains(" alwaysinline"), "{definition}");
         }
+    }
+}
+
+/// The deepest nesting of loops in an expression: `while`, `for` and `new [T](n, f)`. Lambdas are lifted
+/// into functions of their own.
+fn loop_depth(expression: &TypedExpr) -> usize {
+    let inner = expression
+        .children()
+        .into_iter()
+        .map(loop_depth)
+        .max()
+        .unwrap_or(0);
+    let looping = matches!(
+        expression.kind,
+        TypedExprKind::While { .. }
+            | TypedExprKind::ForRange { .. }
+            | TypedExprKind::ForEach { .. }
+            | TypedExprKind::NewArray(..)
+            | TypedExprKind::NewList(..)
+    );
+    inner + usize::from(looping)
+}
+
+#[test]
+fn segmentation_and_case_conversion_do_not_rescan_the_input() {
+    // A review found the WB6/WB7b/WB12 lookahead rescanning every following Extend, Format and ZWJ at each
+    // scalar, which made `word_boundaries` and `to_title` of "a" + "\u{301}" × n quadratic. Each scalar's
+    // work is now a constant number of table lookups, so the loops over the scalars do not nest.
+    let module = accepts(ALL_APIS);
+    for name in ["word_breaks", "grapheme_breaks", "converted"] {
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.module == "Unicode" && function.name == name)
+            .unwrap_or_else(|| panic!("Unicode.{name}"));
+        assert_eq!(loop_depth(&function.body), 1, "Unicode.{name}");
     }
 }
