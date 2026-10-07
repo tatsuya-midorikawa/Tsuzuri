@@ -63,8 +63,8 @@ flowchart TD
 `Int.abs (-128i8)` は `-128i8` です。同じ幅の符号付きでは `128` を表せないため、勝手に型を拡張しません。符号なしの正の大きさとして取得したいときは `Int.unsigned_abs` を使います。結果は `128i8u` になります。
 
 > [!WARNING]
-> **既知の不具合（ネイティブ実行時の LLVM 宣言重複）**
-> 現在の実装では、ネイティブの `tsuzuri run` において、符号付き `i32` に対する `Int.min` / `Int.max`、および `i32` / `i32u` に対する `Int.leading_zeros` の実行が LLVM 組み込み宣言の重複により失敗します。他のビット幅（`i8`、`i16`、`i64`、`i128` など）や `Int.clamp` では発生しません。`i32` の大小比較には `if left < right then left else right` などの比較式を代用してください。
+> **既知の不具合（LLVM の intrinsic 宣言の重複）**
+> 現在の実装では、符号付き `i32`（接尾辞のない整数リテラルの既定の型）の `Int.min` / `Int.max` と、`i32` / `i32u` の `Int.leading_zeros` を、数値の表示や文字列化（`IO.write_line`、`to_string`、文字列補間、`Main.tz` の結果の表示など）と同じプログラムで使うと、ビルドが `invalid redefinition of function` で失敗します。native と WASM のどちらでも起きます。他のビット幅（`i8`、`i16`、`i64`、`i128` など）や `Int.clamp`、`Int.abs` では発生しません。修正は [D12](../../../_features/D12-intrinsic-declaration-duplicates.md) で計画されています。それまでは、`i32` の大小比較に `if left < right then left else right` などの比較式を使ってください。
 
 ### ビット操作
 
