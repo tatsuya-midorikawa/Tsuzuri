@@ -164,3 +164,56 @@ export def scene_hash :: i64
 fn scene_hash =
     let value = scene ()
     fnv (ref (Result.get (Cbor.serialize (ref value))))
+
+/// The integers from `count - 1` down to 0.
+def descending_keys :: i64 -> Vec<i64>
+fn descending_keys count =
+    let mut keys = Vec.with_capacity count
+    for index in 1 .. count do keys = Vec.push keys (count - index)
+    keys
+
+/// `count` entries whose keys descend, decoded from CBOR: inserting them into the sorted `Map` or
+/// `Set` one by one in document order would shift every entry (quadratic time). The number of
+/// entries when they come out as the keys 0, 1, ... in order (with their values), or the status.
+export def descending :: i64 -> i64 -> i64
+fn descending case count =
+    match case with
+    | 0 ->
+        let keys = descending_keys count
+        let bytes = Result.get (Cbor.serialize (ref keys))
+        let decoded: Result<Set<i64>, Json.Error> = Cbor.deserialize (ref bytes)
+        match decoded with
+        | Ok set -> Set.fold (\position key -> if position >= 0 && deref key == position then position + 1 else -1) 0 (ref set)
+        | Error error -> error_status (ref error)
+    | _ ->
+        let mut pairs = Vec.with_capacity count
+        for index in 1 .. count do pairs = Vec.push pairs (count - index, (count - index) * 3)
+        let bytes = Result.get (Cbor.serialize (ref pairs))
+        let decoded: Result<Map<i64, i64>, Json.Error> = Cbor.deserialize (ref bytes)
+        match decoded with
+        | Ok map -> Map.fold (\position key item -> if position >= 0 && deref key == position && deref item == position * 3 then position + 1 else -1) 0 (ref map)
+        | Error error -> error_status (ref error)
+
+/// `count` keys in a scrambled order, `(index * 7919) % count`, except that the element `count / 2`
+/// repeats the key of the element `count / 3` and the last element repeats the first (0).
+def scattered :: i64 -> Vec<i64>
+fn scattered count =
+    let mut keys = Vec.with_capacity count
+    for index in 0 .. (count - 1) do
+        let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
+        keys = Vec.push keys ((source * 7919) % count)
+    keys
+
+/// The FNV-1a hash of the text of the error of decoding the CBOR of `keys` as a set, or 0.
+def set_message :: Vec<i64> -> i64
+fn set_message keys =
+    let bytes = Result.get (Cbor.serialize (ref keys))
+    let decoded: Result<Set<i64>, Json.Error> = Cbor.deserialize (ref bytes)
+    match decoded with
+    | Ok _ -> 0
+    | Error error -> text_fnv (ref (Utf8String.from_string (ref (Display.display (ref error)))))
+
+/// Keys repeated in a random order, from CBOR: the error names the element at the smallest index
+/// whose key repeats an earlier key. `count` 0 decodes `[9, 1, 9, 5, 1]`, others `scattered count`.
+export def duplicate_message :: i64 -> i64
+fn duplicate_message count = set_message (if count == 0 then Vec.of_array (new [9, 1, 9, 5, 1]) else scattered count)

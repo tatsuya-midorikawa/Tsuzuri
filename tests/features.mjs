@@ -122,6 +122,20 @@ function fnv64(bytes) {
 const utf8Bytes = (text) => [...new TextEncoder().encode(text)];
 const jsonTextHash = (text) => fnv64(utf8Bytes(text));
 const jsonStatus = (kind, offset) => BigInt(kind) * (1n << 40n) + BigInt(offset);
+// The DuplicateKey message of the first entry whose key repeats an earlier key, scanning in
+// document order: the reference for Map and Set decoding, which sorts the entries instead.
+// `key` maps the JSON text of an entry's key to the key.
+function duplicateMessage(texts, key = (text) => text) {
+  const seen = new Set();
+  for (const text of texts) {
+    if (seen.has(key(text))) return `json: duplicate key ${JSON.stringify(text)}`;
+    seen.add(key(text));
+  }
+  throw new Error("no repeated key");
+}
+// `scattered count` of the json and cbor fixtures: a permutation with two planted repeats.
+const scattered = (count) => Array.from({ length: count }, (_, index) =>
+  ((index === count - 1 ? 0 : index === Math.floor(count / 2) ? Math.floor(count / 3) : index) * 7919) % count);
 // The nearest f32 to a positive integer, rounded once (ties to even), computed exactly with BigInt.
 function integerToF32(value) {
   const bits = value.toString(2).length;
@@ -1247,6 +1261,20 @@ const suites = {
         "[0.5,0.1,1e+300,[1.1,-0]]", jsonStatus(5, -1), '{"a":1}', jsonStatus(10, -1), jsonStatus(10, -1), '[[1,"a"],[2,"b"]]',
         jsonStatus(9, -1), "1.234568", jsonStatus(8, -1), '{"Blue":1,"Red":2}', jsonStatus(10, -1)]
         .map((expected, index) => ["container_hash", [BigInt(index)], typeof expected === "string" ? jsonTextHash(expected) : expected]),
+      // Map and Set decoding sorts the entries by key: inserting descending keys one by one would be
+      // quadratic. WASM has 16 MiB, so the larger inputs run natively (`nativeCases`).
+      ["descending", [0n, 50000n], 50000n], ["descending", [1n, 25000n], 25000n], ["descending", [2n, 5000n], 5000n],
+      // A repeated key is reported where inserting in document order would find it, in its text there.
+      ...[
+        ["9", "1", "9", "5", "1"], ["2.0", "1", "2", "1.0"], ["3", "1", "2", "1", "3"], ["10", "2", "1e1", "2.0"], ["3", "1", "03", "001"],
+      ].map((texts) => [jsonStatus(5, -1), duplicateMessage(texts, Number)])
+        .concat([[jsonStatus(5, -1), duplicateMessage(['"Red"', '"Blue"', '"Green"', '"Blue"', '"Red"'])],
+          [jsonStatus(5, -1), duplicateMessage(["4", "8", "8", "4"], Number)], [jsonStatus(10, -1), "json: expected integer"], [-1n, null], [-1n, null], [-1n, null]])
+        .flatMap(([expected, text], index) => [
+          ["duplicate_status", [BigInt(index)], expected],
+          ["duplicate_message", [BigInt(index)], text === null ? 0n : jsonTextHash(text)],
+        ]),
+      ["scattered_message", [50000n], jsonTextHash(duplicateMessage(scattered(50000).map(String), Number))],
       // `@json` names of fields and cases.
       ["renamed", [0n], jsonTextHash('[{"created":{"user_id":7,"display name":"Ann","email":null}},{"deleted":7},"Reset"]')],
       ["renamed", [1n], jsonTextHash('[{"created":{"user_id":1,"display name":"B","email":null}},"Reset"]')],
@@ -1265,7 +1293,11 @@ const suites = {
         ` { Ka=a { Kb N1@10 Kb N2@16|${jsonStatus(5, 12)}`, `${" [".repeat(128)}|${jsonStatus(6, 128)}`]
         .map((expected, index) => ["stream_events", [BigInt(index)], jsonTextHash(expected)]),
     ],
-    nativeCases: [["too_large", [], jsonStatus(7, 0)]],
+    nativeCases: [
+      ["too_large", [], jsonStatus(7, 0)],
+      ["descending", [0n, 200000n], 200000n], ["descending", [1n, 200000n], 200000n], ["descending", [2n, 100000n], 100000n],
+      ["scattered_message", [200000n], jsonTextHash(duplicateMessage(scattered(200000).map(String), Number))],
+    ],
     inspect(ir) {
       assert.match(ir, /define internal [^\n]*@tz\.fn\.Json\.parse\(/);
       assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf/);
@@ -1294,6 +1326,14 @@ const suites = {
         ["note", cborText("é")],
         ["big", [0xc2, 0x50, ...Array(16).fill(0xff)]],
       ]))],
+      // Map and Set decoding from CBOR sorts the entries by key (see the json suite).
+      ["descending", [0n, 50000n], 50000n], ["descending", [1n, 25000n], 25000n],
+      ["duplicate_message", [0n], jsonTextHash(duplicateMessage(["9", "1", "9", "5", "1"], Number))],
+      ["duplicate_message", [50000n], jsonTextHash(duplicateMessage(scattered(50000).map(String), Number))],
+    ],
+    nativeCases: [
+      ["descending", [0n, 200000n], 200000n], ["descending", [1n, 200000n], 200000n],
+      ["duplicate_message", [200000n], jsonTextHash(duplicateMessage(scattered(200000).map(String), Number))],
     ],
   },
   display_parse: {

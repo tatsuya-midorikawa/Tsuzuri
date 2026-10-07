@@ -785,6 +785,27 @@ Phase 1 の合否条件にしない。完了後に docs/benchmarks.md の手順�
 - Windows の型検査: rustup の toolchain（clippy 1.96）で `cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings` と `aarch64-pc-windows-msvc` を実行。
   `2ee813f` でも同じく出る既存の `clippy::nonminimal_bool` 3 件（`src/lsp.rs` の `includeDeclaration`、`src/parser.rs` の `;` の判定。Homebrew の clippy 1.98 では出ない）を除いて警告なし。プラットフォーム固有のコードは変えていない。
 
+### レビュー指摘への対応（2026-10-08）: `Map`／`Set` の decode の計算量
+
+- 指摘（MEDIUM）: `Decode<Map>`／`Decode<Set>` は要素を文書順に `Map.insert`／`Set.insert` しており、挿入のたびに整列済みの `Vec` の後ろをずらすので、降順や乱順の入力で $O(n^2)$ になる
+  （降順の `Set<i64>` 200,000 要素で native `-O3` 約 10.4 秒、昇順は 0.04 秒。入力は 64 MiB まで受理する）。
+- 修正（`std/Json.tz`）: 要素をすべて decode してから、文書での位置を持つ private の `Keyed { key, index, value }`（`Eq`／`Ord` はキーだけを比べる）の配列を `Array.sort_in_place`（安定）で整列し、
+  前の要素とキーが等しい（`!(Ord.lt 前 後)`）要素の位置の最小値を重複とする（`by_key`）。これは文書順に挿入したときに最初に重なる要素なので、`DuplicateKey` の名前（`entry_name`／`element_name` が
+  文書のその位置の字句から作る）と offset（-1）は従来と同じ。重複がなければ配列をその場で反転し、`Vec.pop` で昇順に取り出して挿入するので、`Map.insert`／`Set.insert` は二分探索の後に末尾へ足すだけになる。
+  全体で $O(n \log n)$、作業領域は位置の 1 語ぶん増える。すべて decode してから重複を調べるので、decode の誤りが重複より先なのも従来どおり。`Map`／`Set` は不透明なので一括構築の関数は足さず、
+  公開 API は変えていない。`HashMap`／`HashSet` は文書順の挿入のまま（挿入は期待 $O(1)$）で、`HashMap` は `Keyed` の位置を使うようにしただけ。`Set` の要素は `decode_elements` で直接 `Keyed` にする。
+- 計測（native `-O3`、user 時間）: 降順 100,000 要素で `Set<i64>` 2.57 → 0.03 秒、組の配列の `Map<i64, i64>` 2.00 → 0.06 秒、CBOR からの `Set<i64>` 2.58 → 0.04 秒。1,000,000 要素で 0.32／0.71／0.51 秒。
+- テスト（時間の閾値は置かない）: suite `json` に `descending`（`Set<i64>`、組の配列の `Map<i64, i64>`、降順のキーの object からの `Map<string, i64>`。昇順に出ることと値を確かめる）、
+  `duplicate_status`／`duplicate_message`（11 件。乱順の重複で後の出現の字句 `"2"`・`"1e1"`、`Ord` を導出した利用者のキー型で `"3"` と `"03"` が重なる object、union のキー、`HashMap`、重複より先の decode の誤り、成功、空の `Set` と `Map`）、
+  `scattered_message`（`(i * 7919) % n` で並べた n 個に 2 つの重複を埋めた入力）を追加。期待値は JavaScript で文書順に走査して最初に重なる字句を求める独立の参照（`duplicateMessage`）。
+  suite `cbor` に `descending`（`Set`、組の配列の `Map`）と `duplicate_message`。WASM は既定の 16 MiB に収まる 50,000／25,000／5,000 要素（100,000 個の数値の値の木だけで約 12 MiB）、
+  native は `nativeCases` で 200,000 要素（object は 100,000）。
+- 確認: suite `json` 165 ケース・`cbor` 77 ケース（native と WASM × `-O0`／`-O3`、`live == 0`）、`cargo test --locked --test json` 17 passed、`node tests/json.mjs` 297 入力・2,523 件、
+  `tests/fixtures/` の IR を `e4c5441` のコンパイラと比べて 114 個中 64 個が byte 一致、50 個は生成 id の一様な付け替えだけ（`Keyed` のインスタンスと関数が増えた分。番号を出現順に写すと差なし）。
+- 見つけた既存の問題（直していない）: WASM の既定のヒープ（`src/runtime/heap-wasm.ll` のアドレス順・first-fit の空きリスト。確保も解放もリストを先頭からたどる）では、object の `to_utf8string` と `parse` が
+  メンバー数の 2 乗の時間になる（20,000 メンバーで `-O3` 1.4 秒と 1.3 秒、40,000 で 5.6 秒。native は 0.01 秒、文字列 40,000 個の配列は 6 ms、`--allocator host` で解放しない bump allocator を渡すと 22 ms）。
+  `Map`／`Set` の修正とは独立なので、WASM の `descending` の object は 5,000 メンバーにした。
+
 ### 既知の制限
 
 - 導出した `Encode`／`Decode`、`to_utf8string`、`Cbor.encode` は値の深さだけ再帰する（利用者が組み立てた非常に深い値ではスタックを使う。導出した `Display` と同じ）。
