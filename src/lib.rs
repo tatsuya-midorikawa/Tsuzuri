@@ -55,7 +55,8 @@ pub fn analyze_modules(sources: &[(&str, &str)]) -> Result<check::CheckedModule,
 pub fn analyze_modules_all(
     sources: &[(&str, &str)],
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    analyze_modules_with_std_all(sources, stdlib::SOURCES)
+    let std_sources = stdlib::sources_for(sources.iter().map(|(_, text)| *text));
+    analyze_modules_with_std_all(sources, &std_sources)
 }
 
 /// Checks user sources with `std_sources`, given as `("std/Name.tz", text)`,

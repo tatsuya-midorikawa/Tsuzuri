@@ -1401,13 +1401,17 @@ impl Project {
                 normalized.insert(path, text.clone());
             }
         }
-        Self::load_from_root(&directory, None, &normalized)
+        // The editor offers every std module, so it loads the opt-in ones too (D-40).
+        Self::load_from_root(&directory, None, &normalized, true)
     }
 
+    /// Loads the package graph at `directory`. With `all_std` false, it loads only the
+    /// opt-in std modules that the user sources name (`stdlib::sources_for`).
     fn load_from_root(
         directory: &Path,
         selected: Option<&Path>,
         overlays: &std::collections::BTreeMap<PathBuf, String>,
+        all_std: bool,
     ) -> Result<Self, SourceError> {
         let lock = read_lockfile(directory)?;
         let packages = load_packages(directory, &mut |request| {
@@ -1583,7 +1587,12 @@ impl Project {
                 .position(|source| source.name == "Main")
                 .unwrap_or(0)
         };
-        sources.extend(crate::stdlib::SOURCES.iter().map(|(path, text)| {
+        let std_sources = if all_std {
+            crate::stdlib::SOURCES.to_vec()
+        } else {
+            crate::stdlib::sources_for(sources.iter().map(|source| source.text.as_str()))
+        };
+        sources.extend(std_sources.iter().map(|(path, text)| {
             SourceFile {
                 path: PathBuf::from(path),
                 relative_path: PathBuf::from(path),
@@ -1736,7 +1745,7 @@ impl Project {
         if !metadata.is_dir() {
             return Self::load(input);
         }
-        let project = Self::load_from_root(input, None, &std::collections::BTreeMap::new())?;
+        let project = Self::load_from_root(input, None, &std::collections::BTreeMap::new(), false)?;
         if !project
             .sources
             .iter()
@@ -1773,6 +1782,7 @@ impl Project {
             parent,
             input.file_name().map(Path::new),
             &std::collections::BTreeMap::new(),
+            false,
         )
     }
 
@@ -4262,10 +4272,25 @@ mod tests {
             .iter()
             .skip_while(|source| source.origin == ModuleOrigin::User)
             .collect();
-        assert_eq!(std.len(), crate::stdlib::SOURCES.len());
+        // The sources name no opt-in std module, so only the others are loaded (D-40).
+        assert_eq!(
+            std.len(),
+            crate::stdlib::SOURCES.len() - crate::stdlib::OPT_IN.len()
+        );
+        assert_eq!(std.len(), crate::stdlib::sources_for(["42"]).len());
         assert!(
             std.iter()
                 .all(|source| source.origin == ModuleOrigin::Std && source.path.starts_with("std"))
+        );
+        // The editor loads every std module.
+        let edited = Project::load_with_overlays(&directory.path, &Default::default()).unwrap();
+        assert_eq!(
+            edited
+                .sources
+                .iter()
+                .filter(|source| source.origin == ModuleOrigin::Std)
+                .count(),
+            crate::stdlib::SOURCES.len()
         );
         let first = llvm::emit(&project.analyze().unwrap(), Entry::Console).unwrap();
         let reloaded = Project::load(&directory.path.join("Main.tz")).unwrap();

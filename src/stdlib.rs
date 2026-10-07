@@ -134,6 +134,190 @@ pub fn module_name(path: &str) -> Option<&str> {
     .then_some(stem)
 }
 
+/// A std module that only a program naming it can reach (D-40). Commands that
+/// build or check a program load it only when a user source contains one of
+/// `names`, so programs that do not use it neither type-check nor emit it.
+pub(crate) struct OptIn {
+    pub module: &'static str,
+    /// The identifiers that can refer to the module from user code: its name,
+    /// each public record, union, case, alias, and class it declares whose
+    /// unqualified use is not already ambiguous among the always-loaded std
+    /// modules, and the builtin classes it gives instances for types it does
+    /// not declare. `opt_in_names_cover_every_reachable_declaration` keeps the
+    /// list complete.
+    pub names: &'static [&'static str],
+    /// The opt-in modules that its own source refers to.
+    pub uses: &'static [&'static str],
+}
+
+pub(crate) const OPT_IN: &[OptIn] = &[
+    OptIn {
+        module: "Arena",
+        names: &["Arena", "Handle"],
+        uses: &[],
+    },
+    OptIn {
+        module: "Regex",
+        names: &["Regex", "ErrorKind", "Syntax", "Unsupported", "TooLarge"],
+        uses: &["Unicode"],
+    },
+    OptIn {
+        module: "Unicode",
+        names: &[
+            "Unicode",
+            "Category",
+            "Lu",
+            "Ll",
+            "Lt",
+            "Lm",
+            "Lo",
+            "Mn",
+            "Mc",
+            "Me",
+            "Nd",
+            "Nl",
+            "No",
+            "Pc",
+            "Pd",
+            "Ps",
+            "Pe",
+            "Pi",
+            "Pf",
+            "Po",
+            "Sm",
+            "Sc",
+            "Sk",
+            "So",
+            "Zs",
+            "Zl",
+            "Zp",
+            "Cc",
+            "Cf",
+            "Cs",
+            "Co",
+            "Cn",
+            "NormalizationForm",
+            "Nfc",
+            "Nfd",
+            "Nfkc",
+            "Nfkd",
+        ],
+        uses: &[],
+    },
+    OptIn {
+        module: "Json",
+        names: &[
+            "Json",
+            "Encode",
+            "Decode",
+            "Numeral",
+            "Lexeme",
+            "Reader",
+            "Writer",
+            "Value",
+            "Null",
+            "Bool",
+            "Number",
+            "Text",
+            "Items",
+            "Object",
+            "ErrorKind",
+            "Syntax",
+            "UnexpectedEnd",
+            "InvalidEscape",
+            "ControlCharacter",
+            "DuplicateKey",
+            "TooDeep",
+            "TooLarge",
+            "NonFinite",
+            "NumberRange",
+            "ExpectedType",
+            "MissingField",
+            "UnknownCase",
+            "LoneSurrogate",
+            "InvalidUtf8",
+            "Unsupported",
+            "Event",
+            "ObjectStart",
+            "ObjectEnd",
+            "ArrayStart",
+            "ArrayEnd",
+            "KeyToken",
+            "TextToken",
+            "NumberToken",
+            "BoolToken",
+            "NullToken",
+            "EndOfInput",
+        ],
+        uses: &[],
+    },
+    OptIn {
+        module: "Cbor",
+        names: &["Cbor"],
+        uses: &["Json"],
+    },
+];
+
+/// The embedded std sources that a program made of `texts` (its user sources)
+/// can reach, in load order: every module that is not opt-in, and the opt-in
+/// modules that the texts name directly or through another opt-in module.
+pub fn sources_for<'a>(
+    texts: impl IntoIterator<Item = &'a str>,
+) -> Vec<(&'static str, &'static str)> {
+    let mut words = std::collections::BTreeSet::new();
+    for text in texts {
+        let bytes = text.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            // Every identifier token is a maximal run of these bytes, or the part of a
+            // run after leading digits; scanning both over-approximates the tokens.
+            if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
+                while index < bytes.len() && bytes[index].is_ascii_digit() {
+                    index += 1;
+                }
+                let start = index;
+                while index < bytes.len()
+                    && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+                {
+                    index += 1;
+                }
+                if start < index && bytes[start].is_ascii_uppercase() {
+                    words.insert(&text[start..index]);
+                }
+            } else {
+                index += 1;
+            }
+        }
+    }
+    let mut needed: Vec<&str> = OPT_IN
+        .iter()
+        .filter(|module| module.names.iter().any(|name| words.contains(name)))
+        .map(|module| module.module)
+        .collect();
+    let mut next = 0;
+    while next < needed.len() {
+        let module = OPT_IN
+            .iter()
+            .find(|module| module.module == needed[next])
+            .expect("opt-in modules use opt-in modules");
+        for used in module.uses {
+            if !needed.contains(used) {
+                needed.push(used);
+            }
+        }
+        next += 1;
+    }
+    SOURCES
+        .iter()
+        .filter(|(path, _)| {
+            module_name(path).is_none_or(|name| {
+                !OPT_IN.iter().any(|module| module.module == name) || needed.contains(&name)
+            })
+        })
+        .copied()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +339,195 @@ mod tests {
         ] {
             assert_eq!(module_name(path), None, "{path}");
         }
+    }
+
+    /// The public names of `source` by namespace: types, union cases, classes,
+    /// and active-pattern cases, the names an unqualified use can resolve to.
+    fn public_names(source: &str) -> Vec<(&'static str, String)> {
+        use crate::syntax::Visibility;
+        let program = crate::parser::parse(source).expect("std sources parse");
+        let mut names = Vec::new();
+        for record in &program.records {
+            if record.visibility == Visibility::Public {
+                names.push(("type", record.name.text.clone()));
+            }
+        }
+        for union in &program.unions {
+            if union.visibility == Visibility::Public {
+                names.push(("type", union.name.text.clone()));
+                for case in &union.cases {
+                    names.push(("case", case.name.text.clone()));
+                }
+            }
+        }
+        for alias in &program.type_aliases {
+            if alias.visibility == Visibility::Public {
+                names.push(("type", alias.name.text.clone()));
+            }
+        }
+        for handle in &program.extern_types {
+            if handle.visibility == Visibility::Public {
+                names.push(("type", handle.name.text.clone()));
+            }
+        }
+        for class in &program.classes {
+            names.push(("class", class.name.text.clone()));
+        }
+        for pattern in &program.active_patterns {
+            for case in &pattern.cases {
+                names.push(("pattern", case.text.clone()));
+            }
+        }
+        names
+    }
+
+    /// Whether `source` has the identifier token `word` (comments and strings do not
+    /// count), anywhere or only where it is not a member after `.` or `::`.
+    fn mentions_as(source: &str, word: &str, unqualified: bool) -> bool {
+        use crate::syntax::TokenKind;
+        let tokens = crate::lexer::lex(source).expect("std sources lex");
+        tokens.iter().enumerate().any(|(index, token)| {
+            matches!(&token.kind, TokenKind::Ident(name) if name == word)
+                && !(unqualified
+                    && index > 0
+                    && matches!(
+                        tokens[index - 1].kind,
+                        TokenKind::Dot | TokenKind::DoubleColon
+                    ))
+        })
+    }
+
+    fn mentions(source: &str, word: &str) -> bool {
+        mentions_as(source, word, false)
+    }
+
+    #[test]
+    fn opt_in_names_cover_every_reachable_declaration() {
+        let opt_in = |name: &str| OPT_IN.iter().any(|module| module.module == name);
+        let mut always = std::collections::BTreeMap::<(&str, String), usize>::new();
+        for (path, source) in SOURCES {
+            let name = module_name(path).unwrap();
+            if !opt_in(name) {
+                for entry in public_names(source) {
+                    *always.entry(entry).or_default() += 1;
+                }
+                // An always-loaded module must not need an opt-in module.
+                for module in OPT_IN {
+                    assert!(
+                        !mentions(source, module.module),
+                        "{path} names {}",
+                        module.module
+                    );
+                }
+            }
+        }
+        for module in OPT_IN {
+            let (path, source) = SOURCES
+                .iter()
+                .find(|(path, _)| module_name(path) == Some(module.module))
+                .unwrap();
+            assert!(module.names.contains(&module.module), "{path}");
+            let declared = public_names(source);
+            let missing: Vec<&str> = declared
+                .iter()
+                .filter(|(namespace, name)| {
+                    !always
+                        .get(&(*namespace, name.clone()))
+                        .is_some_and(|count| *count >= 2)
+                        && !module.names.contains(&name.as_str())
+                })
+                .map(|(_, name)| name.as_str())
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "{path}: add these names to its OptIn names: {missing:?}"
+            );
+            // Instances for types declared elsewhere are reached through their class.
+            let program = crate::parser::parse(source).unwrap();
+            for instance in &program.instances {
+                use crate::syntax::TypeExprKind;
+                let head = match &instance.ty.kind {
+                    TypeExprKind::Named(name) => Some(name.as_str()),
+                    TypeExprKind::Apply(name, _) => Some(name.text.as_str()),
+                    _ => None,
+                };
+                let own = head.is_some_and(|head| {
+                    let head = head
+                        .strip_prefix(&format!("{}.", module.module))
+                        .unwrap_or(head);
+                    program
+                        .records
+                        .iter()
+                        .any(|record| record.name.text == head)
+                        || program.unions.iter().any(|union| union.name.text == head)
+                        || program
+                            .type_aliases
+                            .iter()
+                            .any(|alias| alias.name.text == head)
+                });
+                assert!(
+                    own || module.names.contains(&instance.class.text.as_str()),
+                    "{path}: instance {} is for a type it does not declare; add '{}' to its OptIn names",
+                    instance.class.text,
+                    instance.class.text
+                );
+            }
+            // The modules it refers to are exactly its `uses`.
+            for other in OPT_IN {
+                if other.module != module.module {
+                    let named = mentions(source, other.module)
+                        || other.names.iter().any(|name| {
+                            mentions_as(source, name, true)
+                                && !declared.iter().any(|(_, declared)| declared == name)
+                        });
+                    assert_eq!(
+                        named,
+                        module.uses.contains(&other.module),
+                        "{path} and {}",
+                        other.module
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_std_module_type_checks_when_named() {
+        // A comment that names every opt-in module loads all of them.
+        let names: Vec<&str> = OPT_IN.iter().map(|module| module.module).collect();
+        let source = format!("// {}\n0\n", names.join(" "));
+        assert_eq!(sources_for([source.as_str()]), SOURCES.to_vec());
+        crate::analyze_modules(&[("Main.tz", &source)])
+            .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    }
+
+    #[test]
+    fn sources_for_loads_named_opt_in_modules_and_their_uses() {
+        let loaded = |text: &str| -> Vec<&str> {
+            sources_for([text])
+                .iter()
+                .filter_map(|(path, _)| module_name(path))
+                .filter(|name| OPT_IN.iter().any(|module| module.module == *name))
+                .collect()
+        };
+        let always = SOURCES.len() - OPT_IN.len();
+        assert_eq!(sources_for(["42\n"]).len(), always);
+        assert_eq!(loaded("42\n"), Vec::<&str>::new());
+        // A word inside a longer identifier is not a mention.
+        assert_eq!(
+            loaded("let JsonText = 1\nlet regex_count = Arenas"),
+            Vec::<&str>::new()
+        );
+        assert_eq!(loaded("Regex.compile (ref text)"), ["Regex", "Unicode"]);
+        assert_eq!(loaded("x |> Cbor.encode"), ["Cbor", "Json"]);
+        assert_eq!(loaded("record P { x: i64 } deriving (Encode)"), ["Json"]);
+        assert_eq!(loaded("let a: Arena<i64> = Arena.empty()"), ["Arena"]);
+        assert_eq!(loaded("match c with | Lu -> 1 | _ -> 0"), ["Unicode"]);
+        assert_eq!(loaded("let x = 1Regex"), ["Regex", "Unicode"]);
+        assert_eq!(loaded("42"), Vec::<&str>::new());
+        // The load order is the embedded order.
+        let all = sources_for(OPT_IN.iter().map(|module| module.module));
+        assert_eq!(all, SOURCES.to_vec());
     }
 
     #[test]
