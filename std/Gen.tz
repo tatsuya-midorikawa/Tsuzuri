@@ -7,7 +7,7 @@ type Source = (Random.Pcg * [i64u] * bool * Vec<i64u>)
 /// value by replaying smaller choices.
 record Gen<'a> { run: Source -> ('a * Source) }
 
-/// The most cases that a property tries before it holds.
+/// The number of values that `for_all` tries.
 private def default_cases :: i64
 fn default_cases = 100
 

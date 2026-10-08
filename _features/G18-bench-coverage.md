@@ -793,3 +793,23 @@ HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従�
 - CLI: `tsuzuri test --seed N`（`TestOptions.seed`）。test 以外、2 回目、範囲外は E2000。
 - 見直し（2026-10-08）: 失敗したテストの標準エラーを表示するように変えた（これまでは捨てていた）。標準エラーに書く失敗したテストの報告に行が増えるが、成功したテストの出力、失敗理由、JSON の既存の欄は変わらない。`Debug.print` を使うテストの WASM の出力は、`Gen` を使わないプログラムでは従来どおり何も書かない。
 - 検証: `cargo test --locked --test property` 4 passed（20 個の失敗する性質の反例を手で求めた最も単純な値と完全一致で照合、2 回の実行・`-O3`・wasm32 で報告が一致、`--seed 7` と最大の seed、`--seed` の誤用、`Gen.__seed` と `Gen` の構築・フィールド参照の E1022、opt-in）。`tests/test_runner.rs` に `failed_tests_show_the_end_of_their_stderr` を追加（9 passed）。`src/main.rs` に `parses_bench_coverage_and_seed_options`。`node scripts/check-docs.mjs`（gen.md・test.md・index.md・random.md・usage.md・option.md）成功。
+
+### 最終の検証（3 つの Phase の後）
+
+- `RUST_MIN_STACK=4194304 cargo test --locked`: 84 個の `test result` で 876 passed、0 failed、0 ignored。既定の 2 MiB のスタックでは base `1182045` でも `tests/computations.rs` の `bounds_computation_syntax_and_expansion` がスタックあふれで止まるので、前回の PR と同じく `RUST_MIN_STACK` を付けた。
+- GUIDE §3.1 の 4 件（`--test polymorphism bounds_type_growing_polymorphic_recursion`、`--lib bounds_recursive_and_flat_expression_depth`、`--test computations bounds_nested_builder_expansion_not_just_source_syntax`、`honors_the_exact_specialization_limit`）は `RUST_MIN_STACK` なしで個別に実行し、どれも `running 1 test` で passed。
+- `cargo fmt --all -- --check` と `cargo clippy --locked --all-targets -- -D warnings` は成功。`git diff --check` は差なし。`sh scripts/check-runtime-includes.sh` は成功（33 files）。この script は `src/test_runner.rs` と `src/stdlib.rs` の `include_str!` を見ないので、`src/runtime/bench-runner.c`・`std/Bench.tz`・`std/Gen.tz` が Git で追跡され、ignore されていないことを別に確かめた。
+- Windows: rustup の stable（x86_64／aarch64-pc-windows-msvc の std 付き）で `cargo check --all-targets --target x86_64-pc-windows-msvc` と `--target aarch64-pc-windows-msvc` は成功。同じ target の `cargo clippy` は `src/lsp.rs:806` と `src/parser.rs:2043-2048` の `nonminimal_bool` 3 件を出すが、base `1182045` でも同じ 3 件が出る（この変更とは関係しない）。`test-runner.c`・`bench-runner.c` の Windows の分岐の動作は Windows の CI でしか確かめられない。
+- 生成 IR の不変: 最終の release と base `1182045` の release で、examples と tests/fixtures の全プロジェクトの `build --emit llvm` を native／wasm32 × `-O0`／`-O3` で比べ、328 組が byte 単位で一致し、差は 0。base が build できない 4 組は `Gen` を使う `tests/fixtures/property`。
+- E2E（Homebrew の LLVM 21 と lld を PATH の先頭に置き、release で実行）: `node tests/e2e.mjs`、`tests/cache.mjs`、`tests/wasm_memory.mjs`（wasm32 の `tsuzuri test`、`-O0`／`-O3`）、`tests/ffi_extensions.mjs`（リンク入力付きの `tsuzuri test`）、`tests/lsp_sessions.mjs`、`tests/docgen.mjs`（`tsuzuri doc std` が `Bench.tz`・`Gen.tz` を含む）がすべて成功。`tests/wasm64.mjs` は Node 24 が要るので実行していない。
+- 変更していない既存の問題: `tsuzuri build --trap-info` で最上位の `Debug.print [1, 2, 3]` を含むプログラムを build すると、clang が `use of undefined value '%tz.context'` で失敗する（base `1182045` でも同じ）。`tests/test_runner.rs` の `runner_rejects_malformed_indices_and_reaps_timed_out_children` は 1 秒の timeout を使うので、負荷が高いときに 1 回失敗した（再実行で成功）。wasm の build の `build cache disabled: tool version query failed` は base でも出る環境の問題。
+
+### 更新したドキュメント
+
+- `README.md`（`tsuzuri bench`・`--coverage`・`--seed`・`--samples`）、`docs/language.md`（予約語 `bench`、bench 宣言、`Bench`、カバレッジ、`Gen`）、`docs/architecture.md`（bench 実行器、カバレッジの計装、テスト実行器の seed と標準エラー）。
+- `_tsuzuri/language-reference/`: `built-in-types-and-modules/bench.md`（新規）・`gen.md`（新規）・`test.md`（カバレッジ、プロパティテスト、失敗したテストの標準エラー）・`random.md`、`compiler/usage.md`・`option.md`（`bench` の列、`--samples`・`--coverage`・`--seed`）・`diagnostics.md`、`values-and-functions/keywords.md`（`bench`）、`languages/strategy.md`（GUIDE §8.1 の `guides/performance.md` の移行先）、`index.md`。`docs/benchmarks.md` はリポジトリーの比較測定の説明でありこのチケットの表にないので変えていない。
+
+### 変更したファイル
+
+- 新規: `src/coverage.rs`、`src/runtime/bench-runner.c`、`std/Bench.tz`、`std/Gen.tz`、`tests/coverage.rs`、`tests/bench.rs`、`tests/property.rs`、`tests/fixtures/coverage/Calc.tz`、`tests/fixtures/property/Props.tz`、上記の 2 ページ。
+- 変更: `src/{bindings,check,computation,driver,formatter,lexer,lib,llvm,llvm_control,llvm_exception,llvm_frame,lsp,main,parse_control,parser,polymorph,semantic,stdlib,syntax,test_runner}.rs`、`src/runtime/test-runner.c`・`test-runner.mjs`、`tests/frontend.rs`・`tests/test_runner.rs`、`vsc/syntaxes/tsuzuri.tmLanguage.json`・`vsc/snippets/tsuzuri.json`・`vsc/src/core.ts`・`vsc/src/editor.ts`、このチケット。
