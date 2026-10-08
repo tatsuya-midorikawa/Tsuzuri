@@ -150,7 +150,7 @@ export async function run(): Promise<void> {
 			if (message.type === 'event' && message.event === 'stopped') { stopped = { session, threadId: message.body.threadId }; }
 		} }),
 	});
-	const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(2, 4)));
+	const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(3, 4)));
 	vscode.debug.addBreakpoints([breakpoint]);
 	try {
 		assert.ok(await vscode.commands.executeCommand('tsuzuri.debug', uri));
@@ -161,11 +161,13 @@ export async function run(): Promise<void> {
 		const scopes = await pause.session.customRequest('scopes', { frameId: stack.stackFrames[0].id });
 		const variables = (await Promise.all(scopes.scopes.map((scope: { variablesReference: number }) => pause.session.customRequest('variables', { variablesReference: scope.variablesReference })))).flatMap(result => result.variables);
 		assert.ok(variables.some((variable: { name: string; value: string }) => variable.name === 'result' && variable.value === '42'), JSON.stringify(variables));
+		// The Tsuzuri LLDB formatters, which the launch loads, show a string as its text.
+		assert.ok(variables.some((variable: { name: string; value: string }) => variable.name === 'label' && variable.value === '"ok"'), JSON.stringify(variables));
 		stopped = undefined;
 		await pause.session.customRequest('next', { threadId: pause.threadId });
 		await waitFor('source step', () => stopped, 30000);
 		await vscode.debug.stopDebugging(pause.session);
-		console.log('VS Code: debug build, CodeLLDB launch, source breakpoint, stack, local variable, stepping passed.');
+		console.log('VS Code: debug build, CodeLLDB launch, source breakpoint, stack, formatted local variables, stepping passed.');
 	} finally {
 		vscode.debug.removeBreakpoints([breakpoint]);
 		tracker.dispose();

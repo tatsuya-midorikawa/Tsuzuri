@@ -141,3 +141,4 @@
 - [診断メッセージとエラーコード](./compiler/diagnostics.md)
 - [WebAssembly への出力](./compiler/webassembly.md)
 - [ネイティブ連携 (C ABI)](./compiler/native-interop.md)
+- [デバッグ](./compiler/debugging.md)

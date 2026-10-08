@@ -49,11 +49,12 @@ tsuzuri-0.1.0-darwin-arm64/
   manifest.json
   bin/       tsuzuri  tsuzuri-clang  clang  wasm-ld  llvm-link  dsymutil
   lib/
+  share/     lldb/tsuzuri_lldb.py
   zig/
   licenses/
 ```
 
-Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。
+Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。
 
 同じディレクトリに置いた `<archive>.sha256` は、`shasum -a 256 -c`（Linux は `sha256sum -c`）で読めます。これはダウンロード時の破損を検査するものです。配布元そのものの真正性の検証は別の手段で行います。
 

@@ -1,0 +1,28 @@
+union Shape = Empty | Circle of f64 | Rect of f64 * f64
+union Color = Red | Green
+union Tree = Leaf | Node of Tree * i64 * Tree
+record Point { x: i64, label: string }
+
+def show :: i64 -> i64
+fn show input =
+    let text = "h\u{e9}llo"
+    let bytes = u8"abc"
+    let letter = 'A'
+    let point = Point { x: input, label: "p" }
+    let color = Green
+    let shape = Rect (1.5, 2.0)
+    let tree = Node (Leaf, input, Leaf)
+    let maybe = Maybe.Some input
+    let nothing: Maybe<i64> = Maybe.None
+    let outcome: Result<i64, string> = Result.Error "bad"
+    let values = [1, 2, 3]
+    let chain = [|4, 5|]
+    let growing = Vec.push (Vec.empty()) 7
+    let table = Map.singleton 1 10
+    let add = \offset -> input + offset
+    let total = Array.sum (&values)
+    total + add 0 - input
+
+export def view :: i64 -> i64 = \input -> show input
+
+show 40

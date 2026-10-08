@@ -102,7 +102,7 @@ add 20 22
 | `--json` | オフ | 診断を stderr の 1 行 1 JSON にする |
 | `--deny-warnings` | オフ | 警告があれば、コード生成や実行の前に終了コード 1 |
 | `--warn implicit-copy` | オフ | 配列とリストの暗黙コピー `W1006` を出す。生成コードは変わらない |
-| `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可 |
+| `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可。表示とステップ実行は [デバッグ](debugging.md) |
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
 | `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
 | `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |

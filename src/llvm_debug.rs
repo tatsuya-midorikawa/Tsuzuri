@@ -13,7 +13,33 @@ pub(super) struct DebugContext {
     optimized: bool,
     wasm: bool,
     types: BTreeMap<Type, usize>,
+    /// The base types under the scalar typedefs, which enumerations also use (G16 D4).
+    bases: BTreeMap<Type, usize>,
+    /// The unnamed untyped pointer.
+    opaque: Option<usize>,
+    /// The pointer to a function type that a function value's `code` member has.
+    code: Option<usize>,
     locations: BTreeMap<(usize, usize, usize), usize>,
+}
+
+/// A member of a structure: its name, type, and size and alignment in bytes.
+struct Member {
+    name: String,
+    ty: usize,
+    size: usize,
+    alignment: usize,
+}
+
+/// The DWARF encoding of a scalar type.
+fn encoding(ty: &Type) -> Option<&'static str> {
+    Some(match ty {
+        Type::Integer(_, true) => "DW_ATE_signed",
+        Type::Integer(_, false) | Type::Decimal(_) | Type::Unit => "DW_ATE_unsigned",
+        Type::Char | Type::Utf8Char => "DW_ATE_UTF",
+        Type::Binary(_) => "DW_ATE_float",
+        Type::Bool => "DW_ATE_boolean",
+        _ => return None,
+    })
 }
 
 fn metadata(next: &mut usize, definitions: &mut Vec<String>, text: String) -> usize {
@@ -36,6 +62,35 @@ fn quote(text: &str) -> String {
     quoted
 }
 
+/// The name that debuggers show for `function` (G16 D3). A monomorphized instance drops its
+/// `.$mono.N`, so a breakpoint by name reaches every instance; a lambda or task is named after
+/// the function that contains it and its `line:column`. `position` is that of `function.span`.
+fn subprogram_name(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    position: (usize, usize),
+) -> String {
+    let plain = |function: &CheckedFunction| {
+        let name = function.qualified_name();
+        name.split(".$mono.").next().unwrap_or(&name).to_owned()
+    };
+    let kind = if function.is_task {
+        "task"
+    } else if function.module == "$lambda" {
+        "lambda"
+    } else {
+        return plain(function);
+    };
+    match function
+        .origin
+        .parent
+        .and_then(|id| module.functions.get(id))
+    {
+        Some(parent) => format!("{}.{kind}@{}:{}", plain(parent), position.0, position.1),
+        None => function.qualified_name(),
+    }
+}
+
 pub(super) fn wrapper(
     ir: String,
     module: &CheckedModule,
@@ -43,7 +98,7 @@ pub(super) fn wrapper(
     symbol: &str,
     globals: &mut Globals,
 ) -> String {
-    let Some(scope) = globals.debug_subprogram(module, function, symbol) else {
+    let Some(scope) = globals.debug_subprogram(module, function, symbol, true) else {
         return ir;
     };
     let Some(location) = globals.debug_location(scope, function.span) else {
@@ -150,6 +205,9 @@ impl DebugContext {
             optimized,
             wasm,
             types: BTreeMap::new(),
+            bases: BTreeMap::new(),
+            opaque: None,
+            code: None,
             locations: BTreeMap::new(),
         }
     }
@@ -185,15 +243,29 @@ impl DebugContext {
         }))
     }
 
+    /// The subprogram of `function`'s definition `symbol`. An artificial one, for a wrapper that
+    /// the compiler generates around the function, takes the symbol's name (G16 D3). The glue
+    /// functions that the compiler generates for builtins, intrinsic methods, case constructors,
+    /// and export bridges have none: like the runtime and the `tz.apply.*` adapters, they have no
+    /// source of their own, so stepping does not stop in them (G16 D7).
     fn subprogram(
         &mut self,
         module: &CheckedModule,
         function: &CheckedFunction,
         symbol: &str,
+        artificial: bool,
         next: &mut usize,
         definitions: &mut Vec<String>,
     ) -> Option<usize> {
-        let (file, line, _) = self.source(function.span)?;
+        if !artificial
+            && matches!(
+                function.module.as_str(),
+                "$builtin" | "$intrinsic" | "$case" | "$export"
+            )
+        {
+            return None;
+        }
+        let (file, line, column) = self.source(function.span)?;
         let mut signature = vec![self.ty(&function.signature.result, module, next, definitions)];
         signature.extend(
             function
@@ -218,23 +290,25 @@ impl DebugContext {
             definitions,
             format!("!DISubroutineType(types: !{elements})"),
         );
-        let name = if (function.is_task || function.name.starts_with("$lambda"))
-            && let Some(parent) = function
-                .origin
-                .parent
-                .and_then(|id| module.functions.get(id))
-        {
-            format!("{}.{}", parent.qualified_name(), function.name)
+        let name = if artificial {
+            symbol.trim_start_matches('@').to_owned()
         } else {
-            function.qualified_name()
+            subprogram_name(module, function, (line, column))
         };
+        // No `scopeLine`: the prologue, which includes the parameters' stores in the `loop`
+        // block, is at line 0, which debuggers skip, so a breakpoint on the function and a step
+        // into it stop at the body's first line with the parameters bound (G16 D7).
         Some(metadata(
             next,
             definitions,
             format!(
-                "distinct !DISubprogram(name: {}, linkageName: {}, scope: !{file}, file: !{file}, line: {line}, type: !{signature}, scopeLine: {line}, spFlags: DISPFlagDefinition | DISPFlagLocalToUnit{}, unit: !{}, retainedNodes: !{})",
+                "distinct !DISubprogram(name: {}, scope: !{file}, file: !{file}, line: {line}, type: !{signature}, {}spFlags: DISPFlagDefinition | DISPFlagLocalToUnit{}, unit: !{}, retainedNodes: !{})",
                 quote(&name),
-                quote(symbol.trim_start_matches('@')),
+                if artificial {
+                    "flags: DIFlagArtificial, "
+                } else {
+                    ""
+                },
                 if self.optimized {
                     " | DISPFlagOptimized"
                 } else {
@@ -259,74 +333,405 @@ impl DebugContext {
         let id = *next;
         *next += 1;
         self.types.insert(ty.clone(), id);
-        let name = quote(&ty.display(&module.types()));
+        let display = ty.display(&module.types());
+        let name = quote(&display);
         let (size, alignment) = layout(ty, module, self.wasm);
-        let pointer = if self.wasm { 32 } else { 64 };
-        let scalar = match ty {
-            Type::Integer(_, true) => Some("DW_ATE_signed"),
-            Type::Integer(_, false)
-            | Type::Decimal(_)
-            | Type::Unit
-            | Type::Char
-            | Type::Utf8Char => Some("DW_ATE_unsigned"),
-            Type::Binary(_) => Some("DW_ATE_float"),
-            Type::Bool => Some("DW_ATE_boolean"),
-            _ => None,
-        };
-        let definition = if let Some(encoding) = scalar {
-            format!(
+        let pointer = self.pointer();
+        let definition = if let Some(encoding) = encoding(ty) {
+            let base = format!(
                 "!DIBasicType(name: {name}, size: {}, encoding: {encoding})",
                 size * 8
-            )
+            );
+            if *ty == Type::Bool {
+                base
+            } else {
+                // G16 D4: debuggers show a typedef's name, but choose a C name for a base type.
+                let base = metadata(next, definitions, base);
+                self.bases.insert(ty.clone(), base);
+                format!("!DIDerivedType(tag: DW_TAG_typedef, name: {name}, baseType: !{base})")
+            }
         } else if let Type::Reference(inner, _) = ty
             && ty.slice_element().is_none()
         {
             let base = self.ty(inner, module, next, definitions);
-            format!(
-                "!DIDerivedType(tag: DW_TAG_pointer_type, name: {name}, baseType: !{base}, size: {pointer})"
-            )
-        } else if matches!(ty, Type::Handle(_) | Type::Shared(..))
-            || (matches!(ty, Type::Union(..)) && module.types().recursive(ty))
-        {
-            format!(
-                "!DIDerivedType(tag: DW_TAG_pointer_type, name: {name}, baseType: null, size: {pointer})"
-            )
+            let target = self.pointer_to(base, next, definitions);
+            // Debuggers ignore the name of a pointer type, but show a typedef's.
+            format!("!DIDerivedType(tag: DW_TAG_typedef, name: {name}, baseType: !{target})")
+        } else if matches!(ty, Type::Handle(_) | Type::Shared(..)) {
+            let target = self.opaque_pointer(next, definitions);
+            format!("!DIDerivedType(tag: DW_TAG_typedef, name: {name}, baseType: !{target})")
+        } else if let Type::Union(union, arguments) = ty {
+            self.union_type((*union, arguments), ty, &display, module, next, definitions)
         } else {
-            let fields = fields(ty, module);
-            let mut members = Vec::new();
+            let members = match ty {
+                Type::List(element) => {
+                    let node = self.list_node(&display, element, module, next, definitions);
+                    let length = self.ty(&Type::I64, module, next, definitions);
+                    vec![
+                        Member::new("head", node, pointer, pointer),
+                        Member::new("length", length, 8, 8),
+                    ]
+                }
+                Type::Function(..) | Type::Task(_) => {
+                    let code = self.code_pointer(next, definitions);
+                    let opaque = self.opaque_pointer(next, definitions);
+                    vec![
+                        Member::new("code", code, pointer, pointer),
+                        Member::new("environment", opaque, pointer, pointer),
+                        Member::new("clone", opaque, pointer, pointer),
+                        Member::new("drop", opaque, pointer, pointer),
+                    ]
+                }
+                // A14: the owned data and the vtable of a dyn value.
+                Type::Dyn(_) => {
+                    let opaque = self.opaque_pointer(next, definitions);
+                    vec![
+                        Member::new("data", opaque, pointer, pointer),
+                        Member::new("vtable", opaque, pointer, pointer),
+                    ]
+                }
+                _ => fields(ty, module)
+                    .into_iter()
+                    .map(|(field, field_type)| {
+                        let (size, alignment) = layout(&field_type, module, self.wasm);
+                        let member = self.ty(&field_type, module, next, definitions);
+                        Member::new(&field, member, size, alignment)
+                    })
+                    .collect(),
+            };
             let mut offset: usize = 0;
-            for (field, field_type) in fields {
-                let (field_size, field_alignment) = layout(&field_type, module, self.wasm);
-                offset = offset.next_multiple_of(field_alignment);
-                let member_type = self.ty(&field_type, module, next, definitions);
-                members.push(metadata(next, definitions, format!("!DIDerivedType(tag: DW_TAG_member, name: {}, scope: !{id}, baseType: !{member_type}, size: {}, align: {}, offset: {})", quote(&field), field_size * 8, field_alignment * 8, offset * 8)));
-                offset += field_size;
-            }
-            let elements = metadata(
+            let placed = members
+                .into_iter()
+                .map(|member| {
+                    offset = offset.next_multiple_of(member.alignment);
+                    let placed = (member, offset);
+                    offset += placed.0.size;
+                    placed
+                })
+                .collect();
+            composite(
+                "DW_TAG_structure_type",
+                id,
+                &name,
+                (size, alignment),
+                placed,
                 next,
                 definitions,
-                format!(
-                    "!{{{}}}",
-                    members
-                        .iter()
-                        .map(|id| format!("!{id}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            );
-            format!(
-                "distinct !DICompositeType(tag: DW_TAG_structure_type, name: {name}, size: {}, align: {}, elements: !{elements})",
-                size * 8,
-                alignment * 8
             )
         };
         definitions.push(format!("!{id} = {definition}"));
         id
     }
+
+    fn pointer(&self) -> usize {
+        if self.wasm { 4 } else { 8 }
+    }
+
+    /// An unnamed pointer to type `base`.
+    fn pointer_to(
+        &mut self,
+        base: usize,
+        next: &mut usize,
+        definitions: &mut Vec<String>,
+    ) -> usize {
+        metadata(
+            next,
+            definitions,
+            format!(
+                "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{base}, size: {})",
+                self.pointer() * 8
+            ),
+        )
+    }
+
+    /// The unnamed pointer with no pointee type, which debuggers show as `void *`.
+    fn opaque_pointer(&mut self, next: &mut usize, definitions: &mut Vec<String>) -> usize {
+        if let Some(id) = self.opaque {
+            return id;
+        }
+        let id = metadata(
+            next,
+            definitions,
+            format!(
+                "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: {})",
+                self.pointer() * 8
+            ),
+        );
+        self.opaque = Some(id);
+        id
+    }
+
+    /// The pointer to a function, so debuggers show the function that a function value calls.
+    fn code_pointer(&mut self, next: &mut usize, definitions: &mut Vec<String>) -> usize {
+        if let Some(id) = self.code {
+            return id;
+        }
+        let function = metadata(
+            next,
+            definitions,
+            "!DISubroutineType(types: !{null})".into(),
+        );
+        let id = metadata(
+            next,
+            definitions,
+            format!(
+                "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{function}, size: {})",
+                self.pointer() * 8
+            ),
+        );
+        self.code = Some(id);
+        id
+    }
+
+    /// The pointer to the node `{ ptr next, T value }` of the list `[|T|]` named `list`, as
+    /// `FunctionEmitter::list_node_type` stores it.
+    fn list_node(
+        &mut self,
+        list: &str,
+        element: &Type,
+        module: &CheckedModule,
+        next: &mut usize,
+        definitions: &mut Vec<String>,
+    ) -> usize {
+        let node = *next;
+        let link = node + 1;
+        *next += 2;
+        let pointer = self.pointer();
+        definitions.push(format!(
+            "!{link} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{node}, size: {})",
+            pointer * 8
+        ));
+        let (value_size, value_alignment) = layout(element, module, self.wasm);
+        let value = self.ty(element, module, next, definitions);
+        let offset = pointer.next_multiple_of(value_alignment);
+        let alignment = pointer.max(value_alignment);
+        let members = vec![
+            (Member::new("next", link, pointer, pointer), 0),
+            (
+                Member::new("value", value, value_size, value_alignment),
+                offset,
+            ),
+        ];
+        let definition = composite(
+            "DW_TAG_structure_type",
+            node,
+            &quote(&format!("{list}.node")),
+            ((offset + value_size).next_multiple_of(alignment), alignment),
+            members,
+            next,
+            definitions,
+        );
+        definitions.push(format!("!{node} = {definition}"));
+        link
+    }
+
+    /// The definition of union `ty` named `display` (G16 D5). A union whose cases are all
+    /// nullary is an enumeration of its `i32` tag. Another is a structure of the tag `$tag` and
+    /// the payload `$payload`, a C union with a member for each case with a payload, at the
+    /// offsets of `union_layout`. A recursive union is a typedef of a pointer to its node, which
+    /// adds the `next`, `drop`, and `clone` pointers of `recursive_header` before them; a null
+    /// pointer is its first nullary case.
+    fn union_type(
+        &mut self,
+        (union, arguments): (usize, &[Type]),
+        ty: &Type,
+        display: &str,
+        module: &CheckedModule,
+        next: &mut usize,
+        definitions: &mut Vec<String>,
+    ) -> String {
+        let pointer = self.pointer();
+        let shape = union_layout(union, arguments, module);
+        let recursive = module.types().recursive(ty);
+        if matches!(shape, UnionLayout::Enum) && !recursive {
+            return self.tag_type(union, display, module, next, definitions);
+        }
+        let tag = self.tag_type(union, &format!("{display}.$tag"), module, next, definitions);
+        let tag = metadata(next, definitions, tag);
+        let (storage_size, storage_alignment) = match &shape {
+            UnionLayout::Enum => (1, 1),
+            UnionLayout::Common(payload) => layout(payload, module, self.wasm),
+            UnionLayout::General(count) => (16 * count, 16),
+        };
+        let payloads: Vec<_> = module.unions[union]
+            .cases
+            .iter()
+            .zip(module.types().union_payloads(union, arguments))
+            .filter_map(|((case, _), payload)| Some((case.clone(), payload?)))
+            .collect();
+        let payload = (!payloads.is_empty()).then(|| {
+            let id = *next;
+            *next += 1;
+            let members = payloads
+                .iter()
+                .map(|(case, payload)| {
+                    let (size, alignment) = layout(payload, module, self.wasm);
+                    let member = self.ty(payload, module, next, definitions);
+                    (Member::new(case, member, size, alignment), 0)
+                })
+                .collect();
+            let definition = composite(
+                "DW_TAG_union_type",
+                id,
+                &quote(&format!("{display}.$payload")),
+                (storage_size, storage_alignment),
+                members,
+                next,
+                definitions,
+            );
+            definitions.push(format!("!{id} = {definition}"));
+            id
+        });
+        let header = if recursive { 3 * pointer } else { 0 };
+        let mut members = Vec::new();
+        if recursive {
+            let opaque = self.opaque_pointer(next, definitions);
+            for (index, field) in ["next", "drop", "clone"].into_iter().enumerate() {
+                members.push((
+                    Member::new(field, opaque, pointer, pointer),
+                    index * pointer,
+                ));
+            }
+        }
+        members.push((Member::new("$tag", tag, 4, 4), header));
+        let payload_offset = match shape {
+            UnionLayout::General(_) if !recursive => 16,
+            _ => (header + 4).next_multiple_of(storage_alignment),
+        };
+        if let Some(payload) = payload {
+            members.push((
+                Member::new("$payload", payload, storage_size, storage_alignment),
+                payload_offset,
+            ));
+        }
+        if !recursive {
+            let (size, alignment) = layout(ty, module, self.wasm);
+            return composite(
+                "DW_TAG_structure_type",
+                *self.types.get(ty).unwrap(),
+                &quote(display),
+                (size, alignment),
+                members,
+                next,
+                definitions,
+            );
+        }
+        // The node `{ ptr, ptr, ptr, i32, payload }` of `emit_program`'s type definitions.
+        let node = *next;
+        *next += 1;
+        let alignment = pointer.max(storage_alignment);
+        let definition = composite(
+            "DW_TAG_structure_type",
+            node,
+            &quote(&format!("{display}.node")),
+            (
+                (payload_offset + storage_size).next_multiple_of(alignment),
+                alignment,
+            ),
+            members,
+            next,
+            definitions,
+        );
+        definitions.push(format!("!{node} = {definition}"));
+        let pointer = self.pointer_to(node, next, definitions);
+        format!(
+            "!DIDerivedType(tag: DW_TAG_typedef, name: {}, baseType: !{pointer})",
+            quote(display)
+        )
+    }
+
+    /// The definition of the enumeration named `name` of the `i32` tag of `union`, with an
+    /// enumerator per case.
+    fn tag_type(
+        &mut self,
+        union: usize,
+        name: &str,
+        module: &CheckedModule,
+        next: &mut usize,
+        definitions: &mut Vec<String>,
+    ) -> String {
+        self.ty(&Type::I32, module, next, definitions);
+        let base = self.bases[&Type::I32];
+        let enumerators: Vec<_> = module.unions[union]
+            .cases
+            .iter()
+            .enumerate()
+            .map(|(value, (case, _))| {
+                metadata(
+                    next,
+                    definitions,
+                    format!("!DIEnumerator(name: {}, value: {value})", quote(case)),
+                )
+            })
+            .collect();
+        let elements = list(&enumerators, next, definitions);
+        format!(
+            "distinct !DICompositeType(tag: DW_TAG_enumeration_type, name: {}, size: 32, align: 32, baseType: !{base}, elements: !{elements})",
+            quote(name)
+        )
+    }
 }
 
+impl Member {
+    fn new(name: &str, ty: usize, size: usize, alignment: usize) -> Self {
+        Self {
+            name: name.to_owned(),
+            ty,
+            size,
+            alignment,
+        }
+    }
+}
+
+/// The definition of composite type `id` named `name` (quoted), of `(size, alignment)` in
+/// bytes, whose members are at the given byte offsets.
+fn composite(
+    tag: &str,
+    id: usize,
+    name: &str,
+    (size, alignment): (usize, usize),
+    members: Vec<(Member, usize)>,
+    next: &mut usize,
+    definitions: &mut Vec<String>,
+) -> String {
+    let members: Vec<_> = members
+        .into_iter()
+        .map(|(member, offset)| {
+            metadata(next, definitions, format!(
+                "!DIDerivedType(tag: DW_TAG_member, name: {}, scope: !{id}, baseType: !{}, size: {}, align: {}, offset: {})",
+                quote(&member.name),
+                member.ty,
+                member.size * 8,
+                member.alignment * 8,
+                offset * 8
+            ))
+        })
+        .collect();
+    let elements = list(&members, next, definitions);
+    format!(
+        "distinct !DICompositeType(tag: {tag}, name: {name}, size: {}, align: {}, elements: !{elements})",
+        size * 8,
+        alignment * 8
+    )
+}
+
+/// The metadata tuple of `ids`.
+fn list(ids: &[usize], next: &mut usize, definitions: &mut Vec<String>) -> usize {
+    metadata(
+        next,
+        definitions,
+        format!(
+            "!{{{}}}",
+            ids.iter()
+                .map(|id| format!("!{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
+}
+
+/// The members of a structure that `DebugContext::ty` builds from Tsuzuri types.
 fn fields(ty: &Type, module: &CheckedModule) -> Vec<(String, Type)> {
-    let pointer = || Type::Reference(Box::new(Type::Unit), false);
     let sequence = |element: Type| {
         vec![
             ("data".into(), Type::Reference(Box::new(element), false)),
@@ -355,21 +760,11 @@ fn fields(ty: &Type, module: &CheckedModule) -> Vec<(String, Type)> {
         Type::Reference(..) if ty.slice_element().is_some() => {
             sequence(ty.slice_element().unwrap().clone())
         }
-        Type::List(_) => vec![("head".into(), pointer()), ("length".into(), Type::I64)],
         Type::Vec(element) => {
             let mut result = sequence((**element).clone());
             result.push(("capacity".into(), Type::I64));
             result
         }
-        Type::Function(..) | Type::Task(_) => ["code", "environment", "clone", "drop"]
-            .into_iter()
-            .map(|name| (name.into(), pointer()))
-            .collect(),
-        // A14: the owned data and the vtable of a dyn value.
-        Type::Dyn(_) => ["data", "vtable"]
-            .into_iter()
-            .map(|name| (name.into(), pointer()))
-            .collect(),
         _ => Vec::new(),
     }
 }
@@ -445,11 +840,13 @@ impl Globals {
         module: &CheckedModule,
         function: &CheckedFunction,
         symbol: &str,
+        artificial: bool,
     ) -> Option<usize> {
         self.debug.as_mut()?.subprogram(
             module,
             function,
             symbol,
+            artificial,
             &mut self.next_metadata,
             &mut self.definitions,
         )

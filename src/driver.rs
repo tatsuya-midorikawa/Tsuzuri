@@ -2544,9 +2544,9 @@ fn build_complete(
             if stack_runtime {
                 runtime.arg("-DTZ_STACK_GUARD");
             }
-            if options.debug_info {
-                runtime.arg("-g");
-            }
+            // The runtime has no debug information, like the stack guard below: stepping never
+            // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
+            // runtime unit at Clang's default (DWARF 5) would otherwise raise when merged (G16).
             if merge_debug_ir {
                 runtime.args(["-S", "-emit-llvm"]);
             }

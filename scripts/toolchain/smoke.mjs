@@ -45,6 +45,8 @@ try {
   } else {
     await cp(source, tools, { recursive: true });
   }
+  // The LLDB formatters ship beside the tools for `command script import` (G16).
+  assert.match(await readFile(path.join(tools, 'share', 'lldb', 'tsuzuri_lldb.py'), 'utf8'), /^def __lldb_init_module\(/m);
   let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
   if (discover) {
     // Only the compiler is on PATH; it must find the bundled tools itself.

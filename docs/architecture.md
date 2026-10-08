@@ -344,12 +344,22 @@ POSIX 環境では argv[1..] の UTF-8 文字列をデコードして格納し�
 **デバッグ情報:** `llvm::emit_with_debug_info` は既存の `TrapSource` ソースマップを明示的に受け取り、DWARF デバッグ情報を付与したコードを生成します（通常の API 呼び出しではデバッグ情報は生成されません）。
 `DIFile`、`DICompileUnit`、`DISubprogram`、`DILocation`、ならびに変数や型のメタデータノードは `Globals.next_metadata` によって一元的に採番され、ループメタデータ、トラップマーカー、および同梱ランタイムと同一の ID 空間を共有します。
 ソース位置情報は既存の `current_span` を利用し、`switch` の case 行ではなく各命令の終端位置に正確に関連付けられます。ローカル変数のエントリーブロックにおける `alloca` の直後には `llvm.dbg.declare` が配置されます。
-公開 ABI やコンソール用ラッパー関数にも適切なスコープ情報が付与され、`-O3` 最適化によって内部関数がインライン展開された場合でも元のソース位置情報が確実に保持されます。自動生成される関数名には、親関数の情報と決定的な内部命名規則が併用されます。
-2進浮動小数点はビット幅に応じた `DW_ATE_float`、decimal 型は BID エンコーディングのストレージとして `DW_ATE_unsigned` で記録されます（union 型の詳細なペイロードのデバッガ表示は対象外です）。
+公開 ABI やコンソール用ラッパー関数にも適切なスコープ情報が付与され、`-O3` 最適化によって内部関数がインライン展開された場合でも元のソース位置情報が確実に保持されます。
+
+DWARF の形は、formatter を読み込まないデバッガーでも Tsuzuri の名前が見え、`scripts/lldb/tsuzuri_lldb.py` が値を復元できるように決めています（G16）。命令列は変えず、`-g` なしの IR は同一です。
+
+- 型名は `Type::display`（`i64`、`[|i64|]`、`Maybe<i64>`、`Main.Shape`）です。`bool` 以外のスカラーは同名の基本型への `DW_TAG_typedef` です（デバッガーは基本型には C の名前を、typedef には typedef の名前を表示するため）。`char`・`utf8char` の基本型は 16・32 bit の `DW_ATE_UTF`、2進浮動小数点は `DW_ATE_float`、decimal 型は BID のストレージとして `DW_ATE_unsigned` です。名前の付くポインター（参照、ハンドル、`Rc`・`Arc`、再帰 union）も、名前のないポインターへの typedef です。
+- リストの `head` はノード構造体 `<型名>.node`（`next` と `value`。`FunctionEmitter::list_node_type` の `{ ptr, T }`）へのポインターです。関数値と Task の `code` は関数型へのポインター、`environment`・`clone`・`drop` と dyn 値の `data`・`vtable` は型のないポインターです。
+- union はすべての case が値を持たなければ `DW_TAG_enumeration_type` です。そうでなければ構造体で、メンバー `$tag`（列挙型 `<型名>.$tag`）と `$payload`（値を持つ case ごとに case 名のメンバーを持つ `DW_TAG_union_type` `<型名>.$payload`）を持ちます。`$payload` の offset は `union_layout` が `Common(T)` なら 4 を `T` の align に切り上げた値、`General(_)` なら 16 です。再帰 union はノード構造体 `<型名>.node`（`next`・`drop`・`clone`・`$tag`・`$payload`。`emit_program` の `{ ptr, ptr, ptr, i32, payload }`）へのポインターの typedef で、空ポインターは最初の値を持たない case です。`$` は Tsuzuri の識別子に使えないので、record のフィールドと衝突しません。
+- `DISubprogram` には `linkageName` がなく、`name` は `CheckedFunction::qualified_name` から単相化の `.$mono.<N>` を除いた名前（`Main.show`、全実体が `Array.sum`）です。ラムダ式と Task は `<外側の関数>.lambda@<行>:<列>`・`.task@<行>:<列>`、callback の特殊化は元の関数と同じ名前です。`export` の `@tz_<name>`、`@tsuzuri_main`、`@main` などのラッパーは、シンボル名と `DIFlagArtificial` を持ちます。組み込み関数・組み込みメソッド・case のコンストラクター・export の bridge（モジュール `$builtin`・`$intrinsic`・`$case`・`$export`）は自分のソースを持たないので、`DISubprogram` を付けません。
+- `let` の束縛の `store` は局所変数の宣言の位置に、閉包の捕捉の読み出しは閉包の位置に置きます。引数の `store` は位置を持たず、`DISubprogram` は `scopeLine` を持たないので、`loop` ブロックで引数を束縛するまでの prologue は行 0 になり、デバッガーは関数の本体の最初の行で止まります。
+- ランタイムの C（`task.c` など）はデバッグ情報なしでコンパイルし、生成する補助関数（`tz.apply.*`、`tz.drop.rec.*`、`tz.clone.*`）にも位置を付けません。LLDB は既定でデバッグ情報のない関数へステップインしないので、ステップ実行は Tsuzuri のソースだけを辿ります。プログラムの DWARF はコンパイラーの compile unit（DWARF 4）だけになり、Clang の既定の DWARF 5 の runtime の unit を `llvm-link` で結合したときにプログラム全体が DWARF 5 になって、LLVM 21 の `-O3` の `.debug_names` が `llvm-dwarfdump --verify` を通らなかった問題もなくなります。
+- formatter の正本は `scripts/lldb/tsuzuri_lldb.py` で、LLDB の `lldb` モジュールだけを使い、型名と `$tag`・`$payload` のメンバー名で型を見分けます。`scripts/toolchain/bundle.mjs` が配布物の `share/lldb/` へ、`vsc/scripts/toolchain.mjs` が VS Code 拡張の `resources/lldb/` へ複製し、拡張はデバッグの `initCommands` の先頭で `command script import` します。
+
 Clang には `-g` フラグが渡され、WASM リンク時の `--strip-all` は解除されます。macOS におけるデバッグタスクオブジェクトの生成では、対応する `llvm-link` を用いて事前に IR を結合してから単一オブジェクトとして生成することで、`ld -r` による DWARF 情報の脱落問題を回避しています。
 また macOS のデバッグ実行ファイルは、保持された `module.o` からリンクを行い、一時ファイルを削除する前に `dsymutil --flat` を実行して隣接する `output.dwarf` を生成します。
 DWARF メタデータとトラップ情報テーブルは、共通のソースファイル保護、バックアップ、および公開失敗時のロールバック機構を利用して安全に出力されます。
-なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テスト、ならびに `llvm-dwarfdump --verify` によって行われています。
+なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.rs`（名前、束縛の位置、スカラーとポインター、union の形と offset）、`tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テストと `llvm-dwarfdump --verify`、ならびに LLDB の batch で表示・名前・ステップ実行を確かめる `tests/debugger.mjs`（LLDB が必要なので共有 CI では実行しません）によって行われています。
 
 **言語サーバー:** `tsuzuri lsp` は、LSP 3.17 仕様に準拠した stdio フレームプロトコルと `serde_json` を使用し、最大メッセージサイズ 16 MiB、ヘッダー長 8 KiB、JSON 再帰深度 128 を上限として安全に動作します。
 文字位置のエンコーディングはクライアントとのネゴシエーションによって決定され（デフォルトは UTF-16）、バイト位置（byte span）からの相互変換には改行テーブルと文字境界判定を用いて、CRLF 改行やサロゲートペア・異体字セレクタ等の補助平面文字を正しく取り扱います。
