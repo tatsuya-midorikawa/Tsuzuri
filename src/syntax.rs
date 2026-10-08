@@ -57,6 +57,8 @@ pub enum TokenKind {
     Type,
     Const,
     Test,
+    /// `bench "name" = body`, a benchmark that `tsuzuri bench` measures (G18).
+    Bench,
     Class,
     Instance,
     Deriving,
@@ -245,6 +247,7 @@ pub struct Program {
     pub instances: Vec<InstanceDecl>,
     pub active_patterns: Vec<ActivePattern>,
     pub tests: Vec<TestDecl>,
+    pub benches: Vec<BenchDecl>,
     pub entry: Option<Expr>,
     /// Every `dyn` type written in this module, in source order (A14). The checker reports the
     /// classes that cannot be dispatched here and generates the dispatching instances.
@@ -281,6 +284,16 @@ pub struct NamespaceDecl {
 
 #[derive(Clone, Debug)]
 pub struct TestDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub body: Expr,
+    pub span: Span,
+}
+
+/// `bench "name" = body`: the body has type `i64 -> i64`, from an iteration count to the
+/// nanoseconds that many iterations took (G18).
+#[derive(Clone, Debug)]
+pub struct BenchDecl {
     pub name: String,
     pub name_span: Span,
     pub body: Expr,

@@ -9,8 +9,8 @@
 //! `Mode::Full` writes everything except the source index of spans, which `decode` sets to the
 //! source being decoded, so a file keeps its entry when files are added or removed. A span of
 //! another source cannot be encoded. `Mode::Interface` also leaves out spans, documentation,
-//! function bodies, tests, the entry code and the bodies of instance methods: what other modules
-//! can observe (D6). It is only encoded, for `frontend_cache::interface_hash`.
+//! function bodies, tests, benches, the entry code and the bodies of instance methods: what
+//! other modules can observe (D6). It is only encoded, for `frontend_cache::interface_hash`.
 //!
 //! Changing the encoding changes `pins_encoding_format` and requires bumping
 //! `frontend_cache::FRONTEND_FORMAT`.
@@ -544,6 +544,7 @@ impl Wire for Program {
             instances,
             active_patterns,
             tests,
+            benches,
             entry,
             dyn_types,
             cpu_attributes,
@@ -563,6 +564,7 @@ impl Wire for Program {
         active_patterns.put(out)?;
         if out.full() {
             tests.put(out)?;
+            benches.put(out)?;
             entry.put(out)?;
         }
         dyn_types.put(out)?;
@@ -585,6 +587,7 @@ impl Wire for Program {
             instances: Vec::get(input)?,
             active_patterns: Vec::get(input)?,
             tests: Vec::get(input)?,
+            benches: Vec::get(input)?,
             entry: Option::get(input)?,
             dyn_types: Vec::get(input)?,
             cpu_attributes: Vec::get(input)?,
@@ -638,6 +641,30 @@ impl Wire for TestDecl {
 
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         Ok(TestDecl {
+            name: String::get(input)?,
+            name_span: Span::get(input)?,
+            body: Expr::get(input)?,
+            span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for BenchDecl {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let BenchDecl {
+            name,
+            name_span,
+            body,
+            span,
+        } = self;
+        name.put(out)?;
+        name_span.put(out)?;
+        body.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(BenchDecl {
             name: String::get(input)?,
             name_span: Span::get(input)?,
             body: Expr::get(input)?,
@@ -2598,6 +2625,6 @@ add_one 41
         "36341b1e0100000000010001662627010000000000010178393a010000036936342b2e0100000003",
         "693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000101664a4d01",
         "0e050f0a016650510100505101010100010052530101505301020002005758010150580103455801",
-        "011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d01030000",
+        "00011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d01030000",
     );
 }

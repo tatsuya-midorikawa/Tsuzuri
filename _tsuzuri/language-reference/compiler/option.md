@@ -6,7 +6,7 @@
 
 ## この記事のポイント
 
-- 最適化の既定は `-O3` です。`test` だけ既定が `-O0` です。fast-math は使いません。
+- 最適化の既定は `-O3` です。`test` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
 - フラグの重複や、サブコマンドとの不一致は終了コード 2 の `E2000` です。
@@ -16,30 +16,33 @@
 
 `lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
-| オプション | check | build | run | test | doc | fmt |
-| --- | --- | --- | --- | --- | --- | --- |
-| `--json` | ○ | ○ | ○ | ○ | ○ | ○ |
-| `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | |
-| `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | |
-| `-o` / `--output` | | ○ | | ○（`-g` と） | ○（必須） | |
-| `--target` | | ○ | | ○ | | |
-| `--emit` | | ○ | | | | |
-| `-O0`〜`-O3` | | ○ | ○ | ○ | | |
-| `--cpu` | | ○ | ○ | | | |
-| `--no-cache` | | ○ | ○ | | | |
-| `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | |
-| `--debug-output` | | ○ | ○ | | | |
-| `--trap-info` | | ○ | ○ | | | |
-| `--trap-mode` | | ○ | | | | |
-| `--allocator` | | ○ | | | | |
-| `--freestanding` | | ○ | | | | |
-| `--wasm-feature` | | ○ | | | | |
-| `--wasm-host` | | ○ | | | | |
-| `--wasm-max-memory` | | ○ | | ○ | | |
-| `--wasm-stack-size` | | ○ | | ○ | | |
-| `--link` / `-l` / `-L` | | ○ | ○ | ○ | | |
-| `--list` / `--filter` / `--index` | | | | ○ | | |
-| `--check` | | | | | | ○ |
+| オプション | check | build | run | test | bench | doc | fmt |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `--json` | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
+| `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | ○ | |
+| `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | ○ | |
+| `-o` / `--output` | | ○ | | ○（`-g` と） | | ○（必須） | |
+| `--target` | | ○ | | ○ | ○（native だけ） | | |
+| `--emit` | | ○ | | | | | |
+| `-O0`〜`-O3` | | ○ | ○ | ○ | ○ | | |
+| `--cpu` | | ○ | ○ | | | | |
+| `--no-cache` | | ○ | ○ | | | | |
+| `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | |
+| `--debug-output` | | ○ | ○ | | | | |
+| `--trap-info` | | ○ | ○ | | | | |
+| `--trap-mode` | | ○ | | | | | |
+| `--allocator` | | ○ | | | | | |
+| `--freestanding` | | ○ | | | | | |
+| `--wasm-feature` | | ○ | | | | | |
+| `--wasm-host` | | ○ | | | | | |
+| `--wasm-max-memory` | | ○ | | ○ | | | |
+| `--wasm-stack-size` | | ○ | | ○ | | | |
+| `--link` / `-l` / `-L` | | ○ | ○ | ○ | ○ | | |
+| `--list` / `--filter` / `--index` | | | | ○ | ○ | | |
+| `--coverage PATH` | | | | ○ | | | |
+| `--seed N` | | | | ○ | | | |
+| `--check` | | | | | | | ○ |
+| `--samples N` | | | | | ○ | | |
 
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
 
@@ -185,10 +188,20 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `check` に `-O` | `check does not use an optimization level` |
 | `test` に `--cpu` | `test does not use CPU tuning` |
 | `doc` に `-o` が無い | `doc requires -o or --output with an output directory` |
-| `--filter` を `test` 以外に付ける | `--filter, --list, and --index are only valid with test` |
+| `--filter` を `test`・`bench` 以外に付ける | `--filter, --list, and --index are only valid with test or bench` |
 | `test` に `-g` と `-o` の片方だけ | `debugging a test needs both -g and -o with the runner's path` |
 | `test -g` の `--index` が 1 つでない、または `--list`・`--filter` と組み合わせる | `debugging a test needs exactly one --index, without --list or --filter` |
 | `test -g` に WASM のターゲット | `debugging a test requires the native target` |
+| `--samples` を `bench` 以外に付ける | `--samples is only valid with bench` |
+| `--seed` を `test` 以外に付ける | `--seed is only valid with test` |
+| `--seed` が 0〜18446744073709551615 の整数でない | `property seed must be an integer between 0 and 18446744073709551615` |
+| `--samples` が 1〜1000 の整数でない | `bench samples must be an integer between 1 and 1000` |
+| `bench` に `--target wasm32`／`wasm64` | `tsuzuri bench supports only the native target` |
+| `bench` に `--cpu` | `bench does not use CPU tuning` |
+| `--coverage` を `test` 以外に付ける | `--coverage is only valid with test` |
+| `test --coverage` と `--target wasm32`／`wasm64` | `test coverage supports only the native target` |
+| `test --coverage` と `--list` | `coverage cannot be combined with --list` |
+| `test --coverage` と `-g` | `coverage cannot be combined with -g; a debug runner only builds` |
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
 | WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
 

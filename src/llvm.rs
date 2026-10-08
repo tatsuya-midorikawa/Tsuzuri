@@ -34,6 +34,8 @@ pub enum Entry {
     Library,
     Console,
     TestRunner,
+    /// `tsuzuri bench`: `@tsuzuri_bench_count` and `@tsuzuri_bench_sample` over the benches (G18).
+    BenchRunner,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -297,6 +299,15 @@ pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> 
     emit_target(module, entry, false)
 }
 
+/// Every test or bench of a runner entry; `None` for the other entries.
+fn runner_selection(module: &CheckedModule, entry: Entry) -> Option<Vec<usize>> {
+    match entry {
+        Entry::TestRunner => Some((0..module.tests.len()).collect()),
+        Entry::BenchRunner => Some((0..module.benches.len()).collect()),
+        Entry::Library | Entry::Console => None,
+    }
+}
+
 pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<String, Diagnostic> {
     emit_with_options(
         module,
@@ -313,8 +324,7 @@ pub fn emit_with_options(
     module: &CheckedModule,
     options: EmitOptions,
 ) -> Result<String, Diagnostic> {
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     emit_program(
         module,
         options.entry,
@@ -334,8 +344,7 @@ pub fn emit_with_trap_info(
     options: EmitOptions,
     sources: &[TrapSource<'_>],
 ) -> Result<EmitOutput, Diagnostic> {
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
         options.entry,
@@ -365,8 +374,7 @@ pub fn emit_with_debug_info(
             Span::default(),
         ));
     }
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
         options.entry,
@@ -626,6 +634,8 @@ pub(crate) fn emit_wasm_build(
             trap_return: false,
             allocator: options.allocator,
             multiversion: false,
+            coverage: None,
+            seed: None,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -661,6 +671,60 @@ pub(crate) fn emit_test_runner_for(
     memory64: bool,
     debug: Option<(&[TrapSource<'_>], bool)>,
 ) -> Result<String, Diagnostic> {
+    emit_test_runner_with(
+        module,
+        selected,
+        TestRunnerOptions {
+            wasm,
+            memory64,
+            debug,
+            ..TestRunnerOptions::default()
+        },
+    )
+}
+
+/// The native test runner of `emit_test_runner`, counting the regions of `plan` in
+/// `@tsuzuri_coverage_counters` (`tsuzuri test --coverage`, G18 Phase 2).
+pub fn emit_test_runner_covered(
+    module: &CheckedModule,
+    selected: &[usize],
+    plan: &crate::coverage::CoveragePlan,
+) -> Result<String, Diagnostic> {
+    emit_test_runner_with(
+        module,
+        selected,
+        TestRunnerOptions {
+            coverage: Some(plan),
+            ..TestRunnerOptions::default()
+        },
+    )
+}
+
+/// The seed of property tests (`Gen.for_all`) without `tsuzuri test --seed` (G18 Phase 3).
+pub const DEFAULT_PROPERTY_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// How `emit_test_runner_with` builds a test runner.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestRunnerOptions<'a> {
+    pub wasm: bool,
+    pub memory64: bool,
+    /// Count coverage regions (native only).
+    pub coverage: Option<&'a crate::coverage::CoveragePlan>,
+    /// The property-test seed instead of `DEFAULT_PROPERTY_SEED`.
+    pub seed: Option<u64>,
+    /// WASM only: `Debug.print` writes through the `tsuzuri_debug.write` import, which the Node
+    /// test runner provides.
+    pub debug_output: bool,
+    /// The source map and whether the code is optimized when the runner carries debug
+    /// information for a debugger (G16 Phase 2).
+    pub debug: Option<(&'a [TrapSource<'a>], bool)>,
+}
+
+pub fn emit_test_runner_with(
+    module: &CheckedModule,
+    selected: &[usize],
+    options: TestRunnerOptions<'_>,
+) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
         return Err(Diagnostic::new(
             "E2000",
@@ -671,14 +735,37 @@ pub(crate) fn emit_test_runner_for(
     emit_program(
         module,
         Entry::TestRunner,
-        wasm,
+        options.wasm,
         Some(selected),
-        false,
+        options.debug_output && options.wasm,
         Instrumentation {
-            memory64,
-            debug,
+            memory64: options.memory64,
+            debug: options.debug,
+            coverage: options.coverage.filter(|_| !options.wasm),
+            seed: options.seed,
             ..Instrumentation::default()
         },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
+/// calls bench `index` with an iteration count and returns its nanoseconds, or -1 for a bad index.
+pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<String, Diagnostic> {
+    if selected.iter().any(|index| *index >= module.benches.len()) {
+        return Err(Diagnostic::new(
+            "E2000",
+            "invalid bench index",
+            Span::default(),
+        ));
+    }
+    emit_program(
+        module,
+        Entry::BenchRunner,
+        false,
+        Some(selected),
+        false,
+        Instrumentation::default(),
     )
     .map(|(ir, _)| ir)
 }
@@ -695,6 +782,10 @@ struct Instrumentation<'a> {
     allocator: Allocator,
     /// A native build that compiles `@cpu` functions for further CPU levels (F08 Phase 3).
     multiversion: bool,
+    /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
+    coverage: Option<&'a crate::coverage::CoveragePlan>,
+    /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
+    seed: Option<u64>,
 }
 
 fn emit_program(
@@ -736,10 +827,16 @@ fn emit_program(
     let roots = tests.map(|selected| {
         selected
             .iter()
-            .map(|index| module.tests[*index].function)
+            .map(|index| {
+                if entry == Entry::BenchRunner {
+                    module.benches[*index].function
+                } else {
+                    module.tests[*index].function
+                }
+            })
             .collect::<Vec<_>>()
     });
-    let reachable = reachable_functions(module, roots.as_deref());
+    let reachable = reachable_functions(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -845,6 +942,8 @@ fn emit_program(
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         multiversion: instrumentation.multiversion && !wasm,
+        coverage: instrumentation.coverage.cloned(),
+        seed: instrumentation.seed,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -970,7 +1069,7 @@ fn emit_program(
             &mut globals,
         ));
     }
-    let io_wrapper = if entry != Entry::TestRunner && io_entry(module) {
+    let io_wrapper = if matches!(entry, Entry::Library | Entry::Console) && io_entry(module) {
         Some(io::entry(FunctionEmitter::new(
             module,
             &module.functions[module.entry.unwrap()],
@@ -992,6 +1091,13 @@ fn emit_program(
     ));
     // Only a program that reads `Env.args` receives argc and argv; other entries keep `@main()`.
     let uses_args = intrinsics.contains("declare void @tsuzuri_os_set_args(i32, ptr)");
+    if entry != Entry::BenchRunner && intrinsics.contains("declare i64 @tsuzuri_bench_now()") {
+        return Err(Diagnostic::new(
+            "E1018",
+            "Bench.now runs only under tsuzuri bench; call Bench.with_input or Bench.now from a bench declaration",
+            Span::default(),
+        ));
+    }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
@@ -1022,7 +1128,27 @@ fn emit_program(
             &mut globals,
         ));
     }
-    if let Some(selected) = tests {
+    if let Some(selected) = tests.filter(|_| entry == Entry::BenchRunner) {
+        let _ = writeln!(
+            output,
+            "define i32 @tsuzuri_bench_count() {{\nentry:\n  ret i32 {}\n}}",
+            selected.len()
+        );
+        output.push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n  switch i32 %index, label %bad [\n");
+        for index in 0..selected.len() {
+            let _ = writeln!(output, "    i32 {index}, label %bench{index}");
+        }
+        output.push_str("  ]\nbad:\n  ret i64 -1\n");
+        for (index, selected) in selected.iter().enumerate() {
+            let function = &module.functions[module.benches[*selected].function];
+            let _ = writeln!(
+                output,
+                "bench{index}:\n  %result{index} = call i64 @tz.fn.{}(i64 %iterations)\n  ret i64 %result{index}",
+                function.qualified_name()
+            );
+        }
+        output.push_str("}\n");
+    } else if let Some(selected) = tests {
         let _ = writeln!(
             output,
             "define i32 @tsuzuri_test_count() {{\nentry:\n  ret i32 {}\n}}",
@@ -1042,6 +1168,13 @@ fn emit_program(
             );
         }
         output.push_str("}\n");
+    }
+    if let Some(plan) = instrumentation.coverage {
+        let _ = writeln!(
+            output,
+            "@tsuzuri_coverage_counters = global [{0} x i64] zeroinitializer\n@tsuzuri_coverage_count = constant i64 {0}",
+            plan.len()
+        );
     }
     for global in globals.definitions {
         output.push_str(&global);
@@ -1346,6 +1479,10 @@ struct Globals {
     shared_types: BTreeSet<(Type, bool)>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
+    coverage: Option<crate::coverage::CoveragePlan>,
+    /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
+    seed: Option<u64>,
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
     #[cfg(debug_assertions)]
     emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
@@ -1382,6 +1519,8 @@ impl Default for Globals {
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
+            coverage: None,
+            seed: None,
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
         }
@@ -2157,6 +2296,7 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 pub(crate) fn reachable_functions(
     module: &CheckedModule,
     roots: Option<&[usize]>,
+    benches: bool,
 ) -> BTreeSet<usize> {
     fn references(expression: &TypedExpr, module: &CheckedModule, pending: &mut Vec<usize>) {
         match &expression.kind {
@@ -2200,7 +2340,13 @@ pub(crate) fn reachable_functions(
         <[usize]>::to_vec,
     );
     // Drop glue calls the user drops without a reference in any body.
-    pending.extend(module.user_drops.values().copied());
+    pending.extend(
+        module
+            .user_drops
+            .values()
+            .copied()
+            .filter(|drop| benches || !module.bench_drops.contains(drop)),
+    );
     let mut reachable = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
@@ -2473,6 +2619,8 @@ struct FunctionEmitter<'a, 'b> {
     trap_kind: Option<TrapKind>,
     drop_pending: Option<String>,
     clone_pending: Option<String>,
+    /// Whether this body counts coverage regions: a counted user function of a covered runner.
+    counted: bool,
     /// Whether implicit copies count for the debug inventory check: only in bodies that `emit` writes.
     #[cfg(debug_assertions)]
     note_copies: bool,
@@ -2495,6 +2643,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         globals: &'b mut Globals,
         specializations: &'b mut Specializations,
     ) -> Self {
+        let counted = globals.coverage.is_some() && crate::coverage::counted(function);
         Self {
             module,
             function,
@@ -2540,6 +2689,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             temporaries: Vec::new(),
             frame_slots: BTreeMap::new(),
             frame_locals: BTreeMap::new(),
+            counted,
             #[cfg(debug_assertions)]
             note_copies: false,
         }
@@ -2591,6 +2741,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             for (index, parameter) in self.function.parameters.iter().enumerate() {
                 self.bind_local(parameter, &format!("%p{index}"));
             }
+            self.cover(crate::coverage::RegionKind::Body, self.function.body.span);
             self.emit_body();
         }
         let parameters = self
@@ -2760,6 +2911,23 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn begin(&mut self, block: &str) {
         self.lines.push(format!("{block}:"));
         self.block = block.to_owned();
+    }
+
+    /// Counts one entry into the coverage region of `kind` at `span`, if the plan has it.
+    fn cover(&mut self, kind: crate::coverage::RegionKind, span: Span) {
+        if !self.counted {
+            return;
+        }
+        let Some(plan) = &self.globals.coverage else {
+            return;
+        };
+        let Some(region) = plan.region(kind, span) else {
+            return;
+        };
+        let count = plan.len();
+        self.value(format!(
+            "atomicrmw add ptr getelementptr inbounds ([{count} x i64], ptr @tsuzuri_coverage_counters, i64 0, i64 {region}), i64 1 monotonic"
+        ));
     }
 
     fn jump(&mut self, block: &str) {
@@ -3015,10 +3183,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let no = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 self.tail(then_branch);
                 self.ranges.leave_condition(facts);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 self.tail(else_branch);
             }
             TypedExprKind::Call(callee, arguments)
@@ -3442,6 +3612,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let merge = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 let then_value = self.expression(then_branch);
                 self.ranges.leave_condition(facts);
@@ -3449,6 +3620,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 let else_value = self.expression(else_branch);
                 let else_end = self.block.clone();
                 self.jump(&merge);
@@ -5588,6 +5760,7 @@ fn emit_builtin(
         | Builtin::SeqNext
         | Builtin::OwnedDrop
         | Builtin::Ignore
+        | Builtin::BenchConsume
         | Builtin::Not
         | Builtin::OwnedFunction
         | Builtin::OwnedCall
@@ -5608,6 +5781,18 @@ fn emit_builtin(
         ),
         // Arena ids only need to be unique, so a monotonic increment suffices; the counter
         // publishes no other memory. Default wasm32 lowers the atomic to a plain add.
+        // The clock is defined only by the C entry of `tsuzuri bench` (`runtime/bench-runner.c`);
+        // `emit_program` rejects other outputs that reach it (G18 D3).
+        Builtin::BenchNow => {
+            intrinsics.insert("declare i64 @tsuzuri_bench_now()".into());
+            format!(
+                "define internal i64 {symbol}() nounwind {{\nentry:\n  %now = call i64 @tsuzuri_bench_now()\n  ret i64 %now\n}}\n\n"
+            )
+        }
+        Builtin::GenSeed => format!(
+            "define internal i64 {symbol}() nounwind {{\nentry:\n  ret i64 {}\n}}\n\n",
+            globals.seed.unwrap_or(DEFAULT_PROPERTY_SEED) as i64
+        ),
         Builtin::ArenaNextId => format!(
             "@tz.arena.next_id = internal global i64 0, align 8\n\n\
              define internal i64 {symbol}() nounwind {{\n\
@@ -5785,6 +5970,16 @@ fn emit_typed_builtin(
     } else if instance.builtin == Builtin::SeqNext {
         emitter.sequence_next(ty)
     } else if matches!(instance.builtin, Builtin::OwnedDrop | Builtin::Ignore) {
+        emitter.drop_value(element, "%arg0");
+        "0".to_owned()
+    } else if instance.builtin == Builtin::BenchConsume {
+        // As Rust's `black_box`: the value goes to memory that an opaque asm with a memory
+        // clobber reads, so LLVM keeps its computation and the memory it reaches (G18 D6).
+        let slot = emitter.slot(element);
+        emitter.instruction(format!("store {element_type} %arg0, ptr {slot}"));
+        emitter.instruction(format!(
+            "call void asm sideeffect \"\", \"r,~{{memory}}\"(ptr {slot})"
+        ));
         emitter.drop_value(element, "%arg0");
         "0".to_owned()
     } else if instance.builtin == Builtin::Not {

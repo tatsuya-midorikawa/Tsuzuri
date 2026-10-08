@@ -2715,6 +2715,15 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if builtin == Builtin::GenSeed
+            && !(self.module == "Gen" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the property seed is private to the standard Gen module; set it with tsuzuri test --seed",
+                span,
+            ));
+        }
         if builtin == Builtin::ArenaNextId
             && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
@@ -3827,9 +3836,16 @@ pub(super) fn specialize(
         instantiating: None,
         growing: 0,
     };
+    // Benches start only after everything else is specialized, so that they never renumber the
+    // instances that normal and test builds emit (G18).
+    let mut deferred = Vec::new();
     for (id, function) in module.functions.iter().enumerate() {
         if function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User {
-            specializer.request(id, Vec::new(), function.span)?;
+            if function.origin.bench.is_some() {
+                deferred.push(id);
+            } else {
+                specializer.request(id, Vec::new(), function.span)?;
+            }
         }
     }
     let entry = module.entry.map(|id| specializer.keys[&(id, Vec::new())]);
@@ -3844,6 +3860,9 @@ pub(super) fn specialize(
         .collect();
     let mut next = 0;
     let mut user_drops = BTreeMap::new();
+    // Drop types first found after the benches start are held only by bench code.
+    let mut bench_drops = BTreeSet::new();
+    let mut benches_started = false;
     let drops = classes.drop_heads().next().is_some();
     let mut scanned = 0;
     let mut seen = BTreeSet::new();
@@ -3856,36 +3875,55 @@ pub(super) fn specialize(
             specializer.functions.push(function);
             next += 1;
         }
-        if !drops {
-            break;
-        }
-        // Drop glue calls the user drop of every Drop type that a specialized function holds;
-        // the drops can hold more Drop types, so this runs to a fixed point (B07 D6).
-        let types = specializer.types;
         let mut found = BTreeSet::new();
-        for function in &mut specializer.functions[scanned..] {
-            for parameter in &function.parameters {
-                drop_components(&parameter.ty, &types, &mut seen, &mut found);
+        if drops {
+            // Drop glue calls the user drop of every Drop type that a specialized function holds;
+            // the drops can hold more Drop types, so this runs to a fixed point (B07 D6).
+            let types = specializer.types;
+            for function in &mut specializer.functions[scanned..] {
+                for parameter in &function.parameters {
+                    drop_components(&parameter.ty, &types, &mut seen, &mut found);
+                }
+                drop_components(&function.signature.as_type(), &types, &mut seen, &mut found);
+                expression_types(&mut function.body, &mut |ty, _| {
+                    drop_components(ty, &types, &mut seen, &mut found);
+                    Ok(())
+                })?;
             }
-            drop_components(&function.signature.as_type(), &types, &mut seen, &mut found);
-            expression_types(&mut function.body, &mut |ty, _| {
-                drop_components(ty, &types, &mut seen, &mut found);
-                Ok(())
-            })?;
+            scanned = specializer.functions.len();
         }
-        scanned = specializer.functions.len();
-        if found.is_empty() {
+        if !found.is_empty() {
+            let types = specializer.types;
+            let class = classes.names["Drop"];
+            for ty in found {
+                let (function, arguments) = classes
+                    .resolved_method(class, 0, &ty, &types)
+                    .expect("a Drop instance covers every instantiation of its type");
+                let span = specializer.templates[function].span;
+                let drop = specializer.request(function, arguments, span)?;
+                if benches_started {
+                    bench_drops.insert(drop);
+                }
+                user_drops.insert(ty, drop);
+            }
+        } else if !deferred.is_empty() {
+            benches_started = true;
+            for id in std::mem::take(&mut deferred) {
+                specializer.request(id, Vec::new(), module.functions[id].span)?;
+            }
+        } else {
             break;
-        }
-        let class = classes.names["Drop"];
-        for ty in found {
-            let (function, arguments) = classes
-                .resolved_method(class, 0, &ty, &types)
-                .expect("a Drop instance covers every instantiation of its type");
-            let span = specializer.templates[function].span;
-            user_drops.insert(ty, specializer.request(function, arguments, span)?);
         }
     }
+    let benches = module
+        .benches
+        .iter()
+        .cloned()
+        .map(|mut bench| {
+            bench.function = specializer.keys[&(bench.function, Vec::new())];
+            bench
+        })
+        .collect();
     let requires_rec: Vec<_> = specializer
         .requests
         .iter()
@@ -3902,8 +3940,10 @@ pub(super) fn specialize(
         functions,
         entry,
         tests,
+        benches,
         warnings: module.warnings,
         user_drops,
+        bench_drops,
         vtables,
         dyn_layouts,
         uses_dyn: module.uses_dyn,

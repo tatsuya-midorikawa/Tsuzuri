@@ -13,6 +13,10 @@ pub struct TestOptions {
     pub wasm_max_memory: Option<u64>,
     /// `None` selects [`DEFAULT_WASM_STACK_SIZE`]; only valid for WASM targets.
     pub wasm_stack_size: Option<u64>,
+    /// Count the regions of the user's code that passing tests run (`--coverage`, native only).
+    pub coverage: bool,
+    /// The property-test seed (`--seed`) instead of `llvm::DEFAULT_PROPERTY_SEED`.
+    pub seed: Option<u64>,
 }
 
 impl Default for TestOptions {
@@ -24,6 +28,8 @@ impl Default for TestOptions {
             indices: Vec::new(),
             wasm_max_memory: None,
             wasm_stack_size: None,
+            coverage: false,
+            seed: None,
         }
     }
 }
@@ -42,6 +48,8 @@ impl TestOptions {
 pub struct TestResult {
     pub case: crate::check::CheckedTest,
     pub failure: Option<String>,
+    /// The end of the standard error of a failed test, such as a property's counterexample.
+    pub output: String,
     pub duration_ms: u128,
 }
 
@@ -51,6 +59,17 @@ pub struct TestReport {
     pub ignored: usize,
     pub duration_ms: u128,
     pub messages: Vec<String>,
+    /// The merged counters of the passing tests, with `TestOptions::coverage`.
+    pub coverage: Option<CoverageRun>,
+}
+
+/// What `tsuzuri test --coverage` counted: one counter per region of `plan`.
+#[derive(Debug)]
+pub struct CoverageRun {
+    pub plan: crate::coverage::CoveragePlan,
+    pub counts: Vec<u64>,
+    /// The failed tests, whose counts are left out because they end before writing them.
+    pub excluded_failed: usize,
 }
 
 pub fn run_tests(module: &CheckedModule, options: &TestOptions) -> Result<TestReport, Diagnostic> {
@@ -96,6 +115,12 @@ fn run_with_timeout(
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64",
         ));
     }
+    if options.coverage && options.target.is_wasm() {
+        return Err(driver_error(
+            "E2000",
+            "test coverage supports only the native target",
+        ));
+    }
     wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -125,12 +150,18 @@ fn run_with_timeout(
         .cloned()
         .collect();
     let ignored = module.tests.len() - selected.len();
+    let plan = options.coverage.then(|| crate::coverage::plan(module));
     if selected.is_empty() {
         return Ok(TestReport {
             results: Vec::new(),
             ignored,
             duration_ms: started.elapsed().as_millis(),
             messages: Vec::new(),
+            coverage: plan.map(|plan| CoverageRun {
+                counts: vec![0; plan.len()],
+                plan,
+                excluded_failed: 0,
+            }),
         });
     }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
@@ -140,6 +171,7 @@ fn run_with_timeout(
         &selected.iter().map(|test| test.index).collect::<Vec<_>>(),
         options,
         links,
+        plan.as_ref(),
         &temporary.path,
         &mut messages,
     )?;
@@ -158,11 +190,17 @@ fn run_with_timeout(
                         break;
                     };
                     let started = Instant::now();
-                    let result = execute_test(&runner, index, timeout).map(|failure| TestResult {
-                        case: case.clone(),
-                        failure,
-                        duration_ms: started.elapsed().as_millis(),
-                    });
+                    let result =
+                        execute_test(&runner, index, timeout).map(|(failure, output)| TestResult {
+                            case: case.clone(),
+                            output: if failure.is_some() {
+                                output
+                            } else {
+                                String::new()
+                            },
+                            failure,
+                            duration_ms: started.elapsed().as_millis(),
+                        });
                     results.lock().unwrap().push((case.index, result));
                 }
             });
@@ -170,22 +208,112 @@ fn run_with_timeout(
     });
     let mut results = results.into_inner().unwrap();
     results.sort_by_key(|(index, _)| *index);
-    let results = results
+    let results: Vec<TestResult> = results
         .into_iter()
         .map(|(_, result)| result)
         .collect::<Result<_, _>>()?;
+    let coverage = match plan {
+        Some(plan) => Some(merge_coverage(plan, &results, &runner)?),
+        None => None,
+    };
     temporary.close()?;
     Ok(TestReport {
         results,
         ignored,
         duration_ms: started.elapsed().as_millis(),
         messages,
+        coverage,
     })
+}
+
+/// Adds up the counter files that the passing tests wrote (D12: failed tests write none).
+fn merge_coverage(
+    plan: crate::coverage::CoveragePlan,
+    results: &[TestResult],
+    runner: &Runner,
+) -> Result<CoverageRun, Diagnostic> {
+    let directory = runner
+        .coverage
+        .as_ref()
+        .expect("a covered runner writes counter files");
+    let mut counts = vec![0; plan.len()];
+    let mut excluded_failed = 0;
+    for (position, result) in results.iter().enumerate() {
+        if result.failure.is_some() {
+            excluded_failed += 1;
+            continue;
+        }
+        let path = coverage_file(directory, position);
+        let bytes =
+            fs::read(&path).map_err(|error| io_error("read coverage counters", &path, error))?;
+        crate::coverage::merge(&mut counts, &bytes).map_err(|message| {
+            driver_error(
+                "E2002",
+                format!(
+                    "invalid coverage counters in '{}': {message}",
+                    path.display()
+                ),
+            )
+        })?;
+    }
+    Ok(CoverageRun {
+        plan,
+        counts,
+        excluded_failed,
+    })
+}
+
+/// The counter file of the selected test at `position`.
+fn coverage_file(directory: &Path, position: usize) -> PathBuf {
+    directory.join(format!("coverage-{position}.bin"))
+}
+
+/// Refuses a `--coverage` output that would overwrite one of the project's sources (E2003).
+pub fn check_coverage_output(project: &Project, output: &Path) -> Result<(), Diagnostic> {
+    protect_sources(project, output)
+}
+
+/// Writes the lcov report of `coverage` for the project's user sources to `output` and
+/// returns its files.
+pub fn write_coverage(
+    project: &Project,
+    coverage: &CoverageRun,
+    output: &Path,
+) -> Result<Vec<crate::coverage::FileCoverage>, Diagnostic> {
+    protect_sources(project, output)?;
+    let paths: Vec<Option<String>> = project
+        .sources
+        .iter()
+        .map(|source| {
+            (source.origin == ModuleOrigin::User).then(|| {
+                crate::cache::real_path(&source.path)
+                    .unwrap_or_else(|_| source.path.clone())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .collect();
+    let sources: Vec<Option<crate::coverage::CoverageSource<'_>>> = paths
+        .iter()
+        .zip(&project.sources)
+        .map(|(path, source)| {
+            path.as_deref().map(|path| crate::coverage::CoverageSource {
+                path,
+                text: &source.text,
+            })
+        })
+        .collect();
+    let files = crate::coverage::files(&coverage.plan, &coverage.counts, &sources);
+    fs::write(output, crate::coverage::render_lcov(&files))
+        .map_err(|error| io_error("write coverage report", output, error))?;
+    Ok(files)
 }
 
 struct Runner {
     program: OsString,
     arguments: Vec<OsString>,
+    /// The directory of the counter files of a covered native runner.
+    coverage: Option<PathBuf>,
 }
 
 /// A native test runner with debug information that runs one test when a debugger starts
@@ -258,12 +386,14 @@ pub fn build_debug_runner(
         .map_err(|error| io_error("create output directory", parent, error))?;
     let mut temporary = TemporaryDirectory::new(parent)?;
     let mut text = project.with_trap_sources(|sources| {
-        llvm::emit_test_runner_for(
+        llvm::emit_test_runner_with(
             module,
             &[index],
-            false,
-            false,
-            Some((sources, options.optimization != 0)),
+            llvm::TestRunnerOptions {
+                seed: options.seed,
+                debug: Some((sources, options.optimization != 0)),
+                ..llvm::TestRunnerOptions::default()
+            },
         )
     })?;
     if cfg!(windows) {
@@ -390,50 +520,23 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
     Ok(sources)
 }
 
+/// Runs selected test `index`: why it failed, if it did, and the end of its stderr.
 fn execute_test(
     runner: &Runner,
     index: usize,
     timeout: Duration,
-) -> Result<Option<String>, Diagnostic> {
-    let mut child = Command::new(&runner.program)
-        .args(&runner.arguments)
-        .arg(index.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| driver_error("E2002", format!("cannot start test runner: {error}")))?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(result)) => {
-                return Ok((!result.success()).then(|| termination_reason(&result)));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(driver_error(
-                    "E2002",
-                    format!("cannot wait for test runner: {error}"),
-                ));
-            }
-        }
-        if started.elapsed() >= timeout {
-            let stopped = child.kill();
-            let collected = child.wait();
-            collected.map_err(|error| {
-                driver_error("E2002", format!("cannot collect timed-out test: {error}"))
-            })?;
-            stopped.map_err(|error| {
-                driver_error("E2002", format!("cannot stop timed-out test: {error}"))
-            })?;
-            return Ok(Some(format!("timed out after {}ms", timeout.as_millis())));
-        }
-        std::thread::park_timeout(
-            Duration::from_millis(5).min(timeout.saturating_sub(started.elapsed())),
-        );
+) -> Result<(Option<String>, String), Diagnostic> {
+    let mut command = Command::new(&runner.program);
+    command.args(&runner.arguments).arg(index.to_string());
+    if let Some(directory) = &runner.coverage {
+        command.env("TSUZURI_COVERAGE_FILE", coverage_file(directory, index));
     }
+    let finished = run_captured(&mut command, timeout, false, "test")?;
+    let failure = match finished.status {
+        Some(status) => (!status.success()).then(|| termination_reason(&status)),
+        None => Some(format!("timed out after {}ms", timeout.as_millis())),
+    };
+    Ok((failure, finished.stderr))
 }
 
 fn termination_reason(status: &std::process::ExitStatus) -> String {
@@ -457,6 +560,7 @@ fn build_runner(
     selected: &[usize],
     options: &TestOptions,
     links: &LinkInputs,
+    coverage: Option<&crate::coverage::CoveragePlan>,
     directory: &Path,
     messages: &mut Vec<String>,
 ) -> Result<Runner, Diagnostic> {
@@ -467,17 +571,141 @@ fn build_runner(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
-    let mut text = llvm::emit_test_runner_for(module, selected, wasm, memory64, None)?;
-    if wasm {
-        text = llvm::with_wasm_heap_limit(text, max_memory);
-        if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
-            text = llvm::with_stack_checks(text, false);
-        }
-        text.push_str(include_str!("runtime/wasm.ll"));
-    } else if cfg!(windows) {
+    let mut text = llvm::emit_test_runner_with(
+        module,
+        selected,
+        llvm::TestRunnerOptions {
+            wasm,
+            memory64,
+            coverage,
+            seed: options.seed,
+            // A property test reports its counterexample with Debug.print, so a WASM runner of a
+            // program that uses Gen imports the write; other programs keep no imports.
+            debug_output: module
+                .functions
+                .iter()
+                .any(|function| function.module == "Gen"),
+            debug: None,
+        },
+    )?;
+    if !wasm {
+        let artifact = compile_native_runner(
+            module,
+            text,
+            &NativeRunner {
+                stem: "tests",
+                kind: "test",
+                tools_hint: "tests require LLVM/Clang 17+ or TSUZURI_CLANG",
+                entry: include_str!("runtime/test-runner.c"),
+                defines: if coverage.is_some() {
+                    &["-DTSUZURI_COVERAGE"]
+                } else {
+                    &[]
+                },
+                optimization: options.optimization,
+            },
+            links,
+            directory,
+            messages,
+        )?;
+        return Ok(Runner {
+            program: artifact.into_os_string(),
+            arguments: Vec::new(),
+            coverage: coverage.map(|_| directory.to_owned()),
+        });
+    }
+    text = llvm::with_wasm_heap_limit(text, max_memory);
+    if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
+        text = llvm::with_stack_checks(text, false);
+    }
+    text.push_str(include_str!("runtime/wasm.ll"));
+    if text.contains("declare i64 @tsuzuri_os_") {
+        return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
+    }
+    let ir = directory.join("tests.ll");
+    let object = directory.join("tests.o");
+    let artifact = directory.join("tests.wasm");
+    fs::write(&ir, text).map_err(|error| io_error("write test IR", &ir, error))?;
+    let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+    clang
+        .args(["-x", "ir", "-Wno-override-module"])
+        .arg(format!("-O{}", options.optimization))
+        .arg(&ir)
+        .arg(if memory64 {
+            "--target=wasm64-unknown-unknown"
+        } else {
+            "--target=wasm32-unknown-unknown"
+        })
+        .args(["-mbulk-memory", "-c"])
+        .arg("-o")
+        .arg(&object);
+    collect_message(
+        messages,
+        run_tool(&mut clang, "tests require LLVM/Clang 17+ or TSUZURI_CLANG")?,
+    );
+    let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
+    linker
+        .args([
+            "--no-entry",
+            "--strip-all",
+            "--stack-first",
+            "-z",
+            &format!("stack-size={stack_size}"),
+            &format!("--max-memory={max_memory}"),
+            "--export=tsuzuri_test_count",
+            "--export=tsuzuri_test_run",
+        ])
+        .args(memory64.then_some("-mwasm64"))
+        .arg(&object)
+        .arg("-o")
+        .arg(&artifact);
+    collect_message(
+        messages,
+        run_tool(
+            &mut linker,
+            &wasm_link_hint(
+                "WASM tests require wasm-ld or TSUZURI_WASM_LD",
+                options.wasm_max_memory,
+                options.wasm_stack_size,
+            ),
+        )?,
+    );
+    let script = directory.join("run.mjs");
+    fs::write(&script, include_str!("runtime/test-runner.mjs"))
+        .map_err(|error| io_error("write Node test runner", &script, error))?;
+    Ok(Runner {
+        program: "node".into(),
+        arguments: vec![script.into_os_string(), artifact.into_os_string()],
+        coverage: None,
+    })
+}
+
+/// The C entry and file names of a native runner executable.
+struct NativeRunner<'a> {
+    /// The file stem of its IR and executable in the temporary directory.
+    stem: &'a str,
+    /// `test` or `bench`, for I/O error messages.
+    kind: &'a str,
+    tools_hint: &'a str,
+    entry: &'a str,
+    defines: &'a [&'a str],
+    optimization: u8,
+}
+
+/// Compiles the runner IR `text` with its C entry, the runtimes the IR declares, and the host
+/// link inputs into an executable in `directory`.
+fn compile_native_runner(
+    module: &CheckedModule,
+    mut text: String,
+    runner: &NativeRunner<'_>,
+    links: &LinkInputs,
+    directory: &Path,
+    messages: &mut Vec<String>,
+) -> Result<PathBuf, Diagnostic> {
+    if cfg!(windows) {
         text = llvm::windows_abi(text, module);
     }
-    let task_runtime = !wasm && text.contains("declare void @tsuzuri_task_parallel(");
+    let task_runtime = text.contains("declare void @tsuzuri_task_parallel(");
     if task_runtime && !cfg!(any(unix, windows)) {
         return Err(driver_error(
             "E2002",
@@ -486,117 +714,405 @@ fn build_runner(
     }
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
-    let io_runtime = !wasm && text.contains("declare i32 @tsuzuri_io_");
-    if os_runtime && wasm {
-        return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
-    }
+    let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
     }
-    let ir = directory.join("tests.ll");
-    let object = directory.join("tests.o");
-    let artifact = directory.join(if wasm {
-        "tests.wasm"
-    } else if cfg!(windows) {
-        "tests.exe"
+    let kind = runner.kind;
+    let ir = directory.join(format!("{}.ll", runner.stem));
+    let artifact = directory.join(if cfg!(windows) {
+        format!("{}.exe", runner.stem)
     } else {
-        "tests"
+        runner.stem.to_owned()
     });
-    fs::write(&ir, text).map_err(|error| io_error("write test IR", &ir, error))?;
+    fs::write(&ir, text).map_err(|error| io_error(&format!("write {kind} IR"), &ir, error))?;
     let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
     clang
         .args(["-x", "ir", "-Wno-override-module"])
-        .arg(format!("-O{}", options.optimization))
+        .arg(format!("-O{}", runner.optimization))
         .arg(&ir);
-    if wasm {
-        clang
-            .arg(if memory64 {
-                "--target=wasm64-unknown-unknown"
-            } else {
-                "--target=wasm32-unknown-unknown"
-            })
-            .args(["-mbulk-memory", "-c"])
-            .arg("-o")
-            .arg(&object);
-    } else {
-        let main = directory.join("main.c");
-        clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
-        fs::write(&main, include_str!("runtime/test-runner.c"))
-            .map_err(|error| io_error("write test entry", &main, error))?;
-        clang
-            .args(["-x", "c", "-std=c11"])
-            .arg(&main)
-            .arg("-o")
-            .arg(&artifact);
-        if !cfg!(windows) {
-            clang.arg("-lm");
-        }
-        if task_runtime {
-            let runtime = directory.join("task.c");
-            fs::write(&runtime, crate::driver::task_runtime_source())
-                .map_err(|error| io_error("write task runtime", &runtime, error))?;
-            clang.arg(&runtime);
-            if !cfg!(windows) {
-                clang.arg("-pthread");
-            }
-        }
-        for (needed, name, source) in [
-            (os_runtime, "os.c", include_str!("runtime/os.c")),
-            (io_runtime, "io.c", include_str!("runtime/io.c")),
-        ] {
-            if needed {
-                let runtime = directory.join(name);
-                fs::write(&runtime, source)
-                    .map_err(|error| io_error("write runtime", &runtime, error))?;
-                clang.arg(&runtime);
-            }
-        }
-        links.add_to(&mut clang);
+    let main = directory.join("main.c");
+    clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
+    fs::write(&main, runner.entry)
+        .map_err(|error| io_error(&format!("write {kind} entry"), &main, error))?;
+    clang
+        .args(["-x", "c", "-std=c11"])
+        .args(runner.defines)
+        .arg(&main)
+        .arg("-o")
+        .arg(&artifact);
+    if !cfg!(windows) {
+        clang.arg("-lm");
     }
-    collect_message(
-        messages,
-        run_tool(&mut clang, "tests require LLVM/Clang 17+ or TSUZURI_CLANG")?,
-    );
-    if wasm {
-        let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
-        linker
-            .args([
-                "--no-entry",
-                "--strip-all",
-                "--stack-first",
-                "-z",
-                &format!("stack-size={stack_size}"),
-                &format!("--max-memory={max_memory}"),
-                "--export=tsuzuri_test_count",
-                "--export=tsuzuri_test_run",
-            ])
-            .args(memory64.then_some("-mwasm64"))
-            .arg(&object)
-            .arg("-o")
-            .arg(&artifact);
-        collect_message(
+    if task_runtime {
+        let runtime = directory.join("task.c");
+        fs::write(&runtime, crate::driver::task_runtime_source())
+            .map_err(|error| io_error("write task runtime", &runtime, error))?;
+        clang.arg(&runtime);
+        if !cfg!(windows) {
+            clang.arg("-pthread");
+        }
+    }
+    for (needed, name, source) in [
+        (os_runtime, "os.c", include_str!("runtime/os.c")),
+        (io_runtime, "io.c", include_str!("runtime/io.c")),
+    ] {
+        if needed {
+            let runtime = directory.join(name);
+            fs::write(&runtime, source)
+                .map_err(|error| io_error("write runtime", &runtime, error))?;
+            clang.arg(&runtime);
+        }
+    }
+    links.add_to(&mut clang);
+    collect_message(messages, run_tool(&mut clang, runner.tools_hint)?);
+    Ok(artifact)
+}
+
+/// The time that one bench sample aims for: the runner doubles the iteration count up to it.
+pub const BENCH_SAMPLE_NS: u64 = 10_000_000;
+/// The longest one bench process may run.
+pub const BENCH_TIMEOUT: Duration = Duration::from_secs(300);
+/// The samples per bench without `--samples`.
+pub const DEFAULT_BENCH_SAMPLES: usize = 11;
+/// The most iterations per sample.
+pub const MAX_BENCH_ITERATIONS: u64 = 1 << 30;
+
+/// What `tsuzuri bench` measures (G18 Phase 1).
+#[derive(Clone, Debug)]
+pub struct BenchOptions {
+    pub target: Target,
+    pub optimization: u8,
+    pub filter: Option<String>,
+    pub indices: Vec<usize>,
+    /// Between 1 and 1000.
+    pub samples: usize,
+}
+
+impl Default for BenchOptions {
+    fn default() -> Self {
+        Self {
+            target: Target::Native,
+            optimization: 3,
+            filter: None,
+            indices: Vec::new(),
+            samples: DEFAULT_BENCH_SAMPLES,
+        }
+    }
+}
+
+impl BenchOptions {
+    pub fn includes(&self, bench: &crate::check::CheckedBench) -> bool {
+        (self.indices.is_empty() || self.indices.contains(&bench.index))
+            && self
+                .filter
+                .as_ref()
+                .is_none_or(|filter| format!("{}.{}", bench.module, bench.name).contains(filter))
+    }
+}
+
+/// One measured bench: the iteration count of every sample and the time per iteration of
+/// each sample in milliseconds, or why it failed.
+#[derive(Debug)]
+pub struct BenchResult {
+    pub case: crate::check::CheckedBench,
+    pub failure: Option<String>,
+    /// The end of the standard error of a failed bench.
+    pub output: String,
+    pub iterations: u64,
+    pub samples_ms: Vec<f64>,
+}
+
+impl BenchResult {
+    /// The median (of the two middle samples for an even count), minimum, and maximum
+    /// milliseconds per iteration; `None` for a failed bench.
+    pub fn statistics(&self) -> Option<(f64, f64, f64)> {
+        if self.failure.is_some() || self.samples_ms.is_empty() {
+            return None;
+        }
+        let mut sorted = self.samples_ms.clone();
+        sorted.sort_by(f64::total_cmp);
+        let middle = sorted.len() / 2;
+        let median = if sorted.len() % 2 == 1 {
+            sorted[middle]
+        } else {
+            (sorted[middle - 1] + sorted[middle]) / 2.0
+        };
+        Some((median, sorted[0], sorted[sorted.len() - 1]))
+    }
+}
+
+#[derive(Debug)]
+pub struct BenchReport {
+    pub results: Vec<BenchResult>,
+    pub ignored: usize,
+    pub messages: Vec<String>,
+}
+
+pub fn run_benches(
+    module: &CheckedModule,
+    options: &BenchOptions,
+) -> Result<BenchReport, Diagnostic> {
+    run_benches_linked(module, options, &LinkInputs::default())
+}
+
+/// Measures the selected benches one at a time, each in its own process, so that they do not
+/// disturb one another. The report has no pass or fail threshold.
+pub fn run_benches_linked(
+    module: &CheckedModule,
+    options: &BenchOptions,
+    links: &LinkInputs,
+) -> Result<BenchReport, Diagnostic> {
+    if options.target.is_wasm() {
+        return Err(driver_error(
+            "E2000",
+            "tsuzuri bench supports only the native target",
+        ));
+    }
+    if options.optimization > 3 {
+        return Err(driver_error(
+            "E2000",
+            "bench optimization must be between 0 and 3",
+        ));
+    }
+    if !(1..=1000).contains(&options.samples) {
+        return Err(driver_error(
+            "E2000",
+            "bench samples must be an integer between 1 and 1000",
+        ));
+    }
+    if options
+        .indices
+        .iter()
+        .any(|index| *index >= module.benches.len())
+    {
+        return Err(driver_error(
+            "E2000",
+            "bench index is out of range; refresh the bench list",
+        ));
+    }
+    if !links.is_empty() {
+        links.check_shape()?;
+        links.check_readable()?;
+    }
+    let selected: Vec<_> = module
+        .benches
+        .iter()
+        .filter(|bench| options.includes(bench))
+        .cloned()
+        .collect();
+    let ignored = module.benches.len() - selected.len();
+    let mut messages = Vec::new();
+    if selected.is_empty() {
+        return Ok(BenchReport {
+            results: Vec::new(),
+            ignored,
             messages,
-            run_tool(
-                &mut linker,
-                &wasm_link_hint(
-                    "WASM tests require wasm-ld or TSUZURI_WASM_LD",
-                    options.wasm_max_memory,
-                    options.wasm_stack_size,
-                ),
-            )?,
+        });
+    }
+    let temporary = TemporaryDirectory::new(&env::temp_dir())?;
+    let text = llvm::emit_bench_runner(
+        module,
+        &selected.iter().map(|bench| bench.index).collect::<Vec<_>>(),
+    )?;
+    let artifact = compile_native_runner(
+        module,
+        text,
+        &NativeRunner {
+            stem: "benches",
+            kind: "bench",
+            tools_hint: "benchmarks require LLVM/Clang 17+ or TSUZURI_CLANG",
+            entry: include_str!("runtime/bench-runner.c"),
+            defines: &[],
+            optimization: options.optimization,
+        },
+        links,
+        &temporary.path,
+        &mut messages,
+    )?;
+    let mut results = Vec::with_capacity(selected.len());
+    for (position, case) in selected.into_iter().enumerate() {
+        let (outcome, output) = execute_bench(&artifact, position, options.samples, BENCH_TIMEOUT)?;
+        results.push(match outcome {
+            Ok((iterations, samples)) => BenchResult {
+                case,
+                failure: None,
+                output: String::new(),
+                iterations,
+                samples_ms: samples
+                    .iter()
+                    .map(|nanoseconds| *nanoseconds as f64 / iterations as f64 / 1e6)
+                    .collect(),
+            },
+            Err(reason) => BenchResult {
+                case,
+                failure: Some(reason),
+                output,
+                iterations: 0,
+                samples_ms: Vec::new(),
+            },
+        });
+    }
+    temporary.close()?;
+    Ok(BenchReport {
+        results,
+        ignored,
+        messages,
+    })
+}
+
+/// The iteration count and the nanoseconds of each sample, or why the bench failed.
+type BenchOutcome = Result<(u64, Vec<u64>), String>;
+
+/// Runs bench `position` of a bench runner; returns its outcome and the end of its stderr.
+fn execute_bench(
+    runner: &Path,
+    position: usize,
+    samples: usize,
+    timeout: Duration,
+) -> Result<(BenchOutcome, String), Diagnostic> {
+    let mut command = Command::new(runner);
+    command.args([
+        position.to_string(),
+        samples.to_string(),
+        BENCH_SAMPLE_NS.to_string(),
+    ]);
+    let finished = run_captured(&mut command, timeout, true, "bench")?;
+    let outcome = match finished.status {
+        None => Err(format!("timed out after {}ms", timeout.as_millis())),
+        Some(status) if status.code() == Some(3) => Err("returned a negative duration".into()),
+        Some(status) if !status.success() => Err(termination_reason(&status)),
+        Some(_) => parse_bench_output(&finished.stdout, samples),
+    };
+    Ok((outcome, finished.stderr))
+}
+
+/// Parses `iterations N` and `samples` lines `sample NS` exactly.
+fn parse_bench_output(output: &str, samples: usize) -> Result<(u64, Vec<u64>), String> {
+    let malformed = || "produced malformed output".to_owned();
+    let number = |text: &str| -> Option<u64> {
+        (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| text.parse().ok())
+            .flatten()
+    };
+    let mut lines = output.lines();
+    let iterations = lines
+        .next()
+        .and_then(|line| line.strip_prefix("iterations "))
+        .and_then(number)
+        .filter(|count| count.is_power_of_two() && *count <= MAX_BENCH_ITERATIONS)
+        .ok_or_else(malformed)?;
+    let values = lines
+        .map(|line| line.strip_prefix("sample ").and_then(number))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(malformed)?;
+    if values.len() != samples {
+        return Err(malformed());
+    }
+    Ok((iterations, values))
+}
+
+/// How a child ended: `None` after a timeout, which kills it.
+struct Captured {
+    status: Option<std::process::ExitStatus>,
+    stdout: String,
+    stderr: String,
+}
+
+/// The most bytes of a child's standard error that a report keeps (the last ones).
+const CAPTURED_STDERR: usize = 64 * 1024;
+
+/// Runs `command` with null stdin, waiting at most `timeout`. Readers drain the pipes while the
+/// child runs, so a full pipe never blocks it; stdout is kept only with `stdout`. `kind` is
+/// `test` or `bench`, for the messages.
+fn run_captured(
+    command: &mut Command,
+    timeout: Duration,
+    stdout: bool,
+    kind: &str,
+) -> Result<Captured, Diagnostic> {
+    command
+        .stdin(Stdio::null())
+        .stdout(if stdout {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| driver_error("E2002", format!("cannot start {kind} runner: {error}")))?;
+    let out = child.stdout.take().map(|pipe| {
+        std::thread::spawn(move || {
+            let mut text = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut { pipe }, &mut text);
+            text
+        })
+    });
+    let error_pipe = child.stderr.take().expect("stderr is piped");
+    let err = std::thread::spawn(move || read_tail(error_pipe, CAPTURED_STDERR));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(driver_error(
+                    "E2002",
+                    format!("cannot wait for {kind} runner: {error}"),
+                ));
+            }
+        }
+        if started.elapsed() >= timeout {
+            let stopped = child.kill();
+            let collected = child.wait();
+            collected.map_err(|error| {
+                driver_error("E2002", format!("cannot collect timed-out {kind}: {error}"))
+            })?;
+            stopped.map_err(|error| {
+                driver_error("E2002", format!("cannot stop timed-out {kind}: {error}"))
+            })?;
+            break None;
+        }
+        std::thread::park_timeout(
+            Duration::from_millis(5).min(timeout.saturating_sub(started.elapsed())),
         );
-        let script = directory.join("run.mjs");
-        fs::write(&script, include_str!("runtime/test-runner.mjs"))
-            .map_err(|error| io_error("write Node test runner", &script, error))?;
-        Ok(Runner {
-            program: "node".into(),
-            arguments: vec![script.into_os_string(), artifact.into_os_string()],
-        })
+    };
+    let stdout = out
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    Ok(Captured {
+        status,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr,
+    })
+}
+
+/// Reads `reader` to its end and keeps its last `limit` bytes, noting what it left out.
+fn read_tail(mut reader: impl std::io::Read, limit: usize) -> String {
+    let mut kept: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+    let mut omitted = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => {
+                kept.extend(&buffer[..count]);
+                while kept.len() > limit {
+                    kept.pop_front();
+                    omitted += 1;
+                }
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(kept.make_contiguous()).into_owned();
+    if omitted == 0 {
+        text
     } else {
-        Ok(Runner {
-            program: artifact.into_os_string(),
-            arguments: Vec::new(),
-        })
+        format!("[{omitted} earlier bytes omitted]\n{text}")
     }
 }
 
@@ -614,6 +1130,7 @@ mod tests {
             &[0, 1],
             &TestOptions::default(),
             &LinkInputs::default(),
+            None,
             &temporary.path,
             &mut Vec::new(),
         )
@@ -641,18 +1158,137 @@ mod tests {
         assert!(
             execute_test(&runner, 0, Duration::from_secs(1))
                 .unwrap()
+                .0
                 .is_none()
         );
         assert_eq!(
             execute_test(&runner, 1, Duration::from_millis(30))
                 .unwrap()
+                .0
                 .as_deref(),
             Some("timed out after 30ms")
         );
         assert!(
             execute_test(&runner, 0, Duration::from_secs(1))
                 .unwrap()
+                .0
                 .is_none()
+        );
+        temporary.close().unwrap();
+    }
+
+    fn bench_result(samples_ms: Vec<f64>) -> BenchResult {
+        BenchResult {
+            case: crate::check::CheckedBench {
+                module: "Main".into(),
+                name: "b".into(),
+                index: 0,
+                function: 0,
+                span: Span::default(),
+            },
+            failure: None,
+            output: String::new(),
+            iterations: 1,
+            samples_ms,
+        }
+    }
+
+    #[test]
+    fn bench_statistics_use_median_min_max() {
+        assert_eq!(
+            bench_result(vec![3.0, 1.0, 2.0]).statistics(),
+            Some((2.0, 1.0, 3.0))
+        );
+        assert_eq!(
+            bench_result(vec![4.0, 1.0, 3.0, 2.0]).statistics(),
+            Some((2.5, 1.0, 4.0))
+        );
+        assert_eq!(bench_result(vec![5.0]).statistics(), Some((5.0, 5.0, 5.0)));
+        let mut failed = bench_result(vec![1.0]);
+        failed.failure = Some("timed out after 1ms".into());
+        assert_eq!(failed.statistics(), None);
+        assert_eq!(bench_result(Vec::new()).statistics(), None);
+    }
+
+    #[test]
+    fn bench_output_parsing_is_strict() {
+        assert_eq!(
+            parse_bench_output("iterations 8\nsample 10\nsample 0\n", 2),
+            Ok((8, vec![10, 0]))
+        );
+        for (output, samples) in [
+            ("sample 10\n", 1),
+            ("iterations 8\nsample 10\n", 2),
+            ("iterations 8\nsample 10\nsample 11\n", 1),
+            ("iterations 8\nsample ten\n", 1),
+            ("iterations 8\nsample -1\n", 1),
+            ("iterations 8\nsample +1\n", 1),
+            ("iterations 6\nsample 1\n", 1),
+            ("iterations 0\nsample 1\n", 1),
+            ("iterations 2147483648\nsample 1\n", 1),
+            ("iterations 8\nsample 1\nextra\n", 1),
+            ("", 1),
+        ] {
+            assert_eq!(
+                parse_bench_output(output, samples),
+                Err("produced malformed output".into()),
+                "{output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bench_runner_rejects_malformed_arguments() {
+        let module = crate::analyze("bench \"twice\" = \\n -> n * 2").unwrap();
+        let temporary = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        let runner = compile_native_runner(
+            &module,
+            llvm::emit_bench_runner(&module, &[0]).unwrap(),
+            &NativeRunner {
+                stem: "benches",
+                kind: "bench",
+                tools_hint: "benchmarks require LLVM/Clang 17+ or TSUZURI_CLANG",
+                entry: include_str!("runtime/bench-runner.c"),
+                defines: &[],
+                optimization: 0,
+            },
+            &LinkInputs::default(),
+            &temporary.path,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        for arguments in [
+            vec![],
+            vec!["0", "1"],
+            vec!["0", "1", "1", "1"],
+            vec!["1", "1", "1"],
+            vec!["-0", "1", "1"],
+            vec!["0", "0", "1"],
+            vec!["0", "1001", "1"],
+            vec!["0", "+1", "1"],
+            vec!["0", "1", "0"],
+            vec!["0", "1", "x"],
+            vec!["0", "1", "99999999999999999999"],
+        ] {
+            assert_eq!(
+                Command::new(&runner)
+                    .args(&arguments)
+                    .status()
+                    .unwrap()
+                    .code(),
+                Some(2),
+                "{arguments:?}"
+            );
+        }
+        // A one-nanosecond target stops at the first iteration count: the body returns 2n.
+        let output = Command::new(&runner)
+            .args(["0", "2", "1"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "iterations 1\nsample 2\nsample 2\n"
         );
         temporary.close().unwrap();
     }
@@ -671,10 +1307,12 @@ mod tests {
             let runner = Runner {
                 program: "/bin/sh".into(),
                 arguments: vec!["-c".into(), script.into()],
+                coverage: None,
             };
             assert_eq!(
                 execute_test(&runner, 0, Duration::from_secs(5))
                     .unwrap()
+                    .0
                     .as_deref(),
                 Some(expected),
                 "{script}"

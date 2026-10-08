@@ -350,6 +350,7 @@ impl Parser<'_> {
                     | TokenKind::Record
                     | TokenKind::Union
                     | TokenKind::Test
+                    | TokenKind::Bench
                     | TokenKind::Class
                     | TokenKind::Instance
                     | TokenKind::With

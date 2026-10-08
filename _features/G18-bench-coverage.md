@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（予約語 `bench`。GUIDE D-30 の仮割り当ての確定と、識別子 `bench` を壊す変更）。Phase 2（カバレッジ）は承認不要 |
+| 承認 | 要承認: D1（予約語 `bench`。GUIDE D-30 の仮割り当ての確定と、識別子 `bench` を壊す変更）。Phase 2（カバレッジ）は承認不要。**承認済み（2026-10-08、D-41）**: 利用者の「G16、G18、G17、G13 の実装をすべて完遂して。…すべてのフェーズを完了させること」で D1 と Phase 3 の着手を承認 |
 | 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: 利用者コードの性能測定・カバレッジ・プロパティテストを言語のツールで行えない |
 | 手本にする既存実装 | 宣言と実行器の全体: G06 の `test` 宣言（`src/parser.rs` の `Parser::test_declaration`、`src/check.rs` の `CheckedTest` と `$test.<index>` 関数の合成、`src/llvm.rs` の `Entry::TestRunner`・`emit_test_runner`、`src/test_runner.rs` の `run_tests`・`run_with_timeout`・`build_runner`・`execute_test`、`src/runtime/test-runner.c`、`src/main.rs` の `Action::Test`・`run_test_action`）。任意の型を受ける builtin: `src/check.rs` の `Builtin::Unreachable`。計装の切り替え: `src/llvm.rs` の `Instrumentation`。CLI の E2E: `tests/test_runner.rs` の `cli_reports_json_filters_and_failures_without_main` |
 | 主な影響ファイル | `src/lexer.rs`, `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/formatter.rs`, `src/semantic.rs`, `src/computation.rs`, `src/polymorph.rs`, `src/check.rs`, `src/llvm.rs`, `src/test_runner.rs`, `src/coverage.rs`（新規）, `src/runtime/test-runner.c`, `src/runtime/bench-runner.c`（新規）, `src/main.rs`, `std/Bench.tz`（新規）, `tests/test_runner.rs`, `tests/bench.rs`（新規）, `tests/coverage.rs`（新規）, `tests/fixtures/coverage/Calc.tz`（新規）, `tests/frontend.rs`, `docs/language.md`, `docs/architecture.md`, `_docs/tools/testing.md`, `_docs/tools/command-line.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md`, `vsc/` の予約語文法（GUIDE §6.1） |
@@ -241,6 +241,7 @@ test "positive" = Test.is_true (classify 5 == 1)
 ### Phase 3: プロパティテスト（設計方針）
 
 - `Test.property` と生成器 `Gen<'a>`、縮小（shrinking）、失敗時の seed の表示。乱数は E08 の決定的 PRNG を使う。E08 と D07 の完了後に別チケットとして詳細化する。
+- 見直し（2026-10-08）: 利用者の依頼（D-41）で Phase 3 も実装した。E08（`Random.pcg`）は done。設計は決定事項 D13〜D18、結果は「実装と検証」にある。入口は `Test.property` ではなく opt-in の std `Gen` の `Gen.for_all` にした（D13）。
 
 ## 設計
 
@@ -633,7 +634,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - WASM の bench とカバレッジ（D11 の方針だけ）。分岐の lcov（`BRDA`）、`&&`／`||` の region、MC/DC、HTML の報告、LLVM の coverage mapping。
 - 前回の結果との比較、CI での速度の合否判定、分散・継続的な保存サービス。`tsuzuri bench --cpu native`。
 - PX01 の完全なレコード（`schema`・`run_id`・`commit`・`host` の全欄）への変換（PX01 の `benchmarks/metrics.mjs` の側）。
-- Phase 3（プロパティテスト）とパラメーター化テスト。
+- パラメーター化テスト。Phase 3（プロパティテスト）は 2026-10-08 に実装した（D13〜D18）。
 
 ## 決定事項
 
@@ -644,13 +645,14 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 理由: 代替を比べた。文脈キーワード（トップレベルで `bench` の後に文字列と `=` が続くときだけ）は壊さないが、`TokenKind::Test` を含む parser の 3 集合と
   `src/parse_control.rs` がトークンの種類で宣言の境界を決めており、各所に 3 token の先読みが要る。`.tb` の新しいソース種別は探索・E1018 の表・LSP・整形・`vsc/` に
   広がる。std の `Bench.run` を `main` から呼ぶ形は `--list`・`--filter`・プロセスの隔離ができない。test の修飾子は test の意味（合否）と混ざる。
-- 状態: 要承認（承認前は Phase 1 の手順 6〜11 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。G19 は todo のままなので、`bench` は無条件に予約した（edition による切り替えはない）。
 
 ### D2: 本体の型と std の API
 
 - 決定: 本体は `i64 -> i64`（反復回数 → 準備を除く ns）。`Bench.with :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64` と `Bench.of :: (unit -> 'b) -> i64 -> i64` を std に置く。
 - 理由: record や新しい型を作らずに、準備の分離と独自の計時（`Bench.now` を直接使う本体）の両方を表せる。実行器は `i64 (i64)` の関数だけを呼べばよい。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: `Bench.with` は `Bench.with_input` にした。`with` は `match ... with`・`try ... with`・`{ r with f = v }` の予約語で、`def with` も `Bench.with` も E0002 になる（`union`・`new` のような例外を parser・formatter・LSP・`vsc/` の文法に足すより、名前を変える方が影響が小さい）。名前は criterion の `bench_with_input`（入力を全反復で参照として共有する）に合わせた。`Bench.now` は引数なしの組み込み（`Math.pi()` と同じ `fn() -> i64`）で、`Bench.now()` と呼ぶ（`Bench.now ()` は空白のため E1006）。std の `Bench` は D-40 の opt-in モジュール（`stdlib::OPT_IN`）にし、識別子 `Bench` を書かないプログラムの型検査と IR は変えない。`Bench.of` は `with_input` を経由せず直接ループを書く（計測するループに余分な closure 呼び出しを入れないため）。`<-` は代入ではないので `=` で書いた。
 
 ### D3: `Bench.now` を使える範囲
 
@@ -663,6 +665,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: 設計の「データ構造」の形（引数 `$iterations`、型注釈付きの `$case` 束縛、`ExprKind::Call`）。std の bench は E1018。
 - 理由: 型の不一致が test と同じ E1003 で本体に出る。`$` 名は利用者の名前を隠さない。実行器の IR が test と同じ直接呼び出しで済む。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 合成は設計どおり（`check::bench_function`）。`FunctionOrigin.bench: Option<usize>` を足し、補助関数へ伝播させる（カバレッジの除外にも使う）。`polymorph::specialize` は bench 関数の要求を、ほかのすべての特殊化と Drop の固定点が終わった後に出す（先に出すと、通常ビルドとテストビルドの `$mono.N` が bench の数だけずれた）。その後半で初めて見つかった Drop 型の drop 関数は `CheckedModule.bench_drops` に記録し、`reachable_functions` は bench 実行器のときだけ根にする（bench だけが持つ型の drop glue が通常の成果物に出ていた）。ただし `$lambda.N`・`$instance.N` は関数の総数から付く名前なので、test を足したときと同じく、bench の宣言と opt-in の `Bench` モジュールの読み込みで番号がずれる。`tests/bench.rs` の 3 は「生成名の番号を出現順に振り直して一致」と「ラムダ・instance のないプログラムで byte 一致」を確かめる（bench を宣言しないプログラムは base と byte 一致。§実装と検証）。
 
 ### D5: 実行と統計
 
@@ -692,6 +695,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
   到達しない関数は 0。インスタンス化されない汎用関数の本体は、型付きの本体がなければ出さない。
 - 理由: 枝の block の入口だけで数えれば、生成の変更は 1 か所の helper と 5 か所の呼び出しで済み、1 行の `if` も llvm-cov と同じく実行されたと数えられる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: region の鍵は `(source, start, end, 種類)` にした（複数ファイルのプロジェクトと、同じ span の別の構文を分けるため）。`else` のない `if` は then の span を持つ `()` を else に生成するので、その else は region にも point にもしない。`for`（`ForRange`・`ForEach`）の本体と `try ... with` のハンドラーも region にした（ループの本体と、例外のときだけ走るハンドラーが外側の回数で数えられないように）。持ち上げたラムダと `task`（module `$lambda`・`$task`）は自分の本体を region にする（並列の lambda の中の行が外側の 1 回で数えられないように）。test と bench の除外は span の包含ではなく `FunctionOrigin.test`（Phase 1 で `bench` も）で行い、テスト本体の中のラムダも除く。`match` のパターンとガードの式は point にしない（腕が選ばれる前に走り、回数が定まらない）。数える関数では `lookup_match` の定数表を使わない（腕ごとの block がないため）。組み込み・case・export のラッパー（module `$builtin`・`$intrinsic`・`$to_string`・`$case`・`$export`）は数えない。
 
 ### D9: 出力形式
 
@@ -700,6 +704,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
   `samples`・`median`・`min`・`max` と `index`・`module`・`name`・`status`・`iterations`、最後に `"type":"summary"`）。カバレッジは lcov（PATH）と要約（文字または JSON の 1 行）。
 - 理由: PX01 の変換を欄の追加だけで済ませつつ、利用者のプロジェクトで知りえない `commit` や `rustc` を CLI に持ち込まない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 文字の行の `<index>` は `--list`・`--index` と同じ 0 始まり。要約の `<B>` は実行した件数で、1 件なら `1 benchmark`。`samples` は各標本の 1 回あたりの ms の配列。失敗した bench が標準エラーに書いた内容（最後の 64 KiB）は、その行の下（JSON は `output`）に出す。bench の実行器の C の終了コードは、引数の誤りが 2、負の時間が 3、標準出力の書き込みの失敗が 4。
 
 ### D10: D07 と E08
 
@@ -719,3 +724,92 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: 成功した test のカウンターだけを合算し、除いた件数を要約に出す。
 - 理由: トラップは `fwrite` の前にプロセスを終わらせる。signal handler での書き出しは async-signal-safe の制約と OS 差が大きい。
 - 状態: 既定案（実装者はこの案に従う）
+
+### D13: プロパティテストの置き場所と API（Phase 3）
+
+- 決定: 生成器と実行を opt-in の std モジュール `Gen`（D-40、`stdlib::OPT_IN`）に置く。実行は `Gen.for_all :: Display<'a> => Gen<'a> -> ('a -> bool) -> unit`（100 件）、`Gen.for_all_cases :: Display<'a> => i64 -> Gen<'a> -> ('a -> bool) -> unit`、`Gen.check :: (ref 'a -> string) -> i64 -> Gen<'a> -> ('a -> bool) -> unit`。`Test.property` は作らない。生成器は `Gen.i64()`・`Gen.i32()`・`Gen.range`・`Gen.bool()`・`Gen.f64()`・`Gen.char()`・`Gen.unicode_char()`・`Gen.string()`・`Gen.string_of`・`Gen.array`・`Gen.array_up_to`・`Gen.maybe`・`Gen.result`、組み合わせは `Gen.constant`・`Gen.map`・`Gen.bind`・`Gen.pair`・`Gen.one_of`・`Gen.element`。`Gen<'a>` は不透明（`stdlib::opaque_record`）。
+- 理由: `Test` は常に読み込む std モジュールなので、そこから `Gen` を使うと `Test` を書くすべてのプログラムが `Gen` の型検査を負う（D-40 に反する。`Test` を opt-in にしても `uses` で同じ）。生成器と実行を 1 つの opt-in モジュールに置けば、性質を書かないプログラムの型検査と IR は変わらない。名前は QuickCheck の `forAll` に合わせた。コンパイラへの追加は seed の組み込み 1 つ（D15）と実行器の出力の読み取り（D16）だけで、生成・縮小・報告は std の Tsuzuri で書いた。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D14: 生成と縮小の方式（選択の列）
+
+- 決定: Hypothesis 型の統合縮小。生成器はすべての乱択を上限付きの `i64u` の「選択」として記録しながら値を作り（上限 0 の選択は記録しない）、選択が小さいほど単純な値になるように作る（整数は「0 に最も近い値からの向き」と「距離」、配列は要素の前ごとの「続けるか」、`maybe`・`result`・`one_of`・`element` は先頭が最も単純）。縮小は記録を短く・小さくした候補を再生し（記録が尽きたら 0）、性質が失敗し続け、短長辞書順でより単純な記録だけを採用する。手順は「連続した 8〜1 個の選択の削除」「各選択の 0 への置き換えと二分探索」を変化がなくなるまで繰り返し、性質の実行は 1 つの反例につき最大 10,000 回。
+- 理由: QuickCheck 型の型ごとの縮小関数は `map` を通すと縮小できない。Hedgehog 型の rose tree は遅延の子を持つ再帰的な木が要り、Tsuzuri の record（再帰は union のノードだけ）で表しにくい。選択の列は関数値を持つ record 1 つと配列だけで書け、`map`・`bind` を通しても縮み、決定的。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D15: seed、件数、上書き
+
+- 決定: 既定の seed は時刻に依存しない固定値 `0x9E3779B97F4A7C15`（`11400714819323198485`、`llvm::DEFAULT_PROPERTY_SEED`）。i 番目（0 始まり）の値は `Random.pcg seed i` の stream で選ぶ。既定の件数は 100、`Gen.for_all_cases n` で性質ごとに変える。上書きは `tsuzuri test --seed N`（0〜18446744073709551615、test だけ。2 回目と範囲外は E2000）。環境変数は足さない。seed は std 専用の組み込み `Gen.__seed()`（`fn() -> i64u`。`Gen` 以外からは E1022）で、`emit_builtin` がコンパイル時の定数を返す。
+- 理由: 値の番号ごとに独立した stream なので、`--filter` で 1 件だけ動かしても同じ値になる。テスト名から seed を派生させないのは、性質を別のテストへ移しても結果を変えないためと、テスト名を std へ渡す仕組みを要さないため。純粋なコードは環境変数を読めない（IO が要る）ので、実行時ではなくコンパイル時の定数にした。CLI 1 つで再現の手順が完結する（GUIDE §6.8）。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D16: 失敗の報告
+
+- 決定: 反例を見つけたら縮小し、`property failed at case N of M (seed S)`・`counterexample: X`・`shrunk K times from Y` の 3 行を `Debug.print` で標準エラーへ書き、`assert false` でトラップする。`tsuzuri test` は子の標準エラーを読み取りスレッドで読み（末尾 64 KiB）、失敗したテストだけ失敗理由の下に字下げして出す（JSON は失敗行の `output`）。WASM は、`Gen` の関数を含むプログラムのテストモジュールだけを `debug_output` 付きで出し、`runtime/test-runner.mjs` は `tsuzuri_debug.write` だけを import として許して `writeSync(2, ...)` で書く。性質の中のトラップは縮小せず、そのまま失敗する。
+- 理由: テストは子プロセスなので、親が子の出力を読むのが最も単純で、ほかの言語の test 実行器（失敗したテストの出力だけを出す）とも同じ。`Gen` を使わないプログラムの WASM のテストモジュールは import なしのまま（D-18）。トラップは捕まえられない（例外は `@checked` だけ）ので、条件は `bool` で返す。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D17: 反例の表示
+
+- 決定: `Gen.for_all` は `Display<'a>` を要求し、`Display` のない型（`Maybe`・`Result`・`deriving (Display)` のない record など）には表示関数を受ける `Gen.check` を使う。
+- 理由: std の `Maybe`・`Result` に `Display` の instance を足すと、利用者が書ける `instance Display<Maybe<i64>>` と重なり、既存のコードを壊す（確かめた）。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D18: 既定の生成器の範囲
+
+- 決定: `Gen.i64()`・`Gen.i32()` は全範囲で、探索ではビット長を一様に選ぶ（小さい値が多い）。`Gen.range` はほぼ一様（剰余による偏りは範囲が 2^63 に近いときだけ）。`Gen.f64()` は整数部 52 ビットまでと 20 ビットの小数部の有限値で、NaN・無限大・`-0.0` は作らない。`Gen.char()` は印字 ASCII、`Gen.unicode_char()` はサロゲート以外の UTF-16 コード単位（どちらも `'a'` へ縮む）。配列と文字列の既定の上限は 32。
+- 理由: 既定の生成器は単純な値へ縮む順序を持つ必要があり、NaN や無限大は `x == x` のような自然な性質を壊す。全ビットパターンの浮動小数点は後続の課題。
+- 状態: 承認済み（2026-10-08、D-41）
+
+## 実装と検証（2026-10-08）
+
+HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従って Phase 2 → Phase 1 → Phase 3 の順にすべて実装した。
+
+### Phase 2: `tsuzuri test --coverage PATH`
+
+- `src/coverage.rs`（新規）: `plan`（region と point）、`merge`（長さ `8 * N` 以外は `Err`、飽和加算）、`files`（行は point の region の最大値、FN は本体の region の開始行）、`render_lcov`、`totals`・`render_summary`。単体テスト 4 件。
+- 生成: `llvm::emit_test_runner_covered(module, selected, plan)`（native だけ）が `Instrumentation.coverage` を `Globals.coverage` に置き、`FunctionEmitter::cover(kind, span)` が region の block の先頭で `atomicrmw add ptr getelementptr inbounds ([N x i64], ptr @tsuzuri_coverage_counters, i64 0, i64 K), i64 1 monotonic` を出す。呼び出しは関数の入口（`emit`）、`if` の 3 つの下げ方（`emit_tail`・`expression_mode`・`llvm_frame` の `frame_inner`）の両枝、`loop_body`（`while`・範囲 `for`・`for each` の共通部）、`match_expression` の腕、`try_expression` のハンドラー。末尾に `@tsuzuri_coverage_counters = global [N x i64] zeroinitializer` と `@tsuzuri_coverage_count = constant i64 N`。計画のない出力は変わらない（`counted` が偽なら `cover` は何も出さない）。
+- 実行器: `src/runtime/test-runner.c` は `-DTSUZURI_COVERAGE` のときだけ、テストが 0 を返したらカウンターを `TSUZURI_COVERAGE_FILE` へ書く（失敗は終了コード 3。Windows は `_CRT_SECURE_NO_WARNINGS`）。`src/test_runner.rs` は `TestOptions.coverage: bool`、`TestReport.coverage: Option<CoverageRun>`、`Runner.coverage`（カウンターのファイルの置き場）、`merge_coverage`、`check_coverage_output`（E2003）、`write_coverage`（`cache::real_path` の絶対 path で lcov を書く。E2001）。`build_runner` は引数 `coverage` を足しただけで、`None` のときの IR と clang の引数の順序は変わらない。
+- CLI: `--coverage PATH`（test だけ。2 回目、`--target wasm32/wasm64`、`--list` は終了コード 2 の E2000）、要約はテストの要約行の後（`--json` は最後の行 `{"type":"coverage",...}`）。lcov はテストが失敗しても書き、終了コードは 1 のまま。
+- 見直し（2026-10-08）: チケットの `TestOptions { coverage: Option<PathBuf> }` は `bool` にした（lcov を書くにはプロジェクトのソースが要るので、出力は `driver::write_coverage(project, run, path)` が行う）。E2E の `coverage_counts_parallel_work_exactly` は 1,000 要素ではなく 100,000 要素にした（`Parallel.map` は 4,096 要素ごとのチャンクなので、1,000 要素は 1 スレッドで終わり、原子性を試せない）。
+- 検証: `cargo test --locked --lib coverage::` 4 passed、`cargo test --locked --test coverage` 5 passed（lcov の完全一致は `-O0`／`-O3`、並列の 100,000 回）、`cargo test --locked --test test_runner` 8 passed、`--lib test_runner` 2 passed、GUIDE §3.1 の 4 件 passed、`cargo clippy --locked --all-targets -- -D warnings` 成功、`node scripts/check-docs.mjs`（test.md・usage.md・option.md）成功。
+- 生成 IR の不変（base `1182045` の release と比較）: examples と tests/fixtures の全プロジェクトの `build --emit llvm` を native／wasm32 × `-O0`／`-O3` で 324 組比較し、すべて byte 単位で一致。テスト実行器の IR（`emit_test_runner`、native と wasm32）も、base の木で同じ dump を作って 4 プロジェクト 8 組が一致。
+
+### Phase 1: `bench` 宣言、`std/Bench.tz`、`tsuzuri bench`
+
+- 字句・構文: `TokenKind::Bench`（予約語 `bench`。G19 は todo なので無条件）、`Program.benches: Vec<BenchDecl>`、`Parser::named_declaration(kind)`（test の診断文は不変）、`bench` を token 集合（`is_top_level_declaration_start`・文の終わり 2 か所・`parse_control`・formatter）に追加。formatter・LSP の document symbol（`bench "名前"`）・`computation.rs` の `.tt` の E1018 も test と同じ扱い。`lsp::KEYWORDS`（43 語）と `vsc/` の文法・`editor.ts`・`core.ts`・snippet に `bench`。
+- 検査: `CheckedBench`、`CheckedModule.benches`、`$bench.<index>`（D4）、std の bench は E1018 `embedded standard-library sources cannot declare benchmarks`。組み込み `Bench.now`（`fn() -> i64`）と `Bench.consume`（`'a -> unit`）。
+- 生成: `Entry::BenchRunner`、`llvm::emit_bench_runner`、`@tsuzuri_bench_count`・`@tsuzuri_bench_sample`。`Bench.now` は `declare i64 @tsuzuri_bench_now()` を intrinsics に登録し、bench 実行器以外の出力にあれば E1018。`Bench.consume` は alloca・store・`call void asm sideeffect "", "r,~{memory}"(ptr ...)`・`drop_value`（native と wasm32 の `-O0`／`-O3` で build でき、wasm の import は増えない。`-O3` の arm64 の機械語で、配列の書き込みと store が残ることを確かめた）。
+- 実行器: `src/runtime/bench-runner.c`（新規。時計・較正・予熱・標本）。`src/test_runner.rs` の `build_runner` の native 部分を `compile_native_runner`（C の入口、`-D`、必要なランタイム、リンク入力）に分けて test と bench で共有した（test の IR と clang の引数の順序は不変）。`BenchOptions`・`BenchResult`（`statistics`）・`BenchReport`・`run_benches(_linked)`・`execute_bench`・`parse_bench_output`・`run_captured`（stdout と stderr を読み取りスレッドで読み切る）。
+- CLI: `tsuzuri bench`（`Project::load_for_tests` と `analyze_all` を test と同じ分岐で使う）、`--samples N`（bench だけ。1〜1000）、`--list`・`--filter`・`--index`・`--json`・`-O`・`--target native`・リンク入力。`--filter`・`--list`・`--index` の誤用の文は `only valid with test or bench` に変えた。`bench` の `--cpu` と `--target wasm32/wasm64` は E2000。
+- 予約: std モジュール `Bench`（`RESERVED_MODULES` は 44 件。`stdlib::tests::reserves_the_d07_table` の期待値を 43 から 44 に更新した。新しい予約モジュールに伴う正当な変化）。
+- 検証: `cargo test --locked --test bench` 7 passed、`--test frontend` 4 passed（`bench_became_a_reserved_word` を追加）、`--lib` 118 passed（`test_runner::` の bench 単体テスト 3 件を含む）、`--test coverage` 5 passed、`--test test_runner` 8 passed、`--test formatter` 16 passed。`node scripts/check-docs.mjs`（bench.md・keywords.md・usage.md・option.md・diagnostics.md・strategy.md・index.md・test.md）成功。
+
+### Phase 3: プロパティテスト（`std/Gen.tz`、`tsuzuri test --seed`）
+
+- std: `std/Gen.tz`（新規。opt-in、`RESERVED_MODULES` は 45 件、`opaque_record` に `Gen.Gen`）。生成器・組み合わせ・`attempt`（生成と性質の実行）・`shrink`・`describe`・`check`・`for_all`・`for_all_cases` を Tsuzuri で書いた（D13・D14）。`Source` は `(Random.Pcg * [i64u] * bool * Vec<i64u>)` の組で、`match` で分解して受け渡す（非 Copy の record の更新は元の束縛を読めないため）。
+- コンパイラ: 組み込み `Gen.__seed`（`Builtin::GenSeed`、`fn() -> i64u`、`Gen` 以外は E1022）、`Globals.seed`・`Instrumentation.seed`、`llvm::TestRunnerOptions`（`wasm`・`memory64`・`coverage`・`seed`・`debug_output`）と `emit_test_runner_with`、`llvm::DEFAULT_PROPERTY_SEED`。`emit_test_runner_for`・`emit_test_runner_covered` はその wrapper にした（出力は不変）。
+- 実行器: `execute_test` を `run_captured`（Phase 1 の bench と共有。標準出力は捨て、標準エラーの末尾 64 KiB を読み切る）に切り替え、`TestResult.output`（失敗したテストだけ）を足した。CLI は失敗理由の下に字下げして出し、JSON は失敗行の `output`。`runtime/test-runner.mjs` は `tsuzuri_debug.write` だけを import として許し、`Gen` を含むプログラムの WASM のテストモジュールだけが `debug_output` 付きになる（D16）。
+- CLI: `tsuzuri test --seed N`（`TestOptions.seed`）。test 以外、2 回目、範囲外は E2000。
+- 見直し（2026-10-08）: 失敗したテストの標準エラーを表示するように変えた（これまでは捨てていた）。標準エラーに書く失敗したテストの報告に行が増えるが、成功したテストの出力、失敗理由、JSON の既存の欄は変わらない。`Debug.print` を使うテストの WASM の出力は、`Gen` を使わないプログラムでは従来どおり何も書かない。
+- 検証: `cargo test --locked --test property` 4 passed（20 個の失敗する性質の反例を手で求めた最も単純な値と完全一致で照合、2 回の実行・`-O3`・wasm32 で報告が一致、`--seed 7` と最大の seed、`--seed` の誤用、`Gen.__seed` と `Gen` の構築・フィールド参照の E1022、opt-in）。`tests/test_runner.rs` に `failed_tests_show_the_end_of_their_stderr` を追加（9 passed）。`src/main.rs` に `parses_bench_coverage_and_seed_options`。`node scripts/check-docs.mjs`（gen.md・test.md・index.md・random.md・usage.md・option.md）成功。
+
+### 最終の検証（3 つの Phase の後）
+
+- `RUST_MIN_STACK=4194304 cargo test --locked`: 84 個の `test result` で 876 passed、0 failed、0 ignored。既定の 2 MiB のスタックでは base `1182045` でも `tests/computations.rs` の `bounds_computation_syntax_and_expansion` がスタックあふれで止まるので、前回の PR と同じく `RUST_MIN_STACK` を付けた。
+- GUIDE §3.1 の 4 件（`--test polymorphism bounds_type_growing_polymorphic_recursion`、`--lib bounds_recursive_and_flat_expression_depth`、`--test computations bounds_nested_builder_expansion_not_just_source_syntax`、`honors_the_exact_specialization_limit`）は `RUST_MIN_STACK` なしで個別に実行し、どれも `running 1 test` で passed。
+- `cargo fmt --all -- --check` と `cargo clippy --locked --all-targets -- -D warnings` は成功。`git diff --check` は差なし。`sh scripts/check-runtime-includes.sh` は成功（33 files）。この script は `src/test_runner.rs` と `src/stdlib.rs` の `include_str!` を見ないので、`src/runtime/bench-runner.c`・`std/Bench.tz`・`std/Gen.tz` が Git で追跡され、ignore されていないことを別に確かめた。
+- Windows: rustup の stable（x86_64／aarch64-pc-windows-msvc の std 付き）で `cargo check --all-targets --target x86_64-pc-windows-msvc` と `--target aarch64-pc-windows-msvc` は成功。同じ target の `cargo clippy` は `src/lsp.rs:806` と `src/parser.rs:2043-2048` の `nonminimal_bool` 3 件を出すが、base `1182045` でも同じ 3 件が出る（この変更とは関係しない）。`test-runner.c`・`bench-runner.c` の Windows の分岐の動作は Windows の CI でしか確かめられない。
+- 生成 IR の不変: 最終の release と base `1182045` の release で、examples と tests/fixtures の全プロジェクトの `build --emit llvm` を native／wasm32 × `-O0`／`-O3` で比べ、328 組が byte 単位で一致し、差は 0。base が build できない 4 組は `Gen` を使う `tests/fixtures/property`。
+- E2E（Homebrew の LLVM 21 と lld を PATH の先頭に置き、release で実行）: `node tests/e2e.mjs`、`tests/cache.mjs`、`tests/wasm_memory.mjs`（wasm32 の `tsuzuri test`、`-O0`／`-O3`）、`tests/ffi_extensions.mjs`（リンク入力付きの `tsuzuri test`）、`tests/lsp_sessions.mjs`、`tests/docgen.mjs`（`tsuzuri doc std` が `Bench.tz`・`Gen.tz` を含む）がすべて成功。`tests/wasm64.mjs` は Node 24 が要るので実行していない。
+- 変更していない既存の問題: `tsuzuri build --trap-info` で最上位の `Debug.print [1, 2, 3]` を含むプログラムを build すると、clang が `use of undefined value '%tz.context'` で失敗する（base `1182045` でも同じ）。`tests/test_runner.rs` の `runner_rejects_malformed_indices_and_reaps_timed_out_children` は 1 秒の timeout を使うので、負荷が高いときに 1 回失敗した（再実行で成功）。wasm の build の `build cache disabled: tool version query failed` は base でも出る環境の問題。
+
+### 更新したドキュメント
+
+- `README.md`（`tsuzuri bench`・`--coverage`・`--seed`・`--samples`）、`docs/language.md`（予約語 `bench`、bench 宣言、`Bench`、カバレッジ、`Gen`）、`docs/architecture.md`（bench 実行器、カバレッジの計装、テスト実行器の seed と標準エラー）。
+- `_tsuzuri/language-reference/`: `built-in-types-and-modules/bench.md`（新規）・`gen.md`（新規）・`test.md`（カバレッジ、プロパティテスト、失敗したテストの標準エラー）・`random.md`、`compiler/usage.md`・`option.md`（`bench` の列、`--samples`・`--coverage`・`--seed`）・`diagnostics.md`、`values-and-functions/keywords.md`（`bench`）、`languages/strategy.md`（GUIDE §8.1 の `guides/performance.md` の移行先）、`index.md`。`docs/benchmarks.md` はリポジトリーの比較測定の説明でありこのチケットの表にないので変えていない。
+
+### 変更したファイル
+
+- 新規: `src/coverage.rs`、`src/runtime/bench-runner.c`、`std/Bench.tz`、`std/Gen.tz`、`tests/coverage.rs`、`tests/bench.rs`、`tests/property.rs`、`tests/fixtures/coverage/Calc.tz`、`tests/fixtures/property/Props.tz`、上記の 2 ページ。
+- 変更: `src/{bindings,check,computation,driver,formatter,lexer,lib,llvm,llvm_control,llvm_exception,llvm_frame,lsp,main,parse_control,parser,polymorph,semantic,stdlib,syntax,test_runner}.rs`、`src/runtime/test-runner.c`・`test-runner.mjs`、`tests/frontend.rs`・`tests/test_runner.rs`、`vsc/syntaxes/tsuzuri.tmLanguage.json`・`vsc/snippets/tsuzuri.json`・`vsc/src/core.ts`・`vsc/src/editor.ts`、このチケット。

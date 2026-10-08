@@ -1115,6 +1115,16 @@ pub enum Builtin {
     /// `Arena.__next_id :: i64` takes the next arena id from a process-wide atomic counter (C10).
     /// Only the std `Arena` module may call it.
     ArenaNextId,
+    /// `Bench.now :: i64`, called as `Bench.now()`: nanoseconds of a monotonic clock from an
+    /// arbitrary origin. Only the `tsuzuri bench` runner defines its clock (G18 D3).
+    BenchNow,
+    /// `Bench.consume :: 'a -> unit` drops its argument after an optimization barrier, so the
+    /// value and the memory it reaches count as observed (G18 D6).
+    BenchConsume,
+    /// `Gen.__seed :: i64u`, called as `Gen.__seed()`: the seed of property tests, from
+    /// `tsuzuri test --seed` or `llvm::DEFAULT_PROPERTY_SEED`. Only the std `Gen` module may
+    /// call it (G18 Phase 3).
+    GenSeed,
     /// `Rc.new :: 'a -> Rc<'a>` moves a value into a new reference-counted block (C10 Phase 2).
     RcNew,
     /// `Rc.share :: ref Rc<'a> -> Rc<'a>` adds a strong pointer to the same block.
@@ -1390,6 +1400,9 @@ impl Builtin {
         Self::Not,
         Self::Ignore,
         Self::ArenaNextId,
+        Self::BenchNow,
+        Self::BenchConsume,
+        Self::GenSeed,
         Self::RcNew,
         Self::RcShare,
         Self::RcGet,
@@ -1596,6 +1609,9 @@ impl Builtin {
             Self::Not => "not",
             Self::Ignore => "ignore",
             Self::ArenaNextId => "Arena.__next_id",
+            Self::BenchNow => "Bench.now",
+            Self::BenchConsume => "Bench.consume",
+            Self::GenSeed => "Gen.__seed",
             Self::RcNew => "Rc.new",
             Self::RcShare => "Rc.share",
             Self::RcGet => "Rc.get",
@@ -2406,8 +2422,11 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
-            Self::OwnedDrop | Self::Ignore => (vec![a()], Concrete(Type::Unit), Vec::new()),
-            Self::ArenaNextId => (Vec::new(), Concrete(Type::I64), Vec::new()),
+            Self::OwnedDrop | Self::Ignore | Self::BenchConsume => {
+                (vec![a()], Concrete(Type::Unit), Vec::new())
+            }
+            Self::ArenaNextId | Self::BenchNow => (Vec::new(), Concrete(Type::I64), Vec::new()),
+            Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
             Self::RcNew
             | Self::RcShare
             | Self::RcGet
@@ -2646,6 +2665,8 @@ pub struct FunctionOrigin {
     pub provenance: Provenance,
     pub parent: Option<usize>,
     pub test: Option<usize>,
+    /// The `bench` declaration that the function belongs to (G18).
+    pub bench: Option<usize>,
     /// The CPU levels that `@cpu` also compiles the function for, bit `L` for level `L` of
     /// `syntax::CPU_TARGETS` (F08 Phase 3). Generated helpers have none.
     pub cpu: u8,
@@ -2659,6 +2680,7 @@ impl FunctionOrigin {
             provenance: Provenance::User,
             parent: None,
             test: None,
+            bench: None,
             cpu: 0,
         }
     }
@@ -2694,10 +2716,15 @@ pub struct CheckedModule {
     pub functions: Vec<CheckedFunction>,
     pub entry: Option<usize>,
     pub tests: Vec<CheckedTest>,
+    /// The `bench` declarations, whose functions take an iteration count and return nanoseconds.
+    pub benches: Vec<CheckedBench>,
     /// Warnings in source traversal order; they never fail a check or build.
     pub warnings: Vec<Diagnostic>,
     /// Concrete Drop type -> specialized `Drop.drop` function id. Empty without Drop instances.
     pub user_drops: BTreeMap<Type, usize>,
+    /// The `user_drops` functions of types that only bench code holds; only the bench runner
+    /// emits them (G18).
+    pub bench_drops: BTreeSet<usize>,
     /// A14: the slot functions of each vtable in slot order, by vtable key
     /// (`DynType::vtable_key`) and stored type. Specialization fills it.
     pub vtables: Vtables,
@@ -2722,6 +2749,17 @@ pub struct DynLayout {
 
 #[derive(Clone, Debug)]
 pub struct CheckedTest {
+    /// The module as source code writes it, as `Geometry::Point`.
+    pub module: String,
+    pub name: String,
+    pub index: usize,
+    pub function: usize,
+    pub span: Span,
+}
+
+/// A `bench` declaration (G18). Its function `$bench.<index>` has type `i64 -> i64`.
+#[derive(Clone, Debug)]
+pub struct CheckedBench {
     /// The module as source code writes it, as `Geometry::Point`.
     pub module: String,
     pub name: String,
@@ -3565,6 +3603,69 @@ fn key_path(qualified: &str) -> String {
 /// `Sample::Features::Shape` for `Sample.Features.Shape`.
 fn namespace_display(dotted: &str) -> String {
     dotted.replace('.', "::")
+}
+
+/// `$bench.<index> ($iterations: i64) -> i64 = { let $case: i64 -> i64 = body; $case $iterations }`
+/// (G18 D4): a body of another type reports E1003 where it is written, and the runner calls the
+/// function directly. Names that start with `$` cannot hide the user's names.
+fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDecl {
+    let span = bench.body.span;
+    let named = |text: &str| Ident {
+        text: text.into(),
+        span,
+        provenance: Provenance::Generated,
+    };
+    let i64_type = || TypeExpr {
+        kind: TypeExprKind::Named("i64".into()),
+        span,
+    };
+    let name = |text: &str| Expr {
+        kind: ExprKind::Name(named(text)),
+        span,
+        depth: 1,
+    };
+    let call = Expr {
+        kind: ExprKind::Call(Box::new(name("$case")), vec![name("$iterations")]),
+        span,
+        depth: 2,
+    };
+    FunctionDecl {
+        doc: None,
+        name: Ident {
+            text: format!("$bench.{index}"),
+            span: bench.name_span,
+            provenance: Provenance::Generated,
+        },
+        regions: Vec::new(),
+        recursion: None,
+        visibility: Visibility::Private,
+        exported: false,
+        parameters: vec![Parameter {
+            name: named("$iterations"),
+            ty: i64_type(),
+            mutable: false,
+            json: None,
+        }],
+        result: i64_type(),
+        constraints: Vec::new(),
+        body: Expr {
+            kind: ExprKind::Block {
+                bindings: vec![Binding {
+                    name: named("$case"),
+                    mutable: false,
+                    using: false,
+                    annotation: Some(TypeExpr {
+                        kind: TypeExprKind::Function(vec![i64_type()], Box::new(i64_type())),
+                        span,
+                    }),
+                    value: bench.body.clone(),
+                }],
+                result: Box::new(call),
+            },
+            span,
+            depth: bench.body.depth.max(2) + 1,
+        },
+    }
 }
 
 /// A key-qualified declaration as source code writes it from the root
@@ -5163,6 +5264,31 @@ fn check_modules_collect(
             ));
         }
     }
+    let mut benches = Vec::new();
+    let mut bench_functions = BTreeMap::new();
+    for module in modules {
+        for bench in &module.program.benches {
+            if module.origin == ModuleOrigin::Std {
+                diagnostics.push(Diagnostic::new(
+                    "E1018",
+                    "embedded standard-library sources cannot declare benchmarks",
+                    bench.name_span,
+                ));
+                continue;
+            }
+            let index = benches.len();
+            let function = function_declarations.len();
+            bench_functions.insert(function, index);
+            benches.push(CheckedBench {
+                module: namespace_display(module.name),
+                name: bench.name.clone(),
+                index,
+                function,
+                span: bench.name_span,
+            });
+            function_declarations.push((module.name.into(), bench_function(bench, index)));
+        }
+    }
     for (id, (module, record)) in record_declarations.iter().enumerate() {
         if diagnostics.is_full() {
             break;
@@ -5585,7 +5711,7 @@ fn check_modules_collect(
         if diagnostics.is_full() {
             break;
         }
-        if test_functions.contains_key(&id) {
+        if test_functions.contains_key(&id) || bench_functions.contains_key(&id) {
             continue;
         }
         let qualified = format!("{module}.{}", function.name.text);
@@ -6031,6 +6157,7 @@ fn check_modules_collect(
                 origin: FunctionOrigin {
                     provenance: function.name.provenance,
                     test: test_functions.get(&id).copied(),
+                    bench: bench_functions.get(&id).copied(),
                     cpu: cpu_levels.get(&id).copied().unwrap_or(0),
                     ..FunctionOrigin::source(names.origin(module))
                 },
@@ -6232,8 +6359,10 @@ fn check_modules_collect(
         functions,
         entry,
         tests,
+        benches,
         warnings,
         user_drops: BTreeMap::new(),
+        bench_drops: BTreeSet::new(),
         vtables: BTreeMap::new(),
         dyn_layouts: BTreeMap::new(),
         uses_dyn: modules
@@ -6523,8 +6652,10 @@ fn recovery_module(
         functions,
         entry: None,
         tests: Vec::new(),
+        benches: Vec::new(),
         warnings: Vec::new(),
         user_drops: BTreeMap::new(),
+        bench_drops: BTreeSet::new(),
         vtables: BTreeMap::new(),
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,

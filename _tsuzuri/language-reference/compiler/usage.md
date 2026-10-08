@@ -271,6 +271,22 @@ WASM のテストは PATH の `node` を使います。配布物の `bin/` か�
 
 `--index N -g -o PATH` は、テスト N だけをデバッグ情報付きのランナーとして `PATH` にビルドし、実行しません。デバッガーでランナーを引数 `0` で起動します（[テストをデバッグする](debugging.md#テストをデバッグする)）。
 
+失敗したテストが標準エラーに書いた内容は、失敗理由の下に字下げして出ます（成功したテストの出力は出ません）。プロパティテスト（[Gen](../built-in-types-and-modules/gen.md)）の反例もここに出ます。`--seed N` はプロパティテストの seed を変えます。既定は固定の `11400714819323198485` で、同じ seed なら同じ値を試します。
+
+`--coverage PATH` は、成功したテストが通った利用者のコードの行と関数を、lcov 形式で `PATH` に書きます。テストの要約の後に `coverage: 3/4 lines (75.0%), 1/2 functions` のような 1 行が出ます。ネイティブだけで、`--list` や `-g` とは組み合わせられません。数え方は [Test のカバレッジ](../built-in-types-and-modules/test.md#カバレッジ) にあります。
+
+### bench
+
+`bench "名前" = 本体` を、bench ごとに別プロセスで 1 件ずつ計測します。既定の最適化は `-O3`、標本は 11 個（`--samples N` で 1〜1000）です。1 標本が 10 ms になるまで反復回数を倍にし、予熱の 1 標本の後に測った 1 回あたりの中央値・最小・最大を出します。速さの合否はありません。
+
+```text
+bench 0 Speed.total 1e6: median 312.408 us (min 305.917 us, max 330.142 us; 11 samples of 32 iterations)
+
+1 benchmark; 0 failed; 0 ignored
+```
+
+`--list`、`--filter`、`--index`、`--json` は `test` と同じ使い方です。ネイティブだけで、`--target wasm32` は `E2000` です。トラップ・300 秒の時間切れ・負の時間は失敗で、`E2005` と終了コード 1 になります。書き方と出力の詳細は [Bench](../built-in-types-and-modules/bench.md) にあります。
+
 ### fmt
 
 `.tz`、`.tt`、`.tc` をその場で整形します。意味は変えません。`--check` は書き戻さず、差分があるファイルを `パス: not formatted` と出して終了コード 1 にします。CI 向きです。最適化や警告のフラグは受け付けません。

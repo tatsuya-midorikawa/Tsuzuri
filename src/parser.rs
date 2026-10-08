@@ -31,6 +31,7 @@ fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
             | TokenKind::Type
             | TokenKind::Const
             | TokenKind::Test
+            | TokenKind::Bench
             | TokenKind::Class
             | TokenKind::Instance
             | TokenKind::Export
@@ -286,6 +287,7 @@ impl Parser<'_> {
             instances: Vec::new(),
             active_patterns: Vec::new(),
             tests: Vec::new(),
+            benches: Vec::new(),
             entry: None,
             dyn_types: Vec::new(),
             cpu_attributes: Vec::new(),
@@ -377,6 +379,8 @@ impl Parser<'_> {
                 program.constants.push(declaration);
             } else if self.at(&TokenKind::Test) {
                 program.tests.push(self.test_declaration()?);
+            } else if self.at(&TokenKind::Bench) {
+                program.benches.push(self.bench_declaration()?);
             } else if self.eat(&TokenKind::Union) {
                 let mut declaration = self.union_declaration(visibility, column)?;
                 declaration.doc = doc;
@@ -2330,6 +2334,7 @@ impl Parser<'_> {
                             | TokenKind::Private
                             | TokenKind::Const
                             | TokenKind::Test
+                            | TokenKind::Bench
                     ))
                     || indent.is_some_and(|indent| newline && self.column(token.span) < indent)
                 {
@@ -2437,6 +2442,7 @@ impl Parser<'_> {
                             | TokenKind::Private
                             | TokenKind::Const
                             | TokenKind::Test
+                            | TokenKind::Bench
                             | TokenKind::RightParen
                             | TokenKind::RightBracket
                             | TokenKind::RightList
@@ -3472,6 +3478,28 @@ impl Parser<'_> {
     }
 
     fn test_declaration(&mut self) -> Result<TestDecl, Diagnostic> {
+        let (name, name_span, body, span) = self.named_declaration("test")?;
+        Ok(TestDecl {
+            name,
+            name_span,
+            body,
+            span,
+        })
+    }
+
+    fn bench_declaration(&mut self) -> Result<BenchDecl, Diagnostic> {
+        let (name, name_span, body, span) = self.named_declaration("bench")?;
+        Ok(BenchDecl {
+            name,
+            name_span,
+            body,
+            span,
+        })
+    }
+
+    /// `kind "name" = body [;]`, the shape of `test` and `bench` declarations: the name, its
+    /// span, the body, and the declaration's span.
+    fn named_declaration(&mut self, kind: &str) -> Result<(String, Span, Expr, Span), Diagnostic> {
         let start = self.take().span;
         let token = self.take();
         let name = match token.kind {
@@ -3479,7 +3507,7 @@ impl Parser<'_> {
                 String::from_utf16(&units).map_err(|_| {
                     Diagnostic::new(
                         "E0002",
-                        "test names must contain valid Unicode scalars",
+                        format!("{kind} names must contain valid Unicode scalars"),
                         token.span,
                     )
                 })?
@@ -3488,21 +3516,16 @@ impl Parser<'_> {
             _ => {
                 return Err(Diagnostic::new(
                     "E0002",
-                    "expected a string literal test name",
+                    format!("expected a string literal {kind} name"),
                     token.span,
                 ));
             }
         };
-        self.expect(&TokenKind::Equal, "'=' after the test name")?;
+        self.expect(&TokenKind::Equal, &format!("'=' after the {kind} name"))?;
         let body = self.body_expression()?;
         let span = start.through(body.span);
         self.eat(&TokenKind::Semicolon);
-        Ok(TestDecl {
-            name,
-            name_span: token.span,
-            body,
-            span,
-        })
+        Ok((name, token.span, body, span))
     }
 
     fn identifier_expression(
