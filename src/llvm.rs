@@ -19,6 +19,7 @@ pub(crate) mod call_specialization;
 mod control;
 #[path = "llvm_debug.rs"]
 mod debug;
+pub use debug::with_codeview;
 #[path = "llvm_frame.rs"]
 mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
@@ -648,14 +649,17 @@ pub fn emit_test_runner(
     selected: &[usize],
     wasm: bool,
 ) -> Result<String, Diagnostic> {
-    emit_test_runner_for(module, selected, wasm, false)
+    emit_test_runner_for(module, selected, wasm, false, None)
 }
 
+/// The test runner of the `selected` tests. `debug` holds the source map and whether the code
+/// is optimized when the runner carries debug information for a debugger (G16 Phase 2).
 pub(crate) fn emit_test_runner_for(
     module: &CheckedModule,
     selected: &[usize],
     wasm: bool,
     memory64: bool,
+    debug: Option<(&[TrapSource<'_>], bool)>,
 ) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
         return Err(Diagnostic::new(
@@ -672,6 +676,7 @@ pub(crate) fn emit_test_runner_for(
         false,
         Instrumentation {
             memory64,
+            debug,
             ..Instrumentation::default()
         },
     )
@@ -2463,6 +2468,8 @@ struct FunctionEmitter<'a, 'b> {
     frame_locals: BTreeMap<usize, Vec<Frame>>,
     globals: &'b mut Globals,
     current_span: Span,
+    /// The span that debug locations use instead of `current_span` (G16 D7).
+    debug_span: Option<Span>,
     trap_kind: Option<TrapKind>,
     drop_pending: Option<String>,
     clone_pending: Option<String>,
@@ -2512,6 +2519,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             intrinsics,
             globals,
             current_span: function.body.span,
+            debug_span: None,
             trap_kind: None,
             drop_pending: None,
             clone_pending: None,
@@ -2570,9 +2578,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         {
             self.note_copies = !self.symbol.starts_with("@tz.specialized.");
         }
-        self.debug_scope = self
-            .globals
-            .debug_subprogram(self.module, self.function, &self.symbol);
+        self.debug_scope =
+            self.globals
+                .debug_subprogram(self.module, self.function, &self.symbol, false);
         self.single_use = call_specialization::single_use_locals(&self.function.body);
         self.ranges = crate::ranges::analyze(self.module, self.function);
         self.block = "loop".into();
@@ -2717,7 +2725,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         if let Some(scope) = self.debug_scope
             && !self.debug_switch
-            && let Some(location) = self.globals.debug_location(scope, self.current_span)
+            && let Some(location) = self
+                .globals
+                .debug_location(scope, self.debug_span.unwrap_or(self.current_span))
         {
             let _ = write!(text, ", !dbg !{location}");
         }
@@ -2879,7 +2889,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.debug_declarations.push(format!("call void @llvm.dbg.declare(metadata ptr {slot}, metadata !{variable}, metadata !DIExpression()), !dbg !{location}"));
             }
         }
-        self.instruction(format!("store {} {value}, ptr {slot}", self.ty(&local.ty)));
+        let store = format!("store {} {value}, ptr {slot}", self.ty(&local.ty));
+        if self.debug_scope.is_some()
+            && self
+                .function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.id == local.id)
+        {
+            // As in Clang, the parameters' stores have no location: they belong to the prologue,
+            // so a breakpoint on the function stops where the parameters have their values (G16 D7).
+            self.lines.push(format!("  {store}"));
+        } else if local.span == Span::default() {
+            self.instruction(store);
+        } else {
+            // A binding's store is located at its declaration, so stepping does not go back to
+            // the start of the enclosing block (G16 D7).
+            let previous = std::mem::replace(&mut self.current_span, local.span);
+            self.instruction(store);
+            self.current_span = previous;
+        }
         self.locals.insert(local.id, slot.clone());
         if local.ty.needs_drop(&self.module.types()) && !self.borrowed_locals.contains(&local.id) {
             self.scopes
@@ -3289,10 +3318,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 FunctionRef::Builtin(_) => unreachable!("builtin values are lifted before LLVM"),
             },
             TypedExprKind::Closure(id, captures) => {
+                // A capture's span is its local's declaration, but the closure reads it here.
+                let located = self.debug_span.replace(expression.span);
                 let values: Vec<_> = captures
                     .iter()
                     .map(|capture| self.expression(capture))
                     .collect();
+                self.debug_span = located;
                 self.make_closure(*id, &values)
             }
             TypedExprKind::Unary(operator, operand) => {

@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, commandArguments, defaultNamespace, exists, isNamespace, jsonLines, outputPath, projectRoot, supportsDebug } from './core';
+import { Action, commandArguments, defaultNamespace, exists, isNamespace, jsonLines, lldbLaunch, outputPath, projectRoot, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
 export async function projectFor(resource?: vscode.Uri): Promise<string> {
@@ -18,6 +18,11 @@ export async function projectFor(resource?: vscode.Uri): Promise<string> {
 		return path.resolve(folder?.uri.fsPath ?? path.dirname(resource.fsPath), configured);
 	}
 	return projectRoot(resource.fsPath, folder?.uri.fsPath);
+}
+
+/** The Tsuzuri LLDB formatters that the extension ships. */
+export function formatters(context: vscode.ExtensionContext): string {
+	return context.asAbsolutePath(path.join('resources', 'lldb', 'tsuzuri_lldb.py'));
 }
 
 export function reportError(error: unknown, output: vscode.OutputChannel) {
@@ -173,13 +178,9 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 				if (result.code !== 0) { throw new Error('Tsuzuri debug build failed. See Problems and Tsuzuri Output.'); }
 				if (controller.signal.aborted) { return undefined; }
 			} finally { cancellation.dispose(); }
-			const program = outputPath(root, 'debug');
 			const resolved: vscode.DebugConfiguration = {
-				...configuration, type: 'lldb', request: 'launch', name: configuration.name || 'Debug Tsuzuri',
-				program, cwd: root, sourceLanguages: ['c'],
-				terminal: configuration.terminal ?? 'integrated',
-				preRunCommands: [...(configuration.preRunCommands ?? []),
-					...(process.platform === 'darwin' ? [`target symbols add ${JSON.stringify(`${program}.dwarf`)}`] : [])],
+				...configuration, ...lldbLaunch(outputPath(root, 'debug'), formatters(context), configuration), cwd: root,
+				name: configuration.name || 'Debug Tsuzuri',
 			};
 			delete resolved.project;
 			return resolved;
@@ -230,5 +231,5 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			} catch (error) { reportError(error, output); }
 		}),
 	);
-	return { publishDiagnostics };
+	return { publishDiagnostics, ensureDebugger };
 }

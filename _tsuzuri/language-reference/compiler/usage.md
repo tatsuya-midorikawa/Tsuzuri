@@ -49,11 +49,12 @@ tsuzuri-0.1.0-darwin-arm64/
   manifest.json
   bin/       tsuzuri  tsuzuri-clang  clang  wasm-ld  llvm-link  dsymutil
   lib/
+  share/     lldb/tsuzuri_lldb.py  natvis/tsuzuri.natvis
   zig/
   licenses/
 ```
 
-Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。
+Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
 
 同じディレクトリに置いた `<archive>.sha256` は、`shasum -a 256 -c`（Linux は `sha256sum -c`）で読めます。これはダウンロード時の破損を検査するものです。配布元そのものの真正性の検証は別の手段で行います。
 
@@ -267,6 +268,8 @@ not ok 1 - Main two plus two
 ```
 
 WASM のテストは PATH の `node` を使います。配布物の `bin/` からは探しません。
+
+`--index N -g -o PATH` は、テスト N だけをデバッグ情報付きのランナーとして `PATH` にビルドし、実行しません。デバッガーでランナーを引数 `0` で起動します（[テストをデバッグする](debugging.md#テストをデバッグする)）。
 
 ### fmt
 

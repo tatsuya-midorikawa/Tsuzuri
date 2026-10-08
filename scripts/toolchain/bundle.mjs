@@ -129,6 +129,9 @@ export async function verify(destination) {
     if (!await exists(file)) { throw new Error(`Missing required tool: ${name}`); }
     if (process.platform !== 'win32' && !((await lstat(file)).mode & 0o111)) { throw new Error(`Tool is not executable: ${name}`); }
   }
+  for (const file of ['share/lldb/tsuzuri_lldb.py', 'share/natvis/tsuzuri.natvis']) {
+    if (!await exists(path.join(destination, ...file.split('/')))) { throw new Error(`Missing debugger support file: ${file}`); }
+  }
   run(path.join(destination, 'bin', `tsuzuri${suffix}`), ['--version']);
   console.log(`Verified ${host}: ${files.length} files, ${manifest.id}`);
   return manifest;
@@ -308,6 +311,12 @@ export async function bundle(destination) {
       path.join(repository, 'scripts', 'toolchain', 'clang.rs'), '-o', path.join(stage, 'bin', `tsuzuri-clang${suffix}`)]);
     if (process.platform !== 'win32') { await chmod(path.join(stage, 'bin', 'tsuzuri'), 0o755); }
     await copyFile(path.join(repository, 'LICENSE'), path.join(stage, 'licenses', 'Tsuzuri.txt'));
+    // The LLDB formatters for `-g` builds, which `command script import` loads, and the natvis views
+    // that MSVC links of `-g` objects embed with /NATVIS (G16).
+    await mkdir(path.join(stage, 'share', 'lldb'), { recursive: true });
+    await copyFile(path.join(repository, 'scripts', 'lldb', 'tsuzuri_lldb.py'), path.join(stage, 'share', 'lldb', 'tsuzuri_lldb.py'));
+    await mkdir(path.join(stage, 'share', 'natvis'), { recursive: true });
+    await copyFile(path.join(repository, 'src', 'runtime', 'tsuzuri.natvis'), path.join(stage, 'share', 'natvis', 'tsuzuri.natvis'));
     await copyFile(path.join(repository, 'src', 'runtime', 'musl', 'COPYRIGHT'), path.join(stage, 'licenses', 'musl-COPYRIGHT.txt'));
     await crateLicenses(rustHost, path.join(stage, 'licenses'));
     const toolVersions = Object.fromEntries(llvmTools.map(name => [name, versionLine(path.join(stage, 'bin', name + suffix))]));

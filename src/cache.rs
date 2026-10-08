@@ -117,6 +117,12 @@ fn hash_output_path(
         let name = output.file_name().unwrap_or_default();
         hash.field("shared-library-name", name.as_encoded_bytes());
     }
+    // A Windows debug executable names its PDB, `<output>.pdb`, without a directory (G16).
+    if cfg!(windows) && options.debug_info && options.emit == Emit::Executable {
+        let pdb = crate::driver::pdb_path(output);
+        let name = pdb.file_name().unwrap_or_default();
+        hash.field("pdb-name", name.as_encoded_bytes());
+    }
     Ok(())
 }
 

@@ -589,7 +589,7 @@ tsuzuri test tests/
 tsuzuri test tests/ --filter "加算" -O3 --target native
 ```
 
-テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。
+テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`tsuzuri test tests/ --index 1 -g -o runner` は 1 件のテストをデバッグ情報付きのランナーとしてビルドし、デバッガーで `runner 0` として起動できます（VS Code の Testing ビューの **Debug** も同じ仕組みです）。
 
 ### ドキュメント生成 (`tsuzuri doc`)
 
@@ -610,7 +610,7 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### デバッグ情報と出力仕様
 
-- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。
+- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます。Windows で MSVC のリンカーを使う場合は CodeView も出し、実行ファイルの隣に PDB を書いて natvis の表示を埋め込みます（[デバッグ](_tsuzuri/language-reference/compiler/debugging.md)）。
 - **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。
 - **コンソールの出力とフォーマット**: トップレベルの結果式が評価された場合、その型が `Display` を実装していれば文字列表現が標準出力に表示されます。浮動小数点数は最短で往復可能な十進表現で出力され、ネイティブと WASM で完全に一致します。
 
@@ -689,7 +689,7 @@ tsuzuri lsp
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
-| `-g`, `--debug-info` | DWARF デバッグ情報を付与します。 |
+| `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |
 | `--wasm-max-memory SIZE` | WASM の最大線形メモリサイズ（既定: 16MiB、例: `256MiB`）。 |
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
@@ -736,6 +736,8 @@ node tests/os.mjs target/release/tsuzuri
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
+node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
+node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri

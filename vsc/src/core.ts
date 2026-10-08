@@ -62,9 +62,40 @@ export function commandArguments(action: Action, root: string, optimization = 3,
 	return args;
 }
 
+/** Where the Debug test profile builds the runner of one test (G16 Phase 2). */
+export function testRunnerPath(root: string, platform: string = process.platform): string {
+	return path.join(root, '.tsuzuri', 'test', platform === 'win32' ? 'runner.exe' : 'runner');
+}
+
+/** The compiler arguments that build test `index` of `root` for a debugger without running it. */
+export function testDebugArguments(root: string, index: number, platform: string = process.platform): string[] {
+	return ['test', root, '--index', String(index), '-g', '-o', testRunnerPath(root, platform), '--json'];
+}
+
 export function outputPath(root: string, action: Action): string {
 	return path.join(root, '.tsuzuri', action === 'debug' ? 'debug' : 'bin',
 		`Main${action === 'wasm' ? '.wasm' : process.platform === 'win32' ? '.exe' : ''}`);
+}
+
+export interface LaunchOptions {
+	terminal?: string;
+	initCommands?: string[];
+	preRunCommands?: string[];
+}
+
+/**
+ * The CodeLLDB launch of the `-g` build `program`. The Tsuzuri LLDB formatters at `formatters` load before
+ * the user's init commands, and on macOS the DWARF that the build keeps beside the executable is added.
+ */
+export function lldbLaunch(program: string, formatters: string, configuration: LaunchOptions & Record<string, unknown> = {}, platform: string = process.platform) {
+	// LLDB reads backslashes in a quoted argument as escapes; Windows accepts forward slashes.
+	return {
+		type: 'lldb', request: 'launch', program, sourceLanguages: ['c'],
+		terminal: configuration.terminal ?? 'integrated',
+		initCommands: [`command script import ${JSON.stringify(formatters.replaceAll('\\', '/'))}`, ...(configuration.initCommands ?? [])],
+		preRunCommands: [...(configuration.preRunCommands ?? []),
+			...(platform === 'darwin' ? [`target symbols add ${JSON.stringify(`${program}.dwarf`)}`] : [])],
+	};
 }
 
 /** A PascalCase namespace for a folder name such as `my-app`, or `App` when it has no usable words. */

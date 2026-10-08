@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, projectRoot, reservedWords, runProcess, supportsDebug } from '../core';
+import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, testDebugArguments } from '../core';
 
 test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
 	assert.equal(supportsDebug('win32', 'arm64'), false);
@@ -26,6 +26,24 @@ test('compiler arguments keep paths literal and debug builds unoptimized', () =>
 	assert.ok(!args.includes('-O3'));
 	assert.deepEqual(commandArguments('check', root, 0, true), ['check', root, '--deny-warnings']);
 	assert.throws(() => commandArguments('build', root, 4));
+});
+
+test('debug launches load the LLDB formatters first and add macOS DWARF', () => {
+	const launch = lldbLaunch('/p/.tsuzuri/debug/Main', '/ext/resources/lldb/tsuzuri_lldb.py', { initCommands: ['settings set a b'], preRunCommands: ['c'] }, 'darwin');
+	assert.deepEqual(launch.initCommands, ['command script import "/ext/resources/lldb/tsuzuri_lldb.py"', 'settings set a b']);
+	assert.deepEqual(launch.preRunCommands, ['c', 'target symbols add "/p/.tsuzuri/debug/Main.dwarf"']);
+	assert.equal(launch.type, 'lldb');
+	assert.equal(launch.terminal, 'integrated');
+	const windows = lldbLaunch('C:\\p\\Main.exe', 'C:\\Program Files\\ext\\resources\\lldb\\tsuzuri_lldb.py', {}, 'win32');
+	assert.deepEqual(windows.initCommands, ['command script import "C:/Program Files/ext/resources/lldb/tsuzuri_lldb.py"']);
+	assert.deepEqual(windows.preRunCommands, []);
+	assert.deepEqual(lldbLaunch('/p/Main', '/f.py', {}, 'linux').preRunCommands, []);
+});
+
+test('debugging a test builds that test alone with debug information at a fixed runner path', () => {
+	const root = path.join(os.tmpdir(), 'space & quote\' project');
+	assert.deepEqual(testDebugArguments(root, 3, 'linux'), ['test', root, '--index', '3', '-g', '-o', path.join(root, '.tsuzuri', 'test', 'runner'), '--json']);
+	assert.equal(testDebugArguments(root, 0, 'win32')[6], path.join(root, '.tsuzuri', 'test', 'runner.exe'));
 });
 
 test('new projects suggest a PascalCase namespace and accept identifiers joined by ::', () => {

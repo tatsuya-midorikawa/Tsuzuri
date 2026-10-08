@@ -64,6 +64,9 @@ async function resources() {
     }
   }
   await writeFile(path.join(root, 'completions.json'), JSON.stringify([...completions.values()], null, 2) + '\n');
+  // The LLDB formatters that debug launches load (G16).
+  await mkdir(path.join(root, 'lldb'), { recursive: true });
+  await copyFile(path.join(repository, 'scripts', 'lldb', 'tsuzuri_lldb.py'), path.join(root, 'lldb', 'tsuzuri_lldb.py'));
   const licenses = path.join(root, 'licenses');
   await mkdir(licenses, { recursive: true });
   const lock = JSON.parse(await readFile(path.join(extension, 'package-lock.json'), 'utf8'));

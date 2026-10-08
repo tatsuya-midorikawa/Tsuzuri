@@ -188,6 +188,208 @@ struct Runner {
     arguments: Vec<OsString>,
 }
 
+/// A native test runner with debug information that runs one test when a debugger starts
+/// `program` with `arguments` (G16 Phase 2).
+#[derive(Debug)]
+pub struct DebugRunner {
+    pub case: crate::check::CheckedTest,
+    pub program: PathBuf,
+    pub arguments: Vec<String>,
+    pub messages: Vec<String>,
+}
+
+/// Builds, without running it, the native runner of the one test that `options.indices`
+/// selects, with debug information, at `output`; on macOS the DWARF goes to `<output>.dwarf`, as
+/// for `build -g`. The runner holds only that test, so its argument is `0`. Like the C runtime,
+/// the runner's entry has no debug information, so stepping stays in Tsuzuri code.
+pub fn build_debug_runner(
+    module: &CheckedModule,
+    project: &Project,
+    options: &TestOptions,
+    links: &LinkInputs,
+    output: &Path,
+) -> Result<DebugRunner, Diagnostic> {
+    let [index] = options.indices[..] else {
+        return Err(driver_error(
+            "E2000",
+            "debugging a test needs exactly one --index",
+        ));
+    };
+    let Some(case) = module.tests.get(index).cloned() else {
+        return Err(driver_error(
+            "E2000",
+            "test index is out of range; refresh the test list",
+        ));
+    };
+    if options.target != Target::Native {
+        return Err(driver_error(
+            "E2000",
+            "debugging a test requires the native target",
+        ));
+    }
+    if options.optimization > 3 {
+        return Err(driver_error(
+            "E2000",
+            "test optimization must be between 0 and 3",
+        ));
+    }
+    if !links.is_empty() {
+        links.check_shape()?;
+        links.check_readable()?;
+    }
+    let dwarf = cfg!(target_os = "macos").then(|| {
+        let mut path = output.as_os_str().to_owned();
+        path.push(".dwarf");
+        PathBuf::from(path)
+    });
+    let pdb = msvc_linker().then(|| pdb_path(output));
+    for path in std::iter::once(output)
+        .chain(dwarf.as_deref())
+        .chain(pdb.as_deref())
+    {
+        protect_sources(project, path)?;
+        protect_links(links, path)?;
+    }
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| io_error("create output directory", parent, error))?;
+    let mut temporary = TemporaryDirectory::new(parent)?;
+    let mut text = project.with_trap_sources(|sources| {
+        llvm::emit_test_runner_for(
+            module,
+            &[index],
+            false,
+            false,
+            Some((sources, options.optimization != 0)),
+        )
+    })?;
+    if cfg!(windows) {
+        text = llvm::windows_abi(text, module);
+    }
+    if pdb.is_some() {
+        text = llvm::with_codeview(text);
+    }
+    let sources = native_runtime_sources(&text)?;
+    let ir = temporary.path.join("tests.ll");
+    let object = temporary.path.join("tests.o");
+    let artifact = temporary
+        .path
+        .join(if cfg!(windows) { "tests.exe" } else { "tests" });
+    fs::write(&ir, text).map_err(|error| io_error("write test IR", &ir, error))?;
+    let mut messages = Vec::new();
+    let optimization = format!("-O{}", options.optimization);
+    let mut compile = Command::new(tool("TSUZURI_CLANG", "clang"));
+    compile
+        .args(["-x", "ir", "-Wno-override-module", "-g", "-c"])
+        .arg(&optimization)
+        .args(native_compile_args(cfg!(windows), env::consts::ARCH))
+        .arg(&ir)
+        .arg("-o")
+        .arg(&object);
+    collect_message(
+        &mut messages,
+        run_tool(
+            &mut compile,
+            "tests require LLVM/Clang 17+ or TSUZURI_CLANG",
+        )?,
+    );
+    // The entry and the runtime have no debug information; `-g` only makes the link keep the
+    // program's (and on Windows write the PDB).
+    let mut link = Command::new(tool("TSUZURI_CLANG", "clang"));
+    link.args(["-g", &optimization])
+        .args(native_compile_args(cfg!(windows), env::consts::ARCH));
+    for (name, source) in sources {
+        let path = temporary.path.join(name);
+        let runtime = path.with_extension("o");
+        fs::write(&path, source).map_err(|error| io_error("write runtime", &path, error))?;
+        let mut compile = Command::new(tool("TSUZURI_CLANG", "clang"));
+        compile
+            .args(["-x", "c", "-std=c11", "-c", &optimization])
+            .args(native_compile_args(cfg!(windows), env::consts::ARCH));
+        if !cfg!(windows) {
+            compile.arg("-pthread");
+        }
+        compile.arg(&path).arg("-o").arg(&runtime);
+        collect_message(
+            &mut messages,
+            run_tool(
+                &mut compile,
+                "tests require LLVM/Clang 17+ or TSUZURI_CLANG",
+            )?,
+        );
+        link.arg(runtime);
+    }
+    link.arg(&object).arg("-o").arg(&artifact);
+    if !cfg!(windows) {
+        link.args(["-lm", "-pthread"]);
+    }
+    links.add_to(&mut link);
+    let staged_pdb = temporary.path.join("tests.pdb");
+    if let Some(pdb) = &pdb {
+        link.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
+    }
+    collect_message(
+        &mut messages,
+        run_tool(&mut link, "tests require LLVM/Clang 17+ or TSUZURI_CLANG")?,
+    );
+    let staged = temporary.path.join("tests.dwarf");
+    if dwarf.is_some() {
+        let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
+        symbols.arg("--flat").arg(&artifact).arg("-o").arg(&staged);
+        collect_message(
+            &mut messages,
+            run_tool(
+                &mut symbols,
+                "macOS debug executables require dsymutil; set TSUZURI_DSYMUTIL",
+            )?,
+        );
+    }
+    let sidecars: Vec<_> = dwarf
+        .iter()
+        .map(|path| (&staged, path))
+        .chain(pdb.iter().map(|path| (&staged_pdb, path)))
+        .collect();
+    publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
+    temporary.close()?;
+    let program = crate::cache::real_path(output)
+        .map_err(|error| io_error("resolve test runner", output, error))?;
+    Ok(DebugRunner {
+        case,
+        program,
+        arguments: vec!["0".into()],
+        messages,
+    })
+}
+
+/// The C sources of a native test runner for its IR `text`: the entry and the runtimes that the
+/// IR declares. A test may build IO actions without running them; their primitives still need
+/// the runtime.
+fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Diagnostic> {
+    let mut sources = vec![("main.c", include_str!("runtime/test-runner.c").to_owned())];
+    if text.contains("declare void @tsuzuri_task_parallel(") {
+        if !cfg!(any(unix, windows)) {
+            return Err(driver_error(
+                "E2002",
+                "native parallel tasks require POSIX or Windows threads",
+            ));
+        }
+        sources.push(("task.c", crate::driver::task_runtime_source()));
+    }
+    if text.contains("declare i64 @tsuzuri_os_") {
+        if cfg!(windows) {
+            return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+        }
+        sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
+    }
+    if text.contains("declare i32 @tsuzuri_io_") {
+        sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
+    }
+    Ok(sources)
+}
+
 fn execute_test(
     runner: &Runner,
     index: usize,
@@ -265,7 +467,7 @@ fn build_runner(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
-    let mut text = llvm::emit_test_runner_for(module, selected, wasm, memory64)?;
+    let mut text = llvm::emit_test_runner_for(module, selected, wasm, memory64, None)?;
     if wasm {
         text = llvm::with_wasm_heap_limit(text, max_memory);
         if crate::driver::wasm_stack_checks(options.target, false, max_memory) {

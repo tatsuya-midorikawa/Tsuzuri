@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { excludedPattern, exists, jsonLines } from './core';
+import { excludedPattern, exists, jsonLines, lldbLaunch, supportsDebug, testDebugArguments } from './core';
 import { runCompiler } from './toolchain';
-import { projectFor, reportError } from './workflow';
+import { formatters, projectFor, reportError } from './workflow';
 
 interface TestCase {
 	index: number;
@@ -14,7 +14,8 @@ interface TestCase {
 }
 
 export function registerTesting(context: vscode.ExtensionContext, output: vscode.OutputChannel,
-	publishDiagnostics: (root: string, text: string) => Promise<void>) {
+	workflow: { publishDiagnostics: (root: string, text: string) => Promise<void>; ensureDebugger: () => Promise<void> }) {
+	const { publishDiagnostics } = workflow;
 	const controller = vscode.tests.createTestController('tsuzuri', 'Tsuzuri');
 	context.subscriptions.push(controller);
 	const roots = new Map<string, vscode.TestItem>();
@@ -146,6 +147,32 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		return result;
 	}
 
+	/** The roots that `request` includes, or every root. */
+	function requestedRoots(request: vscode.TestRunRequest): Set<string> {
+		const result = new Set<string>();
+		for (const item of request.include ?? [...roots.values()]) {
+			let parent = item;
+			while (parent.parent) { parent = parent.parent; }
+			if (roots.has(parent.id)) { result.add(parent.id); }
+		}
+		return result;
+	}
+
+	/** The tests of the discovered `root` that `request` selects, without its exclusions. */
+	function selection(request: vscode.TestRunRequest, root: string): vscode.TestItem[] {
+		const excluded = new Set((request.exclude ?? []).flatMap(item => leaves(item).map(leaf => leaf.id)));
+		const included = request.include ? request.include.flatMap(item => {
+			if (item.id.startsWith(`${root}#`)) {
+				if (!cases.has(item.id)) { throw new Error('Test declarations changed. Refresh Tests before selecting individual tests.'); }
+				return [item];
+			}
+			if (item.id === root) { return leaves(roots.get(root)!); }
+			const current = roots.get(root)!.children.get(item.id);
+			return current ? leaves(current) : [];
+		}) : leaves(roots.get(root)!);
+		return [...new Map(included.filter(item => !excluded.has(item.id) && cases.get(item.id)?.root === root).map(item => [item.id, item])).values()];
+	}
+
 	async function run(request: vscode.TestRunRequest, token: vscode.CancellationToken, optimization: number) {
 		const execution = controller.createTestRun(request);
 		const summary = { passed: 0, failed: 0, errored: 0, skipped: 0 };
@@ -155,26 +182,10 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		try {
 			if (!await vscode.workspace.saveAll(false)) { return summary; }
 			await refreshRoots();
-			const requestedRoots = new Set<string>();
-			for (const item of request.include ?? [...roots.values()]) {
-				let parent = item;
-				while (parent.parent) { parent = parent.parent; }
-				if (roots.has(parent.id)) { requestedRoots.add(parent.id); }
-			}
-			for (const root of requestedRoots) {
+			for (const root of requestedRoots(request)) {
 				if (token.isCancellationRequested) { break; }
 				await discover(root, abort.signal);
-				const excluded = new Set((request.exclude ?? []).flatMap(item => leaves(item).map(leaf => leaf.id)));
-				const selection = request.include ? request.include.flatMap(item => {
-					if (item.id.startsWith(`${root}#`)) {
-						if (!cases.has(item.id)) { throw new Error('Test declarations changed. Refresh Tests before selecting individual tests.'); }
-						return [item];
-					}
-					if (item.id === root) { return leaves(roots.get(root)!); }
-					const current = roots.get(root)!.children.get(item.id);
-					return current ? leaves(current) : [];
-				}) : leaves(roots.get(root)!);
-				const selected = [...new Map(selection.filter(item => !excluded.has(item.id) && cases.get(item.id)?.root === root).map(item => [item.id, item])).values()];
+				const selected = selection(request, root);
 				if (!selected.length) { continue; }
 				const byIndex = new Map(selected.map(item => [cases.get(item.id)!.index, item]));
 				for (const item of selected) { execution.enqueued(item); execution.started(item); pending.add(item); }
@@ -215,8 +226,95 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		return summary;
 	}
 
+	/**
+	 * Debugs one test (G16 Phase 2): the compiler builds a runner of that test alone with debug information, and
+	 * CodeLLDB starts it with the Tsuzuri formatters, as for Debug Project. The test passes when the runner exits 0.
+	 */
+	async function debug(request: vscode.TestRunRequest, token: vscode.CancellationToken) {
+		const execution = controller.createTestRun(request);
+		const summary = { passed: 0, failed: 0, errored: 0, skipped: 0 };
+		const abort = new AbortController();
+		const subscription = token.onCancellationRequested(() => abort.abort());
+		let item: vscode.TestItem | undefined;
+		try {
+			if (!await vscode.workspace.saveAll(false)) { return summary; }
+			await refreshRoots();
+			const selected: vscode.TestItem[] = [];
+			for (const root of requestedRoots(request)) {
+				await discover(root, abort.signal);
+				selected.push(...selection(request, root));
+			}
+			if (selected.length !== 1) {
+				for (const other of selected) { execution.skipped(other); summary.skipped++; }
+				throw new Error(`Select one test to debug; ${selected.length} tests are selected.`);
+			}
+			item = selected[0];
+			const { root, index } = cases.get(item.id)!;
+			execution.enqueued(item);
+			execution.started(item);
+			await workflow.ensureDebugger();
+			const result = await runCompiler(context, root, testDebugArguments(root, index), { signal: abort.signal });
+			execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
+			await publishDiagnostics(root, result.stderr);
+			const runner = jsonLines(result.stdout).find(record => record.type === 'debug');
+			if (result.code !== 0 || !runner || typeof runner.program !== 'string' || !Array.isArray(runner.arguments)) {
+				throw new Error(result.stderr || 'The test debug build failed.');
+			}
+			const configuration = {
+				...lldbLaunch(runner.program, formatters(context)), name: `Debug Test: ${item.label}`,
+				args: runner.arguments.map(String), cwd: root,
+			};
+			const exitCode = await debugSession(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(root)), configuration, execution, token);
+			if (exitCode === 0) { execution.passed(item); summary.passed++; }
+			else if (exitCode === undefined) { execution.skipped(item); summary.skipped++; }
+			else {
+				const message = new vscode.TestMessage(`The test exited with code ${exitCode}.`);
+				if (item.uri && item.range) { message.location = new vscode.Location(item.uri, item.range); }
+				execution.failed(item, message);
+				summary.failed++;
+			}
+		} catch (error) {
+			execution.appendOutput(`${String(error)}\r\n`);
+			if (item) { execution.errored(item, new vscode.TestMessage(String(error))); }
+			if (!token.isCancellationRequested) { summary.errored++; }
+		} finally { subscription.dispose(); execution.end(); }
+		return summary;
+	}
+
+	/** Starts `configuration` for `execution` and resolves with the runner's exit code, or undefined if it did not exit. */
+	function debugSession(folder: vscode.WorkspaceFolder | undefined, configuration: vscode.DebugConfiguration,
+		execution: vscode.TestRun, token: vscode.CancellationToken): Promise<number | undefined> {
+		const marker = `${Date.now()}-${Math.random()}`;
+		return new Promise((resolve, reject) => {
+			let session: vscode.DebugSession | undefined;
+			let exitCode: number | undefined;
+			const ours = (candidate: vscode.DebugSession) => candidate.configuration.tsuzuriTest === marker;
+			const subscriptions = [
+				vscode.debug.registerDebugAdapterTrackerFactory('lldb', {
+					createDebugAdapterTracker: candidate => ours(candidate) ? {
+						onDidSendMessage(message) {
+							if (message.type === 'event' && message.event === 'exited') { exitCode = message.body?.exitCode; }
+						},
+					} : undefined,
+				}),
+				vscode.debug.onDidStartDebugSession(candidate => { if (ours(candidate)) { session = candidate; } }),
+				vscode.debug.onDidTerminateDebugSession(candidate => {
+					if (ours(candidate)) { finish(); resolve(exitCode); }
+				}),
+				token.onCancellationRequested(() => { if (session) { void vscode.debug.stopDebugging(session); } }),
+			];
+			const finish = () => { for (const subscription of subscriptions) { subscription.dispose(); } };
+			vscode.debug.startDebugging(folder, { ...configuration, tsuzuriTest: marker }, { testRun: execution }).then(started => {
+				if (!started) { finish(); reject(new Error('CodeLLDB could not start the test.')); }
+			}, error => { finish(); reject(error); });
+		});
+	}
+
 	controller.createRunProfile('Native (O0)', vscode.TestRunProfileKind.Run, async (request, token) => { await run(request, token, 0); }, true);
 	controller.createRunProfile('Native (O3)', vscode.TestRunProfileKind.Run, async (request, token) => { await run(request, token, 3); });
+	if (supportsDebug()) {
+		controller.createRunProfile('Debug', vscode.TestRunProfileKind.Debug, async (request, token) => { await debug(request, token); }, true);
+	}
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument(document => {
 			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') {
@@ -235,5 +333,5 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		}),
 	);
 	void refreshRoots().catch(error => output.appendLine(String(error)));
-	return { controller, discover, roots, run };
+	return { controller, discover, roots, run, debug };
 }
