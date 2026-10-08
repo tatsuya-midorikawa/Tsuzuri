@@ -1,5 +1,3 @@
-use std::fmt::Write;
-
 use tsuzuri::{analyze, analyze_modules, llvm};
 
 fn accepts(source: &str) {
@@ -174,19 +172,4 @@ fn unused_hash_containers_emit_no_code() {
         assert!(ir.contains("@tz.fn.HashMap.insert"), "{ir}");
         assert!(!ir.contains("@tz.fn.HashSet."), "{ir}");
     }
-}
-
-#[test]
-fn hash_containers_leave_the_specialization_budget_to_users() {
-    let mut source = String::from("def id :: 'a -> 'a\nfn id x = x\n");
-    for index in 0..1024 {
-        writeln!(
-            source,
-            "record R{index} {{ value: i8 }}\nfn f{index}(x: R{index}) -> R{index} {{ id x }}"
-        )
-        .unwrap();
-    }
-    analyze(&source).unwrap();
-    source.push_str("fn extra(x: [i8]) -> [i8] { id x }");
-    rejects(&source, "E1017");
 }

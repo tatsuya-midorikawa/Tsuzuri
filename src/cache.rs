@@ -58,7 +58,7 @@ fn key_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+pub(crate) fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.is_symlink() || metadata.len() > limit {
         return Err(invalid("invalid cache file type or size"));
@@ -621,25 +621,29 @@ impl Sha256 {
                 .wrapping_add(words[index - 7])
                 .wrapping_add(high);
         }
-        let mut work = self.state;
+        // The eight working variables stay in registers instead of an array rotated each round.
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
         for (word, round) in words.into_iter().zip(ROUND) {
-            let sigma =
-                work[4].rotate_right(6) ^ work[4].rotate_right(11) ^ work[4].rotate_right(25);
-            let choose = (work[4] & work[5]) ^ (!work[4] & work[6]);
-            let first = work[7]
+            let sigma = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let choose = (e & f) ^ (!e & g);
+            let first = h
                 .wrapping_add(sigma)
                 .wrapping_add(choose)
                 .wrapping_add(round)
                 .wrapping_add(word);
-            let sigma =
-                work[0].rotate_right(2) ^ work[0].rotate_right(13) ^ work[0].rotate_right(22);
-            let majority = (work[0] & work[1]) ^ (work[0] & work[2]) ^ (work[1] & work[2]);
+            let sigma = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let majority = (a & b) ^ (a & c) ^ (b & c);
             let second = sigma.wrapping_add(majority);
-            work.rotate_right(1);
-            work[4] = work[4].wrapping_add(first);
-            work[0] = first.wrapping_add(second);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(first);
+            d = c;
+            c = b;
+            b = a;
+            a = first.wrapping_add(second);
         }
-        for (state, value) in self.state.iter_mut().zip(work) {
+        for (state, value) in self.state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
             *state = state.wrapping_add(value);
         }
     }

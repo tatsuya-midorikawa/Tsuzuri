@@ -1023,7 +1023,7 @@ fn fetch_rejects_unsafe_trees() {
         entries
     };
     let symlink = repository.blob(b"Point.tz");
-    let large = repository.blob(&vec![b'1'; 1_048_577]);
+    let large = repository.blob(&vec![b'1'; 4 * 1024 * 1024 + 1]);
     let latin1 = repository.blob(b"def caf\xe9 :: i64\n");
     let many: Vec<Entry> = (0..4097)
         .map(|index| file(&format!("M{index}.tz"), &point))
@@ -1063,7 +1063,7 @@ fn fetch_rejects_unsafe_trees() {
         (
             base(vec![file("Large.tz", &large)]),
             "E0003",
-            "source exceeds the 1048576-byte limit".to_owned(),
+            "source exceeds the 4194304-byte limit".to_owned(),
         ),
         (
             base(many),

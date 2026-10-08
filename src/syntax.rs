@@ -1,7 +1,9 @@
 use crate::diagnostic::Span;
 
 pub const MAX_NESTING: usize = 128;
-pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+/// The largest source file (`E0003`). A file of this size checks in about 2.3 s and 1 GiB on the
+/// G17 Phase 3 measurement machine; 16 MiB took 9.5 s and 3.9 GiB.
+pub const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {

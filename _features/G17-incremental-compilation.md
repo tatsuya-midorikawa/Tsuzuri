@@ -9,7 +9,7 @@
 | 後続 | G12, G13 |
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D5（`check`・`test`・`doc` でも既定で frontend cache を読み書きする）、D10（Phase 2: 本体の検査結果の再利用）、D11（Phase 3: 上限の新しい値） |
+| 承認 | 承認済み（2026-10-08、D-41）: D5（`check`・`test`・`doc` でも既定で frontend cache を読み書きする）、D10（Phase 2: 本体の検査結果の再利用）、D11（Phase 3: 上限の新しい値） |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: 毎回の全体コンパイル・単一 LLVM モジュールと、プログラム全体の特殊化上限 1,024 などの固定上限が大規模開発の障壁になる |
 | 手本にする既存実装 | cache root・marker・一時名と rename・GC: `src/cache.rs` の `default_root`・`BuildCache::open`・`BuildCache::store`・`BuildCache::evict`・`read_regular`・`Sha256::field`。span と文書を除いた AST の正準形: `src/formatter.rs` の `ast_fingerprint`・`canonicalize`。parse の唯一の入口: `src/lib.rs` の `analyze_inputs_indexed_all`。一時 cache を使う実 CLI の E2E: `tests/cache.mjs`（`cli`・`concurrent`・`TSUZURI_CACHE_DIR`）。合成プロジェクト: `benchmarks/run-cache.mjs` |
 | 主な影響ファイル | `src/syntax_codec.rs`（新規）, `src/frontend_cache.rs`（新規）, `src/lib.rs`, `src/driver.rs`, `src/main.rs`, `src/cache.rs`（`read_regular` の可視性だけ）, `tests/frontend_cache.mjs`（新規）, `README.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/tools/build-and-cache.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md` |
@@ -58,6 +58,13 @@ Phase 1 でも毎回すべて実行する。
 10. Windows での置き換え rename の扱いが、HEAD の `BuildCache::store` と同じ扱い（既存なら勝者を残して成功とみなす）を超える変更を要する。
 
 ## 現状（HEAD `f8dc655` で確認）
+
+> 見直し（2026-10-08、HEAD `1182045`）: `SourceInput` は `namespace` を持ち、モジュールの名前（key）・名前空間・入口かどうかは構文解析の後に
+> `program.namespace` から `module_identity` で決まる（D-35・D-37）。std は 37 ファイル（約 290 KB）で、そのうち `Arena`・`Regex`・`Unicode`・
+> `Json`・`Cbor` は名前を書いたプログラムだけが読み込む（D-40、`stdlib::OPT_IN`・`sources_for`）ので、opt-in を使わないプログラムの std は 32 個。
+> 構文木には名前空間・`using`・属性・固定長配列と長さ引数・`dyn`・補間・`try` などが増えた。G20（エラー回復）は done で、
+> `analyze_inputs_indexed_all` の parse ループと診断の順序は変えない。言語サーバーの解析（`analyze_inputs_semantic`）は cache を使わない（D9）。
+> 規模の数値（下の 2.12 s など）は当時のもので、2026-10-08 の計測は `docs/benchmarks.md` の「コンパイル時間と規模の上限（G17）」にある。
 
 - 解析の入口は `src/lib.rs` の `analyze_inputs_indexed_all`。`SourceInput`（`path`・`text`・`origin`）を順に
   `parser::parse_with_source_all(input.text, id)` で parse し、拡張子から `program.source_kind` を設定する。`Diagnostics::is_full` で
@@ -144,6 +151,10 @@ PB06・PB07・G12 は次の名前と規則だけを使い、同じ内容を別�
 
 PB06 は `Program` を `(parse_key, source index)` の鍵でメモリに持ち、ディスクには同じ形式でだけ書く。PB07 は `FrontendDelta` と
 manifest の interface hash を関数単位の鍵の入力に使う。G17 は関数単位の hash を提供しない。
+
+> 見直し（2026-10-08）: パック（D4 の見直し）に合わせ、`FrontendCache::open(root, project)` が `ProjectKey { hash, kind }`（新規）を受け取って
+> そのプロジェクトのパックを読み、`finish(modules)` は project を引数に取らない。`interface_hash` は `Result<[u8; 32], Invalid>`（符号化できない
+> program は `Invalid`）。`analyze_inputs_with` の第 3 引数は `Option<&mut FrontendCache>`。PB06 はディスクに同じパックの形式で書く。
 
 ### CLI と環境変数
 
@@ -616,6 +627,12 @@ parse テストも変えない。
 - 決定: `src/syntax_codec.rs` に手書きの codec を置き、crate を足さない。source index は保存せず decode で付け直す。`{:?}` の一致を round-trip の基準にする。
 - 理由: serde の derive は新しい crate で要承認になる。`Program` は `Debug` を持ち、`{:?}` は span を含む全 field を出すので独立した比較になる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 規則どおり実装し、現在の構文型に合わせて次を決めた。`ExprKind::Integer` の `u128` は 128 bit までの LEB128、`char` は
+  `u32` で書き `char::from_u32` で検証する。`ComputationStatementKind::Operation` の `&'static str` は builder の操作名の固定表の番号。
+  tag を読む `match` は `_ =>` の代わりに `N..=u8::MAX => Err(Invalid)` と書き、variant の数を超える tag を拒否する。`MAX_DEPTH` は式・パターン・型・
+  計算式のブロック・kind の入れ子を数え、encode も同じ深さで打ち切る（復号できない entry を保存しない）。parser が作らない variant（`DynDispatch`、
+  `QualifiedFunction`、`ComputationBoundary`、`ShiftRightUnsigned`、`ComputationDestructuring`、`Provenance::Generated`）を含め、全 variant が往復することを
+  `round_trips_every_variant`（言語リファレンスの例、std、fixtures、examples と手で作った program）で確かめる。
 
 ### D4: 保存場所・形式・版・GC
 
@@ -623,13 +640,24 @@ parse テストも変えない。
   GC は mtime で数え、hit でも mtime を更新しない（30 日ごとに一度 parse し直すだけ）。
 - 理由: G11 の marker・権限・symlink 拒否をそのまま使え、`BuildCache::evict` は `frontend` という名前を扱わない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08、停止条件 9 への対応）: ソース 1 個ごとの entry ファイル（`p-<parse key>.tzp`）で実装して測ると、warm の `check` が cache なしより遅かった
+  （現実的な 1,000 モジュールで中央値 3.86 s 対 2.44 s）。`sample` では時間の大半が `open` で、この機械ではコンパイラのプロセスがファイルを 1 個開くのに
+  0.3〜1.5 ms かかる（on-access scan。同じ 1,034 ファイルを Node は 35 ms、新しく build した C の実行ファイルは 240〜380 ms で読む）。モジュールの構文解析
+  （1 個 0.2 ms）より開く費用が大きいので、プロジェクトのルートと種類ごとに 1 個のパック `p-<project key>.tzp` に entry をまとめた。パックの header は
+  magic `b"TZPACK\0\0"`・`FRONTEND_FORMAT`・compiler の同一性（32）・project key（32）・entry 数（u64）の 84 byte で、entry は「保存形式」の表の形のまま
+  （magic・形式・parse key・interface hash・長さ・payload・SHA-256）並ぶ。warm の解析が読むのはパックと manifest の 2 ファイルになる。パックは今回の解析で
+  使った entry だけを入力順に持ち（同じ内容のソースは 1 個）、前回のパックと同じなら書かない。ファイルを開く費用のない環境でも、ソースごとのファイルより
+  読み書きが少ない。代わりに、別のプロジェクトや別の種類（`check` と `test`）の間で entry は共有しない（std の entry はプロジェクトごとに約 230 KB 重複する）。
+  パックの上限は 512 MiB（`MAX_PACK_BYTES`、新規）。Windows で rename が置き換えに失敗した場合は、パックは内容で鍵付けしていないので成功とみなさず、
+  前回のパックを残して次の実行で書き直す。GC の対象は `p-<64 桁>.tzp`・`m-<64 桁>.json`・`.tmp-*` で、規則と数は変えない。
 
 ### D5: check・test・doc での既定の利用
 
 - 決定: 手順 8 で check・test・doc も既定で frontend cache を読み書きする。`--no-cache` は build・run だけのまま。無効化は `TSUZURI_CACHE_DIR=`。
 - 理由: 解析だけの `check` が最も恩恵を受ける。ただし check はこれまでディスクに書かず（`README.md` の「check/headerは対象外」）、利用者から見える
   挙動が変わる。承認されない場合は build・run だけで使う。
-- 状態: 要承認（承認前は手順 8 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。手順 8 を実施した。`check`・`test`・`doc` は既定で読み書きし、`--no-cache` は今までどおり build・run だけ
+  （それ以外は `E2000`）、`TSUZURI_CACHE_DIR=`（空）で無効になる。`publish` の検査（`Project::load_for_tests` と `analyze_all`）は対象外のまま cache を使わない。
 
 ### D6: interface summary の中身
 
@@ -637,18 +665,26 @@ parse テストも変えない。
   （頭部、record・union・型別名、class の既定 method の本体、定数の値、extern、active pattern、宣言の順）は含める。
 - 理由: 関数の型は注釈で決まり本体から推論しない。既定 method と定数の値は他モジュールの検査に効き得るので保守的に含める。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: `Program` は宣言を種類ごとの列に持つので、「宣言の順」は同じ種類の中の順である（record と union の入れ替えは `Program` に
+  現れず、interface も変わらない）。`dyn_types`（本体に書いた `dyn` 型も含む）・`cpu_attributes`・名前空間・`using` も interface に入る。
 
 ### D7: 無効化規則と `FrontendDelta`
 
 - 決定: 「無効化規則」の表と `must_recheck` の規則。Phase 1 は全モジュールが全 interface に依存するとみなす。
 - 理由: qualified 名はどのモジュールも参照でき、instance は大域である。絞り込みは誤ると誤った再利用になるので、使用関係を記録する Phase 2 まで行わない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: manifest の `name` は `module_identity` が返すモジュールの key で、各モジュールに `namespace` と `entry`（`Main` のファイルか）を
+  足した。名前空間は `Tsuzuri.toml` の変更だけでも変わり、`entry` は宣言した名前空間のファイルを移すと名前を変えずに変わるので、どちらも
+  `changed_interfaces` の比較（`origin`・`kind`・`namespace`・`entry`・`interface`）に入れた。パスだけの変更は検査に効かないので変更として数えない
+  （拡張子の変更は表のとおり `kind` が変わるので `changed_interfaces` だけに入る）。manifest の byte 列が前回と同じときは解析せずに「変化なし」とする。
+  `FrontendDelta::must_recheck` は Phase 2 を見送った（D10）ので、本体では使わない（PB06・PB07 が使う規則として単体テストで固定した）。
 
 ### D8: 失敗の扱い
 
 - 決定: frontend cache の失敗はすべて miss で、診断・警告を出さない。W2001 は G11 の経路だけが出す。
 - 理由: 最適化の失敗で `check` の出力を変えない。build・run の root の失敗は G11 が既に知らせる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 構文解析が一つでも失敗した解析ではパックも manifest も書かない（成功したソースの新しい entry も次の成功まで保存しない）。
 
 ### D9: LSP と常駐
 
@@ -661,16 +697,146 @@ parse テストも変えない。
 - 決定: 方針だけ決める。モジュール局所の関数 ID、型付き本体と警告・semantic 索引のモジュール単位の保存、`must_recheck` が false のモジュールの本体検査の
   省略、診断を `(source, start)` で並べる現在の順序の維持、使用関係による依存の絞り込み。E2E 8 の比較を全 suite の診断に広げて確かめる。
 - 理由: 検査の構造と診断の順序を変える変更で、G20 の回復の方式と衝突し得る。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。実測で見送り（2026-10-08）。
+- 計測（`docs/benchmarks.md` の「型検査の内訳と本体の検査の再利用（Phase 2 の判断）」）: 変更前のコンパイラに一時的な計装を入れ、現実的な合成プロジェクト
+  （1 モジュール 138 行）の 200・1,000 モジュールと `examples/` で `check_modules_collect` の段ごとの時間を 9 回ずつ測った。Phase 2 が省ける上限（関数本体の
+  検査、入口の式、`solve_members`、`finish`）は、1,000 モジュールの `check` の壁時計時間 3,123 ms のうち 569 ms（18.2%。解析の段だけを分母にしても 23.9%）、
+  `build --emit llvm -O0` では 13.3% だった。判断の基準（1,000 モジュールの `check` で 25% 以上）に届かず、保存した型付きの本体を読む費用も加わるので、
+  型付きの本体の保存は作らない（F12 の Phase 2 と同じ扱い）。残りは特殊化（537 ms）、Copy の推論（256 ms）、所有権の検査（250 ms）、`rec` と未使用の検査
+  （219 ms）などプログラム全体の段と、ソースの読み込みである。小さいプログラムでは std の本体の検査が `check` の 27〜33%（15〜21 ms）になる。
+- 将来の実装に要るもの: (1) モジュール局所の関数 ID。`check_modules_collect` は全モジュールの宣言を `function_declarations` の位置で番号付けし、
+  `TypedExprKind::Function(FunctionRef::User(id))`・`GenericFunction(id, ..)`・`Classes::instances` の `$instance` 関数がその番号を持つので、
+  (モジュール, 局所番号) の安定した ID と読み込み時の付け替えが要る。(2) 型付き IR（`CheckedFunction`・`TypedExpr`・`Type`、record と union の ID）の
+  手書きの codec。構文木の codec よりはるかに大きい。(3) モジュールごとの警告（W1001・W1003・W1004）と言語サーバーの索引の保存と、`(source, start)` の
+  順での合流。(4) 使用関係による依存の絞り込み（解決した名前、選んだ instance、class の既定 method を記録し、使った interface が変わったモジュールだけを
+  再検査する。D7 の `must_recheck` の規則の置き換え）。(5) G20 の回復で poisoned・recovered になった関数は毎回検査し直す。(6) 特殊化以降のプログラム
+  全体の段は今までどおり毎回行う。
+- 使い手: 型付きの本体をプロセスの間で持つのは、ディスクの codec が要らない常駐サーバー（PB06）が先で、関数単位の増分コード生成（PB07）は (1) の
+  安定した関数 ID を要る。どちらも `FrontendDelta` と manifest の interface hash を入力にする。
 
 ### D11: Phase 3（上限の新しい値）
 
 - 決定: 上限と `E1017` は維持する。新しい値（特殊化上限を全体の上限と型が成長する多相再帰の検出の二段にする、ソース上限の引き上げなど）は PX03 の計測の後に人間が判断する。
 - 理由: 上限は資源と診断の約束で、計測なしに変えない。
-- 状態: 要承認（承認前は Phase 3 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。実測して実装した。
+- 計測（`docs/benchmarks.md` の「規模の上限（Phase 3）」）: 1 ファイル 1・4・16 MiB の `check` は 0.52・2.06・9.31 s、最大 RSS 267・983・3,750 MiB、
+  `build --emit llvm -O0` は 0.75・2.74・12.30 s（284・1,034・3,948 MiB）。特殊化 992・4,096・16,384・65,536 件の `check` は 0.08・0.19・0.72・2.49 s、
+  45・107・343・1,278 MiB（IR まで 0.11・0.30・1.05・4.56 s）。ジェネリック関数をモジュールごとに持つ現実的な 1,000 モジュール（約 4,000 件）は、
+  変更前の上限 1,024 で `E1017` になっていた。
+- 決定: 基準は「上限ちょうどの入力が、この機械で `check` を約 2.5 s・約 1.3 GiB 以内、IR の出力までを約 5 s 以内で終える」こと（現実的な 1,000 モジュールの
+  プロジェクトと同じ規模）。
+  - `MAX_SOURCE_BYTES` を 1 MiB から 4 MiB にした（`E0003`）。16 MiB は約 4 GiB を使うので選ばない。`Tsuzuri.toml`・`Tsuzuri.lock`・registry の index は
+    ソースではないので、新しい `package::MAX_PACKAGE_FILE_BYTES`（1 MiB）で今までどおり制限する（`E1017`、メッセージも同じ）。1〜4 MiB の `Tsuzuri.toml` は
+    読み込み（`read_source_text`）が通るようになり、`E0003` ではなく `parse_manifest` の `E1017`（`package manifest exceeds 1 MiB`）になる。
+  - 特殊化の上限を二段にした（`src/polymorph.rs`）。全体は 65,536 件（`MAX_SPECIALIZATIONS`、`more than 65536 specializations of generic functions; call
+    them at fewer distinct types, or use 'dyn' for values of many types`）。型が大きくなり続ける多相再帰は、特殊化を作ったインスタンス化の連鎖（各特殊化の
+    親を記録する）に同じ関数がより小さい型（型の構成要素の数）で 32 回を超えて現れたとき（`MAX_GROWTH_DEPTH`）、またはそのような「成長する」特殊化が
+    1,024 件を超えたとき（`MAX_GROWING_SPECIALIZATIONS`。分岐して指数的に増える場合）に、全体の上限より先に `E1017`（`polymorphic recursion grows
+    the types of 'Main.f' without bound; make the recursive call use the same types`）で止める。連鎖をたどるのは 1,024 段まで。インスタンスの選択で
+    有限回に終わる成長は受け付ける。`fn rec f x = f [x]` は 33 段目で、分岐する成長は 1,025 件目で止まる（どちらも 0.1 s 未満）。
+  - 変えない上限: 構文の深さ `MAX_NESTING`（128。debug の 2 MiB の stack で構文解析が深さの上限に 1.5 MiB 以上を使う）、codec の `MAX_DEPTH`（512）、
+    型の深さ 128・構成要素 4,096（`bounded_type`。再帰する型の処理の stack を守る）、制約 128、モジュールのパス 16 段・255 bytes、ソース 4,096 個、
+    `MAX_VALUE_BYTES`、`call_specialization.rs` の worker の特殊化の予算 1,024（エラーにならない最適化の予算で、超えても通常の経路を使う）。
+- 既存テストへの影響（Phase 3 の目的として承認済み）: `tests/polymorphism.rs` の `honors_the_exact_specialization_limit` は、1,024 件ちょうどと 1,025 件目の
+  `E1017` を固定していた。新しい上限を debug のテストで踏むと 1 回 19 s・約 1 GiB かかるので、同じ形のテストをテスト専用の小さい上限（`TEST_LIMITS`、
+  `#[cfg(test)]` のスレッド局所の値）で `src/polymorph.rs` の単体テストへ移し、`tests/polymorphism.rs` には変更前は拒否していた 1,025 件のプログラムを
+  受け付けることを確かめる `accepts_more_specializations_than_the_old_limit` と、名前を示す成長のメッセージの `reports_type_growing_recursion_by_name` を置いた。
+  本物の上限 65,536 件ちょうどと 65,537 件目は、release のコンパイラで `tests/e2e.mjs` が確かめる。`tests/e2e.mjs` の `E0003` の入力は 1 MiB + 1 から
+  4 MiB + 1 に、`tests/packages.rs` の git パッケージの大きいファイル（1,048,577 bytes と `source exceeds the 1048576-byte limit`）は 4 MiB + 1 と
+  `4194304` にした。`bounds_type_growing_polymorphic_recursion` は変えていない（`f [x]` は新しい成長のメッセージ、ほかは今までどおりの `E1017`）。
 
 ### D12: `-O3` の分割と並列コード生成
 
 - 決定: IR の分割と並列 Clang は PB07 へ移す。`-O3` で ThinLTO を使うか一つのモジュールのままにするかは、PB07 で実測して決める。
 - 理由: 関数単位の増分コード生成と同じ分割の単位を共有する。旧案の「実測で決める」は変えない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-08）
+
+利用者の「G16、G18、G17、G13 の実装をすべて完遂して。…すべてのフェーズを完了させること」により、D5・D10・D11 を承認済み（D-41）として 3 つの Phase を
+すべて扱った。基準は `Phase7-5` の `1182045`、作業機は Apple M1 Max（10 コア、macOS 27.0.1、rustc 1.98.1、Node v20.19.6、Homebrew LLVM 21）で、
+ほかのエージェントのビルドが同時に動き、負荷の平均は 27〜90 だった。
+
+### Phase 1（実装）
+
+- `src/syntax_codec.rs`（新規）: `Program` から届くすべての構文型の `Wire`（全 variant を `_ =>` なしで列挙）、`Mode::Full`・`Mode::Interface`、`encode`・
+  `decode`、`MAX_DEPTH`（512）。D3 の見直しのとおり。
+- `src/frontend_cache.rs`（新規）: `FRONTEND_FORMAT`（1）、`compiler_identity`、`parse_key`、`interface_hash`、`ProjectKey`、`FrontendCache::{open, parse,
+  finish, evict}`、`FrontendDelta::must_recheck`、`compare`、GC（`evict_with`）。保存の単位はプロジェクトごとのパック（D4 の見直し）。
+- `src/lib.rs`: `analyze_inputs_with`（`analyze_inputs_indexed_all` はそれを `None` で呼ぶ）。parse ループの形・`is_full` の打ち切り・エラーの順は変えず、
+  構文解析がすべて成功したら `ModuleRecord` を作って検査の前に `finish` を呼ぶ。`src/driver.rs`: `AnalysisKind`・`Project::analyze_cached`。
+  `src/main.rs`: check・build・run・test・doc が `analyze_cached(options.cache, kind)` を呼ぶ（手順 7 と 8）。`src/cache.rs`: `read_regular` を `pub(crate)` に
+  したほか、`Sha256::compress` の作業変数を毎ラウンド回転する配列から局所変数にした（同じ結果で約 25% 速い。NIST のベクトルのテストが通る）。
+- 手順 1: 基準の release を `target/perf/G17/tsuzuri-before` に保存し、`tests/fixtures` と `examples` の 83 プロジェクトを native・wasm32 × `-O0`・`-O3` の
+  332 回の `build --emit llvm --no-cache` で保存した（IR、終了コード、stdout、`--json` の stderr）。`cargo test --locked --lib bounds_recursive_and_flat_expression_depth`
+  は `running 1 test`、1 passed。
+- 手順 2〜4: `cargo test --locked --lib syntax_codec` は 13 件（チケットの 11 件と、全 variant の往復を確かめる `round_trips_every_variant`、手順 4 の 2 件を含む）。
+  `cargo test --locked --lib interface_` は `running 2 tests`。停止条件 3〜5 には当たらなかった（std 37・fixtures と examples の 100 を超えるソース・
+  言語リファレンスの例 100 以上で `{:?}` が一致し、最深の入力も 512 に収まる）。codec の encode・decode は debug の 384 KiB の stack で最深の入力を通る
+  （構文解析は 1.5 MiB でも足りない）。
+- 手順 5・6: `cargo test --locked --lib frontend_cache` は 11 件（`stores_then_hits`、`packs_follow_the_sources`、`corrupt_entries_are_misses_and_replaced`、
+  `parse_errors_are_not_stored`、`other_format_or_identity_is_a_miss`、`symlinked_pack_is_a_miss`（Unix）、`shares_root_with_build_cache`、
+  `delta_classifies_changes`、`must_recheck_follows_phase_one_rule`、`finish_records_the_manifest`、`evicts_oldest_over_budget_and_stale_temporaries`）。
+- 手順 7〜10: 332 回の build を変更後のコンパイラで `--no-cache`・cold（毎回 `frontend/` を消す）・warm の 3 通りに行い、基準と IR・終了コード・stdout・
+  stderr がすべて byte 単位で一致した（Phase 3 の後にも同じ確認をして一致）。`node tests/frontend_cache.mjs target/release/tsuzuri` は
+  `frontend cache e2e: ok`（E2E の 1〜10。3 はパックに合わせて「プロジェクトと種類ごとにパック 1 個と manifest 1 個、manifest に利用者 21 個と
+  `std/` から `stdlib::OPT_IN` を除いた std のすべて」に変えた）。`node tests/cache.mjs target/release/tsuzuri` も成功（`check --no-cache` の `E2000` を含む）。
+  チケットの「再現」の `check examples/hello` で `.tsuzuri-cache` と `frontend/`（manifest に 33 モジュール: 利用者 1、std 32）ができる。
+- 手順 11: `docs/benchmarks.md` の「frontend cache（Phase 1）」。生データは `target/perf/G17/step11/`。現実的な 1,000 モジュールの `check` は 3.38 s（base）
+  → 2.92 s（warm）、`build --emit llvm -O0` は 4.18 → 3.98 s。小さいモジュール 1,000 では差がばらつきに収まる。warm が base より遅い系列はない
+  （停止条件 9 は、ソースごとのファイルの最初の実装で当たったので D4 の見直しで直した）。
+- 手順 12: 文書（下の一覧）。手順 13: 下の「最終確認」。
+
+### Phase 2（実測で見送り）
+
+D10 のとおり。変更前のコンパイラに一時的な計装（`Instant` と `eprintln!`、コミットしない）を入れ、現実的な合成プロジェクト（1 モジュール 138 行）の 200・1,000
+モジュールと `examples/` の 9 個で 9 回ずつ測った。1,000 モジュールの `check` で関数本体の検査は 18.2%（解析の段だけを分母にしても 23.9%）で、基準の 25% に
+届かないので、型付きの本体の保存は作らない。表は `docs/benchmarks.md` の「型検査の内訳と本体の検査の再利用（Phase 2 の判断）」、生データは
+`target/perf/G17/phase2.jsonl`。合成プロジェクトのジェネリック関数は `Shared.tz` に置いた（モジュールごとに置くと 1,000 モジュールが変更前の特殊化の上限を
+超えて検査できないため。これは Phase 3 の動機の実例でもある）。
+
+### Phase 3（実装）
+
+D11 のとおり。`MAX_SOURCE_BYTES` を 4 MiB、特殊化の全体の上限を 65,536 件にし、型が大きくなり続ける多相再帰を連鎖の深さ 32・成長した特殊化 1,024 件で
+早めに止める。`package::MAX_PACKAGE_FILE_BYTES`（1 MiB）を足して `Tsuzuri.toml`・`Tsuzuri.lock`・registry の index の上限を保った。計測は
+`docs/benchmarks.md` の「規模の上限（Phase 3）」、生データは `target/perf/G17/phase3/`。
+
+### 最終確認
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 79 個のテストバイナリの 877 件がすべて成功（Phase 1 の後は 874 件）。基準の `1182045` でも既定の 2 MiB の stack では
+  `tests/computations.rs::bounds_computation_syntax_and_expansion` が stack overflow で止まる（既存の問題。調整役の指示どおり `RUST_MIN_STACK` で全体を実行した）。
+- GUIDE §3.1 の回帰テスト（`RUST_MIN_STACK` なし）: `cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion`、
+  `cargo test --locked --lib bounds_recursive_and_flat_expression_depth`、`cargo test --locked --test computations bounds_nested_builder_expansion_not_just_source_syntax`、
+  `cargo test --locked honors_the_exact_specialization_limit`: それぞれ `running 1 test` で成功（最後は `src/polymorph.rs` の単体テスト）。
+- Windows: rustup の stable（1.96.1）で `cargo check --all-targets --target x86_64-pc-windows-msvc` と `aarch64-pc-windows-msvc` が警告なし。これで見つけた
+  Windows だけの未使用の `mut`（`FrontendCache::open_with` の `DirBuilder`）は直した。同じ toolchain の clippy は、変更していない `src/lsp.rs:806` と
+  `src/parser.rs:2043`・`2044` の `nonminimal_bool` だけを報告する（リポジトリの clippy 1.98.1 は報告しない既存の差）。Windows の動作は CI でだけ確かめられる。
+- E2E（release）: `tests/frontend_cache.mjs`、`tests/cache.mjs`、`tests/e2e.mjs`（新しい上限の 65,536 件ちょうど・65,537 件目・成長の診断・4 MiB + 1 の `E0003`）、
+  `tests/features.mjs`（全 suite、12,655 件）、`tests/examples.mjs`、`tests/lsp_sessions.mjs`、`tests/packages.mjs`: すべて成功。
+- 文書: `node scripts/check-docs.mjs` を変更した言語リファレンスの 8 ページに実行して成功。
+
+### 文書
+
+`README.md`（`--no-cache` の説明、frontend cache の項、テストの一覧）、`docs/architecture.md`（Whole-build cache の段落と「Frontend cache（G17）」）、
+`docs/benchmarks.md`（「コンパイル時間と規模の上限（G17）」）、`docs/language.md`（ソースの上限、特殊化の上限）、言語リファレンスの
+`compiler/usage.md`（「構文解析の結果」）・`compiler/option.md`（`--no-cache`・`TSUZURI_CACHE_DIR`）・`compiler/diagnostics.md`（`E0003`）・
+`languages/strategy.md`（実装の状態の表）・`values-and-functions/statements.md`（ソースの上限）・`values-and-functions/generics-functions.md`（特殊化の上限）・
+`types-and-type-inference/generics.md`（具体化の上限）・`organizing-tsuzuri/packages.md`（git パッケージのファイルとマニフェストの上限）。
+`docs/architecture.md` の Arena の段落の「1,024 件の上限」も直した。`_docs/feature-status.md` は GUIDE §8.1 で廃止されたので対象がない。
+
+### 変更したファイル
+
+`src/syntax_codec.rs`（新規）、`src/frontend_cache.rs`（新規）、`src/lib.rs`、`src/driver.rs`、`src/main.rs`、`src/cache.rs`、`src/polymorph.rs`、`src/syntax.rs`、
+`src/package.rs`、`src/fetch.rs`、`tests/frontend_cache.mjs`（新規）、`tests/e2e.mjs`、`tests/polymorphism.rs`、`tests/hash_map.rs`、`tests/packages.rs`、
+上の文書、このチケット。
+
+### 調整役への申し送り
+
+- 新しい診断コード・予約語・std の名前・CLI option・環境変数はない（`TSUZURI_CACHE_DIR` の意味が frontend cache にも及ぶ。`E0003`・`E1017` の
+  上限の値とメッセージが変わった）。
+- `_features/README.md` の G17 の状態と、`tests/frontend_cache.mjs` を検証の一覧に足すこと。GUIDE の §1 の 8（「特殊化 1,024」）と §11.1 の「std の generic
+  関数と特殊化の予算」（「利用者の 1,024 件の予算」「`honors_the_exact_specialization_limit`」）は、上限が 65,536 件と成長の二段になったこと、境界のテストが
+  `src/polymorph.rs` の単体テスト（テスト専用の小さい上限）と `tests/e2e.mjs`（本物の上限）に移ったことに合わせて直す必要がある。
+- `tests/hash_map.rs` の `hash_containers_leave_the_specialization_budget_to_users` も 1,024 件ちょうどを固定していたので、同じ名前で `src/polymorph.rs` の
+  単体テストへ移した（std を読み込んだまま、テスト専用の上限ちょうどの利用者の特殊化が通ることを確かめる）。
