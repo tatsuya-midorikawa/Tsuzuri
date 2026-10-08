@@ -19,7 +19,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	await vscode.commands.executeCommand('setContext', 'tsuzuri.debugAvailable', supportsDebug());
 	registerEditor(context);
 	const workflow = registerWorkflow(context, output);
-	const testing = registerTesting(context, output, workflow.publishDiagnostics);
+	const testing = registerTesting(context, output, workflow);
 	const pending = new Map<string, Promise<void>>();
 
 	async function open(document: vscode.TextDocument) {

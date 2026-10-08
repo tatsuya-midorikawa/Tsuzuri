@@ -589,7 +589,7 @@ tsuzuri test tests/
 tsuzuri test tests/ --filter "加算" -O3 --target native
 ```
 
-テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。
+テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`tsuzuri test tests/ --index 1 -g -o runner` は 1 件のテストをデバッグ情報付きのランナーとしてビルドし、デバッガーで `runner 0` として起動できます（VS Code の Testing ビューの **Debug** も同じ仕組みです）。
 
 ### ドキュメント生成 (`tsuzuri doc`)
 
@@ -689,7 +689,7 @@ tsuzuri lsp
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
-| `-g`, `--debug-info` | DWARF デバッグ情報を付与します。 |
+| `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |
 | `--wasm-max-memory SIZE` | WASM の最大線形メモリサイズ（既定: 16MiB、例: `256MiB`）。 |
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |

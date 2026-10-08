@@ -648,14 +648,17 @@ pub fn emit_test_runner(
     selected: &[usize],
     wasm: bool,
 ) -> Result<String, Diagnostic> {
-    emit_test_runner_for(module, selected, wasm, false)
+    emit_test_runner_for(module, selected, wasm, false, None)
 }
 
+/// The test runner of the `selected` tests. `debug` holds the source map and whether the code
+/// is optimized when the runner carries debug information for a debugger (G16 Phase 2).
 pub(crate) fn emit_test_runner_for(
     module: &CheckedModule,
     selected: &[usize],
     wasm: bool,
     memory64: bool,
+    debug: Option<(&[TrapSource<'_>], bool)>,
 ) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
         return Err(Diagnostic::new(
@@ -672,6 +675,7 @@ pub(crate) fn emit_test_runner_for(
         false,
         Instrumentation {
             memory64,
+            debug,
             ..Instrumentation::default()
         },
     )

@@ -21,13 +21,13 @@
 | `--json` | ○ | ○ | ○ | ○ | ○ | ○ |
 | `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | |
 | `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | |
-| `-o` / `--output` | | ○ | | | ○（必須） | |
+| `-o` / `--output` | | ○ | | ○（`-g` と） | ○（必須） | |
 | `--target` | | ○ | | ○ | | |
 | `--emit` | | ○ | | | | |
 | `-O0`〜`-O3` | | ○ | ○ | ○ | | |
 | `--cpu` | | ○ | ○ | | | |
 | `--no-cache` | | ○ | ○ | | | |
-| `-g` / `--debug-info` | | ○ | ○ | | | |
+| `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | |
 | `--debug-output` | | ○ | ○ | | | |
 | `--trap-info` | | ○ | ○ | | | |
 | `--trap-mode` | | ○ | | | | |
@@ -186,6 +186,9 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `test` に `--cpu` | `test does not use CPU tuning` |
 | `doc` に `-o` が無い | `doc requires -o or --output with an output directory` |
 | `--filter` を `test` 以外に付ける | `--filter, --list, and --index are only valid with test` |
+| `test` に `-g` と `-o` の片方だけ | `debugging a test needs both -g and -o with the runner's path` |
+| `test -g` の `--index` が 1 つでない、または `--list`・`--filter` と組み合わせる | `debugging a test needs exactly one --index, without --list or --filter` |
+| `test -g` に WASM のターゲット | `debugging a test requires the native target` |
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
 | WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
 

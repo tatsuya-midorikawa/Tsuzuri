@@ -62,6 +62,16 @@ export function commandArguments(action: Action, root: string, optimization = 3,
 	return args;
 }
 
+/** Where the Debug test profile builds the runner of one test (G16 Phase 2). */
+export function testRunnerPath(root: string, platform: string = process.platform): string {
+	return path.join(root, '.tsuzuri', 'test', platform === 'win32' ? 'runner.exe' : 'runner');
+}
+
+/** The compiler arguments that build test `index` of `root` for a debugger without running it. */
+export function testDebugArguments(root: string, index: number, platform: string = process.platform): string[] {
+	return ['test', root, '--index', String(index), '-g', '-o', testRunnerPath(root, platform), '--json'];
+}
+
 export function outputPath(root: string, action: Action): string {
 	return path.join(root, '.tsuzuri', action === 'debug' ? 'debug' : 'bin',
 		`Main${action === 'wasm' ? '.wasm' : process.platform === 'win32' ? '.exe' : ''}`);

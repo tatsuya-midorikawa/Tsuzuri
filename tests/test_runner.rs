@@ -393,3 +393,68 @@ fn parser_keeps_tests_separate_and_preserves_names_and_spans() {
         assert!(parser::parse(invalid).is_err(), "{invalid}");
     }
 }
+
+#[test]
+fn cli_builds_one_test_with_debug_information_without_running_it() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-debug-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    fs::write(
+        root.join("Specs.tz"),
+        "test \"passes\" = assert true\ntest \"body\" =\n    let total = 40 + 2\n    assert (total == 42)\ntest \"fails\" = assert false\n",
+    )
+    .unwrap();
+    let runner = root.join("out").join("runner");
+    let debug = |index: &str| {
+        Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .arg("test")
+            .arg(&root)
+            .args(["--index", index, "-g", "-o"])
+            .arg(&runner)
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    for (index, passes) in [("1", true), ("2", false)] {
+        let output = debug(index);
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let record: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(record["type"], "debug");
+        assert_eq!(record["index"], index.parse::<u64>().unwrap());
+        assert_eq!(record["module"], "Specs");
+        assert_eq!(record["arguments"], serde_json::json!(["0"]));
+        let program = std::path::PathBuf::from(record["program"].as_str().unwrap());
+        assert_eq!(
+            fs::canonicalize(&program).unwrap(),
+            fs::canonicalize(&runner).unwrap()
+        );
+        // The runner holds only the selected test, which argument 0 runs; the build ran nothing.
+        let status = Command::new(&program).arg("0").status().unwrap();
+        assert_eq!(status.success(), passes, "{status:?}");
+        assert!(!Command::new(&program).arg("1").status().unwrap().success());
+        if cfg!(target_os = "macos") {
+            let mut dwarf = runner.clone().into_os_string();
+            dwarf.push(".dwarf");
+            assert!(fs::metadata(dwarf).unwrap().len() > 0);
+        } else if cfg!(target_os = "linux") {
+            let bytes = fs::read(&program).unwrap();
+            assert!(bytes.windows(11).any(|window| window == b".debug_info"));
+        }
+    }
+    let missing = debug("3");
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("E2000"));
+    fs::remove_dir_all(root).unwrap();
+}

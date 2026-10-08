@@ -231,5 +231,5 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			} catch (error) { reportError(error, output); }
 		}),
 	);
-	return { publishDiagnostics };
+	return { publishDiagnostics, ensureDebugger };
 }

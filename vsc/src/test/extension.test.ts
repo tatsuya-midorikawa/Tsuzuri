@@ -173,5 +173,36 @@ export async function run(): Promise<void> {
 		tracker.dispose();
 		if (vscode.debug.activeDebugSession) { await vscode.debug.stopDebugging(); }
 	}
+
+	// The Debug test profile builds one test with debug information and stops in its body.
+	await api.testing.discover(root);
+	const current: vscode.TestItem[] = [];
+	api.testing.roots.get(root)!.children.forEach(file => file.children.forEach(item => current.push(item)));
+	const passing = current.find(item => item.range?.start.line === 9);
+	assert.ok(passing, JSON.stringify(current.map(item => [item.label, item.range?.start.line])));
+	stopped = undefined;
+	const testTracker = vscode.debug.registerDebugAdapterTrackerFactory('lldb', {
+		createDebugAdapterTracker: session => ({ onDidSendMessage(message) {
+			if (message.type === 'event' && message.event === 'stopped') { stopped = { session, threadId: message.body.threadId }; }
+		} }),
+	});
+	const testBreakpoint = new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(9, 14)));
+	vscode.debug.addBreakpoints([testBreakpoint]);
+	const debugging = new vscode.CancellationTokenSource();
+	try {
+		const result = api.testing.debug(new vscode.TestRunRequest([passing]), debugging.token);
+		const pause = await waitFor('test body breakpoint', () => stopped, 180000);
+		const stack = await pause.session.customRequest('stackTrace', { threadId: pause.threadId });
+		assert.equal(stack.stackFrames[0].source.path, uri.fsPath);
+		assert.match(stack.stackFrames[0].name, /test@10:/);
+		await pause.session.customRequest('continue', { threadId: pause.threadId });
+		assert.deepEqual(await result, { passed: 1, failed: 0, errored: 0, skipped: 0 });
+		console.log('VS Code: Debug test profile, test body breakpoint, and result passed.');
+	} finally {
+		vscode.debug.removeBreakpoints([testBreakpoint]);
+		testTracker.dispose();
+		debugging.dispose();
+		if (vscode.debug.activeDebugSession) { await vscode.debug.stopDebugging(); }
+	}
 	console.log('All Tsuzuri VS Code integration checks passed.');
 }

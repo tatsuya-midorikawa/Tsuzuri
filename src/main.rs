@@ -542,8 +542,22 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             );
         }
     }
-    if debug_info && !matches!(action, Action::Build | Action::Run) {
-        return Err("--debug-info is only valid with build or run".into());
+    if debug_info && !matches!(action, Action::Build | Action::Run | Action::Test) {
+        return Err("--debug-info is only valid with build, run, or test".into());
+    }
+    // `test --index N -g -o PATH` builds the runner of one test for a debugger (G16 Phase 2).
+    if action == Action::Test && (debug_info || output.is_some()) {
+        if !debug_info || output.is_none() {
+            return Err("debugging a test needs both -g and -o with the runner's path".into());
+        }
+        if test_indices.len() != 1 || test_list || test_filter.is_some() {
+            return Err(
+                "debugging a test needs exactly one --index, without --list or --filter".into(),
+            );
+        }
+        if target.is_some_and(Target::is_wasm) {
+            return Err("debugging a test requires the native target".into());
+        }
     }
     if debug_output && !matches!(action, Action::Build | Action::Run) {
         return Err("--debug-output is only valid with build or run".into());
@@ -576,7 +590,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if action == Action::Test && cpu.is_some() {
         return Err("test does not use CPU tuning".into());
     }
-    if output.is_some() && !matches!(action, Action::Build | Action::Doc)
+    if output.is_some() && !matches!(action, Action::Build | Action::Doc | Action::Test)
         || emit.is_some() && action != Action::Build
         || target.is_some() && !matches!(action, Action::Build | Action::Test)
     {
@@ -832,6 +846,9 @@ fn run_test_action(
         );
         return ExitCode::FAILURE;
     }
+    if arguments.options.debug_info {
+        return debug_test(arguments, project, module, &options, links);
+    }
     if arguments.test_list {
         for case in module.tests.iter().filter(|case| options.includes(case)) {
             if arguments.json {
@@ -946,6 +963,58 @@ fn run_test_action(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Builds the runner of one test for a debugger and prints how to start it (G16 Phase 2).
+fn debug_test(
+    arguments: &Arguments,
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+    options: &driver::TestOptions,
+    links: &driver::LinkInputs,
+) -> ExitCode {
+    let output = arguments
+        .output
+        .as_ref()
+        .expect("debugging a test requires output");
+    let runner = match driver::build_debug_runner(module, project, options, links, output) {
+        Ok(runner) => runner,
+        Err(error) => {
+            let source = project.source_for(&error);
+            print_diagnostic(&error, &source.path, &source.text, arguments.json);
+            return ExitCode::FAILURE;
+        }
+    };
+    for message in &runner.messages {
+        if arguments.json {
+            eprintln!(
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            eprintln!("{}", message.trim());
+        }
+    }
+    let case = &runner.case;
+    if arguments.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "debug", "index": case.index, "module": case.module, "name": case.name,
+                "program": runner.program.to_string_lossy(), "arguments": runner.arguments,
+            })
+        );
+    } else {
+        println!(
+            "{} {}.{}: {} {}",
+            case.index,
+            case.module,
+            case.name.escape_debug(),
+            runner.program.display(),
+            runner.arguments.join(" ")
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn toolchain_info() -> String {
@@ -1610,6 +1679,28 @@ mod tests {
             ["test", "Main.tz", "-g"],
         ] {
             assert!(parse(&values).is_err());
+        }
+        // G16 Phase 2: `test --index N -g -o PATH` builds one test's runner for a debugger.
+        let debug = parse(&["test", "Main.tz", "--index", "1", "-g", "-o", "runner"]).unwrap();
+        assert!(debug.options.debug_info);
+        assert_eq!(debug.output.as_deref(), Some(Path::new("runner")));
+        assert_eq!(debug.test_indices, [1]);
+        for values in [
+            vec!["test", "Main.tz", "-g", "-o", "runner"],
+            vec![
+                "test", "Main.tz", "--index", "1", "--index", "2", "-g", "-o", "r",
+            ],
+            vec!["test", "Main.tz", "--index", "1", "-g"],
+            vec!["test", "Main.tz", "--index", "1", "-o", "runner"],
+            vec!["test", "Main.tz", "--index", "1", "--list", "-g", "-o", "r"],
+            vec![
+                "test", "Main.tz", "--index", "1", "--filter", "x", "-g", "-o", "r",
+            ],
+            vec![
+                "test", "Main.tz", "--index", "1", "--target", "wasm32", "-g", "-o", "r",
+            ],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
         }
         assert_eq!(parse(&["lsp"]).unwrap().action, Action::Lsp);
         for options in [["lsp", "-O0"], ["lsp", "--json"], ["lsp", "Main.tz"]] {

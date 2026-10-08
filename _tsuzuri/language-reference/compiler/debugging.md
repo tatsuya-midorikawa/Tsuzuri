@@ -10,6 +10,7 @@
 - LLDB では `command script import <配布物>/share/lldb/tsuzuri_lldb.py` で formatter を読み込みます。VS Code では何もしなくても読み込まれます。
 - 呼び出し履歴とブレークポイントには `Main.show` のような Tsuzuri の関数名を使います。
 - ステップ実行は、ランタイムとコンパイラーが生成した補助関数に入りません。
+- `tsuzuri test --index N -g -o PATH` で 1 件のテストをデバッグ用にビルドできます。VS Code では Testing ビューの **Debug** です。
 - 表示を保証するのは `-O0` のネイティブだけです。`-O3` では変数が消えることがあり、WebAssembly は DWARF を保持するだけです。
 
 ## デバッグ情報付きでビルドする
@@ -125,6 +126,7 @@ LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読�
 | ジェネリックな関数の各実体 | 元の関数と同じ `Array.sum`。名前のブレークポイントがすべての実体に当たります |
 | ラムダ式 | `<外側の関数>.lambda@<行>:<列>`。例: `Main.show.lambda@12:15` |
 | `task` | `<外側の関数>.task@<行>:<列>` |
+| `test` の本体 | `<モジュール>.test@<行>:<列>`（テスト名の位置） |
 | `export def` の公開関数・`main` などの入口 | シンボル名（`tz_view`、`main`、`tsuzuri_main`）。コンパイラーが作った関数として印が付きます |
 
 ## ステップ実行
@@ -133,6 +135,19 @@ LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読�
 - 関数のブレークポイントと関数へのステップインは、引数を束縛した後の本体の最初の行で止まります。
 - ランタイム（C で書いたタスク・入出力などと、LLVM IR のメモリ管理）と、コンパイラーが生成した補助関数（組み込み関数のラッパー、case のコンストラクター、関数値の呼び出しアダプター、解放と複製）はデバッグ情報を持たないので、LLDB の既定の設定ではステップインで入りません。
 - 標準ライブラリの関数（`Array.sum` など）にはデバッグ情報があり、ステップインで入ります。標準ライブラリのソースはコンパイラーに埋め込まれているので、デバッガーは `<プロジェクト>/std/Array.tz` のソースを見つけられず、逆アセンブルを表示します。
+
+## テストをデバッグする
+
+`tsuzuri test` に `--index N`、`-g`、`-o PATH` を付けると、テスト N だけを入れたテストランナーをデバッグ情報付きでビルドし、実行せずに終わります。ランナーは引数 `0` でそのテストを実行します。標準出力（`--json` なら `type` が `debug` の JSON）に、ランナーの絶対パスと引数が出ます。
+
+```sh
+tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
+lldb -o "command script import <配布物>/share/lldb/tsuzuri_lldb.py" -o "target symbols add .tsuzuri/test/runner.dwarf" -- .tsuzuri/test/runner 0
+```
+
+`target symbols add` は macOS だけです。テストの本体の関数名は `<モジュール>.test@<行>:<列>`（テスト名の位置）で、テストの本体に置いたブレークポイントで止まります。ランナーの入口（`main` と `tsuzuri_test_run`）はデバッグ情報を持たないので、ステップ実行で入りません。`assert` が失敗すると、デバッガーはトラップした位置で止まります。
+
+VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug** を押すと、拡張がこのコマンドでランナーを `<プロジェクト>/.tsuzuri/test/runner` にビルドし、CodeLLDB で起動します。formatter と macOS の DWARF の読み込みは、プロジェクトのデバッグと同じです。ランナーが 0 で終われば成功、それ以外は失敗として結果に残ります。終わる前にデバッグを止めると、テストはスキップになります。
 
 ## 最適化と WebAssembly
 
@@ -144,10 +159,12 @@ LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読�
 - `-g -O0` でビルドし、LLDB で `command script import .../tsuzuri_lldb.py` を実行すると Tsuzuri の値で表示されます。VS Code では自動です。
 - 関数名は `Main.show` の形で、ジェネリックな関数の実体は同じ名前です。
 - ステップ実行は束縛で前の行へ戻らず、ランタイムと補助関数に入りません。
+- `tsuzuri test --index N -g -o PATH` と VS Code の **Debug** で、1 件のテストをデバッガーで実行できます。
 
 ## 関連項目
 
 - [コンパイラ オプション](option.md)
 - [コンパイラの使い方](usage.md)
+- [テスト](../built-in-types-and-modules/test.md)
 - [WebAssembly への出力](webassembly.md)
 - [言語リファレンスの目次](../index.md)

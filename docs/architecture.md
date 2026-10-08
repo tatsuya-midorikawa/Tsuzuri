@@ -397,6 +397,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 テスト用内部関数のシンボル名には `@tz.fn.Module.$test.index` という決定的な命名規則が用いられ、テストランナーのみが `tsuzuri_test_count` および `tsuzuri_test_run` を公開関数としてエクスポートします。
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。
+`tsuzuri test --index N -g -o PATH` の `driver::build_debug_runner` は、テスト N だけをルートにした IR を `emit_test_runner_for` の `debug` で DWARF 付きにし（テストの本体の名前は `<モジュール>.test@<行>:<列>`）、C の入口とランタイムはデバッグ情報なしの別オブジェクトにして `-g` でリンクし、macOS では `dsymutil --flat` で `PATH.dwarf` を作って `publish_outputs` で置きます。実行はせず、ランナーの絶対パスと引数 `0` を出力します（G16 Phase 2）。VS Code 拡張の Debug のテストプロファイルはこれを CodeLLDB で起動し、終了コードで成否を報告します。
 
 `Debug.print` および `Debug.trace` は通常の標準ライブラリ関数として提供され、`Display` が生成した所有文字列を非公開の組み込み関数へと渡します。
 ネイティブ環境では厳密な UTF-8 変換と `runtime/debug.ll` の `write(2)` ループを用い、出力完了後に変換前後の所有バッファを確実に解放します。

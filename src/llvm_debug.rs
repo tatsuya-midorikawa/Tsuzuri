@@ -62,35 +62,6 @@ fn quote(text: &str) -> String {
     quoted
 }
 
-/// The name that debuggers show for `function` (G16 D3). A monomorphized instance drops its
-/// `.$mono.N`, so a breakpoint by name reaches every instance; a lambda or task is named after
-/// the function that contains it and its `line:column`. `position` is that of `function.span`.
-fn subprogram_name(
-    module: &CheckedModule,
-    function: &CheckedFunction,
-    position: (usize, usize),
-) -> String {
-    let plain = |function: &CheckedFunction| {
-        let name = function.qualified_name();
-        name.split(".$mono.").next().unwrap_or(&name).to_owned()
-    };
-    let kind = if function.is_task {
-        "task"
-    } else if function.module == "$lambda" {
-        "lambda"
-    } else {
-        return plain(function);
-    };
-    match function
-        .origin
-        .parent
-        .and_then(|id| module.functions.get(id))
-    {
-        Some(parent) => format!("{}.{kind}@{}:{}", plain(parent), position.0, position.1),
-        None => function.qualified_name(),
-    }
-}
-
 pub(super) fn wrapper(
     ir: String,
     module: &CheckedModule,
@@ -243,6 +214,43 @@ impl DebugContext {
         }))
     }
 
+    /// The name that debuggers show for `function` (G16 D3). A monomorphized instance drops its
+    /// `.$mono.N`, so a breakpoint by name reaches every instance. A test is `<module>.test@`, a
+    /// lambda or task `<enclosing function>.lambda@` or `.task@`, followed by the `line:column`
+    /// of the function's span.
+    fn subprogram_name(&self, module: &CheckedModule, function: &CheckedFunction) -> String {
+        let position = |function: &CheckedFunction| {
+            self.source(function.span)
+                .map(|(_, line, column)| format!("{line}:{column}"))
+        };
+        let plain = |function: &CheckedFunction| {
+            if function.name.starts_with("$test.")
+                && let Some(position) = position(function)
+            {
+                return format!("{}.test@{position}", function.module);
+            }
+            let name = function.qualified_name();
+            name.split(".$mono.").next().unwrap_or(&name).to_owned()
+        };
+        let kind = if function.is_task {
+            "task"
+        } else if function.module == "$lambda" {
+            "lambda"
+        } else {
+            return plain(function);
+        };
+        match (
+            function
+                .origin
+                .parent
+                .and_then(|id| module.functions.get(id)),
+            position(function),
+        ) {
+            (Some(parent), Some(position)) => format!("{}.{kind}@{position}", plain(parent)),
+            _ => function.qualified_name(),
+        }
+    }
+
     /// The subprogram of `function`'s definition `symbol`. An artificial one, for a wrapper that
     /// the compiler generates around the function, takes the symbol's name (G16 D3). The glue
     /// functions that the compiler generates for builtins, intrinsic methods, case constructors,
@@ -265,7 +273,7 @@ impl DebugContext {
         {
             return None;
         }
-        let (file, line, column) = self.source(function.span)?;
+        let (file, line, _) = self.source(function.span)?;
         let mut signature = vec![self.ty(&function.signature.result, module, next, definitions)];
         signature.extend(
             function
@@ -293,7 +301,7 @@ impl DebugContext {
         let name = if artificial {
             symbol.trim_start_matches('@').to_owned()
         } else {
-            subprogram_name(module, function, (line, column))
+            self.subprogram_name(module, function)
         };
         // No `scopeLine`: the prologue, which includes the parameters' stores in the `loop`
         // block, is at line 0, which debuggers skip, so a breakpoint on the function and a step

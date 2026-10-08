@@ -26,12 +26,16 @@ function execute(program, args) {
 function session(project, commands) {
   const app = join(root, `app${++sessions}`);
   execute(compiler, ["build", project, "-g", "-O0", "-o", app]);
+  return debug(app, [], commands);
+}
+
+/** Runs one LLDB batch of `commands` on the `-g` executable `app`, started with `args`. */
+function debug(app, args, commands) {
   // macOS keeps the DWARF in the `.dwarf` file beside the executable; Linux keeps it inside.
-  const symbols = process.platform === "darwin" ? ["target symbols add", `${app}.dwarf`] : [];
-  const args = ["-b", "-o", `command script import ${JSON.stringify(formatter)}`];
-  if (symbols.length) args.push("-o", `${symbols[0]} ${JSON.stringify(symbols[1])}`);
-  for (const command of commands) args.push("-o", command);
-  const output = execute(lldb, [...args, app]);
+  const options = ["-b", "-o", `command script import ${JSON.stringify(formatter)}`];
+  if (process.platform === "darwin") options.push("-o", `target symbols add ${JSON.stringify(`${app}.dwarf`)}`);
+  for (const command of commands) options.push("-o", command);
+  const output = execute(lldb, [...options, "--", app, ...args]);
   assert.doesNotMatch(output, /Traceback|error:/, output);
   return output;
 }
@@ -161,5 +165,48 @@ try {
     "(i64) total = 1222",
   ]) assert.ok(edge.includes(line), `${line}\n${edge}`);
   assert.match(edge, /^\(ref string\) label = 0x[0-9a-f]+ "h"$/m);
+
+  // Phase 2: `test --index N -g -o PATH` builds a runner of test N alone, without running it; a
+  // debugger starts it with the printed arguments and stops in the test's body.
+  const specs = join(root, "specs");
+  mkdirSync(specs);
+  writeFileSync(join(specs, "Main.tz"), [
+    "def calculate :: i64 -> i64 = \\value ->",
+    '    let label = "ok"',
+    "    value + label.length",
+    "",
+    "test \"same\" = assert true",
+    "test \"body\" =",
+    "    let total = calculate 40",
+    '    let words = ["a", "b"]',
+    "    assert (total == 42 && words.length == 2)",
+    "",
+  ].join("\n"));
+  const runner = join(root, "runner");
+  const built = spawnSync(compiler, ["test", specs, "--index", "1", "-g", "-o", runner, "--json"], { encoding: "utf8" });
+  assert.equal(built.status, 0, built.stderr);
+  const launch = JSON.parse(built.stdout);
+  assert.deepEqual([launch.type, launch.index, launch.name, launch.arguments], ["debug", 1, "body", ["0"]]);
+  const test = sections(debug(launch.program, launch.arguments, [
+    "breakpoint set -f Main.tz -l 9",
+    "breakpoint set -f Main.tz -l 3",
+    "run",
+    "frame variable",
+    "continue",
+    "frame variable",
+    "bt",
+    "continue",
+  ]));
+  const at = command => test.filter(part => part.command === command).map(part => part.text);
+  assert.match(at("breakpoint set -f Main.tz -l 9")[0], /`Main\.test@6:6 \+ \d+ at Main\.tz:9/);
+  assert.match(at("run")[0], /`Main\.calculate\(value=40\) at Main\.tz:3/);
+  const [callee, body] = at("frame variable");
+  assert.match(callee, /^\(string\) label = "ok"$/m);
+  assert.match(at("continue")[0], /`Main\.test@6:6 at Main\.tz:9/);
+  assert.match(body, /^\(i64\) total = 42$/m);
+  assert.ok(body.includes('([string]) words = length=2 {\n  [0] = "a"\n  [1] = "b"\n}'), body);
+  // The runner's entry has no debug information, like the runtime.
+  assert.match(at("bt")[0], /frame #1: 0x[0-9a-f]+ runner`tsuzuri_test_run \+ \d+\n/);
+  assert.match(at("continue")[1], /exited with status = 0/);
   console.log("debugger: LLDB formatters, names and stepping verified");
 } finally { rmSync(root, { recursive: true, force: true }); }

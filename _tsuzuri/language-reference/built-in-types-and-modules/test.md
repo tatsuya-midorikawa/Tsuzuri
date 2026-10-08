@@ -78,6 +78,7 @@ tsuzuri test . --list
 tsuzuri test . --json
 tsuzuri test . -O3
 tsuzuri test . --index 1
+tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
 ```
 
 ディレクトリを渡すと、そのプロジェクトのソースを読みます。`Main.tz` は必須ではありません。ファイルを渡すと、そのファイルの親をルートにします。
@@ -92,8 +93,9 @@ tsuzuri test . --index 1
 | `--target native\|wasm32\|wasm64` | 既定は `native`。WASM には Node.js が必要 |
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16 MiB |
 | `--wasm-stack-size SIZE` | WASM のメインスタック。既定 1 MiB |
+| `-g -o PATH` | `--index` の 1 件をデバッグ情報付きでビルドし、実行しない（[テストをデバッグする](#テストをデバッグする)） |
 
-`--cpu`、`--emit`、`--output` は使えません。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
+`--cpu` と `--emit` は使えません。`-o` は `-g` と組み合わせるときだけ使えます。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
 
 フィルターは正規表現ではありません。`Checks.tz` の `adds integers` は、一覧では `Checks.adds integers` です。`--filter "Checks.adds"` はこの 1 件に一致し、ほかは `ignored` になります。一致が 0 件でも終了コードは 0 です。
 
@@ -161,6 +163,23 @@ flowchart TD
 コンパイル診断と `E2006` は標準エラーの JSON です。標準出力の行を、診断と混ぜて 1 つの JSON 配列として解析しないでください。
 
 `--list --json` は、実行せずにテスト名の位置を出します。フィールドは `index`、`module`、`name`、`path`、`range`、`type` です。`range` の行と列は 0 始まりの UTF-16 で、テスト名の文字列トークンを指します。この一覧のキーはアルファベット順に並びます。
+
+## テストをデバッグする
+
+`-g` と `-o PATH` を付けると、`--index` で選んだ 1 件だけを入れたテストランナーを、デバッグ情報付きで `PATH` にビルドします。テストは実行しません。macOS では DWARF が `PATH.dwarf` に入ります。ランナーは引数 `0` でそのテストを実行し、成功なら終了コード 0 です。デバッガーでこの引数を付けて起動すると、テストの本体に置いたブレークポイントで止まります。
+
+```sh
+tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
+lldb -o "target symbols add .tsuzuri/test/runner.dwarf" -- .tsuzuri/test/runner 0
+```
+
+標準出力には、起動に必要な情報を 1 行で出します。`--json` では `type` が `debug` で、`program` にランナーの絶対パス、`arguments` に引数が入ります。
+
+```text
+1 Checks.在庫が足りる: /home/me/shop/.tsuzuri/test/runner 0
+```
+
+デバッガーの呼び出し履歴では、テストの本体は `Checks.test@<行>:<列>`（テスト名の位置）です。`--index` がない、または 2 つ以上ある、`--list` や `--filter` と組み合わせる、`-g` と `-o` の片方だけ、WASM のターゲットのときは `E2000` です。VS Code 拡張の Testing ビューの **Debug** はこの機能を使います（[デバッグ](../compiler/debugging.md#テストをデバッグする)）。
 
 ## 終了コード
 
