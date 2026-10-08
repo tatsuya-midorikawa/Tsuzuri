@@ -607,7 +607,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     }
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
     if no_cache && !matches!(action, Action::Build | Action::Run) {
-        return Err("--no-cache is only valid with build or run".into());
+        return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
     if emit == Some(Emit::Wgsl) && (target.is_some() || optimization.is_some() || cpu.is_some()) {
         return Err("WGSL output does not use target, optimization, or CPU options".into());

@@ -166,7 +166,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 
 | 条件 | メッセージの要点 |
 | --- | --- |
-| `--no-cache` を `check` などに付ける | `--no-cache is only valid with build or run` |
+| `--no-cache` を `check` などに付ける | `--no-cache is only valid with build, run, script, or repl` |
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `simd128` が header や native | `--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output` |
