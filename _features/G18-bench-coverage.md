@@ -659,6 +659,8 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: `tsuzuri_bench_now` を定義するのは bench 実行器の C だけ。他の entry の IR が参照すれば E1018（位置なし）。
 - 理由: 通常ビルドの runtime に時計を足さずに済み、リンクエラーより早く分かりやすい。汎用の時計は E08 の `Time` の役目。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08、独立レビュー後）: 根を指定しない出力（Console・Library）は公開の利用者関数をすべて根にするので、bench だけが使う公開の補助関数（`Bench.now`、または `Bench.of`・`Bench.with_input` を通して時計に届く関数）があると `run`／`build` が E1018 になり、メッセージは利用者がすでにしたことを勧めていた。規則を次にした: bench 実行器以外の出力では、時計に（推移的に）届く関数のうち export でも入口でもないものを既定の根から外す。入口のコード（`main`）、`export def`、選んだテスト、`Drop` の実装（drop glue は参照なしに呼ぶので常に根）から届けば従来どおり E1018。届くプログラムは以前は必ず E1018 だったので、ビルドできたプログラムの IR は変わらない。E1018 は根から時計への最短の経路（根の順の幅優先）を求め、起点（トップレベルのコード、export する関数、テストの名前、Drop の実装の型）と途中で最後に通る利用者の関数を名前で示し、その関数の中で次へ向かう式（`Bench.now` や `Bench.of` の参照）を位置にする。例: ``Bench.now runs only under tsuzuri bench, but the top-level code reaches it through `Main.measure`; call it only from bench declarations and from functions that only benchmarks use``。
+- 状態: 承認済み（2026-10-08、D-41。コーディネーターの指示による規則）
 
 ### D4: `$bench.<index>` の合成
 
@@ -696,6 +698,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 理由: 枝の block の入口だけで数えれば、生成の変更は 1 か所の helper と 5 か所の呼び出しで済み、1 行の `if` も llvm-cov と同じく実行されたと数えられる。
 - 状態: 既定案（実装者はこの案に従う）
 - 見直し（2026-10-08）: region の鍵は `(source, start, end, 種類)` にした（複数ファイルのプロジェクトと、同じ span の別の構文を分けるため）。`else` のない `if` は then の span を持つ `()` を else に生成するので、その else は region にも point にもしない。`for`（`ForRange`・`ForEach`）の本体と `try ... with` のハンドラーも region にした（ループの本体と、例外のときだけ走るハンドラーが外側の回数で数えられないように）。持ち上げたラムダと `task`（module `$lambda`・`$task`）は自分の本体を region にする（並列の lambda の中の行が外側の 1 回で数えられないように）。test と bench の除外は span の包含ではなく `FunctionOrigin.test`（Phase 1 で `bench` も）で行い、テスト本体の中のラムダも除く。`match` のパターンとガードの式は point にしない（腕が選ばれる前に走り、回数が定まらない）。数える関数では `lookup_match` の定数表を使わない（腕ごとの block がないため）。組み込み・case・export のラッパー（module `$builtin`・`$intrinsic`・`$to_string`・`$case`・`$export`）は数えない。
+- 見直し（2026-10-08、独立レビュー後）: 本体の region は関数の入口でだけ数えていたので、生成が呼び出しを省く関数が 0 になっていた（引数をそのまま返す関数の直接の呼び出しを引数に置き換える `is_identity`、既知のクロージャの解決で恒等関数を見通す `transparent`、native の末尾の自己呼び出しの引数で `x + y`／`x - y` だけの 2 引数関数を加減算にする `tail_arguments`）。これらの場所で、呼ばれる側が数える関数なら、その本体の region を `FunctionEmitter::cover_call` で数える（呼び出し側の `counted` は見ない。テストの本体からの呼び出しも数えるため）。`transparent` を使う生成（`capture_values`・`prepare_borrowed_call`・callback の引数）は見通した恒等関数をそれぞれ 1 回数え、`prepare_borrowed_call` は失敗して呼び出し側が通常の評価に戻る `request` の後で数える（二重に数えないため）。`const` の参照は検査の段階で値に置き換わるが、`const` は `Provenance::Generated` の関数なので数えない（コンパイル時の値）。ほかに利用者の関数の呼び出しを省く生成はない（`cpu_kernel` は std、HostCall の本体は数えない）。
 
 ### D9: 出力形式
 
@@ -804,6 +807,14 @@ HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従�
 - E2E（Homebrew の LLVM 21 と lld を PATH の先頭に置き、release で実行）: `node tests/e2e.mjs`、`tests/cache.mjs`、`tests/wasm_memory.mjs`（wasm32 の `tsuzuri test`、`-O0`／`-O3`）、`tests/ffi_extensions.mjs`（リンク入力付きの `tsuzuri test`）、`tests/lsp_sessions.mjs`、`tests/docgen.mjs`（`tsuzuri doc std` が `Bench.tz`・`Gen.tz` を含む）がすべて成功。`tests/wasm64.mjs` は Node 24 が要るので実行していない。
 - 変更していない既存の問題: `tsuzuri build --trap-info` で最上位の `Debug.print [1, 2, 3]` を含むプログラムを build すると、clang が `use of undefined value '%tz.context'` で失敗する（base `1182045` でも同じ）。`tests/test_runner.rs` の `runner_rejects_malformed_indices_and_reaps_timed_out_children` は 1 秒の timeout を使うので、負荷が高いときに 1 回失敗した（再実行で成功）。wasm の build の `build cache disabled: tool version query failed` は base でも出る環境の問題。
 
+### 独立レビュー後の修正（Phase7-5 `d0fe562` への fast-forward の後）
+
+- カバレッジ（中）: 生成が呼び出しを省く関数の本体が 0 回と報告されていた（D8 の見直し）。`FunctionEmitter::cover_call(id)` を足し、`is_identity` の置き換え（引数を評価した後）、`tail_arguments` の加減算（`call_specialization::binary_operation` が省いた関数を返す）、`transparent` を使う生成（`skip_identity_calls` = `call_specialization::transparent_calls`。`capture_values`・`prepare_borrowed_call`・callback の引数）で、呼ばれる側の本体の region を数える。`--coverage` がなければ何も出さない。
+- E1018（中）: 公開の bench 用の補助関数があると `run`／`build` が E1018 になっていた（D3 の見直し）。`program_reach`（根と到達集合。時計を直接読む関数を記録し、あれば `reaching` の逆向きの到達で export でも入口でもない関数を既定の根から外す）、`clock_error`（根の順の幅優先で最短の経路、起点と最後の利用者の関数の名前、`clock_use` の位置）。
+- テスト: `tests/coverage.rs` に `coverage_counts_calls_that_the_code_generator_shortcuts`（レビューの再現を `Shortcuts.tz` にしたもの。手で数えた `same` 1・`add` 3・`count` 4、5/5 行の lcov と要約が `-O0`／`-O3` で完全一致）と `coverage_counts_identity_calls_that_known_closures_look_through`（`Through.tz`。callback の特殊化、直接の適用、束縛、部分適用、`Parallel.map`、`new [i64](n, f)`、ジェネリックの恒等関数。`pass` 6・`double` 9・`add` 1・`apply` 2・`ident` 2）。修正前の binary では `same`・`add` と、`pass` の 5 回と `ident` の 2 回が数えられない。`tests/bench.rs` に `public_bench_helpers_stay_out_of_other_builds`（公開の `measure`・`Bench.of` を使う `timed`・両方を呼ぶ `report` と bench 2 件のプログラムが native／wasm32 で build でき、`run` が `hi` を出し、IR は補助関数を private にした同じプログラムと byte 単位で一致し、補助関数も bench もないプログラムとは生成名の番号を除いて一致し、時計・bench・補助関数の名前を含まない。`tsuzuri bench` は 2 件とも成功）と `clock_reached_from_entry_export_test_or_drop_is_rejected_by_name`（入口から `measure` を通す場合、トップレベルが直接読む場合、export が `Bench.of` を通す場合（native／wasm32）、選んだテスト（native／wasm32。時計に届かないテストだけなら実行器を作れる）、`Drop` の実装について、メッセージ全体と位置の文字列（`Bench.now` または `Bench.of`）を照合し、CLI の `Main.tz:3:17` も確かめる）。比較用の `renumbered` は、`$intrinsic.Display.display.N` のように途中に大文字の語を含む生成名も番号を振り直す。
+- ドキュメント: `bench.md` に `### Bench.now を使える範囲`（check-docs が `-O0`／`-O3` で実行する `run=42` の例。修正前の binary では E1018）、`test.md` に呼び出しを省く関数と `const` の数え方、`diagnostics.md` の E1018 の行、`docs/language.md`、`docs/architecture.md`。
+- 検証: `RUST_MIN_STACK=4194304 cargo test --locked` は 84 個の `test result` で 915 passed、0 failed。`--test coverage` 7 passed、`--test bench` 9 passed、`--test property` 4 passed（全体の実行に含む）。GUIDE §3.1 の 4 件は `RUST_MIN_STACK` なしで個別に passed。`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` は成功。`node scripts/check-docs.mjs`（bench.md・test.md・diagnostics.md）成功。`node tests/e2e.mjs`・`tests/cache.mjs` 成功。生成 IR: 修正前の `d0fe562` の release と比べ、examples と tests/fixtures の 328 組（native／wasm32 × `-O0`／`-O3`）がすべて byte 単位で一致。base `1182045` の release とも、324 組が一致し差は 0（base が build できない 4 組は `Gen` を使う `tests/fixtures/property`）。テスト実行器の IR は、`cover_call` と `skip_identity_calls` が `--coverage` なしでは従来と同じ命令列を出し、`program_reach` が明示した根（テスト・bench）では到達集合を変えないので、作りから変わらない。
+
 ### 更新したドキュメント
 
 - `README.md`（`tsuzuri bench`・`--coverage`・`--seed`・`--samples`）、`docs/language.md`（予約語 `bench`、bench 宣言、`Bench`、カバレッジ、`Gen`）、`docs/architecture.md`（bench 実行器、カバレッジの計装、テスト実行器の seed と標準エラー）。
@@ -811,5 +822,5 @@ HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従�
 
 ### 変更したファイル
 
-- 新規: `src/coverage.rs`、`src/runtime/bench-runner.c`、`std/Bench.tz`、`std/Gen.tz`、`tests/coverage.rs`、`tests/bench.rs`、`tests/property.rs`、`tests/fixtures/coverage/Calc.tz`、`tests/fixtures/property/Props.tz`、上記の 2 ページ。
-- 変更: `src/{bindings,check,computation,driver,formatter,lexer,lib,llvm,llvm_control,llvm_exception,llvm_frame,lsp,main,parse_control,parser,polymorph,semantic,stdlib,syntax,test_runner}.rs`、`src/runtime/test-runner.c`・`test-runner.mjs`、`tests/frontend.rs`・`tests/test_runner.rs`、`vsc/syntaxes/tsuzuri.tmLanguage.json`・`vsc/snippets/tsuzuri.json`・`vsc/src/core.ts`・`vsc/src/editor.ts`、このチケット。
+- 新規: `src/coverage.rs`、`src/runtime/bench-runner.c`、`std/Bench.tz`、`std/Gen.tz`、`tests/coverage.rs`、`tests/bench.rs`、`tests/property.rs`、`tests/fixtures/coverage/Calc.tz`・`Shortcuts.tz`・`Through.tz`、`tests/fixtures/property/Props.tz`、上記の 2 ページ。
+- 変更: `src/{bindings,call_specialization,check,computation,driver,formatter,lexer,lib,llvm,llvm_control,llvm_exception,llvm_frame,lsp,main,parse_control,parser,polymorph,semantic,stdlib,syntax,test_runner}.rs`、`src/runtime/test-runner.c`・`test-runner.mjs`、`tests/frontend.rs`・`tests/test_runner.rs`、`vsc/syntaxes/tsuzuri.tmLanguage.json`・`vsc/snippets/tsuzuri.json`・`vsc/src/core.ts`・`vsc/src/editor.ts`、このチケット。
