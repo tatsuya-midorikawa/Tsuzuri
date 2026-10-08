@@ -45,6 +45,7 @@ const NAMESPACES: &str =
 const EXTERNS: &str =
     "extern declarations are not supported in the REPL; use a project with 'tsuzuri run'";
 const TESTS: &str = "test declarations are not supported in the REPL; use 'tsuzuri test'";
+const BENCHES: &str = "bench declarations are not supported in the REPL; use 'tsuzuri bench'";
 const MAIN: &str = "'main' cannot be defined in the REPL; enter its body as an input instead";
 
 /// Runs the loop until `:quit` or the end of `input`. Results go to `output` and diagnostics
@@ -468,6 +469,12 @@ fn classify(path: &str, text: String, program: &Program) -> Result<Input, Diagno
             .map(|handle| (handle.name.span, EXTERNS)),
     );
     rejected.extend(program.tests.iter().map(|test| (test.name_span, TESTS)));
+    rejected.extend(
+        program
+            .benches
+            .iter()
+            .map(|bench| (bench.name_span, BENCHES)),
+    );
     rejected.extend(
         program
             .functions

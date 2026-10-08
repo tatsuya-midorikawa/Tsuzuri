@@ -127,16 +127,18 @@ assert.equal(count(r8.stderr, "input:1:1: error[E2001]"), 1, r8.stderr);
 const r9 = check("R9", [
   "extern def drop_log :: i64 -> unit",
   "test \"adds numbers\" = assert (1 + 2 == 3)",
+  "bench \"one\" = Bench.of (\\_ -> 1)",
   "def main :: unit -> i32 = \\() -> 1",
   "1",
 ], ["it: i32 = 1"], {
   errors: [
     "input:1:12: error[E2000]: extern declarations are not supported in the REPL",
     "input:1:6: error[E2000]: test declarations are not supported in the REPL",
+    "input:1:7: error[E2000]: bench declarations are not supported in the REPL",
     "input:1:5: error[E2000]: 'main' cannot be defined in the REPL",
   ],
 });
-assert.equal(count(r9.stderr, "error["), 3, r9.stderr);
+assert.equal(count(r9.stderr, "error["), 4, r9.stderr);
 
 check("R10", ["while true do ()", "1 + 1"], ["it: i32 = 2"], {
   args: ["--timeout", "1"],

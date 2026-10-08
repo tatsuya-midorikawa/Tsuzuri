@@ -667,6 +667,8 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 
 - 決定: `extern`、`test`、`main` の定義は `E2000` で拒否する。
 - 理由: `extern` は外部 object のリンク手段がなく、再実行で副作用が重複する。`test` は `tsuzuri test` の役割。`main` はトップレベルの実行コードと併用できない（`E2004`）。
+- 見直し（2026-10-08、統合）: G18 の `bench` 宣言も `test` と同じく、宣言の名前の位置で `E2000`（`bench declarations are not supported in the REPL; use 'tsuzuri bench'`）にする。
+  統合前は REPL の分類が `Program::benches` を知らず、`bench` 宣言をセッションに残していた（実行されない）。E2E の R9 で確かめる。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D11: 警告と cache
