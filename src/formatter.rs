@@ -57,7 +57,8 @@ fn print_tokens(source: &str, hints: &mut Hints) -> Result<String, Diagnostic> {
     let mut output = if source.starts_with('\u{feff}') {
         "\u{feff}".to_owned()
     } else {
-        String::new()
+        // The lexer leaves out a `#!` line, so it is copied as it is.
+        source[..crate::lexer::shebang_length(source)].to_owned()
     };
     let mut pending = String::new();
     for (index, retained) in tokens.iter().enumerate() {

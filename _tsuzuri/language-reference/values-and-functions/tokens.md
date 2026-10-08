@@ -44,6 +44,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `//` | 単一行コメント（行末まで） | `// 注記` | [特殊文字](./tokens.md) |
 | `/* */` | 複数行ブロックコメント（入れ子可能） | `/* コメント */` | [特殊文字](./tokens.md) |
 | `///` | Markdown 形式のドキュメントコメント | `/// 関数の説明` | [ドキュメント コメント](../organizing-tsuzuri/documentation-comment.md) |
+| `#!` | ファイル先頭の shebang 行（行コメントと同じく読み飛ばす） | `#!/usr/bin/env -S tsuzuri script` | [特殊文字](./tokens.md) |
 
 ## 括弧の使い分け
 
@@ -146,7 +147,7 @@ Tsuzuri には細い矢印 `->` と太い矢印 `=>` があります。
 
 ## コメントの構文と入れ子
 
-Tsuzuri は 3 種類のコメントをサポートしています。
+Tsuzuri は 3 種類のコメントをサポートしています。ファイルの先頭の shebang 行も、コメントとして読み飛ばされます。
 
 ### 単一行コメント (`//`)
 
@@ -170,6 +171,19 @@ Markdown 形式で記述するドキュメンテーション用のコメント�
 
 - 付けられる対象: `def`（`export`、`private`、`extern`、型クラスのメソッド、`@literal def` を含む）、`record`、`union`、`type`、`const`、`class`
 - 付けられない対象: `fn` や `let` の実装、`instance`、フィールド定義、ローカル束縛、`test`、エントリーコード。いずれも `E0002` です
+
+### shebang 行 (`#!`)
+
+ファイルの先頭（1 文字目）が `#!` のとき、その行は `//` の行コメントと同じく読み飛ばされます。[`tsuzuri script`](../compiler/usage.md#script) で実行するファイルに、実行するプログラムを書くための行です。
+
+```tsuzuri
+#!/usr/bin/env -S tsuzuri script
+def main :: Array<string> -> i32 = \args ->
+    do! IO.write_line (String.join (ref " ") (ref args))
+    0
+```
+
+`.tz`・`.tt`・`.tc` のどのファイルでも同じです。診断の行と列は、shebang 行を 1 行目として数えます。`tsuzuri fmt` は shebang 行をそのまま残します。2 行目以降や BOM の後の `#!` は shebang 行ではなく、構文エラーです。
 
 ## アンダースコア (_) の役割
 

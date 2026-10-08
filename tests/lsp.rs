@@ -125,6 +125,28 @@ const P1: [(&str, &str); 3] = [
 ];
 
 #[test]
+fn a_shebang_line_keeps_positions() {
+    use serde_json::json;
+    const SOURCE: &str = "#!/usr/bin/env tsuzuri script\nlet x = 41\nx + 1\n";
+    let responses = scripted(&[("Main.tz", SOURCE)], "utf-16", |uri| {
+        let main = uri("Main.tz");
+        vec![
+            json!({"id": 1, "method": "textDocument/documentHighlight", "params": {"textDocument": {"uri": main}, "position": position(SOURCE, "x + 1", "utf-16")}}),
+            json!({"id": 2, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(SOURCE, "x + 1", "utf-16")}}),
+        ]
+    });
+    assert_eq!(
+        responses[0]["result"],
+        json!([{"range": range(1, 4, 5), "kind": 3}, {"range": range(2, 0, 1), "kind": 2}])
+    );
+    assert!(
+        responses[1]["result"].to_string().contains("x: i32"),
+        "{}",
+        responses[1]
+    );
+}
+
+#[test]
 fn references_and_highlights_cover_def_and_fn_heads() {
     use serde_json::json;
     let responses = scripted(&P1, "utf-16", |uri| {

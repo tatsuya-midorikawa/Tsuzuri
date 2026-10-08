@@ -1487,6 +1487,9 @@ mod tests {
             [Key::Value("even".into()), Key::Value("odd".into())]
         );
         assert_eq!(keys[3], [Key::Value("a".into()), Key::Value("b".into())]);
+        // A file's `#!` line is not part of its first declaration.
+        let script = classify_text("#!/usr/bin/env tsuzuri script\ndef one :: i32 = 1\n");
+        assert_eq!(texts(&script.declarations), ["def one :: i32 = 1"]);
         // The definition of `f` maps back to its own line.
         assert_eq!(
             input_offset(&input.declarations[1].pieces, 20),

@@ -314,6 +314,8 @@ stderr には `broken` の行の `input:1:14: error[E2005]: ...` が出て、`br
 
 - `tsuzuri script FILE.tz [args...]`: 任意の名前の単一ファイルを `Main.tz` として overlay し、`run` と同じ経路で実行する。先頭の shebang 行
   （`#!/usr/bin/env tsuzuri script`）を無視する。shebang は lexer の規則の変更なので、承認（D12）の前に着手しない。
+- 実装（2026-10-08、D12 の見直しを参照）: `tsuzuri script [options] FILE [arguments...]`。FILE より前は `run` のオプション（`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--json`、
+  `--deny-warnings`、`--warn`、`--link`・`-l`・`-L`）で、FILE より後ろはすべてプログラムの引数。どのソースでも、バイト 0 の `#!` の行を lexer が行コメントとして飛ばす。
 
 ### Phase 3: JIT（研究）
 
@@ -675,6 +677,21 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 決定: `tsuzuri script FILE.tz [args...]` は単一ファイルを `Main.tz` として overlay し、先頭の shebang 行を無視する。
 - 理由: D2 の overlay をそのまま使える。shebang の無視は lexer の規則の変更で、CLI の新しいコマンド名も確定が要る。
 - 状態: 承認済み（2026-10-08、D-41）
+- 見直し（2026-10-08、実装の決定）:
+  - shebang の規則は「どのソースファイルでも、バイト 0 から始まる `#!` の行（改行の前の `\r` を除く）は行コメント」にした（Rust・JavaScript・Python と同じ）。script の時だけにすると、
+    同じファイルを `check`・`fmt`・言語サーバーで開けなくなる。`#` で始まる正しいプログラムはない（`#` は制約行の `#function` だけ）ので、意味が変わる既存のプログラムはない。
+    BOM の後と 2 行目以降の `#!` は従来どおり構文エラー。lexer は行を飛ばすだけで位置はファイル全体のまま数えるので、診断の行・列と言語サーバーの位置は変わらない。
+    `tsuzuri fmt` は行をそのまま出力の先頭に写す（`lex_with_trivia` は行の後から走査する）。
+  - 読み込みは overlay ではなく `Project::load_script`（D2 の見直しと同じ `Project::single_main`）。FILE の実際のパスを保つので、診断とトラップの行が FILE を指し、
+    キャッシュのキーが実行ごとに変わらない（overlay や一時ディレクトリの `Main.tz` だとパスが毎回変わり、同じスクリプトでも毎回 Clang を通す）。同じディレクトリの
+    ほかのファイル、`Tsuzuri.toml`、`Tsuzuri.lock` は読まない。拡張子は問わず（shebang で実行するファイルは拡張子がないことが多い）、`.tt`・`.tc` は `E2000`。
+    PATH に置いたシンボリックリンクから実行できるよう、`run` と違ってシンボリックリンクを辿る。
+  - 実行ファイルの入口の検査（`E2004`）は、入力のパスのファイル名ではなく入口のモジュールの相対パス（`Main.tz`）を見るようにした。既存の読み込みでは両者は常に同じ。
+  - 引数はオプションに見えるものも含めて FILE の後ろからそのまま渡す（`run_with_arguments`）。`run` は従来どおり引数を渡さない（`Array<string>` は空）。
+    stdio・警告・`E2005`・終了コードは `run` と同じで、`def main` の 0 以外の戻り値は `E2005` と終了コード 1 になる（coordinator の指示どおり `run` に揃えた。
+    戻り値をそのまま終了コードにする案は採らなかった）。
+  - shebang 行の書き方は、Linux の kernel が残りを 1 つの引数で渡すため `#!/usr/bin/env -S tsuzuri script` を勧める。macOS は `#!/usr/bin/env tsuzuri script` でも動く。
+  - VS Code の TextMate 文法（`vsc/syntaxes/tsuzuri.tmLanguage.json`）には shebang 行の規則を足していない（色だけの差。`vsc` の npm テストを手元で回せないため。残作業）。
 
 ### D13: Phase 3 の JIT
 
@@ -708,3 +725,23 @@ HEAD `1182045`（`Phase7-5`）から、ブランチ `wt/g13` で 3 Phase を実�
 | `node scripts/check-docs.mjs`（変更した 5 ページ） | 成功（106 links、13 examples、26 native runs） |
 
 チケットの性能の記録（1 回。ベンチマークではない）: チケットの「例」の stdin を流した 1 セッション（評価 11 回、cache なしの状態から）は release で real 6.55 s（user 3.04 s）。入力ごとの内訳は Phase 3 で測った。
+
+### Phase 2: `tsuzuri script` と shebang 行
+
+- 実装: `src/lexer.rs`（`shebang_length`・`content_start`）、`src/formatter.rs`（行を写す）、`src/driver.rs`（`Project::load_script`、`run_with_arguments`、`RunStdio::Inherit` の `arguments`、入口の検査を相対パスに）、
+  `src/main.rs`（`HELP`、`script_arguments` と `script` の分岐。プログラムの引数を `run_action` へ渡す）、`tests/script.mjs`（新規）。決定は D12 の見直しに書いた。
+- 期待値は手計算と、同じ内容を `Main.tz` に置いたプロジェクトの `tsuzuri run` から作った（`exit.tz`・`trap.tz` は `run` と `script` の stderr をパスだけ置き換えて完全一致で比べる）。
+- 生成 IR の不変: `examples/` と `tests/fixtures/` の `Main.tz` を持つ 75 ディレクトリを、変更前（`1182045`）と変更後の release で `--emit llvm`、native と wasm32、`-O0` と `-O3` で
+  ビルドし、300 件すべて byte 単位で一致した（`#!` で始まるソースはない）。
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo test --locked --lib skips_a_shebang`・`script_projects`・`groups_signatures` | `running 3 tests`、成功 |
+| `cargo test --locked --bin tsuzuri` | `running 14 tests`、成功（`splits_script_options_from_program_arguments` を足した） |
+| `cargo test --locked --test formatter` | `running 17 tests`、成功（`keeps_a_shebang_line`） |
+| `cargo test --locked --test lsp` | `running 27 tests`、成功（`a_shebang_line_keeps_positions`） |
+| `cargo test --locked --test frontend --test diagnostics` | 3 件と 19 件、成功 |
+| `node tests/script.mjs target/release/tsuzuri` | 成功。引数（`--help`・`-O0`・`--`・空文字列を含む）、終了コードとトラップ（`run` と比較）、`--json`、stdin、警告と `--deny-warnings`、キャッシュの再利用（2 回目でキャッシュの項目が増えない）、CLI の誤り（終了コード 2）、`.tt`・存在しないファイル（1）、`check`・`fmt --check`、`chmod +x` したファイルを `#!/usr/bin/env tsuzuri script` と `#!/usr/bin/env -S tsuzuri script` で直接実行（コンパイラのディレクトリを PATH の先頭に置く。シンボリックリンク経由も） |
+| `node tests/repl.mjs`・`tests/e2e.mjs`・`tests/cache.mjs`・`tests/lsp_sessions.mjs` | 成功 |
+| `node tests/io.mjs` | 変更前も変更後も、ASan・UBSan 付きの harness が ASan 自身の初期化（`__asan::InitializeShadowMemory` → `dyld_shared_cache_iterate_text_swift`。`sample` で確認）で止まり、180 秒で時間切れになる（この機械の Homebrew LLVM 21 の ASan と macOS の組み合わせの問題で、コンパイラは関わらない）。`-fsanitize=address,undefined` だけを除いた作業用の写し（`target/` の下に置き、コミットしない）では、変更前と変更後の両方で全件成功した |
+| `node scripts/check-docs.mjs`（`usage.md`・`option.md`・`tokens.md`・`strategy.md`） | 成功（96 links、7 examples、10 native runs）。shebang 行を含む例も `tsuzuri check` を通る |

@@ -28,7 +28,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 |---|---|
 | `src/diagnostic.rs` | ソース ID とファイル内位置、診断の順序・重複除去・表示／収集上限、human／JSON lines の出力制御 |
 | `src/syntax.rs` | トークン定義、構文木（AST）、構文リソース上限の管理 |
-| `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理、数値リテラルの切り出し |
+| `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
 | `src/parser.rs` | Pratt パーサー、宣言と式、トップレベルのエントリーコード、再帰深度の制限 |
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
@@ -77,7 +77,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・ビットシフトの freestanding 補助関数群 |
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用） |
-| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`bindgen`、`repl` のオプション |
+| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`bindgen`、`repl` のオプション、`script` の引数の取り分け（ファイルより前を `run` のオプションとして解析し、後ろをプログラムへ渡す） |
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 具体化後の暗黙の複製箇所の列挙（`copies::sites`）、`--warn implicit-copy` による `W1006` 警告、インレイヒント（inlay hint）の基となる配列・リストの複製検出（`costly_sites`） |
@@ -366,6 +366,8 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 **REPL:** `tsuzuri repl` は再コンパイル型で、JIT も入力を跨ぐ常駐プロセスも持ちません（G13 D1・D13）。セッションは受け付けた宣言とトップレベルの文の**ソース**だけで、入力ごとに「宣言 → 文 → 入力の末尾」の順に `Main.tz` を生成し、`Project::single_main` で読みます。これはファイル・マニフェスト・lockfile を読まず、`stdlib::sources_for` が選んだ std だけを足すので、同じ文字列を `Main.tz` に置いた `tsuzuri run` と同じ検査・IR になります。生成したソースはディスクに書かず、パスは仮想の `<repl>/Main.tz` です（キャッシュのキーとトラップの行に入る）。
 式は `let it = (E)` で包み、`SemanticIndex` の `it: T` の項目から型を得て、`Display.display (ref it)` を足した版で値を表示します（その版の診断が表示行の `E1005` だけなら型だけ）。`run_captured` は `run` と同じ `build_complete` の後、子の stdin を空にし、stdout を 16 MiB まで別スレッドで集め、stderr を別スレッドで中継し、時間制限か出力の超過で子を kill して `wait` してから `E2005` を返します。`run_with_diagnostics` はこの `run_process` の `Inherit` で、`run` の挙動（stdio の継承、stderr の中継、`--json`、`E2005` の位置）は変わりません。
 動作は `cargo test --locked --lib repl::` と `cargo build --release --locked && node tests/repl.mjs target/release/tsuzuri` によって検証されています。
+
+**スクリプト実行:** `tsuzuri script FILE [arguments...]` は `run` と同じ経路で、`Project::load_script` が FILE（名前は問わず、シンボリックリンクは辿る。`.tt`・`.tc` は `E2000`）を `Project::single_main` の `Main.tz` にする。FILE の実際のパスを保つので、診断・トラップの行・キャッシュのキーはそのパスを使い、同じスクリプトの再実行はキャッシュに当たる。実行ファイルの入口の検査（`E2004`）はパスのファイル名ではなく入口のモジュールの相対パス（`Main.tz`）を見る。FILE より後ろの引数は `run_with_arguments` が子プロセスへそのまま渡す（`run` は空）。shebang 行は lexer の規則で、`tsuzuri fmt` は行をそのまま出力の先頭に写す。動作は `cargo test --locked --lib skips_a_shebang`、`--test formatter keeps_a_shebang_line`、`--test lsp a_shebang_line_keeps_positions` と `node tests/script.mjs target/release/tsuzuri` によって検証されています。
 
 **フロントエンド:** プロジェクト内の全ファイルのシグネチャを先行して収集するため、宣言の記述順序やファイル順序に依存しない設計となっています。
 ローカル変数の束縛は一意な識別子（ID）へと解決され、コード生成フェーズにおいて名前解決や型推論をやり直すことはありません。
@@ -1104,6 +1106,7 @@ node tests/display_parse.mjs target/release/tsuzuri
 node tests/json.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/repl.mjs target/release/tsuzuri
+node tests/script.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri

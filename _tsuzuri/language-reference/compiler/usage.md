@@ -10,13 +10,14 @@
 - ディレクトリを渡すと `Main.tz` が入口になります。ファイルを渡すと、その親がプロジェクトルートです。
 - `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。
 - `repl` は、宣言と式を 1 つずつ受け取り、入力ごとにプログラムを作り直して検査し、実行します。
+- `script` は、名前を問わない 1 つのファイルを `Main.tz` として `run` と同じように実行し、後ろの引数をプログラムへ渡します。先頭の `#!` 行で、ファイル自体を実行できます。
 - キャッシュは `build` と `run` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
 
-引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。
+`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。
 
 ```mermaid
 flowchart TD
@@ -30,6 +31,8 @@ flowchart TD
   kind -->|bindgen| bind["C ヘッダーから extern を生成"]
   kind -->|lsp| server["stdio の言語サーバー"]
   kind -->|repl| interactive["入力ごとに Main.tz を作って検査し実行"]
+  kind -->|script| single["1 つのファイルを Main.tz として読む"]
+  single --> typed
   kind -->|fmt| format["その場で整形する"]
   kind -->|check doc test build run| load["入力を 1 つ解決する"]
   load --> read["ルート以下のソースを再帰的に読む"]
@@ -229,7 +232,7 @@ tsuzuri check demo
 
 ### run
 
-`Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。
+`Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。`run` はプログラムへ引数を渡さないので空の配列で、引数を渡すときは [`script`](#script) を使います。
 
 `run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。
 
@@ -337,6 +340,33 @@ let word = (
 | 評価するプログラムの標準出力 | 16 MiB | プログラムを止めて `E2005` |
 
 既定の最適化は `-O0` です。ターゲットは native だけで、`--target`、パス、ほかのビルドオプションは終了コード 2 の `E2000` です。入力のエラーでは終了せず、`:quit` か標準入力の終わりで終了コード 0 です。標準入力が端末のときだけ、見出しと `> `（続きの行は `. `）のプロンプトを出します。標準出力は入力だけで決まるので、入力をファイルから流せばテストにも使えます。行の編集と履歴はありません。
+
+### script
+
+名前を問わない 1 つのファイルを、ほかのファイルも依存もないプロジェクトの `Main.tz` として読み、`run` と同じように検査して実行します。ファイルより後ろの引数は、`--help` のようにオプションに見えるものも含めてそのままプログラムへ渡り、`def main :: Array<string> -> i32` が受け取ります。
+
+```sh
+tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
+```
+
+ファイルの前に置けるのは `-O0`〜`-O3`、`--cpu`、`--no-cache`、`--json`、`--deny-warnings`、`--warn implicit-copy`、`--link`、`-l`、`-L` で、意味と既定（`-O3`、キャッシュ有効）は `run` と同じです。名前が `-` で始まるファイルは `--` の後に置きます。
+
+ファイルの先頭の `#!` 行は、どのソースでも行コメントとして読み飛ばされます（[特殊文字](../values-and-functions/tokens.md#コメントの構文と入れ子)）。そのため、実行権限を付けたファイルを、そのままコマンドとして実行できます。
+
+```tsuzuri
+#!/usr/bin/env -S tsuzuri script
+def main :: Array<string> -> i32 = \args ->
+    do! IO.write_line ("hi " + String.join (ref " ") (ref args))
+    0
+```
+
+この内容を `greet` に保存して `chmod +x greet` し、`./greet x y` を実行すると、標準出力は `hi x y` です。`env -S` は、shebang 行の残りを 1 つの引数として渡す Linux でも `tsuzuri` と `script` を分けるために要ります。macOS は自分で分けるので `#!/usr/bin/env tsuzuri script` でも動きます。シンボリックリンクを経由した実行もできます。
+
+- 読むのは指定したファイルだけです。同じディレクトリのほかの `.tz`、`Tsuzuri.toml`、`Tsuzuri.lock` は読まず、std は `run` と同じく、ソースが名前を書いた opt-in のモジュールだけを足します。依存やほかのモジュールを使うなら、プロジェクトを作って `run` を使います。
+- 拡張子はなくてもかまいません。`.tt` と `.tc` は型クラスとビルダーのモジュールなので `E2000` です。
+- 標準入力と標準出力はプログラムと共有し、標準エラーと警告、`E2005`、終了コードは `run` と同じです。`def main` が 0 以外を返すと `E2005` で、`tsuzuri script` の終了コードは 1 です。
+- 診断とトラップの位置は、shebang 行を 1 行目として数えた、指定したパスのファイルの行と列です。
+- キャッシュのキーには指定したパスも入るので、同じパスで同じ内容のファイルを再び実行すると、Clang を通さずに前回の実行ファイルを使います。
 
 ### build
 

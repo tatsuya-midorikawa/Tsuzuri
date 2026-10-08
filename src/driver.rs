@@ -1786,10 +1786,30 @@ impl Project {
         )
     }
 
+    /// The project of `tsuzuri script`: the file at `path`, whatever its name, as the
+    /// application's `Main.tz` and nothing else (see [`Project::single_main`]). A symbolic
+    /// link is followed, since a script on PATH often is one.
+    pub fn load_script(path: &Path) -> Result<Self, SourceError> {
+        if matches!(
+            source_kind(path),
+            Some(SourceKind::TypeClass | SourceKind::Computation)
+        ) {
+            return Err(SourceError::new(
+                path,
+                driver_error(
+                    "E2000",
+                    "a script is a .tz program; .tt and .tc files are type class and builder modules",
+                ),
+            ));
+        }
+        let text = read_source_text(path).map_err(|error| SourceError::new(path, error))?;
+        Ok(Self::single_main(path.to_owned(), text))
+    }
+
     /// A project whose only user source is `text`, the application's `Main.tz`, shown at
     /// `path`. It reads no file, manifest, or lockfile, so the program sees no other module
     /// and no dependency; like [`Project::load`], it adds only the std modules that `text`
-    /// names (D-40). The REPL passes a generated program.
+    /// names (D-40). The REPL passes a generated program and `tsuzuri script` a file.
     pub fn single_main(path: PathBuf, text: String) -> Self {
         let std_sources = crate::stdlib::sources_for([text.as_str()]);
         let mut sources = vec![SourceFile {
@@ -2166,8 +2186,9 @@ fn build_complete(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
+    // The entry module, which `tsuzuri script` reads from a file of any name.
     if options.emit == Emit::Executable
-        && project.input().file_name() != Some(OsStr::new("Main.tz"))
+        && project.sources[project.root].relative_path != Path::new("Main.tz")
     {
         return Err(driver_error(
             "E2004",
@@ -3260,8 +3281,27 @@ pub fn run_with_diagnostics(
     links: &LinkInputs,
     json: bool,
 ) -> Result<Vec<String>, Diagnostic> {
-    run_process(module, project, options, links, RunStdio::Inherit { json })
-        .map(|(messages, _)| messages)
+    run_with_arguments(module, project, options, links, json, &[])
+}
+
+/// [`run_with_diagnostics`] that passes `arguments` to the program, after its own path:
+/// `tsuzuri script FILE [arguments...]`.
+pub fn run_with_arguments(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    json: bool,
+    arguments: &[OsString],
+) -> Result<Vec<String>, Diagnostic> {
+    run_process(
+        module,
+        project,
+        options,
+        links,
+        RunStdio::Inherit { json, arguments },
+    )
+    .map(|(messages, _)| messages)
 }
 
 /// The most standard output that [`run_captured`] collects before it stops the program.
@@ -3290,10 +3330,13 @@ pub fn run_captured(
 }
 
 /// How [`run_process`] connects the program's standard streams.
-enum RunStdio {
-    /// `tsuzuri run`: the program shares the compiler's stdin and stdout, and its stderr is
-    /// relayed, or with `json` collected and reported after it ends.
-    Inherit { json: bool },
+enum RunStdio<'a> {
+    /// `tsuzuri run` and `script`: the program gets `arguments` and shares the compiler's stdin
+    /// and stdout, and its stderr is relayed, or with `json` collected and reported after it ends.
+    Inherit {
+        json: bool,
+        arguments: &'a [OsString],
+    },
     /// [`run_captured`]: stdin is empty, stdout is collected up to `limit` bytes, and stderr is
     /// relayed; the program is killed past `timeout` or `limit`.
     Capture {
@@ -3309,7 +3352,7 @@ fn run_process(
     project: &Project,
     options: BuildOptions,
     links: &LinkInputs,
-    stdio: RunStdio,
+    stdio: RunStdio<'_>,
 ) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
@@ -3334,10 +3377,11 @@ fn run_process(
         links,
         "run",
     )?;
-    let json = matches!(stdio, RunStdio::Inherit { json: true });
+    let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
     let (status, stderr, stdout) = match stdio {
-        RunStdio::Inherit { json } => {
+        RunStdio::Inherit { json, arguments } => {
             let mut child = Command::new(&output)
+                .args(arguments)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::piped())
@@ -3786,6 +3830,47 @@ mod tests {
         }
         let project = Project::load(&directory.path.join(input)).unwrap();
         (directory, project)
+    }
+
+    #[test]
+    fn script_projects_read_one_file_of_any_name() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        let script = directory.path.join("greet");
+        fs::write(
+            &script,
+            "#!/usr/bin/env tsuzuri script\nlet value = Json.Null\n0\n",
+        )
+        .unwrap();
+        fs::write(directory.path.join("Broken.tz"), "def broken :: i64 = (\n").unwrap();
+        let project = Project::load_script(&script).unwrap();
+        assert_eq!(project.input(), script);
+        assert_eq!(
+            project.sources[project.root].relative_path,
+            Path::new("Main.tz")
+        );
+        let names: Vec<_> = project
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::User)
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, ["Main"]);
+        assert!(project.sources.iter().any(|source| source.name == "Json"));
+        assert!(project.analyze_all().is_ok());
+        #[cfg(unix)]
+        {
+            let link = directory.path.join("linked");
+            std::os::unix::fs::symlink(&script, &link).unwrap();
+            assert_eq!(Project::load_script(&link).unwrap().input(), link);
+        }
+        let module = Project::load_script(&directory.path.join("Traits.tt")).unwrap_err();
+        assert_eq!(module.diagnostic.code, "E2000");
+        for missing in [directory.path.join("missing.tz"), directory.path.clone()] {
+            assert_eq!(
+                Project::load_script(&missing).unwrap_err().diagnostic.code,
+                "E2001"
+            );
+        }
     }
 
     #[cfg(unix)]

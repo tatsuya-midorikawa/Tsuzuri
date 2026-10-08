@@ -98,7 +98,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、UI やネットワークはホスト側に委譲。 |
-| 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）。 |
+| 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
 
 ---
 
@@ -379,7 +379,7 @@ def main :: unit -> i32 = \() ->
 #### エントリーポイント (`Main.tz`)
 
 アプリケーションは `Main.tz` から開始します。
-エントリーポイントとして、`def main :: unit -> i32` またはコマンドライン引数を受け取る `def main :: Array<string> -> i32` を定義します。`main` が返す `i32` の値がプロセスの終了コードとなり、コンソールに自動表示されることはありません（終了コードが 0 以外の場合は `tsuzuri run` が `E2005` で報告します）。
+エントリーポイントとして、`def main :: unit -> i32` またはコマンドライン引数を受け取る `def main :: Array<string> -> i32` を定義します。`main` が返す `i32` の値がプロセスの終了コードとなり、コンソールに自動表示されることはありません（終了コードが 0 以外の場合は `tsuzuri run` が `E2005` で報告します）。コマンドライン引数は、`tsuzuri script` でファイルより後ろに書くか、ビルドした実行ファイルに渡します。
 トップレベルの `let` 式および最後の結果式で記述されたプログラムも引き続き実行可能で、結果値が `Display` を実装していれば標準出力に出力されます。
 
 #### コンパイル時定数 (`const`)
@@ -588,6 +588,19 @@ it: i64 = 36
 
 1 行で完結しない入力は空行で終えます。同じ名前の再定義は元の位置で置き換え、セッション全体を検査し直します。実行中の値は持ち越さず、評価のたびに受け付けた `let` を実行し直します。コマンドは `:type`、`:load`、`:list`、`:reset`、`:quit` です。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#repl) を参照してください。
 
+### スクリプト実行 (`tsuzuri script`)
+
+名前を問わない 1 つのファイルを、ほかのファイルも依存もないプロジェクトの `Main.tz` として `tsuzuri run` と同じように実行し、ファイルより後ろの引数を `def main :: Array<string> -> i32` へ渡します。ファイルの先頭の `#!` 行は行コメントとして読み飛ばされるので、実行権限を付けたファイルをそのまま実行できます。
+
+```text
+#!/usr/bin/env -S tsuzuri script
+def main :: Array<string> -> i32 = \args ->
+    do! IO.write_line ("hi " + String.join (ref " ") (ref args))
+    0
+```
+
+`chmod +x greet` の後の `./greet x y` は `hi x y` を出します（macOS は `#!/usr/bin/env tsuzuri script` でも動きます）。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#script) を参照してください。
+
 ### テストランナー (`tsuzuri test`)
 
 言語組み込みの軽量テストフレームワークです。
@@ -684,6 +697,7 @@ tsuzuri check source.tz|source.tt|source.tc|directory [--json]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
 tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
+tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 tsuzuri test source.tz|directory [options]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
@@ -749,6 +763,7 @@ node tests/control.mjs target/release/tsuzuri
 node tests/lsp_sessions.mjs target/release/tsuzuri
 node tests/io.mjs target/release/tsuzuri
 node tests/repl.mjs target/release/tsuzuri
+node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
