@@ -571,6 +571,12 @@ fn build_runner(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
+    // A property test reports its counterexample with Debug.print, so a WASM runner of a program
+    // that uses Gen imports the write; other programs keep no imports.
+    let debug_output = module
+        .functions
+        .iter()
+        .any(|function| function.module == "Gen");
     let mut text = llvm::emit_test_runner_with(
         module,
         selected,
@@ -579,12 +585,7 @@ fn build_runner(
             memory64,
             coverage,
             seed: options.seed,
-            // A property test reports its counterexample with Debug.print, so a WASM runner of a
-            // program that uses Gen imports the write; other programs keep no imports.
-            debug_output: module
-                .functions
-                .iter()
-                .any(|function| function.module == "Gen"),
+            debug_output,
             debug: None,
         },
     )?;
@@ -655,6 +656,9 @@ fn build_runner(
             "--export=tsuzuri_test_count",
             "--export=tsuzuri_test_run",
         ])
+        // The host's `tsuzuri_debug.write` reads the text from the exported memory. wasm-ld
+        // exports it by default; like `build --debug-output`, do not rely on that.
+        .args(debug_output.then_some("--export-memory"))
         .args(memory64.then_some("-mwasm64"))
         .arg(&object)
         .arg("-o")
