@@ -453,6 +453,7 @@ def main :: unit -> i32 = \() ->
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
+| `Bench`, `Gen` | ベンチマーク（`tsuzuri bench`）とプロパティテストの生成器 |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
