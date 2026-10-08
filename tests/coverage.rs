@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const CALC: &str = include_str!("fixtures/coverage/Calc.tz");
+const LOGIC: &str = include_str!("fixtures/coverage/Logic.tz");
 const SHORTCUTS: &str = include_str!("fixtures/coverage/Shortcuts.tz");
 const THROUGH: &str = include_str!("fixtures/coverage/Through.tz");
 
@@ -156,6 +157,37 @@ fn coverage_counts_calls_that_the_code_generator_shortcuts() {
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(
             stdout.ends_with("\ncoverage: 5/5 lines (100.0%), 3/3 functions\n"),
+            "{stdout}"
+        );
+        assert_eq!(fs::read_to_string(&report).unwrap(), expected);
+    }
+    clean(&root);
+}
+
+#[test]
+fn coverage_counts_short_circuit_right_hand_sides_only_when_evaluated() {
+    // `both` runs with (1, 2), (0, 5), and (3, 0): its `&&` evaluates `b > 0` for the two
+    // positive `a`. `either` runs with (1, 0), (0, 1), and (0, 0): its `||` evaluates `b > 0` for
+    // the two zero `a`. `never 5` stops at `a > 100`, and `always` with 3 and 0 at `a >= 0`, so
+    // their right-hand lines never run.
+    let root = project("logic", &[("Logic.tz", LOGIC)]);
+    let expected = format!(
+        "TN:\nSF:{}\nFN:3,Logic.both\nFN:7,Logic.either\nFN:11,Logic.never\nFN:15,Logic.always\n\
+         FNDA:3,Logic.both\nFNDA:3,Logic.either\nFNDA:1,Logic.never\nFNDA:2,Logic.always\n\
+         FNF:4\nFNH:4\nDA:3,3\nDA:4,2\nDA:7,3\nDA:8,2\nDA:11,1\nDA:12,0\nDA:15,2\nDA:16,0\n\
+         LF:8\nLH:6\nend_of_record\n",
+        root.join("Logic.tz").display()
+    );
+    for optimization in ["-O0", "-O3"] {
+        let report = root.join(format!("logic{optimization}.info"));
+        let output = tsuzuri(
+            &root,
+            &["--coverage", report.to_str().unwrap(), optimization],
+        );
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.ends_with("\ncoverage: 6/8 lines (75.0%), 4/4 functions\n"),
             "{stdout}"
         );
         assert_eq!(fs::read_to_string(&report).unwrap(), expected);

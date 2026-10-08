@@ -1,18 +1,18 @@
 //! Line and function coverage for `tsuzuri test --coverage` (G18 Phase 2).
 //!
 //! The plan numbers the regions of the user's typed function bodies: each body, both branches
-//! of `if`, each `match` arm, each loop body, and each `try` handler. The code generator counts a
-//! region where its block starts (`FunctionEmitter::cover`), so a line's count is the largest
-//! count of the regions whose expressions start on it. Specialized copies of a generic body
-//! share their spans and so their counters. Standard-library code, tests, and benchmarks are
-//! not counted.
+//! of `if`, each `match` arm, each loop body, each `try` handler, and the right-hand side of each
+//! `&&` and `||`. The code generator counts a region where its block starts
+//! (`FunctionEmitter::cover`), so a line's count is the largest count of the regions whose
+//! expressions start on it. Specialized copies of a generic body share their spans and so their
+//! counters. Standard-library code, tests, and benchmarks are not counted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::check::{CheckedFunction, CheckedModule, ModuleOrigin, TypedExpr, TypedExprKind};
 use crate::diagnostic::Span;
-use crate::syntax::Provenance;
+use crate::syntax::{BinaryOp, Provenance};
 
 /// Where a counted region starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,6 +27,8 @@ pub enum RegionKind {
     Loop,
     /// The handler of `try ... with`.
     Handler,
+    /// The right-hand side of `&&` or `||`, counted when the left-hand side does not decide.
+    ShortCircuit,
 }
 
 /// A region: its source, its span, and what starts it. Two constructs with one span stay apart.
@@ -179,6 +181,11 @@ pub fn plan<'a>(module: &'a CheckedModule) -> CoveragePlan {
                     if let Some(finally) = &handled.finally {
                         pending.push((finally, region));
                     }
+                }
+                // `false && b` and `true || b` never evaluate `b`.
+                TypedExprKind::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
+                    pending.push((left, region));
+                    enter(RegionKind::ShortCircuit, right, &mut pending);
                 }
                 _ => pending.extend(
                     expression

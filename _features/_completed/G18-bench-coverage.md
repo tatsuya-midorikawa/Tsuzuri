@@ -631,7 +631,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 
 ## 対象外
 
-- WASM の bench とカバレッジ（D11 の方針だけ）。分岐の lcov（`BRDA`）、`&&`／`||` の region、MC/DC、HTML の報告、LLVM の coverage mapping。
+- WASM の bench とカバレッジ（D11 の方針だけ）。分岐の lcov（`BRDA`）、MC/DC、HTML の報告、LLVM の coverage mapping。`&&`／`||` の右辺の region は、PR #18 のレビュー後に対象にした（D8 の見直し）。
 - 前回の結果との比較、CI での速度の合否判定、分散・継続的な保存サービス。`tsuzuri bench --cpu native`。
 - PX01 の完全なレコード（`schema`・`run_id`・`commit`・`host` の全欄）への変換（PX01 の `benchmarks/metrics.mjs` の側）。
 - パラメーター化テスト。Phase 3（プロパティテスト）は 2026-10-08 に実装した（D13〜D18）。
@@ -699,6 +699,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 状態: 既定案（実装者はこの案に従う）
 - 見直し（2026-10-08）: region の鍵は `(source, start, end, 種類)` にした（複数ファイルのプロジェクトと、同じ span の別の構文を分けるため）。`else` のない `if` は then の span を持つ `()` を else に生成するので、その else は region にも point にもしない。`for`（`ForRange`・`ForEach`）の本体と `try ... with` のハンドラーも region にした（ループの本体と、例外のときだけ走るハンドラーが外側の回数で数えられないように）。持ち上げたラムダと `task`（module `$lambda`・`$task`）は自分の本体を region にする（並列の lambda の中の行が外側の 1 回で数えられないように）。test と bench の除外は span の包含ではなく `FunctionOrigin.test`（Phase 1 で `bench` も）で行い、テスト本体の中のラムダも除く。`match` のパターンとガードの式は point にしない（腕が選ばれる前に走り、回数が定まらない）。数える関数では `lookup_match` の定数表を使わない（腕ごとの block がないため）。組み込み・case・export のラッパー（module `$builtin`・`$intrinsic`・`$to_string`・`$case`・`$export`）は数えない。
 - 見直し（2026-10-08、独立レビュー後）: 本体の region は関数の入口でだけ数えていたので、生成が呼び出しを省く関数が 0 になっていた（引数をそのまま返す関数の直接の呼び出しを引数に置き換える `is_identity`、既知のクロージャの解決で恒等関数を見通す `transparent`、native の末尾の自己呼び出しの引数で `x + y`／`x - y` だけの 2 引数関数を加減算にする `tail_arguments`）。これらの場所で、呼ばれる側が数える関数なら、その本体の region を `FunctionEmitter::cover_call` で数える（呼び出し側の `counted` は見ない。テストの本体からの呼び出しも数えるため）。`transparent` を使う生成（`capture_values`・`prepare_borrowed_call`・callback の引数）は見通した恒等関数をそれぞれ 1 回数え、`prepare_borrowed_call` は失敗して呼び出し側が通常の評価に戻る `request` の後で数える（二重に数えないため）。`const` の参照は検査の段階で値に置き換わるが、`const` は `Provenance::Generated` の関数なので数えない（コンパイル時の値）。ほかに利用者の関数の呼び出しを省く生成はない（`cpu_kernel` は std、HostCall の本体は数えない）。
+- 見直し（2026-10-08、PR #18 のレビュー後）: `&&`／`||` の右辺を、それを囲む region に入れていたので、`false && b`・`true || b` で評価しない `b` の行も、囲む本体が動くたびに通ったと数えていた（`a &&` の次の行の `b` など）。行の数が実行していないコードを実行したと示すのは正しさの問題なので、対象外から外し、右辺を region（`RegionKind::ShortCircuit`、右辺の span）にした。`FunctionEmitter::short_circuit` が右辺を評価する block の先頭で数える。`&&`／`||` を評価するのはこの 1 か所だけで、ほかの経路（`const` の畳み込みは数えない関数、`ranges` は解析だけ、GPU の WGSL はネイティブのテスト実行器の外、`match` と例外ハンドラーのガードは region を作らない）はない。1 行に書いた `a && b` の行の数は、従来どおり囲む region の数（最大値）。
 
 ### D9: 出力形式
 
@@ -763,6 +764,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: `Gen.i64()`・`Gen.i32()` は全範囲で、探索ではビット長を一様に選ぶ（小さい値が多い）。`Gen.range` はほぼ一様（剰余による偏りは範囲が 2^63 に近いときだけ）。`Gen.f64()` は整数部 52 ビットまでと 20 ビットの小数部の有限値で、NaN・無限大・`-0.0` は作らない。`Gen.char()` は印字 ASCII、`Gen.unicode_char()` はサロゲート以外の UTF-16 コード単位（どちらも `'a'` へ縮む）。配列と文字列の既定の上限は 32。
 - 理由: 既定の生成器は単純な値へ縮む順序を持つ必要があり、NaN や無限大は `x == x` のような自然な性質を壊す。全ビットパターンの浮動小数点は後続の課題。
 - 状態: 承認済み（2026-10-08、D-41）
+- 見直し（2026-10-08、PR #18 のレビュー後）: `Gen.i64()` は最小値を作れなかった。下側の距離の提案は `below (first >>> 1) ...` で最大 2^63 - 1 だが、最小値には距離 2^63 が要る（選択から値への対応は 2^63 を受け付ける）。`Gen.i32()` は剰余で 2^31 に届くが、確率は無視できるほど小さい。そこで private の `integer` に `bounds` を足し、`Gen.i64()`・`Gen.i32()` だけ、提案の 16 回に 1 回（2 つ目の乱数の上位 4 ビットが 0）を、その向きの最も遠い値（型の最小値か最大値）にした。境界はそれぞれ平均 32 個に 1 回現れ、符号の反転や `abs` があふれる値を 100 個の探索でたいてい試す。選択の形（向きと距離）、0 へ向かう縮小、決定性は変わらず、乱数の消費も同じなので、境界にしない提案の値は従来と同じ。`Gen.range`（一様。全範囲でも剰余で最小値に届く）と `Gen.f64()` の整数部（`integer 0 2^52`、境界は型のあふれではない）は変えない。
 
 ## 実装と検証（2026-10-08）
 
@@ -815,6 +817,14 @@ HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従�
 - ドキュメント: `bench.md` に `### Bench.now を使える範囲`（check-docs が `-O0`／`-O3` で実行する `run=42` の例。修正前の binary では E1018）、`test.md` に呼び出しを省く関数と `const` の数え方、`diagnostics.md` の E1018 の行、`docs/language.md`、`docs/architecture.md`。
 - 検証: `RUST_MIN_STACK=4194304 cargo test --locked` は 84 個の `test result` で 915 passed、0 failed。`--test coverage` 7 passed、`--test bench` 9 passed、`--test property` 4 passed（全体の実行に含む）。GUIDE §3.1 の 4 件は `RUST_MIN_STACK` なしで個別に passed。`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` は成功。`node scripts/check-docs.mjs`（bench.md・test.md・diagnostics.md）成功。`node tests/e2e.mjs`・`tests/cache.mjs` 成功。生成 IR: 修正前の `d0fe562` の release と比べ、examples と tests/fixtures の 328 組（native／wasm32 × `-O0`／`-O3`）がすべて byte 単位で一致。base `1182045` の release とも、324 組が一致し差は 0（base が build できない 4 組は `Gen` を使う `tests/fixtures/property`）。テスト実行器の IR は、`cover_call` と `skip_identity_calls` が `--coverage` なしでは従来と同じ命令列を出し、`program_reach` が明示した根（テスト・bench）では到達集合を変えないので、作りから変わらない。
 
+### PR #18 のレビュー後の修正（Phase7-5 `df517dc` への fast-forward の後）
+
+- カバレッジ: `&&`／`||` の右辺の region（D8 の見直し）。`coverage::plan` が `Binary(And | Or)` の右辺を `RegionKind::ShortCircuit` の region に入れ、`short_circuit` が右辺の block の先頭で数える。`--coverage` がなければ何も出さない。
+- `Gen.i64()` の最小値（D18 の見直し）。`std/Gen.tz` の `integer` に `bounds`。
+- テスト: `tests/coverage.rs` に `coverage_counts_short_circuit_right_hand_sides_only_when_evaluated`（`tests/fixtures/coverage/Logic.tz`。手で数えた lcov: `both` は (1, 2)・(0, 5)・(3, 0) で右辺 2 回、`either` は (1, 0)・(0, 1)・(0, 0) で右辺 2 回、`never 5` と `always` の 3・0 は右辺 0 回。`DA:4,2`・`DA:8,2`・`DA:12,0`・`DA:16,0`、6/8 行、4/4 関数を `-O0`／`-O3` で完全一致。修正前の binary は `DA:12,1`・`DA:16,2` で 8/8 行）。`tests/property.rs` に `integer_generators_reach_their_bounds_and_shrink_from_them`（`tests/fixtures/property/Bounds.tz`。最小値でだけ成り立たない `x == 0 || -x != x`、最大値でだけ成り立たない性質、i32 の両方の境界は反例が境界そのもので `shrunk 0 times from` 境界、最小値から 1,000 以内で成り立たない性質は i64・i32 とも最小値から縮んで最小値 + 1,000 になる。同じ乱数で決まるので i64 と i32 の最小値（最大値）は同じ case で見つかり、既定の seed では 100 個以内。`-O3` と wasm32 で報告が一致。修正前の binary では 6 件とも成り立ってしまう）。既存の 20 個の反例はそのまま。
+- ドキュメント: `test.md`（region と行の規則）、`gen.md`（生成器の表と選択の仕組み）、`docs/language.md`、`docs/architecture.md`。
+- 検証: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` は成功。`RUST_MIN_STACK=4194304 cargo test --locked --test coverage --test property --test bench --test test_runner --lib` は coverage 8・property 5・bench 9・test_runner 10・lib 168 passed。`node scripts/check-docs.mjs`（test.md・gen.md）成功。生成 IR: base `1182045` の release と、examples と tests/fixtures の 324 組（native／wasm32 × `-O0`／`-O3`）が byte 単位で一致し差は 0（base が build できない 4 組は `Gen` を使う `tests/fixtures/property` の `Bounds.tz`）。修正前の `df517dc` の release とも 328 組がすべて一致。テスト実行器の IR は、`--coverage` がなければ `cover` が何も出さないので変わらず、`Gen.i64()`・`Gen.i32()` を使うテストの実行器だけが std の `Gen` の変更で変わる。既定の seed の最初の値が `Gen.i64()` の最大値になったので、test.md と gen.md の報告の例を実際の出力（`shrunk 59 times from 9223372036854775807`）に合わせた。
+
 ### 更新したドキュメント
 
 - `README.md`（`tsuzuri bench`・`--coverage`・`--seed`・`--samples`）、`docs/language.md`（予約語 `bench`、bench 宣言、`Bench`、カバレッジ、`Gen`）、`docs/architecture.md`（bench 実行器、カバレッジの計装、テスト実行器の seed と標準エラー）。
@@ -822,5 +832,5 @@ HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従�
 
 ### 変更したファイル
 
-- 新規: `src/coverage.rs`、`src/runtime/bench-runner.c`、`std/Bench.tz`、`std/Gen.tz`、`tests/coverage.rs`、`tests/bench.rs`、`tests/property.rs`、`tests/fixtures/coverage/Calc.tz`・`Shortcuts.tz`・`Through.tz`、`tests/fixtures/property/Props.tz`、上記の 2 ページ。
+- 新規: `src/coverage.rs`、`src/runtime/bench-runner.c`、`std/Bench.tz`、`std/Gen.tz`、`tests/coverage.rs`、`tests/bench.rs`、`tests/property.rs`、`tests/fixtures/coverage/Calc.tz`・`Shortcuts.tz`・`Through.tz`・`Logic.tz`、`tests/fixtures/property/Props.tz`・`Bounds.tz`、上記の 2 ページ。
 - 変更: `src/{bindings,call_specialization,check,computation,driver,formatter,lexer,lib,llvm,llvm_control,llvm_exception,llvm_frame,lsp,main,parse_control,parser,polymorph,semantic,stdlib,syntax,test_runner}.rs`、`src/runtime/test-runner.c`・`test-runner.mjs`、`tests/frontend.rs`・`tests/test_runner.rs`、`vsc/syntaxes/tsuzuri.tmLanguage.json`・`vsc/snippets/tsuzuri.json`・`vsc/src/core.ts`・`vsc/src/editor.ts`、このチケット。

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const PROPS: &str = include_str!("fixtures/property/Props.tz");
+const BOUNDS: &str = include_str!("fixtures/property/Bounds.tz");
 const DEFAULT_SEED: &str = "11400714819323198485";
 
 /// Each failing property and its simplest counterexample, as `Display` shows it.
@@ -35,10 +36,14 @@ const SIMPLEST: [(&str, &str); 20] = [
 ];
 
 fn project(test: &str) -> PathBuf {
+    project_with(test, "Props.tz", PROPS)
+}
+
+fn project_with(test: &str, file: &str, text: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("tsuzuri-property-{}-{test}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("Props.tz"), PROPS).unwrap();
+    fs::write(root.join(file), text).unwrap();
     root
 }
 
@@ -128,6 +133,94 @@ fn properties_shrink_to_the_simplest_counterexample() {
             "not ok 3 - Props i64 below 100\n  failure: trapped or terminated by signal\n  property failed at case "
         ) && stdout.contains("\n  counterexample: 100\n  shrunk "),
         "{stdout}"
+    );
+    clean(&root);
+}
+
+#[test]
+fn integer_generators_reach_their_bounds_and_shrink_from_them() {
+    // Each property fails only at a bound of its type, except the two that fail for every value
+    // up to 1,000 above the minimum; their simplest counterexample is that value, whatever the
+    // search found first. 1 in 16 proposals of `Gen.i64()` and `Gen.i32()` is a bound, so the
+    // default seed's 100 cases meet both bounds.
+    let expected = [
+        (
+            "negation overflows only at the minimum",
+            "-9223372036854775808",
+        ),
+        ("i64 reaches the maximum", "9223372036854775807"),
+        ("i64 shrinks from the minimum", "-9223372036854774808"),
+        ("i32 reaches the minimum", "-2147483648"),
+        ("i32 reaches the maximum", "2147483647"),
+        ("i32 shrinks from the minimum", "-2147482648"),
+    ];
+    let root = project_with("bounds", "Bounds.tz", BOUNDS);
+    let output = tsuzuri(&root, &["--json"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let found = results(&output);
+    assert_eq!(found.len(), expected.len());
+    let mut cases = Vec::new();
+    for (name, simplest) in expected {
+        let result = found
+            .iter()
+            .find(|result| result["name"] == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        let lines = report(result);
+        let case: u32 = lines[0]
+            .strip_prefix("property failed at case ")
+            .and_then(|rest| rest.strip_suffix(&format!(" of 100 (seed {DEFAULT_SEED})")))
+            .and_then(|case| case.parse().ok())
+            .unwrap_or_else(|| panic!("{name}: {}", lines[0]));
+        cases.push(case);
+        assert_eq!(lines[1], format!("counterexample: {simplest}"), "{name}");
+        if let Some(minimum) = [
+            ("i64 shrinks from the minimum", "-9223372036854775808"),
+            ("i32 shrinks from the minimum", "-2147483648"),
+        ]
+        .into_iter()
+        .find_map(|(shrinking, minimum)| (shrinking == name).then_some(minimum))
+        {
+            // The search meets the minimum first: other proposals of the lower half are random
+            // distances, which fall within 1,000 of it with a chance of about 2^-21 (i32) or
+            // 2^-53 (i64) each.
+            let (shrinks, start) = lines[2]
+                .strip_prefix("shrunk ")
+                .and_then(|rest| rest.split_once(" times from "))
+                .unwrap_or_else(|| panic!("{name}: {}", lines[2]));
+            assert!(shrinks.parse::<u32>().unwrap() > 0, "{name}: {}", lines[2]);
+            assert_eq!(start, minimum, "{name}");
+        } else {
+            // Only the bound fails, and no simpler choices make it.
+            assert_eq!(
+                lines[2],
+                format!("shrunk 0 times from {simplest}"),
+                "{name}"
+            );
+        }
+    }
+    // The same random choices decide the side and the bound for both widths, so i64 and i32 meet
+    // their minimum (and their maximum) at the same case.
+    assert_eq!(
+        (cases[2], cases[3], cases[5]),
+        (cases[0], cases[0], cases[0])
+    );
+    assert_eq!(cases[1], cases[4]);
+    let reports = |output: &Output| -> Vec<(String, String)> {
+        results(output)
+            .iter()
+            .map(|result| {
+                (
+                    result["name"].as_str().unwrap().to_owned(),
+                    result["output"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let native = reports(&output);
+    assert_eq!(native, reports(&tsuzuri(&root, &["--json", "-O3"])));
+    assert_eq!(
+        native,
+        reports(&tsuzuri(&root, &["--json", "--target", "wasm32"]))
     );
     clean(&root);
 }

@@ -5629,6 +5629,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             "1"
         };
         self.begin(&evaluate_right);
+        self.cover(crate::coverage::RegionKind::ShortCircuit, right.span);
         let right = self.expression(right);
         let right_end = self.block.clone();
         self.jump(&merge);

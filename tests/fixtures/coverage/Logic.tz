@@ -1,0 +1,20 @@
+def both :: i64 -> i64 -> bool
+fn both a b =
+    a > 0 &&
+        b > 0
+def either :: i64 -> i64 -> bool
+fn either a b =
+    a > 0 ||
+        b > 0
+def never :: i64 -> bool
+fn never a =
+    a > 100 &&
+        a < 200
+def always :: i64 -> bool
+fn always a =
+    a >= 0 ||
+        a < -100
+test "both" = Test.is_true (both 1 2 && !(both 0 5) && !(both 3 0))
+test "either" = Test.is_true (either 1 0 && either 0 1 && !(either 0 0))
+test "never" = Test.is_true (!(never 5))
+test "always" = Test.is_true (always 3 && always 0)

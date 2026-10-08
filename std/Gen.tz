@@ -71,9 +71,12 @@ fn uniform source bound =
 
 /// Integers in [low, high]. The choices are a side of the value nearest 0 (only when both sides
 /// exist; 0 is the upper side) and a distance from it, so that shrinking moves toward it. With
-/// `scaled`, a random distance has a random bit length, which favors small values.
-private def integer :: i64 -> i64 -> bool -> Source -> (i64 * Source)
-fn integer low high scaled source =
+/// `scaled`, a random distance has a random bit length, which favors small values. With `bounds`,
+/// 1 in 16 proposals is instead the farthest value of its side, so that `low` and `high`, where
+/// integer arithmetic overflows, come up within a few dozen values (the minimum of i64 is 2^63
+/// below 0, which no random bit length of `first >>> 1` reaches).
+private def integer :: i64 -> i64 -> bool -> bool -> Source -> (i64 * Source)
+fn integer low high scaled bounds source =
 	let origin = if low > 0 then low elif high < 0 then high else 0
 	let up = (high - origin) as i64u
 	let down = (origin - low) as i64u
@@ -95,7 +98,9 @@ fn integer low high scaled source =
 			let width = below second 64i64u
 			let widest = if width >= 64i64u then 18446744073709551615i64u else (1i64u <<< width) - 1i64u
 			let proposal_distance =
-				if scaled then
+				if bounds && (second >>> 60) == 0i64u then
+					limit
+				elif scaled then
 					below (first >>> 1) (Int.min limit widest)
 				elif proposal_lower then
 					(origin - uniform_value) as i64u
@@ -114,16 +119,16 @@ fn integer low high scaled source =
 def range :: i64 -> i64 -> Gen<i64>
 fn range low high =
 	assert (low <= high)
-	Gen { run: \source -> integer low high false source }
+	Gen { run: \source -> integer low high false false source }
 
-/// Any i64, favoring small magnitudes, shrinking toward 0.
+/// Any i64, favoring small magnitudes and the bounds, shrinking toward 0.
 def i64 :: Gen<i64>
-fn i64 = Gen { run: \source -> integer (-9223372036854775807 - 1) 9223372036854775807 true source }
+fn i64 = Gen { run: \source -> integer (-9223372036854775807 - 1) 9223372036854775807 true true source }
 
-/// Any i32, favoring small magnitudes, shrinking toward 0.
+/// Any i32, favoring small magnitudes and the bounds, shrinking toward 0.
 def i32 :: Gen<i32>
 fn i32 = Gen { run: \source ->
-	match integer (-2147483648) 2147483647 true source with
+	match integer (-2147483648) 2147483647 true true source with
 	| (value, rest) -> (value as i32, rest) }
 
 /// `false` or `true`, shrinking toward `false`.
@@ -138,7 +143,7 @@ def f64 :: Gen<f64>
 fn f64 = Gen { run: \source ->
 	match uniform source 1i64u with
 	| (sign, rest) ->
-		match integer 0 4503599627370496 true rest with
+		match integer 0 4503599627370496 true false rest with
 		| (whole, next) ->
 			match uniform next 1048575i64u with
 			| (fraction, last) ->

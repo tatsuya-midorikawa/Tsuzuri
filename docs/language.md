@@ -1250,7 +1250,7 @@ test "compares strings" =
 存在しないインデックスを指定した場合は `E2000` エラーとなります。ソースコードを編集した後は、インデックス番号が再採番されるため、再度テスト一覧を取得してください。
 
 `--coverage PATH`（ネイティブのみ）は、成功したテストが実行した利用者コードの行と関数のカバレッジを lcov 形式で `PATH` へ書き出し、テストの要約行の後に `coverage: 3/4 lines (75.0%), 1/2 functions` 形式の 1 行（`--json` では最終行の `{"type":"coverage",...}`）を出力します。
-計数の単位（region）は関数本体（ラムダと `task` を含む）、`if` の両枝、`match` の各節の本体、`while`／`for` の本体、`try ... with` のハンドラーで、行の回数はその行で始まる式が属する region の回数の最大値です。標準ライブラリ、テスト本体、およびトラップ・時間切れで失敗したテストの実行は数えません（除外件数は要約に表示されます）。
+計数の単位（region）は関数本体（ラムダと `task` を含む）、`if` の両枝、`match` の各節の本体、`while`／`for` の本体、`try ... with` のハンドラー、`&&`／`||` の右辺（左辺で結果が決まらずに評価したときだけ数える）で、行の回数はその行で始まる式が属する region の回数の最大値です。標準ライブラリ、テスト本体、およびトラップ・時間切れで失敗したテストの実行は数えません（除外件数は要約に表示されます）。
 `--target wasm32`／`wasm64` や `--list` との併用は `E2000`、出力先がプロジェクトのソースである場合は `E2003` です。
 
 ### プロパティテスト
@@ -1258,7 +1258,7 @@ test "compares strings" =
 標準モジュール `Gen`（名前を書いたプログラムだけが読み込む opt-in モジュール）は、生成器 `Gen<'a>`（不透明。構築とフィールド参照は `E1022`）とプロパティテストを提供します。
 `Gen.for_all :: Display<'a> => Gen<'a> -> ('a -> bool) -> unit` は 100 個（`Gen.for_all_cases n` は `n` 個）の値で性質を確かめ、`false` になる値が見つかると、最も単純な反例まで縮小し、`property failed at case N of M (seed S)`、`counterexample: ...`、`shrunk K times from ...` の 3 行を標準エラーへ書いてトラップします（`Display` のない型には表示関数を受け取る `Gen.check :: (ref 'a -> string) -> i64 -> Gen<'a> -> ('a -> bool) -> unit` を使います）。
 生成器は選択（上限付きの符号なし整数）の列から値を作り、選択が小さいほど単純な値になります。探索中の選択は seed と値の番号から作る `Random.pcg` が選び、縮小中は記録を再生します（尽きたら 0）。縮小は、失敗したままのより短い／辞書順で小さい選択の列を、連続した 8〜1 個の選択の削除、0 への置き換え、二分探索で探します（1 つの反例につき性質の実行は最大 10,000 回）。`map`・`bind` を通した値もそのまま縮みます。
-生成器は `Gen.i64()`、`Gen.i32()`、`Gen.range low high`、`Gen.bool()`、`Gen.f64()`（有限値のみ）、`Gen.char()`、`Gen.unicode_char()`、`Gen.string()`、`Gen.string_of`、`Gen.array`、`Gen.array_up_to`、`Gen.maybe`、`Gen.result`、組み合わせは `Gen.constant`、`Gen.map`、`Gen.bind`、`Gen.pair`、`Gen.one_of`、`Gen.element` です。
+生成器は `Gen.i64()`、`Gen.i32()`（ともに型の全範囲で、距離の桁数を一様に選び、16 回に 1 回は最小値か最大値にする）、`Gen.range low high`、`Gen.bool()`、`Gen.f64()`（有限値のみ）、`Gen.char()`、`Gen.unicode_char()`、`Gen.string()`、`Gen.string_of`、`Gen.array`、`Gen.array_up_to`、`Gen.maybe`、`Gen.result`、組み合わせは `Gen.constant`、`Gen.map`、`Gen.bind`、`Gen.pair`、`Gen.one_of`、`Gen.element` です。
 seed は時刻に依存しない固定値 `11400714819323198485` で、`tsuzuri test --seed N`（0〜18446744073709551615、`test` のみ）で変えられます。seed はコンパイル時の定数として std 専用の組み込み `Gen.__seed()` に埋め込まれ（`Gen` 以外からの呼び出しは `E1022`）、同じ seed ならネイティブと WASM、`-O0` と `-O3` で同じ値と同じ反例になります。`Gen` を使うプログラムの WASM のテストモジュールだけが、報告のために `tsuzuri_debug.write` をインポートします（Node のテストランナーが標準エラーへ書きます）。
 
 ### ベンチマーク
