@@ -1326,7 +1326,13 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let module = match project.analyze_all() {
+    let kind = match arguments.action {
+        Action::Test => driver::AnalysisKind::Tests,
+        Action::Doc => driver::AnalysisKind::Docs,
+        _ => driver::AnalysisKind::Program,
+    };
+    // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
+    let module = match project.analyze_cached(arguments.options.cache, kind) {
         Ok(module) => module,
         Err(errors) => {
             print_diagnostics(&errors, &project, arguments.json);

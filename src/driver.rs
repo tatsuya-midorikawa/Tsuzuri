@@ -1822,20 +1822,76 @@ impl Project {
     }
 
     pub fn analyze_all(&self) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
-        let sources: Vec<_> = self
-            .sources
+        crate::analyze_inputs_all(&self.inputs())
+    }
+
+    /// Analyzes the project like `analyze_all`, reusing parsed sources from the frontend cache
+    /// under `cache::default_root()` when `cache` is set and the cache opens (G17). The result
+    /// and the diagnostics do not depend on the cache.
+    pub fn analyze_cached(
+        &self,
+        cache: bool,
+        kind: AnalysisKind,
+    ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        let inputs = self.inputs();
+        let frontend = cache
+            .then(|| {
+                let project =
+                    crate::frontend_cache::ProjectKey::new(&self.root_directory()?, kind.name())?;
+                crate::frontend_cache::FrontendCache::open(&crate::cache::default_root()?, project)
+            })
+            .flatten();
+        match frontend {
+            Some(mut cache) => crate::analyze_inputs_with(&inputs, None, Some(&mut cache)),
+            None => crate::analyze_inputs_all(&inputs),
+        }
+    }
+
+    fn inputs(&self) -> Vec<crate::SourceInput<'_>> {
+        self.sources
             .iter()
             .map(|source| crate::SourceInput {
-                path: match source.origin {
-                    ModuleOrigin::User => source.relative_path.to_str().unwrap(),
-                    ModuleOrigin::Std => source.relative_path.to_str().unwrap(),
-                },
+                path: source.relative_path.to_str().unwrap(),
                 text: &source.text,
                 origin: source.origin,
                 namespace: &source.namespace,
             })
-            .collect();
-        crate::analyze_inputs_all(&sources)
+            .collect()
+    }
+
+    /// The directory that the root source's relative path starts from.
+    fn root_directory(&self) -> Option<PathBuf> {
+        let source = self.sources.get(self.root)?;
+        let directory = source
+            .path
+            .ancestors()
+            .nth(source.relative_path.components().count())?;
+        Some(if directory.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            directory.to_owned()
+        })
+    }
+}
+
+/// What a command analyzes a project for; each has its own frontend cache manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisKind {
+    /// `Project::load`: check, build and run.
+    Program,
+    /// `Project::load_for_tests`: test.
+    Tests,
+    /// `Project::load_for_docs`: doc.
+    Docs,
+}
+
+impl AnalysisKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Program => "program",
+            Self::Tests => "tests",
+            Self::Docs => "docs",
+        }
     }
 }
 

@@ -144,7 +144,7 @@ add 20 22
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
 | `--allocator system\|host\|counting` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` まで |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
-| `--no-cache` | キャッシュ有効 | `build` と `run` のキャッシュを読まない、書かない |
+| `--no-cache` | キャッシュ有効 | `build` と `run` で、成果物のキャッシュと構文解析の結果のキャッシュを読まない、書かない |
 
 `[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
@@ -213,7 +213,7 @@ flowchart TD
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
 | `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link` | macOS で、タスクを含むデバッグ用オブジェクト |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
-| `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュのルート |
+| `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
 
 `node` は PATH だけです。WASM テスト用の環境変数はありません。
 

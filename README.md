@@ -696,7 +696,7 @@ tsuzuri lsp
 | `--wasm-feature simd128\|threads` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
-| `--no-cache` | ビルド成果物キャッシュを完全に無効化します。 |
+| `--no-cache` | `build` と `run` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。 |
 | `--json` | 診断情報やテスト結果を 1 行 1 JSON オブジェクト形式で標準エラー出力へ返します。 |
 
 ### 入力とエラー報告の仕様
@@ -704,6 +704,7 @@ tsuzuri lsp
 - **入力の解決**: ファイルまたはディレクトリを 1 つ指定します。ディレクトリを指定した場合は、直下の `Main.tz` が自動的にエントリーポイントとして選ばれます。ファイル指定時はその親ディレクトリをルートとし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に探索して読み込みます。
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
 - **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。
+- **frontend cache**: `check`・`build`・`run`・`test`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build` と `run` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
 
 ---
 
@@ -736,6 +737,7 @@ node tests/os.mjs target/release/tsuzuri
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
+node tests/frontend_cache.mjs target/release/tsuzuri
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri

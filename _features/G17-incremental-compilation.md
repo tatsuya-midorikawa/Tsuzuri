@@ -9,7 +9,7 @@
 | 後続 | G12, G13 |
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D5（`check`・`test`・`doc` でも既定で frontend cache を読み書きする）、D10（Phase 2: 本体の検査結果の再利用）、D11（Phase 3: 上限の新しい値） |
+| 承認 | 承認済み（2026-10-08、D-41）: D5（`check`・`test`・`doc` でも既定で frontend cache を読み書きする）、D10（Phase 2: 本体の検査結果の再利用）、D11（Phase 3: 上限の新しい値） |
 | 改善する劣位 | 追加（why-tsuzuri 未記載）: 毎回の全体コンパイル・単一 LLVM モジュールと、プログラム全体の特殊化上限 1,024 などの固定上限が大規模開発の障壁になる |
 | 手本にする既存実装 | cache root・marker・一時名と rename・GC: `src/cache.rs` の `default_root`・`BuildCache::open`・`BuildCache::store`・`BuildCache::evict`・`read_regular`・`Sha256::field`。span と文書を除いた AST の正準形: `src/formatter.rs` の `ast_fingerprint`・`canonicalize`。parse の唯一の入口: `src/lib.rs` の `analyze_inputs_indexed_all`。一時 cache を使う実 CLI の E2E: `tests/cache.mjs`（`cli`・`concurrent`・`TSUZURI_CACHE_DIR`）。合成プロジェクト: `benchmarks/run-cache.mjs` |
 | 主な影響ファイル | `src/syntax_codec.rs`（新規）, `src/frontend_cache.rs`（新規）, `src/lib.rs`, `src/driver.rs`, `src/main.rs`, `src/cache.rs`（`read_regular` の可視性だけ）, `tests/frontend_cache.mjs`（新規）, `README.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/tools/build-and-cache.md`, `_docs/tools/command-line.md`, `_docs/feature-status.md`, `_features/README.md` |
@@ -58,6 +58,13 @@ Phase 1 でも毎回すべて実行する。
 10. Windows での置き換え rename の扱いが、HEAD の `BuildCache::store` と同じ扱い（既存なら勝者を残して成功とみなす）を超える変更を要する。
 
 ## 現状（HEAD `f8dc655` で確認）
+
+> 見直し（2026-10-08、HEAD `1182045`）: `SourceInput` は `namespace` を持ち、モジュールの名前（key）・名前空間・入口かどうかは構文解析の後に
+> `program.namespace` から `module_identity` で決まる（D-35・D-37）。std は 37 ファイル（約 290 KB）で、そのうち `Arena`・`Regex`・`Unicode`・
+> `Json`・`Cbor` は名前を書いたプログラムだけが読み込む（D-40、`stdlib::OPT_IN`・`sources_for`）ので、opt-in を使わないプログラムの std は 32 個。
+> 構文木には名前空間・`using`・属性・固定長配列と長さ引数・`dyn`・補間・`try` などが増えた。G20（エラー回復）は done で、
+> `analyze_inputs_indexed_all` の parse ループと診断の順序は変えない。言語サーバーの解析（`analyze_inputs_semantic`）は cache を使わない（D9）。
+> 規模の数値（下の 2.12 s など）は当時のもので、2026-10-08 の計測は `docs/benchmarks.md` の「コンパイル時間と規模の上限（G17）」にある。
 
 - 解析の入口は `src/lib.rs` の `analyze_inputs_indexed_all`。`SourceInput`（`path`・`text`・`origin`）を順に
   `parser::parse_with_source_all(input.text, id)` で parse し、拡張子から `program.source_kind` を設定する。`Diagnostics::is_full` で
@@ -144,6 +151,10 @@ PB06・PB07・G12 は次の名前と規則だけを使い、同じ内容を別�
 
 PB06 は `Program` を `(parse_key, source index)` の鍵でメモリに持ち、ディスクには同じ形式でだけ書く。PB07 は `FrontendDelta` と
 manifest の interface hash を関数単位の鍵の入力に使う。G17 は関数単位の hash を提供しない。
+
+> 見直し（2026-10-08）: パック（D4 の見直し）に合わせ、`FrontendCache::open(root, project)` が `ProjectKey { hash, kind }`（新規）を受け取って
+> そのプロジェクトのパックを読み、`finish(modules)` は project を引数に取らない。`interface_hash` は `Result<[u8; 32], Invalid>`（符号化できない
+> program は `Invalid`）。`analyze_inputs_with` の第 3 引数は `Option<&mut FrontendCache>`。PB06 はディスクに同じパックの形式で書く。
 
 ### CLI と環境変数
 
@@ -616,6 +627,12 @@ parse テストも変えない。
 - 決定: `src/syntax_codec.rs` に手書きの codec を置き、crate を足さない。source index は保存せず decode で付け直す。`{:?}` の一致を round-trip の基準にする。
 - 理由: serde の derive は新しい crate で要承認になる。`Program` は `Debug` を持ち、`{:?}` は span を含む全 field を出すので独立した比較になる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 規則どおり実装し、現在の構文型に合わせて次を決めた。`ExprKind::Integer` の `u128` は 128 bit までの LEB128、`char` は
+  `u32` で書き `char::from_u32` で検証する。`ComputationStatementKind::Operation` の `&'static str` は builder の操作名の固定表の番号。
+  tag を読む `match` は `_ =>` の代わりに `N..=u8::MAX => Err(Invalid)` と書き、variant の数を超える tag を拒否する。`MAX_DEPTH` は式・パターン・型・
+  計算式のブロック・kind の入れ子を数え、encode も同じ深さで打ち切る（復号できない entry を保存しない）。parser が作らない variant（`DynDispatch`、
+  `QualifiedFunction`、`ComputationBoundary`、`ShiftRightUnsigned`、`ComputationDestructuring`、`Provenance::Generated`）を含め、全 variant が往復することを
+  `round_trips_every_variant`（言語リファレンスの例、std、fixtures、examples と手で作った program）で確かめる。
 
 ### D4: 保存場所・形式・版・GC
 
@@ -623,13 +640,24 @@ parse テストも変えない。
   GC は mtime で数え、hit でも mtime を更新しない（30 日ごとに一度 parse し直すだけ）。
 - 理由: G11 の marker・権限・symlink 拒否をそのまま使え、`BuildCache::evict` は `frontend` という名前を扱わない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08、停止条件 9 への対応）: ソース 1 個ごとの entry ファイル（`p-<parse key>.tzp`）で実装して測ると、warm の `check` が cache なしより遅かった
+  （現実的な 1,000 モジュールで中央値 3.86 s 対 2.44 s）。`sample` では時間の大半が `open` で、この機械ではコンパイラのプロセスがファイルを 1 個開くのに
+  0.3〜1.5 ms かかる（on-access scan。同じ 1,034 ファイルを Node は 35 ms、新しく build した C の実行ファイルは 240〜380 ms で読む）。モジュールの構文解析
+  （1 個 0.2 ms）より開く費用が大きいので、プロジェクトのルートと種類ごとに 1 個のパック `p-<project key>.tzp` に entry をまとめた。パックの header は
+  magic `b"TZPACK\0\0"`・`FRONTEND_FORMAT`・compiler の同一性（32）・project key（32）・entry 数（u64）の 84 byte で、entry は「保存形式」の表の形のまま
+  （magic・形式・parse key・interface hash・長さ・payload・SHA-256）並ぶ。warm の解析が読むのはパックと manifest の 2 ファイルになる。パックは今回の解析で
+  使った entry だけを入力順に持ち（同じ内容のソースは 1 個）、前回のパックと同じなら書かない。ファイルを開く費用のない環境でも、ソースごとのファイルより
+  読み書きが少ない。代わりに、別のプロジェクトや別の種類（`check` と `test`）の間で entry は共有しない（std の entry はプロジェクトごとに約 230 KB 重複する）。
+  パックの上限は 512 MiB（`MAX_PACK_BYTES`、新規）。Windows で rename が置き換えに失敗した場合は、パックは内容で鍵付けしていないので成功とみなさず、
+  前回のパックを残して次の実行で書き直す。GC の対象は `p-<64 桁>.tzp`・`m-<64 桁>.json`・`.tmp-*` で、規則と数は変えない。
 
 ### D5: check・test・doc での既定の利用
 
 - 決定: 手順 8 で check・test・doc も既定で frontend cache を読み書きする。`--no-cache` は build・run だけのまま。無効化は `TSUZURI_CACHE_DIR=`。
 - 理由: 解析だけの `check` が最も恩恵を受ける。ただし check はこれまでディスクに書かず（`README.md` の「check/headerは対象外」）、利用者から見える
   挙動が変わる。承認されない場合は build・run だけで使う。
-- 状態: 要承認（承認前は手順 8 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。手順 8 を実施した。`check`・`test`・`doc` は既定で読み書きし、`--no-cache` は今までどおり build・run だけ
+  （それ以外は `E2000`）、`TSUZURI_CACHE_DIR=`（空）で無効になる。`publish` の検査（`Project::load_for_tests` と `analyze_all`）は対象外のまま cache を使わない。
 
 ### D6: interface summary の中身
 
@@ -637,18 +665,26 @@ parse テストも変えない。
   （頭部、record・union・型別名、class の既定 method の本体、定数の値、extern、active pattern、宣言の順）は含める。
 - 理由: 関数の型は注釈で決まり本体から推論しない。既定 method と定数の値は他モジュールの検査に効き得るので保守的に含める。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: `Program` は宣言を種類ごとの列に持つので、「宣言の順」は同じ種類の中の順である（record と union の入れ替えは `Program` に
+  現れず、interface も変わらない）。`dyn_types`（本体に書いた `dyn` 型も含む）・`cpu_attributes`・名前空間・`using` も interface に入る。
 
 ### D7: 無効化規則と `FrontendDelta`
 
 - 決定: 「無効化規則」の表と `must_recheck` の規則。Phase 1 は全モジュールが全 interface に依存するとみなす。
 - 理由: qualified 名はどのモジュールも参照でき、instance は大域である。絞り込みは誤ると誤った再利用になるので、使用関係を記録する Phase 2 まで行わない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: manifest の `name` は `module_identity` が返すモジュールの key で、各モジュールに `namespace` と `entry`（`Main` のファイルか）を
+  足した。名前空間は `Tsuzuri.toml` の変更だけでも変わり、`entry` は宣言した名前空間のファイルを移すと名前を変えずに変わるので、どちらも
+  `changed_interfaces` の比較（`origin`・`kind`・`namespace`・`entry`・`interface`）に入れた。パスだけの変更は検査に効かないので変更として数えない
+  （拡張子の変更は表のとおり `kind` が変わるので `changed_interfaces` だけに入る）。manifest の byte 列が前回と同じときは解析せずに「変化なし」とする。
+  `FrontendDelta::must_recheck` は Phase 2 を見送った（D10）ので、本体では使わない（PB06・PB07 が使う規則として単体テストで固定した）。
 
 ### D8: 失敗の扱い
 
 - 決定: frontend cache の失敗はすべて miss で、診断・警告を出さない。W2001 は G11 の経路だけが出す。
 - 理由: 最適化の失敗で `check` の出力を変えない。build・run の root の失敗は G11 が既に知らせる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 構文解析が一つでも失敗した解析ではパックも manifest も書かない（成功したソースの新しい entry も次の成功まで保存しない）。
 
 ### D9: LSP と常駐
 
