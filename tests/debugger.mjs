@@ -67,6 +67,11 @@ try {
     "frame variable",
     "frame variable point.x point.label",
     "image lookup -r -n '^Main\\.show\\.lambda@22:'",
+    // Garbage whose element address passes 2^64: the providers give no child, not an OverflowError.
+    "script print('probe', *(getattr(tsuzuri_lldb, provider)(lldb.target.CreateValueFromData(name, " +
+      "lldb.SBData.CreateDataFromUInt64Array(lldb.eByteOrderLittle, 8, words), lldb.frame.FindVariable(name).GetType()), " +
+      "{}).get_child_at_index(index) for provider, name, words, index in [('SequenceProvider', 'values', [2**64 - 16, 3], 2), " +
+      "('ListProvider', 'chain', [2**64 - 4, 2], 0)]))",
     "kill",
   ]);
   const parts = sections(output);
@@ -105,6 +110,7 @@ try {
   const lookup = text("image lookup -r -n '^Main\\.show\\.lambda@22:'")[0];
   assert.match(lookup, /\d+ match(es)? found/, lookup);
   assert.equal(lookup.match(/Summary: app\d+`Main\.show\.lambda@22:15 at Main\.tz/g)?.length, lookup.match(/Summary:/g).length, lookup);
+  assert.match(parts.find(part => part.command.startsWith("script print('probe'")).text, /^probe None None$/m);
 
   // Stepping from line 18 enters std functions and the lambda, which have source, but not the
   // runtime (`Array.sum` calls a C kernel) or the builtin wrappers of `Vec.empty`, `Vec.push`.
@@ -180,6 +186,10 @@ try {
     "    let total = calculate 40",
     '    let words = ["a", "b"]',
     "    assert (total == 42 && words.length == 2)",
+    "def rec fib :: i64 -> i64 = \\n -> if n < 2 then n else fib (n - 1) + fib (n - 2)",
+    "test \"optimized\" =",
+    "    let value = fib 20",
+    "    assert (value == 6765)",
     "",
   ].join("\n"));
   const runner = join(root, "runner");
@@ -205,8 +215,28 @@ try {
   assert.match(at("continue")[0], /`Main\.test@6:6 at Main\.tz:9/);
   assert.match(body, /^\(i64\) total = 42$/m);
   assert.ok(body.includes('([string]) words = length=2 {\n  [0] = "a"\n  [1] = "b"\n}'), body);
-  // The runner's entry has no debug information, like the runtime.
-  assert.match(at("bt")[0], /frame #1: 0x[0-9a-f]+ runner`tsuzuri_test_run \+ \d+\n/);
+  // The dispatch is an artificial frame at the test's declaration; the C entry has no debug
+  // information, like the runtime.
+  assert.match(at("bt")[0], /frame #1: 0x[0-9a-f]+ runner`tsuzuri_test_run at Main\.tz:6:6\n\s*frame #2: 0x[0-9a-f]+ runner`main \+ \d+\n/);
   assert.match(at("continue")[1], /exited with status = 0/);
+
+  // With optimization the dispatch inlines the test, which keeps its lines through the dispatch's
+  // own debug information: breakpoints in the body bind and stop there.
+  const optimized = join(root, "optimized");
+  execute(compiler, ["test", specs, "--index", "2", "-g", "-O2", "-o", optimized]);
+  const inlined = sections(debug(optimized, ["0"], [
+    "breakpoint set -f Main.tz -l 12",
+    "breakpoint set -f Main.tz -l 13",
+    "run",
+    "continue",
+    "continue",
+  ]));
+  const stops = command => inlined.filter(part => part.command === command).map(part => part.text);
+  for (const line of [12, 13]) {
+    assert.match(stops(`breakpoint set -f Main.tz -l ${line}`)[0], new RegExp(`Main\\.test@11:6(?: \\+ \\d+)? at Main\\.tz:${line}:`));
+  }
+  assert.match(stops("run")[0], /stop reason = breakpoint 1\.1\n.*`Main\.test@11:6 at Main\.tz:12:\d+ \[opt\]/);
+  assert.match(stops("continue")[0], /stop reason = breakpoint 2\.1\n.*`Main\.test@11:6 at Main\.tz:13:\d+ \[opt\]/);
+  assert.match(stops("continue")[1], /exited with status = 0/);
   console.log("debugger: LLDB formatters, names and stepping verified");
 } finally { rmSync(root, { recursive: true, force: true }); }

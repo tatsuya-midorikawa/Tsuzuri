@@ -364,7 +364,7 @@ DWARF の形は、formatter を読み込まないデバッガーでも Tsuzuri �
 Clang には `-g` フラグが渡され、WASM リンク時の `--strip-all` は解除されます。macOS におけるデバッグタスクオブジェクトの生成では、対応する `llvm-link` を用いて事前に IR を結合してから単一オブジェクトとして生成することで、`ld -r` による DWARF 情報の脱落問題を回避しています。
 また macOS のデバッグ実行ファイルは、保持された `module.o` からリンクを行い、一時ファイルを削除する前に `dsymutil --flat` を実行して隣接する `output.dwarf` を生成します。
 DWARF メタデータとトラップ情報テーブルは、共通のソースファイル保護、バックアップ、および公開失敗時のロールバック機構を利用して安全に出力されます。
-なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.rs`（名前、束縛の位置、スカラーとポインター、union の形と offset）、`tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テストと `llvm-dwarfdump --verify`、ならびに LLDB の batch で表示・名前・ステップ実行を確かめる `tests/debugger.mjs`（LLDB が必要なので共有 CI では実行しません）によって行われています。
+なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.rs`（名前、束縛の位置、スカラーとポインター、union の形と offset、テストランナーの `tsuzuri_test_run` の subprogram）、`tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テストと `llvm-dwarfdump --verify`、ならびに LLDB の batch で表示・名前・ステップ実行と `-O2` のテストランナーのブレークポイントを確かめる `tests/debugger.mjs`（LLDB が必要なので共有 CI では実行しません）によって行われています。
 
 **言語サーバー:** `tsuzuri lsp` は、LSP 3.17 仕様に準拠した stdio フレームプロトコルと `serde_json` を使用し、最大メッセージサイズ 16 MiB、ヘッダー長 8 KiB、JSON 再帰深度 128 を上限として安全に動作します。
 文字位置のエンコーディングはクライアントとのネゴシエーションによって決定され（デフォルトは UTF-16）、バイト位置（byte span）からの相互変換には改行テーブルと文字境界判定を用いて、CRLF 改行やサロゲートペア・異体字セレクタ等の補助平面文字を正しく取り扱います。
@@ -402,7 +402,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 テスト用内部関数のシンボル名には `@tz.fn.Module.$test.index` という決定的な命名規則が用いられ、テストランナーのみが `tsuzuri_test_count` および `tsuzuri_test_run` を公開関数としてエクスポートします。
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。
-`tsuzuri test --index N -g -o PATH` の `driver::build_debug_runner` は、テスト N だけをルートにした IR を `emit_test_runner_for` の `debug` で DWARF 付きにし（テストの本体の名前は `<モジュール>.test@<行>:<列>`）、C の入口とランタイムはデバッグ情報なしの別オブジェクトにして `-g` でリンクし、macOS では `dsymutil --flat` で `PATH.dwarf` を作って `publish_outputs` で置きます。実行はせず、ランナーの絶対パスと引数 `0` を出力します（G16 Phase 2）。VS Code 拡張の Debug のテストプロファイルはこれを CodeLLDB で起動し、終了コードで成否を報告します。
+`tsuzuri test --index N -g -o PATH` の `driver::build_debug_runner` は、テスト N だけをルートにした IR を `emit_test_runner_with` の `TestRunnerOptions::debug` で DWARF 付きにし（テストの本体の名前は `<モジュール>.test@<行>:<列>`。テストを呼ぶ `@tsuzuri_test_run` は `@main` と同じく artificial な `DISubprogram` を持ち、呼び出しに位置を付けるので、`-O1` 以上でテストが inline されても行が残ります）、C の入口とランタイムはデバッグ情報なしの別オブジェクトにして `-g` でリンクし、macOS では `dsymutil --flat` で `PATH.dwarf` を作って `publish_outputs` で置きます。実行はせず、ランナーの絶対パスと引数 `0` を出力します（G16 Phase 2）。VS Code 拡張の Debug のテストプロファイルはこれを CodeLLDB で起動し、終了コードで成否を報告します。
 
 `tsuzuri test --coverage`（G18 Phase 2）は LLVM のカバレッジ形式や gcov を使わない自前の計装です。`coverage::plan` が単相化・ラムダ持ち上げ後の利用者関数（標準ライブラリ、`FunctionOrigin.test` を持つテスト本体とその補助関数、組み込み・ケース・export のラッパーを除く）の型付き本体を走査し、関数本体・`if` の両枝（`else` のない `if` が生成する `()` は除く）・`match` の節の本体・ループ本体・`try` のハンドラーを (ソース, span, 種類) の昇順に番号付けした region と、各式の開始位置とその時点で最も内側の region の組（point）を作ります。
 `llvm::emit_test_runner_covered` はこの計画を `Globals.coverage` に置き、`FunctionEmitter::cover` が region の block の先頭で `atomicrmw add ... monotonic` を `@tsuzuri_coverage_counters` の要素へ出します（同じ span の特殊化はカウンターを共有し、`lookup_match` の定数表は使いません）。計画がない出力は 1 byte も変わりません。

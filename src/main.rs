@@ -18,7 +18,7 @@ Usage:
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
                              [--coverage PATH] [--seed N]
-    tsuzuri test source.tz|directory --index N -g -o PATH [--seed N] [--json]
+    tsuzuri test source.tz|directory --index N -g -o PATH [-O0|-O1|-O2|-O3] [--seed N] [--json]
                              Build test N alone with debug information as PATH without running it;
                              a debugger starts PATH with the printed argument 0
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
