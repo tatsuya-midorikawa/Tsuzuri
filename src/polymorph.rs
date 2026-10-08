@@ -1,7 +1,93 @@
 use super::*;
 
-const MAX_SPECIALIZATIONS: usize = 1024;
+/// The most specializations of generic functions in one program (G17 Phase 3). A program at
+/// the limit with small generic functions checks in a few seconds and about 1 GiB.
+const MAX_SPECIALIZATIONS: usize = 65_536;
+/// Polymorphic recursion that grows its types needs ever more specializations. A function that
+/// calls itself at types wrapping its own type parameters is rejected when it is first
+/// specialized; growth through other functions and instances is stopped when the
+/// instantiations that lead to a specialization already hold the same function at smaller
+/// types this many times. Growth that instances end after fewer steps only counts toward
+/// `MAX_SPECIALIZATIONS`.
+const MAX_GROWTH_DEPTH: usize = 32;
+/// The ancestors that the growth check inspects; longer chains still meet the global limit.
+const MAX_LINEAGE_WALK: usize = 1024;
 const MAX_CONSTRAINTS: usize = 128;
+
+/// The specialization limits: all specializations, and growth along one chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SpecializationLimits {
+    pub(crate) total: usize,
+    pub(crate) depth: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Smaller limits for the analyses of this thread, so tests can reach them quickly.
+    pub(crate) static TEST_LIMITS: std::cell::Cell<Option<SpecializationLimits>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn specialization_limits() -> SpecializationLimits {
+    #[cfg(test)]
+    if let Some(limits) = TEST_LIMITS.get() {
+        return limits;
+    }
+    SpecializationLimits {
+        total: MAX_SPECIALIZATIONS,
+        depth: MAX_GROWTH_DEPTH,
+    }
+}
+
+/// Whether a generic function with type parameters `parameters` that calls itself at
+/// `arguments` makes every specialization request a larger one: whether a parameter whose
+/// argument wraps a parameter (rather than being one) lies on a cycle of the substitution.
+/// `f<'a, 'b>` calling `f<'a, ['a]>` reaches a fixed point; `f<'a>` calling `f<['a]>` does not.
+fn wraps_own_parameters(parameters: &[String], arguments: &[Type]) -> bool {
+    if parameters.len() != arguments.len() {
+        return false;
+    }
+    let index = |name: &str| parameters.iter().position(|parameter| parameter == name);
+    // `edges[i]` holds `(j, wrapped)` when parameter `j` occurs in the argument for `i`.
+    let edges: Vec<Vec<(usize, bool)>> = arguments
+        .iter()
+        .map(|argument| {
+            let bare = matches!(argument, Type::Variable(name) if index(name).is_some());
+            variables(argument)
+                .iter()
+                .filter_map(|name| index(name))
+                .map(|j| (j, !bare))
+                .collect()
+        })
+        .collect();
+    let reaches = |from: usize, to: usize| {
+        let mut seen = vec![false; edges.len()];
+        let mut pending = vec![from];
+        while let Some(at) = pending.pop() {
+            if at == to {
+                return true;
+            }
+            if !std::mem::replace(&mut seen[at], true) {
+                pending.extend(edges[at].iter().map(|(next, _)| *next));
+            }
+        }
+        false
+    };
+    edges
+        .iter()
+        .enumerate()
+        .any(|(i, targets)| targets.iter().any(|&(j, wrapped)| wrapped && reaches(j, i)))
+}
+
+fn growth_error(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(
+        "E1017",
+        format!(
+            "polymorphic recursion grows the types of '{name}' without bound; make the recursive call use the same types"
+        ),
+        span,
+    )
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct Constraint {
@@ -152,9 +238,20 @@ pub(super) fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> T
 }
 
 pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
-    if ty.contains_error() {
-        return Ok(());
+    if ty.contains_error() || type_size(ty).is_some() {
+        Ok(())
+    } else {
+        Err(Diagnostic::new(
+            "E1017",
+            "polymorphic type expansion exceeds the compiler limit; simplify the type or recursion",
+            span,
+        ))
     }
+}
+
+/// The number of type constructors in `ty`, or `None` beyond a nesting of `MAX_NESTING` or
+/// 4096 constructors.
+fn type_size(ty: &Type) -> Option<usize> {
     fn visit(ty: &Type, depth: usize, count: &mut usize) -> bool {
         *count += 1;
         if depth > MAX_NESTING || *count > 4096 {
@@ -190,15 +287,8 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
             _ => true,
         }
     }
-    if visit(ty, 0, &mut 0) {
-        Ok(())
-    } else {
-        Err(Diagnostic::new(
-            "E1017",
-            "polymorphic type expansion exceeds the compiler limit; simplify the type or recursion",
-            span,
-        ))
-    }
+    let mut count = 0;
+    visit(ty, 0, &mut count).then_some(count)
 }
 
 pub(super) fn require_concrete(ty: &Type, span: Span) -> Result<(), Diagnostic> {
@@ -2675,6 +2765,15 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if builtin == Builtin::GenSeed
+            && !(self.module == "Gen" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the property seed is private to the standard Gen module; set it with tsuzuri test --seed",
+                span,
+            ));
+        }
         if builtin == Builtin::ArenaNextId
             && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
@@ -3640,6 +3739,22 @@ pub(super) fn specialize(
         })?;
         dependencies.push(calls);
     }
+    // The first call of each function to itself at types that wrap its type parameters.
+    let wrapping_calls: BTreeMap<usize, Span> = dependencies
+        .iter()
+        .enumerate()
+        .filter_map(|(id, calls)| {
+            let parameters = &module.functions[id].type_parameters;
+            calls
+                .iter()
+                .find(|(callee, types, _)| {
+                    *callee == id
+                        && !parameters.is_empty()
+                        && wraps_own_parameters(parameters, types)
+                })
+                .map(|(_, _, span)| (id, *span))
+        })
+        .collect();
     // Constraints travel through recursive call graphs to a fixed point, independent of declaration order.
     loop {
         let mut changed = false;
@@ -3782,10 +3897,20 @@ pub(super) fn specialize(
                 function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User
             })
             .count(),
+        limits: specialization_limits(),
+        lineage: Vec::new(),
+        instantiating: None,
     };
+    // Benches start only after everything else is specialized, so that they never renumber the
+    // instances that normal and test builds emit (G18).
+    let mut deferred = Vec::new();
     for (id, function) in module.functions.iter().enumerate() {
         if function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User {
-            specializer.request(id, Vec::new(), function.span)?;
+            if function.origin.bench.is_some() {
+                deferred.push(id);
+            } else {
+                specializer.request(id, Vec::new(), function.span)?;
+            }
         }
     }
     let entry = module.entry.map(|id| specializer.keys[&(id, Vec::new())]);
@@ -3800,46 +3925,77 @@ pub(super) fn specialize(
         .collect();
     let mut next = 0;
     let mut user_drops = BTreeMap::new();
+    // Drop types first found after the benches start are held only by bench code.
+    let mut bench_drops = BTreeSet::new();
+    let mut benches_started = false;
     let drops = classes.drop_heads().next().is_some();
     let mut scanned = 0;
     let mut seen = BTreeSet::new();
     loop {
         while next < specializer.requests.len() {
             let (id, types) = specializer.requests[next].clone();
+            // Every specialization of such a function would request a larger one.
+            if let Some(span) = wrapping_calls.get(&id) {
+                return Err(growth_error(
+                    &specializer.templates[id].qualified_name(),
+                    *span,
+                ));
+            }
+            specializer.instantiating = Some(next);
             let function = specializer.instantiate(id, &types, next)?;
+            specializer.instantiating = None;
             specializer.functions.push(function);
             next += 1;
         }
-        if !drops {
-            break;
-        }
-        // Drop glue calls the user drop of every Drop type that a specialized function holds;
-        // the drops can hold more Drop types, so this runs to a fixed point (B07 D6).
-        let types = specializer.types;
         let mut found = BTreeSet::new();
-        for function in &mut specializer.functions[scanned..] {
-            for parameter in &function.parameters {
-                drop_components(&parameter.ty, &types, &mut seen, &mut found);
+        if drops {
+            // Drop glue calls the user drop of every Drop type that a specialized function holds;
+            // the drops can hold more Drop types, so this runs to a fixed point (B07 D6).
+            let types = specializer.types;
+            for function in &mut specializer.functions[scanned..] {
+                for parameter in &function.parameters {
+                    drop_components(&parameter.ty, &types, &mut seen, &mut found);
+                }
+                drop_components(&function.signature.as_type(), &types, &mut seen, &mut found);
+                expression_types(&mut function.body, &mut |ty, _| {
+                    drop_components(ty, &types, &mut seen, &mut found);
+                    Ok(())
+                })?;
             }
-            drop_components(&function.signature.as_type(), &types, &mut seen, &mut found);
-            expression_types(&mut function.body, &mut |ty, _| {
-                drop_components(ty, &types, &mut seen, &mut found);
-                Ok(())
-            })?;
+            scanned = specializer.functions.len();
         }
-        scanned = specializer.functions.len();
-        if found.is_empty() {
+        if !found.is_empty() {
+            let types = specializer.types;
+            let class = classes.names["Drop"];
+            for ty in found {
+                let (function, arguments) = classes
+                    .resolved_method(class, 0, &ty, &types)
+                    .expect("a Drop instance covers every instantiation of its type");
+                let span = specializer.templates[function].span;
+                let drop = specializer.request(function, arguments, span)?;
+                if benches_started {
+                    bench_drops.insert(drop);
+                }
+                user_drops.insert(ty, drop);
+            }
+        } else if !deferred.is_empty() {
+            benches_started = true;
+            for id in std::mem::take(&mut deferred) {
+                specializer.request(id, Vec::new(), module.functions[id].span)?;
+            }
+        } else {
             break;
-        }
-        let class = classes.names["Drop"];
-        for ty in found {
-            let (function, arguments) = classes
-                .resolved_method(class, 0, &ty, &types)
-                .expect("a Drop instance covers every instantiation of its type");
-            let span = specializer.templates[function].span;
-            user_drops.insert(ty, specializer.request(function, arguments, span)?);
         }
     }
+    let benches = module
+        .benches
+        .iter()
+        .cloned()
+        .map(|mut bench| {
+            bench.function = specializer.keys[&(bench.function, Vec::new())];
+            bench
+        })
+        .collect();
     let requires_rec: Vec<_> = specializer
         .requests
         .iter()
@@ -3856,8 +4012,10 @@ pub(super) fn specialize(
         functions,
         entry,
         tests,
+        benches,
         warnings: module.warnings,
         user_drops,
+        bench_drops,
         vtables,
         dyn_layouts,
         uses_dyn: module.uses_dyn,
@@ -3969,6 +4127,11 @@ struct Specializer<'a> {
     /// The origin that helpers generated for the function being instantiated inherit.
     current: FunctionOrigin,
     base_count: usize,
+    limits: SpecializationLimits,
+    /// For each request: the request whose instantiation made it, and the size of its types.
+    lineage: Vec<(Option<usize>, usize)>,
+    /// The request being instantiated.
+    instantiating: Option<usize>,
 }
 
 impl Specializer<'_> {
@@ -3980,11 +4143,40 @@ impl Specializer<'_> {
         if let Some(id) = self.keys.get(&key) {
             return Ok(*id);
         }
-        if self.requests.len() >= self.base_count + MAX_SPECIALIZATIONS {
+        let size = key
+            .1
+            .iter()
+            .map(|ty| type_size(ty).unwrap_or(usize::MAX))
+            .fold(0, usize::saturating_add);
+        // How often the instantiations that lead here hold this function at smaller types.
+        let mut growth = 0;
+        let mut ancestor = self.instantiating;
+        for _ in 0..MAX_LINEAGE_WALK {
+            let Some(index) = ancestor else {
+                break;
+            };
+            let (parent, ancestor_size) = self.lineage[index];
+            growth += usize::from(self.requests[index].0 == id && ancestor_size < size);
+            ancestor = parent;
+        }
+        if growth > self.limits.depth {
+            return Err(growth_error(&self.templates[id].qualified_name(), span));
+        }
+        if self.requests.len() >= self.base_count + self.limits.total {
+            let advice = if growth > 0 {
+                format!(
+                    "'{}' keeps being specialized at larger types through its own calls, so make the recursive call use the same types",
+                    self.templates[id].qualified_name()
+                )
+            } else {
+                "call them at fewer distinct types, or use 'dyn' for values of many types"
+                    .to_owned()
+            };
             return Err(Diagnostic::new(
                 "E1017",
                 format!(
-                    "more than {MAX_SPECIALIZATIONS} specializations; remove type-growing polymorphic recursion"
+                    "more than {} specializations of generic functions; {advice}",
+                    self.limits.total
                 ),
                 span,
             ));
@@ -3992,6 +4184,7 @@ impl Specializer<'_> {
         let next = self.requests.len();
         self.requests.push(key.clone());
         self.keys.insert(key, next);
+        self.lineage.push((self.instantiating, size));
         Ok(next)
     }
 
@@ -4640,5 +4833,121 @@ impl Specializer<'_> {
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SpecializationLimits, TEST_LIMITS, specialization_limits};
+
+    /// Limits small enough to reach in a debug test; `tests/e2e.mjs` reaches the real ones.
+    const SMALL: SpecializationLimits = SpecializationLimits {
+        total: 64,
+        depth: 3,
+    };
+
+    fn analyze_within(sources: &[(&str, &str)]) -> Result<(), (&'static str, String)> {
+        TEST_LIMITS.set(Some(SMALL));
+        let result = crate::analyze_modules(sources);
+        TEST_LIMITS.set(None);
+        result
+            .map(|_| ())
+            .map_err(|error| (error.code, error.message))
+    }
+
+    /// A program with exactly the limit of specializations, then one more. The std modules,
+    /// `HashMap` and `HashSet` among them, are loaded but specialize nothing on their own.
+    fn reaches_the_specialization_limit() {
+        use std::fmt::Write;
+        let mut source = String::from("def id :: 'a -> 'a\nfn id x = x\n");
+        for index in 0..SMALL.total {
+            writeln!(
+                source,
+                "record R{index} {{ value: i8 }}\nfn f{index}(x: R{index}) -> R{index} {{ id x }}"
+            )
+            .unwrap();
+        }
+        assert_eq!(analyze_within(&[("Main", &source)]), Ok(()));
+        source.push_str("fn extra(x: [i8]) -> [i8] { id x }");
+        let (code, message) = analyze_within(&[("Main", &source)]).unwrap_err();
+        assert_eq!(code, "E1017");
+        assert_eq!(
+            message,
+            "more than 64 specializations of generic functions; call them at fewer distinct types, or use 'dyn' for values of many types"
+        );
+    }
+
+    #[test]
+    fn honors_the_exact_specialization_limit() {
+        assert_eq!(
+            specialization_limits(),
+            SpecializationLimits {
+                total: 65_536,
+                depth: 32,
+            }
+        );
+        reaches_the_specialization_limit();
+    }
+
+    #[test]
+    fn hash_containers_leave_the_specialization_budget_to_users() {
+        reaches_the_specialization_limit();
+    }
+
+    #[test]
+    fn stops_type_growing_recursion_before_the_global_limit() {
+        let growth = |source: &str| {
+            let (code, message) = analyze_within(&[("Main", source)]).unwrap_err();
+            assert_eq!(code, "E1017", "{source}");
+            message
+        };
+        // A function that calls itself at types wrapping its type parameter, linearly or not,
+        // is rejected when it is first specialized.
+        for recursion in ["f [x]", "{ f (ref x, 1); f (ref x, true) }"] {
+            let message = growth(&format!(
+                "def rec f :: 'a -> unit\nfn rec f x = {recursion}\nf 1"
+            ));
+            assert_eq!(
+                message,
+                "polymorphic recursion grows the types of 'Main.f' without bound; make the recursive call use the same types"
+            );
+        }
+        // Growth through another function meets the growth depth along the chain.
+        let message =
+            growth("def rec f :: 'a -> unit = \\x -> g [x]\nand g :: 'a -> unit = \\x -> f x\nf 1");
+        assert!(
+            message.starts_with("polymorphic recursion grows the types of 'Main."),
+            "{message}"
+        );
+        // Branching growth through another function meets the global limit first, which names
+        // the growing function.
+        let message = growth(
+            "def rec f :: 'a -> unit = \\x ->\n    g (ref x, 1)\n    g (ref x, true)\n    g (ref x, 1.5)\n    g (ref x, \"s\")\nand g :: 'a -> unit = \\x -> f x\nf 1",
+        );
+        assert!(
+            message.starts_with("more than 64 specializations of generic functions; 'Main."),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "' keeps being specialized at larger types through its own calls, so make the recursive call use the same types"
+            ),
+            "{message}"
+        );
+        // A call that reaches a fixed point is not growth.
+        assert_eq!(
+            analyze_within(&[(
+                "Main",
+                "def rec f :: 'a -> 'b -> unit\nfn rec f x y = f x [x]\nf 1 true"
+            )]),
+            Ok(())
+        );
+        // Growth that the instances end needs only finitely many specializations.
+        let steps = "class Step<'a> {\n    def step :: 'a -> i64\n}\n";
+        let main = "instance Steps.Step<i64> {\n    fn rec step value = f [value]\n}\n\ninstance Steps.Step<[i64]> {\n    fn step values = values.length\n}\n\ndef rec f :: Steps.Step<'a> -> i64 = \\value -> Steps.Step.step value\n\nf 5i64\n";
+        assert_eq!(
+            analyze_within(&[("Main.tz", main), ("Steps.tt", steps)]),
+            Ok(())
+        );
     }
 }

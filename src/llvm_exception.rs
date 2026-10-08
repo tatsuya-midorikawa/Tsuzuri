@@ -195,6 +195,7 @@ impl FunctionEmitter<'_, '_> {
         self.instruction(format!("store {llvm} {value}, ptr {result}"));
         self.jump(&finish);
         self.begin(&handler);
+        self.cover(crate::coverage::RegionKind::Handler, handled.handler.span);
         self.caught.push(code);
         if let Some((label, slot, _)) = &escape {
             self.try_targets.push(TryTarget {

@@ -62,9 +62,48 @@ export function commandArguments(action: Action, root: string, optimization = 3,
 	return args;
 }
 
+/** Where the Debug test profile builds the runner of one test (G16 Phase 2). Each debug run has its own
+ * `run` name, so concurrent debug runs of a project never overwrite or lock each other's runner. */
+export function testRunnerPath(root: string, run: string, platform: string = process.platform): string {
+	return path.join(root, '.tsuzuri', 'test', `runner-${run}${platform === 'win32' ? '.exe' : ''}`);
+}
+
+/** The runner of a debug run and the debug information that the compiler writes beside it. */
+export function testRunnerFiles(runner: string): string[] {
+	const files = [runner, `${runner}.dwarf`];
+	if (runner.endsWith('.exe')) { files.push(`${runner.slice(0, -'.exe'.length)}.pdb`); }
+	return files;
+}
+
+/** The compiler arguments that build test `index` of `root` for a debugger without running it. */
+export function testDebugArguments(root: string, index: number, run: string, platform: string = process.platform): string[] {
+	return ['test', root, '--index', String(index), '-g', '-o', testRunnerPath(root, run, platform), '--json'];
+}
+
 export function outputPath(root: string, action: Action): string {
 	return path.join(root, '.tsuzuri', action === 'debug' ? 'debug' : 'bin',
 		`Main${action === 'wasm' ? '.wasm' : process.platform === 'win32' ? '.exe' : ''}`);
+}
+
+export interface LaunchOptions {
+	terminal?: string;
+	initCommands?: string[];
+	preRunCommands?: string[];
+}
+
+/**
+ * The CodeLLDB launch of the `-g` build `program`. The Tsuzuri LLDB formatters at `formatters` load before
+ * the user's init commands, and on macOS the DWARF that the build keeps beside the executable is added.
+ */
+export function lldbLaunch(program: string, formatters: string, configuration: LaunchOptions & Record<string, unknown> = {}, platform: string = process.platform) {
+	// LLDB reads backslashes in a quoted argument as escapes; Windows accepts forward slashes.
+	return {
+		type: 'lldb', request: 'launch', program, sourceLanguages: ['c'],
+		terminal: configuration.terminal ?? 'integrated',
+		initCommands: [`command script import ${JSON.stringify(formatters.replaceAll('\\', '/'))}`, ...(configuration.initCommands ?? [])],
+		preRunCommands: [...(configuration.preRunCommands ?? []),
+			...(platform === 'darwin' ? [`target symbols add ${JSON.stringify(`${program}.dwarf`)}`] : [])],
+	};
 }
 
 /** A PascalCase namespace for a folder name such as `my-app`, or `App` when it has no usable words. */
@@ -78,8 +117,8 @@ export function defaultNamespace(folder: string): string {
 }
 
 /** The lexer's reserved words and the reserved standard library module names, as `tsuzuri new` checks them. */
-export const reservedWords = new Set('fn def rec and export extern private record union type const test class instance deriving dyn let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
-export const libraryModules = new Set('Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt FixedArray Dyn Arena Rc Arc Regex Unicode Json Cbor'.split(' '));
+export const reservedWords = new Set('fn def rec and export extern private record union type const test bench class instance deriving dyn let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
+export const libraryModules = new Set('Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Format Exception BigInt FixedArray Dyn Arena Rc Arc Regex Unicode Json Cbor Bench Gen'.split(' '));
 
 /**
  * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme::Tools`: at most 16 identifiers joined by `::`

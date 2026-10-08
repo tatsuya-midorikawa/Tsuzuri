@@ -1,0 +1,13 @@
+def classify :: i64 -> i64
+fn classify x =
+    if x > 0 then
+        1
+    else
+        0
+
+def unused :: i64 -> i64
+fn unused x = x + 1
+
+test "positive" = Test.is_true (classify 5 == 1)
+test "zero" = Test.is_true (classify 0 == 0)
+test "fails" = Test.is_true (classify 7 == 0)

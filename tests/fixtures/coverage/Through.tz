@@ -1,0 +1,24 @@
+def pass :: (i64 -> i64) -> (i64 -> i64)
+fn pass f = f
+def double :: i64 -> i64
+fn double x = x * 2
+def add :: i64 -> i64 -> i64
+fn add x y = x + y
+def apply :: (i64 -> i64) -> i64 -> i64
+fn apply f x = f x
+def ident :: 'a -> 'a
+fn ident x = x
+test "callback" = Test.is_true (apply (pass double) 3 == 6)
+test "direct" = Test.is_true ((pass double) 4 == 8)
+test "binding" =
+    let g = pass double
+    Test.is_true (g 5 == 10)
+test "partial" = Test.is_true (apply (pass (add 1)) 3 == 4)
+test "parallel" =
+    let values = [1, 2, 3]
+    let doubled = Parallel.map (pass double) (ref values)
+    Test.is_true (Array.sum (ref doubled) == 12)
+test "initializer" =
+    let values = new [i64](3, pass double)
+    Test.is_true (Array.sum (ref values) == 6)
+test "generic" = Test.is_true (ident 5 == 5 && ident true)

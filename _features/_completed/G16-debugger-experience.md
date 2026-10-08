@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1 の決定はすべて既定案。Phase 2・3 は人間が求めた場合だけ着手する） |
+| 承認 | 不要（Phase 1 の決定はすべて既定案。Phase 2・3 は人間が求めた場合だけ着手する）。2026-10-08 に利用者が全 Phase の実装を求め、GUIDE D-41 で承認済み |
 | 改善する劣位 | C/C++ 比: デバッガーの成熟度（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)）、C#/F# 比: 開発体験（[同](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | DWARF の型と cache: `src/llvm_debug.rs` の `DebugContext::ty`・`fields`・`layout`・`metadata`・`quote`。union の格納: `src/llvm.rs` の `union_layout`・`storage_layout`・`FunctionEmitter::payload_pointer`、`src/llvm_recursive.rs` の `node_type`・`recursive_header`・`recursive_payload`・`recursive_tag`・`empty_case`。list の node: `src/llvm.rs` の `FunctionEmitter::list_node_type`。テスト: `tests/debug_info.rs` の `debug_metadata_is_deterministic_and_keeps_source_types`、`tests/debug_info.mjs` の `execute`。VS Code: `vsc/src/workflow.ts` の `debugConfiguration`（`preRunCommands`）、`vsc/scripts/toolchain.mjs` の `resources`、`vsc/scripts/package.mjs` の `required` |
 | 主な影響ファイル | `src/llvm_debug.rs`, `src/llvm.rs`（`FunctionEmitter::emit` の `debug_subprogram` 呼び出し）, `scripts/lldb/tsuzuri_lldb.py`（新規）, `tests/debug_info.rs`, `tests/debug_info.mjs`, `tests/debugger.mjs`（新規）, `tests/fixtures/debug_view/Main.tz`（新規）, `vsc/src/workflow.ts`, `vsc/scripts/toolchain.mjs`, `vsc/scripts/package.mjs`, `vsc/src/test/extension.test.ts`, `docs/architecture.md`, `_docs/tools/debugging.md`, `vsc/README.md`, `README.md`, `_docs/feature-status.md`, `_features/README.md` |
@@ -254,15 +254,25 @@ show 40
 
 `point` は `x = 40`、`label = "p"` の 2 行を持つ struct 表示、`table` は summary `size=1`（子は `entries` の要素）、`add` は `<fn ` で始まる summary になる。
 
+見直し（2026-10-08）: 実装後の実際の出力（Apple LLDB lldb-2103 と CodeLLDB 1.12.3 の LLDB 22.1.8 で同じ）は上の期待とほぼ同じで、次だけが違う。
+(1) 型を注釈しない整数リテラルの list と `Vec` は `i32` なので `([|i32|]) chain`・`(Vec<i32>) growing`・`(Map<i32, i32>) table = size=1 { [0] = (key = 1, value = 10) }`。
+(2) `char` は D4 の見直しのとおり `(char) letter = 'A'`。(3) `point` は LLDB の 1 行の形 `(Main.Point) point = (x = 40, label = "p")`。
+(4) fixture は wasm32 の module を作れるように 26 行目に `export def view :: i64 -> i64 = \input -> show input` を足した（1〜25 行目は上と同じなので
+LLDB の行番号は変わらない。`show 40` は 28 行目）。(5) 8 行目の `frame variable` は未初期化の値を `<invalid length N>`・`<invalid tag N>`・`<unreadable>`
+で表示し、`utf8string` は読めたメモリを 1,024 バイトまで表示する。
+
 ### Phase 2: テストのデバッグ（設計方針）
 
 VS Code の Test Explorer に Debug profile を足し、`tsuzuri test <root> --index N` と同じ選択で単一テストを `-g` 付きで build して
 CodeLLDB で起動する。test runner が各テストを別 process で実行するため、debug 用に 1 テストだけを実行する entry が要る。Phase 2 の着手時に設計を確定する。
+見直し（2026-10-08）: D13 の設計（`tsuzuri test ROOT --index N -g -o PATH` と Testing ビューの Debug のプロファイル）で実装した。
 
 ### Phase 3: Windows（設計方針）
 
 G10 の完了後、CodeView／PDB（Clang の `-gcodeview`、`lld-link /debug`）と natvis を追加する。natvis は Phase 1 の DWARF 形（`$tag`・`$payload`・
 node struct）と同じ member 名を使う。
+見直し（2026-10-08）: D14 の設計で実装した。IR を入力にする Clang は `-gcodeview` で module flag を足さないので、driver が `CodeView` の flag を
+IR へ足す（`llvm::with_codeview`）。
 
 ## 設計
 
@@ -586,7 +596,10 @@ lldb -b -o "command script import scripts/lldb/tsuzuri_lldb.py" -o "target symbo
 
 - 決定: Phase 1 は DWARF の改善、LLDB の Python formatter、VS Code での自動読み込み、LLDB の batch テスト。Phase 2・3 は人間が求めた場合だけ着手する。
 - 理由: Phase 1 だけで macOS と Linux の LLDB・CodeLLDB の表示が完結し、Phase 2 は test runner、Phase 3 は G10 に依存する。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 利用者の依頼「G16…の実装をすべて完遂して。…すべてのフェーズを完了させること」により Phase 1〜3 をすべて実装した。
+  Phase 2 の設計は D13、Phase 3 の設計は D14 に記す。G10 は Windows の実行確認が手元でできないため blocked のままだが、Phase 3 は CI と同じ
+  windows-msvc のコード経路を型検査し、手元の LLVM 21（`clang`・`lld-link`・`llvm-readobj`・`llvm-pdbutil`）で CodeView と PDB を確かめて実装した。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D2: 言語コードと union の表現
 
@@ -600,13 +613,24 @@ lldb -b -o "command script import scripts/lldb/tsuzuri_lldb.py" -o "target symbo
 - 決定: `linkageName` を出さず、`name` を「関数名と step 実行」の規則で作る。wrapper は symbol 名と `DIFlagArtificial`。
 - 理由: LLDB は linkage 名を優先して `tz.fn.Main.show` と表示する（検証済み）。C の compile unit で linkage 名を省くのは Clang の C と同じ形。
   単相化の実体を同じ名前にすると、C++ の template と同じく名前の breakpoint が全実体に当たる。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: (1) HEAD のラムダ式の名前は「現状」の記述と違い `$lambda.6`（`module` が `$lambda` で、`name.starts_with("$lambda")` が
+  成り立たなかった）。新しい規則は `module == "$lambda"` と `is_task` で判定する。(2) テストの本体（`$test.N`）は `<モジュール>.test@<行>:<列>`
+  （テスト名の位置）にした（Phase 2 のため。テスト名は空白や引用符を含みうるので、名前の breakpoint に使える形を選んだ）。(3) 組み込み関数・
+  組み込みメソッド・case のコンストラクター・export の bridge（モジュール `$builtin`・`$intrinsic`・`$case`・`$export`。トラップ報告が呼び出し元へ
+  帰属させるのと同じ集合）は `DISubprogram` を持たない。HEAD ではこれらに行情報があり、`Vec.push (Vec.empty()) 7` の行で step-in すると
+  `$builtin.Vec.empty.5` の中（同じ行）で止まった（検証済み）。(4) 実体のラムダと callback 特殊化の両方が同じ名前を持つので、
+  `image lookup -r -n '^Main\.show\.lambda@22:'` は 2 件になる（テストは件数ではなく全件の名前を確かめる）。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D4: scalar の型名
 
 - 決定: `bool` 以外の scalar を `Type::display` 名の typedef にし、`char`・`utf8char` の基底を `DW_ATE_UTF` にする。
 - 理由: LLDB は基本型の名前を無視して C の型名を表示する（`(long) input`、`(unsigned short) letter = 65`。検証済み）。typedef 名は表示に使われる。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: (1) LLDB はポインター型の名前も無視する（`(Main.Tree.node *) tree`。検証済み）ので、名前の付くポインター（参照 `ref T`、
+  ハンドル、`Rc`・`Arc`、再帰 union）も名前のないポインターへの typedef にした。(2) LLDB は `DW_ATE_UTF` 16 bit を `U+0041 u'A'` と表示するので、
+  formatter が `char` を Tsuzuri のリテラルの形 `'A'`、`utf8char` を `u8'é'` で表示する（「例」の `u'A'` から変更。文字列の `"héllo"`・`u8"abc"` と揃えた）。
+  (3) dyn 値の `data`・`vtable` も型のないポインターにした（`ref unit` を出さないため）。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D5: DWARF の型名と union の member 名
 
@@ -614,32 +638,51 @@ lldb -b -o "command script import scripts/lldb/tsuzuri_lldb.py" -o "target symbo
 - 理由: `Type::display` は source と診断に現れる名前で、すでに決定的。`$` は Tsuzuri の識別子に現れないので record の field と衝突しない。
 - 見直し提案: 旧版の「型名を D-03 の正規マングリング（`Main.Pair[i64,string]`）に合わせる」は採らなかった。D-03 名は IR の symbol 用で、
   利用者が読む名前ではない。D-03 名に揃える場合は formatter の正規表現と「例」の期待出力を変える。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: std の `Map`・`Set` の `Type::display` は `Map<i32, i32>`（`type_display` がモジュールと同名の型を短くする）で、設計の
+  `^(Map\.Map|Set\.Set)<.+>$` ではない。formatter は名前の接頭辞と member 名の組で型を見分ける recognizer にした（`[i64]` と `[i64; 4]` の区別は
+  正規表現では書けないため）。すべての case が値を持たない Drop union（`General(0)`）は `$payload` を持たない。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D6: formatter の場所と読み込み
 
 - 決定: 正本は `scripts/lldb/tsuzuri_lldb.py`。`vsc/scripts/toolchain.mjs` の `resources` が `vsc/resources/lldb/` へ複製し、`debugConfiguration` が
   `initCommands` で読み込む。型 category は `tsuzuri`。`sourceLanguages: ['c']` は変えない。
 - 理由: `vsc/resources/` は生成物で `.gitignore` 対象。`initCommands` は target 作成前に実行され、利用者の `initCommands` より先に置けば上書きもできる。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: launch の組み立ては `vsc/src/core.ts` の `lldbLaunch`（単体テスト付き）に移し、Phase 2 のテストのデバッグと共有した。
+  Windows のパスは LLDB の引用符の中で `\` がエスケープになるので `/` にする。CodeLLDB 1.12.3 は LLDB 22.1.8 と Python 3.12 を同梱し、
+  `command script import` で読めることを手元の VS Code の統合テスト（`label = "ok"`）と、その LLDB の batch（`tests/debugger.mjs`）で確かめた。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D7: 束縛の行情報
 
 - 決定: 束縛の `store` の位置を局所変数の宣言位置にする。生成 helper と runtime に `DISubprogram` は付けない。
 - 理由: HEAD では束縛の `store` が関数本体の開始位置を持ち、step が前の行へ戻る（検証済み）。行情報のない関数は LLDB の既定で step-in の対象外になる。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: (1) 引数の `store` は位置を持たせず（Clang と同じく prologue の一部）、`DISubprogram` の `scopeLine` を出さない。
+  関数は entry から `loop` ブロックへ分岐してから引数を束縛するので、LLVM 21 の `prologue_end` は束縛の前に置かれ、名前の breakpoint と step-in が
+  `input=1344` のような未束縛の値で止まっていた（検証済み）。prologue が行 0 になると LLDB は `prologue_end` の後の行 0 を飛ばすので、
+  `breakpoint set -n Main.show` が `Main.show(input=40) at Main.tz:8` で止まる（手順 2 の期待どおり）。命令列は変えない。(2) 閉包の捕捉の読み出しは、
+  捕捉の span（局所変数の宣言）ではなく閉包の位置にする（`FunctionEmitter::debug_span`。`let add = \offset -> ...` の step が 7 行目へ戻っていた）。
+  (3) C のランタイム（`task.c`・`cpu.c`・`io.c`・`os.c`・`trap.c`・`arguments.c`）は G08 では `-g` でコンパイルしていたが、`Array.sum` からの step-in が
+  `tsuzuri_cpu_sum_i64`（task.c）で止まった（検証済み）ので、`stack.c` と同じくデバッグ情報なしにした。これで「step-in はランタイムで止まらない」が
+  成り立ち、D15 の `-O3` の検証の失敗も根本から直る。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D8: 配布物
 
 - 決定: Phase 1 は VSIX とリポジトリの script だけ。G14 が done になった後の toolchain への同梱は G14 の配置規則に従う別作業にする。
 - 理由: G14 は todo で、配置先が決まっていない。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: G14 は done。`scripts/toolchain/bundle.mjs` が配布物の `share/lldb/tsuzuri_lldb.py`（Phase 3 で `share/natvis/tsuzuri.natvis` も）へ
+  複製し、`verify` と `smoke.mjs` が存在を確かめる。実行ファイルではないので `bin/` ではなく `share/` に置いた（`entries` が manifest に載せる）。
+  `tsuzuri toolchain info` の行は増やさない（`distribution` の行で場所が分かり、既存のテストが行数を固定している）。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D9: LLDB テストの実行場所
 
 - 決定: `tests/debugger.mjs` は開発者が macOS arm64（LLDB がある Linux でも可）で明示的に実行し、共有 CI には足さない。LLDB がなければ失敗する。
 - 理由: CI の runner に LLDB と Python の導入を足すのは費用があり、黙って skip すると回帰を見逃す。
-- 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: `TSUZURI_LLDB` に CodeLLDB の VSIX の `extension/lldb/bin/lldb`（LLDB 22.1.8）を渡しても成功する。VS Code の統合テスト
+  （CI の macOS・Linux・Windows x64 で実行）は formatter の表示（`label = "ok"`）と Phase 2 の Debug のプロファイルも確かめる。
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D10: WASM
 
@@ -658,3 +701,166 @@ lldb -b -o "command script import scripts/lldb/tsuzuri_lldb.py" -o "target symbo
 - 決定: `-O3` は DWARF の検証だけを行い、LLDB の表示は保証しない。
 - 理由: 最適化で変数と行が消えるのは C/C++ と同じで、表示を保証するには最適化を変える必要がある。
 - 状態: 既定案（実装者はこの案に従う）
+
+### D13: テストのデバッグ（Phase 2）
+
+- 決定: `tsuzuri test ROOT --index N -g -o PATH` は、テスト N だけをルートにしたテストランナーをデバッグ情報付きで PATH にビルドし、実行しない
+  （macOS は `PATH.dwarf`、Windows の MSVC リンクは `PATH` の拡張子を `.pdb` にした PDB）。ランナーはそのテストだけを持つので引数は `0`。標準出力に
+  `<index> <module>.<name>: <program> 0`、`--json` では `{"type":"debug","index","module","name","program","arguments"}` を出す。`-g` と `-o` の片方だけ、
+  `--index` が 1 つでない、`--list`・`--filter`・WASM との組み合わせは E2000。ランナーの C の入口（`test-runner.c`）とランタイムはデバッグ情報なしの
+  別 object にし、`-g` でリンクする（step-in が `main` に入らない）。テストを呼ぶ `@tsuzuri_test_run` は `@main` と同じく `debug::wrapper` で artificial な
+  `DISubprogram`（位置はテストの宣言）を持ち、呼び出しと `ret` に位置を付ける。出力は `publish_outputs` で原子的に置き、ソースとリンク入力を
+  上書きしない。VS Code の Testing ビューに Debug のプロファイル（既定）を足し、選んだ 1 件をこのコマンドで `<root>/.tsuzuri/test/runner-<pid>-<番号>`（見直し（2026-10-08、PR のレビュー）: デバッグごとに別の名前にし、終わると消す。同時のデバッグが同じランナーを上書きしないため）に
+  ビルドし、`lldbLaunch`（D6）で CodeLLDB を起動する。終了コード 0 で passed、それ以外は failed、終わる前に止めると skipped。2 件以上を選ぶと
+  エラー（全件 skipped）にする。
+- 理由: test runner は各テストを別 process で実行し、`run_tests` の build は一時ディレクトリで完結しているので、debugger が起動できる実行ファイルを
+  残す入口が要る。`build` に `--test` を足すより、テストの選択（`--index`）を既に持つ `test` に寄せる方が CLI の意味が一つに決まる。1 件だけを
+  ルートにすると build が速く、ランナーの引数が常に `0` になる。
+- 見直し（2026-10-08、独立レビュー）: 当初は `@tsuzuri_test_run` にデバッグ情報がなく、`-O1` 以上ではテストの本体がそこへ inline されて LLVM が
+  行表を捨てていた（`dsymutil` が "no debug symbols in executable"、本体のブレークポイントが pending のまま）。`@main` と同じ `debug::wrapper` で
+  artificial な subprogram と呼び出しの位置を付けて直した。代案のうち「選んだテストを `noinline` にする」は最適化の結果を変え、「`-O0` に固定する・
+  拒否する」は最適化したテストを調べられないので採らない。`-g` なしのランナーの IR は変わらない。副作用として、テストの最後の行から先へステップ
+  実行するとテストの宣言の行（`tsuzuri_test_run`）で一度止まる（プログラムの `main` の wrapper と同じ）。以前は `dyld` などの機械語まで抜けていた。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D14: Windows の CodeView・PDB・natvis（Phase 3）
+
+- 決定: Windows で MSVC のリンカーを使う Clang（`driver::msvc_linker`。配布物の `tsuzuri-clang` は MinGW の `ld.lld` でリンクし DWARF を CodeLLDB で
+  読むので除く）では、driver が `-g` のネイティブの IR に `llvm::with_codeview` で `CodeView` の module flag を足す（Clang は IR の入力に module flag を
+  足さない）。実行ファイルとテストランナーのリンクに `-Xlinker` で `/PDB:<一時>`、`/PDBALTPATH:<出力名>.pdb`、`/NATVIS:<一時>/tsuzuri.natvis` を渡し、
+  PDB を `<出力の拡張子を .pdb にした名前>` の sidecar として公開する（PDB 名をキャッシュのキーに含める）。natvis は `src/runtime/tsuzuri.natvis`
+  （埋め込み）を正本とし、配布物の `share/natvis/` にも置く。`string`・`utf8string`・`Vec<*>`・`Map<*,*>`・`Set<*>`・`Maybe<*>`・`Result<*,*>`・
+  `Task<*>` を定義し、`$tag`・`$payload` を DWARF と同じ名前で参照する。DWARF は image に残す。
+- 理由: CodeView の型と関数の名前は DWARF の metadata から作られるので Tsuzuri の名前のまま（`llvm-readobj --codeview`・`llvm-pdbutil` で確認）。
+  `lld-link /debug` は PDB を作りつつ DWARF の section も image に残すので、CodeLLDB の経路を壊さない。`/PDBALTPATH` がないと image は一時ディレクトリの
+  PDB を指す。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列 `[T]`・リスト `[|T|]`・利用者の union は natvis では
+  一般に書けない（プログラムごとの natvis の生成は、手元で表示を確かめられないので見送った）。`-Wl,` はパスのカンマで分かれるので `-Xlinker` を使う。
+  配布物の経路に CodeView を足さないのは、Zig のリンカーの CI での回帰の危険を避けるため。
+- 状態: 承認済み（2026-10-08、D-41）
+
+### D15: `-O3` の `llvm-dwarfdump --verify` の失敗の原因
+
+- 決定: 根本原因は、C のランタイムを Clang の既定（macOS 15 以降と Linux では DWARF 5）でコンパイルしていたこと。macOS の `--emit object` は
+  `llvm-link` で IR を結合するので、module flag の `Dwarf Version` が Max の規則で 5 になり、`-O3` で LLVM 21 の DWARF 5 が `DW_OP_convert` の基本型
+  `DW_ATE_signed_32` などを `.debug_names` に索引しないまま出力して検証に失敗した（`task.c` だけを `clang -O3 -g` でコンパイルしても同じ失敗になり、
+  `-gdwarf-4` では通ることを確かめた）。D7 (3) でランタイムをデバッグ情報なしにしたので、プログラムの DWARF は Tsuzuri の compile unit（DWARF 4）
+  だけになり、`node tests/debug_info.mjs` は `-O0`・`-O3` の native と wasm32 で通る。
+- 理由: ランタイムの DWARF の版を Tsuzuri に揃える案（`-gdwarf-4`）も試して通ったが、ステップ実行がランタイムに入らないこと（D7）と両立するのは
+  デバッグ情報を出さない方だけだった。
+- 状態: 承認済み（2026-10-08、D-41）
+
+## 実装と検証（2026-10-08）
+
+利用者の依頼（GUIDE D-41）により Phase 1〜3 をすべて実装した。作業は worktree `wt/g16`（`Phase7-5` @ `1182045` から）。決定の見直しは「決定事項」の
+`見直し（2026-10-08）` と D13〜D15 にある。
+
+### 実装した内容
+
+- Phase 1（手順 1〜12）: `src/llvm_debug.rs` の DWARF の形（スカラーの typedef、`char`・`utf8char` の `DW_ATE_UTF`、名前の付くポインターの typedef、
+  型のないポインターと関数ポインター、リストのノード `<型名>.node`、union の列挙型・`$tag`・`$payload`・再帰 union のノード）、`linkageName` のない
+  関数名（単相化は同名、`lambda@`・`task@`・`test@`、ラッパーは `DIFlagArtificial`）、glue の `DISubprogram` なし、束縛の `store` の位置、閉包の捕捉の
+  位置、`scopeLine` なし。driver は C のランタイムをデバッグ情報なしでコンパイルする（D7・D15）。formatter `scripts/lldb/tsuzuri_lldb.py`（recognizer で
+  型を見分け、文字列・配列・スライス・`Vec`・リスト・union・`Map`・`Set`・文字・`unit`・関数値・Task を表示）。VS Code は `initCommands` で読み込み、
+  VSIX の `resources/lldb/` と配布物の `share/lldb/` に同梱する。`tests/fixtures/debug_view`、`tests/debugger.mjs`（新規）、`tests/debug_info.rs`
+  （5 件追加）、`tests/debug_info.mjs`（debug_view の DWARF の検査）。
+- Phase 2（D13）: `tsuzuri test ROOT --index N -g -o PATH`（`driver::build_debug_runner`）、Testing ビューの Debug のプロファイル。
+- Phase 3（D14）: `llvm::with_codeview`、MSVC リンクの PDB・natvis（`src/runtime/tsuzuri.natvis`、配布物の `share/natvis/`）、PDB 名のキャッシュのキー。
+
+### 確認したコマンドと結果（macOS arm64、Apple M1 Max、rustc 1.98.1、LLVM 21.1.8、Node v20.19.6）
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 81 binaries、858 passed、0 failed（調整役の指示どおり、既存の
+  `bounds_computation_syntax_and_expansion` の 2 MiB の stack 溢れを避けるため）。負荷の高い状態で一度 `driver::test_runner::tests::
+  runner_rejects_malformed_indices_and_reaps_timed_out_children`（合格するテストの 1 秒の上限）が失敗したが、単独と再実行では成功した（既存の時間依存）。
+- GUIDE §3.1 の回帰テスト（既定の stack）: `bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・
+  `bounds_nested_builder_expansion_not_just_source_syntax`・`honors_the_exact_specialization_limit` がそれぞれ 1 passed。
+- `cargo test --locked --test debug_info`: 8 passed（既存 2 + 手順 2〜6 の 5 + Phase 3 の 1）。`--test test_runner`: 9 passed（Phase 2 の 1 件を追加）。
+  `--bin tsuzuri`: 11 passed（`rejects_ambiguous_or_unused_arguments` に Phase 2 の組み合わせを追加）。`--lib pdb_links`: 1 passed。
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。Windows の型検査（rustup の stable 1.96.1）:
+  `cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` が成功。同じ clippy は既存の `src/lsp.rs`・`src/parser.rs` の
+  `nonminimal_bool` だけで失敗し（base でも同じ）、`-A clippy::nonminimal_bool` では成功。
+- `-g` なしの IR: base のコンパイラと比べ、`tests/fixtures/*` と `examples/*` の 76 プロジェクト × native・wasm32 × `-O0`・`-O3` × `--trap-info` の有無の
+  608 ファイルがすべて byte 単位で同一（`debug_view` は同じ内容で base と比較）。
+- `-g` の IR: 同じ 76 プロジェクト × native・wasm32 で 2 回の出力が同一（決定的）で、`clang -c -g` が受け付け、object の `llvm-dwarfdump --verify` が成功。
+- `node tests/debug_info.mjs`（LLVM 21 を PATH の先頭に置く）: `-O0`・`-O3` の native と WASM が成功（`-O3` の既存の失敗を D15 で修正）。
+- `node tests/debugger.mjs`: Apple LLDB lldb-2103 と、CodeLLDB 1.12.3 の LLDB 22.1.8（`TSUZURI_LLDB`）の両方で成功。`TSUZURI_LLDB` が無効なら
+  `lldb not found; install LLDB or set TSUZURI_LLDB` で失敗する。
+- `node tests/e2e.mjs`・`cache.mjs`・`examples.mjs`・`stack_overflow.mjs`・`ffi_extensions.mjs`・`wasm_memory.mjs`・`wasm_threads.mjs`: 成功。
+- `sh scripts/check-runtime-includes.sh`: 34 files（`tsuzuri.natvis` で 1 増）。`node scripts/check-docs.mjs`（変更した 5 ページ）: 成功。
+- VS Code（`vsc`）: `npm ci`、`npm run compile`（型検査・lint）、`npm run test:unit`（11 件。Phase 1・2 で 1 件ずつ追加）、`npm run toolchain`（キャッシュ済みの Zig と CodeLLDB）、
+  `npm run test:toolchain`、`archive.mjs` と `smoke.mjs --discover`、`npm test`（VS Code 1.103.2。formatter による `label = "ok"` と Debug のテストの
+  プロファイルを含む）、`npm run vsix`、`npm run test:installed` がすべて macOS arm64 で成功。
+- Phase 3 の手元の確認: `with_codeview` の IR を `x86_64`・`aarch64-pc-windows-msvc` へコンパイルし、`llvm-readobj --codeview` が `Main.show`・`Main.Shape`・
+  `$tag`・`$payload`・`[i64]` を示した。`lld-link /debug /pdb /pdbaltpath /natvis /force:unresolved` で PDB ができ、`llvm-pdbutil` が手続き 8 件と
+  `Main.*` の型 15 件、natvis の名前付き stream を示し、image の DWARF も `--verify` を通った。Clang の MSVC driver は `-debug` と `-Xlinker` の 3 引数を
+  そのまま渡し、自分の `-pdb:` を足さない（`-###` で確認）。
+
+### 手元で確かめられないこと
+
+- Windows で `link.exe` を使うリンク（PDB の書き出し、`/PDBALTPATH`、`/NATVIS` の埋め込み）と、Visual Studio・WinDbg での natvis の表示（`$tag`・
+  `$payload` の参照を含む）。CI は配布物の MinGW の経路だけを実行するので、この経路は CI でも確かめていない。CI へ確認を足さなかったのは、bash の
+  runner で Clang が MSVC の `link.exe` を見つけることに確信がないため。→ レビュー後に win32-x64 の CI へ確認を足した（下の「レビュー後の修正」）。
+  Visual Studio・WinDbg での natvis の表示は引き続き確かめていない。
+- Windows x64 の CodeLLDB のデバッグ（Phase 1 の formatter と Phase 2 の Debug のプロファイルの統合テスト）と Linux の LLDB は CI が確かめる。
+
+### 性能
+
+性能は主張しない。`-g` なしの IR は変わらない。
+
+### 更新した文書
+
+`_tsuzuri/language-reference/compiler/debugging.md`（新規）、`compiler/usage.md`、`compiler/option.md`、`index.md`、
+`built-in-types-and-modules/test.md`、`README.md`、`docs/architecture.md`、`vsc/README.md`、`vsc/CHANGELOG.md`、CLI の `--help`。
+`docs/language.md` はデバッグを扱わないので変更しない。
+
+### 変更したファイル
+
+`src/llvm_debug.rs`、`src/llvm.rs`、`src/driver.rs`、`src/test_runner.rs`、`src/main.rs`、`src/cache.rs`、`src/runtime/tsuzuri.natvis`（新規）、
+`scripts/lldb/tsuzuri_lldb.py`（新規）、`scripts/toolchain/bundle.mjs`、`scripts/toolchain/smoke.mjs`、`tests/debug_info.rs`、`tests/debug_info.mjs`、
+`tests/debugger.mjs`（新規）、`tests/fixtures/debug_view/Main.tz`（新規）、`tests/test_runner.rs`、`vsc/src/core.ts`、`vsc/src/workflow.ts`、
+`vsc/src/testing.ts`、`vsc/src/extension.ts`、`vsc/src/test/core.test.ts`、`vsc/src/test/extension.test.ts`、`vsc/scripts/toolchain.mjs`、
+`vsc/scripts/package.mjs`、`vsc/scripts/test-extension.mjs`、上の文書、この ticket。
+
+### レビュー後の修正（2026-10-08）
+
+`Phase7-5`（G17・G18 との merge 後の `d0fe562`）へ fast-forward してから、独立レビューの指摘を直した。
+
+- `-O1` 以上のデバッグ用ランナーが行表を失う: `src/llvm.rs` の `@tsuzuri_test_run` を `debug::wrapper` に通し、デバッグ情報があるときだけ artificial な
+  `DISubprogram`（名前 `tsuzuri_test_run`、位置はテストの宣言）と呼び出し・`ret` の位置を付けた（D13 の見直し）。修正前のコンパイラでは `-O2` の
+  ランナーで本体の `breakpoint set -f Main.tz -l 12` が pending のまま最後まで実行された。修正後は `-O0`〜`-O3` で `llvm-dwarfdump --debug-line` に
+  テストの行が残り、`--verify` が成功する。
+- formatter の `OverflowError`: `SequenceProvider`（`CollectionProvider` も）と `ListProvider` の `get_child_at_index` は、新しい `child_at` で番地が
+  `0 <= address < 2^64` のときだけ子を作り、作れなければ `None` を返す。`ListProvider` はノードをたどる処理の例外も捕まえる。子の名前の解析は
+  `isdigit` を `isdecimal` にした（`[²]` で `int` が `ValueError` を出していた）。
+- Windows の CI: `.github/workflows/vscode.yml` の最後に step「Windows PDB and natvis」（win32-x64 だけ、pwsh）を足した。LLVM の `clang.exe` を
+  `TSUZURI_CLANG` にして `tests/fixtures/debug_view` を `-g -O0` でビルドし、`app.pdb` があること、`app.exe` が `6` を出すこと、image が `app.pdb` を指し
+  一時の名前 `artifact.pdb` を含まないこと、PDB の byte に `Main.Shape`・`Main.show`・`tsuzuri.natvis` があること、`llvm-pdbutil dump --types` に
+  `` `Main.Shape` `` があること（`llvm-pdbutil.exe` がなければ notice）を確かめる。ARM64 は CodeLLDB を同梱せず、MSVC ARM64 の toolset も確かめて
+  いないので対象外。手元では pwsh 7.5 で step の本文を模擬し（tsuzuri を、macOS の実行ファイルと `lld-link` の PDB を置くスクリプトに置き換え）、
+  成功と 3 つの失敗の経路を確かめた。`link.exe` での実際の結果は CI だけが確かめる。
+- テスト: `tests/debug_info.rs` に `debug_test_runner_dispatch_is_an_artificial_subprogram`（native・wasm32 で、`-g` なしは `!dbg` がなく、`-g` は
+  artificial な subprogram と呼び出しの位置を持ち、決定的）。`tests/debugger.mjs` に、`-O2` のランナーで本体の 2 行（`fib 20` と `assert`）の
+  ブレークポイントが bind して止まること、`-O0` の `bt` の `tsuzuri_test_run at Main.tz:6:6`、番地が 2^64 を超える配列とリストの provider が `None` を
+  返すこと（修正前の formatter では `OverflowError` の Traceback）を足した。
+- 文書: `debugging.md`（`tsuzuri_test_run` とステップ実行、壊れたポインターの行）、`usage.md`（`-O1`〜`-O3`）、`docs/architecture.md`、`--help` の
+  `test --index N -g -o PATH` に `[-O0|-O1|-O2|-O3]`。
+
+確認（macOS arm64、LLVM 21.1.8 を PATH の先頭）:
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 成功。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 82 binaries、912 passed、0 failed。GUIDE §3.1 の 4 件は既定の stack でそれぞれ 1 passed。
+  `--bin tsuzuri` 12、`--test debug_info` 9、`--test test_runner` 10 passed。
+- `node tests/debug_info.mjs`: `-O0`・`-O3` の native と WASM が成功。`node tests/debugger.mjs`: Apple LLDB lldb-2103 と CodeLLDB 1.12.3 の LLDB 22.1.8 で成功。
+- `-g` なしの IR: `debug_view`・`tasks` × native・wasm32 × `-O0`・`-O3` × `--trap-info` の有無の 16 組が、base `1182045` とも修正前の `d0fe562` とも
+  byte 単位で同一。テストランナーの IR（`emit_test_runner_with`・`emit_test_runner`、native・wasm32、選択 3 通り、seed の有無、プロパティテストを含む
+  4 ソース）の 72 ファイルも `d0fe562` と同一。
+- `node scripts/check-docs.mjs`（`debugging.md`・`usage.md`）: 成功。VS Code 拡張は変更していない。
+
+変更したファイル: `src/llvm.rs`、`src/main.rs`、`scripts/lldb/tsuzuri_lldb.py`、`tests/debug_info.rs`、`tests/debugger.mjs`、
+`.github/workflows/vscode.yml`、上の文書、この ticket。
+
+### 統合後の修正（2026-10-08、CI）
+
+- PR の Windows x64 の CI の「Windows PDB and natvis」の段のログで、MSVC のリンカーの `-g` の build が `build cache write failed: invalid cache artifact name` を出していた。
+  driver は PDB を `pdb` の名前で whole-build cache に保存するが、`BuildCache` の `store`・`load` の名前の検査が `artifact`・`traps`・`dwarf` だけを受け付けていたため、
+  MSVC の `-g` の build は一度も cache されなかった。名前に `pdb` を足し、`cache::tests::sidecars_round_trip_and_unknown_names_are_refused`（修正前は保存で失敗する）と、
+  CI の段の「cache の entry が 1 個できる」「`app.exe`・`app.pdb` を消した後の cache hit が PDB を戻す」の確認を足した。

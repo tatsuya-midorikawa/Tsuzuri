@@ -85,6 +85,18 @@ test('TextMate grammar tokenizes namespaces, using, error handling, attributes, 
 
 let oniguruma: Promise<void> | undefined;
 
+test('TextMate grammar treats a first-line shebang as a comment', async () => {
+	const { grammar, registry } = await loadGrammar();
+	try {
+		const shebang = '#!/usr/bin/env tsuzuri script';
+		const first = grammar.tokenizeLine(shebang, INITIAL);
+		assert.ok(first.tokens[0].scopes.includes('comment.line.shebang.tsuzuri'));
+		assert.equal(first.tokens[0].endIndex, shebang.length);
+		const later = grammar.tokenizeLine(shebang, grammar.tokenizeLine('let a = 1', INITIAL).ruleStack);
+		assert.ok(!later.tokens.some(token => token.scopes.includes('comment.line.shebang.tsuzuri')));
+	} finally { registry.dispose(); }
+});
+
 async function loadGrammar() {
 	const root = path.resolve(__dirname, '../..');
 	oniguruma ??= readFile(require.resolve('vscode-oniguruma/release/onig.wasm')).then(data => loadWASM(data));

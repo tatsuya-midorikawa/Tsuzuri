@@ -9,6 +9,10 @@
 - Snippets for `namespace`, `using`, `try ... with`, and `try ... with ... finally`. The `main` snippet writes `def main :: unit -> i32`, which returns the exit code, and the new `mainargs` snippet writes `def main :: Array<string> -> i32`, which receives the command-line arguments; these are the only entry-point signatures.
 - Grammar tests cover literal suffixes, `@checked` / `@literal`, bit operators, and the error-handling keywords.
 - **Tsuzuri: Open Documentation** opens the new Japanese language reference (`_tsuzuri/language-reference/index.md`), which replaces the previous `_docs` handbook in the offline bundle.
+- Debugging shows Tsuzuri values: the debug launch loads the bundled LLDB formatters, so variables show strings, arrays, lists, unions (`Some(40)`, `Error("bad")`), `Map`, `Set`, and function values as Tsuzuri values; the call stack shows Tsuzuri function names such as `Main.show`, and stepping skips the runtime and generated helpers.
+- The Testing view has a **Debug** profile: it builds the selected test alone with debug information, starts it in CodeLLDB so breakpoints in the test body stop, and reports the result from the runner's exit code.
+- Highlighting, keyword completion, and a snippet for `bench` declarations; `Bench` and `Gen` are reserved standard library modules, so New Project rejects them as namespaces.
+- A `#!` shebang on the first line of a file (`#!/usr/bin/env tsuzuri script`) is highlighted as a comment.
 
 ## 0.1.0
 

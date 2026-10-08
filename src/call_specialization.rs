@@ -133,9 +133,15 @@ pub(super) fn target(
     }
 }
 
-pub(super) fn transparent<'a>(
+pub(super) fn transparent<'a>(expression: &'a TypedExpr, module: &CheckedModule) -> &'a TypedExpr {
+    transparent_calls(expression, module, |_| {})
+}
+
+/// `transparent`, passing `skipped` each identity function that it looks through.
+pub(super) fn transparent_calls<'a>(
     mut expression: &'a TypedExpr,
     module: &CheckedModule,
+    mut skipped: impl FnMut(usize),
 ) -> &'a TypedExpr {
     while let TypedExprKind::Call(callee, arguments) = &expression.kind {
         let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
@@ -145,6 +151,7 @@ pub(super) fn transparent<'a>(
         if arguments.len() != 1 || !is_identity(function) {
             break;
         }
+        skipped(id);
         expression = &arguments[0];
     }
     expression
@@ -155,10 +162,12 @@ pub(super) fn is_identity(function: &CheckedFunction) -> bool {
         && matches!(function.body.kind, TypedExprKind::Local(id) if id == function.parameters[0].id)
 }
 
+/// `left op right`, written directly or as a call of a two-parameter user function whose body is
+/// `x op y`; the last element is that function, which the caller does not call.
 pub(super) fn binary_operation<'a>(
     expression: &'a TypedExpr,
     module: &CheckedModule,
-) -> Option<(BinaryOp, &'a TypedExpr, &'a TypedExpr)> {
+) -> Option<(BinaryOp, &'a TypedExpr, &'a TypedExpr, Option<usize>)> {
     fn unwrapped(mut expression: &TypedExpr) -> &TypedExpr {
         while let TypedExprKind::Block { bindings, result } = &expression.kind {
             if !bindings.is_empty() {
@@ -169,7 +178,7 @@ pub(super) fn binary_operation<'a>(
         expression
     }
     match &unwrapped(expression).kind {
-        TypedExprKind::Binary(operator, left, right) => Some((*operator, left, right)),
+        TypedExprKind::Binary(operator, left, right) => Some((*operator, left, right, None)),
         TypedExprKind::Call(callee, arguments) if arguments.len() == 2 => {
             let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
                 return None;
@@ -187,7 +196,7 @@ pub(super) fn binary_operation<'a>(
             {
                 return None;
             }
-            Some((*operator, &arguments[0], &arguments[1]))
+            Some((*operator, &arguments[0], &arguments[1], Some(id)))
         }
         _ => None,
     }

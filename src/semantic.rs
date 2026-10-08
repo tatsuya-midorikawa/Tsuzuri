@@ -724,6 +724,18 @@ pub(super) fn collect(
                 format!("test {:?}", test.name),
             );
         }
+        for bench in &program.benches {
+            index.symbol(
+                &Ident {
+                    text: bench.name.clone(),
+                    span: bench.name_span,
+                    provenance: Provenance::User,
+                },
+                12,
+                bench.span,
+                format!("bench {:?}", bench.name),
+            );
+        }
     }
     for module in modules
         .iter()
@@ -736,6 +748,7 @@ pub(super) fn collect(
             .map(|function| &function.body)
             .chain(program.constants.iter().map(|constant| &constant.value))
             .chain(program.tests.iter().map(|test| &test.body))
+            .chain(program.benches.iter().map(|bench| &bench.body))
             .chain(program.entry.as_ref());
         for body in bodies {
             body.visit(&mut |expression| {

@@ -1,7 +1,9 @@
 use crate::diagnostic::Span;
 
 pub const MAX_NESTING: usize = 128;
-pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+/// The largest source file (`E0003`). A file of this size checks in about 2.3 s and 1 GiB on the
+/// G17 Phase 3 measurement machine; 16 MiB took 9.5 s and 3.9 GiB.
+pub const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
@@ -55,6 +57,8 @@ pub enum TokenKind {
     Type,
     Const,
     Test,
+    /// `bench "name" = body`, a benchmark that `tsuzuri bench` measures (G18).
+    Bench,
     Class,
     Instance,
     Deriving,
@@ -243,12 +247,17 @@ pub struct Program {
     pub instances: Vec<InstanceDecl>,
     pub active_patterns: Vec<ActivePattern>,
     pub tests: Vec<TestDecl>,
+    pub benches: Vec<BenchDecl>,
     pub entry: Option<Expr>,
     /// Every `dyn` type written in this module, in source order (A14). The checker reports the
     /// classes that cannot be dispatched here and generates the dispatching instances.
     pub dyn_types: Vec<TypeExpr>,
     /// The `@cpu [...]` attributes of this module's functions (F08 Phase 3).
     pub cpu_attributes: Vec<CpuAttribute>,
+    /// Where each top-level declaration starts (its first token, a doc comment or an attribute
+    /// included), in source order: a signature and its separate definition count apart. The
+    /// REPL splits an input there (G13).
+    pub declaration_starts: Vec<usize>,
 }
 
 /// The CPU targets that `@cpu` names, with their level in `src/runtime/cpu.c` (F08 Phase 3).
@@ -279,6 +288,16 @@ pub struct NamespaceDecl {
 
 #[derive(Clone, Debug)]
 pub struct TestDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub body: Expr,
+    pub span: Span,
+}
+
+/// `bench "name" = body`: the body has type `i64 -> i64`, from an iteration count to the
+/// nanoseconds that many iterations took (G18).
+#[derive(Clone, Debug)]
+pub struct BenchDecl {
     pub name: String,
     pub name_span: Span,
     pub body: Expr,

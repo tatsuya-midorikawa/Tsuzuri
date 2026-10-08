@@ -28,7 +28,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 |---|---|
 | `src/diagnostic.rs` | ソース ID とファイル内位置、診断の順序・重複除去・表示／収集上限、human／JSON lines の出力制御 |
 | `src/syntax.rs` | トークン定義、構文木（AST）、構文リソース上限の管理 |
-| `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理、数値リテラルの切り出し |
+| `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
 | `src/parser.rs` | Pratt パーサー、宣言と式、トップレベルのエントリーコード、再帰深度の制限 |
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
@@ -77,11 +77,12 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・ビットシフトの freestanding 補助関数群 |
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用） |
-| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`bindgen` |
+| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`bindgen`、`repl` のオプション、`script` の引数の取り分け（ファイルより前を `run` のオプションとして解析し、後ろをプログラムへ渡す） |
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 具体化後の暗黙の複製箇所の列挙（`copies::sites`）、`--warn implicit-copy` による `W1006` 警告、インレイヒント（inlay hint）の基となる配列・リストの複製検出（`costly_sites`） |
 | `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
+| `src/repl.rs` | `tsuzuri repl`（G13）。入力の読み取り（1 行目が末尾で未完なら空行まで継続）、宣言の塊（parser が各トップレベル宣言を始めた位置 `Program::declaration_starts` で区切る。列は問わず、文書コメントと属性はその宣言に入り、同じ行の前の空白とコメントも付く。`and` の再帰群と、別に書いたシグネチャと定義は一つの項目）とトップレベルの文（`;` で終わる文は `;` ごと残す）への分類、アクションの行をまとめて左へ寄せること、同じ名前の項目の置き換え、生成した `Main.tz` の解析と `SemanticIndex` からの型の取得、`driver::run_captured` による実行、診断の位置の `input`／`session` への写像 |
 
 ドキュメントコメント（doc comment）は、字句解析器（lexer）において `DocComment` トークンとして保持され、構文解析器（parser）によって対応する宣言の `Documentation(text, span)` に付与されます。
 `def` と `fn` を分離して書いた場合はシグネチャ側の記述から引き継がれ、不適切な位置への配置は `E0002` エラーとなります。生成される型検査済み関数（checked function）にはドキュメント文字列を複製しないため、型システム、所有権モデル、および LLVM のコード生成の意味論を変えることはありません。
@@ -145,7 +146,7 @@ C ランタイム（`task.c`、`cpu.c`、`io.c`）は動的メモリ確保を行
 ネイティブ実行ファイルにおけるスタック枯渇の検知（E14 Phase 3）は、`src/runtime/stack.c` が担当します。コンストラクタがメインスレッドに `sigaltstack` と SIGSEGV／SIGBUS ハンドラを登録し、`task.c` のワーカーは `-DTZ_STACK_GUARD` 定義時に `tsuzuri_stack_thread()` を呼び出して自身のスタック領域を登録します。
 フォールト（障害）アドレスが登録スタックの下端監視領域（ガードウィンドウ）に含まれる場合は、標準エラーに `trap: stack overflow` を出力して `abort()` します。監視領域外のフォールトであれば、OS のデフォルト動作へ戻してシグナルを再送出します（別スレッドで同時にスタック溢れが発生した場合でもエラー報告が欠落することはありません）。スタック監視ウィンドウの境界は、macOS では `pthread_get_stackaddr_np`、Linux メインスレッドでは `getrlimit(RLIMIT_STACK)` と `AT_EXECFN` の末尾情報（musl の `pthread_getattr_np` がメインスレッドで現在のマッピング幅しか返さない制限への対策）、ワーカースレッドでは `pthread_getattr_np` を用いて決定します。
 このスタック保護ランタイムはネイティブ実行ファイルのビルド時のみ、かつ `llvm::has_recursion` によって関数呼び出しグラフに閉路（再帰呼び出し）が検出されたプログラムにのみリンクされます（再帰しないプログラムではスタックオーバーフローが発生し得ず、ビルド時間を余計に 20〜60 ms 増加させないためです）。デバッグ情報が無効（`-g` なし）の場合は同一の Clang 呼び出し内で `-x c` としてコンパイルし、`-g` 有効時は DWARF を持たない別オブジェクトとして分割コンパイルします。
-`driver::run` は子プロセスの標準エラー出力を監視し、`trap: stack overflow` を検知した場合は `E2005`（stack overflow）として明示的に報告します。この文字列が見つからない場合は従来の `probable_stack_exhaustion` によるシグナル推定へフォールバックします。なお、`tsuzuri test` のランナーは標準エラーを破棄して終了シグナルのみを検査するため、この詳細報告は行われません。
+`driver::run` は子プロセスの標準エラー出力を監視し、`trap: stack overflow` を検知した場合は `E2005`（stack overflow）として明示的に報告します。この文字列が見つからない場合は従来の `probable_stack_exhaustion` によるシグナル推定へフォールバックします。なお、`tsuzuri test` のランナーは失敗したテストの標準エラーの末尾を表示しますが、テストの実行ファイルは `stack.c` を持たないため、この詳細報告は行われません。
 動作は `tests/stack_overflow.mjs`（macOS、`-O0`／`-O3`、メインスレッド、ワーカー、`-g`、非再帰プログラムでのハンドラ非含有、スタック外フォールトの区別）、`tests/trap_locations.rs` の `run_reports_stack_overflow`、および `llvm.rs` の再帰検出テスト群によって検証されています。
 
 ネイティブ環境における CPU ディスパッチ（CPU dispatch）は、`emit_native_build` の経路（native の exe／object と、object を作る `--trap-mode return`）でのみ有効化されます。同梱 kernel は、同梱の Array ソースが確認された場合に限り、単相化された整数 8 型の `Array.sum`・`Array.min`・`Array.max` の本体を `llvm::CPU_KERNELS` の `tsuzuri_cpu_{sum|min|max}_{型名}` 呼び出しに置き換えます（`min`・`max` は非公開 helper `min_index`・`max_index` の本体を置き換えます）。
@@ -177,7 +178,7 @@ wasm32 ではラッパー関数のアドレスが関数テーブルのインデ�
 
 ## 不変条件
 
-**Whole-build cache:** `cache.rs` はストリーミング形式の SHA-256 実装と NIST テストベクトルを備え、既存の `serde_json` を用いてメタデータをシリアライズします。パース、型検査、IR 生成の途中段階のキャッシュは作成しません。
+**Whole-build cache:** `cache.rs` はストリーミング形式の SHA-256 実装と NIST テストベクトルを備え、既存の `serde_json` を用いてメタデータをシリアライズします。型検査と IR 生成の途中段階のキャッシュは作成しません（パースの結果は次の frontend cache が持ちます）。
 コンパイラ実行バイナリ全体のダイジェストハッシュをキャッシュキーに含めることで、同一の Git コミット上に存在する未コミットの開発版バイナリ同士も厳密に識別します。`build.rs` が埋め込む Git コミット文字列のみに依存することはありません。
 キーは長さ付きフィールドで構成され、コンパイラバージョン、ホスト環境、ビルドオプション、実行アクション、すべてのソースファイルおよびマニフェストのパス・内容バイト列・由来（origin）、生成された IR、コンパイラおよび依存ツールのバイナリダイジェスト、ツールの `--version` 出力、および関連環境変数を含みます。
 `--cpu native` 指定時には、Clang が定義するターゲットマクロ群もキーに含めます。ファイルパスは Unicode 正規化を行わず OS の表現をそのまま維持し、絶対パスによるソースマップとパッケージの識別性も分離して管理します。
@@ -185,8 +186,12 @@ wasm32 ではラッパー関数のアドレスが関数テーブルのインデ�
 キャッシュルートディレクトリには専用のマーカーファイルが必須であり、シンボリックリンクは拒否されます。各キャッシュファイルのサイズと SHA-256 ハッシュが検証され、メタデータの欠落、ファイルの破損、または未知のフォーマットを検出した場合は安全にキャッシュミスとして扱います。信頼境界は同一 OS ユーザーのプライベートキャッシュとして定義されます。
 保存処理ではキーごとに非待機の排他ロック（create-new lock）を獲得して複数プロセスの重複書き込みを防止し、全ファイルの出力完了後にディレクトリのリネームによってアトミックに配置します。ロック競合が発生した場合はキャッシュ保存をスキップし、ビルド処理をブロックさせません。I/O 障害は警告として報告し、生成されたビルド成果物自体はそのまま保持します。
 GC（ガベージコレクション）は最大 4096 エントリまで走査し、最終アクセス日時、合計 2 GiB の容量上限、30 日間の有効期限を基準に最大 128 件ずつ回収します。古い不完全エントリ、残存ロック、一時領域も回収対象であり、上限はソフトリミットです。
-macOS のデバッグ実行ファイルとデバッグ共有ライブラリにおける DWARF は出力ファイル名に依存した情報を含むため、この場合に限って出力先パスもキャッシュキーに含めます。`--emit shared` はファイル名を install name（macOS）か soname（Linux）として埋め込むので、出力のファイル名もキーに含めます（`hash_output_path`）。それ以外の場合における別出力先へのアーティファクト再利用性は維持されます。
+macOS のデバッグ実行ファイルとデバッグ共有ライブラリにおける DWARF は出力ファイル名に依存した情報を含むため、この場合に限って出力先パスもキャッシュキーに含めます。Windows のデバッグ実行ファイルは隣の PDB をファイル名で指すので、その名前もキーに含めます（G16）。`--emit shared` はファイル名を install name（macOS）か soname（Linux）として埋め込むので、出力のファイル名もキーに含めます（`hash_output_path`）。それ以外の場合における別出力先へのアーティファクト再利用性は維持されます。
 動作は `tests/cache.mjs` により、実際の CLI を用いたキャッシュヒット（ツール起動回数の削減確認）、ミス、破損時の回復、並行書き込み、no-cache 指定、実行権限の保持、トラップ情報／DWARF の整合性、依存関係変更時の無効化が検証されています。
+
+**Frontend cache（G17）:** `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果をキャッシュルートの `frontend/` に保存して再利用します（`Project::analyze_cached` から `analyze_inputs_with`）。`src/syntax_codec.rs` は `Program` から届くすべての構文型を手書きの `Wire` で符号化します。enum の tag は宣言順の 1 byte、整数は LEB128、文字列と列は長さ付きで、`match` は `_ =>` を使わず全 variant を書くので、構文型に variant や field を足すとここが compile error になります。span の source index は保存せず、復号のときに現在の index を付け直すので、ファイルを足したり消したりして index がずれても再利用できます。
+プロジェクトのルート（`fs::canonicalize` した場所）と解析の種類（`program`・`tests`・`docs`）ごとに、パック `p-<project key>.tzp` と manifest `m-<project key>.json` の 2 ファイルだけを読み書きします。パックは、ソースの byte 列と compiler の同一性から作る parse key ごとの entry（header、`syntax_codec` の符号、SHA-256）を並べたものです。ソースごとのファイルにしないのは、ファイルを開く費用（on-access scan のある環境では 1 回 0.3〜1 ms）がモジュールの構文解析より大きくなるためです。manifest はモジュールごとの parse key と interface hash を持ち、前回との比較から `FrontendDelta`（変わったソース、変わった interface、消えたモジュール）を作ります。interface hash は span・文書 comment・関数本体・test・入口式・instance method の本体を除いた符号（`Mode::Interface`）の SHA-256 です。compiler の同一性は形式番号、版、実行ファイルの大きさと更新時刻に、Unix では device・inode・状態変更時刻（ctime）、それ以外ではパスと作成時刻を加えたものです（`cp -p` や Nix のように更新時刻をそろえても、別のファイルや書き直したファイルを区別します）。
+パックと manifest は、すべてのソースの構文解析が成功したときだけ、内容が変わった場合に書き換えます。読めない root、symlink、大きさの超過、形式・compiler・プロジェクトの不一致、checksum の不一致、復号の失敗はすべて miss として構文解析し直し、診断を出しません。構文解析の順序、`Diagnostics::is_full` による打ち切り、エラーの連結は cache なしと同じなので、IR、診断、警告、終了コードは cache の有無や cold／warm で byte 単位で同じです。書き込みは一時名からの rename で、書いたプロセスが合計 1 GiB、更新から 30 日、1 時間より古い一時ファイルの規則で掃除します（1 回に 4,096 件を調べ、最大 128 件）。`BuildCache::evict` は `frontend` という名前を扱いません。言語サーバー（`analyze_inputs_semantic`）は cache を使いません。`TSUZURI_CACHE_DIR=`（空）で無効になり、build・run・script の `--no-cache` は両方の cache を、repl の `--no-cache` は成果物の cache を止めます（repl は frontend cache を使いません）。検証は `src/syntax_codec.rs`・`src/frontend_cache.rs` の単体テストと `tests/frontend_cache.mjs` です。
 
 **bindgen:** `tsuzuri bindgen`（`src/bindgen.rs`）は lexer・parser・check・LLVM を通らず、生成したテキストは利用者のソースとして通常の経路で検査されます。生成するのは C の ABI がホスト ABI と一致すると確かめられる宣言だけで、型は Clang の表記（`qualType`）を typedef 展開してから固定の表と完全一致で照合し、表にない表記は推測せず `W2002` で省きます。`desugaredQualType` は typedef とともにその alignment 属性を落とす（`typeof` の先の over-aligned な typedef が素の整数に見える）ので使いません。enum・typedef・struct・フィールドの属性は、配置と呼び出し規約を変えないと分かっているものの許可リスト（`HARMLESS_ATTRIBUTES`）で判定し、それ以外の属性を持つ型は変換しません。C の tag と typedef 名は別の名前空間ですが、Clang は `typedef struct { ... } S;` の型を `struct S` と表記するので、無名の struct・union を名付ける typedef は展開せず、無名の enum の typedef は同じ名前の enum の tag（入れ子の宣言も含めて全ノードから集める）があれば変換しません。
 Clang は JSON の位置に `file` を変化時にしか書かず、`serde_json` の `Value` はキー順を保たないので、宣言の所属ファイルは `loc`（spelling → expansion）、`range`（begin → end）、子（`array_filler` → `inner`）の順をコードで固定して全ノードを訪ねて求めます。Clang は `sqrt` などの library builtin を最初の言及で暗黙に宣言するため、`previousDecl` が暗黙の宣言を指す関数は最初の宣言として扱います。enum 定数の値は `ConstantExpr` の値に `ImplicitCastExpr` の整数変換を適用して求めます。
@@ -273,8 +278,8 @@ std の仮想パスは `std/Name.ext` という平坦な形式で管理され、
 無修飾の型名、case、レコード、型クラスの解決においては、まず自モジュール内、次いで完全修飾名（モジュールパスが同一名の型を表す場合を含む）を検索します。その後、参照元がユーザーコードであれば「ユーザー定義モジュール群 → std モジュール群」の順序で各段階ごとに一意な候補を探索し、参照元が std であれば std モジュール群のみを探索します。
 std モジュールにおける `export def` の使用は禁止されており、std の関数を外部から呼び出す際はユーザー定義関数と同様にモジュール名による修飾が必須です。
 std のソースコードは型検査の対象となりますが、`closures::lower` の処理後に到達可能性解析（reachability analysis）が行われ、不要な関数は最終成果物から間引かれます。
-例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`。D-40）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
-そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
+例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`。D-40・D-41）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
+そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く。REPL の `Project::single_main` を含む）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
@@ -344,12 +349,23 @@ POSIX 環境では argv[1..] の UTF-8 文字列をデコードして格納し�
 **デバッグ情報:** `llvm::emit_with_debug_info` は既存の `TrapSource` ソースマップを明示的に受け取り、DWARF デバッグ情報を付与したコードを生成します（通常の API 呼び出しではデバッグ情報は生成されません）。
 `DIFile`、`DICompileUnit`、`DISubprogram`、`DILocation`、ならびに変数や型のメタデータノードは `Globals.next_metadata` によって一元的に採番され、ループメタデータ、トラップマーカー、および同梱ランタイムと同一の ID 空間を共有します。
 ソース位置情報は既存の `current_span` を利用し、`switch` の case 行ではなく各命令の終端位置に正確に関連付けられます。ローカル変数のエントリーブロックにおける `alloca` の直後には `llvm.dbg.declare` が配置されます。
-公開 ABI やコンソール用ラッパー関数にも適切なスコープ情報が付与され、`-O3` 最適化によって内部関数がインライン展開された場合でも元のソース位置情報が確実に保持されます。自動生成される関数名には、親関数の情報と決定的な内部命名規則が併用されます。
-2進浮動小数点はビット幅に応じた `DW_ATE_float`、decimal 型は BID エンコーディングのストレージとして `DW_ATE_unsigned` で記録されます（union 型の詳細なペイロードのデバッガ表示は対象外です）。
+公開 ABI やコンソール用ラッパー関数にも適切なスコープ情報が付与され、`-O3` 最適化によって内部関数がインライン展開された場合でも元のソース位置情報が確実に保持されます。
+
+DWARF の形は、formatter を読み込まないデバッガーでも Tsuzuri の名前が見え、`scripts/lldb/tsuzuri_lldb.py` が値を復元できるように決めています（G16）。命令列は変えず、`-g` なしの IR は同一です。
+
+- 型名は `Type::display`（`i64`、`[|i64|]`、`Maybe<i64>`、`Main.Shape`）です。`bool` 以外のスカラーは同名の基本型への `DW_TAG_typedef` です（デバッガーは基本型には C の名前を、typedef には typedef の名前を表示するため）。`char`・`utf8char` の基本型は 16・32 bit の `DW_ATE_UTF`、2進浮動小数点は `DW_ATE_float`、decimal 型は BID のストレージとして `DW_ATE_unsigned` です。名前の付くポインター（参照、ハンドル、`Rc`・`Arc`、再帰 union）も、名前のないポインターへの typedef です。
+- リストの `head` はノード構造体 `<型名>.node`（`next` と `value`。`FunctionEmitter::list_node_type` の `{ ptr, T }`）へのポインターです。関数値と Task の `code` は関数型へのポインター、`environment`・`clone`・`drop` と dyn 値の `data`・`vtable` は型のないポインターです。
+- union はすべての case が値を持たなければ `DW_TAG_enumeration_type` です。そうでなければ構造体で、メンバー `$tag`（列挙型 `<型名>.$tag`）と `$payload`（値を持つ case ごとに case 名のメンバーを持つ `DW_TAG_union_type` `<型名>.$payload`）を持ちます。`$payload` の offset は `union_layout` が `Common(T)` なら 4 を `T` の align に切り上げた値、`General(_)` なら 16 です。再帰 union はノード構造体 `<型名>.node`（`next`・`drop`・`clone`・`$tag`・`$payload`。`emit_program` の `{ ptr, ptr, ptr, i32, payload }`）へのポインターの typedef で、空ポインターは最初の値を持たない case です。`$` は Tsuzuri の識別子に使えないので、record のフィールドと衝突しません。
+- `DISubprogram` には `linkageName` がなく、`name` は `CheckedFunction::qualified_name` から単相化の `.$mono.<N>` を除いた名前（`Main.show`、全実体が `Array.sum`）です。ラムダ式と Task は `<外側の関数>.lambda@<行>:<列>`・`.task@<行>:<列>`、callback の特殊化は元の関数と同じ名前です。`export` の `@tz_<name>`、`@tsuzuri_main`、`@main` などのラッパーは、シンボル名と `DIFlagArtificial` を持ちます。組み込み関数・組み込みメソッド・case のコンストラクター・export の bridge（モジュール `$builtin`・`$intrinsic`・`$case`・`$export`）は自分のソースを持たないので、`DISubprogram` を付けません。
+- `let` の束縛の `store` は局所変数の宣言の位置に、閉包の捕捉の読み出しは閉包の位置に置きます。引数の `store` は位置を持たず、`DISubprogram` は `scopeLine` を持たないので、`loop` ブロックで引数を束縛するまでの prologue は行 0 になり、デバッガーは関数の本体の最初の行で止まります。
+- ランタイムの C（`task.c` など）はデバッグ情報なしでコンパイルし、生成する補助関数（`tz.apply.*`、`tz.drop.rec.*`、`tz.clone.*`）にも位置を付けません。LLDB は既定でデバッグ情報のない関数へステップインしないので、ステップ実行は Tsuzuri のソースだけを辿ります。プログラムの DWARF はコンパイラーの compile unit（DWARF 4）だけになり、Clang の既定の DWARF 5 の runtime の unit を `llvm-link` で結合したときにプログラム全体が DWARF 5 になって、LLVM 21 の `-O3` の `.debug_names` が `llvm-dwarfdump --verify` を通らなかった問題もなくなります。
+- Windows で MSVC のリンカーを使うとき（`driver::msvc_linker`。配布物の `tsuzuri-clang` は MinGW の `ld.lld` でリンクするので除く）、driver は `-g` のネイティブの IR に `llvm::with_codeview` で `CodeView` の module flag を足し、LLVM は DWARF と並べて CodeView（`.debug$S`・`.debug$T`）を出します。実行ファイルと `tsuzuri test -g` のランナーのリンクには `-Xlinker` で `/PDB:<一時ディレクトリ>`、`/PDBALTPATH:<出力名>.pdb`、`/NATVIS:`（`src/runtime/tsuzuri.natvis`）を渡し、PDB を `<出力の拡張子を .pdb にした名前>` の sidecar として公開します。`lld-link` では PDB と DWARF の両方が残ることを確かめています（G16 Phase 3）。
+- formatter の正本は `scripts/lldb/tsuzuri_lldb.py` で、LLDB の `lldb` モジュールだけを使い、型名と `$tag`・`$payload` のメンバー名で型を見分けます。`scripts/toolchain/bundle.mjs` が配布物の `share/lldb/` へ、`vsc/scripts/toolchain.mjs` が VS Code 拡張の `resources/lldb/` へ複製し、拡張はデバッグの `initCommands` の先頭で `command script import` します。
+
 Clang には `-g` フラグが渡され、WASM リンク時の `--strip-all` は解除されます。macOS におけるデバッグタスクオブジェクトの生成では、対応する `llvm-link` を用いて事前に IR を結合してから単一オブジェクトとして生成することで、`ld -r` による DWARF 情報の脱落問題を回避しています。
 また macOS のデバッグ実行ファイルは、保持された `module.o` からリンクを行い、一時ファイルを削除する前に `dsymutil --flat` を実行して隣接する `output.dwarf` を生成します。
 DWARF メタデータとトラップ情報テーブルは、共通のソースファイル保護、バックアップ、および公開失敗時のロールバック機構を利用して安全に出力されます。
-なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テスト、ならびに `llvm-dwarfdump --verify` によって行われています。
+なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.rs`（名前、束縛の位置、スカラーとポインター、union の形と offset、テストランナーの `tsuzuri_test_run` の subprogram）、`tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テストと `llvm-dwarfdump --verify`、ならびに LLDB の batch で表示・名前・ステップ実行と `-O2` のテストランナーのブレークポイントを確かめる `tests/debugger.mjs`（LLDB が必要なので共有 CI では実行しません）によって行われています。
 
 **言語サーバー:** `tsuzuri lsp` は、LSP 3.17 仕様に準拠した stdio フレームプロトコルと `serde_json` を使用し、最大メッセージサイズ 16 MiB、ヘッダー長 8 KiB、JSON 再帰深度 128 を上限として安全に動作します。
 文字位置のエンコーディングはクライアントとのネゴシエーションによって決定され（デフォルトは UTF-16）、バイト位置（byte span）からの相互変換には改行テーブルと文字境界判定を用いて、CRLF 改行やサロゲートペア・異体字セレクタ等の補助平面文字を正しく取り扱います。
@@ -361,6 +377,13 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 `analyze_modules_with_semantics` は、通常の解析結果に加えて `SemanticIndex` を構築して返します。このインデックスは型検査の完了後、定数展開・単相化・クロージャの lowering より前の段階で採取され、通常のコンパイル時には生成されません。
 後続の所有権検査などでエラーが検出された場合でも不完全なインデックスを公開することはなく、以前の正常なインデックスも安全に破棄されます。サーバー機能としては、ホバー（hover）、定義ジャンプ（definition）、およびシンボル検索（symbol）を中心とした堅牢な機能を宣言・提供します。
 動作は `cargo test --locked --test lsp` および `cargo build --release --locked && node tests/lsp_sessions.mjs target/release/tsuzuri` によって検証されています。
+
+**REPL:** `tsuzuri repl` は再コンパイル型で、JIT も入力を跨ぐ常駐プロセスも持ちません（G13 D1・D13）。セッションは受け付けた宣言とトップレベルの文の**ソース**だけで、入力ごとに「宣言 → 文 → 入力の末尾」の順に `Main.tz` を生成し、`Project::single_main` で読みます。これはファイル・マニフェスト・lockfile を読まず、`stdlib::sources_for` が選んだ std だけを足すので、同じ文字列を `Main.tz` に置いた `tsuzuri run` と同じ検査・IR になります。生成したソースはディスクに書かず、パスは仮想の `<repl>/Main.tz` です（キャッシュのキーとトラップの行に入る）。
+式は `let it = (E)` と `Display.display (ref it)` の版を先に検査し、`SemanticIndex` の `it: T` の項目から型を得て値を表示します。その版が通らないときだけ `let it = (E)` の版を検査し直し、通らなかった理由が表示行の `E1005` だけなら型だけを表示します（表示できる式の解析は 1 回。G13 Phase 3）。`run_captured` は `run` と同じ `build_complete` の後、子の stdin を空にし、stdout を 16 MiB まで別スレッドで集め、stderr を別スレッドで中継し、時間制限か出力の超過で子を kill して `wait` してから `E2005` を返します。`run_with_diagnostics` はこの `run_process` の `Inherit` で、`run` の挙動（stdio の継承、stderr の中継、`--json`、`E2005` の位置）は変わりません。
+動作は `cargo test --locked --lib repl::` と `cargo build --release --locked && node tests/repl.mjs target/release/tsuzuri` によって検証されています。
+1 入力の待ち時間（`-O0` の新しい式で約 0.67 秒）は、解析、cache の鍵（ツールの `--version` とコンパイラの SHA-256）、Clang のコンパイルとリンク、新しい実行ファイルの初回の起動（macOS の検査）でほぼ 4 分されます（`node benchmarks/run-repl.mjs`、[性能測定](benchmarks.md#repl-の-1-入力の待ち時間g13)）。JIT（LLVM の C API の ORC）、`lli`、入力ごとの共有ライブラリを読み込む常駐ホスト、値のスナップショットは、`unsafe`・新しい crate・LLVM ライブラリの配布・値の ABI を要し、この節の方針と衝突するので採りません（G13 D13）。
+
+**スクリプト実行:** `tsuzuri script FILE [arguments...]` は `run` と同じ経路で、`Project::load_script` が FILE（名前は問わず、シンボリックリンクは辿る。`.tt`・`.tc` は `E2000`）を `Project::single_main` の `Main.tz` にする。FILE の実際のパスを保つので、診断・トラップの行・キャッシュのキーはそのパスを使い、同じスクリプトの再実行はキャッシュに当たる。実行ファイルの入口の検査（`E2004`）はパスのファイル名ではなく入口のモジュールの相対パス（`Main.tz`）を見る。FILE より後ろの引数は `run_with_arguments` が子プロセスへそのまま渡す（`run` は空）。shebang 行は lexer の規則で、`tsuzuri fmt` は行をそのまま出力の先頭に写す。動作は `cargo test --locked --lib skips_a_shebang`、`--test formatter keeps_a_shebang_line`、`--test lsp a_shebang_line_keeps_positions` と `node tests/script.mjs target/release/tsuzuri` によって検証されています。
 
 **フロントエンド:** プロジェクト内の全ファイルのシグネチャを先行して収集するため、宣言の記述順序やファイル順序に依存しない設計となっています。
 ローカル変数の束縛は一意な識別子（ID）へと解決され、コード生成フェーズにおいて名前解決や型推論をやり直すことはありません。
@@ -387,6 +410,22 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 テスト用内部関数のシンボル名には `@tz.fn.Module.$test.index` という決定的な命名規則が用いられ、テストランナーのみが `tsuzuri_test_count` および `tsuzuri_test_run` を公開関数としてエクスポートします。
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。
+`tsuzuri test --index N -g -o PATH` の `driver::build_debug_runner` は、テスト N だけをルートにした IR を `emit_test_runner_with` の `TestRunnerOptions::debug` で DWARF 付きにし（テストの本体の名前は `<モジュール>.test@<行>:<列>`。テストを呼ぶ `@tsuzuri_test_run` は `@main` と同じく artificial な `DISubprogram` を持ち、呼び出しに位置を付けるので、`-O1` 以上でテストが inline されても行が残ります）、C の入口とランタイムはデバッグ情報なしの別オブジェクトにして `-g` でリンクし、macOS では `dsymutil --flat` で `PATH.dwarf` を作って `publish_outputs` で置きます。実行はせず、ランナーの絶対パスと引数 `0` を出力します（G16 Phase 2）。VS Code 拡張の Debug のテストプロファイルはこれを CodeLLDB で起動し、終了コードで成否を報告します。
+
+`tsuzuri test --coverage`（G18 Phase 2）は LLVM のカバレッジ形式や gcov を使わない自前の計装です。`coverage::plan` が単相化・ラムダ持ち上げ後の利用者関数（標準ライブラリ、`FunctionOrigin.test` を持つテスト本体とその補助関数、組み込み・ケース・export のラッパーを除く）の型付き本体を走査し、関数本体・`if` の両枝（`else` のない `if` が生成する `()` は除く）・`match` の節の本体・ループ本体・`try` のハンドラー・`&&`／`||` の右辺を (ソース, span, 種類) の昇順に番号付けした region と、各式の開始位置とその時点で最も内側の region の組（point）を作ります。
+`llvm::emit_test_runner_covered` はこの計画を `Globals.coverage` に置き、`FunctionEmitter::cover` が region の block の先頭（`&&`／`||` の右辺は `short_circuit` が右辺を評価する block の先頭）で `atomicrmw add ... monotonic` を `@tsuzuri_coverage_counters` の要素へ出します（同じ span の特殊化はカウンターを共有し、`lookup_match` の定数表は使いません）。呼び出しを省く生成（恒等関数の呼び出しを引数に置き換える `call_specialization::is_identity`、既知のクロージャの解決で恒等関数を見通す `transparent`、末尾の自己呼び出しの引数で `x + y`／`x - y` だけの 2 引数関数を加減算にする `tail_arguments`）は、`FunctionEmitter::cover_call` で呼ばれる側の本体の region をその場で数えるので、呼び出し側がテストでも数は呼び出しと同じです。計画がない出力は 1 byte も変わりません。
+C の入口は `-DTSUZURI_COVERAGE` のときだけ、テストが成功したらカウンターを `TSUZURI_COVERAGE_FILE` へ native の byte 順で書きます。`driver::run_tests` は成功したテストのファイルだけを飽和加算で合算し（失敗はカウンターを書く前に終わるので除外数として数える）、`coverage::files` が行ごとに point の region の最大値を取り、`render_lcov` が lcov を書きます。
+
+ベンチ宣言 `Program.benches`（G18 Phase 1）はテストと同じく通常の名前空間から隔離され、`$bench.<index> ($iterations: i64) -> i64 = { let $case: i64 -> i64 = 本体; $case $iterations }` という生成関数と `CheckedModule.benches` になります（本体の型の不一致は `$case` の注釈により本体の位置の `E1003`）。由来 `FunctionOrigin.bench` は補助関数へ伝播します。
+`polymorph::specialize` はベンチ関数の要求を、ほかのすべての特殊化（Drop の固定点を含む）が終わった後に出すので、通常ビルドとテストビルドの `$mono.N` の番号はベンチの有無で変わりません。この後半で初めて見つかった Drop 型の drop 関数は `CheckedModule.bench_drops` に記録され、`reachable_functions` はベンチ実行器のときだけそれらを根にします（ベンチ専用の型の drop glue は通常の成果物に出ません）。ただし `$lambda.N` や `$instance.N` のように関数の総数から付く生成名は、テストを足したときと同じく、ベンチや `Bench` モジュールの読み込みで番号がずれます。
+`tsuzuri bench` 以外の出力（根を指定しない Console・Library）では、`program_reach` が根の候補（公開の利用者関数、export、入口）からの到達集合を求めるときに `Bench.now` を直接読む関数を記録し、あれば逆向きの到達で時計に届く関数を求めて、export でも入口でもないものを根から外してもう一度到達集合を求めます。外した関数がなお到達されるとき（入口・export・選んだテスト・Drop から）は、`clock_error` が根から時計への最短の経路を幅優先で求め、起点と途中で最後に通る利用者の関数を名前で示し、その関数の中で次へ向かう式の位置に `E1018` を出します。根の候補が時計を読む関数に到達しないプログラムでは、到達の計算と出力は変わりません（到達するプログラムは以前は必ず `E1018` だったので、ビルドできたプログラムの出力も変わりません）。
+`llvm::emit_bench_runner`（`Entry::BenchRunner`）は選んだベンチ関数を根にして、`@tsuzuri_bench_count` と、index で分岐して `call i64 @tz.fn.<Module>.$bench.N(i64 %iterations)` を返す `@tsuzuri_bench_sample(i32, i64)`（不正な index は -1）を出します。組み込みの `Bench.now` は `call i64 @tsuzuri_bench_now()` に下がり、宣言がベンチ実行器以外の出力に残れば `emit_program` が `E1018` を返します。`Bench.consume` は値を entry block の alloca に store し、その pointer を `asm sideeffect "", "r,~{memory}"` に渡してから `drop_value` します。
+`runtime/bench-runner.c` は `tsuzuri_bench_now`（macOS は `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`、Linux は `_POSIX_C_SOURCE` 付きの `CLOCK_MONOTONIC`、Windows は `QueryPerformanceCounter`）と、引数 `INDEX SAMPLES TARGET_NS` を厳密に検査して（不正なら終了コード 2）反復回数を倍々に較正し、予熱の後に `iterations N` と `sample NS` の行を出す `main` を持ちます（負の時間は終了コード 3）。
+`driver::run_benches` はテストランナーと共有する `compile_native_runner`（C の入口と必要なランタイムをリンク）で実行器を 1 回だけ作り、ベンチを 1 件ずつ別プロセスで順に実行します。標準出力と標準エラーは読み取りスレッドが読み切り（パイプが満杯でも子を止めない）、300 秒で kill と wait をします。出力の形と件数を厳密に検査し、1 回あたりの時間（`ns / n / 1e6` ms）の中央値・最小・最大を報告します。合否の閾値はありません。
+
+プロパティテスト（G18 Phase 3）は std の opt-in モジュール `Gen` だけで書かれています。`Gen<'a>` は `Source -> ('a * Source)` を持つ不透明なレコードで、`Source` は `(Random.Pcg * [i64u] * bool * Vec<i64u>)`（乱数、再生する選択、再生中か、記録した選択）の組です。生成器はすべての乱択を `choose`（上限 0 の選択は記録しない）で記録し、探索では seed と値の番号を stream にした `Random.pcg` の提案を、再生では記録（尽きたら 0）を上限で切った値を使います。`shrink` は記録を短縮・縮小した候補を再生し、性質が失敗し続けてかつ短長辞書順でより単純な記録だけを採用します。
+seed は std 専用の組み込み `Gen.__seed()` で、`emit_builtin` が `Globals.seed`（`llvm::TestRunnerOptions.seed`、なければ `DEFAULT_PROPERTY_SEED`）の定数を返す関数を出します。`Gen` を書かないプログラムでは読み込まれないので、型検査と IR は変わりません。
+テストランナーは `run_captured` で子プロセスの標準エラーを読み取りスレッドで読み切り（末尾 64 KiB を保持）、失敗したテストの `TestResult.output` にします。WASM のテストランナーは、`Gen` の関数を含むモジュールだけを `debug_output` 付きで出力し、`runtime/test-runner.mjs` は `tsuzuri_debug.write` だけをインポートとして許して `writeSync(2, ...)` で書きます。
 
 `Debug.print` および `Debug.trace` は通常の標準ライブラリ関数として提供され、`Display` が生成した所有文字列を非公開の組み込み関数へと渡します。
 ネイティブ環境では厳密な UTF-8 変換と `runtime/debug.ll` の `write(2)` ループを用い、出力完了後に変換前後の所有バッファを確実に解放します。
@@ -650,7 +689,7 @@ NLL（非字句的生存期間）における借用情報の解放処理では�
 `Handle` の `'a` はどのフィールドにも現れない phantom な型引数です。record 宣言の検査は、不透明な標準 record に限って公開フィールド型の検査と未使用型引数の `E1024` を免除します（判定は宣言ごとに一度だけ行う）。`src/recursive.rs` はフィールドを型引数で置換して辿るので、`record Node { edges: Vec<Arena.Handle<Node>> }` は再帰的な値レイアウトになりません。
 arena ID は std 専用の組み込み関数 `Arena.__next_id`（`Builtin::ArenaNextId`、`Checker::builtin` が std の `Arena` 以外からの使用を `E1022` で拒否）が採番します。`emit_builtin` は単相の定義と大域カウンター `@tz.arena.next_id = internal global i64 0` を一つの文字列で出し、`atomicrmw add ... monotonic` で 1 増やして、結果が正でなければ `@llvm.trap` します。一意性だけが必要で、カウンターを通じて他のメモリを公開しないので `monotonic` で足ります。
 既定の wasm32（atomics 機能なし）では LLVM の WebAssembly backend が atomic 命令を通常の load／add／store へ下げ、`--wasm-feature threads` では `i64.atomic.rmw.add` になります。どちらも WASM の import は増えません。Arena を使わないプログラムの IR は変わりません。
-std の Arena 関数は他の std の generic 関数と同じく利用者コードから到達した要素型ごとに特殊化され、1,024 件の上限に数えます。検証は `cargo test --locked --test arena` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri arena`（`TSUZURI_TSAN=1` での並列採番を含む）で行っています。
+std の Arena 関数は他の std の generic 関数と同じく利用者コードから到達した要素型ごとに特殊化され、特殊化の上限（65,536 件）に数えます。検証は `cargo test --locked --test arena` と `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri arena`（`TSUZURI_TSAN=1` での並列採番を含む）で行っています。
 
 **Rc／Arc（C10 Phase 2）:** 共有ポインタは `Type::Shared(Box<Type>, SharedKind)`（`Rc`・`RcWeak`・`Arc`・`ArcWeak`）で、std のソースを持たない組み込み型です。`resolve_type` が `Rc<T>`・`Rc.Weak<T>`・`Arc<T>`・`Arc.Weak<T>`（`std::` 付きも）を `Vec` と同じく宣言の解決より先に読み、`builtin_type_head` が公開型の検査・型エイリアスの展開・制約の収集で名前の解決を飛ばします。型名 `Rc`・`Arc` は `Vec` と同じく利用者の宣言に使えません（`E1001`）。関数は `Builtin::RcNew`〜`Builtin::ArcPtrEq` の 18 個で、`Builtin::shared_kind` と `SharedOperation` が `Rc`／`Arc` の同じ処理を引きます。`new` は予約語のまま、parser の `dot_member` がドットの後ろでだけメンバー名として読みます。
 性質: `is_copy` は偽、`needs_drop` は真、`contains_reference`・`carries_loans`・所有権の `owned` は中の値に従います。`can_send` は `Arc` で値が `Send` かつ `shareable` のときだけ真で、`can_capture` は `Arc` で値が `shareable` のときだけ真です。`Type::shareable` は格納グラフ（`stored_all`）に `Rc`／`Rc.Weak`、`Type::Handle`、Copy でない dyn、`Owned.Function` がないことで、`Arc` を持つ複数のタスクが `Arc.get` の借用を通してホストのハンドルを同時に使うことを防ぎます（F10 が `Sync` に置き換えます）。関数値の型は捕捉を表さず、どの関数値も `Send` なので、`Rc` を関数値に入れないことでタスク間の非 atomic な計数を防ぎます。拒否のメッセージは `holds_rc` と `holds_unshareable_arc` で選びます。`Validation::check` は排他参照を含む中身を `E1005` で拒否し、`Layouts::size` は共有ポインタを 8 バイトとして中を辿りません。
@@ -1098,6 +1137,8 @@ node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/json.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
+node tests/repl.mjs target/release/tsuzuri
+node tests/script.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri

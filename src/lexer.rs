@@ -13,6 +13,31 @@ pub fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     tokenize(source, true)
 }
 
+/// The length of the interpreter line that starts with `#!` at byte 0, as in
+/// `#!/usr/bin/env tsuzuri script`, or 0. The lexer skips it like a line comment
+/// and keeps the line break, so every later position stays the same. A `#` can
+/// never begin a program, so no other program changes meaning.
+pub fn shebang_length(source: &str) -> usize {
+    if !source.starts_with("#!") {
+        return 0;
+    }
+    let end = source.find('\n').unwrap_or(source.len());
+    if source[..end].ends_with('\r') {
+        end - 1
+    } else {
+        end
+    }
+}
+
+/// Where the first token can start: after a byte order mark or a `#!` line.
+fn content_start(source: &str) -> usize {
+    if source.starts_with('\u{feff}') {
+        3
+    } else {
+        shebang_length(source)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriviaKind {
     Whitespace,
@@ -38,7 +63,7 @@ pub fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic>
     let tokens = lex(source)?;
     let mut scanner = Lexer {
         source,
-        position: if source.starts_with('\u{feff}') { 3 } else { 0 },
+        position: content_start(source),
         holes: Vec::new(),
     };
     let mut result = Vec::with_capacity(tokens.len());
@@ -99,7 +124,7 @@ fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     }
     Lexer {
         source,
-        position: if source.starts_with('\u{feff}') { 3 } else { 0 },
+        position: content_start(source),
         holes: Vec::new(),
     }
     .tokens(recovering)
@@ -554,6 +579,7 @@ impl Lexer<'_> {
             "type" => TokenKind::Type,
             "const" => TokenKind::Const,
             "test" => TokenKind::Test,
+            "bench" => TokenKind::Bench,
             "class" => TokenKind::Class,
             "instance" => TokenKind::Instance,
             "deriving" => TokenKind::Deriving,
@@ -1137,6 +1163,41 @@ fn parse_format_spec(text: &str, span: Span) -> Result<Option<FormatSpec>, Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_a_shebang_line_only_at_byte_zero() {
+        let source = "#!/usr/bin/env tsuzuri script\nlet x = 1\nx";
+        assert_eq!(shebang_length(source), 29);
+        let tokens = lex(source).unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Let);
+        // Positions stay those of the whole file, so diagnostics keep their lines and columns.
+        assert_eq!(tokens[0].span, Span::new(30, 33));
+        assert_eq!(
+            crate::diagnostic::location(source, tokens[1].span.start),
+            (2, 5)
+        );
+        // The line break stays a separate trivia, with a CRLF line's `\r`.
+        assert_eq!(shebang_length("#!x\r\nlet y = 2"), 3);
+        assert_eq!(lex("#!x\r\nlet y = 2").unwrap()[0].span.start, 5);
+        assert_eq!(shebang_length("#!only"), 6);
+        assert_eq!(lex("#!only").unwrap()[0].kind, TokenKind::End);
+        let trivia = lex_with_trivia("#!x\n// note\nlet y = 2").unwrap();
+        let kinds: Vec<_> = trivia[0].leading.iter().map(|trivia| trivia.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                TriviaKind::Newline,
+                TriviaKind::LineComment,
+                TriviaKind::Newline
+            ]
+        );
+        // Anywhere else, `#!` lexes as before and no program can start with it.
+        for other in [" #!x\n1", "\n#!x\n1", "\u{feff}#!x\n1", "1\n#!x"] {
+            assert_eq!(shebang_length(other), 0, "{other:?}");
+            assert!(crate::parser::parse(other).is_err(), "{other:?}");
+        }
+        assert!(crate::parser::parse(source).is_ok());
+    }
 
     #[test]
     fn marks_namespace_paths_apart_from_annotations_and_cons() {

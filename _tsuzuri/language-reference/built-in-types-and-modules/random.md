@@ -134,5 +134,6 @@ Windows のネイティブビルドは、OS の乱数 API に到達すると `E2
 - [IO](./io.md)
 - [Os](./os.md)
 - [HashMap](./hashmap.md)
+- [Gen](./gen.md)（`Random.pcg` で値を選ぶプロパティテスト）
 - [言語仕様の環境・時刻・乱数・プロセス](../../../docs/language.md#環境時刻乱数プロセス)
 - [言語リファレンスの目次](../index.md)

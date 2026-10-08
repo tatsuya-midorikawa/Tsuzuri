@@ -9,6 +9,8 @@
 - `Test.equal` と `Test.not_equal` は借用で比較します。`Test.is_true` は `bool` を受けます。
 - `--filter` は `モジュール名.テスト名` の部分一致です。正規表現ではありません。
 - 1 件でも失敗すると終了コードは 1 で、`E2006` が最初の失敗を指します。
+- `--coverage PATH` は、成功したテストが通った行と関数を lcov 形式で書きます（ネイティブだけ）。
+- プロパティテストは `Gen.for_all 生成器 性質` です。反例は縮小して表示され、seed は `--seed N` で変えられます。
 
 ## テストを書く
 
@@ -78,6 +80,7 @@ tsuzuri test . --list
 tsuzuri test . --json
 tsuzuri test . -O3
 tsuzuri test . --index 1
+tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
 ```
 
 ディレクトリを渡すと、そのプロジェクトのソースを読みます。`Main.tz` は必須ではありません。ファイルを渡すと、そのファイルの親をルートにします。
@@ -92,8 +95,11 @@ tsuzuri test . --index 1
 | `--target native\|wasm32\|wasm64` | 既定は `native`。WASM には Node.js が必要 |
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16 MiB |
 | `--wasm-stack-size SIZE` | WASM のメインスタック。既定 1 MiB |
+| `-g -o PATH` | `--index` の 1 件をデバッグ情報付きでビルドし、実行しない（[テストをデバッグする](#テストをデバッグする)） |
+| `--coverage PATH` | 成功したテストのカバレッジを lcov で `PATH` に書く。ネイティブだけ（[カバレッジ](#カバレッジ)） |
+| `--seed N` | プロパティテストの seed（0〜18446744073709551615）。既定は固定の `11400714819323198485`（[プロパティテスト](#プロパティテスト)） |
 
-`--cpu`、`--emit`、`--output` は使えません。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
+`--cpu` と `--emit` は使えません。`-o` は `-g` と組み合わせるときだけ使えます。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
 
 フィルターは正規表現ではありません。`Checks.tz` の `adds integers` は、一覧では `Checks.adds integers` です。`--filter "Checks.adds"` はこの 1 件に一致し、ほかは `ignored` になります。一致が 0 件でも終了コードは 0 です。
 
@@ -112,7 +118,7 @@ tsuzuri test . --index 1
 
 各テストは別プロセスです。並列度は、CPU コア数、32、選んだ件数の最小値です。あるテストがトラップしても、ほかのテストの収集は止まりません。報告はソースの宣言順に並べ直します。
 
-トラップ、0 以外の終了、30 秒超過は失敗です。テストランナーは子プロセスの標準出力と標準エラーを捨てるため、`Debug.print` の行も、`trap:` の文も、失敗理由には入りません。
+トラップ、0 以外の終了、30 秒超過は失敗です。テストランナーは子プロセスの標準出力を捨て、標準エラーを読みます。失敗したテストが標準エラーに書いた内容（最後の 64 KiB）は、失敗理由の下に字下げして表示されます。成功したテストの出力は表示しません。WASM のテストで `Debug.print` が書くのは、`Gen` を使うプログラムだけです（それ以外の WASM のテストモジュールはインポートを持たず、`Debug.print` は何も書きません）。
 
 成功時の人が読む報告は、次の形です。
 
@@ -152,7 +158,7 @@ flowchart TD
 {"type":"summary","passed":2,"failed":0,"ignored":0,"duration_ms":307}
 ```
 
-失敗した行には `failure` が足されます。
+失敗した行には `failure` が足されます。失敗したテストが標準エラーに書いていれば、その内容が `output` に入ります。
 
 ```text
 {"type":"test","index":1,"module":"Main","name":"stock is positive","status":"failed","failure":"trapped or terminated by signal","duration_ms":269}
@@ -161,6 +167,111 @@ flowchart TD
 コンパイル診断と `E2006` は標準エラーの JSON です。標準出力の行を、診断と混ぜて 1 つの JSON 配列として解析しないでください。
 
 `--list --json` は、実行せずにテスト名の位置を出します。フィールドは `index`、`module`、`name`、`path`、`range`、`type` です。`range` の行と列は 0 始まりの UTF-16 で、テスト名の文字列トークンを指します。この一覧のキーはアルファベット順に並びます。
+
+## テストをデバッグする
+
+`-g` と `-o PATH` を付けると、`--index` で選んだ 1 件だけを入れたテストランナーを、デバッグ情報付きで `PATH` にビルドします。テストは実行しません。macOS では DWARF が `PATH.dwarf` に入ります。ランナーは引数 `0` でそのテストを実行し、成功なら終了コード 0 です。デバッガーでこの引数を付けて起動すると、テストの本体に置いたブレークポイントで止まります。
+
+```sh
+tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
+lldb -o "target symbols add .tsuzuri/test/runner.dwarf" -- .tsuzuri/test/runner 0
+```
+
+標準出力には、起動に必要な情報を 1 行で出します。`--json` では `type` が `debug` で、`program` にランナーの絶対パス、`arguments` に引数が入ります。
+
+```text
+1 Checks.在庫が足りる: /home/me/shop/.tsuzuri/test/runner 0
+```
+
+デバッガーの呼び出し履歴では、テストの本体は `Checks.test@<行>:<列>`（テスト名の位置）です。`--index` がない、または 2 つ以上ある、`--list` や `--filter` と組み合わせる、`-g` と `-o` の片方だけ、WASM のターゲットのときは `E2000` です。VS Code 拡張の Testing ビューの **Debug** はこの機能を使います（[デバッグ](../compiler/debugging.md#テストをデバッグする)）。`--seed N` を付けると、デバッグ用のランナーのプロパティテストもその seed で値を選びます（[プロパティテスト](#プロパティテスト)）。
+
+## プロパティテスト
+
+`Gen.for_all 生成器 性質` は、生成器が作る 100 個の値で性質（`bool` を返す関数）を確かめます。成り立たない値が見つかると、最も単純な反例まで縮小し、何個目の値かと seed と反例を標準エラーに書いてトラップします。生成器と組み合わせの一覧は [Gen](gen.md) にあります。
+
+```tsuzuri project=properties file=Properties.tz
+test "reverse twice is the original" =
+    Gen.for_all (Gen.array (Gen.i64())) (\values ->
+        let once = Array.reverse (ref values)
+        let twice = Array.reverse (ref once)
+        Array.equal (ref twice) (ref values))
+```
+
+失敗すると、報告は失敗理由の下に出ます。
+
+```text
+not ok 1 - Properties below 100
+  failure: trapped or terminated by signal
+  property failed at case 1 of 100 (seed 11400714819323198485)
+  counterexample: 100
+  shrunk 59 times from 9223372036854775807
+```
+
+値の選び方は決定的です。既定の seed は固定の `11400714819323198485` で、`--seed N` で変えられます。同じ seed なら、ネイティブでも WASM でも、`-O0` でも `-O3` でも同じ値を試し、同じ反例になります。
+
+## カバレッジ
+
+`--coverage PATH` を付けると、成功したテストが実行した利用者のコードを数え、lcov 形式のファイルを `PATH` に書きます。テストの要約行の後に、行と関数の要約が 1 行出ます。ネイティブだけで使えます。外部ツールや LLVM のカバレッジ形式は使わず、コンパイラが自分でカウンターを入れます。
+
+```text
+tsuzuri test . --coverage coverage.info
+```
+
+次の `Calc.tz` で試すと、`classify` は成功した 2 件から 1 回ずつ呼ばれ、`then` と `else` を 1 回ずつ通ります。`unused` は呼ばれません。3 件目はトラップするので、数に入りません。
+
+```tsuzuri project=calc file=Calc.tz
+def classify :: i64 -> i64
+fn classify x =
+    if x > 0 then
+        1
+    else
+        0
+
+def unused :: i64 -> i64
+fn unused x = x + 1
+
+test "positive" = Test.is_true (classify 5 == 1)
+test "zero" = Test.is_true (classify 0 == 0)
+```
+
+`fails` という 3 件目の `test "fails" = Test.is_true (classify 7 == 0)` も足して実行すると、要約は次のとおりです。
+
+```text
+2 passed; 1 failed; 0 ignored
+coverage: 3/4 lines (75.0%), 1/2 functions; excluded 1 failed test
+```
+
+`PATH` の lcov は、ファイルごとに 1 つの記録です。`SF` は絶対パス、`FN` と `FNDA` は名前付きの関数の行と呼ばれた回数、`DA` は行と回数、`LF`／`LH` と `FNF`／`FNH` は数えた数と 1 回以上通った数です。
+
+```text
+TN:
+SF:/path/to/calc/Calc.tz
+FN:3,Calc.classify
+FN:9,Calc.unused
+FNDA:2,Calc.classify
+FNDA:0,Calc.unused
+FNF:2
+FNH:1
+DA:3,2
+DA:4,1
+DA:6,1
+DA:9,0
+LF:4
+LH:3
+end_of_record
+```
+
+数え方は次のとおりです。
+
+- 数える単位（region）は、関数の本体、`if` の `then` と `else`、`match` の各節の本体、`while`／`for` の本体、`try ... with` のハンドラー、`&&` と `||` の右辺です。ラムダや `task` の本体も、それぞれ 1 つの関数として数えます。並列のタスクの中でも、カウンターは原子的な加算なので数え落としません。
+- 行の回数は、その行で始まる式が属する region の回数の最大値です。式が始まらない行（コメント、空行、`else` だけの行、パターンだけの行）は出ません。`&&` と `||` の右辺は、左辺で結果が決まらずに評価したときだけ数えます。`a &&` の次の行に書いた右辺の行は、`a` が偽だった回を含みません（`false && b` と `true || b` は `b` を評価しません）。`match` のパターンとガードは別に数えません。
+- `FN` は名前を書いた関数だけで、行は本体の始まりの行です。ジェネリック関数は、特殊化した実体をまとめて 1 つに数えます。使われずに特殊化されなかったジェネリック関数の本体は出ません。
+- コンパイラが呼び出しを省く関数も、呼び出しごとに本体を 1 回と数えます。引数をそのまま返す関数（`fn same x = x`）の呼び出しは引数の値に、末尾の自己呼び出しの引数にある `x + y`・`x - y` だけの 2 引数の関数の呼び出しは加算・減算に置き換わりますが、数はその関数を呼んだときと同じです。`const` はコンパイル時の値なので数えません。
+- 標準ライブラリ、`test` の本体とそこで書いたラムダは数えません。
+- トラップや時間切れで失敗したテストは、カウンターを書く前に終わるので、数に入りません。除いた件数が 1 以上なら要約の末尾に `; excluded N failed test(s)` が付きます。
+- `--json` では、テストの summary の後の最後の行が `{"type":"coverage","lines":{"hit":3,"total":4},"functions":{"hit":1,"total":2},"excluded_failed":1,"files":[...]}` です。`files` の各要素は `path`、`lines`、`functions` を持ちます。
+
+`--coverage` は `--target wasm32`／`wasm64` と組み合わせられず、`--list` や `-g`（[テストをデバッグする](#テストをデバッグする)）とも組み合わせられません（終了コード 2 の `E2000`）。出力先がプロジェクトのソースなら `E2003` で、ファイルは書き換えません。書けなければ `E2001` です。テストが失敗しても lcov は書き、終了コードは 1 です。
 
 ## 終了コード
 
@@ -189,9 +300,12 @@ WASM のテストモジュールが要求するインポートは空です。was
 - `--filter` は `モジュール名.テスト名` の部分一致で、外れた件数は `ignored` です。
 - `--json` は標準出力に 1 行 1 オブジェクト、診断は標準エラーです。
 - 失敗が 1 件でもあれば終了コードは 1 で、`E2006` が最初の失敗を指します。
+- `--coverage PATH` は、成功したテストの行と関数のカバレッジを lcov で書き、要約を 1 行出します。
+- `Gen.for_all` は性質を多くの値で確かめ、反例を縮小して表示します。seed は `--seed N` です。
 
 ## 関連項目
 
+- [Gen](gen.md)
 - [assert 式](../exception-handling/assert.md)
 - [例外処理](../exception-handling/exception-handling.md)
 - [コンパイラの使い方](../compiler/usage.md)

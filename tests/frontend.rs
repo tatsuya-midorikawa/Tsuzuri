@@ -78,3 +78,24 @@ fn warning_rendering_uses_source_path() {
             .starts_with("{\"severity\":\"warning\",\"code\":\"W1003\",")
     );
 }
+
+#[test]
+fn bench_became_a_reserved_word() {
+    // G18 reserves `bench` for benchmark declarations; it was an identifier before.
+    for source in [
+        "let bench = 1\nbench + 1",
+        "def bench :: i64 -> i64\nfn bench x = x",
+        "def f :: i64 -> i64\nfn f bench = bench",
+        "record R { bench: i64 }\n0",
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert_eq!(error.code, "E0002", "{source}: {}", error.message);
+    }
+    assert_eq!(
+        analyze_modules(&[("Bench.tz", "def f :: i64\nfn f = 1")])
+            .unwrap_err()
+            .code,
+        "E1011"
+    );
+    analyze("let benchmark = 1\nlet benches = benchmark + 1\nbenches").unwrap();
+}

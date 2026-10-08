@@ -1,12 +1,12 @@
 # キーワード
 
-Tsuzuri にはプログラムの構造を決定する 42 個の「予約語（Reserved Keywords）」と、特定の構文でのみ特別な意味を持つ「文脈キーワード（Contextual Keywords）」があります。
+Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Reserved Keywords）」と、特定の構文でのみ特別な意味を持つ「文脈キーワード（Contextual Keywords）」があります。
 
 このページでは、予約語の一覧、文脈キーワード、識別子の規則、`union` だけがドットの直後に書ける例外を説明します。
 
 ## この記事のポイント
 
-- Tsuzuri には 42 個の予約語があり、原則として変数名や関数名などの識別子に使えません。
+- Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。
 - `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。
 - 例外として、予約語 `union` はドット直後のメンバー名（例: `Set.union`）として利用可能です。
 - `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。
@@ -19,7 +19,7 @@ Tsuzuri にはプログラムの構造を決定する 42 個の「予約語（Re
 ```mermaid
 flowchart TD
     ident["ソースコード中の単語"]
-    is_res{"42 個の予約語に含まれるか？"}
+    is_res{"43 個の予約語に含まれるか？"}
     res_kw["予約語トークン<br/>（fn, def, let, match など）"]
     ident_token["識別子トークン (Ident)"]
     is_ctx{"特定の構文位置にあるか？<br/>（try の開始、union ケースの of など）"}
@@ -36,7 +36,7 @@ flowchart TD
 
 ## 予約語の一覧（分類別）
 
-Tsuzuri の全 42 個の予約語を用途別に分けて示します。
+Tsuzuri の全 43 個の予約語を用途別に分けて示します。
 
 ### 宣言と定義
 
@@ -55,6 +55,7 @@ Tsuzuri の全 42 個の予約語を用途別に分けて示します。
 | `instance` | 型クラスのインスタンス実装 | `instance Show<i32> { fn show ... }` | [型クラス](../types-and-type-inference/type-classes.md) |
 | `deriving` | 型定義での型クラスインスタンス自動導出 | `deriving (Eq, Ord)` | [型クラス](../types-and-type-inference/type-classes.md) |
 | `test` | 言語内テストの定義 | `test "check" = assert (1 + 1 == 2)` | [テスト](../built-in-types-and-modules/test.md) |
+| `bench` | `tsuzuri bench` が計測するベンチマークの定義 | `bench "sum" = Bench.of (\_ -> 1 + 1)` | [Bench](../built-in-types-and-modules/bench.md) |
 
 ### 可視性と外部連携
 
@@ -188,7 +189,7 @@ Tsuzuri の識別子は以下の規則に従います。
 
 ### 予約語は識別子に使えない
 
-42 個の予約語を変数名、関数名、型名、レコードのフィールド名に使うと、`E0002`（expected an identifier）になります。
+43 個の予約語を変数名、関数名、型名、レコードのフィールド名に使うと、`E0002`（expected an identifier）になります。
 
 ```text
 // コンパイルエラー E0002
@@ -196,6 +197,8 @@ let fn = 10
 let mut = 20
 record Item { type: string }
 ```
+
+`bench` はベンチマーク宣言のために後から予約語になりました。以前に `bench` という名前の変数・関数・フィールドを使っていたコードは `E0002` になるので、`benchmark` などへ改名してください。
 
 ### 例外: 予約語 union のメンバー名利用
 
@@ -229,7 +232,7 @@ Set.length ref s3
 
 ## まとめ
 
-- Tsuzuri には 42 個の予約語があり、構文構造の基本を定義しています。
+- Tsuzuri には 43 個の予約語があり、構文構造の基本を定義しています。
 - 予約語は変数名や関数名などの識別子に使えません。
 - `union` は予約語ですが、`Set.union` のようにドット直後のメンバー名としては利用可能です。
 - `where`、`of`、`use`、`try`、`finally`、`is`、`otherwise`、`namespace`、`using` は文脈キーワードです。所定の位置以外では普通の名前です。`with` は予約語です。

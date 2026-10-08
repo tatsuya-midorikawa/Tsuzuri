@@ -19,6 +19,7 @@ pub(crate) mod call_specialization;
 mod control;
 #[path = "llvm_debug.rs"]
 mod debug;
+pub use debug::with_codeview;
 #[path = "llvm_frame.rs"]
 mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
@@ -33,6 +34,8 @@ pub enum Entry {
     Library,
     Console,
     TestRunner,
+    /// `tsuzuri bench`: `@tsuzuri_bench_count` and `@tsuzuri_bench_sample` over the benches (G18).
+    BenchRunner,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,6 +299,15 @@ pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> 
     emit_target(module, entry, false)
 }
 
+/// Every test or bench of a runner entry; `None` for the other entries.
+fn runner_selection(module: &CheckedModule, entry: Entry) -> Option<Vec<usize>> {
+    match entry {
+        Entry::TestRunner => Some((0..module.tests.len()).collect()),
+        Entry::BenchRunner => Some((0..module.benches.len()).collect()),
+        Entry::Library | Entry::Console => None,
+    }
+}
+
 pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<String, Diagnostic> {
     emit_with_options(
         module,
@@ -312,8 +324,7 @@ pub fn emit_with_options(
     module: &CheckedModule,
     options: EmitOptions,
 ) -> Result<String, Diagnostic> {
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     emit_program(
         module,
         options.entry,
@@ -333,8 +344,7 @@ pub fn emit_with_trap_info(
     options: EmitOptions,
     sources: &[TrapSource<'_>],
 ) -> Result<EmitOutput, Diagnostic> {
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
         options.entry,
@@ -364,8 +374,7 @@ pub fn emit_with_debug_info(
             Span::default(),
         ));
     }
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
         options.entry,
@@ -625,6 +634,8 @@ pub(crate) fn emit_wasm_build(
             trap_return: false,
             allocator: options.allocator,
             multiversion: false,
+            coverage: None,
+            seed: None,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -648,14 +659,71 @@ pub fn emit_test_runner(
     selected: &[usize],
     wasm: bool,
 ) -> Result<String, Diagnostic> {
-    emit_test_runner_for(module, selected, wasm, false)
+    emit_test_runner_for(module, selected, wasm, false, None)
 }
 
+/// The test runner of the `selected` tests. `debug` holds the source map and whether the code
+/// is optimized when the runner carries debug information for a debugger (G16 Phase 2).
 pub(crate) fn emit_test_runner_for(
     module: &CheckedModule,
     selected: &[usize],
     wasm: bool,
     memory64: bool,
+    debug: Option<(&[TrapSource<'_>], bool)>,
+) -> Result<String, Diagnostic> {
+    emit_test_runner_with(
+        module,
+        selected,
+        TestRunnerOptions {
+            wasm,
+            memory64,
+            debug,
+            ..TestRunnerOptions::default()
+        },
+    )
+}
+
+/// The native test runner of `emit_test_runner`, counting the regions of `plan` in
+/// `@tsuzuri_coverage_counters` (`tsuzuri test --coverage`, G18 Phase 2).
+pub fn emit_test_runner_covered(
+    module: &CheckedModule,
+    selected: &[usize],
+    plan: &crate::coverage::CoveragePlan,
+) -> Result<String, Diagnostic> {
+    emit_test_runner_with(
+        module,
+        selected,
+        TestRunnerOptions {
+            coverage: Some(plan),
+            ..TestRunnerOptions::default()
+        },
+    )
+}
+
+/// The seed of property tests (`Gen.for_all`) without `tsuzuri test --seed` (G18 Phase 3).
+pub const DEFAULT_PROPERTY_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// How `emit_test_runner_with` builds a test runner.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestRunnerOptions<'a> {
+    pub wasm: bool,
+    pub memory64: bool,
+    /// Count coverage regions (native only).
+    pub coverage: Option<&'a crate::coverage::CoveragePlan>,
+    /// The property-test seed instead of `DEFAULT_PROPERTY_SEED`.
+    pub seed: Option<u64>,
+    /// WASM only: `Debug.print` writes through the `tsuzuri_debug.write` import, which the Node
+    /// test runner provides.
+    pub debug_output: bool,
+    /// The source map and whether the code is optimized when the runner carries debug
+    /// information for a debugger (G16 Phase 2).
+    pub debug: Option<(&'a [TrapSource<'a>], bool)>,
+}
+
+pub fn emit_test_runner_with(
+    module: &CheckedModule,
+    selected: &[usize],
+    options: TestRunnerOptions<'_>,
 ) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
         return Err(Diagnostic::new(
@@ -667,13 +735,37 @@ pub(crate) fn emit_test_runner_for(
     emit_program(
         module,
         Entry::TestRunner,
-        wasm,
+        options.wasm,
         Some(selected),
-        false,
+        options.debug_output && options.wasm,
         Instrumentation {
-            memory64,
+            memory64: options.memory64,
+            debug: options.debug,
+            coverage: options.coverage.filter(|_| !options.wasm),
+            seed: options.seed,
             ..Instrumentation::default()
         },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
+/// calls bench `index` with an iteration count and returns its nanoseconds, or -1 for a bad index.
+pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<String, Diagnostic> {
+    if selected.iter().any(|index| *index >= module.benches.len()) {
+        return Err(Diagnostic::new(
+            "E2000",
+            "invalid bench index",
+            Span::default(),
+        ));
+    }
+    emit_program(
+        module,
+        Entry::BenchRunner,
+        false,
+        Some(selected),
+        false,
+        Instrumentation::default(),
     )
     .map(|(ir, _)| ir)
 }
@@ -690,6 +782,10 @@ struct Instrumentation<'a> {
     allocator: Allocator,
     /// A native build that compiles `@cpu` functions for further CPU levels (F08 Phase 3).
     multiversion: bool,
+    /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
+    coverage: Option<&'a crate::coverage::CoveragePlan>,
+    /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
+    seed: Option<u64>,
 }
 
 fn emit_program(
@@ -731,10 +827,16 @@ fn emit_program(
     let roots = tests.map(|selected| {
         selected
             .iter()
-            .map(|index| module.tests[*index].function)
+            .map(|index| {
+                if entry == Entry::BenchRunner {
+                    module.benches[*index].function
+                } else {
+                    module.tests[*index].function
+                }
+            })
             .collect::<Vec<_>>()
     });
-    let reachable = reachable_functions(module, roots.as_deref());
+    let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -840,6 +942,8 @@ fn emit_program(
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         multiversion: instrumentation.multiversion && !wasm,
+        coverage: instrumentation.coverage.cloned(),
+        seed: instrumentation.seed,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -965,7 +1069,7 @@ fn emit_program(
             &mut globals,
         ));
     }
-    let io_wrapper = if entry != Entry::TestRunner && io_entry(module) {
+    let io_wrapper = if matches!(entry, Entry::Library | Entry::Console) && io_entry(module) {
         Some(io::entry(FunctionEmitter::new(
             module,
             &module.functions[module.entry.unwrap()],
@@ -987,6 +1091,9 @@ fn emit_program(
     ));
     // Only a program that reads `Env.args` receives argc and argv; other entries keep `@main()`.
     let uses_args = intrinsics.contains("declare void @tsuzuri_os_set_args(i32, ptr)");
+    if entry != Entry::BenchRunner && intrinsics.contains("declare i64 @tsuzuri_bench_now()") {
+        return Err(clock_error(module, &roots));
+    }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
@@ -1017,26 +1124,67 @@ fn emit_program(
             &mut globals,
         ));
     }
-    if let Some(selected) = tests {
+    if let Some(selected) = tests.filter(|_| entry == Entry::BenchRunner) {
+        let _ = writeln!(
+            output,
+            "define i32 @tsuzuri_bench_count() {{\nentry:\n  ret i32 {}\n}}",
+            selected.len()
+        );
+        output.push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n  switch i32 %index, label %bad [\n");
+        for index in 0..selected.len() {
+            let _ = writeln!(output, "    i32 {index}, label %bench{index}");
+        }
+        output.push_str("  ]\nbad:\n  ret i64 -1\n");
+        for (index, selected) in selected.iter().enumerate() {
+            let function = &module.functions[module.benches[*selected].function];
+            let _ = writeln!(
+                output,
+                "bench{index}:\n  %result{index} = call i64 @tz.fn.{}(i64 %iterations)\n  ret i64 %result{index}",
+                function.qualified_name()
+            );
+        }
+        output.push_str("}\n");
+    } else if let Some(selected) = tests {
         let _ = writeln!(
             output,
             "define i32 @tsuzuri_test_count() {{\nentry:\n  ret i32 {}\n}}",
             selected.len()
         );
-        output.push_str("define i32 @tsuzuri_test_run(i32 %index) {\nentry:\n  switch i32 %index, label %bad [\n");
+        let mut runner = String::from(
+            "define i32 @tsuzuri_test_run(i32 %index) {\nentry:\n  switch i32 %index, label %bad [\n",
+        );
         for index in 0..selected.len() {
-            let _ = writeln!(output, "    i32 {index}, label %test{index}");
+            let _ = writeln!(runner, "    i32 {index}, label %test{index}");
         }
-        output.push_str("  ]\nbad:\n  ret i32 2\n");
+        runner.push_str("  ]\nbad:\n  ret i32 2\n");
         for (index, selected) in selected.iter().enumerate() {
             let function = &module.functions[module.tests[*selected].function];
             let _ = writeln!(
-                output,
+                runner,
                 "test{index}:\n  %result{index} = call i8 @tz.fn.{}()\n  ret i32 0",
                 function.qualified_name()
             );
         }
-        output.push_str("}\n");
+        runner.push_str("}\n");
+        // With debug information the dispatch is an artificial subprogram whose calls have
+        // locations, so a test that optimization inlines into it keeps its line table (G16).
+        output.push_str(&match selected.first() {
+            Some(first) => debug::wrapper(
+                runner,
+                module,
+                &module.functions[module.tests[*first].function],
+                "@tsuzuri_test_run",
+                &mut globals,
+            ),
+            None => runner,
+        });
+    }
+    if let Some(plan) = instrumentation.coverage {
+        let _ = writeln!(
+            output,
+            "@tsuzuri_coverage_counters = global [{0} x i64] zeroinitializer\n@tsuzuri_coverage_count = constant i64 {0}",
+            plan.len()
+        );
     }
     for global in globals.definitions {
         output.push_str(&global);
@@ -1341,6 +1489,10 @@ struct Globals {
     shared_types: BTreeSet<(Type, bool)>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
+    coverage: Option<crate::coverage::CoveragePlan>,
+    /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
+    seed: Option<u64>,
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
     #[cfg(debug_assertions)]
     emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
@@ -1377,6 +1529,8 @@ impl Default for Globals {
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
+            coverage: None,
+            seed: None,
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
         }
@@ -2152,57 +2306,260 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 pub(crate) fn reachable_functions(
     module: &CheckedModule,
     roots: Option<&[usize]>,
+    benches: bool,
 ) -> BTreeSet<usize> {
-    fn references(expression: &TypedExpr, module: &CheckedModule, pending: &mut Vec<usize>) {
-        match &expression.kind {
-            TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
-                pending.push(*id);
-            }
-            // A14: a stored value's vtable calls its slot functions; an upcast reuses those.
-            TypedExprKind::Function(FunctionRef::Builtin(instance))
-                if instance.builtin == Builtin::DynOf =>
-            {
-                if let [ty, Type::Dyn(target)] = instance.types.as_slice()
-                    && let Some(functions) = module.vtables.get(&(target.vtable_key(), ty.clone()))
-                {
-                    pending.extend(functions);
-                }
-            }
-            _ => {}
-        }
-        for child in expression.children() {
-            references(child, module, pending);
-        }
+    program_reach(module, roots, benches).1
+}
+
+/// Pushes the functions that `expression` refers to onto `pending`, and sets `clock` if it reads
+/// the clock `Bench.now`.
+fn references(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    pending: &mut Vec<usize>,
+    clock: &mut bool,
+) {
+    direct_references(expression, module, pending, clock);
+    for child in expression.children() {
+        references(child, module, pending, clock);
     }
-    let mut pending: Vec<usize> = roots.map_or_else(
-        || {
-            module
-                .functions
-                .iter()
-                .enumerate()
-                .filter(|(id, function)| {
-                    (function.origin.module == ModuleOrigin::User
-                        && function.origin.test.is_none()
-                        && function.origin.parent.is_none()
-                        && function.visibility == crate::syntax::Visibility::Public)
-                        && !matches!(function.body.kind, TypedExprKind::HostCall(..))
-                        || function.exported
-                        || module.entry == Some(*id)
-                })
-                .map(|(id, _)| id)
-                .collect()
-        },
-        <[usize]>::to_vec,
-    );
-    // Drop glue calls the user drops without a reference in any body.
-    pending.extend(module.user_drops.values().copied());
+}
+
+/// `references` of the expression itself, without its children.
+fn direct_references(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    pending: &mut Vec<usize>,
+    clock: &mut bool,
+) {
+    match &expression.kind {
+        TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
+            pending.push(*id);
+        }
+        // A14: a stored value's vtable calls its slot functions; an upcast reuses those.
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin == Builtin::DynOf =>
+        {
+            if let [ty, Type::Dyn(target)] = instance.types.as_slice()
+                && let Some(functions) = module.vtables.get(&(target.vtable_key(), ty.clone()))
+            {
+                pending.extend(functions);
+            }
+        }
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin == Builtin::BenchNow =>
+        {
+            *clock = true;
+        }
+        _ => {}
+    }
+}
+
+/// The functions reachable from `pending`, and those of them that read the clock themselves.
+fn close(module: &CheckedModule, mut pending: Vec<usize>) -> (BTreeSet<usize>, BTreeSet<usize>) {
     let mut reachable = BTreeSet::new();
+    let mut clocks = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
-            references(&module.functions[id].body, module, &mut pending);
+            let mut clock = false;
+            references(&module.functions[id].body, module, &mut pending, &mut clock);
+            if clock {
+                clocks.insert(id);
+            }
         }
     }
-    reachable
+    (reachable, clocks)
+}
+
+/// `reachable_functions` with its roots. Without explicit roots, the roots are the public user
+/// functions, the exports, and the entry, but a public function that reaches the clock
+/// `Bench.now`, which only the bench runner defines, is a root only if it is exported or the
+/// entry: helpers of `bench` declarations do not make other builds fail (G18 D3). Such a program
+/// would otherwise be rejected, so the output of every program that builds stays the same.
+fn program_reach(
+    module: &CheckedModule,
+    roots: Option<&[usize]>,
+    benches: bool,
+) -> (Vec<usize>, BTreeSet<usize>) {
+    // Drop glue calls the user drops without a reference in any body.
+    let drops: Vec<usize> = module
+        .user_drops
+        .values()
+        .copied()
+        .filter(|drop| benches || !module.bench_drops.contains(drop))
+        .collect();
+    if let Some(roots) = roots {
+        let roots: Vec<usize> = roots.iter().chain(&drops).copied().collect();
+        return (roots.clone(), close(module, roots).0);
+    }
+    let candidates: Vec<usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| {
+            (function.origin.module == ModuleOrigin::User
+                && function.origin.test.is_none()
+                && function.origin.parent.is_none()
+                && function.visibility == crate::syntax::Visibility::Public)
+                && !matches!(function.body.kind, TypedExprKind::HostCall(..))
+                || function.exported
+                || module.entry == Some(*id)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    let roots: Vec<usize> = candidates.iter().chain(&drops).copied().collect();
+    let (reachable, clocks) = close(module, roots.clone());
+    if clocks.is_empty() {
+        return (roots, reachable);
+    }
+    let reaching = reaching(module, &reachable, &clocks);
+    let roots: Vec<usize> = candidates
+        .into_iter()
+        .filter(|id| {
+            !reaching.contains(id) || module.functions[*id].exported || module.entry == Some(*id)
+        })
+        .chain(drops)
+        .collect();
+    (roots.clone(), close(module, roots).0)
+}
+
+/// The functions of `reachable` from which one of `targets` is reachable, `targets` included.
+fn reaching(
+    module: &CheckedModule,
+    reachable: &BTreeSet<usize>,
+    targets: &BTreeSet<usize>,
+) -> BTreeSet<usize> {
+    let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &id in reachable {
+        let mut callees = Vec::new();
+        references(&module.functions[id].body, module, &mut callees, &mut false);
+        for callee in callees {
+            callers.entry(callee).or_default().push(id);
+        }
+    }
+    let mut reaching = targets.clone();
+    let mut pending: Vec<usize> = targets.iter().copied().collect();
+    while let Some(id) = pending.pop() {
+        for &caller in callers.get(&id).into_iter().flatten() {
+            if reaching.insert(caller) {
+                pending.push(caller);
+            }
+        }
+    }
+    reaching
+}
+
+/// The `E1018` of an output other than the bench runner's that reaches `Bench.now`. It names the
+/// root that reaches the clock and the last function written in user code on the shortest path
+/// from the roots (in order) to a body that reads it, at the expression of that function that
+/// leads there.
+fn clock_error(module: &CheckedModule, roots: &[usize]) -> Diagnostic {
+    const RULE: &str = "Bench.now runs only under tsuzuri bench";
+    const ADVICE: &str =
+        "call it only from bench declarations and from functions that only benchmarks use";
+    let mut previous: BTreeMap<usize, Option<usize>> = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    let mut visit = |id: usize, from: Option<usize>, queue: &mut std::collections::VecDeque<_>| {
+        if let std::collections::btree_map::Entry::Vacant(slot) = previous.entry(id) {
+            slot.insert(from);
+            queue.push_back(id);
+        }
+    };
+    for &root in roots {
+        visit(root, None, &mut queue);
+    }
+    let mut found = None;
+    while let Some(id) = queue.pop_front() {
+        let mut callees = Vec::new();
+        let mut clock = false;
+        references(&module.functions[id].body, module, &mut callees, &mut clock);
+        if clock {
+            found = Some(id);
+            break;
+        }
+        for callee in callees {
+            visit(callee, Some(id), &mut queue);
+        }
+    }
+    let Some(found) = found else {
+        return Diagnostic::new("E1018", format!("{RULE}; {ADVICE}"), Span::default());
+    };
+    let mut path = vec![found];
+    while let Some(Some(id)) = previous.get(path.last().unwrap()) {
+        path.push(*id);
+    }
+    path.reverse();
+    let root = path[0];
+    let root_name = if let Some(test) = module.tests.iter().find(|test| test.function == root) {
+        format!("test {:?}", test.name)
+    } else if let Some((ty, _)) = module.user_drops.iter().find(|(_, drop)| **drop == root) {
+        format!("the Drop instance of `{}`", ty.display(&module.types()))
+    } else if let Some(name) = source_function_name(&module.functions[root]) {
+        let export = if module.functions[root].exported {
+            "export "
+        } else {
+            ""
+        };
+        format!("{export}`{name}`")
+    } else if module.entry == Some(root) {
+        "the top-level code".to_owned()
+    } else {
+        format!("`{}`", module.functions[root].qualified_name())
+    };
+    let named = (1..path.len())
+        .rev()
+        .find(|&index| source_function_name(&module.functions[path[index]]).is_some())
+        .unwrap_or(0);
+    let next = path.get(named + 1).copied();
+    let function = &module.functions[path[named]];
+    let span = clock_use(&function.body, module, next)
+        .filter(|span| *span != Span::default())
+        .unwrap_or(function.span);
+    let message = match source_function_name(function) {
+        Some(name) if named > 0 => {
+            format!("{RULE}, but {root_name} reaches it through `{name}`; {ADVICE}")
+        }
+        _ => format!("{RULE}, but {root_name} reads it; {ADVICE}"),
+    };
+    Diagnostic::new("E1018", message, span)
+}
+
+/// `Module.name` of a function written in user code, for diagnostics; `None` for tests, lambdas,
+/// and generated functions.
+fn source_function_name(function: &CheckedFunction) -> Option<String> {
+    let name = function
+        .name
+        .split_once(".$mono.")
+        .map_or(function.name.as_str(), |(name, _)| name);
+    (function.origin.module == ModuleOrigin::User
+        && function.origin.test.is_none()
+        && function.origin.bench.is_none()
+        && !function.module.starts_with('$')
+        && !name.contains('$'))
+    .then(|| format!("{}.{name}", function.module))
+}
+
+/// The span of the first expression of `expression`, in tree order, that refers to function
+/// `target`, or that reads the clock if `target` is `None`.
+fn clock_use(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    target: Option<usize>,
+) -> Option<Span> {
+    let mut callees = Vec::new();
+    let mut clock = false;
+    direct_references(expression, module, &mut callees, &mut clock);
+    let refers = match target {
+        Some(target) => callees.contains(&target),
+        None => clock,
+    };
+    if refers {
+        return Some(expression.span);
+    }
+    expression
+        .children()
+        .into_iter()
+        .find_map(|child| clock_use(child, module, target))
 }
 
 /// Record and union types, generic instances included, reachable from
@@ -2463,9 +2820,13 @@ struct FunctionEmitter<'a, 'b> {
     frame_locals: BTreeMap<usize, Vec<Frame>>,
     globals: &'b mut Globals,
     current_span: Span,
+    /// The span that debug locations use instead of `current_span` (G16 D7).
+    debug_span: Option<Span>,
     trap_kind: Option<TrapKind>,
     drop_pending: Option<String>,
     clone_pending: Option<String>,
+    /// Whether this body counts coverage regions: a counted user function of a covered runner.
+    counted: bool,
     /// Whether implicit copies count for the debug inventory check: only in bodies that `emit` writes.
     #[cfg(debug_assertions)]
     note_copies: bool,
@@ -2488,6 +2849,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         globals: &'b mut Globals,
         specializations: &'b mut Specializations,
     ) -> Self {
+        let counted = globals.coverage.is_some() && crate::coverage::counted(function);
         Self {
             module,
             function,
@@ -2512,6 +2874,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             intrinsics,
             globals,
             current_span: function.body.span,
+            debug_span: None,
             trap_kind: None,
             drop_pending: None,
             clone_pending: None,
@@ -2532,6 +2895,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             temporaries: Vec::new(),
             frame_slots: BTreeMap::new(),
             frame_locals: BTreeMap::new(),
+            counted,
             #[cfg(debug_assertions)]
             note_copies: false,
         }
@@ -2570,9 +2934,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         {
             self.note_copies = !self.symbol.starts_with("@tz.specialized.");
         }
-        self.debug_scope = self
-            .globals
-            .debug_subprogram(self.module, self.function, &self.symbol);
+        self.debug_scope =
+            self.globals
+                .debug_subprogram(self.module, self.function, &self.symbol, false);
         self.single_use = call_specialization::single_use_locals(&self.function.body);
         self.ranges = crate::ranges::analyze(self.module, self.function);
         self.block = "loop".into();
@@ -2583,6 +2947,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             for (index, parameter) in self.function.parameters.iter().enumerate() {
                 self.bind_local(parameter, &format!("%p{index}"));
             }
+            self.cover(crate::coverage::RegionKind::Body, self.function.body.span);
             self.emit_body();
         }
         let parameters = self
@@ -2717,7 +3082,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         if let Some(scope) = self.debug_scope
             && !self.debug_switch
-            && let Some(location) = self.globals.debug_location(scope, self.current_span)
+            && let Some(location) = self
+                .globals
+                .debug_location(scope, self.debug_span.unwrap_or(self.current_span))
         {
             let _ = write!(text, ", !dbg !{location}");
         }
@@ -2752,6 +3119,51 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.block = block.to_owned();
     }
 
+    /// Counts one entry into the coverage region of `kind` at `span`, if the plan has it.
+    fn cover(&mut self, kind: crate::coverage::RegionKind, span: Span) {
+        if self.counted {
+            self.count_region(kind, span);
+        }
+    }
+
+    /// Counts one entry into the body of user function `id` where this body replaced a call of it
+    /// by the call's effect (an identity call, an inline `x + y` helper), whether or not this
+    /// body is counted: the callee ran, as far as the program can tell.
+    fn cover_call(&mut self, id: usize) {
+        let function = &self.module.functions[id];
+        if self.globals.coverage.is_some() && crate::coverage::counted(function) {
+            self.count_region(crate::coverage::RegionKind::Body, function.body.span);
+        }
+    }
+
+    fn count_region(&mut self, kind: crate::coverage::RegionKind, span: Span) {
+        let Some(plan) = &self.globals.coverage else {
+            return;
+        };
+        let Some(region) = plan.region(kind, span) else {
+            return;
+        };
+        let count = plan.len();
+        self.value(format!(
+            "atomicrmw add ptr getelementptr inbounds ([{count} x i64], ptr @tsuzuri_coverage_counters, i64 0, i64 {region}), i64 1 monotonic"
+        ));
+    }
+
+    /// `call_specialization::transparent`, counting each identity function that it looks through
+    /// because the generated code uses the argument instead of calling the function.
+    fn skip_identity_calls<'e>(&mut self, expression: &'e TypedExpr) -> &'e TypedExpr {
+        if self.globals.coverage.is_none() {
+            return call_specialization::transparent(expression, self.module);
+        }
+        let mut skipped = Vec::new();
+        let expression =
+            call_specialization::transparent_calls(expression, self.module, |id| skipped.push(id));
+        for id in skipped {
+            self.cover_call(id);
+        }
+        expression
+    }
+
     fn jump(&mut self, block: &str) {
         self.instruction(format!("br label %{block}"));
     }
@@ -2770,7 +3182,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         fn reduction(expression: &TypedExpr, module: &CheckedModule) -> bool {
             if let TypedExprKind::Assign(place, value) = &expression.kind {
-                if let (TypedExprKind::Local(id), Some((operator, left, right))) = (
+                if let (TypedExprKind::Local(id), Some((operator, left, right, _))) = (
                     &place.kind,
                     call_specialization::binary_operation(value, module),
                 ) {
@@ -2879,7 +3291,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.debug_declarations.push(format!("call void @llvm.dbg.declare(metadata ptr {slot}, metadata !{variable}, metadata !DIExpression()), !dbg !{location}"));
             }
         }
-        self.instruction(format!("store {} {value}, ptr {slot}", self.ty(&local.ty)));
+        let store = format!("store {} {value}, ptr {slot}", self.ty(&local.ty));
+        if self.debug_scope.is_some()
+            && self
+                .function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.id == local.id)
+        {
+            // As in Clang, the parameters' stores have no location: they belong to the prologue,
+            // so a breakpoint on the function stops where the parameters have their values (G16 D7).
+            self.lines.push(format!("  {store}"));
+        } else if local.span == Span::default() {
+            self.instruction(store);
+        } else {
+            // A binding's store is located at its declaration, so stepping does not go back to
+            // the start of the enclosing block (G16 D7).
+            let previous = std::mem::replace(&mut self.current_span, local.span);
+            self.instruction(store);
+            self.current_span = previous;
+        }
         self.locals.insert(local.id, slot.clone());
         if local.ty.needs_drop(&self.module.types()) && !self.borrowed_locals.contains(&local.id) {
             self.scopes
@@ -2928,15 +3359,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let mut pending = Vec::with_capacity(arguments.len());
         for argument in arguments {
             let operation = call_specialization::binary_operation(argument, self.module).filter(
-                |(operator, _, _)| {
+                |(operator, _, _, _)| {
                     argument.ty.is_integer()
                         && matches!(operator, BinaryOp::Add | BinaryOp::Subtract)
                 },
             );
-            if let Some((operator, left, right)) = operation {
+            if let Some((operator, left, right, helper)) = operation {
                 // Snapshot operands now; only the nontrapping wrapping operation moves to the latch.
                 let left = self.expression(left);
                 let right = self.expression(right);
+                if let Some(helper) = helper {
+                    self.cover_call(helper);
+                }
                 let opcode = if operator == BinaryOp::Add {
                     "add"
                 } else {
@@ -2986,10 +3420,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let no = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 self.tail(then_branch);
                 self.ranges.leave_condition(facts);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 self.tail(else_branch);
             }
             TypedExprKind::Call(callee, arguments)
@@ -3289,10 +3725,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 FunctionRef::Builtin(_) => unreachable!("builtin values are lifted before LLVM"),
             },
             TypedExprKind::Closure(id, captures) => {
+                // A capture's span is its local's declaration, but the closure reads it here.
+                let located = self.debug_span.replace(expression.span);
                 let values: Vec<_> = captures
                     .iter()
                     .map(|capture| self.expression(capture))
                     .collect();
+                self.debug_span = located;
                 self.make_closure(*id, &values)
             }
             TypedExprKind::Unary(operator, operand) => {
@@ -3410,6 +3849,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let merge = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 let then_value = self.expression(then_branch);
                 self.ranges.leave_condition(facts);
@@ -3417,6 +3857,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 let else_value = self.expression(else_branch);
                 let else_end = self.block.clone();
                 self.jump(&merge);
@@ -4822,7 +5263,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 return self.host_call(import, arguments, &function.signature.result);
             }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
-                return self.expression(&arguments[0]);
+                let value = self.expression(&arguments[0]);
+                self.cover_call(id);
+                return value;
             }
         }
         if !matches!(callee.kind, TypedExprKind::Function(_)) {
@@ -4915,7 +5358,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             for (index, argument) in arguments[..count].iter().enumerate() {
                 let value =
                     if let Some((_, target)) = callbacks.iter().find(|(slot, _)| *slot == index) {
-                        let argument = call_specialization::transparent(argument, self.module);
+                        let argument = self.skip_identity_calls(argument);
                         if Self::is_place(argument) {
                             self.expression_mode(argument, false)
                         } else {
@@ -4967,7 +5410,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn capture_values(&mut self, expression: &TypedExpr) -> Vec<(String, Vec<Frame>)> {
-        let expression = call_specialization::transparent(expression, self.module);
+        let expression = self.skip_identity_calls(expression);
         match &expression.kind {
             // Known temporary closures only lend their captures to a borrowing worker; the caller
             // drops them after the call, so stack values need not move to the heap.
@@ -5027,7 +5470,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         callee: &TypedExpr,
         target: ClosureTarget,
     ) -> Option<BorrowedCall> {
-        let callee = call_specialization::transparent(callee, self.module);
         let function = &self.module.functions[target.function];
         let symbol = if target.bound == 0 {
             format!("@tz.fn.{}", function.qualified_name())
@@ -5039,6 +5481,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             })?;
             format!("@tz.specialized.{id}")
         };
+        // After the last early return: a caller without this call evaluates `callee` itself.
+        let callee = self.skip_identity_calls(callee);
         let mut cleanup = Vec::new();
         let captures = if Self::is_place(callee) {
             let value = self.expression_mode(callee, false);
@@ -5185,6 +5629,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             "1"
         };
         self.begin(&evaluate_right);
+        self.cover(crate::coverage::RegionKind::ShortCircuit, right.span);
         let right = self.expression(right);
         let right_end = self.block.clone();
         self.jump(&merge);
@@ -5556,6 +6001,7 @@ fn emit_builtin(
         | Builtin::SeqNext
         | Builtin::OwnedDrop
         | Builtin::Ignore
+        | Builtin::BenchConsume
         | Builtin::Not
         | Builtin::OwnedFunction
         | Builtin::OwnedCall
@@ -5576,6 +6022,18 @@ fn emit_builtin(
         ),
         // Arena ids only need to be unique, so a monotonic increment suffices; the counter
         // publishes no other memory. Default wasm32 lowers the atomic to a plain add.
+        // The clock is defined only by the C entry of `tsuzuri bench` (`runtime/bench-runner.c`);
+        // `emit_program` rejects other outputs that reach it (G18 D3).
+        Builtin::BenchNow => {
+            intrinsics.insert("declare i64 @tsuzuri_bench_now()".into());
+            format!(
+                "define internal i64 {symbol}() nounwind {{\nentry:\n  %now = call i64 @tsuzuri_bench_now()\n  ret i64 %now\n}}\n\n"
+            )
+        }
+        Builtin::GenSeed => format!(
+            "define internal i64 {symbol}() nounwind {{\nentry:\n  ret i64 {}\n}}\n\n",
+            globals.seed.unwrap_or(DEFAULT_PROPERTY_SEED) as i64
+        ),
         Builtin::ArenaNextId => format!(
             "@tz.arena.next_id = internal global i64 0, align 8\n\n\
              define internal i64 {symbol}() nounwind {{\n\
@@ -5753,6 +6211,16 @@ fn emit_typed_builtin(
     } else if instance.builtin == Builtin::SeqNext {
         emitter.sequence_next(ty)
     } else if matches!(instance.builtin, Builtin::OwnedDrop | Builtin::Ignore) {
+        emitter.drop_value(element, "%arg0");
+        "0".to_owned()
+    } else if instance.builtin == Builtin::BenchConsume {
+        // As Rust's `black_box`: the value goes to memory that an opaque asm with a memory
+        // clobber reads, so LLVM keeps its computation and the memory it reaches (G18 D6).
+        let slot = emitter.slot(element);
+        emitter.instruction(format!("store {element_type} %arg0, ptr {slot}"));
+        emitter.instruction(format!(
+            "call void asm sideeffect \"\", \"r,~{{memory}}\"(ptr {slot})"
+        ));
         emitter.drop_value(element, "%arg0");
         "0".to_owned()
     } else if instance.builtin == Builtin::Not {

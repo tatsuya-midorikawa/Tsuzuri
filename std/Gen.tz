@@ -1,0 +1,395 @@
+/// The state of one generator run: the random generator, the choices to replay, whether it
+/// replays them, and the choices made so far.
+type Source = (Random.Pcg * [i64u] * bool * Vec<i64u>)
+
+/// A generator of values of type 'a for property tests. Every random choice it makes is a
+/// recorded number, and smaller numbers mean simpler values, so `for_all` shrinks a failing
+/// value by replaying smaller choices.
+record Gen<'a> { run: Source -> ('a * Source) }
+
+/// The number of values that `for_all` tries.
+private def default_cases :: i64
+fn default_cases = 100
+
+/// The most replays of the property that shrinking one counterexample may take.
+private def shrink_budget :: i64
+fn shrink_budget = 10000
+
+private def search :: i64u -> i64u -> Source
+fn search seed stream =
+	let replay: [i64u] = []
+	(Random.pcg seed stream, replay, false, Vec.empty())
+
+private def replay :: [i64u] -> Source
+fn replay choices = (Random.pcg 0i64u 0i64u, choices, true, Vec.empty())
+
+/// The next random number while searching; 0 while replaying. It records nothing.
+private def random_bits :: Source -> (i64u * Source)
+fn random_bits source =
+	match source with
+	| (random, recorded, replaying, choices) ->
+		if replaying then
+			(0i64u, (random, recorded, replaying, choices))
+		else
+			match Random.pcg_next_u64 random with
+			| (bits, next) -> (bits, (next, recorded, replaying, choices))
+
+/// Records and returns the next choice, at most `bound`: `proposal` while searching, or the
+/// recorded choice while replaying (0 past the end). Larger values become `bound`. A choice
+/// with bound 0 has one value and is not recorded.
+private def choose :: Source -> i64u -> i64u -> (i64u * Source)
+fn choose source bound proposal =
+	if bound == 0i64u then
+		(0i64u, source)
+	else
+		record_choice source bound proposal
+
+private def record_choice :: Source -> i64u -> i64u -> (i64u * Source)
+fn record_choice source bound proposal =
+	match source with
+	| (random, recorded, replaying, choices) ->
+		let position = Vec.length (ref choices)
+		let wanted =
+			if !replaying then
+				proposal
+			elif position < recorded.length then
+				recorded[position]
+			else
+				0i64u
+		let value = if wanted > bound then bound else wanted
+		(value, (random, recorded, replaying, Vec.push choices value))
+
+/// `bits` reduced to [0, bound].
+private def below :: i64u -> i64u -> i64u
+fn below bits bound = if bound == 18446744073709551615i64u then bits else bits % (bound + 1i64u)
+
+/// A choice in [0, bound] whose random proposal is nearly uniform.
+private def uniform :: Source -> i64u -> (i64u * Source)
+fn uniform source bound =
+	match random_bits source with
+	| (bits, rest) -> choose rest bound (below bits bound)
+
+/// Integers in [low, high]. The choices are a side of the value nearest 0 (only when both sides
+/// exist; 0 is the upper side) and a distance from it, so that shrinking moves toward it. With
+/// `scaled`, a random distance has a random bit length, which favors small values. With `bounds`,
+/// 1 in 16 proposals is instead the farthest value of its side, so that `low` and `high`, where
+/// integer arithmetic overflows, come up within a few dozen values (the minimum of i64 is 2^63
+/// below 0, which no random bit length of `first >>> 1` reaches).
+private def integer :: i64 -> i64 -> bool -> bool -> Source -> (i64 * Source)
+fn integer low high scaled bounds source =
+	let origin = if low > 0 then low elif high < 0 then high else 0
+	let up = (high - origin) as i64u
+	let down = (origin - low) as i64u
+	match random_bits source with
+	| (first, rest) ->
+		match random_bits rest with
+		| (second, next) ->
+			let uniform_value = low + ((below first ((high - low) as i64u)) as i64)
+			let proposal_lower =
+				if up == 0i64u then
+					true
+				elif down == 0i64u then
+					false
+				elif scaled then
+					first % 2i64u == 1i64u
+				else
+					uniform_value < origin
+			let limit = if proposal_lower then down else up
+			let width = below second 64i64u
+			let widest = if width >= 64i64u then 18446744073709551615i64u else (1i64u <<< width) - 1i64u
+			let proposal_distance =
+				if bounds && (second >>> 60) == 0i64u then
+					limit
+				elif scaled then
+					below (first >>> 1) (Int.min limit widest)
+				elif proposal_lower then
+					(origin - uniform_value) as i64u
+				else
+					(uniform_value - origin) as i64u
+			let side_bound = if up > 0i64u && down > 0i64u then 1i64u else 0i64u
+			match choose next side_bound (if proposal_lower && up > 0i64u then 1i64u else 0i64u) with
+			| (side, after) ->
+				let lower = side == 1i64u || up == 0i64u
+				match choose after (if lower then down else up) proposal_distance with
+				| (taken, last) ->
+					(if lower then origin - (taken as i64) else origin + (taken as i64), last)
+
+/// Integers in [low, high], nearly uniform, shrinking toward the value nearest 0.
+/// An empty range traps.
+def range :: i64 -> i64 -> Gen<i64>
+fn range low high =
+	assert (low <= high)
+	Gen { run: \source -> integer low high false false source }
+
+/// Any i64, favoring small magnitudes and the bounds, shrinking toward 0.
+def i64 :: Gen<i64>
+fn i64 = Gen { run: \source -> integer (-9223372036854775807 - 1) 9223372036854775807 true true source }
+
+/// Any i32, favoring small magnitudes and the bounds, shrinking toward 0.
+def i32 :: Gen<i32>
+fn i32 = Gen { run: \source ->
+	match integer (-2147483648) 2147483647 true true source with
+	| (value, rest) -> (value as i32, rest) }
+
+/// `false` or `true`, shrinking toward `false`.
+def bool :: Gen<bool>
+fn bool = Gen { run: \source ->
+	match uniform source 1i64u with
+	| (value, rest) -> (value == 1i64u, rest) }
+
+/// Finite f64 values with up to 52 integral bits and 20 fractional bits, shrinking toward 0.0,
+/// integers, and simple fractions. They never are NaN, infinite, or -0.0.
+def f64 :: Gen<f64>
+fn f64 = Gen { run: \source ->
+	match uniform source 1i64u with
+	| (sign, rest) ->
+		match integer 0 4503599627370496 true false rest with
+		| (whole, next) ->
+			match uniform next 1048575i64u with
+			| (fraction, last) ->
+				let magnitude = (whole as f64) + (fraction as f64) / 1048576.0
+				(if sign == 1i64u && magnitude != 0.0 then -magnitude else magnitude, last) }
+
+/// The character `offset` places after 'a' in a cycle of `count` code units from `first`.
+private def cycled :: i64 -> i64 -> i64 -> char
+fn cycled first count offset =
+	let index = (97 - first + offset) % count
+	Char.of_u16 ((first + index) as i16u)
+
+/// Printable ASCII characters (' ' to '~'), shrinking toward 'a'.
+def char :: Gen<char>
+fn char = Gen { run: \source ->
+	match uniform source 94i64u with
+	| (offset, rest) -> (cycled 32 95 (offset as i64), rest) }
+
+/// UTF-16 code units that are not surrogates, shrinking toward 'a'.
+def unicode_char :: Gen<char>
+fn unicode_char = Gen { run: \source ->
+	match uniform source 63487i64u with
+	| (offset, rest) ->
+		let index = (97 + (offset as i64)) % 63488
+		let unit = if index < 55296 then index else index + 2048
+		(Char.of_u16 (unit as i16u), rest) }
+
+/// Arrays of at most `limit` values of `element`, shrinking toward fewer and simpler values.
+/// Before each value the generator chooses whether to go on, so shrinking can drop any value.
+/// A negative limit traps.
+def array_up_to :: i64 -> Gen<'a> -> Gen<['a]>
+fn array_up_to limit element =
+	assert (limit >= 0)
+	Gen { run: \source ->
+		let mut values = Vec.empty()
+		let mut current = source
+		let mut going = true
+		while going do
+			if Vec.length (ref values) >= limit then
+				going = false
+			else
+				match random_bits current with
+				| (bits, rest) ->
+					match choose rest 1i64u (if bits % 8i64u == 0i64u then 0i64u else 1i64u) with
+					| (more, next) ->
+						if more == 0i64u then
+							current = next
+							going = false
+						else
+							match element.run next with
+							| (value, last) ->
+								values = Vec.push values value
+								current = last
+		(Vec.to_array values, current) }
+
+/// Arrays of at most 32 values of `element` (about 7 on average), shrinking toward fewer and
+/// simpler values.
+def array :: Gen<'a> -> Gen<['a]>
+fn array element = array_up_to 32 element
+
+/// Strings of the characters of `character`, at most 32 code units long.
+def string_of :: Gen<char> -> Gen<string>
+fn string_of character = Gen { run: \source ->
+	match (array_up_to 32 character).run source with
+	| (characters, rest) -> (String.from_code_units (Array.map Char.to_u16 (ref characters)), rest) }
+
+/// Strings of printable ASCII characters, at most 32 long, shrinking toward "".
+def string :: Gen<string>
+fn string = string_of (Gen.char())
+
+/// `Maybe.None` or `Maybe.Some` of `value`, shrinking toward `Maybe.None`.
+def maybe :: Gen<'a> -> Gen<Maybe<'a>>
+fn maybe value = Gen { run: \source ->
+	match random_bits source with
+	| (bits, rest) ->
+		match choose rest 1i64u (if bits % 4i64u == 0i64u then 0i64u else 1i64u) with
+		| (0i64u, next) -> (Maybe.None, next)
+		| (_, next) ->
+			match value.run next with
+			| (inner, last) -> (Maybe.Some inner, last) }
+
+/// `Result.Ok` of `ok` or `Result.Error` of `error`, shrinking toward `Result.Ok`.
+def result :: Gen<'a> -> Gen<'e> -> Gen<Result<'a, 'e>>
+fn result ok error = Gen { run: \source ->
+	match uniform source 1i64u with
+	| (0i64u, rest) ->
+		match ok.run rest with
+		| (value, last) -> (Result.Ok value, last)
+	| (_, rest) ->
+		match error.run rest with
+		| (value, last) -> (Result.Error value, last) }
+
+/// Always `value`.
+def constant :: Copy<'a> => 'a -> Gen<'a>
+fn constant value = Gen { run: \source -> (value, source) }
+
+/// Applies `transform` to the values of `generator`; they shrink as the values they come from.
+def map :: ('a -> 'b) -> Gen<'a> -> Gen<'b>
+fn map transform generator = Gen { run: \source ->
+	match generator.run source with
+	| (value, rest) -> (transform value, rest) }
+
+/// A value of the generator that `next` makes from a value of `generator`.
+def bind :: ('a -> Gen<'b>) -> Gen<'a> -> Gen<'b>
+fn bind next generator = Gen { run: \source ->
+	match generator.run source with
+	| (value, rest) -> (next value).run rest }
+
+/// Pairs of values of `first` and `second`.
+def pair :: Gen<'a> -> Gen<'b> -> Gen<('a * 'b)>
+fn pair first second = Gen { run: \source ->
+	match first.run source with
+	| (left, rest) ->
+		match second.run rest with
+		| (right, last) -> ((left, right), last) }
+
+/// A value of one of `generators`, shrinking toward the first. An empty array traps.
+def one_of :: [Gen<'a>] -> Gen<'a>
+fn one_of generators =
+	assert (generators.length > 0)
+	Gen { run: \source ->
+		match uniform source ((generators.length - 1) as i64u) with
+		| (index, rest) -> generators[index as i64].run rest }
+
+/// One of `values`, shrinking toward the first. An empty array traps.
+def element :: Copy<'a> => ['a] -> Gen<'a>
+fn element values =
+	assert (values.length > 0)
+	Gen { run: \source ->
+		match uniform source ((values.length - 1) as i64u) with
+		| (index, rest) -> (values[index as i64], rest) }
+
+/// Runs `generator` on `source`, then `property` on its value: whether it held, and the
+/// choices that the run made.
+private def attempt :: Gen<'a> -> ('a -> bool) -> Source -> (bool * [i64u])
+fn attempt generator property source =
+	match generator.run source with
+	| (value, (_, _, _, choices)) -> (property value, Vec.to_array choices)
+
+/// Whether `left` is shorter than `right`, or as long and lexicographically smaller.
+private def simpler :: ref [i64u] -> ref [i64u] -> bool
+fn simpler left right =
+	if left.length != right.length then
+		left.length < right.length
+	else
+		let mut index = 0
+		let mut decided = false
+		let mut result = false
+		while !decided && index < left.length do
+			if left[index] != right[index] then
+				result = left[index] < right[index]
+				decided = true
+			index = index + 1
+		result
+
+/// `values` without the `count` values from `start`.
+private def without :: ref [i64u] -> i64 -> i64 -> [i64u]
+fn without values start count =
+	let mut kept = Vec.empty()
+	let mut index = 0
+	while index < values.length do
+		if index < start || index >= start + count then
+			kept = Vec.push kept values[index]
+		index = index + 1
+	Vec.to_array kept
+
+/// The simplest failing choices that the shrinker finds from the failing `start`, and the
+/// number of times it found simpler ones. It drops runs of 8 down to 1 choices, then lowers
+/// each choice to 0 or by binary search, and repeats until nothing changes or the budget ends.
+private def shrink :: Gen<'a> -> ('a -> bool) -> [i64u] -> ([i64u] * i64)
+fn shrink generator property start =
+	let mut current = start
+	let mut shrinks = 0
+	let mut attempts = 0
+	let mut changed = true
+	while changed && attempts < shrink_budget() do
+		changed = false
+		let mut size = 8
+		while size > 0 do
+			let mut index = 0
+			while index + size <= current.length && attempts < shrink_budget() do
+				attempts = attempts + 1
+				match attempt generator property (replay (without (ref current) index size)) with
+				| (false, found) when simpler (ref found) (ref current) ->
+					current = found
+					shrinks = shrinks + 1
+					changed = true
+				| _ -> index = index + 1
+			size = size - 1
+		let mut position = 0
+		while position < current.length && attempts < shrink_budget() do
+			let mut low = 0i64u
+			let mut high = current[position]
+			let mut first = true
+			while high > low && attempts < shrink_budget() do
+				let middle = if first then 0i64u else low + (high - low) / 2i64u
+				first = false
+				attempts = attempts + 1
+				match attempt generator property (replay (Array.set current position middle)) with
+				| (false, found) when simpler (ref found) (ref current) ->
+					current = found
+					shrinks = shrinks + 1
+					changed = true
+					high = if position < current.length then current[position] else 0i64u
+				| _ -> low = middle + 1i64u
+			position = position + 1
+	(current, shrinks)
+
+/// The value of `generator` for `choices`, shown by `show`.
+private def describe :: (ref 'a -> string) -> Gen<'a> -> [i64u] -> string
+fn describe show generator choices =
+	match generator.run (replay choices) with
+	| (value, _) -> show (ref value)
+
+/// Checks `property` on `cases` values of `generator` and traps on the first value where it is
+/// false, after shrinking it and printing the seed, the case, and both values with `show` to
+/// stderr. The cases use the seed of `tsuzuri test --seed`, or a fixed one, so every run tries
+/// the same values. A property that traps itself ends the test without shrinking.
+def check :: (ref 'a -> string) -> i64 -> Gen<'a> -> ('a -> bool) -> unit
+fn check show cases generator property =
+	assert (cases > 0)
+	let seed = Gen.__seed()
+	let mut case = 0
+	let mut failing: [i64u] = []
+	let mut failed = false
+	while !failed && case < cases do
+		match attempt generator property (search seed (case as i64u)) with
+		| (true, _) -> case = case + 1
+		| (false, choices) ->
+			failing = choices
+			failed = true
+	if failed then
+		match shrink generator property failing with
+		| (smallest, shrinks) ->
+			let header = "property failed at case " + to_string (case + 1) + " of " + to_string cases + " (seed " + to_string seed + ")"
+			let found = "counterexample: " + describe show generator smallest
+			let original = "shrunk " + to_string shrinks + " times from " + describe show generator failing
+			Debug.print (ref header)
+			Debug.print (ref found)
+			Debug.print (ref original)
+			assert false
+
+/// Checks `property` on 100 values of `generator`, as `check` with `Display.display`.
+def for_all :: Display<'a> => Gen<'a> -> ('a -> bool) -> unit
+fn for_all generator property = check (\value -> Display.display value) (default_cases()) generator property
+
+/// Checks `property` on `cases` values of `generator`, as `check` with `Display.display`.
+def for_all_cases :: Display<'a> => i64 -> Gen<'a> -> ('a -> bool) -> unit
+fn for_all_cases cases generator property = check (\value -> Display.display value) cases generator property

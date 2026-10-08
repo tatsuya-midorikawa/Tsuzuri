@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Visual Studio and WinDbg views of Tsuzuri values (G16 Phase 3). A `-g` build for an MSVC target
+  embeds this file in the PDB with /NATVIS. Types match by their Tsuzuri names, the names of the
+  CodeView and DWARF types. Natvis wildcards match only template arguments, so `Vec<*>` and
+  `Maybe<*>` have views here, while arrays, lists, and user unions keep the debugger's view of
+  their members, whose `$tag` shows the case name.
+-->
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <Type Name="string">
+    <DisplayString>{data,[length]su}</DisplayString>
+    <StringView>data,[length]su</StringView>
+    <Expand>
+      <Item Name="[length]">length</Item>
+      <ArrayItems>
+        <Size>length</Size>
+        <ValuePointer>data</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="utf8string">
+    <DisplayString>u8{data,[length]s8}</DisplayString>
+    <StringView>data,[length]s8</StringView>
+    <Expand>
+      <Item Name="[length]">length</Item>
+      <ArrayItems>
+        <Size>length</Size>
+        <ValuePointer>data</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="Vec&lt;*&gt;">
+    <DisplayString>{{ length={length} capacity={capacity} }}</DisplayString>
+    <Expand>
+      <Item Name="[length]">length</Item>
+      <Item Name="[capacity]">capacity</Item>
+      <ArrayItems>
+        <Size>length</Size>
+        <ValuePointer>data</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="Map&lt;*,*&gt;">
+    <DisplayString>{{ size={entries.length} }}</DisplayString>
+    <Expand>
+      <ArrayItems>
+        <Size>entries.length</Size>
+        <ValuePointer>entries.data</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="Set&lt;*&gt;">
+    <DisplayString>{{ size={entries.length} }}</DisplayString>
+    <Expand>
+      <ArrayItems>
+        <Size>entries.length</Size>
+        <ValuePointer>entries.data</ValuePointer>
+      </ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="Maybe&lt;*&gt;">
+    <DisplayString Condition="$tag == 0">None</DisplayString>
+    <DisplayString Condition="$tag == 1">Some({$payload.Some})</DisplayString>
+    <Expand>
+      <Item Name="[value]" Condition="$tag == 1">$payload.Some</Item>
+    </Expand>
+  </Type>
+  <Type Name="Result&lt;*,*&gt;">
+    <DisplayString Condition="$tag == 0">Ok({$payload.Ok})</DisplayString>
+    <DisplayString Condition="$tag == 1">Error({$payload.Error})</DisplayString>
+    <Expand>
+      <Item Name="[value]" Condition="$tag == 0">$payload.Ok</Item>
+      <Item Name="[error]" Condition="$tag == 1">$payload.Error</Item>
+    </Expand>
+  </Type>
+  <Type Name="Task&lt;*&gt;">
+    <DisplayString>&lt;task&gt;</DisplayString>
+  </Type>
+</AutoVisualizer>

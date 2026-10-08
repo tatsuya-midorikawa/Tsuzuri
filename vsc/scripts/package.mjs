@@ -26,6 +26,7 @@ async function verifyArchive(file) {
   const required = new Set(['extension/dist/extension.js', 'extension/package.json', 'extension/language-configuration.json',
     `extension/${manifest.icon}`,
     'extension/syntaxes/tsuzuri.tmLanguage.json', 'extension/snippets/tsuzuri.json', 'extension/resources/completions.json',
+    'extension/resources/lldb/tsuzuri_lldb.py',
     'extension/resources/handbook/_tsuzuri/language-reference/index.md', 'extension/LICENSE.txt', 'extension/toolchain/manifest.json']);
   await new Promise((resolve, reject) => {
     yauzl.open(file, { lazyEntries: true }, (error, zip) => {

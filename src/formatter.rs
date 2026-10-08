@@ -57,7 +57,8 @@ fn print_tokens(source: &str, hints: &mut Hints) -> Result<String, Diagnostic> {
     let mut output = if source.starts_with('\u{feff}') {
         "\u{feff}".to_owned()
     } else {
-        String::new()
+        // The lexer leaves out a `#!` line, so it is copied as it is.
+        source[..crate::lexer::shebang_length(source)].to_owned()
     };
     let mut pending = String::new();
     for (index, retained) in tokens.iter().enumerate() {
@@ -271,11 +272,17 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         test.name_span = Span::default();
         canonical.expression(&mut test.body);
     }
+    for bench in &mut program.benches {
+        bench.span = Span::default();
+        bench.name_span = Span::default();
+        canonical.expression(&mut bench.body);
+    }
     if let Some(entry) = &mut program.entry {
         canonical.expression(entry);
     }
-    // The `dyn` types repeat types already in the tree (A14).
+    // The `dyn` types repeat types already in the tree (A14); declaration starts are positions.
     program.dyn_types.clear();
+    program.declaration_starts.clear();
     for attribute in &mut program.cpu_attributes {
         canonical.ident(&mut attribute.function);
     }
@@ -419,6 +426,7 @@ impl Layout {
                     | TokenKind::Type
                     | TokenKind::Const
                     | TokenKind::Test
+                    | TokenKind::Bench
                     | TokenKind::Extern
                     | TokenKind::Class
                     | TokenKind::Instance

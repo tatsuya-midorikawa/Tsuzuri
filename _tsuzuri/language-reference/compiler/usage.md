@@ -9,13 +9,15 @@
 - 配布物を使うときは、`bin/` 全体ではなく `tsuzuri` だけを PATH に足します。
 - ディレクトリを渡すと `Main.tz` が入口になります。ファイルを渡すと、その親がプロジェクトルートです。
 - `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。
-- キャッシュは `build` と `run` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
+- `repl` は、宣言と式を 1 つずつ受け取り、入力ごとにプログラムを作り直して検査し、実行します。
+- `script` は、名前を問わない 1 つのファイルを `Main.tz` として `run` と同じように実行し、後ろの引数をプログラムへ渡します。先頭の `#!` 行で、ファイル自体を実行できます。
+- 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
 
-引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`bindgen`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。
+`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。
 
 ```mermaid
 flowchart TD
@@ -28,6 +30,9 @@ flowchart TD
   kind -->|toolchain info| tools["解決したツールを表示"]
   kind -->|bindgen| bind["C ヘッダーから extern を生成"]
   kind -->|lsp| server["stdio の言語サーバー"]
+  kind -->|repl| interactive["入力ごとに Main.tz を作って検査し実行"]
+  kind -->|script| single["1 つのファイルを Main.tz として読む"]
+  single --> typed
   kind -->|fmt| format["その場で整形する"]
   kind -->|check doc test build run| load["入力を 1 つ解決する"]
   load --> read["ルート以下のソースを再帰的に読む"]
@@ -49,11 +54,12 @@ tsuzuri-0.1.0-darwin-arm64/
   manifest.json
   bin/       tsuzuri  tsuzuri-clang  clang  wasm-ld  llvm-link  dsymutil
   lib/
+  share/     lldb/tsuzuri_lldb.py  natvis/tsuzuri.natvis
   zig/
   licenses/
 ```
 
-Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。
+Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
 
 同じディレクトリに置いた `<archive>.sha256` は、`shasum -a 256 -c`（Linux は `sha256sum -c`）で読めます。これはダウンロード時の破損を検査するものです。配布元そのものの真正性の検証は別の手段で行います。
 
@@ -227,11 +233,143 @@ tsuzuri check demo
 
 ### run
 
-`Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。
+`Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。`run` はプログラムへ引数を渡さないので空の配列で、引数を渡すときは [`script`](#script) を使います。
 
 `run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。
 
 先の `demo` を実行すると、標準出力は `Hello, Tsuzuri!` で、終了コードは 0 でした。
+
+### repl
+
+宣言、トップレベルの `let`、式を 1 つずつ入力して、型と値をすぐ確かめます。F# の `dotnet fsi` に近い使い方ですが、JIT はありません。入力ごとに、それまでに受け付けた宣言と `let` の後ろへ入力を足した `Main.tz` を作り、`run` と同じ経路（解析、LLVM IR、Clang、実行）で検査して実行します。数値の意味やトラップは `run` と同じで、最適化レベルは時間だけを変えます。
+
+```sh
+tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
+```
+
+次の入力を標準入力から渡すと、
+
+```text
+def square :: i64 -> i64 = \x -> x * x
+let base = 6
+square base
+:type square
+def square :: i64 -> i64 = \x -> x + x
+square base
+"hi"
+square
+let word = (
+    match base with
+    | 6 -> "six"
+    | _ -> "other"
+)
+
+word
+let broken = 10 / (base - 6)
+do! IO.write_line "hello"
+:list
+:quit
+```
+
+標準出力はこうなります。終了コードは 0 です。
+
+```text
+base: i32
+it: i64 = 36
+i64 -> i64
+it: i64 = 12
+it: string = hi
+it: i64 -> i64
+word: string
+it: string = six
+hello
+def square :: i64 -> i64 = \x -> x + x
+let base = 6
+let word = (
+    match base with
+    | 6 -> "six"
+    | _ -> "other"
+)
+```
+
+`broken` の行は 0 除算でトラップするので、標準エラーに `input:1:14: error[E2005]: ...` が出て、`broken` はセッションに入りません。
+
+#### 入力の区切り
+
+入力は 1 行ずつ読みます。1 行で完結しない入力は、1 行目を `(` や `=` で終えるなど未完の形にし、空行で終えます。1 行目の構文解析が入力の末尾で失敗したときだけ次の行へ続けるので、完結した 1 行の次の行は別の入力です。`:` で始まる行はコマンドです。空白だけの行は読み飛ばします。
+
+#### 表示
+
+| 入力 | 動作 | 標準出力 |
+| --- | --- | --- |
+| 宣言（`def`、`record`、`union`、`type`、`const`、`class`、`instance`） | 検査だけ | なし |
+| `let`（式なし） | 検査して実行する。トラップすれば受け付けない | 新しい `let` ごとに `名前: 型` |
+| 式 | 検査して実行する | `it: 型 = 値`。`Display` のインスタンスがない型は `it: 型` だけ、`unit` は何も出さない |
+| `let!`、`do!`、`match!` を含むコード | 検査して 1 回だけ実行する | プログラムの標準出力そのまま |
+
+型は言語サーバーのホバーと同じ表記です。値は `Display.display` の結果です。`IO<T>` の値は式として入力しても実行せず、`it: IO<unit>` のように型だけを出します。実行するのは `do!` などのアクションだけで、アクションはセッションに残りません。
+
+#### セッション
+
+受け付けた宣言と `let` の**ソース**だけがセッションに残ります。実行中の値は持ち越さず、評価のたびに新しいプロセスで、受け付けた `let` をすべて最初から実行し直します。
+
+- 同じ名前の宣言や `let` を入力すると、元の位置で置き換えます。置き換えた後のセッション全体を検査し直すので、依存する宣言がエラーになれば入力全体を拒否します。拒否した入力はセッションを変えません。
+- `let` の再実行は値を変えませんが、`Debug.print` と `Debug.trace` の出力は評価のたびに標準エラーへ出ます。
+- `;` で終わる式（`c = c + 1;` など）は文としてセッションに残ります。`;` のない最後の式は 1 回評価するだけで残りません。`it` も残りません。値を残すときは `let` にします。
+- セッション全体を毎回検査するので、型も毎回推論し直します。接尾辞のない整数リテラルの `let base = 6` は単独なら `i32` ですが、後の入力で `i64` を受け取る関数に渡すと、その入力の中では `i64` になります。
+- 評価するプログラムの標準入力は空です。`IO.read_line ()` は常に `None` を返します。
+- `extern`、`test`、`bench`、`main` の定義、`namespace` と `using` は受け付けません（`E2000`）。作業ディレクトリの `.tz` も読みません。警告は表示しません。
+
+#### コマンド
+
+| コマンド | 動作 |
+| --- | --- |
+| `:type 式` | 式の型を出します。実行はしません |
+| `:load パス` | `.tz` ファイル全体を 1 つの入力として扱います。診断の位置はそのパスで示します |
+| `:list` | セッションの宣言と `let` を出します |
+| `:reset` | セッションを空にします |
+| `:quit` | 終了します。標準入力の終わりでも終了します |
+
+#### 診断と制限
+
+診断の位置は、入力の中なら `input:行:列`（`:load` ではそのパス）、セッションの項目の中なら `:list` の行で `session:行:列` です。トラップの理由を示す `trap: ... at <repl>/Main.tz:行:列` の 1 行だけは、生成したプログラムの位置です。
+
+| 対象 | 上限 | 超えたとき |
+| --- | --- | --- |
+| 1 つの入力、生成した `Main.tz` | 4 MiB（ソースの上限 `MAX_SOURCE_BYTES`） | `E0003` |
+| 1 回の評価の実行時間（Clang は含まない） | `--timeout`。既定は 10 秒、`0` は無制限、最大 3600 | プログラムを止めて `E2005` |
+| 評価するプログラムの標準出力 | 16 MiB | プログラムを止めて `E2005` |
+
+評価のたびに Clang でコンパイルしてリンクし、新しい実行ファイルを起動するので、1 回の評価は `-O0` の新しい式で 0.5〜0.7 秒ほどかかります（Apple M1 Max の macOS で計測。macOS が新しい実行ファイルを初めて起動するときの検査の約 0.2 秒を含みます。[性能測定](../../../docs/benchmarks.md#repl-の-1-入力の待ち時間g13)）。同じプログラムをもう一度評価するときは whole-build cache が当たり、約 0.25 秒です。`:type` と宣言だけの入力は検査だけで、約 0.05 秒です。
+
+既定の最適化は `-O0` です。ターゲットは native だけで、`--target`、パス、ほかのビルドオプションは終了コード 2 の `E2000` です。入力のエラーでは終了せず、`:quit` か標準入力の終わりで終了コード 0 です。標準入力が端末のときだけ、見出しと `> `（続きの行は `. `）のプロンプトを出します。標準出力は入力だけで決まるので、入力をファイルから流せばテストにも使えます。行の編集と履歴はありません。
+
+### script
+
+名前を問わない 1 つのファイルを、ほかのファイルも依存もないプロジェクトの `Main.tz` として読み、`run` と同じように検査して実行します。ファイルより後ろの引数は、`--help` のようにオプションに見えるものも含めてそのままプログラムへ渡り、`def main :: Array<string> -> i32` が受け取ります。
+
+```sh
+tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
+```
+
+ファイルの前に置けるのは `-O0`〜`-O3`、`--cpu`、`--no-cache`、`--json`、`--deny-warnings`、`--warn implicit-copy`、`--link`、`-l`、`-L` で、意味と既定（`-O3`、キャッシュ有効）は `run` と同じです。名前が `-` で始まるファイルは `--` の後に置きます。
+
+ファイルの先頭の `#!` 行は、どのソースでも行コメントとして読み飛ばされます（[特殊文字](../values-and-functions/tokens.md#コメントの構文と入れ子)）。そのため、実行権限を付けたファイルを、そのままコマンドとして実行できます。
+
+```tsuzuri
+#!/usr/bin/env -S tsuzuri script
+def main :: Array<string> -> i32 = \args ->
+    do! IO.write_line ("hi " + String.join (ref " ") (ref args))
+    0
+```
+
+この内容を `greet` に保存して `chmod +x greet` し、`./greet x y` を実行すると、標準出力は `hi x y` です。`env -S` は、shebang 行の残りを 1 つの引数として渡す Linux でも `tsuzuri` と `script` を分けるために要ります。macOS は自分で分けるので `#!/usr/bin/env tsuzuri script` でも動きます。シンボリックリンクを経由した実行もできます。
+
+- 読むのは指定したファイルだけです。同じディレクトリのほかの `.tz`、`Tsuzuri.toml`、`Tsuzuri.lock` は読まず、std は `run` と同じく、ソースが名前を書いた opt-in のモジュールだけを足します。依存やほかのモジュールを使うなら、プロジェクトを作って `run` を使います。
+- 拡張子はなくてもかまいません。`.tt` と `.tc` は型クラスとビルダーのモジュールなので `E2000` です。
+- 標準入力と標準出力はプログラムと共有し、標準エラーと警告、`E2005`、終了コードは `run` と同じです。`def main` が 0 以外を返すと `E2005` で、`tsuzuri script` の終了コードは 1 です。
+- 診断とトラップの位置は、shebang 行を 1 行目として数えた、指定したパスのファイルの行と列です。
+- キャッシュのキーには指定したパスも入るので、同じパスで同じ内容のファイルを再び実行すると、Clang を通さずに前回の実行ファイルを使います。
 
 ### build
 
@@ -267,6 +405,24 @@ not ok 1 - Main two plus two
 ```
 
 WASM のテストは PATH の `node` を使います。配布物の `bin/` からは探しません。
+
+`--index N -g -o PATH` は、テスト N だけをデバッグ情報付きのランナーとして `PATH` にビルドし、実行しません。デバッガーでランナーを引数 `0` で起動します（[テストをデバッグする](debugging.md#テストをデバッグする)）。`-O1` から `-O3` を付けると最適化したランナーになり、テストの行とブレークポイントは残ります（変数は消えることがあります）。
+
+失敗したテストが標準エラーに書いた内容は、失敗理由の下に字下げして出ます（成功したテストの出力は出ません）。プロパティテスト（[Gen](../built-in-types-and-modules/gen.md)）の反例もここに出ます。`--seed N` はプロパティテストの seed を変えます。既定は固定の `11400714819323198485` で、同じ seed なら同じ値を試します。
+
+`--coverage PATH` は、成功したテストが通った利用者のコードの行と関数を、lcov 形式で `PATH` に書きます。テストの要約の後に `coverage: 3/4 lines (75.0%), 1/2 functions` のような 1 行が出ます。ネイティブだけで、`--list` や `-g` とは組み合わせられません。数え方は [Test のカバレッジ](../built-in-types-and-modules/test.md#カバレッジ) にあります。
+
+### bench
+
+`bench "名前" = 本体` を、bench ごとに別プロセスで 1 件ずつ計測します。既定の最適化は `-O3`、標本は 11 個（`--samples N` で 1〜1000）です。1 標本が 10 ms になるまで反復回数を倍にし、予熱の 1 標本の後に測った 1 回あたりの中央値・最小・最大を出します。速さの合否はありません。
+
+```text
+bench 0 Speed.total 1e6: median 312.408 us (min 305.917 us, max 330.142 us; 11 samples of 32 iterations)
+
+1 benchmark; 0 failed; 0 ignored
+```
+
+`--list`、`--filter`、`--index`、`--json` は `test` と同じ使い方です。ネイティブだけで、`--target wasm32` は `E2000` です。トラップ・300 秒の時間切れ・負の時間は失敗で、`E2005` と終了コード 1 になります。書き方と出力の詳細は [Bench](../built-in-types-and-modules/bench.md) にあります。
 
 ### fmt
 
@@ -352,7 +508,15 @@ Price.price()
 | Linux | `$XDG_CACHE_HOME/tsuzuri/build-cache`。無ければ `~/.cache/tsuzuri/build-cache` |
 | Windows | `%LOCALAPPDATA%\Tsuzuri\Cache\build-cache` |
 
-全体の上限は 2 GiB、未使用の期限は 30 日、1 エントリは 256 MiB までです。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが入り、上限と期限による削除の対象外です。`--no-cache` は読み書きの両方を止めます。`build` と `run` 以外では `E2000` です。ツールの `--version` が失敗すると、ビルドは続けつつ `build cache disabled: ...` を標準エラーへ出します。`--json` では、この種のツール警告は `W2001` です。
+全体の上限は 2 GiB、未使用の期限は 30 日、1 エントリは 256 MiB までです。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが入り、上限と期限による削除の対象外です。`--no-cache` は読み書きの両方を止めます。`build`・`run`・`script`・`repl` 以外では `E2000` です。ツールの `--version` が失敗すると、ビルドは続けつつ `build cache disabled: ...` を標準エラーへ出します。`--json` では、この種のツール警告は `W2001` です。
+
+### 構文解析の結果
+
+`check`、`build`、`run`、`script`、`test`、`bench`、`doc` は、ソースを構文解析した結果を同じ保存先の `frontend/` に保存し、次の実行では内容が同じソースを構文解析し直さずに使います。保存するのはプロジェクトのルートとコマンドの種類（`check`・`build`・`run`・`script`、`test`・`bench`、`doc` の 3 つ）ごとに、結果の束 `p-<64 桁の 16 進>.tzp` とモジュールの一覧 `m-<64 桁の 16 進>.json` の 2 ファイルです。標準ライブラリのソースも含みます。照合のキーはソースの byte 列とコンパイラ（版と実行ファイルの同一性。Unix では大きさ、更新時刻、device、inode、状態変更時刻、Windows ではパス、大きさ、作成時刻、更新時刻）で、ソースのパスや拡張子は含みません。コンパイラを入れ替えると、最初の実行ですべてを構文解析し直します。
+
+型検査、特殊化、IR の生成は毎回すべて行うので、出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。保存した結果が壊れている、読めない、別のコンパイラのもの、というときは黙って構文解析し直し、次に構文解析がすべて成功した実行で書き直します。構文エラーのあるソースは保存しません。`frontend/` は合計 1 GiB まで、更新から 30 日で消します。
+
+`--no-cache` は `build`・`run`・`script` で両方のキャッシュを止め、`repl` ではビルド成果物のキャッシュを止めます（`repl` は構文解析の結果のキャッシュを使いません）。`check`、`test`、`bench`、`doc` は `--no-cache` を受け付けない（`E2000`）ので、使いたくないときは `TSUZURI_CACHE_DIR=`（空）にします。言語サーバーはこのキャッシュを使いません。
 
 ## 終了コード
 
@@ -372,7 +536,7 @@ Price.price()
 - 配布物では `tsuzuri` だけを PATH に足し、`toolchain info` で同梱ツールが見えているか確認します。
 - 日常の流れは `new`、`check`、`run`、必要なときだけ `build` です。git や registry の依存があれば、最初と依存を変えたときに `fetch` します。
 - ディレクトリは `Main.tz`、ファイルはその親以下の全ソース、が入力の基本です。
-- キャッシュは既定で有効です。消したいビルドだけ `--no-cache` を付けます。
+- キャッシュは既定で有効です。消したいビルドだけ `--no-cache` を付けます。`check` などでは `TSUZURI_CACHE_DIR=` にします。
 - 終了コード 2 は引き方、1 は中身か実行、0 は成功です。
 
 ## 関連項目

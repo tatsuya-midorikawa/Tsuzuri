@@ -44,6 +44,11 @@
     "body": ["test \"${1:description}\" =", "    assert (${2:true})$0"],
     "description": "Discoverable test"
   },
+  "Bench": {
+    "prefix": "bench",
+    "body": ["bench \"${1:description}\" = Bench.of (\\_ -> ${2:work ()})$0"],
+    "description": "Benchmark that tsuzuri bench measures"
+  },
   "Record": {
     "prefix": "record",
     "body": ["record ${1:Name} {", "    ${2:field}: ${3:i64}", "}$0"],

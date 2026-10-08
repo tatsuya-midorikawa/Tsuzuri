@@ -14,7 +14,12 @@ use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
 
 #[path = "test_runner.rs"]
 mod test_runner;
-pub use test_runner::{TestOptions, TestReport, TestResult, run_tests, run_tests_linked};
+pub use test_runner::{
+    BENCH_SAMPLE_NS, BENCH_TIMEOUT, BenchOptions, BenchReport, BenchResult, CoverageRun,
+    DEFAULT_BENCH_SAMPLES, DebugRunner, MAX_BENCH_ITERATIONS, TestOptions, TestReport, TestResult,
+    build_debug_runner, check_coverage_output, run_benches, run_benches_linked, run_tests,
+    run_tests_linked, write_coverage,
+};
 
 #[path = "bindgen_driver.rs"]
 mod bindgen_driver;
@@ -1253,7 +1258,7 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
             ),
         ));
     }
-    if metadata.len() > MAX_SOURCE_BYTES as u64 {
+    if metadata.len() > crate::package::MAX_PACKAGE_FILE_BYTES as u64 {
         return Err(SourceError::new(
             &path,
             driver_error("E1017", "Tsuzuri.lock exceeds 1 MiB"),
@@ -1262,7 +1267,7 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
     let mut bytes = Vec::new();
     fs::File::open(&path)
         .and_then(|file| {
-            file.take(MAX_SOURCE_BYTES as u64 + 1)
+            file.take(crate::package::MAX_PACKAGE_FILE_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
         })
         .map_err(|error| SourceError::new(&path, io_error("read lockfile", &path, error)))?;
@@ -1382,7 +1387,10 @@ impl Project {
                 if text.len() > MAX_SOURCE_BYTES {
                     return Err(SourceError::new(
                         path,
-                        driver_error("E0003", "source exceeds the 1 MiB limit"),
+                        driver_error(
+                            "E0003",
+                            format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
+                        ),
                     ));
                 }
                 let path = parent.join(path.file_name().ok_or_else(|| {
@@ -1786,6 +1794,63 @@ impl Project {
         )
     }
 
+    /// The project of `tsuzuri script`: the file at `path`, whatever its name, as the
+    /// application's `Main.tz` and nothing else (see [`Project::single_main`]). A symbolic
+    /// link is followed, since a script on PATH often is one.
+    pub fn load_script(path: &Path) -> Result<Self, SourceError> {
+        if matches!(
+            source_kind(path),
+            Some(SourceKind::TypeClass | SourceKind::Computation)
+        ) {
+            return Err(SourceError::new(
+                path,
+                driver_error(
+                    "E2000",
+                    "a script is a .tz program; .tt and .tc files are type class and builder modules",
+                ),
+            ));
+        }
+        let text = read_source_text(path).map_err(|error| SourceError::new(path, error))?;
+        Ok(Self::single_main(path.to_owned(), text))
+    }
+
+    /// A project whose only user source is `text`, the application's `Main.tz`, shown at
+    /// `path`. It reads no file, manifest, or lockfile, so the program sees no other module
+    /// and no dependency; like [`Project::load`], it adds only the std modules that `text`
+    /// names (D-40). The REPL passes a generated program and `tsuzuri script` a file.
+    pub fn single_main(path: PathBuf, text: String) -> Self {
+        let std_sources = crate::stdlib::sources_for([text.as_str()]);
+        let mut sources = vec![SourceFile {
+            path,
+            relative_path: PathBuf::from("Main.tz"),
+            name: "Main".to_owned(),
+            text,
+            origin: ModuleOrigin::User,
+            package: None,
+            namespace: String::new(),
+        }];
+        sources.extend(std_sources.iter().map(|(path, text)| {
+            SourceFile {
+                path: PathBuf::from(path),
+                relative_path: PathBuf::from(path),
+                name: crate::stdlib::module_name(path)
+                    .expect("embedded std paths are flat")
+                    .to_owned(),
+                text: (*text).to_owned(),
+                origin: ModuleOrigin::Std,
+                package: None,
+                namespace: String::new(),
+            }
+        }));
+        Self {
+            sources,
+            manifests: Vec::new(),
+            root: 0,
+            wasm: Default::default(),
+            native: LinkInputs::default(),
+        }
+    }
+
     pub fn input(&self) -> &Path {
         &self.sources[self.root].path
     }
@@ -1822,20 +1887,76 @@ impl Project {
     }
 
     pub fn analyze_all(&self) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
-        let sources: Vec<_> = self
-            .sources
+        crate::analyze_inputs_all(&self.inputs())
+    }
+
+    /// Analyzes the project like `analyze_all`, reusing parsed sources from the frontend cache
+    /// under `cache::default_root()` when `cache` is set and the cache opens (G17). The result
+    /// and the diagnostics do not depend on the cache.
+    pub fn analyze_cached(
+        &self,
+        cache: bool,
+        kind: AnalysisKind,
+    ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        let inputs = self.inputs();
+        let frontend = cache
+            .then(|| {
+                let project =
+                    crate::frontend_cache::ProjectKey::new(&self.root_directory()?, kind.name())?;
+                crate::frontend_cache::FrontendCache::open(&crate::cache::default_root()?, project)
+            })
+            .flatten();
+        match frontend {
+            Some(mut cache) => crate::analyze_inputs_with(&inputs, None, Some(&mut cache)),
+            None => crate::analyze_inputs_all(&inputs),
+        }
+    }
+
+    fn inputs(&self) -> Vec<crate::SourceInput<'_>> {
+        self.sources
             .iter()
             .map(|source| crate::SourceInput {
-                path: match source.origin {
-                    ModuleOrigin::User => source.relative_path.to_str().unwrap(),
-                    ModuleOrigin::Std => source.relative_path.to_str().unwrap(),
-                },
+                path: source.relative_path.to_str().unwrap(),
                 text: &source.text,
                 origin: source.origin,
                 namespace: &source.namespace,
             })
-            .collect();
-        crate::analyze_inputs_all(&sources)
+            .collect()
+    }
+
+    /// The directory that the root source's relative path starts from.
+    fn root_directory(&self) -> Option<PathBuf> {
+        let source = self.sources.get(self.root)?;
+        let directory = source
+            .path
+            .ancestors()
+            .nth(source.relative_path.components().count())?;
+        Some(if directory.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            directory.to_owned()
+        })
+    }
+}
+
+/// What a command analyzes a project for; each has its own frontend cache manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisKind {
+    /// `Project::load`: check, build and run.
+    Program,
+    /// `Project::load_for_tests`: test.
+    Tests,
+    /// `Project::load_for_docs`: doc.
+    Docs,
+}
+
+impl AnalysisKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Program => "program",
+            Self::Tests => "tests",
+            Self::Docs => "docs",
+        }
     }
 }
 
@@ -2129,8 +2250,9 @@ fn build_complete(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
+    // The entry module, which `tsuzuri script` reads from a file of any name.
     if options.emit == Emit::Executable
-        && project.input().file_name() != Some(OsStr::new("Main.tz"))
+        && project.sources[project.root].relative_path != Path::new("Main.tz")
     {
         return Err(driver_error(
             "E2004",
@@ -2264,6 +2386,9 @@ fn build_complete(
         && !matches!(options.emit, Emit::Header | Emit::Wgsl)
     {
         text = llvm::windows_abi(text, module);
+        if options.debug_info && msvc_linker() {
+            text = llvm::with_codeview(text);
+        }
     }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
@@ -2398,6 +2523,15 @@ fn build_complete(
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
+    let pdb = (options.debug_info
+        && options.target == Target::Native
+        && options.emit == Emit::Executable
+        && msvc_linker())
+    .then(|| pdb_path(output));
+    if let Some(pdb) = &pdb {
+        protect_sources(project, pdb)?;
+        protect_links(links, pdb)?;
+    }
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -2415,6 +2549,7 @@ fn build_complete(
     let mut messages = Vec::new();
     let staged_sidecar = temporary.path.join("sites.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
+    let staged_pdb = temporary.path.join("artifact.pdb");
     if sidecar.is_some() {
         let table =
             project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
@@ -2428,6 +2563,9 @@ fn build_complete(
     }
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
+    }
+    if pdb.is_some() {
+        cache_paths.insert("pdb".into(), staged_pdb.clone());
     }
     // The cache key does not cover the contents of link inputs, so a build with them is never cached.
     let cache = if options.cache && options.emit != Emit::Header && links.is_empty() {
@@ -2544,9 +2682,9 @@ fn build_complete(
             if stack_runtime {
                 runtime.arg("-DTZ_STACK_GUARD");
             }
-            if options.debug_info {
-                runtime.arg("-g");
-            }
+            // The runtime has no debug information, like the stack guard below: stepping never
+            // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
+            // runtime unit at Clang's default (DWARF 5) would otherwise raise when merged (G16).
             if merge_debug_ir {
                 runtime.args(["-S", "-emit-llvm"]);
             }
@@ -2740,6 +2878,9 @@ fn build_complete(
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang);
+        }
+        if let Some(pdb) = &pdb {
+            clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
         collect_message(
             &mut messages,
@@ -2940,6 +3081,7 @@ fn build_complete(
         .map(|path| (&staged_sidecar, path))
         .into_iter()
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
+        .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
         .collect();
     if !cache_hit
         && let Some((cache, key)) = &cache
@@ -3165,6 +3307,52 @@ fn publish_outputs(
     Ok(())
 }
 
+/// Whether native executables on this host link with the MSVC linker (`link.exe`, or `lld-link`
+/// with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links with MinGW's
+/// `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get a PDB.
+/// The file name is enough: every other Clang, a MinGW distribution's included, gets
+/// `--target=<arch>-pc-windows-msvc` from `native_compile_args`, and Clang's MSVC driver links
+/// only with `link.exe` or `lld-link`; the launcher alone drops that target for `windows-gnu`.
+pub(crate) fn msvc_linker() -> bool {
+    cfg!(windows)
+        && Path::new(&tool("TSUZURI_CLANG", "clang"))
+            .file_stem()
+            .is_none_or(|stem| stem != "tsuzuri-clang")
+}
+
+/// The PDB of the `-g` executable `output` on Windows: `<output>` with the extension `.pdb`.
+pub fn pdb_path(output: &Path) -> PathBuf {
+    output.with_extension("pdb")
+}
+
+/// The Clang arguments with which the MSVC linker writes the PDB to `staged` in `directory` and
+/// embeds the Tsuzuri natvis views (G16 Phase 3). The executable names the PDB by the file name of
+/// `published`, where the build publishes it, so debuggers find it beside the executable.
+fn pdb_link_args(
+    staged: &Path,
+    published: &Path,
+    directory: &Path,
+) -> Result<Vec<OsString>, Diagnostic> {
+    let natvis = directory.join("tsuzuri.natvis");
+    fs::write(&natvis, include_str!("runtime/tsuzuri.natvis"))
+        .map_err(|error| io_error("write natvis", &natvis, error))?;
+    let name = published
+        .file_name()
+        .map_or_else(|| OsString::from("artifact.pdb"), OsString::from);
+    let mut arguments = Vec::new();
+    for (option, value) in [
+        ("/PDB:", staged.as_os_str()),
+        ("/PDBALTPATH:", name.as_os_str()),
+        ("/NATVIS:", natvis.as_os_str()),
+    ] {
+        let mut argument = OsString::from(option);
+        argument.push(value);
+        // `-Xlinker` passes the argument whole; `-Wl,` would split a path at its commas.
+        arguments.extend([OsString::from("-Xlinker"), argument]);
+    }
+    Ok(arguments)
+}
+
 pub fn trap_sidecar_path(output: &Path) -> PathBuf {
     let mut name = output.as_os_str().to_owned();
     name.push(".trap.json");
@@ -3223,6 +3411,79 @@ pub fn run_with_diagnostics(
     links: &LinkInputs,
     json: bool,
 ) -> Result<Vec<String>, Diagnostic> {
+    run_with_arguments(module, project, options, links, json, &[])
+}
+
+/// [`run_with_diagnostics`] that passes `arguments` to the program, after its own path:
+/// `tsuzuri script FILE [arguments...]`.
+pub fn run_with_arguments(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    json: bool,
+    arguments: &[OsString],
+) -> Result<Vec<String>, Diagnostic> {
+    run_process(
+        module,
+        project,
+        options,
+        links,
+        RunStdio::Inherit { json, arguments },
+    )
+    .map(|(messages, _)| messages)
+}
+
+/// The most standard output that [`run_captured`] collects before it stops the program.
+pub const MAX_CAPTURED_OUTPUT: usize = 16 * 1024 * 1024;
+
+/// Builds and runs the program like `tsuzuri run`, but with an empty standard input and its
+/// standard output collected and returned; its standard error is relayed as `run` relays it.
+/// A program that runs longer than `timeout` or writes more than [`MAX_CAPTURED_OUTPUT`]
+/// bytes is killed and reported as `E2005` without a source position. The REPL uses it.
+pub fn run_captured(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    timeout: Option<std::time::Duration>,
+) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
+    run_process(
+        module,
+        project,
+        options,
+        &LinkInputs::default(),
+        RunStdio::Capture {
+            timeout,
+            limit: MAX_CAPTURED_OUTPUT,
+        },
+    )
+}
+
+/// How [`run_process`] connects the program's standard streams.
+enum RunStdio<'a> {
+    /// `tsuzuri run` and `script`: the program gets `arguments` and shares the compiler's stdin
+    /// and stdout, and its stderr is relayed, or with `json` collected and reported after it ends.
+    Inherit {
+        json: bool,
+        arguments: &'a [OsString],
+    },
+    /// [`run_captured`]: stdin is empty, stdout is collected up to `limit` bytes, and stderr is
+    /// relayed; the program is killed past `timeout` or `limit`.
+    Capture {
+        timeout: Option<std::time::Duration>,
+        limit: usize,
+    },
+}
+
+/// Builds the program into a temporary directory, runs it, and returns the build messages and
+/// the collected stdout (empty unless captured).
+fn run_process(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    stdio: RunStdio<'_>,
+) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
             "E2000",
@@ -3246,38 +3507,30 @@ pub fn run_with_diagnostics(
         links,
         "run",
     )?;
-    let mut child = Command::new(&output)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| io_error("run executable", &output, error))?;
-    let mut stderr = Vec::new();
-    let relay = (|| -> io::Result<()> {
-        let mut stream = child.stderr.take().expect("stderr is piped");
-        let mut buffer = [0; 8192];
-        loop {
-            let count = match stream.read(&mut buffer) {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if count == 0 {
-                return Ok(());
+    let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
+    let (status, stderr, stdout) = match stdio {
+        RunStdio::Inherit { json, arguments } => {
+            let mut child = Command::new(&output)
+                .args(arguments)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| io_error("run executable", &output, error))?;
+            let mut stderr = Vec::new();
+            let stream = child.stderr.take().expect("stderr is piped");
+            if let Err(error) = relay(stream, &mut stderr, !json) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io_error("relay program stderr", &output, error));
             }
-            stderr.extend_from_slice(&buffer[..count]);
-            if !json {
-                io::stderr().write_all(&buffer[..count])?;
-            }
+            let status = child
+                .wait()
+                .map_err(|error| io_error("wait for executable", &output, error))?;
+            (status, stderr, Vec::new())
         }
-    })();
-    if let Err(error) = relay {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(io_error("relay program stderr", &output, error));
-    }
-    let status = child
-        .wait()
-        .map_err(|error| io_error("wait for executable", &output, error))?;
+        RunStdio::Capture { timeout, limit } => capture(&output, timeout, limit)?,
+    };
     temporary.close()?;
     // An `IO<i32>` entry returns its value as the exit code, so a non-zero code is not a trap.
     if let Some(code) = status.code()
@@ -3327,7 +3580,166 @@ pub fn run_with_diagnostics(
             .write_all(&stderr)
             .map_err(|error| io_error("relay program stderr", &output, error))?;
     }
-    Ok(messages)
+    Ok((messages, stdout))
+}
+
+/// Copies `stream` into `collected` until it ends, also writing it to stderr when `echo`.
+fn relay(mut stream: impl Read, collected: &mut Vec<u8>, echo: bool) -> io::Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let count = match stream.read(&mut buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        collected.extend_from_slice(&buffer[..count]);
+        if echo {
+            io::stderr().write_all(&buffer[..count])?;
+        }
+    }
+}
+
+/// How a captured stream of the program ended.
+enum StreamEnd {
+    Closed,
+    /// The program wrote more stdout than the limit.
+    Overflow,
+    Failed(io::Error),
+}
+
+/// Runs `output` for [`run_captured`]. The streams are read on their own threads, so neither
+/// pipe can fill up while the other is read.
+fn capture(
+    output: &Path,
+    timeout: Option<std::time::Duration>,
+    limit: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Diagnostic> {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new(output)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| io_error("run executable", output, error))?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let (sender, receiver) = channel();
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stdout_sender = sender.clone();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        let mut stream = stdout;
+        let mut buffer = [0; 8192];
+        let end = loop {
+            let count = match stream.read(&mut buffer) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => break StreamEnd::Failed(error),
+                Ok(count) => count,
+            };
+            if count == 0 {
+                break StreamEnd::Closed;
+            }
+            if collected.len() + count > limit {
+                break StreamEnd::Overflow;
+            }
+            collected.extend_from_slice(&buffer[..count]);
+        };
+        let _ = stdout_sender.send(end);
+        collected
+    });
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        let end = match relay(stderr, &mut collected, true) {
+            Ok(()) => StreamEnd::Closed,
+            Err(error) => StreamEnd::Failed(error),
+        };
+        let _ = sender.send(end);
+        collected
+    });
+    let next = |deadline: Option<Instant>| match deadline {
+        Some(deadline) => receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+    };
+    let exceeded = || {
+        format!(
+            "evaluation exceeded the {}-second limit and was stopped; use --timeout to change it",
+            timeout.unwrap_or_default().as_secs()
+        )
+    };
+    let mut open = 2;
+    let mut stopped = None;
+    while open > 0 && stopped.is_none() {
+        match next(deadline) {
+            Ok(StreamEnd::Closed) => open -= 1,
+            Ok(StreamEnd::Overflow) => {
+                open -= 1;
+                stopped = Some(format!(
+                    "program output exceeded {} MiB and the program was stopped",
+                    limit >> 20
+                ));
+            }
+            Ok(StreamEnd::Failed(error)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io_error("read program output", output, error));
+            }
+            Err(RecvTimeoutError::Timeout) => stopped = Some(exceeded()),
+            Err(RecvTimeoutError::Disconnected) => open = 0,
+        }
+    }
+    let status = if stopped.is_none() {
+        // Both streams are closed, so the program has exited unless it closed them itself.
+        // ponytail: 1–10 ms try_wait polling for that rare case; use a blocking wait with a timeout if std gains one
+        let mut pause = Duration::from_millis(1);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
+                    stopped = Some(exceeded());
+                    break None;
+                }
+                Ok(None) if deadline.is_none() => {
+                    break Some(
+                        child
+                            .wait()
+                            .map_err(|error| io_error("wait for executable", output, error))?,
+                    );
+                }
+                Ok(None) => {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(Duration::from_millis(10));
+                }
+                Err(error) => return Err(io_error("wait for executable", output, error)),
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(message) = stopped {
+        let _ = child.kill();
+        let _ = child.wait();
+        // Let the relay finish the program's last stderr before the diagnostic follows it; a
+        // process the program started may hold the pipes open, so this waits only briefly.
+        let grace = Instant::now() + Duration::from_millis(500);
+        while open > 0 && next(Some(grace)).is_ok() {
+            open -= 1;
+        }
+        return Err(Diagnostic::new("E2005", message, Span::default()));
+    }
+    let stdout = stdout_reader
+        .join()
+        .expect("the stdout reader does not panic");
+    let stderr = stderr_reader
+        .join()
+        .expect("the stderr reader does not panic");
+    Ok((
+        status.expect("a program that was not stopped has a status"),
+        stderr,
+        stdout,
+    ))
 }
 
 /// Where a compiler tool was found.
@@ -3548,6 +3960,47 @@ mod tests {
         }
         let project = Project::load(&directory.path.join(input)).unwrap();
         (directory, project)
+    }
+
+    #[test]
+    fn script_projects_read_one_file_of_any_name() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        let script = directory.path.join("greet");
+        fs::write(
+            &script,
+            "#!/usr/bin/env tsuzuri script\nlet value = Json.Null\n0\n",
+        )
+        .unwrap();
+        fs::write(directory.path.join("Broken.tz"), "def broken :: i64 = (\n").unwrap();
+        let project = Project::load_script(&script).unwrap();
+        assert_eq!(project.input(), script);
+        assert_eq!(
+            project.sources[project.root].relative_path,
+            Path::new("Main.tz")
+        );
+        let names: Vec<_> = project
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::User)
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, ["Main"]);
+        assert!(project.sources.iter().any(|source| source.name == "Json"));
+        assert!(project.analyze_all().is_ok());
+        #[cfg(unix)]
+        {
+            let link = directory.path.join("linked");
+            std::os::unix::fs::symlink(&script, &link).unwrap();
+            assert_eq!(Project::load_script(&link).unwrap().input(), link);
+        }
+        let module = Project::load_script(&directory.path.join("Traits.tt")).unwrap_err();
+        assert_eq!(module.diagnostic.code, "E2000");
+        for missing in [directory.path.join("missing.tz"), directory.path.clone()] {
+            assert_eq!(
+                Project::load_script(&missing).unwrap_err().diagnostic.code,
+                "E2001"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -4189,6 +4642,39 @@ mod tests {
         assert!(source.contains(&format!("\"{STACK_OVERFLOW_REPORT}\\n\"")));
         assert!(source.contains("tsuzuri_stack_thread"));
         assert!(include_str!("runtime/task.c").contains("tsuzuri_stack_thread();"));
+    }
+
+    #[test]
+    fn pdb_links_write_a_named_pdb_and_embed_the_natvis_views() {
+        assert_eq!(pdb_path(Path::new("out/app.exe")), Path::new("out/app.pdb"));
+        assert_eq!(
+            pdb_path(Path::new("out/runner")),
+            Path::new("out/runner.pdb")
+        );
+        let temporary = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        let staged = temporary.path.join("artifact.pdb");
+        let arguments =
+            pdb_link_args(&staged, Path::new("a, b/my app.pdb"), &temporary.path).unwrap();
+        let natvis = temporary.path.join("tsuzuri.natvis");
+        let expected: Vec<OsString> = [
+            "-Xlinker".into(),
+            format!("/PDB:{}", staged.display()),
+            "-Xlinker".into(),
+            "/PDBALTPATH:my app.pdb".into(),
+            "-Xlinker".into(),
+            format!("/NATVIS:{}", natvis.display()),
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        assert_eq!(arguments, expected);
+        assert_eq!(
+            fs::read_to_string(&natvis).unwrap(),
+            include_str!("runtime/tsuzuri.natvis")
+        );
+        // Only Windows links with the MSVC linker.
+        assert!(cfg!(windows) || !msvc_linker());
+        temporary.close().unwrap();
     }
 
     #[test]

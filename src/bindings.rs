@@ -84,7 +84,7 @@ fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunct
         .filter(|(id, function)| function.exported || module.entry == Some(*id))
         .map(|(id, _)| id)
         .collect();
-    crate::llvm::reachable_functions(module, Some(&roots))
+    crate::llvm::reachable_functions(module, Some(&roots), false)
         .into_iter()
         .filter_map(|id| {
             let function = &module.functions[id];

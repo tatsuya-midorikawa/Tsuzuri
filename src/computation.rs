@@ -50,6 +50,7 @@ pub(super) fn collect_all(
                     .or_else(|| program.externs.first().map(|external| external.name.span))
                     .or_else(|| program.functions.first().map(|function| function.name.span))
                     .or_else(|| program.tests.first().map(|test| test.name_span))
+                    .or_else(|| program.benches.first().map(|bench| bench.name_span))
                     .or_else(|| {
                         program
                             .instances

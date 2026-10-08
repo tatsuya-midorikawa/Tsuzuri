@@ -98,7 +98,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、UI やネットワークはホスト側に委譲。 |
-| 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー。 |
+| 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
 
 ---
 
@@ -379,7 +379,7 @@ def main :: unit -> i32 = \() ->
 #### エントリーポイント (`Main.tz`)
 
 アプリケーションは `Main.tz` から開始します。
-エントリーポイントとして、`def main :: unit -> i32` またはコマンドライン引数を受け取る `def main :: Array<string> -> i32` を定義します。`main` が返す `i32` の値がプロセスの終了コードとなり、コンソールに自動表示されることはありません（終了コードが 0 以外の場合は `tsuzuri run` が `E2005` で報告します）。
+エントリーポイントとして、`def main :: unit -> i32` またはコマンドライン引数を受け取る `def main :: Array<string> -> i32` を定義します。`main` が返す `i32` の値がプロセスの終了コードとなり、コンソールに自動表示されることはありません（終了コードが 0 以外の場合は `tsuzuri run` が `E2005` で報告します）。コマンドライン引数は、`tsuzuri script` でファイルより後ろに書くか、ビルドした実行ファイルに渡します。
 トップレベルの `let` 式および最後の結果式で記述されたプログラムも引き続き実行可能で、結果値が `Display` を実装していれば標準出力に出力されます。
 
 #### コンパイル時定数 (`const`)
@@ -453,6 +453,7 @@ def main :: unit -> i32 = \() ->
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
+| `Bench`, `Gen` | ベンチマーク（`tsuzuri bench`）とプロパティテストの生成器 |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
@@ -573,6 +574,34 @@ VS Code や Neovim など、LSP 対応のエディタから利用可能な標準
 - **主要機能**: 未保存バッファのリアルタイム全量同期、複数診断、型ホバー表示、定義ジャンプ、シンボル検索、参照検索、リネーム、補完、シグネチャヘルプ、セマンティックハイライト、未使用ローカル変数のクイックフィックス。
 - **高精度なリファクタリング**: リネームやクイックフィックスは編集後のコードを内部で再解析し、安全性が確認された差分のみを適用します。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md) を参照してください。
 
+### REPL (`tsuzuri repl`)
+
+宣言・トップレベルの `let`・式を 1 つずつ入力し、型と値を確かめる対話環境です。JIT は使わず、入力ごとにそれまでに受け付けた宣言と `let` を含む `Main.tz` を作り直し、`tsuzuri run` と同じ経路で検査・実行します（既定 `-O0`）。
+
+```text
+$ tsuzuri repl
+Tsuzuri 0.1.0 REPL; enter :quit to exit
+> def square :: i64 -> i64 = \x -> x * x
+> square 6
+it: i64 = 36
+> :quit
+```
+
+1 行で完結しない入力は空行で終えます。同じ名前の再定義は元の位置で置き換え、セッション全体を検査し直します。実行中の値は持ち越さず、評価のたびに受け付けた `let` を実行し直します。コマンドは `:type`、`:load`、`:list`、`:reset`、`:quit` です。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#repl) を参照してください。
+
+### スクリプト実行 (`tsuzuri script`)
+
+名前を問わない 1 つのファイルを、ほかのファイルも依存もないプロジェクトの `Main.tz` として `tsuzuri run` と同じように実行し、ファイルより後ろの引数を `def main :: Array<string> -> i32` へ渡します。ファイルの先頭の `#!` 行は行コメントとして読み飛ばされるので、実行権限を付けたファイルをそのまま実行できます。
+
+```text
+#!/usr/bin/env -S tsuzuri script
+def main :: Array<string> -> i32 = \args ->
+    do! IO.write_line ("hi " + String.join (ref " ") (ref args))
+    0
+```
+
+`chmod +x greet` の後の `./greet x y` は `hi x y` を出します（macOS は `#!/usr/bin/env tsuzuri script` でも動きます）。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#script) を参照してください。
+
 ### テストランナー (`tsuzuri test`)
 
 言語組み込みの軽量テストフレームワークです。
@@ -587,9 +616,39 @@ tsuzuri test tests/
 
 # フィルタリング実行や最適化レベルの指定
 tsuzuri test tests/ --filter "加算" -O3 --target native
+
+# 成功したテストの行と関数のカバレッジを lcov で書く（ネイティブだけ）
+tsuzuri test tests/ --coverage coverage.info
+
+# プロパティテストの seed を変える（既定は固定の 11400714819323198485）
+tsuzuri test tests/ --seed 42
 ```
 
-テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。
+プロパティテストは標準モジュール `Gen` で書きます。`Gen.for_all` は生成器の値で性質を確かめ、失敗すると反例を最も単純な値まで縮小し、seed・何個目の値か・反例を表示します。
+
+```text
+test "加算は可換" = Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair -> match pair with | (a, b) -> a + b == b + a)
+```
+
+テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`tsuzuri test tests/ --index 1 -g -o runner` は 1 件のテストをデバッグ情報付きのランナーとしてビルドし、デバッガーで `runner 0` として起動できます（VS Code の Testing ビューの **Debug** も同じ仕組みです）。`--coverage PATH` はコンパイラ自身の計装で、関数・`if` の枝・`match` の節・ループの本体ごとのカウンターを数え、lcov のファイルとテスト要約の後の 1 行の要約を出します。
+
+### ベンチマーク (`tsuzuri bench`)
+
+`bench "名前" = 本体` は、反復回数を受け取って準備を除いた経過ナノ秒を返す `i64 -> i64` の宣言です。標準モジュール `Bench` の `Bench.of` と `Bench.with_input` で書くのが普通で、計算結果は最適化で消えないよう `Bench.consume` の障壁を通ります。
+
+```text
+bench "合計" = Bench.with_input (\_ -> new [i64](1000000, \i -> i)) (\values -> Array.sum values)
+```
+
+```sh
+# 既定の -O3 で、1 標本 10 ms を目標に反復回数を較正し、11 標本の中央値・最小・最大を出す
+tsuzuri bench benches/
+
+# 標本数と JSON Lines 出力（PX01 の欄名: workload, target, opt, metric, unit, samples, median, min, max）
+tsuzuri bench benches/ --samples 21 --json
+```
+
+各ベンチは別プロセスで 1 件ずつ計測されます（ネイティブのみ）。速さの合否の閾値はなく、失敗はトラップ・時間切れ・負の時間だけです。`bench` は予約語です。
 
 ### ドキュメント生成 (`tsuzuri doc`)
 
@@ -610,7 +669,7 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### デバッグ情報と出力仕様
 
-- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。
+- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます。Windows で MSVC のリンカーを使う場合は CodeView も出し、実行ファイルの隣に PDB を書いて natvis の表示を埋め込みます（[デバッグ](_tsuzuri/language-reference/compiler/debugging.md)）。
 - **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。
 - **コンソールの出力とフォーマット**: トップレベルの結果式が評価された場合、その型が `Display` を実装していれば文字列表現が標準出力に表示されます。浮動小数点数は最短で往復可能な十進表現で出力され、ネイティブと WASM で完全に一致します。
 
@@ -668,7 +727,10 @@ cargo build --release
 tsuzuri check source.tz|source.tt|source.tc|directory [--json]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
 tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
+tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 tsuzuri test source.tz|directory [options]
+tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
@@ -689,14 +751,17 @@ tsuzuri lsp
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
-| `-g`, `--debug-info` | DWARF デバッグ情報を付与します。 |
+| `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |
 | `--wasm-max-memory SIZE` | WASM の最大線形メモリサイズ（既定: 16MiB、例: `256MiB`）。 |
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
+| `--coverage PATH` | `tsuzuri test` で、成功したテストの行と関数のカバレッジを lcov 形式で `PATH` に書きます（ネイティブだけ）。 |
+| `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
+| `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
 | `--wasm-feature simd128\|threads` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
-| `--no-cache` | ビルド成果物キャッシュを完全に無効化します。 |
+| `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
 | `--json` | 診断情報やテスト結果を 1 行 1 JSON オブジェクト形式で標準エラー出力へ返します。 |
 
 ### 入力とエラー報告の仕様
@@ -704,6 +769,7 @@ tsuzuri lsp
 - **入力の解決**: ファイルまたはディレクトリを 1 つ指定します。ディレクトリを指定した場合は、直下の `Main.tz` が自動的にエントリーポイントとして選ばれます。ファイル指定時はその親ディレクトリをルートとし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に探索して読み込みます。
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
 - **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。
+- **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
 
 ---
 
@@ -732,10 +798,15 @@ node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/lsp_sessions.mjs target/release/tsuzuri
 node tests/io.mjs target/release/tsuzuri
+node tests/repl.mjs target/release/tsuzuri
+node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
+node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
+node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
+node tests/frontend_cache.mjs target/release/tsuzuri
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
@@ -762,6 +833,7 @@ node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
+node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。

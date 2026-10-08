@@ -1,0 +1,12 @@
+def same :: i64 -> i64
+fn same x = x
+def add :: i64 -> i64 -> i64
+fn add x y = x + y
+def rec count :: i64 -> i64 -> i64
+fn rec count n acc =
+    if n == 0 then
+        acc
+    else
+        count (n - 1) (add acc 1)
+test "same" = Test.is_true (same 5 == 5)
+test "count" = Test.is_true (count 3 0 == 3)

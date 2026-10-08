@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -17,8 +18,16 @@ Usage:
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
+                             [--coverage PATH] [--seed N]
+    tsuzuri test source.tz|directory --index N -g -o PATH [-O0|-O1|-O2|-O3] [--seed N] [--json]
+                             Build test N alone with debug information as PATH without running it;
+                             a debugger starts PATH with the printed argument 0
+    tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
+                              [-O0|-O1|-O2|-O3] [--target native]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
+  tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
@@ -39,6 +48,15 @@ namespace. Otherwise the namespace is the package namespace (Tsuzuri.toml
 namespace, else the package or folder name) followed by subdirectories
 (Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
 '.', as in Sample::Shapes::Circle.area.
+`tsuzuri test --coverage PATH` writes the line and function coverage of the passing
+tests as an lcov file (native only) and prints a summary after the test summary.
+`tsuzuri test --seed N` sets the seed of property tests (Gen.for_all); without it they
+use the fixed seed 11400714819323198485, so every run tries the same values.
+`tsuzuri bench` runs each `bench \"name\" = body` declaration (body: i64 -> i64, iterations to
+nanoseconds; see Bench.with_input and Bench.of) in its own native process, one at a time: it
+doubles the iterations until a sample takes 10 ms, discards one warm-up sample, and prints the
+median, minimum, and maximum time per iteration of --samples samples (default 11, at most 1000)
+at -O3 by default. It has no pass or fail threshold.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -53,6 +71,14 @@ whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it repor
 other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
 pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
 opaque handle into the call instead of borrowing it.
+`tsuzuri repl` reads declarations, top-level lets, and expressions from stdin one at a
+time and prints each new let's type and each expression's type and value. Every input
+is checked and run as a new program after the accepted ones (default -O0; --timeout 10
+seconds per run, 0 for none). Its commands are :type, :load, :list, :reset, and :quit.
+`tsuzuri script` runs one file of any name as the Main.tz of a project without other
+files or dependencies, like `tsuzuri run`, and passes the arguments after the file to
+'def main :: Array<string> -> i32'. A '#!' line at the start of any source file is a
+comment, so a file that starts with '#!/usr/bin/env -S tsuzuri script' can run itself.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -85,8 +111,10 @@ Build options:
                          These three repeat and apply to build, run, and test of native
                          executables; Tsuzuri.toml [native] link/libraries/search come first
   --json                 Emit machine-readable diagnostics on stderr
-    --no-cache             Disable build/run artifact cache reads and writes
-    -g, --debug-info        Emit source-level DWARF debug information
+    --no-cache             Disable cache reads and writes: artifacts and parsed sources for
+                           build/run/script, artifacts for repl
+    -g, --debug-info        Emit source-level DWARF debug information (Windows links with the
+                            MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
     --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
     --debug-output         Enable WASM Debug output imports (native always writes)
@@ -130,6 +158,7 @@ enum Action {
     Run,
     Fmt,
     Test,
+    Bench,
 }
 
 #[derive(Debug)]
@@ -146,6 +175,12 @@ struct Arguments {
     test_filter: Option<String>,
     test_list: bool,
     test_indices: Vec<usize>,
+    /// `tsuzuri test --coverage PATH`: where the lcov report goes.
+    coverage: Option<PathBuf>,
+    /// `tsuzuri bench --samples N`.
+    bench_samples: Option<usize>,
+    /// `tsuzuri test --seed N`: the property-test seed.
+    test_seed: Option<u64>,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -166,6 +201,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             test_filter: None,
             test_list: false,
             test_indices: Vec::new(),
+            coverage: None,
+            bench_samples: None,
+            test_seed: None,
         });
     }
     let mut position = 0;
@@ -194,6 +232,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             position = 1;
             Action::Test
         }
+        Some("bench") => {
+            position = 1;
+            Action::Bench
+        }
         _ => Action::Build,
     };
     let mut input = None;
@@ -209,6 +251,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_filter = None;
     let mut test_list = false;
     let mut test_indices = Vec::new();
+    let mut coverage = None;
+    let mut bench_samples = None;
+    let mut test_seed = None;
     let mut debug_output = false;
     let mut trap_info = false;
     let mut trap_return = false;
@@ -305,6 +350,50 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             .ok_or("test filter must be UTF-8")?
                             .to_owned(),
                     );
+                    continue;
+                }
+                Some("--samples") => {
+                    if bench_samples.is_some() {
+                        return Err("samples specified more than once".into());
+                    }
+                    bench_samples = Some(
+                        next_value(arguments, &mut position, "--samples")?
+                            .to_str()
+                            .filter(|value| {
+                                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .filter(|samples| (1..=1000).contains(samples))
+                            .ok_or("bench samples must be an integer between 1 and 1000")?,
+                    );
+                    continue;
+                }
+                Some("--seed") => {
+                    if test_seed.is_some() {
+                        return Err("seed specified more than once".into());
+                    }
+                    test_seed = Some(
+                        next_value(arguments, &mut position, "--seed")?
+                            .to_str()
+                            .filter(|value| {
+                                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or(
+                                "property seed must be an integer between 0 and 18446744073709551615",
+                            )?,
+                    );
+                    continue;
+                }
+                Some("--coverage") => {
+                    if coverage.is_some() {
+                        return Err("coverage specified more than once".into());
+                    }
+                    coverage = Some(PathBuf::from(next_value(
+                        arguments,
+                        &mut position,
+                        "--coverage",
+                    )?));
                     continue;
                 }
                 Some("--debug-output") => {
@@ -519,7 +608,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     }
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
     if no_cache && !matches!(action, Action::Build | Action::Run) {
-        return Err("--no-cache is only valid with build or run".into());
+        return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
     if emit == Some(Emit::Wgsl) && (target.is_some() || optimization.is_some() || cpu.is_some()) {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
@@ -542,8 +631,22 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             );
         }
     }
-    if debug_info && !matches!(action, Action::Build | Action::Run) {
-        return Err("--debug-info is only valid with build or run".into());
+    if debug_info && !matches!(action, Action::Build | Action::Run | Action::Test) {
+        return Err("--debug-info is only valid with build, run, or test".into());
+    }
+    // `test --index N -g -o PATH` builds the runner of one test for a debugger (G16 Phase 2).
+    if action == Action::Test && (debug_info || output.is_some()) {
+        if !debug_info || output.is_none() {
+            return Err("debugging a test needs both -g and -o with the runner's path".into());
+        }
+        if test_indices.len() != 1 || test_list || test_filter.is_some() {
+            return Err(
+                "debugging a test needs exactly one --index, without --list or --filter".into(),
+            );
+        }
+        if target.is_some_and(Target::is_wasm) {
+            return Err("debugging a test requires the native target".into());
+        }
     }
     if debug_output && !matches!(action, Action::Build | Action::Run) {
         return Err("--debug-output is only valid with build or run".into());
@@ -570,15 +673,45 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
         );
     }
-    if action != Action::Test && (test_filter.is_some() || test_list || !test_indices.is_empty()) {
-        return Err("--filter, --list, and --index are only valid with test".into());
+    if !matches!(action, Action::Test | Action::Bench)
+        && (test_filter.is_some() || test_list || !test_indices.is_empty())
+    {
+        return Err("--filter, --list, and --index are only valid with test or bench".into());
     }
     if action == Action::Test && cpu.is_some() {
         return Err("test does not use CPU tuning".into());
     }
-    if output.is_some() && !matches!(action, Action::Build | Action::Doc)
+    if bench_samples.is_some() && action != Action::Bench {
+        return Err("--samples is only valid with bench".into());
+    }
+    if test_seed.is_some() && action != Action::Test {
+        return Err("--seed is only valid with test".into());
+    }
+    if action == Action::Bench {
+        if cpu.is_some() {
+            return Err("bench does not use CPU tuning".into());
+        }
+        if target.is_some_and(Target::is_wasm) {
+            return Err("tsuzuri bench supports only the native target".into());
+        }
+    }
+    if coverage.is_some() {
+        if action != Action::Test {
+            return Err("--coverage is only valid with test".into());
+        }
+        if target.is_some_and(Target::is_wasm) {
+            return Err("test coverage supports only the native target".into());
+        }
+        if test_list {
+            return Err("coverage cannot be combined with --list".into());
+        }
+        if debug_info {
+            return Err("coverage cannot be combined with -g; a debug runner only builds".into());
+        }
+    }
+    if output.is_some() && !matches!(action, Action::Build | Action::Doc | Action::Test)
         || emit.is_some() && action != Action::Build
-        || target.is_some() && !matches!(action, Action::Build | Action::Test)
+        || target.is_some() && !matches!(action, Action::Build | Action::Test | Action::Bench)
     {
         return Err("--output requires build or doc; --target and --emit require a supported build/test action".into());
     }
@@ -646,6 +779,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_filter,
         test_list,
         test_indices,
+        coverage,
+        bench_samples,
+        test_seed,
     })
 }
 
@@ -657,7 +793,7 @@ fn links_apply(action: Action, options: &BuildOptions) -> bool {
             options.target == Target::Native
                 && matches!(options.emit, Emit::Executable | Emit::Shared)
         }
-        Action::Test => options.target == Target::Native,
+        Action::Test | Action::Bench => options.target == Target::Native,
         _ => false,
     }
 }
@@ -747,6 +883,7 @@ fn run_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
+    program_arguments: &[OsString],
 ) -> Result<Vec<String>, Diagnostic> {
     match arguments.action {
         Action::Lsp => unreachable!("LSP runs without a build project"),
@@ -757,6 +894,7 @@ fn run_action(
         ),
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
+        Action::Bench => unreachable!("benchmarks use an isolated runner"),
         Action::Build => driver::build_linked(
             module,
             project,
@@ -767,9 +905,14 @@ fn run_action(
             arguments.options,
             links,
         ),
-        Action::Run => {
-            driver::run_with_diagnostics(module, project, arguments.options, links, arguments.json)
-        }
+        Action::Run => driver::run_with_arguments(
+            module,
+            project,
+            arguments.options,
+            links,
+            arguments.json,
+            program_arguments,
+        ),
     }
 }
 
@@ -814,6 +957,8 @@ fn run_test_action(
         indices: arguments.test_indices.clone(),
         wasm_max_memory: arguments.options.wasm_max_memory,
         wasm_stack_size: arguments.options.wasm_stack_size,
+        coverage: arguments.coverage.is_some(),
+        seed: arguments.test_seed,
     };
     if options
         .indices
@@ -831,6 +976,9 @@ fn run_test_action(
             arguments.json,
         );
         return ExitCode::FAILURE;
+    }
+    if arguments.options.debug_info {
+        return debug_test(arguments, project, module, &options, links);
     }
     if arguments.test_list {
         for case in module.tests.iter().filter(|case| options.includes(case)) {
@@ -859,6 +1007,12 @@ fn run_test_action(
         }
         return ExitCode::SUCCESS;
     }
+    if let Some(output) = &arguments.coverage
+        && let Err(error) = driver::check_coverage_output(project, output)
+    {
+        print_diagnostic(&error, output, "", arguments.json);
+        return ExitCode::FAILURE;
+    }
     let report = match driver::run_tests_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
@@ -881,7 +1035,11 @@ fn run_test_action(
         let case = &result.case;
         if arguments.json {
             let failure = result.failure.as_ref().map_or_else(String::new, |failure| {
-                format!(",\"failure\":{}", json_string(failure))
+                format!(
+                    ",\"failure\":{}{}",
+                    json_string(failure),
+                    output_field(&result.output)
+                )
             });
             println!(
                 "{{\"type\":\"test\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"{}\"{},\"duration_ms\":{}}}",
@@ -910,6 +1068,7 @@ fn run_test_action(
             );
             if let Some(failure) = &result.failure {
                 println!("  failure: {failure}");
+                print_output(&result.output);
             }
         }
     }
@@ -930,6 +1089,16 @@ fn run_test_action(
             report.ignored
         );
     }
+    let mut coverage_failed = false;
+    if let (Some(output), Some(coverage)) = (&arguments.coverage, &report.coverage) {
+        match driver::write_coverage(project, coverage, output) {
+            Ok(files) => print_coverage(&files, coverage.excluded_failed, arguments.json),
+            Err(error) => {
+                print_diagnostic(&error, output, "", arguments.json);
+                coverage_failed = true;
+            }
+        }
+    }
     if let Some(first) = report
         .results
         .iter()
@@ -943,9 +1112,304 @@ fn run_test_action(
         let source = project.source_for(&diagnostic);
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
         ExitCode::FAILURE
+    } else if coverage_failed {
+        ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Builds the runner of one test for a debugger and prints how to start it (G16 Phase 2).
+fn debug_test(
+    arguments: &Arguments,
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+    options: &driver::TestOptions,
+    links: &driver::LinkInputs,
+) -> ExitCode {
+    let output = arguments
+        .output
+        .as_ref()
+        .expect("debugging a test requires output");
+    let runner = match driver::build_debug_runner(module, project, options, links, output) {
+        Ok(runner) => runner,
+        Err(error) => {
+            let source = project.source_for(&error);
+            print_diagnostic(&error, &source.path, &source.text, arguments.json);
+            return ExitCode::FAILURE;
+        }
+    };
+    for message in &runner.messages {
+        if arguments.json {
+            eprintln!(
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            eprintln!("{}", message.trim());
+        }
+    }
+    let case = &runner.case;
+    if arguments.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "debug", "index": case.index, "module": case.module, "name": case.name,
+                "program": runner.program.to_string_lossy(), "arguments": runner.arguments,
+            })
+        );
+    } else {
+        println!(
+            "{} {}.{}: {} {}",
+            case.index,
+            case.module,
+            case.name.escape_debug(),
+            runner.program.display(),
+            runner.arguments.join(" ")
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// `tsuzuri bench`: measures each selected bench in its own process, one at a time, and prints
+/// the median, minimum, and maximum time per iteration. No result fails on speed.
+fn run_bench_action(
+    arguments: &Arguments,
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+    links: &driver::LinkInputs,
+) -> ExitCode {
+    let options = driver::BenchOptions {
+        target: arguments.options.target,
+        optimization: arguments.options.optimization,
+        filter: arguments.test_filter.clone(),
+        indices: arguments.test_indices.clone(),
+        samples: arguments
+            .bench_samples
+            .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
+    };
+    if options
+        .indices
+        .iter()
+        .any(|index| *index >= module.benches.len())
+    {
+        print_diagnostic(
+            &Diagnostic::new(
+                "E2000",
+                "bench index is out of range; refresh the bench list",
+                Span::default(),
+            ),
+            project.input(),
+            "",
+            arguments.json,
+        );
+        return ExitCode::FAILURE;
+    }
+    if arguments.test_list {
+        for case in module.benches.iter().filter(|case| options.includes(case)) {
+            if arguments.json {
+                let source = project.source_for(&Diagnostic::new("E2000", "", case.span));
+                let mapper = tsuzuri::lsp::PositionMapper::new(
+                    &source.text,
+                    tsuzuri::lsp::PositionEncoding::Utf16,
+                );
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "type": "bench", "index": case.index, "module": case.module,
+                        "name": case.name, "path": source.path,
+                        "range": mapper.range(&source.text, case.span),
+                    })
+                );
+            } else {
+                println!(
+                    "{} {}.{}",
+                    case.index,
+                    case.module,
+                    case.name.escape_debug()
+                );
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+    let report = match driver::run_benches_linked(module, &options, links) {
+        Ok(report) => report,
+        Err(error) => {
+            let source = project.source_for(&error);
+            print_diagnostic(&error, &source.path, &source.text, arguments.json);
+            return ExitCode::FAILURE;
+        }
+    };
+    for message in &report.messages {
+        if arguments.json {
+            eprintln!(
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            eprintln!("{}", message.trim());
+        }
+    }
+    let number = |value: f64| serde_json::to_string(&value).unwrap_or_else(|_| "null".into());
+    for result in &report.results {
+        let case = &result.case;
+        let qualified = format!("{}.{}", case.module, case.name);
+        match (result.statistics(), &result.failure) {
+            (Some((median, min, max)), None) => {
+                if arguments.json {
+                    let samples = result
+                        .samples_ms
+                        .iter()
+                        .map(|sample| number(*sample))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"passed\",\"workload\":{},\"target\":\"native\",\"opt\":\"O{}\",\"cpu_mode\":\"generic\",\"metric\":\"wall_time\",\"unit\":\"ms\",\"iterations\":{},\"samples\":[{samples}],\"median\":{},\"min\":{},\"max\":{}}}",
+                        case.index,
+                        json_string(&case.module),
+                        json_string(&case.name),
+                        json_string(&qualified),
+                        options.optimization,
+                        result.iterations,
+                        number(median),
+                        number(min),
+                        number(max)
+                    );
+                } else {
+                    let (scale, unit) = bench_unit(median);
+                    println!(
+                        "bench {} {}: median {:.3} {unit} (min {:.3} {unit}, max {:.3} {unit}; {} samples of {} iterations)",
+                        case.index,
+                        qualified.escape_debug(),
+                        median * scale,
+                        min * scale,
+                        max * scale,
+                        result.samples_ms.len(),
+                        result.iterations
+                    );
+                }
+            }
+            _ => {
+                let failure = result.failure.as_deref().unwrap_or("produced no samples");
+                if arguments.json {
+                    println!(
+                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"failed\",\"failure\":{}{}}}",
+                        case.index,
+                        json_string(&case.module),
+                        json_string(&case.name),
+                        json_string(failure),
+                        output_field(&result.output)
+                    );
+                } else {
+                    println!(
+                        "bench {} {}: failed ({failure})",
+                        case.index,
+                        qualified.escape_debug()
+                    );
+                    print_output(&result.output);
+                }
+            }
+        }
+    }
+    let failed: Vec<_> = report
+        .results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .collect();
+    if arguments.json {
+        println!(
+            "{{\"type\":\"summary\",\"benchmarks\":{},\"failed\":{},\"ignored\":{}}}",
+            report.results.len(),
+            failed.len(),
+            report.ignored
+        );
+    } else {
+        println!(
+            "\n{} benchmark{}; {} failed; {} ignored",
+            report.results.len(),
+            if report.results.len() == 1 { "" } else { "s" },
+            failed.len(),
+            report.ignored
+        );
+    }
+    for result in &failed {
+        let diagnostic = Diagnostic::new(
+            "E2005",
+            format!(
+                "benchmark '{}.{}' {}",
+                result.case.module,
+                result.case.name,
+                result.failure.as_deref().unwrap_or_default()
+            ),
+            result.case.span,
+        );
+        let source = project.source_for(&diagnostic);
+        print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
+    }
+    if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The unit for a time per iteration of `median` milliseconds, and its factor from milliseconds.
+fn bench_unit(median: f64) -> (f64, &'static str) {
+    if median < 1e-3 {
+        (1e6, "ns")
+    } else if median < 1.0 {
+        (1e3, "us")
+    } else if median < 1e3 {
+        (1.0, "ms")
+    } else {
+        (1e-3, "s")
+    }
+}
+
+/// The `"output"` field of a failed test or bench in JSON, if it wrote to stderr.
+fn output_field(output: &str) -> String {
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!(",\"output\":{}", json_string(output))
+    }
+}
+
+/// The standard error of a failed test or bench, indented under its failure line.
+fn print_output(output: &str) {
+    for line in output.lines() {
+        println!("  {line}");
+    }
+}
+
+/// Prints the `--coverage` summary after the test summary: one text line or one JSON line.
+fn print_coverage(files: &[tsuzuri::coverage::FileCoverage], excluded_failed: usize, json: bool) {
+    let totals = tsuzuri::coverage::totals(files);
+    if !json {
+        println!(
+            "{}",
+            tsuzuri::coverage::render_summary(totals, excluded_failed)
+        );
+        return;
+    }
+    let files = files
+        .iter()
+        .map(|file| {
+            format!(
+                "{{\"path\":{},\"lines\":{{\"hit\":{},\"total\":{}}},\"functions\":{{\"hit\":{},\"total\":{}}}}}",
+                json_string(&file.path),
+                file.lines_hit(),
+                file.lines.len(),
+                file.functions_hit(),
+                file.functions.len()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{{\"type\":\"coverage\",\"lines\":{{\"hit\":{},\"total\":{}}},\"functions\":{{\"hit\":{},\"total\":{}}},\"excluded_failed\":{excluded_failed},\"files\":[{files}]}}",
+        totals.lines_hit, totals.lines, totals.functions_hit, totals.functions
+    );
 }
 
 fn toolchain_info() -> String {
@@ -1233,12 +1697,183 @@ fn bindgen_command(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+const REPL_USAGE: &str =
+    "repl takes no paths; supported options are -O0 to -O3, --cpu, --no-cache, and --timeout";
+const REPL_TIMEOUT: &str = "--timeout requires whole seconds from 0 to 3600";
+
+/// `tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]`.
+fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOptions, String> {
+    let mut options = tsuzuri::repl::ReplOptions::default();
+    let mut seen = BTreeSet::new();
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        let option = match argument.to_str() {
+            Some("--target") => {
+                return Err("repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'".into());
+            }
+            Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
+                options.build.optimization = level.as_bytes()[2] - b'0';
+                "optimization"
+            }
+            Some("--cpu") => {
+                options.build.cpu = match rest.next().and_then(|value| value.to_str()) {
+                    Some("generic") => Cpu::Generic,
+                    Some("native") => Cpu::Native,
+                    _ => return Err("CPU tuning must be 'generic' or 'native'".into()),
+                };
+                "CPU tuning"
+            }
+            Some("--no-cache") => {
+                options.build.cache = false;
+                "no-cache"
+            }
+            Some("--timeout") => {
+                let seconds = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| {
+                        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|seconds| *seconds <= 3600)
+                    .ok_or(REPL_TIMEOUT)?;
+                options.timeout = (seconds != 0).then(|| std::time::Duration::from_secs(seconds));
+                "timeout"
+            }
+            _ => return Err(REPL_USAGE.into()),
+        };
+        if !seen.insert(option) {
+            return Err(format!("{option} specified more than once"));
+        }
+    }
+    Ok(options)
+}
+
+/// `tsuzuri repl`: evaluates the inputs on stdin until `:quit` or its end (G13).
+fn repl_command(arguments: &[OsString]) -> ExitCode {
+    let options = match parse_repl_arguments(arguments) {
+        Ok(options) => options,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                false,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let input = std::io::stdin();
+    let interactive = std::io::IsTerminal::is_terminal(&input);
+    match tsuzuri::repl::run(
+        options,
+        input.lock(),
+        std::io::stdout().lock(),
+        std::io::stderr(),
+        interactive,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            print_diagnostic(
+                &Diagnostic::new(
+                    "E2001",
+                    format!("cannot read or write the REPL's standard streams: {error}"),
+                    Span::default(),
+                ),
+                Path::new("<repl>"),
+                "",
+                false,
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+const SCRIPT_FILE: &str =
+    "script needs a source file: tsuzuri script [options] FILE [arguments...]";
+const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --link, -l, and -L before the file";
+
+/// Splits `tsuzuri script [options] FILE [arguments...]` into the arguments of
+/// `tsuzuri run [options] -- FILE` and the program's arguments: everything after FILE,
+/// unchanged, so that a script's own options never reach the compiler.
+fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>), String> {
+    let mut run = vec![OsString::from("run")];
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        let file = match argument.to_str() {
+            Some("--") => match rest.next() {
+                Some(file) => file,
+                None => break,
+            },
+            Some("-h" | "--help" | "-O0" | "-O1" | "-O2" | "-O3" | "--no-cache" | "--json")
+            | Some("--deny-warnings") => {
+                run.push(argument.clone());
+                continue;
+            }
+            Some(option @ ("--cpu" | "--warn" | "--link" | "-l" | "-L")) => {
+                run.push(argument.clone());
+                run.push(
+                    rest.next()
+                        .ok_or_else(|| format!("{option} needs a value"))?
+                        .clone(),
+                );
+                continue;
+            }
+            Some(option) if option.starts_with('-') => return Err(SCRIPT_OPTIONS.into()),
+            _ => argument,
+        };
+        run.extend([OsString::from("--"), file.clone()]);
+        return Ok((run, rest.cloned().collect()));
+    }
+    if run
+        .iter()
+        .any(|argument| argument == "-h" || argument == "--help")
+    {
+        return Ok((run, Vec::new()));
+    }
+    Err(SCRIPT_FILE.into())
+}
+
+/// Whether the options before a script's file ask for JSON diagnostics. Option values and the
+/// program's own arguments after the file do not count, so `--cpu native --json` does.
+fn script_json(arguments: &[OsString]) -> bool {
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.to_str() {
+            Some("--json") => return true,
+            Some("--cpu" | "--warn" | "--link" | "-l" | "-L") => {
+                rest.next();
+            }
+            Some(option) if option.starts_with('-') && option != "--" => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
         eprintln!("{HELP}");
         return ExitCode::from(2);
     }
+    // `tsuzuri script` is `tsuzuri run` of one file; the program's arguments are set aside first.
+    let (raw, program_arguments) = if raw.first().is_some_and(|command| *command == "script") {
+        match script_arguments(&raw[1..]) {
+            Ok((run, program)) => (run, Some(program)),
+            Err(message) => {
+                print_diagnostic(
+                    &Diagnostic::new("E2000", message, Span::default()),
+                    Path::new("<command line>"),
+                    "",
+                    script_json(&raw[1..]),
+                );
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        (raw, None)
+    };
     let flags: Vec<_> = raw
         .iter()
         .take_while(|argument| *argument != "--")
@@ -1270,6 +1905,9 @@ fn main() -> ExitCode {
     if raw.first().is_some_and(|command| *command == "bindgen") {
         return bindgen_command(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "repl") {
+        return repl_command(&raw[1..]);
+    }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {
         Ok(arguments) => arguments,
@@ -1293,10 +1931,12 @@ fn main() -> ExitCode {
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
     }
-    let loaded = if arguments.action == Action::Test {
+    let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
         Project::load_for_tests(&arguments.input)
     } else if arguments.action == Action::Doc {
         Project::load_for_docs(&arguments.input)
+    } else if program_arguments.is_some() {
+        Project::load_script(&arguments.input)
     } else {
         Project::load(&arguments.input)
     };
@@ -1326,7 +1966,14 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let module = match project.analyze_all() {
+    let kind = match arguments.action {
+        // bench loads the same sources as test (`Project::load_for_tests`).
+        Action::Test | Action::Bench => driver::AnalysisKind::Tests,
+        Action::Doc => driver::AnalysisKind::Docs,
+        _ => driver::AnalysisKind::Program,
+    };
+    // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
+    let module = match project.analyze_cached(arguments.options.cache, kind) {
         Ok(module) => module,
         Err(errors) => {
             print_diagnostics(&errors, &project, arguments.json);
@@ -1355,7 +2002,16 @@ fn main() -> ExitCode {
     if arguments.action == Action::Test {
         return run_test_action(&arguments, &project, &module, &links);
     }
-    let result = run_action(&arguments, &project, &module, &links);
+    if arguments.action == Action::Bench {
+        return run_bench_action(&arguments, &project, &module, &links);
+    }
+    let result = run_action(
+        &arguments,
+        &project,
+        &module,
+        &links,
+        program_arguments.as_deref().unwrap_or_default(),
+    );
     match result {
         Ok(messages) => {
             for message in messages {
@@ -1384,6 +2040,136 @@ mod tests {
 
     fn parse(values: &[&str]) -> Result<Arguments, String> {
         parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    fn parse_repl(values: &[&str]) -> Result<tsuzuri::repl::ReplOptions, String> {
+        parse_repl_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn script_errors_follow_json_in_the_options_only() {
+        let json =
+            |values: &[&str]| script_json(&values.iter().map(OsString::from).collect::<Vec<_>>());
+        // An option value does not end the options: a missing file still reports in JSON.
+        assert!(json(&["--cpu", "native", "--json"]));
+        assert!(json(&["--link", "m", "-O3", "--json"]));
+        assert!(json(&["--bogus", "--json"]));
+        // `--json` after the file, or as a value, belongs to the program or the option.
+        assert!(!json(&["greet.tz", "--json"]));
+        assert!(!json(&["--", "--json"]));
+        assert!(!json(&["--warn", "--json"]));
+        assert!(!json(&["-O0"]));
+    }
+
+    #[test]
+    fn splits_script_options_from_program_arguments() {
+        let split = |values: &[&str]| {
+            script_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        let strings = |values: &[OsString]| {
+            values
+                .iter()
+                .map(|value| value.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let (run, program) = split(&[
+            "-O3", "--cpu", "native", "greet.tz", "--help", "-O0", "--", "x",
+        ])
+        .unwrap();
+        assert_eq!(
+            strings(&run),
+            ["run", "-O3", "--cpu", "native", "--", "greet.tz"]
+        );
+        assert_eq!(strings(&program), ["--help", "-O0", "--", "x"]);
+        // `--` lets the file's name start with '-'.
+        let (run, program) = split(&["--", "-odd.tz", "a"]).unwrap();
+        assert_eq!(strings(&run), ["run", "--", "-odd.tz"]);
+        assert_eq!(strings(&program), ["a"]);
+        // The options are then those of `tsuzuri run`.
+        let parsed = parse_arguments(
+            &split(&["--no-cache", "--json", "-l", "m", "a.tz"])
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        assert_eq!(parsed.action, Action::Run);
+        assert_eq!(parsed.input, PathBuf::from("a.tz"));
+        assert!(!parsed.options.cache && parsed.json && parsed.options.trap_info);
+        assert_eq!(parsed.options.optimization, 3);
+        assert_eq!(parsed.links.libraries, ["m"]);
+        assert_eq!(
+            parse_arguments(&split(&["-O0", "-O3", "a.tz"]).unwrap().0).unwrap_err(),
+            "optimization specified more than once"
+        );
+        for (values, message) in [
+            (&[][..], SCRIPT_FILE),
+            (&["-O0"], SCRIPT_FILE),
+            (&["--"], SCRIPT_FILE),
+            (&["--target", "wasm32", "a.tz"], SCRIPT_OPTIONS),
+            (&["-o", "out", "a.tz"], SCRIPT_OPTIONS),
+            (&["-g", "a.tz"], SCRIPT_OPTIONS),
+            (&["--timeout", "1", "a.tz"], SCRIPT_OPTIONS),
+            (&["--cpu"], "--cpu needs a value"),
+        ] {
+            assert_eq!(split(values).unwrap_err(), message, "{values:?}");
+        }
+        // Help before the file needs no file.
+        assert_eq!(strings(&split(&["--help"]).unwrap().0), ["run", "--help"]);
+    }
+
+    #[test]
+    fn parses_repl_options() {
+        let defaults = parse_repl(&[]).unwrap();
+        assert_eq!(defaults.build.optimization, 0);
+        assert_eq!(defaults.build.cpu, Cpu::Generic);
+        assert!(defaults.build.cache);
+        assert!(defaults.build.trap_info);
+        assert_eq!(
+            (defaults.build.target, defaults.build.emit),
+            (Target::Native, Emit::Executable)
+        );
+        assert_eq!(defaults.timeout, Some(std::time::Duration::from_secs(10)));
+        let custom =
+            parse_repl(&["-O3", "--cpu", "native", "--no-cache", "--timeout", "0"]).unwrap();
+        assert_eq!(custom.build.optimization, 3);
+        assert_eq!(custom.build.cpu, Cpu::Native);
+        assert!(!custom.build.cache);
+        assert_eq!(custom.timeout, None);
+        assert_eq!(
+            parse_repl(&["--timeout", "3600"]).unwrap().timeout,
+            Some(std::time::Duration::from_secs(3600))
+        );
+        // The REPL's -O0 default leaves build's and run's -O3 default alone.
+        assert_eq!(parse(&["run", "Main.tz"]).unwrap().options.optimization, 3);
+    }
+
+    #[test]
+    fn rejects_repl_paths_and_build_options() {
+        let target = "repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'";
+        for (values, message) in [
+            (&["Main.tz"][..], REPL_USAGE),
+            (&["--target", "wasm32"], target),
+            (&["--target", "native"], target),
+            (&["--json"], REPL_USAGE),
+            (&["-o", "out"], REPL_USAGE),
+            (&["-g"], REPL_USAGE),
+            (&["--emit", "llvm"], REPL_USAGE),
+            (&["--timeout", "3601"], REPL_TIMEOUT),
+            (&["--timeout", "x"], REPL_TIMEOUT),
+            (&["--timeout", "-1"], REPL_TIMEOUT),
+            (&["--timeout"], REPL_TIMEOUT),
+            (
+                &["--cpu", "fast"],
+                "CPU tuning must be 'generic' or 'native'",
+            ),
+            (&["-O0", "-O3"], "optimization specified more than once"),
+            (
+                &["--no-cache", "--no-cache"],
+                "no-cache specified more than once",
+            ),
+        ] {
+            assert_eq!(parse_repl(values).unwrap_err(), message, "{values:?}");
+        }
     }
 
     #[test]
@@ -1611,6 +2397,28 @@ mod tests {
         ] {
             assert!(parse(&values).is_err());
         }
+        // G16 Phase 2: `test --index N -g -o PATH` builds one test's runner for a debugger.
+        let debug = parse(&["test", "Main.tz", "--index", "1", "-g", "-o", "runner"]).unwrap();
+        assert!(debug.options.debug_info);
+        assert_eq!(debug.output.as_deref(), Some(Path::new("runner")));
+        assert_eq!(debug.test_indices, [1]);
+        for values in [
+            vec!["test", "Main.tz", "-g", "-o", "runner"],
+            vec![
+                "test", "Main.tz", "--index", "1", "--index", "2", "-g", "-o", "r",
+            ],
+            vec!["test", "Main.tz", "--index", "1", "-g"],
+            vec!["test", "Main.tz", "--index", "1", "-o", "runner"],
+            vec!["test", "Main.tz", "--index", "1", "--list", "-g", "-o", "r"],
+            vec![
+                "test", "Main.tz", "--index", "1", "--filter", "x", "-g", "-o", "r",
+            ],
+            vec![
+                "test", "Main.tz", "--index", "1", "--target", "wasm32", "-g", "-o", "r",
+            ],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
         assert_eq!(parse(&["lsp"]).unwrap().action, Action::Lsp);
         for options in [["lsp", "-O0"], ["lsp", "--json"], ["lsp", "Main.tz"]] {
             assert!(parse(&options).is_err());
@@ -1798,6 +2606,128 @@ mod tests {
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn parses_bench_coverage_and_seed_options() {
+        let bench = parse(&[
+            "bench",
+            "Speed.tz",
+            "--samples",
+            "5",
+            "--list",
+            "--index",
+            "1",
+            "--filter",
+            "total",
+        ])
+        .unwrap();
+        assert_eq!(bench.action, Action::Bench);
+        assert_eq!(bench.bench_samples, Some(5));
+        assert_eq!(bench.options.optimization, 3);
+        assert!(bench.test_list && bench.test_filter.as_deref() == Some("total"));
+        assert_eq!(bench.test_indices, vec![1]);
+        assert!(links_apply(Action::Bench, &bench.options));
+        assert_eq!(
+            parse(&["bench", "Speed.tz", "-O0", "--target", "native"])
+                .unwrap()
+                .options
+                .optimization,
+            0
+        );
+        let test = parse(&[
+            "test",
+            "Specs.tz",
+            "--coverage",
+            "c.info",
+            "--seed",
+            "18446744073709551615",
+        ])
+        .unwrap();
+        assert_eq!(test.coverage, Some(PathBuf::from("c.info")));
+        assert_eq!(test.test_seed, Some(u64::MAX));
+        assert_eq!(test.bench_samples, None);
+        let samples = "bench samples must be an integer between 1 and 1000";
+        let seed = "property seed must be an integer between 0 and 18446744073709551615";
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--coverage", "c.info"],
+                "--coverage is only valid with test",
+            ),
+            (
+                vec!["bench", "Main.tz", "--coverage", "c.info"],
+                "--coverage is only valid with test",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage"],
+                "--coverage needs a value",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage", "a", "--coverage", "b"],
+                "coverage specified more than once",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage", "a", "--list"],
+                "coverage cannot be combined with --list",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage", "a", "--target", "wasm64"],
+                "test coverage supports only the native target",
+            ),
+            (
+                vec!["test", "Main.tz", "--samples", "3"],
+                "--samples is only valid with bench",
+            ),
+            (vec!["bench", "Main.tz", "--samples", "0"], samples),
+            (vec!["bench", "Main.tz", "--samples", "1001"], samples),
+            (vec!["bench", "Main.tz", "--samples", " 3"], samples),
+            (
+                vec!["bench", "Main.tz", "--samples", "3", "--samples", "4"],
+                "samples specified more than once",
+            ),
+            (
+                vec!["bench", "Main.tz", "--target", "wasm32"],
+                "tsuzuri bench supports only the native target",
+            ),
+            (
+                vec!["bench", "Main.tz", "--cpu", "native"],
+                "bench does not use CPU tuning",
+            ),
+            (
+                vec!["bench", "Main.tz", "--wasm-max-memory", "64MiB"],
+                "--wasm-max-memory and --wasm-stack-size are only valid with build or test",
+            ),
+            (
+                vec!["run", "Main.tz", "--index", "0"],
+                "--filter, --list, and --index are only valid with test or bench",
+            ),
+            (
+                vec!["build", "Main.tz", "--seed", "1"],
+                "--seed is only valid with test",
+            ),
+            (
+                vec!["bench", "Main.tz", "--seed", "1"],
+                "--seed is only valid with test",
+            ),
+            (vec!["test", "Main.tz", "--seed", "0x10"], seed),
+            (
+                vec!["test", "Main.tz", "--seed", "18446744073709551616"],
+                seed,
+            ),
+            (
+                vec!["test", "Main.tz", "--seed", "1", "--seed", "2"],
+                "seed specified more than once",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        for values in [
+            vec!["bench", "Main.tz", "-o", "out"],
+            vec!["bench", "Main.tz", "--emit", "llvm"],
+            vec!["bench", "Main.tz", "--trap-info"],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
         }
     }
 

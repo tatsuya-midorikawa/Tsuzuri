@@ -1,0 +1,6 @@
+test "negation overflows only at the minimum" = Gen.for_all (Gen.i64()) (\x -> x == 0 || -x != x)
+test "i64 reaches the maximum" = Gen.for_all (Gen.i64()) (\x -> x < 9223372036854775807)
+test "i64 shrinks from the minimum" = Gen.for_all (Gen.i64()) (\x -> x > -9223372036854774808)
+test "i32 reaches the minimum" = Gen.for_all (Gen.i32()) (\x -> (x as i64) > -2147483648)
+test "i32 reaches the maximum" = Gen.for_all (Gen.i32()) (\x -> (x as i64) < 2147483647)
+test "i32 shrinks from the minimum" = Gen.for_all (Gen.i32()) (\x -> (x as i64) > -2147482648)

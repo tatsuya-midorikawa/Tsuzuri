@@ -4,11 +4,13 @@ pub mod bindings;
 pub mod cache;
 pub mod check;
 pub mod copies;
+pub mod coverage;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;
 pub mod fetch;
 pub mod formatter;
+pub(crate) mod frontend_cache;
 pub mod gpu;
 pub mod lexer;
 pub mod llvm;
@@ -18,9 +20,11 @@ pub mod ownership;
 pub mod package;
 pub mod parser;
 mod ranges;
+pub mod repl;
 pub mod simd;
 pub mod stdlib;
 pub mod syntax;
+pub(crate) mod syntax_codec;
 pub mod trap;
 
 use check::{ModuleInput, ModuleOrigin};
@@ -107,6 +111,17 @@ pub(crate) fn analyze_inputs_indexed_all(
     inputs: &[SourceInput<'_>],
     semantic: Option<&mut check::semantic::SemanticIndex>,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_inputs_with(inputs, semantic, None)
+}
+
+/// Parses `inputs` in order, through a project's frontend cache when `cache` is given, and
+/// checks them. The cache changes neither the programs nor the diagnostics: parsing stops
+/// and reports in the same order, and the manifest is recorded only after every parse succeeds.
+pub(crate) fn analyze_inputs_with(
+    inputs: &[SourceInput<'_>],
+    semantic: Option<&mut check::semantic::SemanticIndex>,
+    mut cache: Option<&mut frontend_cache::FrontendCache>,
+) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
     for (id, input) in inputs.iter().enumerate() {
@@ -146,7 +161,15 @@ pub(crate) fn analyze_inputs_indexed_all(
             } else {
                 Some(name.to_owned())
             };
-            parser::parse_with_source_all(input.text, id).and_then(|mut program| {
+            let parsed = match cache.as_mut() {
+                Some(cache) => cache
+                    .parse(input.text, id)
+                    .map(|parsed| (parsed.program, Some((parsed.key, parsed.interface)))),
+                None => {
+                    parser::parse_with_source_all(input.text, id).map(|program| (program, None))
+                }
+            };
+            parsed.and_then(|(mut program, hashes)| {
                 program.source_kind = extension.and_then(syntax::SourceKind::from_extension);
                 let identity = match name {
                     Some(name) => (name, stdlib::NAMESPACE.to_owned(), false),
@@ -164,7 +187,7 @@ pub(crate) fn analyze_inputs_indexed_all(
                         (key, namespace, entry)
                     }
                 };
-                Ok((identity, program))
+                Ok((identity, program, hashes))
             })
         })();
         match parsed {
@@ -175,16 +198,38 @@ pub(crate) fn analyze_inputs_indexed_all(
     if !diagnostics.is_empty() {
         return Err(diagnostics.finish());
     }
+    if let Some(cache) = cache {
+        let records: Vec<_> = programs
+            .iter()
+            .zip(inputs)
+            .filter_map(|(((name, namespace, entry), program, hashes), input)| {
+                let (source, interface) = (*hashes)?;
+                Some(frontend_cache::ModuleRecord {
+                    name,
+                    path: input.path,
+                    origin: input.origin,
+                    kind: program.source_kind,
+                    namespace,
+                    entry: *entry,
+                    source,
+                    interface,
+                })
+            })
+            .collect();
+        cache.finish(&records);
+    }
     let modules: Vec<_> = programs
         .iter()
         .zip(inputs)
-        .map(|(((name, namespace, entry), program), input)| ModuleInput {
-            name,
-            program,
-            origin: input.origin,
-            namespace,
-            entry: *entry,
-        })
+        .map(
+            |(((name, namespace, entry), program, _), input)| ModuleInput {
+                name,
+                program,
+                origin: input.origin,
+                namespace,
+                entry: *entry,
+            },
+        )
         .collect();
     check::check_modules_indexed_all(&modules, semantic)
 }

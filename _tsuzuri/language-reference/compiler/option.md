@@ -6,7 +6,7 @@
 
 ## この記事のポイント
 
-- 最適化の既定は `-O3` です。`test` だけ既定が `-O0` です。fast-math は使いません。
+- 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
 - フラグの重複や、サブコマンドとの不一致は終了コード 2 の `E2000` です。
@@ -14,32 +14,36 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
-| オプション | check | build | run | test | doc | fmt |
-| --- | --- | --- | --- | --- | --- | --- |
-| `--json` | ○ | ○ | ○ | ○ | ○ | ○ |
-| `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | |
-| `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | |
-| `-o` / `--output` | | ○ | | | ○（必須） | |
-| `--target` | | ○ | | ○ | | |
-| `--emit` | | ○ | | | | |
-| `-O0`〜`-O3` | | ○ | ○ | ○ | | |
-| `--cpu` | | ○ | ○ | | | |
-| `--no-cache` | | ○ | ○ | | | |
-| `-g` / `--debug-info` | | ○ | ○ | | | |
-| `--debug-output` | | ○ | ○ | | | |
-| `--trap-info` | | ○ | ○ | | | |
-| `--trap-mode` | | ○ | | | | |
-| `--allocator` | | ○ | | | | |
-| `--freestanding` | | ○ | | | | |
-| `--wasm-feature` | | ○ | | | | |
-| `--wasm-host` | | ○ | | | | |
-| `--wasm-max-memory` | | ○ | | ○ | | |
-| `--wasm-stack-size` | | ○ | | ○ | | |
-| `--link` / `-l` / `-L` | | ○ | ○ | ○ | | |
-| `--list` / `--filter` / `--index` | | | | ○ | | |
-| `--check` | | | | | | ○ |
+| オプション | check | build | run | test | bench | doc | fmt | repl | script |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `--json` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | | ○ |
+| `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
+| `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
+| `-o` / `--output` | | ○ | | ○（`-g` と） | | ○（必須） | | | |
+| `--target` | | ○ | | ○ | ○（native だけ） | | | | |
+| `--emit` | | ○ | | | | | | | |
+| `-O0`〜`-O3` | | ○ | ○ | ○ | ○ | | | ○ | ○ |
+| `--cpu` | | ○ | ○ | | | | | ○ | ○ |
+| `--no-cache` | | ○ | ○ | | | | | ○ | ○ |
+| `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | | | |
+| `--debug-output` | | ○ | ○ | | | | | | |
+| `--trap-info` | | ○ | ○ | | | | | | |
+| `--trap-mode` | | ○ | | | | | | | |
+| `--allocator` | | ○ | | | | | | | |
+| `--freestanding` | | ○ | | | | | | | |
+| `--wasm-feature` | | ○ | | | | | | | |
+| `--wasm-host` | | ○ | | | | | | | |
+| `--wasm-max-memory` | | ○ | | ○ | | | | | |
+| `--wasm-stack-size` | | ○ | | ○ | | | | | |
+| `--link` / `-l` / `-L` | | ○ | ○ | ○ | ○ | | | | ○ |
+| `--list` / `--filter` / `--index` | | | | ○ | ○ | | | | |
+| `--coverage PATH` | | | | ○ | | | | | |
+| `--seed N` | | | | ○ | | | | | |
+| `--check` | | | | | | | ○ | | |
+| `--samples N` | | | | | ○ | | | | |
+| `--timeout` | | | | | | | | ○ | |
 
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
 
@@ -73,7 +77,7 @@
 
 | オプション | 既定 | 意味 |
 | --- | --- | --- |
-| `-O0` `-O1` `-O2` `-O3` | `build` / `run` は `-O3`、`test` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
+| `-O0` `-O1` `-O2` `-O3` | `build` / `run` / `script` / `bench` は `-O3`、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
 | `--cpu generic\|native` | `generic` | native の実行ファイルとオブジェクト。`native` はこの機械の命令セットで、古い CPU では動きません |
 
 `check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O` を受け、`--cpu` は拒否します。
@@ -102,7 +106,7 @@ add 20 22
 | `--json` | オフ | 診断を stderr の 1 行 1 JSON にする |
 | `--deny-warnings` | オフ | 警告があれば、コード生成や実行の前に終了コード 1 |
 | `--warn implicit-copy` | オフ | 配列とリストの暗黙コピー `W1006` を出す。生成コードは変わらない |
-| `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可 |
+| `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可。Windows の MSVC のリンカーでは CodeView も出し、実行ファイルの隣に PDB を書く。表示とステップ実行は [デバッグ](debugging.md) |
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
 | `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
 | `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
@@ -144,7 +148,7 @@ add 20 22
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
 | `--allocator system\|host\|counting` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` まで |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
-| `--no-cache` | キャッシュ有効 | `build` と `run` のキャッシュを読まない、書かない |
+| `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物のキャッシュと構文解析の結果のキャッシュを読まない、書かない。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 
 `[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
@@ -162,7 +166,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 
 | 条件 | メッセージの要点 |
 | --- | --- |
-| `--no-cache` を `check` などに付ける | `--no-cache is only valid with build or run` |
+| `--no-cache` を `check` などに付ける | `--no-cache is only valid with build, run, script, or repl` |
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `simd128` が header や native | `--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output` |
@@ -185,7 +189,20 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `check` に `-O` | `check does not use an optimization level` |
 | `test` に `--cpu` | `test does not use CPU tuning` |
 | `doc` に `-o` が無い | `doc requires -o or --output with an output directory` |
-| `--filter` を `test` 以外に付ける | `--filter, --list, and --index are only valid with test` |
+| `--filter` を `test`・`bench` 以外に付ける | `--filter, --list, and --index are only valid with test or bench` |
+| `test` に `-g` と `-o` の片方だけ | `debugging a test needs both -g and -o with the runner's path` |
+| `test -g` の `--index` が 1 つでない、または `--list`・`--filter` と組み合わせる | `debugging a test needs exactly one --index, without --list or --filter` |
+| `test -g` に WASM のターゲット | `debugging a test requires the native target` |
+| `--samples` を `bench` 以外に付ける | `--samples is only valid with bench` |
+| `--seed` を `test` 以外に付ける | `--seed is only valid with test` |
+| `--seed` が 0〜18446744073709551615 の整数でない | `property seed must be an integer between 0 and 18446744073709551615` |
+| `--samples` が 1〜1000 の整数でない | `bench samples must be an integer between 1 and 1000` |
+| `bench` に `--target wasm32`／`wasm64` | `tsuzuri bench supports only the native target` |
+| `bench` に `--cpu` | `bench does not use CPU tuning` |
+| `--coverage` を `test` 以外に付ける | `--coverage is only valid with test` |
+| `test --coverage` と `--target wasm32`／`wasm64` | `test coverage supports only the native target` |
+| `test --coverage` と `--list` | `coverage cannot be combined with --list` |
+| `test --coverage` と `-g` | `coverage cannot be combined with -g; a debug runner only builds` |
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
 | WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
 
@@ -213,7 +230,7 @@ flowchart TD
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
 | `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link` | macOS で、タスクを含むデバッグ用オブジェクト |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
-| `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュのルート |
+| `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
 
 `node` は PATH だけです。WASM テスト用の環境変数はありません。
 

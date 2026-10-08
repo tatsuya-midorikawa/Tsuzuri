@@ -79,7 +79,7 @@ XL と大きい L のチケットは Phase に分かれています。**人間�
 6. **WASM は既定でインポートなし。** インポートが必要な機能は明示的なオプトインにし、文書化する。
 7. **性能主張には実測と生成コード確認を伴う。** 共有 CI に速度の合否閾値を入れない。
    「実装済み」と「計画」を区別して文書に書く。
-8. **資源上限を守る。** 構文・式の深さ 128（`syntax::MAX_NESTING`）、特殊化 1,024、制約 128、
+8. **資源上限を守る。** 構文・式の深さ 128（`syntax::MAX_NESTING`）、特殊化 65,536（型が育つ多相再帰は先に止める。D-41）、制約 128、
    OR 展開 1,024 など既存上限に揃え、新しい解析にも上限と `E1017` を設ける。
 9. **型付き IR の不変条件は型検査で保証する。** コード生成時のキャストや `unreachable!` で辻褄を合わせない。
 10. `unsafe` は `Cargo.toml` の lint で禁止（`unsafe_code = "forbid"`）。Rust の依存 crate 追加は、
@@ -718,6 +718,8 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   | `Rc`／`Arc` | 参照カウントの共有所有と弱参照（組み込みの型と関数。std のソースはなく、名前と型名を予約する） | C10 |
   | `Json`／`Cbor` | JSON の値・解析・出力・ストリーミング、`Encode`／`Decode` の std インスタンス、CBOR。opt-in std モジュール（D-40） | D08 |
   | `Regex`／`Unicode` | 線形時間の正規表現、Unicode 17.0.0 の表による分類・正規化・境界・大小変換。opt-in std モジュール（D-40） | D09 |
+  | `Bench` | `bench` 宣言の本体を作る `Bench.of`・`Bench.with_input` と組み込み `Bench.now`（`tsuzuri bench` の実行器の中だけ）・`Bench.consume`。opt-in std モジュール（D-41） | G18 |
+  | `Gen` | プロパティテストの生成器・組み合わせ・縮小と `Gen.for_all`。std 専用の組み込み `Gen.__seed`。opt-in std モジュール（D-41） | G18 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
@@ -787,7 +789,7 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
 
 ### D-15 キーワード・演算子の追加一覧
 新しい予約語: `union`（A02）、`type`（A05）、`private`（E01）、`break`／`continue`（B03）、`deriving`（A07）、
-`const`（D06）、`test`（G06）、`extern`（E06）、`dyn`（A14。D-39）。`of` は union 宣言の中だけの文脈キーワード（A02。予約語にしない）。
+`const`（D06）、`test`（G06）、`extern`（E06）、`dyn`（A14。D-39）、`bench`（G18。D-41）。`of` は union 宣言の中だけの文脈キーワード（A02。予約語にしない）。
 文字リテラル `'x'`／`u8'x'`（A08）。範囲の部分参照 `xs[a..b]`（C03）。
 レコード更新 `{ base with field = value }`（C05）。キーワード追加時は 6.1 を実施する。
 D-34 の演算子 `**`・単項 `+`・`&&&`・`|||`・`^^^`・`~~~`・`<<<`・`>>>`、関数合成 `>>`／`<<`（従来のシフトから意味を変更）、
@@ -795,6 +797,7 @@ D-34 の演算子 `**`・単項 `+`・`&&&`・`|||`・`^^^`・`~~~`・`<<<`・`>
 D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣言だけ。予約語にしない）。D-37 の名前空間のパス `A::B::Module`（新しい記号はなく、空白なしの `::` を lexer が `PathSep` にする）。
 D-39 の固定長配列の型 `[T; N]` と長さパラメーター `const N: i64`（A16。既存の予約語 `const` の組み合わせで、新しい予約語はない）、排他スライスの型 `ref mut [T..]`（C08）、
 dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属性 `@cpu ["avx2", ...]`（F08。`def` シグネチャの前だけ。`cpu` は予約語にしない）。
+D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソースでも先頭（byte 0）の `#!` 行を行コメントとして読む shebang の規則（G13 Phase 2）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
   取り込まれた後に着手するチケットは、借用・参照外しを扱う箇所（C03 の `&xs[a..b]` に対する `ref xs[a..b]`、A11 の比較用の
@@ -835,7 +838,7 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
   OS API（E08）の WASI への lowering `--wasm-host wasi` も同じ扱いで、既定の wasm32 は OS API に到達するビルドを `E2000` で拒否する。
 
 ### D-19 解析の資源上限
-- 新しい解析・展開（網羅性検査、deriving の生成、const 評価、到達可能性など）は、既存の上限（深さ 128、1,024 など）
+- 新しい解析・展開（網羅性検査、deriving の生成、const 評価、到達可能性など）は、既存の上限（深さ 128、組み合わせの予算 1,024 など）
   に揃えた上限を持ち、超えたら `E1017`。無限ループやスタック枯渇でコンパイラを落とさない。
 
 ### D-20 比較は非消費（`Eq`／`Ord` は借用を受け取る）
@@ -971,14 +974,12 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 
 | 種別 | 仮割り当て | チケット |
 |---|---|---|
-| 予約語 | `bench` | G18 |
 | 警告 | `W1005` 非推奨の宣言の使用 | G19 |
 | 組み込みクラス | `Sync`（仮称） | F10 |
 | std | `Matrix` | C11 |
 | std | `Net` | E09 |
 | std | `Async` | B08 |
 | std | `Atomic`／`Mutex`／`Channel` | F10 |
-| std | `Bench` | G18 |
 
 2026-09-29 の詳細化で、各チケットが次の名前を仮に決めた（衝突を避けるための台帳。確定は各チケットの決定事項と承認に従う）。
 `要承認` の欄は、そのチケットで承認が必要な名前であることを示す。
@@ -990,10 +991,10 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 | 構文 | `const def` | D11 | いいえ（Phase 1） |
 | 組み込みクラス・builtin | `AtomicValue`、`Task.scope`、構築関数 `create`（`new` は予約語） | F10 | はい |
 | std | `Gpu.map_relaxed`・`Gpu.init_relaxed` | F09 | はい |
-| std | `Bench.now`・`Bench.consume`・`Bench.with`・`Bench.of` | G18 | はい（`bench` と共に） |
+| std | `Bench.now`・`Bench.consume`・`Bench.with_input`・`Bench.of`（`with` は予約語なので `Bench.with` は `Bench.with_input`） | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
-| サブコマンド | `tsuzuri repl`（Phase 2 の `tsuzuri script` は要承認） | G13 | Phase 2 だけ |
-| サブコマンド | `tsuzuri bench` | G18 | はい |
+| サブコマンド | `tsuzuri repl`・`tsuzuri script`（CLI の `--timeout` は repl だけ） | G13 | いいえ（承認済み・実装済み。D-41） |
+| サブコマンド | `tsuzuri bench` | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
 | CLI | `--allocator system\|host\|counting`・`--freestanding`（F13、実装済み）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
 | CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
@@ -1006,7 +1007,7 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 | CLI | `--profile-generate`・`--profile-use` | PR07 | いいえ |
 | CLI | `-Os`・`-Oz`・`--strip` | PM08 | いいえ |
 | CLI | `--backend llvm\|fast` | PB05 | はい |
-| CLI | `--samples`・`--coverage` | G18 | `bench` と共に |
+| CLI | `--samples`（bench）・`--coverage`・`--seed`（test）、`test --index N -g -o PATH`（G16） | G18・G16 | いいえ（承認済み・実装済み。D-41） |
 | CLI | `--no-server`・`--idle-timeout` | PB06 | はい（Phase 2） |
 | 環境変数 | `TSUZURI_THREADS` | PB04 | いいえ |
 | 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（既定の変更） |
@@ -1016,7 +1017,7 @@ dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属
 | 環境変数 | `TSUZURI_TIME_PASSES` | PX01 | いいえ |
 | 環境変数 | `TSUZURI_ZIG`・`TSUZURI_GO` | PX02 | 計測機への導入だけ |
 | 環境変数 | `TSUZURI_TEST_ALLOCATOR`（テスト用） | F13 | いいえ |
-| 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ |
+| 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ（実装済み） |
 | 環境変数 | `TSUZURI_BASELINE`（テスト用） | PM03 | はい（PM03 全体） |
 | 環境変数 | `TSUZURI_TEST_WASM_TARGET`（テスト用。`tests/features.mjs` の WASM を `wasm64` で実行） | F11 | いいえ |
 | 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc`（WASM は `tsuzuri_heap` の `alloc`・`free`・`realloc`）、`tsuzuri_alloc_stats` と `tsuzuri_allocation_stats` | F13 | いいえ（実装済み） |
@@ -1234,6 +1235,41 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   registry 依存は root の `[registry]` に書いた git の index（`index/<name>.json`）から、名前と互換の範囲ごとの最小版選択で選ぶ（選ばれなかった版だけが述べる要求は
   衝突にしない）。Tsuzuri は公開の registry を運営しない。`publish` は index の項目を出力するだけで、G19 の公開 API の差分検査はまだない。
 
+### D-41 第2期の 4 チケット（G16・G18・G17・G13）の確定
+
+- 2026-10-08、利用者の「G16、G18、G17、G13 の実装をすべて完遂して。もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して。
+  …すべてのフェーズを完了させること。…判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、4 チケットの `要承認` の
+  決定事項すべての承認として扱った。詳細は各チケットの「実装と検証」にある。
+- G16（デバッガー）: DWARF の型名は `Type::display`。`bool` 以外のスカラーは同名の typedef、`char`・`utf8char` は `DW_ATE_UTF`。payload を持つ union は
+  `$tag`（enumeration）と `$payload`（case 名を member にする union）、再帰する union とリストはノードの struct への pointer で、offset は生成 IR の格納位置から
+  計算する。`DISubprogram` は `linkageName` を出さず、単相化の実体は元の名前、ラムダ・task・テストは `<親>.lambda@行:列` などの名前にする。束縛の `store` は
+  宣言の位置、引数の束縛は prologue（行 0）。C のランタイムはデバッグ情報なしでコンパイルする（G08 を改めた。step-in がランタイムに入らず、DWARF 5 の
+  ランタイムの compile unit による `-O3` の `llvm-dwarfdump --verify` の失敗もなくなる）。LLDB の formatter `scripts/lldb/tsuzuri_lldb.py` を VS Code が
+  `initCommands` で読み込み、配布物は `share/lldb/` に置く。Phase 2 は `tsuzuri test ROOT --index N -g -o PATH`（1 件のテストのデバッグ用ランナーを作り、
+  実行しない）と Testing ビューの Debug。Phase 3 は MSVC のリンカーを使う Windows の `-g` で CodeView を足して PDB を作り、natvis
+  （`src/runtime/tsuzuri.natvis`、配布物の `share/natvis/`）を埋め込む。DWARF も image に残す。配布物の `tsuzuri-clang`（MinGW）の経路は DWARF だけ。
+- G18（ベンチマーク・カバレッジ・プロパティテスト）: 予約語 `bench`（D-15）と `bench "name" = body`（本体は `i64 -> i64`）、opt-in std `Bench`
+  （`with` が予約語なので `Bench.with` は `Bench.with_input`）、組み込み `Bench.now`（`tsuzuri bench` の実行器の外の IR が参照すれば `E1018`）と
+  `Bench.consume`（stack slot と memory clobber の `asm sideeffect`）、`tsuzuri bench`（ネイティブだけ、`--samples`、閾値なし）。Phase 2 は
+  `tsuzuri test --coverage PATH`（コンパイラ自身の計装。関数・`if`・`match`・ループ・`try` の region ごとの atomic なカウンター、lcov、成功したテストだけを
+  合算）。カウンターのファイルは実行器が環境変数 `TSUZURI_COVERAGE_FILE` で子へ渡す（内部用）。Phase 3 は opt-in std `Gen`（選択の列による統合縮小、
+  固定の既定 seed、`tsuzuri test --seed N`、std 専用の組み込み `Gen.__seed`）。`tsuzuri test` は失敗したテストの標準エラーの末尾 64 KiB を表示する。
+  ランタイム `src/runtime/bench-runner.c` と実行器だけの記号 `tsuzuri_bench_*`・`tsuzuri_coverage_*` を足した。WASM のテストモジュールは `Gen` を使う
+  プログラムのときだけ `tsuzuri_debug.write` を import する（D-18 の opt-in）。
+- G17（増分コンパイル）: Phase 1 の frontend cache は `<cache root>/frontend/` にプロジェクトとコマンドの種類ごとのパックと manifest を置く（D4 の見直し。
+  ファイルを開く費用のため）。D5 により `check`・`test`・`doc`（と `bench`・`script`）も既定で使う。`--no-cache` は `build`・`run`・`script` で両方の cache を、
+  `repl` で成果物の cache を止め（`repl` は frontend cache を使わない）、`check`・`test`・`bench`・`doc` では従来どおり `E2000`。それらの無効化は `TSUZURI_CACHE_DIR=`。キャッシュの有無で IR・診断・終了コードは変わらない。Phase 2（D10、関数本体の検査結果の再利用）は、本体の検査が
+  現実的な 1,000 モジュールの `check` の 18.2% で判断の基準 25% に届かないため実測で見送った（F12 の Phase 2 と同じ扱い）。Phase 3（D11）はソースの
+  上限 `MAX_SOURCE_BYTES` を 4 MiB（`E0003`。`Tsuzuri.toml`・`Tsuzuri.lock`・registry の index は `MAX_PACKAGE_FILE_BYTES` の 1 MiB のまま）、特殊化の
+  上限を 65,536（`E1017`）にした。型が育つ多相再帰は、自分の型引数を包んだ型で自分を直接呼ぶ関数を最初の特殊化で、ほかの関数を通る成長を
+  1 つの呼び出しの系列に同じ関数が 32 回現れた時点で `E1017` にする（分岐する成長は全体の上限が止める）。D-19 の上限の例と §1.8・§11.1 を改めた。
+  frontend cache のコンパイラの同一性は、実行ファイルの大きさ・更新時刻に加え、Unix では device・inode・ctime、ほかでは path と作成時刻を使う。
+- G13（REPL とスクリプト）: `tsuzuri repl`（入力ごとに `Main.tz` を作り直して検査・実行する再コンパイル型。状態は持ち越さず、受理した束縛を毎回実行し直す。
+  `--timeout`）と、D12 の `tsuzuri script FILE [args...]`。shebang は、どのソースでも byte 0 の `#!` 行を行コメントとして読む（`#` で始まる正しい
+  プログラムはないので、既存のプログラムの意味は変わらない。D-15）。D13（JIT）は再検討しても採用しない。LLVM の C API への結合・新しい crate・
+  `unsafe`・配布物の前提の変更が要り、docs/architecture.md の方針と衝突する。代わりに 1 入力の待ち時間を段ごとに測り（docs/benchmarks.md）、表示できる
+  式の解析を 1 回にした。残る費用は PB01・PB05・PB06 の対象。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
@@ -1272,7 +1308,8 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `bounds_recursive_and_flat_expression_depth`、`bounds_nested_builder_expansion_not_just_source_syntax`）。
 - **`_ =>` の fallback。** 新しい variant を黙って無視する match が多い。§6.9 の手順で全出現を確かめる。
 - **std の generic 関数と特殊化の予算。** 単相化は利用者の非 generic 関数からだけ始める。std の generic 関数を先に特殊化すると、
-  利用者の 1,024 件の予算を消費する（`honors_the_exact_specialization_limit`）。std に API を足したら必ずこのテストを実行する。
+  利用者の特殊化の予算を消費する（上限は 65,536。D-41）。`honors_the_exact_specialization_limit` は `src/polymorph.rs` の単体テストで、
+  テスト用の小さい上限で予算の数え方を確かめる。std に API を足したら必ずこのテストを実行する。
 - **LLVM の型の出力順。** enum の別名（`= type i32`）は、どの record／union の struct 定義よりも前に出す（LLVM は非 struct の別名を前方参照できない）。
 - **生成ランタイム。** `numeric.ll`・`math.ll` は手で直さず、§2.2 の手順で両方を作り直す。`Globals::FIRST_METADATA` の範囲を保つ。
   数値ランタイムに静的な表を足した形が Clang 23 の wasm32 `-O0` で不正なコードになった例がある。新しいランタイムの形は

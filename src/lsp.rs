@@ -18,11 +18,11 @@ const MAX_LOCATIONS: usize = 10_000;
 const MAX_COMPLETIONS: usize = 500;
 const MAX_SYMBOLS: usize = 256;
 
-const KEYWORDS: [&str; 42] = [
+const KEYWORDS: [&str; 43] = [
     "fn", "def", "rec", "and", "export", "extern", "private", "record", "union", "type", "const",
-    "test", "class", "instance", "deriving", "dyn", "let", "task", "do", "return", "yield", "for",
-    "in", "to", "downto", "while", "break", "continue", "mut", "ref", "deref", "new", "as", "if",
-    "then", "elif", "else", "match", "with", "when", "true", "false",
+    "test", "bench", "class", "instance", "deriving", "dyn", "let", "task", "do", "return",
+    "yield", "for", "in", "to", "downto", "while", "break", "continue", "mut", "ref", "deref",
+    "new", "as", "if", "then", "elif", "else", "match", "with", "when", "true", "false",
 ];
 /// Words that are keywords only in their syntax and identifiers elsewhere.
 const CONTEXTUAL_KEYWORDS: [&str; 7] =
@@ -521,7 +521,10 @@ impl Session {
                         .ok_or_else(|| invalid("replacement text is required"))?
                 };
                 if text.len() > crate::syntax::MAX_SOURCE_BYTES {
-                    return Err(invalid("source exceeds the 1 MiB limit"));
+                    return Err(invalid(&format!(
+                        "source exceeds the {}-byte limit",
+                        crate::syntax::MAX_SOURCE_BYTES
+                    )));
                 }
                 let used: usize = self
                     .buffers

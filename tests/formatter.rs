@@ -22,6 +22,33 @@ fn documentation_text_survives_formatting_and_span_changes() {
 }
 
 #[test]
+fn keeps_a_shebang_line() {
+    for (source, expected) in [
+        (
+            "#!/usr/bin/env tsuzuri script\nlet   x =  1\nx\n",
+            "#!/usr/bin/env tsuzuri script\nlet x = 1\nx\n",
+        ),
+        (
+            "#!/usr/bin/env -S tsuzuri script -O0\r\nlet x=1\r\n// keep\r\nx\r\n",
+            "#!/usr/bin/env -S tsuzuri script -O0\r\nlet x = 1\r\n// keep\r\nx\r\n",
+        ),
+        (
+            "#!/usr/bin/env tsuzuri script",
+            "#!/usr/bin/env tsuzuri script\n",
+        ),
+    ] {
+        let result = format_source("Main.tz", source, SourceKind::Code).unwrap();
+        assert_eq!(result.formatted, expected);
+        assert_eq!(
+            format_source("Main.tz", expected, SourceKind::Code)
+                .unwrap()
+                .formatted,
+            expected
+        );
+    }
+}
+
+#[test]
 fn trims_only_external_whitespace_and_preserves_newline_style() {
     for (source, expected) in [
         (
