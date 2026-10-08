@@ -832,6 +832,32 @@ fn accepts_more_specializations_than_the_old_limit() {
 }
 
 #[test]
+fn accepts_growth_that_instances_end_for_many_types() {
+    // Each `h` grows `total` from `Box<R>` to `[Box<R>]` once, where the instance for lists
+    // ends the recursion: about four specializations per record, far below the limit, however
+    // many records take the step (G17 review: a program-wide count of such steps rejected it).
+    use std::fmt::Write;
+    let traits = "class Size<'a> { def size :: 'a -> i64 }\n";
+    let mut main = String::from(
+        "record Box<'a> { value: 'a }\n\
+         instance Size<Box<'a>> { fn rec size b = total [b] }\n\
+         instance Size<['a]> { fn size xs = xs.length }\n\
+         def rec total :: Size<'a> => 'a -> i64\n\
+         fn rec total x = Size.size x\n",
+    );
+    for index in 0..1100 {
+        writeln!(
+            main,
+            "record R{index} {{ v: i64 }}\ndef h{index} :: Box<R{index}> -> i64\nfn h{index} b = total b"
+        )
+        .unwrap();
+    }
+    let module = analyze_modules(&[("Main.tz", &main), ("Traits.tt", traits)])
+        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    assert!(module.functions.len() > 4 * 1100);
+}
+
+#[test]
 fn reports_type_growing_recursion_by_name() {
     for recursion in ["f [x]", "{ f (ref x, 1); f (ref x, true) }"] {
         let source = format!("def rec f :: 'a -> unit\nfn rec f x = {recursion}\nf 1");

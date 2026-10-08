@@ -521,7 +521,10 @@ impl Session {
                         .ok_or_else(|| invalid("replacement text is required"))?
                 };
                 if text.len() > crate::syntax::MAX_SOURCE_BYTES {
-                    return Err(invalid("source exceeds the 1 MiB limit"));
+                    return Err(invalid(&format!(
+                        "source exceeds the {}-byte limit",
+                        crate::syntax::MAX_SOURCE_BYTES
+                    )));
                 }
                 let used: usize = self
                     .buffers

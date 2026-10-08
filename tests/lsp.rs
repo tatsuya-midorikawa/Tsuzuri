@@ -223,6 +223,21 @@ fn rename_keeps_json_attributes() {
 }
 
 #[test]
+fn rejects_documents_over_the_source_limit() {
+    let limit = tsuzuri::syntax::MAX_SOURCE_BYTES;
+    // Sent as a request, the notification's error comes back as a response.
+    let response = scripted(&[], "utf-16", |uri| {
+        vec![serde_json::json!({"id": 1, "method": "textDocument/didOpen", "params": {"textDocument": {"uri": uri("Big.tz"), "languageId": "tsuzuri", "version": 1, "text": " ".repeat(limit + 1)}}})]
+    })
+    .remove(0);
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert_eq!(
+        response["error"]["message"],
+        format!("source exceeds the {limit}-byte limit")
+    );
+}
+
+#[test]
 fn rename_rejects_std_export_conflicts_and_errors() {
     let reject = |files: &[(&str, &str)], needle: &str, name: &str| {
         let text = files[0].1;
