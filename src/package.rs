@@ -3,10 +3,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::{
-    diagnostic::{Diagnostic, Span},
-    syntax::MAX_SOURCE_BYTES,
-};
+use crate::diagnostic::{Diagnostic, Span};
+
+/// The largest `Tsuzuri.toml`, `Tsuzuri.lock` and registry index file. Sources have their own
+/// limit, `syntax::MAX_SOURCE_BYTES`.
+pub const MAX_PACKAGE_FILE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PackageId {
@@ -189,7 +190,7 @@ pub struct LockEntry {
 pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockEntry>, Diagnostic> {
     use serde_json::Value;
     let span = Span::new(0, 0).in_source(source_id);
-    if text.len() > MAX_SOURCE_BYTES {
+    if text.len() > MAX_PACKAGE_FILE_BYTES {
         return Err(Diagnostic::new("E1017", "Tsuzuri.lock exceeds 1 MiB", span));
     }
     let invalid = |detail: String| {
@@ -639,7 +640,7 @@ fn package_name(folder: &str) -> String {
 
 pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagnostic> {
     let whole = Span::new(0, source.len()).in_source(source_id);
-    if source.len() > MAX_SOURCE_BYTES {
+    if source.len() > MAX_PACKAGE_FILE_BYTES {
         return Err(Diagnostic::new(
             "E1017",
             "package manifest exceeds 1 MiB",

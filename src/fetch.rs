@@ -743,7 +743,7 @@ impl Index {
         let mut wanted = Vec::new();
         for name in &names {
             let file = &self.files[*name];
-            if file.size > MAX_SOURCE_BYTES as u64 {
+            if file.size > crate::package::MAX_PACKAGE_FILE_BYTES as u64 {
                 return Err(self.location.error(
                     "E1017",
                     format!("the registry index file for '{name}' exceeds 1 MiB"),

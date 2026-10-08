@@ -1,7 +1,43 @@
 use super::*;
 
-const MAX_SPECIALIZATIONS: usize = 1024;
+/// The most specializations of generic functions in one program (G17 Phase 3). A program at
+/// the limit with small generic functions checks in a few seconds and about 1 GiB.
+const MAX_SPECIALIZATIONS: usize = 65_536;
+/// Polymorphic recursion that grows its types needs ever more specializations, so it is
+/// stopped early: when the instantiations that lead to a specialization already hold the same
+/// function at smaller types this many times, and when this many specializations grew so.
+const MAX_GROWTH_DEPTH: usize = 32;
+const MAX_GROWING_SPECIALIZATIONS: usize = 1024;
+/// The ancestors that the growth check inspects; longer chains still meet the global limit.
+const MAX_LINEAGE_WALK: usize = 1024;
 const MAX_CONSTRAINTS: usize = 128;
+
+/// The specialization limits: all specializations, growing ones, and growth along one chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SpecializationLimits {
+    pub(crate) total: usize,
+    pub(crate) growing: usize,
+    pub(crate) depth: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Smaller limits for the analyses of this thread, so tests can reach them quickly.
+    pub(crate) static TEST_LIMITS: std::cell::Cell<Option<SpecializationLimits>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn specialization_limits() -> SpecializationLimits {
+    #[cfg(test)]
+    if let Some(limits) = TEST_LIMITS.get() {
+        return limits;
+    }
+    SpecializationLimits {
+        total: MAX_SPECIALIZATIONS,
+        growing: MAX_GROWING_SPECIALIZATIONS,
+        depth: MAX_GROWTH_DEPTH,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct Constraint {
@@ -152,9 +188,20 @@ pub(super) fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> T
 }
 
 pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
-    if ty.contains_error() {
-        return Ok(());
+    if ty.contains_error() || type_size(ty).is_some() {
+        Ok(())
+    } else {
+        Err(Diagnostic::new(
+            "E1017",
+            "polymorphic type expansion exceeds the compiler limit; simplify the type or recursion",
+            span,
+        ))
     }
+}
+
+/// The number of type constructors in `ty`, or `None` beyond a nesting of `MAX_NESTING` or
+/// 4096 constructors.
+fn type_size(ty: &Type) -> Option<usize> {
     fn visit(ty: &Type, depth: usize, count: &mut usize) -> bool {
         *count += 1;
         if depth > MAX_NESTING || *count > 4096 {
@@ -190,15 +237,8 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
             _ => true,
         }
     }
-    if visit(ty, 0, &mut 0) {
-        Ok(())
-    } else {
-        Err(Diagnostic::new(
-            "E1017",
-            "polymorphic type expansion exceeds the compiler limit; simplify the type or recursion",
-            span,
-        ))
-    }
+    let mut count = 0;
+    visit(ty, 0, &mut count).then_some(count)
 }
 
 pub(super) fn require_concrete(ty: &Type, span: Span) -> Result<(), Diagnostic> {
@@ -3782,6 +3822,10 @@ pub(super) fn specialize(
                 function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User
             })
             .count(),
+        limits: specialization_limits(),
+        lineage: Vec::new(),
+        instantiating: None,
+        growing: 0,
     };
     for (id, function) in module.functions.iter().enumerate() {
         if function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User {
@@ -3806,7 +3850,9 @@ pub(super) fn specialize(
     loop {
         while next < specializer.requests.len() {
             let (id, types) = specializer.requests[next].clone();
+            specializer.instantiating = Some(next);
             let function = specializer.instantiate(id, &types, next)?;
+            specializer.instantiating = None;
             specializer.functions.push(function);
             next += 1;
         }
@@ -3969,6 +4015,13 @@ struct Specializer<'a> {
     /// The origin that helpers generated for the function being instantiated inherit.
     current: FunctionOrigin,
     base_count: usize,
+    limits: SpecializationLimits,
+    /// For each request: the request whose instantiation made it, and the size of its types.
+    lineage: Vec<(Option<usize>, usize)>,
+    /// The request being instantiated.
+    instantiating: Option<usize>,
+    /// The requests that polymorphic recursion made at larger types.
+    growing: usize,
 }
 
 impl Specializer<'_> {
@@ -3980,11 +4033,41 @@ impl Specializer<'_> {
         if let Some(id) = self.keys.get(&key) {
             return Ok(*id);
         }
-        if self.requests.len() >= self.base_count + MAX_SPECIALIZATIONS {
+        let size = key
+            .1
+            .iter()
+            .map(|ty| type_size(ty).unwrap_or(usize::MAX))
+            .fold(0, usize::saturating_add);
+        // How often the instantiations that lead here hold this function at smaller types.
+        let mut growth = 0;
+        let mut ancestor = self.instantiating;
+        for _ in 0..MAX_LINEAGE_WALK {
+            let Some(index) = ancestor else {
+                break;
+            };
+            let (parent, ancestor_size) = self.lineage[index];
+            growth += usize::from(self.requests[index].0 == id && ancestor_size < size);
+            ancestor = parent;
+        }
+        if growth > 0 {
+            self.growing += 1;
+            if growth > self.limits.depth || self.growing > self.limits.growing {
+                return Err(Diagnostic::new(
+                    "E1017",
+                    format!(
+                        "polymorphic recursion grows the types of '{}' without bound; make the recursive call use the same types",
+                        self.templates[id].qualified_name()
+                    ),
+                    span,
+                ));
+            }
+        }
+        if self.requests.len() >= self.base_count + self.limits.total {
             return Err(Diagnostic::new(
                 "E1017",
                 format!(
-                    "more than {MAX_SPECIALIZATIONS} specializations; remove type-growing polymorphic recursion"
+                    "more than {} specializations of generic functions; call them at fewer distinct types, or use 'dyn' for values of many types",
+                    self.limits.total
                 ),
                 span,
             ));
@@ -3992,6 +4075,7 @@ impl Specializer<'_> {
         let next = self.requests.len();
         self.requests.push(key.clone());
         self.keys.insert(key, next);
+        self.lineage.push((self.instantiating, size));
         Ok(next)
     }
 
@@ -4640,5 +4724,86 @@ impl Specializer<'_> {
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SpecializationLimits, TEST_LIMITS, specialization_limits};
+
+    /// Limits small enough to reach in a debug test; `tests/e2e.mjs` reaches the real ones.
+    const SMALL: SpecializationLimits = SpecializationLimits {
+        total: 64,
+        growing: 4,
+        depth: 3,
+    };
+
+    fn analyze_within(sources: &[(&str, &str)]) -> Result<(), (&'static str, String)> {
+        TEST_LIMITS.set(Some(SMALL));
+        let result = crate::analyze_modules(sources);
+        TEST_LIMITS.set(None);
+        result
+            .map(|_| ())
+            .map_err(|error| (error.code, error.message))
+    }
+
+    /// A program with exactly the limit of specializations, then one more. The std modules,
+    /// `HashMap` and `HashSet` among them, are loaded but specialize nothing on their own.
+    fn reaches_the_specialization_limit() {
+        use std::fmt::Write;
+        let mut source = String::from("def id :: 'a -> 'a\nfn id x = x\n");
+        for index in 0..SMALL.total {
+            writeln!(
+                source,
+                "record R{index} {{ value: i8 }}\nfn f{index}(x: R{index}) -> R{index} {{ id x }}"
+            )
+            .unwrap();
+        }
+        assert_eq!(analyze_within(&[("Main", &source)]), Ok(()));
+        source.push_str("fn extra(x: [i8]) -> [i8] { id x }");
+        let (code, message) = analyze_within(&[("Main", &source)]).unwrap_err();
+        assert_eq!(code, "E1017");
+        assert!(
+            message.starts_with("more than 64 specializations of generic functions;"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn honors_the_exact_specialization_limit() {
+        assert_eq!(
+            specialization_limits(),
+            SpecializationLimits {
+                total: 65_536,
+                growing: 1024,
+                depth: 32,
+            }
+        );
+        reaches_the_specialization_limit();
+    }
+
+    #[test]
+    fn hash_containers_leave_the_specialization_budget_to_users() {
+        reaches_the_specialization_limit();
+    }
+
+    #[test]
+    fn stops_type_growing_recursion_before_the_global_limit() {
+        for recursion in ["f [x]", "{ f (ref x, 1); f (ref x, true) }"] {
+            let source = format!("def rec f :: 'a -> unit\nfn rec f x = {recursion}\nf 1");
+            let (code, message) = analyze_within(&[("Main", &source)]).unwrap_err();
+            assert_eq!(code, "E1017", "{recursion}");
+            assert!(
+                message.starts_with("polymorphic recursion grows the types of 'Main.f'"),
+                "{message}"
+            );
+        }
+        // Growth that the instances end needs only finitely many specializations.
+        let steps = "class Step<'a> {\n    def step :: 'a -> i64\n}\n";
+        let main = "instance Steps.Step<i64> {\n    fn rec step value = f [value]\n}\n\ninstance Steps.Step<[i64]> {\n    fn step values = values.length\n}\n\ndef rec f :: Steps.Step<'a> -> i64 = \\value -> Steps.Step.step value\n\nf 5i64\n";
+        assert_eq!(
+            analyze_within(&[("Main.tz", main), ("Steps.tt", steps)]),
+            Ok(())
+        );
     }
 }

@@ -814,7 +814,10 @@ fn bounds_type_growing_polymorphic_recursion() {
 }
 
 #[test]
-fn honors_the_exact_specialization_limit() {
+fn accepts_more_specializations_than_the_old_limit() {
+    // G17 Phase 3 raised the limit of 1,024 to 65,536 and stops type-growing recursion on its
+    // own. `check::polymorph::tests::honors_the_exact_specialization_limit` tests the boundary
+    // with small limits, and `tests/e2e.mjs` the real one.
     use std::fmt::Write;
     let mut source = String::from("def id :: 'a -> 'a\nfn id x = x\n");
     for index in 0..1024 {
@@ -824,9 +827,24 @@ fn honors_the_exact_specialization_limit() {
         )
         .unwrap();
     }
-    assert!(analyze(&source).is_ok());
     source.push_str("fn extra(x: [i8]) -> [i8] { id x }");
-    rejects(&source, "E1017");
+    assert!(analyze(&source).is_ok());
+}
+
+#[test]
+fn reports_type_growing_recursion_by_name() {
+    for recursion in ["f [x]", "{ f (ref x, 1); f (ref x, true) }"] {
+        let source = format!("def rec f :: 'a -> unit\nfn rec f x = {recursion}\nf 1");
+        let error = analyze(&source).expect_err(&source);
+        assert_eq!(error.code, "E1017", "{}", error.message);
+        assert!(
+            error
+                .message
+                .starts_with("polymorphic recursion grows the types of 'Main.f' without bound;"),
+            "{}",
+            error.message
+        );
+    }
 }
 
 #[test]

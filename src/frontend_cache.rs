@@ -357,12 +357,14 @@ impl FrontendCache {
     fn open_with(root: &Path, project: ProjectKey, identity: [u8; 32]) -> Option<Self> {
         BuildCache::open(root).ok()?;
         let directory = root.join("frontend");
-        let mut builder = fs::DirBuilder::new();
+        let builder = fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
             builder.mode(0o700);
-        }
+            builder
+        };
         if let Err(error) = builder.create(&directory)
             && error.kind() != io::ErrorKind::AlreadyExists
         {

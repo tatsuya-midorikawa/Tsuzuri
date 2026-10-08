@@ -1253,7 +1253,7 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
             ),
         ));
     }
-    if metadata.len() > MAX_SOURCE_BYTES as u64 {
+    if metadata.len() > crate::package::MAX_PACKAGE_FILE_BYTES as u64 {
         return Err(SourceError::new(
             &path,
             driver_error("E1017", "Tsuzuri.lock exceeds 1 MiB"),
@@ -1262,7 +1262,7 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
     let mut bytes = Vec::new();
     fs::File::open(&path)
         .and_then(|file| {
-            file.take(MAX_SOURCE_BYTES as u64 + 1)
+            file.take(crate::package::MAX_PACKAGE_FILE_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
         })
         .map_err(|error| SourceError::new(&path, io_error("read lockfile", &path, error)))?;
@@ -1382,7 +1382,10 @@ impl Project {
                 if text.len() > MAX_SOURCE_BYTES {
                     return Err(SourceError::new(
                         path,
-                        driver_error("E0003", "source exceeds the 1 MiB limit"),
+                        driver_error(
+                            "E0003",
+                            format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
+                        ),
                     ));
                 }
                 let path = parent.join(path.file_name().ok_or_else(|| {
