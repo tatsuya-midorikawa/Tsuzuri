@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { excludedPattern, exists, jsonLines, lldbLaunch, supportsDebug, testDebugArguments } from './core';
+import { excludedPattern, exists, jsonLines, lldbLaunch, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
 import { formatters, projectFor, reportError } from './workflow';
 
@@ -12,6 +13,9 @@ interface TestCase {
 	path: string;
 	range: { start: { line: number; character: number }; end: { line: number; character: number } };
 }
+
+/** Numbers the debug runs of this extension host, which name their runners (`testRunnerPath`). */
+let debugRuns = 0;
 
 export function registerTesting(context: vscode.ExtensionContext, output: vscode.OutputChannel,
 	workflow: { publishDiagnostics: (root: string, text: string) => Promise<void>; ensureDebugger: () => Promise<void> }) {
@@ -236,6 +240,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		const abort = new AbortController();
 		const subscription = token.onCancellationRequested(() => abort.abort());
 		let item: vscode.TestItem | undefined;
+		let runner: string | undefined;
 		try {
 			if (!await vscode.workspace.saveAll(false)) { return summary; }
 			await refreshRoots();
@@ -253,16 +258,18 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			execution.enqueued(item);
 			execution.started(item);
 			await workflow.ensureDebugger();
-			const result = await runCompiler(context, root, testDebugArguments(root, index), { signal: abort.signal });
+			const run = `${process.pid}-${++debugRuns}`;
+			runner = testRunnerPath(root, run);
+			const result = await runCompiler(context, root, testDebugArguments(root, index, run), { signal: abort.signal });
 			execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
 			await publishDiagnostics(root, result.stderr);
-			const runner = jsonLines(result.stdout).find(record => record.type === 'debug');
-			if (result.code !== 0 || !runner || typeof runner.program !== 'string' || !Array.isArray(runner.arguments)) {
+			const built = jsonLines(result.stdout).find(record => record.type === 'debug');
+			if (result.code !== 0 || !built || typeof built.program !== 'string' || !Array.isArray(built.arguments)) {
 				throw new Error(result.stderr || 'The test debug build failed.');
 			}
 			const configuration = {
-				...lldbLaunch(runner.program, formatters(context)), name: `Debug Test: ${item.label}`,
-				args: runner.arguments.map(String), cwd: root,
+				...lldbLaunch(built.program, formatters(context)), name: `Debug Test: ${item.label}`,
+				args: built.arguments.map(String), cwd: root,
 			};
 			const exitCode = await debugSession(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(root)), configuration, execution, token);
 			if (exitCode === 0) { execution.passed(item); summary.passed++; }
@@ -282,7 +289,12 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				if (item) { execution.errored(item, new vscode.TestMessage(String(error))); }
 				summary.errored++;
 			}
-		} finally { subscription.dispose(); execution.end(); }
+		} finally {
+			subscription.dispose();
+			execution.end();
+			// The session has ended, so nothing holds the runner; a file that cannot be removed only stays behind.
+			if (runner) { await Promise.all(testRunnerFiles(runner).map(file => rm(file, { force: true }).catch(() => undefined))); }
+		}
 		return summary;
 	}
 

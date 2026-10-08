@@ -62,14 +62,22 @@ export function commandArguments(action: Action, root: string, optimization = 3,
 	return args;
 }
 
-/** Where the Debug test profile builds the runner of one test (G16 Phase 2). */
-export function testRunnerPath(root: string, platform: string = process.platform): string {
-	return path.join(root, '.tsuzuri', 'test', platform === 'win32' ? 'runner.exe' : 'runner');
+/** Where the Debug test profile builds the runner of one test (G16 Phase 2). Each debug run has its own
+ * `run` name, so concurrent debug runs of a project never overwrite or lock each other's runner. */
+export function testRunnerPath(root: string, run: string, platform: string = process.platform): string {
+	return path.join(root, '.tsuzuri', 'test', `runner-${run}${platform === 'win32' ? '.exe' : ''}`);
+}
+
+/** The runner of a debug run and the debug information that the compiler writes beside it. */
+export function testRunnerFiles(runner: string): string[] {
+	const files = [runner, `${runner}.dwarf`];
+	if (runner.endsWith('.exe')) { files.push(`${runner.slice(0, -'.exe'.length)}.pdb`); }
+	return files;
 }
 
 /** The compiler arguments that build test `index` of `root` for a debugger without running it. */
-export function testDebugArguments(root: string, index: number, platform: string = process.platform): string[] {
-	return ['test', root, '--index', String(index), '-g', '-o', testRunnerPath(root, platform), '--json'];
+export function testDebugArguments(root: string, index: number, run: string, platform: string = process.platform): string[] {
+	return ['test', root, '--index', String(index), '-g', '-o', testRunnerPath(root, run, platform), '--json'];
 }
 
 export function outputPath(root: string, action: Action): string {

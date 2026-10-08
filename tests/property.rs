@@ -226,6 +226,40 @@ fn integer_generators_reach_their_bounds_and_shrink_from_them() {
 }
 
 #[test]
+fn invalid_generator_domains_trap_before_any_case() {
+    // A generator with an empty domain is an error in the test, not a property that holds.
+    let root = project_with(
+        "domains",
+        "Domains.tz",
+        concat!(
+            "test \"zero limit\" = Gen.for_all (Gen.array_up_to 0 (Gen.i64())) (\\values -> values.length == 0)\n",
+            "test \"negative limit\" = Gen.for_all (Gen.array_up_to (-1) (Gen.i64())) (\\values -> values.length == 0)\n",
+            "test \"empty range\" = Gen.for_all (Gen.range 5 1) (\\x -> x > 0)\n",
+        ),
+    );
+    let output = tsuzuri(&root, &["--json"]);
+    let statuses: Vec<_> = results(&output)
+        .iter()
+        .map(|result| {
+            (
+                result["name"].as_str().unwrap().to_owned(),
+                result["status"].as_str().unwrap().to_owned(),
+                result.get("output").is_none(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            ("zero limit".to_owned(), "passed".to_owned(), true),
+            ("negative limit".to_owned(), "failed".to_owned(), true),
+            ("empty range".to_owned(), "failed".to_owned(), true),
+        ]
+    );
+    clean(&root);
+}
+
+#[test]
 fn property_runs_are_reproducible_across_runs_optimizations_and_targets() {
     let root = project("reproducible");
     let first = results(&tsuzuri(&root, &["--json"]));

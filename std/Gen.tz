@@ -173,28 +173,31 @@ fn unicode_char = Gen { run: \source ->
 
 /// Arrays of at most `limit` values of `element`, shrinking toward fewer and simpler values.
 /// Before each value the generator chooses whether to go on, so shrinking can drop any value.
+/// A negative limit traps.
 def array_up_to :: i64 -> Gen<'a> -> Gen<['a]>
-fn array_up_to limit element = Gen { run: \source ->
-	let mut values = Vec.empty()
-	let mut current = source
-	let mut going = true
-	while going do
-		if Vec.length (ref values) >= limit then
-			going = false
-		else
-			match random_bits current with
-			| (bits, rest) ->
-				match choose rest 1i64u (if bits % 8i64u == 0i64u then 0i64u else 1i64u) with
-				| (more, next) ->
-					if more == 0i64u then
-						current = next
-						going = false
-					else
-						match element.run next with
-						| (value, last) ->
-							values = Vec.push values value
-							current = last
-	(Vec.to_array values, current) }
+fn array_up_to limit element =
+	assert (limit >= 0)
+	Gen { run: \source ->
+		let mut values = Vec.empty()
+		let mut current = source
+		let mut going = true
+		while going do
+			if Vec.length (ref values) >= limit then
+				going = false
+			else
+				match random_bits current with
+				| (bits, rest) ->
+					match choose rest 1i64u (if bits % 8i64u == 0i64u then 0i64u else 1i64u) with
+					| (more, next) ->
+						if more == 0i64u then
+							current = next
+							going = false
+						else
+							match element.run next with
+							| (value, last) ->
+								values = Vec.push values value
+								current = last
+		(Vec.to_array values, current) }
 
 /// Arrays of at most 32 values of `element` (about 7 on average), shrinking toward fewer and
 /// simpler values.

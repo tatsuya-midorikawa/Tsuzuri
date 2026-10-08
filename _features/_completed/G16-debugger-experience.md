@@ -710,7 +710,7 @@ lldb -b -o "command script import scripts/lldb/tsuzuri_lldb.py" -o "target symbo
   `--index` が 1 つでない、`--list`・`--filter`・WASM との組み合わせは E2000。ランナーの C の入口（`test-runner.c`）とランタイムはデバッグ情報なしの
   別 object にし、`-g` でリンクする（step-in が `main` に入らない）。テストを呼ぶ `@tsuzuri_test_run` は `@main` と同じく `debug::wrapper` で artificial な
   `DISubprogram`（位置はテストの宣言）を持ち、呼び出しと `ret` に位置を付ける。出力は `publish_outputs` で原子的に置き、ソースとリンク入力を
-  上書きしない。VS Code の Testing ビューに Debug のプロファイル（既定）を足し、選んだ 1 件をこのコマンドで `<root>/.tsuzuri/test/runner` に
+  上書きしない。VS Code の Testing ビューに Debug のプロファイル（既定）を足し、選んだ 1 件をこのコマンドで `<root>/.tsuzuri/test/runner-<pid>-<番号>`（見直し（2026-10-08、PR のレビュー）: デバッグごとに別の名前にし、終わると消す。同時のデバッグが同じランナーを上書きしないため）に
   ビルドし、`lldbLaunch`（D6）で CodeLLDB を起動する。終了コード 0 で passed、それ以外は failed、終わる前に止めると skipped。2 件以上を選ぶと
   エラー（全件 skipped）にする。
 - 理由: test runner は各テストを別 process で実行し、`run_tests` の build は一時ディレクトリで完結しているので、debugger が起動できる実行ファイルを

@@ -64,7 +64,7 @@ tsuzuri test . --seed 42
 | `Gen.string()` | `Gen<string>` | `Gen.char()` の 32 文字以下の文字列。`""` へ縮む |
 | `Gen.string_of g` | `Gen<char> -> Gen<string>` | `g` の文字の 32 文字以下の文字列 |
 | `Gen.array g` | `Gen<'a> -> Gen<['a]>` | 32 個以下（平均 7 個程度）の配列。短く、要素も単純に縮む |
-| `Gen.array_up_to n g` | `i64 -> Gen<'a> -> Gen<['a]>` | `n` 個以下の配列 |
+| `Gen.array_up_to n g` | `i64 -> Gen<'a> -> Gen<['a]>` | `n` 個以下の配列。`n` が負ならトラップ |
 | `Gen.maybe g` | `Gen<'a> -> Gen<Maybe<'a>>` | `Maybe.None` へ縮む |
 | `Gen.result ok error` | `Gen<'a> -> Gen<'e> -> Gen<Result<'a, 'e>>` | `Result.Ok` へ縮む |
 

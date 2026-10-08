@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, testDebugArguments } from '../core';
+import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
 	assert.equal(supportsDebug('win32', 'arm64'), false);
@@ -40,10 +40,16 @@ test('debug launches load the LLDB formatters first and add macOS DWARF', () => 
 	assert.deepEqual(lldbLaunch('/p/Main', '/f.py', {}, 'linux').preRunCommands, []);
 });
 
-test('debugging a test builds that test alone with debug information at a fixed runner path', () => {
+test('debugging a test builds that test alone with debug information at a runner path of its own', () => {
 	const root = path.join(os.tmpdir(), 'space & quote\' project');
-	assert.deepEqual(testDebugArguments(root, 3, 'linux'), ['test', root, '--index', '3', '-g', '-o', path.join(root, '.tsuzuri', 'test', 'runner'), '--json']);
-	assert.equal(testDebugArguments(root, 0, 'win32')[6], path.join(root, '.tsuzuri', 'test', 'runner.exe'));
+	assert.deepEqual(testDebugArguments(root, 3, '42-1', 'linux'), ['test', root, '--index', '3', '-g', '-o', path.join(root, '.tsuzuri', 'test', 'runner-42-1'), '--json']);
+	assert.equal(testDebugArguments(root, 0, '42-2', 'win32')[6], path.join(root, '.tsuzuri', 'test', 'runner-42-2.exe'));
+	// Concurrent debug runs never share a runner, and each run removes its runner and debug information.
+	assert.notEqual(testRunnerPath(root, '42-1', 'linux'), testRunnerPath(root, '42-2', 'linux'));
+	const linux = testRunnerPath(root, '42-1', 'linux');
+	assert.deepEqual(testRunnerFiles(linux), [linux, `${linux}.dwarf`]);
+	const windows = testRunnerPath(root, '42-2', 'win32');
+	assert.deepEqual(testRunnerFiles(windows), [windows, `${windows}.dwarf`, path.join(root, '.tsuzuri', 'test', 'runner-42-2.pdb')]);
 });
 
 test('new projects suggest a PascalCase namespace and accept identifiers joined by ::', () => {
