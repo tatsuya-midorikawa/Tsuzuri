@@ -836,7 +836,7 @@ fn emit_program(
             })
             .collect::<Vec<_>>()
     });
-    let reachable = reachable_functions(module, roots.as_deref(), entry == Entry::BenchRunner);
+    let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -1092,11 +1092,7 @@ fn emit_program(
     // Only a program that reads `Env.args` receives argc and argv; other entries keep `@main()`.
     let uses_args = intrinsics.contains("declare void @tsuzuri_os_set_args(i32, ptr)");
     if entry != Entry::BenchRunner && intrinsics.contains("declare i64 @tsuzuri_bench_now()") {
-        return Err(Diagnostic::new(
-            "E1018",
-            "Bench.now runs only under tsuzuri bench; call Bench.with_input or Bench.now from a bench declaration",
-            Span::default(),
-        ));
+        return Err(clock_error(module, &roots));
     }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
@@ -2298,62 +2294,258 @@ pub(crate) fn reachable_functions(
     roots: Option<&[usize]>,
     benches: bool,
 ) -> BTreeSet<usize> {
-    fn references(expression: &TypedExpr, module: &CheckedModule, pending: &mut Vec<usize>) {
-        match &expression.kind {
-            TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
-                pending.push(*id);
-            }
-            // A14: a stored value's vtable calls its slot functions; an upcast reuses those.
-            TypedExprKind::Function(FunctionRef::Builtin(instance))
-                if instance.builtin == Builtin::DynOf =>
-            {
-                if let [ty, Type::Dyn(target)] = instance.types.as_slice()
-                    && let Some(functions) = module.vtables.get(&(target.vtable_key(), ty.clone()))
-                {
-                    pending.extend(functions);
-                }
-            }
-            _ => {}
-        }
-        for child in expression.children() {
-            references(child, module, pending);
-        }
+    program_reach(module, roots, benches).1
+}
+
+/// Pushes the functions that `expression` refers to onto `pending`, and sets `clock` if it reads
+/// the clock `Bench.now`.
+fn references(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    pending: &mut Vec<usize>,
+    clock: &mut bool,
+) {
+    direct_references(expression, module, pending, clock);
+    for child in expression.children() {
+        references(child, module, pending, clock);
     }
-    let mut pending: Vec<usize> = roots.map_or_else(
-        || {
-            module
-                .functions
-                .iter()
-                .enumerate()
-                .filter(|(id, function)| {
-                    (function.origin.module == ModuleOrigin::User
-                        && function.origin.test.is_none()
-                        && function.origin.parent.is_none()
-                        && function.visibility == crate::syntax::Visibility::Public)
-                        && !matches!(function.body.kind, TypedExprKind::HostCall(..))
-                        || function.exported
-                        || module.entry == Some(*id)
-                })
-                .map(|(id, _)| id)
-                .collect()
-        },
-        <[usize]>::to_vec,
-    );
-    // Drop glue calls the user drops without a reference in any body.
-    pending.extend(
-        module
-            .user_drops
-            .values()
-            .copied()
-            .filter(|drop| benches || !module.bench_drops.contains(drop)),
-    );
+}
+
+/// `references` of the expression itself, without its children.
+fn direct_references(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    pending: &mut Vec<usize>,
+    clock: &mut bool,
+) {
+    match &expression.kind {
+        TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
+            pending.push(*id);
+        }
+        // A14: a stored value's vtable calls its slot functions; an upcast reuses those.
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin == Builtin::DynOf =>
+        {
+            if let [ty, Type::Dyn(target)] = instance.types.as_slice()
+                && let Some(functions) = module.vtables.get(&(target.vtable_key(), ty.clone()))
+            {
+                pending.extend(functions);
+            }
+        }
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin == Builtin::BenchNow =>
+        {
+            *clock = true;
+        }
+        _ => {}
+    }
+}
+
+/// The functions reachable from `pending`, and those of them that read the clock themselves.
+fn close(module: &CheckedModule, mut pending: Vec<usize>) -> (BTreeSet<usize>, BTreeSet<usize>) {
     let mut reachable = BTreeSet::new();
+    let mut clocks = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
-            references(&module.functions[id].body, module, &mut pending);
+            let mut clock = false;
+            references(&module.functions[id].body, module, &mut pending, &mut clock);
+            if clock {
+                clocks.insert(id);
+            }
         }
     }
-    reachable
+    (reachable, clocks)
+}
+
+/// `reachable_functions` with its roots. Without explicit roots, the roots are the public user
+/// functions, the exports, and the entry, but a public function that reaches the clock
+/// `Bench.now`, which only the bench runner defines, is a root only if it is exported or the
+/// entry: helpers of `bench` declarations do not make other builds fail (G18 D3). Such a program
+/// would otherwise be rejected, so the output of every program that builds stays the same.
+fn program_reach(
+    module: &CheckedModule,
+    roots: Option<&[usize]>,
+    benches: bool,
+) -> (Vec<usize>, BTreeSet<usize>) {
+    // Drop glue calls the user drops without a reference in any body.
+    let drops: Vec<usize> = module
+        .user_drops
+        .values()
+        .copied()
+        .filter(|drop| benches || !module.bench_drops.contains(drop))
+        .collect();
+    if let Some(roots) = roots {
+        let roots: Vec<usize> = roots.iter().chain(&drops).copied().collect();
+        return (roots.clone(), close(module, roots).0);
+    }
+    let candidates: Vec<usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| {
+            (function.origin.module == ModuleOrigin::User
+                && function.origin.test.is_none()
+                && function.origin.parent.is_none()
+                && function.visibility == crate::syntax::Visibility::Public)
+                && !matches!(function.body.kind, TypedExprKind::HostCall(..))
+                || function.exported
+                || module.entry == Some(*id)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    let roots: Vec<usize> = candidates.iter().chain(&drops).copied().collect();
+    let (reachable, clocks) = close(module, roots.clone());
+    if clocks.is_empty() {
+        return (roots, reachable);
+    }
+    let reaching = reaching(module, &reachable, &clocks);
+    let roots: Vec<usize> = candidates
+        .into_iter()
+        .filter(|id| {
+            !reaching.contains(id) || module.functions[*id].exported || module.entry == Some(*id)
+        })
+        .chain(drops)
+        .collect();
+    (roots.clone(), close(module, roots).0)
+}
+
+/// The functions of `reachable` from which one of `targets` is reachable, `targets` included.
+fn reaching(
+    module: &CheckedModule,
+    reachable: &BTreeSet<usize>,
+    targets: &BTreeSet<usize>,
+) -> BTreeSet<usize> {
+    let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &id in reachable {
+        let mut callees = Vec::new();
+        references(&module.functions[id].body, module, &mut callees, &mut false);
+        for callee in callees {
+            callers.entry(callee).or_default().push(id);
+        }
+    }
+    let mut reaching = targets.clone();
+    let mut pending: Vec<usize> = targets.iter().copied().collect();
+    while let Some(id) = pending.pop() {
+        for &caller in callers.get(&id).into_iter().flatten() {
+            if reaching.insert(caller) {
+                pending.push(caller);
+            }
+        }
+    }
+    reaching
+}
+
+/// The `E1018` of an output other than the bench runner's that reaches `Bench.now`. It names the
+/// root that reaches the clock and the last function written in user code on the shortest path
+/// from the roots (in order) to a body that reads it, at the expression of that function that
+/// leads there.
+fn clock_error(module: &CheckedModule, roots: &[usize]) -> Diagnostic {
+    const RULE: &str = "Bench.now runs only under tsuzuri bench";
+    const ADVICE: &str =
+        "call it only from bench declarations and from functions that only benchmarks use";
+    let mut previous: BTreeMap<usize, Option<usize>> = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    let mut visit = |id: usize, from: Option<usize>, queue: &mut std::collections::VecDeque<_>| {
+        if let std::collections::btree_map::Entry::Vacant(slot) = previous.entry(id) {
+            slot.insert(from);
+            queue.push_back(id);
+        }
+    };
+    for &root in roots {
+        visit(root, None, &mut queue);
+    }
+    let mut found = None;
+    while let Some(id) = queue.pop_front() {
+        let mut callees = Vec::new();
+        let mut clock = false;
+        references(&module.functions[id].body, module, &mut callees, &mut clock);
+        if clock {
+            found = Some(id);
+            break;
+        }
+        for callee in callees {
+            visit(callee, Some(id), &mut queue);
+        }
+    }
+    let Some(found) = found else {
+        return Diagnostic::new("E1018", format!("{RULE}; {ADVICE}"), Span::default());
+    };
+    let mut path = vec![found];
+    while let Some(Some(id)) = previous.get(path.last().unwrap()) {
+        path.push(*id);
+    }
+    path.reverse();
+    let root = path[0];
+    let root_name = if let Some(test) = module.tests.iter().find(|test| test.function == root) {
+        format!("test {:?}", test.name)
+    } else if let Some((ty, _)) = module.user_drops.iter().find(|(_, drop)| **drop == root) {
+        format!("the Drop instance of `{}`", ty.display(&module.types()))
+    } else if let Some(name) = source_function_name(&module.functions[root]) {
+        let export = if module.functions[root].exported {
+            "export "
+        } else {
+            ""
+        };
+        format!("{export}`{name}`")
+    } else if module.entry == Some(root) {
+        "the top-level code".to_owned()
+    } else {
+        format!("`{}`", module.functions[root].qualified_name())
+    };
+    let named = (1..path.len())
+        .rev()
+        .find(|&index| source_function_name(&module.functions[path[index]]).is_some())
+        .unwrap_or(0);
+    let next = path.get(named + 1).copied();
+    let function = &module.functions[path[named]];
+    let span = clock_use(&function.body, module, next)
+        .filter(|span| *span != Span::default())
+        .unwrap_or(function.span);
+    let message = match source_function_name(function) {
+        Some(name) if named > 0 => {
+            format!("{RULE}, but {root_name} reaches it through `{name}`; {ADVICE}")
+        }
+        _ => format!("{RULE}, but {root_name} reads it; {ADVICE}"),
+    };
+    Diagnostic::new("E1018", message, span)
+}
+
+/// `Module.name` of a function written in user code, for diagnostics; `None` for tests, lambdas,
+/// and generated functions.
+fn source_function_name(function: &CheckedFunction) -> Option<String> {
+    let name = function
+        .name
+        .split_once(".$mono.")
+        .map_or(function.name.as_str(), |(name, _)| name);
+    (function.origin.module == ModuleOrigin::User
+        && function.origin.test.is_none()
+        && function.origin.bench.is_none()
+        && !function.module.starts_with('$')
+        && !name.contains('$'))
+    .then(|| format!("{}.{name}", function.module))
+}
+
+/// The span of the first expression of `expression`, in tree order, that refers to function
+/// `target`, or that reads the clock if `target` is `None`.
+fn clock_use(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+    target: Option<usize>,
+) -> Option<Span> {
+    let mut callees = Vec::new();
+    let mut clock = false;
+    direct_references(expression, module, &mut callees, &mut clock);
+    let refers = match target {
+        Some(target) => callees.contains(&target),
+        None => clock,
+    };
+    if refers {
+        return Some(expression.span);
+    }
+    expression
+        .children()
+        .into_iter()
+        .find_map(|child| clock_use(child, module, target))
 }
 
 /// Record and union types, generic instances included, reachable from
@@ -2915,9 +3107,22 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     /// Counts one entry into the coverage region of `kind` at `span`, if the plan has it.
     fn cover(&mut self, kind: crate::coverage::RegionKind, span: Span) {
-        if !self.counted {
-            return;
+        if self.counted {
+            self.count_region(kind, span);
         }
+    }
+
+    /// Counts one entry into the body of user function `id` where this body replaced a call of it
+    /// by the call's effect (an identity call, an inline `x + y` helper), whether or not this
+    /// body is counted: the callee ran, as far as the program can tell.
+    fn cover_call(&mut self, id: usize) {
+        let function = &self.module.functions[id];
+        if self.globals.coverage.is_some() && crate::coverage::counted(function) {
+            self.count_region(crate::coverage::RegionKind::Body, function.body.span);
+        }
+    }
+
+    fn count_region(&mut self, kind: crate::coverage::RegionKind, span: Span) {
         let Some(plan) = &self.globals.coverage else {
             return;
         };
@@ -2928,6 +3133,21 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.value(format!(
             "atomicrmw add ptr getelementptr inbounds ([{count} x i64], ptr @tsuzuri_coverage_counters, i64 0, i64 {region}), i64 1 monotonic"
         ));
+    }
+
+    /// `call_specialization::transparent`, counting each identity function that it looks through
+    /// because the generated code uses the argument instead of calling the function.
+    fn skip_identity_calls<'e>(&mut self, expression: &'e TypedExpr) -> &'e TypedExpr {
+        if self.globals.coverage.is_none() {
+            return call_specialization::transparent(expression, self.module);
+        }
+        let mut skipped = Vec::new();
+        let expression =
+            call_specialization::transparent_calls(expression, self.module, |id| skipped.push(id));
+        for id in skipped {
+            self.cover_call(id);
+        }
+        expression
     }
 
     fn jump(&mut self, block: &str) {
@@ -2948,7 +3168,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         fn reduction(expression: &TypedExpr, module: &CheckedModule) -> bool {
             if let TypedExprKind::Assign(place, value) = &expression.kind {
-                if let (TypedExprKind::Local(id), Some((operator, left, right))) = (
+                if let (TypedExprKind::Local(id), Some((operator, left, right, _))) = (
                     &place.kind,
                     call_specialization::binary_operation(value, module),
                 ) {
@@ -3125,15 +3345,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let mut pending = Vec::with_capacity(arguments.len());
         for argument in arguments {
             let operation = call_specialization::binary_operation(argument, self.module).filter(
-                |(operator, _, _)| {
+                |(operator, _, _, _)| {
                     argument.ty.is_integer()
                         && matches!(operator, BinaryOp::Add | BinaryOp::Subtract)
                 },
             );
-            if let Some((operator, left, right)) = operation {
+            if let Some((operator, left, right, helper)) = operation {
                 // Snapshot operands now; only the nontrapping wrapping operation moves to the latch.
                 let left = self.expression(left);
                 let right = self.expression(right);
+                if let Some(helper) = helper {
+                    self.cover_call(helper);
+                }
                 let opcode = if operator == BinaryOp::Add {
                     "add"
                 } else {
@@ -5026,7 +5249,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 return self.host_call(import, arguments, &function.signature.result);
             }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
-                return self.expression(&arguments[0]);
+                let value = self.expression(&arguments[0]);
+                self.cover_call(id);
+                return value;
             }
         }
         if !matches!(callee.kind, TypedExprKind::Function(_)) {
@@ -5119,7 +5344,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             for (index, argument) in arguments[..count].iter().enumerate() {
                 let value =
                     if let Some((_, target)) = callbacks.iter().find(|(slot, _)| *slot == index) {
-                        let argument = call_specialization::transparent(argument, self.module);
+                        let argument = self.skip_identity_calls(argument);
                         if Self::is_place(argument) {
                             self.expression_mode(argument, false)
                         } else {
@@ -5171,7 +5396,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn capture_values(&mut self, expression: &TypedExpr) -> Vec<(String, Vec<Frame>)> {
-        let expression = call_specialization::transparent(expression, self.module);
+        let expression = self.skip_identity_calls(expression);
         match &expression.kind {
             // Known temporary closures only lend their captures to a borrowing worker; the caller
             // drops them after the call, so stack values need not move to the heap.
@@ -5231,7 +5456,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         callee: &TypedExpr,
         target: ClosureTarget,
     ) -> Option<BorrowedCall> {
-        let callee = call_specialization::transparent(callee, self.module);
         let function = &self.module.functions[target.function];
         let symbol = if target.bound == 0 {
             format!("@tz.fn.{}", function.qualified_name())
@@ -5243,6 +5467,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             })?;
             format!("@tz.specialized.{id}")
         };
+        // After the last early return: a caller without this call evaluates `callee` itself.
+        let callee = self.skip_identity_calls(callee);
         let mut cleanup = Vec::new();
         let captures = if Self::is_place(callee) {
             let value = self.expression_mode(callee, false);

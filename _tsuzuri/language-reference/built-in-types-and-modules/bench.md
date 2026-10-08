@@ -59,7 +59,39 @@ bench "custom loop" = \n ->
     Bench.now() - start
 ```
 
-時計は、macOS が `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`、Linux などが `clock_gettime(CLOCK_MONOTONIC)`、Windows が `QueryPerformanceCounter` です。時計の定義は bench の実行器だけが持つので、`tsuzuri build`・`run`・`test` の出力が `Bench.now` に到達すると、位置なしの `E1018`（`Bench.now runs only under tsuzuri bench; ...`）になります。`Bench.consume` はどの出力でも使えます。
+時計は、macOS が `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`、Linux などが `clock_gettime(CLOCK_MONOTONIC)`、Windows が `QueryPerformanceCounter` です。`Bench.consume` はどの出力でも使えます。
+
+### Bench.now を使える範囲
+
+時計の定義は bench の実行器だけが持ちます。`tsuzuri build`・`run`・`test` の出力には、`Bench.now` に到達する関数（直接呼ぶ関数と、`Bench.with_input`・`Bench.of` や他の関数を通して呼ぶ関数）のうち `export` していないものは、公開（既定の可視性）でも、出力のほかの部分が使わない限り入りません。bench の本体の補助関数は、普通の `def` で書けます。
+
+```tsuzuri run=42
+def measure :: i64 -> i64
+fn measure n =
+    let start = Bench.now()
+    let mut index = 0
+    while index < n do
+        Bench.consume index
+        index = index + 1
+    Bench.now() - start
+
+bench "measured loop" = measure
+
+42
+```
+
+次のものから `Bench.now` に到達すると、`tsuzuri bench` 以外の出力は `E1018` です。
+
+- トップレベルのコード（`main`）
+- `export def`
+- `tsuzuri test` が実行するテスト（`--filter` などで選んだもの）
+- `Drop` の実装（値を捨てるどこからでも呼ばれるため）
+
+メッセージは到達の起点と、途中で最後に通る利用者の関数を示し、位置はその関数の中で時計へ向かう式です。
+
+```text
+Main.tz:3:17: error[E1018]: Bench.now runs only under tsuzuri bench, but the top-level code reaches it through `Main.measure`; call it only from bench declarations and from functions that only benchmarks use
+```
 
 ### Bench.consume が要る理由
 

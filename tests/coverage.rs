@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const CALC: &str = include_str!("fixtures/coverage/Calc.tz");
+const SHORTCUTS: &str = include_str!("fixtures/coverage/Shortcuts.tz");
+const THROUGH: &str = include_str!("fixtures/coverage/Through.tz");
 
 /// A fresh project root holding `files`, as the compiler names it (no Windows `\\?\` prefix).
 fn project(test: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -128,6 +130,60 @@ fn coverage_counts_parallel_work_exactly() {
             ),
             "{lcov}"
         );
+    }
+    clean(&root);
+}
+
+#[test]
+fn coverage_counts_calls_that_the_code_generator_shortcuts() {
+    // The generated code uses the argument of `same` and an inline `add` in the self tail call of
+    // `count`, but both functions ran as far as the program can tell: `same` once, `add` once per
+    // recursive call (3), and `count` on entry and on each of its 3 tail calls.
+    let root = project("shortcuts", &[("Shortcuts.tz", SHORTCUTS)]);
+    let expected = format!(
+        "TN:\nSF:{}\nFN:2,Shortcuts.same\nFN:4,Shortcuts.add\nFN:7,Shortcuts.count\n\
+         FNDA:1,Shortcuts.same\nFNDA:3,Shortcuts.add\nFNDA:4,Shortcuts.count\nFNF:3\nFNH:3\n\
+         DA:2,1\nDA:4,3\nDA:7,4\nDA:8,1\nDA:10,3\nLF:5\nLH:5\nend_of_record\n",
+        root.join("Shortcuts.tz").display()
+    );
+    for optimization in ["-O0", "-O3"] {
+        let report = root.join(format!("shortcuts{optimization}.info"));
+        let output = tsuzuri(
+            &root,
+            &["--coverage", report.to_str().unwrap(), optimization],
+        );
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.ends_with("\ncoverage: 5/5 lines (100.0%), 3/3 functions\n"),
+            "{stdout}"
+        );
+        assert_eq!(fs::read_to_string(&report).unwrap(), expected);
+    }
+    clean(&root);
+}
+
+#[test]
+fn coverage_counts_identity_calls_that_known_closures_look_through() {
+    // `pass` is evaluated once in each of the first six tests, though the code generator passes,
+    // calls, or captures `double` (or `add 1`) directly. `double` runs once in three tests and
+    // once per element in the two three-element arrays; the two instances of `ident` share its body.
+    let root = project("through", &[("Through.tz", THROUGH)]);
+    let expected = format!(
+        "TN:\nSF:{}\nFN:2,Through.pass\nFN:4,Through.double\nFN:6,Through.add\nFN:8,Through.apply\n\
+         FN:10,Through.ident\nFNDA:6,Through.pass\nFNDA:9,Through.double\nFNDA:1,Through.add\n\
+         FNDA:2,Through.apply\nFNDA:2,Through.ident\nFNF:5\nFNH:5\n\
+         DA:2,6\nDA:4,9\nDA:6,1\nDA:8,2\nDA:10,2\nLF:5\nLH:5\nend_of_record\n",
+        root.join("Through.tz").display()
+    );
+    for optimization in ["-O0", "-O3"] {
+        let report = root.join(format!("through{optimization}.info"));
+        let output = tsuzuri(
+            &root,
+            &["--coverage", report.to_str().unwrap(), optimization],
+        );
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(fs::read_to_string(&report).unwrap(), expected);
     }
     clean(&root);
 }

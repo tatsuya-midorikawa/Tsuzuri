@@ -127,9 +127,10 @@ fn rejects_bench_identifiers_and_malformed_declarations() {
     tsuzuri::analyze("let benchmark = 1\nlet benches = benchmark + 1\nbenches").unwrap();
 }
 
-/// `ir` with the numbers of generated symbols (`$lambda.N`, `$instance.N`, `$mono.N`, ...)
-/// renumbered in order of first appearance. Declaring and specializing bench functions shifts
-/// those numbers, as declaring tests does, without changing any emitted code.
+/// `ir` with the numbers of generated symbols (`$lambda.N`, `$instance.N`, `$mono.N`,
+/// `$intrinsic.Display.display.N`, ...) renumbered in order of first appearance. Declaring and
+/// specializing bench functions shifts those numbers, as declaring tests does, without changing
+/// any emitted code.
 fn renumbered(ir: &str) -> String {
     let mut numbers = std::collections::BTreeMap::new();
     let mut output = String::with_capacity(ir.len());
@@ -137,23 +138,38 @@ fn renumbered(ir: &str) -> String {
     while let Some(dollar) = rest.find('$') {
         output.push_str(&rest[..=dollar]);
         rest = &rest[dollar + 1..];
-        let word = rest
-            .find(|character: char| !character.is_ascii_lowercase() && character != '_')
-            .unwrap_or(rest.len());
-        let digits = rest[word..].strip_prefix('.').map_or(0, |after| {
-            after
+        // `word(.word)*.digits`: the words name the kind of symbol, the digits number it.
+        let mut end = 0;
+        let digits = loop {
+            let word = rest[end..]
+                .find(|character: char| !character.is_ascii_alphabetic() && character != '_')
+                .unwrap_or(rest.len() - end);
+            if word == 0 {
+                break 0;
+            }
+            end += word;
+            let Some(after) = rest[end..].strip_prefix('.') else {
+                break 0;
+            };
+            let digits = after
                 .find(|character: char| !character.is_ascii_digit())
-                .unwrap_or(after.len())
-        });
+                .unwrap_or(after.len());
+            if digits > 0 {
+                break digits;
+            }
+            end += 1;
+        };
         if digits == 0 {
             continue;
         }
-        let prefix = rest[..word].to_owned();
-        let number = rest[word + 1..word + 1 + digits].to_owned();
+        let kind = &rest[..end];
+        let number = &rest[end + 1..end + 1 + digits];
         let count = numbers.len();
-        let canonical = *numbers.entry((prefix.clone(), number)).or_insert(count);
-        output.push_str(&format!("{prefix}.#{canonical}"));
-        rest = &rest[word + 1 + digits..];
+        let canonical = *numbers
+            .entry((kind.to_owned(), number.to_owned()))
+            .or_insert(count);
+        output.push_str(&format!("{kind}.#{canonical}"));
+        rest = &rest[end + 1 + digits..];
     }
     output.push_str(rest);
     output
@@ -273,6 +289,137 @@ fn bench_now_outside_bench_runner_is_rejected() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("E1018") && stderr.contains(message),
+        "{stderr}"
+    );
+    clean(&root);
+}
+
+const MEASURE: &str = "def measure :: i64 -> i64\nfn measure n =\n    let start = Bench.now()\n    let mut index = 0\n    while index < n do\n        Bench.consume index\n        index = index + 1\n    Bench.now() - start\n";
+const TIMED: &str = "def timed :: i64 -> i64\nfn timed n = Bench.of (\\() -> 1) n\n";
+const ADVICE: &str =
+    "; call it only from bench declarations and from functions that only benchmarks use";
+
+#[test]
+fn public_bench_helpers_stay_out_of_other_builds() {
+    // `measure`, `timed` (through `Bench.of`), and `report` (through both) are public, so every
+    // build used to root them and reject the program with E1018 though only benches call them.
+    let program = format!(
+        "{MEASURE}{TIMED}def report :: i64 -> i64\nfn report n = measure n + timed n\n\
+         bench \"measure\" = measure\nbench \"report\" = report\nDebug.print \"hi\"\n"
+    );
+    // With private helpers, which builds have never rooted, the program built before G18 D3's
+    // revision; the analysis is the same, so the output is the same byte for byte.
+    let private = program.replace("def ", "private def ");
+    let plain = "Debug.print \"hi\"\n";
+    let console = |source: &str, wasm| {
+        tsuzuri::llvm::emit_target(
+            &tsuzuri::analyze(source).unwrap(),
+            tsuzuri::llvm::Entry::Console,
+            wasm,
+        )
+        .unwrap()
+    };
+    for wasm in [false, true] {
+        let ir = console(&program, wasm);
+        for name in ["tsuzuri_bench", "$bench", "measure", "timed", "report"] {
+            assert!(!ir.contains(name), "{name}: {ir}");
+        }
+        assert_eq!(ir, console(&private, wasm));
+        // Only the numbers of generated symbols differ from the program without the helpers and
+        // benches, as their analysis and that of the std `Bench` module add instances.
+        assert_eq!(renumbered(&ir), renumbered(&console(plain, wasm)));
+    }
+    let root = project("helpers", &[("Main.tz", program.as_str())]);
+    let run = tsuzuri(&["run", root.to_str().unwrap()], &root);
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "hi\n");
+    let bench = tsuzuri(&["bench", root.to_str().unwrap(), "--samples", "1"], &root);
+    assert!(bench.status.success(), "{bench:?}");
+    assert!(
+        String::from_utf8_lossy(&bench.stdout).ends_with("\n2 benchmarks; 0 failed; 0 ignored\n")
+    );
+    clean(&root);
+}
+
+#[test]
+fn clock_reached_from_entry_export_test_or_drop_is_rejected_by_name() {
+    // The error points at the use that leads to the clock in the last user function on the way.
+    let rejected =
+        |source: &str, error: tsuzuri::diagnostic::Diagnostic, text: &str, message: &str| {
+            assert_eq!(error.code, "E1018");
+            assert_eq!(
+                error.message,
+                format!("Bench.now runs only under tsuzuri bench, but {message}{ADVICE}")
+            );
+            assert_eq!(&source[error.span.start..error.span.end], text, "{error:?}");
+        };
+    let entry = format!("{MEASURE}bench \"m\" = measure\nDebug.print (measure 5)\n");
+    let module = tsuzuri::analyze(&entry).unwrap();
+    rejected(
+        &entry,
+        tsuzuri::llvm::emit(&module, tsuzuri::llvm::Entry::Console).unwrap_err(),
+        "Bench.now",
+        "the top-level code reaches it through `Main.measure`",
+    );
+    let top = "let start = Bench.now()\nstart - start\n";
+    rejected(
+        top,
+        tsuzuri::llvm::emit(
+            &tsuzuri::analyze(top).unwrap(),
+            tsuzuri::llvm::Entry::Console,
+        )
+        .unwrap_err(),
+        "Bench.now",
+        "the top-level code reads it",
+    );
+    let export = format!("{TIMED}export def run :: i64\nfn run = timed 3\nbench \"t\" = timed\n");
+    let module = tsuzuri::analyze(&export).unwrap();
+    for wasm in [false, true] {
+        rejected(
+            &export,
+            tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Library, wasm).unwrap_err(),
+            "Bench.of",
+            "export `Main.run` reaches it through `Main.timed`",
+        );
+    }
+    let tests =
+        format!("{MEASURE}test \"t\" = assert (measure 1 >= 0)\ntest \"plain\" = assert true\n");
+    let module = tsuzuri::analyze(&tests).unwrap();
+    for wasm in [false, true] {
+        rejected(
+            &tests,
+            tsuzuri::llvm::emit_test_runner(&module, &[0], wasm).unwrap_err(),
+            "Bench.now",
+            "test \"t\" reaches it through `Main.measure`",
+        );
+        // A test that does not reach the clock runs.
+        let ir = tsuzuri::llvm::emit_test_runner(&module, &[1], wasm).unwrap();
+        assert!(
+            !ir.contains("tsuzuri_bench") && !ir.contains("measure"),
+            "{ir}"
+        );
+    }
+    // Drop glue runs wherever a value is dropped, so a Drop instance that reads the clock is
+    // part of every build.
+    let drop = "record Resource { id: i64 }\ninstance Drop<Resource> { fn drop value = Bench.consume (Bench.now() + value.id) }\nDebug.print \"hi\"\n";
+    rejected(
+        drop,
+        tsuzuri::llvm::emit(
+            &tsuzuri::analyze(drop).unwrap(),
+            tsuzuri::llvm::Entry::Console,
+        )
+        .unwrap_err(),
+        "Bench.now",
+        "the Drop instance of `Main.Resource` reads it",
+    );
+    let root = project("named", &[("Main.tz", entry.as_str())]);
+    let output = tsuzuri(&["run", root.to_str().unwrap()], &root);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "Main.tz:3:17: error[E1018]: Bench.now runs only under tsuzuri bench, but the top-level code reaches it through `Main.measure`{ADVICE}"
+        )),
         "{stderr}"
     );
     clean(&root);
