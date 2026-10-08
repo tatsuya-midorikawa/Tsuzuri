@@ -275,8 +275,13 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			}
 		} catch (error) {
 			execution.appendOutput(`${String(error)}\r\n`);
-			if (item) { execution.errored(item, new vscode.TestMessage(String(error))); }
-			if (!token.isCancellationRequested) { summary.errored++; }
+			// Like a run, a debug session cancelled while it builds or starts skips its test.
+			if (token.isCancellationRequested) {
+				if (item) { execution.skipped(item); summary.skipped++; }
+			} else {
+				if (item) { execution.errored(item, new vscode.TestMessage(String(error))); }
+				summary.errored++;
+			}
 		} finally { subscription.dispose(); execution.end(); }
 		return summary;
 	}

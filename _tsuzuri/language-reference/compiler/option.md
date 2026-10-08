@@ -77,7 +77,7 @@
 
 | オプション | 既定 | 意味 |
 | --- | --- | --- |
-| `-O0` `-O1` `-O2` `-O3` | `build` / `run` / `script` は `-O3`、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
+| `-O0` `-O1` `-O2` `-O3` | `build` / `run` / `script` / `bench` は `-O3`、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
 | `--cpu generic\|native` | `generic` | native の実行ファイルとオブジェクト。`native` はこの機械の命令セットで、古い CPU では動きません |
 
 `check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O` を受け、`--cpu` は拒否します。
@@ -148,7 +148,7 @@ add 20 22
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
 | `--allocator system\|host\|counting` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` まで |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
-| `--no-cache` | キャッシュ有効 | `build` と `run` で、成果物のキャッシュと構文解析の結果のキャッシュを読まない、書かない |
+| `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物のキャッシュと構文解析の結果のキャッシュを読まない、書かない。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 
 `[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
