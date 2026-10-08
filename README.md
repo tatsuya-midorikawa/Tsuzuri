@@ -610,7 +610,7 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### デバッグ情報と出力仕様
 
-- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます（[デバッグ](_tsuzuri/language-reference/compiler/debugging.md)）。
+- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます。Windows で MSVC のリンカーを使う場合は CodeView も出し、実行ファイルの隣に PDB を書いて natvis の表示を埋め込みます（[デバッグ](_tsuzuri/language-reference/compiler/debugging.md)）。
 - **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。
 - **コンソールの出力とフォーマット**: トップレベルの結果式が評価された場合、その型が `Display` を実装していれば文字列表現が標準出力に表示されます。浮動小数点数は最短で往復可能な十進表現で出力され、ネイティブと WASM で完全に一致します。
 

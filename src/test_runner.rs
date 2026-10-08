@@ -242,7 +242,11 @@ pub fn build_debug_runner(
         path.push(".dwarf");
         PathBuf::from(path)
     });
-    for path in std::iter::once(output).chain(dwarf.as_deref()) {
+    let pdb = msvc_linker().then(|| pdb_path(output));
+    for path in std::iter::once(output)
+        .chain(dwarf.as_deref())
+        .chain(pdb.as_deref())
+    {
         protect_sources(project, path)?;
         protect_links(links, path)?;
     }
@@ -264,6 +268,9 @@ pub fn build_debug_runner(
     })?;
     if cfg!(windows) {
         text = llvm::windows_abi(text, module);
+    }
+    if pdb.is_some() {
+        text = llvm::with_codeview(text);
     }
     let sources = native_runtime_sources(&text)?;
     let ir = temporary.path.join("tests.ll");
@@ -320,6 +327,10 @@ pub fn build_debug_runner(
         link.args(["-lm", "-pthread"]);
     }
     links.add_to(&mut link);
+    let staged_pdb = temporary.path.join("tests.pdb");
+    if let Some(pdb) = &pdb {
+        link.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
+    }
     collect_message(
         &mut messages,
         run_tool(&mut link, "tests require LLVM/Clang 17+ or TSUZURI_CLANG")?,
@@ -336,7 +347,11 @@ pub fn build_debug_runner(
             )?,
         );
     }
-    let sidecars: Vec<_> = dwarf.iter().map(|path| (&staged, path)).collect();
+    let sidecars: Vec<_> = dwarf
+        .iter()
+        .map(|path| (&staged, path))
+        .chain(pdb.iter().map(|path| (&staged_pdb, path)))
+        .collect();
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
     temporary.close()?;
     let program = crate::cache::real_path(output)

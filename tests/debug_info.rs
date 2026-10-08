@@ -257,3 +257,72 @@ fn debug_union_offsets_match_storage() {
         assert_eq!(member_offset(&ir, "[|i64|].node", "value"), 64);
     }
 }
+
+#[test]
+fn debug_codeview_flag_joins_the_module_flags_for_windows_objects() {
+    let source = "export def answer :: i64 -> i64\nfn answer input =\n    let shape: Maybe<i64> = Maybe.Some input\n    Maybe.default_value 0 shape + 2\n";
+    let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, false);
+    let windows = tsuzuri::llvm::with_codeview(ir.clone());
+    let id = ir
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix('!')?
+                .split_once(" = ")?
+                .0
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .unwrap()
+        + 1;
+    let flag = format!("\n!{id} = !{{i32 2, !\"CodeView\", i32 1}}\n");
+    assert!(windows.contains(&flag), "{windows}");
+    let flags = windows
+        .lines()
+        .find(|line| line.starts_with("!llvm.module.flags = "))
+        .unwrap();
+    assert!(flags.ends_with(&format!(", !{id}}}")), "{flags}");
+    // Only the flag is added, once.
+    assert_eq!(
+        windows
+            .replacen(&flag, "\n", 1)
+            .replace(&format!(", !{id}}}"), "}"),
+        ir
+    );
+    assert_eq!(tsuzuri::llvm::with_codeview(windows.clone()), windows);
+    let module = tsuzuri::analyze(source).unwrap();
+    let plain = tsuzuri::llvm::emit(&module, tsuzuri::llvm::Entry::Library).unwrap();
+    assert_eq!(tsuzuri::llvm::with_codeview(plain.clone()), plain);
+    // For an MSVC target LLVM writes CodeView, which becomes the PDB, beside the DWARF.
+    let directory = std::env::temp_dir().join(format!("tsuzuri-codeview-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("module.ll");
+    std::fs::write(&path, &windows).unwrap();
+    let clang = std::env::var_os("TSUZURI_CLANG").unwrap_or_else(|| "clang".into());
+    for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+        let object = directory.join(format!("{target}.obj"));
+        let output = std::process::Command::new(&clang)
+            .args(["-x", "ir", "-Wno-override-module", "-O0", "-g", "-c"])
+            .arg(format!("--target={target}"))
+            .arg(&path)
+            .arg("-o")
+            .arg(&object)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let bytes = std::fs::read(&object).unwrap();
+        for section in [
+            &b".debug$S"[..],
+            b".debug$T",
+            b".debug_info",
+            b"Main.answer",
+        ] {
+            assert!(
+                bytes.windows(section.len()).any(|window| window == section),
+                "{target}: {}",
+                String::from_utf8_lossy(section)
+            );
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}

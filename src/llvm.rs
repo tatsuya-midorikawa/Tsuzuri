@@ -19,6 +19,7 @@ pub(crate) mod call_specialization;
 mod control;
 #[path = "llvm_debug.rs"]
 mod debug;
+pub use debug::with_codeview;
 #[path = "llvm_frame.rs"]
 mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};

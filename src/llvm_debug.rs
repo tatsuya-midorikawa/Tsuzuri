@@ -62,6 +62,38 @@ fn quote(text: &str) -> String {
     quoted
 }
 
+/// `ir` with a compile unit that is also emitted as CodeView. Clang adds the `CodeView` module flag
+/// only when it compiles C, so the driver adds it to the IR of a `-g` build that the MSVC linker
+/// links: for a Windows target LLVM then writes the `.debug$S` and `.debug$T` sections that become
+/// the PDB, beside the DWARF (G16 Phase 3). IR without debug information is returned unchanged.
+pub fn with_codeview(ir: String) -> String {
+    const FLAGS: &str = "\n!llvm.module.flags = !{";
+    if !ir.contains("\n!llvm.dbg.cu = ") || ir.contains("!\"CodeView\"") {
+        return ir;
+    }
+    let Some(start) = ir.find(FLAGS) else {
+        return ir;
+    };
+    let id = ir
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix('!')?
+                .split_once(" = ")?
+                .0
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .map_or(0, |id| id + 1);
+    let end = start + ir[start..].find("}\n").unwrap_or(ir.len() - start);
+    format!(
+        "{}\n!{id} = !{{i32 2, !\"CodeView\", i32 1}}{}, !{id}{}",
+        &ir[..start],
+        &ir[start..end],
+        &ir[end..]
+    )
+}
+
 pub(super) fn wrapper(
     ir: String,
     module: &CheckedModule,

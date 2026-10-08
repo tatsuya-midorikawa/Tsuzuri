@@ -45,8 +45,9 @@ try {
   } else {
     await cp(source, tools, { recursive: true });
   }
-  // The LLDB formatters ship beside the tools for `command script import` (G16).
+  // The LLDB formatters and the natvis views ship beside the tools (G16).
   assert.match(await readFile(path.join(tools, 'share', 'lldb', 'tsuzuri_lldb.py'), 'utf8'), /^def __lldb_init_module\(/m);
+  assert.match(await readFile(path.join(tools, 'share', 'natvis', 'tsuzuri.natvis'), 'utf8'), /<AutoVisualizer /);
   let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
   if (discover) {
     // Only the compiler is on PATH; it must find the bundled tools itself.

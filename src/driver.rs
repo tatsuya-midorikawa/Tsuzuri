@@ -2267,6 +2267,9 @@ fn build_complete(
         && !matches!(options.emit, Emit::Header | Emit::Wgsl)
     {
         text = llvm::windows_abi(text, module);
+        if options.debug_info && msvc_linker() {
+            text = llvm::with_codeview(text);
+        }
     }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
@@ -2401,6 +2404,15 @@ fn build_complete(
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
+    let pdb = (options.debug_info
+        && options.target == Target::Native
+        && options.emit == Emit::Executable
+        && msvc_linker())
+    .then(|| pdb_path(output));
+    if let Some(pdb) = &pdb {
+        protect_sources(project, pdb)?;
+        protect_links(links, pdb)?;
+    }
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -2418,6 +2430,7 @@ fn build_complete(
     let mut messages = Vec::new();
     let staged_sidecar = temporary.path.join("sites.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
+    let staged_pdb = temporary.path.join("artifact.pdb");
     if sidecar.is_some() {
         let table =
             project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
@@ -2431,6 +2444,9 @@ fn build_complete(
     }
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
+    }
+    if pdb.is_some() {
+        cache_paths.insert("pdb".into(), staged_pdb.clone());
     }
     // The cache key does not cover the contents of link inputs, so a build with them is never cached.
     let cache = if options.cache && options.emit != Emit::Header && links.is_empty() {
@@ -2744,6 +2760,9 @@ fn build_complete(
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang);
         }
+        if let Some(pdb) = &pdb {
+            clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
+        }
         collect_message(
             &mut messages,
             run_tool(
@@ -2943,6 +2962,7 @@ fn build_complete(
         .map(|path| (&staged_sidecar, path))
         .into_iter()
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
+        .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
         .collect();
     if !cache_hit
         && let Some((cache, key)) = &cache
@@ -3166,6 +3186,49 @@ fn publish_outputs(
         return Err(error);
     }
     Ok(())
+}
+
+/// Whether native executables on this host link with the MSVC linker (`link.exe`, or `lld-link`
+/// with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links with MinGW's
+/// `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get a PDB.
+pub(crate) fn msvc_linker() -> bool {
+    cfg!(windows)
+        && Path::new(&tool("TSUZURI_CLANG", "clang"))
+            .file_stem()
+            .is_none_or(|stem| stem != "tsuzuri-clang")
+}
+
+/// The PDB of the `-g` executable `output` on Windows: `<output>` with the extension `.pdb`.
+pub fn pdb_path(output: &Path) -> PathBuf {
+    output.with_extension("pdb")
+}
+
+/// The Clang arguments with which the MSVC linker writes the PDB to `staged` in `directory` and
+/// embeds the Tsuzuri natvis views (G16 Phase 3). The executable names the PDB by the file name of
+/// `published`, where the build publishes it, so debuggers find it beside the executable.
+fn pdb_link_args(
+    staged: &Path,
+    published: &Path,
+    directory: &Path,
+) -> Result<Vec<OsString>, Diagnostic> {
+    let natvis = directory.join("tsuzuri.natvis");
+    fs::write(&natvis, include_str!("runtime/tsuzuri.natvis"))
+        .map_err(|error| io_error("write natvis", &natvis, error))?;
+    let name = published
+        .file_name()
+        .map_or_else(|| OsString::from("artifact.pdb"), OsString::from);
+    let mut arguments = Vec::new();
+    for (option, value) in [
+        ("/PDB:", staged.as_os_str()),
+        ("/PDBALTPATH:", name.as_os_str()),
+        ("/NATVIS:", natvis.as_os_str()),
+    ] {
+        let mut argument = OsString::from(option);
+        argument.push(value);
+        // `-Xlinker` passes the argument whole; `-Wl,` would split a path at its commas.
+        arguments.extend([OsString::from("-Xlinker"), argument]);
+    }
+    Ok(arguments)
 }
 
 pub fn trap_sidecar_path(output: &Path) -> PathBuf {
@@ -4192,6 +4255,39 @@ mod tests {
         assert!(source.contains(&format!("\"{STACK_OVERFLOW_REPORT}\\n\"")));
         assert!(source.contains("tsuzuri_stack_thread"));
         assert!(include_str!("runtime/task.c").contains("tsuzuri_stack_thread();"));
+    }
+
+    #[test]
+    fn pdb_links_write_a_named_pdb_and_embed_the_natvis_views() {
+        assert_eq!(pdb_path(Path::new("out/app.exe")), Path::new("out/app.pdb"));
+        assert_eq!(
+            pdb_path(Path::new("out/runner")),
+            Path::new("out/runner.pdb")
+        );
+        let temporary = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        let staged = temporary.path.join("artifact.pdb");
+        let arguments =
+            pdb_link_args(&staged, Path::new("a, b/my app.pdb"), &temporary.path).unwrap();
+        let natvis = temporary.path.join("tsuzuri.natvis");
+        let expected: Vec<OsString> = [
+            "-Xlinker".into(),
+            format!("/PDB:{}", staged.display()),
+            "-Xlinker".into(),
+            "/PDBALTPATH:my app.pdb".into(),
+            "-Xlinker".into(),
+            format!("/NATVIS:{}", natvis.display()),
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        assert_eq!(arguments, expected);
+        assert_eq!(
+            fs::read_to_string(&natvis).unwrap(),
+            include_str!("runtime/tsuzuri.natvis")
+        );
+        // Only Windows links with the MSVC linker.
+        assert!(cfg!(windows) || !msvc_linker());
+        temporary.close().unwrap();
     }
 
     #[test]

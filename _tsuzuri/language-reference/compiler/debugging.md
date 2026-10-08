@@ -11,6 +11,7 @@
 - 呼び出し履歴とブレークポイントには `Main.show` のような Tsuzuri の関数名を使います。
 - ステップ実行は、ランタイムとコンパイラーが生成した補助関数に入りません。
 - `tsuzuri test --index N -g -o PATH` で 1 件のテストをデバッグ用にビルドできます。VS Code では Testing ビューの **Debug** です。
+- Windows で MSVC のリンカーを使うビルドは、実行ファイルの隣に PDB を書き、Visual Studio の natvis の表示を埋め込みます。
 - 表示を保証するのは `-O0` のネイティブだけです。`-O3` では変数が消えることがあり、WebAssembly は DWARF を保持するだけです。
 
 ## デバッグ情報付きでビルドする
@@ -149,6 +150,16 @@ lldb -o "command script import <配布物>/share/lldb/tsuzuri_lldb.py" -o "targe
 
 VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug** を押すと、拡張がこのコマンドでランナーを `<プロジェクト>/.tsuzuri/test/runner` にビルドし、CodeLLDB で起動します。formatter と macOS の DWARF の読み込みは、プロジェクトのデバッグと同じです。ランナーが 0 で終われば成功、それ以外は失敗として結果に残ります。終わる前にデバッグを止めると、テストはスキップになります。
 
+## Windows（PDB と natvis）
+
+Windows で、MSVC のリンカー（`link.exe`）でリンクする Clang（配布物の `tsuzuri-clang` 以外。たとえば `TSUZURI_CLANG` に指定した LLVM の `clang`）を使うと、`-g` のネイティブのビルドは DWARF に加えて CodeView も出します。実行ファイルでは、リンカーが出力の拡張子を `.pdb` にした PDB（`app.exe` なら `app.pdb`）を隣に書きます。実行ファイルは PDB をディレクトリなしの名前で指すので、Visual Studio や WinDbg は隣の PDB を見つけます。PDB の関数と型の名前は DWARF と同じ Tsuzuri の名前（`Main.show`、`Main.Shape`、`$tag`）です。`tsuzuri test --index N -g -o PATH` のランナーにも PDB を書きます。
+
+PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result`、`Task` を Tsuzuri の値として表示します。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。
+
+`--emit object` と `--emit llvm` の `-g` も CodeView を含みます。自分で MSVC のリンカーでリンクするときは、`/DEBUG` と `/NATVIS:<配布物>/share/natvis/tsuzuri.natvis` を付けます。
+
+配布物と VS Code 拡張は MinGW の `ld.lld` でリンクするので、PDB を書かず、実行ファイルの DWARF を CodeLLDB と LLDB で読みます（このページの LLDB の表示）。
+
 ## 最適化と WebAssembly
 
 - `-O3` でも DWARF は正しく、`llvm-dwarfdump --verify` を通ります。ただし最適化で変数や行が消えることがあります。消えた変数は LLDB の既定の表示（`<variable not available>` など）になります。
@@ -160,6 +171,7 @@ VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug**
 - 関数名は `Main.show` の形で、ジェネリックな関数の実体は同じ名前です。
 - ステップ実行は束縛で前の行へ戻らず、ランタイムと補助関数に入りません。
 - `tsuzuri test --index N -g -o PATH` と VS Code の **Debug** で、1 件のテストをデバッガーで実行できます。
+- Windows の MSVC のリンカーは、隣に PDB を書き、natvis を埋め込みます。
 
 ## 関連項目
 
