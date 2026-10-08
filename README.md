@@ -794,6 +794,7 @@ node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
+node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。

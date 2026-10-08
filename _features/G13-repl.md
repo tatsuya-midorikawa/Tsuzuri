@@ -563,14 +563,14 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 
 ## 受け入れ条件
 
-- [ ] `tsuzuri repl` が Phase 1 の仕様（分類、表示の書式、再定義、状態、コマンド、複数行、上限、診断）どおりに動く。
-- [ ] Rust テスト 14 件と `tests/repl.mjs` の 14 case が成功し、R13 で `-O0` と `-O3` の stdout が一致する。
-- [ ] IO の二重実行を起こさない（R6・R7）。
-- [ ] 構文エラー・型エラー・トラップ・時間切れ・出力の超過の後もセッションが壊れない（R1〜R3・R10・R11）。
-- [ ] `tsuzuri run` の挙動が変わらない（`tests/io.mjs`・`tests/e2e.mjs`・`tests/cache.mjs`）。
-- [ ] 新しい crate、`unsafe`、parser・checker・LLVM・cache の変更がない。
-- [ ] ドキュメントを更新し、`scripts/check-docs.mjs` が成功する。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] `tsuzuri repl` が Phase 1 の仕様（分類、表示の書式、再定義、状態、コマンド、複数行、上限、診断）どおりに動く（見直しは決定事項に記録）。
+- [x] Rust テスト（`repl::` 15 件、`--bin tsuzuri repl` 2 件）と `tests/repl.mjs` の 20 セッション（R1〜R18）が成功し、R13 で `-O0` と `-O3` の stdout が一致する。
+- [x] IO の二重実行を起こさない（R6・R7・R16）。
+- [x] 構文エラー・型エラー・トラップ・時間切れ・出力の超過の後もセッションが壊れない（R1〜R3・R10・R11）。
+- [x] `tsuzuri run` の挙動が変わらない（`tests/e2e.mjs`・`tests/cache.mjs` と、`p1`〜`p12` の `run`・`run --json` の byte 比較。`tests/io.mjs` は ASan の harness がこの機械で変更前から止まるため、サニタイザーを除いた写しで変更前後とも成功）。
+- [x] 新しい crate、`unsafe`、checker・LLVM・cache の変更がない。parser は `is_top_level_declaration_start` を `pub(crate)` にしただけ。Phase 2（承認済み）で lexer に shebang 行の規則を足した。
+- [x] ドキュメントを更新し、`scripts/check-docs.mjs` が成功する。
+- [x] GUIDE §10 の完了の定義を満たす（`_features/README.md` の状態欄と `_features/_completed/` への移動は coordinator が行う）。
 
 ## 落とし穴
 
@@ -698,6 +698,26 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 決定: 採用しない。検討する場合は、LLVM の C API への結合と状態の保持を含めて人間が判断する。
 - 理由: docs/architecture.md の方針と衝突し、配布物とビルドの前提が変わる。
 - 状態: 承認済み（2026-10-08、D-41）。全 Phase の実装の依頼を受けて coordinator が再検討し、JIT と入力を跨ぐ常駐の評価プロセスは実装せず、Phase 3 を計測による研究として完了することにした（採用しない、を 2026-10-08 に再確認）。
+- 見直し（2026-10-08、Phase 3 の計測による再確認）: 採用しない。計測（「実装と検証」の Phase 3、[docs/benchmarks.md](../docs/benchmarks.md#repl-の-1-入力の待ち時間g13)）では、`-O0` の新しい式の 1 入力（約 0.67 秒）は、
+  解析（約 44 ms）、cache の鍵と保存（約 100〜115 ms）、Clang の IR のコンパイルとリンク（約 220 ms）、新しい実行ファイルの初回の起動（macOS の検査で約 210〜220 ms）でほぼ 4 分される。
+  JIT が消せるのは後ろの 3 つ（Clang の起動とリンク、ファイルの保存、新しいファイルの検査）だが、どの方式もこのリポジトリの前提（docs/architecture.md: LLVM の C API に結合しない、
+  新しい crate を足さない、`unsafe` を使わない、配布物は clang・lld の実行ファイルだけで LLVM のライブラリを含まない）と衝突する。検討した代替案と必要なもの:
+  - LLVM ORC（C API）でプロセス内で JIT する: C API の FFI（`unsafe`。crate は `unsafe_code = "forbid"`）、`llvm-sys` などの crate、libLLVM の同梱（静的なら 100 MB 級、動的なら共有ライブラリの配布と
+    版の固定）、LLVM の版ごとの C API の追従。さらにトラップ（`llvm.trap` はプロセスを止める）・スタックの溢れ（`stack.c` の signal handler）・時間切れ（スレッドは止められない）から REPL を守るには、
+    結局評価を別プロセスに置くか E14 の `--trap-mode return` の境界をすべての評価に通す必要があり、入力を跨ぐ状態の保持も別の設計（下の 3 つ目）を要する。
+  - `lli`（LLVM の JIT 実行ツール）を子プロセスで使う: 配布物への `lli` と libLLVM の同梱（G14 の変更）、C のランタイム（`io.c`・`os.c`・`task.c`・`cpu.c`・`arguments.c`）を `--extra-object` で
+    渡すための事前ビルド（PB01 と同じ物）、`stack.c` のスタックの溢れの報告とトラップの位置の照合を `lli` のプロセスで同じに保つこと。計測では、同じ IR（557 KB）の `lli` は既定の ORC で
+    約 270 ms、呼ばれた関数だけをコンパイルする `--jit-kind=orc-lazy` で約 120〜130 ms だった（Clang とリンクと初回の起動の約 440 ms の代わり）。ただし `lli -O3` は IR の最適化パスを通さないので、
+    `-O3` の意味（最適化した実行）は保てず、`-O0` の代わりにしかならない。新しいプロセスと状態を持ち越さないことは今と同じ。
+  - 入力ごとの共有ライブラリを常駐ホストが `dlopen` し、束縛の値をホストに残す: ホスト（C か `unsafe` の Rust）、すべての型の値の ABI（record・union・閉包・文字列・`Rc`/`Arc` を、別々に
+    コンパイルしたライブラリの間で同じ配置と型の同一性で渡す。単相化は今ライブラリごと）、再定義での値の解放、閉包が指すコードを持つライブラリの寿命、トラップでホストごと止まることへの対処
+    （E14 の境界）、Windows の `--emit shared`（未対応）。リンクと新しいライブラリの初回の読み込みは残る。
+  - 値のスナップショット（束縛の値を直列化して次のプログラムで復元する）: 関数値・閉包・`Rc`/`Arc`・ハンドルを直列化できず、型ごとの直列化（`Encode`/`Decode` に相当）が要る。
+    消せるのは束縛の再計算だけで、計測した主な待ち時間（Clang・リンク・初回の起動・鍵）は残る。
+  計測した待ち時間を担当する既存のチケット: 埋め込みのランタイムのコンパイル（`-O3` の `clang -c` 約 650 ms の大半）は PB01（ランタイムの事前ビルド）、`-O0` の Clang のコード生成は
+  PB05（Cranelift のデバッグ用バックエンド。リンクは残る）、解析（入力ごとの std の検査）と cache の鍵の計算（`clang --version` 約 47 ms、コンパイラ自身の SHA-256 と保存で約 69 ms）は
+  プロセスをまたいで状態を保つ PB06（常駐ビルドサーバー）と G17（解析の cache）。新しい実行ファイルの初回の起動の検査は、入力ごとに実行ファイルを作る限りなくならず、どのチケットの範囲でもない。
+  REPL の中で安く取れる短縮は、表示できる式の解析を 2 回から 1 回にすることだけだったので、それを実装した（Phase 3）。
 
 ## 実装と検証（2026-10-08）
 
@@ -745,3 +765,48 @@ HEAD `1182045`（`Phase7-5`）から、ブランチ `wt/g13` で 3 Phase を実�
 | `node tests/repl.mjs`・`tests/e2e.mjs`・`tests/cache.mjs`・`tests/lsp_sessions.mjs` | 成功 |
 | `node tests/io.mjs` | 変更前も変更後も、ASan・UBSan 付きの harness が ASan 自身の初期化（`__asan::InitializeShadowMemory` → `dyld_shared_cache_iterate_text_swift`。`sample` で確認）で止まり、180 秒で時間切れになる（この機械の Homebrew LLVM 21 の ASan と macOS の組み合わせの問題で、コンパイラは関わらない）。`-fsanitize=address,undefined` だけを除いた作業用の写し（`target/` の下に置き、コミットしない）では、変更前と変更後の両方で全件成功した |
 | `node scripts/check-docs.mjs`（`usage.md`・`option.md`・`tokens.md`・`strategy.md`） | 成功（96 links、7 examples、10 native runs）。shebang 行を含む例も `tsuzuri check` を通る |
+
+### Phase 3: 計測と D13 の再確認
+
+- 計測は `benchmarks/run-repl.mjs`（新規）で行った。前半は REPL が式 `1 + N` に作るプログラムを CLI で段ごとに測り、Clang の時間は `TSUZURI_CLANG` に渡した計時用の C のラッパーで呼び出しごとに記録し、
+  ラッパーが残した IR で `clang -c` とリンクを別々に再現する。後半は 1 つの REPL セッションの中で、入力を書いてから結果の 1 行を読むまでを測る。各 9 回（先頭 1 回は捨てる）の中央値と最小・最大。
+  生データは `target/perf/G13-before/`（Phase 2 の `f310d3e`）と `target/perf/G13-after/`（Phase 3）の `summary.jsonl`・`samples.jsonl`（コミットしない）。表と読み方は
+  [docs/benchmarks.md の「REPL の 1 入力の待ち時間（G13）」](../docs/benchmarks.md#repl-の-1-入力の待ち時間g13) にある。負荷（load average 30〜58）の下の値で、閾値は設けない。
+- 主な結果（Phase 3、`-O0`／`-O3` の中央値）: `check` 48／49 ms、Clang の IR のコンパイルとリンク 220／793 ms（再現では `clang -c` 100／651 ms、リンク 143／146 ms）、cache の hit したビルド
+  180／198 ms（うち `clang --version` 48／47 ms）、cache ありの miss は cache なしより約 100 ms 長い、新しい実行ファイルの初回の起動 220／209 ms（2 回目は 3 ms。macOS の新しいファイルの検査）。
+  REPL の中では、`:type` 44 ms、新しい式 671／1256 ms、同じ式の繰り返し（hit）278／308 ms、新しい `let` 546／451 ms、新しいアクション 660／907 ms。チケットの性能の記録の
+  `printf '1 + 1\n' | tsuzuri repl --no-cache` は 344／907 ms（各 9 回の中央値。同じ内容の実行ファイルは 2 回目以降の初回の起動の検査が約 70 ms になる）。
+- 短縮（REPL の中だけ）: 式の入力で、値を表示するプログラムを先に検査し、それが通らないときだけ `let it = (E)` のプログラムを検査し直すようにした（`Repl::expression`）。表示できる式の解析は
+  2 回から 1 回になり、`Display` のない式は従来どおり 2 回。出力・診断・セッションの変化は Phase 2 と同じ（`tests/repl.mjs` の 20 セッションが同じ期待値で成功）。2 つのコンパイラの REPL を
+  同じ時間帯に交互に 15 回ずつ測ると（`-O0`、cache あり）、新しい式 654 → 619 ms、cache の hit する式 278 → 230 ms、`Display` のない関数値 595 → 574 ms（差は揺れの範囲）で、差は 1 回の解析とおおむね一致した。
+- 測ったが REPL の外にあるので実装しなかったもの: cache の鍵の計算が 1 回のビルドごとに `clang --version` を起動し（約 47 ms）、7.4 MB のコンパイラ自身の SHA-256 を計算する（保存と合わせて約 69 ms）。
+  REPL では入力ごとに繰り返すので、プロセスの中で覚えておけば 1 入力あたり約 0.1 秒短くなるが、`src/cache.rs` の `build_key` の変更で、プロセスをまたいで状態を保つ PB06 と G17 の範囲に属する。
+- D13 は「採用しない」を計測に基づいて再確認した（決定事項の D13 の見直し）。検討した代替案のうち `lli` だけは計測した（同じ IR で既定の ORC 約 270 ms、`--jit-kind=orc-lazy` 約 120〜130 ms。
+  `lli -O3` は IR の最適化パスを通さない）。
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo test --locked --lib repl::` | `running 15 tests`、成功（`reads_types_from_the_semantic_index` に表示するプログラムだけで型が決まることと、`Display` がないときは表示行の `E1005` だけで失敗することを足した） |
+| `node tests/repl.mjs`・`tests/script.mjs` | 成功 |
+| `node benchmarks/run-repl.mjs target/perf/G13/tsuzuri-after --samples 9 --out target/perf/G13-after` | 成功（各行の結果の値を assert する） |
+| 最後の全体（Phase 3 の後）`RUST_MIN_STACK=4194304 cargo test --locked` | 79 個のテストバイナリ、872 件成功、失敗 0（lib 128、bin 14） |
+| GUIDE §3.1 の 4 件（`RUST_MIN_STACK` なし） | それぞれ `running 1 test`、成功 |
+| `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` | 成功 |
+| `cargo +stable check --locked --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` | 成功 |
+| `node scripts/check-docs.mjs`（変更した 6 ページ） | 成功（151 links、17 examples、30 native runs） |
+
+### ドキュメント・台帳・残作業
+
+- 更新した文書（旧 `_docs/` のパスは GUIDE §8.1 で読み替えた）: `_tsuzuri/language-reference/compiler/usage.md`（「この記事のポイント」、コマンドの流れ、`run` の引数の注記、新しい節 `repl`・`script`）、
+  `compiler/option.md`（`repl`・`script` の列、`--timeout`、既定の `-O`）、`values-and-functions/tokens.md`（shebang 行。例は `check-docs` で検査される）、`languages/how-about-tsuzuri.md`・`strategy.md`・
+  `why-tsuzuri.md`（「REPL がない」を実際の `repl` の説明に。F# の `dotnet fsi` との違い）、`docs/language.md`（字句の shebang 行、`fmt` が行を保つこと）、`docs/architecture.md`（`src/repl.rs`、
+  `src/lexer.rs`・`src/main.rs` の行、REPL とスクリプト実行の節、D13、検証コマンド）、`docs/benchmarks.md`（「REPL の 1 入力の待ち時間（G13）」）、`README.md`（CLI の書式、`repl`・`script` の節、E2E と
+  ベンチマークのコマンド）。旧 `_docs/get-started.md` と `feature-status.md` に当たるページはない（§8.1。状態欄は coordinator が直す）。
+- coordinator に頼む台帳の項目: GUIDE D-30 の表の「サブコマンド `tsuzuri repl`（Phase 2 の `tsuzuri script` は要承認）」を確定に移す（`repl`・`script` は D-41 で確定）。CLI のオプション `--timeout SECONDS`
+  （`repl` だけ）。字句の規則「ソースのバイト 0 の `#!` の行は行コメント（shebang 行）」（D-15 の近くに記録）。新しい予約語・std の名前・診断コード・環境変数はない（既存の `E0003`・`E2000`・`E2001`・`E2005` を使う）。
+  `_features/README.md` の G13 の状態（Phase 1〜3 完了）。
+- 残作業: VS Code の TextMate 文法の shebang 行の色（D12 の見直し）。cache の鍵のツールの指紋をプロセスの中で覚える短縮（Phase 3。PB06・G17 の範囲）。Windows での `repl`・`script` の実行は
+  CI の Windows ジョブだけが確かめられる（`cargo check --all-targets --target x86_64-pc-windows-msvc` と `aarch64-pc-windows-msvc` は rustup の stable で成功。同じ toolchain の clippy 1.96 は
+  変更していない `src/lsp.rs:806` と `src/parser.rs:2046` に `nonminimal_bool` を出す）。
+- 変更したファイル: `src/repl.rs`（新規）、`src/driver.rs`、`src/main.rs`、`src/lib.rs`、`src/lexer.rs`、`src/formatter.rs`、`src/parser.rs`、`tests/repl.mjs`（新規）、`tests/script.mjs`（新規）、
+  `tests/formatter.rs`、`tests/lsp.rs`、`benchmarks/run-repl.mjs`（新規）、上の文書、このチケット。

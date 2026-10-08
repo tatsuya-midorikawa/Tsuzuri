@@ -1128,7 +1128,9 @@ impl Repl {
     }
 
     /// An expression: `it: T = value`, `it: T` without a `Display` instance, or nothing for
-    /// `unit` (D3).
+    /// `unit` (D3). The program that also shows the value is checked first: for most
+    /// expressions it is the only analysis, and the plain `let it = (E)` is checked only when
+    /// it fails (Phase 3). The outcome is the same as checking the plain program first.
     fn expression(
         &mut self,
         input: &Input,
@@ -1137,44 +1139,50 @@ impl Repl {
         output: &mut impl Write,
         errors: &mut impl Write,
     ) -> io::Result<bool> {
+        let show = generate(&self.session, input, Tail::Show(expression, offset));
+        if show.text.len() > MAX_SOURCE_BYTES {
+            // Reports the limit like any other program.
+            self.check(&show, input, errors, false)?;
+            return Ok(false);
+        }
+        let (project, shown) = analyze(&show.text, true);
+        let failed = match shown {
+            Ok((module, index)) => {
+                let ty = it_type(index.as_ref().expect("checked with an index"), &show);
+                let Some(stdout) = self.evaluate(&(project, module, None), &show, input, errors)?
+                else {
+                    return Ok(false);
+                };
+                if ty != "unit" {
+                    let value = String::from_utf8_lossy(&stdout);
+                    let value = value.strip_suffix('\n').unwrap_or(&value);
+                    writeln!(output, "it: {ty} = {value}")?;
+                }
+                return Ok(true);
+            }
+            Err(set) => set,
+        };
         let check = generate(&self.session, input, Tail::Check(expression, offset));
         let Some(checked) = self.check(&check, input, errors, true)? else {
             return Ok(false);
         };
         let ty = it_type(checked.2.as_ref().expect("checked with an index"), &check);
-        if ty == "unit" {
-            return Ok(self.evaluate(&checked, &check, input, errors)?.is_some());
+        let hidden = failed
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .all(|diagnostic| {
+                diagnostic.code == "E1005" && show.in_display(diagnostic.span, &project)
+            });
+        if ty != "unit" && !hidden {
+            self.report(errors, &failed, &show, &project, input)?;
+            return Ok(false);
         }
-        let show = generate(&self.session, input, Tail::Show(expression, offset));
-        let (project, result) = analyze(&show.text, false);
-        match result {
-            Ok((module, _)) => {
-                let Some(stdout) = self.evaluate(&(project, module, None), &show, input, errors)?
-                else {
-                    return Ok(false);
-                };
-                let value = String::from_utf8_lossy(&stdout);
-                let value = value.strip_suffix('\n').unwrap_or(&value);
-                writeln!(output, "it: {ty} = {value}")?;
-            }
-            Err(set)
-                if set
-                    .diagnostics
-                    .iter()
-                    .filter(|diagnostic| diagnostic.severity == Severity::Error)
-                    .all(|diagnostic| {
-                        diagnostic.code == "E1005" && show.in_display(diagnostic.span, &project)
-                    }) =>
-            {
-                if self.evaluate(&checked, &check, input, errors)?.is_none() {
-                    return Ok(false);
-                }
-                writeln!(output, "it: {ty}")?;
-            }
-            Err(set) => {
-                self.report(errors, &set, &show, &project, input)?;
-                return Ok(false);
-            }
+        if self.evaluate(&checked, &check, input, errors)?.is_none() {
+            return Ok(false);
+        }
+        if ty != "unit" {
+            writeln!(output, "it: {ty}")?;
         }
         Ok(true)
     }
@@ -1633,6 +1641,26 @@ mod tests {
         assert!(
             errors.contains("error[E2000]: :type requires an expression"),
             "{errors}"
+        );
+        // The shown program alone types a displayable expression; without a Display instance it
+        // fails only at its display line, which sends the REPL to the plain program.
+        let show = generate(
+            &current,
+            &classify_text("square base"),
+            Tail::Show("square base", 0),
+        );
+        let (_, result) = analyze(&show.text, true);
+        assert_eq!(it_type(&result.unwrap().1.unwrap(), &show), "i64");
+        let show = generate(&current, &classify_text("square"), Tail::Show("square", 0));
+        let (project, result) = analyze(&show.text, true);
+        let errors = result.unwrap_err().diagnostics;
+        assert!(errors.iter().any(|error| error.severity == Severity::Error));
+        assert!(
+            errors
+                .iter()
+                .filter(|error| error.severity == Severity::Error)
+                .all(|error| error.code == "E1005" && show.in_display(error.span, &project)),
+            "{errors:?}"
         );
     }
 
