@@ -129,7 +129,7 @@ tsuzuri fetch app
 
 ### オフラインのビルド
 
-`check`、`build`、`run`、`test`、`doc`、`lsp` は `git` を起動せず、ネットワークにも触れません。git 依存は `Tsuzuri.lock` とストアから読み、読み込んだ内容が `sha256` と一致することを毎回確かめます。
+`check`、`build`、`run`、`test`、`bench`、`doc`、`lsp` は `git` を起動せず、ネットワークにも触れません。git 依存は `Tsuzuri.lock` とストアから読み、読み込んだ内容が `sha256` と一致することを毎回確かめます。
 
 | 状況 | 診断 |
 | --- | --- |
