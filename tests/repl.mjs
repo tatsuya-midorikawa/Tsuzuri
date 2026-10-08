@@ -148,7 +148,7 @@ check("R11", ["do! IO.write_line (String.repeat \"x\" (17l * 1048576l))", "1 + 1
   errors: ["input:1:1: error[E2005]: program output exceeded 16 MiB and the program was stopped"],
 });
 
-check("R12", [`"${"a".repeat(1_100_000)}"`, "1 + 1"], ["it: i32 = 2"], { errors: ["input:1:1: error[E0003]"] });
+check("R12", [`"${"a".repeat(4_400_000)}"`, "1 + 1"], ["it: i32 = 2"], { errors: ["input:1:1: error[E0003]"] });
 
 // The optimization level changes only the time.
 const r13 = check("R13", example, exampleOutput, { args: ["-O3"], errors: ["input:1:14: error[E2005]"] });

@@ -237,7 +237,7 @@ REPL 独自のエラーは既存のコードを使う。メッセージは英語
 | `E2000` | `test` 宣言 | `test declarations are not supported in the REPL; use 'tsuzuri test'` | 名前 |
 | `E2000` | `main` の定義 | `'main' cannot be defined in the REPL; enter its body as an input instead` | 名前 |
 | `E2000` | 同じ行に二つの宣言 | `put each declaration on its own line in the REPL` | 二つ目の名前 |
-| `E0003` | 入力か生成した `Main.tz` が 1 MiB を超える | 既存の lexer・loader のメッセージ | 既存 |
+| `E0003` | 入力か生成した `Main.tz` が `MAX_SOURCE_BYTES`（G17 の Phase 3 で 4 MiB。起票時は 1 MiB）を超える | 既存の lexer・loader のメッセージ | 既存 |
 | `E2001` | `:load` の読み込みの失敗 | 既存の `read_source` のメッセージ | `input:1:1` |
 | `E2005` | 評価の時間切れ | `evaluation exceeded the N-second limit and was stopped; use --timeout to change it` | 式の先頭 |
 | `E2005` | stdout が 16 MiB を超えた | `program output exceeded 16 MiB and the program was stopped` | 式の先頭 |
@@ -249,8 +249,8 @@ REPL 独自のエラーは既存のコードを使う。メッセージは英語
 
 | 対象 | 上限 | 超えたとき |
 | --- | --- | --- |
-| 一つの入力 | `MAX_SOURCE_BYTES`（1 MiB） | `E0003`。入力を捨てる |
-| 生成した `Main.tz` | 1 MiB（`Project::load_with_overlays` の既存の検査） | `E0003`。入力を拒否する |
+| 一つの入力 | `MAX_SOURCE_BYTES`（4 MiB。起票時は 1 MiB） | `E0003`。入力を捨てる |
+| 生成した `Main.tz` | `MAX_SOURCE_BYTES`（4 MiB。ソースの読み込みの既存の検査） | `E0003`。入力を拒否する |
 | 評価の実行時間（Clang を除く子プロセスだけ） | `--timeout`、既定 10 s | 子プロセスを kill して `E2005` |
 | 捕捉する stdout | 16 MiB（`MAX_CAPTURED_OUTPUT`（新規）） | 子プロセスを kill して `E2005` |
 
@@ -652,7 +652,7 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 
 ### D8: 上限と時間制限
 
-- 決定: 評価の実行時間は `--timeout`（既定 10 s、0 で無制限、最大 3600）、捕捉する stdout は 16 MiB、入力と生成した `Main.tz` は 1 MiB。
+- 決定: 評価の実行時間は `--timeout`（既定 10 s、0 で無制限、最大 3600）、捕捉する stdout は 16 MiB、入力と生成した `Main.tz` は `MAX_SOURCE_BYTES`（起票時は 1 MiB。G17 の Phase 3 で 4 MiB になり、統合後の E2E の R12 は 4,400,000 bytes の入力で確かめる）。
 - 理由: Ctrl-C の処理（crate か `unsafe` が要る）なしで、終わらない評価から REPL を守る。10 s は対話で待てる長さの目安で、`--timeout` で変えられる。
 - 状態: 既定案（実装者はこの案に従う）
 
