@@ -15,6 +15,7 @@ fn native_and_wasm_tests_are_isolated_filtered_and_ordered() {
                 indices: Vec::new(),
                 wasm_max_memory: None,
                 wasm_stack_size: None,
+                ..Default::default()
             };
             let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
             assert_eq!(
@@ -353,6 +354,7 @@ fn shared_specializations_work_in_normal_and_selected_test_roots() {
                 indices: Vec::new(),
                 wasm_max_memory: None,
                 wasm_stack_size: None,
+                ..Default::default()
             },
         )
         .unwrap();

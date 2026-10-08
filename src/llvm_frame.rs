@@ -174,6 +174,7 @@ impl FunctionEmitter<'_, '_> {
                 let merge = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 let (then_value, mut frames) = self.frame_inner(then_branch);
                 self.ranges.leave_condition(facts);
@@ -181,6 +182,7 @@ impl FunctionEmitter<'_, '_> {
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 let (else_value, else_frames) = self.frame_inner(else_branch);
                 let else_end = self.block.clone();
                 self.jump(&merge);

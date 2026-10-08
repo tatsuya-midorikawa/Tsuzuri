@@ -22,6 +22,7 @@ impl FunctionEmitter<'_, '_> {
             scope_base: self.scopes.len(),
             temporary_base: self.temporaries.len(),
         });
+        self.cover(crate::coverage::RegionKind::Loop, body.span);
         self.expression(body);
         self.loop_targets.pop();
     }
@@ -377,7 +378,8 @@ impl FunctionEmitter<'_, '_> {
         arms: &[TypedMatchArm],
         result_type: &Type,
     ) -> Option<String> {
-        if !matches!(result_type, Type::Integer(..) | Type::Bool | Type::Unit) {
+        // A table has no block per arm to count coverage in.
+        if !matches!(result_type, Type::Integer(..) | Type::Bool | Type::Unit) || self.counted {
             return None;
         }
         let plan = self.switch_plan(local, arms)?;
@@ -627,6 +629,7 @@ impl FunctionEmitter<'_, '_> {
                 self.frame_locals.remove(&binding.id);
                 self.bind_local(binding, &value);
             }
+            self.cover(crate::coverage::RegionKind::Arm, arm.body.span);
             if tail {
                 self.tail(&arm.body);
             } else {

@@ -39,6 +39,7 @@
 | `--wasm-stack-size` | | ○ | | ○ | | |
 | `--link` / `-l` / `-L` | | ○ | ○ | ○ | | |
 | `--list` / `--filter` / `--index` | | | | ○ | | |
+| `--coverage PATH` | | | | ○ | | |
 | `--check` | | | | | | ○ |
 
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
@@ -186,6 +187,9 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `test` に `--cpu` | `test does not use CPU tuning` |
 | `doc` に `-o` が無い | `doc requires -o or --output with an output directory` |
 | `--filter` を `test` 以外に付ける | `--filter, --list, and --index are only valid with test` |
+| `--coverage` を `test` 以外に付ける | `--coverage is only valid with test` |
+| `test --coverage` と `--target wasm32`／`wasm64` | `test coverage supports only the native target` |
+| `test --coverage` と `--list` | `coverage cannot be combined with --list` |
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
 | WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
 

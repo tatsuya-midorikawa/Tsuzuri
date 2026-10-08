@@ -9,6 +9,7 @@
 - `Test.equal` と `Test.not_equal` は借用で比較します。`Test.is_true` は `bool` を受けます。
 - `--filter` は `モジュール名.テスト名` の部分一致です。正規表現ではありません。
 - 1 件でも失敗すると終了コードは 1 で、`E2006` が最初の失敗を指します。
+- `--coverage PATH` は、成功したテストが通った行と関数を lcov 形式で書きます（ネイティブだけ）。
 
 ## テストを書く
 
@@ -92,6 +93,7 @@ tsuzuri test . --index 1
 | `--target native\|wasm32\|wasm64` | 既定は `native`。WASM には Node.js が必要 |
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16 MiB |
 | `--wasm-stack-size SIZE` | WASM のメインスタック。既定 1 MiB |
+| `--coverage PATH` | 成功したテストのカバレッジを lcov で `PATH` に書く。ネイティブだけ（[カバレッジ](#カバレッジ)） |
 
 `--cpu`、`--emit`、`--output` は使えません。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
 
@@ -162,6 +164,69 @@ flowchart TD
 
 `--list --json` は、実行せずにテスト名の位置を出します。フィールドは `index`、`module`、`name`、`path`、`range`、`type` です。`range` の行と列は 0 始まりの UTF-16 で、テスト名の文字列トークンを指します。この一覧のキーはアルファベット順に並びます。
 
+## カバレッジ
+
+`--coverage PATH` を付けると、成功したテストが実行した利用者のコードを数え、lcov 形式のファイルを `PATH` に書きます。テストの要約行の後に、行と関数の要約が 1 行出ます。ネイティブだけで使えます。外部ツールや LLVM のカバレッジ形式は使わず、コンパイラが自分でカウンターを入れます。
+
+```text
+tsuzuri test . --coverage coverage.info
+```
+
+次の `Calc.tz` で試すと、`classify` は成功した 2 件から 1 回ずつ呼ばれ、`then` と `else` を 1 回ずつ通ります。`unused` は呼ばれません。3 件目はトラップするので、数に入りません。
+
+```tsuzuri project=calc file=Calc.tz
+def classify :: i64 -> i64
+fn classify x =
+    if x > 0 then
+        1
+    else
+        0
+
+def unused :: i64 -> i64
+fn unused x = x + 1
+
+test "positive" = Test.is_true (classify 5 == 1)
+test "zero" = Test.is_true (classify 0 == 0)
+```
+
+`fails` という 3 件目の `test "fails" = Test.is_true (classify 7 == 0)` も足して実行すると、要約は次のとおりです。
+
+```text
+2 passed; 1 failed; 0 ignored
+coverage: 3/4 lines (75.0%), 1/2 functions; excluded 1 failed test
+```
+
+`PATH` の lcov は、ファイルごとに 1 つの記録です。`SF` は絶対パス、`FN` と `FNDA` は名前付きの関数の行と呼ばれた回数、`DA` は行と回数、`LF`／`LH` と `FNF`／`FNH` は数えた数と 1 回以上通った数です。
+
+```text
+TN:
+SF:/path/to/calc/Calc.tz
+FN:3,Calc.classify
+FN:9,Calc.unused
+FNDA:2,Calc.classify
+FNDA:0,Calc.unused
+FNF:2
+FNH:1
+DA:3,2
+DA:4,1
+DA:6,1
+DA:9,0
+LF:4
+LH:3
+end_of_record
+```
+
+数え方は次のとおりです。
+
+- 数える単位（region）は、関数の本体、`if` の `then` と `else`、`match` の各節の本体、`while`／`for` の本体、`try ... with` のハンドラーです。ラムダや `task` の本体も、それぞれ 1 つの関数として数えます。並列のタスクの中でも、カウンターは原子的な加算なので数え落としません。
+- 行の回数は、その行で始まる式が属する region の回数の最大値です。式が始まらない行（コメント、空行、`else` だけの行、パターンだけの行）は出ません。`&&` と `||` の右辺、`match` のパターンとガードは別に数えません。
+- `FN` は名前を書いた関数だけで、行は本体の始まりの行です。ジェネリック関数は、特殊化した実体をまとめて 1 つに数えます。使われずに特殊化されなかったジェネリック関数の本体は出ません。
+- 標準ライブラリ、`test` の本体とそこで書いたラムダは数えません。
+- トラップや時間切れで失敗したテストは、カウンターを書く前に終わるので、数に入りません。除いた件数が 1 以上なら要約の末尾に `; excluded N failed test(s)` が付きます。
+- `--json` では、テストの summary の後の最後の行が `{"type":"coverage","lines":{"hit":3,"total":4},"functions":{"hit":1,"total":2},"excluded_failed":1,"files":[...]}` です。`files` の各要素は `path`、`lines`、`functions` を持ちます。
+
+`--coverage` は `--target wasm32`／`wasm64` と組み合わせられず、`--list` とも組み合わせられません（終了コード 2 の `E2000`）。出力先がプロジェクトのソースなら `E2003` で、ファイルは書き換えません。書けなければ `E2001` です。テストが失敗しても lcov は書き、終了コードは 1 です。
+
 ## 終了コード
 
 | 結果 | 終了コード | 診断 |
@@ -189,6 +254,7 @@ WASM のテストモジュールが要求するインポートは空です。was
 - `--filter` は `モジュール名.テスト名` の部分一致で、外れた件数は `ignored` です。
 - `--json` は標準出力に 1 行 1 オブジェクト、診断は標準エラーです。
 - 失敗が 1 件でもあれば終了コードは 1 で、`E2006` が最初の失敗を指します。
+- `--coverage PATH` は、成功したテストの行と関数のカバレッジを lcov で書き、要約を 1 行出します。
 
 ## 関連項目
 

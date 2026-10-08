@@ -14,7 +14,10 @@ use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
 
 #[path = "test_runner.rs"]
 mod test_runner;
-pub use test_runner::{TestOptions, TestReport, TestResult, run_tests, run_tests_linked};
+pub use test_runner::{
+    CoverageRun, TestOptions, TestReport, TestResult, check_coverage_output, run_tests,
+    run_tests_linked, write_coverage,
+};
 
 #[path = "bindgen_driver.rs"]
 mod bindgen_driver;

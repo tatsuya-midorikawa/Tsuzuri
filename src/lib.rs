@@ -4,6 +4,7 @@ pub mod bindings;
 pub mod cache;
 pub mod check;
 pub mod copies;
+pub mod coverage;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;

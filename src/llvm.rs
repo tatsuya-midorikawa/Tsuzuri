@@ -625,6 +625,7 @@ pub(crate) fn emit_wasm_build(
             trap_return: false,
             allocator: options.allocator,
             multiversion: false,
+            coverage: None,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -678,6 +679,34 @@ pub(crate) fn emit_test_runner_for(
     .map(|(ir, _)| ir)
 }
 
+/// The native test runner of `emit_test_runner`, counting the regions of `plan` in
+/// `@tsuzuri_coverage_counters` (`tsuzuri test --coverage`, G18 Phase 2).
+pub fn emit_test_runner_covered(
+    module: &CheckedModule,
+    selected: &[usize],
+    plan: &crate::coverage::CoveragePlan,
+) -> Result<String, Diagnostic> {
+    if selected.iter().any(|index| *index >= module.tests.len()) {
+        return Err(Diagnostic::new(
+            "E2000",
+            "invalid test index",
+            Span::default(),
+        ));
+    }
+    emit_program(
+        module,
+        Entry::TestRunner,
+        false,
+        Some(selected),
+        false,
+        Instrumentation {
+            coverage: Some(plan),
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
 #[derive(Default)]
 struct Instrumentation<'a> {
     traps: bool,
@@ -690,6 +719,8 @@ struct Instrumentation<'a> {
     allocator: Allocator,
     /// A native build that compiles `@cpu` functions for further CPU levels (F08 Phase 3).
     multiversion: bool,
+    /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
+    coverage: Option<&'a crate::coverage::CoveragePlan>,
 }
 
 fn emit_program(
@@ -840,6 +871,7 @@ fn emit_program(
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         multiversion: instrumentation.multiversion && !wasm,
+        coverage: instrumentation.coverage.cloned(),
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1037,6 +1069,13 @@ fn emit_program(
             );
         }
         output.push_str("}\n");
+    }
+    if let Some(plan) = instrumentation.coverage {
+        let _ = writeln!(
+            output,
+            "@tsuzuri_coverage_counters = global [{0} x i64] zeroinitializer\n@tsuzuri_coverage_count = constant i64 {0}",
+            plan.len()
+        );
     }
     for global in globals.definitions {
         output.push_str(&global);
@@ -1341,6 +1380,8 @@ struct Globals {
     shared_types: BTreeSet<(Type, bool)>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
+    coverage: Option<crate::coverage::CoveragePlan>,
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
     #[cfg(debug_assertions)]
     emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
@@ -1377,6 +1418,7 @@ impl Default for Globals {
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
+            coverage: None,
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
         }
@@ -2466,6 +2508,8 @@ struct FunctionEmitter<'a, 'b> {
     trap_kind: Option<TrapKind>,
     drop_pending: Option<String>,
     clone_pending: Option<String>,
+    /// Whether this body counts coverage regions: a counted user function of a covered runner.
+    counted: bool,
     /// Whether implicit copies count for the debug inventory check: only in bodies that `emit` writes.
     #[cfg(debug_assertions)]
     note_copies: bool,
@@ -2488,6 +2532,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         globals: &'b mut Globals,
         specializations: &'b mut Specializations,
     ) -> Self {
+        let counted = globals.coverage.is_some() && crate::coverage::counted(function);
         Self {
             module,
             function,
@@ -2532,6 +2577,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             temporaries: Vec::new(),
             frame_slots: BTreeMap::new(),
             frame_locals: BTreeMap::new(),
+            counted,
             #[cfg(debug_assertions)]
             note_copies: false,
         }
@@ -2583,6 +2629,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             for (index, parameter) in self.function.parameters.iter().enumerate() {
                 self.bind_local(parameter, &format!("%p{index}"));
             }
+            self.cover(crate::coverage::RegionKind::Body, self.function.body.span);
             self.emit_body();
         }
         let parameters = self
@@ -2750,6 +2797,23 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn begin(&mut self, block: &str) {
         self.lines.push(format!("{block}:"));
         self.block = block.to_owned();
+    }
+
+    /// Counts one entry into the coverage region of `kind` at `span`, if the plan has it.
+    fn cover(&mut self, kind: crate::coverage::RegionKind, span: Span) {
+        if !self.counted {
+            return;
+        }
+        let Some(plan) = &self.globals.coverage else {
+            return;
+        };
+        let Some(region) = plan.region(kind, span) else {
+            return;
+        };
+        let count = plan.len();
+        self.value(format!(
+            "atomicrmw add ptr getelementptr inbounds ([{count} x i64], ptr @tsuzuri_coverage_counters, i64 0, i64 {region}), i64 1 monotonic"
+        ));
     }
 
     fn jump(&mut self, block: &str) {
@@ -2986,10 +3050,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let no = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 self.tail(then_branch);
                 self.ranges.leave_condition(facts);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 self.tail(else_branch);
             }
             TypedExprKind::Call(callee, arguments)
@@ -3410,6 +3476,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let merge = self.label();
                 self.branch(&test, &yes, &no);
                 self.begin(&yes);
+                self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
                 let then_value = self.expression(then_branch);
                 self.ranges.leave_condition(facts);
@@ -3417,6 +3484,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
                 self.begin(&no);
+                self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 let else_value = self.expression(else_branch);
                 let else_end = self.block.clone();
                 self.jump(&merge);

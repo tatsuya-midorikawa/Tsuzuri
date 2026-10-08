@@ -17,6 +17,7 @@ Usage:
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
+                             [--coverage PATH]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
@@ -39,6 +40,8 @@ namespace. Otherwise the namespace is the package namespace (Tsuzuri.toml
 namespace, else the package or folder name) followed by subdirectories
 (Geometry/Point.tz becomes App::Geometry::Point). Members follow a module with
 '.', as in Sample::Shapes::Circle.area.
+`tsuzuri test --coverage PATH` writes the line and function coverage of the passing
+tests as an lcov file (native only) and prints a summary after the test summary.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -146,6 +149,8 @@ struct Arguments {
     test_filter: Option<String>,
     test_list: bool,
     test_indices: Vec<usize>,
+    /// `tsuzuri test --coverage PATH`: where the lcov report goes.
+    coverage: Option<PathBuf>,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -166,6 +171,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             test_filter: None,
             test_list: false,
             test_indices: Vec::new(),
+            coverage: None,
         });
     }
     let mut position = 0;
@@ -209,6 +215,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_filter = None;
     let mut test_list = false;
     let mut test_indices = Vec::new();
+    let mut coverage = None;
     let mut debug_output = false;
     let mut trap_info = false;
     let mut trap_return = false;
@@ -305,6 +312,17 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             .ok_or("test filter must be UTF-8")?
                             .to_owned(),
                     );
+                    continue;
+                }
+                Some("--coverage") => {
+                    if coverage.is_some() {
+                        return Err("coverage specified more than once".into());
+                    }
+                    coverage = Some(PathBuf::from(next_value(
+                        arguments,
+                        &mut position,
+                        "--coverage",
+                    )?));
                     continue;
                 }
                 Some("--debug-output") => {
@@ -576,6 +594,17 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if action == Action::Test && cpu.is_some() {
         return Err("test does not use CPU tuning".into());
     }
+    if coverage.is_some() {
+        if action != Action::Test {
+            return Err("--coverage is only valid with test".into());
+        }
+        if target.is_some_and(Target::is_wasm) {
+            return Err("test coverage supports only the native target".into());
+        }
+        if test_list {
+            return Err("coverage cannot be combined with --list".into());
+        }
+    }
     if output.is_some() && !matches!(action, Action::Build | Action::Doc)
         || emit.is_some() && action != Action::Build
         || target.is_some() && !matches!(action, Action::Build | Action::Test)
@@ -646,6 +675,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_filter,
         test_list,
         test_indices,
+        coverage,
     })
 }
 
@@ -814,6 +844,7 @@ fn run_test_action(
         indices: arguments.test_indices.clone(),
         wasm_max_memory: arguments.options.wasm_max_memory,
         wasm_stack_size: arguments.options.wasm_stack_size,
+        coverage: arguments.coverage.is_some(),
     };
     if options
         .indices
@@ -858,6 +889,12 @@ fn run_test_action(
             }
         }
         return ExitCode::SUCCESS;
+    }
+    if let Some(output) = &arguments.coverage
+        && let Err(error) = driver::check_coverage_output(project, output)
+    {
+        print_diagnostic(&error, output, "", arguments.json);
+        return ExitCode::FAILURE;
     }
     let report = match driver::run_tests_linked(module, &options, links) {
         Ok(report) => report,
@@ -930,6 +967,16 @@ fn run_test_action(
             report.ignored
         );
     }
+    let mut coverage_failed = false;
+    if let (Some(output), Some(coverage)) = (&arguments.coverage, &report.coverage) {
+        match driver::write_coverage(project, coverage, output) {
+            Ok(files) => print_coverage(&files, coverage.excluded_failed, arguments.json),
+            Err(error) => {
+                print_diagnostic(&error, output, "", arguments.json);
+                coverage_failed = true;
+            }
+        }
+    }
     if let Some(first) = report
         .results
         .iter()
@@ -943,9 +990,41 @@ fn run_test_action(
         let source = project.source_for(&diagnostic);
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
         ExitCode::FAILURE
+    } else if coverage_failed {
+        ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Prints the `--coverage` summary after the test summary: one text line or one JSON line.
+fn print_coverage(files: &[tsuzuri::coverage::FileCoverage], excluded_failed: usize, json: bool) {
+    let totals = tsuzuri::coverage::totals(files);
+    if !json {
+        println!(
+            "{}",
+            tsuzuri::coverage::render_summary(totals, excluded_failed)
+        );
+        return;
+    }
+    let files = files
+        .iter()
+        .map(|file| {
+            format!(
+                "{{\"path\":{},\"lines\":{{\"hit\":{},\"total\":{}}},\"functions\":{{\"hit\":{},\"total\":{}}}}}",
+                json_string(&file.path),
+                file.lines_hit(),
+                file.lines.len(),
+                file.functions_hit(),
+                file.functions.len()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{{\"type\":\"coverage\",\"lines\":{{\"hit\":{},\"total\":{}}},\"functions\":{{\"hit\":{},\"total\":{}}},\"excluded_failed\":{excluded_failed},\"files\":[{files}]}}",
+        totals.lines_hit, totals.lines, totals.functions_hit, totals.functions
+    );
 }
 
 fn toolchain_info() -> String {

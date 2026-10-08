@@ -388,6 +388,10 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。
 
+`tsuzuri test --coverage`（G18 Phase 2）は LLVM のカバレッジ形式や gcov を使わない自前の計装です。`coverage::plan` が単相化・ラムダ持ち上げ後の利用者関数（標準ライブラリ、`FunctionOrigin.test` を持つテスト本体とその補助関数、組み込み・ケース・export のラッパーを除く）の型付き本体を走査し、関数本体・`if` の両枝（`else` のない `if` が生成する `()` は除く）・`match` の節の本体・ループ本体・`try` のハンドラーを (ソース, span, 種類) の昇順に番号付けした region と、各式の開始位置とその時点で最も内側の region の組（point）を作ります。
+`llvm::emit_test_runner_covered` はこの計画を `Globals.coverage` に置き、`FunctionEmitter::cover` が region の block の先頭で `atomicrmw add ... monotonic` を `@tsuzuri_coverage_counters` の要素へ出します（同じ span の特殊化はカウンターを共有し、`lookup_match` の定数表は使いません）。計画がない出力は 1 byte も変わりません。
+C の入口は `-DTSUZURI_COVERAGE` のときだけ、テストが成功したらカウンターを `TSUZURI_COVERAGE_FILE` へ native の byte 順で書きます。`driver::run_tests` は成功したテストのファイルだけを飽和加算で合算し（失敗はカウンターを書く前に終わるので除外数として数える）、`coverage::files` が行ごとに point の region の最大値を取り、`render_lcov` が lcov を書きます。
+
 `Debug.print` および `Debug.trace` は通常の標準ライブラリ関数として提供され、`Display` が生成した所有文字列を非公開の組み込み関数へと渡します。
 ネイティブ環境では厳密な UTF-8 変換と `runtime/debug.ll` の `write(2)` ループを用い、出力完了後に変換前後の所有バッファを確実に解放します。
 WASM のデフォルト動作では UTF-16 の表示結果バッファを解放するのみですが、オプトイン設定時には UTF-8 バッファを `tsuzuri_debug.write` へ同期転送して解放し、改行処理はホスト環境へ委ねます。

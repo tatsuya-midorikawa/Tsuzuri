@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（予約語 `bench`。GUIDE D-30 の仮割り当ての確定と、識別子 `bench` を壊す変更）。Phase 2（カバレッジ）は承認不要 |
+| 承認 | 要承認: D1（予約語 `bench`。GUIDE D-30 の仮割り当ての確定と、識別子 `bench` を壊す変更）。Phase 2（カバレッジ）は承認不要。**承認済み（2026-10-08、D-41）**: 利用者の「G16、G18、G17、G13 の実装をすべて完遂して。…すべてのフェーズを完了させること」で D1 と Phase 3 の着手を承認 |
 | 改善する劣位 | Rust 比: 開発ツールの成熟度（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#rust-に対する劣位点)）／追加: 利用者コードの性能測定・カバレッジ・プロパティテストを言語のツールで行えない |
 | 手本にする既存実装 | 宣言と実行器の全体: G06 の `test` 宣言（`src/parser.rs` の `Parser::test_declaration`、`src/check.rs` の `CheckedTest` と `$test.<index>` 関数の合成、`src/llvm.rs` の `Entry::TestRunner`・`emit_test_runner`、`src/test_runner.rs` の `run_tests`・`run_with_timeout`・`build_runner`・`execute_test`、`src/runtime/test-runner.c`、`src/main.rs` の `Action::Test`・`run_test_action`）。任意の型を受ける builtin: `src/check.rs` の `Builtin::Unreachable`。計装の切り替え: `src/llvm.rs` の `Instrumentation`。CLI の E2E: `tests/test_runner.rs` の `cli_reports_json_filters_and_failures_without_main` |
 | 主な影響ファイル | `src/lexer.rs`, `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/formatter.rs`, `src/semantic.rs`, `src/computation.rs`, `src/polymorph.rs`, `src/check.rs`, `src/llvm.rs`, `src/test_runner.rs`, `src/coverage.rs`（新規）, `src/runtime/test-runner.c`, `src/runtime/bench-runner.c`（新規）, `src/main.rs`, `std/Bench.tz`（新規）, `tests/test_runner.rs`, `tests/bench.rs`（新規）, `tests/coverage.rs`（新規）, `tests/fixtures/coverage/Calc.tz`（新規）, `tests/frontend.rs`, `docs/language.md`, `docs/architecture.md`, `_docs/tools/testing.md`, `_docs/tools/command-line.md`, `_docs/guides/performance.md`, `_docs/feature-status.md`, `_features/README.md`, `vsc/` の予約語文法（GUIDE §6.1） |
@@ -644,7 +644,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 理由: 代替を比べた。文脈キーワード（トップレベルで `bench` の後に文字列と `=` が続くときだけ）は壊さないが、`TokenKind::Test` を含む parser の 3 集合と
   `src/parse_control.rs` がトークンの種類で宣言の境界を決めており、各所に 3 token の先読みが要る。`.tb` の新しいソース種別は探索・E1018 の表・LSP・整形・`vsc/` に
   広がる。std の `Bench.run` を `main` から呼ぶ形は `--list`・`--filter`・プロセスの隔離ができない。test の修飾子は test の意味（合否）と混ざる。
-- 状態: 要承認（承認前は Phase 1 の手順 6〜11 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。G19 は todo のままなので、`bench` は無条件に予約した（edition による切り替えはない）。
 
 ### D2: 本体の型と std の API
 
@@ -692,6 +692,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
   到達しない関数は 0。インスタンス化されない汎用関数の本体は、型付きの本体がなければ出さない。
 - 理由: 枝の block の入口だけで数えれば、生成の変更は 1 か所の helper と 5 か所の呼び出しで済み、1 行の `if` も llvm-cov と同じく実行されたと数えられる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: region の鍵は `(source, start, end, 種類)` にした（複数ファイルのプロジェクトと、同じ span の別の構文を分けるため）。`else` のない `if` は then の span を持つ `()` を else に生成するので、その else は region にも point にもしない。`for`（`ForRange`・`ForEach`）の本体と `try ... with` のハンドラーも region にした（ループの本体と、例外のときだけ走るハンドラーが外側の回数で数えられないように）。持ち上げたラムダと `task`（module `$lambda`・`$task`）は自分の本体を region にする（並列の lambda の中の行が外側の 1 回で数えられないように）。test と bench の除外は span の包含ではなく `FunctionOrigin.test`（Phase 1 で `bench` も）で行い、テスト本体の中のラムダも除く。`match` のパターンとガードの式は point にしない（腕が選ばれる前に走り、回数が定まらない）。数える関数では `lookup_match` の定数表を使わない（腕ごとの block がないため）。組み込み・case・export のラッパー（module `$builtin`・`$intrinsic`・`$to_string`・`$case`・`$export`）は数えない。
 
 ### D9: 出力形式
 
@@ -719,3 +720,17 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: 成功した test のカウンターだけを合算し、除いた件数を要約に出す。
 - 理由: トラップは `fwrite` の前にプロセスを終わらせる。signal handler での書き出しは async-signal-safe の制約と OS 差が大きい。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-08）
+
+HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従って Phase 2 → Phase 1 → Phase 3 の順にすべて実装した。
+
+### Phase 2: `tsuzuri test --coverage PATH`
+
+- `src/coverage.rs`（新規）: `plan`（region と point）、`merge`（長さ `8 * N` 以外は `Err`、飽和加算）、`files`（行は point の region の最大値、FN は本体の region の開始行）、`render_lcov`、`totals`・`render_summary`。単体テスト 4 件。
+- 生成: `llvm::emit_test_runner_covered(module, selected, plan)`（native だけ）が `Instrumentation.coverage` を `Globals.coverage` に置き、`FunctionEmitter::cover(kind, span)` が region の block の先頭で `atomicrmw add ptr getelementptr inbounds ([N x i64], ptr @tsuzuri_coverage_counters, i64 0, i64 K), i64 1 monotonic` を出す。呼び出しは関数の入口（`emit`）、`if` の 3 つの下げ方（`emit_tail`・`expression_mode`・`llvm_frame` の `frame_inner`）の両枝、`loop_body`（`while`・範囲 `for`・`for each` の共通部）、`match_expression` の腕、`try_expression` のハンドラー。末尾に `@tsuzuri_coverage_counters = global [N x i64] zeroinitializer` と `@tsuzuri_coverage_count = constant i64 N`。計画のない出力は変わらない（`counted` が偽なら `cover` は何も出さない）。
+- 実行器: `src/runtime/test-runner.c` は `-DTSUZURI_COVERAGE` のときだけ、テストが 0 を返したらカウンターを `TSUZURI_COVERAGE_FILE` へ書く（失敗は終了コード 3。Windows は `_CRT_SECURE_NO_WARNINGS`）。`src/test_runner.rs` は `TestOptions.coverage: bool`、`TestReport.coverage: Option<CoverageRun>`、`Runner.coverage`（カウンターのファイルの置き場）、`merge_coverage`、`check_coverage_output`（E2003）、`write_coverage`（`cache::real_path` の絶対 path で lcov を書く。E2001）。`build_runner` は引数 `coverage` を足しただけで、`None` のときの IR と clang の引数の順序は変わらない。
+- CLI: `--coverage PATH`（test だけ。2 回目、`--target wasm32/wasm64`、`--list` は終了コード 2 の E2000）、要約はテストの要約行の後（`--json` は最後の行 `{"type":"coverage",...}`）。lcov はテストが失敗しても書き、終了コードは 1 のまま。
+- 見直し（2026-10-08）: チケットの `TestOptions { coverage: Option<PathBuf> }` は `bool` にした（lcov を書くにはプロジェクトのソースが要るので、出力は `driver::write_coverage(project, run, path)` が行う）。E2E の `coverage_counts_parallel_work_exactly` は 1,000 要素ではなく 100,000 要素にした（`Parallel.map` は 4,096 要素ごとのチャンクなので、1,000 要素は 1 スレッドで終わり、原子性を試せない）。
+- 検証: `cargo test --locked --lib coverage::` 4 passed、`cargo test --locked --test coverage` 5 passed（lcov の完全一致は `-O0`／`-O3`、並列の 100,000 回）、`cargo test --locked --test test_runner` 8 passed、`--lib test_runner` 2 passed、GUIDE §3.1 の 4 件 passed、`cargo clippy --locked --all-targets -- -D warnings` 成功、`node scripts/check-docs.mjs`（test.md・usage.md・option.md）成功。
+- 生成 IR の不変（base `1182045` の release と比較）: examples と tests/fixtures の全プロジェクトの `build --emit llvm` を native／wasm32 × `-O0`／`-O3` で 324 組比較し、すべて byte 単位で一致。テスト実行器の IR（`emit_test_runner`、native と wasm32）も、base の木で同じ dump を作って 4 プロジェクト 8 組が一致。

@@ -13,6 +13,8 @@ pub struct TestOptions {
     pub wasm_max_memory: Option<u64>,
     /// `None` selects [`DEFAULT_WASM_STACK_SIZE`]; only valid for WASM targets.
     pub wasm_stack_size: Option<u64>,
+    /// Count the regions of the user's code that passing tests run (`--coverage`, native only).
+    pub coverage: bool,
 }
 
 impl Default for TestOptions {
@@ -24,6 +26,7 @@ impl Default for TestOptions {
             indices: Vec::new(),
             wasm_max_memory: None,
             wasm_stack_size: None,
+            coverage: false,
         }
     }
 }
@@ -51,6 +54,17 @@ pub struct TestReport {
     pub ignored: usize,
     pub duration_ms: u128,
     pub messages: Vec<String>,
+    /// The merged counters of the passing tests, with `TestOptions::coverage`.
+    pub coverage: Option<CoverageRun>,
+}
+
+/// What `tsuzuri test --coverage` counted: one counter per region of `plan`.
+#[derive(Debug)]
+pub struct CoverageRun {
+    pub plan: crate::coverage::CoveragePlan,
+    pub counts: Vec<u64>,
+    /// The failed tests, whose counts are left out because they end before writing them.
+    pub excluded_failed: usize,
 }
 
 pub fn run_tests(module: &CheckedModule, options: &TestOptions) -> Result<TestReport, Diagnostic> {
@@ -96,6 +110,12 @@ fn run_with_timeout(
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64",
         ));
     }
+    if options.coverage && options.target.is_wasm() {
+        return Err(driver_error(
+            "E2000",
+            "test coverage supports only the native target",
+        ));
+    }
     wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -125,12 +145,18 @@ fn run_with_timeout(
         .cloned()
         .collect();
     let ignored = module.tests.len() - selected.len();
+    let plan = options.coverage.then(|| crate::coverage::plan(module));
     if selected.is_empty() {
         return Ok(TestReport {
             results: Vec::new(),
             ignored,
             duration_ms: started.elapsed().as_millis(),
             messages: Vec::new(),
+            coverage: plan.map(|plan| CoverageRun {
+                counts: vec![0; plan.len()],
+                plan,
+                excluded_failed: 0,
+            }),
         });
     }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
@@ -140,6 +166,7 @@ fn run_with_timeout(
         &selected.iter().map(|test| test.index).collect::<Vec<_>>(),
         options,
         links,
+        plan.as_ref(),
         &temporary.path,
         &mut messages,
     )?;
@@ -170,22 +197,112 @@ fn run_with_timeout(
     });
     let mut results = results.into_inner().unwrap();
     results.sort_by_key(|(index, _)| *index);
-    let results = results
+    let results: Vec<TestResult> = results
         .into_iter()
         .map(|(_, result)| result)
         .collect::<Result<_, _>>()?;
+    let coverage = match plan {
+        Some(plan) => Some(merge_coverage(plan, &results, &runner)?),
+        None => None,
+    };
     temporary.close()?;
     Ok(TestReport {
         results,
         ignored,
         duration_ms: started.elapsed().as_millis(),
         messages,
+        coverage,
     })
+}
+
+/// Adds up the counter files that the passing tests wrote (D12: failed tests write none).
+fn merge_coverage(
+    plan: crate::coverage::CoveragePlan,
+    results: &[TestResult],
+    runner: &Runner,
+) -> Result<CoverageRun, Diagnostic> {
+    let directory = runner
+        .coverage
+        .as_ref()
+        .expect("a covered runner writes counter files");
+    let mut counts = vec![0; plan.len()];
+    let mut excluded_failed = 0;
+    for (position, result) in results.iter().enumerate() {
+        if result.failure.is_some() {
+            excluded_failed += 1;
+            continue;
+        }
+        let path = coverage_file(directory, position);
+        let bytes =
+            fs::read(&path).map_err(|error| io_error("read coverage counters", &path, error))?;
+        crate::coverage::merge(&mut counts, &bytes).map_err(|message| {
+            driver_error(
+                "E2002",
+                format!(
+                    "invalid coverage counters in '{}': {message}",
+                    path.display()
+                ),
+            )
+        })?;
+    }
+    Ok(CoverageRun {
+        plan,
+        counts,
+        excluded_failed,
+    })
+}
+
+/// The counter file of the selected test at `position`.
+fn coverage_file(directory: &Path, position: usize) -> PathBuf {
+    directory.join(format!("coverage-{position}.bin"))
+}
+
+/// Refuses a `--coverage` output that would overwrite one of the project's sources (E2003).
+pub fn check_coverage_output(project: &Project, output: &Path) -> Result<(), Diagnostic> {
+    protect_sources(project, output)
+}
+
+/// Writes the lcov report of `coverage` for the project's user sources to `output` and
+/// returns its files.
+pub fn write_coverage(
+    project: &Project,
+    coverage: &CoverageRun,
+    output: &Path,
+) -> Result<Vec<crate::coverage::FileCoverage>, Diagnostic> {
+    protect_sources(project, output)?;
+    let paths: Vec<Option<String>> = project
+        .sources
+        .iter()
+        .map(|source| {
+            (source.origin == ModuleOrigin::User).then(|| {
+                crate::cache::real_path(&source.path)
+                    .unwrap_or_else(|_| source.path.clone())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .collect();
+    let sources: Vec<Option<crate::coverage::CoverageSource<'_>>> = paths
+        .iter()
+        .zip(&project.sources)
+        .map(|(path, source)| {
+            path.as_deref().map(|path| crate::coverage::CoverageSource {
+                path,
+                text: &source.text,
+            })
+        })
+        .collect();
+    let files = crate::coverage::files(&coverage.plan, &coverage.counts, &sources);
+    fs::write(output, crate::coverage::render_lcov(&files))
+        .map_err(|error| io_error("write coverage report", output, error))?;
+    Ok(files)
 }
 
 struct Runner {
     program: OsString,
     arguments: Vec<OsString>,
+    /// The directory of the counter files of a covered native runner.
+    coverage: Option<PathBuf>,
 }
 
 fn execute_test(
@@ -193,12 +310,17 @@ fn execute_test(
     index: usize,
     timeout: Duration,
 ) -> Result<Option<String>, Diagnostic> {
-    let mut child = Command::new(&runner.program)
+    let mut command = Command::new(&runner.program);
+    command
         .args(&runner.arguments)
         .arg(index.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(directory) = &runner.coverage {
+        command.env("TSUZURI_COVERAGE_FILE", coverage_file(directory, index));
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| driver_error("E2002", format!("cannot start test runner: {error}")))?;
     let started = Instant::now();
@@ -255,6 +377,7 @@ fn build_runner(
     selected: &[usize],
     options: &TestOptions,
     links: &LinkInputs,
+    coverage: Option<&crate::coverage::CoveragePlan>,
     directory: &Path,
     messages: &mut Vec<String>,
 ) -> Result<Runner, Diagnostic> {
@@ -265,7 +388,10 @@ fn build_runner(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
-    let mut text = llvm::emit_test_runner_for(module, selected, wasm, memory64)?;
+    let mut text = match coverage {
+        Some(plan) => llvm::emit_test_runner_covered(module, selected, plan)?,
+        None => llvm::emit_test_runner_for(module, selected, wasm, memory64)?,
+    };
     if wasm {
         text = llvm::with_wasm_heap_limit(text, max_memory);
         if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
@@ -321,11 +447,11 @@ fn build_runner(
         clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
         fs::write(&main, include_str!("runtime/test-runner.c"))
             .map_err(|error| io_error("write test entry", &main, error))?;
-        clang
-            .args(["-x", "c", "-std=c11"])
-            .arg(&main)
-            .arg("-o")
-            .arg(&artifact);
+        clang.args(["-x", "c", "-std=c11"]);
+        if coverage.is_some() {
+            clang.arg("-DTSUZURI_COVERAGE");
+        }
+        clang.arg(&main).arg("-o").arg(&artifact);
         if !cfg!(windows) {
             clang.arg("-lm");
         }
@@ -389,11 +515,13 @@ fn build_runner(
         Ok(Runner {
             program: "node".into(),
             arguments: vec![script.into_os_string(), artifact.into_os_string()],
+            coverage: None,
         })
     } else {
         Ok(Runner {
             program: artifact.into_os_string(),
             arguments: Vec::new(),
+            coverage: coverage.map(|_| directory.to_owned()),
         })
     }
 }
@@ -412,6 +540,7 @@ mod tests {
             &[0, 1],
             &TestOptions::default(),
             &LinkInputs::default(),
+            None,
             &temporary.path,
             &mut Vec::new(),
         )
@@ -469,6 +598,7 @@ mod tests {
             let runner = Runner {
                 program: "/bin/sh".into(),
                 arguments: vec!["-c".into(), script.into()],
+                coverage: None,
             };
             assert_eq!(
                 execute_test(&runner, 0, Duration::from_secs(5))
