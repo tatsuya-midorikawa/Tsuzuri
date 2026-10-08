@@ -590,6 +590,15 @@ tsuzuri test tests/ --filter "加算" -O3 --target native
 
 # 成功したテストの行と関数のカバレッジを lcov で書く（ネイティブだけ）
 tsuzuri test tests/ --coverage coverage.info
+
+# プロパティテストの seed を変える（既定は固定の 11400714819323198485）
+tsuzuri test tests/ --seed 42
+```
+
+プロパティテストは標準モジュール `Gen` で書きます。`Gen.for_all` は生成器の値で性質を確かめ、失敗すると反例を最も単純な値まで縮小し、seed・何個目の値か・反例を表示します。
+
+```text
+test "加算は可換" = Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair -> match pair with | (a, b) -> a + b == b + a)
 ```
 
 テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`--coverage PATH` はコンパイラ自身の計装で、関数・`if` の枝・`match` の節・ループの本体ごとのカウンターを数え、lcov のファイルとテスト要約の後の 1 行の要約を出します。
@@ -716,6 +725,7 @@ tsuzuri lsp
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
 | `--coverage PATH` | `tsuzuri test` で、成功したテストの行と関数のカバレッジを lcov 形式で `PATH` に書きます（ネイティブだけ）。 |
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
+| `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
 | `--wasm-feature simd128\|threads` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |

@@ -2675,6 +2675,15 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if builtin == Builtin::GenSeed
+            && !(self.module == "Gen" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the property seed is private to the standard Gen module; set it with tsuzuri test --seed",
+                span,
+            ));
+        }
         if builtin == Builtin::ArenaNextId
             && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
         {

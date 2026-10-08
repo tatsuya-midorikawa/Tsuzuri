@@ -40,6 +40,7 @@
 | `--link` / `-l` / `-L` | | ○ | ○ | ○ | ○ | | |
 | `--list` / `--filter` / `--index` | | | | ○ | ○ | | |
 | `--coverage PATH` | | | | ○ | | | |
+| `--seed N` | | | | ○ | | | |
 | `--check` | | | | | | | ○ |
 | `--samples N` | | | | | ○ | | |
 
@@ -189,6 +190,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `doc` に `-o` が無い | `doc requires -o or --output with an output directory` |
 | `--filter` を `test`・`bench` 以外に付ける | `--filter, --list, and --index are only valid with test or bench` |
 | `--samples` を `bench` 以外に付ける | `--samples is only valid with bench` |
+| `--seed` を `test` 以外に付ける | `--seed is only valid with test` |
+| `--seed` が 0〜18446744073709551615 の整数でない | `property seed must be an integer between 0 and 18446744073709551615` |
 | `--samples` が 1〜1000 の整数でない | `bench samples must be an integer between 1 and 1000` |
 | `bench` に `--target wasm32`／`wasm64` | `tsuzuri bench supports only the native target` |
 | `bench` に `--cpu` | `bench does not use CPU tuning` |

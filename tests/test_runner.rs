@@ -395,3 +395,45 @@ fn parser_keeps_tests_separate_and_preserves_names_and_spans() {
         assert!(parser::parse(invalid).is_err(), "{invalid}");
     }
 }
+
+#[test]
+fn failed_tests_show_the_end_of_their_stderr() {
+    use std::{fs, process::Command};
+    let root = std::env::temp_dir().join(format!("tsuzuri-stderr-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Specs.tz"),
+        "test \"quiet pass\" = { let message = \"hidden\"; Debug.print (ref message); assert true }\n\
+         test \"loud failure\" = { let message = \"shown\"; Debug.print (ref message); assert false }\n",
+    )
+    .unwrap();
+    let text = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("test")
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(text.status.code(), Some(1));
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "ok 1 - Specs quiet pass\nnot ok 2 - Specs loud failure\n  failure: trapped or terminated by signal\n  shown\n"
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("hidden"), "{stdout}");
+    let json = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("test")
+        .arg(&root)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let lines: Vec<serde_json::Value> = String::from_utf8(json.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(lines[0].get("output").is_none(), "{}", lines[0]);
+    assert_eq!(lines[1]["output"], "shown\n");
+    fs::remove_dir_all(root).unwrap();
+}

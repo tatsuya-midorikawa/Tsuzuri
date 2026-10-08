@@ -1,0 +1,34 @@
+private def show_maybe :: ref Maybe<i64> -> string
+fn show_maybe value =
+    match deref value with
+    | Maybe.None -> "None"
+    | Maybe.Some inner -> "Some " + to_string inner
+
+private def show_result :: ref Result<i64, i64> -> string
+fn show_result value =
+    match deref value with
+    | Result.Ok inner -> "Ok " + to_string inner
+    | Result.Error inner -> "Error " + to_string inner
+
+test "i64 holds" = Gen.for_all (Gen.i64()) (\x -> x + 0 == x)
+test "pair commutes" = Gen.for_all (Gen.pair (Gen.i32()) (Gen.i32())) (\pair -> match pair with | (a, b) -> a + b == b + a)
+test "i64 below 100" = Gen.for_all (Gen.i64()) (\x -> x < 100)
+test "i64 above -100" = Gen.for_all (Gen.i64()) (\x -> x > -100)
+test "i32 below 1000" = Gen.for_all (Gen.i32()) (\x -> x < 1000)
+test "range below 500" = Gen.for_all (Gen.range 10 1000) (\x -> x < 500)
+test "negative range above -30" = Gen.for_all (Gen.range (-50) (-10)) (\x -> x > -30)
+test "bool is false" = Gen.for_all (Gen.bool()) (\flag -> !flag)
+test "f64 below 2" = Gen.for_all (Gen.f64()) (\x -> x < 2.0)
+test "char before c" = Gen.for_all (Gen.char()) (\c -> c < 'c')
+test "unicode char before brace" = Gen.for_all (Gen.unicode_char()) (\c -> Char.to_u16 c < 123i16u)
+test "string shorter than 3" = Gen.for_all (Gen.string()) (\text -> text.length < 3)
+test "array shorter than 3" = Gen.for_all (Gen.array (Gen.range 0 9)) (\values -> values.length < 3)
+test "array values below 5" = Gen.for_all (Gen.array (Gen.range 0 9)) (\values -> Array.all (\value -> deref value < 5) (ref values))
+test "maybe below 50" = Gen.check show_maybe 100 (Gen.maybe (Gen.range 0 100)) (\value -> match value with | Maybe.None -> true | Maybe.Some inner -> inner < 50)
+test "error below 3" = Gen.check show_result 100 (Gen.result (Gen.range 0 9) (Gen.range 0 9)) (\value -> match value with | Result.Ok _ -> true | Result.Error inner -> inner < 3)
+test "pair corner" = Gen.for_all (Gen.pair (Gen.range 0 100) (Gen.range 0 100)) (\pair -> match pair with | (a, b) -> a < 10 || b < 20)
+test "map doubles" = Gen.for_all (Gen.map (\x -> x * 2) (Gen.range 0 1000)) (\y -> y < 100)
+test "bind sizes" = Gen.for_all (Gen.bind (\size -> Gen.array_up_to size (Gen.constant 7)) (Gen.range 0 5)) (\values -> values.length < 2)
+test "one of" = Gen.for_all (Gen.one_of [Gen.constant 1, Gen.range 10 20]) (\x -> x < 15)
+test "element" = Gen.for_all (Gen.element [3, 1, 4, 1, 5]) (\x -> x != 4)
+test "seven cases" = Gen.for_all_cases 7 (Gen.range 0 9) (\_ -> false)

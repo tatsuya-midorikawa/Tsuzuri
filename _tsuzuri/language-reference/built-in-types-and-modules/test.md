@@ -10,6 +10,7 @@
 - `--filter` は `モジュール名.テスト名` の部分一致です。正規表現ではありません。
 - 1 件でも失敗すると終了コードは 1 で、`E2006` が最初の失敗を指します。
 - `--coverage PATH` は、成功したテストが通った行と関数を lcov 形式で書きます（ネイティブだけ）。
+- プロパティテストは `Gen.for_all 生成器 性質` です。反例は縮小して表示され、seed は `--seed N` で変えられます。
 
 ## テストを書く
 
@@ -94,6 +95,7 @@ tsuzuri test . --index 1
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16 MiB |
 | `--wasm-stack-size SIZE` | WASM のメインスタック。既定 1 MiB |
 | `--coverage PATH` | 成功したテストのカバレッジを lcov で `PATH` に書く。ネイティブだけ（[カバレッジ](#カバレッジ)） |
+| `--seed N` | プロパティテストの seed（0〜18446744073709551615）。既定は固定の `11400714819323198485`（[プロパティテスト](#プロパティテスト)） |
 
 `--cpu`、`--emit`、`--output` は使えません。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
 
@@ -114,7 +116,7 @@ tsuzuri test . --index 1
 
 各テストは別プロセスです。並列度は、CPU コア数、32、選んだ件数の最小値です。あるテストがトラップしても、ほかのテストの収集は止まりません。報告はソースの宣言順に並べ直します。
 
-トラップ、0 以外の終了、30 秒超過は失敗です。テストランナーは子プロセスの標準出力と標準エラーを捨てるため、`Debug.print` の行も、`trap:` の文も、失敗理由には入りません。
+トラップ、0 以外の終了、30 秒超過は失敗です。テストランナーは子プロセスの標準出力を捨て、標準エラーを読みます。失敗したテストが標準エラーに書いた内容（最後の 64 KiB）は、失敗理由の下に字下げして表示されます。成功したテストの出力は表示しません。WASM のテストで `Debug.print` が書くのは、`Gen` を使うプログラムだけです（それ以外の WASM のテストモジュールはインポートを持たず、`Debug.print` は何も書きません）。
 
 成功時の人が読む報告は、次の形です。
 
@@ -154,7 +156,7 @@ flowchart TD
 {"type":"summary","passed":2,"failed":0,"ignored":0,"duration_ms":307}
 ```
 
-失敗した行には `failure` が足されます。
+失敗した行には `failure` が足されます。失敗したテストが標準エラーに書いていれば、その内容が `output` に入ります。
 
 ```text
 {"type":"test","index":1,"module":"Main","name":"stock is positive","status":"failed","failure":"trapped or terminated by signal","duration_ms":269}
@@ -163,6 +165,30 @@ flowchart TD
 コンパイル診断と `E2006` は標準エラーの JSON です。標準出力の行を、診断と混ぜて 1 つの JSON 配列として解析しないでください。
 
 `--list --json` は、実行せずにテスト名の位置を出します。フィールドは `index`、`module`、`name`、`path`、`range`、`type` です。`range` の行と列は 0 始まりの UTF-16 で、テスト名の文字列トークンを指します。この一覧のキーはアルファベット順に並びます。
+
+## プロパティテスト
+
+`Gen.for_all 生成器 性質` は、生成器が作る 100 個の値で性質（`bool` を返す関数）を確かめます。成り立たない値が見つかると、最も単純な反例まで縮小し、何個目の値かと seed と反例を標準エラーに書いてトラップします。生成器と組み合わせの一覧は [Gen](gen.md) にあります。
+
+```tsuzuri project=properties file=Properties.tz
+test "reverse twice is the original" =
+    Gen.for_all (Gen.array (Gen.i64())) (\values ->
+        let once = Array.reverse (ref values)
+        let twice = Array.reverse (ref once)
+        Array.equal (ref twice) (ref values))
+```
+
+失敗すると、報告は失敗理由の下に出ます。
+
+```text
+not ok 1 - Properties below 100
+  failure: trapped or terminated by signal
+  property failed at case 1 of 100 (seed 11400714819323198485)
+  counterexample: 100
+  shrunk 15 times from 304129
+```
+
+値の選び方は決定的です。既定の seed は固定の `11400714819323198485` で、`--seed N` で変えられます。同じ seed なら、ネイティブでも WASM でも、`-O0` でも `-O3` でも同じ値を試し、同じ反例になります。
 
 ## カバレッジ
 
@@ -255,9 +281,11 @@ WASM のテストモジュールが要求するインポートは空です。was
 - `--json` は標準出力に 1 行 1 オブジェクト、診断は標準エラーです。
 - 失敗が 1 件でもあれば終了コードは 1 で、`E2006` が最初の失敗を指します。
 - `--coverage PATH` は、成功したテストの行と関数のカバレッジを lcov で書き、要約を 1 行出します。
+- `Gen.for_all` は性質を多くの値で確かめ、反例を縮小して表示します。seed は `--seed N` です。
 
 ## 関連項目
 
+- [Gen](gen.md)
 - [assert 式](../exception-handling/assert.md)
 - [例外処理](../exception-handling/exception-handling.md)
 - [コンパイラの使い方](../compiler/usage.md)

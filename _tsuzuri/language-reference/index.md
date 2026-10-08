@@ -108,6 +108,7 @@
 - [Simd](./built-in-types-and-modules/simd.md)
 - [Test](./built-in-types-and-modules/test.md)
 - [Bench](./built-in-types-and-modules/bench.md)
+- [Gen](./built-in-types-and-modules/gen.md)
 - [Gpu](./built-in-types-and-modules/gpu.md)
 - [IO](./built-in-types-and-modules/io.md)
 - [Owned](./built-in-types-and-modules/owned.md)

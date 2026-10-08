@@ -634,6 +634,7 @@ pub(crate) fn emit_wasm_build(
             allocator: options.allocator,
             multiversion: false,
             coverage: None,
+            seed: None,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -666,25 +667,15 @@ pub(crate) fn emit_test_runner_for(
     wasm: bool,
     memory64: bool,
 ) -> Result<String, Diagnostic> {
-    if selected.iter().any(|index| *index >= module.tests.len()) {
-        return Err(Diagnostic::new(
-            "E2000",
-            "invalid test index",
-            Span::default(),
-        ));
-    }
-    emit_program(
+    emit_test_runner_with(
         module,
-        Entry::TestRunner,
-        wasm,
-        Some(selected),
-        false,
-        Instrumentation {
+        selected,
+        TestRunnerOptions {
+            wasm,
             memory64,
-            ..Instrumentation::default()
+            ..TestRunnerOptions::default()
         },
     )
-    .map(|(ir, _)| ir)
 }
 
 /// The native test runner of `emit_test_runner`, counting the regions of `plan` in
@@ -693,6 +684,38 @@ pub fn emit_test_runner_covered(
     module: &CheckedModule,
     selected: &[usize],
     plan: &crate::coverage::CoveragePlan,
+) -> Result<String, Diagnostic> {
+    emit_test_runner_with(
+        module,
+        selected,
+        TestRunnerOptions {
+            coverage: Some(plan),
+            ..TestRunnerOptions::default()
+        },
+    )
+}
+
+/// The seed of property tests (`Gen.for_all`) without `tsuzuri test --seed` (G18 Phase 3).
+pub const DEFAULT_PROPERTY_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// How `emit_test_runner_with` builds a test runner.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestRunnerOptions<'a> {
+    pub wasm: bool,
+    pub memory64: bool,
+    /// Count coverage regions (native only).
+    pub coverage: Option<&'a crate::coverage::CoveragePlan>,
+    /// The property-test seed instead of `DEFAULT_PROPERTY_SEED`.
+    pub seed: Option<u64>,
+    /// WASM only: `Debug.print` writes through the `tsuzuri_debug.write` import, which the Node
+    /// test runner provides.
+    pub debug_output: bool,
+}
+
+pub fn emit_test_runner_with(
+    module: &CheckedModule,
+    selected: &[usize],
+    options: TestRunnerOptions<'_>,
 ) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
         return Err(Diagnostic::new(
@@ -704,11 +727,13 @@ pub fn emit_test_runner_covered(
     emit_program(
         module,
         Entry::TestRunner,
-        false,
+        options.wasm,
         Some(selected),
-        false,
+        options.debug_output && options.wasm,
         Instrumentation {
-            coverage: Some(plan),
+            memory64: options.memory64,
+            coverage: options.coverage.filter(|_| !options.wasm),
+            seed: options.seed,
             ..Instrumentation::default()
         },
     )
@@ -750,6 +775,8 @@ struct Instrumentation<'a> {
     multiversion: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
     coverage: Option<&'a crate::coverage::CoveragePlan>,
+    /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
+    seed: Option<u64>,
 }
 
 fn emit_program(
@@ -907,6 +934,7 @@ fn emit_program(
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         multiversion: instrumentation.multiversion && !wasm,
         coverage: instrumentation.coverage.cloned(),
+        seed: instrumentation.seed,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1444,6 +1472,8 @@ struct Globals {
     callbacks: BTreeSet<usize>,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
     coverage: Option<crate::coverage::CoveragePlan>,
+    /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
+    seed: Option<u64>,
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
     #[cfg(debug_assertions)]
     emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
@@ -1481,6 +1511,7 @@ impl Default for Globals {
             shared_types: BTreeSet::new(),
             callbacks: BTreeSet::new(),
             coverage: None,
+            seed: None,
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
         }
@@ -5722,6 +5753,10 @@ fn emit_builtin(
                 "define internal i64 {symbol}() nounwind {{\nentry:\n  %now = call i64 @tsuzuri_bench_now()\n  ret i64 %now\n}}\n\n"
             )
         }
+        Builtin::GenSeed => format!(
+            "define internal i64 {symbol}() nounwind {{\nentry:\n  ret i64 {}\n}}\n\n",
+            globals.seed.unwrap_or(DEFAULT_PROPERTY_SEED) as i64
+        ),
         Builtin::ArenaNextId => format!(
             "@tz.arena.next_id = internal global i64 0, align 8\n\n\
              define internal i64 {symbol}() nounwind {{\n\

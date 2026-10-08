@@ -17,7 +17,7 @@ Usage:
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
-                             [--coverage PATH]
+                             [--coverage PATH] [--seed N]
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
@@ -44,6 +44,8 @@ namespace, else the package or folder name) followed by subdirectories
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri test --coverage PATH` writes the line and function coverage of the passing
 tests as an lcov file (native only) and prints a summary after the test summary.
+`tsuzuri test --seed N` sets the seed of property tests (Gen.for_all); without it they
+use the fixed seed 11400714819323198485, so every run tries the same values.
 `tsuzuri bench` runs each `bench \"name\" = body` declaration (body: i64 -> i64, iterations to
 nanoseconds; see Bench.with_input and Bench.of) in its own native process, one at a time: it
 doubles the iterations until a sample takes 10 ms, discards one warm-up sample, and prints the
@@ -161,6 +163,8 @@ struct Arguments {
     coverage: Option<PathBuf>,
     /// `tsuzuri bench --samples N`.
     bench_samples: Option<usize>,
+    /// `tsuzuri test --seed N`: the property-test seed.
+    test_seed: Option<u64>,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -183,6 +187,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             test_indices: Vec::new(),
             coverage: None,
             bench_samples: None,
+            test_seed: None,
         });
     }
     let mut position = 0;
@@ -232,6 +237,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_indices = Vec::new();
     let mut coverage = None;
     let mut bench_samples = None;
+    let mut test_seed = None;
     let mut debug_output = false;
     let mut trap_info = false;
     let mut trap_return = false;
@@ -343,6 +349,23 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             .and_then(|value| value.parse::<usize>().ok())
                             .filter(|samples| (1..=1000).contains(samples))
                             .ok_or("bench samples must be an integer between 1 and 1000")?,
+                    );
+                    continue;
+                }
+                Some("--seed") => {
+                    if test_seed.is_some() {
+                        return Err("seed specified more than once".into());
+                    }
+                    test_seed = Some(
+                        next_value(arguments, &mut position, "--seed")?
+                            .to_str()
+                            .filter(|value| {
+                                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or(
+                                "property seed must be an integer between 0 and 18446744073709551615",
+                            )?,
                     );
                     continue;
                 }
@@ -631,6 +654,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if bench_samples.is_some() && action != Action::Bench {
         return Err("--samples is only valid with bench".into());
     }
+    if test_seed.is_some() && action != Action::Test {
+        return Err("--seed is only valid with test".into());
+    }
     if action == Action::Bench {
         if cpu.is_some() {
             return Err("bench does not use CPU tuning".into());
@@ -722,6 +748,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_indices,
         coverage,
         bench_samples,
+        test_seed,
     })
 }
 
@@ -892,6 +919,7 @@ fn run_test_action(
         wasm_max_memory: arguments.options.wasm_max_memory,
         wasm_stack_size: arguments.options.wasm_stack_size,
         coverage: arguments.coverage.is_some(),
+        seed: arguments.test_seed,
     };
     if options
         .indices
@@ -965,7 +993,11 @@ fn run_test_action(
         let case = &result.case;
         if arguments.json {
             let failure = result.failure.as_ref().map_or_else(String::new, |failure| {
-                format!(",\"failure\":{}", json_string(failure))
+                format!(
+                    ",\"failure\":{}{}",
+                    json_string(failure),
+                    output_field(&result.output)
+                )
             });
             println!(
                 "{{\"type\":\"test\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"{}\"{},\"duration_ms\":{}}}",
@@ -994,6 +1026,7 @@ fn run_test_action(
             );
             if let Some(failure) = &result.failure {
                 println!("  failure: {failure}");
+                print_output(&result.output);
             }
         }
     }
@@ -2138,6 +2171,128 @@ mod tests {
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn parses_bench_coverage_and_seed_options() {
+        let bench = parse(&[
+            "bench",
+            "Speed.tz",
+            "--samples",
+            "5",
+            "--list",
+            "--index",
+            "1",
+            "--filter",
+            "total",
+        ])
+        .unwrap();
+        assert_eq!(bench.action, Action::Bench);
+        assert_eq!(bench.bench_samples, Some(5));
+        assert_eq!(bench.options.optimization, 3);
+        assert!(bench.test_list && bench.test_filter.as_deref() == Some("total"));
+        assert_eq!(bench.test_indices, vec![1]);
+        assert!(links_apply(Action::Bench, &bench.options));
+        assert_eq!(
+            parse(&["bench", "Speed.tz", "-O0", "--target", "native"])
+                .unwrap()
+                .options
+                .optimization,
+            0
+        );
+        let test = parse(&[
+            "test",
+            "Specs.tz",
+            "--coverage",
+            "c.info",
+            "--seed",
+            "18446744073709551615",
+        ])
+        .unwrap();
+        assert_eq!(test.coverage, Some(PathBuf::from("c.info")));
+        assert_eq!(test.test_seed, Some(u64::MAX));
+        assert_eq!(test.bench_samples, None);
+        let samples = "bench samples must be an integer between 1 and 1000";
+        let seed = "property seed must be an integer between 0 and 18446744073709551615";
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--coverage", "c.info"],
+                "--coverage is only valid with test",
+            ),
+            (
+                vec!["bench", "Main.tz", "--coverage", "c.info"],
+                "--coverage is only valid with test",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage"],
+                "--coverage needs a value",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage", "a", "--coverage", "b"],
+                "coverage specified more than once",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage", "a", "--list"],
+                "coverage cannot be combined with --list",
+            ),
+            (
+                vec!["test", "Main.tz", "--coverage", "a", "--target", "wasm64"],
+                "test coverage supports only the native target",
+            ),
+            (
+                vec!["test", "Main.tz", "--samples", "3"],
+                "--samples is only valid with bench",
+            ),
+            (vec!["bench", "Main.tz", "--samples", "0"], samples),
+            (vec!["bench", "Main.tz", "--samples", "1001"], samples),
+            (vec!["bench", "Main.tz", "--samples", " 3"], samples),
+            (
+                vec!["bench", "Main.tz", "--samples", "3", "--samples", "4"],
+                "samples specified more than once",
+            ),
+            (
+                vec!["bench", "Main.tz", "--target", "wasm32"],
+                "tsuzuri bench supports only the native target",
+            ),
+            (
+                vec!["bench", "Main.tz", "--cpu", "native"],
+                "bench does not use CPU tuning",
+            ),
+            (
+                vec!["bench", "Main.tz", "--wasm-max-memory", "64MiB"],
+                "--wasm-max-memory and --wasm-stack-size are only valid with build or test",
+            ),
+            (
+                vec!["run", "Main.tz", "--index", "0"],
+                "--filter, --list, and --index are only valid with test or bench",
+            ),
+            (
+                vec!["build", "Main.tz", "--seed", "1"],
+                "--seed is only valid with test",
+            ),
+            (
+                vec!["bench", "Main.tz", "--seed", "1"],
+                "--seed is only valid with test",
+            ),
+            (vec!["test", "Main.tz", "--seed", "0x10"], seed),
+            (
+                vec!["test", "Main.tz", "--seed", "18446744073709551616"],
+                seed,
+            ),
+            (
+                vec!["test", "Main.tz", "--seed", "1", "--seed", "2"],
+                "seed specified more than once",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        for values in [
+            vec!["bench", "Main.tz", "-o", "out"],
+            vec!["bench", "Main.tz", "--emit", "llvm"],
+            vec!["bench", "Main.tz", "--trap-info"],
+        ] {
+            assert!(parse(&values).is_err(), "{values:?}");
         }
     }
 

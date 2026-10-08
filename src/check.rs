@@ -1121,6 +1121,10 @@ pub enum Builtin {
     /// `Bench.consume :: 'a -> unit` drops its argument after an optimization barrier, so the
     /// value and the memory it reaches count as observed (G18 D6).
     BenchConsume,
+    /// `Gen.__seed :: i64u`, called as `Gen.__seed()`: the seed of property tests, from
+    /// `tsuzuri test --seed` or `llvm::DEFAULT_PROPERTY_SEED`. Only the std `Gen` module may
+    /// call it (G18 Phase 3).
+    GenSeed,
     /// `Rc.new :: 'a -> Rc<'a>` moves a value into a new reference-counted block (C10 Phase 2).
     RcNew,
     /// `Rc.share :: ref Rc<'a> -> Rc<'a>` adds a strong pointer to the same block.
@@ -1398,6 +1402,7 @@ impl Builtin {
         Self::ArenaNextId,
         Self::BenchNow,
         Self::BenchConsume,
+        Self::GenSeed,
         Self::RcNew,
         Self::RcShare,
         Self::RcGet,
@@ -1606,6 +1611,7 @@ impl Builtin {
             Self::ArenaNextId => "Arena.__next_id",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
+            Self::GenSeed => "Gen.__seed",
             Self::RcNew => "Rc.new",
             Self::RcShare => "Rc.share",
             Self::RcGet => "Rc.get",
@@ -2420,6 +2426,7 @@ impl Builtin {
                 (vec![a()], Concrete(Type::Unit), Vec::new())
             }
             Self::ArenaNextId | Self::BenchNow => (Vec::new(), Concrete(Type::I64), Vec::new()),
+            Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
             Self::RcNew
             | Self::RcShare
             | Self::RcGet

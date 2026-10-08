@@ -15,6 +15,8 @@ pub struct TestOptions {
     pub wasm_stack_size: Option<u64>,
     /// Count the regions of the user's code that passing tests run (`--coverage`, native only).
     pub coverage: bool,
+    /// The property-test seed (`--seed`) instead of `llvm::DEFAULT_PROPERTY_SEED`.
+    pub seed: Option<u64>,
 }
 
 impl Default for TestOptions {
@@ -27,6 +29,7 @@ impl Default for TestOptions {
             wasm_max_memory: None,
             wasm_stack_size: None,
             coverage: false,
+            seed: None,
         }
     }
 }
@@ -45,6 +48,8 @@ impl TestOptions {
 pub struct TestResult {
     pub case: crate::check::CheckedTest,
     pub failure: Option<String>,
+    /// The end of the standard error of a failed test, such as a property's counterexample.
+    pub output: String,
     pub duration_ms: u128,
 }
 
@@ -185,11 +190,17 @@ fn run_with_timeout(
                         break;
                     };
                     let started = Instant::now();
-                    let result = execute_test(&runner, index, timeout).map(|failure| TestResult {
-                        case: case.clone(),
-                        failure,
-                        duration_ms: started.elapsed().as_millis(),
-                    });
+                    let result =
+                        execute_test(&runner, index, timeout).map(|(failure, output)| TestResult {
+                            case: case.clone(),
+                            output: if failure.is_some() {
+                                output
+                            } else {
+                                String::new()
+                            },
+                            failure,
+                            duration_ms: started.elapsed().as_millis(),
+                        });
                     results.lock().unwrap().push((case.index, result));
                 }
             });
@@ -305,55 +316,23 @@ struct Runner {
     coverage: Option<PathBuf>,
 }
 
+/// Runs selected test `index`: why it failed, if it did, and the end of its stderr.
 fn execute_test(
     runner: &Runner,
     index: usize,
     timeout: Duration,
-) -> Result<Option<String>, Diagnostic> {
+) -> Result<(Option<String>, String), Diagnostic> {
     let mut command = Command::new(&runner.program);
-    command
-        .args(&runner.arguments)
-        .arg(index.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.args(&runner.arguments).arg(index.to_string());
     if let Some(directory) = &runner.coverage {
         command.env("TSUZURI_COVERAGE_FILE", coverage_file(directory, index));
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| driver_error("E2002", format!("cannot start test runner: {error}")))?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(result)) => {
-                return Ok((!result.success()).then(|| termination_reason(&result)));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(driver_error(
-                    "E2002",
-                    format!("cannot wait for test runner: {error}"),
-                ));
-            }
-        }
-        if started.elapsed() >= timeout {
-            let stopped = child.kill();
-            let collected = child.wait();
-            collected.map_err(|error| {
-                driver_error("E2002", format!("cannot collect timed-out test: {error}"))
-            })?;
-            stopped.map_err(|error| {
-                driver_error("E2002", format!("cannot stop timed-out test: {error}"))
-            })?;
-            return Ok(Some(format!("timed out after {}ms", timeout.as_millis())));
-        }
-        std::thread::park_timeout(
-            Duration::from_millis(5).min(timeout.saturating_sub(started.elapsed())),
-        );
-    }
+    let finished = run_captured(&mut command, timeout, false, "test")?;
+    let failure = match finished.status {
+        Some(status) => (!status.success()).then(|| termination_reason(&status)),
+        None => Some(format!("timed out after {}ms", timeout.as_millis())),
+    };
+    Ok((failure, finished.stderr))
 }
 
 fn termination_reason(status: &std::process::ExitStatus) -> String {
@@ -388,10 +367,22 @@ fn build_runner(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
-    let mut text = match coverage {
-        Some(plan) => llvm::emit_test_runner_covered(module, selected, plan)?,
-        None => llvm::emit_test_runner_for(module, selected, wasm, memory64)?,
-    };
+    let mut text = llvm::emit_test_runner_with(
+        module,
+        selected,
+        llvm::TestRunnerOptions {
+            wasm,
+            memory64,
+            coverage,
+            seed: options.seed,
+            // A property test reports its counterexample with Debug.print, so a WASM runner of a
+            // program that uses Gen imports the write; other programs keep no imports.
+            debug_output: module
+                .functions
+                .iter()
+                .any(|function| function.module == "Gen"),
+        },
+    )?;
     if !wasm {
         let artifact = compile_native_runner(
             module,
@@ -781,7 +772,7 @@ fn execute_bench(
         samples.to_string(),
         BENCH_SAMPLE_NS.to_string(),
     ]);
-    let finished = run_captured(&mut command, timeout, true)?;
+    let finished = run_captured(&mut command, timeout, true, "bench")?;
     let outcome = match finished.status {
         None => Err(format!("timed out after {}ms", timeout.as_millis())),
         Some(status) if status.code() == Some(3) => Err("returned a negative duration".into()),
@@ -827,11 +818,13 @@ struct Captured {
 const CAPTURED_STDERR: usize = 64 * 1024;
 
 /// Runs `command` with null stdin, waiting at most `timeout`. Readers drain the pipes while the
-/// child runs, so a full pipe never blocks it; stdout is kept only with `stdout`.
+/// child runs, so a full pipe never blocks it; stdout is kept only with `stdout`. `kind` is
+/// `test` or `bench`, for the messages.
 fn run_captured(
     command: &mut Command,
     timeout: Duration,
     stdout: bool,
+    kind: &str,
 ) -> Result<Captured, Diagnostic> {
     command
         .stdin(Stdio::null())
@@ -843,7 +836,7 @@ fn run_captured(
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|error| driver_error("E2002", format!("cannot start bench runner: {error}")))?;
+        .map_err(|error| driver_error("E2002", format!("cannot start {kind} runner: {error}")))?;
     let out = child.stdout.take().map(|pipe| {
         std::thread::spawn(move || {
             let mut text = Vec::new();
@@ -863,7 +856,7 @@ fn run_captured(
                 let _ = child.wait();
                 return Err(driver_error(
                     "E2002",
-                    format!("cannot wait for bench runner: {error}"),
+                    format!("cannot wait for {kind} runner: {error}"),
                 ));
             }
         }
@@ -871,10 +864,10 @@ fn run_captured(
             let stopped = child.kill();
             let collected = child.wait();
             collected.map_err(|error| {
-                driver_error("E2002", format!("cannot collect timed-out bench: {error}"))
+                driver_error("E2002", format!("cannot collect timed-out {kind}: {error}"))
             })?;
             stopped.map_err(|error| {
-                driver_error("E2002", format!("cannot stop timed-out bench: {error}"))
+                driver_error("E2002", format!("cannot stop timed-out {kind}: {error}"))
             })?;
             break None;
         }
@@ -960,17 +953,20 @@ mod tests {
         assert!(
             execute_test(&runner, 0, Duration::from_secs(1))
                 .unwrap()
+                .0
                 .is_none()
         );
         assert_eq!(
             execute_test(&runner, 1, Duration::from_millis(30))
                 .unwrap()
+                .0
                 .as_deref(),
             Some("timed out after 30ms")
         );
         assert!(
             execute_test(&runner, 0, Duration::from_secs(1))
                 .unwrap()
+                .0
                 .is_none()
         );
         temporary.close().unwrap();
@@ -1111,6 +1107,7 @@ mod tests {
             assert_eq!(
                 execute_test(&runner, 0, Duration::from_secs(5))
                     .unwrap()
+                    .0
                     .as_deref(),
                 Some(expected),
                 "{script}"
