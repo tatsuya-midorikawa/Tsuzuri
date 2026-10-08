@@ -3310,6 +3310,9 @@ fn publish_outputs(
 /// Whether native executables on this host link with the MSVC linker (`link.exe`, or `lld-link`
 /// with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links with MinGW's
 /// `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get a PDB.
+/// The file name is enough: every other Clang, a MinGW distribution's included, gets
+/// `--target=<arch>-pc-windows-msvc` from `native_compile_args`, and Clang's MSVC driver links
+/// only with `link.exe` or `lld-link`; the launcher alone drops that target for `windows-gnu`.
 pub(crate) fn msvc_linker() -> bool {
     cfg!(windows)
         && Path::new(&tool("TSUZURI_CLANG", "clang"))

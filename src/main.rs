@@ -111,7 +111,8 @@ Build options:
                          These three repeat and apply to build, run, and test of native
                          executables; Tsuzuri.toml [native] link/libraries/search come first
   --json                 Emit machine-readable diagnostics on stderr
-    --no-cache             Disable build/run artifact cache reads and writes
+    --no-cache             Disable cache reads and writes: artifacts and parsed sources for
+                           build/run/script, artifacts for repl
     -g, --debug-info        Emit source-level DWARF debug information (Windows links with the
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings

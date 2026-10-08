@@ -1257,8 +1257,8 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   ランタイム `src/runtime/bench-runner.c` と実行器だけの記号 `tsuzuri_bench_*`・`tsuzuri_coverage_*` を足した。WASM のテストモジュールは `Gen` を使う
   プログラムのときだけ `tsuzuri_debug.write` を import する（D-18 の opt-in）。
 - G17（増分コンパイル）: Phase 1 の frontend cache は `<cache root>/frontend/` にプロジェクトとコマンドの種類ごとのパックと manifest を置く（D4 の見直し。
-  ファイルを開く費用のため）。D5 により `check`・`test`・`doc`（と `bench`・`script`）も既定で使い、`--no-cache` は従来どおり `build`・`run` だけ、
-  無効化は `TSUZURI_CACHE_DIR=`。キャッシュの有無で IR・診断・終了コードは変わらない。Phase 2（D10、関数本体の検査結果の再利用）は、本体の検査が
+  ファイルを開く費用のため）。D5 により `check`・`test`・`doc`（と `bench`・`script`）も既定で使う。`--no-cache` は `build`・`run`・`script` で両方の cache を、
+  `repl` で成果物の cache を止め（`repl` は frontend cache を使わない）、`check`・`test`・`bench`・`doc` では従来どおり `E2000`。それらの無効化は `TSUZURI_CACHE_DIR=`。キャッシュの有無で IR・診断・終了コードは変わらない。Phase 2（D10、関数本体の検査結果の再利用）は、本体の検査が
   現実的な 1,000 モジュールの `check` の 18.2% で判断の基準 25% に届かないため実測で見送った（F12 の Phase 2 と同じ扱い）。Phase 3（D11）はソースの
   上限 `MAX_SOURCE_BYTES` を 4 MiB（`E0003`。`Tsuzuri.toml`・`Tsuzuri.lock`・registry の index は `MAX_PACKAGE_FILE_BYTES` の 1 MiB のまま）、特殊化の
   上限を 65,536（`E1017`）にした。型が育つ多相再帰は、自分の型引数を包んだ型で自分を直接呼ぶ関数を最初の特殊化で、ほかの関数を通る成長を
