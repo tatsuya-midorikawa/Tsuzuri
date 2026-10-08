@@ -857,3 +857,10 @@ lldb -b -o "command script import scripts/lldb/tsuzuri_lldb.py" -o "target symbo
 
 変更したファイル: `src/llvm.rs`、`src/main.rs`、`scripts/lldb/tsuzuri_lldb.py`、`tests/debug_info.rs`、`tests/debugger.mjs`、
 `.github/workflows/vscode.yml`、上の文書、この ticket。
+
+### 統合後の修正（2026-10-08、CI）
+
+- PR の Windows x64 の CI の「Windows PDB and natvis」の段のログで、MSVC のリンカーの `-g` の build が `build cache write failed: invalid cache artifact name` を出していた。
+  driver は PDB を `pdb` の名前で whole-build cache に保存するが、`BuildCache` の `store`・`load` の名前の検査が `artifact`・`traps`・`dwarf` だけを受け付けていたため、
+  MSVC の `-g` の build は一度も cache されなかった。名前に `pdb` を足し、`cache::tests::sidecars_round_trip_and_unknown_names_are_refused`（修正前は保存で失敗する）と、
+  CI の段の「cache の entry が 1 個できる」「`app.exe`・`app.pdb` を消した後の cache hit が PDB を戻す」の確認を足した。

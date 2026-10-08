@@ -143,7 +143,9 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'tsuzuri-pdb'
           New-Item -ItemType Directory -Force $out | Out-Null
           $env:TSUZURI_CLANG = Join-Path $env:LLVM_PREFIX 'bin\clang.exe'
-          & ..\target\release\tsuzuri.exe build ..\tests\fixtures\debug_view -g -O0 -o (Join-Path $out 'app.exe')
+          $env:TSUZURI_CACHE_DIR = Join-Path $out 'cache'
+          $app = Join-Path $out 'app.exe'
+          & ..\target\release\tsuzuri.exe build ..\tests\fixtures\debug_view -g -O0 -o $app
           if ($LASTEXITCODE -ne 0) { throw "tsuzuri build failed: $LASTEXITCODE" }
           $pdb = Join-Path $out 'app.pdb'
           if (-not (Test-Path $pdb) -or (Get-Item $pdb).Length -eq 0) { throw 'no app.pdb beside app.exe' }
@@ -156,6 +158,13 @@ jobs:
           foreach ($name in 'Main.Shape', 'Main.show', 'tsuzuri.natvis') {
             if (-not $symbols.Contains($name)) { throw "app.pdb lacks $name" }
           }
+          # The build cache keeps the PDB with the executable, and a hit restores both.
+          $entries = @(Get-ChildItem $env:TSUZURI_CACHE_DIR -Directory | Where-Object { $_.Name -match '^[0-9a-f]{64}$' })
+          if ($entries.Count -ne 1) { throw "expected one build cache entry, found $($entries.Count)" }
+          Remove-Item $app, $pdb
+          & ..\target\release\tsuzuri.exe build ..\tests\fixtures\debug_view -g -O0 -o $app
+          if ($LASTEXITCODE -ne 0) { throw "cached tsuzuri build failed: $LASTEXITCODE" }
+          if (-not (Test-Path $pdb) -or (Get-Item $pdb).Length -eq 0) { throw 'the cache hit did not restore app.pdb' }
           $pdbutil = Join-Path $env:LLVM_PREFIX 'bin\llvm-pdbutil.exe'
           if (Test-Path $pdbutil) {
             $types = & $pdbutil dump --types $pdb | Out-String

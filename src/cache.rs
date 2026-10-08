@@ -345,7 +345,7 @@ impl BuildCache {
             let mut remaining = MAX_ENTRY_BYTES;
             let mut result = BTreeMap::new();
             for (name, fields) in files {
-                if !matches!(name.as_str(), "artifact" | "traps" | "dwarf") {
+                if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
                     return Err(invalid("invalid cache artifact name"));
                 }
                 let size = fields["size"]
@@ -435,7 +435,7 @@ impl BuildCache {
         let mut remaining = MAX_ENTRY_BYTES;
         let mut files = serde_json::Map::new();
         for (name, source) in paths {
-            if !matches!(name.as_str(), "artifact" | "traps" | "dwarf") {
+            if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
                 return Err(invalid("invalid cache artifact name"));
             }
             let bytes = read_regular(source, remaining)?;
@@ -731,6 +731,39 @@ mod tests {
         fs::write(root.join("do-not-delete"), b"user file").unwrap();
         tiny.evict().unwrap();
         assert!(root.join("do-not-delete").exists());
+    }
+
+    #[test]
+    fn sidecars_round_trip_and_unknown_names_are_refused() {
+        let temporary = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let cache = BuildCache::open(&temporary.path.join("cache")).unwrap();
+        let file = |name: &str| {
+            let path = temporary.path.join(name);
+            fs::write(&path, name).unwrap();
+            path
+        };
+        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF.
+        for sidecars in [["traps", "dwarf"], ["traps", "pdb"]] {
+            let mut hash = Sha256::new();
+            hash.field("sidecars", sidecars.join(",").as_bytes());
+            let key = hash.hex();
+            let mut paths = BTreeMap::from([("artifact".to_owned(), file("artifact"))]);
+            for name in sidecars {
+                paths.insert(name.to_owned(), file(name));
+            }
+            cache.store(&key, &paths, &[]).unwrap();
+            let loaded = cache.load(&key).unwrap().unwrap();
+            assert!(loaded.files.keys().eq(paths.keys()));
+            for name in sidecars {
+                assert_eq!(loaded.files[name].bytes, name.as_bytes());
+            }
+        }
+        let paths = BTreeMap::from([
+            ("artifact".to_owned(), file("artifact")),
+            ("other".to_owned(), file("other")),
+        ]);
+        let error = cache.store(&"0".repeat(64), &paths, &[]).unwrap_err();
+        assert_eq!(error.to_string(), "invalid cache artifact name");
     }
 
     #[test]
