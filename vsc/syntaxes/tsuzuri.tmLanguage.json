@@ -2,6 +2,7 @@
   "name": "Tsuzuri",
   "scopeName": "source.tsuzuri",
   "patterns": [
+    { "name": "comment.line.shebang.tsuzuri", "match": "\\A#!.*$" },
     { "include": "#comments" },
     { "include": "#strings" },
     { "match": "^(namespace|using)\\s+([A-Za-z_][A-Za-z_0-9]*(?:::[A-Za-z_][A-Za-z_0-9]*)*)", "captures": { "1": { "name": "keyword.other.namespace.tsuzuri" }, "2": { "name": "entity.name.namespace.tsuzuri", "patterns": [{ "name": "keyword.operator.tsuzuri", "match": "::" }] } } },

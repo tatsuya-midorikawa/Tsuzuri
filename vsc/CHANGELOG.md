@@ -11,6 +11,8 @@
 - **Tsuzuri: Open Documentation** opens the new Japanese language reference (`_tsuzuri/language-reference/index.md`), which replaces the previous `_docs` handbook in the offline bundle.
 - Debugging shows Tsuzuri values: the debug launch loads the bundled LLDB formatters, so variables show strings, arrays, lists, unions (`Some(40)`, `Error("bad")`), `Map`, `Set`, and function values as Tsuzuri values; the call stack shows Tsuzuri function names such as `Main.show`, and stepping skips the runtime and generated helpers.
 - The Testing view has a **Debug** profile: it builds the selected test alone with debug information, starts it in CodeLLDB so breakpoints in the test body stop, and reports the result from the runner's exit code.
+- Highlighting, keyword completion, and a snippet for `bench` declarations; `Bench` and `Gen` are reserved standard library modules, so New Project rejects them as namespaces.
+- A `#!` shebang on the first line of a file (`#!/usr/bin/env tsuzuri script`) is highlighted as a comment.
 
 ## 0.1.0
 
