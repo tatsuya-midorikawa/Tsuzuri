@@ -479,7 +479,21 @@ class UnionProvider:
 
 
 def is_function(sbtype, _dict):
-    return field_names(sbtype) == ["code", "environment", "clone", "drop"]
+    """Only the generated function value and `Task` types: a record may name its fields the same,
+    but its `code` is never a function pointer and its type name has no `->`."""
+    try:
+        canonical = sbtype.GetCanonicalType()
+        if field_names(canonical) != ["code", "environment", "clone", "drop"]:
+            return False
+        name = strip(sbtype).GetName() or ""
+        code = canonical.GetFieldAtIndex(0).GetType().GetCanonicalType()
+        return (
+            code.IsPointerType()
+            and code.GetPointeeType().IsFunctionType()
+            and ("->" in name or name.startswith("Task<"))
+        )
+    except Exception:
+        return False
 
 
 @guarded

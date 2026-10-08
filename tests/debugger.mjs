@@ -135,6 +135,7 @@ try {
   writeFileSync(join(extras, "Main.tz"), [
     "union Nest = Stop | Wrap of Nest",
     "record Holder { name: string, tags: [string] }",
+    "record Lookalike { code: i64, environment: i64, clone: i64, drop: i64 }",
     "",
     "def inspect :: i64 -> i64",
     "fn inspect seed =",
@@ -150,13 +151,14 @@ try {
     "    let job = task { return seed }",
     '    let holder = Holder { name: "h", tags: ["t"] }',
     "    let label = ref holder.name",
+    "    let lookalike = Lookalike { code: 1, environment: 2, clone: 3, drop: 4 }",
     "    let total = Array.length window + long.length + escaped.length + Task.run job",
-    "    total + (if wide == u8'\\u{e9}' then 1 else 0) + label.length - seed",
+    "    total + (if wide == u8'\\u{e9}' then 1 else 0) + label.length - seed + lookalike.code - 1",
     "",
     "inspect 5",
     "",
   ].join("\n"));
-  const edge = sections(session(extras, ["breakpoint set -f Main.tz -l 19", "run", "frame variable", "kill"]))
+  const edge = sections(session(extras, ["breakpoint set -f Main.tz -l 21", "run", "frame variable", "kill"]))
     .find(part => part.command === "frame variable").text;
   for (const line of [
     "(Main.Nest) nest = Wrap(Wrap(Wrap(Wrap(...))))",
@@ -171,6 +173,8 @@ try {
     "(i64) total = 1222",
   ]) assert.ok(edge.includes(line), `${line}\n${edge}`);
   assert.match(edge, /^\(ref string\) label = 0x[0-9a-f]+ "h"$/m);
+  // A record with the field names of a function value keeps the default record display.
+  assert.match(edge, /^\(Main\.Lookalike\) lookalike = (?:\(code = 1, environment = 2, clone = 3, drop = 4\)|\{\n  code = 1\n  environment = 2\n  clone = 3\n  drop = 4\n\})$/m);
 
   // Phase 2: `test --index N -g -o PATH` builds a runner of test N alone, without running it; a
   // debugger starts it with the printed arguments and stops in the test's body.

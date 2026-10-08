@@ -609,6 +609,9 @@ impl FrontendCache {
                 .create_new(true)
                 .open(&temporary)?
                 .write_all(bytes)?;
+            // `fs::rename` replaces an existing `path` on Windows too (`MoveFileExW` with
+            // `MOVEFILE_REPLACE_EXISTING`). If another process holds `path` open, the old file
+            // stays: a miss for the changed sources, never a wrong hit (entries carry their key).
             fs::rename(&temporary, path)
         })();
         let _ = fs::remove_file(&temporary);

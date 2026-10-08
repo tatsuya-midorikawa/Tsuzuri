@@ -1833,6 +1833,23 @@ fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsStri
     Err(SCRIPT_FILE.into())
 }
 
+/// Whether the options before a script's file ask for JSON diagnostics. Option values and the
+/// program's own arguments after the file do not count, so `--cpu native --json` does.
+fn script_json(arguments: &[OsString]) -> bool {
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.to_str() {
+            Some("--json") => return true,
+            Some("--cpu" | "--warn" | "--link" | "-l" | "-L") => {
+                rest.next();
+            }
+            Some(option) if option.starts_with('-') && option != "--" => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1848,10 +1865,7 @@ fn main() -> ExitCode {
                     &Diagnostic::new("E2000", message, Span::default()),
                     Path::new("<command line>"),
                     "",
-                    raw[1..]
-                        .iter()
-                        .take_while(|argument| argument.to_string_lossy().starts_with('-'))
-                        .any(|argument| argument == "--json"),
+                    script_json(&raw[1..]),
                 );
                 return ExitCode::from(2);
             }
@@ -2029,6 +2043,21 @@ mod tests {
 
     fn parse_repl(values: &[&str]) -> Result<tsuzuri::repl::ReplOptions, String> {
         parse_repl_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn script_errors_follow_json_in_the_options_only() {
+        let json =
+            |values: &[&str]| script_json(&values.iter().map(OsString::from).collect::<Vec<_>>());
+        // An option value does not end the options: a missing file still reports in JSON.
+        assert!(json(&["--cpu", "native", "--json"]));
+        assert!(json(&["--link", "m", "-O3", "--json"]));
+        assert!(json(&["--bogus", "--json"]));
+        // `--json` after the file, or as a value, belongs to the program or the option.
+        assert!(!json(&["greet.tz", "--json"]));
+        assert!(!json(&["--", "--json"]));
+        assert!(!json(&["--warn", "--json"]));
+        assert!(!json(&["-O0"]));
     }
 
     #[test]

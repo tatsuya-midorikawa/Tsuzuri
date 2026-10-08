@@ -285,6 +285,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 	function debugSession(folder: vscode.WorkspaceFolder | undefined, configuration: vscode.DebugConfiguration,
 		execution: vscode.TestRun, token: vscode.CancellationToken): Promise<number | undefined> {
 		const marker = `${Date.now()}-${Math.random()}`;
+		if (token.isCancellationRequested) { return Promise.resolve(undefined); }
 		return new Promise((resolve, reject) => {
 			let session: vscode.DebugSession | undefined;
 			let exitCode: number | undefined;
@@ -297,7 +298,12 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 						},
 					} : undefined,
 				}),
-				vscode.debug.onDidStartDebugSession(candidate => { if (ours(candidate)) { session = candidate; } }),
+				vscode.debug.onDidStartDebugSession(candidate => {
+					if (!ours(candidate)) { return; }
+					session = candidate;
+					// A cancellation before CodeLLDB reported the session found nothing to stop.
+					if (token.isCancellationRequested) { void vscode.debug.stopDebugging(candidate); }
+				}),
 				vscode.debug.onDidTerminateDebugSession(candidate => {
 					if (ours(candidate)) { finish(); resolve(exitCode); }
 				}),
