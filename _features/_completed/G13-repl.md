@@ -603,7 +603,7 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
   PB01 の前は `-O3` だと埋め込みランタイムの Clang に毎回 0.43 s かかるが、`-O0` は 0.06 s。結果は最適化レベルに依存しない。PB01・PB05 はこの経路のまま速くなる。
 - 状態: 既定案（実装者はこの案に従う）
 - 見直し提案: 旧版の `tsuzuri repl [--target native|wasm32]` から wasm32 を外した。WASM の REPL は IO の入口と Node の host を使う別チケットにする。
-- 見直し（2026-10-08）: `--target` は `native` を含めてすべて `E2000`（native しかないので、受け付ける値を作らない）。オプションの誤りの終了コードは、現在の CLI の規則（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#終了コード)。引数の誤りは 2）に合わせて 1 ではなく 2 にした。同じオプションの重複は `run` と同じく `... specified more than once`。
+- 見直し（2026-10-08）: `--target` は `native` を含めてすべて `E2000`（native しかないので、受け付ける値を作らない）。オプションの誤りの終了コードは、現在の CLI の規則（[コンパイラの使い方](../../_tsuzuri/language-reference/compiler/usage.md#終了コード)。引数の誤りは 2）に合わせて 1 ではなく 2 にした。同じオプションの重複は `run` と同じく `... specified more than once`。
 
 ### D2: セッションの表現
 
@@ -703,7 +703,7 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 決定: 採用しない。検討する場合は、LLVM の C API への結合と状態の保持を含めて人間が判断する。
 - 理由: docs/architecture.md の方針と衝突し、配布物とビルドの前提が変わる。
 - 状態: 承認済み（2026-10-08、D-41）。全 Phase の実装の依頼を受けて coordinator が再検討し、JIT と入力を跨ぐ常駐の評価プロセスは実装せず、Phase 3 を計測による研究として完了することにした（採用しない、を 2026-10-08 に再確認）。
-- 見直し（2026-10-08、Phase 3 の計測による再確認）: 採用しない。計測（「実装と検証」の Phase 3、[docs/benchmarks.md](../docs/benchmarks.md#repl-の-1-入力の待ち時間g13)）では、`-O0` の新しい式の 1 入力（約 0.67 秒）は、
+- 見直し（2026-10-08、Phase 3 の計測による再確認）: 採用しない。計測（「実装と検証」の Phase 3、[docs/benchmarks.md](../../docs/benchmarks.md#repl-の-1-入力の待ち時間g13)）では、`-O0` の新しい式の 1 入力（約 0.67 秒）は、
   解析（約 44 ms）、cache の鍵と保存（約 100〜115 ms）、Clang の IR のコンパイルとリンク（約 220 ms）、新しい実行ファイルの初回の起動（macOS の検査で約 210〜220 ms）でほぼ 4 分される。
   JIT が消せるのは後ろの 3 つ（Clang の起動とリンク、ファイルの保存、新しいファイルの検査）だが、どの方式もこのリポジトリの前提（docs/architecture.md: LLVM の C API に結合しない、
   新しい crate を足さない、`unsafe` を使わない、配布物は clang・lld の実行ファイルだけで LLVM のライブラリを含まない）と衝突する。検討した代替案と必要なもの:
@@ -776,7 +776,7 @@ HEAD `1182045`（`Phase7-5`）から、ブランチ `wt/g13` で 3 Phase を実�
 - 計測は `benchmarks/run-repl.mjs`（新規）で行った。前半は REPL が式 `1 + N` に作るプログラムを CLI で段ごとに測り、Clang の時間は `TSUZURI_CLANG` に渡した計時用の C のラッパーで呼び出しごとに記録し、
   ラッパーが残した IR で `clang -c` とリンクを別々に再現する。後半は 1 つの REPL セッションの中で、入力を書いてから結果の 1 行を読むまでを測る。各 9 回（先頭 1 回は捨てる）の中央値と最小・最大。
   生データは `target/perf/G13-before/`（Phase 2 の `f310d3e`）と `target/perf/G13-after/`（Phase 3）の `summary.jsonl`・`samples.jsonl`（コミットしない）。表と読み方は
-  [docs/benchmarks.md の「REPL の 1 入力の待ち時間（G13）」](../docs/benchmarks.md#repl-の-1-入力の待ち時間g13) にある。負荷（load average 30〜58）の下の値で、閾値は設けない。
+  [docs/benchmarks.md の「REPL の 1 入力の待ち時間（G13）」](../../docs/benchmarks.md#repl-の-1-入力の待ち時間g13) にある。負荷（load average 30〜58）の下の値で、閾値は設けない。
 - 主な結果（Phase 3、`-O0`／`-O3` の中央値）: `check` 48／49 ms、Clang の IR のコンパイルとリンク 220／793 ms（再現では `clang -c` 100／651 ms、リンク 143／146 ms）、cache の hit したビルド
   180／198 ms（うち `clang --version` 48／47 ms）、cache ありの miss は cache なしより約 100 ms 長い、新しい実行ファイルの初回の起動 220／209 ms（2 回目は 3 ms。macOS の新しいファイルの検査）。
   REPL の中では、`:type` 44 ms、新しい式 671／1256 ms、同じ式の繰り返し（hit）278／308 ms、新しい `let` 546／451 ms、新しいアクション 660／907 ms。チケットの性能の記録の
