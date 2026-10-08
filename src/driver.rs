@@ -1794,6 +1794,63 @@ impl Project {
         )
     }
 
+    /// The project of `tsuzuri script`: the file at `path`, whatever its name, as the
+    /// application's `Main.tz` and nothing else (see [`Project::single_main`]). A symbolic
+    /// link is followed, since a script on PATH often is one.
+    pub fn load_script(path: &Path) -> Result<Self, SourceError> {
+        if matches!(
+            source_kind(path),
+            Some(SourceKind::TypeClass | SourceKind::Computation)
+        ) {
+            return Err(SourceError::new(
+                path,
+                driver_error(
+                    "E2000",
+                    "a script is a .tz program; .tt and .tc files are type class and builder modules",
+                ),
+            ));
+        }
+        let text = read_source_text(path).map_err(|error| SourceError::new(path, error))?;
+        Ok(Self::single_main(path.to_owned(), text))
+    }
+
+    /// A project whose only user source is `text`, the application's `Main.tz`, shown at
+    /// `path`. It reads no file, manifest, or lockfile, so the program sees no other module
+    /// and no dependency; like [`Project::load`], it adds only the std modules that `text`
+    /// names (D-40). The REPL passes a generated program and `tsuzuri script` a file.
+    pub fn single_main(path: PathBuf, text: String) -> Self {
+        let std_sources = crate::stdlib::sources_for([text.as_str()]);
+        let mut sources = vec![SourceFile {
+            path,
+            relative_path: PathBuf::from("Main.tz"),
+            name: "Main".to_owned(),
+            text,
+            origin: ModuleOrigin::User,
+            package: None,
+            namespace: String::new(),
+        }];
+        sources.extend(std_sources.iter().map(|(path, text)| {
+            SourceFile {
+                path: PathBuf::from(path),
+                relative_path: PathBuf::from(path),
+                name: crate::stdlib::module_name(path)
+                    .expect("embedded std paths are flat")
+                    .to_owned(),
+                text: (*text).to_owned(),
+                origin: ModuleOrigin::Std,
+                package: None,
+                namespace: String::new(),
+            }
+        }));
+        Self {
+            sources,
+            manifests: Vec::new(),
+            root: 0,
+            wasm: Default::default(),
+            native: LinkInputs::default(),
+        }
+    }
+
     pub fn input(&self) -> &Path {
         &self.sources[self.root].path
     }
@@ -2193,8 +2250,9 @@ fn build_complete(
         options.wasm_max_memory,
         options.wasm_stack_size,
     )?;
+    // The entry module, which `tsuzuri script` reads from a file of any name.
     if options.emit == Emit::Executable
-        && project.input().file_name() != Some(OsStr::new("Main.tz"))
+        && project.sources[project.root].relative_path != Path::new("Main.tz")
     {
         return Err(driver_error(
             "E2004",
@@ -3350,6 +3408,79 @@ pub fn run_with_diagnostics(
     links: &LinkInputs,
     json: bool,
 ) -> Result<Vec<String>, Diagnostic> {
+    run_with_arguments(module, project, options, links, json, &[])
+}
+
+/// [`run_with_diagnostics`] that passes `arguments` to the program, after its own path:
+/// `tsuzuri script FILE [arguments...]`.
+pub fn run_with_arguments(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    json: bool,
+    arguments: &[OsString],
+) -> Result<Vec<String>, Diagnostic> {
+    run_process(
+        module,
+        project,
+        options,
+        links,
+        RunStdio::Inherit { json, arguments },
+    )
+    .map(|(messages, _)| messages)
+}
+
+/// The most standard output that [`run_captured`] collects before it stops the program.
+pub const MAX_CAPTURED_OUTPUT: usize = 16 * 1024 * 1024;
+
+/// Builds and runs the program like `tsuzuri run`, but with an empty standard input and its
+/// standard output collected and returned; its standard error is relayed as `run` relays it.
+/// A program that runs longer than `timeout` or writes more than [`MAX_CAPTURED_OUTPUT`]
+/// bytes is killed and reported as `E2005` without a source position. The REPL uses it.
+pub fn run_captured(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    timeout: Option<std::time::Duration>,
+) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
+    run_process(
+        module,
+        project,
+        options,
+        &LinkInputs::default(),
+        RunStdio::Capture {
+            timeout,
+            limit: MAX_CAPTURED_OUTPUT,
+        },
+    )
+}
+
+/// How [`run_process`] connects the program's standard streams.
+enum RunStdio<'a> {
+    /// `tsuzuri run` and `script`: the program gets `arguments` and shares the compiler's stdin
+    /// and stdout, and its stderr is relayed, or with `json` collected and reported after it ends.
+    Inherit {
+        json: bool,
+        arguments: &'a [OsString],
+    },
+    /// [`run_captured`]: stdin is empty, stdout is collected up to `limit` bytes, and stderr is
+    /// relayed; the program is killed past `timeout` or `limit`.
+    Capture {
+        timeout: Option<std::time::Duration>,
+        limit: usize,
+    },
+}
+
+/// Builds the program into a temporary directory, runs it, and returns the build messages and
+/// the collected stdout (empty unless captured).
+fn run_process(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    stdio: RunStdio<'_>,
+) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
             "E2000",
@@ -3373,38 +3504,30 @@ pub fn run_with_diagnostics(
         links,
         "run",
     )?;
-    let mut child = Command::new(&output)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| io_error("run executable", &output, error))?;
-    let mut stderr = Vec::new();
-    let relay = (|| -> io::Result<()> {
-        let mut stream = child.stderr.take().expect("stderr is piped");
-        let mut buffer = [0; 8192];
-        loop {
-            let count = match stream.read(&mut buffer) {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if count == 0 {
-                return Ok(());
+    let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
+    let (status, stderr, stdout) = match stdio {
+        RunStdio::Inherit { json, arguments } => {
+            let mut child = Command::new(&output)
+                .args(arguments)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| io_error("run executable", &output, error))?;
+            let mut stderr = Vec::new();
+            let stream = child.stderr.take().expect("stderr is piped");
+            if let Err(error) = relay(stream, &mut stderr, !json) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io_error("relay program stderr", &output, error));
             }
-            stderr.extend_from_slice(&buffer[..count]);
-            if !json {
-                io::stderr().write_all(&buffer[..count])?;
-            }
+            let status = child
+                .wait()
+                .map_err(|error| io_error("wait for executable", &output, error))?;
+            (status, stderr, Vec::new())
         }
-    })();
-    if let Err(error) = relay {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(io_error("relay program stderr", &output, error));
-    }
-    let status = child
-        .wait()
-        .map_err(|error| io_error("wait for executable", &output, error))?;
+        RunStdio::Capture { timeout, limit } => capture(&output, timeout, limit)?,
+    };
     temporary.close()?;
     // An `IO<i32>` entry returns its value as the exit code, so a non-zero code is not a trap.
     if let Some(code) = status.code()
@@ -3454,7 +3577,166 @@ pub fn run_with_diagnostics(
             .write_all(&stderr)
             .map_err(|error| io_error("relay program stderr", &output, error))?;
     }
-    Ok(messages)
+    Ok((messages, stdout))
+}
+
+/// Copies `stream` into `collected` until it ends, also writing it to stderr when `echo`.
+fn relay(mut stream: impl Read, collected: &mut Vec<u8>, echo: bool) -> io::Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let count = match stream.read(&mut buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        collected.extend_from_slice(&buffer[..count]);
+        if echo {
+            io::stderr().write_all(&buffer[..count])?;
+        }
+    }
+}
+
+/// How a captured stream of the program ended.
+enum StreamEnd {
+    Closed,
+    /// The program wrote more stdout than the limit.
+    Overflow,
+    Failed(io::Error),
+}
+
+/// Runs `output` for [`run_captured`]. The streams are read on their own threads, so neither
+/// pipe can fill up while the other is read.
+fn capture(
+    output: &Path,
+    timeout: Option<std::time::Duration>,
+    limit: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Diagnostic> {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new(output)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| io_error("run executable", output, error))?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let (sender, receiver) = channel();
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stdout_sender = sender.clone();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        let mut stream = stdout;
+        let mut buffer = [0; 8192];
+        let end = loop {
+            let count = match stream.read(&mut buffer) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => break StreamEnd::Failed(error),
+                Ok(count) => count,
+            };
+            if count == 0 {
+                break StreamEnd::Closed;
+            }
+            if collected.len() + count > limit {
+                break StreamEnd::Overflow;
+            }
+            collected.extend_from_slice(&buffer[..count]);
+        };
+        let _ = stdout_sender.send(end);
+        collected
+    });
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        let end = match relay(stderr, &mut collected, true) {
+            Ok(()) => StreamEnd::Closed,
+            Err(error) => StreamEnd::Failed(error),
+        };
+        let _ = sender.send(end);
+        collected
+    });
+    let next = |deadline: Option<Instant>| match deadline {
+        Some(deadline) => receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+    };
+    let exceeded = || {
+        format!(
+            "evaluation exceeded the {}-second limit and was stopped; use --timeout to change it",
+            timeout.unwrap_or_default().as_secs()
+        )
+    };
+    let mut open = 2;
+    let mut stopped = None;
+    while open > 0 && stopped.is_none() {
+        match next(deadline) {
+            Ok(StreamEnd::Closed) => open -= 1,
+            Ok(StreamEnd::Overflow) => {
+                open -= 1;
+                stopped = Some(format!(
+                    "program output exceeded {} MiB and the program was stopped",
+                    limit >> 20
+                ));
+            }
+            Ok(StreamEnd::Failed(error)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io_error("read program output", output, error));
+            }
+            Err(RecvTimeoutError::Timeout) => stopped = Some(exceeded()),
+            Err(RecvTimeoutError::Disconnected) => open = 0,
+        }
+    }
+    let status = if stopped.is_none() {
+        // Both streams are closed, so the program has exited unless it closed them itself.
+        // ponytail: 1–10 ms try_wait polling for that rare case; use a blocking wait with a timeout if std gains one
+        let mut pause = Duration::from_millis(1);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
+                    stopped = Some(exceeded());
+                    break None;
+                }
+                Ok(None) if deadline.is_none() => {
+                    break Some(
+                        child
+                            .wait()
+                            .map_err(|error| io_error("wait for executable", output, error))?,
+                    );
+                }
+                Ok(None) => {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(Duration::from_millis(10));
+                }
+                Err(error) => return Err(io_error("wait for executable", output, error)),
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(message) = stopped {
+        let _ = child.kill();
+        let _ = child.wait();
+        // Let the relay finish the program's last stderr before the diagnostic follows it; a
+        // process the program started may hold the pipes open, so this waits only briefly.
+        let grace = Instant::now() + Duration::from_millis(500);
+        while open > 0 && next(Some(grace)).is_ok() {
+            open -= 1;
+        }
+        return Err(Diagnostic::new("E2005", message, Span::default()));
+    }
+    let stdout = stdout_reader
+        .join()
+        .expect("the stdout reader does not panic");
+    let stderr = stderr_reader
+        .join()
+        .expect("the stderr reader does not panic");
+    Ok((
+        status.expect("a program that was not stopped has a status"),
+        stderr,
+        stdout,
+    ))
 }
 
 /// Where a compiler tool was found.
@@ -3675,6 +3957,47 @@ mod tests {
         }
         let project = Project::load(&directory.path.join(input)).unwrap();
         (directory, project)
+    }
+
+    #[test]
+    fn script_projects_read_one_file_of_any_name() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        let script = directory.path.join("greet");
+        fs::write(
+            &script,
+            "#!/usr/bin/env tsuzuri script\nlet value = Json.Null\n0\n",
+        )
+        .unwrap();
+        fs::write(directory.path.join("Broken.tz"), "def broken :: i64 = (\n").unwrap();
+        let project = Project::load_script(&script).unwrap();
+        assert_eq!(project.input(), script);
+        assert_eq!(
+            project.sources[project.root].relative_path,
+            Path::new("Main.tz")
+        );
+        let names: Vec<_> = project
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::User)
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, ["Main"]);
+        assert!(project.sources.iter().any(|source| source.name == "Json"));
+        assert!(project.analyze_all().is_ok());
+        #[cfg(unix)]
+        {
+            let link = directory.path.join("linked");
+            std::os::unix::fs::symlink(&script, &link).unwrap();
+            assert_eq!(Project::load_script(&link).unwrap().input(), link);
+        }
+        let module = Project::load_script(&directory.path.join("Traits.tt")).unwrap_err();
+        assert_eq!(module.diagnostic.code, "E2000");
+        for missing in [directory.path.join("missing.tz"), directory.path.clone()] {
+            assert_eq!(
+                Project::load_script(&missing).unwrap_err().diagnostic.code,
+                "E2001"
+            );
+        }
     }
 
     #[cfg(unix)]

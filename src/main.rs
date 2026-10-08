@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -25,6 +26,8 @@ Usage:
                               [-O0|-O1|-O2|-O3] [--target native]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
+  tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
@@ -68,6 +71,14 @@ whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it repor
 other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
 pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
 opaque handle into the call instead of borrowing it.
+`tsuzuri repl` reads declarations, top-level lets, and expressions from stdin one at a
+time and prints each new let's type and each expression's type and value. Every input
+is checked and run as a new program after the accepted ones (default -O0; --timeout 10
+seconds per run, 0 for none). Its commands are :type, :load, :list, :reset, and :quit.
+`tsuzuri script` runs one file of any name as the Main.tz of a project without other
+files or dependencies, like `tsuzuri run`, and passes the arguments after the file to
+'def main :: Array<string> -> i32'. A '#!' line at the start of any source file is a
+comment, so a file that starts with '#!/usr/bin/env -S tsuzuri script' can run itself.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -871,6 +882,7 @@ fn run_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
+    program_arguments: &[OsString],
 ) -> Result<Vec<String>, Diagnostic> {
     match arguments.action {
         Action::Lsp => unreachable!("LSP runs without a build project"),
@@ -892,9 +904,14 @@ fn run_action(
             arguments.options,
             links,
         ),
-        Action::Run => {
-            driver::run_with_diagnostics(module, project, arguments.options, links, arguments.json)
-        }
+        Action::Run => driver::run_with_arguments(
+            module,
+            project,
+            arguments.options,
+            links,
+            arguments.json,
+            program_arguments,
+        ),
     }
 }
 
@@ -1679,12 +1696,169 @@ fn bindgen_command(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+const REPL_USAGE: &str =
+    "repl takes no paths; supported options are -O0 to -O3, --cpu, --no-cache, and --timeout";
+const REPL_TIMEOUT: &str = "--timeout requires whole seconds from 0 to 3600";
+
+/// `tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]`.
+fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOptions, String> {
+    let mut options = tsuzuri::repl::ReplOptions::default();
+    let mut seen = BTreeSet::new();
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        let option = match argument.to_str() {
+            Some("--target") => {
+                return Err("repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'".into());
+            }
+            Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
+                options.build.optimization = level.as_bytes()[2] - b'0';
+                "optimization"
+            }
+            Some("--cpu") => {
+                options.build.cpu = match rest.next().and_then(|value| value.to_str()) {
+                    Some("generic") => Cpu::Generic,
+                    Some("native") => Cpu::Native,
+                    _ => return Err("CPU tuning must be 'generic' or 'native'".into()),
+                };
+                "CPU tuning"
+            }
+            Some("--no-cache") => {
+                options.build.cache = false;
+                "no-cache"
+            }
+            Some("--timeout") => {
+                let seconds = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| {
+                        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|seconds| *seconds <= 3600)
+                    .ok_or(REPL_TIMEOUT)?;
+                options.timeout = (seconds != 0).then(|| std::time::Duration::from_secs(seconds));
+                "timeout"
+            }
+            _ => return Err(REPL_USAGE.into()),
+        };
+        if !seen.insert(option) {
+            return Err(format!("{option} specified more than once"));
+        }
+    }
+    Ok(options)
+}
+
+/// `tsuzuri repl`: evaluates the inputs on stdin until `:quit` or its end (G13).
+fn repl_command(arguments: &[OsString]) -> ExitCode {
+    let options = match parse_repl_arguments(arguments) {
+        Ok(options) => options,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                false,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let input = std::io::stdin();
+    let interactive = std::io::IsTerminal::is_terminal(&input);
+    match tsuzuri::repl::run(
+        options,
+        input.lock(),
+        std::io::stdout().lock(),
+        std::io::stderr(),
+        interactive,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            print_diagnostic(
+                &Diagnostic::new(
+                    "E2001",
+                    format!("cannot read or write the REPL's standard streams: {error}"),
+                    Span::default(),
+                ),
+                Path::new("<repl>"),
+                "",
+                false,
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+const SCRIPT_FILE: &str =
+    "script needs a source file: tsuzuri script [options] FILE [arguments...]";
+const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --link, -l, and -L before the file";
+
+/// Splits `tsuzuri script [options] FILE [arguments...]` into the arguments of
+/// `tsuzuri run [options] -- FILE` and the program's arguments: everything after FILE,
+/// unchanged, so that a script's own options never reach the compiler.
+fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>), String> {
+    let mut run = vec![OsString::from("run")];
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        let file = match argument.to_str() {
+            Some("--") => match rest.next() {
+                Some(file) => file,
+                None => break,
+            },
+            Some("-h" | "--help" | "-O0" | "-O1" | "-O2" | "-O3" | "--no-cache" | "--json")
+            | Some("--deny-warnings") => {
+                run.push(argument.clone());
+                continue;
+            }
+            Some(option @ ("--cpu" | "--warn" | "--link" | "-l" | "-L")) => {
+                run.push(argument.clone());
+                run.push(
+                    rest.next()
+                        .ok_or_else(|| format!("{option} needs a value"))?
+                        .clone(),
+                );
+                continue;
+            }
+            Some(option) if option.starts_with('-') => return Err(SCRIPT_OPTIONS.into()),
+            _ => argument,
+        };
+        run.extend([OsString::from("--"), file.clone()]);
+        return Ok((run, rest.cloned().collect()));
+    }
+    if run
+        .iter()
+        .any(|argument| argument == "-h" || argument == "--help")
+    {
+        return Ok((run, Vec::new()));
+    }
+    Err(SCRIPT_FILE.into())
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
         eprintln!("{HELP}");
         return ExitCode::from(2);
     }
+    // `tsuzuri script` is `tsuzuri run` of one file; the program's arguments are set aside first.
+    let (raw, program_arguments) = if raw.first().is_some_and(|command| *command == "script") {
+        match script_arguments(&raw[1..]) {
+            Ok((run, program)) => (run, Some(program)),
+            Err(message) => {
+                print_diagnostic(
+                    &Diagnostic::new("E2000", message, Span::default()),
+                    Path::new("<command line>"),
+                    "",
+                    raw[1..]
+                        .iter()
+                        .take_while(|argument| argument.to_string_lossy().starts_with('-'))
+                        .any(|argument| argument == "--json"),
+                );
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        (raw, None)
+    };
     let flags: Vec<_> = raw
         .iter()
         .take_while(|argument| *argument != "--")
@@ -1716,6 +1890,9 @@ fn main() -> ExitCode {
     if raw.first().is_some_and(|command| *command == "bindgen") {
         return bindgen_command(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "repl") {
+        return repl_command(&raw[1..]);
+    }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {
         Ok(arguments) => arguments,
@@ -1743,6 +1920,8 @@ fn main() -> ExitCode {
         Project::load_for_tests(&arguments.input)
     } else if arguments.action == Action::Doc {
         Project::load_for_docs(&arguments.input)
+    } else if program_arguments.is_some() {
+        Project::load_script(&arguments.input)
     } else {
         Project::load(&arguments.input)
     };
@@ -1773,7 +1952,8 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let kind = match arguments.action {
-        Action::Test => driver::AnalysisKind::Tests,
+        // bench loads the same sources as test (`Project::load_for_tests`).
+        Action::Test | Action::Bench => driver::AnalysisKind::Tests,
         Action::Doc => driver::AnalysisKind::Docs,
         _ => driver::AnalysisKind::Program,
     };
@@ -1810,7 +1990,13 @@ fn main() -> ExitCode {
     if arguments.action == Action::Bench {
         return run_bench_action(&arguments, &project, &module, &links);
     }
-    let result = run_action(&arguments, &project, &module, &links);
+    let result = run_action(
+        &arguments,
+        &project,
+        &module,
+        &links,
+        program_arguments.as_deref().unwrap_or_default(),
+    );
     match result {
         Ok(messages) => {
             for message in messages {
@@ -1839,6 +2025,121 @@ mod tests {
 
     fn parse(values: &[&str]) -> Result<Arguments, String> {
         parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    fn parse_repl(values: &[&str]) -> Result<tsuzuri::repl::ReplOptions, String> {
+        parse_repl_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn splits_script_options_from_program_arguments() {
+        let split = |values: &[&str]| {
+            script_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        let strings = |values: &[OsString]| {
+            values
+                .iter()
+                .map(|value| value.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let (run, program) = split(&[
+            "-O3", "--cpu", "native", "greet.tz", "--help", "-O0", "--", "x",
+        ])
+        .unwrap();
+        assert_eq!(
+            strings(&run),
+            ["run", "-O3", "--cpu", "native", "--", "greet.tz"]
+        );
+        assert_eq!(strings(&program), ["--help", "-O0", "--", "x"]);
+        // `--` lets the file's name start with '-'.
+        let (run, program) = split(&["--", "-odd.tz", "a"]).unwrap();
+        assert_eq!(strings(&run), ["run", "--", "-odd.tz"]);
+        assert_eq!(strings(&program), ["a"]);
+        // The options are then those of `tsuzuri run`.
+        let parsed = parse_arguments(
+            &split(&["--no-cache", "--json", "-l", "m", "a.tz"])
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        assert_eq!(parsed.action, Action::Run);
+        assert_eq!(parsed.input, PathBuf::from("a.tz"));
+        assert!(!parsed.options.cache && parsed.json && parsed.options.trap_info);
+        assert_eq!(parsed.options.optimization, 3);
+        assert_eq!(parsed.links.libraries, ["m"]);
+        assert_eq!(
+            parse_arguments(&split(&["-O0", "-O3", "a.tz"]).unwrap().0).unwrap_err(),
+            "optimization specified more than once"
+        );
+        for (values, message) in [
+            (&[][..], SCRIPT_FILE),
+            (&["-O0"], SCRIPT_FILE),
+            (&["--"], SCRIPT_FILE),
+            (&["--target", "wasm32", "a.tz"], SCRIPT_OPTIONS),
+            (&["-o", "out", "a.tz"], SCRIPT_OPTIONS),
+            (&["-g", "a.tz"], SCRIPT_OPTIONS),
+            (&["--timeout", "1", "a.tz"], SCRIPT_OPTIONS),
+            (&["--cpu"], "--cpu needs a value"),
+        ] {
+            assert_eq!(split(values).unwrap_err(), message, "{values:?}");
+        }
+        // Help before the file needs no file.
+        assert_eq!(strings(&split(&["--help"]).unwrap().0), ["run", "--help"]);
+    }
+
+    #[test]
+    fn parses_repl_options() {
+        let defaults = parse_repl(&[]).unwrap();
+        assert_eq!(defaults.build.optimization, 0);
+        assert_eq!(defaults.build.cpu, Cpu::Generic);
+        assert!(defaults.build.cache);
+        assert!(defaults.build.trap_info);
+        assert_eq!(
+            (defaults.build.target, defaults.build.emit),
+            (Target::Native, Emit::Executable)
+        );
+        assert_eq!(defaults.timeout, Some(std::time::Duration::from_secs(10)));
+        let custom =
+            parse_repl(&["-O3", "--cpu", "native", "--no-cache", "--timeout", "0"]).unwrap();
+        assert_eq!(custom.build.optimization, 3);
+        assert_eq!(custom.build.cpu, Cpu::Native);
+        assert!(!custom.build.cache);
+        assert_eq!(custom.timeout, None);
+        assert_eq!(
+            parse_repl(&["--timeout", "3600"]).unwrap().timeout,
+            Some(std::time::Duration::from_secs(3600))
+        );
+        // The REPL's -O0 default leaves build's and run's -O3 default alone.
+        assert_eq!(parse(&["run", "Main.tz"]).unwrap().options.optimization, 3);
+    }
+
+    #[test]
+    fn rejects_repl_paths_and_build_options() {
+        let target = "repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'";
+        for (values, message) in [
+            (&["Main.tz"][..], REPL_USAGE),
+            (&["--target", "wasm32"], target),
+            (&["--target", "native"], target),
+            (&["--json"], REPL_USAGE),
+            (&["-o", "out"], REPL_USAGE),
+            (&["-g"], REPL_USAGE),
+            (&["--emit", "llvm"], REPL_USAGE),
+            (&["--timeout", "3601"], REPL_TIMEOUT),
+            (&["--timeout", "x"], REPL_TIMEOUT),
+            (&["--timeout", "-1"], REPL_TIMEOUT),
+            (&["--timeout"], REPL_TIMEOUT),
+            (
+                &["--cpu", "fast"],
+                "CPU tuning must be 'generic' or 'native'",
+            ),
+            (&["-O0", "-O3"], "optimization specified more than once"),
+            (
+                &["--no-cache", "--no-cache"],
+                "no-cache specified more than once",
+            ),
+        ] {
+            assert_eq!(parse_repl(values).unwrap_err(), message, "{values:?}");
+        }
     }
 
     #[test]

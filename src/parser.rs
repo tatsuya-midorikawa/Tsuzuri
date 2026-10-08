@@ -291,6 +291,7 @@ impl Parser<'_> {
             entry: None,
             dyn_types: Vec::new(),
             cpu_attributes: Vec::new(),
+            declaration_starts: Vec::new(),
         };
         let mut signatures = BTreeMap::new();
         let mut definitions = Vec::new();
@@ -621,6 +622,10 @@ impl Parser<'_> {
                 definition_group = None;
             } else if program.entry.is_some() {
                 break;
+            } else {
+                program
+                    .declaration_starts
+                    .push(self.tokens[start].span.start);
             }
         }
         if !diagnostics.is_empty() {

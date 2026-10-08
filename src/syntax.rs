@@ -254,6 +254,10 @@ pub struct Program {
     pub dyn_types: Vec<TypeExpr>,
     /// The `@cpu [...]` attributes of this module's functions (F08 Phase 3).
     pub cpu_attributes: Vec<CpuAttribute>,
+    /// Where each top-level declaration starts (its first token, a doc comment or an attribute
+    /// included), in source order: a signature and its separate definition count apart. The
+    /// REPL splits an input there (G13).
+    pub declaration_starts: Vec<usize>,
 }
 
 /// The CPU targets that `@cpu` names, with their level in `src/runtime/cpu.c` (F08 Phase 3).
