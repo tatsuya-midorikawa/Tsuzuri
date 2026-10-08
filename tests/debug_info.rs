@@ -326,3 +326,65 @@ fn debug_codeview_flag_joins_the_module_flags_for_windows_objects() {
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn debug_test_runner_dispatch_is_an_artificial_subprogram() {
+    use tsuzuri::{analyze, llvm, trap::TrapSource};
+    let source = "test \"same\" = assert true\ntest \"body\" =\n    let total = 40 + 2\n    assert (total == 42)\n";
+    let module =
+        analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    let sources = [TrapSource {
+        path: "sources/Main.tz",
+        text: source,
+    }];
+    for wasm in [false, true] {
+        let plain = llvm::TestRunnerOptions {
+            wasm,
+            ..llvm::TestRunnerOptions::default()
+        };
+        let ir = llvm::emit_test_runner_with(&module, &[1], plain).unwrap();
+        assert!(
+            ir.contains("define i32 @tsuzuri_test_run(i32 %index) {\n"),
+            "{ir}"
+        );
+        assert!(!ir.contains("!dbg"), "{ir}");
+        for optimized in [false, true] {
+            let options = llvm::TestRunnerOptions {
+                debug: Some((&sources, optimized)),
+                ..plain
+            };
+            let ir = llvm::emit_test_runner_with(&module, &[1], options).unwrap();
+            assert_eq!(
+                ir,
+                llvm::emit_test_runner_with(&module, &[1], options).unwrap()
+            );
+            // From -O1 the dispatch inlines the test; the inlined body keeps its lines only
+            // when the dispatch has a subprogram and the call has a location.
+            let define = ir
+                .lines()
+                .find(|line| line.starts_with("define i32 @tsuzuri_test_run(i32 %index)"))
+                .unwrap();
+            let scope = define
+                .strip_suffix(" {")
+                .and_then(|line| line.rsplit_once(" !dbg "))
+                .unwrap_or_else(|| panic!("{define}"))
+                .1;
+            let subprogram = ir
+                .lines()
+                .find(|line| line.starts_with(&format!("{scope} = distinct !DISubprogram(")))
+                .unwrap_or_else(|| panic!("{scope}\n{ir}"));
+            for part in [
+                "name: \"tsuzuri_test_run\",",
+                "line: 2,",
+                "DIFlagArtificial",
+            ] {
+                assert!(subprogram.contains(part), "{part}\n{subprogram}");
+            }
+            let call = ir
+                .lines()
+                .find(|line| line.starts_with("  %result0 = call i8 @tz.fn.Main.$test.1()"))
+                .unwrap_or_else(|| panic!("{ir}"));
+            assert!(call.contains(", !dbg !"), "{call}");
+        }
+    }
+}

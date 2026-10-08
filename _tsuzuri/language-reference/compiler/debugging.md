@@ -114,6 +114,7 @@ LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読�
 | 長さが負、または 2^32 以上 | `<invalid length N>`（子なし） |
 | union のタグがどの case でもない | `<invalid tag N>`（子なし） |
 | 文字の値が U+10FFFF を超える | `<invalid character N>` |
+| 要素の番地が 2^64 を超える（壊れたポインター） | その要素の子なし |
 
 `string` は先頭 1,024 コード単位、`utf8string` は 1,024 バイトで切り、`...` を付けます。子の数は LLDB の上限（`target.max-children-count`、既定 256）までです。union の入れ子は 3 段まで表示し、4 段目は `Wrap(...)` のように省きます。
 
@@ -146,7 +147,7 @@ tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
 lldb -o "command script import <配布物>/share/lldb/tsuzuri_lldb.py" -o "target symbols add .tsuzuri/test/runner.dwarf" -- .tsuzuri/test/runner 0
 ```
 
-`target symbols add` は macOS だけです。テストの本体の関数名は `<モジュール>.test@<行>:<列>`（テスト名の位置）で、テストの本体に置いたブレークポイントで止まります。ランナーの入口（`main` と `tsuzuri_test_run`）はデバッグ情報を持たないので、ステップ実行で入りません。`assert` が失敗すると、デバッガーはトラップした位置で止まります。
+`target symbols add` は macOS だけです。テストの本体の関数名は `<モジュール>.test@<行>:<列>`（テスト名の位置）で、テストの本体に置いたブレークポイントで止まります。`-O1` 以上ではテストの本体がランナーの `tsuzuri_test_run` に inline されますが、`tsuzuri_test_run` はプログラムの `main` と同じくデバッグ情報を持つ artificial な関数（位置はテストの宣言）なので、テストの行とブレークポイントは残ります。C の入口 `main` はランタイムと同じくデバッグ情報を持ちません。テストの最後の行から先へステップ実行するとテストの宣言の行（`tsuzuri_test_run`）で止まり、さらに進めると `main` の機械語に出るので、続きは continue で実行します。`assert` が失敗すると、デバッガーはトラップした位置で止まります。
 
 VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug** を押すと、拡張がこのコマンドでランナーを `<プロジェクト>/.tsuzuri/test/runner` にビルドし、CodeLLDB で起動します。formatter と macOS の DWARF の読み込みは、プロジェクトのデバッグと同じです。ランナーが 0 で終われば成功、それ以外は失敗として結果に残ります。終わる前にデバッグを止めると、テストはスキップになります。
 

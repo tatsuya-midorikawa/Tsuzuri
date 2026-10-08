@@ -1154,20 +1154,34 @@ fn emit_program(
             "define i32 @tsuzuri_test_count() {{\nentry:\n  ret i32 {}\n}}",
             selected.len()
         );
-        output.push_str("define i32 @tsuzuri_test_run(i32 %index) {\nentry:\n  switch i32 %index, label %bad [\n");
+        let mut runner = String::from(
+            "define i32 @tsuzuri_test_run(i32 %index) {\nentry:\n  switch i32 %index, label %bad [\n",
+        );
         for index in 0..selected.len() {
-            let _ = writeln!(output, "    i32 {index}, label %test{index}");
+            let _ = writeln!(runner, "    i32 {index}, label %test{index}");
         }
-        output.push_str("  ]\nbad:\n  ret i32 2\n");
+        runner.push_str("  ]\nbad:\n  ret i32 2\n");
         for (index, selected) in selected.iter().enumerate() {
             let function = &module.functions[module.tests[*selected].function];
             let _ = writeln!(
-                output,
+                runner,
                 "test{index}:\n  %result{index} = call i8 @tz.fn.{}()\n  ret i32 0",
                 function.qualified_name()
             );
         }
-        output.push_str("}\n");
+        runner.push_str("}\n");
+        // With debug information the dispatch is an artificial subprogram whose calls have
+        // locations, so a test that optimization inlines into it keeps its line table (G16).
+        output.push_str(&match selected.first() {
+            Some(first) => debug::wrapper(
+                runner,
+                module,
+                &module.functions[module.tests[*first].function],
+                "@tsuzuri_test_run",
+                &mut globals,
+            ),
+            None => runner,
+        });
     }
     if let Some(plan) = instrumentation.coverage {
         let _ = writeln!(

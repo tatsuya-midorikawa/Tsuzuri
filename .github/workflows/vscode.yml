@@ -132,3 +132,34 @@ jobs:
             vsc/dist/*.vsix
             vsc/dist/*.sha256
           if-no-files-found: error
+      # G16 Phase 3: with the MSVC linker, a `-g` executable gets a PDB beside it that holds the
+      # CodeView types and functions and the embedded natvis views. The bundled `tsuzuri-clang`
+      # links with MinGW and keeps DWARF only, so this uses the LLVM Clang installed above. Only
+      # x64: CodeLLDB is not bundled for ARM64 Windows, whose MSVC ARM64 toolset is unverified.
+      - name: Windows PDB and natvis
+        if: matrix.target == 'win32-x64'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'tsuzuri-pdb'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $env:TSUZURI_CLANG = Join-Path $env:LLVM_PREFIX 'bin\clang.exe'
+          & ..\target\release\tsuzuri.exe build ..\tests\fixtures\debug_view -g -O0 -o (Join-Path $out 'app.exe')
+          if ($LASTEXITCODE -ne 0) { throw "tsuzuri build failed: $LASTEXITCODE" }
+          $pdb = Join-Path $out 'app.pdb'
+          if (-not (Test-Path $pdb) -or (Get-Item $pdb).Length -eq 0) { throw 'no app.pdb beside app.exe' }
+          $result = & (Join-Path $out 'app.exe')
+          if ($LASTEXITCODE -ne 0 -or "$result".Trim() -ne '6') { throw "app.exe printed '$result' ($LASTEXITCODE)" }
+          # The image names the PDB by its published name (/PDBALTPATH), not the staged one.
+          $image = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $out 'app.exe')))
+          if (-not $image.Contains('app.pdb') -or $image.Contains('artifact.pdb')) { throw 'app.exe does not name app.pdb' }
+          $symbols = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($pdb))
+          foreach ($name in 'Main.Shape', 'Main.show', 'tsuzuri.natvis') {
+            if (-not $symbols.Contains($name)) { throw "app.pdb lacks $name" }
+          }
+          $pdbutil = Join-Path $env:LLVM_PREFIX 'bin\llvm-pdbutil.exe'
+          if (Test-Path $pdbutil) {
+            $types = & $pdbutil dump --types $pdb | Out-String
+            if ($LASTEXITCODE -ne 0 -or -not $types.Contains('`Main.Shape`')) { throw "llvm-pdbutil: no Main.Shape`n$types" }
+          } else {
+            Write-Output '::notice::llvm-pdbutil.exe is not installed; checked the PDB bytes only'
+          }

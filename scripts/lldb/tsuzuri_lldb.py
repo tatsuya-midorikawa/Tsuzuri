@@ -6,13 +6,15 @@ and function values as Tsuzuri values. They read the DWARF shapes that the compi
 "Debug information" section of `docs/architecture.md`): types carry their Tsuzuri names, and a
 union stores `$tag` and `$payload`, names that no Tsuzuri identifier can take. Only LLDB's own
 `lldb` module is used. A value that cannot be read, such as an uninitialized local, gets a summary
-in angle brackets instead of an exception.
+in angle brackets, and an element at an address past the address space gets no child, instead of an
+exception.
 """
 
 import lldb
 
 TEXT_LIMIT = 1024
 LENGTH_LIMIT = 1 << 32
+ADDRESS_LIMIT = 1 << 64
 NEST_LIMIT = 3
 CATEGORY = "tsuzuri"
 ESCAPES = {0: "\\0", 9: "\\t", 10: "\\n", 13: "\\r", 0x5C: "\\\\"}
@@ -207,8 +209,19 @@ def sequence_summary(valobj):
     return summary
 
 
+def child_at(valobj, name, address, sbtype):
+    """The child `name` of type `sbtype` at `address`, or None when the address that a garbage
+    pointer gives is outside the address space (LLDB raises OverflowError for it)."""
+    if not 0 <= address < ADDRESS_LIMIT:
+        return None
+    try:
+        return valobj.CreateValueFromAddress(name, address, sbtype)
+    except Exception:
+        return None
+
+
 def child_index(name):
-    if name.startswith("[") and name.endswith("]") and name[1:-1].isdigit():
+    if name.startswith("[") and name.endswith("]") and name[1:-1].isdecimal():
         return int(name[1:-1])
     return -1
 
@@ -246,8 +259,8 @@ class SequenceProvider:
     def get_child_at_index(self, index):
         if not 0 <= index < self.count:
             return None
-        return self.valobj.CreateValueFromAddress(
-            f"[{index}]", self.address + index * self.stride, self.element
+        return child_at(
+            self.valobj, f"[{index}]", self.address + index * self.stride, self.element
         )
 
 
@@ -312,12 +325,13 @@ class ListProvider:
     def get_child_at_index(self, index):
         if not 0 <= index < self.count:
             return None
-        address = self.node(index)
+        try:
+            address = self.node(index)
+        except Exception:
+            return None
         if address == 0:
             return None
-        return self.valobj.CreateValueFromAddress(
-            f"[{index}]", address + self.offset, self.element
-        )
+        return child_at(self.valobj, f"[{index}]", address + self.offset, self.element)
 
 
 def is_collection(sbtype, _dict):
@@ -458,7 +472,7 @@ class UnionProvider:
         return bool(self.children)
 
     def get_child_index(self, name):
-        return int(name) if name.isdigit() and int(name) < len(self.children) else -1
+        return int(name) if name.isdecimal() and int(name) < len(self.children) else -1
 
     def get_child_at_index(self, index):
         return self.children[index] if 0 <= index < len(self.children) else None
