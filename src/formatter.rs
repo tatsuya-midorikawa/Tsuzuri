@@ -271,6 +271,11 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         test.name_span = Span::default();
         canonical.expression(&mut test.body);
     }
+    for bench in &mut program.benches {
+        bench.span = Span::default();
+        bench.name_span = Span::default();
+        canonical.expression(&mut bench.body);
+    }
     if let Some(entry) = &mut program.entry {
         canonical.expression(entry);
     }
@@ -419,6 +424,7 @@ impl Layout {
                     | TokenKind::Type
                     | TokenKind::Const
                     | TokenKind::Test
+                    | TokenKind::Bench
                     | TokenKind::Extern
                     | TokenKind::Class
                     | TokenKind::Instance

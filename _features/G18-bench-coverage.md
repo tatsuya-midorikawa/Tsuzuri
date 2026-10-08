@@ -651,6 +651,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: 本体は `i64 -> i64`（反復回数 → 準備を除く ns）。`Bench.with :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64` と `Bench.of :: (unit -> 'b) -> i64 -> i64` を std に置く。
 - 理由: record や新しい型を作らずに、準備の分離と独自の計時（`Bench.now` を直接使う本体）の両方を表せる。実行器は `i64 (i64)` の関数だけを呼べばよい。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: `Bench.with` は `Bench.with_input` にした。`with` は `match ... with`・`try ... with`・`{ r with f = v }` の予約語で、`def with` も `Bench.with` も E0002 になる（`union`・`new` のような例外を parser・formatter・LSP・`vsc/` の文法に足すより、名前を変える方が影響が小さい）。名前は criterion の `bench_with_input`（入力を全反復で参照として共有する）に合わせた。`Bench.now` は引数なしの組み込み（`Math.pi()` と同じ `fn() -> i64`）で、`Bench.now()` と呼ぶ（`Bench.now ()` は空白のため E1006）。std の `Bench` は D-40 の opt-in モジュール（`stdlib::OPT_IN`）にし、識別子 `Bench` を書かないプログラムの型検査と IR は変えない。`Bench.of` は `with_input` を経由せず直接ループを書く（計測するループに余分な closure 呼び出しを入れないため）。`<-` は代入ではないので `=` で書いた。
 
 ### D3: `Bench.now` を使える範囲
 
@@ -663,6 +664,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
 - 決定: 設計の「データ構造」の形（引数 `$iterations`、型注釈付きの `$case` 束縛、`ExprKind::Call`）。std の bench は E1018。
 - 理由: 型の不一致が test と同じ E1003 で本体に出る。`$` 名は利用者の名前を隠さない。実行器の IR が test と同じ直接呼び出しで済む。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 合成は設計どおり（`check::bench_function`）。`FunctionOrigin.bench: Option<usize>` を足し、補助関数へ伝播させる（カバレッジの除外にも使う）。`polymorph::specialize` は bench 関数の要求を、ほかのすべての特殊化と Drop の固定点が終わった後に出す（先に出すと、通常ビルドとテストビルドの `$mono.N` が bench の数だけずれた）。その後半で初めて見つかった Drop 型の drop 関数は `CheckedModule.bench_drops` に記録し、`reachable_functions` は bench 実行器のときだけ根にする（bench だけが持つ型の drop glue が通常の成果物に出ていた）。ただし `$lambda.N`・`$instance.N` は関数の総数から付く名前なので、test を足したときと同じく、bench の宣言と opt-in の `Bench` モジュールの読み込みで番号がずれる。`tests/bench.rs` の 3 は「生成名の番号を出現順に振り直して一致」と「ラムダ・instance のないプログラムで byte 一致」を確かめる（bench を宣言しないプログラムは base と byte 一致。§実装と検証）。
 
 ### D5: 実行と統計
 
@@ -701,6 +703,7 @@ GUIDE D-30 の `bench`（予約語）と `Bench`（std）の行を D-15・D-07 �
   `samples`・`median`・`min`・`max` と `index`・`module`・`name`・`status`・`iterations`、最後に `"type":"summary"`）。カバレッジは lcov（PATH）と要約（文字または JSON の 1 行）。
 - 理由: PX01 の変換を欄の追加だけで済ませつつ、利用者のプロジェクトで知りえない `commit` や `rustc` を CLI に持ち込まない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 文字の行の `<index>` は `--list`・`--index` と同じ 0 始まり。要約の `<B>` は実行した件数で、1 件なら `1 benchmark`。`samples` は各標本の 1 回あたりの ms の配列。失敗した bench が標準エラーに書いた内容（最後の 64 KiB）は、その行の下（JSON は `output`）に出す。bench の実行器の C の終了コードは、引数の誤りが 2、負の時間が 3、標準出力の書き込みの失敗が 4。
 
 ### D10: D07 と E08
 
@@ -734,3 +737,13 @@ HEAD `1182045`（`Phase7-5`）から、利用者の依頼（GUIDE D-41）に従�
 - 見直し（2026-10-08）: チケットの `TestOptions { coverage: Option<PathBuf> }` は `bool` にした（lcov を書くにはプロジェクトのソースが要るので、出力は `driver::write_coverage(project, run, path)` が行う）。E2E の `coverage_counts_parallel_work_exactly` は 1,000 要素ではなく 100,000 要素にした（`Parallel.map` は 4,096 要素ごとのチャンクなので、1,000 要素は 1 スレッドで終わり、原子性を試せない）。
 - 検証: `cargo test --locked --lib coverage::` 4 passed、`cargo test --locked --test coverage` 5 passed（lcov の完全一致は `-O0`／`-O3`、並列の 100,000 回）、`cargo test --locked --test test_runner` 8 passed、`--lib test_runner` 2 passed、GUIDE §3.1 の 4 件 passed、`cargo clippy --locked --all-targets -- -D warnings` 成功、`node scripts/check-docs.mjs`（test.md・usage.md・option.md）成功。
 - 生成 IR の不変（base `1182045` の release と比較）: examples と tests/fixtures の全プロジェクトの `build --emit llvm` を native／wasm32 × `-O0`／`-O3` で 324 組比較し、すべて byte 単位で一致。テスト実行器の IR（`emit_test_runner`、native と wasm32）も、base の木で同じ dump を作って 4 プロジェクト 8 組が一致。
+
+### Phase 1: `bench` 宣言、`std/Bench.tz`、`tsuzuri bench`
+
+- 字句・構文: `TokenKind::Bench`（予約語 `bench`。G19 は todo なので無条件）、`Program.benches: Vec<BenchDecl>`、`Parser::named_declaration(kind)`（test の診断文は不変）、`bench` を token 集合（`is_top_level_declaration_start`・文の終わり 2 か所・`parse_control`・formatter）に追加。formatter・LSP の document symbol（`bench "名前"`）・`computation.rs` の `.tt` の E1018 も test と同じ扱い。`lsp::KEYWORDS`（43 語）と `vsc/` の文法・`editor.ts`・`core.ts`・snippet に `bench`。
+- 検査: `CheckedBench`、`CheckedModule.benches`、`$bench.<index>`（D4）、std の bench は E1018 `embedded standard-library sources cannot declare benchmarks`。組み込み `Bench.now`（`fn() -> i64`）と `Bench.consume`（`'a -> unit`）。
+- 生成: `Entry::BenchRunner`、`llvm::emit_bench_runner`、`@tsuzuri_bench_count`・`@tsuzuri_bench_sample`。`Bench.now` は `declare i64 @tsuzuri_bench_now()` を intrinsics に登録し、bench 実行器以外の出力にあれば E1018。`Bench.consume` は alloca・store・`call void asm sideeffect "", "r,~{memory}"(ptr ...)`・`drop_value`（native と wasm32 の `-O0`／`-O3` で build でき、wasm の import は増えない。`-O3` の arm64 の機械語で、配列の書き込みと store が残ることを確かめた）。
+- 実行器: `src/runtime/bench-runner.c`（新規。時計・較正・予熱・標本）。`src/test_runner.rs` の `build_runner` の native 部分を `compile_native_runner`（C の入口、`-D`、必要なランタイム、リンク入力）に分けて test と bench で共有した（test の IR と clang の引数の順序は不変）。`BenchOptions`・`BenchResult`（`statistics`）・`BenchReport`・`run_benches(_linked)`・`execute_bench`・`parse_bench_output`・`run_captured`（stdout と stderr を読み取りスレッドで読み切る）。
+- CLI: `tsuzuri bench`（`Project::load_for_tests` と `analyze_all` を test と同じ分岐で使う）、`--samples N`（bench だけ。1〜1000）、`--list`・`--filter`・`--index`・`--json`・`-O`・`--target native`・リンク入力。`--filter`・`--list`・`--index` の誤用の文は `only valid with test or bench` に変えた。`bench` の `--cpu` と `--target wasm32/wasm64` は E2000。
+- 予約: std モジュール `Bench`（`RESERVED_MODULES` は 44 件。`stdlib::tests::reserves_the_d07_table` の期待値を 43 から 44 に更新した。新しい予約モジュールに伴う正当な変化）。
+- 検証: `cargo test --locked --test bench` 7 passed、`--test frontend` 4 passed（`bench_became_a_reserved_word` を追加）、`--lib` 118 passed（`test_runner::` の bench 単体テスト 3 件を含む）、`--test coverage` 5 passed、`--test test_runner` 8 passed、`--test formatter` 16 passed。`node scripts/check-docs.mjs`（bench.md・keywords.md・usage.md・option.md・diagnostics.md・strategy.md・index.md・test.md）成功。

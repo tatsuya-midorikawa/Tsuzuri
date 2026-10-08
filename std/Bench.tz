@@ -1,0 +1,21 @@
+/// Runs `setup` once, then `run` on a borrow of its value `iterations` times, and returns the
+/// nanoseconds the runs took. Neither `setup` nor the drop of its value is timed.
+def with_input :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64
+fn with_input setup run iterations =
+    let value = setup ()
+    let start = Bench.now()
+    let mut index = 0
+    while index < iterations do
+        Bench.consume (run (ref value))
+        index = index + 1
+    Bench.now() - start
+
+/// Calls `run` `iterations` times and returns the nanoseconds the calls took.
+def of :: (unit -> 'b) -> i64 -> i64
+fn of run iterations =
+    let start = Bench.now()
+    let mut index = 0
+    while index < iterations do
+        Bench.consume (run ())
+        index = index + 1
+    Bench.now() - start

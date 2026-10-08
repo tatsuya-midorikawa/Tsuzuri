@@ -554,6 +554,7 @@ impl Lexer<'_> {
             "type" => TokenKind::Type,
             "const" => TokenKind::Const,
             "test" => TokenKind::Test,
+            "bench" => TokenKind::Bench,
             "class" => TokenKind::Class,
             "instance" => TokenKind::Instance,
             "deriving" => TokenKind::Deriving,

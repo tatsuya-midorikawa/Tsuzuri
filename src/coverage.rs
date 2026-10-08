@@ -81,6 +81,7 @@ impl CoveragePlan {
 pub(crate) fn counted(function: &CheckedFunction) -> bool {
     function.origin.module == ModuleOrigin::User
         && function.origin.test.is_none()
+        && function.origin.bench.is_none()
         // Lifted lambdas and tasks count; builtin, case, and export wrappers do not.
         && (!function.module.starts_with('$') || matches!(function.module.as_str(), "$lambda" | "$task"))
         && (function.origin.provenance == Provenance::User || function.origin.parent.is_some())

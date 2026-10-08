@@ -594,6 +594,24 @@ tsuzuri test tests/ --coverage coverage.info
 
 テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`--coverage PATH` はコンパイラ自身の計装で、関数・`if` の枝・`match` の節・ループの本体ごとのカウンターを数え、lcov のファイルとテスト要約の後の 1 行の要約を出します。
 
+### ベンチマーク (`tsuzuri bench`)
+
+`bench "名前" = 本体` は、反復回数を受け取って準備を除いた経過ナノ秒を返す `i64 -> i64` の宣言です。標準モジュール `Bench` の `Bench.of` と `Bench.with_input` で書くのが普通で、計算結果は最適化で消えないよう `Bench.consume` の障壁を通ります。
+
+```text
+bench "合計" = Bench.with_input (\_ -> new [i64](1000000, \i -> i)) (\values -> Array.sum values)
+```
+
+```sh
+# 既定の -O3 で、1 標本 10 ms を目標に反復回数を較正し、11 標本の中央値・最小・最大を出す
+tsuzuri bench benches/
+
+# 標本数と JSON Lines 出力（PX01 の欄名: workload, target, opt, metric, unit, samples, median, min, max）
+tsuzuri bench benches/ --samples 21 --json
+```
+
+各ベンチは別プロセスで 1 件ずつ計測されます（ネイティブのみ）。速さの合否の閾値はなく、失敗はトラップ・時間切れ・負の時間だけです。`bench` は予約語です。
+
 ### ドキュメント生成 (`tsuzuri doc`)
 
 ソースコード内の `///` ドキュメントコメントを抽出し、公開 API の Markdown ドキュメントを自動生成します。
@@ -672,6 +690,7 @@ tsuzuri check source.tz|source.tt|source.tc|directory [--json]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
 tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
 tsuzuri test source.tz|directory [options]
+tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
@@ -696,6 +715,7 @@ tsuzuri lsp
 | `--wasm-max-memory SIZE` | WASM の最大線形メモリサイズ（既定: 16MiB、例: `256MiB`）。 |
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
 | `--coverage PATH` | `tsuzuri test` で、成功したテストの行と関数のカバレッジを lcov 形式で `PATH` に書きます（ネイティブだけ）。 |
+| `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
 | `--wasm-feature simd128\|threads` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |

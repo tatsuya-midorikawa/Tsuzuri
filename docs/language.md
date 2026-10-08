@@ -17,10 +17,11 @@ WebAssembly における SIMD128 機能は、`build --target wasm32 --wasm-featu
 - ソースファイル拡張子は `.tz`（通常のプログラムコード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）です。
   ファイルエンコーディングは UTF-8（先頭 BOM の有無を許容）、改行コードは LF または CRLF に対応します。識別子は ASCII 英字またはアンダースコア `_` で始まり、英数字または `_` が後続します。
 - 予約語は以下のとおりです:
-  `fn` `def` `rec` `and` `export` `extern` `private` `record` `union` `type` `const` `test` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
+  `fn` `def` `rec` `and` `export` `extern` `private` `record` `union` `type` `const` `test` `bench` `class` `instance` `deriving` `let` `task` `do` `return` `yield`
   `for` `in` `to` `downto` `while` `break` `continue` `mut` `ref` `deref` `new` `as` `if` `then` `elif` `else` `match` `with` `when`
   `true` `false` `dyn`
   これらは関数、変数、フィールド、モジュールの識別子名として使用することはできません（ただし `refs` や `ref_count` などの部分一致名は使用可能です）。
+  `bench` は G18 で追加された予約語です。以前に識別子 `bench` を使っていたコードは `E0002` となるため、`benchmark` などへの改名が必要です（互換性を破る変更点です）。
   `of` は `union` の case 宣言の内部でのみ予約される文脈キーワードであり、それ以外の場所では通常の識別子として扱われます。
   `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
@@ -225,11 +226,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`
 
 `Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -1249,6 +1250,15 @@ test "compares strings" =
 `--coverage PATH`（ネイティブのみ）は、成功したテストが実行した利用者コードの行と関数のカバレッジを lcov 形式で `PATH` へ書き出し、テストの要約行の後に `coverage: 3/4 lines (75.0%), 1/2 functions` 形式の 1 行（`--json` では最終行の `{"type":"coverage",...}`）を出力します。
 計数の単位（region）は関数本体（ラムダと `task` を含む）、`if` の両枝、`match` の各節の本体、`while`／`for` の本体、`try ... with` のハンドラーで、行の回数はその行で始まる式が属する region の回数の最大値です。標準ライブラリ、テスト本体、およびトラップ・時間切れで失敗したテストの実行は数えません（除外件数は要約に表示されます）。
 `--target wasm32`／`wasm64` や `--list` との併用は `E2000`、出力先がプロジェクトのソースである場合は `E2003` です。
+
+### ベンチマーク
+
+`bench "ベンチ名" = 本体式` は `test` 宣言と同じ位置・同じ規則（`.tt` と埋め込み標準ライブラリでは `E1018`、修飾子不可、名前の重複可、宣言順の index による識別）のベンチマーク宣言です。
+本体の型は `i64 -> i64`（反復回数を受け取り、準備を除いたその回数分の経過ナノ秒を返す関数）で、違えば本体の位置で `E1003` です。`tsuzuri check`／`build` はベンチ本体も型検査しますが、ベンチ本体とベンチ専用の特殊化は通常の成果物にもテスト実行器にも出力されません。
+標準モジュール `Bench`（名前を書いたプログラムだけが読み込む opt-in モジュール）は `Bench.with_input :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64`（標本ごとに準備を 1 回呼び、その値を借用で `n` 回 `run` に渡す。準備と値の解放は計測しない）と `Bench.of :: (unit -> 'b) -> i64 -> i64` を提供し、`run` の結果は毎回 `Bench.consume` に渡されます。
+組み込みの `Bench.now()`（`fn() -> i64`、単調時計のナノ秒）は `tsuzuri bench` の実行器だけが定義し、ほかの出力が到達すると位置なしの `E1018` です。`Bench.consume :: 'a -> unit` は値を move で受け取り、スタックに置いた値のアドレスをメモリを読み書きしうる空のインライン asm（`asm sideeffect "", "r,~{memory}"`）に渡してから通常どおり解放します（Rust の `black_box` と同じ障壁で、返り値・副作用・評価順序は変えません。どの出力でも使えます）。
+`tsuzuri bench <file|directory> [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3] [--target native]` は、ベンチごとに別プロセスで 1 件ずつ（並列にせず、上限 300 秒）、既定 `-O3` で、反復回数を 1 から 1 標本 10 ms（上限 2<sup>30</sup> 回）まで倍にし、予熱の 1 標本を捨てた後、`--samples`（1〜1000、既定 11）個の標本から 1 回あたりの時間の中央値・最小・最大を報告します。`--json` の行は `workload`・`target`・`opt`・`cpu_mode`・`metric`（`wall_time`）・`unit`（`ms`）・`iterations`・`samples`・`median`・`min`・`max` を持ちます。
+速さの合否の閾値はなく、トラップ・時間切れ・負の時間を返したベンチだけが失敗（`E2005`、終了コード 1）です。ネイティブのみで、`--target wasm32`／`wasm64` や不正な `--samples` は `E2000` です。
 
 ## 型とメモリ
 

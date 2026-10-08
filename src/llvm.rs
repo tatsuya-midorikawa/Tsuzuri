@@ -33,6 +33,8 @@ pub enum Entry {
     Library,
     Console,
     TestRunner,
+    /// `tsuzuri bench`: `@tsuzuri_bench_count` and `@tsuzuri_bench_sample` over the benches (G18).
+    BenchRunner,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,6 +298,15 @@ pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> 
     emit_target(module, entry, false)
 }
 
+/// Every test or bench of a runner entry; `None` for the other entries.
+fn runner_selection(module: &CheckedModule, entry: Entry) -> Option<Vec<usize>> {
+    match entry {
+        Entry::TestRunner => Some((0..module.tests.len()).collect()),
+        Entry::BenchRunner => Some((0..module.benches.len()).collect()),
+        Entry::Library | Entry::Console => None,
+    }
+}
+
 pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<String, Diagnostic> {
     emit_with_options(
         module,
@@ -312,8 +323,7 @@ pub fn emit_with_options(
     module: &CheckedModule,
     options: EmitOptions,
 ) -> Result<String, Diagnostic> {
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     emit_program(
         module,
         options.entry,
@@ -333,8 +343,7 @@ pub fn emit_with_trap_info(
     options: EmitOptions,
     sources: &[TrapSource<'_>],
 ) -> Result<EmitOutput, Diagnostic> {
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
         options.entry,
@@ -364,8 +373,7 @@ pub fn emit_with_debug_info(
             Span::default(),
         ));
     }
-    let tests =
-        (options.entry == Entry::TestRunner).then(|| (0..module.tests.len()).collect::<Vec<_>>());
+    let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
         options.entry,
@@ -707,6 +715,27 @@ pub fn emit_test_runner_covered(
     .map(|(ir, _)| ir)
 }
 
+/// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
+/// calls bench `index` with an iteration count and returns its nanoseconds, or -1 for a bad index.
+pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<String, Diagnostic> {
+    if selected.iter().any(|index| *index >= module.benches.len()) {
+        return Err(Diagnostic::new(
+            "E2000",
+            "invalid bench index",
+            Span::default(),
+        ));
+    }
+    emit_program(
+        module,
+        Entry::BenchRunner,
+        false,
+        Some(selected),
+        false,
+        Instrumentation::default(),
+    )
+    .map(|(ir, _)| ir)
+}
+
 #[derive(Default)]
 struct Instrumentation<'a> {
     traps: bool,
@@ -762,10 +791,16 @@ fn emit_program(
     let roots = tests.map(|selected| {
         selected
             .iter()
-            .map(|index| module.tests[*index].function)
+            .map(|index| {
+                if entry == Entry::BenchRunner {
+                    module.benches[*index].function
+                } else {
+                    module.tests[*index].function
+                }
+            })
             .collect::<Vec<_>>()
     });
-    let reachable = reachable_functions(module, roots.as_deref());
+    let reachable = reachable_functions(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -997,7 +1032,7 @@ fn emit_program(
             &mut globals,
         ));
     }
-    let io_wrapper = if entry != Entry::TestRunner && io_entry(module) {
+    let io_wrapper = if matches!(entry, Entry::Library | Entry::Console) && io_entry(module) {
         Some(io::entry(FunctionEmitter::new(
             module,
             &module.functions[module.entry.unwrap()],
@@ -1019,6 +1054,13 @@ fn emit_program(
     ));
     // Only a program that reads `Env.args` receives argc and argv; other entries keep `@main()`.
     let uses_args = intrinsics.contains("declare void @tsuzuri_os_set_args(i32, ptr)");
+    if entry != Entry::BenchRunner && intrinsics.contains("declare i64 @tsuzuri_bench_now()") {
+        return Err(Diagnostic::new(
+            "E1018",
+            "Bench.now runs only under tsuzuri bench; call Bench.with_input or Bench.now from a bench declaration",
+            Span::default(),
+        ));
+    }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
@@ -1049,7 +1091,27 @@ fn emit_program(
             &mut globals,
         ));
     }
-    if let Some(selected) = tests {
+    if let Some(selected) = tests.filter(|_| entry == Entry::BenchRunner) {
+        let _ = writeln!(
+            output,
+            "define i32 @tsuzuri_bench_count() {{\nentry:\n  ret i32 {}\n}}",
+            selected.len()
+        );
+        output.push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n  switch i32 %index, label %bad [\n");
+        for index in 0..selected.len() {
+            let _ = writeln!(output, "    i32 {index}, label %bench{index}");
+        }
+        output.push_str("  ]\nbad:\n  ret i64 -1\n");
+        for (index, selected) in selected.iter().enumerate() {
+            let function = &module.functions[module.benches[*selected].function];
+            let _ = writeln!(
+                output,
+                "bench{index}:\n  %result{index} = call i64 @tz.fn.{}(i64 %iterations)\n  ret i64 %result{index}",
+                function.qualified_name()
+            );
+        }
+        output.push_str("}\n");
+    } else if let Some(selected) = tests {
         let _ = writeln!(
             output,
             "define i32 @tsuzuri_test_count() {{\nentry:\n  ret i32 {}\n}}",
@@ -2194,6 +2256,7 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 pub(crate) fn reachable_functions(
     module: &CheckedModule,
     roots: Option<&[usize]>,
+    benches: bool,
 ) -> BTreeSet<usize> {
     fn references(expression: &TypedExpr, module: &CheckedModule, pending: &mut Vec<usize>) {
         match &expression.kind {
@@ -2237,7 +2300,13 @@ pub(crate) fn reachable_functions(
         <[usize]>::to_vec,
     );
     // Drop glue calls the user drops without a reference in any body.
-    pending.extend(module.user_drops.values().copied());
+    pending.extend(
+        module
+            .user_drops
+            .values()
+            .copied()
+            .filter(|drop| benches || !module.bench_drops.contains(drop)),
+    );
     let mut reachable = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
@@ -5624,6 +5693,7 @@ fn emit_builtin(
         | Builtin::SeqNext
         | Builtin::OwnedDrop
         | Builtin::Ignore
+        | Builtin::BenchConsume
         | Builtin::Not
         | Builtin::OwnedFunction
         | Builtin::OwnedCall
@@ -5644,6 +5714,14 @@ fn emit_builtin(
         ),
         // Arena ids only need to be unique, so a monotonic increment suffices; the counter
         // publishes no other memory. Default wasm32 lowers the atomic to a plain add.
+        // The clock is defined only by the C entry of `tsuzuri bench` (`runtime/bench-runner.c`);
+        // `emit_program` rejects other outputs that reach it (G18 D3).
+        Builtin::BenchNow => {
+            intrinsics.insert("declare i64 @tsuzuri_bench_now()".into());
+            format!(
+                "define internal i64 {symbol}() nounwind {{\nentry:\n  %now = call i64 @tsuzuri_bench_now()\n  ret i64 %now\n}}\n\n"
+            )
+        }
         Builtin::ArenaNextId => format!(
             "@tz.arena.next_id = internal global i64 0, align 8\n\n\
              define internal i64 {symbol}() nounwind {{\n\
@@ -5821,6 +5899,16 @@ fn emit_typed_builtin(
     } else if instance.builtin == Builtin::SeqNext {
         emitter.sequence_next(ty)
     } else if matches!(instance.builtin, Builtin::OwnedDrop | Builtin::Ignore) {
+        emitter.drop_value(element, "%arg0");
+        "0".to_owned()
+    } else if instance.builtin == Builtin::BenchConsume {
+        // As Rust's `black_box`: the value goes to memory that an opaque asm with a memory
+        // clobber reads, so LLVM keeps its computation and the memory it reaches (G18 D6).
+        let slot = emitter.slot(element);
+        emitter.instruction(format!("store {element_type} %arg0, ptr {slot}"));
+        emitter.instruction(format!(
+            "call void asm sideeffect \"\", \"r,~{{memory}}\"(ptr {slot})"
+        ));
         emitter.drop_value(element, "%arg0");
         "0".to_owned()
     } else if instance.builtin == Builtin::Not {

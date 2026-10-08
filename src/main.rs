@@ -18,6 +18,8 @@ Usage:
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
                              [--coverage PATH]
+    tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
+                              [-O0|-O1|-O2|-O3] [--target native]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
@@ -42,6 +44,11 @@ namespace, else the package or folder name) followed by subdirectories
 '.', as in Sample::Shapes::Circle.area.
 `tsuzuri test --coverage PATH` writes the line and function coverage of the passing
 tests as an lcov file (native only) and prints a summary after the test summary.
+`tsuzuri bench` runs each `bench \"name\" = body` declaration (body: i64 -> i64, iterations to
+nanoseconds; see Bench.with_input and Bench.of) in its own native process, one at a time: it
+doubles the iterations until a sample takes 10 ms, discards one warm-up sample, and prints the
+median, minimum, and maximum time per iteration of --samples samples (default 11, at most 1000)
+at -O3 by default. It has no pass or fail threshold.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -133,6 +140,7 @@ enum Action {
     Run,
     Fmt,
     Test,
+    Bench,
 }
 
 #[derive(Debug)]
@@ -151,6 +159,8 @@ struct Arguments {
     test_indices: Vec<usize>,
     /// `tsuzuri test --coverage PATH`: where the lcov report goes.
     coverage: Option<PathBuf>,
+    /// `tsuzuri bench --samples N`.
+    bench_samples: Option<usize>,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -172,6 +182,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             test_list: false,
             test_indices: Vec::new(),
             coverage: None,
+            bench_samples: None,
         });
     }
     let mut position = 0;
@@ -200,6 +211,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             position = 1;
             Action::Test
         }
+        Some("bench") => {
+            position = 1;
+            Action::Bench
+        }
         _ => Action::Build,
     };
     let mut input = None;
@@ -216,6 +231,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_list = false;
     let mut test_indices = Vec::new();
     let mut coverage = None;
+    let mut bench_samples = None;
     let mut debug_output = false;
     let mut trap_info = false;
     let mut trap_return = false;
@@ -311,6 +327,22 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             .to_str()
                             .ok_or("test filter must be UTF-8")?
                             .to_owned(),
+                    );
+                    continue;
+                }
+                Some("--samples") => {
+                    if bench_samples.is_some() {
+                        return Err("samples specified more than once".into());
+                    }
+                    bench_samples = Some(
+                        next_value(arguments, &mut position, "--samples")?
+                            .to_str()
+                            .filter(|value| {
+                                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .filter(|samples| (1..=1000).contains(samples))
+                            .ok_or("bench samples must be an integer between 1 and 1000")?,
                     );
                     continue;
                 }
@@ -588,11 +620,24 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
         );
     }
-    if action != Action::Test && (test_filter.is_some() || test_list || !test_indices.is_empty()) {
-        return Err("--filter, --list, and --index are only valid with test".into());
+    if !matches!(action, Action::Test | Action::Bench)
+        && (test_filter.is_some() || test_list || !test_indices.is_empty())
+    {
+        return Err("--filter, --list, and --index are only valid with test or bench".into());
     }
     if action == Action::Test && cpu.is_some() {
         return Err("test does not use CPU tuning".into());
+    }
+    if bench_samples.is_some() && action != Action::Bench {
+        return Err("--samples is only valid with bench".into());
+    }
+    if action == Action::Bench {
+        if cpu.is_some() {
+            return Err("bench does not use CPU tuning".into());
+        }
+        if target.is_some_and(Target::is_wasm) {
+            return Err("tsuzuri bench supports only the native target".into());
+        }
     }
     if coverage.is_some() {
         if action != Action::Test {
@@ -607,7 +652,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     }
     if output.is_some() && !matches!(action, Action::Build | Action::Doc)
         || emit.is_some() && action != Action::Build
-        || target.is_some() && !matches!(action, Action::Build | Action::Test)
+        || target.is_some() && !matches!(action, Action::Build | Action::Test | Action::Bench)
     {
         return Err("--output requires build or doc; --target and --emit require a supported build/test action".into());
     }
@@ -676,6 +721,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_list,
         test_indices,
         coverage,
+        bench_samples,
     })
 }
 
@@ -687,7 +733,7 @@ fn links_apply(action: Action, options: &BuildOptions) -> bool {
             options.target == Target::Native
                 && matches!(options.emit, Emit::Executable | Emit::Shared)
         }
-        Action::Test => options.target == Target::Native,
+        Action::Test | Action::Bench => options.target == Target::Native,
         _ => false,
     }
 }
@@ -787,6 +833,7 @@ fn run_action(
         ),
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
+        Action::Bench => unreachable!("benchmarks use an isolated runner"),
         Action::Build => driver::build_linked(
             module,
             project,
@@ -994,6 +1041,217 @@ fn run_test_action(
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `tsuzuri bench`: measures each selected bench in its own process, one at a time, and prints
+/// the median, minimum, and maximum time per iteration. No result fails on speed.
+fn run_bench_action(
+    arguments: &Arguments,
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+    links: &driver::LinkInputs,
+) -> ExitCode {
+    let options = driver::BenchOptions {
+        target: arguments.options.target,
+        optimization: arguments.options.optimization,
+        filter: arguments.test_filter.clone(),
+        indices: arguments.test_indices.clone(),
+        samples: arguments
+            .bench_samples
+            .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
+    };
+    if options
+        .indices
+        .iter()
+        .any(|index| *index >= module.benches.len())
+    {
+        print_diagnostic(
+            &Diagnostic::new(
+                "E2000",
+                "bench index is out of range; refresh the bench list",
+                Span::default(),
+            ),
+            project.input(),
+            "",
+            arguments.json,
+        );
+        return ExitCode::FAILURE;
+    }
+    if arguments.test_list {
+        for case in module.benches.iter().filter(|case| options.includes(case)) {
+            if arguments.json {
+                let source = project.source_for(&Diagnostic::new("E2000", "", case.span));
+                let mapper = tsuzuri::lsp::PositionMapper::new(
+                    &source.text,
+                    tsuzuri::lsp::PositionEncoding::Utf16,
+                );
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "type": "bench", "index": case.index, "module": case.module,
+                        "name": case.name, "path": source.path,
+                        "range": mapper.range(&source.text, case.span),
+                    })
+                );
+            } else {
+                println!(
+                    "{} {}.{}",
+                    case.index,
+                    case.module,
+                    case.name.escape_debug()
+                );
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+    let report = match driver::run_benches_linked(module, &options, links) {
+        Ok(report) => report,
+        Err(error) => {
+            let source = project.source_for(&error);
+            print_diagnostic(&error, &source.path, &source.text, arguments.json);
+            return ExitCode::FAILURE;
+        }
+    };
+    for message in &report.messages {
+        if arguments.json {
+            eprintln!(
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            eprintln!("{}", message.trim());
+        }
+    }
+    let number = |value: f64| serde_json::to_string(&value).unwrap_or_else(|_| "null".into());
+    for result in &report.results {
+        let case = &result.case;
+        let qualified = format!("{}.{}", case.module, case.name);
+        match (result.statistics(), &result.failure) {
+            (Some((median, min, max)), None) => {
+                if arguments.json {
+                    let samples = result
+                        .samples_ms
+                        .iter()
+                        .map(|sample| number(*sample))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"passed\",\"workload\":{},\"target\":\"native\",\"opt\":\"O{}\",\"cpu_mode\":\"generic\",\"metric\":\"wall_time\",\"unit\":\"ms\",\"iterations\":{},\"samples\":[{samples}],\"median\":{},\"min\":{},\"max\":{}}}",
+                        case.index,
+                        json_string(&case.module),
+                        json_string(&case.name),
+                        json_string(&qualified),
+                        options.optimization,
+                        result.iterations,
+                        number(median),
+                        number(min),
+                        number(max)
+                    );
+                } else {
+                    let (scale, unit) = bench_unit(median);
+                    println!(
+                        "bench {} {}: median {:.3} {unit} (min {:.3} {unit}, max {:.3} {unit}; {} samples of {} iterations)",
+                        case.index,
+                        qualified.escape_debug(),
+                        median * scale,
+                        min * scale,
+                        max * scale,
+                        result.samples_ms.len(),
+                        result.iterations
+                    );
+                }
+            }
+            _ => {
+                let failure = result.failure.as_deref().unwrap_or("produced no samples");
+                if arguments.json {
+                    println!(
+                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"failed\",\"failure\":{}{}}}",
+                        case.index,
+                        json_string(&case.module),
+                        json_string(&case.name),
+                        json_string(failure),
+                        output_field(&result.output)
+                    );
+                } else {
+                    println!(
+                        "bench {} {}: failed ({failure})",
+                        case.index,
+                        qualified.escape_debug()
+                    );
+                    print_output(&result.output);
+                }
+            }
+        }
+    }
+    let failed: Vec<_> = report
+        .results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .collect();
+    if arguments.json {
+        println!(
+            "{{\"type\":\"summary\",\"benchmarks\":{},\"failed\":{},\"ignored\":{}}}",
+            report.results.len(),
+            failed.len(),
+            report.ignored
+        );
+    } else {
+        println!(
+            "\n{} benchmark{}; {} failed; {} ignored",
+            report.results.len(),
+            if report.results.len() == 1 { "" } else { "s" },
+            failed.len(),
+            report.ignored
+        );
+    }
+    for result in &failed {
+        let diagnostic = Diagnostic::new(
+            "E2005",
+            format!(
+                "benchmark '{}.{}' {}",
+                result.case.module,
+                result.case.name,
+                result.failure.as_deref().unwrap_or_default()
+            ),
+            result.case.span,
+        );
+        let source = project.source_for(&diagnostic);
+        print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
+    }
+    if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The unit for a time per iteration of `median` milliseconds, and its factor from milliseconds.
+fn bench_unit(median: f64) -> (f64, &'static str) {
+    if median < 1e-3 {
+        (1e6, "ns")
+    } else if median < 1.0 {
+        (1e3, "us")
+    } else if median < 1e3 {
+        (1.0, "ms")
+    } else {
+        (1e-3, "s")
+    }
+}
+
+/// The `"output"` field of a failed test or bench in JSON, if it wrote to stderr.
+fn output_field(output: &str) -> String {
+    if output.is_empty() {
+        String::new()
+    } else {
+        format!(",\"output\":{}", json_string(output))
+    }
+}
+
+/// The standard error of a failed test or bench, indented under its failure line.
+fn print_output(output: &str) {
+    for line in output.lines() {
+        println!("  {line}");
     }
 }
 
@@ -1372,7 +1630,7 @@ fn main() -> ExitCode {
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
     }
-    let loaded = if arguments.action == Action::Test {
+    let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
         Project::load_for_tests(&arguments.input)
     } else if arguments.action == Action::Doc {
         Project::load_for_docs(&arguments.input)
@@ -1433,6 +1691,9 @@ fn main() -> ExitCode {
     }
     if arguments.action == Action::Test {
         return run_test_action(&arguments, &project, &module, &links);
+    }
+    if arguments.action == Action::Bench {
+        return run_bench_action(&arguments, &project, &module, &links);
     }
     let result = run_action(&arguments, &project, &module, &links);
     match result {

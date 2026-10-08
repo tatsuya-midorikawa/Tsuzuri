@@ -5,6 +5,7 @@
 pub const SOURCES: &[(&str, &str)] = &[
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
+    ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
@@ -88,6 +89,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Unicode",
     "Json",
     "Cbor",
+    "Bench",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -173,6 +175,11 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Cbor",
         names: &["Cbor"],
         uses: &["Json"],
+    },
+    OptIn {
+        module: "Bench",
+        names: &["Bench"],
+        uses: &[],
     },
 ];
 
@@ -470,7 +477,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 43);
+        assert_eq!(RESERVED_MODULES.len(), 44);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

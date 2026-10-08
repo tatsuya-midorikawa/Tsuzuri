@@ -392,6 +392,12 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 `llvm::emit_test_runner_covered` はこの計画を `Globals.coverage` に置き、`FunctionEmitter::cover` が region の block の先頭で `atomicrmw add ... monotonic` を `@tsuzuri_coverage_counters` の要素へ出します（同じ span の特殊化はカウンターを共有し、`lookup_match` の定数表は使いません）。計画がない出力は 1 byte も変わりません。
 C の入口は `-DTSUZURI_COVERAGE` のときだけ、テストが成功したらカウンターを `TSUZURI_COVERAGE_FILE` へ native の byte 順で書きます。`driver::run_tests` は成功したテストのファイルだけを飽和加算で合算し（失敗はカウンターを書く前に終わるので除外数として数える）、`coverage::files` が行ごとに point の region の最大値を取り、`render_lcov` が lcov を書きます。
 
+ベンチ宣言 `Program.benches`（G18 Phase 1）はテストと同じく通常の名前空間から隔離され、`$bench.<index> ($iterations: i64) -> i64 = { let $case: i64 -> i64 = 本体; $case $iterations }` という生成関数と `CheckedModule.benches` になります（本体の型の不一致は `$case` の注釈により本体の位置の `E1003`）。由来 `FunctionOrigin.bench` は補助関数へ伝播します。
+`polymorph::specialize` はベンチ関数の要求を、ほかのすべての特殊化（Drop の固定点を含む）が終わった後に出すので、通常ビルドとテストビルドの `$mono.N` の番号はベンチの有無で変わりません。この後半で初めて見つかった Drop 型の drop 関数は `CheckedModule.bench_drops` に記録され、`reachable_functions` はベンチ実行器のときだけそれらを根にします（ベンチ専用の型の drop glue は通常の成果物に出ません）。ただし `$lambda.N` や `$instance.N` のように関数の総数から付く生成名は、テストを足したときと同じく、ベンチや `Bench` モジュールの読み込みで番号がずれます。
+`llvm::emit_bench_runner`（`Entry::BenchRunner`）は選んだベンチ関数を根にして、`@tsuzuri_bench_count` と、index で分岐して `call i64 @tz.fn.<Module>.$bench.N(i64 %iterations)` を返す `@tsuzuri_bench_sample(i32, i64)`（不正な index は -1）を出します。組み込みの `Bench.now` は `call i64 @tsuzuri_bench_now()` に下がり、宣言がベンチ実行器以外の出力に残れば `emit_program` が `E1018` を返します。`Bench.consume` は値を entry block の alloca に store し、その pointer を `asm sideeffect "", "r,~{memory}"` に渡してから `drop_value` します。
+`runtime/bench-runner.c` は `tsuzuri_bench_now`（macOS は `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`、Linux は `_POSIX_C_SOURCE` 付きの `CLOCK_MONOTONIC`、Windows は `QueryPerformanceCounter`）と、引数 `INDEX SAMPLES TARGET_NS` を厳密に検査して（不正なら終了コード 2）反復回数を倍々に較正し、予熱の後に `iterations N` と `sample NS` の行を出す `main` を持ちます（負の時間は終了コード 3）。
+`driver::run_benches` はテストランナーと共有する `compile_native_runner`（C の入口と必要なランタイムをリンク）で実行器を 1 回だけ作り、ベンチを 1 件ずつ別プロセスで順に実行します。標準出力と標準エラーは読み取りスレッドが読み切り（パイプが満杯でも子を止めない）、300 秒で kill と wait をします。出力の形と件数を厳密に検査し、1 回あたりの時間（`ns / n / 1e6` ms）の中央値・最小・最大を報告します。合否の閾値はありません。
+
 `Debug.print` および `Debug.trace` は通常の標準ライブラリ関数として提供され、`Display` が生成した所有文字列を非公開の組み込み関数へと渡します。
 ネイティブ環境では厳密な UTF-8 変換と `runtime/debug.ll` の `write(2)` ループを用い、出力完了後に変換前後の所有バッファを確実に解放します。
 WASM のデフォルト動作では UTF-16 の表示結果バッファを解放するのみですが、オプトイン設定時には UTF-8 バッファを `tsuzuri_debug.write` へ同期転送して解放し、改行処理はホスト環境へ委ねます。
