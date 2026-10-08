@@ -621,6 +621,15 @@ parse テストも変えない。
 - 理由: G11 の `file_digest(current_exe)` は 4.5 MB の全体を毎回 hash し、0.05 s の `check` に対して無視できない。再 build は更新時刻を変え、
   entry は末尾の SHA-256 と decoder の検証で守られる。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08、独立レビューへの対応）: `CARGO_PKG_VERSION` は開発中の build で変わらず、大きさも一致しやすい（`target/perf/G17/tsuzuri-phase3` と
+  `target/release/tsuzuri` はどちらも 7,377,968 bytes で SHA-256 が違う）ので、更新時刻をそろえる install（Nix・Guix の 1、`cp -p`）では古い compiler の
+  構文木を新しい compiler が使い得た。Unix では device・inode・状態変更時刻（`ctime` と `ctime_nsec`）を加えた。状態変更時刻は書き込み・rename・
+  コピーのたびに kernel が設定し、利用者の道具では過去の値にできない。Windows（Unix 以外）では inode と状態変更時刻の代わりにパスと作成時刻を加えた
+  （安定版の std は Windows の file index と ChangeTime を返さないので、同じパスへ書き直して更新時刻を戻した場合は区別できない）。実行ファイル全体の
+  hash（G11 の方式）と、それを (device, inode, 大きさ, 更新時刻, ctime) で memo する案は、memo の鍵が同じなら同じ誤りを起こし、初回に 7 MB の hash
+  （約 40 ms）が要るので選ばなかった。費用は `current_exe` と `stat` 1 回と短い SHA-256 で、debug build で 1 回約 40 µs（`stat` だけなら約 2 µs）。
+  `identities_tell_copies_and_rewrites_apart` が、大きさと更新時刻が同じ別のファイルと、その場で書き直して更新時刻を戻したファイル（Unix）の同一性が
+  違うことを確かめる。
 
 ### D3: 構文木の直列化
 
@@ -729,11 +738,20 @@ parse テストも変えない。
     ソースではないので、新しい `package::MAX_PACKAGE_FILE_BYTES`（1 MiB）で今までどおり制限する（`E1017`、メッセージも同じ）。1〜4 MiB の `Tsuzuri.toml` は
     読み込み（`read_source_text`）が通るようになり、`E0003` ではなく `parse_manifest` の `E1017`（`package manifest exceeds 1 MiB`）になる。
   - 特殊化の上限を二段にした（`src/polymorph.rs`）。全体は 65,536 件（`MAX_SPECIALIZATIONS`、`more than 65536 specializations of generic functions; call
-    them at fewer distinct types, or use 'dyn' for values of many types`）。型が大きくなり続ける多相再帰は、特殊化を作ったインスタンス化の連鎖（各特殊化の
-    親を記録する）に同じ関数がより小さい型（型の構成要素の数）で 32 回を超えて現れたとき（`MAX_GROWTH_DEPTH`）、またはそのような「成長する」特殊化が
-    1,024 件を超えたとき（`MAX_GROWING_SPECIALIZATIONS`。分岐して指数的に増える場合）に、全体の上限より先に `E1017`（`polymorphic recursion grows
-    the types of 'Main.f' without bound; make the recursive call use the same types`）で止める。連鎖をたどるのは 1,024 段まで。インスタンスの選択で
-    有限回に終わる成長は受け付ける。`fn rec f x = f [x]` は 33 段目で、分岐する成長は 1,025 件目で止まる（どちらも 0.1 s 未満）。
+    them at fewer distinct types, or use 'dyn' for values of many types`）。型が大きくなり続ける多相再帰は全体の上限より先に `E1017`（`polymorphic
+    recursion grows the types of 'Main.f' without bound; make the recursive call use the same types`）で止める。型引数を包んだ型で自分自身を直接呼ぶ関数
+    （呼び出しの型引数で、自分の型引数の置換の閉路に「包む」辺があるもの。`f<'a>` から `f<['a]>` は止め、`f<'a, 'b>` から `f<'a, ['a]>` は不動点に
+    着くので止めない）は、最初の特殊化で拒否する（どの特殊化もより大きな特殊化を要求するので、この判定は受理されるプログラムを変えない）。ほかの関数や
+    インスタンスを経る成長は、特殊化を作ったインスタンス化の連鎖（各特殊化の親を記録する）に同じ関数がより小さい型（型の構成要素の数）で 32 回を超えて
+    現れたとき（`MAX_GROWTH_DEPTH`）に止める。連鎖をたどるのは 1,024 段まで。全体の上限を超えた特殊化がそのような成長の途中なら、メッセージは
+    「`'<関数>' keeps being specialized at larger types through its own calls, so make the recursive call use the same types`」になる。インスタンスの
+    選択で有限回に終わる成長は全体の上限にだけ数える。
+  - 見直し（2026-10-08、独立レビューへの対応）: 最初の実装は、成長した特殊化をプログラム全体で 1,024 件までとする上限
+    （`MAX_GROWING_SPECIALIZATIONS`）も持っていた。インスタンスが 1 段で終わらせる成長でも 1 件ずつ数えるので、レビューのプログラム
+    （`instance Size<Box<'a>>` が `total [b]` を呼び `instance Size<['a]>` が終える形を 1,025 種類の record で使う。特殊化は約 4,100 件）を誤った
+    メッセージで拒否し、65,536 件の約束と食い違った。この上限を外し、分岐する直接の再帰は上の直接の判定で即座に、関数を経る分岐は全体の上限で
+    （関数の名前を示して）止める。`fn rec f x = f [x]` と `f (ref x, 1)`・`f (ref x, true)` の分岐は 0.07 s、`f` と `g` を経る直線の成長は 0.08 s、
+    関数を経る分岐は全体の上限で 2.6 s（release）。レビューのプログラムは受け付け、実行結果も正しい。
   - 変えない上限: 構文の深さ `MAX_NESTING`（128。debug の 2 MiB の stack で構文解析が深さの上限に 1.5 MiB 以上を使う）、codec の `MAX_DEPTH`（512）、
     型の深さ 128・構成要素 4,096（`bounded_type`。再帰する型の処理の stack を守る）、制約 128、モジュールのパス 16 段・255 bytes、ソース 4,096 個、
     `MAX_VALUE_BYTES`、`call_specialization.rs` の worker の特殊化の予算 1,024（エラーにならない最適化の予算で、超えても通常の経路を使う）。
@@ -797,8 +815,8 @@ D10 のとおり。変更前のコンパイラに一時的な計装（`Instant` 
 
 ### Phase 3（実装）
 
-D11 のとおり。`MAX_SOURCE_BYTES` を 4 MiB、特殊化の全体の上限を 65,536 件にし、型が大きくなり続ける多相再帰を連鎖の深さ 32・成長した特殊化 1,024 件で
-早めに止める。`package::MAX_PACKAGE_FILE_BYTES`（1 MiB）を足して `Tsuzuri.toml`・`Tsuzuri.lock`・registry の index の上限を保った。計測は
+D11 のとおり。`MAX_SOURCE_BYTES` を 4 MiB、特殊化の全体の上限を 65,536 件にし、型が大きくなり続ける多相再帰を、直接の再帰は最初の特殊化で、関数を経る
+ものは連鎖の深さ 32 で早めに止める（レビューへの対応で、成長した特殊化の数の上限 1,024 件は外した）。`package::MAX_PACKAGE_FILE_BYTES`（1 MiB）を足して `Tsuzuri.toml`・`Tsuzuri.lock`・registry の index の上限を保った。計測は
 `docs/benchmarks.md` の「規模の上限（Phase 3）」、生データは `target/perf/G17/phase3/`。
 
 ### 最終確認
@@ -840,3 +858,23 @@ D11 のとおり。`MAX_SOURCE_BYTES` を 4 MiB、特殊化の全体の上限を
   `src/polymorph.rs` の単体テスト（テスト専用の小さい上限）と `tests/e2e.mjs`（本物の上限）に移ったことに合わせて直す必要がある。
 - `tests/hash_map.rs` の `hash_containers_leave_the_specialization_budget_to_users` も 1,024 件ちょうどを固定していたので、同じ名前で `src/polymorph.rs` の
   単体テストへ移した（std を読み込んだまま、テスト専用の上限ちょうどの利用者の特殊化が通ることを確かめる）。
+
+### 独立レビューへの対応（2026-10-08）
+
+`Phase7-5`（G16・G18 の取り込み後、`d0fe562`）へ fast-forward してから直した。調整役が G18 の `Program::benches` のために足した codec（`BenchDecl` を
+`tests` の後に Full の mode だけで書き、interface から除く。`pins_encoding_format` の golden は 1 byte 増え、未公開なので `FRONTEND_FORMAT` は 1 のまま）は
+正しいことを確かめた（全 field の分解、往復、`cargo test --locked --lib syntax_codec` の 13 件が成功）。
+
+- 中: 成長した特殊化のプログラム全体の上限（1,024 件）が、インスタンスが 1 段で終わらせる成長を多くの型で使う有限のプログラムを誤ったメッセージで
+  拒否していた。上限を外し、型引数を包んだ型で自分自身を直接呼ぶ関数を最初の特殊化で拒否する判定（置換の閉路の判定）を足した（D11 の見直し）。
+  回帰テスト: `tests/polymorphism.rs` の `accepts_growth_that_instances_end_for_many_types`（レビューのプログラムを 1,100 種類の record で。debug で 1.5 s）、
+  `src/polymorph.rs` の `stops_type_growing_recursion_before_the_global_limit` に関数を経る直線・分岐の成長と不動点に着く呼び出しを追加。
+- 中: `compiler_identity` に Unix の device・inode・状態変更時刻、Windows のパスと作成時刻を加えた（D2 の見直し）。回帰テスト:
+  `frontend_cache::tests::identities_tell_copies_and_rewrites_apart`。
+- 軽: `src/lsp.rs` の大きさの超過のメッセージを `source exceeds the 4194304-byte limit`（driver と同じ）にした。回帰テスト: `tests/lsp.rs` の
+  `rejects_documents_over_the_source_limit`。
+
+確認: `cargo fmt --all -- --check`・`cargo clippy --locked --all-targets -- -D warnings` が成功。`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は
+82 個のテストバイナリの 914 件がすべて成功。GUIDE §3.1 の 4 件は `RUST_MIN_STACK` なしでそれぞれ `running 1 test` で成功。release で
+`tests/frontend_cache.mjs`・`tests/cache.mjs`・`tests/e2e.mjs`・`tests/lsp_sessions.mjs` が成功。Windows の 2 target の `cargo check --all-targets`
+（rustup の 1.96.1）は警告なし（clippy は以前と同じ、変更していない式の `nonminimal_bool` だけ）。`node scripts/check-docs.mjs` を変更した 3 ページで成功。

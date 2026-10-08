@@ -3,20 +3,21 @@ use super::*;
 /// The most specializations of generic functions in one program (G17 Phase 3). A program at
 /// the limit with small generic functions checks in a few seconds and about 1 GiB.
 const MAX_SPECIALIZATIONS: usize = 65_536;
-/// Polymorphic recursion that grows its types needs ever more specializations, so it is
-/// stopped early: when the instantiations that lead to a specialization already hold the same
-/// function at smaller types this many times, and when this many specializations grew so.
+/// Polymorphic recursion that grows its types needs ever more specializations. A function that
+/// calls itself at types wrapping its own type parameters is rejected when it is first
+/// specialized; growth through other functions and instances is stopped when the
+/// instantiations that lead to a specialization already hold the same function at smaller
+/// types this many times. Growth that instances end after fewer steps only counts toward
+/// `MAX_SPECIALIZATIONS`.
 const MAX_GROWTH_DEPTH: usize = 32;
-const MAX_GROWING_SPECIALIZATIONS: usize = 1024;
 /// The ancestors that the growth check inspects; longer chains still meet the global limit.
 const MAX_LINEAGE_WALK: usize = 1024;
 const MAX_CONSTRAINTS: usize = 128;
 
-/// The specialization limits: all specializations, growing ones, and growth along one chain.
+/// The specialization limits: all specializations, and growth along one chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SpecializationLimits {
     pub(crate) total: usize,
-    pub(crate) growing: usize,
     pub(crate) depth: usize,
 }
 
@@ -34,9 +35,58 @@ fn specialization_limits() -> SpecializationLimits {
     }
     SpecializationLimits {
         total: MAX_SPECIALIZATIONS,
-        growing: MAX_GROWING_SPECIALIZATIONS,
         depth: MAX_GROWTH_DEPTH,
     }
+}
+
+/// Whether a generic function with type parameters `parameters` that calls itself at
+/// `arguments` makes every specialization request a larger one: whether a parameter whose
+/// argument wraps a parameter (rather than being one) lies on a cycle of the substitution.
+/// `f<'a, 'b>` calling `f<'a, ['a]>` reaches a fixed point; `f<'a>` calling `f<['a]>` does not.
+fn wraps_own_parameters(parameters: &[String], arguments: &[Type]) -> bool {
+    if parameters.len() != arguments.len() {
+        return false;
+    }
+    let index = |name: &str| parameters.iter().position(|parameter| parameter == name);
+    // `edges[i]` holds `(j, wrapped)` when parameter `j` occurs in the argument for `i`.
+    let edges: Vec<Vec<(usize, bool)>> = arguments
+        .iter()
+        .map(|argument| {
+            let bare = matches!(argument, Type::Variable(name) if index(name).is_some());
+            variables(argument)
+                .iter()
+                .filter_map(|name| index(name))
+                .map(|j| (j, !bare))
+                .collect()
+        })
+        .collect();
+    let reaches = |from: usize, to: usize| {
+        let mut seen = vec![false; edges.len()];
+        let mut pending = vec![from];
+        while let Some(at) = pending.pop() {
+            if at == to {
+                return true;
+            }
+            if !std::mem::replace(&mut seen[at], true) {
+                pending.extend(edges[at].iter().map(|(next, _)| *next));
+            }
+        }
+        false
+    };
+    edges
+        .iter()
+        .enumerate()
+        .any(|(i, targets)| targets.iter().any(|&(j, wrapped)| wrapped && reaches(j, i)))
+}
+
+fn growth_error(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(
+        "E1017",
+        format!(
+            "polymorphic recursion grows the types of '{name}' without bound; make the recursive call use the same types"
+        ),
+        span,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -3689,6 +3739,22 @@ pub(super) fn specialize(
         })?;
         dependencies.push(calls);
     }
+    // The first call of each function to itself at types that wrap its type parameters.
+    let wrapping_calls: BTreeMap<usize, Span> = dependencies
+        .iter()
+        .enumerate()
+        .filter_map(|(id, calls)| {
+            let parameters = &module.functions[id].type_parameters;
+            calls
+                .iter()
+                .find(|(callee, types, _)| {
+                    *callee == id
+                        && !parameters.is_empty()
+                        && wraps_own_parameters(parameters, types)
+                })
+                .map(|(_, _, span)| (id, *span))
+        })
+        .collect();
     // Constraints travel through recursive call graphs to a fixed point, independent of declaration order.
     loop {
         let mut changed = false;
@@ -3834,7 +3900,6 @@ pub(super) fn specialize(
         limits: specialization_limits(),
         lineage: Vec::new(),
         instantiating: None,
-        growing: 0,
     };
     // Benches start only after everything else is specialized, so that they never renumber the
     // instances that normal and test builds emit (G18).
@@ -3869,6 +3934,13 @@ pub(super) fn specialize(
     loop {
         while next < specializer.requests.len() {
             let (id, types) = specializer.requests[next].clone();
+            // Every specialization of such a function would request a larger one.
+            if let Some(span) = wrapping_calls.get(&id) {
+                return Err(growth_error(
+                    &specializer.templates[id].qualified_name(),
+                    *span,
+                ));
+            }
             specializer.instantiating = Some(next);
             let function = specializer.instantiate(id, &types, next)?;
             specializer.instantiating = None;
@@ -4060,8 +4132,6 @@ struct Specializer<'a> {
     lineage: Vec<(Option<usize>, usize)>,
     /// The request being instantiated.
     instantiating: Option<usize>,
-    /// The requests that polymorphic recursion made at larger types.
-    growing: usize,
 }
 
 impl Specializer<'_> {
@@ -4089,24 +4159,23 @@ impl Specializer<'_> {
             growth += usize::from(self.requests[index].0 == id && ancestor_size < size);
             ancestor = parent;
         }
-        if growth > 0 {
-            self.growing += 1;
-            if growth > self.limits.depth || self.growing > self.limits.growing {
-                return Err(Diagnostic::new(
-                    "E1017",
-                    format!(
-                        "polymorphic recursion grows the types of '{}' without bound; make the recursive call use the same types",
-                        self.templates[id].qualified_name()
-                    ),
-                    span,
-                ));
-            }
+        if growth > self.limits.depth {
+            return Err(growth_error(&self.templates[id].qualified_name(), span));
         }
         if self.requests.len() >= self.base_count + self.limits.total {
+            let advice = if growth > 0 {
+                format!(
+                    "'{}' keeps being specialized at larger types through its own calls, so make the recursive call use the same types",
+                    self.templates[id].qualified_name()
+                )
+            } else {
+                "call them at fewer distinct types, or use 'dyn' for values of many types"
+                    .to_owned()
+            };
             return Err(Diagnostic::new(
                 "E1017",
                 format!(
-                    "more than {} specializations of generic functions; call them at fewer distinct types, or use 'dyn' for values of many types",
+                    "more than {} specializations of generic functions; {advice}",
                     self.limits.total
                 ),
                 span,
@@ -4774,7 +4843,6 @@ mod tests {
     /// Limits small enough to reach in a debug test; `tests/e2e.mjs` reaches the real ones.
     const SMALL: SpecializationLimits = SpecializationLimits {
         total: 64,
-        growing: 4,
         depth: 3,
     };
 
@@ -4803,9 +4871,9 @@ mod tests {
         source.push_str("fn extra(x: [i8]) -> [i8] { id x }");
         let (code, message) = analyze_within(&[("Main", &source)]).unwrap_err();
         assert_eq!(code, "E1017");
-        assert!(
-            message.starts_with("more than 64 specializations of generic functions;"),
-            "{message}"
+        assert_eq!(
+            message,
+            "more than 64 specializations of generic functions; call them at fewer distinct types, or use 'dyn' for values of many types"
         );
     }
 
@@ -4815,7 +4883,6 @@ mod tests {
             specialization_limits(),
             SpecializationLimits {
                 total: 65_536,
-                growing: 1024,
                 depth: 32,
             }
         );
@@ -4829,15 +4896,52 @@ mod tests {
 
     #[test]
     fn stops_type_growing_recursion_before_the_global_limit() {
+        let growth = |source: &str| {
+            let (code, message) = analyze_within(&[("Main", source)]).unwrap_err();
+            assert_eq!(code, "E1017", "{source}");
+            message
+        };
+        // A function that calls itself at types wrapping its type parameter, linearly or not,
+        // is rejected when it is first specialized.
         for recursion in ["f [x]", "{ f (ref x, 1); f (ref x, true) }"] {
-            let source = format!("def rec f :: 'a -> unit\nfn rec f x = {recursion}\nf 1");
-            let (code, message) = analyze_within(&[("Main", &source)]).unwrap_err();
-            assert_eq!(code, "E1017", "{recursion}");
-            assert!(
-                message.starts_with("polymorphic recursion grows the types of 'Main.f'"),
-                "{message}"
+            let message = growth(&format!(
+                "def rec f :: 'a -> unit\nfn rec f x = {recursion}\nf 1"
+            ));
+            assert_eq!(
+                message,
+                "polymorphic recursion grows the types of 'Main.f' without bound; make the recursive call use the same types"
             );
         }
+        // Growth through another function meets the growth depth along the chain.
+        let message =
+            growth("def rec f :: 'a -> unit = \\x -> g [x]\nand g :: 'a -> unit = \\x -> f x\nf 1");
+        assert!(
+            message.starts_with("polymorphic recursion grows the types of 'Main."),
+            "{message}"
+        );
+        // Branching growth through another function meets the global limit first, which names
+        // the growing function.
+        let message = growth(
+            "def rec f :: 'a -> unit = \\x ->\n    g (ref x, 1)\n    g (ref x, true)\n    g (ref x, 1.5)\n    g (ref x, \"s\")\nand g :: 'a -> unit = \\x -> f x\nf 1",
+        );
+        assert!(
+            message.starts_with("more than 64 specializations of generic functions; 'Main."),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "' keeps being specialized at larger types through its own calls, so make the recursive call use the same types"
+            ),
+            "{message}"
+        );
+        // A call that reaches a fixed point is not growth.
+        assert_eq!(
+            analyze_within(&[(
+                "Main",
+                "def rec f :: 'a -> 'b -> unit\nfn rec f x y = f x [x]\nf 1 true"
+            )]),
+            Ok(())
+        );
         // Growth that the instances end needs only finitely many specializations.
         let steps = "class Step<'a> {\n    def step :: 'a -> i64\n}\n";
         let main = "instance Steps.Step<i64> {\n    fn rec step value = f [value]\n}\n\ninstance Steps.Step<[i64]> {\n    fn step values = values.length\n}\n\ndef rec f :: Steps.Step<'a> -> i64 = \\value -> Steps.Step.step value\n\nf 5i64\n";

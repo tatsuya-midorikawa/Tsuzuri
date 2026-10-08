@@ -51,11 +51,19 @@ const REMOVE_LIMIT: usize = 128;
 
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The compiler that wrote an entry: the format, the version, and the size and modification
-/// time of the running executable (D2), or `None` when they are unknown, which disables the
-/// cache. Hashing the whole executable, as the build cache does, would cost more than a parse.
+/// The compiler that wrote a pack (D2): the format, the version, and the identity of the
+/// running executable file, or `None` when that is unknown, which disables the cache. Hashing
+/// the whole executable, as the build cache does, would cost more than parsing a small project.
 pub(crate) fn compiler_identity() -> Option<[u8; 32]> {
-    let metadata = fs::metadata(std::env::current_exe().ok()?).ok()?;
+    executable_identity(&std::env::current_exe().ok()?)
+}
+
+/// The size and modification time of the file at `path`, and on Unix its device, inode and
+/// status-change time: the kernel sets that on every write, rename or copy, and tools that give
+/// files fixed modification times (`cp -p`, Nix) cannot set it. Elsewhere the path and the
+/// creation time stand in for the inode and the status-change time.
+fn executable_identity(path: &Path) -> Option<[u8; 32]> {
+    let metadata = fs::metadata(path).ok()?;
     let modified = metadata
         .modified()
         .ok()?
@@ -67,6 +75,25 @@ pub(crate) fn compiler_identity() -> Option<[u8; 32]> {
     hash.field("compiler-version", env!("CARGO_PKG_VERSION").as_bytes());
     hash.field("compiler-length", &metadata.len().to_le_bytes());
     hash.field("compiler-modified", &modified.to_le_bytes());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        hash.field("compiler-device", &metadata.dev().to_le_bytes());
+        hash.field("compiler-inode", &metadata.ino().to_le_bytes());
+        hash.field("compiler-changed", &metadata.ctime().to_le_bytes());
+        hash.field("compiler-changed-ns", &metadata.ctime_nsec().to_le_bytes());
+    }
+    #[cfg(not(unix))]
+    {
+        hash.field("compiler-path", path.as_os_str().as_encoded_bytes());
+        let created = metadata
+            .created()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        hash.field("compiler-created", &created.to_le_bytes());
+    }
     Some(hash.finalize())
 }
 
@@ -824,6 +851,48 @@ mod tests {
 
     fn modified(path: &Path) -> std::time::SystemTime {
         fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    #[test]
+    fn identities_tell_copies_and_rewrites_apart() {
+        let (temporary, _root) = root();
+        let first = temporary.path.join("first");
+        let second = temporary.path.join("second");
+        // Nix gives every file the modification time 1.
+        let stamp = UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let write = |path: &Path, bytes: &[u8]| {
+            fs::write(path, bytes).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(stamp)
+                .unwrap();
+        };
+        write(&first, b"compiler one");
+        write(&second, b"compiler two");
+        let identity = executable_identity(&first).unwrap();
+        assert_eq!(executable_identity(&first), Some(identity));
+        // Another file of the same size and modification time.
+        assert_ne!(executable_identity(&second), Some(identity));
+        // The same file rewritten in place with its old time, as `cp -p` onto it does.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let changed = |path: &Path| {
+                let metadata = fs::metadata(path).unwrap();
+                (metadata.ctime(), metadata.ctime_nsec())
+            };
+            let before = changed(&first);
+            write(&first, b"compiler new");
+            if changed(&first) == before {
+                // A file system with coarse status-change times.
+                std::thread::sleep(std::time::Duration::from_millis(1100));
+                write(&first, b"compiler new");
+            }
+            assert_ne!(executable_identity(&first), Some(identity));
+        }
+        assert!(executable_identity(&temporary.path.join("missing")).is_none());
     }
 
     #[test]
