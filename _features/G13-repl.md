@@ -612,7 +612,10 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 状態: 既定案（実装者はこの案に従う）
 - 見直し（2026-10-08）: overlay（`Project::load_with_overlays`）ではなく、新しい `Project::single_main(path, text)` で読む。`load_with_overlays` は言語サーバー用で opt-in の std（D-40）を全部読み込むため、`tsuzuri run` と std の集合が違い、検査も遅い（`Json` を 1 つ名指すだけで `tsuzuri check` が 65 ms → 124 ms。M1 Max、各 9 回の中央値）。`single_main` はファイル・マニフェスト・lockfile を読まず、`stdlib::sources_for` で std を選ぶので、同じ文字列を `Main.tz` に置いた `run` と同じ検査・IR になる。一時ディレクトリは要らず、生成した `Main.tz` のパスは仮想の `<repl>/Main.tz`（ディスクに書かない）。このパスはキャッシュのキーとトラップの行に入り、実行ごとに変わらない。
 - 見直し（2026-10-08）: 宣言の分け方を「名前の行頭から次の宣言の行頭まで」から、parser の回復境界（`is_top_level_declaration_start` の字句が括弧の外の行頭にある位置。`pub(crate)` にした）で区切る塊に変えた。文書コメント `///` と属性 `@cpu` などは次の宣言の塊に、`and` は再帰群の塊に入る。塊は AST の名前の位置と、`def`／`and` の後の名前（別に書いたシグネチャの塊には AST の名前がない）で鍵を持ち、鍵を共有する塊は一つの項目になる（`def f :: T` と離れた `fn f x = ...`、再帰群）。同じ行の二つの宣言も一つの項目で、`E2000`（`put each declaration on its own line in the REPL`）は作らなかった。HEAD で増えた `namespace`・`using`（D-35・D-37）と `extern type` も `E2000` で拒否する。
+- 見直し（2026-10-08、レビュー後）: 宣言の塊の区切りを、parser の回復境界（行頭・列 0 の字句）から、parser が各トップレベル宣言を始めた位置に変えた（`Program::declaration_starts`。parser の動作は変えず、位置を記録するだけ。`tsuzuri fmt` の比較からは除く）。列 0 でない宣言や `/* c */ def g` のような宣言を黙って落とす不具合と、1 行の `@literal def A ...` が次の宣言を取り込む不具合を直した。宣言の行の前に空白とコメントしかなければ、それも宣言の項目に入れる（`:list` は書いたとおり）。`def a ...; def b ...` は二つの項目になる（同じ行の二つの宣言の扱いの上の記述を改める）。再帰群は群の名前（最初の関数の名前）を共通の鍵にしてまとめる。`is_top_level_declaration_start` は元どおり非公開に戻した。
 - 見直し（2026-10-08）: parser は `;` で終わる式（`c = c + 1;`）を名前が `Provenance::Generated` の束縛にする。これも文として順にセッションに残し（鍵なし、`:reset` まで残る）、`name: T` は出さない。`;` のない最後の式だけが「式」になる。
+- 見直し（2026-10-08、レビュー後）: その文の `;` も項目に残す。parser は `;` で終わる文の型を問わないが、改行で区切られた最後でない式は `unit` でなければならない（`src/parse_control.rs` の `layout_block`）。`;` を落とすと `1 + 1;` の後のすべての入力が `session:1:1: error[E1003]` になっていた。改行で区切った文（`unit`）は書いたとおり `;` なしで残す。`let _ = ...` は値を捨てる文と同じく鍵を持たない。
+- 見直し（2026-10-08、レビュー後）: アクションは最初の行の桁ぶんの空白で埋めていたが、それでは前のセッションの文（列 0）の後でトップレベルの計算として読まれず `E0002` になった。最も浅い行が列 0 になるように行をまとめて左へ寄せ（最初の行は始まりの位置から数える）、位置は行ごとの対応で入力へ写す。
 
 ### D3: 式の包み方と結果の表示
 
@@ -810,3 +813,20 @@ HEAD `1182045`（`Phase7-5`）から、ブランチ `wt/g13` で 3 Phase を実�
   変更していない `src/lsp.rs:806` と `src/parser.rs:2046` に `nonminimal_bool` を出す）。
 - 変更したファイル: `src/repl.rs`（新規）、`src/driver.rs`、`src/main.rs`、`src/lib.rs`、`src/lexer.rs`、`src/formatter.rs`、`src/parser.rs`、`tests/repl.mjs`（新規）、`tests/script.mjs`（新規）、
   `tests/formatter.rs`、`tests/lsp.rs`、`benchmarks/run-repl.mjs`（新規）、上の文書、このチケット。
+
+### レビュー指摘の修正（2026-10-08）
+
+独立レビューが `src/repl.rs` の入力の分け方と再生成に 3 件の不具合を見つけたので直した（決定事項の D2 の「見直し（2026-10-08、レビュー後）」）。
+
+1. `;` で終わる名前のない文（`1 + 1;`）が `;` を失い、以後のすべての入力が `E1003`（`expected unit, found i32`）になる。`1 + 1; let z = 2` も拒否される。→ `;` を項目に残す。
+2. 列 0 でない宣言（`  def f ...`、`/* c */ def g ...`）を黙って落とす。インデントしたアクションは前のセッションの文の後で `E0002` になる。→ parser が記録した宣言の開始位置で区切り、アクションの行を左へ寄せる。
+3. 1 行の属性つき宣言（`@literal def A :: i32 = 5`、`@cpu [...] def f ...`）が次の宣言を取り込み、その宣言の再定義で `A` が消える。→ 1 と同じく parser の開始位置で区切る。
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo test --locked --lib repl::` | `running 18 tests`、成功（`keeps_the_semicolon_of_statements`、`splits_declarations_where_the_parser_starts_them`、`moves_indented_actions_to_column_zero` を足した） |
+| `node tests/repl.mjs target/release/tsuzuri` | 23 セッション（R1〜R21）成功。足した R19〜R21 の期待値は同じ内容の `Main.tz` の `tsuzuri run`（`1 + 1;`・`2 + 3` で 5、`1 + 1;`・`1 + 1; let z = 2`・`z` で 2、インデントとコメントつきの宣言で `f 1` = 2・`g 2` = 6・`twice (inc 4)` = 10、左へ寄せたアクション `let base = 6`・`do! IO.write_line (to_string base)` で 6、`@literal def A` と新しい `f` で `f 1` = 7・`A` = 5）から作った。3 件とも修正前のコンパイラでは失敗し、修正後は成功する |
+| `node tests/script.mjs target/release/tsuzuri` | 成功 |
+| 生成 IR | `examples/` と `tests/fixtures/` の 75 プロジェクト × native・wasm32 × `-O0`・`-O3` の 300 件が `1182045` と byte 単位で一致 |
+| `RUST_MIN_STACK=4194304 cargo test --locked` | 79 個のテストバイナリ、875 件成功、失敗 0（lib 131、bin 14） |
+| GUIDE §3.1 の 4 件（`RUST_MIN_STACK` なし）、`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` | 成功 |

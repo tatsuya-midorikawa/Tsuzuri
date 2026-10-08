@@ -12,7 +12,9 @@ use crate::check::CheckedModule;
 use crate::check::semantic::SemanticIndex;
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Severity, Span};
 use crate::driver::{self, BuildOptions, Project};
-use crate::syntax::{Expr, ExprKind, Ident, MAX_SOURCE_BYTES, Program, Provenance, TokenKind};
+use crate::syntax::{
+    Expr, ExprKind, Ident, MAX_SOURCE_BYTES, Program, Provenance, Token, TokenKind,
+};
 
 /// The REPL's command-line settings.
 #[derive(Clone, Copy, Debug)]
@@ -391,8 +393,8 @@ enum Body {
     None,
     /// An expression and its offset in the input.
     Expression(String, usize),
-    /// Top-level `let!`, `do!`, or `match!` code and its offset in the input.
-    Action(String, usize),
+    /// Top-level `let!`, `do!`, or `match!` code, moved left, and its pieces in the input.
+    Action(String, Vec<(usize, usize)>),
 }
 
 #[derive(Debug)]
@@ -415,7 +417,9 @@ impl Input {
     fn anchor(&self) -> usize {
         match &self.body {
             Body::Expression(_, offset) => *offset,
-            Body::Action(text, offset) => offset + (text.len() - text.trim_start().len()),
+            Body::Action(text, pieces) => {
+                input_offset(pieces, text.len() - text.trim_start().len())
+            }
             Body::None => self
                 .bindings
                 .first()
@@ -478,9 +482,10 @@ fn classify(path: &str, text: String, program: &Program) -> Result<Input, Diagno
         .entry
         .as_ref()
         .map_or(text.len(), |entry| entry.span.start);
-    let declarations = declarations(&text, end, program);
+    let tokens = crate::lexer::lex(&text).unwrap_or_default();
+    let declarations = declarations(&text, &tokens, end, program);
     let (bindings, body) = match &program.entry {
-        Some(entry) => statements(&text, entry),
+        Some(entry) => statements(&text, &tokens, entry),
         None => (Vec::new(), Body::None),
     };
     Ok(Input {
@@ -492,47 +497,32 @@ fn classify(path: &str, text: String, program: &Program) -> Result<Input, Diagno
     })
 }
 
-/// The declarations before `end`, one item per group of top-level chunks that share a name.
-/// A chunk starts at a line whose first token, outside brackets, can begin a declaration (the
-/// parser's recovery rule); doc comments and attributes start the chunk of the declaration
-/// after them, and `and` continues a recursive group. A signature and its separate `fn` or
-/// `let` definition become one item.
-fn declarations(text: &str, end: usize, program: &Program) -> Vec<Item> {
-    let tokens = crate::lexer::lex(text).unwrap_or_default();
-    let mut starts = Vec::new();
-    let mut depth = 0usize;
-    let mut prefix = false;
-    for token in tokens.iter().take_while(|token| token.span.start < end) {
-        let line = line_start(text, token.span.start);
-        if depth == 0 && token.span.start == line {
-            match &token.kind {
-                TokenKind::DocComment(_) | TokenKind::At => {
-                    if !prefix {
-                        starts.push(line);
-                    }
-                    prefix = true;
-                }
-                kind if crate::parser::is_top_level_declaration_start(kind) => {
-                    if !prefix {
-                        starts.push(line);
-                    }
-                    prefix = false;
-                }
-                _ => {}
+/// The declarations before `end`, one item per group of declarations that share a name. Each
+/// top-level declaration runs from where the parser started it (`Program::declaration_starts`,
+/// at any column, its doc comment and attributes included; from its line's start when only
+/// spaces and comments come before it there) to where the next one starts, so no declaration
+/// is left out. A signature and its separate `fn` or `let` definition, and the
+/// members of a recursive `and` group, become one item.
+fn declarations(text: &str, tokens: &[Token], end: usize, program: &Program) -> Vec<Item> {
+    let starts: Vec<usize> = program
+        .declaration_starts
+        .iter()
+        .copied()
+        .filter(|start| *start < end)
+        .map(|start| {
+            // Spaces and comments before a declaration on its line stay with it.
+            let line = line_start(text, start);
+            let first = tokens.partition_point(|token| token.span.start < line);
+            if tokens
+                .get(first)
+                .is_some_and(|token| token.span.start == start)
+            {
+                line
+            } else {
+                start
             }
-        }
-        depth = match token.kind {
-            TokenKind::LeftParen
-            | TokenKind::LeftBracket
-            | TokenKind::LeftBrace
-            | TokenKind::LeftList => depth + 1,
-            TokenKind::RightParen
-            | TokenKind::RightBracket
-            | TokenKind::RightBrace
-            | TokenKind::RightList => depth.saturating_sub(1),
-            _ => depth,
-        };
-    }
+        })
+        .collect();
     let user = |name: &Ident| name.provenance == Provenance::User;
     let mut anchors: Vec<(usize, Key)> = Vec::new();
     let value = |name: &Ident| (name.span.start, Key::Value(name.text.clone()));
@@ -544,6 +534,14 @@ fn declarations(text: &str, end: usize, program: &Program) -> Vec<Item> {
             .map(|f| &f.name)
             .filter(|name| user(name))
             .map(value),
+    );
+    // A recursive group is named after its first function, which every member shares.
+    anchors.extend(
+        program
+            .functions
+            .iter()
+            .filter(|f| user(&f.name))
+            .filter_map(|f| Some((f.name.span.start, Key::Value(f.recursion.clone()?)))),
     );
     anchors.extend(
         program
@@ -605,7 +603,7 @@ fn declarations(text: &str, end: usize, program: &Program) -> Vec<Item> {
             .filter(|(at, _)| (start..end).contains(at))
             .map(|(_, key)| key.clone())
             .collect();
-        keys.extend(signature_names(&tokens, start, end));
+        keys.extend(signature_names(tokens, start, end));
         let mut target: Option<usize> = None;
         let mut group = 0;
         while group < groups.len() {
@@ -655,7 +653,7 @@ fn declarations(text: &str, end: usize, program: &Program) -> Vec<Item> {
 
 /// The names after `def` and `and` (past `rec`) outside brackets in `start..end`: a signature
 /// whose definition is a separate `fn` or `let` has no AST name in its own chunk.
-fn signature_names(tokens: &[crate::syntax::Token], start: usize, end: usize) -> Vec<Key> {
+fn signature_names(tokens: &[Token], start: usize, end: usize) -> Vec<Key> {
     let mut names = Vec::new();
     let mut depth = 0usize;
     let chunk: Vec<_> = tokens
@@ -692,19 +690,11 @@ fn signature_names(tokens: &[crate::syntax::Token], start: usize, end: usize) ->
 
 /// The entry code's top-level statements (named `let`s and `;`-ended statements, kept in the
 /// session) and its body, which is evaluated once.
-fn statements(text: &str, entry: &Expr) -> (Vec<Item>, Body) {
-    let action = |start: usize| {
-        // Keep the first line's column, so the following lines keep their layout.
-        let column = start - line_start(text, start);
-        Body::Action(
-            format!("{}{}", " ".repeat(column), text[start..].trim_end()),
-            start - column,
-        )
-    };
+fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
     let ExprKind::Block { bindings, result } = &entry.kind else {
         return match entry.kind {
             ExprKind::Computation(..) | ExprKind::ComputationBoundary(_) => {
-                (Vec::new(), action(entry.span.start))
+                (Vec::new(), action(text, entry.span.start))
             }
             _ => (
                 Vec::new(),
@@ -718,9 +708,19 @@ fn statements(text: &str, entry: &Expr) -> (Vec<Item>, Body) {
     let mut items = Vec::new();
     let mut boundary = entry.span.start;
     for binding in bindings {
-        let end = binding.value.span.end;
+        let mut end = binding.value.span.end;
+        // A statement that ended with `;` keeps it: without it, a statement that another one
+        // follows must be `unit` (the parser's layout rule), so `1 + 1;` would no longer check.
+        if binding.name.provenance == Provenance::Generated
+            && binding.annotation.is_none()
+            && let Some(next) = tokens.get(tokens.partition_point(|token| token.span.start < end))
+            && next.kind == TokenKind::Semicolon
+        {
+            end = next.span.end;
+        }
         let start = skip_separators(text, boundary, end);
-        let named = binding.name.provenance == Provenance::User;
+        // `let _ = ...` discards its value like a statement, so it replaces nothing.
+        let named = binding.name.provenance == Provenance::User && binding.name.text != "_";
         items.push(Item {
             keys: if named {
                 vec![Key::Binding(binding.name.text.clone())]
@@ -736,10 +736,41 @@ fn statements(text: &str, entry: &Expr) -> (Vec<Item>, Body) {
     let start = skip_separators(text, boundary, text.len());
     let body = match result.kind {
         ExprKind::Unit if result.span.start == result.span.end => Body::None,
-        ExprKind::Computation(..) | ExprKind::ComputationBoundary(_) => action(start),
+        ExprKind::Computation(..) | ExprKind::ComputationBoundary(_) => action(text, start),
         _ => Body::Expression(text[start..].trim_end().to_owned(), start),
     };
     (items, body)
+}
+
+/// The action from `start` to the end of the input. Its lines move left together until the
+/// least indented starts at column 0 (the first line counts from `start`): after the
+/// session's statements, a top-level `let!` or `do!` must start at column 0 to begin the
+/// computation, as the first statement of the input could start anywhere.
+fn action(text: &str, start: usize) -> Body {
+    let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
+    let mut lines = Vec::new();
+    let mut offset = start;
+    for line in text[start..].trim_end().split('\n') {
+        lines.push((offset, line));
+        offset += line.len() + 1;
+    }
+    let column = start - line_start(text, start);
+    let common = lines
+        .iter()
+        .skip(1)
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(_, line)| indent(line))
+        .fold(column, usize::min);
+    let mut action = " ".repeat(column - common);
+    let mut pieces = vec![(0, start - action.len())];
+    action.push_str(lines[0].1);
+    for &(offset, line) in &lines[1..] {
+        action.push('\n');
+        let removed = indent(line).min(common);
+        pieces.push((action.len(), offset + removed));
+        action.push_str(&line[removed..]);
+    }
+    Body::Action(action, pieces)
 }
 
 /// What a part of a generated `Main.tz` maps back to.
@@ -772,7 +803,7 @@ enum Tail<'a> {
     Check(&'a str, usize),
     /// `let it = (E)` and `Display.display (ref it)`, which also prints its value (D3).
     Show(&'a str, usize),
-    Action(&'a str, usize),
+    Action(&'a str, &'a [(usize, usize)]),
 }
 
 /// A generated `Main.tz`: the merged declarations, then the merged statements, then the tail.
@@ -892,8 +923,8 @@ fn generate(session: &Session, input: &Input, tail: Tail<'_>) -> Generated {
                 generated.push(Origin::Display, "Display.display (ref it)\n");
             }
         }
-        Tail::Action(action, offset) => {
-            generated.push(Origin::Body(offset), action);
+        Tail::Action(action, pieces) => {
+            generated.push(Origin::Input(pieces.to_vec()), action);
             generated.push(Origin::Wrapper, "\n");
         }
     }
@@ -993,13 +1024,7 @@ impl Repl {
                 command_error(errors, line, ":load requires one .tz file path")?
             }
             "load" => match driver::read_source(Path::new(argument)) {
-                Ok(text) => {
-                    let text = text
-                        .strip_prefix('\u{feff}')
-                        .unwrap_or(&text)
-                        .replace("\r\n", "\n");
-                    self.source(argument, text, output, errors)?;
-                }
+                Ok(text) => self.source(argument, text.replace("\r\n", "\n"), output, errors)?,
                 Err(error) => render(errors, [(&error, "input", line)])?,
             },
             _ => command_error(
@@ -1062,6 +1087,11 @@ impl Repl {
         output: &mut impl Write,
         errors: &mut impl Write,
     ) -> io::Result<()> {
+        // The session's text is joined from pieces, so a byte order mark cannot stay in it.
+        let text = match text.strip_prefix('\u{feff}') {
+            Some(rest) => rest.to_owned(),
+            None => text,
+        };
         let program = match crate::parser::parse(&text) {
             Ok(program) => program,
             Err(error) => return render(errors, [(&error, path, text.as_str())]),
@@ -1078,8 +1108,8 @@ impl Repl {
             Body::Expression(expression, offset) => {
                 self.expression(&input, &expression, offset, output, errors)?
             }
-            Body::Action(action, offset) => {
-                let generated = generate(&self.session, &input, Tail::Action(&action, offset));
+            Body::Action(action, pieces) => {
+                let generated = generate(&self.session, &input, Tail::Action(&action, &pieces));
                 match self.check(&generated, &input, errors, false)? {
                     Some(checked) => match self.evaluate(&checked, &generated, &input, errors)? {
                         Some(stdout) => {
@@ -1392,10 +1422,11 @@ mod tests {
 
     #[test]
     fn keeps_bindings_without_expression() {
+        // A `;`-ended statement keeps its `;` (see `keeps_the_semicolon_of_statements`).
         let input = classify_text("let a = 1; let b = a;  c = c + 1;");
         assert_eq!(
             texts(&input.bindings),
-            ["let a = 1", "let b = a", "c = c + 1"]
+            ["let a = 1", "let b = a", "c = c + 1;"]
         );
         assert_eq!(input.bindings[2].keys, []);
         assert_eq!(input.bindings[2].binding, None);
@@ -1411,7 +1442,7 @@ mod tests {
         let action = classify_text("do! IO.write_line \"hello\"");
         assert_eq!(
             action.body,
-            Body::Action("do! IO.write_line \"hello\"".into(), 0)
+            Body::Action("do! IO.write_line \"hello\"".into(), vec![(0, 0)])
         );
         // `let` and `do!` together are one computation that the session does not keep.
         let mixed = classify_text("let base = 6\ndo! IO.write_line (to_string base)");
@@ -1481,7 +1512,8 @@ mod tests {
                 "/// Doubles.\n@cpu [\"avx2\"]\ndef double :: i64 -> i64 = \\x -> x + x",
                 "def f :: i64 -> i64\nfn f x = double x",
                 "def rec even :: i64 -> bool = \\n -> if n == 0 then true else odd (n - 1)\nand odd :: i64 -> bool = \\n -> if n == 0 then false else even (n - 1)",
-                "def a :: i64 = 1; def b :: i64 = 2",
+                "def a :: i64 = 1;",
+                "def b :: i64 = 2",
             ]
         );
         let keys: Vec<_> = input
@@ -1494,7 +1526,8 @@ mod tests {
             keys[2],
             [Key::Value("even".into()), Key::Value("odd".into())]
         );
-        assert_eq!(keys[3], [Key::Value("a".into()), Key::Value("b".into())]);
+        assert_eq!(keys[3], [Key::Value("a".into())]);
+        assert_eq!(keys[4], [Key::Value("b".into())]);
         // A file's `#!` line is not part of its first declaration.
         let script = classify_text("#!/usr/bin/env tsuzuri script\ndef one :: i32 = 1\n");
         assert_eq!(texts(&script.declarations), ["def one :: i32 = 1"]);
@@ -1503,6 +1536,139 @@ mod tests {
             input_offset(&input.declarations[1].pieces, 20),
             input.text.find("fn f").unwrap()
         );
+    }
+
+    #[test]
+    fn keeps_the_semicolon_of_statements() {
+        // Without its `;`, a statement that another follows must be `unit`, so the session
+        // `1 + 1` would reject every later input with E1003 (`tsuzuri run` of `1 + 1\n2 + 3` does).
+        let alone = classify_text("1 + 1;");
+        assert_eq!(texts(&alone.bindings), ["1 + 1;"]);
+        assert_eq!(alone.body, Body::None);
+        let current = Session::default().merged(&alone);
+        assert_eq!(current.listing(), "1 + 1;\n");
+        let next = classify_text("2 + 3");
+        let show = generate(&current, &next, Tail::Show("2 + 3", 0));
+        assert!(analyze(&show.text, false).1.is_ok(), "{}", show.text);
+        let mixed = classify_text("1 + 1 ; let z = 2");
+        assert_eq!(texts(&mixed.bindings), ["1 + 1 ;", "let z = 2"]);
+        let generated = generate(&current, &mixed, Tail::None);
+        assert!(
+            analyze(&generated.text, false).1.is_ok(),
+            "{}",
+            generated.text
+        );
+        // A statement on its own line, which must be `unit`, stays as it was written.
+        let lines = classify_text("let mut c = 1\nc = c + 1\nlet d = c");
+        assert_eq!(
+            texts(&lines.bindings),
+            ["let mut c = 1", "c = c + 1", "let d = c"]
+        );
+        // `let _` discards its value like a statement, so it replaces nothing.
+        assert_eq!(classify_text("let _ = 1").bindings[0].keys, []);
+    }
+
+    #[test]
+    fn splits_declarations_where_the_parser_starts_them() {
+        for (text, expected) in [
+            (
+                "  def f :: i32 -> i32 = \\x -> x + 1",
+                &["  def f :: i32 -> i32 = \\x -> x + 1"][..],
+            ),
+            (
+                "/* c */ def g :: i32 -> i32 = \\x -> x\n/* d */ def h :: i32 = 1",
+                &[
+                    "/* c */ def g :: i32 -> i32 = \\x -> x",
+                    "/* d */ def h :: i32 = 1",
+                ],
+            ),
+            (
+                "@literal def A :: i32 = 5\ndef f :: i32 -> i32 = \\x -> x + A",
+                &[
+                    "@literal def A :: i32 = 5",
+                    "def f :: i32 -> i32 = \\x -> x + A",
+                ],
+            ),
+            (
+                "@cpu [\"avx2\"] def h :: i64 -> i64 = \\x -> x\ndef k :: i64 = 1",
+                &[
+                    "@cpu [\"avx2\"] def h :: i64 -> i64 = \\x -> x",
+                    "def k :: i64 = 1",
+                ],
+            ),
+            (
+                "  def f :: i32 -> i32 = \\x ->\n      let y = x + 1\n      y\n  def g :: i32 = 2",
+                &[
+                    "  def f :: i32 -> i32 = \\x ->\n      let y = x + 1\n      y",
+                    "  def g :: i32 = 2",
+                ],
+            ),
+        ] {
+            assert_eq!(texts(&classify_text(text).declarations), expected, "{text}");
+        }
+        // Redefining `f` leaves the constant that came before it on its own line.
+        let current = Session::default()
+            .merged(&classify_text(
+                "@literal def A :: i32 = 5\ndef f :: i32 -> i32 = \\x -> x + A",
+            ))
+            .merged(&classify_text("def f :: i32 -> i32 = \\x -> x + A + 1"));
+        assert_eq!(
+            texts(&current.declarations),
+            [
+                "@literal def A :: i32 = 5",
+                "def f :: i32 -> i32 = \\x -> x + A + 1"
+            ]
+        );
+        let show = generate(&current, &classify_text("f 1"), Tail::Show("f 1", 0));
+        assert!(analyze(&show.text, false).1.is_ok(), "{}", show.text);
+        // An indented declaration is kept, not dropped: it checks and `:list` shows it.
+        let (output, errors) = session("  def f :: i32 -> i32 = \\x -> x + 1\n:list\n:type f 1\n");
+        assert_eq!(
+            output, "  def f :: i32 -> i32 = \\x -> x + 1\ni32\n",
+            "{errors}"
+        );
+    }
+
+    #[test]
+    fn moves_indented_actions_to_column_zero() {
+        let single = classify_text("   do! IO.write_line \"a\"");
+        assert_eq!(
+            single.body,
+            Body::Action("do! IO.write_line \"a\"".into(), vec![(0, 3)])
+        );
+        let text = "  do! IO.write_line \"a\"\n  do! IO.write_line \"b\"";
+        let lines = classify_text(text);
+        assert_eq!(
+            lines.body,
+            Body::Action(
+                "do! IO.write_line \"a\"\ndo! IO.write_line \"b\"".into(),
+                vec![(0, 2), (22, 26)]
+            )
+        );
+        // After the session's statements, the moved action still begins the computation.
+        let current = Session::default().merged(&classify_text("let base = 6"));
+        let input = classify_text("   do! IO.write_line (to_string base)");
+        let Body::Action(action, pieces) = &input.body else {
+            panic!("{:?}", input.body)
+        };
+        let generated = generate(&current, &input, Tail::Action(action, pieces));
+        assert!(
+            analyze(&generated.text, false).1.is_ok(),
+            "{}",
+            generated.text
+        );
+        // Positions in the moved lines map back to the input.
+        let wrong = classify_text("   do! IO.write_line missing_name");
+        let Body::Action(action, pieces) = &wrong.body else {
+            panic!("{:?}", wrong.body)
+        };
+        let generated = generate(&current, &wrong, Tail::Action(action, pieces));
+        let (project, result) = analyze(&generated.text, false);
+        let errors = result.expect_err("the name is unknown").diagnostics;
+        let (path, text, offset) = generated.locate(errors[0].span, &project, &wrong, "");
+        let in_program = generated.text[errors[0].span.start..].lines().next();
+        assert_eq!((path, Some(&text[offset..])), ("input", in_program));
+        assert_eq!(offset, "   do! ".len());
     }
 
     #[test]

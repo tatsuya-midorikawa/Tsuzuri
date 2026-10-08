@@ -184,5 +184,50 @@ check("R18", [":load Shapes.tz", "(shift (Point { x: 1, y: 2 })).x", "Point { x:
   "/// Moves right.\ndef width :: i64 = 3",
 ], { files: { "Shapes.tz": shapes }, quiet: true });
 
+// A statement that ends with ';' keeps it in the session: `tsuzuri run` of `1 + 1;` and `2 + 3`
+// prints 5, and of `1 + 1;`, `1 + 1; let z = 2`, and `z` prints 2 (without the ';', a statement
+// that another follows must be unit, which `1 + 1` is not).
+check("R19", ["1 + 1;", ":list", "2 + 3", "1 + 1; let z = 2", "z"],
+  ["1 + 1;", "it: i32 = 5", "z: i32", "it: i32 = 2"], { quiet: true });
+
+// Declarations at any column, or after a comment on their line, are kept as written: `tsuzuri run`
+// of the same lines prints `f 1` = 2, `g 2` = 6, and `twice (inc 4)` = 10. An indented action runs
+// after the session's statements as it does alone (`run` of the moved line after `let base = 6`
+// prints 6).
+const indented = "  def twice :: i32 -> i32 = \\x -> x * 2\n/* note */ def inc :: i32 -> i32 = \\x -> x + 1\n";
+check("R20", [
+  "  def f :: i32 -> i32 = \\x -> x + 1",
+  "/* c */ def g :: i32 -> i32 = \\x -> x * 3",
+  "f 1",
+  "g 2",
+  "let base = 6",
+  "   do! IO.write_line (to_string base)",
+  ":load Indented.tz",
+  "twice (inc 4)",
+  ":list",
+], [
+  "it: i32 = 2",
+  "it: i32 = 6",
+  "base: i32",
+  "6",
+  "it: i32 = 10",
+  "  def f :: i32 -> i32 = \\x -> x + 1",
+  "/* c */ def g :: i32 -> i32 = \\x -> x * 3",
+  "  def twice :: i32 -> i32 = \\x -> x * 2",
+  "/* note */ def inc :: i32 -> i32 = \\x -> x + 1",
+  "let base = 6",
+], { files: { "Indented.tz": indented }, quiet: true });
+
+// An attribute on the same line as its declaration does not take in the next declaration, so
+// redefining `f` keeps `A`: `tsuzuri run` of `@literal def A :: i32 = 5`, the new `f`, and `f 1`
+// prints 7, and with `A` prints 5.
+const constants = "@literal def A :: i32 = 5\ndef f :: i32 -> i32 = \\x -> x + A\n";
+check("R21", [":load Consts.tz", "def f :: i32 -> i32 = \\x -> x + A + 1", "f 1", "A", ":list"], [
+  "it: i32 = 7",
+  "it: i32 = 5",
+  "@literal def A :: i32 = 5",
+  "def f :: i32 -> i32 = \\x -> x + A + 1",
+], { files: { "Consts.tz": constants }, quiet: true });
+
 rmSync(root, { recursive: true, force: true });
 console.log("REPL: scripted sessions, redefinition, session state, commands, limits, diagnostics, and -O0/-O3 passed");

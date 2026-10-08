@@ -20,10 +20,7 @@ fn duplicate_active_case(case: &Ident) -> Diagnostic {
     )
 }
 
-/// Whether a token at the start of a line, outside brackets, can begin a top-level
-/// declaration or the entry code. Error recovery resumes there, and the REPL splits an
-/// input's declarations there (`src/repl.rs`).
-pub(crate) fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
+fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
     matches!(
         kind,
         TokenKind::DocComment(_)
@@ -292,6 +289,7 @@ impl Parser<'_> {
             entry: None,
             dyn_types: Vec::new(),
             cpu_attributes: Vec::new(),
+            declaration_starts: Vec::new(),
         };
         let mut signatures = BTreeMap::new();
         let mut definitions = Vec::new();
@@ -620,6 +618,10 @@ impl Parser<'_> {
                 definition_group = None;
             } else if program.entry.is_some() {
                 break;
+            } else {
+                program
+                    .declaration_starts
+                    .push(self.tokens[start].span.start);
             }
         }
         if !diagnostics.is_empty() {

@@ -275,8 +275,9 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
     if let Some(entry) = &mut program.entry {
         canonical.expression(entry);
     }
-    // The `dyn` types repeat types already in the tree (A14).
+    // The `dyn` types repeat types already in the tree (A14); declaration starts are positions.
     program.dyn_types.clear();
+    program.declaration_starts.clear();
     for attribute in &mut program.cpu_attributes {
         canonical.ident(&mut attribute.function);
     }
