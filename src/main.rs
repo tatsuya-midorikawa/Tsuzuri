@@ -17,6 +17,9 @@ Usage:
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
+    tsuzuri test source.tz|directory --index N -g -o PATH [--json]
+                             Build test N alone with debug information as PATH without running it;
+                             a debugger starts PATH with the printed argument 0
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
   tsuzuri new directory [--namespace NAME]
@@ -86,7 +89,8 @@ Build options:
                          executables; Tsuzuri.toml [native] link/libraries/search come first
   --json                 Emit machine-readable diagnostics on stderr
     --no-cache             Disable build/run artifact cache reads and writes
-    -g, --debug-info        Emit source-level DWARF debug information
+    -g, --debug-info        Emit source-level DWARF debug information (Windows links with the
+                            MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
     --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
     --debug-output         Enable WASM Debug output imports (native always writes)
