@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ Usage:
                              [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
@@ -53,6 +55,10 @@ whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it repor
 other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
 pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
 opaque handle into the call instead of borrowing it.
+`tsuzuri repl` reads declarations, top-level lets, and expressions from stdin one at a
+time and prints each new let's type and each expression's type and value. Every input
+is checked and run as a new program after the accepted ones (default -O0; --timeout 10
+seconds per run, 0 for none). Its commands are :type, :load, :list, :reset, and :quit.
 File inputs use their parent as the root; directory inputs use that directory.
 Applications start in Main.tz; a directory selects it.
 Other source inputs can be checked or built as libraries.
@@ -1233,6 +1239,98 @@ fn bindgen_command(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+const REPL_USAGE: &str =
+    "repl takes no paths; supported options are -O0 to -O3, --cpu, --no-cache, and --timeout";
+const REPL_TIMEOUT: &str = "--timeout requires whole seconds from 0 to 3600";
+
+/// `tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]`.
+fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOptions, String> {
+    let mut options = tsuzuri::repl::ReplOptions::default();
+    let mut seen = BTreeSet::new();
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        let option = match argument.to_str() {
+            Some("--target") => {
+                return Err("repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'".into());
+            }
+            Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
+                options.build.optimization = level.as_bytes()[2] - b'0';
+                "optimization"
+            }
+            Some("--cpu") => {
+                options.build.cpu = match rest.next().and_then(|value| value.to_str()) {
+                    Some("generic") => Cpu::Generic,
+                    Some("native") => Cpu::Native,
+                    _ => return Err("CPU tuning must be 'generic' or 'native'".into()),
+                };
+                "CPU tuning"
+            }
+            Some("--no-cache") => {
+                options.build.cache = false;
+                "no-cache"
+            }
+            Some("--timeout") => {
+                let seconds = rest
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| {
+                        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|seconds| *seconds <= 3600)
+                    .ok_or(REPL_TIMEOUT)?;
+                options.timeout = (seconds != 0).then(|| std::time::Duration::from_secs(seconds));
+                "timeout"
+            }
+            _ => return Err(REPL_USAGE.into()),
+        };
+        if !seen.insert(option) {
+            return Err(format!("{option} specified more than once"));
+        }
+    }
+    Ok(options)
+}
+
+/// `tsuzuri repl`: evaluates the inputs on stdin until `:quit` or its end (G13).
+fn repl_command(arguments: &[OsString]) -> ExitCode {
+    let options = match parse_repl_arguments(arguments) {
+        Ok(options) => options,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                false,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let input = std::io::stdin();
+    let interactive = std::io::IsTerminal::is_terminal(&input);
+    match tsuzuri::repl::run(
+        options,
+        input.lock(),
+        std::io::stdout().lock(),
+        std::io::stderr(),
+        interactive,
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            print_diagnostic(
+                &Diagnostic::new(
+                    "E2001",
+                    format!("cannot read or write the REPL's standard streams: {error}"),
+                    Span::default(),
+                ),
+                Path::new("<repl>"),
+                "",
+                false,
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
@@ -1269,6 +1367,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "bindgen") {
         return bindgen_command(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "repl") {
+        return repl_command(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
     let arguments = match parse_arguments(&raw) {
@@ -1384,6 +1485,65 @@ mod tests {
 
     fn parse(values: &[&str]) -> Result<Arguments, String> {
         parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    fn parse_repl(values: &[&str]) -> Result<tsuzuri::repl::ReplOptions, String> {
+        parse_repl_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn parses_repl_options() {
+        let defaults = parse_repl(&[]).unwrap();
+        assert_eq!(defaults.build.optimization, 0);
+        assert_eq!(defaults.build.cpu, Cpu::Generic);
+        assert!(defaults.build.cache);
+        assert!(defaults.build.trap_info);
+        assert_eq!(
+            (defaults.build.target, defaults.build.emit),
+            (Target::Native, Emit::Executable)
+        );
+        assert_eq!(defaults.timeout, Some(std::time::Duration::from_secs(10)));
+        let custom =
+            parse_repl(&["-O3", "--cpu", "native", "--no-cache", "--timeout", "0"]).unwrap();
+        assert_eq!(custom.build.optimization, 3);
+        assert_eq!(custom.build.cpu, Cpu::Native);
+        assert!(!custom.build.cache);
+        assert_eq!(custom.timeout, None);
+        assert_eq!(
+            parse_repl(&["--timeout", "3600"]).unwrap().timeout,
+            Some(std::time::Duration::from_secs(3600))
+        );
+        // The REPL's -O0 default leaves build's and run's -O3 default alone.
+        assert_eq!(parse(&["run", "Main.tz"]).unwrap().options.optimization, 3);
+    }
+
+    #[test]
+    fn rejects_repl_paths_and_build_options() {
+        let target = "repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'";
+        for (values, message) in [
+            (&["Main.tz"][..], REPL_USAGE),
+            (&["--target", "wasm32"], target),
+            (&["--target", "native"], target),
+            (&["--json"], REPL_USAGE),
+            (&["-o", "out"], REPL_USAGE),
+            (&["-g"], REPL_USAGE),
+            (&["--emit", "llvm"], REPL_USAGE),
+            (&["--timeout", "3601"], REPL_TIMEOUT),
+            (&["--timeout", "x"], REPL_TIMEOUT),
+            (&["--timeout", "-1"], REPL_TIMEOUT),
+            (&["--timeout"], REPL_TIMEOUT),
+            (
+                &["--cpu", "fast"],
+                "CPU tuning must be 'generic' or 'native'",
+            ),
+            (&["-O0", "-O3"], "optimization specified more than once"),
+            (
+                &["--no-cache", "--no-cache"],
+                "no-cache specified more than once",
+            ),
+        ] {
+            assert_eq!(parse_repl(values).unwrap_err(), message, "{values:?}");
+        }
     }
 
     #[test]

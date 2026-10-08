@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D12（Phase 2 の `script` コマンドと shebang 行）, D13（Phase 3 の JIT）。Phase 1 は承認不要 |
+| 承認 | 要承認: D12（Phase 2 の `script` コマンドと shebang 行）, D13（Phase 3 の JIT）。Phase 1 は承認不要。D12・D13 は承認済み（2026-10-08、D-41。全 Phase の実装の依頼） |
 | 改善する劣位 | C#/F# 比: 対話環境がない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cf-に対する劣位点)） |
 | 手本にする既存実装 | 位置引数を取らないサブコマンド: `src/main.rs` の `parse_arguments` の `lsp` 分岐。ディスクにないソースの解析: `src/lsp.rs` が呼ぶ `Project::load_with_overlays`。ビルドと実行・stderr の中継・`E2005`: `src/driver.rs` の `run_with_diagnostics` と `TemporaryDirectory`。診断の表示: `src/main.rs` の `print_with_severity`（`Diagnostic::render_with_severity`）。実プロセスの E2E: `tests/lsp_sessions.mjs`、`tests/io.mjs` の `execute` |
 | 主な影響ファイル | `src/main.rs`, `src/repl.rs`（新規）, `src/lib.rs`, `src/driver.rs`, `tests/repl.mjs`（新規）, `README.md`, `docs/architecture.md`, `_docs/tools/command-line.md`, `_docs/get-started.md`, `_docs/guides/from-fsharp.md`, `_docs/feature-status.md`, `_features/README.md` |
@@ -106,6 +106,8 @@ cd /tmp/tz-work-G13
 /Users/tmidorikawa/Documents/git/Tsuzuri/target/release/tsuzuri build p1 --target wasm32 -o /tmp/tz-work-G13/p1.wasm
 # p1/Main.tz:1:1: error[E2004]: a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point
 ```
+
+見直し（2026-10-08、HEAD `1182045`）: p1〜p8・p10・p12 を `target/release/tsuzuri run <case> -O0` で作り直し、上と同じ stdout・stderr・終了コードを確かめた（p10 は先に `W1001` の警告が出る。p3・p4・p12 の診断の位置も同じ）。差は、接尾辞のない整数リテラルの既定の型が `i32` になったこと（D3 の見直し）と、引数の誤りの終了コードが 2 になったこと（D1 の見直し）。`tsuzuri run` はプログラムへコマンドライン引数を渡さない（`def main :: Array<string> -> i32` は空の配列を受け取る）。
 
 ## 仕様
 
@@ -538,6 +540,8 @@ stderr はコードと位置の部分一致、終了コードは完全一致。�
 R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`）は docs/language.md の該当節の形から作り、`tests/repl.mjs` に入れる前に
 `target/release/tsuzuri check` で確かめる。native だけなので WASM の case はない。生成コードを変えないので `live == 0` の確認は要らない。
 
+見直し（2026-10-08）: 既定の整数型の変更（D3 の見直し）で、R1・R2・R4〜R12 の期待値の `i64` は `i32`（`square` の結果などの明示した `i64` はそのまま）。R14 の終了コードは 2（D1 の見直し）。R10 は `while true do ()`、R11 は `do! IO.write_line (String.repeat "x" (17l * 1048576l))`（`IO` の中の範囲の `for` は `E1005` になるため）。R15（束縛の `Debug.trace` が評価ごとに stderr へ出る）、R16（IO の値は束縛でも表示でも実行しない）、R17（`;` で終わる文は残る）、R18（`:load` の別に書いたシグネチャと定義、`Display` のない型の `it: Main.Point`）を足した。
+
 ### 既存テストへの影響
 
 なし。`HELP` の文字列を照合するテストがあれば、`repl` の行の追加だけを反映する。
@@ -597,12 +601,16 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
   PB01 の前は `-O3` だと埋め込みランタイムの Clang に毎回 0.43 s かかるが、`-O0` は 0.06 s。結果は最適化レベルに依存しない。PB01・PB05 はこの経路のまま速くなる。
 - 状態: 既定案（実装者はこの案に従う）
 - 見直し提案: 旧版の `tsuzuri repl [--target native|wasm32]` から wasm32 を外した。WASM の REPL は IO の入口と Node の host を使う別チケットにする。
+- 見直し（2026-10-08）: `--target` は `native` を含めてすべて `E2000`（native しかないので、受け付ける値を作らない）。オプションの誤りの終了コードは、現在の CLI の規則（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#終了コード)。引数の誤りは 2）に合わせて 1 ではなく 2 にした。同じオプションの重複は `run` と同じく `... specified more than once`。
 
 ### D2: セッションの表現
 
 - 決定: セッションは宣言と束縛の source 文字列の列（`Session`）。空の一時ディレクトリを root にし、生成した `Main.tz` を overlay で渡す。作業ディレクトリの `.tz` は読まない。
 - 理由: `Main.tz` の既存の規則（宣言の後に束縛、最後に結果式）をそのまま使え、parser と checker を変えずに済む。E03 の再帰読み込みで無関係なファイルを拾わない。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: overlay（`Project::load_with_overlays`）ではなく、新しい `Project::single_main(path, text)` で読む。`load_with_overlays` は言語サーバー用で opt-in の std（D-40）を全部読み込むため、`tsuzuri run` と std の集合が違い、検査も遅い（`Json` を 1 つ名指すだけで `tsuzuri check` が 65 ms → 124 ms。M1 Max、各 9 回の中央値）。`single_main` はファイル・マニフェスト・lockfile を読まず、`stdlib::sources_for` で std を選ぶので、同じ文字列を `Main.tz` に置いた `run` と同じ検査・IR になる。一時ディレクトリは要らず、生成した `Main.tz` のパスは仮想の `<repl>/Main.tz`（ディスクに書かない）。このパスはキャッシュのキーとトラップの行に入り、実行ごとに変わらない。
+- 見直し（2026-10-08）: 宣言の分け方を「名前の行頭から次の宣言の行頭まで」から、parser の回復境界（`is_top_level_declaration_start` の字句が括弧の外の行頭にある位置。`pub(crate)` にした）で区切る塊に変えた。文書コメント `///` と属性 `@cpu` などは次の宣言の塊に、`and` は再帰群の塊に入る。塊は AST の名前の位置と、`def`／`and` の後の名前（別に書いたシグネチャの塊には AST の名前がない）で鍵を持ち、鍵を共有する塊は一つの項目になる（`def f :: T` と離れた `fn f x = ...`、再帰群）。同じ行の二つの宣言も一つの項目で、`E2000`（`put each declaration on its own line in the REPL`）は作らなかった。HEAD で増えた `namespace`・`using`（D-35・D-37）と `extern type` も `E2000` で拒否する。
+- 見直し（2026-10-08）: parser は `;` で終わる式（`c = c + 1;`）を名前が `Provenance::Generated` の束縛にする。これも文として順にセッションに残し（鍵なし、`:reset` まで残る）、`name: T` は出さない。`;` のない最後の式だけが「式」になる。
 
 ### D3: 式の包み方と結果の表示
 
@@ -610,6 +618,7 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 理由: 既存の入口の自動表示は数値・bool・文字列系だけで、Display はレコードなども扱える（再現 `p1`・`p2`）。型は LSP と同じ semantic index の文字列で、別の表示規則を作らない。
   括弧で包むと複数行の式も同じ規則で扱える（`p8`）。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: 起票後、接尾辞のない整数リテラルの既定の型が `i64` から `i32` に変わった（docs/language.md「文脈から型を一意に特定できない場合、デフォルトの整数型は `i32`」）。例と E2E の期待値は `base: i32`、`it: i32 = 2` などになる。セッションは毎回全体を推論し直すので、`let base = 6` は単独では `i32` だが、`square base`（`i64 -> i64`）の入力の中では `i64` になる（`tsuzuri run` に同じ `Main.tz` を渡したのと同じ）。利用者の文書に書いた。
 
 ### D4: 再定義と依存の再検査
 
@@ -647,6 +656,7 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 - 決定: stdout は入力だけで決まる。prompt と見出しは stdin が端末のときだけ。診断の path は `input`（`:load` はそのパス）と `session`（`:list` の行）。
 - 理由: 生成した `Main.tz` の行番号は利用者に見えず、一時パスは環境ごとに違う。scripted stdin の E2E を完全一致で書ける。
 - 状態: 既定案（実装者はこの案に従う）
+- 見直し（2026-10-08）: D2 の見直しで生成した `Main.tz` のパスが仮想の `<repl>/Main.tz` になったので、トラップの行も `trap: ... at <repl>/Main.tz:L:C` で決まった文字列になる（L:C は生成したプログラムの位置）。位置を持たない `E2005`（時間切れ、出力の超過、トラップの場所が分からない異常終了）は入力の式・アクションの先頭（それがなければ最初の束縛）に置く。
 
 ### D10: 受け付けない宣言
 
@@ -664,10 +674,37 @@ R10・R11 の Tsuzuri のコード（`while` と繰り返しの `IO.write_line`�
 
 - 決定: `tsuzuri script FILE.tz [args...]` は単一ファイルを `Main.tz` として overlay し、先頭の shebang 行を無視する。
 - 理由: D2 の overlay をそのまま使える。shebang の無視は lexer の規則の変更で、CLI の新しいコマンド名も確定が要る。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）
 
 ### D13: Phase 3 の JIT
 
 - 決定: 採用しない。検討する場合は、LLVM の C API への結合と状態の保持を含めて人間が判断する。
 - 理由: docs/architecture.md の方針と衝突し、配布物とビルドの前提が変わる。
-- 状態: 要承認（承認前は Phase 3 に着手しない）
+- 状態: 承認済み（2026-10-08、D-41）。全 Phase の実装の依頼を受けて coordinator が再検討し、JIT と入力を跨ぐ常駐の評価プロセスは実装せず、Phase 3 を計測による研究として完了することにした（採用しない、を 2026-10-08 に再確認）。
+
+## 実装と検証（2026-10-08）
+
+HEAD `1182045`（`Phase7-5`）から、ブランチ `wt/g13` で 3 Phase を実装した。利用者の「すべてのフェーズを完了させること」を D12・D13 の承認として扱った（GUIDE D-41）。
+計測機は Apple M1 Max（10 コア）、macOS、Homebrew LLVM 21.1.8（`clang`・`wasm-ld` を PATH の先頭）、rustc 1.98.1、Node v20.19.6。ほかの 3 つのエージェントが同時に cargo のビルドとテストを回しており、load average は 30〜55 だった。時間はすべてこの負荷の下の値。
+
+### Phase 1: `tsuzuri repl`
+
+- 実装: `src/repl.rs`（新規）、`src/driver.rs`（`run_process`・`RunStdio`・`run_captured`・`MAX_CAPTURED_OUTPUT`・`Project::single_main`）、`src/main.rs`（`HELP`、`repl` の分岐と `parse_repl_arguments`）、`src/lib.rs`（`pub mod repl`）、`src/parser.rs`（`is_top_level_declaration_start` を `pub(crate)` にしただけ）、`tests/repl.mjs`（新規）。parser・checker・LLVM・cache の挙動、生成 IR、ランタイムは変えていない。
+- チケットからの変更は決定事項の「見直し（2026-10-08）」に書いた（D1・D2・D3・D9）。要点: `Project::single_main` と仮想パス `<repl>/Main.tz`、parser の回復境界による宣言の塊、`;` で終わる文の保持、既定の整数型 `i32`、引数の誤りの終了コード 2。
+- `run_process` の `Inherit` は HEAD の `run_with_diagnostics` の本体を移しただけで、stderr の中継の loop は `relay` に出した。`Capture` は stdout と stderr をそれぞれのスレッドで読み、親は両方の終わりをチャネルで待つ（終わりの後もプロセスが残るまれな場合だけ 1〜10 ms の `try_wait`。`// ponytail:` の注記）。時間切れと出力の超過では `kill` と `wait` の後、中継の残りを最大 0.5 秒待ってから `E2005` を返す。
+- E2E の期待値は手計算と `tsuzuri run` から作った。整数の既定 `i32` は `let base = 6`／`base + 2147483647` を `run` して `-2147483643`（i32 の折り返し）で確かめ、`b = a * 10` の 20 も同様に確かめた。17 MiB の出力は `do! IO.write_line (String.repeat "x" (17l * 1048576l))` を `run` して 17,825,793 bytes。record の型の表記は checker の診断（`expected i64, found Main.Point`）と同じ `Main.Point`。
+- `tsuzuri run` の不変: `p1`〜`p12` を変更前（`1182045` の release）と変更後の release で `run -O0` と `run -O0 --json` し、stdout・stderr・終了コードが byte 単位で一致した。
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo test --locked --bin tsuzuri repl` | `running 2 tests`、成功 |
+| `cargo test --locked --lib repl::` | `running 15 tests`、成功（チケットの 12 件に、宣言の塊、プロンプト、コマンドの引数の 3 件を足した） |
+| `cargo test --locked --lib driver::` | `running 26 tests`、成功 |
+| `RUST_MIN_STACK=4194304 cargo test --locked` | 79 個のテストバイナリ、867 件成功、失敗 0（lib 126、bin 13）。既定の 2 MiB の stack の全体実行は、変更前の `1182045` でも `tests/computations.rs` の `bounds_computation_syntax_and_expansion` で stack overflow になる（coordinator の注記。PR #17 と同じ実行方法） |
+| GUIDE §3.1 の 4 件（`RUST_MIN_STACK` なし） | それぞれ `running 1 test`、成功 |
+| `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` | 成功 |
+| `node tests/repl.mjs target/release/tsuzuri` | 20 セッション（R1〜R18、R14 は 3 回）成功。R13 で `-O0` と `-O3` の stdout が一致 |
+| `node tests/e2e.mjs`・`tests/cache.mjs`・`tests/lsp_sessions.mjs` | 変更前と同じく成功 |
+| `node scripts/check-docs.mjs`（変更した 5 ページ） | 成功（106 links、13 examples、26 native runs） |
+
+チケットの性能の記録（1 回。ベンチマークではない）: チケットの「例」の stdin を流した 1 セッション（評価 11 回、cache なしの状態から）は release で real 6.55 s（user 3.04 s）。入力ごとの内訳は Phase 3 で測った。

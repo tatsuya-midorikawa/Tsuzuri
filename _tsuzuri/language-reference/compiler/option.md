@@ -6,7 +6,7 @@
 
 ## この記事のポイント
 
-- 最適化の既定は `-O3` です。`test` だけ既定が `-O0` です。fast-math は使いません。
+- 最適化の既定は `-O3` です。`test` と `repl` は既定が `-O0` です。fast-math は使いません。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
 - フラグの重複や、サブコマンドとの不一致は終了コード 2 の `E2000` です。
@@ -14,32 +14,33 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
-| オプション | check | build | run | test | doc | fmt |
-| --- | --- | --- | --- | --- | --- | --- |
-| `--json` | ○ | ○ | ○ | ○ | ○ | ○ |
-| `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | |
-| `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | |
-| `-o` / `--output` | | ○ | | | ○（必須） | |
-| `--target` | | ○ | | ○ | | |
-| `--emit` | | ○ | | | | |
-| `-O0`〜`-O3` | | ○ | ○ | ○ | | |
-| `--cpu` | | ○ | ○ | | | |
-| `--no-cache` | | ○ | ○ | | | |
-| `-g` / `--debug-info` | | ○ | ○ | | | |
-| `--debug-output` | | ○ | ○ | | | |
-| `--trap-info` | | ○ | ○ | | | |
-| `--trap-mode` | | ○ | | | | |
-| `--allocator` | | ○ | | | | |
-| `--freestanding` | | ○ | | | | |
-| `--wasm-feature` | | ○ | | | | |
-| `--wasm-host` | | ○ | | | | |
-| `--wasm-max-memory` | | ○ | | ○ | | |
-| `--wasm-stack-size` | | ○ | | ○ | | |
-| `--link` / `-l` / `-L` | | ○ | ○ | ○ | | |
-| `--list` / `--filter` / `--index` | | | | ○ | | |
-| `--check` | | | | | | ○ |
+| オプション | check | build | run | test | doc | fmt | repl |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `--json` | ○ | ○ | ○ | ○ | ○ | ○ | |
+| `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | | |
+| `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | | |
+| `-o` / `--output` | | ○ | | | ○（必須） | | |
+| `--target` | | ○ | | ○ | | | |
+| `--emit` | | ○ | | | | | |
+| `-O0`〜`-O3` | | ○ | ○ | ○ | | | ○ |
+| `--cpu` | | ○ | ○ | | | | ○ |
+| `--no-cache` | | ○ | ○ | | | | ○ |
+| `-g` / `--debug-info` | | ○ | ○ | | | | |
+| `--debug-output` | | ○ | ○ | | | | |
+| `--trap-info` | | ○ | ○ | | | | |
+| `--trap-mode` | | ○ | | | | | |
+| `--allocator` | | ○ | | | | | |
+| `--freestanding` | | ○ | | | | | |
+| `--wasm-feature` | | ○ | | | | | |
+| `--wasm-host` | | ○ | | | | | |
+| `--wasm-max-memory` | | ○ | | ○ | | | |
+| `--wasm-stack-size` | | ○ | | ○ | | | |
+| `--link` / `-l` / `-L` | | ○ | ○ | ○ | | | |
+| `--list` / `--filter` / `--index` | | | | ○ | | | |
+| `--check` | | | | | | ○ | |
+| `--timeout` | | | | | | | ○ |
 
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
 
@@ -73,7 +74,7 @@
 
 | オプション | 既定 | 意味 |
 | --- | --- | --- |
-| `-O0` `-O1` `-O2` `-O3` | `build` / `run` は `-O3`、`test` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
+| `-O0` `-O1` `-O2` `-O3` | `build` / `run` は `-O3`、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
 | `--cpu generic\|native` | `generic` | native の実行ファイルとオブジェクト。`native` はこの機械の命令セットで、古い CPU では動きません |
 
 `check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O` を受け、`--cpu` は拒否します。

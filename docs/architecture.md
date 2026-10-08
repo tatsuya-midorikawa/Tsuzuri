@@ -77,11 +77,12 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・ビットシフトの freestanding 補助関数群 |
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用） |
-| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`bindgen` |
+| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`bindgen`、`repl` のオプション |
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 具体化後の暗黙の複製箇所の列挙（`copies::sites`）、`--warn implicit-copy` による `W1006` 警告、インレイヒント（inlay hint）の基となる配列・リストの複製検出（`costly_sites`） |
 | `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
+| `src/repl.rs` | `tsuzuri repl`（G13）。入力の読み取り（1 行目が末尾で未完なら空行まで継続）、宣言の塊（parser の回復境界 `is_top_level_declaration_start`、文書コメントと属性は次の宣言へ、`and` は再帰群の続き、別に書いたシグネチャと定義は一つの項目）とトップレベルの文への分類、同じ名前の項目の置き換え、生成した `Main.tz` の解析と `SemanticIndex` からの型の取得、`driver::run_captured` による実行、診断の位置の `input`／`session` への写像 |
 
 ドキュメントコメント（doc comment）は、字句解析器（lexer）において `DocComment` トークンとして保持され、構文解析器（parser）によって対応する宣言の `Documentation(text, span)` に付与されます。
 `def` と `fn` を分離して書いた場合はシグネチャ側の記述から引き継がれ、不適切な位置への配置は `E0002` エラーとなります。生成される型検査済み関数（checked function）にはドキュメント文字列を複製しないため、型システム、所有権モデル、および LLVM のコード生成の意味論を変えることはありません。
@@ -274,7 +275,7 @@ std の仮想パスは `std/Name.ext` という平坦な形式で管理され、
 std モジュールにおける `export def` の使用は禁止されており、std の関数を外部から呼び出す際はユーザー定義関数と同様にモジュール名による修飾が必須です。
 std のソースコードは型検査の対象となりますが、`closures::lower` の処理後に到達可能性解析（reachability analysis）が行われ、不要な関数は最終成果物から間引かれます。
 例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`。D-40）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
-そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
+そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く。REPL の `Project::single_main` を含む）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
@@ -361,6 +362,10 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 `analyze_modules_with_semantics` は、通常の解析結果に加えて `SemanticIndex` を構築して返します。このインデックスは型検査の完了後、定数展開・単相化・クロージャの lowering より前の段階で採取され、通常のコンパイル時には生成されません。
 後続の所有権検査などでエラーが検出された場合でも不完全なインデックスを公開することはなく、以前の正常なインデックスも安全に破棄されます。サーバー機能としては、ホバー（hover）、定義ジャンプ（definition）、およびシンボル検索（symbol）を中心とした堅牢な機能を宣言・提供します。
 動作は `cargo test --locked --test lsp` および `cargo build --release --locked && node tests/lsp_sessions.mjs target/release/tsuzuri` によって検証されています。
+
+**REPL:** `tsuzuri repl` は再コンパイル型で、JIT も入力を跨ぐ常駐プロセスも持ちません（G13 D1・D13）。セッションは受け付けた宣言とトップレベルの文の**ソース**だけで、入力ごとに「宣言 → 文 → 入力の末尾」の順に `Main.tz` を生成し、`Project::single_main` で読みます。これはファイル・マニフェスト・lockfile を読まず、`stdlib::sources_for` が選んだ std だけを足すので、同じ文字列を `Main.tz` に置いた `tsuzuri run` と同じ検査・IR になります。生成したソースはディスクに書かず、パスは仮想の `<repl>/Main.tz` です（キャッシュのキーとトラップの行に入る）。
+式は `let it = (E)` で包み、`SemanticIndex` の `it: T` の項目から型を得て、`Display.display (ref it)` を足した版で値を表示します（その版の診断が表示行の `E1005` だけなら型だけ）。`run_captured` は `run` と同じ `build_complete` の後、子の stdin を空にし、stdout を 16 MiB まで別スレッドで集め、stderr を別スレッドで中継し、時間制限か出力の超過で子を kill して `wait` してから `E2005` を返します。`run_with_diagnostics` はこの `run_process` の `Inherit` で、`run` の挙動（stdio の継承、stderr の中継、`--json`、`E2005` の位置）は変わりません。
+動作は `cargo test --locked --lib repl::` と `cargo build --release --locked && node tests/repl.mjs target/release/tsuzuri` によって検証されています。
 
 **フロントエンド:** プロジェクト内の全ファイルのシグネチャを先行して収集するため、宣言の記述順序やファイル順序に依存しない設計となっています。
 ローカル変数の束縛は一意な識別子（ID）へと解決され、コード生成フェーズにおいて名前解決や型推論をやり直すことはありません。
@@ -1098,6 +1103,7 @@ node tests/integer_intrinsics.mjs target/release/tsuzuri
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/json.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
+node tests/repl.mjs target/release/tsuzuri
 node tests/examples.mjs target/release/tsuzuri
 node tests/features.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri

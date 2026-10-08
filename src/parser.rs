@@ -20,7 +20,10 @@ fn duplicate_active_case(case: &Ident) -> Diagnostic {
     )
 }
 
-fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
+/// Whether a token at the start of a line, outside brackets, can begin a top-level
+/// declaration or the entry code. Error recovery resumes there, and the REPL splits an
+/// input's declarations there (`src/repl.rs`).
+pub(crate) fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
     matches!(
         kind,
         TokenKind::DocComment(_)
