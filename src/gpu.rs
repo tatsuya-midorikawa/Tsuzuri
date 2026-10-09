@@ -322,19 +322,23 @@ impl GpuKernel<'_> {
                 text: String::new(),
                 next: 0,
                 relaxed,
+                depth: 1,
             };
-            let parameters = function
-                .parameters
-                .iter()
-                .map(|local| {
-                    Ok(format!(
-                        "local_{}: {}",
-                        local.id,
-                        wgsl_type(&local.ty, relaxed, local.span)?
-                    ))
-                })
-                .collect::<Result<Vec<_>, Diagnostic>>()?
-                .join(", ");
+            let mut parameters = Vec::new();
+            for local in &function.parameters {
+                let ty = wgsl_type(&local.ty, relaxed, local.span)?;
+                if local.mutable {
+                    // A WGSL parameter cannot be assigned: the body gets a variable of the local's name.
+                    parameters.push(format!("param_{}: {ty}", local.id));
+                    emitter.emit(
+                        local.span,
+                        &format!("var local_{0}: {ty} = param_{0};", local.id),
+                    )?;
+                } else {
+                    parameters.push(format!("local_{}: {ty}", local.id));
+                }
+            }
+            let parameters = parameters.join(", ");
             let result = wgsl_type(&function.signature.result, relaxed, function.span)?;
             let value = emitter.expression(&function.body)?;
             let _ = writeln!(
@@ -400,10 +404,29 @@ fn half_or_single(ty: &Type) -> bool {
     matches!(ty, Type::Binary(16 | 32))
 }
 
+/// The deepest statement nesting that a WGSL implementation accepts (Tint: "statement nesting depth /
+/// chaining length exceeds limit of 127"). A function body is depth 1, a statement is one deeper than the
+/// block that holds it, and the blocks of an `if` are one deeper than the `if`, so every `if` (also each
+/// `else if` arm, which this emitter nests in the `else` block) and every right operand of `&&` or `||`
+/// costs two levels.
+const MAX_STATEMENT_DEPTH: usize = 127;
+
+fn too_deep(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        "E1017",
+        format!(
+            "GPU kernel exceeds {MAX_STATEMENT_DEPTH} levels of WGSL statement nesting; each nested if, else-if arm, and right operand of && or || takes two levels, so move the rest of a long chain into a function"
+        ),
+        span,
+    )
+}
+
 struct Wgsl {
     text: String,
     next: usize,
     relaxed: bool,
+    /// The depth of the block that the next statement goes into: 1 for the function body.
+    depth: usize,
 }
 
 impl Wgsl {
@@ -411,6 +434,29 @@ impl Wgsl {
         let name = format!("value_{}", self.next);
         self.next += 1;
         name
+    }
+
+    /// Writes statements (one per line) into the current block, unless WGSL cannot nest them that deep.
+    fn emit(&mut self, span: Span, lines: &str) -> Result<(), Diagnostic> {
+        if self.depth + 1 > MAX_STATEMENT_DEPTH {
+            return Err(too_deep(span));
+        }
+        self.text.push_str(lines);
+        self.text.push('\n');
+        Ok(())
+    }
+
+    /// Enters the blocks of an `if` whose statement was just written.
+    fn enter(&mut self, span: Span) -> Result<(), Diagnostic> {
+        self.depth += 2;
+        if self.depth > MAX_STATEMENT_DEPTH {
+            return Err(too_deep(span));
+        }
+        Ok(())
+    }
+
+    fn leave(&mut self) {
+        self.depth -= 2;
     }
 
     fn expression(&mut self, expression: &TypedExpr) -> Result<String, Diagnostic> {
@@ -457,12 +503,15 @@ impl Wgsl {
                     } else {
                         format!("!{left_value}")
                     };
-                    let _ = writeln!(
-                        self.text,
-                        "var {name}: bool = {left_value};\nif ({condition}) {{"
-                    );
+                    self.emit(
+                        span,
+                        &format!("var {name}: bool = {left_value};\nif ({condition}) {{"),
+                    )?;
+                    self.enter(span)?;
                     let right_value = self.expression(right)?;
-                    let _ = writeln!(self.text, "{name} = {right_value};\n}}");
+                    self.emit(span, &format!("{name} = {right_value};"))?;
+                    self.text.push_str("}\n");
+                    self.leave();
                     name
                 } else {
                     let right_value = self.expression(right)?;
@@ -566,12 +615,12 @@ impl Wgsl {
                     let value = self.expression(initializer)?;
                     if local.ty != Type::Unit {
                         let kind = if local.mutable { "var" } else { "let" };
-                        let _ = writeln!(
-                            self.text,
+                        let declaration = format!(
                             "{kind} local_{}: {} = {value};",
                             local.id,
                             wgsl_type(&local.ty, self.relaxed, local.span)?
                         );
+                        self.emit(local.span, &declaration)?;
                     }
                 }
                 self.expression(result)?
@@ -581,7 +630,7 @@ impl Wgsl {
                     return Err(unsupported("GPU assignment requires a scalar local", span));
                 };
                 let value = self.expression(value)?;
-                let _ = writeln!(self.text, "local_{id} = {value};");
+                self.emit(span, &format!("local_{id} = {value};"))?;
                 return Ok(String::new());
             }
             TypedExprKind::If {
@@ -592,23 +641,25 @@ impl Wgsl {
                 let condition = self.expression(condition)?;
                 let name = self.fresh();
                 if expression.ty != Type::Unit {
-                    let _ = writeln!(
-                        self.text,
+                    let declaration = format!(
                         "var {name}: {};",
                         wgsl_type(&expression.ty, self.relaxed, span)?
                     );
+                    self.emit(span, &declaration)?;
                 }
-                let _ = writeln!(self.text, "if ({condition}) {{");
+                self.emit(span, &format!("if ({condition}) {{"))?;
+                self.enter(span)?;
                 let value = self.expression(then_branch)?;
                 if expression.ty != Type::Unit {
-                    let _ = writeln!(self.text, "{name} = {value};");
+                    self.emit(span, &format!("{name} = {value};"))?;
                 }
                 self.text.push_str("} else {\n");
                 let value = self.expression(else_branch)?;
                 if expression.ty != Type::Unit {
-                    let _ = writeln!(self.text, "{name} = {value};");
+                    self.emit(span, &format!("{name} = {value};"))?;
                 }
                 self.text.push_str("}\n");
+                self.leave();
                 name
             }
             TypedExprKind::Call(callee, arguments) => {
@@ -638,11 +689,11 @@ impl Wgsl {
             return Ok(String::new());
         }
         let name = self.fresh();
-        let _ = writeln!(
-            self.text,
+        let declaration = format!(
             "let {name}: {} = {value};",
             wgsl_type(&expression.ty, self.relaxed, span)?
         );
+        self.emit(span, &declaration)?;
         Ok(name)
     }
 }

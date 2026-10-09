@@ -718,3 +718,16 @@ const ulp = x => { f32[0] = Math.abs(x); const low = f32[0]; u32[0] += 1; return
   Dawn の native ライブラリ（`libwebgpu_dawn`。`webgpu.h` の版が違うので `Unavailable` になる設計）、ブラウザの `navigator.gpu`、wgpu-native 29 以外。
 - Phase 3 への接続点: `std/Gpu.tz` の `request_on`・`init_on`・`map_on` の `Vulkan` と `Auto` の arm（今は `Unavailable` と `unreachable ()`）、`src/gpu_devices.rs` の `blob`（`spirv` と、`FEATURE_*` の bit、64 bit の lane 種別）、
   `src/runtime/gpu.c` の `tsuzuri_gpu_open`・`tsuzuri_gpu_run` の `backend == 2` の枝（Vulkan のコードを別のファイルにするなら、`src/driver.rs`・`src/test_runner.rs`・`tests/gpu.mjs` の `gpu.c` を連結・コンパイルする箇所）。
+
+### Phase 1・2 のレビュー後の修正（WGSL 生成の 2 件）
+
+独立したコードレビューが、F07 から受け継いだ WGSL 生成器の欠陥を 2 件見つけた。どちらも `--emit wgsl-relaxed` と `Gpu.map_relaxed`（と、Phase 2 の埋め込みカーネル）から届き、
+コンパイルは通って、Tint が shader module の作成（`prepare()` や WebGpu デバイスでの実行時）で初めて拒否していた。
+
+- `mut` の引数: WGSL の関数の引数は代入できず、`local_0 = …;` を出す関数を Tint が `cannot assign to parameter` で拒否した。`mut` の引数だけを `param_N` と改名し、本体の先頭で
+  `var local_N: T = param_N;` と複製する。`mut` の引数がない関数の出力は、修正前と byte 一致（検証用の 24 本で `cmp`）。
+- `else if` の連鎖: Tint の文の入れ子の上限は 127 で、`if` の文とその各ブロックが 1 段ずつなので、入れ子の `if`・`else if` の各枝・`&&`／`||` の右辺が 2 段を使い、`else if` は 62 本まで通って
+  63 本目で拒否された（Tint で実測。WGSL の `else if` を平らに出しても 124 本が上限なので、平坦化はしない）。生成器が段数を構造から数え（テキストの走査ではない）、超える式で `E1017`
+  （`GPU kernel exceeds 127 levels of WGSL statement nesting; …`、上限の数を含む）を出す。関数ごとに数え直す。厳密な呼び出しは、CPU 参照では制限を受けず、WebGpu デバイスでは GPU のカーネルがない（実行時の文面は
+  lane の型だけを挙げる）。緩い呼び出しは `validate_calls` でコンパイル時に `E1017` になる。
+- テスト: `tests/gpu.rs` の 3 本（修正前は失敗）、`tests/gpu.mjs` の 9 形状（CPU と実 Dawn でビット一致）と拒否 5 件、`tests/gpu_runtime.mjs` の native（wgpu-native）と WASM（Dawn、JSPI）の `shapes`・`deep63`。
