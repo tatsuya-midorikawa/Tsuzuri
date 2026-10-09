@@ -98,6 +98,8 @@
 - [Arena](./built-in-types-and-modules/arena.md)
 - [Matrix](./built-in-types-and-modules/matrix.md)
 - [Rc と Arc](./built-in-types-and-modules/rc.md)
+- [Atomic](./built-in-types-and-modules/atomic.md)
+- [Mutex](./built-in-types-and-modules/mutex.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)
 - [Result](./built-in-types-and-modules/result.md)

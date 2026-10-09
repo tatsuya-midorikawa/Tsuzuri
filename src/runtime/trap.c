@@ -1,8 +1,9 @@
 /* Trap boundary runtime (E14 Phase 2), embedded into `--trap-mode return` objects.
    A boundary is one tsuzuri_try_<name> call: the first trap inside it longjmps back, every
    allocation made since the call is freed, and the host gets status 1. Tsuzuri code never
-   unwinds, so no destructor or lock is skipped; the runtime releases its own locks before any
-   callback runs. */
+   unwinds, so no destructor is skipped; the runtime releases its own locks before any callback
+   runs, and the one lock that Tsuzuri code holds while it runs, Mutex.with_lock's, is released
+   by the boundary through `tsuzuri_sync_hooks` (F10). */
 #include <pthread.h>
 #include <setjmp.h>
 #include <stddef.h>
@@ -52,6 +53,16 @@ struct tz_trap_hooks {
     void (*release)(void *);
 };
 __attribute__((weak, visibility("hidden"))) struct tz_trap_hooks tsuzuri_trap_hooks;
+#endif
+
+/* The runtime of Mutex.with_lock (task.c) installs this when it is linked: the boundary calls it
+   on the thread whose call trapped, so that a lock that thread held is released. */
+#ifndef TSUZURI_SYNC_HOOKS_DEFINED
+#define TSUZURI_SYNC_HOOKS_DEFINED
+struct tz_sync_hooks {
+    void (*abandon)(void);
+};
+__attribute__((weak, visibility("hidden"))) struct tz_sync_hooks tsuzuri_sync_hooks;
 #endif
 
 struct tz_block;
@@ -135,6 +146,7 @@ int32_t tsuzuri_boundary_item(void *owner, void (*run)(void *, uint64_t),
     }
     tz_frame = frame.outer;
     if (trapped) {
+        if (tsuzuri_sync_hooks.abandon) tsuzuri_sync_hooks.abandon();
         trap->site = frame.site;
         trap->kind = frame.kind;
     }
@@ -170,6 +182,7 @@ int32_t tsuzuri_boundary_run(void (*thunk)(void *), void *argument, tsuzuri_trap
     if (setjmp(frame.env) == 0) thunk(argument);
     else trapped = 1;
     tz_frame = NULL;
+    if (trapped && tsuzuri_sync_hooks.abandon) tsuzuri_sync_hooks.abandon();
     /* A finished call hands what is left (results the host owns) over; a trapped one drops it all. */
     tz_boundary_release(boundary, trapped);
     pthread_mutex_destroy(&boundary->lock);

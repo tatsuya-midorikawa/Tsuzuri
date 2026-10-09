@@ -28,6 +28,8 @@ target
 !src/runtime/wasm.ll
 !src/runtime/closure.ll
 !src/runtime/task-wasm.ll
+!src/runtime/sync.ll
+!src/runtime/sync-wasm.ll
 !src/runtime/string.ll
 !src/runtime/utf8string.ll
 !src/runtime/heap-native.ll

@@ -1,0 +1,61 @@
+// F10 on real worker threads (tests/wasm_threads.mjs): atomics must not lose updates between
+// workers, and the children of a scope run on the pool. Every result is independent of the schedule.
+
+export def atomic_counter :: i64 -> i64
+fn atomic_counter n =
+    let counter = Atomic.create 0i64
+    let _previous = Task.scope (ref counter) n (shared -> index -> Atomic.fetch_add shared (index + 1))
+    Atomic.load (ref counter)
+
+// Each child adds one a thousand times: a plain, non-atomic add would lose updates between workers.
+export def atomic_contended :: i64 -> i64
+fn atomic_contended n =
+    let counter = Atomic.create 0i64
+    let _done = Task.scope (ref counter) n (shared -> _index -> add_many shared 1000)
+    Atomic.load (ref counter)
+
+def add_many :: ref Atomic<i64> -> i64 -> i64
+fn add_many cell count =
+    let mut round = 0i64
+    while round < count do
+        let _previous = Atomic.fetch_add cell 1
+        round = round + 1
+    round
+
+// One compare-exchange loop: every child wins its update once, whatever the order.
+export def atomic_compare_exchange_loop :: i64 -> i64
+fn atomic_compare_exchange_loop n =
+    let counter = Atomic.create 0i64
+    let _done = Task.scope (ref counter) n (shared -> index -> increment shared (index + 1))
+    Atomic.load (ref counter)
+
+def rec increment :: ref Atomic<i64> -> i64 -> i64
+fn rec increment cell amount =
+    let seen = Atomic.load cell
+    match Atomic.compare_exchange cell seen (seen + amount) with
+    | Result.Ok _previous -> amount
+    | Result.Error _current -> increment cell amount
+
+export def scope_results_order :: i64 -> i64
+fn scope_results_order n =
+    let unit_value = 0i64
+    let results = Task.scope (ref unit_value) n (_shared -> index -> index * 3 + 1)
+    let mut checksum = 0;
+    for position in 0i64 .. (results.length - 1) do
+        checksum = checksum * 31 + results[position] + position
+    checksum
+
+def count :: Arc<Atomic<i64>> -> i64 -> Task<i64>
+fn count shared amount = task {
+    let _previous = Atomic.fetch_add (Arc.get (ref shared)) amount
+    return amount
+}
+
+def counts :: ref Arc<Atomic<i64>> -> i64 -> [Task<i64>]
+fn counts shared n = new [Task<i64>](n, \index -> count (Arc.share shared) (index + 1))
+
+export def arc_atomic_tasks :: i64 -> i64
+fn arc_atomic_tasks n =
+    let shared = Arc.new (Atomic.create 0i64)
+    let results = Task.run (Task.parallel (counts (ref shared) n))
+    Array.sum (ref results) * 1000 + Atomic.load (Arc.get (ref shared))

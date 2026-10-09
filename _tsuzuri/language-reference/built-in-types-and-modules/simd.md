@@ -41,7 +41,7 @@ Simd.sum_lanes shifted as i64
 | 32 bit | `i32x4`、`i32ux4`、`f32x4` | `i32x8`、`i32ux8`、`f32x8` | `mask32x4` / `mask32x8` |
 | 64 bit | `i64x2`、`i64ux2`、`f64x2` | `i64x4`、`i64ux4`、`f64x4` | `mask64x2` / `mask64x4` |
 
-どの型も Copy、Send、Capture です。レコード、共用体、タプル、配列、リスト、クロージャに入れられます。メモリ上のサイズは 128 bit 型が 16 byte、256 bit 型が 32 byte です。マスクの LLVM IR 上の幅は、レーン数分のビット列です。
+どの型も Copy、Send、Sync、Capture です。レコード、共用体、タプル、配列、リスト、クロージャに入れられます。メモリ上のサイズは 128 bit 型が 16 byte、256 bit 型が 32 byte です。マスクの LLVM IR 上の幅は、レーン数分のビット列です。
 
 256 bit の値を置く領域は、16 byte 境界までしか揃えません。生成されるコードも、それ以上の強いアライメントを前提としません。
 

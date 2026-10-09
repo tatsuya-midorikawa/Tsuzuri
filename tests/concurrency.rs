@@ -1,0 +1,480 @@
+use tsuzuri::{analyze, analyze_modules, llvm};
+
+fn rejects(source: &str, code: &str) -> String {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    error.message
+}
+
+fn emits(source: &str) -> [String; 2] {
+    let module = analyze(source).unwrap_or_else(|error| {
+        panic!("{source}\n{}: {}", error.code, error.message);
+    });
+    [false, true].map(|wasm| {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap(),
+            "{source}: IR is deterministic"
+        );
+        ir
+    })
+}
+
+const OPERATIONS: &str = "let counter = Atomic.create 0i64\n\
+let added = Atomic.fetch_add (ref counter) 5\n\
+let subtracted = Atomic.fetch_sub (ref counter) 1\n\
+let anded = Atomic.fetch_and (ref counter) 7\n\
+let ored = Atomic.fetch_or (ref counter) 8\n\
+let xored = Atomic.fetch_xor (ref counter) 1\n\
+let swapped = Atomic.swap (ref counter) 3\n\
+Atomic.store (ref counter) 4\n\
+let exchanged = match Atomic.compare_exchange (ref counter) 4 9 with\n    | Result.Ok previous -> previous\n    | Result.Error current -> current\n\
+let last = Atomic.load (ref counter)\n\
+added + subtracted + anded + ored + xored + swapped + exchanged + last + Atomic.into_inner counter";
+
+const INTEGERS: [&str; 8] = ["i8", "i16", "i32", "i64", "i8u", "i16u", "i32u", "i64u"];
+
+const NODE: &str = "record Node { value: i64, next: Maybe<Arc<Mutex<Node>>> }\n";
+
+const HANDLE: &str = "extern type Counter\n\
+extern \"f10_counter_new\" def counter_new :: i64 -> Counter\n";
+
+const SHAPE: &str = "class Shape<'a> {\n    def area :: ref 'a -> i64\n}\nrecord Square { side: i64 }\ninstance Shape<Square> {\n    fn area s = s.side * s.side\n}\n";
+
+const SYNC_PARAMETER: &str = "def share :: Sync<'a> => ref 'a -> i64 = \\_value -> 1\n";
+
+#[test]
+fn atomic_programs_type_check_and_emit() {
+    emits(OPERATIONS);
+    for ty in INTEGERS {
+        emits(&format!(
+            "let cell = Atomic.create 1{ty}\nlet previous = Atomic.fetch_add (ref cell) 2{ty}\nlet changed = Atomic.fetch_xor (ref cell) 1{ty}\nif Atomic.load (ref cell) == 2{ty} && previous == 1{ty} && changed == 3{ty} then 1 else 0"
+        ));
+    }
+    emits(
+        "let flag = Atomic.create false\nlet was = Atomic.swap (ref flag) true\nlet ok = match Atomic.compare_exchange (ref flag) true false with\n    | Result.Ok _previous -> 1\n    | Result.Error _current -> 0\nif was || Atomic.load (ref flag) then 0 else ok",
+    );
+    for source in [
+        "def bump :: (AtomicValue<'a>, Integer<'a>) => ref Atomic<'a> -> 'a -> 'a = \\cell amount -> Atomic.fetch_add cell amount\nlet cell = Atomic.create 4i32\nbump (ref cell) 3",
+        "record Counters { hits: Atomic<i64>, misses: Atomic<i32> }\nlet counters = Counters { hits: Atomic.create 0i64, misses: Atomic.create 0i32 }\nlet _hit = Atomic.fetch_add (ref counters.hits) 1\nAtomic.load (ref counters.hits)",
+        "let cells = Vec.push (Vec.push (Vec.empty()) (Atomic.create 1i64)) (Atomic.create 2i64)\nAtomic.load (ref cells[0]) + Atomic.load (ref cells[1])",
+        "let cell = Atomic.create 7i64\nTask.run (task { return Atomic.load (ref cell) })",
+    ] {
+        emits(source);
+    }
+    for name in ["Atomic", "Mutex"] {
+        let error = analyze_modules(&[(name, "")]).unwrap_err();
+        assert_eq!(error.code, "E1011", "{name}: {}", error.message);
+    }
+}
+
+#[test]
+fn atomic_values_are_integers_and_bool() {
+    let limit =
+        "atomic values must be i8, i16, i32, i64, i8u, i16u, i32u, i64u or bool; use Mutex for";
+    for (source, ty) in [
+        ("let cell = Atomic.create \"text\"\n0", "string"),
+        ("let cell = Atomic.create 1.5\n0", "f64"),
+        ("let cell = Atomic.create ()\n0", "unit"),
+        ("let cell = Atomic.create [1i64]\n0", "[i64]"),
+        (
+            "record P { x: i64 }\nlet cell = Atomic.create (P { x: 1 })\n0",
+            "Main.P",
+        ),
+        (
+            "def bump :: AtomicValue<'a> => 'a -> Atomic<'a> = \\x -> Atomic.create x\nlet fine = Atomic.create 1i64\nlet other = bump \"x\"\n0",
+            "string",
+        ),
+    ] {
+        let message = rejects(source, "E1005");
+        assert!(message.contains(&format!("{limit} {ty}")), "{message}");
+    }
+    // Only integers take the arithmetic and bitwise updates.
+    for operation in [
+        "fetch_add",
+        "fetch_sub",
+        "fetch_and",
+        "fetch_or",
+        "fetch_xor",
+    ] {
+        let message = rejects(
+            &format!("let flag = Atomic.create false\nAtomic.{operation} (ref flag) true"),
+            "E1005",
+        );
+        assert!(message.contains("Integer"), "{operation}: {message}");
+    }
+}
+
+#[test]
+fn atomics_and_mutexes_are_owned_and_never_copied() {
+    for source in [
+        "let first = Atomic.create 0i64\nlet second = first\nAtomic.load (ref first)",
+        "let first = Mutex.create 0i64\nlet second = first\nMutex.with_lock (ref first) (\\value -> deref value)",
+    ] {
+        let message = rejects(source, "E1012");
+        assert!(message.contains("'first'"), "{message}");
+    }
+    for source in [
+        "def dup :: Copy<'a> => 'a -> ('a * 'a) = \\x -> (x, x)\ndup (Atomic.create 0i64)",
+        "def dup :: Copy<'a> => 'a -> ('a * 'a) = \\x -> (x, x)\ndup (Mutex.create 0i64)",
+        "let first = Atomic.create 0i64\nlet second = Atomic.create 0i64\nfirst == second",
+    ] {
+        let message = rejects(source, "E1005");
+        assert!(message.contains("no instance for"), "{message}");
+    }
+    // A function value may be copied, and a copy would be a second cell.
+    for source in [
+        "let cell = Atomic.create 0i64\nlet read = \\() -> Atomic.load (ref cell)\nread ()",
+        "let cell = Mutex.create 0i64\nlet read = \\() -> Mutex.with_lock (ref cell) (\\value -> deref value)\nread ()",
+        "record Counters { hits: Atomic<i64> }\nlet counters = Counters { hits: Atomic.create 0i64 }\nlet read = \\() -> Atomic.load (ref counters.hits)\nread ()",
+    ] {
+        let message = rejects(source, "E1005");
+        assert!(
+            message.contains("cannot capture")
+                && message.contains("a copy of an Atomic or Mutex would be a separate cell")
+                && message.contains(
+                    "capture a borrow of it, share it through an Arc, or pass it as an argument"
+                ),
+            "{message}"
+        );
+    }
+    // The ways the message names are accepted.
+    for source in [
+        "let cell = Atomic.create 0i64\nlet borrowed = ref cell\nlet read = \\() -> Atomic.load borrowed\nread ()",
+        "let cell = Arc.new (Atomic.create 0i64)\nlet read = \\() -> Atomic.load (Arc.get (ref cell))\nread ()",
+        "let cell = Mutex.create 5i64\nlet read = \\shared -> Mutex.with_lock shared (\\value -> deref value)\nread (ref cell)",
+    ] {
+        emits(source);
+    }
+}
+
+#[test]
+fn sync_marks_what_tasks_may_share() {
+    for body in [
+        "let values = [1i64, 2i64]\nshare (ref values) + share (ref \"text\") + share (ref 5i64)",
+        "let cell = Atomic.create 0i64\nlet lock = Mutex.create 0i64\nshare (ref cell) + share (ref lock)",
+        "let shared = Arc.new 1\nshare (ref shared)",
+        "let function = \\value -> value + 1\nshare (ref function)",
+        "record Counters { hits: Atomic<i64>, names: [string] }\nlet counters = Counters { hits: Atomic.create 0i64, names: [\"a\"] }\nshare (ref counters)",
+    ] {
+        emits(&format!("{SYNC_PARAMETER}{body}"));
+    }
+    let not_sync = "tasks can share only Sync values";
+    for (body, ty) in [
+        ("let counted = Rc.new 1\nshare (ref counted)", "Rc<i32>"),
+        (
+            "let counted = Arc.new (Rc.new 1)\nshare (ref counted)",
+            "Arc<Rc<i32>>",
+        ),
+        (
+            "let pending = task { return 1 }\nshare (ref pending)",
+            "Task<i32>",
+        ),
+        (
+            "let mut number = 5i64\nshare (ref mut number)",
+            "ref mut i64",
+        ),
+        (
+            "record Holder { counted: Rc<i64> }\nlet holder = Holder { counted: Rc.new 1 }\nshare (ref holder)",
+            "Holder",
+        ),
+    ] {
+        let message = rejects(
+            &format!("def share :: Sync<'a> => 'a -> i64 = \\_value -> 1\n{body}"),
+            "E1013",
+        );
+        assert!(
+            message.contains(not_sync) && message.contains(&format!("{ty} is not Sync")),
+            "{message}"
+        );
+    }
+    let message = rejects(
+        &format!("{HANDLE}{SYNC_PARAMETER}let counter = counter_new 1\nshare (ref counter)"),
+        "E1013",
+    );
+    assert!(
+        message.contains(not_sync) && message.contains("is not Sync"),
+        "{message}"
+    );
+    // A dyn value is Sync only when it is Copy: a shared copy cannot be mutated through.
+    let shared = format!("{SHAPE}{SYNC_PARAMETER}");
+    emits(&format!(
+        "{shared}let shape: dyn (Shape, Copy) = Dyn.of (Square {{ side: 3 }})\nshare (ref shape)"
+    ));
+    rejects(
+        &format!(
+            "{shared}let shape: dyn (Shape, Send) = Dyn.of (Square {{ side: 3 }})\nshare (ref shape)"
+        ),
+        "E1013",
+    );
+    // `Sync` is a class of the checker, not a mark that a dyn value carries.
+    rejects(
+        &format!("{SHAPE}let shape: dyn (Shape, Sync) = Dyn.of (Square {{ side: 3 }})\n0"),
+        "E1028",
+    );
+    // The built-in classes cannot be given instances, and their names are taken.
+    for (source, code) in [
+        ("record P { x: i64 }\ninstance Sync<P> {}\n0", "E1016"),
+        ("record P { x: i64 }\ninstance Send<P> {}\n0", "E1016"),
+        (
+            "record P { x: i64 }\ninstance AtomicValue<P> {}\n0",
+            "E1016",
+        ),
+        ("record Sync { x: i64 }\n0", "E1001"),
+        ("record AtomicValue { x: i64 }\n0", "E1001"),
+    ] {
+        rejects(source, code);
+    }
+}
+
+#[test]
+fn arc_shares_only_sync_values_between_tasks() {
+    let sync_send = "Arc<Rc<i32>> holds an Rc or Rc.Weak, whose counts are not atomic";
+    for body in [
+        "let shared = Arc.new (Atomic.create 0i64)\nlet other = Arc.share (ref shared)\nTask.run (task { return Atomic.fetch_add (Arc.get (ref other)) 1 }) + Atomic.load (Arc.get (ref shared))",
+        "let shared = Arc.new (Mutex.create 0i64)\nlet other = Arc.share (ref shared)\nTask.run (task { return Mutex.with_lock (Arc.get (ref other)) (\\value -> deref value) })",
+        "let shared = Arc.new (Arc.new (Atomic.create 0i64))\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "record Counters { hits: Atomic<i64> }\nlet shared = Arc.new (Counters { hits: Atomic.create 0i64 })\nTask.run (task { return Atomic.load (ref (Arc.get (ref shared)).hits) })",
+        "let shared = Arc.new (\\value -> value + 1)\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "let shared = Arc.new [1i64, 2i64]\nTask.run (task { return Array.sum (Arc.get (ref shared)) })",
+    ] {
+        emits(body);
+    }
+    // The recursive node holds a Mutex that holds the next Arc: cycles are possible, and typed.
+    emits(&format!(
+        "{NODE}let tail = Arc.new (Mutex.create (Node {{ value: 1, next: Maybe.None }}))\nlet head = Arc.new (Mutex.create (Node {{ value: 2, next: Maybe.Some (Arc.share (ref tail)) }}))\nTask.run (task {{ return Mutex.with_lock (Arc.get (ref head)) (\\node -> (deref node).value) }})"
+    ));
+    let message = rejects(
+        "let shared = Arc.new (Rc.new 1)\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "E1013",
+    );
+    assert!(message.contains(sync_send), "{message}");
+    for (source, shape) in [
+        (
+            "let shared = Arc.new (task { return 1 })\nTask.run (task { return Arc.strong_count (ref shared) })",
+            "shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
+        ),
+        (
+            "let shared = Arc.new (async { return 1 })\nTask.run (task { return Arc.strong_count (ref shared) })",
+            "shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
+        ),
+    ] {
+        let message = rejects(source, "E1013");
+        assert!(message.contains(shape), "{message}");
+    }
+    let message = rejects(
+        &format!(
+            "{HANDLE}let shared = Arc.new (counter_new 1)\nTask.run (task {{ return Arc.strong_count (ref shared) }})"
+        ),
+        "E1013",
+    );
+    assert!(message.contains("shares an extern handle"), "{message}");
+    // A task that holds an Arc of an Rc could drop it on another thread; so could a plain Rc.
+    rejects(
+        "let shared = Rc.new 1\nTask.run (task { return Rc.strong_count (ref shared) })",
+        "E1013",
+    );
+}
+
+#[test]
+fn task_scope_shares_a_sync_borrow() {
+    for source in [
+        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)",
+        "let table = [1i64, 2i64, 3i64]\nlet sums = Task.scope (ref table) 3 (\\shared index -> Array.sum shared + index)\nArray.sum (ref sums)",
+        "let text = \"shared\"\nlet lengths = Task.scope (ref text) 2 (\\shared index -> shared.length + index)\nArray.sum (ref lengths)",
+        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Task.scope (ref shared) 2 (\\arc index -> Atomic.fetch_add (Arc.get arc) index)\nArray.sum (ref seen)",
+        "let lock = Mutex.create 0i64\nlet seen = Task.scope (ref lock) 4 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + index; deref value }))\nArray.length (ref seen)",
+        "let seen = Task.scope (ref 5i64) 0 (\\shared index -> deref shared + index)\nArray.length (ref seen)",
+        "let outer = Task.scope (ref 1i64) 2 (\\shared index -> Array.sum (ref (Task.scope shared 2 (\\inner position -> deref inner + position + index))))\nArray.sum (ref outer)",
+    ] {
+        emits(source);
+    }
+    let not_sync = "tasks can share only Sync values";
+    for source in [
+        "let counted = Rc.new 1\nlet seen = Task.scope (ref counted) 2 (\\_shared index -> index)\n0",
+        "let pending = task { return 1 }\nlet seen = Task.scope (ref pending) 2 (\\_shared index -> index)\n0",
+    ] {
+        let message = rejects(source, "E1013");
+        assert!(message.contains(not_sync), "{message}");
+    }
+    // Each child returns an owned Send value; the shared borrow cannot leave the scope.
+    let message = rejects(
+        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared _index -> shared)\n0",
+        "E1013",
+    );
+    assert!(message.contains("tasks require owned values"), "{message}");
+    let message = rejects(
+        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\_shared index -> Rc.new index)\n0",
+        "E1013",
+    );
+    assert!(message.contains("tasks require Send values"), "{message}");
+    // The callback keeps no borrowed environment, as in every parallel operation.
+    for source in [
+        "let counter = Atomic.create 0i64\nlet other = Atomic.create 0i64\nlet borrowed = ref other\nlet seen = Task.scope (ref counter) 4 (\\_shared _index -> Atomic.load borrowed)\n0",
+        "let counter = Atomic.create 0i64\nlet step = 5i64\nlet borrowed = ref step\nlet seen = Task.scope (ref counter) 4 (\\shared _index -> Atomic.fetch_add shared (deref borrowed))\n0",
+    ] {
+        let message = rejects(source, "E1013");
+        assert!(
+            message.contains("cannot retain borrowed environments"),
+            "{message}"
+        );
+    }
+    // The call is one ownership boundary and cannot be erased into a function value.
+    let message = rejects(
+        "let counter = Atomic.create 0i64\nlet partial: (ref Atomic<i64> -> i64 -> i64) -> [i64] = Task.scope (ref counter) 4\n0",
+        "E1013",
+    );
+    assert!(
+        message.contains("must be fully applied directly"),
+        "{message}"
+    );
+}
+
+#[test]
+fn mutex_programs_type_check_and_the_closure_result_is_owned() {
+    for source in [
+        "let lock = Mutex.create [1i64, 2i64]\nMutex.with_lock (ref lock) (\\values -> Array.length (deref values))",
+        "let lock = Mutex.create 5i64\nlet seen = Mutex.with_lock (ref lock) (\\value -> { deref value = deref value + 1; deref value })\nseen + Mutex.into_inner lock",
+        "record Totals { count: i64, sum: i64 }\nlet lock = Mutex.create (Totals { count: 0, sum: 0 })\nMutex.with_lock (ref lock) (\\totals -> { deref totals = Totals { count: (deref totals).count + 1, sum: (deref totals).sum + 5 }; (deref totals).sum })",
+        "let outer = Mutex.create 1i64\nlet inner = Mutex.create 2i64\nlet borrowed = ref inner\nMutex.with_lock (ref outer) (\\_a -> Mutex.with_lock borrowed (\\b -> deref b))",
+        "let lock = Mutex.create 0i64\nTask.run (task { return Mutex.with_lock (ref lock) (\\value -> deref value) })",
+        "let lock = Mutex.create \"text\"\nMutex.with_lock (ref lock) (\\text -> (deref text).length)",
+    ] {
+        emits(source);
+    }
+    // A reference to the protected value would outlive the lock.
+    for source in [
+        "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> value)",
+        "let lock = Mutex.create [1i64]\nMutex.with_lock (ref lock) (\\values -> ref (deref values))",
+    ] {
+        let message = rejects(source, "E1013");
+        assert!(message.contains("tasks require owned values"), "{message}");
+    }
+    let message = rejects("let lock = Mutex.create (Rc.new 1)\n0", "E1013");
+    assert!(message.contains("tasks require Send values"), "{message}");
+    let message = rejects(
+        "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\_value -> Rc.new 1)",
+        "E1013",
+    );
+    assert!(message.contains("tasks require Send values"), "{message}");
+}
+
+#[test]
+fn atomics_lower_to_sequentially_consistent_instructions() {
+    for ir in emits(OPERATIONS) {
+        for instruction in [
+            "atomicrmw add ptr",
+            "atomicrmw sub ptr",
+            "atomicrmw and ptr",
+            "atomicrmw or ptr",
+            "atomicrmw xor ptr",
+            "atomicrmw xchg ptr",
+            "cmpxchg ptr",
+            "load atomic i64, ptr",
+            "store atomic i64",
+        ] {
+            assert!(ir.contains(instruction), "{instruction}\n{ir}");
+        }
+        for line in ir.lines().filter(|line| {
+            ["atomicrmw ", "cmpxchg ", "load atomic ", "store atomic "]
+                .iter()
+                .any(|operation| line.trim_start().contains(operation))
+        }) {
+            assert!(
+                line.contains(" seq_cst"),
+                "every atomic operation is seq_cst: {line}"
+            );
+        }
+        assert!(ir.contains("seq_cst, align 8"), "{ir}");
+        assert!(
+            !ir.contains("tz.mutex") && !ir.contains("tsuzuri_mutex"),
+            "atomics need no lock"
+        );
+    }
+    for ty in ["i8", "i16", "i32", "i64"] {
+        let [native, _] = emits(&format!(
+            "let cell = Atomic.create 1{ty}\nlet _a = Atomic.fetch_add (ref cell) 1{ty}\nAtomic.load (ref cell) as i64"
+        ));
+        let bits = &ty[1..];
+        assert!(
+            native.contains("atomicrmw add ptr")
+                && native.contains(&format!("load atomic i{bits}, ptr")),
+            "{ty}\n{native}"
+        );
+    }
+    let [native, _] = emits(
+        "let flag = Atomic.create true\nlet _was = Atomic.swap (ref flag) false\nAtomic.load (ref flag)",
+    );
+    assert!(
+        native.contains("load atomic i8, ptr") && native.contains("atomicrmw xchg ptr"),
+        "a bool is one byte in the cell\n{native}"
+    );
+}
+
+#[test]
+fn mutex_lowering_adds_no_runtime_to_other_programs() {
+    let plain = "let values = Task.run (Task.parallel [task { return 1 }, task { return 2 }])\nArray.sum (ref values)";
+    for ir in emits(plain) {
+        assert!(
+            !ir.contains("tz.mutex") && !ir.contains("tsuzuri_mutex"),
+            "no Mutex, no lock\n{ir}"
+        );
+    }
+    let locked = "let lock = Mutex.create 0i64\nlet held = Mutex.with_lock (ref lock) (\\value -> deref value)\n";
+    let [native, wasm] = emits(&format!("{locked}held"));
+    assert!(
+        native.contains("declare i32 @tsuzuri_mutex_lock(ptr)")
+            && native.contains("declare void @tsuzuri_mutex_unlock(ptr)"),
+        "{native}"
+    );
+    assert!(
+        wasm.contains("define internal i32 @tsuzuri_mutex_lock(ptr %cell)")
+            && !wasm.contains("declare i32 @tsuzuri_mutex_lock"),
+        "standalone WASM takes the lock in IR\n{wasm}"
+    );
+    assert!(
+        !wasm.contains("tsuzuri_task_parallel") && !wasm.contains("tz.mutex.parallel"),
+        "no parallel work, no wrapper\n{wasm}"
+    );
+    // With parallel work in the program, a start inside a lock is refused by the wrappers.
+    let with_work = format!(
+        "{locked}let values = Task.run (Task.parallel [task {{ return 1 }}, task {{ return 2 }}])\nheld + Array.sum (ref values)"
+    );
+    for ir in emits(&with_work) {
+        assert!(
+            ir.contains("call void @tz.mutex.parallel(")
+                || ir.contains("call i64 @tz.mutex.parallel_results("),
+            "{ir}"
+        );
+        // The one direct call of each entry is inside its wrapper.
+        assert!(
+            ir.matches("call void @tsuzuri_task_parallel(").count() <= 1,
+            "calls go through the wrappers\n{ir}"
+        );
+        assert!(
+            ir.matches("call i64 @tsuzuri_task_parallel_results(")
+                .count()
+                <= 1,
+            "calls go through the wrappers\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn task_scope_is_one_group_of_children() {
+    let source = "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)";
+    let [native, wasm] = emits(source);
+    for ir in [&native, &wasm] {
+        assert!(ir.contains("@tsuzuri_task_parallel("), "{ir}");
+        assert!(!ir.contains("tz.mutex"), "{ir}");
+    }
+    assert!(
+        native.contains("declare void @tsuzuri_task_parallel("),
+        "{native}"
+    );
+    assert!(
+        wasm.contains("define internal void @tsuzuri_task_parallel("),
+        "standalone WASM runs the children in index order\n{wasm}"
+    );
+}

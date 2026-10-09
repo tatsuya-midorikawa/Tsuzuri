@@ -313,13 +313,24 @@ impl TypeContext<'_> {
     }
 
     pub(super) fn stored_all(&self, root: &Type, predicate: impl Fn(&Type) -> bool) -> bool {
+        self.stored_all_closed(root, predicate, |_| false)
+    }
+
+    /// `stored_all`, except that it does not look inside a type for which `closed` holds: the
+    /// predicate has already judged what that type holds (F10's `Sync` of a `Mutex`).
+    pub(super) fn stored_all_closed(
+        &self,
+        root: &Type,
+        predicate: impl Fn(&Type) -> bool,
+        closed: impl Fn(&Type) -> bool,
+    ) -> bool {
         let mut seen = BTreeSet::new();
         let mut pending = vec![root.clone()];
         while let Some(ty) = pending.pop() {
             if !predicate(&ty) {
                 return false;
             }
-            if !seen.insert(ty.clone()) {
+            if closed(&ty) || !seen.insert(ty.clone()) {
                 continue;
             }
             match ty {

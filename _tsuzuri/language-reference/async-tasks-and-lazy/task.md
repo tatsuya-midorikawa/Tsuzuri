@@ -10,6 +10,7 @@ OS のスレッドハンドルでも、JavaScript の `Promise` でもありま�
 - タスクは非 Copy です。二重実行は `E1012` になります。
 - 持ち込めるのは所有値のムーブか Copy だけです。参照の持ち込みは `E1013` です。
 - 読み取り専用のデータを複数のタスクで共有するときは、[Arc](../built-in-types-and-modules/rc.md) をタスクごとに `Arc.share` して渡します。`Rc` は持ち込めません（`E1013`）。
+- 外の値を借用したまま子どもたちに共有させるときは `Task.scope` を使います。共有した状態を書き換えるときは、[Atomic](../built-in-types-and-modules/atomic.md)（整数と `bool`）か [Mutex](../built-in-types-and-modules/mutex.md)（ほかの値）に入れます（[共有状態と Task.scope](#共有状態と-taskscope)）。
 - 実行せずに捨てたタスクは、本体を走らせず、捕捉した所有値だけを解放します。
 - `Task.parallel` の結果配列は、入力の並び順です。
 - `Task.parallel_results` は、未開始のタスクを止め、入力インデックスが最小の `Error` を返します。
@@ -190,7 +191,7 @@ Task.run work
 6
 ```
 
-`Rc` は計数が atomic でないので、所有値でもタスクへ持ち込めません（`E1013`、`tasks require Send values; ... holds an Rc or Rc.Weak`）。同じ値を複数のタスクで読むときは `Arc` を使い、タスクごとに `Arc.share` した所有者を渡します（[Rc と Arc](../built-in-types-and-modules/rc.md#arc-とタスク)）。ただし、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持つ値の `Arc` は、複数のタスクが同じホストのハンドルを同時に使えてしまうので持ち込めません（`E1013`）。ハンドルは `Arc` に入れずに、値そのものを 1 つのタスクへ移します。
+`Rc` は計数が atomic でないので、所有値でもタスクへ持ち込めません（`E1013`、`tasks require Send values; ... holds an Rc or Rc.Weak`）。同じ値を複数のタスクで読むときは `Arc` を使い、タスクごとに `Arc.share` した所有者を渡します（[Rc と Arc](../built-in-types-and-modules/rc.md#arc-とタスク)）。`Arc<T>` をタスクへ渡せるのは、`T` が `Send` で、かつ複数のタスクが共有借用で同時に使ってよい（`Sync`）ときです。extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持つ値の `Arc` は、複数のタスクが同じホストのハンドルを同時に使えてしまうので持ち込めません（`E1013`）。ハンドルは `Arc` に入れずに、値そのものを 1 つのタスクへ移します。`Atomic` と `Mutex` は `Sync` なので、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` は持ち込めます。
 
 外の `let mut` への代入は、タスクの中では可変束縛として見えません（`E1014`）。タスクの中で `let mut` したローカルは、そのタスクの中だけで変えられます。Copy の配列や関数ポインタを捕捉するときは、独立したコピーが作られます。大きな Copy 値は、その分のコピーがかかります。
 
@@ -229,7 +230,72 @@ Array.length ref (Task.run (Task.parallel jobs))
 0
 ```
 
-`and!`、デタッチ、スレッド ID、スレッド間の可変状態の共有、外部キャンセルトークン、回復可能なタスク例外はありません。
+`and!`、デタッチ、スレッド ID、外部キャンセルトークン、回復可能なタスク例外はありません。スレッドの間で状態を共有するには、次の節の `Task.scope` と、`Atomic`・`Mutex` を使います。
+
+## 共有状態と Task.scope
+
+```text
+Task.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]
+```
+
+`Task.scope shared count callback` は、`callback shared index` を `index = 0 .. count - 1` で 1 回ずつ呼び、結果を `index` の順に並べた配列を返します。`callback` の 1 回の呼び出し（子ども）は、プールのワーカーで並列に走りえます。制御は、すべての子どもが終わってから戻ります。`shared` は、この呼び出しの間だけ全員に貸す共有借用です。`Task.parallel` のタスクは外の借用を持ち込めませんが、`Task.scope` は、外の値を借用のまま共有できます。
+
+```tsuzuri run=partial%3D1225%2C1250%2C1275%2C1300%20total%3D5050
+def stride_sum :: ref [i64] -> i64 -> i64
+fn stride_sum numbers start =
+    let mut total = 0;
+    let mut index = start;
+    while index < numbers.length do
+        total = total + numbers[index];
+        index = index + 4
+    total
+
+let numbers = new [i64](100, \index -> index + 1)
+let partial = Task.scope (ref numbers) 4 (shared -> part -> stride_sum shared part)
+$"partial={partial[0]},{partial[1]},{partial[2]},{partial[3]} total={Array.sum (ref partial)}"
+```
+
+実行結果:
+
+```text
+partial=1225,1250,1275,1300 total=5050
+```
+
+4 つの子どもが、同じ配列 `numbers` を借用して 4 つおきに足します。配列はコピーされず、結果は `index` の順です。
+
+`shared` を読むだけでなく、共有した状態を書き換えるには、書き換えを許す型に入れます。整数と `bool` は [Atomic](../built-in-types-and-modules/atomic.md)、そのほかの値と、複数の値を 1 つの不変条件で守る状態は [Mutex](../built-in-types-and-modules/mutex.md) です。どちらも共有借用 `ref` から更新できるので、`Task.scope` の `shared` にそのまま使えます。
+
+```tsuzuri run=36
+let hits = Atomic.create 0i64
+let _seen = Task.scope (ref hits) 8 (shared -> index -> Atomic.fetch_add shared (index + 1))
+Atomic.load (ref hits)
+```
+
+実行結果:
+
+```text
+36
+```
+
+規則は次のとおりです。
+
+- `shared` の型は `Sync` でなければなりません。`Rc`、extern ハンドル、`Task`、排他参照、Copy でない `dyn` 値、`Owned.Function`、`Seq`、`Async`、GPU のハンドルは `Sync` ではなく、`E1013`（`tasks can share only Sync values; ... is not Sync`）です。整数、文字列、配列、レコード、関数値、`Atomic`、`Mutex`、`Sync` な値の `Arc` は `Sync` です。`Sync` は、組み込みの型クラスです（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
+- `callback` は借用を持った環境を捕捉できません（`E1013`、`parallel callbacks and values cannot retain borrowed environments`）。共有したい値は、引数の `shared` で受け取ります。
+- 結果は所有値で `Send` です。`shared` を返すことはできません（`E1013`、`tasks require owned values`）。
+- `count` が 0 なら空配列です。負の数は、結果の配列を確保するときにトラップします（`allocation size overflow`）。
+- `Task.scope` は引数をすべて渡して直接呼びます。関数値として持ち回すことはできません（`E1013`、`parallel operations must be fully applied directly`）。
+- 子どもの中で `Task.parallel`、`Parallel.*`、`Task.scope` を使えます。呼び出したスレッドも子どもを実行するので、空きワーカーがなくてもデッドロックしません。ただし、`Mutex.with_lock` の中では始められません（トラップ）。
+- 子どもがトラップしたときの扱いは `Task.parallel` と同じです。
+
+状態を共有する方法は、次のように選びます。
+
+| 共有したいもの | 使うもの |
+| --- | --- |
+| 外の値を、借用のまま読む | `Task.scope (ref value) count callback` |
+| 整数や `bool` のカウンター、フラグ | `Atomic` を `Task.scope` の `shared` か `Arc` で共有する |
+| `string`・配列・レコード、複数の値の組 | `Mutex` を `Task.scope` の `shared` か `Arc` で共有する |
+| `Task.parallel` で作ったタスクが持つ共有値 | タスクごとに `Arc.share` した `Arc<T>`（`T` は `Send` かつ `Sync`）を渡す |
+| 1 つのタスクだけが使う値 | 所有値をそのタスクへ移す |
 
 ## 失敗の伝播
 
@@ -290,13 +356,15 @@ POSIX では pthreads、Windows では Win32 のスレッドプールを使っ�
 
 ### WebAssembly
 
-既定の WASM は、ホストの import を要しない逐次実行です。所有権、結果の順序、`parallel_results` のエラー選択はネイティブと同じです。逐次のときは、最初の `Error` 以降のタスクを実行しません。
+既定の WASM は、ホストの import を要しない逐次実行です。所有権、結果の順序、`parallel_results` のエラー選択はネイティブと同じです。逐次のときは、最初の `Error` 以降のタスクを実行しません。`Task.scope` の子どもは `index` の昇順に 1 つずつ実行し、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになります。
 
 Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature threads` で出した WASM かオブジェクトだけです。`run`、`check`、ネイティブ、LLVM テキストへの指定は `E2000` です。simd128 とは併用できます。
 
 同梱のホストは Node.js 20 以降向けの `src/runtime/wasm-threads.mjs` です。共有メモリ（`SharedArrayBuffer`）が要ります。ブラウザでは、`--emit bindings-js --wasm-feature threads` で生成したグルーが Web Worker のプールを作り、export を Worker で実行して `Promise` を返します（[スレッドのグルー](../compiler/webassembly.md#スレッドのグルー)）。ページは COOP（`same-origin`）と COEP（`require-corp`）付きで配信します。満たさないページでは、グルーが `Error` を投げます。初期化に失敗したプールを、黙って逐次成功にはしません。
 
 `Task.run` はネイティブでも WASM でも同期呼び出しです。UI スレッドをブロックしない API ではありません。
+
+`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` を使うプログラムを threads でビルドすると、いまは `E2000` です（`Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic`）。
 
 ## Async との違い
 
@@ -320,7 +388,7 @@ Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature
 
 | 言語 | 構文 / 型 | いつ始まるか | 捕捉 | 実行 |
 | --- | --- | --- | --- | --- |
-| Tsuzuri | `task { ... }` / `Task<T>` | コールド。`Task.run` か `let!` | 1 回実行。参照は不可。共有は `Arc` | スレッドプールの同期フォーク・ジョイン |
+| Tsuzuri | `task { ... }` / `Task<T>` | コールド。`Task.run` か `let!` | 1 回実行。参照は不可。共有は `Arc`、借用の共有は `Task.scope` | スレッドプールの同期フォーク・ジョイン |
 | F# | `task { ... }` / `Task<T>` | ホット。生成時に開始 | 複数回参照できる | .NET のスレッドプール |
 | Rust | `std::thread::spawn` | ホット | `'static`、または scoped thread の借用 | OS スレッド。並列は外部クレートが多い |
 | C# | `Task.Run(...)` | ホット | GC が参照を共有 | .NET のスレッドプール |
@@ -332,6 +400,7 @@ Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature
 - `task { ... }` で作り、`Task.run` で同期実行します。二重実行は `E1012`、参照の持ち込みは `E1013` です。
 - `if` の枝で `return` するときはブロックが要ります。`then return` は `E0002` です。
 - `Task.parallel` の結果は入力順です。`Task.parallel_results` は未開始分を止め、最小インデックスの `Error` を返します。
+- `Task.scope shared count callback` は、`Sync` な `shared` の借用を子どもたちに貸し、結果を `index` の順に返します。共有した状態の書き換えは `Atomic` と `Mutex` です。
 - 追加ワーカーは `min(CPU 数, 32) - 1` までです。既定の WASM は逐次で、threads は明示した wasm32 ビルドだけです。
 
 ## 関連項目
@@ -339,6 +408,9 @@ Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature
 - [Async 式](async.md)
 - [Lazy 式](lazy.md)
 - [Parallel](../built-in-types-and-modules/parallel.md)
+- [Atomic](../built-in-types-and-modules/atomic.md)
+- [Mutex](../built-in-types-and-modules/mutex.md)
+- [Rc と Arc](../built-in-types-and-modules/rc.md)
 - [Result](../built-in-types-and-modules/result.md)
 - [IO](../built-in-types-and-modules/io.md)
 - [コンピュテーション式](../computation-expressions/computation-expressions.md)

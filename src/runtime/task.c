@@ -303,3 +303,83 @@ TZ_TASK_API
 uint64_t tsuzuri_task_parallel_results(uint32_t (*run)(void *, uint64_t), void *context, uint64_t length) {
     return tz_task_submit(NULL, run, context, length);
 }
+
+/* Mutex.with_lock (F10). The lock word is the first field of a cell: 0 free, 1 held, 2 held and
+   somebody may wait. A critical section never waits (the generated code refuses to nest a lock or
+   to start parallel work inside one), so a waiter always gets the lock once its holder is done. All
+   mutexes park on one pthread mutex and condition variable, so the lock word of a mutex that
+   is never contended is touched by compare-exchange alone. */
+static _Thread_local void *tz_mutex_held;
+static pthread_mutex_t tz_mutex_park = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t tz_mutex_wake = PTHREAD_COND_INITIALIZER;
+
+static void tz_mutex_refuse(const char *message) {
+    fprintf(stderr, "Tsuzuri runtime: %s\n", message);
+    fflush(stderr);
+}
+
+/* 0 when this thread now holds the lock of `cell`; 1 when it holds one already (nothing changed). */
+TZ_TASK_API
+int32_t tsuzuri_mutex_lock(void *cell) {
+    if (tz_mutex_held) {
+        tz_mutex_refuse("Mutex.with_lock cannot be nested; release the outer mutex first");
+        return 1;
+    }
+    atomic_uint *state = cell;
+    unsigned expected = 0;
+    if (!atomic_compare_exchange_strong_explicit(state, &expected, 1,
+            memory_order_acquire, memory_order_relaxed)) {
+        tz_task_check("pthread_mutex_lock", TZ_TASK_MUTEX_LOCK(&tz_mutex_park));
+        /* The exchange and the wait are atomic under the park lock, so the broadcast of the unlock
+           that sees 2 cannot come before the wait: no wakeup is lost. */
+        while (atomic_exchange_explicit(state, 2, memory_order_acquire) != 0) {
+            tz_task_check("pthread_cond_wait", TZ_TASK_COND_WAIT(&tz_mutex_wake, &tz_mutex_park));
+        }
+        tz_task_check("pthread_mutex_unlock", TZ_TASK_MUTEX_UNLOCK(&tz_mutex_park));
+    }
+    tz_mutex_held = cell;
+    return 0;
+}
+
+TZ_TASK_API
+void tsuzuri_mutex_unlock(void *cell) {
+    tz_mutex_held = NULL;
+    atomic_uint *state = cell;
+    if (atomic_exchange_explicit(state, 0, memory_order_release) == 2) {
+        tz_task_check("pthread_mutex_lock", TZ_TASK_MUTEX_LOCK(&tz_mutex_park));
+        tz_task_check("pthread_cond_broadcast", TZ_TASK_COND_BROADCAST(&tz_mutex_wake));
+        tz_task_check("pthread_mutex_unlock", TZ_TASK_MUTEX_UNLOCK(&tz_mutex_park));
+    }
+}
+
+/* Nonzero when parallel work may start: this thread holds no lock. */
+TZ_TASK_API
+int32_t tsuzuri_mutex_parallel_ok(void) {
+    if (!tz_mutex_held) return 1;
+    tz_mutex_refuse("parallel work cannot start inside Mutex.with_lock; move it outside the critical section");
+    return 0;
+}
+
+#if !defined(_WIN32)
+/* A trap boundary (src/runtime/trap.c) that catches a trap inside Mutex.with_lock calls this on the
+   thread that trapped. The call is abandoned, so the lock is released and the thread forgets it:
+   a waiter in the same group gets the lock instead of waiting for ever, and the next call on this
+   thread can lock again. */
+static void tz_mutex_abandon(void) {
+    void *cell = tz_mutex_held;
+    if (cell) tsuzuri_mutex_unlock(cell);
+}
+
+#ifndef TSUZURI_SYNC_HOOKS_DEFINED
+#define TSUZURI_SYNC_HOOKS_DEFINED
+struct tz_sync_hooks {
+    void (*abandon)(void);
+};
+__attribute__((weak, visibility("hidden"))) struct tz_sync_hooks tsuzuri_sync_hooks;
+#endif
+
+__attribute__((constructor))
+static void tz_sync_install(void) {
+    tsuzuri_sync_hooks.abandon = tz_mutex_abandon;
+}
+#endif

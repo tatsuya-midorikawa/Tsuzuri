@@ -7,10 +7,10 @@ Tsuzuri に GC はありません。共有はいつも明示的です。`Rc.shar
 ## この記事のポイント
 
 - `Rc<T>` と `Arc<T>` は非 Copy の所有値です。所有者を増やすのは `Rc.share (ref rc)` だけで、代入や引数渡しはムーブです（ムーブ後の使用は `E1012`）。
-- 中の値は共有借用 `Rc.get (ref rc)` で読みます。共有した値を書き換える方法はありません（内部可変性はありません）。
+- 中の値は共有借用 `Rc.get (ref rc)` で読みます。共有した値を書き換えられるのは、中に [Atomic](./atomic.md) か [Mutex](./mutex.md) を入れたときだけです（`Arc<Atomic<i64>>`、`Arc<Mutex<T>>`）。ほかの値は、共有されている間は変わりません。
 - 弱参照 `Rc.Weak<T>`／`Arc.Weak<T>` は値の寿命を延ばしません。`Rc.upgrade` は、値が生きていれば新しい `Rc` を `Some` で返し、解放済みなら `None` を返します。
-- `Rc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。`Arc<T>` は `T` が `Send` で、extern ハンドルを持ちうる値を含まなければ両方できます。
-- 値が共有後に変わらないので、`Rc`／`Arc` だけで循環は作れず、参照カウントによる解放漏れは起きません。循環するグラフは [Arena](./arena.md) で表します。
+- `Rc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。`Arc<T>` は、`T` が `Send` かつ `Sync` のとき、両方できます（Rust の `Arc<T>: Send` と同じ規則です）。タスクの間で状態を共有する標準の書き方は、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` です。
+- `Rc`／`Arc` だけでは循環を作れません。ただし `Mutex` の中に `Arc` を入れると循環を作れ、サイクルコレクターはないので、そのブロックは解放されません。循環の一方は `Arc.Weak` で持ちます。循環するグラフは [Arena](./arena.md) でも表せます。
 - 長い鎖（連結リストなど）の解放は再帰しません。100 万要素の鎖も native のスタックを溢れさせずに解放します。
 
 ## 基本の書き方
@@ -148,22 +148,84 @@ even=2450 odd=2500 owners=1
 | 型 | 所有者を増やす | タスクへ移す（`Send`） | 関数値に捕捉する |
 | --- | --- | --- | --- |
 | `Rc<T>`・`Rc.Weak<T>` | `Rc.share`・`Rc.downgrade` | できない（`E1013`） | できない（`E1005`） |
-| `Arc<T>`・`Arc.Weak<T>` | `Arc.share`・`Arc.downgrade` | `T` が `Send` で共有できるとき | `T` が共有できるとき |
+| `Arc<T>`・`Arc.Weak<T>` | `Arc.share`・`Arc.downgrade` | `T` が `Send` かつ `Sync` のとき | `T` が `Sync` のとき |
 
 - `Rc` の計数は atomic ではないので、`Rc` はそれを作ったタスクから出ません。`Rc` を持つレコード・共用体・配列、`Arc<Rc<T>>` も同じです。
 - 関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せます。そのため `Rc` は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません。`Rc` は引数として渡します。
 - `Arc` を捕捉した関数値を複製すると、`Arc.share` と同じく所有者が 1 増えます。値は複製しません。
-- `Arc` を持つタスクはどれも、`Arc.get` で同時に値を借用できます。共有できる値は、`Rc`、extern ハンドル（`extern type`）、ハンドルを隠しうる Copy でない `dyn` 値、ハンドルを捕捉しうる `Owned.Function` を、入れ子の中にも持たない値です。ホストのライブラリーのハンドルは複数のスレッドから同時に使えるとは限らないためです。共有できない値の `Arc` は、それを持つレコードや共用体も含めて、タスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。同じタスクの中で `Arc.share` するのは自由です。ハンドルを別のタスクで使うときは、`Arc` に入れずに値そのものを 1 つのタスクへ移します。内部可変性とともに `Sync` が入ると（F10）、この規則は `Sync` に置き換わります。
+- `Arc` を持つタスクはどれも、`Arc.get` で同時に値を借用できます。そのため `Arc<T>` をタスクへ渡せるのは、`T` が `Send` であり、かつ `Sync`（複数のタスクが共有借用で同時に使ってよい値）のときだけです。`Sync` でないのは、`Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function`、`Task`、排他参照、`Seq`、`Async`、GPU のハンドルを、入れ子の中にも含む値です。ホストのライブラリーのハンドルは複数のスレッドから同時に使えるとは限らないためです。`Sync` でない値の `Arc` は、それを持つレコードや共用体も含めて、タスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。同じタスクの中で `Arc.share` するのは自由です。ハンドルを別のタスクで使うときは、`Arc` に入れずに値そのものを 1 つのタスクへ移します。`Atomic<T>` と `Mutex<T>` は `Sync` で、`Mutex<T>` は `T` が `Send` なら作れるので、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` はタスクへ渡せます。`Sync` は組み込みの型クラスです（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
 - `Rc` と `Arc` には排他参照 `ref mut` を入れられません（`E1005`）。`Rc<ref string>` のように共有参照を入れた値は、参照先より長く生きられません（`E1013`）。
 - `Rc` と `Arc` は公開 ABI（`export def`・`extern def`）に使えず（`E1008`）、const にもできません（`E1026`）。
 
 ## 循環と解放
 
-共有した値は変更できないので、値ができる前にその値を指す `Rc` は作れません。`Rc` と `Arc` だけでは循環は作れず、参照カウントの循環による解放漏れは起きません。Tsuzuri にサイクルコレクターはありません。循環するグラフは [Arena](./arena.md) とハンドルで表します。
+`Rc` と `Arc` の値は、共有されている間は変更できないので、値ができる前にその値を指す `Rc`・`Arc` は作れません。`Rc` と `Arc` だけでは循環は作れず、参照カウントの循環による解放漏れも起きません。循環するグラフは [Arena](./arena.md) とハンドルでも表せます。
+
+ただし、[Mutex](./mutex.md) は共有された値を書き換えられます。`Arc` は `Mutex` の中に入れられる（`Rc` は `Send` ではないので入れられません）ので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指すと、循環を作れます。Tsuzuri にサイクルコレクターはなく、循環の中のブロックは、所有者がすべていなくなっても解放されません。次の例は、2 つのノードが互いを `Arc` で指して、`Owned.drop` の後も `Arc.upgrade` が成功する（ブロックが残っている）ようすです。
+
+```tsuzuri run=alive%3Dtrue
+record Node { id: i64, peer: Mutex<Maybe<Arc<Node>>> }
+
+def link :: ref Arc<Node> -> Arc<Node> -> i64
+fn link node target =
+    Mutex.with_lock (ref (Arc.get node).peer) (peer -> {
+        deref peer = Maybe.Some target;
+        0
+    })
+
+let first = Arc.new (Node { id: 1, peer: Mutex.create Maybe.None })
+let second = Arc.new (Node { id: 2, peer: Mutex.create Maybe.None })
+let watcher = Arc.downgrade (ref first)
+let _a = link (ref first) (Arc.share (ref second))
+let _b = link (ref second) (Arc.share (ref first))
+Owned.drop first
+Owned.drop second
+let alive = match Arc.upgrade (ref watcher) with
+    | Maybe.Some _node -> true
+    | Maybe.None -> false
+$"alive={alive}"
+```
+
+実行結果:
+
+```text
+alive=true
+```
+
+循環の一方を `Arc.Weak` で持つと、強い所有者の循環ができないので、所有者がいなくなれば値は解放されます。親から子へは `Arc`、子から親へは `Arc.Weak` のように、所有の向きを 1 つに決めます。
+
+```tsuzuri run=alive%3Dfalse
+record Node { id: i64, peer: Mutex<Maybe<Arc.Weak<Node>>> }
+
+def link :: ref Arc<Node> -> Arc.Weak<Node> -> i64
+fn link node target =
+    Mutex.with_lock (ref (Arc.get node).peer) (peer -> {
+        deref peer = Maybe.Some target;
+        0
+    })
+
+let first = Arc.new (Node { id: 1, peer: Mutex.create Maybe.None })
+let second = Arc.new (Node { id: 2, peer: Mutex.create Maybe.None })
+let watcher = Arc.downgrade (ref first)
+let _a = link (ref first) (Arc.downgrade (ref second))
+let _b = link (ref second) (Arc.downgrade (ref first))
+Owned.drop first
+Owned.drop second
+let alive = match Arc.upgrade (ref watcher) with
+    | Maybe.Some _node -> true
+    | Maybe.None -> false
+$"alive={alive}"
+```
+
+実行結果:
+
+```text
+alive=false
+```
 
 型の定義は `Rc` を通って自分自身を含められます。`record Node { value: i64, children: Vec<Rc<Node>> }` のように、空のコレクションや共用体の case で有限の値を作れれば受理されます。`record Loop { next: Rc<Loop> }` は有限の値がないので `E1010` です。
 
-親を弱参照で指す木も書けます。値は共有の後に変わらないので、親を先に作り、子が `Rc.downgrade` で親を指します。親を解放した後の `Rc.upgrade` は `None` です。
+親を弱参照で指す木も書けます。`Mutex` を使わない木では値は共有の後に変わらないので、親を先に作り、子が `Rc.downgrade` で親を指します。親を解放した後の `Rc.upgrade` は `None` です。
 
 ```tsuzuri run=parent%3D7%20after%3D-1
 record TreeNode { value: i64, parent: Maybe<Rc.Weak<TreeNode>>, children: Vec<Rc<TreeNode>> }
@@ -225,11 +287,13 @@ parent=7 after=-1
 ## まとめ
 
 - 同じ値を複数の所有者で読むときは `Rc`、複数のタスクで読むときは `Arc` を使います。共有は `share` で明示します。
-- 中の値は `get` の共有借用で読みます。共有した値は変わらないので循環はできず、循環するグラフは `Arena` で表します。
+- 中の値は `get` の共有借用で読みます。共有した値を書き換えるには `Atomic` か `Mutex` を入れ、`Arc<Atomic<T>>`・`Arc<Mutex<T>>` をタスクへ渡します。`Rc`／`Arc` だけでは循環できませんが、`Arc` と `Mutex` では循環でき、解放されません。循環の一方は `Arc.Weak` で持ちます。
 - 弱参照は値の寿命を延ばさず、`upgrade` で生きているかを確かめます。
 
 ## 関連項目
 
+- [Atomic](./atomic.md) — 共有できる整数と `bool`
+- [Mutex](./mutex.md) — ロックで守る共有状態
 - [Arena](./arena.md) — 循環するグラフ
 - [Drop とリソースの解放](../ownership-and-memory/drop.md) — 共有所有の選び方
 - [Task 式](../async-tasks-and-lazy/task.md) — タスクへ渡せる値

@@ -107,7 +107,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 
 メモリのコストまで消えるわけではありません。コレクションの複製、捕捉環境の複製、フレームの外への移動では、確保やコピーが起こります。GC の停止がないことだけを根拠に、ハードリアルタイム性は保証しません。
 
-循環や自由な共有が必要なデータは、今の所有権モデルに合わせて設計します。複数の所有者で共有する値は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示的に共有し、循環するグラフは std の [Arena](../built-in-types-and-modules/arena.md) に値を入れ、世代付きのハンドルで指して表します。共有した値を書き換える内部可変性はなく（F10 で計画中）、サイクルコレクターも GC も後から足す方針は採っていません。
+循環や自由な共有が必要なデータは、今の所有権モデルに合わせて設計します。複数の所有者で共有する値は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示的に共有し、循環するグラフは std の [Arena](../built-in-types-and-modules/arena.md) に値を入れ、世代付きのハンドルで指して表します。共有した値を書き換えるときは、整数と `bool` なら [Atomic](../built-in-types-and-modules/atomic.md)、そのほかなら [Mutex](../built-in-types-and-modules/mutex.md) に入れます（内部可変性はこの 2 つだけです）。`Arc` と `Mutex` では循環を作れてしまうので、循環の一方は `Arc.Weak` で持ちます。サイクルコレクターも GC も後から足す方針は採っていません。
 
 ## 移植できる経路を残す
 
@@ -144,9 +144,10 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
 | GPU の浮動小数点と自動接続 | 計画中 | [F09](../../../_features/F09-gpu-float-runtime.md) |
-| 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。内部可変性はない |
+| 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。共有した値の書き換えは F10 の `Atomic` / `Mutex` |
 | 多次元配列 `Matrix`（行優先の連続バッファ、行列積の演算順序を固定） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)、C11 Phase 1。ビューと N 次元は含まない |
-| Atomic / Mutex / Channel | 計画中 | F10 |
+| `Atomic`、`Mutex`、`Task.scope`、`Sync` | 実装済み。`--wasm-feature threads` と `Mutex` の組み合わせは `E2000` | F10 の Phase 1 |
+| `Channel` | 計画中 | F10 の Phase 2 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |

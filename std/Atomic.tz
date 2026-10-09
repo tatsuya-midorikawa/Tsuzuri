@@ -1,0 +1,6 @@
+/// A shared cell of an integer or `bool` that threads read and update with atomic operations.
+/// `Atomic.create` makes one, `Atomic.load`, `store`, `swap`, `compare_exchange` and `fetch_*`
+/// work through a shared borrow, so one `Task.scope` or `Arc` lets many tasks update it. It is
+/// not Copy and no function value can capture it (a copy would be another counter); the cell
+/// lives in the buffer of `cell`, which is why moving the value never moves the cell.
+record Atomic<'a> { cell: ['a] }

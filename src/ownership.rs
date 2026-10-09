@@ -2188,15 +2188,44 @@ impl Checker<'_> {
             }
             E::Parallel(operation, arguments) => {
                 let callback = operation.parallel_callback();
-                let input = if *operation == crate::check::Builtin::ParallelInit {
+                let scope = *operation == crate::check::Builtin::TaskScope;
+                let input = if matches!(
+                    operation,
+                    crate::check::Builtin::ParallelInit | crate::check::Builtin::TaskScope
+                ) {
                     None
                 } else {
                     Some(arguments.len() - 1)
                 };
+                // The callbacks of `reduce` and `Task.scope` take two arguments.
+                let result_arity = usize::from(matches!(
+                    operation,
+                    crate::check::Builtin::ParallelReduce | crate::check::Builtin::TaskScope
+                ));
                 let base = self.held.len();
                 for (index, argument) in arguments.iter().enumerate() {
                     let value = self.eval(argument, Use::Consume, &during)?;
-                    if Some(index) == input {
+                    if scope && index == 0 {
+                        // Every child reads the shared borrow, which lasts for the call. A value
+                        // that may hold function values needs an environment proven to hold no
+                        // loans, as the elements of `Parallel.map_ref` do.
+                        let referent = argument
+                            .ty
+                            .dereferenced()
+                            .expect("a task scope shares a borrow");
+                        if referent.carries_loans(&self.module.types())
+                            && value.loans.iter().any(|id| {
+                                !self.loans[*id].parents.is_empty()
+                                    || self.external.contains(&self.loans[*id].place.root)
+                            })
+                        {
+                            return Err(error(
+                                "E1013",
+                                "task scopes can share only values with proven owned environments",
+                                argument.span,
+                            ));
+                        }
+                    } else if Some(index) == input {
                         let element = argument
                             .ty
                             .slice_element()
@@ -2222,8 +2251,7 @@ impl Checker<'_> {
                     }
                     if index == callback
                         && expression.ty.carries_loans(&self.module.types())
-                        && !value.closed_result
-                            [usize::from(*operation == crate::check::Builtin::ParallelReduce)]
+                        && !value.closed_result[result_arity]
                     {
                         return Err(error(
                             "E1013",
