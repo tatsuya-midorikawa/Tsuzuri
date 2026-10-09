@@ -364,6 +364,52 @@ fn task_scope_shares_a_sync_borrow() {
     );
 }
 
+// A function value that a scope shares runs in several tasks at once, so what it borrows must be
+// shared too. The environment is proven to hold no borrow, and a temporary has to meet the same
+// proof as a name does.
+const BORROWING_CLOSURE: &str = "\\x -> { let again = Rc.share r; deref (Rc.get (ref again)) + x }";
+
+#[test]
+fn a_shared_temporary_must_hold_no_borrow_just_as_a_named_value_must_not() {
+    let owned = "task scopes can share only values with proven owned environments";
+    let prelude = "let rc = Rc.new 5i64\nlet r = ref rc\n";
+    for source in [
+        // The closure bound to a name first: refused (and was before).
+        format!("{prelude}let f = {BORROWING_CLOSURE}\nlet seen = Task.scope (ref f) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
+        // The same closure as a temporary: its loan on the Rc has no parents, and was accepted.
+        format!("{prelude}let seen = Task.scope (ref ({BORROWING_CLOSURE})) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
+        format!("record Holder {{ f: i64 -> i64 }}\n{prelude}let seen = Task.scope (ref (Holder {{ f: {BORROWING_CLOSURE} }})) 4 (\\shared index -> shared.f index)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Task.scope (ref [{BORROWING_CLOSURE}]) 4 (\\shared index -> (shared[0]) index)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Task.scope (ref (Maybe.Some ({BORROWING_CLOSURE}))) 4 (\\shared index -> match shared with | Maybe.Some f -> f index | Maybe.None -> 0)\nArray.sum (ref seen)"),
+        // A borrow of a Sync place would be sound to share, but the rule is the one that a name
+        // meets, whatever the pointee.
+        "let counter = Atomic.create 0i64\nlet b = ref counter\nlet seen = Task.scope (ref (\\x -> Atomic.fetch_add b x)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)".to_owned(),
+    ] {
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(owned), "{source}\n{message}");
+    }
+    // The elements that Parallel.map_ref shares between its tasks meet the same rule.
+    let message = rejects(
+        &format!(
+            "{prelude}let seen = Parallel.map_ref (\\f -> (deref f) 1) (ref [{BORROWING_CLOSURE}])\nArray.sum (ref seen)"
+        ),
+        "E1013",
+    );
+    assert!(
+        message.contains("parallel input elements must have proven owned environments"),
+        "{message}"
+    );
+    // A temporary whose environment owns what it holds is shared as before.
+    emits(
+        "let base = 10i64\nlet seen = Task.scope (ref (\\x -> x + base)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)",
+    );
+    emits(
+        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Task.scope (ref (\\x -> Atomic.fetch_add (Arc.get (ref shared)) x)) 4 (\\f index -> (deref f) index)\nArray.sum (ref seen)",
+    );
+    analyze("let base = 10i64\nlet seen = Parallel.map_ref (\\f -> (deref f) 1) (ref [\\x -> x + base])\nArray.sum (ref seen)")
+        .expect("an owned environment is shared");
+}
+
 #[test]
 fn mutex_programs_type_check_and_the_closure_result_is_owned() {
     for source in [

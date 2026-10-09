@@ -639,6 +639,20 @@ impl Checker<'_> {
         closed(body, self.module, self.closed, &locals)
     }
 
+    /// Whether the tasks of a parallel operation that share the borrow `argument`, which evaluated
+    /// to `value`, could reach a borrowed environment through it (F10). The loans of a place that
+    /// is borrowed have the loans of the place as parents, and a loan of an external place says
+    /// nothing about what the place holds. A temporary is borrowed where it is made, so the loans
+    /// in `value` are the loans that the temporary holds itself: a loan with no parents on a plain
+    /// local does not prove the environment owned, because the closure, not the local, is shared.
+    fn shares_borrowed_environment(&self, argument: &TypedExpr, value: &Value) -> bool {
+        (matches!(argument.kind, E::BorrowOperand(_)) && !value.loans.is_empty())
+            || value.loans.iter().any(|id| {
+                !self.loans[*id].parents.is_empty()
+                    || self.external.contains(&self.loans[*id].place.root)
+            })
+    }
+
     fn is_copy(&self, ty: &Type) -> bool {
         if self.module.types().recursive(ty) || ty.is_noncopy_record(&self.module.types()) {
             return false;
@@ -2214,10 +2228,7 @@ impl Checker<'_> {
                             .dereferenced()
                             .expect("a task scope shares a borrow");
                         if referent.carries_loans(&self.module.types())
-                            && value.loans.iter().any(|id| {
-                                !self.loans[*id].parents.is_empty()
-                                    || self.external.contains(&self.loans[*id].place.root)
-                            })
+                            && self.shares_borrowed_environment(argument, &value)
                         {
                             return Err(error(
                                 "E1013",
@@ -2231,10 +2242,7 @@ impl Checker<'_> {
                             .slice_element()
                             .expect("parallel input is a slice");
                         if element.carries_loans(&self.module.types())
-                            && value.loans.iter().any(|id| {
-                                !self.loans[*id].parents.is_empty()
-                                    || self.external.contains(&self.loans[*id].place.root)
-                            })
+                            && self.shares_borrowed_environment(argument, &value)
                         {
                             return Err(error(
                                 "E1013",

@@ -280,6 +280,7 @@ Atomic.load (ref hits)
 規則は次のとおりです。
 
 - `shared` の型は `Sync` でなければなりません。`Rc`、extern ハンドル、`Task`、排他参照、Copy でない `dyn` 値、`Owned.Function`、`Seq`、`Async`、GPU のハンドルは `Sync` ではなく、`E1013`（`tasks can share only Sync values; ... is not Sync`）です。整数、文字列、配列、レコード、関数値、`Atomic`、`Mutex`、`Sync` な値の `Arc` は `Sync` です。`Sync` は、組み込みの型クラスです（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
+- `shared` が関数値、または関数値を含む値のときは、その環境が借用を持たない所有値であると証明できなければなりません。環境が借用を持つとき、または証明できないとき（引数で受け取った未知の関数値など）は、`E1013`（`task scopes can share only values with proven owned environments`）です。`let f = ...` と名前を付けた値でも、`Task.scope (ref (\x -> ...)) ...` のように一時値として直接渡した値でも、規則は同じです。借用を捕捉した関数を共有すると、その借用（たとえば `Rc` の数え上げ）を、すべての子どもが同時に使うことになるからです。`Parallel.map_ref` などの入力配列の要素も同じ規則です。
 - `callback` は借用を持った環境を捕捉できません（`E1013`、`parallel callbacks and values cannot retain borrowed environments`）。共有したい値は、引数の `shared` で受け取ります。
 - 結果は所有値で `Send` です。`shared` を返すことはできません（`E1013`、`tasks require owned values`）。
 - `count` が 0 なら空配列です。負の数は、結果の配列を確保するときにトラップします（`allocation size overflow`）。

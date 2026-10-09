@@ -2212,7 +2212,7 @@ Task インスタンス自身およびキャプチャされた所有変数は、
 呼び出しはすべての子どもが終わってから戻り、結果は `index` の順に並びます。`count` が 0 のときは空配列で、負のときは結果配列の確保でトラップします（`allocation size overflow`）。
 `shared` は呼び出しの間だけ貸す借用なので、`Task.parallel` のタスクと違い、外の値を持ち込まずに共有できます。
 
-- `shared` の型は `Sync` でなければならず、満たさない型は `E1013`（`tasks can share only Sync values; ... is not Sync`）です。共有する関数値の環境が借用を保持するか、環境を所有値と証明できないとき（引数で受け取った未知の関数値など）は、`E1013`（`task scopes can share only values with proven owned environments`）です。
+- `shared` の型は `Sync` でなければならず、満たさない型は `E1013`（`tasks can share only Sync values; ... is not Sync`）です。共有する関数値の環境が借用を保持するか、環境を所有値と証明できないとき（引数で受け取った未知の関数値など）は、`E1013`（`task scopes can share only values with proven owned environments`）です。名前を付けた値でも、`ref (\x -> ...)` のように一時値として直接渡した値でも同じで、一時値が保持する借用は、その環境が保持する借用として数えます。`Parallel.map_ref` などの入力配列の要素も同じ規則です。
 - `callback` は借用を持った環境を捕捉できません（`E1013`、`parallel callbacks and values cannot retain borrowed environments`）。共有したい値は引数の `shared` で受け取ります。
 - 結果は `Send` の所有値で、`shared` を返せません（`E1013`）。
 - `Task.scope` は、ほかの並列 API と同じく、引数をすべて渡して直接呼びます（部分適用や関数値化は `E1013`、`parallel operations must be fully applied directly`）。
