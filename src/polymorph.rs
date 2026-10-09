@@ -2833,6 +2833,17 @@ impl Checker<'_> {
         }
         if matches!(
             builtin,
+            Builtin::GpuOpen | Builtin::GpuFeatures | Builtin::GpuRun
+        ) && !(self.module == "Gpu" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the GPU runtime primitives are private to the standard Gpu module; request a device with Gpu.request",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
             Builtin::AsyncResume
                 | Builtin::AsyncTake
                 | Builtin::AsyncPut
@@ -4105,6 +4116,7 @@ pub(super) fn specialize(
         vtables,
         dyn_layouts,
         uses_dyn: module.uses_dyn,
+        gpu: module.gpu,
     })
 }
 

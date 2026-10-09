@@ -12,6 +12,7 @@ pub mod fetch;
 pub mod formatter;
 pub(crate) mod frontend_cache;
 pub mod gpu;
+pub mod gpu_devices;
 pub mod lexer;
 pub mod llvm;
 pub mod lsp;

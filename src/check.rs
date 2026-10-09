@@ -1217,6 +1217,19 @@ pub enum Builtin {
     /// `tsuzuri test --seed` or `llvm::DEFAULT_PROPERTY_SEED`. Only the std `Gen` module may
     /// call it (G18 Phase 3).
     GenSeed,
+    /// `Gpu.__open :: i32 -> i32 -> i32` opens the process-wide device of a backend (the tag of
+    /// `Gpu.Backend`) with the device features the program's kernels need, and returns a status:
+    /// 0 for success. It is `tsuzuri_gpu_open` natively, the import `tsuzuri_gpu.open` under
+    /// `--wasm-feature webgpu`, and the constant 1 (unavailable) otherwise. Only the std `Gpu`
+    /// module may call it (F09 Phase 2).
+    GpuOpen,
+    /// `Gpu.__features :: i32`, called as `Gpu.__features()`: the device features that every
+    /// kernel of the program needs (F09 Phase 2).
+    GpuFeatures,
+    /// `Gpu.__run :: i32 -> i64 -> i32 -> ref ['a] -> i64 -> ['b]` runs the kernel of the program's
+    /// kernel table on a device, with the lanes of a borrowed input array (or none for `init`),
+    /// and returns the new output array; a failing run traps (F09 Phase 2).
+    GpuRun,
     /// `Rc.new :: 'a -> Rc<'a>` moves a value into a new reference-counted block (C10 Phase 2).
     RcNew,
     /// `Rc.share :: ref Rc<'a> -> Rc<'a>` adds a strong pointer to the same block.
@@ -1562,6 +1575,9 @@ impl Builtin {
         Self::BenchNow,
         Self::BenchConsume,
         Self::GenSeed,
+        Self::GpuOpen,
+        Self::GpuFeatures,
+        Self::GpuRun,
         Self::RcNew,
         Self::RcShare,
         Self::RcGet,
@@ -1824,6 +1840,9 @@ impl Builtin {
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::GenSeed => "Gen.__seed",
+            Self::GpuOpen => "Gpu.__open",
+            Self::GpuFeatures => "Gpu.__features",
+            Self::GpuRun => "Gpu.__run",
             Self::RcNew => "Rc.new",
             Self::RcShare => "Rc.share",
             Self::RcGet => "Rc.get",
@@ -2709,6 +2728,23 @@ impl Builtin {
                 }
             }
             Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
+            Self::GpuOpen => (
+                vec![Concrete(Type::Integer(32, true)); 2],
+                Concrete(Type::Integer(32, true)),
+                Vec::new(),
+            ),
+            Self::GpuFeatures => (Vec::new(), Concrete(Type::Integer(32, true)), Vec::new()),
+            Self::GpuRun => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Concrete(Type::I64),
+                    Concrete(Type::Integer(32, true)),
+                    Reference(Box::new(Array(Box::new(a()))), false),
+                    Concrete(Type::I64),
+                ],
+                Array(Box::new(Var("b"))),
+                Vec::new(),
+            ),
             Self::RcNew
             | Self::RcShare
             | Self::RcGet
@@ -3122,6 +3158,9 @@ pub struct CheckedModule {
     pub dyn_layouts: BTreeMap<DynType, DynLayout>,
     /// A14: some module writes a `dyn` type, so the IR defines `%tz.dyn`.
     pub uses_dyn: bool,
+    /// F09 Phase 2: the kernels that the program embeds for non-CPU backends. Empty unless the
+    /// program builds a non-CPU `Gpu.Backend`.
+    pub gpu: crate::gpu_devices::GpuProgram,
 }
 
 /// The slot functions of each vtable in slot order, by vtable key and stored type (A14).
@@ -6819,7 +6858,7 @@ fn check_modules_collect(
     ));
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
-    let module = CheckedModule {
+    let mut module = CheckedModule {
         records,
         unions,
         functions,
@@ -6834,9 +6873,12 @@ fn check_modules_collect(
         uses_dyn: modules
             .iter()
             .any(|input| !input.program.dyn_types.is_empty()),
+        gpu: Default::default(),
     };
     validate_callbacks(&module)?;
     regions::validate_contract_calls(&module)?;
+    // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
+    crate::gpu_devices::retarget_calls(&mut module);
     let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
         let first = errors[0].clone();
         diagnostics.extend(errors);
@@ -6854,7 +6896,7 @@ fn check_modules_collect(
         copy_constraints,
         &recursive_functions,
     )?;
-    let module = closures::lower(module)?;
+    let mut module = closures::lower(module)?;
     diagnostics.extend(crate::ownership::check_all(&module));
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
@@ -6863,6 +6905,8 @@ fn check_modules_collect(
         diagnostics.push(error);
     }
     diagnostics.check()?;
+    // F09 Phase 2: the calls are validated, so their callbacks are known functions.
+    crate::gpu_devices::lower_kernels(&mut module)?;
     Ok(module)
 }
 
@@ -7125,6 +7169,7 @@ fn recovery_module(
         vtables: BTreeMap::new(),
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,
+        gpu: Default::default(),
     }
 }
 

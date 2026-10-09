@@ -136,7 +136,7 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 - Windows の OS API に依存するネイティブアプリ。到達すると `E2002` です。
 
 > [!WARNING]
-> 標準のネットワーク API、公開の registry、汎用 GPU 実行、非同期 I/O は、0.1.0 にはありません。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
+> 標準のネットワーク API、公開の registry、汎用 GPU 実行、非同期 I/O は、0.1.0 にはありません（GPU は、WebGPU 上のカーネル実行が実験的にあるだけです）。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
 
 ## プラットフォームの読み方
 

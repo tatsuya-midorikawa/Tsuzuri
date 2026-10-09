@@ -15,8 +15,8 @@ const useGpu = process.env.TSUZURI_WEBGPU === "1" && !quick;
 const rows = [];
 let runtime;
 let provider;
-function execute(program, args, success = true) {
-  const result = spawnSync(program, args, { encoding: "utf8", timeout: 120000, maxBuffer: 8 * 1024 * 1024 });
+function execute(program, args, success = true, env = process.env) {
+  const result = spawnSync(program, args, { encoding: "utf8", timeout: 120000, maxBuffer: 8 * 1024 * 1024, env });
   assert.ifError(result.error);
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
@@ -246,6 +246,48 @@ try {
       rows.push(row);
     }
   }
+  // f16 lanes (F09 Phase 2). f16 cannot be exported, so these kernels have no --emit form: the WGSL is read from the
+  // kernel table that a device-aware program embeds. The values are small integers, which f16 holds exactly.
+  const halfProject = join(directory, "halves");
+  mkdirSync(halfProject);
+  writeFileSync(join(halfProject, "Main.tz"), "def square :: f16 -> f16\nfn square value = value * value + value\ndef index :: i32 -> f16\nfn index value = value as f16\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f16] = [1.0f16]\nlet _a = Gpu.map_relaxed (&device) square (Gpu.from_array (&device) (&values))\nlet _b = Gpu.init_relaxed (&device) 4 index\n0\n");
+  const halfIr = join(halfProject, "halves.ll");
+  cli(["build", halfProject, "--emit", "llvm", "-o", halfIr]);
+  const embedded = number => {
+    const constant = new RegExp(`@tz\\.gpu\\.kernel\\.${number}\\.wgsl = [^\\n]*? c"((?:[^"\\\\]|\\\\[0-9A-F]{2})*)"`).exec(readFileSync(halfIr, "utf8"));
+    return constant[1].replace(/\\([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))).replace(/\0$/, "");
+  };
+  const squareWgsl = embedded(0);
+  const indexWgsl = embedded(1);
+  assert.ok(squareWgsl.startsWith("// tsuzuri-gpu float=relaxed input=f16 output=f16\nenable f16;\n"));
+  assert.ok(indexWgsl.startsWith("// tsuzuri-gpu float=relaxed input=i32 output=f16\nenable f16;\n"));
+  let halfNote = "f16 resident lanes not requested";
+  if (runtime) {
+    const half16 = integer => (integer === 0 ? 0 : ((Math.floor(Math.log2(integer)) + 15) << 10) | Math.round((integer / 2 ** Math.floor(Math.log2(integer)) - 1) * 1024));
+    await assert.rejects(runtime.prepare(squareWgsl, { float: "relaxed" }), /shader-f16/);
+    const adapter = await provider.requestAdapter();
+    if (adapter.features.has("shader-f16")) {
+      const halves = await createWebGpu(provider, { features: ["shader-f16"] });
+      try {
+        const square = await halves.prepare(squareWgsl, { float: "relaxed" });
+        const index = await halves.prepare(indexWgsl, { float: "relaxed" });
+        // Odd counts leave a 2-byte tail, which the buffers pad to 4 bytes.
+        for (const count of [0, 1, 3, 40, 41]) {
+          const initialized = await halves.toArray(await halves.init(index, count));
+          assert.ok(initialized instanceof Uint16Array);
+          assert.deepEqual(Array.from(initialized), Array.from({ length: count }, (_, k) => half16(k)));
+          const squared = await halves.toArray(await halves.map(square, await halves.fromArray(Uint16Array.from({ length: count }, (_, k) => half16(k)))));
+          assert.deepEqual(Array.from(squared), Array.from({ length: count }, (_, k) => half16(k * k + k)));
+        }
+        assert.throws(() => halves.fromArray(new Float64Array(1)), TypeError);
+      } finally {
+        await halves.close();
+      }
+      halfNote = "f16 resident lanes matched exactly";
+    } else {
+      halfNote = "the adapter lacks shader-f16, so f16 resident lanes were not run";
+    }
+  }
   const api = join(directory, "api");
   mkdirSync(api);
   const source = join(api, "Main.tz");
@@ -296,8 +338,11 @@ fn unavailable = {
   writeFileSync(host, `#include <stdint.h>\n#include <stdlib.h>\n#include <assert.h>\n#include <math.h>\n#include <string.h>\nstatic uint64_t live;\nvoid *tracked_alloc(uint64_t size) { uint64_t *header = malloc(size + 16); assert(header); header[0] = size; live += size; return header + 2; }\nvoid tracked_free(void *pointer) { if (pointer) { uint64_t *header = (uint64_t *)pointer - 2; live -= header[0]; free(header); } }\nextern int64_t tz_pipeline(void);\nextern float tz_float_reference(float);\nextern float tz_relaxed_reference(float);\nextern float tz_relaxed_init_sum(void);\nextern uint8_t tz_unavailable(void);\nint main(void) { uint32_t patterns[] = {0, 0x80000000u, 1, 0x80000001u, 0x00800000u, 0x3f800000u, 0xbf800000u, 0x7f800000u, 0xff800000u, 0x7fc00000u}; for (unsigned repeat = 0; repeat < 500; repeat++) { assert(tz_pipeline() == 148); assert(tz_unavailable()); assert(tz_relaxed_init_sum() == 16.0f); for (unsigned index = 0; index < 10; index++) { float value; memcpy(&value, &patterns[index], 4); volatile float product = value * value; float expected = product + value; float actual = tz_float_reference(value); float relaxed = tz_relaxed_reference(value); if (isnan(expected)) { assert(isnan(actual)); assert(isnan(relaxed)); } else { assert(memcmp(&actual, &expected, 4) == 0); assert(memcmp(&relaxed, &expected, 4) == 0); } } assert(live == 0); } return 0; }\n`);
   for (const optimization of [0, 3]) {
     const native = join(api, `host-${optimization}${process.platform === "win32" ? ".exe" : ""}`);
-    execute(clang, [ir, host, `-O${optimization}`, "-ffp-contract=off", "-Wno-override-module", "-o", native, ...(process.platform === "win32" ? [] : ["-lm"])]);
-    execute(native, []);
+    // `unavailable` names Gpu.WebGpu, so the program calls the GPU runtime of src/runtime/gpu.c. The run has
+    // no WebGPU library (an empty TSUZURI_WEBGPU_LIBRARY disables the backend), so the result does not depend on
+    // the machine: Gpu.request Gpu.WebGpu is Unavailable and no CPU run is substituted.
+    execute(clang, [ir, host, resolve("src/runtime/gpu.c"), `-O${optimization}`, "-ffp-contract=off", "-Wno-override-module", "-o", native, ...(process.platform === "win32" ? [] : ["-lm", "-pthread"]), ...(process.platform === "linux" ? ["-ldl"] : [])]);
+    execute(native, [], true, { ...process.env, TSUZURI_WEBGPU_LIBRARY: "" });
     const wasm = join(api, `api-${optimization}.wasm`);
     cli(["build", source, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
@@ -323,7 +368,7 @@ fn unavailable = {
   assert.equal(JSON.parse(failure.stderr).code, "E1018");
   assert.equal(readFileSync(protectedOutput, "utf8"), "preserved");
   if (benchmark) console.log(JSON.stringify({ note: "CPU scalar host calls are not a bulk speed comparison; GPU times include upload, dispatch, completion wait, and readback unless the column says resident; no speed thresholds", rows }));
-  else console.log(`GPU phase 1: ${kernels.length * inputs.length} integer references and ${relaxedKernels.length * floatInputs.length} relaxed f32 references, native/WASM O0/O3, owned heap and strict float CPU reference; WebGPU ${useGpu ? `executed and matched (relaxed within the D6 tolerances; max ulp error ${Object.entries(relaxedErrors).map(([name, worst]) => `${name} ${worst.toFixed(2)}`).join(", ")})` : "not requested (CPU reference validation only)"}`);
+  else console.log(`GPU phase 1: ${kernels.length * inputs.length} integer references and ${relaxedKernels.length * floatInputs.length} relaxed f32 references, native/WASM O0/O3, owned heap and strict float CPU reference; WebGPU ${useGpu ? `executed and matched (relaxed within the D6 tolerances; max ulp error ${Object.entries(relaxedErrors).map(([name, worst]) => `${name} ${worst.toFixed(2)}`).join(", ")}; ${halfNote})` : "not requested (CPU reference validation only)"}`);
 } finally {
   if (runtime) await runtime.close();
   runtime = undefined;

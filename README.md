@@ -81,7 +81,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 **Tsuzuri は性能を最優先の設計要件の一つとしており、CPU 命令・SIMD・並列 CPU・GPU のうち、プログラムの意味を保ちつつ実処理が最も速くなる経路をコンパイラ内部で選択することを目指しています。**
 この方針はコンパイラ本体だけでなく、組み込み関数や標準ライブラリの設計にも一貫して適用されます。
 
-現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、WebGPU ホスト試作に対応しています（通常ランタイムへの実 GPU 接続や自動オフロードは未実装です）。
+現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、WebGPU ホスト試作に対応しています（厳密な浮動小数点と 64 bit 整数の GPU 実行、Vulkan、自動オフロードは未実装です）。
 
 ### 設計と実装済みの範囲
 
@@ -571,7 +571,9 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 ### GPU カーネル連携（実験的）
 
 単一の `export` された `i32 -> i32` または `i32u -> i32u` カーネルを含むプロジェクトから、`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl` により WebGPU 向けの WGSL シェーダーを生成できます。
-これは厳密な整数演算に基づく出力で、自動オフロードや速度優位を保証するものではありません。`f32` は GPU では厳密にできないため、名前で緩い意味を選びます。`--emit wgsl-relaxed`（`f32`・`i32`・`i32u` のカーネル）と、CPU 参照の `Gpu.init_relaxed`・`Gpu.map_relaxed` です。CPU 上の評価は厳密なままで、GPU 上の結果だけが WGSL の浮動小数点規則に従います。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) を参照してください。
+これは厳密な整数演算に基づく出力で、自動オフロードや速度優位を保証するものではありません。`f32` と `f16` は GPU では厳密にできないため、名前で緩い意味を選びます。`--emit wgsl-relaxed`（`f32`・`i32`・`i32u` のカーネルで、内部で `f16` も使えます）と、`Gpu.init_relaxed`・`Gpu.map_relaxed` です。CPU 上の評価は厳密なままで、GPU 上の結果だけが WGSL の浮動小数点規則に従います。
+
+言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しし、`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が GPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。確かめたのは Apple M1 Max だけです。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
 
 ---
 
@@ -788,7 +790,7 @@ tsuzuri lsp
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
-| `--wasm-feature simd128\|threads\|jspi` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration）を有効化します。 |
+| `--wasm-feature simd128\|threads\|jspi\|webgpu` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
@@ -846,7 +848,8 @@ node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
 node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
-node tests/gpu.mjs target/release/tsuzuri
+node tests/gpu.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_MODULE で実アダプタ（Dawn）も
+node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
 node scripts/check-docs.mjs

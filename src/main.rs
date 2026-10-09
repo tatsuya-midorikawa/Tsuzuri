@@ -86,9 +86,11 @@ Other source inputs can be checked or built as libraries.
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
   --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
-    --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), or jspi
+    --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), jspi
                             (WASM build; Async.block_on waits through JavaScript Promise
-                            Integration)
+                            Integration), or webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
+                            the kernels on that device call the JSPI imports tsuzuri_gpu.open
+                            and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements)
     --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
                             Process APIs to WASI preview1 (wasm32 object or WASM output;
                             the default wasm32 output rejects those APIs)
@@ -269,6 +271,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_simd = false;
     let mut wasm_threads = false;
     let mut wasm_jspi = false;
+    let mut wasm_webgpu = false;
     let mut wasm_host = None;
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
@@ -491,7 +494,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         Some("simd128") => &mut wasm_simd,
                         Some("threads") => &mut wasm_threads,
                         Some("jspi") => &mut wasm_jspi,
-                        _ => return Err("supported WASM features are 'simd128', 'threads', and 'jspi'; relaxed SIMD is not supported".into()),
+                        Some("webgpu") => &mut wasm_webgpu,
+                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', and 'webgpu'; relaxed SIMD is not supported".into()),
                     };
                     if *feature {
                         return Err("WASM feature specified more than once".into());
@@ -624,7 +628,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
     }
-    if (wasm_simd || wasm_threads || wasm_jspi) && action != Action::Build {
+    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
     if wasm_host.is_some() && action != Action::Build {
@@ -759,6 +763,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_simd,
         wasm_threads,
         wasm_jspi,
+        wasm_webgpu,
         wasm_host,
         wasm_max_memory,
         wasm_stack_size,
@@ -2508,7 +2513,42 @@ mod tests {
                     "--wasm-feature",
                     "asyncify",
                 ],
-                "supported WASM features are 'simd128', 'threads', and 'jspi'; relaxed SIMD is not supported",
+                "supported WASM features are 'simd128', 'threads', 'jspi', and 'webgpu'; relaxed SIMD is not supported",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--wasm-feature",
+                    "webgpu",
+                ],
+                "--wasm-feature webgpu requires wasm32 object, LLVM IR, or WASM output; the JavaScript bindings do not provide the WebGPU imports, so instantiate the module with createGpuImports of src/runtime/webgpu.mjs",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "webgpu",
+                    "--wasm-feature",
+                    "threads",
+                ],
+                "--wasm-feature webgpu cannot be combined with --wasm-feature threads or --wasm-host: its imports suspend the WebAssembly stack with JavaScript Promise Integration",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "wgsl",
+                    "--wasm-feature",
+                    "webgpu",
+                ],
+                "WGSL output does not use target, CPU, debug, or WASM feature options",
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");

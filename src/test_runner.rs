@@ -523,6 +523,9 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
     if text.contains("declare i32 @tsuzuri_io_") {
         sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
     }
+    if text.contains("declare i32 @tsuzuri_gpu_") {
+        sources.push(("gpu.c", include_str!("runtime/gpu.c").to_owned()));
+    }
     if llvm::uses_reactor(text) {
         if !crate::driver::ASYNC_NATIVE_SUPPORTED {
             return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
@@ -631,6 +634,7 @@ fn build_runner(
     if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
         text = llvm::with_stack_checks(text, false);
     }
+    text = llvm::with_wasm_gpu_host(text, false);
     text.push_str(include_str!("runtime/wasm.ll"));
     if text.contains("declare i64 @tsuzuri_os_") {
         return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
@@ -742,6 +746,7 @@ fn compile_native_runner(
     let net_runtime = text.contains("declare i64 @tsuzuri_net_");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
+    let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
     }
@@ -791,6 +796,7 @@ fn compile_native_runner(
         (net_runtime, "net.c", include_str!("runtime/net.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
         (async_runtime, "async.c", include_str!("runtime/async.c")),
+        (gpu_runtime, "gpu.c", include_str!("runtime/gpu.c")),
     ] {
         if needed {
             let runtime = directory.join(name);
@@ -799,8 +805,12 @@ fn compile_native_runner(
             clang.arg(&runtime);
         }
     }
-    if (async_runtime || net_runtime) && !task_runtime && !cfg!(windows) {
+    if (async_runtime || net_runtime || gpu_runtime) && !task_runtime && !cfg!(windows) {
         clang.arg("-pthread");
+    }
+    // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
+    if gpu_runtime && cfg!(target_os = "linux") {
+        clang.arg("-ldl");
     }
     links.add_to(&mut clang);
     collect_message(messages, run_tool(&mut clang, runner.tools_hint)?);

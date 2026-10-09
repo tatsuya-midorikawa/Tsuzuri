@@ -273,6 +273,8 @@ mod cpu;
 mod display;
 #[path = "llvm_exception.rs"]
 mod exception;
+#[path = "llvm_gpu.rs"]
+mod gpu_host;
 #[path = "llvm_hash.rs"]
 mod hash;
 #[path = "llvm_abi.rs"]
@@ -295,6 +297,7 @@ mod simd;
 mod sync;
 #[path = "llvm_task.rs"]
 mod task;
+pub(crate) use gpu_host::with_wasm_gpu_host;
 pub(crate) use host_abi::uses_host_abi;
 
 pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> {
@@ -6106,6 +6109,9 @@ fn emit_builtin(
         }
         builtin if builtin.name().starts_with("Math.") => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
+        Builtin::GpuOpen | Builtin::GpuFeatures | Builtin::GpuRun => {
+            gpu_host::emit(instance, module, intrinsics, globals, &symbol)
         }
         Builtin::Hash
         | Builtin::HashMix
