@@ -74,13 +74,14 @@ struct configuration {
     uint32_t api, instance_api, max_range, max_groups, invocations, group_size;
     uint64_t max_allocation;
     int fail, fail_code;
+    int probe_fault; /* the lane of the conformance probe whose result is corrupted, plus one; 0 for none */
     char missing[64];
 };
 
 static pthread_mutex_t mock_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct configuration config;
 static int live_objects[O_TYPE_COUNT];
-static int misuse_count, injected_faults, fallible_calls, total_submits;
+static int misuse_count, injected_faults, fallible_calls, total_submits, probe_dispatches;
 static char report[4096];
 static int instance_flags_seen;
 
@@ -140,7 +141,7 @@ int tz_vk_mock_configure(const char *text) {
     config.denorm_independence = config.rounding_independence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
     config.fail_code = VK_ERROR_OUT_OF_HOST_MEMORY;
     memset(live_objects, 0, sizeof live_objects);
-    misuse_count = injected_faults = fallible_calls = total_submits = 0;
+    misuse_count = injected_faults = fallible_calls = total_submits = probe_dispatches = 0;
     report[0] = '\0';
     int ok = 1;
     char buffer[512];
@@ -180,6 +181,7 @@ int tz_vk_mock_configure(const char *text) {
         else if (strcmp(key, "no_version") == 0) config.no_version = atoi(value);
         else if (strcmp(key, "missing") == 0) snprintf(config.missing, sizeof config.missing, "%s", value);
         else if (strcmp(key, "fail") == 0) config.fail = atoi(value);
+        else if (strcmp(key, "probe") == 0) config.probe_fault = atoi(value) + 1;
         else if (strcmp(key, "code") == 0) config.fail_code = atoi(value);
         else ok = 0;
     }
@@ -191,6 +193,13 @@ int tz_vk_mock_configure(const char *text) {
 int tz_vk_mock_injected(void) { return injected_faults; }
 int tz_vk_mock_calls(void) { return fallible_calls; }
 int tz_vk_mock_submits(void) { return total_submits; }
+int tz_vk_mock_probe_dispatches(void) { return probe_dispatches; }
+
+/* A program that is not the harness (a compiled Tsuzuri program) configures the mock through the environment. */
+__attribute__((constructor)) static void configure_from_environment(void) {
+    const char *text = getenv("TZ_VK_MOCK");
+    if (text != NULL) tz_vk_mock_configure(text);
+}
 
 int tz_vk_mock_leaked(void) {
     int total = misuse_count;
@@ -820,7 +829,7 @@ VkResult TZ_VKAPI vkCreateComputePipelines(VkDevice device, VkPipelineCache pipe
         }
         struct object *pipeline = create(O_PIPELINE, owner);
         pipeline->module = module;
-        pipeline->entry = strcmp(info->stage.pName, "init_main") == 0;
+        pipeline->entry = strcmp(info->stage.pName, "init_main") == 0 ? 1 : strcmp(info->stage.pName, "probe_main") == 0 ? 2 : 0;
         pPipelines[index] = (VkPipeline)pipeline;
     }
     LEAVE();
@@ -967,6 +976,29 @@ static uint64_t lane_load(const unsigned char *data, uint64_t index, uint64_t si
     return value;
 }
 
+/* The eight operations of the conformance probe (tests/gpu_vulkan_probe.spvasm) as a device that honours the strict
+   controls computes them: IEEE binary32 arithmetic, no fused multiply-add (the mock is built with -ffp-contract=off),
+   subnormals and the sign of a zero preserved, a NaN as the canonical 0x7FC00000. Lane i performs operation i / 3. */
+static uint32_t probe_operation(uint32_t lane, uint32_t a_bits, uint32_t b_bits) {
+    float a, b, result;
+    memcpy(&a, &a_bits, sizeof a);
+    memcpy(&b, &b_bits, sizeof b);
+    volatile float product;
+    switch (lane / 3) {
+    case 0: product = a * b; result = product + -1.00048828125f; break;
+    case 1: product = a * b; result = -product; break;
+    case 2: result = a + b; break;
+    case 3:
+    case 4: result = a * b; break;
+    case 5: result = a - b; break;
+    case 6: result = (float)a_bits; break;
+    default: result = (float)(int32_t)a_bits; break;
+    }
+    uint32_t bits;
+    memcpy(&bits, &result, sizeof bits);
+    return lane / 3 == 5 && result != result ? 0x7FC00000U : bits;
+}
+
 static void execute(struct object *buffer) {
     struct object *pipeline = NULL, *set = NULL, *last_output = NULL;
     uint32_t push[2] = {0, 0};
@@ -1001,18 +1033,33 @@ static void execute(struct object *buffer) {
                 misuse("vkQueueSubmit: dispatch with length 0");
                 break;
             }
-            uint64_t out_lane = set->bound_ranges[1] / length, in_lane = pipeline->entry == 0 ? set->bound_ranges[0] / length : 0;
-            if ((out_lane != 4 && out_lane != 8) || (pipeline->entry == 0 && in_lane != 4 && in_lane != 8)) {
+            uint64_t out_lane = set->bound_ranges[1] / length, in_lane = pipeline->entry != 1 ? set->bound_ranges[0] / length : 0;
+            if ((out_lane != 4 && out_lane != 8) || (pipeline->entry != 1 && in_lane != 4 && in_lane != 8)) {
                 misuse("vkQueueSubmit: lane sizes are not 4 or 8 bytes");
                 break;
             }
             last_output = output;
             last_length = length;
             last_lane = out_lane;
+            if (pipeline->entry == 2) probe_dispatches++;
             uint64_t invocations = (uint64_t)command->words[0] * 256;
             for (uint64_t x = 0; x < invocations; x++) {
                 uint64_t i = base + x;
                 if (i >= length) continue;
+                if (pipeline->entry == 2) {
+                    if (in_lane != 8 || out_lane != 4) {
+                        misuse("vkQueueSubmit: the probe needs 8-byte input lanes and 4-byte output lanes");
+                        break;
+                    }
+                    uint32_t a_bits, b_bits;
+                    memcpy(&a_bits, input->memory->data + i * 8, 4);
+                    memcpy(&b_bits, input->memory->data + i * 8 + 4, 4);
+                    uint32_t bits = probe_operation((uint32_t)i, a_bits, b_bits);
+                    if (config.probe_fault == (int)i + 1) bits ^= 1U;
+                    memcpy(output->memory->data + i * 4, &bits, 4);
+                    output->hits[i]++;
+                    continue;
+                }
                 uint64_t value = pipeline->entry == 0 ? lane_load(input->memory->data, i, in_lane) : i;
                 uint64_t result = value * 3 + 7;
                 if (out_lane == 4) result &= 0xFFFFFFFFU;

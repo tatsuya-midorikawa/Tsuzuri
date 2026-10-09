@@ -770,15 +770,18 @@ struct tz_vk_caps {
     int rounding_rte32;
     int denorm_independence;
     int rounding_independence;
-    int strict_f32;
+    int strict_f32; /* the controls are reported (properties), and the probe has not found otherwise */
+    int strict_probe; /* the conformance probe of the strict controls: 0 not run, 1 passed, 2 failed */
     int direct_transfer;
 };
+
+#define TZ_VK_MODES 3 /* the entry points of a module: map, init, and the conformance probe */
 
 struct tz_vk_program {
     uint32_t *words;
     uint32_t length;
     VkShaderModule module;
-    VkPipeline pipelines[2];
+    VkPipeline pipelines[TZ_VK_MODES];
 };
 
 struct tz_vk_state {
@@ -1098,15 +1101,20 @@ static const char *tz_vk_type_name(int32_t type) {
     }
 }
 
+static const char *tz_vk_probe_name(int state) {
+    return state == 1 ? "passed" : state == 2 ? "failed" : "not-run";
+}
+
 static void tz_vk_format_caps(const struct tz_vk_caps *caps, char *text, size_t size) {
     snprintf(text, size,
-        "device=\"%s\" type=%s api=%u.%u.%u int64=%d strict_f32=%d float_controls=%d signed_zero_inf_nan_preserve32=%d "
-        "denorm_preserve32=%d rounding_rte32=%d denorm_independence=%s rounding_independence=%s workgroup_invocations=%u "
-        "group_count_x=%u max_storage_range=%u max_allocation=%llu transfer=%s",
+        "device=\"%s\" type=%s api=%u.%u.%u int64=%d strict_f32=%d strict_probe=%s float_controls=%d "
+        "signed_zero_inf_nan_preserve32=%d denorm_preserve32=%d rounding_rte32=%d denorm_independence=%s "
+        "rounding_independence=%s workgroup_invocations=%u group_count_x=%u max_storage_range=%u max_allocation=%llu "
+        "transfer=%s",
         caps->name, tz_vk_type_name(caps->device_type), VK_API_VERSION_MAJOR(caps->api_version),
         VK_API_VERSION_MINOR(caps->api_version), VK_API_VERSION_PATCH(caps->api_version), caps->int64, caps->strict_f32,
-        caps->float_controls, caps->zero_inf_nan_preserve32, caps->denorm_preserve32, caps->rounding_rte32,
-        tz_vk_independence(caps->denorm_independence), tz_vk_independence(caps->rounding_independence),
+        tz_vk_probe_name(caps->strict_probe), caps->float_controls, caps->zero_inf_nan_preserve32, caps->denorm_preserve32,
+        caps->rounding_rte32, tz_vk_independence(caps->denorm_independence), tz_vk_independence(caps->rounding_independence),
         caps->max_workgroup_invocations, caps->max_group_count_x, caps->max_storage_range,
         (unsigned long long)caps->max_allocation, caps->direct_transfer ? "direct" : "staged");
 }
@@ -1117,7 +1125,7 @@ static void tz_vk_release_programs(void) {
     struct tz_vk_state *state = &tz_vk;
     for (uint32_t index = 0; index < state->program_count; index++) {
         struct tz_vk_program *program = &state->programs[index];
-        for (int entry = 0; entry < 2; entry++) {
+        for (int entry = 0; entry < TZ_VK_MODES; entry++) {
             if (program->pipelines[entry] != 0) state->fn.vkDestroyPipeline(state->device, program->pipelines[entry], NULL);
         }
         if (program->module != 0) state->fn.vkDestroyShaderModule(state->device, program->module, NULL);
@@ -1414,6 +1422,9 @@ static int32_t tz_vk_init(int32_t features) {
     return TZ_VK_OK;
 }
 
+/* Whether kernels with the strict float32 modes may run: defined with the probe, after the code that runs a module. */
+static int tz_vk_strict_ok(void);
+
 /* Initializes once, then checks the features; the lock is held by the caller. */
 static int32_t tz_vk_ensure(int32_t features) {
     if (tz_vk.state == 0) {
@@ -1426,9 +1437,11 @@ static int32_t tz_vk_ensure(int32_t features) {
         tz_vk_debug("the device does not support 64-bit integers in shaders (shaderInt64)");
         return TZ_VK_UNSUPPORTED;
     }
-    if ((features & TZ_VK_FEATURE_STRICT_F32) != 0 && !tz_vk.caps.strict_f32) {
-        tz_vk_debug("the device lacks the strict float32 controls (signed zero/inf/nan preserve, denorm preserve, "
-                    "round to nearest even, independent 32-bit modes)");
+    if ((features & TZ_VK_FEATURE_STRICT_F32) != 0 && !tz_vk_strict_ok()) {
+        if (tz_vk.caps.strict_probe == 0) {
+            tz_vk_debug("the device lacks the strict float32 controls (signed zero/inf/nan preserve, denorm preserve, "
+                        "round to nearest even, independent 32-bit modes)");
+        }
         return TZ_VK_UNSUPPORTED;
     }
     return TZ_VK_OK;
@@ -1564,7 +1577,8 @@ static int32_t tz_vk_pipeline(const uint32_t *words, uint32_t length, int mode, 
         info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         info.stage.module = program->module;
-        info.stage.pName = mode == 0 ? "map_main" : "init_main";
+        static const char *const entries[TZ_VK_MODES] = {"map_main", "init_main", "probe_main"};
+        info.stage.pName = entries[mode];
         info.layout = state->pipeline_layout;
         VkResult result = state->fn.vkCreateComputePipelines(state->device, 0, 1, &info, NULL, &program->pipelines[mode]);
         if (result != VK_SUCCESS) {
@@ -1597,8 +1611,8 @@ static int32_t tz_vk_check_module(const uint32_t *words, uint32_t length) {
             if (capability == 11 && !caps->int64) {
                 return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel uses Int64 and the device lacks shaderInt64");
             }
-            if ((capability == 4464 || capability == 4466 || capability == 4467) && !caps->strict_f32) {
-                return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel needs the strict float32 controls and the device lacks them");
+            if ((capability == 4464 || capability == 4466 || capability == 4467) && !tz_vk_strict_ok()) {
+                return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel needs the strict float32 controls and the device cannot run them");
             }
             if (capability != 1 && capability != 11 && capability != 4464 && capability != 4466 && capability != 4467) {
                 return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel uses SPIR-V capability %u", capability);
@@ -1627,46 +1641,15 @@ static void tz_vk_barrier(VkCommandBuffer commands, VkFlags source_stage, VkFlag
     tz_vk.fn.vkCmdPipelineBarrier(commands, source_stage, destination_stage, 0, 1, &barrier, 0, NULL, 0, NULL);
 }
 
-/* mode 0 = map over `count` input lanes, 1 = init (no input); the buffers belong to the caller. */
-static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const void *wgsl, int32_t wgsl_length,
-    const void *spirv, int32_t spirv_length, const void *input, int64_t count, void *output) {
-    (void)flags;
-    (void)wgsl;
-    (void)wgsl_length;
-    if (mode != 0 && mode != 1) return tz_vk_report(TZ_VK_UNSUPPORTED, "unknown run mode %d", (int)mode);
-    if (spirv == NULL || spirv_length < 20 || (spirv_length & 3) != 0) {
-        return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel has no SPIR-V module for Vulkan");
-    }
-    int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
-    if ((mode == 0 && input_size == 0) || output_size == 0) {
-        return tz_vk_report(TZ_VK_UNSUPPORTED, "the lane type of the kernel is not available on Vulkan");
-    }
-    if (count < 0 || count > TZ_VK_MAX_LANES) return tz_vk_report(TZ_VK_LIMIT, "%lld lanes exceed 2147483647", (long long)count);
-    if (count == 0) return TZ_VK_OK;
-    if (output == NULL || (mode == 0 && input == NULL)) return tz_vk_report(TZ_VK_FAILED, "a buffer is missing");
-    tz_vk_debug("%s %lld lanes, kinds 0x%04x", mode ? "init" : "map", (long long)count, (unsigned)lanes);
-
-    TZ_VK_LOCK();
-    int32_t status = tz_vk_ensure(0);
-    if (status != TZ_VK_OK) {
-        TZ_VK_UNLOCK();
-        return status == TZ_VK_FAILED && tz_vk.poisoned ? tz_vk_report(status, "the device was lost earlier") : status;
-    }
+/* mode 0 = map over `count` input lanes, 1 = init (no input), 2 = the conformance probe (a map over its own module). The
+   lock is held, the device is ready, the lane kinds and the count are checked, and the buffers belong to the caller. */
+static int32_t tz_vk_run_locked(int32_t mode, int32_t lanes, const uint32_t *words, uint32_t length_words,
+    const void *input, int64_t count, void *output) {
     struct tz_vk_state *state = &tz_vk;
     const struct tz_vk_caps *caps = &state->caps;
-    const uint32_t *words = (const uint32_t *)spirv;
-    uint32_t length_words = (uint32_t)spirv_length / 4;
-    uint32_t *aligned = NULL;
-    if (((uintptr_t)spirv & 3U) != 0) {
-        aligned = (uint32_t *)TZ_VK_ALLOC((size_t)spirv_length);
-        if (aligned == NULL) {
-            TZ_VK_UNLOCK();
-            return tz_vk_report(TZ_VK_FAILED, "out of host memory");
-        }
-        memcpy(aligned, spirv, (size_t)spirv_length);
-        words = aligned;
-    }
-    VkDeviceSize input_bytes = mode == 0 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
+    const int has_input = mode != 1;
+    int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
+    VkDeviceSize input_bytes = has_input ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
     VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
     struct tz_vk_buffer device_in, device_out, host_in, host_out;
     memset(&device_in, 0, sizeof device_in);
@@ -1674,12 +1657,15 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
     memset(&host_in, 0, sizeof host_in);
     memset(&host_out, 0, sizeof host_out);
     int recording = 0, submitted = 0, no_memory_type = 0;
+    int32_t status = TZ_VK_OK;
     VkPipeline pipeline = 0;
     VkResult result = VK_SUCCESS;
     const char *what = "";
 
-    status = tz_vk_check_module(words, length_words);
-    if (status != TZ_VK_OK) goto done;
+    if (mode != 2) {
+        status = tz_vk_check_module(words, length_words);
+        if (status != TZ_VK_OK) goto done;
+    }
     if ((VkDeviceSize)input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
         || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
         status = tz_vk_report(TZ_VK_LIMIT, "%lld lanes need %llu bytes; the device allows %u bytes per storage buffer and %llu per allocation",
@@ -1695,7 +1681,7 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
         const VkFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         if (caps->direct_transfer) {
             const VkFlags unified = host_flags | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-            if (mode == 0) {
+            if (has_input) {
                 what = "creating the input buffer";
                 result = tz_vk_create_buffer(&device_in, input_bytes, storage, unified, 0, 1, &no_memory_type);
                 if (result != VK_SUCCESS) goto failed;
@@ -1705,7 +1691,7 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
             result = tz_vk_create_buffer(&device_out, output_bytes, storage, unified, 0, 1, &no_memory_type);
             if (result != VK_SUCCESS) goto failed;
         } else {
-            if (mode == 0) {
+            if (has_input) {
                 what = "creating the input buffers";
                 result = tz_vk_create_buffer(&device_in, input_bytes, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0, &no_memory_type);
@@ -1727,9 +1713,9 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
 
     {
         VkDescriptorBufferInfo infos[2];
-        infos[0].buffer = mode == 0 ? device_in.buffer : device_out.buffer;
+        infos[0].buffer = has_input ? device_in.buffer : device_out.buffer;
         infos[0].offset = 0;
-        infos[0].range = mode == 0 ? input_bytes : output_bytes;
+        infos[0].range = has_input ? input_bytes : output_bytes;
         infos[1].buffer = device_out.buffer;
         infos[1].offset = 0;
         infos[1].range = output_bytes;
@@ -1756,7 +1742,7 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
         recording = 1;
         result = state->fn.vkBeginCommandBuffer(commands, &begin);
         if (result != VK_SUCCESS) goto failed;
-        if (!caps->direct_transfer && mode == 0) {
+        if (!caps->direct_transfer && has_input) {
             VkBufferCopy region;
             region.srcOffset = 0;
             region.dstOffset = 0;
@@ -1825,9 +1811,193 @@ done:
     tz_vk_destroy_buffer(&host_in);
     tz_vk_destroy_buffer(&device_out);
     tz_vk_destroy_buffer(&device_in);
-    TZ_VK_FREE(aligned);
-    TZ_VK_UNLOCK();
     return status;
+}
+
+/* mode 0 = map over `count` input lanes, 1 = init (no input); the buffers belong to the caller. */
+static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const void *wgsl, int32_t wgsl_length,
+    const void *spirv, int32_t spirv_length, const void *input, int64_t count, void *output) {
+    (void)flags;
+    (void)wgsl;
+    (void)wgsl_length;
+    if (mode != 0 && mode != 1) return tz_vk_report(TZ_VK_UNSUPPORTED, "unknown run mode %d", (int)mode);
+    if (spirv == NULL || spirv_length < 20 || (spirv_length & 3) != 0) {
+        return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel has no SPIR-V module for Vulkan");
+    }
+    int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
+    if ((mode == 0 && input_size == 0) || output_size == 0) {
+        return tz_vk_report(TZ_VK_UNSUPPORTED, "the lane type of the kernel is not available on Vulkan");
+    }
+    if (count < 0 || count > TZ_VK_MAX_LANES) return tz_vk_report(TZ_VK_LIMIT, "%lld lanes exceed 2147483647", (long long)count);
+    if (count == 0) return TZ_VK_OK;
+    if (output == NULL || (mode == 0 && input == NULL)) return tz_vk_report(TZ_VK_FAILED, "a buffer is missing");
+    tz_vk_debug("%s %lld lanes, kinds 0x%04x", mode ? "init" : "map", (long long)count, (unsigned)lanes);
+
+    const uint32_t *words = (const uint32_t *)spirv;
+    uint32_t *aligned = NULL;
+    if (((uintptr_t)spirv & 3U) != 0) {
+        aligned = (uint32_t *)TZ_VK_ALLOC((size_t)spirv_length);
+        if (aligned == NULL) return tz_vk_report(TZ_VK_FAILED, "out of host memory");
+        memcpy(aligned, spirv, (size_t)spirv_length);
+        words = aligned;
+    }
+    TZ_VK_LOCK();
+    int32_t status = tz_vk_ensure(0);
+    if (status == TZ_VK_OK) {
+        status = tz_vk_run_locked(mode, lanes, words, (uint32_t)spirv_length / 4, input, count, output);
+    } else if (status == TZ_VK_FAILED && tz_vk.poisoned) {
+        status = tz_vk_report(status, "the device was lost earlier");
+    }
+    TZ_VK_UNLOCK();
+    TZ_VK_FREE(aligned);
+    return status;
+}
+
+/* ---- the conformance probe of the strict float32 controls ---- */
+
+/* The float controls that a device reports are a claim of its driver, and a claim has been wrong: a device that reports
+   SignedZeroInfNanPreserve computed -(x * 0.0) as -0.0 for negative x, and one that reports RoundingModeRTE rounded
+   OpConvertUToF of some 32-bit unsigned integers wrongly. So a kernel with the strict float32 modes runs only on a device
+   that also passes this probe: 24 lanes of 8 operations of the strict contract (fused multiply-add, the sign of a zero,
+   subnormals, round to nearest even, infinities and NaN, both integer conversions), run once, on the first request that
+   needs strict float32, and compared with the bits the CPU reference computes. The module is assembled from
+   tests/gpu_vulkan_probe.spvasm, and tests/gpu_spirv.rs checks the words and both tables against that source. The probe
+   is a sample of the contract, not a proof: a device that passes can still differ elsewhere, and a difference that
+   remains is a defect of that driver. A device that fails it, or cannot run it, refuses strict float32 kernels (the
+   other kernels are not affected). */
+#define TZ_VK_PROBE_LANES 24
+#define TZ_VK_PROBE_WORDS 538
+
+static const uint32_t tz_vk_probe_module[TZ_VK_PROBE_WORDS] = {
+    0x07230203U, 0x00010300U, 0x00070000U, 0x00000056U, 0x00000000U, 0x00020011U, 0x00000001U, 0x00020011U,
+    0x00001170U, 0x00020011U, 0x00001172U, 0x00020011U, 0x00001173U, 0x0007000AU, 0x5F565053U, 0x5F52484BU,
+    0x616F6C66U, 0x6F635F74U, 0x6F72746EU, 0x0000736CU, 0x0003000EU, 0x00000000U, 0x00000001U, 0x0007000FU,
+    0x00000005U, 0x00000001U, 0x626F7270U, 0x616D5F65U, 0x00006E69U, 0x00000002U, 0x00060010U, 0x00000001U,
+    0x00000011U, 0x00000100U, 0x00000001U, 0x00000001U, 0x00040010U, 0x00000001U, 0x0000116BU, 0x00000020U,
+    0x00040010U, 0x00000001U, 0x0000116DU, 0x00000020U, 0x00040010U, 0x00000001U, 0x0000116EU, 0x00000020U,
+    0x00040047U, 0x00000002U, 0x0000000BU, 0x0000001CU, 0x00040047U, 0x00000003U, 0x00000006U, 0x00000004U,
+    0x00040047U, 0x00000004U, 0x00000006U, 0x00000004U, 0x00030047U, 0x00000005U, 0x00000002U, 0x00050048U,
+    0x00000005U, 0x00000000U, 0x00000023U, 0x00000000U, 0x00040048U, 0x00000005U, 0x00000000U, 0x00000018U,
+    0x00030047U, 0x00000006U, 0x00000002U, 0x00050048U, 0x00000006U, 0x00000000U, 0x00000023U, 0x00000000U,
+    0x00040047U, 0x00000007U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000007U, 0x00000021U, 0x00000000U,
+    0x00040047U, 0x00000008U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000008U, 0x00000021U, 0x00000001U,
+    0x00030047U, 0x00000009U, 0x00000002U, 0x00050048U, 0x00000009U, 0x00000000U, 0x00000023U, 0x00000000U,
+    0x00050048U, 0x00000009U, 0x00000001U, 0x00000023U, 0x00000004U, 0x00030047U, 0x0000000AU, 0x0000002AU,
+    0x00030047U, 0x0000000BU, 0x0000002AU, 0x00030047U, 0x0000000CU, 0x0000002AU, 0x00030047U, 0x0000000DU,
+    0x0000002AU, 0x00030047U, 0x0000000EU, 0x0000002AU, 0x00030047U, 0x0000000FU, 0x0000002AU, 0x00030047U,
+    0x00000010U, 0x0000002AU, 0x00030047U, 0x00000011U, 0x0000002AU, 0x00030047U, 0x00000012U, 0x0000002AU,
+    0x00030047U, 0x00000013U, 0x0000002AU, 0x00020013U, 0x00000014U, 0x00030021U, 0x00000015U, 0x00000014U,
+    0x00040015U, 0x00000016U, 0x00000020U, 0x00000000U, 0x00030016U, 0x00000017U, 0x00000020U, 0x00020014U,
+    0x00000018U, 0x00040017U, 0x00000019U, 0x00000016U, 0x00000003U, 0x00040020U, 0x0000001AU, 0x00000001U,
+    0x00000019U, 0x0004003BU, 0x0000001AU, 0x00000002U, 0x00000001U, 0x0003001DU, 0x00000003U, 0x00000016U,
+    0x0003001DU, 0x00000004U, 0x00000016U, 0x0003001EU, 0x00000005U, 0x00000003U, 0x0003001EU, 0x00000006U,
+    0x00000004U, 0x00040020U, 0x0000001BU, 0x0000000CU, 0x00000005U, 0x00040020U, 0x0000001CU, 0x0000000CU,
+    0x00000006U, 0x0004003BU, 0x0000001BU, 0x00000007U, 0x0000000CU, 0x0004003BU, 0x0000001CU, 0x00000008U,
+    0x0000000CU, 0x00040020U, 0x0000001DU, 0x0000000CU, 0x00000016U, 0x0004001EU, 0x00000009U, 0x00000016U,
+    0x00000016U, 0x00040020U, 0x0000001EU, 0x00000009U, 0x00000009U, 0x00040020U, 0x0000001FU, 0x00000009U,
+    0x00000016U, 0x0004003BU, 0x0000001EU, 0x00000020U, 0x00000009U, 0x0004002BU, 0x00000016U, 0x00000021U,
+    0x00000000U, 0x0004002BU, 0x00000016U, 0x00000022U, 0x00000001U, 0x0004002BU, 0x00000016U, 0x00000023U,
+    0x00000002U, 0x0004002BU, 0x00000016U, 0x00000024U, 0x00000003U, 0x0004002BU, 0x00000016U, 0x00000025U,
+    0x00000004U, 0x0004002BU, 0x00000016U, 0x00000026U, 0x00000005U, 0x0004002BU, 0x00000016U, 0x00000027U,
+    0x00000006U, 0x0004002BU, 0x00000016U, 0x00000028U, 0x00000007U, 0x0004002BU, 0x00000016U, 0x00000029U,
+    0x7FC00000U, 0x0004002BU, 0x00000016U, 0x0000002AU, 0xFFFFFFFFU, 0x0004002BU, 0x00000017U, 0x0000002BU,
+    0xBF801000U, 0x00050036U, 0x00000014U, 0x00000001U, 0x00000000U, 0x00000015U, 0x000200F8U, 0x0000002CU,
+    0x0004003DU, 0x00000019U, 0x0000002DU, 0x00000002U, 0x00050051U, 0x00000016U, 0x0000002EU, 0x0000002DU,
+    0x00000000U, 0x00050041U, 0x0000001FU, 0x0000002FU, 0x00000020U, 0x00000021U, 0x0004003DU, 0x00000016U,
+    0x00000030U, 0x0000002FU, 0x00050041U, 0x0000001FU, 0x00000031U, 0x00000020U, 0x00000022U, 0x0004003DU,
+    0x00000016U, 0x00000032U, 0x00000031U, 0x00050080U, 0x00000016U, 0x00000033U, 0x00000032U, 0x0000002EU,
+    0x000500B0U, 0x00000018U, 0x00000034U, 0x00000033U, 0x00000030U, 0x000300F7U, 0x00000035U, 0x00000000U,
+    0x000400FAU, 0x00000034U, 0x00000036U, 0x00000035U, 0x000200F8U, 0x00000036U, 0x00050084U, 0x00000016U,
+    0x00000037U, 0x00000033U, 0x00000023U, 0x00050080U, 0x00000016U, 0x00000038U, 0x00000037U, 0x00000022U,
+    0x00060041U, 0x0000001DU, 0x00000039U, 0x00000007U, 0x00000021U, 0x00000037U, 0x0004003DU, 0x00000016U,
+    0x0000003AU, 0x00000039U, 0x00060041U, 0x0000001DU, 0x0000003BU, 0x00000007U, 0x00000021U, 0x00000038U,
+    0x0004003DU, 0x00000016U, 0x0000003CU, 0x0000003BU, 0x0004007CU, 0x00000017U, 0x0000003DU, 0x0000003AU,
+    0x0004007CU, 0x00000017U, 0x0000003EU, 0x0000003CU, 0x00050086U, 0x00000016U, 0x0000003FU, 0x00000033U,
+    0x00000024U, 0x000300F7U, 0x00000040U, 0x00000000U, 0x001300FBU, 0x0000003FU, 0x00000041U, 0x00000000U,
+    0x00000042U, 0x00000001U, 0x00000043U, 0x00000002U, 0x00000044U, 0x00000003U, 0x00000045U, 0x00000004U,
+    0x00000046U, 0x00000005U, 0x00000047U, 0x00000006U, 0x00000048U, 0x00000007U, 0x00000049U, 0x000200F8U,
+    0x00000042U, 0x00050085U, 0x00000017U, 0x0000000AU, 0x0000003DU, 0x0000003EU, 0x00050081U, 0x00000017U,
+    0x0000000BU, 0x0000000AU, 0x0000002BU, 0x0004007CU, 0x00000016U, 0x0000004AU, 0x0000000BU, 0x000200F9U,
+    0x00000040U, 0x000200F8U, 0x00000043U, 0x00050085U, 0x00000017U, 0x0000000CU, 0x0000003DU, 0x0000003EU,
+    0x0004007FU, 0x00000017U, 0x0000000DU, 0x0000000CU, 0x0004007CU, 0x00000016U, 0x0000004BU, 0x0000000DU,
+    0x000200F9U, 0x00000040U, 0x000200F8U, 0x00000044U, 0x00050081U, 0x00000017U, 0x0000000EU, 0x0000003DU,
+    0x0000003EU, 0x0004007CU, 0x00000016U, 0x0000004CU, 0x0000000EU, 0x000200F9U, 0x00000040U, 0x000200F8U,
+    0x00000045U, 0x00050085U, 0x00000017U, 0x0000000FU, 0x0000003DU, 0x0000003EU, 0x0004007CU, 0x00000016U,
+    0x0000004DU, 0x0000000FU, 0x000200F9U, 0x00000040U, 0x000200F8U, 0x00000046U, 0x00050085U, 0x00000017U,
+    0x00000010U, 0x0000003DU, 0x0000003EU, 0x0004007CU, 0x00000016U, 0x0000004EU, 0x00000010U, 0x000200F9U,
+    0x00000040U, 0x000200F8U, 0x00000047U, 0x00050083U, 0x00000017U, 0x00000011U, 0x0000003DU, 0x0000003EU,
+    0x0004009CU, 0x00000018U, 0x0000004FU, 0x00000011U, 0x0004007CU, 0x00000016U, 0x00000050U, 0x00000011U,
+    0x000600A9U, 0x00000016U, 0x00000051U, 0x0000004FU, 0x00000029U, 0x00000050U, 0x000200F9U, 0x00000040U,
+    0x000200F8U, 0x00000048U, 0x00040070U, 0x00000017U, 0x00000012U, 0x0000003AU, 0x0004007CU, 0x00000016U,
+    0x00000052U, 0x00000012U, 0x000200F9U, 0x00000040U, 0x000200F8U, 0x00000049U, 0x0004006FU, 0x00000017U,
+    0x00000013U, 0x0000003AU, 0x0004007CU, 0x00000016U, 0x00000053U, 0x00000013U, 0x000200F9U, 0x00000040U,
+    0x000200F8U, 0x00000041U, 0x000200F9U, 0x00000040U, 0x000200F8U, 0x00000040U, 0x001500F5U, 0x00000016U,
+    0x00000054U, 0x0000004AU, 0x00000042U, 0x0000004BU, 0x00000043U, 0x0000004CU, 0x00000044U, 0x0000004DU,
+    0x00000045U, 0x0000004EU, 0x00000046U, 0x00000051U, 0x00000047U, 0x00000052U, 0x00000048U, 0x00000053U,
+    0x00000049U, 0x0000002AU, 0x00000041U, 0x00060041U, 0x0000001DU, 0x00000055U, 0x00000008U, 0x00000021U,
+    0x00000033U, 0x0003003EU, 0x00000055U, 0x00000054U, 0x000200F9U, 0x00000035U, 0x000200F8U, 0x00000035U,
+    0x000100FDU, 0x00010038U
+};
+
+/* The operands a and b of every lane. */
+static const uint32_t tz_vk_probe_input[TZ_VK_PROBE_LANES * 2] = {
+    0x3F800800U, 0x3F800800U, 0xBF800800U, 0xBF800800U, 0x40000800U, 0x3F000800U,
+    0xBF800000U, 0x00000000U, 0x3F800000U, 0x00000000U, 0x80000000U, 0x40000000U,
+    0x00800000U, 0x80400000U, 0x00400000U, 0x00400000U, 0x00000001U, 0x00000001U,
+    0x00000001U, 0x3F800000U, 0x00800000U, 0x3F000000U, 0x00000001U, 0x3F000000U,
+    0x3FC00000U, 0x3F800001U, 0xBFC00000U, 0x3F800001U, 0x3FA0BDBAU, 0x3FDAB1D1U,
+    0x7F800000U, 0x7F800000U, 0x7F800000U, 0xFF800000U, 0x7FC00000U, 0x3F800000U,
+    0xFFFFFF7FU, 0x00000000U, 0x80000001U, 0x00000000U, 0x01000001U, 0x00000000U,
+    0x7FFFFFC1U, 0x00000000U, 0x80000081U, 0x00000000U, 0x01000001U, 0x00000000U};
+
+/* The bits of the CPU reference, a NaN as the canonical 0x7FC00000. */
+static const uint32_t tz_vk_probe_expected[TZ_VK_PROBE_LANES] = {
+    0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x80000000U, 0x00000000U, 0x00400000U, 0x00800000U,
+    0x00000002U, 0x00000001U, 0x00400000U, 0x00000000U, 0x3FC00002U, 0xBFC00002U, 0x40095137U, 0x7FC00000U,
+    0x7F800000U, 0x7FC00000U, 0x4F7FFFFFU, 0x4F000000U, 0x4B800000U, 0x4F000000U, 0xCEFFFFFFU, 0x4B800000U};
+
+static const char *const tz_vk_probe_operations[8] = {"(a * b) + c without a fused multiply-add", "-(a * b)",
+    "a + b with subnormals", "a * b with subnormals", "a * b rounded to nearest even", "a - b with infinities and NaN",
+    "float of a 32-bit unsigned integer", "float of a 32-bit signed integer"};
+
+/* Runs the probe and records the verdict; the lock is held and the device is open. Whatever goes wrong, the answer is no. */
+static void tz_vk_probe_strict(void) {
+    struct tz_vk_caps *caps = &tz_vk.caps;
+    uint32_t results[TZ_VK_PROBE_LANES];
+    memset(results, 0, sizeof results);
+    caps->strict_probe = 2;
+    int32_t status = tz_vk_run_locked(2, 4 | (1 << 8), tz_vk_probe_module, TZ_VK_PROBE_WORDS, tz_vk_probe_input,
+        TZ_VK_PROBE_LANES, results);
+    int wrong = 0;
+    if (status == TZ_VK_OK) {
+        for (uint32_t lane = 0; lane < TZ_VK_PROBE_LANES; lane++) {
+            if (results[lane] == tz_vk_probe_expected[lane]) continue;
+            if (wrong++ < 4) {
+                tz_vk_debug("the strict float32 probe: %s, lane %u: the device computed 0x%08X, the reference is 0x%08X",
+                    tz_vk_probe_operations[lane / 3], (unsigned)lane, (unsigned)results[lane],
+                    (unsigned)tz_vk_probe_expected[lane]);
+            }
+        }
+    }
+    if (status == TZ_VK_OK && wrong == 0) {
+        caps->strict_probe = 1;
+        tz_vk_debug("the strict float32 probe passed (%d lanes)", TZ_VK_PROBE_LANES);
+        return;
+    }
+    caps->strict_f32 = 0;
+    if (status != TZ_VK_OK) {
+        tz_vk_debug("the strict float32 probe could not run (status %d); strict float32 kernels are refused", (int)status);
+    } else {
+        tz_vk_debug("the device reports the strict float32 controls but %d of %d probe lanes differ from the reference; "
+                    "strict float32 kernels are refused", wrong, TZ_VK_PROBE_LANES);
+    }
+}
+
+/* Whether kernels with the strict float32 modes may run: the device reports the controls and passes the probe, which
+   runs here on the first need. The lock is held and the device is open. */
+static int tz_vk_strict_ok(void) {
+    if (tz_vk.caps.strict_f32 && tz_vk.caps.strict_probe == 0) tz_vk_probe_strict();
+    return tz_vk.caps.strict_f32;
 }
 
 /* ---- Gpu.Auto: is a call worth running here? ---- */
@@ -1837,13 +2007,20 @@ done:
    has the method, the machine, the medians, and the load of that machine). They describe one machine (an Apple
    M1 Max through MoltenVK: an integrated GPU with unified memory), so they are heuristics, not guarantees: another
    GPU or driver has other constants, and TSUZURI_GPU_AUTO_MIN_WORK replaces the rule with a threshold of one's own. */
-#define TZ_VK_AUTO_CPU_NS_PER_OP 0.1 /* one lane-operation of the CPU reference */
-#define TZ_VK_AUTO_CALL_NS 300000.0 /* one Vulkan call with no work: buffers, submit, fence wait, release */
-#define TZ_VK_AUTO_BYTE_NS 0.14 /* one byte of input or output: host copy and device access */
-#define TZ_VK_AUTO_GPU_NS_PER_OP 0.002 /* one lane-operation on the device */
-#define TZ_VK_AUTO_OPEN_NS 60000000.0 /* the first use: loader, instance, device, pools */
-#define TZ_VK_AUTO_COMPILE_NS 10000000.0 /* the first call of a kernel: shader module and pipeline */
+#define TZ_VK_AUTO_CPU_NS_PER_OP 0.03 /* one lane-operation of the CPU reference (the middle of the plateau of least regret) */
+#define TZ_VK_AUTO_CALL_NS 270000.0 /* one Vulkan call with no work: buffers, submit, fence wait, release */
+#define TZ_VK_AUTO_BYTE_NS 0.13 /* one byte of input or output: host copy and device access */
+#define TZ_VK_AUTO_GPU_NS_PER_OP 0.001 /* one lane-operation on the device */
+#define TZ_VK_AUTO_OPEN_NS 30000000.0 /* the first use: loader, instance, device, pools */
+#define TZ_VK_AUTO_COMPILE_NS 7000000.0 /* the first call of a kernel: shader module and pipeline */
 #define TZ_VK_AUTO_MARGIN 1.0 /* the device must be this many times cheaper than the estimate of the CPU reference */
+
+/* The CPU time that the calls kept on the CPU only because the first-use costs (open, compile) were still ahead would
+   have saved on a warm device. The first use is paid once this credit reaches it (the ski-rental rule): a loop whose
+   every call is cheaper on the CPU than a cold start, but far cheaper on a warm device, pays the first use after a few
+   calls instead of never, and a process never spends more than about twice the better of the two on it. The credit
+   depends only on the calls made, not on a clock. Guarded by the lock. */
+static double tz_vk_auto_credit;
 
 /* The measurements are of an integrated GPU that the host reaches without a copy (the memory of the machine is
    shared). A discrete GPU, whose transfers cross a bus, and a software device are never chosen by Gpu.Auto: no
@@ -1877,12 +2054,32 @@ static int tz_vk_cached(const uint32_t *words, uint32_t length, int mode) {
     return 0;
 }
 
+/* What the device must have for one call, once it is known: the features of the kernel, the measured kind, and buffers
+   that fit its limits. Opens the device if that has not happened yet; the lock is held. */
+static int tz_vk_auto_usable(int32_t features, int32_t mode, int64_t count, int input_size, int output_size) {
+    if (tz_vk_ensure(features & TZ_VK_FEATURE_MASK) != TZ_VK_OK) return 0;
+    const struct tz_vk_caps *caps = &tz_vk.caps;
+    if (!tz_vk_auto_device_measured(caps)) {
+        tz_vk_debug("Gpu.Auto does not use %s: the cost rule is measured for integrated GPUs with unified memory", caps->name);
+        return 0;
+    }
+    VkDeviceSize input_bytes = mode == 0 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
+    VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
+    if (input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
+        || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
+        tz_vk_debug("Gpu.Auto: %lld lanes do not fit the buffer limits of the device", (long long)count);
+        return 0;
+    }
+    return 1;
+}
+
 /* Gpu.Auto asks, for one call of a kernel, whether to run it here (1) or on the CPU reference (0). It chooses this
    backend only when everything that can be checked before the run holds: the kernel has a module, its lanes are
    ones Vulkan has, the device is open with the features of the kernel, the device is of the measured kind, the
-   buffers fit, and the pipeline builds; and the estimated cost, with the open and the compile if they are still
-   ahead, is below the estimated cost of the CPU reference. A device that is unavailable is not asked again. A
-   failure while the run itself is under way (a lost device, no memory) traps like an explicit device does. */
+   buffers fit, and the pipeline builds; and the estimated cost on a warm device is below the estimated cost of the CPU
+   reference, with the first use (the open, the compile) paid out of the credit that earlier declined calls built up.
+   A device that is unavailable is not asked again. A failure while the run itself is under way (a lost device, no
+   memory) traps like an explicit device does. */
 static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const void *spirv, int32_t spirv_length,
     int32_t weight, int64_t count) {
     int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
@@ -1906,33 +2103,27 @@ static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const v
     TZ_VK_LOCK();
     tz_vk_quiet = 1;
     if (tz_vk.state == 2 || tz_vk.poisoned) goto done;
+    /* A device that is already open answers the cheap questions first, so that no credit is built for a call it cannot run. */
+    if (tz_vk.state == 1 && !tz_vk_auto_usable(features, mode, count, input_size, output_size)) goto done;
     {
         int ready = tz_vk.state == 1;
         if (minimum >= 0) {
             if (work < (double)minimum) goto done;
         } else {
             double cpu = work * TZ_VK_AUTO_CPU_NS_PER_OP;
-            double device = TZ_VK_AUTO_CALL_NS + (double)count * lane_bytes * TZ_VK_AUTO_BYTE_NS
-                + work * TZ_VK_AUTO_GPU_NS_PER_OP + (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS)
+            double warm = TZ_VK_AUTO_CALL_NS + (double)count * lane_bytes * TZ_VK_AUTO_BYTE_NS + work * TZ_VK_AUTO_GPU_NS_PER_OP;
+            double saving = cpu - warm * TZ_VK_AUTO_MARGIN;
+            if (saving <= 0.0) goto done;
+            double first_use = (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS)
                 + (ready && tz_vk_cached(words, length_words, mode) ? 0.0 : TZ_VK_AUTO_COMPILE_NS);
-            if (device * TZ_VK_AUTO_MARGIN >= cpu) goto done;
+            if (first_use > 0.0) {
+                tz_vk_auto_credit += saving;
+                if (tz_vk_auto_credit < first_use) goto done;
+                tz_vk_auto_credit -= first_use;
+            }
         }
     }
-    if (tz_vk_ensure(features & TZ_VK_FEATURE_MASK) != TZ_VK_OK) goto done;
-    {
-        const struct tz_vk_caps *caps = &tz_vk.caps;
-        if (!tz_vk_auto_device_measured(caps)) {
-            tz_vk_debug("Gpu.Auto does not use %s: the cost rule is measured for integrated GPUs with unified memory", caps->name);
-            goto done;
-        }
-        VkDeviceSize input_bytes = mode == 0 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
-        VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
-        if (input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
-            || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
-            tz_vk_debug("Gpu.Auto: %lld lanes do not fit the buffer limits of the device", (long long)count);
-            goto done;
-        }
-    }
+    if (!tz_vk_auto_usable(features, mode, count, input_size, output_size)) goto done;
     {
         VkPipeline pipeline = 0;
         if (tz_vk_check_module(words, length_words) != TZ_VK_OK) goto done;
@@ -1957,12 +2148,24 @@ static void tz_vulkan_describe(char *text, size_t size) {
 
 #ifdef TZ_VK_TEST_HOOKS
 /* Test hooks: the harness includes this file and reaches the state directly. */
+
+/* Runs the module of the conformance probe whatever the device reports, and stores the bits of its lanes; the device must
+   be open. The probe of the runtime itself runs only where the properties report the controls. */
+static int32_t tz_vk_test_conform(uint32_t *results) {
+    TZ_VK_LOCK();
+    int32_t status = tz_vk.state == 1 && !tz_vk.poisoned ? tz_vk_run_locked(2, 4 | (1 << 8), tz_vk_probe_module,
+        TZ_VK_PROBE_WORDS, tz_vk_probe_input, TZ_VK_PROBE_LANES, results) : TZ_VK_UNAVAILABLE;
+    TZ_VK_UNLOCK();
+    return status;
+}
+
 static void tz_vk_test_reset(void) {
     TZ_VK_LOCK();
     if (tz_vk.state == 1) tz_vk_teardown();
     tz_vk.state = 0;
     tz_vk.status = 0;
     tz_vk.poisoned = 0;
+    tz_vk_auto_credit = 0.0;
     TZ_VK_UNLOCK();
 }
 #endif

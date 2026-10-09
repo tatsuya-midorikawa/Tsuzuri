@@ -227,6 +227,24 @@ fn bits_of(value: f32) -> u64 {
     u64::from(value.to_bits())
 }
 
+/// Unsigned 32-bit values whose conversion to `f32` must round to nearest even: the spacing of `f32` is 256 above 2^31,
+/// so the values just below 2^32 and around 2^31, and the ties above 2^24, are where a device that rounds the
+/// conversion wrongly differs (a driver rounded 4294967167 up to 4294967296 while the CPU gives 4294967040).
+fn large_u32s() -> Vec<u64> {
+    let mut values: Vec<u32> = (0xFFFF_FF00..=0xFFFF_FFFF).collect();
+    values.extend(0x7FFF_FF80..=0x8000_0080);
+    values.extend([
+        0x0100_0001,
+        0x0100_0003,
+        0x0200_0001,
+        0x0200_0002,
+        0x0200_0003,
+    ]);
+    let mut seed = 0x0BAD_5EED;
+    values.extend((0..300).map(|_| lcg(&mut seed) | 0x8000_0000));
+    values.into_iter().map(u64::from).collect()
+}
+
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -422,6 +440,24 @@ fn cases() -> Vec<Case> {
             relaxed: false,
             inputs: ints64,
             reference: |x| bits_of(x as i64 as f32),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "from_u32_strict",
+            source: "export def kernel :: i32u -> f32\nfn kernel value = value as f32",
+            relaxed: false,
+            inputs: large_u32s,
+            reference: |x| bits_of(x as u32 as f32),
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "negated_zero_product_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = -(value * 0.0)",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| bits_of(-(f(x) * 0.0)),
             compare: Compare::Exact,
             init: false,
         },
@@ -1011,6 +1047,208 @@ fn spirv_modules_validate_for_vulkan() {
     eprintln!("spirv-val accepted {validated} module/environment pairs");
 }
 
+// ---- the conformance probe of the strict float32 controls ----
+
+/// The words of a table of `src/runtime/gpu-vulkan.c` (`static const uint32_t name[...] = { ... };`).
+fn runtime_table(name: &str) -> Vec<u32> {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/gpu-vulkan.c"))
+            .unwrap();
+    let start = source
+        .find(&format!("static const uint32_t {name}["))
+        .unwrap_or_else(|| panic!("{name} is not declared in the runtime"));
+    let open = start + source[start..].find('{').unwrap();
+    let close = open + source[open..].find('}').unwrap();
+    source[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let digits = word
+                .strip_prefix("0x")
+                .and_then(|word| word.strip_suffix('U'))
+                .unwrap_or_else(|| panic!("{name}: {word} is not a hexadecimal word"));
+            u32::from_str_radix(digits, 16).unwrap()
+        })
+        .collect()
+}
+
+fn runtime_constant(name: &str) -> usize {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/gpu-vulkan.c"))
+            .unwrap();
+    let prefix = format!("#define {name} ");
+    source
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("{name} is not defined in the runtime"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// What the probe expects of a device is what the CPU reference computes, and each group of lanes can tell a wrong
+/// behaviour from the right one (a fused multiply-add, a flush of subnormals, a truncation).
+#[test]
+fn the_probe_tables_hold_what_the_cpu_reference_computes() {
+    let lanes = runtime_constant("TZ_VK_PROBE_LANES");
+    let input = runtime_table("tz_vk_probe_input");
+    let expected = runtime_table("tz_vk_probe_expected");
+    assert_eq!((lanes, input.len(), expected.len()), (24, 48, 24));
+    let c0 = f32::from_bits(0xBF80_1000);
+    for lane in 0..lanes {
+        let (a_bits, b_bits) = (input[2 * lane], input[2 * lane + 1]);
+        let (a, b) = (f32::from_bits(a_bits), f32::from_bits(b_bits));
+        let result = match lane / 3 {
+            0 => std::hint::black_box(a * b) + c0,
+            1 => -(a * b),
+            2 => a + b,
+            3 | 4 => a * b,
+            5 => a - b,
+            6 => a_bits as f32,
+            _ => a_bits as i32 as f32,
+        };
+        let bits = if lane / 3 == 5 && result.is_nan() {
+            0x7FC0_0000
+        } else {
+            result.to_bits()
+        };
+        assert_eq!(expected[lane], bits, "lane {lane} (operation {})", lane / 3);
+    }
+    for lane in 0..3 {
+        let (a, b) = (
+            f32::from_bits(input[2 * lane]),
+            f32::from_bits(input[2 * lane + 1]),
+        );
+        assert_ne!(
+            a.mul_add(b, c0).to_bits(),
+            expected[lane],
+            "lane {lane} must tell a fused multiply-add"
+        );
+    }
+    for (lane, bits) in expected.iter().enumerate().take(11).skip(6) {
+        assert_ne!(
+            bits & 0x7FFF_FFFF,
+            0,
+            "lane {lane} must tell a flush of subnormals"
+        );
+    }
+    for lane in 12..15 {
+        let exact = f64::from(f32::from_bits(input[2 * lane]))
+            * f64::from(f32::from_bits(input[2 * lane + 1]));
+        let nearest = exact as f32;
+        let truncated = if f64::from(nearest).abs() > exact.abs() {
+            f32::from_bits(nearest.to_bits() - 1)
+        } else {
+            nearest
+        };
+        assert_ne!(
+            truncated.to_bits(),
+            expected[lane],
+            "lane {lane} must tell a truncation from rounding to nearest even"
+        );
+    }
+    assert_eq!(expected[3], 0, "-(-1 * 0) is +0");
+    assert_eq!(expected[4], 0x8000_0000, "-(1 * 0) is -0");
+}
+
+#[test]
+fn the_probe_module_is_the_assembly_of_its_source_and_validates() {
+    let Some(assembler) = find_tool(
+        "SPIRV_AS",
+        &[
+            "/opt/homebrew/opt/spirv-tools/bin/spirv-as",
+            "/usr/local/bin/spirv-as",
+            "/usr/bin/spirv-as",
+        ],
+        "spirv-as",
+    ) else {
+        skip(
+            "TSUZURI_REQUIRE_SPIRV_TOOLS",
+            "spirv-as was not found; the words of the conformance probe were not compared with their source",
+        );
+        return;
+    };
+    let directory = scratch("probe");
+    let module = directory.join("probe.spv");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gpu_vulkan_probe.spvasm");
+    let output = Command::new(&assembler)
+        .args(["--target-env", "vulkan1.1"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&module)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let assembled: Vec<u32> = fs::read(&module)
+        .unwrap()
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+        .collect();
+    let embedded = runtime_table("tz_vk_probe_module");
+    assert_eq!(
+        embedded.len(),
+        runtime_constant("TZ_VK_PROBE_WORDS"),
+        "the declared size is the size of the table"
+    );
+    assert_eq!(
+        embedded, assembled,
+        "src/runtime/gpu-vulkan.c must hold the words of tests/gpu_vulkan_probe.spvasm: assemble it again"
+    );
+
+    // The module declares the strict controls, and every floating-point result carries NoContraction.
+    let mut declared = BTreeSet::new();
+    let (mut arithmetic, mut no_contraction, mut position) = (0, 0, 5);
+    while position < embedded.len() {
+        let size = (embedded[position] >> 16) as usize;
+        match (embedded[position] & 0xFFFF) as u16 {
+            OP_CAPABILITY => {
+                declared.insert(embedded[position + 1]);
+            }
+            OP_F_ADD | OP_F_SUB | OP_F_MUL | OP_F_NEGATE | OP_CONVERT_S_TO_F
+            | OP_CONVERT_U_TO_F => arithmetic += 1,
+            OP_DECORATE if embedded[position + 2] == 42 => no_contraction += 1,
+            _ => {}
+        }
+        position += size;
+    }
+    assert!(declared.is_superset(&BTreeSet::from([4464, 4466, 4467])));
+    assert_eq!(arithmetic, no_contraction);
+
+    let Some(validator) = find_tool(
+        "SPIRV_VAL",
+        &[
+            "/opt/homebrew/opt/spirv-tools/bin/spirv-val",
+            "/usr/local/bin/spirv-val",
+            "/usr/bin/spirv-val",
+        ],
+        "spirv-val",
+    ) else {
+        skip(
+            "TSUZURI_REQUIRE_SPIRV_TOOLS",
+            "spirv-val was not found; the conformance probe module was not validated",
+        );
+        return;
+    };
+    for environment in ["vulkan1.1", "vulkan1.2"] {
+        let output = Command::new(&validator)
+            .args(["--target-env", environment])
+            .arg(&module)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "spirv-val --target-env {environment} rejects the probe:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 // ---- execution on a device ----
 
 /// The runtime harness together with the environment of one Vulkan implementation: the default one of the machine, and
@@ -1039,7 +1277,9 @@ fn compile_harness(clang: &Path, source: &Path, path: &Path) -> Result<(), Harne
         .arg("-o")
         .arg(path)
         .output()
-        .map_err(|error| HarnessError::Missing(format!("{} cannot run: {error}", clang.display())))?;
+        .map_err(|error| {
+            HarnessError::Missing(format!("{} cannot run: {error}", clang.display()))
+        })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -1234,7 +1474,9 @@ fn a_harness_that_does_not_compile_fails_and_a_missing_compiler_skips() {
         Err(HarnessError::Build(reason)) => {
             assert!(reason.contains("the runtime does not compile"), "{reason}")
         }
-        Err(HarnessError::Missing(reason)) => panic!("a compile error is not a missing tool: {reason}"),
+        Err(HarnessError::Missing(reason)) => {
+            panic!("a compile error is not a missing tool: {reason}")
+        }
         Ok(()) => panic!("the broken harness compiled"),
     }
     match compile_harness(

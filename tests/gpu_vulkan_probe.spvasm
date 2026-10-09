@@ -1,0 +1,158 @@
+; The conformance probe of the strict float32 contract (F09 Phase 3), the source of the words in src/runtime/gpu-vulkan.c
+; (tz_vk_probe_module). Properties that a device reports do not prove that it computes what they say: a device that
+; reports SignedZeroInfNanPreserve has lost the sign of a zero in x * 0.0, and one that reports RoundingModeRTE has
+; rounded a conversion from a 32-bit unsigned integer wrongly. The runtime runs this module once, on the first request
+; that needs strict f32, and refuses the device when a result differs from the bits that the table beside the words holds.
+;
+; 24 lanes, 8 operations of 3 operand pairs each. Lane i reads the words a = in[2i] and b = in[2i + 1], performs
+; operation i / 3, and stores the bits of the result in out[i] (a NaN as the canonical 0x7FC00000, because a NaN has
+; many bit patterns). Every floating-point result carries NoContraction, and the modes are those of a strict f32 kernel.
+;
+;   0  (a * b) + c0   c0 = -(1 + 2^-11): a fused multiply-add differs from the two roundings
+;   1  -(a * b)       the sign of a zero that a multiplication produced
+;   2  a + b          subnormal operands and results (DenormPreserve)
+;   3  a * b          subnormal operands, results, and a tie that rounds to zero
+;   4  a * b          round to nearest even, where truncation differs
+;   5  a - b          infinities and NaNs (SignedZeroInfNanPreserve), the NaN canonicalized
+;   6  float(a)       a as a 32-bit unsigned integer (OpConvertUToF), above 2^31 included
+;   7  float(a)       a as a 32-bit signed integer (OpConvertSToF)
+;
+; Assemble with:  spirv-as --target-env vulkan1.1 tests/gpu_vulkan_probe.spvasm -o probe.spv
+               OpCapability Shader
+               OpCapability DenormPreserve
+               OpCapability SignedZeroInfNanPreserve
+               OpCapability RoundingModeRTE
+               OpExtension "SPV_KHR_float_controls"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "probe_main" %global_id
+               OpExecutionMode %main LocalSize 256 1 1
+               OpExecutionMode %main DenormPreserve 32
+               OpExecutionMode %main SignedZeroInfNanPreserve 32
+               OpExecutionMode %main RoundingModeRTE 32
+               OpDecorate %global_id BuiltIn GlobalInvocationId
+               OpDecorate %input_array ArrayStride 4
+               OpDecorate %output_array ArrayStride 4
+               OpDecorate %input_block Block
+               OpMemberDecorate %input_block 0 Offset 0
+               OpMemberDecorate %input_block 0 NonWritable
+               OpDecorate %output_block Block
+               OpMemberDecorate %output_block 0 Offset 0
+               OpDecorate %input DescriptorSet 0
+               OpDecorate %input Binding 0
+               OpDecorate %output DescriptorSet 0
+               OpDecorate %output Binding 1
+               OpDecorate %parameters Block
+               OpMemberDecorate %parameters 0 Offset 0
+               OpMemberDecorate %parameters 1 Offset 4
+               OpDecorate %product0 NoContraction
+               OpDecorate %sum0 NoContraction
+               OpDecorate %product1 NoContraction
+               OpDecorate %negated1 NoContraction
+               OpDecorate %sum2 NoContraction
+               OpDecorate %product3 NoContraction
+               OpDecorate %product4 NoContraction
+               OpDecorate %difference5 NoContraction
+               OpDecorate %converted6 NoContraction
+               OpDecorate %converted7 NoContraction
+       %void = OpTypeVoid
+   %function = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+      %float = OpTypeFloat 32
+       %bool = OpTypeBool
+     %v3uint = OpTypeVector %uint 3
+  %ptr_input_v3uint = OpTypePointer Input %v3uint
+  %global_id = OpVariable %ptr_input_v3uint Input
+%input_array = OpTypeRuntimeArray %uint
+%output_array = OpTypeRuntimeArray %uint
+%input_block = OpTypeStruct %input_array
+%output_block = OpTypeStruct %output_array
+%ptr_buffer_input = OpTypePointer StorageBuffer %input_block
+%ptr_buffer_output = OpTypePointer StorageBuffer %output_block
+      %input = OpVariable %ptr_buffer_input StorageBuffer
+     %output = OpVariable %ptr_buffer_output StorageBuffer
+%ptr_buffer_uint = OpTypePointer StorageBuffer %uint
+ %parameters = OpTypeStruct %uint %uint
+%ptr_constant_parameters = OpTypePointer PushConstant %parameters
+%ptr_constant_uint = OpTypePointer PushConstant %uint
+ %constants = OpVariable %ptr_constant_parameters PushConstant
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+     %uint_3 = OpConstant %uint 3
+     %uint_4 = OpConstant %uint 4
+     %uint_5 = OpConstant %uint 5
+     %uint_6 = OpConstant %uint 6
+     %uint_7 = OpConstant %uint 7
+ %uint_nan = OpConstant %uint 0x7FC00000
+ %uint_none = OpConstant %uint 0xFFFFFFFF
+    %float_c0 = OpConstant %float -1.00048828125
+       %main = OpFunction %void None %function
+      %entry = OpLabel
+  %global_v3 = OpLoad %v3uint %global_id
+   %global_x = OpCompositeExtract %uint %global_v3 0
+  %length_ptr = OpAccessChain %ptr_constant_uint %constants %uint_0
+     %length = OpLoad %uint %length_ptr
+  %base_ptr = OpAccessChain %ptr_constant_uint %constants %uint_1
+       %base = OpLoad %uint %base_ptr
+      %index = OpIAdd %uint %base %global_x
+   %in_range = OpULessThan %bool %index %length
+               OpSelectionMerge %exit None
+               OpBranchConditional %in_range %body %exit
+       %body = OpLabel
+  %first_word = OpIMul %uint %index %uint_2
+ %second_word = OpIAdd %uint %first_word %uint_1
+    %a_ptr = OpAccessChain %ptr_buffer_uint %input %uint_0 %first_word
+   %a_bits = OpLoad %uint %a_ptr
+    %b_ptr = OpAccessChain %ptr_buffer_uint %input %uint_0 %second_word
+   %b_bits = OpLoad %uint %b_ptr
+          %a = OpBitcast %float %a_bits
+          %b = OpBitcast %float %b_bits
+  %operation = OpUDiv %uint %index %uint_3
+               OpSelectionMerge %merge None
+               OpSwitch %operation %fallback 0 %case0 1 %case1 2 %case2 3 %case3 4 %case4 5 %case5 6 %case6 7 %case7
+      %case0 = OpLabel
+   %product0 = OpFMul %float %a %b
+       %sum0 = OpFAdd %float %product0 %float_c0
+    %result0 = OpBitcast %uint %sum0
+               OpBranch %merge
+      %case1 = OpLabel
+   %product1 = OpFMul %float %a %b
+   %negated1 = OpFNegate %float %product1
+    %result1 = OpBitcast %uint %negated1
+               OpBranch %merge
+      %case2 = OpLabel
+       %sum2 = OpFAdd %float %a %b
+    %result2 = OpBitcast %uint %sum2
+               OpBranch %merge
+      %case3 = OpLabel
+   %product3 = OpFMul %float %a %b
+    %result3 = OpBitcast %uint %product3
+               OpBranch %merge
+      %case4 = OpLabel
+   %product4 = OpFMul %float %a %b
+    %result4 = OpBitcast %uint %product4
+               OpBranch %merge
+      %case5 = OpLabel
+%difference5 = OpFSub %float %a %b
+    %is_nan5 = OpIsNan %bool %difference5
+      %bits5 = OpBitcast %uint %difference5
+    %result5 = OpSelect %uint %is_nan5 %uint_nan %bits5
+               OpBranch %merge
+      %case6 = OpLabel
+%converted6 = OpConvertUToF %float %a_bits
+    %result6 = OpBitcast %uint %converted6
+               OpBranch %merge
+      %case7 = OpLabel
+%converted7 = OpConvertSToF %float %a_bits
+    %result7 = OpBitcast %uint %converted7
+               OpBranch %merge
+   %fallback = OpLabel
+               OpBranch %merge
+      %merge = OpLabel
+     %result = OpPhi %uint %result0 %case0 %result1 %case1 %result2 %case2 %result3 %case3 %result4 %case4 %result5 %case5 %result6 %case6 %result7 %case7 %uint_none %fallback
+    %out_ptr = OpAccessChain %ptr_buffer_uint %output %uint_0 %index
+               OpStore %out_ptr %result
+               OpBranch %exit
+       %exit = OpLabel
+               OpReturn
+               OpFunctionEnd

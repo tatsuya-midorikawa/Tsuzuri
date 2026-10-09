@@ -195,7 +195,10 @@ static int run_job(const struct job *job) {
         return (int)status;
     }
     if (job->staged) tz_vk.caps.direct_transfer = 0;
-    if (job->assume_strict) tz_vk.caps.strict_f32 = 1;
+    if (job->assume_strict) {
+        tz_vk.caps.strict_f32 = 1;
+        tz_vk.caps.strict_probe = 1; /* as if the device had passed the conformance probe */
+    }
     size_t output_size = output_bytes_for(job);
     int threads = job->threads < 1 ? 1 : job->threads;
     struct worker *workers = (struct worker *)calloc((size_t)threads, sizeof *workers);
@@ -298,6 +301,7 @@ struct mock_api {
     mock_configure_function configure;
     mock_query_function injected;
     mock_query_function leaked;
+    mock_query_function probe_dispatches;
     mock_text_function leak_report;
 };
 
@@ -309,8 +313,10 @@ static int load_mock(struct mock_api *mock) {
     mock->configure = (mock_configure_function)dlsym(mock->handle, "tz_vk_mock_configure");
     mock->injected = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_injected");
     mock->leaked = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_leaked");
+    mock->probe_dispatches = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_probe_dispatches");
     mock->leak_report = (mock_text_function)dlsym(mock->handle, "tz_vk_mock_leak_report");
-    return mock->configure != NULL && mock->injected != NULL && mock->leaked != NULL && mock->leak_report != NULL;
+    return mock->configure != NULL && mock->injected != NULL && mock->leaked != NULL && mock->probe_dispatches != NULL
+        && mock->leak_report != NULL;
 }
 
 /* Runs open + run once per injected failure: the Nth fallible Vulkan call fails, for N = 1, 2, ... until a pass meets no
@@ -403,13 +409,63 @@ static int sweep_job(const struct job *job, const char *base_config) {
     return failures == 0 ? 0 : HARNESS_ERROR;
 }
 
-/* Opens the backend with `features` once and prints the status and the capability line. */
+/* Opens the backend with `features` (`repeat` times) and prints the status and the capability line. With --spirv it then
+   runs that kernel in the same process (a refused feature does not stop the kernels that do not need it) and prints
+   `run=<status>`; on the mock it prints how many times the conformance probe was dispatched. */
 static int probe_job(const struct job *job) {
-    int32_t status = tz_vulkan_open(job->features);
+    int32_t status = 0;
+    for (int round = 0; round < (job->repeat < 1 ? 1 : job->repeat); round++) status = tz_vulkan_open(job->features);
+    int32_t run_status = -1;
+    if (job->spirv_path != NULL) {
+        size_t spirv_size = 0, input_size = 0;
+        void *spirv = read_file(job->spirv_path, &spirv_size);
+        void *input = job->input_path != NULL ? read_file(job->input_path, &input_size) : NULL;
+        size_t output_size = output_bytes_for(job);
+        unsigned char *output = (unsigned char *)malloc(output_size > 0 ? output_size : 1);
+        run_status = spirv != NULL && output != NULL
+            ? tz_vulkan_run(job->mode, 0, job->lanes, NULL, 0, spirv, (int32_t)spirv_size, input, job->count, output)
+            : HARNESS_ERROR;
+        free(output);
+        free(input);
+        free(spirv);
+    }
+    char text[1024];
+    tz_vulkan_describe(text, sizeof text);
+    printf("status=%d %s", (int)status, text);
+    if (run_status >= 0) printf(" run=%d", (int)run_status);
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (getenv("TZ_VK_MOCK") != NULL && load_mock(&mock)) printf(" probe_dispatches=%d", mock.probe_dispatches());
+    printf("\n");
+    return (int)status;
+}
+
+/* Opens the backend and runs the module of the conformance probe whatever the device reports (the runtime itself runs
+   it only where the properties report the controls and a strict kernel is wanted), then prints every lane against the
+   bits that the CPU reference computes. The exit code is the status of the run; the last line counts the lanes that differ. */
+static int conform_job(const struct job *job) {
+    int32_t status = tz_vulkan_open(job->features & ~TZ_VK_FEATURE_STRICT_F32);
     char text[1024];
     tz_vulkan_describe(text, sizeof text);
     printf("status=%d %s\n", (int)status, text);
-    return (int)status;
+    if (status != 0) return (int)status;
+    uint32_t results[TZ_VK_PROBE_LANES];
+    memset(results, 0, sizeof results);
+    status = tz_vk_test_conform(results);
+    if (status != 0) {
+        printf("conform status=%d\n", (int)status);
+        return (int)status;
+    }
+    int different = 0;
+    for (uint32_t lane = 0; lane < TZ_VK_PROBE_LANES; lane++) {
+        int same = results[lane] == tz_vk_probe_expected[lane];
+        different += !same;
+        printf("lane %2u %-40s a=0x%08X b=0x%08X reference=0x%08X device=0x%08X %s\n", (unsigned)lane,
+            tz_vk_probe_operations[lane / 3], (unsigned)tz_vk_probe_input[2 * lane], (unsigned)tz_vk_probe_input[2 * lane + 1],
+            (unsigned)tz_vk_probe_expected[lane], (unsigned)results[lane], same ? "ok" : "DIFFERENT");
+    }
+    printf("conform lanes=%d different=%d\n", TZ_VK_PROBE_LANES, different);
+    return 0;
 }
 
 /* Asks Gpu.Auto `repeat` times whether it would run the kernel on this backend, and prints the answers (1: here, 0: the
@@ -485,7 +541,7 @@ static int autosweep_job(const struct job *job, const char *base_config) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: harness probe|run|bench|sweep|auto|autosweep [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
+        fprintf(stderr, "usage: harness probe|conform|run|bench|sweep|auto|autosweep [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
         return HARNESS_ERROR;
     }
     struct job job;
@@ -503,6 +559,8 @@ int main(int argc, char **argv) {
     int code;
     if (strcmp(argv[1], "probe") == 0) {
         code = probe_job(&job);
+    } else if (strcmp(argv[1], "conform") == 0) {
+        code = conform_job(&job);
     } else if (strcmp(argv[1], "run") == 0) {
         code = run_job(&job);
     } else if (strcmp(argv[1], "bench") == 0) {

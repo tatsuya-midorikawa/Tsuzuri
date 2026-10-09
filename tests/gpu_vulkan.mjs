@@ -75,7 +75,7 @@ const mockPath = join(directory, `libvk_mock.${library}`);
 const harnessBuild = run(clang, ["-std=c11", "-Wall", "-Wextra", "-Wpedantic", ...flags, join(root, "tests/gpu_vulkan_runtime.c"), "-o", harnessPath]);
 assert.equal(harnessBuild.status, 0, harnessBuild.stderr);
 assert.doesNotMatch(harnessBuild.stderr, /warning/, "the runtime must compile without warnings");
-const mockBuild = run(clang, ["-std=gnu11", "-Wall", "-Wextra", "-Wno-unused-function", "-Wno-unused-variable", ...flags, "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", mockPath]);
+const mockBuild = run(clang, ["-std=gnu11", "-Wall", "-Wextra", "-Wno-unused-function", "-Wno-unused-variable", "-ffp-contract=off", ...flags, "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", mockPath]);
 assert.equal(mockBuild.status, 0, mockBuild.stderr);
 assert.doesNotMatch(mockBuild.stderr, /warning/, "the mock must compile without warnings");
 
@@ -177,6 +177,66 @@ check("capabilities: a device that satisfies the features is chosen among severa
   assert.match(result.stdout, /Mock Vulkan device/);
 });
 
+// ---- the conformance probe of the strict float32 contract ----
+// A device can report the float controls and still compute differently, so the runtime dispatches a probe module once, on
+// the first request that needs strict float32 (tests/gpu_vulkan_probe.spvasm). The mock computes its eight operations in C
+// float arithmetic; `probe=<lane>` flips a bit of one lane of its result.
+const strictModule = join(directory, "probe-strict.spv");
+writeFileSync(strictModule, fakeModule([1, 4464, 4466, 4467]));
+const strictProbe = (config, features, { repeat = 1, kernel, env = {} } = {}) => {
+  const args = ["probe", "--features", String(features), "--repeat", String(repeat)];
+  if (kernel) {
+    writeFileSync(join(directory, "probe-in.bin"), u32(sample(8)));
+    args.push("--spirv", kernel, "--mode", "map", "--lanes", "1,1", "--count", "8", "--input", join(directory, "probe-in.bin"));
+  }
+  const result = mock(config, args, env);
+  const field = name => new RegExp(`${name}=(\\S+)`).exec(result.stdout)?.[1];
+  return { status: statusOf(result), strict: field("strict_f32"), probe: field("strict_probe"), run: field("run"), dispatches: Number(field("probe_dispatches")), stderr: result.stderr };
+};
+const verdict = answer => [answer.status, answer.strict, answer.probe, answer.dispatches];
+
+check("strict probe: runs once, on the first request that needs strict float32, and only where the properties report the controls", () => {
+  assert.deepEqual(verdict(strictProbe("strict=1", 0)), [0, "1", "not-run", 0], "nothing asks for strict float32");
+  assert.deepEqual(verdict(strictProbe("strict=1", 2)), [0, "1", "not-run", 0], "a program of integers never runs it");
+  assert.deepEqual(verdict(strictProbe("strict=1", 4)), [0, "1", "passed", 1]);
+  assert.deepEqual(verdict(strictProbe("strict=1", 6, { repeat: 5 })), [0, "1", "passed", 1], "once, however many requests follow");
+  assert.deepEqual(verdict(strictProbe("", 4)), [2, "0", "not-run", 0], "a device without the controls does not get the probe");
+  assert.deepEqual(verdict(strictProbe("strict=1,denorm=0", 4)), [2, "0", "not-run", 0]);
+  assert.match(strictProbe("strict=1", 4, { env: { TSUZURI_GPU_DEBUG: "1" } }).stderr, /the strict float32 probe passed \(24 lanes\)/);
+});
+
+check("strict probe: a device that reports the controls but computes any lane differently refuses strict float32, and only that", () => {
+  for (let lane = 0; lane < 24; lane++) {
+    const answer = strictProbe(`strict=1,probe=${lane}`, 4, { env: { TSUZURI_GPU_DEBUG: "1" } });
+    assert.deepEqual(verdict(answer), [2, "0", "failed", 1], `lane ${lane}`);
+    assert.match(answer.stderr, new RegExp(`lane ${lane}: the device computed`));
+    assert.match(answer.stderr, /but 1 of 24 probe lanes differ from the reference; strict float32 kernels are refused/);
+  }
+  assert.deepEqual(verdict(strictProbe("strict=1,probe=3", 6, { repeat: 3 })), [2, "0", "failed", 1], "a failed probe is not run again");
+  // The kernels that do not need strict float32 still run on the same device, in the same process.
+  const integers = strictProbe("strict=1,probe=3", 4, { kernel: mockModule });
+  assert.deepEqual([integers.status, integers.run, integers.probe], [2, "0", "failed"]);
+  const plain = strictProbe("strict=1,probe=3", 0, { kernel: mockModule });
+  assert.deepEqual([plain.status, plain.run, plain.probe, plain.dispatches], [0, "0", "not-run", 0]);
+});
+
+check("strict probe: a kernel with the strict modes triggers it, and the verdict decides whether the kernel runs", () => {
+  const lazy = strictProbe("strict=1", 0, { kernel: strictModule });
+  assert.deepEqual([lazy.status, lazy.run, lazy.probe, lazy.dispatches], [0, "0", "passed", 1]);
+  const refused = strictProbe("strict=1,probe=3", 0, { kernel: strictModule });
+  assert.deepEqual([refused.status, refused.run, refused.probe, refused.dispatches], [0, "2", "failed", 1]);
+  const without = strictProbe("", 0, { kernel: strictModule });
+  assert.deepEqual([without.run, without.probe, without.dispatches], ["2", "not-run", 0]);
+});
+
+check("strict probe: the harness mode conform prints every lane against the reference, on any device", () => {
+  assert.match(mock("strict=1", ["conform"]).stdout, /conform lanes=24 different=0/);
+  assert.match(mock("", ["conform"]).stdout, /conform lanes=24 different=0/, "it runs whatever the properties say");
+  const bad = mock("strict=1,probe=5", ["conform"]);
+  assert.match(bad.stdout, /conform lanes=24 different=1/);
+  assert.match(bad.stdout, /lane  5 -\(a \* b\) .*DIFFERENT/);
+});
+
 check("loader: a library that cannot be loaded makes the backend unavailable, and no other library is tried", () => {
   for (const missing of ["/nonexistent/libvulkan.so.1", join(directory, "no-such-library")]) {
     const result = harness(["probe", "--features", "0"], { TSUZURI_VULKAN_LIBRARY: missing, TSUZURI_GPU_DEBUG: "1" });
@@ -240,6 +300,7 @@ check("run: limits and refusals have their own statuses", () => {
   assert.equal(statusOf(runMock("", { count: 8, lanes: "9,1", input: u32(sample(8)) })), 2, "unknown lane kind");
   assert.equal(statusOf(runMock("", { count: 8, features: 4, input: u32(sample(8)) })), 2, "strict float on a device without the controls");
   assert.equal(statusOf(runMock("strict=1", { count: 8, features: 4, input: u32(sample(8)) })), 0, "strict float on a device with the controls");
+  assert.equal(statusOf(runMock("strict=1,probe=3", { count: 8, features: 4, input: u32(sample(8)) })), 2, "strict float on a device that fails the conformance probe");
 });
 
 check("run: a module that needs what the device lacks is refused even when the features do not say so", () => {
@@ -253,6 +314,7 @@ check("run: a module that needs what the device lacks is refused even when the f
   const runStrict = config => mock(config, ["run", "--spirv", strict, "--mode", "map", "--lanes", "1,1", "--count", "8", "--features", "0", "--input", join(directory, "in.bin")]);
   assert.equal(statusOf(runStrict("")), 2);
   assert.equal(statusOf(runStrict("strict=1")), 0);
+  assert.equal(statusOf(runStrict("strict=1,probe=3")), 2, "the controls are reported but the conformance probe fails");
   const odd = join(directory, "odd.spv");
   writeFileSync(odd, fakeModule([1, 9999]));
   assert.equal(statusOf(mock("", ["run", "--spirv", odd, "--mode", "map", "--lanes", "1,1", "--count", "8", "--input", join(directory, "in.bin")])), 2, "an unknown capability");
@@ -292,6 +354,22 @@ check("auto: work that outweighs the transfer, the open, and the compile opens t
   assert.deepEqual(ask("", { mode: "init", count: 4000000, weight: 1280 }).chosen, [1], "init has no input to move");
 });
 
+check("auto: calls that each save less than the first use costs pay it together, once, and then stay on the device", () => {
+  // 100,000 lanes of weight 320: far cheaper on a warm device, but not by as much as opening it and building the pipeline.
+  const answer = ask("", { count: 100000, weight: 320, repeat: 100 });
+  const switched = answer.chosen.indexOf(1);
+  assert.ok(switched > 0, `the first calls stay on the CPU reference: ${answer.chosen.join("")}`);
+  assert.ok(answer.chosen.slice(switched).every(chosen => chosen === 1), "after the first use is paid every call is the device's");
+  assert.equal(answer.opened, true);
+  // Calls that the warm device would not do faster build no credit and never open it.
+  const never = ask("", { count: 100000, weight: 20, repeat: 100 });
+  assert.deepEqual(never.chosen, Array(100).fill(0));
+  assert.equal(never.opened, false);
+  // A kernel that the device cannot run is declined however much credit there is, and so is every call after it.
+  assert.deepEqual(ask("int64=0", { count: 100000, weight: 320, features: 2, repeat: 100 }).chosen, Array(100).fill(0));
+  assert.deepEqual(ask("", { count: 100000, weight: 320, features: 4, repeat: 100 }).chosen, Array(100).fill(0));
+});
+
 check("auto: TSUZURI_GPU_AUTO_MIN_WORK replaces the cost rule by a threshold on lanes times weight, and nothing else", () => {
   assert.deepEqual(ask("", { count: 1, weight: 1, env: always }).chosen, [1]);
   assert.deepEqual(ask("", { count: 100, weight: 50, env: { TSUZURI_GPU_AUTO_MIN_WORK: "5000" } }).chosen, [1], "5000 reaches 5000");
@@ -306,6 +384,7 @@ check("auto: TSUZURI_GPU_AUTO_MIN_WORK replaces the cost rule by a threshold on 
   assert.deepEqual(ask("int64=0", { count: 1000, features: 2, env: always }).chosen, [0], "64-bit integers without shaderInt64");
   assert.deepEqual(ask("", { count: 1000, features: 4, env: always }).chosen, [0], "strict float without the controls");
   assert.deepEqual(ask("strict=1", { count: 1000, features: 4, env: always }).chosen, [1], "strict float with the controls");
+  assert.deepEqual(ask("strict=1,probe=3", { count: 1000, features: 4, env: always }).chosen, [0], "strict float where the conformance probe fails");
   assert.deepEqual(ask("", { count: 1000, features: 1, env: always }).chosen, [1], "a feature bit of another backend is not this backend's");
   assert.deepEqual(ask("devices=0", { count: 1000, repeat: 3, env: always }).chosen, [0, 0, 0], "no device");
   assert.deepEqual(ask("no_version=1", { count: 1000, env: always }).chosen, [0], "no usable loader");
@@ -415,7 +494,7 @@ check("threads: concurrent runs and the lazy initialization are serialized (mock
   const tsanHarness = join(directory, "harness_tsan");
   const tsanMock = join(directory, `libvk_mock_tsan.${library}`);
   const built = run(clang, ["-std=c11", "-g", "-O1", "-fsanitize=thread", join(root, "tests/gpu_vulkan_runtime.c"), "-o", tsanHarness]);
-  const builtMock = built.status === 0 ? run(clang, ["-std=gnu11", "-g", "-O1", "-fsanitize=thread", "-Wno-unused-function", "-Wno-unused-variable", "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", tsanMock]) : built;
+  const builtMock = built.status === 0 ? run(clang, ["-std=gnu11", "-g", "-O1", "-ffp-contract=off", "-fsanitize=thread", "-Wno-unused-function", "-Wno-unused-variable", "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", tsanMock]) : built;
   if (builtMock.status !== 0) {
     skip("threads under ThreadSanitizer", `${clang} cannot build with -fsanitize=thread`);
   } else {
@@ -607,6 +686,29 @@ device("device: repeated and concurrent runs leave nothing behind (sanitizers, a
   assert.deepEqual([...new Uint32Array(readFileSync(join(directory, "real-out.bin")).buffer.slice(0))], inputs.map(value => hostMul(value, false)));
 });
 
+const strictNotes = [];
+device("device: the conformance probe agrees with what the device reports about the strict float32 controls", () => {
+  const reported = harness(["probe", "--features", "0"]).stdout;
+  const name = /device="([^"]*)"/.exec(reported)?.[1] ?? "?";
+  const propertiesSay = /strict_f32=1/.test(reported);
+  const conform = harness(["conform", "--features", "0"]);
+  const lanes = /conform lanes=24 different=(\d+)/.exec(conform.stdout);
+  if (/float_controls=1/.test(reported)) assert.ok(lanes, `a device that reports float controls runs the probe module: ${conform.stdout}${conform.stderr}`);
+  const differing = lanes ? [...conform.stdout.matchAll(/^lane +(\d+) .*DIFFERENT$/gm)].map(match => Number(match[1])) : undefined;
+  assert.equal(differing?.length ?? 0, lanes ? Number(lanes[1]) : 0);
+  const strict = harness(["probe", "--features", "4"]);
+  const probe = /strict_probe=(\S+)/.exec(strict.stdout)?.[1];
+  if (propertiesSay) {
+    assert.equal(statusOf(strict), probe === "passed" ? 0 : 2, strict.stdout + strict.stderr);
+    if (probe === "passed") assert.deepEqual(differing, [], "the verdict of the runtime and the lanes of the probe agree");
+    if (probe === "failed" && lanes) assert.ok(differing.length > 0, "the runtime refused the device and the lanes differ");
+  } else {
+    assert.equal(statusOf(strict), 2);
+    assert.equal(probe, "not-run", "a device that does not report the controls is never probed by the runtime");
+  }
+  strictNotes.push(`${name}: ${propertiesSay ? "reports the strict float32 controls" : "does not report them"}, probe ${probe}${differing?.length ? ` (lanes that differ: ${differing.join(", ")})` : ""}`);
+});
+
 device("device: an unloadable library, an unknown ICD, and a bad module are refused with their statuses", () => {
   const module = assemble(false);
   writeFileSync(join(directory, "real-in.bin"), u32(sample(8)));
@@ -622,6 +724,7 @@ device("device: an unloadable library, an unknown ICD, and a bad module are refu
 });
 
 rmSync(directory, { recursive: true, force: true });
+if (strictNotes.length) console.log(`strict float32 on the real devices (the drivers' own verdicts, informational): ${strictNotes.join("; ")}`);
 const total = passed + failed;
 console.log(`GPU Vulkan runtime: ${passed} of ${total} checks passed${failed ? `, ${failed} FAILED` : ""}, ${skips.length} skipped${skips.length ? ` (${skips.map(entry => entry.split(":")[0]).join("; ")})` : ""}; real devices: ${usedImplementations.size ? [...usedImplementations].join(", ") : "none available"}; sanitizers: ${flags === sanitize ? "on" : "off"}`);
 process.exit(failed ? 1 : 0);

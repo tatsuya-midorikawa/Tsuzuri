@@ -71,13 +71,17 @@ const implementations = [
   ...(process.env.TSUZURI_VULKAN_TEST_ICDS ?? "").split(delimiter).filter(Boolean).map((manifest, index) => ({ label: `icd${index}`, env: { VK_DRIVER_FILES: manifest, VK_ICD_FILENAMES: manifest } })),
 ];
 function probe(env) {
-  const result = execute(harnessPath, ["probe", "--features", "0"], { env: { ...env, TSUZURI_GPU_DEBUG: "1" }, success: false });
+  const ask = features => execute(harnessPath, ["probe", "--features", String(features)], { env: { ...env, TSUZURI_GPU_DEBUG: "1" }, success: false });
+  const result = ask(0);
   const status = Number(/status=(\d+)/.exec(result.stdout)?.[1] ?? NaN);
   const field = name => new RegExp(`${name}=(\\S+)`).exec(result.stdout)?.[1];
+  // Strict f32 needs more than the properties: the device must also pass the built-in conformance probe, which runs on
+  // the first request that asks for it. Only a request with the strict bit tells.
+  const strict = status === 0 ? Number(/status=(\d+)/.exec(ask(4).stdout)?.[1] ?? NaN) === 0 : false;
   return {
     available: status === 0,
     int64: field("int64") === "1",
-    strictF32: field("strict_f32") === "1",
+    strictF32: strict,
     // The kind of device that Gpu.Auto has a measured cost rule for: an integrated GPU that the host reaches without a copy.
     autoDevice: status === 0 && field("type") === "integrated" && field("transfer") === "direct",
     name: /device="([^"]*)"/.exec(result.stdout)?.[1] ?? "none",
@@ -286,6 +290,48 @@ check("vulkan: an empty or wrong TSUZURI_VULKAN_LIBRARY makes Gpu.Vulkan Unavail
     assert.deepEqual(found, { strict_auto: 0, unsigned_auto: 0, relaxed_auto: 0 }, `Auto never selects a backend that cannot open [${library}]`);
   }
 });
+
+// ---- the conformance probe through the language, on a synthetic device that reports the strict float controls ----
+// The device properties are a claim of the driver, so a program with strict f32 kernels gets a device only when the built-in
+// probe, run on the first request, also finds the strict results. The mock (tests/gpu_vulkan_mock.c) computes the probe the way
+// a conforming device does and corrupts one lane on request (`probe=<lane>`).
+{
+  const mockLibrary = join(directory, process.platform === "darwin" ? "libvk_mock.dylib" : "libvk_mock.so");
+  const mockBuilt = execute(clang, ["-std=gnu11", "-O1", "-ffp-contract=off", "-Wno-unused-function", "-Wno-unused-variable", "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", mockLibrary], { success: false });
+  if (mockBuilt.status !== 0) {
+    skip("probe through the language", `${clang} cannot build the mock Vulkan library: ${mockBuilt.stderr.split("\n")[0]}`);
+  } else {
+    const availability = name => {
+      const project = projects[name];
+      const ir = join(project.path, "availability.ll");
+      cli(["build", project.path, "--emit", "llvm", "-o", ir]);
+      const hostPath = join(project.path, "availability.c");
+      writeFileSync(hostPath, `#include <stdint.h>\n#include <stdio.h>\nextern uint8_t tz_available_vulkan(void);\nint main(void) { printf("available %d\\n", tz_available_vulkan()); return 0; }\n`);
+      const executable = join(project.path, "availability");
+      execute(clang, [ir, hostPath, runtimeSource, "-O1", "-ffp-contract=off", "-Wno-override-module", ...sanitize, "-o", executable, "-lm", "-pthread", ...(process.platform === "linux" ? ["-ldl"] : [])]);
+      return executable;
+    };
+    const request = (executable, config) => execute(executable, [], { env: { TSUZURI_VULKAN_LIBRARY: mockLibrary, TZ_VK_MOCK: config, TSUZURI_GPU_DEBUG: "1" } });
+    check("probe: Gpu.request of a program with strict f32 kernels is Ok only where the controls are reported and the conformance probe passes", () => {
+      const strict = availability("strictf32");
+      assert.match(request(strict, "strict=1").stdout, /^available 1$/m, "the controls are reported and the probe passes");
+      assert.match(request(strict, "strict=1").stderr, /the strict float32 probe passed \(24 lanes\)/);
+      const refused = request(strict, "strict=1,probe=3");
+      assert.match(refused.stdout, /^available 0$/m, "the controls are reported but a lane of the probe differs");
+      assert.match(refused.stderr, /the strict float32 probe: -\(a \* b\), lane 3: the device computed/);
+      assert.match(refused.stderr, /strict float32 kernels are refused/);
+      assert.match(request(strict, "").stdout, /^available 0$/m, "no controls are reported");
+    });
+    check("probe: a program without strict f32 kernels never runs it, and a device that fails it still serves that program", () => {
+      const core = availability("core");
+      for (const config of ["strict=1", "strict=1,probe=3", ""]) {
+        const answer = request(core, config);
+        assert.match(answer.stdout, /^available 1$/m, config);
+        assert.doesNotMatch(answer.stderr, /strict float32 probe/, `${config}: nothing asks for strict float32`);
+      }
+    });
+  }
+}
 
 // ---- the driver builds the same programs: it links the Vulkan runtime when a program names Vulkan or Auto ----
 const program = `def mix :: i32 -> i32
