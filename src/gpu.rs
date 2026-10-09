@@ -36,7 +36,11 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
         })
         .filter_map(|(id, function)| {
             let name = function.name.split('.').next().unwrap();
-            matches!(name, "init" | "map" | "from_array").then_some((id, name))
+            matches!(
+                name,
+                "init" | "map" | "init_relaxed" | "map_relaxed" | "from_array"
+            )
+            .then_some((id, name))
         })
         .collect();
     if apis.is_empty() {
@@ -53,7 +57,7 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
                 && !direct_callee
             {
                 return Err(unsupported(
-                    "Gpu.init/map/from_array cannot escape as function values; use direct full application",
+                    "GPU operations cannot escape as function values; use direct full application",
                     expression.span,
                 ));
             }
@@ -63,7 +67,7 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
             {
                 if arguments.len() != module.functions[*id].signature.parameters.len() {
                     return Err(unsupported(
-                        "Gpu.init/map/from_array require direct full application",
+                        "GPU operations require direct full application",
                         expression.span,
                     ));
                 }
@@ -83,18 +87,21 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
                     ));
                 }
                 if *name != "from_array" {
-                    let callback = &arguments[if *name == "init" { 2 } else { 1 }];
+                    let callback = &arguments[if name.starts_with("init") { 2 } else { 1 }];
                     let target = match &callback.kind {
                         TypedExprKind::Function(FunctionRef::User(id)) => *id,
                         TypedExprKind::Closure(id, captures) if captures.is_empty() => *id,
                         _ => {
                             return Err(unsupported(
-                                "Gpu.init/map require a known function or capture-free lambda",
+                                "GPU init/map operations require a known function or capture-free lambda",
                                 callback.span,
                             ));
                         }
                     };
-                    extract_kernel(module, target)?;
+                    let kernel = extract_kernel(module, target)?;
+                    if name.ends_with("_relaxed") {
+                        kernel.wgsl_relaxed()?;
+                    }
                 }
             }
             if let TypedExprKind::Call(callee, arguments) = &expression.kind {
@@ -252,19 +259,42 @@ impl GpuKernel<'_> {
         llvm::emit_target(self.module, llvm::Entry::Library, wasm)
     }
 
+    /// The strict WGSL of the kernel: 32-bit integer lanes that match the CPU reference bit for bit.
     pub fn wgsl(&self) -> Result<String, Diagnostic> {
+        self.emit_wgsl(false)
+    }
+
+    /// The relaxed WGSL of the kernel (F09): f32, i32, and i32u lanes, evaluated with the
+    /// floating-point freedoms of WGSL. Its first line names the contract.
+    pub fn wgsl_relaxed(&self) -> Result<String, Diagnostic> {
+        self.emit_wgsl(true)
+    }
+
+    fn emit_wgsl(&self, relaxed: bool) -> Result<String, Diagnostic> {
         let root = &self.module.functions[self.function];
-        if !matches!(root.signature.parameters[0], Type::Integer(32, _))
-            || !matches!(root.signature.result, Type::Integer(32, _))
+        let mut text = String::new();
+        if !relaxed
+            && (!matches!(root.signature.parameters[0], Type::Integer(32, _))
+                || !matches!(root.signature.result, Type::Integer(32, _)))
         {
             return Err(unsupported(
-                "strict WebGPU kernels require i32 or i32u buffer lanes; 64-bit and strict floating-point lanes are unavailable",
+                "strict WebGPU kernels require i32 or i32u buffer lanes; 64-bit lanes are unavailable and f32 lanes need --emit wgsl-relaxed",
                 root.span,
             ));
         }
-        let input = wgsl_type(&root.signature.parameters[0], root.span)?;
-        let output = wgsl_type(&root.signature.result, root.span)?;
-        let mut text = format!(
+        let input = wgsl_type(&root.signature.parameters[0], relaxed, root.span)?;
+        let output = wgsl_type(&root.signature.result, relaxed, root.span)?;
+        if relaxed {
+            if input == "bool" || output == "bool" {
+                return Err(unsupported(RELAXED_BOOL_LANE, root.span));
+            }
+            let _ = writeln!(
+                text,
+                "// tsuzuri-gpu float=relaxed input={input} output={output}"
+            );
+        }
+        let _ = write!(
+            text,
             "struct Params {{ length: u32 }}\n@group(0) @binding(0) var<storage, read> input_values: array<{input}>;\n@group(0) @binding(1) var<storage, read_write> output_values: array<{output}>;\n@group(0) @binding(2) var<uniform> params: Params;\n"
         );
         for id in &self.functions {
@@ -272,6 +302,7 @@ impl GpuKernel<'_> {
             let mut emitter = Wgsl {
                 text: String::new(),
                 next: 0,
+                relaxed,
             };
             let parameters = function
                 .parameters
@@ -280,12 +311,12 @@ impl GpuKernel<'_> {
                     Ok(format!(
                         "local_{}: {}",
                         local.id,
-                        wgsl_type(&local.ty, local.span)?
+                        wgsl_type(&local.ty, relaxed, local.span)?
                     ))
                 })
                 .collect::<Result<Vec<_>, Diagnostic>>()?
                 .join(", ");
-            let result = wgsl_type(&function.signature.result, function.span)?;
+            let result = wgsl_type(&function.signature.result, relaxed, function.span)?;
             let value = emitter.expression(&function.body)?;
             let _ = writeln!(
                 text,
@@ -302,11 +333,20 @@ impl GpuKernel<'_> {
     }
 }
 
-fn wgsl_type(ty: &Type, span: Span) -> Result<&'static str, Diagnostic> {
+const RELAXED_TYPES: &str =
+    "relaxed WebGPU kernels support f32, i32, and i32u values; WGSL has no f64 or 64-bit integers";
+const RELAXED_BOOL_LANE: &str =
+    "relaxed WebGPU buffer lanes must be f32, i32, or i32u; bool lanes are unavailable";
+const RELAXED_CASTS: &str =
+    "relaxed WGSL cannot reproduce Tsuzuri float-to-integer or f64 casts; compute them on the CPU";
+
+fn wgsl_type(ty: &Type, relaxed: bool, span: Span) -> Result<&'static str, Diagnostic> {
     match ty {
         Type::Integer(32, true) => Ok("i32"),
         Type::Integer(32, false) => Ok("u32"),
         Type::Bool => Ok("bool"),
+        Type::Binary(32) if relaxed => Ok("f32"),
+        _ if relaxed => Err(unsupported(RELAXED_TYPES, span)),
         _ => Err(unsupported(
             "WGSL cannot preserve this scalar type; use the explicit CPU reference path",
             span,
@@ -314,9 +354,18 @@ fn wgsl_type(ty: &Type, span: Span) -> Result<&'static str, Diagnostic> {
     }
 }
 
+/// The f32 bit pattern of a literal. The checker keeps an f32 literal as the LLVM hexadecimal
+/// of the f64 that holds it, so the conversion is exact.
+fn f32_bits(text: &str) -> u32 {
+    let bits = u64::from_str_radix(text.trim_start_matches("0x"), 16)
+        .expect("a float literal is an LLVM hexadecimal constant");
+    (f64::from_bits(bits) as f32).to_bits()
+}
+
 struct Wgsl {
     text: String,
     next: usize,
+    relaxed: bool,
 }
 
 impl Wgsl {
@@ -338,6 +387,9 @@ impl Wgsl {
                 }
             }
             TypedExprKind::Bool(value) => value.to_string(),
+            TypedExprKind::Float(text) if self.relaxed && expression.ty == Type::Binary(32) => {
+                format!("bitcast<f32>({}u)", f32_bits(text))
+            }
             TypedExprKind::Unit => return Ok(String::new()),
             TypedExprKind::Local(id) => format!("local_{id}"),
             TypedExprKind::Unary(operator, operand) => {
@@ -345,6 +397,9 @@ impl Wgsl {
                 match operator {
                     UnaryOp::Negate if expression.ty == Type::Integer(32, true) => {
                         format!("bitcast<i32>(0u - bitcast<u32>({value}))")
+                    }
+                    UnaryOp::Negate if self.relaxed && expression.ty == Type::Binary(32) => {
+                        format!("(-{value})")
                     }
                     UnaryOp::Negate => format!("(0u - {value})"),
                     UnaryOp::Not => format!("(!{value})"),
@@ -371,6 +426,7 @@ impl Wgsl {
                 } else {
                     let right_value = self.expression(right)?;
                     let signed = left.ty == Type::Integer(32, true);
+                    let float = self.relaxed && left.ty == Type::Binary(32);
                     let bits = |value: &str, ty: &Type| {
                         if *ty == Type::Integer(32, true) {
                             format!("bitcast<u32>({value})")
@@ -382,6 +438,7 @@ impl Wgsl {
                         BinaryOp::Add => "+",
                         BinaryOp::Subtract => "-",
                         BinaryOp::Multiply => "*",
+                        BinaryOp::Divide if float => "/",
                         BinaryOp::Equal => "==",
                         BinaryOp::NotEqual => "!=",
                         BinaryOp::Less => "<",
@@ -446,6 +503,12 @@ impl Wgsl {
                     (Type::Integer(32, false), Type::Integer(32, true)) => {
                         format!("bitcast<i32>({value})")
                     }
+                    (Type::Integer(32, _), Type::Binary(32)) if self.relaxed => {
+                        format!("f32({value})")
+                    }
+                    (Type::Binary(_), _) | (_, Type::Binary(_)) if self.relaxed => {
+                        return Err(unsupported(RELAXED_CASTS, span));
+                    }
                     _ => {
                         return Err(unsupported(
                             "WGSL kernel casts require 32-bit integer operands",
@@ -463,7 +526,7 @@ impl Wgsl {
                             self.text,
                             "{kind} local_{}: {} = {value};",
                             local.id,
-                            wgsl_type(&local.ty, local.span)?
+                            wgsl_type(&local.ty, self.relaxed, local.span)?
                         );
                     }
                 }
@@ -488,7 +551,7 @@ impl Wgsl {
                     let _ = writeln!(
                         self.text,
                         "var {name}: {};",
-                        wgsl_type(&expression.ty, span)?
+                        wgsl_type(&expression.ty, self.relaxed, span)?
                     );
                 }
                 let _ = writeln!(self.text, "if ({condition}) {{");
@@ -518,7 +581,11 @@ impl Wgsl {
             }
             _ => {
                 return Err(unsupported(
-                    "expression is not supported by strict WGSL generation",
+                    if self.relaxed {
+                        "expression is not supported by relaxed WGSL generation"
+                    } else {
+                        "expression is not supported by strict WGSL generation"
+                    },
                     span,
                 ));
             }
@@ -530,7 +597,7 @@ impl Wgsl {
         let _ = writeln!(
             self.text,
             "let {name}: {} = {value};",
-            wgsl_type(&expression.ty, span)?
+            wgsl_type(&expression.ty, self.relaxed, span)?
         );
         Ok(name)
     }

@@ -96,9 +96,12 @@ Build options:
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
-    --emit KIND            exe, object, llvm, header, wasm, wgsl, shared, bindings-js,
-                         bindings-cs, bindings-py, or bindings-cpp
+    --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared,
+                         bindings-js, bindings-cs, bindings-py, or bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
+                         wgsl writes the strict WebGPU compute shader of the one exported kernel
+                         (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
+                         whose results follow WGSL's floating-point rules (Gpu.map_relaxed)
                          shared links a native .dylib or .so that exports the C ABI
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
@@ -539,6 +542,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("header") => Emit::Header,
                             Some("wasm") => Emit::Wasm,
                             Some("wgsl") => Emit::Wgsl,
+                            Some("wgsl-relaxed") => Emit::WgslRelaxed,
                             Some("shared") => Emit::Shared,
                             Some("bindings-js") => Emit::BindingsJs,
                             Some("bindings-cs") => Emit::BindingsCs,
@@ -546,7 +550,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -614,7 +618,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
-    if emit == Some(Emit::Wgsl) && (target.is_some() || optimization.is_some() || cpu.is_some()) {
+    if emit.is_some_and(Emit::is_wgsl)
+        && (target.is_some() || optimization.is_some() || cpu.is_some())
+    {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
     }
     if (wasm_simd || wasm_threads || wasm_jspi) && action != Action::Build {
@@ -2321,6 +2327,22 @@ mod tests {
         );
         assert!(parse(&["build", "Kernel.tz", "--emit", "wgsl", "-O3"]).is_err());
         assert!(parse(&["build", "Kernel.tz", "--emit", "wgsl", "--target", "wasm32"]).is_err());
+        assert_eq!(
+            parse(&["build", "Kernel.tz", "--emit", "wgsl-relaxed"])
+                .unwrap()
+                .options
+                .emit,
+            Emit::WgslRelaxed
+        );
+        for extra in [
+            vec!["-O3"],
+            vec!["--target", "wasm32"],
+            vec!["--cpu", "native"],
+        ] {
+            let mut values = vec!["build", "Kernel.tz", "--emit", "wgsl-relaxed"];
+            values.extend(extra);
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
         let threads = parse(&[
             "build",
             "Main.tz",
@@ -2597,7 +2619,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],

@@ -216,6 +216,9 @@ pub enum Emit {
     Header,
     Wasm,
     Wgsl,
+    /// `--emit wgsl-relaxed` (F09): the WGSL of a kernel whose floating-point operations follow
+    /// WGSL's freedoms. Its first line names the contract; `Emit::Wgsl` stays strict.
+    WgslRelaxed,
     /// `--emit bindings-js` (E13): a JavaScript module with TypeScript declarations for a wasm32
     /// module of the same sources.
     BindingsJs,
@@ -230,6 +233,11 @@ pub enum Emit {
 }
 
 impl Emit {
+    /// WGSL output, strict or relaxed (F09).
+    pub fn is_wgsl(self) -> bool {
+        matches!(self, Self::Wgsl | Self::WgslRelaxed)
+    }
+
     /// The host bindings that come from the sources alone, without LLVM (E13).
     pub fn is_bindings(self) -> bool {
         matches!(
@@ -311,7 +319,7 @@ impl Default for BuildOptions {
 
 impl BuildOptions {
     pub fn validate(self) -> Result<(), Diagnostic> {
-        if self.emit == Emit::Wgsl
+        if self.emit.is_wgsl()
             && (self.target != Target::Native
                 || self.cpu != Cpu::Generic
                 || self.debug_info
@@ -549,7 +557,7 @@ impl BuildOptions {
             ));
         }
         if self.allocator == llvm::Allocator::Host
-            && matches!(self.emit, Emit::Executable | Emit::Wgsl)
+            && (self.emit.is_wgsl() || self.emit == Emit::Executable)
         {
             return Err(driver_error(
                 "E2000",
@@ -557,7 +565,7 @@ impl BuildOptions {
             ));
         }
         if self.allocator == llvm::Allocator::Counting
-            && matches!(self.emit, Emit::Executable | Emit::Wgsl)
+            && (self.emit.is_wgsl() || self.emit == Emit::Executable)
         {
             return Err(driver_error(
                 "E2000",
@@ -620,7 +628,7 @@ impl BuildOptions {
             Emit::Llvm => "ll",
             Emit::Header => "h",
             Emit::Wasm => "wasm",
-            Emit::Wgsl => "wgsl",
+            Emit::Wgsl | Emit::WgslRelaxed => "wgsl",
             Emit::Shared if cfg!(windows) => "dll",
             Emit::Shared if cfg!(target_os = "macos") => "dylib",
             Emit::Shared => "so",
@@ -2335,7 +2343,7 @@ fn build_complete(
         } else {
             llvm::header_with_allocator(module, options.allocator)
         }
-    } else if options.emit == Emit::Wgsl {
+    } else if options.emit.is_wgsl() {
         let exports: Vec<_> = module
             .functions
             .iter()
@@ -2349,7 +2357,12 @@ fn build_complete(
                 "WGSL output requires exactly one exported scalar kernel; use a dedicated source project",
             ));
         }
-        crate::gpu::extract_kernel(module, exports[0])?.wgsl()?
+        let kernel = crate::gpu::extract_kernel(module, exports[0])?;
+        if options.emit == Emit::WgslRelaxed {
+            kernel.wgsl_relaxed()?
+        } else {
+            kernel.wgsl()?
+        }
     } else {
         let emission = llvm::EmitOptions {
             entry: if options.emit == Emit::Executable {
@@ -2434,7 +2447,7 @@ fn build_complete(
     };
     if cfg!(windows)
         && options.target == Target::Native
-        && !matches!(options.emit, Emit::Header | Emit::Wgsl)
+        && !(options.emit == Emit::Header || options.emit.is_wgsl())
     {
         text = llvm::windows_abi(text, module);
         if options.debug_info && msvc_linker() {
@@ -2679,7 +2692,7 @@ fn build_complete(
         {
             messages.push(format!("build cache cleanup failed: {error}"));
         }
-    } else if matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Wgsl) {
+    } else if matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_wgsl() {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
         // The C names that a shared library exports, read from the IR before it is written.
@@ -4612,6 +4625,7 @@ mod tests {
             (Target::Native, Emit::Object, memory, None, limit),
             (Target::Native, Emit::Llvm, memory, None, limit),
             (Target::Native, Emit::Wgsl, memory, None, limit),
+            (Target::Native, Emit::WgslRelaxed, memory, None, limit),
             (Target::Wasm32, Emit::Header, memory, None, limit),
             (Target::Wasm64, Emit::Header, memory, None, limit),
             (Target::Native, Emit::Executable, None, stack, size),
@@ -4679,6 +4693,7 @@ mod tests {
         for (target, emit) in [
             (Target::Native, Emit::Executable),
             (Target::Native, Emit::Wgsl),
+            (Target::Native, Emit::WgslRelaxed),
             (Target::Wasm32, Emit::Object),
             (Target::Wasm32, Emit::Llvm),
             (Target::Wasm32, Emit::Wasm),
@@ -4687,7 +4702,7 @@ mod tests {
             let error = options(target, emit).validate().unwrap_err();
             assert_eq!(error.code, "E2000", "{target:?} {emit:?}");
             assert!(
-                error.message == message || emit == Emit::Wgsl,
+                error.message == message || emit.is_wgsl(),
                 "{target:?} {emit:?}: {}",
                 error.message
             );

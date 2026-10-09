@@ -57,7 +57,7 @@
 | --- | --- | --- |
 | `-o` / `--output PATH` | 入力の拡張子を差し替えたパス | 成果物、または `doc` のディレクトリ。親は作られます |
 | `--target native\|wasm32\|wasm64` | `native` | `wasm64` は 64-bit の線形メモリです |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | native は `exe`、WASM は `wasm` | 何を残すか |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | native は `exe`、WASM は `wasm` | 何を残すか |
 
 拡張子は、native の実行ファイルが macOS / Linux で空、Windows で `.exe`、オブジェクトが `.o` または Windows の `.obj`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、共有ライブラリが macOS で `.dylib`、Linux で `.so`、バインディングが JavaScript の `.mjs`、C# の `.cs`、Python の `.py`、C++ の `.hpp` です。
 
@@ -71,7 +71,7 @@
 <command line>:1:1: error[E2000]: '--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'
 ```
 
-`wgsl` は実験的な GPU カーネル用です。`--target`、`-O`、`--cpu`、デバッグ、WASM 機能とは一緒に使えません。
+`wgsl` と `wgsl-relaxed` は実験的な GPU カーネル用です。`wgsl` は厳密な `i32`／`i32u` のカーネル、`wgsl-relaxed` は `f32` を含む緩いカーネルで、出力の 1 行目に `// tsuzuri-gpu float=relaxed …` を付けます（[Gpu](../built-in-types-and-modules/gpu.md#緩い-f32-カーネル)）。どちらも `export` が 1 つの専用プロジェクトを受け、`--target`、`-O`、`--cpu`、デバッグ、WASM 機能とは一緒に使えません。
 
 ## 最適化と CPU
 

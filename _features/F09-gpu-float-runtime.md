@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | F07, (C11) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | doing（Phase 1 done。Phase 2・3 は未完了） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（relaxed f32 の言語契約と名前 `Gpu.map_relaxed`・`Gpu.init_relaxed`・`--emit wgsl-relaxed`）, D9（Phase 2: 言語 runtime からの WebGPU 接続と opt-in の WASM import）, D10（Phase 3: Vulkan の strict float・i64・`Gpu.Auto`） |
 | 改善する劣位 | C/C++ 比: GPU は実験段階で、成熟した GPU 開発基盤の代替にならない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
@@ -668,3 +668,21 @@ const ulp = x => { f32[0] = Math.abs(x); const low = f32[0]; u32[0] += 1; return
 - 理由: 旧版の Phase 1（Vulkan の strict float）は新しい driver 依存と SPIR-V 基盤を要し、WGSL と既存の Dawn 試作で届く relaxed f32 より
   先に着手する理由がない。能力の確認なしに strict と称さない方針は保つ。
 - 状態: 要承認（承認前は Phase 3 に着手しない）
+
+## 実装状況（2026-10-10、base `96d7cbf`）
+
+利用者の包括承認（`D1`・`D9`・`D10` を含む `要承認` のすべて）に基づく。実装は worktree `impl/f09-gpu` の Phase 1 と Phase 2。Phase 3 は別の担当者が行う。
+
+### Phase 1（done）
+
+- 実装: `Gpu.init_relaxed`・`Gpu.map_relaxed`（`std/Gpu.tz`）、`Emit::WgslRelaxed`（`--emit wgsl-relaxed`。`BuildOptions` に field なし。D3）、`GpuKernel::wgsl_relaxed`、
+  1 行目の宣言 `// tsuzuri-gpu float=relaxed input=<t> output=<t>`、`bitcast<f32>(<bits>u)` のリテラル、`(-x)`・`/`・`f32(x)`、
+  `webgpu.mjs` の f32 buffer（`Float32Array`、要素種別 `kind`、`prepare(source, { float: "relaxed" })`）。
+- ticket から外れた点: ① `src/cache.rs` の `Emit::Llvm | Header | Wgsl` も直した（ticket の表にない）。② 現行の `--emit` の一覧（`shared`・`bindings-*`）に合わせてメッセージを
+  `… wgsl, wgsl-relaxed, shared, …` にした（`src/main.rs` の既存テストの文面。ticket が許す変更）。③ f32 の `%` は言語にない（`Rem` は整数と `BigInt` だけ）ので、ticket の
+  「float の剰余」の拒否は到達しない。専用の arm も診断も作っていない。④ bool lane は専用の文面（`relaxed WebGPU buffer lanes must be f32, i32, or i32u; bool lanes are unavailable`）。
+  ⑤ ticket の「例」の WGSL は簡略化されていて、実際の出力は全式を `let value_N` に束縛する（strict と同じ生成規則）。テストは実際の出力を完全一致で比べる。
+  ⑥ `fromArray` の buffer に `COPY_SRC` を足した（`toArray` が upload 直後の buffer でも検証を通る。以前は未使用の経路）。
+- 検証: `cargo test --locked --test gpu` 7 passed、`--emit wgsl` の strict 出力は base と byte 一致（`cmp`）、`node tests/gpu.mjs`（CPU のみ）は 783 の整数参照と 1,315 の緩い f32 参照が成功、
+  `TSUZURI_WEBGPU=1 node tests/gpu.mjs`（Apple M1 Max、Dawn 0.6.1 の Metal）は成功。最大誤差は poly 1・horner 1・ratio 2・index 0・threshold 0 ulp（許容 4・12・9・5・0）。
+  性能は `docs/benchmarks.md`（9 回の中央値。転送を含む値と常駐の値を分け、速度の優位は主張しない）。
