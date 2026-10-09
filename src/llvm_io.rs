@@ -203,4 +203,99 @@ impl FunctionEmitter<'_, '_> {
             "insertvalue {result_type} {tuple}, %tz.array {value}, 1"
         ))
     }
+
+    /// The network primitives of the standard `Net` module (E09). Each declares a C function that
+    /// `src/runtime/net.c` defines when the program reaches it. A status of 0 is success; otherwise it
+    /// is `(kind << 32) | code` with `kind` in 1..=7, and any other value traps like `os_builtin`.
+    /// `Net.__open` and `Net.__accept` return a handle (positive) or the negated status, and
+    /// `Net.__classify` an index below 7.
+    pub(super) fn net_builtin(&mut self, builtin: Builtin, signature: &Type) -> String {
+        let (name, parameters) = match builtin {
+            Builtin::NetResolve => ("resolve", "ptr, ptr, i64, i64"),
+            Builtin::NetOpen => ("open", "ptr, i32, i64, i64, i64, i64"),
+            Builtin::NetAccept => ("accept", "ptr, i64, i64"),
+            Builtin::NetRead => ("read", "ptr, i32, i64, i64, i64"),
+            Builtin::NetWrite => ("write", "i32, i64, ptr, i64, i64, i64, i64, i64"),
+            Builtin::NetClose => ("close", "i32, i64"),
+            Builtin::NetClassify => ("classify", "i32"),
+            _ => unreachable!(),
+        };
+        self.intrinsics
+            .insert(format!("declare i64 @tsuzuri_net_{name}({parameters})"));
+        let owned = matches!(
+            builtin,
+            Builtin::NetResolve | Builtin::NetOpen | Builtin::NetAccept | Builtin::NetRead
+        );
+        let bytes = Type::Array(Box::new(Type::Integer(8, false)));
+        let slot = owned.then(|| self.host_result_slot(&bytes));
+        let call = match builtin {
+            Builtin::NetResolve => {
+                let text = self.value("load %tz.utf8string, ptr %arg0");
+                let pointer = self.value(format!("extractvalue %tz.utf8string {text}, 0"));
+                let length = self.value(format!("extractvalue %tz.utf8string {text}, 1"));
+                format!(
+                    "call i64 @tsuzuri_net_resolve(ptr {}, ptr {pointer}, i64 {length}, i64 %arg1)",
+                    slot.as_ref().unwrap()
+                )
+            }
+            Builtin::NetOpen => format!(
+                "call i64 @tsuzuri_net_open(ptr {}, i32 %arg0, i64 %arg1, i64 %arg2, i64 %arg3, i64 %arg4)",
+                slot.as_ref().unwrap()
+            ),
+            Builtin::NetAccept => format!(
+                "call i64 @tsuzuri_net_accept(ptr {}, i64 %arg0, i64 %arg1)",
+                slot.as_ref().unwrap()
+            ),
+            Builtin::NetRead => format!(
+                "call i64 @tsuzuri_net_read(ptr {}, i32 %arg0, i64 %arg1, i64 %arg2, i64 %arg3)",
+                slot.as_ref().unwrap()
+            ),
+            Builtin::NetWrite => {
+                // A shared array is passed as its descriptor, not as a pointer to it.
+                let data = self.value("extractvalue %tz.array %arg2, 0");
+                let length = self.value("extractvalue %tz.array %arg2, 1");
+                format!(
+                    "call i64 @tsuzuri_net_write(i32 %arg0, i64 %arg1, ptr {data}, i64 {length}, i64 %arg3, i64 %arg4, i64 %arg5, i64 %arg6)"
+                )
+            }
+            Builtin::NetClose => "call i64 @tsuzuri_net_close(i32 %arg0, i64 %arg1)".to_owned(),
+            _ => "call i64 @tsuzuri_net_classify(i32 %arg0)".to_owned(),
+        };
+        let result = self.value(call);
+        if builtin == Builtin::NetClassify {
+            let valid = self.value(format!("icmp ult i64 {result}, 7"));
+            self.guard(&valid, TrapKind::BoundsCheck);
+            return result;
+        }
+        // A handle is not an error status; only the negated status of a failure is checked.
+        let status = if matches!(builtin, Builtin::NetOpen | Builtin::NetAccept) {
+            let failed = self.value(format!("icmp slt i64 {result}, 0"));
+            let negated = self.value(format!("sub i64 0, {result}"));
+            self.value(format!("select i1 {failed}, i64 {negated}, i64 0"))
+        } else {
+            result.clone()
+        };
+        let succeeded = self.value(format!("icmp eq i64 {status}, 0"));
+        let kind = self.value(format!("lshr i64 {status}, 32"));
+        let offset = self.value(format!("sub i64 {kind}, 1"));
+        let known = self.value(format!("icmp ult i64 {offset}, 7"));
+        let valid = self.value(format!("or i1 {succeeded}, {known}"));
+        self.guard(&valid, TrapKind::BoundsCheck);
+        let Some(slot) = slot else {
+            return result;
+        };
+        let value = self.read_host_result(&bytes, &slot);
+        let arguments = match builtin {
+            Builtin::NetResolve | Builtin::NetAccept => 2,
+            Builtin::NetOpen => 5,
+            _ => 4,
+        };
+        let result_type = self.ty(&signature.after_arguments(arguments));
+        let tuple = self.value(format!(
+            "insertvalue {result_type} zeroinitializer, i64 {result}, 0"
+        ));
+        self.value(format!(
+            "insertvalue {result_type} {tuple}, %tz.array {value}, 1"
+        ))
+    }
 }

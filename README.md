@@ -396,6 +396,11 @@ def main :: unit -> i32 = \() ->
 ファイルシステム、プロセス、環境変数、時刻などの OS 機能は、標準モジュール `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Process`、`Os` で提供されます（macOS および Linux 対応）。
 すべての OS 操作は `IO<Result<T, Os.Error>>` などの一貫した遅延アクションとして抽象化されています（`Path` および擬似乱数 `Random.Pcg` は純粋関数です）。WASM 環境では `--wasm-host wasi` を指定することで WASI preview1 に接続可能です。
 
+#### ネットワーク API
+
+TCP と UDP のソケット、IP アドレスの解析と表示、名前解決は、opt-in の標準モジュール `Net` で提供されます（ソケットは macOS と Linux の native。アドレスの解析と表示はどの target でも import なしで動きます）。
+操作は `IO<Result<T, Os.Error>>` で、ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
+
 #### エントリーポイント (`Main.tz`)
 
 アプリケーションは `Main.tz` から開始します。
@@ -477,6 +482,7 @@ def main :: unit -> i32 = \() ->
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `Async` | 協調的な非同期計算、仮想時刻、native reactor、ホストの再開 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
+| `Net` | TCP・UDP のソケット、IP アドレスの解析と表示、名前解決（opt-in。ソケットは macOS と Linux の native） |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
 | `Json` | JSON の解析・出力と `Encode` / `Decode` による値の変換 |
 | `Cbor` | `Json.Value` の CBOR（RFC 8949）の読み書き |
@@ -823,6 +829,7 @@ node tests/io.mjs target/release/tsuzuri
 node tests/repl.mjs target/release/tsuzuri
 node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
+node tests/net.mjs target/release/tsuzuri   # アドレス・ソケット・確保の追跡。127.0.0.1 の ephemeral port だけを使う
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri

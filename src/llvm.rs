@@ -1206,6 +1206,7 @@ fn emit_program(
         || (!wasm && uses_reactor(&output))
         || output.contains("@tsuzuri_io_")
         || output.contains("@tsuzuri_os_")
+        || output.contains("@tsuzuri_net_")
         || output.contains("@tsuzuri_arguments(")
         || instrumentation.allocator == Allocator::Counting
     {
@@ -6091,7 +6092,14 @@ fn emit_builtin(
         | Builtin::OsOpen
         | Builtin::OsHandle
         | Builtin::OsClose
-        | Builtin::OsSpawn => emit_typed_builtin(instance, ty, module, intrinsics, globals),
+        | Builtin::OsSpawn
+        | Builtin::NetResolve
+        | Builtin::NetOpen
+        | Builtin::NetAccept
+        | Builtin::NetRead
+        | Builtin::NetWrite
+        | Builtin::NetClose
+        | Builtin::NetClassify => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
@@ -6456,6 +6464,17 @@ fn emit_typed_builtin(
             | Builtin::OsSpawn
     ) {
         emitter.os_builtin(instance.builtin, ty)
+    } else if matches!(
+        instance.builtin,
+        Builtin::NetResolve
+            | Builtin::NetOpen
+            | Builtin::NetAccept
+            | Builtin::NetRead
+            | Builtin::NetWrite
+            | Builtin::NetClose
+            | Builtin::NetClassify
+    ) {
+        emitter.net_builtin(instance.builtin, ty)
     } else if instance.builtin.name().starts_with("Math.") {
         emitter.math_builtin(instance)
     } else if instance.builtin == Builtin::DisplayQuoted {

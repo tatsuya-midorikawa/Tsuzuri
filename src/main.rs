@@ -131,7 +131,7 @@ Build options:
                          (WASM imports them from tsuzuri_heap); counting adds the counts that
                          tsuzuri_alloc_stats reports
     --freestanding         Native object, llvm, or header output that needs no C library;
-                         requires --allocator host and rejects IO, OS APIs, tasks, and Debug
+                         requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -149,7 +149,8 @@ results do not print anything. 'def main :: unit -> i32' and
 'def main :: Array<string> -> i32' print nothing and return the exit code; the
 Array<string> form receives the command-line arguments.
 Standard input and output and the File, Dir, Env, Time, Random, and Process APIs are
-built in on native; a GUI belongs to the host, not the language.";
+built in on native, and so are the Net sockets on macOS and Linux; a GUI belongs to the
+host, not the language.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {

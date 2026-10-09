@@ -514,6 +514,12 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
         }
         sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
     }
+    if text.contains("declare i64 @tsuzuri_net_") {
+        if !crate::driver::NET_NATIVE_SUPPORTED {
+            return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
+        }
+        sources.push(("net.c", include_str!("runtime/net.c").to_owned()));
+    }
     if text.contains("declare i32 @tsuzuri_io_") {
         sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
     }
@@ -629,6 +635,9 @@ fn build_runner(
     if text.contains("declare i64 @tsuzuri_os_") {
         return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
     }
+    if text.contains("declare i64 @tsuzuri_net_") {
+        return Err(driver_error("E2000", crate::driver::NET_WASM_MESSAGE));
+    }
     if text.contains("define i64 @tsuzuri_async_poll(") || llvm::uses_reactor(&text) {
         return Err(driver_error(
             "E2000",
@@ -730,10 +739,14 @@ fn compile_native_runner(
     }
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    let net_runtime = text.contains("declare i64 @tsuzuri_net_");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+    }
+    if net_runtime && !crate::driver::NET_NATIVE_SUPPORTED {
+        return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
     }
     if async_runtime && !crate::driver::ASYNC_NATIVE_SUPPORTED {
         return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
@@ -775,6 +788,7 @@ fn compile_native_runner(
     }
     for (needed, name, source) in [
         (os_runtime, "os.c", include_str!("runtime/os.c")),
+        (net_runtime, "net.c", include_str!("runtime/net.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
         (async_runtime, "async.c", include_str!("runtime/async.c")),
     ] {
@@ -785,7 +799,7 @@ fn compile_native_runner(
             clang.arg(&runtime);
         }
     }
-    if async_runtime && !task_runtime && !cfg!(windows) {
+    if (async_runtime || net_runtime) && !task_runtime && !cfg!(windows) {
         clang.arg("-pthread");
     }
     links.add_to(&mut clang);

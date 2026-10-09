@@ -1149,7 +1149,7 @@ match Random.pcg_next_u32 generator with
 #### WASM と Windows
 
 デフォルトの wasm32 出力バイナリは、`tsuzuri_io`（標準入出力）以外のホストインポートを持たない自己完結バイナリの生成を原則としています。そのため、`File`、`Dir`、`Env`、`Time`、`Random`（`Random.bytes`／`next_u64`、ならびにこれらを利用する `HashMap.randomized` など）、および `Process` の操作に到達するコードをビルドしようとした場合、ビルド処理は `E2000` エラーで安全に失敗します（WASM バイナリ、LLVM IR、オブジェクトファイルのいずれの出力モードであっても拒否され、不完全な成果物は出力されません。なお、静的検証のみを行う `check` コマンドは IR を生成しないため本エラーは報告されません）。
-一方、`Path` モジュールや `Os` モジュール内の純粋関数、および `Random.Pcg` は外部インポートを必要としないため、wasm32 環境であってもネイティブとまったく同一にコンパイル・実行可能です。
+一方、`Path` モジュールや `Os` モジュール内の純粋関数、および `Random.Pcg` は外部インポートを必要としないため、wasm32 環境であってもネイティブとまったく同一にコンパイル・実行可能です。`Net` のソケット（`connect`・`bind`・`bind_udp`・`resolve`・`error_kind` など）に到達するコードも `E2000` で、`--wasm-host wasi` を付けても同じです（WASI preview1 には `connect`・`bind`・`listen` がありません）。`Net` のアドレスの解析と表示は純粋な計算なので、import は増えません。
 
 `build --target wasm32 --wasm-host wasi` オプションを指定した場合、標準入出力および OS API は WASI preview1（`wasi_snapshot_preview1`）の公式インポート関数へと lowering されます。
 
@@ -1158,7 +1158,33 @@ match Random.pcg_next_u32 generator with
 - `Os.Error.code` には WASI 仕様の errno 番号が格納されます。ファイルパスは、preopen されたディレクトリのうちスラッシュ `/` 境界で最長一致するプレフィックスを起点として解決され、いずれにも一致しないパスは最初の preopen ディレクトリからの相対パスとして扱われます。`Env.current_dir ()` は最初の preopen ディレクトリ名（例: `/work`）を返し、`Process.run` は `Other` エラーとなります。
 - 動作は Node.js の `node:wasi` 実装を用いて検証されており、システム固有のエラーコード番号の差異を除いてネイティブ環境の実行結果と完全に一致します（なお、WASI preview2 および WebAssembly コンポーネントモデルは現時点で未対応です）。
 
-Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境における実行検証が完了していないためであり、未対応のプラットフォームに対して安易に対応を主張しないための設計です（OS API を使用しない純粋計算プログラムには影響しません）。
+Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API や `Net` のソケットに到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境における実行検証が完了していないためであり、未対応のプラットフォームに対して安易に対応を主張しないための設計です（OS API や `Net` のソケットを使用しない純粋計算プログラムには影響しません）。
+
+### ネットワーク（Net）
+
+標準モジュール `Net` は、TCP と UDP のソケット、IP アドレスの解析と表示、名前解決を提供します。opt-in の標準モジュールで、ソースが `Net` という名前を書いたときだけ読み込まれます（書かないプログラムの型検査・生成 IR・import は変わりません）。利用者の `Net.tz` は `E1011` です。ソケットの操作はすべて遅延評価される `IO<Result<T, Os.Error>>` で、実行した回数だけ OS を呼びます。TLS と HTTP は std に含めません（公式パッケージの対象）。通信は暗号化されず、受信したデータも送信元のアドレスも認証されません。
+
+| 区分 | API |
+|---|---|
+| アドレス（純粋） | `parse_address :: ref string -> Maybe<Address>`、`parse_ip :: ref string -> i64 -> Maybe<Address>`、`address_text`／`ip_text :: Address -> string`、`port :: Address -> i64`、`is_ipv6 :: Address -> bool` |
+| 名前解決 | `resolve :: string -> i64 -> IO<Result<[Address], Os.Error>>` |
+| TCP クライアント | `connect :: Address -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>`、`read :: TcpStream -> i64 -> Maybe<i64> -> IO<Result<[ubyte], Os.Error>>`、`write :: TcpStream -> [ubyte] -> Maybe<i64> -> IO<Result<unit, Os.Error>>`、`shutdown`、`close`、`stream_local_addr`、`peer_addr` |
+| TCP サーバー | `bind :: Address -> IO<Result<TcpListener, Os.Error>>`、`accept :: TcpListener -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>`、`local_addr`、`close_listener` |
+| UDP | `bind_udp`、`send_to :: UdpSocket -> [ubyte] -> Address -> IO<Result<unit, Os.Error>>`、`recv_from :: UdpSocket -> i64 -> Maybe<i64> -> IO<Result<([ubyte] * Address), Os.Error>>`、`udp_local_addr`、`close_udp` |
+| 括弧 | `with_connection`・`with_accepted`・`with_listener`・`with_udp`（`Capture<'a> => ... (handle -> IO<'a>) -> IO<Result<'a, Os.Error>>`。本体の成否にかかわらず戻る前に閉じる） |
+| エラー | `error_kind :: Os.Error -> ErrorKind`（`TimedOut`・`ConnectionRefused`・`ConnectionReset`・`AddressInUse`・`AddressNotAvailable`・`Unreachable`・`Unclassified`） |
+
+`Address { v6, high, low, port }` は `Copy` の不透明な record で、`==`・`Hash`・`Display`（`address_text` と同じ文字列）を持ちます。`parse_address` は `a.b.c.d:port` か `[ipv6]:port` だけを受け、IPv4 は 1〜3 桁の 10 進 4 部分（先頭の 0 は `0` だけ、255 以下）、IPv6 は 1〜4 桁の 16 進（大文字可）で `::` は高々 1 回、最後の部分だけが IPv4 形式（2 group）でもよく、ゾーン（`%`）は受けません。port は 1〜5 桁で先頭の 0 は `0` だけ、65535 以下で、空白は受けません。`127.1`・`0x7f.0.0.1`・`010.0.0.1` のように `inet_aton` が受ける形を拒否するので、許可リストの検査と実際の接続先が食い違いません。`address_text` は RFC 5952 の形（小文字、先頭の 0 を省略、長さ 2 以上の最長の 0 の並びを `::` に、同長は先頭、IPv4 埋め込みは 16 進）です。
+
+`TcpStream { id, local, peer }`・`TcpListener { id, local }`・`UdpSocket { id, local }` は、runtime の世代検査付きのソケット表の添字と、2 つのアドレスを持つ不透明な `Copy` の値です（構築・フィールド参照は `E1022`）。`File.Handle` と同じ規則で、`Drop` にはしません（std の型は `Drop` の instance を持てず `E1016`、`Drop` の値は `let!` の継続をまたげず `E1005`）。開くたびに新しい世代が付くので、`close` 済みのハンドルは別のソケットに当たらず、使うと `InvalidInput`（`code` は `EBADF`）です。閉じ忘れたソケットはプロセスが終わるまで開いたままで、終了時に OS が閉じます。`close` は失敗しても、また `EINTR` でも再試行せずに、ハンドルを無効にします。
+
+時間制限は `Maybe<i64>` のミリ秒で、呼び出し全体の期限（`CLOCK_MONOTONIC`）です。`None` は無期限、`Some n` は 1〜2,147,483,647 で、範囲外は OS を呼ばずに `InvalidInput`（`code` 0）です。期限が来ると `ETIMEDOUT` を `code` に持つ `Os.ErrorKind.Other` を返し、`Net.error_kind` は `TimedOut` です。ソケットは壊れません。`read`・`recv_from` の最大長は 1〜16,777,216 byte で、範囲外は `InvalidInput`（`code` 0）です。`read` は 1 回の受信で得た分だけを返し、空の配列は相手の送信終了です。`recv_from` は最大長より長いデータグラムを切り詰めずに `InvalidInput`（`code` は `EMSGSIZE`）にし、そのデータグラムを捨てます。`write` は全 byte を送るまで繰り返し、途中で失敗しても送れた量は分かりません。`send_to` は 1 データグラムを送り、時間制限は取りません。`resolve` は host を UTF-8 にし（孤立サロゲートは `InvalidEncoding`）、空・NUL を含む・253 byte 超・port が 0〜65535 の外は `InvalidInput`（`code` 0）、`getaddrinfo`（`AF_UNSPEC`、`SOCK_STREAM`、`AI_ADDRCONFIG` なし）の結果を OS の順で、重複を除き先頭 64 件まで返します。名前が無ければ `NotFound`（`code` 0）です。
+
+失敗は `Os.Error` で、`Os.ErrorKind` に case を足せないため、`errno` を `code` に持つ `Other` が多くなります。`errno` から `Os.ErrorKind` への対応は、`EACCES`・`EPERM` が `PermissionDenied`、`EADDRINUSE` が `AlreadyExists`、`EINVAL`・`EAFNOSUPPORT`・`EADDRNOTAVAIL`・`EMSGSIZE` が `InvalidInput`、`getaddrinfo` の `EAI_NONAME`（と `EAI_NODATA`）が `NotFound`（`code` 0）、それ以外の `EAI_*` は `Other`（`code` 0）、残りは `Other` です。`Net.error_kind` は、`ETIMEDOUT` を `TimedOut`、`ECONNREFUSED` を `ConnectionRefused`、`ECONNRESET`・`ECONNABORTED`・`EPIPE` を `ConnectionReset`、`EADDRINUSE` を `AddressInUse`、`EADDRNOTAVAIL` を `AddressNotAvailable`、`ENETUNREACH`・`EHOSTUNREACH`・`ENETDOWN`・`EHOSTDOWN` を `Unreachable` に分類し、`code` 0 とそれ以外は `Unclassified` です。`errno` の値は OS ごとに違いますが、分類は同じ結果になります。`EINTR` はランタイムが再試行します。
+
+すべてのソケットは `FD_CLOEXEC` 付きで（Linux は作成と同時、macOS は直後）、内部では非ブロッキングです。送信は SIGPIPE を起こさず（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）、相手が切れたソケットへの書き込みは `ConnectionReset` の `Error` です。IPv6 のソケットは `IPV6_V6ONLY` を有効にし、listener は `SO_REUSEADDR` と `SOMAXCONN` の backlog を付けます（`SO_REUSEPORT`・`TCP_NODELAY` は使いません）。ソケットの数の上限は OS に従います。`0.0.0.0` や `::` で待つとネットワークへ公開されるので、例と文書は `127.0.0.1` を使います。ソケットの操作は入口のスレッドで順に実行され、待っている間はプログラム全体が止まります。
+
+実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `declare i64 @tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`、Windows の native は `E2002`、`--freestanding` は `E2000` です。macOS と Linux だけに対応します。
 
 ## トラップ位置
 
@@ -3595,7 +3621,7 @@ void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 ```
 
 `--freestanding`（ネイティブの `--emit object`・`llvm`・`header`、`--allocator host` が必須）は C ライブラリに依存しない出力を作ります。生成コードが参照する外部の関数は、`tsuzuri_host_*`、プログラムが宣言した extern のホスト関数、freestanding な C 環境が提供する `memcpy`・`memmove`・`memset`・`memcmp`、コンパイラの組み込みランタイム（compiler-rt／libgcc。128-bit 整数の除算の `__divti3` など）だけです。CPU ディスパッチは使わず、トラップは `llvm.trap` だけです。
-標準 IO、OS API、並列タスク、プログラム引数、Debug 出力を使うプログラムは `E2000`（`--freestanding cannot use ...`）で、`--emit header` でも同じです。`--trap-info`・`--debug-output` との併用も `E2000` です。
+標準 IO、OS API、`Net` のソケット、並列タスク、プログラム引数、Debug 出力を使うプログラムは `E2000`（`--freestanding cannot use ...`）で、`--emit header` でも同じです。`--trap-info`・`--debug-output` との併用も `E2000` です。
 
 ## 診断
 
@@ -3657,7 +3683,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1019` | 再帰関数に必要な `rec` 修飾子の欠落、宣言と実装の再帰契約の不一致、先行関数を持たない単独の `and` |
 | `E1020` | 不正なパターン構文、OR パターン間での束縛変数の不一致、未対応のアクティブパターン形式、共用体バリアントのペイロード不整合 |
 | `E1021` | 明示的な `match` 式および関数ガードにおけるパターンの網羅性不足（不足している具体的なケース例を提示） |
-| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Arena.__next_id` プリミティブの不正参照 |
+| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle`、`Net.Address` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Net.__*`・`Arena.__next_id` プリミティブの不正参照 |
 | `E1023` | ループ外での脱出、関数・Task・ビルダー境界を越える不正な `break`／`continue`、`finally` 節を持つ `try` 式から抜け出す不正なジャンプ |
 | `E1024` | 型宣言における型パラメータ・長さパラメーター（`const N: i64`）の重複・未使用・未宣言、union／case／型エイリアスの大文字始まり規則違反、同一 union 内でのバリアント名重複、型エイリアスの循環参照・型引数の個数不一致 |
 | `E1027` | 条件付きインスタンス、スーパークラス、デフォルトメソッドにおけるトレイト制約の不整合 |
@@ -3670,8 +3696,8 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1004` | 同一字句スコープ内での変数シャドーイング（コンパイラ内部オプション時のみ有効、デフォルト無効） |
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
-| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）に到達するコードのビルド拒否 |
-| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API に到達した場合の `E2002` エラー |
+| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否 |
+| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API や `Net` のソケットに到達した場合の `E2002` エラー |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |
 | `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存、内容のハッシュの不一致、`git` の欠落・失敗、取得したリポジトリの危険なエントリ、registry の index にない版や index と食い違うパッケージ、`publish` の commit とディレクトリの不一致） |

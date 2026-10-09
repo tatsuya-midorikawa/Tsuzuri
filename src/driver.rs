@@ -193,6 +193,12 @@ pub(crate) const ASYNC_NATIVE_SUPPORTED: bool =
     cfg!(any(target_os = "macos", target_os = "linux", windows));
 pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
     "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
+/// Why wasm output cannot reach the sockets of the standard Net module (E09).
+pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, or keep to Net address parsing, which needs no host";
+/// Whether `src/runtime/net.c` has an implementation for the host this compiler runs on.
+pub(crate) const NET_NATIVE_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+/// Why a build for another host cannot reach the Net sockets yet.
+pub(crate) const NET_NATIVE_MESSAGE: &str = "the Net socket API is only available on macOS and Linux for now (Windows waits for G10); build on macOS or Linux";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
@@ -2463,6 +2469,8 @@ fn build_complete(
             .any(|line| line.starts_with("declare ") && line.contains(" @tsuzuri_cpu_"));
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    // The sockets of the standard Net module are src/runtime/net.c (E09).
+    let net_runtime = text.contains("declare i64 @tsuzuri_net_");
     // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
     let async_reactor = llvm::uses_reactor(&text);
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
@@ -2488,6 +2496,7 @@ fn build_complete(
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
+            ("declare i64 @tsuzuri_net_", "the Net socket API"),
             ("declare void @tsuzuri_async_wait(", "Async.block_on"),
             ("@tsuzuri_arguments(", "program arguments"),
             ("declare i64 @write(", "Debug output"),
@@ -2525,7 +2534,7 @@ fn build_complete(
         || cpu_runtime
         || trap_runtime
         || (options.target == Target::Native
-            && (io_runtime || os_runtime || arguments_runtime || async_reactor));
+            && (io_runtime || os_runtime || net_runtime || arguments_runtime || async_reactor));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
@@ -2548,6 +2557,16 @@ fn build_complete(
     // would send a Windows user to link a POSIX runtime that cannot be linked there.
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
+    }
+    if net_runtime && options.target.is_wasm() {
+        return Err(driver_error("E2000", NET_WASM_MESSAGE));
+    }
+    if net_runtime
+        && !NET_NATIVE_SUPPORTED
+        && options.target == Target::Native
+        && options.emit != Emit::Llvm
+    {
+        return Err(driver_error("E2002", NET_NATIVE_MESSAGE));
     }
     if async_reactor
         && !ASYNC_NATIVE_SUPPORTED
@@ -2695,10 +2714,16 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-                // The feature macros of os.c must precede every include, so it comes first.
+                "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                // The feature macros of os.c and net.c are the same and must precede every include, so
+                // they come first.
                 if os_runtime && options.target == Target::Native {
                     include_str!("runtime/os.c")
+                } else {
+                    ""
+                },
+                if net_runtime && options.target == Target::Native {
+                    include_str!("runtime/net.c")
                 } else {
                     ""
                 },
@@ -2740,7 +2765,7 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
-            if (task_runtime || trap_runtime || async_reactor) && !cfg!(windows) {
+            if (task_runtime || trap_runtime || async_reactor || net_runtime) && !cfg!(windows) {
                 runtime.arg("-pthread");
             }
             if trap_runtime {
@@ -2930,7 +2955,7 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if task_runtime && !cfg!(windows) {
+            if (task_runtime || net_runtime) && !cfg!(windows) {
                 clang.arg("-pthread");
             }
         }
@@ -2986,7 +3011,7 @@ fn build_complete(
             linker.arg(&object).args(["-g", "-lm"]);
             if native_runtime {
                 linker.arg(&runtime_object);
-                if task_runtime {
+                if task_runtime || net_runtime {
                     linker.arg("-pthread");
                 }
             }

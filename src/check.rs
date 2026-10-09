@@ -995,6 +995,21 @@ pub enum Builtin {
     /// `Os.__spawn :: ref utf8string -> ref [ubyte] -> ref [ubyte] -> (i64 * [ubyte])`: runs a program without a
     /// shell, given its NUL-terminated arguments and its input, and returns the encoded outcome.
     OsSpawn,
+    /// `Net.__resolve :: ref utf8string -> i64 -> (i64 * [ubyte])` (E09): host names to 20-byte address records.
+    NetResolve,
+    /// `Net.__open :: i32 -> i64 -> i64 -> i64 -> i64 -> (i64 * [ubyte])`: connects, listens, or binds UDP; a
+    /// positive handle or the negated status, and the local and peer address records.
+    NetOpen,
+    /// `Net.__accept :: i64 -> i64 -> (i64 * [ubyte])`: a new handle (or the negated status) and its two address records.
+    NetAccept,
+    /// `Net.__read :: i32 -> i64 -> i64 -> i64 -> (i64 * [ubyte])`: one TCP receive or one datagram (with its source first).
+    NetRead,
+    /// `Net.__write :: i32 -> i64 -> ref [ubyte] -> i64 -> i64 -> i64 -> i64 -> i64`: all of a TCP stream or one datagram.
+    NetWrite,
+    /// `Net.__close :: i32 -> i64 -> i64`: closes a socket or shuts one direction down.
+    NetClose,
+    /// `Net.__classify :: i32 -> i64`: an `errno` as the declaration-order index of `Net.ErrorKind`.
+    NetClassify,
     /// `Unicode.__table_length :: i64 -> i64`: the number of entries of a generated Unicode table
     /// (`src/runtime/unicode.ll`). Private to the std Unicode and Regex modules (D09).
     UnicodeTableLength,
@@ -1324,6 +1339,13 @@ impl Builtin {
         Self::OsHandle,
         Self::OsClose,
         Self::OsSpawn,
+        Self::NetResolve,
+        Self::NetOpen,
+        Self::NetAccept,
+        Self::NetRead,
+        Self::NetWrite,
+        Self::NetClose,
+        Self::NetClassify,
         Self::UnicodeTableLength,
         Self::UnicodeTableEntry,
         Self::Display,
@@ -1541,6 +1563,13 @@ impl Builtin {
             Self::OsHandle => "Os.__handle",
             Self::OsClose => "Os.__close",
             Self::OsSpawn => "Os.__spawn",
+            Self::NetResolve => "Net.__resolve",
+            Self::NetOpen => "Net.__open",
+            Self::NetAccept => "Net.__accept",
+            Self::NetRead => "Net.__read",
+            Self::NetWrite => "Net.__write",
+            Self::NetClose => "Net.__close",
+            Self::NetClassify => "Net.__classify",
             Self::UnicodeTableLength => "Unicode.__table_length",
             Self::UnicodeTableEntry => "Unicode.__table_entry",
             Self::Display => "$builtin.display",
@@ -1789,6 +1818,54 @@ impl Builtin {
                     Concrete(Type::I64),
                     Array(Box::new(Concrete(Type::Integer(8, false)))),
                 ]),
+                Vec::new(),
+            ),
+            Self::NetResolve | Self::NetOpen | Self::NetAccept | Self::NetRead => {
+                let integers = |count: usize| vec![Concrete(Type::I64); count];
+                let parameters = match self {
+                    Self::NetResolve => vec![
+                        Reference(Box::new(Concrete(Type::Utf8String)), false),
+                        Concrete(Type::I64),
+                    ],
+                    Self::NetOpen => {
+                        [vec![Concrete(Type::Integer(32, true))], integers(4)].concat()
+                    }
+                    Self::NetAccept => integers(2),
+                    _ => [vec![Concrete(Type::Integer(32, true))], integers(3)].concat(),
+                };
+                (
+                    parameters,
+                    BuiltinType::Tuple(vec![
+                        Concrete(Type::I64),
+                        Array(Box::new(Concrete(Type::Integer(8, false)))),
+                    ]),
+                    Vec::new(),
+                )
+            }
+            Self::NetWrite => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Concrete(Type::I64),
+                    Reference(
+                        Box::new(Array(Box::new(Concrete(Type::Integer(8, false))))),
+                        false,
+                    ),
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                ],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::NetClose => (
+                vec![Concrete(Type::Integer(32, true)), Concrete(Type::I64)],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::NetClassify => (
+                vec![Concrete(Type::Integer(32, true))],
+                Concrete(Type::I64),
                 Vec::new(),
             ),
             Self::SimdSplat
