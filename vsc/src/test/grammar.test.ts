@@ -115,15 +115,20 @@ test('member-position keywords stay function names', async () => {
 test('a builder alias is an attribute and a module-like name', async () => {
 	const { grammar, registry } = await loadGrammar();
 	try {
-		const line = '@alias async';
-		const tokens = grammar.tokenizeLine(line, INITIAL).tokens;
-		const at = (offset: number) => {
-			const token = tokens.find(candidate => candidate.startIndex <= offset && offset < candidate.endIndex);
-			assert.ok(token, `offset ${offset}`);
-			return token.scopes;
-		};
-		assert.ok(at(0).includes('storage.modifier.attribute.tsuzuri'));
-		assert.ok(at(line.indexOf('async')).includes('entity.name.namespace.tsuzuri'));
+		// The formatter keeps one space, but unformatted declarations are valid too.
+		for (const line of ['@alias async', '@alias    async', '@alias\tasync', '@alias \t async // note']) {
+			const tokens = grammar.tokenizeLine(line, INITIAL).tokens;
+			const at = (offset: number) => {
+				const token = tokens.find(candidate => candidate.startIndex <= offset && offset < candidate.endIndex);
+				assert.ok(token, `${JSON.stringify(line)} offset ${offset}`);
+				return token.scopes;
+			};
+			assert.ok(at(0).includes('storage.modifier.attribute.tsuzuri'), JSON.stringify(line));
+			assert.ok(at(line.indexOf('async')).includes('entity.name.namespace.tsuzuri'), JSON.stringify(line));
+		}
+		// Without a name yet, the attribute alone is still highlighted.
+		const bare = grammar.tokenizeLine('@alias', INITIAL).tokens;
+		assert.ok(bare[0].scopes.includes('storage.modifier.attribute.tsuzuri'));
 	} finally { registry.dispose(); }
 });
 

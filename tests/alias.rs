@@ -196,7 +196,7 @@ fn malformed_alias_declarations_are_rejected() {
     for (header, message) in [
         (
             "@alias Upper",
-            "a builder alias starts with a lowercase letter, as in '@alias async'; 'Upper' would collide with module and record names",
+            "a builder alias starts with a lowercase letter, as in '@alias async'; 'Upper' would collide with module and type names",
         ),
         (
             "@alias _private",
@@ -274,6 +274,80 @@ fn an_unknown_lowercase_builder_points_to_aliases() {
     assert_eq!(
         error.message,
         "unknown computation builder 'Nosuch'; define its operations in Nosuch.tc"
+    );
+}
+
+#[test]
+fn an_empty_lowercase_block_is_an_alias_unless_a_record_has_the_name() {
+    let program = |declarations: &str| {
+        format!(
+            "{declarations}export def one :: i64 -> i64\nfn one n =\n    let _empty = widget {{}}\n    n"
+        )
+    };
+    // No alias and no record: the same guidance as for a block with statements.
+    let error = rejected(&[("Main.tz", &program(""))], "E1018");
+    assert_eq!(
+        error.message,
+        "unknown computation builder 'widget'; declare '@alias widget' in the .tc file of its builder, or write the builder's name"
+    );
+    // A lowercase record keeps its empty literal.
+    ir(&[("Main.tz", &program("record widget {}\n\n"))]);
+    // An alias takes `widget {}` over the empty record, as `Name.tc` does over `record Name {}`.
+    let widget = builder("@alias widget");
+    let both = ir(&[
+        ("Main.tz", &program("record widget {}\n\n")),
+        ("Widget.tc", &widget),
+    ]);
+    assert!(both.contains("call i8 @tz.fn.Widget.Zero()"), "{both}");
+}
+
+#[test]
+fn builders_of_one_name_in_two_namespaces_are_told_apart_by_their_aliases() {
+    let alias = builder("@alias parse");
+    let plain = builder("");
+    let main =
+        "using Left\nusing Right\n\nexport def one :: i64 -> i64\nfn one n = parse { return n }";
+    // Both declare it: the alias is ambiguous, not unknown, though `Parser` itself is too.
+    let error = rejected(
+        &[
+            ("Main.tz", main),
+            ("Left/Parser.tc", &alias),
+            ("Right/Parser.tc", &alias),
+        ],
+        "E1004",
+    );
+    assert!(
+        error
+            .message
+            .starts_with("builder alias 'parse' is ambiguous: the builders '")
+            && error.message.contains("'Left::Parser'")
+            && error.message.contains("'Right::Parser'"),
+        "{}",
+        error.message
+    );
+    // The namespace chooses between them.
+    let qualified = |namespace: &str| {
+        format!(
+            "using Left\nusing Right\n\nexport def one :: i64 -> i64\nfn one n = {namespace}::Parser {{ return n }}"
+        )
+    };
+    ir(&[
+        ("Main.tz", &qualified("Left")),
+        ("Left/Parser.tc", &alias),
+        ("Right/Parser.tc", &alias),
+    ]);
+    // Only one of them declares it: the alias names that builder.
+    assert_eq!(
+        ir(&[
+            ("Main.tz", main),
+            ("Left/Parser.tc", &alias),
+            ("Right/Parser.tc", &plain)
+        ]),
+        ir(&[
+            ("Main.tz", &qualified("Left")),
+            ("Left/Parser.tc", &alias),
+            ("Right/Parser.tc", &plain)
+        ])
     );
 }
 

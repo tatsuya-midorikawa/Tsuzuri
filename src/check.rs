@@ -4144,10 +4144,7 @@ impl Names {
             let visible: Vec<&str> = candidates
                 .iter()
                 .map(String::as_str)
-                .filter(|key| {
-                    self.origin(key) == *tier
-                        && self.module_path(requester, module_stem(key)) == Some(key)
-                })
+                .filter(|key| self.origin(key) == *tier && self.builder_in_sight(requester, key))
                 .collect();
             match visible.as_slice() {
                 [] => {}
@@ -4156,6 +4153,28 @@ impl Names {
             }
         }
         BuilderName::Missing
+    }
+
+    /// Whether the bare name of the builder module `key` is in sight of `requester`: it names
+    /// `key`, or several `using` namespaces hold a module of that name and `key` is one of them.
+    /// The second case keeps same-named builders of two namespaces from hiding each other's alias.
+    fn builder_in_sight(&self, requester: &str, key: &str) -> bool {
+        let stem = module_stem(key);
+        match self.module_path(requester, stem) {
+            Some(found) => found == key,
+            None => self.module_usings.get(requester).is_some_and(|namespaces| {
+                self.imported(namespaces, stem).any(|found| found == key)
+            }),
+        }
+    }
+
+    /// Whether `name {}` is an empty computation expression, not an empty record: `name` is a
+    /// builder or an alias in sight, or a lowercase word that no record is named, which can only
+    /// be an alias that nobody declared (`computation::lower` says so).
+    fn empty_block_is_computation(&self, requester: &str, name: &str) -> bool {
+        !matches!(self.builder_name(requester, name), BuilderName::Missing)
+            || (name.starts_with(|first: char| first.is_ascii_lowercase())
+                && !self.record_aliases.contains_key(name))
     }
 
     /// The error for an alias that several builders in sight declare.

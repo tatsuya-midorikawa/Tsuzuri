@@ -202,8 +202,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             return Ok(());
         }
         ExprKind::Record { name, fields }
-            if fields.is_empty()
-                && !matches!(names.builder_name(module, &name.text), BuilderName::Missing) =>
+            if fields.is_empty() && names.empty_block_is_computation(module, &name.text) =>
         {
             let body = ComputationBlock {
                 statements: Vec::new(),

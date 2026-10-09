@@ -855,7 +855,7 @@ impl Parser<'_> {
 
     /// `@alias name` on its own line: another name for the builder of this `.tc` file, so that
     /// `name { ... }` builds the same computation as `Builder { ... }`. The name starts with a
-    /// lowercase letter, which keeps it apart from module and record names, and is not a
+    /// lowercase letter, which keeps it apart from builder (module) and type names, and is not a
     /// contextual keyword. `declared` are the aliases of the file so far.
     fn alias_declaration(&mut self, declared: &[Ident]) -> Result<Ident, Diagnostic> {
         self.take();
@@ -884,10 +884,7 @@ impl Parser<'_> {
                 .text
                 .starts_with(|first: char| first.is_ascii_uppercase())
             {
-                message += &format!(
-                    "; '{}' would collide with module and record names",
-                    name.text
-                );
+                message += &format!("; '{}' would collide with module and type names", name.text);
             }
             Some(message)
         } else if CONTEXTUAL_KEYWORDS.contains(&name.text.as_str()) {
