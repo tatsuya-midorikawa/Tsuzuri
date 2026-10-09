@@ -8,6 +8,9 @@ use crate::{
     syntax::{BinaryOp, UnaryOp},
 };
 
+mod spirv;
+pub use spirv::{FEATURE_INT64, FEATURE_STRICT_FLOAT, Lane, SpirvKernel};
+
 #[derive(Debug)]
 pub struct GpuKernel<'a> {
     module: &'a CheckedModule,
