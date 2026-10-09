@@ -1,0 +1,1502 @@
+//! SPIR-V emission for Vulkan (F09 Phase 3): the structure and determinism of the modules, `spirv-val` for every kernel
+//! shape, the rejections that keep the strict float contract, and the execution of the modules on a Vulkan device
+//! through the runtime harness (`tests/gpu_vulkan_runtime.c`, which includes `src/runtime/gpu-vulkan.c`).
+//!
+//! Tests that need a tool or a device print a loud `SKIPPED` line and pass; set `TSUZURI_REQUIRE_SPIRV_TOOLS=1` or
+//! `TSUZURI_REQUIRE_VULKAN=1` to make such a skip a failure. Strict `f32` kernels execute only on a device that reports
+//! the float controls (the others are checked for the `Unavailable` path, and run once uncertified for information).
+
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
+
+use tsuzuri::{
+    analyze,
+    check::CheckedModule,
+    gpu::{self, FEATURE_INT64, FEATURE_STRICT_FLOAT, Lane, SpirvKernel},
+};
+
+fn kernel_id(module: &CheckedModule) -> usize {
+    module
+        .functions
+        .iter()
+        .position(|function| function.qualified_name() == "Main.kernel")
+        .unwrap()
+}
+
+fn emit(source: &str, relaxed: bool) -> Result<SpirvKernel, tsuzuri::diagnostic::Diagnostic> {
+    let module = analyze(source)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let kernel = gpu::extract_kernel(&module, kernel_id(&module)).unwrap();
+    if relaxed {
+        kernel.spirv_relaxed()
+    } else {
+        kernel.spirv()
+    }
+}
+
+fn emit_ok(source: &str, relaxed: bool) -> SpirvKernel {
+    emit(source, relaxed)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message))
+}
+
+// ---- the kernels and their reference semantics ----
+
+#[derive(Clone, Copy, PartialEq)]
+enum Compare {
+    /// Bit for bit; NaN equals NaN.
+    Exact,
+    /// Within that many ULPs of the reference (relaxed `f32` kernels, D6 of the F09 ticket).
+    Ulps(f32),
+}
+
+struct Case {
+    name: &'static str,
+    source: &'static str,
+    relaxed: bool,
+    inputs: fn() -> Vec<u64>,
+    reference: fn(u64) -> u64,
+    compare: Compare,
+    /// Whether the input lane is an `i32` (the module has `init_main`).
+    init: bool,
+}
+
+fn lcg(seed: &mut u32) -> u32 {
+    *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    *seed
+}
+
+fn ints32() -> Vec<u64> {
+    let mut values: Vec<u32> = vec![
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        99,
+        100,
+        255,
+        256,
+        257,
+        (-1i32) as u32,
+        (-2i32) as u32,
+        (-3i32) as u32,
+        i32::MIN as u32,
+        i32::MAX as u32,
+        0x8000_0001,
+    ];
+    let mut seed = 0x1234_5678;
+    values.extend((0..683).map(|_| lcg(&mut seed)));
+    values.into_iter().map(u64::from).collect()
+}
+
+fn ints64() -> Vec<u64> {
+    let mut values: Vec<u64> = vec![
+        0,
+        1,
+        5,
+        u64::MAX,
+        1 << 63,
+        (1 << 63) - 1,
+        0xFFFF_FFFF,
+        0x1_0000_0000,
+    ];
+    let mut seed = 0x9E37_79B9;
+    for _ in 0..800 {
+        let high = u64::from(lcg(&mut seed));
+        let low = u64::from(lcg(&mut seed));
+        values.push(high << 32 | low);
+    }
+    values
+}
+
+fn float_bits(values: &[f32]) -> Vec<u64> {
+    values
+        .iter()
+        .map(|value| u64::from(value.to_bits()))
+        .collect()
+}
+
+/// Positive normal values in `[2^-8, 2^8)`: no cancellation, so ULP tolerances are meaningful (D6).
+fn positive_floats() -> Vec<u64> {
+    let mut seed = 0x0BAD_CAFE;
+    let mut values = vec![2f32.powi(-8), 0.5, 1.0, 1.5, 2.0, 3.0, 255.0, 255.99];
+    values.extend((0..700).map(|_| {
+        let fraction = (lcg(&mut seed) >> 8) as f32 / (1u32 << 24) as f32;
+        (2f32.powf(fraction * 16.0 - 8.0)).min(255.99)
+    }));
+    float_bits(&values)
+}
+
+/// Values around the casts and the special values of IEEE 754, without subnormals (which the float controls of the
+/// device decide).
+fn special_floats() -> Vec<u64> {
+    let mut values = vec![
+        0.0,
+        -0.0,
+        0.5,
+        -0.5,
+        1.0,
+        -1.0,
+        1.5,
+        -1.5,
+        2.5,
+        0.999_999_94,
+        2_147_483_520.0,
+        2_147_483_648.0,
+        -2_147_483_648.0,
+        -2_147_483_904.0,
+        4_294_967_040.0,
+        4_294_967_296.0,
+        -4_294_967_296.0,
+        9.223_371_5e18,
+        9.223_372e18,
+        -9.223_372e18,
+        -9.223_373e18,
+        1.844_674_3e19,
+        3.0e38,
+        -3.0e38,
+        f32::MAX,
+        f32::MIN,
+        f32::MIN_POSITIVE,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        -f32::NAN,
+        16_777_216.0,
+        16_777_217.0,
+        1.0e-30,
+    ];
+    let mut seed = 0x5EED_5EED;
+    values.extend((0..500).map(|_| {
+        let bits = lcg(&mut seed);
+        let exponent = ((bits >> 23) % 80) as i32 - 40;
+        let magnitude = f32::from_bits((bits & 0x007F_FFFF) | (((127 + exponent) as u32) << 23));
+        if bits >> 31 == 1 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    }));
+    float_bits(&values)
+}
+
+fn f(bits: u64) -> f32 {
+    f32::from_bits(bits as u32)
+}
+
+/// Values around 1.0 whose square loses low bits: a fused multiply-add keeps them, two roundings do not.
+fn near_one_floats() -> Vec<u64> {
+    let mut seed = 0x00F1_5ED0;
+    let mut values = vec![
+        1.0f32,
+        1.0 + 2f32.powi(-12),
+        1.0 - 2f32.powi(-12),
+        1.0 + 2f32.powi(-23),
+    ];
+    values.extend((0..600).map(|_| {
+        let offset = (lcg(&mut seed) >> 9) as f32 / (1u32 << 23) as f32 - 0.5;
+        1.0 + offset * 2f32.powi(-10)
+    }));
+    float_bits(&values)
+}
+
+/// Subnormal values and the smallest normal: the device decides (`DenormPreserve`) whether they survive.
+fn denormal_floats() -> Vec<u64> {
+    let mut values = vec![
+        1u32,
+        2,
+        3,
+        0x007F_FFFF,
+        0x0040_0000,
+        0x0000_1234,
+        0x8000_0001,
+        0x807F_FFFF,
+    ];
+    let mut seed = 0xDE40_0123;
+    values.extend((0..200).map(|_| (lcg(&mut seed) & 0x807F_FFFF) | 1));
+    values.into_iter().map(u64::from).collect()
+}
+
+fn bits_of(value: f32) -> u64 {
+    u64::from(value.to_bits())
+}
+
+fn cases() -> Vec<Case> {
+    vec![
+        Case {
+            name: "mix",
+            source: "export def kernel :: i32 -> i32\nfn kernel value = (value * 1664525 + 1013904223) ^ (Bits.ushr value 13)",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| {
+                let v = x as u32;
+                u64::from(v.wrapping_mul(1664525).wrapping_add(1013904223) ^ (v >> 13))
+            },
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "cast",
+            source: "export def kernel :: i32 -> i32\nfn kernel value = ((value as i32u) + 4294967295i32u) as i32",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| u64::from((x as u32).wrapping_sub(1)),
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "locals_calls_shifts",
+            source: "def square :: i32 -> i32\nfn square value = value * value\n\ndef twice :: i32 -> i32\nfn twice value = square (value + 1) + square (value - 1)\n\nexport def kernel :: i32 -> i32\nfn kernel value = {\n    let mut current = value;\n    let before = current;\n    current = current + 1;\n    let a = if before < 0 && (value & 1) == 0 then 1 else (if value >= 100 || value == -3 then 2 else 3);\n    let b = (value <<< (value & 63)) + (value >>> 2) + (Bits.ushr value 5);\n    let c = (-value) ^ (~~~value);\n    twice (current ^ a) + b + c\n}",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| {
+                let v = x as u32 as i32;
+                let current = v.wrapping_add(1);
+                let a = if v < 0 && (v & 1) == 0 {
+                    1
+                } else if v >= 100 || v == -3 {
+                    2
+                } else {
+                    3
+                };
+                let b = v
+                    .wrapping_shl((v & 63) as u32)
+                    .wrapping_add(v >> 2)
+                    .wrapping_add(((v as u32) >> 5) as i32);
+                let c = v.wrapping_neg() ^ !v;
+                let square = |t: i32| t.wrapping_mul(t);
+                let argument = current ^ a;
+                let result = square(argument.wrapping_add(1))
+                    .wrapping_add(square(argument.wrapping_sub(1)))
+                    .wrapping_add(b)
+                    .wrapping_add(c);
+                u64::from(result as u32)
+            },
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "unsigned32",
+            source: "export def kernel :: i32u -> i32u\nfn kernel value = ((value * 2654435761u) >>> 7u) ^ value",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| {
+                let v = x as u32;
+                u64::from((v.wrapping_mul(2654435761) >> 7) ^ v)
+            },
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "mix64",
+            source: "def helper :: i64 -> i64\nfn helper value = value * 6364136223846793005l + 1442695040888963407l\n\nexport def kernel :: i64 -> i64\nfn kernel value = {\n    let mut state = helper value;\n    state = state ^ (state >>> 13l);\n    state = state ^ (state <<< 7l);\n    if state < 0l && value != 5l then -state else (Bits.ushr state 3l)\n}",
+            relaxed: false,
+            inputs: ints64,
+            reference: |x| {
+                let v = x as i64;
+                let mut state = v
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                state ^= state >> 13;
+                state ^= state.wrapping_shl(7);
+                if state < 0 && v != 5 {
+                    state.wrapping_neg() as u64
+                } else {
+                    (state as u64) >> 3
+                }
+            },
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "widen",
+            source: "export def kernel :: i32 -> i64\nfn kernel value = ((value as i64) * 3000000000l) + ((value as i32u) as i64)",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| {
+                let v = x as u32 as i32;
+                (i64::from(v).wrapping_mul(3_000_000_000)).wrapping_add(i64::from(v as u32)) as u64
+            },
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "narrow",
+            source: "export def kernel :: i64 -> i32\nfn kernel value = (value >>> 17l) as i32",
+            relaxed: false,
+            inputs: ints64,
+            reference: |x| u64::from(((x as i64) >> 17) as u32),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "unsigned64",
+            source: "export def kernel :: i64u -> i64u\nfn kernel value = (value * 6364136223846793005ul) ^ (value >>> 29ul)",
+            relaxed: false,
+            inputs: ints64,
+            reference: |x| x.wrapping_mul(6364136223846793005) ^ (x >> 29),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "poly_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = value * value + value",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| bits_of(f(x) * f(x) + f(x)),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "negate_compare_strict",
+            source: "export def kernel :: f32 -> i32\nfn kernel value = if (-value) < 1.0 then 1 else (if value == value then (if value != 0.0 then 2 else 3) else 4)",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| {
+                let v = f(x);
+                u64::from(if -v < 1.0 {
+                    1u32
+                } else if !v.is_nan() {
+                    if v != 0.0 { 2 } else { 3 }
+                } else {
+                    4
+                })
+            },
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "to_i32_strict",
+            source: "export def kernel :: f32 -> i32\nfn kernel value = value as i32",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| u64::from(f(x) as i32 as u32),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "to_u32_strict",
+            source: "export def kernel :: f32 -> i32u\nfn kernel value = value as i32u",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| u64::from(f(x) as u32),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "to_i64_strict",
+            source: "export def kernel :: f32 -> i64\nfn kernel value = value as i64",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| f(x) as i64 as u64,
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "to_u64_strict",
+            source: "export def kernel :: f32 -> i64u\nfn kernel value = value as i64u",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| f(x) as u64,
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "from_i32_strict",
+            source: "export def kernel :: i32 -> f32\nfn kernel value = (value as f32) * 0.5 + 0.25",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| bits_of((x as u32 as i32 as f32) * 0.5 + 0.25),
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "from_i64_strict",
+            source: "export def kernel :: i64 -> f32\nfn kernel value = value as f32",
+            relaxed: false,
+            inputs: ints64,
+            reference: |x| bits_of(x as i64 as f32),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "fusion_probe_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = (value * value - 1.0) + (value * 0.1 + 0.2) * value",
+            relaxed: false,
+            inputs: near_one_floats,
+            reference: |x| {
+                let v = f(x);
+                bits_of((v * v - 1.0) + (v * 0.1 + 0.2) * v)
+            },
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "denormal_probe_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = (value + value) * 0.5",
+            relaxed: false,
+            inputs: denormal_floats,
+            reference: |x| bits_of((f(x) + f(x)) * 0.5),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "poly_relaxed",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = value * value + value",
+            relaxed: true,
+            inputs: positive_floats,
+            reference: |x| bits_of(f(x) * f(x) + f(x)),
+            compare: Compare::Ulps(4.0),
+            init: false,
+        },
+        Case {
+            name: "horner_relaxed",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = ((value * 0.5 + 0.25) * value + 0.125) * value + 1.0",
+            relaxed: true,
+            inputs: positive_floats,
+            reference: |x| {
+                let v = f(x);
+                bits_of(((v * 0.5 + 0.25) * v + 0.125) * v + 1.0)
+            },
+            compare: Compare::Ulps(12.0),
+            init: false,
+        },
+        Case {
+            name: "ratio_relaxed",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = (value + 1.0) / (value * value + 2.0)",
+            relaxed: true,
+            inputs: positive_floats,
+            reference: |x| {
+                let v = f(x);
+                bits_of((v + 1.0) / (v * v + 2.0))
+            },
+            compare: Compare::Ulps(9.0),
+            init: false,
+        },
+        Case {
+            name: "index_relaxed",
+            source: "export def kernel :: i32 -> f32\nfn kernel value = (value as f32) * 0.5 + 0.25",
+            relaxed: true,
+            inputs: || (0..700u64).collect(),
+            reference: |x| bits_of((x as u32 as i32 as f32) * 0.5 + 0.25),
+            compare: Compare::Ulps(5.0),
+            init: true,
+        },
+        Case {
+            name: "threshold_relaxed",
+            source: "export def kernel :: f32 -> i32\nfn kernel value = if value * value > 2.0 then 1 else 0",
+            relaxed: true,
+            inputs: || {
+                positive_floats()
+                    .into_iter()
+                    .filter(|bits| {
+                        // away from the threshold, where a one-ULP difference could change the answer
+                        let v = f(*bits);
+                        (v * v - 2.0).abs() > 0.001
+                    })
+                    .collect()
+            },
+            reference: |x| u64::from(f(x) * f(x) > 2.0),
+            compare: Compare::Exact,
+            init: false,
+        },
+    ]
+}
+
+// ---- a word-level reader, independent of the emitter ----
+
+#[derive(Debug)]
+struct Inst {
+    op: u16,
+    args: Vec<u32>,
+}
+
+fn parse(words: &[u32]) -> Vec<Inst> {
+    assert_eq!(words[0], 0x0723_0203, "magic number");
+    assert_eq!(words[1], 0x0001_0300, "SPIR-V 1.3");
+    assert_eq!(words[2], 0, "generator");
+    assert_eq!(words[4], 0, "schema");
+    let mut instructions = Vec::new();
+    let mut position = 5;
+    while position < words.len() {
+        let size = (words[position] >> 16) as usize;
+        assert!(
+            size >= 1 && position + size <= words.len(),
+            "word count at {position}"
+        );
+        instructions.push(Inst {
+            op: (words[position] & 0xFFFF) as u16,
+            args: words[position + 1..position + size].to_vec(),
+        });
+        position += size;
+    }
+    assert!(words[3] > 1, "bound");
+    instructions
+}
+
+fn count(instructions: &[Inst], op: u16) -> usize {
+    instructions
+        .iter()
+        .filter(|instruction| instruction.op == op)
+        .count()
+}
+
+fn string_at(args: &[u32]) -> String {
+    let bytes: Vec<u8> = args
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .take_while(|byte| *byte != 0)
+        .collect();
+    String::from_utf8(bytes).unwrap()
+}
+
+const OP_CAPABILITY: u16 = 17;
+const OP_EXTENSION: u16 = 10;
+const OP_MEMORY_MODEL: u16 = 14;
+const OP_ENTRY_POINT: u16 = 15;
+const OP_EXECUTION_MODE: u16 = 16;
+const OP_DECORATE: u16 = 71;
+const OP_F_ADD: u16 = 129;
+const OP_F_SUB: u16 = 131;
+const OP_F_MUL: u16 = 133;
+const OP_F_DIV: u16 = 136;
+const OP_F_NEGATE: u16 = 127;
+const OP_F_REM: u16 = 140;
+const OP_F_MOD: u16 = 141;
+const OP_CONVERT_S_TO_F: u16 = 111;
+const OP_CONVERT_U_TO_F: u16 = 112;
+const OP_CONVERT_F_TO_S: u16 = 110;
+const OP_CONVERT_F_TO_U: u16 = 109;
+const OP_S_DIV: u16 = 135;
+const OP_U_DIV: u16 = 134;
+const OP_S_REM: u16 = 138;
+const OP_U_MOD: u16 = 137;
+const OP_IS_NAN: u16 = 156;
+const OP_SELECT: u16 = 169;
+const OP_TYPE_FLOAT: u16 = 22;
+const OP_TYPE_INT: u16 = 21;
+
+fn capabilities(instructions: &[Inst]) -> BTreeSet<u32> {
+    instructions
+        .iter()
+        .filter(|instruction| instruction.op == OP_CAPABILITY)
+        .map(|instruction| instruction.args[0])
+        .collect()
+}
+
+fn float_arithmetic_count(instructions: &[Inst]) -> usize {
+    [
+        OP_F_ADD,
+        OP_F_SUB,
+        OP_F_MUL,
+        OP_F_DIV,
+        OP_F_NEGATE,
+        OP_CONVERT_S_TO_F,
+        OP_CONVERT_U_TO_F,
+    ]
+    .iter()
+    .map(|op| count(instructions, *op))
+    .sum()
+}
+
+fn no_contraction_count(instructions: &[Inst]) -> usize {
+    instructions
+        .iter()
+        .filter(|instruction| instruction.op == OP_DECORATE && instruction.args[1] == 42)
+        .count()
+}
+
+fn uses_float(source: &str) -> bool {
+    source.contains("f32")
+}
+
+fn uses_int64(source: &str) -> bool {
+    source.contains("i64") || source.contains("l)") || source.contains("ul)")
+}
+
+#[test]
+fn spirv_modules_have_the_documented_structure() {
+    for case in cases() {
+        let kernel = emit_ok(case.source, case.relaxed);
+        let instructions = parse(&kernel.words);
+        let caps = capabilities(&instructions);
+        let int64 = uses_int64(case.source);
+        let strict_float = !case.relaxed && uses_float(case.source);
+        assert!(caps.contains(&1), "{}: Shader", case.name);
+        assert_eq!(caps.contains(&11), int64, "{}: Int64 capability", case.name);
+        assert_eq!(
+            kernel.features & FEATURE_INT64 != 0,
+            int64,
+            "{}: Int64 feature",
+            case.name
+        );
+        assert_eq!(
+            kernel.features & FEATURE_STRICT_FLOAT != 0,
+            strict_float,
+            "{}: strict float feature",
+            case.name
+        );
+        assert_eq!(
+            kernel.features & 1,
+            0,
+            "{}: bit 0 belongs to WebGPU",
+            case.name
+        );
+        for capability in [4464, 4466, 4467] {
+            assert_eq!(
+                caps.contains(&capability),
+                strict_float,
+                "{}: capability {capability}",
+                case.name
+            );
+        }
+        let extensions: Vec<String> = instructions
+            .iter()
+            .filter(|instruction| instruction.op == OP_EXTENSION)
+            .map(|instruction| string_at(&instruction.args))
+            .collect();
+        let expected_extensions: Vec<&str> = if strict_float {
+            vec!["SPV_KHR_float_controls"]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(extensions, expected_extensions, "{}", case.name);
+        let model = instructions
+            .iter()
+            .find(|instruction| instruction.op == OP_MEMORY_MODEL)
+            .unwrap();
+        assert_eq!(model.args, [0, 1], "{}: Logical GLSL450", case.name);
+        let entry_points: Vec<&Inst> = instructions
+            .iter()
+            .filter(|instruction| instruction.op == OP_ENTRY_POINT)
+            .collect();
+        let names: Vec<String> = entry_points
+            .iter()
+            .map(|entry| string_at(&entry.args[2..]))
+            .collect();
+        let expected: Vec<&str> = if case.init {
+            vec!["map_main", "init_main"]
+        } else {
+            vec!["map_main"]
+        };
+        assert_eq!(names, expected, "{}", case.name);
+        assert!(
+            entry_points.iter().all(|entry| entry.args[0] == 5),
+            "{}: GLCompute",
+            case.name
+        );
+        assert_eq!(kernel.init, case.init, "{}", case.name);
+        for entry in &entry_points {
+            let function = entry.args[1];
+            let modes: Vec<(u32, Vec<u32>)> = instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.op == OP_EXECUTION_MODE && instruction.args[0] == function
+                })
+                .map(|mode| (mode.args[1], mode.args[2..].to_vec()))
+                .collect();
+            assert!(
+                modes.contains(&(17, vec![256, 1, 1])),
+                "{}: LocalSize",
+                case.name
+            );
+            for mode in [4459, 4461, 4462] {
+                assert_eq!(
+                    modes.contains(&(mode, vec![32])),
+                    strict_float,
+                    "{}: mode {mode}",
+                    case.name
+                );
+            }
+        }
+        let arithmetic = float_arithmetic_count(&instructions);
+        assert_eq!(
+            no_contraction_count(&instructions),
+            if case.relaxed { 0 } else { arithmetic },
+            "{}: NoContraction",
+            case.name
+        );
+        for forbidden in [OP_F_REM, OP_F_MOD, OP_S_DIV, OP_U_DIV, OP_S_REM, OP_U_MOD] {
+            assert_eq!(
+                count(&instructions, forbidden),
+                0,
+                "{}: opcode {forbidden}",
+                case.name
+            );
+        }
+        if !case.relaxed {
+            assert_eq!(
+                count(&instructions, OP_F_DIV),
+                0,
+                "{}: strict kernels have no OpFDiv",
+                case.name
+            );
+        }
+        assert_eq!(
+            count(&instructions, OP_TYPE_FLOAT) > 0,
+            uses_float(case.source),
+            "{}: float type",
+            case.name
+        );
+        let wide_types = instructions
+            .iter()
+            .filter(|instruction| instruction.op == OP_TYPE_INT && instruction.args[1] == 64)
+            .count();
+        assert_eq!(wide_types > 0, int64, "{}: 64-bit type", case.name);
+        assert!(kernel.weight >= 1);
+        assert_eq!(kernel.bytes().len(), kernel.words.len() * 4);
+    }
+}
+
+#[test]
+fn spirv_lanes_and_features_match_the_kernel_types() {
+    let kernel = emit_ok(
+        "export def kernel :: i32 -> i32\nfn kernel value = value + 1",
+        false,
+    );
+    assert_eq!(
+        (kernel.input, kernel.output, kernel.features, kernel.init),
+        (Lane::Int32, Lane::Int32, 0, true)
+    );
+    let kernel = emit_ok(
+        "export def kernel :: i64u -> f32\nfn kernel value = (value as i64) as f32",
+        false,
+    );
+    assert_eq!((kernel.input, kernel.output), (Lane::Int64, Lane::Float32));
+    assert_eq!(kernel.features, FEATURE_INT64 | FEATURE_STRICT_FLOAT);
+    assert!(!kernel.init);
+    assert_eq!(
+        (Lane::Int32.kind(), Lane::Float32.kind(), Lane::Int64.kind()),
+        (1, 2, 4)
+    );
+    let kernel = emit_ok(
+        "export def kernel :: f32 -> f32\nfn kernel value = (value + 1.0) / 3.0",
+        true,
+    );
+    assert_eq!(
+        kernel.features, 0,
+        "a relaxed float kernel needs no device feature"
+    );
+    let single = emit_ok(
+        "def helper :: i32 -> i32\nfn helper value = value * value + 1\nexport def kernel :: i32 -> i32\nfn kernel value = helper value",
+        false,
+    );
+    let double = emit_ok(
+        "def helper :: i32 -> i32\nfn helper value = value * value + 1\nexport def kernel :: i32 -> i32\nfn kernel value = helper (helper value)",
+        false,
+    );
+    assert!(
+        double.weight > single.weight,
+        "weight counts a callee at every call"
+    );
+}
+
+#[test]
+fn spirv_output_is_deterministic() {
+    for case in cases() {
+        let first = emit_ok(case.source, case.relaxed);
+        let second = emit_ok(case.source, case.relaxed);
+        assert_eq!(first, second, "{}", case.name);
+        assert_eq!(first.bytes(), second.bytes(), "{}", case.name);
+    }
+}
+
+#[test]
+fn spirv_rejects_what_it_cannot_reproduce() {
+    for (name, source, relaxed, fragment) in [
+        (
+            "strict division",
+            "export def kernel :: f32 -> f32\nfn kernel value = value / 3.0",
+            false,
+            "division",
+        ),
+        (
+            "f64 lane",
+            "export def kernel :: f64 -> f64\nfn kernel value = value + 1.0",
+            false,
+            "f64",
+        ),
+        (
+            "f64 local",
+            "export def kernel :: f32 -> f32\nfn kernel value = { let wide = (value as f64) + 1.0; wide as f32 }",
+            false,
+            "f64",
+        ),
+        (
+            "bool lane",
+            "export def kernel :: i32 -> bool\nfn kernel value = value > 1",
+            false,
+            "bool lanes",
+        ),
+        (
+            "integer division",
+            "export def kernel :: i32 -> i32\nfn kernel value = 100 / value",
+            false,
+            "division/remainder",
+        ),
+        (
+            "integer remainder",
+            "export def kernel :: i64 -> i64\nfn kernel value = value % 7l",
+            false,
+            "division/remainder",
+        ),
+        (
+            "power",
+            "export def kernel :: i32 -> i32\nfn kernel value = value ** 2",
+            false,
+            "'**'",
+        ),
+        (
+            "relaxed i64 lane",
+            "export def kernel :: i64 -> i64\nfn kernel value = value + 1l",
+            true,
+            "64-bit",
+        ),
+        (
+            "relaxed float to integer",
+            "export def kernel :: f32 -> i32\nfn kernel value = value as i32",
+            true,
+            "float-to-integer",
+        ),
+        (
+            "relaxed f64",
+            "export def kernel :: f64 -> f64\nfn kernel value = value + 1.0",
+            true,
+            "f64",
+        ),
+    ] {
+        let error = emit(source, relaxed).expect_err(name);
+        assert_eq!(error.code, "E1018", "{name}: {}", error.message);
+        assert!(
+            error.message.contains(fragment),
+            "{name}: {}",
+            error.message
+        );
+    }
+    assert!(
+        emit(
+            "export def kernel :: f32 -> f32\nfn kernel value = value / 3.0",
+            true
+        )
+        .is_ok(),
+        "the relaxed contract allows division"
+    );
+}
+
+#[test]
+fn relaxed_spirv_has_no_float_controls_and_no_decorations() {
+    let kernel = emit_ok(
+        "export def kernel :: f32 -> f32\nfn kernel value = ((value + 1.0) / (value * value + 2.0)) - value",
+        true,
+    );
+    let instructions = parse(&kernel.words);
+    assert_eq!(capabilities(&instructions), BTreeSet::from([1]));
+    assert_eq!(no_contraction_count(&instructions), 0);
+    assert_eq!(count(&instructions, OP_F_DIV), 1);
+    assert_eq!(kernel.features, 0);
+    assert!(kernel.relaxed);
+}
+
+#[test]
+fn strict_float_to_integer_casts_are_guarded_selects() {
+    let kernel = emit_ok(
+        "export def kernel :: f32 -> i32\nfn kernel value = (value as i32) + ((-value) as i32)",
+        false,
+    );
+    let instructions = parse(&kernel.words);
+    assert_eq!(count(&instructions, OP_CONVERT_F_TO_S), 2);
+    assert_eq!(count(&instructions, OP_CONVERT_F_TO_U), 0);
+    assert_eq!(count(&instructions, OP_IS_NAN), 2);
+    assert!(count(&instructions, OP_SELECT) >= 8);
+    assert_eq!(
+        no_contraction_count(&instructions),
+        1,
+        "only the negation is arithmetic"
+    );
+}
+
+// ---- tools ----
+
+fn find_tool(variable: &str, candidates: &[&str], name: &str) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(variable) {
+        return Some(PathBuf::from(path));
+    }
+    for candidate in candidates {
+        if Path::new(candidate).exists() {
+            return Some(PathBuf::from(candidate));
+        }
+    }
+    Command::new(name)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|_| PathBuf::from(name))
+}
+
+fn skip(requirement: &str, reason: &str) {
+    eprintln!("\n*** SKIPPED (tests/gpu_spirv.rs): {reason} ***\n");
+    assert!(
+        std::env::var_os(requirement).is_none(),
+        "{requirement} is set but the test would be skipped: {reason}"
+    );
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("gpu_spirv")
+        .join(name);
+    fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+fn write_module(directory: &Path, name: &str, kernel: &SpirvKernel) -> PathBuf {
+    let path = directory.join(format!("{name}.spv"));
+    fs::write(&path, kernel.bytes()).unwrap();
+    path
+}
+
+#[test]
+fn spirv_modules_validate_for_vulkan() {
+    let Some(validator) = find_tool(
+        "SPIRV_VAL",
+        &[
+            "/opt/homebrew/opt/spirv-tools/bin/spirv-val",
+            "/usr/local/bin/spirv-val",
+            "/usr/bin/spirv-val",
+        ],
+        "spirv-val",
+    ) else {
+        skip(
+            "TSUZURI_REQUIRE_SPIRV_TOOLS",
+            "spirv-val was not found; SPIR-V validation did not run",
+        );
+        return;
+    };
+    let directory = scratch("validate");
+    let mut validated = 0;
+    for case in cases() {
+        let kernel = emit_ok(case.source, case.relaxed);
+        let path = write_module(&directory, case.name, &kernel);
+        for environment in ["vulkan1.1", "vulkan1.2"] {
+            let output = Command::new(&validator)
+                .args(["--target-env", environment])
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "spirv-val --target-env {environment} rejects {}:\n{}{}",
+                case.name,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            validated += 1;
+        }
+    }
+    assert_eq!(validated, cases().len() * 2);
+    eprintln!("spirv-val accepted {validated} module/environment pairs");
+}
+
+// ---- execution on a device ----
+
+/// The runtime harness together with the environment of one Vulkan implementation: the default one of the machine, and
+/// every driver manifest listed in `TSUZURI_VULKAN_TEST_ICDS` (a path list; each runs the same checks through the
+/// Vulkan loader with `VK_DRIVER_FILES` set, for example the SwiftShader that a browser ships).
+#[derive(Clone)]
+struct Harness {
+    path: PathBuf,
+    label: String,
+    environment: Vec<(String, String)>,
+}
+
+static HARNESS: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+
+fn harness_binary() -> &'static Result<PathBuf, String> {
+    HARNESS.get_or_init(|| {
+        let clang = std::env::var_os("TSUZURI_CLANG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("clang"));
+        let directory = scratch("harness");
+        let path = directory.join("gpu_vulkan_harness");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gpu_vulkan_runtime.c");
+        let output = Command::new(&clang)
+            .args(["-std=c11", "-O1", "-g"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&path)
+            .output()
+            .map_err(|error| format!("{} cannot run: {error}", clang.display()))?;
+        if !output.status.success() {
+            return Err(format!(
+                "the runtime harness does not compile:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(path)
+    })
+}
+
+struct Outcome {
+    status: i32,
+    log: String,
+    output: Vec<u8>,
+}
+
+impl Harness {
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.path);
+        command.env("TSUZURI_GPU_DEBUG", "1");
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command
+    }
+
+    fn run(&self, directory: &Path, arguments: &[String], input: Option<&[u8]>) -> Outcome {
+        let output_path = directory.join("output.bin");
+        let _ = fs::remove_file(&output_path);
+        let mut command = self.command();
+        command.args(arguments);
+        if let Some(input) = input {
+            let input_path = directory.join("input.bin");
+            fs::write(&input_path, input).unwrap();
+            command.arg("--input").arg(&input_path);
+        }
+        command.arg("--output").arg(&output_path);
+        let result = command.output().unwrap();
+        Outcome {
+            status: result.status.code().unwrap_or(-1),
+            log: format!(
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            ),
+            output: fs::read(&output_path).unwrap_or_default(),
+        }
+    }
+
+    fn probe(&self, features: u32) -> Outcome {
+        let result = self
+            .command()
+            .args(["probe", "--features", &features.to_string()])
+            .output()
+            .unwrap();
+        Outcome {
+            status: result.status.code().unwrap_or(-1),
+            log: format!(
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            ),
+            output: Vec::new(),
+        }
+    }
+
+    fn scratch(&self, name: &str) -> PathBuf {
+        scratch(&format!("{}_{name}", self.label))
+    }
+}
+
+/// The harness of every usable Vulkan implementation; a loud skip when there is none.
+fn devices() -> Vec<Harness> {
+    let binary = match harness_binary() {
+        Err(reason) => {
+            skip(
+                "TSUZURI_REQUIRE_VULKAN",
+                &format!("no Vulkan runtime harness: {reason}"),
+            );
+            return Vec::new();
+        }
+        Ok(binary) => binary,
+    };
+    let mut candidates = vec![Harness {
+        path: binary.clone(),
+        label: "default".to_owned(),
+        environment: Vec::new(),
+    }];
+    if let Some(list) = std::env::var_os("TSUZURI_VULKAN_TEST_ICDS") {
+        for (index, manifest) in std::env::split_paths(&list).enumerate() {
+            let manifest = manifest.display().to_string();
+            candidates.push(Harness {
+                path: binary.clone(),
+                label: format!("icd{index}"),
+                environment: vec![
+                    ("VK_DRIVER_FILES".to_owned(), manifest.clone()),
+                    ("VK_ICD_FILENAMES".to_owned(), manifest),
+                ],
+            });
+        }
+    }
+    let mut usable = Vec::new();
+    for harness in candidates {
+        let probe = harness.probe(0);
+        if probe.status == 0 {
+            eprintln!(
+                "Vulkan implementation {}: {}",
+                harness.label,
+                probe
+                    .log
+                    .lines()
+                    .find(|line| line.contains("device="))
+                    .unwrap_or("")
+                    .trim()
+            );
+            usable.push(harness);
+        } else {
+            skip(
+                "TSUZURI_REQUIRE_VULKAN",
+                &format!(
+                    "no usable Vulkan device for {} (status {}):\n{}",
+                    harness.label, probe.status, probe.log
+                ),
+            );
+        }
+    }
+    usable
+}
+
+fn lane_bytes(lane: Lane) -> usize {
+    if lane == Lane::Int64 { 8 } else { 4 }
+}
+
+fn encode(values: &[u64], lane: Lane) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| {
+            if lane == Lane::Int64 {
+                value.to_le_bytes().to_vec()
+            } else {
+                (*value as u32).to_le_bytes().to_vec()
+            }
+        })
+        .collect()
+}
+
+fn decode(bytes: &[u8], lane: Lane) -> Vec<u64> {
+    bytes
+        .chunks(lane_bytes(lane))
+        .map(|chunk| {
+            let mut padded = [0u8; 8];
+            padded[..chunk.len()].copy_from_slice(chunk);
+            u64::from_le_bytes(padded)
+        })
+        .collect()
+}
+
+fn ulp(value: f32) -> f32 {
+    let magnitude = value.abs();
+    f32::from_bits(magnitude.to_bits() + 1) - magnitude
+}
+
+fn matches(compare: Compare, actual: u64, expected: u64, float_output: bool) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if !float_output {
+        return false;
+    }
+    let (a, e) = (f(actual), f(expected));
+    if a.is_nan() && e.is_nan() {
+        return true;
+    }
+    match compare {
+        Compare::Exact => false,
+        Compare::Ulps(tolerance) => {
+            a.is_finite() && e.is_finite() && (a - e).abs() <= tolerance * ulp(e)
+        }
+    }
+}
+
+fn expected_lane(case: &Case, kernel: &SpirvKernel, input: u64) -> u64 {
+    let expected = (case.reference)(input);
+    if kernel.output == Lane::Int64 {
+        expected
+    } else {
+        expected & 0xFFFF_FFFF
+    }
+}
+
+fn lanes_argument(kernel: &SpirvKernel) -> String {
+    format!("{},{}", kernel.input.kind(), kernel.output.kind())
+}
+
+fn run_arguments(
+    spv: &Path,
+    kernel: &SpirvKernel,
+    mode: &str,
+    count: usize,
+    extra: &[&str],
+) -> Vec<String> {
+    let mut arguments = vec![
+        "run".to_owned(),
+        "--spirv".to_owned(),
+        spv.display().to_string(),
+        "--mode".to_owned(),
+        mode.to_owned(),
+        "--lanes".to_owned(),
+        lanes_argument(kernel),
+        "--count".to_owned(),
+        count.to_string(),
+        "--features".to_owned(),
+        kernel.features.to_string(),
+    ];
+    arguments.extend(extra.iter().map(|argument| (*argument).to_owned()));
+    arguments
+}
+
+fn check_outputs(case: &Case, kernel: &SpirvKernel, inputs: &[u64], actual: &[u64], what: &str) {
+    assert_eq!(
+        actual.len(),
+        inputs.len(),
+        "{}: {what}: lane count",
+        case.name
+    );
+    let float_output = kernel.output == Lane::Float32;
+    let mismatches: Vec<(usize, u64, u64, u64)> = inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| {
+            let expected = expected_lane(case, kernel, *input);
+            (!matches(case.compare, actual[index], expected, float_output)).then_some((
+                index,
+                *input,
+                actual[index],
+                expected,
+            ))
+        })
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "{}: {what}: {} of {} lanes differ; first (index, input, actual, expected): {:x?}",
+        case.name,
+        mismatches.len(),
+        inputs.len(),
+        &mismatches[..mismatches.len().min(4)]
+    );
+}
+
+fn execute(case: &Case, harness: &Harness, staged: bool) -> usize {
+    let kernel = emit_ok(case.source, case.relaxed);
+    let directory = harness.scratch(&format!(
+        "run_{}_{}",
+        case.name,
+        if staged { "staged" } else { "direct" }
+    ));
+    let spv = write_module(&directory, case.name, &kernel);
+    let inputs = (case.inputs)();
+    let extra: &[&str] = if staged { &["--staged"] } else { &[] };
+    let outcome = harness.run(
+        &directory,
+        &run_arguments(&spv, &kernel, "map", inputs.len(), extra),
+        Some(&encode(&inputs, kernel.input)),
+    );
+    assert_eq!(
+        outcome.status, 0,
+        "{}: map failed:\n{}",
+        case.name, outcome.log
+    );
+    check_outputs(
+        case,
+        &kernel,
+        &inputs,
+        &decode(&outcome.output, kernel.output),
+        "map",
+    );
+    let mut checked = inputs.len();
+    if case.init && !staged {
+        for count in [1usize, 255, 256, 257, 1000] {
+            let outcome = harness.run(
+                &directory,
+                &run_arguments(&spv, &kernel, "init", count, &[]),
+                None,
+            );
+            assert_eq!(
+                outcome.status, 0,
+                "{}: init {count} failed:\n{}",
+                case.name, outcome.log
+            );
+            let indexes: Vec<u64> = (0..count as u64).collect();
+            check_outputs(
+                case,
+                &kernel,
+                &indexes,
+                &decode(&outcome.output, kernel.output),
+                "init",
+            );
+            checked += count;
+        }
+    }
+    checked
+}
+
+#[test]
+fn integer_kernels_match_the_reference_on_a_vulkan_device() {
+    for harness in devices() {
+        integer_kernels(&harness);
+    }
+}
+
+fn integer_kernels(harness: &Harness) {
+    let int64 = harness.probe(FEATURE_INT64);
+    let mut executed = 0;
+    let mut lanes = 0;
+    for case in cases()
+        .iter()
+        .filter(|case| !case.relaxed && !uses_float(case.source))
+    {
+        let kernel = emit_ok(case.source, false);
+        if kernel.features & FEATURE_INT64 != 0 && int64.status != 0 {
+            eprintln!(
+                "{}: the device has no shaderInt64; the Unavailable path is checked instead",
+                case.name
+            );
+            let directory = harness.scratch(&format!("run_{}_unavailable", case.name));
+            let spv = write_module(&directory, case.name, &kernel);
+            let inputs = [1u64, 2, 3];
+            let outcome = harness.run(
+                &directory,
+                &run_arguments(&spv, &kernel, "map", inputs.len(), &[]),
+                Some(&encode(&inputs, kernel.input)),
+            );
+            assert_eq!(outcome.status, 2, "{}: {}", case.name, outcome.log);
+            continue;
+        }
+        for staged in [false, true] {
+            lanes += execute(case, harness, staged);
+        }
+        executed += 1;
+    }
+    // four 32-bit kernels, and four that need shaderInt64
+    assert_eq!(
+        executed,
+        if int64.status == 0 { 8 } else { 4 },
+        "{}",
+        harness.label
+    );
+    eprintln!(
+        "Vulkan ({}): {executed} integer kernels matched the reference on {lanes} lanes (direct and staged transfers)",
+        harness.label
+    );
+}
+
+#[test]
+fn relaxed_float_kernels_stay_within_the_relaxed_tolerance_on_a_vulkan_device() {
+    for harness in devices() {
+        let mut lanes = 0;
+        for case in cases().iter().filter(|case| case.relaxed) {
+            lanes += execute(case, &harness, false);
+        }
+        eprintln!(
+            "Vulkan ({}): relaxed f32 kernels stayed within the D6 tolerances on {lanes} lanes",
+            harness.label
+        );
+    }
+}
+
+#[test]
+fn strict_float_kernels_run_only_where_the_device_reports_the_controls() {
+    for harness in devices() {
+        strict_float_kernels(&harness);
+    }
+}
+
+fn strict_float_kernels(harness: &Harness) {
+    let probe = harness.probe(FEATURE_STRICT_FLOAT);
+    let certified = probe.status == 0;
+    let int64 = harness.probe(FEATURE_INT64).status == 0;
+    let mut executed = 0;
+    for case in cases()
+        .iter()
+        .filter(|case| !case.relaxed && uses_float(case.source))
+    {
+        let kernel = emit_ok(case.source, false);
+        assert_ne!(kernel.features & FEATURE_STRICT_FLOAT, 0, "{}", case.name);
+        if kernel.features & FEATURE_INT64 != 0 && !int64 {
+            continue;
+        }
+        if certified {
+            for staged in [false, true] {
+                executed += execute(case, harness, staged);
+            }
+            continue;
+        }
+        let directory = harness.scratch(&format!("strict_{}", case.name));
+        let spv = write_module(&directory, case.name, &kernel);
+        let inputs = (case.inputs)();
+        let head = &inputs[..8.min(inputs.len())];
+        // The device does not report the strict controls: the backend refuses, with and without the feature bit
+        // (the runtime also reads the capabilities of the module itself).
+        let refused = harness.run(
+            &directory,
+            &run_arguments(&spv, &kernel, "map", head.len(), &[]),
+            Some(&encode(head, kernel.input)),
+        );
+        assert_eq!(
+            refused.status, 2,
+            "{}: expected the Unavailable path:\n{}",
+            case.name, refused.log
+        );
+        let mut stripped = kernel.clone();
+        stripped.features = 0;
+        let refused = harness.run(
+            &directory,
+            &run_arguments(&spv, &stripped, "map", head.len(), &[]),
+            Some(&encode(head, kernel.input)),
+        );
+        assert_eq!(
+            refused.status, 2,
+            "{}: the module's own capabilities must refuse:\n{}",
+            case.name, refused.log
+        );
+        // Information only: what the translation layer does when the check is bypassed (UNCERTIFIED).
+        let outcome = harness.run(
+            &directory,
+            &run_arguments(&spv, &kernel, "map", inputs.len(), &["--assume-strict"]),
+            Some(&encode(&inputs, kernel.input)),
+        );
+        if outcome.status == 0 {
+            let actual = decode(&outcome.output, kernel.output);
+            let float_output = kernel.output == Lane::Float32;
+            let differing = inputs
+                .iter()
+                .zip(&actual)
+                .filter(|(input, actual)| {
+                    !matches(
+                        case.compare,
+                        **actual,
+                        expected_lane(case, &kernel, **input),
+                        float_output,
+                    )
+                })
+                .count();
+            eprintln!(
+                "UNCERTIFIED {}: with the capability check bypassed, {} of {} lanes equal the CPU reference",
+                case.name,
+                inputs.len() - differing,
+                inputs.len()
+            );
+        }
+    }
+    if certified {
+        eprintln!(
+            "Vulkan: strict f32 kernels matched the CPU reference bit for bit on {executed} lanes"
+        );
+    } else {
+        eprintln!(
+            "Vulkan: this device does not report the strict float32 controls ({}); strict f32 kernels are Unavailable here",
+            probe
+                .log
+                .lines()
+                .find(|line| line.contains("device="))
+                .unwrap_or("")
+                .trim()
+        );
+    }
+}
