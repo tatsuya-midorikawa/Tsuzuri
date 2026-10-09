@@ -938,6 +938,11 @@ fn emit_program(
     let mut intrinsics = BTreeSet::new();
     let mut globals = Globals {
         wasm,
+        async_reactor: module
+            .functions
+            .iter()
+            .enumerate()
+            .any(|(id, function)| emitted[id] && async_reactor_function(function)),
         memory64: instrumentation.memory64,
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
@@ -983,6 +988,9 @@ fn emit_program(
             &mut globals,
             &mut specializations,
         ));
+        if let Some(symbol) = host_entry(function) {
+            output.push_str(&named_wrapper(function, module, symbol));
+        }
         if function.exported {
             let wrapper = if host_abi::extended(function) {
                 host_abi::wrapper(
@@ -1195,6 +1203,7 @@ fn emit_program(
     }
     // A counting build also lets a WASM host allocate the buffer that `tsuzuri_alloc_stats` fills.
     if uses_host_abi(module)
+        || (!wasm && uses_reactor(&output))
         || output.contains("@tsuzuri_io_")
         || output.contains("@tsuzuri_os_")
         || output.contains("@tsuzuri_arguments(")
@@ -1445,6 +1454,15 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
         output.push_str("int32_t tsuzuri_main(void);\n");
     }
     output.push_str(&imports::header(module));
+    for (symbol, _) in host_entries(module) {
+        output.push_str(match symbol {
+            "tsuzuri_async_poll" => "int64_t tsuzuri_async_poll(int64_t now);\n",
+            _ => "void tsuzuri_async_complete(int64_t operation, int64_t value);\n",
+        });
+    }
+    if reaches_reactor(module) {
+        output.push_str("int32_t tsuzuri_async_post(int64_t operation, int64_t value);\n");
+    }
     for function in &module.functions {
         if !function.exported {
             continue;
@@ -1477,6 +1495,7 @@ struct Globals {
     definitions: Vec<String>,
     next_metadata: usize,
     wasm: bool,
+    async_reactor: bool,
     memory64: bool,
     traps: Option<traps::Marks>,
     debug: Option<debug::DebugContext>,
@@ -1520,6 +1539,7 @@ impl Default for Globals {
             definitions: Vec::new(),
             next_metadata,
             wasm: false,
+            async_reactor: false,
             memory64: false,
             traps: None,
             debug: None,
@@ -2709,6 +2729,53 @@ pub fn io_entry(module: &CheckedModule) -> bool {
             == [Type::function(vec![Type::Unit], arguments[0].clone())]
 }
 
+/// Whether IR waits in the reactor of `Async.block_on` (B08 Phase 3).
+pub fn uses_reactor(ir: &str) -> bool {
+    ir.contains("declare void @tsuzuri_async_wait(")
+}
+
+/// Whether the program can reach `Async.block_on`, whose native runtime defines
+/// `tsuzuri_async_post`.
+pub fn reaches_reactor(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, false);
+    module
+        .functions
+        .iter()
+        .enumerate()
+        .any(|(id, function)| reachable.contains(&id) && async_reactor_function(function))
+}
+
+fn async_reactor_function(function: &CheckedFunction) -> bool {
+    function.origin.module == ModuleOrigin::Std
+        && function.module == "Async"
+        && function.name.split('.').next() == Some("reactor")
+}
+
+/// The entry points of the executor that the host drives, `(symbol, function)`, when the
+/// program can reach that executor (B08): `Async.start` and `Async.block_on` refer to them.
+pub fn host_entries(module: &CheckedModule) -> Vec<(&'static str, usize)> {
+    let reachable = reachable_functions(module, None, false);
+    module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| reachable.contains(id))
+        .filter_map(|(id, function)| host_entry(function).map(|symbol| (symbol, id)))
+        .collect()
+}
+
+/// The symbol under which the host calls a std function of the host-driven executor.
+fn host_entry(function: &CheckedFunction) -> Option<&'static str> {
+    if function.origin.module != ModuleOrigin::Std || function.module != "Async" {
+        return None;
+    }
+    match function.name.as_str() {
+        "__poll" => Some("tsuzuri_async_poll"),
+        "__complete" => Some("tsuzuri_async_complete"),
+        _ => None,
+    }
+}
+
 /// Whether the entry is a `def main`, which the checker allows only as `unit -> i32` or
 /// `Array<string> -> i32`; its result is the process exit code.
 pub fn main_entry(module: &CheckedModule) -> bool {
@@ -2974,8 +3041,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         };
         // Unicode table reads inline into every caller, so that LLVM resolves the table switch where
         // the table number is constant and keeps only the tables that a program reads (D09).
+        // Resuming a continuation inlines too, so even at -O0 a chain of suspended computations
+        // costs no extra frames per level (B08).
         let inline = if self.function.module == "$builtin"
-            && self.function.name.starts_with("Unicode.__table_")
+            && (self.function.name.starts_with("Unicode.__table_")
+                || self.function.name.starts_with("Async.__resume"))
         {
             " alwaysinline"
         } else {
@@ -5859,6 +5929,11 @@ fn numeric_kind(ty: &Type) -> u16 {
 }
 
 fn export_wrapper(function: &CheckedFunction, module: &CheckedModule) -> String {
+    named_wrapper(function, module, &format!("tz_{}", function.name))
+}
+
+/// The C-ABI wrapper `symbol` of a function with scalar parameters and result.
+fn named_wrapper(function: &CheckedFunction, module: &CheckedModule, symbol: &str) -> String {
     let parameters = function
         .signature
         .parameters
@@ -5869,9 +5944,8 @@ fn export_wrapper(function: &CheckedFunction, module: &CheckedModule) -> String 
         .join(", ");
     let result = &function.signature.result;
     let mut output = format!(
-        "define {} @tz_{}({parameters}) nounwind {{\nentry:\n",
-        abi_type(result),
-        function.name
+        "define {} @{symbol}({parameters}) nounwind {{\nentry:\n",
+        abi_type(result)
     );
     let mut arguments = Vec::new();
     for (index, ty) in function.signature.parameters.iter().enumerate() {
@@ -6005,6 +6079,7 @@ fn emit_builtin(
         | Builtin::Not
         | Builtin::OwnedFunction
         | Builtin::OwnedCall
+        | Builtin::AsyncResume
         | Builtin::IOReadLine
         | Builtin::IOWrite
         | Builtin::OsRead
@@ -6043,6 +6118,111 @@ fn emit_builtin(
              exhausted:\n  call void @llvm.trap()\n  unreachable\n\
              done:\n  ret i64 %id\n}}\n\n"
         ),
+        // Operation ids are unique and never reused. The high bits name the thread that began the
+        // operation, so `tsuzuri_async_post` can hand its completion to that thread (B08).
+        Builtin::AsyncNextId => {
+            async_thread_index(globals, wasm);
+            let register = if !wasm && globals.async_reactor {
+                intrinsics.insert("declare void @tsuzuri_async_register(i64)".into());
+                "  call void @tsuzuri_async_register(i64 %id)\n"
+            } else {
+                ""
+            };
+            let storage = if wasm {
+                "global"
+            } else {
+                "thread_local global"
+            };
+            format!(
+                "@tz.async.next_id = internal {storage} i64 0, align 8\n\n\
+                 define internal i64 {symbol}() nounwind {{\n\
+                 entry:\n  %thread = call i64 @tz.async.thread_index()\n  \
+                 %previous = load i64, ptr @tz.async.next_id, align 8\n  %count = add i64 %previous, 1\n  \
+                 %valid = icmp ult i64 %count, {ASYNC_OPERATIONS_PER_THREAD}\n  \
+                 br i1 %valid, label %done, label %exhausted\n\
+                 exhausted:\n  call void @llvm.trap()\n  unreachable\n\
+                 done:\n  store i64 %count, ptr @tz.async.next_id, align 8\n  \
+                 %high = shl i64 %thread, {ASYNC_THREAD_SHIFT}\n  %id = or i64 %high, %count\n{register}  ret i64 %id\n}}\n\n"
+            )
+        }
+        Builtin::AsyncRetire => {
+            let retire = if !wasm && globals.async_reactor {
+                intrinsics.insert("declare void @tsuzuri_async_retire(i64)".into());
+                "  call void @tsuzuri_async_retire(i64 %operation)\n"
+            } else {
+                ""
+            };
+            format!(
+                "define internal {result} {symbol}(i64 %operation) nounwind {{\nentry:\n{retire}  ret {result} 0\n}}\n\n"
+            )
+        }
+        // The reactor of `Async.block_on` (B08 Phase 3): `src/runtime/async.c` natively, which the
+        // driver links when the IR declares these functions, and JSPI imports on WASM, which the
+        // driver accepts only with `--wasm-feature jspi`.
+        Builtin::AsyncClock => {
+            intrinsics.insert(if wasm {
+                "declare i64 @tsuzuri_async_clock() \"wasm-import-module\"=\"tsuzuri_async\" \"wasm-import-name\"=\"clock\"".into()
+            } else {
+                "declare i64 @tsuzuri_async_clock()".into()
+            });
+            format!(
+                "define internal i64 {symbol}() nounwind {{\nentry:\n  %now = call i64 @tsuzuri_async_clock()\n  ret i64 %now\n}}\n\n"
+            )
+        }
+        Builtin::AsyncWait if wasm => {
+            intrinsics.insert(
+                "declare void @tsuzuri_async_wait(i64) \"wasm-import-module\"=\"tsuzuri_async\" \"wasm-import-name\"=\"wait\"".into(),
+            );
+            format!(
+                "define internal {result} {symbol}(i64 %deadline) nounwind {{\nentry:\n  call void @tsuzuri_async_wait(i64 %deadline)\n  ret {result} 0\n}}\n\n"
+            )
+        }
+        // Natively the thread waits for the completions posted to it.
+        Builtin::AsyncWait => {
+            async_thread_index(globals, wasm);
+            intrinsics.insert("declare void @tsuzuri_async_wait(i64, i64)".into());
+            format!(
+                "define internal {result} {symbol}(i64 %deadline) nounwind {{\nentry:\n  %thread = call i64 @tz.async.thread_index()\n  \
+                 call void @tsuzuri_async_wait(i64 %thread, i64 %deadline)\n  ret {result} 0\n}}\n\n"
+            )
+        }
+        // JavaScript completes operations on its own thread with `tsuzuri_async_complete`.
+        Builtin::AsyncPosted if wasm => format!(
+            "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n\n"
+        ),
+        Builtin::AsyncPosted => {
+            async_thread_index(globals, wasm);
+            intrinsics.insert("declare i32 @tsuzuri_async_take(i64, ptr, ptr)".into());
+            format!(
+                "define internal {result} {symbol}() nounwind {{\nentry:\n  %thread = call i64 @tz.async.thread_index()\n  \
+                 %operation = alloca i64, align 8\n  %value = alloca i64, align 8\n  \
+                 %found = call i32 @tsuzuri_async_take(i64 %thread, ptr %operation, ptr %value)\n  %first = load i64, ptr %operation, align 8\n  \
+                 %second = load i64, ptr %value, align 8\n  %pair = insertvalue {result} zeroinitializer, i64 %first, 0\n  \
+                 %result = insertvalue {result} %pair, i64 %second, 1\n  ret {result} %result\n}}\n\n"
+            )
+        }
+        // The two builtins of a slot share its globals, which `emit_target` writes once. Each
+        // thread has its own executor, so the slots are thread-local (B08).
+        Builtin::AsyncTake | Builtin::AsyncPut => {
+            let (slot, lock) = async_slot(&canonical_type(&instance.types[0], module));
+            let storage = if wasm {
+                "global"
+            } else {
+                "thread_local global"
+            };
+            for global in [
+                format!(
+                    "{slot} = internal {storage} {} zeroinitializer, align 16",
+                    llvm_type(&instance.types[0], module)
+                ),
+                format!("{lock} = internal {storage} i8 0, align 1"),
+            ] {
+                if !globals.definitions.contains(&global) {
+                    globals.definitions.push(global);
+                }
+            }
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
         // The generated tables live in `unicode.ll`, which `emit_target` appends on use (D09).
         Builtin::UnicodeTableLength => format!(
             "define internal i64 {symbol}(i64 %table) nounwind alwaysinline {{\nentry:\n  %r = call i64 @tz.unicode.length(i64 %table)\n  ret i64 %r\n}}\n\n"
@@ -6230,6 +6410,19 @@ fn emit_typed_builtin(
         emitter.value(format!(
             "insertvalue {owned} zeroinitializer, %tz.closure %arg0, 0"
         ))
+    } else if matches!(instance.builtin, Builtin::AsyncTake | Builtin::AsyncPut) {
+        emitter.async_slot_builtin(instance, ty)
+    } else if instance.builtin == Builtin::AsyncResume {
+        // The call takes the continuation's environment, which nothing else holds (B08).
+        let Type::Function(parameters, _) = ty else {
+            unreachable!("builtin has function type")
+        };
+        let run = Type::function(vec![parameters[1].clone()], ty.after_arguments(2));
+        let next = emitter.ty(&parameters[0]);
+        let closure = emitter.value(format!("extractvalue {next} %arg0, 0"));
+        emitter
+            .apply_value(&closure, &run, Some((&parameters[1], "%arg1")), false)
+            .0
     } else if instance.builtin == Builtin::OwnedCall {
         // The call borrows the environment, which the owned function keeps.
         let Type::Function(parameters, _) = ty else {
@@ -6427,10 +6620,13 @@ fn emit_typed_builtin(
         .join(", ");
     let result_type = emitter.ty(&ty.after_arguments(count));
     emitter.instruction(format!("ret {result_type} {result}"));
-    let definition = emitter.auxiliary(&format!(
+    let mut definition = emitter.auxiliary(&format!(
         "{result_type} {}({arguments})",
         builtin_symbol(instance, module)
     ));
+    if instance.builtin == Builtin::AsyncResume {
+        definition = definition.replacen(" nounwind {", " nounwind alwaysinline {", 1);
+    }
     // A builtin body that drops recursive values or deferred shared blocks needs their helpers.
     if separate {
         shared_globals
@@ -6443,7 +6639,147 @@ fn emit_typed_builtin(
     definition
 }
 
+/// The globals of the host executor's state slot for the canonical type name `ty`, one per
+/// type: the value, and its lock (0 empty, 1 full, 2 taken).
+fn async_slot(ty: &str) -> (String, String) {
+    (
+        format!("@\"tz.async.slot.{ty}\""),
+        format!("@\"tz.async.lock.{ty}\""),
+    )
+}
+
+/// The bit at which an operation id of `Async.__next_id` keeps the index of the thread that began
+/// the operation; `src/runtime/async.c` reads it the same way to route a posted completion (B08).
+const ASYNC_THREAD_SHIFT: u32 = 39;
+/// The operations that one thread can begin, so that the count stays below the thread's bits.
+const ASYNC_OPERATIONS_PER_THREAD: u64 = 1 << ASYNC_THREAD_SHIFT;
+
+/// Defines `@tz.async.thread_index`: the calling thread's index for the executor of `Async.start`
+/// and `Async.block_on`, assigned on first use and never reused. Indexes stay below 2^24, so an
+/// operation id that carries one stays positive.
+fn async_thread_index(globals: &mut Globals, wasm: bool) {
+    let definition = if wasm {
+        "@tz.async.thread = internal global i64 1, align 8\n\
+        define internal i64 @tz.async.thread_index() nounwind {\n\
+        entry:\n  %epoch = load i64, ptr @tz.async.thread, align 8\n  ret i64 %epoch\n\
+}\n\
+        define void @tsuzuri_async_set_epoch(i64 %epoch) nounwind {\n\
+        entry:\n  %positive = icmp sgt i64 %epoch, 0\n  %bounded = icmp ult i64 %epoch, 16777216\n  \
+        %count = load i64, ptr @tz.async.next_id, align 8\n  %unused = icmp eq i64 %count, 0\n  \
+        %range = and i1 %positive, %bounded\n  %valid = and i1 %range, %unused\n  \
+        br i1 %valid, label %store, label %bad\n\
+        store:\n  store i64 %epoch, ptr @tz.async.thread, align 8\n  ret void\n\
+        bad:\n  call void @llvm.trap()\n  unreachable\n\
+}\n"
+            .to_owned()
+    } else {
+        "@tz.async.thread = internal thread_local global i64 0, align 8\n\
+        @tz.async.threads = internal global i64 0, align 8\n\n\
+        define internal i64 @tz.async.thread_index() nounwind {\n\
+        entry:\n  %current = load i64, ptr @tz.async.thread, align 8\n  %known = icmp ne i64 %current, 0\n  \
+        br i1 %known, label %done, label %assign\n\
+        assign:\n  %previous = atomicrmw add ptr @tz.async.threads, i64 1 monotonic, align 8\n  \
+        %fresh = add i64 %previous, 1\n  %valid = icmp ult i64 %fresh, 16777216\n  \
+        br i1 %valid, label %store, label %exhausted\n\
+        store:\n  store i64 %fresh, ptr @tz.async.thread, align 8\n  br label %done\n\
+        exhausted:\n  call void @llvm.trap()\n  unreachable\n\
+        done:\n  %index = phi i64 [ %current, %entry ], [ %fresh, %store ]\n  ret i64 %index\n}
+"
+            .to_owned()
+    };
+    if !globals
+        .definitions
+        .iter()
+        .any(|global| global == &definition)
+    {
+        globals.definitions.push(definition);
+    }
+}
+
 impl FunctionEmitter<'_, '_> {
+    /// `Async.__take` and `Async.__put` (B08 Phase 2). A take locks the slot, and only a put
+    /// unlocks it, so a take of a taken slot (a re-entrant use of the executor) and a put into an
+    /// unlocked slot trap. The slot and its lock are thread-local, so plain accesses suffice.
+    fn async_slot_builtin(&mut self, instance: &BuiltinInstance, ty: &Type) -> String {
+        let element = &instance.types[0];
+        let element_type = self.ty(element);
+        let (slot, lock) = async_slot(&canonical_type(element, self.module));
+        let Type::Function(parameters, _) = ty else {
+            unreachable!("builtin has function type")
+        };
+        let state = if instance.builtin == Builtin::AsyncTake {
+            ty.after_arguments(0)
+        } else {
+            parameters[0].clone()
+        };
+        let Type::Union(id, _) = &state else {
+            unreachable!("checked state is Maybe")
+        };
+        let case = |name: &str| {
+            self.module.unions[*id]
+                .cases
+                .iter()
+                .position(|(case, _)| case == name)
+                .expect("Maybe has None and Some")
+        };
+        let (none, some) = (case("None"), case("Some"));
+        let fail = |emitter: &mut Self, valid: &str| {
+            let failed = emitter.label();
+            let next = emitter.label();
+            emitter.branch(valid, &next, &failed);
+            emitter.begin(&failed);
+            emitter.instruction("call void @llvm.trap()");
+            emitter.instruction("unreachable");
+            emitter.begin(&next);
+        };
+        if instance.builtin == Builtin::AsyncTake {
+            let previous = self.value(format!("load i8, ptr {lock}, align 1"));
+            self.instruction(format!("store i8 2, ptr {lock}, align 1"));
+            let free = self.value(format!("icmp ne i8 {previous}, 2"));
+            fail(self, &free);
+            let output = self.slot(&state);
+            let empty = self.construct_value(&state, none, None);
+            self.instruction(format!("store {} {empty}, ptr {output}", self.ty(&state)));
+            let full = self.value(format!("icmp eq i8 {previous}, 1"));
+            let take = self.label();
+            let done = self.label();
+            self.branch(&full, &take, &done);
+            self.begin(&take);
+            let value = self.value(format!("load {element_type}, ptr {slot}, align 16"));
+            self.instruction(format!(
+                "store {element_type} zeroinitializer, ptr {slot}, align 16"
+            ));
+            let taken = self.construct_value(&state, some, Some((value, element_type.clone())));
+            self.instruction(format!("store {} {taken}, ptr {output}", self.ty(&state)));
+            self.jump(&done);
+            self.begin(&done);
+            self.value(format!("load {}, ptr {output}", self.ty(&state)))
+        } else {
+            let current = self.value(format!("load i8, ptr {lock}, align 1"));
+            let taken = self.value(format!("icmp eq i8 {current}, 2"));
+            fail(self, &taken);
+            let state_type = self.ty(&state);
+            let tag = self.value(format!("extractvalue {state_type} %arg0, 0"));
+            let present = self.value(format!("icmp eq i32 {tag}, {some}"));
+            let store = self.label();
+            let empty = self.label();
+            let done = self.label();
+            self.branch(&present, &store, &empty);
+            self.begin(&store);
+            let value = self.payload_value(&state, "%arg0", element);
+            self.instruction(format!(
+                "store {element_type} {value}, ptr {slot}, align 16"
+            ));
+            self.instruction(format!("store i8 1, ptr {lock}, align 1"));
+            self.jump(&done);
+            self.begin(&empty);
+            self.instruction(format!("store i8 0, ptr {lock}, align 1"));
+            self.jump(&done);
+            self.begin(&done);
+            "0".to_owned()
+        }
+    }
+
     fn sequence_next(&mut self, ty: &Type) -> String {
         let Type::Function(parameters, _) = ty else {
             unreachable!("builtin function type");

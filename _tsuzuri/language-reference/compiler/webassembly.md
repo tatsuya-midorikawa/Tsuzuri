@@ -8,6 +8,7 @@
 
 - `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
 - `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
+- [Async 式](../async-tasks-and-lazy/async.md) の `Async.start` は、グルーの `bindings.async` がイベントループで駆動します。`Async.block_on` は `--wasm-feature jspi` で JSPI を使い、export が `Promise` を返します。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
 - 線形メモリの既定上限は 16 MiB、メインスタックは 1 MiB です。
@@ -148,7 +149,7 @@ trap (site 0) trap
 2n
 ```
 
-グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。`--wasm-feature threads` を付けたときのグルーは、[スレッドのグルー](#スレッドのグルー) で説明します。
+グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。`--wasm-feature threads` を付けたときのグルーは [スレッドのグルー](#スレッドのグルー) で、`--wasm-feature jspi` を付けたときのグルーと `bindings.async` は [非同期計算と JSPI](#非同期計算と-jspi) で説明します。
 
 ### 型の対応
 
@@ -385,6 +386,41 @@ the WASM thread pool stopped after a failure; load the module again
 
 この例とリポジトリの `tests/bindings_threads.mjs` は、Chrome（headless）と、Playwright の Chromium、WebKit で、COOP / COEP 付きのページでは 3 スレッドが同時に動くこと、ヘッダーの無いページでは `Error` になることを確かめました。Firefox は未確認です。Node.js から使うときは、このグルーではなく `src/runtime/wasm-threads.mjs` を使います。
 
+## 非同期計算と JSPI
+
+[Async 式](../async-tasks-and-lazy/async.md) の実行器に到達するプログラム（`Async.start` か `Async.block_on` を使うもの）は、`tsuzuri_async_poll`（`(now: i64) => i64`）と `tsuzuri_async_complete`（`(operation: i64, value: i64) => void`）を export します。実行器に到達しないプログラムの export と import は変わりません。
+
+`Async.start` は import を足しません。ホストが `tsuzuri_async_poll` を回し、`Async.host` の操作の完了を `tsuzuri_async_complete` で渡します。`--emit bindings-js` のグルーは、これを自動で行います。export の呼び出しと `complete` のあと、またいちばん早いタイマーの時刻に、`performance.now()` のミリ秒で poll します。宣言には次が加わります。
+
+```typescript
+export interface AsyncHost {
+  complete(operation: bigint, value: bigint): void;
+  settled(): Promise<void>;
+}
+export interface Bindings { readonly async: AsyncHost }
+```
+
+`complete` は `bigint` の操作 ID と値を受け取ります。ほかの型は `TypeError`、`i64` の範囲外は `RangeError` です。`settled()` は、計算が残っていない状態になると解決します。実行器の失敗では拒否し、再作成まで失敗を保持します。待っていない ID を `complete` に渡すとトラップで、インスタンスを捨てます。待っていた計算も失われます。使い方の例は [Async 式](../async-tasks-and-lazy/async.md#ホストが駆動する実行asyncstart) にあります。
+
+実行器のモジュールは `tsuzuri_async_set_epoch(i64)` も export します。グルーは、新しいインスタンスで操作を開始する前に、1 以上 2^24 未満の世代を設定します。同じ生成モジュール内では、複数の `load` とインスタンスの再作成を通じて世代を再利用しません。別のインスタンスや破棄したインスタンスの ID を `complete` に渡すと `TypeError` になり、新しい計算へ取り違えて渡しません。別々に生成したグルーや生の WASM の間では、ホストが操作 ID と実行器を対応付けます。生の WASM を再作成するホストも世代を変えます。操作の開始後に世代を変更するとトラップします。
+
+`Async.block_on` は、待つ間に WebAssembly のスタックを中断します。そのために JavaScript Promise Integration（JSPI）を使います。`--wasm-feature jspi` を付けて、`.wasm` とグルーの両方をビルドします。
+
+```sh
+tsuzuri build app --target wasm32 --wasm-feature jspi --emit bindings-js -o app.mjs
+tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
+```
+
+- モジュールは `tsuzuri_async.clock`（`() => i64`、ミリ秒）と `tsuzuri_async.wait`（`(deadline: i64) => void`）を import します。`wait` は `WebAssembly.Suspending` で包んだ関数で、期限か操作の完了で解決する `Promise` を返します。期限が `i64` の最大値なら、完了だけを待ちます。
+- `Async.block_on` に到達する export は、`WebAssembly.promising` で包んで呼びます。JSPI のグルーは、すべての export を `Promise` を返す関数にします。宣言の戻り値も `Promise<T>` です。
+- JSPI のグルーは export を呼び出し順に直列化し、待っている間に次の呼び出しで同じスタックや結果を使いません。入力は呼び出し時点のコピーで、`withBorrowed` はありません。生の `WebAssembly.promising` の呼び出しも、前の呼び出しを await してから次を始めます。
+- export が待っている間も JavaScript は動きます。`bindings.async.complete` は、待っている export を起こします。
+- `--wasm-feature jspi` は、`wasm32` と `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js` で使えます。`--wasm-feature threads` や `--wasm-host wasi` とは同時に指定できません（`E2000`）。
+- `--wasm-feature jspi` なしで `Async.block_on` に到達すると `E2000` です。JSPI を使う `.wasm` を JSPI なしのグルーで読むと、`load` が `module does not match bindings: it waits through JSPI; generate the bindings with --wasm-feature jspi as well` で失敗します。
+- JSPI（`WebAssembly.Suspending` と `WebAssembly.promising`）を持つエンジンが要ります。リポジトリの `tests/async.mjs` で、Node.js 24 で動くことを確かめました。Node.js 20 にはありません。
+
+`--wasm-feature threads` は、実行器に到達するプログラムを `E2000` で拒否します。現在の WASM worker は Async 実行器の TLS を設定しません。
+
 ## WASI
 
 `--wasm-host wasi` は、標準入出力と `File`、`Dir`、`Env`、`Time`、`Random`、`Process` を WASI preview 1 の import へ下げます。wasm32 の object か WASM だけです。既定の wasm32 は、これらの API に到達した時点でビルドを拒否します。
@@ -452,11 +488,13 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - 計算だけのモジュールは import なしで instantiate できます。OS API は WASI か native です。
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
+- `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 
 ## 関連項目
 
 - [コンパイラ オプション](option.md)
+- [Async 式](../async-tasks-and-lazy/async.md)
 - [ネイティブ連携 (C ABI)](native-interop.md)
 - [診断メッセージとエラーコード](diagnostics.md)
 - [言語仕様の公開 ABI](../../../docs/language.md#公開-abi)

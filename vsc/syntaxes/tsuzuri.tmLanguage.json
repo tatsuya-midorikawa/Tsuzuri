@@ -9,6 +9,7 @@
     { "name": "entity.name.function.tsuzuri", "match": "(?<=\\bdef\\s)(?:rec\\s+)?[A-Za-z_][A-Za-z_0-9]*" },
     { "name": "entity.name.type.tsuzuri", "match": "(?<=\\brecord\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bunion\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\bclass\\s)[A-Za-z_][A-Za-z_0-9]*|(?<=\\btype\\s)[A-Za-z_][A-Za-z_0-9]*" },
     { "name": "storage.type.generic.tsuzuri", "match": "'[A-Za-z_][A-Za-z_0-9]*\\b" },
+    { "name": "entity.name.function.tsuzuri", "match": "(?<=\\.)\\b(?:yield|union|new)\\b" },
     { "name": "constant.language.tsuzuri", "match": "\\b(?:true|false)\\b" },
     { "name": "storage.type.tsuzuri", "match": "\\b(?:unit|bool|string|utf8string|char|utf8char|byte|ubyte|sbyte|bigint|i(?:8|16|32|64|128)u?(?:x[248]|x16|x32)?|f(?:16|32|64|128)(?:x[248])?|d(?:32|64|128))\\b" },
     { "name": "keyword.control.tsuzuri", "match": "\\b(?:if|then|elif|else|match|with|when|where|for|in|to|downto|while|break|continue|return|yield|do|and|let|try|finally|is)(?:!)?\\b|\\b(?:return|yield|do|and|let|match)!" },

@@ -97,6 +97,21 @@ test('TextMate grammar treats a first-line shebang as a comment', async () => {
 	} finally { registry.dispose(); }
 });
 
+test('member-position keywords stay function names', async () => {
+	const { grammar, registry } = await loadGrammar();
+	try {
+		for (const member of ['Async.yield', 'Set.union', 'Rc.new']) {
+			const line = `do! ${member} ()`;
+			const start = line.indexOf('.') + 1;
+			const token = grammar.tokenizeLine(line, INITIAL).tokens.find(candidate => candidate.startIndex === start);
+			assert.ok(token, member);
+			assert.ok(token.scopes.includes('entity.name.function.tsuzuri'), member);
+			assert.ok(!token.scopes.includes('keyword.control.tsuzuri'), member);
+		}
+		assert.ok(grammar.tokenizeLine('yield 1', INITIAL).tokens[0].scopes.includes('keyword.control.tsuzuri'));
+	} finally { registry.dispose(); }
+});
+
 async function loadGrammar() {
 	const root = path.resolve(__dirname, '../..');
 	oniguruma ??= readFile(require.resolve('vscode-oniguruma/release/onig.wasm')).then(data => loadWASM(data));

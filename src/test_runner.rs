@@ -517,6 +517,15 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
     if text.contains("declare i32 @tsuzuri_io_") {
         sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
     }
+    if llvm::uses_reactor(text) {
+        if !cfg!(unix) {
+            return Err(driver_error(
+                "E2002",
+                "Async.block_on needs a POSIX native reactor; use Async.run on this platform",
+            ));
+        }
+        sources.push(("async.c", include_str!("runtime/async.c").to_owned()));
+    }
     Ok(sources)
 }
 
@@ -623,6 +632,12 @@ fn build_runner(
     if text.contains("declare i64 @tsuzuri_os_") {
         return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
     }
+    if text.contains("define i64 @tsuzuri_async_poll(") || llvm::uses_reactor(&text) {
+        return Err(driver_error(
+            "E2000",
+            "the WebAssembly test runner cannot drive Async.start or Async.block_on; use Async.run, or build a module with an asynchronous host",
+        ));
+    }
     let ir = directory.join("tests.ll");
     let object = directory.join("tests.o");
     let artifact = directory.join("tests.wasm");
@@ -719,8 +734,15 @@ fn compile_native_runner(
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
+    let async_runtime = llvm::uses_reactor(&text);
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+    }
+    if async_runtime && !cfg!(unix) {
+        return Err(driver_error(
+            "E2002",
+            "Async.block_on needs a POSIX native reactor; use Async.run on this platform",
+        ));
     }
     let kind = runner.kind;
     let ir = directory.join(format!("{}.ll", runner.stem));
@@ -760,6 +782,7 @@ fn compile_native_runner(
     for (needed, name, source) in [
         (os_runtime, "os.c", include_str!("runtime/os.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
+        (async_runtime, "async.c", include_str!("runtime/async.c")),
     ] {
         if needed {
             let runtime = directory.join(name);
@@ -767,6 +790,9 @@ fn compile_native_runner(
                 .map_err(|error| io_error("write runtime", &runtime, error))?;
             clang.arg(&runtime);
         }
+    }
+    if async_runtime && !task_runtime && !cfg!(windows) {
+        clang.arg("-pthread");
     }
     links.add_to(&mut clang);
     collect_message(messages, run_tool(&mut clang, runner.tools_hint)?);

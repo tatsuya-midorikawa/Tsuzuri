@@ -2774,6 +2774,24 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(
+            builtin,
+            Builtin::AsyncResume
+                | Builtin::AsyncTake
+                | Builtin::AsyncPut
+                | Builtin::AsyncNextId
+                | Builtin::AsyncClock
+                | Builtin::AsyncWait
+                | Builtin::AsyncPosted
+                | Builtin::AsyncRetire
+        ) && !(self.module == "Async" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the continuation primitive is private to the standard Async module; compose computations with the Async builder",
+                span,
+            ));
+        }
         if builtin == Builtin::ArenaNextId
             && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
@@ -2861,6 +2879,17 @@ impl Checker<'_> {
                 return Err(Diagnostic::new(
                     "E1005",
                     "Seq.next requires Maybe.None and Maybe.Some in standard order",
+                    span,
+                ));
+            }
+        }
+        if builtin == Builtin::AsyncResume {
+            let run = Type::function(vec![types[0].clone()], types[1].clone());
+            if !matches!(&parameters[0], Type::Record(id, arguments) if self.types.record_fields(*id, arguments) == [run])
+            {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    "Async.__resume requires the standard Async.Next record",
                     span,
                 ));
             }

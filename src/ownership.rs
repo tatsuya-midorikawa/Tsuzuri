@@ -78,6 +78,8 @@ fn join(result: &mut Value, value: Value) {
     result.loans.extend(value.loans);
 }
 
+/// B08 D6: an `Async` value holds no loans, so no borrow lives across a suspension.
+const ASYNC_BORROW: &str = "async computations cannot keep borrowed values across 'let!', 'do!', or the start of the computation; move or clone the value into the async block instead";
 const MOVE_OUT_OF_DROP: &str = "cannot move a field or payload out of a value whose type implements Drop; borrow it with 'ref' instead";
 
 impl Place {
@@ -284,6 +286,7 @@ fn check_body(
             .collect(),
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters[0].id),
+        placeholders: BTreeSet::new(),
     };
     for (index, parameter) in parameters.iter().enumerate() {
         let mut value = Value::default();
@@ -450,6 +453,9 @@ struct Checker<'a> {
     callbacks: BTreeMap<usize, &'a CallbackContract>,
     /// The root of the value that the checked `Drop.drop` body drops.
     drop_root: Option<usize>,
+    /// The external roots of parameters that store no reference: their loans only stand for
+    /// whatever a function or async argument captured, which the caller checks (B08 D6).
+    placeholders: BTreeSet<usize>,
 }
 
 /// Whether each result slot of `actual` borrows only from inputs that `required` allows, once
@@ -753,6 +759,9 @@ impl Checker<'_> {
     ) {
         let root = usize::MAX - parameter.id;
         self.external.insert(root);
+        if !parameter.ty.contains_stored_reference(&self.module.types()) {
+            self.placeholders.insert(root);
+        }
         let target = slots.is_some_and(|slots| slots.targets.get(index) == Some(&true));
         let count = if target {
             2
@@ -1788,7 +1797,7 @@ impl Checker<'_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
-        match expression.kind {
+        let value = match expression.kind {
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
                 self.eval_control(expression, live)
             }
@@ -1796,7 +1805,16 @@ impl Checker<'_> {
             E::Call(..) => self.eval_call(expression, live),
             E::Lambda { .. } => self.eval_lambda(expression, live),
             _ => self.eval_value(expression, usage, live),
+        }?;
+        if expression.ty.is_async(&self.module.types())
+            && value
+                .loans
+                .iter()
+                .any(|loan| !self.placeholders.contains(&self.loans[*loan].place.root))
+        {
+            return Err(error("E1013", ASYNC_BORROW, expression.span));
         }
+        Ok(value)
     }
 
     fn eval_block(

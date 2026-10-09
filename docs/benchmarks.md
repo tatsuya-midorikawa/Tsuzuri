@@ -20,6 +20,43 @@ GPU 実行の測定試作は `node benchmarks/run-gpu.mjs target/release/tsuzuri
 2026-09-28 には、Dawn Node binding 0.6.1 の Metal バックエンド上で、厳密な `i32` シェーダーの初期化、マッピング、および常駐チェーンの参照照合を実施しました。速度の優位性は主張しておらず、浮動小数点の GPU 実行や自動オフロードは現時点で対象外です。
 制約の根拠は [WGSL 仕様](https://gpuweb.github.io/gpuweb/wgsl/#floating-point-accuracy) に基づきます。ハードウェアネイティブな 64-bit 整数型は存在せず、浮動小数点演算においては式の再結合、融合演算、および非正規化数の扱いに差異が許容されているためです。
 
+## Async の中断と継続のコスト（B08）
+
+2026-10-09、Apple M1 Max（10 論理 CPU）、macOS 27.0.1、Apple Clang 21.0.0、Rust 1.98.1、Node 24.21.0 で測定しました。
+コンパイラは `ce7e8a1` に B08 の未コミット変更を加えた release 版、生成プログラムは native / generic / O3 です。
+各プログラムを 1 回 warm-up してから `/usr/bin/time -l` で 9 回測りました。時間にはプロセスの開始と終了、継続の確保・再開・解放を含みます。
+計時の表示粒度は 0.01 秒で、他言語や旧 Async 実装との速度比、SIMD・並列・GPU による加速を表す値ではありません。
+
+| 入力 | wall time の中央値（最小–最大） | 最大 RSS |
+| --- | --- | --- |
+| 末尾の `return!` と yield、1,000,000 回 | 0.18 秒（0.17–0.23） | 1,753,088 bytes |
+| 非末尾の `let!` と yield、1,000 段 | 0.03 秒（0.03–0.05） | 2,572,288 bytes |
+| 同、2,000 段 | 0.11 秒（0.10–0.16） | 3,325,952 bytes |
+| 同、4,000 段 | 0.40 秒（0.40–0.57） | 4,882,432 bytes |
+
+入力は [Async fixture](../tests/fixtures/async/Main.tz) の `tail_loop_from` と `deep_from` です。
+各関数と、`Async.run` の結果が入力の回数と一致したら終了コード 0 を返す main だけを、別々のプロジェクトに置きます。
+末尾のプログラムの main は次のとおりです。非末尾では呼び出しを `deep_from 1000`（または 2000 / 4000）、期待値を同じ数にします。
+
+```tsuzuri
+def main :: unit -> i32 = \() ->
+    let result = Async.run (tail_loop_from 0 1000000)
+    if result == 1000000 then 0 else 1
+```
+
+```sh
+tsuzuri build <project> --cpu generic -O3 -o <program>
+<program>                         # warm-up、終了コード 0 を確認
+for sample in 1 2 3 4 5 6 7 8 9; do /usr/bin/time -l <program>; done
+```
+
+入力・計測スクリプト・標本ごとの time の出力と machine code は ignored の `target/perf/B08-after/`、
+コンパイラの SHA-256、環境、wall / user / sys time、RSS の全標本は PX01 形式の `process.jsonl` に保存しました。
+生成 IR の代表的な i64 `bind_step` 特殊化には直接の `tz.alloc` が 4 箇所、環境 clone helper には 2 箇所あります。
+consuming `Async.Next` は再開時に環境を move しますが、深い非末尾の継続は各段で包み直すため全体で O(n²) です。
+末尾の `return!` や `For` の反復は、反復数に比例してスタックを深くしません。native / WASM の O0 / O3 で 100 万反復を確認しました。
+非末尾の深さは別で、WASM はエンジンの stack exhaustion の限界を受けます。既定の stack や資源上限を増やして測定していません。
+
 ## 表の読み方
 
 ビルド全体キャッシュ（whole-build cache）の合成ベンチマークは `node benchmarks/run-cache.mjs target/release/tsuzuri` で実行します。200 モジュールのプロジェクトを用いて、コールド状態（uncached）とウォーム状態（warm）における 7 回試行の中央値をミリ秒（ms）単位で計測し、出力バイナリのバイト単位の一致および実行チェックサムを照合します。

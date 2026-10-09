@@ -97,7 +97,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
-| ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、UI やネットワークはホスト側に委譲。 |
+| ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、協調的な待ちは `Async`、UI やネットワークのイベントはホスト側に委譲。 |
 | 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
 
 ---
@@ -352,6 +352,23 @@ match Task.run (Task.parallel_results jobs) with
 | Result.Error _ -> -1
 ```
 
+### 非同期計算 (`Async`)
+
+待ち時間のあいだに同じスレッドで別の計算を進めるには、標準の `Async` を使います。`Async.run` は仮想時刻、`Async.block_on` は実時間、`Async.start` はホストの poll で実行します。CPU のコアを使う並列処理は、上の `Task.parallel` と分担します。
+
+```text
+let work = Async {
+    do! Async.sleep 10
+    let! now = Async.now ()
+    return now + 32
+}
+
+Async.run work
+// 出力: 42
+```
+
+`Async.all` は子を入力順に協調スケジュールし、`Async.all_results` は最初に時刻順で完了した `Error` で残りを取り消します。`Async` の値はコールドで非 Copy です。中断をまたぐ借用は `E1013` で拒否されます。詳しくは [Async 式](_tsuzuri/language-reference/async-tasks-and-lazy/async.md) を参照してください。
+
 ### 入出力・OS 連携・定数
 
 #### 入出力 (`IO<T>`)
@@ -455,6 +472,7 @@ def main :: unit -> i32 = \() ->
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
 | `Bench`, `Gen` | ベンチマーク（`tsuzuri bench`）とプロパティテストの生成器 |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
+| `Async` | 協調的な非同期計算、仮想時刻、native reactor、ホストの再開 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
 | `Json` | JSON の解析・出力と `Encode` / `Decode` による値の変換 |
@@ -758,7 +776,7 @@ tsuzuri lsp
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
-| `--wasm-feature simd128\|threads` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散）を有効化します。 |
+| `--wasm-feature simd128\|threads\|jspi` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
@@ -792,6 +810,7 @@ node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/strings.mjs target/release/tsuzuri
 node tests/tasks.mjs target/release/tsuzuri
+node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
 node tests/json.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri

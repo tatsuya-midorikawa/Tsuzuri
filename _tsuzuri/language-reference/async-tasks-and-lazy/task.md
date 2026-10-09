@@ -14,6 +14,7 @@ OS のスレッドハンドルでも、JavaScript の `Promise` でもありま�
 - `Task.parallel` の結果配列は、入力の並び順です。
 - `Task.parallel_results` は、未開始のタスクを止め、入力インデックスが最小の `Error` を返します。
 - ネイティブの追加ワーカーは `min(オンライン CPU 数, 32) - 1` までです。既定の WASM は逐次です。
+- 待ち時間をほかの計算へ譲るなら [Async 式](async.md) を使います。`Async` は CPU コアを増やさず、`Task` はスレッドプールで計算を分けます。
 
 ## タスクの状態
 
@@ -296,6 +297,20 @@ Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature
 同梱のホストは Node.js 20 以降向けの `src/runtime/wasm-threads.mjs` です。共有メモリ（`SharedArrayBuffer`）が要ります。ブラウザでは、`--emit bindings-js --wasm-feature threads` で生成したグルーが Web Worker のプールを作り、export を Worker で実行して `Promise` を返します（[スレッドのグルー](../compiler/webassembly.md#スレッドのグルー)）。ページは COOP（`same-origin`）と COEP（`require-corp`）付きで配信します。満たさないページでは、グルーが `Error` を投げます。初期化に失敗したプールを、黙って逐次成功にはしません。
 
 `Task.run` はネイティブでも WASM でも同期呼び出しです。UI スレッドをブロックしない API ではありません。
+
+## Async との違い
+
+`Task<T>` と `Async<T>` は別の型で、暗黙の変換はありません。
+
+| | `Task<T>` | `Async<T>` |
+| --- | --- | --- |
+| 実行開始 | `Task.run` / `let!` で 1 回消費 | `Async.run`、`Async.block_on`、`Async.start` |
+| 実行 | ネイティブではワーカースレッドで同期フォーク・ジョイン。既定の WASM は逐次 | 1 スレッドの協調的な中断。`all` も自動でスレッドを増やさない |
+| 時計 | なし。計算が終わるまで呼び出し元を待つ | `run` は仮想時刻、`block_on` は単調時計、`start` はホストの poll |
+| 借用 | タスクをまたぐ借用は禁止（`E1013`） | 中断をまたぐ借用は禁止（`E1013`）。開始も中断点として扱う |
+| ホスト I/O | `extern` は同期呼び出し | `Async.host` と `Async.start` で、`tsuzuri_async_complete` による再開ができる |
+
+`Task.run` は UI スレッドやブラウザのイベントループを空ける API ではありません。イベントを待ちながら別の計算を進める必要がある場合は `Async` を使い、CPU 並列が必要な場合は `Task.parallel` を使います。
 
 ### ホスト関数
 

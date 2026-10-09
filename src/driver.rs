@@ -262,6 +262,8 @@ pub struct BuildOptions {
     pub debug_info: bool,
     pub wasm_simd: bool,
     pub wasm_threads: bool,
+    /// `--wasm-feature jspi`: `Async.block_on` waits through JavaScript Promise Integration (B08).
+    pub wasm_jspi: bool,
     /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
     pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
@@ -289,6 +291,7 @@ impl Default for BuildOptions {
             debug_info: false,
             wasm_simd: false,
             wasm_threads: false,
+            wasm_jspi: false,
             wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
@@ -309,7 +312,8 @@ impl BuildOptions {
                 || self.debug_output
                 || self.trap_info
                 || self.wasm_simd
-                || self.wasm_threads)
+                || self.wasm_threads
+                || self.wasm_jspi)
         {
             return Err(driver_error(
                 "E2000",
@@ -329,6 +333,24 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature threads requires wasm32 object or WASM output",
+            ));
+        }
+        if self.wasm_jspi
+            && (!self.target.is_wasm()
+                || !matches!(
+                    self.emit,
+                    Emit::Wasm | Emit::Object | Emit::Llvm | Emit::BindingsJs
+                ))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output",
+            ));
+        }
+        if self.wasm_jspi && (self.wasm_threads || self.wasm_host.is_some()) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
             ));
         }
         if self.wasm_simd && (!self.target.is_wasm() || self.emit == Emit::Header) {
@@ -472,7 +494,8 @@ impl BuildOptions {
             (self.trap_info, "--trap-info"),
             (self.debug_info, "--debug-info"),
             (self.debug_output, "--debug-output"),
-            // `threads` selects the glue of a thread pool; SIMD does not change the glue.
+            // `threads` selects the glue of a thread pool and `jspi` the Promise-returning glue;
+            // SIMD does not change the glue.
             (self.wasm_simd, "--wasm-feature"),
             (self.allocator != llvm::Allocator::System, "--allocator"),
         ] {
@@ -2242,6 +2265,22 @@ fn build_complete(
         links.check_shape()?;
         links.check_readable()?;
     }
+    // The executor of `Async.start` and `Async.block_on` keeps its state across calls (B08), so the
+    // blocks that a trapped call allocated and the trap boundary frees could still be reachable from it.
+    if options.trap_return && !llvm::host_entries(module).is_empty() {
+        return Err(driver_error(
+            "E2000",
+            "--trap-mode return cannot be combined with Async.start or Async.block_on: a trap inside the executor would leave its state half updated",
+        ));
+    }
+    // Each thread has its own executor in thread-local storage, which the workers of WebAssembly
+    // threads do not set up. Their glue would also call exports from several workers (B08).
+    if options.wasm_threads && !llvm::host_entries(module).is_empty() {
+        return Err(driver_error(
+            "E2000",
+            "--wasm-feature threads cannot be combined with Async.start or Async.block_on: their executor keeps per-thread state that WebAssembly threads do not set up",
+        ));
+    }
     if options.emit.is_bindings() {
         return build_bindings(module, project, output, options).map(|()| (Vec::new(), Vec::new()));
     }
@@ -2412,6 +2451,8 @@ fn build_complete(
             .any(|line| line.starts_with("declare ") && line.contains(" @tsuzuri_cpu_"));
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
+    let async_reactor = llvm::uses_reactor(&text);
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
     let arguments_runtime = text.contains("@tsuzuri_arguments(");
     if options.freestanding {
@@ -2435,6 +2476,7 @@ fn build_complete(
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
+            ("declare void @tsuzuri_async_wait(", "Async.block_on"),
             ("@tsuzuri_arguments(", "program arguments"),
             ("declare i64 @write(", "Debug output"),
             ("declare i32 @putchar(", "Debug output"),
@@ -2470,7 +2512,8 @@ fn build_complete(
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
-        || (options.target == Target::Native && (io_runtime || os_runtime || arguments_runtime));
+        || (options.target == Target::Native
+            && (io_runtime || os_runtime || arguments_runtime || async_reactor));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
@@ -2493,6 +2536,22 @@ fn build_complete(
     // would send a Windows user to link a POSIX runtime that cannot be linked there.
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
+    }
+    if async_reactor && options.target.is_wasm() && !options.wasm_jspi {
+        return Err(driver_error(
+            "E2000",
+            "Async.block_on on WebAssembly needs --wasm-feature jspi: it suspends the WebAssembly stack with JavaScript Promise Integration while it waits",
+        ));
+    }
+    if async_reactor
+        && cfg!(windows)
+        && options.target == Target::Native
+        && options.emit != Emit::Llvm
+    {
+        return Err(driver_error(
+            "E2002",
+            "Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)",
+        ));
     }
     if os_runtime && cfg!(windows) && options.target == Target::Native && options.emit != Emit::Llvm
     {
@@ -2633,10 +2692,15 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c must precede every include, so it comes first.
                 if os_runtime && options.target == Target::Native {
                     include_str!("runtime/os.c")
+                } else {
+                    ""
+                },
+                if async_reactor && options.target == Target::Native {
+                    include_str!("runtime/async.c")
                 } else {
                     ""
                 },
@@ -2673,7 +2737,7 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
-            if (task_runtime || trap_runtime) && !cfg!(windows) {
+            if (task_runtime || trap_runtime || async_reactor) && !cfg!(windows) {
                 runtime.arg("-pthread");
             }
             if trap_runtime {
@@ -3062,6 +3126,12 @@ fn build_complete(
                     linker.arg(format!("--export=tz_{}", function.name));
                 }
             }
+            for (symbol, _) in llvm::host_entries(module) {
+                linker.arg(format!("--export={symbol}"));
+            }
+            if !llvm::host_entries(module).is_empty() {
+                linker.arg("--export=tsuzuri_async_set_epoch");
+            }
             linker.arg(&object).arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
@@ -3117,9 +3187,15 @@ pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool
             names
         })
         .collect();
+    // The reactor's runtime defines `tsuzuri_async_post`, which other threads call (B08).
+    if llvm::uses_reactor(ir) {
+        symbols.push("tsuzuri_async_post".to_owned());
+    }
     for symbol in [
         "tsuzuri_alloc",
         "tsuzuri_alloc_stats",
+        "tsuzuri_async_complete",
+        "tsuzuri_async_poll",
         "tsuzuri_free",
         "tsuzuri_main",
     ] {
@@ -3229,6 +3305,8 @@ fn build_bindings(
     let staged = temporary.path.join("declarations");
     let flavor = if options.wasm_threads {
         crate::bindings::JsFlavor::Threads
+    } else if options.wasm_jspi {
+        crate::bindings::JsFlavor::Jspi
     } else {
         crate::bindings::JsFlavor::Single
     };

@@ -557,7 +557,12 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Async.Async" | "Async.Next"))
+    }
+
+    /// The std `Async.Async`, whose values hold no loans (B08 D6).
+    pub(crate) fn is_async(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Async.Async")
     }
 
     /// The std `Owned.Function`, whose environment has no clone (B07).
@@ -1153,6 +1158,33 @@ pub enum Builtin {
     ArcDowngrade,
     ArcUpgrade,
     ArcPtrEq,
+    /// `Async.__resume :: Async.Next<'a, 'b> -> 'a -> 'b` calls a continuation once, moving
+    /// its environment into the call instead of copying it (B08). Only the std `Async`
+    /// module may call it.
+    AsyncResume,
+    /// `Async.__take :: Maybe<'a>`, called as `Async.__take()`: takes the host executor's state of
+    /// type `'a` out of its per-thread slot and locks it until `Async.__put`; taking a locked
+    /// slot traps on re-entry (B08 Phase 2). Only the std `Async` module may call it.
+    AsyncTake,
+    /// `Async.__put :: Maybe<'a> -> unit` stores the state of a slot that `Async.__take`
+    /// locked, or leaves it empty, and unlocks it; putting into an unlocked slot traps.
+    AsyncPut,
+    /// `Async.__next_id :: i64`, called as `Async.__next_id()`: the next host operation id from a
+    /// per-thread counter, tagged with the thread's never-reused index.
+    AsyncNextId,
+    /// `Async.__clock :: i64`, called as `Async.__clock()`: milliseconds of the monotonic clock
+    /// of `Async.block_on` (B08 Phase 3): `src/runtime/async.c` natively, and the import
+    /// `tsuzuri_async.clock` under `--wasm-feature jspi`.
+    AsyncClock,
+    /// `Async.__wait :: i64 -> unit` blocks until the clock reaches the deadline or a host
+    /// operation completes: natively in `src/runtime/async.c`, and under `--wasm-feature jspi`
+    /// through the import `tsuzuri_async.wait`, which suspends the WebAssembly stack.
+    AsyncWait,
+    /// `Async.__posted :: (i64 * i64)`, called as `Async.__posted()`: the earliest completion
+    /// that another thread posted with `tsuzuri_async_post`, or `(0, 0)`. WASM has none.
+    AsyncPosted,
+    /// Removes a completed or cancelled operation from the native reactor's mailbox.
+    AsyncRetire,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1421,6 +1453,14 @@ impl Builtin {
         Self::ArcDowngrade,
         Self::ArcUpgrade,
         Self::ArcPtrEq,
+        Self::AsyncResume,
+        Self::AsyncTake,
+        Self::AsyncPut,
+        Self::AsyncNextId,
+        Self::AsyncClock,
+        Self::AsyncWait,
+        Self::AsyncPosted,
+        Self::AsyncRetire,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1609,6 +1649,14 @@ impl Builtin {
             Self::Not => "not",
             Self::Ignore => "ignore",
             Self::ArenaNextId => "Arena.__next_id",
+            Self::AsyncResume => "Async.__resume",
+            Self::AsyncTake => "Async.__take",
+            Self::AsyncPut => "Async.__put",
+            Self::AsyncNextId => "Async.__next_id",
+            Self::AsyncClock => "Async.__clock",
+            Self::AsyncWait => "Async.__wait",
+            Self::AsyncPosted => "Async.__posted",
+            Self::AsyncRetire => "Async.__retire",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::GenSeed => "Gen.__seed",
@@ -2425,7 +2473,29 @@ impl Builtin {
             Self::OwnedDrop | Self::Ignore | Self::BenchConsume => {
                 (vec![a()], Concrete(Type::Unit), Vec::new())
             }
-            Self::ArenaNextId | Self::BenchNow => (Vec::new(), Concrete(Type::I64), Vec::new()),
+            Self::ArenaNextId | Self::BenchNow | Self::AsyncNextId | Self::AsyncClock => {
+                (Vec::new(), Concrete(Type::I64), Vec::new())
+            }
+            Self::AsyncWait | Self::AsyncRetire => {
+                (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new())
+            }
+            Self::AsyncPosted => (
+                Vec::new(),
+                Concrete(Type::Tuple(vec![Type::I64, Type::I64])),
+                Vec::new(),
+            ),
+            Self::AsyncTake | Self::AsyncPut => {
+                let state = BuiltinType::Std {
+                    module: "Maybe",
+                    name: "Maybe",
+                    args: vec![a()],
+                };
+                if self == Self::AsyncTake {
+                    (Vec::new(), state, Vec::new())
+                } else {
+                    (vec![state], Concrete(Type::Unit), Vec::new())
+                }
+            }
             Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
             Self::RcNew
             | Self::RcShare
@@ -2493,6 +2563,18 @@ impl Builtin {
                 }
             }
             Self::Not => (vec![Concrete(Type::Bool)], Concrete(Type::Bool), Vec::new()),
+            Self::AsyncResume => (
+                vec![
+                    BuiltinType::Std {
+                        module: "Async",
+                        name: "Next",
+                        args: vec![a(), Var("b")],
+                    },
+                    a(),
+                ],
+                Var("b"),
+                Vec::new(),
+            ),
             Self::OwnedFunction | Self::OwnedCall => {
                 let run = BuiltinType::Function(vec![a()], Box::new(Var("b")));
                 let owned = BuiltinType::Std {

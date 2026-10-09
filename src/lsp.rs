@@ -1778,8 +1778,21 @@ fn path_text(tokens: &[Token], chain: &[usize]) -> String {
 fn ident(token: &Token) -> &str {
     match &token.kind {
         TokenKind::Ident(name) => name,
+        TokenKind::Yield => "yield",
+        TokenKind::Union => "union",
+        TokenKind::New => "new",
         _ => "",
     }
+}
+
+fn name_token(tokens: &[Token], at: usize) -> bool {
+    matches!(tokens[at].kind, TokenKind::Ident(_))
+        || (at > 0
+            && tokens[at - 1].kind == TokenKind::Dot
+            && matches!(
+                tokens[at].kind,
+                TokenKind::Yield | TokenKind::Union | TokenKind::New
+            ))
 }
 
 fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
@@ -1809,10 +1822,7 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
         items: Vec::new(),
     };
     let mut before = tokens.partition_point(|token| token.span.end <= offset);
-    if before > 0
-        && matches!(tokens[before - 1].kind, TokenKind::Ident(_))
-        && tokens[before - 1].span.end == offset
-    {
+    if before > 0 && name_token(&tokens, before - 1) && tokens[before - 1].span.end == offset {
         before -= 1;
     }
     let separator = (before >= 2)
@@ -2070,10 +2080,7 @@ fn count_terms(tokens: &[Token]) -> (usize, Option<usize>) {
             dotted = true;
             continue;
         }
-        if dotted
-            && matches!(token.kind, TokenKind::Ident(_))
-            && adjacent(&tokens[index - 1], token)
-        {
+        if dotted && name_token(tokens, index) && adjacent(&tokens[index - 1], token) {
             dotted = false;
             end = Some(token.span.end);
             continue;
@@ -2117,7 +2124,9 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
                 break;
             } else if depth == 0
                 && (token.span.start < line_start
-                    || !(is_term(&token.kind) || is_prefix(tokens, index)))
+                    || !(is_term(&token.kind)
+                        || name_token(tokens, index)
+                        || is_prefix(tokens, index)))
             {
                 start = index + 1;
                 break;
@@ -2125,7 +2134,7 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
         }
         if let Some(open) = open
             && open > 0
-            && matches!(tokens[open - 1].kind, TokenKind::Ident(_))
+            && name_token(tokens, open - 1)
             && adjacent(&tokens[open - 1], &tokens[open])
         {
             let mut depth = 0usize;
@@ -2145,7 +2154,7 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
             let mut head = start;
             while head + 2 < end
                 && matches!(tokens[head + 1].kind, TokenKind::Dot | TokenKind::PathSep)
-                && matches!(tokens[head + 2].kind, TokenKind::Ident(_))
+                && name_token(tokens, head + 2)
                 && adjacent(&tokens[head], &tokens[head + 1])
                 && adjacent(&tokens[head + 1], &tokens[head + 2])
             {

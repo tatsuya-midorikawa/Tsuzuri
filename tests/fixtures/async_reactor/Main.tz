@@ -1,0 +1,82 @@
+// B08 Phase 3: Async.block_on on the real clock. Natively the host completes operations from
+// other threads with tsuzuri_async_post; under --wasm-feature jspi JavaScript completes them.
+
+extern def start_operation :: i64 -> i64 -> unit
+extern def cancel_operation :: i64 -> unit
+extern def report :: i64 -> i64 -> unit
+
+def wait_host :: i64 -> Async<i64>
+fn wait_host request = Async.host (Async.Operation {
+    start: \operation -> start_operation operation request,
+    cancel: \operation -> cancel_operation operation
+})
+
+def span :: i64 -> Async<i64>
+fn span delay = Async {
+    let! start = Async.now ()
+    do! Async.sleep delay
+    let! finish = Async.now ()
+    return finish - start
+}
+
+// Concurrent sleeps on the real clock; each span is at least its delay.
+export def timers :: i64 -> i64
+fn timers delay =
+    let! spans = Async.block_on (Async.all [span delay, span (delay * 2)])
+    if spans[0] >= delay && spans[1] >= delay * 2 then 1 else 0
+
+// Two host operations that the host completes later, on other threads natively.
+export def completed :: i64 -> i64
+fn completed n =
+    let! values = Async.block_on (Async.all [wait_host n, wait_host (n + 1)])
+    values[0] * 1000 + values[1]
+
+// The failure after 20 ms cancels the operation that the other child waits for.
+export def cancelled :: i64 -> i64
+fn cancelled n =
+    let waiting: Async<Result<i64, i64>> = Async {
+        let! value = wait_host n
+        return Result.Ok value
+    }
+    let failing: Async<Result<i64, i64>> = Async {
+        do! Async.sleep 20
+        return Result.Error n
+    }
+    let! outcome = Async.block_on (Async.all_results [waiting, failing])
+    match outcome with
+    | Result.Ok _ -> 0
+    | Result.Error error -> -error
+
+// A computation that `start` handed over runs while block_on waits for its own.
+export def background :: i64 -> i64
+fn background n =
+    do! Async.start (Async {
+        do! Async.sleep 10
+        report 1 n
+    })
+    let! value = Async.block_on (Async {
+        do! Async.sleep 30
+        return n * 2
+    })
+    value
+
+def wait_on_thread :: i64 -> i64
+fn wait_on_thread request =
+    let! value = Async.block_on (wait_host request)
+    value
+
+// Each worker of Task.parallel waits on its own executor for an operation that another thread
+// completes; the host posts each completion to the thread that began the operation.
+export def parallel_completed :: i64 -> i64
+fn parallel_completed n =
+    let jobs = new [Task<i64>](4, \index -> task { return wait_on_thread (n + index) })
+    Array.sum ref (Task.run (Task.parallel jobs))
+
+export def buffered :: ref [i64] -> i64 -> [i64]
+fn buffered values delay =
+    let owned = Array.copy values
+    let! output = Async.block_on (Async {
+        do! Async.sleep delay
+        return owned
+    })
+    output

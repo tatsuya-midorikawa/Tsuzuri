@@ -94,6 +94,10 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "Maybe { let! value = Some 1; return value }\n",
         ),
         (
+            "Async{do! Async.yield ();return 1}",
+            "Async { do! Async.yield (); return 1 }\n",
+        ),
+        (
             "Maybe{use ! value=Some 1;return value}",
             "Maybe { use! value = Some 1; return value }\n",
         ),

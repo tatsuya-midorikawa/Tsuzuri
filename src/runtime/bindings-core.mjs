@@ -1,13 +1,15 @@
 // The runtime core of the bindings that `tsuzuri build --target wasm32 --emit bindings-js` generates
 // (E13). The generator writes `const TABLE = {...};` before this text, the module's exports, host
 // imports and records as descriptors, and `bindings.mjs` (one instance) or `bindings-threads.mjs`
-// (a thread pool) after it. The runtime imports no module, fetches nothing, and keeps no global
-// state; each `load` owns its compiled module and instances.
+// (a thread pool) after it. The runtime imports no module and fetches nothing. Each `load` owns
+// its compiled module and instances; Async epochs are unique within this generated module.
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const tagOf = (value) => Object.prototype.toString.call(value);
 const NO_ERROR = Symbol("no host error");
+const MAX_I64 = (1n << 63n) - 1n;
+let nextAsyncEpoch = 1;
 const ARRAYS = {
   i64: [BigInt64Array, 8, "[object BigInt64Array]", "a BigInt64Array"],
   f64: [Float64Array, 8, "[object Float64Array]", "a Float64Array"],
@@ -344,6 +346,9 @@ const POOL_EXPORTS = ["__stack_pointer", "tsuzuri_thread_entry", "tsuzuri_thread
 // shared memory and thread imports of --wasm-feature threads, and the others reject them. Returns
 // the table's imports that the module declares, in the order of the table.
 function inspect(module, threads) {
+  if (TABLE.async?.jspi && (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function")) {
+    throw new Error("JSPI bindings require WebAssembly.Suspending and WebAssembly.promising; use a JSPI-capable engine");
+  }
   const moduleImports = WebAssembly.Module.imports(module);
   const pooled = moduleImports.some((entry) => entry.module === "tsuzuri_threads");
   if (pooled && !threads) {
@@ -357,6 +362,11 @@ function inspect(module, threads) {
   const present = new Set();
   for (const { module: namespace, name, kind } of moduleImports) {
     if (threads && (namespace === "tsuzuri_threads" || (namespace === "env" && name === "memory" && kind === "memory"))) continue;
+    // The glue itself provides the clock and the wait of Async.block_on under JSPI (B08).
+    if (namespace === "tsuzuri_async") {
+      if (TABLE.async?.jspi && kind === "function" && (name === "clock" || name === "wait")) continue;
+      throw new Error("module does not match bindings: it waits through JSPI; generate the bindings with --wasm-feature jspi as well");
+    }
     if (kind === "function" && declared.has(key(namespace, name))) {
       present.add(key(namespace, name));
     } else if (namespace in UNSUPPORTED || namespace.startsWith("tsuzuri_")) {
@@ -372,6 +382,7 @@ function inspect(module, threads) {
   if (TABLE.hostAbi) required.push("memory", "tsuzuri_alloc", "tsuzuri_free");
   if (used.some(([, , parameters]) => parameters.some(Array.isArray))) required.push("__indirect_function_table");
   if (threads) required.push(...POOL_EXPORTS);
+  if (TABLE.async?.driven) required.push("tsuzuri_async_poll", "tsuzuri_async_complete", "tsuzuri_async_set_epoch");
   for (const name of required) {
     if (!exported.has(name)) throw new Error(`module does not match bindings: missing export '${name}'; regenerate the bindings from the same sources`);
   }
@@ -449,6 +460,8 @@ function checkSlice(kind, value, bindings) {
 // `trapOf(own)` may replace the trap that a call reports.
 function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf = (own) => own } = {}) {
   const resolve = resolver();
+  const jspi = TABLE.async?.jspi === true;
+  let jspiQueue = Promise.resolve();
   const siteTable = new Map(sites.map((site) => [site.id, site]));
   // Identifies these bindings to their Borrowed buffers.
   const bindings = {};
@@ -486,7 +499,11 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     if (failed.alive) {
       failed.alive = false;
       failed.failure = thrown;
-      if (state === failed) state = undefined;
+      failed.wake?.();
+      if (state === failed) {
+        state = undefined;
+        asyncHost?.discard(thrown);
+      }
       if (!recreate) final ??= thrown;
     }
     return thrown;
@@ -587,14 +604,48 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
   }
 
   function createState() {
+    if (TABLE.async?.driven && nextAsyncEpoch >= 16777216) throw new RangeError("Async instance epochs exhausted; reload the generated bindings module");
     const created = { alive: true, failure: undefined, exports: undefined, current: () => state === created };
+    created.epoch = TABLE.async?.driven ? nextAsyncEpoch++ : 0;
     return created;
+  }
+
+  function install(owner, exports) {
+    owner.exports = exports;
+    if (TABLE.async?.driven) exports.tsuzuri_async_set_epoch(BigInt(owner.epoch));
   }
 
   function importObject(owner) {
     const object = wrapImports(owner);
     for (const [namespace, values] of Object.entries(extra?.(owner) ?? {})) object[namespace] = Object.assign(Object.create(null), object[namespace], values);
+    if (jspi) object.tsuzuri_async = asyncImports(owner);
     return object;
+  }
+
+  // The clock of Async.block_on in milliseconds, and its wait: a promise that settles at the
+  // deadline, or when the host completes an operation, while JSPI suspends the module (B08).
+  function asyncImports(owner) {
+    return Object.assign(Object.create(null), {
+      clock: () => {
+        if (!owner.alive) throw owner.failure;
+        return BigInt(Math.floor(performance.now()));
+      },
+      wait: new WebAssembly.Suspending((deadline) => {
+        if (!owner.alive) throw owner.failure;
+        return new Promise((settle) => {
+          let timer;
+          const finish = () => {
+            clearTimeout(timer);
+            owner.wake = undefined;
+            settle();
+          };
+          if (deadline !== MAX_I64) {
+            timer = setTimeout(finish, Math.min(2147483647, Math.max(0, Math.ceil(Number(deadline) - performance.now()))));
+          }
+          owner.wake = finish;
+        });
+      }),
+    });
   }
 
   // The instance for a call: after a failure, a new one created synchronously. A browser's main
@@ -604,11 +655,12 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       if (final !== undefined) throw new Error("the WASM thread pool stopped after a failure; load the module again", { cause: final });
       const created = createState();
       try {
-        created.exports = new WebAssembly.Instance(module, importObject(created)).exports;
+        install(created, new WebAssembly.Instance(module, importObject(created)).exports);
       } catch (cause) {
         throw new Error("the WASM instance could not be recreated synchronously after a failure; await ready() to recreate it asynchronously, then call again", { cause });
       }
       state = created;
+      asyncHost?.reset();
     }
     return state;
   }
@@ -619,9 +671,12 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     pending ??= (async () => {
       const created = createState();
       try {
-        created.exports = (await WebAssembly.instantiate(module, importObject(created))).exports;
+        install(created, (await WebAssembly.instantiate(module, importObject(created))).exports);
         // A call may have created an instance synchronously meanwhile; that one stays.
-        state ??= created;
+        if (state === undefined) {
+          state = created;
+          asyncHost?.reset();
+        }
       } finally {
         pending = undefined;
       }
@@ -648,57 +703,179 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     const result = resolve(resultType);
     const target = `tz_${name}`;
     const count = parameters.length;
-    const check = argumentChecker(name, parameters, bindings);
+    const check = argumentChecker(name, parameters, jspi ? undefined : bindings);
+    // Copies the checked arguments into the instance: the lowered values, the input blocks to
+    // free after the call, and the block that receives a buffer or record result.
+    function lower(owner, checked) {
+      const lowered = [];
+      const inputs = [];
+      let out = 0;
+      for (let position = 0; position < count; position++) {
+        const converter = parameters[position];
+        const value = checked[position];
+        if (converter.slice !== undefined) {
+          if (Array.isArray(value)) {
+            lowered.push(value[0], BigInt(value[1]));
+          } else {
+            const [pointer, length] = writeBuffer(owner, converter.slice, value);
+            if (pointer !== 0) inputs.push(pointer);
+            lowered.push(pointer, BigInt(length));
+          }
+        } else if (converter.record !== undefined) {
+          const pointer = allocate(owner, converter.record.size);
+          inputs.push(pointer);
+          converter.record.write(new DataView(memoryOf(owner)), pointer, value);
+          lowered.push(pointer);
+        } else {
+          lowered.push(converter.lower(value));
+        }
+      }
+      if (result.buffer !== undefined) out = allocate(owner, 16);
+      else if (result.record !== undefined) out = allocate(owner, result.record.size);
+      return { lowered: out === 0 ? lowered : [out, ...lowered], inputs, out };
+    }
+    // Reads the result of a call and frees what `lower` allocated.
+    function lift(owner, raw, { inputs, out }) {
+      if (!owner.alive) throw owner.failure;
+      let value;
+      if (result.buffer !== undefined) {
+        const view = new DataView(memoryOf(owner));
+        const pointer = view.getUint32(out, true);
+        const length = Number(view.getBigInt64(out + 8, true));
+        value = readBuffer(owner, result.buffer, pointer, length);
+        owner.exports.tsuzuri_free(pointer);
+      } else if (result.record !== undefined) {
+        value = result.record.read(new DataView(memoryOf(owner)), out);
+      } else {
+        value = result.lift(raw);
+      }
+      if (out !== 0) owner.exports.tsuzuri_free(out);
+      for (let index = inputs.length - 1; index >= 0; index--) owner.exports.tsuzuri_free(inputs[index]);
+      return value;
+    }
+    if (jspi) {
+      // One JSPI call owns the instance until it returns. Queue later calls, and snapshot their
+      // inputs now rather than when the queue reaches them.
+      return async function (...args) {
+        const checked = check(args);
+        for (let index = 0; index < checked.length; index++) {
+          const kind = parameters[index].slice;
+          if (kind !== undefined && Object.hasOwn(ARRAYS, kind)) {
+            checked[index] = new ARRAYS[kind][0](checked[index]);
+          }
+        }
+        const result = jspiQueue.then(async () => {
+          const owner = current();
+          const prepared = enter(owner, () => lower(owner, checked));
+          const calls = owner.promising ??= new Map();
+          if (!calls.has(target)) calls.set(target, WebAssembly.promising(owner.exports[target]));
+          owner.jspiActive = true;
+          try {
+            const raw = await calls.get(target)(...prepared.lowered);
+            return enter(owner, () => lift(owner, raw, prepared));
+          } catch (error) {
+            throw fail(owner, error);
+          } finally {
+            owner.jspiActive = false;
+            if (owner.alive) asyncHost?.schedule();
+          }
+        });
+        // The caller receives `result`'s rejection; the queue must still accept the next call.
+        jspiQueue = result.then(() => undefined, () => undefined);
+        return result;
+      };
+    }
     return function (...args) {
       const checked = check(args);
       const owner = current();
-      return enter(owner, () => {
-        const lowered = [];
-        const inputs = [];
-        let out = 0;
-        for (let position = 0; position < count; position++) {
-          const converter = parameters[position];
-          const value = checked[position];
-          if (converter.slice !== undefined) {
-            if (Array.isArray(value)) {
-              lowered.push(value[0], BigInt(value[1]));
-            } else {
-              const [pointer, length] = writeBuffer(owner, converter.slice, value);
-              if (pointer !== 0) inputs.push(pointer);
-              lowered.push(pointer, BigInt(length));
-            }
-          } else if (converter.record !== undefined) {
-            const pointer = allocate(owner, converter.record.size);
-            inputs.push(pointer);
-            converter.record.write(new DataView(memoryOf(owner)), pointer, value);
-            lowered.push(pointer);
-          } else {
-            lowered.push(converter.lower(value));
-          }
-        }
-        if (result.buffer !== undefined) out = allocate(owner, 16);
-        else if (result.record !== undefined) out = allocate(owner, result.record.size);
-        const exported = owner.exports[target];
-        const raw = out === 0 ? exported(...lowered) : exported(out, ...lowered);
-        if (!owner.alive) throw owner.failure;
-        let value;
-        if (result.buffer !== undefined) {
-          const view = new DataView(memoryOf(owner));
-          const pointer = view.getUint32(out, true);
-          const length = Number(view.getBigInt64(out + 8, true));
-          value = readBuffer(owner, result.buffer, pointer, length);
-          owner.exports.tsuzuri_free(pointer);
-        } else if (result.record !== undefined) {
-          value = result.record.read(new DataView(memoryOf(owner)), out);
-        } else {
-          value = result.lift(raw);
-        }
-        if (out !== 0) owner.exports.tsuzuri_free(out);
-        for (let index = inputs.length - 1; index >= 0; index--) owner.exports.tsuzuri_free(inputs[index]);
-        return value;
+      const value = enter(owner, () => {
+        const prepared = lower(owner, checked);
+        const raw = owner.exports[target](...prepared.lowered);
+        return lift(owner, raw, prepared);
       });
+      // A call may have handed computations to the executor of Async.start (B08).
+      asyncHost?.schedule();
+      return value;
     };
   }
+
+  // The executor of Async.start on the event loop (B08): polls after export calls and
+  // completions, at the earliest timer, and settles `settled()` when no computation remains.
+  function createAsyncHost() {
+    let timer;
+    let waiters = [];
+    let failure = NO_ERROR;
+    const integer = resolve("i64");
+    function finish(error) {
+      const list = waiters;
+      waiters = [];
+      for (const [resolve, reject] of list) {
+        if (error === NO_ERROR) resolve(); else reject(error);
+      }
+    }
+    function drive(owner) {
+      timer = undefined;
+      if (owner !== state || !owner.alive || owner.jspiActive) return;
+      let next;
+      const observed = waiters.length !== 0;
+      try {
+        next = enter(owner, () => owner.exports.tsuzuri_async_poll(BigInt(Math.floor(performance.now()))));
+      } catch (error) {
+        if (!observed) console.error("Async executor failed:", error);
+        return;
+      }
+      if (next === -1n) {
+        finish(NO_ERROR);
+      } else if (next !== MAX_I64) {
+        const delay = Number(next) - performance.now();
+        timer = setTimeout(() => drive(owner), Math.min(2147483647, Math.max(0, Math.ceil(delay))));
+      }
+    }
+    function schedule() {
+      clearTimeout(timer);
+      const owner = state;
+      if (owner !== undefined) timer = setTimeout(() => drive(owner), 0);
+    }
+    const api = Object.freeze({
+      complete(operation, value) {
+        for (const [name, input] of [["operation", operation], ["value", value]]) {
+          try {
+            integer.check(input);
+          } catch (error) {
+            throw located(error, `${name} of complete`);
+          }
+        }
+        if (failure !== NO_ERROR) throw failure;
+        const owner = current();
+        const epoch = operation > 0n ? operation >> 39n : 0n;
+        if (epoch !== 0n && epoch !== BigInt(owner.epoch)) {
+          throw new TypeError("operation belongs to a different or discarded Async instance");
+        }
+        enter(owner, () => owner.exports.tsuzuri_async_complete(operation, value));
+        owner.wake?.();
+        schedule();
+      },
+      settled() {
+        if (failure !== NO_ERROR) return Promise.reject(failure);
+        return new Promise((resolve, reject) => {
+          waiters.push([resolve, reject]);
+          schedule();
+        });
+      },
+    });
+    return {
+      api,
+      schedule,
+      reset() { failure = NO_ERROR; },
+      discard(error) {
+        clearTimeout(timer);
+        timer = undefined;
+        failure = error;
+        finish(error);
+      },
+    };
+  }
+  const asyncHost = TABLE.async?.driven ? createAsyncHost() : undefined;
 
   const exports = {};
   for (const [name, parameters, result] of TABLE.exports) {
@@ -707,6 +884,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
   Object.freeze(exports);
 
   function withBorrowed(kind, length, callback) {
+    if (jspi) throw new TypeError("withBorrowed cannot span a JSPI call; pass a typed array instead");
     if (!Object.hasOwn(ARRAYS, kind)) throw new TypeError('withBorrowed kind must be "i64", "f64", or "ubyte"');
     if (!Number.isSafeInteger(length) || length < 0) throw new RangeError("withBorrowed length must be a non-negative safe integer");
     if (typeof callback !== "function") throw new TypeError("withBorrowed callback must be a function");
@@ -730,10 +908,11 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     exports,
     withBorrowed,
     ready,
+    async: asyncHost?.api,
     // Creates the first instance asynchronously, as a browser's main thread requires.
     async start() {
       const first = createState();
-      first.exports = (await WebAssembly.instantiate(module, importObject(first))).exports;
+      install(first, (await WebAssembly.instantiate(module, importObject(first))).exports);
       state = first;
       return first;
     },

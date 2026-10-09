@@ -213,7 +213,11 @@ fn bindings_are_deterministic() {
     assert!(javascript.starts_with(&format!("{banner}const TABLE = {{\"abi\":1,")));
     assert!(declarations.starts_with(&banner));
     // The runtime follows the table and exports only `load` and `TsuzuriTrap`.
-    for flavor in [bindings::JsFlavor::Single, bindings::JsFlavor::Threads] {
+    for flavor in [
+        bindings::JsFlavor::Single,
+        bindings::JsFlavor::Threads,
+        bindings::JsFlavor::Jspi,
+    ] {
         let javascript = bindings::javascript_for(&module, flavor);
         assert_eq!(javascript, bindings::javascript_for(&fixture(), flavor));
         assert_eq!(

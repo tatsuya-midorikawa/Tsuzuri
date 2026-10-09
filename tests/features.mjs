@@ -390,6 +390,55 @@ const suites = {
     ],
     traps: [["strict_trap", []]],
   },
+  // B08: the values follow from the virtual-clock rules by hand: time advances only when every
+  // computation sleeps, to the earliest wake-up; a round resumes children in index order.
+  async: {
+    cases: [
+      // yield, then sleep 3 from time 0: now = 3.
+      ...[0n, 4n, -5n].map((n) => ["basic", [n], n * 10n + 3n]),
+      ["sleep_zero", [0n], 0n],
+      // Two sleeps of the largest i64: the second wake-up saturates.
+      ["saturated", [0n], max],
+      // Worker 1 records times 1, 2, 3 and worker 2 times 2, 4.
+      ["timeline", [0n], 123n * 1000n + 24n],
+      // The spinning child yields three times at time 0 before the sleeper wakes at 1.
+      ["starvation", [0n], 0n * 10n + 1n],
+      // [[12, 3], [2]]: the inner workers wake at 1 and 2, at 3, and at 2.
+      ["nested_all", [0n], 12n * 10000n + 3n * 100n + 2n],
+      ["all_empty", [0n], 0n],
+      ["results_ok", [0n], 1n * 10n + 2n],
+      // Index 0 and 1 fail at time 2; within the round index 0 comes first.
+      ["results_first_error", [0n], -1n],
+      // Index 1 fails at time 1, before index 0 at time 3.
+      ["results_time_order", [0n], -2n],
+      // The failure at time 1 drops the child that owns 100 elements; live == 0 proves it.
+      ["cancel_frees", [0n], -5n],
+      ...[0n, 1n, 1000n].map((count) => ["for_suspending", [count], count]),
+      ["for_sync", [100000n], 100000n],
+      ["for_sync_many", [1000000n], 1000000n],
+      ["tail_loop", [1000000n], 1000000n],
+      // Non-tail nesting uses stack per level, like synchronous recursion (docs/language.md).
+      ["deep", [200n], 200n],
+      // The inner run has its own clock: it sees 2, the outer 5.
+      ["nested_run", [0n], 2n * 10n + 5n],
+      ["unused", [7n], 7n],
+      ["divide_after_yield", [2n], 5n],
+      // "7", "42", and "abc".
+      ["owned_results", [0n], 1n * 100n + 2n * 10n + 3n],
+      // Ok ["12", "5"], and Error "failed".
+      ["owned_failure", [5n], 2n * 10n + 1n], ["owned_failure", [-1n], -6n],
+      ["borrows_end", [4n], 3n * 100n + 4n],
+      ["implicit_body", [21n], 42n],
+      ["task_inside", [3n], 4n + 3n],
+    ],
+    nativeCases: [["deep", [1000n], 1000n]],
+    traps: [["divide_after_yield", [0n]]],
+    inspect(ir) {
+      // Resuming a continuation costs no frame of its own, even at -O0.
+      assert.match(ir, /^define internal \S+ @tz\.builtin\.Async\.__resume\S*\(.*\) nounwind alwaysinline \{$/m);
+      assert.doesNotMatch(ir, /^define internal \S+ @tz\.builtin\.Async\.__resume\S*\(.*\) nounwind \{$/m);
+    },
+  },
   simd: {
     cases: [
       ...[128, 256].flatMap((width) => [8, 16, 32, 64].flatMap((bits) => [false, true].flatMap((unsigned) => [0n, 1n, -1n, 127n, -129n, 2147483647n, -(1n << 63n)].flatMap((seed) => [0n, 1n, BigInt(bits), BigInt(bits + 1)].map((shift) => {
@@ -1559,7 +1608,7 @@ function run(name, suite) {
     // The host allocator's IR calls only tsuzuri_host_*, so nothing is renamed.
     if (hostAllocator) assert.ok(!/@(malloc|free|realloc)\(/.test(sourceIr), `${name}: the host allocator replaces the C library`);
     let trackedIr = hostAllocator ? sourceIr : sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
-    if (sanitizerKind) trackedIr = trackedIr.replaceAll(" nounwind {", ` nounwind sanitize_${sanitizerKind} {`);
+    if (sanitizerKind) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${sanitizerKind}`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];
     const host = join(temporary, "host.c");

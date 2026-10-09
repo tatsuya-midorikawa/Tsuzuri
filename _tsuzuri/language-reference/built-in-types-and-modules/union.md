@@ -74,7 +74,7 @@ Maybe.get (wrap 42)
 - 自モジュールの `Union.Case`
 - `Module.Union.Case`
 
-標準ライブラリはユーザー定義より後に検索されます。自前の `union Maybe` があると、無修飾の `Maybe.Some` は自前のケースです。標準の方は `std::Maybe.Some` と書きます。`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen` のケースと型は無修飾では見つからず、`Json.Null` や `Regex.Syntax` のようにモジュール名で修飾して書きます。
+標準ライブラリはユーザー定義より後に検索されます。自前の `union Maybe` があると、無修飾の `Maybe.Some` は自前のケースです。標準の方は `std::Maybe.Some` と書きます。`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async` のケースと型は無修飾では見つからず、`Json.Null` や `Regex.Syntax` のようにモジュール名で修飾して書きます。
 
 ```tsuzuri run=42
 union Choice = Some of i64 | None
@@ -310,4 +310,3 @@ Completed 42
 - [言語仕様の共用体](../../../docs/language.md#共用体union)
 - [言語仕様の再帰的なデータ型](../../../docs/language.md#再帰的なデータ型)
 - [言語リファレンスの目次](../index.md)
-

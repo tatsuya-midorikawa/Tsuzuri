@@ -1057,17 +1057,20 @@ impl Parser<'_> {
         self.member_ident()
     }
 
+    /// A function or member name. The keywords `union` and `yield` name members such as
+    /// `Set.union` and `Async.yield` (B08); unqualified, they stay keywords.
     fn member_ident(&mut self) -> Result<Ident, Diagnostic> {
-        if self.at(&TokenKind::Union) {
-            let token = self.take();
-            Ok(Ident {
-                text: "union".into(),
-                span: token.span,
-                provenance: Provenance::User,
-            })
-        } else {
-            self.ident()
-        }
+        let text = match self.current().kind {
+            TokenKind::Union => "union",
+            TokenKind::Yield => "yield",
+            _ => return self.ident(),
+        };
+        let token = self.take();
+        Ok(Ident {
+            text: text.into(),
+            span: token.span,
+            provenance: Provenance::User,
+        })
     }
 
     fn qualified_ident(&mut self) -> Result<Ident, Diagnostic> {

@@ -11,7 +11,11 @@ export async function load(source, options = {}) {
   checkHostImports(used, hostImports);
   const bound = bind(module, used, hostImports, sites);
   await bound.start();
-  return Object.freeze({ exports: bound.exports, withBorrowed: bound.withBorrowed, ready: bound.ready });
+  const bindings = { exports: bound.exports, ready: bound.ready };
+  if (!TABLE.async?.jspi) bindings.withBorrowed = bound.withBorrowed;
+  // The executor of Async.start on this event loop (B08).
+  if (bound.async !== undefined) bindings.async = bound.async;
+  return Object.freeze(bindings);
 }
 
 export { TsuzuriTrap };

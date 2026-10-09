@@ -36,6 +36,9 @@ pub enum JsFlavor {
     Single,
     /// A module of `--wasm-feature threads` on Web Workers; calls return promises.
     Threads,
+    /// One instance of a module of `--wasm-feature jspi`: calls return promises, because
+    /// `Async.block_on` may suspend them (B08 Phase 3).
+    Jspi,
 }
 
 /// The traps, the same in every flavor of the TypeScript declarations.
@@ -53,6 +56,22 @@ export interface Bindings {
   withBorrowed<R>(kind: "ubyte", length: number, callback: (buffer: Borrowed<Uint8Array>) => R): R;
   ready(): Promise<void>;
 }
+"#;
+
+/// JSPI calls may suspend, so their input buffers are copied rather than borrowed.
+const JSPI_DECLARATIONS: &str = r#"export interface Bindings {
+  readonly exports: Exports;
+  ready(): Promise<void>;
+}
+"#;
+
+/// The executor of `Async.start` on the JavaScript event loop (B08): `complete` hands the value of
+/// a host operation to the computation that waits for it, and `settled` waits until none runs.
+const ASYNC_DECLARATIONS: &str = r#"export interface AsyncHost {
+  complete(operation: bigint, value: bigint): void;
+  settled(): Promise<void>;
+}
+export interface Bindings { readonly async: AsyncHost }
 "#;
 
 /// The first line of a generated file, after the comment marker of its language.
@@ -226,6 +245,12 @@ fn fields(ty: &Type, module: &CheckedModule) -> Vec<(String, usize, Type)> {
 /// The descriptor table: `abi`, `hostAbi`, the exports `[name, parameters, result]` and imports
 /// `[name, module, parameters, result]` in byte order of their names, and the records by name.
 pub fn table(module: &CheckedModule) -> Value {
+    table_for(module, JsFlavor::Single)
+}
+
+/// The descriptor table with `async`: whether the glue drives the host-driven executor of
+/// `Async.start` (B08), and whether `Async.block_on` waits through JSPI imports.
+fn table_for(module: &CheckedModule, flavor: JsFlavor) -> Value {
     let exports: Vec<_> = exports(module)
         .into_iter()
         .map(|function| {
@@ -268,12 +293,15 @@ pub fn table(module: &CheckedModule) -> Value {
             )
         })
         .collect();
+    let driven = !crate::llvm::host_entries(module).is_empty();
+    let jspi = flavor == JsFlavor::Jspi;
     json!({
         "abi": ABI_VERSION,
         "hostAbi": crate::llvm::uses_host_abi(module),
         "exports": exports,
         "imports": imports,
         "records": records,
+        "async": (driven || jspi).then(|| json!({ "driven": driven, "jspi": jspi })),
     })
 }
 
@@ -295,13 +323,13 @@ pub fn javascript(module: &CheckedModule) -> String {
 /// The JavaScript module of `--emit bindings-js` for one flavor.
 pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
     let tail = match flavor {
-        JsFlavor::Single => RUNTIME_SINGLE,
+        JsFlavor::Single | JsFlavor::Jspi => RUNTIME_SINGLE,
         JsFlavor::Threads => RUNTIME_THREADS,
     };
     format!(
         "{}const TABLE = {};\n{RUNTIME_CORE}{tail}",
         banner("//"),
-        table(module)
+        table_for(module, flavor)
     )
 }
 
@@ -378,6 +406,7 @@ pub fn declarations(module: &CheckedModule) -> String {
 /// The TypeScript declarations of `--emit bindings-js` for one flavor.
 pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
     let threads = flavor == JsFlavor::Threads;
+    let promised = threads || flavor == JsFlavor::Jspi;
     let mut output = banner("//");
     for (name, ty) in records(module) {
         let fields: Vec<_> = fields(&ty, module)
@@ -416,7 +445,7 @@ pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
             .map(|(index, ty)| {
                 format!(
                     "arg{index}: {}",
-                    typescript_type_with(ty, module, true, !threads)
+                    typescript_type_with(ty, module, true, !promised)
                 )
             })
             .collect();
@@ -426,7 +455,7 @@ pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
             "  {}({}): {};",
             typescript_property(&function.name),
             parameters.join(", "),
-            if threads {
+            if promised {
                 format!("Promise<{result}>")
             } else {
                 result
@@ -464,7 +493,15 @@ pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
         };
         (options, "ThreadBindings")
     } else {
-        output.push_str(DECLARATIONS);
+        output.push_str(if flavor == JsFlavor::Jspi {
+            JSPI_DECLARATIONS
+        } else {
+            DECLARATIONS
+        });
+        // The glue drives the executor of `Async.start` and completes host operations (B08).
+        if !crate::llvm::host_entries(module).is_empty() {
+            output.push_str(ASYNC_DECLARATIONS);
+        }
         let options = if imports.is_empty() {
             "options?: { sites?: readonly TrapSite[] }".to_owned()
         } else {

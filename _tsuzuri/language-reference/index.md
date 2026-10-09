@@ -111,6 +111,7 @@
 - [Gen](./built-in-types-and-modules/gen.md)
 - [Gpu](./built-in-types-and-modules/gpu.md)
 - [IO](./built-in-types-and-modules/io.md)
+- [Async（型と API）](./async-tasks-and-lazy/async.md#api)
 - [Owned](./built-in-types-and-modules/owned.md)
 - [File](./built-in-types-and-modules/file.md)
 - [Dir](./built-in-types-and-modules/dir.md)
@@ -127,7 +128,7 @@
 
 #### 非同期処理
 
-- [Async 式](./async-tasks-and-lazy/async.md)
+- [Async 式（協調的な中断とホスト駆動）](./async-tasks-and-lazy/async.md)
 - [Task 式](./async-tasks-and-lazy/task.md)
 - [Lazy 式](./async-tasks-and-lazy/lazy.md)
 
